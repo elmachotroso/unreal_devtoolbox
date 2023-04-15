@@ -3,60 +3,40 @@
 #pragma once
 
 #include "../Common.ush"
+#include "/Engine/Shared/NaniteDefinitions.h"
 #if VIRTUAL_TEXTURE_TARGET
 #include "../VirtualShadowMaps/VirtualShadowMapPageAccessCommon.ush"
 #endif
 
-// Must match ERasterTechnique in NaniteCullRaster.h
-#define RASTER_TECHNIQUE_FALLBACK	0
-#define RASTER_TECHNIQUE_PLATFORM	1
-#define RASTER_TECHNIQUE_NVIDIA		2
-#define RASTER_TECHNIQUE_AMD_DX11	3
-#define RASTER_TECHNIQUE_AMD_DX12	4
-#define RASTER_TECHNIQUE_DEPTHONLY	5
-#define RASTER_TECHNIQUE_INTC_DX11	6
-#define RASTER_TECHNIQUE_INTC_DX12	7
-
-#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_FALLBACK
-#define COHERENCY_FLAG globallycoherent
-#else
-#define COHERENCY_FLAG 
-#endif
-
-// When near clipping is disabled we need to move the geometry 
-#ifndef NEAR_CLIP
-#define NEAR_CLIP 1
-#endif
-
-RWTexture2D<uint>						OutDepthBuffer;
-COHERENCY_FLAG RWTexture2D<UlongType>	OutVisBuffer64;
+RWTexture2D<uint>		OutDepthBuffer;
+RWTexture2DArray<uint>	OutDepthBufferArray;
+RWTexture2D<UlongType>	OutVisBuffer64;
 
 #if VISUALIZE
-COHERENCY_FLAG RWTexture2D<UlongType>	OutDbgBuffer64;
-RWTexture2D<uint>						OutDbgBuffer32;
+RWTexture2D<UlongType>	OutDbgBuffer64;
+RWTexture2D<uint>		OutDbgBuffer32;
 #endif
 
-RWTexture2D<uint> 						LockBuffer;
+bool ShouldWritePixel(
+	RWTexture2D<UlongType> OutBuffer,
+	uint2 PixelPos,
+	float DeviceZ
+)
+{
+	// When near clipping is disabled we need to move the geometry
+	DeviceZ = saturate(DeviceZ);
 
-#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_NVIDIA
-#define NV_SHADER_EXTN_SLOT u7
-#include "/Engine/Shared/ThirdParty/NVIDIA/nvHLSLExtns.h"
+	const uint DepthInt = asuint(DeviceZ);
 
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX11
-#define AmdDxExtShaderIntrinsicsUAVSlot u7
-#include "/Engine/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx11.h"
-
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX12
-#include "/Engine/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx12.h"
-
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX11
-#define INTEL_SHADER_EXT_UAV_SLOT u7
-#include "/Engine/Shared/ThirdParty/Intel/IntelExtensions.h"
-
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX12
-#define INTEL_SHADER_EXT_UAV_SLOT u7
-#include "/Engine/Shared/ThirdParty/Intel/IntelExtensions12.h"
+#if DEPTH_ONLY
+	return OutDepthBuffer[PixelPos] < DepthInt;
+#elif COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS
+	return UnpackUlongType(OutBuffer[PixelPos]).y < DepthInt;
+#else
+	#error UNKNOWN_ATOMIC_PLATFORM
+	return false;
 #endif
+}
 
 void WritePixel(
 	RWTexture2D<UlongType> OutBuffer,
@@ -65,95 +45,117 @@ void WritePixel(
 	float DeviceZ
 )
 {
-#if !NEAR_CLIP
-	DeviceZ = max(0.0f, DeviceZ);
-#endif
+	// When near clipping is disabled we need to move the geometry 
+	DeviceZ = saturate(DeviceZ);
 
 	const uint DepthInt = asuint(DeviceZ);
 
-#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_DEPTHONLY
+#if DEPTH_ONLY
 	InterlockedMax( OutDepthBuffer[ PixelPos ], DepthInt );
-#else
+#elif COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS
 	const UlongType Pixel = PackUlongType(uint2(PixelValue, DepthInt));
-
-#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_PLATFORM
-#if COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS
 	ImageInterlockedMaxUInt64(OutBuffer, PixelPos, Pixel);
 #else
 	#error UNKNOWN_ATOMIC_PLATFORM
 #endif
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_NVIDIA
-	NvInterlockedMaxUint64(OutBuffer, PixelPos, Pixel); 
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX11
-	AmdDxExtShaderIntrinsics_AtomicMaxU64(OutBuffer, PixelPos, Pixel);
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX12
-	AmdExtD3DShaderIntrinsics_AtomicMaxU64(OutBuffer, PixelPos, Pixel);
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX11
-	IntelExt_Init();
-	IntelExt_InterlockedMaxUint64(OutBuffer, PixelPos, Pixel);
-#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX12
-	IntelExt_Init();
-	IntelExt_InterlockedMaxUint64(OutBuffer, PixelPos, Pixel);
-#else
-	// YOLO SYNC: Surprisingly this seems to work in practice (for compute, not pixel). Tested on 2080Ti and 1080.
-	uint PrevDepth;
-	InterlockedMax(LockBuffer[PixelPos], DepthInt, PrevDepth);
-	if (DepthInt > PrevDepth)
-	{
-		OutBuffer[PixelPos] = Pixel;
-	}
-#endif
-#endif
 }
-
 
 // Optional per-pixel page translation parameters
 struct WritePixelPageTranslation
 {
-	// TODO: We could optimize this slightly be precomputing the base layer/level offset
-	int TargetLayerIndex;
-	int TargetMipLevel;
-	uint2 PhysicalOffset;
+	FVirtualSMLevelOffset PageTableLevelOffset;
+	int MipLevel;
+	uint ArrayIndex;
+	bool bTranslate;
 };
 
 WritePixelPageTranslation InitializeWritePixelPageTranslation()
 {
 	WritePixelPageTranslation Result;
-	Result.TargetLayerIndex = INDEX_NONE;
-	Result.TargetMipLevel = 0;
-	Result.PhysicalOffset = uint2( 0, 0 );
+	Result.PageTableLevelOffset = (FVirtualSMLevelOffset)0;
+	Result.MipLevel = 0;
+	Result.ArrayIndex = 0;
+	Result.bTranslate = false;
 	return Result;
 }
 
-WritePixelPageTranslation InitializeWritePixelPageTranslation( FNaniteView NaniteView, bool bStaticPage )
+WritePixelPageTranslation InitializeWritePixelPageTranslation(uint PageTableLevelOffset, uint MipLevel, uint ArrayIndex)
 {
 	WritePixelPageTranslation Result;
-	Result.TargetLayerIndex = NaniteView.TargetLayerIndex;
-	Result.TargetMipLevel = NaniteView.TargetMipLevel;
-	Result.PhysicalOffset = bStaticPage ? GetVirtualShadowMapStaticPixelOffset() : uint2( 0, 0 );
+	Result.PageTableLevelOffset = InitVirtualMLevelOffset(PageTableLevelOffset);
+	Result.MipLevel = MipLevel;
+	Result.ArrayIndex = ArrayIndex;
+	Result.bTranslate = true;
 	return Result;
 }
 
-// Write pixel with per-pixel page translation
-void WritePixel(
-	RWTexture2D<UlongType> OutBuffer,
-	uint PixelValue,
-	uint2 PixelPos,
-	float DeviceZ,
-	WritePixelPageTranslation PageTranslation
-)
+#if DEPTH_ONLY
+
+// Determines final write position with an optional per-pixel page translation
+bool VirtualToPhysicalTexel(uint2 VirtualPixelPos, WritePixelPageTranslation PageTranslation, out uint3 PhysicalPixelPos)
 {
+	PhysicalPixelPos = uint3(VirtualPixelPos, PageTranslation.ArrayIndex);
+
 #if VIRTUAL_TEXTURE_TARGET
-	if( PageTranslation.TargetLayerIndex != INDEX_NONE )
+	if( PageTranslation.bTranslate )
 	{
-		if( !VirtualToPhysicalTexel(PageTranslation.TargetLayerIndex, PageTranslation.TargetMipLevel, PixelPos, PixelPos) )
+		if( !VirtualToPhysicalTexel_PageTableLevelOffset(PageTranslation.PageTableLevelOffset, PageTranslation.MipLevel, VirtualPixelPos, PhysicalPixelPos.xy) )
 		{
 			// mapped to non-commited space.
-			return;
+			return false;
 		}
-		PixelPos += PageTranslation.PhysicalOffset;
 	}
 #endif
 
-	WritePixel( OutBuffer, PixelValue, PixelPos, DeviceZ );
+	return true;
 }
+
+// Allows you to pre-translate the virtual pixel position to physical and perform an early depth test before calling WriteDepthTextureArray
+bool ShouldWriteDepthTextureArray(
+	uint2 VirtualPixelPos,
+	WritePixelPageTranslation PageTranslation,
+	float DeviceZ,
+	out uint3 PhysicalPixelPos
+)
+{
+	if (!VirtualToPhysicalTexel(VirtualPixelPos, PageTranslation, PhysicalPixelPos))
+	{
+		// mapped to non-commited space.
+		return false;
+	}
+
+	// When near clipping is disabled we need to move the geometry 
+	DeviceZ = saturate(DeviceZ);
+
+	const uint DepthInt = asuint(DeviceZ);
+	return OutDepthBufferArray[PhysicalPixelPos] < DepthInt;
+}
+
+// Write depth pixel. Supports array texture targets (third coordinate of PhysicalPixelPos)
+void WriteDepthTextureArray(uint3 PhysicalPixelPos, float DeviceZ)
+{
+	// When near clipping is disabled we need to move the geometry 
+	DeviceZ = saturate(DeviceZ);
+
+	const uint DepthInt = asuint(DeviceZ);
+	InterlockedMax( OutDepthBufferArray[ PhysicalPixelPos ], DepthInt );
+}
+
+// Write depth pixel with optional per-pixel page translation
+void WriteDepthTextureArray(
+	uint2 VirtualPixelPos,
+	WritePixelPageTranslation PageTranslation,
+	float DeviceZ
+)
+{
+	uint3 PhysicalPixelPos;
+	if (!VirtualToPhysicalTexel(VirtualPixelPos, PageTranslation, PhysicalPixelPos))
+	{
+		// mapped to non-commited space.
+		return;
+	}
+
+	WriteDepthTextureArray(PhysicalPixelPos, DeviceZ);
+}
+
+#endif

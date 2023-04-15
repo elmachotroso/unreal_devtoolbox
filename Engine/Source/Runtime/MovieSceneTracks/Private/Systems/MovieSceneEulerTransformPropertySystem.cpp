@@ -8,11 +8,11 @@
 
 #include "MovieSceneTracksComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneEulerTransformPropertySystem)
+
 UMovieSceneEulerTransformPropertySystem::UMovieSceneEulerTransformPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->EulerTransform);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
@@ -26,3 +26,4 @@ void UMovieSceneEulerTransformPropertySystem::OnRun(FSystemTaskPrerequisites& In
 {
 	Super::OnRun(InPrerequisites, Subsequents);
 }
+

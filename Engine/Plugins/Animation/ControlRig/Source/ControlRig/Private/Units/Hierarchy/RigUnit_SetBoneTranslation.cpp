@@ -2,6 +2,9 @@
 
 #include "RigUnit_SetBoneTranslation.h"
 #include "Units/RigUnitContext.h"
+#include "Units/Hierarchy/RigUnit_SetTransform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SetBoneTranslation)
 
 FRigUnit_SetBoneTranslation_Execute()
 {
@@ -75,3 +78,18 @@ FRigUnit_SetBoneTranslation_Execute()
 		}
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_SetBoneTranslation::GetUpgradeInfo() const
+{
+	FRigUnit_SetTranslation NewNode;
+	NewNode.Item = FRigElementKey(Bone, ERigElementType::Bone);
+	NewNode.Space = Space;
+	NewNode.Value = Translation;
+	NewNode.Weight = Weight;	
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Bone"), TEXT("Item.Name"));
+	Info.AddRemappedPin(TEXT("Translation"), TEXT("Value"));
+	return Info;
+}
+

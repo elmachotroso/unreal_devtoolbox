@@ -9,7 +9,7 @@ using UnrealBuildTool;
 //{
 	public class OodleDataCompression : ModuleRules
 	{
-		protected virtual string OodleVersion { get { return "2.9.5"; } }
+		protected virtual string OodleVersion { get { return "2.9.8"; } }
 
 		// Platform Extensions need to override these
 		protected virtual string LibRootDirectory { get { return ModuleDirectory; } }
@@ -46,23 +46,6 @@ using UnrealBuildTool;
 				DebugLib = "oo2core_win64_debug.lib";
 				PlatformDir = "Win64";
 			}
-			else if (Target.Platform == UnrealTargetPlatform.HoloLens)
-			{
-				if (Target.WindowsPlatform.Architecture == WindowsArchitecture.x64) // emulation target, bBuildForEmulation
-				{
-					ReleaseLib = "oo2core_winuwp64.lib";
-					DebugLib = "oo2core_winuwp64_debug.lib";
-				}
-				else if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64) // device target, bBuildForDevice
-				{
-					ReleaseLib = "oo2core_winuwparm64.lib";
-					DebugLib = "oo2core_winuwparm64_debug.lib";
-				}
-				else
-				{
-					throw new System.Exception("Unknown architecture for HoloLens platform!");
-				}
-			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac)
 			{
 				ReleaseLib = "liboo2coremac64.a";
@@ -91,6 +74,7 @@ using UnrealBuildTool;
 			}
 			else if (Target.Platform == UnrealTargetPlatform.IOS)
 			{
+				// NOTE: Simulator builds should use .sim.a files but we're not building sim as of this writing
 				ReleaseLib = "liboo2coreios.a";
 				DebugLib = "liboo2coreios_dbg.a";
 			}

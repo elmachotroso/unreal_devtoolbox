@@ -4,6 +4,8 @@
 #include "Net/UnrealNetwork.h"
 #include "NetworkPredictionWorldManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetworkPredictionReplicatedManager)
+
 
 ANetworkPredictionReplicatedManager::FOnAuthoritySpawn ANetworkPredictionReplicatedManager::OnAuthoritySpawnDelegate;
 TWeakObjectPtr<ANetworkPredictionReplicatedManager> ANetworkPredictionReplicatedManager::AuthorityInstance;
@@ -12,7 +14,8 @@ ANetworkPredictionReplicatedManager::ANetworkPredictionReplicatedManager()
 {
 	bReplicates = true;
 	NetPriority = 1000.f; // We want this to be super high priority when it replicates
-	NetUpdateFrequency = 0.001f; // Very low frequency: we will use ForceNetUpdate when important data changes
+	// Mute very low update frequency ensure. Was 0.001f .
+	NetUpdateFrequency = 0.125f; // Low frequency: we will use ForceNetUpdate when important data changes
 	bAlwaysRelevant = true;
 }
 
@@ -35,7 +38,10 @@ void ANetworkPredictionReplicatedManager::GetLifetimeReplicatedProps(TArray<FLif
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(ANetworkPredictionReplicatedManager, SharedPackageMap);
+	FDoRepLifetimeParams SharedParams;
+	SharedParams.bIsPushBased = true;
+
+	DOREPLIFETIME_WITH_PARAMS_FAST(ANetworkPredictionReplicatedManager, SharedPackageMap, SharedParams);
 }
 
 FDelegateHandle ANetworkPredictionReplicatedManager::OnAuthoritySpawn(const TFunction<void(ANetworkPredictionReplicatedManager*)>& Func)
@@ -49,12 +55,12 @@ FDelegateHandle ANetworkPredictionReplicatedManager::OnAuthoritySpawn(const TFun
 	return OnAuthoritySpawnDelegate.AddLambda(Func);
 }
 
-uint8 ANetworkPredictionReplicatedManager::GetIDForObject(UObject* Obj)
+uint8 ANetworkPredictionReplicatedManager::GetIDForObject(UObject* Obj) const
 {
 	// Naive lookup
-	for (auto It = SharedPackageMap.Items.CreateIterator(); It; ++It)
+	for (auto It = SharedPackageMap.Items.CreateConstIterator(); It; ++It)
 	{
-		FSharedPackageMapItem& Item = *It;
+		const FSharedPackageMapItem& Item = *It;
 		if (Item.SoftPtr.Get() == Obj)
 		{
 			npCheckSlow(It.GetIndex() < TNumericLimits<uint8>::Max());
@@ -66,7 +72,7 @@ uint8 ANetworkPredictionReplicatedManager::GetIDForObject(UObject* Obj)
 	return 0;
 }
 
-TSoftObjectPtr<UObject> ANetworkPredictionReplicatedManager::GetObjectForID(uint8 ID)
+TSoftObjectPtr<UObject> ANetworkPredictionReplicatedManager::GetObjectForID(uint8 ID) const
 {
 	if (SharedPackageMap.Items.IsValidIndex(ID))
 	{
@@ -90,5 +96,7 @@ uint8 ANetworkPredictionReplicatedManager::AddObjectToSharedPackageMap(TSoftObje
 	}
 
 	SharedPackageMap.Items.Add(FSharedPackageMapItem{SoftPtr});
+	MARK_PROPERTY_DIRTY_FROM_NAME(ANetworkPredictionReplicatedManager, SharedPackageMap, this);
+
 	return SharedPackageMap.Items.Num()-1;
 }

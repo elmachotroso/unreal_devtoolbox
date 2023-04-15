@@ -29,10 +29,13 @@ FBlendSpaceDetails::FBlendSpaceDetails()
 	Builder = nullptr;
 	BlendSpace = nullptr;
 	BlendSpaceNode = nullptr;
+
+	GEditor->RegisterForUndo(this);
 }
 
 FBlendSpaceDetails::~FBlendSpaceDetails()
 {
+	GEditor->UnregisterForUndo(this);
 }
 
 //======================================================================================================================
@@ -121,6 +124,9 @@ static EVisibility GetAnalyzeButtonVisibility(
 // that if "None" was selected then the new value will be null
 void FBlendSpaceDetails::HandleAnalysisFunctionChanged(int32 AxisIndex, TSharedPtr<FString> NewFunctionName)
 {
+	const FScopedTransaction Transaction(LOCTEXT("BlendSpaceDetailsChangedAxisTransaction", "Changed Axis Function"));
+	BlendSpace->Modify();
+
 	UAnalysisProperties* NewAnalysisProperties = BlendSpaceAnalysis::MakeAnalysisProperties(BlendSpace, *NewFunctionName);
 	// Preserve values where possible
 	if (BlendSpace->AnalysisProperties[AxisIndex])
@@ -286,7 +292,7 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 						.ContentPadding(1)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("Icons.Refresh"))
+							.Image(FAppStyle::GetBrush("Icons.Refresh"))
 							.ColorAndOpacity(FSlateColor::UseForeground())
 						]
 					];
@@ -362,12 +368,12 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 					[
 						SNew(STextBlock)
 						.Text(AxisTexts[AxisIndex])
-						.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+						.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 					]
 					.ValueContent()
 					[
 						SNew(STextComboBox)
-						.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+						.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 						.OptionsSource(&AnalysisFunctionNames[AxisIndex])
 						.InitiallySelectedItem(CurrentlySelectedFunction)
 						.OnSelectionChanged_Lambda(
@@ -424,7 +430,7 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 						.ContentPadding(1)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("Icons.Delete"))
+							.Image(FAppStyle::GetBrush("Icons.Delete"))
 							.ColorAndOpacity(FSlateColor::UseForeground())
 						]
 					];
@@ -505,6 +511,16 @@ void FBlendSpaceDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuil
 			}
 		}
 	}	
+}
+
+void FBlendSpaceDetails::PostUndo(bool bSuccess)
+{
+	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateSP(this, &FBlendSpaceDetails::RefreshDetails));
+}
+
+void FBlendSpaceDetails::RefreshDetails()
+{
+	Builder->ForceRefreshDetails();
 }
 
 #undef LOCTEXT_NAMESPACE

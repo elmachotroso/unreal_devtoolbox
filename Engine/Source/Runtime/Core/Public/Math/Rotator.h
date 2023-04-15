@@ -21,6 +21,15 @@ namespace Math
  * Implements a container for rotation information.
  *
  * All rotation values are stored in degrees.
+ *
+ * The angles are interpreted as intrinsic rotations applied in the order Yaw, then Pitch, then Roll. I.e., an object would be rotated
+ * first by the specified yaw around its up axis (with positive angles interpreted as clockwise when viewed from above, along -Z), 
+ * then pitched around its (new) right axis (with positive angles interpreted as 'nose up', i.e. clockwise when viewed along +Y), 
+ * and then finally rolled around its (final) forward axis (with positive angles interpreted as clockwise rotations when viewed along +X).
+ *
+ * Note that these conventions differ from quaternion axis/angle. UE Quat always considers a positive angle to be a left-handed rotation, 
+ * whereas Rotator treats yaw as left-handed but pitch and roll as right-handed.
+ * 
  */
 template<typename T>
 struct TRotator
@@ -35,10 +44,10 @@ public:
 	/** Rotation around the right axis (around Y axis), Looking up and down (0=Straight Ahead, +Up, -Down) */
 	T Pitch;
 
-	/** Rotation around the up axis (around Z axis), Running in circles 0=East, +North, -South. */
+	/** Rotation around the up axis (around Z axis), Turning around (0=Forward, +Right, -Left)*/
 	T Yaw;
 
-	/** Rotation around the forward axis (around X axis), Tilting your head, 0=Straight, +Clockwise, -CCW. */
+	/** Rotation around the forward axis (around X axis), Tilting your head, (0=Straight, +Clockwise, -CCW) */
 	T Roll;
 
 public:
@@ -200,7 +209,7 @@ public:
 	 * @param Tolerance Error Tolerance.
 	 * @return true if rotator is nearly zero, within specified tolerance, otherwise false.
 	 */
-	bool IsNearlyZero( T Tolerance = KINDA_SMALL_NUMBER ) const;
+	bool IsNearlyZero( T Tolerance = UE_KINDA_SMALL_NUMBER ) const;
 
 	/**
 	 * Checks whether this has exactly zero rotation, when treated as an orientation.
@@ -218,7 +227,7 @@ public:
 	 * @param Tolerance Error Tolerance.
 	 * @return true if two rotators are equal, within specified tolerance, otherwise false.
 	 */
-	bool Equals( const TRotator<T>& R, T Tolerance = KINDA_SMALL_NUMBER ) const;
+	bool Equals( const TRotator<T>& R, T Tolerance = UE_KINDA_SMALL_NUMBER ) const;
 
 	/**
 	 * Adds to each component of the rotator.
@@ -675,7 +684,7 @@ template<typename T>
 FORCEINLINE uint8 TRotator<T>::CompressAxisToByte( T Angle )
 {
 	// map [0->360) to [0->256) and mask off any winding
-	return FMath::RoundToInt(Angle * 256.f / 360.f) & 0xFF;
+	return FMath::RoundToInt(Angle * (T)256.f / (T)360.f) & 0xFF;
 }
 
 template<typename T>
@@ -905,4 +914,25 @@ FORCEINLINE_DEBUGGABLE UE::Math::TRotator<T> FMath::LerpRange(const UE::Math::TR
 {
 	// Similar to Lerp, but does not take the shortest path. Allows interpolation over more than 180 degrees.
 	return (A * ((T)1.0 - (T)Alpha) + B * Alpha).GetNormalized();
+}
+
+template<typename T>
+FORCEINLINE_DEBUGGABLE T FMath::ClampAngle(T AngleDegrees, T MinAngleDegrees, T MaxAngleDegrees)
+{
+	const T MaxDelta = UE::Math::TRotator<T>::ClampAxis(MaxAngleDegrees - MinAngleDegrees) * 0.5f;			// 0..180
+	const T RangeCenter = UE::Math::TRotator<T>::ClampAxis(MinAngleDegrees + MaxDelta);						// 0..360
+	const T DeltaFromCenter = UE::Math::TRotator<T>::NormalizeAxis(AngleDegrees - RangeCenter);				// -180..180
+
+	// maybe clamp to nearest edge
+	if (DeltaFromCenter > MaxDelta)
+	{
+		return UE::Math::TRotator<T>::NormalizeAxis(RangeCenter + MaxDelta);
+	}
+	else if (DeltaFromCenter < -MaxDelta)
+	{
+		return UE::Math::TRotator<T>::NormalizeAxis(RangeCenter - MaxDelta);
+	}
+
+	// already in range, just return it
+	return UE::Math::TRotator<T>::NormalizeAxis(AngleDegrees);
 }

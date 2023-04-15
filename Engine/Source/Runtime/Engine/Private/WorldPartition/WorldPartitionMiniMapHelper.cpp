@@ -52,35 +52,26 @@ AWorldPartitionMiniMap* FWorldPartitionMiniMapHelper::GetWorldPartitionMiniMap(U
 	return nullptr;
 }
 
-void FWorldPartitionMiniMapHelper::CaptureWorldMiniMapToTexture(UWorld* InWorld, UObject* InOuterForTexture, uint32 InMiniMapSize, UTexture2D*& InOutMiniMapTexture, const FString& InTextureName, FBox& OutWorldBounds)
+void FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(UWorld* InWorld, UObject* InOuterForTexture, uint32 InMiniMapSize, UTexture2D*& InOutMiniMapTexture, const FString& InTextureName, const FBox& InBounds)
 {
-	//Calculate bounds of the World
-	OutWorldBounds = InWorld->GetWorldPartition()->GetEditorWorldBounds();
-
-	CaptureBoundsMiniMapToTexture(InWorld, InOuterForTexture, InMiniMapSize, InOutMiniMapTexture, InTextureName, OutWorldBounds);
+	const uint32 DefaultNumWarmupFrames = 5;
+	CaptureBoundsMiniMapToTexture(InWorld, InOuterForTexture, InMiniMapSize, InMiniMapSize, InOutMiniMapTexture, InTextureName, InBounds, SCS_BaseColor, DefaultNumWarmupFrames);
 }
 
-void FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(UWorld* InWorld, UObject* InOuterForTexture, uint32 InMiniMapSize, UTexture2D*& InOutMiniMapTexture, const FString& InTextureName, const FBox& InBounds)
+void FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(UWorld* InWorld, UObject* InOuterForTexture, uint32 InMiniMapSizeX, uint32 InMiniMapSizeY, UTexture2D*& InOutMiniMapTexture, const FString& InTextureName, const FBox& InBounds, ESceneCaptureSource InCaptureSource, uint32 InNumWarmupFrames)
 {
 	// Before capturing the scene, make sure all assets are finished compiling
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
-	//Calculate Viewport size
-	FBox2D WorldBounds2D(FVector2D(InBounds.Min), FVector2D(InBounds.Max));
-	FVector2D ViewSize = WorldBounds2D.Max - WorldBounds2D.Min;
-	float AspectRatio = FMath::Abs(ViewSize.X) / FMath::Abs(ViewSize.Y);
-	uint32 ViewportWidth = InMiniMapSize * AspectRatio;
-	uint32 ViewportHeight = InMiniMapSize;
-
 	//Calculate Projection matrix based on world bounds.
 	FMatrix ProjectionMatrix;
-	FWorldPartitionMiniMapHelper::CalTopViewOfWorld(ProjectionMatrix, InBounds, ViewportWidth, ViewportHeight);
+	FWorldPartitionMiniMapHelper::CalTopViewOfWorld(ProjectionMatrix, InBounds, InMiniMapSizeX, InMiniMapSizeY);
 
 	//Using SceneCapture Actor capture the scene to buffer
 	UTextureRenderTarget2D* RenderTargetTexture = NewObject<UTextureRenderTarget2D>();
 	RenderTargetTexture->ClearColor = FLinearColor::Transparent;
 	RenderTargetTexture->TargetGamma = 2.2f;
-	RenderTargetTexture->InitCustomFormat(InMiniMapSize, InMiniMapSize, PF_B8G8R8A8, false);
+	RenderTargetTexture->InitCustomFormat(InMiniMapSizeX, InMiniMapSizeY, PF_B8G8R8A8, false);
 	RenderTargetTexture->UpdateResourceImmediate(true);
 
 	FActorSpawnParameters SpawnInfo;
@@ -91,12 +82,22 @@ void FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(UWorld* InWorld
 	auto CaptureComponent = CaptureActor->GetCaptureComponent2D();
 	CaptureComponent->TextureTarget = RenderTargetTexture;
 	CaptureComponent->ProjectionType = ECameraProjectionMode::Orthographic;
-	CaptureComponent->CaptureSource = SCS_BaseColor;
-	CaptureComponent->OrthoWidth = ViewportWidth;
+	CaptureComponent->CaptureSource = InCaptureSource;
+	CaptureComponent->OrthoWidth = InMiniMapSizeX;
 	CaptureComponent->bUseCustomProjectionMatrix = true;
 	CaptureComponent->CustomProjectionMatrix = ProjectionMatrix;
 	CaptureComponent->bCaptureEveryFrame = false;
 	CaptureComponent->bCaptureOnMovement = false;
+
+	// Disable vignetting, otherwise we'll see it as a pattern between each captured tiles
+	CaptureComponent->PostProcessSettings.bOverride_VignetteIntensity = true;
+	CaptureComponent->PostProcessSettings.VignetteIntensity = 0.0f;
+
+	for (uint32 i = 0; i < InNumWarmupFrames; i++)
+	{
+		CaptureComponent->CaptureScene();
+	}
+
 	CaptureComponent->CaptureScene();
 
 	InWorld->DestroyActor(CaptureActor);
@@ -111,10 +112,6 @@ void FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(UWorld* InWorld
 	{
 		RenderTargetTexture->UpdateTexture2D(InOutMiniMapTexture, TSF_BGRA8, CTF_Default);
 	}
-
-	InOutMiniMapTexture->AdjustMinAlpha = 1.f;
-	InOutMiniMapTexture->LODGroup = TEXTUREGROUP_UI;
-	InOutMiniMapTexture->UpdateResource();
 }
 
 void FWorldPartitionMiniMapHelper::CalTopViewOfWorld(FMatrix& OutProjectionMatrix, const FBox& WorldBox, uint32 ViewportWidth, uint32 ViewportHeight)
@@ -134,7 +131,7 @@ void FWorldPartitionMiniMapHelper::CalTopViewOfWorld(FMatrix& OutProjectionMatri
 	const float OrthoWidth = FMath::Max(1.f, ViewportWidth * OrthoZoom);
 	const float OrthoHeight = FMath::Max(1.f, ViewportHeight * OrthoZoom);
 
-	const float ZOffset = WORLDPARTITION_MAX * 0.5;
+	const double ZOffset = UE_FLOAT_HUGE_DISTANCE / 2.0;
 	OutProjectionMatrix = FReversedZOrthoMatrix(
 		OrthoWidth,
 		OrthoHeight,

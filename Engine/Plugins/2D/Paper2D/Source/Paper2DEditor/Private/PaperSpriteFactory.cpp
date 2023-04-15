@@ -4,12 +4,14 @@
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "Engine/Texture2D.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "SpriteEditorOnlyTypes.h"
 #include "PaperImporterSettings.h"
 #include "PaperSprite.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageTools.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PaperSpriteFactory)
 
 #define LOCTEXT_NAMESPACE "Paper2D"
 
@@ -70,7 +72,7 @@ UObject* UPaperSpriteFactory::FactoryCreateNew(UClass* Class, UObject* InParent,
 		for (const FString& NameToTest : NamesToTest)
 		{
 			const FString ObjectPathToTest = PackagePath / (NameToTest + FString(TEXT(".")) + NameToTest);
-			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*ObjectPathToTest);
+			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPathToTest));
 
 			if (AssetData.IsValid())
 			{
@@ -91,3 +93,4 @@ UObject* UPaperSpriteFactory::FactoryCreateNew(UClass* Class, UObject* InParent,
 }
 
 #undef LOCTEXT_NAMESPACE
+

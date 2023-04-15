@@ -3,7 +3,6 @@
 #include "PixelStreamingInputComponent.h"
 #include "IPixelStreamingModule.h"
 #include "PixelStreamingModule.h"
-#include "InputDevice.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
@@ -11,6 +10,10 @@
 #include "Serialization/JsonSerializer.h"
 #include "GameFramework/GameUserSettings.h"
 #include "PixelStreamingPrivate.h"
+#include "PixelStreamingProtocol.h"
+#include "IPixelStreamingStreamer.h"
+#include "Settings.h"
+#include "Utils.h"
 
 UPixelStreamingInput::UPixelStreamingInput(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -51,43 +54,14 @@ void UPixelStreamingInput::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 }
 
-bool UPixelStreamingInput::OnCommand(const FString& Descriptor)
-{
-	FString ConsoleCommand;
-	bool bSuccess = false;
-	ExtractJsonFromDescriptor(Descriptor, TEXT("ConsoleCommand"), ConsoleCommand, bSuccess);
-	if (bSuccess)
-	{
-		return GEngine->Exec(GEngine->GetWorld(), *ConsoleCommand);
-	}
-
-	FString WidthString;
-	FString HeightString;
-	ExtractJsonFromDescriptor(Descriptor, TEXT("Resolution.Width"), WidthString, bSuccess);
-	if (bSuccess)
-	{
-		ExtractJsonFromDescriptor(Descriptor, TEXT("Resolution.Height"), HeightString, bSuccess);
-
-		int Width = FCString::Atoi(*WidthString);
-		int Height = FCString::Atoi(*HeightString);
-
-		if (Width < 1 || Height < 1)
-		{
-			return false;
-		}
-
-		FString ChangeResCommand = FString::Printf(TEXT("r.SetRes %dx%d"), Width, Height);
-		return GEngine->Exec(GEngine->GetWorld(), *ChangeResCommand);
-	}
-
-	return false;
-}
-
 void UPixelStreamingInput::SendPixelStreamingResponse(const FString& Descriptor)
 {
 	if (PixelStreamingModule)
 	{
-		PixelStreamingModule->SendResponse(Descriptor);
+		PixelStreamingModule->ForEachStreamer([&Descriptor, this](TSharedPtr<IPixelStreamingStreamer> Streamer)
+		{
+			Streamer->SendPlayerMessage(PixelStreamingModule->GetProtocol().FromStreamerProtocol.Find("Response")->Id, Descriptor);
+		});
 	}
 	else
 	{
@@ -97,64 +71,10 @@ void UPixelStreamingInput::SendPixelStreamingResponse(const FString& Descriptor)
 
 void UPixelStreamingInput::GetJsonStringValue(FString Descriptor, FString FieldName, FString& StringValue, bool& Success)
 {
-	ExtractJsonFromDescriptor(Descriptor, FieldName, StringValue, Success);
-}
-
-void UPixelStreamingInput::ExtractJsonFromDescriptor(FString Descriptor, FString FieldName, FString& StringValue, bool& Success)
-{
-	TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-
-	TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(Descriptor);
-	if (FJsonSerializer::Deserialize(JsonReader, JsonObject) && JsonObject.IsValid())
-	{
-		const TSharedPtr<FJsonObject>* JsonObjectPtr = &JsonObject;
-
-		if (FieldName.Contains(TEXT(".")))
-		{
-			TArray<FString> FieldComponents;
-			FieldName.ParseIntoArray(FieldComponents, TEXT("."));
-			FieldName = FieldComponents.Pop();
-
-			for (const FString& FieldComponent : FieldComponents)
-			{
-				if (!(*JsonObjectPtr)->TryGetObjectField(FieldComponent, JsonObjectPtr))
-				{
-					Success = false;
-					return;
-				}
-			}
-		}
-
-		Success = (*JsonObjectPtr)->TryGetStringField(FieldName, StringValue);
-	}
-	else
-	{
-		Success = false;
-	}
+	UE::PixelStreaming::ExtractJsonFromDescriptor(Descriptor, FieldName, StringValue, Success);
 }
 
 void UPixelStreamingInput::AddJsonStringValue(const FString& Descriptor, FString FieldName, FString StringValue, FString& NewDescriptor, bool& Success)
 {
-	ExtendJsonWithField(Descriptor, FieldName, StringValue, NewDescriptor, Success);
-}
-
-void UPixelStreamingInput::ExtendJsonWithField(const FString& Descriptor, FString FieldName, FString StringValue, FString& NewDescriptor, bool& Success)
-{
-	TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-
-	if (!Descriptor.IsEmpty())
-	{
-		TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(Descriptor);
-		if (!FJsonSerializer::Deserialize(JsonReader, JsonObject) || !JsonObject.IsValid())
-		{
-			Success = false;
-			return;
-		}
-	}
-
-	TSharedRef<FJsonValueString> JsonValueObject = MakeShareable(new FJsonValueString(StringValue));
-	JsonObject->SetField(FieldName, JsonValueObject);
-
-	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> JsonWriter = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&NewDescriptor);
-	Success = FJsonSerializer::Serialize(JsonObject.ToSharedRef(), JsonWriter);
+	UE::PixelStreaming::ExtendJsonWithField(Descriptor, FieldName, StringValue, NewDescriptor, Success);
 }

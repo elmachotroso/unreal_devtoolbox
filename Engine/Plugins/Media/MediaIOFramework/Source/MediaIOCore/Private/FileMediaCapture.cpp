@@ -3,11 +3,14 @@
 #include "FileMediaCapture.h"
 
 #include "FileMediaOutput.h"
+#include "IImageWrapperModule.h"
 #include "ImageWriteQueue.h"
 #include "ImageWriteTask.h"
 #include "MediaIOCoreModule.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FileMediaCapture)
 
 #if WITH_EDITOR
 #include "AnalyticsEventAttribute.h"
@@ -75,9 +78,16 @@ void UFileMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& 
 		return;
 	}
 
+	IImageWrapperModule* ImageModulePtr = FModuleManager::Get().GetModulePtr<IImageWrapperModule>("ImageWrapper");
+	if (ImageModulePtr == nullptr)
+	{
+		SetState(EMediaCaptureState::Error);
+		return;
+	}
+
 	TUniquePtr<FImageWriteTask> ImageTask = MakeUnique<FImageWriteTask>();
 	ImageTask->Format = ImageFormat;
-	ImageTask->Filename = FString::Printf(TEXT("%s%05d"), *BaseFilePathName, InBaseData.SourceFrameNumber);
+	ImageTask->Filename = FString::Printf(TEXT("%s%05d.%s"), *BaseFilePathName, InBaseData.SourceFrameNumber, ImageModulePtr->GetExtension(ImageFormat));
 	ImageTask->bOverwriteFile = bOverwriteFile;
 	ImageTask->CompressionQuality = CompressionQuality;
 	ImageTask->OnCompleted = OnCompleteWrapper;
@@ -128,31 +138,19 @@ void UFileMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& 
 	}
 }
 
-bool UFileMediaCapture::CaptureSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
+bool UFileMediaCapture::InitializeCapture()
 {
 	FModuleManager::Get().LoadModuleChecked<IImageWriteQueueModule>("ImageWriteQueue");
 	CacheMediaOutputValues();
 
 	SetState(EMediaCaptureState::Capturing);
+
 #if WITH_EDITOR
-	FileMediaCaptureAnalytics::SendCaptureEvent(ImageFormat, CompressionQuality, TEXT("SceneViewport"));
+	FileMediaCaptureAnalytics::SendCaptureEvent(ImageFormat, CompressionQuality, GetCaptureSourceType());
 #endif
+
 	return true;
 }
-
-
-bool UFileMediaCapture::CaptureRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget)
-{
-	FModuleManager::Get().LoadModuleChecked<IImageWriteQueueModule>("ImageWriteQueue");
-	CacheMediaOutputValues();
-
-	SetState(EMediaCaptureState::Capturing);
-#if WITH_EDITOR
-	FileMediaCaptureAnalytics::SendCaptureEvent(ImageFormat, CompressionQuality, TEXT("RenderTarget"));
-#endif
-	return true;
-}
-
 
 void UFileMediaCapture::CacheMediaOutputValues()
 {
@@ -172,3 +170,4 @@ void UFileMediaCapture::CacheMediaOutputValues()
 		DynamicCB.ExecuteIfBound(bSuccess);
 	};
 }
+

@@ -8,10 +8,6 @@
 #include "ControlRigDefines.h"
 #include "RigUnit_AimConstraint.generated.h"
 
-/** 
- * Spec define: https://wiki.it.epicgames.net/pages/viewpage.action?spaceKey=TeamOnline&title=Aim+Constraint
- */
-
  /*
  ENUM: Aim Mode (Default: Aim At Target Transform )  # How to perform an aim
  Aim At Target Transforms
@@ -31,7 +27,7 @@ enum class EAimMode : uint8
 	MAX,
 };
 
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FAimTarget
 {
 	GENERATED_BODY()
@@ -95,4 +91,7 @@ struct CONTROLRIG_API FRigUnit_AimConstraint : public FRigUnitMutable
 	// note that Targets.Num () != ConstraintData.Num()
 	UPROPERTY()
 	FRigUnit_AimConstraint_WorkData WorkData;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };

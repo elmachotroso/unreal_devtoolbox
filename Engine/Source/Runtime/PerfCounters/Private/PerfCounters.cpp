@@ -6,6 +6,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformMemoryHelpers.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
@@ -62,7 +63,7 @@ bool FPerfCounters::Initialize()
 	}
 
 	// Get an IHttpRouter on the command-line designated port
-	HttpRouter = FHttpServerModule::Get().GetHttpRouter(StatsPort);
+	HttpRouter = FHttpServerModule::Get().GetHttpRouter(StatsPort, /* bFailOnBindFailure = */ true);
 	if (!HttpRouter)
 	{
 		UE_LOG(LogPerfCounters, Error, 
@@ -197,7 +198,7 @@ void FPerfCounters::TickSystemCounters(float DeltaTime)
 		Set(TEXT("ProcessCPUUsageRelativeToCore"), CPUStats.CPUTimePctRelative);
 
 		// memory
-		FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+		FPlatformMemoryStats Stats = PlatformMemoryHelpers::GetFrameMemoryStats();
 		Set(TEXT("AvailablePhysicalMemoryMB"), static_cast<uint64>(Stats.AvailablePhysical / (1024 * 1024)));
 		Set(TEXT("AvailableVirtualMemoryMB"), static_cast<uint64>(Stats.AvailableVirtual / (1024 * 1024)));
 		Set(TEXT("ProcessPhysicalMemoryMB"), static_cast<uint64>(Stats.UsedPhysical/ (1024 * 1024)));
@@ -253,7 +254,20 @@ bool FPerfCounters::ProcessExecRequest(const FHttpServerRequest& Request, const 
 		{
 			bExecCommandSuccess = ExecCmdCallback.Execute(*ExecCmd, StringOutDevice);
 		}
+		else
+		{
+			auto Response = FHttpServerResponse::Error(EHttpServerResponseCodes::NotSupported,
+				TEXT("exec handler not found"));
+			OnComplete(MoveTemp(Response));
+		}
 	}
+	else
+	{
+		auto Response = FHttpServerResponse::Error(EHttpServerResponseCodes::NotSupported,
+			TEXT("exec missing query command (c=MyCommand)"));
+		OnComplete(MoveTemp(Response));
+	}
+
 
 	if (bExecCommandSuccess)
 	{
@@ -262,8 +276,7 @@ bool FPerfCounters::ProcessExecRequest(const FHttpServerRequest& Request, const 
 	}
 	else
 	{
-		auto Response = FHttpServerResponse::Error(EHttpServerResponseCodes::NotSupported, 
-			TEXT("exec handler not found"));
+		auto Response = FHttpServerResponse::Error(EHttpServerResponseCodes::NotSupported, StringOutDevice);
 		OnComplete(MoveTemp(Response));
 	}
 

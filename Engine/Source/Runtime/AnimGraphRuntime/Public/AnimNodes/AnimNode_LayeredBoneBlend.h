@@ -28,7 +28,7 @@ public:
 	FPoseLink BasePose;
 
 	/** Each layer's blended pose */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, editfixedsize, Category=Links)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, editfixedsize, Category=Links, meta=(BlueprintCompilerGeneratedDefaults))
 	TArray<FPoseLink> BlendPoses;
 
 	/** Whether to use branch filters or a blend mask to specify an input pose per-bone influence */
@@ -51,7 +51,7 @@ public:
 	TArray<FInputBlendPose> LayerSetup;
 
 	/** The weights of each layer */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, editfixedsize, Category=Runtime, meta=(PinShownByDefault))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, editfixedsize, Category=Runtime, meta=(BlueprintCompilerGeneratedDefaults, PinShownByDefault))
 	TArray<float> BlendWeights;
 
 	/** Whether to blend bone rotations in mesh space or in local space */
@@ -129,19 +129,37 @@ public:
 	void AddPose()
 	{
 		BlendWeights.Add(1.f);
-		BlendMasks.Add(nullptr);
 		new (BlendPoses) FPoseLink();
-		new (LayerSetup) FInputBlendPose();
+
+		if (BlendMode == ELayeredBoneBlendMode::BlendMask) 
+		{ 
+			BlendMasks.Add(nullptr); 
+		}
+		else /*if (BlendMode::BranchFilter)*/ 
+		{ 
+			new (LayerSetup) FInputBlendPose(); 
+		}
 	}
 
 	void RemovePose(int32 PoseIndex)
 	{
 		BlendWeights.RemoveAt(PoseIndex);
-		BlendMasks.RemoveAt(PoseIndex);
 		BlendPoses.RemoveAt(PoseIndex);
-		LayerSetup.RemoveAt(PoseIndex);
+
+		if (BlendMasks.IsValidIndex(PoseIndex)) 
+		{ 
+			BlendMasks.RemoveAt(PoseIndex); 
+		}
+
+		if (LayerSetup.IsValidIndex(PoseIndex)) 
+		{ 
+			LayerSetup.RemoveAt(PoseIndex); 
+		}
 	}
 
+	// Set the blend mask for the specified input pose
+	void SetBlendMask(int32 InPoseIndex, UBlendProfile* InBlendMask);
+	
 	// Invalidate the cached per-bone blend weights from the skeleton
 	void InvalidatePerBoneBlendWeights() { RequiredBonesSerialNumber = 0; SkeletonGuid = FGuid(); VirtualBoneGuid = FGuid(); }
 	

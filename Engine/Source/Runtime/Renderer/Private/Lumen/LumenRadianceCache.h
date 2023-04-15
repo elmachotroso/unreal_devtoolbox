@@ -3,6 +3,7 @@
 #pragma once
 
 #include "LumenRadianceCacheInterpolation.h"
+#include "LumenTracingUtils.h"
 
 class FLumenCardTracingInputs;
 class FSceneTextureParameters;
@@ -37,18 +38,90 @@ struct FRadianceCacheConfiguration
 	bool bFarField = true;
 };
 
-extern void RenderRadianceCache(
-	FRDGBuilder& GraphBuilder, 
-	const FLumenCardTracingInputs& TracingInputs, 
-	const LumenRadianceCache::FRadianceCacheInputs& RadianceCacheInputs,
-	FRadianceCacheConfiguration Configuration,
-	const class FScene* Scene,
-	const FViewInfo& View, 
-	const FScreenProbeParameters* ScreenProbeParameters,
-	FRDGBufferSRVRef BRDFProbabilityDensityFunctionSH,
-	FMarkUsedRadianceCacheProbes MarkUsedRadianceCacheProbes,
-	FRadianceCacheState& RadianceCacheState,
-	LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters);
+namespace LumenRadianceCache
+{
+	template<typename T, uint32 NumInlineElements = 4>
+	class TInlineArray : public TArray<T, TInlineAllocator<NumInlineElements>>
+	{
+	public:
+		TInlineArray()
+		{}
+
+		TInlineArray(int32 InNum) :
+			TArray<T, TInlineAllocator<NumInlineElements>>()
+		{
+			TArray<T, TInlineAllocator<NumInlineElements>>::AddZeroed(InNum);
+		}
+	};
+
+	// The read-only inputs to a Radiance Cache update
+	class FUpdateInputs
+	{
+	public:
+		FLumenCardTracingInputs TracingInputs;
+		FRadianceCacheInputs RadianceCacheInputs;
+		FRadianceCacheConfiguration Configuration;
+		const FViewInfo& View;
+		const FScreenProbeParameters* ScreenProbeParameters;
+		FRDGBufferSRVRef BRDFProbabilityDensityFunctionSH;
+
+		FMarkUsedRadianceCacheProbes GraphicsMarkUsedRadianceCacheProbes;
+		FMarkUsedRadianceCacheProbes ComputeMarkUsedRadianceCacheProbes;
+
+		FUpdateInputs(
+			const FLumenCardTracingInputs& InTracingInputs,
+			const FRadianceCacheInputs& InRadianceCacheInputs,
+			FRadianceCacheConfiguration InConfiguration,
+			const FViewInfo& InView,
+			const FScreenProbeParameters* InScreenProbeParameters,
+			FRDGBufferSRVRef InBRDFProbabilityDensityFunctionSH,
+			FMarkUsedRadianceCacheProbes&& InGraphicsMarkUsedRadianceCacheProbes,
+			FMarkUsedRadianceCacheProbes&& InComputeMarkUsedRadianceCacheProbes) :
+			TracingInputs(InTracingInputs),
+			RadianceCacheInputs(InRadianceCacheInputs),
+			Configuration(InConfiguration),
+			View(InView),
+			ScreenProbeParameters(InScreenProbeParameters),
+			BRDFProbabilityDensityFunctionSH(InBRDFProbabilityDensityFunctionSH),
+			GraphicsMarkUsedRadianceCacheProbes(MoveTemp(InGraphicsMarkUsedRadianceCacheProbes)),
+			ComputeMarkUsedRadianceCacheProbes(MoveTemp(InComputeMarkUsedRadianceCacheProbes))
+		{}
+
+		bool IsAnyCallbackBound() const
+		{
+			return ComputeMarkUsedRadianceCacheProbes.IsBound() || GraphicsMarkUsedRadianceCacheProbes.IsBound();
+		}
+	};
+
+	// The outputs of a Radiance Cache update
+	class FUpdateOutputs
+	{
+	public:
+
+		FRadianceCacheState& RadianceCacheState;
+		FRadianceCacheInterpolationParameters& RadianceCacheParameters;
+
+		FUpdateOutputs(FRadianceCacheState& InRadianceCacheState,
+			FRadianceCacheInterpolationParameters& InRadianceCacheParameters) :
+			RadianceCacheState(InRadianceCacheState),
+			RadianceCacheParameters(InRadianceCacheParameters)
+		{}
+	};
+
+	/**
+	* Updates the requested Radiance Caches, overlapping their dispatches for better GPU utilization
+	* Places radiance probes around the positions marked in MarkUsedRadianceCacheProbes, re-using cached results where possible, then traces to update a subset of them.
+	* The Radiance Caches are then available for interpolating from the marked positions using FRadianceCacheInterpolationParameters.
+	*/
+	void UpdateRadianceCaches(
+		FRDGBuilder& GraphBuilder, 
+		const TInlineArray<FUpdateInputs>& InputArray,
+		TInlineArray<FUpdateOutputs>& OutputArray,
+		const FScene* Scene,
+		const FEngineShowFlags& EngineShadowFlags,
+		bool bPropagateGlobalLightingChange,
+		ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute);
+}
 
 extern void RenderLumenHardwareRayTracingRadianceCache(
 	FRDGBuilder& GraphBuilder,
@@ -70,4 +143,9 @@ extern void RenderLumenHardwareRayTracingRadianceCache(
 	FRDGTextureUAVRef RadianceProbeAtlasTextureUAV,
 	FRDGTextureUAVRef DepthProbeTextureUAV);
 
-extern void MarkUsedProbesForVisualize(FRDGBuilder& GraphBuilder, const FViewInfo& View, const class LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters);
+extern void MarkUsedProbesForVisualize(FRDGBuilder& GraphBuilder, const FViewInfo& View, const class LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters, ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute);
+
+namespace Lumen
+{
+	ERDGPassFlags GetLumenSceneLightingComputePassFlags(const FEngineShowFlags& EngineShowFlags);
+}

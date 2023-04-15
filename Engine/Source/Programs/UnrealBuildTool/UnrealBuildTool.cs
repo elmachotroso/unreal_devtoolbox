@@ -9,7 +9,9 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using OpenTracing.Util;
 using UnrealBuildBase;
 
@@ -46,6 +48,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The full name of the Engine/Source directory
 		/// </summary>
+		[Obsolete("Replace with Unreal.EngineSourceDirectory")]
 		public static readonly DirectoryReference EngineSourceDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Source");
 
 		/// <summary>
@@ -223,6 +226,7 @@ namespace UnrealBuildTool
 		/// Gets the absolute path to the UBT assembly.
 		/// </summary>
 		/// <returns>A string containing the path to the UBT assembly.</returns>
+		[Obsolete("Deprecated in UE5.1 - use UnrealBuildTool.DotnetPath Unreal.UnrealBuildToolDllPath")]
 		static public FileReference GetUBTPath()
 		{
 			return Unreal.UnrealBuildToolPath;
@@ -285,6 +289,12 @@ namespace UnrealBuildTool
 			/// </summary>
 			[CommandLine(Prefix = "-FromMsBuild", Description = "Format messages for msbuild")]
 			public bool bLogFromMsBuild = false;
+
+			/// <summary>
+			/// Whether or not to suppress warnings of missing SDKs from warnings to LogEventType.Log in UEBuildPlatformSDK.cs 
+			/// </summary>
+			[CommandLine(Prefix = "-SuppressSDKWarnings", Description = "Missing SDKs error verbosity level will be reduced from warning to log")]
+			public bool bShouldSuppressSDKWarnings = false;
 
 			/// <summary>
 			/// Whether to write progress markup in a format that can be parsed by other programs
@@ -446,7 +456,25 @@ namespace UnrealBuildTool
 			FileReference? RunFile = null;
 			SingleInstanceMutex? Mutex = null;
 			JsonTracer? Tracer = null;
-			
+
+			ILogger Logger = Log.Logger;
+
+			// When running RunUBT.sh on a Mac we need to install a Ctrl-C handler, or hitting Ctrl-C from a terminal
+			// or from cancelling a build within Xcode, can leave a dotnet process in a zombie state. 
+			// By putting this in, the Ctrl-C may not be handled immediately, but it shouldn't leave a blocking zombie process
+			if (OperatingSystem.IsMacOS())
+			{
+				Console.CancelKeyPress += delegate
+				{
+					Console.WriteLine("UnrealBuildTool: Ctrl-C pressed. Exiting...");
+
+					// While the Ctrl-C handler fixes most instances of a zombie process, we still need to 
+					// force an exit from the process to handle _all_ cases.  Ctrl-C should not be a regular event! 
+					// Note: this could be a dotnet (6.0.302) on macOS issue.  Recheck with next release if this is still required.
+					Environment.Exit(-1);
+				};
+			}
+
 			try
 			{
 				// Start capturing performance info
@@ -476,15 +504,24 @@ namespace UnrealBuildTool
 				Log.IncludeTimestamps = Options.bLogTimestamps;
 				Log.IncludeProgramNameWithSeverityPrefix = Options.bLogFromMsBuild;
 
-				if (Options.TraceWrites != null)
+				// Reducing SDK warning events in the log to LogEventType.Log
+				if (Options.bShouldSuppressSDKWarnings)
 				{
-					Log.TraceInformation($"All attempts to write to \"{Options.TraceWrites}\" via WriteFileIfChanged() will be logged");
-					Utils.WriteFileIfChangedTrace = Options.TraceWrites;
+					UEBuildPlatformSDK.bSuppressSDKWarnings = true;
 				}
 
 				// Always start capturing logs as early as possible to later copy to a log file if the ToolMode desires it (we have to start capturing before we get the ToolModeOptions below)
 				StartupTraceListener StartupTrace = new StartupTraceListener();
 				Log.AddTraceListener(StartupTrace);
+
+				if (Options.TraceWrites != null)
+				{
+					Logger.LogInformation("All attempts to write to \"{TraceWrites}\" via WriteFileIfChanged() will be logged", Options.TraceWrites);
+					Utils.WriteFileIfChangedTrace = Options.TraceWrites;
+				}
+
+				// Add all the default event matchers from the UBT assembly
+				Log.EventParser.AddMatchersFromAssembly(Assembly.GetExecutingAssembly());
 
 				// Configure the progress writer
 				ProgressWriter.bWriteMarkup = Options.bWriteProgressMarkup;
@@ -494,7 +531,7 @@ namespace UnrealBuildTool
 
 				// Change the working directory to be the Engine/Source folder. We are likely running from Engine/Binaries/DotNET
 				// This is critical to be done early so any code that relies on the current directory being Engine/Source will work.
-				DirectoryReference.SetCurrentDirectory(UnrealBuildTool.EngineSourceDirectory);
+				DirectoryReference.SetCurrentDirectory(Unreal.EngineSourceDirectory);
 
 				// Register encodings from Net FW as this is required when using Ionic as we do in multiple toolchains
 				Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -506,7 +543,9 @@ namespace UnrealBuildTool
 					// Try to get the correct mode
 					if(!ModeNameToType.TryGetValue(Options.Mode, out ModeType))
 					{
-						Log.TraceError("No mode named '{0}'. Available modes are:\n  {1}", Options.Mode, String.Join("\n  ", ModeNameToType.Keys));
+						List<string> ModuleNameList = ModeNameToType.Keys.ToList();
+						ModuleNameList.Sort(StringComparer.OrdinalIgnoreCase);
+						Logger.LogError("No mode named '{Name}'. Available modes are:\n  {ModeList}", Options.Mode, String.Join("\n  ", ModuleNameList));
 						return 1;
 					}
 				}
@@ -534,11 +573,11 @@ namespace UnrealBuildTool
 				{
 					using (GlobalTracer.Instance.BuildSpan("XmlConfig.ReadConfigFiles()").StartActive())
 					{
-						string XmlConfigMutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_Mutex_XmlConfig", Assembly.GetExecutingAssembly().CodeBase!);
+						string XmlConfigMutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_Mutex_XmlConfig", Assembly.GetExecutingAssembly().Location);
 						using(SingleInstanceMutex XmlConfigMutex = new SingleInstanceMutex(XmlConfigMutexName, true))
 						{
 							FileReference? XmlConfigCache = Arguments.GetFileReferenceOrDefault("-XmlConfigCache=", null);
-							XmlConfig.ReadConfigFiles(XmlConfigCache);
+							XmlConfig.ReadConfigFiles(XmlConfigCache, Logger);
 						}
 					}
 				
@@ -577,7 +616,7 @@ namespace UnrealBuildTool
 				{
 					using (GlobalTracer.Instance.BuildSpan("SingleInstanceMutex.Acquire()").StartActive())
 					{
-						string MutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_Mutex", Assembly.GetExecutingAssembly().CodeBase!);
+						string MutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_Mutex", Assembly.GetExecutingAssembly().Location);
 						Mutex = new SingleInstanceMutex(MutexName, Options.bWaitMutex);
 					}
 				}
@@ -587,21 +626,21 @@ namespace UnrealBuildTool
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(false, false);
+						UEBuildPlatform.RegisterPlatforms(false, false, Logger);
 					}
 				}
 				if ((ModeOptions & ToolModeOptions.BuildPlatformsHostOnly) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(false, true);
+						UEBuildPlatform.RegisterPlatforms(false, true, Logger);
 					}
 				}
 				if ((ModeOptions & ToolModeOptions.BuildPlatformsForValidation) != 0)
 				{
 					using (GlobalTracer.Instance.BuildSpan("UEBuildPlatform.RegisterPlatforms()").StartActive())
 					{
-						UEBuildPlatform.RegisterPlatforms(true, false);
+						UEBuildPlatform.RegisterPlatforms(true, false, Logger);
 					}
 				}
 
@@ -609,31 +648,31 @@ namespace UnrealBuildTool
 				ToolMode Mode = (ToolMode)Activator.CreateInstance(ModeType)!;
 
 				// Execute the mode
-				int Result = Mode.Execute(Arguments);
+				int Result = Mode.Execute(Arguments, Logger);
 				if((ModeOptions & ToolModeOptions.ShowExecutionTime) != 0)
 				{
-					Log.TraceInformation("Total execution time: {0:0.00} seconds", Timeline.Elapsed.TotalSeconds);
+					Logger.LogInformation("Total execution time: {Time:0.00} seconds", Timeline.Elapsed.TotalSeconds);
 				}
 				return Result;
 			}
 			catch (CompilationResultException Ex)
 			{
 				// Used to return a propagate a specific exit code after an error has occurred. Does not log any message.
-				Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
+				Logger.LogDebug(Ex, "{Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
 				return (int)Ex.Result;
 			}
 			catch (BuildException Ex)
 			{
 				// BuildExceptions should have nicely formatted messages. We can log these directly.
-				Log.TraceError(ExceptionUtils.FormatException(Ex));
-				Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
+				Logger.LogError(Ex, "{Ex}", ExceptionUtils.FormatException(Ex));
+				Logger.LogDebug(Ex, "{Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
 				return (int)CompilationResult.OtherCompilationError;
 			}
 			catch (Exception Ex)
 			{
 				// Unhandled exception.
-				Log.TraceError("Unhandled exception: {0}", ExceptionUtils.FormatException(Ex));
-				Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
+				Logger.LogError(Ex, "Unhandled exception: {Ex}", ExceptionUtils.FormatException(Ex));
+				Logger.LogDebug(Ex, "Unhandled exception: {Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
 				return (int)CompilationResult.OtherCompilationError;
 			}
 			finally
@@ -644,10 +683,14 @@ namespace UnrealBuildTool
 					FileMetadataPrefetch.Stop();
 				}
 
-				Utils.LogWriteFileIfChangedActivity();
+				// Uncomment this to output a file that contains all files that UBT has scanned.
+				// Useful when investigating why UBT takes time.
+				//DirectoryItem.WriteDebugFileWithAllEnumeratedFiles(@"c:\temp\AllFiles.txt");
+
+				Utils.LogWriteFileIfChangedActivity(Logger);
 
 				// Print out all the performance info
-				Timeline.Print(TimeSpan.FromMilliseconds(20.0), LogEventType.Log);
+				Timeline.Print(TimeSpan.FromMilliseconds(20.0), LogLevel.Debug, Logger);
 
 				// Make sure we flush the logs however we exit
 				Trace.Close();

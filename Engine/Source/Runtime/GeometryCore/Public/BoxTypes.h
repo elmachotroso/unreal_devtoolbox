@@ -36,6 +36,16 @@ struct TInterval1
 		return TInterval1(TNumericLimits<RealType>::Max(), -TNumericLimits<RealType>::Max());
 	}
 
+	static TInterval1<RealType> MakeFromUnordered(const RealType& A, const RealType& B)
+	{
+		TInterval1<RealType> Result(A, B);
+		if (A > B)
+		{
+			Swap(Result.Min, Result.Max);
+		}
+		return Result;
+	}
+
 	RealType Center() const
 	{
 		return (Min + Max) * (RealType)0.5;
@@ -64,6 +74,18 @@ struct TInterval1
 		if (V > Max)
 		{
 			Max = V;
+		}
+	}
+
+	void Contain(const TInterval1<RealType>& O)
+	{
+		if (O.Min < Min)
+		{
+			Min = O.Min;
+		}
+		if (O.Max > Max)
+		{
+			Max = O.Max;
 		}
 	}
 
@@ -285,6 +307,18 @@ struct TAxisAlignedBox3
 		}
 	}
 
+	TAxisAlignedBox3(TArrayView<const TVector<RealType>> Pts) :
+		TAxisAlignedBox3(TAxisAlignedBox3<RealType>::Empty())
+	{
+		Contain(Pts);
+	}
+
+	TAxisAlignedBox3(const TArray<TVector<RealType>>& Pts) :
+		TAxisAlignedBox3(TAxisAlignedBox3<RealType>::Empty())
+	{
+		Contain(Pts);
+	}
+
 	bool operator==(const TAxisAlignedBox3<RealType>& Other) const
 	{
 		return Max == Other.Max && Min == Other.Min;
@@ -297,9 +331,7 @@ struct TAxisAlignedBox3
 
 	explicit operator FBox() const
 	{
-		FVector MinV((float)Min.X, (float)Min.Y, (float)Min.Z);
-		FVector MaxV((float)Max.X, (float)Max.Y, (float)Max.Z);
-		return FBox(MinV, MaxV);
+		return FBox((FVector)Min, (FVector)Max);
 	}
 	TAxisAlignedBox3(const FBox& Box)
 	{
@@ -412,6 +444,22 @@ struct TAxisAlignedBox3
 		Max.X = Max.X > Other.Max.X ? Max.X : Other.Max.X;
 		Max.Y = Max.Y > Other.Max.Y ? Max.Y : Other.Max.Y;
 		Max.Z = Max.Z > Other.Max.Z ? Max.Z : Other.Max.Z;
+	}
+
+	void Contain(TArrayView<const TVector<RealType>> Pts)
+	{
+		for (const TVector<RealType>& Pt : Pts)
+		{
+			Contain(Pt);
+		}
+	}
+
+	void Contain(const TArray<TVector<RealType>>& Pts)
+	{
+		for (const TVector<RealType>& Pt : Pts)
+		{
+			Contain(Pt);
+		}
 	}
 
 	bool Contains(const TVector<RealType>& V) const
@@ -576,9 +624,15 @@ struct TAxisAlignedBox2
 	{
 	}
 
-	TAxisAlignedBox2(const TArray<TVector2<RealType>>& Pts)
+	TAxisAlignedBox2(const TArray<TVector2<RealType>>& Pts) :
+		TAxisAlignedBox2(Empty())
 	{
-		*this = Empty();
+		Contain(Pts);
+	}
+
+	TAxisAlignedBox2(TArrayView<const TVector2<RealType>> Pts) :
+		TAxisAlignedBox2(Empty())
+	{
 		Contain(Pts);
 	}
 
@@ -590,9 +644,7 @@ struct TAxisAlignedBox2
 
 	explicit operator FBox2D() const
 	{
-		FVector2D MinV((float)Min.X, (float)Min.Y);
-		FVector2D MaxV((float)Max.X, (float)Max.Y);
-		return FBox2D(MinV, MaxV);
+		return FBox2D((FVector2D)Min, (FVector2D)Max);
 	}
 	TAxisAlignedBox2(const FBox2D& Box)
 	{
@@ -668,6 +720,14 @@ struct TAxisAlignedBox2
 		}
 	}
 
+	void Contain(TArrayView<const TVector2<RealType>> Pts)
+	{
+		for (const TVector2<RealType>& Pt : Pts)
+		{
+			Contain(Pt);
+		}
+	}
+
 	bool Contains(const TVector2<RealType>& V) const
 	{
 		return (Min.X <= V.X) && (Min.Y <= V.Y) && (Max.X >= V.X) && (Max.Y >= V.Y);
@@ -718,6 +778,11 @@ struct TAxisAlignedBox2
 	inline RealType Area() const
 	{
 		return Width() * Height();
+	}
+
+	inline RealType Perimeter() const
+	{
+		return (Width() + Height()) * 2;
 	}
 
 	RealType DiagonalLength() const

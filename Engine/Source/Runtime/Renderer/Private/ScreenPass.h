@@ -15,7 +15,7 @@
 bool IsHMDHiddenAreaMaskActive();
 
 // Returns the global engine mini font texture.
-const FTextureRHIRef& GetMiniFontTexture();
+FRHITexture* GetMiniFontTexture();
 
 // Creates and returns an RDG texture for the view family output. Returns null if no RHI texture exists.
 FRDGTextureRef RENDERER_API TryCreateViewFamilyTexture(FRDGBuilder& GraphBuilder, const FSceneViewFamily& ViewFamily);
@@ -387,9 +387,6 @@ enum class EScreenPassDrawFlags : uint8
 {
 	None,
 
-	// Flips the Y axis of the rendered quad. Used by mobile rendering.
-	FlipYAxis = 0x1,
-
 	// Allows the screen pass to use a HMD hidden area mask if one is available. Used for VR.
 	AllowHMDHiddenAreaMask = 0x2
 };
@@ -426,18 +423,6 @@ void DrawScreenPass(
 	FIntPoint LocalOutputPos(FIntPoint::ZeroValue);
 	FIntPoint LocalOutputSize(OutputSize);
 	EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
-
-	const bool bFlipYAxis = (Flags & EScreenPassDrawFlags::FlipYAxis) == EScreenPassDrawFlags::FlipYAxis;
-
-	if (bFlipYAxis)
-	{
-		// Draw the quad flipped. Requires that the cull mode be disabled.
-		LocalOutputPos.Y = OutputSize.Y;
-		LocalOutputSize.Y = -OutputSize.Y;
-
-		// Triangle optimization currently doesn't work when flipped.
-		DrawRectangleFlags = EDRF_Default;
-	}
 
 	const bool bUseHMDHiddenAreaMask = (Flags & EScreenPassDrawFlags::AllowHMDHiddenAreaMask) == EScreenPassDrawFlags::AllowHMDHiddenAreaMask
 		? View.bHMDHiddenAreaMaskActive
@@ -657,7 +642,7 @@ FORCEINLINE void AddDrawCanvasPass(
 	check(Output.IsValid());
 
 	const FSceneViewFamily& ViewFamily = *View.Family;
-	FCanvas& Canvas = *FCanvas::Create(GraphBuilder, Output.Texture, nullptr, ViewFamily.Time, View.GetFeatureLevel());
+	FCanvas& Canvas = *FCanvas::Create(GraphBuilder, Output.Texture, nullptr, ViewFamily.Time, View.GetFeatureLevel(), ViewFamily.DebugDPIScale);
 	Canvas.SetRenderTargetRect(Output.ViewRect);
 
 	Function(Canvas);
@@ -685,4 +670,4 @@ void AddDownsampleDepthPass(
 	FScreenPassRenderTarget Output,
 	EDownsampleDepthFilter DownsampleDepthFilter);
 
-#include "ScreenPass.inl"
+#include "ScreenPass.inl" // IWYU pragma: export

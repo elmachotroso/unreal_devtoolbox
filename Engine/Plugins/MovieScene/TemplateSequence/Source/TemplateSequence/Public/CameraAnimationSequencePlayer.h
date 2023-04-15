@@ -4,7 +4,6 @@
 
 #include "CineCameraComponent.h"
 #include "Engine/Scene.h"
-#include "EntitySystem/MovieSceneBoundSceneComponentInstantiator.h"
 #include "TemplateSequencePlayer.h"
 #include "CameraAnimationSequencePlayer.generated.h"
 
@@ -12,7 +11,7 @@
  * A dummy class that we give to a sequence in lieu of an actual camera actor.
  */
 UCLASS()
-class TEMPLATESEQUENCE_API UCameraAnimationSequenceCameraStandIn : public UObject, public IMovieSceneSceneComponentImpersonator
+class TEMPLATESEQUENCE_API UCameraAnimationSequenceCameraStandIn : public UObject
 {
 public:
 
@@ -78,11 +77,16 @@ public:
 	/** Register the stand-in class with the sequencer ECS component registry */
 	static void RegisterCameraStandIn();
 
+	/** Unregister the stand-in class with the sequencer ECS component registry */
+	static void UnregisterCameraStandIn();
+
 private:
 	void ResetDefaultValues(const FMinimalViewInfo& ViewInfo);
 	void UpdateInitialPropertyValues(UMovieSceneEntitySystemLinker* Linker);
 
 private:
+	static bool bRegistered;
+
 	FTransform Transform;
 
 	bool bIsCineCamera = false;

@@ -5,7 +5,11 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_ApplyRootMotionRadialForce)
 
 UAbilityTask_ApplyRootMotionRadialForce::UAbilityTask_ApplyRootMotionRadialForce(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -44,9 +48,10 @@ UAbilityTask_ApplyRootMotionRadialForce* UAbilityTask_ApplyRootMotionRadialForce
 
 void UAbilityTask_ApplyRootMotionRadialForce::SharedInitAndApply()
 {
-	if (AbilitySystemComponent->AbilityActorInfo->MovementComponent.IsValid())
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (ASC && ASC->AbilityActorInfo->MovementComponent.IsValid())
 	{
-		MovementComponent = Cast<UCharacterMovementComponent>(AbilitySystemComponent->AbilityActorInfo->MovementComponent.Get());
+		MovementComponent = Cast<UCharacterMovementComponent>(ASC->AbilityActorInfo->MovementComponent.Get());
 		StartTime = GetWorld()->GetTimeSeconds();
 		EndTime = StartTime + Duration;
 
@@ -157,3 +162,4 @@ void UAbilityTask_ApplyRootMotionRadialForce::OnDestroy(bool AbilityIsEnding)
 
 	Super::OnDestroy(AbilityIsEnding);
 }
+

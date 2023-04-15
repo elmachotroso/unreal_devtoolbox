@@ -7,12 +7,14 @@
 
 #include "Engine/UserInterfaceSettings.h"
 #include "Slate/SlateBrushAsset.h"
-#include "Runtime/Engine/Classes/Engine/UserInterfaceSettings.h"
+#include "Engine/UserInterfaceSettings.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Slate/SceneViewport.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Slate/SGameLayerManager.h"
 #include "Widgets/SWindow.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SlateBlueprintLibrary)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -162,3 +164,4 @@ FVector2D USlateBlueprintLibrary::TransformVectorLocalToAbsolute(const FGeometry
 }
 
 #undef LOCTEXT_NAMESPACE
+

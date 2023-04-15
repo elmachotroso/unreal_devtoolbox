@@ -57,6 +57,41 @@ namespace Metasound
 			return Invalid::GetInvalidName();
 		}
 
+		EMetasoundFrontendVertexAccessType FBaseInputController::GetVertexAccessType() const
+		{
+			EMetasoundFrontendVertexAccessType AccessType = EMetasoundFrontendVertexAccessType::Unset;
+			bool bIsRerouted = false;
+
+			Frontend::IterateReroutedInputs(AsShared(), [this, &bIsRerouted, &AccessType](const FConstInputHandle& ReroutedInput)
+			{
+				bIsRerouted = true;
+
+				if (AccessType != EMetasoundFrontendVertexAccessType::Value)
+				{
+					if (ReroutedInput->IsValid())
+					{
+						// If ReroutedInput is top-level controller, iterator function is returning self, so just report if set to value.
+						if (ReroutedInput->GetID() == GetID() && ReroutedInput->GetOwningNodeID() == GetOwningNodeID())
+						{
+							if (const FMetasoundFrontendClassVertex* ClassInput = ClassInputPtr.Get())
+							{
+								AccessType = ClassInput->AccessType;
+								return;
+							}
+						}
+
+						const EMetasoundFrontendVertexAccessType RerouteAccessType = ReroutedInput->GetVertexAccessType();
+						if (RerouteAccessType == EMetasoundFrontendVertexAccessType::Value)
+						{
+							AccessType = RerouteAccessType;
+						}
+					}
+				}
+			});
+
+			return bIsRerouted ? AccessType : EMetasoundFrontendVertexAccessType::Reference;
+		}
+
 #if WITH_EDITOR
 		FText FBaseInputController::GetDisplayName() const
 		{
@@ -193,6 +228,11 @@ namespace Metasound
 				OutConnectability.Connectable = FConnectability::EConnectable::No;
 				OutConnectability.Reason = FConnectability::EReason::IncompatibleDataTypes;
 			}
+			else if (!FMetasoundFrontendClassVertex::CanConnectVertexAccessTypes(InController.GetVertexAccessType(), GetVertexAccessType()))
+			{
+				OutConnectability.Connectable = FConnectability::EConnectable::No;
+				OutConnectability.Reason = FConnectability::EReason::IncompatibleAccessTypes;
+			}
 			else if (OtherDataType == DataType)
 			{
 				// If data types are equal, connection can happen.
@@ -233,25 +273,37 @@ namespace Metasound
 			{
 				return false;
 			}
+			
 
 			if (FMetasoundFrontendGraph* Graph = GraphPtr.Get())
 			{
-				if (ensureAlwaysMsgf(OtherDataType == DataType, TEXT("Cannot connect incompatible types.")))
+				if (OtherDataType == DataType)
 				{
-					// Overwrite an existing connection if it exists.
-					FMetasoundFrontendEdge* Edge = FindEdge();
-
-					if (!Edge)
+					if (FMetasoundFrontendClassVertex::CanConnectVertexAccessTypes(InController.GetVertexAccessType(), GetVertexAccessType()))
 					{
-						Edge = &Graph->Edges.AddDefaulted_GetRef();
-						Edge->ToNodeID = GetOwningNodeID();
-						Edge->ToVertexID = GetID();
+						// Overwrite an existing connection if it exists.
+						FMetasoundFrontendEdge* Edge = FindEdge();
+
+						if (!Edge)
+						{
+							Edge = &Graph->Edges.AddDefaulted_GetRef();
+							Edge->ToNodeID = GetOwningNodeID();
+							Edge->ToVertexID = GetID();
+						}
+
+						Edge->FromNodeID = InController.GetOwningNodeID();
+						Edge->FromVertexID = InController.GetID();
+
+						return true;
 					}
-
-					Edge->FromNodeID = InController.GetOwningNodeID();
-					Edge->FromVertexID = InController.GetID();
-
-					return true;
+					else
+					{
+						UE_LOG(LogMetaSound, Error, TEXT("Cannot connect incompatible vertex access types (Input)%s and (Output)%s."), *LexToString(GetVertexAccessType()), *LexToString(InController.GetVertexAccessType()));
+					}
+				}
+				else
+				{
+					UE_LOG(LogMetaSound, Error, TEXT("Cannot connect incompatible data types %s and %s."), *DataType.ToString(), *OtherDataType.ToString());
 				}
 			}
 
@@ -303,7 +355,16 @@ namespace Metasound
 					return (Edge.FromNodeID == FromNodeID) && (Edge.FromVertexID == FromVertexID) && (Edge.ToNodeID == ToNodeID) && (Edge.ToVertexID == ToVertexID);
 				};
 
-				int32 NumRemoved = Graph->Edges.RemoveAllSwap(IsMatchingEdge);
+				const int32 NumRemoved = Graph->Edges.RemoveAllSwap(IsMatchingEdge);
+
+#if WITH_EDITOR
+				auto IsMatchingStyle = [&](const FMetasoundFrontendEdgeStyle& EdgeStyle)
+				{
+					return EdgeStyle.NodeID == FromNodeID && InController.GetName() == EdgeStyle.OutputName;
+				};
+				Graph->Style.EdgeStyles.RemoveAllSwap(IsMatchingStyle);
+#endif // WITH_EDITOR
+
 				return NumRemoved > 0;
 			}
 
@@ -453,6 +514,11 @@ namespace Metasound
 			}
 		}
 
+		EMetasoundFrontendVertexAccessType FOutputNodeInputController::GetVertexAccessType() const
+		{
+			return OwningGraphClassOutputPtr.Get()->AccessType;
+		}
+
 		FDocumentAccess FOutputNodeInputController::ShareAccess() 
 		{
 			FDocumentAccess Access = FBaseInputController::ShareAccess();
@@ -524,6 +590,11 @@ namespace Metasound
 			{
 				Vertex->Name = InName;
 			}
+		}
+		
+		EMetasoundFrontendVertexAccessType FInputNodeInputController::GetVertexAccessType() const
+		{
+			return OwningGraphClassInputPtr.Get()->AccessType;
 		}
 
 		bool FInputNodeInputController::IsConnectionUserModifiable() const

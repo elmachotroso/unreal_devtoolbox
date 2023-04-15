@@ -3,9 +3,13 @@
 #pragma once
 
 #include "Library/DMXImport.h"
+
 #include "DMXImportGDTF.generated.h"
 
+class UDMXGDTFAssetImportData;
+
 class UTexture2D;
+
 
 UENUM(BlueprintType)
 enum class EDMXImportGDTFType : uint8
@@ -203,7 +207,7 @@ struct FDMXImportGDTFWheelSlot
     FDMXImportGDTFFilter Filter;
 
     UPROPERTY(VisibleAnywhere, Category = "Fixture Type")
-    UTexture2D* MediaFileName = nullptr;
+    TObjectPtr<UTexture2D> MediaFileName = nullptr;
 };
 
 USTRUCT(BlueprintType)
@@ -709,7 +713,7 @@ public:
     FString FixtureTypeID;
 
     UPROPERTY(VisibleAnywhere, Category = "Fixture Type")
-    UTexture2D* Thumbnail = nullptr;
+    TObjectPtr<UTexture2D> Thumbnail = nullptr;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Type")
     FString RefFT;
@@ -825,19 +829,34 @@ public:
 
 UCLASS(BlueprintType, Blueprintable)
 class DMXRUNTIME_API UDMXImportGDTF
-: public UDMXImport
+	: public UDMXImport
 {
     GENERATED_BODY()
 
 public:
-	UFUNCTION(BlueprintPure, Category = "DMXGDTF|Import Data")
-	UDMXImportGDTFDMXModes* GetDMXModes()
-	{
-		return Cast<UDMXImportGDTFDMXModes>(DMXModes);
-	};
+	/** Constructor */
+	UDMXImportGDTF();
 
-public:
-	/** The filename of the dmx we were created from. This may not always exist on disk, as we may have previously loaded and cached the font data inside this asset. */
+	//~ Begin UObject interface
+	virtual void PostLoad() override;
+	//~ End UObject interface
+
+	UFUNCTION(BlueprintPure, Category = "DMXGDTF|Import Data")
+	UDMXImportGDTFDMXModes* GetDMXModes() const { return Cast<UDMXImportGDTFDMXModes>(DMXModes); }
+
+	/** DEPRECATED 5.1 in favor of AssetImportData */
+	UPROPERTY(Meta = (DeprecatedProperty, DeprecationMessage = "Deprecated in favor of GDTFAssetImportData, see UDMXImportGDTF::GetGDTFAssetImportData."))
+	FString SourceFilename_DEPRECATED;
+
+#if WITH_EDITORONLY_DATA
+	/** Returns GDTF Asset Import Data for this GDTF */
+	FORCEINLINE UDMXGDTFAssetImportData* GetGDTFAssetImportData() const { return GDTFAssetImportData; }
+#endif 
+
+private:
+#if WITH_EDITORONLY_DATA
+	/** The Asset Import Data used to generate the GDTF asset or nullptr, if not generated from a GDTF file */
 	UPROPERTY()
-	FString SourceFilename;
+	TObjectPtr<UDMXGDTFAssetImportData> GDTFAssetImportData;
+#endif
 };

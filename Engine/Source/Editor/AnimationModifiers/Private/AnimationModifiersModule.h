@@ -2,11 +2,17 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "IAnimationModifiersModule.h"
-
-#include "WorkflowOrientedApp/ApplicationMode.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 #include "WorkflowOrientedApp/WorkflowCentricApplication.h"
-#include "WorkflowOrientedApp/WorkflowTabFactory.h"
+#include "AnimationModifier.h"
+
+class FApplicationMode;
+class UAnimSequence;
+class UFactory;
+class UObject;
 
 /** Animation modifiers module, handles injecting of the AnimationModifiersTab into animation and skeleton editor modes */
 class FAnimationModifiersModule : public IAnimationModifiersModule

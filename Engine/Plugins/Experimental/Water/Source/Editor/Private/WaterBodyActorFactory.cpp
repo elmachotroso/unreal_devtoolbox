@@ -12,6 +12,8 @@
 #include "WaterSplineComponent.h"
 #include "WaterWaves.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyActorFactory)
+
 #define LOCTEXT_NAMESPACE "WaterBodyActorFactory"
 
 // --------------------------------------------------
@@ -40,6 +42,7 @@ void UWaterBodyActorFactory::PostSpawnActor(UObject* Asset, AActor* NewActor)
 	if (const FWaterBodyDefaults* WaterBodyDefaults = GetWaterBodyDefaults())
 	{
 		WaterBodyComponent->SetWaterMaterial(WaterBodyDefaults->GetWaterMaterial());
+		WaterBodyComponent->SetHLODMaterial(WaterBodyDefaults->GetWaterHLODMaterial());
 		WaterBodyComponent->SetUnderwaterPostProcessMaterial(WaterBodyDefaults->GetUnderwaterPostProcessMaterial());
 
 		UWaterSplineComponent* WaterSpline = WaterBodyComponent->GetWaterSpline();

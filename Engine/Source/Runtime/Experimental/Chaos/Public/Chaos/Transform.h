@@ -10,16 +10,15 @@
 #include "Math/Transform.h"
 #else
 //TODO(mlentine): If we use this class in engine we need to make it more efficient.
-//TODO(mlentine): This should really be a class as there is a lot of functionality but static anlysis current forbids this.
-struct FTransform
+struct _FTransform
 {
 public:
-	FTransform() {}
-	FTransform(const Chaos::TRotation<Chaos::FReal, 3>& Rotation, const Chaos::TVector<Chaos::FReal, 3>& Translation)
+	_FTransform() {}
+	_FTransform(const Chaos::TRotation<Chaos::FReal, 3>& Rotation, const Chaos::TVector<Chaos::FReal, 3>& Translation)
 		: MRotation(Rotation), MTranslation(Translation)
 	{
 	}
-	FTransform(const FMatrix& Matrix)
+	_FTransform(const FMatrix& Matrix)
 	{
 		MTranslation[0] = Matrix.M[0][3];
 		MTranslation[1] = Matrix.M[1][3];
@@ -39,7 +38,7 @@ public:
 			MRotation[2] = 0;
 		}
 	}
-	FTransform(const FTransform& Transform)
+	_FTransform(const _FTransform& Transform)
 		: MRotation(Transform.MRotation), MTranslation(Transform.MTranslation)
 	{
 	}
@@ -106,6 +105,7 @@ private:
 	Chaos::TRotation<Chaos::FReal, 3> MRotation;
 	Chaos::TVector<Chaos::FReal, 3> MTranslation;
 };
+using FTransform = _FTransform;	// Work around include tool not understanding that this can't be compiled alongside MathFwd.h
 #endif
 
 namespace Chaos
@@ -180,12 +180,6 @@ namespace Chaos
 			return BaseTransform::ToMatrixNoScale();
 		}
 
-		// For low-level VectorRegister programming
-		const TPersistentVectorRegisterType<FRealSingle>& GetTranslationRegister() const { return Translation; }
-		const TPersistentVectorRegisterType<FRealSingle>& GetRotationRegister() const { return Rotation; }
-		void SetTranslationRegister(TransformVectorRegister InTranslation) { Translation = InTranslation; }
-		void SetRotationRegister(TransformVectorRegister InRotation) { Rotation = InRotation; }
-
 		CHAOS_API PMatrix<FRealSingle, 4, 4> operator*(const PMatrix<FRealSingle, 4, 4>& Matrix) const;
 		
 		inline TRigidTransform<FRealSingle, 3> operator*(const TRigidTransform<FRealSingle, 3>& Other) const
@@ -214,7 +208,7 @@ namespace Chaos
 			const TVector<FRealSingle, 3> RotatedNormal = TransformNormalNoScale(Normal);
 			const TVector<FRealSingle, 3> ScaledNormal = RotatedNormal / GetScale3D();
 			const FRealSingle ScaledNormal2 = ScaledNormal.SizeSquared();
-			if (ScaledNormal2 > SMALL_NUMBER)
+			if (ScaledNormal2 > UE_SMALL_NUMBER)
 			{
 				return ScaledNormal * FMath::InvSqrt(ScaledNormal2);
 			}
@@ -247,7 +241,7 @@ namespace Chaos
 #else
 			Result.Rotation = B.Rotation * A.Rotation;
 			Result.Translation = B.Rotation * A.Translation + B.Translation;
-			Result.Scale3D = FVector::OneVector;
+			Result.Scale3D = FVector3f::OneVector;
 #endif
 
 			return Result;
@@ -290,12 +284,6 @@ namespace Chaos
 			return BaseTransform::ToMatrixNoScale();
 		}
 
-		// For low-level VectorRegister programming
-		const TPersistentVectorRegisterType<FRealDouble>& GetTranslationRegister() const { return Translation; }
-		const TPersistentVectorRegisterType<FRealDouble>& GetRotationRegister() const { return Rotation; }
-		void SetTranslationRegister(TransformVectorRegister InTranslation) { Translation = InTranslation; }
-		void SetRotationRegister(TransformVectorRegister InRotation) { Rotation = InRotation; }
-
 		CHAOS_API PMatrix<FRealDouble, 4, 4> operator*(const Chaos::PMatrix<FRealDouble, 4, 4>& Matrix) const;
 		
 		inline TRigidTransform<FRealDouble, 3> operator*(const TRigidTransform<FRealDouble, 3>& Other) const
@@ -324,7 +312,7 @@ namespace Chaos
 			const TVector<FRealDouble, 3> RotatedNormal = TransformNormalNoScale(Normal);
 			const TVector<FRealDouble, 3> ScaledNormal = RotatedNormal / GetScale3D();
 			const FRealDouble ScaledNormal2 = ScaledNormal.SizeSquared();
-			if (ScaledNormal2 > SMALL_NUMBER)
+			if (ScaledNormal2 > UE_SMALL_NUMBER)
 			{
 				return ScaledNormal * FMath::InvSqrt(ScaledNormal2);
 			}
@@ -357,7 +345,7 @@ namespace Chaos
 #else
 			Result.Rotation = B.Rotation * A.Rotation;
 			Result.Translation = B.Rotation * A.Translation + B.Translation;
-			Result.Scale3D = FVector::OneVector;
+			Result.Scale3D = FVector3d::OneVector;
 #endif
 
 			return Result;

@@ -11,10 +11,6 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <dwmapi.h>
 
-THIRD_PARTY_INCLUDES_START
-#include "dxgi1_6.h"
-THIRD_PARTY_INCLUDES_END
-
 #ifndef DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
 #define DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING  2048
 #endif
@@ -48,6 +44,8 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 	ValidState(0),
 	PixelFormat(InPreferredPixelFormat),
 	PixelColorSpace(EColorSpaceAndEOTF::ERec709_sRGB),
+	DisplayColorGamut(EDisplayColorGamut::sRGB_D65),
+	DisplayOutputFormat(EDisplayOutputFormat::SDR_sRGB),
 	bIsFullscreen(bInIsFullscreen),
 	bAllowTearing(false),
 	FrameSyncEvent(InD3DRHI)
@@ -187,6 +185,23 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 			{
 				SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain.GetInitReference()));
 
+				RECT WindowRect = {};
+#if PLATFORM_WINDOWS
+				GetWindowRect(WindowHandle, &WindowRect);
+#endif
+				FVector2D WindowTopLeft((float)WindowRect.left, (float)WindowRect.top);
+				FVector2D WindowBottomRight((float)WindowRect.right, (float)WindowRect.bottom);
+				bool bHDREnabled = false;
+				EDisplayColorGamut LocalDisplayColorGamut = DisplayColorGamut;
+				EDisplayOutputFormat LocalDisplayOutputFormat = DisplayOutputFormat;
+
+				HDRGetMetaData(LocalDisplayOutputFormat, LocalDisplayColorGamut, bHDREnabled, WindowTopLeft, WindowBottomRight, (void*)WindowHandle);
+				if (bHDREnabled)
+				{
+					DisplayOutputFormat = LocalDisplayOutputFormat;
+					DisplayColorGamut = LocalDisplayColorGamut;
+				}
+
 				// See if we are running on a HDR monitor 
 				CheckHDRMonitorStatus();
 			}
@@ -265,57 +280,91 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 	});	
 }
 
+static const FString GetDXGIColorSpaceString(DXGI_COLOR_SPACE_TYPE ColorSpace)
+{
+	switch (ColorSpace)
+	{
+	case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+		return TEXT("RGB_FULL_G22_NONE_P709");
+	case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+		return TEXT("RGB_FULL_G10_NONE_P709");
+	case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+		return TEXT("RGB_FULL_G2084_NONE_P2020");
+	case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
+		return TEXT("RGB_FULL_G22_NONE_P2020");
+	default:
+		break;
+	}
+
+	return FString::FromInt(ColorSpace);
+};
+
+inline void EnsureColorSpace(IDXGISwapChain* SwapChain, EDisplayColorGamut DisplayGamut, EDisplayOutputFormat OutputDevice, EPixelFormat PixelFormat)
+{
+	TRefCountPtr<IDXGISwapChain3> swapChain3;
+	if (FAILED(SwapChain->QueryInterface(IID_PPV_ARGS(swapChain3.GetInitReference()))))
+	{
+		return;
+	}
+
+	DXGI_COLOR_SPACE_TYPE NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;	// sRGB;
+	const bool bPrimaries2020 = (DisplayGamut == EDisplayColorGamut::Rec2020_D65);
+
+	// See console variable r.HDR.Display.OutputDevice.
+	switch (OutputDevice)
+	{
+		// Gamma 2.2
+	case EDisplayOutputFormat::SDR_sRGB:
+	case EDisplayOutputFormat::SDR_Rec709:
+		NewColorSpace = bPrimaries2020 ? DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+		break;
+
+		// Gamma ST.2084
+	case EDisplayOutputFormat::HDR_ACES_1000nit_ST2084:
+	case EDisplayOutputFormat::HDR_ACES_2000nit_ST2084:
+		NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+		ensure(PixelFormat == PF_A2B10G10R10);
+		break;
+
+		// Gamma 1.0 (Linear)
+	case EDisplayOutputFormat::HDR_ACES_1000nit_ScRGB:
+	case EDisplayOutputFormat::HDR_ACES_2000nit_ScRGB:
+		// Linear. Still supports expanded color space with values >1.0f and <0.0f.
+		// The actual range is determined by the pixel format (e.g. a UNORM format can only ever have 0-1).
+		NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+		ensure(PixelFormat == PF_FloatRGBA);
+		break;
+	}
+
+	{
+		UINT ColorSpaceSupport = 0;
+		HRESULT hr = swapChain3->CheckColorSpaceSupport(NewColorSpace, &ColorSpaceSupport);
+		FString ColorSpaceName = GetDXGIColorSpaceString(NewColorSpace);
+		if (SUCCEEDED(hr) && (ColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+		{
+			swapChain3->SetColorSpace1(NewColorSpace);
+			UE_LOG(LogD3D11RHI, Verbose, TEXT("Setting color space on swap chain: %s"), *ColorSpaceName);
+		}
+		else
+		{
+			UE_LOG(LogD3D11RHI, Error, TEXT("Warning: unable to set color space %s to the swapchain: verify EDisplayOutputFormat / swapchain format"), *ColorSpaceName);
+		}
+	}
+}
+
 // When a window has moved or resized we need to check whether it is on a HDR monitor or not. Set the correct color space of the monitor
 void FD3D11Viewport::CheckHDRMonitorStatus()
 {
 #if WITH_EDITOR
-
-	DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
 	static auto CVarHDREnable = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.HDRSupport"));
 	if (CVarHDREnable->GetInt() != 0)
 	{
 		FlushRenderingCommands();
 
-		if (SwapChain)
-		{
-			TRefCountPtr<IDXGIOutput> Output;
-			if (SUCCEEDED(SwapChain->GetContainingOutput(Output.GetInitReference())))
-			{
-				TRefCountPtr<IDXGIOutput6> Output6;
-				if (SUCCEEDED(Output->QueryInterface(IID_PPV_ARGS(Output6.GetInitReference()))))
-				{
-					DXGI_OUTPUT_DESC1 desc;
-					Output6->GetDesc1(&desc);
-
-					if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
-					{
-						// Display output is HDR10.
-						colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-					}
-				}
-			}
-		}
-
-		TRefCountPtr<IDXGISwapChain3> swapChain3;
-
-		if (SUCCEEDED(SwapChain->QueryInterface(IID_PPV_ARGS(swapChain3.GetInitReference()))))
-		{
-			UINT colorSpaceSupport = 0;
-		
-			if (SUCCEEDED(swapChain3->CheckColorSpaceSupport(colorSpace, &colorSpaceSupport)) && 
-				(colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
-			{
-				swapChain3->SetColorSpace1(colorSpace);
-			}
-		}
+		EnsureColorSpace(SwapChain, DisplayColorGamut, DisplayOutputFormat, PixelFormat);
 	}
 	
-	if (colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
-	{
-		PixelColorSpace = EColorSpaceAndEOTF::ERec2020_PQ;
-	}
-	else
 	{
 		PixelColorSpace =  EColorSpaceAndEOTF::ERec709_sRGB;
 	}
@@ -368,6 +417,11 @@ void FD3D11Viewport::ResetSwapChainInternal(bool bIgnoreFocus)
 			}
 		}
 	}
+}
+
+void FD3D11DynamicRHI::RHIGetDisplaysInformation(FDisplayInformationArray& OutDisplayInformation)
+{
+	OutDisplayInformation.Append(DisplayList);
 }
 
 #include "Windows/HideWindowsPlatformTypes.h"

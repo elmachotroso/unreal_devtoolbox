@@ -10,10 +10,9 @@ namespace UnrealBuildTool.Rules
             PublicDependencyModuleNames.AddRange(
                 new string[] {
                     "Slate",
-                    "SlateCore",
-                    "EditorStyle",
+					"SlateCore",
 					"EditorSubsystem"
-                }
+				}
             );
 
             PrivateDependencyModuleNames.AddRange(
@@ -28,12 +27,15 @@ namespace UnrealBuildTool.Rules
 					"InteractiveToolsFramework",
 					"EditorInteractiveToolsFramework",
 					"MeshPaintingToolset",
+					"GeometryCollectionEngine",
 					"PropertyEditor",
 					"MainFrame",
 					"DesktopPlatform",
                     "RenderCore",
                     "RHI",
 					"ToolWidgets",
+					"InterchangeEngine",
+					"InterchangePipelines"
                 }
             );
 

@@ -131,6 +131,8 @@ public:
 	{
 	}
 
+	virtual bool AffectsEditLayers() const { return false; }
+
 	virtual ELandscapeLayerUpdateMode GetBeginToolContentUpdateFlag() const override
 	{
 		return ELandscapeLayerUpdateMode::Update_None;
@@ -146,9 +148,9 @@ public:
 		return ELandscapeLayerUpdateMode::Update_None;
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Select"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Selection", "Component Selection"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Selection_Message", "Paint a mask on the Landscape to protect areas from editing."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Select"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Selection", "Component Selection"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Selection_Message", "Paint a mask on the Landscape to protect areas from editing."); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::SelectComponent | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -207,7 +209,7 @@ public:
 
 					if (BrushValue > 0.0f && LandscapeInfo->IsValidPosition(X, Y))
 					{
-						float PaintValue = BrushValue * UISettings->ToolStrength * Pressure;
+						float PaintValue = BrushValue * UISettings->GetCurrentToolStrength() * Pressure;
 						float Value = DataScanline[X] / 255.0f;
 						checkSlow(FMath::IsNearlyEqual(Value, LandscapeInfo->SelectedRegion.FindRef(Key), 1 / 255.0f));
 						if (bInvert)
@@ -249,9 +251,11 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Mask"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Mask", "Region Selection"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Mask_Message", "Region Selection"); };
+	virtual bool AffectsEditLayers() const { return false; }
+
+	virtual const TCHAR* GetToolName() const override { return TEXT("Mask"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Mask", "Region Selection"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Mask_Message", "Region Selection"); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::SelectRegion | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return true; }
@@ -335,9 +339,9 @@ public:
 		return FLandscapeToolBase<FLandscapeToolStrokeVisibility>::BeginTool(ViewportClient, InTarget, InHitLocation);
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Visibility"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Visibility", "Visibility"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Visibility_Message", "This tool will allow you to mask out the visibility and collision of areas of your Landscape when used in conjunction with the Landscape Hole Material."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Visibility"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Visibility", "Visibility"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Visibility_Message", "This tool will allow you to mask out the visibility and collision of areas of your Landscape when used in conjunction with the Landscape Hole Material."); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -495,11 +499,11 @@ public:
 		: FLandscapeToolBase<FLandscapeToolStrokeMoveToLevel>(InEdMode)
 	{
 	}
-	virtual bool ShouldUpdateEditingLayer() const override { return false; }
+	virtual bool AffectsEditLayers() const override { return false; }
 
-	virtual const TCHAR* GetToolName() override { return TEXT("MoveToLevel"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_MoveToLevel", "Move to Streaming Level"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_MoveToLevel_Message", "Move the selected components, via using the Selection tool, to the current streaming level.  This makes it possible to move sections of a Landscape into a streaming level so that they will be streamed in and out with that level, optimizing the performance of the Landscape."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("MoveToLevel"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_MoveToLevel", "Move to Streaming Level"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_MoveToLevel_Message", "Move the selected components, via using the Selection tool, to the current streaming level.  This makes it possible to move sections of a Landscape into a streaming level so that they will be streamed in and out with that level, optimizing the performance of the Landscape."); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::SelectComponent | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -783,16 +787,32 @@ class FLandscapeToolAddComponent : public FLandscapeToolBase<FLandscapeToolStrok
 public:
 	FLandscapeToolAddComponent(FEdModeLandscape* InEdMode)
 		: FLandscapeToolBase<FLandscapeToolStrokeAddComponent>(InEdMode)
+		, bIsToolActionResolutionCompliant(true)
 	{
 	}
-	virtual bool ShouldUpdateEditingLayer() const override { return false; }
+	virtual bool AffectsEditLayers() const override { return false; }
 
-	virtual const TCHAR* GetToolName() override { return TEXT("AddComponent"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_AddComponent", "Add New Landscape Component"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_AddComponent_Message", "Create new components for the current Landscape, one at a time.  The cursor shows a green wireframe where new components can be added."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("AddComponent"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_AddComponent", "Add New Landscape Component"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_AddComponent_Message", "Create new components for the current Landscape, one at a time.  The cursor shows a green wireframe where new components can be added."); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
+
+	virtual bool CanToolBeActivated() const override
+	{ 
+		return FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::CanToolBeActivated() && bIsToolActionResolutionCompliant;
+	}
+
+	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override
+	{
+		if (EdMode != nullptr)
+		{
+			bIsToolActionResolutionCompliant = EdMode->IsLandscapeResolutionCompliant();
+		}
+
+		FLandscapeToolBase<FLandscapeToolStrokeAddComponent>::Tick(ViewportClient, DeltaTime);
+	}
 	
 	virtual void EnterTool() override
 	{
@@ -815,13 +835,15 @@ public:
 	{
 		if (AddCollision.IsSet())
 		{
-			PDI->DrawLine(AddCollision->Corners[0], AddCollision->Corners[3], FColor(0, 255, 128), SDPG_Foreground);
-			PDI->DrawLine(AddCollision->Corners[3], AddCollision->Corners[1], FColor(0, 255, 128), SDPG_Foreground);
-			PDI->DrawLine(AddCollision->Corners[1], AddCollision->Corners[0], FColor(0, 255, 128), SDPG_Foreground);
+			const FColor LineColor = CanToolBeActivated() ? FColor(0, 255, 128) : FColor(255, 0, 64);
 
-			PDI->DrawLine(AddCollision->Corners[0], AddCollision->Corners[2], FColor(0, 255, 128), SDPG_Foreground);
-			PDI->DrawLine(AddCollision->Corners[2], AddCollision->Corners[3], FColor(0, 255, 128), SDPG_Foreground);
-			PDI->DrawLine(AddCollision->Corners[3], AddCollision->Corners[0], FColor(0, 255, 128), SDPG_Foreground);
+			PDI->DrawLine(AddCollision->Corners[0], AddCollision->Corners[3], LineColor, SDPG_Foreground);
+			PDI->DrawLine(AddCollision->Corners[3], AddCollision->Corners[1], LineColor, SDPG_Foreground);
+			PDI->DrawLine(AddCollision->Corners[1], AddCollision->Corners[0], LineColor, SDPG_Foreground);
+
+			PDI->DrawLine(AddCollision->Corners[0], AddCollision->Corners[2], LineColor, SDPG_Foreground);
+			PDI->DrawLine(AddCollision->Corners[2], AddCollision->Corners[3], LineColor, SDPG_Foreground);
+			PDI->DrawLine(AddCollision->Corners[3], AddCollision->Corners[0], LineColor, SDPG_Foreground);
 		}
 	}
 
@@ -865,6 +887,44 @@ public:
 		return false;
 	}
 
+	virtual int32 GetToolActionResolutionDelta() const override
+	{
+		int32 ResolutionDelta = 0;
+
+		if (EdMode == nullptr)
+		{
+			return 0;
+		}
+
+		const FLandscapeToolTarget& ToolTarget = EdMode->CurrentToolTarget;
+		FLandscapeBrush* CurrentBrush = EdMode->CurrentBrush;
+		TOptional<FVector2D> LastMousePosition = CurrentBrush->GetLastMousePosition();
+		FIntRect LandscapeIndices;
+
+		if (ToolTarget.LandscapeInfo.IsValid() && LastMousePosition.IsSet() && ToolTarget.LandscapeInfo->GetLandscapeXYComponentBounds(LandscapeIndices))
+		{
+			const int32 BrushSize = FMath::Max(EdMode->UISettings->BrushComponentSize, 0);
+			const int32 ComponentSizeQuads = ToolTarget.LandscapeInfo->ComponentSizeQuads;
+			const float BrushOriginX = LastMousePosition.GetValue().X / ComponentSizeQuads - (BrushSize - 1) / 2.0f;
+			const float BrushOriginY = LastMousePosition.GetValue().Y / ComponentSizeQuads - (BrushSize - 1) / 2.0f;
+			const int32 ComponentIndexX = FMath::FloorToInt(BrushOriginX);
+			const int32 ComponentIndexY = FMath::FloorToInt(BrushOriginY);
+			FIntPoint CurrentResolution = ToolTarget.LandscapeInfo->GetLandscapeProxy()->GetBoundingRect().Size() + 1;
+
+			if ((ComponentIndexX < LandscapeIndices.Min.X) || (ComponentIndexX > LandscapeIndices.Max.X))
+			{
+				ResolutionDelta += CurrentResolution.Y * BrushSize * ComponentSizeQuads;
+			}
+
+			if ((ComponentIndexY < LandscapeIndices.Min.Y) || (ComponentIndexY > LandscapeIndices.Max.Y))
+			{
+				ResolutionDelta += CurrentResolution.X * BrushSize * ComponentSizeQuads;
+			}
+		}
+
+		return ResolutionDelta;
+	}
+
 private:
 	bool RayIntersectTriangle(const FVector& Start, const FVector& End, const FVector& A, const FVector& B, const FVector& C, FVector& IntersectPoint)
 	{
@@ -887,6 +947,7 @@ private:
 	}
 
 	TOptional<FLandscapeAddCollision> AddCollision;
+	bool bIsToolActionResolutionCompliant;
 };
 
 //
@@ -936,11 +997,11 @@ public:
 	{
 	}
 
-	virtual bool ShouldUpdateEditingLayer() const override { return false; }
+	virtual bool AffectsEditLayers() const override { return false; }
 
-	virtual const TCHAR* GetToolName() override { return TEXT("DeleteComponent"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_DeleteComponent", "Delete Landscape Components"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_DeleteComponent_Message", "Delete selected components . If no components are currently selected, deletes the component highlighted under the mouse cursor. "); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("DeleteComponent"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_DeleteComponent", "Delete Landscape Components"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_DeleteComponent_Message", "Delete selected components . If no components are currently selected, deletes the component highlighted under the mouse cursor. "); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::SelectComponent | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -1264,9 +1325,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Copy"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Copy", "Copy"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Copy_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Copy"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Copy", "Copy"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Copy_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
 
 
 	virtual void SetEditRenderType() override
@@ -1434,7 +1495,7 @@ public:
 
 						// Value before we apply our painting
 						int32 index = (X - X1) + (Y - Y1)*(1 + X2 - X1);
-						float PaintAmount = (Brush->GetBrushType() == ELandscapeBrushType::Gizmo) ? BrushValue : BrushValue * EdMode->UISettings->ToolStrength * Pressure;
+						float PaintAmount = (Brush->GetBrushType() == ELandscapeBrushType::Gizmo) ? BrushValue : BrushValue * EdMode->UISettings->GetCurrentToolStrength() * Pressure;
 
 						FVector GizmoLocal = LandscapeToGizmoLocal.TransformPosition(FVector(X, Y, 0));
 						GizmoLocal.X *= ScaleX * SignX;
@@ -1583,9 +1644,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Paste"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region", "Region Copy/Paste"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Paste"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region", "Region Copy/Paste"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
 
 	virtual void SetEditRenderType() override
 	{
@@ -1664,9 +1725,9 @@ public:
 	}
 
 	// Just hybrid of Copy and Paste tool
-	virtual const TCHAR* GetToolName() override { return TEXT("CopyPaste"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region", "Region Copy/Paste"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("CopyPaste"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region", "Region Copy/Paste"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Region_Message", "Copy and Paste allows you to copy terrain data from one area of your Landscape to another.  Use the select tool  in conjunction with the Copy gizmo to further refine your selection."); };
 
 	virtual void EnterTool() override
 	{
@@ -1801,10 +1862,10 @@ public:
 		, DraggingEdge_Remainder(0.0f)
 	{
 	}
-
-	virtual const TCHAR* GetToolName() override { return TEXT("NewLandscape"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_NewLandscape", "New Landscape"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_NewLandscape_Message", "Create or import a new heightmap.  Assign a material and configure the components.  When you are ready to create your new Landscape, press the Create button in the lower-right corner of this panel. "); };
+	virtual bool AffectsEditLayers() const { return false; }
+	virtual const TCHAR* GetToolName() const override { return TEXT("NewLandscape"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_NewLandscape", "New Landscape"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_NewLandscape_Message", "Create or import a new heightmap.  Assign a material and configure the components.  When you are ready to create your new Landscape, press the Create button in the lower-right corner of this panel. "); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -1814,7 +1875,7 @@ public:
 		DraggingEdge = ELandscapeEdge::None;
 		DraggingEdge_Remainder = 0.0f;
 		EdMode->NewLandscapePreviewMode = NewLandscapePreviewMode;
-		EdMode->UISettings->ImportLandscapeData();
+		EdMode->UISettings->RefreshImports();
 	}
 
 	virtual void ExitTool() override
@@ -1860,7 +1921,7 @@ public:
 						DraggingEdge = EdgeProxy->Edge;
 						DraggingEdge_Remainder = 0;
 
-						return false; // false to let FEditorViewportClient.InputKey start mouse tracking and enable InputDelta() so we can use it
+						return true;
 					}
 				}
 			}
@@ -1871,7 +1932,7 @@ public:
 					DraggingEdge = ELandscapeEdge::None;
 					DraggingEdge_Remainder = 0;
 
-					return false; // false to let FEditorViewportClient.InputKey end mouse tracking
+					return true;
 				}
 			}
 		}
@@ -1903,35 +1964,48 @@ public:
 			HitLocation = Transform.InverseTransformPosition(HitLocation);
 
 			UISettings->Modify();
-			switch (DraggingEdge)
+
+			auto DragEdge = [&UISettings, &HitLocation, &Transform](const ELandscapeEdge::Type Edge)
 			{
-			case ELandscapeEdge::X_Negative:
-			case ELandscapeEdge::X_Negative_Y_Negative:
-			case ELandscapeEdge::X_Negative_Y_Positive:
-			{
-				const int32 InitialComponentCountX = UISettings->NewLandscape_ComponentCount.X;
-				const int32 Delta = FMath::RoundToInt(HitLocation.X + (float)InitialComponentCountX / 2);
-				UISettings->NewLandscape_ComponentCount.X = InitialComponentCountX - Delta;
+				int32& ComponentCount = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? UISettings->NewLandscape_ComponentCount.X : UISettings->NewLandscape_ComponentCount.Y;
+				const float Hit = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? HitLocation.X : HitLocation.Y;
+				const float PosOrNeg = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::Y_Negative ? -1.0f : 1.0f;
+				const FVector XOrY = Edge == ELandscapeEdge::X_Negative || Edge == ELandscapeEdge::X_Positive ? FVector(1, 0, 0) : FVector(0, 1, 0);
+				
+				const int32 InitialComponentCount = ComponentCount;
+				const int32 Delta = FMath::RoundToInt(Hit - PosOrNeg * static_cast<float>(InitialComponentCount) / 2.0f);
+				ComponentCount = InitialComponentCount + PosOrNeg * Delta;
 				UISettings->NewLandscape_ClampSize();
-				const int32 ActualDelta = UISettings->NewLandscape_ComponentCount.X - InitialComponentCountX;
-				UISettings->NewLandscape_Location -= Transform.TransformVector(FVector(((float)ActualDelta / 2), 0, 0));
-			}
-			break;
-			case ELandscapeEdge::X_Positive:
-			case ELandscapeEdge::X_Positive_Y_Negative:
-			case ELandscapeEdge::X_Positive_Y_Positive:
+				const float ActualDelta = static_cast<float>(ComponentCount - InitialComponentCount) / 2.0f;
+				UISettings->NewLandscape_Location += PosOrNeg * XOrY * Transform.TransformVector(FVector(ActualDelta, ActualDelta, 0));
+			};
+
+			if (DraggingEdge == ELandscapeEdge::X_Negative ||
+				DraggingEdge == ELandscapeEdge::X_Negative_Y_Negative ||
+				DraggingEdge ==	ELandscapeEdge::X_Negative_Y_Positive)
 			{
-				const int32 InitialComponentCountX = UISettings->NewLandscape_ComponentCount.X;
-				int32 Delta = FMath::RoundToInt(HitLocation.X - (float)InitialComponentCountX / 2);
-				UISettings->NewLandscape_ComponentCount.X = InitialComponentCountX + Delta;
-				UISettings->NewLandscape_ClampSize();
-				const int32 ActualDelta = UISettings->NewLandscape_ComponentCount.X - InitialComponentCountX;
-				UISettings->NewLandscape_Location += Transform.TransformVector(FVector(((float)ActualDelta / 2), 0, 0));
+				DragEdge(ELandscapeEdge::X_Negative);
 			}
-			break;
-			case  ELandscapeEdge::Y_Negative:
-			case  ELandscapeEdge::Y_Positive:
-				break;
+
+			if (DraggingEdge == ELandscapeEdge::X_Positive ||
+				DraggingEdge == ELandscapeEdge::X_Positive_Y_Negative ||
+				DraggingEdge ==	ELandscapeEdge::X_Positive_Y_Positive)
+			{
+				DragEdge(ELandscapeEdge::X_Positive);
+			}
+
+			if (DraggingEdge == ELandscapeEdge::Y_Negative ||
+				DraggingEdge == ELandscapeEdge::X_Negative_Y_Negative ||
+				DraggingEdge == ELandscapeEdge::X_Positive_Y_Negative)
+			{
+				DragEdge(ELandscapeEdge::Y_Negative);
+			}
+
+			if (DraggingEdge == ELandscapeEdge::Y_Positive ||
+				DraggingEdge == ELandscapeEdge::X_Negative_Y_Positive ||
+				DraggingEdge == ELandscapeEdge::X_Positive_Y_Positive)
+			{
+				DragEdge(ELandscapeEdge::Y_Positive);
 			}
 						
 			return true;
@@ -1944,12 +2018,12 @@ public:
 	{
 		if (EdMode->NewLandscapePreviewMode != ENewLandscapePreviewMode::None)
 		{
-			static const float        CornerSize = 0.33f;
-			static const FLinearColor CornerColor(1.0f, 1.0f, 0.5f);
-			static const FLinearColor EdgeColor(1.0f, 1.0f, 0.0f);
-			static const FLinearColor ComponentBorderColor(0.0f, 0.85f, 0.0f);
-			static const FLinearColor SectionBorderColor(0.0f, 0.4f, 0.0f);
-			static const FLinearColor InnerColor(0.0f, 0.25f, 0.0f);
+			static constexpr float        CornerSize = 0.33f;
+			static constexpr FLinearColor CornerColor(1.0f, 0.5f, 0.0f);
+			static constexpr FLinearColor EdgeColor(1.0f, 1.0f, 0.0f);
+			static constexpr FLinearColor ComponentBorderColor(0.0f, 0.85f, 0.0f);
+			static constexpr FLinearColor SectionBorderColor(0.0f, 0.4f, 0.0f);
+			static constexpr FLinearColor InnerColor(0.0f, 0.25f, 0.0f);
 
 			const ELevelViewportType ViewportType = ((FEditorViewportClient*)Viewport->GetClient())->ViewportType;
 
@@ -1961,6 +2035,19 @@ public:
 			const FVector Offset = EdMode->UISettings->NewLandscape_Location + FTransform(EdMode->UISettings->NewLandscape_Rotation, FVector::ZeroVector, EdMode->UISettings->NewLandscape_Scale).TransformVector(FVector(-ComponentCountX * ComponentSize / 2, -ComponentCountY * ComponentSize / 2, 0));
 			const FTransform Transform = FTransform(EdMode->UISettings->NewLandscape_Rotation, Offset, EdMode->UISettings->NewLandscape_Scale);
 
+			using LineCoords = TTuple<FVector, FVector>;
+
+			auto DrawLine = [&PDI, &Transform](const LineCoords& AB, const FLinearColor& Color, const uint8 DepthPriorityGroup)
+			{
+				PDI->DrawLine(Transform.TransformPosition(AB.Get<0>()), Transform.TransformPosition(AB.Get<1>()), Color, DepthPriorityGroup);
+			};
+
+			auto DrawLineBorder = [&PDI, &DrawLine](const ELandscapeEdge::Type Edge, const LineCoords& AB, const FLinearColor& Color)
+			{
+				PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(Edge));
+				DrawLine(AB, Color, SDPG_Foreground);
+			};
+
 			if (EdMode->NewLandscapePreviewMode == ENewLandscapePreviewMode::ImportLandscape)
 			{
 				auto GetColor = [&](int32 ComponentIndex)
@@ -1969,16 +2056,15 @@ public:
 					{
 						return EdgeColor;
 					}
-					else
-					{
-						return ComponentBorderColor;
-					}
+					return ComponentBorderColor;
 				};
 
 				const TArray<uint16>& ImportHeights = EdMode->UISettings->GetImportLandscapeData();
 				if (ImportHeights.Num() != 0)
 				{
-					const float InvQuadsPerComponent = 1.0f / (float)QuadsPerComponent;
+					const int32 NumLinesForeground = ComponentCountX * ComponentCountY * 2 + ComponentCountX + ComponentCountY + 8;
+					PDI->AddReserveLines(SDPG_Foreground, NumLinesForeground);
+
 					const int32 SizeX = ComponentCountX * QuadsPerComponent + 1;
 					const int32 SizeY = ComponentCountY * QuadsPerComponent + 1;
 					const int32 ImportSizeX = EdMode->UISettings->ImportLandscape_Width;
@@ -1986,77 +2072,125 @@ public:
 					const int32 OffsetX = (SizeX - ImportSizeX) / 2;
 					const int32 OffsetY = (SizeY - ImportSizeY) / 2;
 
-					for (int32 ComponentY = 0; ComponentY < ComponentCountY; ComponentY++)
+					// Get coordinates for a line in X direction
+					auto LineX = [QuadsPerComponent, ImportSizeX, ImportSizeY, &ImportHeights, OffsetX, OffsetY](int32 X, int32 Y)
 					{
-						const int32 Y0 = ComponentY * QuadsPerComponent;
-						const int32 Y1 = (ComponentY + 1) * QuadsPerComponent;
-
+						X *= QuadsPerComponent;
+						const int32 Y0 = Y * QuadsPerComponent;
+						const int32 Y1 = (Y + 1) * QuadsPerComponent;
+						const int32 ImportX = FMath::Clamp<int32>(X - OffsetX, 0, ImportSizeX - 1);
 						const int32 ImportY0 = FMath::Clamp<int32>(Y0 - OffsetY, 0, ImportSizeY - 1);
 						const int32 ImportY1 = FMath::Clamp<int32>(Y1 - OffsetY, 0, ImportSizeY - 1);
+						const float Z0 = (static_cast<float>(ImportHeights[ImportX + ImportY0 * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						const float Z1 = (static_cast<float>(ImportHeights[ImportX + ImportY1 * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						return LineCoords{FVector(X, Y0, Z0), FVector(X, Y1, Z1)};
+					};
 
-						for (int32 ComponentX = 0; ComponentX < ComponentCountX; ComponentX++)
+					// Get coordinates for a line in Y direction
+					auto LineY = [QuadsPerComponent, ImportSizeX, ImportSizeY, &ImportHeights, OffsetX, OffsetY](int32 X, int32 Y)
+					{
+						Y *= QuadsPerComponent;
+						const int32 X0 = X * QuadsPerComponent;
+						const int32 X1 = (X + 1) * QuadsPerComponent;
+						const int32 ImportY = FMath::Clamp<int32>(Y - OffsetY, 0, ImportSizeY - 1);
+						const int32 ImportX0 = FMath::Clamp<int32>(X0 - OffsetX, 0, ImportSizeX - 1);
+						const int32 ImportX1 = FMath::Clamp<int32>(X1 - OffsetX, 0, ImportSizeX - 1);
+						const float Z0 = (static_cast<float>(ImportHeights[ImportX0 + ImportY * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						const float Z1 = (static_cast<float>(ImportHeights[ImportX1 + ImportY * ImportSizeX]) - 32768.0f) * LANDSCAPE_ZSCALE;
+						return LineCoords{FVector(X0, Y, Z0), FVector(X1, Y, Z1)};
+					};
+
+					// Draw a border in X direction
+					auto DrawBorderX = [&PDI, ComponentCountY, &DrawLine, &DrawLineBorder, &LineX](
+						const int32 X, ELandscapeEdge::Type FirstCornerEdge, ELandscapeEdge::Type BorderEdge, ELandscapeEdge::Type LastCornerEdge)
+					{
+						const LineCoords FirstComponent = LineX(X, 0);
+						const LineCoords LastComponent = LineX(X, ComponentCountY - 1);
+						const FVector FirstCornerEnd = FirstComponent.Get<0>() + CornerSize * (FirstComponent.Get<1>() - FirstComponent.Get<0>());
+						const FVector LastCornerBegin = LastComponent.Get<1>() - CornerSize * (LastComponent.Get<1>() - LastComponent.Get<0>());
+
+						DrawLineBorder(FirstCornerEdge, {FirstComponent.Get<0>(), FirstCornerEnd}, CornerColor);
+						PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(BorderEdge));
+						if (ComponentCountY == 1)
 						{
-							const int32 X0 = ComponentX * QuadsPerComponent;
-							const int32 X1 = (ComponentX + 1) * QuadsPerComponent;
-							const int32 ImportX0 = FMath::Clamp<int32>(X0 - OffsetX, 0, ImportSizeX - 1);
-							const int32 ImportX1 = FMath::Clamp<int32>(X1 - OffsetX, 0, ImportSizeX - 1);
-							const float Z00 = ((float)ImportHeights[ImportX0 + ImportY0 * ImportSizeX] - 32768.0f) * LANDSCAPE_ZSCALE;
-							const float Z01 = ((float)ImportHeights[ImportX0 + ImportY1 * ImportSizeX] - 32768.0f) * LANDSCAPE_ZSCALE;
-							const float Z10 = ((float)ImportHeights[ImportX1 + ImportY0 * ImportSizeX] - 32768.0f) * LANDSCAPE_ZSCALE;
-							const float Z11 = ((float)ImportHeights[ImportX1 + ImportY1 * ImportSizeX] - 32768.0f) * LANDSCAPE_ZSCALE;
+							DrawLine({FirstCornerEnd, LastCornerBegin}, EdgeColor, SDPG_Foreground);
+						}
+						else
+						{
+							DrawLine({FirstCornerEnd, FirstComponent.Get<1>()}, EdgeColor, SDPG_Foreground);
+							for (int32 Y = 1; Y < ComponentCountY - 1; ++Y)
+							{
+								DrawLine(LineX(X, Y), EdgeColor, SDPG_Foreground);
+							}
+							DrawLine({LastComponent.Get<0>(), LastCornerBegin}, EdgeColor, SDPG_Foreground);
+						}
+						DrawLineBorder(LastCornerEdge, {LastCornerBegin, LastComponent.Get<1>()}, CornerColor);
+					};
 
-							if (ComponentX == 0)
-							{
-								PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative));
-								PDI->DrawLine(Transform.TransformPosition(FVector(X0, Y0, Z00)), Transform.TransformPosition(FVector(X0, Y1, Z01)), GetColor(ComponentX), SDPG_Foreground);
-								PDI->SetHitProxy(NULL);
-							}
+					// Draw a border in Y direction
+					auto DrawBorderY = [&PDI, ComponentCountX, &DrawLine, &DrawLineBorder, &LineY](
+						const int32 Y, ELandscapeEdge::Type FirstCornerEdge, ELandscapeEdge::Type BorderEdge, ELandscapeEdge::Type LastCornerEdge)
+					{
+						const LineCoords FirstComponent = LineY(0, Y);
+						const LineCoords LastComponent = LineY(ComponentCountX - 1, Y);
+						const FVector FirstCornerEnd = FirstComponent.Get<0>() + CornerSize * (FirstComponent.Get<1>() - FirstComponent.Get<0>());
+						const FVector LastCornerBegin = LastComponent.Get<1>() - CornerSize * (LastComponent.Get<1>() - LastComponent.Get<0>());
 
-							if (ComponentX == ComponentCountX - 1)
+						DrawLineBorder(FirstCornerEdge, {FirstComponent.Get<0>(), FirstCornerEnd}, CornerColor);
+						PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(BorderEdge));
+						if (ComponentCountX == 1)
+						{
+							DrawLine({FirstCornerEnd, LastCornerBegin}, EdgeColor, SDPG_Foreground);
+						}
+						else
+						{
+							DrawLine({FirstCornerEnd, FirstComponent.Get<1>()}, EdgeColor, SDPG_Foreground);
+							for (int32 X = 1; X < ComponentCountX - 1; ++X)
 							{
-								PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive));
-								PDI->DrawLine(Transform.TransformPosition(FVector(X1, Y0, Z10)), Transform.TransformPosition(FVector(X1, Y1, Z11)), GetColor(ComponentX), SDPG_Foreground);
-								PDI->SetHitProxy(NULL);
+								DrawLine(LineY(X, Y), EdgeColor, SDPG_Foreground);
 							}
-							else
-							{
-								PDI->DrawLine(Transform.TransformPosition(FVector(X1, Y0, Z10)), Transform.TransformPosition(FVector(X1, Y1, Z11)), GetColor(ComponentX), SDPG_Foreground);
-							}
+							DrawLine({LastComponent.Get<0>(), LastCornerBegin}, EdgeColor, SDPG_Foreground);
+						}
+						DrawLineBorder(LastCornerEdge, {LastCornerBegin, LastComponent.Get<1>()}, CornerColor);
+					};
+					
+					// Left border
+					DrawBorderX(0, ELandscapeEdge::X_Negative_Y_Negative, ELandscapeEdge::X_Negative, ELandscapeEdge::X_Negative_Y_Positive);
 
-							if (ComponentY == 0)
-							{
-								PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::Y_Negative));
-								PDI->DrawLine(Transform.TransformPosition(FVector(X0, Y0, Z00)), Transform.TransformPosition(FVector(X1, Y0, Z10)), GetColor(ComponentY), SDPG_Foreground);
-								PDI->SetHitProxy(NULL);
-							}
+					// Right border
+					DrawBorderX(ComponentCountX, ELandscapeEdge::X_Positive_Y_Negative, ELandscapeEdge::X_Positive, ELandscapeEdge::X_Positive_Y_Positive);
 
-							if (ComponentY == ComponentCountY - 1)
-							{
-								PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::Y_Positive));
-								PDI->DrawLine(Transform.TransformPosition(FVector(X0, Y1, Z01)), Transform.TransformPosition(FVector(X1, Y1, Z11)), GetColor(ComponentY), SDPG_Foreground);
-								PDI->SetHitProxy(NULL);
-							}
-							else
-							{
-								PDI->DrawLine(Transform.TransformPosition(FVector(X0, Y1, Z01)), Transform.TransformPosition(FVector(X1, Y1, Z11)), GetColor(ComponentY), SDPG_Foreground);
-							}
+					// Bottom border
+					DrawBorderY(0, ELandscapeEdge::X_Negative_Y_Negative, ELandscapeEdge::Y_Negative, ELandscapeEdge::X_Positive_Y_Negative);
 
-							// intra-component lines - too slow for big landscapes
-							/*
-							for (int32 x=1;x<QuadsPerComponent;x++)
-							{
-							PDI->DrawLine(Transform.TransformPosition(FVector(X0+x, Y0, FMath::Lerp(Z00,Z10,(float)x*InvQuadsPerComponent))), Transform.TransformPosition(FVector(X0+x, Y1, FMath::Lerp(Z01,Z11,(float)x*InvQuadsPerComponent))), ComponentBorderColor, SDPG_World);
-							}
-							for (int32 y=1;y<QuadsPerComponent;y++)
-							{
-							PDI->DrawLine(Transform.TransformPosition(FVector(X0, Y0+y, FMath::Lerp(Z00,Z01,(float)y*InvQuadsPerComponent))), Transform.TransformPosition(FVector(X1, Y0+y, FMath::Lerp(Z10,Z11,(float)y*InvQuadsPerComponent))), ComponentBorderColor, SDPG_World);
-							}
-							*/
+					// Top border
+					DrawBorderY(ComponentCountY, ELandscapeEdge::X_Negative_Y_Positive, ELandscapeEdge::Y_Positive, ELandscapeEdge::X_Positive_Y_Positive);
+
+					// Reset mouse cursor after all border are drawn
+					PDI->SetHitProxy(nullptr);
+
+					// Left to right
+					for (int32 X = 1; X < ComponentCountX; ++X)
+					{
+						const FLinearColor Color = GetColor(X);
+						for (int32 Y = 0; Y < ComponentCountY; ++Y)
+						{
+							DrawLine(LineX(X, Y), Color, SDPG_Foreground);
+						}
+					}
+
+					// Bottom to top
+					for (int32 Y = 1; Y < ComponentCountY; ++Y)
+					{
+						const FLinearColor Color = GetColor(Y);
+						for (int32 X = 0; X < ComponentCountX; ++X)
+						{
+							DrawLine(LineY(X, Y), Color, SDPG_Foreground);
 						}
 					}
 				}
 			}
-			else //if (EdMode->NewLandscapePreviewMode == ENewLandscapePreviewMode::NewLandscape)
+			else // EdMode->NewLandscapePreviewMode == ENewLandscapePreviewMode::NewLandscape
 			{
 				auto GetColor = [&](int32 QuadIndex)
 				{
@@ -2064,99 +2198,110 @@ public:
 					{
 						return EdgeColor;
 					}
-					else if (QuadIndex % QuadsPerComponent == 0)
+					if (QuadIndex % QuadsPerComponent == 0)
 					{
 						return ComponentBorderColor;
 					}
-					else if (QuadIndex % EdMode->UISettings->NewLandscape_QuadsPerSection == 0)
+					if (QuadIndex % EdMode->UISettings->NewLandscape_QuadsPerSection == 0)
 					{
 						return SectionBorderColor;
 					}
-
 					return InnerColor;
 				};
 								
 				if (ViewportType == LVT_Perspective || ViewportType == LVT_OrthoXY || ViewportType == LVT_OrthoNegativeXY)
 				{
-					for (int32 x = 0; x <= ComponentCountX * QuadsPerComponent; x++)
-					{
-						if (x == 0)
-						{
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative_Y_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, 0, 0)), Transform.TransformPosition(FVector(x, CornerSize * ComponentSize, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, CornerSize * ComponentSize, 0)), Transform.TransformPosition(FVector(x, (ComponentCountY - CornerSize) * ComponentSize, 0)), EdgeColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative_Y_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, (ComponentCountY - CornerSize) * ComponentSize, 0)), Transform.TransformPosition(FVector(x, ComponentCountY * ComponentSize, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(NULL);
-						}
-						else if (x == ComponentCountX * QuadsPerComponent)
-						{
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive_Y_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, 0, 0)), Transform.TransformPosition(FVector(x, CornerSize * ComponentSize, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, CornerSize * ComponentSize, 0)), Transform.TransformPosition(FVector(x, (ComponentCountY - CornerSize) * ComponentSize, 0)), EdgeColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive_Y_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, (ComponentCountY - CornerSize) * ComponentSize, 0)), Transform.TransformPosition(FVector(x, ComponentCountY * ComponentSize, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(NULL);
-						}
-						else
-						{
-							FLinearColor CurrentColor = GetColor(x);
-							uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
-							PDI->DrawLine(Transform.TransformPosition(FVector(x, 0, 0)), Transform.TransformPosition(FVector(x, ComponentCountY * ComponentSize, 0)), GetColor(x), DepthPriority);
-						}
-					}
-				}
-				else
-				{
-					// Don't allow dragging to resize in side-view
-					// and there's no point drawing the inner lines as only the outer is visible
-					PDI->DrawLine(Transform.TransformPosition(FVector(0, 0, 0)), Transform.TransformPosition(FVector(0, ComponentCountY * ComponentSize, 0)), EdgeColor, SDPG_World);
-					PDI->DrawLine(Transform.TransformPosition(FVector(ComponentCountX * QuadsPerComponent, 0, 0)), Transform.TransformPosition(FVector(ComponentCountX * QuadsPerComponent, ComponentCountY * ComponentSize, 0)), EdgeColor, SDPG_World);
-				}
+					const int32 NumLines = ComponentCountX * QuadsPerComponent + 1 + ComponentCountY * QuadsPerComponent + 1;
+					const int32 NumLinesForeground = ComponentCountX + 1 + ComponentCountY + 1;
+					const int32 NumLinesWorld = NumLines - NumLinesForeground;
+					constexpr int32 NumLinesForegroundCorners = 8;
 
-				if (ViewportType == LVT_Perspective || ViewportType == LVT_OrthoXY || ViewportType == LVT_OrthoNegativeXY)
-				{
-					for (int32 y = 0; y <= ComponentCountY * QuadsPerComponent; y++)
+					PDI->AddReserveLines(SDPG_Foreground, NumLinesForeground + NumLinesForegroundCorners);
+					PDI->AddReserveLines(SDPG_World, NumLinesWorld);
+
+					// Draw a border in X direction
+					auto DrawBorderX = [ComponentSize, ComponentCountY, &DrawLineBorder](
+						const int32 X, ELandscapeEdge::Type FirstCornerEdge, ELandscapeEdge::Type BorderEdge, ELandscapeEdge::Type LastCornerEdge)
 					{
-						if (y == 0)
-						{
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative_Y_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector(0, y, 0)), Transform.TransformPosition(FVector(CornerSize * ComponentSize, y, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::Y_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector(CornerSize * ComponentSize, y, 0)), Transform.TransformPosition(FVector((ComponentCountX - CornerSize) * ComponentSize, y, 0)), EdgeColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive_Y_Negative));
-							PDI->DrawLine(Transform.TransformPosition(FVector((ComponentCountX - CornerSize) * ComponentSize, y, 0)), Transform.TransformPosition(FVector(ComponentCountX * ComponentSize, y, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(NULL);
-						}
-						else if (y == ComponentCountY * QuadsPerComponent)
-						{
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Negative_Y_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector(0, y, 0)), Transform.TransformPosition(FVector(CornerSize * ComponentSize, y, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::Y_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector(CornerSize * ComponentSize, y, 0)), Transform.TransformPosition(FVector((ComponentCountX - CornerSize) * ComponentSize, y, 0)), EdgeColor, SDPG_Foreground);
-							PDI->SetHitProxy(new HNewLandscapeGrabHandleProxy(ELandscapeEdge::X_Positive_Y_Positive));
-							PDI->DrawLine(Transform.TransformPosition(FVector((ComponentCountX - CornerSize) * ComponentSize, y, 0)), Transform.TransformPosition(FVector(ComponentCountX * ComponentSize, y, 0)), CornerColor, SDPG_Foreground);
-							PDI->SetHitProxy(NULL);
-						}
-						else
-						{
-							FLinearColor CurrentColor = GetColor(y);
-							uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
-							PDI->DrawLine(Transform.TransformPosition(FVector(0, y, 0)), Transform.TransformPosition(FVector(ComponentCountX * ComponentSize, y, 0)), GetColor(y), DepthPriority);
-						}
+						DrawLineBorder(FirstCornerEdge, {FVector(X, 0, 0), FVector(X, CornerSize * ComponentSize, 0)}, CornerColor);
+						DrawLineBorder(BorderEdge, {FVector(X, CornerSize * ComponentSize, 0), FVector(X, (ComponentCountY - CornerSize) * ComponentSize, 0)}, EdgeColor);
+						DrawLineBorder(LastCornerEdge, {FVector(X, (ComponentCountY - CornerSize) * ComponentSize, 0), FVector(X, ComponentCountY * ComponentSize, 0)}, CornerColor);
+					};
+
+					// Draw a border in Y direction
+					auto DrawBorderY = [ComponentSize, ComponentCountX, &DrawLineBorder](
+						const int32 Y, ELandscapeEdge::Type FirstCornerEdge, ELandscapeEdge::Type BorderEdge, ELandscapeEdge::Type LastCornerEdge)
+					{
+						DrawLineBorder(FirstCornerEdge, {FVector(0, Y, 0), FVector(CornerSize * ComponentSize, Y, 0)}, CornerColor);
+						DrawLineBorder(BorderEdge, {FVector(CornerSize * ComponentSize, Y, 0), FVector((ComponentCountX - CornerSize) * ComponentSize, Y, 0)}, EdgeColor);
+						DrawLineBorder(LastCornerEdge, {FVector((ComponentCountX - CornerSize) * ComponentSize, Y, 0), FVector(ComponentCountX * ComponentSize, Y, 0)}, CornerColor);
+					};
+
+					// Left border
+					DrawBorderX(0, ELandscapeEdge::X_Negative_Y_Negative, ELandscapeEdge::X_Negative, ELandscapeEdge::X_Negative_Y_Positive);
+
+					// Right border
+					DrawBorderX(ComponentCountX * QuadsPerComponent, ELandscapeEdge::X_Positive_Y_Negative, ELandscapeEdge::X_Positive, ELandscapeEdge::X_Positive_Y_Positive);
+
+					// Bottom border
+					DrawBorderY(0, ELandscapeEdge::X_Negative_Y_Negative, ELandscapeEdge::Y_Negative, ELandscapeEdge::X_Positive_Y_Negative);
+
+					// Top border
+					DrawBorderY(ComponentCountY * QuadsPerComponent, ELandscapeEdge::X_Negative_Y_Positive, ELandscapeEdge::Y_Positive, ELandscapeEdge::X_Positive_Y_Positive);
+
+					// Reset mouse cursor after all border are drawn
+					PDI->SetHitProxy(nullptr);
+
+					// Left to right
+					for (int32 X = 1; X < ComponentCountX * QuadsPerComponent; ++X)
+					{
+						const FLinearColor CurrentColor = GetColor(X);
+						const uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
+						DrawLine({FVector(X, 0, 0), FVector(X, ComponentCountY * ComponentSize, 0)}, CurrentColor, DepthPriority);
+					}
+
+					// Bottom to top
+					for (int32 Y = 1; Y < ComponentCountY * QuadsPerComponent; ++Y)
+					{
+						const FLinearColor CurrentColor = GetColor(Y);
+						const uint8 DepthPriority = CurrentColor == InnerColor ? SDPG_World : SDPG_Foreground;
+						DrawLine({FVector(0, Y, 0), FVector(ComponentCountX * ComponentSize, Y, 0)}, CurrentColor, DepthPriority);
 					}
 				}
 				else
 				{
-					// Don't allow dragging to resize in side-view
-					// and there's no point drawing the inner lines as only the outer is visible
-					PDI->DrawLine(Transform.TransformPosition(FVector(0, 0, 0)), Transform.TransformPosition(FVector(ComponentCountX * ComponentSize, 0, 0)), EdgeColor, SDPG_World);
-					PDI->DrawLine(Transform.TransformPosition(FVector(0, ComponentCountY * QuadsPerComponent, 0)), Transform.TransformPosition(FVector(ComponentCountX * ComponentSize, ComponentCountY * QuadsPerComponent, 0)), EdgeColor, SDPG_World);
+					// Don't allow dragging to resize in side-view, and there is no point drawing the inner lines as only the outer are visible.
+
+					if (ViewportType == LVT_OrthoXZ || ViewportType == LVT_OrthoNegativeXZ)
+					{
+						DrawLine({FVector(0, 0, 0), FVector(ComponentCountX * ComponentSize, 0, 0)}, EdgeColor, SDPG_World);
+						DrawLine({FVector(0, ComponentCountY * QuadsPerComponent, 0), FVector(ComponentCountX * ComponentSize, ComponentCountY * QuadsPerComponent, 0)}, EdgeColor, SDPG_World);
+					}
+
+					if (ViewportType == LVT_OrthoYZ || ViewportType == LVT_OrthoNegativeYZ)
+					{
+						DrawLine({FVector(0, 0, 0), FVector(0, ComponentCountY * ComponentSize, 0)}, EdgeColor, SDPG_World);
+						DrawLine({FVector(ComponentCountX * QuadsPerComponent, 0, 0), FVector(ComponentCountX * QuadsPerComponent, ComponentCountY * ComponentSize, 0)}, EdgeColor, SDPG_World);
+					}
 				}
 			}
 		}
+	}
+
+	virtual int32 GetToolActionResolutionDelta() const override
+	{
+		if (EdMode != nullptr)
+		{
+			int32 NewLandscapeResolutionX = EdMode->GetNewLandscapeResolutionX();
+			int32 NewLandscapeResolutionY = EdMode->GetNewLandscapeResolutionY();
+
+			NewLandscapeResolutionX = (NewLandscapeResolutionX > 0) ? NewLandscapeResolutionX : 1;
+			NewLandscapeResolutionY = (NewLandscapeResolutionY > 0) ? NewLandscapeResolutionY : 1;
+
+			return NewLandscapeResolutionX * NewLandscapeResolutionY;
+		}
+
+		return 0;
 	}
 };
 
@@ -2175,9 +2320,10 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("ResizeLandscape"); }
-	virtual FText GetDisplayName() override { return LOCTEXT("LandscapeMode_ResizeLandscape", "Change Landscape Component Size"); };
-	virtual FText GetDisplayMessage() override { return LOCTEXT("LandscapeMode_ResizeLandscape_Message", "Change Landscape Component Size"); };
+	virtual bool AffectsEditLayers() const { return false; }
+	virtual const TCHAR* GetToolName() const override { return TEXT("ResizeLandscape"); }
+	virtual FText GetDisplayName() const override { return LOCTEXT("LandscapeMode_ResizeLandscape", "Change Landscape Component Size"); };
+	virtual FText GetDisplayMessage() const override { return LOCTEXT("LandscapeMode_ResizeLandscape_Message", "Change Landscape Component Size"); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -2241,9 +2387,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("ImportExport"); }
-	virtual FText GetDisplayName() override { return LOCTEXT("LandscapeMode_ImportExport", "Import Export"); };
-	virtual FText GetDisplayMessage() override { return LOCTEXT("LandscapeMode_ImportExport_Message", "Import/Export Landscape Data"); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("ImportExport"); }
+	virtual FText GetDisplayName() const override { return LOCTEXT("LandscapeMode_ImportExport", "Import Export"); };
+	virtual FText GetDisplayMessage() const override { return LOCTEXT("LandscapeMode_ImportExport_Message", "Import/Export Landscape Data"); };
 
 	virtual bool UsesTransformWidget() const { return true; }
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::SelectComponent | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
@@ -2463,6 +2609,22 @@ public:
 				PDI->DrawLine(GizmoTransform.TransformPosition(FVector(0, ImportHeight, 0)), GizmoTransform.TransformPosition(FVector(ImportWidth, ImportHeight, 0)), EdgeColor, SDPG_Foreground);
 			}
 		}
+	}
+
+	virtual int32 GetToolActionResolutionDelta() const override
+	{
+		if (EdMode != nullptr)
+		{
+			int32 ImportWidth = EdMode->UISettings->ImportLandscape_Width;
+			int32 ImportHeight = EdMode->UISettings->ImportLandscape_Height;
+
+			ImportWidth = (ImportWidth > 0) ? ImportWidth : 1;
+			ImportHeight = (ImportHeight > 0) ? ImportHeight : 1;
+
+			return ImportWidth * ImportHeight;
+		}
+
+		return 0;
 	}
 };
 

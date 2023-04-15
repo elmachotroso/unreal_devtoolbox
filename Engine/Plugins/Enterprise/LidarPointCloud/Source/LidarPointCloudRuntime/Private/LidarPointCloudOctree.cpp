@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
- 
+
 #include "LidarPointCloudOctree.h"
 #include "LidarPointCloudOctreeMacros.h"
 #include "LidarPointCloud.h"
 #include "Meshing/LidarPointCloudMeshing.h"
-#include "Collision/LidarPointCloudCollision.h"
 #include "Misc/ScopeTryLock.h"
 #include "Containers/Queue.h"
 #include "Async/Async.h"
@@ -36,16 +35,27 @@ FArchive& operator<<(FArchive& Ar, FLidarPointCloudPoint_Legacy& P)
 	return Ar;
 }
 
-struct FLidarPointCloudBulkData_Legacy : public FUntypedBulkData
+struct FLidarPointCloudBulkData_Legacy : public FBulkData
 {
 private:
 	int32 ElementSize;
 
 public:
 	FLidarPointCloudBulkData_Legacy(int32 ElementSize) : ElementSize(ElementSize) {}
-	virtual int32 GetElementSize() const override { return ElementSize; }
-	virtual void SerializeElement(FArchive& Ar, void* Data, int64 ElementIndex) override { }
+	void Serialize(FArchive& Ar, UObject* Owner);
+	int32 GetElementCount() const;
 };
+
+void FLidarPointCloudBulkData_Legacy::Serialize(FArchive& Ar, UObject* Owner)
+{
+	const bool bAttemptFileMapping = false;
+	FBulkData::Serialize(Ar, Owner, bAttemptFileMapping, ElementSize, EFileRegionType::None);
+}
+
+int32 FLidarPointCloudBulkData_Legacy::GetElementCount() const
+{
+	return GetBulkDataSize() / ElementSize;
+}
 
 /** Used for grid allocation calculations */
 struct FGridAllocation
@@ -119,11 +129,13 @@ FLidarPointCloudOctreeNode::FLidarPointCloudOctreeNode(FLidarPointCloudOctree* T
 	, Tree(Tree)
 	, bVisibilityDirty(false)
 	, bInUse(false)
+	, bHasSelection(false)
 	, NumVisiblePoints(0)
 	, NumPoints(0)
 	, bHasData(false)
 	, DataCache(nullptr)
 	, VertexFactory(nullptr)
+	, RayTracingGeometry(nullptr)
 	, bRenderDataDirty(true)
 	, bHasDataPending(false)
 	, bCanReleaseData(true)
@@ -187,7 +199,7 @@ FLidarPointCloudPoint* FLidarPointCloudOctreeNode::GetPersistentData() const
 	return GetData();
 }
 
-bool FLidarPointCloudOctreeNode::BuildDataCache(bool bUseStaticBuffers)
+bool FLidarPointCloudOctreeNode::BuildDataCache(bool bUseStaticBuffers, bool bUseRayTracing)
 {	
 	// Only include nodes with available data
 	if (HasData() && GetNumVisiblePoints())
@@ -224,24 +236,39 @@ bool FLidarPointCloudOctreeNode::BuildDataCache(bool bUseStaticBuffers)
 			}
 		}
 
+		if(bUseRayTracing)
+		{
+			if(!RayTracingGeometry.IsValid())
+			{
+				RayTracingGeometry = MakeShareable(new FLidarPointCloudRayTracingGeometry());
+				bRenderDataDirty = true;
+			}
+		}
+		else
+		{
+			if(RayTracingGeometry.IsValid())
+			{
+				RayTracingGeometry->ReleaseResource();
+				RayTracingGeometry.Reset();
+				bRenderDataDirty = true;
+			}
+		}
+
 		if (bRenderDataDirty)
 		{
 			if (DataCache.IsValid())
 			{
-				DataCache->Resize(GetNumVisiblePoints() * 5);
-
-				uint8* StructuredBuffer = (uint8*)RHILockBuffer(DataCache->Buffer, 0, GetNumVisiblePoints() * sizeof(FLidarPointCloudPoint), RLM_WriteOnly);
-				for (FLidarPointCloudPoint* P = GetData(), *DataEnd = P + GetNumVisiblePoints(); P != DataEnd; ++P)
-				{
-					FMemory::Memcpy(StructuredBuffer, P, sizeof(FLidarPointCloudPoint));
-					StructuredBuffer += sizeof(FLidarPointCloudPoint);
-				}
-				RHIUnlockBuffer(DataCache->Buffer);
+				DataCache->Initialize(GetData(), GetNumVisiblePoints());
 			}
 
 			if (VertexFactory.IsValid())
 			{
 				VertexFactory->Initialize(GetData(), GetNumVisiblePoints());
+			}
+
+			if(RayTracingGeometry.IsValid())
+			{
+				RayTracingGeometry->Initialize(GetNumVisiblePoints());
 			}
 
 			bRenderDataDirty = false;
@@ -787,7 +814,11 @@ int64 FLidarPointCloudOctreeNode::GetAllocatedSize(bool bRecursive, bool bInclud
 void FLidarPointCloudOctreeNode::ReleaseData(bool bForce)
 {
 	// Check if the data can be released
-	if (bCanReleaseData || bForce)
+	if ((bCanReleaseData
+#if WITH_EDITOR
+		&& !bHasSelection
+#endif
+		) || bForce)
 	{
 		bHasDataPending = false;
 		bCanReleaseData = true;
@@ -807,7 +838,8 @@ void FLidarPointCloudOctreeNode::ReleaseDataCache()
 {
 	if (VertexFactory.IsValid() || DataCache.IsValid())
 	{
-		ENQUEUE_RENDER_COMMAND(LidarPointCloudOctreeNode_ReleaseDataCache)([DataCache = DataCache, VertexFactory = VertexFactory](FRHICommandListImmediate& RHICmdList)
+		ENQUEUE_RENDER_COMMAND(LidarPointCloudOctreeNode_ReleaseDataCache)([
+			DataCache = DataCache, VertexFactory = VertexFactory, RayTracingGeometry = RayTracingGeometry](FRHICommandListImmediate& RHICmdList)
 		{
 			if (DataCache.IsValid())
 			{
@@ -818,10 +850,16 @@ void FLidarPointCloudOctreeNode::ReleaseDataCache()
 			{
 				VertexFactory->ReleaseResource();
 			}
+			
+			if(RayTracingGeometry.IsValid())
+			{
+				RayTracingGeometry->ReleaseResource();
+			}
 		});
 
 		DataCache.Reset();
 		VertexFactory.Reset();
+		RayTracingGeometry.Reset();
 	}
 }
 
@@ -833,7 +871,7 @@ void FLidarPointCloudOctreeNode::AddPointCount(int32 PointCount)
 
 void FLidarPointCloudOctreeNode::SortVisiblePoints()
 {
-	TArrayView<FLidarPointCloudPoint> Points(GetData(), GetNumPoints());
+	TArrayView<FLidarPointCloudPoint> Points(GetData(), Data.Num());
 	Algo::Sort(Points, [](const FLidarPointCloudPoint& A, const FLidarPointCloudPoint& B)
 	{
 		return A.bVisible > B.bVisible;
@@ -865,7 +903,6 @@ FLidarPointCloudOctree::FLidarPointCloudOctree(ULidarPointCloud* Owner)
 
 FLidarPointCloudOctree::~FLidarPointCloudOctree()
 {
-	FScopeLock Lock(&DataLock);
 	Empty(true);
 }
 
@@ -999,7 +1036,7 @@ float FLidarPointCloudOctree::GetEstimatedPointSpacing() const
 
 void FLidarPointCloudOctree::BuildCollision(const float& Accuracy, const bool& bVisibleOnly)
 {
-	LidarPointCloudCollision::BuildCollisionMesh(this, Accuracy, bVisibleOnly, &CollisionMesh);
+	LidarPointCloudMeshing::BuildCollisionMesh(this, Accuracy, &CollisionMesh);
 }
 
 void FLidarPointCloudOctree::RemoveCollision()
@@ -1008,6 +1045,16 @@ void FLidarPointCloudOctree::RemoveCollision()
 
 	CollisionMesh.~FTriMeshCollisionData();
 	new (&CollisionMesh) FTriMeshCollisionData();
+}
+
+void FLidarPointCloudOctree::BuildStaticMeshBuffers(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform)
+{
+	if(CellSize == 0)
+	{
+		CellSize = GetEstimatedPointSpacing() * 1.1f;
+	}
+	
+	LidarPointCloudMeshing::BuildStaticMeshBuffers(this, CellSize, false, OutMeshBuffers, Transform);
 }
 
 void FLidarPointCloudOctree::GetPoints(TArray<FLidarPointCloudPoint*>& SelectedPoints, int64 StartIndex /*= 0*/, int64 Count /*= -1*/)
@@ -1152,6 +1199,7 @@ void FLidarPointCloudOctree::GetPointsAsCopies_Internal(TArray<FLidarPointCloudP
 
 	if (LocalToWorld)
 	{
+		const FTransform3f Transform = (FTransform3f)*LocalToWorld;
 		ITERATE_NODES_CONST({
 			// If no data is required, quit
 			if (Count == 0)
@@ -1167,7 +1215,7 @@ void FLidarPointCloudOctree::GetPointsAsCopies_Internal(TArray<FLidarPointCloudP
 				{
 					for (FLidarPointCloudPoint* Point = CurrentNode->GetData() + StartIndex, *DataEnd = Point + StartIndex + NumPointsToCopy; Point != DataEnd; ++Point)
 					{
-						Points.Add(Point->Transform(*LocalToWorld));
+						Points.Add(Point->Transform(Transform));
 					}
 
 					StartIndex = FMath::Max(0LL, StartIndex - NumPointsToCopy);
@@ -1328,7 +1376,8 @@ void FLidarPointCloudOctree::GetPointsInSphereAsCopies_Internal(TArray<FLidarPoi
 	SelectedPoints.Reset();
 	if (LocalToWorld)
 	{
-		PROCESS_IN_SPHERE_CONST({ SelectedPoints.Add(Point->Transform(*LocalToWorld)); });
+		const FTransform3f Transform = (FTransform3f)*LocalToWorld;
+		PROCESS_IN_SPHERE_CONST({ SelectedPoints.Add(Point->Transform(Transform)); });
 	}
 	else
 	{
@@ -1342,7 +1391,8 @@ void FLidarPointCloudOctree::GetPointsInBoxAsCopies_Internal(TArray<FLidarPointC
 	SelectedPoints.Reset();
 	if (LocalToWorld)
 	{
-		PROCESS_IN_BOX_CONST({ SelectedPoints.Add(Point->Transform(*LocalToWorld)); });
+		const FTransform3f Transform = (FTransform3f)*LocalToWorld;
+		PROCESS_IN_BOX_CONST({ SelectedPoints.Add(Point->Transform(Transform)); });
 	}
 	else
 	{
@@ -1388,7 +1438,8 @@ bool FLidarPointCloudOctree::RaycastMulti(const FLidarPointCloudRay& Ray, const 
 	OutHits.Reset();
 	if (LocalToWorld)
 	{
-		PROCESS_BY_RAY_CONST({ OutHits.Add(Point->Transform(*LocalToWorld)); });
+		const FTransform3f Transform = (FTransform3f)*LocalToWorld;
+		PROCESS_BY_RAY_CONST({ OutHits.Add(Point->Transform(Transform)); });
 	}
 	else
 	{
@@ -1715,6 +1766,222 @@ void FLidarPointCloudOctree::MarkRenderDataInConvexVolumeDirty(const FConvexVolu
 {
 	ITERATE_NODES({ CurrentNode->bRenderDataDirty = true; }, NODE_IN_CONVEX_VOLUME);
 }
+
+#if WITH_EDITOR
+void FLidarPointCloudOctree::SelectByConvexVolume(const FConvexVolume& ConvexVolume, bool bAdditive, bool bVisibleOnly)
+{
+	ITERATE_NODES(
+	{
+		// This will be used to determine if the payload should be released once convex check is complete
+		const bool bHadData = CurrentNode->bHasData;
+		bool bModified = false;
+
+		// Proactively flag as selected to avoid async release of the node's data
+		const bool bHadSelection = CurrentNode->bHasSelection;
+		CurrentNode->bHasSelection = true;
+
+		PROCESS_IN_CONVEX_VOLUME_BODY(
+		{
+			bModified = true;
+			Point->bSelected = bAdditive;
+		}, _RO)
+
+		if(bModified)
+		{
+			CurrentNode->bRenderDataDirty = true;
+		}
+		else
+		{
+			CurrentNode->bHasSelection = bHadSelection;
+
+			// Only attempt to release payload if the node didn't have any data loaded before
+			if(!bHadData)
+			{
+				CurrentNode->ReleaseData();
+			}
+		}
+	}, NODE_IN_CONVEX_VOLUME);
+}
+
+void FLidarPointCloudOctree::SelectBySphere(const FSphere& Sphere, bool bAdditive, bool bVisibleOnly)
+{
+	const FBox Box(Sphere.Center - FVector(Sphere.W), Sphere.Center + FVector(Sphere.W));
+	const float RadiusSq = Sphere.W * Sphere.W;
+	
+	ITERATE_NODES(
+	{
+		// This will be used to determine if the payload should be released once convex check is complete
+		const bool bHadData = CurrentNode->bHasData;
+		bool bModified = false;
+
+		// Proactively flag as selected to avoid async release of the node's data
+		const bool bHadSelection = CurrentNode->bHasSelection;
+		CurrentNode->bHasSelection = true;
+
+		PROCESS_IN_SPHERE_BODY(
+		{
+			bModified = true;
+			Point->bSelected = bAdditive;
+		}, _RO)
+
+		if(bModified)
+		{
+			CurrentNode->bRenderDataDirty = true;
+		}
+		else
+		{
+			CurrentNode->bHasSelection = bHadSelection;
+
+			// Only attempt to release payload if the node didn't have any data loaded before
+			if(!bHadData)
+			{
+				CurrentNode->ReleaseData();
+			}
+		}
+	}, NODE_IN_BOX);
+}
+
+void FLidarPointCloudOctree::HideSelected()
+{
+	ITERATE_SELECTED({
+		Point->bVisible = false;
+		Point->bSelected = false;
+	}, {
+		CurrentNode->bHasSelection = false;
+		CurrentNode->bCanReleaseData = false;
+		CurrentNode->bRenderDataDirty = true;
+		CurrentNode->bVisibilityDirty = true;
+	});
+}
+
+void FLidarPointCloudOctree::DeleteSelected()
+{
+	ITERATE_SELECTED_NODES({
+		const int32 NumElements = CurrentNode->GetNumPoints();
+		FLidarPointCloudPoint* Start = CurrentNode->GetData();
+		
+		int64 NumRemoved = 0;
+
+		for (FLidarPointCloudPoint* P = Start, *DataEnd = Start + NumElements; P != DataEnd; ++P)
+		{
+			if (P->bSelected)
+			{
+				CurrentNode->Data.RemoveAtSwap(P - Start, 1, false);
+				++NumRemoved;
+				--DataEnd;
+				--P;
+			}
+		}
+
+		CurrentNode->AddPointCount(-NumRemoved);
+
+		// Reduce space usage
+		CurrentNode->Data.Shrink();
+
+		// Copy the updated array back to the BulkData
+		CurrentNode->NumPoints = CurrentNode->Data.Num();
+
+		CurrentNode->bHasSelection = false;
+		CurrentNode->bCanReleaseData = false;
+		CurrentNode->bRenderDataDirty = true;
+		CurrentNode->bVisibilityDirty = true;
+	});
+}
+
+void FLidarPointCloudOctree::InvertSelection()
+{
+	ITERATE_NODES(
+	{
+		// This will be used to determine if the payload should be released once invert is complete
+		bool bNewHasSelection = false;
+		
+		FOR_RO(Point, CurrentNode)
+		{
+			Point->bSelected = !Point->bSelected;
+			if(Point->bSelected)
+			{
+				bNewHasSelection = true;
+			}
+		}
+
+		CurrentNode->bHasSelection = bNewHasSelection;
+		CurrentNode->bRenderDataDirty = true;
+
+		// Only attempt to release payload if the node isn't also used by rendering
+		if(!bNewHasSelection && !CurrentNode->bInUse)
+		{
+			CurrentNode->ReleaseData();
+		}
+	}, true);
+}
+
+int64 FLidarPointCloudOctree::NumSelectedPoints() const
+{
+	int64 Count = 0;
+	ITERATE_SELECTED({ ++Count; }, {});
+	return Count;
+}
+
+bool FLidarPointCloudOctree::HasSelectedPoints() const
+{
+	ITERATE_SELECTED({ return true; }, {});
+	return false;
+}
+
+void FLidarPointCloudOctree::GetSelectedPoints(TArray64<FLidarPointCloudPoint*>& SelectedPoints) const
+{
+	ITERATE_SELECTED({ SelectedPoints.Add(Point); }, {});
+}
+
+void FLidarPointCloudOctree::GetSelectedPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FTransform& Transform) const
+{
+	const FTransform3f Transform3F = (FTransform3f)Transform;
+
+	ITERATE_SELECTED(
+	{
+		SelectedPoints.Add(Point->Transform(Transform3F));
+	},{});
+}
+
+void FLidarPointCloudOctree::GetSelectedPointsInBox(TArray64<const FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box) const
+{
+	constexpr bool bVisibleOnly = false;
+	
+	SelectedPoints.Reset(); 
+	PROCESS_IN_BOX({
+		if(Point->bSelected)
+		{
+			SelectedPoints.Add(Point);
+		}
+	});
+}
+
+void FLidarPointCloudOctree::ClearSelection()
+{
+	ITERATE_SELECTED({
+		Point->bSelected = false; 
+	}, {
+		CurrentNode->bRenderDataDirty = true;
+		CurrentNode->bHasSelection = false;
+
+		// Only attempt to release payload if the node isn't also used by rendering
+		if(!CurrentNode->bInUse)
+		{
+			CurrentNode->ReleaseData();
+		}
+	});
+}
+
+void FLidarPointCloudOctree::BuildStaticMeshBuffersForSelection(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform)
+{
+	if(CellSize == 0)
+	{
+		CellSize = GetEstimatedPointSpacing() * 1.1f;
+	}
+	
+	LidarPointCloudMeshing::BuildStaticMeshBuffers(this, CellSize, true, OutMeshBuffers, Transform);
+}
+#endif // WITH_EDITOR
 
 void FLidarPointCloudOctree::MarkRenderDataInFrustumDirty(const FConvexVolume& Frustum)
 {
@@ -2476,9 +2743,28 @@ void FLidarPointCloudOctree::Serialize(FArchive& Ar)
 		}, true);
 		
 #if WITH_EDITOR
-		if(Ar.IsSaving())
+		if(Ar.HasAnyPortFlags(PPF_Duplicate))
 		{
-			SavingBulkData.Serialize(Ar);
+			if(Ar.IsLoading())
+			{
+				ITERATE_NODES({
+					CurrentNode->Data.SetNumUninitialized(CurrentNode->NumPoints);
+					Ar.Serialize(CurrentNode->Data.GetData(), CurrentNode->BulkDataSize);
+					CurrentNode->bCanReleaseData = false;
+					CurrentNode->bRenderDataDirty = true;
+					CurrentNode->bHasData = true;
+				}, true);	
+			}
+			else
+			{
+				ITERATE_NODES({
+					Ar.Serialize(CurrentNode->Data.GetData(), CurrentNode->BulkDataSize);
+				}, true);	
+			}
+		}
+		else if(Ar.IsSaving())
+		{
+			SavingBulkData.Serialize(Ar, Owner, false, 1, EFileRegionType::None);
 		}
 		else
 #endif
@@ -2519,9 +2805,14 @@ void FLidarPointCloudOctree::SerializeBulkData(FArchive& Ar)
 {
 	if (Ar.IsSaving())
 	{
+		const bool bReleaseData = !!Owner->GetPackage()->GetLinker();
+		
 		ITERATE_NODES({
 			Ar.Serialize(CurrentNode->Data.GetData(), CurrentNode->BulkDataSize);
-			CurrentNode->ReleaseData(true);
+			if(bReleaseData)
+			{
+				CurrentNode->ReleaseData(true);
+			}
 		}, true);
 	}
 }
@@ -2570,19 +2861,17 @@ void FLidarPointCloudOctree::StreamNodeData(FLidarPointCloudOctreeNode* Node)
 //////////////////////////////////////////////////////////// FLidarPointCloudBulkData
 
 #if WITH_EDITOR
-FLidarPointCloudOctree::FLidarPointCloudBulkData::FLidarPointCloudBulkData(FLidarPointCloudOctree* Octree): Octree(Octree)
+FLidarPointCloudOctree::FLidarPointCloudBulkData::FLidarPointCloudBulkData(FLidarPointCloudOctree* Octree)
 {
-	SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
-	Lock(LOCK_READ_WRITE);
-	Realloc(2);
-	Unlock();
-}
-
-void FLidarPointCloudOctree::FLidarPointCloudBulkData::Serialize(FArchive& Ar)
-{
-	ElementSize = Ar.IsPersistent() && !Ar.IsObjectReferenceCollector() && !Ar.ShouldSkipBulkData() ? INT32_MAX : 1;
-	FByteBulkData::Serialize(Ar, Octree->GetOwner());
-	ElementSize = 1;
+	SerializeElementsCallback = [Octree](FArchive& Ar, void*, int64, EBulkDataFlags)
+	{
+		Octree->SerializeBulkData(Ar);
+	};
+#if !USE_RUNTIME_BULKDATA
+	SerializeBulkDataElements = &SerializeElementsCallback;
+#endif // !USE_RUNTIME_BULKDATA
+	
+	SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload | BULKDATA_Size64Bit);
 }
 #endif
 

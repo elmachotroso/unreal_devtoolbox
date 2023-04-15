@@ -474,9 +474,40 @@ void UTimedDataMonitorSubsystem::SetInputEvaluationOffsetInSeconds(const FTimedD
 {
 	BuildSourcesListIfNeeded();
 
+	if (const FTimeDataInputItem* SourceItem = InputMap.Find(Identifier))
+	{
+		if (!SourceItem->Input->SupportsSubFrames())
+		{
+			// If sub frames are not supported, convert to frames, round it, then re-convert to seconds in order to get
+			// a time that aligns with a frame.
+			const int32 RoundedFrameOffset = FMath::RoundToInt32(SourceItem->Input->ConvertSecondOffsetInFrameOffset(Offset));
+			const double AlignedSecondsOffset = SourceItem->Input->ConvertFrameOffsetInSecondOffset(RoundedFrameOffset);
+			return SourceItem->Input->SetEvaluationOffsetInSeconds(AlignedSecondsOffset);
+		}
+		return SourceItem->Input->SetEvaluationOffsetInSeconds(Offset);
+	}
+}
+
+float UTimedDataMonitorSubsystem::GetInputEvaluationOffsetInFrames(const FTimedDataMonitorInputIdentifier& Identifier)
+{
+	BuildSourcesListIfNeeded();
+
+	if (const FTimeDataInputItem* SourceItem = InputMap.Find(Identifier))
+	{
+		return SourceItem->Input->ConvertSecondOffsetInFrameOffset(SourceItem->Input->GetEvaluationOffsetInSeconds());
+	}
+
+	return 0.f;
+}
+
+
+void UTimedDataMonitorSubsystem::SetInputEvaluationOffsetInFrames(const FTimedDataMonitorInputIdentifier& Identifier, float Offset)
+{
+	BuildSourcesListIfNeeded();
+
 	if (FTimeDataInputItem* SourceItem = InputMap.Find(Identifier))
 	{
-		return SourceItem->Input->SetEvaluationOffsetInSeconds(Offset);
+		return SourceItem->Input->SetEvaluationOffsetInSeconds(SourceItem->Input->ConvertFrameOffsetInSecondOffset(Offset));
 	}
 }
 

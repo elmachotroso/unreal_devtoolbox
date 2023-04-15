@@ -3,6 +3,8 @@
 #include "AnimSequencerInstanceProxy.h"
 #include "AnimSequencerInstance.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimSequencerInstanceProxy)
+
 void FAnimSequencerInstanceProxy::Initialize(UAnimInstance* InAnimInstance)
 {
 	FAnimInstanceProxy::Initialize(InAnimInstance);
@@ -60,7 +62,52 @@ bool FAnimSequencerInstanceProxy::Evaluate(FPoseContext& Output)
 			}
 		}
 	}
+	
+	RootBoneTransform.Reset();
+
+	if (SwapRootBone != ESwapRootBone::SwapRootBone_None)
+	{
+		for (const FCompactPoseBoneIndex BoneIndex : Output.Pose.ForEachBoneIndex())
+		{
+			if (BoneIndex.IsRootBone())
+			{
+				RootBoneTransform = Output.Pose[BoneIndex];
+				Output.Pose[BoneIndex] = FTransform::Identity;
+				break;
+			}
+		}
+	}
+
 	return true;
+}
+
+void FAnimSequencerInstanceProxy::PostEvaluate(UAnimInstance* InAnimInstance)
+{
+	if (GetSkelMeshComponent() && SwapRootBone != ESwapRootBone::SwapRootBone_None)
+	{
+		if (RootBoneTransform.IsSet())
+		{
+			FTransform RelativeTransform = RootBoneTransform.GetValue();
+
+			if (InitialTransform.IsSet())
+			{
+				RelativeTransform = RootBoneTransform.GetValue() * InitialTransform.GetValue();
+			}
+
+			if (SwapRootBone == ESwapRootBone::SwapRootBone_Component)
+			{
+				GetSkelMeshComponent()->SetRelativeLocationAndRotation(RelativeTransform.GetLocation(), RelativeTransform.GetRotation().Rotator());
+			}
+			else if (SwapRootBone == ESwapRootBone::SwapRootBone_Actor)
+			{
+				AActor* Actor = GetSkelMeshComponent()->GetOwner();
+				if (Actor && Actor->GetRootComponent())
+				{
+					Actor->GetRootComponent()->SetRelativeLocationAndRotation(RelativeTransform.GetLocation(), RelativeTransform.GetRotation().Rotator());
+				}
+			}
+		}
+	}
 }
 
 void FAnimSequencerInstanceProxy::UpdateAnimationNode(const FAnimationUpdateContext& InContext)
@@ -173,7 +220,7 @@ void FAnimSequencerInstanceProxy::InitAnimTrack(UAnimSequenceBase* InAnimSequenc
 // where we could just clear one sequence id. We just clear all the weights before update. 
 // once they go out of range, they don't get called anymore, so there is no good point of tearing down
 // there is multiple tear down point but we couldn't find where only happens once activated and once getting out
-// because sequencer finds the nearest point, not exact point, it doens't have good point of tearing down
+// because sequencer finds the nearest point, not exact point, it doesn't have good point of tearing down
 void FAnimSequencerInstanceProxy::TermAnimTrack(int32 SequenceId)
 {
 	FSequencerPlayerState* PlayerState = FindPlayer(SequenceId);
@@ -209,6 +256,13 @@ void FAnimSequencerInstanceProxy::UpdateAnimTrackWithRootMotion(UAnimSequenceBas
 void FAnimSequencerInstanceProxy::UpdateAnimTrackWithRootMotion(UAnimSequenceBase* InAnimSequence, int32 SequenceId, const TOptional<FRootMotionOverride>& RootMotion, float InFromPosition, float InToPosition, float Weight, bool bFireNotifies, UMirrorDataTable* InMirrorDataTable)
 {
 	UpdateAnimTrack(InAnimSequence, SequenceId, RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, InMirrorDataTable);
+}
+
+void FAnimSequencerInstanceProxy::UpdateAnimTrackWithRootMotion(const FAnimSequencerData& InAnimSequencerData)
+{
+	SwapRootBone = InAnimSequencerData.SwapRootBone;
+	InitialTransform = InAnimSequencerData.InitialTransform;
+	UpdateAnimTrack(InAnimSequencerData.AnimSequence, InAnimSequencerData.SequenceId, InAnimSequencerData.RootMotion, InAnimSequencerData.FromPosition, InAnimSequencerData.ToPosition, InAnimSequencerData.Weight, InAnimSequencerData.bFireNotifies, InAnimSequencerData.MirrorDataTable);
 }
 
 void FAnimSequencerInstanceProxy::UpdateAnimTrack(UAnimSequenceBase* InAnimSequence, uint32 SequenceId, const TOptional<FRootMotionOverride>& InRootMotionOverride, TOptional<float> InFromPosition, float InToPosition, float Weight, bool bFireNotifies, UMirrorDataTable* InMirrorDataTable)
@@ -266,4 +320,5 @@ void FAnimSequencerInstanceProxy::EnsureAnimTrack(UAnimSequenceBase* InAnimSeque
 		PlayerState->PlayerNode.SetSequence(InAnimSequence);
 	}
 }
+
 

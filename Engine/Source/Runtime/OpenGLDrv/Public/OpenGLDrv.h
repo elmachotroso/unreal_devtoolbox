@@ -10,19 +10,19 @@
 
 #include "CoreMinimal.h"
 #include "Containers/IndirectArray.h"
+#include "IOpenGLDynamicRHI.h"
 #include "RHIDefinitions.h"
 #include "RHI.h"
 #include "GPUProfiler.h"
 #include "RenderResource.h"
 #include "Templates/EnableIf.h"
-#include "RHICoreShader.h"
 
 // @todo platplug: Replace all of these includes with a call to COMPILED_PLATFORM_HEADER(OpenGLDrvPrivate.h)
 //TODO: Move these to OpenGLDrvPrivate.h
 #if PLATFORM_WINDOWS
-	#include "Runtime/OpenGLDrv/Private/Windows/OpenGLWindows.h"
+	#include "Windows/OpenGLWindows.h"
 #elif PLATFORM_LINUX
-	#include "Runtime/OpenGLDrv/Private/Linux/OpenGLLinux.h"
+	#include "Linux/OpenGLLinux.h"
 #elif PLATFORM_ANDROID
 	#include "Android/AndroidOpenGL.h"
 #else
@@ -33,9 +33,6 @@
 #ifndef GL_TEXTURE_EXTERNAL_OES
 #define GL_TEXTURE_EXTERNAL_OES 0x8D65
 #endif
-
-#define OPENGL_USE_BINDABLE_UNIFORMS 0
-#define OPENGL_USE_BLIT_FOR_BACK_BUFFER 1
 
 // OpenGL RHI public headers.
 #include "OpenGLUtil.h"
@@ -288,9 +285,12 @@ struct FOpenGLGPUProfiler : public FGPUProfiler
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 /** The interface which is implemented by the dynamically bound RHI. */
-class OPENGLDRV_API FOpenGLDynamicRHI  final : public FDynamicRHI, public IRHICommandContextPSOFallback
+class OPENGLDRV_API FOpenGLDynamicRHI  final : public IOpenGLDynamicRHI, public IRHICommandContextPSOFallback
 {
+	static inline FOpenGLDynamicRHI* Singleton = nullptr;
+
 public:
+	static inline FOpenGLDynamicRHI& Get() { return *Singleton; }
 
 	friend class FOpenGLViewport;
 
@@ -299,6 +299,30 @@ public:
 
 	/** Destructor */
 	~FOpenGLDynamicRHI() {}
+
+	// IOpenGLDynamicRHI interface.
+	virtual int32 RHIGetGLMajorVersion() const final override;
+	virtual int32 RHIGetGLMinorVersion() const final override;
+	virtual bool RHISupportsFramebufferSRGBEnable() const final override;
+	virtual FTexture2DRHIRef RHICreateTexture2DFromResource(EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags) final override;
+	virtual FTexture2DRHIRef RHICreateTexture2DArrayFromResource(EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags) final override;
+	virtual FTextureCubeRHIRef RHICreateTextureCubeFromResource(EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags) final override;
+	virtual GLuint RHIGetResource(FRHITexture* InTexture) const final override;
+	virtual bool RHIIsValidTexture(GLuint InTexture) const final override;
+	virtual void RHISetExternalGPUTime(uint32 InExternalGPUTime) final override;
+
+#if PLATFORM_ANDROID
+	virtual EGLDisplay RHIGetEGLDisplay() const final override;
+	virtual EGLSurface RHIGetEGLSurface() const final override;
+	virtual EGLConfig  RHIGetEGLConfig() const final override;
+	virtual EGLContext RHIGetEGLContext() const final override;
+	virtual ANativeWindow* RHIGetEGLNativeWindow() const final override;
+	virtual bool RHIEGLSupportsNoErrorContext() const final override;
+	virtual void RHIInitEGLInstanceGLES2() final override;
+	virtual void RHIInitEGLBackBuffer() final override;
+	virtual void RHIEGLSetCurrentRenderingContext() final override;
+	virtual void RHIEGLTerminateContext() final override;
+#endif
 
 	// FDynamicRHI interface.
 	virtual void Init();
@@ -314,6 +338,12 @@ public:
 		auto GLProxy = static_cast<typename TOpenGLResourceTraits<TRHIType>::TConcreteType*>(Resource);
 		// rhi resource can be null.
 		return GLProxy ? GLProxy->GetGLResourceObject() : nullptr;
+	}
+
+	template<typename TRHIType>
+	static FORCEINLINE typename TEnableIf<TIsGLProxyObject<typename TOpenGLResourceTraits<TRHIType>::TConcreteType>::Value, typename TOpenGLResourceTraits<TRHIType>::TConcreteType*>::Type ResourceCastProxy(TRHIType* Resource)
+	{
+		return static_cast<typename TOpenGLResourceTraits<TRHIType>::TConcreteType*>(Resource);
 	}
 
 	template<typename TRHIType>
@@ -340,12 +370,12 @@ public:
 	virtual FComputeShaderRHIRef RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
 
 	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation) final override;
-	virtual void RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override;
-	virtual FBufferRHIRef RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
+	virtual void RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override;
+	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
 	virtual void RHICopyBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer) final override;
 	virtual void RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FRHIBuffer* SrcBuffer) final override;
-	virtual void* LockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
-	virtual void UnlockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) final override;
+	virtual void* LockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
+	virtual void UnlockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer) final override;
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) final override;
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) final override;
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, uint8 Format) final override;
@@ -354,18 +384,12 @@ public:
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer) final override;
 	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override;
 	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer) final override;
-	virtual uint64 RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
-	virtual uint64 RHICalcTexture2DArrayPlatformSize(uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
-	virtual uint64 RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
-	virtual uint64 RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
+	virtual FRHICalcTextureSizeResult RHICalcTexturePlatformSize(FRHITextureDesc const& Desc, uint32 FirstMipIndex) final override;
 	virtual void RHIGetTextureMemoryStats(FTextureMemoryStats& OutStats) final override;
 	virtual bool RHIGetTextureMemoryVisualizeData(FColor* TextureData,int32 SizeX,int32 SizeY,int32 Pitch,int32 PixelSize) final override;
-	virtual FTexture2DRHIRef RHICreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual FTexture2DRHIRef RHICreateTextureExternal2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual FTexture2DRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override;
+	virtual FTextureRHIRef RHICreateTexture(const FRHITextureCreateDesc& CreateDesc) final override;
+	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override;
 	virtual void RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D) final override;
-	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual FTexture3DRHIRef RHICreateTexture3D(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) final override;
 	virtual void RHIGenerateMips(FRHITexture* Texture) final override;
 	virtual uint32 RHIComputeMemorySize(FRHITexture* TextureRHI) final override;
@@ -378,8 +402,6 @@ public:
 	virtual void RHIUnlockTexture2DArray(FRHITexture2DArray* Texture, uint32 TextureIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
 	virtual void RHIUpdateTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData) final override;
 	virtual void RHIUpdateTexture3D(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData) final override;
-	virtual FTextureCubeRHIRef RHICreateTextureCube(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual FTextureCubeRHIRef RHICreateTextureCubeArray(uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
 	virtual void* RHILockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
 	virtual void RHIUnlockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
 	virtual void RHIBindDebugLabelName(FRHITexture* Texture, const TCHAR* Name) final override;
@@ -394,10 +416,6 @@ public:
 	virtual FTexture2DRHIRef RHIGetViewportBackBuffer(FRHIViewport* Viewport) final override;
 	virtual void RHIAliasTextureResources(FTextureRHIRef& DestTextureRHI, FTextureRHIRef& SrcTextureRHI) final override;
 	virtual FTextureRHIRef RHICreateAliasedTexture(FTextureRHIRef& SourceTexture) final override;
-	UE_DEPRECATED(4.25, "RHIAliasTextureResources now takes references to FTextureRHIRef objects as parameters")
-	virtual void RHIAliasTextureResources(FRHITexture* DestTexture, FRHITexture* SrcTexture) final override;
-	UE_DEPRECATED(4.25, "RHICreateAliasedTexture now takes a reference to an FTextureRHIRef object")
-	virtual FTextureRHIRef RHICreateAliasedTexture(FRHITexture* SourceTexture) final override;
 	virtual void RHIAdvanceFrameForGetViewportBackBuffer(FRHIViewport* Viewport) final override;
 	virtual void RHIAcquireThreadOwnership() final override;
 	virtual void RHIReleaseThreadOwnership() final override;
@@ -418,7 +436,9 @@ public:
 	virtual void* RHIGetNativeDevice() final override;
 	virtual void* RHIGetNativeInstance() final override;
 	virtual class IRHICommandContext* RHIGetDefaultContext() final override;
-	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) final override;
+	virtual IRHIComputeContext* RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask) final override;
+	virtual IRHIPlatformCommandList* RHIFinalizeContext(IRHIComputeContext* Context) final override;
+	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists) final override;
 
 	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) final override;
 	virtual void RHIEndRenderPass() final override;
@@ -485,16 +505,10 @@ public:
 	virtual void RHIInvalidateCachedState() final override;
 	virtual void RHIDiscardRenderTargets(bool Depth,bool Stencil,uint32 ColorBitMask) final override;
 
-	virtual void RHICopySubTextureRegion(FRHITexture2D* SourceTexture, FRHITexture2D* DestinationTexture, FBox2D SourceBox, FBox2D DestinationBox) final override;
 	// FIXME: Broken on Android for cubemaps
 	virtual void RHICopyTexture(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FRHICopyTextureInfo& CopyInfo) final override;
 
 	virtual void RHICopyBufferRegion(FRHIBuffer* DestBuffer, uint64 DstOffset, FRHIBuffer* SourceBuffer, uint64 SrcOffset, uint64 NumBytes) final override;
-
-	// FOpenGLDynamicRHI interface.
-	FTexture2DRHIRef RHICreateTexture2DFromResource(EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags);
-	FTexture2DRHIRef RHICreateTexture2DArrayFromResource(EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags);
-	FTextureCubeRHIRef RHICreateTextureCubeFromResource(EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, ETextureCreateFlags Flags);
 
 	// Inline copy
 	virtual void RHICopyToStagingBuffer(FRHIBuffer* SourceBufferRHI, FRHIStagingBuffer* DestinationStagingBufferRHI, uint32 InOffset, uint32 InNumBytes) final override;
@@ -612,18 +626,9 @@ public:
 	void EndRenderQuery_OnThisThread(FOpenGLRenderQuery* Query);
 	void GetRenderQueryResult_OnThisThread(FOpenGLRenderQuery* Query, bool bWait);
 
-
-
 	FOpenGLSamplerState* GetPointSamplerState() const { return (FOpenGLSamplerState*)PointSamplerState.GetReference(); }
 
-	FRHITexture* CreateOpenGLTexture(uint32 SizeX, uint32 SizeY, bool CubeTexture, bool ArrayTexture, bool bIsExternal, uint8 Format, uint32 NumMips, uint32 NumSamples, uint32 ArraySize, ETextureCreateFlags Flags, const FClearValueBinding& InClearValue, FResourceBulkDataInterface* BulkData = NULL);
-	
-	FRHITexture* CreateOpenGLRHITextureOnly(const uint32 SizeX, const uint32 SizeY, const bool bCubeTexture, const bool bArrayTexture, const bool bIsExternal, uint8& Format, uint32& NumMips, uint32& NumSamples, const uint32 ArraySize, ETextureCreateFlags Flags, const FClearValueBinding& InClearValue, FResourceBulkDataInterface* BulkData = nullptr);
-	FRHITexture* CreateTexture2DAliased(FOpenGLTexture2D* SourceTexture);
-	FRHITexture* CreateTexture2DArrayAliased(FOpenGLTexture2DArray* SourceTexture);
-	FRHITexture* CreateTextureCubeAliased(FOpenGLTextureCube* SourceTexture);
-
-	void InitializeGLTexture(FRHITexture* Texture, uint32 SizeX, const uint32 SizeY, const bool bCubeTexture, const bool bArrayTexture, const bool bIsExternal, const uint8 Format, const uint32 NumMips, const uint32 NumSamples, const uint32 ArraySize, const ETextureCreateFlags Flags, const FClearValueBinding& InClearValue, FResourceBulkDataInterface* BulkData = nullptr);
+	void InitializeGLTexture(FOpenGLTexture* Texture, const void* BulkDataPtr, uint64 BulkDataSize);
 
 	void* GetOpenGLCurrentContextHandle();
 
@@ -649,7 +654,7 @@ public:
 			x ReturnValue = (x)0;\
 			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([&ReturnValue, GLCommand = MoveTemp(GLCommand)]() { ReturnValue = GLCommand(); }); \
 			RHITHREAD_GLTRACE_BLOCKING;\
-			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
+			RHICmdList.GetAsImmediate().ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
 			return ReturnValue;\
 		}\
 
@@ -663,7 +668,7 @@ public:
 		{\
 			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([&ReturnValue, GLCommand = MoveTemp(GLCommand)]() { ReturnValue = GLCommand(); }); \
 			RHITHREAD_GLTRACE_BLOCKING;\
-			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
+			RHICmdList.GetAsImmediate().ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
 		}\
 
 
@@ -676,7 +681,7 @@ public:
 		{\
 			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)( MoveTemp(GLCommand) ); \
 			RHITHREAD_GLTRACE_BLOCKING;\
-			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
+			RHICmdList.GetAsImmediate().ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
 		}\
 
 #define RHITHREAD_GLCOMMAND_EPILOGUE_NORETURN() };\
@@ -688,7 +693,7 @@ public:
 		{\
 			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)(  MoveTemp(GLCommand) ); \
 			RHITHREAD_GLTRACE_BLOCKING;\
-			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
+			RHICmdList.GetAsImmediate().ImmediateFlush(EImmediateFlushType::FlushRHIThread);\
 		}\
 
 	struct FTextureLockTracker
@@ -759,11 +764,6 @@ public:
 	virtual void* LockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
 	virtual void UnlockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
 
-	virtual FBufferRHIRef CreateBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		return this->RHICreateBuffer(Size, Usage, Stride, ResourceState, CreateInfo);
-	}
-
 	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override
 	{
 		return this->RHICreateShaderResourceView(Buffer, Stride, Format);
@@ -780,43 +780,10 @@ public:
 	}
 
 
-	virtual FTexture2DRHIRef RHICreateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
+	virtual FTextureRHIRef RHICreateTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, const FRHITextureCreateDesc& CreateDesc) final override
 	{
-		const bool bCubeTexture = false;
-		const bool bArrayTexture = false;
-		const bool bIsExternal = false;
-		const uint32 ArraySize = 1;
-		FOpenGLTexture2D* Texture2D = (FOpenGLTexture2D*)CreateOpenGLRHITextureOnly(SizeX, SizeY, bCubeTexture, bArrayTexture, bIsExternal, Format, NumMips, NumSamples, ArraySize, Flags, CreateInfo.ClearValueBinding, CreateInfo.BulkData);
-		Texture2D->CreationFence.Reset();
-		RunOnGLRenderContextThread([=]()
-		{
-			// Fill in the GL resources.
-			InitializeGLTexture(Texture2D, SizeX, SizeY, bCubeTexture, bArrayTexture, bIsExternal, Format, NumMips, NumSamples, ArraySize, Flags, CreateInfo.ClearValueBinding, CreateInfo.BulkData);
-			Texture2D->CreationFence.WriteAssertFence();
-		});
-		Texture2D->CreationFence.SetRHIThreadFence();
-		return Texture2D;
-	}
-
-	virtual FTexture2DRHIRef RHICreateTextureExternal2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		RHITHREAD_GLCOMMAND_PROLOGUE();
-		return this->RHICreateTextureExternal2D(SizeX, SizeY, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FTexture2DRHIRef);
-	}
-
-	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		RHITHREAD_GLCOMMAND_PROLOGUE();
-		return this->RHICreateTexture2DArray(SizeX, SizeY, SizeZ, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FTexture2DArrayRHIRef);
-	}
-
-	virtual FTexture3DRHIRef RHICreateTexture3D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		RHITHREAD_GLCOMMAND_PROLOGUE();
-		return this->RHICreateTexture3D(SizeX, SizeY, SizeZ, Format, NumMips, Flags, InResourceState, CreateInfo);
-		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FTexture3DRHIRef);
+		check(IsInRenderingThread());
+		return this->RHICreateTexture(CreateDesc);
 	}
 
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) final override
@@ -853,32 +820,6 @@ public:
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) final override
 	{
 		return this->RHICreateShaderResourceView(Buffer);
-	}
-
-	virtual FTextureCubeRHIRef RHICreateTextureCube_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		const bool bCubeTexture = true;
-		const bool bArrayTexture = false;
-		const bool bIsExternal = false;
-		const uint32 ArraySize = 1;
-		uint32 NumSamples = 1;
-		FOpenGLTextureCube* TextureCube = (FOpenGLTextureCube*)CreateOpenGLRHITextureOnly(Size, Size, bCubeTexture, bArrayTexture, bIsExternal, Format, NumMips, NumSamples, ArraySize, Flags, CreateInfo.ClearValueBinding, CreateInfo.BulkData);
-		TextureCube->CreationFence.Reset();
-		RunOnGLRenderContextThread([=]()
-		{
-			// Fill in the GL resources.
-			InitializeGLTexture(TextureCube, Size, Size, bCubeTexture, bArrayTexture, bIsExternal, Format, NumMips, NumSamples, ArraySize, Flags, CreateInfo.ClearValueBinding, CreateInfo.BulkData);
-			TextureCube->CreationFence.WriteAssertFence();
-		});
-		TextureCube->CreationFence.SetRHIThreadFence();
-		return TextureCube;
-	}
-
-	virtual FTextureCubeRHIRef RHICreateTextureCubeArray_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{
-		RHITHREAD_GLCOMMAND_PROLOGUE();
-		return this->RHICreateTextureCubeArray(Size, ArraySize, Format, NumMips, Flags, InResourceState, CreateInfo);
-		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FTextureCubeRHIRef);
 	}
 
 	virtual FRenderQueryRHIRef RHICreateRenderQuery_RenderThread(class FRHICommandListImmediate& RHICmdList, ERenderQueryType QueryType) final override
@@ -932,59 +873,15 @@ public:
 		RHITHREAD_GLCOMMAND_EPILOGUE();
 	}
 
-	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState) final override
+
+	virtual FGraphicsPipelineStateRHIRef RHICreateGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer)
 	{
-		FRHIGraphicsPipelineStateFallBack* FallbackGraphicsState = static_cast<FRHIGraphicsPipelineStateFallBack*>(GraphicsState);
+		PrepareGFXBoundShaderState(Initializer);
 
-		auto& PsoInit = FallbackGraphicsState->Initializer;
-
-		RHISetBoundShaderState(
-			RHICreateBoundShaderState_internal(
-				PsoInit.BoundShaderState.VertexDeclarationRHI,
-				PsoInit.BoundShaderState.VertexShaderRHI,
-				PsoInit.BoundShaderState.PixelShaderRHI,
-				PsoInit.BoundShaderState.GetGeometryShader(),
-				PsoInit.bFromPSOFileCache
-			).GetReference()
-		);
-
-		RHISetDepthStencilState(FallbackGraphicsState->Initializer.DepthStencilState, StencilRef);
-		RHISetRasterizerState(FallbackGraphicsState->Initializer.RasterizerState);
-		RHISetBlendState(FallbackGraphicsState->Initializer.BlendState, FLinearColor(1.0f, 1.0f, 1.0f));
-		if (GSupportsDepthBoundsTest)
-		{
-			RHIEnableDepthBoundsTest(FallbackGraphicsState->Initializer.bDepthBounds);
-		}
-
-		if (bApplyAdditionalState)
-		{
-			ApplyStaticUniformBuffers(PsoInit.BoundShaderState.VertexShaderRHI, ResourceCast(PsoInit.BoundShaderState.VertexShaderRHI));
-			ApplyStaticUniformBuffers(PsoInit.BoundShaderState.GetGeometryShader(), ResourceCast(PsoInit.BoundShaderState.GetGeometryShader()));
-			ApplyStaticUniformBuffers(PsoInit.BoundShaderState.PixelShaderRHI, ResourceCast(PsoInit.BoundShaderState.PixelShaderRHI));
-		}
-
-		// Store the PSO's primitive (after since IRHICommandContext::RHISetGraphicsPipelineState sets the BSS)
-		PrimitiveType = PsoInit.PrimitiveType;
+		return new FRHIGraphicsPipelineStateFallBack(Initializer);
 	}
 
-	FBoundShaderStateRHIRef RHICreateBoundShaderState_internal(
-		FRHIVertexDeclaration* VertexDeclarationRHI,
-		FRHIVertexShader* VertexShaderRHI,
-		FRHIPixelShader* PixelShaderRHI,
-		FRHIGeometryShader* GeometryShaderRHI,
-		bool FromPSOFileCache
-	)
-	{
-		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-
-		RHITHREAD_GLCOMMAND_PROLOGUE()
-			return RHICreateBoundShaderState_OnThisThread(VertexDeclarationRHI,
-				VertexShaderRHI,
-				PixelShaderRHI,
-				GeometryShaderRHI,
-				FromPSOFileCache);
-		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FBoundShaderStateRHIRef);
-	}
+	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState) final override;
 
 	virtual FBoundShaderStateRHIRef RHICreateBoundShaderState(
 		FRHIVertexDeclaration* VertexDeclarationRHI,
@@ -1012,9 +909,37 @@ public:
 		return GPUProfilingData;
 	}
 
-	GLuint GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTargets, FOpenGLTextureBase** RenderTargets, const uint32* ArrayIndices, const uint32* MipmapLevels, FOpenGLTextureBase* DepthStencilTarget);
+	GLuint GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTargets, FOpenGLTexture** RenderTargets, const uint32* ArrayIndices, const uint32* MipmapLevels, FOpenGLTexture* DepthStencilTarget);
+	GLuint GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTargets, FOpenGLTexture** RenderTargets, const uint32* ArrayIndices, const uint32* MipmapLevels, FOpenGLTexture* DepthStencilTarget, int32 NumRenderingSamples);
+
+	FRHIPixelShader* GetNULLPixelShader() const;
 	
 private:
+
+	FBoundShaderStateRHIRef RHICreateBoundShaderState_internal(
+		FRHIVertexDeclaration* VertexDeclarationRHI,
+		FRHIVertexShader* VertexShaderRHI,
+		FRHIPixelShader* PixelShaderRHI,
+		FRHIGeometryShader* GeometryShaderRHI,
+		bool FromPSOFileCache
+	)
+	{
+		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+		RHITHREAD_GLCOMMAND_PROLOGUE()
+			return RHICreateBoundShaderState_OnThisThread(VertexDeclarationRHI,
+				VertexShaderRHI,
+				PixelShaderRHI,
+				GeometryShaderRHI,
+				FromPSOFileCache);
+		RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(FBoundShaderStateRHIRef);
+	}
+
+	void PrepareGFXBoundShaderState(const FGraphicsPipelineStateInitializer& Initializer);
+
+
+	/** called once per frame, used for resource processing */
+	void EndFrameTick();
 
 	/** Counter incremented each time RHIBeginScene is called. */
 	uint32 SceneFrameCounter;
@@ -1046,14 +971,7 @@ private:
 	int32 BeginSceneContextType;
 
 	template <typename TRHIShader, typename TRHIProxyShader>
-	void ApplyStaticUniformBuffers(TRHIShader* Shader, TRHIProxyShader* ProxyShader)
-	{
-		if (ProxyShader)
-		{
-			check(Shader);
-			UE::RHICore::ApplyStaticUniformBuffers(this, Shader, ProxyShader->StaticSlots, ProxyShader->Bindings.ShaderResourceTable.ResourceTableLayoutHashes, GlobalUniformBuffers);
-		}
-	}
+	void ApplyStaticUniformBuffers(TRHIShader* Shader, TRHIProxyShader* ProxyShader);
 
 	TArray<FRHIUniformBuffer*> GlobalUniformBuffers;
 
@@ -1071,10 +989,12 @@ private:
 
 	FOpenGLGPUProfiler GPUProfilingData;
 	friend FOpenGLGPUProfiler;
-//	FOpenGLEventQuery FrameSyncEvent;
 
 	FCriticalSection CustomPresentSection;
 	TRefCountPtr<class FRHICustomPresent> CustomPresent;
+
+	// Cached NULLPS
+	FRHIPixelShader* NULLPixelShaderRHI;
 
 	void InitializeStateResources();
 
@@ -1102,8 +1022,6 @@ private:
 	void CommitGraphicsResourceTablesInner();
 	void CommitComputeResourceTables(FOpenGLComputeShader* ComputeShader);
 	void CommitNonComputeShaderConstants();
-	void CommitNonComputeShaderConstantsSlowPath();
-	void CommitNonComputeShaderConstantsFastPath(FOpenGLLinkedProgram* LinkedProgram);
 	void CommitComputeShaderConstants(FOpenGLComputeShader* ComputeShader);
 	void SetPendingBlendStateForActiveRenderTargets( FOpenGLContextState& ContextState );
 	
@@ -1119,11 +1037,11 @@ private:
 
 public:
 	/** Remember what RHI user wants set on a specific OpenGL texture stage, translating from Stage and TextureIndex for stage pair. */
-	void InternalSetShaderTexture(FOpenGLTextureBase* Texture, FOpenGLShaderResourceView* SRV, GLint TextureIndex, GLenum Target, GLuint Resource, int NumMips, int LimitMip);
+	void InternalSetShaderTexture(FOpenGLTexture* Texture, FOpenGLShaderResourceView* SRV, GLint TextureIndex, GLenum Target, GLuint Resource, int NumMips, int LimitMip);
 	void InternalSetShaderImageUAV(GLint UAVIndex, GLenum Format, GLuint Resource, bool bLayered, GLint Layer, GLenum Access);
 	void InternalSetShaderBufferUAV(GLint UAVIndex, GLuint Resource);
 	void InternalSetSamplerStates(GLint TextureIndex, FOpenGLSamplerState* SamplerState);
-	void InitializeGLTextureInternal(GLuint TextureID, FRHITexture* Texture, uint32 SizeX, const uint32 SizeY, const bool bCubeTexture, const bool bArrayTexture, const bool bIsExternal, const uint8 Format, const uint32 NumMips, const uint32 NumSamples, const uint32 ArraySize, const ETextureCreateFlags Flags, const FClearValueBinding& InClearValue, FResourceBulkDataInterface* BulkData);
+	void InitializeGLTextureInternal(FOpenGLTexture* Texture, void const* BulkDataPtr, uint64 BulkDataSize);
 private:
 
 	void RegisterSharedShaderCodeDelegates();

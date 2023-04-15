@@ -7,13 +7,12 @@
 #include "ScopedTransaction.h"
 #include "Templates/SharedPointer.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 #include "StateTreeEditorStyle.h"
 
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBorder.h"
@@ -24,32 +23,19 @@
 #include "StateTree.h"
 #include "StateTreeState.h"
 #include "StateTreeConditionBase.h"
-#include "StateTreeEvaluatorBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeViewModel.h"
 #include "Algo/ForEach.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
-namespace UE { namespace StateTreeEditor {
-
-static void AddUnique(TArray<FText>& Array, const FText& NewItem)
-{
-	if (!Array.FindByPredicate([&NewItem](const FText& Item) { return Item.IdenticalTo(NewItem); }))
-	{
-		Array.Add(NewItem);
-	}
-}
-	
-}} // UE::StateTreeEditor
-
-void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, UStateTreeState* InState, TSharedRef<FStateTreeViewModel> InStateTreeViewModel)
+void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, TWeakObjectPtr<UStateTreeState> InState, const TSharedPtr<SScrollBox>& ViewBox, TSharedRef<FStateTreeViewModel> InStateTreeViewModel)
 {
 	StateTreeViewModel = InStateTreeViewModel;
 	WeakState = InState;
 
-	STableRow<UStateTreeState*>::ConstructInternal(STableRow::FArguments()
-        .Padding(5.f)
+	STableRow<TWeakObjectPtr<UStateTreeState>>::ConstructInternal(STableRow::FArguments()
+        .Padding(5.0f)
         .OnDragDetected(this, &SStateTreeViewRow::HandleDragDetected)
         .OnCanAcceptDrop(this, &SStateTreeViewRow::HandleCanAcceptDrop)
         .OnAcceptDrop(this, &SStateTreeViewRow::HandleAcceptDrop)
@@ -57,313 +43,325 @@ void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STa
     , InOwnerTableView);
 
 	static const FLinearColor TasksBackground = FLinearColor(FColor(17, 117, 131));
-	static const FLinearColor EvaluatorsBackground = FLinearColor(FColor(48, 48, 48));
-	
+	static const FLinearColor LinkBackground = FLinearColor(FColor(84, 84, 84));
+
 	this->ChildSlot
     .HAlign(HAlign_Fill)
     [
-        SNew(SHorizontalBox)
-        + SHorizontalBox::Slot()
-        .VAlign(VAlign_Fill)
-        .HAlign(HAlign_Left)
-        .AutoWidth()
-        [
-            SNew(SExpanderArrow, SharedThis(this))
-            .ShouldDrawWires(true)
-            .IndentAmount(32)
-            .BaseIndentLevel(0)
-        ]
+	    SNew(SBox)
+	    .MinDesiredWidth_Lambda([ViewBox]()
+			{
+    			// Make the row at least as wide as the view.
+	    		// The -1 is needed or we'll see a scrollbar. 
+				return ViewBox->GetTickSpaceGeometry().GetLocalSize().X - 1;
+			})
+		[
+	        SNew(SHorizontalBox)
+	        + SHorizontalBox::Slot()
+	        .VAlign(VAlign_Fill)
+	        .HAlign(HAlign_Left)
+	        .AutoWidth()
+	        [
+	            SNew(SExpanderArrow, SharedThis(this))
+	            .ShouldDrawWires(true)
+	            .IndentAmount(32)
+	            .BaseIndentLevel(0)
+	        ]
 
-        // State Box
-        + SHorizontalBox::Slot()
-        .VAlign(VAlign_Center)
-        .Padding(FMargin(0.0f, 4.0f))
-        .AutoWidth()
-        [
-            SNew(SBox)
-            .HeightOverride(28.0f)
-            .VAlign(VAlign_Fill)
-            [
-                SNew(SBorder)
-                .BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-                .BorderBackgroundColor(this, &SStateTreeViewRow::GetTitleColor)
-                .Padding(FMargin(16.0f, 0.0f, 16.0f, 0.0f))
-                [
-                    // Conditions icon
-                    SNew(SHorizontalBox)
-                    + SHorizontalBox::Slot()
-                    .VAlign(VAlign_Center)
-                    .AutoWidth()
-                    [
-                        SNew(SBox)
-                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-                        .Visibility(this, &SStateTreeViewRow::GetConditionVisibility)
-                        [
-                            SNew(SImage)
-							.Image(FAppStyle::Get().GetBrush("Icons.Help"))
+	        // State Box
+	        + SHorizontalBox::Slot()
+	        .VAlign(VAlign_Center)
+	        .Padding(FMargin(0.0f, 4.0f))
+	        .AutoWidth()
+	        [
+	            SNew(SBox)
+	            .HeightOverride(28.0f)
+	            .VAlign(VAlign_Fill)
+	            [
+	                SNew(SBorder)
+	                .BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+	                .BorderBackgroundColor(this, &SStateTreeViewRow::GetTitleColor)
+	                .Padding(FMargin(16.0f, 0.0f, 16.0f, 0.0f))
+	                [
+	                    // Conditions icon
+	                    SNew(SHorizontalBox)
+	                    + SHorizontalBox::Slot()
+	                    .VAlign(VAlign_Center)
+	                    .AutoWidth()
+	                    [
+	                        SNew(SBox)
+	                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+	                        .Visibility(this, &SStateTreeViewRow::GetConditionVisibility)
+	                        [
+	                            SNew(SImage)
+								.Image(FAppStyle::Get().GetBrush("Icons.Help"))
+							]
+						]
+
+						// Selector icon
+	                    + SHorizontalBox::Slot()
+	                    .VAlign(VAlign_Center)
+	                    .AutoWidth()
+	                    [
+	                        SNew(SBox)
+	                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+	                        .Visibility(this, &SStateTreeViewRow::GetSelectorVisibility)
+	                        [
+	                            SNew(STextBlock)
+	                            .Text(this, &SStateTreeViewRow::GetSelectorDesc)
+	                            .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+	                        ]
+	                    ]
+
+	                    // State Name
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							SAssignNew(NameTextBlock, SInlineEditableTextBlock)
+							.Style(FStateTreeEditorStyle::Get(), "StateTree.State.TitleInlineEditableText")
+							.OnVerifyTextChanged_Lambda([](const FText& NewLabel, FText& OutErrorMessage)
+							{
+								return !NewLabel.IsEmptyOrWhitespace();
+							})
+							.OnTextCommitted(this, &SStateTreeViewRow::HandleNodeLabelTextCommitted)
+							.Text(this, &SStateTreeViewRow::GetStateDesc)
+							.Clipping(EWidgetClipping::ClipToBounds)
+							.IsSelected(this, &SStateTreeViewRow::IsStateSelected)
 						]
 					]
-
-					// Selector icon
-                    + SHorizontalBox::Slot()
-                    .VAlign(VAlign_Center)
-                    .AutoWidth()
-                    [
-                        SNew(SBox)
-                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-                        .Visibility(this, &SStateTreeViewRow::GetSelectorVisibility)
-                        [
-                            SNew(STextBlock)
-                            .Text(FEditorFontGlyphs::Level_Down)
-                            .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-                        ]
-                    ]
-
-                    // State Name
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.AutoWidth()
-					[
-						SAssignNew(NameTextBlock, SInlineEditableTextBlock)
-						.Style(FStateTreeEditorStyle::Get(), "StateTree.State.TitleInlineEditableText")
-						.OnVerifyTextChanged(this, &SStateTreeViewRow::VerifyNodeTextChanged)
-						.OnTextCommitted(this, &SStateTreeViewRow::HandleNodeLabelTextCommitted)
-						.Text(this, &SStateTreeViewRow::GetStateDesc)
-						.Clipping(EWidgetClipping::ClipToBounds)
-						.IsSelected(this, &SStateTreeViewRow::IsSelected)
-					]
 				]
 			]
-		]
 
-		// Evaluators Box
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.Padding(FMargin(0.0f, 4.0f))
-		.AutoWidth()
-		[
-			SNew(SBox)
-			.HeightOverride(28.0f)
-			.VAlign(VAlign_Fill)
-			.Visibility(this, &SStateTreeViewRow::GetEvaluatorsVisibility)
+			// Tasks Box
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.0f, 4.0f))
+			.AutoWidth()
 			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(EvaluatorsBackground)
-				.Padding(FMargin(12.0f, 0.0f, 16.0f, 0.0f))
+				SNew(SBox)
+				.HeightOverride(28.0f)
+				.VAlign(VAlign_Fill)
+				.Visibility(this, &SStateTreeViewRow::GetTasksVisibility)
 				[
-					// Evaluator icon
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-					.AutoWidth()
+					SNew(SBorder)
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+					.BorderBackgroundColor(TasksBackground)
+					.Padding(FMargin(12.0f, 0.0f, 16.0f, 0.0f))
 					[
-						SNew(STextBlock)
-						.Text(FEditorFontGlyphs::Crosshairs)
-						.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.DetailsIcon")
-					]
+						// Task icon
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(FEditorFontGlyphs::Paper_Plane)
+							.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.DetailsIcon")
+						]
 
-					// Evalutors
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.AutoWidth()
-					[
-						SNew(STextBlock)
-						.Text(this, &SStateTreeViewRow::GetEvaluatorsDesc)
-						.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+						// Tasks list
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(this, &SStateTreeViewRow::GetTasksDesc)
+							.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+						]
 					]
 				]
 			]
-		]
-
-		// Tasks Box
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.Padding(FMargin(0.0f, 4.0f))
-		.AutoWidth()
-		[
-			SNew(SBox)
-			.HeightOverride(28.0f)
-			.VAlign(VAlign_Fill)
-			.Visibility(this, &SStateTreeViewRow::GetTasksVisibility)
+			
+			// Linked State box
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.0f, 4.0f))
+			.AutoWidth()
 			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(TasksBackground)
-				.Padding(FMargin(12.0f, 0.0f, 16.0f, 0.0f))
+				SNew(SBox)
+				.HeightOverride(28.0f)
+				.VAlign(VAlign_Fill)
+				.Visibility(this, &SStateTreeViewRow::GetLinkedStateVisibility)
 				[
-					// Task icon
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-					.AutoWidth()
+					SNew(SBorder)
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+					.BorderBackgroundColor(LinkBackground)
+					.Padding(FMargin(12.0f, 0.0f, 16.0f, 0.0f))
 					[
-						SNew(STextBlock)
-						.Text(FEditorFontGlyphs::Paper_Plane)
-						.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.DetailsIcon")
-					]
+						// Link icon
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(FEditorFontGlyphs::Link)
+							.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.DetailsIcon")
+						]
 
-					// Tasks list
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.AutoWidth()
-					[
-						SNew(STextBlock)
-						.Text(this, &SStateTreeViewRow::GetTasksDesc)
-						.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+						// Linked State
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(this, &SStateTreeViewRow::GetLinkedStateDesc)
+							.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+						]
 					]
 				]
 			]
-		]
+			
+			// Completed transitions
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(8.0f, 0.0f, 0, 0.0f))
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetCompletedTransitionsIcon)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetCompletedTransitionVisibility)
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(4.0f, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetCompletedTransitionsDesc)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+					.Visibility(this, &SStateTreeViewRow::GetCompletedTransitionVisibility)
+				]
+			]
 
-		// Completed transitions
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			SNew(SHorizontalBox)
+			// Succeeded transitions
 			+ SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
 			.AutoWidth()
-			.Padding(FMargin(8.0f, 0.0f, 0, 0.0f))
 			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetCompletedTransitionsIcon)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-				.Visibility(this, &SStateTreeViewRow::GetCompletedTransitionVisibility)
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(8.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(FEditorFontGlyphs::Check_Circle)
+	                .ColorAndOpacity(FLinearColor(FColor(110,143,67)))
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetSucceededTransitionIcon)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(4.0f, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetSucceededTransitionDesc)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+					.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
+				]
 			]
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(FMargin(4.0f, 0, 0, 0))
-			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetCompletedTransitionsDesc)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
-				.Visibility(this, &SStateTreeViewRow::GetCompletedTransitionVisibility)
-			]
-		]
 
-		// Succeeded transitions
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.Padding(FMargin(8.0f, 0.0f, 0, 0))
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(FEditorFontGlyphs::Check_Circle)
-                .ColorAndOpacity(FLinearColor(FColor(110,143,67)))
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-				.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
-			]
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.Padding(FMargin(4.0f, 0.0f, 0, 0))
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetSucceededTransitionIcon)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-				.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
-			]
+			// Failed transitions
 			+ SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
 			.AutoWidth()
-			.Padding(FMargin(4.0f, 0, 0, 0))
 			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetSucceededTransitionDesc)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
-				.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(8.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(FEditorFontGlyphs::Times_Circle)
+	                .ColorAndOpacity(FLinearColor(FColor(187,77,42)))
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetFailedTransitionIcon)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(4.0f, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetFailedTransitionDesc)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+					.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
+				]
 			]
-		]
-
-		// Failed transitions
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			SNew(SHorizontalBox)
+			// Transitions
 			+ SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
-			.Padding(FMargin(8.0f, 0.0f, 0, 0))
 			.AutoWidth()
 			[
-				SNew(STextBlock)
-				.Text(FEditorFontGlyphs::Times_Circle)
-                .ColorAndOpacity(FLinearColor(FColor(187,77,42)))
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-				.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
-			]
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.Padding(FMargin(4.0f, 0.0f, 0, 0))
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetFailedTransitionIcon)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-				.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
-			]
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(FMargin(4.0f, 0, 0, 0))
-			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetFailedTransitionDesc)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
-				.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
-			]
-		]
-		// Transitions
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.Padding(FMargin(8.0f, 0.0f, 0, 0))
-			.AutoWidth()
-			[
-				SNew(SImage)
-				.Image(FAppStyle::Get().GetBrush("Icons.Help"))
-                .ColorAndOpacity(FLinearColor(FColor(31,151,167)))
-				.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
-			]
-            + SHorizontalBox::Slot()
-            .VAlign(VAlign_Center)
-            .Padding(FMargin(4.0f, 0.0f, 0, 0))
-            .AutoWidth()
-            [
-                SNew(STextBlock)
-                .Text(FEditorFontGlyphs::Long_Arrow_Right)
-                .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-                .Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
-            ]
-            + SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(FMargin(4.0f, 0, 0, 0))
-			[
-				SNew(STextBlock)
-				.Text(this, &SStateTreeViewRow::GetConditionalTransitionsDesc)
-				.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
-				.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(8.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(SImage)
+					.Image(FAppStyle::Get().GetBrush("Icons.Help"))
+	                .ColorAndOpacity(FLinearColor(FColor(31,151,167)))
+					.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
+				]
+	            + SHorizontalBox::Slot()
+	            .VAlign(VAlign_Center)
+	            .Padding(FMargin(4.0f, 0.0f, 0, 0))
+	            .AutoWidth()
+	            [
+	                SNew(STextBlock)
+	                .Text(FEditorFontGlyphs::Long_Arrow_Right)
+	                .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+	                .Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
+	            ]
+	            + SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(4.0f, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Text(this, &SStateTreeViewRow::GetConditionalTransitionsDesc)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Details")
+					.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
+				]
 			]
 		]
 	];
 }
 
-void SStateTreeViewRow::RequestRename()
+void SStateTreeViewRow::RequestRename() const
 {
 	if (NameTextBlock)
 	{
@@ -379,7 +377,7 @@ FSlateColor SStateTreeViewRow::GetTitleColor() const
 		{
 			return FLinearColor(FColor(236, 134, 39));
 		}
-		if (IsRoutine())
+		if (IsRootState() || State->Type == EStateTreeStateType::Subtree)
 		{
 			return FLinearColor(FColor(17, 117, 131));
 		}
@@ -410,47 +408,43 @@ EVisibility SStateTreeViewRow::GetSelectorVisibility() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return State->Children.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+		if (State->Type == EStateTreeStateType::State || State->Type == EStateTreeStateType::Group)
+		{
+			return State->Children.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+		}
+		else if (IsRootState() || State->Type == EStateTreeStateType::Subtree)
+		{
+			return EVisibility::Visible;
+		}
+		else if (State->Type == EStateTreeStateType::Linked)
+		{
+			return EVisibility::Visible;
+		}
 	}
+	
 	return EVisibility::Collapsed;
 }
 
-EVisibility SStateTreeViewRow::GetEvaluatorsVisibility() const
+
+FText SStateTreeViewRow::GetSelectorDesc() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		int32 ValidCount = 0;
-		for (int32 i = 0; i < State->Evaluators.Num(); i++)
+		if (State->Type == EStateTreeStateType::State || State->Type == EStateTreeStateType::Group)
 		{
-			if (const FStateTreeEvaluatorBase* Eval = State->Evaluators[i].Node.GetPtr<FStateTreeEvaluatorBase>())
-			{
-				ValidCount++;
-			}
+			return FEditorFontGlyphs::Level_Down; // Selector
 		}
-		return ValidCount > 0 ? EVisibility::Visible : EVisibility::Collapsed;
-	}
-	return EVisibility::Collapsed;
-}
-
-FText SStateTreeViewRow::GetEvaluatorsDesc() const
-{
-	const UStateTreeState* State = WeakState.Get();
-	if (!State)
-	{
-		return FText::GetEmpty();
-	}
-
-	TArray<FText> Names;
-
-	for (int32 i = 0; i < State->Evaluators.Num(); i++)
-	{
-		if (const FStateTreeEvaluatorBase* Eval = State->Evaluators[i].Node.GetPtr<FStateTreeEvaluatorBase>())
+		else if (IsRootState() || State->Type == EStateTreeStateType::Subtree)
 		{
-			Names.Add(FText::FromName(Eval->Name));
+			return FEditorFontGlyphs::Cogs;
+		}
+		else if (State->Type == EStateTreeStateType::Linked)
+		{
+			return FEditorFontGlyphs::Link;
 		}
 	}
 
-	return FText::Join((FText::FromString(TEXT(", "))), Names);
+	return FText::GetEmpty(); 
 }
 
 EVisibility SStateTreeViewRow::GetTasksVisibility() const
@@ -490,25 +484,51 @@ FText SStateTreeViewRow::GetTasksDesc() const
 	return FText::Join((FText::FromString(TEXT(" & "))), Names);
 }
 
-bool SStateTreeViewRow::HasParentTransitionForEvent(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const
+EVisibility SStateTreeViewRow::GetLinkedStateVisibility() const
 {
-	EStateTreeTransitionEvent CombinedEvents = EStateTreeTransitionEvent::None;
+	if (const UStateTreeState* State = WeakState.Get())
+	{
+		return State->Type == EStateTreeStateType::Linked ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+	return EVisibility::Collapsed;
+}
+
+FText SStateTreeViewRow::GetLinkedStateDesc() const
+{
+	const UStateTreeState* State = WeakState.Get();
+	if (!State)
+	{
+		return FText::GetEmpty();
+	}
+
+	if (State->Type == EStateTreeStateType::Linked)
+	{
+		return FText::FromName(State->LinkedSubtree.Name);
+	}
+	
+	return FText::GetEmpty();
+}
+
+bool SStateTreeViewRow::HasParentTransitionForTrigger(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger) const
+{
+	EStateTreeTransitionTrigger CombinedTrigger = EStateTreeTransitionTrigger::None;
 	for (const UStateTreeState* ParentState = State.Parent; ParentState != nullptr; ParentState = ParentState->Parent)
 	{
 		for (const FStateTreeTransition& Transition : ParentState->Transitions)
 		{
-			CombinedEvents |= Transition.Event;
+			CombinedTrigger |= Transition.Trigger;
 		}
 	}
-	return EnumHasAllFlags(CombinedEvents, Event);
+	return EnumHasAllFlags(CombinedTrigger, Trigger);
 }
 
-FText SStateTreeViewRow::GetTransitionsDesc(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const
+FText SStateTreeViewRow::GetTransitionsDesc(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger, const bool bUseMask) const
 {
 	TArray<FText> DescItems;
 	for (const FStateTreeTransition& Transition : State.Transitions)
 	{
-		if (Transition.Event == Event)
+		const bool bMatch = bUseMask ? EnumHasAnyFlags(Transition.Trigger, Trigger) : Transition.Trigger == Trigger;
+		if (bMatch)
 		{
 			switch (Transition.State.Type)
 			{
@@ -535,10 +555,11 @@ FText SStateTreeViewRow::GetTransitionsDesc(const UStateTreeState& State, const 
 	}
 
 	if (State.Children.Num() == 0
+		&& State.Type == EStateTreeStateType::State
 		&& DescItems.Num() == 0
-		&& Event != EStateTreeTransitionEvent::OnCondition)
+		&& EnumHasAnyFlags(Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
 	{
-		if (HasParentTransitionForEvent(State, Event))
+		if (HasParentTransitionForTrigger(State, Trigger))
 		{
 			DescItems.Add(LOCTEXT("TransitionActionHandleInParentStyled", "[Parent]"));
 		}
@@ -551,7 +572,7 @@ FText SStateTreeViewRow::GetTransitionsDesc(const UStateTreeState& State, const 
 	return FText::Join(FText::FromString(TEXT(", ")), DescItems);
 }
 
-FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const
+FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger, const bool bUseMask) const
 {
 	enum EIconType
 	{
@@ -566,7 +587,8 @@ FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const 
 	for (const FStateTreeTransition& Transition : State.Transitions)
 	{
 		// The icons here depict "transition direction", not the type specifically.
-		if (Transition.Event == Event)
+		const bool bMatch = bUseMask ? EnumHasAnyFlags(Transition.Trigger, Trigger) : Transition.Trigger == Trigger;
+		if (bMatch)
 		{
 			switch (Transition.State.Type)
 			{
@@ -599,10 +621,11 @@ FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const 
 	}
 	
 	if (State.Children.Num() == 0
+		&& State.Type == EStateTreeStateType::State
         && IconType == IconNone
-        && Event != EStateTreeTransitionEvent::OnCondition)
+        && EnumHasAnyFlags(Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
 	{
-		if (HasParentTransitionForEvent(State, Event))
+		if (HasParentTransitionForTrigger(State, Trigger))
 		{
 			IconType = IconLevelUp;
 		}
@@ -629,38 +652,48 @@ FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const 
 	return FText::GetEmpty();
 }
 
-EVisibility SStateTreeViewRow::GetTransitionsVisibility(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const
+EVisibility SStateTreeViewRow::GetTransitionsVisibility(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger) const
 {
-	TStaticArray<int32, 5> Counts;
-	Algo::ForEach(Counts, [](int32& Count) { Count = 0; }); 
+	// Handle completed, succeeeded and failed transitions.
+	if (EnumHasAnyFlags(Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
+	{
+		const bool bIsLeafState = (State.Children.Num() == 0);
+		EStateTreeTransitionTrigger HandledTriggers = EStateTreeTransitionTrigger::None;
+		bool bExactMatch = false;
 
+		for (const FStateTreeTransition& Transition : State.Transitions)
+		{
+			HandledTriggers |= Transition.Trigger;
+			bExactMatch |= (Transition.Trigger == Trigger);
+		}
+
+		// Assume that leaf states should have completion transitions.
+		if (!bExactMatch && bIsLeafState)
+		{
+			// Find the missing transition type, note: Completed = Succeeded|Failed.
+			const EStateTreeTransitionTrigger MissingTriggers = HandledTriggers ^ EStateTreeTransitionTrigger::OnStateCompleted;
+			return MissingTriggers == Trigger ? EVisibility::Visible : EVisibility::Collapsed;
+		}
+		
+		return bExactMatch ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+
+	// Handle the test
 	for (const FStateTreeTransition& Transition : State.Transitions)
 	{
-		Counts[static_cast<uint8>(Transition.Event)]++;
+		if (EnumHasAnyFlags(Trigger, Transition.Trigger))
+		{
+			return EVisibility::Visible;
+		}
 	}
-
-	if (State.Children.Num() == 0
-	    && Counts[static_cast<uint8>(Event)] == 0
-	    && Event != EStateTreeTransitionEvent::OnCondition)
-	{
-		// Find the missing transition type, note: Completed = Succeeded|Failed.
-		EStateTreeTransitionEvent HandledEvents = EStateTreeTransitionEvent::None;
-		HandledEvents |= Counts[static_cast<uint8>(EStateTreeTransitionEvent::OnCompleted)] > 0 ? EStateTreeTransitionEvent::OnCompleted : EStateTreeTransitionEvent::None;
-		HandledEvents |= Counts[static_cast<uint8>(EStateTreeTransitionEvent::OnSucceeded)] > 0 ? EStateTreeTransitionEvent::OnSucceeded : EStateTreeTransitionEvent::None;
-		HandledEvents |= Counts[static_cast<uint8>(EStateTreeTransitionEvent::OnFailed)] > 0 ? EStateTreeTransitionEvent::OnFailed : EStateTreeTransitionEvent::None;
-		const EStateTreeTransitionEvent MissingEvent = HandledEvents ^ EStateTreeTransitionEvent::OnCompleted;
-		
-		return MissingEvent == Event ? EVisibility::Visible : EVisibility::Collapsed;
-	}
-	
-	return Counts[static_cast<uint8>(Event)] > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+	return EVisibility::Collapsed;
 }
 
 EVisibility SStateTreeViewRow::GetCompletedTransitionVisibility() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsVisibility(*State, EStateTreeTransitionEvent::OnCompleted);
+		return GetTransitionsVisibility(*State, EStateTreeTransitionTrigger::OnStateCompleted);
 	}
 	return EVisibility::Visible;
 }
@@ -669,7 +702,7 @@ FText SStateTreeViewRow::GetCompletedTransitionsDesc() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsDesc(*State, EStateTreeTransitionEvent::OnCompleted);
+		return GetTransitionsDesc(*State, EStateTreeTransitionTrigger::OnStateCompleted);
 	}
 	return LOCTEXT("Invalid", "Invalid");
 }
@@ -678,7 +711,7 @@ FText SStateTreeViewRow::GetCompletedTransitionsIcon() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsIcon(*State, EStateTreeTransitionEvent::OnCompleted);
+		return GetTransitionsIcon(*State, EStateTreeTransitionTrigger::OnStateCompleted);
 	}
 	return FText::GetEmpty();
 }
@@ -687,7 +720,7 @@ EVisibility SStateTreeViewRow::GetSucceededTransitionVisibility() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsVisibility(*State, EStateTreeTransitionEvent::OnSucceeded);
+		return GetTransitionsVisibility(*State, EStateTreeTransitionTrigger::OnStateSucceeded);
 	}
 	return EVisibility::Collapsed;
 }
@@ -696,7 +729,7 @@ FText SStateTreeViewRow::GetSucceededTransitionDesc() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsDesc(*State, EStateTreeTransitionEvent::OnSucceeded);
+		return GetTransitionsDesc(*State, EStateTreeTransitionTrigger::OnStateSucceeded);
 	}
 	return FText::GetEmpty();
 }
@@ -705,7 +738,7 @@ FText SStateTreeViewRow::GetSucceededTransitionIcon() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsIcon(*State, EStateTreeTransitionEvent::OnSucceeded);
+		return GetTransitionsIcon(*State, EStateTreeTransitionTrigger::OnStateSucceeded);
 	}
 	return FText::GetEmpty();
 }
@@ -714,7 +747,7 @@ EVisibility SStateTreeViewRow::GetFailedTransitionVisibility() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsVisibility(*State, EStateTreeTransitionEvent::OnFailed);
+		return GetTransitionsVisibility(*State, EStateTreeTransitionTrigger::OnStateFailed);
 	}
 	return EVisibility::Collapsed;
 }
@@ -723,7 +756,7 @@ FText SStateTreeViewRow::GetFailedTransitionDesc() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsDesc(*State, EStateTreeTransitionEvent::OnFailed);
+		return GetTransitionsDesc(*State, EStateTreeTransitionTrigger::OnStateFailed);
 	}
 	return LOCTEXT("Invalid", "Invalid");
 }
@@ -732,7 +765,7 @@ FText SStateTreeViewRow::GetFailedTransitionIcon() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsIcon(*State, EStateTreeTransitionEvent::OnFailed);
+		return GetTransitionsIcon(*State, EStateTreeTransitionTrigger::OnStateFailed);
 	}
 	return FEditorFontGlyphs::Ban;
 }
@@ -741,29 +774,28 @@ EVisibility SStateTreeViewRow::GetConditionalTransitionsVisibility() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsVisibility(*State, EStateTreeTransitionEvent::OnCondition);
+		return GetTransitionsVisibility(*State, EStateTreeTransitionTrigger::OnTick | EStateTreeTransitionTrigger::OnEvent);
 	}
 	return EVisibility::Collapsed;
 }
 
 FText SStateTreeViewRow::GetConditionalTransitionsDesc() const
 {
-	TArray<FText> DescItems;
 	if (const UStateTreeState* State = WeakState.Get())
 	{
-		return GetTransitionsDesc(*State, EStateTreeTransitionEvent::OnCondition);
+		return GetTransitionsDesc(*State, EStateTreeTransitionTrigger::OnTick | EStateTreeTransitionTrigger::OnEvent, /*bUseMask*/true);
 	}
-	return FText::Join(FText::FromString(TEXT(", ")), DescItems);
+	return FText::GetEmpty();
 }
 
-bool SStateTreeViewRow::IsRoutine() const
+bool SStateTreeViewRow::IsRootState() const
 {
 	// Routines can be identified by not having parent state.
 	const UStateTreeState* State = WeakState.Get();
 	return State ? State->Parent == nullptr : false;
 }
 
-bool SStateTreeViewRow::IsSelected() const
+bool SStateTreeViewRow::IsStateSelected() const
 {
 	if (const UStateTreeState* State = WeakState.Get())
 	{
@@ -775,13 +807,7 @@ bool SStateTreeViewRow::IsSelected() const
 	return false;
 }
 
-
-bool SStateTreeViewRow::VerifyNodeTextChanged(const FText& NewLabel, FText& OutErrorMessage)
-{
-	return !NewLabel.IsEmptyOrWhitespace();
-}
-
-void SStateTreeViewRow::HandleNodeLabelTextCommitted(const FText& NewLabel, ETextCommit::Type CommitType)
+void SStateTreeViewRow::HandleNodeLabelTextCommitted(const FText& NewLabel, ETextCommit::Type CommitType) const
 {
 	if (StateTreeViewModel)
 	{
@@ -792,19 +818,18 @@ void SStateTreeViewRow::HandleNodeLabelTextCommitted(const FText& NewLabel, ETex
 	}
 }
 
-
-FReply SStateTreeViewRow::HandleDragDetected(const FGeometry&, const FPointerEvent&)
+FReply SStateTreeViewRow::HandleDragDetected(const FGeometry&, const FPointerEvent&) const
 {
 	return FReply::Handled().BeginDragDrop(FActionTreeViewDragDrop::New(WeakState.Get()));
 }
 
-TOptional<EItemDropZone> SStateTreeViewRow::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, UStateTreeState* TargetState)
+TOptional<EItemDropZone> SStateTreeViewRow::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TWeakObjectPtr<UStateTreeState> TargetState) const
 {
-	TSharedPtr<FActionTreeViewDragDrop> DragDropOperation = DragDropEvent.GetOperationAs<FActionTreeViewDragDrop>();
+	const TSharedPtr<FActionTreeViewDragDrop> DragDropOperation = DragDropEvent.GetOperationAs<FActionTreeViewDragDrop>();
 	if (DragDropOperation.IsValid())
 	{
 		// Cannot drop on selection or child of selection.
-		if (StateTreeViewModel && StateTreeViewModel->IsChildOfSelection(TargetState))
+		if (StateTreeViewModel && StateTreeViewModel->IsChildOfSelection(TargetState.Get()))
 		{
 			return TOptional<EItemDropZone>();
 		}
@@ -815,24 +840,24 @@ TOptional<EItemDropZone> SStateTreeViewRow::HandleCanAcceptDrop(const FDragDropE
 	return TOptional<EItemDropZone>();
 }
 
-FReply SStateTreeViewRow::HandleAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, UStateTreeState* TargetState)
+FReply SStateTreeViewRow::HandleAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TWeakObjectPtr<UStateTreeState> TargetState) const
 {
-	TSharedPtr<FActionTreeViewDragDrop> DragDropOperation = DragDropEvent.GetOperationAs<FActionTreeViewDragDrop>();
+	const TSharedPtr<FActionTreeViewDragDrop> DragDropOperation = DragDropEvent.GetOperationAs<FActionTreeViewDragDrop>();
 	if (DragDropOperation.IsValid())
 	{
 		if (StateTreeViewModel)
 		{
 			if (DropZone == EItemDropZone::AboveItem)
 			{
-				StateTreeViewModel->MoveSelectedStatesBefore(TargetState);
+				StateTreeViewModel->MoveSelectedStatesBefore(TargetState.Get());
 			}
 			else if (DropZone == EItemDropZone::BelowItem)
 			{
-				StateTreeViewModel->MoveSelectedStatesAfter(TargetState);
+				StateTreeViewModel->MoveSelectedStatesAfter(TargetState.Get());
 			}
 			else
 			{
-				StateTreeViewModel->MoveSelectedStatesInto(TargetState);
+				StateTreeViewModel->MoveSelectedStatesInto(TargetState.Get());
 			}
 
 			return FReply::Handled();

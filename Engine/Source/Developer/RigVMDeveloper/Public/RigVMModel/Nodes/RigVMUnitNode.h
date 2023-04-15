@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "RigVMModel/RigVMNode.h"
+#include "RigVMModel/Nodes/RigVMTemplateNode.h"
 #include "RigVMCore/RigVMStruct.h"
 #include "UObject/StructOnScope.h"
 #include "RigVMUnitNode.generated.h"
@@ -13,11 +13,14 @@
  * struct UPROPERTY members.
  */
 UCLASS(BlueprintType)
-class RIGVMDEVELOPER_API URigVMUnitNode : public URigVMNode
+class RIGVMDEVELOPER_API URigVMUnitNode : public URigVMTemplateNode
 {
 	GENERATED_BODY()
 
 public:
+
+	// UObject interface
+	virtual void PostLoad() override;
 
 	// Override node functions
 	virtual FString GetNodeTitle() const override;
@@ -25,19 +28,23 @@ public:
 	virtual bool IsDefinedAsConstant() const override;
 	virtual bool IsDefinedAsVarying() const override;
 	virtual FName GetEventName() const override;
+	virtual bool CanOnlyExistOnce() const override;
 	virtual bool IsLoopNode() const override;
+	virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const override;
+	virtual TArray<URigVMPin*> GetAggregateInputs() const override;
+	virtual TArray<URigVMPin*> GetAggregateOutputs() const override;
+	virtual FName GetNextAggregateName(const FName& InLastAggregatePinName) const override;
 
 	bool IsDeprecated() const;
 	FString GetDeprecatedMetadata() const;
 
-	// Returns the UStruct for this unit node
-	// (the struct declaring the RIGVM_METHOD)
-	UFUNCTION(BlueprintCallable, Category = RigVMUnitNode)
-	UScriptStruct* GetScriptStruct() const;
+
+	// URigVMTemplateNode interface
+	virtual UScriptStruct* GetScriptStruct() const override;
 
 	// Returns the name of the declared RIGVM_METHOD
 	UFUNCTION(BlueprintCallable, Category = RigVMUnitNode)
-	FName GetMethodName() const;
+	virtual FName GetMethodName() const;
 
 	// Returns the default value for the struct as text
 	UFUNCTION(BlueprintCallable, Category = RigVMUnitNode)
@@ -47,6 +54,25 @@ public:
 	// @param bUseDefault If set to true the default struct will be created - otherwise the struct will contains the values from the node
 	TSharedPtr<FStructOnScope> ConstructStructInstance(bool bUseDefault = false) const;
 
+	// Returns a copy of the struct with the current values
+	template <
+		typename T,
+		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type* = nullptr
+	>
+	FORCEINLINE T ConstructStructInstance() const
+	{
+		if(!ensure(T::StaticStruct() == GetScriptStruct()))
+		{
+			return T();
+		}
+
+		TSharedPtr<FStructOnScope> Instance = ConstructStructInstance(false);
+		const T& InstanceRef = *(const T*)Instance->GetStructMemory();
+		return InstanceRef;
+	}
+
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
+
 protected:
 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const override;
@@ -54,10 +80,10 @@ protected:
 private:
 
 	UPROPERTY()
-	TObjectPtr<UScriptStruct> ScriptStruct;
+	TObjectPtr<UScriptStruct> ScriptStruct_DEPRECATED;
 
 	UPROPERTY()
-	FName MethodName;
+	FName MethodName_DEPRECATED;
 
 	friend class URigVMController;
 };

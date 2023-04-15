@@ -29,7 +29,10 @@
 #include "Net/DataBunch.h"
 #include "Net/NetAnalyticsTypes.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "PackageMapClient.generated.h"
+
+LLM_DECLARE_TAG_API(GuidCache, ENGINE_API);
 
 class UNetConnection;
 class UNetDriver;
@@ -51,47 +54,7 @@ public:
 	{
 	}
 
-	friend FArchive& operator<<( FArchive& Ar, FNetFieldExport& C )
-	{
-		uint8 Flags = C.bExported ? 1 : 0;
-
-		Ar << Flags;
-
-		if ( Ar.IsLoading() )
-		{
-			C.bExported = (Flags == 1);
-		}
-
-		if ( C.bExported )
-		{
-			Ar.SerializeIntPacked( C.Handle );
-			Ar << C.CompatibleChecksum;
-
-			if (Ar.IsLoading() && Ar.EngineNetVer() < HISTORY_NETEXPORT_SERIALIZATION)
-			{
-				FName TempName;
-				FString TempType;
-
-				Ar << TempName;
-				Ar << TempType;
-
-				C.ExportName = TempName;
-			}
-			else
-			{
-				if (Ar.IsLoading() && Ar.EngineNetVer() < HISTORY_NETEXPORT_SERIALIZE_FIX)
-				{
-					Ar << C.ExportName;
-				}
-				else
-				{
-					UPackageMap::StaticSerializeName(Ar, C.ExportName);
-				}
-			}
-		}
-
-		return Ar;
-	}
+	friend FArchive& operator<<(FArchive& Ar, FNetFieldExport& C);
 
 	void CountBytes(FArchive& Ar) const;
 
@@ -115,39 +78,19 @@ public:
 	TArray< FNetFieldExport >	NetFieldExports;
 	bool						bDirtyForReplay;
 
-	friend FArchive& operator<<( FArchive& Ar, FNetFieldExportGroup& C )
+	friend FArchive& operator<<(FArchive& Ar, FNetFieldExportGroup& C);
+
+	int32 FindNetFieldExportHandleByChecksum(const uint32 Checksum) const
 	{
-		Ar << C.PathName;
-
-		Ar.SerializeIntPacked( C.PathNameIndex );
-
-		uint32 NumNetFieldExports = C.NetFieldExports.Num();
-		Ar.SerializeIntPacked( NumNetFieldExports );
-
-		if ( Ar.IsLoading() )
+		for (int32 i = 0; i < NetFieldExports.Num(); i++)
 		{
-			C.NetFieldExports.AddDefaulted( ( int32 )NumNetFieldExports );
-		}
-
-		for ( int32 i = 0; i < C.NetFieldExports.Num(); i++ )
-		{
-			Ar << C.NetFieldExports[i];
-		}
-
-		return Ar;
-	}
-
-	int32 FindNetFieldExportHandleByChecksum( const uint32 Checksum )
-	{
-		for ( int32 i = 0; i < NetFieldExports.Num(); i++ )
-		{
-			if ( NetFieldExports[i].CompatibleChecksum == Checksum )
+			if (NetFieldExports[i].CompatibleChecksum == Checksum)
 			{
 				return i;
 			}
 		}
 
-		return -1;
+		return INDEX_NONE;
 	}
 
 	void CountBytes(FArchive& Ar) const;
@@ -252,6 +195,7 @@ public:
 	void			SetAsyncLoadMode( const EAsyncLoadMode NewMode );
 	bool			ShouldAsyncLoad() const;
 	bool			CanClientLoadObject( const UObject* Object, const FNetworkGUID& NetGUID ) const;
+	FString			Describe(const FNetworkGUID& NetGUID) const;
 
 	void			AsyncPackageCallback(const FName& PackageName, UPackage * Package, EAsyncLoadingResult::Type Result);
 
@@ -546,7 +490,7 @@ protected:
 	void ExportNetGUIDHeader();
 
 	void			InternalWriteObject( FArchive& Ar, FNetworkGUID NetGUID, UObject* Object, FString ObjectPathName, UObject* ObjectOuter );	
-	FNetworkGUID	InternalLoadObject( FArchive & Ar, UObject *& Object, int InternalLoadObjectRecursionCount );
+	FNetworkGUID	InternalLoadObject( FArchive & Ar, UObject *& Object, const int32 InternalLoadObjectRecursionCount );
 
 	virtual UObject* ResolvePathAndAssignNetGUID( const FNetworkGUID& NetGUID, const FString& PathName ) override;
 
@@ -556,7 +500,7 @@ protected:
 
 	class UNetConnection* Connection;
 
-	bool ObjectLevelHasFinishedLoading(UObject* Obj);
+	bool ObjectLevelHasFinishedLoading(UObject* Obj) const;
 
 	TArray<TArray<uint8>>				ExportGUIDArchives;
 	TSet< FNetworkGUID >				CurrentExportNetGUIDs;				// Current list of NetGUIDs being written to the Export Bunch.

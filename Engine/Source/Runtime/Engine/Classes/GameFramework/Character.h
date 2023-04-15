@@ -148,6 +148,12 @@ namespace MovementBaseUtility
 
 	/** Get the transforms for the given MovementBase, optionally at the location of a bone. Returns false if MovementBase is nullptr, or if BoneName is not a valid bone. */
 	ENGINE_API bool GetMovementBaseTransform(const UPrimitiveComponent* MovementBase, const FName BoneName, FVector& OutLocation, FQuat& OutQuat);
+
+	/** Get the world space location from a local space location for a given MovementBase. Returns false if MovementBase is nullptr, or if BoneName is not a valid bone. Scaling is ignored. */
+	ENGINE_API bool GetLocalMovementBaseLocationInWorldSpace(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& LocalLocation, FVector& OutLocationWorldSpace);
+
+	/** Get the local space location for a given MovementBase, optionally at the location of a bone. Returns false if MovementBase is nullptr, or if BoneName is not a valid bone. Scaling is ignored. */
+	ENGINE_API bool GetLocalMovementBaseLocation(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& WorldSpaceLocation, FVector& OutLocalLocation);
 }
 
 /** Struct to hold information about the "base" object the character is standing on. */
@@ -220,7 +226,9 @@ public:
 	/** Default UObject constructor. */
 	ACharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
-	void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	virtual void GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const override;
 
 private:
 	/** The main skeletal mesh associated with this Character (optional sub-object). */
@@ -366,7 +374,12 @@ public:
 	static FName MeshComponentName;
 
 	/** Returns CharacterMovement subobject **/
-	FORCEINLINE class UCharacterMovementComponent* GetCharacterMovement() const { return CharacterMovement; }
+	template <class T>
+	FORCEINLINE_DEBUGGABLE T* GetCharacterMovement() const
+	{
+		return CastChecked<T>(CharacterMovement, ECastCheckedType::NullAllowed);
+	}
+	FORCEINLINE UCharacterMovementComponent* GetCharacterMovement() const { return CharacterMovement; }
 
 	/** Name of the CharacterMovement component. Use this name if you want to use a different class (with ObjectInitializer.SetDefaultSubobjectClass). */
 	static FName CharacterMovementComponentName;
@@ -507,7 +520,7 @@ public:
 	UPROPERTY(Transient)
 	uint32 bClientResimulateRootMotionSources:1;
 
-	/** Disable simulated gravity (set when character encroaches geometry on client, to keep him from falling through floors) */
+	/** Disable simulated gravity (set when character encroaches geometry on client, to keep it from falling through floors) */
 	UPROPERTY()
 	uint32 bSimGravityDisabled:1;
 
@@ -576,6 +589,10 @@ public:
 
 	/** Incremented every time there is an Actor overlap event (start or stop) on this actor. */
 	uint32 NumActorOverlapEventsCounter;
+
+	//~ Begin UObject Interface.
+	virtual void PostLoad() override;
+	//~ End UObject Interface
 
 	//~ Begin AActor Interface.
 	virtual void BeginPlay() override;
@@ -738,6 +755,7 @@ public:
 	 * @param Hit Result describing the landing that resulted in a valid landing spot.
 	 * @see OnMovementModeChanged()
 	 */
+	UPROPERTY(BlueprintAssignable, Category=Character)
 	FLandedSignature LandedDelegate;
 
 	/**

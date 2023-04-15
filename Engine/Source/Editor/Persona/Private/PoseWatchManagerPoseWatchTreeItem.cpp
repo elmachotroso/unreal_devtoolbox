@@ -5,7 +5,7 @@
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Framework/Commands/UIAction.h"
 #include "ToolMenus.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PoseWatchManagerDragDrop.h"
 #include "SPoseWatchManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -27,35 +27,14 @@ struct PERSONA_API SPoseWatchManagerPoseWatchTreeLabel : FPoseWatchManagerCommon
 
 		HighlightText = PoseWatchManager.GetFilterHighlightText();
 
-		TSharedPtr<SInlineEditableTextBlock> InlineTextBlock;
-
-		auto MainContent = SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			[
-				SAssignNew(InlineTextBlock, SInlineEditableTextBlock)
-				.Text(this, &SPoseWatchManagerPoseWatchTreeLabel::GetDisplayText)
-				.ToolTipText(this, &SPoseWatchManagerPoseWatchTreeLabel::GetTooltipText)
-				.HighlightText(HighlightText)
-				.ColorAndOpacity(this, &SPoseWatchManagerPoseWatchTreeLabel::GetForegroundColor)
-				.OnTextCommitted(this, &SPoseWatchManagerPoseWatchTreeLabel::OnLabelCommitted)
-				.OnVerifyTextChanged(this, &SPoseWatchManagerPoseWatchTreeLabel::OnVerifyItemLabelChanged)
-				.OnEnterEditingMode(this, &SPoseWatchManagerPoseWatchTreeLabel::OnEnterEditingMode)
-				.OnExitEditingMode(this, &SPoseWatchManagerPoseWatchTreeLabel::OnExitEditingMode)
-				.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FPoseWatchManagerTreeItemPtr>::IsSelectedExclusively))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(0.0f, 0.f, 3.0f, 0.0f)
-			[
-				SNew(STextBlock)
-				.Text(this, &SPoseWatchManagerPoseWatchTreeLabel::GetTypeText)
-				.Visibility(this, &SPoseWatchManagerPoseWatchTreeLabel::GetTypeTextVisibility)
-				.HighlightText(HighlightText)
-			];
+		TSharedPtr<SInlineEditableTextBlock> InlineTextBlock = SNew(SInlineEditableTextBlock)
+			.Text(this, &SPoseWatchManagerPoseWatchTreeLabel::GetDisplayText)
+			.HighlightText(PoseWatchManager.GetFilterHighlightText())
+			.ColorAndOpacity(this, &SPoseWatchManagerPoseWatchTreeLabel::GetForegroundColor)
+			.OnTextCommitted(this, &SPoseWatchManagerPoseWatchTreeLabel::OnLabelCommitted)
+			.OnVerifyTextChanged(this, &SPoseWatchManagerPoseWatchTreeLabel::OnVerifyItemLabelChanged)
+			.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FPoseWatchManagerTreeItemPtr>::IsSelectedExclusively))
+			.IsReadOnly_Lambda([this]() { return !CanExecuteRenameRequest(*TreeItemPtr.Pin()); });
 
 		if (WeakPoseWatchManager.Pin())
 		{
@@ -67,27 +46,11 @@ struct PERSONA_API SPoseWatchManagerPoseWatchTreeLabel : FPoseWatchManagerCommon
 			SNew(SHorizontalBox)
 
 			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(FPoseWatchManagerDefaultTreeItemMetrics::IconPadding())
-			[
-				SNew(SBox)
-				.WidthOverride(FPoseWatchManagerDefaultTreeItemMetrics::IconSize())
-				.HeightOverride(FPoseWatchManagerDefaultTreeItemMetrics::IconSize())
-				[
-					SNew(SImage)
-					.Image(this, &SPoseWatchManagerPoseWatchTreeLabel::GetIcon)
-					.ToolTipText(this, &SPoseWatchManagerPoseWatchTreeLabel::GetIconTooltip)
-					.ColorAndOpacity(FSlateColor::UseForeground())
-				]
-			]
-
-			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
 			.VAlign(VAlign_Center)
-			.Padding(0.0f, 0.0f)
+			.Padding(0.0f, 2.0f)
 			[
-				MainContent
+				InlineTextBlock.ToSharedRef()
 			]
 		];
 	}
@@ -100,7 +63,11 @@ private:
 
 	FText GetDisplayText() const
 	{
-		return WeakPoseWatchPtr.Get()->GetLabel();
+		if (const UPoseWatch* PoseWatch = WeakPoseWatchPtr.Get())
+		{
+			return PoseWatch->GetLabel();
+		}
+		return FText();
 	}
 
 	FText GetTooltipText() const
@@ -128,7 +95,7 @@ private:
 
 	const FSlateBrush* GetIcon() const
 	{
-		return FEditorStyle::Get().GetBrush(TEXT("ClassIcon.PoseAsset"));
+		return FAppStyle::Get().GetBrush("AnimGraph.PoseWatch.Icon");
 	}
 
 	const FSlateBrush* GetIconOverlay() const
@@ -157,7 +124,8 @@ private:
 
 	void OnLabelCommitted(const FText& InLabel, ETextCommit::Type InCommitInfo)
 	{
-		check(WeakPoseWatchPtr->SetLabel(InLabel));
+		bool bRenameSuccessful = WeakPoseWatchPtr->SetLabel(InLabel);
+		check(bRenameSuccessful);
 		WeakPoseWatchManager.Pin()->FullRefresh();
 		WeakPoseWatchManager.Pin()->SetKeyboardFocus();
 	}
@@ -242,6 +210,16 @@ void FPoseWatchManagerPoseWatchTreeItem::OnRemoved()
 bool FPoseWatchManagerPoseWatchTreeItem::IsEnabled() const
 {
 	return PoseWatch->GetIsEnabled();
+}
+
+void FPoseWatchManagerPoseWatchTreeItem::SetIsExpanded(const bool bIsExpanded)
+{
+	PoseWatch->SetIsExpanded(bIsExpanded);
+}
+
+bool FPoseWatchManagerPoseWatchTreeItem::IsExpanded() const
+{
+	return PoseWatch->GetIsExpanded();
 }
 
 #undef LOCTEXT_NAMESPACE

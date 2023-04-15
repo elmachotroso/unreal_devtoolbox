@@ -41,18 +41,6 @@ namespace AutomationTool
 		abstract public string GetFrameworkMsbuildExe();
 
 		/// <summary>
-		/// Gets the path to dotnet
-		/// </summary>
-		/// <returns></returns>
-		abstract public FileReference GetDotnetExe();
-
-		/// <summary>
-		/// Gets the build executable filename for NET Core projects. Typically, the path to the bundled dotnet executable.
-		/// </summary>
-		/// <returns></returns>
-		abstract public string GetDotnetMsbuildExe();
-
-		/// <summary>
 		/// Folder under UE/ to the platform's binaries.
 		/// </summary>
 		abstract public string RelativeBinariesFolder { get; }
@@ -63,12 +51,6 @@ namespace AutomationTool
 		/// <param name="UnrealExe"></param>
 		/// <returns></returns>
 		abstract public string GetUnrealExePath(string UnrealExe);
-
-		[Obsolete("Deprecated in 5.0; use GetUnrealExePath() instead")]
-		public string GetUE4ExePath(string UE4Exe)
-		{
-			return GetUnrealExePath(UE4Exe);
-		}
 
 		/// <summary>
 		/// Log folder for local builds.
@@ -105,6 +87,11 @@ namespace AutomationTool
 		/// Returns the type of the host editor platform.
 		/// </summary>
 		abstract public UnrealBuildTool.UnrealTargetPlatform HostEditorPlatform { get; }
+
+		/// <summary>
+		/// Returns the type of the current running host platform
+		/// </summary>
+		public static UnrealBuildTool.UnrealTargetPlatform Platform { get => Current.HostEditorPlatform; }
 
 		/// <summary>
 		/// Returns the pdb file extenstion for the host platform.

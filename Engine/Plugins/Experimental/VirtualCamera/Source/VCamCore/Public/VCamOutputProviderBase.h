@@ -106,6 +106,9 @@ public:
 		bWasActive = false;
 	}
 
+	/** Calls the VCamModifierInterface on the widget if it exists and also requests any child VCam Widgets to reconnect */
+	void NotifyWidgetOfComponentChange() const;
+
 protected:
 	// If set, this output provider will execute every frame
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output", meta = (DisplayPriority = "1"))
@@ -132,11 +135,9 @@ protected:
 #endif
 
 	UPROPERTY(Transient)
-	UVPFullScreenUserWidget* UMGWidget = nullptr;
+	TObjectPtr<UVPFullScreenUserWidget> UMGWidget = nullptr;
 
 private:
-	void NotifyWidgetOfComponentChange() const;
-
 	bool IsOuterComponentEnabled() const;
 
 	TSoftObjectPtr<UCineCameraComponent> TargetCamera;

@@ -29,8 +29,6 @@ public:
 	{
 		FVariantManagerEditorCommands::Register();
 
-		FVariantManagerStyle::Initialize();
-
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 
 		// Register a delegate to detect whenever we should open an editor for a LevelVariantSets asset, and relay the
@@ -64,8 +62,6 @@ public:
 
 		FVariantManagerUtils::UnregisterForHotReload();
 
-		FVariantManagerStyle::Shutdown();
-
 		FVariantManagerEditorCommands::Unregister();
 	}
 
@@ -89,12 +85,12 @@ public:
 			UnregisterTabSpawner( TabManager );
 		}
 
-		const FSlateIcon LayersIcon( FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Layers" );
+		const FName VariantManagerStyleSetName = FVariantManagerStyle::Get().GetStyleSetName();
 
 		TabManager->RegisterTabSpawner( FLevelVariantSetsEditorToolkit::GetVariantManagerTabID(), FOnSpawnTab::CreateStatic( &FVariantManagerModule::HandleTabManagerSpawnTab ) )
 			.SetDisplayName( LOCTEXT("VariantManagerMainTab", "Variant Manager") )
 			.SetGroup( WorkspaceMenu::GetMenuStructure().GetLevelEditorCategory() )
-			.SetIcon( LayersIcon );
+			.SetIcon( FSlateIcon(VariantManagerStyleSetName, "VariantManager.Icon") );
 	}
 
 	static void UnregisterTabSpawner( const TSharedPtr< FTabManager >& TabManager )
@@ -110,7 +106,7 @@ public:
 	static TSharedRef<SDockTab> HandleTabManagerSpawnTab(const FSpawnTabArgs& Args)
 	{
 		return SNew(SDockTab)
-			.Label(LOCTEXT("VariantManagerMainTitle", "VariantManager"))
+			.Label(LOCTEXT("VariantManagerMainTitle", "Variant Manager"))
 			.TabColorScale( FLevelVariantSetsEditorToolkit::GetWorldCentricTabColorScaleStatic() )
 			.ContentPadding(FMargin(0))
 			.TabRole(ETabRole::PanelTab);
@@ -118,8 +114,7 @@ public:
 
 	static void OnLevelVariantSetsEditor(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& EditWithinLevelEditor, class ULevelVariantSets* LevelVariantSets)
 	{
-		TSharedPtr<ISlateStyle> Style = MakeShareable(new FSlateStyleSet(TEXT("EditorStyle")));
-		TSharedRef<FLevelVariantSetsEditorToolkit> Toolkit = MakeShareable(new FLevelVariantSetsEditorToolkit(Style.ToSharedRef()));
+		TSharedRef<FLevelVariantSetsEditorToolkit> Toolkit = MakeShareable(new FLevelVariantSetsEditorToolkit());
 		Toolkit->Initialize(Mode, EditWithinLevelEditor, LevelVariantSets);
 	}
 

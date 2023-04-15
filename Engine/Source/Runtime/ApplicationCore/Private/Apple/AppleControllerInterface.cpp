@@ -3,6 +3,7 @@
 #include "AppleControllerInterface.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/ScopeLock.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 DEFINE_LOG_CATEGORY(LogAppleController);
 
@@ -175,7 +176,7 @@ void FAppleControllerInterface::HandleConnection(GCController* Controller)
         Controllers[ControllerIndex].Controller = [Controller retain];
         SetControllerType(ControllerIndex);
         
-        // Deprecated but buttonMenu behavior is unreliable in iOS/tvOS 14
+        // Deprecated but buttonMenu behavior is unreliable since iOS/tvOS 14
 		Controllers[ControllerIndex].bPauseWasPressed = false;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Controller.controllerPausedHandler = ^(GCController* Cont)
@@ -231,23 +232,27 @@ void FAppleControllerInterface::SendControllerEvents()
  	{
 		FUserController& Controller = Controllers[i];
 		
-		// make sure the connection handler has run on this guy
+		// make sure the connection handler has run on this
 		if (Controller.PlayerIndex == PlayerIndex::PlayerUnset)
 		{
             continue;
 		}
 		
 		GCController* ControllerImpl = Controller.Controller;
-
-		// Assumes iOS13, tvOS 13 & macOS 10.15
+		
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+		FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(Controller.PlayerIndex);
+		FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+		DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Controller.PlayerIndex, OUT UserId, OUT DeviceId);
+		
         GCExtendedGamepad* ExtendedGamepad = [ControllerImpl capture].extendedGamepad;
 		GCMotion* Motion = ControllerImpl.motion;
 		
-		// Workaround for unreliable buttonMenu behavior in iOS/tvOS 14
+		// Workaround for unreliable buttonMenu behavior since iOS/tvOS 14
 		if (Controller.bPauseWasPressed)
         {
-            MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::SpecialRight, Controller.PlayerIndex, false);
-            MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::SpecialRight, Controller.PlayerIndex, false);
+            MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::SpecialRight, UserId, DeviceId, false);
+            MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::SpecialRight, UserId, DeviceId, false);
 
             Controller.bPauseWasPressed = false;
         }
@@ -346,15 +351,20 @@ void FAppleControllerInterface::HandleInputInternal(const FGamepadKeyNames::Type
 {
     const double CurrentTime = FPlatformTime::Seconds();
     const float InitialRepeatDelay = 0.2f;
-    const float RepeatDelay = 0.1;
+    const float RepeatDelay = 0.1f;
     GCController* Cont = Controllers[ControllerIndex].Controller;
+    
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(Controllers[ControllerIndex].PlayerIndex);
+	FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Controllers[ControllerIndex].PlayerIndex, OUT UserId, OUT DeviceId);
 
     if (bWasPressed != bIsPressed)
     {
 #if APPLE_CONTROLLER_DEBUG
         NSLog(@"%@ button %s on controller %d", bIsPressed ? @"Pressed" : @"Released", TCHAR_TO_ANSI(*UEButton.ToString()), Controllers[ControllerIndex].PlayerIndex);
 #endif
-        bIsPressed ? MessageHandler->OnControllerButtonPressed(UEButton, Controllers[ControllerIndex].PlayerIndex, false) : MessageHandler->OnControllerButtonReleased(UEButton, Controllers[ControllerIndex].PlayerIndex, false);
+        bIsPressed ? MessageHandler->OnControllerButtonPressed(UEButton, UserId, DeviceId, false) : MessageHandler->OnControllerButtonReleased(UEButton,UserId, DeviceId, false);
         NextKeyRepeatTime.FindOrAdd(UEButton) = CurrentTime + InitialRepeatDelay;
     }
     else if(bIsPressed)
@@ -362,7 +372,7 @@ void FAppleControllerInterface::HandleInputInternal(const FGamepadKeyNames::Type
         double* NextRepeatTime = NextKeyRepeatTime.Find(UEButton);
         if(NextRepeatTime && *NextRepeatTime <= CurrentTime)
         {
-            MessageHandler->OnControllerButtonPressed(UEButton, Controllers[ControllerIndex].PlayerIndex, true);
+            MessageHandler->OnControllerButtonPressed(UEButton, UserId, DeviceId, true);
             *NextRepeatTime = CurrentTime + RepeatDelay;
         }
     }
@@ -379,7 +389,7 @@ void FAppleControllerInterface::HandleVirtualButtonGamepad(const FGamepadKeyName
     GCExtendedGamepad *ExtendedPreviousGamepad = Controllers[ControllerIndex].PreviousExtendedGamepad;;
 
     // Send controller events any time we are passed the given input threshold similarly to PC/Console (see: XInputInterface.cpp)
-    const float RepeatDeadzone = 0.24;
+    const float RepeatDeadzone = 0.24f;
     
     bool bWasNegativePressed = false;
     bool bNegativePressed = false;
@@ -495,8 +505,13 @@ void FAppleControllerInterface::HandleAnalogGamepad(const FGamepadKeyNames::Type
 {
     GCController* Cont = Controllers[ControllerIndex].Controller;
     
+    IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(Controllers[ControllerIndex].PlayerIndex);
+	FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Controllers[ControllerIndex].PlayerIndex, OUT UserId, OUT DeviceId);
+    
     // Send controller events any time we are passed the given input threshold similarly to PC/Console (see: XInputInterface.cpp)
-    const float RepeatDeadzone = 0.24;
+    const float RepeatDeadzone = 0.24f;
     bool bWasPositivePressed = false;
     bool bPositivePressed = false;
     bool bWasNegativePressed = false;
@@ -541,5 +556,5 @@ void FAppleControllerInterface::HandleAnalogGamepad(const FGamepadKeyNames::Type
 #if APPLE_CONTROLLER_DEBUG
     NSLog(@"Axis %s is %f", TCHAR_TO_ANSI(*UEAxis.ToString()), axisValue);
 #endif
-    MessageHandler->OnControllerAnalog(UEAxis, Controllers[ControllerIndex].PlayerIndex, axisValue);
+    MessageHandler->OnControllerAnalog(UEAxis, UserId, DeviceId, axisValue);
 }

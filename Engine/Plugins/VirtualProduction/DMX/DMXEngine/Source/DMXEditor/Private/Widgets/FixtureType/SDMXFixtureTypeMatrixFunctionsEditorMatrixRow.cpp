@@ -12,6 +12,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Notifications/SPopUpErrorText.h"
+#include "Styling/AppStyle.h"
 
 
 #define LOCTEXT_NAMESPACE "SDMXFixtureTypeMatrixFunctionsEditorMatrixRow"
@@ -35,19 +36,19 @@ TSharedRef<SWidget> SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GenerateWidge
 			SNew(SBorder)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			[
 				SNew(SImage)
 				.Image_Lambda([this]()
 					{
 						if (!CellAttributeItem->ErrorStatus.IsEmpty())
 						{
-							return FEditorStyle::GetBrush("Icons.Error");
+							return FAppStyle::GetBrush("Icons.Error");
 						}
 
 						if (!CellAttributeItem->WarningStatus.IsEmpty())
 						{
-							return FEditorStyle::GetBrush("Icons.Warning");
+							return FAppStyle::GetBrush("Icons.Warning");
 						}
 						static const FSlateBrush EmptyBrush = FSlateNoResource();
 						return &EmptyBrush;
@@ -71,7 +72,7 @@ TSharedRef<SWidget> SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GenerateWidge
 		return
 			SNew(SBorder)
 			.Padding(4.f)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			[
 				SNew(STextBlock)
 				.Text(CellAttributeItem->ChannelNumberText)
@@ -82,11 +83,8 @@ TSharedRef<SWidget> SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GenerateWidge
 	{
 		return
 			SNew(SNameListPicker)
-			.OptionsSource(MakeAttributeLambda(&FDMXAttributeName::GetPossibleValues))
-			.UpdateOptionsDelegate(&FDMXAttributeName::OnValuesChanged)
-			.IsValid(this, &SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::HasInvalidCellAttributeName)
+			.OptionsSource(MakeAttributeLambda(&FDMXAttributeName::GetPredefinedValues))
 			.Value(this, &SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GetCellAttributeName)
-			.bCanBeNone(FDMXAttributeName::bCanBeNone)
 			.bDisplayWarningIcon(true)
 			.OnValueChanged(this, &SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::SetCellAttributeName);
 	}
@@ -95,7 +93,7 @@ TSharedRef<SWidget> SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GenerateWidge
 		return
 			SNew(SButton)
 			.ContentPadding(2.0f)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::OnDeleteCellAttributeClicked)
 			.ToolTipText(LOCTEXT("RemoveCellAttributeTooltip", "Removes the Cell Attribute"))
 			.ForegroundColor(FSlateColor::UseForeground())
@@ -104,7 +102,7 @@ TSharedRef<SWidget> SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GenerateWidge
 			.Content()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Delete"))
+				.Image(FAppStyle::GetBrush("Icons.Delete"))
 				.ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f))
 			];
 	}
@@ -119,20 +117,9 @@ FReply SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::OnDeleteCellAttributeClick
 	return FReply::Handled();
 }
 
-bool SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::HasInvalidCellAttributeName() const
-{
-	const FName CurrentValue = GetCellAttributeName();
-	if (CurrentValue.IsEqual(FDMXNameListItem::None))
-	{
-		return true;
-	}
-
-	return FDMXAttributeName::IsValid(CurrentValue);
-}
-
 FName SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::GetCellAttributeName() const
 {
-	return CellAttributeItem->GetCellAttributeName().GetName();
+	return CellAttributeItem->GetCellAttributeName().Name;
 }
 
 void SDMXFixtureTypeMatrixFunctionsEditorMatrixRow::SetCellAttributeName(FName NewValue)

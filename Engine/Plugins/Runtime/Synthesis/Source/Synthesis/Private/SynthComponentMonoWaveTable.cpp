@@ -2,7 +2,9 @@
 
 
 #include "SynthComponents/SynthComponentMonoWaveTable.h"
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SynthComponentMonoWaveTable)
 
 UMonoWaveTableSynthPreset::UMonoWaveTableSynthPreset() : PresetName(TEXT("Default"))
 , LockKeyframesToGrid(16)
@@ -87,7 +89,7 @@ void UMonoWaveTableSynthPreset::EditChangeInternal()
 			bChangedThisCurve = true;
 		}
 
-		Curve.EditorCurveData.RemoveRedundantKeys(SMALL_NUMBER, -0.1, 1.1);
+		Curve.EditorCurveData.RemoveRedundantAutoTangentKeys(SMALL_NUMBER, -0.1, 1.1);
 
 		// Loop through Keys in this Curve...
 		for (auto& Key : Curve.EditorCurveData.Keys)
@@ -418,10 +420,12 @@ void USynthComponentMonoWaveTable::RefreshWaveTable(int32 Index)
 	MaxValue += DCShift;
 	MinValue += DCShift;
 
+	TArrayView<float> DestinationTableView(DestinationTable.GetData(), TableRes);
+
 	// Remove DC offset
 	if (!FMath::IsNearlyZero(DCShift))
 	{
-		Audio::AddConstantToBufferInplace(DestinationTable.GetData(), TableRes, DCShift);
+		Audio::ArrayAddConstantInplace(DestinationTableView, DCShift);
 	}
 
 	if (CachedPreset->bNormalizeWaveTables)
@@ -429,7 +433,7 @@ void USynthComponentMonoWaveTable::RefreshWaveTable(int32 Index)
 		const float MaxAbsValue = FMath::Max(FMath::Abs(MaxValue), FMath::Abs(MinValue));
 		const float NormalizationScalar = 1.0f / MaxAbsValue;
 
-		Audio::MultiplyBufferByConstantInPlace(DestinationTable.GetData(), TableRes, NormalizationScalar);
+		Audio::ArrayMultiplyByConstantInPlace(DestinationTableView, NormalizationScalar);
 	}
 	else // clip the values since we aren't normalizing
 	{
@@ -1067,3 +1071,4 @@ int32 USynthComponentMonoWaveTable::GetNumTableEntries()
 
 	return CachedPreset->WaveTable.Num();
 }
+

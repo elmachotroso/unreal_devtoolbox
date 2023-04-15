@@ -48,9 +48,10 @@ struct FListPresetsResponse
 	
 	FListPresetsResponse() = default;
 
-	FListPresetsResponse(const TArray<FAssetData>& InPresets)
+	FListPresetsResponse(const TArray<FAssetData>& InPresets, const TArray<TWeakObjectPtr<URemoteControlPreset>> InEmbeddedPresets)
 	{
 		Presets.Append(InPresets);
+		Presets.Append(InEmbeddedPresets);
 	}
 
 	/**
@@ -122,7 +123,7 @@ struct FDescribeObjectResponse
 	FString Name;
 
 	UPROPERTY()
-	UClass* Class = nullptr;
+	TObjectPtr<UClass> Class = nullptr;
 
 	UPROPERTY()
 	TArray<FRCPropertyDescription> Properties;
@@ -254,7 +255,7 @@ struct FRCPresetMetadataModified
 	{
 		if (InPreset)
 		{
-			PresetName = InPreset->GetFName();
+			PresetName = InPreset->GetPresetName();
 			PresetId = InPreset->GetPresetId().ToString();
 			Metadata = InPreset->Metadata;
 		}
@@ -368,7 +369,7 @@ struct FRCPresetEntitiesModifiedEvent
 		: Type(TEXT("PresetEntitiesModified"))
 	{
 		checkSlow(InPreset);
-		PresetName = InPreset->GetFName();
+		PresetName = InPreset->GetPresetName();
 		PresetId = InPreset->GetPresetId().ToString();
 		ModifiedEntities = FRCPresetModifiedEntitiesDescription{InPreset, InModifiedEntities};
 	}
@@ -397,3 +398,214 @@ struct FRCPresetEntitiesModifiedEvent
 	UPROPERTY()
 	FRCPresetModifiedEntitiesDescription ModifiedEntities;
 };
+
+USTRUCT()
+struct FRCPresetControllersRenamedEvent
+{
+	GENERATED_BODY()
+
+	FRCPresetControllersRenamedEvent() = default;
+
+	FRCPresetControllersRenamedEvent(FName InPresetName, FGuid InPresetId, TArray<TTuple<FName, FName>> InRenamedControllers)
+		: Type(TEXT("PresetControllersRenamed"))
+		, PresetName(InPresetName)
+		, PresetId(InPresetId.ToString())
+		, RenamedControllers(InRenamedControllers)
+	{
+	}
+		
+	UPROPERTY()
+	FString Type;
+
+	UPROPERTY()
+	FName PresetName;
+
+	UPROPERTY()
+	FString PresetId;
+
+	UPROPERTY()
+	TArray<FRCPresetFieldRenamed> RenamedControllers;
+};
+
+USTRUCT()
+struct FRCPresetControllersRemovedEvent
+{
+	GENERATED_BODY()
+
+	FRCPresetControllersRemovedEvent() = default;
+
+	FRCPresetControllersRemovedEvent(FName InPresetName, FGuid InPresetId, TArray<FName> InRemoveControllers, const TArray<FGuid>& InRemovedControllerIds)
+		: Type(TEXT("PresetControllersRemoved"))
+		, PresetName(InPresetName)
+		, PresetId(InPresetId.ToString())
+		, RemovedControllers(MoveTemp(InRemoveControllers))
+	{
+		Algo::Transform(InRemovedControllerIds, RemovedControllerIds, [](const FGuid& Id){ return Id.ToString();});
+	}
+
+	UPROPERTY()
+	FString Type;
+
+	UPROPERTY()
+	FName PresetName;
+
+	UPROPERTY()
+	FString PresetId;
+
+	UPROPERTY()
+	TArray<FName> RemovedControllers;
+
+	UPROPERTY()
+	TArray<FString> RemovedControllerIds;
+};
+
+USTRUCT()
+struct FRCPresetControllersAddedEvent
+{
+	GENERATED_BODY()
+
+	FRCPresetControllersAddedEvent() = default;
+
+	FRCPresetControllersAddedEvent(FName InPresetName, FGuid InPresetId, FRCPresetDescription InPresetDescription)
+		: Type(TEXT("PresetControllersAdded"))
+		, PresetName(InPresetName)
+		, PresetId(InPresetId.ToString())
+		, Description(MoveTemp(InPresetDescription))
+	{
+	}
+
+	UPROPERTY()
+	FString Type;
+	
+	UPROPERTY()
+	FName PresetName;
+
+	UPROPERTY()
+	FString PresetId;
+
+	UPROPERTY()
+	FRCPresetDescription Description;
+};
+
+/** Event which is triggered whenever a Controller is modified. */
+USTRUCT()
+struct FRCPresetControllersModifiedEvent
+{
+	GENERATED_BODY()
+
+	FRCPresetControllersModifiedEvent() = default;
+
+	FRCPresetControllersModifiedEvent(const URemoteControlPreset* InPreset, const TArray<FGuid>& InModifiedControllers)
+		: Type(TEXT("PresetControllersModified"))
+	{
+		checkSlow(InPreset);
+		PresetName = InPreset->GetPresetName();
+		PresetId = InPreset->GetPresetId().ToString();
+		ModifiedControllers = FRCControllerModifiedDescription(InPreset, InModifiedControllers);
+		
+	}
+
+	/**
+	 * Type of the event.
+	 */
+	UPROPERTY()
+	FString Type;
+
+	/**
+	 * Name of the preset which contains the modified controller.
+	 */
+	UPROPERTY()
+	FName PresetName;
+	
+	/**
+	 * ID of the preset that contains the modified controller.
+	 */
+	UPROPERTY()
+	FString PresetId;
+
+	/**
+	 * The controllers that were modified in the last frame.
+	 */
+	UPROPERTY()
+	FRCControllerModifiedDescription ModifiedControllers;
+};
+
+/**
+ * Data about actors that have changed in the scene.
+ */
+USTRUCT()
+struct FRCActorsChangedData
+{
+	GENERATED_BODY()
+
+	/** Actors that were added. */
+	UPROPERTY()
+	TArray<FRCActorDescription> AddedActors;
+
+	/** Actors that were renamed. */
+	UPROPERTY()
+	TArray<FRCActorDescription> RenamedActors;
+
+	/** Actors that were deleted. */
+	UPROPERTY()
+	TArray<FRCActorDescription> DeletedActors;
+};
+
+/**
+ * Event triggered when the list of actors in the current scene (or their names) changes.
+ */
+USTRUCT()
+struct FRCActorsChangedEvent
+{
+	GENERATED_BODY()
+
+	FRCActorsChangedEvent()
+		: Type(TEXT("ActorsChanged"))
+	{
+	}
+
+	/**
+	 * Type of the event.
+	 */
+	UPROPERTY()
+	FString Type;
+
+	/**
+	 * Map from class name to changes in actors of that type.
+	 */
+	UPROPERTY()
+	TMap<FString, FRCActorsChangedData> Changes;
+};
+
+/**
+ * Event sent to a client that contributed to a transaction, indicating that the transaction was either cancelled or finalized.
+ */
+USTRUCT()
+struct FRCTransactionEndedEvent
+{
+	GENERATED_BODY()
+
+	FRCTransactionEndedEvent()
+	: Type(TEXT("TransactionEnded"))
+	{
+	}
+
+	/**
+	 * Type of the event.
+	 */
+	UPROPERTY()
+	FString Type;
+
+	/**
+	 * The client-specific ID of the transaction that was ended.
+	 */
+	UPROPERTY()
+	int32 TransactionId = -1;
+
+	/**
+	 * The highest sequence number received from the receiving client at the time that the transaction ended.
+	 */
+	UPROPERTY()
+	int64 SequenceNumber = -1;
+};
+

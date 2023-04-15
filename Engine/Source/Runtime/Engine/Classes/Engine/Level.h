@@ -38,6 +38,9 @@ class FLevelPartitionOperationScope;
 class FRegisterComponentContext;
 class SNotificationItem;
 class UActorFolder;
+class IWorldPartitionCell;
+class UWorldPartitionRuntimeCell;
+struct FFolder;
 
 UINTERFACE()
 class ULevelPartitionInterface : public UInterface
@@ -69,10 +72,15 @@ struct ENGINE_API FLevelActorFoldersHelper
 private:
 	static void SetUseActorFolders(ULevel* InLevel, bool bInEnabled);
 	static void AddActorFolder(ULevel* InLevel, UActorFolder* InActorFolder, bool bInShouldDirtyLevel, bool bInShouldBroadcast = true);
+	static void RenameFolder(ULevel* InLevel, const FFolder& InOldFolder, const FFolder& InNewFolder);
+	static void DeleteFolder(ULevel* InLevel, const FFolder& InFolder);
 
 	friend class UWorld;
+	friend class ULevel;
 	friend class UActorFolder;
+	friend class FWorldPartitionConverter;
 	friend class UWorldPartitionConvertCommandlet;
+	friend class FWorldPartitionLevelHelper;
 	friend class UWorldPartitionLevelStreamingDynamic;
 };
 
@@ -103,6 +111,24 @@ class UActorContainer : public UObject
 public:
 	UPROPERTY()
 	TMap<FName, TObjectPtr<AActor>> Actors;
+};
+
+USTRUCT()
+struct ENGINE_API FActorFolderSet
+{
+	GENERATED_BODY()
+
+public:
+
+	void Add(UActorFolder* InActorFolder);
+	int32 Remove(UActorFolder* InActorFolder) { return ActorFolders.Remove(InActorFolder); }
+	bool IsEmpty() const { return ActorFolders.IsEmpty(); }
+	const TSet<TObjectPtr<UActorFolder>>& GetActorFolders() const { return ActorFolders; }
+
+private:
+
+	UPROPERTY(Transient)
+	TSet<TObjectPtr<UActorFolder>> ActorFolders;
 };
 
 /**
@@ -374,33 +400,6 @@ struct ENGINE_API FLevelSimplificationDetails
 	UPROPERTY(Category=Landscape, EditAnywhere)
 	bool bBakeGrassToLandscape;
 
-	UPROPERTY()
-	bool bGenerateMeshNormalMap_DEPRECATED;
-	
-	UPROPERTY()
-	bool bGenerateMeshMetallicMap_DEPRECATED;
-
-	UPROPERTY()
-	bool bGenerateMeshRoughnessMap_DEPRECATED;
-	
-	UPROPERTY()
-	bool bGenerateMeshSpecularMap_DEPRECATED;
-	
-	UPROPERTY()
-	bool bGenerateLandscapeNormalMap_DEPRECATED;
-
-	UPROPERTY()
-	bool bGenerateLandscapeMetallicMap_DEPRECATED;
-
-	UPROPERTY()
-	bool bGenerateLandscapeRoughnessMap_DEPRECATED;
-	
-	UPROPERTY()
-	bool bGenerateLandscapeSpecularMap_DEPRECATED;
-
-	/** Handles deprecated properties */
-	void PostLoadDeprecated();
-	
 	FLevelSimplificationDetails();
 	bool operator == (const FLevelSimplificationDetails& Other) const;
 };
@@ -619,7 +618,10 @@ public:
 	UPROPERTY(Transient, DuplicateTransient, NonTransactional)
 	uint8										bStaticComponentsRegisteredInStreamingManager: 1;
 
-	/** Whether the level is currently visible/ associated with the world */
+	/** 
+	 * Whether the level is currently visible/ associated with the world. 
+	 * If false, may not yet be fully removed from the world.
+	 */
 	UPROPERTY(transient)
 	uint8										bIsVisible:1;
 
@@ -657,7 +659,7 @@ public:
 	uint8										bIsAssociatingLevel:1;
 	/** Whether this level is in the process of being disassociated with its world (i.e. we are within RemoveFromWorld for this level */
 	uint8										bIsDisassociatingLevel : 1;
-	/** Whether this level should be fully added to the world before rendering his components	*/
+	/** Whether this level should be fully added to the world before rendering its components	*/
 	uint8										bRequireFullVisibilityToRender:1;
 	/** Whether this level is specific to client, visibility state will not be replicated to server	*/
 	uint8										bClientOnlyVisible:1;
@@ -674,15 +676,14 @@ public:
 	/** Whether the level is partitioned or not. */
     UPROPERTY()
 	uint8										bIsPartitioned : 1;
-	/** Whether the level is a world partition runtime cell. */
-	UPROPERTY()
-	uint8										bIsWorldPartitionRuntimeCell : 1;
 
 	enum class EIncrementalComponentState : uint8
 	{
 		Init,
 		RegisterInitialComponents,
+#if WITH_EDITOR
 		RunConstructionScripts,
+#endif
 		Finalize
 	};
 
@@ -765,15 +766,31 @@ public:
 
 #if WITH_EDITOR
 	ENGINE_API static bool GetLevelBoundsFromAsset(const FAssetData& Asset, FBox& OutLevelBounds);
-	ENGINE_API static bool GetIsLevelPartitionedFromAsset(const FAssetData& Asset);
-	ENGINE_API static bool GetIsLevelUsingExternalActorsFromAsset(const FAssetData& Asset);
-	ENGINE_API static bool GetIsUsingActorFoldersFromAsset(const FAssetData& Asset);
-
-
 	ENGINE_API static bool GetLevelBoundsFromPackage(FName LevelPackage, FBox& OutLevelBounds);
+
+	ENGINE_API static bool GetLevelScriptExternalActorsReferencesFromAsset(const FAssetData& Asset, TArray<FGuid>& OutLevelScriptExternalActorsReferences);
+	ENGINE_API static bool GetLevelScriptExternalActorsReferencesFromPackage(FName LevelPackage, TArray<FGuid>& OutLevelScriptExternalActorsReferences);
+
+	ENGINE_API static bool GetIsLevelPartitionedFromAsset(const FAssetData& Asset);
 	ENGINE_API static bool GetIsLevelPartitionedFromPackage(FName LevelPackage);
+
+	ENGINE_API static bool GetIsLevelUsingExternalActorsFromAsset(const FAssetData& Asset);
 	ENGINE_API static bool GetIsLevelUsingExternalActorsFromPackage(FName LevelPackage);
+
+	ENGINE_API static bool GetIsUsingActorFoldersFromAsset(const FAssetData& Asset);
 	ENGINE_API static bool GetIsUsingActorFoldersFromPackage(FName LevelPackage);
+
+	ENGINE_API static bool GetIsStreamingDisabledFromAsset(const FAssetData& Asset);	
+	ENGINE_API static bool GetIsStreamingDisabledFromPackage(FName LevelPackage);
+
+	ENGINE_API static bool GetPartitionedLevelCanBeUsedByLevelInstanceFromAsset(const FAssetData& Asset);
+	ENGINE_API static bool GetPartitionedLevelCanBeUsedByLevelInstanceFromPackage(FName LevelPackage);
+
+	ENGINE_API static FVector GetLevelInstancePivotOffsetFromAsset(const FAssetData& Asset);
+	ENGINE_API static FVector GetLevelInstancePivotOffsetFromPackage(FName LevelPackage);
+
+	ENGINE_API static const FName LoadAllExternalObjectsTag;
+	ENGINE_API static const FName DontLoadExternalObjectsTag;
 
 	ENGINE_API bool GetPromptWhenAddingToLevelOutsideBounds() const;
 	ENGINE_API bool GetPromptWhenAddingToLevelBeforeCheckout() const;
@@ -787,6 +804,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<AWorldDataLayers> WorldDataLayers;
+
+	UPROPERTY()
+	TSoftObjectPtr<UWorldPartitionRuntimeCell> WorldPartitionRuntimeCell;
 
 	/** Cached level collection that this level is contained in, for faster access than looping through the collections in the world. */
 	FLevelCollection* CachedLevelCollection;
@@ -821,6 +841,10 @@ private:
 	/** Actor folder objects. They can either be saved inside level or in their own package. */
 	UPROPERTY(Transient)
 	TMap<FGuid, TObjectPtr<UActorFolder>> ActorFolders;
+
+	/** Acceleration table used to find an ActorFolder object for a given folder path. */
+	UPROPERTY(Transient)
+	TMap<FString, FActorFolderSet> FolderLabelToActorFolders;
 
 	/** Temporary array containing actor folder objects manually loaded from their external packages (only used while loading the level). */
 	UPROPERTY(Transient)
@@ -884,7 +908,6 @@ public:
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PreDuplicate(FObjectDuplicationParameters& DupParams) override;
-	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual bool CanBeClusterRoot() const override;
 	virtual void CreateCluster() override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
@@ -902,9 +925,10 @@ public:
 	 * Flag this level instance for destruction.
 	 * This is called by UWorld::CleanupWorld to flag the level and its owned packages for destruction.
 	 *
-	 * @param bCleanupResources Whether to also remove RF_Standalone flags in the editor on level-specific subassets so that they will be garbage collected
+	 * @param bCleanupResources Whether to uninit anything that was initialized through OnLevelLoaded()
+	 * @param bUnloadFromEditor Whether to also remove RF_Standalone flags in the editor on level-specific subassets so that they can be garbage collected
 	 */
-	ENGINE_API void CleanupLevel(bool bCleanupResources);
+	ENGINE_API void CleanupLevel(bool bCleanupResources = true, bool bUnloadFromEditor = true);
 
 	/**
 	 * Cleans all references from and to this level that may be preventing it from being Garbage Collected
@@ -980,13 +1004,21 @@ public:
 #if WITH_EDITOR
 	/**
 	 * Add a dynamically loaded actor to this level, as if it was part of the original map load process.
+	 *
+	 * @param Actor				The actor to add to the level
+	 * @param TransformToApply	The transform to apply to this actor if it's not already in the level
 	 */
-	ENGINE_API void AddLoadedActor(AActor* Actor);
+	ENGINE_API void AddLoadedActor(AActor* Actor, const FTransform* TransformToApply = nullptr);
+	ENGINE_API void AddLoadedActors(const TArray<AActor*>& ActorList, const FTransform* TransformToApply = nullptr);
 
 	/**
 	 * Remove a dynamically loaded actor from this level.
+	 *
+	 * @param Actor				The actor to remove from the level
+	 * @param TransformToRemove	The transform that was applied to this actor when it was added to the level
 	 */
-	ENGINE_API void RemoveLoadedActor(AActor* Actor);
+	ENGINE_API void RemoveLoadedActor(AActor* Actor, const FTransform* TransformToRemove = nullptr);
+	ENGINE_API void RemoveLoadedActors(const TArray<AActor*>& ActorList, const FTransform* TransformToRemove = nullptr);
 
 	/** Called when dynamically loaded actor is added to this level */
 	DECLARE_EVENT_OneParam(ULevel, FLoadedActorAddedToLevelEvent, AActor&);
@@ -1022,11 +1054,6 @@ public:
 	 * Method for resetting routing actor initialization for the next time this level is streamed.
 	 */
 	void ResetRouteActorInitializationState();
-
-	/**
-	 * Old implementation for routing actor initialization in full.
-	 */
-	void RouteActorInitializeOld();
 
 	/**
 	 * Routes pre and post initialize to actors and also sets volumes.
@@ -1069,6 +1096,20 @@ public:
 	ENGINE_API AWorldDataLayers* GetWorldDataLayers() const;
 
 	ENGINE_API void SetWorldDataLayers(AWorldDataLayers* NewWorldDataLayers);
+
+	/**
+	 * Returns the RuntimeCell associated with this Level if it is a level representing a cell of a WorldPartition World.
+	 *
+	 * @return		The cell associated with the level.
+	 */
+	ENGINE_API const IWorldPartitionCell* GetWorldPartitionRuntimeCell() const;
+
+	/**
+	 * Returns if the level is a cell from a WorldPartition World.
+	 *
+	 * @return		The cell associated with the level.
+	 */
+	ENGINE_API bool IsWorldPartitionRuntimeCell() const { return !WorldPartitionRuntimeCell.GetUniqueID().IsNull(); }
 
 	/**
 	 * Returns the UWorldPartition for this level.
@@ -1118,6 +1159,13 @@ public:
 	static ENGINE_API FString GetActorPackageName(UPackage* InLevelPackage, EActorPackagingScheme ActorPackagingScheme, const FString& InActorPath);
 
 	/**
+	 * Get the package name for this actor
+	 * @param InActorPath the fully qualified actor path, in the format: 'Outermost.Outer.Name'
+	 * @return the package name
+	 */
+	static ENGINE_API FString GetActorPackageName(const FString& InBaseDir, EActorPackagingScheme ActorPackagingScheme, const FString& InActorPath);
+
+	/**
 	 * Get the folder containing the external actors for this level path
 	 * @param InLevelPackageName The package name to get the external actors path of
 	 * @param InPackageShortName Optional short name to use instead of the package short name
@@ -1132,6 +1180,11 @@ public:
 	 * @return the folder
 	 */
 	static ENGINE_API FString GetExternalActorsPath(UPackage* InLevelPackage, const FString& InPackageShortName = FString());
+
+	/**
+	 * Extract the packaging Scheme used by an external actor package based on the name of the package
+	 */
+	static ENGINE_API EActorPackagingScheme GetActorPackagingSchemeFromActorPackageName(const FStringView InActorPackageName);
 
 	/**
 	 * Scans/Updates all Level Assets (level package and external packages)
@@ -1167,6 +1220,9 @@ public:
 	/** Updates all actors/folders that refer to folders marked as deleted, reparent to valid folder, deletes folders marked as deleted. */
 	ENGINE_API void CreateOrUpdateActorFolders();
 
+	/** Deletes all actor folders marked as deleted and unreferenced by neither an actor nor another actor folder */
+	ENGINE_API void CleanupDeletedAndUnreferencedActorFolders();
+
 	/** Sets if the level uses actor folders mode or not. Returns true if succeeded. */
 	ENGINE_API bool SetUseActorFolders(bool bEnabled, bool bInteractive = false);
 
@@ -1174,7 +1230,7 @@ public:
 	ENGINE_API UActorFolder* GetActorFolder(const FGuid& InGuid, bool bSkipDeleted = true) const;
 
 	/** Finds the level actor folder by its path. Returns null if not found. */
-	ENGINE_API UActorFolder* GetActorFolder(const FName& InPath, bool bSkipDeleted = true) const;
+	ENGINE_API UActorFolder* GetActorFolder(const FName& InPath) const;
 
 	/** Iterates on all valid level actor folders. */
 	ENGINE_API void ForEachActorFolder(TFunctionRef<bool(UActorFolder*)> Operation, bool bSkipDeleted = false);
@@ -1196,7 +1252,7 @@ public:
 	* Get a properly formated external actor package instance name for this level package to be used in FLinkerInstancingContext
 	* @return external actor package instance name
 	*/
-	static ENGINE_API FString GetExternalActorPackageInstanceName(const FString& LevelPackageName, const FString& ActorShortPackageName);
+	static ENGINE_API FString GetExternalActorPackageInstanceName(const FString& LevelPackageName, const FString& ActorPackageName);
 
 	/**
 	 * Get the list of (on disk) external actor packages associated with this external actors path
@@ -1312,9 +1368,9 @@ public:
 
 private:
 	bool IncrementalRegisterComponents(bool bPreRegisterComponents, int32 NumComponentsToUpdate, FRegisterComponentContext* Context);
+#if WITH_EDITOR
 	bool IncrementalRunConstructionScripts(bool bProcessAllActors);
 
-#if WITH_EDITOR
 private:
 	/**
 	 * Potentially defer the running of an actor's construction script on load
@@ -1331,10 +1387,20 @@ private:
 	/** Prepares/fixes actor folder objects once level is fully loaded. */
 	void FixupActorFolders();
 
+	void AddActorFolder(UActorFolder* InActorFolder);
+	void RemoveActorFolder(UActorFolder* InActorFolder);
+	void OnFolderMarkAsDeleted(UActorFolder* InActorFolder);
+	void OnFolderLabelChanged(UActorFolder* InActorFolder, const FString& InOldFolderLabel);
+
 	/** Sets the level to use or not the actor folder objects feature. */
 	void SetUseActorFoldersInternal(bool bInEnabled);
 
+	/** Returns unreferenced actor folders that are marked as deleted. */
+	TSet<FGuid> GetDeletedAndUnreferencedActorFolders() const;
+
 	friend struct FLevelActorFoldersHelper;
+	friend class FWorldPartitionLevelHelper;
+	friend class UActorFolder;
 
 	/** Replace the existing LSA (if set) by spawning a new one based on this level's script blueprint */
 	void RegenerateLevelScriptActor();

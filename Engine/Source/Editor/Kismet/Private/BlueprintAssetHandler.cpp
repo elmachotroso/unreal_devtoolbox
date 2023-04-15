@@ -1,9 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintAssetHandler.h"
-#include "Engine/World.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetDataTagMap.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Level.h"
 #include "Engine/LevelScriptBlueprint.h"
-#include "AssetData.h"
+#include "Engine/World.h"
+#include "HAL/PlatformCrt.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
 
 class FLevelBlueprintAssetHandler : public IBlueprintAssetHandler
 {
@@ -40,8 +51,8 @@ class FBlueprintAssetTypeHandler : public IBlueprintAssetHandler
 FBlueprintAssetHandler::FBlueprintAssetHandler()
 {
 	// Register default handlers
-	RegisterHandler<FLevelBlueprintAssetHandler>(UWorld::StaticClass()->GetFName());
-	RegisterHandler<FBlueprintAssetTypeHandler>(UBlueprint::StaticClass()->GetFName());
+	RegisterHandler<FLevelBlueprintAssetHandler>(UWorld::StaticClass()->GetClassPathName());
+	RegisterHandler<FBlueprintAssetTypeHandler>(UBlueprint::StaticClass()->GetClassPathName());
 }
 
 FBlueprintAssetHandler& FBlueprintAssetHandler::Get()
@@ -50,7 +61,7 @@ FBlueprintAssetHandler& FBlueprintAssetHandler::Get()
 	return Singleton;
 }
 
-void FBlueprintAssetHandler::RegisterHandler(FName EligibleClass, TUniquePtr<IBlueprintAssetHandler>&& InHandler)
+void FBlueprintAssetHandler::RegisterHandler(FTopLevelAssetPath EligibleClass, TUniquePtr<IBlueprintAssetHandler>&& InHandler)
 {
 	ClassNames.Add(EligibleClass);
 	Handlers.Add(MoveTemp(InHandler));
@@ -61,7 +72,7 @@ const IBlueprintAssetHandler* FBlueprintAssetHandler::FindHandler(const UClass* 
 	UClass* StopAtClass = UObject::StaticClass();
 	while (InClass && InClass != StopAtClass)
 	{
-		int32 Index = ClassNames.IndexOfByKey(InClass->GetFName());
+		int32 Index = ClassNames.IndexOfByKey(InClass->GetClassPathName());
 		if (Index != INDEX_NONE)
 		{
 			return Handlers[Index].Get();

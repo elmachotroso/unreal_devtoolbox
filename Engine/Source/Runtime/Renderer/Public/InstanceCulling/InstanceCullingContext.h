@@ -160,6 +160,15 @@ public:
 
 
 	void SetupDrawCommands(
+		TArrayView<const FStateBucketAuxData> StateBucketsAuxData,
+		FMeshCommandOneFrameArray& VisibleMeshDrawCommandsInOut,
+		bool bCompactIdenticalCommands,
+		// Stats
+		int32& MaxInstancesOut,
+		int32& VisibleMeshDrawCommandsNumOut,
+		int32& NewPassVisibleMeshDrawCommandsNumOut);
+
+	void SetupDrawCommands(
 		FMeshCommandOneFrameArray& VisibleMeshDrawCommandsInOut,
 		bool bCompactIdenticalCommands,
 		// Stats
@@ -178,7 +187,7 @@ public:
 
 	FInstanceCullingManager* InstanceCullingManager = nullptr;
 	ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::Num;
-	TArray<int32, TInlineAllocator<6>/*, SceneRenderingAllocator*/> ViewIds;
+	TArray<int32, TInlineAllocator<6, SceneRenderingAllocator>> ViewIds;
 	TRefCountPtr<IPooledRenderTarget> PrevHZB = nullptr;
 	bool bIsEnabled = false;
 	EInstanceCullingMode InstanceCullingMode = EInstanceCullingMode::Normal;
@@ -196,12 +205,6 @@ public:
 		uint32 IndirectArgsOffsetOrNumInstances : 31U;
 		// offset into per-instance buffer
 		uint32 InstanceDataByteOffset;
-	};
-
-	// TODO: bit-pack
-	struct FDrawCommandDesc
-	{
-		uint32 bMaterialMayModifyPosition;
 	};
 
 	struct FPayloadData
@@ -256,14 +259,14 @@ public:
 		}
 	};
 
-	TArray<FMeshDrawCommandInfo> MeshDrawCommandInfos;
-	TArray<FRHIDrawIndexedIndirectParameters> IndirectArgs;
-	TArray<FDrawCommandDesc> DrawCommandDescs;
-	TArray<FPayloadData> PayloadData;
-	TArray<uint32> InstanceIdOffsets;
+	TArray<FMeshDrawCommandInfo, SceneRenderingAllocator> MeshDrawCommandInfos;
+	TArray<FRHIDrawIndexedIndirectParameters, SceneRenderingAllocator> IndirectArgs;
+	TArray<uint32, SceneRenderingAllocator> DrawCommandDescs;
+	TArray<FPayloadData, SceneRenderingAllocator> PayloadData;
+	TArray<uint32, SceneRenderingAllocator> InstanceIdOffsets;
 
-	TArray<FCompactionData> DrawCommandCompactionData;	
-	TArray<uint32> CompactionBlockDataIndices;	
+	TArray<FCompactionData, SceneRenderingAllocator> DrawCommandCompactionData;
+	TArray<uint32, SceneRenderingAllocator> CompactionBlockDataIndices;
 	uint32 NumCompactionInstances = 0U;
 
 	using LoadBalancerArray = TStaticArray<FInstanceProcessingGPULoadBalancer*, static_cast<uint32>(EBatchProcessingMode::Num)>;

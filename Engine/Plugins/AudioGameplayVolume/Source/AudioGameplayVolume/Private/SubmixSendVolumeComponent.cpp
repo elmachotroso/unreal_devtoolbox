@@ -4,6 +4,8 @@
 #include "ActiveSound.h"
 #include "AudioGameplayFlags.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SubmixSendVolumeComponent)
+
 constexpr TCHAR FProxyMutator_SubmixSend::MutatorSubmixSendName[];
 
 FProxyMutator_SubmixSend::FProxyMutator_SubmixSend()
@@ -59,10 +61,9 @@ TSharedPtr<FProxyVolumeMutator> USubmixSendVolumeComponent::FactoryMutator() con
 	return MakeShared<FProxyMutator_SubmixSend>();
 }
 
-void USubmixSendVolumeComponent::FillMutator(TSharedPtr<FProxyVolumeMutator> Mutator) const
+void USubmixSendVolumeComponent::CopyAudioDataToMutator(TSharedPtr<FProxyVolumeMutator>& Mutator) const
 {
-	Super::FillMutator(Mutator);
-
 	TSharedPtr<FProxyMutator_SubmixSend> SubmixMutator = StaticCastSharedPtr<FProxyMutator_SubmixSend>(Mutator);
 	SubmixMutator->SubmixSendSettings = SubmixSendSettings;
 }
+

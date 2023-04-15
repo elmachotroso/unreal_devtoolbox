@@ -3,6 +3,7 @@
 #include "OnlineLeaderboardsEOS.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemEOS.h"
+#include "OnlineSubsystemEOSPrivate.h"
 #include "OnlineSubsystemEOSTypes.h"
 #include "UserManagerEOS.h"
 #include "OnlineStatsEOS.h"
@@ -73,7 +74,7 @@ struct FQueryLeaderboardForUsersContext
 	}
 };
 
-typedef TEOSCallback<EOS_Leaderboards_OnQueryLeaderboardUserScoresCompleteCallback, EOS_Leaderboards_OnQueryLeaderboardUserScoresCompleteCallbackInfo> FQueryLeaderboardForUsersCallback;
+typedef TEOSCallback<EOS_Leaderboards_OnQueryLeaderboardUserScoresCompleteCallback, EOS_Leaderboards_OnQueryLeaderboardUserScoresCompleteCallbackInfo, FOnlineLeaderboardsEOS> FQueryLeaderboardForUsersCallback;
 
 bool FOnlineLeaderboardsEOS::ReadLeaderboards(const TArray<FUniqueNetIdRef>& Players, FOnlineLeaderboardReadRef& ReadObject)
 {
@@ -92,7 +93,7 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboards(const TArray<FUniqueNetIdRef>& Pla
 	for (const FUniqueNetIdRef& NetId : Players)
 	{
 		const FUniqueNetIdEOS& EOSId = FUniqueNetIdEOS::Cast(*NetId);
-		EOS_ProductUserId UserId = EOS_ProductUserId_FromString(TCHAR_TO_UTF8(*EOSId.ProductUserIdStr));
+		const EOS_ProductUserId UserId = EOSId.GetProductUserId();
 		if (UserId != nullptr)
 		{
 			ProductUserIds.Add(UserId);
@@ -115,7 +116,7 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboards(const TArray<FUniqueNetIdRef>& Pla
 
 	TSharedPtr<FQueryLeaderboardForUsersContext> QueryContext = MakeShared<FQueryLeaderboardForUsersContext>(Players, ReadObject);
 
-	FQueryLeaderboardForUsersCallback* CallbackObj = new FQueryLeaderboardForUsersCallback();
+	FQueryLeaderboardForUsersCallback* CallbackObj = new FQueryLeaderboardForUsersCallback(FOnlineLeaderboardsEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, QueryContext](const EOS_Leaderboards_OnQueryLeaderboardUserScoresCompleteCallbackInfo* Data)
 	{
 		bool bWasSuccessful = Data->ResultCode == EOS_EResult::EOS_Success;
@@ -133,7 +134,8 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboards(const TArray<FUniqueNetIdRef>& Pla
 		for (FUniqueNetIdRef NetId : QueryContext->Players)
 		{
 			FString Nickname = EOSSubsystem->UserManager->GetPlayerNickname(*NetId);
-			EOS_ProductUserId UserId = EOSSubsystem->UserManager->GetProductUserId(*NetId);
+			const FUniqueNetIdEOS& EOSId = FUniqueNetIdEOS::Cast(*NetId);
+			const EOS_ProductUserId UserId = EOSId.GetProductUserId();
 			if (UserId == nullptr)
 			{
 				QueryContext->AddEmptyRowForPlayer(NetId, Nickname);
@@ -226,7 +228,7 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboardsForFriends(int32 LocalUserNum, FOnl
 	return ReadLeaderboards(Players, ReadObject);
 }
 
-typedef TEOSCallback<EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallback, EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallbackInfo> FQueryLeaderboardCallback;
+typedef TEOSCallback<EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallback, EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallbackInfo, FOnlineLeaderboardsEOS> FQueryLeaderboardCallback;
 
 bool FOnlineLeaderboardsEOS::ReadLeaderboardsAroundRank(int32 Rank, uint32 Range, FOnlineLeaderboardReadRef& ReadObject)
 {
@@ -251,7 +253,7 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboardsAroundRank(int32 Rank, uint32 Range
 	Options.LocalUserId = EOSSubsystem->UserManager->GetLocalProductUserId(0);
 	FCStringAnsi::Strncpy(LeaderboardId, TCHAR_TO_UTF8(*ReadObject->LeaderboardName.ToString()), EOS_OSS_STRING_BUFFER_LENGTH);
 
-	FQueryLeaderboardCallback* CallbackObj = new FQueryLeaderboardCallback();
+	FQueryLeaderboardCallback* CallbackObj = new FQueryLeaderboardCallback(FOnlineLeaderboardsEOSWeakPtr(AsShared()));
 	FOnlineLeaderboardReadRef LambdaReadObject = ReadObject;
 	CallbackObj->CallbackLambda = [this, LambdaReadObject, StartIndex, EndIndex](const EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallbackInfo* Data)
 	{
@@ -307,7 +309,7 @@ bool FOnlineLeaderboardsEOS::ReadLeaderboardsAroundRank(int32 Rank, uint32 Range
 						Nickname = TEXT("Unknown Player");
 					}
 					const EOS_EpicAccountId AccountId = EOS_EpicAccountId_FromString(EpicIdStr);
-					const FUniqueNetIdEOSRef NetId = FUniqueNetIdEOS::Create(MakeNetIdStringFromIds(AccountId, Record->UserId));
+					const FUniqueNetIdEOSRef NetId = FUniqueNetIdEOSRegistry::FindOrAdd(AccountId, Record->UserId).ToSharedRef();
 
 					FOnlineStatsRow* Row = new(LambdaReadObject->Rows) FOnlineStatsRow(Nickname, NetId);
 					Row->Rank = Record->Rank;

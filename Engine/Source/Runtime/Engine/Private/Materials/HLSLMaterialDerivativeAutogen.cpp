@@ -1238,11 +1238,24 @@ int32 FMaterialDerivativeAutogen::GenerateIfFunc(FHLSLMaterialTranslator& Transl
 		}
 		else
 		{
-			CodeFinite = FString::Printf(
-				TEXT("(%s ? %s : %s)"),
-				*CompareGreaterEqual,
-				*GreaterFinite, *LessFinite
-			);
+			if (ResultType == MCT_ShadingModel)
+			{
+				// @lh-todo: Workaround SPIR-V bug in DXC: Wrong literal type is deduced during implicit type deduction from int to uint
+				// GitHub PR: https://github.com/microsoft/DirectXShaderCompiler/pull/4626
+				CodeFinite = FString::Printf(
+					TEXT("(%s ? (uint)%s : (uint)%s)"),
+					*CompareGreaterEqual,
+					*GreaterFinite, *LessFinite
+				);
+			}
+			else
+			{
+				CodeFinite = FString::Printf(
+					TEXT("(%s ? %s : %s)"),
+					*CompareGreaterEqual,
+					*GreaterFinite, *LessFinite
+				);
+			}
 		}
 	}
 
@@ -1290,29 +1303,6 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 	EnableGeneratedDepencencies();
 
 	FString Ret;
-
-	// The basic structs (FloatDeriv, FloatDeriv2, FloatDeriv3, FloatDeriv4)
-	// It's not worth keeping track of all the times these are used, just make them.
-	for (int32 Index = 0; Index < NumDerivativeTypes; Index++)
-	{
-		EDerivativeType DerivType = (EDerivativeType)Index;
-		if (!IsLWCType(DerivType))
-		{
-			continue;				// Non-LWC types defined in common.ush
-		}
-
-		FString BaseName = GetDerivVectorName(DerivType);
-		FString FieldName = GetFloatVectorName(DerivType);
-		FString FieldNameDDXY = GetFloatVectorDDXYName(DerivType);
-
-		Ret += TEXT("struct ") + BaseName + LINE_TERMINATOR;
-		Ret += TEXT("{") LINE_TERMINATOR;
-		Ret += TEXT("\t") + FieldName + TEXT(" Value;") LINE_TERMINATOR;
-		Ret += TEXT("\t") + FieldNameDDXY + TEXT(" Ddx;") LINE_TERMINATOR;
-		Ret += TEXT("\t") + FieldNameDDXY + TEXT(" Ddy;") LINE_TERMINATOR;
-		Ret += TEXT("};") LINE_TERMINATOR;
-		Ret += TEXT("") LINE_TERMINATOR;
-	}
 
 	// Full FloatDerivX constructors with explicit derivatives.
 	for (int32 Index = 0; Index < NumDerivativeTypes; Index++)

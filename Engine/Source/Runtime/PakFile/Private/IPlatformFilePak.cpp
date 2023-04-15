@@ -68,6 +68,9 @@ int64 GTotalLoadedLastTick = 0;
 #ifndef ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
 #define ALLOW_INI_OVERRIDE_FROM_COMMANDLINE 0
 #endif
+#ifndef HAS_PLATFORM_PAK_INSTALL_CHECK
+#define HAS_PLATFORM_PAK_INSTALL_CHECK 0
+#endif
 #ifndef ALL_PAKS_WILDCARD
 #define ALL_PAKS_WILDCARD "*.pak"
 #endif 
@@ -222,30 +225,27 @@ FPakPlatformFile::FPakSigningFailureHandlerData& FPakPlatformFile::GetPakSigning
 	return Instance;
 }
 
-// Needs to be a global as multiple threads may try to access the failed delegate
-FPakChunkSignatureCheckFailedHandler& FPakPlatformFile::GetPakChunkSignatureCheckFailedHandler()
-{
-	return GetPakSigningFailureHandlerData().ChunkSignatureCheckFailedDelegate;
-}
-
-FPakMasterSignatureTableCheckFailureHandler& FPakPlatformFile::GetPakMasterSignatureTableCheckFailureHandler()
-{
-	return GetPakSigningFailureHandlerData().MasterSignatureTableCheckFailedDelegate;
-}
-
 void FPakPlatformFile::BroadcastPakChunkSignatureCheckFailure(const FPakChunkSignatureCheckFailedData& InData)
 {
 	FPakSigningFailureHandlerData& HandlerData = GetPakSigningFailureHandlerData();
-	FScopeLock Lock(&HandlerData.Lock);
-	HandlerData.ChunkSignatureCheckFailedDelegate.Broadcast(InData);
+	FScopeLock Lock(&HandlerData.GetLock());
+	HandlerData.GetPakChunkSignatureCheckFailedDelegate().Broadcast(InData);
 }
 
-void FPakPlatformFile::BroadcastPakMasterSignatureTableCheckFailure(const FString& InFilename)
+void FPakPlatformFile::BroadcastPakPrincipalSignatureTableCheckFailure(const FString& InFilename)
 {
 	FPakSigningFailureHandlerData& HandlerData = GetPakSigningFailureHandlerData();
-	FScopeLock Lock(&HandlerData.Lock);
-	HandlerData.MasterSignatureTableCheckFailedDelegate.Broadcast(InFilename);
+	FScopeLock Lock(&HandlerData.GetLock());
+	HandlerData.GetPrincipalSignatureTableCheckFailedDelegate().Broadcast(InFilename);
 }
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+void FPakPlatformFile::BroadcastPakMasterSignatureTableCheckFailure(const FString& InFilename)
+{
+	return BroadcastPakPrincipalSignatureTableCheckFailure(InFilename);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 
 FPakSetIndexSettings& FPakPlatformFile::GetPakSetIndexSettingsDelegate()
 {
@@ -408,7 +408,7 @@ TSharedPtr<const struct FPakSignatureFile, ESPMode::ThreadSafe> FPakPlatformFile
 		else
 		{
 			UE_LOG(LogPakFile, Warning, TEXT("Couldn't find pak signature file '%s'"), InFilename);
-			BroadcastPakMasterSignatureTableCheckFailure(InFilename);
+			BroadcastPakPrincipalSignatureTableCheckFailure(InFilename);
 		}
 	}
 
@@ -3746,7 +3746,7 @@ void FPakPrecacher::DoSignatureCheck(bool bWasCanceled, IAsyncReadRequest* Reque
 	int64 RequestSize = 0;
 	int64 RequestOffset = 0;
 	uint16 PakIndex;
-	FSHAHash MasterSignatureHash;
+	FSHAHash PrincipalSignatureHash;
 	static const int64 MaxHashesToCache = 16;
 
 #if PAKHASH_USE_CRC
@@ -3774,7 +3774,7 @@ void FPakPrecacher::DoSignatureCheck(bool bWasCanceled, IAsyncReadRequest* Reque
 		SignatureIndex = RequestOffset / FPakInfo::MaxChunkDataSize;
 
 		FPakData& PakData = CachedPakData[PakIndex];
-		MasterSignatureHash = PakData.Signatures->DecryptedHash;
+		PrincipalSignatureHash = PakData.Signatures->DecryptedHash;
 
 		for (int32 CacheIndex = 0; CacheIndex < FMath::Min(NumSignaturesToCheck, MaxHashesToCache); ++CacheIndex)
 		{
@@ -3816,9 +3816,9 @@ void FPakPrecacher::DoSignatureCheck(bool bWasCanceled, IAsyncReadRequest* Reque
 				UE_LOG(LogPakFile, Warning, TEXT("Pak chunk signing mismatch on chunk [%i/%i]! Expected %s, Received %s"), SignatureIndex, PakData->Signatures->ChunkHashes.Num() - 1, *ChunkHashToString(PakData->Signatures->ChunkHashes[SignatureIndex]), *ChunkHashToString(ThisHash));
 
 				// Check the signatures are still as we expected them
-				if (PakData->Signatures->DecryptedHash != PakData->Signatures->ComputeCurrentMasterHash())
+				if (PakData->Signatures->DecryptedHash != PakData->Signatures->ComputeCurrentPrincipalHash())
 				{
-					UE_LOG(LogPakFile, Warning, TEXT("Master signature table has changed since initialization!"));
+					UE_LOG(LogPakFile, Warning, TEXT("Principal signature table has changed since initialization!"));
 				}
 
 				FPakChunkSignatureCheckFailedData FailedData(PakData->Name.ToString(), HashCache[SignedChunkIndex % MaxHashesToCache], ThisHash, SignatureIndex);
@@ -4686,12 +4686,12 @@ public:
 	}
 	virtual IMappedFileRegion* MapRegion(int64 Offset = 0, int64 BytesToMap = MAX_int64, bool bPreloadHint = false) override
 	{
-		check(Offset + OffsetInPak < PakSize); // don't map zero bytes and don't map off the end of the (real) file
+		//check(Offset + OffsetInPak < PakSize); // don't map zero bytes and don't map off the end of the (real) file
 		check(Offset < GetFileSize()); // don't map zero bytes and don't map off the end of the (virtual) file
 		BytesToMap = FMath::Min<int64>(BytesToMap, GetFileSize() - Offset);
 		check(BytesToMap > 0); // don't map zero bytes
-		check(Offset + BytesToMap <= GetFileSize()); // don't map zero bytes and don't map off the end of the (virtual) file
-		check(Offset + OffsetInPak + BytesToMap <= PakSize); // don't map zero bytes and don't map off the end of the (real) file
+		//check(Offset + BytesToMap <= GetFileSize()); // don't map zero bytes and don't map off the end of the (virtual) file
+		//check(Offset + OffsetInPak + BytesToMap <= PakSize); // don't map zero bytes and don't map off the end of the (real) file
 		return LowerLevel->MapRegion(Offset + OffsetInPak, BytesToMap, bPreloadHint);
 	}
 };
@@ -4743,6 +4743,17 @@ IMappedFileHandle* FPakPlatformFile::OpenMapped(const TCHAR* Filename)
 	{
 		return nullptr;
 	}
+
+#if !UE_BUILD_SHIPPING
+	if (bLookLooseFirst && IsNonPakFilenameAllowed(Filename))
+	{
+		IMappedFileHandle* Handle = LowerLevel->OpenMapped(Filename);
+		if (Handle != nullptr)
+		{
+			return Handle;
+		}
+	}
+#endif
 
 	// Check pak files first
 	FPakEntry FileEntry;
@@ -5161,6 +5172,18 @@ bool FPakPlatformFile::IsNonPakFilenameAllowed(const FString& InFilename)
 		}
 	}
 #endif
+#if !DISABLE_CHEAT_CVARS && !UE_BUILD_SHIPPING
+	if (bIsIniFile && !bAllowed)
+	{
+		FString OverrideConsoleVariablesPath;
+		FParse::Value(FCommandLine::Get(), TEXT("-cvarsini="), OverrideConsoleVariablesPath);
+
+		if (!OverrideConsoleVariablesPath.IsEmpty() && InFilename == OverrideConsoleVariablesPath)
+		{
+			bAllowed = true;
+		}
+	}
+#endif
 
 	FFilenameSecurityDelegate& FilenameSecurityDelegate = GetFilenameSecurityDelegate();
 	if (bAllowed)
@@ -5173,6 +5196,28 @@ bool FPakPlatformFile::IsNonPakFilenameAllowed(const FString& InFilename)
 
 	return bAllowed;
 }
+
+#if !HAS_PLATFORM_PAK_INSTALL_CHECK
+bool FPakPlatformFile::IsPakFileInstalled(const FString& InFilename)
+{
+	IPlatformChunkInstall* ChunkInstall = FPlatformMisc::GetPlatformChunkInstall();
+	if (ChunkInstall)
+	{
+		// if a platform supports chunk style installs, make sure that the chunk a pak file resides in is actually fully installed before accepting pak files from it
+		int32 PakchunkIndex = GetPakchunkIndexFromPakFile(InFilename);
+		if (PakchunkIndex != INDEX_NONE)
+		{
+			if (ChunkInstall->GetPakchunkLocation(PakchunkIndex) == EChunkLocation::NotAvailable)
+			{
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+#endif //HAS_PLATFORM_PAK_INSTALL_CHECK
+
 
 
 FSharedPakReader::FSharedPakReader(FArchive* InArchive, FPakFile* InPakFile)
@@ -6639,8 +6684,8 @@ bool FPakFile::Check()
 		FPakPlatformFile::FPakSigningFailureHandlerData& HandlerData = FPakPlatformFile::GetPakSigningFailureHandlerData();
 
 		{
-			FScopeLock Lock(&HandlerData.Lock);
-			DelegateHandle = HandlerData.ChunkSignatureCheckFailedDelegate.AddLambda([&ErrorCount](const FPakChunkSignatureCheckFailedData&)
+			FScopeLock Lock(&HandlerData.GetLock());
+			DelegateHandle = HandlerData.GetPakChunkSignatureCheckFailedDelegate().AddLambda([&ErrorCount](const FPakChunkSignatureCheckFailedData&)
 			{
 				++ErrorCount;
 			});
@@ -6658,8 +6703,8 @@ bool FPakFile::Check()
 
 		if (DelegateHandle.IsValid())
 		{
-			FScopeLock Lock(&HandlerData.Lock);
-			HandlerData.ChunkSignatureCheckFailedDelegate.Remove(DelegateHandle);
+			FScopeLock Lock(&HandlerData.GetLock());
+			HandlerData.GetPakChunkSignatureCheckFailedDelegate().Remove(DelegateHandle);
 		}
 	}
 	else
@@ -7267,14 +7312,12 @@ void FPakPlatformFile::FindPakFilesInDirectory(IPlatformFile* LowLevelFile, cons
 	class FPakSearchVisitor : public IPlatformFile::FDirectoryVisitor
 	{
 		TArray<FString>& FoundPakFiles;
-		IPlatformChunkInstall* ChunkInstall = nullptr;
 		FString WildCard;
 		bool bSkipOptionalPakFiles;
 
 	public:
-		FPakSearchVisitor(TArray<FString>& InFoundPakFiles, const FString& InWildCard, IPlatformChunkInstall* InChunkInstall, bool bInSkipOptionalPakFiles)
+		FPakSearchVisitor(TArray<FString>& InFoundPakFiles, const FString& InWildCard, bool bInSkipOptionalPakFiles)
 			: FoundPakFiles(InFoundPakFiles)
-			, ChunkInstall(InChunkInstall)
 			, WildCard(InWildCard)
 			, bSkipOptionalPakFiles(bInSkipOptionalPakFiles)
 		{}
@@ -7285,17 +7328,9 @@ void FPakPlatformFile::FindPakFilesInDirectory(IPlatformFile* LowLevelFile, cons
 				FString Filename(FilenameOrDirectory);
 				if(Filename.MatchesWildcard(WildCard))
 				{
-					// if a platform supports chunk style installs, make sure that the chunk a pak file resides in is actually fully installed before accepting pak files from it
-					if (ChunkInstall)
+					if (!FPakPlatformFile::IsPakFileInstalled(Filename))
 					{
-						int32 PakchunkIndex = GetPakchunkIndexFromPakFile(Filename);
-						if (PakchunkIndex != INDEX_NONE)
-						{
-							if (ChunkInstall->GetPakchunkLocation(PakchunkIndex) == EChunkLocation::NotAvailable)
-							{
-								return true;
-							}
-						}
+						return true;
 					}
 
 #if !UE_BUILD_SHIPPING
@@ -7313,7 +7348,7 @@ void FPakPlatformFile::FindPakFilesInDirectory(IPlatformFile* LowLevelFile, cons
 	bool bSkipOptionalPakFiles = FParse::Param(FCommandLine::Get(), TEXT("SkipOptionalPakFiles"));
 
 	// Find all pak files.
-	FPakSearchVisitor Visitor(OutPakFiles, WildCard, FPlatformMisc::GetPlatformChunkInstall(), bSkipOptionalPakFiles);
+	FPakSearchVisitor Visitor(OutPakFiles, WildCard, bSkipOptionalPakFiles);
 	LowLevelFile->IterateDirectoryRecursively(Directory, Visitor);
 }
 
@@ -7361,15 +7396,7 @@ bool FPakPlatformFile::CheckIfPakFilesExist(IPlatformFile* LowLevelFile, const T
 
 bool FPakPlatformFile::ShouldBeUsed(IPlatformFile* Inner, const TCHAR* CmdLine) const
 {
-	bool Result = false;
-#if (!WITH_EDITOR || IS_MONOLITHIC)
-	if (!FParse::Param(CmdLine, TEXT("NoPak")))
-	{
-		TArray<FString> PakFolders;
-		GetPakFolders(CmdLine, PakFolders);
-		Result = CheckIfPakFilesExist(Inner, PakFolders);
-	}
-#else
+#if WITH_EDITOR
 	if (FParse::Param(CmdLine, TEXT("UsePaks")))
 	{
 		TArray<FString> PakFolders;
@@ -7378,9 +7405,19 @@ bool FPakPlatformFile::ShouldBeUsed(IPlatformFile* Inner, const TCHAR* CmdLine) 
 		{
 			UE_LOG(LogPakFile, Warning, TEXT("No Pak files were found when checking to make Pak Environment"));
 		}
-		Result = true;
+		return true;
 	}
-#endif
+#endif //if WITH_EDITOR
+
+	bool Result = false;
+#if (!WITH_EDITOR || IS_MONOLITHIC)
+	if (!FParse::Param(CmdLine, TEXT("NoPak")))
+	{
+		TArray<FString> PakFolders;
+		GetPakFolders(CmdLine, PakFolders);
+		Result = CheckIfPakFilesExist(Inner, PakFolders);
+	}
+#endif //if (!WITH_EDITOR || IS_MONOLITHIC)
 	return Result;
 }
 
@@ -7409,12 +7446,18 @@ bool FPakPlatformFile::Initialize(IPlatformFile* Inner, const TCHAR* CmdLine)
 	GameUserSettingsIniFilename = TEXT("GameUserSettings.ini");
 #endif
 
-	// Signed if we have keys, and are not running with fileopenlog (currently results in a deadlock).
-	bSigned = FCoreDelegates::GetPakSigningKeysDelegate().IsBound() && !FParse::Param(FCommandLine::Get(), TEXT("fileopenlog"));
+	// Signed if we have keys, and are not running with fileopenlog in non-shipping builds (currently results in a deadlock).
+	bSigned = FCoreDelegates::GetPakSigningKeysDelegate().IsBound();
+#if !UE_BUILD_SHIPPING
+	bSigned &= !FParse::Param(FCommandLine::Get(), TEXT("fileopenlog"));
+#endif
 
 	FString StartupPaksWildcard = GMountStartupPaksWildCard;
 #if !UE_BUILD_SHIPPING
 	FParse::Value(FCommandLine::Get(), TEXT("StartupPaksWildcard="), StartupPaksWildcard);
+
+	// initialize the bLookLooseFirst setting
+	bLookLooseFirst = FParse::Param(FCommandLine::Get(), TEXT("LookLooseFirst"));
 #endif
 
 	FString GlobalUTocPath = FString::Printf(TEXT("%sPaks/global.utoc"), *FPaths::ProjectContentDir());
@@ -7430,11 +7473,8 @@ bool FPakPlatformFile::Initialize(IPlatformFile* Inner, const TCHAR* CmdLine)
 		FIoDispatcher& IoDispatcher = FIoDispatcher::Get();
 		IoDispatcherFileBackend = CreateIoDispatcherFileBackend();
 		IoDispatcher.Mount(IoDispatcherFileBackend.ToSharedRef());
-		FilePackageStore = MakeShared<FFilePackageStore>();
-		FCoreDelegates::CreatePackageStore.BindLambda([this]()
-		{
-			return FilePackageStore;
-		});
+		PackageStoreBackend = MakeShared<FFilePackageStoreBackend>();
+		FPackageStore::Get().Mount(PackageStoreBackend.ToSharedRef());
 
 		if (bShouldMountGlobal)
 		{
@@ -7640,8 +7680,7 @@ bool FPakPlatformFile::Mount(const TCHAR* InPakFilename, uint32 PakOrder, const 
 	LLM_SCOPE(ELLMTag::FileSystem);
 	bool bPakSuccess = false;
 	bool bIoStoreSuccess = true;
-	TSharedPtr<IFileHandle> PakHandle = MakeShareable(LowerLevel->OpenRead(InPakFilename));
-	if (PakHandle.IsValid())
+	if (LowerLevel->FileExists(InPakFilename))
 	{
 		TRefCountPtr<FPakFile> Pak = new FPakFile(LowerLevel, InPakFilename, bSigned, bLoadIndex);
 		if (Pak.GetReference()->IsValid())
@@ -7705,7 +7744,6 @@ bool FPakPlatformFile::Mount(const TCHAR* InPakFilename, uint32 PakOrder, const 
 				Entry.PakchunkIndex = Pak->PakchunkIndex;
 
 				Pak.SafeRelease();
-				PakHandle.Reset();
 				return false;
 			}
 		}
@@ -7739,7 +7777,24 @@ bool FPakPlatformFile::Mount(const TCHAR* InPakFilename, uint32 PakOrder, const 
 				{
 					UE_LOG(LogPakFile, Display, TEXT("Mounted IoStore container \"%s\""), *UtocPath);
 					Pak->IoContainerHeader = MakeUnique<FIoContainerHeader>(MountResult.ConsumeValueOrDie());
-					FilePackageStore->Mount(Pak->IoContainerHeader.Get(), PakOrder);
+					PackageStoreBackend->Mount(Pak->IoContainerHeader.Get(), PakOrder);
+#if WITH_EDITOR
+					FString OptionalSegmentUtocPath = FPaths::ChangeExtension(InPakFilename, FString::Printf(TEXT("%s.utoc"), FPackagePath::GetOptionalSegmentExtensionModifier()));
+					if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*OptionalSegmentUtocPath))
+					{
+						MountResult = IoDispatcherFileBackend->Mount(*OptionalSegmentUtocPath, PakOrder, EncryptionKeyGuid, EncryptionKey);
+						if (MountResult.IsOk())
+						{
+							Pak->OptionalSegmentIoContainerHeader = MakeUnique<FIoContainerHeader>(MountResult.ConsumeValueOrDie());
+							PackageStoreBackend->Mount(Pak->OptionalSegmentIoContainerHeader.Get(), PakOrder);
+							UE_LOG(LogPakFile, Display, TEXT("Mounted optional segment extension IoStore container \"%s\""), *OptionalSegmentUtocPath);
+						}
+						else
+						{
+							UE_LOG(LogPakFile, Warning, TEXT("Failed to mount optional segment extension IoStore container \"%s\" [%s]"), *OptionalSegmentUtocPath, *MountResult.Status().ToString());
+						}
+					}
+#endif
 				}
 				else
 				{
@@ -7770,7 +7825,12 @@ bool FPakPlatformFile::Mount(const TCHAR* InPakFilename, uint32 PakOrder, const 
 			UE_LOG(LogPakFile, Verbose, TEXT("OnPakFileMounted2Time == %lf"), OnPakFileMounted2Time);
 						
 			// skip this check for the default mountpoint, it will print false positives
-			if (FPaths::CreateStandardFilename(Pak->GetMountPoint()) != FPaths::CreateStandardFilename(FPaths::RootDir()))
+			FString NormalizedPakMountPoint = FPaths::CreateStandardFilename(Pak->GetMountPoint());
+			bool bIsMountingToRoot = NormalizedPakMountPoint == FPaths::CreateStandardFilename(FPaths::RootDir());
+#if WITH_EDITOR
+			bIsMountingToRoot |= NormalizedPakMountPoint == FPaths::CreateStandardFilename(FPaths::GameFeatureRootPrefix());
+#endif
+			if (!bIsMountingToRoot)
 			{
 				FString OutPackageName;
 				if (!FPackageName::TryConvertFilenameToLongPackageName(Pak->GetMountPoint(), OutPackageName))
@@ -7816,10 +7876,18 @@ bool FPakPlatformFile::Unmount(const TCHAR* InPakFilename)
 		{
 			if (UnmountedPak)
 			{
-				FilePackageStore->Unmount(UnmountedPak->IoContainerHeader.Get());
+				PackageStoreBackend->Unmount(UnmountedPak->IoContainerHeader.Get());
 			}
 			FString ContainerPath = FPaths::ChangeExtension(InPakFilename, FString());
 			bRemovedContainerFile = IoDispatcherFileBackend->Unmount(*ContainerPath);
+#if WITH_EDITOR
+			if (UnmountedPak && UnmountedPak->OptionalSegmentIoContainerHeader.IsValid())
+			{
+				PackageStoreBackend->Unmount(UnmountedPak->OptionalSegmentIoContainerHeader.Get());
+				FString OptionalSegmentContainerPath = ContainerPath + FPackagePath::GetOptionalSegmentExtensionModifier();
+				IoDispatcherFileBackend->Unmount(*OptionalSegmentContainerPath);
+			}
+#endif
 		}
 
 		if (UnmountedPak)
@@ -8102,6 +8170,19 @@ void FPakPlatformFile::RegisterEncryptionKey(const FGuid& InGuid, const FAES::FA
 IFileHandle* FPakPlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrite)
 {
 	IFileHandle* Result = NULL;
+
+#if !UE_BUILD_SHIPPING
+	if (bLookLooseFirst && IsNonPakFilenameAllowed(Filename))
+	{
+		Result = LowerLevel->OpenRead(Filename, bAllowWrite);
+		if (Result != nullptr)
+		{
+			return Result;
+		}
+	}
+#endif
+
+
 	TRefCountPtr<FPakFile> PakFile;
 	FPakEntry FileEntry;
 	if (FindFileInPakFiles(Filename, &PakFile, &FileEntry))
@@ -8207,6 +8288,14 @@ bool FPakPlatformFile::BufferedCopyFile(IFileHandle& Dest, IFileHandle& Source, 
 
 bool FPakPlatformFile::CopyFile(const TCHAR* To, const TCHAR* From, EPlatformFileRead ReadFlags, EPlatformFileWrite WriteFlags)
 {
+#if !UE_BUILD_SHIPPING
+	if (bLookLooseFirst && LowerLevel->FileExists(From))
+	{
+		return LowerLevel->CopyFile(To, From, ReadFlags, WriteFlags);
+	}
+#endif
+
+
 	bool Result = false;
 	FPakEntry FileEntry;
 	TRefCountPtr<FPakFile> PakFile;

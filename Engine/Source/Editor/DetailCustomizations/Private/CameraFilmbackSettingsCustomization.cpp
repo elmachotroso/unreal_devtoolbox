@@ -1,18 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CameraFilmbackSettingsCustomization.h"
-#include "PropertyHandle.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
-#include "ScopedTransaction.h"
+
 #include "CineCameraComponent.h"
+#include "Containers/Map.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "Templates/ChooseClass.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IDetailPropertyRow;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "CameraFilmbackSettingsCustomization"
 
-FCameraFilmbackSettingsCustomization::FCameraFilmbackSettingsCustomization()
+void FCameraFilmbackSettingsCustomization::BuildPresetComboList()
 {
-	TArray<FNamedFilmbackPreset> const& Presets = UCineCameraComponent::GetFilmbackPresets();
+	TArray<FNamedFilmbackPreset> const& Presets = UCineCameraSettings::GetFilmbackPresets();
 
 	int32 const NumPresets = Presets.Num();
 	// first create preset combo list
@@ -28,6 +46,11 @@ FCameraFilmbackSettingsCustomization::FCameraFilmbackSettingsCustomization()
 	}
 }
 
+FCameraFilmbackSettingsCustomization::FCameraFilmbackSettingsCustomization()
+{
+	BuildPresetComboList();
+}
+
 TSharedRef<IPropertyTypeCustomization> FCameraFilmbackSettingsCustomization::MakeInstance()
 {
 	return MakeShareable(new FCameraFilmbackSettingsCustomization);
@@ -39,24 +62,34 @@ void FCameraFilmbackSettingsCustomization::CustomizeHeader(TSharedRef<IPropertyH
 		NameContent()
 		[
 			StructPropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MaxDesiredWidth(0.f)
-		[
-			SAssignNew(PresetComboBox, SComboBox< TSharedPtr<FString> >)
-			.OptionsSource(&PresetComboList)
-			.OnGenerateWidget(this, &FCameraFilmbackSettingsCustomization::MakePresetComboWidget)
-			.OnSelectionChanged(this, &FCameraFilmbackSettingsCustomization::OnPresetChanged)
-			.IsEnabled(this, &FCameraFilmbackSettingsCustomization::IsPresetEnabled)
-			.ContentPadding(2)
-			.Content()
-			[
-				SNew(STextBlock)
-				.Text(this, &FCameraFilmbackSettingsCustomization::GetPresetComboBoxContent)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.ToolTipText(this, &FCameraFilmbackSettingsCustomization::GetPresetComboBoxContent)
-			]
 		];
+
+	// We only want the dropdown list outside of the settings class as the settings class is the thing
+	// defining the presets we use for the dropdown
+	const bool bInSettingsClass = StructPropertyHandle->GetOuterBaseClass() == UCineCameraSettings::StaticClass();
+
+	if (!bInSettingsClass)
+	{
+		HeaderRow.
+			ValueContent()
+			.MaxDesiredWidth(0.f)
+			[
+				SAssignNew(PresetComboBox, SComboBox< TSharedPtr<FString> >)
+				.OptionsSource(&PresetComboList)
+				.OnGenerateWidget(this, &FCameraFilmbackSettingsCustomization::MakePresetComboWidget)
+				.OnSelectionChanged(this, &FCameraFilmbackSettingsCustomization::OnPresetChanged)
+				.OnComboBoxOpening(this, &FCameraFilmbackSettingsCustomization::BuildPresetComboList)
+				.IsEnabled(this, &FCameraFilmbackSettingsCustomization::IsPresetEnabled)
+				.ContentPadding(2)
+				.Content()
+				[
+					SNew(STextBlock)
+					.Text(this, &FCameraFilmbackSettingsCustomization::GetPresetComboBoxContent)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(this, &FCameraFilmbackSettingsCustomization::GetPresetComboBoxContent)
+				]
+			];
+	}
 }
 
 void FCameraFilmbackSettingsCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
@@ -112,7 +145,7 @@ void FCameraFilmbackSettingsCustomization::OnPresetChanged(TSharedPtr<FString> N
 		FString const NewPresetName = *NewSelection.Get();
 
 		// search presets for one that matches
-		TArray<FNamedFilmbackPreset> const& Presets = UCineCameraComponent::GetFilmbackPresets();
+		TArray<FNamedFilmbackPreset> const& Presets = UCineCameraSettings::GetFilmbackPresets();
 		int32 const NumPresets = Presets.Num();
 		for (int32 PresetIdx = 0; PresetIdx < NumPresets; ++PresetIdx)
 		{
@@ -158,7 +191,7 @@ TSharedPtr<FString> FCameraFilmbackSettingsCustomization::GetPresetString() cons
 	SensorHeightHandle->GetValue(CurSensorHeight);
 
 	// search presets for one that matches
-	TArray<FNamedFilmbackPreset> const& Presets = UCineCameraComponent::GetFilmbackPresets();
+	TArray<FNamedFilmbackPreset> const& Presets = UCineCameraSettings::GetFilmbackPresets();
 	int32 const NumPresets = Presets.Num();
 	for (int32 PresetIdx = 0; PresetIdx < NumPresets; ++PresetIdx)
 	{

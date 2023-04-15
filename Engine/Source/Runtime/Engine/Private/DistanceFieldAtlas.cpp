@@ -127,7 +127,7 @@ FDistanceFieldAsyncQueue* GDistanceFieldAsyncQueue = NULL;
 #if WITH_EDITOR
 
 // DDC key for distance field data, must be changed when modifying the generation code or data format
-#define DISTANCEFIELD_DERIVEDDATA_VER TEXT("540160fd-f0b5-41da-bbe3-f573428ccd0d")
+#define DISTANCEFIELD_DERIVEDDATA_VER TEXT("23A632E6-DB31-4A5B-B43D-17D98C6E946C")
 
 FString BuildDistanceFieldDerivedDataKey(const FString& InMeshKey)
 {
@@ -151,23 +151,44 @@ FString BuildDistanceFieldDerivedDataKey(const FString& InMeshKey)
 
 void FDistanceFieldVolumeData::CacheDerivedData(const FString& InStaticMeshDerivedDataKey, const ITargetPlatform* TargetPlatform, UStaticMesh* Mesh, FStaticMeshRenderData& RenderData, UStaticMesh* GenerateSource, float DistanceFieldResolutionScale, bool bGenerateDistanceFieldAsIfTwoSided)
 {
-	FString DistanceFieldKey = BuildDistanceFieldDerivedDataKey(InStaticMeshDerivedDataKey);
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldVolumeData::CacheDerivedData);
 
-	for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
+	const TArray<FStaticMaterial>& StaticMaterials = Mesh->GetStaticMaterials();
+
+	TArray<FSignedDistanceFieldBuildMaterialData> BuildMaterialData;
+	BuildMaterialData.SetNum(StaticMaterials.Num());
+
+	const FMeshSectionInfoMap& SectionInfoMap = Mesh->GetSectionInfoMap();
+	const uint32 LODIndex = 0;
+
+	for (int32 SectionIndex = 0; SectionIndex < SectionInfoMap.GetSectionNumber(LODIndex); SectionIndex++)
 	{
-		FSignedDistanceFieldBuildMaterialData MaterialData;
-		// Default material blend mode
-		MaterialData.BlendMode = BLEND_Opaque;
-		MaterialData.bTwoSided = false;
+		const FMeshSectionInfo& Section = SectionInfoMap.Get(LODIndex, SectionIndex);
 
-		UMaterialInterface* MaterialInterface = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface;
+		if (!BuildMaterialData.IsValidIndex(Section.MaterialIndex))
+		{
+			continue;
+		}
+
+		FSignedDistanceFieldBuildMaterialData& MaterialData = BuildMaterialData[Section.MaterialIndex];
+		MaterialData.bAffectDistanceFieldLighting = Section.bAffectDistanceFieldLighting;
+
+		UMaterialInterface* MaterialInterface = StaticMaterials[Section.MaterialIndex].MaterialInterface;
 		if (MaterialInterface)
 		{
 			MaterialData.BlendMode = MaterialInterface->GetBlendMode();
 			MaterialData.bTwoSided = MaterialInterface->IsTwoSided();
 		}
+	}
 
-		DistanceFieldKey += FString::Printf(TEXT("_M%u_%u"), (uint32)MaterialData.BlendMode, MaterialData.bTwoSided ? 1 : 0);
+	FString DistanceFieldKey = BuildDistanceFieldDerivedDataKey(InStaticMeshDerivedDataKey);
+
+	for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
+	{
+		DistanceFieldKey += FString::Printf(TEXT("_M%u_%u_%u"), 
+			(uint32)BuildMaterialData[MaterialIndex].BlendMode,
+			BuildMaterialData[MaterialIndex].bTwoSided ? 1 : 0,
+			BuildMaterialData[MaterialIndex].bAffectDistanceFieldLighting ? 1 : 0);
 	}
 
 	TArray<uint8> DerivedData;
@@ -183,11 +204,12 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InStaticMeshDeriv
 	}
 	else if (GDistanceFieldAsyncQueue)
 	{
+		check(Mesh && GenerateSource);
+
 		// We don't actually build the resource until later, so only track the cycles used here.
 		COOK_STAT(Timer.TrackCyclesOnly());
 		FAsyncDistanceFieldTask* NewTask = new FAsyncDistanceFieldTask;
 		NewTask->DDCKey = DistanceFieldKey;
-		check(Mesh && GenerateSource);
 		NewTask->TargetPlatform = TargetPlatform;
 		NewTask->StaticMesh = Mesh;
 		NewTask->GenerateSource = GenerateSource;
@@ -196,22 +218,7 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InStaticMeshDeriv
 		NewTask->GeneratedVolumeData = new FDistanceFieldVolumeData();
 		NewTask->GeneratedVolumeData->AssetName = Mesh->GetFName();
 		NewTask->GeneratedVolumeData->bAsyncBuilding = true;
-
-		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
-		{
-			FSignedDistanceFieldBuildMaterialData MaterialData;
-			// Default material blend mode
-			MaterialData.BlendMode = BLEND_Opaque;
-			MaterialData.bTwoSided = false;
-
-			if (Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface)
-			{
-				MaterialData.BlendMode = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->GetBlendMode();
-				MaterialData.bTwoSided = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->IsTwoSided();
-			}
-
-			NewTask->MaterialBlendModes.Add(MaterialData);
-		}
+		NewTask->MaterialBlendModes = MoveTemp(BuildMaterialData);
 
 		// Nanite overrides source static mesh with a coarse representation. Need to load original data before we build the mesh SDF.
 		if (Mesh->NaniteSettings.bEnabled)
@@ -799,7 +806,12 @@ void FDistanceFieldAsyncQueue::ProcessAsyncTasks(bool bLimitExecutionTime)
 				COOK_STAT(Timer.AddMiss(DerivedData.Num()));
 			}
 
-			BeginCacheMeshCardRepresentation(Task->TargetPlatform, Task->StaticMesh, *Task->StaticMesh->GetRenderData(), Task->DDCKey, &Task->SourceMeshData);
+			BeginCacheMeshCardRepresentation(
+				Task->TargetPlatform,
+				Task->StaticMesh,
+				Task->StaticMesh->GetPlatformStaticMeshRenderData(Task->StaticMesh, Task->TargetPlatform),
+				Task->DDCKey,
+				&Task->SourceMeshData);
 		}
 
 		delete Task;
@@ -859,10 +871,9 @@ void FLandscapeTextureAtlas::InitializeIfNeeded()
 		const uint32 SizeY = AddrSpaceAllocator.DimInTexels;
 		const ETextureCreateFlags Flags = TexCreate_ShaderResource | TexCreate_UAV;
 		const EPixelFormat Format = bHeight ? PF_R8G8 : PF_G8;
-		FRHIResourceCreateInfo CreateInfo(bHeight ? TEXT("HeightFieldAtlas") : TEXT("VisibilityAtlas"));
+		const TCHAR* Name = bHeight ? TEXT("HeightFieldAtlas") : TEXT("VisibilityAtlas");
 
-		AtlasTextureRHI = RHICreateTexture2D(SizeX, SizeY, Format, 1, 1, Flags, CreateInfo);
-		AtlasUAVRHI = RHICreateUnorderedAccessView(AtlasTextureRHI, 0);
+		AtlasTextureRHI = AllocatePooledTexture(FRDGTextureDesc::Create2D(FIntPoint(SizeX, SizeY), Format, FClearValueBinding::None, Flags), Name);
 
 		MaxDownSampleLevel = LocalDownSampleLevel;
 		++Generation;
@@ -980,7 +991,7 @@ class FUploadHeightFieldToAtlasCS : public FUploadLandscapeTextureToAtlasCS
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters,)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FUploadLandscapeTextureToAtlasCS::FSharedParameters, SharedParams)
-		SHADER_PARAMETER_UAV(RWTexture2D<float2>, RWHeightFieldAtlas)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, RWHeightFieldAtlas)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -996,7 +1007,7 @@ class FUploadVisibilityToAtlasCS : public FUploadLandscapeTextureToAtlasCS
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FUploadLandscapeTextureToAtlasCS::FSharedParameters, SharedParams)
 		SHADER_PARAMETER(FVector4f, VisibilityChannelMask)
-		SHADER_PARAMETER_UAV(RWTexture2D<float>, RWVisibilityAtlas)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWVisibilityAtlas)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -1022,6 +1033,9 @@ uint32 FLandscapeTextureAtlas::CalculateDownSampleLevel(uint32 SizeX, uint32 Siz
 
 void FLandscapeTextureAtlas::UpdateAllocations(FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type InFeatureLevel)
 {
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
 	InitializeIfNeeded();
 
 	TArray<FPendingUpload, TInlineAllocator<8>> PendingUploads;
@@ -1145,11 +1159,7 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRDGBuilder& GraphBuilder, ERHIFe
 
 	if (PendingUploads.Num())
 	{
-		AddPass(GraphBuilder, RDG_EVENT_NAME("TransitionAtlasUAV"), [this](FRHICommandList& RHICmdList)
-		{
-			RHICmdList.Transition(FRHITransitionInfo(AtlasUAVRHI, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-			RHICmdList.BeginUAVOverlap(AtlasUAVRHI);
-		});
+		FRDGTextureUAV* AtlasTextureUAV = GraphBuilder.CreateUAV(GraphBuilder.RegisterExternalTexture(AtlasTextureRHI), ERDGUnorderedAccessViewFlags::SkipBarrier);
 
 		if (SubAllocType == SAT_Height)
 		{
@@ -1157,15 +1167,9 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRDGBuilder& GraphBuilder, ERHIFe
 			for (int32 Idx = 0; Idx < PendingUploads.Num(); ++Idx)
 			{
 				typename FUploadHeightFieldToAtlasCS::FParameters* Parameters = GraphBuilder.AllocParameters<typename FUploadHeightFieldToAtlasCS::FParameters>();
-				const FIntPoint UpdateRegion = PendingUploads[Idx].SetShaderParameters(Parameters, *this);
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("UploadHeightFieldToAtlas"),
-					Parameters,
-					ERDGPassFlags::Compute,
-					[Parameters, ComputeShader, UpdateRegion](FRHICommandList& CmdList)
-				{
-					FComputeShaderUtils::Dispatch(CmdList, ComputeShader, *Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
-				});
+				const FIntPoint UpdateRegion = PendingUploads[Idx].SetShaderParameters(Parameters, *this, AtlasTextureUAV);
+
+				FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("UploadHeightFieldToAtlas"), ComputeShader, Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
 			}
 		}
 		else
@@ -1174,29 +1178,16 @@ void FLandscapeTextureAtlas::UpdateAllocations(FRDGBuilder& GraphBuilder, ERHIFe
 			for (int32 Idx = 0; Idx < PendingUploads.Num(); ++Idx)
 			{
 				typename FUploadVisibilityToAtlasCS::FParameters* Parameters = GraphBuilder.AllocParameters<typename FUploadVisibilityToAtlasCS::FParameters>();
-				const FIntPoint UpdateRegion = PendingUploads[Idx].SetShaderParameters(Parameters, *this);
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("UploadVisibilityToAtlas"),
-					Parameters,
-					ERDGPassFlags::Compute,
-					[Parameters, ComputeShader, UpdateRegion](FRHICommandList& CmdList)
-				{
-					FComputeShaderUtils::Dispatch(CmdList, ComputeShader, *Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
-				});
+				const FIntPoint UpdateRegion = PendingUploads[Idx].SetShaderParameters(Parameters, *this, AtlasTextureUAV);
+
+				FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("UploadVisibilityToAtlas"), ComputeShader, Parameters, FIntVector(UpdateRegion.X, UpdateRegion.Y, 1));
 			}
 		}
-
-		AddPass(GraphBuilder, RDG_EVENT_NAME("TransitionAtlasUAV"), [this](FRHICommandList& RHICmdList)
-		{
-			RHICmdList.EndUAVOverlap(AtlasUAVRHI);
-			RHICmdList.Transition(FRHITransitionInfo(AtlasUAVRHI, ERHIAccess::UAVCompute, ERHIAccess::SRVGraphics));
-		});
 	}
 }
 
 void FLandscapeTextureAtlas::UpdateAllocations(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type InFeatureLevel)
 {
-	FMemMark Mark(FMemStack::Get());
 	FRDGBuilder GraphBuilder(RHICmdList);
 	UpdateAllocations(GraphBuilder, InFeatureLevel);
 	GraphBuilder.Execute();
@@ -1397,12 +1388,12 @@ FLandscapeTextureAtlas::FPendingUpload::FPendingUpload(UTexture2D* Texture, uint
 	, Handle(InHandle)
 {}
 
-FIntPoint FLandscapeTextureAtlas::FPendingUpload::SetShaderParameters(void* ParamsPtr, const FLandscapeTextureAtlas& Atlas) const
+FIntPoint FLandscapeTextureAtlas::FPendingUpload::SetShaderParameters(void* ParamsPtr, const FLandscapeTextureAtlas& Atlas, FRDGTextureUAV* AtlasUAV) const
 {
 	if (Atlas.SubAllocType == SAT_Height)
 	{
 		typename FUploadHeightFieldToAtlasCS::FParameters* Params = (typename FUploadHeightFieldToAtlasCS::FParameters*)ParamsPtr;
-		Params->RWHeightFieldAtlas = Atlas.AtlasUAVRHI;
+		Params->RWHeightFieldAtlas = AtlasUAV;
 		return SetCommonShaderParameters(&Params->SharedParams, Atlas);
 	}
 	else
@@ -1411,7 +1402,7 @@ FIntPoint FLandscapeTextureAtlas::FPendingUpload::SetShaderParameters(void* Para
 		FVector4f ChannelMask(ForceInitToZero);
 		ChannelMask[VisibilityChannel] = 1.f;
 		Params->VisibilityChannelMask = ChannelMask;
-		Params->RWVisibilityAtlas = Atlas.AtlasUAVRHI;
+		Params->RWVisibilityAtlas = AtlasUAV;
 		return SetCommonShaderParameters(&Params->SharedParams, Atlas);
 	}
 }

@@ -7,6 +7,7 @@
 #include "DerivedDataBuildPrivate.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataCachePrivate.h"
+#include "DerivedDataPrivate.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/ScopeLock.h"
 #include "Modules/ModuleManager.h"
@@ -35,6 +36,11 @@ public:
 		return &GDerivedDataLegacyCache;
 	}
 
+	FDerivedDataCacheInterface* const* GetCache() final
+	{
+		return &GDerivedDataLegacyCache;
+	}
+
 	void CreateCacheOnce()
 	{
 		FScopeLock Lock(&CreateLock);
@@ -54,6 +60,13 @@ public:
 			GDerivedDataBuild = CreateBuild(*GDerivedDataCache);
 			check(GDerivedDataBuild);
 		}
+	}
+
+	void StartupModule() final
+	{
+		// Required to guarantee that SSL shuts down after DDC. Without this, waiting for active
+		// cache requests on shutdown can crash when accessing SSL.
+		FModuleManager::Get().LoadModuleChecked(TEXT("SSL"));
 	}
 
 	void ShutdownModule() final
@@ -88,6 +101,10 @@ static FDerivedDataCacheModule* GetModule()
 namespace UE::DerivedData
 {
 
+LLM_DEFINE_TAG(DerivedData);
+LLM_DEFINE_TAG(DerivedDataBuild, "Build", "DerivedData");
+LLM_DEFINE_TAG(DerivedDataCache, "Cache", "DerivedData");
+
 ICache& GetCache()
 {
 	if (ICache* Cache = Private::GDerivedDataCache)
@@ -102,6 +119,11 @@ ICache& GetCache()
 	ICache* Cache = Private::GDerivedDataCache;
 	checkf(Cache, TEXT("Failed to create derived data cache."));
 	return *Cache;
+}
+
+ICache* TryGetCache()
+{
+	return Private::GDerivedDataCache;
 }
 
 IBuild& GetBuild()

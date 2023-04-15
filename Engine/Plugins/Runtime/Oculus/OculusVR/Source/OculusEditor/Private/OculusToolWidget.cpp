@@ -11,7 +11,7 @@
 #include "AndroidRuntimeSettings.h"
 #include "EngineUtils.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Text/SRichTextBlock.h"
 #include "UObject/EnumProperty.h"
 #include "EdGraph/EdGraph.h"
@@ -21,6 +21,8 @@
 #define CALL_MEMBER_FUNCTION(object, memberFn) ((object).*(memberFn))
 
 #define LOCTEXT_NAMESPACE "OculusToolWidget"
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 // Misc notes and known issues:
 // * I save after every change because UE wasn't prompting to save on exit, but this makes it tough for users to undo, and doesn't prompt shader rebuild. Alternatives?
@@ -32,7 +34,7 @@ TSharedRef<SHorizontalBox> SOculusToolWidget::CreateSimpleSetting(SimpleSetting*
 		[
 			SNew(SRichTextBlock)
 			.Visibility(this, &SOculusToolWidget::IsVisible, setting->tag)
-		.DecoratorStyleSet(&FEditorStyle::Get())
+		.DecoratorStyleSet(&FAppStyle::Get())
 		.Text(setting->description).AutoWrapText(true)
 		+ SRichTextBlock::HyperlinkDecorator(TEXT("HyperlinkDecorator"), this, &SOculusToolWidget::OnBrowserLinkClicked)
 		];
@@ -64,7 +66,7 @@ EVisibility SOculusToolWidget::IsVisible(FName tag) const
 	const SimpleSetting* setting = SimpleSettings.Find(tag);
 	checkf(setting != NULL, TEXT("Failed to find tag %s."), *tag.ToString());
 	if(SettingIgnored(setting->tag)) return EVisibility::Collapsed;
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	EOculusPlatform targetPlatform = EditorSettings->PerfToolTargetPlatform;
 	 
 	if(targetPlatform == EOculusPlatform::Mobile && !((int)setting->supportMask & (int)SupportFlags::SupportMobile)) return EVisibility::Collapsed;
@@ -89,7 +91,7 @@ void SOculusToolWidget::AddSimpleSetting(TSharedRef<SVerticalBox> box, SimpleSet
 
 bool SOculusToolWidget::SettingIgnored(FName settingKey) const
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	bool* ignoreSetting = EditorSettings->PerfToolIgnoreList.Find(settingKey);
 	return (ignoreSetting != NULL && *ignoreSetting == true);
 }
@@ -100,14 +102,14 @@ TSharedRef<SVerticalBox> SOculusToolWidget::NewCategory(TSharedRef<SScrollBox> s
 	.Padding(0, 0)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder") )
+		.BorderImage( FAppStyle::GetBrush("ToolPanel.DarkGroupBorder") )
 		[
 			SNew(SHorizontalBox)
 			+SHorizontalBox::Slot().Padding(5,5).FillWidth(1)
 			[
 				SNew(SRichTextBlock)
-				.TextStyle(FEditorStyle::Get(), "ToolBar.Heading")
-				.DecoratorStyleSet(&FEditorStyle::Get()).AutoWrapText(true)
+				.TextStyle(FAppStyle::Get(), "ToolBar.Heading")
+				.DecoratorStyleSet(&FAppStyle::Get()).AutoWrapText(true)
 				.Text(heading)
 				+ SRichTextBlock::HyperlinkDecorator(TEXT("HyperlinkDecorator"), this, &SOculusToolWidget::OnBrowserLinkClicked)
 			]
@@ -119,7 +121,7 @@ TSharedRef<SVerticalBox> SOculusToolWidget::NewCategory(TSharedRef<SScrollBox> s
 	.Padding(0, 0, 0, 2)
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SAssignNew(box, SVerticalBox)
 		]
@@ -132,7 +134,7 @@ void SOculusToolWidget::RebuildLayout()
 	if (!ScrollingContainer.IsValid()) return;
 	TSharedRef<SScrollBox> scroller = ScrollingContainer.ToSharedRef();
 
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	uint8 initiallySelected = 0;
 	for (uint8 i = 0; i < (uint8)EOculusPlatform::Length; ++i)
 	{
@@ -151,19 +153,19 @@ void SOculusToolWidget::RebuildLayout()
 		+SVerticalBox::Slot().AutoHeight()
 		[
 			SNew(SBorder)
-			//.BorderImage( FEditorStyle::GetBrush("ToolPanel.LightGroupBorder") ).Visibility(this, &SOculusToolWidget::RestartVisible)
-			.BorderImage( FEditorStyle::GetBrush("SceneOutliner.ChangedItemHighlight") ).Visibility(this, &SOculusToolWidget::RestartVisible)
+			//.BorderImage( FAppStyle::GetBrush("ToolPanel.LightGroupBorder") ).Visibility(this, &SOculusToolWidget::RestartVisible)
+			.BorderImage( FAppStyle::GetBrush("SceneOutliner.ChangedItemHighlight") ).Visibility(this, &SOculusToolWidget::RestartVisible)
 			.Padding(2)
 			[
 				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder") )
+				.BorderImage( FAppStyle::GetBrush("ToolPanel.DarkGroupBorder") )
 				.Padding(2)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().FillWidth(10).VAlign(VAlign_Center)
 					[
 						SNew(SRichTextBlock)
-						.Text(LOCTEXT("RestartRequired", "<RichTextBlock.TextHighlight>Restart required:You have made changes that require an editor restart to take effect.</>")).DecoratorStyleSet(&FEditorStyle::Get())
+						.Text(LOCTEXT("RestartRequired", "<RichTextBlock.TextHighlight>Restart required:You have made changes that require an editor restart to take effect.</>")).DecoratorStyleSet(&FAppStyle::Get())
 					]
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Top)
 					[
@@ -285,7 +287,6 @@ void SOculusToolWidget::RebuildLayout()
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileShaderStaticAndCSMShadowReceivers")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileShaderAllowDistanceFieldShadows")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileShaderAllowMovableDirectionalLights")));
-	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileNumDynamicPointLights")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileMovableSpotlights")));
 
 	box = NewCategory(scroller, FText::GetEmpty());
@@ -327,7 +328,7 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 	PlatformEnum = StaticEnum<EOculusPlatform>();
 	Platforms.Reset(2);
 
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	for (uint8 i = 0; i < (uint8)EOculusPlatform::Length; ++i)
 	{
 		Platforms.Add(MakeShareable(new FString(PlatformEnum->GetDisplayNameTextByIndex((int64)i).ToString())));
@@ -546,30 +547,6 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 		&SOculusToolWidget::MobileShaderAllowMovableDirectionalLightsDisable }
 	);
 
-	SimpleSettings.Add(FName("MobileNumDynamicPointLights"), {
-		FName("MobileNumDynamicPointLights"),
-		LOCTEXT("MobileNumDynamicPointLightsDescription", "Your project does not contain any movable lights. Max Movable Spotlights / Point Lights can be set to 0 to reduce shader permutations."),
-		&SOculusToolWidget::MobileNumDynamicPointLightsVisibility,
-		TArray<SimpleSettingAction>(),
-		(int)SupportFlags::SupportMobile
-		});
-	SimpleSettings.Find(FName("MobileNumDynamicPointLights"))->actions.Add(
-		{ LOCTEXT("MobileNumDynamicPointLightsButton", "Set Max Movable Spotlights / Point Lights to 0"),
-		&SOculusToolWidget::MobileNumDynamicPointLightsFix }
-	);
-
-	SimpleSettings.Add(FName("MobileMovableSpotlights"), {
-		FName("MobileMovableSpotlights"),
-		LOCTEXT("MobileMovableSpotlightsDescription", "Your project does not contain any movable lights. Support Movable Spotlights can be disabled to reduce shader permutations."),
-		&SOculusToolWidget::MobileMovableSpotlightsDisableVisibility,
-		TArray<SimpleSettingAction>(),
-		(int)SupportFlags::SupportMobile
-		});
-	SimpleSettings.Find(FName("MobileMovableSpotlights"))->actions.Add(
-		{ LOCTEXT("MobileMovableSpotlightsButton", "Disable Support Movable Spotlights"),
-		&SOculusToolWidget::MobileMovableSpotlightsDisable }
-	);
-
 	auto scroller = SNew(SScrollBox);
 	ScrollingContainer = scroller;
 	RebuildLayout();
@@ -577,7 +554,7 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 	ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.LightGroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.LightGroupBorder") )
 			.Padding(2)
 			[
 				scroller
@@ -616,7 +593,7 @@ void SOculusToolWidget::OnChangePlatform(TSharedPtr<FString> ItemSelected, ESele
 	int32 idx = PlatformEnum->GetIndexByNameString(*ItemSelected);
 	if (idx != INDEX_NONE)
 	{
-		UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+		UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 		EditorSettings->PerfToolTargetPlatform = (EOculusPlatform)idx;
 		EditorSettings->SaveConfig();
 	}
@@ -625,7 +602,7 @@ void SOculusToolWidget::OnChangePlatform(TSharedPtr<FString> ItemSelected, ESele
 
 FReply SOculusToolWidget::IgnoreRecommendation(FName tag)
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	EditorSettings->PerfToolIgnoreList.Add(tag, true);
 	EditorSettings->SaveConfig();
 	return FReply::Handled();
@@ -633,13 +610,13 @@ FReply SOculusToolWidget::IgnoreRecommendation(FName tag)
 
 EVisibility SOculusToolWidget::CanUnhideIgnoredRecommendations() const
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	return EditorSettings->PerfToolIgnoreList.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SOculusToolWidget::UnhideIgnoredRecommendations()
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	EditorSettings->PerfToolIgnoreList.Empty();
 	EditorSettings->SaveConfig();
 	RebuildLayout();
@@ -648,7 +625,7 @@ FReply SOculusToolWidget::UnhideIgnoredRecommendations()
 
 bool SOculusToolWidget::UsingForwardShading() const
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
 	EOculusPlatform targetPlatform = EditorSettings->PerfToolTargetPlatform;
 	return targetPlatform == EOculusPlatform::Mobile || Settings->bForwardShading;
@@ -948,64 +925,6 @@ EVisibility SOculusToolWidget::MobileShaderAllowMovableDirectionalLightsVisibili
 	return EVisibility::Visible;
 }
 
-FReply SOculusToolWidget::MobileNumDynamicPointLightsFix(bool text)
-{
-	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	Settings->MobileNumDynamicPointLights = 0;
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, MobileNumDynamicPointLights)), Settings->GetDefaultConfigFilename());
-	SuggestRestart();
-	return FReply::Handled();
-}
-
-EVisibility SOculusToolWidget::MobileNumDynamicPointLightsVisibility(FName tag) const
-{
-	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	if (Settings->MobileNumDynamicPointLights == 0)
-	{
-		return EVisibility::Collapsed;
-	}
-
-	for (const auto& kvp : DynamicLights)
-	{
-		AActor* owner = kvp.Value->GetOwner();
-		if (owner != NULL && owner->IsRootComponentMovable())
-		{
-			return EVisibility::Collapsed;
-		}
-	}
-
-	return EVisibility::Visible;
-}
-
-FReply SOculusToolWidget::MobileMovableSpotlightsDisable(bool text)
-{
-	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	Settings->bMobileAllowMovableSpotlights = false;
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, bMobileAllowMovableSpotlights)), Settings->GetDefaultConfigFilename());
-	SuggestRestart();
-	return FReply::Handled();
-}
-
-EVisibility SOculusToolWidget::MobileMovableSpotlightsDisableVisibility(FName tag) const
-{
-	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	if (!Settings->bMobileAllowMovableSpotlights)
-	{
-		return EVisibility::Collapsed;
-	}
-
-	for (const auto& kvp : DynamicLights)
-	{
-		AActor* owner = kvp.Value->GetOwner();
-		if (owner != NULL && owner->IsRootComponentMovable())
-		{
-			return EVisibility::Collapsed;
-		}
-	}
-
-	return EVisibility::Visible;
-}
-
 void SOculusToolWidget::OnShowButtonChanged(ECheckBoxState NewState)
 {
 	GConfig->SetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bAddMenuOption"), NewState == ECheckBoxState::Checked ? true : false, FString::Printf(TEXT("%sDefaultEditor.ini"), *FPaths::SourceConfigDir()));
@@ -1065,7 +984,7 @@ FReply SOculusToolWidget::SelectLight(FString lightName)
 
 FReply SOculusToolWidget::IgnoreLight(FString lightName)
 {
-	UOculusEditorSettings* EditorSettings = GetMutableDefault<UOculusEditorSettings>();
+	UDEPRECATED_UOculusEditorSettings* EditorSettings = GetMutableDefault<UDEPRECATED_UOculusEditorSettings>();
 	FString lightIgnoreKey = "IgnoreLight_" + lightName;
 	EditorSettings->PerfToolIgnoreList.Add(FName(lightIgnoreKey.GetCharArray().GetData()), true);
 	EditorSettings->SaveConfig();
@@ -1090,16 +1009,18 @@ EVisibility SOculusToolWidget::StartInVRVisibility(FName tag) const
 
 FReply SOculusToolWidget::SupportDashEnable(bool text)
 {
-	UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+	UDEPRECATED_UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UDEPRECATED_UOculusHMDRuntimeSettings>();
 	Settings->bSupportsDash = true;
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusHMDRuntimeSettings, bSupportsDash)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UDEPRECATED_UOculusHMDRuntimeSettings, bSupportsDash)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::SupportDashVisibility(FName tag) const
 {
-	const UOculusHMDRuntimeSettings* Settings = GetDefault<UOculusHMDRuntimeSettings>();
+	const UDEPRECATED_UOculusHMDRuntimeSettings* Settings = GetDefault<UDEPRECATED_UOculusHMDRuntimeSettings>();
 	return Settings->bSupportsDash ? EVisibility::Collapsed : EVisibility::Visible;
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef LOCTEXT_NAMESPACE

@@ -10,6 +10,8 @@
 #include "Stats/Stats.h"
 #include "TimerManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonActivatableWidgetContainer)
+
 UCommonActivatableWidget* ActivatableWidgetFromSlate(const TSharedPtr<SWidget>& SlateWidget)
 {
 	//@todo DanH: FActivatableWidgetMetaData
@@ -32,7 +34,7 @@ UCommonActivatableWidgetContainerBase::UCommonActivatableWidgetContainerBase(con
 	: Super(Initializer)
 	, GeneratedWidgetsPool(*this)
 {
-	Visibility = ESlateVisibility::Collapsed;
+	SetVisibilityInternal(ESlateVisibility::Collapsed);
 }
 
 void UCommonActivatableWidgetContainerBase::AddWidgetInstance(UCommonActivatableWidget& ActivatableWidget)
@@ -259,7 +261,7 @@ void UCommonActivatableWidgetContainerBase::HandleActiveIndexChanged(int32 Activ
 	{
 		SetVisibility(ESlateVisibility::SelfHitTestInvisible);
 
-		DisplayedWidget->OnDeactivated().AddUObject(this, &UCommonActivatableWidgetContainerBase::HandleActiveWidgetDeactivated, DisplayedWidget);
+		DisplayedWidget->OnDeactivated().AddUObject(this, &UCommonActivatableWidgetContainerBase::HandleActiveWidgetDeactivated, ToRawPtr(DisplayedWidget));
 		DisplayedWidget->ActivateWidget();
 
 		if (UWorld* MyWorld = GetWorld())

@@ -30,23 +30,22 @@ enum class EPowerUsageFrameRateLock : uint8
 UENUM()
 	enum class EIOSVersion : uint8
 {
-    /** iOS 14 */
-    IOS_14 = 14 UMETA(DisplayName = "14.0"),
-    
     /** iOS 15 */
     IOS_15 = 15 UMETA(DisplayName = "15.0"),
-
+    
+    /** iOS 16 */
+    IOS_16 = 16 UMETA(DisplayName = "16.0"),
 };
 
 UENUM()
 enum class EIOSMetalShaderStandard : uint8
 {
     /** Metal Shader 2.3 is the minimum as of UE5.0*/
-    IOSMetalSLStandard_Minimum = 0 UMETA(DisplayName="Minimum, Currently v2.3 (iOS 14.0/tvOS 14.0)"),
-    /** Metal Shaders Compatible With iOS 14.0/tvOS 14.0 or later (std=ios-metal2.3) */
-    IOSMetalSLStandard_2_3 = 6 UMETA(DisplayName="Metal v2.3 (iOS 14.0/tvOS 14.0)"),
+    IOSMetalSLStandard_Minimum = 0 UMETA(DisplayName="Minimum, Currently v2.4 (iOS 15.0/tvOS 15.0)"),
     /** Metal Shaders Compatible With iOS 15.0/tvOS 15.0 or later (std=ios-metal2.4) */
     IOSMetalSLStandard_2_4 = 7 UMETA(DisplayName="Metal v2.4 (iOS 15.0/tvOS 15.0)"),
+    /** Metal Shaders Compatible With iOS 16.0/tvOS 16.0 or later (std=metal3.0) */
+    IOSMetalSLStandard_3_0 = 8 UMETA(DisplayName="Metal v3.0 (iOS 16.0/tvOS 16.0)"),
 
 };
 
@@ -294,15 +293,7 @@ public:
 	// If checked, the Siri Remote can be rotated to landscape view
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input, meta = (DisplayName = "Allow AppleTV Remote landscape mode"))
 	bool bAllowRemoteRotation;
-	
-	// If checked, the trackpad is a virtual joystick (acts like the left stick of a controller). If unchecked, the trackpad will send touch events
-	UPROPERTY(config, meta = (Deprecated, DeprecationMessage = "Use AppleTV trackpad as virtual joystick. Deprecated. Siri Remote shouls always behave as a joystick"))
-	bool bUseRemoteAsVirtualJoystick_DEPRECATED;
-	
-	// If checked, the center of the trackpad is 0,0 (center) for the virtual joystick. If unchecked, the location the user taps becomes 0,0
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input, meta = (DisplayName = "Use AppleTV Remote absolute trackpad values"))
-	bool bUseRemoteAbsoluteDpadValues;
-	
+		
 	// If checked, Bluetooth connected controllers will send input
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input, meta = (DisplayName = "Allow MFi (Bluetooth) controllers"))
 	bool bAllowControllers;
@@ -505,6 +496,10 @@ public:
 	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
+
+	/** Which of the currently enabled source data override plugins to use. */
+	UPROPERTY(config, EditAnywhere, Category = "Audio")
+	FString SourceDataOverridePlugin;
 
 	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")

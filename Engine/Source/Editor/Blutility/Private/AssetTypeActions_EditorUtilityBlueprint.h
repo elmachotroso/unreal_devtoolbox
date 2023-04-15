@@ -2,10 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EditorUtilityBlueprint.h"
-#include "Toolkits/IToolkitHost.h"
 #include "AssetTypeActions/AssetTypeActions_Blueprint.h"
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class UClass;
+class UObject;
 
 
 class FAssetTypeActions_EditorUtilityBlueprint : public FAssetTypeActions_Blueprint
@@ -15,7 +21,6 @@ public:
 	virtual FText GetName() const override;
 	virtual FColor GetTypeColor() const override;
 	virtual UClass* GetSupportedClass() const override;
-	virtual bool HasActions(const TArray<UObject*>& InObjects) const override;
 	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) override;
 	virtual uint32 GetCategories() override;
 	virtual bool CanLocalize() const override { return false; }

@@ -210,9 +210,9 @@ void InternalSetPerTriangleUVs(EnumerableType TriangleIDs, const FDynamicMesh3* 
 		FIndex3i ElemTri;
 		for (int32 j = 0; j < 3; ++j)
 		{
-			FVector2f UV = (FVector2f)TriProjFrame.ToPlaneUV(Mesh->GetVertex(MeshTri[j]), 2);
+			FVector2d UV = TriProjFrame.ToPlaneUV(Mesh->GetVertex(MeshTri[j]), 2);
 			UV *= ScaleFactor;
-			ElemTri[j] = UVOverlay->AppendElement(UV);
+			ElemTri[j] = UVOverlay->AppendElement((FVector2f)UV);
 			NewUVIndices.Add(ElemTri[j]);
 		}
 		UVOverlay->SetTriangle(TriangleID, ElemTri);
@@ -277,10 +277,10 @@ void FDynamicMeshUVEditor::SetTriangleUVsFromPlanarProjection(
 			{
 				FVector3d Pos = Mesh->GetVertex(BaseTri[j]);
 				FVector3d TransformPos = PointTransform(Pos);
-				FVector2f UV = (FVector2f)ProjectionFrame.ToPlaneUV(TransformPos, 2);
+				FVector2d UV = ProjectionFrame.ToPlaneUV(TransformPos, 2);
 				UV.X *= ScaleX;
 				UV.Y *= ScaleY;
-				ElemTri[j] = UVOverlay->AppendElement(UV);
+				ElemTri[j] = UVOverlay->AppendElement(FVector2f(UV));
 				NewUVIndices.Add(ElemTri[j]);
 				BaseToOverlayVIDMap.Add(BaseTri[j], ElemTri[j]);
 			}
@@ -350,7 +350,8 @@ bool FDynamicMeshUVEditor::EstimateGeodesicCenterFrameVertex(const FDynamicMesh3
 	{
 		return false;
 	}
-	FrameVertexID = SubmeshCalc.MapVertexToBaseMesh(FrameVertexID);
+	VertexIDOut = SubmeshCalc.MapVertexToBaseMesh(FrameVertexID);
+	FrameOut = SeedFrame;
 	return true;
 }
 
@@ -485,10 +486,10 @@ bool FDynamicMeshUVEditor::SetTriangleUVsFromExpMap(
 	{
 		if (Param.HasUV(vid))
 		{
-			FVector2f UV = (FVector2f)Param.GetUV(vid);
+			FVector2d UV = Param.GetUV(vid);
 			UV.X *= ScaleX;
 			UV.Y *= ScaleY;
-			VtxElementIDs[vid] = UVOverlay->AppendElement(UV);
+			VtxElementIDs[vid] = UVOverlay->AppendElement(FVector2f(UV));
 			NewElementIDs.Add(VtxElementIDs[vid]);
 		}
 	}
@@ -523,7 +524,18 @@ bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundaryConformal(const TArray<
 {
 	return SetTriangleUVsFromFreeBoundaryConformal(Triangles, false, Result);
 }
-bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundaryConformal(const TArray<int32>& Triangles, bool bUseExistingUVTopology, FUVEditResult* Result)
+
+bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundaryConformal(const TArray<int32>& Triangles, bool bUseExistingUVTopology, FUVEditResult* Result) 
+{
+	return SetTriangleUVsFromConformal(Triangles, bUseExistingUVTopology, false, false, Result);
+}
+
+bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundarySpectralConformal(const TArray<int32>& Triangles, bool bUseExistingUVTopology, bool bPreserveIrregularity, FUVEditResult* Result) 
+{
+	return SetTriangleUVsFromConformal(Triangles, bUseExistingUVTopology, true, bPreserveIrregularity, Result);
+}
+
+bool FDynamicMeshUVEditor::SetTriangleUVsFromConformal(const TArray<int32>& Triangles, bool bUseExistingUVTopology, bool bUseSpectral, bool bPreserveIrregularity, FUVEditResult* Result)
 {
 	if (ensure(UVOverlay) == false) return false;
 	if (Triangles.Num() == 0) return false;
@@ -540,6 +552,10 @@ bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundaryConformal(const TArray<
 
 	for (int32 tid : Triangles)
 	{
+		if (bUseExistingUVTopology && !UVOverlay->IsSetTriangle(tid))
+		{
+			continue;
+		}
 		FIndex3i Triangle = (bUseExistingUVTopology) ? UVOverlay->GetTriangle(tid) : Mesh->GetTriangle(tid);
 		FIndex3i NewTriangle;
 		for (int32 j = 0; j < 3; ++j)
@@ -566,38 +582,59 @@ bool FDynamicMeshUVEditor::SetTriangleUVsFromFreeBoundaryConformal(const TArray<
 	}
 
 	// is there a quick check we can do to ensure that we have a single connected component?
+	
+	TUniquePtr<UE::Solvers::IConstrainedMeshUVSolver> Solver = nullptr;
 
-	// make the UV solver
-	TUniquePtr<UE::Solvers::IConstrainedMeshUVSolver> Solver = UE::MeshDeformation::ConstructNaturalConformalParamSolver(Submesh);
-
-	// find pair of vertices to constrain. The standard procedure is to find the two furthest-apart vertices on the
-	// largest boundary loop. 
 	FMeshBoundaryLoops Loops(&Submesh, true);
-	if (Loops.GetLoopCount() == 0) return false;
+	if (Loops.GetLoopCount() == 0) 
+	{ 
+		return false; 
+	}
 	const TArray<int32>& ConstrainLoop = Loops[Loops.GetLongestLoopIndex()].Vertices;
 	int32 LoopNum = ConstrainLoop.Num();
-	FIndex2i MaxDistPair = FIndex2i::Invalid();
-	double MaxDistSqr = 0;
-	for (int32 i = 0; i < LoopNum; ++i)
+
+	if (bUseSpectral) 
 	{
-		for (int32 j = i + 1; j < LoopNum; ++j)
+		Solver = UE::MeshDeformation::ConstructSpectralConformalParamSolver(Submesh, bPreserveIrregularity);
+		
+		for (int32 Idx = 0; Idx < LoopNum; ++Idx)
 		{
-			double DistSqr = DistanceSquared(Submesh.GetVertex(ConstrainLoop[i]), Submesh.GetVertex(ConstrainLoop[j]));
-			if (DistSqr > MaxDistSqr)
-			{
-				MaxDistSqr = DistSqr;
-				MaxDistPair = FIndex2i(ConstrainLoop[i], ConstrainLoop[j]);
-			}
+			// It doesnt matter what the uv values or weights are, we are only interested in the indicies of the
+			// boundary vertices.
+			Solver->AddConstraint(ConstrainLoop[Idx], 0.0, FVector2d(0.0, 0.0), false);
 		}
 	}
-	if (ensure(MaxDistPair != FIndex2i::Invalid()) == false)
+	else 
 	{
-		return false;
-	}
+		Solver = UE::MeshDeformation::ConstructNaturalConformalParamSolver(Submesh);
 
-	// pin those vertices
-	Solver->AddConstraint(MaxDistPair.A, 1.0, FVector2d(0.0, 0.5), false);
-	Solver->AddConstraint(MaxDistPair.B, 1.0, FVector2d(1.0, 0.5), false);
+		// Find a pair of vertices to constrain. The standard procedure is to find the two furthest-apart vertices 
+		// on the largest boundary loop. 
+		FIndex2i MaxDistPair = FIndex2i::Invalid();
+		double MaxDistSqr = 0;
+		for (int32 Idx = 0; Idx < LoopNum; ++Idx)
+		{
+			for (int32 NextIdx = Idx + 1; NextIdx < LoopNum; ++NextIdx)
+			{
+				const double DistSqr = DistanceSquared(Submesh.GetVertex(ConstrainLoop[Idx]), 
+													   Submesh.GetVertex(ConstrainLoop[NextIdx]));
+				if (DistSqr > MaxDistSqr)
+				{
+					MaxDistSqr = DistSqr;
+					MaxDistPair = FIndex2i(ConstrainLoop[Idx], ConstrainLoop[NextIdx]);
+				}
+			}
+		}
+
+		if (ensure(MaxDistPair != FIndex2i::Invalid()) == false)
+		{
+			return false;
+		}
+
+		// pin those vertices
+		Solver->AddConstraint(MaxDistPair.A, 1.0, FVector2d(0.0, 0.5), false);
+		Solver->AddConstraint(MaxDistPair.B, 1.0, FVector2d(1.0, 0.5), false);
+	}
 
 	// solve for UVs
 	TArray<FVector2d> UVBuffer;
@@ -1018,7 +1055,9 @@ void FDynamicMeshUVEditor::SetTriangleUVsFromBoxProjection(
 
 		int MajorAxis = TriBoxInfo.A;
 		int Bucket = TriBoxInfo.B;
-		double MajorAxisSign = FMathd::Sign(N[MajorAxis]);
+		int MajorAxisSign =  (N[MajorAxis] > 0.0) ? 1 : ( (N[MajorAxis] < 0.0) ? -1 : 0 );
+		
+		FMathd::Sign(N[MajorAxis]);
 		int Minor1 = Minor1s[MajorAxis];
 		int Minor2 = Minor2s[MajorAxis];
 
@@ -1034,7 +1073,7 @@ void FDynamicMeshUVEditor::SetTriangleUVsFromBoxProjection(
 				FVector3d BoxPos = BoxFrame.ToFramePoint(TransformPos);
 				BoxPos *= Scale;
 
-				FVector2f UV = ProjAxis(BoxPos, Minor1, Minor2, MajorAxisSign * Minor1Flip[MajorAxis], Minor2Flip[MajorAxis]);
+				FVector2f UV = ProjAxis(BoxPos, Minor1, Minor2, float(MajorAxisSign * Minor1Flip[MajorAxis] ), (float)Minor2Flip[MajorAxis]);
 
 				ElemTri[j] = UVOverlay->AppendElement(UV);
 				NewUVIndices.Add(ElemTri[j]);
@@ -1156,7 +1195,8 @@ void FDynamicMeshUVEditor::SetTriangleUVsFromCylinderProjection(
 				FVector2f UV = FVector2f::Zero();
 				if (Bucket <= 2)
 				{
-					UV = ProjAxis(BoxPos, 0, 1, FMathd::Sign(N[MajorAxis]) * Minor1Flip[MajorAxis], Minor2Flip[MajorAxis]);
+					int MajorAxisSign =  (N[MajorAxis] > 0.0) ? 1 : ( (N[MajorAxis] < 0.0) ? -1 : 0 );
+					UV = ProjAxis(BoxPos, 0, 1, float( MajorAxisSign * Minor1Flip[MajorAxis] ), (float)Minor2Flip[MajorAxis]);
 				}
 				else
 				{
@@ -1231,7 +1271,7 @@ bool FDynamicMeshUVEditor::ScaleUVAreaTo3DArea(const TArray<int32>& Triangles, b
 	for (int32 eid : Elements)
 	{
 		FVector2f UV = UVOverlay->GetElement(eid);
-		UV = (UV - ScaleOrigin) * UVScale + Translation;
+		UV = (UV - ScaleOrigin) * float(UVScale) + Translation;
 		UVOverlay->SetElement(eid, UV);
 	}
 
@@ -1418,6 +1458,63 @@ bool FDynamicMeshUVEditor::QuickPack(int32 TargetTextureResolution, float Gutter
 
 	return bOK;
 }
+
+bool FDynamicMeshUVEditor::UDIMPack(int32 TargetTextureResolution, float GutterSize, const FVector2i& UDIMCoordsIn, const TArray<int32>* Triangles)
+{
+	TUniquePtr<TArray<int32>> TileTids;
+	if (Triangles)
+	{
+		TileTids = MakeUnique<TArray<int32>>(*Triangles);
+	}
+	else
+	{
+		// Add all set UV triangles
+		TileTids = MakeUnique<TArray<int32>>();
+		TileTids->Reserve(Mesh->TriangleCount());
+		for (int32 TriangleID : Mesh->TriangleIndicesItr())
+		{
+			TileTids->Add(TriangleID);
+		}
+	}
+
+	// Do this first, so we don't need to keep the TileTids around after moving it into the packer.
+	TSet<int32> ElementsToMove;
+	ElementsToMove.Reserve(TileTids->Num() * 3);
+	for (int Tid : *TileTids)
+	{
+		// If the triangle is unset, we will skip it here, before moving on.
+		if (UVOverlay->IsSetTriangle(Tid))
+		{
+			FIndex3i Elements = UVOverlay->GetTriangle(Tid);
+			ElementsToMove.Add(Elements[0]);
+			ElementsToMove.Add(Elements[1]);
+			ElementsToMove.Add(Elements[2]);
+		}
+	}
+	// Final check to make sure we didn't let any invalid element IDs from sneaking through.
+	// This should never happen, since we are filtering potentially unset UV triangles above
+	check(!ElementsToMove.Contains(IndexConstants::InvalidID));
+
+	// TODO: There is a second connected components call inside the packer that might be unnessessary. Could be a future optimization.
+	FDynamicMeshUVPacker Packer(UVOverlay, MoveTemp(TileTids));
+	Packer.TextureResolution = TargetTextureResolution;
+	Packer.GutterSize = GutterSize;
+	Packer.bAllowFlips = false;
+	bool bOK = Packer.StandardPack();
+
+	// Transform this to match the internal UV storage layout of negative Y
+	FVector2i TransformedUDIMCoords(UDIMCoordsIn.X, -UDIMCoordsIn.Y);
+
+	for (int32 Element : ElementsToMove)
+	{
+		FVector2f UV = UVOverlay->GetElement(Element);
+		UV = (UV)+(FVector2f)(TransformedUDIMCoords);
+		UVOverlay->SetElement(Element, UV);
+	}
+
+	return bOK;
+}
+
 
 double  FDynamicMeshUVEditor::DetermineAreaFromUVs(const FDynamicMeshUVOverlay& UVOverlay, const TArray<int32>& Triangles, FAxisAlignedBox2f* BoundingBox)
 {

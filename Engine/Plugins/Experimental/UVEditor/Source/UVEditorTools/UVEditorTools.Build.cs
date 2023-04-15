@@ -43,12 +43,15 @@ public class UVEditorTools : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+				"RenderCore",
+				"RHI",
 					
 				"MeshModelingToolsExp",
 				"DynamicMesh",
 				"GeometryCore",
 				"ModelingComponents",
 				"ModelingOperators",
+				"TextureUtilitiesCommon"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

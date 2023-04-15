@@ -18,6 +18,7 @@
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Traits/ElementType.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 #include "Traits/IsContiguousContainer.h"
 #include <type_traits>
 
@@ -32,7 +33,7 @@ public:
 
 	template <
 		typename CharType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<CharType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<CharType, FromType>>* = nullptr
 	>
 	FORCEINLINE static void Convert(To* Dest, int32 DestLen, const CharType* Source, int32 SourceLen)
 	{
@@ -42,7 +43,7 @@ public:
 
 	template <
 		typename CharType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<CharType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<CharType, FromType>>* = nullptr
 	>
 	static int32 ConvertedLength(const CharType* Source, int32 SourceLen)
 	{
@@ -172,7 +173,7 @@ namespace StringConv
 	FUnused GetLegacyFromType(...);
 }
 
-namespace UE4StringConv_Private
+namespace UE::Core::Private
 {
 	/**
 	 * This is a basic object which counts how many times it has been incremented
@@ -205,130 +206,132 @@ namespace UE4StringConv_Private
 	private:
 		int32 Counter;
 	};
+
+	// This should be replaced with Platform stuff when FPlatformString starts to know about UTF-8.
+	class FTCHARToUTF8_Convert
+	{
+		// Leave this until we convert all the call sites and can change FromType to this.
+		using IntendedToType = UTF8CHAR;
+	
+	public:
+		typedef TCHAR    FromType;
+		typedef ANSICHAR ToType;
+	
+		/**
+		 * Convert Codepoint into UTF-8 characters.
+		 *
+		 * @param Codepoint Codepoint to expand into UTF-8 bytes
+		 * @param OutputIterator Output iterator to write UTF-8 bytes into
+		 * @param OutputIteratorByteSizeRemaining Maximum number of ANSI characters that can be written to OutputIterator
+		 * @return Number of characters written for Codepoint
+		 */
+		template <typename BufferType>
+		static int32 Utf8FromCodepoint(uint32 Codepoint, BufferType OutputIterator, uint32 OutputIteratorByteSizeRemaining)
+		{
+			// Ensure we have at least one character in size to write
+			if (OutputIteratorByteSizeRemaining < sizeof(ToType))
+			{
+				return 0;
+			}
+	
+			const BufferType OutputIteratorStartPosition = OutputIterator;
+	
+			if (!StringConv::IsValidCodepoint(Codepoint))
+			{
+				Codepoint = UNICODE_BOGUS_CHAR_CODEPOINT;
+			}
+			else if (StringConv::IsHighSurrogate(Codepoint) || StringConv::IsLowSurrogate(Codepoint)) // UTF-8 Characters are not allowed to encode codepoints in the surrogate pair range
+			{
+				Codepoint = UNICODE_BOGUS_CHAR_CODEPOINT;
+			}
+	
+			// Do the encoding...
+			if (Codepoint < 0x80)
+			{
+				*(OutputIterator++) = (ToType)Codepoint;
+			}
+			else if (Codepoint < 0x800)
+			{
+				if (OutputIteratorByteSizeRemaining >= 2)
+				{
+					*(OutputIterator++) = (ToType)((Codepoint >> 6)         | 128 | 64);
+					*(OutputIterator++) = (ToType)((Codepoint       & 0x3F) | 128);
+				}
+			}
+			else if (Codepoint < 0x10000)
+			{
+				if (OutputIteratorByteSizeRemaining >= 3)
+				{
+					*(OutputIterator++) = (ToType) ((Codepoint >> 12)        | 128 | 64 | 32);
+					*(OutputIterator++) = (ToType)(((Codepoint >> 6) & 0x3F) | 128);
+					*(OutputIterator++) = (ToType) ((Codepoint       & 0x3F) | 128);
+				}
+			}
+			else
+			{
+				if (OutputIteratorByteSizeRemaining >= 4)
+				{
+					*(OutputIterator++) = (ToType) ((Codepoint >> 18)         | 128 | 64 | 32 | 16);
+					*(OutputIterator++) = (ToType)(((Codepoint >> 12) & 0x3F) | 128);
+					*(OutputIterator++) = (ToType)(((Codepoint >> 6 ) & 0x3F) | 128);
+					*(OutputIterator++) = (ToType) ((Codepoint        & 0x3F) | 128);
+				}
+			}
+	
+			return UE_PTRDIFF_TO_INT32(OutputIterator - OutputIteratorStartPosition);
+		}
+	
+		/**
+		 * Converts a Source string into UTF8 and stores it in Dest.
+		 *
+		 * @param Dest      The destination output iterator. Usually ANSICHAR*, but you can supply your own output iterator.
+		 *                  One can determine the number of characters written by checking the offset of Dest when the function returns.
+		 * @param DestLen   The length of the destination buffer.
+		 * @param Source    The source string to convert.
+		 * @param SourceLen The length of the source string.
+		 * @return          The number of bytes written to Dest, up to DestLen, or -1 if the entire Source string could did not fit in DestLen bytes.
+		 */
+		template <
+			typename SrcBufferType,
+			std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
+		>
+		static FORCEINLINE int32 Convert(IntendedToType* Dest, int32 DestLen, const SrcBufferType* Source, int32 SourceLen)
+		{
+			IntendedToType* Result = FPlatformString::Convert(Dest, DestLen, (const FromType*)Source, SourceLen);
+			if (!Result)
+			{
+				return -1;
+			}
+	
+			return (int32)(Result - Dest);
+		}
+		template <
+			typename SrcBufferType,
+			std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
+		>
+		static FORCEINLINE int32 Convert(ToType* Dest, int32 DestLen, const SrcBufferType* Source, int32 SourceLen)
+		{
+			// This helper function is only for backwards compatibility and won't be necessary once IntendedToType becomes the ToType
+			return FTCHARToUTF8_Convert::Convert((IntendedToType*)Dest, DestLen, Source, SourceLen);
+		}
+	
+		/**
+		 * Determines the length of the converted string.
+		 *
+		 * @return The length of the string in UTF-8 code units.
+		 */
+		template <
+			typename SrcBufferType,
+			std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
+		>
+		static FORCEINLINE int32 ConvertedLength(const SrcBufferType* Source, int32 SourceLen)
+		{
+			return FPlatformString::ConvertedLength<IntendedToType>((const FromType*)Source, SourceLen);
+		}
+	};
 }
 
-// This should be replaced with Platform stuff when FPlatformString starts to know about UTF-8.
-class FTCHARToUTF8_Convert
-{
-	// Leave this until we convert all the call sites and can change FromType to this.
-	using IntendedToType = UTF8CHAR;
-
-public:
-	typedef TCHAR    FromType;
-	typedef ANSICHAR ToType;
-
-	/**
-	 * Convert Codepoint into UTF-8 characters.
-	 *
-	 * @param Codepoint Codepoint to expand into UTF-8 bytes
-	 * @param OutputIterator Output iterator to write UTF-8 bytes into
-	 * @param OutputIteratorByteSizeRemaining Maximum number of ANSI characters that can be written to OutputIterator
-	 * @return Number of characters written for Codepoint
-	 */
-	template <typename BufferType>
-	static int32 Utf8FromCodepoint(uint32 Codepoint, BufferType OutputIterator, uint32 OutputIteratorByteSizeRemaining)
-	{
-		// Ensure we have at least one character in size to write
-		if (OutputIteratorByteSizeRemaining < sizeof(ToType))
-		{
-			return 0;
-		}
-
-		const BufferType OutputIteratorStartPosition = OutputIterator;
-
-		if (!StringConv::IsValidCodepoint(Codepoint))
-		{
-			Codepoint = UNICODE_BOGUS_CHAR_CODEPOINT;
-		}
-		else if (StringConv::IsHighSurrogate(Codepoint) || StringConv::IsLowSurrogate(Codepoint)) // UTF-8 Characters are not allowed to encode codepoints in the surrogate pair range
-		{
-			Codepoint = UNICODE_BOGUS_CHAR_CODEPOINT;
-		}
-
-		// Do the encoding...
-		if (Codepoint < 0x80)
-		{
-			*(OutputIterator++) = (ToType)Codepoint;
-		}
-		else if (Codepoint < 0x800)
-		{
-			if (OutputIteratorByteSizeRemaining >= 2)
-			{
-				*(OutputIterator++) = (ToType)((Codepoint >> 6)         | 128 | 64);
-				*(OutputIterator++) = (ToType)((Codepoint       & 0x3F) | 128);
-			}
-		}
-		else if (Codepoint < 0x10000)
-		{
-			if (OutputIteratorByteSizeRemaining >= 3)
-			{
-				*(OutputIterator++) = (ToType) ((Codepoint >> 12)        | 128 | 64 | 32);
-				*(OutputIterator++) = (ToType)(((Codepoint >> 6) & 0x3F) | 128);
-				*(OutputIterator++) = (ToType) ((Codepoint       & 0x3F) | 128);
-			}
-		}
-		else
-		{
-			if (OutputIteratorByteSizeRemaining >= 4)
-			{
-				*(OutputIterator++) = (ToType) ((Codepoint >> 18)         | 128 | 64 | 32 | 16);
-				*(OutputIterator++) = (ToType)(((Codepoint >> 12) & 0x3F) | 128);
-				*(OutputIterator++) = (ToType)(((Codepoint >> 6 ) & 0x3F) | 128);
-				*(OutputIterator++) = (ToType) ((Codepoint        & 0x3F) | 128);
-			}
-		}
-
-		return UE_PTRDIFF_TO_INT32(OutputIterator - OutputIteratorStartPosition);
-	}
-
-	/**
-	 * Converts a Source string into UTF8 and stores it in Dest.
-	 *
-	 * @param Dest      The destination output iterator. Usually ANSICHAR*, but you can supply your own output iterator.
-	 *                  One can determine the number of characters written by checking the offset of Dest when the function returns.
-	 * @param DestLen   The length of the destination buffer.
-	 * @param Source    The source string to convert.
-	 * @param SourceLen The length of the source string.
-	 * @return          The number of bytes written to Dest, up to DestLen, or -1 if the entire Source string could did not fit in DestLen bytes.
-	 */
-	template <
-		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
-	>
-	static FORCEINLINE int32 Convert(IntendedToType* Dest, int32 DestLen, const SrcBufferType* Source, int32 SourceLen)
-	{
-		IntendedToType* Result = FPlatformString::Convert(Dest, DestLen, (const FromType*)Source, SourceLen);
-		if (!Result)
-		{
-			return -1;
-		}
-
-		return (int32)(Result - Dest);
-	}
-	template <
-		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
-	>
-	static FORCEINLINE int32 Convert(ToType* Dest, int32 DestLen, const SrcBufferType* Source, int32 SourceLen)
-	{
-		// This helper function is only for backwards compatibility and won't be necessary once IntendedToType becomes the ToType
-		return FTCHARToUTF8_Convert::Convert((IntendedToType*)Dest, DestLen, Source, SourceLen);
-	}
-
-	/**
-	 * Determines the length of the converted string.
-	 *
-	 * @return The length of the string in UTF-8 code units.
-	 */
-	template <
-		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
-	>
-	static FORCEINLINE int32 ConvertedLength(const SrcBufferType* Source, int32 SourceLen)
-	{
-		return FPlatformString::ConvertedLength<IntendedToType>((const FromType*)Source, SourceLen);
-	}
-};
+using FTCHARToUTF8_Convert /*UE_DEPRECATED(5.1, "FTCHARToUTF8_Convert has been deprecated in favor of FPlatformString::Convert and StringCast")*/ = UE::Core::Private::FTCHARToUTF8_Convert;
 
 class FUTF8ToTCHAR_Convert
 {
@@ -347,7 +350,7 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static FORCEINLINE void Convert(ToType* Dest, const int32 DestLen, const SrcBufferType* Source, const int32 SourceLen)
 	{
@@ -367,7 +370,7 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static int32 ConvertedLength(const SrcBufferType* Source, const int32 SourceLen)
 	{
@@ -455,7 +458,7 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static FORCEINLINE void Convert(ToType* Dest, int32 DestLen, const SrcBufferType* Source, int32 SourceLen)
 	{
@@ -469,11 +472,11 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static FORCEINLINE int32 ConvertedLength(const SrcBufferType* Source, int32 SourceLen)
 	{
-		UE4StringConv_Private::FCountingOutputIterator Dest;
+		UE::Core::Private::FCountingOutputIterator Dest;
 		const int32 DestLen = SourceLen * 2;
 		Convert_Impl(Dest, DestLen, (const FromType*)Source, SourceLen);
 
@@ -531,7 +534,7 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static FORCEINLINE void Convert(ToType* Dest, const int32 DestLen, const SrcBufferType* Source, const int32 SourceLen)
 	{
@@ -547,11 +550,11 @@ public:
 	 */
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	static int32 ConvertedLength(const SrcBufferType* Source, const int32 SourceLen)
 	{
-		UE4StringConv_Private::FCountingOutputIterator Dest;
+		UE::Core::Private::FCountingOutputIterator Dest;
 		Convert_Impl(Dest, MAX_int32, (const FromType*)Source, SourceLen);
 
 		return Dest.GetCount();
@@ -672,7 +675,7 @@ class TStringConversion : private Converter, private TInlineAllocator<DefaultCon
 public:
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	explicit TStringConversion(const SrcBufferType* Source)
 	{
@@ -693,7 +696,7 @@ public:
 
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	TStringConversion(const SrcBufferType* Source, int32 SourceLen)
 	{
@@ -729,9 +732,9 @@ public:
 		std::enable_if_t<
 			TAnd<
 				TIsContiguousContainer<FromRangeType>,
-				TNot<TIsArray<typename TRemoveReference<FromRangeType>::Type>>
-			>::Value &&
-			FPlatformString::IsCharEncodingCompatibleWith<FromRangeCharType, FromType>()
+				TNot<TIsArray<typename TRemoveReference<FromRangeType>::Type>>,
+				TIsCharEncodingCompatibleWith<FromRangeCharType, FromType>
+			>::Value
 		>* = nullptr
 	>
 	TStringConversion(FromRangeType&& Source)
@@ -824,7 +827,7 @@ public:
 public:
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	explicit TStringPointer(const SrcBufferType* Source)
 	{
@@ -842,7 +845,7 @@ public:
 
 	template <
 		typename SrcBufferType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<SrcBufferType, FromType>()>* = nullptr
+		std::enable_if_t<TIsCharEncodingCompatibleWith_V<SrcBufferType, FromType>>* = nullptr
 	>
 	TStringPointer(const SrcBufferType* Source, int32 SourceLen)
 	{
@@ -873,9 +876,9 @@ public:
 		std::enable_if_t<
 			TAnd<
 				TIsContiguousContainer<FromRangeType>,
-				TNot<TIsArray<typename TRemoveReference<FromRangeType>::Type>>
-			>::Value &&
-			FPlatformString::IsCharEncodingCompatibleWith<FromRangeCharType, FromType>()
+				TNot<TIsArray<typename TRemoveReference<FromRangeType>::Type>>,
+				TIsCharEncodingCompatibleWith<FromRangeCharType, FromType>
+			>::Value
 		>* = nullptr
 	>
 	TStringPointer(FromRangeType&& Source)
@@ -961,7 +964,7 @@ struct TElementType<TStringPointer<FromType, ToType>>
  */
 
 // These should be replaced with StringCasts when FPlatformString starts to know about UTF-8.
-typedef TStringConversion<FTCHARToUTF8_Convert> FTCHARToUTF8;
+typedef TStringConversion<UE::Core::Private::FTCHARToUTF8_Convert> FTCHARToUTF8;
 typedef TStringConversion<FUTF8ToTCHAR_Convert> FUTF8ToTCHAR;
 
 // Usage of these should be replaced with StringCasts.
@@ -984,6 +987,18 @@ typedef TStringPointer<UTF32CHAR, TCHAR> FUTF32ToTCHAR;
 #define TCHAR_TO_UTF32(str) (UTF32CHAR*)(str)
 #define UTF32_TO_TCHAR(str) (TCHAR*)(str)
 
+#elif PLATFORM_TCHAR_IS_UTF8CHAR
+
+typedef TStringConversion<TStringConvert<TCHAR, UTF16CHAR>> FTCHARToUTF16;
+typedef TStringConversion<TStringConvert<UTF16CHAR, TCHAR>> FUTF16ToTCHAR;
+#define TCHAR_TO_UTF16(str) (UTF16CHAR*)FTCHARToUTF16((const TCHAR*)str).Get()
+#define UTF16_TO_TCHAR(str) (TCHAR*)FUTF16ToTCHAR((const UTF16CHAR*)str).Get()
+
+typedef TStringConversion<TStringConvert<TCHAR, UTF32CHAR>> FTCHARToUTF32;
+typedef TStringConversion<TStringConvert<UTF32CHAR, TCHAR>> FUTF32ToTCHAR;
+#define TCHAR_TO_UTF32(str) (UTF32CHAR*)FTCHARToUTF32((const TCHAR*)str).Get()
+#define UTF32_TO_TCHAR(str) (TCHAR*)FUTF32ToTCHAR((const UTF32CHAR*)str).Get()
+
 #else
 
 static_assert(sizeof(TCHAR) == sizeof(UTF16CHAR), "TCHAR and UTF16CHAR are expected to be the same size for inline conversion! PLATFORM_TCHAR_IS_4_BYTES is not configured correctly for this platform.");
@@ -1005,12 +1020,22 @@ typedef TStringConversion<TUTF16ToUTF32_Convert<TCHAR, wchar_t>> FTCHARToWChar;
 typedef TStringConversion<TUTF32ToUTF16_Convert<wchar_t, TCHAR>> FWCharToTCHAR;
 #define TCHAR_TO_WCHAR(str) (wchar_t*)FTCHARToWChar((const TCHAR*)str).Get()
 #define WCHAR_TO_TCHAR(str) (TCHAR*)FWCharToTCHAR((const wchar_t*)str).Get()
+
+#elif PLATFORM_TCHAR_IS_UTF8CHAR
+
+typedef TStringConversion<TStringConvert<TCHAR, wchar_t>> FTCHARToWChar;
+typedef TStringConversion<TStringConvert<wchar_t, TCHAR>> FWCharToTCHAR;
+#define TCHAR_TO_WCHAR(str) (wchar_t*)FTCHARToUTF32((const TCHAR*)str).Get()
+#define WCHAR_TO_TCHAR(str) (TCHAR*)FWCharToTCHAR((const wchar_t*)str).Get()
+
 #else
+
 static_assert(sizeof(TCHAR) == sizeof(wchar_t), "TCHAR and wchar_t are expected to be the same size for inline conversion! PLATFORM_WCHAR_IS_4_BYTES is not configured correctly for this platform.");
 typedef TStringPointer<TCHAR, wchar_t> FTCHARToWChar;
 typedef TStringPointer<wchar_t, TCHAR> FWCharToTCHAR;
 #define TCHAR_TO_WCHAR(str) (wchar_t*)(str)
 #define WCHAR_TO_TCHAR(str) (TCHAR*)(str)
+
 #endif
 
 /**
@@ -1039,7 +1064,7 @@ typedef TStringPointer<wchar_t, TCHAR> FWCharToTCHAR;
 template <typename To, int32 DefaultConversionSize = DEFAULT_STRING_CONVERSION_SIZE, typename From>
 FORCEINLINE auto StringCast(const From* Str)
 {
-	if constexpr (FPlatformString::IsCharEncodingCompatibleWith<From, To>())
+	if constexpr (TIsCharEncodingCompatibleWith_V<From, To>)
 	{
 		return TStringPointer<To>((const To*)Str);
 	}
@@ -1058,7 +1083,7 @@ FORCEINLINE auto StringCast(const From* Str)
 template <typename To, int32 DefaultConversionSize = DEFAULT_STRING_CONVERSION_SIZE, typename From>
 FORCEINLINE auto StringCast(const From* Str, int32 Len)
 {
-	if constexpr (FPlatformString::IsCharEncodingCompatibleWith<From, To>())
+	if constexpr (TIsCharEncodingCompatibleWith_V<From, To>)
 	{
 		return TStringPointer<To>((const To*)Str, Len);
 	}
@@ -1186,7 +1211,7 @@ private:
 template <typename From, typename To, int32 DefaultConversionSize = DEFAULT_STRING_CONVERSION_SIZE>
 FORCEINLINE auto StringMemoryPassthru(To* Buffer, int32 BufferSize, int32 SourceLength)
 {
-	if constexpr (FPlatformString::IsCharEncodingCompatibleWith<From, To>())
+	if constexpr (TIsCharEncodingCompatibleWith_V<From, To>)
 	{
 		check(SourceLength <= BufferSize);
 		return TPassthruPointer<From>((From*)Buffer);
@@ -1212,5 +1237,5 @@ FORCEINLINE TArray<ToType> StringToArray(const FromType* Src, int32 SrcLen)
 template <typename ToType, typename FromType>
 FORCEINLINE TArray<ToType> StringToArray(const FromType* Str)
 {
-	return ToArray(Str, TCString<FromType>::Strlen(Str) + 1);
+	return StringToArray<ToType>(Str, TCString<FromType>::Strlen(Str) + 1);
 }

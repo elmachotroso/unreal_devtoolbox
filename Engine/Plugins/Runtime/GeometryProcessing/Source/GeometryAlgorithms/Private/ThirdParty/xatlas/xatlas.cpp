@@ -33,6 +33,30 @@ https://github.com/brandonpelfrey/Fast-BVH
 MIT License
 Copyright (c) 2012 Brandon Pelfrey
 */
+
+// disable implicit type conversion warnings for visual studio and clang.
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4242)
+#pragma float_control(precise, on, push)
+#endif
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+	#if __has_warning("-Wimplicit-float-conversion")
+		#pragma clang diagnostic ignored "-Wimplicit-float-conversion"
+	#endif 
+	#if __has_warning("-Wimplicit-int-float-conversion")
+		#pragma clang diagnostic ignored "-Wimplicit-int-float-conversion"
+	#endif
+	#if defined(__clang_analyzer__)
+		#ifndef XA_DEBUG
+			#define XA_DEBUG 1
+		#endif
+	#endif
+#endif
+
 #include "ThirdParty/xatlas/xatlas.h"
 #ifndef XATLAS_C_API
 #define XATLAS_C_API 0
@@ -10047,3 +10071,12 @@ void xatlasPackOptionsInit(xatlasPackOptions *packOptions)
 } // extern "C"
 #endif
 #endif // XATLAS_C_API
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#pragma float_control(pop)
+#endif

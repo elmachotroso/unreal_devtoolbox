@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
         public ChaosCachingEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add("ChaosCachingEditor/Private");
-            PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -19,14 +16,24 @@ namespace UnrealBuildTool.Rules
 					"InputCore",
 					"Engine",
 					"UnrealEd",
-					"EditorStyle",
 					"PropertyEditor",
 					"BlueprintGraph",
 					"ToolMenus",
 					"PhysicsCore",
 					"ChaosCaching",
 					"GeometryCollectionEngine",
-					"LevelEditor"
+					"LevelEditor",
+					"LevelSequence",
+                    "MovieScene",
+                    "MovieSceneTools",
+                    "MovieSceneTracks",
+                    "Sequencer",
+                    "TimeManagement",
+					"EditorFramework",
+					"TakesCore",
+					"TakeRecorder",
+					"SceneOutliner",
+					"TakeTrackRecorders",
 				});
 
 			SetupModulePhysicsSupport(Target);

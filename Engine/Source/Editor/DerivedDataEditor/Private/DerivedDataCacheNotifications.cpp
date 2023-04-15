@@ -1,16 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DerivedDataCacheNotifications.h"
-#include "Misc/EngineBuildSettings.h"
+
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "DerivedDataCacheInterface.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CoreMisc.h"
-#include "Misc/App.h"
-#include "Internationalization/Internationalization.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Input/SHyperlink.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "DerivedDataCacheInterface.h"
-#include "Editor/EditorPerformanceSettings.h"
 
 #define LOCTEXT_NAMESPACE "DerivedDataCacheNotifications"
 

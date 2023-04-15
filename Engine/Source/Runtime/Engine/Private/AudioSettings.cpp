@@ -16,6 +16,8 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioSettings)
+
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -35,6 +37,8 @@ UAudioSettings::UAudioSettings(const FObjectInitializer& ObjectInitializer)
 
 	GlobalMinPitchScale = 0.4F;
 	GlobalMaxPitchScale = 2.0F;
+
+	DefaultAudioCompressionType = EDefaultAudioCompressionType::BinkAudio;
 }
 
 void UAudioSettings::AddDefaultSettings()
@@ -96,6 +100,20 @@ void UAudioSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 			|| PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, ReverbSubmix))
 		{
 			bPromptRestartRequired = true;
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, DefaultAudioCompressionType))
+		{
+			// loop through all USoundWaves and update the compression type w/ the new defualt
+			// (if they are set to "Project Default")
+			for (TObjectIterator<USoundWave> It; It; ++It)
+			{
+				USoundWave* SoundWave = *It;
+				if(SoundWave && SoundWave->GetSoundAssetCompressionTypeEnum() == ESoundAssetCompressionType::ProjectDefined)
+				{
+					// this will query the correct compression type and update the asset accordingly
+					SoundWave->SetSoundAssetCompressionType(SoundWave->GetSoundAssetCompressionType(), /*bMarkDirty*/false);
+				}
+			}
 		}
 		else if (PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, QualityLevels))
 		{
@@ -323,3 +341,4 @@ FString UAudioSettings::FindQualityNameByIndex(int32 Index) const
 }
 
 #undef LOCTEXT_NAMESPACE
+

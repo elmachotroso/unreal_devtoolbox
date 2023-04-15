@@ -7,6 +7,8 @@
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "Engine/Engine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BuoyancyManager)
+
 ABuoyancyManager::ABuoyancyManager(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -28,44 +30,45 @@ ABuoyancyManager* ABuoyancyManager::Get(const UObject* WorldContextObject)
 
 void ABuoyancyManager::OnCreatePhysics(UActorComponent* Component)
 {
-#if WITH_CHAOS
 	if (AActor* OwningActor = Component->GetOwner())
 	{
 		if (UBuoyancyComponent* BuoyancyComp = OwningActor->FindComponentByClass<UBuoyancyComponent>())
 		{
-			InitializeAsyncAux(BuoyancyComp);
+			if (BuoyancyComp->GetSimulatingComponent() == Cast<UPrimitiveComponent>(Component))
+			{
+				InitializeAsyncAux(BuoyancyComp);
+			}
 		}
 	}
-#endif
 }
 
 void ABuoyancyManager::OnDestroyPhysics(UActorComponent* Component)
 {
-#if WITH_CHAOS
 	if (AActor* OwningActor = Component->GetOwner())
 	{
 		if (UBuoyancyComponent* BuoyancyComp = OwningActor->FindComponentByClass<UBuoyancyComponent>())
 		{
-			
-			ClearAsyncInputs(BuoyancyComp);
-			if (UPrimitiveComponent* SimulatingComp = BuoyancyComp->GetSimulatingComponent())
+			if (PhysicsInitializedSimulatingComponents.Contains(Cast<UPrimitiveComponent>(Component)))
 			{
-				if (AsyncCallback)
+				ClearAsyncInputs(BuoyancyComp);
+				if (UPrimitiveComponent* SimulatingComp = BuoyancyComp->GetSimulatingComponent())
 				{
-					if (FBodyInstance* BI = SimulatingComp->GetBodyInstance())
+					if (AsyncCallback)
 					{
-						if (auto ActorHandle = BI->ActorHandle)
+						if (FBodyInstance* BI = SimulatingComp->GetBodyInstance())
 						{
-							AsyncCallback->ClearAsyncAux_External(ActorHandle->GetGameThreadAPI().UniqueIdx());
+							if (auto ActorHandle = BI->ActorHandle)
+							{
+								AsyncCallback->ClearAsyncAux_External(ActorHandle->GetGameThreadAPI().UniqueIdx());
+							}
 						}
 					}
-				}
 
-				PhysicsInitializedSimulatingComponents.Remove(SimulatingComp);
+					PhysicsInitializedSimulatingComponents.Remove(SimulatingComp);
+				}
 			}
 		}
 	}
-#endif
 }
 
 void ABuoyancyManager::ClearAsyncInputs(UBuoyancyComponent* Component)
@@ -99,7 +102,14 @@ void ABuoyancyManager::Register(UBuoyancyComponent* BuoyancyComponent)
 {
 	check(BuoyancyComponent);
 	BuoyancyComponents.AddUnique(BuoyancyComponent);
-	InitializeAsyncAux(BuoyancyComponent);
+	if(AsyncCallback)
+	{
+		InitializeAsyncAux(BuoyancyComponent);
+	}
+	else // AsyncCallback is not setup yet. We need to register this component at a later time.
+	{
+		BuoyancyComponentsToRegister.Emplace(BuoyancyComponent);
+	}
 }
 
 void ABuoyancyManager::Unregister(UBuoyancyComponent* BuoyancyComponent)
@@ -216,7 +226,6 @@ void ABuoyancyManager::Update(FPhysScene* PhysScene, float DeltaTime)
 
 void ABuoyancyManager::InitializeAsyncAux(UBuoyancyComponent* Component)
 {
-#if WITH_CHAOS
 	UPrimitiveComponent* SimulatingComponent = Component->GetSimulatingComponent();
 	if (!SimulatingComponent)
 	{
@@ -238,7 +247,6 @@ void ABuoyancyManager::InitializeAsyncAux(UBuoyancyComponent* Component)
 			}
 		}
 	}
-#endif
 }
 
 void ABuoyancyManager::BeginPlay()
@@ -251,11 +259,17 @@ void ABuoyancyManager::BeginPlay()
 		if (FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
 			OnPhysScenePreTickHandle = PhysScene->OnPhysScenePreTick.AddUObject(this, &ABuoyancyManager::Update);
-#if WITH_CHAOS
-			OnPhysScenePreTickHandle = PhysScene->OnPhysScenePreTick.AddUObject(this, &ABuoyancyManager::Update);
 			AsyncCallback = PhysScene->GetSolver()->CreateAndRegisterSimCallbackObject_External<FBuoyancyManagerAsyncCallback>();
-#endif
 		}
+
+		for (const TWeakObjectPtr<UBuoyancyComponent>& BuoyancyComponentPtr : BuoyancyComponentsToRegister)
+		{
+			if (UBuoyancyComponent* BuoyancyComponent = BuoyancyComponentPtr.Get())
+			{
+				InitializeAsyncAux(BuoyancyComponent);
+			}
+		}
+		BuoyancyComponentsToRegister.Empty();
 	}
 
 	Super::BeginPlay();
@@ -276,14 +290,13 @@ void ABuoyancyManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		if (FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
 			PhysScene->OnPhysScenePreTick.Remove(OnPhysScenePreTickHandle);
-#if WITH_CHAOS
+
 			if (AsyncCallback)
 			{
 				PhysScene->GetSolver()->UnregisterAndFreeSimCallbackObject_External(AsyncCallback);
 				PhysScene->OnPhysScenePreTick.Remove(OnPhysScenePreTickHandle);
 				AsyncCallback = nullptr;
 			}
-#endif
 		}
 	}
 }
@@ -362,3 +375,4 @@ void FBuoyancyManagerAsyncCallback::OnPreSimulate_Internal()
 		Output.Outputs[ObjectIdx] = BuoyancyComponentInput.PreSimulate(World, GetDeltaTime_Internal(), GetSimTime_Internal(), Aux, Input->WaterBodyComponentToSolverData);
 	}
 }
+

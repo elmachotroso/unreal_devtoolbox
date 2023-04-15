@@ -21,6 +21,7 @@ class IAssetEditorInstance;
 class IDetailsView;
 class SActorDetails;
 class SBorder;
+class SDockTab;
 class SLevelEditorModeContent;
 class SLevelEditorToolBox;
 class UTypedElementSelectionSet;
@@ -148,11 +149,21 @@ public:
 	}
 	
 	/** Attaches a sequencer asset editor used to animate objects in the level to this level editor */
-	void AttachSequencer( TSharedPtr<SWidget> SequencerWidget, TSharedPtr<IAssetEditorInstance> NewSequencerAssetEditor );
+	TSharedPtr<SDockTab> AttachSequencer( TSharedPtr<SWidget> SequencerWidget, TSharedPtr<IAssetEditorInstance> NewSequencerAssetEditor );
 
-	/** Returns current scene outliner associated with level editor's scene outliner tab, if it exists */
-	virtual TSharedPtr<ISceneOutliner> GetSceneOutliner() const override { return SceneOutlinerPtr.Pin();  }
+	/** Get an array containing weak pointers to all 4 Scene Outliners which could be potentially active */
+	virtual TArray<TWeakPtr<ISceneOutliner>> GetAllSceneOutliners() const override;
 
+	/** Set the outliner with the given name as the most recently interacted with */
+	virtual void SetMostRecentlyUsedSceneOutliner(FName OutlinerIdentifier) override;
+	
+	/** Return the most recently interacted with Outliner */
+	virtual TSharedPtr<ISceneOutliner> GetMostRecentlyUsedSceneOutliner() override;
+	
+	/** Return the most recently interacted with Outliner */
+	UE_DEPRECATED(5.1, "The Level Editor has multiple outliners, use GetAllSceneOutliners() or GetMostRecentlyUsedSceneOutliner() instead to avoid ambiguity")
+	virtual TSharedPtr<ISceneOutliner> GetSceneOutliner() const override;
+	
 	TSharedRef<SWidget> GetTitleBarMessageWidget() const { return TtileBarMessageBox.ToSharedRef(); }
 private:
 	
@@ -237,6 +248,9 @@ private:
 	/** Handles deletion of assets */
 	void HandleAssetsDeleted(const TArray<UClass*>& DeletedClasses);
 
+	/** Handles events where an instance of an Instanced Static Mesh is about to be removed. */
+	void OnIsmInstanceRemoving(const FSMInstanceElementId& SMInstanceElementId, int32 InstanceIndex);
+
 	/** Called when element selection changes */
 	void OnElementSelectionChanged(const UTypedElementSelectionSet* SelectionSet, bool bForceRefresh = false);
 
@@ -257,6 +271,18 @@ private:
 
 	/** @return All valid actor details panels */
 	TArray<TSharedRef<SActorDetails>> GetAllActorDetails() const;
+
+	/** Create a Scene Outliner for the Level Editor */
+	TSharedRef<ISceneOutliner> CreateSceneOutliner(FName TabIdentifier);
+
+	/** Function to extend the context menu for the outliner tab */
+	void OnExtendSceneOutlinerTabContextMenu(FMenuBuilder& InMenuBuilder);
+
+	/** Helper function to get the display name for an outliner */
+	FText GetSceneOutlinerLabel(FName SceneOutlinerTabIdentifier);
+
+	/** Sets the first available outliner as the most recent outliner */
+	void ResetMostRecentOutliner();
 
 private:
 
@@ -308,8 +334,17 @@ private:
 	/** Weak pointer to the level editor's Sequencer widget */
 	TWeakPtr<SWidget> SequencerWidgetPtr;
 
-	/** Weak pointer to the level editor's scene outliner */
+	/** Weak pointer to the level editor's most recently created scene outliner */
 	TWeakPtr<ISceneOutliner> SceneOutlinerPtr;
+
+	/** Map containing Weak pointers to all the Outliners in the level editor */
+	TMap<FName, TWeakPtr<ISceneOutliner>> SceneOutliners;
+
+	/** Map containing Weak pointers to all the Scene Outliner Tabs in the level editor */
+	TMap<FName, TWeakPtr<SDockTab>> SceneOutlinerTabs;
+
+	/** Map containing the display names of all the outliners */
+	TMap<FName, FText> SceneOutlinerDisplayNames;
 
 	/** Handle to the registered OnPreviewFeatureLevelChanged delegate. */
 	FDelegateHandle PreviewFeatureLevelChangedHandle;

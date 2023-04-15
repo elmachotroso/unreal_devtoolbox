@@ -1,18 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using Amazon.Runtime.Internal.Util;
-using HordeServer.Models;
-using HordeServer.Utilities;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using HordeCommon;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
-namespace HordeServer.Services
+namespace Horde.Build.Server
 {
 	/// <summary>
 	/// Interface for a service which keeps track of whether we're during downtime
@@ -31,7 +28,7 @@ namespace HordeServer.Services
 	/// <summary>
 	/// Service which manages the downtime schedule
 	/// </summary>
-	public class DowntimeService : TickedBackgroundService, IDowntimeService
+	public sealed class DowntimeService : IDowntimeService, IHostedService, IDisposable
 	{
 		/// <summary>
 		/// Whether the server is currently in downtime
@@ -42,52 +39,64 @@ namespace HordeServer.Services
 			private set;
 		}
 
-		DatabaseService DatabaseService;
-		IOptionsMonitor<ServerSettings> Settings;
-		ILogger<DowntimeService> Logger;
+		readonly MongoService _mongoService;
+		readonly ITicker _ticker;
+		readonly IOptionsMonitor<ServerSettings> _settings;
+		readonly ILogger _logger;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="DatabaseService">The database service instance</param>
-		/// <param name="Settings">The server settings</param>
-		/// <param name="Logger">Logger instance</param>
-		public DowntimeService(DatabaseService DatabaseService, IOptionsMonitor<ServerSettings> Settings, ILogger<DowntimeService> Logger)
-			: base(TimeSpan.FromMinutes(1.0), Logger)
+		/// <param name="mongoService">The database service instance</param>
+		/// <param name="clock"></param>
+		/// <param name="settings">The server settings</param>
+		/// <param name="logger">Logger instance</param>
+		public DowntimeService(MongoService mongoService, IClock clock, IOptionsMonitor<ServerSettings> settings, ILogger<DowntimeService> logger)
 		{
-			this.DatabaseService = DatabaseService;
-			this.Settings = Settings;
-			this.Logger = Logger;
+			_mongoService = mongoService;
+			_settings = settings;
+			_logger = logger;
 
 			// Ensure the initial value to be correct
-			TickAsync(CancellationToken.None).Wait();
+			TickAsync(CancellationToken.None).AsTask().Wait();
+
+			_ticker = clock.AddTicker<DowntimeService>(TimeSpan.FromMinutes(1.0), TickAsync, logger);
 		}
+
+		/// <inheritdoc/>
+		public Task StartAsync(CancellationToken cancellationToken) => _ticker.StartAsync();
+
+		/// <inheritdoc/>
+		public Task StopAsync(CancellationToken cancellationToken) => _ticker.StopAsync();
+
+		/// <inheritdoc/>
+		public void Dispose() => _ticker.Dispose();
 
 		/// <summary>
 		/// Periodically called tick function
 		/// </summary>
-		/// <param name="StoppingToken">Token indicating that the service should stop</param>
+		/// <param name="stoppingToken">Token indicating that the service should stop</param>
 		/// <returns>Async task</returns>
-		protected override async Task TickAsync(CancellationToken StoppingToken)
+		async ValueTask TickAsync(CancellationToken stoppingToken)
 		{
-			Globals Globals = await DatabaseService.GetGlobalsAsync();
+			Globals globals = await _mongoService.GetGlobalsAsync();
 
-			DateTimeOffset Now = TimeZoneInfo.ConvertTime(DateTimeOffset.Now, Settings.CurrentValue.TimeZoneInfo);
-			bool bIsActive = Globals.ScheduledDowntime.Any(x => x.IsActive(Now));
+			DateTimeOffset now = TimeZoneInfo.ConvertTime(DateTimeOffset.Now, _settings.CurrentValue.TimeZoneInfo);
+			bool bIsActive = globals.ScheduledDowntime.Any(x => x.IsActive(now));
 
-			DateTimeOffset? Next = null;
-			foreach (ScheduledDowntime Schedule in Globals.ScheduledDowntime)
+			DateTimeOffset? next = null;
+			foreach (ScheduledDowntime schedule in globals.ScheduledDowntime)
 			{
-				DateTimeOffset Start = Schedule.GetNext(Now).StartTime;
-				if(Next == null || Start < Next)
+				DateTimeOffset start = schedule.GetNext(now).StartTime;
+				if (next == null || start < next)
 				{
-					Next = Start;
+					next = start;
 				}
 			}
 
-			if (Next != null)
+			if (next != null)
 			{
-				Logger.LogInformation("Server time: {Time}. Downtime: {Downtime}. Next: {Next}.", Now, bIsActive, Next.Value);
+				_logger.LogInformation("Server time: {Time}. Downtime: {Downtime}. Next: {Next}.", now, bIsActive, next.Value);
 			}
 
 			if (bIsActive != IsDowntimeActive)
@@ -95,11 +104,11 @@ namespace HordeServer.Services
 				IsDowntimeActive = bIsActive;
 				if (IsDowntimeActive)
 				{
-					Logger.LogInformation("Entering downtime");
+					_logger.LogInformation("Entering downtime");
 				}
 				else
 				{
-					Logger.LogInformation("Leaving downtime");
+					_logger.LogInformation("Leaving downtime");
 				}
 			}
 		}

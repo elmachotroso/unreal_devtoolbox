@@ -1,19 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/SCurveEditorKeyBarView.h"
-#include "Rendering/DrawElements.h"
-#include "Fonts/FontMeasure.h"
-#include "Styling/CoreStyle.h"
+
+#include "Containers/SortedMap.h"
 #include "CurveEditor.h"
-#include "EditorStyleSet.h"
-#include "CurveModel.h"
-#include "ICurveEditorBounds.h"
 #include "CurveEditorScreenSpace.h"
-#include "CurveDataAbstraction.h"
-#include "CurveDrawInfo.h"
+#include "CurveEditorSelection.h"
+#include "CurveEditorTypes.h"
+#include "Fonts/FontMeasure.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
 #include "KeyBarCurveModel.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "SCurveEditorPanel.h"
+#include "Layout/Geometry.h"
+#include "Layout/PaintGeometry.h"
+#include "Math/Color.h"
+#include "Math/Range.h"
+#include "Math/TransformCalculus2D.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/SlateLayoutTransform.h"
+#include "Rendering/SlateRenderer.h"
+#include "SCurveEditorView.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/ChooseClass.h"
+
+class FCurveModel;
+class FMenuBuilder;
+class FPaintArgs;
+class FSlateRect;
+class FWidgetStyle;
+struct FSlateBrush;
 
 float SCurveEditorKeyBarView::TrackHeight = 24.f;
 
@@ -82,7 +103,7 @@ void SCurveEditorKeyBarView::DrawLabels(const FGeometry& AllottedGeometry, FSlat
 		return;
 	}
 
-	const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
+	const FSlateBrush* WhiteBrush = FAppStyle::GetBrush("WhiteBrush");
 
 	// Draw some text telling the user how to get retime anchors.
 	const FSlateFontInfo FontInfo = FCoreStyle::Get().GetFontStyle("ToolTip.LargerFont");
@@ -90,7 +111,10 @@ void SCurveEditorKeyBarView::DrawLabels(const FGeometry& AllottedGeometry, FSlat
 	// We have to measure the string so we can draw it centered on the window.
 	const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
+	const FVector2D LocalSize(AllottedGeometry.GetLocalSize().X, TrackHeight);
+
+	double InputMin = 0, InputMax = 1;
+	GetInputBounds(InputMin, InputMax);//in Sequencer Seconds
 
 	const FCurveEditorScreenSpace ViewSpace = GetViewSpace();
 
@@ -104,13 +128,8 @@ void SCurveEditorKeyBarView::DrawLabels(const FGeometry& AllottedGeometry, FSlat
 
 		const int32 CurveIndex = static_cast<int32>(It->Value.ViewToCurveTransform.GetTranslation().Y);
 
-		FCurveEditorScreenSpace CurveSpace = GetCurveSpace(It.Key());
-
+		const FCurveEditorScreenSpace CurveSpace = GetCurveSpace(It.Key());
 		const float LaneTop = CurveSpace.ValueToScreen(0.0) - TrackHeight*.5f;
-
-
-		double InputMin = 0, InputMax = 1;
-		GetInputBounds(InputMin, InputMax);//in Sequencer Seconds
 
 		// Draw the curve label and background
 		FKeyBarCurveModel* KeyBarCurveModel = static_cast<FKeyBarCurveModel*>(Curve);
@@ -122,7 +141,11 @@ void SCurveEditorKeyBarView::DrawLabels(const FGeometry& AllottedGeometry, FSlat
 			{
 				const FKeyBarCurveModel::FBarRange& Range = Ranges[Index];
 				const double LowerSeconds = Range.Range.GetLowerBoundValue();
-				const double UpperSeconds = Range.Range.GetUpperBoundValue();
+				double UpperSeconds = Range.Range.GetUpperBoundValue();
+				if (LowerSeconds == UpperSeconds)
+				{
+					UpperSeconds = InputMax;
+				}
 				const bool bOutsideUpper = (Index != Ranges.Num() - 1) && UpperSeconds < InputMin;
 				if (LowerSeconds > InputMax || bOutsideUpper) //out of range
 				{
@@ -145,18 +168,37 @@ void SCurveEditorKeyBarView::DrawLabels(const FGeometry& AllottedGeometry, FSlat
 					}
 				}
 
+				// draw background box
 				if (CurveColor != FLinearColor::White)
 				{
-					const double LowerSecondsForBox =(Index == 0 && LowerSeconds > InputMin )? InputMin : LowerSeconds;
-					const double BoxPos = CurveSpace.SecondsToScreen(LowerSecondsForBox);
+					FPaintGeometry BoxGeometry;
+					if (Range.bRangeIsInfinite)
+					{
+						const double LowerSecondsForBox = Index == 0 ? InputMin : FMath::Max<double>(InputMin, LowerSeconds);
+						const double BoxPos = CurveSpace.SecondsToScreen(LowerSecondsForBox);
+						BoxGeometry = AllottedGeometry.ToPaintGeometry(
+							LocalSize,
+							FSlateLayoutTransform(FVector2D(BoxPos, LaneTop))
+						);
+					}
+					else
+					{
+						const double LowerSecondsForBox = FMath::Max<double>(InputMin, LowerSeconds);
+						const double UpperSecondsForBox = FMath::Min<double>(InputMax, UpperSeconds);
+						const double BoxPos = CurveSpace.SecondsToScreen(LowerSecondsForBox);
+						const double BoxEnd = CurveSpace.SecondsToScreen(UpperSecondsForBox);
+						const FVector2D OurLocalSize(BoxEnd - BoxPos, LocalSize.Y);
 
-					const FPaintGeometry BoxGeometry = AllottedGeometry.ToPaintGeometry(
-						FVector2D(AllottedGeometry.GetLocalSize().X, TrackHeight),
-						FSlateLayoutTransform(FVector2D(BoxPos, LaneTop))
-					);
-
+						BoxGeometry = AllottedGeometry.ToPaintGeometry(
+							OurLocalSize,
+							FSlateLayoutTransform(FVector2D(BoxPos, LaneTop))
+						);
+					}
+				
 					FSlateDrawElement::MakeBox(OutDrawElements, BaseLayerId + CurveViewConstants::ELayerOffset::Background, BoxGeometry, WhiteBrush, DrawEffects, CurveColor);
 				}
+
+				// draw label
 				const double LowerSecondsForLabel = (InputMin > LowerSeconds) ? InputMin : LowerSeconds;
 				double LabelPos = CurveSpace.SecondsToScreen(LowerSecondsForLabel) + 10;
 

@@ -20,7 +20,7 @@ public:
 	 *
 	 * @param MenuBuilder The builder for the menu that owns this menu.
 	 */
-	static void MakeMenu( FMenuBuilder& MenuBuilder, bool bIsVolumeTexture )
+	static void MakeMenu(FMenuBuilder& MenuBuilder)
 	{
 		// view port options
 		MenuBuilder.BeginSection("ViewportSection", LOCTEXT("ViewportSectionHeader", "Viewport Options"));
@@ -32,15 +32,6 @@ public:
 				LOCTEXT("BackgroundTooltip", "Set the viewport's background"),
 				FNewMenuDelegate::CreateStatic(&FTextureEditorViewOptionsMenu::GenerateBackgroundMenuContent)
 			);
-
-			if (bIsVolumeTexture)
-			{
-				MenuBuilder.AddSubMenu(
-					LOCTEXT("ViewMode", "View Mode"),
-					LOCTEXT("ViewModeTooltip", "Set the view mode"),
-					FNewMenuDelegate::CreateStatic(&FTextureEditorViewOptionsMenu::GenerateVolumeDisplayModeMenuContent)
-				);
-			}
 
 			MenuBuilder.AddMenuEntry(FTextureEditorCommands::Get().TextureBorder);
 		}
@@ -64,16 +55,6 @@ protected:
 		MenuBuilder.AddMenuEntry(FTextureEditorCommands::Get().SolidBackground);
 	}
 
-	/**
-	 * Creates the 'Display Mode' sub-menu.
-	 *
-	 * @param MenuBuilder The builder for the menu that owns this menu.
-	 */
-	static void GenerateVolumeDisplayModeMenuContent( FMenuBuilder& MenuBuilder )
-	{
-		MenuBuilder.AddMenuEntry(FTextureEditorCommands::Get().DepthSlices);
-		MenuBuilder.AddMenuEntry(FTextureEditorCommands::Get().TraceIntoVolume);
-	}
 };
 
 

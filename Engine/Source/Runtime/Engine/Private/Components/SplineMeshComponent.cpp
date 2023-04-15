@@ -21,6 +21,7 @@
 #if WITH_EDITOR
 #include "IHierarchicalLODUtilities.h"
 #include "HierarchicalLODUtilitiesModule.h"
+#include "LandscapeSplineActor.h"
 #endif // WITH_EDITOR
 
 int32 GNoRecreateSplineMeshProxy = 1;
@@ -114,6 +115,7 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FSplineMeshVertexFactory, "/Engine/Private/LocalVe
 	| EVertexFactoryFlags::SupportsPrecisePrevWorldPos
 	| EVertexFactoryFlags::SupportsPositionOnly
 	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+	| EVertexFactoryFlags::SupportsPSOPrecaching
 );
 
 //////////////////////////////////////////////////////////////////////////
@@ -263,6 +265,11 @@ FVector USplineMeshComponent::GetEndTangent() const
 
 void USplineMeshComponent::SetEndTangent(FVector EndTangent, bool bUpdateMesh)
 {
+	if (SplineParams.EndTangent == EndTangent)
+	{
+		return;
+	}
+
 	SplineParams.EndTangent = EndTangent;
 	bMeshDirty = true;
 	if (bUpdateMesh)
@@ -273,6 +280,11 @@ void USplineMeshComponent::SetEndTangent(FVector EndTangent, bool bUpdateMesh)
 
 void USplineMeshComponent::SetStartAndEnd(FVector StartPos, FVector StartTangent, FVector EndPos, FVector EndTangent, bool bUpdateMesh)
 {
+	if (SplineParams.StartPos == StartPos && SplineParams.StartTangent == StartTangent && SplineParams.EndPos == EndPos && SplineParams.EndTangent == EndTangent)
+	{
+		return;
+	}
+
 	SplineParams.StartPos = StartPos;
 	SplineParams.StartTangent = StartTangent;
 	SplineParams.EndPos = EndPos;
@@ -291,6 +303,11 @@ FVector2D USplineMeshComponent::GetStartScale() const
 
 void USplineMeshComponent::SetStartScale(FVector2D StartScale, bool bUpdateMesh)
 {
+	if (SplineParams.StartScale == StartScale)
+	{
+		return;
+	}
+
 	SplineParams.StartScale = StartScale;
 	bMeshDirty = true;
 	if (bUpdateMesh)
@@ -336,6 +353,11 @@ FVector2D USplineMeshComponent::GetEndScale() const
 
 void USplineMeshComponent::SetEndScale(FVector2D EndScale, bool bUpdateMesh)
 {
+	if (SplineParams.EndScale == EndScale)
+	{
+		return;
+	}
+
 	SplineParams.EndScale = EndScale;
 	bMeshDirty = true;
 	if (bUpdateMesh)
@@ -381,6 +403,11 @@ ESplineMeshAxis::Type USplineMeshComponent::GetForwardAxis() const
 
 void USplineMeshComponent::SetForwardAxis(ESplineMeshAxis::Type InForwardAxis, bool bUpdateMesh)
 {
+	if (ForwardAxis == InForwardAxis)
+	{
+		return;
+	}
+
 	ForwardAxis = InForwardAxis;
 	bMeshDirty = true;
 	if (bUpdateMesh)
@@ -527,8 +554,8 @@ void USplineMeshComponent::Serialize(FArchive& Ar)
 	if (Ar.UEVer() < VER_UE4_SPLINE_MESH_ORIENTATION)
 	{
 		ForwardAxis = ESplineMeshAxis::Z;
-		SplineParams.StartRoll -= HALF_PI;
-		SplineParams.EndRoll -= HALF_PI;
+		SplineParams.StartRoll -= UE_HALF_PI;
+		SplineParams.EndRoll -= UE_HALF_PI;
 
 		float Temp = SplineParams.StartOffset.X;
 		SplineParams.StartOffset.X = -SplineParams.StartOffset.Y;
@@ -547,6 +574,23 @@ void USplineMeshComponent::Serialize(FArchive& Ar)
 }
 
 #if WITH_EDITOR
+bool USplineMeshComponent::IsEditorOnly() const
+{
+	if (Super::IsEditorOnly())
+	{
+		return true;
+	}
+
+	// If Landscape uses generated LandscapeSplineMeshesActors, SplineMeshComponents is removed from cooked build  
+	ALandscapeSplineActor* SplineActor = Cast<ALandscapeSplineActor>(GetOwner());
+	if (SplineActor && SplineActor->HasGeneratedLandscapeSplineMeshesActors())
+	{
+		return true;
+	}
+
+	return false;
+}
+
 bool USplineMeshComponent::Modify(bool bAlwaysMarkDirty)
 {
 	bool bSavedToTransactionBuffer = Super::Modify(bAlwaysMarkDirty);
@@ -559,6 +603,39 @@ bool USplineMeshComponent::Modify(bool bAlwaysMarkDirty)
 	return bSavedToTransactionBuffer;
 }
 #endif
+
+void USplineMeshComponent::PrecachePSOs()
+{
+	if (!IsComponentPSOPrecachingEnabled() || GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
+	{
+		return;
+	}
+
+	bool bAnySectionCastsShadows = false;
+	TArray<int16, TInlineAllocator<2>> UsedMaterialIndices;
+	for (FStaticMeshLODResources& LODRenderData : GetStaticMesh()->GetRenderData()->LODResources)
+	{
+		for (FStaticMeshSection& RenderSection : LODRenderData.Sections)
+		{
+			UsedMaterialIndices.AddUnique(RenderSection.MaterialIndex);
+			bAnySectionCastsShadows |= RenderSection.bCastShadow;
+		}
+	}
+
+	FPSOPrecacheParams PrecachePSOParams;
+	SetupPrecachePSOParams(PrecachePSOParams);
+	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
+	PrecachePSOParams.bReverseCulling = bReverseCulling;
+
+	for (uint16 MaterialIndex : UsedMaterialIndices)
+	{
+		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
+		if (MaterialInterface)
+		{
+			MaterialInterface->PrecachePSOs(&FSplineMeshVertexFactory::StaticType, PrecachePSOParams);
+		}
+	}
+}
 
 FPrimitiveSceneProxy* USplineMeshComponent::CreateSceneProxy()
 {
@@ -777,7 +854,10 @@ FTransform USplineMeshComponent::CalcSliceTransform(const float DistanceAlong) c
 		const FBoxSphereBounds StaticMeshBounds = GetStaticMesh()->GetBounds();
 		const float MeshMinZ = GetAxisValue(StaticMeshBounds.Origin, ForwardAxis) - GetAxisValue(StaticMeshBounds.BoxExtent, ForwardAxis);
 		const float MeshRangeZ = 2.0f * GetAxisValue(StaticMeshBounds.BoxExtent, ForwardAxis);
-		Alpha = (DistanceAlong - MeshMinZ) / MeshRangeZ;
+		if (MeshRangeZ > UE_SMALL_NUMBER)
+		{
+			Alpha = (DistanceAlong - MeshMinZ) / MeshRangeZ;
+		}
 	}
 
 	return CalcSliceTransformAtSplineOffset(Alpha);
@@ -868,6 +948,16 @@ bool USplineMeshComponent::ContainsPhysicsTriMeshData(bool InUseAllTriData) cons
 	return false;
 }
 
+bool USplineMeshComponent::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	if (GetStaticMesh())
+	{
+		return GetStaticMesh()->GetTriMeshSizeEstimates(OutTriMeshEstimates, bInUseAllTriData);
+	}
+
+	return false;
+}
+
 void USplineMeshComponent::GetMeshId(FString& OutMeshId)
 {
 	// First get the base mesh id from the static mesh
@@ -930,21 +1020,12 @@ void USplineMeshComponent::OnCreatePhysicsState()
 
 UBodySetup* USplineMeshComponent::GetBodySetup()
 {
-#if PHYSICS_INTERFACE_PHYSX
-	// Don't return a body setup that has no collision, it means we are interactively moving the spline and don't want to build collision.
-	// Instead we explicitly build collision with USplineMeshComponent::RecreateCollision()
-	if (BodySetup != NULL && (BodySetup->TriMeshes.Num() || BodySetup->AggGeom.GetElementCount() > 0))
-	{
-		return BodySetup;
-	}
-#elif WITH_CHAOS
 	// Don't return a body setup that has no collision, it means we are interactively moving the spline and don't want to build collision.
 	// Instead we explicitly build collision with USplineMeshComponent::RecreateCollision()
 	if (BodySetup != NULL && (BodySetup->ChaosTriMeshes.Num() || BodySetup->AggGeom.GetElementCount() > 0))
 	{
 		return BodySetup;
 	}
-#endif // WITH_CHAOS
 
 	return NULL;
 }
@@ -1011,7 +1092,7 @@ void USplineMeshComponent::DestroyBodySetup()
 
 void USplineMeshComponent::RecreateCollision()
 {
-	if (GetStaticMesh() && IsCollisionEnabled())
+	if (GetStaticMesh())
 	{
 		if (BodySetup == NULL)
 		{
@@ -1142,6 +1223,9 @@ void USplineMeshComponent::ApplyComponentInstanceData(FSplineMeshInstanceData* S
 
 
 #include "StaticMeshLight.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SplineMeshComponent)
+
 /** */
 class FSplineStaticLightingMesh : public FStaticMeshStaticLightingMesh
 {
@@ -1217,3 +1301,4 @@ void USplineMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 	}
 }
 #endif
+

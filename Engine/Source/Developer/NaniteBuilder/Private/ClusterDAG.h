@@ -4,6 +4,7 @@
 
 #include "Cluster.h"
 #include "Containers/BinaryHeap.h"
+#include "Containers/BitArray.h"
 
 // Log CRCs to test for deterministic building
 #if 0
@@ -33,13 +34,14 @@ struct FClusterGroup
 };
 
 // Performs DAG reduction and appends the resulting clusters and groups
-void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Cluster, uint32 ClusterBaseStart, uint32 ClusterBaseNum, uint32 MeshIndex, FBounds& MeshBounds );
+void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Cluster, uint32 ClusterBaseStart, uint32 ClusterBaseNum, uint32 MeshIndex, FBounds3f& MeshBounds );
 
 FBinaryHeap< float > FindDAGCut(
 	const TArray< FClusterGroup >& Groups,
 	const TArray< FCluster >& Clusters,
 	uint32 TargetNumTris,
 	float  TargetError,
-	uint32 TargetOvershoot );
+	uint32 TargetOvershoot,
+	TBitArray<>* SelectedGroupsMask );
 
 } // namespace Nanite

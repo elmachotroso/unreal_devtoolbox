@@ -14,10 +14,6 @@
 #include "eos_rtc_audio_types.h"
 #include "eos_lobby_types.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogEOSVoiceChat, Log, All);
-
-EOSVOICECHAT_API FVoiceChatResult ResultFromEOSResult(const EOS_EResult EosResult);
-
 EOSVOICECHAT_API const TCHAR* LexToString(EOS_ERTCAudioInputStatus Status);
 
 struct FVoiceChatMetadataItem
@@ -45,15 +41,14 @@ public:
 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnVoiceChatDataReceivedDelegate, const FString& /* ChannelName */, const FString& /* PlayerName */, TArrayView<const uint8> /* Buffer */);
 
+class FEOSAudioDevicePool;
 class FEOSVoiceChatUser;
 class IEOSSDKManager;
 using IEOSPlatformHandlePtr = TSharedPtr<class IEOSPlatformHandle, ESPMode::ThreadSafe>;
 
 typedef TSharedPtr<class FEOSVoiceChat, ESPMode::ThreadSafe> FEOSVoiceChatPtr;
-typedef TWeakPtr<class FEOSVoiceChat, ESPMode::ThreadSafe> FEOSVoiceChatWeakPtr;
 typedef TSharedPtr<class FEOSVoiceChatUser, ESPMode::ThreadSafe> FEOSVoiceChatUserPtr;
 typedef TSharedRef<class FEOSVoiceChatUser, ESPMode::ThreadSafe> FEOSVoiceChatUserRef;
-typedef TWeakPtr<class FEOSVoiceChatUser, ESPMode::ThreadSafe> FEOSVoiceChatUserWeakPtr;
 
 class FEOSVoiceChat : public TSharedFromThis<FEOSVoiceChat, ESPMode::ThreadSafe>, public IVoiceChat
 {
@@ -148,11 +143,9 @@ public:
 	virtual FString InsecureGetJoinToken(const FString& ChannelName, EVoiceChatChannelType ChannelType, TOptional<FVoiceChatChannel3dProperties> Channel3dProperties = TOptional<FVoiceChatChannel3dProperties>()) override;
 	// ~End IVoiceChatUser Interface
 
+	IEOSPlatformHandlePtr GetPlatformHandle() const { return EosPlatformHandle; }
 	EOS_HRTC GetRtcInterface() const { return InitSession.EosRtcInterface; }
 	EOS_HLobby GetLobbyInterface() const { return InitSession.EosLobbyInterface; }
-
-	const TArray<FVoiceChatDeviceInfo>& GetCachedInputDeviceInfos() const { return InitSession.CachedInputDeviceInfos; }
-	const TArray<FVoiceChatDeviceInfo>& GetCachedOutputDeviceInfos() const { return InitSession.CachedOutputDeviceInfos; }
 
 protected:
 	virtual void PostInitialize() {};
@@ -172,31 +165,31 @@ protected:
 
 	struct FInitSession
 	{
+		FInitSession();
+
+		// `FEOSAudioDevicePool` holds a ref to an object field itself which can't be copied or moved
+		UE_NONCOPYABLE(FInitSession)
+
+		// reverts fields to their default state
+		void Reset();
+
 		EInitializationState State = EInitializationState::Uninitialized;
 
 		TArray<FOnVoiceChatUninitializeCompleteDelegate> UninitializeCompleteDelegates;
 
-		IEOSPlatformHandlePtr EosPlatformHandle = nullptr;
 		EOS_HRTC EosRtcInterface = nullptr;
 		EOS_HLobby EosLobbyInterface = nullptr;
 
 		EOS_NotificationId OnAudioDevicesChangedNotificationId = EOS_INVALID_NOTIFICATIONID;
 
-		int32 DefaultInputDeviceInfoIdx = -1;
-		int32 DefaultOutputDeviceInfoIdx = -1;
-		TArray<FVoiceChatDeviceInfo> CachedInputDeviceInfos;
-		TArray<FVoiceChatDeviceInfo> CachedOutputDeviceInfos;
+		TSharedRef<FEOSAudioDevicePool> EosAudioDevicePool;
 	};
 	FInitSession InitSession;
 
-	virtual IEOSPlatformHandlePtr EOSPlatformCreate(EOS_Platform_Options& PlatformOptions);
 	void BindInitCallbacks();
 	void UnbindInitCallbacks();
 	static void EOS_CALL OnAudioDevicesChangedStatic(const EOS_RTCAudio_AudioDevicesChangedCallbackInfo* CallbackInfo);
 	void OnAudioDevicesChanged();
-
-	TArray<FVoiceChatDeviceInfo> GetRtcInputDeviceInfos(int32& OutDefaultDeviceIdx) const;
-	TArray<FVoiceChatDeviceInfo> GetRtcOutputDeviceInfos(int32& OutDefaultDeviceIdx) const;
 
 	// The current state of the connection.
 	enum class EConnectionState
@@ -227,12 +220,11 @@ protected:
 	TArray<IVoiceChatUser*> UsersCreatedByConsoleCommand;
 
 	IEOSSDKManager& SDKManager;
-	IEOSPlatformHandlePtr ExternalPlatformHandle;
+	IEOSPlatformHandlePtr EosPlatformHandle = nullptr;
+	virtual IEOSPlatformHandlePtr EOSPlatformCreate(EOS_Platform_Options& PlatformOptions);
 
 	static int64 StaticInstanceIdCount;
 	int64 InstanceId = StaticInstanceIdCount++;
-
-	FEOSVoiceChatWeakPtr CreateWeakThis();
 
 	friend const TCHAR* LexToString(FEOSVoiceChat::EConnectionState State);
 };

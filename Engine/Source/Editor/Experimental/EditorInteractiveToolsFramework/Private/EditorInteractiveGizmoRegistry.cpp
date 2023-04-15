@@ -1,8 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorInteractiveGizmoRegistry.h"
+
 #include "EditorInteractiveGizmoConditionalBuilder.h"
 #include "EditorInteractiveGizmoSelectionBuilder.h"
+#include "HAL/PlatformCrt.h"
+#include "InteractiveGizmoBuilder.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
 
 
 #define LOCTEXT_NAMESPACE "UEditorInteractiveGizmoRegistry"

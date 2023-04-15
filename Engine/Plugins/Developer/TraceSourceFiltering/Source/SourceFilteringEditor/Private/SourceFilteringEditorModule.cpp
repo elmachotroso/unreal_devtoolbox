@@ -11,11 +11,12 @@
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "WorkspaceMenuStructure.h"
 #include "Features/IModularFeatures.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EmptySourceFilter.h"
 #include "SourceFilterCollection.h"
 #include "TraceSourceFiltering.h"
@@ -56,11 +57,13 @@ public:
 
 void FSourceFilteringEditorModule::StartupModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/SourceFilteringEditor"));
+	
 	FSourceFilterStyle::Initialize();
 	FSourceFilteringCommands::Register();
 
 	// Populate static ini path
-	FConfigCacheIni::LoadGlobalIniFile(SourceFiltersIni, TEXT("TraceSourceFilters"));
+	FConfigContext::ReadIntoGConfig().Load(TEXT("TraceSourceFilters"), SourceFiltersIni);
 	
 	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");	
 	FOnRegisterMajorTabExtensions& TimingProfilerLayoutExtension = UnrealInsightsModule.OnRegisterMajorTabExtension(FInsightsManagerTabs::TimingProfilerTabId);
@@ -100,6 +103,7 @@ bool FSourceFilteringEditorModule::IsSourceFilteringVisibile()
 
 void FSourceFilteringEditorModule::RegisterLayoutExtensions(FInsightsMajorTabExtender& InOutExtender)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/SourceFilteringEditor"));
 #if WITH_EDITOR
 	FTabId ExtendedTabId(GameplayInsightsTabs::DocumentTab);
 #else

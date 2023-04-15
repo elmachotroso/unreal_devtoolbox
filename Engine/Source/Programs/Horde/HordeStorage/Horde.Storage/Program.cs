@@ -1,24 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.IO.Pipelines;
-using System.Net.Sockets;
-using Horde.Storage.Implementation.Kestrel;
 using Jupiter;
+using Microsoft.Extensions.Hosting;
 
 namespace Horde.Storage
 {
     // ReSharper disable once ClassNeverInstantiated.Global
-    public class Program
+    public static class Program
     {
         public static int Main(string[] args)
         {
-            return BaseProgram<HordeStorageStartup>.BaseMain(args, HttpConnectionFactory);
+            return BaseProgram<HordeStorageStartup>.BaseMain(args);
         }
 
-        private static BaseHttpConnection HttpConnectionFactory(IServiceProvider sp, PipeReader reader, PipeWriter writer, Socket socket)
+        public static IHostBuilder CreateHostBuilder(string[] Args)
         {
-            return new KestrelDispatcher(sp, reader, writer, socket);
+            return BaseProgram<HordeStorageStartup>.CreateHostBuilder(Args);
         }
     }
 }

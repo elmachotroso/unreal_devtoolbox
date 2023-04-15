@@ -1,7 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnloadedBlueprintData.h"
+
+#include "ClassViewerNode.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "HAL/PlatformCrt.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 
 FUnloadedBlueprintData::FUnloadedBlueprintData(TWeakPtr<FClassViewerNode> InClassViewerNode)
@@ -131,10 +137,20 @@ FName FUnloadedBlueprintData::GetClassPath() const
 {
 	if (ClassViewerNode.IsValid())
 	{
-		return ClassViewerNode.Pin()->ClassPath;
+		return FName(*ClassViewerNode.Pin()->ClassPath.ToString());
 	}
 
 	return FName();
+}
+
+FTopLevelAssetPath FUnloadedBlueprintData::GetClassPathName() const
+{
+	if (ClassViewerNode.IsValid())
+	{
+		return ClassViewerNode.Pin()->ClassPath;
+	}
+
+	return FTopLevelAssetPath();
 }
 
 const TWeakPtr<FClassViewerNode>& FUnloadedBlueprintData::GetClassViewerNode() const

@@ -2,18 +2,24 @@
 
 #include "SDocumentationAnchor.h"
 
-#include "EditorClassUtils.h"
-#include "EditorStyleSet.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
 #include "IDocumentation.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SToolTip.h"
+#include "IDocumentationPage.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
 #include "SSimpleButton.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Widgets/SToolTip.h"
 
 void SDocumentationAnchor::Construct(const FArguments& InArgs )
 {
 	Link = InArgs._Link;
+	BaseUrlId = InArgs._BaseUrlId;
 
 	SetVisibility(TAttribute<EVisibility>::CreateLambda([this]()
 		{
@@ -27,21 +33,41 @@ void SDocumentationAnchor::Construct(const FArguments& InArgs )
 	}
 
 	const FString PreviewLink = InArgs._PreviewLink;
-	// All in-editor UDN documents must live under the Shared/ folder
-	ensure(PreviewLink.IsEmpty() || PreviewLink.StartsWith(TEXT("Shared/")));
+	const FString PreviewExcerptName = InArgs._PreviewExcerptName;
+	if (!PreviewLink.IsEmpty() && !PreviewExcerptName.IsEmpty() && BaseUrlId.Get().IsEmpty())
+	{
+		TSharedRef<IDocumentation> Documentation = IDocumentation::Get();
+		if (Documentation->PageExists(PreviewLink))
+		{
+			TSharedPtr<IDocumentationPage> DocumentationPage = Documentation->GetPage(PreviewLink, NULL);
+
+			FExcerpt Excerpt;
+			if (DocumentationPage->HasExcerpt(PreviewExcerptName))
+			{
+				if (DocumentationPage->GetExcerpt(PreviewExcerptName, Excerpt))
+				{
+					if (FString* BaseUrlValue = Excerpt.Variables.Find(TEXT("BaseUrl")))
+					{
+						BaseUrlId = *BaseUrlValue;
+					}
+				}
+			}
+		}
+
+	}
 
 	ChildSlot
 	[
 		SAssignNew(Button, SSimpleButton)
 		.OnClicked(this, &SDocumentationAnchor::OnClicked)
 		.Icon(FAppStyle::Get().GetBrush("Icons.Help"))
-		.ToolTip(IDocumentation::Get()->CreateToolTip(ToolTipText, nullptr, PreviewLink, InArgs._PreviewExcerptName))
+		.ToolTip(IDocumentation::Get()->CreateToolTip(ToolTipText, nullptr, PreviewLink, PreviewExcerptName))
 	];
 }
 
 
 FReply SDocumentationAnchor::OnClicked() const
 {
-	IDocumentation::Get()->Open(Link.Get(FString()), FDocumentationSourceInfo(TEXT("doc_anchors")));
+	IDocumentation::Get()->Open(Link.Get(FString()), FDocumentationSourceInfo(TEXT("doc_anchors")), BaseUrlId.Get(FString()));
 	return FReply::Handled();
 }

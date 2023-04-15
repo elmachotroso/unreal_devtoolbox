@@ -69,6 +69,10 @@ class ENGINE_API UExponentialHeightFogComponent : public USceneComponent
 	UPROPERTY(BlueprintReadOnly, interp, Category=ExponentialHeightFogComponent, meta = (DisplayName = "Fog Inscattering Color"))
 	FLinearColor FogInscatteringLuminance;
 
+	/** Color used to modulate the SkyAtmosphere component contribution to the non directional component of the fog. Only effective when r.SupportSkyAtmosphereAffectsHeightFog>0 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ExponentialHeightFogComponent)
+	FLinearColor SkyAtmosphereAmbientContributionColorScale;
+
 	/** 
 	 * Cubemap that can be specified for fog color, which is useful to make distant, heavily fogged scene elements match the sky.
 	 * When the cubemap is specified, FogInscatteringColor is ignored and Directional inscattering is disabled. 
@@ -168,10 +172,22 @@ class ENGINE_API UExponentialHeightFogComponent : public USceneComponent
 	float VolumetricFogExtinctionScale;
 
 	/** 
-	 * Distance over which volumetric fog should be computed.  Larger values extend the effect into the distance but expose under-sampling artifacts in details.
+	 * Distance over which volumetric fog should be computed, after the start distance.  Larger values extend the effect into the distance but expose under-sampling artifacts in details.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VolumetricFog, meta=(DisplayName = "View Distance", UIMin = "1000", UIMax = "10000"))
 	float VolumetricFogDistance;
+
+	/** 
+	 * Distance from the camera that the volumetric fog will start, in world units. 
+	 */
+	UPROPERTY(BlueprintReadOnly, interp, Category= VolumetricFog, meta=(DisplayName = "Start Distance", UIMin = "0", UIMax = "5000"))
+	float VolumetricFogStartDistance;
+
+	/** 
+	 * Distance over which volumetric fog will fade in from the start distance.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VolumetricFog, meta=(DisplayName = "Near Fade In Distance", UIMin = "0", UIMax = "1000"))
+	float VolumetricFogNearFadeInDistance;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VolumetricFog, meta=(DisplayName = "Static Lighting Scattering Intensity", UIMin = "0", UIMax = "10"))
 	float VolumetricFogStaticLightingScatteringIntensity;
@@ -187,6 +203,9 @@ class ENGINE_API UExponentialHeightFogComponent : public USceneComponent
 public:
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetFogDensity(float Value);
+
+	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
+	void SetSecondFogDensity(float Value);
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetFogInscatteringColor(FLinearColor Value);
@@ -214,9 +233,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetDirectionalInscatteringColor(FLinearColor Value);
+
+	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
+	void SetSecondFogHeightOffset(float Value);
 	
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetFogHeightFalloff(float Value);
+
+	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
+	void SetSecondFogHeightFalloff(float Value);
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetFogMaxOpacity(float Value);
@@ -226,7 +251,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|ExponentialHeightFog")
 	void SetFogCutoffDistance(float Value);
-
+	
 	UFUNCTION(BlueprintCallable, Category="Rendering|VolumetricFog")
 	void SetVolumetricFog(bool bNewValue);
 
@@ -244,6 +269,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|VolumetricFog")
 	void SetVolumetricFogDistance(float NewValue);
+
+	UFUNCTION(BlueprintCallable, Category="Rendering|VolumetricFog")
+	void SetSecondFogData(FExponentialHeightFogData NewValue);
 
 protected:
 	//~ Begin UActorComponent Interface.

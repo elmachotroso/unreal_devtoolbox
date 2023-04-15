@@ -22,6 +22,7 @@
 #include "Containers/StaticBitArray.h"
 #include "Net/Core/Misc/GuidReferences.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "Net/Core/PropertyConditions/RepChangedPropertyTracker.h"
 #include "Templates/CopyQualifiersFromTo.h"
 
 class FNetFieldExportGroup;
@@ -141,83 +142,7 @@ public:
 	uint32 IsConditional: 1;
 };
 
-/**
- * This class is used to store meta data about properties that is shared between connections,
- * including whether or not a given property is Conditional, Active, and any external data
- * that may be needed for Replays.
- *
- * TODO: This class (and arguably IRepChangedPropertyTracker) should be renamed to reflect
- *			what they actually do now.
- */
-class FRepChangedPropertyTracker : public IRepChangedPropertyTracker
-{
-public:
-	FRepChangedPropertyTracker() = delete;
-	FRepChangedPropertyTracker(const bool InbIsReplay, const bool InbIsClientReplayRecording);
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	virtual ~FRepChangedPropertyTracker() = default;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	//~ Begin IRepChangedPropertyTracker Interface.
-	/**
-	 * Manually set whether or not Property should be marked inactive.
-	 * This will change the Active status for all connections.
-	 *
-	 * @see DOREPLIFETIME_ACTIVE_OVERRIDE
-	 *
-	 * @param OwningObject	The object that we're tracking.
-	 * @param RepIndex		Replication index for the Property.
-	 * @param bIsActive		The new Active state.
-	 */
-	virtual void SetCustomIsActiveOverride(
-		UObject* OwningObject,
-		const uint16 RepIndex,
-		const bool bIsActive) override;
-
-	/**
-	 * Sets (or resets) the External Data.
-	 * External Data is primarily used for Replays, and is used to track additional non-replicated
-	 * data or state about an object.
-	 *
-	 * @param Src		Memory containing the external data.
-	 * @param NumBits	Size of the memory, in bits.
-	 */
-	UE_DEPRECATED(5.0, "Please use UReplaySubsystem::SetExternalDataForObject instead.")
-	virtual void SetExternalData(const uint8* Src, const int32 NumBits) override;
-
-	virtual void CountBytes(FArchive& Ar) const override;
-	//~ End IRepChangedPropertyTracker Interface
-
-	void InitActiveParents(int32 ParentCount)
-	{
-		ActiveParents.Init(true, ParentCount);
-	}
-
-	bool IsParentActive(int32 ParentIndex) const 
-	{ 
-		return ActiveParents[ParentIndex]; 
-	}
-
-	int32 GetParentCount() const
-	{
-		return ActiveParents.Num();
-	}
-
-private:
-	/** Whether or not this is being used for a client replay recording. */
-	bool bIsClientReplayRecording;
-
-	/** Activation data for top level Properties on the given Actor / Object. */
-	TBitArray<> ActiveParents;
-
-public:
-	UE_DEPRECATED(5.0, "No longer used, see UReplaySubsystem::SetExternalDataForObject")
-	TArray<uint8> ExternalData;
-
-	UE_DEPRECATED(5.0, "No longer used, see UReplaySubsystem::SetExternalDataForObject")
-	uint32 ExternalDataNumBits;
-};
+/** FRepChangedPropertyTracker moved to NetCore module */
 
 class FRepLayout;
 class FRepLayoutCmd;
@@ -297,13 +222,20 @@ struct FRepSerializedPropertyInfo
 struct FRepSerializationSharedInfo
 {
 	FRepSerializationSharedInfo():
-		SerializedProperties(MakeUnique<FNetBitWriter>(0)),
 		bIsValid(false)
 	{}
 
 	void SetValid()
 	{
 		bIsValid = true;
+	}
+
+	void Init()
+	{
+		if (!SerializedProperties.IsValid())
+		{
+			SerializedProperties.Reset(new FNetBitWriter(0));
+		}
 	}
 
 	bool IsValid() const
@@ -518,6 +450,9 @@ public:
 	/** Number of times that properties have been compared */
 	int32 CompareIndex;
 
+	/** Tracking custom delta sends, for comparison against sending rep state. */
+	uint32 CustomDeltaChangeIndex = 0;
+	
 	/** Latest state of all property data. Not used on Clients, only used on Servers if Shadow State is enabled. */
 	FRepStateStaticBuffer StaticBuffer;
 
@@ -672,6 +607,9 @@ public:
 	 */
 	int32 LastCompareIndex;
 
+	/** Tracking custom delta sends, for comparison against the changelist state. */
+	uint32 CustomDeltaChangeIndex = 0;
+
 	FReplicationFlags RepFlags;
 
 	TSharedPtr<FRepChangedPropertyTracker> RepChangedPropertyTracker;
@@ -794,6 +732,8 @@ enum class ERepLayoutCmdType : uint8
 	PropertyInterface		= 24,
 	NetSerializeStructWithObjectReferences = 25,
 };
+
+const TCHAR* LexToString(ERepLayoutCmdType CmdType);
 
 /** Various flags that describe how a Top Level Property should be handled. */
 enum class ERepParentFlags : uint32
@@ -1110,6 +1050,7 @@ enum class ERepLayoutFlags : uint8
 	HasObjectOrNetSerializeProperties	= (1 << 3),	//! Will be set for any RepLayout that contains Object or Net Serialize property commands.
 	NoReplicatedProperties				= (1 << 4), //! Will be set if the RepLayout has no lifetime properties, or they are all disabled.
 	FullPushProperties					= (1 << 5), //! All properties in this RepLayout use Push Model.
+	HasInitialOnlyProperties			= (1 << 6), //! There is at least 1 Initial Only Lifetime property on this RepLayout.
 };
 ENUM_CLASS_FLAGS(ERepLayoutFlags);
 
@@ -1280,6 +1221,7 @@ public:
 		TSharedPtr<FRepChangedPropertyTracker>& InRepChangedPropertyTracker,
 		ECreateRepStateFlags Flags) const;
 
+	UE_DEPRECATED(5.1, "No longer used, trackers are initialized by the replication subsystem.")
 	void InitChangedTracker(FRepChangedPropertyTracker * ChangedTracker) const;
 
 	/**
@@ -1903,9 +1845,11 @@ private:
 
 	const uint16 GetNumLifetimeCustomDeltaProperties() const;
 
+	const uint16 GetLifetimeCustomDeltaPropertyRepIndex(const uint16 RepIndCustomDeltaPropertyIndex) const;
+
 	FProperty* GetLifetimeCustomDeltaProperty(const uint16 CustomDeltaPropertyIndex) const;
 
-	const ELifetimeCondition GetLifetimeCustomDeltaPropertyCondition(const uint16 RepIndCustomDeltaPropertyIndexex) const;
+	const ELifetimeCondition GetLifetimeCustomDeltaPropertyCondition(const uint16 RepIndCustomDeltaPropertyIndex) const;
 
 	ERepLayoutFlags Flags;
 

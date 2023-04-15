@@ -6,13 +6,23 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "Containers/List.h"
+#include "Containers/Map.h"
 #include "Containers/StaticArray.h"
 #include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
 #include "Misc/StringBuilder.h"
 #include "RHI.h"
+#include "RHIDefinitions.h"
+#include "Serialization/MemoryImage.h"
 #include "Serialization/MemoryLayout.h"
+#include "Templates/AlignmentTemplates.h"
+#include "UObject/NameTypes.h"
 
 namespace EShaderPrecisionModifier
 {
@@ -50,6 +60,8 @@ struct FUniformBufferEntry
 	uint32 LayoutHash{};
 	/** The binding flags used by this resource table. */
 	EUniformBufferBindingFlags BindingFlags{ EUniformBufferBindingFlags::Shader };
+	/** Whether to force a real uniform buffer when using emulated uniform buffers */
+	bool bNoEmulatedUniformBuffer;
 };
 
 /** Parse the shader resource binding from the binding type used in shader code. */
@@ -121,6 +133,15 @@ public:
 
 		/** Uniform buffer generated from assets, such as material parameter collection or Niagara. */
 		DataDrivenUniformBuffer,
+	};
+
+	/** Additional flags that can be used to determine usage */
+	enum class EUsageFlags : uint8
+	{
+		None = 0,
+
+		/** On platforms that support emulated uniform buffers, disable them for this uniform buffer */
+		NoEmulatedUniformBuffer = 1 << 0,
 	};
 
 	/** Shader binding name of the uniform buffer that contains the root shader parameters. */
@@ -241,7 +262,8 @@ public:
 		uint32 InSize,
 		const TArray<FMember>& InMembers,
 		bool bForceCompleteInitialization = false,
-		FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr);
+		FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr,
+		uint32 InUsageFlags = 0);
 
 	virtual ~FShaderParametersMetadata();
 
@@ -275,6 +297,8 @@ public:
 	uint32 GetSize() const { return Size; }
 	EUseCase GetUseCase() const { return UseCase; }
 	inline bool IsLayoutInitialized() const { return Layout != nullptr; }
+	uint32 GetUsageFlags() const { return UsageFlags; }
+
 	const FRHIUniformBufferLayout& GetLayout() const
 	{
 		check(IsLayoutInitialized());
@@ -310,21 +334,6 @@ public:
 		check(UseCase == EUseCase::ShaderParameterStruct || UseCase == EUseCase::UniformBuffer);
 		check(IsLayoutInitialized());
 		return LayoutHash;	
-	}
-
-	/** Iterate recursively over all shader parameter members. */
-	template<typename TParameterFunction>
-	void IterateShaderParameterMembers(TParameterFunction Lambda) const
-	{
-		TStringBuilder<1024> ShaderBindingNameBuilder;
-		if (UseCase == EUseCase::UniformBuffer || UseCase == EUseCase::DataDrivenUniformBuffer)
-		{
-			ShaderBindingNameBuilder.Append(ShaderVariableName);
-			ShaderBindingNameBuilder.Append(TEXT("_"));
-		}
-
-		FShaderParametersMetadata::IterateShaderParameterMembersInternal(
-			*this, /* ByteOffset = */ 0, ShaderBindingNameBuilder, Lambda);
 	}
 
 	/** Iterate recursively over all FShaderParametersMetadata. */
@@ -385,74 +394,10 @@ private:
 	/** Hash about the entire memory layout of the structure. */
 	uint32 LayoutHash = 0;
 
+	/** Additional flags for how to use the buffer */
+	uint32 UsageFlags = 0;
 
 	void InitializeLayout(FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr);
 
 	void AddResourceTableEntriesRecursive(const TCHAR* UniformBufferName, const TCHAR* Prefix, uint16& ResourceIndex, TMap<FString, FResourceTableEntry>& ResourceTableMap) const;
-
-	template<typename TParameterFunction>
-	static inline void IterateShaderParameterMembersInternal(
-		const FShaderParametersMetadata& ParametersMetadata,
-		uint16 ByteOffset,
-		TStringBuilder<1024>& ShaderBindingNameBuilder,
-		TParameterFunction Lambda)
-	{
-		for (const FShaderParametersMetadata::FMember& Member : ParametersMetadata.GetMembers())
-		{
-			EUniformBufferBaseType BaseType = Member.GetBaseType();
-			uint16 MemberOffset = ByteOffset + uint16(Member.GetOffset());
-			uint32 NumElements = Member.GetNumElements();
-
-			int32 MemberNameLength = FCString::Strlen(Member.GetName());
-
-			if (BaseType == UBMT_INCLUDED_STRUCT)
-			{
-				check(NumElements == 0);
-				const FShaderParametersMetadata& NewParametersMetadata = *Member.GetStructMetadata();
-				IterateShaderParameterMembersInternal(NewParametersMetadata, MemberOffset, ShaderBindingNameBuilder, Lambda);
-			}
-			else if (BaseType == UBMT_NESTED_STRUCT && NumElements == 0)
-			{
-				ShaderBindingNameBuilder.Append(Member.GetName());
-				ShaderBindingNameBuilder.Append(TEXT("_"));
-
-				const FShaderParametersMetadata& NewParametersMetadata = *Member.GetStructMetadata();
-				IterateShaderParameterMembersInternal(NewParametersMetadata, MemberOffset, ShaderBindingNameBuilder, Lambda);
-
-				ShaderBindingNameBuilder.RemoveSuffix(MemberNameLength + 1);
-			}
-			else if (BaseType == UBMT_NESTED_STRUCT && NumElements > 0)
-			{
-				ShaderBindingNameBuilder.Append(Member.GetName());
-				ShaderBindingNameBuilder.Append(TEXT("_"));
-
-				const FShaderParametersMetadata& NewParametersMetadata = *Member.GetStructMetadata();
-				for (uint32 ArrayElementId = 0; ArrayElementId < NumElements; ArrayElementId++)
-				{
-					FString ArrayElementIdString;
-					ArrayElementIdString.AppendInt(ArrayElementId);
-					int32 ArrayElementIdLength = ArrayElementIdString.Len();
-
-					ShaderBindingNameBuilder.Append(ArrayElementIdString);
-					ShaderBindingNameBuilder.Append(TEXT("_"));
-
-					uint16 NewStructOffset = MemberOffset + ArrayElementId * NewParametersMetadata.GetSize();
-					IterateShaderParameterMembersInternal(NewParametersMetadata, NewStructOffset, ShaderBindingNameBuilder, Lambda);
-
-					ShaderBindingNameBuilder.RemoveSuffix(ArrayElementIdLength + 1);
-				}
-
-				ShaderBindingNameBuilder.RemoveSuffix(MemberNameLength + 1);
-			}
-			else
-			{
-				ShaderBindingNameBuilder.Append(Member.GetName());
-
-				const TCHAR* ShaderBindingName = ShaderBindingNameBuilder.ToString();
-				Lambda(ParametersMetadata, Member, ShaderBindingName, MemberOffset);
-
-				ShaderBindingNameBuilder.RemoveSuffix(MemberNameLength);
-			}
-		}
-	}
 };

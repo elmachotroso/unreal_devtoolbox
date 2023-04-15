@@ -95,6 +95,8 @@ UText3DComponent::UText3DComponent()
 
 	bPendingBuild = false;
 	bFreezeBuild = false;
+
+	TextScale = FVector::ZeroVector;
 }
 
 void UText3DComponent::OnRegister()
@@ -262,12 +264,12 @@ void UText3DComponent::SetBackMaterial(UMaterialInterface* Value)
 bool UText3DComponent::AllocateGlyphs(int32 Num)
 {
 	int32 DeltaNum = Num - CharacterMeshes.Num();
-	if(DeltaNum == 0)
+	if (DeltaNum == 0)
 	{
 		return false;
 	}
 	// Add characters
-	else if(FMath::Sign(DeltaNum) > 0)
+	if (FMath::Sign(DeltaNum) > 0)
 	{
 		int32 GlyphId = CharacterMeshes.Num() - 1;
 		for(int32 CharacterIndex = 0; CharacterIndex < DeltaNum; ++CharacterIndex)
@@ -299,25 +301,28 @@ bool UText3DComponent::AllocateGlyphs(int32 Num)
 	// Remove characters
 	else
 	{
+		AActor* OwnerActor = GetOwner();
 		DeltaNum = FMath::Abs(DeltaNum);
 		for(int32 CharacterIndex = CharacterKernings.Num() - 1 - DeltaNum; CharacterIndex < CharacterKernings.Num(); ++CharacterIndex)
 		{
 			USceneComponent* CharacterKerningComponent = CharacterKernings[CharacterIndex];
 			// If called in quick succession, may already be pending destruction
-			if(IsValid(CharacterKerningComponent))
+			if (IsValid(CharacterKerningComponent))
 			{
 				CharacterKerningComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 				CharacterKerningComponent->UnregisterComponent();
 				CharacterKerningComponent->DestroyComponent();
+				OwnerActor->RemoveInstanceComponent(CharacterKerningComponent);
 			}
 
 			
 			UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[CharacterIndex];
-			if(IsValid(StaticMeshComponent))
+			if (IsValid(StaticMeshComponent))
 			{
 				StaticMeshComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 				StaticMeshComponent->UnregisterComponent();
 				StaticMeshComponent->DestroyComponent();
+				OwnerActor->RemoveInstanceComponent(StaticMeshComponent);
 			}
 		}
 		
@@ -507,7 +512,7 @@ void UText3DComponent::SetFreeze(const bool bFreeze)
 
 void UText3DComponent::SetCastShadow(bool NewCastShadow)
 {
-	if(NewCastShadow != bCastShadow)
+	if (NewCastShadow != bCastShadow)
 	{
 		bCastShadow = NewCastShadow;
 
@@ -563,6 +568,7 @@ void UText3DComponent::Rebuild(const bool bCleanCache)
 		BuildTextMesh(bCleanCache);
 	}
 }
+
 void UText3DComponent::CalculateTextWidth()
 {
 	for (FShapedGlyphLine& ShapedLine : ShapedText->Lines)
@@ -571,12 +577,12 @@ void UText3DComponent::CalculateTextWidth()
 	}
 }
 
-float UText3DComponent::GetTextHeight()
+float UText3DComponent::GetTextHeight() const
 {
 	return ShapedText->Lines.Num() * ShapedText->LineHeight + (ShapedText->Lines.Num() - 1) * LineSpacing;
 }
 
-FVector UText3DComponent::GetTextScale()
+void UText3DComponent::CalculateTextScale()
 {
 	FVector Scale(1.0f, 1.0f, 1.0f);
 
@@ -610,7 +616,17 @@ FVector UText3DComponent::GetTextScale()
 		Scale.X = Scale.Y;
 	}
 
-	return Scale;
+	TextScale = Scale;
+}
+
+FVector UText3DComponent::GetTextScale()
+{
+	if (TextScale == FVector::ZeroVector)
+	{
+		CalculateTextScale();
+	}
+
+	return TextScale;
 }
 
 FVector UText3DComponent::GetLineLocation(int32 LineIndex)
@@ -656,6 +672,7 @@ FVector UText3DComponent::GetLineLocation(int32 LineIndex)
 void UText3DComponent::UpdateTransforms()
 {
 	CalculateTextWidth();
+	CalculateTextScale();
 	const FVector Scale = GetTextScale();
 	TextRoot->SetRelativeScale3D(Scale);
 
@@ -710,16 +727,23 @@ void UText3DComponent::ClearTextMesh()
 	}
 	CharacterKernings.Reset();
 
+	constexpr bool bIncludeChildDescendants = true;
 	TArray<USceneComponent*> ChildComponents;
-	TextRoot->GetChildrenComponents(true, ChildComponents);
+	TextRoot->GetChildrenComponents(bIncludeChildDescendants, ChildComponents);
 
 	for (USceneComponent* ChildComponent : ChildComponents)
 	{
-		if(IsValid(ChildComponent))
+		if (IsValid(ChildComponent))
 		{
 			ChildComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 			ChildComponent->DestroyComponent();	
 		}
+	}
+
+	if (AActor* OwnerActor = GetOwner())
+	{
+		constexpr bool bAlsoDestroyComponents = false; // already destroyed!
+		OwnerActor->ClearInstanceComponents(bAlsoDestroyComponents);
 	}
 }
 
@@ -734,13 +758,16 @@ void UText3DComponent::BuildTextMesh(const bool bCleanCache)
 	bIsBuilding = true;
 
 	TWeakObjectPtr<UText3DComponent> WeakThis(this);
-	
+
 	// Execution guarded by the above flag
 	AsyncTask(ENamedThreads::GameThread, [WeakThis, bCleanCache]()
 	{
 		if (UText3DComponent* StrongThis = WeakThis.Get())
 		{
-			StrongThis->BuildTextMeshInternal(bCleanCache);
+			if (!UE::IsSavingPackage(StrongThis))
+			{
+				StrongThis->BuildTextMeshInternal(bCleanCache);	
+			}
 		}
 	});
 }
@@ -784,9 +811,10 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 	FTextShaper::Get()->ShapeBidirectionalText(Face, Text.ToString(), ShapedText->Lines);
 	
 	CalculateTextWidth();
+	CalculateTextScale();
 	TextRoot->SetRelativeScale3D(GetTextScale());
 
-	// Pre-allocate, avoid new'ing! 
+	// Pre-allocate, avoid new'ing!
 	AllocateGlyphs(Algo::TransformAccumulate(ShapedText->Lines, [&](const FShapedGlyphLine& ShapedLine)
 	{
 		return Algo::CountIf(ShapedLine.GlyphsToRender, [&](const FShapedGlyphEntry& ShapedGlyph)
@@ -822,16 +850,32 @@ void UText3DComponent::BuildTextMeshInternal(const bool bCleanCache)
 				continue;
 			}
 
-			UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[GlyphId];
-			StaticMeshComponent->SetStaticMesh(CachedMesh);
-			StaticMeshComponent->SetVisibility(GetVisibleFlag());
-			StaticMeshComponent->SetHiddenInGame(bHiddenInGame);
-			StaticMeshComponent->SetCastShadow(bCastShadow);
+			if (CharacterMeshes.IsValidIndex(GlyphId))
+			{
+				UStaticMeshComponent* StaticMeshComponent = CharacterMeshes[GlyphId];
+				StaticMeshComponent->SetStaticMesh(CachedMesh);			
+				StaticMeshComponent->SetVisibility(GetVisibleFlag());
+				StaticMeshComponent->SetHiddenInGame(bHiddenInGame);
+				StaticMeshComponent->SetCastShadow(bCastShadow);
+			}
+			else
+			{
+				// @note: This shouldn't occur, but it does under unknown circumstances (UE-164789) so it should be handled 
+				UE_LOG(LogText3D, Error, TEXT("CharacterMesh not found at index %d"), GlyphId);
+			}
 
-			FTransform Transform;
-			Transform.SetLocation(GlyphLocation);
-			USceneComponent* CharacterKerningComponent = CharacterKernings[GlyphId];
-			CharacterKerningComponent->SetRelativeTransform(Transform);
+			if (CharacterKernings.IsValidIndex(GlyphId))
+			{
+				FTransform Transform;
+				Transform.SetLocation(GlyphLocation);
+				USceneComponent* CharacterKerningComponent = CharacterKernings[GlyphId];
+				CharacterKerningComponent->SetRelativeTransform(Transform);
+			}
+			else
+			{
+				// @note: This shouldn't occur, but it does under unknown circumstances (UE-164789) so it should be handled
+				UE_LOG(LogText3D, Error, TEXT("CharacterKerning not found at index %d"), GlyphId);
+			}
 		}
 	}
 	
@@ -865,7 +909,23 @@ float UText3DComponent::MaxBevel() const
 
 void UText3DComponent::UpdateMaterial(const EText3DGroupType Type, UMaterialInterface* Material)
 {
-	const int32 Index = static_cast<int32>(Type);
+	// Material indices are affected by some options
+	const bool bHasBevel = !bOutline && !FMath::IsNearlyZero(Bevel);
+	if (!bHasBevel && Type == EText3DGroupType::Bevel)
+	{
+		return; 
+	}
+	
+	const bool bHasExtrude = !FMath::IsNearlyZero(Extrude);
+	if (!bHasExtrude && Type == EText3DGroupType::Extrude)
+	{
+		return;
+	}
+
+	int32 Index = static_cast<int32>(Type);
+	Index -= !bHasBevel && Type >= EText3DGroupType::Bevel ? 1 : 0; // if no bevel, and the input is bevel or above (bevel, side/extrude, back), offset -1
+	Index -= !bHasExtrude && Type >= EText3DGroupType::Extrude ? 1 : 0; // if no extrude, and the input is side/extrude or above (back), offset -1
+
 	for (UStaticMeshComponent* StaticMeshComponent : CharacterMeshes)
 	{
 		StaticMeshComponent->SetMaterial(Index, Material);

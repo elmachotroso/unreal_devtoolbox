@@ -15,6 +15,7 @@
 #include "NiagaraCore.h"
 #include "NiagaraCommon.generated.h"
 
+struct FVersionedNiagaraEmitter;
 class UNiagaraComponent;
 class UNiagaraSystem;
 class UNiagaraScript;
@@ -34,6 +35,10 @@ struct FNiagaraParameterStore;
 	#define NIAGARA_COMPUTEDEBUG_ENABLED WITH_EDITOR
 #endif
 
+#ifndef WITH_NIAGARA_DEBUGGER
+	#define WITH_NIAGARA_DEBUGGER !UE_BUILD_SHIPPING
+#endif
+
 #define WITH_NIAGARA_GPU_PROFILER_EDITOR (WITH_EDITOR && STATS)
 #define WITH_NIAGARA_GPU_PROFILER ((WITH_PARTICLE_PERF_STATS && !UE_BUILD_SHIPPING) || WITH_NIAGARA_GPU_PROFILER_EDITOR)
 
@@ -44,9 +49,6 @@ struct FNiagaraParameterStore;
 
 /** Defines The maximum ThreadGroup size we allow in Niagara.  This is important for how memory is allocated as we always need to round this and the final instance is used to avoid overflowing the buffer. */
 constexpr uint32 NiagaraComputeMaxThreadGroupSize = 64;
-
-/** Defines The maximum Thread Group Count Per Dimension. */
-constexpr uint32 NiagaraMaxThreadGroupCountPerDimension = 65535;
 
 /** The maximum number of spawn infos we can run on the GPU, modifying this will require a version update as it is used in the shader compiler  */
 constexpr uint32 NIAGARA_MAX_GPU_SPAWN_INFOS = 8;
@@ -382,9 +384,13 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	UPROPERTY()
 	uint32 bSupportsGPU : 1;
 
-	/** Writes to the variable this is bound to */
+	/** Writes data owned by the data interface.  Any stage using it will be marked as an Output stage. */
 	UPROPERTY()
 	uint32 bWriteFunction : 1;
+
+	/** Reads data owned by the data interface.  Any stage using it will be marked as an Input stage. */
+	UPROPERTY()
+	uint32 bReadFunction : 1;
 
 	/** Whether or not this function should show up in normal usage. */
 	UPROPERTY()
@@ -399,7 +405,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	uint32 bHidden : 1;
 
 	/** Bitmask for which scripts are supported for this function. Use UNiagaraScript::MakeSupportedUsageContextBitmask to make the bitmask. */
-	UPROPERTY(meta = (Bitmask, BitmaskEnum = ENiagaraScriptUsage))
+	UPROPERTY(meta = (Bitmask, BitmaskEnum = "/Script/Niagara.ENiagaraScriptUsage"))
 	int32 ModuleUsageBitmask;
 
 	/** When using simulation stages and bRequiresContext is true this will be the index of the stage that is associated with the function. */
@@ -430,6 +436,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bSupportsCPU(true)
 		, bSupportsGPU(true)
 		, bWriteFunction(false)
+		, bReadFunction(false)
 		, bSoftDeprecatedFunction(false)
 		, bIsCompileTagGenerator(false)
 		, bHidden(false)
@@ -447,6 +454,7 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		, bSupportsCPU(true)
 		, bSupportsGPU(true)
 		, bWriteFunction(false)
+		, bReadFunction(false)
 		, bSoftDeprecatedFunction(false)
 		, bIsCompileTagGenerator(false)
 		, bHidden(false)
@@ -464,6 +472,11 @@ struct NIAGARA_API FNiagaraFunctionSignature
 		{
 			Outputs.Add(Var);
 		}
+	}
+
+	bool operator!=(const FNiagaraFunctionSignature& Other) const
+	{
+		return !(*this == Other);
 	}
 
 	bool operator==(const FNiagaraFunctionSignature& Other) const
@@ -529,6 +542,20 @@ struct NIAGARA_API FNiagaraFunctionSignature
 	#if WITH_EDITORONLY_DATA
 		FunctionVersion = Version;
 	#endif
+	}
+
+	void SetInputDescription(const FNiagaraVariableBase& Variable, const FText& Desc)
+	{
+#if WITH_EDITORONLY_DATA
+		InputDescriptions.FindOrAdd(Variable) = Desc;
+#endif
+	}
+
+	void SetOutputDescription(const FNiagaraVariableBase& Variable, const FText& Desc)
+	{
+#if WITH_EDITORONLY_DATA
+		OutputDescriptions.FindOrAdd(Variable) = Desc;
+#endif
 	}
 
 	void SetDescription(const FText& Desc)
@@ -723,10 +750,9 @@ struct NIAGARA_API FNiagaraSystemUpdateContext
 {
 	GENERATED_BODY()
 
-	FNiagaraSystemUpdateContext(UNiagaraComponent* Component, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Component, bReInit); }
 	FNiagaraSystemUpdateContext(const UNiagaraSystem* System, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(System, bReInit); }
 #if WITH_EDITORONLY_DATA
-	FNiagaraSystemUpdateContext(const UNiagaraEmitter* Emitter, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Emitter, bReInit); }
+	FNiagaraSystemUpdateContext(const FVersionedNiagaraEmitter& Emitter, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Emitter, bReInit); }
 	FNiagaraSystemUpdateContext(const UNiagaraScript* Script, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Script, bReInit); }
 	FNiagaraSystemUpdateContext(const UNiagaraParameterCollection* Collection, bool bReInit, bool bInDestroyOnAdd = false, bool bInOnlyActive = false, bool bInDestroySystemSim = true) :bDestroyOnAdd(bInDestroyOnAdd), bOnlyActive(bInOnlyActive), bDestroySystemSim(bInDestroySystemSim) { Add(Collection, bReInit); }
 #endif
@@ -739,10 +765,10 @@ struct NIAGARA_API FNiagaraSystemUpdateContext
 	void SetOnlyActive(bool bInOnlyActive) { bOnlyActive = bInOnlyActive; }
 	void SetDestroySystemSim(bool bInDestroySystemSim) { bDestroySystemSim = bInDestroySystemSim; }
 
-	void Add(UNiagaraComponent* Component, bool bReInit);
+	void AddSoloComponent(UNiagaraComponent* Component, bool bReInit);
 	void Add(const UNiagaraSystem* System, bool bReInit);
 #if WITH_EDITORONLY_DATA
-	void Add(const UNiagaraEmitter* Emitter, bool bReInit);
+	void Add(const FVersionedNiagaraEmitter& Emitter, bool bReInit);
 	void Add(const UNiagaraScript* Script, bool bReInit);
 	void Add(const UNiagaraParameterCollection* Collection, bool bReInit);
 #endif
@@ -758,7 +784,7 @@ struct NIAGARA_API FNiagaraSystemUpdateContext
 	FCustomWorkDelegate& GetPostWork() { return PostWork; }
 
 private:
-	void AddInternal(class UNiagaraComponent* Comp, bool bReInit);
+	void AddInternal(class UNiagaraComponent* Comp, bool bReInit, bool bAllowDestroySystemSim);
 
 	UPROPERTY(transient)
 	TArray<TObjectPtr<UNiagaraComponent>> ComponentsToReset;
@@ -768,6 +794,8 @@ private:
 	TArray<TObjectPtr<UNiagaraComponent>> ComponentsToNotifySimDestroy;
 	UPROPERTY(transient)
 	TArray<TObjectPtr<UNiagaraSystem>> SystemSimsToDestroy;
+	UPROPERTY(transient)
+	TArray<TObjectPtr<UNiagaraSystem>> SystemSimsToRecache;
 
 	bool bDestroyOnAdd;
 	bool bOnlyActive;
@@ -910,7 +938,7 @@ private:
  * This is then used by the SNiagaraStackRowPerfWidget to display the data in the ui.
  */
 struct NIAGARA_API FNiagaraStatDatabase
-{
+{	
 	typedef TTuple<uint64, ENiagaraScriptUsage> FStatReportKey;
 
 	/* Used by emitter and system instances to add the recorded data of a frame to this emitter's data store. */
@@ -928,10 +956,14 @@ struct NIAGARA_API FNiagaraStatDatabase
 	/* Returns the names of all captures stat data points. Useful for debugging and to dump the stat data. */
 	TMap<ENiagaraScriptUsage, TSet<FName>> GetAvailableStatNames();
 
+	void Init();
+
 private:
 	/** The captured runtime stat data. The first key is a combination of reporter handle and script usage, the second key is the stat id which correlates to a single recorded scope. */
 	TMap<FStatReportKey, TMap<TStatIdData const*, FStatExecutionTimer>> StatCaptures;
-	FCriticalSection CriticalSection;
+
+	FCriticalSection* GetCriticalSection() const;
+	TSharedPtr<FCriticalSection> CriticalSection;
 };
 #endif
 
@@ -973,12 +1005,12 @@ struct FNiagaraVariableAttributeBinding
 	bool NIAGARA_API IsParticleBinding() const { return bIsCachedParticleValue; }
 	bool NIAGARA_API DoesBindingExistOnSource() const { return bBindingExistsOnSource; }
 	bool NIAGARA_API CanBindToHostParameterMap() const { return bBindingExistsOnSource && !bIsCachedParticleValue; }
-	void NIAGARA_API SetValue(const FName& InValue, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableBase& Src, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableAttributeBinding& Src, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	void NIAGARA_API CacheValues(const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	bool NIAGARA_API RenameVariableIfMatching(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
-	bool NIAGARA_API Matches(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API SetValue(const FName& InValue, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableBase& Src, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API SetAsPreviousValue(const FNiagaraVariableAttributeBinding& Src, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API CacheValues(const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	bool NIAGARA_API RenameVariableIfMatching(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	bool NIAGARA_API Matches(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 
 #if WITH_EDITORONLY_DATA
 	NIAGARA_API const FName& GetName() const { return CachedDisplayName; }
@@ -1002,7 +1034,7 @@ struct FNiagaraVariableAttributeBinding
 	void NIAGARA_API PostLoad(ENiagaraRendererSourceDataMode InSourceMode);
 	void NIAGARA_API Dump() const;
 
-	void NIAGARA_API ResetToDefault(const FNiagaraVariableAttributeBinding& InOther, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void NIAGARA_API ResetToDefault(const FNiagaraVariableAttributeBinding& InOther, const FVersionedNiagaraEmitter& InEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 	bool NIAGARA_API MatchesDefault(const FNiagaraVariableAttributeBinding& InOther, ENiagaraRendererSourceDataMode InSourceMode) const;
 protected:
 	/** The fully expressed namespace for the variable. If an emitter namespace, this will include the Emitter's unique name.*/
@@ -1197,18 +1229,6 @@ namespace FNiagaraUtilities
 		return IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::SM5) || IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::ES3_1);
 	}
 
-	// Whether the platform supports GPU particles. A static function that doesn't not rely on any runtime switches.
-	inline bool SupportsComputeShaders(EShaderPlatform ShaderPlatform)
-	{
-		return RHISupportsComputeShaders(ShaderPlatform);
-	}
-
-	// DEPRECATED, use SupportsComputeShaders instead!
-	inline bool SupportsGPUParticles(EShaderPlatform ShaderPlatform)
-	{
-		return SupportsComputeShaders(ShaderPlatform);
-	}
-
 	// When enabled log more information for the end user
 #if NO_LOGGING
 	inline bool LogVerboseWarnings() { return false; }
@@ -1256,7 +1276,9 @@ namespace FNiagaraUtilities
 	 * @param ScriptToEmitterNameMap An array of scripts to the name of the emitter than owns them.  If this is a system script the name can be empty.  All scripts in the
 	 * scripts array must have an entry in this map.
 	 */
-	void NIAGARA_API PrepareRapidIterationParameters(const TArray<UNiagaraScript*>& Scripts, const TMap<UNiagaraScript*, UNiagaraScript*>& ScriptDependencyMap, const TMap<UNiagaraScript*, const UNiagaraEmitter*>& ScriptToEmitterNameMap);
+	void NIAGARA_API PrepareRapidIterationParameters(const TArray<UNiagaraScript*>& Scripts, const TMap<UNiagaraScript*, UNiagaraScript*>& ScriptDependencyMap, const TMap<UNiagaraScript*, FVersionedNiagaraEmitter>& ScriptToEmitterNameMap);
+
+	bool NIAGARA_API AreTypesAssignable(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB);
 #endif
 
 	void NIAGARA_API DumpHLSLText(const FString& SourceCode, const FString& DebugName);
@@ -1448,6 +1470,7 @@ struct FNiagaraScalabilityState
 
 	FNiagaraScalabilityState()
 		: Significance(1.0f)
+		, LastVisibleTime(0.0f)
 		, SystemDataIndex(INDEX_NONE)
 		, bCulled(0)
 		, bPreviousCulled(0)
@@ -1460,6 +1483,7 @@ struct FNiagaraScalabilityState
 
 	FNiagaraScalabilityState(float InSignificance, bool InCulled, bool InPreviousCulled)
 		: Significance(InSignificance)
+		, LastVisibleTime(0.0f)
 		, SystemDataIndex(INDEX_NONE)
 		, bCulled(InCulled)
 		, bPreviousCulled(InPreviousCulled)
@@ -1475,6 +1499,9 @@ struct FNiagaraScalabilityState
 
 	UPROPERTY(VisibleAnywhere, Category="Scalability")
 	float Significance;
+
+	UPROPERTY(VisibleAnywhere, Category = "Scalability")
+	float LastVisibleTime;
 
 	int16 SystemDataIndex;
 
@@ -1590,6 +1617,7 @@ struct NIAGARA_API FSynchronizeWithParameterDefinitionsArgs
 };
 
 /** Enum used to track stage that GPU compute proxies will execute in. */
+UENUM()
 namespace ENiagaraGpuComputeTickStage
 {
 	enum Type
@@ -1597,8 +1625,8 @@ namespace ENiagaraGpuComputeTickStage
 		PreInitViews,
 		PostInitViews,
 		PostOpaqueRender,
-		Max,
-		First = PreInitViews,
-		Last = PostOpaqueRender,
+		Max UMETA(hidden),
+		First = PreInitViews UMETA(hidden),
+		Last = PostOpaqueRender UMETA(hidden),
 	};
-};
+}

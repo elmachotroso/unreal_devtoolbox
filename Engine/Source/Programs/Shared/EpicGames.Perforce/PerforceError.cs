@@ -1,14 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace EpicGames.Perforce
 {
-	#pragma warning disable CS1591
+#pragma warning disable CS1591
 
 	/// <summary>
 	/// Error severity codes. Taken from the p4java documentation.
@@ -41,10 +37,10 @@ namespace EpicGames.Perforce
 		Config = 36,
 		Upgrade = 37,
 		Comm = 38,
-		TooBig = 39, 
+		TooBig = 39,
 	}
 
-	#pragma warning restore CS1591
+#pragma warning restore CS1591
 
 	/// <summary>
 	/// Represents a error return value from Perforce.
@@ -55,19 +51,19 @@ namespace EpicGames.Perforce
 		/// The severity of this error
 		/// </summary>
 		[PerforceTagAttribute("severity")]
-		public PerforceSeverityCode Severity;
+		public PerforceSeverityCode Severity { get; set; }
 
 		/// <summary>
 		/// The generic error code associated with this message
 		/// </summary>
 		[PerforceTagAttribute("generic")]
-		public PerforceGenericCode Generic;
+		public PerforceGenericCode Generic { get; set; }
 
 		/// <summary>
 		/// The message text
 		/// </summary>
 		[PerforceTagAttribute("data")]
-		public string Data;
+		public string Data { get; set; }
 
 		/// <summary>
 		/// Private constructor for serialization

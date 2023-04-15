@@ -4,6 +4,8 @@
 
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitAbilityActivate)
+
 
 UAbilityTask_WaitAbilityActivate::UAbilityTask_WaitAbilityActivate(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -42,7 +44,7 @@ UAbilityTask_WaitAbilityActivate* UAbilityTask_WaitAbilityActivate::WaitForAbili
 
 void UAbilityTask_WaitAbilityActivate::Activate()
 {
-	if (AbilitySystemComponent)
+	if (AbilitySystemComponent.IsValid())
 	{
 		OnAbilityActivateDelegateHandle = AbilitySystemComponent->AbilityActivatedCallbacks.AddUObject(this, &UAbilityTask_WaitAbilityActivate::OnAbilityActivate);
 	}
@@ -95,10 +97,11 @@ void UAbilityTask_WaitAbilityActivate::OnAbilityActivate(UGameplayAbility* Activ
 
 void UAbilityTask_WaitAbilityActivate::OnDestroy(bool AbilityEnded)
 {
-	if (AbilitySystemComponent)
+	if (AbilitySystemComponent.IsValid())
 	{
 		AbilitySystemComponent->AbilityActivatedCallbacks.Remove(OnAbilityActivateDelegateHandle);
 	}
 
 	Super::OnDestroy(AbilityEnded);
 }
+

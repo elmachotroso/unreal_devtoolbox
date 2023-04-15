@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class libcurl : ModuleRules
 {
@@ -10,20 +11,24 @@ public class libcurl : ModuleRules
 
 		PublicDefinitions.Add("WITH_LIBCURL=1");
 
-		string LinuxLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/7_65_3/";
-		string WinLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/curl-7.55.1/";
+		string LinuxLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/7.83.1/";
+		string MacLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/7.83.1/";
+		string WinLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/7.83.1/";
 		string AndroidLibCurlPath = Target.UEThirdPartySourceDirectory + "libcurl/7_75_0/";
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			string platform = "/Unix/" + Target.Architecture;
-			string IncludePath = LinuxLibCurlPath + "include" + platform;
-			string LibraryPath = LinuxLibCurlPath + "lib" + platform;
+			PublicIncludePaths.Add(Path.Combine(LinuxLibCurlPath, "include"));
+			PublicAdditionalLibraries.Add(Path.Combine(LinuxLibCurlPath, "lib", "Unix", Target.Architecture, "Release", "libcurl.a"));
+			PublicDefinitions.Add("CURL_STATICLIB=1");
 
-			PublicIncludePaths.Add(IncludePath);
-			PublicAdditionalLibraries.Add(LibraryPath + "/libcurl.a");
-
-			PrivateDependencyModuleNames.Add("SSL");
+			// Our build requires nghttp2, OpenSSL and zlib, so ensure they're linked in
+			AddEngineThirdPartyPrivateStaticDependencies(Target, new string[]
+			{
+				"nghttp2",
+				"OpenSSL",
+				"zlib"
+			});
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
@@ -38,27 +43,34 @@ public class libcurl : ModuleRules
 				PublicAdditionalLibraries.Add(AndroidLibCurlPath + "lib/Android/" + Architecture + "/libcurl.a");
 			}
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win64)
+		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			PublicIncludePaths.Add(WinLibCurlPath + "include/" + Target.Platform.ToString() +  "/VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-			string LibDir = WinLibCurlPath + "lib/" + Target.Platform.ToString() +  "/VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName() + "/";
-			PublicAdditionalLibraries.Add(LibDir + "libcurl_a.lib");
+			PublicIncludePaths.Add(Path.Combine(MacLibCurlPath, "include"));
+			PublicAdditionalLibraries.Add(Path.Combine(MacLibCurlPath, "lib", "Mac", "Release", "libcurl.a"));
 			PublicDefinitions.Add("CURL_STATICLIB=1");
+			PublicFrameworks.Add("SystemConfiguration");
 
-			// Our build requires OpenSSL and zlib, so ensure thye're linked in
+			// Our build requires nghttp2, OpenSSL and zlib, so ensure they're linked in
 			AddEngineThirdPartyPrivateStaticDependencies(Target, new string[]
 			{
+				"nghttp2",
 				"OpenSSL",
 				"zlib"
 			});
 		}
-		else if (Target.Platform == UnrealTargetPlatform.HoloLens)
+		else if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			// We do not currently have hololens OpenSSL binaries, lets not pretend we do.
-			// We will remove WITH_LIBCURL=1 which should mean we *should* compile out dependencies on it, but I'm not very confident that 
-			// there won't be some runtime failures in projects that do depend on it (like EngineTest).
-			
-			PublicDefinitions.Remove("WITH_LIBCURL=1");
+			PublicSystemIncludePaths.Add(Path.Combine(WinLibCurlPath, "include"));
+			PublicAdditionalLibraries.Add(Path.Combine(WinLibCurlPath, "lib", Target.Platform.ToString(), "Release", "libcurl.lib"));
+			PublicDefinitions.Add("CURL_STATICLIB=1");
+
+			// Our build requires nghttp2, OpenSSL and zlib, so ensure they're linked in
+			AddEngineThirdPartyPrivateStaticDependencies(Target, new string[]
+			{
+				"nghttp2",
+				"OpenSSL",
+				"zlib"
+			});
 		}
 	}
 }

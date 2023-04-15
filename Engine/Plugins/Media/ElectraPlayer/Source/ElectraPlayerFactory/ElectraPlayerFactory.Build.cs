@@ -47,7 +47,7 @@ namespace UnrealBuildTool.Rules
                 PrivateIncludePathModuleNames.Add("Settings");
             }
 
-            if (Target.Platform == UnrealTargetPlatform.Win64)
+            if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
             {
                 PublicDefinitions.Add("_CRT_SECURE_NO_WARNINGS");
             }
@@ -64,6 +64,7 @@ namespace UnrealBuildTool.Rules
 				|| Target.Platform == UnrealTargetPlatform.Mac
 				|| Target.Platform == UnrealTargetPlatform.IOS
 				|| Target.IsInPlatformGroup(UnrealPlatformGroup.Android)
+				|| Target.IsInPlatformGroup(UnrealPlatformGroup.Unix)
 				;
 		}
     }

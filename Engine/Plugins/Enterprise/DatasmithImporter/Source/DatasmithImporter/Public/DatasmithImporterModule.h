@@ -6,6 +6,7 @@
 #include "Modules/ModuleManager.h"		// For inline LoadModuleChecked()
 #include "DatasmithCore.h"
 
+#include "Delegates/DelegateCombinations.h"
 #include "Templates/Function.h"
 
 #define DATASMITHIMPORTER_MODULE_NAME TEXT("DatasmithImporter")
@@ -15,7 +16,6 @@
  */
 class IDatasmithImporterModule : public IModuleInterface
 {
-
 public:
 
 	/**
@@ -42,5 +42,12 @@ public:
 	 * Restores the Datasmith imported values on an object
 	 */
 	virtual void ResetOverrides( UObject* Object ) = 0;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnGenerateDatasmithImportMenu, struct FToolMenuSection&);
+	virtual FOnGenerateDatasmithImportMenu& OnGenerateDatasmithImportMenu() = 0;
+
+	// #ue_ds_cloth_arch: temp API: Do not use directly.
+	virtual void SetClothImporterExtension(class IDatasmithImporterExt*) = 0;
+	virtual class IDatasmithImporterExt* GetClothImporterExtension() = 0;
 };
 

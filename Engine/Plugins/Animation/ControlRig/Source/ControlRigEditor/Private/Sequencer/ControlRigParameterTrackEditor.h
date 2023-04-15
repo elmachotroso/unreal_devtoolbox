@@ -18,6 +18,7 @@
 #include "MovieSceneToolsModule.h"
 #include "Engine/EngineTypes.h"
 #include "EditorUndoClient.h"
+#include "ScopedTransaction.h"
 
 struct FAssetData;
 class FMenuBuilder;
@@ -113,26 +114,52 @@ private:
 	/** Delegate for when track immediately changes, so we need to do an interaction edit for things like fk/ik*/
 	void OnChannelChanged(const FMovieSceneChannelMetaData* MetaData, UMovieSceneSection* InSection);
 
-	/** Delegate for Curve Selection Changed Event */
-	void OnCurveDisplayChanged(FCurveModel* InCurveModel, bool bDisplayed, const FCurveEditor* InCurveEditor);
-
 	/** Delegate for difference focused movie scene sequence*/
 	void OnActivateSequenceChanged(FMovieSceneSequenceIDRef ID);
 
 	/** Actor Added Delegate*/
 	void HandleActorAdded(AActor* Actor, FGuid TargetObjectGuid);
 	/** Add Control Rig Tracks For Skelmesh Components*/
-	void AddTrackForComponent(USceneComponent* Component);
+	void AddTrackForComponent(USceneComponent* Component, FGuid Binding);
 
 	/** Control Rig Delegates*/
 	void HandleControlModified(UControlRig* Subject, FRigControlElement* ControlElement, const FRigControlModifiedContext& Context);
 	void HandleControlSelected(UControlRig* Subject, FRigControlElement* ControlElement, bool bSelected);
+	void HandleControlUndoBracket(UControlRig* Subject, bool bOpenUndoBracket);
 	void HandleOnInitialized(UControlRig* Subject, const EControlRigState InState, const FName& InEventName);
+	void HandleOnControlRigBound(UControlRig* InControlRig);
+	void HandleOnObjectBoundToControlRig(UObject* InObject);
+
+	//if rig not set then we clear delegates for everyone
+	void ClearOutAllSpaceAndConstraintDelegates(const UControlRig* InOptionalControlRig = nullptr) const;
 
 	/** SpaceChannel Delegates*/
-	void HandleOnSpaceAdded(UMovieSceneControlRigParameterSection* Section, const FName& ControlName, FMovieSceneControlRigSpaceChannel* Channel);
-	void HandleSpaceKeyDeleted(UMovieSceneControlRigParameterSection* Section, FMovieSceneControlRigSpaceChannel* Channel, const TArray<FKeyAddOrDeleteEventItem>& DeletedItems);
-	void HandleSpaceKeyMoved(UMovieSceneControlRigParameterSection* Section, FMovieSceneControlRigSpaceChannel* Channel, const  TArray<FKeyMoveEventItem>& MovedItems);
+	void HandleOnSpaceAdded(
+		UMovieSceneControlRigParameterSection* Section,
+		const FName& ControlName,
+		FMovieSceneControlRigSpaceChannel* Channel);
+	void HandleSpaceKeyDeleted(
+		UMovieSceneControlRigParameterSection* Section,
+		FMovieSceneControlRigSpaceChannel* Channel,
+		const TArray<FKeyAddOrDeleteEventItem>& DeletedItems) const;
+	static void HandleSpaceKeyMoved(
+		UMovieSceneControlRigParameterSection* Section,
+		FMovieSceneControlRigSpaceChannel* Channel,
+		const TArray<FKeyMoveEventItem>& MovedItems);
+
+	/** ConstraintChannel Delegates*/
+	void HandleOnConstraintAdded(
+		IMovieSceneConstrainedSection* InSection,
+		FMovieSceneConstraintChannel* InConstraintChannel);
+	void HandleConstraintKeyDeleted(
+		IMovieSceneConstrainedSection* InSection,
+		const FMovieSceneConstraintChannel* InConstraintChannel,
+		const TArray<FKeyAddOrDeleteEventItem>& InDeletedItems) const;
+	static void HandleConstraintKeyMoved(
+		IMovieSceneConstrainedSection* InSection,
+		const FMovieSceneConstraintChannel* InConstraintChannel,
+		const TArray<FKeyMoveEventItem>& InMovedItems);
+	void HandleConstraintRemoved(IMovieSceneConstrainedSection* InSection);
 
 	/** Select control rig if not selected, select controls from key areas */
 	void SelectRigsAndControls(UControlRig* Subject, const TArray<const IKeyArea*>& KeyAreas);
@@ -175,13 +202,17 @@ private:
 
 public:
 
-	void AddControlKeys(USceneComponent *InSceneComp, UControlRig* InControlRig, FName PropertyName, FName ParameterName, EControlRigContextChannelToKey ChannelsToKey, ESequencerKeyMode KeyMode, float InLocalTime);
-	void GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EControlRigContextChannelToKey ChannelsToKey, ESequencerKeyMode KeyMode, UMovieSceneControlRigParameterSection* SectionToKey, FGeneratedTrackKeys& OutGeneratedKeys);
+	void AddControlKeys(USceneComponent *InSceneComp, UControlRig* InControlRig, FName PropertyName,
+		FName ParameterName, EControlRigContextChannelToKey ChannelsToKey, ESequencerKeyMode KeyMode,
+		float InLocalTime, const bool bInConstraintSpace = false);
+	void GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EControlRigContextChannelToKey ChannelsToKey,
+		ESequencerKeyMode KeyMode, UMovieSceneControlRigParameterSection* SectionToKey,	FGeneratedTrackKeys& OutGeneratedKeys,
+		const bool bInConstraintSpace = false);
 	FKeyPropertyResult AddKeysToControlRig(
-		USceneComponent *InSceneComp, UControlRig* InControlRig, FFrameNumber KeyTime, FGeneratedTrackKeys& GeneratedKeys,
+		USceneComponent *InSceneComp, UControlRig* InControlRig, FFrameNumber KeyTime, FFrameNumber EvaluateTime, FGeneratedTrackKeys& GeneratedKeys,
 		ESequencerKeyMode KeyMode, TSubclassOf<UMovieSceneTrack> TrackClass, FName ControlRigName, FName RigControlName);
 	FKeyPropertyResult AddKeysToControlRigHandle(USceneComponent *InSceneComp, UControlRig* InControlRig,
-		FGuid ObjectHandle, FFrameNumber KeyTime, FGeneratedTrackKeys& GeneratedKeys,
+		FGuid ObjectHandle, FFrameNumber KeyTime, FFrameNumber EvaluateTime, FGeneratedTrackKeys& GeneratedKeys,
 		ESequencerKeyMode KeyMode, TSubclassOf<UMovieSceneTrack> TrackClass, FName ControlRigName, FName RigControlName);
 	/**
 	 * Modify the passed in Generated Keys by the current tracks values and weight at the passed in time.
@@ -193,7 +224,7 @@ public:
 	 * @param InOutGeneratedTrackKeys The Keys we need to modify. We change these values.
 	 * @param Weight The weight we need to modify the values by.
 	 */
-	bool ModifyOurGeneratedKeysByCurrentAndWeight(UObject* Object, UControlRig* InControlRig, FName RigControlName, UMovieSceneTrack *Track, UMovieSceneSection* SectionToKey, FFrameNumber Time, FGeneratedTrackKeys& InOutGeneratedTotalKeys, float Weight) const;
+	bool ModifyOurGeneratedKeysByCurrentAndWeight(UObject* Object, UControlRig* InControlRig, FName RigControlName, UMovieSceneTrack *Track, UMovieSceneSection* SectionToKey, FFrameNumber EvaluateTime, FGeneratedTrackKeys& InOutGeneratedTotalKeys, float Weight) const;
 
 	//**Function to collapse all layers from this section onto the first absoluate layer.*/
 	static bool CollapseAllLayers(TSharedPtr<ISequencer>& SequencerPtr, UMovieSceneTrack* OwnerTrack, UMovieSceneControlRigParameterSection* ParameterSection, bool bKeyReduce = false, float Tolerance = 0.001f);
@@ -223,6 +254,9 @@ private:
 	/** Guard to stop infinite loops when handling control selections*/
 	bool bIsDoingSelection;
 
+	/** A flag to determine if the next update coming from the timer should be skipped */
+	bool bSkipNextSelectionFromTimer;
+
 	/** Whether or not we should check Skeleton when filtering*/
 	bool bFilterAssetBySkeleton;
 
@@ -234,6 +268,20 @@ private:
 
 	/** Array of sections that are getting undone, we need to recreate any space channel add,move key delegates to them*/
 	mutable TArray<UMovieSceneControlRigParameterSection*> SectionsGettingUndone;
+
+	/** An index counter for the opened undo brackets */
+	int32 ControlUndoBracket;
+
+	/** A transaction used to group multiple key events */
+	TSharedPtr<FScopedTransaction> ControlUndoTransaction;
+
+	/** Controls if the control rig track for the default animating rig should be created */
+	static bool bAutoGenerateControlRigTrack;
+
+	/** Set of delegate handles we have added delegate's too, need to clear them*/
+	TSet<FDelegateHandle> ConstraintHandlesToClear;
+
+	friend class FControlRigBlueprintActions;
 };
 
 

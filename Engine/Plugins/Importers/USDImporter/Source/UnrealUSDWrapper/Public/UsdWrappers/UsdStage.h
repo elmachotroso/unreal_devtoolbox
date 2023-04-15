@@ -18,6 +18,13 @@ namespace UE
 		template< typename PtrType > class FUsdStageImpl;
 	}
 
+	/** Corresponds to pxr::UsdLoadPolicy, refer to the USD SDK documentation */
+	enum class EUsdLoadPolicy
+	{
+		UsdLoadWithDescendants,    // Load a prim plus all its descendants.
+		UsdLoadWithoutDescendants  // Load a prim by itself with no descendants.
+	};
+
 	/**
 	 * Minimal pxr::UsdStage pointer wrapper for Unreal that can be used from no-rtti modules.
 	 * Use the aliases FUsdStage and FUsdStageWeak instead (defined on ForwardDeclarations.h)
@@ -63,6 +70,14 @@ namespace UE
 
 	// Wrapped pxr::UsdStage functions, refer to the USD SDK documentation
 	public:
+		void LoadAndUnload( const TSet<UE::FSdfPath>& LoadSet, const TSet<UE::FSdfPath>& UnloadSet, EUsdLoadPolicy Policy = EUsdLoadPolicy::UsdLoadWithDescendants );
+
+		/**
+		 * Saves a flattened copy of the stage to the given path (e.g. "C:/Folder/FlattenedStage.usda"). Will use the corresponding file writer depending on FilePath extension.
+		 * Will not alter the current stage.
+		 */
+		bool Export( const TCHAR* FileName, bool bAddSourceFileComment = true, const TMap<FString, FString>& FileFormatArguments = {} ) const;
+
 		FSdfLayer GetRootLayer() const;
 		FSdfLayer GetSessionLayer() const;
 		bool HasLocalLayer( const FSdfLayer& Layer ) const;
@@ -70,6 +85,12 @@ namespace UE
 		FUsdPrim GetPseudoRoot() const;
 		FUsdPrim GetDefaultPrim() const;
 		FUsdPrim GetPrimAtPath( const FSdfPath& Path ) const;
+
+		TArray<FSdfLayer> GetLayerStack( bool bIncludeSessionLayers = true ) const;
+		TArray<FSdfLayer> GetUsedLayers( bool bIncludeClipLayers = true ) const;
+
+		void MuteAndUnmuteLayers( const TArray<FString>& MuteLayers, const TArray<FString>& UnmuteLayers );
+		bool IsLayerMuted( const FString& LayerIdentifier ) const;
 
 		bool IsEditTargetValid() const;
 		void SetEditTarget( const FSdfLayer& Layer );

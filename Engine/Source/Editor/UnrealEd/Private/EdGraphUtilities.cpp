@@ -2,21 +2,43 @@
 
 
 #include "EdGraphUtilities.h"
-#include "UObject/PropertyPortFlags.h"
-#include "Styling/CoreStyle.h"
-#include "Exporters/Exporter.h"
+
+#include "BlueprintUtilities.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreGlobals.h"
 #include "EdGraph/EdGraph.h"
-#include "Kismet2/CompilerResultsLog.h"
-#include "Factories.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "UnrealExporter.h"
+#include "Engine/Blueprint.h"
+#include "Exporters/Exporter.h"
+#include "Factories.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "K2Node_EditablePinBase.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Math/IntRect.h"
+#include "Misc/AssertionMacros.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectMarks.h"
+#include "UnrealExporter.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "K2Node_Composite.h"
 
 DECLARE_CYCLE_STAT(TEXT("Clone Graph"), EKismetCompilerStats_CloneGraph, STATGROUP_KismetCompiler);
-DECLARE_CYCLE_STAT(TEXT("Clone Graph - Build Backtrack Map"), EKismetCompilerStats_CloneGraph_BuildBackTrackMap, STATGROUP_KismetCompiler);
+DECLARE_CYCLE_STAT(TEXT("Clone Graph - Post Process"), EKismetCompilerStats_CloneGraph_PostProcess, STATGROUP_KismetCompiler);
 
 /////////////////////////////////////////////////////
 // Local namespace
@@ -246,11 +268,11 @@ UEdGraph* FEdGraphUtilities::CloneGraph(UEdGraph* InSource, UObject* NewOuter, F
 	// Duplicate the graph, keeping track of what was duplicated
 	TMap<UObject*, UObject*> DuplicatedObjectList;
 
-	UObject* UseOuter = (NewOuter != NULL) ? NewOuter : GetTransientPackage();
+	UObject* UseOuter = (NewOuter != nullptr) ? NewOuter : GetTransientPackage();
 	FObjectDuplicationParameters Parameters(InSource, UseOuter);
 	Parameters.CreatedObjects = &DuplicatedObjectList;
 
-	if (bCloningForCompile || (NewOuter == NULL))
+	if (bCloningForCompile || (NewOuter == nullptr))
 	{
 		Parameters.ApplyFlags |= RF_Transient;
 		Parameters.FlagMask &= ~RF_Transactional;
@@ -258,37 +280,81 @@ UEdGraph* FEdGraphUtilities::CloneGraph(UEdGraph* InSource, UObject* NewOuter, F
 
 	UEdGraph* ClonedGraph = CastChecked<UEdGraph>(StaticDuplicateObjectEx(Parameters));
 
-	// Store backtrack links from each duplicated object to the original source object
-	if (MessageLog != NULL)
+	// During compilation, do not clone disabled (e.g. ghost) nodes from non-transient source graphs.
+	const bool bExcludeDisabledNodes = bCloningForCompile && InSource && !InSource->HasAnyFlags(RF_Transient);
+
+	// Exclude disabled nodes and/or store backtrack links from each duplicated object to the original source object.
+	if (bExcludeDisabledNodes || MessageLog != nullptr)
 	{
-		BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_CloneGraph_BuildBackTrackMap);
+		BP_SCOPED_COMPILER_EVENT_STAT(EKismetCompilerStats_CloneGraph_PostProcess);
 		
 		for (TMap<UObject*, UObject*>::TIterator It(DuplicatedObjectList); It; ++It)
 		{
+			bool bIsExcludedNode = false;
+
 			UObject* const Source = It.Key();
 			UObject* const Dest = It.Value();
-
-			MessageLog->NotifyIntermediateObjectCreation(Dest, Source);
 
 			UEdGraphNode* SrcNode = Cast<UEdGraphNode>(Source);
 			UEdGraphNode* DstNode = Cast<UEdGraphNode>(Dest);
 			if (SrcNode && DstNode)
 			{
+				// Determine whether the source is a disabled node that should be excluded from the cloned graph.
+				bIsExcludedNode = bExcludeDisabledNodes && !SrcNode->IsNodeEnabled();
+
 				// associate pins, no known case of StaticDuplicateObjectEx resulting in a different number of pins, but
 				// if that does happen we just associate as many pins as we can:
 				ensure(SrcNode->Pins.Num() == DstNode->Pins.Num());
-				for (int32 I = 0; I < SrcNode->Pins.Num() && I < DstNode->Pins.Num(); ++I)
+				for (int32 PinIdx = 0; PinIdx < SrcNode->Pins.Num() && PinIdx < DstNode->Pins.Num(); ++PinIdx)
 				{
-					if (ensure(DstNode->Pins[I] && SrcNode->Pins[I]))
+					UEdGraphPin* SrcPin = SrcNode->Pins[PinIdx];
+					UEdGraphPin* DstPin = DstNode->Pins[PinIdx];
+					if (ensure(SrcPin && DstPin))
 					{
-						MessageLog->NotifyIntermediatePinCreation(DstNode->Pins[I], SrcNode->Pins[I]);
+						// Don't record pins to the backtrack map if this is an excluded node.
+						if (bIsExcludedNode)
+						{
+							// Patch any input links to pass through to the other side.
+							if (DstPin->Direction == EGPD_Input && DstPin->LinkedTo.Num() > 0)
+							{
+								UEdGraphPin* PassThroughPin = DstNode->GetPassThroughPin(DstPin);
+								if (PassThroughPin != nullptr && PassThroughPin->LinkedTo.Num() > 0)
+								{
+									for (UEdGraphPin* OutputPin : DstPin->LinkedTo)
+									{
+										for (UEdGraphPin* InputPin : PassThroughPin->LinkedTo)
+										{
+											InputPin->LinkedTo.Add(OutputPin);
+											OutputPin->LinkedTo.Add(InputPin);
+										}
+									}
+								}
+							}
+						}
+						else if (MessageLog)
+						{
+							MessageLog->NotifyIntermediatePinCreation(DstPin, SrcPin);
+						}
 					}
 				}
 
-				if (bCloningForCompile)
+				if (bIsExcludedNode)
 				{
-					DstNode->SetEnabledState(SrcNode->IsNodeEnabled() ? ENodeEnabledState::Enabled : ENodeEnabledState::Disabled);
+					// Break remaining node links, if any exist.
+					DstNode->BreakAllNodeLinks();
+
+					// Remove the node from the cloned graph, if valid.
+					if (ClonedGraph)
+					{
+						ClonedGraph->Nodes.Remove(DstNode);
+					}
 				}
+			}
+
+			// Don't record excluded nodes to the backtrack map.
+			if (MessageLog && !bIsExcludedNode)
+			{
+				MessageLog->NotifyIntermediateObjectCreation(Dest, Source);
 			}
 		}
 	}
@@ -343,6 +409,11 @@ void FEdGraphUtilities::MergeChildrenGraphsIn(UEdGraph* MergeTarget, UEdGraph* P
 			if (bSchemaMatches)
 			{
 				ChildGraph->MoveNodesToAnotherGraph(MergeTarget, IsAsyncLoading() || bIsLoading, bInIsCompiling);
+			}
+			else if (bRequireSchemaMatch && NodeOwner && MessageLog)
+			{
+				// If merging requires a schema match and we have a valid owner for the child graph, throw an error message on the outer node context.
+				MessageLog->Error(*NSLOCTEXT("EdGraphUtilities", "CannotMergeChildGraph_Error", "Unable to merge child graph for node @@. The child graph's schema is incompatible with the outer graph.").ToString(), MessageLog->FindSourceObject(NodeOwner));
 			}
 
 			MergeChildrenGraphsIn(MergeTarget, ChildGraph, bRequireSchemaMatch, bInIsCompiling, MessageLog);

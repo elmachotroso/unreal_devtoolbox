@@ -6,6 +6,8 @@
 #include "Misc/CoreDelegates.h"
 #include "UObject/UnrealType.h"
 
+DEFINE_LOG_CATEGORY(LogPropertyEditorPermissionList);
+
 namespace
 {
 	const FName PropertyEditorPermissionListOwner = "PropertyEditorPermissionList";
@@ -39,23 +41,36 @@ FPropertyEditorPermissionList::~FPropertyEditorPermissionList()
 	}
 }
 
-void FPropertyEditorPermissionList::AddPermissionList(TSoftObjectPtr<UStruct> Struct, const FNamePermissionList& PermissionList, EPropertyEditorPermissionListRules Rules)
+void FPropertyEditorPermissionList::ClearCacheAndBroadcast(TSoftObjectPtr<UStruct> ObjectStruct, FName OwnerName)
 {
-	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
-	Entry.PermissionList.Append(PermissionList);
-	Entry.Rules = Rules;
 	// The cache isn't too expensive to recompute, so it is cleared
 	// and lazily repopulated any time the raw PermissionList changes.
 	ClearCache();
-	PermissionListUpdatedDelegate.Broadcast(Struct, NAME_None);
+
+	if (!bSuppressUpdateDelegate)
+	{
+		PermissionListUpdatedDelegate.Broadcast(ObjectStruct, OwnerName);
+	}
+}
+
+void FPropertyEditorPermissionList::AddPermissionList(TSoftObjectPtr<UStruct> Struct, const FNamePermissionList& PermissionList, EPropertyEditorPermissionListRules Rules)
+{
+	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
+	Entry.PermissionList = PermissionList;
+	// Always use the most permissive rule previously set
+	if (Entry.Rules > Rules)
+	{
+		Entry.Rules = Rules;
+	}
+
+	ClearCacheAndBroadcast(Struct);
 }
 
 void FPropertyEditorPermissionList::RemovePermissionList(TSoftObjectPtr<UStruct> Struct)
 {
 	if (RawPropertyEditorPermissionList.Remove(Struct) > 0)
 	{
-		ClearCache();
-		PermissionListUpdatedDelegate.Broadcast(Struct, NAME_None);
+		ClearCacheAndBroadcast(Struct);
 	}
 }
 
@@ -63,7 +78,31 @@ void FPropertyEditorPermissionList::ClearPermissionList()
 {
 	TArray<TSoftObjectPtr<UStruct>> Keys;
 	RawPropertyEditorPermissionList.Reset();
-	PermissionListUpdatedDelegate.Broadcast(nullptr, NAME_None);
+	ClearCacheAndBroadcast();
+}
+
+void FPropertyEditorPermissionList::UnregisterOwner(const FName Owner)
+{
+	TArray<TSoftObjectPtr<UStruct>> StructsToRemove;
+
+	for (TPair<TSoftObjectPtr<UStruct>, FPropertyEditorPermissionListEntry>& Pair : RawPropertyEditorPermissionList)
+	{
+		Pair.Value.PermissionList.UnregisterOwner(Owner);
+		if (Pair.Value.PermissionList.GetOwnerNames().Num() == 0)
+		{
+			StructsToRemove.Add(Pair.Key);
+		}
+	}
+
+	{
+		TGuardValue<bool> SuppressGuard(bSuppressUpdateDelegate, true);
+		for (TSoftObjectPtr<UStruct>& StructToRemove : StructsToRemove)
+		{
+			RemovePermissionList(StructToRemove);
+		}
+	}
+
+	ClearCacheAndBroadcast(nullptr, Owner);
 }
 
 void FPropertyEditorPermissionList::AddToAllowList(TSoftObjectPtr<UStruct> Struct, const FName PropertyName, const FName Owner)
@@ -71,8 +110,7 @@ void FPropertyEditorPermissionList::AddToAllowList(TSoftObjectPtr<UStruct> Struc
 	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
 	if (Entry.PermissionList.AddAllowListItem(Owner, PropertyName))
 	{
-		ClearCache();
-		PermissionListUpdatedDelegate.Broadcast(Struct, Owner);
+		ClearCacheAndBroadcast(Struct, Owner);
 	}
 }
 
@@ -81,8 +119,7 @@ void FPropertyEditorPermissionList::RemoveFromAllowList(TSoftObjectPtr<UStruct> 
 	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
 	if (Entry.PermissionList.RemoveAllowListItem(Owner, PropertyName))
 	{
-		ClearCache();
-		PermissionListUpdatedDelegate.Broadcast(Struct, Owner);
+		ClearCacheAndBroadcast(Struct, Owner);
 	}
 }
 
@@ -91,8 +128,7 @@ void FPropertyEditorPermissionList::AddToDenyList(TSoftObjectPtr<UStruct> Struct
 	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
 	if (Entry.PermissionList.AddDenyListItem(Owner, PropertyName))
 	{
-		ClearCache();
-		PermissionListUpdatedDelegate.Broadcast(Struct, Owner);
+		ClearCacheAndBroadcast(Struct, Owner);
 	}
 }
 
@@ -101,8 +137,7 @@ void FPropertyEditorPermissionList::RemoveFromDenyList(TSoftObjectPtr<UStruct> S
 	FPropertyEditorPermissionListEntry& Entry = RawPropertyEditorPermissionList.FindOrAdd(Struct);
 	if (Entry.PermissionList.RemoveDenyListItem(Owner, PropertyName))
 	{
-		ClearCache();
-		PermissionListUpdatedDelegate.Broadcast(Struct, Owner);
+		ClearCacheAndBroadcast(Struct, Owner);
 	}
 }
 
@@ -136,7 +171,7 @@ const FNamePermissionList& FPropertyEditorPermissionList::GetCachedPermissionLis
 
 	// Default value doesn't matter since it's a no-op until the first PermissionList is encountered, at which
 	// point the rules will re-assign the value.
-	bool bShouldPermissionListAllProperties = true;
+	bool bShouldPermissionListAllProperties = false;
 	return GetCachedPermissionListForStructHelper(Struct, bShouldPermissionListAllProperties);
 }
 
@@ -145,7 +180,8 @@ const FNamePermissionList& FPropertyEditorPermissionList::GetCachedPermissionLis
 	check(Struct);
 
 	const FPropertyEditorPermissionListEntry* Entry = RawPropertyEditorPermissionList.Find(Struct);
-	bool bIsThisAllowListEmpty = Entry ? Entry->PermissionList.GetAllowList().Num() == 0 : true;
+	// If an entry is set to AllowListAll, then treat it as if it has no manually-defined properties.
+	const bool bIsThisAllowListEmpty = Entry ? (Entry->PermissionList.GetAllowList().Num() == 0 || Entry->Rules == EPropertyEditorPermissionListRules::AllowListAllProperties) : true;
 
 	// Normally this case would be caught in GetCachedPermissionListForStruct, but when being called recursively from a subclass
 	// we still need to update bInOutShouldAllowListAllProperties so that new PermissionLists cache properly.
@@ -172,18 +208,26 @@ const FNamePermissionList& FPropertyEditorPermissionList::GetCachedPermissionLis
 		// Append this struct's PermissionList on top of the parent's PermissionList
 		if (Entry)
 		{
-			NewPermissionList.Append(Entry->PermissionList);
-
-			if (Entry->Rules == EPropertyEditorPermissionListRules::AllowListAllProperties)
+			if (bIsThisAllowListEmpty)
 			{
-				bInOutShouldAllowListAllProperties = true;
+				// If the AllowList is empty, we only want to append the DenyLists
+				FNamePermissionList DuplicatePermissionList = Entry->PermissionList;
+				// Hack to get around the fact that there's no easy way to only clear an AllowList
+				TMap<FName, FPermissionListOwners>& AllowList = const_cast<TMap<FName, FPermissionListOwners>&>(DuplicatePermissionList.GetAllowList());
+				AllowList.Empty();
+				NewPermissionList.Append(DuplicatePermissionList);
 			}
+			else
+			{
+				NewPermissionList.Append(Entry->PermissionList);
+			}
+
+			bInOutShouldAllowListAllProperties = Entry->Rules == EPropertyEditorPermissionListRules::AllowListAllProperties;
 		}
 
 		// PermissionList all properties if the flag is set, the parent Struct has a PermissionList, and this Struct has no PermissionList
 		// If the parent Struct's PermissionList is empty then that already implies all properties are visible
-		// If this Struct has a PermissionList, the manually-specified list always overrides the ShouldPermissionListAllProperties rule
-		if (bInOutShouldAllowListAllProperties && NewPermissionList.GetAllowList().Num() > 0 && bIsThisAllowListEmpty)
+		if (bInOutShouldAllowListAllProperties && NewPermissionList.GetAllowList().Num() > 0)
 		{
 			for (TFieldIterator<FProperty> Property(Struct, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated); Property; ++Property)
 			{
@@ -193,7 +237,7 @@ const FNamePermissionList& FPropertyEditorPermissionList::GetCachedPermissionLis
 
 		PermissionList = &CachedPropertyEditorPermissionList.Add(Struct, NewPermissionList);
 	}
-
+	
 	// If this Struct has no PermissionList, then the ShouldPermissionListAllProperties rule just forwards its current value on to the next subclass.
 	// This causes an issue in the case where a Struct should have no PermissionListed properties but wants to PermissionList all subclass properties.
 	// In this case, simply add a dummy entry to the Struct's PermissionList that (likely) won't ever collide with a real property name

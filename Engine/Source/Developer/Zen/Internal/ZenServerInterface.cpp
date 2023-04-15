@@ -35,6 +35,11 @@
 #	include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
+#if PLATFORM_UNIX || PLATFORM_MAC
+#	include <sys/file.h>
+#	include <sys/sem.h>
+#endif
+
 #define ALLOW_SETTINGS_OVERRIDE_FROM_COMMANDLINE			(UE_SERVER || !(UE_BUILD_SHIPPING))
 
 namespace UE::Zen
@@ -123,6 +128,16 @@ DetermineDataPath(const TCHAR* ConfigSection, FString& DataPath)
 	{
 		DataPath = NormalizeDataPath(CommandLineOverrideValue);
 		UE_LOG(LogZenServiceInstance, Log, TEXT("Found command line override ZenDataPath=%s"), *CommandLineOverrideValue);
+		return;
+	}
+
+	// Zen subprocess environment
+	FString SubprocessDataPathEnvOverrideValue;
+	SubprocessDataPathEnvOverrideValue = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenSubprocessDataPath"));
+	if (!SubprocessDataPathEnvOverrideValue.IsEmpty())
+	{
+		DataPath = NormalizeDataPath(SubprocessDataPathEnvOverrideValue);
+		UE_LOG(LogZenServiceInstance, Log, TEXT("Found subprocess environment variable UE-ZenSubprocessDataPath=%s"), *SubprocessDataPathEnvOverrideValue);
 		return;
 	}
 
@@ -239,6 +254,9 @@ FServiceSettings::ReadFromConfig()
 			ReadUInt16FromConfig(AutoLaunchConfigSection, TEXT("DesiredPort"), AutoLaunchSettings.DesiredPort, GEngineIni);
 			GConfig->GetBool(AutoLaunchConfigSection, TEXT("ShowConsole"), AutoLaunchSettings.bShowConsole, GEngineIni);
 			GConfig->GetBool(AutoLaunchConfigSection, TEXT("LimitProcessLifetime"), AutoLaunchSettings.bLimitProcessLifetime, GEngineIni);
+
+			// Ensure that the zen data path is inherited by subprocesses
+			FPlatformMisc::SetEnvironmentVar(TEXT("UE-ZenSubprocessDataPath"), *AutoLaunchSettings.DataPath);
 		}
 	}
 	else
@@ -401,14 +419,14 @@ ReadCbLockFile(FStringView FileName, FCbObject& OutLockObject)
 	FPathViews::ToAbsolutePath(FileName, FullFileNameBuilder);
 	for (TCHAR& Char : MakeArrayView(FullFileNameBuilder))
 	{
-		if (Char == '/')
+		if (Char == TEXT('/'))
 		{
-			Char = '\\';
+			Char = TEXT('\\');
 		}
 	}
 	if (FullFileNameBuilder.Len() >= MAX_PATH)
 	{
-		FullFileNameBuilder.Prepend(TEXT("\\\\?\\"_SV));
+		FullFileNameBuilder.Prepend(TEXTVIEW("\\\\?\\"));
 	}
 	HANDLE Handle = CreateFileW(FullFileNameBuilder.ToString(), Access, WinFlags, NULL, Create, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (Handle != INVALID_HANDLE_VALUE)
@@ -432,20 +450,85 @@ ReadCbLockFile(FStringView FileName, FCbObject& OutLockObject)
 		}
 	}
 	return false;
-#else
-	// Generic lock reading path
-	if (TUniquePtr<FArchive> Ar{FileManager.CreateFileReader(*FileName, FILEREAD_AllowWrite | FILEREAD_Silent)})
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	TAnsiStringBuilder<256> LockFilePath;
+	LockFilePath << FileName;
+	int32 Fd = open(LockFilePath.ToString(), O_RDONLY);
+	if (Fd < 0)
 	{
-		*Ar << OutLockObject;
-		FMemoryView View;
-		if (Ar.Close() &&
-			OutLockObject.TryGetView(View) &&
-			ValidateCompactBinary(View, ECbValidateMode::Default) == ECbValidateError::None)
+		return false;
+	}
+
+	// If we can claim the lock then it's an orphaned lock file and should be
+	// ignored. Not ideal as there's a period of time when the lock can be
+	// held unncessarily.
+	int32 LockRet = flock(Fd, LOCK_EX | LOCK_NB);
+	if (LockRet >= 0)
+	{
+		unlink(LockFilePath.ToString());
+		flock(Fd, LOCK_UN);
+		close(Fd);
+		return false;
+	}
+
+	if (errno != EWOULDBLOCK && errno != EAGAIN)
+	{
+		return false;
+	}
+
+	struct stat Stat;
+	fstat(Fd, &Stat);
+	uint64 FileSize = uint64(Stat.st_size);
+
+	bool bSuccess = false;
+	FUniqueBuffer FileBytes = FUniqueBuffer::Alloc(FileSize);
+	if (read(Fd, FileBytes.GetData(), FileSize) == FileSize)
+	{
+		if (ValidateCompactBinary(FileBytes, ECbValidateMode::Default) == ECbValidateError::None)
 		{
-			return true;
+			OutLockObject = FCbObject(FileBytes.MoveToShared());
+			bSuccess = true;
 		}
 	}
-	return false;
+
+	close(Fd);
+	return bSuccess;
+#endif
+}
+
+static bool
+IsLockFileLocked(const TCHAR* FileName, bool bAttemptCleanUp=false)
+{
+#if PLATFORM_WINDOWS
+	if (bAttemptCleanUp)
+	{
+		IFileManager::Get().Delete(FileName, false, false, true);
+	}
+	return IFileManager::Get().FileExists(FileName);
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	TAnsiStringBuilder<256> LockFilePath;
+	LockFilePath << FileName;
+	int32 Fd = open(LockFilePath.ToString(), O_RDONLY);
+	if (Fd < 0)
+	{
+		return false;
+	}
+
+	int32 LockRet = flock(Fd, LOCK_EX | LOCK_NB);
+	if (LockRet < 0)
+	{
+		close(Fd);
+		return errno == EWOULDBLOCK || errno == EAGAIN;
+	}
+
+	// Consider the lock file as orphaned if we we managed to claim the lock for
+	// it. Might as well delete it while we own it.
+	unlink(LockFilePath.ToString());
+
+	flock(Fd, LOCK_UN);
+	close(Fd);
+
+	return true;
 #endif
 }
 
@@ -459,6 +542,24 @@ RequestZenShutdownOnPort(uint16 Port)
 		ON_SCOPE_EXIT{ CloseHandle(Handle); };
 		SetEvent(Handle);
 	}
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	TAnsiStringBuilder<64> EventPath;
+	EventPath << "/tmp/Zen_" << Port << "_Shutdown";
+
+	key_t IpcKey = ftok(EventPath.ToString(), 1);
+	if (IpcKey < 0)
+	{
+		return;
+	}
+
+	int Semaphore = semget(IpcKey, 1, 0600);
+	if (Semaphore < 0)
+	{
+		return;
+	}
+
+	semctl(Semaphore, 0, SETVAL, 0);
+	semctl(Semaphore, 0, IPC_RMID);
 #else
 	static_assert(false, "Missing implementation for Zen named shutdown events");
 #endif
@@ -468,7 +569,7 @@ static bool
 WaitForZenShutdown(const TCHAR* LockFilePath, double MaximumWaitDurationSeconds)
 {
 	uint64 ZenShutdownWaitStartTime = FPlatformTime::Cycles64();
-	while (IFileManager::Get().FileExists(LockFilePath))
+	while (IsLockFileLocked(LockFilePath))
 	{
 		double ZenShutdownWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenShutdownWaitStartTime);
 		if (ZenShutdownWaitDuration < MaximumWaitDurationSeconds)
@@ -516,6 +617,26 @@ DetermineCmdLineWithoutTransientComponents(const FServiceAutoLaunchSettings& InS
 	{
 		Parms.AppendChar(TEXT(' '));
 		Parms.Append(InSettings.ExtraArgs);
+	}
+
+	FString LogCommandLineOverrideValue;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ZenLogPath="), LogCommandLineOverrideValue))
+	{
+		if (!LogCommandLineOverrideValue.IsEmpty())
+		{
+			Parms.Appendf(TEXT(" --abslog \"%s\""),
+				*FPaths::ConvertRelativePathToFull(LogCommandLineOverrideValue));
+		}
+	}
+
+	FString CfgCommandLineOverrideValue;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ZenCfgPath="), CfgCommandLineOverrideValue))
+	{
+		if (!CfgCommandLineOverrideValue.IsEmpty())
+		{
+			Parms.Appendf(TEXT(" --config \"%s\""),
+				*FPaths::ConvertRelativePathToFull(CfgCommandLineOverrideValue));
+		}
 	}
 
 	return Parms;
@@ -605,7 +726,7 @@ FZenServiceInstance::IsServiceReady()
 		TStringBuilder<128> ZenDomain;
 		ZenDomain << HostName << TEXT(":") << Port;
 		Zen::FZenHttpRequest Request(ZenDomain.ToString(), false);
-		Zen::FZenHttpRequest::Result Result = Request.PerformBlockingDownload(TEXT("health/ready"_SV), nullptr, Zen::EContentType::Text);
+		Zen::FZenHttpRequest::Result Result = Request.PerformBlockingDownload(TEXTVIEW("health/ready"), nullptr, Zen::EContentType::Text);
 		
 		if (Result == Zen::FZenHttpRequest::Result::Success && Zen::IsSuccessCode(Request.GetResponseCode()))
 		{
@@ -618,6 +739,12 @@ FZenServiceInstance::IsServiceReady()
 		}
 	}
 	return false;
+}
+
+uint16
+FZenServiceInstance::GetAutoLaunchedPort()
+{
+	return AutoLaunchedPort;
 }
 
 void
@@ -666,6 +793,8 @@ FZenServiceInstance::ConditionalUpdateLocalInstall()
 	FDateTime InTreeFileTime;
 	FDateTime InstallFileTime;
 	FileManager.GetTimeStampPair(*InTreeFilePath, *InstallFilePath, InTreeFileTime, InstallFileTime);
+
+	bool bMainExecutableUpdated = false;
 	if (InTreeFileTime > InstallFileTime)
 	{
 		if (IsProcessActive(*InstallFilePath))
@@ -684,7 +813,7 @@ FZenServiceInstance::ConditionalUpdateLocalInstall()
 				}
 			}
 
-			if (FileManager.FileExists(*LockFilePath))
+			if (IsLockFileLocked(*LockFilePath))
 			{
 				PromptUserToStopRunningServerInstance(InstallFilePath);
 			}
@@ -692,15 +821,26 @@ FZenServiceInstance::ConditionalUpdateLocalInstall()
 
 		// Even after waiting for the lock file to be removed, the executable may have a period where it can't be overwritten as the process shuts down
 		// so any attempt to overwrite it should have some tolerance for retrying.
-		bool bExecutableCopySucceeded = AttemptFileCopyWithRetries(*InstallFilePath, *InTreeFilePath, 5.0);
-		checkf(bExecutableCopySucceeded, TEXT("Failed to copy zenserver to install location '%s'."), *InstallFilePath);
+		bMainExecutableUpdated = AttemptFileCopyWithRetries(*InstallFilePath, *InTreeFilePath, 5.0);
+		checkf(bMainExecutableUpdated, TEXT("Failed to copy zenserver to install location '%s'."), *InstallFilePath);
+	}
 
 #if PLATFORM_WINDOWS
-		FString InTreeSymbolFilePath = FPaths::ChangeExtension(InTreeFilePath, TEXT("pdb"));
-		FString InstallSymbolFilePath = FPaths::ChangeExtension(InstallFilePath, TEXT("pdb"));
-		bool bSymbolCopySucceeded = AttemptFileCopyWithRetries(*InstallFilePath, *InTreeFilePath, 1.0);
-		checkf(bSymbolCopySucceeded, TEXT("Failed to copy zenserver symbols to install location '%s'."), *InstallSymbolFilePath);
+	FString InTreeSymbolFilePath = FPaths::ChangeExtension(InTreeFilePath, TEXT("pdb"));
+	FString InstallSymbolFilePath = FPaths::ChangeExtension(InstallFilePath, TEXT("pdb"));
+
+	if (FileManager.FileExists(*InTreeSymbolFilePath) && (bMainExecutableUpdated || !FileManager.FileExists(*InstallSymbolFilePath)))
+	{
+		AttemptFileCopyWithRetries(*InstallSymbolFilePath, *InTreeSymbolFilePath, 1.0);
+	}
 #endif
+
+	FString InTreeCrashpadHandlerFilePath = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("crashpad_handler"), EBuildConfiguration::Development));
+	FString InstallCrashpadHandlerFilePath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPlatformProcess::ApplicationSettingsDir(), TEXT("Zen\\Install"), FString(FPathViews::GetCleanFilename(InTreeCrashpadHandlerFilePath))));
+
+	if (FileManager.FileExists(*InTreeCrashpadHandlerFilePath) && (bMainExecutableUpdated || !FileManager.FileExists(*InstallCrashpadHandlerFilePath)))
+	{
+		AttemptFileCopyWithRetries(*InstallCrashpadHandlerFilePath, *InTreeCrashpadHandlerFilePath, 1.0);
 	}
 
 	FPaths::MakePlatformFilename(InstallFilePath);
@@ -713,12 +853,13 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 	int16 DesiredPort = InSettings.DesiredPort;
 	IFileManager& FileManager = IFileManager::Get();
 	const FString LockFilePath = FPaths::Combine(InSettings.DataPath, TEXT(".lock"));
-	const FString CmdLineFilePath = FPaths::Combine(InSettings.DataPath, TEXT(".cmdline"));
-	FileManager.Delete(*LockFilePath, false, false, true);
+	const FString ExecutionContextFilePath = FPaths::Combine(InSettings.DataPath, TEXT(".runcontext"));
+
+	FString WorkingDirectory = FPaths::GetPath(ExecutablePath);
 
 	bool bReUsingExistingInstance = false;
 
-	if (FileManager.FileExists(*LockFilePath))
+	if (IsLockFileLocked(*LockFilePath, true))
 	{
 		// If an instance is running with this data path, check if we can use it and what port it is on
 		uint16 CurrentPort = 0;
@@ -733,9 +874,9 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 		}
 
 		bool bCurrentInstanceUsable = false;
-		FString DesiredCmdLine = FString::Printf(TEXT("%s %s"), *ExecutablePath, *DetermineCmdLineWithoutTransientComponents(InSettings, CurrentPort));
-		FString CurrentCmdLine;
-		if (FFileHelper::LoadFileToString(CurrentCmdLine, *CmdLineFilePath) && (DesiredCmdLine == CurrentCmdLine))
+		FString DesiredExecutionContext = FString::Printf(TEXT("%s %s") LINE_TERMINATOR TEXT("%s"), *ExecutablePath, *DetermineCmdLineWithoutTransientComponents(InSettings, CurrentPort), *WorkingDirectory);
+		FString CurrentExecutionContext;
+		if (FFileHelper::LoadFileToString(CurrentExecutionContext, *ExecutionContextFilePath) && (DesiredExecutionContext == CurrentExecutionContext))
 		{
 			DesiredPort = CurrentPort;
 			bReUsingExistingInstance = true;
@@ -753,7 +894,7 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 	}
 
 
-	bool bProcessIsLive = FileManager.FileExists(*LockFilePath);
+	bool bProcessIsLive = IsLockFileLocked(*LockFilePath);
 
 	// When limiting process lifetime, always re-launch to add sponsor process IDs.
 	// When not limiting process lifetime, only launch if the process is not already live.
@@ -761,16 +902,6 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 	{
 		FString ParmsWithoutTransients = DetermineCmdLineWithoutTransientComponents(InSettings, DesiredPort);
 		FString Parms = ParmsWithoutTransients;
-
-		FString LogCommandLineOverrideValue;
-		if (FParse::Value(FCommandLine::Get(), TEXT("ZenLogPath="), LogCommandLineOverrideValue))
-		{
-			if (!LogCommandLineOverrideValue.IsEmpty())
-			{
-				Parms.Appendf(TEXT(" --abslog \"%s\""),
-					*FPaths::ConvertRelativePathToFull(LogCommandLineOverrideValue));
-			}
-		}
 
 		if (InSettings.bLimitProcessLifetime)
 		{
@@ -800,7 +931,7 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 
 			FString CommandLine = FString::Printf(TEXT("\"%s\" %s"), *ExecutablePath, *Parms);
 			PROCESS_INFORMATION ProcInfo;
-			if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), nullptr, nullptr, false, (::DWORD)(NORMAL_PRIORITY_CLASS | DETACHED_PROCESS), nullptr, nullptr, &StartupInfo, &ProcInfo))
+			if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), nullptr, nullptr, false, (::DWORD)(NORMAL_PRIORITY_CLASS | DETACHED_PROCESS), nullptr, WorkingDirectory.GetCharArray().GetData(), &StartupInfo, &ProcInfo))
 			{
 				::CloseHandle(ProcInfo.hThread);
 				Proc = FProcHandle(ProcInfo.hProcess);
@@ -831,26 +962,25 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 			bool bLaunchReallyHidden = !InSettings.bShowConsole;
 			uint32* OutProcessID = nullptr;
 			int32 PriorityModifier = 0;
-			const TCHAR* OptionalWorkingDirectory = nullptr;
 			void* PipeWriteChild = nullptr;
 			void* PipeReadChild = nullptr;
 			Proc = FPlatformProcess::CreateProc(
-				*MainFilePath,
+				*ExecutablePath,
 				*Parms,
 				bLaunchDetached,
 				bLaunchHidden,
 				bLaunchReallyHidden,
 				OutProcessID,
 				PriorityModifier,
-				OptionalWorkingDirectory,
+				*WorkingDirectory,
 				PipeWriteChild,
 				PipeReadChild);
 		}
 #endif
 		if (!bProcessIsLive)
 		{
-			FString ExecutedCmdLine = FString::Printf(TEXT("%s %s"), *ExecutablePath, *ParmsWithoutTransients);
-			FFileHelper::SaveStringToFile(ExecutedCmdLine,*CmdLineFilePath);
+			FString UsedExecutionContext = FString::Printf(TEXT("%s %s") LINE_TERMINATOR TEXT("%s"), *ExecutablePath, *ParmsWithoutTransients, *WorkingDirectory);
+			FFileHelper::SaveStringToFile(UsedExecutionContext,*ExecutionContextFilePath);
 		}
 
 		bProcessIsLive = Proc.IsValid();
@@ -887,16 +1017,16 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 			}
 
 			double ZenWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenWaitStartTime);
-			if (ZenWaitDuration < 3.0)
+			if (ZenWaitDuration < 5.0)
 			{
-				// Initial 3 second window of higher frequency checks
+				// Initial 5 second window of higher frequency checks
 				FPlatformProcess::Sleep(0.01f);
 			}
 			else
 			{
 				if (DurationPhase == EWaitDurationPhase::Short)
 				{
-					if (!FileManager.FileExists(*LockFilePath))
+					if (!IsLockFileLocked(*LockFilePath))
 					{
 						if (FApp::IsUnattended())
 						{
@@ -970,10 +1100,10 @@ FZenServiceInstance::GetStats(FZenStats& Stats)
 	Stats = LastStats;
 
 	const uint64 CurrentTime = FPlatformTime::Cycles64();
-	const float MinTimeBetweenRequestsInSeconds = 0.5f;
-	const float DeltaTimeInSeconds = FPlatformTime::ToSeconds(CurrentTime - LastStatsTime);
+	constexpr double MinTimeBetweenRequestsInSeconds = 0.5;
+	const double DeltaTimeInSeconds = FPlatformTime::ToSeconds64(CurrentTime - LastStatsTime);
 
-	if ( StatsRequest.IsValid()==false && DeltaTimeInSeconds > MinTimeBetweenRequestsInSeconds)
+	if (!StatsRequest.IsValid() && DeltaTimeInSeconds > MinTimeBetweenRequestsInSeconds)
 	{
 #if WITH_EDITOR
 		EAsyncExecution ThreadPool = EAsyncExecution::LargeThreadPool;
@@ -994,7 +1124,7 @@ FZenServiceInstance::GetStats(FZenStats& Stats)
 				Request.Reset();
 
 				TArray64<uint8> GetBuffer;
-				FZenHttpRequest::Result Result = Request.PerformBlockingDownload(TEXT("/stats/z$"_SV), &GetBuffer, Zen::EContentType::CbObject);
+				FZenHttpRequest::Result Result = Request.PerformBlockingDownload(TEXTVIEW("/stats/z$"), &GetBuffer, Zen::EContentType::CbObject);
 
 				FZenStats Stats;
 

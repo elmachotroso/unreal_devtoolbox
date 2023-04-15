@@ -9,21 +9,35 @@ namespace UnrealBuildTool.Rules
 	{
 		public MetasoundEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
+			PrivateIncludePaths.AddRange(
+				new string[] {
+					Path.Combine(GetModuleDirectory("MetasoundFrontend"), "Private"),
+				}
+			);
+
 			PrivateDependencyModuleNames.AddRange
 			(
 				new string[]
 				{
+					"AssetTools",
+					"AppFramework",
 					"AudioExtensions",
 					"AudioMixer",
+					"AudioWidgets",
+					"AudioSynesthesia",
+					"ContentBrowser",
+					"EditorWidgets",
+					"Kismet",
 					"KismetWidgets",
 					"MetasoundEngine",
 					"MetasoundFrontend",
+					"MetasoundGenerator",
 					"MetasoundGraphCore",
+					"SignalProcessing",
 					"ToolMenus",
 					"ToolWidgets",
-					"AudioWidgets",
-					"AudioSynesthesia",
-					"EditorWidgets"
+					"WaveTable",
+					"WaveTableEditor"
 				}
 			);
 
@@ -32,6 +46,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"ApplicationCore",
+					"AudioAnalyzer",
 					"AudioMixer",
 					"AudioWidgets",
 					"ClassViewer",
@@ -39,6 +54,7 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"DetailCustomizations",
+					"EditorFramework",
 					"EditorStyle",
 					"Engine",
 					"GraphEditor",
@@ -47,9 +63,7 @@ namespace UnrealBuildTool.Rules
 					"RenderCore",
 					"Slate",
 					"SlateCore",
-					"EditorFramework",
-					"UnrealEd",
-					"AudioAnalyzer"
+					"UnrealEd"
 				}
 			);
 		}

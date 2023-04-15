@@ -4,9 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "PluginDescriptor.h"
+#include "Containers/VersePathFwd.h"
 
 struct FProjectDescriptor;
 class FJsonObject;
+struct FPluginReferenceDescriptor;
 
 /**
  * Enum for where a plugin is loaded from
@@ -86,23 +88,23 @@ public:
 	virtual const FString& GetFriendlyName() const = 0;
 
 	/**
-	 * Get a path to the plugin's descriptor
+	 * Get a filesystem path to the plugin's descriptor
 	 *
-	 * @return Path to the plugin's descriptor.
+	 * @return Filesystem path to the plugin's descriptor.
 	 */
 	virtual const FString& GetDescriptorFileName() const = 0;
 
 	/**
-	 * Get a path to the plugin's directory.
+	 * Get a filesystem path to the plugin's directory.
 	 *
-	 * @return Path to the plugin's base directory.
+	 * @return Filesystem path to the plugin's base directory.
 	 */
 	virtual FString GetBaseDir() const = 0;
 
 	/**
-	 * Get a path to the plugin's content directory.
+	 * Get a filesystem path to the plugin's content directory.
 	 *
-	 * @return Path to the plugin's content directory.
+	 * @return Filesystem path to the plugin's content directory.
 	 */
 	virtual FString GetContentDir() const = 0;
 
@@ -156,6 +158,13 @@ public:
 	virtual bool CanContainVerse() const = 0;
 
 	/**
+	 * Gets the Verse path to the root of the plugin's content directory
+	 *
+	 * @return Verse path to the root of the plugin's content directory
+	 */
+	virtual const FString& GetVersePath() const = 0;
+
+	/**
 	 * Returns the plugin's location
 	 *
 	 * @return Where the plugin was loaded from
@@ -207,6 +216,13 @@ public:
 	 * @return True if the plugin was added or already in the list. False if it failed to load.
 	 */
 	virtual bool AddToPluginsList(const FString& PluginFilename, FText* OutFailReason = nullptr) = 0;
+
+	/**
+	 * Remove a single plugin from the list of plugins.
+	 *
+	 * @return True if the plugin was not in the list. False if it can't be removed (see OutFailReason).
+	 */
+	virtual bool RemoveFromPluginsList(const FString& PluginFilename, FText* OutFailReason = nullptr) = 0;
 
 	/**
 	 * Loads all plug-ins
@@ -281,7 +297,7 @@ public:
 #endif
 
 	/**
-	 * Finds information for an enabled plugin.
+	 * Finds information for a plugin.
 	 *
 	 * @return	 Pointer to the plugin's information, or nullptr.
 	 */
@@ -322,6 +338,18 @@ public:
 	 * @return	Array of the discovered plugins.
 	 */
 	virtual TArray<TSharedRef<IPlugin>> GetDiscoveredPlugins() = 0;
+
+#if WITH_EDITOR
+	/**
+	 * Returns the set of built-in plugin names
+	 */
+	PROJECTS_API virtual const TSet<FString>& GetBuiltInPluginNames() const = 0;
+
+	/**
+	 * Returns the plugin that owns the specified module, if any
+	 */
+	PROJECTS_API virtual TSharedPtr<IPlugin> GetModuleOwnerPlugin(FName ModuleName) const = 0;
+#endif //WITH_EDITOR
 
 	/**
 	 * Stores the specified path, utilizing it in future search passes when 
@@ -365,6 +393,11 @@ public:
 	virtual FNewPluginMountedEvent& OnPluginEdited() = 0;
 
 	/**
+	* Event for being notified that a plugin has been unmounted
+	*/
+	virtual FNewPluginMountedEvent& OnPluginUnmounted() = 0;
+
+	/**
 	 * Marks a newly created plugin as enabled, mounts its content and tries to load its modules
 	 */
 	virtual void MountNewlyCreatedPlugin(const FString& PluginName) = 0;
@@ -373,7 +406,9 @@ public:
 	 * Marks an explicitly loaded plugin as enabled, mounts its content and tries to load its modules.
 	 * These plugins are not loaded implicitly, but instead wait for this function to be called.
 	 */
-	virtual void MountExplicitlyLoadedPlugin(const FString& PluginName) = 0;
+	virtual bool MountExplicitlyLoadedPlugin(const FString& PluginName) = 0;
+	virtual bool MountExplicitlyLoadedPlugin_FromFileName(const FString& PluginFileName) = 0;
+	virtual bool MountExplicitlyLoadedPlugin_FromDescriptor(const FPluginReferenceDescriptor& PluginDescriptor) = 0;
 
 	/**
 	 * Marks an explicitly loaded plugin as disabled, unmounts its content (does not work on plugins with compiled modules).
@@ -384,6 +419,13 @@ public:
 	* Does a reverse lookup to try to figure out what the UObject package name is for a plugin
 	*/
 	virtual FName PackageNameFromModuleName(FName ModuleName) = 0;
+
+#if UE_USE_VERSE_PATHS
+	/**
+	* Does a reverse lookup to try to figure out what the package name is from a VersePath
+	*/
+	virtual bool TrySplitVersePath(const UE::Core::FVersePath& VersePath, FName& OutPackageName, FString& OutLeafPath) = 0;
+#endif // #if UE_USE_VERSE_PATHS
 
 	/**
 	 * Determines if a content-only project requires a temporary target due to having a plugin enabled

@@ -22,6 +22,7 @@
 #include "HAL/MallocBinned3.h"
 #include "HAL/MallocStomp2.h"
 #include "HAL/MallocDoubleFreeFinder.h"
+#include "HAL/IConsoleManager.h"
 #include "Windows/WindowsHWrapper.h"
 
 #pragma warning(disable:6250)
@@ -35,6 +36,15 @@
 #pragma comment(lib, "psapi.lib")
 
 DECLARE_MEMORY_STAT(TEXT("Windows Specific Memory Stat"),	STAT_WindowsSpecificMemoryStat, STATGROUP_MemoryPlatform);
+
+
+static int32 GWindowsPlatformMemoryGetStatsLimitTotalGB = 0;
+static FAutoConsoleVariableRef CVarLogPlatformMemoryStats(
+	TEXT("memory.WindowsPlatformMemoryGetStatsLimitTotalGB"),
+	GWindowsPlatformMemoryGetStatsLimitTotalGB,
+	TEXT("Set a synthetic platform total memory size (in GB) which will be returned as Total and Available memory from GetStats\n"),
+	ECVF_Default);
+
 
 #if ENABLE_WIN_ALLOC_TRACKING
 // This allows tracking of allocations that don't happen within the engine's wrappers.
@@ -52,6 +62,14 @@ int WindowsAllocHook(int nAllocType, void *pvData,
 
 void FWindowsPlatformMemory::Init()
 {
+	// Only allow this method to be called once
+	{
+		static bool bInitDone = false;
+		if (bInitDone)
+			return;
+		bInitDone = true;
+	}
+
 	FGenericPlatformMemory::Init();
 
 #if PLATFORM_32BITS
@@ -63,13 +81,13 @@ void FWindowsPlatformMemory::Init()
 	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
 #if PLATFORM_32BITS	
 	UE_LOG(LogMemory, Log, TEXT("Memory total: Physical=%.1fGB (%dGB approx) Virtual=%.1fGB"), 
-		float(MemoryConstants.TotalPhysical/1024.0/1024.0/1024.0),
+		(double)MemoryConstants.TotalPhysical/1024.0/1024.0/1024.0,
 		MemoryConstants.TotalPhysicalGB, 
-		float(MemoryConstants.TotalVirtual/1024.0/1024.0/1024.0) );
+		(double)MemoryConstants.TotalVirtual/1024.0/1024.0/1024.0 );
 #else
 	// Logging virtual memory size for 64bits is pointless.
 	UE_LOG(LogMemory, Log, TEXT("Memory total: Physical=%.1fGB (%dGB approx)"), 
-		float(MemoryConstants.TotalPhysical/1024.0/1024.0/1024.0),
+		(double)MemoryConstants.TotalPhysical/1024.0/1024.0/1024.0,
 		MemoryConstants.TotalPhysicalGB );
 #endif //PLATFORM_32BITS
 
@@ -212,6 +230,10 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 
 FPlatformMemoryStats FWindowsPlatformMemory::GetStats()
 {
+	// release mimalloc held pages back to OS before getting stats
+	// can't do this, it calls me :
+	//FMemory::Trim(true);
+
 	/**
 	 *	GlobalMemoryStatusEx 
 	 *	MEMORYSTATUSEX 
@@ -260,8 +282,46 @@ FPlatformMemoryStats FWindowsPlatformMemory::GetStats()
 
 	MemoryStats.UsedPhysical = ProcessMemoryCounters.WorkingSetSize;
 	MemoryStats.PeakUsedPhysical = ProcessMemoryCounters.PeakWorkingSetSize;
+	// PagefileUsage = commit charge
 	MemoryStats.UsedVirtual = ProcessMemoryCounters.PagefileUsage;
 	MemoryStats.PeakUsedVirtual = ProcessMemoryCounters.PeakPagefileUsage;
+
+	if ( GWindowsPlatformMemoryGetStatsLimitTotalGB > 0 )
+	{
+		// if GWindowsPlatformMemoryGetStatsLimitTotalGB is set
+		// apply a synthetic limit to the Total memory on the system for testing
+		// note the first couple of calls to this function are before the cvar for GWindowsPlatformMemoryGetStatsLimitTotalGB
+		//	is processed (eg. for LLM init), and that's okay
+		const uint64 TestHardLimit = (int64)GWindowsPlatformMemoryGetStatsLimitTotalGB << 30;
+
+		// "Available" is the amount free on the whole system
+		// "Used" is only what our app has used
+		// the synthetic limit here pretends that our app is the only thing on the system
+		//   eg. we get to use up to 100% of TestHardLimit, usage by other apps is not counted
+		//   except when your real system runs out of memory
+
+		if ( MemoryStats.UsedVirtual > TestHardLimit )
+		{
+			MemoryStats.TotalVirtual = MemoryStats.UsedVirtual;
+			MemoryStats.AvailableVirtual = 0;
+		}
+		else
+		{
+			MemoryStats.TotalVirtual = TestHardLimit;
+			MemoryStats.AvailableVirtual = FMath::Min(MemoryStats.AvailableVirtual, TestHardLimit - MemoryStats.UsedVirtual);	
+		}
+		
+		if ( MemoryStats.UsedPhysical > TestHardLimit )
+		{
+			MemoryStats.TotalPhysical = MemoryStats.UsedPhysical;
+			MemoryStats.AvailablePhysical = 0;
+		}
+		else
+		{
+			MemoryStats.TotalPhysical = TestHardLimit;
+			MemoryStats.AvailablePhysical = FMath::Min(MemoryStats.AvailablePhysical,TestHardLimit - MemoryStats.UsedPhysical);
+		}
+	}
 
 	return MemoryStats;
 }

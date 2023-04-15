@@ -21,6 +21,8 @@
 #include "NiagaraScriptVariable.h"
 #include "SNiagaraParameterEditor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScriptVariableCustomization)
+
 #define LOCTEXT_NAMESPACE "NiagaraScriptVariableVariableDetails"
 
 const FName FNiagaraScriptVariableDetails::DefaultValueCategoryName = TEXT("Default Value");
@@ -62,7 +64,7 @@ TArray<UEdGraphPin*> FNiagaraScriptVariableDetails::GetDefaultPins()
 	}
 	return TArray<UEdGraphPin*>();
 }
- 
+
 void FNiagaraScriptVariableDetails::Refresh()
 {
 	IDetailLayoutBuilder* DetailBuilderPtr = nullptr;
@@ -235,9 +237,9 @@ void FNiagaraScriptVariableDetails::CustomizeDetailsParameterDefinitionsSynchron
 		[
 			SNew(SEnumComboBox, LibrarySourceDefaultModeEnum)
 			.CurrentValue(this, &FNiagaraScriptVariableDetails::GetLibraryDefaultModeValue)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Light")
 			.ContentPadding(FMargin(2, 0))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 			.OnEnumSelectionChanged(SEnumComboBox::FOnEnumSelectionChanged::CreateSP(this, &FNiagaraScriptVariableDetails::OnLibrarySourceDefaultModeChanged))
 		];
 	}
@@ -255,9 +257,9 @@ void FNiagaraScriptVariableDetails::CustomizeDetailsParameterDefinitionsSynchron
 		[
 			SNew(SEnumComboBox, LibrarySynchronizedDefaultModeEnum)
 			.CurrentValue(this, &FNiagaraScriptVariableDetails::GetLibraryDefaultModeValue)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Light")
 			.ContentPadding(FMargin(2, 0))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 			.OnEnumSelectionChanged(SEnumComboBox::FOnEnumSelectionChanged::CreateSP(this, &FNiagaraScriptVariableDetails::OnLibrarySynchronizedDefaultModeChanged))
 		];
 	}
@@ -691,4 +693,58 @@ void FNiagaraScriptVariableDetails::OnLibrarySynchronizedDefaultModeChanged(int3
 	}
 }
 
+TSharedRef<IDetailCustomization> FNiagaraScriptVariableHierarchyDetails::MakeInstance()
+{
+	return MakeShared<FNiagaraScriptVariableHierarchyDetails>();
+}
+
+FNiagaraScriptVariableHierarchyDetails::FNiagaraScriptVariableHierarchyDetails()
+{
+}
+
+void FNiagaraScriptVariableHierarchyDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	TArray<TWeakObjectPtr<UObject>> ObjectsCustomized;
+	DetailBuilder.GetObjectsBeingCustomized(ObjectsCustomized);
+
+	if (ObjectsCustomized.Num() != 1)
+	{
+		// Only allow selecting one UNiagaraScriptVariable at a time.
+		return;
+	}
+	if (!ObjectsCustomized[0]->IsA<UNiagaraScriptVariable>())
+	{
+		return;
+	}
+
+	UNiagaraScriptVariable* Variable = Cast<UNiagaraScriptVariable>(ObjectsCustomized[0].Get());
+	if (Variable == nullptr)
+	{
+		return;
+	}
+
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, DefaultMode));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, DefaultBinding));
+	// member isn't public so we can't use GET_MEMBER_NAME_CHECKED
+	DetailBuilder.HideProperty("DefaultValueVariant", UNiagaraScriptVariable::StaticClass());
+
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.CategoryName));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bAdvancedDisplay));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bOverrideColor));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bEnableBoolOverride));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bInlineEditConditionToggle));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.EditCondition));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.VisibleCondition));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.EditorSortPriority));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.PropertyMetaData));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.ParentAttribute));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bDisplayInOverviewStack));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterSortPriority));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterEnumOverrides));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterColorOverride));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterBoolOverride));
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.AlternateAliases));
+}
+
 #undef LOCTEXT_NAMESPACE
+

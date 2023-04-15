@@ -29,16 +29,17 @@ public:
 	bool bEnableAsyncStaticMeshCompilation;
 
 	/** Enable async skeletal mesh compilation to improve import and map load time performance when compilation is required */
-	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async skeletal mesh compilation and loading"))
+	UE_DEPRECATED(5.1, "Deprecated & replaced by bEnableAsyncSkinnedAssetCompilation.")
+	UPROPERTY(/*EditAnywhere - deprecated & replaced by bEnableAsyncSkinnedAssetCompilation, */config/*, Category = Performance, meta = (DisplayName = "Enable async skeletal mesh compilation and loading")*/)
 	bool bEnableAsyncSkeletalMeshCompilation;
 
-	/** Enable interchange framework, the interchange framework is a new import system which can import asynchronously and in parallel. See the interchange project settings to configure the import pipeline*/
-	UPROPERTY(EditAnywhere, config, Category = Interchange, meta = (DisplayName = "Enable interchange framework import"))
-	bool bEnableInterchangeFramework;
+	/** Enable async skinned asset compilation to improve import and map load time performance when compilation is required */
+	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async skinned asset compilation and loading"))
+	bool bEnableAsyncSkinnedAssetCompilation;
 
-	/** Enable interchange framework, the interchange framework is a new import system which can import asynchronously and in parallel but only add support the texture assets. See the interchange project settings to configure the import pipeline*/
-	UPROPERTY(EditAnywhere, config, Category = Interchange, meta = (DisplayName = "Enable interchange framework import for textures only"))
-	bool bEnableInterchangeFrameworkForTextureOnly;
+	/** Enable async sound compilation to improve import and map load time performance when compilation is required */
+	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async sound compilation and loading"))
+	bool bEnableAsyncSoundWaveCompilation;
 
 	/** Allows the editor to run on HDR monitors on Windows 10 */
 	UPROPERTY(EditAnywhere, config, Category = HDR, meta = (ConfigRestartRequired = true, DisplayName = "Enable Editor Support for HDR Monitors"))
@@ -83,8 +84,8 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Cooking, meta = (DisplayName = "Use shared cooked builds in launch on", ConfigRestartRequired = true))
 	bool bSharedCookedBuilds;
 
-	UPROPERTY(EditAnywhere, config, Category = Cooking, meta = (DisplayName = "Use multiple processes when cooking (only affects File -> Package)"))
-	int32 MultiProcessCooking;
+	UPROPERTY()
+	int32 MultiProcessCooking_DEPRECATED;
 
 	/** Enable late joining in PIE */
 	UPROPERTY(EditAnywhere, config, Category = PIE, meta = (DisplayName = "Allow late joining"))
@@ -129,6 +130,10 @@ public:
 	/** Enables in-editor support for text asset formats */
 	UPROPERTY(EditAnywhere, config, Category = Core)
 	bool bTextAssetFormatSupport;
+
+	/** Enables in-editor support for rehydrating virtualized assets */
+	UPROPERTY(EditAnywhere, config, Category = Core)
+	bool bVirtualizedAssetRehydration;
 
 	/** When creating new Material Layers and Material Layer Blends, set up example graphs. */
 	UPROPERTY(EditAnywhere, config, Category = Materials)

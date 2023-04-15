@@ -46,6 +46,14 @@ struct FSimpleElementVertex
 
 	FSimpleElementVertex() {}
 
+	FSimpleElementVertex(const FVector4f& InPosition, const FVector2f& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId) :
+		RelativePosition(InPosition),
+		TilePosition(ForceInitToZero),
+		TextureCoordinate(InTextureCoordinate),
+		Color(InColor),
+		HitProxyIdColor(InHitProxyId.GetColor())
+	{}
+
 	FSimpleElementVertex(const FVector4f& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId InHitProxyId) :
 		RelativePosition(InPosition),
 		TilePosition(ForceInitToZero),
@@ -158,8 +166,10 @@ public:
 	/** Adds a point to the batch. Note only SE_BLEND_Opaque will be used for batched point rendering. */
 	void AddPoint(const FVector& Position,float Size,const FLinearColor& Color,FHitProxyId HitProxyId);
 
+	/** This is for compatibility but should be avoided since it's slower due to conversions. */
+	int32 AddVertex(const FVector4& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId HitProxyId);
 	/** Adds a mesh vertex to the batch. */
-	int32 AddVertex(const FVector4& InPosition,const FVector2D& InTextureCoordinate,const FLinearColor& InColor,FHitProxyId HitProxyId);
+	int32 AddVertexf(const FVector4f& InPosition, const FVector2f& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId HitProxyId);
 
 	/** Adds a triangle to the batch. */
 	void AddTriangle(int32 V0,int32 V1,int32 V2,const FTexture* Texture,EBlendMode BlendMode);
@@ -239,7 +249,7 @@ public:
 	 * @param Gamma			Optional gamma override
 	 * @param DepthTexture	DepthTexture for manual depth testing with editor compositing in the pixel shader
 	 */
-	bool Draw(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, ERHIFeatureLevel::Type FeatureLevel, bool bNeedToSwitchVerticalAxis, const FSceneView& View, bool bHitTesting, float Gamma = 1.0f, EBlendModeFilter::Type Filter = EBlendModeFilter::All) const;
+	bool Draw(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, ERHIFeatureLevel::Type FeatureLevel, const FSceneView& View, bool bHitTesting, float Gamma = 1.0f, EBlendModeFilter::Type Filter = EBlendModeFilter::All) const;
 
 	/**
 	 * Creates a proxy FSceneView for operations that are not tied directly to a scene but still require batched elements to be drawn.
@@ -332,8 +342,7 @@ private:
 		float OpacityMaskRefVal;
 		uint8 BlendMode;
 	};
-	/** This array is sorted during draw-calls */
-	mutable TArray<FBatchedSprite> Sprites;
+	TArray<FBatchedSprite> Sprites;
 
 	struct FBatchedMeshElement
 	{
@@ -392,7 +401,6 @@ private:
 		ERHIFeatureLevel::Type FeatureLevel,
 		ESimpleElementBlendMode BlendMode,
 		const FRelativeViewMatrices& ViewMatrices,
-		bool bSwitchVerticalAxis,
 		FBatchedElementParameters* BatchedElementParameters,
 		const FTexture* Texture,
 		bool bHitTesting,

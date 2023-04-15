@@ -61,7 +61,7 @@ FGroomEditorViewportClient::FGroomEditorViewportClient(FAdvancedPreviewScene& In
 	DrawHelper.GridColorAxis = FColor(80,80,80);
 	DrawHelper.GridColorMajor = FColor(72,72,72);
 	DrawHelper.GridColorMinor = FColor(64,64,64);
-	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+	DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 	ShowWidget(false);
 
 	SetViewMode(VMI_Lit);
@@ -69,6 +69,7 @@ FGroomEditorViewportClient::FGroomEditorViewportClient(FAdvancedPreviewScene& In
 	EngineShowFlags.DisableAdvancedFeatures();
 	EngineShowFlags.SetSnap(0);
 	EngineShowFlags.SetTemporalAA(true);
+	EngineShowFlags.SetShaderPrint(true);
 	
 	OverrideNearClipPlane(1.0f);	
 
@@ -89,8 +90,7 @@ void FGroomEditorViewportClient::Tick(float DeltaSeconds)
 
 void FGroomEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 {
-	TSharedPtr<SGroomEditorViewport> GroomEditorViewport = GroomEditorViewportPtr.Pin();	
-	
+	TSharedPtr<SGroomEditorViewport> GroomEditorViewport = GroomEditorViewportPtr.Pin();
 	FEditorViewportClient::Draw(InViewport, Canvas);
 }
 
@@ -328,7 +328,7 @@ void SGroomEditorViewport::SetSkeletalMeshComponent(USkeletalMeshComponent *Targ
 	}
 	SkeletalGroomTarget = Target;
 
-	if (StaticGroomTarget != nullptr)
+	if (SkeletalGroomTarget != nullptr)
 	{
 		AdvancedPreviewScene->AddComponent(SkeletalGroomTarget, SkeletalGroomTarget->GetRelativeTransform());
 	}

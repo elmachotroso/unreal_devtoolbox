@@ -8,7 +8,7 @@ DebugViewModeRendering.cpp: Contains definitions for rendering debug viewmodes.
 #include "Materials/Material.h"
 #include "PrimitiveSceneInfo.h"
 #include "ScenePrivate.h"
-#include "PostProcessing.h"
+#include "PostProcess/PostProcessing.h"
 #include "PostProcess/PostProcessVisualizeComplexity.h"
 #include "PostProcess/PostProcessStreamingAccuracyLegend.h"
 #include "PostProcess/PostProcessSelectionOutline.h"
@@ -82,19 +82,15 @@ static FAutoConsoleVariableRef CVarShaderComplexityBaselineDeferredUnlitPS(
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FDebugViewModePS, TEXT("/Engine/Private/DebugViewModePixelShader.usf"), TEXT("Main"), SF_Pixel);
 
-int32 GetQuadOverdrawUAVIndex(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel)
+int32 GetQuadOverdrawUAVIndex(EShaderPlatform Platform)
 {
-	if (IsSimpleForwardShadingEnabled(Platform))
+	if (IsForwardShadingEnabled(Platform))
 	{
-		return 1;
-	}
-	else if (IsForwardShadingEnabled(Platform))
-	{
-		return FVelocityRendering::BasePassCanOutputVelocity(FeatureLevel) ? 2 : 1;
+		return FVelocityRendering::BasePassCanOutputVelocity(Platform) ? 2 : 1;
 	}
 	else // GBuffer
 	{
-		return FVelocityRendering::BasePassCanOutputVelocity(FeatureLevel) ? 7 : 6;
+		return FVelocityRendering::BasePassCanOutputVelocity(Platform) ? 7 : 6;
 	}
 }
 
@@ -146,7 +142,7 @@ TRDGUniformBufferRef<FDebugViewModePassUniformParameters> CreateDebugViewModePas
 	}
 
 	auto* UniformBufferParameters = GraphBuilder.AllocParameters<FDebugViewModePassUniformParameters>();
-	SetupSceneTextureUniformParameters(GraphBuilder, View.FeatureLevel, ESceneTextureSetupMode::None, UniformBufferParameters->SceneTextures);
+	SetupSceneTextureUniformParameters(GraphBuilder, View.GetSceneTexturesChecked(), View.FeatureLevel, ESceneTextureSetupMode::None, UniformBufferParameters->SceneTextures);
 	SetupDebugViewModePassUniformBufferConstants(View, UniformBufferParameters->DebugViewMode);
 	UniformBufferParameters->QuadOverdraw = GraphBuilder.CreateUAV(QuadOverdrawTexture);
 	return GraphBuilder.CreateUniformBuffer(UniformBufferParameters);
@@ -160,7 +156,7 @@ bool FDebugViewModeVS::ShouldCompilePermutation(const FMeshMaterialShaderPermuta
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDebugViewModePassParameters, )
-	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FDebugViewModePassUniformParameters, Pass)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 	RENDER_TARGET_BINDING_SLOTS()
@@ -177,7 +173,7 @@ void RenderDebugViewMode(FRDGBuilder& GraphBuilder, TArrayView<FViewInfo> Views,
 		RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FDebugViewModePassParameters>();
-		PassParameters->View = View.ViewUniformBuffer;
+		PassParameters->View = View.GetShaderParameters();
 		PassParameters->Pass = CreateDebugViewModePassUniformBuffer(GraphBuilder, View, QuadOverdrawTexture);
 		PassParameters->RenderTargets = RenderTargets;
 
@@ -235,6 +231,7 @@ void FDebugViewModePS::GetElementShaderBindings(
 			ShaderElementData.DebugViewMode,
 			ShaderElementData.ViewOrigin,
 			ShaderElementData.VisualizeLODIndex,
+			ShaderElementData.SkinCacheDebugColor,
 			VisualizeElementIndex,
 			ShaderElementData.NumVSInstructions,
 			ShaderElementData.NumPSInstructions,
@@ -252,7 +249,7 @@ FDebugViewModeMeshProcessor::FDebugViewModeMeshProcessor(
 	bool bTranslucentBasePass,
 	FMeshPassDrawListContext* InDrawListContext
 )
-	: FMeshPassProcessor(InScene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::DebugViewMode, InScene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, DebugViewMode(DVSM_None)
 	, ViewModeParam(INDEX_NONE)
 	, DebugViewModeInterface(nullptr)
@@ -287,7 +284,7 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 
 	FMaterialShaderTypes ShaderTypes;
 	DebugViewModeInterface->AddShaderTypes(FeatureLevel, VertexFactoryType, ShaderTypes);
-	if (!Material->ShouldCacheShaders(ShaderTypes, VertexFactoryType))
+	if (!Material->ShouldCacheShaders(GetFeatureLevelShaderPlatform(FeatureLevel), ShaderTypes, VertexFactoryType))
 	{
 		return;
 	}
@@ -303,8 +300,8 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 	Shaders.TryGetPixelShader(DebugViewModePassShaders.PixelShader);
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *BatchMaterial, OverrideSettings);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *BatchMaterial, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*BatchMaterial, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*BatchMaterial, OverrideSettings);
 
 	FMeshPassProcessorRenderState DrawRenderState;
 
@@ -319,6 +316,7 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 		DebugViewMode, 
 		ViewIfDynamicMeshCommand ? ViewIfDynamicMeshCommand->ViewMatrices.GetViewOrigin() : FVector::ZeroVector, 
 		(ViewIfDynamicMeshCommand && ViewIfDynamicMeshCommand->Family->EngineShowFlags.HLODColoration) ? MeshBatch.VisualizeHLODIndex : MeshBatch.VisualizeLODIndex,
+		(ViewIfDynamicMeshCommand && ViewIfDynamicMeshCommand->Family->EngineShowFlags.VisualizeGPUSkinCache) ? MeshBatch.Elements[0].SkinCacheDebugColor : FColor::White,
 		ViewModeParam, 
 		ViewModeParamName);
 
@@ -355,16 +353,8 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 			const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(InBatchMaterial->GetFeatureLevel());
 
 			FMaterialShaderTypes ShaderTypes;
-			if (IsSimpleForwardShadingEnabled(ShaderPlatform))
-			{
-				ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>>>();
-				ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_SIMPLE_NO_LIGHTMAP>, false>>();
-			}
-			else
-			{
-				ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>>>();
-				ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false>>();
-			}
+			ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>>>();
+			ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default>>();
 
 			FMaterialShaders Shaders;
 			if (InBatchMaterial->TryGetShaders(ShaderTypes, InVertexFactoryType, Shaders))
@@ -372,9 +362,7 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 				OutShaderElementData.NumVSInstructions = Shaders.Shaders[SF_Vertex]->GetNumInstructions();
 				OutShaderElementData.NumPSInstructions = Shaders.Shaders[SF_Pixel]->GetNumInstructions();
 
-				if (IsForwardShadingEnabled(ShaderPlatform) &&
-					!IsSimpleForwardShadingEnabled(ShaderPlatform) &&
-					!IsTranslucentBlendMode(InBatchMaterial->GetBlendMode()))
+				if (IsForwardShadingEnabled(ShaderPlatform) && !IsTranslucentBlendMode(InBatchMaterial->GetBlendMode()))
 				{
 					const bool bLit = InBatchMaterial->GetShadingModels().IsLit();
 
@@ -416,6 +404,7 @@ void FDebugViewModeImplementation::GetDebugViewModeShaderBindings(
 	EDebugViewShaderMode DebugViewMode,
 	const FVector& ViewOrigin,
 	int32 VisualizeLODIndex,
+	const FColor& SkinCacheDebugColor,
 	int32 VisualizeElementIndex,
 	int32 NumVSInstructions,
 	int32 NumPSInstructions,
@@ -485,7 +474,7 @@ void FDebugViewModeImplementation::GetDebugViewModeShaderBindings(
 
 							if (Texture->IsStreamable())
 							{
-								TextureResolution = 1 << (Texture->GetResource()->GetCurrentMipCount() - 1);
+								TextureResolution = 1 << FMath::Max((Texture->GetResource()->GetCurrentMipCount() - 1), 0);
 							}
 							else
 							{
@@ -511,7 +500,7 @@ void FDebugViewModeImplementation::GetDebugViewModeShaderBindings(
 
 						if (Texture->IsStreamable())
 						{
-							TextureResolution = 1 << (Texture->GetResource()->GetCurrentMipCount() - 1);
+							TextureResolution = 1 << FMath::Max((Texture->GetResource()->GetCurrentMipCount() - 1), 0);
 						}
 						else
 						{
@@ -552,14 +541,15 @@ void FDebugViewModeImplementation::GetDebugViewModeShaderBindings(
 	ShaderBindings.Add(Shader.CPULogDistanceParameter, CPULogDistance);
 	ShaderBindings.Add(Shader.ShowQuadOverdraw, bShowQuadOverdraw);
 	ShaderBindings.Add(Shader.LODIndexParameter, LODIndex);
+	ShaderBindings.Add(Shader.SkinCacheDebugColorParameter, FVector3f(SkinCacheDebugColor.R / 255.f, SkinCacheDebugColor.G / 255.f, SkinCacheDebugColor.B / 255.f));
 	ShaderBindings.Add(Shader.OutputQuadOverdrawParameter, boolOutputQuadOverdraw);
 	ShaderBindings.Add(Shader.VisualizeModeParameter, DebugViewMode);
 }
 
-FMeshPassProcessor* CreateDebugViewModePassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateDebugViewModePassProcessor(ERHIFeatureLevel::Type InFeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	const ERHIFeatureLevel::Type FeatureLevel = Scene ? Scene->GetFeatureLevel() : (InViewIfDynamicMeshCommand ? InViewIfDynamicMeshCommand->GetFeatureLevel() : GMaxRHIFeatureLevel);
-	return new(FMemStack::Get()) FDebugViewModeMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, false, InDrawListContext);
+	const ERHIFeatureLevel::Type FeatureLevel = InViewIfDynamicMeshCommand ? InViewIfDynamicMeshCommand->GetFeatureLevel() : InFeatureLevel;
+	return new FDebugViewModeMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, false, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterDebugViewModeMobilePass(&CreateDebugViewModePassProcessor, EShadingPath::Mobile, EMeshPass::DebugViewMode, EMeshPassFlags::MainView);

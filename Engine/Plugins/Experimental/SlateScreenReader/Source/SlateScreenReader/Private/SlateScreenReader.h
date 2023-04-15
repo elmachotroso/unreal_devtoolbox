@@ -6,11 +6,9 @@
 #include "GenericPlatform/ScreenReaderBase.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 
-class SWidget;
 class iAccessibleWidget;
-class FWidgetPath;
-class FWeakWidgetPath;
-struct FFocusEvent;
+struct FAccessibleEventArgs;
+
 
 /**
  * A basic screen reader that can work for desktop and consoles that use Slate.
@@ -23,12 +21,15 @@ public:
 	FSlateScreenReader() = delete;
 	FSlateScreenReader(const FSlateScreenReader& Other) = delete;
 	explicit FSlateScreenReader(const TSharedRef<GenericApplication>& InPlatformApplication);
-
-	FSlateScreenReader& operator=(const FSlateScreenReader& Other) = delete;
 	virtual ~FSlateScreenReader();
 	
-	void HandleSlateFocusChanging(const FFocusEvent& InFocusEvent, const FWeakWidgetPath& InOldFocusWidgetPath, const TSharedPtr<SWidget>& InOldWidget, const FWidgetPath& InNewWidgetPath, const TSharedPtr<SWidget>& InNewFocusWidget);
+	FSlateScreenReader& operator=(const FSlateScreenReader& Other) = delete;
+	
 protected:
+	//~ Begin FScreenReaderBase interface
 	virtual void OnActivate() override;
 	virtual void OnDeactivate() override;
+	virtual void OnAccessibleEventRaised(const FAccessibleEventArgs& Args) override;
+	//~ End FScreenReaderBase interface
 };
+

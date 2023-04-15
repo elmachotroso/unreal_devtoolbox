@@ -108,7 +108,7 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 				InputClass = InputClass->GetAuthoritativeClass();
 
 				// It matches if it's an exact match or if the output class is more derived than the input class
-				bTypeMismatch = bSubtypeMismatch = !((OutputClass == InputClass) || (OutputClass->IsChildOf(InputClass)));
+				bTypeMismatch = bSubtypeMismatch = !((OutputClass == InputClass) || (OutputClass && OutputClass->IsChildOf(InputClass)));
 
 				if ((PinCategory == UEdGraphSchema_K2::PC_SoftClass) && (!TestProperty->IsA<FSoftClassProperty>()))
 				{
@@ -222,7 +222,7 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 				OutputClass = OutputClass->GetAuthoritativeClass();
 
 				// It matches if it's an exact match or if the output class is more derived than the input class
-				bTypeMismatch = bSubtypeMismatch = !((OutputClass == InputClass) || (OutputClass->IsChildOf(InputClass)));
+				bTypeMismatch = bSubtypeMismatch = !((OutputClass == InputClass) || (OutputClass && OutputClass->IsChildOf(InputClass)));
 
 				if ((PinCategory == UEdGraphSchema_K2::PC_SoftObject) && (!TestProperty->IsA<FSoftObjectProperty>()))
 				{
@@ -754,16 +754,16 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 		if (NULL == CallBeginSpawnNode->FindPin(OrgPin->PinName) &&
 			(OrgPin->LinkedTo.Num() > 0 || bHasDefaultValue))
 		{
+			FProperty* Property = FindFProperty<FProperty>(ForClass, OrgPin->PinName);
+			// NULL property indicates that this pin was part of the original node, not the 
+			// class we're assigning to:
+			if (!Property)
+			{
+				continue;
+			}
+
 			if( OrgPin->LinkedTo.Num() == 0 )
 			{
-				FProperty* Property = FindFProperty<FProperty>(ForClass, OrgPin->PinName);
-				// NULL property indicates that this pin was part of the original node, not the 
-				// class we're assigning to:
-				if( !Property )
-				{
-					continue;
-				}
-
 				// We don't want to generate an assignment node unless the default value 
 				// differs from the value in the CDO:
 				FString DefaultValueAsString;
@@ -786,8 +786,41 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 				}
 			}
 
-			UFunction* SetByNameFunction = Schema->FindSetVariableByNameFunction(OrgPin->PinType);
-			if (SetByNameFunction)
+			const FString& SetFunctionName = Property->GetMetaData(FBlueprintMetadata::MD_PropertySetFunction);
+			if (!SetFunctionName.IsEmpty())
+			{
+				UClass* OwnerClass = Property->GetOwnerClass();
+				UFunction* SetFunction = OwnerClass->FindFunctionByName(*SetFunctionName);
+				check(SetFunction);
+
+				UK2Node_CallFunction* CallFuncNode = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(SpawnNode, SourceGraph);
+				CallFuncNode->SetFromFunction(SetFunction);
+				CallFuncNode->AllocateDefaultPins();
+
+				// Connect this node into the exec chain
+				Schema->TryCreateConnection(LastThen, CallFuncNode->GetExecPin());
+				LastThen = CallFuncNode->GetThenPin();
+
+				// Connect the new object to the 'object' pin
+				UEdGraphPin* ObjectPin = Schema->FindSelfPin(*CallFuncNode, EGPD_Input);
+				CallBeginResult->MakeLinkTo(ObjectPin);
+
+				// Move Value pin connections
+				UEdGraphPin* SetFunctionValuePin = nullptr;
+				for (UEdGraphPin* CallFuncPin : CallFuncNode->Pins)
+				{
+					if (!Schema->IsMetaPin(*CallFuncPin))
+					{
+						check(CallFuncPin->Direction == EGPD_Input);
+						SetFunctionValuePin = CallFuncPin;
+						break;
+					}
+				}
+				check(SetFunctionValuePin);
+
+				CompilerContext.MovePinLinksToIntermediate(*OrgPin, *SetFunctionValuePin);
+			}
+			else if (UFunction* SetByNameFunction = Schema->FindSetVariableByNameFunction(OrgPin->PinType))
 			{
 				UK2Node_CallFunction* SetVarNode = nullptr;
 				if (OrgPin->PinType.IsArray())
@@ -805,7 +838,7 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 				Schema->TryCreateConnection(LastThen, SetVarNode->GetExecPin());
 				LastThen = SetVarNode->GetThenPin();
 
-				// Connect the new actor to the 'object' pin
+				// Connect the new object to the 'object' pin
 				UEdGraphPin* ObjectPin = SetVarNode->FindPinChecked(ObjectParamName);
 				CallBeginResult->MakeLinkTo(ObjectPin);
 
@@ -851,7 +884,6 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 						CompilerContext.MovePinLinksToIntermediate(*OrgPin, *ValuePin);
 						SetVarNode->PinConnectionListChanged(ValuePin);
 					}
-
 				}
 			}
 		}
@@ -900,10 +932,7 @@ void FKismetCompilerUtilities::CreateObjectAssignmentStatement(FKismetFunctionCo
 		// Some terms don't necessarily have a valid SourcePin (eg: FKCHandler_FunctionEntry)
 		if (DstPinSearchKey)
 		{
-			TOptional<TPair<FBPTerminal*, EKismetCompiledStatementType>> ImplicitCastEntry =
-				CastingUtils::InsertImplicitCastStatement(Context, DstPinSearchKey, RHSTerm);
-
-			ImplicitCastTerm = ImplicitCastEntry ? ImplicitCastEntry->Get<0>() : nullptr;
+			ImplicitCastTerm = CastingUtils::InsertImplicitCastStatement(Context, DstPinSearchKey, RHSTerm);
 		}
 
 		if (ImplicitCastTerm != nullptr)
@@ -1713,6 +1742,21 @@ void FKismetCompilerUtilities::UpdateDependentBlueprints(UBlueprint* ForBP)
 			}
 		}
 	}
+
+	// Clear out any stale references to invalid/deleted objects.
+	TSet<TWeakObjectPtr<UBlueprint>> InvalidReferences;
+	for (const TWeakObjectPtr<UBlueprint>& Reference : ForBP->CachedDependents)
+	{
+		if (!Reference.IsValid() || Reference.IsStale())
+		{
+			InvalidReferences.Add(Reference);
+		}
+	}
+
+	for (const TWeakObjectPtr<UBlueprint>& InvalidReference : InvalidReferences)
+	{
+		ForBP->CachedDependents.Remove(InvalidReference);
+	}
 }
 
 bool FKismetCompilerUtilities::CheckFunctionThreadSafety(const FKismetFunctionContext& InContext, FCompilerResultsLog& InMessageLog, bool InbEmitErrors)
@@ -1996,25 +2040,7 @@ bool FKismetCompilerUtilities::CheckFunctionCompiledStatementsThreadSafety(const
 			case KCST_CastObjToInterface:
 			case KCST_DynamicCast:
 			case KCST_DoubleToFloatCast:
-			case KCST_DoubleToFloatArrayCast:
-			case KCST_DoubleToFloatSetCast:
 			case KCST_FloatToDoubleCast:
-			case KCST_FloatToDoubleArrayCast:
-			case KCST_FloatToDoubleSetCast:
-			case KCST_VectorToVector3fCast:
-			case KCST_VectorToVector3fArrayCast:
-			case KCST_VectorToVector3fSetCast:
-			case KCST_Vector3fToVectorCast:
-			case KCST_Vector3fToVectorArrayCast:
-			case KCST_Vector3fToVectorSetCast:
-			case KCST_FloatToDoubleKeys_MapCast:
-			case KCST_DoubleToFloatKeys_MapCast:
-			case KCST_FloatToDoubleValues_MapCast:
-			case KCST_DoubleToFloatValues_MapCast:
-			case KCST_FloatToDoubleKeys_FloatToDoubleValues_MapCast:
-			case KCST_DoubleToFloatKeys_FloatToDoubleValues_MapCast:
-			case KCST_DoubleToFloatKeys_DoubleToFloatValues_MapCast:
-			case KCST_FloatToDoubleKeys_DoubleToFloatValues_MapCast:
 			case KCST_ObjectToBool:
 				break;
 			case KCST_AddMulticastDelegate:
@@ -2073,6 +2099,49 @@ bool FKismetCompilerUtilities::CheckFunctionCompiledStatementsThreadSafety(const
 	return bIsThreadSafe;
 }
 
+ConvertibleSignatureMatchResult FKismetCompilerUtilities::DoSignaturesHaveConvertibleFloatTypes(const UFunction* A, const UFunction* B)
+{
+	check(A);
+	check(B);
+
+	if (!A->IsSignatureCompatibleWith(B))
+	{
+		TFieldIterator<FProperty> PropAIt(A);
+		TFieldIterator<FProperty> PropBIt(B);
+
+		while (PropAIt)
+		{
+			if (PropBIt)
+			{
+				if (!FStructUtils::ArePropertiesTheSame(*PropAIt, *PropBIt, false))
+				{
+					bool bHasConvertibleProperties =
+						(PropAIt->IsA<FFloatProperty>() && PropBIt->IsA<FDoubleProperty>()) ||
+						(PropAIt->IsA<FDoubleProperty>() && PropBIt->IsA<FFloatProperty>());
+
+					if (!bHasConvertibleProperties)
+					{
+						return ConvertibleSignatureMatchResult::Different;
+					}
+				}
+			}
+			else
+			{
+				// Mismatched parameter count
+				return ConvertibleSignatureMatchResult::Different;
+			}
+
+			++PropAIt;
+			++PropBIt;
+		}
+
+		// If PropBIt still has parameters, then there was a mismatch
+		return PropBIt ? ConvertibleSignatureMatchResult::Different : ConvertibleSignatureMatchResult::HasConvertibleFloatParams;
+	}
+
+	return ConvertibleSignatureMatchResult::ExactMatch;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FNodeHandlingFunctor
 
@@ -2105,7 +2174,7 @@ void FNodeHandlingFunctor::ResolveAndRegisterScopedTerm(FKismetFunctionContext& 
 		{
 			Term->SetVarTypeLocal(true);
 		}
-		else if (BoundProperty->HasAnyPropertyFlags(CPF_BlueprintReadOnly) || (Context.IsConstFunction() && Context.NewClass->IsChildOf(SearchScope)))
+		else if (BoundProperty->HasAnyPropertyFlags(CPF_BlueprintReadOnly) || (Context.IsConstFunction() && Context.NewClass && Context.NewClass->IsChildOf(SearchScope)))
 		{
 			// Read-only variables and variables in const classes are both const
 			Term->bIsConst = true;
@@ -2393,9 +2462,11 @@ struct FGotoMapUtils
 {
 	static bool IsUberGraphEventStatement(const FBlueprintCompiledStatement* GotoStatement)
 	{
+		// Note: Latent function call sites also utilize the UbergraphCallIndex field, so we need to separate them from ubergraph event targets when the latent term is at index 0.
 		return GotoStatement
 			&& (GotoStatement->Type == KCST_CallFunction) 
-			&& (GotoStatement->UbergraphCallIndex == 0);
+			&& (GotoStatement->UbergraphCallIndex == 0)
+			&& (GotoStatement->FunctionToCall && !GotoStatement->FunctionToCall->HasMetaData(FBlueprintMetadata::MD_Latent));
 	}
 
 	static UEdGraphNode* TargetNodeFromPin(const FBlueprintCompiledStatement* GotoStatement, const UEdGraphPin* ExecNet)

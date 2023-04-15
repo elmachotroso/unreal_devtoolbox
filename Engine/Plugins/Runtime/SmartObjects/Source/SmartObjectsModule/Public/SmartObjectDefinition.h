@@ -9,6 +9,8 @@
 #include "SmartObjectDefinition.generated.h"
 
 class UGameplayBehaviorConfig;
+enum class ESmartObjectTagFilteringPolicy: uint8;
+enum class ESmartObjectTagMergingPolicy: uint8;
 
 /**
  * Abstract class that can be extended to bind a new type of behavior framework
@@ -21,19 +23,6 @@ class SMARTOBJECTSMODULE_API USmartObjectBehaviorDefinition : public UObject
 };
 
 /**
- * SmartObject behavior definition for the GameplayBehavior framework
- */
-UCLASS()
-class SMARTOBJECTSMODULE_API USmartObjectGameplayBehaviorDefinition : public USmartObjectBehaviorDefinition
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject, Instanced)
-	UGameplayBehaviorConfig* GameplayBehaviorConfig;
-};
-
-/**
  * Persistent and sharable definition of a smart object slot.
  */
 USTRUCT()
@@ -41,9 +30,25 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 {
 	GENERATED_BODY()
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	FName Name;
+
+	UPROPERTY(EditAnywhere, Category = SmartObject, meta = (DisplayName = "Color"))
+	FColor DEBUG_DrawColor = FColor::Yellow;
+#endif // WITH_EDITORONLY_DATA
+
 	/** This slot is available only for users matching this query. */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
 	FGameplayTagQuery UserTagFilter;
+
+	/**
+	 * Tags identifying this slot's use case. Can be used while looking for slots supporting given activity.
+	 * Depending on the tag filtering policy these tags can override the parent object's tags
+	 * or be combined with them while applying filters from requests.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	FGameplayTagContainer ActivityTags;
 
 	/** Offset relative to the parent object where the slot is located. */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
@@ -53,8 +58,8 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
 	FRotator Rotation = FRotator::ZeroRotator;
 
-	/** Custom data that can be added to the slot definition and access through a FSmartObjectSlotView */
-	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", meta = (BaseStruct = "SmartObjectSlotDefinitionData", ExcludeBaseStruct))
+	/** Custom data (struct inheriting from SmartObjectSlotDefinitionData) that can be added to the slot definition and accessed through a FSmartObjectSlotView */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", meta = (BaseStruct = "/Script/SmartObjectsModule.SmartObjectSlotDefinitionData", ExcludeBaseStruct))
 	TArray<FInstancedStruct> Data;
 
 	/**
@@ -63,19 +68,7 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	 * Note that there should be only one definition of each type since the first one will be selected.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject, Instanced)
-	TArray<USmartObjectBehaviorDefinition*> BehaviorDefinitions;
-
-#if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere, Category = SmartObject)
-	FColor DEBUG_DrawColor;
-#endif // WITH_EDITORONLY_DATA
-
-	FSmartObjectSlotDefinition()
-		: Offset(FVector::ZeroVector), Rotation(FRotator::ZeroRotator)
-#if WITH_EDITORONLY_DATA
-		, DEBUG_DrawColor(FColor::Yellow)
-#endif // WITH_EDITORONLY_DATA
-	{}
+	TArray<TObjectPtr<USmartObjectBehaviorDefinition>> BehaviorDefinitions;
 };
 
 /**
@@ -110,6 +103,8 @@ class SMARTOBJECTSMODULE_API USmartObjectDefinition : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	explicit USmartObjectDefinition(const FObjectInitializer& ObjectInitializer);
+
 	/**
 	 * Retrieves a specific type of behavior definition for a given slot.
 	 * When the slot doesn't provide one or if the provided index is not valid
@@ -144,14 +139,49 @@ public:
 	 */
 	TOptional<FTransform> GetSlotTransform(const FTransform& OwnerTransform, const FSmartObjectSlotIndex SlotIndex) const;
 
-	/** Returns the tag query to run on the user tags to accept this definition */
+	/**
+	 * Fills the provided GameplayTagContainer with the activity tags associated to the slot according to the tag merging policy.
+	 * @param SlotIndex	Index of the slot for which the tags are requested
+	 * @param OutActivityTags Tag container to fill with the activity tags associated to the slot
+	 */
+	void GetSlotActivityTags(const FSmartObjectSlotIndex& SlotIndex, FGameplayTagContainer& OutActivityTags) const;
+
+	/**
+	 * Fills the provided GameplayTagContainer with the activity tags associated to the slot according to the tag merging policy.
+	 * @param SlotDefinition Definition of the slot for which the tags are requested
+	 * @param OutActivityTags Tag container to fill with the activity tags associated to the slot
+	 */
+	void GetSlotActivityTags(const FSmartObjectSlotDefinition& SlotDefinition, FGameplayTagContainer& OutActivityTags) const;
+
+	/** Returns the tag query to run on the user tags provided by a request to accept this definition */
 	const FGameplayTagQuery& GetUserTagFilter() const { return UserTagFilter; }
 
-	/** Returns the tag query to run on the owner tags to accept this definition */
+	/** Sets the tag query to run on the user tags provided by a request to accept this definition */
+	void SetUserTagFilter(const FGameplayTagQuery& InUserTagFilter) { UserTagFilter = InUserTagFilter; }
+
+	/** Returns the tag query to run on the runtime tags of a smart object instance to accept it */
 	const FGameplayTagQuery& GetObjectTagFilter() const { return ObjectTagFilter; }
+
+	/** Sets the tag query to run on the runtime tags of a smart object instance to accept it */
+	void SetObjectTagFilter(const FGameplayTagQuery& InObjectTagFilter) { ObjectTagFilter = InObjectTagFilter; }
 
 	/** Returns the list of tags describing the activity associated to this definition */
 	const FGameplayTagContainer& GetActivityTags() const { return ActivityTags; }
+
+	/** Sets the list of tags describing the activity associated to this definition */
+	void SetActivityTags(const FGameplayTagContainer& InActivityTags) { ActivityTags = InActivityTags; }
+
+	/** Returns the tag filtering policy that should be applied on User tags by this definition */
+	ESmartObjectTagFilteringPolicy GetUserTagsFilteringPolicy() const { return UserTagsFilteringPolicy; }
+
+	/** Sets the tag filtering policy to apply on User tags by this definition */
+	void SetUserTagsFilteringPolicy(const ESmartObjectTagFilteringPolicy InUserTagsFilteringPolicy) { UserTagsFilteringPolicy = InUserTagsFilteringPolicy; }
+
+	/** Returns the tag merging policy to apply on Activity tags from this definition */
+	ESmartObjectTagMergingPolicy GetActivityTagsMergingPolicy() const { return ActivityTagsMergingPolicy; }
+
+	/** Sets the tag merging policy to apply on Activity tags from this definition */
+	void SetActivityTagsMergingPolicy(const ESmartObjectTagMergingPolicy InActivityTagsMergingPolicy) { ActivityTagsMergingPolicy = InActivityTagsMergingPolicy; }
 
 	/**
 	 *	Performs validation and logs errors if any. An object using an invalid definition
@@ -176,11 +206,11 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** Actor class used for previewing the definition in the asset editor. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY()
 	TSoftClassPtr<AActor> PreviewClass;
 
 	/** Path of the static mesh used for previewing the definition in the asset editor. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY()
 	FSoftObjectPath PreviewMeshPath;
 #endif
 
@@ -197,25 +227,33 @@ private:
 
 	/** List of behavior definitions of different types provided to SO's user if the slot does not provide one. */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject, Instanced)
-	TArray<USmartObjectBehaviorDefinition*> DefaultBehaviorDefinitions;
+	TArray<TObjectPtr<USmartObjectBehaviorDefinition>> DefaultBehaviorDefinitions;
 
-	/** This object is available only for users matching this query. */
+	/** This object is available if user tags match this query; always available if query is empty. */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
 	FGameplayTagQuery UserTagFilter;
 
-	/** This object is available only when instance matches this query. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	/** This object is available if instance tags match this query; always available if query is empty. */
+	UPROPERTY(EditDefaultsOnly, Category = SmartObject, meta = (DisplayName = "Object Activation Tag Filter"))
 	FGameplayTagQuery ObjectTagFilter;
 
 	/** Tags identifying this Smart Object's use case. Can be used while looking for objects supporting given activity */
 	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
 	FGameplayTagContainer ActivityTags;
 
+	/** Indicates how Tags from slots and parent object are combined to be evaluated by a TagQuery from a find request. */
+	UPROPERTY(EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	ESmartObjectTagMergingPolicy ActivityTagsMergingPolicy;
+
+	/** Indicates how TagQueries from slots and parent object will be processed against User Tags from a find request. */
+	UPROPERTY(EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	ESmartObjectTagFilteringPolicy UserTagsFilteringPolicy;
+
 	mutable TOptional<bool> bValid;
 };
 
 /**
- * Mass Fragment used to share slot definition between all slot instances using that definition.
+ * Mass Fragment used to share slot definition between slot instances.
  */
 USTRUCT()
 struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinitionFragment : public FMassSharedFragment
@@ -228,7 +266,7 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinitionFragment : public FMassS
 
 	/** Pointer to the parent object definition to preserve slot definition pointer validity. */
 	UPROPERTY(Transient)
-	const USmartObjectDefinition* SmartObjectDefinition = nullptr;
+	TObjectPtr<const USmartObjectDefinition> SmartObjectDefinition = nullptr;
 
 	/** Pointer to the slot definition contained by the SmartObject definition. */
 	const FSmartObjectSlotDefinition* SlotDefinition = nullptr;

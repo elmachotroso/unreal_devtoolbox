@@ -1,53 +1,47 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeAgent.Utility;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using EpicGames.Perforce;
 using EpicGames.Perforce.Managed;
+using Microsoft.Extensions.Logging;
 
-namespace HordeAgent.Commands.Workspace
+namespace Horde.Agent.Commands.Workspace
 {
 	abstract class WorkspaceCommand : Command
 	{
 		[CommandLine("-Server")]
 		[Description("Specifies the Perforce server and port")]
-		protected string? ServerAndPort = null;
+		protected string ServerAndPort { get; set; } = PerforceSettings.Default.ServerAndPort;
 
 		[CommandLine("-User")]
 		[Description("Specifies the Perforce username")]
-		protected string? UserName = null;
+		protected string UserName { get; set; } = PerforceSettings.Default.UserName;
 
 		[CommandLine("-BaseDir", Required = true)]
 		[Description("Base directory to use for syncing workspaces")]
-		protected DirectoryReference BaseDir = null!;
+		protected DirectoryReference BaseDir { get; set; } = null!;
 
 		[CommandLine("-Overwrite")]
 		[Description("")]
-		protected bool bOverwrite = false;
+		protected bool Overwrite { get; set; } = false;
 
-		protected PerforceConnection Perforce = null!;
-
-		public override void Configure(CommandLineArguments Arguments, ILogger Logger)
+		public override void Configure(CommandLineArguments arguments, ILogger logger)
 		{
-			base.Configure(Arguments, Logger);
+			base.Configure(arguments, logger);
 
 			if(BaseDir == null)
 			{
-				for (DirectoryReference? ParentDir = DirectoryReference.GetCurrentDirectory(); ParentDir != null; ParentDir = ParentDir.ParentDirectory)
+				for (DirectoryReference? parentDir = DirectoryReference.GetCurrentDirectory(); parentDir != null; parentDir = parentDir.ParentDirectory)
 				{
-					if (ManagedWorkspace.Exists(ParentDir))
+					if (ManagedWorkspace.Exists(parentDir))
 					{
-						BaseDir = ParentDir;
+						BaseDir = parentDir;
 						break;
 					}
 				}
@@ -59,93 +53,95 @@ namespace HordeAgent.Commands.Workspace
 			}
 		}
 
-		public override async Task<int> ExecuteAsync(ILogger Logger)
+		public override async Task<int> ExecuteAsync(ILogger logger)
 		{
-			Perforce = new PerforceConnection(ServerAndPort, UserName, null, Logger);
+			using (IPerforceConnection perforce = await PerforceConnection.CreateAsync(new PerforceSettings(ServerAndPort, UserName), logger))
+			{
+				InfoRecord info = await perforce.GetInfoAsync(InfoOptions.ShortOutput, CancellationToken.None);
 
-			InfoRecord Info = await Perforce.GetInfoAsync(InfoOptions.ShortOutput, CancellationToken.None);
-
-			ILogger RepoLogger = new Logging.HordeLoggerProvider().CreateLogger("Repository");
-			ManagedWorkspace Repo = await ManagedWorkspace.LoadOrCreateAsync(Info.ClientHost!, BaseDir, bOverwrite, RepoLogger, CancellationToken.None);
-			await ExecuteAsync(Repo, Logger);
+				using Logging.HordeLoggerProvider loggerProvider = new Logging.HordeLoggerProvider();
+				ILogger repoLogger = loggerProvider.CreateLogger("Repository");
+				ManagedWorkspace repo = await ManagedWorkspace.LoadOrCreateAsync(info.ClientHost!, BaseDir, Overwrite, repoLogger, CancellationToken.None);
+				await ExecuteAsync(perforce, repo, logger);
+			}
 			return 0;
 		}
 
-		protected abstract Task ExecuteAsync(ManagedWorkspace Repo, ILogger Logger);
+		protected abstract Task ExecuteAsync(IPerforceConnection perforce, ManagedWorkspace repo, ILogger logger);
 
-		protected static long ParseSize(string Size)
+		protected static long ParseSize(string size)
 		{
-			long Value;
-			if (Size.EndsWith("gb", StringComparison.OrdinalIgnoreCase))
+			long value;
+			if (size.EndsWith("gb", StringComparison.OrdinalIgnoreCase))
 			{
-				string SizeValue = Size.Substring(0, Size.Length - 2).TrimEnd();
-				if (long.TryParse(SizeValue, out Value))
+				string sizeValue = size.Substring(0, size.Length - 2).TrimEnd();
+				if (Int64.TryParse(sizeValue, out value))
 				{
-					return Value * (1024 * 1024 * 1024);
+					return value * (1024 * 1024 * 1024);
 				}
 			}
-			else if (Size.EndsWith("mb", StringComparison.OrdinalIgnoreCase))
+			else if (size.EndsWith("mb", StringComparison.OrdinalIgnoreCase))
 			{
-				string SizeValue = Size.Substring(0, Size.Length - 2).TrimEnd();
-				if (long.TryParse(SizeValue, out Value))
+				string sizeValue = size.Substring(0, size.Length - 2).TrimEnd();
+				if (Int64.TryParse(sizeValue, out value))
 				{
-					return Value * (1024 * 1024);
+					return value * (1024 * 1024);
 				}
 			}
-			else if (Size.EndsWith("kb"))
+			else if (size.EndsWith("kb", StringComparison.OrdinalIgnoreCase))
 			{
-				string SizeValue = Size.Substring(0, Size.Length - 2).TrimEnd();
-				if (long.TryParse(SizeValue, out Value))
+				string sizeValue = size.Substring(0, size.Length - 2).TrimEnd();
+				if (Int64.TryParse(sizeValue, out value))
 				{
-					return Value * 1024;
+					return value * 1024;
 				}
 			}
 			else
 			{
-				if (long.TryParse(Size, out Value))
+				if (Int64.TryParse(size, out value))
 				{
-					return Value;
+					return value;
 				}
 			}
-			throw new FatalErrorException("Invalid size '{0}'", Size);
+			throw new FatalErrorException("Invalid size '{0}'", size);
 		}
 
-		protected static int ParseChangeNumber(string Change)
+		protected static int ParseChangeNumber(string change)
 		{
-			int ChangeNumber;
-			if (int.TryParse(Change, out ChangeNumber) && ChangeNumber > 0)
+			int changeNumber;
+			if (Int32.TryParse(change, out changeNumber) && changeNumber > 0)
 			{
-				return ChangeNumber;
+				return changeNumber;
 			}
-			throw new FatalErrorException("Unable to parse change number from '{0}'", Change);
+			throw new FatalErrorException("Unable to parse change number from '{0}'", change);
 		}
 
-		protected static int ParseChangeNumberOrLatest(string Change)
+		protected static int ParseChangeNumberOrLatest(string change)
 		{
-			if (Change.Equals("Latest", StringComparison.OrdinalIgnoreCase))
+			if (change.Equals("Latest", StringComparison.OrdinalIgnoreCase))
 			{
 				return -1;
 			}
 			else
 			{
-				return ParseChangeNumber(Change);
+				return ParseChangeNumber(change);
 			}
 		}
 
-		protected static List<string> ExpandFilters(List<string> Arguments)
+		protected static List<string> ExpandFilters(List<string> arguments)
 		{
-			List<string> Filters = new List<string>();
-			foreach (string Argument in Arguments)
+			List<string> filters = new List<string>();
+			foreach (string argument in arguments)
 			{
-				foreach (string SingleArgument in Argument.Split(';').Select(x => x.Trim()))
+				foreach (string singleArgument in argument.Split(';').Select(x => x.Trim()))
 				{
-					if (SingleArgument.Length > 0)
+					if (singleArgument.Length > 0)
 					{
-						Filters.Add(SingleArgument);
+						filters.Add(singleArgument);
 					}
 				}
 			}
-			return Filters;
+			return filters;
 		}
 	}
 }

@@ -85,14 +85,14 @@ END_SHADER_PARAMETER_STRUCT()
 
 FGeometryAwareUpsampleParameters SetupGeometryAwareUpsampleParameters(const FViewInfo& View, FRDGTextureRef DistanceFieldNormal, FRDGTextureRef DistanceFieldAOBentNormal)
 {
-	extern FVector2f GetJitterOffset(int32 SampleIndex);
-	FVector2f const JitterOffsetValue = GetJitterOffset(View.GetDistanceFieldTemporalSampleIndex());
+	extern FVector2f GetJitterOffset(const FViewInfo& View);
+	FVector2f const JitterOffsetValue = GetJitterOffset(View);
 
-	const FIntPoint DownsampledBufferSize = GetBufferSizeForAO();
+	const FIntPoint DownsampledBufferSize = GetBufferSizeForAO(View);
 	const FVector2f BaseLevelTexelSizeValue(1.0f / DownsampledBufferSize.X, 1.0f / DownsampledBufferSize.Y);
 
-	extern FIntPoint GetBufferSizeForConeTracing();
-	const FIntPoint ConeTracingBufferSize = GetBufferSizeForConeTracing();
+	extern FIntPoint GetBufferSizeForConeTracing(const FViewInfo& View);
+	const FIntPoint ConeTracingBufferSize = GetBufferSizeForConeTracing(View);
 	const FVector4f BentNormalBufferAndTexelSizeValue(ConeTracingBufferSize.X, ConeTracingBufferSize.Y, 1.0f / ConeTracingBufferSize.X, 1.0f / ConeTracingBufferSize.Y);
 
 	extern int32 GConeTraceDownsampleFactor;
@@ -213,11 +213,11 @@ public:
 
 IMPLEMENT_SHADER_TYPE(,FGeometryAwareUpsamplePS, TEXT("/Engine/Private/DistanceFieldLightingPost.usf"), TEXT("GeometryAwareUpsamplePS"), SF_Pixel);
 
-void AllocateOrReuseAORenderTarget(FRDGBuilder& GraphBuilder, FRDGTextureRef& Texture, const TCHAR* Name, EPixelFormat Format, ETextureCreateFlags Flags) 
+void AllocateOrReuseAORenderTarget(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef& Texture, const TCHAR* Name, EPixelFormat Format, ETextureCreateFlags Flags)
 {
 	if (!Texture)
 	{
-		const FIntPoint BufferSize = GetBufferSizeForAO();
+		const FIntPoint BufferSize = GetBufferSizeForAO(View);
 		const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(BufferSize, Format, FClearValueBinding::None, Flags | TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_UAV);
 		Texture = GraphBuilder.CreateTexture(Desc, Name);
 		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Texture), FLinearColor::Black);
@@ -266,9 +266,39 @@ void GeometryAwareUpsample(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRD
 			0, 0,
 			View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 			FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
-			GetSceneTextureExtent() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
+			View.GetSceneTexturesConfig().Extent / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
 			VertexShader);
 	});
+}
+
+bool DistanceFieldAOUseHistory(const FViewInfo& View)
+{
+	// Disable AO history for cube map captures to save memory.  AO history (DistanceFieldAOHistoryRT) is sized to the scene texture extents, meaning
+	// the size is proportional to the front buffer resolution, regardless of the resolution of the cube map capture itself.  This then gets multiplied
+	// by 6 for cube map faces.  This totals around 25 MB at 1080p or 100 MB at 4K resolution.
+	//
+	// JHOERNER_TODO:  Ideally, the code would be rewritten so DistanceFieldAOHistoryRT is sized to the view rectangle, rather than scene texture extents.
+	// The goal of scene texture extents is to reuse render target memory on platforms like PC, by making all scene renders use the same sized render
+	// targets for things like gbuffers.  This advantage doesn't apply to temporal history buffers, since these persist across frames and are unique per
+	// scene view state, and never shared.  As an example, temporal volumetric cloud buffers (VolumetricCloudRenderTarget) are scaled to the view rect,
+	// and so don't involve a similar memory waste.
+	//
+	// I did investigate fixing the memory waste myself, and started attempting it, but it's an involved process due to the number of places in the code
+	// you'd need to touch.  I figured it would be better if someone that has worked with the code before did the changes, to make sure nothing relevant
+	// was missed, and hopefully they'd be able to visually tell if it was working correctly.
+	//
+	// At a basic level, you'd modify UpdateHistory below so instead of using "View.GetSceneTexturesConfig().Extent" to determine the history dimensions,
+	// you'd use the view rect (multiple places in that function).  You'd eliminate "HistoryScreenPositionScaleBiasValue" and "HistoryUVMinMaxValue" scale
+	// and clamping factors when reading from the history in shaders.  The input scene textures (VelocityTexture, etc) would still be in scene texture
+	// space, so there would be a mix of UV math going on, depending on what textures you were sampling from.
+	//
+	// If it was just the shaders in UpdateHistory, I'd give it a shot, but there are additional shaders referencing "BentNormalAOTexture", including from
+	// DistanceFieldAOShared.ush and DistanceFieldLightingPost.usf.  You'd need to update all the shaders, and possibly add extra parameters to make
+	// information available about the resolution of the history (can't use View.BufferSizeAndInvSize).  Any typos could cause artifacts which will only
+	// be visually obvious if you set up a synthetic test where the scene texture extents don't match the view rect (you should be able to accomplish
+	// this for debug purposes by modifying FSceneTextureExtentState::Compute to add some padding to the scene textures).
+	//
+	return GAOUseHistory && !View.bIsSceneCaptureCube;
 }
 
 void UpdateHistory(
@@ -288,9 +318,9 @@ void UpdateHistory(
 {
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
-	const FIntPoint SceneTextureExtent = GetSceneTextureExtent();
+	const FIntPoint SceneTextureExtent = View.GetSceneTexturesConfig().Extent;
 
-	if (BentNormalHistoryState && GAOUseHistory)
+	if (BentNormalHistoryState && DistanceFieldAOUseHistory(View))
 	{
 #if WITH_MGPU
 		RDG_GPU_STAT_SCOPE(GraphBuilder, AFRWaitForDistanceFieldAOHistory);
@@ -301,7 +331,7 @@ void UpdateHistory(
 		});
 #endif
 
-		FIntPoint BufferSize = GetBufferSizeForAO();
+		FIntPoint BufferSize = GetBufferSizeForAO(View);
 
 		if (*BentNormalHistoryState 
 			&& !View.bCameraCut 
@@ -316,7 +346,7 @@ void UpdateHistory(
 			ETextureCreateFlags HistoryPassOutputFlags = ETextureCreateFlags(UseAOHistoryStabilityPass() ? GFastVRamConfig.DistanceFieldAOHistory : TexCreate_None);
 			// Reuse a render target from the pool with a consistent name, for vis purposes
 			FRDGTextureRef NewBentNormalHistory = nullptr;
-			AllocateOrReuseAORenderTarget(GraphBuilder, NewBentNormalHistory, BentNormalHistoryRTName, PF_FloatRGBA, HistoryPassOutputFlags);
+			AllocateOrReuseAORenderTarget(GraphBuilder, View, NewBentNormalHistory, BentNormalHistoryRTName, PF_FloatRGBA, HistoryPassOutputFlags);
 
 			{
 				FIntRect PrevHistoryViewRect = *DistanceFieldAOHistoryViewRect;
@@ -336,7 +366,7 @@ void UpdateHistory(
 				PassParameters->UseHistoryFilter = UseAOHistoryStabilityPass() ? 1.0f : 0.0f;
 
 				{
-					FIntPoint HistoryBufferSize = GetSceneTextureExtent() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor);
+					FIntPoint HistoryBufferSize = View.GetSceneTexturesConfig().Extent / FIntPoint(GAODownsampleFactor, GAODownsampleFactor);
 
 					const float InvBufferSizeX = 1.0f / HistoryBufferSize.X;
 					const float InvBufferSizeY = 1.0f / HistoryBufferSize.Y;
@@ -410,7 +440,7 @@ void UpdateHistory(
 					GRenderTargetPool.FreeUnusedResource(*BentNormalHistoryState);
 					*BentNormalHistoryState = nullptr;
 					// Update the view state's render target reference with the new history
-					AllocateOrReuseAORenderTarget(GraphBuilder, BentNormalHistoryTexture, BentNormalHistoryRTName, PF_FloatRGBA);
+					AllocateOrReuseAORenderTarget(GraphBuilder, View, BentNormalHistoryTexture, BentNormalHistoryRTName, PF_FloatRGBA);
 				}
 
 				const bool bManuallyClampUV = View.ViewRect.Min != FIntPoint::ZeroValue || View.ViewRect.Max != SceneTextureExtent;
@@ -421,7 +451,7 @@ void UpdateHistory(
 				auto VertexShader = View.ShaderMap->GetShader<FPostProcessVS>();
 				auto PixelShader = View.ShaderMap->GetShader<FFilterHistoryPS>(PermutationVector);
 
-				const FIntPoint DownsampledBufferSize(GetSceneTextureExtent() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor));
+				const FIntPoint DownsampledBufferSize(View.GetSceneTexturesConfig().Extent / FIntPoint(GAODownsampleFactor, GAODownsampleFactor));
 				FVector2f MaxSampleBufferUV(
 					(View.ViewRect.Width() / GAODownsampleFactor - 0.5f - GAODownsampleFactor) / DownsampledBufferSize.X,
 					(View.ViewRect.Height() / GAODownsampleFactor - 0.5f - GAODownsampleFactor) / DownsampledBufferSize.Y);
@@ -487,7 +517,7 @@ void UpdateHistory(
 		{
 			// Use the current frame's upscaled mask for next frame's history
 			FRDGTextureRef DistanceFieldAOBentNormal = nullptr;
-			AllocateOrReuseAORenderTarget(GraphBuilder, DistanceFieldAOBentNormal, TEXT("DistanceFieldBentNormalAO"), PF_FloatRGBA, GFastVRamConfig.DistanceFieldAOBentNormal);
+			AllocateOrReuseAORenderTarget(GraphBuilder, View, DistanceFieldAOBentNormal, TEXT("DistanceFieldBentNormalAO"), PF_FloatRGBA, GFastVRamConfig.DistanceFieldAOBentNormal);
 
 			GeometryAwareUpsample(GraphBuilder, View, DistanceFieldAOBentNormal, DistanceFieldNormal, BentNormalInterpolation, Parameters);
 
@@ -500,7 +530,7 @@ void UpdateHistory(
 		DistanceFieldAOHistoryViewRect->Max.Y = View.ViewRect.Size().Y / GAODownsampleFactor;
 
 #if WITH_MGPU && 0 // TODO(RDG)
-		FRHITexture* TexturesToCopyForTemporalEffect[] = { BentNormalHistoryOutput->GetRenderTargetItem().ShaderResourceTexture.GetReference() };
+		FRHITexture* TexturesToCopyForTemporalEffect[] = { BentNormalHistoryOutput->GetRHI() };
 		RHICmdList.BroadcastTemporalEffect(FName(NameForTemporalEffect, View.ViewState->UniqueID), TexturesToCopyForTemporalEffect);
 #endif
 	}
@@ -508,7 +538,7 @@ void UpdateHistory(
 	{
 		// Temporal reprojection is disabled or there is no view state - just upscale
 		FRDGTextureRef DistanceFieldAOBentNormal = nullptr;
-		AllocateOrReuseAORenderTarget(GraphBuilder, DistanceFieldAOBentNormal, TEXT("DistanceFieldBentNormalAO"), PF_FloatRGBA, GFastVRamConfig.DistanceFieldAOBentNormal);
+		AllocateOrReuseAORenderTarget(GraphBuilder, View, DistanceFieldAOBentNormal, TEXT("DistanceFieldBentNormalAO"), PF_FloatRGBA, GFastVRamConfig.DistanceFieldAOBentNormal);
 
 		GeometryAwareUpsample(GraphBuilder, View, DistanceFieldAOBentNormal, DistanceFieldNormal, BentNormalInterpolation, Parameters);
 
@@ -607,7 +637,7 @@ void UpsampleBentNormalAO(
 				View.ViewRect.Min.X / GAODownsampleFactor, View.ViewRect.Min.Y / GAODownsampleFactor,
 				View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 				FIntPoint(View.ViewRect.Width(), View.ViewRect.Height()),
-				GetBufferSizeForAO(),
+				GetBufferSizeForAO(View),
 				VertexShader);
 		});
 	}

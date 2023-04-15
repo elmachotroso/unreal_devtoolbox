@@ -7,6 +7,8 @@
 #include "UObject/FrameworkObjectVersion.h"
 #include "Async/Async.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundNodeWavePlayer)
+
 #define LOCTEXT_NAMESPACE "SoundNodeWavePlayer"
 
 void USoundNodeWavePlayer::Serialize(FArchive& Ar)
@@ -31,7 +33,7 @@ void USoundNodeWavePlayer::Serialize(FArchive& Ar)
 
 void USoundNodeWavePlayer::LoadAsset(bool bAddToRoot)
 {
-	if (IsAsyncLoading())
+	if (IsAsyncLoadingMultithreaded())
 	{
 		SoundWave = SoundWaveAssetPtr.Get();
 		if (SoundWave && SoundWave->HasAnyFlags(RF_NeedLoad))
@@ -279,3 +281,4 @@ int32 USoundNodeWavePlayer::GetMaxChildNodes() const
 
 
 #undef LOCTEXT_NAMESPACE
+

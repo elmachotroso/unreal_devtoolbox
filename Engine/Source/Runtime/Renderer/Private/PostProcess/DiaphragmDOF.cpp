@@ -17,7 +17,7 @@
 #include "ScenePrivate.h"
 #include "ClearQuad.h"
 #include "SpriteIndexBuffer.h"
-#include "TemporalAA.h"
+#include "PostProcess/TemporalAA.h"
 #include "SceneTextureParameters.h"
 #include "TranslucentRendering.h"
 
@@ -617,8 +617,13 @@ END_SHADER_PARAMETER_STRUCT()
 
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDOFCocModelShaderParameters, )
-	SHADER_PARAMETER(FVector4f, CocModelParameters)
-	SHADER_PARAMETER(FVector2f, DepthBlurParameters)
+	SHADER_PARAMETER(float, CocInfinityRadius)
+	SHADER_PARAMETER(float, CocMinRadius)
+	SHADER_PARAMETER(float, CocMaxRadius)
+	SHADER_PARAMETER(float, CocSqueeze)
+	SHADER_PARAMETER(float, CocInvSqueeze)
+	SHADER_PARAMETER(float, DepthBlurRadius)
+	SHADER_PARAMETER(float, DepthBlurExponent)
 END_SHADER_PARAMETER_STRUCT()
 
 void SetCocModelParameters(
@@ -626,11 +631,13 @@ void SetCocModelParameters(
 	const DiaphragmDOF::FPhysicalCocModel& CocModel,
 	float CocRadiusBasis = 1.0f)
 {
-	OutParameters->CocModelParameters.X = CocRadiusBasis * CocModel.InfinityBackgroundCocRadius;
-	OutParameters->CocModelParameters.Y = CocRadiusBasis * CocModel.MinForegroundCocRadius;
-	OutParameters->CocModelParameters.Z = CocRadiusBasis * CocModel.MaxBackgroundCocRadius;
-	OutParameters->DepthBlurParameters.X = CocModel.DepthBlurExponent;
-	OutParameters->DepthBlurParameters.Y = CocRadiusBasis * CocModel.MaxDepthBlurRadius;
+	OutParameters->CocInfinityRadius = CocRadiusBasis * CocModel.InfinityBackgroundCocRadius;
+	OutParameters->CocMinRadius = CocRadiusBasis * CocModel.MinForegroundCocRadius;
+	OutParameters->CocMaxRadius = CocRadiusBasis * CocModel.MaxBackgroundCocRadius;
+	OutParameters->CocSqueeze = CocModel.Squeeze;
+	OutParameters->CocInvSqueeze = 1.0f / CocModel.Squeeze;
+	OutParameters->DepthBlurRadius = CocRadiusBasis * CocModel.MaxDepthBlurRadius;
+	OutParameters->DepthBlurExponent = CocModel.DepthBlurExponent;
 }
 
 
@@ -861,6 +868,7 @@ class FDiaphragmDOFReduceCS : public FDiaphragmDOFShader
 		SHADER_PARAMETER(float, PreProcessingToProcessingCocRadiusFactor)
 		SHADER_PARAMETER(float, MinScatteringCocRadius)
 		SHADER_PARAMETER(float, NeighborCompareMaxColor)
+		SHADER_PARAMETER(float, CocSqueeze)
 		
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDOFCommonShaderParameters, CommonParameters)
@@ -932,6 +940,8 @@ class FDiaphragmDOFBuildBokehLUTCS : public FDiaphragmDOFShader
 		SHADER_PARAMETER(float, CocRadiusToIncircleRadius)
 		SHADER_PARAMETER(float, DiaphragmBladeRadius)
 		SHADER_PARAMETER(float, DiaphragmBladeCenterOffset)
+		SHADER_PARAMETER(float, CocSqueeze)
+		SHADER_PARAMETER(float, CocInvSqueeze)
 
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, BokehLUTOutput)
 	END_SHADER_PARAMETER_STRUCT()
@@ -1064,14 +1074,10 @@ class FDiaphragmDOFGatherCS : public FDiaphragmDOFShader
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		// The gathering pass shader code gives a really hard time to the HLSL compiler. To improve
-		// iteration time on the shader, only pass down a /O1 instead of /O3.
-		if (Parameters.Platform == SP_PCD3D_SM5)
-		{
-			OutEnvironment.CompilerFlags.Add(CFLAG_StandardOptimization);
-		}
-
 		FDiaphragmDOFShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		// This shader takes a very long time to compile with FXC, so we pre-compile it with DXC first and then forward the optimized HLSL to FXC.
+		OutEnvironment.CompilerFlags.Add(CFLAG_PrecompileWithDXC);
 	}
 
 	
@@ -1086,6 +1092,8 @@ class FDiaphragmDOFGatherCS : public FDiaphragmDOFShader
 		SHADER_PARAMETER(FVector2f, InputBufferUVToOutputPixel)
 		SHADER_PARAMETER(float, MipBias)
 		SHADER_PARAMETER(float, MaxRecombineAbsCocRadius)
+		SHADER_PARAMETER(float, CocSqueeze)
+		SHADER_PARAMETER(float, CocInvSqueeze)
 
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDOFTileDecisionParameters, TileDecisionParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDOFCommonShaderParameters, CommonParameters)
@@ -1151,6 +1159,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FDOFHybridScatterParameters, )
 	SHADER_PARAMETER(FVector4f, ViewportSize)
 	SHADER_PARAMETER(float, CocRadiusToCircumscribedRadius)
 	SHADER_PARAMETER(float, ScatteringScaling)
+	SHADER_PARAMETER(float, CocSqueeze)
+	SHADER_PARAMETER(float, CocInvSqueeze)
 	
 	SHADER_PARAMETER_STRUCT_INCLUDE(FDOFCommonShaderParameters, CommonParameters)
 	
@@ -1312,8 +1322,7 @@ bool DiaphragmDOF::IsEnabled(const FViewInfo& View)
 		View.Family->EngineShowFlags.DepthOfField &&
 		bDepthOfFieldRequestedByCVar &&
 		!(View.Family->EngineShowFlags.PathTracing && View.FinalPostProcessSettings.PathTracingEnableReferenceDOF) &&
-		View.FinalPostProcessSettings.DepthOfFieldFstop > 0 &&
-		View.FinalPostProcessSettings.DepthOfFieldFocalDistance > 0;
+		((View.FinalPostProcessSettings.DepthOfFieldFstop > 0.f && View.FinalPostProcessSettings.DepthOfFieldFocalDistance > 0.f) || View.FinalPostProcessSettings.DepthOfFieldDepthBlurRadius > 0.f);
 }
 
 FRDGTextureRef DiaphragmDOF::AddPasses(
@@ -1953,6 +1962,7 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 			PassParameters->PreProcessingToProcessingCocRadiusFactor = PreProcessingToProcessingCocRadiusFactor;
 			PassParameters->MinScatteringCocRadius = MinScatteringCocRadius;
 			PassParameters->NeighborCompareMaxColor = CVarScatterNeighborCompareMaxColor.GetValueOnRenderThread();
+			PassParameters->CocSqueeze = CocModel.Squeeze;
 			
 			PassParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
 			PassParameters->CommonParameters = CommonParameters;
@@ -2102,6 +2112,8 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 		PassParameters->CocRadiusToIncircleRadius = BokehModel.CocRadiusToIncircleRadius;
 		PassParameters->DiaphragmBladeRadius = BokehModel.RoundedBlades.DiaphragmBladeRadius;
 		PassParameters->DiaphragmBladeCenterOffset = BokehModel.RoundedBlades.DiaphragmBladeCenterOffset;
+		PassParameters->CocSqueeze = CocModel.Squeeze;
+		PassParameters->CocInvSqueeze = 1.0f / CocModel.Squeeze;
 		PassParameters->BokehLUTOutput = GraphBuilder.CreateUAV(BokehLUT);
 			
 		TShaderMapRef<FDiaphragmDOFBuildBokehLUTCS> ComputeShader(View.ShaderMap, PermutationVector);
@@ -2284,6 +2296,8 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 				float(SrcSize.Y * GatheringViewSize.Y) / float(PreprocessViewSize.Y));
 			PassParameters->MipBias = FMath::Log2(float(PreprocessViewSize.X) / float(GatheringViewSize.X));
 			PassParameters->MaxRecombineAbsCocRadius = float(kMaxSlightOutOfFocusCocRadius) / PreProcessingToProcessingCocRadiusFactor;
+			PassParameters->CocSqueeze = CocModel.Squeeze;
+			PassParameters->CocInvSqueeze = 1.0f / CocModel.Squeeze;
 
 			PassParameters->TileDecisionParameters.MinGatherRadius = PassParameters->MaxRecombineAbsCocRadius - 1;
 			PassParameters->TileDecisionParameters.SlightOutOfFocusRadiusBoundary = float(kMaxSlightOutOfFocusCocRadius) / PreProcessingToProcessingCocRadiusFactor;
@@ -2428,6 +2442,8 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 			PassParameters->ViewportSize = FVector4f(GatheringViewSize.X, GatheringViewSize.Y, 1.0f / GatheringViewSize.X, 1.0f / GatheringViewSize.Y);
 			PassParameters->CocRadiusToCircumscribedRadius = BokehModel.CocRadiusToCircumscribedRadius;
 			PassParameters->ScatteringScaling = float(GatheringViewSize.X) / float(PreprocessViewSize.X);
+			PassParameters->CocSqueeze = CocModel.Squeeze;
+			PassParameters->CocInvSqueeze = 1.0 / CocModel.Squeeze;
 			PassParameters->CommonParameters = CommonParameters;
 			if (bEnableScatterBokehSettings)
 				PassParameters->BokehLUT = ScatteringBokehLUT;
@@ -2450,10 +2466,6 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 				ERDGPassFlags::Raster,
 				[PassParameters, VertexShader, PixelShader, GatheringViewSize, DrawIndirectParametersOffset](FRHICommandList& RHICmdList)
 			{
-#if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
-				RHICmdList.RHIFlushTextureCacheBOP(PassParameters->RenderTargets[0].GetTexture()->GetRHI());
-#endif // #if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
-
 				RHICmdList.SetViewport(0, 0, 0.0f, GatheringViewSize.X, GatheringViewSize.Y, 1.0f);
 
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;

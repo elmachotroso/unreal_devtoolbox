@@ -129,9 +129,9 @@ public:
 		ALandscapeProxy* Proxy = LandscapeInfo->GetLandscapeProxy();
 
 		const float ScaleXY = FMath::Abs(LandscapeInfo->DrawScale.X);
-		const float TotalRadius = EdMode->UISettings->BrushRadius / ScaleXY;
-		const float Radius = (1.0f - EdMode->UISettings->BrushFalloff) * TotalRadius;
-		const float Falloff = EdMode->UISettings->BrushFalloff * TotalRadius;
+		const float TotalRadius = EdMode->UISettings->GetCurrentToolBrushRadius() / ScaleXY;
+		const float Radius = (1.0f - EdMode->UISettings->GetCurrentToolBrushFalloff()) * TotalRadius;
+		const float Falloff = EdMode->UISettings->GetCurrentToolBrushFalloff() * TotalRadius;
 
 		FIntRect Bounds;
 		Bounds.Min.X = FMath::FloorToInt(LastMousePosition.X - TotalRadius);
@@ -142,7 +142,7 @@ public:
 		TSet<ULandscapeComponent*> NewComponents;
 		bool bHasUnloadedComponents = false;
 		// Adjusting the brush may use the same keybind as moving the camera as they can be user-set, so we need this second check.
-		if (!ViewportClient->IsMovingCamera() || EdMode->IsAdjustingBrush(ViewportClient->Viewport))
+		if (!ViewportClient->IsMovingCamera() || EdMode->IsAdjustingBrush(ViewportClient))
 		{
 			// GetComponentsInRegion expects an inclusive max
 			LandscapeInfo->GetComponentsInRegion(Bounds.Min.X, Bounds.Min.Y, Bounds.Max.X - 1, Bounds.Max.Y - 1, NewComponents);
@@ -260,9 +260,9 @@ public:
 
 		ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get();
 		const float ScaleXY = FMath::Abs(LandscapeInfo->DrawScale.X);
-		const float TotalRadius = EdMode->UISettings->BrushRadius / ScaleXY;
-		const float Radius = (1.0f - EdMode->UISettings->BrushFalloff) * TotalRadius;
-		const float Falloff = EdMode->UISettings->BrushFalloff * TotalRadius;
+		const float TotalRadius = EdMode->UISettings->GetCurrentToolBrushRadius() / ScaleXY;
+		const float Radius = (1.0f - EdMode->UISettings->GetCurrentToolBrushFalloff()) * TotalRadius;
+		const float Falloff = EdMode->UISettings->GetCurrentToolBrushFalloff() * TotalRadius;
 
 		// Cap number of mouse positions to a sensible number
 		TArray<FLandscapeToolInteractorPosition> InteractorPositions;
@@ -418,7 +418,7 @@ public:
 		TSet<ULandscapeComponent*> NewComponents;
 
 		// Adjusting the brush may use the same keybind as moving the camera as they can be user-set, so we need this second check.
-		if (!ViewportClient->IsMovingCamera() || EdMode->IsAdjustingBrush(ViewportClient->Viewport))
+		if (!ViewportClient->IsMovingCamera() || EdMode->IsAdjustingBrush(ViewportClient))
 		{
 			ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get();
 			if (LandscapeInfo && LandscapeInfo->ComponentSizeQuads > 0)
@@ -479,6 +479,11 @@ public:
 	virtual void MouseMove(float LandscapeX, float LandscapeY) override
 	{
 		LastMousePosition = FVector2D(LandscapeX, LandscapeY);
+	}
+
+	virtual TOptional<FVector2D> GetLastMousePosition() const override
+	{ 
+		return LastMousePosition;
 	}
 
 	virtual FLandscapeBrushData ApplyBrush(const TArray<FLandscapeToolInteractorPosition>& InteractorPositions) override
@@ -773,7 +778,7 @@ public:
 					if (EdMode->UISettings->bSmoothGizmoBrush)
 					{
 						FVector TransformedLocal(FMath::Abs(GizmoLocal.X - LW), FMath::Abs(GizmoLocal.Y - LH) * (W / H), 0);
-						float FalloffRadius = LW * EdMode->UISettings->BrushFalloff;
+						float FalloffRadius = LW * EdMode->UISettings->GetCurrentToolBrushFalloff();
 						float SquareRadius = LW - FalloffRadius;
 						float Cos = FMath::Abs(TransformedLocal.X) / TransformedLocal.Size2D();
 						float Sin = FMath::Abs(TransformedLocal.Y) / TransformedLocal.Size2D();
@@ -1058,9 +1063,9 @@ public:
 
 		ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get();
 		const float ScaleXY = FMath::Abs(LandscapeInfo->DrawScale.X);
-		const float TotalRadius = EdMode->UISettings->BrushRadius / ScaleXY;
-		const float Radius = (1.0f - EdMode->UISettings->BrushFalloff) * TotalRadius;
-		const float Falloff = EdMode->UISettings->BrushFalloff * TotalRadius;
+		const float TotalRadius = EdMode->UISettings->GetCurrentToolBrushRadius() / ScaleXY;
+		const float Radius = (1.0f - EdMode->UISettings->GetCurrentToolBrushFalloff()) * TotalRadius;
+		const float Falloff = EdMode->UISettings->GetCurrentToolBrushFalloff() * TotalRadius;
 
 		int32 SizeX = EdMode->UISettings->AlphaTextureSizeX;
 		int32 SizeY = EdMode->UISettings->AlphaTextureSizeY;
@@ -1267,7 +1272,7 @@ public:
 		else
 		{
 			float ScaleXY = FMath::Abs(LandscapeInfo->DrawScale.X);
-			float Radius = EdMode->UISettings->BrushRadius / ScaleXY;
+			float Radius = EdMode->UISettings->GetCurrentToolBrushRadius() / ScaleXY;
 			int32 SizeX = EdMode->UISettings->AlphaTextureSizeX;
 			int32 SizeY = EdMode->UISettings->AlphaTextureSizeY;
 			float MaxSize = 2.0f * FMath::Sqrt(FMath::Square(Radius) / 2.0f);
@@ -1373,7 +1378,7 @@ public:
 			float ScaleXY = FMath::Abs(LandscapeInfo->DrawScale.X);
 			int32 SizeX = EdMode->UISettings->AlphaTextureSizeX;
 			int32 SizeY = EdMode->UISettings->AlphaTextureSizeY;
-			float Radius = EdMode->UISettings->BrushRadius / ScaleXY;
+			float Radius = EdMode->UISettings->GetCurrentToolBrushRadius() / ScaleXY;
 			float MaxSize = 2.0f * FMath::Sqrt(FMath::Square(Radius) / 2.0f);
 			float AlphaBrushScale = MaxSize / (float)FMath::Max<int32>(SizeX, SizeY);
 

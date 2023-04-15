@@ -70,8 +70,10 @@
 !*.sh
 !*.pl
 !*.py
+!*.ps1
 !*.js
 !*.ts
+!*.tsx
 !*.command
 
 # Other configuration and markup files
@@ -152,6 +154,7 @@
 
 # Exception for VirtualProduction LiveLinkVCamFiles
 !/Engine/Extras/VirtualProduction/LiveLinkVCAM/**
+/Engine/Extras/VirtualProduction/LiveLinkVCAM/LiveLinkProvider.framework/LiveLinkProvider
 /Engine/Extras/VirtualProduction/LiveLinkVCAM/UE4LiveLinkProvider.framework/UE4LiveLinkProvider
 /Engine/Extras/VirtualProduction/LiveLinkVCAM/UE5LiveLinkProvider.framework/UE5LiveLinkProvider
 
@@ -178,9 +181,14 @@
 /Engine/Binaries/ThirdParty/Mono/Linux/bin/mono-boehm
 /Engine/Binaries/ThirdParty/Mono/Linux/bin/mono-sgen
 
-# Add exceptions for GitDependencies.exe
+# Add exceptions for GitDependencies
+!/Engine/Binaries/DotNET/GitDependencies/
 !/Engine/Binaries/DotNET/GitDependencies.exe
-!/Engine/Binaries/DotNET/GitDependencies.exe.config
+!/Engine/Binaries/DotNET/GitDependencies.dll
+!/Engine/Binaries/DotNET/GitDependencies.runtimeconfig.json
+
+# Add Horde dockerfiles
+!/Engine/Source/Programs/Horde/**/Dockerfile
 
 # Ignore NET binaries
 /Engine/Binaries/ThirdParty/DotNet/
@@ -193,9 +201,20 @@
 /Engine/Binaries/DotNET/UnrealBuildTool.xml
 /Engine/Binaries/DotNET/AutomationScripts/BuildGraph.Automation.xml
 /Engine/Binaries/DotNET/AutomationScripts/Newtonsoft.Json.xml
-/Engine/Binaries/DotNET/AutomationScripts/HoloLens/System.Runtime.WindowsRuntime.xml
-/Engine/Binaries/DotNET/AutomationScripts/HoloLens/WindowsDevicePortalWrapper.xml
+/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/EpicGames.UHT.xml
+/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/System.Runtime.WindowsRuntime.xml
+/Engine/Platforms/Hololens/Binaries/DotNET/AutomationTool/AutomationScripts/Platforms/HoloLens/WindowsDevicePortalWrapper.xml
 /Engine/Source/Programs/AutomationTool/BuildGraph/BuildGraph.Automation.xml
+
+# Ignore generated files from C# tools
+/Engine/Platforms/**/*.deps.json
+/Engine/Source/Programs/**/*.deps.json
+/Engine/Source/Programs/**/*.runtimeconfig*.json
+/Engine/Source/Programs/**/Properties/launchSettings.json
+/Engine/Source/Programs/UnrealBuildTool.Tests/bin/
+/Engine/Binaries/DotNet/**/*.deps.json
+/Engine/Binaries/DotNet/Android/UnrealAndroidFileTool/*.xml
+/Engine/Binaries/DotNet/**/*.runtimeconfig*.json
 
 # Ignore Datasmith generated sources on all platforms
 /Engine/Binaries/**/DatasmithFacadeCSharp
@@ -242,6 +261,9 @@ Saved/
 
 # Ignore CLion directory
 .idea/
+
+# Ignore Rider directories
+/Engine/Plugins/Developer/RiderLink
 
 # Annoying windows files
 [Dd]esktop.ini

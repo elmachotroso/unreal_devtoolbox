@@ -39,6 +39,7 @@ namespace Metasound
 			virtual FGuid GetID() const override;
 			virtual const FName& GetDataType() const override;
 			virtual const FVertexName& GetName() const override;
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const override;
 			virtual bool ClearLiteral() override;
 			virtual const FMetasoundFrontendLiteral* GetLiteral() const override;
 			virtual void SetLiteral(const FMetasoundFrontendLiteral& InLiteral) override;
@@ -78,6 +79,7 @@ namespace Metasound
 			virtual bool Disconnect() override;
 
 		protected:
+
 
 			virtual FDocumentAccess ShareAccess() override;
 			virtual FConstDocumentAccess ShareAccess() const override;
@@ -126,6 +128,7 @@ namespace Metasound
 #endif // WITH_EDITOR
 
 			virtual void SetName(const FVertexName& InName) override;
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const override;
 
 		protected:
 
@@ -173,6 +176,7 @@ namespace Metasound
 #endif // WITH_EDITOR
 
 			virtual void SetName(const FVertexName& InName) override;
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const override;
 
 			virtual bool IsConnectionUserModifiable() const override;
 			virtual FConnectability CanConnectTo(const IOutputController& InController) const override;

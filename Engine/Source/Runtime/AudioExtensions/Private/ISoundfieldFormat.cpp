@@ -3,6 +3,8 @@
 #include "ISoundfieldFormat.h"
 #include "ISoundfieldEndpoint.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ISoundfieldFormat)
+
 FName ISoundfieldFactory::GetFormatNameForNoEncoding()
 {
 	static FName NoEncodingFormatName = FName(TEXT("No Encoding"));
@@ -40,7 +42,9 @@ ISoundfieldFactory* ISoundfieldFactory::Get(const FName& InName)
 		return nullptr;
 	}
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<ISoundfieldFactory*> Factories = IModularFeatures::Get().GetModularFeatureImplementations<ISoundfieldFactory>(GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	for (ISoundfieldFactory* Factory : Factories)
 	{
@@ -66,7 +70,10 @@ TArray<FName> ISoundfieldFactory::GetAvailableSoundfieldFormats()
 	SoundfieldFormatNames.Add(GetFormatNameForInheritedEncoding());
 	SoundfieldFormatNames.Add(GetFormatNameForNoEncoding());
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<ISoundfieldFactory*> Factories = IModularFeatures::Get().GetModularFeatureImplementations<ISoundfieldFactory>(GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
+
 	for (ISoundfieldFactory* Factory : Factories)
 	{
 		SoundfieldFormatNames.Add(Factory->GetSoundfieldFormatName());
@@ -74,3 +81,4 @@ TArray<FName> ISoundfieldFactory::GetAvailableSoundfieldFormats()
 
 	return SoundfieldFormatNames;
 }
+

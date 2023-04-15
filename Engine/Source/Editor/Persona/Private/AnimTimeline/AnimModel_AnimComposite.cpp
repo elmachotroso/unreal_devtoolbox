@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimModel_AnimComposite.h"
+#include "AnimTimeline/AnimModel_AnimComposite.h"
 #include "Animation/AnimComposite.h"
-#include "AnimTimelineTrack.h"
-#include "AnimTimelineTrack_CompositePanel.h"
+#include "AnimTimeline/AnimTimelineTrack.h"
+#include "AnimTimeline/AnimTimelineTrack_CompositePanel.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimPreviewInstance.h"
 #include "IPersonaPreviewScene.h"
@@ -22,7 +22,7 @@ void FAnimModel_AnimComposite::RefreshTracks()
 	ClearTrackSelection();
 
 	// Clear all tracks
-	RootTracks.Empty();
+	ClearRootTracks();
 
 	// Add the composite root track
 	if(!CompositeRoot.IsValid())
@@ -31,7 +31,7 @@ void FAnimModel_AnimComposite::RefreshTracks()
 	}
 
 	CompositeRoot->ClearChildren();
-	RootTracks.Add(CompositeRoot.ToSharedRef());
+	AddRootTrack(CompositeRoot.ToSharedRef());
 
 	TSharedRef<FAnimTimelineTrack_CompositePanel> CompositePanel = MakeShared<FAnimTimelineTrack_CompositePanel>(SharedThis(this));
 	CompositeRoot->AddChild(CompositePanel);

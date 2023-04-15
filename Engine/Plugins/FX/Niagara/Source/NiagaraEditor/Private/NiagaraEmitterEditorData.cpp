@@ -2,8 +2,11 @@
 
 #include "NiagaraEmitterEditorData.h"
 
+#include "EdGraph/EdGraph.h"
 #include "NiagaraStackEditorData.h"
 #include "ScopedTransaction.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEmitterEditorData)
 
 const FName UNiagaraEmitterEditorData::PrivateMemberNames::SummarySections = GET_MEMBER_NAME_CHECKED(UNiagaraEmitterEditorData, SummarySections);
 
@@ -30,6 +33,14 @@ void UNiagaraEmitterEditorData::PostLoad()
 	}
 	StackEditorData->ConditionalPostLoad();
 }
+
+#if WITH_EDITORONLY_DATA
+void UNiagaraEmitterEditorData::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UEdGraph::StaticClass()));
+}
+#endif
 
 UNiagaraStackEditorData& UNiagaraEmitterEditorData::GetStackEditorData() const
 {

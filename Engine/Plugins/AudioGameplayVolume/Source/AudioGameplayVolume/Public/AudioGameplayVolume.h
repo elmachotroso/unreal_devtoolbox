@@ -5,14 +5,21 @@
 #include "GameFramework/Volume.h"
 #include "AudioGameplayVolume.generated.h"
 
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAudioGameplayVolumeEvent);
+
 // Forward Declarations 
-class UAudioGameplayVolumeProxyComponent;
+class UAudioGameplayVolumeComponent;
 class UAudioGameplayVolumeSubsystem;
 
 /**
- * AudioGameplayVolume
+ * AudioGameplayVolume - A spatial volume used to notify audio gameplay systems when the nearest audio listener
+   enters or exits the volume. Additionally, these volumes can influence audio sources depending on the relative
+   position of the listener.
+
+   NOTE: Will only impact audio sources that have "apply ambient volumes" set on their sound class.
  */
-UCLASS(Blueprintable, hidecategories = (Advanced, Attachment, Collision, Volume))
+UCLASS(hidecategories = (Advanced, Attachment, Collision, Volume))
 class AUDIOGAMEPLAYVOLUME_API AAudioGameplayVolume : public AVolume
 {
 	GENERATED_UCLASS_BODY()
@@ -20,8 +27,8 @@ class AUDIOGAMEPLAYVOLUME_API AAudioGameplayVolume : public AVolume
 private:
 
 	// A representation of this volume for the audio thread
-	UPROPERTY()
-	UAudioGameplayVolumeProxyComponent* AGVComponent = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioGameplayVolumeComponent> AGVComponent = nullptr;
 
 	// Whether this volume is currently enabled.  Disabled volumes will not have a volume proxy, 
 	// and therefore will not be considered for intersection checks.
@@ -32,16 +39,23 @@ public:
 
 	bool GetEnabled() const { return bEnabled; }
 	
+	/** Sets whether the volume is enabled */
 	UFUNCTION(BlueprintCallable, Category = "AudioGameplay")
 	void SetEnabled(bool bEnable);
 
 	/** Blueprint event for listener enter */
-	UFUNCTION(BlueprintImplementableEvent, Category = Events)
+	UFUNCTION(BlueprintNativeEvent, Category = Events)
 	void OnListenerEnter();
 
 	/** Blueprint event for listener exit */
-	UFUNCTION(BlueprintImplementableEvent, Category = Events)
+	UFUNCTION(BlueprintNativeEvent, Category = Events)
 	void OnListenerExit();
+
+	UPROPERTY(BlueprintAssignable, Category = Events)
+	FAudioGameplayVolumeEvent OnListenerEnterEvent;
+
+	UPROPERTY(BlueprintAssignable, Category = Events)
+	FAudioGameplayVolumeEvent OnListenerExitEvent;
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR

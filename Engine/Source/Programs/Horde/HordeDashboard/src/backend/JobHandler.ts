@@ -1,20 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 import { action, observable } from 'mobx';
-import moment from 'moment-timezone';
+import moment from 'moment';
 import backend from '../backend';
-import { JobData, JobQuery, JobState, JobStepOutcome, StreamData } from '../backend/Api';
+import { JobData, JobState, JobStepOutcome, JobStreamQuery, StreamData } from '../backend/Api';
 import graphCache, { GraphQuery } from '../backend/GraphCache';
 
 
 export type FilterStatus = "Running" | "Complete" | "Succeeded" | "Failed" | "Waiting";
 
 const jobPageSize = 50;
-const jobsRefreshTime = 3000;
+const jobsRefreshTime = 10000;
 
 export class JobHandler {
 
-    constructor(includeBatches: boolean = false, jobLimit?:number) {
+    constructor(includeBatches: boolean = false, jobLimit?: number) {
         this.includeBatches = includeBatches;
         this.jobLimit = jobLimit;
     }
@@ -75,20 +75,19 @@ export class JobHandler {
 
         let wasUpdated = false;
 
-        try {            
+        try {
 
             // discover new/updated jobs
-            let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUser,abortedByUser,createTime,state,arguments,updateTime,labels,defaultLabel";
+            let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUserInfo,abortedByUserInfo,createTime,state,arguments,updateTime,labels,defaultLabel";
 
             if (this.includeBatches) {
                 filter += ",batches";
             }
 
             // needs modified time
-            const query: JobQuery = {
+            const query: JobStreamQuery = {
                 filter: filter,
                 count: this.count,
-                streamId: this.stream?.id,
                 template: this.templateNames,
                 includePreflight: this.includePreflights,
                 preflightStartedByUserId: this.preflightStartedByUserId
@@ -98,6 +97,8 @@ export class JobHandler {
             const bumpCount = this.bumpCount;
 
             if (bumpCount) {
+
+                this.modifiedAfter = undefined;
 
                 let maxCreate: Date | undefined;
 
@@ -121,19 +122,9 @@ export class JobHandler {
 
             }
 
-            // Set a min time as a TEMPORARY hint which greatly speeds up *all* job query requests
-            // @todo https://jira.it.epicgames.com/browse/UE-135429
-
-            if (!query.minCreateTime) {
-                query.minCreateTime = new Date('2010-1-1').toISOString();
-            }
-            
-
             const cancelId = this.cancelId++;
 
-            const queryTime = moment.utc().toISOString();
-
-            const mjobs = await backend.getJobs(query, false);
+            const mjobs = await backend.getStreamJobs(this.stream!.id, query, false);
 
             // check for canceled after modified test
             if (this.canceled.has(cancelId)) {
@@ -229,10 +220,6 @@ export class JobHandler {
                 wasUpdated = true;
             }
 
-            if (!this.bumpCount) {
-                this.modifiedAfter = queryTime;
-            }
-
         } catch (reason) {
             console.log(reason);
         } finally {
@@ -243,13 +230,29 @@ export class JobHandler {
 
                 if (this.count === this.jobs.length && this.count < this.jobLimit) {
                     this.bumpCount = true;
-                }    
+                }
             }
+
+            if (this.jobs.length) {
+                let job = this.jobs[0];
+                this.jobs.forEach(j => {
+                    const date1 = new Date(job.updateTime);
+                    const date2 = new Date(j.updateTime);
+                    if (date2.getTime() > date1.getTime()) {
+                        job = j;
+                    }
+                });
+
+                this.modifiedAfter = moment(job.updateTime).add(1, 'milliseconds').toDate().toISOString();
+            } else {
+                this.modifiedAfter = undefined;
+            }
+
 
             if (wasUpdated) {
                 this.setUpdated();
             }
-            
+
             this.updating = false;
         }
 
@@ -332,7 +335,7 @@ export class JobHandler {
     includePreflights = true;
     private preflightStartedByUserId?: string;
 
-    private jobLimit?:number;
+    private jobLimit?: number;
 
     initial = true;
 

@@ -11,7 +11,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/PlayerController.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "Tracks/MovieSceneSubTrack.h"
@@ -28,6 +28,7 @@
 #include "EngineAnalytics.h"
 #include "Interfaces/IAnalyticsProvider.h"
 #include "Algo/Accumulate.h"
+#include "AssetToolsModule.h"
 
 #include "CommonMovieSceneTools.h"
 
@@ -183,7 +184,7 @@ private:
 					MenuBuilder.AddMenuEntry(
 						FText::Format(LOCTEXT("TakeNumber", "Take {0}"), FText::AsNumber(TakeNumber)),
 						FText::Format(LOCTEXT("TakeNumberTooltip", "Switch to {0}"), FText::FromString(TakeObject->GetPathName())),
-						TakeNumber == CurrentTakeNumber ? FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Star") : FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Empty"),
+						TakeNumber == CurrentTakeNumber ? FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Star") : FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Empty"),
 						FUIAction(FExecuteAction::CreateSP(SubTrackEditor.Pin().ToSharedRef(), &FSubTrackEditor::SwitchTake, TakeObject))
 					);
 				}
@@ -217,7 +218,7 @@ void FSubTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddSubTrack", "Subsequences Track"),
 		LOCTEXT("AddSubTooltip", "Adds a new track that can contain other sequences."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Sub"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Sub"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FSubTrackEditor::HandleAddSubTrackMenuEntryExecute)
 		)
@@ -311,7 +312,7 @@ bool FSubTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) const
 
 const FSlateBrush* FSubTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Sub");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Sub");
 }
 
 
@@ -329,13 +330,30 @@ bool FSubTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequence
 		return false;
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return false;
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return false;
+	}
+
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
 
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		if (UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset()))
 		{
-			FFrameRate TickResolution = GetSequencer()->GetFocusedTickResolution();
+			FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
 
 			const FQualifiedFrameTime InnerDuration = FQualifiedFrameTime(
 				UE::MovieScene::DiscreteSize(Sequence->GetMovieScene()->GetPlaybackRange()),
@@ -365,6 +383,18 @@ FReply FSubTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeque
 		return FReply::Unhandled();
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return FReply::Unhandled();
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return FReply::Unhandled();
+	}
+
 	const FScopedTransaction Transaction(LOCTEXT("DropAssets", "Drop Assets"));
 
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
@@ -374,6 +404,11 @@ FReply FSubTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeque
 	bool bAnyDropped = false;
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset());
 
 		if (Sequence)
@@ -399,6 +434,15 @@ bool FSubTrackEditor::CanAddSubSequence(const UMovieSceneSequence& Sequence) con
 	return FSubTrackEditorUtil::CanAddSubSequence(FocusedSequence, Sequence);
 }
 
+UMovieSceneSubTrack* FSubTrackEditor::CreateNewTrack(UMovieScene* MovieScene) const
+{
+	return MovieScene->AddMasterTrack<UMovieSceneSubTrack>();
+}
+
+void FSubTrackEditor::GetSupportedSequenceClassPaths(TArray<FTopLevelAssetPath>& ClassPaths) const
+{
+	ClassPaths.Add(FTopLevelAssetPath(TEXT("/Script/LevelSequence"), TEXT("LevelSequence")));
+}
 
 /* FSubTrackEditor callbacks
  *****************************************************************************/
@@ -420,7 +464,7 @@ void FSubTrackEditor::HandleAddSubTrackMenuEntryExecute()
 	const FScopedTransaction Transaction(LOCTEXT("AddSubTrack_Transaction", "Add Sub Track"));
 	FocusedMovieScene->Modify();
 
-	auto NewTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneSubTrack>();
+	UMovieSceneSubTrack* NewTrack = CreateNewTrack(FocusedMovieScene);
 	ensure(NewTrack);
 
 	if (GetSequencer().IsValid())
@@ -451,16 +495,26 @@ TSharedRef<SWidget> FSubTrackEditor::HandleAddSubSequenceComboButtonGetMenuConte
 {
 	FMenuBuilder MenuBuilder(true, nullptr);
 
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("InsertSequence", "Insert Sequence"),
+		LOCTEXT("InsertSequenceTooltip", "Insert new sequence at current time"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &FSubTrackEditor::InsertSequence, InTrack))
+	);
+
 	MenuBuilder.BeginSection(TEXT("ChooseSequence"), LOCTEXT("ChooseSequence", "Choose Sequence"));
 	{
+		UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 		FAssetPickerConfig AssetPickerConfig;
 		{
 			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw( this, &FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryExecute, InTrack);
 			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw( this, &FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryEnterPressed, InTrack);
 			AssetPickerConfig.bAllowNullSelection = false;
-			AssetPickerConfig.InitialAssetViewType = EAssetViewType::Tile;
-			AssetPickerConfig.Filter.ClassNames.Add(TEXT("LevelSequence"));
+			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+			GetSupportedSequenceClassPaths(AssetPickerConfig.Filter.ClassPaths);
 			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+			AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 		}
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -500,6 +554,36 @@ void FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryEnterPressed(const
 	{
 		HandleAddSubSequenceComboButtonMenuEntryExecute(AssetData[0].GetAsset(), InTrack);
 	}
+}
+
+void FSubTrackEditor::InsertSequence(UMovieSceneTrack* Track)
+{
+	const FScopedTransaction Transaction(LOCTEXT("InsertSequence_Transaction", "Insert Sequence"));
+
+	FFrameTime NewSectionStartTime = GetSequencer()->GetLocalTime().Time;
+
+	UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track);
+	if (!SubTrack)
+	{
+		SubTrack = FindOrCreateMasterTrack<UMovieSceneSubTrack>().Track;
+	}
+
+	FString NewSequencePath = FPaths::GetPath(GetSequencer()->GetFocusedMovieSceneSequence()->GetPathName());
+	FString NewSequenceName = TEXT("NewSubSequence");
+
+	FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+	AssetToolsModule.Get().CreateUniqueAssetName(NewSequencePath + TEXT("/") + NewSequenceName, TEXT(""), NewSequencePath, NewSequenceName);
+
+	UMovieSceneSubSection* NewSection = MovieSceneToolHelpers::CreateSubSequence(NewSequenceName, NewSequencePath, NewSectionStartTime.FrameNumber, SubTrack);
+	if (NewSection)
+	{
+		NewSection->SetRowIndex(MovieSceneToolHelpers::FindAvailableRowIndex(Track, NewSection));
+	}
+
+	GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+	GetSequencer()->EmptySelection();
+	GetSequencer()->SelectSection(NewSection);
+	GetSequencer()->ThrobSectionSelection();
 }
 
 FKeyPropertyResult FSubTrackEditor::AddKeyInternal(FFrameNumber KeyTime, UMovieSceneSequence* InMovieSceneSequence, UMovieSceneTrack* InTrack, int32 RowIndex)

@@ -2,15 +2,20 @@
 
 #include "CurveEditorSettings.h"
 
+#include "HAL/PlatformCrt.h"
+
 UCurveEditorSettings::UCurveEditorSettings()
 {
 	bAutoFrameCurveEditor = true;
 	FrameInputPadding = 50;
 	FrameOutputPadding = 50;
+	bShowBufferedCurves = true;
 	bShowCurveEditorCurveToolTips = true;
 	TangentVisibility = ECurveEditorTangentVisibility::SelectedKeys;
 	ZoomPosition = ECurveEditorZoomPosition::CurrentTime;
+	bSnapTimeToSelection = false;
 
+	SelectionColor = FLinearColor::White;
 	ParentSpaceCustomColor = FLinearColor(.93, .31, .19); //pastel orange
 	WorldSpaceCustomColor = FLinearColor(.198, .610, .558); //pastel teal
 }
@@ -57,6 +62,20 @@ void UCurveEditorSettings::SetFrameOutputPadding(int32 InFrameOutputPadding)
 	}
 }
 
+bool UCurveEditorSettings::GetShowBufferedCurves() const
+{
+	return bShowBufferedCurves;
+}
+
+void UCurveEditorSettings::SetShowBufferedCurves(bool InbShowBufferedCurves)
+{
+	if (bShowBufferedCurves != InbShowBufferedCurves)
+	{
+		bShowBufferedCurves = InbShowBufferedCurves;
+		SaveConfig();
+	}
+}
+
 bool UCurveEditorSettings::GetShowCurveEditorCurveToolTips() const
 {
 	return bShowCurveEditorCurveToolTips;
@@ -95,6 +114,34 @@ void UCurveEditorSettings::SetZoomPosition(ECurveEditorZoomPosition InZoomPositi
 	if (ZoomPosition != InZoomPosition)
 	{
 		ZoomPosition = InZoomPosition;
+		SaveConfig();
+	}
+}
+
+bool UCurveEditorSettings::GetSnapTimeToSelection() const
+{
+	return bSnapTimeToSelection;
+}
+
+void UCurveEditorSettings::SetSnapTimeToSelection(bool bInSnapTimeToSelection)
+{
+	if (bSnapTimeToSelection != bInSnapTimeToSelection)
+	{
+		bSnapTimeToSelection = bInSnapTimeToSelection;
+		SaveConfig();
+	}
+}
+
+FLinearColor UCurveEditorSettings::GetSelectionColor() const
+{
+	return SelectionColor;
+}
+
+void UCurveEditorSettings::SetSelectionColor(const FLinearColor& InColor)
+{
+	if (SelectionColor != InColor)
+	{
+		SelectionColor = InColor;
 		SaveConfig();
 	}
 }
@@ -230,18 +277,33 @@ FLinearColor UCurveEditorSettings::GetNextRandomColor()
 	if (IndexedColor.Num() == 0)
 	{
 		IndexedColor.Add(FLinearColor(.904, .323, .539)); //pastel red
-		IndexedColor.Add(FLinearColor(552, .737, .328)); //pastel green
+		IndexedColor.Add(FLinearColor(.552, .737, .328)); //pastel green
 		IndexedColor.Add(FLinearColor(.947, .418, .219)); //pastel orange
 		IndexedColor.Add(FLinearColor(.156, .624, .921)); //pastel blue
-		IndexedColor.Add(FLinearColor(.921, .314, .337));//pastel red 2
+		IndexedColor.Add(FLinearColor(.921, .314, .337)); //pastel red 2
 		IndexedColor.Add(FLinearColor(.361, .651, .332)); //pastel green 2
 		IndexedColor.Add(FLinearColor(.982, .565, .254)); //pastel orange 2
 		IndexedColor.Add(FLinearColor(.246, .223, .514)); //pastel purple
 		IndexedColor.Add(FLinearColor(.208, .386, .687)); //pastel blue2
-		IndexedColor.Add(FLinearColor(.223, .59, .337)); //pastel green 3
-		IndexedColor.Add(FLinearColor(.230, .291, .591));  //pastel blue 3
+		IndexedColor.Add(FLinearColor(.223, .590, .337)); //pastel green 3
+		IndexedColor.Add(FLinearColor(.230, .291, .591)); //pastel blue 3
 	}
 	FLinearColor Color = IndexedColor[NextIndex];
-	NextIndex = (NextIndex + 1) % IndexedColor.Num();
+	++NextIndex;
+	int32 NewIndex = (NextIndex % IndexedColor.Num());
+	NextIndex = NewIndex;
 	return Color;
+}
+
+void UCurveEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	FName PropertyName = (PropertyChangedEvent.Property != NULL) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	FName MemberPropertyName = (PropertyChangedEvent.MemberProperty != NULL) ? PropertyChangedEvent.MemberProperty->GetFName() : NAME_None;
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UCurveEditorSettings, CustomColors) ||
+		MemberPropertyName == GET_MEMBER_NAME_CHECKED(UCurveEditorSettings, CustomColors))
+	{
+		OnCustomColorsChangedEvent.Broadcast();
+	}
+	
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }

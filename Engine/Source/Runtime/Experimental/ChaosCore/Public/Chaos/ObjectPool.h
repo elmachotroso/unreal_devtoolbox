@@ -26,7 +26,8 @@ namespace Chaos
 		// Alignment of the stored type
 		constexpr static int32 ItemAlign = alignof(ObjectType);
 
-		using Ptr = ObjectType*;
+		using FObject = ObjectType;
+		using FPtr = ObjectType*;
 
 		explicit TObjectPool(int32 InNumPerBlock, int32 InitialBlocks = 1)
 			: NumPerBlock(InNumPerBlock)
@@ -58,7 +59,7 @@ namespace Chaos
 		 * @return The newly allocated object
 		 */
 		template<typename... TArgs>
-		Ptr Alloc(TArgs&&... Args)
+		FPtr Alloc(TArgs&&... Args)
 		{
 			// Need a new Block
 			if(FreeCount == 0)
@@ -73,37 +74,35 @@ namespace Chaos
 			// We know there's a free item somewhere, find one - shuffling full blocks to the end of the list
 			check(Blocks.Num() > 0);
 
-			// Set BackIndex to the first empty block from the end
-			int32 BackIndex = Blocks.Num() - 1;
-			while(BackIndex > 0)
+			if (Blocks[0].IsFull())
 			{
-				if(Blocks[BackIndex].IsFull())
+				// Find the fullest block that is not completely full
+				int32 SelectedIndex = INDEX_NONE;
+				int32 SelectedNumFree = TNumericLimits<int32>::Max();
+				for (int32 Index = 0; Index < Blocks.Num(); ++Index)
 				{
-					--BackIndex;
+					const int32 BlockNumFree = Blocks[Index].NumFree;
+					if ((BlockNumFree > 0) && (BlockNumFree < SelectedNumFree))
+					{
+						SelectedNumFree = BlockNumFree;
+						SelectedIndex = Index;
+					}
 				}
-				else
-				{
-					break;
-				}
+
+				// Move the selected block to the front
+				checkf(SelectedIndex != INDEX_NONE, TEXT("Could not find an empty block"));
+				Swap(Blocks[0], Blocks[SelectedIndex]);
 			}
 
-			int32 RunCount = 0;
-			while(true)
-			{
-				checkf(RunCount++ < Blocks.Num(), TEXT("Could not find an empty block"));
+			// Ensure any writes to Blocks[0] cannot be reordered so that the GetNextFree
+			// call is definitely handled by the right block
+			FPlatformMisc::MemoryBarrier();
 
-				if(Blocks[0].IsFull())
-				{
-					Swap(Blocks[0], Blocks[BackIndex--]);
-					continue;
-				}
-
-				// Blocks[0] is now a block with at least one free element
-				ObjectType* NewPtr = Blocks[0].GetNextFree();
-				Construct<ObjectType>(NewPtr, Forward<TArgs>(Args)...);
-				--FreeCount;
-				return NewPtr;
-			}
+			// Blocks[0] is now a block with at least one free element
+			ObjectType* NewPtr = Blocks[0].GetNextFree();
+			Construct<ObjectType>(NewPtr, Forward<TArgs>(Args)...);
+			--FreeCount;
+			return NewPtr;
 		}
 
 		/**
@@ -115,7 +114,7 @@ namespace Chaos
 		 * this will not be asserted
 		 * @param Object The object to free
 		 */
-		void Free(Ptr Object)
+		void Free(FPtr Object)
 		{
 			int32 BlockIndex = FindBlock(Object);
 			Blocks[BlockIndex].Free(Object);
@@ -144,6 +143,14 @@ namespace Chaos
 		int32 GetNumAllocatedBlocks() const
 		{
 			return Blocks.Num();
+		}
+
+		/**
+		 * Get the max number of items per block
+		*/
+		int32 GetNumPerBlock() const
+		{
+			return NumPerBlock;
 		}
 
 		/**
@@ -224,6 +231,14 @@ namespace Chaos
 		}
 
 		/**
+		 * Get the number of allocated items.
+		*/
+		int32 GetNumAllocated() const
+		{
+			return GetCapacity() - GetNumFree();
+		}
+
+		/**
 		 * Gets the number of free items the pool has remaining
 		 * @return Number of free items
 		 */
@@ -267,7 +282,7 @@ namespace Chaos
 		// will need to destruct any non-free objects). This is specialized so that if the type
 		// is trivially destructible we can avoid adding the extra member.
 		template<typename T_>
-		struct alignas(ItemAlign) TItem<T_, typename TRequiresDestructor<T_>>
+		struct alignas(ItemAlign) TItem<T_, TRequiresDestructor<T_>>
 		{
 			TItem()
 				: NextFree(INDEX_NONE)
@@ -295,7 +310,7 @@ namespace Chaos
 
 		// Size of the item, plus padding up to the correct alignment so we can allocate the whole
 		// block with the correct size.
-		constexpr static int32 PaddedItemSize = Align(sizeof(FItem), ItemAlign);
+		constexpr static int32 PaddedItemSize = Align(int32(sizeof(FItem)), ItemAlign);
 
 		// A block is an area of memory large enough to hold NumInBlock items, correctly aligned and
 		// provide items on demand to the pool
@@ -319,7 +334,7 @@ namespace Chaos
 				FMemory::Free(Begin);
 			}
 
-			Ptr GetNextFree()
+			FPtr GetNextFree()
 			{
 				if(FreeList != INDEX_NONE)
 				{
@@ -343,6 +358,8 @@ namespace Chaos
 
 					return &NewItem->Object;
 				}
+
+				checkf(false, TEXT("Attempt to request a free item from a full block (Freelist is empty, NumValid is %d, NumInBlock is %d, NumFree is %d)"), NumValid, NumInBlock, NumFree);
 
 				return nullptr;
 			}
@@ -465,7 +482,7 @@ namespace Chaos
 		 */
 		template<
 			typename ObjectType_ = ObjectType, 
-			typename TTrivialDestruct<ObjectType_>* = nullptr, 
+			TTrivialDestruct<ObjectType_>* = nullptr, 
 			typename... TArgs>
 		static ObjectType* Construct(ObjectType* At, TArgs&&... Args)
 		{
@@ -484,7 +501,7 @@ namespace Chaos
 		 */
 		template<
 			typename ObjectType_ = ObjectType, 
-			typename TRequiresDestructor<ObjectType_>* = nullptr, 
+			TRequiresDestructor<ObjectType_>* = nullptr, 
 			typename... TArgs>
 		static ObjectType* Construct(ObjectType* At, TArgs&&... Args)
 		{
@@ -505,7 +522,7 @@ namespace Chaos
 		 */
 		template<
 			typename ObjectType_ = ObjectType, 
-			typename TRequiresDestructor<ObjectType_>* = nullptr>
+			TRequiresDestructor<ObjectType_>* = nullptr>
 		static void ConditionalDestruct(ObjectType* At)
 		{
 			checkSlow(At);
@@ -527,7 +544,7 @@ namespace Chaos
 		 */
 		template<
 			typename ObjectType_ = ObjectType, 
-			typename TTrivialDestruct<ObjectType_>* = nullptr>
+			TTrivialDestruct<ObjectType_>* = nullptr>
 		static void ConditionalDestruct(ObjectType*)
 		{}
 
@@ -536,5 +553,39 @@ namespace Chaos
 		int32 NumPerBlock = 0;
 		int32 Capacity = 0;
 		int32 FreeCount = 0;
+	};
+
+
+	/**
+	 * A deleter for use with TUniquePtr and a TObjectPool item
+	 */
+	template<typename ObjectPoolType>
+	class TObjectPoolDeleter
+	{
+	public:
+		using FObjectPool = ObjectPoolType;
+		using FObject = typename FObjectPool::FObject;
+
+		TObjectPoolDeleter()
+			: Pool(nullptr)
+		{
+		}
+
+		TObjectPoolDeleter(FObjectPool& InPool)
+			: Pool(&InPool)
+		{
+		}
+
+		void operator()(FObject* Object)
+		{
+			if (Object != nullptr)
+			{
+				check(Pool != nullptr);
+				Pool->Free(Object);
+			}
+		}
+
+	private:
+		FObjectPool* Pool;
 	};
 }

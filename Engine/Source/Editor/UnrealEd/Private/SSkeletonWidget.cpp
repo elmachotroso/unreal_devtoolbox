@@ -15,55 +15,60 @@
 #include "Editor.h"
 #include "Animation/AnimSet.h"
 #include "Interfaces/IMainFrameModule.h"
-#include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "IDocumentation.h"
 #include "Animation/Rig.h"
 #include "AnimPreviewInstance.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AnimationRuntime.h"
 #include "Settings/SkeletalMeshEditorSettings.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "SkeletonWidget"
 
 void SSkeletonListWidget::Construct(const FArguments& InArgs)
 {
+	bShowBones = InArgs._ShowBones;
+	InitialViewType = InArgs._InitialViewType;
 	CurSelectedSkeleton = nullptr;
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SSkeletonListWidget::SkeletonSelectionChanged);
-	AssetPickerConfig.InitialAssetViewType = EAssetViewType::Column;
+	AssetPickerConfig.InitialAssetViewType = InitialViewType;
 	AssetPickerConfig.SelectionMode = ESelectionMode::Single;
 	AssetPickerConfig.bShowPathInColumnView = true;
 	AssetPickerConfig.bShowTypeInColumnView = false;
 
-	this->ChildSlot
+	TSharedRef<SVerticalBox> ContentBox = SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
 		[
-			SNew(SVerticalBox)
-
-			+SVerticalBox::Slot()
-			.AutoHeight()
+			SNew(STextBlock)
+			.Text(LOCTEXT("SelectSkeletonLabel", "Select Skeleton: "))
+		]
+		+ SVerticalBox::Slot().FillHeight(1).Padding(2)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("SelectSkeletonLabel", "Select Skeleton: "))
-			]
-
-			+SVerticalBox::Slot() .FillHeight(1) .Padding(2)
+				SNew(SBorder)
+				.Content()
 				[
-					SNew(SBorder)
-					.Content()
-					[
-						ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
-					]
+					ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 				]
+			];
 
-			+SVerticalBox::Slot() .FillHeight(1) .Padding(2)
-				.Expose(BoneListSlot)
+	if (bShowBones)
+	{
+		ContentBox->AddSlot()
+			.FillHeight(1).Padding(2)
+			.Expose(BoneListSlot);
+	}
 
+	ChildSlot
+		[
+			ContentBox
 		];
 
 	// Construct the BoneListSlot by clearing the skeleton selection. 
@@ -75,43 +80,46 @@ void SSkeletonListWidget::SkeletonSelectionChanged(const FAssetData& AssetData)
 	BoneList.Empty();
 	CurSelectedSkeleton = Cast<USkeleton>(AssetData.GetAsset());
 
-	if (CurSelectedSkeleton != nullptr)
+	if (bShowBones)
 	{
-		const FReferenceSkeleton& RefSkeleton = CurSelectedSkeleton->GetReferenceSkeleton();
-
-		for (int32 I=0; I<RefSkeleton.GetNum(); ++I)
+		if (CurSelectedSkeleton != nullptr)
 		{
-			BoneList.Add( MakeShareable(new FName(RefSkeleton.GetBoneName(I))) ) ;
-		}
+			const FReferenceSkeleton& RefSkeleton = CurSelectedSkeleton->GetReferenceSkeleton();
 
-		(*BoneListSlot)
-			[
-				SNew(SBorder) .Padding(2)
-				.Content()
+			for (int32 I = 0; I < RefSkeleton.GetNum(); ++I)
+			{
+				BoneList.Add(MakeShareable(new FName(RefSkeleton.GetBoneName(I))));
+			}
+
+			(*BoneListSlot)
+				[
+					SNew(SBorder).Padding(2)
+					.Content()
 				[
 					SNew(SListView< TSharedPtr<FName> >)
 					.OnGenerateRow(this, &SSkeletonListWidget::GenerateSkeletonBoneRow)
-					.ListItemsSource(&BoneList)
-					.HeaderRow
-					(
+				.ListItemsSource(&BoneList)
+				.HeaderRow
+				(
 					SNew(SHeaderRow)
-					+SHeaderRow::Column(TEXT("Bone Name"))
+					+ SHeaderRow::Column(TEXT("Bone Name"))
 					.DefaultLabel(NSLOCTEXT("SkeletonWidget", "BoneName", "Bone Name"))
-					)
+				)
 				]
-			];
-	}
-	else
-	{
-		(*BoneListSlot)
-			[
-				SNew(SBorder) .Padding(2)
-				.Content()
+				];
+		}
+		else
+		{
+			(*BoneListSlot)
+				[
+					SNew(SBorder).Padding(2)
+					.Content()
 				[
 					SNew(STextBlock)
 					.Text(NSLOCTEXT("SkeletonWidget", "NoSkeletonIsSelected", "No skeleton is selected!"))
 				]
-			];
+				];
+		}
 	}
 }
 
@@ -125,7 +133,7 @@ void SSkeletonCompareWidget::Construct(const FArguments& InArgs)
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SSkeletonCompareWidget::SkeletonSelectionChanged);
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::Column;
 	AssetPickerConfig.bShowPathInColumnView = true;
@@ -281,6 +289,10 @@ void SSkeletonSelectorWindow::Construct(const FArguments& InArgs)
 	{
 		ConstructWindowFromAnimSet(CastChecked<UAnimSet>(Object));
 	}
+	else if (Object->IsA(UAnimBlueprint::StaticClass()))
+	{
+		ConstructWindowFromAnimBlueprint(CastChecked<UAnimBlueprint>(Object));
+	}
 }
 
 void SSkeletonSelectorWindow::ConstructWindowFromAnimSet(UAnimSet* InAnimSet)
@@ -330,12 +342,32 @@ void SSkeletonSelectorWindow::ConstructWindowFromMesh(USkeletalMesh* InSkeletalM
 		];
 }
 
+void SSkeletonSelectorWindow::ConstructWindowFromAnimBlueprint(UAnimBlueprint* AnimBlueprint)
+{
+	TSharedRef<SVerticalBox> ContentBox = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().FillHeight(1).Padding(2)
+		[
+			SAssignNew(SkeletonWidget, SSkeletonListWidget)
+				.ShowBones(false)
+				.InitialViewType(EAssetViewType::List)
+		];
+
+	ConstructButtons(ContentBox);
+
+	ChildSlot
+		[
+			ContentBox
+		];
+}
+
 void SSkeletonSelectorWindow::ConstructWindow()
 {
 	TSharedRef<SVerticalBox> ContentBox = SNew(SVerticalBox)
 		+SVerticalBox::Slot() .FillHeight(1) .Padding(2)
 		[
 			SAssignNew(SkeletonWidget, SSkeletonListWidget)
+				.ShowBones(true)
+				.InitialViewType(EAssetViewType::Column)
 		];
 
 	ConstructButtons(ContentBox);
@@ -432,22 +464,22 @@ void SSkeletonBoneRemoval::Construct( const FArguments& InArgs )
 		.VAlign(VAlign_Bottom)
 		[
 			SNew(SUniformGridPanel)
-			.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-			.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-			.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+			.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+			.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 			+SUniformGridPanel::Slot(0,0)
 			[
 				SNew(SButton) .HAlign(HAlign_Center)
 				.Text(LOCTEXT("BoneRemoval_Ok", "Ok"))
 				.OnClicked(this, &SSkeletonBoneRemoval::OnOk)
 				.HAlign(HAlign_Center)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 			]
 			+SUniformGridPanel::Slot(1,0)
 			[
 				SNew(SButton) .HAlign(HAlign_Center)
 				.Text(LOCTEXT("BoneRemoval_Cancel", "Cancel"))
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.OnClicked(this, &SSkeletonBoneRemoval::OnCancel)
 			]
 		]
@@ -486,7 +518,7 @@ bool SSkeletonBoneRemoval::ShowModal(const TArray<FName> BonesToRemove, const FT
 
 	TSharedPtr<SBorder> DialogWrapper = 
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(4.0f)
 		[
 			SAssignNew(DialogWidget, SSkeletonBoneRemoval)
@@ -526,7 +558,7 @@ public:
 		DrawHelper.GridColorAxis = FColor(70, 70, 70);
 		DrawHelper.GridColorMajor = FColor(40, 40, 40);
 		DrawHelper.GridColorMinor =  FColor(20, 20, 20);
-		DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+		DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 
 		bDisableInput = true;
 	}
@@ -682,7 +714,7 @@ void SSelectFolderDlg::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -709,14 +741,14 @@ void SSelectFolderDlg::Construct(const FArguments& InArgs)
 			.Padding(5)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0, 0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("OK", "OK"))
 					.OnClicked(this, &SSelectFolderDlg::OnButtonClick, EAppReturnType::Ok)
 				]
@@ -724,7 +756,7 @@ void SSelectFolderDlg::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.OnClicked(this, &SSelectFolderDlg::OnButtonClick, EAppReturnType::Cancel)
 				]
@@ -779,7 +811,7 @@ void SReplaceMissingSkeletonDialog::Construct(const FArguments& InArgs)
 	FAssetPickerConfig AssetPickerConfig;
 
 	/** The asset picker will only show skeleton assets */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 
 	/** The delegate that fires when an asset was selected */
@@ -808,14 +840,14 @@ void SReplaceMissingSkeletonDialog::Construct(const FArguments& InArgs)
 			.Padding(5)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0, 0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("OK", "OK"))
 					.OnClicked(this, &SReplaceMissingSkeletonDialog::OnButtonClick, EAppReturnType::Ok)
 				]
@@ -823,7 +855,7 @@ void SReplaceMissingSkeletonDialog::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.OnClicked(this, &SReplaceMissingSkeletonDialog::OnButtonClick, EAppReturnType::Cancel)
 				]
@@ -847,7 +879,7 @@ FReply SReplaceMissingSkeletonDialog::OnButtonClick(EAppReturnType::Type ButtonI
 	}
 
 	const TObjectPtr<UObject> Asset = SelectedAsset.GetAsset();
-	if (Asset.IsNull())
+	if (!Asset)
 	{
 		return FReply::Handled();
 	}

@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -11,35 +11,36 @@ namespace UnrealGameSync
 {
 	class ActivationListener : IDisposable
 	{
-		Thread BackgroundThread;
-		EventWaitHandle ActivateEventHandle;
-		EventWaitHandle QuitEventHandle;
+		Thread? _backgroundThread;
+		EventWaitHandle _activateEventHandle;
+		EventWaitHandle _quitEventHandle;
 
-		public event Action OnActivate;
+		public event Action? OnActivate;
 
-		public ActivationListener(EventWaitHandle InActivateEventHandle)
+		public ActivationListener(EventWaitHandle inActivateEventHandle)
 		{
-			ActivateEventHandle = InActivateEventHandle;
-			QuitEventHandle = new EventWaitHandle(false, EventResetMode.ManualReset);
+			_activateEventHandle = inActivateEventHandle;
+			_quitEventHandle = new EventWaitHandle(false, EventResetMode.ManualReset);
 		}
 
 		public void Start()
 		{
-			if(BackgroundThread == null)
+			if(_backgroundThread == null)
 			{
-				BackgroundThread = new Thread(x => ThreadProc());
-				BackgroundThread.Start();
+				_backgroundThread = new Thread(x => ThreadProc());
+				_backgroundThread.IsBackground = true;
+				_backgroundThread.Start();
 			}
 		}
 
 		public void Stop()
 		{
-			if(BackgroundThread != null)
+			if(_backgroundThread != null)
 			{
-				QuitEventHandle.Set();
+				_quitEventHandle.Set();
 
-				BackgroundThread.Join();
-				BackgroundThread = null;
+				_backgroundThread.Join();
+				_backgroundThread = null;
 			}
 		}
 
@@ -47,26 +48,18 @@ namespace UnrealGameSync
 		{
 			Stop();
 
-			if(QuitEventHandle != null)
-			{
-				QuitEventHandle.Dispose();
-				QuitEventHandle = null;
-			}
-			if(ActivateEventHandle != null)
-			{
-				ActivateEventHandle.Dispose();
-				ActivateEventHandle = null;
-			}
+			_quitEventHandle.Dispose();
+			_activateEventHandle.Dispose();
 		}
 
 		void ThreadProc()
 		{
 			for(;;)
 			{
-				int Index = EventWaitHandle.WaitAny(new WaitHandle[]{ ActivateEventHandle, QuitEventHandle }, Timeout.Infinite);
-				if(Index == 0)
+				int index = EventWaitHandle.WaitAny(new WaitHandle[]{ _activateEventHandle, _quitEventHandle }, Timeout.Infinite);
+				if(index == 0)
 				{
-					OnActivate();
+					OnActivate?.Invoke();
 				}
 				else
 				{

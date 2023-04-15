@@ -2,6 +2,9 @@
 #include "Tools/ControlRigPose.h"
 #include "Tools/ControlRigPoseProjectSettings.h"
 #include "IControlRigObjectBinding.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigPose)
+
 #if WITH_EDITOR
 #include "ScopedTransaction.h"
 #endif
@@ -16,7 +19,7 @@ void FControlRigControlPose::SavePose(UControlRig* ControlRig, bool bUseAll)
 	
 	for (FRigControlElement* ControlElement : CurrentControls)
 	{
-		if (ControlElement->Settings.bAnimatable && (bUseAll || ControlRig->IsControlSelected(ControlElement->GetName())))
+		if (ControlRig->GetHierarchy()->IsAnimatable(ControlElement) && (bUseAll || ControlRig->IsControlSelected(ControlElement->GetName())))
 		{
 			//we store poses in default parent space so if not in that space we need to compensate it
 			bool bHasNonDefaultParent = false;
@@ -430,4 +433,5 @@ bool UControlRigPoseAsset::DoesMirrorMatch(UControlRig* ControlRig, const FName&
 
 
 #undef LOCTEXT_NAMESPACE
+
 

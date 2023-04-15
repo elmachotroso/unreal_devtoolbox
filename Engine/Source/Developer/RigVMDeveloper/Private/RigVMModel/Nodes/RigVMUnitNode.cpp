@@ -1,7 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/Nodes/RigVMUnitNode.h"
+
+#include "Animation/Rig.h"
 #include "RigVMCore/RigVMStruct.h"
+#include "RigVMModel/RigVMControllerActions.h"
+#include "RigVMUserWorkflowRegistry.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMUnitNode)
+
+void URigVMUnitNode::PostLoad()
+{
+	Super::PostLoad();
+
+	// if we have a script struct but no notation let's figure out the template
+	if(GetScriptStruct() != nullptr)
+	{
+		if (IsDeprecated())
+		{
+			TemplateNotation = NAME_None;
+			if(const FRigVMFunction* Function = FRigVMRegistry::Get().FindFunction(GetScriptStruct(), *GetMethodName().ToString()))
+			{
+				ResolvedFunctionName = Function->GetName();
+			}
+		}
+		else if(GetTemplate() == nullptr)
+		{
+			if(const FRigVMFunction* Function = FRigVMRegistry::Get().FindFunction(GetScriptStruct(), *GetMethodName().ToString()))
+			{
+				if(Function->TemplateIndex != INDEX_NONE)
+				{
+					const FRigVMTemplate& Template = FRigVMRegistry::Get().GetTemplates()[Function->TemplateIndex];
+					TemplateNotation = Template.GetNotation();				
+				}
+				ResolvedFunctionName = Function->GetName();
+			}			
+		}
+	}
+}
 
 FString URigVMUnitNode::GetNodeTitle() const
 {
@@ -41,13 +77,24 @@ bool URigVMUnitNode::IsDefinedAsVarying() const
 
 FName URigVMUnitNode::GetEventName() const
 {
-	TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
+	TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(false);
 	if (StructOnScope.IsValid())
 	{
 		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
 		return StructMemory->GetEventName();
 	}
-	return NAME_None;
+	return Super::GetEventName();
+}
+
+bool URigVMUnitNode::CanOnlyExistOnce() const
+{
+	TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(false);
+	if (StructOnScope.IsValid())
+	{
+		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
+		return StructMemory->CanOnlyExistOnce();
+	}
+	return Super::CanOnlyExistOnce();
 }
 
 FText URigVMUnitNode::GetToolTipTextForPin(const URigVMPin* InPin) const
@@ -107,14 +154,117 @@ FString URigVMUnitNode::GetDeprecatedMetadata() const
 	return FString();
 }
 
+TArray<FRigVMUserWorkflow> URigVMUnitNode::GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const
+{
+	TArray<FRigVMUserWorkflow> Workflows = Super::GetSupportedWorkflows(InType, InSubject);
+
+	if(InSubject == nullptr)
+	{
+		InSubject = this;
+	}
+
+	if(UScriptStruct* Struct = GetScriptStruct())
+	{
+		check(Struct->IsChildOf(FRigVMStruct::StaticStruct()));
+
+		const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance();
+		const FRigVMStruct* StructMemory = (const FRigVMStruct*)StructOnScope->GetStructMemory();
+		TArray<FRigVMUserWorkflow> StructWorkflows = StructMemory->GetWorkflows(InType, InSubject);
+		StructWorkflows.Append(URigVMUserWorkflowRegistry::Get()->GetWorkflows(InType, Struct, InSubject));
+		Swap(Workflows, StructWorkflows);
+		Workflows.Append(StructWorkflows);
+	}
+
+	return Workflows;
+}
+
+TArray<URigVMPin*> URigVMUnitNode::GetAggregateInputs() const
+{
+	TArray<URigVMPin*> AggregateInputs;
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED
+	if (const UScriptStruct* Struct = GetScriptStruct())
+	{
+		for (URigVMPin* Pin : GetPins())
+		{
+			if (Pin->GetDirection() == ERigVMPinDirection::Input)
+			{
+				if (const FProperty* Property = Struct->FindPropertyByName(Pin->GetFName()))
+				{
+					if (Property->HasMetaData(FRigVMStruct::AggregateMetaName))
+					{
+						AggregateInputs.Add(Pin);
+					}
+				}			
+			}
+		}
+	}
+	else
+	{
+		return Super::GetAggregateInputs();
+	}
+#endif
+	return AggregateInputs;
+}
+
+TArray<URigVMPin*> URigVMUnitNode::GetAggregateOutputs() const
+{
+	TArray<URigVMPin*> AggregateOutputs;
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED	
+	if (const UScriptStruct* Struct = GetScriptStruct())
+	{
+		for (URigVMPin* Pin : GetPins())
+		{
+			if (Pin->GetDirection() == ERigVMPinDirection::Output)
+			{
+				if (const FProperty* Property = Struct->FindPropertyByName(Pin->GetFName()))
+				{
+					if (Property->HasMetaData(FRigVMStruct::AggregateMetaName))
+					{
+						AggregateOutputs.Add(Pin);
+					}
+				}			
+			}
+		}
+	}
+	else
+	{
+		return Super::GetAggregateOutputs();
+	}
+#endif
+	return AggregateOutputs;
+}
+
+FName URigVMUnitNode::GetNextAggregateName(const FName& InLastAggregatePinName) const
+{
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED	
+	if(const UScriptStruct* Struct = GetScriptStruct())
+	{
+		check(Struct->IsChildOf(FRigVMStruct::StaticStruct()));
+
+		const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance();
+		const FRigVMStruct* StructMemory = (const FRigVMStruct*)StructOnScope->GetStructMemory();
+		return StructMemory->GetNextAggregateName(InLastAggregatePinName);
+	}
+	else
+	{
+		return Super::GetNextAggregateName(InLastAggregatePinName);
+	}
+#endif
+	return FName();
+}
+
 UScriptStruct* URigVMUnitNode::GetScriptStruct() const
 {
-	return ScriptStruct;
+	if(UScriptStruct* ResolvedStruct = Super::GetScriptStruct())
+	{
+		return ResolvedStruct;
+	}
+	return ScriptStruct_DEPRECATED;
 }
 
 bool URigVMUnitNode::IsLoopNode() const
 {
-	TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
+	const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance(true);
 	if (StructOnScope.IsValid())
 	{
 		const FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
@@ -125,7 +275,12 @@ bool URigVMUnitNode::IsLoopNode() const
 
 FName URigVMUnitNode::GetMethodName() const
 {
-	return MethodName;
+	const FName ResolvedMethodName = Super::GetMethodName();
+	if(!ResolvedMethodName.IsNone())
+	{
+		return ResolvedMethodName;
+	}
+	return MethodName_DEPRECATED;
 }
 
 FString URigVMUnitNode::GetStructDefaultValue() const
@@ -158,20 +313,34 @@ FString URigVMUnitNode::GetStructDefaultValue() const
 
 TSharedPtr<FStructOnScope> URigVMUnitNode::ConstructStructInstance(bool bUseDefault) const
 {
-	if (ScriptStruct)
+	if (UScriptStruct* Struct = GetScriptStruct())
 	{
-		TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(ScriptStruct));
+		TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(Struct));
 		FRigVMStruct* StructMemory = (FRigVMStruct*)StructOnScope->GetStructMemory();
 		if (bUseDefault)
 		{
-			ScriptStruct->InitializeDefaultValue((uint8*)StructMemory);
+			Struct->InitializeDefaultValue((uint8*)StructMemory);
 		}
 		else
 		{
 			FString StructDefaultValue = GetStructDefaultValue();
-			ScriptStruct->ImportText(*StructDefaultValue, StructMemory, nullptr, PPF_None, nullptr, ScriptStruct->GetName());
+			Struct->ImportText(*StructDefaultValue, StructMemory, nullptr, PPF_IncludeTransient, GLog, Struct->GetName());
 		}
 		return StructOnScope;
 	}
 	return nullptr;
 }
+
+FRigVMStructUpgradeInfo URigVMUnitNode::GetUpgradeInfo() const
+{
+	if(UScriptStruct* Struct = GetScriptStruct())
+	{
+		check(Struct->IsChildOf(FRigVMStruct::StaticStruct()));
+
+		const TSharedPtr<FStructOnScope> StructOnScope = ConstructStructInstance();
+		const FRigVMStruct* StructMemory = (const FRigVMStruct*)StructOnScope->GetStructMemory();
+		return StructMemory->GetUpgradeInfo();
+	}
+	return FRigVMStructUpgradeInfo();
+}
+

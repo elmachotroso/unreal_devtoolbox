@@ -16,7 +16,7 @@
 #include "FileHelpers.h"
 #include "SDiscoveringAssetsDialog.h"
 #include "AssetRenameManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
 #include "ObjectTools.h"
@@ -390,7 +390,7 @@ void FAssetFixUpRedirectors::SaveReferencingCollections(TArray<FRedirectorRefs>&
 		// Follow each link in the redirector, and notify the collections manager that it is going to be removed - this will force it to re-save any required collections
 		for (UObjectRedirector* Redirector = RedirectorRefs.Redirector; Redirector; Redirector = Cast<UObjectRedirector>(Redirector->DestinationObject))
 		{
-			const FName RedirectorObjectPath = *Redirector->GetPathName();
+			const FSoftObjectPath RedirectorObjectPath = FSoftObjectPath(Redirector);
 			if (!CollectionManagerModule.Get().HandleRedirectorDeleted(RedirectorObjectPath))
 			{
 				RedirectorRefs.FailureReason = FText::Format(LOCTEXT("RedirectorFixupFailed_CollectionsFailedToSave", "Referencing collection(s) failed to save: {0}"), CollectionManagerModule.Get().GetLastError());

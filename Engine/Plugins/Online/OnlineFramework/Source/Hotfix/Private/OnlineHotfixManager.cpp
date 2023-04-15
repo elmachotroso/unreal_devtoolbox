@@ -29,6 +29,8 @@
 
 #include "Serialization/AsyncLoadingFlushContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineHotfixManager)
+
 #ifdef WITH_ONLINETRACING
 #include "OnlineTracingModule.h"
 #endif
@@ -912,7 +914,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	// Store the original file so we can undo this later
 	FConfigFileBackup& BackupFile = BackupIniFile(FileName, ConfigFile);
 	// Merge the string into the config file
-	ConfigFile->CombineFromBuffer(IniData);
+	ConfigFile->CombineFromBuffer(IniData, FileName);
 	TArray<UClass*> Classes;
 	TArray<UObject*> PerObjectConfigObjects;
 	int32 StartIndex = 0;
@@ -922,6 +924,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	bool bUpdateHttpConfigs = false;
 	bool bUpdateOnlineTracing = false;
 	TSet<FString> OnlineSubSections;
+	TSet<FString> UpdatedSectionNames;
 	// Find the set of object classes that were affected
 	while (StartIndex >= 0 && StartIndex < IniData.Len() && EndIndex >= StartIndex)
 	{
@@ -963,6 +966,8 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 					}
 				}
 
+				UpdatedSectionNames.Emplace(IniData.Mid(StartIndex+1, EndIndex - StartIndex - 1));
+
 				int32 PerObjectNameIndex = IniData.Find(TEXT(" "), ESearchCase::IgnoreCase, ESearchDir::FromStart, StartIndex);
 
 				const TCHAR* AssetHotfixIniHACK = TEXT("[AssetHotfix]");
@@ -974,6 +979,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 
 				if (bIsEngineIni)
 				{
+					// TODO replace all of this with bindees to FCoreDelegates::OnConfigSectionsChanged
 					const TCHAR* LogConfigSection = TEXT("[Core.Log]");
 					const TCHAR* ConsoleVariableSection = TEXT("[ConsoleVariables]");
 					const TCHAR* HttpSection = TEXT("[HTTP"); // note "]" omitted on purpose since we want a partial match
@@ -997,8 +1003,8 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 					}
 					else if (FCString::Strnicmp(*IniData + StartIndex, OnlineSubSectionKey, FCString::Strlen(OnlineSubSectionKey)) == 0)
 					{
-						const FString SectionStr = IniData.Mid(StartIndex, EndIndex - StartIndex + 1);
-						OnlineSubSections.Add(SectionStr);
+						FString SectionStr = IniData.Mid(StartIndex, EndIndex - StartIndex + 1);
+						OnlineSubSections.Emplace(MoveTemp(SectionStr));
 					}
 				}
 
@@ -1042,7 +1048,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 					const FString ClassName = IniData.Mid(ClassNameStart, EndIndex - ClassNameStart);
 
 					// Look up the class to search for
-					UClass* ObjectClass = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+					UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(ClassName);
 
 					if (ObjectClass)
 					{
@@ -1050,7 +1056,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 						const FString PerObjectName = IniData.Mid(StartIndex + 1, Count);
 
 						// Explicitly search the transient package (won't update non-transient objects)
-						UObject* PerObject = StaticFindObject(ObjectClass, ANY_PACKAGE, *PerObjectName, false);
+						UObject* PerObject = StaticFindFirstObject(ObjectClass, *PerObjectName, EFindFirstObjectOptions::NativeFirst);
 						if (PerObject != nullptr)
 						{
 							PerObjectConfigObjects.Add(PerObject);
@@ -1096,6 +1102,9 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 		ReloadObject->ReloadConfig();
 		NumObjectsReloaded++;
 	}
+
+	const FString ConfigFileName = ConfigFile->Name.ToString();
+	FCoreDelegates::OnConfigSectionsChanged.Broadcast(ConfigFileName, UpdatedSectionNames);
 
 	// Reload log suppression if configs changed
 	if (bUpdateLogSuppression)
@@ -1217,7 +1226,7 @@ bool UOnlineHotfixManager::IsMapLoaded(const FString& MapName)
 	FString MapPackageName(MapName.Left(MapName.Len() - 5));
 	MapPackageName = MapPackageName.Replace(*GameContentPath, TEXT("/Game"));
 	// If this map's UPackage exists, it is currently loaded
-	UPackage* MapPackage = FindObject<UPackage>(ANY_PACKAGE, *MapPackageName, true);
+	UPackage* MapPackage = FindObject<UPackage>(nullptr, *MapPackageName, true);
 	return MapPackage != nullptr;
 }
 
@@ -2025,3 +2034,4 @@ struct FHotfixManagerExec :
 	}
 };
 static FHotfixManagerExec HotfixManagerExec;
+

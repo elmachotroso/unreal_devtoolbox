@@ -2,29 +2,37 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Containers/SortedMap.h"
-#include "Evaluation/MovieScenePlayback.h"
 #include "Compilation/MovieSceneCompiledDataID.h"
-#include "EntitySystem/MovieSceneEntityManager.h"
+#include "Containers/Array.h"
+#include "Containers/SortedMap.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/IDelegateInstance.h"
+#include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneEntityLedger.h"
+#include "EntitySystem/MovieSceneEntityManager.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
-
-struct FMovieSceneTrackEvaluator;
+#include "Evaluation/MovieScenePlayback.h"
+#include "MovieSceneSequenceID.h"
+#include "Templates/UniquePtr.h"
 
 class IMovieScenePlayer;
 class UMovieSceneEntitySystemLinker;
+class UObject;
+struct FFrameTime;
+struct FMovieSceneTrackEvaluator;
+template <typename ElementType> class TRange;
 
 namespace UE
 {
 namespace MovieScene
 {
 
-struct ISequenceUpdater;
-struct FSequenceInstance;
-struct FPreAnimatedStateExtension;
 struct FCompiledDataVolatilityManager;
+struct FPreAnimatedStateExtension;
+struct FSequenceInstance;
 struct FSubSequencePath;
+struct ISequenceUpdater;
 
 /**
  * A sequence instance represents a specific instance of a currently playing sequence, either as a top-level sequence in an IMovieScenePlayer, or as a sub sequence.
@@ -135,7 +143,7 @@ public:
 	 *
 	 * @return A handle to the root sequence instance for this sub sequence, or a handle to this sequence instance if it is not a sub sequence
 	 */
-	FInstanceHandle GetRootInstanceHandle() const
+	FRootInstanceHandle GetRootInstanceHandle() const
 	{
 		return RootInstanceHandle;
 	}
@@ -195,6 +203,11 @@ public:
 	FMovieSceneEntityID FindEntity(UObject* Owner, uint32 EntityID) const;
 
 	/**
+	 * Attempt to locate all entities given their owner
+	 */
+	void FindEntities(UObject* Owner, TArray<FMovieSceneEntityID>& OutEntityIDs) const;
+
+	/**
 	 * Retrieve the legacy evaluator for this sequence, if it is available (may return nullptr)
 	 */
 	const FMovieSceneTrackEvaluator* GetLegacyEvaluator() const
@@ -224,7 +237,7 @@ public:
 	 */
 	void SetFinished(bool bInFinished)
 	{
-		bInFinished = bFinished;
+		bFinished = bInFinished;
 	}
 
 	/**
@@ -245,10 +258,10 @@ public:
 public:
 
 	/** Constructor for top level sequences */
-	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle ThisInstanceHandle);
+	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FRootInstanceHandle ThisInstanceHandle);
 
 	/** Constructor for sub sequences */
-	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle ThisInstanceHandle, FInstanceHandle RootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID);
+	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle ThisInstanceHandle, FRootInstanceHandle RootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID);
 
 	/** Destructor */
 	~FSequenceInstance();
@@ -268,6 +281,11 @@ private:
 private:
 
 	FMovieSceneContext Context;
+
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+	/** Name of the root sequence */
+	FString RootSequenceName;
+#endif
 
 	/** For top-level sequences only - legacy track template evaluator for the entire sequence */
 	TUniquePtr<FMovieSceneTrackEvaluator> LegacyEvaluator;
@@ -290,7 +308,7 @@ private:
 	/** This instance's handle. */
 	FInstanceHandle InstanceHandle;
 	/** This instance's root handle, if it is a sub sequence. */
-	FInstanceHandle RootInstanceHandle;
+	FRootInstanceHandle RootInstanceHandle;
 	/** Flag that is set when this sequence has or (will be) finished. */
 	bool bFinished : 1;
 	/** Flag that is set if this sequence has ever updated. */

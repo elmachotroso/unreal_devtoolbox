@@ -27,6 +27,13 @@ const TOptional<FTableCellValue> FTableColumn::GetValue(const FBaseTreeNode& InN
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+uint64 FTableColumn::GetValueId(const FBaseTreeNode& InNode) const
+{
+	return ValueGetter->GetValueId(*this, InNode);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 TSharedRef<ITableCellValueFormatter> FTableColumn::GetDefaultValueFormatter()
 {
 	return MakeShared<FTableCellValueFormatter>();
@@ -44,6 +51,13 @@ FText FTableColumn::GetValueAsText(const FBaseTreeNode& InNode) const
 FText FTableColumn::GetValueAsTooltipText(const FBaseTreeNode& InNode) const
 {
 	return ValueFormatter->FormatValueForTooltip(*this, InNode);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText FTableColumn::GetValueAsGroupingText(const FBaseTreeNode& InNode) const
+{
+	return ValueFormatter->FormatValueForGrouping(*this, InNode);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -67,7 +81,7 @@ inline void TrimEndingZero(FString& Str)
 		{
 			--Data;
 		}
-		Str.LeftInline(Data - Start + 1);
+		Str.LeftInline(static_cast<int32>(Data - Start + 1));
 	}
 }
 

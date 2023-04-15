@@ -2,18 +2,41 @@
 
 #pragma once
 
+#include "Algo/Transform.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
 #include "Containers/StringView.h"
+#include "CoreTypes.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "HAL/ThreadSingleton.h"
+#include "Misc/CString.h"
+#include "Serialization/ArchiveUObject.h"
+#include "Serialization/StructuredArchive.h"
+#include "Templates/Function.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/ObjectPtr.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectHash.h"
 
+class FArchive;
+class FOutputDevice;
+struct FPropertyTag;
+struct FUObjectSerializeContext;
+
 /**
- * A struct that contains a string reference to an object, either a top level asset or a subobject.
+ * A struct that contains a string reference to an object, either a package, a top level asset or a subobject.
  * This can be used to make soft references to assets that are loaded on demand.
- * This is stored internally as an FName pointing to the top level asset (/package/path.assetname) and an option a string subobject path.
+ * This is stored internally as an FTopLevelAssetPath pointing to the top level asset (/package/path.assetname) and an optional string subobject path.
  * If the MetaClass metadata is applied to a FProperty with this the UI will restrict to that type of asset.
  */
 struct COREUOBJECT_API FSoftObjectPath
@@ -22,85 +45,131 @@ struct COREUOBJECT_API FSoftObjectPath
 
 	/** Construct from another soft object path */
 	FSoftObjectPath(const FSoftObjectPath& Other)
-		: AssetPathName(Other.AssetPathName)
+		: AssetPath(Other.AssetPath)
 		, SubPathString(Other.SubPathString)
 	{
 	}
 
 	/** Construct from a moveable soft object path */
 	FSoftObjectPath(FSoftObjectPath&& Other)
-		: AssetPathName(Other.AssetPathName)
+		: AssetPath(Other.AssetPath)
 		, SubPathString(MoveTemp(Other.SubPathString))
 	{
 	}
 
 	/** Construct from a path string. Non-explicit for backwards compatibility. */
 	FSoftObjectPath(const FString& Path)						{ SetPath(FStringView(Path)); }
+	FSoftObjectPath(FTopLevelAssetPath InAssetPath, FString InSubPathString)
+	{
+		SetPath(InAssetPath, MoveTemp(InSubPathString));
+	}
+	FSoftObjectPath(FName InPackageName, FName InAssetName, FString InSubPathString)
+	{
+		SetPath(FTopLevelAssetPath(InPackageName, InAssetName), MoveTemp(InSubPathString));
+	}
+	/** Explicitly extend a top-level object path with an empty subobject path. */
+	explicit FSoftObjectPath(FTopLevelAssetPath InAssetPath)	{ SetPath(InAssetPath, FString()); }
 	explicit FSoftObjectPath(FWideStringView Path)				{ SetPath(Path); }
 	explicit FSoftObjectPath(FAnsiStringView Path)				{ SetPath(Path); }
-	explicit FSoftObjectPath(FName Path)						{ SetPath(Path); }
 	explicit FSoftObjectPath(const WIDECHAR* Path)				{ SetPath(FWideStringView(Path)); }
 	explicit FSoftObjectPath(const ANSICHAR* Path)				{ SetPath(FAnsiStringView(Path)); }
 	explicit FSoftObjectPath(TYPE_OF_NULLPTR)					{}
-	
-	/** Construct from an asset FName and subobject pair */
-	FSoftObjectPath(FName InAssetPathName, FString InSubPathString)
-		: AssetPathName(InAssetPathName)
-		, SubPathString(MoveTemp(InSubPathString))
-	{}
-	
-	/** Construct from an existing object in memory */
-	FSoftObjectPath(const UObject* InObject);
 
-	FSoftObjectPath(FObjectPtr InObject)
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. This constructor should be used only temporarily to fix up old codepaths that produce an FName.")
+	explicit FSoftObjectPath(FName Path) 
 	{
-		SetPath(InObject.GetPath());
+PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+		SetPath(Path); 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 	}
 
+	/** Construct from an asset FName and subobject pair */
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. This constructor should be used only temporarily to fix up old codepaths that produce an FName.")
+	FSoftObjectPath(FName InAssetPathName, FString InSubPathString);
+	
 	template <typename T>
 	FSoftObjectPath(const TObjectPtr<T>& InObject)
 	{
-		SetPath(InObject.GetPath());
+		SetPath(InObject.GetPathName());
+	}
+
+	FSoftObjectPath(const FObjectPtr& InObject)
+	{
+		SetPath(InObject.GetPathName());
+	}
+
+	/** Construct from an existing object in memory */
+	FSoftObjectPath(const UObject* InObject)
+	{
+		if (InObject)
+		{
+			SetPath(InObject->GetPathName());
+		}
 	}
 
 	~FSoftObjectPath() {}
-	
+PRAGMA_DISABLE_DEPRECATION_WARNINGS	
 	FSoftObjectPath& operator=(const FSoftObjectPath& Path)	= default;
 	FSoftObjectPath& operator=(FSoftObjectPath&& Path) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FSoftObjectPath& operator=(const FTopLevelAssetPath Path)			{ SetPath(Path); return *this; }
 	FSoftObjectPath& operator=(const FString& Path)						{ SetPath(FStringView(Path)); return *this; }
 	FSoftObjectPath& operator=(FWideStringView Path)					{ SetPath(Path); return *this; }
 	FSoftObjectPath& operator=(FAnsiStringView Path)					{ SetPath(Path); return *this; }
-	FSoftObjectPath& operator=(FName Path)								{ SetPath(Path); return *this; }
 	FSoftObjectPath& operator=(const WIDECHAR* Path)					{ SetPath(FWideStringView(Path)); return *this; }
 	FSoftObjectPath& operator=(const ANSICHAR* Path)					{ SetPath(FAnsiStringView(Path)); return *this; }
 	FSoftObjectPath& operator=(TYPE_OF_NULLPTR)							{ Reset(); return *this; }
 
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. This assignment operator should be used only temporarily to fix up old codepaths that produce an FName.")
+	FSoftObjectPath& operator=(FName Path) 
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+		SetPath(Path); 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+		return *this;
+	}
+
 	/** Returns string representation of reference, in form /package/path.assetname[:subpath] */
 	FString ToString() const;
+
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. This function should be used only temporarily to interface with old APIs that require an FName.")
+	FName ToFName() const { return *ToString(); }
 
 	/** Append string representation of reference, in form /package/path.assetname[:subpath] */
 	void ToString(FStringBuilderBase& Builder) const;
 
-	/** Returns the entire asset path as an FName, including both package and asset but not sub object */
-	FORCEINLINE FName GetAssetPathName() const
+	/** Append string representation of reference, in form /package/path.assetname[:subpath] */
+	void AppendString(FString& Builder) const;
+	void AppendString(FStringBuilderBase& Builder) const;
+
+	/** Returns the top-level asset part of this path, without the subobject path. */
+	FTopLevelAssetPath GetAssetPath() const
 	{
-		return AssetPathName;
+		return AssetPath;
 	}
 
-	FORCEINLINE void SetAssetPathName(FName InAssetPathName)
+	/** Returns this path without the SubPath component, restricting the result to a top level asset but keeping the type as FSoftObjectPath in contrast to GetAssetPath. */
+	FSoftObjectPath GetWithoutSubPath() const
 	{
-		AssetPathName = InAssetPathName;
+		return FSoftObjectPath(AssetPath, {});
 	}
+	
+	/** Returns the entire asset path as an FName, including both package and asset but not sub object */
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. Use GetAssetPath instead.")
+	FName GetAssetPathName() const;
+	
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. Use SetAssetPath instead.")
+	void SetAssetPathName(FName InAssetPathName);
 
 	/** Returns string version of asset path, including both package and asset but not sub object */
 	FORCEINLINE FString GetAssetPathString() const
 	{
-		if (AssetPathName.IsNone())
+		if (AssetPath.IsNull())
 		{
 			return FString();
 		}
 
-		return AssetPathName.ToString();
+		return AssetPath.ToString();
 	}
 
 	/** Returns the sub path, which is often empty */
@@ -117,26 +186,35 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Returns /package/path, leaving off the asset name and sub object */
 	FString GetLongPackageName() const
 	{
-		FString PackageName;
-		GetAssetPathString().Split(TEXT("."), &PackageName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromStart);
-		return PackageName;
+		FName PackageName = GetAssetPath().GetPackageName();
+		return PackageName.IsNone() ? FString() : PackageName.ToString();
 	}
 
 	/** Returns /package/path, leaving off the asset name and sub object */
-	FName GetLongPackageFName() const;
+	FName GetLongPackageFName() const
+	{
+		return GetAssetPath().GetPackageName();
+	}
 
 	/** Returns assetname string, leaving off the /package/path part and sub object */
 	FString GetAssetName() const
 	{
-		FString AssetName;
-		GetAssetPathString().Split(TEXT("."), nullptr, &AssetName, ESearchCase::CaseSensitive, ESearchDir::FromStart);
-		return AssetName;
+		FName AssetName = GetAssetPath().GetAssetName();
+		return AssetName.IsNone() ? FString() : AssetName.ToString();
+	}
+
+	/** Returns assetname string, leaving off the /package/path part and sub object */
+	FName GetAssetFName() const
+	{
+		return GetAssetPath().GetAssetName();
 	}
 
 	/** Sets asset path of this reference based on a string path */
+	void SetPath(const FTopLevelAssetPath& InAssetPath, FString InSubPathString = FString());
 	void SetPath(FWideStringView Path);
 	void SetPath(FAnsiStringView Path);
 	void SetPath(FUtf8StringView Path);
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated. This function should be used only temporarily to fix up old codepaths that produce an FName.")
 	void SetPath(FName Path);
 	void SetPath(const WIDECHAR* Path)			{ SetPath(FWideStringView(Path)); }
 	void SetPath(const ANSICHAR* Path)			{ SetPath(FAnsiStringView(Path)); }
@@ -159,32 +237,54 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Resets reference to point to null */
 	void Reset()
 	{		
-		AssetPathName = FName();
+		AssetPath.Reset();
 		SubPathString.Reset();
 	}
 	
 	/** Check if this could possibly refer to a real object, or was initialized to null */
 	FORCEINLINE bool IsValid() const
 	{
-		return !AssetPathName.IsNone();
+		return AssetPath.IsValid();
 	}
 
 	/** Checks to see if this is initialized to null */
 	FORCEINLINE bool IsNull() const
 	{
-		return AssetPathName.IsNone();
+		return AssetPath.IsNull();
 	}
 
 	/** Check if this represents an asset, meaning it is not null but does not have a sub path */
 	FORCEINLINE bool IsAsset() const
 	{
-		return !AssetPathName.IsNone() && SubPathString.IsEmpty();
+		return !AssetPath.IsNull() && SubPathString.IsEmpty();
 	}
 
 	/** Check if this represents a sub object, meaning it has a sub path */
 	FORCEINLINE bool IsSubobject() const
 	{
-		return !AssetPathName.IsNone() && !SubPathString.IsEmpty();
+		return !AssetPath.IsNull() && !SubPathString.IsEmpty();
+	}
+
+	/** Return true if this path appears before Other in lexical order */
+	bool LexicalLess(const FSoftObjectPath& Other) const
+	{
+		int32 PathCompare = AssetPath.Compare(Other.AssetPath);
+		if (PathCompare != 0)
+		{
+			return PathCompare < 0;
+		}
+		return SubPathString.Compare(Other.SubPathString) < 0; 
+	}
+
+	/** Return true if this path appears before Other using fast index-based fname order */
+	bool FastLess(const FSoftObjectPath& Other) const
+	{
+		int32 PathCompare = AssetPath.CompareFast(Other.AssetPath);
+		if (PathCompare != 0)
+		{
+			return PathCompare < 0;
+		}
+		return SubPathString.Compare(Other.SubPathString) < 0; 
 	}
 
 	/** Struct overrides */
@@ -225,7 +325,7 @@ struct COREUOBJECT_API FSoftObjectPath
 	{
 		uint32 Hash = 0;
 
-		Hash = HashCombine(Hash, GetTypeHash(This.AssetPathName));
+		Hash = HashCombine(Hash, GetTypeHash(This.AssetPath));
 		Hash = HashCombine(Hash, GetTypeHash(This.SubPathString));
 		return Hash;
 	}
@@ -249,7 +349,7 @@ struct COREUOBJECT_API FSoftObjectPath
 
 private:
 	/** Asset path, patch to a top level object in a package. This is /package/path.assetname */
-	FName AssetPathName;
+	FTopLevelAssetPath AssetPath;
 
 	/** Optional FString for subobject within an asset. This is the sub path after the : */
 	FString SubPathString;
@@ -271,12 +371,7 @@ struct FSoftObjectPathFastLess
 {
 	bool operator()(const FSoftObjectPath& Lhs, const FSoftObjectPath& Rhs) const
 	{
-		int32 Comp = Lhs.GetAssetPathName().CompareIndexes(Rhs.GetAssetPathName());
-		if (Comp < 0)
-		{
-			return true;
-		}
-		return Comp == 0 && Lhs.GetSubPathString() < Rhs.GetSubPathString();
+		return Lhs.FastLess(Rhs);
 	}
 };
 
@@ -285,12 +380,7 @@ struct FSoftObjectPathLexicalLess
 {
 	bool operator()(const FSoftObjectPath& Lhs, const FSoftObjectPath& Rhs) const
 	{
-		int32 Comp = Lhs.GetAssetPathName().Compare(Rhs.GetAssetPathName());
-		if (Comp < 0)
-		{
-			return true;
-		}
-		return Comp == 0 && Lhs.GetSubPathString() < Rhs.GetSubPathString();
+		return Lhs.LexicalLess(Rhs);
 	}
 };
 
@@ -467,6 +557,7 @@ struct FSoftObjectPathFixupArchive : public FArchiveUObject
 	{
 		this->SetIsSaving(true);
 		this->ArShouldSkipBulkData = true;
+		this->SetShouldSkipCompilingAssets(true);
 	}
 
 	FSoftObjectPathFixupArchive(const FString& InOldAssetPathString, const FString& InNewAssetPathString)
@@ -474,7 +565,7 @@ struct FSoftObjectPathFixupArchive : public FArchiveUObject
 		{
 			if (!Value.IsNull() && Value.GetAssetPathString().Equals(OldAssetPathString, ESearchCase::IgnoreCase))
 			{
-				Value.SetAssetPathName(FName(*NewAssetPathString));
+				Value = FSoftObjectPath(NewAssetPathString);
 			}
 		})
 	{
@@ -489,8 +580,38 @@ struct FSoftObjectPathFixupArchive : public FArchiveUObject
 	void Fixup(UObject* Root)
 	{
 		Root->Serialize(*this);
-		ForEachObjectWithOuter(Root, [this](UObject* InObject) { InObject->Serialize(*this);  });
+		TArray<UObject*> SubObjects;
+		GetObjectsWithOuter(Root, SubObjects);
+		for (UObject* Obj : SubObjects)
+		{
+			Obj->Serialize(*this);
+		}
 	}
 
 	TFunction<void(FSoftObjectPath&)> FixupFunction;
 };
+
+namespace UE::SoftObjectPath::Private
+{
+	UE_DEPRECATED(5.1, "This function is only for use in fixing up deprecated APIs.")
+	inline TArray<FName> ConvertSoftObjectPaths(TConstArrayView<FSoftObjectPath> InPaths)
+	{
+		TArray<FName> Out;
+		Out.Reserve(InPaths.Num());
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Algo::Transform(InPaths, Out, [](const FSoftObjectPath& Path) { return Path.ToFName(); });
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return Out;
+	}
+
+	UE_DEPRECATED(5.1, "This function is only for use in fixing up deprecated APIs.")
+	inline TArray<FSoftObjectPath> ConvertObjectPathNames(TConstArrayView<FName> InPaths)
+	{
+		TArray<FSoftObjectPath> Out;
+		Out.Reserve(InPaths.Num());
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Algo::Transform(InPaths, Out, [](FName Name) { return FSoftObjectPath(Name); });
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return Out;
+	}
+}

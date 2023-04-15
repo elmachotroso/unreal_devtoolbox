@@ -8,12 +8,20 @@
 
 #define TEXTURE_COMPRESSOR_MODULENAME "TextureCompressor"
 
+struct FEncodedTextureDescription;
+class ITextureFormat;
+class ITextureTiler;
+struct FTextureEngineParameters;
+enum EPixelFormat : uint8;
+
 /**
  * Compressed image data.
  */
 struct FCompressedImage2D
 {
 	TArray64<uint8> RawData;
+	// in the past Sizes here were aligned up to a compressed block size multiple
+	//	that is no longer done, the real size is stored
 	int32 SizeX;
 	int32 SizeY;
 	int32 SizeZ; // Only for Volume Texture
@@ -68,6 +76,8 @@ struct FColorAdjustmentParameters
  */
 struct FTextureBuildSettings
 {
+	/** An optional ID to change the cache key. */
+	FGuid CompressionCacheId;
 	/** Format specific config object view or null if no format specific config is applied as part of this build. */
 	FCbObjectView FormatConfigOverride;
 	/** Color adjustment parameters. */
@@ -76,6 +86,8 @@ struct FTextureBuildSettings
 	bool bDoScaleMipsForAlphaCoverage;
 	/** Channel values to compare to when preserving alpha coverage. */
 	FVector4f AlphaCoverageThresholds;
+	/** Use newer & faster mip generation filter */
+	bool bUseNewMipFilter;
 	/** The desired amount of mip sharpening. */
 	float MipSharpening;
 	/** For angular filtered cubemaps, the mip level which contains convolution with the diffuse cosine lobe. */
@@ -122,8 +134,6 @@ struct FTextureBuildSettings
 	uint32 bForceNoAlphaChannel : 1;
 	/** Whether we should not discard the alpha channel when it contains 1 for the entire texture. */
 	uint32 bForceAlphaChannel : 1;
-	/** Whether the alpha channel should contain a dithered alpha value. */
-	uint32 bDitherMipMapAlpha : 1;
 	/** Whether bokeh alpha values should be computed for the texture. */
 	uint32 bComputeBokehAlpha : 1;
 	/** Whether the contents of the red channel should be replicated to all channels. */
@@ -158,8 +168,11 @@ struct FTextureBuildSettings
 	mutable int32 VolumeSizeZ;
 	/** The array texture's top mip size Z without LODBias applied */
 	mutable int32 ArraySlices;
-	/** Can the texture be streamed */
-	uint32 bStreamable : 1;
+	/** Can the texture be streamed. This is deprecated because it was used in a single place in a single 
+	*	platform for something that handled an edge case that never happened. That code is removes so this is
+	*	never touched other than saving it, and it'll be removed soon.
+	*/
+	uint32 bStreamable_Unused : 1;
 	/** Is the texture streamed using the VT system */
 	uint32 bVirtualStreamable : 1;
 	/** Whether to chroma key the image, replacing any pixels that match ChromaKeyColor with transparent black */
@@ -202,10 +215,6 @@ struct FTextureBuildSettings
 	int32 VirtualTextureTileSize;
 	/** Size in pixels of border on virtual texture tile */
 	int32 VirtualTextureBorderSize;
-	/** Is zlib compression enabled */
-	uint32 bVirtualTextureEnableCompressZlib : 1;
-	/** Is crunch compression enabled */
-	uint32 bVirtualTextureEnableCompressCrunch : 1;
 
 	// Which encode speed this build settings represents.
 	// This is not sent to the build worker, it is used to
@@ -213,14 +222,20 @@ struct FTextureBuildSettings
 	// ETextureEncodeSpeed, either Final or Fast.
 	uint8 RepresentsEncodeSpeedNoSend;
 
+	// If the target format is a tiled format and can leverage reusing the linear encoding, this is not nullptr.
+	const ITextureTiler* Tiler = nullptr;
+
+	static constexpr uint32 MaxTextureResolutionDefault = TNumericLimits<uint32>::Max();
+
 	/** Default settings. */
 	FTextureBuildSettings()
 		: bDoScaleMipsForAlphaCoverage(false)
 		, AlphaCoverageThresholds(0, 0, 0, 0)
+		, bUseNewMipFilter(false)
 		, MipSharpening(0.0f)
 		, DiffuseConvolveMipLevel(0)
 		, SharpenMipKernelSize(2)
-		, MaxTextureResolution(TNumericLimits<uint32>::Max())
+		, MaxTextureResolution(MaxTextureResolutionDefault)
 		, bHDRSource(false)
 		, MipGenSettings(1 /*TMGS_SimpleAverage*/)
 		, bCubemap(false)
@@ -239,7 +254,6 @@ struct FTextureBuildSettings
 		, bPreserveBorder(false)
 		, bForceNoAlphaChannel(false)
 		, bForceAlphaChannel(false)
-		, bDitherMipMapAlpha(false)
 		, bComputeBokehAlpha(false)
 		, bReplicateRed(false)
 		, bReplicateAlpha(false)
@@ -257,7 +271,7 @@ struct FTextureBuildSettings
 		, TopMipSize(0, 0)
 		, VolumeSizeZ(0)
 		, ArraySlices(0)
-		, bStreamable(false)
+		, bStreamable_Unused(false)
 		, bVirtualStreamable(false)
 		, bChromaKeyTexture(false)
 		, PowerOfTwoMode(0 /*ETexturePowerOfTwoSetting::None*/)
@@ -277,15 +291,34 @@ struct FTextureBuildSettings
 		, VirtualAddressingModeY(0)
 		, VirtualTextureTileSize(0)
 		, VirtualTextureBorderSize(0)
-		, bVirtualTextureEnableCompressZlib(false)
-		, bVirtualTextureEnableCompressCrunch(false)
 	{
 	}
 
-	FORCEINLINE EGammaSpace GetGammaSpace() const
+	// GammaSpace is TextureCompressorModule is always a Destination gamma
+	// we get FImages as input with source gamma space already set on them
+
+	FORCEINLINE EGammaSpace GetSourceGammaSpace() const
 	{
 		return bSRGB ? ( bUseLegacyGamma ? EGammaSpace::Pow22 : EGammaSpace::sRGB ) : EGammaSpace::Linear;
 	}
+	
+	FORCEINLINE EGammaSpace GetDestGammaSpace() const
+	{
+		return bSRGB ? EGammaSpace::sRGB : EGammaSpace::Linear;
+	}
+
+	UE_DEPRECATED(5.1, "Use GetDestGammaSpace or GetSourceGammaSpace (probably Dest)")
+	FORCEINLINE EGammaSpace GetGammaSpace() const
+	{
+		return GetDestGammaSpace();
+	}
+
+	/*
+	* Convert the build settings to an actual texture description containing enough information to describe the texture
+	* to hardware APIs.
+	*/
+	TEXTURECOMPRESSOR_API void GetEncodedTextureDescription(FEncodedTextureDescription* OutTextureDescription, const ITextureFormat* InTextureFormat, int32 InEncodedMip0SizeX, int32 InEncodedMip0SizeY, int32 InEncodedMip0NumSlices, int32 InMipCount, bool bInImageHasAlphaChannel) const;
+	TEXTURECOMPRESSOR_API void GetEncodedTextureDescriptionWithPixelFormat(FEncodedTextureDescription* OutTextureDescription, EPixelFormat InEncodedPixelFormat, int32 InEncodedMip0SizeX, int32 InEncodedMip0SizeY, int32 InEncodedMip0NumSlices, int32 InMipCount) const;
 };
 
 /**
@@ -312,7 +345,8 @@ public:
 		FStringView DebugTexturePathName,
 		TArray<FCompressedImage2D>& OutTextureMips,
 		uint32& OutNumMipsInTail,
-		uint32& OutExtData
+		uint32& OutExtData,
+		bool* bOutImageHasAlpha // If desired, this will report whether the mip processing determined an alpha channel is necessary in the encoded texture.		
 		) = 0;
 
 	
@@ -327,7 +361,7 @@ public:
 		const FTextureBuildSettings& Settings,
 		const FImage& BaseImage,
 		TArray<FImage> &OutMipChain,
-		uint32 MipChainDepth = MAX_uint32
+		uint32 MipChainDepth
 		);
 
 	/**
@@ -353,4 +387,12 @@ public:
 	 * @param DiffuseConvolveMipLevel - The mip level that contains the diffuse convolution.
 	 */
 	TEXTURECOMPRESSOR_API static void GenerateAngularFilteredMips(TArray<FImage>& InOutMipChain, int32 NumMips, uint32 DiffuseConvolveMipLevel);
+
+	/**
+	* Returns the number of mips that the given texture will generate with the given build settings, as well as the size of the top mip.
+	*/
+	virtual int32 GetMipCountForBuildSettings(
+		int32 InMip0SizeX, int32 InMip0SizeY, int32 InMip0NumSlices, 
+		int32 InExistingMipCount, const FTextureBuildSettings& InBuildSettings, 
+		int32& OutMip0SizeX, int32& OutMip0SizeY, int32& OutMip0NumSlices) const =0;
 };

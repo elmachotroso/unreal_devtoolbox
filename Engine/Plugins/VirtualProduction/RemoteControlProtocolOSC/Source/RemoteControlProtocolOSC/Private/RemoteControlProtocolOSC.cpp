@@ -16,6 +16,15 @@
 
 const FName FRemoteControlProtocolOSC::ProtocolName = TEXT("OSC");
 
+#if WITH_EDITOR
+
+namespace RemoteControlOSCProtocolColumns
+{
+	static FName Address = TEXT("Address");
+}
+
+#endif // WITH_EDITOR
+
 bool FRemoteControlOSCProtocolEntity::IsSame(const FRemoteControlProtocolEntity* InOther)
 {
 	if(const FRemoteControlOSCProtocolEntity* Other = static_cast<const FRemoteControlOSCProtocolEntity*>(InOther))
@@ -25,6 +34,15 @@ bool FRemoteControlOSCProtocolEntity::IsSame(const FRemoteControlProtocolEntity*
 
 	return false;
 }
+
+#if WITH_EDITOR
+
+void FRemoteControlOSCProtocolEntity::RegisterProperties()
+{
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlOSCProtocolColumns::Address, FRemoteControlOSCProtocolEntity, PathName);
+}
+
+#endif // WITH_EDITOR
 
 void FRemoteControlProtocolOSC::Bind(FRemoteControlProtocolEntityPtr InRemoteControlProtocolEntityPtr)
 {
@@ -136,7 +154,17 @@ void FRemoteControlProtocolOSC::ProcessAutoBinding(const FOSCAddress& InAddress)
 		}
 	}
 }
-#endif
+
+void FRemoteControlProtocolOSC::RegisterColumns()
+{
+	FRemoteControlProtocol::RegisterColumns();
+
+	REGISTER_COLUMN(RemoteControlOSCProtocolColumns::Address
+		, LOCTEXT("RCPresetAddressColumnHeader", "Address")
+		, ProtocolColumnConstants::ColumnSizeMedium);
+}
+
+#endif // WITH_EDITOR
 
 void FRemoteControlProtocolOSC::UnbindAll()
 {

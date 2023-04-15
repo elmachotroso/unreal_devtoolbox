@@ -2,6 +2,8 @@
 
 #include "Settings/ControlRigSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSettings)
+
 #if WITH_EDITOR
 #include "RigVMModel/RigVMController.h"
 #include "RigVMModel/RigVMNode.h"
@@ -27,9 +29,11 @@ UControlRigEditorSettings::UControlRigEditorSettings(const FObjectInitializer& O
 	bResetControlsOnPinValueInteraction = false;
 	bEnableUndoForPoseInteraction = true;
 
-	SetupEventBorderColor = FLinearColor::Red;
+	ConstructionEventBorderColor = FLinearColor::Red;
 	BackwardsSolveBorderColor = FLinearColor::Yellow;
 	BackwardsAndForwardsBorderColor = FLinearColor::Blue;
-	DynamicHierarchyBorderColor = FLinearColor::Blue;
+	bShowStackedHierarchy = false;
+	MaxStackSize = 16;
 #endif
 }
+

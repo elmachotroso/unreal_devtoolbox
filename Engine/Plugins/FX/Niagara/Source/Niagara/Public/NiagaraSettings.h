@@ -7,6 +7,7 @@
 #include "NiagaraScript.h"
 #include "Engine/DeveloperSettings.h"
 #include "InputCoreTypes.h"
+#include "NiagaraPlatformSet.h"
 #include "NiagaraSettings.generated.h"
 
 // This enum must match the order in NiagaraDataInterfaceSkeletalMesh.ush
@@ -62,6 +63,24 @@ enum class ENiagaraDefaultRendererPixelCoverageMode : uint8
 };
 
 UENUM()
+enum class ENiagaraDefaultSortPrecision : uint8
+{
+	/** Low precision sorting, half float (fp16) precision, faster and adequate for most cases. */
+	Low,
+	/** High precision sorting, float (fp32) precision, slower but may fix sorting artifacts. */
+	High,
+};
+
+UENUM()
+enum class ENiagaraDefaultGpuTranslucentLatency : uint8
+{
+	/** Gpu simulations will always read this frames data for translucent materials. */
+	Immediate,
+	/** Gpu simulations will read the previous frames data if the simulation has to run in PostRenderOpaque. */
+	Latent,
+};
+
+UENUM()
 namespace ENDICollisionQuery_AsyncGpuTraceProvider
 {
 	enum Type
@@ -79,13 +98,13 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "ScriptStruct"))
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/CoreUObject.ScriptStruct"))
 	TArray<FSoftObjectPath> AdditionalParameterTypes;
 
-	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "ScriptStruct"))
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/CoreUObject.ScriptStruct"))
 	TArray<FSoftObjectPath> AdditionalPayloadTypes;
 
-	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "Enum"))
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/CoreUObject.Enum"))
 	TArray<FSoftObjectPath> AdditionalParameterEnums;
 
 	/** Sets the default navigation behavior for the system preview viewport. */
@@ -108,8 +127,16 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = ( DisplayName = "Enforce strict type checks in the graph" ))
 	bool bEnforceStrictStackTypes = true;
 
+	/**
+	 True indicates that we will generate byte code for the new experimental VM.  Control over whether the new VM will
+	 be used when executing NiagaraScripts will also take into account the overrides on the system (bDisableExperimentalVM) and
+	 the cvars fx.NiagaraScript.StripByteCodeOnLoad and fx.ForceExecVMPath.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (DisplayName = "Enable building data for Experimental VM"))
+	bool bExperimentalVMEnabled = false;
+
 	/** Default effect type to use for effects that don't define their own. Can be null. */
-	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "NiagaraEffectType"))
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta = (AllowedClasses = "/Script/Niagara.NiagaraEffectType"))
 	FSoftObjectPath DefaultEffectType;
 
 	/** Position pin type color. The other pin colors are defined in the general editor settings. */
@@ -140,6 +167,18 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = Renderer)
 	ENiagaraDefaultRendererPixelCoverageMode DefaultPixelCoverageMode = ENiagaraDefaultRendererPixelCoverageMode::Enabled;
 
+	/** The default setting for sorting precision when automatic is set on the Niagara Renderer. */
+	UPROPERTY(config, EditAnywhere, Category = Renderer)
+	ENiagaraDefaultSortPrecision DefaultSortPrecision = ENiagaraDefaultSortPrecision::Low;
+
+	/** The default setting for Gpu simulation translucent draw latency. */
+	UPROPERTY(config, EditAnywhere, Category = Renderer)
+	ENiagaraDefaultGpuTranslucentLatency DefaultGpuTranslucentLatency = ENiagaraDefaultGpuTranslucentLatency::Immediate;
+
+	/** The default InverseExposureBlend used for the light renderer. */
+	UPROPERTY(config, EditAnywhere, Category = LightRenderer)
+	float DefaultLightInverseExposureBlend = 0.0f;
+
 	UPROPERTY(config, EditAnywhere, Category=SkeletalMeshDI, meta = ( DisplayName = "Gpu Max Bone Influences", ToolTip = "Controls the maximum number of influences we allow the Skeletal Mesh Data Interface to use on the GPU.  Changing this setting requires restarting the editor.", ConfigRestartRequired = true))
 	TEnumAsByte<ENDISkelMesh_GpuMaxInfluences::Type> NDISkelMesh_GpuMaxInfluences;
 
@@ -163,6 +202,9 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	*/
 	UPROPERTY(config, EditAnywhere, Category = AsyncGpuTraceDI, meta = (DisplayName = "Trace Provider Priorities (Experimental)", ConfigRestartRequired = true))
 	TArray<TEnumAsByte<ENDICollisionQuery_AsyncGpuTraceProvider::Type>> NDICollisionQuery_AsyncGpuTraceProviderOrder;
+
+	UPROPERTY(config, EditAnywhere, Category = Scalability)
+	TArray<FNiagaraPlatformSetRedirect> PlatformSetRedirects;
 
 	// Begin UDeveloperSettings Interface
 	virtual FName GetCategoryName() const override;

@@ -2,8 +2,13 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "DynamicMesh3.h"
 #include "DynamicMeshAttributeSet.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "VectorTypes.h"
 
 
 namespace UE
@@ -244,6 +249,32 @@ public:
 	 * @param MeshToSet Mesh to copy overlays to; does not need to be the same as the Mesh member of this class
 	 */
 	bool CopyToOverlays(FDynamicMesh3& MeshToSet) const;
+
+
+
+	/**
+	 * Convenience function to compute tangents from the mesh attribute set's primary UVs and normals
+	 * @return true if tangents were computed, false otherwise
+	 */
+	static bool ComputeDefaultOverlayTangents(FDynamicMesh3& Mesh)
+	{
+		const FDynamicMeshAttributeSet* Attributes = Mesh.Attributes();
+		if (!Attributes)
+		{
+			return false;
+		}
+		const FDynamicMeshUVOverlay* UVOverlay = Attributes->PrimaryUV();
+		const FDynamicMeshNormalOverlay* NormalOverlay = Attributes->PrimaryNormals();
+		if (UVOverlay && NormalOverlay)
+		{
+			TMeshTangents Tangents;
+			Tangents.SetMesh(&Mesh);
+			Tangents.ComputeTriVertexTangents(NormalOverlay, UVOverlay, FComputeTangentsOptions());
+			Mesh.Attributes()->EnableTangents();
+			return Tangents.CopyToOverlays(Mesh);
+		}
+		return false;
+	}
 
 protected:
 	/**

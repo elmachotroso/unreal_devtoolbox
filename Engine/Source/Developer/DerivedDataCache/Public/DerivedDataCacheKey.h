@@ -2,14 +2,17 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
+#include "CoreTypes.h"
 #include "IO/IoHash.h"
+#include "Misc/AsciiSet.h"
+#include "Misc/CString.h"
 #include "Templates/TypeHash.h"
 
 #define UE_API DERIVEDDATACACHE_API
 
+class FCbFieldView;
 class FCbWriter;
 
 namespace UE::DerivedData
@@ -20,11 +23,22 @@ namespace UE::DerivedData
 /**
  * An alphanumeric identifier that groups related cache records.
  *
- * A cache bucket name must be alphanumeric, non-empty, and contain fewer than 256 code units.
+ * A cache bucket name must be alphanumeric, non-empty, and contain fewer than 64 code units.
  */
 class FCacheBucket
 {
 public:
+	/** Maximum number of code units in a valid cache bucket name. */
+	static constexpr int32 MaxNameLen = 63;
+
+	/** Returns true if the name is a valid cache bucket name. */
+	template <typename CharType>
+	static inline bool IsValidName(TStringView<CharType> Name)
+	{
+		constexpr FAsciiSet Valid("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+		return !Name.IsEmpty() && Name.Len() <= MaxNameLen && FAsciiSet::HasOnly(Name, Valid);
+	}
+
 	/** Construct a null cache bucket. */
 	FCacheBucket() = default;
 
@@ -93,6 +107,9 @@ inline TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Bu
 	return Builder << Bucket.ToString();
 }
 
+UE_API FCbWriter& operator<<(FCbWriter& Writer, FCacheBucket Bucket);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheBucket& OutBucket);
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inline bool operator==(const FCacheKey& A, const FCacheKey& B)
@@ -124,6 +141,16 @@ inline TStringBuilderBase<CharType>& operator<<(TStringBuilderBase<CharType>& Bu
 }
 
 UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheKey& Key);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheKey& OutKey);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Constructs a cache key from a legacy cache key.
+ *
+ * Legacy keys are typically of the form DATATYPENAME_VersionGuid_TypeSpecificSuffix.
+ */
+UE_API FCacheKey ConvertLegacyCacheKey(FStringView Key);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

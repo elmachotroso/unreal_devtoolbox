@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Serialization/Archive.h"
 
 struct FAssetData;
+struct FNameEntryId;
 
 /** 
  * Legacy name table reader replaced by FAssetRegistryReader.
@@ -29,6 +31,7 @@ public:
 	virtual FArchive& operator<<(FName& Name);
 
 	void SerializeTagsAndBundles(FAssetData& Out);
+	void SerializeTagsAndBundlesOldVersion(FAssetData& Out, int32 Version);
 
 private:
 	/** Serializers for different package maps */

@@ -8,6 +8,8 @@
 #include "GameFramework/WorldSettings.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ProjectileMovementComponent)
+
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 DEFINE_LOG_CATEGORY_STATIC(LogProjectileMovement, Log, All);
 
@@ -247,7 +249,7 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 			if (Velocity == OldVelocity)
 			{
 				// re-calculate end velocity for partial time
-				Velocity = (Hit.Time > KINDA_SMALL_NUMBER) ? ComputeVelocity(OldVelocity, TimeTick * Hit.Time) : OldVelocity;
+				Velocity = (Hit.Time > UE_KINDA_SMALL_NUMBER) ? ComputeVelocity(OldVelocity, TimeTick * Hit.Time) : OldVelocity;
 			}
 
 			// Logging
@@ -311,7 +313,7 @@ bool UProjectileMovementComponent::HandleDeflection(FHitResult& Hit, const FVect
 	const FVector Normal = ConstrainNormalToPlane(Hit.Normal);
 
 	// Multiple hits within very short time period?
-	const bool bMultiHit = (PreviousHitTime < 1.f && Hit.Time <= KINDA_SMALL_NUMBER);
+	const bool bMultiHit = (PreviousHitTime < 1.f && Hit.Time <= UE_KINDA_SMALL_NUMBER);
 
 	// if velocity still into wall (after HandleBlockingHit() had a chance to adjust), slide along wall
 	const float DotTolerance = 0.01f;
@@ -346,7 +348,7 @@ bool UProjectileMovementComponent::HandleDeflection(FHitResult& Hit, const FVect
 		}
 
 		// Velocity is now parallel to the impact surface.
-		if (SubTickTimeRemaining > KINDA_SMALL_NUMBER)
+		if (SubTickTimeRemaining > UE_KINDA_SMALL_NUMBER)
 		{
 			if (!HandleSliding(Hit, SubTickTimeRemaining))
 			{
@@ -868,3 +870,4 @@ void UProjectileMovementComponent::TickInterpolation(float DeltaTime)
 		UpdateTickRegistration();
 	}
 }
+

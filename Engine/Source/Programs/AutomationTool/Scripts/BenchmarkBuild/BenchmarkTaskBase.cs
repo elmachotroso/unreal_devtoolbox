@@ -12,6 +12,56 @@ using UnrealBuildTool;
 
 namespace AutomationTool.Benchmark
 {
+	[Flags]
+	public enum UBTBuildOptions
+	{
+		None = 0,
+		PreClean = 1 << 0,          // don't preclean before the job (useful for testing)
+		PostClean = 1 << 1,         // clean after the job (default for building multiple clients)
+		CleanOnly = 1 << 2,
+	}
+
+	[Flags]
+	public enum DDCTaskOptions
+	{
+		None = 0,
+		WarmDDC = 1 << 0,
+		ColdDDCNoShared = 1 << 1,
+		ColdDDC = 1 << 2,
+		NoShaderDDC = 1 << 3,
+		HotDDC = 1 << 4,
+		KeepMemoryDDC = 1 << 6,
+	}
+
+	[Flags]
+	public enum XGETaskOptions
+	{
+		None = 0,
+		NoXGE = 1 << 1,
+		WithXGE = 1 << 2,
+		NoEditorXGE = 1 << 3,         // don't use XGE for shader compilation
+		WithEditorXGE = 1 << 4,         // don't use XGE for shader compilation
+	}
+
+	/// <summary>
+	/// Simple class that describes a target in a project
+	/// </summary>
+	class ProjectTargetInfo
+	{
+		public FileReference ProjectFile { get; private set; }
+
+		public UnrealTargetPlatform TargetPlatform { get; private set; }
+
+		public bool BuildTargetAsClient { get; private set; }
+
+		public ProjectTargetInfo(FileReference InFileReference, UnrealTargetPlatform InTargetPlatform, bool InBuildTargetAsClient)
+		{
+			ProjectFile = InFileReference;
+			TargetPlatform = InTargetPlatform;
+			BuildTargetAsClient = InBuildTargetAsClient;
+		}
+	}
+
 	/// <summary>
 	/// Base class for running tasks
 	/// </summary>
@@ -30,7 +80,7 @@ namespace AutomationTool.Benchmark
 		/// <summary>
 		/// Don't report this test
 		/// </summary>
-		public bool SkipReport { get; protected set; }
+		public bool SkipReport { get; set; }
 
 		/// <summary>
 		/// Time the task took (does not include prequisites)
@@ -55,20 +105,87 @@ namespace AutomationTool.Benchmark
 		/// <summary>
 		/// Perform the actual task that is measured
 		/// </summary>
-		protected abstract bool PerformTask();
+		protected abstract bool PerformTask();	
+		
+		/// <summary>
+		/// Path to the project file we're using. May be null for Unreal editor, client etc
+		/// </summary>
+		public FileReference ProjectFile { get; private set; }
+
 
 		/// <summary>
-		/// Return a name for this task for reporting
+		/// Return the name of the module this is being performed on
 		/// </summary>
 		/// <returns></returns>
-		public string TaskName { get; set; }
+		public string ProjectName { get { return ProjectFile == null ? "Unreal" : ProjectFile.GetFileNameWithoutAnyExtensions(); } }
+
+		/// <summary>
+		/// Return the name of this task
+		/// </summary>
+		/// <returns></returns>
+		public abstract string TaskName { get;  }
+
+		private readonly List<string> InternalModifiers = new List<string>();
 
 		/// <summary>
 		/// A list of modifiers that can be considered when
 		/// </summary>
 		protected List<string> TaskModifiers { get { return InternalModifiers; }  }
 
-		private readonly List<string> InternalModifiers = new List<string>();
+		/// <summary>
+		/// Return the full name of this task for reporting
+		/// </summary>
+		/// <returns></returns>
+		public string ModifierString 
+		{ 
+			get
+			{
+				string Str = String.Empty;
+
+				if (TaskModifiers.Count > 0)
+				{
+					Str = string.Join(" ", TaskModifiers);
+				}
+
+				return Str;
+			} 
+		}
+
+		/// <summary>
+		/// Returns a full name to use in reporting and logging
+		/// </summary>
+		/// <returns></returns>
+		public string TaskNameWithModifiers
+		{
+			get
+			{
+				string Name = TaskName;
+
+				if (TaskModifiers.Count > 0)
+				{
+					Name = string.Format("{0} ({1})", Name, ModifierString);
+				}
+
+				return Name;
+			}
+		}
+
+
+
+		/// <summary>
+		/// Return the full name of this task for reporting
+		/// </summary>
+		/// <returns></returns>
+		public string FullName { get { return String.Format("{0} {1}", ProjectName, TaskNameWithModifiers); } }		
+
+		/// <summary>
+		/// Simple constructor
+		/// </summary>
+		/// <param name="InProjectFile"></param>
+		public BenchmarkTaskBase(FileReference InProjectFile)
+		{
+			ProjectFile = InProjectFile;
+		}
 
 		/// <summary>
 		/// Run the task. Performs any prerequisites, then the actual task itself
@@ -107,7 +224,7 @@ namespace AutomationTool.Benchmark
 			
 			if (Failed)
 			{
-				Log.TraceError("{0} failed. {1}", GetFullTaskName(), FailureString);
+				Log.TraceError("{0} failed. {1}", FullName, FailureString);
 			}
 
 			try
@@ -116,7 +233,7 @@ namespace AutomationTool.Benchmark
 			}
 			catch (Exception Ex)
 			{
-				Log.TraceError("Cleanup of {0} failed. {1}", GetFullTaskName(), Ex);
+				Log.TraceError("Cleanup of {0} failed. {1}", FullName, Ex);
 			}
 		}
 
@@ -127,183 +244,17 @@ namespace AutomationTool.Benchmark
 		{
 			if (!Failed)
 			{
-				Log.TraceInformation("Task {0}:\t\t\t\t{1}", GetFullTaskName(), TaskTime.ToString(@"hh\:mm\:ss"));
+				Log.TraceInformation("Task {0}:\t\t\t\t{1}", FullName, TaskTime.ToString(@"hh\:mm\:ss"));
 			}
 			else
 			{
-				Log.TraceInformation("Task {0}::\t\t\t\t{1} Failed. {2}", GetFullTaskName(), TaskTime.ToString(@"hh\:mm\:ss"), FailureString);
+				Log.TraceInformation("Task {0}::\t\t\t\t{1} Failed. {2}", FullName, TaskTime.ToString(@"hh\:mm\:ss"), FailureString);
 			}
-		}
-
-		/// <summary>
-		/// Returns a full name to use in reporting and logging
-		/// </summary>
-		/// <returns></returns>
-		public string GetFullTaskName()
-		{
-			string Name = TaskName;
-
-			if (TaskModifiers.Count > 0)
-			{
-				Name = string.Format("{0} ({1})", Name, string.Join(" ", TaskModifiers));
-			}
-
-			return Name;
 		}
 
 		public override string ToString()
 		{
-			return GetFullTaskName();
-		}
-	}
-
-	[Flags]
-	public enum DDCTaskOptions
-	{
-		None = 0,
-		WarmDDC = 1 << 0,
-		ColdDDC = 1 << 1,
-		//NoDDC = 1 << 2,
-		NoShaderDDC = 1 << 3,
-		HotDDC = 1 << 4,
-		NoXGE = 1 << 5,			// don't use XGE for shader compilation
-
-		KeepMemoryDDC = 1 << 6,
-	}
-
-	abstract class BenchmarkEditorTaskBase : BenchmarkTaskBase
-	{
-		protected DDCTaskOptions TaskOptions;
-
-		protected FileReference ProjectFile = null;
-
-		protected string EditorArgs = "";
-
-		protected string ProjectName
-		{
-			get
-			{
-				return ProjectFile == null ? "UE" : ProjectFile.GetFileNameWithoutAnyExtensions();
-			}
-		}
-
-		protected BenchmarkEditorTaskBase(FileReference InProjectFile, DDCTaskOptions InTaskOptions, string InEditorArgs)
-		{
-			TaskOptions = InTaskOptions;
-			EditorArgs = InEditorArgs.Trim().Replace("  ", " ");
-			ProjectFile = InProjectFile;
-
-			if (TaskOptions == DDCTaskOptions.None || TaskOptions.HasFlag(DDCTaskOptions.WarmDDC))
-			{
-				TaskModifiers.Add("warmddc");
-			}
-
-			if (TaskOptions.HasFlag(DDCTaskOptions.ColdDDC))
-			{
-				TaskModifiers.Add("coldddc");
-			}
-
-			if (TaskOptions.HasFlag(DDCTaskOptions.HotDDC))
-			{
-				TaskModifiers.Add("hotddc");
-			}
-
-			if (TaskOptions.HasFlag(DDCTaskOptions.NoShaderDDC))
-			{
-				TaskModifiers.Add("noshaderddc");
-			}
-
-			if (TaskOptions.HasFlag(DDCTaskOptions.KeepMemoryDDC))
-			{
-				TaskModifiers.Add("withbootddc");
-			}
-
-			if (!string.IsNullOrEmpty(EditorArgs))
-			{
-				TaskModifiers.Add(EditorArgs);
-			}
-		}
-
-		private Dictionary<string, string> StoredEnvVars = new Dictionary<string, string>();
-		private List<DirectoryReference> CachePaths = new List<DirectoryReference>();
-
-		private string GetXPlatformEnvironmentKey(string InKey)
-		{
-			// Mac uses _ in place of -
-			if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Win64)
-			{
-				InKey = InKey.Replace("-", "_");
-			}
-
-			return InKey;
-		}
-
-		protected override bool PerformPrequisites()
-		{
-			if (TaskOptions.HasFlag(DDCTaskOptions.ColdDDC))
-			{
-				StoredEnvVars.Clear();
-				CachePaths.Clear();
-
-				// We put our temp DDC paths in here
-				DirectoryReference BasePath = DirectoryReference.Combine(Unreal.EngineDirectory, "BenchmarkDDC");
-
-				// For Linux and Mac the ENV vars will be UE_BootDataCachePath and UE_LocalDataCachePath
-				IEnumerable<string> DDCEnvVars = new string[] { GetXPlatformEnvironmentKey("UE-BootDataCachePath"), GetXPlatformEnvironmentKey("UE-LocalDataCachePath") };
-				
-				if (TaskOptions.HasFlag(DDCTaskOptions.KeepMemoryDDC))
-				{
-					DDCEnvVars = DDCEnvVars.Where(E => !E.Contains("UE-Boot"));
-				}
-
-				// get all current environment vars and set them to our temp dir
-				foreach (var Key in DDCEnvVars)
-				{
-					// save current key
-					StoredEnvVars.Add(Key, Environment.GetEnvironmentVariable(Key));
-
-					// create a new dir for this key
-					DirectoryReference Dir = DirectoryReference.Combine(BasePath, Key);
-
-					if (DirectoryReference.Exists(Dir))
-					{
-						DirectoryReference.Delete(Dir, true);
-					}
-
-					DirectoryReference.CreateDirectory(Dir);
-
-					// save this dir and set it as the env var
-					CachePaths.Add(Dir);
-					Environment.SetEnvironmentVariable(Key, Dir.FullName);
-				}
-
-				// remove project files
-				DirectoryReference ProjectDDC = DirectoryReference.Combine(ProjectFile.Directory, "DerivedDataCache");
-				CommandUtils.DeleteDirectory_NoExceptions(ProjectDDC.FullName);
-
-				// remove S3 files
-				DirectoryReference S3DDC = DirectoryReference.Combine(ProjectFile.Directory, "Saved", "S3DDC");
-				CommandUtils.DeleteDirectory_NoExceptions(S3DDC.FullName);
-			}
-
-			return base.PerformPrequisites();
-		}
-
-		protected override void PerformCleanup()
-		{
-			// restore keys
-			foreach (var KV in StoredEnvVars)
-			{
-				Environment.SetEnvironmentVariable(KV.Key, KV.Value);
-			}
-
-			foreach (var Dir in CachePaths)
-			{
-				CommandUtils.DeleteDirectory_NoExceptions(Dir.FullName);
-			}
-
-			CachePaths.Clear();
-			StoredEnvVars.Clear();
+			return FullName;
 		}
 	}
 }

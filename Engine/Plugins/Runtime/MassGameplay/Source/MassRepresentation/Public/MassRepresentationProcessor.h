@@ -10,6 +10,7 @@
 #include "MassRepresentationProcessor.generated.h"
 
 class UMassRepresentationSubsystem;
+class UMassActorSubsystem;
 struct FMassActorFragment;
 
 UCLASS()
@@ -25,18 +26,12 @@ protected:
 	/** Configure the owned FMassEntityQuery instances to express processor's requirements */
 	virtual void ConfigureQueries() override;
 
-	/**
-	 * Initialize the processor 
-	 * @param Owner of the Processor
-	 */
-	virtual void Initialize(UObject& Owner) override;
-
 	/** 
 	 * Execution method for this processor 
 	 * @param EntitySubsystem is the system to execute the lambdas on each entity chunk
 	 * @param Context is the execution context to be passed when executing the lambdas
 	 */
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	/**
 	 * Release the actor to the subsystem, will only release it the actor or spawn request matches the template actor
@@ -49,20 +44,13 @@ protected:
 	 * @param bCancelSpawningOnly tell to only cancel the existing spawning request and to not release the associated actor it any.
 	 * @return if the actor was release or the spawning was canceled.
 	 */
-	bool ReleaseActorOrCancelSpawning(UMassRepresentationSubsystem& RepresentationSubsystem, const FMassEntityHandle MassAgent, FMassActorFragment& ActorInfo, const int16 TemplateActorIndex, FMassActorSpawnRequestHandle& SpawnRequestHandle, FMassCommandBuffer& CommandBuffer, const bool bCancelSpawningOnly = false);
+	bool ReleaseActorOrCancelSpawning(UMassRepresentationSubsystem& RepresentationSubsystem, UMassActorSubsystem* MassActorSubsystem, const FMassEntityHandle MassAgent, FMassActorFragment& ActorInfo, const int16 TemplateActorIndex, FMassActorSpawnRequestHandle& SpawnRequestHandle, FMassCommandBuffer& CommandBuffer, const bool bCancelSpawningOnly = false);
 
 	/*
 	 * Update representation type for each entity, must be called within a ForEachEntityChunk
 	 * @param Context of the execution from the entity sub system
 	 */
 	void UpdateRepresentation(FMassExecutionContext& Context);
-
-	/** Caching ptr to our associated world */
-	UPROPERTY(Transient)
-	UWorld* World;
-
-	UPROPERTY(Transient)
-	UMassEntitySubsystem* CachedEntitySubsystem;
 
 	FMassEntityQuery EntityQuery;
 };
@@ -82,7 +70,7 @@ protected:
 	 * @param EntitySubsystem is the system to execute the lambdas on each entity chunk
 	 * @param Context is the execution context to be passed when executing the lambdas
 	 */
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	/**
 	 * Updates chunk visibility info for later chunk logic optimization
@@ -119,7 +107,7 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 };

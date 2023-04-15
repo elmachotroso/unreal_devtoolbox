@@ -7,6 +7,8 @@
 #include "DatasmithMaxSceneParser.h"
 #include "DatasmithMaxSceneExporter.h"
 
+#include "DatasmithMaterialsUtils.h"
+
 #include "Misc/Paths.h"
 
 float GetCoronaTexmapGamma(BitmapTex* InBitmapTex)
@@ -63,58 +65,6 @@ FString FDatasmithMaxMatWriter::DumpBitmapCorona(TSharedPtr<IDatasmithCompositeT
 	CompTex->AddSurface(*OrigBase, TextureSampler);
 
 	return *Base;
-}
-
-void FDatasmithMaxMatWriter::GetCoronaTexmap(TSharedRef< IDatasmithScene > DatasmithScene, BitmapTex* InBitmapTex)
-{
-	FString Path = TEXT("");
-
-	int NumParamBlocks = InBitmapTex->NumParamBlocks();
-	
-	for (int j = 0; j < NumParamBlocks; j++)
-	{
-		IParamBlock2* ParamBlock2 = InBitmapTex->GetParamBlockByID((short)j);
-		// The the descriptor to 'decode'
-		ParamBlockDesc2* ParamBlockDesc = ParamBlock2->GetDesc();
-		// Loop through all the defined parameters therein
-		for (int i = 0; i < ParamBlockDesc->count; i++)
-		{
-			const ParamDef& ParamDefinition = ParamBlockDesc->paramdefs[i];
-
-			if (FCString::Stricmp(ParamDefinition.int_name, TEXT("filename")) == 0)
-			{
-				Path = FDatasmithMaxSceneExporter::GetActualPath(ParamBlock2->GetStr(ParamDefinition.ID, GetCOREInterface()->GetTime()));
-				continue;
-			}
-		}
-		ParamBlock2->ReleaseDesc();
-	}
-
-	if (Path.IsEmpty())
-	{
-		return;
-	}
-
-	float Gamma = GetCoronaTexmapGamma(InBitmapTex);
-
-	FString BaseName = FPaths::GetBaseFilename(Path);
-	FString Base = BaseName + FString("_") + FString::SanitizeFloat(Gamma).Replace(TEXT("."), TEXT("_")) + TextureSuffix;
-
-	for (int i = 0; i < DatasmithScene->GetTexturesCount(); i++)
-	{
-		if (DatasmithScene->GetTexture(i)->GetFile() == Path && DatasmithScene->GetTexture(i)->GetName() == Base)
-		{
-			return;
-		}
-	}
-
-	TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*Base);
-	if (gammaMgr.IsEnabled())
-	{
-		TextureElement->SetRGBCurve(Gamma / 2.2f);
-	}
-	TextureElement->SetFile(*Path);
-	DatasmithScene->AddTexture(TextureElement);
 }
 
 void FDatasmithMaxMatWriter::ExportCoronaMaterial(TSharedRef< IDatasmithScene > DatasmithScene, TSharedPtr< IDatasmithMaterialElement >& MaterialElement, Mtl* Material)
@@ -691,7 +641,7 @@ FString FDatasmithMaxMatWriter::DumpCoronaColor(TSharedPtr<IDatasmithCompositeTe
 		CoronaColor.B = ColorParameters.ColorHdr.Z;
 		break;
 	case 2:
-		CoronaColor = FDatasmithMaxMatHelper::MaxLinearColorToFLinearColor( FDatasmithMaxMatHelper::TemperatureToColor( ColorParameters.Temperature ) );
+		CoronaColor = DatasmithMaterialsUtils::TemperatureToColor( ColorParameters.Temperature );
 		ColorParameters.bInputIsLinear = true;
 		break;
 	case 3:

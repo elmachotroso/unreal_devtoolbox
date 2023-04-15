@@ -269,6 +269,28 @@ namespace CrossCompiler
 		case EHlslToken::Uint4x3:
 		case EHlslToken::Uint4x4:
 
+		case EHlslToken::Uint64_t:
+		case EHlslToken::Uint64_t1:
+		case EHlslToken::Uint64_t2:
+		case EHlslToken::Uint64_t3:
+		case EHlslToken::Uint64_t4:
+		case EHlslToken::Uint64_t1x1:
+		case EHlslToken::Uint64_t1x2:
+		case EHlslToken::Uint64_t1x3:
+		case EHlslToken::Uint64_t1x4:
+		case EHlslToken::Uint64_t2x1:
+		case EHlslToken::Uint64_t2x2:
+		case EHlslToken::Uint64_t2x3:
+		case EHlslToken::Uint64_t2x4:
+		case EHlslToken::Uint64_t3x1:
+		case EHlslToken::Uint64_t3x2:
+		case EHlslToken::Uint64_t3x3:
+		case EHlslToken::Uint64_t3x4:
+		case EHlslToken::Uint64_t4x1:
+		case EHlslToken::Uint64_t4x2:
+		case EHlslToken::Uint64_t4x3:
+		case EHlslToken::Uint64_t4x4:
+
 		case EHlslToken::Half:
 		case EHlslToken::Half1:
 		case EHlslToken::Half2:
@@ -338,6 +360,7 @@ namespace CrossCompiler
 		case EHlslToken::RWTexture1DArray:
 		case EHlslToken::RWTexture2D:
 		case EHlslToken::RWTexture2DArray:
+		case EHlslToken::RasterizerOrderedTexture2D:
 		case EHlslToken::RWTexture3D:
 		case EHlslToken::ConstantBuffer:
 		case EHlslToken::StructuredBuffer:
@@ -801,6 +824,23 @@ namespace CrossCompiler
 			return ParseResultError();
 		}
 
+		auto ParseScopedIdentifier = [](FHlslScanner& Scanner, FLinearAllocator* Allocator, FString& Name, const FHlslToken* Token, const FHlslToken* Token1, const FHlslToken* Token2)
+		{
+			while (Token1 && Token1->Token == EHlslToken::ColonColon && Token2 && Token2->Token == EHlslToken::Identifier)
+			{
+				Name += Token1->String;
+				Name += Token2->String;
+				Scanner.Advance();
+				Scanner.Advance();
+				Token1 = Scanner.PeekToken();
+				Token2 = Scanner.PeekToken(1);
+			}
+
+			AST::FExpression* AtomExpression = new(Allocator) AST::FExpression(Allocator, AST::EOperators::Identifier, Token->SourceInfo);
+			AtomExpression->Identifier = Allocator->Strdup(*Name);
+			return AtomExpression;
+		};
+
 		AST::FExpression* AtomExpression = nullptr;
 		switch (Token->Token)
 		{
@@ -811,6 +851,22 @@ namespace CrossCompiler
 			AtomExpression->LiteralType = Token->LiteralType;
 			break;
 
+		case EHlslToken::ColonColon:
+		{
+			const FHlslToken* Token1 = Scanner.PeekToken(1);
+			if (Token1 && Token1->Token == EHlslToken::Identifier)
+			{
+				FString Name;
+				AtomExpression = ParseScopedIdentifier(Scanner, Allocator, Name, Token, Token, Token1);
+			}
+			else
+			{
+				Scanner.SourceError(TEXT("Expected identifier after ::"));
+				return ParseResultError();
+			}
+		}
+			break;
+
 		case EHlslToken::Identifier:
 		{
 			auto* Token1 = Scanner.PeekToken(1);
@@ -819,18 +875,7 @@ namespace CrossCompiler
 			{
 				FString Name = Token->String;
 				Scanner.Advance();
-				while (Token1 && Token1->Token == EHlslToken::ColonColon && Token2 && Token2->Token == EHlslToken::Identifier)
-				{
-					Name += Token1->String;
-					Name += Token2->String;
-					Scanner.Advance();
-					Scanner.Advance();
-					Token1 = Scanner.PeekToken();
-					Token2 = Scanner.PeekToken(1);
-				}
-
-				AtomExpression = new(Allocator) AST::FExpression(Allocator, AST::EOperators::Identifier, Token->SourceInfo);
-				AtomExpression->Identifier = Allocator->Strdup(*Name);
+				AtomExpression = ParseScopedIdentifier(Scanner, Allocator, Name, Token, Token1, Token2);
 			}
 			else
 			{

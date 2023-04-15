@@ -14,6 +14,7 @@
 
 #include "Factories.h"
 #include "ISinglePropertyView.h"
+#include "ObjectTools.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "UnrealExporter.h"
@@ -138,7 +139,7 @@ UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::C
 	UDisplayClusterConfigurationCluster* Cluster = Toolkit->GetEditorData()->Cluster;
 
 	TArray<FString> ParentItems;
-	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& Node : Cluster->Nodes)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Node : Cluster->Nodes)
 	{
 		ParentItems.Add(Node.Key);
 	}
@@ -421,7 +422,7 @@ FVector2D FDisplayClusterConfiguratorClusterUtils::FindNextAvailablePositionForV
 
 	FBox2D DesiredBounds = FBox2D(DesiredPosition, DesiredPosition + DesiredSize);
 	TArray<FBox2D> ViewportBounds;
-	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ClusterNode->Viewports)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportKeyPair : ClusterNode->Viewports)
 	{
 		const FDisplayClusterConfigurationRectangle& Region = ViewportKeyPair.Value->Region;
 		ViewportBounds.Add(FBox2D(FVector2D(Region.X, Region.Y), FVector2D(Region.X + Region.W, Region.Y + Region.H)));
@@ -449,12 +450,31 @@ void FDisplayClusterConfiguratorClusterUtils::SortClusterNodesByHost(const TMap<
 	OutSortedNodes.KeySort(TLess<FString>());
 }
 
+void FDisplayClusterConfiguratorClusterUtils::SortClusterNodesByHost(const TMap<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& InClusterNodes, TMap<FString, TMap<FString, UDisplayClusterConfigurationClusterNode*>>& OutSortedNodes)
+{
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& ClusterNodePair : InClusterNodes)
+	{
+		check(ClusterNodePair.Value)
+
+			FString Host = ClusterNodePair.Value->Host;
+		if (!OutSortedNodes.Contains(Host))
+		{
+			OutSortedNodes.Add(Host, TMap<FString, UDisplayClusterConfigurationClusterNode*>());
+		}
+
+		OutSortedNodes[Host].Add(ClusterNodePair);
+	}
+
+	// Sort the hosts by the host address
+	OutSortedNodes.KeySort(TLess<FString>());
+}
+
 UDisplayClusterConfigurationHostDisplayData* FDisplayClusterConfiguratorClusterUtils::FindOrCreateHostDisplayData(UDisplayClusterConfigurationCluster* Cluster, FString HostIPAddress)
 {
 	// In some cases, existing host display data may be pending kill, such as if the user recently performed an undo to a state
 	// prior to the data's existence. In this case, simply remove existing host data that is pending kill and create a new one to use.
 	TArray<FString> PendingKillHostData;
-	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*>& HostPair : Cluster->HostDisplayData)
+	for (TPair<FString, TObjectPtr<UDisplayClusterConfigurationHostDisplayData>>& HostPair : Cluster->HostDisplayData)
 	{
 		if (!IsValid(HostPair.Value))
 		{
@@ -487,7 +507,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(UDispl
 	TArray<FString> UnusedHosts;
 	Cluster->HostDisplayData.GetKeys(UnusedHosts);
 
-	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& NodePair : Cluster->Nodes)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& NodePair : Cluster->Nodes)
 	{
 		UnusedHosts.Remove(NodePair.Value->Host);
 	}
@@ -511,7 +531,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(UDispl
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForHost(FString InitialName, UDisplayClusterConfigurationCluster* ParentCluster, bool bAddZero)
 {
 	TArray<FString> UsedNames;
-	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*>& HostPair : ParentCluster->HostDisplayData)
+	for (TPair<FString, TObjectPtr<UDisplayClusterConfigurationHostDisplayData>>& HostPair : ParentCluster->HostDisplayData)
 	{
 		UsedNames.Add(HostPair.Value->HostName.ToString());
 	}
@@ -548,7 +568,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveHost(UDisplayClusterConfigur
 	}
 
 	TArray<FString> ClusterNodesToRemove;
-	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& Pair : Cluster->Nodes)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Pair : Cluster->Nodes)
 	{
 		if (Pair.Value->Host == Host)
 		{
@@ -609,6 +629,8 @@ bool FDisplayClusterConfiguratorClusterUtils::IsClusterNodePrimary(UDisplayClust
 
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForClusterNode(FString InitialName, UDisplayClusterConfigurationCluster* ParentCluster, bool bAddZero)
 {
+	InitialName = ObjectTools::SanitizeObjectName(InitialName);
+	
 	TArray<FString> UsedNames;
 	ParentCluster->Nodes.GenerateKeyArray(UsedNames);
 
@@ -682,7 +704,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveClusterNodeFromCluster(UDisp
 
 			if (bRemovingPrimaryNode)
 			{
-				for (const TTuple<FString, UDisplayClusterConfigurationClusterNode*>& NodesKeyVal : ClusterNodeParent->Nodes)
+				for (const TTuple<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& NodesKeyVal : ClusterNodeParent->Nodes)
 				{
 					SetClusterNodeAsPrimary(NodesKeyVal.Value);
 					break;
@@ -773,23 +795,25 @@ FString FDisplayClusterConfiguratorClusterUtils::GetViewportName(UDisplayCluster
 
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(FString InitialName, UDisplayClusterConfigurationClusterNode* ParentClusterNode, bool bAddZero)
 {
+	InitialName = ObjectTools::SanitizeObjectName(InitialName);
+	
 	// Viewport names must be unique across the entire cluster, not just within its parent cluster nodes. Gather all of the viewport names
 	// in the cluster to check for uniqueness. Add the parent cluster node's viewports first, in case we can't get to the root cluster through
 	// the cluster node's Outer (i.e. the cluster node has not been added to the cluster yet)
 	TSet<FString> UsedNames;
-	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ParentClusterNode->Viewports)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportKeyPair : ParentClusterNode->Viewports)
 	{
 		UsedNames.Add(ViewportKeyPair.Key);
 	}
 
 	if (UDisplayClusterConfigurationCluster* Cluster = Cast<UDisplayClusterConfigurationCluster>(ParentClusterNode->GetOuter()))
 	{
-		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& ClusterNodeKeyPair : Cluster->Nodes)
+		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& ClusterNodeKeyPair : Cluster->Nodes)
 		{
 			UDisplayClusterConfigurationClusterNode* ClusterNode = ClusterNodeKeyPair.Value;
 			if (ClusterNode != ParentClusterNode)
 			{
-				for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ClusterNode->Viewports)
+				for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportKeyPair : ClusterNode->Viewports)
 				{
 					UsedNames.Add(ViewportKeyPair.Key);
 				}
@@ -1145,7 +1169,7 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 
 			// Rename viewports in the new cluster node to ensure they're unique. Copy the viewport pointers into an array
 			// first since renaming would cause the dictionary to change while we're iterating it.
-			TArray<UDisplayClusterConfigurationViewport*> CopiedViewports;
+			TArray<typename decltype(ClusterNodeCopy->Viewports)::ValueType> CopiedViewports;
 			ClusterNodeCopy->Viewports.GenerateValueArray(CopiedViewports);
 			
 			for (UDisplayClusterConfigurationViewport* Viewport : CopiedViewports)

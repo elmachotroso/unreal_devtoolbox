@@ -19,14 +19,17 @@
 #include "BSPOps.h"		// in UnrealEd
 #include "Editor/EditorEngine.h"		// for FActorLabelUtilities
 #include "Editor.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/Paths.h"
 
 #include "MeshDescriptionToDynamicMesh.h"
 #include "DynamicMeshToMeshDescription.h"
 #include "ConversionUtils/DynamicMeshToVolume.h"
 #include "AssetUtils/CreateStaticMeshUtil.h"
+#include "AssetUtils/CreateTexture2DUtil.h"
 #include "ModelingObjectsCreationAPI.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CreateNewAssetUtilityFunctions)
 
 using namespace UE::Geometry;
 
@@ -57,7 +60,7 @@ void UGeometryScriptLibrary_CreateNewAssetFunctions::CreateUniqueNewAssetPathNam
 		UniqueAssetPathAndName = FPaths::Combine(AssetFolderPath, UniqueAssetName);
 
 		// if asset does not exist at this path, we can use it
-		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*UniqueAssetPathAndName);
+		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(UniqueAssetPathAndName));
 		if (AssetData.IsValid() == false)
 		{
 			Outcome = EGeometryScriptOutcomePins::Success;
@@ -176,7 +179,7 @@ UStaticMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMesh
 	AssetOptions.bEnableRecomputeNormals = Options.bEnableRecomputeNormals;
 	AssetOptions.bEnableRecomputeTangents = Options.bEnableRecomputeTangents;
 	AssetOptions.bGenerateNaniteEnabledMesh = Options.bEnableNanite;
-	AssetOptions.NaniteProxyTrianglePercent = Options.NaniteProxyTrianglePercent;
+	AssetOptions.NaniteSettings = Options.NaniteSettings;
 
 	AssetOptions.bCreatePhysicsBody = Options.bEnableCollision;
 	AssetOptions.CollisionType = Options.CollisionMode;
@@ -209,6 +212,64 @@ UStaticMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMesh
 	return NewStaticMesh;
 }
 
+
+UTexture2D* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewTexture2DAsset(
+		UTexture2D* FromTexture, 
+		FString AssetPathAndName,
+		FGeometryScriptCreateNewTexture2DAssetOptions Options,
+		TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+		UGeometryScriptDebug* Debug)
+{
+	Outcome = EGeometryScriptOutcomePins::Failure;
+	if (FromTexture == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CreateNewTexture2DAsset_InvalidInput1", "CreateNewTexture2DAsset: FromTexture is Null"));
+		return nullptr;
+	}
+
+	UE::AssetUtils::FTexture2DAssetOptions AssetOptions;
+	AssetOptions.NewAssetPath = AssetPathAndName;
+	AssetOptions.bOverwriteIfExists = Options.bOverwriteIfExists;
+
+	UE::AssetUtils::FTexture2DAssetResults ResultData;
+	UE::AssetUtils::ECreateTexture2DResult AssetResult = UE::AssetUtils::SaveGeneratedTexture2DAsset(
+		FromTexture, AssetOptions, ResultData);
+
+	switch (AssetResult)
+	{
+	case UE::AssetUtils::ECreateTexture2DResult::NameError:
+	{
+		const FText Error = FText::Format(LOCTEXT("CreateNewTexture2DAsset_InvalidInputName", "CreateNewTexture2DAsset: AssetPathAndName '{0}' already exists."), FText::FromString(AssetPathAndName));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, Error);
+		break;
+	}
+	case UE::AssetUtils::ECreateTexture2DResult::OverwriteTypeError:
+	{
+		const FText Error = FText::Format(LOCTEXT("CreateNewTexture2DAsset_InvalidOverwriteType", "CreateNewTexture2DAsset: AssetPathAndName '{0}' already exists and is not a UTexture2D."), FText::FromString(AssetPathAndName));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, Error);
+		break;
+	}
+	case UE::AssetUtils::ECreateTexture2DResult::InvalidInputTexture:
+	{
+		const FText Error = FText::Format(LOCTEXT("CreateNewTexture2DAsset_InvalidInputPackage", "CreateNewTexture2DAsset: Failed to read input texture '{0}'."), FText::FromString(FromTexture->GetPathName()));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, Error);
+		break;
+	}
+	case UE::AssetUtils::ECreateTexture2DResult::InvalidPackage:
+	case UE::AssetUtils::ECreateTexture2DResult::UnknownError:
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("CreateNewTexture2DAsset_Failed", "CreateNewTexture2DAsset: Failed to create new Asset."));
+		break;
+	}
+	case UE::AssetUtils::ECreateTexture2DResult::Ok:
+	{
+		Outcome = EGeometryScriptOutcomePins::Success;
+		break;
+	}
+	}
+	
+	return ResultData.Texture;
+}
 
 
 

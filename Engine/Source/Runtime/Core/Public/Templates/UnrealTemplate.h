@@ -180,7 +180,24 @@ constexpr bool IntFitsIn(InType In)
 template<typename OutType, typename InType>
 OutType IntCastChecked(InType In)
 {
-	check(IntFitsIn<OutType>(In));
+	checkf(IntFitsIn<OutType>(In), TEXT("Loss of data caused by narrowing conversion"));
+	return static_cast<OutType>(In);
+}
+
+/** Test if value can make a static_cast roundtrip via OutType whilst maintaining precision */
+template<typename OutType, typename InType>
+constexpr bool FloatFitsIn(InType In, InType Precision)
+{
+	static_assert(std::is_floating_point_v<InType> && std::is_floating_point_v<OutType>, "Only floating point supported");
+	
+	OutType Out = static_cast<OutType>(In);
+	return fabs(static_cast<InType>(Out) - In) <= Precision;
+}
+
+template<typename OutType, typename InType>
+OutType FloatCastChecked(InType In, InType Precision)
+{
+	checkf(FloatFitsIn<OutType>(In, Precision), TEXT("Loss of data caused by narrowing conversion"));
 	return static_cast<OutType>(In);
 }
 
@@ -198,17 +215,12 @@ OutType IntCastChecked(InType In)
 
 // Number of elements in an array.
 #define UE_ARRAY_COUNT( array ) (sizeof(UEArrayCountHelper(array)) - 1)
-#define ARRAY_COUNT( array ) DEPRECATED_MACRO(4.24, "The ARRAY_COUNT macro has been deprecated in favor of UE_ARRAY_COUNT.") UE_ARRAY_COUNT( array )
 
 // Offset of a struct member.
-#ifndef UNREAL_CODE_ANALYZER
-// UCA uses clang on Windows. According to C++11 standard, (which in this case clang follows and msvc doesn't)
-// forbids using reinterpret_cast in constant expressions. msvc uses reinterpret_cast in offsetof macro,
-// while clang uses compiler intrinsic. Calling static_assert(STRUCT_OFFSET(x, y) == SomeValue) causes compiler
-// error when using clang on Windows (while including windows headers).
-#define STRUCT_OFFSET( struc, member )	offsetof(struc, member)
-#else
+#ifdef __clang__
 #define STRUCT_OFFSET( struc, member )	__builtin_offsetof(struc, member)
+#else
+#define STRUCT_OFFSET( struc, member )	offsetof(struc, member)
 #endif
 
 #if PLATFORM_VTABLE_AT_END_OF_CLASS

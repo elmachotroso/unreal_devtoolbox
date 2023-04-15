@@ -36,7 +36,7 @@
 #include "ContentBrowserModule.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "DesktopPlatformModule.h"
@@ -202,7 +202,6 @@ void FPhysicalMaterialMaskImport::GetSupportedTextureFileTypes(TArray<FString>& 
 void FPhysicalMaterialMaskImport::GetSupportedTextureSourceFormats(TArray<ETextureSourceFormat>& OutSourceFormats)
 {
 	OutSourceFormats.Empty();
-	OutSourceFormats.Emplace(ETextureSourceFormat::TSF_RGBA8);
 	OutSourceFormats.Emplace(ETextureSourceFormat::TSF_BGRA8);
 	OutSourceFormats.Emplace(ETextureSourceFormat::TSF_RGBA16);
 }

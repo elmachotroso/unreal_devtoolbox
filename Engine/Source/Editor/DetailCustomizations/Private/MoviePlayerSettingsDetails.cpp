@@ -1,22 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MoviePlayerSettingsDetails.h"
-#include "Misc/Paths.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "EditorStyleSet.h"
-#include "EditorDirectories.h"
-#include "Dialogs/Dialogs.h"
-#include "PropertyHandle.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Dialogs/Dialogs.h"
+#include "EditorDirectories.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/Paths.h"
 #include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "SourceControlHelpers.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SFilePathPicker.h"
-#include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "HAL/FileManager.h"
 
 
 #define LOCTEXT_NAMESPACE "MoviePlayerSettingsDetails"
@@ -63,8 +72,8 @@ void FMoviePlayerSettingsDetails::GenerateArrayElementWidget(TSharedRef<IPropert
 			.MinDesiredWidth(125.0f)
 			[
 				SNew(SFilePathPicker)
-					.BrowseButtonImage(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
-					.BrowseButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.BrowseButtonImage(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+					.BrowseButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.BrowseButtonToolTip(LOCTEXT("FileButtonToolTipText", "Choose a file from this computer"))
 					.BrowseDirectory(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_OPEN))
 					.BrowseTitle(LOCTEXT("PropertyEditorTitle", "File picker..."))

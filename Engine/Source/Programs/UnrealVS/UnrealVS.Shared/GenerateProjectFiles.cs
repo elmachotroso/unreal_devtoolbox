@@ -131,13 +131,17 @@ namespace UnrealVS
 		/// </summary>
 		public void OnOutputFromGenerateProjectFilesProcess(object _Sender, DataReceivedEventArgs Args)
 		{
-			ThreadHelper.ThrowIfNotOnUIThread();
-
-			var Pane = UnrealVSPackage.Instance.GetOutputPane();
-			if (Pane != null)
+			var AsyncTask = ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
 			{
-				Pane.OutputString(Args.Data + "\n");
-			}
+				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+				var Pane = UnrealVSPackage.Instance.GetOutputPane();
+				if (Pane != null)
+				{
+					Pane.OutputString(Args.Data + "\n");
+				}
+			});
+			AsyncTask.Join();
 		}
 
 		private string GetBatchFileName()
@@ -146,7 +150,11 @@ namespace UnrealVS
 			if (UnrealVSPackage.Instance.IsUESolutionLoaded)
 			{
 				// We expect "GenerateProjectFiles.bat" to live in the same directory as the solution
-				return Path.Combine(Path.GetDirectoryName(UnrealVSPackage.Instance.SolutionFilepath), "GenerateProjectFiles.bat");
+				string BatchPath = Path.Combine(Path.GetDirectoryName(UnrealVSPackage.Instance.SolutionFilepath), "GenerateProjectFiles.bat");
+				if (File.Exists(BatchPath))
+				{
+					return BatchPath;
+				}
 			}
 			return null;
 		}

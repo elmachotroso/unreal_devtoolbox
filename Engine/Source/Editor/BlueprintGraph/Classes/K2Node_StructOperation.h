@@ -3,11 +3,27 @@
 
 #pragma once
 
+#include "BlueprintActionFilter.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "HAL/Platform.h"
 #include "K2Node.h"
 #include "K2Node_Variable.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+
 #include "K2Node_StructOperation.generated.h"
+
+class FBlueprintActionDatabaseRegistrar;
+class UEdGraphPin;
+class UObject;
 
 UCLASS(MinimalAPI, abstract)
 class UK2Node_StructOperation : public UK2Node_Variable
@@ -20,13 +36,13 @@ class UK2Node_StructOperation : public UK2Node_Variable
 
 	//~ Begin UEdGraphNode Interface
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput = nullptr) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface
 	//virtual bool DrawNodeAsVariable() const override { return true; }
 	virtual bool ShouldShowNodeProperties() const override { return true; }
 	virtual void ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const override;
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput = nullptr) const override;
 	virtual FString GetFindReferenceSearchString() const override;
 	virtual bool IsActionFilteredOut(class FBlueprintActionFilter const& Filter) override;
 	//~ End UK2Node Interface

@@ -68,8 +68,6 @@ public class TextureFormatOodle : ModuleRules
 	{
 		ShortName = "TextureFormatOodle";
 
-		PrivatePCHHeaderFile = "Private/TextureFormatOodlePCH.h";
-
 		PrivateIncludePathModuleNames.AddRange(new string[]
 		{
 			"CoreUObject",
@@ -92,8 +90,11 @@ public class TextureFormatOodle : ModuleRules
 		// dynamic libs , for every version, not just current :
 
 		AddDynamicLibsForVersion("2.9.5");
+		AddDynamicLibsForVersion("2.9.6");
+		AddDynamicLibsForVersion("2.9.7");
+		AddDynamicLibsForVersion("2.9.8");
 
-		string LatestOodleVersion = "2.9.5";
+		string LatestOodleVersion = "2.9.8";
 
 		string IncludeDirectory = Path.Combine(ModuleDirectory, "..", "Sdks", LatestOodleVersion, "include");
 		PrivateIncludePaths.Add(IncludeDirectory);

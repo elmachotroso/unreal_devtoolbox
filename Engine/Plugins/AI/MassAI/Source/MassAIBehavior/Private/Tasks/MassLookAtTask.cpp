@@ -5,24 +5,21 @@
 #include "MassLookAtFragments.h"
 #include "MassSignalSubsystem.h"
 #include "MassStateTreeExecutionContext.h"
+#include "StateTreeLinker.h"
 
 bool FMassLookAtTask::Link(FStateTreeLinker& Linker)
 {
 	Linker.LinkExternalData(MassSignalSubsystemHandle);
 	Linker.LinkExternalData(LookAtHandle);
-
-	Linker.LinkInstanceDataProperty(DurationHandle, STATETREE_INSTANCEDATA_PROPERTY(FMassLookAtTaskInstanceData, Duration));
-	Linker.LinkInstanceDataProperty(TargetEntityHandle, STATETREE_INSTANCEDATA_PROPERTY(FMassLookAtTaskInstanceData, TargetEntity));
-	Linker.LinkInstanceDataProperty(TimeHandle, STATETREE_INSTANCEDATA_PROPERTY(FMassLookAtTaskInstanceData, Time));
 	
 	return true;
 }
 
-EStateTreeRunStatus FMassLookAtTask::EnterState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const
+EStateTreeRunStatus FMassLookAtTask::EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
-	float& Time = Context.GetInstanceData(TimeHandle);
-
-	Time = 0.f;
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+	
+	InstanceData.Time = 0.f;
 	
 	const FMassStateTreeExecutionContext& MassContext = static_cast<FMassStateTreeExecutionContext&>(Context);
 	FMassLookAtFragment& LookAtFragment = MassContext.GetExternalData(LookAtHandle);
@@ -32,8 +29,7 @@ EStateTreeRunStatus FMassLookAtTask::EnterState(FStateTreeExecutionContext& Cont
 	
 	if (LookAtMode == EMassLookAtMode::LookAtEntity)
 	{
-		const FMassEntityHandle* TargetEntity = Context.GetInstanceDataPtr(TargetEntityHandle); // Optional input
-		if (TargetEntity == nullptr || !TargetEntity->IsSet())
+		if (!InstanceData.TargetEntity.IsSet())
 		{
 			LookAtFragment.LookAtMode = EMassLookAtMode::LookForward;
 			MASSBEHAVIOR_LOG(Error, TEXT("Failed LookAt: invalid target entity"));
@@ -41,7 +37,7 @@ EStateTreeRunStatus FMassLookAtTask::EnterState(FStateTreeExecutionContext& Cont
 		else
 		{
 			LookAtFragment.LookAtMode = EMassLookAtMode::LookAtEntity;
-			LookAtFragment.TrackedEntity = *TargetEntity;
+			LookAtFragment.TrackedEntity = InstanceData.TargetEntity;
 		}
 	}
 
@@ -52,17 +48,16 @@ EStateTreeRunStatus FMassLookAtTask::EnterState(FStateTreeExecutionContext& Cont
 
 	// A Duration <= 0 indicates that the task runs until a transition in the state tree stops it.
 	// Otherwise we schedule a signal to end the task.
-	const float Duration = Context.GetInstanceData(DurationHandle);
-	if (Duration > 0.0f)
+	if (InstanceData.Duration > 0.0f)
 	{
 		UMassSignalSubsystem& MassSignalSubsystem = MassContext.GetExternalData(MassSignalSubsystemHandle);
-		MassSignalSubsystem.DelaySignalEntity(UE::Mass::Signals::LookAtFinished, MassContext.GetEntity(), Duration);
+		MassSignalSubsystem.DelaySignalEntity(UE::Mass::Signals::LookAtFinished, MassContext.GetEntity(), InstanceData.Duration);
 	}
 
 	return EStateTreeRunStatus::Running;
 }
 
-void FMassLookAtTask::ExitState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const
+void FMassLookAtTask::ExitState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
 	const FMassStateTreeExecutionContext& MassContext = static_cast<FMassStateTreeExecutionContext&>(Context);
 	FMassLookAtFragment& LookAtFragment = MassContext.GetExternalData(LookAtHandle);
@@ -72,10 +67,9 @@ void FMassLookAtTask::ExitState(FStateTreeExecutionContext& Context, const EStat
 
 EStateTreeRunStatus FMassLookAtTask::Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
-	float& Time = Context.GetInstanceData(TimeHandle);
-	const float Duration = Context.GetInstanceData(DurationHandle);
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 	
-	Time += DeltaTime;
+	InstanceData.Time += DeltaTime;
 	
-	return Duration <= 0.0f ? EStateTreeRunStatus::Running : (Time < Duration ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Succeeded);
+	return InstanceData.Duration <= 0.0f ? EStateTreeRunStatus::Running : (InstanceData.Time < InstanceData.Duration ? EStateTreeRunStatus::Running : EStateTreeRunStatus::Succeeded);
 }

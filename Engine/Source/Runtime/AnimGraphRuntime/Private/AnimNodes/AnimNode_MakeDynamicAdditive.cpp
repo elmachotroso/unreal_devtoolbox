@@ -4,6 +4,8 @@
 #include "AnimationRuntime.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_MakeDynamicAdditive)
+
 /////////////////////////////////////////////////////
 // FAnimNode_MakeDynamicAdditive
 
@@ -40,6 +42,7 @@ void FAnimNode_MakeDynamicAdditive::Update_AnyThread(const FAnimationUpdateConte
 void FAnimNode_MakeDynamicAdditive::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	FScopedExpectsAdditiveOverride(Output, false);
 	FPoseContext BaseEvalContext(Output);
 
 	Base.Evaluate(BaseEvalContext);
@@ -67,3 +70,4 @@ void FAnimNode_MakeDynamicAdditive::GatherDebugData(FNodeDebugData& DebugData)
 	Base.GatherDebugData(DebugData.BranchFlow(1.f));
 	Additive.GatherDebugData(DebugData.BranchFlow(1.f));
 }
+

@@ -17,6 +17,8 @@
 
 #include "Algo/Find.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WeightAndEasingEvaluatorSystem)
+
 DECLARE_CYCLE_STAT(TEXT("MovieScene: Evaluate easing"), MovieSceneEval_EvaluateEasingTask, STATGROUP_MovieSceneECS);
 
 UMovieSceneHierarchicalEasingInstantiatorSystem::UMovieSceneHierarchicalEasingInstantiatorSystem(const FObjectInitializer& ObjInit)
@@ -26,6 +28,7 @@ UMovieSceneHierarchicalEasingInstantiatorSystem::UMovieSceneHierarchicalEasingIn
 
 	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 	RelevantComponent = BuiltInComponents->HierarchicalEasingProvider;
+	SystemCategories = EEntitySystemCategory::Core;
 }
 
 void UMovieSceneHierarchicalEasingInstantiatorSystem::OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
@@ -151,10 +154,10 @@ struct FEvaluateEasings
 			const FEntityAllocation* InAllocation, 
 			TRead<FFrameTime> Times,
 			TReadOptional<FEasingComponentData> OptEasing,
-			TReadOptional<float> OptManualWeights,
+			TReadOptional<double> OptManualWeights,
 			TReadOptional<FInstanceHandle> OptInstanceHandles,
 			TReadOptional<FMovieSceneSequenceID> OptHierarchicalEasingProviders,
-			TWrite<float> Results)
+			TWrite<double> Results)
 	{
 		const int32 Num = InAllocation->Num();
 
@@ -169,7 +172,7 @@ struct FEvaluateEasings
 		{
 			for (int32 Idx = 0; Idx < Num; ++Idx)
 			{
-				const float EasingWeight = OptEasing[Idx].Section->EvaluateEasing(Times[Idx]);
+				const double EasingWeight = OptEasing[Idx].Section->EvaluateEasing(Times[Idx]);
 				Results[Idx] *= FMath::Max(EasingWeight, 0.f);
 			}
 		}
@@ -249,7 +252,7 @@ struct FPropagateHierarchicalEasings
 		: EasingChannels(InEasingChannels)
 	{}
 
-	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<uint16> HierarchicalEasingChannels, TWrite<float> WeightAndEasingResults)
+	void ForEachAllocation(const FEntityAllocation* Allocation, TRead<uint16> HierarchicalEasingChannels, TWrite<double> WeightAndEasingResults)
 	{
 		const int32 Num = Allocation->Num();
 		for (int32 Index = 0; Index < Num; ++Index)
@@ -271,6 +274,8 @@ struct FPropagateHierarchicalEasings
 UWeightAndEasingEvaluatorSystem::UWeightAndEasingEvaluatorSystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
+	SystemCategories = UE::MovieScene::EEntitySystemCategory::ChannelEvaluators;
+
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineImplicitPrerequisite(UMovieSceneEvalTimeSystem::StaticClass(), GetClass());
@@ -322,7 +327,7 @@ void UWeightAndEasingEvaluatorSystem::ReleaseEasingChannel(uint16 EasingChannelI
 	}
 }
 
-void UWeightAndEasingEvaluatorSystem::SetSubSequenceEasing(UE::MovieScene::FInstanceHandle SubSequenceHandle, float EasingResult)
+void UWeightAndEasingEvaluatorSystem::SetSubSequenceEasing(UE::MovieScene::FInstanceHandle SubSequenceHandle, double EasingResult)
 {
 	using namespace UE::MovieScene;
 
@@ -400,4 +405,5 @@ void UWeightAndEasingEvaluatorSystem::OnRun(FSystemTaskPrerequisites& InPrerequi
 			.Dispatch_PerAllocation<FPropagateHierarchicalEasings>(&Linker->EntityManager, PropagatePrereqs, &Subsequents, &EasingChannels);
 	}
 }
+
 

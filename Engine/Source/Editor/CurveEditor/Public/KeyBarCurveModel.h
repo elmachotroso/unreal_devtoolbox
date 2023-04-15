@@ -2,11 +2,26 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "CoreTypes.h"
+#include "CurveEditorTypes.h"
 #include "CurveModel.h"
+#include "Curves/KeyHandle.h"
+#include "Math/Color.h"
+#include "Math/Range.h"
+#include "Misc/Optional.h"
+#include "Templates/Tuple.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
 
+class FCurveEditor;
 class FMenuBuilder;
+struct FCurveEditorScreenSpace;
 struct FCurvePointHandle;
+struct FKeyAttributes;
+struct FKeyDrawInfo;
+struct FKeyPosition;
 
 /**
  * Class that provides functionality to represents keys as continuous ranges.
@@ -44,6 +59,8 @@ public:
 	*/
 	struct CURVEEDITOR_API FBarRange
 	{
+		/* Spaces have ifinite ranges, Constraints don't*/
+		bool bRangeIsInfinite = true;
 		TRange<double> Range;
 		FName  Name;
 		FLinearColor Color;

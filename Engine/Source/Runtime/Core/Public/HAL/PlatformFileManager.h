@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "CoreFwd.h"
+#include "CoreTypes.h"
 #include "Templates/Atomic.h"
 
 #ifndef USE_ATOMIC_PLATFORM_FILE
@@ -79,9 +79,19 @@ public:
 	* THIS IS EXTREMELY DANGEROUS AFTER THE ENGINE HAS BEEN INITIALIZED AS WE MAY BE MODIFYING
 	* THE WRAPPER CHAIN WHILE THINGS ARE BEING LOADED
 	*
-	* @param Name of the platform file to create.
-	* @return Platform file instance of the platform file type was found, nullptr otherwise.
+	* @param The platform file to remove.
 	*/
 	void RemovePlatformFile(IPlatformFile* PlatformFileToRemove);
 
+	/**
+	* Inserts a new platform file into the platform file wrapper chain.
+	* The file is inserted before NewPlatformFile->GetLowerLevel().
+	*
+	* THIS IS EXTREMELY DANGEROUS AFTER THE ENGINE HAS BEEN INITIALIZED AS WE MAY BE MODIFYING
+	* THE WRAPPER CHAIN WHILE THINGS ARE BEING LOADED
+	*
+	* @param The platform file to insert.
+	* @return true if the platform file was inserted.
+	*/
+	bool InsertPlatformFile(IPlatformFile* NewPlatformFile);
 };

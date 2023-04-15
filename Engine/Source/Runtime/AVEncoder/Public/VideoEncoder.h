@@ -2,13 +2,23 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "VideoEncoderInput.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Platform.h"
 #include "Misc/FrameRate.h"
 #include "Misc/ScopeLock.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "VideoEncoderInput.h"
 
 namespace AVEncoder
 {
+	class FCodecPacket;
+	class FVideoEncoderInput;
+	class FVideoEncoderInputFrame;
+
     class AVENCODER_API FVideoEncoder
     {
     public:
@@ -63,8 +73,8 @@ namespace AVEncoder
 		FLayerConfig GetLayerConfig(uint32 layerIdx) const;
         void UpdateLayerConfig(uint32 layerIdx, FLayerConfig const& config);
 
-        using OnFrameEncodedCallback = TFunction<void(const FVideoEncoderInputFrame* /* InCompletedFrame */)>;
-        using OnEncodedPacketCallback = TFunction<void(uint32 /* LayerIndex */, const FVideoEncoderInputFrame* /* Frame */, const FCodecPacket& /* Packet */)>;
+        using OnFrameEncodedCallback = TFunction<void(const TSharedPtr<FVideoEncoderInputFrame> /* InCompletedFrame */)>;
+        using OnEncodedPacketCallback = TFunction<void(uint32 /* LayerIndex */, const TSharedPtr<FVideoEncoderInputFrame> /* Frame */, const FCodecPacket& /* Packet */)>;
 
         struct FEncodeOptions
         {
@@ -75,7 +85,7 @@ namespace AVEncoder
         void SetOnEncodedPacket(OnEncodedPacketCallback callback) { OnEncodedPacket = MoveTemp(callback); }
         void ClearOnEncodedPacket() { OnEncodedPacket = nullptr; }
 
-		virtual void Encode(FVideoEncoderInputFrame const* frame, FEncodeOptions const& options) {}
+		virtual void Encode(const TSharedPtr<FVideoEncoderInputFrame> frame, FEncodeOptions const& options) {}
 
     protected:
         FVideoEncoder() = default;

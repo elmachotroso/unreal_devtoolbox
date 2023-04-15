@@ -14,7 +14,7 @@
 
 #include "Styling/CoreStyle.h"
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 #include "Components/PanelWidget.h"
 
@@ -34,8 +34,8 @@
 #include "WidgetBlueprintEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "Styling/SlateIconFinder.h"
-#include "WidgetTemplateBlueprintClass.h"
-#include "WidgetTemplateImageClass.h"
+#include "Templates/WidgetTemplateBlueprintClass.h"
+#include "Templates/WidgetTemplateImageClass.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -222,7 +222,7 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 
 			if (DecoratedDragDropOp.IsValid())
 			{
-				DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+				DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 			}
 			return EItemDropZone::OntoItem;
 		}
@@ -267,7 +267,7 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 
 				if (DecoratedDragDropOp.IsValid())
 				{
-					DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+					DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 				}
 				return EItemDropZone::OntoItem;
 			}
@@ -282,7 +282,7 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 
 		if (DecoratedDragDropOp.IsValid())
 		{
-			DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 		}
 		return TOptional<EItemDropZone>();
 	}
@@ -303,28 +303,28 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 
 			if ( bIsDraggedObject )
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				return TOptional<EItemDropZone>();
 			}
 
 			UPanelWidget* NewParent = Cast<UPanelWidget>(TargetItem.GetTemplate());
 			if (!NewParent)
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("CantHaveChildren", "Widget can't have children.");
 				return TOptional<EItemDropZone>();
 			}
 
 			if (!NewParent->CanAddMoreChildren())
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("NoAdditionalChildren", "Widget can't accept additional children.");
 				return TOptional<EItemDropZone>();
 			}
 
 			if (!NewParent->CanHaveMultipleChildren() && HierarchyDragDropOp->DraggedWidgets.Num() > 1)
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("CantHaveMultipleChildren", "Widget can't have multiple children.");
 				return TOptional<EItemDropZone>();
 			}
@@ -345,7 +345,7 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 
 			if (bFoundNewParentInChildSet)
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("CantMakeWidgetChildOfChildren", "Can't make widget a child of its children.");
 				return TOptional<EItemDropZone>();
 			}
@@ -440,12 +440,12 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 				BlueprintEditor->SelectWidgets(SelectedTemplates, false);
 			}
 
-			HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 			return EItemDropZone::OntoItem;
 		}
 		else
 		{
-			HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 			HierarchyDragDropOp->CurrentHoverText = LOCTEXT("CantHaveChildren", "Widget can't have children.");
 		}
 
@@ -568,7 +568,7 @@ bool FHierarchyModel::HasCircularReferences(UWidgetBlueprint* Blueprint, UWidget
 			if (DragDropOp->IsOfType<FDecoratedDragDropOp>())
 			{
 				TSharedPtr<FDecoratedDragDropOp> DecoratedDragDropOp = StaticCastSharedPtr<FDecoratedDragDropOp>(DragDropOp);
-				DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				DecoratedDragDropOp->CurrentHoverText = LOCTEXT("CircularReference", "This would cause a circular reference.");
 			}
 
@@ -700,10 +700,19 @@ void FHierarchyRoot::GetChildren(TArray< TSharedPtr<FHierarchyModel> >& Children
 	TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
 	UWidgetBlueprint* Blueprint = BPEd->GetWidgetBlueprintObj();
 
+	// We only show the hierarchy of the widget tree we own.  If this is a subclass of a widget with a parent tree
+	// we won't actually show those widgets here because we can't affect them in a useful inheritable way.
 	if ( Blueprint->WidgetTree->RootWidget )
 	{
 		TSharedPtr<FHierarchyWidget> RootChild = MakeShareable(new FHierarchyWidget(BPEd->GetReferenceFromTemplate(Blueprint->WidgetTree->RootWidget), BPEd));
 		Children.Add(RootChild);
+	}
+
+	// Grab any exposed named slots from the super classes CDO.  These slots can have content slotted into them by this subclass.
+	for ( const FName& SlotName : Blueprint->GetInheritedAvailableNamedSlots() )
+	{
+		TSharedPtr<FNamedSlotModelSubclass> ChildItem = MakeShareable(new FNamedSlotModelSubclass(Blueprint, SlotName, BPEd));
+		Children.Add(ChildItem);
 	}
 }
 
@@ -744,7 +753,7 @@ bool FHierarchyRoot::DoesWidgetOverrideFlowDirection() const
 	TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
 	if (UWidget* Default = BPEd->GetWidgetBlueprintObj()->GeneratedClass->GetDefaultObject<UWidget>())
 	{
-		return Default->FlowDirectionPreference != EFlowDirectionPreference::Inherit;
+		return Default->GetFlowDirectionPreference() != EFlowDirectionPreference::Inherit;
 	}
 
 	return false;
@@ -766,13 +775,13 @@ TOptional<EItemDropZone> FHierarchyRoot::HandleCanAcceptDrop(const FDragDropEven
 		}
 	}
 
-	bool bIsDrop = false;
+	const bool bIsDrop = false;
 	return bIsFreeFromCircularReferences ? ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), FWidgetReference()) : TOptional<EItemDropZone>();
 }
 
 FReply FHierarchyRoot::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EItemDropZone DropZone)
 {
-	bool bIsDrop = true;
+	const bool bIsDrop = true;
 	TOptional<EItemDropZone> Zone = ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), FWidgetReference());
 	if (Zone.IsSet())
 	{
@@ -793,28 +802,25 @@ FReply FHierarchyRoot::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EIt
 
 //////////////////////////////////////////////////////////////////////////
 
-FNamedSlotModel::FNamedSlotModel(FWidgetReference InItem, FName InSlotName, TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor)
+FNamedSlotModelBase::FNamedSlotModelBase(FName InSlotName, TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor)
 	: FHierarchyModel(InBlueprintEditor)
-	, Item(InItem)
 	, SlotName(InSlotName)
 {
 }
 
-FName FNamedSlotModel::GetUniqueName() const
+const FSlateBrush* FNamedSlotModelBase::GetImage() const
 {
-	UWidget* WidgetTemplate = Item.GetTemplate();
-	if ( WidgetTemplate )
-	{
-		FString UniqueSlot = WidgetTemplate->GetName() + TEXT(".") + SlotName.ToString();
-		return FName(*UniqueSlot);
-	}
-
-	return NAME_None;
+	return nullptr;
 }
 
-FText FNamedSlotModel::GetText() const
+FSlateFontInfo FNamedSlotModelBase::GetFont() const
 {
-	if ( INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()) )
+	return FCoreStyle::GetDefaultFontStyle("Bold", 10);
+}
+
+FText FNamedSlotModelBase::GetText() const
+{
+	if (INamedSlotInterface* NamedSlotHost = GetNamedSlotHost())
 	{
 		TSet<FWidgetReference> SelectedWidgets;
 		if ( UWidget* SlotContent = NamedSlotHost->GetContentForSlot(SlotName) )
@@ -826,59 +832,34 @@ FText FNamedSlotModel::GetText() const
 	return FText::FromName(SlotName);
 }
 
-const FSlateBrush* FNamedSlotModel::GetImage() const
-{
-	return NULL;
-}
 
-FSlateFontInfo FNamedSlotModel::GetFont() const
+void FNamedSlotModelBase::GetChildren(TArray< TSharedPtr<FHierarchyModel> >& Children)
 {
-	return FCoreStyle::GetDefaultFontStyle("Bold", 10);
-}
-
-void FNamedSlotModel::GetChildren(TArray< TSharedPtr<FHierarchyModel> >& Children)
-{
-	TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
-	if ( INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()) )
+	if (INamedSlotInterface* NamedSlotHost = GetNamedSlotHost())
 	{
 		TSet<FWidgetReference> SelectedWidgets;
 		if ( UWidget* TemplateSlotContent = NamedSlotHost->GetContentForSlot(SlotName) )
 		{
+			TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
 			TSharedPtr<FHierarchyWidget> RootChild = MakeShareable(new FHierarchyWidget(BPEd->GetReferenceFromTemplate(TemplateSlotContent), BPEd));
 			Children.Add(RootChild);
 		}
 	}
 }
 
-void FNamedSlotModel::OnSelection()
+void FNamedSlotModelBase::OnSelection()
 {
-	TSharedPtr<FWidgetBlueprintEditor> Editor = BlueprintEditor.Pin();
-
-	FNamedSlotSelection Selection;
-	Selection.NamedSlotHostWidget = Item;
-	Selection.SlotName = SlotName;
-	Editor->SetSelectedNamedSlot(Selection);
+	// No-Op intentionally.
 }
 
-void FNamedSlotModel::UpdateSelection()
+void FNamedSlotModelBase::UpdateSelection()
 {
-	//bIsSelected = false;
-
-	//const TSet<FWidgetReference>& SelectedWidgets = BlueprintEditor.Pin()->GetSelectedWidgets();
-
-	//TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
-	//if ( INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()) )
-	//{
-	//	if ( UWidget* TemplateSlotContent = NamedSlotHost->GetContentForSlot(SlotName) )
-	//	{
-	//		bIsSelected = SelectedWidgets.Contains(BPEd->GetReferenceFromTemplate(TemplateSlotContent));
-	//	}
-	//}
+	// No-Op intentionally.
 }
 
-FWidgetReference FNamedSlotModel::AsDraggedWidgetReference() const
+FWidgetReference FNamedSlotModelBase::AsDraggedWidgetReference() const
 {
-	if (INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()))
+	if (INamedSlotInterface* NamedSlotHost = GetNamedSlotHost())
 	{
 		// Only assign content to the named slot if it is null.
 		if (UWidget* Content = NamedSlotHost->GetContentForSlot(SlotName))
@@ -890,7 +871,7 @@ FWidgetReference FNamedSlotModel::AsDraggedWidgetReference() const
 	return FWidgetReference();
 }
 
-TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone)
+TOptional<EItemDropZone> FNamedSlotModelBase::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone)
 {
 	UWidgetBlueprint* Blueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj();
 
@@ -904,14 +885,14 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 			DecoratedDragDropOp->ResetToDefaultToolTip();
 		}
 
-		if (INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()))
+		if (INamedSlotInterface* NamedSlotHost = GetNamedSlotHost())
 		{
 			// Only assign content to the named slot if it is null.
 			if (NamedSlotHost->GetContentForSlot(SlotName) != nullptr)
 			{
 				if (DecoratedDragDropOp.IsValid())
 				{
-					DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+					DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 					DecoratedDragDropOp->CurrentHoverText = LOCTEXT("NamedSlotAlreadyFull", "Named Slot already has a child.");
 				}
 				return TOptional<EItemDropZone>();
@@ -919,10 +900,10 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 
 			if (UWidget* Widget = FWidgetBlueprintEditorUtils::GetWidgetTemplateFromDragDrop(Blueprint, Blueprint->WidgetTree, DragDropOp))
 			{
-				bool bIsFreeFromCircularReferences = !HasCircularReferences(Blueprint, Widget, DragDropOp);
+				const bool bIsFreeFromCircularReferences = !HasCircularReferences(Blueprint, Widget, DragDropOp);
 				if (DecoratedDragDropOp.IsValid())
 				{
-					DecoratedDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+					DecoratedDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 				}
 				return bIsFreeFromCircularReferences ? EItemDropZone::OntoItem : TOptional<EItemDropZone>();
 			}
@@ -934,12 +915,12 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 	{
 		HierarchyDragDropOp->ResetToDefaultToolTip();
 
-		if (INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(Item.GetTemplate()))
+		if (INamedSlotInterface* NamedSlotHost = GetNamedSlotHost())
 		{
 			// Only assign content to the named slot if it is null.
 			if (NamedSlotHost->GetContentForSlot(SlotName) != nullptr)
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("NamedSlotAlreadyFull", "Named Slot already has a child.");
 				return TOptional<EItemDropZone>();
 			}
@@ -949,7 +930,7 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 
 			// Verify that the new location we're placing the widget is not inside of its existing children.
 			Blueprint->WidgetTree->ForWidgetAndChildren(TemplateWidget, [&](UWidget* Widget) {
-				if (Item.GetTemplate() == Widget)
+				if (GetNamedSlotHostWidget() == Widget)
 				{
 					bFoundNewParentInChildSet = true;
 				}
@@ -957,12 +938,12 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 
 			if (bFoundNewParentInChildSet)
 			{
-				HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				HierarchyDragDropOp->CurrentHoverText = LOCTEXT("CantMakeWidgetChildOfChildren", "Can't make widget a child of its children.");
 				return TOptional<EItemDropZone>();
 			}
 
-			HierarchyDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			HierarchyDragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 			return EItemDropZone::OntoItem;
 		}
 	}
@@ -970,10 +951,9 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 	return TOptional<EItemDropZone>();
 }
 
-FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EItemDropZone DropZone)
+FReply FNamedSlotModelBase::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EItemDropZone DropZone)
 {
-	UWidget* SlotHostWidget = Item.GetTemplate();
-	INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(SlotHostWidget);
+	INamedSlotInterface* NamedSlotHost = GetNamedSlotHost();
 	if (NamedSlotHost == nullptr)
 	{
 		return FReply::Unhandled();
@@ -994,7 +974,7 @@ FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EI
 
 		if (UWidget* DroppingWidget = FWidgetBlueprintEditorUtils::GetWidgetTemplateFromDragDrop(Blueprint, Blueprint->WidgetTree, DragDropOp))
 		{
-			DoDrop(SlotHostWidget, DroppingWidget);
+			DoDrop(NamedSlotHost, DroppingWidget);
 			return FReply::Handled();
 		}
 		else
@@ -1013,8 +993,7 @@ FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EI
 		UWidget* DroppingWidget = HierarchyDragDropOp->DraggedWidgets[0].Widget.GetTemplate();
 
 		// We don't know if this widget is being removed from a named slot and RemoveFromParent is not enough to take care of this
-		UWidget* SourceNamedSlotHostWidget = FWidgetBlueprintEditorUtils::FindNamedSlotHostWidgetForContent(DroppingWidget, Blueprint->WidgetTree);
-		if (SourceNamedSlotHostWidget != nullptr)
+		if (UWidget* SourceNamedSlotHostWidget = FWidgetBlueprintEditorUtils::FindNamedSlotHostWidgetForContent(DroppingWidget, Blueprint->WidgetTree))
 		{
 			if (TScriptInterface<INamedSlotInterface> SourceNamedSlotHost = TScriptInterface<INamedSlotInterface>(SourceNamedSlotHostWidget))
 			{
@@ -1023,10 +1002,18 @@ FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EI
 				FWidgetBlueprintEditorUtils::RemoveNamedSlotHostContent(DroppingWidget, SourceNamedSlotHost);
 			}
 		}
+		else
+		{
+			FName SourceSlotName = Blueprint->WidgetTree->FindSlotForContent(DroppingWidget);
+			if (SourceSlotName != NAME_None)
+			{
+				Blueprint->WidgetTree->SetContentForSlot(SourceSlotName, nullptr);
+			}
+		}
 
 		DroppingWidget->RemoveFromParent();
 
-		DoDrop(SlotHostWidget, DroppingWidget);
+		DoDrop(NamedSlotHost, DroppingWidget);
 
 		return FReply::Handled();
 	}
@@ -1034,15 +1021,17 @@ FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EI
 	return FReply::Unhandled();
 }
 
-void FNamedSlotModel::DoDrop(UWidget* NamedSlotHostWidget, UWidget* DroppingWidget)
+void FNamedSlotModelBase::DoDrop(INamedSlotInterface* NamedSlotHost, UWidget* DroppingWidget)
 {
 	UWidgetBlueprint* Blueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj();
 
-	NamedSlotHostWidget->SetFlags(RF_Transactional);
-	NamedSlotHostWidget->Modify();
-
-	TScriptInterface<INamedSlotInterface> NamedSlotInterface = TScriptInterface<INamedSlotInterface>(NamedSlotHostWidget);
-	NamedSlotInterface->SetContentForSlot(SlotName, DroppingWidget);
+	if (UObject* NamedSlotHostObject = Cast<UObject>(NamedSlotHost))
+	{
+		NamedSlotHostObject->SetFlags(RF_Transactional);
+		NamedSlotHostObject->Modify();
+	}
+	
+	NamedSlotHost->SetContentForSlot(SlotName, DroppingWidget);
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -1050,6 +1039,84 @@ void FNamedSlotModel::DoDrop(UWidget* NamedSlotHostWidget, UWidget* DroppingWidg
 	SelectedTemplates.Add(BlueprintEditor.Pin()->GetReferenceFromTemplate(DroppingWidget));
 
 	BlueprintEditor.Pin()->SelectWidgets(SelectedTemplates, false);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FNamedSlotModel::FNamedSlotModel(FWidgetReference InItem, FName InSlotName, TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor)
+	: FNamedSlotModelBase(InSlotName, InBlueprintEditor)
+	, Item(InItem)
+{
+}
+
+FName FNamedSlotModel::GetUniqueName() const
+{
+	if ( const UWidget* WidgetTemplate = Item.GetTemplate() )
+	{
+		TStringBuilder<256> StringBuilder;
+		StringBuilder.Append(WidgetTemplate->GetName());
+		StringBuilder.Append(TEXT("."));
+		SlotName.AppendString(StringBuilder);
+
+		return FName(StringBuilder);
+	}
+
+	return FName();
+}
+
+INamedSlotInterface* FNamedSlotModel::GetNamedSlotHost() const
+{
+	return Cast<INamedSlotInterface>(Item.GetTemplate());
+}
+
+UWidget* FNamedSlotModel::GetNamedSlotHostWidget() const
+{
+	return Cast<UWidget>(Item.GetTemplate());
+}
+
+void FNamedSlotModel::OnSelection()
+{
+	TSharedPtr<FWidgetBlueprintEditor> Editor = BlueprintEditor.Pin();
+	check(Editor.IsValid());
+
+	FNamedSlotSelection Selection;
+	Selection.NamedSlotHostWidget = Item;
+	Selection.SlotName = SlotName;
+	Editor->SetSelectedNamedSlot(Selection);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FNamedSlotModelSubclass::FNamedSlotModelSubclass(UWidgetBlueprint* InBlueprint, FName InSlotName, TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor)
+	: FNamedSlotModelBase(InSlotName, InBlueprintEditor)
+	, Blueprint(InBlueprint)
+{
+}
+
+FName FNamedSlotModelSubclass::GetUniqueName() const
+{
+	const FString UniqueSlot = TEXT("This.") + SlotName.ToString();
+	return FName(*UniqueSlot);
+}
+
+INamedSlotInterface* FNamedSlotModelSubclass::GetNamedSlotHost() const
+{
+	return Blueprint->WidgetTree;
+}
+
+UWidget* FNamedSlotModelSubclass::GetNamedSlotHostWidget() const
+{
+	// CDO stored named slot elements don't have a host widget they can use/reference/talk about.
+	return nullptr;
+}
+
+void FNamedSlotModelSubclass::OnSelection()
+{
+	TSharedPtr<FWidgetBlueprintEditor> Editor = BlueprintEditor.Pin();
+
+	FNamedSlotSelection Selection;
+	Selection.SlotName = SlotName;
+	Editor->SetSelectedNamedSlot(Selection);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1363,7 +1430,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 				.ToolTipText(LOCTEXT("NavigationHierarchyToolTip", "This widget overrides the navigation preference."))
 				.Visibility_Lambda([InModel] { return InModel->DoesWidgetOverrideNavigation() ? EVisibility::Visible : EVisibility::Collapsed; })
 				.ColorAndOpacity(FCoreStyle::Get().GetSlateColor("Foreground"))
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 				.Text(FEditorFontGlyphs::Arrows)
 			]
 
@@ -1377,7 +1444,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 				.ToolTipText(LOCTEXT("FlowDirectionHierarchyToolTip", "This widget overrides the culture/localization flow direction preference."))
 				.Visibility_Lambda([InModel] { return InModel->DoesWidgetOverrideFlowDirection() ? EVisibility::Visible : EVisibility::Collapsed; })
 				.ColorAndOpacity(FCoreStyle::Get().GetSlateColor("Foreground"))
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 				.Text(FEditorFontGlyphs::Exchange)
 			]
 
@@ -1388,7 +1455,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 			[
 				SNew(SButton)
 				.ContentPadding(FMargin(3, 1))
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ForegroundColor(FCoreStyle::Get().GetSlateColor("Foreground"))
 				.OnClicked(this, &SHierarchyViewItem::OnToggleLockedInDesigner)
 				.Visibility(Model->CanControlLockedInDesigner() ? EVisibility::Visible : EVisibility::Hidden)
@@ -1401,7 +1468,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 					.HAlign(HAlign_Left)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(this, &SHierarchyViewItem::GetLockBrushForWidget)
 					]
 				]
@@ -1414,7 +1481,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 			[
 				SNew(SButton)
 				.ContentPadding(FMargin(3, 1))
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ForegroundColor(FCoreStyle::Get().GetSlateColor("Foreground"))
 				.OnClicked(this, &SHierarchyViewItem::OnToggleVisibility)
 				.Visibility(Model->CanControlVisibility() ? EVisibility::Visible : EVisibility::Hidden)
@@ -1423,7 +1490,7 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 					.Text(this, &SHierarchyViewItem::GetVisibilityBrushForWidget)
 				]
 			]

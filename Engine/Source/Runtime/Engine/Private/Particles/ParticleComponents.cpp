@@ -50,6 +50,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "PipelineStateCache.h"
 #if WITH_EDITOR
 #include "Engine/InterpCurveEdSetup.h"
 #include "ObjectEditorUtils.h"
@@ -179,6 +180,14 @@ static TAutoConsoleVariable<float> CVarPruneEmittersOnCookByDetailMode(
 	TEXT("This will only work if scalability settings affecting detail mode can not be changed at runtime (depends on platform).\n"),
 	ECVF_ReadOnly);
 
+float GFXLWCTileRecache = 2;
+FAutoConsoleVariableRef CVarFXLWCTileRecache(
+	TEXT("fx.LWCTileRecache"),
+	GFXLWCTileRecache,
+	TEXT("When we cross this number of LWC tiles from where we started the FX we need to recache the LWC tile to avoid artifacts.\n")
+	TEXT("When this occurs the system may need to reset, cull particles too far away, or do some additional processing to handle it.\n")
+	TEXT("Setting this value to 0 will remove this behavior but could introduce rendering & simulation artifacts.\n"),
+	ECVF_Default);
 
 int32 OldDetailModeToBitmask(int32 OldMode)
 {
@@ -2504,6 +2513,8 @@ void UParticleSystem::PostLoad()
 		}
 	}
 
+	PrecachePSOs();
+
 #if WITH_EDITOR
 	// Due to there still being some ways that LODLevel counts get mismatched,
 	// when loading in the editor LOD levels will always be checked and fixed
@@ -2602,6 +2613,77 @@ void UParticleSystem::PostLoad()
 
 	// Set up the SoloTracking...
 	SetupSoloing();
+}
+
+void UParticleSystem::PrecachePSOs()
+{
+	if (!IsComponentPSOPrecachingEnabled() && !IsResourcePSOPrecachingEnabled())
+	{
+		return;
+	}
+
+	struct VFsPerMaterialData
+	{
+		UMaterialInterface* MaterialInterface;
+		EPrimitiveType PrimitiveType;
+		TArray<const FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
+	};
+	TArray<VFsPerMaterialData, TInlineAllocator<2>> VFsPerMaterials;
+
+	// No per component emitter materials known at this point in time
+	TArray<UMaterialInterface*> EmptyEmitterMaterials;
+	// Cached array to collect all materials used for LOD level
+	TArray<UMaterialInterface*> Materials;
+
+	for (int32 EmitterIdx = 0; EmitterIdx < Emitters.Num(); ++EmitterIdx)
+	{
+		const UParticleEmitter* Emitter = Emitters[EmitterIdx];
+		if (!Emitter)
+		{
+			continue;
+		}
+
+		for (int32 LodIndex = 0; LodIndex < Emitter->LODLevels.Num(); ++LodIndex)
+		{
+			const UParticleLODLevel* LOD = Emitter->LODLevels[LodIndex];
+			if (LOD && LOD->bEnabled)
+			{
+				const FVertexFactoryType* VFType = LOD->TypeDataModule ? LOD->TypeDataModule->GetVertexFactoryType() : &FParticleSpriteVertexFactory::StaticType;
+				check(VFType);
+				EPrimitiveType PrimitiveType = LOD->TypeDataModule ? LOD->TypeDataModule->GetPrimitiveType() : PT_TriangleList;
+
+				Materials.Empty();
+				LOD->GetUsedMaterials(Materials, NamedMaterialSlots, EmptyEmitterMaterials);
+
+				for (UMaterialInterface* MaterialInterface : Materials)
+				{
+					VFsPerMaterialData* VFsPerMaterial = VFsPerMaterials.FindByPredicate([MaterialInterface, PrimitiveType](const VFsPerMaterialData& Other)
+						{
+							return Other.MaterialInterface == MaterialInterface && Other.PrimitiveType == PrimitiveType;
+						});
+					if (VFsPerMaterial == nullptr)
+					{
+						VFsPerMaterial = &VFsPerMaterials.AddDefaulted_GetRef();
+						VFsPerMaterial->MaterialInterface = MaterialInterface;
+						VFsPerMaterial->PrimitiveType = PrimitiveType;
+					}
+					VFsPerMaterial->VertexFactoryTypes.AddUnique(VFType);
+				}
+			}
+		}
+	}
+
+	FPSOPrecacheParams PreCachePSOParams;
+	PreCachePSOParams.SetMobility(EComponentMobility::Movable);
+
+	for (VFsPerMaterialData& VFsPerMaterial : VFsPerMaterials)
+	{
+		if (VFsPerMaterial.MaterialInterface)
+		{
+			PreCachePSOParams.PrimitiveType = VFsPerMaterial.PrimitiveType;
+			VFsPerMaterial.MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PreCachePSOParams);
+		}
+	}
 }
 
 void UParticleSystem::Serialize(FArchive& Ar)
@@ -3373,6 +3455,19 @@ UFXSystemComponent::UFXSystemComponent(const FObjectInitializer& ObjectInitializ
 	: Super(ObjectInitializer)
 {}
 
+bool UFXSystemComponent::RequiresLWCTileRecache(const FVector3f CurrentTile, const FVector CurrentLocation)
+{
+	bool bNeedsRecache = false;
+	const float TileRecache = GFXLWCTileRecache;
+	if (TileRecache > 0.0f)
+	{
+		const FVector3f ActorTile = FLargeWorldRenderScalar::GetTileFor(CurrentLocation);
+		const float MaxMovement = (CurrentTile - ActorTile).GetAbs().GetMax();
+		bNeedsRecache = MaxMovement >= TileRecache;
+	}
+	return bNeedsRecache;
+}
+
 FOnSystemPreActivationChange UParticleSystemComponent::OnSystemPreActivationChange;
 
 UParticleSystemComponent::UParticleSystemComponent(const FObjectInitializer& ObjectInitializer)
@@ -3423,6 +3518,7 @@ UParticleSystemComponent::UParticleSystemComponent(const FObjectInitializer& Obj
 	LastSignificantTime = 0.0f;
 	bIsManagingSignificance = 0;
 	bWasManagingSignificance = 0;
+	bIsDuringRegister = 0;
 
 	ManagerHandle = INDEX_NONE;
 	bPendingManagerAdd = false;
@@ -3726,6 +3822,15 @@ void UParticleSystemComponent::CheckForErrors()
 			}
 		}
 	}
+
+	static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.TranslucentPerObject.ProjectEnabled"));
+	if (bCastVolumetricTranslucentShadow && CastShadow && bCastDynamicShadow && CVar && CVar->GetInt() == 0)
+	{
+		FMessageLog("MapCheck").Warning()
+			->AddToken(FUObjectToken::Create(this))
+			->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_NoTranslucentShadowSupport", "Component is a using CastVolumetricTranslucentShadow but this feature is disabled for the project! Turn on r.Shadow.TranslucentPerObject.ProjectEnabled in a project ini if required.")))
+			->AddToken(FMapErrorToken::Create(FMapErrors::PrimitiveComponentHasInvalidTranslucentShadowSetting));
+	}
 }
 #endif
 
@@ -3849,6 +3954,8 @@ bool UParticleSystemComponent::ParticleLineCheck(FHitResult& Hit, AActor* Source
 
 void UParticleSystemComponent::OnRegister()
 {
+	FGuardValue_Bitfield(bIsDuringRegister, true);
+	
 	ForceAsyncWorkCompletion(STALL);
 	check(FXSystem == nullptr);
 
@@ -4871,8 +4978,7 @@ public:
 				{
 					check(FinalizePrereq.GetReference() && !FinalizePrereq->IsComplete());
 					{
-						TArray<FBaseGraphTask*> NewTasks;
-						FinalizePrereq->DispatchSubsequents(NewTasks);
+						FinalizePrereq->DispatchSubsequents();
 					}
 					delete FinalizeDispatchCounter;
 				}
@@ -4910,8 +5016,7 @@ public:
 	{
 		check(Target.GetReference() && !Target->IsComplete());
 		{
-			TArray<FBaseGraphTask*> NewTasks;
-			Target->DispatchSubsequents(NewTasks);
+			Target->DispatchSubsequents();
 		}
 	}
 };
@@ -5197,6 +5302,15 @@ void UParticleSystemComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 		return;
 	} 
 	
+	// Has the actor position changed to the point where we need to reset the LWC tile
+	if (RequiresLWCTileRecache(LWCTile, GetComponentLocation()))
+	{
+		//-OPT: We may be able to narrow down when a reset is required, like having a GPU emitter, having world space emitters, etc.
+		//      Cascade generally operates at double precision so it may only be GPU emitters that require a reset.
+		UE_LOG(LogParticles, Warning, TEXT("PSC(%s - %s) required LWC tile recache and was reset."), *GetFullNameSafe(this), *GetFullNameSafe(Template));
+		bRequiresReset = true;
+	}
+
 	if (bRequiresReset)
 	{
 		ForceReset();
@@ -5639,7 +5753,7 @@ void UParticleSystemComponent::WaitForAsyncAndFinalize(EForceAsyncWorkCompletion
 
 		//if (bDelayTick && IsTickManaged())
 		//{
-			//TODO: If we're completing early for a activate/deactivate etc call from some external owner and it stalls us, we can possible reduce stall chance by telling the PSC man to move us into a later tick group?
+			//TODO: If we're completing early for a activate/deactivate etc call from some external owner and it stalls us, we can possible reduce stall chance by telling the PSC manager to move us into a later tick group?
 		//}
 
 		float ThisTime = float(FPlatformTime::Seconds() - StartTime) * 1000.0f;
@@ -6158,7 +6272,7 @@ void UParticleSystemComponent::ActivateSystem(bool bFlagAsJustAttached)
 		}
 
 		//We are definitely insignificant already so set insignificant before we ever begin ticking.
-		if (bIsManagingSignificance && Template->GetHighestSignificance() < RequiredSignificance && Template->InsignificanceDelay == 0.0f)
+		if (!bIsDuringRegister && bIsManagingSignificance && Template->GetHighestSignificance() < RequiredSignificance && Template->InsignificanceDelay == 0.0f)
 		{
 			OnSignificanceChanged(false, true);
 		}
@@ -6403,7 +6517,12 @@ void UParticleSystemComponent::ApplyWorldOffset(const FVector& InOffset, bool bW
 {
 	Super::ApplyWorldOffset(InOffset, bWorldShift);
 
-	OldPosition+= InOffset;
+	// Trigger a reset as the offset applying below does not work correctly with all emitter types
+	// Niagara also resets so having Cascade follow the same path makes it consistent also
+	bResetTriggered = true;
+
+#if 0
+	OldPosition += InOffset;
 	
 	for (auto It = EmitterInstances.CreateIterator(); It; ++It)
 	{
@@ -6413,6 +6532,7 @@ void UParticleSystemComponent::ApplyWorldOffset(const FVector& InOffset, bool bW
 			EmitterInstance->ApplyWorldOffset(InOffset, bWorldShift);
 		}
 	}
+#endif
 }
 
 void UParticleSystemComponent::ResetToDefaults()
@@ -7088,10 +7208,10 @@ int32 UParticleSystemComponent::DetermineLODLevelForLocation(const FVector& Effe
 		}
 
 		// This will now put everything in LODLevel 0 (high detail) by default
-		float LODDistanceSqr = (PlayerViewLocations.Num() ? FMath::Square(WORLD_MAX) : 0.0f);
+		FVector::FReal LODDistanceSqr = (PlayerViewLocations.Num() ? FMath::Square(WORLD_MAX) : 0.0f);
 		for (const FVector& ViewLocation : PlayerViewLocations)
 		{
-			const float DistanceToEffectSqr = FVector(ViewLocation - EffectLocation).SizeSquared();
+			const FVector::FReal DistanceToEffectSqr = FVector(ViewLocation - EffectLocation).SizeSquared();
 			if (DistanceToEffectSqr < LODDistanceSqr)
 			{
 				LODDistanceSqr = DistanceToEffectSqr;
@@ -7639,7 +7759,7 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 	{
 		const UParticleModuleTypeDataMesh* MeshTypeData = Cast<UParticleModuleTypeDataMesh>(TypeDataModule);
 
-		if (MeshTypeData && MeshTypeData->Mesh)
+		if (MeshTypeData && MeshTypeData->Mesh && MeshTypeData->Mesh->GetRenderData())
 		{
 			const FStaticMeshLODResources& LODModel = MeshTypeData->Mesh->GetRenderData()->LODResources[0];
 
@@ -7741,6 +7861,30 @@ void UParticleLODLevel::GetUsedMaterials(TArray<UMaterialInterface*>& OutMateria
 	}
 }
 
+void UParticleLODLevel::GetStreamingMeshInfo(const FBoxSphereBounds& Bounds, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const
+{
+	if (bEnabled)
+	{
+		if (const UParticleModuleTypeDataMesh* MeshTypeData = Cast<UParticleModuleTypeDataMesh>(TypeDataModule))
+		{
+			if (UStaticMesh* Mesh = MeshTypeData->Mesh)
+			{
+				if (Mesh->RenderResourceSupportsStreaming() && Mesh->GetRenderAssetType() == EStreamableRenderAssetType::StaticMesh)
+				{
+					const FBoxSphereBounds MeshBounds = Mesh->GetBounds();
+					const FBoxSphereBounds StreamingBounds = FBoxSphereBounds(
+						Bounds.Origin + MeshBounds.Origin,
+						MeshBounds.BoxExtent * MeshTypeData->LODSizeScale,
+						MeshBounds.SphereRadius * MeshTypeData->LODSizeScale);
+					const float MeshTexelFactor = MeshBounds.SphereRadius * 2.0f;
+
+					new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(Mesh, StreamingBounds, MeshTexelFactor);
+				}
+			}
+		}
+	}
+}
+
 void UParticleSystemComponent::GetUsedMaterials( TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials ) const
 {
 	if (Template)
@@ -7816,6 +7960,8 @@ void UParticleSystemComponent::GetStreamingRenderAssetInfo(FStreamingTextureLeve
 				LODLevelMaterials.Reset();
 				LOD->GetUsedMaterials(LODLevelMaterials, Template->NamedMaterialSlots, EmitterMaterials);
 				AddMaterials(MaterialWithScales, LODLevelMaterials, (float)FMath::Max<int32>(LOD->RequiredModule->SubImages_Horizontal, LOD->RequiredModule->SubImages_Vertical));
+
+				LOD->GetStreamingMeshInfo(Bounds, OutStreamingRenderAssets);
 			}
 		}
 
@@ -8679,7 +8825,7 @@ FAutoConsoleCommand GDumpPSCStateCommand(
 		UE_LOG(LogParticles, Log, TEXT("| World: 0x%p - %s |"), World, *WorldInfoString);
 		UE_LOG(LogParticles, Log, TEXT("|-------------------------------------------------------------------------------------------------------|"));
 		UE_LOG(LogParticles, Log, TEXT("| Inactive = Ticking but is not active and has no active particles.  This should be investigated.                                   |"));
-		UE_LOG(LogParticles, Log, TEXT("| Invisible = Ticking but is not visible. Ideally these systems could be culled by the sig man but this requires them to be non critical.   |"));
+		UE_LOG(LogParticles, Log, TEXT("| Invisible = Ticking but is not visible. Ideally these systems could be culled by the significance manager but this requires them to be non critical.   |"));
 		UE_LOG(LogParticles, Log, TEXT("|-------------------------------------------------------------------------------------------------------|"));
 		UE_LOG(LogParticles, Log, TEXT("|                                            Summary                                                    |"));
 		UE_LOG(LogParticles, Log, TEXT("|-------------------------------------------------------------------------------------------------------|"));

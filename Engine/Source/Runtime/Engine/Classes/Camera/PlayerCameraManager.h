@@ -302,7 +302,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Debug)
 	FVector ViewTargetOffset;
 
-	/** If bound, broadcast on fade start (with fade time) instead of manually altering audio device's master volume directly */
+	/** If bound, broadcast on fade start (with fade time) instead of manually altering audio device's primary volume directly */
 	UPROPERTY(BlueprintAssignable, Transient)
 	FOnAudioFadeChangeSignature OnAudioFadeChangeEvent;
 
@@ -322,9 +322,17 @@ public:
 	virtual void SetLastFrameCameraCachePOV(const FMinimalViewInfo& InPOV);
 
 	/** Gets value of CameraCachePrivate.POV */
+	virtual const FMinimalViewInfo& GetCameraCacheView() const;
+
+	/** Gets value of LastFrameCameraCachePrivate.POV */
+	virtual const FMinimalViewInfo& GetLastFrameCameraCacheView() const;
+
+	/** Gets value of CameraCachePrivate.POV */
+	UE_DEPRECATED(5.0, "APlayerCameraManager::GetCameraCacheView is favored now, and this function forwards to that one.")
 	virtual FMinimalViewInfo GetCameraCachePOV() const;
 
 	/** Gets value of LastFrameCameraCachePrivate.POV */
+	UE_DEPRECATED(5.0, "APlayerCameraManager::GetLastFrameCameraCacheView is favored now, and this function forwards to that one.")
 	virtual FMinimalViewInfo GetLastFrameCameraCachePOV() const;
 
 	/** Get value of CameraCachePrivate.Time  */
@@ -354,16 +362,6 @@ protected:
 	TObjectPtr<class UCameraModifier_CameraShake> CachedCameraShakeMod;
 
 
-	////////////////////////
-	// CameraAnim support
-	////////////////////////
-	
-	static const int32 MAX_ACTIVE_CAMERA_ANIMS = 8;
-
-	/** Internal pool of camera anim instance objects available for playing camera animations. Defines the max number of camera anims that can play simultaneously. */
-	UPROPERTY(transient)
-	TObjectPtr<class UCameraAnimInst> AnimInstPool[8];    /*MAX_ACTIVE_CAMERA_ANIMS @fixme constant */
-
 	/** Internal list of active post process effects. Parallel array to PostProcessBlendCacheWeights. */
 	UPROPERTY(transient)
 	TArray<struct FPostProcessSettings> PostProcessBlendCache;
@@ -379,18 +377,10 @@ protected:
 	void ClearCachedPPBlends();
 
 public:
-	/** Array of camera anim instances that are currently playing and in-use */
-	UPROPERTY(transient)
-	TArray<TObjectPtr<class UCameraAnimInst>> ActiveAnims;
-
 	/** Returns active post process info. */
 	void GetCachedPostProcessBlends(TArray<struct FPostProcessSettings> const*& OutPPSettings, TArray<float> const*& OutBlendWeigthts) const;
 	
 protected:
-	/** Array of camera anim instances that are not playing and available to be used. */
-	UPROPERTY(transient)
-	TArray<TObjectPtr<class UCameraAnimInst>> FreeAnims;
-
 	/** Internal. Receives the output of individual camera animations. */
 	UPROPERTY(transient)
 	TObjectPtr<class ACameraActor> AnimCameraActor;
@@ -549,6 +539,7 @@ public:
 	virtual bool ShouldTickIfViewportsOnly() const override;
 	virtual void PostInitializeComponents() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Destroyed() override;
 	virtual void DisplayDebug(class UCanvas* Canvas, const FDebugDisplayInfo& DebugDisplay, float& YL, float& YPos) override;
 	virtual void ApplyWorldOffset(const FVector& InOffset, bool bWorldShift) override;
 	//~ End AActor Interface
@@ -622,6 +613,8 @@ protected:
 	/** Internal. Places the given modifier in the ModifierList at the appropriate priority. */
 	virtual bool AddCameraModifierToList(UCameraModifier* NewModifier);
 
+	virtual void CleanUpAnimCamera(const bool bDestroy);
+
 public:	
 	/**
 	 * Applies the current set of camera modifiers to the given camera POV.
@@ -666,7 +659,7 @@ public:
 	virtual void UnlockOrthoWidth();
 
 	/**
-	 * Master function to retrieve Camera's actual view point.
+	 * Primary function to retrieve Camera's actual view point.
 	 * Consider calling PlayerController::GetPlayerViewPoint() instead.
 	 *
 	 * @param	OutCamLoc	Returned camera location
@@ -833,7 +826,7 @@ public:
 	virtual void StopAllCameraShakesFromSource(UCameraShakeSourceComponent* SourceComponent, bool bImmediately = true);
 
 	//
-	//  CameraAnim fades.
+	//  Camera fades.
 	//
 
 	/** 
@@ -862,69 +855,9 @@ public:
 	virtual void SetManualCameraFade(float InFadeAmount, FLinearColor Color, bool bInFadeAudio);
 
 
-	//
-	//  CameraAnim support.
-	//
-	
-	/**
-	 * Play the indicated CameraAnim on this camera.
-	 * 
-	 * @param Anim The animation that should play on this instance.
-	 * @param Rate				How fast to play the animation. 1.0 is normal.
-	 * @param Scale				How "intense" to play the animation. 1.0 is normal.
-	 * @param BlendInTime		Time to linearly ramp in.
-	 * @param BlendOutTime		Time to linearly ramp out.
-	 * @param bLoop				True to loop the animation if it hits the end.
-	 * @param bRandomStartTime	Whether or not to choose a random time to start playing. Useful with bLoop=true and a duration to randomize things like shakes.
-	 * @param Duration			Optional total playtime for this animation, including blends. 0 means to use animations natural duration, or infinite if looping.
-	 * @param PlaySpace			Which space to play the animation in.
-	 * @param UserPlaySpaceRot  Custom play space, used when PlaySpace is UserDefined.
-	 * @return The CameraAnim instance, which can be stored to manipulate/stop the anim after the fact.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Camera Animation")
-	virtual class UCameraAnimInst* PlayCameraAnim(class UCameraAnim* Anim, float Rate = 1.f, float Scale = 1.f, float BlendInTime = 0.f, float BlendOutTime = 0.f, bool bLoop = false, bool bRandomStartTime = false, float Duration = 0.f, ECameraShakePlaySpace PlaySpace = ECameraShakePlaySpace::CameraLocal, FRotator UserPlaySpaceRot = FRotator::ZeroRotator);
-	
-	/**
-	 * Stop playing all instances of the indicated CameraAnim.
-	 * @param bImmediate	True to stop it right now and ignore blend out, false to let it blend out as indicated.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Camera Animation")
-	virtual void StopAllInstancesOfCameraAnim(class UCameraAnim* Anim, bool bImmediate = false);
-	
-	/** 
-	 * Stops the given CameraAnimInst from playing.  The given pointer should be considered invalid after this. 
-	 * @param bImmediate	True to stop it right now and ignore blend out, false to let it blend out as indicated.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Camera Animation")
-	virtual void StopCameraAnimInst(class UCameraAnimInst* AnimInst, bool bImmediate = false);
-	
-	/**
-	 * Stop playing all CameraAnims on this CameraManager.
-	 * @param bImmediate	True to stop it right now and ignore blend out, false to let it blend out as indicated.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Camera Animation")
-	virtual void StopAllCameraAnims(bool bImmediate = false);
-
-	/** Returns first existing instance of the specified camera anim, or NULL if none exists. */
-	class UCameraAnimInst* FindInstanceOfCameraAnim(class UCameraAnim const* Anim) const;
-
 	/** Sets the bGameCameraCutThisFrame flag to true (indicating we did a camera cut this frame; useful for game code to call, e.g., when performing a teleport that should be seamless) */
 	UFUNCTION(BlueprintCallable, Category = "Camera")
 	virtual void SetGameCameraCutThisFrame() { bGameCameraCutThisFrame = true; }
-
-protected:
-	/** Gets specified temporary CameraActor ready to update the specified Anim. */
-	void InitTempCameraActor(class ACameraActor* CamActor, class UCameraAnimInst const* AnimInstToInitFor) const;
-	void ApplyAnimToCamera(class ACameraActor const* AnimatedCamActor, class UCameraAnimInst const* AnimInst, FMinimalViewInfo& InOutPOV);
-
-	/** Returns an available CameraAnimInst, or NULL if no more are available. */
-	class UCameraAnimInst* AllocCameraAnimInst();
-
-	/** 
-	 * Frees an allocated CameraAnimInst for future use. 
-	 * @param Inst - Instance to free. 
-	 */
-	void ReleaseCameraAnimInst(class UCameraAnimInst* Inst);
 
 public:
 	/** 

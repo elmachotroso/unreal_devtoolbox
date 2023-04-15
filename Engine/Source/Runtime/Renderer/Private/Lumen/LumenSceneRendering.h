@@ -65,7 +65,7 @@ public:
 
 	void UpdateViewMatrices(const FViewInfo& MainView);
 
-	void PatchView(FRHICommandList& RHICmdList, const FScene* Scene, FViewInfo* View) const;
+	void PatchView(const FScene* Scene, FViewInfo* View) const;
 };
 
 struct FResampledCardCaptureAtlas
@@ -77,6 +77,7 @@ struct FResampledCardCaptureAtlas
 };
 
 FMeshPassProcessor* CreateLumenCardNaniteMeshProcessor(
+	ERHIFeatureLevel::Type FeatureLevel,
 	const FScene* Scene,
 	const FSceneView* InViewIfDynamicMeshCommand,
 	FMeshPassDrawListContext* InDrawListContext);
@@ -89,13 +90,15 @@ namespace Lumen
 	}
 };
 
-extern void SetupLumenCardSceneParameters(FRDGBuilder& GraphBuilder, const FScene* Scene, FLumenCardScene& OutParameters);
-extern void UpdateLumenMeshCards(FScene& Scene, const FDistanceFieldSceneData& DistanceFieldSceneData, FLumenSceneData& LumenSceneData, FRDGBuilder& GraphBuilder);
+extern void UpdateLumenCardSceneUniformBuffer(FRDGBuilder& GraphBuilder, FScene* Scene, const FLumenSceneData& LumenSceneData, FLumenSceneFrameTemporaries& FrameTemporaries);
+extern void UpdateLumenMeshCards(FRDGBuilder& GraphBuilder, const FScene& Scene, const FDistanceFieldSceneData& DistanceFieldSceneData, FLumenSceneFrameTemporaries& FrameTemporaries, FLumenSceneData& LumenSceneData);
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionCompositeParameters, )
 	SHADER_PARAMETER(float, MaxRoughnessToTrace)
 	SHADER_PARAMETER(float, InvRoughnessFadeLength)
 END_SHADER_PARAMETER_STRUCT()
+
+extern FLumenReflectionCompositeParameters GetLumenReflectionCompositeParameters();
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenScreenSpaceBentNormalParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, ScreenBentNormal)

@@ -11,6 +11,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ToolTargetManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ProjectToTargetTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UProjectToTargetTool"
@@ -74,6 +76,9 @@ TUniquePtr<FDynamicMeshOperator> UProjectToTargetTool::MakeNewOperator()
 		RemeshOp->bSmoothInFillAreas = ProjectProperties->bSmoothInFillAreas;
 		RemeshOp->FillAreaDistanceMultiplier = ProjectProperties->FillAreaDistanceMultiplier;
 		RemeshOp->FillAreaSmoothMultiplier = ProjectProperties->FillAreaSmoothMultiplier;
+
+		// disable convergence check
+		RemeshOp->MinActiveEdgeFraction = 0.0;
 	}
 
 	return Op;
@@ -81,3 +86,4 @@ TUniquePtr<FDynamicMeshOperator> UProjectToTargetTool::MakeNewOperator()
 
 
 #undef LOCTEXT_NAMESPACE
+

@@ -2,9 +2,17 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "IStructSerializerBackend.h"
+#include "Misc/EnumClassFlags.h"
 #include "Serialization/JsonWriter.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/UnrealType.h"
+
+class FArchive;
 
 /**
  * Implements a writer for UStruct serialization using Json.
@@ -78,7 +86,7 @@ protected:
 		else if (State.KeyProperty != nullptr)
 		{
 			FString KeyString;
-			State.KeyProperty->ExportTextItem(KeyString, State.KeyData, nullptr, nullptr, PPF_None);
+			State.KeyProperty->ExportTextItem_Direct(KeyString, State.KeyData, nullptr, nullptr, PPF_None);
 			JsonWriter->WriteValue(KeyString, Value);
 		}
 		//Write PropertyName:Value for any other cases (single array element, single property, etc...)
@@ -102,7 +110,7 @@ protected:
 		else if (State.KeyProperty != nullptr)
 		{
 			FString KeyString;
-			State.KeyProperty->ExportTextItem(KeyString, State.KeyData, nullptr, nullptr, PPF_None);
+			State.KeyProperty->ExportTextItem_Direct(KeyString, State.KeyData, nullptr, nullptr, PPF_None);
 			JsonWriter->WriteNull(KeyString);
 		}
 		else

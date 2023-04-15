@@ -17,7 +17,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "ObjectTools.h"
 #include "DesktopPlatformModule.h"
@@ -52,7 +52,7 @@ public:
 		ParentWindow->SetWidgetToFocusOnActivate(SharedThis(this));
 		Response = EAppReturnType::Cancel;
 
-		FSlateFontInfo MessageFont( FEditorStyle::GetFontStyle("StandardDialog.LargeFont"));
+		FSlateFontInfo MessageFont( FAppStyle::GetFontStyle("StandardDialog.LargeFont"));
 		MyMessage = InArgs._Message;
 
 		TSharedPtr<SUniformGridPanel> ButtonBox;
@@ -60,7 +60,7 @@ public:
 		this->ChildSlot
 		[	
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(16.f)
 			[
 				SNew(SVerticalBox)
@@ -430,7 +430,7 @@ public:
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			.FillHeight(1.0f)
-			.Padding(5)
+			.Padding(5.0f)
 			[
 				SNew( STextBlock )
 				.WrapTextAt(615.0f)	// 400.0f
@@ -447,7 +447,7 @@ public:
 					SNew( SButton )
 					.Text( NSLOCTEXT("UnrealEd", "Yes", "Yes") )
 					.OnClicked( this, &SModalDialog::OnYesClicked )
-					.ContentPadding(7)
+					.ContentPadding(7.0f)
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
@@ -455,7 +455,7 @@ public:
 					SNew( SButton )
 					.Text( NSLOCTEXT("UnrealEd", "No", "No") )
 					.OnClicked( this, &SModalDialog::OnNoClicked )
-					.ContentPadding(7)
+					.ContentPadding(7.0f)
 				]
 			]
 		];
@@ -554,12 +554,12 @@ public:
 		MyMessage = InArgs._Message;
 		MyCheckboxMessage = InArgs._CheckboxMessage;
 
-		FSlateFontInfo MessageFont( FEditorStyle::GetFontStyle("StandardDialog.LargeFont"));
+		FSlateFontInfo MessageFont( FAppStyle::GetFontStyle("StandardDialog.LargeFont"));
 
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew( SVerticalBox )
 				+SVerticalBox::Slot()
@@ -640,7 +640,7 @@ public:
 		.Padding(2.f)
 		[
 			SAssignNew(UniformGridPanel, SUniformGridPanel)
-			.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
+			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
 		];
 
 		// yes/ok/confirm button
@@ -650,7 +650,7 @@ public:
 			SNew( SButton )
 			.Text( InArgs._ConfirmText )
 			.OnClicked( this, &SModalDialogWithCheckbox::OnConfirmClicked )
-			.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 			.HAlign(HAlign_Center)
 		];
 
@@ -664,7 +664,7 @@ public:
 				SNew( SButton )
 				.Text( InArgs._CancelText )
 				.OnClicked( this, &SModalDialogWithCheckbox::OnCancelClicked )
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.HAlign(HAlign_Center)
 			];
 		}
@@ -775,7 +775,7 @@ FSuppressableWarningDialog::FSuppressableWarningDialog(const FSetupInfo& Info)
 		.SupportsMaximize(false) .SupportsMinimize(false);
 
 		// Cache a default image to be used as most cases will not provide their own.
-		static const FSlateBrush* DefaultImage = FEditorStyle::GetBrush("NotificationList.DefaultMessage");
+		static const FSlateBrush* DefaultImage = FAppStyle::GetBrush("NotificationList.DefaultMessage");
 
 		MessageBox = SNew(SModalDialogWithCheckbox)
 			.Message(Prompt)
@@ -855,8 +855,8 @@ bool PromptUserIfExistingObject(const FString& Name, const FString& Package, UPa
 	QualifiedName += Name;
 
 	// Check for an existing object
-	UObject* ExistingObject = StaticFindObject( UObject::StaticClass(), ANY_PACKAGE, *QualifiedName );
-	if( ExistingObject != NULL )
+	UObject* ExistingObject = StaticFindObject( UObject::StaticClass(), nullptr, *QualifiedName );
+	if( ExistingObject != nullptr )
 	{
 		// Object already exists in either the specified package or another package.  Check to see if the user wants
 		// to replace the object.
@@ -904,7 +904,7 @@ void SGenericDialogWidget::Construct( const FArguments& InArgs )
 	{
 		ContentWidget = 
 			SNew(SBox)
-			.MaxDesiredHeight(InArgs._ScrollBoxMaxHeight)
+			.MaxDesiredHeight(static_cast<float>(InArgs._ScrollBoxMaxHeight))
 			[
 				SNew(SScrollBox)
 				+SScrollBox::Slot()
@@ -953,7 +953,7 @@ void SGenericDialogWidget::OpenDialog(const FText& InDialogTitle, const TSharedR
 		[
 			SNew( SBorder )
 			.Padding( 4.f )
-			.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
+			.BorderImage( FAppStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 			[
 				SAssignNew(GenericDialogWidget, SGenericDialogWidget)
 				.UseScrollBox(InArgs._UseScrollBox)

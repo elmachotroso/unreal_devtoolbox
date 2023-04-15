@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Units/Simulation/RigUnit_SimBase.h"
+#include "RigUnit_SimBase.h"
 #include "Math/ControlRigMathLibrary.h"
 #include "Math/Simulation/CRSimPoint.h"
 #include "Math/Simulation/CRSimLinearSpring.h"
@@ -203,5 +203,8 @@ struct CONTROLRIG_API FRigUnit_PointSimulation : public FRigUnit_SimBaseMutable
 
 	UPROPERTY(transient)
 	FRigUnit_PointSimulation_WorkData WorkData;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
 

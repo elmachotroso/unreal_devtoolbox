@@ -77,6 +77,9 @@ public:
 		/** Can this plugin contain content */
 		bool bCanContainContent = false;
 
+		/** Can this plugin contain Verse */
+		bool bCanContainVerse = false;
+
 		/** Does this plugin have Source files? */
 		bool bHasModules = false;
 
@@ -85,6 +88,9 @@ public:
 		 * It will load/mount when explicitly requested and LoadingPhases will be ignored.
 		 */
 		bool bExplicitelyLoaded = false;
+
+		/** The Verse path to the root of this plugin's content directory */
+		FString VersePath;
 
 		/** Whether this plugin should be enabled/disabled by default for any project. */
 		EPluginEnabledByDefault EnabledByDefault = EPluginEnabledByDefault::Unspecified;
@@ -311,6 +317,42 @@ public:
 	 * @return Whether all plugins were successfully unloaded
 	 */
 	static bool UnloadPlugins(const TConstArrayView<FString> PluginNames, FText* OutFailReason = nullptr);
+
+	/**
+	 * Unload assets from the specified plugin but does not unmount it
+	 * @warning Dirty assets that need to be saved will be unloaded anyway
+	 * @param Plugin Plugin to unload assets from
+	 * @param OutFailReason Outputs the reason of the failure if any
+	 * @return Whether plugin assets were successfully unloaded
+	 */
+	static bool UnloadPluginAssets(const TSharedRef<IPlugin>& Plugin, FText* OutFailReason = nullptr);
+
+	/**
+	 * Unload assets from the specified plugin but does not unmount it
+	 * @warning Dirty assets that need to be saved will be unloaded anyway
+	 * @param PluginName Name of the plugin to unload assets from
+	 * @param OutFailReason Outputs the reason of the failure if any
+	 * @return Whether plugin assets were successfully unloaded
+	 */
+	static bool UnloadPluginAssets(const FString& PluginName, FText* OutFailReason = nullptr);
+
+	/**
+	 * Unload assets from the specified plugins but does not unmount them
+	 * @warning Dirty assets that need to be saved will be unloaded anyway
+	 * @param Plugin Plugins to unload assets from
+	 * @param OutFailReason Outputs the reason of the failure if any
+	 * @return Whether plugin assets were successfully unloaded
+	 */
+	static bool UnloadPluginsAssets(const TConstArrayView<TSharedRef<IPlugin>> Plugins, FText* OutFailReason = nullptr);
+
+	/**
+	 * Unload assets from the specified plugin but does not unmount them
+	 * @warning Dirty assets that need to be saved will be unloaded anyway
+	 * @param PluginNames Names of the plugins to unload assets from
+	 * @param OutFailReason Outputs the reason of the failure if any
+	 * @return Whether plugin assets were successfully unloaded
+	 */
+	static bool UnloadPluginsAssets(const TConstArrayView<FString> PluginNames, FText* OutFailReason = nullptr);
 
 	/**
 	 * Adds a directory to the list of paths that are recursively searched for plugins, 

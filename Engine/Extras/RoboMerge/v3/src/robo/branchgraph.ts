@@ -83,6 +83,7 @@ if (botname === '__TEST__') {
 		// also flag for applying reverse entry too? would apply to branchspecs, not so simple for resolver
 		const propertiesToPropagate: [keyof NodeOptions, keyof EdgeOptions, ConfigBlendMode | null][] = [
 			['additionalSlackChannelForBlockages', 'additionalSlackChannel', null],
+			['postMessagesToAdditionalChannelOnly', 'postOnlyToAdditionalChannel', null],
 			['lastGoodCLPath', 'lastGoodCLPath', null],
 			['disallowSkip', 'disallowSkip', null],
 			['incognitoMode', 'incognitoMode', null],
@@ -149,7 +150,7 @@ if (botname === '__TEST__') {
 			}
 		}
 
-		// set up branchspecs to use
+		// old style branchspecs
 		if (branchGraph.branchspecs) {
 			for (let def of branchGraph.branchspecs) {
 				// get the name
@@ -169,11 +170,11 @@ if (botname === '__TEST__') {
 
 				// add forward and reverse entries
 				if (!fromBranch.config.ignoreBranchspecs) {
-					fromBranch.branchspec.set(toBranch.upperName, {name: name, reverse: false})
+					fromBranch.branchspec.set(toBranch.upperName, {name, reverse: false})
 				}
 
 				if (!toBranch.config.ignoreBranchspecs) {
-					toBranch.branchspec.set(fromBranch.upperName, {name: name, reverse: true})
+					toBranch.branchspec.set(fromBranch.upperName, {name, reverse: true})
 				}
 			}
 		}
@@ -187,7 +188,15 @@ if (botname === '__TEST__') {
 					throw new Error(`No edge matching property ${edge.from} -> ${edge.to}`)
 				}
 
+				if (edge.approval) {
+					edge.additionalSlackChannel = edge.approval.channelId
+				}
+
 				source!.edgeProperties.set(targetName, edge)
+
+				if (edge.branchspec) {
+					source!.branchspec.set(targetName, {name: edge.branchspec, reverse: false})
+				}
 			}
 		}
 
@@ -423,18 +432,48 @@ if (botname === '__TEST__') {
 			// compute reachable
 			const reach = this._computeReachableFrom(new Set([branch]), 'flowsTo', branch)
 			reach.delete(branch.upperName) // loops are allowed but we don't want them in the flow list
-			branch.reachable = Array.from(reach).sort()
+			branch.reachable = [...reach].sort()
 
 			// compute forced downstream
 			const forced = this._computeReachableFrom(new Set([branch]), 'forceFlowTo', branch)
-			branch.forcedDownstream = Array.from(forced).sort()
-			if (forced.has(branch.upperName)) {
-				throw new Error(`Branch ${branch.name} has a forced flow loop to itself. ` + JSON.stringify(branch.forcedDownstream))
+			branch.forcedDownstream = [...forced].sort()
+		}
+
+		// new forced flow cycle detection
+		const visited = new Set<string>()
+		for (const branch of this.branches) {
+			const cyclePath = this.hasCycle(branch, [], visited)
+			if (cyclePath) {
+				throw new Error(`Branch ${branch.name} has a forced flow loop to itself: ${JSON.stringify(cyclePath)}`)
 			}
 		}
 	}
 
-	// public for use by NodeBot - maybe move to a utility
+	private hasCycle(branch: Branch, pathSoFar: string[], visited: Set<string>): string[] | null {
+		if (pathSoFar.indexOf(branch.upperName) >= 0) {
+			// we found a cycle
+			return pathSoFar
+		}
+		if (visited.has(branch.upperName)) {
+			// already looked for cycles from this node
+			return null
+		}
+		visited.add(branch.upperName)
+
+		const path = [...pathSoFar, branch.upperName]
+		for (const target of branch.forceFlowTo) {
+			const targetBranch = this.names.get(target.toUpperCase())!
+			if (!branch.edgeProperties.get(targetBranch.upperName)!.ignoreInCycleDetection) {
+				const cyclePath = this.hasCycle(targetBranch, path, visited)
+				if (cyclePath) {
+					return cyclePath
+				}
+			}
+		}
+		return null
+	}
+
+	// public for use by computeTargets
 	public _computeReachableFrom(visited: Set<Branch>, flowKey: string, branch: Branch) {
 		// start with flows to
 		const directFlow: Set<string> = (branch as any)[flowKey]

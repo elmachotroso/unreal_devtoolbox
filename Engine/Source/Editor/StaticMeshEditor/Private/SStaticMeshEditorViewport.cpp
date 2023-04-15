@@ -7,18 +7,18 @@
 #include "Widgets/Text/STextBlock.h"
 #include "UObject/Package.h"
 #include "Components/StaticMeshComponent.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/StaticMesh.h"
 #include "IStaticMeshEditor.h"
 #include "StaticMeshEditorActions.h"
 #include "Slate/SceneViewport.h"
 #include "ComponentReregisterContext.h"
-#include "Runtime/Analytics/Analytics/Public/AnalyticsEventAttribute.h"
-#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "AnalyticsEventAttribute.h"
+#include "Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Engine/StaticMeshSocket.h"
-#include "Editor/UnrealEd/Public/SEditorViewportToolBarMenu.h"
+#include "SEditorViewportToolBarMenu.h"
 #include "Editor.h"
 #include "Widgets/Text/SRichTextBlock.h"
 
@@ -40,7 +40,7 @@ void SStaticMeshEditorViewport::Construct(const FArguments& InArgs)
 
 	if (StaticMesh)
 	{
-		PreviewScene->SetFloorOffset(-StaticMesh->GetExtendedBounds().Origin.Z + StaticMesh->GetExtendedBounds().BoxExtent.Z);
+		PreviewScene->SetFloorOffset(static_cast<float>( -StaticMesh->GetExtendedBounds().Origin.Z + StaticMesh->GetExtendedBounds().BoxExtent.Z ));
 	}
 
 	// restore last used feature level
@@ -361,7 +361,7 @@ void SStaticMeshEditorViewport::UpdatePreviewMesh(UStaticMesh* InStaticMesh, boo
 
 bool SStaticMeshEditorViewport::IsVisible() const
 {
-	return ViewportWidget.IsValid() && (!ParentTab.IsValid() || ParentTab.Pin()->IsForeground());
+	return ViewportWidget.IsValid() && (!ParentTab.IsValid() || ParentTab.Pin()->IsForeground()) && SEditorViewport::IsVisible();
 }
 
 UStaticMeshComponent* SStaticMeshEditorViewport::GetStaticMeshComponent() const

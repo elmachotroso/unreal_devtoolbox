@@ -167,7 +167,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	TObjectPtr<class UTextureLightProfile> IESTexture;
 
 	/** true: take light brightness from IES profile, false: use the light brightness - the maximum light in one direction is used to define no masking. Use with InverseSquareFalloff. Will be disabled if a valid IES profile texture is not supplied. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightProfiles, meta=(DisplayName = "Use IES Intensity"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightProfiles, meta=(DisplayName = "Use IES Intensity", EditCondition="IESTexture!=nullptr"))
 	uint32 bUseIESBrightness : 1;
 
 	/** Global scale for IES brightness contribution. Only available when "Use IES Brightness" is selected, and a valid IES profile texture is set */
@@ -242,6 +242,10 @@ public:
 	/** Set color of the light */
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Light")
 	void SetLightColor(FLinearColor NewLightColor, bool bSRGB = true);
+
+	/** Set color of the light */
+	UFUNCTION(Category="Rendering|Components|Light")
+	void SetLightFColor(FColor NewLightColor);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetTemperature(float NewTemperature);

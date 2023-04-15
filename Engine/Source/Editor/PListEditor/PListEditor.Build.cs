@@ -14,7 +14,6 @@ public class PListEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"DesktopPlatform",
@@ -25,6 +24,7 @@ public class PListEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"MainFrame",
+				"WorkspaceMenuStructure",
 			}
 		);
 

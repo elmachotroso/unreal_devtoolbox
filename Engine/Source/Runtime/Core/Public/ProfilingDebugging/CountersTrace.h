@@ -3,8 +3,12 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "Misc/Build.h"
 #include "Trace/Config.h"
 #include "Trace/Trace.h"
+
+namespace UE { namespace Trace { class FChannel; } }
 
 #if !defined(COUNTERSTRACE_ENABLED)
 #if UE_TRACE_ENABLED && !UE_BUILD_SHIPPING
@@ -42,8 +46,8 @@ struct FCountersTrace
 	public:
 		TCounter(const TCHAR* InCounterName, ETraceCounterDisplayHint InCounterDisplayHint)
 			: Value(0)
-			, CounterId(0)
 			, CounterName(InCounterName)
+			, CounterId(0)
 			, CounterDisplayHint(InCounterDisplayHint)
 		{
 			CounterId = OutputInitCounter(InCounterName, CounterType, CounterDisplayHint);
@@ -92,18 +96,12 @@ struct FCountersTrace
 			--Value;
 			OutputSetValue(CounterId, Value);
 		}
-		
+
 	private:
 		ValueType Value;
-		uint16 CounterId;
 		const TCHAR* CounterName;
+		uint16 CounterId;
 		ETraceCounterDisplayHint CounterDisplayHint;
-
-		bool CheckCounterId()
-		{
-			CounterId = OutputInitCounter(CounterName, CounterType, CounterDisplayHint);
-			return !!CounterId;
-		}
 	};
 
 	using FCounterInt = TCounter<int64, TraceCounterType_Int>;

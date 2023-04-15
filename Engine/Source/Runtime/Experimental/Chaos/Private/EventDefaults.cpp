@@ -67,6 +67,7 @@ namespace Chaos
 		RegisterTrailingEvent(EventManager);
 		RegisterSleepingEvent(EventManager);
 		RegisterRemovalEvent(EventManager);
+		RegisterCrumblingEvent(EventManager);
 	}
 
 	void FEventDefaults::RegisterCollisionEvent(FEventManager& EventManager)
@@ -134,6 +135,7 @@ namespace Chaos
 
 							if (ensure(!Constraint.AccumulatedImpulse.ContainsNaN() && FMath::IsFinite(Constraint.GetPhi())))
 							{
+	
 								const FPerShapeData* Shape0 = Constraint.GetShape0();
 								const FPerShapeData* Shape1 = Constraint.GetShape1();
 
@@ -141,7 +143,7 @@ namespace Chaos
 								const bool bFilter0Notify = Shape0 ? Shape0->GetSimData().HasFlag(EFilterFlags::ContactNotify) : true;
 								const bool bFilter1Notify = Shape1 ? Shape1->GetSimData().HasFlag(EFilterFlags::ContactNotify) : true;
 
-								if (!bFilter0Notify && !bFilter1Notify)
+								if(!bFilter0Notify && !bFilter1Notify)
 								{
 									// No need to notify - engine didn't request notifications for either shape.
 									continue;
@@ -157,7 +159,10 @@ namespace Chaos
 								const FKinematicGeometryParticleHandle* Primary = Body0 ? Body0 : Body1;
 								const FKinematicGeometryParticleHandle* Secondary = Body0 ? Body1 : Body0;
 
-								if (!Constraint.AccumulatedImpulse.IsZero() && Primary)
+								//
+								const int32 NumManifoldPoints = Constraint.GetManifoldPoints().Num();
+
+								if (((Constraint.IsProbe() && NumManifoldPoints > 0) || !Constraint.AccumulatedImpulse.IsZero()) && Primary)
 								{
 									if (ensure(!Constraint.CalculateWorldContactLocation().ContainsNaN() &&
 										!Constraint.CalculateWorldContactNormal().ContainsNaN()) &&
@@ -203,6 +208,7 @@ namespace Chaos
 								Data.AccumulatedImpulse = Constraint.AccumulatedImpulse;
 								Data.Normal = Constraint.CalculateWorldContactNormal();
 								Data.PenetrationDepth = Constraint.GetPhi();
+								Data.bProbe = Constraint.GetIsProbe();
 
 								// @todo(chaos): fix this casting
 								Data.Proxy1 = Particle0 ? const_cast<IPhysicsProxyBase*>(Particle0->PhysicsProxy()) : nullptr;
@@ -211,6 +217,8 @@ namespace Chaos
 								const FPerShapeData* Shape0 = Constraint.GetShape0();
 								const FPerShapeData* Shape1 = Constraint.GetShape1();
 
+								Data.ShapeIndex1 = Shape0 ? Shape0->GetShapeIndex() : INDEX_NONE;
+								Data.ShapeIndex2 = Shape1 ? Shape1->GetShapeIndex() : INDEX_NONE;
 								Data.Mat1 = ResolveMaterial(Shape0, Constraint);
 								Data.Mat2 = ResolveMaterial(Shape1, Constraint);
 
@@ -279,7 +287,6 @@ namespace Chaos
 							if (DupAllCollisionsDataArray[IdxCollision].Proxy1 != nullptr)
 							{
 								int32 NewIdx = AllCollisionsDataArray.Add(DupAllCollisionsDataArray[IdxCollision]);
-								// Add to AllCollisionsIndicesByPhysicsProxy
 								AllCollisionsIndicesByPhysicsProxy.FindOrAdd(AllCollisionsDataArray[NewIdx].Proxy1).Add(FEventManager::EncodeCollisionIndex(NewIdx, false));
 
 								if (AllCollisionsDataArray[NewIdx].Proxy2 && AllCollisionsDataArray[NewIdx].Proxy2 != AllCollisionsDataArray[NewIdx].Proxy1)
@@ -500,7 +507,13 @@ namespace Chaos
 
 			NonConstSolver->Particles.GetDynamicParticles().ClearSleepData();
 
+			// We don't care about sleep data added to these
+			NonConstSolver->Particles.GetDynamicKinematicParticles().ClearSleepData();
+			NonConstSolver->Particles.GetDynamicDisabledParticles().ClearSleepData();
 
+			// Sleep data is not supported for these particles yet, clear the buffers here so that we don't leak memory
+			NonConstSolver->Particles.GetClusteredParticles().ClearSleepData();
+			NonConstSolver->Particles.GetGeometryCollectionParticles().ClearSleepData(); 
 		});
 	}
 
@@ -540,5 +553,35 @@ namespace Chaos
 				}
 			
 			});
+	}
+
+	void FEventDefaults::RegisterCrumblingEvent(FEventManager& EventManager)
+	{
+		EventManager.template RegisterEvent<FCrumblingEventData>(EEventType::Crumbling, []
+		(const Chaos::FPBDRigidsSolver* Solver, FCrumblingEventData& CrumblingEventData, bool bResetData)
+		{
+			check(Solver);
+
+			EnsureIsInPhysicsThreadContext();
+
+			SCOPE_CYCLE_COUNTER(STAT_GatherBreakingEvent);
+
+			// @todo(chaos) : should we check for a way to globally stop this from being processed ? 
+
+			if (bResetData)
+			{
+				CrumblingEventData.Reset();
+			}
+			CrumblingEventData.SetTimeCreated(Solver->MTime);
+
+			const TArray<FCrumblingData>& AllCrumblingsArray = Solver->GetEvolution()->GetRigidClustering().GetAllClusterCrumblings();
+
+			CrumblingEventData.Reserve(AllCrumblingsArray.Num());
+			for (const FCrumblingData& Crumbling: AllCrumblingsArray)
+			{
+				// todo(chaos) : implement filtering only if necessary as crumbling event should be sparser than breaking ones
+				CrumblingEventData.AddCrumbling(Crumbling);
+			}
+		});
 	}
 }

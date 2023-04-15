@@ -13,7 +13,7 @@ namespace UE
 
 		// Utility to compute the number of elements in the sparse laplacian matrix
 		template<typename MeshT>
-		DYNAMICMESH_API int32 ComputeNumMatrixElements(const MeshT& DynamicMesh, const TArray<int32>& ToVtxId)
+		int32 ComputeNumMatrixElements(const MeshT& DynamicMesh, const TArray<int32>& ToVtxId)
 		{
 			const int32 NumVerts = ToVtxId.Num();
 			TArray<int32> OneRingSize;
@@ -119,7 +119,7 @@ namespace UE
 			// NB: the cotan laplacian has terms ~ 1/TriArea
 			//     and the deformation matrix has terms ~ 1/TriArea**2
 
-			static constexpr double SmallTriangleArea = 1.e-4;
+			static constexpr double SmallTriangleArea = SMALL_NUMBER; //1.e-8;
 
 			// testing
 			int32 TriId = -1;
@@ -133,6 +133,10 @@ namespace UE
 			// VoronoiArea[i] is the voronoi area about the i'th vertex in this triangle.
 
 			double VoronoiArea[3] = { 0. };
+
+			// Area of the triangle 
+			
+			double Area = -1;
 
 			// OppositeEdge[i] = Corresponding DynamicsMesh3::EdgeId for the edge that is opposite
 			// the i'th vertex in this triangle

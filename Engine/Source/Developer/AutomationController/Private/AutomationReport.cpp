@@ -71,9 +71,9 @@ FString FAutomationReport::GetDisplayNameWithDecoration() const
 {
 	FString FinalDisplayName = TestInfo.GetDisplayName();
 	//if this is an internal leaf node and the "decoration" name is being requested
-	if (ChildReports.Num())
+	if (FilteredChildReports.Num())
 	{
-		int32 NumChildren = GetTotalNumChildren();
+		int32 NumChildren = GetTotalNumFilteredChildren();
 		//append on the number of child tests
 		return TestInfo.GetDisplayName() + FString::Printf(TEXT(" (%d)"), NumChildren);
 	}
@@ -114,6 +114,7 @@ int32 FAutomationReport::GetTotalNumFilteredChildren() const
 
 void FAutomationReport::GetEnabledTestNames(TArray<FString>& OutEnabledTestNames, FString CurrentPath) const
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	//if this is a leaf and this test is enabled
 	if ((ChildReports.Num() == 0) && IsEnabled())
 	{
@@ -136,6 +137,41 @@ void FAutomationReport::GetEnabledTestNames(TArray<FString>& OutEnabledTestNames
 	return;
 }
 
+void FAutomationReport::GetFilteredTestNames(TArray<FString>& OutFilteredTestNames, FString CurrentPath) const
+{
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
+	// start from FilteredChildReports
+	if (CurrentPath.IsEmpty())
+	{
+		for (int32 FilteredChildIndex = 0; FilteredChildIndex < FilteredChildReports.Num(); ++FilteredChildIndex)
+		{
+			FilteredChildReports[FilteredChildIndex]->GetFilteredTestNames(OutFilteredTestNames, TestInfo.GetDisplayName());
+		}
+	}
+	else // then continue collecting all leaf nodes
+	{
+		//if this is a leaf collect full test name
+		if (FilteredChildReports.Num() == 0)
+		{
+			const FString FullTestName = CurrentPath.Len() > 0 ? CurrentPath.AppendChar(TCHAR('.')) + TestInfo.GetDisplayName() : TestInfo.GetDisplayName();
+			OutFilteredTestNames.Add(FullTestName);
+		}
+		else
+		{
+			if (!CurrentPath.IsEmpty())
+			{
+				CurrentPath += TEXT(".");
+			}
+			CurrentPath += TestInfo.GetDisplayName();
+			//recurse through the hierarchy
+			for (int32 ChildIndex = 0; ChildIndex < FilteredChildReports.Num(); ++ChildIndex)
+			{
+				FilteredChildReports[ChildIndex]->GetFilteredTestNames(OutFilteredTestNames, CurrentPath);
+			}
+		}
+	}
+	return;
+}
 
 void FAutomationReport::SetEnabledTests(const TArray<FString>& InEnabledTests, FString CurrentPath)
 {
@@ -206,6 +242,7 @@ void FAutomationReport::SetSupport(const int32 ClusterIndex)
 	SupportFlags |= (1<<ClusterIndex);
 
 	//ensure there is enough room in the array for status per platform
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	for (int32 i = 0; i <= ClusterIndex; ++i)
 	{
 		//Make sure we have enough results for a single pass
@@ -258,6 +295,7 @@ const bool FAutomationReport::IsSmokeTest( )
 
 bool FAutomationReport::SetFilter( TSharedPtr< AutomationFilterCollection > InFilter, const bool ParentPassedFilter )
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	//assume that this node and all its children fail to pass the filter test
 	bool bSelfOrChildPassedFilter = false;
 
@@ -317,6 +355,7 @@ TArray<TSharedPtr<IAutomationReport> >& FAutomationReport::GetChildReports()
 
 void FAutomationReport::ClustersUpdated(const int32 NumClusters)
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	TestInfo.ResetNumDevicesRunningTest();
 
 	//Fixup Support flags
@@ -397,6 +436,7 @@ void FAutomationReport::SetResults( const int32 ClusterIndex, const int32 PassIn
 		TestInfo.InformOfNewDeviceRunningTest();
 	}
 
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	const TArray<FAutomationArtifact> ExistingArtifacts = Results[ClusterIndex][PassIndex].Artifacts;
 	Results[ClusterIndex][PassIndex] = InResults;
 	Results[ClusterIndex][PassIndex].Artifacts.Append(ExistingArtifacts);
@@ -418,6 +458,7 @@ void FAutomationReport::AddArtifact(const int32 ClusterIndex, const int32 PassIn
 	check(( ClusterIndex >= 0 ) && ( ClusterIndex < Results.Num() ));
 	check(( PassIndex >= 0 ) && ( PassIndex < Results[ClusterIndex].Num() ));
 
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 	Results[ClusterIndex][PassIndex].Artifacts.Add(Artifact);
 }
 
@@ -539,15 +580,10 @@ TSharedPtr<IAutomationReport> FAutomationReport::EnsureReportExists(FAutomationT
 		// Set the test info name to be the remaining string
 		InTestInfo.SetDisplayName( NameRemainder );
 		// Update the fullpath
-		int32 Pos = FullPath.Find(NameToMatch + TEXT("."));
-		if (Pos >= 0)
-		{
-			FullPath.LeftChopInline(FullPath.Len() - Pos);
-		}
-		FullPath += NameToMatch;
+		FullPath.LeftChopInline(NameRemainder.Len() + 1);
 	}
 
-	uint32 NameToMatchHash = GetTypeHash(NameToMatch);
+	uint32 NameToMatchHash = GetTypeHash(FullPath);
 
 	TSharedPtr<IAutomationReport> MatchTest;
 	//check hash table first to see if it exists yet
@@ -558,7 +594,7 @@ TSharedPtr<IAutomationReport> FAutomationReport::EnsureReportExists(FAutomationT
 		for (; TestIndex >= 0; --TestIndex)
 		{
 			//if the name matches
-			if (ChildReports[TestIndex]->GetDisplayName() == NameToMatch)
+			if (ChildReports[TestIndex]->GetFullTestPath() == FullPath)
 			{
 				MatchTest = ChildReports[TestIndex];
 				break;
@@ -569,6 +605,7 @@ TSharedPtr<IAutomationReport> FAutomationReport::EnsureReportExists(FAutomationT
 	//if there isn't already a test like this
 	if (!MatchTest.IsValid())
 	{
+		LLM_SCOPE_BYNAME(TEXT("AutomationTest/Report"));
 		if ( NameRemainder.Len() == 0 )
 		{
 			// Create a new leaf node
@@ -682,7 +719,6 @@ void FAutomationReport::GetEnabledTestReports(TArray<TSharedPtr<IAutomationRepor
 		}
 	}
 }
-
 
 const bool FAutomationReport::HasErrors()
 {
@@ -849,6 +885,11 @@ bool FAutomationReport::IsToBeSkipped(FName* OutReason, bool* OutWarn) const
 	return false;
 }
 
+bool FAutomationReport::IsToBeSkippedOnConditions() const
+{
+	return bNeedToSkip && ExcludeTestInfo.HasConditions();
+}
+
 bool FAutomationReport::IsToBeSkippedByPropagation() const
 {
 	return bNeedToSkip && ExcludeTestInfo.bIsPropagated;
@@ -868,7 +909,7 @@ void FAutomationReport::SetSkipFlag(bool bEnableSkip, const FAutomationTestExclu
 		}
 	}
 
-	if (!bFromPropagation && !ExcludeTestInfo.IsEmpty() && ExcludeTestInfo.bIsPropagated)
+	if (!bFromPropagation && !ExcludeTestInfo.IsEmpty() && ExcludeTestInfo.bIsPropagated && !ExcludeTestInfo.HasConditions())
 		return; // Propagated exclusion can't be changed directly
 
 	bNeedToSkip = bEnableSkip;
@@ -880,27 +921,64 @@ void FAutomationReport::SetSkipFlag(bool bEnableSkip, const FAutomationTestExclu
 		ExcludeTestInfo.bIsPropagated = bFromPropagation;
 	}
 
+	auto ExcludedTestCached = UAutomationTestExcludelist::Get();
 	if (bFromPropagation)
 	{
-		if (!bNeedToSkip)
+		auto Entry = ExcludedTestCached->GetExcludeTestEntry(TestInfo.GetFullTestPath());
+		if (bNeedToSkip)
 		{
-			ExcludeTestInfo.Reset();
+			// If we get an exclusion entry, check if it is the original one.
+			if (Entry != nullptr)
+			{
+				ExcludeTestInfo = *Entry;
+				ExcludeTestInfo.SetPropagation(TestInfo.GetFullTestPath());
+			}
+		}
+		else
+		{
+			// Before enabling the test, check if there is an underlying exclusion already set
+			if (Entry == nullptr)
+			{
+				ExcludeTestInfo.Reset();
+			}
+			else
+			{
+				// Update instance exclusion info
+				ExcludeTestInfo = *Entry;
+				bNeedToSkip = true;
+				// Update exclusion template for the children propagation
+				Template = Entry;
+			}
 		}
 	}
 	else
 	{
-		auto ExcludedTestCached = UAutomationTestExcludelist::Get();
 		if (bNeedToSkip)
 		{
 			check(Template != nullptr);
+			auto Entry = ExcludedTestCached->GetExcludeTestEntry(TestInfo.GetFullTestPath());
+			if (Entry != nullptr && ExcludeTestInfo.RemoveConditions(*Entry))
+			{
+				// Branch off the template with a different exclusion condition set
+				Template = &ExcludeTestInfo;
+			}
 			ExcludedTestCached->AddToExcludeTest(TestInfo.GetFullTestPath(), *Template);
 		}
 		else
 		{
 			ExcludedTestCached->RemoveFromExcludeTest(TestInfo.GetFullTestPath());
+			auto Entry = ExcludedTestCached->GetExcludeTestEntry(TestInfo.GetFullTestPath());
+			if (Entry != nullptr)
+			{
+				// If there is still an entry, it means a higher exclusion rule exists so we apply it.
+				// Update instance exclusion info
+				ExcludeTestInfo = *Entry;
+				ExcludeTestInfo.bIsPropagated = true;
+				bNeedToSkip = true;
+				// Update exclusion template for the children propagation
+				Template = Entry;
+			}
 		}
-
-		ExcludedTestCached->SaveConfig();
 	}
 
 	// Propagate to children
@@ -912,6 +990,11 @@ void FAutomationReport::SetSkipFlag(bool bEnableSkip, const FAutomationTestExclu
 		}
 	}
 
+	if (!bFromPropagation)
+	{
+		// Save config only at the end of the recursion
+		ExcludedTestCached->SaveConfig();
+	}
 }
 
 TSharedPtr<FAutomationTestExcludeOptions> FAutomationReport::GetExcludeOptions()

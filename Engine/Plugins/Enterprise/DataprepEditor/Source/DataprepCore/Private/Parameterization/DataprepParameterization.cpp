@@ -17,6 +17,7 @@
 #include "Engine/Engine.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/ITransaction.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "Serialization/Archive.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/CoreObjectVersion.h"
@@ -1796,7 +1797,7 @@ void UDataprepParameterizationInstance::ApplyParameterization(const TMap<UObject
 		const TSharedRef<FDataprepParameterizationBinding>& Binding = BindingPair.Key;
 		if ( UDataprepParameterizableObject* Object = Cast<UDataprepParameterizableObject>( SourceToCopy.FindRef( Binding->ObjectBinded ) ) )
 		{
-			TGuardValue<UDataprepParameterizableObject*> GuardObjectBinded( Binding->ObjectBinded, Object );
+			TGuardValue<decltype(Binding->ObjectBinded)> GuardObjectBinded( Binding->ObjectBinded, Object );
 
 			void* DestinationAddress = nullptr;
 			if ( FProperty* DestinationProperty = DataprepParameterization::GetPropertyFromBinding( Binding.Get(), DestinationAddress ) )

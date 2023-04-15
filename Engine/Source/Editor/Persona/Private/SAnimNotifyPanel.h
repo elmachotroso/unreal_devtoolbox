@@ -9,15 +9,15 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MarqueeRect.h"
 #include "SAnimTrackPanel.h"
 #include "SAnimEditorBase.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Framework/Commands/Commands.h"
 #include "SAnimTimingPanel.h"
 #include "EditorUndoClient.h"
-#include "AnimModel.h"
+#include "AnimTimeline/AnimModel.h"
 #include "Containers/ArrayView.h"
 
 class FSlateWindowElementList;
@@ -148,7 +148,7 @@ class FAnimNotifyPanelCommands : public TCommands<FAnimNotifyPanelCommands>
 {
 public:
 	FAnimNotifyPanelCommands()
-		: TCommands<FAnimNotifyPanelCommands>("AnimNotifyPanel", NSLOCTEXT("Contexts", "AnimNotifyPanel", "Anim Notify Panel"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FAnimNotifyPanelCommands>("AnimNotifyPanel", NSLOCTEXT("Contexts", "AnimNotifyPanel", "Anim Notify Panel"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 
 	}
@@ -258,7 +258,7 @@ public:
 
 	void HandleObjectsSelected(const TArray<UObject*>& InObjects);
 
-	TSharedRef<FUICommandList> GetCommandList() const { return WeakCommandList.Pin().ToSharedRef(); }
+	TSharedRef<FUICommandList> GetCommandList() const { return CommandList.ToSharedRef(); }
 
 private:
 	friend struct FScopedSavedNotifySelection;
@@ -345,8 +345,8 @@ private:
 	FOnSnapPosition OnSnapPosition;
 
 	/** UI commands for this widget */
-	TWeakPtr<FUICommandList> WeakCommandList;
-
+	TSharedPtr<FUICommandList> CommandList;
+	
 	/** Classes that are known to be derived from blueprint notifies */
 	TArray<FString> NotifyClassNames;
 

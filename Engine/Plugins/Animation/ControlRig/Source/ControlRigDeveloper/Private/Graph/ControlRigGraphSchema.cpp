@@ -27,10 +27,18 @@
 #include "RigVMModel/RigVMVariableDescription.h"
 #include "RigVMCore/RigVMUnknownType.h"
 #include "Kismet2/Kismet2NameValidators.h"
+#include "Algo/Count.h"
+#include "Units/Execution/RigUnit_BeginExecution.h"
+#include "Units/Execution/RigUnit_PrepareForExecution.h"
+#include "Units/Execution/RigUnit_InverseExecution.h"
+#include "Units/Execution/RigUnit_InteractionExecution.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigGraphSchema)
 
 #if WITH_EDITOR
-#include "ControlRigEditor/Private/Editor/SControlRigFunctionLocalizationWidget.h"
+#include "Editor/SControlRigFunctionLocalizationWidget.h"
 #include "Misc/MessageDialog.h"
+#include "Editor/Transactor.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "ControlRigGraphSchema"
@@ -205,6 +213,15 @@ void FControlRigGraphSchemaAction_LocalVar::DeleteVariable()
 {
 	if (UControlRigGraph* Graph = Cast<UControlRigGraph>(GetVariableScope()))
 	{
+#if WITH_EDITOR
+
+		if (GEditor)
+		{
+			GEditor->CancelTransaction(0);
+		}
+	
+#endif
+		
 		Graph->GetController()->RemoveLocalVariable(GetVariableName(), true, true);
 	}
 }
@@ -268,6 +285,14 @@ UEdGraphNode* FControlRigGraphSchemaAction_PromoteToVariable::PerformAction(UEdG
 
 	if(bLocalVariable)
 	{
+#if WITH_EDITOR
+
+		if (GEditor)
+		{
+			GEditor->CancelTransaction(0);
+		}
+	
+#endif
 		const FRigVMGraphVariableDescription VariableDescription = Controller->AddLocalVariable(
 			*ModelPin->GetPinPath(),
 			ModelPin->GetCPPType(),
@@ -362,6 +387,34 @@ UEdGraphNode* FControlRigGraphSchemaAction_PromoteToVariable::PerformAction(UEdG
 	}
 	
 	return nullptr;
+}
+
+FControlRigGraphSchemaAction_Event::FControlRigGraphSchemaAction_Event(const FName& InEventName, const FString& InNodePath, const FText& InNodeCategory)
+: FEdGraphSchemaAction(	InNodeCategory, 
+						FText::FromName(InEventName),
+						FText(),
+						1)
+, NodePath(InNodePath)
+{
+}
+
+FReply FControlRigGraphSchemaAction_Event::OnDoubleClick(UBlueprint* InBlueprint)
+{
+	if (UControlRigBlueprint* Blueprint = Cast<UControlRigBlueprint>(InBlueprint))
+	{
+		if(const URigVMNode* ModelNode = Blueprint->GetRigVMClient()->FindNode(NodePath))
+		{
+			Blueprint->OnRequestJumpToHyperlink().Execute(ModelNode);
+			return FReply::Handled();
+		}
+	}
+	return FReply::Unhandled();;
+}
+
+FSlateBrush const* FControlRigGraphSchemaAction_Event::GetPaletteIcon() const
+{
+	static FSlateIcon EventIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
+	return EventIcon.GetIcon();
 }
 
 FReply FControlRigFunctionDragDropAction::DroppedOnPanel(const TSharedRef< class SWidget >& Panel, FVector2D ScreenPosition, FVector2D GraphPosition, UEdGraph& Graph)
@@ -556,21 +609,37 @@ bool UControlRigGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin*
 
 	UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
 
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(PinA->GetOwningNode());
-	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
-	if (RigBlueprint != nullptr)
+	IRigVMClientHost* Host = PinA->GetOwningNode()->GetImplementingOuter<IRigVMClientHost>();
+	if (Host != nullptr)
 	{
-		if (URigVMController* Controller = RigBlueprint->GetOrCreateController(PinA->GetOwningNode()->GetGraph()))
+		if (URigVMController* Controller = Host->GetRigVMClient()->GetOrCreateController(PinA->GetOwningNode()->GetGraph()))
 		{
+			ERigVMPinDirection UserLinkDirection = ERigVMPinDirection::Output;
 			if (PinA->Direction == EGPD_Input)
 			{
-				UEdGraphPin* Temp = PinA;
-				PinA = PinB;
-				PinB = Temp;
+				Swap(PinA, PinB);
+				UserLinkDirection = ERigVMPinDirection::Input;
+			}
+
+			const bool bPinAIsWildCard = PinA->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject();
+			const bool bPinBIsWildCard = PinB->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject();
+			if(bPinAIsWildCard != bPinBIsWildCard)
+			{
+				// switch the user link direction if only one of the pins is a wildcard 
+				if(UserLinkDirection == ERigVMPinDirection::Input && bPinBIsWildCard)
+				{
+					UserLinkDirection = ERigVMPinDirection::Output;
+				}
+				else if(UserLinkDirection == ERigVMPinDirection::Output && bPinAIsWildCard)
+				{
+					UserLinkDirection = ERigVMPinDirection::Input;
+				}
 			}
 
 #if WITH_EDITOR
 
+			static const FText LoopMessage = LOCTEXT("LinkingLoopNotRecommended", "Linking a function return within a loop is not recommended.\nAre you sure?");
+			
 			// check if we are trying to connect a loop iteration pin to a return
 			if(URigVMGraph* Graph = Controller->GetGraph())
 			{
@@ -633,7 +702,7 @@ bool UControlRigGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin*
 
 						if(bIsInLoopIteration)
 						{
-							const EAppReturnType::Type Answer = FMessageDialog::Open( EAppMsgType::YesNo, FText::FromString( TEXT("Linking a function return within a loop is not recommended.\nAre you sure?") ) );
+							const EAppReturnType::Type Answer = FMessageDialog::Open( EAppMsgType::YesNo, LoopMessage );
 							if(Answer == EAppReturnType::No)
 							{
 								return false;
@@ -643,8 +712,8 @@ bool UControlRigGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin*
 				}
 			}
 #endif
-			
-			return Controller->AddLink(PinA->GetName(), PinB->GetName(), true, true);
+
+			return Controller->AddLink(PinA->GetName(), PinB->GetName(), true, true, UserLinkDirection);
 		}
 	}
 	return false;
@@ -675,45 +744,63 @@ static bool HasChildConnection_Recursive(const UEdGraphPin* InPin)
 
 const FPinConnectionResponse UControlRigGraphSchema::CanCreateConnection(const UEdGraphPin* A, const UEdGraphPin* B) const
 {
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(A->GetOwningNode());
-	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
-	if (RigBlueprint != nullptr)
+	UControlRigGraphNode* RigNodeA = Cast<UControlRigGraphNode>(A->GetOwningNode());
+	UControlRigGraphNode* RigNodeB = Cast<UControlRigGraphNode>(B->GetOwningNode());
+
+	if (RigNodeA && RigNodeB && RigNodeA != RigNodeB)
 	{
-		UControlRigGraphNode* RigNodeA = Cast<UControlRigGraphNode>(A->GetOwningNode());
-		UControlRigGraphNode* RigNodeB = Cast<UControlRigGraphNode>(B->GetOwningNode());
-
-		if (RigNodeA && RigNodeB && RigNodeA != RigNodeB)
+		URigVMPin* PinA = RigNodeA->GetModelPinFromPinPath(A->GetName());
+		if (PinA)
 		{
-			URigVMPin* PinA = RigNodeA->GetModelPinFromPinPath(A->GetName());
-			if (PinA)
-			{
-				PinA = PinA->GetPinForLink();
-				RigNodeA->GetModel()->PrepareCycleChecking(PinA, A->Direction == EGPD_Input);
-			}
-
-			URigVMPin* PinB = RigNodeB->GetModelPinFromPinPath(B->GetName());
-			if (PinB)
-			{
-				PinB = PinB->GetPinForLink();
-			}
-
-			if (A->Direction == EGPD_Input)
-			{
-				URigVMPin* Temp = PinA;
-				PinA = PinB;
-				PinB = Temp;
-			}
-
-			const FRigVMByteCode* ByteCode = RigNodeA->GetController()->GetCurrentByteCode();
-
-			FString FailureReason;
-			bool bResult = RigNodeA->GetModel()->CanLink(PinA, PinB, &FailureReason, ByteCode);
-			if (!bResult)
-			{
-				return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, FText::FromString(FailureReason));
-			}
-			return FPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Allowed", "Connect"));
+			PinA = PinA->GetPinForLink();
+			RigNodeA->GetModel()->PrepareCycleChecking(PinA, A->Direction == EGPD_Input);
 		}
+
+		URigVMPin* PinB = RigNodeB->GetModelPinFromPinPath(B->GetName());
+		if (PinB)
+		{
+			PinB = PinB->GetPinForLink();
+		}
+
+		ERigVMPinDirection UserLinkDirection = ERigVMPinDirection::Output;
+		if (A->Direction == EGPD_Input)
+		{
+			Swap(PinA, PinB);
+			UserLinkDirection = ERigVMPinDirection::Input;
+		}
+
+		if (!PinA)
+		{
+			return FPinConnectionResponse(ECanCreateConnectionResponse::CONNECT_RESPONSE_DISALLOW, FString::Printf(TEXT("Pin %s not found"), *A->GetName()));
+		}
+
+		if (!PinB)
+		{
+			return FPinConnectionResponse(ECanCreateConnectionResponse::CONNECT_RESPONSE_DISALLOW, FString::Printf(TEXT("Pin %s not found"), *B->GetName()));
+		}
+
+		if(PinA->IsWildCard() != PinB->IsWildCard())
+		{
+			// switch the user link direction if only one of the pins is a wildcard 
+			if(UserLinkDirection == ERigVMPinDirection::Input && PinB->IsWildCard())
+			{
+				UserLinkDirection = ERigVMPinDirection::Output;
+			}
+			else if(UserLinkDirection == ERigVMPinDirection::Output && PinA->IsWildCard())
+			{
+				UserLinkDirection = ERigVMPinDirection::Input;
+			}
+		}
+
+		const FRigVMByteCode* ByteCode = RigNodeA->GetController()->GetCurrentByteCode();
+
+		FString FailureReason;
+		bool bResult = RigNodeA->GetModel()->CanLink(PinA, PinB, &FailureReason, ByteCode, UserLinkDirection);
+		if (!bResult)
+		{
+			return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, FText::FromString(FailureReason));
+		}
+		return FPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Allowed", "Connect"));
 	}
 
 	return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectResponse_Disallowed_Unexpected", "Unexpected error"));
@@ -731,7 +818,7 @@ FLinearColor UControlRigGraphSchema::GetPinTypeColor(const FEdGraphPinType& PinT
 				return FLinearColor::White;
 			}
 
-			if (Struct->IsChildOf(FRigVMUnknownType::StaticStruct()))
+			if (Struct->IsChildOf(RigVMTypeUtils::GetWildCardCPPTypeObject()))
 			{
 				return FLinearColor(FVector3f::OneVector * 0.25f);
 			}
@@ -771,7 +858,7 @@ void UControlRigGraphSchema::InsertAdditionalActions(TArray<UBlueprint*> InBluep
 		{
 			if(URigVMPin* ModelPin = RigNode->GetModelPinFromPinPath(EdGraphPins[0]->GetName()))
 			{
-				if(!ModelPin->IsExecuteContext() && !ModelPin->IsUnknownType())
+				if(!ModelPin->IsExecuteContext() && !ModelPin->IsWildCard())
 				{
 					if(!ModelPin->GetNode()->IsA<URigVMVariableNode>())
 					{
@@ -855,7 +942,11 @@ bool UControlRigGraphSchema::SupportsPinType(UScriptStruct* ScriptStruct) const
 				continue;
 			}
 		}
-		else if (CastField<FObjectProperty>(Property))
+		else if (CastField<FObjectProperty>(Property) && RigVMCore::SupportsUObjects())
+		{
+			continue;
+		}
+		else if (CastField<FInterfaceProperty>(Property) && RigVMCore::SupportsUInterfaces())
 		{
 			continue;
 		}
@@ -885,13 +976,27 @@ bool UControlRigGraphSchema::SupportsPinType(TWeakPtr<const FEdGraphSchemaAction
 		return true;
 	}
 
-	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Object ||
-		PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
-		PinType.PinCategory == UEdGraphSchema_K2::AllObjectTypes)
+	if(RigVMCore::SupportsUObjects())
 	{
-		if (PinType.PinSubCategoryObject.IsValid())
+		if (PinType.PinCategory == UEdGraphSchema_K2::PC_Object ||
+			PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
+			PinType.PinCategory == UEdGraphSchema_K2::AllObjectTypes)
 		{
-			return PinType.PinSubCategoryObject->IsA<UClass>();
+			if (PinType.PinSubCategoryObject.IsValid())
+			{
+				return PinType.PinSubCategoryObject->IsA<UClass>();
+			}
+		}
+	}
+
+	if (RigVMCore::SupportsUInterfaces())
+	{
+		if (PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)
+		{
+			if (PinType.PinSubCategoryObject.IsValid())
+			{
+				return PinType.PinSubCategoryObject->IsA<UInterface>();
+			}
 		}
 	}
 
@@ -907,6 +1012,15 @@ bool UControlRigGraphSchema::SupportsPinType(TWeakPtr<const FEdGraphSchemaAction
 				}
 			}
 			return SupportsPinType(ScriptStruct);
+		}
+		else if (PinType.PinSubCategoryObject == UUserDefinedStruct::StaticClass())
+		{
+			// if a user defined struct hasn't been loaded yet,
+			// its PinSubCategoryObject equals UUserDefinedStruct::StaticClass()
+			// and since it is not practical to load every user defined struct to check if they only contain supported types,
+			// we always return true so that they at least show up in the drop down menu
+			// if they contain members of unsupported type, the spawned node will generate error
+			return true;
 		}
 	}
 
@@ -989,6 +1103,19 @@ bool UControlRigGraphSchema::CanGraphBeDropped(TSharedPtr<FEdGraphSchemaAction> 
 	}
 	
 	return false;
+}
+
+FString UControlRigGraphSchema::GetFindReferenceSearchTerm(const FEdGraphSchemaAction* InGraphAction) const
+{
+	if(InGraphAction)
+	{
+		if(InGraphAction->GetTypeId() == FEdGraphSchemaAction_K2Var::StaticGetTypeId())
+		{
+			const FEdGraphSchemaAction_K2Var* VarAction = (const FEdGraphSchemaAction_K2Var*)InGraphAction;
+			return VarAction->GetVariableName().ToString();
+		}
+	}
+	return Super::GetFindReferenceSearchTerm(InGraphAction);
 }
 
 FReply UControlRigGraphSchema::BeginGraphDragAction(TSharedPtr<FEdGraphSchemaAction> InAction, const FPointerEvent& MouseEvent) const
@@ -1123,28 +1250,72 @@ void UControlRigGraphSchema::GetGraphDisplayInformation(const UEdGraph& Graph, /
 
 	if (UControlRigGraph* RigGraph = Cast<UControlRigGraph>((UEdGraph*)&Graph))
 	{
-		TArray<FString> NodePathParts;
-		if (URigVMNode::SplitNodePath(RigGraph->ModelNodePath, NodePathParts))
+		if(URigVMGraph* Model = RigGraph->GetModel())
 		{
-			DisplayInfo.DisplayName = FText::FromString(NodePathParts.Last());
-			DisplayInfo.PlainName = DisplayInfo.DisplayName;
-
-			static const FText LocalFunctionText = FText::FromString(TEXT("A local function.")); 
-			DisplayInfo.Tooltip = LocalFunctionText;
-
-			// if this is a riggraph within a collapse node - let's use that for the tooltip
-			if(URigVMGraph* Model = RigGraph->GetModel())
+			TArray<FString> NodePathParts;
+			if (URigVMNode::SplitNodePath(RigGraph->ModelNodePath, NodePathParts))
 			{
+				if(NodePathParts.Num() > 1)
+				{
+					DisplayInfo.DisplayName = FText::FromString(NodePathParts.Last());
+					DisplayInfo.PlainName = DisplayInfo.DisplayName;
+
+					static const FText LocalFunctionText = FText::FromString(TEXT("A local function.")); 
+					DisplayInfo.Tooltip = LocalFunctionText;
+				}
+
+				// if this is a riggraph within a collapse node - let's use that for the tooltip
 				if(URigVMCollapseNode* CollapseNode = Model->GetTypedOuter<URigVMCollapseNode>())
 				{
 					DisplayInfo.Tooltip = CollapseNode->GetToolTipText();
 				}
 			}
-		}
-		else
-		{
-			static const FText MainGraphText = FText::FromString(TEXT("The main graph for the Control Rig."));
-			DisplayInfo.Tooltip = MainGraphText;
+
+			if(Model->IsRootGraph())
+			{
+				// let's see if there is only one event
+				FString EventName;
+				if(Algo::CountIf(Model->GetNodes(), [&EventName](const URigVMNode* NodeToCount) -> bool
+				{
+					if(NodeToCount->IsEvent() && NodeToCount->CanOnlyExistOnce())
+					{
+						if(EventName.IsEmpty())
+						{
+							if(const URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(NodeToCount))
+							{
+								if(UnitNode->GetScriptStruct())
+								{
+									EventName = UnitNode->GetScriptStruct()->GetDisplayNameText().ToString();
+								}
+							}
+						}
+						return true;
+					}
+					return false;
+				}) == 1)
+				{
+					static constexpr TCHAR EventGraphNameFormat[] = TEXT("%s Graph");
+					const FString DesiredGraphName = FString::Printf(EventGraphNameFormat, *EventName);
+					DisplayInfo.DisplayName = FText::FromString(DesiredGraphName);
+					DisplayInfo.PlainName = DisplayInfo.DisplayName;
+				}
+				else
+				{
+					static const FText MainGraphText = FText::FromString(TEXT("A top level graph for the rig."));
+					DisplayInfo.Tooltip = MainGraphText;
+
+					if(!NodePathParts.IsEmpty())
+					{
+						static constexpr TCHAR NodePathSuffix[] = TEXT("::");
+						FString NodePath = NodePathParts[0];
+						NodePath.RemoveFromEnd(NodePathSuffix);
+						NodePath.RemoveFromStart(UControlRigBlueprint::RigVMModelPrefix);
+						NodePath.TrimStartAndEndInline();
+						DisplayInfo.DisplayName = FText::FromString(NodePath);
+						DisplayInfo.PlainName = DisplayInfo.DisplayName;
+					}
+				}
+			}
 		}
 	}
 }
@@ -1205,6 +1376,43 @@ FText UControlRigGraphSchema::GetGraphCategory(const UEdGraph* InGraph) const
 	return FText();
 }
 
+EGraphType UControlRigGraphSchema::GetGraphType(const UEdGraph* TestEdGraph) const
+{
+	if (UControlRigGraph* RigGraph = Cast<UControlRigGraph>((UEdGraph*)TestEdGraph))
+	{
+		if (UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(RigGraph)))
+		{
+			if (URigVMGraph* Model = RigGraph->GetModel())
+			{
+				if(Model->IsRootGraph())
+				{
+					if(Model->IsA<URigVMFunctionLibrary>())
+					{
+						return EGraphType::GT_Function;
+					}
+					else
+					{
+						return EGraphType::GT_Ubergraph;
+					}
+				}
+				else if(URigVMLibraryNode* LibraryNode = Cast<URigVMLibraryNode>(Model->GetOuter()))
+				{
+					if(LibraryNode->GetGraph()->IsA<URigVMFunctionLibrary>())
+					{
+						return EGraphType::GT_Function;
+					}
+					else
+					{
+						// collapse nodes show up as uber graphs
+						return EGraphType::GT_Ubergraph;
+					}
+				}
+			}
+		}
+	}
+	return Super::GetGraphType(TestEdGraph);
+}
+
 FReply UControlRigGraphSchema::TrySetGraphCategory(const UEdGraph* InGraph, const FText& InCategory)
 {
 	if (UControlRigGraph* RigGraph = Cast<UControlRigGraph>((UEdGraph*)InGraph))
@@ -1237,7 +1445,12 @@ bool UControlRigGraphSchema::TryDeleteGraph(UEdGraph* GraphToDelete) const
 		{
 			if (URigVMGraph* Model = RigBlueprint->GetModel(GraphToDelete))
 			{
-				if (URigVMCollapseNode* LibraryNode = Cast<URigVMCollapseNode>(Model->GetOuter()))
+				if(Model->IsRootGraph())
+				{
+					RigBlueprint->RemoveModel(Model->GetNodePath());
+					return true;
+				}
+				else if (URigVMCollapseNode* LibraryNode = Cast<URigVMCollapseNode>(Model->GetOuter()))
 				{
 					if (URigVMController* Controller = RigBlueprint->GetOrCreateController(LibraryNode->GetGraph()))
 					{
@@ -1310,7 +1523,12 @@ bool UControlRigGraphSchema::TryRenameGraph(UEdGraph* GraphToRename, const FName
 		{
 			if (URigVMGraph* Model = RigGraph->GetModel())
 			{
-				if (URigVMGraph* RootModel = Model->GetRootGraph())
+				if(Model->IsRootGraph())
+				{
+					const FString NewName = FString::Printf(TEXT("%s %s"), RigBlueprint->RigVMModelPrefix, *InNewName.ToString()); 
+					RigBlueprint->RenameGraph(Model->GetNodePath(), *NewName);
+				}
+				else if (URigVMGraph* RootModel = Model->GetRootGraph())
 				{
 					URigVMLibraryNode* LibraryNode = Cast<URigVMLibraryNode>(RootModel->FindNode(RigGraph->ModelNodePath));
 					if (LibraryNode)
@@ -1325,6 +1543,62 @@ bool UControlRigGraphSchema::TryRenameGraph(UEdGraph* GraphToRename, const FName
 			}
 		}
 	}
+	return false;
+}
+
+bool UControlRigGraphSchema::TryToGetChildEvents(const UEdGraph* Graph, const int32 SectionId,
+	TArray<TSharedPtr<FEdGraphSchemaAction>>& Actions, const FText& ParentCategory) const
+{
+	check(Graph);
+
+	if(const UControlRigGraph* RigGraph = Cast<UControlRigGraph>(Graph))
+	{
+		if(URigVMGraph* Model = RigGraph->GetModel())
+		{
+			TArray<FName> EventNames;
+			TMap<FName, const URigVMNode*> EventNameToNode;
+			for(const URigVMNode* Node : Model->GetNodes())
+			{
+				if(Node->IsEvent())
+				{
+					if(!EventNames.Contains(Node->GetEventName()))
+					{
+						EventNames.Add(Node->GetEventName());
+						EventNameToNode.Add(Node->GetEventName(), Node);
+					}
+				}
+			}
+
+			if(!EventNames.IsEmpty())
+			{
+				FGraphDisplayInfo EdGraphDisplayInfo;
+				GetGraphDisplayInformation(*Graph, EdGraphDisplayInfo);
+
+				FText EdGraphDisplayName = EdGraphDisplayInfo.DisplayName;
+				FText ActionCategory;
+				if (!ParentCategory.IsEmpty())
+				{
+					ActionCategory = FText::Format(FText::FromString(TEXT("{0}|{1}")), ParentCategory, EdGraphDisplayName);
+				}
+				else
+				{
+					ActionCategory = MoveTemp(EdGraphDisplayName);
+				}
+
+				for(const FName& EventName : EventNames)
+				{
+					const URigVMNode* Node = EventNameToNode.FindChecked(EventName);
+					TSharedPtr<FEdGraphSchemaAction> Action = MakeShareable(
+						new FControlRigGraphSchemaAction_Event(EventName, Node->GetNodePath(true), ActionCategory)
+					);
+					Action->SectionID = SectionId;
+					Actions.Add(Action);
+				}
+			}
+			return true;
+		}
+	}
+
 	return false;
 }
 
@@ -1361,6 +1635,7 @@ UEdGraphPin* UControlRigGraphSchema::DropPinOnNode(UEdGraphNode* InTargetNode, c
 					{
 						if (URigVMController* Controller = RigBlueprint->GetController(Model))
 						{
+							FName SourcePinName = InSourcePinName; 
 							FString TypeName = ExternalVar.TypeName.ToString();
 							if (ExternalVar.bIsArray)
 							{
@@ -1370,6 +1645,15 @@ UEdGraphPin* UControlRigGraphSchema::DropPinOnNode(UEdGraphNode* InTargetNode, c
 							if (ExternalVar.TypeObject)
 							{
 								TypeObjectPathName = *ExternalVar.TypeObject->GetPathName();
+
+								if(const UScriptStruct* CPPTypeStruct = Cast<UScriptStruct>(ExternalVar.TypeObject))
+								{
+									if(CPPTypeStruct->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+									{
+										SourcePinName = FRigVMStruct::ExecuteContextName;
+										PinDirection = ERigVMPinDirection::IO;										
+									}
+								}
 							}
 
 							FString DefaultValue;
@@ -1385,7 +1669,7 @@ UEdGraphPin* UControlRigGraphSchema::DropPinOnNode(UEdGraphNode* InTargetNode, c
 							}
 
 							FName ExposedPinName = Controller->AddExposedPin(
-								InSourcePinName,
+								SourcePinName,
 								PinDirection,
 								TypeName,
 								TypeObjectPathName,
@@ -1502,38 +1786,55 @@ bool UControlRigGraphSchema::ArePinsCompatible(const UEdGraphPin* PinA, const UE
 		return false;
 	}
 
-	if (UControlRigGraphNode* GraphNode = Cast<UControlRigGraphNode>(PinB->GetOwningNode()))
-	{
-	}
-
-	// for reroute nodes - always allow it
-	if (PinA->PinType.PinCategory == TEXT("ANY_TYPE"))
-	{
-		UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
-		MutableThis->LastPinForCompatibleCheck = PinB;
-		MutableThis->bLastPinWasInput = PinB->Direction == EGPD_Input;
-		return true;
-	}
-	if (PinB->PinType.PinCategory == TEXT("ANY_TYPE"))
-	{
-		UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
-		MutableThis->LastPinForCompatibleCheck = PinA;
-		MutableThis->bLastPinWasInput = PinA->Direction == EGPD_Input;
-		return true;
-	}
-
 	// if we are looking at a polymorphic node
 	if((PinA->PinType.ContainerType == PinB->PinType.ContainerType) ||
 		(PinA->PinType.PinSubCategoryObject != PinB->PinType.PinSubCategoryObject))
 	{
-		if(PinA->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct && PinA->PinType.PinSubCategoryObject == FRigVMUnknownType::StaticStruct())
+		auto IsPinCompatibleWithType = [](const UEdGraphPin* InPin, const FEdGraphPinType& InPinType) -> bool
 		{
-			bool bIsExecuteContext = false;
-			if(const UScriptStruct* ExecuteContextScriptStruct = Cast<UScriptStruct>(PinB->PinType.PinSubCategoryObject))
+			if(const UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(InPin->GetOwningNode()))
 			{
-				bIsExecuteContext = ExecuteContextScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct());
+				if(const FRigVMTemplate* Template = RigNode->GetTemplate())
+				{
+					FString CPPType;
+					UObject* CPPTypeObject = nullptr;
+					if(RigVMTypeUtils::CPPTypeFromPinType(InPinType, CPPType, &CPPTypeObject))
+					{
+						FString PinPath, PinName;
+						URigVMPin::SplitPinPathAtEnd(InPin->GetName(), PinPath, PinName);
+						
+						if((InPin->ParentPin != nullptr) &&
+							(InPin->ParentPin->ParentPin == nullptr) &&
+							(InPin->ParentPin->PinType.ContainerType == EPinContainerType::Array))
+						{
+							URigVMPin::SplitPinPathAtEnd(InPin->ParentPin->GetName(), PinPath, PinName);
+							CPPType = RigVMTypeUtils::ArrayTypeFromBaseType(CPPType);
+						}
+
+						const FRigVMTemplateArgumentType Type(*CPPType, CPPTypeObject);
+						const int32 TypeIndex = FRigVMRegistry::Get().GetTypeIndex(Type);
+						if(!Template->ArgumentSupportsTypeIndex(*PinName, TypeIndex))
+						{
+							return false;
+						}
+					}
+				}
 			}
-			if(!bIsExecuteContext)
+			return true;
+		};
+
+		auto IsTemplateNodePin = [](const UEdGraphPin* InPin)
+		{
+			if(const UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(InPin->GetOwningNode()))
+			{
+				return RigNode->GetTemplate() != nullptr;
+			};
+			return false;
+		};
+		
+		if(PinA->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject() || IsTemplateNodePin(PinA))
+		{
+			if(IsPinCompatibleWithType(PinA, PinB->PinType))
 			{
 				UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
 				MutableThis->LastPinForCompatibleCheck = PinB;
@@ -1541,14 +1842,9 @@ bool UControlRigGraphSchema::ArePinsCompatible(const UEdGraphPin* PinA, const UE
 				return true;
 			}
 		}
- 		else if(PinB->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct && PinB->PinType.PinSubCategoryObject == FRigVMUnknownType::StaticStruct())
+ 		if(PinB->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject() || IsTemplateNodePin(PinB))
 		{
-			bool bIsExecuteContext = false;
- 			if(const UScriptStruct* ExecuteContextScriptStruct = Cast<UScriptStruct>(PinA->PinType.PinSubCategoryObject))
- 			{
- 				bIsExecuteContext = ExecuteContextScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct());
- 			}
- 			if(!bIsExecuteContext)
+ 			if(IsPinCompatibleWithType(PinB, PinA->PinType))
  			{
  				UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
  				MutableThis->LastPinForCompatibleCheck = PinA;
@@ -1569,51 +1865,6 @@ bool UControlRigGraphSchema::ArePinsCompatible(const UEdGraphPin* PinA, const UE
 			PinB->PinType.PinCategory == UEdGraphSchema_K2::PC_Float))
 		{
 			return true;
-		}
-	}
-
-	struct Local
-	{
-		static FString GetCPPTypeFromPinType(const FEdGraphPinType& InPinType)
-		{
-			return FString();
-		}
-	};
-
-	if (PinA->PinType.PinCategory.IsNone() && PinB->PinType.PinCategory.IsNone())
-	{
-		return true;
-	}
-	else if (PinA->PinType.PinCategory.IsNone() && !PinB->PinType.PinCategory.IsNone())
-	{
-		if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(PinA->GetOwningNode()))
-		{
-			if (URigVMPrototypeNode* PrototypeNode = Cast<URigVMPrototypeNode>(RigNode->GetModelNode()))
-			{
-				FString CPPType = Local::GetCPPTypeFromPinType(PinB->PinType);
-				FString Left, Right;
-				URigVMPin::SplitPinPathAtStart(PinA->GetName(), Left, Right);
-				if (URigVMPin* ModelPin = PrototypeNode->FindPin(Right))
-				{
-					return PrototypeNode->SupportsType(ModelPin, CPPType);
-				}
-			}
-		}
-	}
-	else if (!PinA->PinType.PinCategory.IsNone() && PinB->PinType.PinCategory.IsNone())
-	{
-		if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(PinB->GetOwningNode()))
-		{
-			if (URigVMPrototypeNode* PrototypeNode = Cast<URigVMPrototypeNode>(RigNode->GetModelNode()))
-			{
-				FString CPPType = Local::GetCPPTypeFromPinType(PinA->PinType);
-				FString Left, Right;
-				URigVMPin::SplitPinPathAtStart(PinB->GetName(), Left, Right);
-				if (URigVMPin* ModelPin = PrototypeNode->FindPin(Right))
-				{
-					return PrototypeNode->SupportsType(ModelPin, CPPType);
-				}
-			}
 		}
 	}
 
@@ -1911,4 +2162,13 @@ void UControlRigGraphSchema::HandleModifiedEvent(ERigVMGraphNotifType InNotifTyp
 	}
 }
 
+bool UControlRigGraphSchema::IsControlRigDefaultEvent(const FName& InEventName)
+{
+	return InEventName == FRigUnit_BeginExecution::EventName ||
+		InEventName == FRigUnit_InverseExecution::EventName ||
+		InEventName == FRigUnit_PrepareForExecution::EventName ||
+		InEventName == FRigUnit_InteractionExecution::EventName;
+}
+
 #undef LOCTEXT_NAMESPACE
+

@@ -1,7 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once 
+#include "Async/Fundamental/TaskDelegate.h"
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Event.h"
+#include "HAL/PlatformAffinity.h"
+#include "HAL/Thread.h"
 #include "Scheduler.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+
+#include <atomic>
 
 namespace LowLevelTasks
 {
@@ -43,6 +55,7 @@ namespace LowLevelTasks
 		template<typename ElementType>
 		using TAlignedArray = TArray<ElementType, TAlignedHeapAllocator<alignof(ElementType)>>;
 		TEventStack<FYieldedWork> 						EventStack;
+		TArray<TUniquePtr<FYieldedWork>>				ReserveEvents;
 		FCriticalSection 								WorkerThreadsCS;
 		TAlignedArray<FSchedulerTls::FLocalQueueType>	WorkerLocalQueues;
 		TArray<TUniquePtr<FThread>>						WorkerThreads;

@@ -13,6 +13,9 @@
 #include "ShaderParameterStruct.h"
 #include "ScenePrivate.h"
 
+static int32 GHairVirtualVoxel_NumPixelPerVoxel = 2;
+static FAutoConsoleVariableRef CVarHairVirtualVoxel_NumPixelPerVoxel(TEXT("r.HairStrands.Voxelization.VoxelSizeInPixel"), GHairVirtualVoxel_NumPixelPerVoxel, TEXT("Target size of voxel size in pixels"), ECVF_RenderThreadSafe);
+
 class FHairMacroGroupAABBCS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FHairMacroGroupAABBCS);
@@ -22,6 +25,11 @@ class FHairMacroGroupAABBCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, MacroGroupId)
 		SHADER_PARAMETER(uint32, MacroGroupValid)
 		SHADER_PARAMETER(uint32, bClearBuffer)
+
+		SHADER_PARAMETER(float, PixelSizeAtDepth1)
+		SHADER_PARAMETER(float, NumPixelPerVoxel)
+		SHADER_PARAMETER(uint32, VoxelPageResolution)
+
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InGroupAABBBuffer0)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InGroupAABBBuffer1)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InGroupAABBBuffer2)
@@ -31,7 +39,9 @@ class FHairMacroGroupAABBCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InGroupAABBBuffer6)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, InGroupAABBBuffer7)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OutMacroGroupAABBBuffer)
-		END_SHADER_PARAMETER_STRUCT()
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer, OutMacroGroupVoxelSizeBuffer)
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	END_SHADER_PARAMETER_STRUCT()
 
 public:
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsHairStrandsSupported(EHairStrandsShaderType::Strands, Parameters.Platform); }
@@ -44,15 +54,29 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FHairMacroGroupAABBCS, "/Engine/Private/HairStrands/HairStrandsAABB.usf", "Main", SF_Compute);
 
+void GetVoxelPageResolution(uint32& OutPageResolution, uint32& OutPageResolutionLog2);
+
 static void AddHairMacroGroupAABBPass(
 	FRDGBuilder& GraphBuilder,
-	FGlobalShaderMap* ShaderMap,
+	const FViewInfo& View, 
 	FHairStrandsMacroGroupData& MacroGroup,
-	FRDGBufferUAVRef& OutHairMacroGroupAABBBufferUAV)
+	FRDGBufferUAVRef& OutHairMacroGroupAABBBufferUAV,
+	FRDGBufferUAVRef& OutMacroGroupVoxelSizeBufferUAV)
 {
 	const uint32 PrimitiveCount = MacroGroup.PrimitivesInfos.Num();
 	if (PrimitiveCount == 0)
 		return;
+	
+	// Compute the average pixel size at a distance of 1 units
+	const FIntPoint Resolution(View.ViewRect.Width(), View.ViewRect.Height());
+	const float vFOV = FMath::DegreesToRadians(View.FOV);
+	const float PixelSizeAtDepth1 = FMath::Tan(vFOV * 0.5f) / (0.5f * Resolution.Y);
+	
+	uint32 VoxelPageResolution = 0;
+	uint32 VoxelPageResolutionLog2 = 1;
+	GetVoxelPageResolution(VoxelPageResolution, VoxelPageResolutionLog2);
+
+	const float NumPixelPerVoxel = FMath::Clamp(GHairVirtualVoxel_NumPixelPerVoxel, 1.f, 50.f);
 
 	const uint32 GroupPerPass = 8;
 	bool bNeedClear = true;
@@ -63,6 +87,11 @@ static void AddHairMacroGroupAABBPass(
 		FHairMacroGroupAABBCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairMacroGroupAABBCS::FParameters>();
 		Parameters->MacroGroupId = MacroGroupId;
 		Parameters->OutMacroGroupAABBBuffer = OutHairMacroGroupAABBBufferUAV;
+		Parameters->OutMacroGroupVoxelSizeBuffer = OutMacroGroupVoxelSizeBufferUAV;
+		Parameters->PixelSizeAtDepth1   = PixelSizeAtDepth1;
+		Parameters->NumPixelPerVoxel    = NumPixelPerVoxel;
+		Parameters->VoxelPageResolution = VoxelPageResolution;
+		Parameters->View			    = View.ViewUniformBuffer;
 
 		uint32 MacroGroupValid = 1;
 		uint32 CurrentGroupIt = 1;
@@ -103,10 +132,10 @@ static void AddHairMacroGroupAABBPass(
 		Parameters->MacroGroupValid = MacroGroupValid;
 		Parameters->bClearBuffer = bNeedClear ? 1 : 0;
 
-		TShaderMapRef<FHairMacroGroupAABBCS> ComputeShader(ShaderMap);
+		TShaderMapRef<FHairMacroGroupAABBCS> ComputeShader(View.ShaderMap);
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
-			RDG_EVENT_NAME("HairStrandsMacroGroupAABBUpdate"),
+			RDG_EVENT_NAME("HairStrands::MacroGroupAABBUpdate"),
 			ComputeShader,
 			Parameters,
 			FIntVector(1,1,1));
@@ -161,7 +190,7 @@ void CreateHairStrandsMacroGroups(
 	FHairStrandsViewData& OutHairStrandsViewData)
 {
 	const bool bHasHairStrandsElements = View.HairStrandsMeshElements.Num() != 0 || Scene->HairStrandsSceneData.RegisteredProxies.Num() != 0;
-	if (!View.Family || !bHasHairStrandsElements || View.bIsPlanarReflection || View.bIsReflectionCapture)
+	if (!View.Family || !bHasHairStrandsElements || View.bIsReflectionCapture)
 	{
 		return;
 	}
@@ -172,7 +201,7 @@ void CreateHairStrandsMacroGroups(
 
 	// Aggregate all hair primitives within the same area into macro groups, for allocating/rendering DOM/voxel
 	uint32 MacroGroupId = 0;
-	auto UpdateMacroGroup = [&MacroGroups, &MacroGroupId, &MaterialId](FHairGroupPublicData* HairData, const FMeshBatch* Mesh,  const FPrimitiveSceneProxy* Proxy, const FBoxSphereBounds* Bounds)
+	auto UpdateMacroGroup = [&MacroGroups, &MacroGroupId, &MaterialId](FHairGroupPublicData* HairData, const FMeshBatch* Mesh,  const FPrimitiveSceneProxy* Proxy, const FBoxSphereBounds& Bounds)
 	{
 		check(HairData);
 
@@ -181,7 +210,7 @@ void CreateHairStrandsMacroGroups(
 		if (!bIsValid)
 			return;
 
-		const FBoxSphereBounds& PrimitiveBounds = Proxy ? Proxy->GetBounds() : *Bounds;
+		const FBoxSphereBounds& PrimitiveBounds = Proxy ? Proxy->GetBounds() : Bounds;
 
 		bool bFound = false;
 		float MinDistance = FLT_MAX;
@@ -235,6 +264,7 @@ void CreateHairStrandsMacroGroups(
 	};
 
 	// 1. Add all visible hair-strands instances
+	static FBoxSphereBounds EmptyBound(ForceInit);
 	const int32 ActiveInstanceCount = Scene->HairStrandsSceneData.RegisteredProxies.Num();
 	TBitArray InstancesVisibility(false, ActiveInstanceCount);
 	for (const FMeshBatchAndRelevance& MeshBatchAndRelevance : View.HairStrandsMeshElements)
@@ -243,7 +273,7 @@ void CreateHairStrandsMacroGroups(
 		{
 			if (FHairGroupPublicData* HairData = HairStrands::GetHairData(MeshBatchAndRelevance.Mesh))
 			{
-				UpdateMacroGroup(HairData, MeshBatchAndRelevance.Mesh, MeshBatchAndRelevance.PrimitiveSceneProxy, nullptr);
+				UpdateMacroGroup(HairData, MeshBatchAndRelevance.Mesh, MeshBatchAndRelevance.PrimitiveSceneProxy, EmptyBound);
 				InstancesVisibility[HairData->Instance->RegisteredIndex] = true;
 			}
 		}
@@ -255,7 +285,7 @@ void CreateHairStrandsMacroGroups(
 	{
 		for (FHairStrandsInstance* Instance : Scene->HairStrandsSceneData.RegisteredProxies)
 		{
-			if (Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex])
+			if (Instance && Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex])
 			{
 				if (IsHairStrandsVisibleInShadows(View, *Instance))
 				{
@@ -283,10 +313,13 @@ void CreateHairStrandsMacroGroups(
 		RDG_GPU_STAT_SCOPE(GraphBuilder, HairStrandsAABB);
 
 		MacroGroupResources.MacroGroupAABBsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(4, 6 * MacroGroupCount), TEXT("Hair.MacroGroupAABBBuffer"));
+		MacroGroupResources.MacroGroupVoxelAlignedAABBsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(4, 6 * MacroGroupCount), TEXT("Hair.MacroGroupVoxelAlignedAABBBuffer"));
+		MacroGroupResources.MacroGroupVoxelSizeBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(2, MacroGroupCount), TEXT("Hair.MacroGroupVoxelSize"));
 		FRDGBufferUAVRef MacroGroupAABBBufferUAV = GraphBuilder.CreateUAV(MacroGroupResources.MacroGroupAABBsBuffer, PF_R32_SINT);
+		FRDGBufferUAVRef MacroGroupVoxelSizeBufferUAV = GraphBuilder.CreateUAV(MacroGroupResources.MacroGroupVoxelSizeBuffer, PF_R16F);
 		for (FHairStrandsMacroGroupData& MacroGroup : MacroGroups)
 		{				
-			AddHairMacroGroupAABBPass(GraphBuilder, View.ShaderMap, MacroGroup, MacroGroupAABBBufferUAV);
+			AddHairMacroGroupAABBPass(GraphBuilder, View, MacroGroup, MacroGroupAABBBufferUAV, MacroGroupVoxelSizeBufferUAV);
 		}
 		MacroGroupResources.MacroGroupCount = MacroGroups.Num();
 	}

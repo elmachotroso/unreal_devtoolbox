@@ -14,7 +14,7 @@
 #include "VectorField/VectorField.h"
 #include "Components/VectorFieldComponent.h"
 #include "SceneUtils.h"
-#include "Renderer/Private/SceneRendering.h" // needed for STATGROUP_CommandListMarkers
+#include "SceneRendering.h" // needed for STATGROUP_CommandListMarkers
 #include "GPUSortManager.h"
 
 
@@ -93,7 +93,7 @@ void FFXSystemInterface::UnregisterCustomFXSystem(const FName& InterfaceName)
 	CreateCustomFXDelegates.Remove(InterfaceName);
 }
 
-FRHIUniformBuffer* FFXSystemInterface::GetReferenceViewUniformBuffer(TConstArrayView<FViewInfo> Views)
+TUniformBufferRef<FViewUniformShaderParameters> FFXSystemInterface::GetReferenceViewUniformBuffer(TConstArrayView<FViewInfo> Views)
 {
 	check(Views.Num() > 0);
 	return Views[0].ViewUniformBuffer;
@@ -222,11 +222,17 @@ FFXSystem::FFXSystem(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InSh
 	: ParticleSimulationResources(NULL)
 	, FeatureLevel(InFeatureLevel)
 	, ShaderPlatform(InShaderPlatform)
-	, GPUSortManager(InGPUSortManager)
+	, GPUSortManager(nullptr)
 #if WITH_EDITOR
 	, bSuspended(false)
 #endif // #if WITH_EDITOR
 {
+	// FXSystem GPU sorting is disabled for mobile, see FParticleSortKeyGenCS
+	if (FeatureLevel >= ERHIFeatureLevel::SM5)
+	{
+		GPUSortManager = InGPUSortManager;
+	}
+	
 	InitGPUSimulation();
 
 	// Register the callback in the GPUSortManager. 
@@ -475,6 +481,8 @@ DECLARE_CYCLE_STAT(TEXT("FXPreRender_PrepareCDF"), STAT_CLM_FXPreRender_PrepareC
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_SimulateCDF"), STAT_CLM_FXPreRender_SimulateCDF, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_FinalizeCDF"), STAT_CLM_FXPreRender_FinalizeCDF, STATGROUP_CommandListMarkers);
 
+DECLARE_GPU_DRAWCALL_STAT(FXSystemPreRender);
+DECLARE_GPU_DRAWCALL_STAT(FXSystemPostRenderOpaque);
 
 void FFXSystem::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
 {
@@ -482,6 +490,9 @@ void FFXSystem::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> 
 
 	if (RHISupportsGPUParticles() && bAllowGPUParticleSceneUpdate)
 	{
+		RDG_GPU_STAT_SCOPE(GraphBuilder, FXSystemPreRender);
+		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, FXSystem);
+
 		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
 		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData = GetReferenceGlobalDistanceFieldData(Views);
 
@@ -526,6 +537,9 @@ void FFXSystem::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FVie
 
 	if (RHISupportsGPUParticles() && IsParticleCollisionModeSupported(GetShaderPlatform(), PCM_DepthBuffer) && bAllowGPUParticleUpdate)
 	{
+		RDG_GPU_STAT_SCOPE(GraphBuilder, FXSystemPostRenderOpaque);
+		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, FXSystem);
+
 		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
 
 		AddPass(GraphBuilder, RDG_EVENT_NAME("FFXSystem::PostRenderOpaque"), 

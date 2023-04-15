@@ -7,7 +7,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Dasync.Collections;
-using Jupiter;
+using Datadog.Trace;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
 using Serilog;
@@ -17,13 +18,18 @@ namespace Horde.Storage.Implementation
     public class FileSystemStore : IBlobStore, IBlobCleanup 
     {
         private readonly ILogger _logger = Log.ForContext<FileSystemStore>();
-        private IOptionsMonitor<FilesystemSettings> _settings;
+        private readonly IOptionsMonitor<FilesystemSettings> _settings;
 
-        internal const int DefaultBufferSize = 4096;
+        private const int DefaultBufferSize = 4096;
 
         public FileSystemStore(IOptionsMonitor<FilesystemSettings> settings)
         {
             _settings = settings;
+        }
+
+        private string GetRootDir()
+        {
+            return PathUtil.ResolvePath(_settings.CurrentValue.RootDir);
         }
 
         public static FileInfo GetFilesystemPath(string rootDir, NamespaceId ns, BlobIdentifier blob)
@@ -39,38 +45,54 @@ namespace Horde.Storage.Implementation
 
         public FileInfo GetFilesystemPath(NamespaceId ns, BlobIdentifier objectName)
         {
-            return GetFilesystemPath(_settings.CurrentValue.RootDir, ns, objectName);
+            return GetFilesystemPath(GetRootDir(), ns, objectName);
         }
 
         public DirectoryInfo GetFilesystemPath(NamespaceId ns)
         {
-            return new DirectoryInfo(Path.Combine(_settings.CurrentValue.RootDir, ns.ToString()));
+            return new DirectoryInfo(Path.Combine(GetRootDir(), ns.ToString()));
         }
+
+        static readonly string s_processSuffix = Guid.NewGuid().ToString();
+        static int s_uniqueId = 0;
 
         public async Task<BlobIdentifier> PutObject(NamespaceId ns, ReadOnlyMemory<byte> content, BlobIdentifier blobIdentifier)
         {
-            FileInfo filePath = GetFilesystemPath(ns, blobIdentifier);
-            filePath.Directory?.Create();
-
-            await using FileStream fs = new FileStream(filePath.FullName, FileMode.Create, FileAccess.Write, FileShare.Read, DefaultBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            CancellationToken cancellationToken = default(CancellationToken);
-            await fs.WriteAsync(content, cancellationToken);
-            await fs.FlushAsync(cancellationToken);
-
-            UpdateLastWriteTime(filePath.FullName, DateTime.UnixEpoch);
-            return blobIdentifier;
+			using EpicGames.Core.ReadOnlyMemoryStream stream = new EpicGames.Core.ReadOnlyMemoryStream(content);
+			return await PutObject(ns, stream, blobIdentifier);
         }
-
 
         public async Task<BlobIdentifier> PutObject(NamespaceId ns, Stream content, BlobIdentifier blobIdentifier)
         {
             FileInfo filePath = GetFilesystemPath(ns, blobIdentifier);
             filePath.Directory?.Create();
 
-            await using FileStream fs = new FileStream(filePath.FullName, FileMode.Create, FileAccess.Write, FileShare.Read, DefaultBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            CancellationToken cancellationToken = default(CancellationToken);
-            await content.CopyToAsync(fs, cancellationToken);
-            await fs.FlushAsync(cancellationToken);
+            if (!filePath.Exists)
+            {
+                int uniqueId = Interlocked.Increment(ref s_uniqueId);
+
+                string tempFilePath = $"{filePath.FullName}.{s_processSuffix}.{uniqueId}";
+                await using (FileStream fs = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write, FileShare.Read, DefaultBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    CancellationToken cancellationToken = default(CancellationToken);
+                    await content.CopyToAsync(fs, cancellationToken);
+                }
+
+                try
+                {
+                    File.Move(tempFilePath, filePath.FullName, true);
+                }
+                catch (IOException) when (File.Exists(filePath.FullName))
+                {
+                }
+
+                filePath.Refresh();
+
+                if (filePath.Length == 0)
+                {
+                    _logger.Warning("0 byte file written as {Blob} {Namespace} {Method}", blobIdentifier, ns, "Stream");
+                }
+            }
 
             UpdateLastWriteTime(filePath.FullName, DateTime.UnixEpoch);
             return blobIdentifier;
@@ -78,28 +100,25 @@ namespace Horde.Storage.Implementation
 
         public async Task<BlobIdentifier> PutObject(NamespaceId ns, byte[] content, BlobIdentifier blobIdentifier)
         {
-            FileInfo filePath = GetFilesystemPath(ns, blobIdentifier);
-            filePath.Directory?.Create();
-
-            await using FileStream fs = new FileStream(filePath.FullName, FileMode.Create, FileAccess.Write, FileShare.Read, DefaultBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            CancellationToken cancellationToken = default(CancellationToken);
-            await fs.WriteAsync(content, cancellationToken);
-            await fs.FlushAsync(cancellationToken);
-
-            UpdateLastWriteTime(filePath.FullName, DateTime.UnixEpoch);
-            return blobIdentifier;
+			using MemoryStream stream = new MemoryStream(content);
+			return await PutObject(ns, stream, blobIdentifier);
         }
 
-        public Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blob)
+        public Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blob, LastAccessTrackingFlags flags)
         {
             FileInfo filePath = GetFilesystemPath(ns, blob);
 
             if (!filePath.Exists)
+            {
                 throw new BlobNotFoundException(ns, blob);
+            }
 
+            if (flags == LastAccessTrackingFlags.DoTracking)
+            {
+                UpdateLastWriteTime(filePath.FullName, DateTime.UtcNow);
+            }
             FileStream fs = new FileStream(filePath.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, DefaultBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            
-            UpdateLastWriteTime(filePath.FullName, DateTime.UtcNow);
+
             return Task.FromResult(new BlobContents(fs, fs.Length));
         }
 
@@ -116,28 +135,19 @@ namespace Horde.Storage.Implementation
         /// </summary>
         /// <param name="filePath"></param>
         /// <param name="lastAccessed">Time the file was last accessed</param>
-        private void UpdateLastWriteTime(string filePath, DateTime lastAccessed)
+        private static void UpdateLastWriteTime(string filePath, DateTime lastAccessed)
         {
-            Task.Run(() =>
+            try
             {
-                try
-                {
-                    File.SetLastWriteTimeUtc(filePath, lastAccessed);
-                }
-                catch (FileNotFoundException)
-                {
-                    // it is okay if the file does not exist anymore, that just means it got gced
-                }
-            }).ContinueWith(task =>
+                File.SetLastWriteTimeUtc(filePath, lastAccessed);
+            }
+            catch (FileNotFoundException)
             {
-                if (task.Exception != null)
-                {
-                    _logger.Error(task.Exception, "Exception when updating write time for {FilePath}", filePath);
-                }
-            });
+                // it is okay if the file does not exist anymore, that just means it got gced
+            }
         }
 
-        public Task<bool> Exists(NamespaceId ns, BlobIdentifier blob)
+        public Task<bool> Exists(NamespaceId ns, BlobIdentifier blob, bool forceCheck)
         {
             FileInfo filePath = GetFilesystemPath(ns, blob);
 
@@ -155,19 +165,21 @@ namespace Horde.Storage.Implementation
         {
             DirectoryInfo namespaceDirectory = GetFilesystemPath(ns);
             if (namespaceDirectory.Exists)
+            {
                 namespaceDirectory.Delete(true);
+            }
 
             return Task.CompletedTask;
         }
 
-        public IAsyncEnumerable<BlobIdentifier> ListOldObjects(NamespaceId ns, DateTime cutoff)
+        public IAsyncEnumerable<(BlobIdentifier,DateTime)> ListObjects(NamespaceId ns)
         {
-            return DoListOldObjects(ns, cutoff).ToAsyncEnumerable();
+            return DoListOldObjects(ns).ToAsyncEnumerable();
         }
 
-        private IEnumerable<BlobIdentifier> DoListOldObjects(NamespaceId ns, DateTime cutoff)
+        private IEnumerable<(BlobIdentifier, DateTime)> DoListOldObjects(NamespaceId ns)
         {
-            DirectoryInfo di = new DirectoryInfo(Path.Combine(_settings.CurrentValue.RootDir, ns.ToString()));
+            DirectoryInfo di = GetFilesystemPath(ns);
             if (!di.Exists)
             {
                 yield break;
@@ -180,18 +192,16 @@ namespace Horde.Storage.Implementation
                     continue;
                 }
 
-                if (file.LastWriteTime > cutoff)
-                {
-                    _logger.Information("Ignoring {Blob} as it is new. Last modified: {LastModified} Cutoff: {CutOff}", file.Name, file.LastWriteTime, cutoff);
-                    continue;
-                }
-                _logger.Information("Old {Blob} found. Last modified: {LastModified} Cutoff: {CutOff}", file.Name, file.LastWriteTime, cutoff);
-
-                yield return new BlobIdentifier(file.Name);
+                yield return (new BlobIdentifier(file.Name), file.LastWriteTime);
             }
         }
-        
-        public async Task<List<RemovedBlobs>> Cleanup(CancellationToken cancellationToken)
+
+        public bool ShouldRun()
+        {
+            return true;
+        }
+
+        public async Task<ulong> Cleanup(CancellationToken cancellationToken)
         {
             return await CleanupInternal(cancellationToken);
         }
@@ -204,17 +214,19 @@ namespace Horde.Storage.Implementation
         /// <param name="cancellationToken">Cancellation token</param>
         /// <param name="batchSize">Number of files to scan for clean up. A higher number is recommended since blob store can contain many small blobs</param>
         /// <returns></returns>
-        public async Task<List<RemovedBlobs>> CleanupInternal(CancellationToken cancellationToken, int batchSize = 100000)
+        public async Task<ulong> CleanupInternal(CancellationToken cancellationToken, int batchSize = 100000)
         {
+            using IScope scope = Tracer.Instance.StartActive("gc.filesystem");
+
             long size = await CalculateDiskSpaceUsed();
             ulong maxSizeBytes = _settings.CurrentValue.MaxSizeBytes;
             long triggerSize = (long) (maxSizeBytes * _settings.CurrentValue.TriggerThresholdPercentage);
             long targetSize = (long) (maxSizeBytes * _settings.CurrentValue.TargetThresholdPercentage); // Target to shrink to if triggered
-            List<RemovedBlobs> blobsRemoved = new List<RemovedBlobs>(batchSize);
+            ulong countOfBlobsRemoved = 0;
 
             if (size < triggerSize)
             {
-                return blobsRemoved;
+                return 0;
             }
 
             // Perform a maximum of 5 clean up runs
@@ -223,28 +235,26 @@ namespace Horde.Storage.Implementation
                 size = await CalculateDiskSpaceUsed();
                 if (size <= targetSize)
                 {
-                    return blobsRemoved;
+                    return countOfBlobsRemoved;
                 }
                 
-                FileInfo[] fileInfos = await GetLeastRecentlyAccessedObjects(maxResults: batchSize);
-                if (fileInfos.Length == 0)
-                {
-                    return blobsRemoved;
-                }
-                
+                IEnumerable<FileInfo> fileInfos = GetLeastRecentlyAccessedObjects(maxResults: batchSize);
+
+                bool hadFiles = false;
                 long totalBytesDeleted = 0;
                 foreach (FileInfo fi in fileInfos)
                 {
+                    hadFiles = true;
                     try
                     {
                         totalBytesDeleted += fi.Length;
                         fi.Delete();
-                        blobsRemoved.Add(new RemovedBlobs(new BlobIdentifier(fi.Name)));
+                        ++countOfBlobsRemoved;
 
                         long currentSize = size - totalBytesDeleted;
                         if (currentSize <= targetSize || cancellationToken.IsCancellationRequested)
                         {
-                            return blobsRemoved;
+                            return countOfBlobsRemoved;
                         }
                     }
                     catch (FileNotFoundException)
@@ -252,9 +262,14 @@ namespace Horde.Storage.Implementation
                         // if the file was gced while running we can just ignore it
                     }
                 }
+
+                if (!hadFiles)
+                {
+                    return countOfBlobsRemoved;
+                }
             }
             
-            return blobsRemoved;
+            return countOfBlobsRemoved;
         }
 
         /// <summary>
@@ -264,16 +279,16 @@ namespace Horde.Storage.Implementation
         /// <param name="ns">Namespace, if set to null all namespaces will be scanned</param>
         /// <param name="maxResults">Max results to return. Note that the entire namespace will be scanned no matter what.</param>
         /// <returns>Enumerable of least recently accessed objects as FileInfos</returns>
-        public async Task<FileInfo[]> GetLeastRecentlyAccessedObjects(NamespaceId? ns = null, int maxResults = 10000)
+        public IEnumerable<FileInfo> GetLeastRecentlyAccessedObjects(NamespaceId? ns = null, int maxResults = 10000)
         {
-            string path = ns != null ? Path.Combine(_settings.CurrentValue.RootDir, ns.ToString()!) : _settings.CurrentValue.RootDir;
+            string path = ns != null ? Path.Combine(GetRootDir(), ns.ToString()!) : GetRootDir();
             DirectoryInfo di = new DirectoryInfo(path);
             if (!di.Exists)
             {
                 return Array.Empty<FileInfo>();
             }
-            
-            return await Task.Run(() => di.EnumerateFiles("*", SearchOption.AllDirectories).OrderBy(x => x.LastWriteTime).Take(maxResults).ToArray());
+
+            return di.EnumerateFiles("*", SearchOption.AllDirectories).OrderBy(x => x.LastWriteTime).Take(maxResults);
         }
         
         /// <summary>
@@ -283,7 +298,7 @@ namespace Horde.Storage.Implementation
         /// <returns>Total size of blobs in bytes</returns>
         public async Task<long> CalculateDiskSpaceUsed(NamespaceId? ns = null)
         {
-            string path = ns != null ? Path.Combine(_settings.CurrentValue.RootDir, ns.ToString()!) : _settings.CurrentValue.RootDir;
+            string path = ns != null ? Path.Combine(GetRootDir(), ns.ToString()!) : GetRootDir();
             DirectoryInfo di = new DirectoryInfo(path);
             if (!di.Exists)
             {
@@ -306,7 +321,7 @@ namespace Horde.Storage.Implementation
         
         public  IAsyncEnumerable<NamespaceId> ListNamespaces()
         {
-            DirectoryInfo di = new DirectoryInfo(_settings.CurrentValue.RootDir);
+            DirectoryInfo di = new DirectoryInfo(GetRootDir());
             return di.GetDirectories().Select(x => new NamespaceId(x.Name)).ToAsyncEnumerable();
         }
     }

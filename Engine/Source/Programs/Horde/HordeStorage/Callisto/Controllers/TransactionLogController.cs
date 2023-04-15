@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Callisto.Implementation;
+using EpicGames.Horde.Storage;
 using Jupiter;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.Authorization;
@@ -24,18 +25,17 @@ namespace Callisto.Controllers
         private readonly IDiagnosticContext _diagnosticContext;
         private readonly IAuthorizationService _authorizationService;
 
-        private readonly CallistoSettings _settings;
+        private readonly IOptionsMonitor<JupiterSettings> _settings;
         private readonly ILogger _logger = Log.ForContext<TransactionLogController>();
 
-        public TransactionLogController(ITransactionLogs transactionLogs, IOptionsMonitor<CallistoSettings> options, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService)
+        public TransactionLogController(ITransactionLogs transactionLogs, IOptionsMonitor<JupiterSettings> options, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService)
         {
             _transactionLogs = transactionLogs;
             _diagnosticContext = diagnosticContext;
             _authorizationService = authorizationService;
 
-            _settings = options.CurrentValue;
+            _settings = options;
         }
-
 
         [HttpGet("")]
         [ProducesDefaultResponseType]
@@ -48,7 +48,11 @@ namespace Callisto.Controllers
             // filter namespaces down to only the namespaces the user has access to
             namespaces = namespaces.Where(ns =>
             {
-                Task<AuthorizationResult> authorizationResult = _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+                Task<AuthorizationResult> authorizationResult = _authorizationService.AuthorizeAsync(User, new NamespaceAccessRequest()
+                {
+                    Namespace = ns,
+                    Actions = new [] { AclAction.ReadTransactionLog }
+                }, NamespaceAccessRequirement.Name);
                 return authorizationResult.Result.Succeeded;
             }).ToArray();
 
@@ -70,7 +74,11 @@ namespace Callisto.Controllers
             [FromQuery] int maxOffsetsAttempted = 100
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, new NamespaceAccessRequest()
+            {
+                Namespace = ns,
+                Actions = new[] { AclAction.ReadTransactionLog }
+            }, NamespaceAccessRequirement.Name);
 
             if (!authorizationResult.Succeeded)
             {
@@ -129,7 +137,11 @@ namespace Callisto.Controllers
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, new NamespaceAccessRequest()
+            {
+                Namespace = ns,
+                Actions = new[] { AclAction.WriteTransactionLog }
+            }, NamespaceAccessRequirement.Name);
 
             if (!authorizationResult.Succeeded)
             {
@@ -147,7 +159,6 @@ namespace Callisto.Controllers
             }
         }
 
-
         [HttpPost("{ns}")]
         [Authorize("TLog.write")]
         public async Task<IActionResult> PostNewTransaction(
@@ -155,21 +166,25 @@ namespace Callisto.Controllers
             [Required] [FromBody] TransactionEvent request
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, new NamespaceAccessRequest()
+            {
+                Namespace = ns,
+                Actions = new[] { AclAction.WriteTransactionLog }
+            }, NamespaceAccessRequirement.Name);
 
             if (!authorizationResult.Succeeded)
             {
                 return Forbid();
             }
 
-            if (string.IsNullOrEmpty(_settings.CurrentSite))
+            if (string.IsNullOrEmpty(_settings.CurrentValue.CurrentSite))
             {
                 throw new Exception(
                     "Current site setting is missing, this has to be part of the deployment and has to be globally unique");
             }
 
             // add the current site to the list of sites that have seen this event
-            request.Locations.Add(_settings.CurrentSite);
+            request.Locations.Add(_settings.CurrentValue.CurrentSite);
             long id;
             switch (request)
             {
@@ -192,7 +207,6 @@ namespace Callisto.Controllers
 
         }
 
-
         // this exists for admin use only
         [HttpDelete("{ns}")]
         [Authorize("TLog.delete")]
@@ -200,7 +214,11 @@ namespace Callisto.Controllers
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, new NamespaceAccessRequest()
+            {
+                Namespace = ns,
+                Actions = new[] { AclAction.WriteTransactionLog }
+            }, NamespaceAccessRequirement.Name);
 
             if (!authorizationResult.Succeeded)
             {
@@ -233,5 +251,4 @@ namespace Callisto.Controllers
     {
         public long Offset { get; set; }
     }
-
 }

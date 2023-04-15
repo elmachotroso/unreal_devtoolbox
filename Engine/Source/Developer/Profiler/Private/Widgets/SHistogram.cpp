@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SHistogram.h"
+
+#if STATS
+
 #include "Fonts/SlateFontInfo.h"
 #include "Styling/CoreStyle.h"
 #include "Misc/Paths.h"
@@ -8,8 +11,8 @@
 #include "Widgets/SOverlay.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
 #include "ProfilerFPSAnalyzer.h"
+#include "ProfilerStyle.h"
 
 
 #define LOCTEXT_NAMESPACE "SHistogram"
@@ -37,9 +40,9 @@ int32 SHistogram::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 	// Rendering info.
 	const bool bEnabled  = ShouldBeEnabled( bParentEnabled );
 	ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
-	const FSlateBrush* TimelineAreaBrush = FEditorStyle::GetBrush("Profiler.LineGraphArea");
-	const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteTexture");
-	const FSlateBrush* FillImage  = FEditorStyle::GetBrush("TaskGraph.Mono");
+	const FSlateBrush* TimelineAreaBrush = FProfilerStyle::Get().GetBrush("Brushes.White25");
+	const FSlateBrush* WhiteBrush = FProfilerStyle::Get().GetBrush("Brushes.White");
+	const FSlateBrush* FillImage  = FProfilerStyle::Get().GetBrush("TaskGraph.Mono");
 
 	// Draw background.
 	FSlateDrawElement::MakeBox
@@ -172,4 +175,4 @@ void SHistogram::SetFPSAnalyzer(const TSharedPtr<FFPSAnalyzer>& InAnalyzer)
 
 #undef LOCTEXT_NAMESPACE
 
-
+#endif // STATS

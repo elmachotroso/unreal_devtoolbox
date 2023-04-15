@@ -4,11 +4,15 @@
 
 #include "CoreTypes.h"
 #include "HAL/UnrealMemory.h"
-#include "Math/UnrealMathUtility.h"
 #include "Math/Color.h"
+#include "Math/MathFwd.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/UnrealMathUtility.h"
 #include "Math/Vector.h"
 #include "Math/Vector4.h"
 #include "Math/VectorRegister.h"
+
+class FArchive;
 
 //	Constants.
 extern CORE_API float NormalizationConstants[9];
@@ -260,7 +264,7 @@ public:
 	void Normalize()
 	{
 		const float Integral = CalcIntegral();
-		if(Integral > DELTA)
+		if(Integral > UE_DELTA)
 		{
 			*this /= Integral;
 		}
@@ -307,9 +311,9 @@ public:
 
 		// These formula are scaling factors for each SH band that convolve a SH with the circularly symmetric function
 		// max(0,cos(theta))
-		float L0 =					PI;
-		float L1 =					2 * PI / 3;
-		float L2 =					PI / 4;
+		float L0 =					UE_PI;
+		float L1 =					2 * UE_PI / 3;
+		float L2 =					UE_PI / 4;
 
 		// Multiply the coefficients in each band with the appropriate band scaling factor.
 		for(int32 BasisIndex = 0;BasisIndex < MaxSHBasis;BasisIndex++)
@@ -349,7 +353,7 @@ public:
 		// Multiply the result by the phi-dependent part of the SH bases.
 		// Skip this for X=0 and Y=0, because atan will be undefined and
 		// we know the Vector will be (0,0,+1) or (0,0,-1).
-		if (FMath::Abs(Vector.X) > KINDA_SMALL_NUMBER || FMath::Abs(Vector.Y) > KINDA_SMALL_NUMBER)
+		if (FMath::Abs(Vector.X) > UE_KINDA_SMALL_NUMBER || FMath::Abs(Vector.Y) > UE_KINDA_SMALL_NUMBER)
 		{
 			const float	Phi = (float)FMath::Atan2(Vector.Y, Vector.X);
 
@@ -379,7 +383,7 @@ public:
 	static TSHVector AmbientFunction()
 	{
 		TSHVector AmbientFunctionSH;
-		AmbientFunctionSH.V[0] = 1.0f / (2.0f * FMath::Sqrt(PI));
+		AmbientFunctionSH.V[0] = 1.0f / (2.0f * FMath::Sqrt(UE_PI));
 		return AmbientFunctionSH;
 	}
 
@@ -440,7 +444,7 @@ public:
 			float delta = -f / fd;
 			Lambda += delta;
 
-			if (FMath::Abs(delta) < KINDA_SMALL_NUMBER)
+			if (FMath::Abs(delta) < UE_KINDA_SMALL_NUMBER)
 			{
 				break;
 			}

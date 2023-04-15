@@ -10,9 +10,11 @@
 #include "Nodes/RigVMFunctionEntryNode.h"
 #include "Nodes/RigVMFunctionReturnNode.h"
 #include "RigVMCompiler/RigVMAST.h"
+#include "UObject/Interface.h"
 #include "RigVMGraph.generated.h"
 
 class URigVMFunctionLibrary;
+struct FRigVMClient;
 
 /**
  * The Graph represents a Function definition
@@ -68,11 +70,6 @@ public:
 	// Multiple Variable Nodes can share the same description.
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
 	TArray<FRigVMGraphVariableDescription> GetVariableDescriptions() const;
-
-	// Returns a list of unique Parameter descriptions within this Graph.
-	// Multiple Parameter Nodes can share the same description.
-	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
-	TArray<FRigVMGraphParameterDescription> GetParameterDescriptions() const;
 
 	// Returns the path of this graph as defined by its invoking nodes
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
@@ -137,8 +134,13 @@ public:
 	// subscribe to changes happening within the Graph.
 	FRigVMGraphModifiedEvent& OnModified();
 
+	// Sets the execute context struct type to use
+	void SetExecuteContextStruct(UScriptStruct* InExecuteContextStruct);
+	
+	UScriptStruct* GetExecuteContextStruct() const;
+
 	void PrepareCycleChecking(URigVMPin* InPin, bool bAsInput);
-	virtual bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode);
+	virtual bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection = ERigVMPinDirection::IO);
 	
 	TSharedPtr<FRigVMParserAST> GetDiagnosticsAST(bool bForceRefresh = false, TArray<URigVMLink*> InLinksToSkip = TArray<URigVMLink*>());
 	TSharedPtr<FRigVMParserAST> GetRuntimeAST(const FRigVMParserASTSettings& InSettings = FRigVMParserASTSettings::Optimized(), bool bForceRefresh = false);
@@ -161,6 +163,9 @@ private:
 	UPROPERTY()
 	TWeakObjectPtr<URigVMGraph> DefaultFunctionLibraryPtr;
 
+	UPROPERTY()
+	TObjectPtr<UScriptStruct> ExecuteContextStruct;
+
 	TSharedPtr<FRigVMParserAST> DiagnosticsAST;
 	TSharedPtr<FRigVMParserAST> RuntimeAST;
 
@@ -170,11 +175,15 @@ private:
 #endif
 
 	UPROPERTY()
+	bool bEditable;
+
+	UPROPERTY()
 	TArray<FRigVMGraphVariableDescription> LocalVariables;
 
 	bool IsNameAvailable(const FString& InName);
 
 	friend class URigVMController;
+	friend class UControlRigBlueprint;
 	friend class FRigVMControllerCompileBracketScope;
 	friend class URigVMCompiler;
 	friend struct FRigVMControllerObjectFactory;

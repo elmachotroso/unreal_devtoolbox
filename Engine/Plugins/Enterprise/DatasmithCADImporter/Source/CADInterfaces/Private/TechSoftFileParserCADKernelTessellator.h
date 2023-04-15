@@ -5,7 +5,7 @@
 
 #include "TechSoftFileParser.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 class FBody;
 class FSession;
@@ -38,7 +38,7 @@ private:
 	// Tessellation methods
 	virtual void GenerateBodyMeshes() override;
 	virtual void GenerateBodyMesh(A3DRiRepresentationItem* Representation, FArchiveBody& Body) override;
-	void MeshAndGetTessellation(CADKernel::FSession& CADKernelSession, FArchiveBody& ArchiveBody, CADKernel::FBody& CADKernelBody);
+	void MeshAndGetTessellation(UE::CADKernel::FSession& CADKernelSession, FArchiveBody& ArchiveBody, UE::CADKernel::FBody& CADKernelBody);
 
 	void SewAndGenerateBodyMeshes();
 	void SewAndMesh(TArray<A3DRiRepresentationItem*>& Representations);
@@ -49,6 +49,9 @@ private:
 
 	FCadId LastEntityId = 1;
 	int32 LastHostIdUsed = 0;
+
+	const double GeometricTolerance = 0.01; // mm
+	const double ForceFactor = 5.;
 
 };
 

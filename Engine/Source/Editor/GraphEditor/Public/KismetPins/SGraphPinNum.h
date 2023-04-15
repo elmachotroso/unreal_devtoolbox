@@ -32,7 +32,7 @@ protected:
 			.MaxDesiredWidth(400)
 			[
 				SNew(SNumericEntryBox<NumericType>)
-				.EditableTextBoxStyle(FEditorStyle::Get(), "Graph.EditableTextBox")
+				.EditableTextBoxStyle(FAppStyle::Get(), "Graph.EditableTextBox")
 				.BorderForegroundColor(FSlateColor::UseForeground())
 				.Visibility(this, &SGraphPinNum::GetDefaultValueVisibility)
 				.IsEnabled(this, &SGraphPinNum::GetDefaultValueIsEditable)
@@ -50,18 +50,17 @@ protected:
 
 	void SetNumericValue(NumericType InValue, ETextCommit::Type CommitType)
 	{
-		if(GraphPinObj->IsPendingKill())
+		if (GraphPinObj->IsPendingKill())
 		{
 			return;
 		}
 
-		const FString TypeValueString = LexToString(InValue);
-		if (GraphPinObj->GetDefaultAsString() != TypeValueString)
+		if (GetNumericValue() != InValue)
 		{
 			const FScopedTransaction Transaction(NSLOCTEXT("GraphEditor", "ChangeNumberPinValue", "Change Number Pin Value"));
 			GraphPinObj->Modify();
 
-			GraphPinObj->GetSchema()->TrySetDefaultValue(*GraphPinObj, *TypeValueString);
+			GraphPinObj->GetSchema()->TrySetDefaultValue(*GraphPinObj, *LexToString(InValue));
 		}
 	}
 };

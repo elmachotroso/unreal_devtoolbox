@@ -206,6 +206,8 @@ public:
 
 	// Returns the list of viewpoints currently being represented by the significance manager
 	const TArray<FTransform>& GetViewpoints() const { return Viewpoints; }
+	
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 protected:
 
 	// Internal function that takes the managed object info and registers it with the significance manager
@@ -225,26 +227,29 @@ protected:
 
 private:
 
-	uint32 ManagedObjectsWithSequentialPostWork;
-
 	// All objects being managed organized by Tag
 	TMap<FName, TArray<FManagedObjectInfo*>> ManagedObjectsByTag;
 
 	// Reverse lookup map to find the tag for a given object
 	TMap<UObject*, FManagedObjectInfo*> ManagedObjects;
 
-	// Arrays used for ::Update. To avoid memory allocations, making them members
+	// Array of all managed objects that we use for iteration during update. This is kept in sync with the ManagedObjects map.
 	TArray<FManagedObjectInfo*> ObjArray;
+	// We copy ObjArray to this before running update to avoid mutations during the update. To avoid memory allocations, making it a member.
+	TArray<FManagedObjectInfo*> ObjArrayCopy;
 
 	struct FSequentialPostWorkPair
 	{
 		FManagedObjectInfo* ObjectInfo;
 		float OldSignificance;
 	};
+	// Array of all managed objects requiring sequential work that we use for iteration during update. This is kept in sync with the ManagedObjects map.
 	TArray<FSequentialPostWorkPair> ObjWithSequentialPostWork;
+	// We copy ObjWithSequentialPostWork to this before running update to avoid mutations during the update. To avoid memory allocations, making it a member.
+	TArray<FSequentialPostWorkPair> ObjWithSequentialPostWorkCopy;
 
 	// Game specific significance class to instantiate
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="SignificanceManager", DisplayName="Significance Manager Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/SignificanceManager.SignificanceManager", DisplayName="Significance Manager Class"))
 	FSoftClassPath SignificanceManagerClassName;
 
 	// Callback function registered with HUD to supply debug info when ShowDebug SignificanceManager has been entered on the console

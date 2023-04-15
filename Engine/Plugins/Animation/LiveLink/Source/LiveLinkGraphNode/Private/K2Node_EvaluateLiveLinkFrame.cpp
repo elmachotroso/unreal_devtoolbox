@@ -14,7 +14,9 @@
 #include "LiveLinkTypes.h"
 #include "LiveLinkBlueprintLibrary.h"
 #include "UObject/PropertyPortFlags.h"
+#include "Styling/AppStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(K2Node_EvaluateLiveLinkFrame)
 
 #define LOCTEXT_NAMESPACE "K2Node_EvaluateLiveLinkFrame"
 
@@ -308,7 +310,7 @@ void UK2Node_EvaluateLiveLinkFrame::ExpandNode(class FKismetCompilerContext& Com
 FSlateIcon UK2Node_EvaluateLiveLinkFrame::GetIconAndTint(FLinearColor& OutColor) const
 {
 	OutColor = GetNodeTitleColor();
-	static FSlateIcon Icon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 	return Icon;
 }
 
@@ -419,3 +421,4 @@ bool UK2Node_EvaluateLiveLinkFrame::IsRoleValidForEvaluation(TSubclassOf<ULiveLi
 }
 
 #undef LOCTEXT_NAMESPACE
+

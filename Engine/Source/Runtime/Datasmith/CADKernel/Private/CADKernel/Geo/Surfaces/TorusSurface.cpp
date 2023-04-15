@@ -5,7 +5,7 @@
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Geo/Sampling/SurfacicSampling.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 TSharedPtr<FEntityGeom> FTorusSurface::ApplyMatrix(const FMatrixH& InMatrix) const
@@ -56,7 +56,7 @@ void FTorusSurface::EvaluatePointGridInCylindricalSpace(const FCoordinateGrid& C
 		double CosV = cos(Angle);
 		double Rho = MajorRadius + MinorRadius * CosV;
 
-		double SwapOrientation = (Angle < PI && Angle >= 0) ? 1.0 : -1.0;
+		double SwapOrientation = (Angle < DOUBLE_PI && Angle >= 0) ? 1.0 : -1.0;
 		for (int32 Undex = 0; Undex < UCount; Undex++)
 		{
 			OutPoints.Emplace(Rho * CosU[Undex] * SwapOrientation, Rho * SinU[Undex]);
@@ -122,8 +122,8 @@ void FTorusSurface::EvaluatePointGrid(const FCoordinateGrid& Coordinates, FSurfa
 
 	if (bComputeNormals)
 	{
-		FVector Center = Matrix.Column(3);
-		for (FVector& Normal : OutPoints.Normals)
+		FVector3f Center = Matrix.Column(3);
+		for (FVector3f& Normal : OutPoints.Normals)
 		{
 			 Normal = Matrix.MultiplyVector(Normal);
 		}

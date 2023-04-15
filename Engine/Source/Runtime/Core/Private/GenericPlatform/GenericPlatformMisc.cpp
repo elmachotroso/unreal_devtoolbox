@@ -22,6 +22,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/App.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
+#include "GenericPlatform/GenericPlatformHostCommunication.h"
 #include "HAL/FileManagerGeneric.h"
 #include "Misc/VarargsHelper.h"
 #include "Misc/SecureHash.h"
@@ -252,7 +253,7 @@ static FAutoConsoleCommand GLogNamedEventsCmd(
 #endif//LOG_NAMED_EVENTS
 
 /** Holds an override path if a program has special needs */
-FString OverrideProjectDir;
+static FString GOverrideProjectDir;
 
 /** Hooks for moving ClipboardCopy and ClipboardPaste into FPlatformApplicationMisc */
 CORE_API void (*ClipboardCopyShim)(const TCHAR* Text) = nullptr;
@@ -482,6 +483,8 @@ FString FSHA256Signature::ToString() const
 	bool FGenericPlatformMisc::bShouldPromptForRemoteDebugging = false;
 	bool FGenericPlatformMisc::bPromptForRemoteDebugOnEnsure = false;
 #endif	//#if !UE_BUILD_SHIPPING
+
+EDeviceScreenOrientation FGenericPlatformMisc::AllowedDeviceOrientation = EDeviceScreenOrientation::Unknown;
 
 struct FGenericPlatformMisc::FStaticData
 {
@@ -971,17 +974,31 @@ void FGenericPlatformMisc:: ClipboardPaste(class FString& Dest)
 void FGenericPlatformMisc::CreateGuid(FGuid& Guid)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FGenericPlatformMisc_CreateGuid);
+	
+	// this is a pretty terrible Guid maker that has way less than 128 bits of randomness
+	// luckily this is not used, as every platform has an override
+	//   do not use this!
+	// all the timing used for "randomness" can easily be the same on two threads
+	// you wind up with 15 bits of randomness from the stdlib rand() call
+	//   the atomic IncrementCounter is crucial to ensure simultaneous calls to CreateGuid
+	//	 on different threads don't produce the same Guid here
 
-	static uint16 IncrementCounter = 0; 
+	// note the first calls to this are in static initializers, people use it to init globals
 
+	static std::atomic<uint32> IncrementCounter = 0; 
 	static FDateTime InitialDateTime;
 	static uint64 InitialCycleCounter;
 
 	FDateTime EstimatedCurrentDateTime;
 
-	if (IncrementCounter == 0)
+	uint32 SequentialBits = IncrementCounter.fetch_add(1);
+
+	if (SequentialBits == 0) // not a thread-safe init, but our first call is not threaded, so okay
 	{
 		// Hack: First Guid can be created prior to FPlatformTime::InitTiming(), so do it here.
+		//	InitTiming is done in static init in CoreGlobals.cpp
+		//	but CreateGuid is also used in static initializers, so we may come first
+		//  this can result in InitTiming being called twice which is not entirely benign
 		FPlatformTime::InitTiming();
 
 		// uses FPlatformTime::SystemTime()
@@ -997,10 +1014,16 @@ void FGenericPlatformMisc::CreateGuid(FGuid& Guid)
 		EstimatedCurrentDateTime = InitialDateTime + ElapsedTime;
 	}
 
-	uint32 SequentialBits = static_cast<uint32>(IncrementCounter++); // Add sequential bits to ensure sequentially generated guids are unique even if Cycles is wrong
-	uint32 RandBits = FMath::Rand() & 0xFFFF; // Add randomness to improve uniqueness across machines
+	uint32 RandBits = FMath::Rand();
+	
+	// bit rotate 16 : 
+	SequentialBits = ( SequentialBits << 16 ) | ( SequentialBits >> 16 );
 
-	Guid = FGuid(RandBits | (SequentialBits << 16), EstimatedCurrentDateTime.GetTicks() >> 32, EstimatedCurrentDateTime.GetTicks() & 0xffffffff, FPlatformTime::Cycles());
+	Guid = FGuid(RandBits ^ SequentialBits, EstimatedCurrentDateTime.GetTicks() >> 32, EstimatedCurrentDateTime.GetTicks() & 0xffffffff, FPlatformTime::Cycles());
+
+	// note: all the platform Guid makers do this but we do not :
+	//	Result[1] = (Result[1] & 0xffff0fff) | 0x00004000; // version 4
+	//	Result[2] = (Result[2] & 0x3fffffff) | 0x80000000; // variant 1
 }
 
 const TCHAR* LexToString( EAppReturnType::Type Value )
@@ -1205,6 +1228,12 @@ IPlatformChunkInstall* FGenericPlatformMisc::GetPlatformChunkInstall()
 	return &Singleton;
 }
 
+IPlatformHostCommunication& FGenericPlatformMisc::GetPlatformHostCommunication()
+{
+	static FPlatformHostCommunicationAutoInit<FGenericPlatformHostCommunication> Singleton;
+	return Singleton;
+}
+
 void GenericPlatformMisc_GetProjectFilePathProjectDir(FString& OutGameDir)
 {
 	// Here we derive the game path from the project file location.
@@ -1240,7 +1269,7 @@ const TCHAR* FGenericPlatformMisc::ProjectDir()
 	if (ProjectDir.Len() == 0)
 	{
 		ProjectDir.Reserve(FPlatformMisc::GetMaxPathLength());
-		ProjectDir = OverrideProjectDir;
+		ProjectDir = GOverrideProjectDir;
 	}
 
 	if (ProjectDir.Len() == 0)
@@ -1350,6 +1379,11 @@ const TCHAR* FGenericPlatformMisc::GamePersistentDownloadDir()
 	return *GamePersistentDownloadDir;
 }
 
+const TCHAR* FGenericPlatformMisc::GameTemporaryDownloadDir()
+{
+	return nullptr;
+}
+
 const TCHAR* FGenericPlatformMisc::GeneratedConfigDir()
 {
 	static FString Dir = FPaths::ProjectSavedDir() / TEXT("Config/");
@@ -1366,19 +1400,52 @@ const TCHAR* FGenericPlatformMisc::GetUBTTarget()
 	return TEXT(PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
 }
 
-/** The name of the UBT target that the current executable was built from. Defaults to the UE4 default target for this type to make content only projects work, 
-	but will be overridden by the primary game module if it exists */
-TCHAR GUBTTargetName[128] = TEXT("Unreal" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+using FUBTTargetNameArrayType = TCHAR[128];
+
+#if PLATFORM_TCHAR_IS_UTF8CHAR
+
+	// We can't initialize a sized UTF8CHAR static array with a UTF8TEXT until we have char8_t in C++20,
+	// so we use a constructor to copy the value in.
+	static FUBTTargetNameArrayType& GetStaticUBTTargetName()
+	{
+		static struct FInitializer
+		{
+			FInitializer()
+			{
+				/** The name of the UBT target that the current executable was built from. Defaults to the UE default target for this type to make content only projects work,
+					but will be overridden by the primary game module if it exists */
+				FCString::Strcpy(UBTTargetName, TEXT("Unreal" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET)));
+			}
+
+			TCHAR UBTTargetName[128];
+		} Initializer;
+
+		return Initializer.UBTTargetName;
+	}
+
+#else
+
+	static FUBTTargetNameArrayType& GetStaticUBTTargetName()
+	{
+		/** The name of the UBT target that the current executable was built from. Defaults to the UE default target for this type to make content only projects work,
+			but will be overridden by the primary game module if it exists */
+		static FUBTTargetNameArrayType GUBTTargetName = TEXT("Unreal" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+
+		return GUBTTargetName;
+	}
+
+#endif
 
 void FGenericPlatformMisc::SetUBTTargetName(const TCHAR* InTargetName)
 {
-	check(FCString::Strlen(InTargetName) < (UE_ARRAY_COUNT(GUBTTargetName) - 1));
-	FCString::Strcpy(GUBTTargetName, InTargetName);
+	FUBTTargetNameArrayType& UBTTargetName = GetStaticUBTTargetName();
+	check(FCString::Strlen(InTargetName) < (UE_ARRAY_COUNT(UBTTargetName) - 1));
+	FCString::Strcpy(UBTTargetName, InTargetName);
 }
 
 const TCHAR* FGenericPlatformMisc::GetUBTTargetName()
 {
-	return GUBTTargetName;
+	return GetStaticUBTTargetName();
 }
 
 const TCHAR* FGenericPlatformMisc::GetDefaultDeviceProfileName()
@@ -1393,7 +1460,7 @@ float FGenericPlatformMisc::GetDeviceTemperatureLevel()
 
 void FGenericPlatformMisc::SetOverrideProjectDir(const FString& InOverrideDir)
 {
-	OverrideProjectDir = InOverrideDir;
+	GOverrideProjectDir = InOverrideDir;
 }
 
 bool FGenericPlatformMisc::UseRenderThread()
@@ -1441,9 +1508,59 @@ bool FGenericPlatformMisc::AllowThreadHeartBeat()
 	return bHeartbeat;
 }
 
+int32 FGenericPlatformMisc::NumberOfCores()
+{
+	return 1;
+}
+
 int32 FGenericPlatformMisc::NumberOfCoresIncludingHyperthreads()
 {
 	return FPlatformMisc::NumberOfCores();
+}
+
+void FGenericPlatformMisc::GetConfiguredCoreLimits(int32 PlatformNumPhysicalCores, int32 PlatformNumLogicalCores,
+	bool& bOutFullyInitialized, int32& OutPhysicalCoreLimit, int32& OutLogicalCoreLimit,
+	bool& bOutSetPhysicalCountToLogicalCount)
+{
+	// If CommandLine is not yet initialized, silently return default values. Callers will need to handle calling again.
+	if (!FCommandLine::IsInitialized())
+	{
+		bOutFullyInitialized = false;
+		OutPhysicalCoreLimit = 0;
+		OutLogicalCoreLimit = 0;
+		bOutSetPhysicalCountToLogicalCount = false;
+		return;
+	}
+
+	int32 PhysicalCoreLimit = 0;
+	int32 LogicalCoreLimit = 0;
+	int32 LegacyCoreLimit = 0;
+	bool bSetPhysicalCountToLogicalCount = false;
+
+	const TCHAR* CommandLine = FCommandLine::Get();
+	FParse::Value(CommandLine, TEXT("-physicalcorelimit="), PhysicalCoreLimit); // DEPRECATION_WARNING: physicalcorelimit is experimental and may be changed in a future release without deprecation
+	FParse::Value(CommandLine, TEXT("-corelimit="), LegacyCoreLimit);
+	bSetPhysicalCountToLogicalCount = FParse::Param(CommandLine, TEXT("usehyperthreading"));
+	if (bSetPhysicalCountToLogicalCount)
+	{
+		LogicalCoreLimit = PhysicalCoreLimit;
+	}
+	else
+	{
+		LogicalCoreLimit = PlatformNumPhysicalCores > 0 ?
+			(PhysicalCoreLimit * PlatformNumLogicalCores) / PlatformNumPhysicalCores :
+			PhysicalCoreLimit;
+	}
+	if (LegacyCoreLimit > 0)
+	{
+		PhysicalCoreLimit = PhysicalCoreLimit == 0 ? LegacyCoreLimit : FMath::Min(PhysicalCoreLimit, LegacyCoreLimit);
+		LogicalCoreLimit = LogicalCoreLimit == 0 ? LegacyCoreLimit : FMath::Min(LogicalCoreLimit, LegacyCoreLimit);
+	}
+
+	bOutFullyInitialized = true;
+	OutPhysicalCoreLimit = PhysicalCoreLimit;
+	OutLogicalCoreLimit = LogicalCoreLimit;
+	bOutSetPhysicalCountToLogicalCount = bSetPhysicalCountToLogicalCount;
 }
 
 FProcessorGroupDesc InternalGetProcessorGroupDesc()
@@ -1604,7 +1721,17 @@ EDeviceScreenOrientation FGenericPlatformMisc::GetDeviceOrientation()
 
 void FGenericPlatformMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrientation)
 {
-	// not implemented by default
+	SetAllowedDeviceOrientation(NewDeviceOrientation);
+}
+
+EDeviceScreenOrientation FGenericPlatformMisc::GetAllowedDeviceOrientation()
+{
+	return AllowedDeviceOrientation;
+}
+
+void FGenericPlatformMisc::SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation)
+{
+	AllowedDeviceOrientation = NewAllowedDeviceOrientation;
 }
 
 int32 FGenericPlatformMisc::GetDeviceVolume()
@@ -1740,6 +1867,7 @@ TArray<FCustomChunk> FGenericPlatformMisc::GetAllLanguageChunks()
 
 TArray<FCustomChunk> FGenericPlatformMisc::GetCustomChunksByType(ECustomChunkType DesiredChunkType)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (DesiredChunkType == ECustomChunkType::OnDemandChunk)
 	{
 		return GetAllOnDemandChunks();
@@ -1748,6 +1876,7 @@ TArray<FCustomChunk> FGenericPlatformMisc::GetCustomChunksByType(ECustomChunkTyp
 	{
 		return GetAllLanguageChunks();
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FString FGenericPlatformMisc::LoadTextFileFromPlatformPackage(const FString& RelativePath)

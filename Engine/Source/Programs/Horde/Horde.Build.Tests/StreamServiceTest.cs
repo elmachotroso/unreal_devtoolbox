@@ -3,38 +3,37 @@
 using System;
 using System.Globalization;
 using System.Threading.Tasks;
-using HordeServer.Models;
+using Horde.Build.Streams;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using PoolId = HordeServer.Utilities.StringId<HordeServer.Models.IPool>;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
-    [TestClass]
+	[TestClass]
     public class StreamServiceTests : TestSetup
     {
         [TestMethod]
         public async Task Pausing()
         {
-			Fixture Fixture = await CreateFixtureAsync();
+			Fixture fixture = await CreateFixtureAsync();
 
-	        IStream Stream = (await StreamService.GetStreamAsync(Fixture!.Stream!.Id))!;
-	        Assert.IsFalse(Stream.IsPaused(DateTime.UtcNow));
-	        Assert.IsNull(Stream.PausedUntil);
-	        Assert.IsNull(Stream.PauseComment);
+	        IStream stream = (await StreamService.GetStreamAsync(fixture!.Stream!.Id))!;
+	        Assert.IsFalse(stream.IsPaused(DateTime.UtcNow));
+	        Assert.IsNull(stream.PausedUntil);
+	        Assert.IsNull(stream.PauseComment);
 
-	        DateTime PausedUntil = DateTime.UtcNow.AddHours(1);
-	        await StreamService.UpdatePauseStateAsync(Stream, NewPausedUntil: PausedUntil, NewPauseComment: "mycomment");
-	        Stream = (await StreamService.GetStreamAsync(Fixture!.Stream!.Id))!;
+	        DateTime pausedUntil = DateTime.UtcNow.AddHours(1);
+	        await StreamService.UpdatePauseStateAsync(stream, newPausedUntil: pausedUntil, newPauseComment: "mycomment");
+	        stream = (await StreamService.GetStreamAsync(fixture!.Stream!.Id))!;
 	        // Comparing by string to avoid comparing exact milliseconds as those are not persisted in MongoDB fields
-	        Assert.IsTrue(Stream.IsPaused(DateTime.UtcNow));
-	        Assert.AreEqual(PausedUntil.ToString(CultureInfo.InvariantCulture), Stream.PausedUntil!.Value.ToString(CultureInfo.InvariantCulture));
-	        Assert.AreEqual("mycomment", Stream.PauseComment);
+	        Assert.IsTrue(stream.IsPaused(DateTime.UtcNow));
+	        Assert.AreEqual(pausedUntil.ToString(CultureInfo.InvariantCulture), stream.PausedUntil!.Value.ToString(CultureInfo.InvariantCulture));
+	        Assert.AreEqual("mycomment", stream.PauseComment);
 	        
-	        await StreamService.UpdatePauseStateAsync(Stream, NewPausedUntil: null, NewPauseComment: null);
-	        Stream = (await StreamService.GetStreamAsync(Fixture!.Stream!.Id))!;
-	        Assert.IsFalse(Stream.IsPaused(DateTime.UtcNow));
-	        Assert.IsNull(Stream.PausedUntil);
-	        Assert.IsNull(Stream.PauseComment);
+	        await StreamService.UpdatePauseStateAsync(stream, newPausedUntil: null, newPauseComment: null);
+	        stream = (await StreamService.GetStreamAsync(fixture!.Stream!.Id))!;
+	        Assert.IsFalse(stream.IsPaused(DateTime.UtcNow));
+	        Assert.IsNull(stream.PausedUntil);
+	        Assert.IsNull(stream.PauseComment);
         }
     }
 }

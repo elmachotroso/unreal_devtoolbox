@@ -53,13 +53,7 @@ bool FD3D12CustomPresent::IsUsingCorrectDisplayAdapter() const
 
 	if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetDisplayAdapterId2(&luid)) && luid)
 	{
-		TRefCountPtr<ID3D12Device> D3DDevice;
-
-		ExecuteOnRenderThread([&D3DDevice]()
-		{
-			D3DDevice = (ID3D12Device*) RHIGetNativeDevice();
-		});
-
+		ID3D12Device* D3DDevice = GetID3D12DynamicRHI()->RHIGetDevice(0);
 		if (D3DDevice)
 		{
 			LUID AdapterLuid = D3DDevice->GetAdapterLuid();
@@ -73,16 +67,14 @@ bool FD3D12CustomPresent::IsUsingCorrectDisplayAdapter() const
 
 void* FD3D12CustomPresent::GetOvrpDevice() const
 {
-	FD3D12DynamicRHI* DynamicRHI = FD3D12DynamicRHI::GetD3DRHI();
-	return DynamicRHI->RHIGetD3DCommandQueue();
+	return GetID3D12DynamicRHI()->RHIGetCommandQueue();
 }
-
 
 FTextureRHIRef FD3D12CustomPresent::CreateTexture_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, ovrpTextureHandle InTexture, ETextureCreateFlags InTexCreateFlags)
 {
 	CheckInRenderThread();
 
-	FD3D12DynamicRHI* DynamicRHI = FD3D12DynamicRHI::GetD3DRHI();
+	ID3D12DynamicRHI* DynamicRHI = GetID3D12DynamicRHI();
 
 	// Add TexCreate_Shared flag to indicate the textures are shared with DX11 and therefore its initial state is D3D12_RESOURCE_STATE_COMMON
 	switch (InResourceType)

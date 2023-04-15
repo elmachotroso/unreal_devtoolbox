@@ -4,6 +4,8 @@
 #include "Animation/AnimationSettings.h"
 #include "Internationalization/Regex.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MirrorDataTable)
+
 #define LOCTEXT_NAMESPACE "MirrorDataTables"
 
 
@@ -363,8 +365,11 @@ void UMirrorDataTable::FillCompactPoseAndComponentRefRotations(
 
 	const int32 NumBones = BoneContainer.GetCompactPoseNumBones();
 	OutComponentSpaceRefRotations.SetNumUninitialized(NumBones);
-	OutComponentSpaceRefRotations[FCompactPoseBoneIndex(0)] = 
-		BoneContainer.GetRefPoseTransform(FCompactPoseBoneIndex(0)).GetRotation();
+	if (NumBones > 0 && BoneContainer.GetRefPoseArray().Num() > 0)
+	{
+		OutComponentSpaceRefRotations[FCompactPoseBoneIndex(0)] =
+			BoneContainer.GetRefPoseTransform(FCompactPoseBoneIndex(0)).GetRotation();
+	}
 	for (FCompactPoseBoneIndex BoneIndex(1); BoneIndex < NumBones; ++BoneIndex)
 	{
 		const FCompactPoseBoneIndex ParentBoneIndex = BoneContainer.GetParentBoneIndex(BoneIndex);

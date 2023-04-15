@@ -33,11 +33,21 @@ class SettingsViewController : UITableViewController {
         
         switch cell.reuseIdentifier {
 
-        case "liveLink":
+        case "subjectName":
             cell.detailTextLabel?.text = appSettings.liveLinkSubjectName
 
         case "timecode":
             cell.detailTextLabel?.text = Timecode.sourceToString(appSettings.timecodeSourceEnum())
+            
+        case "connectionType":
+            switch appSettings.connectionType {
+            case "RemoteSession":
+                cell.detailTextLabel?.text = "Remote Session"
+            case "WebRTC":
+                cell.detailTextLabel?.text = "Pixel Streaming"
+            default:
+                cell.detailTextLabel?.text = "Unknown"
+            }
 
         default:
             break
@@ -47,5 +57,46 @@ class SettingsViewController : UITableViewController {
     @objc func done(sender:Any?) {
         self.navigationController?.dismiss(animated: true, completion: nil)
     }
+    
+    override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
 
+        if let vc = segue.destination as? SingleValueViewController {
+            
+            if segue.identifier == "subjectName" {
+                
+                vc.navigationItem.title = Localized.subjectName()
+                vc.mode = .edit
+                vc.allowedType = .unreal
+                vc.initialValue = AppSettings.shared.liveLinkSubjectName
+                vc.placeholderValue = AppSettings.defaultLiveLinkSubjectName()
+                vc.finished = { (action, value) in
+                    
+                    if action == .done {
+                        
+                        let v = value!.trimmed()
+                        
+                        AppSettings.shared.liveLinkSubjectName = v.isEmpty ? AppSettings.defaultLiveLinkSubjectName() : value!.toUnrealCompatibleString()
+                        self.tableView.reloadData()
+                    }
+                }
+            }
+        }
+        
+        else if let vc = segue.destination as? MultipleChoiceViewController {
+            
+            if segue.identifier == "connectionType" {
+                
+                vc.navigationItem.title = "Connection Type"
+                vc.items = [ "Remote Session", "Pixel Streaming" ]
+                vc.selectedIndex = appSettings.connectionType == "RemoteSession" ? 0 : 1
+                vc.footerString = "Description of Connection Types"
+                vc.completion = { (index) in
+                    self.appSettings.connectionType = index == 0 ? "RemoteSession" : "WebRTC"
+                }
+            }
+        }
+
+    }
+    
+    
 }

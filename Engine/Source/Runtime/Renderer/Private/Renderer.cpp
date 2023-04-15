@@ -83,6 +83,9 @@ void FRendererModule::ShutdownModule()
 
 	// Free up global resources in Lumen
 	Lumen::Shutdown();
+
+	void CleanupOcclusionSubmittedFence();
+	CleanupOcclusionSubmittedFence();
 }
 
 void FRendererModule::OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources, bool bWorldChanged)
@@ -127,10 +130,18 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 		//@todo - reuse this view for multiple tiles, this is going to be slow for each tile
 		FViewInfo& View = *RenderContext.Alloc<FViewInfo>(&SceneView);
 		View.ViewRect = View.UnscaledViewRect;
+		FViewFamilyInfo* ViewFamily = RenderContext.Alloc<FViewFamilyInfo>(*SceneView.Family);
+		ViewFamily->Views.Add(&View);
+		View.Family = ViewFamily;
+
+		// Default init of SceneTexturesConfig will take extents from FSceneTextureExtentState.
+		// We want the view extents, so explicitly set that.
+		InitializeSceneTexturesConfig(ViewFamily->SceneTexturesConfig, *ViewFamily);
+		ViewFamily->SceneTexturesConfig.Extent = View.ViewRect.Size();
 
 		const auto FeatureLevel = View.GetFeatureLevel();
 		const EShadingPath ShadingPath = FSceneInterface::GetShadingPath(FeatureLevel);
-		const FSceneViewFamily* ViewFamily = View.Family;
+
 		FScene* Scene = nullptr;
 
 		if (ViewFamily->Scene)
@@ -207,6 +218,22 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 			FRDGSystemTextures::Create(GraphBuilder);
 		}
 
+		// Materials sampling VTs need FVirtualTextureSystem to be updated before being rendered
+		const FMaterial& MeshMaterial = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+		const bool bUseVirtualTexturing = UseVirtualTexturing(FeatureLevel) && !MeshMaterial.GetUniformVirtualTextureExpressions().IsEmpty();
+		if (bUseVirtualTexturing)
+		{
+			RDG_GPU_STAT_SCOPE(GraphBuilder, VirtualTextureUpdate);
+			FVirtualTextureSystem::Get().AllocateResources(GraphBuilder, FeatureLevel);
+			FVirtualTextureSystem::Get().CallPendingCallbacks();
+
+			FVirtualTextureUpdateSettings Settings;
+			Settings.DisableThrottling(true);
+			FVirtualTextureSystem::Get().Update(GraphBuilder, FeatureLevel, Scene, Settings);
+
+			VirtualTextureFeedbackBegin(GraphBuilder, TArrayView<const FViewInfo>(&View, 1), RenderContext.GetViewportRect().Size());
+		}
+
 		View.InitRHIResources();
 		View.ForwardLightingResources.SetUniformBuffer(CreateDummyForwardLightUniformBuffer(GraphBuilder));
 
@@ -217,20 +244,6 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 			EmptyReflectionCaptureUniformBuffer = TUniformBufferRef<FReflectionCaptureShaderData>::CreateUniformBufferImmediate(EmptyData, UniformBuffer_SingleFrame);
 		}
 
-		//get the blend mode of the material
-		const FMaterial& MeshMaterial = Mesh.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
-		const EBlendMode MaterialBlendMode = MeshMaterial.GetBlendMode();
-
-		const bool bUseVirtualTexturing = UseVirtualTexturing(FeatureLevel);
-		// Materials sampling VTs need FVirtualTextureSystem to be updated before being rendered :
-		if (bUseVirtualTexturing && !MeshMaterial.GetUniformVirtualTextureExpressions().IsEmpty())
-		{
-			RDG_GPU_STAT_SCOPE(GraphBuilder, VirtualTextureUpdate);
-			FVirtualTextureSystem::Get().AllocateResources(GraphBuilder, FeatureLevel);
-			FVirtualTextureSystem::Get().CallPendingCallbacks();
-			FVirtualTextureSystem::Get().Update(GraphBuilder, FeatureLevel, Scene);
-		}
-
 		RDG_EVENT_SCOPE(GraphBuilder, "DrawTileMesh");
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FDrawTileMeshPassParameters>();
@@ -238,6 +251,8 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 		PassParameters->View = View.GetShaderParameters();
 		PassParameters->ReflectionCapture = EmptyReflectionCaptureUniformBuffer;
 		PassParameters->InstanceCulling = FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(GraphBuilder);
+
+		const EBlendMode MaterialBlendMode = MeshMaterial.GetBlendMode();
 
 		// handle translucent material blend modes, not relevant in MaterialTexCoordScalesAnalysis since it outputs the scales.
 		if (ViewFamily->GetDebugViewShaderMode() == DVSM_OutputMaterialTextureScales)
@@ -281,6 +296,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 					DrawDynamicMeshPass(View, RHICmdList, [&](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 					{
 						FBasePassMeshProcessor PassMeshProcessor(
+							EMeshPass::BasePass,
 							Scene,
 							View.GetFeatureLevel(),
 							&View,
@@ -304,6 +320,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 					DrawDynamicMeshPass(View, RHICmdList, [&](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 					{
 						FMobileBasePassMeshProcessor PassMeshProcessor(
+							EMeshPass::TranslucencyAll,
 							Scene,
 							View.GetFeatureLevel(),
 							&View,
@@ -361,6 +378,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 							[&](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 						{
 							FBasePassMeshProcessor PassMeshProcessor(
+								EMeshPass::BasePass,
 								Scene,
 								View.GetFeatureLevel(),
 								&View,
@@ -383,6 +401,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 						DrawDynamicMeshPass(View, RHICmdList, [&](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 						{
 							FMobileBasePassMeshProcessor PassMeshProcessor(
+								EMeshPass::BasePass,
 								Scene,
 								View.GetFeatureLevel(),
 								&View,
@@ -396,6 +415,12 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 					});
 				}
 			}
+		}
+
+		if (bUseVirtualTexturing)
+		{
+			RDG_GPU_STAT_SCOPE(GraphBuilder, VirtualTextureUpdate);
+			VirtualTextureFeedbackEnd(GraphBuilder);
 		}
 	}
 }
@@ -434,7 +459,7 @@ void FRendererModule::GPUBenchmark(FSynthBenchmarkResults& InOut, float WorkScal
 	FSceneViewInitOptions ViewInitOptions;
 	FIntRect ViewRect(0, 0, 1, 1);
 
-	FBox LevelBox(FVector(-WORLD_MAX), FVector(+WORLD_MAX));
+	FBox LevelBox(FVector(-UE_OLD_WORLD_MAX), FVector(+UE_OLD_WORLD_MAX));	// LWC_TODO: Scale to renderable world bounds?
 	ViewInitOptions.SetViewRectangle(ViewRect);
 
 	// Initialize Projection Matrix and ViewMatrix since FSceneView initialization is doing some math on them.
@@ -447,7 +472,7 @@ void FRendererModule::GPUBenchmark(FSynthBenchmarkResults& InOut, float WorkScal
 		FPlane(0, 0, -1, 0),
 		FPlane(0, 0, 0, 1));
 
-	const float ZOffset = WORLD_MAX;
+	const FVector::FReal ZOffset = UE_OLD_WORLD_MAX;
 	ViewInitOptions.ProjectionMatrix = FReversedZOrthoMatrix(
 		LevelBox.GetSize().X / 2.f,
 		LevelBox.GetSize().Y / 2.f,

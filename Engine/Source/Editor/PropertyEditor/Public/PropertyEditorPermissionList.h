@@ -7,6 +7,8 @@
 #include "UObject/WeakObjectPtr.h"
 #include "Misc/NamePermissionList.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogPropertyEditorPermissionList, Log, All);
+
 /** Struct, OwnerName */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FPermissionListUpdated, TSoftObjectPtr<UStruct>, FName);
 
@@ -26,13 +28,13 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FPermissionListUpdated, TSoftObjectPtr<UStr
  */
 enum class EPropertyEditorPermissionListRules : uint8
 {
-	// If a PermissionList is manually defined for this struct, PermissionList those properties. Otherwise, use the parent Struct's rule.
-	UseExistingPermissionList,
 	// If no PermissionList is manually defined for this Struct, AllowList all properties from this Struct and its subclasses
 	AllowListAllProperties,
 	// If a PermissionList is manually defined for this Struct, AllowList all properties from this Struct's subclasses.
 	// If this functionality is needed without any properties to AllowList, a fake property must be added to AllowList instead.
-	AllowListAllSubclassProperties
+	AllowListAllSubclassProperties,
+	// If a PermissionList is manually defined for this struct, PermissionList those properties. Otherwise, use the parent Struct's rule.
+	UseExistingPermissionList
 };
 
 struct FPropertyEditorPermissionListEntry
@@ -56,6 +58,9 @@ public:
 	void RemovePermissionList(TSoftObjectPtr<UStruct> Struct);
 	/** Remove all rules */
 	void ClearPermissionList();
+
+	/** Unregister an owner from all permission lists currently stored */
+	void UnregisterOwner(const FName Owner);
 
 	/** Add a specific property to a UStruct's AllowList */
 	void AddToAllowList(TSoftObjectPtr<UStruct> Struct, const FName PropertyName, const FName Owner = NAME_None);
@@ -99,11 +104,16 @@ public:
 	/** Clear CachedPropertyEditorPermissionList to cause the PermissionListed property list to be regenerated next time it's queried */
 	void ClearCache();
 
+	/** If true, PermissionListUpdatedDelegate will not broadcast when modifying the permission lists */
+	bool bSuppressUpdateDelegate = false;
+
 private:
 	FPropertyEditorPermissionList();
 	~FPropertyEditorPermissionList();
 
 	void RegisterOnBlueprintCompiled();
+
+	void ClearCacheAndBroadcast(TSoftObjectPtr<UStruct> ObjectStruct = nullptr, FName OwnerName = NAME_None);
 	
 	/** Whether DoesPropertyPassFilter should perform its PermissionList check or always return true */
 	bool bEnablePropertyEditorPermissionList = false;

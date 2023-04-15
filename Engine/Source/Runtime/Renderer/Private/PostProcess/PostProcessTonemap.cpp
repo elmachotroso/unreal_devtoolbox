@@ -18,6 +18,7 @@
 #include "Rendering/Texture2DResource.h"
 #include "Math/Halton.h"
 #include "SystemTextures.h"
+#include "HDRHelper.h"
 
 bool SupportsFilmGrain(EShaderPlatform Platform)
 {
@@ -34,53 +35,6 @@ TAutoConsoleVariable<float> CVarTonemapperSharpen(
 	TEXT(" 0.5: half strength\n")
 	TEXT("   1: full strength"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-// Note: Enables or disables HDR support for a project. Typically this would be set on a per-project/per-platform basis in defaultengine.ini
-TAutoConsoleVariable<int32> CVarAllowHDR(
-	TEXT("r.AllowHDR"),
-	0,
-	TEXT("Creates an HDR compatible swap-chain and enables HDR display output.")
-	TEXT("0: Disabled (default)\n")
-	TEXT("1: Allow HDR, if supported by the platform and display \n"),
-	ECVF_ReadOnly);
-
-// Note: These values are directly referenced in code. They are set in code at runtime and therefore cannot be set via ini files
-// Please update all paths if changing
-TAutoConsoleVariable<int32> CVarDisplayColorGamut(
-	TEXT("r.HDR.Display.ColorGamut"),
-	0,
-	TEXT("Color gamut of the output display:\n")
-	TEXT("0: Rec709 / sRGB, D65 (default)\n")
-	TEXT("1: DCI-P3, D65\n")
-	TEXT("2: Rec2020 / BT2020, D65\n")
-	TEXT("3: ACES, D60\n")
-	TEXT("4: ACEScg, D60\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-TAutoConsoleVariable<int32> CVarDisplayOutputDevice(
-	TEXT("r.HDR.Display.OutputDevice"),
-	0,
-	TEXT("Device format of the output display:\n")
-	TEXT("0: sRGB (LDR)\n")
-	TEXT("1: Rec709 (LDR)\n")
-	TEXT("2: Explicit gamma mapping (LDR)\n")
-	TEXT("3: ACES 1000 nit ST-2084 (Dolby PQ) (HDR)\n")
-	TEXT("4: ACES 2000 nit ST-2084 (Dolby PQ) (HDR)\n")
-	TEXT("5: ACES 1000 nit ScRGB (HDR)\n")
-	TEXT("6: ACES 2000 nit ScRGB (HDR)\n")
-	TEXT("7: Linear EXR (HDR)\n")
-	TEXT("8: Linear final color, no tone curve (HDR)\n")
-	TEXT("9: Linear final color with tone curve\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-	
-TAutoConsoleVariable<int32> CVarHDROutputEnabled(
-	TEXT("r.HDR.EnableHDROutput"),
-	0,
-	TEXT("Creates an HDR compatible swap-chain and enables HDR display output.")
-	TEXT("0: Disabled (default)\n")
-	TEXT("1: Enable hardware-specific implementation\n"),
-	ECVF_RenderThreadSafe
-	);
 
 TAutoConsoleVariable<float> CVarTonemapperGamma(
 	TEXT("r.TonemapperGamma"),
@@ -117,7 +71,6 @@ class FTonemapperLocalExposureDim : SHADER_PERMUTATION_BOOL("USE_LOCAL_EXPOSURE"
 class FTonemapperVignetteDim       : SHADER_PERMUTATION_BOOL("USE_VIGNETTE");
 class FTonemapperSharpenDim        : SHADER_PERMUTATION_BOOL("USE_SHARPEN");
 class FTonemapperFilmGrainDim      : SHADER_PERMUTATION_BOOL("USE_FILM_GRAIN");
-class FTonemapperSwitchAxis        : SHADER_PERMUTATION_BOOL("NEEDTOSWITCHVERTICLEAXIS");
 class FTonemapperMsaaDim           : SHADER_PERMUTATION_BOOL("METAL_MSAA_HDR_DECODE");
 class FTonemapperEyeAdaptationDim  : SHADER_PERMUTATION_BOOL("EYEADAPTATION_EXPOSURE_FIX");
 
@@ -128,17 +81,10 @@ using FCommonDomain = TShaderPermutationDomain<
 	FTonemapperVignetteDim,
 	FTonemapperSharpenDim,
 	FTonemapperFilmGrainDim,
-	FTonemapperSwitchAxis,
 	FTonemapperMsaaDim>;
 
 bool ShouldCompileCommonPermutation(const FGlobalShaderPermutationParameters& Parameters, const FCommonDomain& PermutationVector)
 {
-	// Prevent switch axis permutation on platforms that dont require it.
-	if (PermutationVector.Get<FTonemapperSwitchAxis>() && !RHINeedsToSwitchVerticalAxis(Parameters.Platform))
-	{
-		return false;
-	}
-
 	// MSAA pre-resolve step only used on iOS atm
 	if (PermutationVector.Get<FTonemapperMsaaDim>() && !IsMetalMobilePlatform(Parameters.Platform))
 	{
@@ -159,7 +105,7 @@ bool ShouldCompileCommonPermutation(const FGlobalShaderPermutationParameters& Pa
 }
 
 // Common conversion of engine settings into.
-FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnly, bool bLocalExposure, bool bSwitchVerticalAxis, bool bMetalMSAAHDRDecode)
+FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnly, bool bLocalExposure, bool bMetalMSAAHDRDecode)
 {
 	const FSceneViewFamily* Family = View.Family;
 
@@ -180,7 +126,6 @@ FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnl
 	PermutationVector.Set<FTonemapperLocalExposureDim>(bLocalExposure);
 	PermutationVector.Set<FTonemapperFilmGrainDim>(View.FilmGrainTexture != nullptr);
 	PermutationVector.Set<FTonemapperSharpenDim>(CVarTonemapperSharpen.GetValueOnRenderThread() > 0.0f);	
-	PermutationVector.Set<FTonemapperSwitchAxis>(bSwitchVerticalAxis);
 	PermutationVector.Set<FTonemapperMsaaDim>(bMetalMSAAHDRDecode);
 	return PermutationVector;
 }
@@ -188,7 +133,7 @@ FCommonDomain BuildCommonPermutationDomain(const FViewInfo& View, bool bGammaOnl
 // Desktop renderer permutation dimensions.
 class FTonemapperColorFringeDim       : SHADER_PERMUTATION_BOOL("USE_COLOR_FRINGE");
 class FTonemapperGrainQuantizationDim : SHADER_PERMUTATION_BOOL("USE_GRAIN_QUANTIZATION");
-class FTonemapperOutputDeviceDim      : SHADER_PERMUTATION_ENUM_CLASS("DIM_OUTPUT_DEVICE", ETonemapperOutputDevice);
+class FTonemapperOutputDeviceDim      : SHADER_PERMUTATION_ENUM_CLASS("DIM_OUTPUT_DEVICE", EDisplayOutputFormat);
 
 using FDesktopDomain = TShaderPermutationDomain<
 	FCommonDomain,
@@ -223,13 +168,13 @@ FDesktopDomain RemapPermutation(FDesktopDomain PermutationVector, ERHIFeatureLev
 
 	// Mobile supports only sRGB and LinearNoToneCurve output
 	if (FeatureLevel <= ERHIFeatureLevel::ES3_1 &&
-		PermutationVector.Get<FTonemapperOutputDeviceDim>() != ETonemapperOutputDevice::LinearNoToneCurve)
+		PermutationVector.Get<FTonemapperOutputDeviceDim>() != EDisplayOutputFormat::HDR_LinearNoToneCurve)
 	{
-		PermutationVector.Set<FTonemapperOutputDeviceDim>(ETonemapperOutputDevice::sRGB);
+		PermutationVector.Set<FTonemapperOutputDeviceDim>(EDisplayOutputFormat::SDR_sRGB);
 	}
 
 	// Disable grain quantization for LinearNoToneCurve and LinearWithToneCurve output device
-	if (PermutationVector.Get<FTonemapperOutputDeviceDim>() == ETonemapperOutputDevice::LinearNoToneCurve || PermutationVector.Get<FTonemapperOutputDeviceDim>() == ETonemapperOutputDevice::LinearWithToneCurve)
+	if (PermutationVector.Get<FTonemapperOutputDeviceDim>() == EDisplayOutputFormat::HDR_LinearNoToneCurve || PermutationVector.Get<FTonemapperOutputDeviceDim>() == EDisplayOutputFormat::HDR_LinearWithToneCurve)
 		PermutationVector.Set<FTonemapperGrainQuantizationDim>(false);
 	else
 		PermutationVector.Set<FTonemapperGrainQuantizationDim>(true);
@@ -271,41 +216,39 @@ bool ShouldCompileDesktopPermutation(const FGlobalShaderPermutationParameters& P
 
 FTonemapperOutputDeviceParameters GetTonemapperOutputDeviceParameters(const FSceneViewFamily& Family)
 {
-	static TConsoleVariableData<int32>* CVarOutputGamut = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.ColorGamut"));
-	static TConsoleVariableData<int32>* CVarOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
 	static TConsoleVariableData<float>* CVarOutputGamma = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.TonemapperGamma"));
 
-	ETonemapperOutputDevice OutputDeviceValue;
+	EDisplayOutputFormat OutputDeviceValue;
 
 	if (Family.SceneCaptureSource == SCS_FinalColorHDR)
 	{
-		OutputDeviceValue = ETonemapperOutputDevice::LinearNoToneCurve;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_LinearNoToneCurve;
 	}
 	else if (Family.SceneCaptureSource == SCS_FinalToneCurveHDR)
 	{
-		OutputDeviceValue = ETonemapperOutputDevice::LinearWithToneCurve;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_LinearWithToneCurve;
 	}
 	else if (Family.bIsHDR)
 	{
-		OutputDeviceValue = ETonemapperOutputDevice::ACES1000nitST2084;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_ACES_1000nit_ST2084;
 	}
 	else
 	{
-		OutputDeviceValue = static_cast<ETonemapperOutputDevice>(CVarOutputDevice->GetValueOnRenderThread());
-		OutputDeviceValue = static_cast<ETonemapperOutputDevice>(FMath::Clamp(static_cast<int32>(OutputDeviceValue), 0, static_cast<int32>(ETonemapperOutputDevice::MAX) - 1));
+		OutputDeviceValue = Family.RenderTarget->GetDisplayOutputFormat();
 	}
 
 	float Gamma = CVarOutputGamma->GetValueOnRenderThread();
 
-	if (PLATFORM_APPLE && Gamma == 0.0f)
+    // In case gamma is unspecified, fall back to 2.2 which is the most common case
+	if ((PLATFORM_APPLE || OutputDeviceValue == EDisplayOutputFormat::SDR_ExplicitGammaMapping) && Gamma == 0.0f)
 	{
 		Gamma = 2.2f;
 	}
 
 	// Enforce user-controlled ramp over sRGB or Rec709
-	if (Gamma > 0.0f && (OutputDeviceValue == ETonemapperOutputDevice::sRGB || OutputDeviceValue == ETonemapperOutputDevice::Rec709))
+	if (Gamma > 0.0f && (OutputDeviceValue == EDisplayOutputFormat::SDR_sRGB || OutputDeviceValue == EDisplayOutputFormat::SDR_Rec709))
 	{
-		OutputDeviceValue = ETonemapperOutputDevice::ExplicitGammaMapping;
+		OutputDeviceValue = EDisplayOutputFormat::SDR_ExplicitGammaMapping;
 	}
 
 	FVector3f InvDisplayGammaValue;
@@ -316,7 +259,8 @@ FTonemapperOutputDeviceParameters GetTonemapperOutputDeviceParameters(const FSce
 	FTonemapperOutputDeviceParameters Parameters;
 	Parameters.InverseGamma = InvDisplayGammaValue;
 	Parameters.OutputDevice = static_cast<uint32>(OutputDeviceValue);
-	Parameters.OutputGamut = CVarOutputGamut->GetValueOnRenderThread();
+	Parameters.OutputGamut = static_cast<uint32>(Family.RenderTarget->GetDisplayColorGamut());
+	Parameters.OutputMaxLuminance = HDRGetDisplayMaximumLuminance();
 	return Parameters;
 }
 
@@ -371,7 +315,6 @@ BEGIN_SHADER_PARAMETER_STRUCT(FTonemapParameters, )
 	SHADER_PARAMETER(FVector4f, TonemapperParams)
 	SHADER_PARAMETER(FVector4f, LensPrincipalPointOffsetScale)
 	SHADER_PARAMETER(FVector4f, LensPrincipalPointOffsetScaleInverse)
-	SHADER_PARAMETER(float, SwitchVerticalAxis)
 	SHADER_PARAMETER(float, DefaultEyeExposure)
 	SHADER_PARAMETER(float, EditorNITLevel)
 	SHADER_PARAMETER(uint32, bOutputInHDR)
@@ -423,17 +366,11 @@ public:
 	// FDrawRectangleParameters is filled by DrawScreenPass.
 	SHADER_USE_PARAMETER_STRUCT_WITH_LEGACY_BASE(FTonemapVS, FGlobalShader);
 
-	using FPermutationDomain = TShaderPermutationDomain<TonemapperPermutation::FTonemapperSwitchAxis, TonemapperPermutation::FTonemapperEyeAdaptationDim>;
+	using FPermutationDomain = TShaderPermutationDomain<TonemapperPermutation::FTonemapperEyeAdaptationDim>;
 	using FParameters = FTonemapParameters;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		FPermutationDomain PermutationVector(Parameters.PermutationId);
-		// Prevent switch axis permutation on platforms that dont require it.
-		if (PermutationVector.Get<TonemapperPermutation::FTonemapperSwitchAxis>() && !RHINeedsToSwitchVerticalAxis(Parameters.Platform))
-		{
-			return false;
-		}
 		return true;
 	}
 };
@@ -610,13 +547,13 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 		OutputDesc.ClearValue = FClearValueBinding(FLinearColor(0, 0, 0, 0));
 
 		const FTonemapperOutputDeviceParameters OutputDeviceParameters = GetTonemapperOutputDeviceParameters(*View.Family);
-		const ETonemapperOutputDevice OutputDevice = static_cast<ETonemapperOutputDevice>(OutputDeviceParameters.OutputDevice);
+		const EDisplayOutputFormat OutputDevice = static_cast<EDisplayOutputFormat>(OutputDeviceParameters.OutputDevice);
 
-		if (OutputDevice == ETonemapperOutputDevice::LinearEXR)
+		if (OutputDevice == EDisplayOutputFormat::HDR_LinearEXR)
 		{
 			OutputDesc.Format = PF_A32B32G32R32F;
 		}
-		else if (OutputDevice == ETonemapperOutputDevice::LinearNoToneCurve || OutputDevice == ETonemapperOutputDevice::LinearWithToneCurve)
+		else if (OutputDevice == EDisplayOutputFormat::HDR_LinearNoToneCurve || OutputDevice == EDisplayOutputFormat::HDR_LinearWithToneCurve)
 		{
 			OutputDesc.Format = PF_FloatRGBA;
 		}
@@ -806,7 +743,6 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	CommonParameters.ColorScale0 = PostProcessSettings.SceneColorTint;
 	CommonParameters.ChromaticAberrationParams = ChromaticAberrationParams;
 	CommonParameters.TonemapperParams = FVector4f(PostProcessSettings.VignetteIntensity, SharpenDiv6, 0.0f, 0.0f);
-	CommonParameters.SwitchVerticalAxis = Inputs.bFlipYAxis;
 	CommonParameters.DefaultEyeExposure = DefaultEyeExposure;
 	CommonParameters.EditorNITLevel = EditorNITLevel;
 	CommonParameters.bOutputInHDR = ViewFamily.bIsHDR;
@@ -880,7 +816,7 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 	TonemapperPermutation::FDesktopDomain DesktopPermutationVector;
 
 	{
-		TonemapperPermutation::FCommonDomain CommonDomain = TonemapperPermutation::BuildCommonPermutationDomain(View, Inputs.bGammaOnly, Inputs.LocalExposureTexture != nullptr, Inputs.bFlipYAxis, Inputs.bMetalMSAAHDRDecode);
+		TonemapperPermutation::FCommonDomain CommonDomain = TonemapperPermutation::BuildCommonPermutationDomain(View, Inputs.bGammaOnly, Inputs.LocalExposureTexture != nullptr, Inputs.bMetalMSAAHDRDecode);
 		DesktopPermutationVector.Set<TonemapperPermutation::FCommonDomain>(CommonDomain);
 
 		if (!CommonDomain.Get<TonemapperPermutation::FTonemapperGammaOnlyDim>())
@@ -895,7 +831,7 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 			DesktopPermutationVector.Set<TonemapperPermutation::FTonemapperColorFringeDim>(PostProcessSettings.SceneFringeIntensity > 0.01f);
 		}
 
-		DesktopPermutationVector.Set<TonemapperPermutation::FTonemapperOutputDeviceDim>(ETonemapperOutputDevice(CommonParameters.OutputDevice.OutputDevice));
+		DesktopPermutationVector.Set<TonemapperPermutation::FTonemapperOutputDeviceDim>(EDisplayOutputFormat(CommonParameters.OutputDevice.OutputDevice));
 
 		DesktopPermutationVector = TonemapperPermutation::RemapPermutation(DesktopPermutationVector, View.GetFeatureLevel());
 	}
@@ -929,7 +865,6 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 		PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 		FTonemapVS::FPermutationDomain VertexPermutationVector;
-		VertexPermutationVector.Set<TonemapperPermutation::FTonemapperSwitchAxis>(Inputs.bFlipYAxis);
 		VertexPermutationVector.Set<TonemapperPermutation::FTonemapperEyeAdaptationDim>(bEyeAdaptation);
 
 		TShaderMapRef<FTonemapVS> VertexShader(View.ShaderMap, VertexPermutationVector);
@@ -938,7 +873,8 @@ FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& Vi
 		// If this is a stereo view, there's a good chance we need alpha out of the tonemapper
 		// @todo: Remove this once Oculus fix the bug in their runtime that requires alpha here.
 		const bool bIsStereo = IStereoRendering::IsStereoEyeView(View);
-		FRHIBlendState* BlendState = Inputs.bWriteAlphaChannel || bIsStereo ? FScreenPassPipelineState::FDefaultBlendState::GetRHI() : TStaticBlendStateWriteMask<CW_RGB>::GetRHI();
+		const bool bFormatNeedsAlphaWrite = Output.Texture->Desc.Format == PF_R9G9B9EXP5;
+		FRHIBlendState* BlendState = (Inputs.bWriteAlphaChannel || bIsStereo || bFormatNeedsAlphaWrite) ? FScreenPassPipelineState::FDefaultBlendState::GetRHI() : TStaticBlendStateWriteMask<CW_RGB>::GetRHI();
 		FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
 
 		EScreenPassDrawFlags DrawFlags = EScreenPassDrawFlags::AllowHMDHiddenAreaMask;

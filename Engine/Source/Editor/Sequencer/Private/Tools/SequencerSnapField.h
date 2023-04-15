@@ -2,39 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Curves/KeyHandle.h"
+#include "CoreTypes.h"
+#include "Containers/Array.h"
 #include "Tools/SequencerEntityVisitor.h"
+#include "MVVM/Extensions/ISnappableExtension.h"
 
 class IKeyArea;
-class ISequencer;
+class FSequencer;
 
-/** Structure defining a point to snap to in the sequencer */
-struct FSequencerSnapPoint
-{
-	enum ESnapType { Key, SectionBounds, CustomSection, PlaybackRange, CurrentTime, InOutRange, Mark };
-
-	/** The type of snap */
-	ESnapType Type;
-
-	/** The time of the snap */
-	FFrameNumber Time;
-};
-
-/** Interface that defines how to construct an FSequencerSnapField */
-struct ISequencerSnapCandidate
-{
-	virtual ~ISequencerSnapCandidate() { }
-
-	/** Return true to include the specified key in the snap field */
-	virtual bool IsKeyApplicable(FKeyHandle KeyHandle, const TSharedPtr<IKeyArea>& KeyArea, UMovieSceneSection* Section) { return true; }
-
-	/** Return true to include the specified section's bounds in the snap field */
-	virtual bool AreSectionBoundsApplicable(UMovieSceneSection* Section) { return true; }
-
-	/** Return true to include the specified section's custom snap points in the snap field */
-	virtual bool AreSectionCustomSnapsApplicable(UMovieSceneSection* Section) { return true; }
-};
+enum class ESequencerScrubberStyle : uint8;
 
 /** A snapping field that provides efficient snapping calculations on a range of values */
 class FSequencerSnapField
@@ -45,25 +21,39 @@ public:
 	struct FSnapResult
 	{
 		/** The time before it was snapped */
-		FFrameNumber Original;
+		FFrameTime OriginalTime;
 		/** The time after it was snapped */
-		FFrameNumber Snapped;
+		FFrameNumber SnappedTime;
+		/** The total weight of the time that was snapped to */
+		float SnappedWeight = 0.f;
 	};
 
-	/** Construction from a sequencer and a snap canidate implementation. Optionally provide an entity mask to completely ignore some entity types */
-	FSequencerSnapField(const FSequencer& InSequencer, ISequencerSnapCandidate& Candidate, uint32 EntityMask = ESequencerEntity::Everything);
+	FSequencerSnapField(){}
 
-	/** Move construction / assignment */
-	FSequencerSnapField(FSequencerSnapField&& In) : SortedSnaps(MoveTemp(In.SortedSnaps)) {}
-	FSequencerSnapField& operator=(FSequencerSnapField&& In) { SortedSnaps = MoveTemp(In.SortedSnaps); return *this; }
-	
+	/** Construction from a sequencer and a snap canidate implementation. Optionally provide an entity mask to completely ignore some entity types */
+	FSequencerSnapField(const FSequencer& InSequencer, UE::Sequencer::ISnapCandidate& Candidate, uint32 EntityMask = ESequencerEntity::Everything);
+
+	void Initialize(const FSequencer& InSequencer, UE::Sequencer::ISnapCandidate& Candidate, uint32 EntityMask = ESequencerEntity::Everything);
+
+	void AddExplicitSnap(UE::Sequencer::FSnapPoint InSnap);
+
+	void Finalize();
+
+	void SetSnapToInterval(bool bInSnapToInterval) { bSnapToInterval = bInSnapToInterval; }
+
 	/** Snap the specified time to this field with the given threshold */
-	TOptional<FFrameNumber> Snap(FFrameNumber InTime, int32 Threshold) const;
+	TOptional<FSnapResult> Snap(const FFrameTime& InTime, const FFrameTime& Threshold) const;
 
 	/** Snap the specified times to this field with the given threshold. Will return the closest snap value of the entire intersection. */
-	TOptional<FSnapResult> Snap(const TArray<FFrameNumber>& InTimes, int32 Threshold) const;
+	TOptional<FSnapResult> Snap(const TArray<FFrameTime>& InTimes, const FFrameTime& Threshold) const;
 
 private:
 	/** Array of snap points, approximately grouped, and sorted in ascending order by time */
-	TArray<FSequencerSnapPoint> SortedSnaps;
+	TArray<UE::Sequencer::FSnapPoint> SortedSnaps;
+
+	FFrameRate TickResolution;
+	FFrameRate DisplayRate;
+	ESequencerScrubberStyle ScrubStyle;
+
+	bool bSnapToInterval = false;
 };

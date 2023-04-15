@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AITestsCommon.h"
-#include "ScriptStructTypeBitSet.h"
+#include "StructTypeBitSet.h"
 #include "StructUtilsTestTypes.h"
 
 #if WITH_STRUCTUTILS_DEBUG
@@ -11,14 +11,23 @@
 
 PRAGMA_DISABLE_OPTIMIZATION
 
-namespace FScriptStructTypeBitSetTests
-{
+DECLARE_STRUCTTYPEBITSET(FTestStructBaseBitSet, FTestStructSimpleBase);
+DEFINE_TYPEBITSET(FTestStructBaseBitSet);
 
-struct FTestStructBitSet : public TScriptStructTypeBitSet<FTestStructSimple>
+namespace FStructTypeBitSetTests
 {
+struct FTestStructBaseBitSetStructTracker
+{
+	static FStructTracker StructTracker;
+};
+FStructTracker FTestStructBaseBitSetStructTracker::StructTracker;
+
+struct FTestStructBitSet : public TStructTypeBitSet<FTestStructSimple, FTestStructBaseBitSetStructTracker>
+{
+	using Super = TStructTypeBitSet<FTestStructSimple, FTestStructBaseBitSetStructTracker>;
 	FTestStructBitSet() = default;
-	FTestStructBitSet(const TScriptStructTypeBitSet<FTestStructSimple>& Other) 
-		: TScriptStructTypeBitSet<FTestStructSimple>(Other)
+	FTestStructBitSet(const Super& Other)
+		: Super(Other)
 	{
 
 	}
@@ -243,7 +252,158 @@ struct FStructUtilsTest_BitSetHash : FAITestBase
 
 IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetHash, "System.StructUtils.BitSet.Hash");
 
-} // namespace FScriptStructTypeBitSetTests
+struct FStructUtilsTest_CompileTimeBitSet : FAITestBase
+{
+	virtual bool InstantTest() override
+	{
+		FTestStructBaseBitSet::DebugResetStructTypeMappingInfo();
+
+		FTestStructBaseBitSet BitSet1 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple1>();
+		FTestStructBaseBitSet BitSet3 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple3>();
+		FTestStructBaseBitSet BitSet5 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple5>();
+		FTestStructBaseBitSet BitSet4 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple4>();
+		FTestStructBaseBitSet BitSet2 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple2>();
+		FTestStructBaseBitSet BitSet6 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple6>();
+		FTestStructBaseBitSet BitSet7 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple7>();
+
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet1.IsEquivalent(BitSet2));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet1.IsEquivalent(BitSet5));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet2.IsEquivalent(BitSet1));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet2.IsEquivalent(BitSet5));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet5.IsEquivalent(BitSet1));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet5.IsEquivalent(BitSet2));
+		
+		FTestStructBaseBitSet BitSet15;
+		BitSet15.Add<FTestStructSimple1>();
+		BitSet15.Add<FTestStructSimple5>();
+		AITEST_TRUE("BitSets created for a list of types should be equivalent to the combination of BitSets to individual types", BitSet15.IsEquivalent(BitSet1 | BitSet5));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet2));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet3));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet4));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet6));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet7));
+
+		return true;
+	}
+};
+
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_CompileTimeBitSet, "System.StructUtils.BitSet.CompileTime");
+
+struct FStructUtilsTest_CompileTimeBitSetReversed : FAITestBase
+{
+	virtual bool InstantTest() override
+	{
+		FTestStructBaseBitSet::DebugResetStructTypeMappingInfo();
+
+		FTestStructBaseBitSet BitSet15;
+		BitSet15.Add<FTestStructSimple1>();
+		BitSet15.Add<FTestStructSimple5>();
+
+		FTestStructBaseBitSet BitSet1 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple1>();
+		FTestStructBaseBitSet BitSet3 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple3>();
+		FTestStructBaseBitSet BitSet5 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple5>();
+		FTestStructBaseBitSet BitSet4 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple4>();
+		FTestStructBaseBitSet BitSet2 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple2>();
+		FTestStructBaseBitSet BitSet6 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple6>();
+		FTestStructBaseBitSet BitSet7 = FTestStructBaseBitSet::GetTypeBitSet<FTestStructSimple7>();
+
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet1.IsEquivalent(BitSet2));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet1.IsEquivalent(BitSet5));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet2.IsEquivalent(BitSet1));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet2.IsEquivalent(BitSet5));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet5.IsEquivalent(BitSet1));
+		AITEST_FALSE("BitSets created for different types should not be equivalent", BitSet5.IsEquivalent(BitSet2));
+		
+		AITEST_TRUE("BitSets created for a list of types should be equivalent to the combination of BitSets to individual types", BitSet15.IsEquivalent(BitSet1 | BitSet5));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet2));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet3));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet4));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet6));
+		AITEST_FALSE("BitSets created for a list of types should not contain bit for other types", BitSet15.HasAny(BitSet7));
+
+		return true;
+	}
+};
+
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_CompileTimeBitSetReversed, "System.StructUtils.BitSet.CompileTime_Reversed");
+
+struct FStructUtilsTest_BitSetIndexIteratorBase : FAITestBase
+{
+	TArray<int32> Indices;
+	FTestStructBitSet BitSet;
+	bool bValue = true;
+
+	FStructUtilsTest_BitSetIndexIteratorBase()
+		: Indices({ 0, 3, 9, 230 })
+	{}
+
+	virtual bool SetUp() override
+	{
+		for (int32 Index : Indices)
+		{
+			BitSet.AddBit(Index);
+		}
+		return FAITestBase::SetUp();
+	}
+
+	virtual bool InstantTest() override
+	{
+		int32 i = 0;
+		for (auto It = BitSet.GetIndexIterator(/*bValue=*/bValue); It; ++It, ++i)
+		{
+			AITEST_EQUAL("Indices fetched by FIndexIterator need to reflect Bitset\'s contents", Indices[i], *It);
+		}
+		return true;
+	}
+};
+
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetIndexIteratorBase, "System.StructUtils.BitSet.IndexIterator");
+
+struct FStructUtilsTest_BitSetIndexIteratorEmpty : FStructUtilsTest_BitSetIndexIteratorBase
+{
+	FStructUtilsTest_BitSetIndexIteratorEmpty()
+	{
+		Indices = {};
+	}
+};
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetIndexIteratorEmpty, "System.StructUtils.BitSet.IndexIterator.Empty");
+
+struct FStructUtilsTest_BitSetIndexIteratorTrailingFalse : FStructUtilsTest_BitSetIndexIteratorBase
+{
+	virtual bool SetUp() override
+	{
+		Indices.Sort();
+		for (int32 Index : Indices)
+		{
+			BitSet.AddBit(Index);
+		}
+		const int32 TrailingFalseBitIndex = Indices.Last() + 1;
+		BitSet.AddBit(TrailingFalseBitIndex);
+		BitSet.RemoveBit(TrailingFalseBitIndex);
+
+		return FAITestBase::SetUp();
+	}
+};
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetIndexIteratorTrailingFalse, "System.StructUtils.BitSet.IndexIterator.TrailingFalse");
+
+struct FStructUtilsTest_BitSetIndexIteratorBeginningFalse : FStructUtilsTest_BitSetIndexIteratorBase
+{
+	virtual bool SetUp() override
+	{
+		Indices.Sort();
+		for (int32 Index : Indices)
+		{
+			BitSet.AddBit(Index);
+		}
+		BitSet.RemoveBit(Indices[0]);
+		Indices.RemoveAt(0);
+
+		return FAITestBase::SetUp();
+	}
+};
+IMPLEMENT_AI_INSTANT_TEST(FStructUtilsTest_BitSetIndexIteratorBeginningFalse, "System.StructUtils.BitSet.IndexIterator.BeginningFalse");
+
+} // namespace FStructTypeBitSetTests
 
 #undef LOCTEXT_NAMESPACE
 

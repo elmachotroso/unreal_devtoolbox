@@ -23,8 +23,12 @@
 #include "Stats/Stats.h"
 #include "EngineStats.h"
 #include "SlateGlobals.h"
-#include "Animation/WidgetAnimation.h"
+#include "Animation/WidgetAnimationEvents.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+	#include "Animation/WidgetAnimation.h"
+#endif
 
 #include "UserWidget.generated.h"
 
@@ -37,6 +41,7 @@ class UUMGSequenceTickManager;
 class UWidgetAnimation;
 class UWidgetTree;
 class UNamedSlot;
+class UUserWidgetExtension;
 
 /** Determines what strategy we use to determine when and if the widget ticks. */
 UENUM()
@@ -191,8 +196,6 @@ enum class EDesignPreviewSizeMode : uint8
 
 #endif
 
-//TODO UMG If you want to host a widget that's full screen there may need to be a SWindow equivalent that you spawn it into.
-
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnConstructEvent);
 
 DECLARE_DYNAMIC_DELEGATE( FOnInputAction );
@@ -211,30 +214,37 @@ class UMG_API UUserWidget : public UWidget, public INamedSlotInterface
 public:
 	UUserWidget(const FObjectInitializer& ObjectInitializer);
 
-	//UObject interface
+	//~ Begin UObject interface
 	virtual class UWorld* GetWorld() const override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual void BeginDestroy() override;
 	virtual void PostLoad() override;
-	virtual void Serialize(FArchive& Ar) override;
 	//~ End UObject Interface
 
-	void DuplicateAndInitializeFromWidgetTree(UWidgetTree* InWidgetTree);
+	void DuplicateAndInitializeFromWidgetTree(UWidgetTree* InWidgetTree, const TMap<FName, UWidget*>& NamedSlotContentToMerge);
 
 	virtual bool Initialize();
 
 	EWidgetTickFrequency GetDesiredTickFrequency() const { return TickFrequency; }
 
+	/**
+	 * Returns the BlueprintGeneratedClass that generated the WidgetTree.
+	 * A child UserWidget that extends a parent UserWidget will not have a new WidgetTree.
+	 * The child UserWidget will have the same WidgetTree as the parent UserWidget.
+	 * This function returns the parent UserWidget's BlueprintClass.
+	 */
 	UWidgetBlueprintGeneratedClass* GetWidgetTreeOwningClass() const;
+
+	void UpdateCanTick();
 
 protected:
 	/** The function is implemented only in nativized widgets (automatically converted from BP to c++) */
 	virtual void InitializeNativeClassData() {}
 
-	void InitializeNamedSlots(bool bReparentToWidgetTree);
+	void InitializeNamedSlots();
 
 public:
-	//UVisual interface
+	//~ Begin UVisual interface
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 	//~ End UVisual Interface
 
@@ -242,11 +252,11 @@ public:
 	virtual void SynchronizeProperties() override;
 	//~ End UWidget Interface
 
-	// UNamedSlotInterface Begin
+	//~ Begin UNamedSlotInterface Begin
 	virtual void GetSlotNames(TArray<FName>& SlotNames) const override;
 	virtual UWidget* GetContentForSlot(FName SlotName) const override;
 	virtual void SetContentForSlot(FName SlotName, UWidget* Content) override;
-	// UNamedSlotInterface End
+	//~ UNamedSlotInterface End
 
 	/**
 	 * Adds it to the game's viewport and fills the entire screen, unless SetDesiredSizeInViewport is called
@@ -269,14 +279,9 @@ public:
 	/**
 	 * Removes the widget from the viewport.
 	 */
+	UE_DEPRECATED(5.1, "RemoveFromViewport is deprecated. Use RemoveFromParent instead.")
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="User Interface|Viewport", meta=( DeprecatedFunction, DeprecationMessage="Use RemoveFromParent instead" ))
 	void RemoveFromViewport();
-
-	/**
-	 * Removes the widget from its parent widget.  If this widget was added to the player's screen or the viewport
-	 * it will also be removed from those containers.
-	 */
-	virtual void RemoveFromParent() override;
 
 	/**
 	 * Sets the widgets position in the viewport.
@@ -309,15 +314,12 @@ public:
 	FVector2D GetAlignmentInViewport() const;
 
 	/*  */
+	UE_DEPRECATED(5.1, "GetIsVisible is deprecated. Please use IsInViewport instead.")
 	UFUNCTION(BlueprintPure, BlueprintCosmetic, Category="Appearance", meta=( DeprecatedFunction, DeprecationMessage="Use IsInViewport instead" ))
 	bool GetIsVisible() const;
 
 	/** Sets the visibility of the widget. */
 	virtual void SetVisibility(ESlateVisibility InVisibility) override;
-
-	/* @return true if the widget was added to the viewport using AddToViewport. */
-	UFUNCTION(BlueprintPure, BlueprintCosmetic, Category="Appearance")
-	bool IsInViewport() const;
 
 	/** Sets the player context associated with this UI. */
 	void SetPlayerContext(const FLocalPlayerContext& InPlayerContext);
@@ -921,21 +923,6 @@ public:
 	UUMGSequencePlayer* PlayAnimation(UWidgetAnimation* InAnimation, float StartAtTime = 0.0f, int32 NumLoopsToPlay = 1, EUMGSequencePlayMode::Type PlayMode = EUMGSequencePlayMode::Forward, float PlaybackSpeed = 1.0f, bool bRestoreState = false);
 
 	/**
-	 * Plays an animation in this widget a specified number of times
-	 * 
-	 * @param InAnimation The animation to play
-	 * @param StartAtTime The time in the animation from which to start playing, relative to the start position. For looped animations, this will only affect the first playback of the animation.
-	 * @param NumLoopsToPlay The number of times to loop this animation (0 to loop indefinitely)
-	 * @param PlaybackSpeed The speed at which the animation should play
-	 * @param PlayMode Specifies the playback mode
-	 */
-	UE_DEPRECATED(4.22, "Short lived attempt to clarify what the default PlayAnimation function does, but going to just keep the default one to make things simple by default.")
-	UUMGSequencePlayer* PlayAnimationAtTime(UWidgetAnimation* InAnimation, float StartAtTime = 0.0f, int32 NumLoopsToPlay = 1, EUMGSequencePlayMode::Type PlayMode = EUMGSequencePlayMode::Forward, float PlaybackSpeed = 1.0f)
-	{
-		return PlayAnimation(InAnimation, StartAtTime, NumLoopsToPlay, PlayMode, PlaybackSpeed);
-	}
-
-	/**
 	 * Plays an animation in this widget a specified number of times stopping at a specified time
 	 * 
 	 * @param InAnimation The animation to play
@@ -1073,6 +1060,47 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "User Interface|Animation")
 	void FlushAnimations();
 
+	/** Find the first extension of the requested type. */
+	template<typename ExtensionType>
+	ExtensionType* GetExtension() const
+	{
+		return CastChecked<ExtensionType>(GetExtension(ExtensionType::StaticClass()), ECastCheckedType::NullAllowed);
+	}
+
+	/** Find the first extension of the requested type. */
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	UUserWidgetExtension* GetExtension(TSubclassOf<UUserWidgetExtension> ExtensionType) const;
+
+	/** Find the extensions of the requested type. */
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	TArray<UUserWidgetExtension*> GetExtensions(TSubclassOf<UUserWidgetExtension> ExtensionType) const;
+
+	/** Add the extension of the requested type. */
+	template<typename ExtensionType>
+	ExtensionType* AddExtension()
+	{
+		return CastChecked<ExtensionType>(AddExtension(ExtensionType::StaticClass()), ECastCheckedType::NullAllowed);
+	}
+
+	/** Add the extension of the requested type. */
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	UUserWidgetExtension* AddExtension(TSubclassOf<UUserWidgetExtension> InExtensionType);
+
+	/** Remove the extension. */
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	void RemoveExtension(UUserWidgetExtension* InExtension);
+
+	/** Remove all extensions of the requested type. */
+	template<typename ExtensionType>
+	void RemoveExtensions()
+	{
+		return RemoveExtensions(ExtensionType::StaticClass());
+	}
+
+	/** Remove all extensions of the requested type. */
+	UFUNCTION(BlueprintCallable, Category = "User Interface|Extension")
+	void RemoveExtensions(TSubclassOf<UUserWidgetExtension> InExtensionType);
+
 	/**
 	 * Plays a sound through the UI
 	 *
@@ -1095,10 +1123,6 @@ public:
 
 	//~ Begin UObject Interface
 	virtual bool IsAsset() const;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
-	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	//~ End UObject Interface
 
@@ -1188,6 +1212,10 @@ private:
 	UPROPERTY()
 	TArray<FNamedSlotBinding> NamedSlotBindings;
 
+	/** The UserWidget extensions */
+	UPROPERTY()
+	TArray<TObjectPtr<UUserWidgetExtension>> Extensions;
+
 public:
 	/** The widget tree contained inside this user widget initialized by the blueprint */
 	UPROPERTY(Transient, DuplicateTransient, TextExportTransient)
@@ -1220,9 +1248,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
 	int32 Priority;
 
-	UPROPERTY()
-	uint8 bSupportsKeyboardFocus_DEPRECATED:1;
-
 	/** Setting this flag to true, allows this widget to accept focus when clicked, or when navigated to. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Interaction")
 	uint8 bIsFocusable : 1;
@@ -1238,42 +1263,29 @@ public:
 	UPROPERTY()
 	uint8 bHasScriptImplementedPaint : 1;
 
-protected:
+private:
 
 	/** Has this widget been initialized by its class yet? */
 	uint8 bInitialized : 1;
+
+	/** Has this widget been constructed and we need to call Construct on new extension. */
+	uint8 bAreExtensionsConstructed : 1;
 
 	/** If we're stopping all animations, don't allow new animations to be created as side-effects. */
 	uint8 bStoppingAllAnimations : 1;
 
 protected:
-
-	/** Adds the widget to the screen, either to the viewport or to the player's screen depending on if the LocalPlayer is null. */
-	virtual void AddToScreen(ULocalPlayer* LocalPlayer, int32 ZOrder);
-
-	/**
-	 * Called when a top level widget is in the viewport and the world is potentially coming to and end. When this occurs, 
-	 * it's not save to keep widgets on the screen.  We automatically remove them when this happens and mark them for pending kill.
-	 */
-	virtual void OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* InWorld);
-
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void OnWidgetRebuilt() override;
 
+	UE_DEPRECATED(5.1, "GetFullScreenOffset is deprecated. Use the GameViewportSubsystem.")
 	FMargin GetFullScreenOffset() const;
-
-	//native SObjectWidget methods (see the corresponding BlueprintImplementableEvent declarations above for more info on each)
-	friend class SObjectWidget;
 
 	virtual void NativeOnInitialized();
 	virtual void NativePreConstruct();
 	virtual void NativeConstruct();
 	virtual void NativeDestruct();
-
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime);
-
-	UE_DEPRECATED(4.20, "Please override the other version of NativePaint that accepts all the parameters, not just the paint context.")
-	virtual void NativePaint(FPaintContext& InContext) const { }
 
 	/**
 	 * Native implemented paint function for the Widget
@@ -1321,8 +1333,6 @@ protected:
 	virtual FReply NativeOnTouchForceChanged(const FGeometry& MyGeometry, const FPointerEvent& TouchEvent);
 	virtual FCursorReply NativeOnCursorQuery( const FGeometry& InGeometry, const FPointerEvent& InCursorEvent );
 	virtual FNavigationReply NativeOnNavigation(const FGeometry& InGeometry, const FNavigationEvent& InNavigationEvent);
-	UE_DEPRECATED(4.20, "Please use NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)")
-	void NativeOnMouseCaptureLost() {}
 	virtual void NativeOnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent);
 
 protected:
@@ -1341,9 +1351,6 @@ protected:
 	void TearDownAnimations();
 
 	void DisableAnimations();
-
-	UE_DEPRECATED(4.21, "You now need to provide the reason you're invalidating.")
-	void Invalidate();
 
 	void Invalidate(EInvalidateWidgetReason InvalidateReason);
 	
@@ -1420,14 +1427,6 @@ protected:
 private:
 	static void OnLatentActionsChanged(UObject* ObjectWhichChanged, ELatentActionChangeType ChangeType);
 
-	void InvalidateFullScreenWidget(EInvalidateWidgetReason InvalidateReason);
-
-	FAnchors ViewportAnchors;
-	FMargin ViewportOffsets;
-	FVector2D ViewportAlignment;
-
-	TWeakPtr<SWidget> FullScreenWidget;
-
 	/** The player context that is associated with this UI.  Think of this as the owner of the UI. */
 	FLocalPlayerContext PlayerContext;
 
@@ -1436,8 +1435,6 @@ private:
 
 	static bool bTemplateInitializing;
 	static uint32 bInitializingFromWidgetTree;
-
-	void UpdateCanTick();
 
 protected:
 
@@ -1467,18 +1464,19 @@ namespace CreateWidgetHelpers
 
 DECLARE_CYCLE_STAT(TEXT("UserWidget Create"), STAT_CreateWidget, STATGROUP_Slate);
 
-template <typename WidgetT = UUserWidget, typename OwnerT = UObject>
-WidgetT* CreateWidget(OwnerT* OwningObject, TSubclassOf<UUserWidget> UserWidgetClass = WidgetT::StaticClass(), FName WidgetName = NAME_None)
+template <typename WidgetT = UUserWidget, typename OwnerType = UObject>
+WidgetT* CreateWidget(OwnerType OwningObject, TSubclassOf<UUserWidget> UserWidgetClass = WidgetT::StaticClass(), FName WidgetName = NAME_None)
 {
 	static_assert(TIsDerivedFrom<WidgetT, UUserWidget>::IsDerived, "CreateWidget can only be used to create UserWidget instances. If creating a UWidget, use WidgetTree::ConstructWidget.");
 	
-	static_assert(TIsDerivedFrom<OwnerT, UWidget>::IsDerived
-		|| TIsDerivedFrom<OwnerT, UWidgetTree>::IsDerived
-		|| TIsDerivedFrom<OwnerT, APlayerController>::IsDerived
-		|| TIsDerivedFrom<OwnerT, UGameInstance>::IsDerived
-		|| TIsDerivedFrom<OwnerT, UWorld>::IsDerived, "The given OwningObject is not of a supported type for use with CreateWidget.");
+	static_assert(TIsDerivedFrom<TPointedToType<OwnerType>, UWidget>::IsDerived
+		|| TIsDerivedFrom<TPointedToType<OwnerType>, UWidgetTree>::IsDerived
+		|| TIsDerivedFrom<TPointedToType<OwnerType>, APlayerController>::IsDerived
+		|| TIsDerivedFrom<TPointedToType<OwnerType>, UGameInstance>::IsDerived
+		|| TIsDerivedFrom<TPointedToType<OwnerType>, UWorld>::IsDerived, "The given OwningObject is not of a supported type for use with CreateWidget.");
 
 	SCOPE_CYCLE_COUNTER(STAT_CreateWidget);
+	FScopeCycleCounterUObject WidgetObjectCycleCounter(UserWidgetClass, GET_STATID(STAT_CreateWidget));
 
 	if (OwningObject)
 	{

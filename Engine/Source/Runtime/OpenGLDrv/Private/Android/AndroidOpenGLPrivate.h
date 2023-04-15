@@ -25,6 +25,7 @@ public:
 
 	FString GPUFamily;
 	FString GLVersion;
+	FString VendorName;
 	bool bSupportsFloatingPointRenderTargets;
 	bool bSupportsFrameBufferFetch;
 	TArray<FString> TargetPlatformNames;
@@ -51,7 +52,7 @@ private:
 		// Do not create a window surface if the app is for Oculus Mobile (use small buffer)
 		bool bCreateSurface = !AndroidThunkCpp_IsOculusMobileApplication();
 		FPlatformMisc::LowLevelOutputDebugString(TEXT("FAndroidGPUInfo"));
-		EGL->InitSurface(bCreateSurface, bCreateSurface);
+		EGL->InitSurface(false, bCreateSurface);
 		EGL->SetCurrentSharedContext();
 
 		// get extensions
@@ -89,5 +90,7 @@ private:
 			|| ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch ")); // has space at the end to exclude GL_ARM_shader_framebuffer_fetch_depth_stencil match
 
 		GAndroidGPUInfoReady = true;
+
+		VendorName = FString(ANSI_TO_TCHAR((const ANSICHAR*)glGetString(GL_VENDOR)));
 	}
 };

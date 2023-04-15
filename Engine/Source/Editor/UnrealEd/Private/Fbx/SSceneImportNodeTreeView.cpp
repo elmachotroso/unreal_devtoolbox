@@ -1,20 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Fbx/SSceneImportNodeTreeView.h"
-#include "Factories/FbxSceneImportFactory.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Images/SImage.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
-#include "GameFramework/Actor.h"
-#include "Components/LightComponent.h"
+
 #include "Camera/CameraComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
-#include "Components/DirectionalLightComponent.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Factories/FbxSceneImportFactory.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SExpanderArrow.h"
+#include "Widgets/Views/STableRow.h"
+
+class FUICommandList;
+class ITableRow;
+class SWidget;
+class UClass;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SFbxSceneTreeView"
 
@@ -141,7 +165,7 @@ public:
 			[
 				SNew(SImage)
 				.Image(ClassIcon)
-				.Visibility(ClassIcon != FEditorStyle::GetDefaultBrush() ? EVisibility::Visible : EVisibility::Collapsed)
+				.Visibility(ClassIcon != FAppStyle::GetDefaultBrush() ? EVisibility::Visible : EVisibility::Collapsed)
 			]
 
 		+ SHorizontalBox::Slot()
@@ -333,9 +357,9 @@ TSharedPtr<SWidget> SFbxSceneTreeView::OnOpenContextMenu()
 	// We always create a section here, even if there is no parent so that clients can still extend the menu
 	MenuBuilder.BeginSection("FbxSceneTreeViewContextMenuImportSection");
 	{
-		const FSlateIcon PlusIcon(FEditorStyle::GetStyleSetName(), "Icons.Plus");
+		const FSlateIcon PlusIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("CheckForImport", "Add Selection To Import"), FText(), PlusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneTreeView::AddSelectionToImport)));
-		const FSlateIcon MinusIcon(FEditorStyle::GetStyleSetName(), "Icons.Minus");
+		const FSlateIcon MinusIcon(FAppStyle::GetAppStyleSetName(), "Icons.Minus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("UncheckForImport", "Remove Selection From Import"), FText(), MinusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneTreeView::RemoveSelectionFromImport)));
 	}
 	MenuBuilder.EndSection();

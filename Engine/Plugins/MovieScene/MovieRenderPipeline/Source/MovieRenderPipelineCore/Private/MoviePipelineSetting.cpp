@@ -3,6 +3,8 @@
 #include "MoviePipelineSetting.h"
 #include "MoviePipeline.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineSetting)
+
 UMoviePipelineSetting::UMoviePipelineSetting()
 	: bEnabled(true)
 {
@@ -15,11 +17,8 @@ void UMoviePipelineSetting::OnMoviePipelineInitialized(UMoviePipeline* InPipelin
 
 UMoviePipeline* UMoviePipelineSetting::GetPipeline() const
 {
-	// If this check trips then life cycles aren't as expected.
-	UMoviePipeline* OutPipeline = CachedPipeline.Get();
-	check(OutPipeline);
-
-	return OutPipeline;
+	// Can be null if we're not in the middle of a render (ie in the UI)
+	return CachedPipeline.Get();
 }
 
 UWorld* UMoviePipelineSetting::GetWorld() const

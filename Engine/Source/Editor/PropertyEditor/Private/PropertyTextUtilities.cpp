@@ -1,8 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PropertyTextUtilities.h"
-#include "PropertyNode.h"
+
+#include "CoreTypes.h"
 #include "PropertyHandleImpl.h"
+#include "PropertyNode.h"
+#include "UObject/UnrealType.h"
+
+class FString;
+class UObject;
 
 void FPropertyTextUtilities::PropertyToTextHelper(FString& OutString, const FPropertyNode* InPropertyNode, const FProperty* Property, const uint8* ValueAddress, UObject* Object, EPropertyPortFlags PortFlags)
 {
@@ -25,7 +31,7 @@ void FPropertyTextUtilities::TextToPropertyHelper(const TCHAR* Buffer, const FPr
 {
 	if (InPropertyNode->GetArrayIndex() != INDEX_NONE || Property->ArrayDim == 1)
 	{
-		Property->ImportText(Buffer, ValueAddress, PortFlags, Object);
+		Property->ImportText_Direct(Buffer, ValueAddress, Object, PortFlags);
 	}
 	else
 	{

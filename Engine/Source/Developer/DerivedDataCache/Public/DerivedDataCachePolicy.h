@@ -2,9 +2,10 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
 #include "Containers/StringFwd.h"
+#include "CoreTypes.h"
 #include "DerivedDataValueId.h"
 #include "Misc/EnumClassFlags.h"
 #include "Templates/RefCounting.h"
@@ -12,13 +13,13 @@
 
 #define UE_API DERIVEDDATACACHE_API
 
+class FCbFieldView;
 class FCbObjectView;
 class FCbWriter;
-
 template <typename FuncType> class TFunctionRef;
 
-namespace UE::DerivedData { class FOptionalCacheRecordPolicy; }
 namespace UE::DerivedData::Private { class ICacheRecordPolicyShared; }
+namespace UE::DerivedData { class FOptionalCacheRecordPolicy; }
 
 namespace UE::DerivedData
 {
@@ -33,9 +34,12 @@ namespace UE::DerivedData
  * Get(Query | StoreLocal): Fetch from any cache. Store response to any local caches if missing.
  * Get(Query | SkipData): Check for existence in any cache. Do not store to any caches if missing.
  * Get(Default | SkipData): Check for existence in any cache. Store the response to any caches if missing.
+ * Get(Default | PartialRecord): Fetch from any cache, and return a partial record if values are missing data.
  *
- * Put(Default): Store to every cache.
+ * Put(Default): Store to every cache, and do not overwrite existing valid records or values.
+ * Put(Store): Store to every cache, and overwrite existing records or values.
  * Put(Local): Store to every local cache, skipping remote caches.
+ * Put(Default | PartialRecord): Store to every cache, even if the record has missing data for its values.
  */
 enum class ECachePolicy : uint32
 {
@@ -84,10 +88,13 @@ enum class ECachePolicy : uint32
 	PartialRecord   = 1 << 6,
 
 	/**
-	 * Keep records in the cache for at least the duration of the session.
+	 * Keep records and values in the cache for at least the duration of the session.
 	 *
-	 * This is a hint that the record may be accessed again in this session. This is mainly meant
-	 * to be used when subsequent accesses will not tolerate a cache miss.
+	 * This flag hints that the records and values that it is applied to may be accessed again in
+	 * this session. The cache will make an effort to prevent eviction of the records and values,
+	 * though an absolute guarantee is impossible.
+	 *
+	 * This flag is meant to be used when subsequent accesses will not tolerate a cache miss.
 	 */
 	KeepAlive       = 1 << 7,
 };
@@ -99,10 +106,16 @@ UE_API FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, ECach
 UE_API FWideStringBuilderBase& operator<<(FWideStringBuilderBase& Builder, ECachePolicy Policy);
 UE_API FUtf8StringBuilderBase& operator<<(FUtf8StringBuilderBase& Builder, ECachePolicy Policy);
 
-/** Parse non-empty text written by operator<< into a policy. */
-UE_API ECachePolicy ParseCachePolicy(FAnsiStringView Text);
-UE_API ECachePolicy ParseCachePolicy(FWideStringView Text);
-UE_API ECachePolicy ParseCachePolicy(FUtf8StringView Text);
+/** Try to parse a policy from text written by operator<<. */
+UE_API bool TryLexFromString(ECachePolicy& OutPolicy, FUtf8StringView String);
+UE_API bool TryLexFromString(ECachePolicy& OutPolicy, FWideStringView String);
+
+UE_DEPRECATED(5.1, "Replace ParseCachePolicy with TryLexFromString.") UE_API ECachePolicy ParseCachePolicy(FAnsiStringView Text);
+UE_DEPRECATED(5.1, "Replace ParseCachePolicy with TryLexFromString.") UE_API ECachePolicy ParseCachePolicy(FWideStringView Text);
+UE_DEPRECATED(5.1, "Replace ParseCachePolicy with TryLexFromString.") UE_API ECachePolicy ParseCachePolicy(FUtf8StringView Text);
+
+UE_API FCbWriter& operator<<(FCbWriter& Writer, ECachePolicy Policy);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, ECachePolicy& OutPolicy, ECachePolicy Default = ECachePolicy::Default);
 
 /** A value ID and the cache policy to use for that value. */
 struct FCacheValuePolicy
@@ -113,6 +126,9 @@ struct FCacheValuePolicy
 	/** Flags that are valid on a value policy. */
 	static constexpr ECachePolicy PolicyMask = ECachePolicy::Default | ECachePolicy::SkipData;
 };
+
+UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheValuePolicy& Policy);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheValuePolicy& OutPolicy);
 
 /** Interface for the private implementation of the cache record policy. */
 class Private::ICacheRecordPolicyShared
@@ -147,6 +163,9 @@ public:
 	{
 	}
 
+	/** Returns true if this is the default cache policy with no overrides for values. */
+	inline bool IsDefault() const { return !Shared && RecordPolicy == ECachePolicy::Default; }
+
 	/** Returns true if the record and every value use the same cache policy. */
 	inline bool IsUniform() const { return !Shared; }
 
@@ -172,9 +191,11 @@ public:
 	UE_API FCacheRecordPolicy Transform(TFunctionRef<ECachePolicy (ECachePolicy)> Op) const;
 
 	/** Saves the cache record policy to a compact binary object. */
+	UE_DEPRECATED(5.1, "Replace Policy.Save(Writer) with Writer << Policy.")
 	UE_API void Save(FCbWriter& Writer) const;
 
 	/** Loads a cache record policy from an object. */
+	UE_DEPRECATED(5.1, "Replace Load(Object) with LoadFromCompactBinary(Field, Policy).")
 	UE_API static FOptionalCacheRecordPolicy Load(FCbObjectView Object);
 
 private:
@@ -199,7 +220,7 @@ public:
 	{
 	}
 
-	/** Adds a cache policy override for a value. */
+	/** Adds a cache policy override for a value. Must contain only flags in FCacheRecordValue::PolicyMask. */
 	UE_API void AddValuePolicy(const FCacheValuePolicy& Value);
 	inline void AddValuePolicy(const FValueId& Id, ECachePolicy Policy) { AddValuePolicy({Id, Policy}); }
 
@@ -237,6 +258,9 @@ public:
 	inline void Reset() { *this = FOptionalCacheRecordPolicy(); }
 };
 
-} // namespace UE::DerivedData
+UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheRecordPolicy& Policy);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheRecordPolicy& OutPolicy);
+
+} // UE::DerivedData
 
 #undef UE_API

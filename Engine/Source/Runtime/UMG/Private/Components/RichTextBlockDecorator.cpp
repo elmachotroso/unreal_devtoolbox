@@ -9,6 +9,8 @@
 #include "Fonts/FontMeasure.h"
 #include "Components/RichTextBlock.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RichTextBlockDecorator)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 FRichTextDecorator::FRichTextDecorator(URichTextBlock* InOwner)
@@ -37,10 +39,17 @@ TSharedRef<ISlateRun> FRichTextDecorator::Create(const TSharedRef<class FTextLay
 		ModelRange.EndIndex = InOutModelText->Len();
 
 		// Calculate the baseline of the text within the owning rich text
-		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-		int16 WidgetBaseline = FontMeasure->GetBaseline(TextStyle.Font) - FMath::Min(0.0f, TextStyle.ShadowOffset.Y);
+		// Requested on demand as the font may not be loaded right now
+		const FSlateFontInfo Font = TextStyle.Font;
+		const float ShadowOffsetY = FMath::Min(0.0f, TextStyle.ShadowOffset.Y);
 
-		FSlateWidgetRun::FWidgetRunInfo WidgetRunInfo(DecoratorWidget.ToSharedRef(), WidgetBaseline);
+		TAttribute<int16> GetBaseline = TAttribute<int16>::CreateLambda([Font, ShadowOffsetY]()
+		{
+			const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+			return FontMeasure->GetBaseline(Font) - ShadowOffsetY;
+		});
+
+		FSlateWidgetRun::FWidgetRunInfo WidgetRunInfo(DecoratorWidget.ToSharedRef(), GetBaseline);
 		SlateRun = FSlateWidgetRun::Create(TextLayout, RunInfo, InOutModelText, WidgetRunInfo, ModelRange);
 	}
 	else
@@ -81,3 +90,4 @@ TSharedPtr<ITextDecorator> URichTextBlockDecorator::CreateDecorator(URichTextBlo
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

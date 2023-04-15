@@ -345,7 +345,7 @@ void FAreaNavModifier::InitializeConvex(const TNavStatArray<FVector>& InPoints, 
 	check(InPoints.IsValidIndex(FirstIndex) && InPoints.IsValidIndex(LastIndex-1));
 
 	Init(InAreaClass);
-	SetConvex(LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex, ENavigationCoordSystem::Unreal, LocalToWorld);	// LWC_TODO: Perf pessimization
+	SetConvex(UE::LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex, ENavigationCoordSystem::Unreal, LocalToWorld);	// LWC_TODO: Perf pessimization
 }
 
 void FAreaNavModifier::InitializePerInstanceConvex(const TNavStatArray<FVector>& InPoints, const int32 FirstIndex, const int32 LastIndex, const TSubclassOf<UNavAreaBase> InAreaClass)
@@ -353,7 +353,7 @@ void FAreaNavModifier::InitializePerInstanceConvex(const TNavStatArray<FVector>&
 	check(InPoints.IsValidIndex(FirstIndex) && InPoints.IsValidIndex(LastIndex - 1));
 
 	Init(InAreaClass);
-	SetPerInstanceConvex(LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex);	// LWC_TODO: Perf pessimization
+	SetPerInstanceConvex(UE::LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex);	// LWC_TODO: Perf pessimization
 }
 
 FAreaNavModifier::FAreaNavModifier(const UBrushComponent* BrushComponent, const TSubclassOf<UNavAreaBase> InAreaClass)
@@ -445,8 +445,17 @@ void FAreaNavModifier::SetAreaClassToReplace(const TSubclassOf<UNavAreaBase> InA
 	bHasMetaAreas = (AreaClass1 && IsMetaAreaClass(*AreaClass1))
 		|| (AreaClass2 && IsMetaAreaClass(*AreaClass2));
 
-	bIsLowAreaModifier = (AreaClass2 && AreaClass2->GetDefaultObject<UNavAreaBase>()->IsLowArea());
-	ApplyMode = bIsLowAreaModifier ? ENavigationAreaMode::ReplaceInLowPass : AreaClass2 ? ENavigationAreaMode::Replace : ENavigationAreaMode::Apply;
+	if (AreaClass2)
+	{
+		bIsLowAreaModifier = AreaClass2->GetDefaultObject<UNavAreaBase>()->IsLowArea();
+		ApplyMode = bIsLowAreaModifier ? ENavigationAreaMode::ReplaceInLowPass : ENavigationAreaMode::Replace;
+	}
+	else if (ApplyMode == ENavigationAreaMode::ReplaceInLowPass || ApplyMode == ENavigationAreaMode::Replace)
+	{
+		// since we no longer have ReplaceAreaClass the new value of ApplyMode and bIsLowAreaModifier should depend on previous value of ApplyMode
+		bIsLowAreaModifier = ApplyMode == ENavigationAreaMode::ReplaceInLowPass;
+		ApplyMode = ApplyMode == ENavigationAreaMode::ReplaceInLowPass ? ENavigationAreaMode::ApplyInLowPass : ENavigationAreaMode::Apply;		
+	}
 }
 
 void FAreaNavModifier::SetApplyMode(ENavigationAreaMode::Type InApplyMode)
@@ -501,8 +510,8 @@ void FAreaNavModifier::FillConvexNavAreaData(const FVector* InPoints, const int3
 {
 	OutBounds = FBox(ForceInit);
 	OutConvexData.Points.Reset();
-	OutConvexData.MinZ = MAX_FLT;
-	OutConvexData.MaxZ = -MAX_FLT;
+	OutConvexData.MinZ = UE_MAX_FLT;
+	OutConvexData.MaxZ = -UE_MAX_FLT;
 
 	if (InNumPoints <= 0)
 	{
@@ -773,8 +782,21 @@ FCompositeNavModifier FCompositeNavModifier::GetInstantiatedMetaModifier(const F
 	{
 		return Result;
 	}
+	
+	auto FindActorOwner = [](UObject* Obj) -> const AActor*
+	{
+		while (Obj)
+		{
+			if (const AActor* ActorOwner = Cast<AActor>(Obj->GetOuter()))
+			{
+				return ActorOwner;
+			}
+			Obj = Obj->GetOuter();
+		}
+		return nullptr;
+	};
 
-	const AActor* ActorOwner = Cast<AActor>(ObjectOwner) ? (AActor*)ObjectOwner : Cast<AActor>(ObjectOwner->GetOuter());
+	const AActor* ActorOwner = Cast<AActor>(ObjectOwner) ? (AActor*)ObjectOwner : FindActorOwner(ObjectOwner);
 	if (ActorOwner == NULL)
 	{
 		return Result;
@@ -784,6 +806,7 @@ FCompositeNavModifier FCompositeNavModifier::GetInstantiatedMetaModifier(const F
 	Result = *this;
 
 	{
+		Result.bHasMetaAreas = false;
 		FAreaNavModifier* Area = Result.Areas.GetData();
 		for (int32 Index = 0; Index < Result.Areas.Num(); ++Index, ++Area)
 		{
@@ -791,6 +814,7 @@ FCompositeNavModifier FCompositeNavModifier::GetInstantiatedMetaModifier(const F
 			{
 				Area->SetAreaClass(UNavAreaBase::PickAreaClassForAgent(Area->GetAreaClass(), *ActorOwner, *NavAgent));
 				Area->SetAreaClassToReplace(UNavAreaBase::PickAreaClassForAgent(Area->GetAreaClassToReplace(), *ActorOwner, *NavAgent));
+				Result.bHasMetaAreas = true;
 			}
 		}
 	}
@@ -895,7 +919,7 @@ void FCompositeNavModifier::CreateAreaModifiers(const UPrimitiveComponent* PrimC
 		const FKConvexElem& ConvexElem = BodySetup->AggGeom.ConvexElems[Idx];
 		if (ConvexElem.VertexData.Num() > 0)
 		{
-			FAreaNavModifier AreaMod(LWC::ConvertArrayType<FVector>(ConvexElem.VertexData), 0, ConvexElem.VertexData.Num(), ENavigationCoordSystem::Unreal, PrimComp->GetComponentTransform(), AreaClass);
+			FAreaNavModifier AreaMod(UE::LWC::ConvertArrayType<FVector>(ConvexElem.VertexData), 0, ConvexElem.VertexData.Num(), ENavigationCoordSystem::Unreal, PrimComp->GetComponentTransform(), AreaClass);
 			Add(AreaMod);
 		}
 		else

@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SDeviceBrowserFilterBar.h"
+#include "Widgets/Browser/SDeviceBrowserFilterBar.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PlatformInfo.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Images/SImage.h"
@@ -77,11 +77,11 @@ void SDeviceBrowserFilterBar::Construct(const FArguments& InArgs, TSharedRef<FDe
 						.AutoWidth()
 						[
 							SNew(SBox)
-								.WidthOverride(24)
-								.HeightOverride(24)
+								.WidthOverride(24.f)
+								.HeightOverride(24.f)
 								[
 									SNew(SImage)
-									.Image((PlatformInfo) ? FEditorStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
+									.Image((PlatformInfo) ? FAppStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
 								]
 						]
 
@@ -113,22 +113,20 @@ void SDeviceBrowserFilterBar::Construct(const FArguments& InArgs, TSharedRef<FDe
 			[
 				// platform filter
 				SNew(SComboButton)
-					.ComboButtonStyle(FEditorStyle::Get(), "ToolbarComboButton")
-					.ForegroundColor(FLinearColor::White)
-					.ButtonContent()
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "Launcher.Filters.Text")
-						.Text(LOCTEXT("PlatformFiltersComboButtonText", "Platform Filters"))
-					]
-					.ContentPadding(0.0f)
-					.MenuContent()
-					[
-						SAssignNew(PlatformListView, SListView<TSharedPtr<FDeviceBrowserFilterEntry> >)
-							.ItemHeight(24.0f)
-							.ListItemsSource(&Filter->GetFilteredPlatforms())
-							.OnGenerateRow_Lambda(PlatformListViewGenerateRow)
-					]
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::Get().GetFontStyle("NormalBold"))
+					.Text(LOCTEXT("PlatformFiltersComboButtonText", "Platform Filters"))
+				]
+				.ContentPadding(0.0f)
+				.MenuContent()
+				[
+					SAssignNew(PlatformListView, SListView<TSharedPtr<FDeviceBrowserFilterEntry> >)
+					.ItemHeight(24.0f)
+					.ListItemsSource(&Filter->GetFilteredPlatforms())
+					.OnGenerateRow_Lambda(PlatformListViewGenerateRow)
+				]
 			]
 
 		+ SHorizontalBox::Slot()

@@ -3,19 +3,39 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "AssetData.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserItemPath.h"
+#include "HAL/Platform.h"
 #include "IContentBrowserSingleton.h"
+#include "Internationalization/Text.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+
 #include "ContentBrowserSingleton.generated.h"
 
 class FCollectionAssetRegistryBridge;
+class FMenuBuilder;
+class FPathPermissionList;
 class FSpawnTabArgs;
 class FTabManager;
 class FViewport;
-class SContentBrowser;
-class UFactory;
-class UToolMenu;
 class FWorkspaceItem;
+class SContentBrowser;
+class SDockTab;
+class SWidget;
+class UClass;
+class UFactory;
+class UObject;
+class UToolMenu;
+struct FAssetData;
+struct FContentBrowserItem;
 struct FTabSpawnerEntry;
 
 #define MAX_CONTENT_BROWSERS 4
@@ -37,6 +57,12 @@ struct FContentBrowserPluginSettings
 	{}
 };
 
+struct FShowPrivateContentState
+{
+	TSharedPtr<FPathPermissionList> InvariantPaths;
+	TSharedPtr<FPathPermissionList> CachedVirtualPaths;
+};
+
 /**
  * Content browser module singleton implementation class
  */
@@ -48,11 +74,12 @@ public:
 	virtual ~FContentBrowserSingleton();
 
 	// IContentBrowserSingleton interface
-	virtual TSharedRef<class SWidget> CreateContentBrowser( const FName InstanceName, TSharedPtr<SDockTab> ContainingTab, const FContentBrowserConfig* ContentBrowserConfig ) override;
-	virtual TSharedRef<class SWidget> CreateAssetPicker(const FAssetPickerConfig& AssetPickerConfig) override;
-	virtual TSharedRef<class SWidget> CreatePathPicker(const FPathPickerConfig& PathPickerConfig) override;
-	virtual TSharedRef<class SWidget> CreateCollectionPicker(const FCollectionPickerConfig& CollectionPickerConfig) override;
-	virtual TSharedRef<class SWidget> CreateContentBrowserDrawer(const FContentBrowserConfig& ContentBrowserConfig, TFunction<TSharedPtr<SDockTab>()> InOnGetTabForDrawer) override;
+	virtual TSharedRef<SWidget> CreateContentBrowser( const FName InstanceName, TSharedPtr<SDockTab> ContainingTab, const FContentBrowserConfig* ContentBrowserConfig ) override;
+	virtual TSharedRef<SWidget> CreateAssetPicker(const FAssetPickerConfig& AssetPickerConfig) override;
+	virtual TSharedPtr<SWidget> GetAssetPickerSearchBox(const TSharedRef<SWidget>& AssetPickerWidget) override;
+	virtual TSharedRef<SWidget> CreatePathPicker(const FPathPickerConfig& PathPickerConfig) override;
+	virtual TSharedRef<SWidget> CreateCollectionPicker(const FCollectionPickerConfig& CollectionPickerConfig) override;
+	virtual TSharedRef<SWidget> CreateContentBrowserDrawer(const FContentBrowserConfig& ContentBrowserConfig, TFunction<TSharedPtr<SDockTab>()> InOnGetTabForDrawer) override;
 	virtual void CreateOpenAssetDialog(const FOpenAssetDialogConfig& OpenAssetConfig, const FOnAssetsChosenForOpen& OnAssetsChosenForOpen, const FOnAssetDialogCancelled& OnAssetDialogCancelled) override;
 	virtual TArray<FAssetData> CreateModalOpenAssetDialog(const FOpenAssetDialogConfig& InConfig) override;
 	virtual void CreateSaveAssetDialog(const FSaveAssetDialogConfig& SaveAssetConfig, const FOnObjectPathChosenForSave& OnAssetNameChosenForSave, const FOnAssetDialogCancelled& OnAssetDialogCancelled) override;
@@ -81,6 +108,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void ExecuteRename(TSharedPtr<SWidget> PickerWidget) override;
 	virtual void ExecuteAddFolder(TSharedPtr<SWidget> PathPickerWidget) override;
 	virtual void RefreshPathView(TSharedPtr<SWidget> PathPickerWidget) override;
+	virtual bool IsShowingPrivateContent(const FStringView VirtualFolderPath) override;
+	virtual bool IsFolderShowPrivateContentToggleable(const FStringView VirtualFolderPath) override;
+	virtual const TSharedPtr<FPathPermissionList>& GetShowPrivateContentPermissionList() override;
+	virtual void SetPrivateContentPermissionListDirty() override;
+	virtual void RegisterIsFolderShowPrivateContentToggleableDelegate(FIsFolderShowPrivateContentToggleableDelegate InIsFolderShowPrivateContentToggleableDelegate) override;
+	virtual void UnregisterIsFolderShowPrivateContentToggleableDelegate() override;
 
 	/** Gets the content browser singleton as a FContentBrowserSingleton */
 	static FContentBrowserSingleton& Get();
@@ -140,11 +173,19 @@ private:
 	/** Creates the Content Browser submenu in the Level Editor Toolbar Add menu */
 	void GetContentBrowserSubMenu(UToolMenu* Menu, TSharedRef<FWorkspaceItem> ContentBrowserGroup);
 
+	void ExtendContentBrowserTabContextMenu(FMenuBuilder& InMenuBuilder);
+
+	/** Rebuilds the private content state cache based off of the currently registered Invariant Path permission list */
+	void RebuildPrivateContentStateCache();
+
 public:
 	/** The tab identifier/instance name for content browser tabs */
 	FName ContentBrowserTabIDs[MAX_CONTENT_BROWSERS];
 
 private:
+
+	FIsFolderShowPrivateContentToggleableDelegate IsFolderShowPrivateContentToggleableDelegate;
+
 	TArray<TWeakPtr<SContentBrowser>> AllContentBrowsers;
 
 	TWeakPtr<SContentBrowser> ContentBrowserDrawer;
@@ -163,4 +204,6 @@ private:
 
 	/** An incrementing int32 which is used when making unique settings strings */
 	int32 SettingsStringID;
+
+	FShowPrivateContentState ShowPrivateContentState;
 };

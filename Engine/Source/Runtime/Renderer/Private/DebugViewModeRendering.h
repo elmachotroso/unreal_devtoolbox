@@ -16,6 +16,7 @@ DebugViewModeRendering.h: Contains definitions for rendering debug viewmodes.
 #include "ShaderBaseClasses.h"
 #include "MeshPassProcessor.h"
 #include "DebugViewModeInterface.h"
+#include "SceneRenderTargetParameters.h"
 
 class FPrimitiveSceneProxy;
 struct FMeshBatchElement;
@@ -43,7 +44,7 @@ void SetupDebugViewModePassUniformBufferConstants(const FViewInfo& ViewInfo, FDe
 TRDGUniformBufferRef<FDebugViewModePassUniformParameters> CreateDebugViewModePassUniformBuffer(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef QuadOverdrawTexture);
 
 /** Returns the RT index where the QuadOverdrawUAV will be bound. */
-extern int32 GetQuadOverdrawUAVIndex(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel);
+extern int32 GetQuadOverdrawUAVIndex(EShaderPlatform Platform);
 
 class FDebugViewModeShaderElementData : public FMeshMaterialShaderElementData
 {
@@ -55,6 +56,7 @@ public:
 		EDebugViewShaderMode InDebugViewMode, 
 		const FVector& InViewOrigin, 
 		int32 InVisualizeLODIndex, 
+		const FColor& InSkinCacheDebugColor,
 		int32 InViewModeParam, 
 		const FName& InViewModeParamName) 
 		: MaterialRenderProxy(InMaterialRenderProxy)
@@ -62,6 +64,7 @@ public:
 		, DebugViewMode(InDebugViewMode)
 		, ViewOrigin(InViewOrigin)
 		, VisualizeLODIndex(InVisualizeLODIndex)
+		, SkinCacheDebugColor(InSkinCacheDebugColor)
 		, ViewModeParam(InViewModeParam)
 		, ViewModeParamName(InViewModeParamName)
 		, NumVSInstructions(0)
@@ -74,6 +77,7 @@ public:
 	EDebugViewShaderMode DebugViewMode;
 	FVector ViewOrigin;
 	int32 VisualizeLODIndex;
+	FColor SkinCacheDebugColor;
 	int32 ViewModeParam;
 	FName ViewModeParamName;
 
@@ -153,6 +157,7 @@ public:
 		ShowQuadOverdraw.Bind(Initializer.ParameterMap, TEXT("bShowQuadOverdraw"));
 		OutputQuadOverdrawParameter.Bind(Initializer.ParameterMap, TEXT("bOutputQuadOverdraw"));
 		LODIndexParameter.Bind(Initializer.ParameterMap, TEXT("LODIndex"));
+		SkinCacheDebugColorParameter.Bind(Initializer.ParameterMap, TEXT("SkinCacheDebugColor"));
 		VisualizeModeParameter.Bind(Initializer.ParameterMap, TEXT("VisualizeMode"));
 		QuadBufferUAV.Bind(Initializer.ParameterMap, TEXT("RWQuadBuffer"));
 	}
@@ -168,9 +173,11 @@ public:
 		OutEnvironment.SetDefine(TEXT("MAX_NUM_TEXTURE_REGISTER"), (uint32)TEXSTREAM_MAX_NUM_TEXTURES_PER_MATERIAL);
 		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1u);
 		TCHAR BufferRegister[] = { 'u', '0', 0 };
-		BufferRegister[1] += GetQuadOverdrawUAVIndex(Parameters.Platform, Parameters.MaterialParameters.FeatureLevel);
+		BufferRegister[1] += GetQuadOverdrawUAVIndex(Parameters.Platform);
 		OutEnvironment.SetDefine(TEXT("QUAD_BUFFER_REGISTER"), BufferRegister);
-		OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), 1);
+		const bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(GetMaxSupportedFeatureLevel(Parameters.Platform)) == EShadingPath::Mobile;
+		OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), !bUsingMobileRenderer);
+
 
 		for (int i = 0; i < DVSM_MAX; ++i)
 		{
@@ -204,12 +211,13 @@ public:
 	LAYOUT_FIELD(FShaderParameter, CPULogDistanceParameter);
 	LAYOUT_FIELD(FShaderParameter, ShowQuadOverdraw);
 	LAYOUT_FIELD(FShaderParameter, LODIndexParameter);
+	LAYOUT_FIELD(FShaderParameter, SkinCacheDebugColorParameter);
 	LAYOUT_FIELD(FShaderParameter, OutputQuadOverdrawParameter);
 	LAYOUT_FIELD(FShaderParameter, VisualizeModeParameter);
 	LAYOUT_FIELD(FShaderResourceParameter, QuadBufferUAV);
 };
 
-class FDebugViewModeMeshProcessor : public FMeshPassProcessor
+class FDebugViewModeMeshProcessor : public FSceneRenderingAllocatorObject<FDebugViewModeMeshProcessor>, public FMeshPassProcessor
 {
 public:
 	FDebugViewModeMeshProcessor(const FScene* InScene, ERHIFeatureLevel::Type InFeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, bool bTranslucentBasePass, FMeshPassDrawListContext* InDrawListContext);
@@ -243,6 +251,7 @@ public:
 		EDebugViewShaderMode DebugViewMode,
 		const FVector& ViewOrigin,
 		int32 VisualizeLODIndex,
+		const FColor& SkinCacheDebugColor,
 		int32 VisualizeElementIndex,
 		int32 NumVSInstructions,
 		int32 NumPSInstructions,

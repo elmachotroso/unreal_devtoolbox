@@ -3,7 +3,9 @@
 #include "RigUnit_BeginExecution.h"
 #include "Units/RigUnitContext.h"
 
-FName FRigUnit_BeginExecution::EventName = TEXT("Update");
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_BeginExecution)
+
+FName FRigUnit_BeginExecution::EventName = TEXT("Forwards Solve");
 
 FRigUnit_BeginExecution_Execute()
 {
@@ -12,3 +14,4 @@ FRigUnit_BeginExecution_Execute()
 	ExecuteContext.Hierarchy = Context.Hierarchy;
 	ExecuteContext.EventName = FRigUnit_BeginExecution::EventName;
 }
+

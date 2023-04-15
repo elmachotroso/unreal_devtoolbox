@@ -1,28 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/BezierChannelCurveModel.h"
-#include "BuiltInChannelEditors.h"
-#include "Channels/MovieSceneChannelProxy.h"
+
+#include "Channels/MovieSceneChannelData.h"
+#include "Channels/MovieSceneCurveChannelCommon.h"
 #include "Channels/MovieSceneDoubleChannel.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "Containers/EnumAsByte.h"
 #include "CurveDataAbstraction.h"
 #include "CurveDrawInfo.h"
-#include "CurveEditor.h"
 #include "CurveEditorScreenSpace.h"
-#include "CurveEditorSnapMetrics.h"
-#include "EditorStyleSet.h"
-#include "HAL/PlatformMath.h"
-#include "ISequencer.h"
+#include "Curves/RealCurve.h"
+#include "Curves/RichCurve.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathUtility.h"
 #include "Math/Vector2D.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
+#include "Misc/Optional.h"
 #include "MovieScene.h"
 #include "MovieSceneSection.h"
-#include "SequencerChannelTraits.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/WeakObjectPtr.h"
+
+class FCurveEditor;
 
 template<typename ChannelType>
 FBezierChannelBufferedCurveModel<ChannelType>::FBezierChannelBufferedCurveModel(
 		const ChannelType* InChannel, TWeakObjectPtr<UMovieSceneSection> InWeakSection,
-		TArray<FKeyPosition>&& InKeyPositions, TArray<FKeyAttributes>&& InKeyAttributes, const FString& InIntentionName, const double InValueMin, const double InValueMax)
-	: IBufferedCurveModel(MoveTemp(InKeyPositions), MoveTemp(InKeyAttributes), InIntentionName, InValueMin, InValueMax)
+		TArray<FKeyPosition>&& InKeyPositions, TArray<FKeyAttributes>&& InKeyAttributes, const FString& InLongDisplayName, const double InValueMin, const double InValueMax)
+	: IBufferedCurveModel(MoveTemp(InKeyPositions), MoveTemp(InKeyAttributes), InLongDisplayName, InValueMin, InValueMax)
 	, Channel(*InChannel)
 	, WeakSection(InWeakSection)
 {
@@ -86,7 +97,7 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetKeyDrawInf
 {
 	if (PointType == ECurvePointType::ArriveTangent || PointType == ECurvePointType::LeaveTangent)
 	{
-		OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.TangentHandle");
+		OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.TangentHandle");
 		OutDrawInfo.ScreenSize = FVector2D(8, 8);
 	}
 	else
@@ -113,34 +124,30 @@ void FBezierChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetKeyDrawInf
 		switch (KeyInterpType)
 		{
 		case ERichCurveInterpMode::RCIM_Constant:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.ConstantKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.45f, 0.70f);
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.ConstantKey");
 			break;
 		case ERichCurveInterpMode::RCIM_Linear:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.LinearKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.62f, 0.46f);
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.LinearKey");
 			break;
 		case ERichCurveInterpMode::RCIM_Cubic:
 			if (KeyTWType == ERichCurveTangentWeightMode::RCTWM_WeightedBoth)
 			{
-				OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.WeightedTangentCubicKey");
+				OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.WeightedTangentCubicKey");
 			}
 			else
 			{
-				OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.CubicKey");
+				OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.CubicKey");
 			}
 
-			OutDrawInfo.Tint = FLinearColor::White;
 			break;
 		default:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.Key");
-			OutDrawInfo.Tint = FLinearColor::White;
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.Key");
 			break;
 		}
 
 		if (this->IsReadOnly())
 		{
-			OutDrawInfo.Tint = OutDrawInfo.Tint * 0.5f;
+			OutDrawInfo.Tint = OutDrawInfo.Tint.IsSet() ? OutDrawInfo.Tint.GetValue() * 0.5f : FLinearColor(0.5f, 0.5f, 0.5f);
 		}
 	}
 }

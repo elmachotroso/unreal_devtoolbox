@@ -1155,7 +1155,7 @@ void UChaosVehicleMovementComponent::UpdateState(float DeltaTime)
 		HandbrakeInput = HandbrakeInputRate.InterpInputValue(DeltaTime, HandbrakeInput, CalcHandbrakeInput());
 
 		// and send to server - (ServerUpdateState_Implementation below)
-		ServerUpdateState(SteeringInput, ThrottleInput, BrakeInput, HandbrakeInput, GetTargetGear(), RollInput, PitchInput, YawInput);
+		ServerUpdateState(SteeringInput, ThrottleInput, BrakeInput, HandbrakeInput, GetCurrentGear(), RollInput, PitchInput, YawInput);
 
 		if (PawnOwner && PawnOwner->IsNetMode(NM_Client))
 		{
@@ -1254,7 +1254,13 @@ void UChaosVehicleMovementComponent::ServerUpdateState_Implementation(float InSt
 
 	if (!GetUseAutoGears())
 	{
-		SetTargetGear(InCurrentGear, true);
+		if (UWorld* World = GetWorld())
+		{
+			if (World->GetNetMode() == NM_DedicatedServer)
+			{
+				SetTargetGear(InCurrentGear, true);
+			}
+		}
 	}
 
 	// update state of inputs
@@ -1325,15 +1331,15 @@ FVector UChaosVehicleMovementComponent::LocateBoneOffset(const FName InBoneName,
 	{
 		if (USkinnedMeshComponent* Mesh = Cast<USkinnedMeshComponent>(GetMesh()))
 		{
-			if (ensureMsgf(Mesh->SkeletalMesh, TEXT("Expected skeletal mesh when locating bone offset. Asset might be missing references.")))
+			if (ensureMsgf(Mesh->GetSkinnedAsset(), TEXT("Expected skinned asset when locating bone offset. Asset might be missing references.")))
 			{
-				const FVector BonePosition = Mesh->SkeletalMesh->GetComposedRefPoseMatrix(InBoneName).GetOrigin() * Mesh->GetRelativeScale3D();
+				const FVector BonePosition = Mesh->GetSkinnedAsset()->GetComposedRefPoseMatrix(InBoneName).GetOrigin() * Mesh->GetRelativeScale3D();
 				//BonePosition is local for the root BONE of the skeletal mesh - however, we are using the Root BODY which may have its own transform, so we need to return the position local to the root BODY
 				FMatrix RootBodyMTX = FMatrix::Identity;
 
 				if (Mesh->GetBodyInstance() && Mesh->GetBodyInstance()->BodySetup.IsValid())
 				{
-					RootBodyMTX = Mesh->SkeletalMesh->GetComposedRefPoseMatrix(Mesh->GetBodyInstance()->BodySetup->BoneName);
+					RootBodyMTX = Mesh->GetSkinnedAsset()->GetComposedRefPoseMatrix(Mesh->GetBodyInstance()->BodySetup->BoneName);
 				}
 				const FVector LocalBonePosition = RootBodyMTX.InverseTransformPosition(BonePosition);
 				Offset += LocalBonePosition;
@@ -1696,7 +1702,6 @@ TUniquePtr<FChaosVehicleAsyncOutput> FChaosVehicleDefaultAsyncInput::Simulate(UW
 /************************************************************************/
 void UChaosVehicleMovementComponent::Update(float DeltaTime)
 {
-#if WITH_CHAOS
 	if (CurAsyncInput)
 	{
 		if (const FBodyInstance* BodyInstance = GetBodyInstance())
@@ -1730,7 +1735,6 @@ void UChaosVehicleMovementComponent::Update(float DeltaTime)
 			}
 		}
 	}
-#endif
 }
 
 void UChaosVehicleMovementComponent::ResetVehicleState()
@@ -1808,6 +1812,10 @@ void UChaosVehicleMovementComponent::ParallelUpdate(float DeltaSeconds)
 					PVehicleOutput->Wheels[WheelIdx].SuspensionOffset = FMath::Lerp(Current.SuspensionOffset, Next.SuspensionOffset, OutputInterpAlpha);
 					PVehicleOutput->Wheels[WheelIdx].SpringForce = FMath::Lerp(Current.SpringForce, Next.SpringForce, OutputInterpAlpha);
 					PVehicleOutput->Wheels[WheelIdx].NormalizedSuspensionLength = FMath::Lerp(Current.NormalizedSuspensionLength, Next.NormalizedSuspensionLength, OutputInterpAlpha);
+
+					PVehicleOutput->Wheels[WheelIdx].bBlockingHit = Current.bBlockingHit;
+					PVehicleOutput->Wheels[WheelIdx].ImpactPoint = FMath::Lerp(Current.ImpactPoint, Next.ImpactPoint, OutputInterpAlpha);
+					PVehicleOutput->Wheels[WheelIdx].PhysMaterial = Current.PhysMaterial;
 				}
 			}
 			else // WHEN ASYNC IS OFF IT STILL GENERATES THE ASYNC CALLBACK BUT THERE IS ONLY EVER THE CURRENT AND NO NEXT OUTPUT TO INTERPOLATE BETWEEN
@@ -1839,6 +1847,10 @@ void UChaosVehicleMovementComponent::ParallelUpdate(float DeltaSeconds)
 					PVehicleOutput->Wheels[WheelIdx].SuspensionOffset = Current.SuspensionOffset;
 					PVehicleOutput->Wheels[WheelIdx].SpringForce = Current.SpringForce;
 					PVehicleOutput->Wheels[WheelIdx].NormalizedSuspensionLength = Current.NormalizedSuspensionLength;
+
+					PVehicleOutput->Wheels[WheelIdx].bBlockingHit = Current.bBlockingHit;
+					PVehicleOutput->Wheels[WheelIdx].ImpactPoint = Current.ImpactPoint;
+					PVehicleOutput->Wheels[WheelIdx].PhysMaterial = Current.PhysMaterial;
 				}
 
 			}

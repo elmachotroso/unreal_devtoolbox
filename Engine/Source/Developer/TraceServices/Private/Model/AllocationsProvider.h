@@ -5,8 +5,7 @@
 #include "Common/PagedArray.h"
 #include "Containers/Map.h"
 #include "HAL/CriticalSection.h"
-#include "ProfilingDebugging/MemoryTrace.h"
-#include "TraceServices/Model/Callstack.h"
+#include "ProfilingDebugging/MemoryTrace.h" // for EMemoryTraceHeapFlags and EMemoryTraceHeapAllocationFlags
 #include "TraceServices/Model/AllocationsProvider.h"
 
 namespace TraceServices
@@ -14,6 +13,7 @@ namespace TraceServices
 
 class IAnalysisSession;
 class ILinearAllocator;
+class FMetadataProvider;
 class FSbTree;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -41,38 +41,62 @@ class FTagTracker
 private:
 	static constexpr uint32 TrackerIdShift = 24;
 	static constexpr uint32 TrackerIdMask = 0xFF000000;
-	static constexpr uint32 PtrTagMask = 0x80000000;
-	
-	struct ThreadState
+	static constexpr TagIdType UntaggedTagId = 0;
+	static constexpr TagIdType InvalidTagId = ~0;
+
+	enum class ETagStackFlags : uint32
 	{
-		TArray<TagIdType> TagStack;
+		None = 0,
+		PtrScope = 1 << 0,
 	};
 
-	struct TagEntry
+	struct FTagStackEntry
+	{
+		TagIdType Tag;
+		ETagStackFlags Flags;
+
+		inline bool IsPtrScope() const { return ((uint32(Flags) & uint32(ETagStackFlags::PtrScope)) != 0); }
+	};
+
+	struct FThreadState
+	{
+		TArray<FTagStackEntry> TagStack;
+	};
+
+	struct FTagEntry
 	{
 		const TCHAR* Display;
+		const TCHAR* FullPath;
 		TagIdType ParentTag;
 	};
 
 public:
+	explicit FTagTracker(IAnalysisSession& Session);
 	void AddTagSpec(TagIdType Tag, TagIdType ParentTag, const TCHAR* Display);
 	void PushTag(uint32 ThreadId, uint8 Tracker, TagIdType Tag);
 	void PopTag(uint32 ThreadId, uint8 Tracker);
 	TagIdType GetCurrentTag(uint32 ThreadId, uint8 Tracker) const;
 	const TCHAR* GetTagString(TagIdType Tag) const;
+	const TCHAR* GetTagFullPath(TagIdType Tag) const;
+	void EnumerateTags(TFunctionRef<void(const TCHAR*, const TCHAR*, TagIdType, TagIdType)> Callback) const;
 
 	void PushTagFromPtr(uint32 ThreadId, uint8 Tracker, TagIdType Tag);
 	void PopTagFromPtr(uint32 ThreadId, uint8 Tracker);
 	bool HasTagFromPtrScope(uint32 ThreadId, uint8 Tracker) const;
 
+	uint32 GetNumErrors() const { return NumErrors; }
+
 private:
-	inline uint32 GetTrackerThreadId(uint32 ThreadId, uint8 Tracker) const
+	void BuildTagPath(FStringBuilderBase& OutString, FStringView Name, TagIdType ParentTagId);
+	static inline uint32 GetTrackerThreadId(uint32 ThreadId, uint8 Tracker)
 	{
 		return (Tracker << TrackerIdShift) | (~TrackerIdMask & ThreadId);
 	}
 
-	TMap<uint32, ThreadState> TrackerThreadStates;
-	TMap<TagIdType, TagEntry> TagMap;
+	IAnalysisSession& Session;
+	TMap<uint32, FThreadState> TrackerThreadStates;
+	TMap<TagIdType, FTagEntry> TagMap;
+	TArray<TTuple<TagIdType, FString>> PendingTags;
 	uint32 NumErrors = 0;
 };
 
@@ -93,14 +117,16 @@ struct FAllocationItem
 	uint32 GetAlignment() const { return UnpackAlignment(SizeAndAlignment); }
 	bool IsHeap() const { return EnumHasAnyFlags(Flags, EMemoryTraceHeapAllocationFlags::Heap); }
 
+	uint64 Address;
+	uint64 SizeAndAlignment; // (Alignment << AlignmentShift) | Size
 	uint32 StartEventIndex;
 	uint32 EndEventIndex;
 	double StartTime;
 	double EndTime;
-	uint64 Owner;
-	uint64 Address;
-	uint64 SizeAndAlignment; // (Alignment << AlignmentShift) | Size
-	mutable const FCallstack* Callstack;
+	uint32 ThreadId;
+	uint32 CallstackId;
+	uint32 FreeCallstackId;
+	uint32 MetadataId;
 	TagIdType Tag;
 	uint8 RootHeap;
 	EMemoryTraceHeapAllocationFlags Flags;
@@ -120,7 +146,8 @@ private:
 		FNode* Prev;
 	};
 
-	static const int32 MaxAllocCount = 8 * 1024; // max number of short living allocations
+	//static const int32 MaxAllocCount = 8 * 1024; // max number of short living allocations
+	static const int32 MaxAllocCount = 64; // max number of short living allocations
 
 public:
 	FShortLivingAllocs();
@@ -147,7 +174,7 @@ public:
 	FAllocationItem* FindRange(uint64 Address) const;
 
 private:
-	TMap<uint64, FNode*> AddressMap; // map for short living allocations: Address -> FNode*
+	//TMap<uint64, FNode*> AddressMap; // map for short living allocations: Address -> FNode*
 	FNode* AllNodes = nullptr; // preallocated array of nodes (MaxAllocCount nodes)
 	FNode* LastAddedAllocNode = nullptr; // the last added alloc; double linked list: Prev -> .. -> OldestAlloc
 	FNode* OldestAllocNode = nullptr; // the oldest alloc; double linked list: Next -> .. -> LastAddedAlloc
@@ -211,7 +238,7 @@ public:
 
 	uint32 Num() const { return TotalAllocCount; }
 	uint32 PeakCount() const { return MaxAllocCount; }
-	
+
 	// Finds the allocation with specified address.
 	// Returns the found allocation or nullptr if not found.
 	FORCEINLINE FAllocationItem* FindRef(uint64 Address);
@@ -260,9 +287,32 @@ public:
 	void Enumerate(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
 
 private:
+	template<typename ValueType>
+	struct TAddressKeyFuncs : BaseKeyFuncs<TPair<uint64, ValueType>, uint64, false>
+	{
+		typedef typename TTypeTraits<uint64>::ConstPointerType KeyInitType;
+		typedef const TPairInitializer<typename TTypeTraits<uint64>::ConstInitType, typename TTypeTraits<ValueType>::ConstInitType>& ElementInitType;
+
+		static FORCEINLINE uint64 GetSetKey(ElementInitType Element)
+		{
+			return Element.Key;
+		}
+
+		static FORCEINLINE bool Matches(uint64 A, uint64 B)
+		{
+			return A == B;
+		}
+
+		static FORCEINLINE uint32 GetKeyHash(uint64 Key)
+		{
+			return uint32(Key >> 6);
+		}
+	};
+
+private:
 	FAllocationItem* LastAlloc = nullptr; // last allocation
 	FShortLivingAllocs ShortLivingAllocs; // short living allocs
-	TMap<uint64, FAllocationItem*> LongLivingAllocs; // long living allocations
+	TMap<uint64, FAllocationItem*, FDefaultSetAllocator, TAddressKeyFuncs<FAllocationItem*>> LongLivingAllocs; // long living allocations
 	FHeapAllocs HeapAllocs; // heap allocs
 
 	uint32 TotalAllocCount = 0;
@@ -277,7 +327,7 @@ private:
 	static constexpr double DefaultTimelineSampleGranularity = 0.0001; // 0.1ms
 
 public:
-	explicit FAllocationsProvider(IAnalysisSession& InSession);
+	explicit FAllocationsProvider(IAnalysisSession& InSession, FMetadataProvider& InMetadataProvider);
 	virtual ~FAllocationsProvider();
 
 	virtual void BeginEdit() const override { Lock.BeginWrite(); }
@@ -293,7 +343,7 @@ public:
 
 	virtual bool IsInitialized() const override { ReadAccessCheck(); return bInitialized; }
 
-	virtual uint32 GetTimelineNumPoints() const override { ReadAccessCheck(); return Timeline.Num(); }
+	virtual int32 GetTimelineNumPoints() const override { ReadAccessCheck(); return static_cast<int32>(Timeline.Num()); }
 	virtual void EnumerateRootHeaps(TFunctionRef<void(HeapId Id, const FHeapSpec&)> Callback) const override;
 	virtual void GetTimelineIndexRange(double StartTime, double EndTime, int32& StartIndex, int32& EndIndex) const override;
 	virtual void EnumerateMinTotalAllocatedMemoryTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint64 Value)> Callback) const override;
@@ -302,6 +352,7 @@ public:
 	virtual void EnumerateMaxLiveAllocationsTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint32 Value)> Callback) const override;
 	virtual void EnumerateAllocEventsTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint32 Value)> Callback) const override;
 	virtual void EnumerateFreeEventsTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint32 Value)> Callback) const override;
+	virtual void EnumerateTags(TFunctionRef<void(const TCHAR*, const TCHAR*, TagIdType, TagIdType)> Callback) const override;
 
 	virtual FQueryHandle StartQuery(const FQueryParams& Params) const override;
 	virtual void CancelQuery(FQueryHandle Query) const override;
@@ -312,7 +363,8 @@ public:
 	void EnumerateLiveAllocs(TFunctionRef<void(const FAllocationItem& Alloc)> Callback) const;
 	uint32 GetNumLiveAllocs() const;
 
-	virtual const TCHAR* GetTagName(TagIdType Tag) const { ReadAccessCheck(); return TagTracker.GetTagString(Tag); }
+	virtual const TCHAR* GetTagName(TagIdType Tag) const override { ReadAccessCheck(); return TagTracker.GetTagString(Tag); }
+	virtual const TCHAR* GetTagFullPath(TagIdType Tag) const override { ReadAccessCheck(); return TagTracker.GetTagFullPath(Tag); }
 	bool HasTagFromPtrScope(uint32 ThreadId, uint8 Tracker) const { ReadAccessCheck(); return TagTracker.HasTagFromPtrScope(ThreadId, Tracker); }
 
 	void DebugPrint() const;
@@ -324,11 +376,11 @@ public:
 
 	void EditHeapSpec(HeapId Id, HeapId ParentId, const FStringView& Name, EMemoryTraceHeapFlags Flags);
 
-	void EditAlloc(double Time, uint64 Owner, uint64 Address, uint64 Size, uint32 Alignment, uint32 ThreadId, uint8 Tracker, HeapId RootHeap);
-	void EditFree(double Time, uint64 Address, HeapId RootHeap);
+	void EditAlloc(double Time, uint32 CallstackId, uint64 Address, uint64 Size, uint32 Alignment, HeapId RootHeap);
+	void EditFree(double Time, uint32 CallstackId, uint64 Address, HeapId RootHeap);
 	void EditMarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap, EMemoryTraceHeapAllocationFlags Flags);
 	void EditUnmarkAllocationAsHeap(double Time, uint64 Address, HeapId Heap);
-	
+
 	void EditAddTagSpec(TagIdType Tag, TagIdType ParentTag, const TCHAR* Display) { EditAccessCheck(); TagTracker.AddTagSpec(Tag, ParentTag, Display); }
 	void EditPushTag(uint32 ThreadId, uint8 Tracker, TagIdType Tag);
 	void EditPopTag(uint32 ThreadId, uint8 Tracker);
@@ -336,6 +388,12 @@ public:
 	void EditPopTagFromPtr(uint32 ThreadId, uint8 Tracker);
 
 	void EditOnAnalysisCompleted(double Time);
+
+	void SetCurrentThreadId(uint32 InThreadId, uint32 InSystemThreadId)
+	{
+		CurrentTraceThreadId = InThreadId;
+		CurrentSystemThreadId = InSystemThreadId;
+	}
 
 	//////////////////////////////////////////////////
 
@@ -348,26 +406,33 @@ private:
 
 private:
 	IAnalysisSession& Session;
+	FMetadataProvider& MetadataProvider;
 
 	mutable FAllocationsProviderLock Lock;
 
-	//Number of supported root heaps
+	// Number of supported root heaps
 	constexpr static uint8 MaxRootHeaps = 16;
-	
+
 	double InitTime = 0;
 	uint8 MinAlignment = 0;
 	uint8 SizeShift = 0;
 	uint8 SummarySizeShift = 0;
 	bool bInitialized = false;
 
-	FTagTracker TagTracker;
+	uint32 CurrentTraceThreadId = 0;
+	uint32 CurrentSystemThreadId = 0;
 
-	uint32 EventIndex[MaxRootHeaps];
+	FTagTracker TagTracker;
+	uint8 CurrentTracker = 0;
+
+	TArray<FHeapSpec> HeapSpecs;
+
+	uint32 EventIndex[MaxRootHeaps] = { 0 };
+	FSbTree* SbTree[MaxRootHeaps] = { nullptr };
+	FLiveAllocCollection* LiveAllocs[MaxRootHeaps] = { nullptr };
 
 	uint64 AllocCount = 0;
 	uint64 FreeCount = 0;
-
-	FLiveAllocCollection* LiveAllocs[MaxRootHeaps];
 
 	uint64 MiscErrors = 0;
 	uint64 HeapErrors = 0;
@@ -379,8 +444,6 @@ private:
 
 	uint32 MaxEventDistance = 0;
 	uint32 EventDistanceHistogramPow2[33] = { 0 };
-
-	FSbTree* SbTree[MaxRootHeaps];
 
 	uint64 TotalAllocatedMemory = 0;
 	uint32 TotalLiveAllocations = 0;
@@ -401,8 +464,6 @@ private:
 	TPagedArray<uint32> MaxLiveAllocationsTimeline;
 	TPagedArray<uint32> AllocEventsTimeline;
 	TPagedArray<uint32> FreeEventsTimeline;
-	
-	TArray<FHeapSpec> HeapSpecs;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

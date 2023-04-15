@@ -17,25 +17,15 @@ public class CADLibrary : ModuleRules
 				"CADTools",
 				"CADKernel",
 				"DatasmithCore",
+				"DynamicMesh",
+				"MeshConversion",
 				"MeshDescription",
+				"GeometryCore",
 				"StaticMeshDescription"
 			}
 		);
 
 		// Support for Windows only
 		bool bIsPlateformSupported = Target.Platform == UnrealTargetPlatform.Win64;
-
-		// CAD library is only available if CoreTech is available too
-		bool bHasCoretech = System.Type.GetType("CoreTech") != null;
-
-		if (bIsPlateformSupported && bHasCoretech)
-		{
-			PublicDependencyModuleNames.AddRange(
-				new string[]
-				{
-					"CoreTech",
-				}
-			);
-		}
 	}
 }

@@ -280,7 +280,7 @@ namespace SkeletalMeshImportData
 			bool bUVsEqual = true;
 			for (uint32 UVIdx = 0; UVIdx < MAX_TEXCOORDS; ++UVIdx)
 			{
-				if (!UVs[UVIdx].Equals(Other.UVs[UVIdx], SMALL_NUMBER))
+				if (!UVs[UVIdx].Equals(Other.UVs[UVIdx], UE_SMALL_NUMBER))
 				{
 					bUVsEqual = false;
 					break;
@@ -364,6 +364,7 @@ public:
 	// Alternate influence imported(i.e. FBX) data. The name is the alternate skinning profile name
 	TArray<FSkeletalMeshImportData> AlternateInfluences;
 	TArray<FString> AlternateInfluenceProfileNames;
+	
 
 	//////////////////////////////////////////////////////////////////////////
 
@@ -455,6 +456,8 @@ struct FReductionBaseSkeletalMeshBulkData
 
 	//The custom version when this was load
 	FCustomVersionContainer SerializeLoadingCustomVersionContainer;
+	FPackageFileVersion UEVersion;
+	int32 LicenseeUEVersion = 0;
 	bool bUseSerializeLoadingCustomVersion = false;
 
 	uint32 CacheLODVertexNumber = MAX_uint32;
@@ -534,6 +537,8 @@ class FRawSkeletalMeshBulkData
 
 	//The custom version when this was load
 	FCustomVersionContainer SerializeLoadingCustomVersionContainer;
+	FPackageFileVersion UEVersion;
+	int32 LicenseeUEVersion = 0;
 	bool bUseSerializeLoadingCustomVersion = false;
 
 public:
@@ -624,7 +629,7 @@ namespace FWedgePositionHelper
 		FIndexAndZ() {}
 
 		/** Initialization constructor. */
-		FIndexAndZ(int32 InIndex, FVector V)
+		FIndexAndZ(int32 InIndex, FVector3f V)
 		{
 			Z = 0.30f * V.X + 0.33f * V.Y + 0.37f * V.Z;
 			Index = InIndex;

@@ -1,20 +1,57 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KismetPins/SGraphPinObject.h"
+
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Containers/Set.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserModule.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "IContentBrowserSingleton.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
+#include "ScopedTransaction.h"
+#include "Selection.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "Editor.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "ScopedTransaction.h"
-#include "Engine/Selection.h"
-#include "AssetRegistryModule.h"
-#include "EdGraphSchema_K2.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SGraphPinObject"
 
@@ -56,7 +93,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 	if(ShouldDisplayAsSelfPin())
 	{
 		return SNew(SEditableTextBox)
-			.Style( FEditorStyle::Get(), "Graph.EditableTextBox" )
+			.Style( FAppStyle::Get(), "Graph.EditableTextBox" )
 			.Text( this, &SGraphPinObject::GetValue )
 			.SelectAllTextWhenFocused(false)
 			.Visibility( this, &SGraphPinObject::GetDefaultValueVisibility )
@@ -75,7 +112,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 			.MaxWidth(100.0f)
 			[
 				SAssignNew(AssetPickerAnchor, SComboButton)
-				.ButtonStyle( FEditorStyle::Get(), "PropertyEditor.AssetComboStyle" )
+				.ButtonStyle( FAppStyle::Get(), "PropertyEditor.AssetComboStyle" )
 				.ForegroundColor( this, &SGraphPinObject::OnGetComboForeground)
 				.ContentPadding( FMargin(2,2,2,1) )
 				.ButtonColorAndOpacity( this, &SGraphPinObject::OnGetWidgetBackground )
@@ -85,8 +122,8 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 				[
 					SNew(STextBlock)
 					.ColorAndOpacity( this, &SGraphPinObject::OnGetComboForeground )
-					.TextStyle( FEditorStyle::Get(), "PropertyEditor.AssetClass" )
-					.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
+					.TextStyle( FAppStyle::Get(), "PropertyEditor.AssetClass" )
+					.Font( FAppStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
 					.Text( this, &SGraphPinObject::OnGetComboTextValue )
 					.ToolTipText( this, &SGraphPinObject::GetObjectToolTip )
 				]
@@ -99,7 +136,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 			.VAlign(VAlign_Center)
 			[
 				SAssignNew(UseButton, SButton)
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 				.ButtonColorAndOpacity( this, &SGraphPinObject::OnGetWidgetBackground )
 				.OnClicked( GetOnUseButtonDelegate() )
 				.ContentPadding(1.f)
@@ -108,7 +145,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SGraphPinObject::OnGetWidgetForeground )
-					.Image( FEditorStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
+					.Image( FAppStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
 				]
 			]
 			// Browse button
@@ -118,7 +155,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 			.VAlign(VAlign_Center)
 			[
 				SAssignNew(BrowseButton, SButton)
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 				.ButtonColorAndOpacity( this, &SGraphPinObject::OnGetWidgetBackground )
 				.OnClicked( GetOnBrowseButtonDelegate() )
 				.ContentPadding(0)
@@ -126,7 +163,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SGraphPinObject::OnGetWidgetForeground )
-					.Image( FEditorStyle::GetBrush(TEXT("Icons.Search")) )
+					.Image( FAppStyle::GetBrush(TEXT("Icons.Search")) )
 				]
 			];
 	}
@@ -200,7 +237,7 @@ TSharedRef<SWidget> SGraphPinObject::GenerateAssetPicker()
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(AllowedClass->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(AllowedClass->GetClassPathName());
 	AssetPickerConfig.bAllowNullSelection = true;
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SGraphPinObject::OnAssetSelectedFromPicker);
@@ -213,14 +250,15 @@ TSharedRef<SWidget> SGraphPinObject::GenerateAssetPicker()
 	if( !AllowedClassesFilterString.IsEmpty() )
 	{
 		// Clear out the allowed class names and have the pin's metadata override.
-		AssetPickerConfig.Filter.ClassNames.Empty();
+		AssetPickerConfig.Filter.ClassPaths.Empty();
 
 		// Parse and add the classes from the metadata
 		TArray<FString> AllowedClassesFilterNames;
 		AllowedClassesFilterString.ParseIntoArrayWS(AllowedClassesFilterNames, TEXT(","), true);
 		for(const FString& AllowedClassesFilterName : AllowedClassesFilterNames)
 		{
-			AssetPickerConfig.Filter.ClassNames.Add(FName(*AllowedClassesFilterName));
+			ensureAlwaysMsgf(!FPackageName::IsShortPackageName(AllowedClassesFilterName), TEXT("Short class names are not supported as AllowedClasses on pin \"%s\": class \"%s\""), *GraphPinObj->PinName.ToString(), *AllowedClassesFilterName);
+			AssetPickerConfig.Filter.ClassPaths.Add(FTopLevelAssetPath(AllowedClassesFilterName));
 		}
 	}
 
@@ -231,7 +269,8 @@ TSharedRef<SWidget> SGraphPinObject::GenerateAssetPicker()
 		DisallowedClassesFilterString.ParseIntoArrayWS(DisallowedClassesFilterNames, TEXT(","), true);
 		for(const FString& DisallowedClassesFilterName : DisallowedClassesFilterNames)
 		{
-			AssetPickerConfig.Filter.RecursiveClassesExclusionSet.Add(FName(*DisallowedClassesFilterName));
+			ensureAlwaysMsgf(!FPackageName::IsShortPackageName(DisallowedClassesFilterName), TEXT("Short class names are not supported as DisallowedClasses on pin \"%s\": class \"%s\""), *GraphPinObj->PinName.ToString(), *DisallowedClassesFilterName);
+			AssetPickerConfig.Filter.RecursiveClassPathsExclusionSet.Add(FTopLevelAssetPath(DisallowedClassesFilterName));
 		}
 	}
 
@@ -241,7 +280,7 @@ TSharedRef<SWidget> SGraphPinObject::GenerateAssetPicker()
 		.WidthOverride(300)
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+			.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 			]
@@ -265,7 +304,7 @@ void SGraphPinObject::OnAssetSelectedFromPicker(const struct FAssetData& AssetDa
 		AssetPickerAnchor->SetIsOpen(false);
 
 		// Set the object found from the asset picker
-		GraphPinObj->GetSchema()->TrySetDefaultValue(*GraphPinObj, AssetData.ObjectPath.ToString());
+		GraphPinObj->GetSchema()->TrySetDefaultValue(*GraphPinObj, AssetData.GetObjectPathString());
 	}
 }
 
@@ -402,7 +441,7 @@ const FAssetData& SGraphPinObject::GetAssetData(bool bRuntimePath) const
 	// For normal assets, the editor and runtime path are the same
 	if (GraphPinObj->DefaultObject)
 	{
-		if (!GraphPinObj->DefaultObject->GetPathName().Equals(CachedAssetData.ObjectPath.ToString(), ESearchCase::CaseSensitive))
+		if (!GraphPinObj->DefaultObject->GetPathName().Equals(CachedAssetData.GetObjectPathString(), ESearchCase::CaseSensitive))
 		{
 			// This always uses the exact object pointed at
 			CachedAssetData = FAssetData(GraphPinObj->DefaultObject, true);
@@ -410,8 +449,8 @@ const FAssetData& SGraphPinObject::GetAssetData(bool bRuntimePath) const
 	}
 	else if (!GraphPinObj->DefaultValue.IsEmpty())
 	{
-		FName ObjectPath = FName(*GraphPinObj->DefaultValue);
-		if (ObjectPath != CachedAssetData.ObjectPath)
+		FSoftObjectPath ObjectPath = FSoftObjectPath(GraphPinObj->DefaultValue);
+		if (ObjectPath != CachedAssetData.GetSoftObjectPath())
 		{
 			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
@@ -424,7 +463,7 @@ const FAssetData& SGraphPinObject::GetAssetData(bool bRuntimePath) const
 				FString ObjectName = FPackageName::ObjectPathToObjectName(GraphPinObj->DefaultValue);
 
 				// Fake one
-				CachedAssetData = FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectName), UObject::StaticClass()->GetFName());
+				CachedAssetData = FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectName), UObject::StaticClass()->GetClassPathName());
 			}
 		}
 	}

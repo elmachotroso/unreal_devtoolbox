@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "MediaIOCoreDefinitions.h"
 
+class UMediaSource;
+
 class MEDIAIOCORE_API IMediaIOCoreDeviceProvider
 {
 public:
@@ -17,13 +19,18 @@ public:
 	virtual TArray<FMediaIOMode> GetModes(const FMediaIODevice& InDevice, bool bInOutput) const = 0;
 	virtual TArray<FMediaIOInputConfiguration> GetInputConfigurations() const = 0;
 	virtual TArray<FMediaIOOutputConfiguration> GetOutputConfigurations() const = 0;
+	virtual TArray<FMediaIOVideoTimecodeConfiguration> GetTimecodeConfigurations() const = 0;
 
 	virtual FMediaIOConfiguration GetDefaultConfiguration() const = 0;
 	virtual FMediaIOMode GetDefaultMode() const = 0;
 	virtual FMediaIOInputConfiguration GetDefaultInputConfiguration() const = 0;
 	virtual FMediaIOOutputConfiguration GetDefaultOutputConfiguration() const = 0;
+	virtual FMediaIOVideoTimecodeConfiguration GetDefaultTimecodeConfiguration() const = 0;
 
-	virtual FText ToText(const FMediaIOConfiguration& InConfiguration) const;
+	virtual UMediaSource* CreateMediaSource(const FMediaIOConfiguration& InConfiguration,
+		UObject* Outer) const { return nullptr; }
+
+	virtual FText ToText(const FMediaIOConfiguration& InConfiguration, bool bInIsAutoDetected = false) const;
 	virtual FText ToText(const FMediaIOConnection& InConnection) const;
 	virtual FText ToText(const FMediaIODevice& InDevice) const;
 	virtual FText ToText(const FMediaIOMode& InMode) const;

@@ -6,6 +6,8 @@
 #include "Engine/NetworkObjectList.h"
 #include "ReplayNetConnection.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ReplaySubsystem)
+
 namespace ReplaySubsystem
 {
 	TAutoConsoleVariable<bool> CVarUseReplayConnection(TEXT("Replay.UseReplayConnection"), false, TEXT(""));
@@ -99,11 +101,11 @@ void UReplaySubsystem::OnSeamlessLevelTransition(UWorld* CurrentWorld)
 
 void UReplaySubsystem::RecordReplay(const FString& Name, const FString& FriendlyName, const TArray<FString>& AdditionalOptions, TSharedPtr<IAnalyticsProvider> AnalyticsProvider)
 {
-	LLM_SCOPE(ELLMTag::Networking);
+	LLM_SCOPE(ELLMTag::Replays);
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("NOREPLAYS")))
 	{
-		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::StartRecordingReplay: Rejected due to -noreplays option"));
+		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::RecordReplay: Rejected due to -noreplays option"));
 		return;
 	}
 
@@ -111,13 +113,13 @@ void UReplaySubsystem::RecordReplay(const FString& Name, const FString& Friendly
 
 	if (CurrentWorld == nullptr)
 	{
-		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::StartRecordingReplay: GetWorld() is null"));
+		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::RecordReplay: GetWorld() is null"));
 		return;
 	}
 
 	if (CurrentWorld->IsPlayingReplay())
 	{
-		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::StartRecordingReplay: A replay is already playing, cannot begin recording another one."));
+		UE_LOG(LogDemo, Warning, TEXT("UReplaySubsystem::RecordReplay: A replay is already playing, cannot begin recording another one."));
 		return;
 	}
 
@@ -154,6 +156,7 @@ void UReplaySubsystem::RecordReplay(const FString& Name, const FString& Friendly
 		UE_LOG(LogDemo, Log, TEXT("UReplaySubsystem::RecordReplay: Starting recording with replay connection.  Name: %s FriendlyName: %s"), *Name, *FriendlyName);
 
 		Connection->StartRecording();
+
 		return;
 	}
 
@@ -215,7 +218,7 @@ void UReplaySubsystem::RecordReplay(const FString& Name, const FString& Friendly
 
 bool UReplaySubsystem::PlayReplay(const FString& Name, UWorld* WorldOverride, const TArray<FString>& AdditionalOptions)
 {
-	LLM_SCOPE(ELLMTag::Networking);
+	LLM_SCOPE(ELLMTag::Replays);
 
 	UWorld* CurrentWorld = WorldOverride != nullptr ? WorldOverride : GetWorld();
 
@@ -380,6 +383,8 @@ bool UReplaySubsystem::IsPlaying() const
 
 void UReplaySubsystem::AddEvent(const FString& Group, const FString& Meta, const TArray<uint8>& Data)
 {
+	LLM_SCOPE(ELLMTag::Replays);
+
 	UWorld* CurrentWorld = GetWorld();
 
 	if (CurrentWorld != nullptr && CurrentWorld->GetDemoNetDriver() != nullptr)
@@ -395,6 +400,8 @@ void UReplaySubsystem::AddEvent(const FString& Group, const FString& Meta, const
 
 void UReplaySubsystem::AddOrUpdateEvent(const FString& EventName, const FString& Group, const FString& Meta, const TArray<uint8>& Data)
 {
+	LLM_SCOPE(ELLMTag::Replays);
+
 	UWorld* CurrentWorld = GetWorld();
 
 	if (CurrentWorld != nullptr && CurrentWorld->GetDemoNetDriver() != nullptr)
@@ -457,6 +464,8 @@ void UReplaySubsystem::RequestCheckpoint()
 
 void UReplaySubsystem::SetExternalDataForObject(UObject* OwningObject, const uint8* Src, const int32 NumBits)
 {
+	LLM_SCOPE(ELLMTag::Replays);
+
 	UWorld* CurrentWorld = GetWorld();
 
 	if (CurrentWorld != nullptr && CurrentWorld->GetDemoNetDriver() != nullptr)

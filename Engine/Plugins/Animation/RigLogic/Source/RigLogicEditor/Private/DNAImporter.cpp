@@ -7,9 +7,9 @@
 #include "DNAImporter.h"
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Interfaces/IMainFrameModule.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 #include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformApplicationMisc.h"
@@ -36,7 +36,7 @@ FDNAAssetImportOptions* GetImportOptions(FDNAImporter * DNAImporter, UDNAAssetIm
 			// Look in the current target directory to see if we have a skeleton
 			FARFilter Filter;
 			Filter.PackagePaths.Add(*FPaths::GetPath(FullPath));
-			Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+			Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 			TArray<FAssetData> SkeletalMeshAssets;

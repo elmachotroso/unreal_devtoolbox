@@ -47,6 +47,8 @@ namespace Metasound
 			virtual const FMetasoundFrontendClassInterface& GetClassInterface() const override;
 			virtual const FMetasoundFrontendClassMetadata& GetClassMetadata() const override;
 
+			virtual const FMetasoundFrontendNodeInterface& GetNodeInterface() const override;
+
 #if WITH_EDITOR
 			virtual const FMetasoundFrontendInterfaceStyle& GetInputStyle() const override;
 			virtual const FMetasoundFrontendInterfaceStyle& GetOutputStyle() const override;
@@ -60,8 +62,6 @@ namespace Metasound
 
 			virtual bool CanAutoUpdate(FClassInterfaceUpdates& OutInterfaceUpdates) const override;
 			virtual FNodeHandle ReplaceWithVersion(const FMetasoundFrontendVersionNumber& InNewVersion, TArray<FVertexNameAndType>* OutDisconnectedInputs, TArray<FVertexNameAndType>* OutDisconnectedOutputs) override;
-			virtual FMetasoundFrontendVersionNumber FindHighestVersionInRegistry() const override;
-			virtual FMetasoundFrontendVersionNumber FindHighestMinorVersionInRegistry() const override;
 
 			virtual const FVertexName& GetNodeName() const override;
 

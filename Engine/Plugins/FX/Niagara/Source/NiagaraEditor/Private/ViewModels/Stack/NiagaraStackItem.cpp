@@ -9,7 +9,9 @@
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "NiagaraStackEditorData.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackItem)
 
 void UNiagaraStackItem::Initialize(FRequiredEntryData InRequiredEntryData, FString InStackEditorDataKey)
 {
@@ -216,4 +218,5 @@ FText UNiagaraStackItemTextContent::GetDisplayName() const
 {
 	return DisplayText;
 }
+
 

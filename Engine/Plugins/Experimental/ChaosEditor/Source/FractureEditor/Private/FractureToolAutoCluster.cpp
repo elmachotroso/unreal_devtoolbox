@@ -12,6 +12,8 @@
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "Math/NumericLimits.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolAutoCluster)
+
 #define LOCTEXT_NAMESPACE "FractureAutoCluster"
 
 
@@ -79,31 +81,52 @@ void UFractureToolAutoCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTo
 			for (const int32 ClusterIndex : Context.GetSelection())
 			{
 				FVoronoiPartitioner VoronoiPartition(GeometryCollection, ClusterIndex);
-				VoronoiPartition.KMeansPartition(AutoClusterSettings->SiteCount);
+				int32 NumChildren = GeometryCollection->Children[ClusterIndex].Num();
+				int32 SiteCountToUse = AutoClusterSettings->ClusterSizeMethod == EClusterSizeMethod::ByFractionOfInput ?
+					FMath::Max(2, NumChildren * AutoClusterSettings->SiteCountFraction) :
+					AutoClusterSettings->SiteCount;
+				VoronoiPartition.KMeansPartition(SiteCountToUse);
 				if (VoronoiPartition.GetPartitionCount() == 0)
 				{
 					continue;
 				}
 
-				if (AutoClusterSettings->bEnforceConnectivity)
+				bool bNeedProximity = AutoClusterSettings->bEnforceConnectivity || AutoClusterSettings->bAvoidIsolated;
+				if (bNeedProximity)
 				{
 					FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
 					ProximityUtility.UpdateProximity();
+				}
+
+				if (AutoClusterSettings->bEnforceConnectivity)
+				{
 					VoronoiPartition.SplitDisconnectedPartitions(GeometryCollection);
+				}
+
+				if (AutoClusterSettings->bAvoidIsolated)
+				{
+					// attempt to remove isolated via merging (may not succeed, as it only merges if there is a cluster in proximity)
+					VoronoiPartition.MergeSingleElementPartitions(GeometryCollection);
+				}
+
+				int32 NonEmptyPartitionCount = VoronoiPartition.GetNonEmptyPartitionCount();
+				bool bHasEmptyClusters = NonEmptyPartitionCount > 0;
+
+				if (AutoClusterSettings->bAvoidIsolated && NonEmptyPartitionCount == 1)
+				{
+					continue;
 				}
 					
 				int32 PartitionCount = VoronoiPartition.GetPartitionCount();
 				int32 NewClusterIndexStart = GeometryCollection->AddElements(PartitionCount, FGeometryCollection::TransformGroup);
 
-				bool bHasEmptyClusters = false;
-
 				for (int32 Index = 0; Index < PartitionCount; ++Index)
 				{
-						
 					TArray<int32> NewCluster = VoronoiPartition.GetPartition(Index);
-					if (NewCluster.Num() == 0)
+					if (AutoClusterSettings->bAvoidIsolated && NewCluster.Num() == 1)
 					{
 						bHasEmptyClusters = true;
+						NewCluster.Reset();
 					}
 
 					int32 NewClusterIndex = NewClusterIndexStart + Index;
@@ -157,10 +180,52 @@ void FVoronoiPartitioner::KMeansPartition(int32 InPartitionCount)
 	}
 }
 
+void FVoronoiPartitioner::MergeSingleElementPartitions(FGeometryCollection* GeometryCollection)
+{
+	if (Connectivity.IsEmpty())
+	{
+		GenerateConnectivity(GeometryCollection);
+	}
+	for (int32 ElIdx = 0; ElIdx < TransformIndices.Num(); ElIdx++)
+	{
+		int32 Partition = Partitions[ElIdx];
+		if (PartitionSize[Partition] == 1)
+		{
+			// Find the smallest neighboring partition to merge to
+			// (to help keep partition sizes balanced)
+			int32 SmallestNbrPartition = -1;
+			int32 SmallestNbrSize = TransformIndices.Num()+1;
+			for (int32 NbrEl : Connectivity[ElIdx])
+			{
+				int32 NbrPartition = Partitions[NbrEl];
+				if (NbrPartition == Partition)
+				{
+					continue;
+				}
+				int32 NbrSize = PartitionSize[NbrPartition];
+				if (NbrSize > 0 && (SmallestNbrPartition == -1 || NbrSize < SmallestNbrSize))
+				{
+					SmallestNbrPartition = NbrPartition;
+					SmallestNbrSize = NbrSize;
+				}
+			}
+			if (SmallestNbrPartition != -1)
+			{
+				Partitions[ElIdx] = SmallestNbrPartition;
+				PartitionSize[Partition]--;
+				PartitionSize[SmallestNbrPartition]++;
+			}
+		}
+	}
+}
+
 void FVoronoiPartitioner::SplitDisconnectedPartitions(FGeometryCollection* GeometryCollection)
 {
 	Visited.Init(false, TransformIndices.Num());
-	GenerateConnectivity(GeometryCollection);
+	if (Connectivity.IsEmpty())
+	{
+		GenerateConnectivity(GeometryCollection);
+	}
 	
 	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
 	{
@@ -181,8 +246,11 @@ void FVoronoiPartitioner::SplitDisconnectedPartitions(FGeometryCollection* Geome
 						{
 							bFoundUnattached = true;
 							PartitionCount++;
+							PartitionSize.Add(0);
 						}
 						Partitions[Index] = PartitionCount - 1;
+						PartitionSize[PartitionCount - 1]++;
+						PartitionSize[PartitionIndex]--;
 					}
 				}
 			}
@@ -222,6 +290,10 @@ void FVoronoiPartitioner::GenerateConnectivity(const FGeometryCollection* Geomet
 	
 	Connectivity.SetNum(TransformIndices.Num());
 
+	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	{
+		return;
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 	for (int32 Index = 0; Index < TransformIndices.Num(); ++Index)
@@ -409,4 +481,5 @@ int32 FVoronoiPartitioner::FindClosestPartitionCenter(const FVector& Location) c
 }
 	
 #undef LOCTEXT_NAMESPACE
+
 

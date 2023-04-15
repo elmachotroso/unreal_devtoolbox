@@ -34,23 +34,22 @@
 
 #if WITH_EDITOR
 
+#include "ChildTextureFormat.h"
+#include "ColorSpace.h"
+#include "Compression/OodleDataCompressionUtil.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataCacheInterface.h"
-#include "DerivedDataCacheKey.h"
 #include "DerivedDataRequestOwner.h"
-#include "DerivedDataRequestTypes.h"
-#include "DerivedDataValue.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/ITextureFormat.h"
 #include "Misc/StringBuilder.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "UObject/ArchiveCookContext.h"
 #include "VT/VirtualTextureDataBuilder.h"
 #include "VT/LightmapVirtualTexture.h"
 #include "TextureCompiler.h"
 #include "TextureEncodingSettings.h"
-#include "ColorSpace.h"
-#include "Compression/OodleDataCompressionUtil.h"
 
 
 /*------------------------------------------------------------------------------
@@ -62,12 +61,36 @@
 // with a guid ( ex.: TEXT("855EE5B3574C43ABACC6700C4ADC62E6") )
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID and set this new
 // guid as version
+// this is put in the DDC1 and the DDC2 key
 
-#define TEXTURE_DERIVEDDATA_VER		TEXT("596BF8F951D64FD7A48E0C99F80E2F36")
+// next time this changes clean up SerializeForKey todo marks , search "@todo SerializeForKey"
+#define TEXTURE_DERIVEDDATA_VER		TEXT("95BCE5A0BFB949539A18684748C633C9")
 
 // This GUID is mixed into DDC version for virtual textures only, this allows updating DDC version for VT without invalidating DDC for all textures
 // This is useful during development, but once large numbers of VT are present in shipped content, it will have the same problem as TEXTURE_DERIVEDDATA_VER
-#define TEXTURE_VT_DERIVEDDATA_VER	TEXT("F36E4B807BC24Y818FE085C655C45176")
+// This is put in the DDC1 key but NOT in the DDC2 key
+#define TEXTURE_VT_DERIVEDDATA_VER	TEXT("7C16439390E24F1F9468894FB4D4BC54")
+
+
+static bool IsUsingNewDerivedData()
+{
+	struct FTextureDerivedDataSetting
+	{
+		FTextureDerivedDataSetting()
+		{
+			bUseNewDerivedData = FParse::Param(FCommandLine::Get(), TEXT("DDC2AsyncTextureBuilds")) || FParse::Param(FCommandLine::Get(), TEXT("DDC2TextureBuilds"));
+			if (!bUseNewDerivedData)
+			{
+				GConfig->GetBool(TEXT("TextureBuild"), TEXT("NewTextureBuilds"), bUseNewDerivedData, GEditorIni);
+			}
+			UE_CLOG(bUseNewDerivedData, LogTexture, Log, TEXT("Using new texture derived data builds."));
+		}
+		bool bUseNewDerivedData;
+	};
+	static const FTextureDerivedDataSetting TextureDerivedDataSetting;
+	return TextureDerivedDataSetting.bUseNewDerivedData;
+}
+
 
 #if ENABLE_COOK_STATS
 namespace TextureCookStats
@@ -87,7 +110,8 @@ namespace TextureCookStats
 ------------------------------------------------------------------------------*/
 
 /**
- * Serialize build settings for use when generating the derived data key.
+ * Serialize build settings for use when generating the derived data key. (DDC1)
+ * Must keep in sync with DDC2 Key WriteBuildSettings
  */
 static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 {
@@ -137,7 +161,11 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 	}
 
 	TempByte = Settings.bPreserveBorder; Ar << TempByte;
-	TempByte = Settings.bDitherMipMapAlpha; Ar << TempByte;
+
+	// bDitherMipMapAlpha was removed from Texture
+	//  serialize to DDC as if it was still around and false to keep keys the same:
+	uint8 bDitherMipMapAlpha = 0;
+	TempByte = bDitherMipMapAlpha; Ar << TempByte;
 
 	if (Settings.bDoScaleMipsForAlphaCoverage)
 	{
@@ -183,10 +211,20 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 		TempByte = Settings.VirtualAddressingModeY; Ar << TempByte;
 		TempUint32 = Settings.VirtualTextureTileSize; Ar << TempUint32;
 		TempUint32 = Settings.VirtualTextureBorderSize; Ar << TempUint32;
-		TempByte = Settings.bVirtualTextureEnableCompressZlib; Ar << TempByte;
-		TempByte = Settings.bVirtualTextureEnableCompressCrunch; Ar << TempByte;
+		// compresion options removed: keep serializing them as "off" to keep the key the same:
+		TempByte = 0; Ar << TempByte;
+		TempByte = 0; Ar << TempByte;
 		TempByte = Settings.LossyCompressionAmount; Ar << TempByte; // Lossy compression currently only used by VT
 		TempByte = Settings.bApplyYCoCgBlockScale; Ar << TempByte; // YCoCg currently only used by VT
+
+		
+		// @todo SerializeForKey these can go away whenever we bump the overall ddc key:
+		if ( Settings.bSRGB && Settings.bUseLegacyGamma )
+		{
+			// processing changed, modify ddc key :
+			TempGuid = FGuid(0xA227BEFC,0x9F8643C6,0x81580369,0xC4C6F73E);
+			Ar << TempGuid;
+		}
 	}
 
 	// Avoid changing key if texture is not being downscaled
@@ -196,10 +234,64 @@ static void SerializeForKey(FArchive& Ar, const FTextureBuildSettings& Settings)
 		TempByte = Settings.DownscaleOptions; Ar << TempByte;
 	}
 
+	// this is done in a funny way to add the bool that wasn't being serialized before
+	//  without changing DDC keys where the bool is not set
+	// @todo SerializeForKey these can go away whenever we bump the overall ddc key - just serialize the bool
 	if (Settings.bForceAlphaChannel)
 	{
-		TempGuid = FGuid(0x2C9DF7E3, 0xBC9D413B, 0xBF963C7A, 0x3F27E8B1); // Guid reserved for bForceAlphaChannel feature
+		TempGuid = FGuid(0x2C9DF7E3, 0xBC9D413B, 0xBF963C7A, 0x3F27E8B1);
 		Ar << TempGuid;
+	}
+	// fix - bForceNoAlphaChannel is not in key !
+	// @todo SerializeForKey these can go away whenever we bump the overall ddc key - just serialize the bool
+	if (Settings.bForceNoAlphaChannel)
+	{
+		TempGuid = FGuid(0x748fc0d4, 0x62004afa, 0x9530460a, 0xf8149d02);
+		Ar << TempGuid;
+	}
+
+	if ( Settings.MaxTextureResolution != FTextureBuildSettings::MaxTextureResolutionDefault &&
+		( Settings.MipGenSettings == TMGS_LeaveExistingMips || Settings.bDoScaleMipsForAlphaCoverage ) )
+	{
+		// @todo SerializeForKey these can go away whenever we bump the overall ddc key
+		// behavior of MaxTextureResolution + LeaveExistingMips or bDoScaleMipsForAlphaCoverage changed, so modify the key :
+		TempGuid = FGuid(0x418B8584, 0x72D54EA5, 0xBA8E8C2B, 0xECC880DE);
+		Ar << TempGuid;
+	}
+
+	if ( Settings.bVolume )
+	{
+		// @todo SerializeForKey these can go away whenever we bump the overall ddc key
+		TempGuid = FGuid(0xCC4348B8,0x84714993,0xAB1E2C93,0x8EA6C9E0);
+		Ar << TempGuid;
+	}
+
+	if ( Settings.bVirtualStreamable && Settings.bSRGB && Settings.bUseLegacyGamma )
+	{
+		// @todo SerializeForKey these can go away whenever we bump the overall ddc key
+		TempGuid = FGuid(0xCAEDDFB6,0xEDC2455D,0x8D45B90C,0x3A1B7783);
+		Ar << TempGuid;
+	}
+
+	// do not change key if old mip filter is used for old textures
+	// @todo SerializeForKey these can go away whenever we bump the overall ddc key
+	if (Settings.bUseNewMipFilter)
+	{
+		TempGuid = FGuid(0x27B79A99, 0xE1A5458E, 0xAB619475, 0xCD01AD2A);
+		Ar << TempGuid;
+	}
+
+	if (Settings.bLongLatSource)
+	{
+		// @todo SerializeForKey these can go away whenever we bump the overall ddc key
+		// texture processing for cubemaps generated from longlat sources changed, so modify the key :
+		TempGuid = FGuid(0x3D642836, 0xEBF64714, 0x9E8E3241, 0x39F66906);
+		Ar << TempGuid;
+	}
+
+	if (Settings.CompressionCacheId.IsValid())
+	{
+		TempGuid = Settings.CompressionCacheId; Ar << TempGuid;
 	}
 
 	// Note - compression quality is added to the DDC by the formats (based on whether they
@@ -235,13 +327,16 @@ void GetTextureDerivedDataKeySuffix(const UTexture& Texture, const FTextureBuild
 		{
 			Version = TextureFormat->GetVersion(BuildSettings.TextureFormatName, &BuildSettings);
 		}
+		// else error !?
 	}
+	// else error !?
 	
 	FString CompositeTextureStr;
 
 	if(IsValid(Texture.CompositeTexture) && Texture.CompositeTextureMode != CTM_Disabled)
 	{
-		CompositeTextureStr += TEXT("_");
+		// CompositeTextureMode output changed so force a new DDC key value :
+		CompositeTextureStr += TEXT("_Composite090802022_");
 		CompositeTextureStr += Texture.CompositeTexture->Source.GetIdString();
 	}
 
@@ -282,6 +377,13 @@ void GetTextureDerivedDataKeySuffix(const UTexture& Texture, const FTextureBuild
 		// Additional GUID for virtual textures, make it easier to force these to rebuild while developing
 		OutKeySuffix.Append(FString::Printf(TEXT("VT%s_"), TEXTURE_VT_DERIVEDDATA_VER));
 	}
+
+#if PLATFORM_CPU_ARM_FAMILY
+	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
+	// input. Add the arm specifically so that a) we avoid rebuilding the current DDC and
+	// b) we can remove it once we get arm64 to be consistent.
+	OutKeySuffix.Append(TEXT("_arm64"));
+#endif
 
 	// Serialize the compressor settings into a temporary array. The archive
 	// is flagged as persistent so that machines of different endianness produce
@@ -513,7 +615,28 @@ static void FinalizeBuildSettingsForLayer(
 					OutBuildResultMetadata->bIsValid = true;
 					OutBuildResultMetadata->bSupportsEncodeSpeed = bSupportsEncodeSpeed;
 				}
-			}
+			
+				
+				{
+					static auto CVarSharedLinearTextureEncoding = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SharedLinearTextureEncoding"));
+					if (CVarSharedLinearTextureEncoding->GetValueOnAnyThread())
+					{
+						// Shared linear encoding can only work if the base texture format does not expect to
+						// do the tiling itself (SupportsTiling == false).
+						const FChildTextureFormat* ChildTextureFormat = TextureFormat->GetChildFormat();
+						if (ChildTextureFormat && ChildTextureFormat->GetBaseFormatObject(OutSettings.TextureFormatName)->SupportsTiling() == false)
+						{
+							OutSettings.Tiler = ChildTextureFormat->GetTiler();
+							if (OutSettings.Tiler && IsUsingNewDerivedData())
+							{
+								// New derived data wants to treat everything as the base format and then have a separate tiling function
+								// afterwards.
+								OutSettings.TextureFormatName = ChildTextureFormat->GetBaseFormatName(OutSettings.TextureFormatName);
+							}
+						}
+					} // end if enabled
+				} // end if ddc2
+			} // end if texture format found.
 		}
 	}
 
@@ -531,6 +654,7 @@ static void FinalizeBuildSettingsForLayer(
 		if (Options.bUsesRDO)
 		{
 			// If this mapping changes, update the tooltip in TextureEncodingSettings.h
+			// this is an ETextureLossyCompressionAmount
 			switch (OutSettings.LossyCompressionAmount)
 			{
 			default:
@@ -565,14 +689,14 @@ static void FinalizeBuildSettingsForLayer(
 	}
 }
 
-static ETextureEncodeSpeed GetDesiredEncodeSpeed()
+ENGINE_API ETextureEncodeSpeed UTexture::GetDesiredEncodeSpeed() const
 {
-	//
-	// I don't really see a good place to initialize target platform cached data,
-	// but we can't hit this constantly for perf and because changing the project settings UI
-	// can cause a crash in the GetDefault<> call.
-	//
-	// So we init once here.
+	if ( CompressFinal )
+	{
+		return ETextureEncodeSpeed::Final;
+	}
+
+	// Get the command line and config options with a one-time static init :
 	static struct FThreadSafeInitializer
 	{
 		ETextureEncodeSpeed CachedEncodeSpeedOption;
@@ -581,7 +705,7 @@ static ETextureEncodeSpeed GetDesiredEncodeSpeed()
 		// guarantees will be called only once.
 		FThreadSafeInitializer()
 		{
-			UEnum* EncodeSpeedEnum = StaticEnum<ETextureEncodeSpeed>();
+			const UEnum* EncodeSpeedEnum = StaticEnum<ETextureEncodeSpeed>();
 
 			// Overridden by command line?
 			FString CmdLineSpeed;
@@ -692,7 +816,6 @@ static void GetTextureBuildSettings(
 	OutBuildSettings.ColorAdjustment.AdjustMaxAlpha = Texture.AdjustMaxAlpha;
 	OutBuildSettings.bUseLegacyGamma = Texture.bUseLegacyGamma;
 	OutBuildSettings.bPreserveBorder = Texture.bPreserveBorder;
-	OutBuildSettings.bDitherMipMapAlpha = Texture.bDitherMipMapAlpha;
 
 	// in Texture , the fields bDoScaleMipsForAlphaCoverage and AlphaCoverageThresholds are independent
 	// but in the BuildSettings bDoScaleMipsForAlphaCoverage is only on if thresholds are valid (not all zero)
@@ -707,6 +830,8 @@ static void GetTextureBuildSettings(
 		OutBuildSettings.AlphaCoverageThresholds = FVector4f(0,0,0,0);
 	}
 
+	OutBuildSettings.CompressionCacheId = Texture.CompressionCacheId;
+	OutBuildSettings.bUseNewMipFilter = Texture.bUseNewMipFilter;
 	OutBuildSettings.bComputeBokehAlpha = (Texture.LODGroup == TEXTUREGROUP_Bokeh);
 	OutBuildSettings.bReplicateAlpha = false;
 	OutBuildSettings.bReplicateRed = false;
@@ -722,32 +847,52 @@ static void GetTextureBuildSettings(
 	OutBuildSettings.BlueChromaticityCoordinate = FVector2f(Texture.SourceColorSettings.BlueChromaticityCoordinate);
 	OutBuildSettings.WhiteChromaticityCoordinate = FVector2f(Texture.SourceColorSettings.WhiteChromaticityCoordinate);
 	OutBuildSettings.ChromaticAdaptationMethod = static_cast<uint8>(Texture.SourceColorSettings.ChromaticAdaptationMethod);
-
+	
+	check( OutBuildSettings.MaxTextureResolution == FTextureBuildSettings::MaxTextureResolutionDefault );
 	if (Texture.MaxTextureSize > 0)
 	{
 		OutBuildSettings.MaxTextureResolution = Texture.MaxTextureSize;
 	}
 
-	if (Texture.IsA(UTextureCube::StaticClass()))
+	ETextureClass TextureClass = Texture.GetTextureClass();
+	
+	if ( TextureClass == ETextureClass::TwoD )
+	{
+		// nada
+	}
+	else if ( TextureClass == ETextureClass::Cube )
 	{
 		OutBuildSettings.bCubemap = true;
 		OutBuildSettings.DiffuseConvolveMipLevel = GDiffuseConvolveMipLevel;
-		const UTextureCube* Cube = CastChecked<UTextureCube>(&Texture);
-		OutBuildSettings.bLongLatSource = (Cube->Source.GetNumSlices() == 1) || Cube->Source.IsLongLatCubemap();
+		check( Texture.Source.GetNumSlices() == 1 || Texture.Source.GetNumSlices() == 6 );
+		OutBuildSettings.bLongLatSource = Texture.Source.IsLongLatCubemap();
 	}
-	else if (Texture.IsA(UTexture2DArray::StaticClass()))
+	else if ( TextureClass == ETextureClass::Array )
 	{
 		OutBuildSettings.bTextureArray = true;
 	}
-	else if (Texture.IsA(UTextureCubeArray::StaticClass()))
+	else if ( TextureClass == ETextureClass::CubeArray )
 	{
 		OutBuildSettings.bCubemap = true;
 		OutBuildSettings.bTextureArray = true;
+		// beware IsLongLatCubemap
+		// ambiguous with longlat cube arrays with multiple of 6 array size
 		OutBuildSettings.bLongLatSource = Texture.Source.IsLongLatCubemap();
+		check( ((Texture.Source.GetNumSlices()%6)==0) || OutBuildSettings.bLongLatSource );
 	}
-	else if (Texture.IsA(UVolumeTexture::StaticClass()))
+	else if ( TextureClass == ETextureClass::Volume )
 	{
 		OutBuildSettings.bVolume = true;
+	}
+	else if ( TextureClass == ETextureClass::TwoDDynamic ||
+		TextureClass == ETextureClass::Other2DNoSource )
+	{
+		UE_LOG(LogTexture, Warning, TEXT("Unexpected texture build for dynamic texture? (%s)"),*Texture.GetName());
+	}
+	else
+	{
+		// unknown TextureType ?
+		UE_LOG(LogTexture, Error, TEXT("Unexpected texture build for unknown texture class? (%s)"),*Texture.GetName());
 	}
 
 	bool bDownsampleWithAverage;
@@ -779,7 +924,6 @@ static void GetTextureBuildSettings(
 	OutBuildSettings.CompositePower = Texture.CompositePower;
 	OutBuildSettings.LODBias = TextureLODSettings.CalculateLODBias(SourceSize.X, SourceSize.Y, Texture.MaxTextureSize, Texture.LODGroup, Texture.LODBias, Texture.NumCinematicMipLevels, Texture.MipGenSettings, bVirtualTextureStreaming);
 	OutBuildSettings.LODBiasWithCinematicMips = TextureLODSettings.CalculateLODBias(SourceSize.X, SourceSize.Y, Texture.MaxTextureSize, Texture.LODGroup, Texture.LODBias, 0, Texture.MipGenSettings, bVirtualTextureStreaming);
-	OutBuildSettings.bStreamable = GetTextureIsStreamableOnPlatform(Texture, TargetPlatform);
 	OutBuildSettings.bVirtualStreamable = bVirtualTextureStreaming;
 	OutBuildSettings.PowerOfTwoMode = Texture.PowerOfTwoMode;
 	OutBuildSettings.PaddingColor = Texture.PaddingColor;
@@ -792,9 +936,9 @@ static void GetTextureBuildSettings(
 	OutBuildSettings.OodleTextureSdkVersion = ConditionalRemapOodleTextureSdkVersion(Texture.OodleTextureSdkVersion,&TargetPlatform);
 
 	// if LossyCompressionAmount is Default, inherit from LODGroup :
-	const FTextureLODGroup& LODGroup = TextureLODSettings.GetTextureLODGroup(Texture.LODGroup);
-	if ( OutBuildSettings.LossyCompressionAmount == TLCA_Default )
+	if ( Texture.LossyCompressionAmount == TLCA_Default )
 	{
+		const FTextureLODGroup& LODGroup = TextureLODSettings.GetTextureLODGroup(Texture.LODGroup);
 		OutBuildSettings.LossyCompressionAmount = LODGroup.LossyCompressionAmount;
 		if (OutBuildResultMetadata)
 		{
@@ -811,7 +955,10 @@ static void GetTextureBuildSettings(
 	}
 
 	OutBuildSettings.Downscale = 1.0f;
-	if (MipGenSettings == TMGS_NoMipmaps && 
+	// Downscale only allowed if NoMipMaps, 2d, and not VT
+	//	silently does nothing otherwise
+	if (! bVirtualTextureStreaming &&
+		MipGenSettings == TMGS_NoMipmaps && 
 		Texture.IsA(UTexture2D::StaticClass()))	// TODO: support more texture types
 	{
 		TextureLODSettings.GetDownscaleOptions(Texture, TargetPlatform, OutBuildSettings.Downscale, (ETextureDownscaleOptions&)OutBuildSettings.DownscaleOptions);
@@ -837,8 +984,6 @@ static void GetTextureBuildSettings(
 
 		FVirtualTextureBuildSettings VirtualTextureBuildSettings;
 		Texture.GetVirtualTextureBuildSettings(VirtualTextureBuildSettings);
-		OutBuildSettings.bVirtualTextureEnableCompressZlib = VirtualTextureBuildSettings.bEnableCompressZlib;
-		OutBuildSettings.bVirtualTextureEnableCompressCrunch = VirtualTextureBuildSettings.bEnableCompressCrunch;
 		OutBuildSettings.VirtualTextureTileSize = FMath::RoundUpToPowerOfTwo(VirtualTextureBuildSettings.TileSize);
 
 		// Apply any LOD group tile size bias here
@@ -861,8 +1006,6 @@ static void GetTextureBuildSettings(
 		OutBuildSettings.VirtualAddressingModeY = TA_Wrap;
 		OutBuildSettings.VirtualTextureTileSize = 0;
 		OutBuildSettings.VirtualTextureBorderSize = 0;
-		OutBuildSettings.bVirtualTextureEnableCompressZlib = false;
-		OutBuildSettings.bVirtualTextureEnableCompressCrunch = false;
 	}
 
 	// By default, initialize settings for layer0
@@ -1018,7 +1161,7 @@ int64 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& De
 		if (UE_LOG_ACTIVE(LogTexture,Verbose) || bDDCError)
 		{
 			if (LogString.IsEmpty())
-		{
+			{
 				LogString = FString::Printf(
 					TEXT("Storing texture in DDC:\n  Name: %s\n  Key: %s\n  Format: %s\n"),
 					*FString(TextureName),
@@ -1076,9 +1219,17 @@ int64 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& De
 	// At this point we've stored all the non-inline data in the DDC, so this will only serialize and store the TexturePlatformData metadata and any inline mips
 	FMemoryWriter64 Ar(RawDerivedData, /*bIsPersistent=*/ true);
 	DerivedData->Serialize(Ar, NULL);
-	TotalBytesPut += RawDerivedData.Num();
-	GetDerivedDataCacheRef().Put(*DerivedDataKey, RawDerivedData, TextureName, bReplaceExistingDerivedDataDDC);
-	UE_LOG(LogTexture,Verbose,TEXT("%s  Derived Data: %d bytes"),*LogString,RawDerivedData.Num());
+	const int64 RawDerivedDataSize = RawDerivedData.Num();
+	TotalBytesPut += RawDerivedDataSize;
+
+	using namespace UE::DerivedData;
+	FRequestOwner AsyncOwner(EPriority::Normal);
+	FValue Value = FValue::Compress(MakeSharedBufferFromArray(MoveTemp(RawDerivedData)));
+	const ECachePolicy Policy = bReplaceExistingDerivedDataDDC ? ECachePolicy::Store : ECachePolicy::Default;
+	GetCache().PutValue({{{TextureName}, ConvertLegacyCacheKey(DerivedDataKey), MoveTemp(Value), Policy}}, AsyncOwner);
+	AsyncOwner.KeepAlive();
+
+	UE_LOG(LogTexture, Verbose, TEXT("%s  Derived Data: %" INT64_FMT " bytes"), *LogString, RawDerivedDataSize);
 	return TotalBytesPut;
 }
 
@@ -1220,25 +1371,6 @@ void FTexturePlatformData::CancelCache()
 	}
 }
 
-bool FTexturePlatformData::IsUsingNewDerivedData()
-{
-	struct FTextureDerivedDataSetting
-	{
-		FTextureDerivedDataSetting()
-		{
-			bUseNewDerivedData = FParse::Param(FCommandLine::Get(), TEXT("DDC2AsyncTextureBuilds")) || FParse::Param(FCommandLine::Get(), TEXT("DDC2TextureBuilds"));
-			if (!bUseNewDerivedData)
-			{
-				GConfig->GetBool(TEXT("TextureBuild"), TEXT("NewTextureBuilds"), bUseNewDerivedData, GEditorIni);
-			}
-			UE_CLOG(bUseNewDerivedData, LogTexture, Log, TEXT("Using new texture derived data builds."));
-		}
-		bool bUseNewDerivedData;
-	};
-	static const FTextureDerivedDataSetting TextureDerivedDataSetting;
-	return TextureDerivedDataSetting.bUseNewDerivedData;
-}
-
 bool FTexturePlatformData::IsAsyncWorkComplete() const
 {
 	return !AsyncTask || AsyncTask->Poll();
@@ -1269,43 +1401,73 @@ typedef TArray<uint32> FAsyncVTChunkHandles;
  * Executes async DDC gets for mips stored in the derived data cache.
  * @param Mip - Mips to retrieve.
  * @param FirstMipToLoad - Index of the first mip to retrieve.
- * @param OutHandles - Handles to the asynchronous DDC gets.
+ * @param Callback - Callback invoked for each mip as it loads.
  * 
  * This function must be called after the initial DDC fetch is complete,
  * so we know what our in-use key is. This might be on the worker immediately
  * after the fetch completes.
  */
-static bool BeginLoadDerivedMips(FTexturePlatformData& PlatformData, int32 FirstMipToLoad, FStringView DebugContext, FAsyncMipHandles& OutHandles, TUniqueFunction<void (int32 MipIndex, FSharedBuffer MipData)> Callback)
+static bool LoadDerivedStreamingMips(FTexturePlatformData& PlatformData, int32 FirstMipToLoad, FStringView DebugContext, TFunctionRef<void (int32 MipIndex, FSharedBuffer MipData)> Callback)
 {
 	using namespace UE::DerivedData;
 
+	bool bMiss = false;
+
 	TIndirectArray<FTexture2DMipMap>& Mips = PlatformData.Mips;
+	const int32 ReadableMipCount = Mips.Num() - (PlatformData.GetNumMipsInTail() > 0 ? PlatformData.GetNumMipsInTail() - 1 : 0);
+
 	if (PlatformData.DerivedDataKey.IsType<FString>())
 	{
-		FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-		OutHandles.AddZeroed(Mips.Num());
-		for (int32 MipIndex = FirstMipToLoad; MipIndex < Mips.Num(); ++MipIndex)
+		TArray<FCacheGetValueRequest, TInlineAllocator<MAX_TEXTURE_MIP_COUNT>> Requests;
+
+		for (int32 MipIndex = FirstMipToLoad; MipIndex < ReadableMipCount; ++MipIndex)
 		{
 			const FTexture2DMipMap& Mip = Mips[MipIndex];
-			if (Mip.IsPagedToDerivedData())
+			if (Mip.IsPagedToDerivedData() && !Mip.BulkData.IsBulkDataLoaded())
 			{
-				OutHandles[MipIndex] = DDC.GetAsynchronous(*PlatformData.GetDerivedDataMipKeyString(MipIndex, Mip), DebugContext);
+				TStringBuilder<256> MipNameBuilder;
+				MipNameBuilder.Append(DebugContext).Appendf(TEXT(" [MIP %d]"), MipIndex);
+				FCacheGetValueRequest& Request = Requests.AddDefaulted_GetRef();
+				Request.Name = MipNameBuilder;
+				Request.Key = ConvertLegacyCacheKey(PlatformData.GetDerivedDataMipKeyString(MipIndex, Mip));
+				Request.UserData = MipIndex;
 			}
+		}
+
+		if (!Requests.IsEmpty())
+		{
+			COOK_STAT(auto Timer = TextureCookStats::StreamingMipUsageStats.TimeSyncWork());
+			uint64 Size = 0;
+			FRequestOwner BlockingOwner(EPriority::Blocking);
+			GetCache().GetValue(Requests, BlockingOwner, [Callback = MoveTemp(Callback), &Size, &bMiss](FCacheGetValueResponse&& Response)
+			{
+				Size += Response.Value.GetRawSize();
+				if (Response.Status == EStatus::Ok)
+				{
+					Callback(int32(Response.UserData), Response.Value.GetData().Decompress());
+				}
+				else
+				{
+					bMiss = true;
+				}
+			});
+			BlockingOwner.Wait();
+			COOK_STAT(Timer.AddHitOrMiss(!bMiss ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss, int64(Size)));
 		}
 	}
 	else if (PlatformData.DerivedDataKey.IsType<FCacheKeyProxy>())
 	{
-		TArray<FCacheGetChunkRequest> MipKeys;
+		TArray<FCacheGetChunkRequest, TInlineAllocator<MAX_TEXTURE_MIP_COUNT>> Requests;
 
 		const FCacheKey& Key = *PlatformData.DerivedDataKey.Get<UE::DerivedData::FCacheKeyProxy>().AsCacheKey();
-		for (int32 MipIndex = FirstMipToLoad; MipIndex < Mips.Num(); ++MipIndex)
+		for (int32 MipIndex = FirstMipToLoad; MipIndex < ReadableMipCount; ++MipIndex)
 		{
 			const FTexture2DMipMap& Mip = Mips[MipIndex];
-			if (Mip.IsPagedToDerivedData())
+			if (Mip.IsPagedToDerivedData() && !Mip.BulkData.IsBulkDataLoaded())
 			{
 				TStringBuilder<256> MipNameBuilder;
-				MipNameBuilder.Append(DebugContext).Appendf(TEXT(" [MIP 0]"), MipIndex);
-				FCacheGetChunkRequest& Request = MipKeys.AddDefaulted_GetRef();
+				MipNameBuilder.Append(DebugContext).Appendf(TEXT(" [MIP %d]"), MipIndex);
+				FCacheGetChunkRequest& Request = Requests.AddDefaulted_GetRef();
 				Request.Name = MipNameBuilder;
 				Request.Key = Key;
 				Request.Id = FTexturePlatformData::MakeMipId(MipIndex);
@@ -1313,13 +1475,14 @@ static bool BeginLoadDerivedMips(FTexturePlatformData& PlatformData, int32 First
 			}
 		}
 
-		if (!MipKeys.IsEmpty())
+		if (!Requests.IsEmpty())
 		{
-			check(Callback);
-			bool bMiss = false;
-			FRequestOwner RequestOwner(EPriority::Blocking);
-			GetCache().GetChunks(MipKeys, RequestOwner, [Callback = MoveTemp(Callback), &bMiss](FCacheGetChunkResponse&& Response)
+			COOK_STAT(auto Timer = TextureCookStats::StreamingMipUsageStats.TimeSyncWork());
+			uint64 Size = 0;
+			FRequestOwner BlockingOwner(EPriority::Blocking);
+			GetCache().GetChunks(Requests, BlockingOwner, [Callback = MoveTemp(Callback), &Size, &bMiss](FCacheGetChunkResponse&& Response)
 			{
+				Size += Response.RawSize;
 				if (Response.Status == EStatus::Ok)
 				{
 					Callback(int32(Response.UserData), MoveTemp(Response.RawData));
@@ -1329,33 +1492,59 @@ static bool BeginLoadDerivedMips(FTexturePlatformData& PlatformData, int32 First
 					bMiss = true;
 				}
 			});
-			RequestOwner.Wait();
-
-			if (bMiss)
-			{
-				return false;
-			}
+			BlockingOwner.Wait();
+			COOK_STAT(Timer.AddHitOrMiss(!bMiss ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss, int64(Size)));
 		}
 	}
 	else
 	{
 		UE_LOG(LogTexture, Error, TEXT("Attempting to stream in mips for texture that has not generated a supported derived data key format."));
 	}
-	return true;
+
+	return !bMiss;
 }
 
-static void BeginLoadDerivedVTChunks(const TArray<FVirtualTextureDataChunk>& Chunks, FStringView DebugContext, FAsyncVTChunkHandles& OutHandles)
+static bool LoadDerivedStreamingVTChunks(const TArray<FVirtualTextureDataChunk>& Chunks, FStringView DebugContext, TFunctionRef<void (int32 ChunkIndex, FSharedBuffer ChunkData)> Callback)
 {
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-	OutHandles.AddZeroed(Chunks.Num());
+	using namespace UE::DerivedData;
+	TArray<FCacheGetValueRequest> Requests;
+
 	for (int32 ChunkIndex = 0; ChunkIndex < Chunks.Num(); ++ChunkIndex)
 	{
 		const FVirtualTextureDataChunk& Chunk = Chunks[ChunkIndex];
-		if (Chunk.DerivedDataKey.IsEmpty() == false)
+		if (!Chunk.DerivedDataKey.IsEmpty() && !Chunk.BulkData.IsBulkDataLoaded())
 		{
-			OutHandles[ChunkIndex] = DDC.GetAsynchronous(*Chunk.DerivedDataKey, DebugContext);
+			FCacheGetValueRequest& Request = Requests.AddDefaulted_GetRef();
+			Request.Name = FSharedString(WriteToString<256>(DebugContext, TEXT(" [Chunk ]"), ChunkIndex, TEXT("]")));
+			Request.Key = ConvertLegacyCacheKey(Chunk.DerivedDataKey);
+			Request.UserData = ChunkIndex;
 		}
 	}
+
+	bool bMiss = false;
+
+	if (!Requests.IsEmpty())
+	{
+		COOK_STAT(auto Timer = TextureCookStats::StreamingMipUsageStats.TimeSyncWork());
+		uint64 Size = 0;
+		FRequestOwner BlockingOwner(EPriority::Blocking);
+		GetCache().GetValue(Requests, BlockingOwner, [Callback = MoveTemp(Callback), &Size, &bMiss](FCacheGetValueResponse&& Response)
+		{
+			Size += Response.Value.GetRawSize();
+			if (Response.Status == EStatus::Ok)
+			{
+				Callback(int32(Response.UserData), Response.Value.GetData().Decompress());
+			}
+			else
+			{
+				bMiss = true;
+			}
+		});
+		BlockingOwner.Wait();
+		COOK_STAT(Timer.AddHitOrMiss(!bMiss ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss, int64(Size)));
+	}
+
+	return !bMiss;
 }
 
 /** Logs a warning that MipSize is correct for the mipmap. */
@@ -1387,91 +1576,71 @@ static void CheckMipSize(FTexture2DMipMap& Mip, EPixelFormat PixelFormat, int64 
 //
 static bool FetchAllTextureDataSynchronous(FTexturePlatformData* PlatformData, FStringView DebugContext, TArray<TArray64<uint8>>& OutMipData, TArray<TArray64<uint8>>& OutVTChunkData)
 {
-	OutMipData.Empty();
-	OutVTChunkData.Empty();
+	const auto StoreMip = [&OutMipData](int32 MipIndex, FSharedBuffer MipBuffer)
+	{
+		OutMipData[MipIndex].Append(static_cast<const uint8*>(MipBuffer.GetData()), MipBuffer.GetSize());
+	};
 
-	using namespace UE::DerivedData;
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
+	const int32 MipCount = PlatformData->Mips.Num();
+	OutMipData.Empty(MipCount);
+	OutMipData.AddDefaulted(MipCount);
 
-	OutMipData.AddDefaulted(PlatformData->Mips.Num());
-
-	// This only handles non-vt mips that are paged to derived data.
-	// (some mips are inline). Doesn't handle excluded mips due to 
-	// platform settings.
-	FAsyncMipHandles MipHandles;
-	if (!BeginLoadDerivedMips(*PlatformData, 0, DebugContext, MipHandles,
-			[&OutMipData](int32 MipIndex, FSharedBuffer MipBuffer)
-				{
-					OutMipData[MipIndex].Append((uint8*)MipBuffer.GetData(), MipBuffer.GetSize());
-				}
-			)
-		)
+	if (!LoadDerivedStreamingMips(*PlatformData, 0, DebugContext, StoreMip))
 	{
 		return false;
 	}
 
-	// DDC1 fetches are async, so we need to wait on the handles,
-	// and if it's not paged to derived data we need to copy the
-	// data from bulk
-	for (int32 MipIndex = 0; MipIndex < PlatformData->Mips.Num(); ++MipIndex)
+	for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
 	{
 		FTexture2DMipMap& Mip = PlatformData->Mips[MipIndex];
-		if (Mip.IsPagedToDerivedData() == false)
+		if (OutMipData[MipIndex].IsEmpty())
 		{
-			OutMipData[MipIndex].Append((uint8*)Mip.BulkData.LockReadOnly(), Mip.BulkData.GetBulkDataSize());
-			Mip.BulkData.Unlock();
-			continue;
-		}
-
-		// Here we either got the data synchronously with the DDC2 path in BeginLoadDerivedMips,
-		// or we didn't if we are DDC1. BeginLoadDerivedMips only allocates the async handles
-		// in the ddc1 path, so we use that to tell.
-		if (MipHandles.Num() == 0)
-		{
-			// skip, ddc1. This is the same for all mips but we still need to check for paged
-			// data above.
-			continue;
-		}
-
-		uint32 AsyncHandle = MipHandles[MipIndex];
-		DDC.WaitAsynchronousCompletion(AsyncHandle);
-		bool bLoadedFromDDC = DDC.GetAsynchronousResults(AsyncHandle, OutMipData[MipIndex]);
-		if (bLoadedFromDDC == false)
-		{
-			return false;
-		}
-	}
-	
-	if (PlatformData->VTData)
-	{
-		OutVTChunkData.AddDefaulted(PlatformData->VTData->Chunks.Num());
-
-		FAsyncVTChunkHandles AsyncVTHandles;
-		BeginLoadDerivedVTChunks(PlatformData->VTData->Chunks, DebugContext, AsyncVTHandles);
-
-		for (int32 ChunkIndex = 0; ChunkIndex < PlatformData->VTData->Chunks.Num(); ++ChunkIndex)
-		{
-			FVirtualTextureDataChunk& Chunk = PlatformData->VTData->Chunks[ChunkIndex];
-			if (Chunk.DerivedDataKey.IsEmpty())
+			if (Mip.BulkData.IsBulkDataLoaded())
 			{
-				// The data is resident and we can just copy it.
-				OutVTChunkData[ChunkIndex].Append((uint8*)Chunk.BulkData.LockReadOnly(), Chunk.BulkData.GetBulkDataSize());
-				Chunk.BulkData.Unlock();
+				OutMipData[MipIndex].Append((uint8*)Mip.BulkData.LockReadOnly(), Mip.BulkData.GetBulkDataSize());
+				Mip.BulkData.Unlock();
 			}
 			else
 			{
-				// The data was fetched and we need to wait on the result.
-				uint32 AsyncHandle = AsyncVTHandles[ChunkIndex];
-				DDC.WaitAsynchronousCompletion(AsyncHandle);
-				bool bLoadedFromDDC = DDC.GetAsynchronousResults(AsyncHandle, OutVTChunkData[ChunkIndex]);
+				return false;
+			}
+		}
+	}
 
-				if (bLoadedFromDDC == false)
+	const auto StoreChunk = [&OutVTChunkData](int32 ChunkIndex, FSharedBuffer ChunkBuffer)
+	{
+		OutVTChunkData[ChunkIndex].Append(static_cast<const uint8*>(ChunkBuffer.GetData()), ChunkBuffer.GetSize());
+	};
+
+	const int32 ChunkCount = PlatformData->VTData ? PlatformData->VTData->Chunks.Num() : 0;
+	OutVTChunkData.Empty(ChunkCount);
+	if (ChunkCount)
+	{
+		OutVTChunkData.AddDefaulted(ChunkCount);
+
+		if (!LoadDerivedStreamingVTChunks(PlatformData->VTData->Chunks, DebugContext, StoreChunk))
+		{
+			return false;
+		}
+
+		for (int32 ChunkIndex = 0; ChunkIndex < ChunkCount; ++ChunkIndex)
+		{
+			FVirtualTextureDataChunk& Chunk = PlatformData->VTData->Chunks[ChunkIndex];
+			if (OutVTChunkData[ChunkIndex].IsEmpty())
+			{
+				if (Chunk.BulkData.IsBulkDataLoaded())
+				{
+					// The data is resident and we can just copy it.
+					OutVTChunkData[ChunkIndex].Append((uint8*)Chunk.BulkData.LockReadOnly(), Chunk.BulkData.GetBulkDataSize());
+					Chunk.BulkData.Unlock();
+				}
+				else
 				{
 					return false;
 				}
 			}
-		} // end each vt chunk
-	} // end if virtual texture
+		}
+	}
 
 	return true;
 }
@@ -1692,95 +1861,34 @@ bool FTexturePlatformData::TryInlineMipData(int32 FirstMipToLoad, FStringView De
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTexturePlatformData::TryInlineMipData);
 
-	FAsyncMipHandles AsyncHandles;
-	FAsyncVTChunkHandles AsyncVTHandles;
-	TArray64<uint8> TempData;
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
+	const auto StoreMip = [this](int32 MipIndex, FSharedBuffer MipBuffer)
+	{
+		FTexture2DMipMap& Mip = Mips[MipIndex];
+		Mip.BulkData.Lock(LOCK_READ_WRITE);
+		void* MipData = Mip.BulkData.Realloc(int64(MipBuffer.GetSize()));
+		FMemory::Memcpy(MipData, MipBuffer.GetData(), MipBuffer.GetSize());
+		Mip.BulkData.Unlock();
+	};
 
-
-	if (!BeginLoadDerivedMips(*this, FirstMipToLoad, DebugContext, AsyncHandles,
-		[this](int32 MipIndex, FSharedBuffer MipBuffer)
-		{
-			FTexture2DMipMap& Mip = Mips[MipIndex];
-			Mip.BulkData.Lock(LOCK_READ_WRITE);
-			void* MipData = Mip.BulkData.Realloc(int64(MipBuffer.GetSize()));
-			FMemory::Memcpy(MipData, MipBuffer.GetData(), MipBuffer.GetSize());
-			Mip.BulkData.Unlock();
-			Mip.SetPagedToDerivedData(false);
-		}))
+	if (!LoadDerivedStreamingMips(*this, FirstMipToLoad, DebugContext, StoreMip))
 	{
 		return false;
 	}
 
-	if (VTData != nullptr)
+	const auto StoreChunk = [this](int32 ChunkIndex, FSharedBuffer ChunkBuffer)
 	{
-		BeginLoadDerivedVTChunks(VTData->Chunks, DebugContext, AsyncVTHandles);
+		FVirtualTextureDataChunk& Chunk = VTData->Chunks[ChunkIndex];
+		Chunk.BulkData.Lock(LOCK_READ_WRITE);
+		void* ChunkData = Chunk.BulkData.Realloc(int64(ChunkBuffer.GetSize()));
+		FMemory::Memcpy(ChunkData, ChunkBuffer.GetData(), ChunkBuffer.GetSize());
+		Chunk.BulkData.Unlock();
+	};
+
+	if (VTData && !LoadDerivedStreamingVTChunks(VTData->Chunks, DebugContext, StoreChunk))
+	{
+		return false;
 	}
 
-	// Process regular mips
-	for (int32 MipIndex = FirstMipToLoad; MipIndex < Mips.Num(); ++MipIndex)
-	{
-		FTexture2DMipMap& Mip = Mips[MipIndex];
-		if (Mip.IsPagedToDerivedData())
-		{
-			uint32 AsyncHandle = AsyncHandles[MipIndex];
-			bool bLoadedFromDDC = false;
-			{
-				COOK_STAT(auto Timer = TextureCookStats::StreamingMipUsageStats.TimeAsyncWait());
-				DDC.WaitAsynchronousCompletion(AsyncHandle);
-				bLoadedFromDDC = DDC.GetAsynchronousResults(AsyncHandle, TempData);
-				COOK_STAT(Timer.AddHitOrMiss(bLoadedFromDDC ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss, TempData.Num()));
-			}
-			if (bLoadedFromDDC)
-			{
-				FMemoryReaderView Ar(MakeMemoryView(TempData), /*bIsPersistent=*/ true);
-
-				Mip.BulkData.Lock(LOCK_READ_WRITE);
-				void* MipData = Mip.BulkData.Realloc(TempData.Num());
-				Ar.Serialize(MipData, TempData.Num());
-				Mip.BulkData.Unlock();
-				Mip.SetPagedToDerivedData(false);
-			}
-			else
-			{
-				return false;
-			}
-			TempData.Reset();
-		}
-	}
-
-	// Process VT mips
-	if (VTData != nullptr)
-	{
-		for (int32 ChunkIndex = 0; ChunkIndex < VTData->Chunks.Num(); ++ChunkIndex)
-		{
-			FVirtualTextureDataChunk& Chunk = VTData->Chunks[ChunkIndex];
-			if (Chunk.DerivedDataKey.IsEmpty() == false)
-			{
-				uint32 AsyncHandle = AsyncVTHandles[ChunkIndex];
-				bool bLoadedFromDDC = false;
-				{
-					COOK_STAT(auto Timer = TextureCookStats::StreamingMipUsageStats.TimeAsyncWait());
-					DDC.WaitAsynchronousCompletion(AsyncHandle);
-					bLoadedFromDDC = DDC.GetAsynchronousResults(AsyncHandle, TempData);
-					COOK_STAT(Timer.AddHitOrMiss(bLoadedFromDDC ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss, TempData.Num()));
-				}
-				if (bLoadedFromDDC)
-				{
-					Chunk.BulkData.Lock(LOCK_READ_WRITE);
-					void* ChunkData = Chunk.BulkData.Realloc(TempData.Num());
-					FMemory::Memcpy(ChunkData, TempData.GetData(), TempData.Num());
-					Chunk.BulkData.Unlock();
-					Chunk.DerivedDataKey.Empty();
-				}
-				else
-				{
-					return false;
-				}
-				TempData.Reset();
-			}
-		}
-	}
 	return true;
 }
 
@@ -1837,6 +1945,14 @@ bool FTexturePlatformData::IsReadyForAsyncPostLoad() const
 
 bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, FStringView DebugContext)
 {
+	// TryLoadMips fills mip pointers but not sizes
+	//  dangerous, not robust, use TryLoadMipsWithSizes instead
+
+	return TryLoadMipsWithSizes(FirstMipToLoad, OutMipData, nullptr, DebugContext);
+}
+
+bool FTexturePlatformData::TryLoadMipsWithSizes(int32 FirstMipToLoad, void** OutMipData, int64* OutMipSize, FStringView DebugContext)
+{
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTexturePlatformData::TryLoadMips);
 
 	int32 NumMipsCached = 0;
@@ -1844,25 +1960,26 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 	check(LoadableMips >= 0);
 
 #if WITH_EDITOR
+	const auto StoreMip = [this, OutMipData, OutMipSize, FirstMipToLoad, &NumMipsCached](int32 MipIndex, FSharedBuffer MipBuffer)
+	{
+		FTexture2DMipMap& Mip = Mips[MipIndex];
 
-	TArray64<uint8> TempData;
-	FAsyncMipHandles AsyncHandles;
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-	if (!BeginLoadDerivedMips(*this, FirstMipToLoad, DebugContext, AsyncHandles,
-		[this, OutMipData, FirstMipToLoad, &NumMipsCached](int32 MipIndex, FSharedBuffer MipBuffer)
+		const int64 MipSize = static_cast<int64>(MipBuffer.GetSize());
+		CheckMipSize(Mip, PixelFormat, MipSize);
+		NumMipsCached++;
+
+		if (OutMipData)
 		{
-			FTexture2DMipMap& Mip = Mips[MipIndex];
+			OutMipData[MipIndex - FirstMipToLoad] = FMemory::Malloc(MipSize);
+			FMemory::Memcpy(OutMipData[MipIndex - FirstMipToLoad], MipBuffer.GetData(), MipSize);
+		}
+		if ( OutMipSize ) 
+		{
+			OutMipSize[MipIndex - FirstMipToLoad] = MipSize;
+		}
+	};
 
-			const int64 MipSize = static_cast<int64>(MipBuffer.GetSize());
-			CheckMipSize(Mip, PixelFormat, MipSize);
-			NumMipsCached++;
-
-			if (OutMipData)
-			{
-				OutMipData[MipIndex - FirstMipToLoad] = FMemory::Malloc(MipSize);
-				FMemory::Memcpy(OutMipData[MipIndex - FirstMipToLoad], MipBuffer.GetData(), MipSize);
-			}
-		}))
+	if (!LoadDerivedStreamingMips(*this, FirstMipToLoad, DebugContext, StoreMip))
 	{
 		return false;
 	}
@@ -1887,7 +2004,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 		const int64 BulkDataSize = Mip.BulkData.GetBulkDataSize();
 		if (BulkDataSize > 0)
 		{
-			if (OutMipData != nullptr)
+			if (OutMipData)
 			{
 #if PLATFORM_SUPPORTS_TEXTURE_STREAMING
 				// We want to make sure that any non-streamed mips are coming from the texture asset file, and not from an external bulk file.
@@ -1897,49 +2014,18 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 				if (!FPlatformProperties::HasEditorOnlyData() && CVarSetTextureStreaming.GetValueOnAnyThread() != 0)
 				{
 					UE_CLOG(Mip.BulkData.IsInSeparateFile(), LogTexture, Error, TEXT("Loading non-streamed mips from an external bulk file.  This is not desireable.  File %s"),
-						*(Mip.BulkData.GetPackagePath().GetDebugName()) );
+						*(Mip.BulkData.GetDebugName()) );
 				}
 #endif
 				Mip.BulkData.GetCopy(&OutMipData[MipIndex - FirstMipToLoad], true);
 			}
+			if (OutMipSize)
+			{
+				OutMipSize[MipIndex - FirstMipToLoad] = BulkDataSize;
+			}
 			NumMipsCached++;
 		}
 	}
-
-#if WITH_EDITOR
-	if (DerivedDataKey.IsType<FString>())
-	{
-		// Wait for async DDC gets.
-		for (int32 MipIndex = FirstMipToLoad; MipIndex < LoadableMips; ++MipIndex)
-		{
-			FTexture2DMipMap& Mip = Mips[MipIndex];
-			if (Mip.IsPagedToDerivedData())
-			{
-				uint32 AsyncHandle = AsyncHandles[MipIndex];
-				DDC.WaitAsynchronousCompletion(AsyncHandle);
-				if (DDC.GetAsynchronousResults(AsyncHandle, TempData))
-				{
-					FMemoryReaderView Ar(MakeMemoryView(TempData), /*bIsPersistent=*/ true);
-					CheckMipSize(Mip, PixelFormat, TempData.Num());
-					NumMipsCached++;
-
-					if (OutMipData)
-					{
-						OutMipData[MipIndex - FirstMipToLoad] = FMemory::Malloc(TempData.Num());
-						Ar.Serialize(OutMipData[MipIndex - FirstMipToLoad], TempData.Num());
-					}
-				}
-				else
-				{
-					UE_LOG(LogTexture, Verbose, TEXT("DDC.GetAsynchronousResults() failed for %.*s, MipIndex: %d"),
-						DebugContext.Len(), DebugContext.GetData(),
-						MipIndex);
-				}
-				TempData.Reset();
-			}
-		}
-	}
-#endif // #if WITH_EDITOR
 
 	if (NumMipsCached != (LoadableMips - FirstMipToLoad))
 	{
@@ -1969,7 +2055,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 	return true;
 }
 
-int32 FTexturePlatformData::GetNumNonStreamingMips() const
+int32 FTexturePlatformData::GetNumNonStreamingMips(bool bIsStreamingPossible) const
 {
 	if (CanUseCookedDataPath())
 	{
@@ -1994,13 +2080,23 @@ int32 FTexturePlatformData::GetNumNonStreamingMips() const
 		}
 		else
 		{
+			if ( ! bIsStreamingPossible )
+			{
+				check( NumNonStreamingMips == Mips.Num() );
+			}
+
 			return NumNonStreamingMips;
 		}
 	}
-	else if (Mips.Num() > 0)
+	else if (Mips.Num() <= 1 || !bIsStreamingPossible)
+	{
+		return Mips.Num();
+	}
+	else
 	{
 		int32 MipCount = Mips.Num();
 		int32 NumNonStreamingMips = 1;
+		// MipCount >= 2 and bIsStreamingPossible
 
 		// Take in to account the min resident limit.
 		NumNonStreamingMips = FMath::Max(NumNonStreamingMips, (int32)GetNumMipsInTail());
@@ -2010,15 +2106,23 @@ int32 FTexturePlatformData::GetNumNonStreamingMips() const
 		int32 BlockSizeY = GPixelFormats[PixelFormat].BlockSizeY;
 		if (BlockSizeX > 1 || BlockSizeY > 1)
 		{
-			NumNonStreamingMips = FMath::Max<int32>(NumNonStreamingMips, MipCount - FPlatformMath::FloorLog2(Mips[0].SizeX / BlockSizeX));
-			NumNonStreamingMips = FMath::Max<int32>(NumNonStreamingMips, MipCount - FPlatformMath::FloorLog2(Mips[0].SizeY / BlockSizeY));
+			// ensure the top non-streamed mip size is >= BlockSize (and a multiple of block size!)
+			// @todo Oodle : only do for BCN, not for ASTC
+			
+			// note: this is not right for non pow 2; NeverStream should set !bIsStreamingPossible in that case
+			if ( FMath::IsPowerOfTwo(Mips[0].SizeX) && FMath::IsPowerOfTwo(Mips[0].SizeY) )
+			{
+				NumNonStreamingMips = FMath::Max<int32>(NumNonStreamingMips, MipCount - FPlatformMath::FloorLog2(Mips[0].SizeX / BlockSizeX));
+				NumNonStreamingMips = FMath::Max<int32>(NumNonStreamingMips, MipCount - FPlatformMath::FloorLog2(Mips[0].SizeY / BlockSizeY));
+			}
+			else
+			{
+				// should have !bIsStreamingPossible, so we should not hit this branch, but it's not reliable
+				NumNonStreamingMips = MipCount;
+			}
 		}
 
 		return NumNonStreamingMips;
-	}
-	else
-	{
-		return 0;
 	}
 }
 
@@ -2060,12 +2164,10 @@ bool FTexturePlatformData::CanBeLoaded() const
 {
 	for (const FTexture2DMipMap& Mip : Mips)
 	{
-#if WITH_EDITORONLY_DATA
-		if (Mip.IsPagedToDerivedData())
+		if (Mip.DerivedData.HasData())
 		{
 			return true;
 		}
-#endif 
 		if (Mip.BulkData.CanLoadFromDisk())
 		{
 			return true;
@@ -2092,6 +2194,36 @@ EPixelFormat FTexturePlatformData::GetLayerPixelFormat(uint32 LayerIndex) const
 	return PixelFormat;
 }
 
+int64 FTexturePlatformData::GetPayloadSize(int32 MipBias) const
+{
+	int64 PayloadSize = 0;
+	if (VTData)
+	{
+		int32 NumTiles = 0;
+		for (uint32 MipIndex = MipBias; MipIndex < VTData->NumMips; MipIndex++)
+		{
+			NumTiles += VTData->TileOffsetData[MipIndex].Width * VTData->TileOffsetData[MipIndex].Height;
+		}
+		int32 TileSizeWithBorder = (int32)(VTData->TileSize + 2 * VTData->TileBorderSize);
+		int32 TileBlockSizeX = FMath::DivideAndRoundUp(TileSizeWithBorder, GPixelFormats[PixelFormat].BlockSizeX);
+		int32 TileBlockSizeY = FMath::DivideAndRoundUp(TileSizeWithBorder, GPixelFormats[PixelFormat].BlockSizeY);
+		PayloadSize += (int64)GPixelFormats[PixelFormat].BlockBytes * TileBlockSizeX * TileBlockSizeY * VTData->NumLayers * NumTiles;
+	}
+	else
+	{
+		for (int32 MipIndex = MipBias; MipIndex < Mips.Num(); MipIndex++)
+		{
+			int32 BlockSizeX = FMath::DivideAndRoundUp(Mips[MipIndex].SizeX, GPixelFormats[PixelFormat].BlockSizeX);
+			int32 BlockSizeY = FMath::DivideAndRoundUp(Mips[MipIndex].SizeY, GPixelFormats[PixelFormat].BlockSizeY);
+			// for TextureCube and TextureCubeArray all the mipmaps contain the same number of slices, which is encoded in the PackedData member
+			// at the same time we can not just use SizeZ of a TextureCube mipmap, because for compatibility reasons it is always set to 1 and not 6 (which is the actual number of slices)
+			int32 BlockSizeZ = FMath::DivideAndRoundUp(FMath::Max(IsCubemap() ? GetNumSlices() : Mips[MipIndex].SizeZ, 1), GPixelFormats[PixelFormat].BlockSizeZ);
+			PayloadSize += (int64)GPixelFormats[PixelFormat].BlockBytes * BlockSizeX * BlockSizeY * BlockSizeZ;
+		}
+	}
+	return PayloadSize;
+}
+
 bool FTexturePlatformData::CanUseCookedDataPath() const
 {
 #if WITH_IOSTORE_IN_EDITOR
@@ -2104,86 +2236,103 @@ bool FTexturePlatformData::CanUseCookedDataPath() const
 #if WITH_EDITOR
 bool FTexturePlatformData::AreDerivedMipsAvailable(FStringView Context) const
 {
-	TArray<int32, TInlineAllocator<16>> PagedMipIndices;
-	for (int32 MipIndex = 0; MipIndex < Mips.Num(); ++MipIndex)
+	if (DerivedDataKey.IsType<FString>())
 	{
-		if (Mips[MipIndex].IsPagedToDerivedData())
-		{
-			PagedMipIndices.Add(MipIndex);
-		}
-	}
+		using namespace UE::DerivedData;
+		TArray<FCacheGetValueRequest, TInlineAllocator<16>> MipRequests;
 
-	if (PagedMipIndices.IsEmpty())
+		int32 MipIndex = 0;
+		const FSharedString SharedContext = Context;
+		for (const FTexture2DMipMap& Mip : Mips)
+		{
+			if (Mip.IsPagedToDerivedData())
+			{
+				const FCacheKey MipKey = ConvertLegacyCacheKey(GetDerivedDataMipKeyString(MipIndex, Mip));
+				const ECachePolicy ExistsPolicy = ECachePolicy::Query | ECachePolicy::SkipData;
+				MipRequests.Add({SharedContext, MipKey, ExistsPolicy});
+			}
+			++MipIndex;
+		}
+
+		if (MipRequests.IsEmpty())
+		{
+			return true;
+		}
+
+		// When performing async loading, prefetch the lowest streaming mip into local caches
+		// to avoid high priority request stalls from the render thread.
+		if (!IsInGameThread())
+		{
+			MipRequests.Last().Policy |= ECachePolicy::StoreLocal;
+		}
+
+		bool bAreDerivedMipsAvailable = true;
+		FRequestOwner BlockingOwner(EPriority::Blocking);
+		GetCache().GetValue(MipRequests, BlockingOwner, [&bAreDerivedMipsAvailable](FCacheGetValueResponse&& Response)
+		{
+			bAreDerivedMipsAvailable &= Response.Status == EStatus::Ok;
+		});
+		BlockingOwner.Wait();
+		return bAreDerivedMipsAvailable;
+	}
+	else if (DerivedDataKey.IsType<UE::DerivedData::FCacheKeyProxy>())
 	{
 		return true;
 	}
 
-	bool bAreDerivedMipsAvailable = false;
-
-	if (DerivedDataKey.IsType<FString>())
-	{
-		TArray<FString, TInlineAllocator<16>> MipKeys;
-		for (int32 PagedMipIndex : PagedMipIndices)
-		{
-			MipKeys.Add(GetDerivedDataMipKeyString(PagedMipIndex, Mips[PagedMipIndex]));
-		}
-
-		bAreDerivedMipsAvailable = GetDerivedDataCacheRef().AllCachedDataProbablyExists(MipKeys);
-
-		// When using a shared DDC and performing async loading, 
-		// prefetch the lowest mip to avoid high prio request stalls from the render thread
-		if (bAreDerivedMipsAvailable && !IsInGameThread())
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(PrefetchSmallestMip);
-			GetDerivedDataCacheRef().TryToPrefetch({MipKeys.Last()}, Context);
-		}
-	}
-	else if (DerivedDataKey.IsType<UE::DerivedData::FCacheKeyProxy>())
-	{
-		bAreDerivedMipsAvailable = true;
-	}
-
-	return bAreDerivedMipsAvailable;
+	return false;
 }
 
 bool FTexturePlatformData::AreDerivedVTChunksAvailable(FStringView Context) const
 {
 	check(VTData);
-	TArray<FString, TInlineAllocator<16>> ChunkKeys;
+
+	using namespace UE::DerivedData;
+	TArray<FCacheGetValueRequest, TInlineAllocator<16>> ChunkRequests;
+
+	int32 ChunkIndex = 0;
+	const FSharedString SharedContext = Context;
 	for (const FVirtualTextureDataChunk& Chunk : VTData->Chunks)
 	{
 		if (!Chunk.DerivedDataKey.IsEmpty())
 		{
-			ChunkKeys.Add(Chunk.DerivedDataKey);
+			const FCacheKey ChunkKey = ConvertLegacyCacheKey(Chunk.DerivedDataKey);
+			const ECachePolicy ExistsPolicy = ECachePolicy::Query | ECachePolicy::SkipData;
+			ChunkRequests.Add({SharedContext, ChunkKey, ExistsPolicy});
 		}
+		++ChunkIndex;
 	}
 
-	if (ChunkKeys.IsEmpty())
+	if (ChunkRequests.IsEmpty())
 	{
 		return true;
 	}
 
-	const bool bAreDerivedChunksAvailable = GetDerivedDataCacheRef().AllCachedDataProbablyExists(ChunkKeys);
-
-	// When using a shared DDC and performing async loading, 
-	// prefetch the lowest mip to avoid high prio request stalls from the render thread
-	if (bAreDerivedChunksAvailable && !IsInGameThread())
+	// When performing async loading, prefetch the last chunk into local caches
+	// to avoid high priority request stalls from the render thread.
+	if (!IsInGameThread())
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(PrefetchSmallestDerivedVTChunk);
-		GetDerivedDataCacheRef().TryToPrefetch({ ChunkKeys.Last() }, Context);
+		ChunkRequests.Last().Policy |= ECachePolicy::StoreLocal;
 	}
 
+	bool bAreDerivedChunksAvailable = true;
+	FRequestOwner BlockingOwner(EPriority::Blocking);
+	GetCache().GetValue(ChunkRequests, BlockingOwner, [&bAreDerivedChunksAvailable](FCacheGetValueResponse&& Response)
+	{
+		bAreDerivedChunksAvailable &= Response.Status == EStatus::Ok;
+	});
+	BlockingOwner.Wait();
 	return bAreDerivedChunksAvailable;
 }
 
 bool FTexturePlatformData::AreDerivedMipsAvailable() const
 {
-	return AreDerivedMipsAvailable(TEXT("DerivedMips"_SV));
+	return AreDerivedMipsAvailable(TEXTVIEW("DerivedMips"));
 }
 
 bool FTexturePlatformData::AreDerivedVTChunksAvailable() const
 {
-	return AreDerivedVTChunksAvailable(TEXT("DerivedVTChunks"_SV));
+	return AreDerivedVTChunksAvailable(TEXTVIEW("DerivedVTChunks"));
 }
 
 #endif // #if WITH_EDITOR
@@ -2205,6 +2354,10 @@ static void SerializePlatformData(
 )
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SerializePlatformData"), STAT_Texture_SerializePlatformData, STATGROUP_LoadTime);
+
+	// note: if BuildTexture failed, we still get called here,
+	//	just with a default-constructed PlatformData
+	//	(no mips, sizes=0, PF=Unknown)
 
 	if (Ar.IsFilterEditorOnly())
 	{
@@ -2274,7 +2427,6 @@ static void SerializePlatformData(
 			const int32 Height = PlatformData->SizeY;
 			const int32 LODGroup = Texture->LODGroup;
 			const int32 LODBias = Texture->LODBias;
-			const int32 NumCinematicMipLevels = Texture->NumCinematicMipLevels;
 			const TextureMipGenSettings MipGenSetting = Texture->MipGenSettings;
 			const int32 LastMip = FMath::Max(NumMips - 1, 0);
 			check(NumMips >= (int32)PlatformData->GetNumMipsInTail());
@@ -2283,6 +2435,7 @@ static void SerializePlatformData(
 			FirstMipToSerialize = Ar.CookingTarget()->GetTextureLODSettings().CalculateLODBias(Width, Height, Texture->MaxTextureSize, LODGroup, LODBias, 0, MipGenSetting, bIsVirtual);
 			if (!bIsVirtual)
 			{
+				// NumMips is the number of mips starting from FirstMipToSerialize
 				FirstMipToSerialize = FMath::Clamp(FirstMipToSerialize, 0, PlatformData->GetNumMipsInTail() > 0 ? FirstMipTailMip : LastMip);
 				NumMips = FMath::Max(0, NumMips - FirstMipToSerialize);
 			}
@@ -2317,6 +2470,10 @@ static void SerializePlatformData(
 			int32 OptionalMips = 0; // TODO: do we need to consider platforms saving texture assets as cooked files? all the info to calculate the optional is part of the editor only data
 			bool DuplicateNonOptionalMips = false;
 		
+			// bStreamable comes from IsCandidateForTextureStreaming
+			//  if not bStreamable, all mips are written inline
+			//  so the runtime will see NumNonStreamingMips = all
+
 #if WITH_EDITORONLY_DATA
 			check(Ar.CookingTarget());
 			// This also needs to check whether the project enables texture streaming.
@@ -2327,35 +2484,46 @@ static void SerializePlatformData(
 			if (bStreamable)
 #endif
 			{
-				MinMipToInline = FMath::Max(0, NumMips - PlatformData->GetNumNonStreamingMips());
+				int32 NumNonStreamingMips = PlatformData->GetNumNonStreamingMips(true);
+				// NumMips has been reduced by FirstMipToSerialize (LODBias)
+				NumNonStreamingMips = FMath::Min(NumNonStreamingMips,NumMips);
+				// NumNonStreamingMips is not serialized
+				// the runtime will just use NumNonStreamingMips == NumInlineMips
+				MinMipToInline = NumMips - NumNonStreamingMips;
 #if WITH_EDITORONLY_DATA
-				const int32 Width = PlatformData->SizeX;
-				const int32 Height = PlatformData->SizeY;
 				const int32 LODGroup = Texture->LODGroup;
-				const int32 LODBias = Texture->LODBias;
-				const int32 NumCinematicMipLevels = Texture->NumCinematicMipLevels;
 
-				OptionalMips = Ar.CookingTarget()->GetTextureLODSettings().CalculateNumOptionalMips(LODGroup, Width, Height, NumMips, MinMipToInline, Texture->MipGenSettings);
+				// was a bug ? CalculateNumOptional mips is using full Width/Height ?  should be from FirstMipToSerialize? -> moot, it's not actually used
+				const int32 FirstMipWidth  = PlatformData->Mips[FirstMipToSerialize].SizeX;
+				const int32 FirstMipHeight = PlatformData->Mips[FirstMipToSerialize].SizeY;
+
+				OptionalMips = Ar.CookingTarget()->GetTextureLODSettings().CalculateNumOptionalMips(LODGroup, FirstMipWidth, FirstMipHeight, NumMips, MinMipToInline, Texture->MipGenSettings);
 				DuplicateNonOptionalMips = Ar.CookingTarget()->GetTextureLODSettings().TextureLODGroups[LODGroup].DuplicateNonOptionalMips;
+
+				// Optional mips must not overlap the non-streaming mips : (MinMipToInline ensures this)
+				check( OptionalMips + NumNonStreamingMips <= NumMips );
 #endif
 			}
 
 			for (int32 MipIndex = 0; MipIndex < NumMips && MipIndex < OptionalMips; ++MipIndex) //-V654
 			{
+				// optional (and streamed) mips
 				PlatformData->Mips[MipIndex + FirstMipToSerialize].BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload | BULKDATA_OptionalPayload);
 			}
 
 			const uint32 AdditionalNonOptionalBulkDataFlags = DuplicateNonOptionalMips ? BULKDATA_DuplicateNonOptionalPayload : 0;
 			for (int32 MipIndex = OptionalMips; MipIndex < NumMips && MipIndex < MinMipToInline; ++MipIndex)
 			{
+				// non-optional but streamed mips
 				PlatformData->Mips[MipIndex + FirstMipToSerialize].BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload | AdditionalNonOptionalBulkDataFlags);
 			}
 			for (int32 MipIndex = MinMipToInline; MipIndex < NumMips; ++MipIndex)
 			{
+				// non-streamed (inline) mips
 				PlatformData->Mips[MipIndex + FirstMipToSerialize].BulkData.SetBulkDataFlags(BULKDATA_ForceInlinePayload | BULKDATA_SingleUse);
 			}
 		}
-		else // bVirtual == false
+		else // bVirtual == true
 		{
 			const int32 NumChunks = PlatformData->VTData->Chunks.Num();
 			BulkDataMipFlags.AddZeroed(NumChunks);
@@ -2365,6 +2533,52 @@ static void SerializePlatformData(
 				PlatformData->VTData->Chunks[ChunkIndex].BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
 			}	
 		}
+
+		// Save cook tags
+#if WITH_EDITORONLY_DATA
+		if (Ar.GetCookContext() && Ar.GetCookContext()->GetCookTagList())
+		{
+			FCookTagList* CookTags = Ar.GetCookContext()->GetCookTagList();
+
+			if (bIsVirtual)
+			{
+				FVirtualTextureBuiltData* VTData = PlatformData->VTData;
+				CookTags->Add(Texture, "Size", FString::Printf(TEXT("%dx%d"), VTData->Width, VTData->Height));
+	}
+			else if ( PlatformData->Mips.Num() > 0 ) // PlatformData->Mips is empty if BuildTexture failed
+			{
+				FString DimensionsStr;
+				FTexture2DMipMap& TopMip = PlatformData->Mips[FirstMipToSerialize];
+				if (TopMip.SizeZ != 1)
+				{
+					DimensionsStr = FString::Printf(TEXT("%dx%dx%d"), TopMip.SizeX, TopMip.SizeY, TopMip.SizeZ);
+				}
+				else
+				{
+					DimensionsStr = FString::Printf(TEXT("%dx%d"), TopMip.SizeX, TopMip.SizeY);
+				}
+				CookTags->Add(Texture, "Size", MoveTemp(DimensionsStr));	
+			}
+
+			CookTags->Add(Texture, "Format", FString(GPixelFormats[PlatformData->PixelFormat].Name));
+
+			// Add in diff keys for change detection/blame.
+			{
+				// Did the source change?
+				CookTags->Add(Texture, "Diff_10_Tex2D_Source", Texture->Source.GetIdString());
+
+				// Did the settings change?
+				if (const UE::DerivedData::FCacheKeyProxy* CacheKey = PlatformData->DerivedDataKey.TryGet<UE::DerivedData::FCacheKeyProxy>())
+				{
+					CookTags->Add(Texture, "Diff_20_Tex2D_CacheKey", *WriteToString<64>(*CacheKey->AsCacheKey()));
+				}
+				else if (const FString* DDK = PlatformData->DerivedDataKey.TryGet<FString>())
+				{
+					CookTags->Add(Texture, "Diff_20_Tex2D_DDK", FString(*DDK));
+				}
+			}
+		}
+#endif
 	}
 	Ar << NumMips;
 	check(NumMips >= (int32)PlatformData->GetNumMipsInTail());
@@ -2431,7 +2645,7 @@ FString FTexturePlatformData::GetDerivedDataMipKeyString(int32 MipIndex, const F
 
 UE::DerivedData::FValueId FTexturePlatformData::MakeMipId(int32 MipIndex)
 {
-	return UE::DerivedData::FValueId::FromName(WriteToString<16>(TEXT("Mip"_SV), MipIndex));
+	return UE::DerivedData::FValueId::FromName(WriteToString<16>(TEXTVIEW("Mip"), MipIndex));
 }
 
 #endif // WITH_EDITORONLY_DATA
@@ -2470,6 +2684,44 @@ void FTexturePlatformData::SerializeCooked(FArchive& Ar, UTexture* Owner, bool b
 	Texture derived data interface.
 ------------------------------------------------------------------------------*/
 
+bool UTexture2DArray::GetMipData(int32 InFirstMipToLoad, TArray<FUniqueBuffer, TInlineAllocator<MAX_TEXTURE_MIP_COUNT>>& OutMipData)
+{
+	FTexturePlatformData* LocalPlatformData = GetPlatformData();
+	const int32 ReadableMipCount = LocalPlatformData->Mips.Num() - (LocalPlatformData->GetNumMipsInTail() > 0 ? LocalPlatformData->GetNumMipsInTail() - 1 : 0);
+
+	int32 OutputMipCount = ReadableMipCount - InFirstMipToLoad;
+
+	check(OutputMipCount <= MAX_TEXTURE_MIP_COUNT);
+
+	void* MipData[MAX_TEXTURE_MIP_COUNT] = {};
+	int64 MipSizes[MAX_TEXTURE_MIP_COUNT];
+	if (LocalPlatformData->TryLoadMipsWithSizes(InFirstMipToLoad, MipData, MipSizes, GetPathName()) == false)
+	{
+		// Unable to load mips from the cache. Rebuild the texture and try again.
+		UE_LOG(LogTexture, Warning, TEXT("GetMipData failed for %s (%s)"),
+			*GetPathName(), GPixelFormats[GetPixelFormat()].Name);
+#if WITH_EDITOR
+		if (!GetOutermost()->bIsCookedForEditor)
+		{
+			ForceRebuildPlatformData();
+			if (LocalPlatformData->TryLoadMipsWithSizes(InFirstMipToLoad, MipData, MipSizes, GetPathName()) == false)
+			{
+				UE_LOG(LogTexture, Error, TEXT("TryLoadMipsWithSizes still failed after ForceRebuildPlatformData %s."), *GetPathName());
+				return false;
+			}
+		}
+#else // #if WITH_EDITOR
+		return false;
+#endif // WITH_EDITOR
+	}
+
+	for (int32 MipIndex = 0; MipIndex < OutputMipCount; MipIndex++)
+	{
+		OutMipData.Emplace(FUniqueBuffer::TakeOwnership(MipData[MipIndex], MipSizes[MipIndex], [](void* Ptr) {FMemory::Free(Ptr);} ));
+	}
+	return true;
+}
+
 void UTexture2D::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 {
 	if (GetPlatformData()->TryLoadMips(FirstMipToLoad, OutMipData, GetPathName()) == false)
@@ -2483,7 +2735,7 @@ void UTexture2D::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 			ForceRebuildPlatformData();
 			if (GetPlatformData()->TryLoadMips(FirstMipToLoad, OutMipData, GetPathName()) == false)
 			{
-				UE_LOG(LogTexture, Error, TEXT("Failed to build texture %s."), *GetPathName());
+				UE_LOG(LogTexture, Error, TEXT("TryLoadMips still failed after ForceRebuildPlatformData %s."), *GetPathName());
 			}
 		}
 #endif // #if WITH_EDITOR
@@ -2503,7 +2755,7 @@ void UTextureCube::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 			ForceRebuildPlatformData();
 			if (GetPlatformData()->TryLoadMips(FirstMipToLoad, OutMipData, GetPathName()) == false)
 			{
-				UE_LOG(LogTexture, Error, TEXT("Failed to build texture %s."), *GetPathName());
+				UE_LOG(LogTexture, Error, TEXT("TryLoadMips still failed after ForceRebuildPlatformData %s."), *GetPathName());
 			}
 		}
 #endif // #if WITH_EDITOR
@@ -2546,16 +2798,35 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 			// know we always have those. If we need the FetchFirst key, we generate it later when
 			// we know we're actually going to Cache()
 			//
-			TArray<FTextureBuildSettings> BuildSettingsFetchOrBuild;
+			TArray<FTextureBuildSettings> BuildSettingsFetchOrBuild;			
 			TArray<FTexturePlatformData::FTextureEncodeResultMetadata> ResultMetadataFetchOrBuild;
-			if (EncodeSpeed == ETextureEncodeSpeed::FinalIfAvailable ||
-				EncodeSpeed == ETextureEncodeSpeed::Fast)
+
+			// These might be empty.
+			TArray<FTextureBuildSettings> BuildSettingsFetchFirst;
+			TArray<FTexturePlatformData::FTextureEncodeResultMetadata> ResultMetadataFetchFirst;
+
+			switch (EncodeSpeed)
 			{
-				GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Fast, BuildSettingsFetchOrBuild, &ResultMetadataFetchOrBuild);
-			}
-			else
-			{
-				GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Final, BuildSettingsFetchOrBuild, &ResultMetadataFetchOrBuild);
+			case ETextureEncodeSpeed::FinalIfAvailable:
+				{
+					GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Final, BuildSettingsFetchFirst, &ResultMetadataFetchFirst);
+					GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Fast, BuildSettingsFetchOrBuild, &ResultMetadataFetchOrBuild);
+					break;
+				}
+			case ETextureEncodeSpeed::Fast:
+				{
+					GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Fast, BuildSettingsFetchOrBuild, &ResultMetadataFetchOrBuild);
+					break;
+				}
+			case ETextureEncodeSpeed::Final:
+				{
+					GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Final, BuildSettingsFetchOrBuild, &ResultMetadataFetchOrBuild);
+					break;
+				}
+			default:
+				{
+					UE_LOG(LogTexture, Fatal, TEXT("Invalid encode speed in CachePlatformData"));
+				}
 			}
 
 			// If we're open in a texture editor, then we might have custom build settings.
@@ -2569,6 +2840,8 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 					// speed to whatever we already have staged, then set those settings to the custom
 					// ones.
 					EncodeSpeed = (ETextureEncodeSpeed)BuildSettingsFetchOrBuild[0].RepresentsEncodeSpeedNoSend;
+					BuildSettingsFetchFirst.Empty();
+					ResultMetadataFetchFirst.Empty();
 
 					for (int32 i = 0; i < BuildSettingsFetchOrBuild.Num(); i++)
 					{
@@ -2596,19 +2869,33 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 			bPerformCache = true;
 			if (PlatformDataLink != nullptr)
 			{
-				// Check if our keys match.
-				if (FTexturePlatformData::IsUsingNewDerivedData() && (Source.GetNumLayers() == 1) && !BuildSettingsFetchOrBuild[0].bVirtualStreamable)
+				bPerformCache = false;
+
+				// Check if our keys match. If we have two, they both have to match, otherwise a change that only affects one
+				// might not cause a rebuild, leading to confusion in the texture editor.
+				if (IsUsingNewDerivedData() && (Source.GetNumLayers() == 1) && !BuildSettingsFetchOrBuild[0].bVirtualStreamable)
 				{
 					// DDC2 version
 					using namespace UE::DerivedData;
 					if (const FTexturePlatformData::FStructuredDerivedDataKey* ExistingDerivedDataKey = PlatformDataLink->FetchOrBuildDerivedDataKey.TryGet<FTexturePlatformData::FStructuredDerivedDataKey>())
 					{
-						if (*ExistingDerivedDataKey == CreateTextureDerivedDataKey(*this, CacheFlags, BuildSettingsFetchOrBuild[0]))
+						if (*ExistingDerivedDataKey != CreateTextureDerivedDataKey(*this, CacheFlags, BuildSettingsFetchOrBuild[0]))
 						{
-							bPerformCache = false;
+							bPerformCache = true;
 						}						
 					}
-				}
+
+					if (BuildSettingsFetchFirst.Num())
+					{
+						if (const FTexturePlatformData::FStructuredDerivedDataKey* ExistingDerivedDataKey = PlatformDataLink->FetchFirstDerivedDataKey.TryGet<FTexturePlatformData::FStructuredDerivedDataKey>())
+						{
+							if (*ExistingDerivedDataKey != CreateTextureDerivedDataKey(*this, CacheFlags, BuildSettingsFetchFirst[0]))
+							{
+								bPerformCache = true;
+							}
+						}
+					}
+				} // end if ddc2
 				else
 				{
 					// DDC1 version.
@@ -2616,12 +2903,25 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 					{
 						FString DerivedDataKey;
 						GetTextureDerivedDataKey(*this, BuildSettingsFetchOrBuild.GetData(), DerivedDataKey);
-						if (*ExistingDerivedDataKey == DerivedDataKey)
+						if (*ExistingDerivedDataKey != DerivedDataKey)
 						{
-							bPerformCache = false;
+							bPerformCache = true;
 						}
 					}
-				}
+
+					if (BuildSettingsFetchFirst.Num())
+					{
+						if (const FString* ExistingDerivedDataKey = PlatformDataLink->FetchFirstDerivedDataKey.TryGet<FString>())
+						{
+							FString DerivedDataKey;
+							GetTextureDerivedDataKey(*this, BuildSettingsFetchFirst.GetData(), DerivedDataKey);
+							if (*ExistingDerivedDataKey != DerivedDataKey)
+							{
+								bPerformCache = true;
+							}
+						}
+					}
+				} // end if ddc1
 			} // end if checking existing data matches.
 
 			if (bPerformCache)
@@ -2638,15 +2938,6 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 				else
 				{
 					PlatformDataLink = new FTexturePlatformData();
-				}
-
-				// We delayed generating our FetchFirst settings since we assume we'll usually be just testing
-				// keys above.
-				TArray<FTextureBuildSettings> BuildSettingsFetchFirst;
-				TArray<FTexturePlatformData::FTextureEncodeResultMetadata> ResultMetadataFetchFirst;
-				if (EncodeSpeed == ETextureEncodeSpeed::FinalIfAvailable)
-				{
-					GetBuildSettingsForRunningPlatform(*this, ETextureEncodeSpeed::Final, BuildSettingsFetchFirst, &ResultMetadataFetchFirst);
 				}
 
 				PlatformDataLink->Cache(
@@ -2916,7 +3207,7 @@ bool UTexture::IsAsyncCacheComplete() const
 	{
 		if (const FTexturePlatformData* PlatformData = *RunningPlatformDataPtr)
 		{
-			if (PlatformData->AsyncTask && !PlatformData->AsyncTask->Poll())
+			if (!PlatformData->IsAsyncWorkComplete())
 			{
 				return false;
 			}
@@ -2929,7 +3220,7 @@ bool UTexture::IsAsyncCacheComplete() const
 		{
 			if (const FTexturePlatformData* PlatformData = Kvp.Value)
 			{
-				if (PlatformData->AsyncTask && !PlatformData->AsyncTask->Poll())
+				if (!PlatformData->IsAsyncWorkComplete())
 				{
 					return false;
 				}
@@ -2939,7 +3230,7 @@ bool UTexture::IsAsyncCacheComplete() const
 
 	return true;
 }
-	
+
 bool UTexture::TryCancelCachePlatformData()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UTexture::TryCancelCachePlatformData);
@@ -3017,7 +3308,6 @@ void UTexture::ForceRebuildPlatformData(uint8 InEncodeSpeedOverride /* =255 ETex
 			EncodeSpeed = GetDesiredEncodeSpeed();
 		}
 
-
 		TArray<FTextureBuildSettings> BuildSettingsFetch;
 		TArray<FTextureBuildSettings> BuildSettingsFetchOrBuild;
 		TArray<FTexturePlatformData::FTextureEncodeResultMetadata> ResultMetadataFetch;
@@ -3047,53 +3337,8 @@ void UTexture::ForceRebuildPlatformData(uint8 InEncodeSpeedOverride /* =255 ETex
 	}
 }
 
-
-
 void UTexture::MarkPlatformDataTransient()
 {
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-
-	FTexturePlatformData** RunningPlatformData = GetRunningPlatformData();
-	if (RunningPlatformData)
-	{
-		FTexturePlatformData* PlatformData = *RunningPlatformData;
-		if (PlatformData)
-		{
-			if (const FString* KeyString = PlatformData->DerivedDataKey.TryGet<FString>())
-			{
-				for (int32 MipIndex = 0; MipIndex < PlatformData->Mips.Num(); ++MipIndex)
-				{
-					FTexture2DMipMap& Mip = PlatformData->Mips[MipIndex];
-					if (Mip.IsPagedToDerivedData())
-					{
-						DDC.MarkTransient(*PlatformData->GetDerivedDataMipKeyString(MipIndex, Mip));
-					}
-				}
-				DDC.MarkTransient(**KeyString);
-			}
-		}
-	}
-
-	TMap<FString, FTexturePlatformData*> *CookedPlatformData = GetCookedPlatformData();
-	if ( CookedPlatformData )
-	{
-		for ( auto It : *CookedPlatformData )
-		{
-			FTexturePlatformData* PlatformData = It.Value;
-			if (const FString* KeyString = PlatformData->DerivedDataKey.TryGet<FString>())
-			{
-				for (int32 MipIndex = 0; MipIndex < PlatformData->Mips.Num(); ++MipIndex)
-				{
-					FTexture2DMipMap& Mip = PlatformData->Mips[MipIndex];
-					if (Mip.IsPagedToDerivedData())
-					{
-						DDC.MarkTransient(*PlatformData->GetDerivedDataMipKeyString(MipIndex, Mip));
-					}
-				}
-				DDC.MarkTransient(**KeyString);
-			}
-		}
-	}
 }
 #endif // #if WITH_EDITOR
 

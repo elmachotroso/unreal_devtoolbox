@@ -8,10 +8,10 @@
 #include "UnrealWidgetFwd.h"
 #include "SceneTypes.h"
 #include "Framework/Commands/Commands.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "Toolkits/IToolkit.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "TexAligner/TexAligner.h"
 #include "LightmapResRatioAdjust.h"
 #include "Elements/Framework/TypedElementHandle.h"
@@ -79,6 +79,7 @@ public:
 	TSharedPtr< FUICommandInfo > BuildPathsOnly;
 	TSharedPtr< FUICommandInfo > BuildHLODs;
 	TSharedPtr< FUICommandInfo > BuildMinimap;
+	TSharedPtr< FUICommandInfo > BuildLandscapeSplineMeshes;
 	TSharedPtr< FUICommandInfo > BuildTextureStreamingOnly;
 	TSharedPtr< FUICommandInfo > BuildVirtualTextureOnly;
 	TSharedPtr< FUICommandInfo > BuildAllLandscape;
@@ -131,6 +132,9 @@ public:
 
 	/** Copy the file path where the actor is saved. */
 	TSharedPtr< FUICommandInfo > CopyActorFilePathtoClipboard;
+
+	/** Save the selected actor. */
+	TSharedPtr< FUICommandInfo > SaveActor;
 
 	/** Opens the source control panel. */
 	TSharedPtr< FUICommandInfo > OpenSourceControl;
@@ -397,10 +401,6 @@ public:
 	/** Selects all actors using the same material(s) as the current selection */
 	TSharedPtr< FUICommandInfo > SelectAllWithSameMaterial;
 
-	/** Selects all actors used by currently selected matinee actor */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	TSharedPtr< FUICommandInfo > SelectAllActorsControlledByMatinee;
-
 	/** Selects all emitters using the same particle system as the current selection */
 	TSharedPtr< FUICommandInfo > SelectMatchingEmitter;
 
@@ -645,7 +645,9 @@ public:
 
 	/** Creates a new level */
 	static void NewLevel();
-	static FSimpleDelegate NewLevelOverride;
+	static void NewLevel(bool& bOutLevelCreated);
+	DECLARE_DELEGATE_OneParam(FNewLevelOverride, bool& /*bOutLevelCreated*/);
+	static FNewLevelOverride NewLevelOverride;
 	static bool NewLevel_CanExecute();
 
 	/** Opens an existing level */
@@ -749,8 +751,11 @@ public:
 	static void BuildGeometryOnly_Execute();
 	static void BuildGeometryOnly_OnlyCurrentLevel_Execute();
 	static void BuildPathsOnly_Execute();
+	static bool IsWorldPartitionEnabled();
+	static bool IsWorldPartitionStreamingEnabled();
 	static void BuildHLODs_Execute();
 	static void BuildMinimap_Execute();
+	static void BuildLandscapeSplineMeshes_Execute();
 	static void BuildTextureStreamingOnly_Execute();
 	static void BuildVirtualTextureOnly_Execute();
 	static void BuildAllLandscape_Execute();
@@ -919,11 +924,12 @@ public:
 	/** Called when 'Go to Code for Actor' is clicked */
 	static void GoToCodeForActor_Clicked();
 	static bool GoToCodeForActor_CanExecute();
+	static bool GoToCodeForActor_IsVisible();
 
 	/** Called when 'Go to Documentation for Actor' is clicked */
 	static void GoToDocsForActor_Clicked();
 
-	/**
+/**
 	 * Called when the LockActorMovement command is executed
 	 */
 	static void LockActorMovement_Clicked();
@@ -958,7 +964,7 @@ public:
 	 * @param ActorFactory	The actor factory to use in replacement
 	 */
 	static void ReplaceActors_Clicked( UActorFactory* ActorFactory, FAssetData AssetData );
-	static AActor* ReplaceActors( UActorFactory* ActorFactory, const FAssetData& AssetData );
+	static AActor* ReplaceActors( UActorFactory* ActorFactory, const FAssetData& AssetData, bool bCopySourceProperties = true );
 
 	/**
 	 * Called when the ReplaceActor command is executed and a class is selected in the actor browser
@@ -1254,13 +1260,24 @@ public:
 	static void CopyActorFilePathtoClipboard_Clicked();
 
 	/**
+	* Save the actor.
+	*/
+	static void SaveActor_Clicked();
+
+	/**
+	 * Checks whether SaveActor can be executed on the selected actors.
+	 * @return 	True if SaveActor can be executed on the selected actors.
+	 */
+	static bool SaveActor_CanExecute();
+
+	/**
 	* Shows the history of the file containing the actor.
 	*/
 	static void ShowActorHistory_Clicked();
 
 	/**
 	 * Checks whether ShowActorHistory can be executed on the selected actors.
-	 * @return 	True if ShowActorHistory can be executer on the selected actors.
+	 * @return 	True if ShowActorHistory can be executed on the selected actors.
 	 */
 	static bool ShowActorHistory_CanExecute();
 

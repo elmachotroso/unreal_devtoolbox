@@ -40,7 +40,7 @@ void SLevelSnapshotsEditorBrowser::Construct(const FArguments& InArgs, ULevelSna
 		FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FARFilter ARFilter;
-	ARFilter.ClassNames.Add(ULevelSnapshot::StaticClass()->GetFName());
+	ARFilter.ClassPaths.Add(ULevelSnapshot::StaticClass()->GetClassPathName());
 
 	FAssetPickerConfig AssetPickerConfig;
 	AssetPickerConfig.CustomColumns = GetCustomColumns();
@@ -239,7 +239,7 @@ TSharedPtr<SWidget> SLevelSnapshotsEditorBrowser::OnGetAssetContextMenu(const TA
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("Browse", "Browse to Asset"),
 			LOCTEXT("BrowseTooltip", "Browses to the associated asset and selects it in the most recently used Content Browser (summoning one if necessary)"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser.Small"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser.Small"),
 			FUIAction(
 				FExecuteAction::CreateLambda([SelectedAsset] ()
 				{
@@ -257,7 +257,7 @@ TSharedPtr<SWidget> SLevelSnapshotsEditorBrowser::OnGetAssetContextMenu(const TA
 		MenuBuilder.AddMenuEntry(
 		LOCTEXT("OpenSnapshot", "Open Snapshot in Editor"),
 		LOCTEXT("OpenSnapshotToolTip", "Open this snapshot in the Level Snapshots Editor."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.SummonOpenAssetDialog"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.SummonOpenAssetDialog"),
 			FUIAction(
 				FExecuteAction::CreateLambda([this, SelectedAsset] ()
 				{
@@ -282,13 +282,11 @@ TSharedRef<SToolTip> SLevelSnapshotsEditorBrowser::CreateCustomTooltip(FAssetDat
 	constexpr uint32 MaxDescriptionHeight = ThumbnailSize / 3 * 2;
 	
 	const TSharedRef<FAssetThumbnail> AssetThumbnail =
-		MakeShareable(
-			new FAssetThumbnail(
-				AssetData.GetAsset(),
-				ThumbnailSize,
-				ThumbnailSize,
-				UThumbnailManager::Get().GetSharedThumbnailPool()
-			)
+		MakeShared<FAssetThumbnail>(
+			AssetData,
+			ThumbnailSize,
+			ThumbnailSize,
+			UThumbnailManager::Get().GetSharedThumbnailPool()
 		);
 	
 	FAssetThumbnailConfig AssetThumbnailConfig;
@@ -302,6 +300,9 @@ TSharedRef<SToolTip> SLevelSnapshotsEditorBrowser::CreateCustomTooltip(FAssetDat
 
 	FString OutCaptureTime;
 	AssetData.GetTagValue("CaptureTime",OutCaptureTime);
+	
+	FSlateFontInfo AssetNameTextFont = FAppStyle::Get().GetFontStyle("Bold");
+	AssetNameTextFont.Size = 10;
 	
 	return SNew(SToolTip)
 	[
@@ -335,7 +336,7 @@ TSharedRef<SToolTip> SLevelSnapshotsEditorBrowser::CreateCustomTooltip(FAssetDat
 				[
 					SNew(STextBlock)
 					.Text(FText::FromName(AssetData.AssetName))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.Font(AssetNameTextFont)
 					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
 				]
 

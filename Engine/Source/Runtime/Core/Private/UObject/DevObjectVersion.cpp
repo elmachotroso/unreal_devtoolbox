@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "UObject/DevObjectVersion.h"
 #include "Logging/LogMacros.h"
+#include "Misc/ScopeLock.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/BuildObjectVersion.h"
 #include "UObject/CoreObjectVersion.h"
@@ -19,7 +20,9 @@
 #include "UObject/AnimPhysObjectVersion.h"
 #include "UObject/AnimObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/FortniteNCBranchObjectVersion.h"
 #include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
+#include "UObject/FortniteShaderworkObjectVersion.h"
 #include "UObject/ReflectionCaptureObjectVersion.h"
 #include "UObject/LoadTimesObjectVersion.h"
 #include "UObject/AutomationObjectVersion.h"
@@ -40,7 +43,102 @@ DEFINE_LOG_CATEGORY_STATIC(LogDevObjectVersion, Log, All);
 
 #if !UE_BUILD_SHIPPING
 static TArray<FGuid, TInlineAllocator<64>> GDevVersions;
+
+// A multi map of all Guids registered for a system to identify and report duplicates
+static TMultiMap<FGuid, FGuid> GRegisteredSystemGuids;
 #endif
+
+struct FDevSystemGuidRegistry
+{
+	void RegisterSystemGuids(const TMap<FGuid, FGuid>& SystemGuids);
+	FGuid GetSystemGuid(FGuid System);
+
+private:
+
+	struct FRegisteredGuid
+	{
+		FGuid Guid;
+		bool bHasBeenRead = false;
+	};
+
+	void RegisterSystemGuid(FGuid System, FGuid Guid);
+
+	FCriticalSection Lock;
+	TMap<FGuid, FRegisteredGuid> RegisteredSystemGuids;
+};
+
+static FDevSystemGuidRegistry GSystemGuidRegistry;
+
+FDevSystemGuidRegistration::FDevSystemGuidRegistration(const TMap<FGuid, FGuid>& SystemGuids)
+{
+	GSystemGuidRegistry.RegisterSystemGuids(SystemGuids);
+}
+
+void FDevSystemGuidRegistry::RegisterSystemGuid(FGuid System, FGuid Guid)
+{
+#if !UE_BUILD_SHIPPING
+	TArray<FGuid> RegisteredGuids;
+	GRegisteredSystemGuids.MultiFind(System, RegisteredGuids);
+	if (ensureMsgf(!RegisteredGuids.Contains(Guid), TEXT("Registering a duplicate guid for the same system. Validate that each system has a unique Guid and you are not registering a system twice.")))
+	{
+		GRegisteredSystemGuids.Add(System, Guid);
+	}
+#endif
+
+	FRegisteredGuid& RegisteredGuid = RegisteredSystemGuids.FindOrAdd(System);
+
+	ensureMsgf(!RegisteredGuid.bHasBeenRead, TEXT("Registering a system guid after it has already been read."));
+
+	RegisteredGuid.Guid.A ^= Guid.A;
+	RegisteredGuid.Guid.B ^= Guid.B;
+	RegisteredGuid.Guid.C ^= Guid.C;
+	RegisteredGuid.Guid.D ^= Guid.D;
+}
+
+void FDevSystemGuidRegistry::RegisterSystemGuids(const TMap<FGuid, FGuid>& SystemGuids)
+{
+	FScopeLock Scope(&Lock);
+
+	for (const TPair<FGuid, FGuid>& SystemGuid : SystemGuids)
+	{
+		check(SystemGuid.Key.IsValid());
+		check(SystemGuid.Value.IsValid());
+		RegisterSystemGuid(SystemGuid.Key, SystemGuid.Value);
+	}
+}
+
+FGuid FDevSystemGuidRegistry::GetSystemGuid(FGuid System)
+{
+	FScopeLock Scope(&Lock);
+
+	FRegisteredGuid& RegisteredGuid = RegisteredSystemGuids.FindOrAdd(System);
+	RegisteredGuid.bHasBeenRead = true;
+	return RegisteredGuid.Guid;
+}
+
+FDevSystemGuids::FDevSystemGuids()
+	: GLOBALSHADERMAP_DERIVEDDATA_VER(0x7912A706, 0x52B8450A, 0x9CD66FA7, 0xEFBBFA0A)
+	, LANDSCAPE_MOBILE_COOK_VERSION(0x0E9ADF72, 0xD6B64E0D, 0x81C4A92B, 0x081A37AB)
+	, MATERIALSHADERMAP_DERIVEDDATA_VER(0x2579AAFE, 0x8F1D4E4F, 0xB04278C6, 0x35917C17)
+	, NANITE_DERIVEDDATA_VER(0xBEB0226A, 0x070E4ECA, 0x972C1E7D, 0xD8599E68)
+	, NIAGARASHADERMAP_DERIVEDDATA_VER(0x7BBD9913, 0xC1554D20, 0xADAE9F17, 0xB006299E)
+	, Niagara_LatestScriptCompileVersion(0x6D32B8EE, 0x909FCA7E, 0xA5CE4F17, 0x066A5F25)
+	, SkeletalMeshDerivedDataVersion(0x9B5F4544, 0x76D7481C, 0x9AD3F614, 0xA6C07904)
+	, STATICMESH_DERIVEDDATA_VER(0x5B7A05A7, 0x7371440C, 0xA314621A, 0x9B1E08BC)
+	, POSESEARCHDB_DERIVEDDATA_VER(0x389117E4, 0x807A4CC0, 0x9F37C2E6, 0xD808A78D)
+{
+}
+
+const FDevSystemGuids& FDevSystemGuids::Get()
+{
+	static FDevSystemGuids Guids;
+	return Guids;
+}
+
+FGuid FDevSystemGuids::GetSystemGuid(FGuid System)
+{
+	return GSystemGuidRegistry.GetSystemGuid(System);
+}
 
 void FDevVersionRegistration::RecordDevVersion(FGuid Key)
 {
@@ -158,6 +256,16 @@ FDevVersionRegistration GRegisterAutomationObjectVersion(FAutomationObjectVersio
 const FGuid FFortniteMainBranchObjectVersion::GUID(0x601D1886, 0xAC644F84, 0xAA16D3DE, 0x0DEAC7D6);
 // Register Fortnite Main custom version with Core
 FDevVersionRegistration GRegisterFortniteMainBranchObjectVersion(FFortniteMainBranchObjectVersion::GUID, FFortniteMainBranchObjectVersion::LatestVersion, TEXT("FortniteMain"));
+FDevSystemGuidRegistration GRegisterFortniteMainBranchSystemGuids(FFortniteMainBranchObjectVersion::GetSystemGuids());
+
+// Unique Fortnite NC Object version id
+const FGuid FFortniteNCBranchObjectVersion::GUID(0x5B4C06B7, 0x24634AF8, 0x805BBF70, 0xCDF5D0DD);
+// Register Fortnite NC version with Core
+FDevVersionRegistration GRegisterFortniteNCBranchObjectVersion(FFortniteNCBranchObjectVersion::GUID, FFortniteNCBranchObjectVersion::LatestVersion, TEXT("FortniteNC"));
+FDevSystemGuidRegistration GRegisterFortniteNCBranchSystemGuids(FFortniteNCBranchObjectVersion::GetSystemGuids());
+
+// Register Fortnite Shaderwork custom version with Core
+FDevSystemGuidRegistration GRegisterFortniteShaderworkBranchSystemGuids(FFortniteShaderworkObjectVersion::GetSystemGuids());
 
 // Unique Fortnite Release Object version id
 const FGuid FFortniteReleaseBranchCustomObjectVersion::GUID(0xE7086368, 0x6B234C58, 0x84391B70, 0x16265E91);
@@ -205,11 +313,13 @@ FDevVersionRegistration GRegisterVirtualProductionObjectVersion(FVirtualProducti
 const FGuid FUE5MainStreamObjectVersion::GUID(0x697DD581, 0xE64f41AB, 0xAA4A51EC, 0xBEB7B628);
 // Register UE5 main stream custom version with Core
 FDevVersionRegistration GRegisterUE5MainStreamObjectVersion(FUE5MainStreamObjectVersion::GUID, FUE5MainStreamObjectVersion::LatestVersion, TEXT("UE5-Main"));
+FDevSystemGuidRegistration GRegisterUE5MainBranchSystemGuids(FUE5MainStreamObjectVersion::GetSystemGuids());
 
 // Unique UE5 release version id
 const FGuid FUE5ReleaseStreamObjectVersion::GUID(0xD89B5E42, 0x24BD4D46, 0x8412ACA8, 0xDF641779);
 // Register UE5 release stream custom version with Core
 FDevVersionRegistration GRegisterUE5ReleaseStreamObjectVersion(FUE5ReleaseStreamObjectVersion::GUID, FUE5ReleaseStreamObjectVersion::LatestVersion, TEXT("UE5-Release"));
+FDevSystemGuidRegistration GRegisterUE5ReleaseBranchSystemGuids(FUE5ReleaseStreamObjectVersion::GetSystemGuids());
 
 // Unique UE5 private frosty version id
 const FGuid FUE5PrivateFrostyStreamObjectVersion::GUID(0x59DA5D52, 0x12324948, 0xB8785978, 0x70B8E98B);

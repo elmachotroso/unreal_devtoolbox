@@ -2,7 +2,10 @@
 
 #include "WorldPartition/HLOD/HLODLayerFactory.h"
 
+#include "Misc/AssertionMacros.h"
+#include "Templates/SubclassOf.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
+
 
 UHLODLayerFactory::UHLODLayerFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -16,7 +19,20 @@ UHLODLayerFactory::UHLODLayerFactory(const FObjectInitializer& ObjectInitializer
 
 UObject* UHLODLayerFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
-	UHLODLayer* HLODLayer = NewObject<UHLODLayer>(InParent, Class, Name, Flags);
+	UHLODLayer* HLODLayer = nullptr;
+
+	if (UHLODLayer* HLODLayerTemplate = UHLODLayer::GetEngineDefaultHLODLayersSetup())
+	{
+		HLODLayer = DuplicateObject<UHLODLayer>(HLODLayerTemplate, InParent, Name);
+		HLODLayer->ClearFlags(RF_AllFlags);
+		HLODLayer->SetFlags(Flags);
+	}
+	
+	if (!HLODLayer)
+	{
+		HLODLayer = NewObject<UHLODLayer>(InParent, Class, Name, Flags);
+	}
+	
 	check(HLODLayer);
 	return HLODLayer;
 }

@@ -9,10 +9,10 @@
 #include "IDetailTreeNode.h"
 #include "GameDelegates.h"
 #include "Settings/LevelEditorPlaySettings.h"
-#include "Editor/PropertyEditor/Public/PropertyEditorModule.h"
-#include "Editor/LevelEditor/Public/ILevelEditor.h"
-#include "Editor/UnrealEd/Public/IAssetViewport.h"
-#include "Editor/LevelEditor/Public/LevelEditor.h"
+#include "PropertyEditorModule.h"
+#include "ILevelEditor.h"
+#include "IAssetViewport.h"
+#include "LevelEditor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "IDetailsView.h"
 #include "ISequencer.h"
@@ -51,6 +51,8 @@
 #include "UnrealEdMisc.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EditorSupportDelegates.h"
+#include "Subsystems/UnrealEditorSubsystem.h"
+
 
 #define LOCTEXT_NAMESPACE "LevelEditorSequencerIntegration"
 
@@ -125,14 +127,20 @@ public:
 	{
 		TArray<UObject*> Objects;
 		KeyedPropertyHandle.GetOuterObjects( Objects );
-		FKeyPropertyParams KeyPropertyParams(Objects, KeyedPropertyHandle, ESequencerKeyMode::ManualKeyForced);
 
+		TArray<UObject*> EachObject;
+		EachObject.SetNum(1);
 		for (const TWeakPtr<ISequencer>& WeakSequencer : Sequencers)
 		{
 			TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 			if (Sequencer.IsValid())
 			{
-				Sequencer->KeyProperty(KeyPropertyParams);
+				for (UObject* Object : Objects)
+				{
+					EachObject[0] = Object;
+					FKeyPropertyParams KeyPropertyParams(EachObject, KeyedPropertyHandle, ESequencerKeyMode::ManualKeyForced);
+					Sequencer->KeyProperty(KeyPropertyParams);
+				}
 			}
 		}
 	}
@@ -189,6 +197,14 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 		AcquiredResources.Add([=]{ FEditorDelegates::PostSaveExternalActors.Remove(Handle); });
 	}
 	{
+		FDelegateHandle Handle = FEditorDelegates::OnPreAssetValidation.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreAssetValidation);
+		AcquiredResources.Add([=] { FEditorDelegates::OnPreAssetValidation.Remove(Handle); });
+	}
+	{
+		FDelegateHandle Handle = FEditorDelegates::OnPostAssetValidation.AddRaw(this, &FLevelEditorSequencerIntegration::OnPostAssetValidation);
+		AcquiredResources.Add([=] { FEditorDelegates::OnPostAssetValidation.Remove(Handle); });
+	}
+	{
 		FDelegateHandle Handle = FEditorDelegates::PreBeginPIE.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreBeginPIE);
 		AcquiredResources.Add([=]{ FEditorDelegates::PreBeginPIE.Remove(Handle); });
 	}
@@ -232,7 +248,6 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 
 	AddLevelViewportMenuExtender();
 	ActivateDetailHandler(Options);
-	ActivateSequencerEditorMode();
 
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -355,14 +370,41 @@ void FLevelEditorSequencerIntegration::OnPostSaveExternalActors(UWorld* World)
 	ResetToAnimatedState(World);
 }
 
+void FLevelEditorSequencerIntegration::OnPreAssetValidation()
+{
+	// Asset validation doesn't have a world context, so we'll just use the editor world.
+	UUnrealEditorSubsystem* UnrealEditorSubsystem = GEditor->GetEditorSubsystem<UUnrealEditorSubsystem>();
+	if(UnrealEditorSubsystem && UnrealEditorSubsystem->GetEditorWorld())
+	{
+		RestoreToSavedState(UnrealEditorSubsystem->GetEditorWorld());
+	}
+}
+
+void FLevelEditorSequencerIntegration::OnPostAssetValidation()
+{
+	UUnrealEditorSubsystem* UnrealEditorSubsystem = GEditor->GetEditorSubsystem<UUnrealEditorSubsystem>();
+	if(UnrealEditorSubsystem && UnrealEditorSubsystem->GetEditorWorld())
+	{
+		ResetToAnimatedState(UnrealEditorSubsystem->GetEditorWorld());
+	}
+}
+
 void FLevelEditorSequencerIntegration::OnNewCurrentLevel()
 {
-	ActivateSequencerEditorMode();
+	auto IsSequenceEditor = [](const FSequencerAndOptions& In) { return In.Sequencer.IsValid() && In.Options.bActivateSequencerEdMode; };
+	if (BoundSequencers.FindByPredicate(IsSequenceEditor))
+	{
+		ActivateSequencerEditorMode();
+	}
 }
 
 void FLevelEditorSequencerIntegration::OnMapOpened(const FString& Filename, bool bLoadAsTemplate)
 {
-	ActivateSequencerEditorMode();
+	auto IsSequenceEditor = [](const FSequencerAndOptions& In) { return In.Sequencer.IsValid() && In.Options.bActivateSequencerEdMode; };
+	if (BoundSequencers.FindByPredicate(IsSequenceEditor))
+	{
+		ActivateSequencerEditorMode();
+	}
 }
 
 void FLevelEditorSequencerIntegration::OnLevelAdded(ULevel* InLevel, UWorld* InWorld)
@@ -564,10 +606,8 @@ void FLevelEditorSequencerIntegration::UpdateDetails(bool bForceRefresh)
 
 void FLevelEditorSequencerIntegration::ActivateSequencerEditorMode()
 {
-
 	// Release the sequencer mode if we already enabled it
-	FName ResourceName("SequencerMode");
-	AcquiredResources.Release(ResourceName);
+	DeactivateSequencerEditorMode();
 
 	// Activate the default mode in case FEditorModeTools::Tick isn't run before here. 
 	// This can be removed once a general fix for UE-143791 has been implemented.
@@ -587,25 +627,23 @@ void FLevelEditorSequencerIntegration::ActivateSequencerEditorMode()
 			SequencerEdMode->AddSequencer(Pinned);
 		}
 	}
-
-	// Acquire the resource, which allows us to deactivate the mode later
-	AcquiredResources.Add(
-		ResourceName,
-		[] {
-
-			FEditorModeID ModeID = TEXT("SequencerToolsEditMode");
-
-			if (GLevelEditorModeTools().IsModeActive(ModeID))
-			{
-				GLevelEditorModeTools().DeactivateMode(ModeID);
-			}
-			if (GLevelEditorModeTools().IsModeActive(FSequencerEdMode::EM_SequencerMode))
-			{
-				GLevelEditorModeTools().DeactivateMode(FSequencerEdMode::EM_SequencerMode);
-			}
-		}
-	);
 }
+
+
+void FLevelEditorSequencerIntegration::DeactivateSequencerEditorMode()
+{
+	const FEditorModeID ModeID = TEXT("SequencerToolsEditMode");
+	
+	if (GLevelEditorModeTools().IsModeActive(ModeID))
+	{
+		GLevelEditorModeTools().DeactivateMode(ModeID);
+	}
+	if (GLevelEditorModeTools().IsModeActive(FSequencerEdMode::EM_SequencerMode))
+	{
+		GLevelEditorModeTools().DeactivateMode(FSequencerEdMode::EM_SequencerMode);
+	}
+}
+
 
 
 void FLevelEditorSequencerIntegration::OnPreBeginPIE(bool bIsSimulating)
@@ -1019,13 +1057,14 @@ void FLevelEditorSequencerIntegration::AttachOutlinerColumn()
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked< FSceneOutlinerModule >("SceneOutliner");
 
 	FSceneOutlinerColumnInfo SpawnColumnInfo(ESceneOutlinerColumnVisibility::Visible, 11, 
-		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerSpawnableColumn));
+		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerSpawnableColumn),
+		true, TOptional<float>(), LOCTEXT("SpawnableColumnName", "Spawnable"));
 
 	SceneOutlinerModule.RegisterDefaultColumnType< Sequencer::FSequencerSpawnableColumn >(SpawnColumnInfo);
-	AcquiredResources.Add([=]{ this->DetachOutlinerColumn(); });
 
 	FSceneOutlinerColumnInfo ColumnInfo(ESceneOutlinerColumnVisibility::Visible, 15, 
-		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerInfoColumn));
+		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerInfoColumn), 
+		true, TOptional<float>(), LOCTEXT("SequencerColumnName", "Sequencer"));
 
 	SceneOutlinerModule.RegisterDefaultColumnType< Sequencer::FSequencerInfoColumn >(ColumnInfo);
 
@@ -1146,7 +1185,6 @@ void FLevelEditorSequencerIntegration::ResetToAnimatedState(UWorld* World)
 		{
 			if (Options.bRequiresLevelEvents)
 			{
-				In.InvalidateCachedData();
 				In.ForceEvaluate();
 
 				for (const TSharedPtr<ISequencerTrackEditor>& TrackEditor : In.GetTrackEditors())
@@ -1247,9 +1285,16 @@ void FLevelEditorSequencerIntegration::AddSequencer(TSharedRef<ISequencer> InSeq
 	{
 		SequencerEdMode->AddSequencer(DerivedSequencerPtr);
 	}
+	else if (Options.bActivateSequencerEdMode)
+	{
+		ActivateSequencerEditorMode();
+	}
 
 	ActivateRealtimeViewports();
-	AttachOutlinerColumn();
+	if (Options.bAttachOutlinerColumns)
+	{
+		AttachOutlinerColumn();
+	}
 	OnSequencersChanged.Broadcast();
 }
 
@@ -1280,10 +1325,29 @@ void FLevelEditorSequencerIntegration::RemoveSequencer(TSharedRef<ISequencer> In
 
 	KeyFrameHandler->Remove(InSequencer);
 
-	auto IsValidSequencer = [](const FSequencerAndOptions& In){ return In.Sequencer.IsValid(); };
-	if (!BoundSequencers.FindByPredicate(IsValidSequencer))
+	bool bHasValidSequencer = false;
+	bool bHasSequencerEditor = false;
+	bool bHasOutlinerColumns = false;
+	for (const FSequencerAndOptions& In : BoundSequencers)
+	{
+		if (In.Sequencer.IsValid())
+		{
+			bHasValidSequencer = true;
+			bHasSequencerEditor = bHasSequencerEditor || In.Options.bActivateSequencerEdMode;
+			bHasOutlinerColumns = bHasOutlinerColumns || In.Options.bAttachOutlinerColumns;
+		}
+	}
+	if (!bHasValidSequencer)
 	{
 		AcquiredResources.Release();
+	}
+	if (!bHasSequencerEditor)
+	{
+		DeactivateSequencerEditorMode();
+	}
+	if (!bHasOutlinerColumns)
+	{
+		DetachOutlinerColumn();
 	}
 
 	OnSequencersChanged.Broadcast();

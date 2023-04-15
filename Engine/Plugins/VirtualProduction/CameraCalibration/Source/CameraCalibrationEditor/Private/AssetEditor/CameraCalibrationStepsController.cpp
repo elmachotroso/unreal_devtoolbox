@@ -6,6 +6,7 @@
 #include "CalibrationPointComponent.h"
 #include "Camera/CameraActor.h"
 #include "CameraCalibrationEditorLog.h"
+#include "CameraCalibrationSettings.h"
 #include "CameraCalibrationStep.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CameraCalibrationToolkit.h"
@@ -27,9 +28,8 @@
 #include "ICompElementManager.h"
 #include "Input/Events.h"
 #include "Kismet/KismetRenderingLibrary.h"
+#include "LensComponent.h"
 #include "LensFile.h"
-#include "LiveLinkCameraController.h"
-#include "LiveLinkComponentController.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "MediaPlayer.h"
@@ -68,36 +68,6 @@ namespace CameraCalibrationStepsController
 		{
 			return CompElementManager.Get();
 		}
-		return nullptr;
-	}
-
-	/** Retrieves the latest lens evaluation data from the LiveLink controller in the given camera for the given lens file */
-	const FLensFileEvalData* LensFileEvalDataFromCamera(const ACameraActor* InCamera, const ULensFile* InLensFile)
-	{
-		if (!InCamera || !InLensFile)
-		{
-			return nullptr;
-		}
-
-		TArray<ULiveLinkComponentController*> LLComponentControllers;
-		InCamera->GetComponents<ULiveLinkComponentController>(LLComponentControllers);
-
-		for (const ULiveLinkComponentController* LLComponentController : LLComponentControllers)
-		{
-			for (const TPair<TSubclassOf<ULiveLinkRole>, TObjectPtr<ULiveLinkControllerBase>> Pair : LLComponentController->ControllerMap)
-			{
-				if (ULiveLinkCameraController* CameraController = Cast<ULiveLinkCameraController>(Pair.Value))
-				{
-					const FLensFileEvalData* OutLensFileEvalData = &CameraController->GetLensFileEvalDataRef();
-
-					if (OutLensFileEvalData->LensFile == InLensFile)
-					{
-						return OutLensFileEvalData;
-					}
-				}
-			}
-		}
-
 		return nullptr;
 	}
 }
@@ -205,7 +175,32 @@ TSharedPtr<SWidget> FCameraCalibrationStepsController::BuildUI()
 bool FCameraCalibrationStepsController::OnTick(float DeltaTime)
 {
 	// Update the lens file eval data
-	LensFileEvalData = CameraCalibrationStepsController::LensFileEvalDataFromCamera(Camera.Get(), LensFile.Get());
+	LensFileEvaluationInputs.bIsValid = false;
+	if (const ULensComponent* const LensComponent = FindLensComponent())
+	{
+		LensFileEvaluationInputs = LensComponent->GetLensFileEvaluationInputs();
+	}
+
+	// Compare the current dimensions of the playing media track to the comp's render resolution to determine if the comp needs to be resized
+	if (MediaPlayer.IsValid())
+	{
+		const FIntPoint MediaDimensions = MediaPlayer->GetVideoTrackDimensions(INDEX_NONE, INDEX_NONE);
+
+		// If no track was found, the dimensions might be (0, 0)
+		if (MediaDimensions.X != 0 && MediaDimensions.Y != 0)
+		{
+			if (RenderTarget->SizeX != MediaDimensions.X || RenderTarget->SizeY != MediaDimensions.Y)
+			{
+				// Resize the media plate comp layer and its output render target to match the incoming media dimensions
+				MediaPlateRenderTarget->ResizeTarget(MediaDimensions.X, MediaDimensions.Y);
+				MediaPlate->SetRenderResolution(MediaDimensions);
+
+				// Resize the parent comp and its output render target to match the incoming media dimensions
+				RenderTarget->ResizeTarget(MediaDimensions.X, MediaDimensions.Y);
+				Comp->SetRenderResolution(MediaDimensions);
+			}
+		}
+	}
 
 	for (TStrongObjectPtr<UCameraCalibrationStep>& Step : CalibrationSteps)
 	{
@@ -421,7 +416,7 @@ void FCameraCalibrationStepsController::CreateComp()
 	// Disable fog on scene capture component of CGLayer
 	{
 		TArray<USceneCaptureComponent2D*> CaptureComponents;
-		CGLayer->GetComponents<USceneCaptureComponent2D>(CaptureComponents);
+		CGLayer->GetComponents(CaptureComponents);
 
 		for (USceneCaptureComponent2D* CaptureComponent : CaptureComponents)
 		{
@@ -472,7 +467,7 @@ void FCameraCalibrationStepsController::CreateComp()
 		}
 
 		MediaPlayer->PlayOnOpen = true;
-
+		MediaPlayer->SetLooping(true);
 		// Create MediaTexture
 
 		MediaTexture = NewObject<UMediaTexture>(GetTransientPackage(), NAME_None, RF_Transient);
@@ -831,39 +826,6 @@ void FCameraCalibrationStepsController::EnableDistortionInCG()
 		return;
 	}
 
-	UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
-
-	if (!SubSystem)
-	{
-		UE_LOG(LogCameraCalibrationEditor, Error, TEXT("Could not find UCameraCalibrationSubsystem"));
-		return;
-	}
-
-	ACineCameraActor* CineCamera = Cast<ACineCameraActor>(Camera.Get());
-
-	if (!CineCamera)
-	{
-		UE_LOG(LogCameraCalibrationEditor, Warning, TEXT("No cine camera selected when trying to enable distortion."));
-		return;
-	}
-
-	// Pick first valid handler that the subsystem finds in our	camera
-	//
-
-	ULensDistortionModelHandlerBase* DistortionHandler = nullptr;
-
-	for (ULensDistortionModelHandlerBase* Handler : SubSystem->GetDistortionModelHandlers(CineCamera->GetCineCameraComponent()))
-	{
-		if (!Handler)
-		{
-			continue;
-		}
-
-		DistortionHandler = Handler;
-
-		break;
-	}
-
 	for (ACompositingElement* Element : Comp->GetChildElements())
 	{
 		ACompositingCaptureBase* CaptureBase = Cast<ACompositingCaptureBase>(Element);
@@ -875,18 +837,6 @@ void FCameraCalibrationStepsController::EnableDistortionInCG()
 
 		// Enable distortion on the CG compositing layer
 		CaptureBase->SetApplyDistortion(true);
-
-		// If a distortion handler exists for the target camera, set it on the CG layer. 
-		// If no handlers currently exist, log a warning. At some later time, if a distortion source is created
-		// the CG layer will automatically pick it up and start using it.
-		if (DistortionHandler)
-		{
-			CaptureBase->SetDistortionHandler(DistortionHandler);
-		}
-		else
-		{
-			UE_LOG(LogCameraCalibrationEditor, Warning, TEXT("Could not find a distortion handler in the selected camera"));
-		}
 	}
 }
 
@@ -938,66 +888,239 @@ bool FCameraCalibrationStepsController::OnSimulcamViewportInputKey(const FKey& I
 	return bStepHandled;
 }
 
-ULiveLinkCameraController* FCameraCalibrationStepsController::FindLiveLinkCameraController() const
+FReply FCameraCalibrationStepsController::OnRewindButtonClicked()
 {
-	return FindLiveLinkCameraControllerWithLens(Camera.Get(), LensFile.Get());
-}
-
-ULiveLinkCameraController* FCameraCalibrationStepsController::FindLiveLinkCameraControllerWithLens(const ACameraActor* InCamera, const ULensFile* InLensFile) const
-{
-	if (!InCamera || !InLensFile)
+	// Rewind to the beginning of the media
+	if (MediaPlayer.IsValid())
 	{
-		return nullptr;
+		MediaPlayer->Rewind();
 	}
 
-	FAssetData LensFileAssetData(InLensFile);
+	return FReply::Handled();
+}
 
-	TArray<ULiveLinkComponentController*> LiveLinkComponents;
-	InCamera->GetComponents<ULiveLinkComponentController>(LiveLinkComponents);
-
-	for (const ULiveLinkComponentController* LiveLinkComponent : LiveLinkComponents)
+FReply FCameraCalibrationStepsController::OnReverseButtonClicked()
+{
+	// Increase the reverse media playback rate
+	if (MediaPlayer.IsValid())
 	{
-		for (auto It = LiveLinkComponent->ControllerMap.CreateConstIterator(); It; ++It)
+		MediaPlayer->SetRate(GetFasterReverseRate());
+	}
+
+	return FReply::Handled();
+}
+
+FReply FCameraCalibrationStepsController::OnStepBackButtonClicked() 
+{
+	if (MediaPlayer.IsValid())
+	{
+		const float DefaultStepRateInMilliseconds = GetDefault<UCameraCalibrationEditorSettings>()->DefaultMediaStepRateInMilliseconds;
+		const bool bForceDefaultStepRate = GetDefault<UCameraCalibrationEditorSettings>()->bForceDefaultMediaStepRate;
+
+		// The media player could return a frame rate of 0 for the current video track
+		const float MediaFrameRate = MediaPlayer->GetVideoTrackFrameRate(INDEX_NONE, INDEX_NONE);
+
+		// Use the default step rate if the media player returned an invalid frame rate or if the project settings force it
+		float MillisecondsPerStep = 0.0f;
+		if (FMath::IsNearlyEqual(MediaFrameRate, 0.0f) || bForceDefaultStepRate)
 		{
-			ULiveLinkCameraController* CameraController = Cast<ULiveLinkCameraController>(It->Value);
+			MillisecondsPerStep = DefaultStepRateInMilliseconds;
+		}
+		else
+		{
+			MillisecondsPerStep = 1000.0f / MediaFrameRate;
+		}
 
-			if (!CameraController)
-			{
-				continue;
-			}
+		// Compute the number of ticks in one step and go backward from the media's current time (clamping to 0)
+		const FTimespan TicksInOneStep = ETimespan::TicksPerMillisecond * (MillisecondsPerStep);
+		FTimespan PreviousStepTime = MediaPlayer->GetTime() - TicksInOneStep;
+		if (PreviousStepTime < FTimespan::Zero())
+		{
+			PreviousStepTime = FTimespan::Zero();
+		}
 
-			const ULensFile* CameraLensFile = CameraController->LensFilePicker.GetLensFile();
+		MediaPlayer->Seek(PreviousStepTime);
+		MediaPlayer->Pause();
+	}
 
-			if (!CameraLensFile)
-			{
-				continue;
-			}
+	return FReply::Handled();
+}
 
-			if (FAssetData(CameraLensFile, true).PackageName == LensFileAssetData.PackageName)
-			{
-				return CameraController;
-			}
+FReply FCameraCalibrationStepsController::OnPlayButtonClicked() 
+{
+	if (MediaPlayer.IsValid())
+	{
+		MediaPlayer->Play();
+	}
+
+	return FReply::Handled(); 
+}
+
+FReply FCameraCalibrationStepsController::OnPauseButtonClicked() 
+{
+	if (MediaPlayer.IsValid())
+	{
+		MediaPlayer->Pause();
+	}
+
+	return FReply::Handled(); 
+}
+
+FReply FCameraCalibrationStepsController::OnStepForwardButtonClicked()
+{
+	if (MediaPlayer.IsValid())
+	{
+		const float DefaultStepRateInMilliseconds = GetDefault<UCameraCalibrationEditorSettings>()->DefaultMediaStepRateInMilliseconds;
+		const bool bForceDefaultStepRate = GetDefault<UCameraCalibrationEditorSettings>()->bForceDefaultMediaStepRate;
+
+		// The media player could return a frame rate of 0 for the current video track
+		const float MediaFrameRate = MediaPlayer->GetVideoTrackFrameRate(INDEX_NONE, INDEX_NONE);
+
+		// Use the default step rate if the media player returned an invalid frame rate or if the project settings force it
+		float MillisecondsPerStep = 0.0f;
+		if (FMath::IsNearlyEqual(MediaFrameRate, 0.0f) || bForceDefaultStepRate)
+		{
+			MillisecondsPerStep = DefaultStepRateInMilliseconds;
+		}
+		else
+		{
+			MillisecondsPerStep = 1000.0f / MediaFrameRate;
+		}
+
+
+		// Compute the number of ticks in one step and go forward from the media's current time
+		const FTimespan TicksInOneStep = ETimespan::TicksPerMillisecond * (MillisecondsPerStep);
+		const FTimespan NextStepTime = MediaPlayer->GetTime() + TicksInOneStep;
+
+		// Ensure that we do not attempt to seek past the end of the media
+		const FTimespan Duration = MediaPlayer->GetDuration();
+		if ((NextStepTime + TicksInOneStep) < Duration)
+		{
+			MediaPlayer->Seek(NextStepTime);
+			MediaPlayer->Pause();
 		}
 	}
 
-	return nullptr;
+	return FReply::Handled();
+}
+
+FReply FCameraCalibrationStepsController::OnForwardButtonClicked() 
+{
+	// Increase the forward media playback rate
+	if (MediaPlayer.IsValid())
+	{
+		MediaPlayer->SetRate(GetFasterForwardRate());
+	}
+
+	return FReply::Handled(); 
+}
+
+bool FCameraCalibrationStepsController::DoesMediaSupportSeeking() const
+{
+	if (MediaPlayer.IsValid())
+	{
+		return MediaPlayer->SupportsSeeking();
+	}
+
+	return false;
+}
+
+bool FCameraCalibrationStepsController::DoesMediaSupportNextReverseRate() const
+{
+	if (MediaPlayer.IsValid())
+	{
+		constexpr bool Unthinned = false;
+		return MediaPlayer->SupportsRate(GetFasterReverseRate(), Unthinned);
+	}
+
+	return false;
+}
+
+bool FCameraCalibrationStepsController::DoesMediaSupportNextForwardRate() const
+{
+	if (MediaPlayer.IsValid())
+	{
+		constexpr bool Unthinned = false;
+		return MediaPlayer->SupportsRate(GetFasterForwardRate(), Unthinned);
+	}
+
+	return false;
+}
+
+float FCameraCalibrationStepsController::GetFasterReverseRate() const
+{
+	if (MediaPlayer.IsValid())
+	{
+		// Get the current playback rate of the media player
+		float Rate = MediaPlayer->GetRate();
+
+		// Reverse the playback direction (if needed) to ensure the rate is going in reverse
+		if (Rate > -1.0f)
+		{
+			return -1.0f;
+		}
+
+		// Double the reverse playback rate
+		return 2.0f * Rate;
+	}
+
+	return -1.0f;
+}
+
+float FCameraCalibrationStepsController::GetFasterForwardRate() const
+{
+	if (MediaPlayer.IsValid())
+	{
+		// Get the current playback rate of the media player
+		float Rate = MediaPlayer->GetRate();
+
+		// Reverse the playback direction (if needed) to ensure the rate is going forward
+		if (Rate < 1.0f)
+		{
+			Rate = 1.0f;
+		}
+
+		// Double the forward playback rate
+		return 2.0f * Rate;
+	}
+
+	return 1.0f;
+}
+
+void FCameraCalibrationStepsController::ToggleShowMediaPlaybackControls()
+{
+	bShowMediaPlaybackButtons = !bShowMediaPlaybackButtons;
+}
+
+bool FCameraCalibrationStepsController::AreMediaPlaybackControlsVisible() const
+{
+	return bShowMediaPlaybackButtons;
 }
 
 ACameraActor* FCameraCalibrationStepsController::FindFirstCameraWithCurrentLens() const
 {
 	// We iterate over all cameras in the scene and try to find one that is using the current LensFile
-
-	for (TActorIterator<ACameraActor> CameraItr(GetWorld()); CameraItr; ++CameraItr)
+	ACineCameraActor* FirstCamera = nullptr;
+	for (TActorIterator<ACineCameraActor> CameraItr(GetWorld()); CameraItr; ++CameraItr)
 	{
-		ACameraActor* CameraActor = *CameraItr;
+		ACineCameraActor* CameraActor = *CameraItr;
 
-		if (FindLiveLinkCameraControllerWithLens(CameraActor, LensFile.Get()))
+		if (ULensComponent* FoundLensComponent = FindLensComponentOnCamera(CameraActor))
 		{
-			return CameraActor;
+			if (FirstCamera == nullptr)
+			{
+				FirstCamera = CameraActor;
+			}
+			else
+			{
+				FText ErrorMessage = LOCTEXT("MoreThanOneCameraFoundError", "There are multiple cameras in the scene using this LensFile. When the asset editor opens, be sure to select the correct camera if not already selected.");
+				FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage);
+				break;
+			}
 		}
 	}
 
-	return nullptr;
+	return FirstCamera;
 }
 
 void FCameraCalibrationStepsController::TogglePlay()
@@ -1049,9 +1172,9 @@ bool FCameraCalibrationStepsController::IsPaused() const
 	return true;
 }
 
-const FLensFileEvalData* FCameraCalibrationStepsController::GetLensFileEvalData() const
+FLensFileEvaluationInputs FCameraCalibrationStepsController::GetLensFileEvaluationInputs() const
 {
-	return LensFileEvalData;
+	return LensFileEvaluationInputs;
 }
 
 ULensFile* FCameraCalibrationStepsController::GetLensFile() const
@@ -1064,21 +1187,39 @@ ULensFile* FCameraCalibrationStepsController::GetLensFile() const
 	return nullptr;
 }
 
+ULensComponent* FCameraCalibrationStepsController::FindLensComponentOnCamera(ACameraActor* CineCamera) const
+{
+	const ULensFile* OpenLensFile = GetLensFile();
+	if (CineCamera && OpenLensFile)
+	{
+		TInlineComponentArray<ULensComponent*> LensComponents;
+		CineCamera->GetComponents(LensComponents);
+
+		for (ULensComponent* LensComponent : LensComponents)
+		{
+			if (LensComponent->GetLensFile() == OpenLensFile)
+			{
+				return LensComponent;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+ULensComponent* FCameraCalibrationStepsController::FindLensComponent() const
+{
+	return FindLensComponentOnCamera(GetCamera());
+}
+
 const ULensDistortionModelHandlerBase* FCameraCalibrationStepsController::GetDistortionHandler() const
 {
-	if (!CGLayer.IsValid())
+	if (ULensComponent* LensComponent = FindLensComponent())
 	{
-		return nullptr;
+		return LensComponent->GetLensDistortionHandler();
 	}
 
-	ACompositingCaptureBase* CaptureBase = Cast<ACompositingCaptureBase>(CGLayer.Get());
-
-	if (!CaptureBase)
-	{
-		return nullptr;
-	}
-
-	return CaptureBase->GetDistortionHandler();
+	return nullptr;
 }
 
 bool FCameraCalibrationStepsController::SetMediaSourceUrl(const FString& InMediaSourceUrl)
@@ -1147,11 +1288,6 @@ void FCameraCalibrationStepsController::FindMediaSourceUrls(TArray<TSharedPtr<FS
 			OutMediaSourceUrls.Add(MakeShared<FString>(MediaSource->GetUrl()));
 		}
 	}
-}
-
-const FLensFileEvalData* FCameraCalibrationStepsController::GetLensFileEvalData()
-{
-	return LensFileEvalData;
 }
 
 const TConstArrayView<TStrongObjectPtr<UCameraCalibrationStep>> FCameraCalibrationStepsController::GetCalibrationSteps() const

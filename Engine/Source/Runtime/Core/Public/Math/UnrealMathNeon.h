@@ -33,7 +33,7 @@ PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
 template<typename T, typename BASE_TYPE>
 struct alignas(alignof(T)) VectorRegisterWrapper
 {
-	FORCEINLINE VectorRegisterWrapper() {}
+	FORCEINLINE VectorRegisterWrapper() = default;
 	FORCEINLINE constexpr VectorRegisterWrapper(T vec) : m_vec(vec) {}
 
 	FORCEINLINE operator T&() { return m_vec; }
@@ -373,11 +373,11 @@ FORCEINLINE VectorRegister4Int MakeVectorRegisterInt(int32 X, int32 Y, int32 Z, 
 	return Tmp.V;
 }
 
-FORCEINLINE VectorRegister2Int64 MakeVectorRegisterInt64(int64 X, int64 Y)
+FORCEINLINE VectorRegister4Int MakeVectorRegisterInt64(int64 X, int64 Y)
 {
 	union U
 	{
-		VectorRegister2Int64 V; int64 I[2];
+		VectorRegister4Int V; int64 I[2];
 		FORCEINLINE U() : V() {}
 	} Tmp;
 	Tmp.I[0] = X;
@@ -1582,36 +1582,17 @@ FORCEINLINE VectorRegister4Double VectorPow(const VectorRegister4Double& Base, c
 }
 
 /**
-* Returns an estimate of 1/sqrt(c) for each component of the vector
-*
-* @param Vector		Vector 
-* @return			VectorRegister4Float(1/sqrt(t), 1/sqrt(t), 1/sqrt(t), 1/sqrt(t))
-*/
-FORCEINLINE VectorRegister4Float VectorReciprocalSqrt(const VectorRegister4Float& Vec)
-{
-	return vrsqrteq_f32(Vec);
-}
-
-FORCEINLINE VectorRegister4Double VectorReciprocalSqrt(const VectorRegister4Double& Vec)
-{
-	VectorRegister4Double Result;
-	Result.XY = vrsqrteq_f64(Vec.XY);
-	Result.ZW = vrsqrteq_f64(Vec.ZW);
-	return Result;
-}
-
-/**
  * Computes an estimate of the reciprocal of a vector (component-wise) and returns the result.
  *
  * @param Vec	1st vector
  * @return		VectorRegister4Float( (Estimate) 1.0f / Vec.x, (Estimate) 1.0f / Vec.y, (Estimate) 1.0f / Vec.z, (Estimate) 1.0f / Vec.w )
  */
-FORCEINLINE VectorRegister4Float VectorReciprocal(const VectorRegister4Float& Vec)
+FORCEINLINE VectorRegister4Float VectorReciprocalEstimate(const VectorRegister4Float& Vec)
 {
 	return vrecpeq_f32(Vec);
 }
 
-FORCEINLINE VectorRegister4Double VectorReciprocal(const VectorRegister4Double& Vec)
+FORCEINLINE VectorRegister4Double VectorReciprocalEstimate(const VectorRegister4Double& Vec)
 {
 	VectorRegister4Double Result;
 	Result.XY = vrecpeq_f64(Vec.XY);
@@ -1621,66 +1602,18 @@ FORCEINLINE VectorRegister4Double VectorReciprocal(const VectorRegister4Double& 
 
 
 /**
-* Return Reciprocal Length of the vector
-*
-* @param Vector		Vector 
-* @return			VectorRegister4Float(rlen, rlen, rlen, rlen) when rlen = 1/sqrt(dot4(V))
-*/
-#define VectorReciprocalLen(Vector)		VectorReciprocalSqrt( VectorDot4( Vector, Vector ) )
-
-
-/**
-* Return the reciprocal of the square root of each component
-*
-* @param Vector		Vector
-* @return			VectorRegister4Float(1/sqrt(Vec.X), 1/sqrt(Vec.Y), 1/sqrt(Vec.Z), 1/sqrt(Vec.W))
-*/
-FORCEINLINE VectorRegister4Float VectorReciprocalSqrtAccurate(const VectorRegister4Float& Vec)
-{
-	// Perform a single pass of Newton-Raphson iteration on the hardware estimate
-	// This is a builtin instruction (VRSQRTS)
-
-	// Initial estimate
-	VectorRegister4Float RecipSqrt = VectorReciprocalSqrt(Vec);
-
-	// Two refinement
-	RecipSqrt = VectorMultiply(vrsqrtsq_f32(Vec, VectorMultiply(RecipSqrt, RecipSqrt)), RecipSqrt);
-	return VectorMultiply(vrsqrtsq_f32(Vec, VectorMultiply(RecipSqrt, RecipSqrt)), RecipSqrt);
-}
-
-FORCEINLINE VectorRegister4Double VectorReciprocalSqrtAccurate(const VectorRegister4Double& Vec)
-{
-	// Perform a single pass of Newton-Raphson iteration on the hardware estimate
-	// This is a builtin instruction (VRSQRTS)
-
-	// Initial estimate
-	VectorRegister4Double RecipSqrt = VectorReciprocalSqrt(Vec);
-
-	// Two refinement
-	VectorRegister4Double Tmp;
-	Tmp.XY = vrsqrtsq_f64(Vec.XY, VectorMultiply(RecipSqrt.XY, RecipSqrt.XY));
-	Tmp.ZW = vrsqrtsq_f64(Vec.ZW, VectorMultiply(RecipSqrt.ZW, RecipSqrt.ZW));
-	RecipSqrt = VectorMultiply(Tmp, RecipSqrt);
-
-	Tmp.XY = vrsqrtsq_f64(Vec.XY, VectorMultiply(RecipSqrt.XY, RecipSqrt.XY));
-	Tmp.ZW = vrsqrtsq_f64(Vec.ZW, VectorMultiply(RecipSqrt.ZW, RecipSqrt.ZW));
-	return VectorMultiply(Tmp, RecipSqrt);
-}
-
-
-/**
  * Computes the reciprocal of a vector (component-wise) and returns the result.
  *
  * @param Vec	1st vector
  * @return		VectorRegister4Float( 1.0f / Vec.x, 1.0f / Vec.y, 1.0f / Vec.z, 1.0f / Vec.w )
  */
-FORCEINLINE VectorRegister4Float VectorReciprocalAccurate(const VectorRegister4Float& Vec)
+FORCEINLINE VectorRegister4Float VectorReciprocal(const VectorRegister4Float& Vec)
 {
 	// Perform two passes of Newton-Raphson iteration on the hardware estimate
 	// The built-in instruction (VRECPS) is not as accurate
 
 	// Initial estimate
-	VectorRegister4Float Reciprocal = VectorReciprocal(Vec);
+	VectorRegister4Float Reciprocal = VectorReciprocalEstimate(Vec);
 
 	// First iteration
 	VectorRegister4Float Squared = VectorMultiply(Reciprocal, Reciprocal);
@@ -1693,10 +1626,120 @@ FORCEINLINE VectorRegister4Float VectorReciprocalAccurate(const VectorRegister4F
 	return VectorNegateMultiplyAdd(Vec, Squared, Double);
 }
 
-FORCEINLINE VectorRegister4Double VectorReciprocalAccurate(const VectorRegister4Double& Vec)
+FORCEINLINE VectorRegister4Double VectorReciprocal(const VectorRegister4Double& Vec)
 {
 	return VectorDivide(GlobalVectorConstants::DoubleOne, Vec);
 }
+
+
+/**
+ * Return the square root of each component
+ *
+ * @param Vector	Vector
+ * @return			VectorRegister4Float(sqrt(Vec.X), sqrt(Vec.Y), sqrt(Vec.Z), sqrt(Vec.W))
+ */
+FORCEINLINE VectorRegister4Float VectorSqrt(const VectorRegister4Float& Vec)
+{
+	return vsqrtq_f32(Vec);
+}
+
+FORCEINLINE VectorRegister4Double VectorSqrt(const VectorRegister4Double& Vec)
+{
+	VectorRegister4Double Result;
+	Result.XY = vsqrtq_f64(Vec.XY);
+	Result.ZW = vsqrtq_f64(Vec.ZW);
+	return Result;
+}
+
+/**
+ * Returns an estimate of 1/sqrt(c) for each component of the vector
+ *
+ * @param Vector	Vector 
+ * @return			VectorRegister4Float(1/sqrt(t), 1/sqrt(t), 1/sqrt(t), 1/sqrt(t))
+ */
+FORCEINLINE VectorRegister4Float VectorReciprocalSqrtEstimate(const VectorRegister4Float& Vec)
+{
+	return vrsqrteq_f32(Vec);
+}
+
+FORCEINLINE VectorRegister4Double VectorReciprocalSqrtEstimate(const VectorRegister4Double& Vec)
+{
+	VectorRegister4Double Result;
+	Result.XY = vrsqrteq_f64(Vec.XY);
+	Result.ZW = vrsqrteq_f64(Vec.ZW);
+	return Result;
+}
+
+/**
+ * Return the reciprocal of the square root of each component
+ *
+ * @param Vector	Vector
+ * @return			VectorRegister4Float(1/sqrt(Vec.X), 1/sqrt(Vec.Y), 1/sqrt(Vec.Z), 1/sqrt(Vec.W))
+ */
+FORCEINLINE VectorRegister4Float VectorReciprocalSqrt(const VectorRegister4Float& Vec)
+{
+	// Perform a single pass of Newton-Raphson iteration on the hardware estimate
+	// This is a builtin instruction (VRSQRTS)
+
+	// Initial estimate
+	VectorRegister4Float RecipSqrt = VectorReciprocalSqrtEstimate(Vec);
+
+	// Two refinement
+	RecipSqrt = VectorMultiply(vrsqrtsq_f32(Vec, VectorMultiply(RecipSqrt, RecipSqrt)), RecipSqrt);
+	return VectorMultiply(vrsqrtsq_f32(Vec, VectorMultiply(RecipSqrt, RecipSqrt)), RecipSqrt);
+}
+
+FORCEINLINE VectorRegister4Double VectorReciprocalSqrt(const VectorRegister4Double& Vec)
+{
+	// Perform a single pass of Newton-Raphson iteration on the hardware estimate
+	// This is a builtin instruction (VRSQRTS)
+
+	// Initial estimate
+	VectorRegister4Double RecipSqrt = VectorReciprocalSqrtEstimate(Vec);
+
+	// Two refinement
+	VectorRegister4Double Tmp;
+	Tmp.XY = vrsqrtsq_f64(Vec.XY, VectorMultiply(RecipSqrt.XY, RecipSqrt.XY));
+	Tmp.ZW = vrsqrtsq_f64(Vec.ZW, VectorMultiply(RecipSqrt.ZW, RecipSqrt.ZW));
+	RecipSqrt = VectorMultiply(Tmp, RecipSqrt);
+
+	Tmp.XY = vrsqrtsq_f64(Vec.XY, VectorMultiply(RecipSqrt.XY, RecipSqrt.XY));
+	Tmp.ZW = vrsqrtsq_f64(Vec.ZW, VectorMultiply(RecipSqrt.ZW, RecipSqrt.ZW));
+	return VectorMultiply(Tmp, RecipSqrt);
+}
+
+/**
+ * Return Reciprocal Length of the vector
+ *
+ * @param Vector	Vector
+ * @return			VectorRegister4Float(rlen, rlen, rlen, rlen) when rlen = 1/sqrt(dot4(V))
+ */
+FORCEINLINE VectorRegister4Float VectorReciprocalLen(const VectorRegister4Float& Vector)
+{
+	return VectorReciprocalSqrt(VectorDot4(Vector, Vector));
+}
+
+FORCEINLINE VectorRegister4Double VectorReciprocalLen(const VectorRegister4Double& Vector)
+{
+	return VectorReciprocalSqrt(VectorDot4(Vector, Vector));
+}
+
+/**
+ * Return Reciprocal Length of the vector (estimate)
+ *
+ * @param Vector	Vector
+ * @return			VectorRegister4Float(rlen, rlen, rlen, rlen) when rlen = 1/sqrt(dot4(V)) (estimate)
+ */
+FORCEINLINE VectorRegister4Float VectorReciprocalLenEstimate(const VectorRegister4Float& Vector)
+{
+	return VectorReciprocalSqrtEstimate(VectorDot4(Vector, Vector));
+}
+
+FORCEINLINE VectorRegister4Double VectorReciprocalLenEstimate(const VectorRegister4Double& Vector)
+{
+	return VectorReciprocalSqrtEstimate(VectorDot4(Vector, Vector));
+}
+
 
 /**
 * Loads XYZ and sets W=0
@@ -2701,35 +2744,36 @@ FORCEINLINE VectorRegister4Double VectorTruncate(const VectorRegister4Double& X)
 
 FORCEINLINE VectorRegister4Float VectorMod(const VectorRegister4Float& X, const VectorRegister4Float& Y)
 {
-	VectorRegister4Float Div = VectorDivide(X, Y);
-	// Floats where abs(f) >= 2^23 have no fractional portion, and larger values would overflow VectorTruncate.
-	VectorRegister4Float NoFractionMask = VectorCompareGE(VectorAbs(Div), GlobalVectorConstants::FloatNonFractional);
-	VectorRegister4Float Temp = VectorSelect(NoFractionMask, Div, VectorTruncate(Div));
-	VectorRegister4Float Result = VectorNegateMultiplyAdd(Y, Temp, X);
-	// Clamp to [-AbsY, AbsY] because of possible failures for very large numbers (>1e10) due to precision loss.
-	VectorRegister4Float AbsY = VectorAbs(Y);
-	return vmaxnmq_f32(VectorNegate(AbsY), vminnmq_f32(Result, AbsY));
+	// Check against invalid divisor
+	VectorRegister4Float InvalidDivisorMask = VectorCompareLE(VectorAbs(Y), GlobalVectorConstants::SmallNumber);
+	
+	AlignedFloat4 XFloats(X), YFloats(Y);
+	XFloats[0] = fmodf(XFloats[0], YFloats[0]);
+	XFloats[1] = fmodf(XFloats[1], YFloats[1]);
+	XFloats[2] = fmodf(XFloats[2], YFloats[2]);
+	XFloats[3] = fmodf(XFloats[3], YFloats[3]);
+	VectorRegister4Float Result = XFloats.ToVectorRegister();
+
+	// Return 0 where divisor Y was too small	
+	Result = VectorSelect(InvalidDivisorMask, GlobalVectorConstants::FloatZero, Result);
+	return Result;
 }
 
 FORCEINLINE VectorRegister4Double VectorMod(const VectorRegister4Double& X, const VectorRegister4Double& Y)
 {
-	VectorRegister4Double Div = VectorDivide(X, Y);
-	// Floats where abs(f) >= 2^52 have no fractional portion, and larger values would overflow VectorTruncate.
-	VectorRegister4Double NoFractionMask = VectorCompareGE(VectorAbs(Div), GlobalVectorConstants::DoubleNonFractional);
-	VectorRegister4Double Temp = VectorSelect(NoFractionMask, Div, VectorTruncate(Div));
-	VectorRegister4Double Result = VectorNegateMultiplyAdd(Y, Temp, X);
-	// Clamp to [-AbsY, AbsY] because of possible failures for very large numbers (>1e10) due to precision loss.
-	VectorRegister4Double AbsY = VectorAbs(Y);
-	VectorRegister4Double NegAbsY = VectorNegate(AbsY);
+	// Check against invalid divisor
+	VectorRegister4Double InvalidDivisorMask = VectorCompareLE(VectorAbs(Y), GlobalVectorConstants::DoubleSmallNumber);
 	
-	VectorRegister4Double Min;
-	Min.XY = vminnmq_f64(Result.XY, AbsY.XY);
-	Min.ZW = vminnmq_f64(Result.ZW, AbsY.ZW);
-	
-	VectorRegister4Double Max;
-	Max.XY = vmaxnmq_f64(NegAbsY.XY, Min.XY);
-	Max.ZW = vmaxnmq_f64(NegAbsY.ZW, Min.ZW);
-	return Max;
+	AlignedDouble4 XDoubles(X), YDoubles(Y);
+	XDoubles[0] = fmod(XDoubles[0], YDoubles[0]);
+	XDoubles[1] = fmod(XDoubles[1], YDoubles[1]);
+	XDoubles[2] = fmod(XDoubles[2], YDoubles[2]);
+	XDoubles[3] = fmod(XDoubles[3], YDoubles[3]);
+	VectorRegister4Double DoubleResult = XDoubles.ToVectorRegister();
+
+	// Return 0 where divisor Y was too small
+	DoubleResult = VectorSelect(InvalidDivisorMask, GlobalVectorConstants::DoubleZero, DoubleResult);
+	return DoubleResult;
 }
 
 FORCEINLINE VectorRegister4Float VectorSign(const VectorRegister4Float& X)
@@ -2831,9 +2875,7 @@ FORCEINLINE VectorRegister4Float VectorLoadURGBA16N(const uint16* E)
 	V[2] = float(E[2]);
 	V[3] = float(E[3]);
 
-	VectorRegister4Float Vec = VectorLoad(V);
-	VectorRegister4Float Div = vdupq_n_f32(1.0f / 65535.0f);
-	return VectorMultiply(Vec, Div);
+	return VectorLoad(V);
 }
 
 /**
@@ -2853,9 +2895,7 @@ FORCEINLINE VectorRegister4Float VectorLoadSRGBA16N(const void* Ptr)
 	V[2] = float(E[2]);
 	V[3] = float(E[3]);
 
-	VectorRegister4Float Vec = VectorLoad(V);
-	VectorRegister4Float Div = vdupq_n_f32(1.0f / 32767.0f);
-	return VectorMultiply(Vec, Div);
+	return VectorLoad(V);
 }
 
 /**
@@ -2918,6 +2958,7 @@ FORCEINLINE VectorRegister4Int VectorIntSelect(const VectorRegister4Int& Mask, c
 #define VectorIntNegate(A) vnegq_s32(A)
 #define VectorIntMin(A, B) vminq_s32(A,B)
 #define VectorIntMax(A, B) vmaxq_s32(A,B)
+#define VectorIntClamp(A, B, C) VectorIntMin(VectorIntMax(A, B), C)
 #define VectorIntAbs(A) vabdq_s32(A, GlobalVectorConstants::IntZero)
 
 #define VectorIntSign(A) VectorIntSelect( VectorIntCompareGE(A, GlobalVectorConstants::IntZero), GlobalVectorConstants::IntOne, GlobalVectorConstants::IntMinusOne )
@@ -2975,6 +3016,26 @@ FORCEINLINE VectorRegister4Int VectorFloatToInt(const VectorRegister4Double& A)
 * @return		VectorRegister4Int(*Ptr, *Ptr, *Ptr, *Ptr)
 */
 #define VectorIntLoad1( Ptr )	vld1q_dup_s32((int32*)(Ptr))
+
+#define VectorIntSet1(F)                            vdupq_n_s32(F)
+#define VectorSetZero()                             vdupq_n_s32(0)
+#define VectorSet1(F)                               vdupq_n_f32(F)
+#define VectorCastIntToFloat(Vec)                   ((VectorRegister4f)vreinterpretq_f32_s32(Vec))
+#define VectorCastFloatToInt(Vec)					((VectorRegister4i)vreinterpretq_s32_f32(Vec))
+#define VectorShiftLeftImm(Vec, ImmAmt)             vshlq_n_s32(Vec, ImmAmt)
+#define VectorShiftRightImmArithmetic(Vec, ImmAmt)  vshrq_n_s32(Vec, ImmAmt)
+#define VectorShiftRightImmLogical(Vec, ImmAmt)     vshrq_n_u32(Vec, ImmAmt)
+#define VectorRound(Vec)							vreinterpretq_f32_s32(vcvtnq_s32_f32(Vec))
+
+FORCEINLINE VectorRegister4Int VectorRoundToIntHalfToEven(const VectorRegister4Float& Vec)
+{
+	return vcvtnq_s32_f32(Vec);
+}
+
+inline VectorRegister4i VectorIntExpandLow16To32(VectorRegister4i V) {
+	int16x4x2_t res = vzip_s16(vget_low_u16(V), vdup_n_u16(0));
+	return vcombine_s16(res.val[0], res.val[1]);
+}
 
 // To be continued...
 

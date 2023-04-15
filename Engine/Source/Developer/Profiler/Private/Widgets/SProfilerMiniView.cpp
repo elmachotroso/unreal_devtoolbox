@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProfilerMiniView.h"
+
+#if STATS
+
 #include "Fonts/SlateFontInfo.h"
 #include "Misc/Paths.h"
 #include "Rendering/DrawElements.h"
@@ -8,8 +11,8 @@
 #include "Fonts/FontMeasure.h"
 #include "Styling/CoreStyle.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
 #include "ProfilerSession.h"
+#include "ProfilerStyle.h"
 
 
 SProfilerMiniView::SProfilerMiniView()
@@ -99,8 +102,8 @@ int32 SProfilerMiniView::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 	// Rendering info.
 	const bool bEnabled = ShouldBeEnabled( bParentEnabled );
 	const ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
-	const FSlateBrush* MiniViewArea = FEditorStyle::GetBrush( "Profiler.LineGraphArea" );
-	const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush( "WhiteTexture" );
+	const FSlateBrush* MiniViewArea = FProfilerStyle::Get().GetBrush( "Brushes.White25" );
+	const FSlateBrush* WhiteBrush = FProfilerStyle::Get().GetBrush( "Brushes.White" );
 
 	PaintState = new((void*)PaintStateMemory) FSlateOnPaintState( AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, DrawEffects );
 
@@ -245,7 +248,7 @@ int32 SProfilerMiniView::OnPaint( const FPaintArgs& Args, const FGeometry& Allot
 			OutDrawElements,
 			LayerId,
 			AllottedGeometry.ToPaintGeometry( FVector2D( SelectionBoxX0, 0.0f ), FVector2D( SelectionBoxX1 - SelectionBoxX0, AllottedGeometry.Size.Y ) ),
-			FEditorStyle::GetBrush( "PlainBorder" ),
+			FProfilerStyle::Get().GetBrush( "PlainBorder" ),
 			DrawEffects,
 			FColorList::Green
 		);
@@ -492,8 +495,8 @@ FReply SProfilerMiniView::OnMouseMove( const FGeometry& MyGeometry, const FPoint
 			const float StartEdgeDistance = FrameIndexToPosition(SelectionBoxFrameStart) - MousePosition.X;
 			const float EndEdgeDistance = MousePosition.X - FrameIndexToPosition(SelectionBoxFrameEnd);
 
-			bCanBeStartDragged = StartEdgeDistance < MOUSE_SNAP_DISTANCE && StartEdgeDistance > 0.0f;
-			bCanBeEndDragged = EndEdgeDistance < MOUSE_SNAP_DISTANCE && EndEdgeDistance > 0.0f;
+			bCanBeStartDragged = StartEdgeDistance < (float)MOUSE_SNAP_DISTANCE && StartEdgeDistance > 0.0f;
+			bCanBeEndDragged = EndEdgeDistance < (float)MOUSE_SNAP_DISTANCE && EndEdgeDistance > 0.0f;
 
 			if( StartEdgeDistance <= 0.0f && EndEdgeDistance <= 0.0f )
 			{
@@ -711,3 +714,5 @@ void SProfilerMiniView::ProcessData()
 
 	MaxFrameTime = FMath::Clamp( MaxFrameTime, 0.0f, (float)MAX_VISIBLE_THREADTIME );
 }
+
+#endif // STATS

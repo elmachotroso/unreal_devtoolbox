@@ -2,15 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Styling/SlateColor.h"
-#include "Widgets/SWidget.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
 #include "IDetailCustomization.h"
-#include "ShaderFormatsPropertyDetails.h"
 #include "TargetPlatformAudioCustomization.h"
+#include "Templates/SharedPointer.h"
 
+class FShaderFormatsPropertyDetails;
 class IDetailLayoutBuilder;
 class IPropertyHandle;
+
 enum class ECheckBoxState : uint8;
 
 /**
@@ -41,12 +42,11 @@ private:
 	/** This gets the current value of the audio stream caching bool property. */
 	ECheckBoxState GetAudioStreamCachingToggled(TSharedPtr<IPropertyHandle> PropertyHandle) const;
 
-protected:
-
-
-
 private:
 	/** Reference to the target shader formats property view */
-	TSharedPtr<FShaderFormatsPropertyDetails> TargetShaderFormatsDetails;
+	TSharedPtr<FShaderFormatsPropertyDetails> D3D12TargetShaderFormatsDetails;
+	TSharedPtr<FShaderFormatsPropertyDetails> D3D11TargetShaderFormatsDetails;
+	TSharedPtr<FShaderFormatsPropertyDetails> VulkanTargetShaderFormatsDetails;
+
 	FAudioPluginWidgetManager AudioPluginWidgetManager;
 };

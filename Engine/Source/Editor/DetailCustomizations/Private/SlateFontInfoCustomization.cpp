@@ -1,12 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/SlateFontInfoCustomization.h"
-#include "Engine/Font.h"
-#include "PropertyHandle.h"
-#include "IDetailChildrenBuilder.h"
-#include "AssetData.h"
-#include "PropertyCustomizationHelpers.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "Containers/UnrealString.h"
 #include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Engine/Font.h"
+#include "Fonts/CompositeFont.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "SlateGlobals.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SlateFontInfo"
 
@@ -92,6 +113,8 @@ void FSlateFontInfoStructCustomization::CustomizeChildren(TSharedRef<IPropertyHa
 	InStructBuilder.AddProperty(FontSizeProperty.ToSharedRef());
 
 	InStructBuilder.AddProperty(InStructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FSlateFontInfo, LetterSpacing)).ToSharedRef());
+	
+	InStructBuilder.AddProperty(InStructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FSlateFontInfo, SkewAmount)).ToSharedRef());
 
 	InStructBuilder.AddProperty(InStructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FSlateFontInfo, FontMaterial)).ToSharedRef());
 
@@ -223,7 +246,7 @@ TSharedRef<SWidget> FSlateFontInfoStructCustomization::MakeFontEntryWidget(TShar
 	return
 		SNew(STextBlock)
 		.Text(FText::FromName(*InFontEntry))
-		.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
+		.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
 }
 
 FText FSlateFontInfoStructCustomization::GetFontEntryComboText() const

@@ -1,40 +1,90 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SClothAssetSelector.h"
+
+#include "Animation/DebugSkelMeshComponent.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "ClothLODData.h"
+#include "ClothPhysicalMeshData.h"
+#include "ClothingAsset.h"
+#include "ClothingAssetBase.h"
+#include "ClothingAssetExporter.h"
+#include "ClothingAssetFactoryInterface.h"
+#include "ClothingAssetListCommands.h"
+#include "ClothingSimulationFactory.h"
+#include "ClothingSystemEditorInterfaceModule.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/IndirectArray.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserModule.h"
+#include "DetailLayoutBuilder.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/SkeletalMesh.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "IContentBrowserSingleton.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PointWeightMap.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshModel.h"
+#include "SCopyVertexColorSettingsPanel.h"
+#include "SPositiveActionButton.h"
+#include "ScopedTransaction.h"
+#include "SkeletalMeshTypes.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Utils/ClothingMeshUtils.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
-#include "EditorStyleSet.h"
-#include "DetailLayoutBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SSlider.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Images/SImage.h"
-#include "ClothingAsset.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "SPositiveActionButton.h"
-#include "Engine/SkeletalMesh.h"
-#include "ApexClothingUtils.h"
-#include "UObject/UObjectIterator.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "ComponentReregisterContext.h"
-#include "Misc/MessageDialog.h"
-#include "ClothingSystemEditorInterfaceModule.h"
-#include "Modules/ModuleManager.h"
-#include "ClothingAssetFactoryInterface.h"
-#include "Utils/ClothingMeshUtils.h"
-#include "ClothingAssetListCommands.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "Rendering/SkeletalMeshModel.h"
-#include "ScopedTransaction.h"
-#include "Editor.h"
-#include "SCopyVertexColorSettingsPanel.h"
-#include "Editor/ContentBrowser/Private/SAssetPicker.h"
-#include "ContentBrowserModule.h"
-#include "Animation/DebugSkelMeshComponent.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+#include "Widgets/Views/STableRow.h"
+
+class FUICommandInfo;
+class ITableRow;
+class STableViewBase;
+class SWidget;
+class UObject;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "ClothAssetSelector"
 
@@ -147,19 +197,22 @@ public:
 			FExecuteAction::CreateSP(this, &SAssetListRow::DeleteAsset)
 		);
 
-#if WITH_APEX_CLOTHING
-		UICommandList->MapAction(
-			Commands.ReimportAsset,
-			FExecuteAction::CreateSP(this, &SAssetListRow::ReimportAsset),
-			FCanExecuteAction::CreateSP(this, &SAssetListRow::CanReimportAsset)
-		);
-#endif
-
 		UICommandList->MapAction(
 			Commands.RebuildAssetParams,
 			FExecuteAction::CreateSP(this, &SAssetListRow::RebuildLODParameters),
 			FCanExecuteAction::CreateSP(this, &SAssetListRow::CanRebuildLODParameters)
 		);
+
+		// Add clothing asset exporters
+		ForEachClothingAssetExporter([this, &Commands](UClass* ExportedType)
+			{
+				if (const TSharedPtr<FUICommandInfo>* const CommandId = Commands.ExportAssets.Find(ExportedType->GetFName()))
+				{
+					UICommandList->MapAction(
+						*CommandId,
+						FExecuteAction::CreateSP(this, &SAssetListRow::ExportAsset, ExportedType));
+				}
+			});
 	}
 
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
@@ -172,10 +225,12 @@ public:
 			Builder.BeginSection(NAME_None, LOCTEXT("AssetActions_SectionName", "Actions"));
 			{
 				Builder.AddMenuEntry(FGenericCommands::Get().Delete);
-#if WITH_APEX_CLOTHING
-				Builder.AddMenuEntry(Commands.ReimportAsset);
-#endif
 				Builder.AddMenuEntry(Commands.RebuildAssetParams);
+
+				for (const TPair<FName, TSharedPtr<FUICommandInfo>>& CommandId : Commands.ExportAssets)
+				{
+					Builder.AddMenuEntry(CommandId.Value);
+				}
 			}
 			Builder.EndSection();
 
@@ -244,62 +299,6 @@ private:
 		}
 	}
 
-#if WITH_APEX_CLOTHING
-	void ReimportAsset()
-	{
-		if(UClothingAssetCommon* Asset = Item->ClothingAsset.Get())
-		{
-			if(USkeletalMesh* SkelMesh = Cast<USkeletalMesh>(Asset->GetOuter()))
-			{
-				FString ReimportPath = Asset->ImportedFilePath;
-
-				if(ReimportPath.IsEmpty())
-				{
-					const FText MessageText = LOCTEXT("Warning_NoReimportPath", "There is no reimport path available for this asset, it was likely created in the Editor. Would you like to select a file and overwrite this asset?");
-					EAppReturnType::Type MessageReturn = FMessageDialog::Open(EAppMsgType::YesNo, MessageText);
-
-					if(MessageReturn == EAppReturnType::Yes)
-					{
-						ReimportPath = ApexClothingUtils::PromptForClothingFile();
-					}
-				}
-
-				if(ReimportPath.IsEmpty())
-				{
-					return;
-				}
-
-				// Retry if the file isn't there
-				if(!FPaths::FileExists(ReimportPath))
-				{
-					const FText MessageText = LOCTEXT("Warning_NoFileFound", "Could not find an asset to reimport, select a new file on disk?");
-					EAppReturnType::Type MessageReturn = FMessageDialog::Open(EAppMsgType::YesNo, MessageText);
-
-					if(MessageReturn == EAppReturnType::Yes)
-					{
-						ReimportPath = ApexClothingUtils::PromptForClothingFile();
-					}
-				}
-
-				FClothingSystemEditorInterfaceModule& ClothingEditorInterface = FModuleManager::Get().LoadModuleChecked<FClothingSystemEditorInterfaceModule>("ClothingSystemEditorInterface");
-				UClothingAssetFactoryBase* Factory = ClothingEditorInterface.GetClothingAssetFactory();
-
-				if(Factory && Factory->CanImport(ReimportPath))
-				{
-					Factory->Reimport(ReimportPath, SkelMesh, Asset);
-
-					OnInvalidateList.ExecuteIfBound();
-				}
-			}
-		}
-	}
-
-	bool CanReimportAsset() const
-	{
-		return Item.IsValid() && !Item->ClothingAsset->ImportedFilePath.IsEmpty();
-	}
-#endif  // #if WITH_APEX_CLOTHING
-
 	// Using LOD0 of an asset, rebuild the other LOD masks by mapping the LOD0 parameters onto their meshes
 	void RebuildLODParameters()
 	{
@@ -339,6 +338,19 @@ private:
 					ParameterMapper.Map(SourceMask.Values, DestMask.Values);
 				}
 			}
+		}
+	}
+
+	void ExportAsset(UClass* ExportedType)
+	{
+		if (!Item.IsValid() || !ExportedType)
+		{
+			return;
+		}
+
+		if (const UClothingAssetCommon* const ClothingAsset = Item->ClothingAsset.Get())
+		{
+			ExportClothingAsset(ClothingAsset, ExportedType);
 		}
 	}
 
@@ -759,42 +771,6 @@ void SClothAssetSelector::Construct(const FArguments& InArgs, USkeletalMesh* InM
 					.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
 					.Font(FAppStyle::Get().GetFontStyle("PropertyWindow.BoldFont"))
 				]
-#if WITH_APEX_CLOTHING
-				+SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Right)
-				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-				[
-					SNew(SButton)
-					.OnClicked(this, &SClothAssetSelector::OnImportApexFileClicked)
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					[
-						SNew(SHorizontalBox)
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.AutoWidth()
-						.Padding(FMargin(0, 1))
-						[
-							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("Plus"))
-						]
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.AutoWidth()
-						.Padding(FMargin(2, 0, 0, 0))
-						[
-							SNew(STextBlock)
-							.Font(IDetailLayoutBuilder::GetDetailFontBold())
-							.Text(LOCTEXT("NewAssetButtonText", "Import APEX file"))
-							.Visibility(this, &SClothAssetSelector::GetAssetHeaderButtonTextVisibility)
-						]
-					]
-				]
-#endif  // #if WITH_APEX_CLOTHING
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
@@ -1167,21 +1143,6 @@ void SClothAssetSelector::PostUndo(bool bSuccess)
 	OnRefresh();
 }
 
-#if WITH_APEX_CLOTHING
-FReply SClothAssetSelector::OnImportApexFileClicked()
-{
-	if(Mesh)
-	{
-		ApexClothingUtils::PromptAndImportClothing(Mesh);
-		OnRefresh();
-
-		return FReply::Handled();
-	}
-
-	return FReply::Unhandled();
-}
-#endif  // #if WITH_APEX_CLOTHING
-
 void SClothAssetSelector::OnCopyClothingAssetSelected(const FAssetData& AssetData)
 {
 	USkeletalMesh* SourceSkelMesh = Cast<USkeletalMesh>(AssetData.GetAsset());
@@ -1208,7 +1169,7 @@ TSharedRef<SWidget> SClothAssetSelector::OnGenerateSkeletalMeshPickerForClothCop
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SClothAssetSelector::OnCopyClothingAssetSelected);
 	AssetPickerConfig.bAllowNullSelection = true;
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;

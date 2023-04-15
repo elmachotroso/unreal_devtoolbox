@@ -4,6 +4,8 @@
 
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitAbilityCommit)
+
 
 
 UAbilityTask_WaitAbilityCommit::UAbilityTask_WaitAbilityCommit(const FObjectInitializer& ObjectInitializer)
@@ -31,7 +33,7 @@ UAbilityTask_WaitAbilityCommit* UAbilityTask_WaitAbilityCommit::WaitForAbilityCo
 
 void UAbilityTask_WaitAbilityCommit::Activate()
 {
-	if (AbilitySystemComponent)	
+	if (AbilitySystemComponent.IsValid())	
 	{		
 		OnAbilityCommitDelegateHandle = AbilitySystemComponent->AbilityCommittedCallbacks.AddUObject(this, &UAbilityTask_WaitAbilityCommit::OnAbilityCommit);
 	}
@@ -39,7 +41,7 @@ void UAbilityTask_WaitAbilityCommit::Activate()
 
 void UAbilityTask_WaitAbilityCommit::OnDestroy(bool AbilityEnded)
 {
-	if (AbilitySystemComponent)
+	if (AbilitySystemComponent.IsValid())
 	{
 		AbilitySystemComponent->AbilityCommittedCallbacks.Remove(OnAbilityCommitDelegateHandle);
 	}
@@ -75,3 +77,4 @@ void UAbilityTask_WaitAbilityCommit::OnAbilityCommit(UGameplayAbility *Activated
 		EndTask();
 	}
 }
+

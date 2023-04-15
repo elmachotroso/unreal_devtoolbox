@@ -1,13 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FilePathStructCustomization.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Misc/PackageName.h"
-#include "PropertyHandle.h"
-#include "Misc/MessageDialog.h"
-#include "EditorDirectories.h"
+
 #include "DetailWidgetRow.h"
+#include "EditorDirectories.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "PropertyHandle.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SFilePathPicker.h"
 
 
@@ -63,8 +71,8 @@ void FFilePathStructCustomization::CustomizeHeader( TSharedRef<IPropertyHandle> 
 		.MinDesiredWidth(125.0f)
 		[
 			SNew(SFilePathPicker)
-				.BrowseButtonImage(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
-				.BrowseButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.BrowseButtonImage(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+				.BrowseButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.BrowseButtonToolTip(LOCTEXT("FileButtonToolTipText", "Choose a file from this computer"))
 				.BrowseDirectory(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_OPEN))
 				.BrowseTitle(LOCTEXT("PropertyEditorTitle", "File picker..."))

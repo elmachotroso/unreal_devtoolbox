@@ -18,8 +18,7 @@ public class AnalyticsMulticastEditor : ModuleRules
 				"EditorFramework",
 				"UnrealEd", // for Asset Editor Subsystem
 				"PropertyEditor",
-				"WorkspaceMenuStructure",
-				"EditorStyle",
+				"WorkspaceMenuStructure",				
 				"EditorWidgets",
 				"Projects",
 				"DeveloperSettings"
@@ -29,7 +28,6 @@ public class AnalyticsMulticastEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Settings",
-				"IntroTutorials",
                 "AssetTools"
 			}
 		);

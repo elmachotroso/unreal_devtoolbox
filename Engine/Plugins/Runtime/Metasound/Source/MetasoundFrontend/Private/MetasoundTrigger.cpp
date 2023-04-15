@@ -91,6 +91,16 @@ namespace Metasound
 		return TriggeredFrames[InTriggerIndex];
 	}
 
+	int32 FTrigger::First() const
+	{
+		return TriggeredFrames.IsEmpty() ? INDEX_NONE : TriggeredFrames[0];
+	}
+
+	int32 FTrigger::Last() const
+	{
+		return TriggeredFrames.IsEmpty() ? INDEX_NONE : TriggeredFrames.Last();
+	}
+
 	bool FTrigger::IsTriggered() const
 	{
 		return bHasTrigger;
@@ -111,6 +121,27 @@ namespace Metasound
 		TriggeredFrames.Reset();
 		LastTriggerIndexInBlock = 0;
 		bHasTrigger = false;
+	}
+
+	void FTrigger::RemoveAfter(int32 InStartingFrame)
+	{
+		if (InStartingFrame <= 0)
+		{
+			Reset();
+		}
+		else if (TriggeredFrames.Num() > 0)
+		{
+			// Algo::UpperBound Returns index of first element > InStartingFrame
+			int32 BeginningIndex = Algo::UpperBound(TriggeredFrames, InStartingFrame);
+			int32 NumToRemove = TriggeredFrames.Num() - BeginningIndex;
+
+			if (NumToRemove > 0)
+			{
+				TriggeredFrames.RemoveAt(BeginningIndex, NumToRemove);
+				UpdateLastTriggerIndexInBlock();
+				bHasTrigger = TriggeredFrames.Num() > 0;
+			}
+		}
 	}
 
 	void FTrigger::UpdateLastTriggerIndexInBlock()

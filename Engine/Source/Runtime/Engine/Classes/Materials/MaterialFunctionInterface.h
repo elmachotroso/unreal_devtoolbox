@@ -15,10 +15,10 @@
 #include "MaterialFunctionInterface.generated.h"
 
 class UMaterial;
+class UMaterialFunction;
 class UTexture;
 struct FPropertyChangedEvent;
 class FMaterialHLSLGenerator;
-class FMaterialHLSLTree;
 
 /** Usage set on a material function determines feature compatibility and validation. */
 UENUM()
@@ -31,6 +31,14 @@ enum class EMaterialFunctionUsage : uint8
 
 using FMFRecursionGuard = TMaterialRecursionGuard<class UMaterialFunctionInterface>;
 
+UCLASS(Optional)
+class UMaterialFunctionInterfaceEditorOnlyData : public UObject
+{
+	GENERATED_BODY()
+public:
+	
+};
+
 /**
  * A Material Function is a collection of material expressions that can be reused in different materials
  */
@@ -39,27 +47,36 @@ class UMaterialFunctionInterface : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
+#if WITH_EDITORONLY_DATA
+protected:
+	UPROPERTY()
+	TObjectPtr<UMaterialFunctionInterfaceEditorOnlyData> EditorOnlyData;
+
+	ENGINE_API virtual const UClass* GetEditorOnlyDataClass() const;
+	ENGINE_API virtual UMaterialFunctionInterfaceEditorOnlyData* CreateEditorOnlyData();
+
+public:
+	UMaterialFunctionInterfaceEditorOnlyData* GetEditorOnlyData() { return EditorOnlyData; }
+	const UMaterialFunctionInterfaceEditorOnlyData* GetEditorOnlyData() const { return EditorOnlyData; }
+#endif // WITH_EDITORONLY_DATA
+
 	//~ Begin UObject Interface.
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	ENGINE_API static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+	virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
 	//~ End UObject Interface.
 
 	/** Used by materials using this function to know when to recompile. */
 	UPROPERTY(duplicatetransient)
 	FGuid StateId;
-
-#if WITH_EDITOR
-public:
-	FMaterialHLSLTree& AcquireHLSLTree(FMaterialHLSLGenerator& Generator);
-#endif
-#if WITH_EDITORONLY_DATA
-private:
-	FMaterialHLSLTree* CachedHLSLTree = nullptr;
-#endif
 
 protected:
 	/** The intended usage of this function, required for material layers. */
@@ -138,26 +155,25 @@ public:
 	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
 #endif
 	
-	virtual UMaterialFunctionInterface* GetBaseFunction()
-		PURE_VIRTUAL(UMaterialFunctionInterface::GetBaseFunction,return nullptr;);
+	virtual UMaterialFunction* GetBaseFunction(FMFRecursionGuard RecursionGuard = FMFRecursionGuard())
+		PURE_VIRTUAL(UMaterialFunction::GetBaseFunction,return nullptr;);
 
-	virtual const UMaterialFunctionInterface* GetBaseFunction() const
-		PURE_VIRTUAL(UMaterialFunctionInterface::GetBaseFunction,return nullptr;);
+	virtual const UMaterialFunction* GetBaseFunction(FMFRecursionGuard RecursionGuard = FMFRecursionGuard()) const
+		PURE_VIRTUAL(UMaterialFunction::GetBaseFunction,return nullptr;);
 
-#if WITH_EDITORONLY_DATA
-	virtual const TArray<TObjectPtr<UMaterialExpression>>* GetFunctionExpressions() const
-		PURE_VIRTUAL(UMaterialFunctionInterface::GetFunctionExpressions,return nullptr;);
-#endif // WITH_EDITORONLY_DATA
-
-	virtual const FString* GetDescription() const
-		PURE_VIRTUAL(UMaterialFunctionInterface::GetDescription,return nullptr;);
+	/** Returns GetBaseFunction() as a UMaterialFunctionInterface, useful if MaterialFunction.h hasn't been included yet, and implicit conversion to UMaterialInterface isn't availiable */
+	ENGINE_API UMaterialFunctionInterface* GetBaseFunctionInterface();
+	ENGINE_API const UMaterialFunctionInterface* GetBaseFunctionInterface() const;
 
 #if WITH_EDITOR
-	virtual bool GetReentrantFlag() const
-		PURE_VIRTUAL(UMaterialFunctionInterface::GetReentrantFlag,return false;);
+	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpression>> GetExpressions() const;
 
-	virtual void SetReentrantFlag(const bool bIsReentrant)
-		PURE_VIRTUAL(UMaterialFunctionInterface::SetReentrantFlag,);
+	UE_DEPRECATED(5.1, "Use GetExpressions()")
+	inline TConstArrayView<TObjectPtr<UMaterialExpression>> GetFunctionExpressions() const { return GetExpressions(); }
+
+	ENGINE_API const FString& GetDescription() const;
+	ENGINE_API bool GetReentrantFlag() const;
+	ENGINE_API void SetReentrantFlag(bool bIsReentrant);
 #endif // WITH_EDITOR
 
 public:
@@ -167,10 +183,10 @@ public:
 	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const
 	{
-		if (const UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
+		if (const UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
 		{
 			const UClass* TargetClass = UMaterialExpressionMaterialFunctionCall::StaticClass();
-			for (const TObjectPtr<UMaterialExpression>& Expression : *ParameterFunction->GetFunctionExpressions())
+			for (const TObjectPtr<UMaterialExpression>& Expression : ParameterFunction->GetExpressions())
 			{
 				if (const UMaterialExpressionMaterialFunctionCall* FunctionExpression = (Expression && Expression.IsA(TargetClass)) ? (const UMaterialExpressionMaterialFunctionCall*)Expression.Get() : nullptr)
 				{
@@ -201,14 +217,14 @@ public:
 	{
 		Parameter = nullptr;
 
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
+		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
 		{
 			const UClass* TargetClass = ExpressionType::StaticClass();
 
 			auto GetExpressionParameterByNamePredicate = 
 				[&ParameterInfo, &Parameter, &OwningFunction, TargetClass](UMaterialFunctionInterface* Function) -> bool
 			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
+				for (UMaterialExpression* FunctionExpression : Function->GetExpressions())
 				{
 					if (ExpressionType* ExpressionParameter = (FunctionExpression && FunctionExpression->IsA(TargetClass)) ? (ExpressionType *)FunctionExpression : nullptr)
 					{
@@ -245,7 +261,7 @@ public:
 	{
 		bool bChanged = false;
 
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
+		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
 		{
 			TArray<UMaterialFunctionInterface*> Functions;
 			ParameterFunction->GetDependentFunctions(Functions);
@@ -253,7 +269,7 @@ public:
 
 			for (UMaterialFunctionInterface* Function : Functions)
 			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
+				for (TObjectPtr<UMaterialExpression> FunctionExpression : Function->GetExpressions())
 				{
 					if (ExpressionType* ParameterExpression = Cast<ExpressionType>(FunctionExpression))
 					{
@@ -277,7 +293,7 @@ public:
 	template<typename ExpressionType>
 	bool HasAnyExpressionsOfType()
 	{
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
+		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
 		{
 			TArray<UMaterialFunctionInterface*> Functions;
 			ParameterFunction->GetDependentFunctions(Functions);
@@ -285,7 +301,7 @@ public:
 
 			for (UMaterialFunctionInterface* Function : Functions)
 			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
+				for (UMaterialExpression* FunctionExpression : Function->GetExpressions())
 				{
 					if (ExpressionType* FunctionExpressionOfType = Cast<ExpressionType>(FunctionExpression))
 					{
@@ -302,7 +318,7 @@ public:
 	template<typename ExpressionType>
 	void GetAllExpressionsOfType(TArray<ExpressionType*>& OutExpressions, const bool bRecursive = true)
 	{
-		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunction())
+		if (UMaterialFunctionInterface* ParameterFunction = GetBaseFunctionInterface())
 		{
 			TArray<UMaterialFunctionInterface*> Functions;
 			if (bRecursive)
@@ -313,7 +329,7 @@ public:
 
 			for (UMaterialFunctionInterface* Function : Functions)
 			{
-				for (UMaterialExpression* FunctionExpression : *Function->GetFunctionExpressions())
+				for (UMaterialExpression* FunctionExpression : Function->GetExpressions())
 				{
 					if (ExpressionType* FunctionExpressionOfType = Cast<ExpressionType>(FunctionExpression))
 					{
@@ -335,5 +351,8 @@ public:
 	ENGINE_API bool OverrideNamedFontParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage);
 	ENGINE_API bool OverrideNamedStaticSwitchParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid);
 	ENGINE_API bool OverrideNamedStaticComponentMaskParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid);
+
+	virtual bool IsUsingControlFlow() const { return false; }
+	virtual bool IsUsingNewHLSLGenerator() const { return false; }
 #endif // WITH_EDITOR
 };

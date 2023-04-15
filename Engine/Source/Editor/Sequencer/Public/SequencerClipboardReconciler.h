@@ -2,49 +2,62 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/SparseArray.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "Curves/KeyHandle.h"
+#include "Misc/Optional.h"
 #include "MovieSceneClipboard.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
-class IKeyArea;
+namespace UE
+{
+namespace Sequencer
+{
+	class FChannelModel;
+}
+}
 
-typedef TArray<IKeyArea*> FKeyAreaArray;
 
 struct FSequencerPasteEnvironment : FMovieSceneClipboardEnvironment
 {
-	void ReportPastedKey(FKeyHandle KeyHandle, IKeyArea& KeyArea) const
+	void ReportPastedKey(FKeyHandle KeyHandle, TSharedPtr<UE::Sequencer::FChannelModel> ChannelModel) const
 	{
 		if (OnKeyPasted)
 		{
-			OnKeyPasted(KeyHandle, KeyArea);
+			OnKeyPasted(KeyHandle, ChannelModel);
 		}
 	}
 
-	TFunction<void(FKeyHandle, IKeyArea&)> OnKeyPasted;
+	TFunction<void(FKeyHandle, TSharedPtr<UE::Sequencer::FChannelModel>)> OnKeyPasted;
 };
 
 /** Struct responsible for adding key areas to a group */
 struct FSequencerClipboardPasteGroup
 {
 	/** Constructor that takes an array to add our group of key areas to */
-	FSequencerClipboardPasteGroup(TArray<FKeyAreaArray>& InOwnerArray)
+	FSequencerClipboardPasteGroup(TArray<TArray<TSharedPtr<UE::Sequencer::FChannelModel>>>& InOwnerArray)
 		: OwnerArray(InOwnerArray)
 		, Index(INDEX_NONE)
 	{}
 
 	/** Add a key area to this group */
-	void Add(IKeyArea& InKeyArea)
+	void Add(TSharedPtr<UE::Sequencer::FChannelModel> InChannel)
 	{
 		if (Index == INDEX_NONE)
 		{
 			Index = OwnerArray.AddDefaulted();
 		}
-		OwnerArray[Index].Add(&InKeyArea);
+		OwnerArray[Index].Add(InChannel);
 	}
 
 private:
 	/** Owner array to create our group within */
-	TArray<FKeyAreaArray>& OwnerArray;
+	TArray<TArray<TSharedPtr<UE::Sequencer::FChannelModel>>>& OwnerArray;
 
 	/** Index into the above array at which our group resides */
 	int32 Index;
@@ -96,7 +109,7 @@ private:
 	 * @param bAllowAliases	true to allow synonymous names to match, false if only exact matches should be allowed
 	 * @return true if any matches were found, false otherwise
 	 */
-	bool FindMatchingGroup(const FKeyAreaArray& Destination, const TArray<FMovieSceneClipboardKeyTrack>& Source, TMap<int32, int32>& Map, bool bAllowAliases);
+	bool FindMatchingGroup(const TArray<TSharedPtr<UE::Sequencer::FChannelModel>>& Destination, const TArray<FMovieSceneClipboardKeyTrack>& Source, TMap<int32, int32>& Map, bool bAllowAliases);
 
 	/** Reconcile a single key area group, to one or more destination groups */
 	bool ReconcileOneToMany();
@@ -133,7 +146,7 @@ private:
 	TSharedRef<const FMovieSceneClipboard> Clipboard;
 
 	/** Array of paste destinations. A paste destination will consist of one or more key areas. */
-	TArray<FKeyAreaArray> PasteDestination;
+	TArray<TArray<TSharedPtr<UE::Sequencer::FChannelModel>>> PasteDestination;
 
 	/** Optional cached reconciliation result for the current data set */
 	TOptional<bool> bReconcileResult;

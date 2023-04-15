@@ -10,7 +10,7 @@ public class BinkAudioDecoder : ModuleRules
     // virtual so that NDA platforms can hide secrets
     protected virtual string GetLibrary(ReadOnlyTargetRules Target)
     {
-        if (Target.Platform == UnrealTargetPlatform.Win64)
+        if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
         {
             return Path.Combine(ModuleDirectory, "..", "SDK", "BinkAudio", "Lib", "binka_ue_decode_win64_static.lib");
         }
@@ -20,11 +20,15 @@ public class BinkAudioDecoder : ModuleRules
         }
         if (Target.Platform == UnrealTargetPlatform.Mac)
         {
-            return Path.Combine(ModuleDirectory, "..", "SDK", "BinkAudio", "Lib", "libbinka_ue_decode_osxfat_static.a");
+            return Path.Combine(ModuleDirectory, "..", "SDK", "BinkAudio", "Lib", "libbinka_ue_decode_osx_static.a");
         }
         if (Target.Platform == UnrealTargetPlatform.IOS)
         {
             return Path.Combine(ModuleDirectory, "..", "SDK", "BinkAudio", "Lib", "libbinka_ue_decode_ios_static.a");
+        }
+        if (Target.Platform == UnrealTargetPlatform.TVOS)
+        {
+            return Path.Combine(ModuleDirectory, "..", "SDK", "BinkAudio", "Lib", "libbinka_ue_decode_tvos_static.a");
         }
         return null;
     }

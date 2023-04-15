@@ -1,11 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DragOperations/CurveEditorDragOperation_Marquee.h"
+
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
 #include "CurveEditor.h"
-#include "SCurveEditorView.h"
+#include "CurveEditorSelection.h"
+#include "CurveEditorTypes.h"
+#include "Curves/KeyHandle.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Events.h"
+#include "Layout/Geometry.h"
+#include "Math/UnrealMathUtility.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/SlateLayoutTransform.h"
 #include "SCurveEditorPanel.h"
-#include "EditorStyleSet.h"
-#include "CurveDrawInfo.h"
+#include "SCurveEditorView.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/Tuple.h"
 
 FCurveEditorDragOperation_Marquee::FCurveEditorDragOperation_Marquee(FCurveEditor* InCurveEditor)
 	: LockedToView(nullptr)
@@ -68,7 +82,7 @@ void FCurveEditorDragOperation_Marquee::OnEndDrag(FVector2D InitialPosition, FVe
 			const FGeometry& LocalGeometry = View->GetCachedGeometry();
 			FSlateLayoutTransform ContainerToView = InverseContainerTransform.Concatenate(LocalGeometry.GetAccumulatedLayoutTransform()).Inverse();
 
-			FSlateRect UnclippedLocalMarquee = FSlateRect(ContainerToView.TransformPoint(Marquee.GetTopLeft()), ContainerToView.TransformPoint(Marquee.GetBottomRight()));
+			FSlateRect UnclippedLocalMarquee = FSlateRect(ContainerToView.TransformPoint(Marquee.GetTopLeft2f()), ContainerToView.TransformPoint(Marquee.GetBottomRight2f()));
 			FSlateRect ClippedLocalMarquee = UnclippedLocalMarquee.IntersectionWith(FSlateRect(FVector2D(0.f,0.f), LocalGeometry.GetLocalSize()));
 
 			if (ClippedLocalMarquee.IsValid() && !ClippedLocalMarquee.IsEmpty())
@@ -99,6 +113,41 @@ void FCurveEditorDragOperation_Marquee::OnEndDrag(FVector2D InitialPosition, FVe
 			bPreferPointSelection = true;
 			break;
 		}
+	}
+
+	// When adding to the existing selection, ensure only either points or tangents are selected
+	TArray<FCurvePointHandle> CurvePointsToRemove;
+	if (bIsShiftDown)
+	{
+		for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : CurveEditor->GetSelection().GetAll())
+		{
+			for (FKeyHandle Handle : Pair.Value.AsArray())
+			{
+				ECurvePointType PointType = Pair.Value.PointType(Handle);
+
+				if (bPreferPointSelection)
+				{
+					// If selecting points, deselect tangen handles (ie. anything that's not a point/key)
+					if (PointType != ECurvePointType::Key)
+					{
+						CurvePointsToRemove.Add(FCurvePointHandle(Pair.Key, PointType, Handle));
+					}
+				}
+				else
+				{
+					// Otherwise when selecting tangent handles, deselect anything that's a key
+					if (PointType == ECurvePointType::Key)
+					{
+						CurvePointsToRemove.Add(FCurvePointHandle(Pair.Key, PointType, Handle));
+					}
+				}
+			}
+		}
+	}
+
+	for (const FCurvePointHandle& Point : CurvePointsToRemove)
+	{
+		CurveEditor->Selection.Remove(Point);
 	}
 
 	// Now that we've gathered the overlapping points, perform the relevant selection
@@ -135,6 +184,6 @@ void FCurveEditorDragOperation_Marquee::OnPaint(const FGeometry& AllottedGeometr
 		OutDrawElements,
 		PaintOnLayerId,
 		AllottedGeometry.ToPaintGeometry(Marquee.GetTopLeft(), Marquee.GetBottomRight() - Marquee.GetTopLeft()),
-		FEditorStyle::GetBrush(TEXT("MarqueeSelection"))
+		FAppStyle::GetBrush(TEXT("MarqueeSelection"))
 		);
 }

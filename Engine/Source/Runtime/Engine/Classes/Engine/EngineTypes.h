@@ -12,7 +12,14 @@
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "Templates/SubclassOf.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/NetSerialization.h"
+#include "Engine/ActorInstanceHandle.h"
+#include "Engine/HitResult.h"
+#include "Engine/OverlapResult.h"
+#include "Engine/DamageEvents.h"
+#include "Engine/ReplicatedState.h"
+#endif
 #include "EngineTypes.generated.h"
 
 class AActor;
@@ -250,6 +257,21 @@ enum EBlendMode
 	BLEND_MAX,
 };
 
+/**
+ * The blending mode for Strata materials
+ */
+UENUM(BlueprintType)
+enum EStrataBlendMode
+{
+	SBM_Opaque UMETA(DisplayName = "Opaque"),
+	SBM_Masked UMETA(DisplayName = "Masked"),
+	SBM_TranslucentGreyTransmittance UMETA(DisplayName = "Translucent - Grey Transmittance"),
+	SBM_TranslucentColoredTransmittance UMETA(DisplayName = "Translucent - Colored Transmittance"),
+	SBM_ColoredTransmittanceOnly UMETA(DisplayName = "Colored Transmittance Only"),
+	SBM_AlphaHoldout UMETA(DisplayName = "Alpha Holdout"),
+	SBM_MAX,
+};
+
 /** The default float precision for material's pixel shaders on mobile devices*/
 UENUM()
 enum EMaterialFloatPrecisionMode
@@ -274,7 +296,9 @@ enum ESamplerSourceMode
 	/** Shared sampler source that does not consume a sampler slot.  Uses wrap addressing and gets filter mode from the world texture group. */
 	SSM_Wrap_WorldGroupSettings UMETA(DisplayName="Shared: Wrap"),
 	/** Shared sampler source that does not consume a sampler slot.  Uses clamp addressing and gets filter mode from the world texture group. */
-	SSM_Clamp_WorldGroupSettings UMETA(DisplayName="Shared: Clamp")
+	SSM_Clamp_WorldGroupSettings UMETA(DisplayName="Shared: Clamp"),
+	/** Shared sampler source that does not consume a sampler slot, used to sample the terrain weightmap.  Gets filter mode from the terrain weightmap texture group. */
+	SSM_TerrainWeightmapGroupSettings UMETA(Hidden)
 };
 
 /** defines how MipValue is used */
@@ -629,6 +653,7 @@ public:
 	bool IsLit() const														{ return !IsUnlit(); }
 	bool IsValid() const													{ return (ShadingModelField > 0) && (ShadingModelField < (1 << MSM_NUM)); }
 	uint16 GetShadingModelField() const										{ return ShadingModelField; }
+	void SetShadingModelField(uint16 InShadingModelField)					{ ShadingModelField = InShadingModelField; }
 	int32 CountShadingModels() const										{ return FMath::CountBits(ShadingModelField); }
 	EMaterialShadingModel GetFirstShadingModel() const						{ check(IsValid()); return (EMaterialShadingModel)FMath::CountTrailingZeros(ShadingModelField); }
 
@@ -651,11 +676,15 @@ enum EStrataShadingModel
 	SSM_SubsurfaceLit			UMETA(DisplayName = "SubsurfaceLit"),
 	SSM_VolumetricFogCloud		UMETA(DisplayName = "VolumetricFogCloud"),
 	SSM_Hair					UMETA(DisplayName = "Hair"),
+	SSM_Eye						UMETA(DisplayName = "Eye"),
 	SSM_SingleLayerWater		UMETA(DisplayName = "SingleLayerWater"),
+	SSM_LightFunction			UMETA(DisplayName = "LightFunction"),
+	SSM_PostProcess				UMETA(DisplayName = "PostProcess"),
+	SSM_Decal					UMETA(DisplayName = "Decal"),
 	/** Number of unique shading models. */
 	SSM_NUM						UMETA(Hidden),
 };
-static_assert(SSM_NUM <= 8, "Do not exceed 16 shading models without expanding FStrataMaterialShadingModelField to support uint32 instead of uint16!");
+static_assert(SSM_NUM <= 16, "Do not exceed 16 shading models without expanding FStrataMaterialShadingModelField to support uint32 instead of uint16!");
 
 /** Gather information from the Strata material graph to setup material for runtime. */
 USTRUCT()
@@ -671,7 +700,7 @@ public:
 	void AddShadingModel(EStrataShadingModel InShadingModel) { check(InShadingModel < SSM_NUM); ShadingModelField |= (1 << (uint16)InShadingModel); }
 	bool HasShadingModel(EStrataShadingModel InShadingModel) const { return (ShadingModelField & (1 << (uint16)InShadingModel)) != 0; }
 	bool HasOnlyShadingModel(EStrataShadingModel InShadingModel) const { return ShadingModelField == (1 << (uint16)InShadingModel); }
-	uint8 GetShadingModelField() const { return ShadingModelField; }
+	uint16 GetShadingModelField() const { return ShadingModelField; }
 	int32 CountShadingModels() const { return FMath::CountBits(ShadingModelField); }
 
 	// Subsurface profiles
@@ -683,6 +712,11 @@ public:
 	void SetShadingModelFromExpression(bool bIn) { bHasShadingModelFromExpression = bIn ? 1u : 0u; }
 	bool HasShadingModelFromExpression() const { return bHasShadingModelFromExpression > 0u; }
 
+	uint32 GetPropertyConnected() const { return ConnectedProperties; }
+	void AddPropertyConnected(uint32 In) { ConnectedProperties |= (1 << In); }
+	bool HasPropertyConnected(uint32 In) const { return !!(ConnectedProperties & (1 << In)); }
+	static bool HasPropertyConnected(uint32 InConnectedProperties, uint32 In) { return !!(InConnectedProperties & (1 << In)); }
+
 	bool IsValid() const { return (ShadingModelField > 0) && (ShadingModelField < (1 << SSM_NUM)); }
 
 	bool operator==(const FStrataMaterialInfo& Other) const { return ShadingModelField == Other.GetShadingModelField(); }
@@ -690,12 +724,16 @@ public:
 
 private:
 	UPROPERTY()
-	uint8 ShadingModelField = 0;
+	uint16 ShadingModelField = 0;
 
 	/* Indicates if the shading model is constant or data-driven from the shader graph */
 	UPROPERTY()
 	uint8 bHasShadingModelFromExpression = 0;
 
+	/* Indicates which (legacy) inputs are connected */
+	UPROPERTY()
+	uint32 ConnectedProperties = 0;
+	
 	UPROPERTY()
 	TArray<TObjectPtr<USubsurfaceProfile>> SubsurfaceProfiles;
 };
@@ -761,14 +799,14 @@ enum EMaterialShadingRate
 
 
 /**	Lighting build quality enumeration */
-UENUM()
+UENUM(BlueprintType)
 enum ELightingBuildQuality
 {
-	Quality_Preview,
-	Quality_Medium,
-	Quality_High,
-	Quality_Production,
-	Quality_MAX,
+	Quality_Preview		UMETA(DisplayName = "Preview"),
+	Quality_Medium		UMETA(DisplayName = "Medium"),
+	Quality_High		UMETA(DisplayName = "High"),
+	Quality_Production	UMETA(DisplayName = "Production"),
+	Quality_MAX			UMETA(Hidden),
 };
 
 /** Movement modes for Characters. */
@@ -816,8 +854,6 @@ enum class ENetworkSmoothingMode : uint8
 	/** Exponential. Faster as you are further from target. */
 	Exponential		UMETA(DisplayName="Exponential"),
 
-	/** Special linear interpolation designed specifically for replays. Not intended as a selectable mode in-editor. */
-	Replay			UMETA(Hidden, DisplayName="Replay"),
 };
 
 // Number of bits used currently from FMaskFilter.
@@ -1349,7 +1385,15 @@ namespace ECollisionEnabled
 		/** Only used only for physics simulation (rigid body, constraints). Cannot be used for spatial queries (raycasts, sweeps, overlaps). Useful for jiggly bits on characters that do not need per bone detection. Performance gains by keeping data out of query tree */
 		PhysicsOnly UMETA(DisplayName="Physics Only (No Query Collision)"),
 		/** Can be used for both spatial queries (raycasts, sweeps, overlaps) and simulation (rigid body, constraints). */
-		QueryAndPhysics UMETA(DisplayName="Collision Enabled (Query and Physics)") 
+		QueryAndPhysics UMETA(DisplayName="Collision Enabled (Query and Physics)"),
+		/** Only used for probing the physics simulation (rigid body, constraints). Cannot be used for spatial queries (raycasts,
+		sweeps, overlaps). Useful for when you want to detect potential physics interactions and pass contact data to hit callbacks
+		or contact modification, but don't want to physically react to these contacts. */
+		ProbeOnly UMETA(DisplayName="Probe Only (Contact Data, No Query or Physics Collision)"),
+		/** Can be used for both spatial queries (raycasts, sweeps, overlaps) and probing the physics simulation (rigid body,
+		constraints). Will not allow for actual physics interaction, but will generate contact data, trigger hit callbacks, and
+		contacts will appear in contact modification. */
+		QueryAndProbe UMETA(DisplayName="Query and Probe (Query Collision and Contact Data, No Physics Collision)")
 	}; 
 } 
 
@@ -1376,65 +1420,62 @@ extern FCollisionEnabledMask ENGINE_API operator|(const ECollisionEnabled::Type 
 
 FORCEINLINE bool CollisionEnabledHasPhysics(ECollisionEnabled::Type CollisionEnabled)
 {
-	return (CollisionEnabled == ECollisionEnabled::PhysicsOnly) ||
+	return	(CollisionEnabled == ECollisionEnabled::PhysicsOnly) ||
 			(CollisionEnabled == ECollisionEnabled::QueryAndPhysics);
 }
 
 FORCEINLINE bool CollisionEnabledHasQuery(ECollisionEnabled::Type CollisionEnabled)
 {
-	return (CollisionEnabled == ECollisionEnabled::QueryOnly) ||
-			(CollisionEnabled == ECollisionEnabled::QueryAndPhysics);
+	return	(CollisionEnabled == ECollisionEnabled::QueryOnly) ||
+			(CollisionEnabled == ECollisionEnabled::QueryAndPhysics) ||
+			(CollisionEnabled == ECollisionEnabled::QueryAndProbe);
+}
+
+FORCEINLINE bool CollisionEnabledHasProbe(ECollisionEnabled::Type CollisionEnabled)
+{
+	return (CollisionEnabled == ECollisionEnabled::ProbeOnly) ||
+			(CollisionEnabled == ECollisionEnabled::QueryAndProbe);
 }
 
 FORCEINLINE ECollisionEnabled::Type CollisionEnabledIntersection(ECollisionEnabled::Type CollisionEnabledA, ECollisionEnabled::Type CollisionEnabledB)
 {
-	const bool bHasQuery = (CollisionEnabledHasQuery(CollisionEnabledA) && CollisionEnabledHasQuery(CollisionEnabledB));
-	const bool bHasPhysics = (CollisionEnabledHasPhysics(CollisionEnabledA) && CollisionEnabledHasPhysics(CollisionEnabledB));
-	if (bHasQuery && bHasPhysics) { return ECollisionEnabled::QueryAndPhysics; }
-	if (bHasQuery) { return ECollisionEnabled::QueryOnly; }
-	if (bHasPhysics) { return ECollisionEnabled::PhysicsOnly; }
-	return ECollisionEnabled::NoCollision;
-}
-
-/** Describes the physical state of a rigid body. */
-USTRUCT()
-struct FRigidBodyState
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	FVector_NetQuantize100 Position;
-
-	UPROPERTY()
-	FQuat Quaternion;
-
-	UPROPERTY()
-	FVector_NetQuantize100 LinVel;
-
-	UPROPERTY()
-	FVector_NetQuantize100 AngVel;
-
-	UPROPERTY()
-	uint8 Flags;
-
-	FRigidBodyState()
-		: Position(ForceInit)
-		, Quaternion(ForceInit)
-		, LinVel(ForceInit)
-		, AngVel(ForceInit)
-		, Flags(0)
-	{ }
-};
-
-/** Describes extra state about a specific rigid body */
-namespace ERigidBodyFlags
-{
-	enum Type
-	{
-		None				= 0x00,
-		Sleeping			= 0x01,
-		NeedsUpdate			= 0x02,
+	// Combine collision two enabled data.
+	//
+	// The intersection follows the following rules:
+	//
+	// * For the result to have Query, both data must have Query
+	// * For the result to have Probe, either data must have Probe
+	// * For the result to have Physics, both data must have Physics and the result must not have Probe
+	//
+	// This way if an object is query-only, for example, but one of its shapes is query-and-physics,
+	// the object's settings win and the shape ends up being query-only. And if the object is marked
+	// as physics, but the child is marked as probe (or vice versa), use probe.
+	//
+	// The following matrix represents the intersection relationship.
+	// NOTE: The order of types must match the order declared in ECollisionEnabled!
+	using namespace ECollisionEnabled;
+	static constexpr ECollisionEnabled::Type IntersectionMatrix[5][5] = {
+		/*                 |        QueryOnly       PhysicsOnly     QueryAndPhysics     ProbeOnly     QueryAndProbe   */
+		/*-----------------+------------------------------------------------------------------------------------------*/
+		/* QueryOnly       | */ {   QueryOnly,      NoCollision,    QueryOnly,          NoCollision,  QueryOnly       },
+		/* PhysicsOnly     | */ {   NoCollision,    PhysicsOnly,    PhysicsOnly,        ProbeOnly,    ProbeOnly       },
+		/* QueryAndPhysics | */ {   QueryOnly,      PhysicsOnly,    QueryAndPhysics,    ProbeOnly,    QueryAndProbe   },
+		/* ProbeOnly       | */ {   NoCollision,    ProbeOnly,      ProbeOnly,          ProbeOnly,    ProbeOnly       },
+		/* QueryAndProbe   | */ {   QueryOnly,      ProbeOnly,      QueryAndProbe,      ProbeOnly,    QueryAndProbe   }
 	};
+
+	// Subtract 1 because the first index is NoCollision.
+	// If both indices indicate _some_ collision setting (ie, greater than -1),
+	// lookup their intersection setting in the matrix.
+	const int32 IndexA = (int32)CollisionEnabledA - 1;
+	const int32 IndexB = (int32)CollisionEnabledB - 1;
+	if (IndexA >= 0 && IndexB >= 0)
+	{
+		return IntersectionMatrix[IndexA][IndexB];
+	}
+
+	// Either of the two settings were set to NoCollision which trumps all
+	return ECollisionEnabled::NoCollision;
 }
 
 /** Describes type of wake/sleep event sent to the physics system */
@@ -1549,6 +1590,10 @@ struct ENGINE_API FRigidBodyContactInfo
 	UPROPERTY()
 	float ContactPenetration;
 
+	/** Was this contact generated by a probe constraint */
+	UPROPERTY()
+	bool bContactProbe;
+
 	/** The physical material of the two shapes involved in a contact */
 	UPROPERTY()
 	TObjectPtr<class UPhysicalMaterial> PhysMaterial[2];
@@ -1558,6 +1603,7 @@ struct ENGINE_API FRigidBodyContactInfo
 		: ContactPosition(ForceInit)
 		, ContactNormal(ForceInit)
 		, ContactPenetration(0)
+		, bContactProbe(false)
 	{
 		for (int32 ElementIndex = 0; ElementIndex < 2; ElementIndex++)
 		{
@@ -1568,11 +1614,13 @@ struct ENGINE_API FRigidBodyContactInfo
 	FRigidBodyContactInfo(	const FVector& InContactPosition, 
 							const FVector& InContactNormal, 
 							float InPenetration, 
+							bool bInProbe,
 							UPhysicalMaterial* InPhysMat0, 
 							UPhysicalMaterial* InPhysMat1 )
 		: ContactPosition(InContactPosition)
 		, ContactNormal(InContactNormal)
 		, ContactPenetration(InPenetration)
+		, bContactProbe(bInProbe)
 	{
 		PhysMaterial[0] = InPhysMat0;
 		PhysMaterial[1] = InPhysMat1;
@@ -1902,11 +1950,11 @@ struct FLightmassPrimitiveSettings
 			(A.bShadowIndirectOnly != B.bShadowIndirectOnly) || 
 			(A.bUseEmissiveForStaticLighting != B.bUseEmissiveForStaticLighting) || 
 			(A.bUseVertexNormalForHemisphereGather != B.bUseVertexNormalForHemisphereGather) || 
-			(fabsf(A.EmissiveLightFalloffExponent - B.EmissiveLightFalloffExponent) > SMALL_NUMBER) ||
-			(fabsf(A.EmissiveLightExplicitInfluenceRadius - B.EmissiveLightExplicitInfluenceRadius) > SMALL_NUMBER) ||
-			(fabsf(A.EmissiveBoost - B.EmissiveBoost) > SMALL_NUMBER) ||
-			(fabsf(A.DiffuseBoost - B.DiffuseBoost) > SMALL_NUMBER) ||
-			(fabsf(A.FullyOccludedSamplesFraction - B.FullyOccludedSamplesFraction) > SMALL_NUMBER))
+			(fabsf(A.EmissiveLightFalloffExponent - B.EmissiveLightFalloffExponent) > UE_SMALL_NUMBER) ||
+			(fabsf(A.EmissiveLightExplicitInfluenceRadius - B.EmissiveLightExplicitInfluenceRadius) > UE_SMALL_NUMBER) ||
+			(fabsf(A.EmissiveBoost - B.EmissiveBoost) > UE_SMALL_NUMBER) ||
+			(fabsf(A.DiffuseBoost - B.DiffuseBoost) > UE_SMALL_NUMBER) ||
+			(fabsf(A.FullyOccludedSamplesFraction - B.FullyOccludedSamplesFraction) > UE_SMALL_NUMBER))
 		{
 			return false;
 		}
@@ -2067,425 +2115,6 @@ enum EShadowMapFlags
 	SMF_Streamed		= 0x00000001
 };
 
-/** Reference to a specific material in a PrimitiveComponent, used by Matinee */
-USTRUCT()
-struct FPrimitiveMaterialRef
-{
-	GENERATED_BODY()
-
-	/** Material is on a primitive component */
-	UPROPERTY()
-	TObjectPtr<class UPrimitiveComponent> Primitive;
-
-	/** Material is on a decal component */
-	UPROPERTY()
-	TObjectPtr<class UDecalComponent> Decal;
-
-	/** Index into the material on the components data */
-	UPROPERTY()
-	int32 ElementIndex;
-
-	FPrimitiveMaterialRef()
-		: Primitive(nullptr)
-		, Decal(nullptr)
-		, ElementIndex(0)
-	{ }
-
-	FPrimitiveMaterialRef(UPrimitiveComponent* InPrimitive, int32 InElementIndex)
-		: Primitive(InPrimitive)
-		, Decal(nullptr)
-		, ElementIndex(InElementIndex)
-	{ 	}
-
-	FPrimitiveMaterialRef(UDecalComponent* InDecal, int32 InElementIndex)
-		: Primitive(nullptr)
-		, Decal(InDecal)
-		, ElementIndex(InElementIndex)
-	{ 	}
-};
-
-// Handle to a unique object. This may specify a full weigh actor or it may only specify the light weight instance that represents the same object.
-USTRUCT(BlueprintType)
-struct ENGINE_API FActorInstanceHandle
-{
-	GENERATED_BODY()
-
-	friend struct FLightWeightInstanceSubsystem;
-	friend class ALightWeightInstanceManager;
-	friend class UActorInstanceHandleInterface;
-
-	FActorInstanceHandle();
-
-	explicit FActorInstanceHandle(AActor* InActor);
-	explicit FActorInstanceHandle(class ALightWeightInstanceManager* Manager, int32 InInstanceIndex);
-
-	FActorInstanceHandle(const FActorInstanceHandle& Other);
-
-	bool IsValid() const;
-
-	bool DoesRepresentClass(const UClass* OtherClass) const;
-
-	UClass* GetRepresentedClass() const;
-
-	FVector GetLocation() const;
-	FRotator GetRotation() const;
-	FTransform GetTransform() const;
-
-	FName GetFName() const;
-	FString GetName() const;
-
-	/** If this handle has a valid actor, return it; otherwise return the actor responsible for managing the instances. */
-	AActor* GetManagingActor() const;
-
-	/** Returns either the actor's root component or the root component for the manager associated with the handle */
-	USceneComponent* GetRootComponent() const;
-
-	/** Returns the actor specified by this handle. This may require loading and creating the actor object. */
-	AActor* FetchActor() const;
-	template <typename T>
-	T* FetchActor() const;
-
-	/* Returns the index used internally by the manager */
-	FORCEINLINE int32 GetInstanceIndex() const { return InstanceIndex; }
-
-	/* Returns the index used by rendering and collision */
-	int32 GetRenderingInstanceIndex() const;
-
-	FActorInstanceHandle& operator=(const FActorInstanceHandle& Other) = default;
-	FActorInstanceHandle& operator=(FActorInstanceHandle&& Other) = default;
-	FActorInstanceHandle& operator=(AActor* OtherActor);
-
-	bool operator==(const FActorInstanceHandle& Other) const;
-	bool operator!=(const FActorInstanceHandle& Other) const;
-
-	bool operator==(const AActor* OtherActor) const;
-	bool operator!=(const AActor* OtherActor) const;
-
-	friend ENGINE_API uint32 GetTypeHash(const FActorInstanceHandle& Handle);
-
-	friend ENGINE_API FArchive& operator<<(FArchive& Ar, FActorInstanceHandle& Handle);
-
-	uint32 GetInstanceUID() const { return InstanceUID; }
-
-private:
-	/**
-	 * helper functions that let us treat the actor pointer as a UObject in templated functions
-	 * these do NOT fetch the actor so they will return nullptr if we don't have a full actor representation
-	 */
-	UObject* GetActorAsUObject();
-	const UObject* GetActorAsUObject() const;
-
-	/** Returns true if Actor is not null and not pending kill */
-	bool IsActorValid() const;
-
-	/** this is cached here for convenience */
-	UPROPERTY()
-	mutable TWeakObjectPtr<AActor> Actor;
-
-	/** Identifies the light weight instance manager to use */
-	TWeakObjectPtr<ALightWeightInstanceManager> Manager;
-
-	/** Identifies the instance within the manager */
-	int32 InstanceIndex;
-
-	/** Unique identifier for instances represented by the handle */
-	uint32 InstanceUID;
-};
-
-template <typename T>
-T* FActorInstanceHandle::FetchActor() const
-{
-	return Cast<T>(FetchActor());
-}
-
-/**
- * Structure containing information about one hit of a trace, such as point of impact and surface normal at that point.
- */
-USTRUCT(BlueprintType, meta = (HasNativeBreak = "Engine.GameplayStatics.BreakHitResult", HasNativeMake = "Engine.GameplayStatics.MakeHitResult"))
-struct ENGINE_API FHitResult
-{
-	GENERATED_BODY()
-
-	/** Face index we hit (for complex hits with triangle meshes). */
-	UPROPERTY()
-	int32 FaceIndex;
-
-	/**
-	 * 'Time' of impact along trace direction (ranging from 0.0 to 1.0) if there is a hit, indicating time between TraceStart and TraceEnd.
-	 * For swept movement (but not queries) this may be pulled back slightly from the actual time of impact, to prevent precision problems with adjacent geometry.
-	 */
-	UPROPERTY()
-	float Time;
-	 
-	/** The distance from the TraceStart to the Location in world space. This value is 0 if there was an initial overlap (trace started inside another colliding object). */
-	UPROPERTY()
-	float Distance; 
-	
-	/**
-	 * The location in world space where the moving shape would end up against the impacted object, if there is a hit. Equal to the point of impact for line tests.
-	 * Example: for a sphere trace test, this is the point where the center of the sphere would be located when it touched the other object.
-	 * For swept movement (but not queries) this may not equal the final location of the shape since hits are pulled back slightly to prevent precision issues from overlapping another surface.
-	 */
-	UPROPERTY()
-	FVector_NetQuantize Location;
-
-	/**
-	 * Location in world space of the actual contact of the trace shape (box, sphere, ray, etc) with the impacted object.
-	 * Example: for a sphere trace test, this is the point where the surface of the sphere touches the other object.
-	 * @note: In the case of initial overlap (bStartPenetrating=true), ImpactPoint will be the same as Location because there is no meaningful single impact point to report.
-	 */
-	UPROPERTY()
-	FVector_NetQuantize ImpactPoint;
-
-	/**
-	 * Normal of the hit in world space, for the object that was swept. Equal to ImpactNormal for line tests.
-	 * This is computed for capsules and spheres, otherwise it will be the same as ImpactNormal.
-	 * Example: for a sphere trace test, this is a normalized vector pointing in towards the center of the sphere at the point of impact.
-	 */
-	UPROPERTY()
-	FVector_NetQuantizeNormal Normal;
-
-	/**
-	 * Normal of the hit in world space, for the object that was hit by the sweep, if any.
-	 * For example if a sphere hits a flat plane, this is a normalized vector pointing out from the plane.
-	 * In the case of impact with a corner or edge of a surface, usually the "most opposing" normal (opposed to the query direction) is chosen.
-	 */
-	UPROPERTY()
-	FVector_NetQuantizeNormal ImpactNormal;
-
-	/**
-	 * Start location of the trace.
-	 * For example if a sphere is swept against the world, this is the starting location of the center of the sphere.
-	 */
-	UPROPERTY()
-	FVector_NetQuantize TraceStart;
-
-	/**
-	 * End location of the trace; this is NOT where the impact occurred (if any), but the furthest point in the attempted sweep.
-	 * For example if a sphere is swept against the world, this would be the center of the sphere if there was no blocking hit.
-	 */
-	UPROPERTY()
-	FVector_NetQuantize TraceEnd;
-
-	/**
-	  * If this test started in penetration (bStartPenetrating is true) and a depenetration vector can be computed,
-	  * this value is the distance along Normal that will result in moving out of penetration.
-	  * If the distance cannot be computed, this distance will be zero.
-	  */
-	UPROPERTY()
-	float PenetrationDepth;
-
-	/** If the hit result is from a collision this will have extra info about the item that hit the second item. */
-	UPROPERTY()
-	int32 MyItem;
-
-	/** Extra data about item that was hit (hit primitive specific). */
-	UPROPERTY()
-	int32 Item;
-
-	/** Index to item that was hit, also hit primitive specific. */
-	UPROPERTY()
-	uint8 ElementIndex;
-
-	/** Indicates if this hit was a result of blocking collision. If false, there was no hit or it was an overlap/touch instead. */
-	UPROPERTY()
-	uint8 bBlockingHit : 1;
-
-	/**
-	 * Whether the trace started in penetration, i.e. with an initial blocking overlap.
-	 * In the case of penetration, if PenetrationDepth > 0.f, then it will represent the distance along the Normal vector that will result in
-	 * minimal contact between the swept shape and the object that was hit. In this case, ImpactNormal will be the normal opposed to movement at that location
-	 * (ie, Normal may not equal ImpactNormal). ImpactPoint will be the same as Location, since there is no single impact point to report.
-	 */
-	UPROPERTY()
-	uint8 bStartPenetrating : 1;
-
-	/**
-	 * Physical material that was hit.
-	 * @note Must set bReturnPhysicalMaterial on the swept PrimitiveComponent or in the query params for this to be returned.
-	 */
-	UPROPERTY()
-	TWeakObjectPtr<class UPhysicalMaterial> PhysMaterial;
-
-	/** Handle to the object hit by the trace. */
-	UPROPERTY()
-	FActorInstanceHandle HitObjectHandle;
-
-	/** PrimitiveComponent hit by the trace. */
-	UPROPERTY()
-	TWeakObjectPtr<class UPrimitiveComponent> Component;
-
-	/** Name of bone we hit (for skeletal meshes). */
-	UPROPERTY()
-	FName BoneName;
-
-	/** Name of the _my_ bone which took part in hit event (in case of two skeletal meshes colliding). */
-	UPROPERTY()
-	FName MyBoneName;
-
-
-	FHitResult()
-	{
-		Init();
-	}
-	
-	explicit FHitResult(float InTime)
-	{
-		Init();
-		Time = InTime;
-	}
-
-	explicit FHitResult(EForceInit InInit)
-	{
-		Init();
-	}
-
-	explicit FHitResult(ENoInit NoInit)
-	{
-	}
-
-	explicit FHitResult(FVector Start, FVector End)
-	{
-		Init(Start, End);
-	}
-
-	/** Initialize empty hit result with given time. */
-	FORCEINLINE void Init()
-	{
-		FMemory::Memzero(this, sizeof(FHitResult));
-		HitObjectHandle = FActorInstanceHandle();
-		Time = 1.f;
-		MyItem = INDEX_NONE;
-	}
-
-	/** Initialize empty hit result with given time, TraceStart, and TraceEnd */
-	FORCEINLINE void Init(FVector Start, FVector End)
-	{
-		FMemory::Memzero(this, sizeof(FHitResult));
-		HitObjectHandle = FActorInstanceHandle();
-		Time = 1.f;
-		TraceStart = Start;
-		TraceEnd = End;
-		MyItem = INDEX_NONE;
-	}
-
-	/** Ctor for easily creating "fake" hits from limited data. */
-	FHitResult(class AActor* InActor, class UPrimitiveComponent* InComponent, FVector const& HitLoc, FVector const& HitNorm);
- 
-	/** Reset hit result while optionally saving TraceStart and TraceEnd. */
-	FORCEINLINE void Reset(float InTime = 1.f, bool bPreserveTraceData = true)
-	{
-		const FVector SavedTraceStart = TraceStart;
-		const FVector SavedTraceEnd = TraceEnd;
-		Init();
-		Time = InTime;
-		if (bPreserveTraceData)
-		{
-			TraceStart = SavedTraceStart;
-			TraceEnd = SavedTraceEnd;
-		}
-	}
-
-	/** Utility to return the Actor that owns the Component that was hit. */
-	FORCEINLINE AActor* GetActor() const
-	{
-		return HitObjectHandle.FetchActor();
-	}
-
-	FORCEINLINE FActorInstanceHandle GetHitObjectHandle() const
-	{
-		return HitObjectHandle;
-	}
-
-	FORCEINLINE bool HasValidHitObjectHandle() const
-	{
-		return HitObjectHandle.IsValid();
-	}
-
-	/** Utility to return the Component that was hit. */
-	FORCEINLINE UPrimitiveComponent* GetComponent() const
-	{
-		return Component.Get();
-	}
-
-	/** Optimized serialize function */
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
-
-	/** Return true if there was a blocking hit that was not caused by starting in penetration. */
-	FORCEINLINE bool IsValidBlockingHit() const
-	{
-		return bBlockingHit && !bStartPenetrating;
-	}
-
-	/** Static utility function that returns the first 'blocking' hit in an array of results. */
-	static FHitResult* GetFirstBlockingHit(TArray<FHitResult>& InHits)
-	{
-		for(int32 HitIdx=0; HitIdx<InHits.Num(); HitIdx++)
-		{
-			if(InHits[HitIdx].bBlockingHit)
-			{
-				return &InHits[HitIdx];
-			}
-		}
-		return nullptr;
-	}
-
-	/** Static utility function that returns the number of blocking hits in array. */
-	static int32 GetNumBlockingHits(const TArray<FHitResult>& InHits)
-	{
-		int32 NumBlocks = 0;
-		for(int32 HitIdx=0; HitIdx<InHits.Num(); HitIdx++)
-		{
-			if(InHits[HitIdx].bBlockingHit)
-			{
-				NumBlocks++;
-			}
-		}
-		return NumBlocks;
-	}
-
-	/** Static utility function that returns the number of overlapping hits in array. */
-	static int32 GetNumOverlapHits(const TArray<FHitResult>& InHits)
-	{
-		return (InHits.Num() - GetNumBlockingHits(InHits));
-	}
-
-	/**
-	 * Get a copy of the HitResult with relevant information reversed.
-	 * For example when receiving a hit from another object, we reverse the normals.
-	 */
-	static FHitResult GetReversedHit(const FHitResult& Hit)
-	{
-		FHitResult Result(Hit);
-		Result.Normal = -Result.Normal;
-		Result.ImpactNormal = -Result.ImpactNormal;
-
-		int32 TempItem = Result.Item;
-		Result.Item = Result.MyItem;
-		Result.MyItem = TempItem;
-
-		FName TempBoneName = Result.BoneName;
-		Result.BoneName = Result.MyBoneName;
-		Result.MyBoneName = TempBoneName;
-		return Result;
-	}
-
-	FString ToString() const;
-};
-
-// All members of FHitResult are PODs.
-template<> struct TIsPODType<FHitResult> { enum { Value = true }; };
-
-template<>
-struct TStructOpsTypeTraits<FHitResult> : public TStructOpsTypeTraitsBase2<FHitResult>
-{
-	enum
-	{
-		WithNetSerializer = true,
-	};
-};
-
-
 /** Whether to teleport physics body or not */
 UENUM()
 enum class ETeleportType : uint8
@@ -2502,44 +2131,6 @@ enum class ETeleportType : uint8
 
 FORCEINLINE ETeleportType TeleportFlagToEnum(bool bTeleport) { return bTeleport ? ETeleportType::TeleportPhysics : ETeleportType::None; }
 FORCEINLINE bool TeleportEnumToFlag(ETeleportType Teleport) { return ETeleportType::TeleportPhysics == Teleport; }
-
-
-/** Structure containing information about one hit of an overlap test */
-USTRUCT()
-struct ENGINE_API FOverlapResult
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	FActorInstanceHandle OverlapObjectHandle;
-
-	/** PrimitiveComponent that the check hit. */
-	UPROPERTY()
-	TWeakObjectPtr<class UPrimitiveComponent> Component;
-
-	/** This is the index of the overlapping item. 
-		For DestructibleComponents, this is the ChunkInfo index. 
-		For SkeletalMeshComponents this is the Body index or INDEX_NONE for single body */
-	int32 ItemIndex;
-
-	/** Utility to return the Actor that owns the Component that was hit */
-	AActor* GetActor() const;
-
-	/** Utility to return the Component that was hit */
-	UPrimitiveComponent* GetComponent() const;
-
-	/** Indicates if this hit was requesting a block - if false, was requesting a touch instead */
-	UPROPERTY()
-	uint32 bBlockingHit:1;
-
-	FOverlapResult()
-	{
-		FMemory::Memzero(this, sizeof(FOverlapResult));
-	}
-};
-
-// All members of FOverlapResult are PODs.
-template<> struct TIsPODType<FOverlapResult> { enum { Value = true }; };
 
 /** Structure containing information about minimum translation direction (MTD) */
 USTRUCT()
@@ -2559,21 +2150,6 @@ struct ENGINE_API FMTDResult
 	{
 		FMemory::Memzero(this, sizeof(FMTDResult));
 	}
-};
-
-/** Struct used for passing information from Matinee to an Actor for blending animations during a sequence. */
-USTRUCT()
-struct FAnimSlotInfo
-{
-	GENERATED_BODY()
-
-	/** Name of slot that we want to play the animtion in. */
-	UPROPERTY()
-	FName SlotName;
-
-	/** Strength of each Channel within this Slot. Channel indexs are determined by track order in Matinee. */
-	UPROPERTY()
-	TArray<float> ChannelWeights;
 };
 
 /** Used to indicate each slot name and how many channels they have. */
@@ -3106,6 +2682,10 @@ struct FMeshNaniteSettings
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
 	uint8 bEnabled : 1;
 
+	/** Whether to try and maintain the same surface area at all distances. Useful for foliage that thins out otherwise. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	uint8 bPreserveArea : 1;
+
 	/** Position Precision. Step size is 2^(-PositionPrecision) cm. MIN_int32 is auto. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
 	int32 PositionPrecision;
@@ -3133,6 +2713,7 @@ struct FMeshNaniteSettings
 	/** Default settings. */
 	FMeshNaniteSettings()
 	: bEnabled(false)
+	, bPreserveArea(false)
 	, PositionPrecision(MIN_int32)
 	, TargetMinimumResidencyInKB(0)
 	, KeepPercentTriangles(1.0f)
@@ -3144,6 +2725,7 @@ struct FMeshNaniteSettings
 
 	FMeshNaniteSettings(const FMeshNaniteSettings& Other)
 	: bEnabled(Other.bEnabled)
+	, bPreserveArea(Other.bPreserveArea)
 	, PositionPrecision(Other.PositionPrecision)
 	, TargetMinimumResidencyInKB(Other.TargetMinimumResidencyInKB)
 	, KeepPercentTriangles(Other.KeepPercentTriangles)
@@ -3157,6 +2739,7 @@ struct FMeshNaniteSettings
 	bool operator==(const FMeshNaniteSettings& Other) const
 	{
 		return bEnabled == Other.bEnabled
+			&& bPreserveArea == Other.bPreserveArea
 			&& PositionPrecision == Other.PositionPrecision
 			&& TargetMinimumResidencyInKB == Other.TargetMinimumResidencyInKB
 			&& KeepPercentTriangles == Other.KeepPercentTriangles
@@ -3170,151 +2753,6 @@ struct FMeshNaniteSettings
 	{
 		return !(*this == Other);
 	}
-};
-
-/** Event used by AActor::TakeDamage and related functions */
-USTRUCT(BlueprintType)
-struct ENGINE_API FDamageEvent
-{
-	GENERATED_BODY()
-
-public:
-	/** Default constructor (no initialization). */
-	FDamageEvent() { }
-
-	FDamageEvent(FDamageEvent const& InDamageEvent)
-		: DamageTypeClass(InDamageEvent.DamageTypeClass)
-	{ }
-	
-	virtual ~FDamageEvent() { }
-
-	explicit FDamageEvent(TSubclassOf<class UDamageType> InDamageTypeClass)
-		: DamageTypeClass(InDamageTypeClass)
-	{ }
-
-	/** Optional DamageType for this event.  If nullptr, UDamageType will be assumed. */
-	UPROPERTY()
-	TSubclassOf<class UDamageType> DamageTypeClass;
-
-	/** ID for this class. NOTE this must be unique for all damage events. */
-	static const int32 ClassID = 0;
-
-	virtual int32 GetTypeID() const { return FDamageEvent::ClassID; }
-	virtual bool IsOfType(int32 InID) const { return FDamageEvent::ClassID == InID; };
-
-	/** This is for compatibility with old-style functions which want a unified set of hit data regardless of type of hit.  Ideally this will go away over time. */
-	virtual void GetBestHitInfo(AActor const* HitActor, AActor const* HitInstigator, struct FHitResult& OutHitInfo, FVector& OutImpulseDir) const;
-};
-
-/** Damage subclass that handles damage with a single impact location and source direction */
-USTRUCT()
-struct ENGINE_API FPointDamageEvent : public FDamageEvent
-{
-	GENERATED_BODY()
-
-	/** Actual damage done */
-	UPROPERTY()
-	float Damage;
-	
-	/** Direction the shot came from. Should be normalized. */
-	UPROPERTY()
-	FVector_NetQuantizeNormal ShotDirection;
-	
-	/** Describes the trace/location that caused this damage */
-	UPROPERTY()
-	struct FHitResult HitInfo;
-
-	FPointDamageEvent() : Damage(0.0f), ShotDirection(ForceInitToZero), HitInfo() {}
-	FPointDamageEvent(float InDamage, struct FHitResult const& InHitInfo, FVector const& InShotDirection, TSubclassOf<class UDamageType> InDamageTypeClass)
-		: FDamageEvent(InDamageTypeClass), Damage(InDamage), ShotDirection(InShotDirection), HitInfo(InHitInfo)
-	{}
-	
-	/** ID for this class. NOTE this must be unique for all damage events. */
-	static const int32 ClassID = 1;
-	
-	virtual int32 GetTypeID() const override { return FPointDamageEvent::ClassID; };
-	virtual bool IsOfType(int32 InID) const override { return (FPointDamageEvent::ClassID == InID) || FDamageEvent::IsOfType(InID); };
-
-	/** Simple API for common cases where we are happy to assume a single hit is expected, even though damage event may have multiple hits. */
-	virtual void GetBestHitInfo(AActor const* HitActor, AActor const* HitInstigator, struct FHitResult& OutHitInfo, FVector& OutImpulseDir) const override;
-};
-
-/** Parameters used to compute radial damage */
-USTRUCT(BlueprintType)
-struct ENGINE_API FRadialDamageParams
-{
-	GENERATED_BODY()
-
-	/** Max damage done */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=RadialDamageParams)
-	float BaseDamage;
-
-	/** Damage will not fall below this if within range */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=RadialDamageParams)
-	float MinimumDamage;
-	
-	/** Within InnerRadius, do max damage */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=RadialDamageParams)
-	float InnerRadius;
-		
-	/** Outside OuterRadius, do no damage */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=RadialDamageParams)
-	float OuterRadius;
-		
-	/** Describes amount of exponential damage falloff */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=RadialDamageParams)
-	float DamageFalloff;
-
-	FRadialDamageParams()
-		: BaseDamage(0.f), MinimumDamage(0.f), InnerRadius(0.f), OuterRadius(0.f), DamageFalloff(1.f)
-	{}
-	FRadialDamageParams(float InBaseDamage, float InInnerRadius, float InOuterRadius, float InDamageFalloff)
-		: BaseDamage(InBaseDamage), MinimumDamage(0.f), InnerRadius(InInnerRadius), OuterRadius(InOuterRadius), DamageFalloff(InDamageFalloff)
-	{}
-	FRadialDamageParams(float InBaseDamage, float InMinimumDamage, float InInnerRadius, float InOuterRadius, float InDamageFalloff)
-		: BaseDamage(InBaseDamage), MinimumDamage(InMinimumDamage), InnerRadius(InInnerRadius), OuterRadius(InOuterRadius), DamageFalloff(InDamageFalloff)
-	{}
-	FRadialDamageParams(float InBaseDamage, float InRadius)
-		: BaseDamage(InBaseDamage), MinimumDamage(0.f), InnerRadius(0.f), OuterRadius(InRadius), DamageFalloff(1.f)
-	{}
-
-	/** Returns damage done at a certain distance */
-	float GetDamageScale(float DistanceFromEpicenter) const;
-
-	/** Return outermost radius of the damage area. Protects against malformed data. */
-	float GetMaxRadius() const { return FMath::Max( FMath::Max(InnerRadius, OuterRadius), 0.f ); }
-};
-
-/** Damage subclass that handles damage with a source location and falloff radius */
-USTRUCT()
-struct ENGINE_API FRadialDamageEvent : public FDamageEvent
-{
-	GENERATED_BODY()
-
-	/** Static parameters describing damage falloff math */
-	UPROPERTY()
-	FRadialDamageParams Params;
-	
-	/** Location of origin point */
-	UPROPERTY()
-	FVector Origin;
-
-	/** Hit reslts of specific impacts */
-	UPROPERTY()
-	TArray<struct FHitResult> ComponentHits;
-
-	/** ID for this class. NOTE this must be unique for all damage events. */
-	static const int32 ClassID = 2;
-
-	virtual int32 GetTypeID() const override { return FRadialDamageEvent::ClassID; };
-	virtual bool IsOfType(int32 InID) const override { return (FRadialDamageEvent::ClassID == InID) || FDamageEvent::IsOfType(InID); };
-
-	/** Simple API for common cases where we are happy to assume a single hit is expected, even though damage event may have multiple hits. */
-	virtual void GetBestHitInfo(AActor const* HitActor, AActor const* HitInstigator, struct FHitResult& OutHitInfo, FVector& OutImpulseDir) const override;
-
-	FRadialDamageEvent()
-		: Origin(ForceInitToZero)
-	{}
 };
 
 /** The network role of an actor on a local/remote network context */
@@ -3368,7 +2806,7 @@ namespace EAutoReceiveInput
 	};
 }
 
-/** Specifies if an AI pawn will automatically be possed by an AI controller */
+/** Specifies if an AI pawn will automatically be possessed by an AI controller */
 UENUM()
 enum class EAutoPossessAI : uint8
 {
@@ -3386,7 +2824,7 @@ enum class EAutoPossessAI : uint8
 UENUM(BlueprintType)
 namespace EEndPlayReason
 {
-	enum Type
+	enum Type : int
 	{
 		/** When the Actor or Component is explicitly destroyed. */
 		Destroyed,
@@ -3441,7 +2879,7 @@ struct FTimerHandle
 
 	FString ToString() const
 	{
-		return FString::Printf(TEXT("%ull"), Handle);
+		return FString::Printf(TEXT("%llu"), Handle);
 	}
 
 private:
@@ -3477,263 +2915,6 @@ private:
 	{
 		return GetTypeHash(InHandle.Handle);
 	}
-};
-
-/** Describes rules for network replicating a vector efficiently */
-UENUM()
-enum class EVectorQuantization : uint8
-{
-	/** Each vector component will be rounded to the nearest whole number. */
-	RoundWholeNumber,
-	/** Each vector component will be rounded, preserving one decimal place. */
-	RoundOneDecimal,
-	/** Each vector component will be rounded, preserving two decimal places. */
-	RoundTwoDecimals
-};
-
-/** Describes rules for network replicating a vector efficiently */
-UENUM()
-enum class ERotatorQuantization : uint8
-{
-	/** The rotator will be compressed to 8 bits per component. */
-	ByteComponents,
-	/** The rotator will be compressed to 16 bits per component. */
-	ShortComponents
-};
-
-/** Replicated movement data of our RootComponent.
-  * Struct used for efficient replication as velocity and location are generally replicated together (this saves a repindex) 
-  * and velocity.Z is commonly zero (most position replications are for walking pawns). 
-  */
-USTRUCT()
-struct ENGINE_API FRepMovement
-{
-	GENERATED_BODY()
-
-	/** Velocity of component in world space */
-	UPROPERTY(Transient)
-	FVector LinearVelocity;
-
-	/** Velocity of rotation for component */
-	UPROPERTY(Transient)
-	FVector AngularVelocity;
-	
-	/** Location in world space */
-	UPROPERTY(Transient)
-	FVector Location;
-
-	/** Current rotation */
-	UPROPERTY(Transient)
-	FRotator Rotation;
-
-	/** If set, RootComponent should be sleeping. */
-	UPROPERTY(Transient)
-	uint8 bSimulatedPhysicSleep : 1;
-
-	/** If set, additional physic data (angular velocity) will be replicated. */
-	UPROPERTY(Transient)
-	uint8 bRepPhysics : 1;
-
-	/** Allows tuning the compression level for the replicated location vector. You should only need to change this from the default if you see visual artifacts. */
-	UPROPERTY(EditDefaultsOnly, Category=Replication, AdvancedDisplay)
-	EVectorQuantization LocationQuantizationLevel;
-
-	/** Allows tuning the compression level for the replicated velocity vectors. You should only need to change this from the default if you see visual artifacts. */
-	UPROPERTY(EditDefaultsOnly, Category=Replication, AdvancedDisplay)
-	EVectorQuantization VelocityQuantizationLevel;
-
-	/** Allows tuning the compression level for replicated rotation. You should only need to change this from the default if you see visual artifacts. */
-	UPROPERTY(EditDefaultsOnly, Category=Replication, AdvancedDisplay)
-	ERotatorQuantization RotationQuantizationLevel;
-
-	FRepMovement();
-
-	bool SerializeQuantizedVector(FArchive& Ar, FVector& Vector, EVectorQuantization QuantizationLevel)
-	{
-		// Since FRepMovement used to use FVector_NetQuantize100, we're allowing enough bits per component
-		// regardless of the quantization level so that we can still support at least the same maximum magnitude
-		// (2^30 / 100, or ~10 million).
-		// This uses no inherent extra bandwidth since we're still using the same number of bits to store the
-		// bits-per-component value. Of course, larger magnitudes will still use more bandwidth,
-		// as has always been the case.
-		switch(QuantizationLevel)
-		{
-			case EVectorQuantization::RoundTwoDecimals:
-			{
-				return SerializePackedVector<100, 30>(Vector, Ar);
-			}
-
-			case EVectorQuantization::RoundOneDecimal:
-			{
-				return SerializePackedVector<10, 27>(Vector, Ar);
-			}
-
-			default:
-			{
-				return SerializePackedVector<1, 24>(Vector, Ar);
-			}
-		}
-	}
-
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
-	{
-		// pack bitfield with flags
-		uint8 Flags = (bSimulatedPhysicSleep << 0) | (bRepPhysics << 1);
-		Ar.SerializeBits(&Flags, 2);
-		bSimulatedPhysicSleep = ( Flags & ( 1 << 0 ) ) ? 1 : 0;
-		bRepPhysics = ( Flags & ( 1 << 1 ) ) ? 1 : 0;
-
-		bOutSuccess = true;
-
-		// update location, rotation, linear velocity
-		bOutSuccess &= SerializeQuantizedVector( Ar, Location, LocationQuantizationLevel );
-		
-		switch(RotationQuantizationLevel)
-		{
-			case ERotatorQuantization::ByteComponents:
-			{
-				Rotation.SerializeCompressed( Ar );
-				break;
-			}
-
-			case ERotatorQuantization::ShortComponents:
-			{
-				Rotation.SerializeCompressedShort( Ar );
-				break;
-			}
-		}
-		
-		bOutSuccess &= SerializeQuantizedVector( Ar, LinearVelocity, VelocityQuantizationLevel );
-
-		// update angular velocity if required
-		if ( bRepPhysics )
-		{
-			bOutSuccess &= SerializeQuantizedVector( Ar, AngularVelocity, VelocityQuantizationLevel );
-		}
-
-		return true;
-	}
-
-	void FillFrom(const struct FRigidBodyState& RBState, const AActor* const Actor = nullptr)
-	{
-		Location = RebaseOntoZeroOrigin(RBState.Position, Actor);
-		Rotation = RBState.Quaternion.Rotator();
-		LinearVelocity = RBState.LinVel;
-		AngularVelocity = RBState.AngVel;
-		bSimulatedPhysicSleep = (RBState.Flags & ERigidBodyFlags::Sleeping) != 0;
-		bRepPhysics = true;
-	}
-
-	void CopyTo(struct FRigidBodyState& RBState, const AActor* const Actor = nullptr) const
-	{
-		RBState.Position = RebaseOntoLocalOrigin(Location, Actor);
-		RBState.Quaternion = Rotation.Quaternion();
-		RBState.LinVel = LinearVelocity;
-		RBState.AngVel = AngularVelocity;
-		RBState.Flags = (decltype(FRigidBodyState::Flags))(bSimulatedPhysicSleep ? ERigidBodyFlags::Sleeping : ERigidBodyFlags::None) | ERigidBodyFlags::NeedsUpdate;
-	}
-
-	bool operator==(const FRepMovement& Other) const
-	{
-		if ( LinearVelocity != Other.LinearVelocity )
-		{
-			return false;
-		}
-
-		if ( AngularVelocity != Other.AngularVelocity )
-		{
-			return false;
-		}
-
-		if ( Location != Other.Location )
-		{
-			return false;
-		}
-
-		if ( Rotation != Other.Rotation )
-		{
-			return false;
-		}
-
-		if ( bSimulatedPhysicSleep != Other.bSimulatedPhysicSleep )
-		{
-			return false;
-		}
-
-		if ( bRepPhysics != Other.bRepPhysics )
-		{
-			return false;
-		}
-
-		return true;
-	}
-
-	bool operator!=(const FRepMovement& Other) const
-	{
-		return !(*this == Other);
-	}
-
-	/** True if multiplayer rebasing is enabled, corresponds to p.EnableMultiplayerWorldOriginRebasing console variable */
-	static int32 EnableMultiplayerWorldOriginRebasing;
-
-	/** Rebase zero-origin position onto local world origin value. */
-	static FVector RebaseOntoLocalOrigin(const FVector& Location, const struct FIntVector& LocalOrigin);
-
-	/** Rebase local-origin position onto zero world origin value. */
-	static FVector RebaseOntoZeroOrigin(const FVector& Location, const struct FIntVector& LocalOrigin);
-
-	/** Rebase zero-origin position onto an Actor's local world origin. */
-	static FVector RebaseOntoLocalOrigin(const FVector& Location, const AActor* const WorldContextActor);
-
-	/** Rebase an Actor's local-origin position onto zero world origin value. */
-	static FVector RebaseOntoZeroOrigin(const FVector& Location, const AActor* const WorldContextActor);
-
-	/** Rebase zero-origin position onto local world origin value based on an actor component's world. */
-	static FVector RebaseOntoLocalOrigin(const FVector& Location, const class UActorComponent* const WorldContextActorComponent);
-
-	/** Rebase local-origin position onto zero world origin value based on an actor component's world.*/
-	static FVector RebaseOntoZeroOrigin(const FVector& Location, const class UActorComponent* const WorldContextActorComponent);
-};
-
-
-/** Handles attachment replication to clients.  */
-USTRUCT()
-struct FRepAttachment
-{
-	GENERATED_BODY()
-
-	/** Actor we are attached to, movement replication will not happen while AttachParent is non-nullptr */
-	UPROPERTY()
-	TObjectPtr<class AActor> AttachParent;
-
-	/** Location offset from attach parent */
-	UPROPERTY()
-	FVector_NetQuantize100 LocationOffset;
-
-	/** Scale relative to attach parent */
-	UPROPERTY()
-	FVector_NetQuantize100 RelativeScale3D;
-
-	/** Rotation offset from attach parent */
-	UPROPERTY()
-	FRotator RotationOffset;
-
-	/** Specific socket we are attached to */
-	UPROPERTY()
-	FName AttachSocket;
-
-	/** Specific component we are attached to */
-	UPROPERTY()
-	TObjectPtr<class USceneComponent> AttachComponent;
-
-	FRepAttachment()
-		: AttachParent(nullptr)
-		, LocationOffset(ForceInit)
-		, RelativeScale3D(ForceInit)
-		, RotationOffset(ForceInit)
-		, AttachSocket(NAME_None)
-		, AttachComponent(nullptr)
-	{ }
 };
 
 /**
@@ -3888,16 +3069,6 @@ private:
 
 template<> struct TIsPODType<FWalkableSlopeOverride> { enum { Value = true }; };
 
-template<>
-struct TStructOpsTypeTraits<FRepMovement> : public TStructOpsTypeTraitsBase2<FRepMovement>
-{
-	enum 
-	{
-		WithNetSerializer = true,
-		WithNetSharedSerialization = true,
-	};
-};
-
 /** Structure to hold and pass around transient flags used during replication. */
 struct FReplicationFlags
 {
@@ -3927,7 +3098,8 @@ struct FReplicationFlags
 			uint32 bSerializePropertyNames : 1;
 			/** True if a subclass of UActorChannel needs custom subobject replication */
 			uint32 bUseCustomSubobjectReplication : 1;
-
+			/** True if this actor is replicating on a replay connection on a game client. */
+			uint32 bClientReplay : 1;
 		};
 
 		uint32	Value;
@@ -3952,22 +3124,14 @@ struct FConstrainComponentPropName
 };
 
 /** 
- *	Struct that allows for different ways to reference a component. 
- *	If just an Actor is specified, will return RootComponent of that Actor.
+ *	Base class for the hard/soft component reference structs 
  */
 USTRUCT(BlueprintType)
-struct ENGINE_API FComponentReference
+struct ENGINE_API FBaseComponentReference
 {
 	GENERATED_BODY()
 
-	FComponentReference() : OtherActor(nullptr) {}
-
-	/** 
-	 * Pointer to a different Actor that owns the Component.  
-	 * If this is not provided the reference refers to a component on this / the same actor.
-	 */
-	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Referenced Actor"))
-	TObjectPtr<AActor> OtherActor;
+	FBaseComponentReference()  {}
 
 	/** Name of component to use. If this is not specified the reference refers to the root component. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Component Name"))
@@ -3980,14 +3144,72 @@ struct ENGINE_API FComponentReference
 	/** Allows direct setting of first component to constraint. */
 	TWeakObjectPtr<class UActorComponent> OverrideComponent;
 
+	/** Extract the actual component pointer from this reference given a search actor */
+	class UActorComponent* ExtractComponent(AActor* SearchActor) const;
+
+	/** FBaseComponentReference == operator */
+	bool operator== (const FBaseComponentReference& Other) const
+	{
+		return ComponentProperty == Other.ComponentProperty && PathToComponent == Other.PathToComponent && OverrideComponent == Other.OverrideComponent;
+	}
+};
+
+/** 
+ *	Struct that allows for different ways to reference a component using TObjectPtr. 
+ *	If just an Actor is specified, will return RootComponent of that Actor.
+ */
+USTRUCT(BlueprintType)
+struct ENGINE_API FComponentReference : public FBaseComponentReference
+{
+	GENERATED_BODY()
+
+	FComponentReference() : OtherActor(nullptr) {}
+
+	/** 
+	 * Weak Pointer to a different Actor that owns the Component.  
+	 * If this is not provided the reference refers to a component on this / the same actor.
+	 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Referenced Actor"))
+	TWeakObjectPtr<AActor> OtherActor;
+
 	/** Get the actual component pointer from this reference */
 	class UActorComponent* GetComponent(AActor* OwningActor) const;
 
+	/** FComponentReference == operator */
 	bool operator== (const FComponentReference& Other) const
 	{
-		return OtherActor == Other.OtherActor && ComponentProperty == Other.ComponentProperty && PathToComponent == Other.PathToComponent && OverrideComponent == Other.OverrideComponent;
+		return (OtherActor == Other.OtherActor) && (FBaseComponentReference::operator==(Other));
 	}
 };
+
+/** 
+ *	Struct that allows for different ways to reference a component using TSoftObjectPtr. 
+ *	If just an Actor is specified, will return RootComponent of that Actor.
+ */
+USTRUCT(BlueprintType)
+struct ENGINE_API FSoftComponentReference : public FBaseComponentReference
+{
+	GENERATED_BODY()
+
+	FSoftComponentReference() : OtherActor(nullptr) {}
+
+	/** 
+	 * Soft Pointer to a different Actor that owns the Component.  
+	 * If this is not provided the reference refers to a component on this / the same actor.
+	 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Referenced Actor"))
+	TSoftObjectPtr<AActor> OtherActor;
+
+	/** Get the actual component pointer from this reference */
+	class UActorComponent* GetComponent(AActor* OwningActor) const;
+
+	/** FSoftComponentReference == operator */
+	bool operator== (const FSoftComponentReference& Other) const
+	{
+		return (OtherActor == Other.OtherActor) && (FBaseComponentReference::operator==(Other));
+	}
+};
+
 
 /** Types of valid physical material mask colors which may be associated with a physical material */
 UENUM(BlueprintType)

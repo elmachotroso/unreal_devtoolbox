@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterQuadTree.h"
-#include "Engine/Public/SceneManagement.h"
 #include "Materials/MaterialInterface.h"
+#include "SceneManagement.h"
 
 #if WITH_WATER_SELECTION_SUPPORT
 #include "HitProxies.h"
@@ -94,17 +94,22 @@ void FWaterQuadTree::FNode::AddNodeForRender(const FNodeData& InNodeData, const 
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// Debug drawing
-	if (InTraversalDesc.DebugShowTile)
+	if (InTraversalDesc.DebugShowTile != 0)
 	{
 		FColor Color;
-		if (InTraversalDesc.DebugShowTypeColor)
+		if (InTraversalDesc.DebugShowTile == 1)
 		{
-			//static FColor WaterTypeColor[] = { FColor::Red, FColor::Green, FColor::Blue, FColor::Yellow, FColor::Purple };
-			Color = GColorList.GetFColorByIndex(DensityIndex + 1);
+			static FColor WaterTypeColor[] = { FColor::Red, FColor::Green, FColor::Blue, FColor::Yellow, FColor::Purple };
+			Color = WaterTypeColor[TileDebugID];
 		}
-		else
+		else if (InTraversalDesc.DebugShowTile == 2)
 		{
-			Color = GColorList.GetFColorByIndex(InLODLevel+1);
+			Color = GColorList.GetFColorByIndex(InLODLevel + 1);
+		}
+		else if (InTraversalDesc.DebugShowTile == 3)
+		{
+
+			Color = GColorList.GetFColorByIndex(DensityIndex + 1);
 		}
 
 		DrawWireBox(InTraversalDesc.DebugPDI, Bounds.ExpandBy(FVector(-20.0f, -20.0f, 0.0f)), Color, SDPG_World);
@@ -258,6 +263,68 @@ void FWaterQuadTree::FNode::SelectLOD(const FNodeData& InNodeData, int32 InLODLe
 	}
 }
 
+void FWaterQuadTree::FNode::SelectLODWithinBounds(const FNodeData& InNodeData, int32 InLODLevel, const FTraversalDesc& InTraversalDesc, FTraversalOutput& Output) const
+{
+	// #todo_water [roey]: this function currently forces all nodes to render at their lowest lod size. This isn't _that_ bad considering most of the nodes are close
+	// enough to the camera to render at lowest lod level anyways but ideally we would leverage the same lod selection system as the non-bounds implementation.
+
+	const FWaterBodyRenderData& WaterBodyRenderData = InNodeData.WaterBodyRenderData[WaterBodyIndex];
+	const FVector CenterPosition = Bounds.GetCenter();
+	const FVector Extent = Bounds.GetExtent();
+
+	// Early out on frustum culling 
+	if (!InTraversalDesc.Frustum.IntersectBox(CenterPosition, Extent))
+	{
+		// Handled
+		return;
+	}
+
+	check(InTraversalDesc.TessellatedWaterMeshBounds.bIsValid);
+	if (InLODLevel == 0)
+	{
+		if ((InTraversalDesc.TessellatedWaterMeshBounds.IsInsideOrOn(FVector2D(Bounds.Min)) && InTraversalDesc.TessellatedWaterMeshBounds.IsInsideOrOn(FVector2D(Bounds.Max))) &&
+			CanRender(0, InTraversalDesc.ForceCollapseDensityLevel, WaterBodyRenderData))
+		{
+			AddNodeForRender(InNodeData, WaterBodyRenderData, 0, InLODLevel, InTraversalDesc, Output);
+		}
+	}
+	else
+	{
+		// If this node has a complete subtree it will not contain any actual children, they are implicit to save memory so we generate them here
+		if (HasCompleteSubtree && IsSubtreeSameWaterBody)
+		{
+			FNode ChildNode;
+			const FVector HalfBoundSize(Extent.X, Extent.Y, Extent.Z*2.0f);
+			const FVector HalfOffsets[] = { {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f} , {0.0f, 1.0f, 0.0f} , {1.0f, 1.0f, 0.0f} };
+			for (int i = 0; i < 4; i++)
+			{
+				const FVector ChildMin = Bounds.Min + HalfBoundSize * HalfOffsets[i];
+				const FVector ChildMax = ChildMin + HalfBoundSize;
+				const FBox ChildBounds(ChildMin, ChildMax);
+
+				// Create a temporary node to traverse
+				ChildNode.HasCompleteSubtree = 1;
+				ChildNode.IsSubtreeSameWaterBody = 1;
+				ChildNode.TransitionWaterBodyIndex = TransitionWaterBodyIndex;
+				ChildNode.WaterBodyIndex = WaterBodyIndex;
+				ChildNode.Bounds = ChildBounds;
+
+				ChildNode.SelectLODWithinBounds(InNodeData, InLODLevel - 1, InTraversalDesc, Output);
+			}
+		}
+		else
+		{
+			for (int32 ChildIndex : Children)
+			{
+				if (ChildIndex > 0)
+				{
+					InNodeData.Nodes[ChildIndex].SelectLODWithinBounds(InNodeData, InLODLevel - 1, InTraversalDesc, Output);
+				}
+			}
+		}
+	}
+}
+
 void FWaterQuadTree::FNode::AddNodes(FNodeData& InNodeData, const FBox& InMeshBounds, const FBox& InWaterBodyBounds, uint32 InWaterBodyIndex, int32 InLODLevel, uint32 InParentIndex)
 {
 	const FWaterBodyRenderData& InWaterBody = InNodeData.WaterBodyRenderData[InWaterBodyIndex];
@@ -282,6 +349,9 @@ void FWaterQuadTree::FNode::AddNodes(FNodeData& InNodeData, const FBox& InMeshBo
 	if (InWaterBody.Priority >= ThisWaterBody.Priority)
 	{
 		WaterBodyIndex = InWaterBodyIndex;
+
+		// Cache whether or not this node has a material
+		HasMaterial = InNodeData.WaterBodyRenderData[WaterBodyIndex].Material != nullptr;
 	}
 
 	// Reset the flags before going through the children. These flags will be turned off by recursion if the state changes
@@ -468,6 +538,32 @@ void FWaterQuadTree::Unlock(bool bPruneRedundantNodes)
 
 	if (bPruneRedundantNodes)
 	{
+		auto SwapRemove = [&](int32 NodeIndex, int32 EndIndex)
+		{
+			if (NodeIndex != EndIndex)
+			{
+				// Swap to back. All the children of this node would have already been removed (or didn't exist to begin with), so don't care about those
+				NodeData.Nodes.SwapMemory(NodeIndex, EndIndex);
+
+				// Patch up the newly moved good node (parent and children)
+				FNode& MovedNode = NodeData.Nodes[NodeIndex];
+				FNode& MovedNodeParent = NodeData.Nodes[MovedNode.ParentIndex];
+
+				for (int32 i = 0; i < 4; i++)
+				{
+					if (MovedNode.Children[i] > 0)
+					{
+						NodeData.Nodes[MovedNode.Children[i]].ParentIndex = NodeIndex;
+					}
+
+					if (MovedNodeParent.Children[i] == EndIndex)
+					{
+						MovedNodeParent.Children[i] = NodeIndex;
+					}
+				}
+			}
+		};
+
 		// Remove redundant nodes
 		// Remove from the back, since all removalbe children are further back than their parent in the node list and we want to remove bottom-up
 		int32 EndIndex = NodeData.Nodes.Num() - 1;
@@ -481,28 +577,22 @@ void FWaterQuadTree::Unlock(bool bPruneRedundantNodes)
 				// Delete all children (not strictly necessary, but now we don't leave any dangling/incorrect child pointers around)
 				FMemory::Memzero(&ParentNode.Children, sizeof(uint32) * 4);
 
-				if (NodeIndex != EndIndex)
+				SwapRemove(NodeIndex, EndIndex);
+
+				// Move back one step down
+				EndIndex--;
+			}
+			else if (!NodeData.Nodes[NodeIndex].HasMaterial && NodeData.Nodes[NodeIndex].HasCompleteSubtree && NodeData.Nodes[NodeIndex].IsSubtreeSameWaterBody)
+			{
+				for (int32 i = 0; i < 4; i++)
 				{
-					// Swap to back. All the children of this node would have already been removed (or didn't exist to begin with), so don't care about those
-					NodeData.Nodes.SwapMemory(NodeIndex, EndIndex);
-
-					// Patch up the newly moved good node (parent and children)
-					FNode& MovedNode = NodeData.Nodes[NodeIndex];
-					FNode& MovedNodeParent = NodeData.Nodes[MovedNode.ParentIndex];
-
-					for (int32 i = 0; i < 4; i++)
+					if (ParentNode.Children[i] == NodeIndex)
 					{
-						if (MovedNode.Children[i] > 0)
-						{
-							NodeData.Nodes[MovedNode.Children[i]].ParentIndex = NodeIndex;
-						}
-
-						if (MovedNodeParent.Children[i] == EndIndex)
-						{
-							MovedNodeParent.Children[i] = NodeIndex;
-						}
+						ParentNode.Children[i] = 0;
 					}
 				}
+
+				SwapRemove(NodeIndex, EndIndex);
 
 				// Move back one step down
 				EndIndex--;
@@ -617,7 +707,14 @@ void FWaterQuadTree::BuildWaterTileInstanceData(const FTraversalDesc& InTraversa
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(BuildWaterTileInstanceData);
 	check(bIsReadOnly);
-	NodeData.Nodes[0].SelectLOD(NodeData, TreeDepth, InTraversalDesc, Output);
+	if (InTraversalDesc.TessellatedWaterMeshBounds.bIsValid)
+	{
+		NodeData.Nodes[0].SelectLODWithinBounds(NodeData, TreeDepth, InTraversalDesc, Output);
+	}
+	else
+	{
+		NodeData.Nodes[0].SelectLOD(NodeData, TreeDepth, InTraversalDesc, Output);
+	}
 
 	// Append Far Mesh tiles
 	if (FarMeshData.InstanceData.Num() > 0 && FarMeshData.MaterialIndex != INDEX_NONE)
@@ -731,18 +828,18 @@ static void SplitPolyWithLine(const TArray<FVector2D>& InPoly, const FVector2D& 
 	int32 NumPVerts = InPoly.Num();
 
 	// Calculate distance of verts from clipping line
-	TArray<float> PlaneDist;
+	TArray<double> PlaneDist;
 	PlaneDist.AddZeroed(NumPVerts);
 	for (int32 i = 0; i < NumPVerts; i++)
 	{
 		const FVector2D PointDiff = InPoly[i] - LinePoint;
-		PlaneDist[i] = LineNormal.X > 0.0f ? PointDiff.X : PointDiff.Y;
+		PlaneDist[i] = LineNormal.X > 0.0 ? PointDiff.X : PointDiff.Y;
 	}
 
 	for (int32 ThisVert = 0; ThisVert < NumPVerts; ThisVert++)
 	{
 		// Vert is on positive side of line, add to Poly0
-		if (PlaneDist[ThisVert] > 0.0f)
+		if (PlaneDist[ThisVert] > 0.0)
 		{
 			OutPoly0.Add(InPoly[ThisVert]);
 		}
@@ -754,10 +851,10 @@ static void SplitPolyWithLine(const TArray<FVector2D>& InPoly, const FVector2D& 
 		// If start and next vert are on opposite sides, add intersection
 		int32 NextVert = (ThisVert + 1) % NumPVerts;
 
-		if (PlaneDist[ThisVert] * PlaneDist[NextVert] < 0.0f)
+		if (PlaneDist[ThisVert] * PlaneDist[NextVert] < 0.0)
 		{
 			// Find distance along edge that plane is
-			float Alpha = -PlaneDist[ThisVert] / (PlaneDist[NextVert] - PlaneDist[ThisVert]);
+			double Alpha = -PlaneDist[ThisVert] / (PlaneDist[NextVert] - PlaneDist[ThisVert]);
 			FVector2D NewVertPos = FMath::Lerp(InPoly[ThisVert], InPoly[NextVert], Alpha);
 
 			// Save vert
@@ -767,24 +864,24 @@ static void SplitPolyWithLine(const TArray<FVector2D>& InPoly, const FVector2D& 
 	}
 }
 
-static float CalcPoly2DArea(const TArray<FVector2D>& InPoly)
+static double CalcPoly2DArea(const TArray<FVector2D>& InPoly)
 {
-	float ResultArea = 0.0f;
+	double ResultArea = 0.0;
 	for (int i = 0, j = InPoly.Num() - 1; i < InPoly.Num(); j = i++)
 	{
 		const FVector2D& Vert0 = InPoly[i];
 		const FVector2D& Vert1 = InPoly[j];
 		ResultArea += Vert1.X * Vert0.Y - Vert0.X * Vert1.Y;
 	}
-	return ResultArea * 0.5f;
+	return ResultArea * 0.5;
 }
 
 void FWaterQuadTree::AddOceanRecursive(const TArray<FVector2D>& InPoly, const FBox2D& InBox, const FVector2D& InZBounds, bool HSplit, int32 InDepth, uint32 InWaterBodyIndex)
 {
 	// Some value to guard against false positives, based on the max area
-	const float BoxArea = InBox.GetArea();
-	const float AreaEpsilon = BoxArea * 0.0001f;
-	const FVector2D LeafSizeShrink(LeafSize * 0.25f, LeafSize * 0.25f);
+	const double BoxArea = InBox.GetArea();
+	const double AreaEpsilon = BoxArea * 0.0001;
+	const FVector2D LeafSizeShrink(LeafSize * 0.25, LeafSize * 0.25);
 
 	//We've reached the bottom, figure out if this poly is filling out its box
 	if (InDepth == 0)
@@ -843,9 +940,9 @@ void FWaterQuadTree::AddOceanRecursive(const TArray<FVector2D>& InPoly, const FB
 void FWaterQuadTree::AddLakeRecursive(const TArray<FVector2D>& InPoly, const FBox2D& InBox, const FVector2D& InZBounds, bool HSplit, int32 InDepth, uint32 InWaterBodyIndex)
 {
 	// Some value to guard against false positives, based on the max area
-	const float BoxArea = InBox.GetArea();
-	const float AreaEpsilon = BoxArea * 0.0001f;
-	const FVector2D LeafSizeShrink(LeafSize * 0.01f, LeafSize * 0.01f);
+	const double BoxArea = InBox.GetArea();
+	const double AreaEpsilon = BoxArea * 0.0001;
+	const FVector2D LeafSizeShrink(LeafSize * 0.01, LeafSize * 0.01);
 
 	//We've reached the bottom, figure out if this poly is filling out its box
 	if (InDepth == 0)
@@ -876,7 +973,7 @@ void FWaterQuadTree::AddLakeRecursive(const TArray<FVector2D>& InPoly, const FBo
 	// Recurse split the two new polys if they have any significant lake poly area
 	// Poly0 is the positive box (on the positive side of the line normal)
 	const FBox2D HalfBox0(InBox.Min + InBox.GetExtent() * LineNormal, InBox.Max);
-	if (CalcPoly2DArea(Poly0) > (BoxArea * 0.5f - AreaEpsilon))
+	if (CalcPoly2DArea(Poly0) > (BoxArea * 0.5 - AreaEpsilon))
 	{
 		// This halfbox is filled with lake poly, mark as water
 		FBox TileBounds(FVector(HalfBox0.Min + LeafSizeShrink, InZBounds.X), FVector(HalfBox0.Max - LeafSizeShrink, InZBounds.Y));
@@ -889,7 +986,7 @@ void FWaterQuadTree::AddLakeRecursive(const TArray<FVector2D>& InPoly, const FBo
 
 	// Poly1 is the negative box (on the negative side of the line normal)
 	const FBox2D HalfBox1(InBox.Min, InBox.Max - InBox.GetExtent() * LineNormal);
-	if (CalcPoly2DArea(Poly1) > (BoxArea * 0.5f - AreaEpsilon))
+	if (CalcPoly2DArea(Poly1) > (BoxArea * 0.5 - AreaEpsilon))
 	{
 		// This halfbox is filled with lake poly, mark as water
 		FBox TileBounds(FVector(HalfBox1.Min + LeafSizeShrink, InZBounds.X), FVector(HalfBox1.Max - LeafSizeShrink, InZBounds.Y));

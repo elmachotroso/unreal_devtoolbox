@@ -5,12 +5,15 @@
 #include "UnrealEngine.h"
 #include "Kismet/GameplayStatics.h"
 
+LLM_DEFINE_TAG(VirtualCamera_VirtualCameraPawnBase);
+
 int32 AVirtualCameraPawnBase::PresetIndex = 1;
 int32 AVirtualCameraPawnBase::WaypointIndex = 1;
 int32 AVirtualCameraPawnBase::ScreenshotIndex = 1;
 
 AVirtualCameraPawnBase::AVirtualCameraPawnBase(const FObjectInitializer& ObjectInitializer)
 {
+	LLM_SCOPE_BYTAG(VirtualCamera_VirtualCameraPawnBase);
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
@@ -38,7 +41,7 @@ AVirtualCameraPawnBase::AVirtualCameraPawnBase(const FObjectInitializer& ObjectI
 	// By default, allow focus visualization
 	bAllowFocusVisualization = true;
 
-	FScreenshotRequest::OnScreenshotRequestProcessed().AddUObject(CineCamera, &UVirtualCameraCineCameraComponent::AllowCameraViewUpdates);
+	FScreenshotRequest::OnScreenshotRequestProcessed().AddUObject(ToRawPtr(CineCamera), &UVirtualCameraCineCameraComponent::AllowCameraViewUpdates);
 }
 
 void AVirtualCameraPawnBase::BeginPlay()
@@ -421,7 +424,11 @@ void AVirtualCameraPawnBase::SaveSettings()
 	SaveGameInstance->CameraSettings.FocalLength = CineCamera->GetCurrentFocalLength();
 	SaveGameInstance->CameraSettings.Aperture = CineCamera->GetCurrentAperture();
 	SaveGameInstance->CameraSettings.bAllowFocusVisualization = bAllowFocusVisualization;
+#if WITH_EDITORONLY_DATA
 	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = CineCamera->FocusSettings.DebugFocusPlaneColor;
+#else
+	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = FColor();
+#endif
 
 	// Save filmback settings
 	SaveGameInstance->CameraSettings.FilmbackName = CineCamera->GetCurrentFilmbackName();
@@ -483,10 +490,12 @@ void AVirtualCameraPawnBase::LoadSettings()
 
 	bAllowFocusVisualization = SaveGameInstance->CameraSettings.bAllowFocusVisualization;
 
+#if WITH_EDITORONLY_DATA
 	if (SaveGameInstance->CameraSettings.DebugFocusPlaneColor != FColor())
 	{
 		CineCamera->FocusSettings.DebugFocusPlaneColor = SaveGameInstance->CameraSettings.DebugFocusPlaneColor;
 	}
+#endif
 
 	// Load focal length
 	if (CineCamera->FocalLengthOptions.Contains(SaveGameInstance->CameraSettings.FocalLength))

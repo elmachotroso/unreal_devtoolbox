@@ -8,6 +8,9 @@
 #include "Misc/CommandLine.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+#include "HAL/PlatformApplicationMisc.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InputSettings)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -20,8 +23,11 @@
 UInputSettings::UInputSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bCaptureMouseOnLaunch(true)
-	, bDefaultViewportMouseLock_DEPRECATED(false)
 	, bEnableLegacyInputScales(true)
+	, bEnableMotionControls(true)
+	, bFilterInputByPlatformUser(false)
+	, bShouldFlushPressedKeysOnViewportFocusLost(true)
+	, bEnableDynamicComponentInputBinding(true)
 	, DefaultViewportMouseCaptureMode(EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown)
 	, DefaultViewportMouseLockMode(EMouseLockMode::LockOnCapture)
 	, DefaultPlayerInputClass(UPlayerInput::StaticClass())
@@ -70,12 +76,6 @@ void UInputSettings::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	if (ConsoleKey_DEPRECATED.IsValid())
-	{
-		ConsoleKeys.Empty(1);
-		ConsoleKeys.Add(ConsoleKey_DEPRECATED);
-	}
-
 	PopulateAxisConfigs();
 
 #if PLATFORM_WINDOWS
@@ -87,6 +87,7 @@ void UInputSettings::PostInitProperties()
 		switch(PRIMARYLANGID(LOWORD(GetKeyboardLayout(0))))
 		{
 		case LANG_FRENCH:
+		case LANG_HUNGARIAN:
 			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_7, 0);
 			break;
 
@@ -134,6 +135,8 @@ void UInputSettings::PostInitProperties()
 			UE_LOG(LogInput, Warning, TEXT("Axis %s uses deprecated key %s."), *KeyMapping.AxisName.ToString(), *KeyMapping.Key.ToString());
 		}
 	}
+
+	FPlatformApplicationMisc::EnableMotionData(bEnableMotionControls);
 }
 
 void UInputSettings::PopulateAxisConfigs()
@@ -188,10 +191,13 @@ void UInputSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 		ForceRebuildKeymaps();
 		FEditorDelegates::OnActionAxisMappingsChanged.Broadcast();
 	}
-
-	if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(UInputSettings, bEnableGestureRecognizer))
+	else if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(UInputSettings, bEnableGestureRecognizer))
 	{
 		FEditorDelegates::OnEnableGestureRecognizerChanged.Broadcast();
+	}
+	else if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(UInputSettings, bEnableMotionControls))
+	{
+		FPlatformApplicationMisc::EnableMotionData(bEnableMotionControls);
 	}
 }
 
@@ -484,4 +490,5 @@ void UInputSettings::SetDefaultInputComponentClass(TSubclassOf<UInputComponent> 
 		InputSettings->DefaultInputComponentClass = NewDefaultInputComponentClass;	
 	}
 }
+
 

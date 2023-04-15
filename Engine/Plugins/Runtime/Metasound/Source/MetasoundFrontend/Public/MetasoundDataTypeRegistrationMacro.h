@@ -13,6 +13,7 @@
 #include "MetasoundDataReferenceMacro.h"
 #include "MetasoundEnum.h"
 #include "MetasoundFrontendDataTypeRegistry.h"
+#include "MetasoundFrontendDataTypeTraits.h"
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundInputNode.h"
 #include "MetasoundLiteral.h"
@@ -29,66 +30,8 @@
 
 namespace Metasound
 {
-	/** Enables or disables automatic registration of array types given a 
-	 * MetaSound data type. By default this is true, and all data types will have
-	 * an associated TArray<DataType> registered if it is supported. */
-	template<typename ... Type>
-	struct TEnableAutoArrayTypeRegistration
-	{
-		static constexpr bool Value = true;
-	};
-
-	/** Enables or disables automatic registration of auto conversion nodes given a 
-	 * MetaSound data type. By default this is true, and all data types will have
-	 * associated conversion nodes registered based upon the data types supported
-	 * constructors and implicit conversions. */
-	template<typename ... Type>
-	struct TEnableAutoConverterNodeRegistration
-	{
-		static constexpr bool Value = true;
-	};
-
-	/** Enables or disables send and receive node registration for a given MetaSound
-	 * data type. By default this is true and all data types supported by the transmission
-	 * system will have associated send and receive nodes. */
-	template<typename ... Type>
-	struct TEnableTransmissionNodeRegistration
-	{
-		static constexpr bool Value = true;
-	};
-
 	namespace MetasoundDataTypeRegistrationPrivate
 	{
-		// Helper utility to test if we can transmit a datatype between a send and a receive node.
-		template <typename TDataType>
-		struct TIsTransmittable
-		{
-		private:
-			static constexpr bool bIsCopyConstructible = std::is_copy_constructible<TDataType>::value;
-			static constexpr bool bIsCopyAssignable = std::is_copy_assignable<TDataType>::value;
-
-			static constexpr bool bCanBeTransmitted = bIsCopyConstructible && bIsCopyAssignable;
-
-		public:
-
-			static constexpr bool Value = bCanBeTransmitted;
-		};
-
-		// Specialization of TIsTransmittable<> for TArray to handle lax TArray copy constructor 
-		// definition. This can be removed once updates to TArray are merged into the same codebase.
-		// TODO: delete me eventually.
-		template<typename TElementType>
-		struct TIsTransmittable<TArray<TElementType>>
-		{
-			// Depend on copy constructor of elements to determine whether TArray is copy constructible
-			// and copy assignable. Definitions for TArray copy construction and copy assignment are
-			// defined by default whether or not the TArray element types support them. This logic
-			// skips checking the TArray object itselt and instead checks the TArray element type
-			// directly.
-
-			static constexpr bool Value = TIsTransmittable<TElementType>::Value;
-		};
-
 		// Returns the Array version of a literal type if it exists.
 		template<ELiteralType LiteralType>
 		struct TLiteralArrayEnum 
@@ -219,6 +162,10 @@ namespace Metasound
 			RegistryInfo.PreferredLiteralType = PreferredArgType;
 
 			RegistryInfo.bIsParsable = TLiteralTraits<TDataType>::bIsParsableFromAnyLiteralType;
+			RegistryInfo.bIsArrayParseable = TLiteralTraits<TDataType>::bIsParseableFromAnyArrayLiteralType;
+
+			RegistryInfo.bIsArrayType = TIsArrayType<TDataType>::Value;
+
 			RegistryInfo.bIsDefaultParsable = TIsParsable<TDataType, FLiteral::FNone>::Value;
 			RegistryInfo.bIsBoolParsable = TIsParsable<TDataType, bool>::Value;
 			RegistryInfo.bIsIntParsable = TIsParsable<TDataType, int32>::Value;
@@ -236,12 +183,13 @@ namespace Metasound
 			RegistryInfo.bIsEnum = TEnumTraits<TDataType>::bIsEnum;
 			RegistryInfo.bIsVariable = TIsVariable<TDataType>::Value;
 			RegistryInfo.bIsTransmittable = TIsTransmittable<TDataType>::Value;
+			RegistryInfo.bIsConstructorType = TIsConstructorVertexSupported<TDataType>::Value;
 			
 			if constexpr (std::is_base_of<UObject, UClassToUse>::value)
 			{
 				RegistryInfo.ProxyGeneratorClass = UClassToUse::StaticClass();
 			}
-			else 
+			else
 			{
 				static_assert(std::is_same<UClassToUse, void>::value, "Only UObject derived classes can supply proxy interfaces.");
 				RegistryInfo.ProxyGeneratorClass = nullptr;
@@ -323,11 +271,11 @@ namespace Metasound
 		bool RegisterDataTypeWithFrontendInternal()
 		{
 			static constexpr bool bIsParsable = TLiteralTraits<TDataType>::bIsParsableFromAnyLiteralType;
+			static constexpr bool bIsConstructorType = TIsConstructorVertexSupported<TDataType>::Value;
+
 			static bool bAlreadyRegisteredThisDataType = false;
 			if (bAlreadyRegisteredThisDataType)
 			{
-				// if we reenter this code (because DECLARE_METASOUND_DATA_REFERENCE_TYPES was called twice with the same type),
-				// we catch it here.
 				UE_LOG(LogMetaSound, Display, TEXT("Tried to call REGISTER_METASOUND_DATATYPE twice with the same class %s. ignoring the second call. Likely because REGISTER_METASOUND_DATATYPE is in a header that's used in multiple modules. Consider moving it to a private header or cpp file."), TDataReferenceTypeInfo<TDataType>::TypeName)
 				return false;
 			}
@@ -348,10 +296,10 @@ namespace Metasound
 
 					if constexpr (bIsParsable)
 					{
-						TInputNode<TDataType> InputPrototype(TEXT(""), FGuid(), TEXT(""), FLiteral());
+						TInputNode<TDataType, EVertexAccessType::Reference> InputPrototype(FInputNodeConstructorParams { });
 						InputClass = Metasound::Frontend::GenerateClass(InputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
 
-						TOutputNode<TDataType> OutputPrototype(TEXT(""), FGuid(), TEXT(""));
+						TOutputNode<TDataType, EVertexAccessType::Reference> OutputPrototype(TEXT(""), FGuid(), TEXT(""));
 						OutputClass = Metasound::Frontend::GenerateClass(OutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
 
 						TLiteralNode<TDataType> LiteralPrototype(TEXT(""), FGuid(), FLiteral());
@@ -368,8 +316,17 @@ namespace Metasound
 
 						TVariableDeferredAccessorNode<TDataType> VariableDeferredAccessorPrototype(TEXT(""), FGuid());
 						VariableDeferredAccessorClass = Metasound::Frontend::GenerateClass(VariableDeferredAccessorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableDeferredAccessor);
+
+						if constexpr (bIsConstructorType)
+						{
+							TInputNode<TDataType, EVertexAccessType::Value> ConstructorInputPrototype(FInputNodeConstructorParams { });
+							ConstructorInputClass = Metasound::Frontend::GenerateClass(ConstructorInputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
+							TOutputNode<TDataType, EVertexAccessType::Value> ConstructorOutputPrototype(TEXT(""), FGuid(), TEXT(""));
+							ConstructorOutputClass = Metasound::Frontend::GenerateClass(ConstructorOutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
+						}
 					}
 				}
+
 				virtual ~FDataTypeRegistryEntry() {}
 
 				virtual const Frontend::FDataTypeRegistryInfo& GetDataTypeInfo() const override
@@ -387,6 +344,11 @@ namespace Metasound
 					return InputClass;
 				}
 
+				virtual const FMetasoundFrontendClass& GetFrontendConstructorInputClass() const override
+				{
+					return ConstructorInputClass;
+				}
+
 				virtual const FMetasoundFrontendClass& GetFrontendLiteralClass() const override
 				{
 					return LiteralClass;
@@ -395,6 +357,11 @@ namespace Metasound
 				virtual const FMetasoundFrontendClass& GetFrontendOutputClass() const override
 				{
 					return OutputClass;
+				}
+
+				virtual const FMetasoundFrontendClass& GetFrontendConstructorOutputClass() const override
+				{
+					return ConstructorOutputClass;
 				}
 
 				virtual const FMetasoundFrontendClass& GetFrontendVariableClass() const override
@@ -421,7 +388,20 @@ namespace Metasound
 				{
 					if constexpr (bIsParsable)
 					{
-						return MakeUnique<TInputNode<TDataType>>(InParams.NodeName, InParams.InstanceID, InParams.VertexName, MoveTemp(InParams.InitParam));
+						return MakeUnique<TInputNode<TDataType, EVertexAccessType::Reference>>(MoveTemp(InParams));
+					}
+					else
+					{
+						return TUniquePtr<INode>(nullptr);
+					}
+				}
+
+				virtual TUniquePtr<INode> CreateConstructorInputNode(FInputNodeConstructorParams&& InParams) const override
+				{
+					if constexpr (bIsParsable && bIsConstructorType)
+					{
+						checkf(!InParams.bEnableTransmission, TEXT("Cannot enable transmission on a constructor input."));
+						return MakeUnique<TInputNode<TDataType, EVertexAccessType::Value>>(MoveTemp(InParams));
 					}
 					else
 					{
@@ -433,7 +413,19 @@ namespace Metasound
 				{
 					if constexpr (bIsParsable)
 					{
-						return MakeUnique<TOutputNode<TDataType>>(InParams.NodeName, InParams.InstanceID, InParams.VertexName);
+						return MakeUnique<TOutputNode<TDataType, EVertexAccessType::Reference>>(InParams.NodeName, InParams.InstanceID, InParams.VertexName);
+					}
+					else
+					{
+						return TUniquePtr<INode>(nullptr);
+					}
+				}
+
+				virtual TUniquePtr<INode> CreateConstructorOutputNode(FOutputNodeConstructorParams&& InParams) const override
+				{
+					if constexpr (bIsParsable && bIsConstructorType)
+					{
+						return MakeUnique<TOutputNode<TDataType, EVertexAccessType::Value>>(InParams.NodeName, InParams.InstanceID, InParams.VertexName);
 					}
 					else
 					{
@@ -535,6 +527,28 @@ namespace Metasound
 					return Audio::IProxyDataPtr(nullptr);
 				}
 
+				virtual TOptional<FAnyDataReference> CreateDataReference(EDataReferenceAccessType InAccessType, const FLiteral& InLiteral, const FOperatorSettings& InOperatorSettings) const override
+				{
+					if constexpr(bIsParsable)
+					{
+						switch (InAccessType)
+						{
+							case EDataReferenceAccessType::Read:
+								return FAnyDataReference{TDataReadReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+
+							case EDataReferenceAccessType::Write:
+								return FAnyDataReference{TDataWriteReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+
+							case EDataReferenceAccessType::Value:
+								return FAnyDataReference{TDataValueReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+
+							default:
+								break;
+						}
+					}
+					return TOptional<FAnyDataReference>();
+				}
+
 				virtual TSharedPtr<IDataChannel, ESPMode::ThreadSafe> CreateDataChannel(const FOperatorSettings& InOperatorSettings) const override
 				{
 					if constexpr (bIsParsable)
@@ -555,7 +569,9 @@ namespace Metasound
 			private:
 				Frontend::FDataTypeRegistryInfo Info;
 				FMetasoundFrontendClass InputClass;
+				FMetasoundFrontendClass ConstructorInputClass;
 				FMetasoundFrontendClass OutputClass;
+				FMetasoundFrontendClass ConstructorOutputClass;
 				FMetasoundFrontendClass LiteralClass;
 				FMetasoundFrontendClass VariableClass;
 				FMetasoundFrontendClass VariableMutatorClass;
@@ -587,7 +603,7 @@ namespace Metasound
 		 *
 		 * @return True on success, false on failure.
 		 */
-		template<typename TDataType, ELiteralType PreferredArgType, typename UClassToUse>
+		template<typename TDataType, ELiteralType PreferredArgType>
 		bool RegisterDataTypeArrayWithFrontend()
 		{
 			using namespace MetasoundDataTypeRegistrationPrivate;
@@ -595,7 +611,8 @@ namespace Metasound
 
 			if (TEnableAutoArrayTypeRegistration<TDataType>::Value)
 			{
-				bool bSuccess = RegisterDataTypeWithFrontendInternal<TArrayType, TLiteralArrayEnum<PreferredArgType>::Value, UClassToUse>();
+				constexpr bool bIsArrayType = true;
+				bool bSuccess = RegisterDataTypeWithFrontendInternal<TArrayType, TLiteralArrayEnum<PreferredArgType>::Value>();
 				bSuccess = bSuccess && RegisterArrayNodes<TArrayType>();
 				bSuccess = bSuccess && RegisterDataTypeWithFrontendInternal<TVariable<TArrayType>>();
 				return bSuccess;
@@ -628,7 +645,7 @@ namespace Metasound
 		ensure(bSuccess);
 
 		// Register TArray<TDataType> as a metasound data type.
-		bSuccess = bSuccess && RegisterDataTypeArrayWithFrontend<TDataType, PreferredArgType, UClassToUse>();
+		bSuccess = bSuccess && RegisterDataTypeArrayWithFrontend<TDataType, PreferredArgType>();
 		ensure(bSuccess);
 
 		return bSuccess;
@@ -645,7 +662,7 @@ namespace Metasound
 		static_assert(std::is_same<DataType, typename std::decay<DataType>::type>::value, "DataType and decayed DataType must be the same");
 		
 		// To register a data type, an input node must be able to instantiate it.
-		static constexpr bool bCanRegister = TInputNode<DataType>::bCanRegister;
+		static constexpr bool bCanRegister = TInputNode<DataType, EVertexAccessType::Reference>::bCanRegister;
 
 		// If a data type has been successfully registered, this will be true.
 		static const bool bSuccessfullyRegistered;

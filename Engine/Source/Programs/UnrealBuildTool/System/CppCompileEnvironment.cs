@@ -53,6 +53,42 @@ namespace UnrealBuildTool
 		/// </summary>
 		Default = Cpp17,
 	}
+	
+	/// <summary>
+	/// Specifies which C language standard to use. This enum should be kept in order, so that toolchains can check whether the requested setting is >= values that they support.
+	/// </summary>
+	public enum CStandardVersion
+	{
+		/// <summary>
+		/// Use the default standard version
+		/// </summary>
+		Default,
+
+		/// <summary>
+		/// Supports C89
+		/// </summary>
+		C89,
+
+		/// <summary>
+		/// Supports C99
+		/// </summary>
+		C99,
+
+		/// <summary>
+		/// Supports C11
+		/// </summary>
+		C11,
+
+		/// <summary>
+		/// Supports C17
+		/// </summary>
+		C17,
+
+		/// <summary>
+		/// Latest standard supported by the compiler
+		/// </summary>
+		Latest,
+	}
 
 	/// <summary>
 	/// The optimization level that may be compilation targets for C# files.
@@ -228,14 +264,34 @@ namespace UnrealBuildTool
 		public bool bWarningsAsErrors = false;
 
 		/// <summary>
+		/// Whether to disable all static analysis - Clang, MSVC, PVS-Studio.
+		/// </summary>
+		public bool bDisableStaticAnalysis = false;
+
+		/// <summary>
+		/// The static analyzer checkers that should be enabled rather than the defaults. This is only supported for Clang.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerCheckers = new HashSet<string>();
+
+		/// <summary>
+		/// The static analyzer default checkers that should be disabled. Unused if StaticAnalyzerCheckers is populated. This is only supported for Clang.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerDisabledCheckers = new HashSet<string>();
+
+		/// <summary>
+		/// The static analyzer non-default checkers that should be enabled. Unused if StaticAnalyzerCheckers is populated. This is only supported for Clang.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerAdditionalCheckers = new HashSet<string>();
+
+		/// <summary>
 		/// True if compiler optimizations should be enabled. This setting is distinct from the configuration (see CPPTargetConfiguration).
 		/// </summary>
 		public bool bOptimizeCode = false;
 
 		/// <summary>
-		/// Whether to optimize for minimal code size
+		/// Allows to fine tune optimizations level for speed and\or code size
 		/// </summary>
-		public bool bOptimizeForSize = false;
+		public OptimizationMode OptimizationLevel = OptimizationMode.Speed;
 
 		/// <summary>
 		/// True if debug info should be created.
@@ -364,6 +420,11 @@ namespace UnrealBuildTool
 		public List<FileItem> AdditionalPrerequisites = new List<FileItem>();
 
 		/// <summary>
+		/// A dictionary of the source file items and the inlined gen.cpp files contained in it
+		/// </summary>
+		public Dictionary<FileItem, List<FileItem>> FileInlineGenCPPMap = new();
+
+		/// <summary>
 		/// The C++ preprocessor definitions to use.
 		/// </summary>
 		public List<string> Definitions = new List<string>();
@@ -397,6 +458,11 @@ namespace UnrealBuildTool
 		/// Which C++ standard to support. May not be compatible with all platforms.
 		/// </summary>
 		public CppStandardVersion CppStandard = CppStandardVersion.Default;
+		
+		/// <summary>
+		/// Which C standard to support. May not be compatible with all platforms.
+		/// </summary>
+		public CStandardVersion CStandard = CStandardVersion.Default;
 
 		/// <summary>
 		/// The amount of the stack usage to report static analysis warnings.
@@ -409,6 +475,21 @@ namespace UnrealBuildTool
 		/// For Clang, adds "-fcoroutines-ts" to the command line. Program should #include &lt;experimental/coroutine&gt; (not supported in every clang toolchain)
 		/// </summary>
 		public bool bEnableCoroutines = false;
+
+		/// <summary>
+		/// What version of include order specified by the module rules. Used to determine shared PCH variants.
+		/// </summary>
+		public EngineIncludeOrderVersion IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+
+		/// <summary>
+		/// Set flags for determinstic compiles (experimental).
+		/// </summary>
+		public bool bDeterministic = false;
+
+		/// <summary>
+		/// Directory where to put crash report files for platforms that support it
+		/// </summary>
+		public string? CrashDiagnosticDirectory;
 
 		/// <summary>
 		/// Default constructor.
@@ -457,8 +538,12 @@ namespace UnrealBuildTool
 			bUndefinedIdentifierWarningsAsErrors = Other.bUndefinedIdentifierWarningsAsErrors;
 			bEnableUndefinedIdentifierWarnings = Other.bEnableUndefinedIdentifierWarnings;
 			bWarningsAsErrors = Other.bWarningsAsErrors;
+			bDisableStaticAnalysis = Other.bDisableStaticAnalysis;
+			StaticAnalyzerCheckers = new HashSet<string>(Other.StaticAnalyzerCheckers);
+			StaticAnalyzerDisabledCheckers = new HashSet<string>(Other.StaticAnalyzerDisabledCheckers);
+			StaticAnalyzerAdditionalCheckers = new HashSet<string>(Other.StaticAnalyzerAdditionalCheckers);
 			bOptimizeCode = Other.bOptimizeCode;
-			bOptimizeForSize = Other.bOptimizeForSize;
+			OptimizationLevel = Other.OptimizationLevel;
 			bCreateDebugInfo = Other.bCreateDebugInfo;
 			bIsBuildingLibrary = Other.bIsBuildingLibrary;
 			bIsBuildingDLL = Other.bIsBuildingDLL;
@@ -491,7 +576,11 @@ namespace UnrealBuildTool
 			bHackHeaderGenerator = Other.bHackHeaderGenerator;
 			bHideSymbolsByDefault = Other.bHideSymbolsByDefault;
 			CppStandard = Other.CppStandard;
+			CStandard = Other.CStandard;
 			bEnableCoroutines = Other.bEnableCoroutines;
+			IncludeOrderVersion = Other.IncludeOrderVersion;
+			bDeterministic = Other.bDeterministic;
+			CrashDiagnosticDirectory = Other.CrashDiagnosticDirectory;
 		}
 	}
 }

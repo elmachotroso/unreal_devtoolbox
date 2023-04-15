@@ -2,22 +2,17 @@
 #include "NiagaraDataInterfaceGrid3DCollectionReader.h"
 #include "NiagaraShader.h"
 #include "ShaderParameterUtils.h"
-#include "ClearQuad.h"
-#include "TextureResource.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraRenderer.h"
 #include "Engine/VolumeTexture.h"
 #include "Engine/TextureRenderTargetVolume.h"
 #include "NiagaraSettings.h"
 #include "NiagaraConstants.h"
 #include "NiagaraComputeExecutionContext.h"
-#if WITH_EDITOR
-#include "NiagaraGpuComputeDebug.h"
-#endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGrid3DCollectionReader)
+
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceGrid3DCollectionReader"
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceGrid3DCollectionReader, FNiagaraDataInterfaceParametersCS_Grid3DCollection);
 
 UNiagaraDataInterfaceGrid3DCollectionReader::UNiagaraDataInterfaceGrid3DCollectionReader(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -65,7 +60,7 @@ bool UNiagaraDataInterfaceGrid3DCollectionReader::InitPerInstanceData(void* PerI
 	FNiagaraEmitterInstance* EmitterInstanceToUse = nullptr;
 	for (TSharedPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInstance : SystemInstance->GetEmitters())
 	{
-		UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter();
+		UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter().Emitter;
 		if (Emitter == nullptr)
 		{
 			continue;
@@ -133,26 +128,23 @@ bool UNiagaraDataInterfaceGrid3DCollectionReader::InitPerInstanceData(void* PerI
 	return false;
 }
 
-void UNiagaraDataInterfaceGrid3DCollectionReader::GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const
+void UNiagaraDataInterfaceGrid3DCollectionReader::GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const
 {
 	if (!Asset)
 	{
 		return;
 	}
 
-	UNiagaraEmitter* FoundSourceEmitter = nullptr;
 	for (const FNiagaraEmitterHandle& EmitterHandle : Asset->GetEmitterHandles())
 	{
-		UNiagaraEmitter* EmitterInstance = EmitterHandle.GetInstance();
+		UNiagaraEmitter* EmitterInstance = EmitterHandle.GetInstance().Emitter;
 		if (EmitterInstance && EmitterInstance->GetUniqueEmitterName() == EmitterName)
 		{
-			Dependencies.Add(EmitterInstance);
+			Dependencies.Add(EmitterHandle.GetInstance());
 			return;
 		}
 	}
 }
-
-
 
 void UNiagaraDataInterfaceGrid3DCollectionReader::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
 {
@@ -208,3 +200,4 @@ bool UNiagaraDataInterfaceGrid3DCollectionReader::PerInstanceTickPostSimulate(vo
 }
 
 #undef LOCTEXT_NAMESPACE
+

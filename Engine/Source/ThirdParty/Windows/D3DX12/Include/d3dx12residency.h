@@ -31,7 +31,7 @@ namespace D3DX12Residency
 #define RESIDENCY_MAX(x,y) ((x) > (y) ? (x) : (y))
 
 // This size can be tuned to your app in order to save space
-#define MAX_NUM_CONCURRENT_CMD_LISTS 128
+#define MAX_NUM_CONCURRENT_CMD_LISTS 1024
 
 	namespace Internal
 	{
@@ -1306,8 +1306,8 @@ namespace D3DX12Residency
 									if (Device3)
 									{
 										hr = Device3->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE,
-																			NumObjectsInBatch,
-																			&pMakeResidentList[BatchStart].pUnderlying,
+																			NumObjects,
+																			&pMakeResidentList[MakeResidentIndex].pUnderlying,
 																			AsyncThreadFence.pFence,
 																			AsyncThreadFence.FenceValue + 1);
 										if (SUCCEEDED(hr))

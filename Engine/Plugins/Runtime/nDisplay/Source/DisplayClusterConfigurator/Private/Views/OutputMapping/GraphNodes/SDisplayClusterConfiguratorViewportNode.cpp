@@ -5,8 +5,8 @@
 #include "DisplayClusterConfiguratorStyle.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
-#include "Interfaces/Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
+#include "Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorViewportNode.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorWindowNode.h"
 #include "Views/OutputMapping/Widgets/SDisplayClusterConfiguratorResizer.h"
@@ -85,7 +85,7 @@ void SDisplayClusterConfiguratorViewportNode::UpdateGraphNode()
 							.VAlign(VAlign_Center)
 							[
 								SNew(SBorder)
-								.BorderImage(FAppStyle::Get().GetBrush("WhiteBrush"))
+								.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 								.BorderBackgroundColor(this, &SDisplayClusterConfiguratorViewportNode::GetTextBoxColor)
 								.ForegroundColor(this, &SDisplayClusterConfiguratorViewportNode::GetTextColor)
 								.Padding(8.0f)
@@ -327,7 +327,7 @@ TOptional<FSlateRenderTransform> SDisplayClusterConfiguratorViewportNode::GetBac
 
 const FSlateBrush* SDisplayClusterConfiguratorViewportNode::GetNodeShadowBrush() const
 {
-	return FAppStyle::Get().GetBrush(TEXT("Graph.Node.Shadow"));
+	return FAppStyle::GetBrush(TEXT("Graph.Node.Shadow"));
 }
 
 const FSlateBrush* SDisplayClusterConfiguratorViewportNode::GetBorderBrush() const

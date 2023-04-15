@@ -10,7 +10,7 @@ public class TakeSequencer : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"EditorStyle",
+				
 				"Slate",
 				"SlateCore",
 				"UnrealEd"
@@ -27,12 +27,5 @@ public class TakeSequencer : ModuleRules
 				"Engine",
             }
         );
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"TakeSequencer/Private",
-				"TakeSequencer/Public",
-			}
-		);
 	}
 }

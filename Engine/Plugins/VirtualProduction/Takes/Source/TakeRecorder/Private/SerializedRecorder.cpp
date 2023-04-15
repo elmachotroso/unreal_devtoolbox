@@ -26,7 +26,7 @@
 #include "GameFramework/Character.h"
 
 #include "IAssetTools.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetToolsModule.h"
 #include "Factories/Factory.h"
 #include "UObject/UObjectIterator.h"
@@ -392,7 +392,7 @@ AActor* FSerializedRecorder::SetActorPossesableOrSpawnable(UMovieSceneSequence* 
 		}
 		if (Actor)
 		{
-			UClass* InitPossessedObjectClass = FindObject<UClass>(ANY_PACKAGE, *ActorHeader.ClassName);
+			UClass* InitPossessedObjectClass = UClass::TryFindTypeSlow<UClass>(ActorHeader.ClassName);
 			FMovieScenePossessable Possessable(ActorHeader.Label, InitPossessedObjectClass);
 
 			Possessable.SetGuid(ActorHeader.Guid);
@@ -409,7 +409,7 @@ AActor* FSerializedRecorder::SetActorPossesableOrSpawnable(UMovieSceneSequence* 
 		//by MakeSpawnableTemplateFromInstance.  
 		//CachedObjectTemplate = CastChecked<AActor>(InMovieSceneSequence->MakeSpawnableTemplateFromInstance(*ActorToRecord, Header.TemplateName));
 		//
-		UClass* SpawnableClass = FindObject<UClass>(ANY_PACKAGE, *ActorHeader.ClassName);
+		UClass* SpawnableClass = UClass::TryFindTypeSlow<UClass>(ActorHeader.ClassName);
 		UObject* NewInstance = NewObject<UObject>(MovieScene, SpawnableClass, FName(*ActorHeader.TemplateName));
 		//this is where UEngine::CopyPropertiesForUnrelatedObjects happens
 		Actor = CastChecked<AActor>(NewInstance);
@@ -500,7 +500,7 @@ AActor* FSerializedRecorder::SetActorPossesableOrSpawnable(UMovieSceneSequence* 
 		{
 			FolderToUse = NewObject<UMovieSceneFolder>(MovieScene, NAME_None, RF_Transactional);
 			FolderToUse->SetFolderName(ActorHeader.FolderName);
-			MovieScene->GetRootFolders().Add(FolderToUse);
+			MovieScene->AddRootFolder(FolderToUse);
 		}
 
 		FolderToUse->AddChildObjectBinding(ActorHeader.Guid);
@@ -515,7 +515,7 @@ void FSerializedRecorder::SetComponentPossessable(UMovieSceneSequence* InMovieSc
 		// first create a possessable for this component to be controlled by
 		UMovieScene* InMovieScene = InMovieSceneSequence->GetMovieScene();
 
-		UClass* InitPossessedObjectClass = FindObject<UClass>(ANY_PACKAGE, *ActorProperty.ClassName);
+		UClass* InitPossessedObjectClass = UClass::TryFindTypeSlow<UClass>(ActorProperty.ClassName);
 		FMovieScenePossessable ChildPossessable(ActorProperty.UObjectName, InitPossessedObjectClass);
 
 		ChildPossessable.SetGuid(ActorProperty.Guid);
@@ -525,7 +525,7 @@ void FSerializedRecorder::SetComponentPossessable(UMovieSceneSequence* InMovieSc
 
 		// Set up parent/child guids for possessables within spawnables
 		FMovieScenePossessable* ChildPossessablePtr = InMovieScene->FindPossessable(ActorProperty.Guid);
-		ChildPossessablePtr->SetParent(ActorHeader.Guid);
+		ChildPossessablePtr->SetParent(ActorHeader.Guid, InMovieScene);
 		
 		FMovieSceneSpawnable* ParentSpawnable = InMovieScene->FindSpawnable(ActorHeader.Guid);
 		if (ParentSpawnable)

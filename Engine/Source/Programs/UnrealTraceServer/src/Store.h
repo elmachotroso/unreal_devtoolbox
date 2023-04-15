@@ -2,8 +2,6 @@
 
 #pragma once
 
-#define TS_WITH_DIR_WATCHER TS_ON
-
 #include "Asio.h"
 #include "AsioFile.h"
 #include "Foundation.h"
@@ -25,16 +23,16 @@ public:
 	class FTrace
 	{
 	public:
-							FTrace(const char* InPath);
-		const FStringView&	GetName() const;
+							FTrace(const FPath& InPath);
+		const FPath&		GetPath() const;
+		FString				GetName() const;
 		uint32				GetId() const;
 		uint64				GetSize() const;
 		uint64				GetTimestamp() const;
 
 	private:
 		friend				FStore;
-		FString				Path;
-		FStringView			Name;
+		FPath				Path;
 		uint64				Timestamp;
 		uint32				Id = 0;
 	};
@@ -45,34 +43,51 @@ public:
 		FAsioWriteable* Writeable;
 	};
 
-						FStore(asio::io_context& IoContext, const char* InStoreDir);
+	class FMount
+	{
+	public:
+						FMount(const FPath& InDir);
+		uint32			GetId() const;
+		FString			GetDir() const;
+		uint32			GetTraceCount() const;
+		const FTrace*	GetTraceInfo(uint32 Index) const;
+
+	private:
+		friend			FStore;
+		FTrace*			GetTrace(uint32 Id) const;
+		FTrace*			AddTrace(const FPath& Path);
+		uint32			Refresh();
+		FPath			Dir;
+		TArray<FTrace*>	Traces;
+		uint32			Id;
+	};
+
+						FStore(asio::io_context& IoContext, const FPath& InStoreDir);
 						~FStore();
 	void				Close();
-	const char*			GetStoreDir() const;
+	bool				AddMount(const FPath& Dir);
+	bool				RemoveMount(uint32 Id);
+	const FMount*		GetMount(uint32 Id) const;
+	uint32				GetMountCount() const;
+	const FMount*		GetMountInfo(uint32 Index) const;
+
+	FString				GetStoreDir() const;
 	uint32				GetChangeSerial() const;
 	uint32				GetTraceCount() const;
 	const FTrace*		GetTraceInfo(uint32 Index) const;
 	bool				HasTrace(uint32 Id) const;
 	FNewTrace			CreateTrace();
 	FAsioReadable*		OpenTrace(uint32 Id);
+	class				FDirWatcher;
 
 private:
-	FTrace*				GetTrace(uint32 Id) const;
-	FTrace*				AddTrace(const char* Path);
-	void				ClearTraces();
+	FTrace*				GetTrace(uint32 Id, FMount** OutMount=nullptr) const;
 	void				Refresh();
-	asio::io_context&	IoContext;
-	FString				StoreDir;
-	TArray<FTrace*>		Traces;
-	uint32				ChangeSerial;
-#if TS_USING(TS_WITH_DIR_WATCHER)
-	class				FDirWatcher;
 	void				WatchDir();
+	asio::io_context&	IoContext;
+	TArray<FMount*>		Mounts;
+	uint32				ChangeSerial;
 	FDirWatcher*		DirWatcher = nullptr;
-#endif
-#if 0
-	int32				LastTraceId = -1;
-#endif // 0
 };
 
 /* vim: set noexpandtab : */

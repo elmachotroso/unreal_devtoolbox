@@ -4,6 +4,8 @@
 
 #include "OnlineSubsystemEOSTypes.h"
 #include "Interfaces/OnlineExternalUIInterface.h"
+#include "Interfaces/OnlineFriendsInterface.h"
+#include "Interfaces/OnlinePresenceInterface.h"
 
 #if WITH_EOS_SDK
 	#include "eos_auth_types.h"
@@ -241,6 +243,7 @@ class FUserManagerEOS
 	, public IOnlineFriends
 	, public IOnlinePresence
 	, public IOnlineUser
+	, public TSharedFromThis<FUserManagerEOS, ESPMode::ThreadSafe>
 {
 public:
 	/**
@@ -254,6 +257,9 @@ public:
 	 * Destructor
 	 */
 	virtual ~FUserManagerEOS();
+
+	void Init();
+	void Shutdown();
 
 // IOnlineIdentity Interface
 	virtual bool Login(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials) override;
@@ -333,7 +339,6 @@ public:
 	virtual FUniqueNetIdPtr GetExternalIdMapping(const FExternalIdQueryOptions& QueryOptions, const FString& ExternalId) override;
 // ~IOnlineUser Interface
 
-PACKAGE_SCOPE:
 	EOS_EpicAccountId GetLocalEpicAccountId(int32 LocalUserNum) const;
 	EOS_EpicAccountId GetLocalEpicAccountId() const;
 	EOS_ProductUserId GetLocalProductUserId(int32 LocalUserNum) const;
@@ -351,12 +356,11 @@ PACKAGE_SCOPE:
 	int32 GetLocalUserNumFromUniqueNetId(const FUniqueNetId& NetId) const;
 	bool IsLocalUser(const FUniqueNetId& NetId) const;
 
-	EOS_EpicAccountId GetEpicAccountId(const FUniqueNetId& NetId) const;
-	EOS_ProductUserId GetProductUserId(const FUniqueNetId& NetId) const;
-
-	typedef TFunction<void(const EOS_ProductUserId& ProductUserId, EOS_EpicAccountId& EpicAccountId)> GetEpicAccountIdAsyncCallback;
+	typedef TFunction<void(TMap<EOS_ProductUserId, FUniqueNetIdEOSRef> ResolvedUniqueNetIds)> FResolveUniqueNetIdsCallback;
+	typedef TFunction<void(FUniqueNetIdEOSRef ResolvedUniqueNetId)> FResolveUniqueNetIdCallback;
 	bool GetEpicAccountIdFromProductUserId(const EOS_ProductUserId& ProductUserId, EOS_EpicAccountId& OutEpicAccountId) const;
-	void GetEpicAccountIdAsync(const EOS_ProductUserId& ProductUserId, const GetEpicAccountIdAsyncCallback& Callback) const;
+	void ResolveUniqueNetId(const EOS_ProductUserId& ProductUserId, const FResolveUniqueNetIdCallback& Callback) const;
+	void ResolveUniqueNetIds(const TArray<EOS_ProductUserId>& ProductUserIds, const FResolveUniqueNetIdsCallback& Callback) const;
 
 	FOnlineUserPtr GetLocalOnlineUser(int32 LocalUserNum) const;
 	FOnlineUserPtr GetOnlineUser(EOS_ProductUserId UserId) const;
@@ -427,8 +431,6 @@ private:
 	/** General account mappings */
 	TMap<EOS_EpicAccountId, FString> AccountIdToStringMap;
 	TMap<EOS_ProductUserId, FString> ProductUserIdToStringMap;
-	TMap<FString, EOS_EpicAccountId> StringToAccountIdMap;
-	TMap<FString, EOS_ProductUserId> StringToProductUserIdMap;
 
 	/** Per user friends lists accessible by user num or net id */
 	TMap<int32, FFriendsListEOSRef> LocalUserNumToFriendsListMap;
@@ -481,5 +483,9 @@ private:
 	/** Last Login Credentials used for a login attempt */
 	TMap<int32, TSharedRef<FOnlineAccountCredentials>> LocalUserNumToLastLoginCredentials;
 };
+
+typedef TSharedPtr<FUserManagerEOS, ESPMode::ThreadSafe> FUserManagerEOSPtr;
+typedef TWeakPtr<FUserManagerEOS, ESPMode::ThreadSafe> FUserManagerEOSWeakPtr;
+typedef TWeakPtr<const FUserManagerEOS, ESPMode::ThreadSafe> FUserManagerEOSConstWeakPtr;
 
 #endif

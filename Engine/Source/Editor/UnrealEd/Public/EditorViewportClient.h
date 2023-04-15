@@ -487,6 +487,8 @@ public:
 			ViewTransform.SetLocation(OrbitMatrix.GetOrigin());
 		}
 	}
+	/** Perform default camera movement that would normally happen* This can be used by systems to override how the camera is triggered*/
+	void PeformDefaultCameraMovement(FVector& Drag, FRotator& Rot, FVector& Scale);
 
 	/** Sets ortho zoom amount */
 	void SetOrthoZoom( float InOrthoZoom ) 
@@ -561,8 +563,12 @@ public:
 	virtual bool ProcessScreenShots(FViewport* Viewport) override;
 	virtual void RedrawRequested(FViewport* Viewport) override;
 	virtual void RequestInvalidateHitProxy(FViewport* Viewport) override;
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
-	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
+	UE_DEPRECATED(5.1, "This version of InputKey is deprecated. Please use the version that takes FInputKeyEventArgs instead.")
+	virtual bool InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
+	UE_DEPRECATED(5.1, "This version of InputAxis is deprecated. Please use the version that takes a DeviceId instead.")
+	virtual bool InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
+	virtual bool InputAxis(FViewport* Viewport, FInputDeviceId DeviceID, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
 	virtual bool InputGesture(FViewport* Viewport, EGestureEvent GestureType, const FVector2D& GestureDelta, bool bIsDirectionInvertedFromDevice) override;
 	virtual void ReceivedFocus(FViewport* Viewport) override;
 	virtual void MouseEnter(FViewport* Viewport,int32 x, int32 y) override;
@@ -579,6 +585,13 @@ public:
 	virtual void SetEnabledStats(const TArray<FString>& InEnabledStats) override;
 	virtual bool IsStatEnabled(const FString& InName) const override;
 
+protected:
+
+	virtual bool Internal_InputKey(const FInputKeyEventArgs& EventArgs);
+	virtual bool Internal_InputAxis(FViewport* Viewport, FInputDeviceId DeviceID, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false);
+
+public:
+	
 	/** FGCObject interface */
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
 	virtual FString GetReferencerName() const override;
@@ -1039,6 +1052,14 @@ public:
 	bool IsCtrlPressed() const;
 	bool IsShiftPressed() const;
 	bool IsCmdPressed() const;
+	
+	/**
+	 * Utility function to return whether the command accepts the key states
+	 * @param InCommand The command being checked
+	 * @param InOptionalKey (Optional) input key being tested against. If not specified, the current viewport's key state's key will be used
+	 * @return True if one of the command's chords accepts the input :
+	 */
+	bool IsCommandChordPressed(const TSharedPtr<FUICommandInfo> InCommand, FKey InOptionalKey = FKey()) const;
 
 	/** @return True if the window is in an immersive viewport */
 	bool IsInImmersiveViewport() const;
@@ -1063,18 +1084,6 @@ public:
 	/** @return true if a mouse button is down and it's movement being tracked for operations inside the viewport */
 	bool IsTracking() const { return bIsTracking; }
 
-	/**
-	 * Allows custom disabling of camera recoil
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	void SetMatineeRecordingWindow(class IMatineeBase* InInterpEd) {}
-
-	/**
-	 * Returns true if camera recoil is currently allowed
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	bool IsMatineeRecordingWindow() const { return false; }
-	
 	EAxisList::Type GetCurrentWidgetAxis() const;
 
 	/** Overrides current cursor. */
@@ -1182,6 +1191,9 @@ public:
 
 	/** Get the near clipping plane for this viewport. */
 	float GetNearClipPlane() const;
+
+	/** Override the near clipping plane. Set to a negative value to disable the override. */
+	void OverrideNearClipPlane(float InNearPlane);
 
 	/** Get the far clipping plane override for this viewport. */
 	float GetFarClipPlaneOverride() const;
@@ -1316,6 +1328,26 @@ public:
 	 */
 	bool IsRayTracingDebugVisualizationModeSelected(FName InName) const;
 
+	/**
+	 * Changes the GPU Skin Cache visualization mode for this viewport
+	 *
+	 * @param InName	The ID of the required GPU Skin Cache visualization mode
+	 */
+	void ChangeGPUSkinCacheVisualizationMode(FName InName);
+
+	/**
+	 * Checks if a GPU Skin Cache visualization mode is selected
+	 *
+	 * @param InName	The ID of the required GPU Skin Cache visualization mode
+	 * @return	true if the supplied GPU Skin Cache visualization mode is checked
+	 */
+	bool IsGPUSkinCacheVisualizationModeSelected(FName InName) const;
+
+	/**
+	* Returns the FText display name associated with CurrentGPUSkinCacheVisualizationMode.
+	*/
+	FText GetCurrentGPUSkinCacheVisualizationModeDisplayName() const;
+
 	/** @return True if PreviewResolutionFraction is supported. */
 	bool SupportsPreviewResolutionFraction() const;
 
@@ -1362,9 +1394,6 @@ public:
 protected:
 	/** Invalidates the viewport widget (if valid) to register its active timer */
 	void InvalidateViewportWidget();
-
-	/** Subclasses may override the near clipping plane. Set to a negative value to disable the override. */
-	void OverrideNearClipPlane(float InNearPlane);
 
 	/** Constant for how much the camera safe zone rectangle is inset when being displayed in the editor */
 	static float const SafePadding;
@@ -1624,6 +1653,7 @@ public:
 	FName CurrentVirtualShadowMapVisualizationMode;
 
 	FName CurrentRayTracingDebugVisualizationMode;
+	FName CurrentGPUSkinCacheVisualizationMode;
 
 	/** The number of frames since this viewport was last drawn.  Only applies to linked orthographic movement. */
 	int32 FramesSinceLastDraw;

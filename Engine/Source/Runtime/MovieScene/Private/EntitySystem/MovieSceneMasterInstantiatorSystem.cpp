@@ -7,11 +7,17 @@
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneMasterInstantiatorSystem)
+
 
 UMovieSceneMasterInstantiatorSystem::UMovieSceneMasterInstantiatorSystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
 	RelevantComponent = UE::MovieScene::FBuiltInComponentTypes::Get()->Tags.Master;
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		DefineComponentProducer(GetClass(), UE::MovieScene::FBuiltInComponentTypes::Get()->Tags.Master);
+	}
 }
 
 void UMovieSceneMasterInstantiatorSystem::OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)

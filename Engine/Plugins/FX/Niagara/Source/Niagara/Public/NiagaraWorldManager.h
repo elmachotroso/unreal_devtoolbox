@@ -55,7 +55,7 @@ struct TStructOpsTypeTraits<FNiagaraWorldManagerTickFunction> : public TStructOp
 
 using FNiagaraSystemSimulationRef = TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>;
 
-enum class NIAGARA_API ENiagaraScalabilityCullingMode : uint8
+enum class ENiagaraScalabilityCullingMode : uint8
 {
 	/* Scalability culling is enabled as normal. */
 	Enabled,
@@ -65,6 +65,16 @@ enum class NIAGARA_API ENiagaraScalabilityCullingMode : uint8
 	Disabled,
 };
 
+struct FNiagaraCachedViewInfo
+{
+	FMatrix ViewMat;
+	FMatrix ProjectionMat;
+	FMatrix ViewProjMat;
+	FMatrix ViewToWorld;
+	TArray<FPlane, TInlineAllocator<6>> FrutumPlanes;
+
+	void Init(const FWorldCachedViewInfo& WorldViewInfo);
+};
 /**
 * Manager class for any data relating to a particular world.
 */
@@ -140,8 +150,7 @@ public:
 		return static_cast<T&>(**ExistingValue);
 	}
 
-	NIAGARA_API bool CachedPlayerViewLocationsValid() const { return bCachedPlayerViewLocationsValid; }
-	NIAGARA_API TArrayView<const FVector> GetCachedPlayerViewLocations() const { check(bCachedPlayerViewLocationsValid); return MakeArrayView(CachedPlayerViewLocations); }
+	NIAGARA_API TArrayView<const FNiagaraCachedViewInfo> GetCachedViewInfo() const { return MakeArrayView(CachedViewInfo); }
 
 	UNiagaraComponentPool* GetComponentPool() { return ComponentPool; }
 
@@ -155,8 +164,8 @@ public:
 
 	//Various helper functions for scalability culling.
 	
-	void RegisterWithScalabilityManager(UNiagaraComponent* Component);
-	void UnregisterWithScalabilityManager(UNiagaraComponent* Component);
+	void RegisterWithScalabilityManager(UNiagaraComponent* Component, UNiagaraEffectType* EffectType);
+	void UnregisterWithScalabilityManager(UNiagaraComponent* Component, UNiagaraEffectType* EffectType);
 
 	/** Should we cull an instance of this system at the passed location before it's even been spawned? */
 	NIAGARA_API bool ShouldPreCull(UNiagaraSystem* System, UNiagaraComponent* Component);
@@ -193,7 +202,9 @@ public:
 	void SetDebugPlaybackRate(float Rate) { DebugPlaybackRate = FMath::Clamp(Rate, KINDA_SMALL_NUMBER, 10.0f); }
 	float GetDebugPlaybackRate() const { return DebugPlaybackRate; }
 
+#if WITH_NIAGARA_DEBUGGER
 	class FNiagaraDebugHud* GetNiagaraDebugHud() { return NiagaraDebugHud.Get(); }
+#endif
 
 	class FNiagaraDeferredMethodQueue& GetDeferredMethodQueue() { return DeferredMethods; }
 
@@ -235,7 +246,10 @@ private:
 
 	// Callback to handle any pre GC processing needed.
 	static void OnPreGarbageCollectBeginDestroy();
-		
+	
+	// Calculates ViewInfo data for player
+	static bool PrepareCachedViewInfo(const APlayerController* PlayerController, FNiagaraCachedViewInfo& OutViewInfo);
+
 	// Gamethread callback to cleanup references to the given ComputeDispatchInterface before it gets deleted on the renderthread.
 	void OnComputeDispatchInterfaceDestroyed_Internal(class FNiagaraGpuComputeDispatchInterface* InComputeDispatchInterface);
 
@@ -243,7 +257,7 @@ private:
 
 	void DistanceCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, FVector Location, FNiagaraScalabilityState& OutState);
 	void DistanceCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraComponent* Component, FNiagaraScalabilityState& OutState);
-	void VisibilityCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraComponent* Component, FNiagaraScalabilityState& OutState);
+	void ViewBasedCulling(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, FSphere BoundingSphere, float ComponentTimeSinceRendered, bool bIsPrecull, FNiagaraScalabilityState& OutState);
 	void InstanceCountCull(UNiagaraEffectType* EffectType, UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, FNiagaraScalabilityState& OutState);
 	void GlobalBudgetCull(const FNiagaraSystemScalabilitySettings& ScalabilitySettings, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState);
 
@@ -265,7 +279,7 @@ private:
 
 	static TMap<class UWorld*, class FNiagaraWorldManager*> WorldManagers;
 
-	UWorld* World;
+	UWorld* World = nullptr;
 
 	int ActiveNiagaraTickGroup;
 
@@ -279,10 +293,7 @@ private:
 
 	TArray<FNiagaraSystemSimulationRef> SimulationsWithEndOfFrameWait;
 
-	int32 CachedEffectsQuality;
-
-	bool bCachedPlayerViewLocationsValid = false;
-	TArray<FVector, TInlineAllocator<8> > CachedPlayerViewLocations;
+	TArray<FNiagaraCachedViewInfo, TInlineAllocator<8> > CachedViewInfo;
 
 	UNiagaraComponentPool* ComponentPool;
 	bool bPoolIsPrimed = false;
@@ -300,13 +311,17 @@ private:
 	/** True if the app has focus. We prevent some culling if the app doesn't have focus as it can interfere. */
 	bool bAppHasFocus;
 
+	bool bIsTearingDown = false;
+
 	float WorldLoopTime = 0.0f;
 	
 	ENiagaraDebugPlaybackMode RequestedDebugPlaybackMode = ENiagaraDebugPlaybackMode::Play;
 	ENiagaraDebugPlaybackMode DebugPlaybackMode = ENiagaraDebugPlaybackMode::Play;
 	float DebugPlaybackRate = 1.0f;
 
+#if WITH_NIAGARA_DEBUGGER
 	TUniquePtr<class FNiagaraDebugHud> NiagaraDebugHud;
+#endif
 
 	TMap<UNiagaraSystem*, UNiagaraCullProxyComponent*> CullProxyMap;
 

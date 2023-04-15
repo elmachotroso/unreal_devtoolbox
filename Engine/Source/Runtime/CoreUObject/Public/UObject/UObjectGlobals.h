@@ -6,27 +6,72 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "Containers/VersePathFwd.h"
+#include "CoreGlobals.h"
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/PrimaryAssetId.h"
-#include "UObject/LinkerInstancingContext.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogMacros.h"
+#include "Logging/LogVerbosity.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/PackagePath.h"
-#include "Containers/ArrayView.h"
-#include "Containers/StringView.h"
-#include "Templates/Function.h"
-#include "Templates/IsArrayOrRefOfType.h"
 #include "Serialization/ArchiveUObject.h"
+#include "Serialization/MemoryLayout.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Function.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
+#include "Templates/PointerIsConvertibleFromTo.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/PrimaryAssetId.h"
+#include "UObject/Script.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UnrealNames.h"
 
-struct FCustomPropertyListNode;
-struct FObjectInstancingGraph;
+class FArchive;
+class FLinkerInstancingContext;
 class FObjectPreSaveContext;
+class FOutputDevice;
+class FPackagePath;
+class FProperty;
+class ITargetPlatform;
+class UClass;
+class UEnum;
+class UFunction;
+class UObject;
+class UObjectBase;
+class UPackage;
+class UPackageMap;
+class UScriptStruct;
+class UWorld;
+struct FCustomPropertyListNode;
+struct FGuid;
+struct FObjectInstancingGraph;
+struct FObjectPostCDOCompiledContext;
 struct FObjectPtr;
+struct FPrimaryAssetId;
 struct FStaticConstructObjectParameters;
+struct FUObjectSerializeContext;
+struct FWorldContext;
 template <typename T>
 struct TObjectPtr;
-struct FWorldContext;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogUObjectGlobals, Log, All);
 
@@ -234,7 +279,6 @@ COREUOBJECT_API bool SafeLoadError( UObject* Outer, uint32 LoadFlags, const TCHA
 /** Internal function used to update the suffix to be given to the next newly-created unnamed object. */
 COREUOBJECT_API int32 UpdateSuffixForNextNewObject(UObject* Parent, const UClass* Class, TFunctionRef<void(int32&)> IndexMutator);
 
-
 /**
  * Fast version of StaticFindObject that relies on the passed in FName being the object name without any group/package qualifiers.
  * This will only find top level packages or subobjects nested directly within a passed in outer.
@@ -249,11 +293,27 @@ COREUOBJECT_API int32 UpdateSuffixForNextNewObject(UObject* Parent, const UClass
  *
  * @return	Returns a pointer to the found object or null if none could be found
  */
-COREUOBJECT_API UObject* StaticFindObjectFast(UClass* Class, UObject* InOuter, FName InName, bool bExactClass = false, bool bAnyPackage = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+UE_DEPRECATED(5.1, "Support for searching for objects in ANY_PACKAGE has been deprecated. Please provide the actual Outer of an object you want to find.")
+COREUOBJECT_API UObject* StaticFindObjectFast(UClass* Class, UObject* InOuter, FName InName, bool bExactClass, bool bAnyPackage, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Fast version of StaticFindObject that relies on the passed in FName being the object name without any group/package qualifiers.
+ * This will only find top level packages or subobjects nested directly within a passed in outer.
+ *
+ * @param	Class			The to be found object's class
+ * @param	InOuter			Outer object to look inside, if null this will only look for top level packages
+ * @param	InName			Object name to look for relative to InOuter
+ * @param	bExactClass		Whether to require an exact match with the passed in class
+ * @param	ExclusiveFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags  Ignores objects that contain any of the specified internal exclusive flags
+ *
+ * @return	Returns a pointer to the found object or null if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObjectFast(UClass* Class, UObject* InOuter, FName InName, bool bExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
 
 /**
  * Fast and safe version of StaticFindObject that relies on the passed in FName being the object name without any group/package qualifiers.
- * It will not assert on GIsSavingPackage or IsGarbageCollecting(). If called from within package saving code or GC, will return nullptr
+ * It will not assert on GIsSavingPackage or IsGarbageCollectingAndLockingUObjectHashTables(). If called from within package saving code or GC, will return nullptr
  * This will only find top level packages or subobjects nested directly within a passed in outer.
  *
  * @param	Class			The to be found object's class
@@ -266,14 +326,31 @@ COREUOBJECT_API UObject* StaticFindObjectFast(UClass* Class, UObject* InOuter, F
  *
  * @return	Returns a pointer to the found object or null if none could be found
  */
-COREUOBJECT_API UObject* StaticFindObjectFastSafe(UClass* Class, UObject* InOuter, FName InName, bool bExactClass = false, bool bAnyPackage = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+UE_DEPRECATED(5.1, "Support for searching for objects in ANY_PACKAGE has been deprecated. Please provide the actual Outer of an object you want to find.")
+COREUOBJECT_API UObject* StaticFindObjectFastSafe(UClass* Class, UObject* InOuter, FName InName, bool bExactClass, bool bAnyPackage, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
 
+
+/**
+ * Fast and safe version of StaticFindObject that relies on the passed in FName being the object name without any group/package qualifiers.
+ * It will not assert on GIsSavingPackage or IsGarbageCollectingAndLockingUObjectHashTables(). If called from within package saving code or GC, will return nullptr
+ * This will only find top level packages or subobjects nested directly within a passed in outer.
+ *
+ * @param	Class			The to be found object's class
+ * @param	InOuter			Outer object to look inside, if null this will only look for top level packages
+ * @param	InName			Object name to look for relative to InOuter
+ * @param	bExactClass		Whether to require an exact match with the passed in class
+ * @param	ExclusiveFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags  Ignores objects that contain any of the specified internal exclusive flags
+ *
+ * @return	Returns a pointer to the found object or null if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObjectFastSafe(UClass* Class, UObject* InOuter, FName InName, bool bExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
 
 /**
  * Tries to find an object in memory. This will handle fully qualified paths of the form /path/packagename.object:subobject and resolve references for you.
  *
  * @param	Class			The to be found object's class
- * @param	InOuter			Outer object to look inside. If this is ANY_PACKAGE it will search all in memory packages, if this is null then InName should start with a package name
+ * @param	InOuter			Outer object to look inside. If this is null then InName should start with a package name
  * @param	InName			The object path to search for an object, relative to InOuter
  * @param	ExactClass		Whether to require an exact match with the passed in class
  *
@@ -281,12 +358,144 @@ COREUOBJECT_API UObject* StaticFindObjectFastSafe(UClass* Class, UObject* InOute
  */
 COREUOBJECT_API UObject* StaticFindObject( UClass* Class, UObject* InOuter, const TCHAR* Name, bool ExactClass=false );
 
+/**
+ * Tries to find an object in memory. This version uses FTopLevelAssetPath to find the object.
+ *
+ * @param	Class			The to be found object's class
+ * @param	ObjectPath		FName pair representing the outer package object and the inner top level object (asset)
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ *
+ * @return	Returns a pointer to the found object or nullptr if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObject(UClass* Class, FTopLevelAssetPath ObjectPath, bool ExactClass /*= false*/);
+
 /** Version of StaticFindObject() that will assert if the object is not found */
 COREUOBJECT_API UObject* StaticFindObjectChecked( UClass* Class, UObject* InOuter, const TCHAR* Name, bool ExactClass=false );
 
-/** Internal version of StaticFindObject that will not assert on GIsSavingPackage or IsGarbageCollecting() */
+/** Internal version of StaticFindObject that will not assert on GIsSavingPackage or IsGarbageCollectingAndLockingUObjectHashTables() */
 COREUOBJECT_API UObject* StaticFindObjectSafe( UClass* Class, UObject* InOuter, const TCHAR* Name, bool ExactClass=false );
 
+#if UE_USE_VERSE_PATHS
+/**
+ * Tries to find an object in memory, using a Verse path.
+ *
+ * @param	VersePath		The path to the object to find.
+ * @param	ObjectPath		FName pair representing the outer package object and the inner top level object (asset)
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ *
+ * @return	Returns a pointer to the found object or nullptr if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObject(UClass* Class, const UE::Core::FVersePath& VersePath);
+#endif
+
+/**
+ * Tries to find an object in memory. This version uses FTopLevelAssetPath to find the object.
+ * Version of StaticFindObject that will not assert on GIsSavingPackage or IsGarbageCollectingAndLockingUObjectHashTables()
+ *
+ * @param	Class			The to be found object's class
+ * @param	ObjectPath		FName pair representing the outer package object and the inner top level object (asset)
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ *
+ * @return	Returns a pointer to the found object or nullptr if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObjectSafe(UClass* Class, FTopLevelAssetPath ObjectPath, bool ExactClass /*= false*/);
+
+/**
+ * Fast version of StaticFindAllObjects that relies on the passed in FName being the object name without any group/package qualifiers.
+ * This will find all objects matching the specified name and class.
+ *
+ * @param	OutFoundObjects	Array of objects matching the search parameters
+ * @param	ObjectClass		The to be found object's class
+ * @param	ObjectName		Object name to look for relative to InOuter
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ * @param	ExclusiveFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags  Ignores objects that contain any of the specified internal exclusive flags
+ *
+ * @return	Returns true if any objects were found, false otherwise
+ */
+COREUOBJECT_API bool StaticFindAllObjectsFast(TArray<UObject*>& OutFoundObjects, UClass* ObjectClass, FName ObjectName, bool ExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Fast version of StaticFindAllObjects that relies on the passed in FName being the object name without any group/package qualifiers.
+ * This will find all objects matching the specified name and class.
+ * This version of StaticFindAllObjectsFast will not assert on GIsSavingPackage or IsGarbageCollecting()
+ * 
+ * @param	OutFoundObjects	Array of objects matching the search parameters
+ * @param	ObjectClass		The to be found object's class
+ * @param	ObjectName		Object name to look for relative to InOuter
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ * @param	ExclusiveFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags  Ignores objects that contain any of the specified internal exclusive flags
+ *
+ * @return	Returns true if any objects were found, false otherwise
+ */
+COREUOBJECT_API bool StaticFindAllObjectsFastSafe(TArray<UObject*>& OutFoundObjects, UClass* ObjectClass, FName ObjectName, bool ExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Tries to find all objects matching the search paramters in memory. This will handle fully qualified paths of the form /path/packagename.object:subobject and resolve references for you.
+ *
+ * @param	OutFoundObjects	Array of objects matching the search parameters
+ * @param	Class			The to be found object's class
+ * @param	Name			The object path to search for an object, relative to InOuter
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ *
+ * @return	Returns true if any objects were found, false otherwise
+ */
+COREUOBJECT_API bool StaticFindAllObjects(TArray<UObject*>& OutFoundObjects, UClass* Class, const TCHAR* Name, bool ExactClass = false);
+
+/**
+ * Tries to find all objects matching the search paramters in memory. This will handle fully qualified paths of the form /path/packagename.object:subobject and resolve references for you.
+ * This version of StaticFindAllObjects will not assert on GIsSavingPackage or IsGarbageCollecting()
+ * 
+ * @param	OutFoundObjects	Array of objects matching the search parameters
+ * @param	Class			The to be found object's class
+ * @param	Name			The object path to search for an object, relative to InOuter
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ *
+ * @return	Returns true if any objects were found, false otherwise
+ */
+COREUOBJECT_API bool StaticFindAllObjectsSafe(TArray<UObject*>& OutFoundObjects, UClass* Class, const TCHAR* Name, bool ExactClass = false);
+
+
+enum class EFindFirstObjectOptions
+{
+	None = 0, // Unused / defaults to Quiet
+	ExactClass = 1 << 1, // Whether to require an exact match with the passed in class
+	NativeFirst = 1 << 2, // If multiple results are found, prioritize native classes or native class instances
+	EnsureIfAmbiguous = 1 << 3 // Ensure if multiple results are found
+};
+ENUM_CLASS_FLAGS(EFindFirstObjectOptions);
+
+/**
+ * Tries to find the first object matching the search paramters in memory. This will handle fully qualified paths of the form /path/packagename.object:subobject and resolve references for you.
+ * If multiple objects share the same name the returned object is random and not based on its time of creation unless otherwise specified in Options (see EFindFirstObjectOptions::NativeFirst)
+ * This function is slow and should not be used in performance critical situations.
+ * 
+ * @param	Class						The to be found object's class
+ * @param	Name						The object path to search for an object, relative to InOuter
+ * @param	Options						Search options
+ * @param	AmbiguousMessageVerbosity	Verbosity with which to print a message if the search result is ambiguous
+ * @param	InCurrentOperation			Current operation to be logged with ambiguous search warning
+ *
+ * @return	Returns a pointer to an object if found, null otherwise
+ */
+COREUOBJECT_API UObject* StaticFindFirstObject(UClass* Class, const TCHAR* Name, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* InCurrentOperation = nullptr);
+
+/**
+ * Tries to find the first objects matching the search paramters in memory. This will handle fully qualified paths of the form /path/packagename.object:subobject and resolve references for you.
+ * This version of StaticFindFirstObject will not assert on GIsSavingPackage or IsGarbageCollecting()
+ * If multiple objects share the same name the returned object is random and not based on its time of creation unless otherwise specified in Options (see EFindFirstObjectOptions::NativeFirst)
+ * This function is slow and should not be used in performance critical situations.
+ * 
+ * @param	Class						The to be found object's class
+ * @param	Name						The object path to search for an object, relative to InOuter
+ * @param	Options						Search options
+ * @param	AmbiguousMessageVerbosity	Verbosity with which to print a message if the search result is ambiguous
+ * @param	InCurrentOperation			Current operation to be logged with ambiguous search warning
+ *
+ * @return	Returns a pointer to an object if found, null otherwise
+ */
+COREUOBJECT_API UObject* StaticFindFirstObjectSafe(UClass* Class, const TCHAR* Name, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* InCurrentOperation = nullptr);
 
 /**
  * Parse a reference to an object from a text representation
@@ -595,6 +804,14 @@ COREUOBJECT_API void GatherUnreachableObjects(bool bForceSingleThreaded);
  */
 COREUOBJECT_API void IncrementalPurgeGarbage( bool bUseTimeLimit, double TimeLimit = 0.002 );
 
+
+enum class EUniqueObjectNameOptions
+{
+	None = 0,
+	GloballyUnique = 1 << 1, // Whether to make the object name unique globally (across all objects that currently exist)
+};
+ENUM_CLASS_FLAGS(EUniqueObjectNameOptions);
+
 /**
  * Create a unique name by combining a base name and an arbitrary number string.
  * The object name returned is guaranteed not to exist.
@@ -602,11 +819,12 @@ COREUOBJECT_API void IncrementalPurgeGarbage( bool bUseTimeLimit, double TimeLim
  * @param	Parent		the outer for the object that needs to be named
  * @param	Class		the class for the object
  * @param	BaseName	optional base name to use when generating the unique object name; if not specified, the class's name is used
- *
+ * @param	Options		Additional options. See EUniqueObjectNameOptions.
+ * 
  * @return	name is the form BaseName_##, where ## is the number of objects of this
  *			type that have been created since the last time the class was garbage collected.
  */
-COREUOBJECT_API FName MakeUniqueObjectName( UObject* Outer, const UClass* Class, FName BaseName=NAME_None );
+COREUOBJECT_API FName MakeUniqueObjectName( UObject* Outer, const UClass* Class, FName BaseName = NAME_None, EUniqueObjectNameOptions Options = EUniqueObjectNameOptions::None);
 
 /**
  * Given a display label string, generates an FName slug that is a valid FName for that label.
@@ -1500,9 +1718,22 @@ inline bool ParseObject( const TCHAR* Stream, const TCHAR* Match, T*& Obj, UObje
  * @see StaticFindObjectFast()
  */
 template< class T > 
-inline T* FindObjectFast( UObject* Outer, FName Name, bool ExactClass=false, bool AnyPackage=false, EObjectFlags ExclusiveFlags=RF_NoFlags )
+UE_DEPRECATED(5.1, "Support for searching for objects in ANY_PACKAGE has been deprecated. Please provide the actual Outer of an object you want to find.")
+inline T* FindObjectFast( UObject* Outer, FName Name, bool ExactClass, bool AnyPackage, EObjectFlags ExclusiveFlags=RF_NoFlags )
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return (T*)StaticFindObjectFast( T::StaticClass(), Outer, Name, ExactClass, AnyPackage, ExclusiveFlags );
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+/**
+ * Find an optional object, relies on the name being unqualified
+ * @see StaticFindObjectFast()
+ */
+template< class T >
+inline T* FindObjectFast(UObject* Outer, FName Name, bool ExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags)
+{
+	return (T*)StaticFindObjectFast(T::StaticClass(), Outer, Name, ExactClass, ExclusiveFlags);
 }
 
 /**
@@ -1516,6 +1747,16 @@ inline T* FindObject( UObject* Outer, const TCHAR* Name, bool ExactClass=false )
 }
 
 /**
+ * Find an optional object.
+ * @see StaticFindObject()
+ */
+template< class T >
+inline T* FindObject(FTopLevelAssetPath InPath, bool ExactClass = false)
+{
+	return (T*)StaticFindObject(T::StaticClass(), InPath, ExactClass);
+}
+
+/**
  * Find an optional object, no failure allowed
  * @see StaticFindObjectChecked()
  */
@@ -1526,7 +1767,7 @@ inline T* FindObjectChecked( UObject* Outer, const TCHAR* Name, bool ExactClass=
 }
 
 /**
- * Find an object without asserting on GIsSavingPackage or IsGarbageCollecting()
+ * Find an object without asserting on GIsSavingPackage or IsGarbageCollectingAndLockingUObjectHashTables()
  * @see StaticFindObjectSafe()
  */
 template< class T > 
@@ -1535,14 +1776,44 @@ inline T* FindObjectSafe( UObject* Outer, const TCHAR* Name, bool ExactClass=fal
 	return (T*)StaticFindObjectSafe( T::StaticClass(), Outer, Name, ExactClass );
 }
 
+/**
+ * Find an optional object.
+ * @see StaticFindObject()
+ */
+template< class T >
+inline T* FindObjectSafe(FTopLevelAssetPath InPath, bool ExactClass = false)
+{
+	return (T*)StaticFindObjectSafe(T::StaticClass(), InPath, ExactClass);
+}
+
+/**
+ * Find an optional object with proper handling of potential ambiguity.
+ * @see StaticFindFirstObject()
+ */
+template< class T >
+inline T* FindFirstObject(const TCHAR* Name, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* CurrentOperation = nullptr)
+{
+	return (T*)StaticFindFirstObject(T::StaticClass(), Name, Options, AmbiguousMessageVerbosity, CurrentOperation);
+}
+
+/**
+ * Find an optional object with proper handling of potential ambiguity without asserting on GIsSavingPackage or IsGarbageCollecting()
+ * @see StaticFindFirstObject()
+ */
+template< class T >
+inline T* FindFirstObjectSafe(const TCHAR* Name, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* CurrentOperation = nullptr)
+{
+	return (T*)StaticFindFirstObjectSafe(T::StaticClass(), Name, Options, AmbiguousMessageVerbosity, CurrentOperation);
+}
+
 /** 
  * Load an object. 
  * @see StaticLoadObject()
  */
 template< class T > 
-inline T* LoadObject( UObject* Outer, const TCHAR* Name, const TCHAR* Filename=nullptr, uint32 LoadFlags=LOAD_None, UPackageMap* Sandbox=nullptr )
+inline T* LoadObject( UObject* Outer, const TCHAR* Name, const TCHAR* Filename=nullptr, uint32 LoadFlags=LOAD_None, UPackageMap* Sandbox=nullptr, const FLinkerInstancingContext* InstancingContext=nullptr )
 {
-	return (T*)StaticLoadObject( T::StaticClass(), Outer, Name, Filename, LoadFlags, Sandbox );
+	return (T*)StaticLoadObject( T::StaticClass(), Outer, Name, Filename, LoadFlags, Sandbox, true, InstancingContext );
 }
 
 /**
@@ -2362,9 +2633,8 @@ protected:
 
 /** Defined in PackageReload.h */
 enum class EPackageReloadPhase : uint8;
-class FPackageReloadedEvent;
-
 class FGarbageCollectionTracer;
+class FPackageReloadedEvent;
 
 enum class EHotReloadedClassFlags
 {
@@ -2381,6 +2651,13 @@ enum class EReloadCompleteReason
 	None,
 	HotReloadAutomatic,
 	HotReloadManual,
+};
+
+struct FEndLoadPackageContext
+{
+	TConstArrayView<UPackage*> LoadedPackages;
+	int32 RecursiveDepth;
+	bool bSynchronous;
 };
 
 /**
@@ -2418,10 +2695,30 @@ struct COREUOBJECT_API FCoreUObjectDelegates
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnObjectTransacted, UObject*, const class FTransactionObjectEvent&);
 	static FOnObjectTransacted OnObjectTransacted;
 
-	/** Called when UObjects have been replaced to allow others a chance to fix their references */
+	/**
+	 * Called when UObjects have been replaced to allow others a chance to fix their references
+	 * Note that this is called after properties are copied from old to new instances but before references to replacement
+	 * objects are fixed up in other objects (i.e. other objects can still be pointing to old data)
+	 */
 	using FReplacementObjectMap = TMap<UObject*, UObject*>; // Alias for use in the macro
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectsReplaced, const FReplacementObjectMap&);
 	static FOnObjectsReplaced OnObjectsReplaced;
+
+	/**
+	 * Called when UObjects have been re-instanced to allow others a chance to fix their references
+	 * Note that this is called after references to replacement objects are fixed up in other objects (i.e. all object
+	 * references should be self-consistent).
+	 */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectsReinstanced, const FReplacementObjectMap&);
+	static FOnObjectsReinstanced OnObjectsReinstanced;
+
+	/**
+	 * Called after the Blueprint compiler has finished generating the Class Default Object (CDO) for a class. This can only happen in the editor.
+	 * This is called when the CDO and its associated class structure have been fully generated and populated, and allows the assignment of cached/derived data,
+	 * eg) caching the name/count of properties of a certain type, or inspecting the properties on the class and using their meta-data and CDO default values to derive game data.
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnObjectPostCDOCompiled, UObject*, const FObjectPostCDOCompiledContext&);
+	static FOnObjectPostCDOCompiled OnObjectPostCDOCompiled;
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnObjectSaved, UObject*);
 	UE_DEPRECATED(5.0, "Use OnObjectPreSave instead.")
@@ -2435,14 +2732,22 @@ struct COREUOBJECT_API FCoreUObjectDelegates
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAssetLoaded, UObject*);
 	static FOnAssetLoaded OnAssetLoaded;
 
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam(FOnObjectConstructed, UObject*);
+	static FOnObjectConstructed OnObjectConstructed;
+
 	/** Callback when packages end loading in LoadPackage or AsyncLoadPackage. All packages loaded recursively due to imports are included in the single call of the explicitly-loaded package. */
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEndLoadPackage, TConstArrayView<UPackage*>);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEndLoadPackage, const FEndLoadPackageContext&);
 	static FOnEndLoadPackage OnEndLoadPackage;
 
 	/** Delegate used by SavePackage() to create the package backup */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FAutoPackageBackupDelegate, const UPackage&);
+	UE_DEPRECATED(5.1, "Backups are no longer used in Unreal Package Saves")
 	static FAutoPackageBackupDelegate AutoPackageBackupDelegate;
 #endif // WITH_EDITOR
+
+	/** Called when new sparse class data has been created (and the base data initialized) for the given class */
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPostInitSparseClassData, UClass*, UScriptStruct*, void*);
+	static FOnPostInitSparseClassData OnPostInitSparseClassData;
 
 	/** Called by ReloadPackage during package reloading. It will be called several times for different phases of fix-up to allow custom code to handle updating objects as needed */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPackageReloaded, EPackageReloadPhase, FPackageReloadedEvent*);
@@ -2516,6 +2821,12 @@ struct COREUOBJECT_API FCoreUObjectDelegates
 
 	/** Called after garbage collection */
 	static FSimpleMulticastDelegate& GetPostGarbageCollect();
+
+#if !UE_BUILD_SHIPPING
+	/** Called when garbage collection detects references to objects that are marked for explicit destruction by MarkAsGarbage */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnReportGarbageReferencers, TConstArrayView<struct FGarbageReferenceInfo>);
+	static FOnReportGarbageReferencers& GetGarbageCollectReportGarbageReferencers();
+#endif
 
 	/** Called before ConditionalBeginDestroy phase of garbage collection */
 	static FSimpleMulticastDelegate PreGarbageCollectConditionalBeginDestroy;
@@ -2610,14 +2921,19 @@ struct FAssetMsg
 	/** Formats a path for the UE_ASSET_LOG macro */
 	static COREUOBJECT_API FString FormatPathForAssetLog(const TCHAR* Path);
 
+	/** Formats a path for the UE_ASSET_LOG macro */
+	static COREUOBJECT_API FString FormatPathForAssetLog(const FPackagePath& Path);
+
 	/** If possible, finds a path to the underlying asset for the provided object and formats it for the UE_ASSET_LOG macro */
 	static COREUOBJECT_API FString FormatPathForAssetLog(const UObject* Object);
 
 	static COREUOBJECT_API FString GetAssetLogString(const TCHAR* Path, const FString& Message);
+	static COREUOBJECT_API FString GetAssetLogString(const FPackagePath& Path, const FString& Message);
 	static COREUOBJECT_API FString GetAssetLogString(const UObject* Object, const FString& Message);
 };
 
-#define ASSET_LOG_FORMAT_STRING TEXT("[AssetLog] %s: ")
+#define ASSET_LOG_FORMAT_STRING_ANSI "[AssetLog] %s: "
+#define ASSET_LOG_FORMAT_STRING TEXT(ASSET_LOG_FORMAT_STRING_ANSI)
 
 #if NO_LOGGING
 	#define UE_ASSET_LOG(...)
@@ -2631,18 +2947,18 @@ struct FAssetMsg
 	 */
 	#define UE_ASSET_LOG(CategoryName, Verbosity, Asset, Format, ...) \
 	{ \
-		static_assert(TIsArrayOrRefOfType<decltype(Format), TCHAR>::Value, "Formatting string must be a TCHAR array."); \
+		static_assert(TIsArrayOrRefOfTypeByPredicate<decltype(Format), TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array."); \
 		static_assert((ELogVerbosity::Verbosity & ELogVerbosity::VerbosityMask) < ELogVerbosity::NumVerbosity && ELogVerbosity::Verbosity > 0, "Verbosity must be constant and in range."); \
 		CA_CONSTANT_IF((ELogVerbosity::Verbosity & ELogVerbosity::VerbosityMask) <= ELogVerbosity::COMPILED_IN_MINIMUM_VERBOSITY && (ELogVerbosity::Warning & ELogVerbosity::VerbosityMask) <= FLogCategory##CategoryName::CompileTimeVerbosity) \
 		{ \
 			UE_LOG_EXPAND_IS_FATAL(Verbosity, PREPROCESSOR_NOTHING, if (!CategoryName.IsSuppressed(ELogVerbosity::Verbosity))) \
 			{ \
 				FString FormatPath = FAssetMsg::FormatPathForAssetLog(Asset);\
-				FMsg::Logf_Internal(__FILE__, __LINE__, CategoryName.GetCategoryName(), ELogVerbosity::Verbosity, ASSET_LOG_FORMAT_STRING Format, *FormatPath, ##__VA_ARGS__); \
+				FMsg::Logf_Internal(__FILE__, __LINE__, CategoryName.GetCategoryName(), ELogVerbosity::Verbosity, TEXT(ASSET_LOG_FORMAT_STRING_ANSI "%s"), *FormatPath, *FString::Printf(Format, ##__VA_ARGS__)); \
 				UE_LOG_EXPAND_IS_FATAL(Verbosity, \
 					{ \
-						_DebugBreakAndPromptForRemote(); \
-						FDebug::AssertFailed("", __FILE__, __LINE__, TEXT("%s: ") Format, *FormatPath, ##__VA_ARGS__); \
+						UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE(); \
+						FDebug::AssertFailed("", __FILE__, __LINE__, TEXT("%s: %s"), *FormatPath, *FString::Printf(Format, ##__VA_ARGS__)); \
 						CA_ASSUME(false); \
 					}, \
 					PREPROCESSOR_NOTHING \
@@ -2661,14 +2977,18 @@ struct FAssetMsg
  * or
  * - if bCheckMarks is true, if it has the EditorOnly object mark
  * or 
- * - if bCheckRecursive is true, if it's class, outer, or archetypes are editor only
+ * - if bCheckRecursive is true, if its class, super struct, outer, or archetypes are editor only
  */
 COREUOBJECT_API bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive = true, bool bCheckMarks = true);
 #endif //WITH_EDITOR
 
+class FFieldClass;
 struct FClassFunctionLinkInfo;
 struct FCppClassTypeInfoStatic;
-class FFieldClass;
+
+/** Property setter and getter wrapper function pointer */
+typedef void (*SetterFuncPtr)(void* InContainer, const void* InValue);
+typedef void (*GetterFuncPtr)(const void* InContainer, void* OutValue);
 
 /// @cond DOXYGEN_IGNORE
 namespace UECodeGen_Private
@@ -2747,6 +3067,20 @@ namespace UECodeGen_Private
 		EPropertyGenFlags Flags;
 		EObjectFlags   ObjectFlags;
 		int32          ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
+	};
+
+	struct FPropertyParamsBaseWithoutOffset // : FPropertyParamsBase
+	{
+		const char* NameUTF8;
+		const char* RepNotifyFuncUTF8;
+		EPropertyFlags    PropertyFlags;
+		EPropertyGenFlags Flags;
+		EObjectFlags   ObjectFlags;
+		int32          ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 	};
 
 	struct FPropertyParamsBaseWithOffset // : FPropertyParamsBase
@@ -2757,6 +3091,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags Flags;
 		EObjectFlags   ObjectFlags;
 		int32          ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32          Offset;
 	};
 
@@ -2768,6 +3104,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 #if WITH_METADATA
 		const FMetaDataPairParam*           MetaDataArray;
@@ -2783,6 +3121,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UEnum*         (*EnumFunc)();
 #if WITH_METADATA
@@ -2791,7 +3131,7 @@ namespace UECodeGen_Private
 #endif
 	};
 
-	struct FBoolPropertyParams // : FPropertyParamsBase
+	struct FBoolPropertyParams // : FPropertyParamsBaseWithoutOffset
 	{
 		const char*      NameUTF8;
 		const char*         RepNotifyFuncUTF8;
@@ -2799,6 +3139,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		uint32           ElementSize;
 		SIZE_T           SizeOfOuter;
 		void           (*SetBitFunc)(void* Obj);
@@ -2808,7 +3150,42 @@ namespace UECodeGen_Private
 #endif
 	};
 
-	struct FObjectPropertyParams // : FPropertyParamsBaseWithOffset
+	struct FObjectPropertyParamsWithoutClass // : FPropertyParamsBaseWithOffset
+	{
+		const char* NameUTF8;
+		const char* RepNotifyFuncUTF8;
+		EPropertyFlags      PropertyFlags;
+		EPropertyGenFlags   Flags;
+		EObjectFlags     ObjectFlags;
+		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
+		int32            Offset;
+#if WITH_METADATA
+		const FMetaDataPairParam* MetaDataArray;
+		int32                               NumMetaData;
+#endif
+	};
+
+	struct FObjectPropertyParamsWithClass // : FPropertyParamsBaseWithOffset
+	{
+		const char* NameUTF8;
+		const char* RepNotifyFuncUTF8;
+		EPropertyFlags      PropertyFlags;
+		EPropertyGenFlags   Flags;
+		EObjectFlags     ObjectFlags;
+		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
+		int32            Offset;
+		UClass*        (*ClassFunc)();
+#if WITH_METADATA
+		const FMetaDataPairParam* MetaDataArray;
+		int32                               NumMetaData;
+#endif
+	};
+
+	struct FObjectPropertyParams // : FObjectPropertyParamsWithClass
 	{
 		const char*      NameUTF8;
 		const char*         RepNotifyFuncUTF8;
@@ -2816,6 +3193,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UClass*        (*ClassFunc)();
 #if WITH_METADATA
@@ -2824,7 +3203,7 @@ namespace UECodeGen_Private
 #endif
 	};
 
-	struct FClassPropertyParams // : FPropertyParamsBaseWithOffset
+	struct FClassPropertyParams // : FObjectPropertyParams
 	{
 		const char*      NameUTF8;
 		const char*         RepNotifyFuncUTF8;
@@ -2832,16 +3211,18 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
-		UClass*        (*MetaClassFunc)();
 		UClass*        (*ClassFunc)();
+		UClass*        (*MetaClassFunc)();		
 #if WITH_METADATA
 		const FMetaDataPairParam*           MetaDataArray;
 		int32                               NumMetaData;
 #endif
 	};
 
-	struct FSoftClassPropertyParams // : FPropertyParamsBaseWithOffset
+	struct FSoftClassPropertyParams // : FObjectPropertyParamsWithoutClass
 	{
 		const char*      NameUTF8;
 		const char*         RepNotifyFuncUTF8;
@@ -2849,6 +3230,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UClass*        (*MetaClassFunc)();
 #if WITH_METADATA
@@ -2865,6 +3248,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UClass*        (*InterfaceClassFunc)();
 #if WITH_METADATA
@@ -2881,6 +3266,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UScriptStruct* (*ScriptStructFunc)();
 #if WITH_METADATA
@@ -2897,6 +3284,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UFunction*     (*SignatureFunctionFunc)();
 #if WITH_METADATA
@@ -2913,6 +3302,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UFunction*     (*SignatureFunctionFunc)();
 #if WITH_METADATA
@@ -2929,6 +3320,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags  Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		UEnum*         (*EnumFunc)();
 #if WITH_METADATA
@@ -2945,6 +3338,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags  Flags;
 		EObjectFlags     ObjectFlags;
 		int32            ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32            Offset;
 		FFieldClass*     (*PropertyClassFunc)();
 #if WITH_METADATA
@@ -2961,6 +3356,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags   Flags;
 		EObjectFlags        ObjectFlags;
 		int32               ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32               Offset;
 		EArrayPropertyFlags ArrayFlags;
 #if WITH_METADATA
@@ -2977,6 +3374,8 @@ namespace UECodeGen_Private
 		EPropertyGenFlags Flags;
 		EObjectFlags      ObjectFlags;
 		int32             ArrayDim;
+		SetterFuncPtr  SetterFunc;
+		GetterFuncPtr  GetterFunc;
 		int32             Offset;
 		EMapPropertyFlags MapFlags;
 #if WITH_METADATA

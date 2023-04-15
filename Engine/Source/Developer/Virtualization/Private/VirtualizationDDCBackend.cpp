@@ -17,11 +17,11 @@ static UE::DerivedData::FValueId ToDerivedDataValueId(const FIoHash& Id)
 	return UE::DerivedData::FValueId::FromHash(Id);
 }
 
-FDDCBackend::FDDCBackend(FStringView ConfigName, FStringView InDebugName)
-: IVirtualizationBackend(ConfigName, InDebugName, EOperations::Both)
-, BucketName(TEXT("BulkData"))
-, TransferPolicy(UE::DerivedData::ECachePolicy::None)
-, QueryPolicy(UE::DerivedData::ECachePolicy::None)
+FDDCBackend::FDDCBackend(FStringView ProjectName, FStringView ConfigName, FStringView InDebugName)
+	: IVirtualizationBackend(ConfigName, InDebugName, EOperations::Push | EOperations::Pull)
+	, BucketName(TEXT("BulkData"))
+	, TransferPolicy(UE::DerivedData::ECachePolicy::None)
+	, QueryPolicy(UE::DerivedData::ECachePolicy::None)
 {
 	
 }
@@ -29,27 +29,26 @@ FDDCBackend::FDDCBackend(FStringView ConfigName, FStringView InDebugName)
 bool FDDCBackend::Initialize(const FString& ConfigEntry)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Initialize::Initialize);
-
-	if (!FParse::Value(*ConfigEntry, TEXT("Bucket="), BucketName))
+	
+	FString BucketNameIniFile;
+	if(FParse::Value(*ConfigEntry, TEXT("Bucket="), BucketNameIniFile))
 	{
-		UE_LOG(LogVirtualization, Fatal, TEXT("[%s] 'Bucket=' not found in the config file"), *GetDebugName());
+		BucketName = BucketNameIniFile;
 	}
 
 	bool bAllowLocal = true;
-	if (FParse::Bool(*ConfigEntry, TEXT("LocalStorage="), bAllowLocal))
-	{
-		UE_LOG(LogVirtualization, Log, TEXT("[%s] Use of local storage set to '%s"), *GetDebugName(), bAllowLocal ? TEXT("true") : TEXT("false"));
-	}
-
+	FParse::Bool(*ConfigEntry, TEXT("LocalStorage="), bAllowLocal);
+	
 	bool bAllowRemote = true;
-	if (FParse::Bool(*ConfigEntry, TEXT("RemoteStorage="), bAllowRemote))
-	{
-		UE_LOG(LogVirtualization, Log, TEXT("[%s] Use of remote storage set to '%s"), *GetDebugName(), bAllowRemote ? TEXT("true") : TEXT("false"));
-	}
+	FParse::Bool(*ConfigEntry, TEXT("RemoteStorage="), bAllowRemote);
+
+	UE_LOG(LogVirtualization, Log, TEXT("[%s] Bucket set to '%s"), *GetDebugName(), *BucketName);
+	UE_LOG(LogVirtualization, Log, TEXT("[%s] Use of local storage set to '%s"), *GetDebugName(), bAllowLocal ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogVirtualization, Log, TEXT("[%s] Use of remote storage set to '%s"), *GetDebugName(), bAllowRemote ? TEXT("true") : TEXT("false"));
 
 	if (!bAllowLocal && !bAllowRemote)
 	{
-		UE_LOG(LogVirtualization, Fatal, TEXT("[%s] LocalStorage and RemoteStorage cannot both be disabled"), *GetDebugName());
+		UE_LOG(LogVirtualization, Error, TEXT("[%s] LocalStorage and RemoteStorage cannot both be disabled"), *GetDebugName());
 		return false;
 	}
 
@@ -70,81 +69,100 @@ bool FDDCBackend::Initialize(const FString& ConfigEntry)
 	return true;	
 }
 
-EPushResult FDDCBackend::PushData(const FIoHash& Id, const FCompressedBuffer& Payload, const FString& PackageContext)
+IVirtualizationBackend::EConnectionStatus FDDCBackend::OnConnect()
+{
+	return IVirtualizationBackend::EConnectionStatus::Connected;
+}
+
+bool FDDCBackend::PushData(TArrayView<FPushRequest> Requests)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDDCBackend::PushData);
 
-	if (DoesPayloadExist(Id))
-	{
-		UE_LOG(LogVirtualization, Verbose, TEXT("[%s] Already has a copy of the payload '%s'."), *GetDebugName(), *LexToString(Id));
-		return EPushResult::PayloadAlreadyExisted;
-	}
-
 	UE::DerivedData::ICache& Cache = UE::DerivedData::GetCache();
-	
-	UE::DerivedData::FCacheKey Key;
-	Key.Bucket = Bucket;
-	Key.Hash = Id;
 
-	UE::DerivedData::FValue DerivedDataValue(Payload);
-	check(DerivedDataValue.GetRawHash() == Id);
+	UE::DerivedData::FRequestOwner Owner(UE::DerivedData::EPriority::Normal);
 
-	UE::DerivedData::FCacheRecordBuilder RecordBuilder(Key);
-	RecordBuilder.AddValue(ToDerivedDataValueId(Id), DerivedDataValue);
+	bool bWasSuccess = true;
 
-	UE::DerivedData::FRequestOwner Owner(UE::DerivedData::EPriority::Blocking);
-
-	UE::DerivedData::FCachePutResponse Result;
-	auto Callback = [&Result](UE::DerivedData::FCachePutResponse&& Response)
+	// TODO: We tend not to memory bloat too much on large batches as the requests complete quite quickly
+	// however we might want to consider adding better control on how much total memory we can dedicate to
+	// loading payloads before we wait for requests to complete?
+	for (FPushRequest& Request : Requests)
 	{
-		Result = Response;
-	};
+		if (DoesPayloadExist(Request.GetIdentifier()))
+		{
+			Request.SetResult(FPushResult::GetAsAlreadyExists());
+		}
+		else
+		{
+			UE::DerivedData::FRequestBarrier Barrier(Owner);
 
-	// TODO: Improve the name when we start passing more context to this function
-	Cache.Put({{{TEXT("Mirage")}, RecordBuilder.Build(), TransferPolicy}}, Owner, MoveTemp(Callback));
+			UE::DerivedData::FCacheKey Key;
+			Key.Bucket = Bucket;
+			Key.Hash = Request.GetIdentifier();
+
+			UE::DerivedData::FValue DerivedDataValue(Request.GetPayload());
+			check(DerivedDataValue.GetRawHash() == Request.GetIdentifier());
+
+			UE::DerivedData::FCacheRecordBuilder RecordBuilder(Key);
+			RecordBuilder.AddValue(ToDerivedDataValueId(Request.GetIdentifier()), DerivedDataValue);
+
+			UE::DerivedData::FCachePutResponse Result;
+			auto Callback = [&Request, &bWasSuccess](UE::DerivedData::FCachePutResponse&& Response)
+			{
+				if (Response.Status == UE::DerivedData::EStatus::Ok)
+				{
+					Request.SetResult(FPushResult::GetAsPushed());
+				}
+				else
+				{
+					Request.SetResult(FPushResult::GetAsError());
+					bWasSuccess = false;
+				}
+			};
+
+			// TODO: Improve the name when we start passing more context to this function
+			Cache.Put({ {{TEXT("Mirage")}, RecordBuilder.Build(), TransferPolicy} }, Owner, MoveTemp(Callback));
+		}
+	}
 
 	Owner.Wait();
 
-	if (Result.Status == UE::DerivedData::EStatus::Ok)
-	{
-		return EPushResult::Success;
-	}
-	else
-	{
-		return EPushResult::Failed;
-	}
+	return bWasSuccess;
 }
 
-FCompressedBuffer FDDCBackend::PullData(const FIoHash& Id)
+bool FDDCBackend::PullData(TArrayView<FPullRequest> Requests)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDDCBackend::PullData);
 
 	UE::DerivedData::ICache& Cache = UE::DerivedData::GetCache();
 
-	UE::DerivedData::FCacheKey Key;
-	Key.Bucket = Bucket; 
-	Key.Hash = Id;
+	UE::DerivedData::FRequestOwner Owner(UE::DerivedData::EPriority::Normal);
 
-	UE::DerivedData::FRequestOwner Owner(UE::DerivedData::EPriority::Blocking);
-
-	FCompressedBuffer ResultData;
-	UE::DerivedData::EStatus ResultStatus;
-
-	auto Callback = [&Id, &ResultData, &ResultStatus](UE::DerivedData::FCacheGetResponse&& Response)
+	for (FPullRequest& Request : Requests)
 	{
-		ResultStatus = Response.Status;
-		if (ResultStatus == UE::DerivedData::EStatus::Ok)
-		{
-			ResultData = Response.Record.GetValue(ToDerivedDataValueId(Id)).GetData();
-		}
-	};
+		UE::DerivedData::FRequestBarrier Barrier(Owner);
 
-	// TODO: Improve the name when we start passing more context to this function
-	Cache.Get({{{TEXT("Mirage")}, Key, TransferPolicy}}, Owner, MoveTemp(Callback));
+		UE::DerivedData::FCacheKey Key;
+		Key.Bucket = Bucket;
+		Key.Hash = Request.GetIdentifier();
+
+		auto Callback = [&Request](UE::DerivedData::FCacheGetResponse&& Response)
+		{
+			if (Response.Status == UE::DerivedData::EStatus::Ok)
+			{
+				UE::DerivedData::FValueId ValueId = ToDerivedDataValueId(Request.GetIdentifier());
+				Request.SetPayload(Response.Record.GetValue(ValueId).GetData());
+			}
+		};
+
+		// TODO: Improve the name when we start passing more context to this function
+		Cache.Get({ {{TEXT("Mirage")}, Key, TransferPolicy} }, Owner, MoveTemp(Callback));
+	}
 
 	Owner.Wait();
 
-	return ResultData;
+	return true;
 }
 
 bool FDDCBackend::DoesPayloadExist(const FIoHash& Id)

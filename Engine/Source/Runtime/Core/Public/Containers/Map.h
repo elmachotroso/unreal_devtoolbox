@@ -349,7 +349,7 @@ public:
 	 * @return Number of bytes allocated by this container.
 	 * @see CountBytes
 	 */
-	FORCEINLINE uint32 GetAllocatedSize() const
+	FORCEINLINE SIZE_T GetAllocatedSize() const
 	{
 		return Pairs.GetAllocatedSize();
 	}
@@ -411,7 +411,7 @@ public:
 	 * @param InKey The key to associate the value with.
 	 * @param InValue The value to associate with the key.
 	 * @return A reference to the value as stored in the map. The reference is only valid until the next change to any key in the map.	 */
-	template <typename InitKeyType, typename InitValueType>
+	template <typename InitKeyType = KeyType, typename InitValueType = ValueType>
 	ValueType& Emplace(InitKeyType&& InKey, InitValueType&& InValue)
 	{
 		const FSetElementId PairId = Pairs.Emplace(TPairInitializer<InitKeyType&&, InitValueType&&>(Forward<InitKeyType>(InKey), Forward<InitValueType>(InValue)));
@@ -420,7 +420,7 @@ public:
 	}
 
 	/** See Emplace() and class documentation section on ByHash() functions */
-	template <typename InitKeyType, typename InitValueType>
+	template <typename InitKeyType = KeyType, typename InitValueType = ValueType>
 	ValueType& EmplaceByHash(uint32 KeyHash, InitKeyType&& InKey, InitValueType&& InValue)
 	{
 		const FSetElementId PairId = Pairs.EmplaceByHash(KeyHash, TPairInitializer<InitKeyType&&, InitValueType&&>(Forward<InitKeyType>(InKey), Forward<InitValueType>(InValue)));
@@ -434,7 +434,7 @@ public:
 	 * @param InKey The key to associate the value with.
 	 * @return A reference to the value as stored in the map. The reference is only valid until the next change to any key in the map.
 	 */
-	template <typename InitKeyType>
+	template <typename InitKeyType = KeyType>
 	ValueType& Emplace(InitKeyType&& InKey)
 	{
 		const FSetElementId PairId = Pairs.Emplace(TKeyInitializer<InitKeyType&&>(Forward<InitKeyType>(InKey)));
@@ -443,7 +443,7 @@ public:
 	}
 
 	/** See Emplace() and class documentation section on ByHash() functions */
-	template <typename InitKeyType>
+	template <typename InitKeyType = KeyType>
 	ValueType& EmplaceByHash(uint32 KeyHash, InitKeyType&& InKey)
 	{
 		const FSetElementId PairId = Pairs.EmplaceByHash(KeyHash, TKeyInitializer<InitKeyType&&>(Forward<InitKeyType>(InKey)));
@@ -689,6 +689,12 @@ public:
 	FORCEINLINE bool ContainsByHash(uint32 KeyHash, const ComparableKey& Key) const
 	{
 		return Pairs.ContainsByHash(KeyHash, Key);
+	}
+
+	/** Copy the key/value pairs in this map into an array. */
+	TArray<ElementType> Array() const
+	{
+		return Pairs.Array();
 	}
 
 	/**

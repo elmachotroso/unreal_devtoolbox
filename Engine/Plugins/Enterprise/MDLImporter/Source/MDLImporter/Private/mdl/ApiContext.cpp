@@ -117,7 +117,19 @@ namespace Mdl
 
 		FString FilePath = FPaths::Combine(LibrariesPath, TEXT("libmdl_sdk" MI_BASE_DLL_FILE_EXT));
 		DsoHandle        = FPlatformProcess::GetDllHandle(*FilePath);
+
+		if (!DsoHandle)
+		{
+			UE_LOG(LogMDLImporter, Error, TEXT("Error: Library %s does not exist in the path %s"), TEXT("libmdl_sdk" MI_BASE_DLL_FILE_EXT), *LibrariesPath);
+			return false;
+		}
+
 		void* SymbolPtr  = FPlatformProcess::GetDllExport(DsoHandle, TEXT("mi_factory"));
+		if (!SymbolPtr)
+		{
+			UE_LOG(LogMDLImporter, Error, TEXT("Error: Symbol %s does not exist in the library %s"), TEXT("mi_factory"), TEXT("libmdl_sdk" MI_BASE_DLL_FILE_EXT));
+			return false;
+		}
 
 		mi::neuraylib::INeuray* Neuray = mi::neuraylib::mi_factory<mi::neuraylib::INeuray>(SymbolPtr);
 		if (!Neuray)
@@ -146,7 +158,16 @@ namespace Mdl
 		mi::Sint32 Result = PluginConfig->load_plugin_library(TCHAR_TO_ANSI(*FreeimageModulePath));
 		if ( Result != 0)
 		{
-			UE_LOG(LogMDLImporter, Error, TEXT("mi::neuraylib::IMdl_compiler::load_plugin_library() failed with return code %d."), Result);
+			UE_LOG(LogMDLImporter, Error, TEXT("mi::neuraylib::IPlugin_configuration::load_plugin_library() failed with return code %d."), Result);
+			return false;
+		}
+
+		// Load the Distiller plugin.
+		FString DistillerModulePath = FPaths::Combine(LibrariesPath, TEXT("mdl_distiller" MI_BASE_DLL_FILE_EXT));
+		Result = PluginConfig->load_plugin_library(TCHAR_TO_ANSI(*DistillerModulePath));
+		if ( Result != 0)
+		{
+			UE_LOG(LogMDLImporter, Error, TEXT("mi::neuraylib::IPlugin_configuration::load_plugin_library() failed with return code %d."), Result);
 			return false;
 		}
 
@@ -278,17 +299,37 @@ namespace Mdl
 			{
 				const char* Name = Module->get_material(Index);
 				if (MaterialIsHidden(Name, *Transaction))
+				{
 					continue;
+				}
 
+				mi::base::Handle<const mi::neuraylib::IMaterial_definition> MaterialDefinition =
+				    mi::base::make_handle((*Transaction).access<mi::neuraylib::IMaterial_definition>(Name));
+
+				FString MdlName = ANSI_TO_TCHAR(MaterialDefinition->get_mdl_name());
+				FString MdlModuleName = ANSI_TO_TCHAR(MaterialDefinition->get_mdl_module_name());
+				FString MdlSimpleName = ANSI_TO_TCHAR(MaterialDefinition->get_mdl_simple_name());
+				
 				FMaterial& Material = OutMaterials.Create();
-				Material.Name       = ANSI_TO_TCHAR(Name);
-				Material.Id         = Index;
-				// strip Module name, format is: mdl::<module_name>::<material_name>
-				const int32 Found = Material.Name.Find(TEXT("::"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+				Material.Id = Index;
+				
+				// Strip Module name, format is: mdl::<module_name>::<material_name>(<material-as-function parameter list>)
+				FString MaterialMdlDbName = ANSI_TO_TCHAR(Name);
+
+				int32 OpeningBracketIndex = INDEX_NONE;
+				MaterialMdlDbName.FindChar(TEXT('('), OpeningBracketIndex);
+
+				// Search module separator skipping function arguments - parameter types can also contain "::"
+				const int32 Found = MaterialMdlDbName.Find(TEXT("::"), ESearchCase::IgnoreCase, ESearchDir::FromEnd, OpeningBracketIndex);
 				if ((Found - 2) > 0)
 				{
-					Material.Name = Material.Name.Right(Material.Name.Len() - Found - 2);
+					MaterialMdlDbName = MaterialMdlDbName.Right(MaterialMdlDbName.Len() - Found - 2);
 				}
+
+				Material.BaseName = MaterialMdlDbName;
+
+				// Use material name without full signature (previously material db name returned from MDL SDK didn't contain parameter list)
+				Material.Name = MdlSimpleName;
 			}
 		}
 		MDL_CHECK_RESULT() = Transaction->commit();

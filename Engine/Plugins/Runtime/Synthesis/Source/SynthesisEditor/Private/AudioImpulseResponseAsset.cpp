@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioImpulseResponseAsset.h"
+
+#include "Algo/AnyOf.h"
+#include "AssetRegistry/AssetData.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "ToolMenus.h"
 #include "ContentBrowserMenuContexts.h"
 #include "Sound/SoundWave.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "Sound/SampleBufferIO.h"
-#include "SampleBuffer.h"
 #include "SubmixEffects/SubmixEffectConvolutionReverb.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioImpulseResponseAsset)
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -19,48 +22,28 @@ UClass* FAssetTypeActions_AudioImpulseResponse::GetSupportedClass() const
 
 void FAudioImpulseResponseExtension::RegisterMenus()
 {
-	if (!UToolMenus::IsToolMenuUIEnabled())
-	{
-		return;
-	}
-
-	FToolMenuOwnerScoped MenuOwner("ConvolutionReverb");
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.SoundWave");
 	FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
 
 	Section.AddDynamicEntry("SoundWaveAssetConversion_CreateImpulseResponse", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
-		UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
-		if (!Context || Context->SelectedObjects.Num() == 0)
+		if (const UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>())
 		{
-			return;
-		}
-
-		for (const TWeakObjectPtr<UObject>& Object : Context->SelectedObjects)
-		{
-			if (Object->IsA<USoundWaveProcedural>())
+			if (!Algo::AnyOf(Context->SelectedAssets, [](const FAssetData& AssetData){ return AssetData.IsInstanceOf<USoundWaveProcedural>(); }))
 			{
-				return;
+				const TAttribute<FText> Label = LOCTEXT("SoundWave_CreateImpulseResponse", "Create Impulse Response");
+				const TAttribute<FText> ToolTip = LOCTEXT("SoundWave_CreateImpulseResponseTooltip", "Creates an impulse response asset using the selected sound wave.");
+				const FSlateIcon Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.ImpulseResponse");
+				const FToolMenuExecuteAction UIAction = FToolMenuExecuteAction::CreateStatic(&FAudioImpulseResponseExtension::ExecuteCreateImpulseResponse);
+
+				InSection.AddMenuEntry("SoundWave_CreateImpulseResponse", Label, ToolTip, Icon, UIAction);
 			}
 		}
-
-		const TAttribute<FText> Label = LOCTEXT("SoundWave_CreateImpulseResponse", "Create Impulse Response");
-		const TAttribute<FText> ToolTip = LOCTEXT("SoundWave_CreateImpulseResponseTooltip", "Creates an impulse response asset using the selected sound wave.");
-		const FSlateIcon Icon = FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.ImpulseResponse");
-		const FToolMenuExecuteAction UIAction = FToolMenuExecuteAction::CreateStatic(&FAudioImpulseResponseExtension::ExecuteCreateImpulseResponse);
-
-		InSection.AddMenuEntry("SoundWave_CreateImpulseResponse", Label, ToolTip, Icon, UIAction);
 	}));
 }
 
 void FAudioImpulseResponseExtension::ExecuteCreateImpulseResponse(const FToolMenuContext& MenuContext)
 {
-	UContentBrowserAssetContextMenuContext* Context = MenuContext.FindContext<UContentBrowserAssetContextMenuContext>();
-	if (!Context || Context->SelectedObjects.IsEmpty())
-	{
-		return;
-	}
-
 	const FString DefaultSuffix = TEXT("_IR");
 	FAssetToolsModule& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools");
 
@@ -68,20 +51,20 @@ void FAudioImpulseResponseExtension::ExecuteCreateImpulseResponse(const FToolMen
 	UAudioImpulseResponseFactory* Factory = NewObject<UAudioImpulseResponseFactory>();
 	
 	// only converts 0th selected object for now (see return statement)
-	for (const TWeakObjectPtr<UObject>& Object : Context->SelectedObjects)
+	if (const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(MenuContext))
 	{
-		// stage the soundwave on the factory to be used during asset creation
-		USoundWave* Wave = Cast<USoundWave>(Object);
-		check(Wave);
-		Factory->StagedSoundWave = Wave; // WeakPtr gets reset by the Factory after it is consumed
+		for (USoundWave* Wave : Context->LoadSelectedObjectsIf<USoundWave>([](const FAssetData& AssetData) { return !AssetData.IsInstanceOf<USoundWaveProcedural>(); }))
+		{
+			Factory->StagedSoundWave = Wave; // WeakPtr gets reset by the Factory after it is consumed
 
-		// Determine an appropriate name
-		FString Name;
-		FString PackagePath;
-		AssetToolsModule.Get().CreateUniqueAssetName(Wave->GetOutermost()->GetName(), DefaultSuffix, PackagePath, Name);
+			// Determine an appropriate name
+			FString Name;
+			FString PackagePath;
+			AssetToolsModule.Get().CreateUniqueAssetName(Wave->GetOutermost()->GetName(), DefaultSuffix, PackagePath, Name);
 
-		// create new asset
-		AssetToolsModule.Get().CreateAsset(Name, FPackageName::GetLongPackagePath(PackagePath), UAudioImpulseResponse::StaticClass(), Factory);
+			// create new asset
+			AssetToolsModule.Get().CreateAsset(Name, FPackageName::GetLongPackagePath(PackagePath), UAudioImpulseResponse::StaticClass(), Factory);
+		}
 	}
 }
 
@@ -135,3 +118,4 @@ UObject* UAudioImpulseResponseFactory::FactoryCreateNew(UClass* Class, UObject* 
 }
 
 #undef LOCTEXT_NAMESPACE
+

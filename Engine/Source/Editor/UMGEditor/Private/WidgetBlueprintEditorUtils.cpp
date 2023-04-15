@@ -54,6 +54,7 @@
 #include "Rendering/SlateDrawBuffer.h"
 #include "Slate/WidgetRenderer.h"
 #include "Widgets/SVirtualWindow.h"
+#include "GraphEditorActions.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -253,14 +254,14 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 		UWidget* WidgetPreview = BlueprintEditor->GetReferenceFromTemplate(Widget).GetPreview();
 		if (WidgetPreview)
 		{
-			WidgetPreview->SetDisplayLabel(NewNameStr);
+			WidgetPreview->SetDisplayLabel(NewDisplayName);
 			WidgetPreview->Rename(*NewNameStr);
 		}
 
 		if (!WidgetPreview || WidgetPreview != Widget)
 		{
 			// Find and update all variable references in the graph
-			Widget->SetDisplayLabel(NewNameStr);
+			Widget->SetDisplayLabel(NewDisplayName);
 			Widget->Rename(*NewNameStr);
 		}
 
@@ -377,18 +378,19 @@ void FWidgetBlueprintEditorUtils::CreateWidgetContextMenu(FMenuBuilder& MenuBuil
 	TSet<FWidgetReference> Widgets = BlueprintEditor->GetSelectedWidgets();
 	UWidgetBlueprint* BP = BlueprintEditor->GetWidgetBlueprintObj();
 
-	MenuBuilder.PushCommandList(BlueprintEditor->DesignerCommandList.ToSharedRef());
-
 	MenuBuilder.BeginSection("Edit", LOCTEXT("Edit", "Edit"));
 	{
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Duplicate);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
-	}
-	MenuBuilder.PopCommandList();
-	{
+		MenuBuilder.PushCommandList(BlueprintEditor->DesignerCommandList.ToSharedRef());
+		{
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Duplicate);
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
+			MenuBuilder.AddMenuEntry(FGraphEditorCommands::Get().FindReferences);
+		}
+		MenuBuilder.PopCommandList();
+
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename);
 	}
 	MenuBuilder.EndSection();
@@ -889,7 +891,7 @@ void FWidgetBlueprintEditorUtils::BuildReplaceWithMenu(FMenuBuilder& Menu, TShar
 			UClass* WidgetClass = Widget.GetTemplate()->GetClass();
 			TWeakObjectPtr<UClass> TemplateWidget = BlueprintEditor->GetSelectedTemplate();
 			FAssetData SelectedUserWidget = BlueprintEditor->GetSelectedUserWidget();
-			if (TemplateWidget.IsValid() || SelectedUserWidget.ObjectPath != NAME_None)
+			if (TemplateWidget.IsValid() || SelectedUserWidget.GetSoftObjectPath().IsValid() )
 			{
 				Menu.AddMenuEntry(
 					FText::Format(LOCTEXT("WidgetTree_ReplaceWithSelection", "Replace With {0}"), FText::FromString(TemplateWidget.IsValid() ? TemplateWidget->GetName() : SelectedUserWidget.AssetName.ToString())),
@@ -986,7 +988,7 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithSelectedTemplate(TSharedRef<F
 		TSharedPtr<FWidgetTemplateClass> Template = MakeShareable(new FWidgetTemplateClass(WidgetClass));
 		NewReplacementWidget = Template->Create(BP->WidgetTree);
 	}
-	else if (BlueprintEditor->GetSelectedUserWidget().ObjectPath != NAME_None)
+	else if (BlueprintEditor->GetSelectedUserWidget().GetSoftObjectPath().IsValid())
 	{
 		bIsUserWidget = true;
 		FAssetData WidgetAssetData = BlueprintEditor->GetSelectedUserWidget();
@@ -1064,55 +1066,56 @@ bool FWidgetBlueprintEditorUtils::CanBeReplacedWithTemplate(TSharedRef<FWidgetBl
 	FAssetData SelectedUserWidget = BlueprintEditor->GetSelectedUserWidget();
 	UWidget* ThisWidget = Widget.GetTemplate();
 	UPanelWidget* ExistingPanel = Cast<UPanelWidget>(ThisWidget);
-	// If selecting another widget blueprint
-	if (SelectedUserWidget.ObjectPath != NAME_None)
-	{
-		if (ExistingPanel)
-		{
-			if (ExistingPanel->GetChildrenCount() != 0)
-			{
-				return false;
-			}
-		}
-		UUserWidget* NewUserWidget = CastChecked<UUserWidget>(FWidgetTemplateBlueprintClass(SelectedUserWidget).Create(BP->WidgetTree));
-		const bool bFreeFromCircularRefs = BP->IsWidgetFreeFromCircularReferences(NewUserWidget);
-		NewUserWidget->Rename(nullptr, GetTransientPackage());
-		return bFreeFromCircularRefs;
-	}
 
-	UClass* WidgetClass = BlueprintEditor->GetSelectedTemplate().Get();
-	const bool bCanReplace = WidgetClass->IsChildOf(UPanelWidget::StaticClass());
-	if (!ExistingPanel && !bCanReplace)
+	UClass* WidgetClass = nullptr;
+	// If selecting another widget blueprint
+	if (SelectedUserWidget.GetSoftObjectPath().IsValid())
 	{
-		return true;
-	}
-	else if (!ExistingPanel && bCanReplace)
-	{
-		return true;
-	}
-	else if (ExistingPanel && !bCanReplace)
-	{
-		if (ExistingPanel->GetChildrenCount() == 0)
-		{
-			return true;
-		}
-		else 
+		if (ExistingPanel && ExistingPanel->GetChildrenCount() != 0)
 		{
 			return false;
 		}
+		if (UWidget* NewWidget = FWidgetTemplateBlueprintClass(SelectedUserWidget).Create(BP->WidgetTree))
+		{
+			// If we are creating a UserWidget, check for Circular references
+			if (UUserWidget* NewUserWidget = Cast<UUserWidget>(NewWidget))
+			{
+				const bool bFreeFromCircularRefs = BP->IsWidgetFreeFromCircularReferences(NewUserWidget);
+				NewWidget->Rename(nullptr, GetTransientPackage());
+				return bFreeFromCircularRefs;
+			}
+			WidgetClass = NewWidget->GetClass();
+			NewWidget->Rename(nullptr, GetTransientPackage());
+		}
 	}
-	else 
+
+	// If we get here, the Widget selected is not a UserWidget and it's not a Blueprint.
+	if (!WidgetClass)
 	{
-		if (ExistingPanel->GetClass()->GetDefaultObject<UPanelWidget>()->CanHaveMultipleChildren() && bCanReplace)
-		{
-			const bool bChildAllowed = WidgetClass->GetDefaultObject<UPanelWidget>()->CanHaveMultipleChildren() || ExistingPanel->GetChildrenCount() == 0;
-			return bChildAllowed;
-		}
-		else
-		{
-			return true;
-		}
+		WidgetClass = BlueprintEditor->GetSelectedTemplate().Get();
 	}
+
+	// If the Widget to replace is not a Panel we can replace it with anything	
+	if (!ExistingPanel)
+	{
+		return true;
+	}
+
+	const bool bNewWidgetClassIsAPanel = WidgetClass->IsChildOf(UPanelWidget::StaticClass());
+	// If the Widget to replace is a Panel and the new widget is not, we allow to replace it only if it's empty;
+	if (!bNewWidgetClassIsAPanel)
+	{
+		return ExistingPanel->GetChildrenCount() == 0;
+	}
+
+	// If the Widget to replace is a Panel that can have multiple children, we allow to replace it with a Panel that can support multiple children only.
+	if (ExistingPanel->GetClass()->GetDefaultObject<UPanelWidget>()->CanHaveMultipleChildren() && bNewWidgetClassIsAPanel)
+	{
+		const bool bChildAllowed = WidgetClass->GetDefaultObject<UPanelWidget>()->CanHaveMultipleChildren() || ExistingPanel->GetChildrenCount() == 0;
+		return bChildAllowed;
+	}
+	
+	return true;
 }
 
 void FWidgetBlueprintEditorUtils::ReplaceWidgetWithChildren(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, FWidgetReference Widget)
@@ -1421,16 +1424,16 @@ UWidget* FWidgetBlueprintEditorUtils::GetWidgetTemplateFromDragDrop(UWidgetBluep
 			// Only handle first valid dragged widget, multi widget drag drop is not practically useful
 			const FAssetData& AssetData = AssetDragDropOp->GetAssets()[0];
 
-			bool CodeClass = AssetData.AssetClass == "Class";
-			FName ClassName = CodeClass ? AssetData.ObjectPath : AssetData.AssetClass;
-			UClass* AssetClass = FindObjectChecked<UClass>(ANY_PACKAGE, *ClassName.ToString());
+			bool CodeClass = AssetData.AssetClassPath == FTopLevelAssetPath(TEXT("/Script/CoreUObject"), TEXT("Class"));
+			FString ClassName = CodeClass ? AssetData.GetObjectPathString() : AssetData.AssetClassPath.ToString();
+			UClass* AssetClass = FindObjectChecked<UClass>(nullptr, *ClassName);
 
 			if (FWidgetTemplateBlueprintClass::Supports(AssetClass))
 			{
 				// Allows a UMG Widget Blueprint to be dragged from the Content Browser to another Widget Blueprint...as long as we're not trying to place a
 				// blueprint inside itself.
 				FString BlueprintPath = Blueprint->GetPathName();
-				if (BlueprintPath != AssetData.ObjectPath.ToString())
+				if (BlueprintPath != AssetData.GetSoftObjectPath().ToString())
 				{
 					Widget = FWidgetTemplateBlueprintClass(AssetData).Create(RootWidgetTree);
 				}
@@ -1765,17 +1768,25 @@ TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgetsInternal(TSharedRef<FW
 			return TArray<UWidget*>();
 		}
 
-		UWidget* NamedSlotHostWidget = ParentWidgetRef.GetTemplate();
-
 		BP->WidgetTree->Modify();
 
-		if (NamedSlotHostWidget)
+		// If there's a ParentWidgetRef, then we're pasting into a named slot of a widget in the tree.
+		if (UWidget* NamedSlotHostWidget = ParentWidgetRef.GetTemplate())
 		{
 			NamedSlotHostWidget->SetFlags(RF_Transactional);
 			NamedSlotHostWidget->Modify();
 
 			INamedSlotInterface* NamedSlotInterface = Cast<INamedSlotInterface>(NamedSlotHostWidget);
 			NamedSlotInterface->SetContentForSlot(SlotName, RootPasteWidgets[0]);
+		}
+		else
+		{
+			// If there's no ParentWidgetRef then we're pasting into the exposed named slots of the widget tree.
+			// these are the slots that our parent class is exposing for use externally, but we can also override
+			// them as a subclass.
+
+			BP->WidgetTree->Modify();
+			BP->WidgetTree->SetContentForSlot(SlotName, RootPasteWidgets[0]);
 		}
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
@@ -1898,7 +1909,7 @@ void FWidgetBlueprintEditorUtils::ImportPropertiesFromText(UObject* Object, cons
 				PropertyChain.AddHead(Property);
 				Object->PreEditChange(PropertyChain);
 
-				Property->ImportText(*Entry.Value, Property->ContainerPtrToValuePtr<uint8>(Object), 0, Object);
+				Property->ImportText_InContainer(*Entry.Value, Object, Object, 0);
 
 				FPropertyChangedEvent ChangedEvent(Property);
 				Object->PostEditChangeProperty(ChangedEvent);
@@ -2034,18 +2045,20 @@ int32 FWidgetBlueprintEditorUtils::UpdateHittestGrid(FHittestGrid& HitTestGrid, 
 	bool bUseGammaSpace = false;
 	TSharedPtr<ISlate3DRenderer, ESPMode::ThreadSafe> Renderer = FModuleManager::Get().LoadModuleChecked<ISlateRHIRendererModule>("SlateRHIRenderer")
 		.CreateSlate3DRenderer(bUseGammaSpace);
-	FSlateDrawBuffer& DrawBuffer = Renderer->GetDrawBuffer();
-	FSlateWindowElementList& WindowElementList = DrawBuffer.AddWindowElementList(Window);
 
-	int32 MaxLayerId = Window->Paint(
+	int32 MaxLayerId = 0;
+	{
+		ISlate3DRenderer::FScopedAcquireDrawBuffer ScopedDrawBuffer{ *Renderer };
+		FSlateWindowElementList& WindowElementList = ScopedDrawBuffer.GetDrawBuffer().AddWindowElementList(Window);
+
+		MaxLayerId = Window->Paint(
 			PaintArgs,
 			WindowGeometry, WindowClipRect,
 			WindowElementList,
 			0,
 			FWidgetStyle(),
 			Window->IsEnabled());
-
-	DrawBuffer.Unlock();
+	}
 
 	FSlateApplication::Get().InvalidateAllWidgets(false);
 

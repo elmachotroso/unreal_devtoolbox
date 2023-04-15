@@ -33,9 +33,13 @@ struct FRigVMStructBase
 
 	UPROPERTY(meta = (Output))
 	float InheritedOutput;
+
+	virtual FName GetNextAggregateName(const FName& InLastAggregateName) const {};
+
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const {};
 };
 
-USTRUCT()
+USTRUCT(meta = (Deprecated = "5.0.0"))
 struct FRigVMMethodStruct : public FRigVMStructBase
 {
 	GENERATED_BODY()
@@ -93,4 +97,25 @@ struct FRigVMMethodStruct : public FRigVMStructBase
 
 	UPROPERTY()
 	TEnumAsByte<ERigVMTestNameSpaceEnum::Type> HiddenNameSpaceEnum;
+
+	RIGVM_METHOD()
+	virtual FName GetNextAggregateName(const FName& InLastAggregatePinName) const override;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
+};
+
+USTRUCT(meta=(DisplayName="Control", Category="Controls", ShowVariableNameInTitle, Deprecated = "4.24.0"))
+struct CONTROLRIG_API FRigUnit_Control
+{
+	GENERATED_BODY()
+
+	FRigUnit_Control()
+		: Factor(0)
+	{
+	}
+
+	/** The transform of this control */
+	UPROPERTY(EditAnywhere, Category="Control")
+	float Factor;
 };

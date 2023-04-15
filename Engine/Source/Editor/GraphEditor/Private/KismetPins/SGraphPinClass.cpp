@@ -2,17 +2,49 @@
 
 
 #include "KismetPins/SGraphPinClass.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBox.h"
-#include "Editor.h"
-#include "ClassViewerModule.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "ClassViewerFilter.h"
-#include "ScopedTransaction.h"
-#include "AssetRegistryModule.h"
-#include "K2Node_Variable.h"
-#include "K2Node_StructOperation.h"
+#include "ClassViewerModule.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
+#include "SGraphPin.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SGraphPinClass"
 
@@ -130,7 +162,7 @@ TSharedRef<SWidget> SGraphPinClass::GenerateAssetPicker()
 		FString PossibleInterface = ParentNode->GetPinMetaData(GraphPinObj->PinName, TEXT("MustImplement"));
 		if (!PossibleInterface.IsEmpty())
 		{
-			Filter->RequiredInterface = FindObject<UClass>(ANY_PACKAGE, *PossibleInterface);
+			Filter->RequiredInterface = UClass::TryFindTypeSlow<UClass>(PossibleInterface);
 		}
 	}
 
@@ -146,7 +178,7 @@ TSharedRef<SWidget> SGraphPinClass::GenerateAssetPicker()
 			[ 
 				SNew(SBorder)
 				.Padding(4)
-				.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+				.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 				[
 					ClassViewerModule.CreateClassViewer(Options, FOnClassPicked::CreateSP(this, &SGraphPinClass::OnPickedNewClass))
 				]
@@ -195,7 +227,7 @@ const FAssetData& SGraphPinClass::GetAssetData(bool bRuntimePath) const
 		return SGraphPinObject::GetAssetData(bRuntimePath);
 	}
 
-	FString CachedRuntimePath = CachedEditorAssetData.ObjectPath.ToString() + TEXT("_C");
+	FString CachedRuntimePath = CachedEditorAssetData.GetObjectPathString() + TEXT("_C");
 
 	if (GraphPinObj->DefaultObject)
 	{
@@ -213,7 +245,7 @@ const FAssetData& SGraphPinClass::GetAssetData(bool bRuntimePath) const
 			EditorPath.RemoveFromEnd(TEXT("_C"));
 			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
-			CachedEditorAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*EditorPath));
+			CachedEditorAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(EditorPath));
 
 			if (!CachedEditorAssetData.IsValid())
 			{
@@ -222,7 +254,7 @@ const FAssetData& SGraphPinClass::GetAssetData(bool bRuntimePath) const
 				FString ObjectName = FPackageName::ObjectPathToObjectName(EditorPath);
 
 				// Fake one
-				CachedEditorAssetData = FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectName), UObject::StaticClass()->GetFName());
+				CachedEditorAssetData = FAssetData(FName(*PackageName), FName(*PackagePath), FName(*ObjectName), UObject::StaticClass()->GetClassPathName());
 			}
 		}
 	}

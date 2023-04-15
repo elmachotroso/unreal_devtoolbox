@@ -339,6 +339,7 @@ SWIGEXPORT void SWIGSTDCALL SWIGRegisterWStringCallback_DatasmithFacadeCSharp(SW
 #include "DatasmithFacadeVariant.h"
 #include "DatasmithFacadeLog.h"
 #include "DatasmithFacadeUtils.h"
+#include "DatasmithFacadeDecal.h"
 
 #include "IDatasmithExporterUIModule.h"
 #include "IDirectLinkUI.h"
@@ -786,101 +787,101 @@ SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeBaseMaterial(void * ja
 }
 
 
-SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeMasterMaterial(wchar_t * jarg1) {
+SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeMaterialInstance(wchar_t * jarg1) {
   void * jresult ;
   TCHAR *arg1 = (TCHAR *) 0 ;
-  FDatasmithFacadeMasterMaterial *result = 0 ;
+  FDatasmithFacadeMaterialInstance *result = 0 ;
   
   arg1 = (TCHAR *)jarg1; 
-  result = (FDatasmithFacadeMasterMaterial *)new FDatasmithFacadeMasterMaterial((TCHAR const *)arg1);
+  result = (FDatasmithFacadeMaterialInstance *)new FDatasmithFacadeMaterialInstance((TCHAR const *)arg1);
   jresult = (void *)result; 
   return jresult;
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeMasterMaterial(void * jarg1) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeMaterialInstance(void * jarg1) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   delete arg1;
 }
 
 
-SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetMaterialType(void * jarg1) {
+SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetMaterialType(void * jarg1) {
   int jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
-  FDatasmithFacadeMasterMaterial::EMasterMaterialType result;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
+  FDatasmithFacadeMaterialInstance::EMaterialInstanceType result;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  result = (FDatasmithFacadeMasterMaterial::EMasterMaterialType)((FDatasmithFacadeMasterMaterial const *)arg1)->GetMaterialType();
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  result = (FDatasmithFacadeMaterialInstance::EMaterialInstanceType)((FDatasmithFacadeMaterialInstance const *)arg1)->GetMaterialType();
   jresult = (int)result; 
   return jresult;
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_SetMaterialType(void * jarg1, int jarg2) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
-  FDatasmithFacadeMasterMaterial::EMasterMaterialType arg2 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_SetMaterialType(void * jarg1, int jarg2) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
+  FDatasmithFacadeMaterialInstance::EMaterialInstanceType arg2 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  arg2 = (FDatasmithFacadeMasterMaterial::EMasterMaterialType)jarg2; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  arg2 = (FDatasmithFacadeMaterialInstance::EMaterialInstanceType)jarg2; 
   (arg1)->SetMaterialType(arg2);
 }
 
 
-SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetQuality(void * jarg1) {
+SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetQuality(void * jarg1) {
   int jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
-  FDatasmithFacadeMasterMaterial::EMasterMaterialQuality result;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
+  FDatasmithFacadeMaterialInstance::EMaterialInstanceQuality result;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  result = (FDatasmithFacadeMasterMaterial::EMasterMaterialQuality)((FDatasmithFacadeMasterMaterial const *)arg1)->GetQuality();
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  result = (FDatasmithFacadeMaterialInstance::EMaterialInstanceQuality)((FDatasmithFacadeMaterialInstance const *)arg1)->GetQuality();
   jresult = (int)result; 
   return jresult;
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_SetQuality(void * jarg1, int jarg2) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
-  FDatasmithFacadeMasterMaterial::EMasterMaterialQuality arg2 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_SetQuality(void * jarg1, int jarg2) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
+  FDatasmithFacadeMaterialInstance::EMaterialInstanceQuality arg2 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  arg2 = (FDatasmithFacadeMasterMaterial::EMasterMaterialQuality)jarg2; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  arg2 = (FDatasmithFacadeMaterialInstance::EMaterialInstanceQuality)jarg2; 
   (arg1)->SetQuality(arg2);
 }
 
 
-SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetCustomMaterialPathName(void * jarg1) {
+SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetCustomMaterialPathName(void * jarg1) {
   wchar_t * jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *result = 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  result = (TCHAR *)((FDatasmithFacadeMasterMaterial const *)arg1)->GetCustomMaterialPathName();
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  result = (TCHAR *)((FDatasmithFacadeMaterialInstance const *)arg1)->GetCustomMaterialPathName();
   jresult = (wchar_t *)result; 
   return jresult;
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_SetCustomMaterialPathName(void * jarg1, wchar_t * jarg2) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_SetCustomMaterialPathName(void * jarg1, wchar_t * jarg2) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   (arg1)->SetCustomMaterialPathName((TCHAR const *)arg2);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddColor__SWIG_0(void * jarg1, wchar_t * jarg2, unsigned char jarg3, unsigned char jarg4, unsigned char jarg5, unsigned char jarg6) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddColor__SWIG_0(void * jarg1, wchar_t * jarg2, unsigned char jarg3, unsigned char jarg4, unsigned char jarg5, unsigned char jarg6) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   unsigned char arg3 ;
   unsigned char arg4 ;
   unsigned char arg5 ;
   unsigned char arg6 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = (unsigned char)jarg3; 
   arg4 = (unsigned char)jarg4; 
@@ -890,15 +891,15 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddColor__SWIG
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddColor__SWIG_1(void * jarg1, wchar_t * jarg2, float jarg3, float jarg4, float jarg5, float jarg6) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddColor__SWIG_1(void * jarg1, wchar_t * jarg2, float jarg3, float jarg4, float jarg5, float jarg6) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   float arg3 ;
   float arg4 ;
   float arg5 ;
   float arg6 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = (float)jarg3; 
   arg4 = (float)jarg4; 
@@ -908,89 +909,89 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddColor__SWIG
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddTexture(void * jarg1, wchar_t * jarg2, void * jarg3) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddTexture(void * jarg1, wchar_t * jarg2, void * jarg3) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   FDatasmithFacadeTexture *arg3 = (FDatasmithFacadeTexture *) 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = (FDatasmithFacadeTexture *)jarg3; 
   (arg1)->AddTexture((TCHAR const *)arg2,(FDatasmithFacadeTexture const *)arg3);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddString(void * jarg1, wchar_t * jarg2, wchar_t * jarg3) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddString(void * jarg1, wchar_t * jarg2, wchar_t * jarg3) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   TCHAR *arg3 = (TCHAR *) 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = (TCHAR *)jarg3; 
   (arg1)->AddString((TCHAR const *)arg2,(TCHAR const *)arg3);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddFloat(void * jarg1, wchar_t * jarg2, float jarg3) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddFloat(void * jarg1, wchar_t * jarg2, float jarg3) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   float arg3 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = (float)jarg3; 
   (arg1)->AddFloat((TCHAR const *)arg2,arg3);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_AddBoolean(void * jarg1, wchar_t * jarg2, unsigned int jarg3) {
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_AddBoolean(void * jarg1, wchar_t * jarg2, unsigned int jarg3) {
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   bool arg3 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   arg3 = jarg3 ? true : false; 
   (arg1)->AddBoolean((TCHAR const *)arg2,arg3);
 }
 
 
-SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetPropertiesCount(void * jarg1) {
+SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetPropertiesCount(void * jarg1) {
   int jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   int32 result;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
-  result = (int32)((FDatasmithFacadeMasterMaterial const *)arg1)->GetPropertiesCount();
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
+  result = (int32)((FDatasmithFacadeMaterialInstance const *)arg1)->GetPropertiesCount();
   jresult = result; 
   return jresult;
 }
 
 
-SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetProperty(void * jarg1, int jarg2) {
+SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetProperty(void * jarg1, int jarg2) {
   void * jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   int32 arg2 ;
   FDatasmithFacadeKeyValueProperty *result = 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (int32)jarg2; 
-  result = (FDatasmithFacadeKeyValueProperty *)((FDatasmithFacadeMasterMaterial const *)arg1)->GetNewProperty(arg2);
+  result = (FDatasmithFacadeKeyValueProperty *)((FDatasmithFacadeMaterialInstance const *)arg1)->GetNewProperty(arg2);
   jresult = (void *)result; 
   return jresult;
 }
 
 
-SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_GetPropertyByName(void * jarg1, wchar_t * jarg2) {
+SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_GetPropertyByName(void * jarg1, wchar_t * jarg2) {
   void * jresult ;
-  FDatasmithFacadeMasterMaterial *arg1 = (FDatasmithFacadeMasterMaterial *) 0 ;
+  FDatasmithFacadeMaterialInstance *arg1 = (FDatasmithFacadeMaterialInstance *) 0 ;
   TCHAR *arg2 = (TCHAR *) 0 ;
   FDatasmithFacadeKeyValueProperty *result = 0 ;
   
-  arg1 = (FDatasmithFacadeMasterMaterial *)jarg1; 
+  arg1 = (FDatasmithFacadeMaterialInstance *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
-  result = (FDatasmithFacadeKeyValueProperty *)((FDatasmithFacadeMasterMaterial const *)arg1)->GetNewPropertyByName((TCHAR const *)arg2);
+  result = (FDatasmithFacadeKeyValueProperty *)((FDatasmithFacadeMaterialInstance const *)arg1)->GetNewPropertyByName((TCHAR const *)arg2);
   jresult = (void *)result; 
   return jresult;
 }
@@ -1857,6 +1858,42 @@ SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeUEPbrMaterial_GetAmbientOcc
   
   arg1 = (FDatasmithFacadeUEPbrMaterial *)jarg1; 
   result = ((FDatasmithFacadeUEPbrMaterial const *)arg1)->GetAmbientOcclusion();
+  jresult = new FDatasmithFacadeExpressionInput((const FDatasmithFacadeExpressionInput &)result); 
+  return jresult;
+}
+
+
+SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeUEPbrMaterial_GetClearCoat(void * jarg1) {
+  void * jresult ;
+  FDatasmithFacadeUEPbrMaterial *arg1 = (FDatasmithFacadeUEPbrMaterial *) 0 ;
+  SwigValueWrapper< FDatasmithFacadeExpressionInput > result;
+  
+  arg1 = (FDatasmithFacadeUEPbrMaterial *)jarg1; 
+  result = ((FDatasmithFacadeUEPbrMaterial const *)arg1)->GetClearCoat();
+  jresult = new FDatasmithFacadeExpressionInput((const FDatasmithFacadeExpressionInput &)result); 
+  return jresult;
+}
+
+
+SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeUEPbrMaterial_GetClearCoatRoughness(void * jarg1) {
+  void * jresult ;
+  FDatasmithFacadeUEPbrMaterial *arg1 = (FDatasmithFacadeUEPbrMaterial *) 0 ;
+  SwigValueWrapper< FDatasmithFacadeExpressionInput > result;
+  
+  arg1 = (FDatasmithFacadeUEPbrMaterial *)jarg1; 
+  result = ((FDatasmithFacadeUEPbrMaterial const *)arg1)->GetClearCoatRoughness();
+  jresult = new FDatasmithFacadeExpressionInput((const FDatasmithFacadeExpressionInput &)result); 
+  return jresult;
+}
+
+
+SWIGEXPORT void * SWIGSTDCALL CSharp_FDatasmithFacadeUEPbrMaterial_GetWorldPositionOffset(void * jarg1) {
+  void * jresult ;
+  FDatasmithFacadeUEPbrMaterial *arg1 = (FDatasmithFacadeUEPbrMaterial *) 0 ;
+  SwigValueWrapper< FDatasmithFacadeExpressionInput > result;
+  
+  arg1 = (FDatasmithFacadeUEPbrMaterial *)jarg1; 
+  result = ((FDatasmithFacadeUEPbrMaterial const *)arg1)->GetWorldPositionOffset();
   jresult = new FDatasmithFacadeExpressionInput((const FDatasmithFacadeExpressionInput &)result); 
   return jresult;
 }
@@ -2866,18 +2903,18 @@ SWIGEXPORT unsigned int SWIGSTDCALL CSharp_FDatasmithFacadeMesh_GetHashForUVChan
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMesh_GetUV(void * jarg1, int jarg2, int jarg3, float * jarg4, float * jarg5) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeMesh_GetUV(void * jarg1, int jarg2, int jarg3, double * jarg4, double * jarg5) {
   FDatasmithFacadeMesh *arg1 = (FDatasmithFacadeMesh *) 0 ;
   int32 arg2 ;
   int32 arg3 ;
-  float *arg4 = 0 ;
-  float *arg5 = 0 ;
+  double *arg4 = 0 ;
+  double *arg5 = 0 ;
   
   arg1 = (FDatasmithFacadeMesh *)jarg1; 
   arg2 = (int32)jarg2; 
   arg3 = (int32)jarg3; 
-  arg4 = (float *)jarg4; 
-  arg5 = (float *)jarg5; 
+  arg4 = (double *)jarg4; 
+  arg5 = (double *)jarg5; 
   ((FDatasmithFacadeMesh const *)arg1)->GetUV(arg2,arg3,*arg4,*arg5);
 }
 
@@ -3454,7 +3491,29 @@ SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeActor(void * jarg1) {
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_0(void * jarg1, float * jarg2, unsigned int jarg3) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_0(void * jarg1, double * jarg2, unsigned int jarg3) {
+  FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
+  double *arg2 ;
+  bool arg3 ;
+  
+  arg1 = (FDatasmithFacadeActor *)jarg1; 
+  arg2 = (double *)jarg2; 
+  arg3 = jarg3 ? true : false; 
+  (arg1)->SetWorldTransform((double const (*))arg2,arg3);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_1(void * jarg1, double * jarg2) {
+  FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
+  double *arg2 ;
+  
+  arg1 = (FDatasmithFacadeActor *)jarg1; 
+  arg2 = (double *)jarg2; 
+  (arg1)->SetWorldTransform((double const (*))arg2);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_2(void * jarg1, float * jarg2, unsigned int jarg3) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
   float *arg2 ;
   bool arg3 ;
@@ -3466,7 +3525,7 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_1(void * jarg1, float * jarg2) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG_3(void * jarg1, float * jarg2) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
   float *arg2 ;
   
@@ -3476,118 +3535,118 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetWorldTransform__SWIG
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetScale(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetScale(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->SetScale(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetScale(void * jarg1, float * jarg2, float * jarg3, float * jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetScale(void * jarg1, double * jarg2, double * jarg3, double * jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float *arg2 = 0 ;
-  float *arg3 = 0 ;
-  float *arg4 = 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float *)jarg2; 
-  arg3 = (float *)jarg3; 
-  arg4 = (float *)jarg4; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
   ((FDatasmithFacadeActor const *)arg1)->GetScale(*arg2,*arg3,*arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetRotation__SWIG_0(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetRotation__SWIG_0(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->SetRotation(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetRotation__SWIG_0(void * jarg1, float * jarg2, float * jarg3, float * jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetRotation__SWIG_0(void * jarg1, double * jarg2, double * jarg3, double * jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float *arg2 = 0 ;
-  float *arg3 = 0 ;
-  float *arg4 = 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float *)jarg2; 
-  arg3 = (float *)jarg3; 
-  arg4 = (float *)jarg4; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
   ((FDatasmithFacadeActor const *)arg1)->GetRotation(*arg2,*arg3,*arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetRotation__SWIG_1(void * jarg1, float jarg2, float jarg3, float jarg4, float jarg5) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetRotation__SWIG_1(void * jarg1, double jarg2, double jarg3, double jarg4, double jarg5) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
-  float arg5 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
+  double arg5 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
-  arg5 = (float)jarg5; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
+  arg5 = (double)jarg5; 
   (arg1)->SetRotation(arg2,arg3,arg4,arg5);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetRotation__SWIG_1(void * jarg1, float * jarg2, float * jarg3, float * jarg4, float * jarg5) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetRotation__SWIG_1(void * jarg1, double * jarg2, double * jarg3, double * jarg4, double * jarg5) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float *arg2 = 0 ;
-  float *arg3 = 0 ;
-  float *arg4 = 0 ;
-  float *arg5 = 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
+  double *arg5 = 0 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float *)jarg2; 
-  arg3 = (float *)jarg3; 
-  arg4 = (float *)jarg4; 
-  arg5 = (float *)jarg5; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
+  arg5 = (double *)jarg5; 
   ((FDatasmithFacadeActor const *)arg1)->GetRotation(*arg2,*arg3,*arg4,*arg5);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetTranslation(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetTranslation(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->SetTranslation(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetTranslation(void * jarg1, float * jarg2, float * jarg3, float * jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetTranslation(void * jarg1, double * jarg2, double * jarg3, double * jarg4) {
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
-  float *arg2 = 0 ;
-  float *arg3 = 0 ;
-  float *arg4 = 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
   
   arg1 = (FDatasmithFacadeActor *)jarg1; 
-  arg2 = (float *)jarg2; 
-  arg3 = (float *)jarg3; 
-  arg4 = (float *)jarg4; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
   ((FDatasmithFacadeActor const *)arg1)->GetTranslation(*arg2,*arg3,*arg4);
 }
 
@@ -3760,6 +3819,28 @@ SWIGEXPORT unsigned int SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetVisibility(v
 }
 
 
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActor_SetCastShadow(void * jarg1, unsigned int jarg2) {
+  FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
+  bool arg2 ;
+  
+  arg1 = (FDatasmithFacadeActor *)jarg1; 
+  arg2 = jarg2 ? true : false; 
+  (arg1)->SetCastShadow(arg2);
+}
+
+
+SWIGEXPORT unsigned int SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetCastShadow(void * jarg1) {
+  unsigned int jresult ;
+  FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
+  bool result;
+  
+  arg1 = (FDatasmithFacadeActor *)jarg1; 
+  result = (bool)((FDatasmithFacadeActor const *)arg1)->GetCastShadow();
+  jresult = result; 
+  return jresult;
+}
+
+
 SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeActor_GetActorType(void * jarg1) {
   int jresult ;
   FDatasmithFacadeActor *arg1 = (FDatasmithFacadeActor *) 0 ;
@@ -3792,36 +3873,36 @@ SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeActorCamera(void * jar
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorCamera_SetCameraPosition(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorCamera_SetCameraPosition(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActorCamera *arg1 = (FDatasmithFacadeActorCamera *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActorCamera *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->SetCameraPosition(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorCamera_SetCameraRotation(void * jarg1, float jarg2, float jarg3, float jarg4, float jarg5, float jarg6, float jarg7) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorCamera_SetCameraRotation(void * jarg1, double jarg2, double jarg3, double jarg4, double jarg5, double jarg6, double jarg7) {
   FDatasmithFacadeActorCamera *arg1 = (FDatasmithFacadeActorCamera *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
-  float arg5 ;
-  float arg6 ;
-  float arg7 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
+  double arg5 ;
+  double arg6 ;
+  double arg7 ;
   
   arg1 = (FDatasmithFacadeActorCamera *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
-  arg5 = (float)jarg5; 
-  arg6 = (float)jarg6; 
-  arg7 = (float)jarg7; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
+  arg5 = (double)jarg5; 
+  arg6 = (double)jarg6; 
+  arg7 = (double)jarg7; 
   (arg1)->SetCameraRotation(arg2,arg3,arg4,arg5,arg6,arg7);
 }
 
@@ -6688,6 +6769,14 @@ SWIGEXPORT unsigned int SWIGSTDCALL CSharp_FDatasmithFacadeDirectLink_UpdateScen
 }
 
 
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeDirectLink_CloseCurrentSource(void * jarg1) {
+  FDatasmithFacadeDirectLink *arg1 = (FDatasmithFacadeDirectLink *) 0 ;
+  
+  arg1 = (FDatasmithFacadeDirectLink *)jarg1; 
+  (arg1)->CloseCurrentSource();
+}
+
+
 SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeDirectLink_AddEndpointObserver(void * jarg1, void * jarg2) {
   FDatasmithFacadeDirectLink *arg1 = (FDatasmithFacadeDirectLink *) 0 ;
   FDatasmithFacadeEndpointObserver *arg2 = (FDatasmithFacadeEndpointObserver *) 0 ;
@@ -6723,6 +6812,16 @@ SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeDirectLink(void * jarg
   
   arg1 = (FDatasmithFacadeDirectLink *)jarg1; 
   delete arg1;
+}
+
+
+SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeUniqueNameProvider() {
+  void * jresult ;
+  FDatasmithFacadeUniqueNameProvider *result = 0 ;
+  
+  result = (FDatasmithFacadeUniqueNameProvider *)new FDatasmithFacadeUniqueNameProvider();
+  jresult = (void *)result; 
+  return jresult;
 }
 
 
@@ -6767,16 +6866,6 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeUniqueNameProvider_RemoveExis
   arg1 = (FDatasmithFacadeUniqueNameProvider *)jarg1; 
   arg2 = (TCHAR *)jarg2; 
   (arg1)->RemoveExistingName((TCHAR const *)arg2);
-}
-
-
-SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeUniqueNameProvider() {
-  void * jresult ;
-  FDatasmithFacadeUniqueNameProvider *result = 0 ;
-  
-  result = (FDatasmithFacadeUniqueNameProvider *)new FDatasmithFacadeUniqueNameProvider();
-  jresult = (void *)result; 
-  return jresult;
 }
 
 
@@ -6906,65 +6995,87 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_RemovePropertyCa
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeLocationCapture(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeLocationCapture(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->AddRelativeLocationCapture(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeRotationCapture__SWIG_0(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeRotationCapture__SWIG_0(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->AddRelativeRotationCapture(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeRotationCapture__SWIG_1(void * jarg1, float jarg2, float jarg3, float jarg4, float jarg5) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeRotationCapture__SWIG_1(void * jarg1, double jarg2, double jarg3, double jarg4, double jarg5) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
-  float arg5 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
+  double arg5 ;
   
   arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
-  arg5 = (float)jarg5; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
+  arg5 = (double)jarg5; 
   (arg1)->AddRelativeRotationCapture(arg2,arg3,arg4,arg5);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeScaleCapture(void * jarg1, float jarg2, float jarg3, float jarg4) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeScaleCapture(void * jarg1, double jarg2, double jarg3, double jarg4) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
-  float arg2 ;
-  float arg3 ;
-  float arg4 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
   
   arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
-  arg2 = (float)jarg2; 
-  arg3 = (float)jarg3; 
-  arg4 = (float)jarg4; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
   (arg1)->AddRelativeScaleCapture(arg2,arg3,arg4);
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_0(void * jarg1, float * jarg2, unsigned int jarg3) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_0(void * jarg1, double * jarg2, unsigned int jarg3) {
+  FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
+  double *arg2 ;
+  bool arg3 ;
+  
+  arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
+  arg2 = (double *)jarg2; 
+  arg3 = jarg3 ? true : false; 
+  (arg1)->AddRelativeTransformCapture((double const (*))arg2,arg3);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_1(void * jarg1, double * jarg2) {
+  FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
+  double *arg2 ;
+  
+  arg1 = (FDatasmithFacadeActorBinding *)jarg1; 
+  arg2 = (double *)jarg2; 
+  (arg1)->AddRelativeTransformCapture((double const (*))arg2);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_2(void * jarg1, float * jarg2, unsigned int jarg3) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
   float *arg2 ;
   bool arg3 ;
@@ -6976,7 +7087,7 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTrans
 }
 
 
-SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_1(void * jarg1, float * jarg2) {
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorBinding_AddRelativeTransformCapture__SWIG_3(void * jarg1, float * jarg2) {
   FDatasmithFacadeActorBinding *arg1 = (FDatasmithFacadeActorBinding *) 0 ;
   float *arg2 ;
   
@@ -7204,6 +7315,162 @@ SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeLevelVariantSets_RemoveVarian
 }
 
 
+SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeActorDecal(wchar_t * jarg1) {
+  void * jresult ;
+  TCHAR *arg1 = (TCHAR *) 0 ;
+  FDatasmithFacadeActorDecal *result = 0 ;
+  
+  arg1 = (TCHAR *)jarg1; 
+  result = (FDatasmithFacadeActorDecal *)new FDatasmithFacadeActorDecal((TCHAR const *)arg1);
+  jresult = (void *)result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeActorDecal(void * jarg1) {
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  delete arg1;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_GetDimensions(void * jarg1, double * jarg2, double * jarg3, double * jarg4) {
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  double *arg2 = 0 ;
+  double *arg3 = 0 ;
+  double *arg4 = 0 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  arg2 = (double *)jarg2; 
+  arg3 = (double *)jarg3; 
+  arg4 = (double *)jarg4; 
+  ((FDatasmithFacadeActorDecal const *)arg1)->GetDimensions(*arg2,*arg3,*arg4);
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_SetDimensions(void * jarg1, double jarg2, double jarg3, double jarg4) {
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  double arg2 ;
+  double arg3 ;
+  double arg4 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  arg2 = (double)jarg2; 
+  arg3 = (double)jarg3; 
+  arg4 = (double)jarg4; 
+  (arg1)->SetDimensions(arg2,arg3,arg4);
+}
+
+
+SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_GetDecalMaterialPathName(void * jarg1) {
+  wchar_t * jresult ;
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  TCHAR *result = 0 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  result = (TCHAR *)((FDatasmithFacadeActorDecal const *)arg1)->GetDecalMaterialPathName();
+  jresult = (wchar_t *)result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_SetDecalMaterialPathName(void * jarg1, wchar_t * jarg2) {
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  TCHAR *arg2 = (TCHAR *) 0 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  arg2 = (TCHAR *)jarg2; 
+  (arg1)->SetDecalMaterialPathName((TCHAR const *)arg2);
+}
+
+
+SWIGEXPORT int SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_GetSortOrder(void * jarg1) {
+  int jresult ;
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  int32 result;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  result = (int32)((FDatasmithFacadeActorDecal const *)arg1)->GetSortOrder();
+  jresult = result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_SetSortOrder(void * jarg1, int jarg2) {
+  FDatasmithFacadeActorDecal *arg1 = (FDatasmithFacadeActorDecal *) 0 ;
+  int32 arg2 ;
+  
+  arg1 = (FDatasmithFacadeActorDecal *)jarg1; 
+  arg2 = (int32)jarg2; 
+  (arg1)->SetSortOrder(arg2);
+}
+
+
+SWIGEXPORT void * SWIGSTDCALL CSharp_new_FDatasmithFacadeDecalMaterial(wchar_t * jarg1) {
+  void * jresult ;
+  TCHAR *arg1 = (TCHAR *) 0 ;
+  FDatasmithFacadeDecalMaterial *result = 0 ;
+  
+  arg1 = (TCHAR *)jarg1; 
+  result = (FDatasmithFacadeDecalMaterial *)new FDatasmithFacadeDecalMaterial((TCHAR const *)arg1);
+  jresult = (void *)result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_delete_FDatasmithFacadeDecalMaterial(void * jarg1) {
+  FDatasmithFacadeDecalMaterial *arg1 = (FDatasmithFacadeDecalMaterial *) 0 ;
+  
+  arg1 = (FDatasmithFacadeDecalMaterial *)jarg1; 
+  delete arg1;
+}
+
+
+SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeDecalMaterial_GetDiffuseTexturePathName(void * jarg1) {
+  wchar_t * jresult ;
+  FDatasmithFacadeDecalMaterial *arg1 = (FDatasmithFacadeDecalMaterial *) 0 ;
+  TCHAR *result = 0 ;
+  
+  arg1 = (FDatasmithFacadeDecalMaterial *)jarg1; 
+  result = (TCHAR *)((FDatasmithFacadeDecalMaterial const *)arg1)->GetDiffuseTexturePathName();
+  jresult = (wchar_t *)result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeDecalMaterial_SetDiffuseTexturePathName(void * jarg1, wchar_t * jarg2) {
+  FDatasmithFacadeDecalMaterial *arg1 = (FDatasmithFacadeDecalMaterial *) 0 ;
+  TCHAR *arg2 = (TCHAR *) 0 ;
+  
+  arg1 = (FDatasmithFacadeDecalMaterial *)jarg1; 
+  arg2 = (TCHAR *)jarg2; 
+  (arg1)->SetDiffuseTexturePathName((TCHAR const *)arg2);
+}
+
+
+SWIGEXPORT wchar_t * SWIGSTDCALL CSharp_FDatasmithFacadeDecalMaterial_GetNormalTexturePathName(void * jarg1) {
+  wchar_t * jresult ;
+  FDatasmithFacadeDecalMaterial *arg1 = (FDatasmithFacadeDecalMaterial *) 0 ;
+  TCHAR *result = 0 ;
+  
+  arg1 = (FDatasmithFacadeDecalMaterial *)jarg1; 
+  result = (TCHAR *)((FDatasmithFacadeDecalMaterial const *)arg1)->GetNormalTexturePathName();
+  jresult = (wchar_t *)result; 
+  return jresult;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_FDatasmithFacadeDecalMaterial_SetNormalTexturePathName(void * jarg1, wchar_t * jarg2) {
+  FDatasmithFacadeDecalMaterial *arg1 = (FDatasmithFacadeDecalMaterial *) 0 ;
+  TCHAR *arg2 = (TCHAR *) 0 ;
+  
+  arg1 = (FDatasmithFacadeDecalMaterial *)jarg1; 
+  arg2 = (TCHAR *)jarg2; 
+  (arg1)->SetNormalTexturePathName((TCHAR const *)arg2);
+}
+
+
 SWIGEXPORT void * SWIGSTDCALL CSharp_IDatasmithExporterUIModule_Get() {
   void * jresult ;
   IDatasmithExporterUIModule *result = 0 ;
@@ -7231,6 +7498,18 @@ SWIGEXPORT void SWIGSTDCALL CSharp_delete_IDatasmithExporterUIModule(void * jarg
   
   arg1 = (IDatasmithExporterUIModule *)jarg1; 
   delete arg1;
+}
+
+
+SWIGEXPORT void SWIGSTDCALL CSharp_IDirectLinkUI_SetStreamWindowCenter(void * jarg1, int jarg2, int jarg3) {
+  IDirectLinkUI *arg1 = (IDirectLinkUI *) 0 ;
+  int arg2 ;
+  int arg3 ;
+  
+  arg1 = (IDirectLinkUI *)jarg1; 
+  arg2 = (int)jarg2; 
+  arg3 = (int)jarg3; 
+  (arg1)->SetStreamWindowCenter(arg2,arg3);
 }
 
 
@@ -7274,7 +7553,7 @@ SWIGEXPORT FDatasmithFacadeElement * SWIGSTDCALL CSharp_FDatasmithFacadeBaseMate
     return (FDatasmithFacadeElement *)jarg1;
 }
 
-SWIGEXPORT FDatasmithFacadeBaseMaterial * SWIGSTDCALL CSharp_FDatasmithFacadeMasterMaterial_SWIGUpcast(FDatasmithFacadeMasterMaterial *jarg1) {
+SWIGEXPORT FDatasmithFacadeBaseMaterial * SWIGSTDCALL CSharp_FDatasmithFacadeMaterialInstance_SWIGUpcast(FDatasmithFacadeMaterialInstance *jarg1) {
     return (FDatasmithFacadeBaseMaterial *)jarg1;
 }
 
@@ -7420,6 +7699,14 @@ SWIGEXPORT FDatasmithFacadeElement * SWIGSTDCALL CSharp_FDatasmithFacadeVariantS
 
 SWIGEXPORT FDatasmithFacadeElement * SWIGSTDCALL CSharp_FDatasmithFacadeLevelVariantSets_SWIGUpcast(FDatasmithFacadeLevelVariantSets *jarg1) {
     return (FDatasmithFacadeElement *)jarg1;
+}
+
+SWIGEXPORT FDatasmithFacadeActor * SWIGSTDCALL CSharp_FDatasmithFacadeActorDecal_SWIGUpcast(FDatasmithFacadeActorDecal *jarg1) {
+    return (FDatasmithFacadeActor *)jarg1;
+}
+
+SWIGEXPORT FDatasmithFacadeBaseMaterial * SWIGSTDCALL CSharp_FDatasmithFacadeDecalMaterial_SWIGUpcast(FDatasmithFacadeDecalMaterial *jarg1) {
+    return (FDatasmithFacadeBaseMaterial *)jarg1;
 }
 
 #ifdef __cplusplus

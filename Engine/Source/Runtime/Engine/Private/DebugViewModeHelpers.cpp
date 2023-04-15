@@ -48,6 +48,8 @@ const TCHAR* DebugViewShaderModeToString(EDebugViewShaderMode InShaderMode)
 		return TEXT("DVSM_RayTracingDebug");
 	case DVSM_LODColoration:
 		return TEXT("DVSM_LODColoration");
+	case DVSM_VisualizeGPUSkinCache:
+		return TEXT("DVSM_VisualizeGPUSkinCache");
 	default:
 		return TEXT("DVSM_None");
 	}
@@ -95,6 +97,8 @@ bool AllowDebugViewShaderMode(EDebugViewShaderMode ShaderMode, EShaderPlatform P
 		return FeatureLevel >= ERHIFeatureLevel::SM5 && (bForceTextureStreamingBuild || PlatformSupportsDebugViewShaders(Platform));
 	case DVSM_RayTracingDebug:
 		return FeatureLevel >= ERHIFeatureLevel::SM5 ;
+	case DVSM_VisualizeGPUSkinCache:
+		return PlatformSupportsDebugViewShaders(Platform);
 	default:
 		return false;
 	}
@@ -246,7 +250,7 @@ bool GetUsedMaterialsInWorld(UWorld* InWorld, OUT TSet<UMaterialInterface*>& Out
 			}
 
 			TInlineComponentArray<UPrimitiveComponent*> Primitives;
-			Actor->GetComponents<UPrimitiveComponent>(Primitives);
+			Actor->GetComponents(Primitives);
 
 			for (UPrimitiveComponent* Primitive : Primitives)
 			{
@@ -329,7 +333,7 @@ bool CompileDebugViewModeShaders(EDebugViewShaderMode ShaderMode, EMaterialQuali
 			{
 				FMaterialShaderTypes ShaderTypes;
 				DebugViewModeInterface->AddShaderTypes(FeatureLevel, LocalVertexFactory, ShaderTypes);
-				if (Material->ShouldCacheShaders(ShaderTypes, LocalVertexFactory) && !Material->HasShaders(ShaderTypes, LocalVertexFactory))
+				if (Material->ShouldCacheShaders(GetFeatureLevelShaderPlatform(FeatureLevel), ShaderTypes, LocalVertexFactory) && !Material->HasShaders(ShaderTypes, LocalVertexFactory))
 				{
 					bMaterialFinished = false;
 				}

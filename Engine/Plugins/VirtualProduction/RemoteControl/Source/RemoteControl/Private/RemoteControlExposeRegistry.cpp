@@ -84,9 +84,9 @@ const UScriptStruct* URemoteControlExposeRegistry::GetExposedEntityType(const FG
 	return nullptr;
 }
 
-const TSet<UScriptStruct*>& URemoteControlExposeRegistry::GetExposedEntityTypes() const
+const bool URemoteControlExposeRegistry::IsEmpty() const
 {
-	return ExposedTypes;
+    return ExposedEntities.IsEmpty();
 }
 
 TSharedPtr<FRemoteControlEntity> URemoteControlExposeRegistry::AddExposedEntity(FRemoteControlEntity&& EntityToExpose, UScriptStruct* EntityType)
@@ -159,6 +159,12 @@ FName URemoteControlExposeRegistry::GenerateUniqueLabel(FName BaseName) const
 void URemoteControlExposeRegistry::PostLoad()
 {
 	Super::PostLoad();
+	CacheLabels();
+}
+
+void URemoteControlExposeRegistry::PostDuplicate(bool bDuplicateForPIE)
+{
+	UObject::PostDuplicate(bDuplicateForPIE);
 	CacheLabels();
 }
 

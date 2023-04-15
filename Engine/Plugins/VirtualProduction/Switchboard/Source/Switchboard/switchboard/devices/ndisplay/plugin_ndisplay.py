@@ -3,12 +3,11 @@
 import concurrent.futures
 import json
 import os
-import typing
 from pathlib import Path
 import socket
 import struct
 import traceback
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from PySide2 import QtCore
 from PySide2 import QtWidgets
@@ -16,9 +15,10 @@ from PySide2 import QtWidgets
 from switchboard import message_protocol
 from switchboard import switchboard_utils as sb_utils
 from switchboard import switchboard_widgets as sb_widgets
+from switchboard import switchboard_dialog as sb_dialog
 from switchboard.config import CONFIG, BoolSetting, FilePathSetting, \
-    LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS, StringListSetting, \
-    migrate_comma_separated_string_to_list
+    LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS, \
+    StringListSetting, migrate_comma_separated_string_to_list
 from switchboard.devices.device_widget_base import AddDeviceDialog
 from switchboard.devices.unreal.plugin_unreal import DeviceUnreal, \
     DeviceWidgetUnreal
@@ -38,11 +38,11 @@ class AddnDisplayDialog(AddDeviceDialog):
         # Set enough width for a decent file path length
         self.setMinimumWidth(640)
 
-        # remove unneded base dialog layout rows
+        # remove unneeded base dialog layout rows
         self.form_layout.removeRow(self.name_field)
-        self.form_layout.removeRow(self.ip_field)
+        self.form_layout.removeRow(self.address_field)
         self.name_field = None
-        self.ip_field = None
+        self.address_field = None
 
         # Button to browse for supported config files
         self.btnBrowse = QtWidgets.QPushButton(self, text="Browse")
@@ -53,7 +53,7 @@ class AddnDisplayDialog(AddDeviceDialog):
         self.btnFindConfigs.clicked.connect(self.on_clicked_btnFindConfigs)
 
         # Combobox with config files
-        self.cbConfigs = QtWidgets.QComboBox(self)
+        self.cbConfigs = sb_widgets.SearchableComboBox(self)
         self.cbConfigs.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         self.cbConfigs.setEditable(True)  # to allow the user to type the value
@@ -145,22 +145,26 @@ class AddnDisplayDialog(AddDeviceDialog):
 
         cfg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select nDisplay config file", start_path,
-            "nDisplay Config (*.ndisplay;*.uasset)")
+            "nDisplay Config (*.ndisplay *.uasset)")
 
         if len(cfg_path) > 0 and os.path.exists(cfg_path):
             self.cbConfigs.setCurrentText(cfg_path)
             SETTINGS.LAST_BROWSED_PATH = os.path.dirname(cfg_path)
             SETTINGS.save()
 
+    def generate_short_unique_config_name(config_path: str, file_name: str) -> str:
+        config_path = CONFIG.shrink_path(config_path)
+        return sb_dialog.SwitchboardDialog.filter_empty_abiguated_path(config_path, file_name)
+
     def on_clicked_btnFindConfigs(self):
         ''' Finds and populates config combobox '''
+
         # We will look for config files in the project's Content folder
         configs_path = os.path.normpath(
             os.path.join(
                 os.path.dirname(
                     CONFIG.UPROJECT_PATH.get_value().replace('"', '')),
                 'Content'))
-
         config_names = []
         config_paths = []
 
@@ -196,13 +200,17 @@ class AddnDisplayDialog(AddDeviceDialog):
         # Looks much better without the window frame.
         progressDiag.setWindowFlag(QtCore.Qt.FramelessWindowHint)
 
+        ''' Returns the asset if it is an nDisplay config '''
         def validateConfigAsset(asset):
-            ''' Returns the asset if it is an nDisplay config '''
+
             with open(asset['path'], 'rb') as file:
+
                 aparser = UassetParser(file, allowUnversioned=True)
+
                 for assetdata in aparser.aregdata:
-                    if assetdata.ObjectClassName == 'DisplayClusterBlueprint':
+                    if assetdata.ObjectClassName in DisplayConfig.VALID_CLASS_NAMES:
                         return asset
+
             raise ValueError
 
         numThreads = 8
@@ -224,11 +232,12 @@ class AddnDisplayDialog(AddDeviceDialog):
                 # paths.
                 try:
                     asset = future.result()
-                    if asset['name'] not in config_names:
-                        config_names.append(asset['name'])
-                        config_paths.append(asset['path'])
+                    config_names.append(asset['name'])
+                    config_paths.append(asset['path'])
                 except Exception:
                     pass
+
+        config_names, _ = sb_dialog.SwitchboardDialog.generate_disambiguated_names(config_paths, AddnDisplayDialog.generate_short_unique_config_name)
 
         # close progress bar window
         progressDiag.close()
@@ -336,21 +345,28 @@ class DeviceWidgetnDisplay(DeviceWidgetUnreal):
 class DisplayConfig(object):
     ''' Encapsulates nDisplay config'''
 
+    VALID_CLASS_NAMES = (
+        'DisplayClusterBlueprint',
+        '/Script/DisplayCluster.DisplayClusterBlueprint'
+    )
+
     def __init__(self):
         self.nodes = []
         self.uasset_path = ''
+
 
 class DevicenDisplay(DeviceUnreal):
 
     add_device_dialog = AddnDisplayDialog
 
     csettings = {
-        'ndisplay_config_file': FilePathSetting(
+        'ndisplay_config_file': StringSetting(
             attr_name="ndisplay_cfg_file",
             nice_name="nDisplay Config File",
             value="",
-            file_path_filter="nDisplay Config (*.ndisplay;*.uasset)",
-            tool_tip="Path to nDisplay config file"
+            tool_tip="Path to nDisplay config file",
+            allow_reset=False,
+            is_read_only=True
         ),
         'use_all_available_cores': BoolSetting(
             attr_name="use_all_available_cores",
@@ -366,7 +382,7 @@ class DevicenDisplay(DeviceUnreal):
             attr_name="render_api",
             nice_name="Render API",
             value="dx12",
-            possible_values=["dx11", "dx12"],
+            possible_values=["dx11", "dx12", "vulkan"],
         ),
         'render_mode': OptionSetting(
             attr_name="render_mode",
@@ -379,7 +395,7 @@ class DevicenDisplay(DeviceUnreal):
             attr_name="render_sync_policy",
             nice_name="Render Sync Policy",
             value='Config',
-            possible_values=['Config','None','Ethernet','Nvidia'],
+            possible_values=['Config', 'None', 'Ethernet', 'Nvidia'],
             tool_tip=(
                 "Select which cluster synchronization policy to use. \n"
                 "- 'Config': Use the setting in the nDisplay config file \n"
@@ -477,6 +493,7 @@ class DevicenDisplay(DeviceUnreal):
                 'LogDisplayClusterRender',
                 'LogDisplayClusterRenderSync',
                 'LogDisplayClusterViewport',
+                'LogDisplayClusterMedia',
                 'LogLiveLink',
                 'LogRemoteControl',
             ],
@@ -488,7 +505,7 @@ class DevicenDisplay(DeviceUnreal):
             value=':0',
             tool_tip=(
                 'Local interface binding (-UDPMESSAGING_TRANSPORT_UNICAST) of '
-                'the form {ip}:{port}. If {ip} is omitted, the device IP '
+                'the form {address}:{port}. If {address} is omitted, the device '
                 'address is used.'),
         ),
         'udpmessaging_extra_static_endpoints': StringSetting(
@@ -517,15 +534,16 @@ class DevicenDisplay(DeviceUnreal):
     ndisplay_monitor_ui = None
     ndisplay_monitor = None
 
-    def __init__(self, name, ip_address, **kwargs):
-        super().__init__(name, ip_address, **kwargs)
+    def __init__(self, name, address, **kwargs):
+        super().__init__(name, address, **kwargs)
 
         self.settings = {
             'ue_command_line': StringSetting(
                 attr_name="ue_command_line",
                 nice_name="UE Command Line",
                 value=kwargs.get("ue_command_line", ''),
-                allow_reset=False
+                allow_reset=False,
+                is_read_only=True
             ),
             'window_position': Setting(
                 attr_name="window_position",
@@ -806,7 +824,7 @@ class DevicenDisplay(DeviceUnreal):
             f'{session_id}',              # Session ID.
             f'{max_gpu_count}',           # Max GPU count (mGPU)
             f'-dc_cfg="{cfg_file}"',      # nDisplay config file
-            f'{render_api}',              # dx11/12
+            f'{render_api}',              # RHI (dx11/dx12/vulkan)
             f'{render_mode}',             # mono/...
             f'{use_all_cores}',           # -useallavailablecores
             f'{no_texture_streaming}',    # -notexturestreaming
@@ -888,9 +906,6 @@ class DevicenDisplay(DeviceUnreal):
 
         # Always tell Chaos to be deterministic
         dp_cvars.append('p.Chaos.Solver.Deterministic=1')
-
-        # Always disable virtual shadow map caching until it supports multi-viewfamily.
-        dp_cvars.append('r.Shadow.Virtual.Cache=0')
 
         # Add user set dp cvars, overriding any of the forced ones.
         user_dp_cvars = self.csettings['ndisplay_dp_cvars'].get_value(self.name)
@@ -1012,8 +1027,9 @@ class DevicenDisplay(DeviceUnreal):
 
             # Check that the asset is of the right class, then find its
             # ConfigExport tag and parse it.
+
             for assetdata in aparser.aregdata:
-                if assetdata.ObjectClassName == 'DisplayClusterBlueprint':
+                if assetdata.ObjectClassName in DisplayConfig.VALID_CLASS_NAMES:
                     return assetdata.tags['ConfigExport']
 
         raise ValueError('Invalid nDisplay config .uasset')
@@ -1076,8 +1092,8 @@ class DevicenDisplay(DeviceUnreal):
                     'node in the nDisplay configuration')
                 continue
 
-            # override ip address
-            node['host'] = device.ip_address
+            # override address
+            node['host'] = device.address
 
             # add to active nodes
             activenodes[device.name] = node
@@ -1125,7 +1141,7 @@ class DevicenDisplay(DeviceUnreal):
         return cls.parse_config_json_string(jsstr)
 
     @classmethod
-    def parse_config_json_string(cls, jsstr) -> Tuple[List, Optional[str]]:
+    def parse_config_json_string(cls, jsstr):
         '''
         Parses nDisplay config JSON string, returning (nodes, uasset_path).
         '''
@@ -1153,12 +1169,12 @@ class DevicenDisplay(DeviceUnreal):
             kwargs["window_resolution"] = (resx, resy)
             # Note the capital 'S'.
             kwargs["fullscreen"] = bool(cnode.get('fullScreen', False))
-        
+
             primary = True if primaryNode['id'] == name else False
 
             config.nodes.append({
                 "name": name,
-                "ip_address": cnode['host'],
+                "address": cnode['host'],
                 "primary": primary,
                 "port_ce": int(primaryNode['ports']['ClusterEventsJson']),
                 "kwargs": kwargs,
@@ -1173,7 +1189,7 @@ class DevicenDisplay(DeviceUnreal):
         return cls.parse_config_json_string(jsstr)
 
     @classmethod
-    def parse_config(cls, cfg_file) -> Tuple[List, Optional[str]]:
+    def parse_config(cls, cfg_file) -> DisplayConfig:
         '''
         Parses an nDisplay file and returns the nodes with the relevant
         information.
@@ -1274,7 +1290,7 @@ class DevicenDisplay(DeviceUnreal):
             with open(cfg_file, 'rb') as f:
                 cfg_content = f.read()
 
-        # Apply local overrides to configuration (e.g. ip addresses)
+        # Apply local overrides to configuration (e.g. addresses)
         try:
             cfg_content = self.__class__.apply_local_overrides_to_config(
                 cfg_content, cfg_ext).encode('utf-8')
@@ -1384,11 +1400,11 @@ class DevicenDisplay(DeviceUnreal):
         # primary.
         port = primary.nodeconfig['port_ce']
 
-        # Use the overridden ip address of this node
-        ip = primary.ip_address
+        # Use the overridden address of this node
+        address = primary.address
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((ip, port))
+        sock.connect((address, port))
         sock.send(msg)
 
     @classmethod

@@ -87,6 +87,7 @@ UMediaTexture::UMediaTexture(const FObjectInitializer& ObjectInitializer)
 	, Size(0)
 	, CachedNextSampleTime(FTimespan::MinValue())
 	, TextureNumMips(1)
+	, MipMapBias(0.0f)
 {
 	NeverStream = true;
 	SRGB = true;
@@ -168,7 +169,10 @@ FTextureResource* UMediaTexture::CreateResource()
 		}
 	}
 
-	Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
+	if (!NewStyleOutput)
+	{
+		Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
+	}
 
 	return new FMediaTextureResource(*this, Dimensions, Size, ClearColor, CurrentGuid.IsValid() ? CurrentGuid : DefaultGuid, EnableGenMips, NumMips);
 }
@@ -436,7 +440,10 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	}
 
 	// update filter state, responding to mips setting
-	Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
+	if (!NewStyleOutput)
+	{
+		Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
+	}
 
 	// setup render parameters
 	RenderParams.CanClear = AutoClear;
@@ -526,4 +533,15 @@ float UMediaTexture::GetCurrentAspectRatio() const
 MediaTextureOrientation UMediaTexture::GetCurrentOrientation() const
 {
 	return CurrentOrientation;
+}
+
+float UMediaTexture::GetMipMapBias() const
+{
+	// Clamped to the legal DirectX range.
+	return FMath::Clamp(MipMapBias, -16.0f, 15.99f);
+}
+
+void UMediaTexture::SetMipMapBias(float InMipMapBias)
+{
+	MipMapBias = InMipMapBias;
 }

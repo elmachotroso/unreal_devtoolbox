@@ -13,18 +13,18 @@ namespace UnrealBuildTool.Rules
 			//
 
 			bLegalToDistributeObjectCode = true;
-			PCHUsage = PCHUsageMode.NoPCHs;
+			bEnforceIWYU = false;
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
-					"HTTP",
-					"WebSockets",
 					"Json",
 					"ElectraBase",
+					"ElectraHTTPStream",
 					"ElectraCDM",
 					"ElectraSubtitles",
-					"XmlParser"
+					"XmlParser",
+					"SoundTouchZ"
 				});
 			if (Target.bCompileAgainstEngine)
 			{
@@ -46,7 +46,7 @@ namespace UnrealBuildTool.Rules
 				string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
 				PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
 
-				if (Target.Platform == UnrealTargetPlatform.Win64)
+				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					DirectXSDKDir += "/Lib/x64/";
 				}
@@ -70,7 +70,7 @@ namespace UnrealBuildTool.Rules
 					PrivateDefinitions.Add("ELECTRA_HAVE_DX11");	// video decoding for DX11 enabled (Win8+)
 				}
 
-				if (Target.Platform == UnrealTargetPlatform.Win64)
+				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					PublicAdditionalLibraries.AddRange(new string[] {
 						DirectXSDKDir + "dxerr.lib",
@@ -155,9 +155,12 @@ namespace UnrealBuildTool.Rules
 					PublicDefinitions.Add("CURL_ENABLE_NO_TIMEOUTS_OPTION=1");
 				}
 
-				PublicIncludePaths.Add("$(ModuleDir)/Public/Unix");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
 
-				PrivateIncludePaths.Add("ElectraPlayerRuntime/Private/Runtime/Decoder/GStreamer");
+				PublicIncludePaths.Add("$(ModuleDir)/Public/Linux");
+				PrivateIncludePaths.Add("ElectraPlayerRuntime/Private/Runtime/Decoder/Linux");
+
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "libav");
 			}
 		}
 

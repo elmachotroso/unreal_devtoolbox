@@ -9,8 +9,10 @@ public class ResonanceAudio : ModuleRules
 	protected virtual bool bSupportsProceduralMesh { get { return true; } }
 
 	public ResonanceAudio(ReadOnlyTargetRules Target) : base(Target)
-    {
-        string ResonanceAudioPath = ModuleDirectory + "/Private/ResonanceAudioLibrary";
+	{
+		PrivatePCHHeaderFile = "Private/ResonanceAudioPrivatePCH.h";
+
+		string ResonanceAudioPath = ModuleDirectory + "/Private/ResonanceAudioLibrary";
         string ResonanceAudioLibraryPath = ModuleDirectory + "/Private/ResonanceAudioLibrary/resonance_audio";
         string PFFTPath = ModuleDirectory + "/Private/ResonanceAudioLibrary/third_party/pfft";
 
@@ -25,7 +27,7 @@ public class ResonanceAudio : ModuleRules
                 ResonanceAudioPath,
                 ResonanceAudioLibraryPath,
                 PFFTPath,
-                "../../../../Source/Runtime/AudioMixer/Private"
+				System.IO.Path.Combine(GetModuleDirectory("AudioMixer"), "Private"),
             }
         );
 
@@ -88,7 +90,6 @@ public class ResonanceAudio : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.Android)
         {
             PrivateDefinitions.Add("PFFFT_SIMD_DISABLE=1");
-            PrivateDefinitions.Add("EIGEN_HAS_CXX11_MATH=0");
         }
     }
 }

@@ -2,14 +2,17 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "CoreFwd.h"
+#include "CoreTypes.h"
 #include "Logging/LogVerbosity.h"
-#include "Misc/CoreMiscDefines.h"
 #include "Misc/VarArgs.h"
-#include "Templates/IsValidVariadicFunctionArg.h"
 #include "Templates/AndOrNot.h"
-#include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
+#include "Templates/IsValidVariadicFunctionArg.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
+
+class FString;
+class FText;
 
 #ifndef USE_DEBUG_LOGGING
 #define USE_DEBUG_LOGGING 1
@@ -192,9 +195,18 @@ public:
 	}
 
 	/**
-	* @return whether this output device can be used from multiple threads simultaneously without any locking
-	*/
+	 * @return whether this output device can be used from multiple threads simultaneously without any locking
+	 */
 	virtual bool CanBeUsedOnMultipleThreads() const
+	{
+		return false;
+	}
+
+	/**
+	 * @return whether this output device can be used after a panic (crash or fatal error) has been flagged.
+	 * @note The return value is cached by AddOutputDevice because calling this during a panic may fail.
+	 */
+	virtual bool CanBeUsedOnPanicThread() const
 	{
 		return false;
 	}
@@ -217,35 +229,35 @@ public:
 	template <typename FmtType>
 	void Logf(const FmtType& Fmt)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
-		return Log(Fmt);
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
+		return Log((const TCHAR*)Fmt);
 	}
 
 	template <typename FmtType, typename... Types>
 	FORCEINLINE void Logf(const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FOutputDevice::Logf");
 
-		LogfImpl(Fmt, Args...);
+		LogfImpl((const TCHAR*)Fmt, Args...);
 	}
 
 	template <typename FmtType, typename... Types>
 	FORCEINLINE void Logf(ELogVerbosity::Type Verbosity, const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FOutputDevice::Logf");
 
-		LogfImpl(Verbosity, Fmt, Args...);
+		LogfImpl(Verbosity, (const TCHAR*)Fmt, Args...);
 	}
 
 	template <typename FmtType, typename... Types>
 	FORCEINLINE void CategorizedLogf(const FName& Category, ELogVerbosity::Type Verbosity, const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FOutputDevice::CategorizedLogf");
 
-		CategorizedLogfImpl(Category, Verbosity, Fmt, Args...);
+		CategorizedLogfImpl(Category, Verbosity, (const TCHAR*)Fmt, Args...);
 	}
 
 protected:

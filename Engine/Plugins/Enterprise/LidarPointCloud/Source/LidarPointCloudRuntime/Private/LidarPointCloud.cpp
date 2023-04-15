@@ -9,26 +9,24 @@
 #include "Async/Future.h"
 #include "Serialization/CustomVersion.h"
 #include "Misc/ScopeTryLock.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Engine/Engine.h"
 #include "LatentActions.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Engine/CollisionProfile.h"
 #include "EngineUtils.h"
 #include "Components/BrushComponent.h"
+#include "UObject/GCObjectScopeGuard.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "UObject/ObjectSaveContext.h"
+#include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
-#include "Editor.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Misc/MessageDialog.h"
-#include "UObject/UObjectGlobals.h"
 #endif
 
 #define IS_PROPERTY(Name) PropertyChangedEvent.MemberProperty->GetName().Equals(#Name)
@@ -79,9 +77,12 @@ private:
 	{
 		if (GetDefault<ULidarPointCloudSettings>()->bReleaseAssetAfterSaving)
 		{
-			if (Cast<ULidarPointCloud>(Package->FindAssetInPackage()))
+			if(Package->GetLinker())
 			{
-				PackagesToReload.Add(Package);
+				if (Cast<ULidarPointCloud>(Package->FindAssetInPackage()))
+				{
+					PackagesToReload.Add(Package);
+				}
 			}
 		}
 	}
@@ -90,6 +91,29 @@ private:
 
 /////////////////////////////////////////////////
 // FPointCloudLatentAction
+
+class FPointCloudSimpleLatentAction : public FPendingLatentAction
+{
+	FName ExecutionFunction;
+	int32 OutputLink;
+	FWeakObjectPtr CallbackTarget;
+
+public:
+	bool bComplete;
+
+	FPointCloudSimpleLatentAction(const FLatentActionInfo& LatentInfo)
+		: ExecutionFunction(LatentInfo.ExecutionFunction)
+		, OutputLink(LatentInfo.Linkage)
+		, CallbackTarget(LatentInfo.CallbackTarget)
+		, bComplete(false)
+	{
+	}
+
+	virtual void UpdateOperation(FLatentResponse& Response) override
+	{
+		Response.FinishAndTriggerIf(bComplete, ExecutionFunction, OutputLink, CallbackTarget);
+	}
+};
 
 class FPointCloudLatentAction : public FPendingLatentAction
 {
@@ -152,7 +176,7 @@ public:
 				Info.Hyperlink = FSimpleDelegate::CreateLambda([SoftObjectPath] {
 					// Select the cloud in Content Browser when the hyperlink is clicked
 					TArray<FAssetData> AssetData;
-					AssetData.Add(FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get().GetAssetByObjectPath(SoftObjectPath.GetAssetPathName()));
+					AssetData.Add(FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get().GetAssetByObjectPath(SoftObjectPath.GetWithoutSubPath()));
 					FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().SyncBrowserToAssets(AssetData);
 					});
 				Info.HyperlinkText = FText::FromString(FPaths::GetBaseFilename(SoftObjectPath.ToString()));
@@ -428,6 +452,11 @@ bool ULidarPointCloud::HasCollisionData() const
 	return Octree.HasCollisionData();
 }
 
+int32 ULidarPointCloud::GetColliderPolys() const
+{
+	return Octree.HasCollisionData() ? Octree.GetCollisionData()->Indices.Num() : 0;
+}
+
 void ULidarPointCloud::RefreshRendering()
 {
 	Octree.MarkRenderDataDirty();
@@ -547,6 +576,84 @@ bool ULidarPointCloud::LineTraceSingle(FVector Origin, FVector Direction, float 
 	return false;
 }
 
+#if WITH_EDITOR
+void ULidarPointCloud::SelectByConvexVolume(FConvexVolume ConvexVolume, bool bAdditive, bool bApplyLocationOffset, bool bVisibleOnly)
+{
+	if(bApplyLocationOffset)
+	{
+		for(FPlane& Plane : ConvexVolume.Planes)
+		{
+			Plane = Plane.TranslateBy(-LocationOffset);
+		}
+
+		ConvexVolume.Init();
+	}
+
+	Octree.SelectByConvexVolume(ConvexVolume, bAdditive, bVisibleOnly);
+}
+
+void ULidarPointCloud::SelectBySphere(FSphere Sphere, bool bAdditive, bool bApplyLocationOffset, bool bVisibleOnly)
+{
+	if(bApplyLocationOffset)
+	{
+		Sphere.Center -= LocationOffset;
+	}
+
+	Octree.SelectBySphere(Sphere, bAdditive, bVisibleOnly);
+}
+
+void ULidarPointCloud::HideSelected()
+{
+	Octree.HideSelected();
+}
+
+void ULidarPointCloud::DeleteSelected()
+{
+	Octree.DeleteSelected();
+}
+
+void ULidarPointCloud::InvertSelection()
+{
+	Octree.InvertSelection();
+}
+
+int64 ULidarPointCloud::NumSelectedPoints() const
+{
+	return Octree.NumSelectedPoints();
+}
+
+bool ULidarPointCloud::HasSelectedPoints() const
+{
+	return Octree.HasSelectedPoints();
+}
+
+void ULidarPointCloud::GetSelectedPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, FTransform Transform) const
+{
+	Transform.AddToTranslation(LocationOffset);
+	Octree.GetSelectedPointsAsCopies(SelectedPoints, Transform);
+}
+
+void ULidarPointCloud::CalculateNormalsForSelection()
+{
+	TArray64<FLidarPointCloudPoint*>* SelectedPoints = new TArray64<FLidarPointCloudPoint*>();
+	Octree.GetSelectedPoints(*SelectedPoints);
+	CalculateNormals(SelectedPoints, [SelectedPoints]
+	{
+		delete SelectedPoints;
+	});
+}
+
+void ULidarPointCloud::ClearSelection()
+{
+	Octree.ClearSelection();
+}
+
+void ULidarPointCloud::BuildStaticMeshBuffersForSelection(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform)
+{
+	Octree.BuildStaticMeshBuffersForSelection(CellSize, OutMeshBuffers, Transform);
+}
+#endif
+
 void ULidarPointCloud::SetSourcePath(const FString& NewSourcePath)
 {
 	SourcePath.FilePath = NewSourcePath;
@@ -587,11 +694,40 @@ void ULidarPointCloud::SetOptimizedForDynamicData(bool bNewOptimizedForDynamicDa
 	}
 }
 
-void ULidarPointCloud::BuildCollision()
+void ULidarPointCloud::SetOptimalCollisionError()
+{
+	MaxCollisionError = FMath::CeilToInt(Octree.GetEstimatedPointSpacing() * 300) * 0.01f;
+}
+
+void ULidarPointCloud::BuildCollisionWithCallback(UObject* WorldContextObject, FLatentActionInfo LatentInfo, bool& bSuccess)
+{
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		FLatentActionManager& LatentActionManager = World->GetLatentActionManager();
+		if (LatentActionManager.FindExistingAction<FPointCloudLatentAction>(LatentInfo.CallbackTarget, LatentInfo.UUID) == nullptr)
+		{
+			FPointCloudSimpleLatentAction* CompletionAction = new FPointCloudSimpleLatentAction(LatentInfo);
+
+			LatentActionManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID, CompletionAction);
+
+			BuildCollision([CompletionAction, &bSuccess](bool bCompletedSuccessfully)
+			{
+				bSuccess = bCompletedSuccessfully;
+				CompletionAction->bComplete = true;
+			});
+		}
+	}
+}
+
+void ULidarPointCloud::BuildCollision(TFunction<void(bool)> CompletionCallback)
 {
 	if (bCollisionBuildInProgress)
 	{
 		PC_ERROR("Another collision operation already in progress.");
+		if(CompletionCallback)
+		{
+			CompletionCallback(false);
+		}
 		return;
 	}
 
@@ -605,18 +741,30 @@ void ULidarPointCloud::BuildCollision()
 	NewBodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;
 	NewBodySetup->bHasCookedCollisionData = true;
 
-	Async(EAsyncExecution::Thread, [this, Notification]{
-		Octree.BuildCollision(MaxCollisionError, true);
+	TWeakObjectPtr<ULidarPointCloud> WeakThis = this;
 
-		FBenchmarkTimer::Reset();
-#if WITH_PHYSX  && PHYSICS_INTERFACE_PHYSX
-		AsyncTask(ENamedThreads::GameThread, [this, Notification] {
-			NewBodySetup->CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished::CreateUObject(this, &ULidarPointCloud::FinishPhysicsAsyncCook, Notification));
-		});
-#elif WITH_CHAOS
-		NewBodySetup->CreatePhysicsMeshes();
-		AsyncTask(ENamedThreads::GameThread, [this, Notification] { FinishPhysicsAsyncCook(true, Notification); });
-#endif		
+	Async(EAsyncExecution::Thread, [WeakThis = MoveTemp(WeakThis), Notification, CompletionCallback = MoveTemp(CompletionCallback)]() mutable
+	{
+		if (ULidarPointCloud* RawPtr = WeakThis.Get())
+		{
+			FGCObjectScopeGuard Guard(RawPtr);
+			RawPtr->Octree.BuildCollision(RawPtr->MaxCollisionError, true);
+
+			FBenchmarkTimer::Reset();
+
+			RawPtr->NewBodySetup->CreatePhysicsMeshes();
+			AsyncTask(ENamedThreads::GameThread, [WeakThis = MoveTemp(WeakThis), Notification, CompletionCallback = MoveTemp(CompletionCallback)]
+			{
+				if (ULidarPointCloud* RawPtr = WeakThis.Get())
+				{
+					RawPtr->FinishPhysicsAsyncCook(true, Notification);
+					if(CompletionCallback)
+					{
+						CompletionCallback(true);
+					}
+				}
+			});
+		}
 	});
 }
 
@@ -640,6 +788,11 @@ void ULidarPointCloud::RemoveCollision()
 	OnPointCloudUpdateCollisionEvent.Broadcast();
 
 	bCollisionBuildInProgress = false;
+}
+
+void ULidarPointCloud::BuildStaticMeshBuffers(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform)
+{
+	Octree.BuildStaticMeshBuffers(CellSize, OutMeshBuffers, Transform);
 }
 
 void ULidarPointCloud::SetLocationOffset(FVector Offset)
@@ -752,7 +905,7 @@ void ULidarPointCloud::Reimport(const FLidarPointCloudAsyncParameters& AsyncPara
 				LocationOffset = bCenter ? FVector::ZeroVector : OriginalCoordinates;
 
 				// Adjust default max collision error
-				MaxCollisionError = FMath::CeilToInt(Octree.GetEstimatedPointSpacing() * 300) * 0.01f;
+				SetOptimalCollisionError();
 			}
 			else
 			{
@@ -1153,6 +1306,8 @@ void ULidarPointCloud::Merge(TArray<ULidarPointCloud*> PointCloudsToMerge, TFunc
 		ThreadResult.Get();
 	}
 
+	SetOptimalCollisionError();
+	
 	MarkPackageDirty();
 	OnPointCloudRebuiltEvent.Broadcast();
 }
@@ -1201,6 +1356,7 @@ void ULidarPointCloud::CalculateNormals(TArray64<FLidarPointCloudPoint*>* Points
 		{
 			MarkPackageDirty();
 			Notification->Close(!bAsyncCancelled);
+			OnPointCloudNormalsUpdatedEvent.Broadcast();
 		});
 
 		if (_CompletionCallback)
@@ -1208,6 +1364,13 @@ void ULidarPointCloud::CalculateNormals(TArray64<FLidarPointCloudPoint*>* Points
 			_CompletionCallback();
 		}
 	});
+}
+
+bool ULidarPointCloud::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	OutTriMeshEstimates.VerticeCount = Octree.GetCollisionData()->Vertices.Num();
+	
+	return true;
 }
 
 bool ULidarPointCloud::GetPhysicsTriMeshData(FTriMeshCollisionData* CollisionData, bool InUseAllTriData)

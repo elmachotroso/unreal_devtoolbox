@@ -28,7 +28,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdLux/api.h"
-#include "pxr/usd/usdLux/light.h"
+#include "pxr/usd/usdLux/nonboundableLightBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usdLux/tokens.h"
@@ -55,7 +55,7 @@ class SdfAssetPath;
 /// Light emitted from a distant source along the -Z axis.
 /// Also known as a directional light.
 ///
-class UsdLuxDistantLight : public UsdLuxLight
+class UsdLuxDistantLight : public UsdLuxNonboundableLightBase
 {
 public:
     /// Compile time constant representing what kind of schema this class is.
@@ -68,7 +68,7 @@ public:
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdLuxDistantLight(const UsdPrim& prim=UsdPrim())
-        : UsdLuxLight(prim)
+        : UsdLuxNonboundableLightBase(prim)
     {
     }
 
@@ -76,7 +76,7 @@ public:
     /// Should be preferred over UsdLuxDistantLight(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdLuxDistantLight(const UsdSchemaBase& schemaObj)
-        : UsdLuxLight(schemaObj)
+        : UsdLuxNonboundableLightBase(schemaObj)
     {
     }
 
@@ -173,29 +173,6 @@ public:
     /// the default for \p writeSparsely is \c false.
     USDLUX_API
     UsdAttribute CreateAngleAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
-
-public:
-    // --------------------------------------------------------------------- //
-    // INTENSITY 
-    // --------------------------------------------------------------------- //
-    /// Scales the emission of the light linearly.
-    /// The DistantLight has a high default intensity to approximate the Sun.
-    ///
-    /// | ||
-    /// | -- | -- |
-    /// | Declaration | `float inputs:intensity = 50000` |
-    /// | C++ Type | float |
-    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Float |
-    USDLUX_API
-    UsdAttribute GetIntensityAttr() const;
-
-    /// See GetIntensityAttr(), and also 
-    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
-    /// If specified, author \p defaultValue as the attribute's default,
-    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
-    /// the default for \p writeSparsely is \c false.
-    USDLUX_API
-    UsdAttribute CreateIntensityAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // ===================================================================== //

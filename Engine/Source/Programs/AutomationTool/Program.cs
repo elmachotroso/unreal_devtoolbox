@@ -4,30 +4,32 @@
 // This software will not be supported.
 // Use at your own risk.
 using System;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Reflection;
 using EpicGames.Core;
 using System.IO;
 using System.Collections.Generic;
-using System.Text;
-using Microsoft.Build.Execution;
-using Microsoft.Build.Framework.Profiler;
 using UnrealBuildBase;
-using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationToolDriver
 {
+	/// <summary>
+	/// Main entry point
+	/// </summary>
 	public partial class Program
 	{
 		/// <summary>
 		/// Parses command line parameter.
 		/// </summary>
-		/// <param name="ParamIndex">Parameter index</param>
-		/// <param name="CommandLine">Command line</param>
+		/// <param name="CurrentParam">Parameter</param>
 		/// <param name="CurrentCommand">Recently parsed command</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if the parameter has been successfully parsed.</returns>
-		private static void ParseParam(string CurrentParam, CommandInfo CurrentCommand)
+		private static void ParseParam(string CurrentParam, CommandInfo CurrentCommand, ILogger Logger)
 		{
 			if (AutomationToolCommandLine.IsParameterIgnored(CurrentParam))
             {
@@ -63,7 +65,7 @@ namespace AutomationToolDriver
 					List<string> OutAdditionalScriptDirectories = (List<string>)AutomationToolCommandLine.GetValueUnchecked(Option_ScriptDir) ?? new List<string>();
 					OutAdditionalScriptDirectories.Add(ScriptDir);
 					AutomationToolCommandLine.SetUnchecked(Option_ScriptDir, OutAdditionalScriptDirectories);
-					Log.TraceVerbose("Found additional script dir: {0}", ScriptDir);
+					Logger.LogDebug("Found additional script dir: {0}", ScriptDir);
 				}
 				else
 				{
@@ -97,7 +99,7 @@ namespace AutomationToolDriver
 				}
 				string EnvVarValue = CurrentParam.Substring(ValueStartIndex);
 
-				Log.TraceLog($"SetEnvVar {EnvVarName}={EnvVarValue}");
+				Logger.LogDebug($"SetEnvVar {EnvVarName}={EnvVarValue}");
 				Environment.SetEnvironmentVariable(EnvVarName, EnvVarValue);
 			}
 		}
@@ -231,7 +233,8 @@ namespace AutomationToolDriver
 		/// Parse the command line and create a list of commands to execute.
 		/// </summary>
 		/// <param name="Arguments">Command line</param>
-		public static void ParseCommandLine(string[] Arguments)
+		/// <param name="Logger">Logger for output</param>
+		public static void ParseCommandLine(string[] Arguments, ILogger Logger)
 		{
 			AutomationToolCommandLine = new ParsedCommandLine(
 				new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase)
@@ -263,7 +266,7 @@ namespace AutomationToolDriver
 
 			ParseProfile(ref Arguments);
 
-			Log.TraceInformation("Parsing command line: {0}", CommandLine.FormatCommandLine(Arguments));
+			Logger.LogInformation("Parsing command line: {CommandLine}", CommandLine.FormatCommandLine(Arguments));
 
 			CommandInfo CurrentCommand = null;
 			for (int Index = 0; Index < Arguments.Length; ++Index)
@@ -274,7 +277,7 @@ namespace AutomationToolDriver
 				{
 					if (Param.StartsWith("-") || Param.Contains("="))
 					{
-						ParseParam(Arguments[Index], CurrentCommand);
+						ParseParam(Arguments[Index], CurrentCommand, Logger);
 					}
 					else
 					{
@@ -288,10 +291,10 @@ namespace AutomationToolDriver
 			var Result = AutomationToolCommandLine.CommandsToExecute.Count > 0 || AutomationToolCommandLine.IsSetGlobal("-Help") || AutomationToolCommandLine.IsSetGlobal("-List");
 			if (AutomationToolCommandLine.CommandsToExecute.Count > 0)
 			{
-				Log.TraceVerbose("Found {0} scripts to execute:", AutomationToolCommandLine.CommandsToExecute.Count);
-				foreach (var Command in AutomationToolCommandLine.CommandsToExecute)
+				Logger.LogDebug("Found {NumScripts} scripts to execute:", AutomationToolCommandLine.CommandsToExecute.Count);
+				foreach (CommandInfo Command in AutomationToolCommandLine.CommandsToExecute)
 				{
-					Log.TraceVerbose("  " + Command.ToString());
+					Logger.LogDebug("  {Command}", Command.ToString());
 				}
 			}
 			else if (!Result)
@@ -312,20 +315,27 @@ namespace AutomationToolDriver
 		static ParsedCommandLine AutomationToolCommandLine;
 		static StartupTraceListener StartupListener = new StartupTraceListener();
 
-		// Do not add [STAThread] here. It will cause deadlocks in platform automation code.
-		public static int Main(string[] Arguments)
+
+		/// <summary>
+		/// Main entry point
+		/// </summary>
+		/// <remarks>Do not add [STAThread] here. It will cause deadlocks in platform automation code.</remarks>
+		public static async Task<int> Main(string[] Arguments)
 		{
+			ILogger Logger = Log.Logger;
+
 			// Initialize the log system, buffering the output until we can create the log file
 			Log.AddTraceListener(StartupListener);
+			Logger.LogInformation("Starting AutomationTool...");
 
 			// Populate AutomationToolCommandLine and CommandsToExecute
 			try
 			{
-				ParseCommandLine(Arguments);
+				ParseCommandLine(Arguments, Logger);
 			}
 			catch (Exception Ex)
 			{
-				Log.TraceError("Error: " + Ex.Message);
+				Logger.LogError(Ex, "ERROR: " + Ex.Message);
 				return (int)ExitCode.Error_Arguments;
 			}
 
@@ -361,8 +371,23 @@ namespace AutomationToolDriver
 			// Configure log timestamps
 			Log.IncludeTimestamps = AutomationToolCommandLine.IsSetGlobal("-Timestamps");
 
+			// Configure the structured logging event parser with matchers from UBT
+			Assembly UnrealBuildToolAssembly = typeof(UnrealBuildTool.BuildVersion).Assembly;
+			Log.EventParser.AddMatchersFromAssembly(UnrealBuildToolAssembly);
+
+			// when running frmo RunUAT.sh (Mac/Linux) we need to install a Ctrl-C handler, or hitting Ctrl-C from a terminal
+			// can leave dotnet process in a zombie state (some order of process destruction is failing)
+			// by putting this in, the Ctrl-C may not be handled immediately, but it shouldn't leave a zombie process
+			if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
+			{
+				Console.CancelKeyPress += delegate
+				{
+					Console.WriteLine("AutomationTool: Ctrl-C pressed. Exiting...");
+				};
+			}
+
 			// Enter the main program section
-            ExitCode ReturnCode = ExitCode.Success;
+			ExitCode ReturnCode = ExitCode.Success;
 			try
 			{
 				// Set the working directory to the Unreal root directory
@@ -374,34 +399,34 @@ namespace AutomationToolDriver
 				AssemblyUtils.InstallRecursiveAssemblyResolver(PathToBinariesDotNET);
 
 				// Log the operating environment. Since we usually compile to AnyCPU, we may be executed using different system paths under WOW64.
-				Log.TraceVerbose("{2}: Running on {0} as a {1}-bit process.", RuntimePlatform.Current.ToString(), Environment.Is64BitProcess ? 64 : 32, DateTime.UtcNow.ToString("o"));
+				Logger.LogDebug("Running on {Platform} as a {Bitness}-bit process.", RuntimePlatform.Current.ToString(), Environment.Is64BitProcess ? 64 : 32);
 
 				// Log if we're running from the launcher
 				string ExecutingAssemblyLocation = Assembly.GetExecutingAssembly().Location;
 				if (string.Compare(ExecutingAssemblyLocation, Assembly.GetEntryAssembly().GetOriginalLocation(), StringComparison.OrdinalIgnoreCase) != 0)
 				{
-					Log.TraceVerbose("Executed from AutomationToolLauncher ({0})", ExecutingAssemblyLocation);
+					Logger.LogDebug("Executed from AutomationToolLauncher ({Location})", ExecutingAssemblyLocation);
 				}
-				Log.TraceVerbose("CWD={0}", Environment.CurrentDirectory);
+				Logger.LogDebug("CWD={Cwd}", Environment.CurrentDirectory);
 
 				// Log the application version
 				FileVersionInfo Version = AssemblyUtils.ExecutableVersion;
-				Log.TraceVerbose("{0} ver. {1}", Version.ProductName, Version.ProductVersion);
+				Logger.LogDebug("{ProductName} ver. {ProductVersion}", Version.ProductName, Version.ProductVersion);
 
 				bool bWaitForUATMutex = AutomationToolCommandLine.IsSetGlobal("-WaitForUATMutex");
 
 				// Don't allow simultaneous execution of AT (in the same branch)
-				ReturnCode = ProcessSingleton.RunSingleInstance(MainProc, bWaitForUATMutex);
+				ReturnCode = await ProcessSingleton.RunSingleInstanceAsync(MainProc, bWaitForUATMutex, Log.Logger);
 			}
 			catch (Exception Ex)
             {
-				Log.TraceError(ExceptionUtils.FormatException(Ex));
+				Logger.LogError(Ex, "Unhandled exception: {Message}", Ex.Message);
             }
             finally
             {
 				// Write the exit code
-                Log.TraceInformation("AutomationTool executed for {0}", Timer.Elapsed.ToString("h'h 'm'm 's's'"));
-                Log.TraceInformation("AutomationTool exiting with ExitCode={0} ({1})", (int)ReturnCode, ReturnCode);
+                Logger.LogInformation("AutomationTool executed for {Time}", Timer.Elapsed.ToString("h'h 'm'm 's's'"));
+                Logger.LogInformation("AutomationTool exiting with ExitCode={ExitCode} ({ExitReason})", (int)ReturnCode, ReturnCode);
 
                 // Can't use NoThrow here because the code logs exceptions. We're shutting down logging!
                 Trace.Close();
@@ -409,8 +434,11 @@ namespace AutomationToolDriver
             return (int)ReturnCode;
         }
 
-		static ExitCode MainProc()
+		static async Task<ExitCode> MainProc()
 		{
+			ILogger Logger = Log.Logger;
+			Logger.LogInformation("Initializing script modules...");
+			var StartTime = DateTime.UtcNow;
 			string ScriptsForProject = (string)AutomationToolCommandLine.GetValueUnchecked("-ScriptsForProject");
 			List<string> AdditionalScriptDirs = (List<string>) AutomationToolCommandLine.GetValueUnchecked("-ScriptDir");
 			bool bForceCompile = AutomationToolCommandLine.IsSetGlobal("-Compile");
@@ -420,13 +448,24 @@ namespace AutomationToolDriver
 				? null
 				: AutomationToolCommandLine.CommandsToExecute;
 			bool bBuildSuccess;
-			HashSet<FileReference> ScriptModuleAssemblyPaths = InitializeScriptModules(
-					ScriptsForProject, AdditionalScriptDirs, bForceCompile, bNoCompile, bUseBuildRecords, out bBuildSuccess);
+			HashSet<FileReference> ScriptModuleAssemblyPaths = CompileScriptModule.InitializeScriptModules(
+					Rules.RulesFileType.AutomationModule, ScriptsForProject, AdditionalScriptDirs, bForceCompile, bNoCompile, bUseBuildRecords, 
+					out bBuildSuccess, (int Count) =>
+                    {
+						Logger.LogInformation("Building {Count} projects (see Log 'Engine/Programs/AutomationTool/Saved/Logs/Log.txt' for more details)", Count);
+					},
+					Log.Logger);
 
 			if (!bBuildSuccess)
             {
 				return ExitCode.Error_Unknown;
             }
+
+			// when the engine is installed, or UAT is invoked with -NoCompile, we expect to find at least one script module (AutomationUtils is a necessity)
+			if (ScriptModuleAssemblyPaths.Count == 0)
+			{
+				throw new Exception("Found no script module records.");
+			}
 
 			// Load AutomationUtils.Automation.dll
 			FileReference AssemblyPath = ScriptModuleAssemblyPaths.FirstOrDefault(x => x.GetFileNameWithoutExtension().Contains("AutomationUtils.Automation"));
@@ -440,8 +479,9 @@ namespace AutomationToolDriver
 			// Call into AutomationTool.Automation.Process()
 
 			Type AutomationTools_Automation = AutomationUtilsAssembly.GetType("AutomationTool.Automation");
-			MethodInfo Automation_Process = AutomationTools_Automation.GetMethod("Process");
-			return (ExitCode) Automation_Process.Invoke(null,
+			MethodInfo Automation_Process = AutomationTools_Automation.GetMethod("ProcessAsync");
+			Logger.LogInformation("Total script module initialization time: {InitTime:0.00} s.", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
+			return await (Task<ExitCode>) Automation_Process.Invoke(null,
 				new object[] {AutomationToolCommandLine, StartupListener, ScriptModuleAssemblyPaths});
 		}
 	}

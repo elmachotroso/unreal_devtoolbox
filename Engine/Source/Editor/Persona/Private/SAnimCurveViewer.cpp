@@ -7,7 +7,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Layout/WidgetPath.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
@@ -75,7 +75,7 @@ TSharedRef< SWidget > SAnimCurveListRow::GenerateWidgetForColumn( const FName& C
 				[
 					SAssignNew(Item->EditableText, SInlineEditableTextBlock)
 					.OnTextCommitted(AnimCurveViewer.Get(), &SAnimCurveViewer::OnNameCommitted, Item)
-					.ColorAndOpacity(this, &SAnimCurveListRow::GetItemTextColor)
+					.Font(this, &SAnimCurveListRow::GetItemFont)
 					.IsSelected(this, &SAnimCurveListRow::IsSelected)
 					.Text(this, &SAnimCurveListRow::GetItemName)
 					.HighlightText(this, &SAnimCurveListRow::GetFilterText)
@@ -186,13 +186,13 @@ TSharedRef< SWidget > SAnimCurveListRow::GetCurveTypeWidget()
 			.OnCheckStateChanged(this, &SAnimCurveListRow::OnAnimCurveTypeBoxChecked, true)
 			.IsChecked(this, &SAnimCurveListRow::IsAnimCurveTypeBoxChangedChecked, true)
 			.IsEnabled(false)
-			.CheckedImage(FEditorStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
-			.CheckedPressedImage(FEditorStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
-			.UncheckedImage(FEditorStyle::GetBrush("AnimCurveViewer.MorphTargetOff"))
-			.CheckedHoveredImage(FEditorStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
-			.UncheckedHoveredImage(FEditorStyle::GetBrush("AnimCurveViewer.MorphTargetOff"))
+			.CheckedImage(FAppStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
+			.CheckedPressedImage(FAppStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
+			.UncheckedImage(FAppStyle::GetBrush("AnimCurveViewer.MorphTargetOff"))
+			.CheckedHoveredImage(FAppStyle::GetBrush("AnimCurveViewer.MorphTargetOn"))
+			.UncheckedHoveredImage(FAppStyle::GetBrush("AnimCurveViewer.MorphTargetOff"))
 			.ToolTipText(LOCTEXT("CurveTypeMorphTarget_Tooltip", "MorphTarget"))
-			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+			.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 		]
 
 		+SHorizontalBox::Slot()
@@ -204,13 +204,13 @@ TSharedRef< SWidget > SAnimCurveListRow::GetCurveTypeWidget()
 			SNew(SCheckBox)
 			.OnCheckStateChanged(this, &SAnimCurveListRow::OnAnimCurveTypeBoxChecked, false)
 			.IsChecked(this, &SAnimCurveListRow::IsAnimCurveTypeBoxChangedChecked, false)
-			.CheckedImage(FEditorStyle::GetBrush("AnimCurveViewer.MaterialOn"))
-			.CheckedPressedImage(FEditorStyle::GetBrush("AnimCurveViewer.MaterialOn"))
-			.UncheckedImage(FEditorStyle::GetBrush("AnimCurveViewer.MaterialOff"))
-			.CheckedHoveredImage(FEditorStyle::GetBrush("AnimCurveViewer.MaterialOn"))
-			.UncheckedHoveredImage(FEditorStyle::GetBrush("AnimCurveViewer.MaterialOff"))
+			.CheckedImage(FAppStyle::GetBrush("AnimCurveViewer.MaterialOn"))
+			.CheckedPressedImage(FAppStyle::GetBrush("AnimCurveViewer.MaterialOn"))
+			.UncheckedImage(FAppStyle::GetBrush("AnimCurveViewer.MaterialOff"))
+			.CheckedHoveredImage(FAppStyle::GetBrush("AnimCurveViewer.MaterialOn"))
+			.UncheckedHoveredImage(FAppStyle::GetBrush("AnimCurveViewer.MaterialOff"))
 			.ToolTipText(LOCTEXT("CurveTypeMaterial_Tooltip", "Material"))
-			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+			.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 		];
 
 }
@@ -380,14 +380,8 @@ bool SAnimCurveListRow::GetActiveWeight(float& OutWeight) const
 }
 
 
-FSlateColor SAnimCurveListRow::GetItemTextColor() const
+FSlateFontInfo SAnimCurveListRow::GetItemFont() const
 {
-	// If row is selected, show text as black to make it easier to read
-	if (IsSelected())
-	{
-		return FLinearColor(0, 0, 0);
-	}
-
 	// If not selected, show bright if active
 	bool bItemActive = true;
 	if (Item->bAutoFillData)
@@ -398,7 +392,7 @@ FSlateColor SAnimCurveListRow::GetItemTextColor() const
 		bItemActive = (Weight != 0.f);
 	}
 
-	return bItemActive ? FLinearColor(1, 1, 1) : FLinearColor(0.5, 0.5, 0.5);
+	return bItemActive ? FAppStyle::Get().GetFontStyle("NormalFontBoldItalic") : FAppStyle::Get().GetFontStyle("NormalFont");
 }
 
 float SAnimCurveListRow::GetWeight() const 
@@ -975,7 +969,7 @@ void SAnimCurveViewer::CreateAnimCurveTypeList(TSharedRef<SHorizontalBox> Horizo
 	.Padding(3, 1)
 	[
 		SNew(SCheckBox)
-		.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+		.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 		.ToolTipText(LOCTEXT("ShowAllCurvesTooltip", "Show all curves, or only active curves."))
 		.Type(ESlateCheckBoxType::ToggleButton)
 		.IsChecked(this, &SAnimCurveViewer::IsShowingAllCurves)

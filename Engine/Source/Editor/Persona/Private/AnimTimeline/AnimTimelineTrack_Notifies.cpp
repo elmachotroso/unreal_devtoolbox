@@ -1,17 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_Notifies.h"
+#include "AnimTimeline/AnimTimelineTrack_Notifies.h"
 #include "PersonaUtils.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "SAnimNotifyPanel.h"
-#include "AnimTimelineTrack_NotifiesPanel.h"
+#include "AnimTimeline/AnimTimelineTrack_NotifiesPanel.h"
 #include "Widgets/Layout/SBorder.h"
 #include "ScopedTransaction.h"
 #include "Animation/AnimMontage.h"
-#include "AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_Notifies"
 
@@ -28,7 +28,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Notifies::GenerateContainerWidgetForOutli
 	TSharedPtr<SHorizontalBox> InnerHorizontalBox;
 	TSharedRef<SWidget> OutlinerWidget = GenerateStandardOutlinerWidget(InRow, true, OuterBorder, InnerHorizontalBox);
 
-	OuterBorder->SetBorderBackgroundColor(FEditorStyle::GetColor("AnimTimeline.Outliner.HeaderColor"));
+	OuterBorder->SetBorderBackgroundColor(FAppStyle::GetColor("AnimTimeline.Outliner.HeaderColor"));
 
 	UAnimMontage* AnimMontage = Cast<UAnimMontage>(GetModel()->GetAnimSequenceBase());
 	if(!(AnimMontage && AnimMontage->HasParentAsset()))

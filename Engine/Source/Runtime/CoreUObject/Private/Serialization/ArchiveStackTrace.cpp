@@ -21,6 +21,7 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/UObjectGlobals.h"
 #include "Misc/ScopeExit.h"
+#include "Compression/CompressionUtil.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogArchiveDiff, Log, All);
 
@@ -229,11 +230,10 @@ void FArchiveStackTrace::Serialize(void* InData, int64 Num)
 {
 	if (Num)
 	{
-#if UE_BUILD_DEBUG
-		const int32 StackIgnoreCount = 5;
-#else
-		const int32 StackIgnoreCount = 4;
-#endif
+		// Remove this function from the reported stack. Note that all functions that we want to
+		// remove from the stack using this method have to be marked with FORCENOINLINE so they're
+		// there for us to remove and we don't remove meaningful functions above them instead.
+		const int32 StackIgnoreCount = 1;
 
 		static struct FBreakAtOffsetSettings
 		{
@@ -502,30 +502,6 @@ namespace
 	}
 }
 
-namespace ArchiveStackTraceUtils
-{
-	void LogHexDump(const uint8* Bytes, int64 BytesNum, int64 OffsetStart, int64 OffsetEnd)
-	{
-		OffsetStart = FMath::Max(0ll, OffsetStart);
-		OffsetEnd = FMath::Min(BytesNum, OffsetEnd);
-
-		for (int64 Idx = OffsetStart; Idx < OffsetEnd;)
-		{
-			int64 LineOffset = OffsetStart;
-			FString HexString;
-			for (int64 Idx2 = 0; Idx2 < 32 && Idx < OffsetEnd; ++Idx, ++Idx2, ++OffsetStart)
-			{
-				HexString += FString::Printf(TEXT("%02X "), Bytes[Idx]);
-				if ((Idx2 & 7) == 7)
-				{
-					HexString += TEXT(" ");
-				}
-			}
-			UE_LOG(LogArchiveDiff, Display, TEXT("%016X: %s"), LineOffset, *HexString);
-		}
-	}
-}
-
 void FArchiveStackTrace::CompareWithInternal(const FPackageData& SourcePackage, const FPackageData& DestPackage, const TCHAR* AssetFilename, const TCHAR* CallstackCutoffText, const int64 MaxDiffsToLog, int32& InOutDiffsLogged, TMap<FName, FArchiveDiffStats>& OutStats)
 {
 #if !NO_LOGGING
@@ -690,7 +666,7 @@ void FArchiveStackTrace::CompareWithInternal(const FPackageData& SourcePackage, 
 					DestAbsoluteOffset,
 					DestAbsoluteOffset
 				);
-				ArchiveStackTraceUtils::LogHexDump(SourcePackage.Data, SourcePackage.Size, SourceAbsoluteOffset - BytesToLog / 2, SourceAbsoluteOffset + BytesToLog / 2);
+				FCompressionUtil::LogHexDump(SourcePackage.Data, SourcePackage.Size, SourceAbsoluteOffset - BytesToLog / 2, SourceAbsoluteOffset + BytesToLog / 2);
 
 				UE_LOG(
 					LogArchiveDiff,
@@ -701,7 +677,7 @@ void FArchiveStackTrace::CompareWithInternal(const FPackageData& SourcePackage, 
 					DestAbsoluteOffset,
 					DestAbsoluteOffset
 				);
-				ArchiveStackTraceUtils::LogHexDump(DestPackage.Data, DestPackage.Size, DestAbsoluteOffset - BytesToLog / 2, DestAbsoluteOffset + BytesToLog / 2);
+				FCompressionUtil::LogHexDump(DestPackage.Data, DestPackage.Size, DestAbsoluteOffset - BytesToLog / 2, DestAbsoluteOffset + BytesToLog / 2);
 
 				bDifferenceLogged = true;
 			}
@@ -1129,9 +1105,6 @@ FString ConvertItemToText(const FObjectImport& Import, FLinkerLoad* Linker)
 bool CompareTableItem(FLinkerLoad* SourceLinker, FLinkerLoad* DestLinker, const FObjectExport& SourceExport, const FObjectExport& DestExport)
 {
 	if (SourceExport.ObjectName != DestExport.ObjectName ||
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SourceExport.PackageGuid != DestExport.PackageGuid ||
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SourceExport.PackageFlags != DestExport.PackageFlags ||
 		SourceExport.ObjectFlags != DestExport.ObjectFlags ||
 		SourceExport.SerialSize != DestExport.SerialSize ||
@@ -1140,6 +1113,8 @@ bool CompareTableItem(FLinkerLoad* SourceLinker, FLinkerLoad* DestLinker, const 
 		SourceExport.bNotForServer != DestExport.bNotForServer ||
 		SourceExport.bNotAlwaysLoadedForEditorGame != DestExport.bNotAlwaysLoadedForEditorGame ||
 		SourceExport.bIsAsset != DestExport.bIsAsset ||
+		SourceExport.bIsInheritedInstance != DestExport.bIsInheritedInstance ||
+		SourceExport.bGeneratePublicHash != DestExport.bGeneratePublicHash ||
 		!ComparePackageIndices(SourceLinker, DestLinker, SourceExport.TemplateIndex, DestExport.TemplateIndex) ||
 		!ComparePackageIndices(SourceLinker, DestLinker, SourceExport.OuterIndex, DestExport.OuterIndex) ||
 		!ComparePackageIndices(SourceLinker, DestLinker, SourceExport.ClassIndex, DestExport.ClassIndex) ||
@@ -1223,22 +1198,20 @@ bool ComparePackageIndices(FLinkerLoad* SourceLinker, FLinkerLoad* DestLinker, c
 FString ConvertItemToText(const FObjectExport& Export, FLinkerLoad* Linker)
 {
 	FName ClassName = Export.ClassIndex.IsNull() ? FName(NAME_Class) : Linker->ImpExp(Export.ClassIndex).ObjectName;
-	return FString::Printf(TEXT("%s Super: %s, Template: %s, Flags: %d, Size: %lld, PackageGuid: %s, PackageFlags: %d, ForcedExport: %d, NotForClient: %d, NotForServer: %d, NotAlwaysLoadedForEditorGame: %d, IsAsset: %d"),
+	return FString::Printf(TEXT("%s Super: %s, Template: %s, Flags: %d, Size: %lld, PackageFlags: %d, ForcedExport: %d, NotForClient: %d, NotForServer: %d, NotAlwaysLoadedForEditorGame: %d, IsAsset: %d, IsInheritedInstance: %d, GeneratePublicHash: %d"),
 		*GetTableKey(Linker, Export),
 		*GetTableKeyForIndex(Linker, Export.SuperIndex),
 		*GetTableKeyForIndex(Linker, Export.TemplateIndex),
 		(int32)Export.ObjectFlags,
 		Export.SerialSize,
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		*Export.PackageGuid.ToString(),
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		Export.PackageFlags,
 		Export.bForcedExport,
 		Export.bNotForClient,
 		Export.bNotForServer,
 		Export.bNotAlwaysLoadedForEditorGame,
-		Export.bIsAsset
-	);
+		Export.bIsAsset,
+		Export.bIsInheritedInstance,
+		Export.bGeneratePublicHash);
 }
 
 static bool IsExportMapIdentical(FLinkerLoad* SourceLinker, FLinkerLoad* DestLinker)

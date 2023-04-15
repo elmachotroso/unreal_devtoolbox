@@ -2,8 +2,6 @@
 #include "rrCore.h"
 #include "varbits.h"
 
-#if defined(__RADX86__)
-
 RRSTRIPPABLEPUB 
 RADDEFINEDATA const RAD_ALIGN(U32, VarBitsLens[ 33 ], 32 ) =
 {
@@ -33,9 +31,4 @@ RADDEFFUNC void VarBitsCopy(VARBITS* dest,VARBITS* src,U32 size)
   }
 }
 
-#else
-
-char VarbitsLibtoolPacifier;
-
-#endif
 

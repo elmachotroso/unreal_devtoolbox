@@ -3,13 +3,18 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "CoreGlobals.h"
-#include "Misc/AssertionMacros.h"
 #include "HAL/PlatformTLS.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include <atomic>
+
 
 #define ENABLE_MT_DETECTOR DO_CHECK
 
 #if ENABLE_MT_DETECTOR
+
+extern CORE_API bool GIsAutomationTesting;
 
 /**
  * Read write multithread access detector, will check on concurrent write/write and read/write access, but will not on concurrent read access.

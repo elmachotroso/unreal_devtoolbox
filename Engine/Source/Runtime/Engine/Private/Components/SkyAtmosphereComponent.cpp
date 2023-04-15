@@ -16,8 +16,11 @@
 #include "Components/DirectionalLightComponent.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkyAtmosphereComponent)
+
 #if WITH_EDITOR
 #include "ObjectEditorUtils.h"
+#include "Rendering/StaticLightingSystemInterface.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SkyAtmosphereComponent"
@@ -259,6 +262,11 @@ void USkyAtmosphereComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		{
 			SendRenderTransformCommand();
 		}
+
+#if WITH_EDITOR
+		FStaticLightingSystemInterface::OnSkyAtmosphereModified.Broadcast();
+#endif
+
 	}
 }
 
@@ -458,5 +466,6 @@ FVector FSkyAtmosphereSceneProxy::GetAtmosphereLightDirection(int32 AtmosphereLi
 
 
 #undef LOCTEXT_NAMESPACE
+
 
 

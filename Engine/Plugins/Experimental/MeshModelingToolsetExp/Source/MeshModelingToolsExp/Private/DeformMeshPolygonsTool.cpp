@@ -2,15 +2,17 @@
 
 #include "DeformMeshPolygonsTool.h"
 
-#include "InteractiveToolManager.h"
+#include "Curves/RichCurve.h"
 #include "DynamicMesh/MeshNormals.h"
-#include "ModelingOperators/Public/ModelingTaskTypes.h"
+#include "InteractiveToolManager.h"
+#include "ModelingTaskTypes.h"
+#include "ModelingToolTargetUtil.h"
 #include "Solvers/ConstrainedMeshDeformer.h"
 #include "ToolBuilderUtil.h"
-#include "ToolSetupUtil.h"
 #include "ToolSceneQueriesUtil.h"
-#include "ModelingToolTargetUtil.h"
-#include "Curves/RichCurve.h"
+#include "ToolSetupUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DeformMeshPolygonsTool)
 
 using namespace UE::Geometry;
 
@@ -833,11 +835,6 @@ UDeformMeshPolygonsTool::UDeformMeshPolygonsTool()
 	UInteractiveTool::SetToolDisplayName(LOCTEXT("DeformPolygroupsToolName", "PolyGroup Deform"));
 }
 
-void UDeformMeshPolygonsTool::SetWorld(UWorld* World)
-{
-	TargetWorld = World;
-}
-
 void UDeformMeshPolygonsTool::Setup()
 {
 	UMeshSurfacePointTool::Setup();
@@ -845,7 +842,7 @@ void UDeformMeshPolygonsTool::Setup()
 	LaplacianDeformer = MakePimpl<FGroupTopologyLaplacianDeformer>();
 
 	// create dynamic mesh component to use for live preview
-	check(TargetWorld);
+	check(TargetWorld.IsValid());
 	FActorSpawnParameters SpawnInfo;
 	PreviewMeshActor = TargetWorld->SpawnActor<AInternalToolFrameworkActor>(FVector::ZeroVector, FRotator::ZeroRotator, SpawnInfo);
 
@@ -1681,3 +1678,4 @@ void UDeformMeshPolygonsTool::EndChange()
 
 
 #undef LOCTEXT_NAMESPACE
+

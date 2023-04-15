@@ -3,10 +3,13 @@
 #include "VisualStudioSourceCodeAccessModule.h"
 #include "Features/IModularFeatures.h"
 #include "Modules/ModuleManager.h"
+#include "HAL/LowLevelMemTracker.h"
 
 IMPLEMENT_MODULE( FVisualStudioSourceCodeAccessModule, VisualStudioSourceCodeAccess );
 
 #define LOCTEXT_NAMESPACE "VisualStudioSourceCodeAccessor"
+
+LLM_DEFINE_TAG(VisualStudioSourceCodeAccess);
 
 FVisualStudioSourceCodeAccessModule::FVisualStudioSourceCodeAccessModule()
 	: VisualStudioSourceCodeAccessor(MakeShareable(new FVisualStudioSourceCodeAccessor()))
@@ -15,14 +18,14 @@ FVisualStudioSourceCodeAccessModule::FVisualStudioSourceCodeAccessModule()
 
 void FVisualStudioSourceCodeAccessModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(VisualStudioSourceCodeAccess);
+
 	VisualStudioSourceCodeAccessor->Startup();
 
 	// Add all the explicit version wrappers. If one of these is selected, UBT will generate project files in the appropriate format. Editor behavior is still to detect which version to use
 	// from the solution on disk.
 	RegisterWrapper("VisualStudio2022", LOCTEXT("VisualStudio2022", "Visual Studio 2022"), LOCTEXT("UsingVisualStudio2022", "Open source code files in Visual Studio 2022"));
 	RegisterWrapper("VisualStudio2019", LOCTEXT("VisualStudio2019", "Visual Studio 2019"), LOCTEXT("UsingVisualStudio2019", "Open source code files in Visual Studio 2019"));
-	RegisterWrapper("VisualStudio2017", LOCTEXT("VisualStudio2017", "Visual Studio 2017"), LOCTEXT("UsingVisualStudio2017", "Open source code files in Visual Studio 2017"));
-	RegisterWrapper("VisualStudio2015", LOCTEXT("VisualStudio2015", "Visual Studio 2015"), LOCTEXT("UsingVisualStudio2015", "Open source code files in Visual Studio 2015"));
 
 	// Bind our source control provider to the editor
 	IModularFeatures::Get().RegisterModularFeature(TEXT("SourceCodeAccessor"), &VisualStudioSourceCodeAccessor.Get() );

@@ -14,7 +14,7 @@ inline float Burley_ScatteringProfile(float r, float A,float S, float L)
 {   //2PIR(r)r
 	float D = 1 / S;
 	float R = r / L;
-	const float Inv8Pi = 1.0 / (8 * PI);
+	const float Inv8Pi = 1.0 / (8 * UE_PI);
 	float NegRbyD = -R / D;
 	float RrDotR = A*FMath::Max((exp(NegRbyD) + exp(NegRbyD / 3.0)) / (D*L)*Inv8Pi, 0.0);
 	return RrDotR;
@@ -111,6 +111,16 @@ FVector GetSearchLightDiffuseScalingFactor(FLinearColor SurfaceAlbedo)
 	);
 }
 
+FLinearColor GetMeanFreePathFromDiffuseMeanFreePath(FLinearColor SurfaceAlbedo, FLinearColor DiffuseMeanFreePath)
+{
+	return DiffuseMeanFreePath * FLinearColor(GetPerpendicularScalingFactor(SurfaceAlbedo) / GetSearchLightDiffuseScalingFactor(SurfaceAlbedo));
+}
+
+FLinearColor GetDiffuseMeanFreePathFromMeanFreePath(FLinearColor SurfaceAlbedo, FLinearColor MeanFreePath)
+{
+	return MeanFreePath * FLinearColor(GetSearchLightDiffuseScalingFactor(SurfaceAlbedo) / GetPerpendicularScalingFactor(SurfaceAlbedo));
+}
+
 void ComputeMirroredBSSSKernel(FLinearColor* TargetBuffer, uint32 TargetBufferSize,
 	FLinearColor SurfaceAlbedo, FLinearColor DiffuseMeanFreePath, float ScatterRadius)
 {
@@ -158,8 +168,9 @@ void ComputeMirroredBSSSKernel(FLinearColor* TargetBuffer, uint32 TargetBufferSi
 			kernel[i].B = t.Z;
 		}
 
-		// We still need to do a small tweak to get the radius to visually match. Multiplying by 4.0 seems to fix it.
-		const float StepScale = 4.0f;
+		// We still need to do a small tweak to get the radius to visually match. Multiplying by 2.0 seems to fix it.
+		// Match that in GetSubsurfaceProfileKernel in PostProcessSubsurface.usf
+		const float StepScale = 2.0f;
 		for (int32 i = 0; i < nTotalSamples; i++)
 		{
 			kernel[i].A *= StepScale;

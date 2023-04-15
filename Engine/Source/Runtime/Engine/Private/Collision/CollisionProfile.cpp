@@ -9,6 +9,8 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CollisionProfile)
+
 DEFINE_LOG_CATEGORY_STATIC(LogCollisionProfile, Warning, All)
 
 #define MIN_CUSTOMIZABLE_COLLISIONCHANNEL	ECC_GameTraceChannel1
@@ -279,7 +281,7 @@ void UCollisionProfile::LoadProfileConfig(bool bForceInit)
 	// before any op, verify if profiles contains invalid name - such as Custom profile name - remove all of them
 	for (auto Iter=Profiles.CreateConstIterator(); Iter; ++Iter)
 	{
-		// make sure it doens't have any 
+		// make sure it doesn't have any 
 		if (Iter->Name == CustomCollisionProfileName)
 		{
 			UE_LOG(LogCollisionProfile, Error, TEXT("Profiles contain invalid name : %s is reserved for internal use"), *CustomCollisionProfileName.ToString());
@@ -847,3 +849,4 @@ bool FCollisionProfilePrivateAccessor::AddProfileTemplate(FCollisionResponseTemp
 	}
 	return false;
 }
+

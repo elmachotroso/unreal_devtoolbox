@@ -11,6 +11,8 @@
 
 #include "Net/UnrealNetwork.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ConversationInstance)
+
 //@TODO: CONVERSATION: Assert or otherwise guard all the Server* functions to only execute on the authority
 
 //////////////////////////////////////////////////////////////////////
@@ -215,8 +217,7 @@ void UConversationInstance::ServerAdvanceConversation(const FAdvanceConversation
 			}
 			else
 			{
-				UE_LOG(LogCommonConversationRuntime, Error, TEXT("User picked option %s but it's not a legal output, aborting"), *InChoicePicked.ToString());
-				ServerAbortConversation();
+				OnInvalidBranchChoice(InChoicePicked);
 				return;
 			}
 		}
@@ -280,6 +281,12 @@ void UConversationInstance::ServerAdvanceConversation(const FAdvanceConversation
 	{
 		UE_LOG(LogCommonConversationRuntime, Error, TEXT("ServerAdvanceConversation called when the conversation is not active"));
 	}
+}
+
+void UConversationInstance::OnInvalidBranchChoice(const FAdvanceConversationRequest& InChoicePicked)
+{
+	UE_LOG(LogCommonConversationRuntime, Error, TEXT("User picked option %s but it's not a legal output, aborting"), *InChoicePicked.ToString());
+	ServerAbortConversation();
 }
 
 void UConversationInstance::ServerAbortConversation()

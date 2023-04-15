@@ -7,7 +7,7 @@
 #include "USDStageModule.h"
 #include "USDTypesConversion.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #include "Engine/World.h"
 #include "Modules/ModuleManager.h"
@@ -37,7 +37,7 @@ TSharedRef< SWidget > SUsdReferenceRow::GenerateWidgetForColumn( const FName& Co
 	{
 		SAssignNew( ColumnWidget, STextBlock )
 		.Text( FText::FromString( Reference->AssetPath ) )
-		.Font( FEditorStyle::GetFontStyle( UsdReferencesListConstants::NormalFont ) );
+		.Font( FAppStyle::GetFontStyle( UsdReferencesListConstants::NormalFont ) );
 	}
 
 	return SNew( SBox )
@@ -55,10 +55,8 @@ TSharedRef< SWidget > SUsdReferenceRow::GenerateWidgetForColumn( const FName& Co
 		];
 }
 
-void SUsdReferencesList::Construct( const FArguments& InArgs, const UE::FUsdStageWeak& UsdStage, const TCHAR* PrimPath )
+void SUsdReferencesList::Construct( const FArguments& InArgs )
 {
-	ViewModel.UpdateReferences( UsdStage, PrimPath );
-
 	SAssignNew( HeaderRowWidget, SHeaderRow )
 
 	+SHeaderRow::Column( FName( TEXT("AssetPath") ) )
@@ -72,6 +70,8 @@ void SUsdReferencesList::Construct( const FArguments& InArgs, const UE::FUsdStag
 		.OnGenerateRow( this, &SUsdReferencesList::OnGenerateRow )
 		.HeaderRow( HeaderRowWidget )
 	);
+
+	SetVisibility( EVisibility::Collapsed ); // Start hidden until SetPrimPath displays us
 }
 
 TSharedRef< ITableRow > SUsdReferencesList::OnGenerateRow( TSharedPtr< FUsdReference > InDisplayNode, const TSharedRef< STableViewBase >& OwnerTable )
@@ -82,6 +82,9 @@ TSharedRef< ITableRow > SUsdReferencesList::OnGenerateRow( TSharedPtr< FUsdRefer
 void SUsdReferencesList::SetPrimPath( const UE::FUsdStageWeak& UsdStage, const TCHAR* PrimPath )
 {
 	ViewModel.UpdateReferences( UsdStage, PrimPath );
+
+	SetVisibility( ViewModel.References.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed );
+
 	RequestListRefresh();
 }
 

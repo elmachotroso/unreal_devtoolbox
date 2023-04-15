@@ -44,7 +44,16 @@ bool FFileHelper::LoadFileToArray( TArray<uint8>& Result, const TCHAR* Filename,
 		}
 		return false;
 	}
-	int32 TotalSize = (int32)Reader->TotalSize();
+	int64 TotalSize64 = Reader->TotalSize();
+	if ( TotalSize64+2 > MAX_int32 )
+	{
+		if (!(Flags & FILEREAD_Silent))
+		{
+			UE_LOG(LogStreaming,Error,TEXT("File '%s' is too large for 32-bit reader (%lld), use TArray64."),Filename,TotalSize64);
+		}
+		return false;
+	}
+	int32 TotalSize = (int32)TotalSize64;
 	// Allocate slightly larger than file size to avoid re-allocation when caller null terminates file buffer
 	Result.Reset( TotalSize + 2 );
 	Result.AddUninitialized( TotalSize );
@@ -134,7 +143,7 @@ void FFileHelper::BufferToString( FString& Result, const uint8* Buffer, int32 Si
 	else
 	{
 		// Else ensure null terminator is present
-		ResultArray.Last() = 0;
+		ResultArray.Last() = TCHAR('\0');
 
 		if (bIsUnicode)
 		{
@@ -607,7 +616,10 @@ bool FFileHelper::SaveStringToFile( FStringView String, const TCHAR* Filename,  
 		return false;
 
 	if( String.IsEmpty() )
+	{
+		Ar->Close();
 		return true;
+	}
 
 	bool SaveAsUnicode = EncodingOptions == EEncodingOptions::ForceUnicode || ( EncodingOptions == EEncodingOptions::AutoDetect && !FCString::IsPureAnsi(String.GetData(), String.Len()) );
 	if( EncodingOptions == EEncodingOptions::ForceUTF8 )
@@ -748,7 +760,7 @@ void FFileHelper::GenerateDateTimeBasedBitmapFilename(const FString& Pattern, co
  * @return true if success
  */
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-bool FFileHelper::CreateBitmap(const TCHAR* Pattern, int32 SourceWidth, int32 SourceHeight, const FColor* Data, struct FIntRect* SubRectangle, IFileManager* FileManager /*= &IFileManager::Get()*/, FString* OutFilename /*= NULL*/, bool bInWriteAlpha /*= false*/, EChannelMask ChannelMask /*= All */)
+bool FFileHelper::CreateBitmap(const TCHAR* Pattern, int32 SourceWidth, int32 SourceHeight, const FColor* Data, FIntRect* SubRectangle, IFileManager* FileManager /*= &IFileManager::Get()*/, FString* OutFilename /*= NULL*/, bool bInWriteAlpha /*= false*/, EChannelMask ChannelMask /*= All */)
 {
 	EColorChannel ColorChannel = EColorChannel::All;
 	if (ChannelMask != EChannelMask::All)
@@ -766,7 +778,7 @@ bool FFileHelper::CreateBitmap(const TCHAR* Pattern, int32 SourceWidth, int32 So
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-bool FFileHelper::CreateBitmap( const TCHAR* Pattern, int32 SourceWidth, int32 SourceHeight, const FColor* Data, struct FIntRect* SubRectangle, IFileManager* FileManager, FString* OutFilename, bool bInWriteAlpha, EColorChannel ColorChannel)
+bool FFileHelper::CreateBitmap( const TCHAR* Pattern, int32 SourceWidth, int32 SourceHeight, const FColor* Data, FIntRect* SubRectangle, IFileManager* FileManager, FString* OutFilename, bool bInWriteAlpha, EColorChannel ColorChannel)
 {
 	FIntRect Src(0, 0, SourceWidth, SourceHeight);
 	if (SubRectangle == NULL || SubRectangle->Area() == 0)
@@ -893,6 +905,8 @@ bool FFileHelper::CreateBitmap( const TCHAR* Pattern, int32 SourceWidth, int32 S
 		}
 
 		// Colors.
+		// @todo fix me : calling Serialize per byte = insanely slow
+		//	BmpImageWrapper now has a good writer, prefer that ; use FImageUtils::SaveImage
 		for( int32 i = SubRectangle->Max.Y - 1; i >= SubRectangle->Min.Y; i-- )
 		{
 			for( int32 j = SubRectangle->Min.X; j < SubRectangle->Max.X; j++ )

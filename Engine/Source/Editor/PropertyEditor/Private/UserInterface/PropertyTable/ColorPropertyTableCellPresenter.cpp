@@ -1,16 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyTable/ColorPropertyTableCellPresenter.h"
-#include "Layout/Margin.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
-#include "IPropertyTableUtilities.h"
 
-#include "UserInterface/PropertyEditor/SPropertyEditorColor.h"
+#include "HAL/Platform.h"
+#include "IPropertyTableUtilities.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Presentation/PropertyEditor/PropertyEditor.h"
+#include "PropertyHandle.h"
 #include "SResetToDefaultPropertyEditor.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorColor.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+
+class SWidget;
 
 FColorPropertyTableCellPresenter::FColorPropertyTableCellPresenter( const TSharedRef< class FPropertyEditor >& InPropertyEditor, const TSharedRef< class IPropertyTableUtilities >& InPropertyUtilities )
 	: PropertyEditor( InPropertyEditor )
@@ -27,7 +35,7 @@ TSharedRef< class SWidget > FColorPropertyTableCellPresenter::ConstructDisplayWi
 		.VAlign( VAlign_Center )
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "PropertyTable.CellEditing.Background" ) )
+			.BorderImage( FAppStyle::GetBrush( "PropertyTable.CellEditing.Background" ) )
 			.Padding( 1 )
 			.Content()
 			[

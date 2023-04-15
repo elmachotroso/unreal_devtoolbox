@@ -12,10 +12,10 @@ namespace TraceServices
 
 class IAnalysisSession;
 class FThreadProvider;
-class FBookmarkProvider;
 class FLogProvider;
 class FFrameProvider;
 class FChannelProvider;
+class FScreenshotProvider;
 
 class FMiscTraceAnalyzer
 	: public UE::Trace::IAnalyzer
@@ -23,10 +23,10 @@ class FMiscTraceAnalyzer
 public:
 	FMiscTraceAnalyzer(IAnalysisSession& Session,
 					   FThreadProvider& ThreadProvider,
-					   FBookmarkProvider& BookmarkProvider,
 					   FLogProvider& LogProvider,
 					   FFrameProvider& FrameProvider, 
-					   FChannelProvider& ChannelProvider);
+					   FChannelProvider& ChannelProvider,
+					   FScreenshotProvider& ScreenshotProvider);
 	virtual void OnAnalysisBegin(const FOnAnalysisContext& Context) override;
 	virtual void OnThreadInfo(const FThreadInfo& ThreadInfo) override;
 	virtual bool OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context) override;
@@ -49,6 +49,8 @@ private:
 		RouteId_EndRenderFrame,
 		RouteId_ChannelAnnounce,
 		RouteId_ChannelToggle,
+		RouteId_ScreenshotHeader,
+		RouteId_ScreenshotChunk,
 	};
 
 	struct FThreadState
@@ -62,12 +64,13 @@ private:
 
 	IAnalysisSession& Session;
 	FThreadProvider& ThreadProvider;
-	FBookmarkProvider& BookmarkProvider;
 	FLogProvider& LogProvider;
 	FFrameProvider& FrameProvider;
 	FChannelProvider& ChannelProvider;
+	FScreenshotProvider& ScreenshotProvider;
 	TMap<uint32, TSharedRef<FThreadState>> ThreadStateMap;
 	uint64 LastFrameCycle[TraceFrameType_Count] = { 0, 0 };
+	uint64 ScreenshotLogCategoryId = uint64(-1);
 };
 
 

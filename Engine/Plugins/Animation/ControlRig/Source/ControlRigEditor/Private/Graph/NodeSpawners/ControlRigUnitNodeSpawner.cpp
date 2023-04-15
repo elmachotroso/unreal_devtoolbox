@@ -6,7 +6,7 @@
 #include "Graph/ControlRigGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor/EditorEngine.h"
 #include "ObjectEditorUtils.h"
 #include "EditorCategoryUtils.h"
@@ -14,9 +14,16 @@
 #include "BlueprintNodeTemplateCache.h"
 #include "ControlRigBlueprintUtils.h"
 #include "ScopedTransaction.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_BeginExecution.h"
+#include "Units/Execution/RigUnit_BeginExecution.h"
 #include "ControlRig.h"
 #include "Settings/ControlRigSettings.h"
+#include "Units/Execution/RigUnit_BeginExecution.h"
+#include "Units/Execution/RigUnit_InverseExecution.h"
+#include "Units/Execution/RigUnit_PrepareForExecution.h"
+#include "Units/Execution/RigUnit_InteractionExecution.h"
+#include "Units/Execution/RigUnit_UserDefinedEvent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigUnitNodeSpawner)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -37,17 +44,17 @@ UControlRigUnitNodeSpawner* UControlRigUnitNodeSpawner::CreateFromStruct(UScript
 	MenuSignature.Tooltip  = InTooltip;
 	MenuSignature.Category = InCategory;
 
-	FString KeywordsMetadata, PrototypeNameMetadata;
+	FString KeywordsMetadata, TemplateNameMetadata;
 	InStruct->GetStringMetaDataHierarchical(FRigVMStruct::KeywordsMetaName, &KeywordsMetadata);
-	if(!PrototypeNameMetadata.IsEmpty())
+	if(!TemplateNameMetadata.IsEmpty())
 	{
 		if(KeywordsMetadata.IsEmpty())
 		{
-			KeywordsMetadata = PrototypeNameMetadata;
+			KeywordsMetadata = TemplateNameMetadata;
 		}
 		else
 		{
-			KeywordsMetadata = KeywordsMetadata + TEXT(",") + PrototypeNameMetadata;
+			KeywordsMetadata = KeywordsMetadata + TEXT(",") + TemplateNameMetadata;
 		}
 	}
 	MenuSignature.Keywords = FText::FromString(KeywordsMetadata);
@@ -63,7 +70,52 @@ UControlRigUnitNodeSpawner* UControlRigUnitNodeSpawner::CreateFromStruct(UScript
 	}
 
 	// @TODO: should use details customization-like extensibility system to provide editor only data like this
-	MenuSignature.Icon = FSlateIcon(TEXT("ControlRigEditorStyle"), TEXT("ControlRig.RigUnit"));
+	FStructOnScope StructScope(InStruct);
+	const FRigVMStruct* StructInstance = (const FRigVMStruct*)StructScope.GetStructMemory();
+	if(StructInstance->GetEventName().IsNone())
+	{
+		if(InStruct->HasMetaDataHierarchical(FRigVMStruct::IconMetaName))
+		{
+			FString IconPath;
+			const int32 NumOfIconPathNames = 4;
+			
+			FName IconPathNames[NumOfIconPathNames] = {
+				NAME_None, // StyleSetName
+				NAME_None, // StyleName
+				NAME_None, // SmallStyleName
+				NAME_None  // StatusOverlayStyleName
+			};
+
+			InStruct->GetStringMetaDataHierarchical(FRigVMStruct::IconMetaName, &IconPath);
+
+			int32 NameIndex = 0;
+
+			while (!IconPath.IsEmpty() && NameIndex < NumOfIconPathNames)
+			{
+				FString Left;
+				FString Right;
+
+				if (!IconPath.Split(TEXT("|"), &Left, &Right))
+				{
+					Left = IconPath;
+				}
+
+				IconPathNames[NameIndex] = FName(*Left);
+
+				NameIndex++;
+				IconPath = Right;
+			}
+			MenuSignature.Icon = FSlateIcon(IconPathNames[0], IconPathNames[1], IconPathNames[2], IconPathNames[3]);
+		}
+		else
+		{
+			MenuSignature.Icon = FSlateIcon(TEXT("ControlRigEditorStyle"), TEXT("ControlRig.RigUnit"));
+		}
+	}
+	else
+	{
+		MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
+	}
 
 	return NodeSpawner;
 }
@@ -108,20 +160,6 @@ UEdGraphNode* UControlRigUnitNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 	return NewNode;
 }
 
-bool UControlRigUnitNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActionFilter const& Filter) const
-{
-	if (StructTemplate)
-	{
-		FString DeprecatedMetadata;
-		StructTemplate->GetStringMetaDataHierarchical(FRigVMStruct::DeprecatedMetaName, &DeprecatedMetadata);
-		if (!DeprecatedMetadata.IsEmpty())
-		{
-			return true;
-		}
-	}
-	return Super::IsTemplateNodeFilteredOut(Filter);
-}
-
 UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, UScriptStruct* StructTemplate, FVector2D const Location)
 {
 	UControlRigGraphNode* NewNode = nullptr;
@@ -131,10 +169,46 @@ UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGrap
 	if (RigBlueprint != nullptr && RigGraph != nullptr)
 	{
 		bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
-		bool const bUndo = !bIsTemplateNode;
+		bool const bIsUserFacingNode = !bIsTemplateNode;
 
-		FName Name = bIsTemplateNode ? *StructTemplate->GetDisplayNameText().ToString() : FControlRigBlueprintUtils::ValidateName(RigBlueprint, StructTemplate->GetFName().ToString());
+		FName Name = bIsTemplateNode ? *StructTemplate->GetStructCPPName() : FControlRigBlueprintUtils::ValidateName(RigBlueprint, StructTemplate->GetFName().ToString());
+
+		FStructOnScope StructScope(StructTemplate);
+		const FRigVMStruct* StructInstance = (const FRigVMStruct*)StructScope.GetStructMemory();
+		const FName EventName = StructInstance->GetEventName();
+
+		// events can only exist once across all uber graphs
+		if(bIsUserFacingNode)
+		{
+			if(!EventName.IsNone())
+			{
+				if(StructInstance->CanOnlyExistOnce() &&
+					(StructTemplate != FRigUnit_UserDefinedEvent::StaticStruct()))
+				{
+					const TArray<URigVMGraph*> Models = RigBlueprint->GetAllModels();
+					for(URigVMGraph* Model : Models)
+					{
+						if(Model->IsRootGraph() && !Model->IsA<URigVMFunctionLibrary>())
+						{
+							for(const URigVMNode* Node : Model->GetNodes())
+							{
+								if(Node->GetEventName() == EventName)
+								{
+									RigBlueprint->OnRequestJumpToHyperlink().Execute(Node);
+									return nullptr;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		
 		URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->GetController(ParentGraph);
+		if(Controller == nullptr)
+		{
+			return nullptr;
+		}
 
 		if (!bIsTemplateNode)
 		{
@@ -144,13 +218,47 @@ UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGrap
 		FRigVMUnitNodeCreatedContext& UnitNodeCreatedContext = Controller->GetUnitNodeCreatedContext();
 		FRigVMUnitNodeCreatedContext::FScope ReasonScope(UnitNodeCreatedContext, ERigVMNodeCreatedReason::NodeSpawner);
 
-		if (URigVMUnitNode* ModelNode = Controller->AddUnitNode(StructTemplate, FRigUnit::GetMethodName(), Location, Name.ToString(), bUndo, !bIsTemplateNode))
+		if (URigVMUnitNode* ModelNode = Controller->AddUnitNode(StructTemplate, FRigUnit::GetMethodName(), Location, Name.ToString(), bIsUserFacingNode, !bIsTemplateNode))
 		{
 			NewNode = Cast<UControlRigGraphNode>(RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()));
 			check(NewNode);
 
-			if (NewNode && bUndo)
+			if (NewNode && bIsUserFacingNode)
 			{
+				if(StructTemplate == FRigUnit_UserDefinedEvent::StaticStruct())
+				{
+					// ensure uniqueness for the event name
+					TArray<FName> ExistingEventNames = {
+						FRigUnit_BeginExecution::EventName,
+						FRigUnit_InverseExecution::EventName,
+						FRigUnit_PrepareForExecution::EventName,
+						FRigUnit_InteractionExecution::EventName
+					};
+
+					const TArray<URigVMGraph*> Models = RigBlueprint->GetAllModels();
+					for(URigVMGraph* Model : Models)
+					{
+						for(const URigVMNode* Node : Model->GetNodes())
+						{
+							if(Node != ModelNode)
+							{
+								const FName ExistingEventName = Node->GetEventName();
+								if(!ExistingEventName.IsNone())
+								{
+									ExistingEventNames.AddUnique(ExistingEventName);
+								}
+							}
+						}
+					}
+
+					FName SafeEventName = URigVMController::GetUniqueName(EventName, [ExistingEventNames](const FName& NameToCheck) -> bool
+					{
+						return !ExistingEventNames.Contains(NameToCheck);
+					}, false, true);
+
+					Controller->SetPinDefaultValue(ModelNode->FindPin(TEXT("EventName"))->GetPinPath(), SafeEventName.ToString(), false, true, false, true);
+				}
+
 				Controller->ClearNodeSelection(true);
 				Controller->SelectNode(ModelNode, true, true);
 
@@ -168,7 +276,7 @@ UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGrap
 					for (const TPair<FString, bool>& Pair : ExpansionMap.Values)
 					{
 						FString PinPath = FString::Printf(TEXT("%s.%s"), *ModelNode->GetName(), *Pair.Key);
-						Controller->SetPinExpansion(PinPath, Pair.Value, bUndo);
+						Controller->SetPinExpansion(PinPath, Pair.Value, bIsUserFacingNode);
 					}
 				}
 
@@ -213,14 +321,18 @@ UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGrap
 			}
 #endif
 
-			if (bUndo)
+			if (bIsUserFacingNode)
 			{
 				Controller->CloseUndoBracket();
+			}
+			else
+			{
+				Controller->RemoveNode(ModelNode, false);
 			}
 		}
 		else
 		{
-			if (bUndo)
+			if (bIsUserFacingNode)
 			{
 				Controller->CancelUndoBracket();
 			}
@@ -321,3 +433,4 @@ void UControlRigUnitNodeSpawner::HookupMutableNode(URigVMNode* InModelNode, UCon
 }
 
 #undef LOCTEXT_NAMESPACE
+

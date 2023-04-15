@@ -5,6 +5,8 @@
 #include "ReflexLatencyMarkers.h"
 #include "ReflexMaxTickRateHandler.h"	
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ReflexBlueprint)
+
 UReflexBlueprintLibrary::UReflexBlueprintLibrary(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -92,7 +94,9 @@ float UReflexBlueprintLibrary::GetGameToRenderLatencyInMs()
 		.GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		return LatencyMarkerModule->GetTotalLatencyInMs();
+		const float Latency = LatencyMarkerModule->GetTotalLatencyInMs();
+		if (Latency > 0.f)
+			return Latency;
 	}
 
 	return 0.f;
@@ -104,7 +108,9 @@ float UReflexBlueprintLibrary::GetGameLatencyInMs()
 		.GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		return LatencyMarkerModule->GetGameLatencyInMs();
+		const float Latency = LatencyMarkerModule->GetGameLatencyInMs();
+		if (Latency > 0.f)
+			return Latency;
 	}
 
 	return 0.f;
@@ -116,8 +122,11 @@ float UReflexBlueprintLibrary::GetRenderLatencyInMs()
 		.GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		return LatencyMarkerModule->GetRenderLatencyInMs();
+		const float Latency = LatencyMarkerModule->GetRenderLatencyInMs();
+		if (Latency > 0.f)
+			return Latency;
 	}
 
 	return 0.f;
 }
+

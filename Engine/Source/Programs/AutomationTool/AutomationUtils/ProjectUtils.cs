@@ -10,6 +10,8 @@ using System.Diagnostics;
 using EpicGames.Core;
 using System.Reflection;
 using UnrealBuildBase;
+using System.Runtime.Serialization;
+using System.Collections;
 
 namespace AutomationTool
 {
@@ -75,7 +77,60 @@ namespace AutomationTool
 	/// </summary>
 	public class ProjectUtils
 	{
-		private static Dictionary<string, ProjectProperties> PropertiesCache = new Dictionary<string, ProjectProperties>(StringComparer.InvariantCultureIgnoreCase);
+
+		/// <summary>
+		/// Struct that acts as a key for the project property cache. Based on these attributes 
+		/// DetectProjectProperties may return different answers, e.g. Some platforms require a 
+		///  codebased project for targets
+		/// </summary>
+		struct PropertyCacheKey : IEquatable<PropertyCacheKey>
+		{
+			string ProjectName;
+
+			UnrealTargetPlatform[] TargetPlatforms;
+
+			UnrealTargetConfiguration[] TargetConfigurations;
+
+			public PropertyCacheKey(string InProjectName, IEnumerable<UnrealTargetPlatform> InTargetPlatforms, IEnumerable<UnrealTargetConfiguration> InTargetConfigurations)
+			{
+				ProjectName = InProjectName.ToLower();
+				TargetPlatforms = InTargetPlatforms != null ? InTargetPlatforms.ToArray() : new UnrealTargetPlatform[0];
+				TargetConfigurations = InTargetConfigurations != null ? InTargetConfigurations.ToArray() : new UnrealTargetConfiguration[0];
+			}
+
+			public bool Equals(PropertyCacheKey Other)
+			{
+				return ProjectName == Other.ProjectName &&
+						StructuralComparisons.StructuralEqualityComparer.Equals(TargetPlatforms, Other.TargetPlatforms) &&
+						StructuralComparisons.StructuralEqualityComparer.Equals(TargetConfigurations, Other.TargetConfigurations);
+			}
+
+			public override bool Equals(object Other)
+			{
+				return Other is PropertyCacheKey OtherKey && Equals(OtherKey);
+			}
+
+			public override int GetHashCode()
+			{
+				return HashCode.Combine(
+					ProjectName.GetHashCode(),
+					StructuralComparisons.StructuralEqualityComparer.GetHashCode(TargetPlatforms),
+					StructuralComparisons.StructuralEqualityComparer.GetHashCode(TargetConfigurations));
+			}
+
+			public static bool operator==(PropertyCacheKey A, PropertyCacheKey B)
+			{
+				return A.Equals(B);
+			}
+
+			public static bool operator!=(PropertyCacheKey A, PropertyCacheKey B)
+			{
+				return !(A == B);
+			}
+		}
+
+
+		private static Dictionary<PropertyCacheKey, ProjectProperties> PropertiesCache = new Dictionary<PropertyCacheKey, ProjectProperties>();
 
 		/// <summary>
 		/// Gets a short project name (QAGame, Elemental, etc)
@@ -113,10 +168,12 @@ namespace AutomationTool
 				ProjectKey = CommandUtils.ConvertSeparators(PathSeparator.Slash, RawProjectPath.FullName);
 			}
 			ProjectProperties Properties;
-			if (PropertiesCache.TryGetValue(ProjectKey, out Properties) == false)
+			PropertyCacheKey PropertyKey = new PropertyCacheKey(ProjectKey, ClientTargetPlatforms, ClientTargetConfigurations);
+
+			if (PropertiesCache.TryGetValue(PropertyKey, out Properties) == false)
 			{
                 Properties = DetectProjectProperties(RawProjectPath, ClientTargetPlatforms, ClientTargetConfigurations, AssetNativizationRequested);
-				PropertiesCache.Add(ProjectKey, Properties);
+				PropertiesCache.Add(PropertyKey, Properties);
 			}
 			return Properties;
 		}
@@ -126,9 +183,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="RawProjectPath">Full project path.</param>
 		/// <returns>True if the project is a UProject file with source code.</returns>
-		public static bool IsCodeBasedUProjectFile(FileReference RawProjectPath, List<UnrealTargetConfiguration> ClientTargetConfigurations = null)
+		public static bool IsCodeBasedUProjectFile(FileReference RawProjectPath, List<UnrealTargetPlatform> ClientTargetPlatforms = null, List < UnrealTargetConfiguration> ClientTargetConfigurations = null)
 		{
-			return GetProjectProperties(RawProjectPath, null, ClientTargetConfigurations).bIsCodeBasedProject;
+			return GetProjectProperties(RawProjectPath, ClientTargetPlatforms, ClientTargetConfigurations).bIsCodeBasedProject;
+		}
+
+		/// <summary>
+		/// Checks if the project is a UProject file with source code.
+		/// </summary>
+		/// <param name="RawProjectPath">Full project path.</param>
+		/// <returns>True if the project is a UProject file with source code.</returns>
+		public static bool IsCodeBasedUProjectFile(FileReference RawProjectPath, UnrealTargetPlatform ClientTargetPlatform, List<UnrealTargetConfiguration> ClientTargetConfigurations = null)
+		{
+			return GetProjectProperties(RawProjectPath, new List<UnrealTargetPlatform>() { ClientTargetPlatform }, ClientTargetConfigurations).bIsCodeBasedProject;
 		}
 
 		/// <summary>
@@ -201,7 +268,7 @@ namespace AutomationTool
             }
 
 			// Check if encryption or signing is enabled
-			EncryptionAndSigning.CryptoSettings Settings = EncryptionAndSigning.ParseCryptoSettings(RawProjectPath.Directory, Platform);
+			EncryptionAndSigning.CryptoSettings Settings = EncryptionAndSigning.ParseCryptoSettings(RawProjectPath.Directory, Platform, Log.Logger);
 			if (Settings.IsAnyEncryptionEnabled() || Settings.IsPakSigningEnabled())
 			{
 				OutReason = "encryption/signing is enabled";
@@ -770,7 +837,7 @@ namespace AutomationTool
 						typeof(UnrealBuildTool.PlatformExports).Assembly.Location
 					};
 			List<string> PreprocessorDefinitions = RulesAssembly.GetPreprocessorDefinitions();
-			Assembly TargetsDLL = DynamicCompilation.CompileAndLoadAssembly(TargetsDllFilename, new HashSet<FileReference>(TargetScripts), ReferencedAssemblies, PreprocessorDefinitions, DoNotCompile);
+			Assembly TargetsDLL = DynamicCompilation.CompileAndLoadAssembly(TargetsDllFilename, new HashSet<FileReference>(TargetScripts), Log.Logger, ReferencedAssemblies, PreprocessorDefinitions, DoNotCompile);
 			Type[] AllCompiledTypes = TargetsDLL.GetTypes();
 			foreach (Type TargetType in AllCompiledTypes)
 			{
@@ -783,7 +850,7 @@ namespace AutomationTool
 
 					// Create an instance of this type
 					CommandUtils.LogVerbose("Creating target rules object: {0}", TargetType.Name);
-					TargetRules Rules = Activator.CreateInstance(TargetType, DummyTargetInfo) as TargetRules;
+					TargetRules Rules = TargetRules.Create(TargetType, DummyTargetInfo, null, null, null, Log.Logger);
 					CommandUtils.LogVerbose("Adding target: {0} ({1})", TargetType.Name, Rules.Type);
 
 					SingleTargetProperties TargetData = new SingleTargetProperties();
@@ -897,7 +964,7 @@ namespace AutomationTool
 			}
 
 			// Search NativeProjects (sibling folders).
-			IEnumerable<FileReference> Projects = NativeProjects.EnumerateProjectFiles();
+			IEnumerable<FileReference> Projects = NativeProjects.EnumerateProjectFiles(Log.Logger);
 
 			FileReference ProjectPath = Projects.Where(R => string.Equals(R.GetFileName(), ProjectFile, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
 
@@ -1019,7 +1086,7 @@ namespace AutomationTool
 
         public BranchInfo()
         {
-            IEnumerable<FileReference> ProjectFiles = UnrealBuildTool.NativeProjects.EnumerateProjectFiles();
+            IEnumerable<FileReference> ProjectFiles = UnrealBuildTool.NativeProjects.EnumerateProjectFiles(Log.Logger);
 			foreach (FileReference InfoEntry in ProjectFiles)
 			{
 				AllProjects.Add(new BranchUProject(InfoEntry));

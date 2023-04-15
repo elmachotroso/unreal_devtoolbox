@@ -4,13 +4,13 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/SlateStyleMacros.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Slate/SlateGameResources.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
 #include "Interfaces/IPluginManager.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Styling/StarshipCoreStyle.h"
 #include "Styling/StyleColors.h"
 #include "Styling/ToolBarStyle.h"
@@ -44,15 +44,15 @@ const FVector2D Icon64x64(64.0f, 64.0f);
 void FNiagaraEditorStyle::InitStats()
 {
 	const FTextBlockStyle CategoryText = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("DetailsView.CategoryTextStyle");
-	const FSlateColor SelectionColor = FEditorStyle::GetSlateColor("SelectionColor");
-	const FSlateColor SelectionColor_Pressed = FEditorStyle::GetSlateColor("SelectionColor_Pressed");
+	const FSlateColor SelectionColor = FAppStyle::GetSlateColor("SelectionColor");
+	const FSlateColor SelectionColor_Pressed = FAppStyle::GetSlateColor("SelectionColor_Pressed");
 	
 	Set("NiagaraEditor.StatsText", CategoryText);
 }
 
 void FNiagaraEditorStyle::InitAssetPicker()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	FTextBlockStyle AssetPickerBoldAssetNameText = FTextBlockStyle(NormalText)
 		.SetColorAndOpacity(FLinearColor::White)
@@ -97,8 +97,8 @@ void FNiagaraEditorStyle::InitAssetPicker()
 
 	Set("NiagaraEditor.NewAssetDialog.AddButton", FButtonStyle()
 		.SetNormal(CORE_BOX_BRUSH("Common/FlatButton", 2.0f / 8.0f, FLinearColor(0, 0, 0, .25f)))
-		.SetHovered(CORE_BOX_BRUSH("Common/FlatButton", 2.0f / 8.0f, FEditorStyle::GetSlateColor("SelectionColor")))
-		.SetPressed(CORE_BOX_BRUSH("Common/FlatButton", 2.0f / 8.0f, FEditorStyle::GetSlateColor("SelectionColor_Pressed")))
+		.SetHovered(CORE_BOX_BRUSH("Common/FlatButton", 2.0f / 8.0f, FAppStyle::GetSlateColor("SelectionColor")))
+		.SetPressed(CORE_BOX_BRUSH("Common/FlatButton", 2.0f / 8.0f, FAppStyle::GetSlateColor("SelectionColor_Pressed")))
 	);
 
 	Set("NiagaraEditor.NewAssetDialog.SubBorderColor", FLinearColor(FColor(48, 48, 48)));
@@ -111,7 +111,7 @@ void FNiagaraEditorStyle::InitAssetPicker()
 
 void FNiagaraEditorStyle::InitActionMenu()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	// Action Menu
 	FTextBlockStyle ActionMenuHeadingText = FTextBlockStyle(NormalText)
@@ -189,7 +189,7 @@ void FNiagaraEditorStyle::InitActionMenu()
 
 void FNiagaraEditorStyle::InitEmitterHeader()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 	
 	// Emitter Header
 	FTextBlockStyle StackHeaderText = FTextBlockStyle(NormalText);
@@ -226,7 +226,7 @@ void FNiagaraEditorStyle::InitEmitterHeader()
 
 void FNiagaraEditorStyle::InitParameters()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 	const FEditableTextBoxStyle NormalEditableTextBox = FStarshipCoreStyle::GetCoreStyle().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
 
 	// Parameters
@@ -265,6 +265,26 @@ void FNiagaraEditorStyle::InitParameters()
 		.SetFont(DEFAULT_FONT("Regular", 8))
 		.SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.5f)));
 
+	FTextBlockStyle InlineEditableTextBlockReadOnly = FTextBlockStyle(NormalText)
+		.SetFont(DEFAULT_FONT("Regular", 9))
+		.SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetShadowOffset(FVector2D::ZeroVector)
+		.SetShadowColorAndOpacity(FLinearColor(0.8f, 0.8f, 0.8f, 0.5));
+
+	FEditableTextBoxStyle InlineEditableTextBlockEditable = FEditableTextBoxStyle()
+		.SetFont(DEFAULT_FONT("Regular", 9))
+		.SetForegroundColor(FStyleColors::Foreground)
+		.SetBackgroundImageNormal(FSlateRoundedBoxBrush(FStyleColors::Input, CoreStyleConstants::InputFocusRadius, FStyleColors::InputOutline, CoreStyleConstants::InputFocusThickness))
+		.SetBackgroundImageHovered(FSlateRoundedBoxBrush(FStyleColors::Input, CoreStyleConstants::InputFocusRadius, FStyleColors::Hover, CoreStyleConstants::InputFocusThickness))
+		.SetBackgroundImageFocused(FSlateRoundedBoxBrush(FStyleColors::Input, CoreStyleConstants::InputFocusRadius, FStyleColors::Primary, CoreStyleConstants::InputFocusThickness))
+		.SetBackgroundImageReadOnly(FSlateRoundedBoxBrush(FStyleColors::Header, CoreStyleConstants::InputFocusRadius, FStyleColors::InputOutline, CoreStyleConstants::InputFocusThickness))
+		.SetScrollBarStyle(FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"));
+	
+	FInlineEditableTextBlockStyle InlineEditableTextBlockStyle = FInlineEditableTextBlockStyle()
+		.SetTextStyle(InlineEditableTextBlockReadOnly)
+		.SetEditableTextBoxStyle(InlineEditableTextBlockEditable);
+	Set("NiagaraEditor.Graph.Node.InlineEditablePinName", InlineEditableTextBlockStyle);
+
 
 	Set("NiagaraEditor.StaticIcon", new IMAGE_BRUSH("Icons/staticpill_16x", Icon16x16));
 	Set("NiagaraEditor.Pins.StaticConnected", new IMAGE_BRUSH("Icons/StaticPin_Connected", Icon16x16));
@@ -280,13 +300,13 @@ void FNiagaraEditorStyle::InitParameterMapView()
 	Set("NiagaraEditor.Stack.FlatButtonColor", FLinearColor(FColor(205, 205, 205)));
 
 	//Parameters panel
-	const FTableRowStyle TreeViewStyle = FEditorStyle::GetWidgetStyle<FTableRowStyle>("DetailsView.TreeView.TableRow");
+	const FTableRowStyle TreeViewStyle = FAppStyle::GetWidgetStyle<FTableRowStyle>("DetailsView.TreeView.TableRow");
 	FTableRowStyle ParameterPanelRowStyle = FTableRowStyle(TreeViewStyle)
 		.SetTextColor(FLinearColor::White)
 		.SetSelectedTextColor(FLinearColor::White);
 	Set("NiagaraEditor.Parameters.TableRow", ParameterPanelRowStyle);
 	
-	const FTextBlockStyle CategoryTextStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("DetailsView.CategoryTextStyle");
+	const FTextBlockStyle CategoryTextStyle = FAppStyle::GetWidgetStyle<FTextBlockStyle>("DetailsView.CategoryTextStyle");
 	FTextBlockStyle ParameterSectionStyle = FTextBlockStyle(CategoryTextStyle)
 		.SetColorAndOpacity(FLinearColor::White);
 	Set("NiagaraEditor.Parameters.HeaderText", ParameterSectionStyle);
@@ -294,7 +314,7 @@ void FNiagaraEditorStyle::InitParameterMapView()
 
 void FNiagaraEditorStyle::InitCodeView()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	// Code View
 	Set("NiagaraEditor.CodeView.Checkbox.Text", FTextBlockStyle(NormalText)
@@ -340,7 +360,7 @@ void FNiagaraEditorStyle::InitCodeView()
 
 void FNiagaraEditorStyle::InitSelectedEmitter()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	// Selected Emitter
 	FSlateFontInfo SelectedEmitterUnsupportedSelectionFont = DEFAULT_FONT("Regular", 10);
@@ -377,7 +397,7 @@ void FNiagaraEditorStyle::InitOverview()
 
 void FNiagaraEditorStyle::InitViewportStyle()
 {
-	FTextBlockStyle NormalTextStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	FTextBlockStyle NormalTextStyle = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 	FTextBlockStyle CompileOverlayText = FTextBlockStyle(NormalTextStyle)
 		.SetFontSize(18);
 	Set("NiagaraEditor.Viewport.CompileOverlay", CompileOverlayText);
@@ -399,6 +419,7 @@ void FNiagaraEditorStyle::InitAssetColors()
 	Set("NiagaraEditor.AssetColors.ParameterCollectionInstance", FLinearColor(1.0f, 1.0f, 0.7f));
 	Set("NiagaraEditor.AssetColors.ParameterDefinitions", FLinearColor(0.57f, 0.82f, 0.06f));
 	Set("NiagaraEditor.AssetColors.EffectType", FLinearColor(1.f, 1.f, 1.f));
+	Set("NiagaraEditor.AssetColors.SimCache", FLinearColor(0.9f, 0.3f, 0.25f));
 }
 
 void FNiagaraEditorStyle::InitThumbnails()
@@ -434,7 +455,7 @@ void FNiagaraEditorStyle::InitNiagaraSequence()
 
 void FNiagaraEditorStyle::InitPlatformSet()
 {
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	// Niagara platform set customization
 	Set("NiagaraEditor.PlatformSet.DropdownButton", new CORE_IMAGE_BRUSH("Common/ComboArrow", Icon8x8));
@@ -492,7 +513,7 @@ void FNiagaraEditorStyle::InitPlatformSet()
 	Set("NiagaraEditor.PlatformSet.Exclude", new CORE_IMAGE_BRUSH("Icons/MinusSymbol_12x", Icon12x12));
 	Set("NiagaraEditor.PlatformSet.Remove", new CORE_IMAGE_BRUSH("Icons/Cross_12x", Icon12x12));
 
-	const FSlateColor SelectionColor_Inactive = FEditorStyle::GetSlateColor("SelectionColor_Inactive");
+	const FSlateColor SelectionColor_Inactive = FAppStyle::GetSlateColor("SelectionColor_Inactive");
 
 	Set("NiagaraEditor.PlatformSet.TreeView", FTableRowStyle()
 		.SetEvenRowBackgroundBrush(FSlateNoResource())
@@ -518,6 +539,7 @@ void FNiagaraEditorStyle::InitDropTarget()
 void FNiagaraEditorStyle::InitScriptGraph()
 {
 	Set("NiagaraEditor.ScriptGraph.SearchBorderColor", FLinearColor(.1f, .1f, .1f, 1.f));
+	Set("NiagaraEditor.ScriptGraph.AffectedAssetsWarningColor", FLinearColor(FColor(255, 184, 0)));
 }
 
 void FNiagaraEditorStyle::InitDebuggerStyle()
@@ -533,8 +555,8 @@ void FNiagaraEditorStyle::InitDebuggerStyle()
 	Set("NiagaraEditor.Debugger.Outliner.Capture", new IMAGE_BRUSH("Icons/Debugger/Capture", Icon24x24));
 	Set("NiagaraEditor.Debugger.Outliner.Filter", new IMAGE_BRUSH("Icons/Debugger/Filter_24x", Icon24x24));
 
-	const FSlateColor SelectionColor = FEditorStyle::GetSlateColor("SelectionColor");
-	const FSlateColor SelectionColor_Pressed = FEditorStyle::GetSlateColor("SelectionColor_Pressed");
+	const FSlateColor SelectionColor = FAppStyle::GetSlateColor("SelectionColor");
+	const FSlateColor SelectionColor_Pressed = FAppStyle::GetSlateColor("SelectionColor_Pressed");
 
 	FButtonStyle OutlinerToolBarButton = FButtonStyle()
 		.SetNormal(CORE_BOX_BRUSH("Common/FlatButton", FMargin(4 / 16.0f), FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)))
@@ -547,7 +569,8 @@ void FNiagaraEditorStyle::InitDebuggerStyle()
 
 void FNiagaraEditorStyle::InitBakerStyle()
 {
-	Set("NiagaraEditor.Baker", new IMAGE_BRUSH("Icons/Baker/BakerIcon", Icon40x40));
+	Set("NiagaraEditor.BakerIcon", new IMAGE_BRUSH("Icons/Baker/BakerIcon", Icon40x40));
+	Set("NiagaraEditor.BakerSettings", new IMAGE_BRUSH("Icons/Baker/BakerSettings", Icon40x40));
 }
 
 void FNiagaraEditorStyle::InitCommonColors()
@@ -570,14 +593,16 @@ void FNiagaraEditorStyle::InitTabIcons()
 	Set("Tab.Spreadsheet", new IMAGE_BRUSH_SVG("Icons/Tabs/Spreadsheet", Icon20x20));
 	Set("Tab.SystemOverview", new IMAGE_BRUSH_SVG("Icons/Tabs/SystemOverview", Icon20x20));
 	Set("Tab.Timeline", new IMAGE_BRUSH_SVG("Icons/Tabs/Timeline", Icon20x20));
+	Set("Tab.UserParameters", new IMAGE_BRUSH_SVG("Icons/Tabs/UserParameters", Icon20x20));
+	Set("Tab.UserParameterHierarchy", new IMAGE_BRUSH_SVG("Icons/Tabs/UserParameterHierarchy", Icon20x20));
 	Set("Tab.Viewport", new IMAGE_BRUSH_SVG("Icons/Tabs/Viewport", Icon20x20));
 	Set("Tab.VisualEffects", new IMAGE_BRUSH_SVG("Icons/Tabs/VisualEffects", Icon20x20));
 }
 
 void FNiagaraEditorStyle::InitOutlinerStyle()
 {
-	const FSlateColor SelectionColor = FEditorStyle::GetSlateColor("SelectionColor");
-	const FSlateColor SelectionColor_Inactive = FEditorStyle::GetSlateColor("SelectionColor_Inactive");
+	const FSlateColor SelectionColor = FAppStyle::GetSlateColor("SelectionColor");
+	const FSlateColor SelectionColor_Inactive = FAppStyle::GetSlateColor("SelectionColor_Inactive");
 
 	Set("NiagaraEditor.Outliner.WorldItem", FTableRowStyle()
 		.SetEvenRowBackgroundBrush(FSlateNoResource())
@@ -653,15 +678,52 @@ void FNiagaraEditorStyle::InitScalabilityColors()
 
 void FNiagaraEditorStyle::InitScalabilityIcons()
 {
+	Set("NiagaraEditor.Scalability", new IMAGE_BRUSH_SVG("Icons/Scalability/Scalability", Icon20x20));
 	Set("NiagaraEditor.Scalability.System.Feature.Override", new IMAGE_BRUSH_SVG("Icons/Scalability/Override", Icon20x20));
 	Set("NiagaraEditor.Scalability.Preview.ResetPlatform", new IMAGE_BRUSH("Icons/Scalability/ResetPreviewPlatform", Icon20x20));
 }
 
+void FNiagaraEditorStyle::InitHierarchyEditor()
+{
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	FSlateFontInfo CategoryFont = FAppStyle::Get().GetFontStyle(TEXT("DetailsView.CategoryFontStyle"));
+	CategoryFont.Size = 11;
+	// const FEditableTextBoxStyle NormalEditableTextBox = FStarshipCoreStyle::GetCoreStyle().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
+	const FEditableTextBoxStyle NormalEditableTextBox = FAppStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
+	
+	FEditableTextBoxStyle CategoryEditableText = FEditableTextBoxStyle(NormalEditableTextBox)
+		.SetFont(CategoryFont)
+		.SetForegroundColor(FStyleColors::AccentWhite);
+	
+	FTextBlockStyle CategoryText = FTextBlockStyle(NormalText)
+		.SetFont(CategoryFont);
+	FInlineEditableTextBlockStyle HierarchyCategoryTextStyle = FInlineEditableTextBlockStyle()
+		.SetTextStyle(CategoryText)
+		.SetEditableTextBoxStyle(CategoryEditableText);
+
+	Set("NiagaraEditor.HierarchyEditor.CategoryTextBlock", CategoryText);
+	Set("NiagaraEditor.HierarchyEditor.Category", HierarchyCategoryTextStyle);
+
+	Set("NiagaraEditor.Stack.DropTarget.BorderVertical", new IMAGE_BRUSH("Icons/StackDropTargetBorder_Vertical", FVector2D(2, 8), FLinearColor::White, ESlateBrushTileType::Vertical));
+	Set("NiagaraEditor.Stack.DropTarget.BorderHorizontal", new IMAGE_BRUSH("Icons/StackDropTargetBorder_Horizontal", FVector2D(8, 2), FLinearColor::White, ESlateBrushTileType::Horizontal));
+
+	FButtonStyle SimpleButtonStyle = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton");
+	FButtonStyle ButtonStyle = FButtonStyle(SimpleButtonStyle)
+		.SetNormalForeground(FStyleColors::Foreground)
+		.SetPressedForeground(FStyleColors::ForegroundHover)
+		.SetHoveredForeground(FStyleColors::ForegroundHover)
+		.SetDisabledForeground(FStyleColors::Foreground)
+		.SetNormalPadding(FMargin(8.f, 2.f, 8.f, 2.f))
+		.SetPressedPadding(FMargin(8.f, 3.f, 8.f, 1.f));
+
+	Set("NiagaraEditor.HierarchyEditor.ButtonStyle", ButtonStyle);
+}
+
 FNiagaraEditorStyle::FNiagaraEditorStyle() : FSlateStyleSet("NiagaraEditorStyle")
-{	
+{
 	SetContentRoot(FPaths::EnginePluginsDir() / TEXT("FX/Niagara/Content/Slate"));
 	SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Editor/Slate"));
-	
+
 	InitStats();
 	InitAssetPicker();
 	InitActionMenu();
@@ -690,6 +752,23 @@ FNiagaraEditorStyle::FNiagaraEditorStyle() : FSlateStyleSet("NiagaraEditorStyle"
 	InitScalabilityColors();
 	InitScalabilityIcons();
 	InitViewportStyle();
+	InitScratchStyle();
+	InitHierarchyEditor();
+}
+
+void FNiagaraEditorStyle::InitScratchStyle()
+{
+	const FTextBlockStyle NormalText = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText");
+
+	FSlateFontInfo ScratchPadEditorHeaderFont = DEFAULT_FONT("Bold", 11);
+	FTextBlockStyle ScratchPadEditorHeaderText = FTextBlockStyle(NormalText)
+		.SetFont(ScratchPadEditorHeaderFont);
+	Set("NiagaraEditor.ScratchPad.EditorHeaderText", ScratchPadEditorHeaderText);
+
+	FSlateFontInfo ScratchPadSubSectionHeaderFont = DEFAULT_FONT("Bold", 9);
+	FTextBlockStyle ScratchPadSubSectionHeaderText = FTextBlockStyle(NormalText)
+		.SetFont(ScratchPadSubSectionHeaderFont);
+	Set("NiagaraEditor.ScratchPad.SubSectionHeaderText", ScratchPadSubSectionHeaderText);
 }
 
 void FNiagaraEditorStyle::ReloadTextures()

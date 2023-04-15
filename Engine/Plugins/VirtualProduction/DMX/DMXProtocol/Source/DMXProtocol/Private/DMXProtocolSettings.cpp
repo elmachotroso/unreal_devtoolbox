@@ -16,10 +16,6 @@
 UDMXProtocolSettings::UDMXProtocolSettings()
 	: SendingRefreshRate(DMX_RATE)
 	, ReceivingRefreshRate_DEPRECATED(DMX_RATE)
-	, bDefaultSendDMXEnabled(true)
-	, bDefaultReceiveDMXEnabled(true)
-	, bOverrideSendDMXEnabled(true)	
-	, bOverrideReceiveDMXEnabled(true)
 {
 	FixtureCategories =
 	{
@@ -156,6 +152,10 @@ void UDMXProtocolSettings::PostEditChangeProperty(FPropertyChangedEvent& Propert
 		bOverrideSendDMXEnabled = bDefaultSendDMXEnabled;
 		UDMXProtocolBlueprintLibrary::SetSendDMXEnabled(bDefaultSendDMXEnabled);
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, bAllFixturePatchesReceiveDMXInEditor))
+	{
+		OnAllFixturePatchesReceiveDMXInEditorEnabled.Broadcast(bAllFixturePatchesReceiveDMXInEditor);
+	}
 }
 #endif // WITH_EDITOR
 
@@ -175,7 +175,7 @@ void UDMXProtocolSettings::PostEditChangeChainProperty(FPropertyChangedChainEven
 			FixtureCategories.Add(TEXT("Other"));
 		}
 
-		FDMXFixtureCategory::OnValuesChanged.Broadcast();
+		OnDefaultFixtureCategoriesChanged.Broadcast();
 	}
 	else if (
 		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, Attributes) ||
@@ -192,7 +192,7 @@ void UDMXProtocolSettings::PostEditChangeChainProperty(FPropertyChangedChainEven
 			Attribute.CleanupKeywords();
 		}
 
-		FDMXAttributeName::OnValuesChanged.Broadcast();
+		OnDefaultAttributesChanged.Broadcast();
 	}
 	else if (
 		PropertyName == FDMXOutputPortConfig::GetDestinationAddressesPropertyNameChecked() ||
@@ -252,14 +252,24 @@ void UDMXProtocolSettings::OverrideSendDMXEnabled(bool bEnabled)
 {
 	bOverrideSendDMXEnabled = bEnabled; 
 	
+	OnSetSendDMXEnabledDelegate.Broadcast(bEnabled);
+
+	// OnSetSendDMXEnabled is deprecated 5.1 and can be removed in a future release
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OnSetSendDMXEnabled.Broadcast(bEnabled);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UDMXProtocolSettings::OverrideReceiveDMXEnabled(bool bEnabled) 
 { 
 	bOverrideReceiveDMXEnabled = bEnabled; 
 
+	OnSetReceiveDMXEnabledDelegate.Broadcast(bEnabled);
+
+	// OnSetReceiveDMXEnabled is deprecated 5.1 and can be removed in a future release
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OnSetReceiveDMXEnabled.Broadcast(bEnabled);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FString UDMXProtocolSettings::GetUniqueInputPortName() const

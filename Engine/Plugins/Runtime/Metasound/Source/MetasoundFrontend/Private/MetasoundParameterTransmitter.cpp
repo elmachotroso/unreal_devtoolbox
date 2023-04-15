@@ -3,12 +3,21 @@
 #include "MetasoundParameterTransmitter.h"
 
 #include "IAudioParameterInterfaceRegistry.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "MetasoundLog.h"
-#include "MetasoundSourceInterface.h"
 
 
 namespace Metasound
 {
+	int32 MetaSoundParameterEnableWarningOnIgnoredParameterCVar = 0;
+
+	FAutoConsoleVariableRef CVarMetaSoundParameterEnableWarningOnIgnoredParameter(
+		TEXT("au.MetaSound.Parameter.EnableWarningOnIgnoredParameter"),
+		MetaSoundParameterEnableWarningOnIgnoredParameterCVar,
+		TEXT("If enabled, a warning will be logged when a parameters sent to a MetaSound is ignored.\n")
+		TEXT("0: Disabled (default), !0: Enabled"),
+		ECVF_Default);
+
 	namespace Frontend
 	{
 		FLiteral ConvertParameterToLiteral(FAudioParameter&& InValue)
@@ -92,6 +101,93 @@ namespace Metasound
 			return FLiteral();
 		}
 
+		FLiteral ConvertParameterToLiteral(const FAudioParameter& InValue)
+		{
+			switch (InValue.ParamType)
+			{
+				case EAudioParameterType::Boolean:
+				{
+					return FLiteral(InValue.BoolParam);
+				}
+
+				case EAudioParameterType::BooleanArray:
+				{
+					return FLiteral(InValue.ArrayBoolParam);
+				}
+
+				case EAudioParameterType::Float:
+				{
+					return FLiteral(InValue.FloatParam);
+				}
+
+				case EAudioParameterType::FloatArray:
+				{
+					return FLiteral(InValue.ArrayFloatParam);
+				}
+
+				case EAudioParameterType::Integer:
+				{
+					return FLiteral(InValue.IntParam);
+				}
+
+				case EAudioParameterType::IntegerArray:
+				{
+					return FLiteral(InValue.ArrayIntParam);
+				}
+
+				case EAudioParameterType::None:
+				{
+					return FLiteral();
+				}
+
+				case EAudioParameterType::NoneArray:
+				{
+					TArray<FLiteral::FNone> InitArray;
+					InitArray.Init(FLiteral::FNone(), InValue.IntParam);
+					return FLiteral(InitArray);
+				}
+
+				case EAudioParameterType::Object:
+				{
+					if (InValue.ObjectProxies.IsEmpty())
+					{
+						return FLiteral();
+					}
+
+					Audio::IProxyDataPtr ObjectProxyClone = InValue.ObjectProxies.Last()->Clone();
+					return FLiteral(MoveTemp(ObjectProxyClone));
+				}
+
+				case EAudioParameterType::ObjectArray:
+				{
+					TArray<Audio::IProxyDataPtr> ObjectProxiesClone;
+					Algo::Transform(InValue.ObjectProxies, ObjectProxiesClone, [](const Audio::IProxyDataPtr& DataPtr)
+					{
+						return DataPtr->Clone();
+					});
+					return FLiteral(MoveTemp(ObjectProxiesClone));
+				}
+
+				case EAudioParameterType::String:
+				{
+					return FLiteral(InValue.StringParam);
+				}
+
+				case EAudioParameterType::StringArray:
+				{
+					return FLiteral(InValue.ArrayStringParam);
+				}
+
+				default:
+				{
+					static_assert(static_cast<int32>(EAudioParameterType::COUNT) == 12, "Possible missing switch case coverage");
+					checkNoEntry();
+				}
+			}
+
+			return FLiteral();
+		}
+
 		FName ConvertParameterToDataType(EAudioParameterType InParameterType)
 		{
 			switch (InParameterType)
@@ -145,10 +241,12 @@ namespace Metasound
 		return FSendAddress(InVertexName, InTypeName, InInstanceID);
 	}
 
-	FMetaSoundParameterTransmitter::FMetaSoundParameterTransmitter(const FMetaSoundParameterTransmitter::FInitParams& InInitParams)
-	: SendInfos(InInitParams.Infos)
-	, OperatorSettings(InInitParams.OperatorSettings)
-	, InstanceID(InInitParams.InstanceID)
+	FMetaSoundParameterTransmitter::FMetaSoundParameterTransmitter(FMetaSoundParameterTransmitter::FInitParams&& InInitParams)
+		: Audio::FParameterTransmitterBase(MoveTemp(InInitParams.DefaultParams))
+		, OperatorSettings(MoveTemp(InInitParams.OperatorSettings))
+		, InstanceID(InInitParams.InstanceID)
+		, DebugMetaSoundName(InInitParams.DebugMetaSoundName)
+		, SendInfos(MoveTemp(InInitParams.Infos))
 	{
 	}
 
@@ -169,22 +267,32 @@ namespace Metasound
 			}
 		}
 
-		return bSuccess;
-	}
+		bSuccess &= Audio::FParameterTransmitterBase::Reset();
 
-	uint64 FMetaSoundParameterTransmitter::GetInstanceID() const
-	{
-		return InstanceID;
+		return bSuccess;
 	}
 
 	bool FMetaSoundParameterTransmitter::SetParameters(TArray<FAudioParameter>&& InParameters)
 	{
 		bool bSuccess = true;
 
-		for (FAudioParameter& InParameter : InParameters)
+		TArray<FAudioParameter> NewParams;
+		for (FAudioParameter& Param : InParameters)
 		{
-			const FName ParamName = InParameter.ParamName;
-			bSuccess &= SetParameterWithLiteral(ParamName, Frontend::ConvertParameterToLiteral(MoveTemp(InParameter)));
+			const FName ParamName = Param.ParamName;
+			if (SetParameterWithLiteral(ParamName, Frontend::ConvertParameterToLiteral(Param)))
+			{
+				NewParams.Add(MoveTemp(Param));
+			}
+			else
+			{
+				bSuccess = false;
+			}
+		}
+
+		if (!NewParams.IsEmpty())
+		{
+			bSuccess &= FParameterTransmitterBase::SetParameters(MoveTemp(NewParams));
 		}
 
 		InParameters.Reset();
@@ -207,12 +315,13 @@ namespace Metasound
 			}
 		}
 
-		return false;
-	}
+		// Enable / disable via CVAR to avoid log spam.
+		if (MetaSoundParameterEnableWarningOnIgnoredParameterCVar)
+		{
+			UE_LOG(LogMetaSound, Warning, TEXT("Failed to set parameter %s in asset %s on instance %d with value %s. No runtime modifiable input with that name exists on instance."), *InParameterName.ToString(), *DebugMetaSoundName.ToString(), InstanceID, *LexToString(InLiteral));
+		}
 
-	TUniquePtr<Audio::IParameterTransmitter> FMetaSoundParameterTransmitter::Clone() const
-	{
-		return MakeUnique<FMetaSoundParameterTransmitter>(FMetaSoundParameterTransmitter::FInitParams(OperatorSettings, InstanceID, SendInfos));
+		return false;
 	}
 
 	const FMetaSoundParameterTransmitter::FSendInfo* FMetaSoundParameterTransmitter::FindSendInfo(const FName& InParameterName) const

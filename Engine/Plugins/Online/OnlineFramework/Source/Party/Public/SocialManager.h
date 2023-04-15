@@ -11,7 +11,6 @@
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Interactions/SocialInteractionHandle.h"
 
-#include "PartyPackage.h"
 #include "SocialManager.generated.h"
 
 class ULocalPlayer;
@@ -26,13 +25,17 @@ class USocialDebugTools;
 
 enum ETravelType;
 
-#define ABORT_DURING_SHUTDOWN()  if (bShutdownPending) { UE_LOG(LogParty, Log, TEXT("%s - Received callback after bShutdownPending."), ANSI_TO_TCHAR(__FUNCTION__)); return; }
+#define ABORT_DURING_SHUTDOWN() if (IsEngineExitRequested() || bShutdownPending) { UE_LOG(LogParty, Log, TEXT("%s - Received callback during shutdown: IsEngineExitRequested=%s, bShutdownPending=%s."), ANSI_TO_TCHAR(__FUNCTION__), *LexToString(IsEngineExitRequested()), *LexToString(bShutdownPending)); return; }
 
 /** Singleton manager at the top of the social framework */
 UCLASS(Within = GameInstance, Config = Game)
 class PARTY_API USocialManager : public UObject, public FExec
 {
 	GENERATED_BODY()
+
+	friend class FPartyPlatformSessionManager;
+	friend UPartyMember;
+	friend USocialUser;
 
 public:
 	// FExec
@@ -95,7 +98,7 @@ public:
 		return Cast<PartyT>(GetPartyInternal(PartyId));
 	}
 
-	bool IsConnectedToPartyService() const { return bIsConnectedToPartyService; }
+	bool IsConnectedToPartyService() const;
 
 	void HandlePartyDisconnected(USocialParty* LeavingParty);
 
@@ -111,10 +114,9 @@ public:
 	/** Validates that the target user has valid join info for us to use and that we can join any party of the given type */
 	virtual FJoinPartyResult ValidateJoinTarget(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId) const;
 
-PACKAGE_SCOPE:
-	
+protected:
 	DECLARE_DELEGATE_OneParam(FOnJoinPartyAttemptComplete, const FJoinPartyResult&);
-	void JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete);
+	void JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete, const FName& JoinMethod);
 
 	USocialToolkit* GetSocialToolkit(int32 LocalPlayerNum) const;
 	USocialToolkit* GetSocialToolkit(FUniqueNetIdRepl LocalUserId) const;
@@ -126,17 +128,22 @@ protected:
 
 		TSharedRef<const FOnlinePartyId> PartyId;
 		TArray<FUniqueNetIdRef> MemberIds;
+		FName OriginalJoinMethod;
 	};
 
 	struct PARTY_API FJoinPartyAttempt
 	{
 		FJoinPartyAttempt(TSharedRef<const FRejoinableParty> InRejoinInfo);
+		FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FName& InJoinMethod, const FOnJoinPartyAttemptComplete& InOnJoinComplete);
+
+		UE_DEPRECATED(5.1, "This constructor is deprecated, use (USocialUser*, FOnlinePartyTypeId, FName, FOnJoinPartyAttemptComplete) instead.")
 		FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FOnJoinPartyAttemptComplete& InOnJoinComplete);
 
 		FString ToDebugString() const;
 
 		TWeakObjectPtr<const USocialUser> TargetUser;
 		FOnlinePartyTypeId PartyTypeId;
+		FName JoinMethod = PartyJoinMethod::Unspecified;
 		FUniqueNetIdRepl TargetUserPlatformId;
 		FSessionId PlatformSessionId;
 
@@ -191,8 +198,11 @@ protected:
 	void RefreshCanCreatePartyObjects();
 
 	USocialParty* GetPersistentPartyInternal(bool bEvenIfLeaving = false) const;
+
+public:
 	const FJoinPartyAttempt* GetJoinAttemptInProgress(const FOnlinePartyTypeId& PartyTypeId) const;
 
+protected:
 	//@todo DanH: TEMP - for now relying on FN to bind to its game-level UFortOnlineSessionClient instance #required
 	void HandlePlatformSessionInviteAccepted(const FUniqueNetIdRef& LocalUserId, const FOnlineSessionSearchResult& InviteResult);
 
@@ -256,10 +266,10 @@ private:
 	static TMap<TWeakObjectPtr<UGameInstance>, TWeakObjectPtr<USocialManager>> AllManagersByGameInstance;
 
 	UPROPERTY()
-	TArray<USocialToolkit*> SocialToolkits;
+	TArray<TObjectPtr<USocialToolkit>> SocialToolkits;
 
 	UPROPERTY()
-	USocialDebugTools* SocialDebugTools;
+	TObjectPtr<USocialDebugTools> SocialDebugTools;
 
 	bool bIsConnectedToPartyService = false;
 	

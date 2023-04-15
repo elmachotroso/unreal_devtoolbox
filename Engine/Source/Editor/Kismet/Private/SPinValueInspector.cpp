@@ -1,16 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPinValueInspector.h"
-#include "UObject/WeakFieldPtr.h"
-#include "Styling/AppStyle.h"
-#include "Widgets/SBoxPanel.h"
-#include "PropertyInfoViewStyle.h"
-#include "Widgets/Input/SSearchBox.h"
+
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/GenericWindowDefinition.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetDebugUtilities.h"
-#include "IDetailPropertyRow.h"
-#include "Widgets/SWindow.h"
+#include "Layout/Children.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlotBase.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SToolTip.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Views/SHeaderRow.h"
 
 #define LOCTEXT_NAMESPACE "SPinValueInspector"
 
@@ -111,7 +125,7 @@ private:
 	TAttribute<TOptional<float>> MaxHeight;
 
 	// must be mutable to be changed in ComputeDesiredSize
-	mutable TOptional<float> CachedXSize;
+	mutable TOptional<double> CachedXSize;
 };
 
 void SPinValueInspector::Construct(const FArguments& InArgs)
@@ -178,6 +192,11 @@ void SPinValueInspector::OnExpansionChanged(FDebugTreeItemPtr InItem, bool bItem
 	ConstrainedBox->RequestResize();
 }
 
+void SPinValueInspector::AddTreeItemUnique(const FDebugTreeItemPtr& Item)
+{
+	TreeViewWidget->AddTreeItemUnique(Item);
+}
+
 void SPinValueInspector::PopulateTreeView()
 {
 	// Locate the class property associated with the source pin and set it to the root node.
@@ -201,8 +220,23 @@ void SPinValueInspector::PopulateTreeView()
 		return;
 	}
 	
+	if (GraphPin->Direction == EGPD_Input)
+	{
+		for (const UEdGraphPin* Pin : GraphPin->LinkedTo)
+		{
+			AddPinToTreeView(Pin, Blueprint);
+		}
+	}
+	else
+	{
+		AddPinToTreeView(GraphPin, Blueprint);
+	}
+}
+
+void SPinValueInspector::AddPinToTreeView(const UEdGraphPin* Pin, UBlueprint* Blueprint)
+{
 	TSharedPtr<FPropertyInstanceInfo> DebugInfo;
-	const FKismetDebugUtilities::EWatchTextResult WatchStatus = FKismetDebugUtilities::GetDebugInfo(DebugInfo, Blueprint, Blueprint->GetObjectBeingDebugged(), GraphPin);
+	const FKismetDebugUtilities::EWatchTextResult WatchStatus = FKismetDebugUtilities::GetDebugInfo(DebugInfo, Blueprint, Blueprint->GetObjectBeingDebugged(), Pin);
 	if (WatchStatus != FKismetDebugUtilities::EWTR_Valid)
 	{
 		switch (WatchStatus)
@@ -226,8 +260,18 @@ void SPinValueInspector::PopulateTreeView()
 
 	if (ensureMsgf(DebugInfo.IsValid(), TEXT("GetDebugInfo returned EWTR_Valid, but DebugInfo wasn't valid")))
 	{
-		TreeViewWidget->AddTreeItemUnique(SKismetDebugTreeView::MakeWatchLineItem(GraphPin, Blueprint->GetObjectBeingDebugged()));
+		TreeViewWidget->AddTreeItemUnique(SKismetDebugTreeView::MakeWatchLineItem(Pin, Blueprint->GetObjectBeingDebugged()));
 	}
+}
+
+void SPinValueInspector::RequestUpdateFilteredItems()
+{
+	TreeViewWidget->RequestUpdateFilteredItems();
+}
+
+const FEdGraphPinReference& SPinValueInspector::GetPinRef() const
+{
+	return PinRef;
 }
 
 void SPinValueInspector::SetPinRef(const FEdGraphPinReference& InPinRef)
@@ -238,7 +282,7 @@ void SPinValueInspector::SetPinRef(const FEdGraphPinReference& InPinRef)
 	ConstrainedBox->RequestResize();
 }
 
-TWeakPtr<FPinValueInspectorTooltip> FPinValueInspectorTooltip::SummonTooltip(FEdGraphPinReference InPinRef)
+TWeakPtr<FPinValueInspectorTooltip> FPinValueInspectorTooltip::SummonTooltip(FEdGraphPinReference InPinRef, TSharedPtr<SPinValueInspector> InContentWidgetOverride)
 {
 	if (!FSlateApplication::Get().GetVisibleMenuWindow().Get())
 	{
@@ -254,7 +298,17 @@ TWeakPtr<FPinValueInspectorTooltip> FPinValueInspectorTooltip::SummonTooltip(FEd
 			}
 
 			Instance = MakeShared<FPinValueInspectorTooltip>();
-			ValueInspectorWidget->SetPinRef(InPinRef);
+			if (TooltipWidget.IsValid() && InContentWidgetOverride)
+			{
+				TooltipWidget->SetContentWidget(InContentWidgetOverride->AsShared());
+				InContentWidgetOverride->SetPinRef(InPinRef);
+				ValueInspectorWidget->SetPinRef({ });
+			}
+			else
+			{
+				ValueInspectorWidget->SetPinRef(InPinRef);
+			}
+
 			TooltipWindow->ShowWindow();
 			TooltipWindow->SetAllowFastUpdate(true);
 			return Instance;
@@ -297,9 +351,16 @@ void FPinValueInspectorTooltip::DismissTooltip()
 	{
 		FSlateApplication::Get().DismissAllMenus();
 	}
+
 	ValueInspectorWidget->SetPinRef(FEdGraphPinReference());
+
 	TooltipWindow->HideWindow();
 	TooltipWindow->SetAllowFastUpdate(false);
+	if (TooltipWidget->GetContentWidget() != ValueInspectorWidget)
+	{
+		TooltipWidget->SetContentWidget(ValueInspectorWidget->AsShared());
+	}
+
 	Instance.Reset();
 }
 
@@ -320,12 +381,12 @@ void FPinValueInspectorTooltip::CreatePinValueTooltipWindow()
 	TooltipWidget->SetContentWidget(SAssignNew(ValueInspectorWidget, SPinValueInspector));
 }
 
-bool FPinValueInspectorTooltip::TooltipCanClose()
+bool FPinValueInspectorTooltip::TooltipCanClose() const
 {
 	return !TooltipWindow->IsHovered() && !TooltipHostsMenu();
 }
 
-bool FPinValueInspectorTooltip::TooltipHostsMenu()
+bool FPinValueInspectorTooltip::TooltipHostsMenu() const
 {
 	TSharedPtr<SWindow> MenuHostWindow = FSlateApplication::Get().GetVisibleMenuWindow();
 	return MenuHostWindow.IsValid() && (MenuHostWindow == TooltipWindow);

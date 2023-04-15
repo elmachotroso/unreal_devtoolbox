@@ -3,8 +3,14 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "EditorStyleSet.h"
 #include "Framework/Commands/Commands.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /**
  * Defines commands for SCurveEditorPanel (and UnrealEd::SCurveEditor)
@@ -18,7 +24,7 @@ public:
 			TEXT("GenericCurveEditor"),
 			NSLOCTEXT("Contexts", "GenericCurveEditor", "Curve Editor"),
 			NAME_None,
-			FEditorStyle::GetStyleSetName()
+			FAppStyle::GetAppStyleSetName()
 		)
 	{
 	}
@@ -64,6 +70,8 @@ public:
 	TSharedPtr<FUICommandInfo> SetNoTangentsVisibility;
 
 	TSharedPtr<FUICommandInfo> ToggleAutoFrameCurveEditor;
+	TSharedPtr<FUICommandInfo> ToggleSnapTimeToSelection;
+	TSharedPtr<FUICommandInfo> ToggleShowBufferedCurves;
 	TSharedPtr<FUICommandInfo> ToggleShowCurveEditorCurveToolTips;
 
 	TSharedPtr<FUICommandInfo> SetRandomCurveColorsForSelected;
@@ -71,6 +79,7 @@ public:
 
 	TSharedPtr<FUICommandInfo> AddKeyHovered;
 	TSharedPtr<FUICommandInfo> PasteKeysHovered;
+	TSharedPtr<FUICommandInfo> PasteOverwriteRange;
 
 	TSharedPtr<FUICommandInfo> AddKeyToAllCurves;
 
@@ -83,7 +92,12 @@ public:
 	TSharedPtr<FUICommandInfo> SelectAllKeys;
 	TSharedPtr<FUICommandInfo> DeselectAllKeys;
 
+	TSharedPtr<FUICommandInfo> SelectForward;
+	TSharedPtr<FUICommandInfo> SelectBackward;
+	TSharedPtr<FUICommandInfo> SelectNone;
+
 	TSharedPtr<FUICommandInfo> BufferVisibleCurves;
+	TSharedPtr<FUICommandInfo> SwapBufferedCurves;
 	TSharedPtr<FUICommandInfo> ApplyBufferedCurves;
 
 	// User Filtering

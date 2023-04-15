@@ -2,33 +2,58 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "UObject/WeakObjectPtr.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformMath.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/NetworkGuid.h"
 #include "Serialization/BitReader.h"
 #include "Serialization/BitWriter.h"
-#include "Misc/NetworkGuid.h"
-#include "UObject/CoreNetTypes.h"
-#include "UObject/SoftObjectPath.h"
-#include "UObject/Field.h"
-#include "Trace/Config.h"
 #include "Templates/PimplPtr.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Trace/Config.h"
+#include "UObject/Class.h"
+#include "UObject/CoreNetTypes.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-
+class FArchive;
+class FName;
+class FNetTraceCollector;
 // Forward declarations
 class FOutBunch;
+class FOutputDevice;
+class FProperty;
 class INetDeltaBaseState;
-class FNetTraceCollector;
+class UClass;
+class UField;
+class UFunction;
 class UPackageMap;
+class UStruct;
+struct FObjectPtr;
+struct FSoftObjectPath;
+struct FSoftObjectPtr;
 
-namespace UE
+namespace UE::Net
 {
-	namespace Net
-	{
-		struct FNetResult;
-	}
+	struct FNetResult;
+
+#if UE_WITH_IRIS
+	class FReplicationFragment;
+	struct FReplicationStateDescriptor;
+	typedef FReplicationFragment* (*CreateAndRegisterReplicationFragmentFunc)(UObject* Owner, const FReplicationStateDescriptor* Descriptor, FFragmentRegistrationContext& Context);
+#endif
 }
 
 
@@ -228,12 +253,6 @@ struct FPacketIdRange
 /** Information for tracking retirement and retransmission of a property. */
 struct FPropertyRetirement
 {
-#if !UE_BUILD_SHIPPING
-	static const uint32 ExpectedSanityTag = 0xDF41C9A3;
-
-	uint32 SanityTag;
-#endif
-
 	FPropertyRetirement* Next;
 
 	TSharedPtr<class INetDeltaBaseState> DynamicState;
@@ -242,9 +261,6 @@ struct FPropertyRetirement
 	uint32 FastArrayChangelistHistory;
 
 	FPropertyRetirement() :
-#if !UE_BUILD_SHIPPING
-		SanityTag( ExpectedSanityTag ),
-#endif
 		 Next(nullptr)
 		, DynamicState(nullptr)
 		, FastArrayChangelistHistory(0)
@@ -268,6 +284,9 @@ public:
 	ELifetimeCondition Condition;
 	ELifetimeRepNotifyCondition RepNotifyCondition;
 	bool bIsPushBased;
+#if UE_WITH_IRIS
+	UE::Net::CreateAndRegisterReplicationFragmentFunc CreateAndRegisterReplicationFragmentFunction = nullptr;
+#endif
 
 	FLifetimeProperty()
 		: RepIndex(0)
@@ -303,6 +322,9 @@ public:
 			check(Condition == Other.Condition);
 			check(RepNotifyCondition == Other.RepNotifyCondition);
 			check(bIsPushBased == Other.bIsPushBased);
+#if UE_WITH_IRIS
+			check(CreateAndRegisterReplicationFragmentFunction == Other.CreateAndRegisterReplicationFragmentFunction);
+#endif
 			return true;
 		}
 
@@ -314,7 +336,6 @@ template <> struct TIsZeroConstructType<FLifetimeProperty> { enum { Value = true
 
 GENERATE_MEMBER_FUNCTION_CHECK(GetLifetimeReplicatedProps, void, const, TArray<FLifetimeProperty>&)
 
-// Consider adding UE_NET_TRACE_ENABLE to build config, for now we use the UE_TRACE_ENABLED as NetTrace is not support unless tracing is enabled
 #if UE_TRACE_ENABLED
 /**
  * We pass a NetTraceCollector along with the NetBitWriter in order avoid modifying all API`s where we want to be able to collect Network stats
@@ -515,10 +536,7 @@ public:
 	IRepChangedPropertyTracker() { }
 	virtual ~IRepChangedPropertyTracker() { }
 
-	virtual void SetCustomIsActiveOverride(
-		UObject* OwningObject,
-		const uint16 RepIndex,
-		const bool bIsActive) = 0;
+	virtual void SetCustomIsActiveOverride(UObject* OwningObject, const uint16 RepIndex, const bool bIsActive) = 0;
 
 	UE_DEPRECATED(5.0, "Please use UReplaySubsystem::SetExternalDataForObject instead.")
 	virtual void SetExternalData(const uint8* Src, const int32 NumBits) = 0;
@@ -530,6 +548,38 @@ public:
 	virtual void CountBytes(FArchive& Ar) const {};
 };
 
+class FCustomPropertyConditionState
+{
+public:
+	FCustomPropertyConditionState() = delete;
+	FCustomPropertyConditionState(int32 NumProperties)
+	{
+		CurrentState.Init(true, NumProperties);
+	}
+
+	void SetActiveState(const uint16 RepIndex, const bool bIsActive)
+	{
+		CurrentState[RepIndex] = bIsActive;
+	}
+
+	bool GetActiveState(const uint16 RepIndex) const
+	{
+		return CurrentState[RepIndex];
+	}
+
+	int32 GetNumProperties() const
+	{
+		return CurrentState.Num();
+	}
+
+	void CountBytes(FArchive& Ar) const
+	{
+		CurrentState.CountBytes(Ar);
+	}
+
+private:
+	TBitArray<> CurrentState;
+};
 
 /**
  * FNetDeltaSerializeInfo
@@ -585,6 +635,9 @@ struct FNetDeltaSerializeInfo
 	//~ TODO: This feels hacky, and a better alternative might be something like connection specific
 	//~ capabilities.
 
+	/** Whether we are currently initializing base from defaults in which case we should not modify the source **/
+	bool bIsInitializingBaseFromDefault = false;
+
 	/** Whether or not we support FFastArraySerializer::FastArrayDeltaSerialize_DeltaSerializeStructs */
 	bool bSupportsFastArrayDeltaStructSerialization = false;
 
@@ -594,8 +647,11 @@ struct FNetDeltaSerializeInfo
 	 */
 	bool bInternalAck = false;
 
-	/** The object that owns the struct we're serializing. */
+	/** The object that owns the struct we're serializing, may be an archetype. */
 	UObject* Object = nullptr;
+
+	/** Used by SendCustomDeltaProperty to distinguish between the source object (archetype) and the replicating object. */
+	UObject* CustomDeltaObject = nullptr;
 
 	/**
 	 * When non-null, this indicates that we're gathering Guid References.

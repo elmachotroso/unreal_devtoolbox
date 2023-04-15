@@ -14,16 +14,18 @@ void FNiagaraEditorCommands::RegisterCommands()
 	UI_COMMAND(Compile, "Compile", "Compile the current scripts", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RefreshNodes, "Refresh", "Refreshes the current graph nodes, and updates pins due to external changes.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ModuleVersioning, "Versioning", "Manage different versions of a module script.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(EmitterVersioning, "Versioning", "Manage different versions of an emittert.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(SelectNextUsage, "Select Next Usage", "Selects the next usage of the selected item.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(CreateAssetFromSelection, "Create Asset...", "Creates an asset from the current selection.", EUserInterfaceActionType::Button, FInputChord());
 
-	UI_COMMAND(OpenAddEmitterMenu, "Add Emitter", "Adds an emitter to the system.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::None, EKeys::E));
+	UI_COMMAND(OpenAddEmitterMenu, "Add Emitter...", "Adds an emitter to the system.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::None, EKeys::E));
 
 	UI_COMMAND(ResetSimulation, "Reset", "Resets the current simulation", EUserInterfaceActionType::Button, FInputChord(EKeys::SpaceBar));
 	UI_COMMAND(TogglePreviewGrid, "Grid", "Toggles the preview pane's grid.", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND(ToggleInstructionCounts, "InstructionCounts", "Display Instruction Counts", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleParticleCounts, "ParticleCounts", "Display Particle Counts", EUserInterfaceActionType::ToggleButton, FInputChord());
-	UI_COMMAND(ToggleEmitterExecutionOrder, "EmitterExecutionOrder", "Display Emitter Execution Order", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(ToggleEmitterExecutionOrder, "Emitter Execution Order", "Display Emitter Execution Order", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(ToggleGpuTickInformation, "Gpu Tick Information", "Display Gpu Tick Information", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(TogglePreviewBackground, "Background", "Toggles the preview pane's background.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleUnlockToChanges, "Lock/Unlock To Changes", "Toggles whether or not changes in the source asset get pulled into this asset automatically.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ToggleStatPerformance, "Performance", "Show runtime performance for particle scripts.", EUserInterfaceActionType::ToggleButton, FInputChord());
@@ -46,6 +48,7 @@ void FNiagaraEditorCommands::RegisterCommands()
 
 	UI_COMMAND(IsolateSelectedEmitters, "Isolate selected emitters", "Isolate all currently selected emitters.", EUserInterfaceActionType::Button, FInputChord(EKeys::S));
 	UI_COMMAND(DisableSelectedEmitters, "Disable selected emitters", "Disables all currently selected emitters and recompiles the system.", EUserInterfaceActionType::Button, FInputChord(EKeys::D));
+	UI_COMMAND(HideDisabledModules, "Collapse disabled modules", "Collapses disabled modules in the stack, so they won't take up as much space.", EUserInterfaceActionType::Check, FInputChord(EModifierKey::Control, EKeys::M));
 	
 	UI_COMMAND(OpenDebugHUD, "Debug HUD", "Open the Niagara Debug HUD.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(OpenDebugOutliner, "FX Outliner", "Open the Niagara FX Outliner.", EUserInterfaceActionType::Button, FInputChord());

@@ -405,7 +405,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Effects|Components|ParticleSystem")
 	virtual void SetEmitterEnable(FName EmitterName, bool bNewEnableState) {};
 
-
 	/**
 	 * Set AutoAttachParent, AutoAttachSocketName, AutoAttachLocationRule, AutoAttachRotationRule, AutoAttachScaleRule to the specified parameters. Does not change bAutoManageAttachment; that must be set separately.
 	 * @param  Parent			Component to attach to.
@@ -444,6 +443,9 @@ public:
 	/** Forces component to deactivate immediately. */
 	virtual void DeactivateImmediate() {}
 
+	/** Returns true if we have crossed LWC tiles to the point that we may introduce artifacts. */
+	static bool RequiresLWCTileRecache(const FVector3f CurrentTile, const FVector CurrentLocation);
+
 #if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
 	mutable FParticlePerfStats* ParticlePerfStats = nullptr;
 #endif
@@ -453,7 +455,7 @@ public:
 /** 
  * A particle emitter.
  */
-UCLASS(ClassGroup=(Rendering), hidecategories=Object, hidecategories=Physics, hidecategories=Collision, showcategories=Trigger, editinlinenew, meta=(BlueprintSpawnableComponent))
+UCLASS(ClassGroup=(Rendering), hidecategories=Object, hidecategories=Physics, hidecategories=Collision, showcategories=Trigger, editinlinenew, meta=(BlueprintSpawnableComponent, DisplayName = "Cascade Particle System Component"))
 class ENGINE_API UParticleSystemComponent : public UFXSystemComponent
 {
 	friend class FParticleSystemWorldManager;
@@ -537,6 +539,8 @@ public:
 	uint8 bIsManagingSignificance : 1;
 	/** If this component was previously having it's significance managed by gameplay code. Allows us to refresh render data when this changes. */
 	uint8 bWasManagingSignificance : 1;
+
+	uint8 bIsDuringRegister : 1;
 
 	UPROPERTY()
 	uint8 bWarmingUp:1;

@@ -2,14 +2,26 @@
 
 
 #include "SEditorViewportToolBarMenu.h"
+
+#include "HAL/PlatformMath.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
 #include "SEditorViewportToolBarMenuButton.h"
-#include "Widgets/SBoxPanel.h"
+#include "SViewportToolBar.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "UObject/UnrealNames.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FGeometry;
+struct FPointerEvent;
 
 void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 {
@@ -18,7 +30,7 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 	SetToolTipText(FText::GetEmpty());
 
 	const FName ImageName = Declaration._Image;
-	const FSlateBrush* ImageBrush = FEditorStyle::GetBrush( ImageName );
+	const FSlateBrush* ImageBrush = FAppStyle::GetBrush( ImageName );
 
 	LabelIconBrush = Declaration._LabelIcon;
 

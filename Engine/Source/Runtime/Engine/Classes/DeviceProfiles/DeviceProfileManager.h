@@ -11,6 +11,7 @@
 #include "UObject/Object.h"
 #include "DeviceProfileMatching.h"
 #include "CoreGlobals.h"
+#include "HAL/IConsoleManager.h"
 #include "DeviceProfileManager.generated.h"
 
 class UDeviceProfile;
@@ -20,6 +21,18 @@ DECLARE_MULTICAST_DELEGATE( FOnDeviceProfileManagerUpdated );
 
 // Delegate used to notify systems when the active device profile changes
 DECLARE_MULTICAST_DELEGATE( FOnActiveDeviceProfileChanged );
+
+struct FPushedCVarSetting
+{
+	FPushedCVarSetting() : SetBy(ECVF_Default)	{}
+	FPushedCVarSetting(const FString& InValue, EConsoleVariableFlags InFlags) 
+		: Value(InValue)
+		, SetBy(EConsoleVariableFlags(InFlags & ECVF_SetByMask))
+	{}
+
+	FString Value;
+	EConsoleVariableFlags SetBy;
+};
 
 /**
  * Implements a helper class that manages all profiles in the Device
@@ -35,13 +48,13 @@ public:
 	 * Startup and select the active device profile
 	 * Then Init the CVars from this profile and it's Device profile parent tree.
 	 */
-	static void InitializeCVarsForActiveDeviceProfile();
+	static void InitializeCVarsForActiveDeviceProfile(bool bPushSettings = false, bool bIsDeviceProfilePreview = false, bool bForceReload = false);
 
 	/**
 	 * Reapplies the device profile. Useful when configs have changed (i.e. hotfix)
 	 * Applies base and then any overridden device profile.
 	 */
-	void ReapplyDeviceProfile();
+	void ReapplyDeviceProfile(bool bForceReload = false);
 
 	/**
 	 * Examine the currently active or overridden profile for references to entries in DeviceProfilesToQuery
@@ -169,6 +182,18 @@ public:
 	const FString GetActiveDeviceProfileName();
 
 	/**
+	* Get a string containing the current matched fragment list.
+	*
+	* e.g. "Fragment1,Fragment2,[tag]Fragment3"
+	* 
+	* @param bEnabledOnly				- Only Enabled fragments will be present in the returned string.
+	* @param bIncludeTags				- If true the Fragment string will include the tag.
+	* @param bAlphaSort					- If true the Fragments will be in alphabetical order as opposed to application order.
+	* @return csv string of the current matched fragments.
+	*/
+	const FString GetActiveDeviceProfileMatchedFragmentsString(bool bEnabledOnly, bool bIncludeTags, bool bAlphaSort);
+
+	/**
 	* Get the selected device profile name, either the platform name, or the name
 	* provided by a Device Profile Selector Module.
 	*
@@ -189,11 +214,6 @@ public:
 	static bool GetScalabilityCVar(const FString& CvarName, int32& OutValue);
 	static bool GetScalabilityCVar(const FString& CvarName, float& OutValue);
 
-#if ALLOW_OTHER_PLATFORM_CONFIG
-	/** Retrieve another platform's DeviceProfile, and make sure it's CVars are expanded, including scalability */
-	static void ExpandDeviceProfileCVars(UDeviceProfile* DeviceProfile);
-#endif
-
 	/**
 	* Enable/Disable a tagged fragment of the active device profile.
 	* This unsets the entire cvar DP state, then re-sets the new DP+fragment state.
@@ -205,6 +225,18 @@ public:
 	* null if the tag is not found.
 	*/
 	const FSelectedFragmentProperties* GetActiveDeviceProfileFragmentByTag(FName& FragmentTag) const;
+
+
+	enum class EDeviceProfileMode : uint8
+	{
+		DPM_SetCVars,
+		DPM_CacheValues,
+	};
+
+	/**
+	 * Walk the device profile/fragment chain to get the final set ot CVars in a unified way
+	 */
+	static TMap<FName, FString> GatherDeviceProfileCVars(const FString& DeviceProfileName, EDeviceProfileMode GatherMode);
 
 
 private:
@@ -226,26 +258,26 @@ private:
 	/** Sees if the texture settings are the same between two profiles */
 	bool AreTextureGroupsTheSame(UDeviceProfile* Profile1, UDeviceProfile* Profile2) const;
 
-	enum class EDeviceProfileMode : uint8
-	{
-		DPM_SetCVars,
-		DPM_CacheValues,
-	};
-
 	/**
 	 * Perform the processing of ini sections, going up to parents, etc. Depending on runtime vs editor processing of another platform,
 	 * the Mode will control how the settings are handled
 	 */
-	static void ProcessDeviceProfileIniSettings(const FString& DeviceProfileName, EDeviceProfileMode Mode);
+	static void SetDeviceProfileCVars(const FString& DeviceProfileName);
 
 
 	/** Read and process all of the fragment matching rules. Returns an array containing the names of fragments selected. */
 	static TArray<FSelectedFragmentProperties> FindMatchingFragments(const FString& ParentDP, class FConfigCacheIni* PreviewConfigSystem);
 
+	/** Convert a FSelectedFragmentProperties array to a string */
+	static const FString FragmentPropertyArrayToFragmentString(const TArray<FSelectedFragmentProperties>& FragmentProperties, bool bEnabledOnly, bool bIncludeTags, bool bAlphaSort);
+
 	/** Get the current platform's the selector module. Can return null */
 	static class IDeviceProfileSelectorModule* GetDeviceProfileSelectorModule();
+
+#if ALLOW_OTHER_PLATFORM_CONFIG && WITH_EDITOR
 	/** Get another platform's selector module. Can return null */
 	static class IDeviceProfileSelectorModule* GetPreviewDeviceProfileSelectorModule(class FConfigCacheIni* PreviewConfigSystem);
+#endif
 public:
 
 	static class UDeviceProfileManager* DeviceProfileManagerSingleton;
@@ -282,11 +314,11 @@ private:
 
 	// Original values of all the CVars modified by the DP.
 	// Used to undo the DP before applying new state.
-	static TMap<FString, FString> PushedSettings;
+	static TMap<FString, FPushedCVarSetting> PushedSettings;
 
 #if ALLOW_OTHER_PLATFORM_CONFIG
 	// Original values of the CVars modified by SetPreviewDeviceProfile.
-	TMap<FString, FString> PreviewPushedSettings;
+	TMap<FString, FPushedCVarSetting> PreviewPushedSettings;
 #endif
 	// Holds the device profile that has been overridden, null no override active.
 	UDeviceProfile* BaseDeviceProfile = nullptr;

@@ -11,10 +11,10 @@
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/NetworkDelegates.h"
 #include "RHIDefinitions.h"
-
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "GameFramework/OnlineReplStructs.h"
+#include "ReplayTypes.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -58,6 +58,10 @@ class FOnlineSessionSearchResult;
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPreClientTravel, const FString& /*PendingURL*/, ETravelType /*TravelType*/, bool /*bIsSeamlessTravel*/);
 typedef FOnPreClientTravel::FDelegate FOnPreClientTravelDelegate;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPawnControllerChanged, APawn*, Pawn, AController*, Controller);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnUserInputDeviceConnectionChange, EInputDeviceConnectionState, NewConnectionState, FPlatformUserId, PlatformUserId, FInputDeviceId, InputDeviceId);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnUserInputDevicePairingChange, FInputDeviceId, InputDeviceId, FPlatformUserId, NewUserPlatformId, FPlatformUserId, OldUserPlatformId);
+
 
 #if WITH_EDITOR
 
@@ -103,6 +107,7 @@ struct FGameInstancePIEParameters
 		, bAnyBlueprintErrors(false)
 		, bStartInSpectatorMode(false)
 		, bRunAsDedicated(false)
+		, bIsPrimaryPIEClient(false)
 		, WorldFeatureLevel(ERHIFeatureLevel::Num)
 		, EditorPlaySettings(nullptr)
 		, NetMode(EPlayNetMode::PIE_Standalone)
@@ -119,6 +124,9 @@ struct FGameInstancePIEParameters
 
 	// Is this a dedicated server instance for PIE?
 	bool bRunAsDedicated;
+
+	// Is this the primary PIE client?
+	bool bIsPrimaryPIEClient;
 
 	// What time did we start PIE in the editor?
 	double PIEStartTime = 0;
@@ -137,6 +145,8 @@ struct FGameInstancePIEParameters
 };
 
 #endif
+
+enum class EInputDeviceConnectionState : uint8;
 
 DECLARE_EVENT_OneParam(UGameInstance, FOnLocalPlayerEvent, ULocalPlayer*);
 
@@ -208,6 +218,7 @@ public:
 	//~ Begin UObject Interface
 	virtual class UWorld* GetWorld() const final;
 	virtual void FinishDestroy() override;
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	//~ End UObject Interface
 
 	/** virtual function to allow custom GameInstances an opportunity to set up what it needs */
@@ -224,6 +235,38 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, meta=(DisplayName = "Shutdown"))
 	void ReceiveShutdown();
 
+	/**
+	 * Callback for handling an Input Device's connection state change.
+	 *
+	 * @param NewConnectionState	The new connection state of this device
+	 * @param FPlatformUserId		The User ID whose input device has changed
+	 * @param FInputDeviceId		The Input Device ID that has changed connection
+	 * @see IPlatformInputDeviceMapper
+	 */
+	virtual void HandleInputDeviceConnectionChange(EInputDeviceConnectionState NewConnectionState, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId);
+
+	/** 
+	 * Callback for when an input device connection state has changed (a new gamepad was connected or disconnected)
+	 */
+	UPROPERTY(BlueprintAssignable, DisplayName=OnInputDeviceConnectionChange)
+	FOnUserInputDeviceConnectionChange OnInputDeviceConnectionChange;
+	
+	/**
+	 * Callback for handling an Input Device pairing change.
+	 * 
+	 * @param FInputDeviceId	Input device ID
+	 * @param FPlatformUserId	The NewUserPlatformId
+	 * @param FPlatformUserId	The OldUserPlatformId
+	 * @see IPlatformInputDeviceMapper
+	 */
+	virtual void HandleInputDevicePairingChange(FInputDeviceId InputDeviceId, FPlatformUserId NewUserPlatformId, FPlatformUserId OldUserPlatformId);
+
+	/**
+	 * Callback when an input device has changed pairings (the owning platform user has changed for that device)
+	 */
+	UPROPERTY(BlueprintAssignable, DisplayName=OnUserInputDevicePairingChange)
+	FOnUserInputDevicePairingChange OnUserInputDevicePairingChange;
+	
 	/** Opportunity for blueprints to handle network errors. */
 	UFUNCTION(BlueprintImplementableEvent, meta=(DisplayName = "NetworkError"))
 	void HandleNetworkError(ENetworkFailure::Type FailureType, bool bIsServer);
@@ -300,12 +343,30 @@ public:
 	ULocalPlayer*			CreateLocalPlayer(int32 ControllerId, FString& OutError, bool bSpawnPlayerController);
 
 	/**
+	 * Adds a new player.
+	 * @param UserId - The platform user id the player should accept input from
+	 * @param OutError - If no player is returned, OutError will contain a string describing the reason.
+	 * @param bSpawnPlayerController - True if a player controller should be spawned immediately for the new player.
+	 * @return The player which was created.
+	 */
+	ULocalPlayer* CreateLocalPlayer(FPlatformUserId UserId, FString& OutError, bool bSpawnPlayerController);
+
+	/**
 	 * Adds a LocalPlayer to the local and global list of Players.
 	 *
 	 * @param	NewPlayer	the player to add
 	 * @param	ControllerId id of the controller associated with the player
 	 */
+	UE_DEPRECATED(5.1, "This version of AddLocalPlayer has been deprecated, pleasse use the version that takes a FPlatformUserId instead.")
 	virtual int32			AddLocalPlayer(ULocalPlayer* NewPlayer, int32 ControllerId);
+
+	/**
+	 * Adds a LocalPlayer to the local and global list of Players.
+	 *
+	 * @param	NewPlayer	The player to add
+	 * @param	UserId		Id of the platform user associated with the player
+	 */
+	virtual int32 AddLocalPlayer(ULocalPlayer* NewPlayer, FPlatformUserId UserId);
 
 	/**
 	 * Removes a player.
@@ -328,6 +389,9 @@ public:
 
 	/** Returns the local player assigned to a physical Controller Id, or null if not found */
 	ULocalPlayer*			FindLocalPlayerFromControllerId(const int32 ControllerId) const;
+	
+	/** Returns the local player assigned to this platform user id, or null if not found */
+	ULocalPlayer* FindLocalPlayerFromPlatformUserId(const FPlatformUserId UserId) const;
 
 	/** Returns the local player that has been assigned the specific unique net id */
 	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(FUniqueNetIdPtr UniqueNetId) const;
@@ -365,8 +429,16 @@ public:
 
 	void CleanupGameViewport();
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Called when demo playback fails for any reason */
-	virtual void HandleDemoPlaybackFailure( EDemoPlayFailure::Type FailureType, const FString& ErrorString = TEXT("") ) { }
+	UE_DEPRECATED(5.1, "Now takes a EReplayResult instead.")
+	virtual void HandleDemoPlaybackFailure(EDemoPlayFailure::Type FailureType, const FString& ErrorString = TEXT("")) { }
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	virtual void HandleDemoPlaybackFailure(const UE::Net::TNetResult<EReplayResult>& Result) { }
+
+	/** Called when demo recording fails for any reason */
+	virtual void HandleDemoRecordFailure(const UE::Net::TNetResult<EReplayResult>& Result) { }
 
 	/** This gets called when the player scrubs in a replay to a different level */
 	virtual void OnSeamlessTravelDuringReplay() { }
@@ -456,7 +528,7 @@ public:
 	/**
 	 * Adds a join-in-progress user to the set of users associated with the currently recording replay (if any)
 	 *
-	 * @param UserString a string that uniquely identifies the user, usually his or her FUniqueNetId
+	 * @param UserString a string that uniquely identifies the user, usually their FUniqueNetId
 	 */
 	virtual void AddUserToReplay(const FString& UserString);
 
@@ -483,6 +555,9 @@ public:
 	/** Called when a client receives the EncryptionAck control message from the server, will generally enable encryption. */
 	virtual void ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResponse& Delegate);
 
+	/** Called when a connecting client fails to setup encryption */
+	virtual EEncryptionFailureAction ReceivedNetworkEncryptionFailure(UNetConnection* Connection);
+
 	/** Call to preload any content before loading a map URL, used during seamless travel as well as map loading */
 	virtual void PreloadContentForURL(FURL InURL);
 
@@ -495,10 +570,26 @@ public:
 	/** Return the game mode subclass to use for a given map, options, and portal. By default return passed in one */
 	virtual TSubclassOf<AGameModeBase> OverrideGameModeClass(TSubclassOf<AGameModeBase> GameModeClass, const FString& MapName, const FString& Options, const FString& Portal) const;
 
+
+	/**
+	 * Game instance has an opportunity to modify the level name before the client starts travel
+	 */
+	virtual void ModifyClientTravelLevelURL(FString& LevelName)
+	{
+	}
+
 	/** return true to delay an otherwise ready-to-join PendingNetGame performing LoadMap() and finishing up
 	 * useful to wait for content downloads, etc
 	 */
 	virtual bool DelayPendingNetGameTravel()
+	{
+		return false;
+	}
+
+	/**
+	 * return true to delay player controller spawn (sending NMT_Join)
+	 */
+	virtual bool DelayCompletionOfPendingNetGameTravel()
 	{
 		return false;
 	}
@@ -564,5 +655,5 @@ protected:
 
 private:
 
-	FSubsystemCollection<UGameInstanceSubsystem> SubsystemCollection;
+	FObjectSubsystemCollection<UGameInstanceSubsystem> SubsystemCollection;
 };

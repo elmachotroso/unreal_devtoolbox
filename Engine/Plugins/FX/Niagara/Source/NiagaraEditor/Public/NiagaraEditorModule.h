@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Modules/ModuleInterface.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "NiagaraTypes.h"
@@ -11,6 +11,7 @@
 #include "AssetTypeCategories.h"
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraDebuggerCommon.h"
+#include "NiagaraRendererProperties.h"
 #include "NiagaraEditorModule.generated.h"
 
 class IAssetTools;
@@ -48,15 +49,17 @@ class UNiagaraParameterCollection;
 DECLARE_STATS_GROUP(TEXT("Niagara Editor"), STATGROUP_NiagaraEditor, STATCAT_Advanced);
 
 extern NIAGARAEDITOR_API int32 GbShowNiagaraDeveloperWindows;
+extern NIAGARAEDITOR_API int32 GbPreloadSelectablePluginAssetsOnDemand;
 
 /* Defines methods for allowing external modules to supply widgets to the core editor module. */
 class NIAGARAEDITOR_API INiagaraEditorWidgetProvider
 {
 public:
 	virtual TSharedRef<SWidget> CreateStackView(UNiagaraStackViewModel& StackViewModel) const = 0;
-	virtual TSharedRef<SWidget> CreateSystemOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const = 0;
+	virtual TSharedRef<SWidget> CreateSystemOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel, const FAssetData& EditedAsset) const = 0;
 	virtual TSharedRef<SWidget> CreateStackIssueIcon(UNiagaraStackViewModel& StackViewModel, UNiagaraStackEntry& StackEntry) const = 0;
-	virtual TSharedRef<SWidget> CreateScriptScratchPad(UNiagaraScratchPadViewModel& ScriptScratchPadViewModel) const = 0;
+
+	virtual TSharedRef<SWidget> CreateScriptScratchPadManager(UNiagaraScratchPadViewModel& ScriptScratchPadViewModel) const = 0;
 	virtual TSharedRef<SWidget> CreateCurveOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const = 0;
 	virtual FLinearColor GetColorForExecutionCategory(FName ExecutionCategory) const = 0;
 };
@@ -89,6 +92,32 @@ private:
 		 
 	UPROPERTY(transient)
 	TObjectPtr<UNiagaraParameterDefinitions> ReservingDefinitionsAsset;
+};
+
+USTRUCT()
+struct NIAGARAEDITOR_API FNiagaraRendererCreationInfo
+{
+	DECLARE_DELEGATE_RetVal_OneParam(UNiagaraRendererProperties*, FRendererFactory, UObject* OuterEmitter);
+
+	GENERATED_BODY()
+
+	FNiagaraRendererCreationInfo() = default;
+	FNiagaraRendererCreationInfo(FText InDisplayName, const FTopLevelAssetPath& InRendererClassPath, FRendererFactory InFactory) : DisplayName(InDisplayName), RendererClassPath(InRendererClassPath), RendererFactory(InFactory)
+	{}
+
+	FNiagaraRendererCreationInfo(FText InDisplayName, FText InDescription, const FTopLevelAssetPath& InRendererClassPath, FRendererFactory InFactory) : DisplayName(InDisplayName), Description(InDescription), RendererClassPath(InRendererClassPath), RendererFactory(InFactory)
+	{}
+
+	UPROPERTY()
+	FText DisplayName;
+
+	UPROPERTY()
+	FText Description;
+
+	UPROPERTY()
+	FTopLevelAssetPath RendererClassPath;
+	
+	FRendererFactory RendererFactory;
 };
 
 FORCEINLINE uint32 GetTypeHash(const FReservedParameter& ReservedParameter) { return GetTypeHash(ReservedParameter.GetParameter().GetName()); };
@@ -153,6 +182,10 @@ public:
 	NIAGARAEDITOR_API void ReleaseObjectToPool(UObject* Obj);
 	NIAGARAEDITOR_API void ClearObjectPool();
 
+	/** Registers a new renderer creation delegate with the display name it's going to use for the UI. */
+	NIAGARAEDITOR_API void RegisterRendererCreationInfo(FNiagaraRendererCreationInfo RendererCreationInfo);
+	NIAGARAEDITOR_API const TArray<FNiagaraRendererCreationInfo>& GetRendererCreationInfos() const { return RendererCreationInfo; }
+	
 	void RegisterParameterTrackCreatorForType(const UScriptStruct& StructType, FOnCreateMovieSceneTrackForParameter CreateTrack);
 	void UnregisterParameterTrackCreatorForType(const UScriptStruct& StructType);
 	bool CanCreateParameterTrackForType(const UScriptStruct& StructType);
@@ -201,7 +234,7 @@ public:
 
 	const TArray<TWeakObjectPtr<UNiagaraParameterDefinitions>>& GetCachedParameterDefinitionsAssets();
 
-	NIAGARAEDITOR_API void GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, UNiagaraEmitter*& OutOwningEmitter);
+	NIAGARAEDITOR_API void GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, FVersionedNiagaraEmitter& OutOwningEmitter);
 	NIAGARAEDITOR_API void GetDataInterfaceFeedbackSafe(UNiagaraDataInterface* InDataInterface, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& Warnings, TArray<FNiagaraDataInterfaceFeedback>& Info);
 
 	NIAGARAEDITOR_API void EnsureReservedDefinitionUnique(FGuid& UniqueId);
@@ -209,6 +242,8 @@ public:
 	FNiagaraGraphDataCache& GetGraphDataCache() const { return *GraphDataCache.Get(); }
 
 	NIAGARAEDITOR_API UNiagaraParameterCollection* FindCollectionForVariable(const FString& VariableName);
+
+	void PreloadSelectablePluginAssetsByClass(UClass* InClass);
 
 private:
 	class FDeferredDestructionContainerBase
@@ -244,12 +279,12 @@ private:
 		{
 			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 			TArray<FAssetData> AssetData;
-			AssetRegistryModule.GetRegistry().GetAssetsByClass(AssetType::StaticClass()->GetFName(), AssetData);
+			AssetRegistryModule.GetRegistry().GetAssetsByClass(AssetType::StaticClass()->GetClassPathName(), AssetData);
 
 			CachedAssets.Reset(AssetData.Num());
 			for (const FAssetData& AssetDatum : AssetData)
 			{
-				if (AssetDatum.IsAssetLoaded() || bAllowLoading)
+				if (AssetDatum.IsAssetLoaded() || (bAllowLoading && FPackageName::GetPackageMountPoint(AssetDatum.PackageName.ToString()) != NAME_None))
 				{
 					if (AssetType* Asset = Cast<AssetType>(AssetDatum.GetAsset()))
 					{
@@ -265,6 +300,7 @@ private:
 		TArray<TWeakObjectPtr<AssetType>> CachedAssets;
 	};
 
+	void RegisterDefaultRendererFactories();
 	void RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action);
 	void OnNiagaraSettingsChangedEvent(const FName& PropertyName, const UNiagaraSettings* Settings);
 	void OnPreGarbageCollection();
@@ -344,6 +380,7 @@ private:
 	IConsoleCommand* PreventAllSystemRecompilesCommand;
 	IConsoleCommand* UpgradeAllNiagaraAssetsCommand;
 	IConsoleCommand* DumpCompileIdDataForAssetCommand;
+	IConsoleCommand* LoadAllSystemsInFolderCommand;
 
 	FOnCheckScriptToolkitsShouldFocusGraphElement OnCheckScriptToolkitsShouldFocusGraphElement;
 
@@ -363,6 +400,8 @@ private:
 	TMap<FName, INiagaraStackObjectIssueGenerator*> StackIssueGenerators;
 
 	TMap<UClass*, TArray<UObject*>> ObjectPool;
+
+	TArray<FNiagaraRendererCreationInfo> RendererCreationInfo;
 
 #if NIAGARA_PERF_BASELINES
 	void GeneratePerfBaselines(TArray<UNiagaraEffectType*>& BaselinesToGenerate);
@@ -385,4 +424,6 @@ private:
 
 	TAssetPreloadCache<UNiagaraParameterCollection> ParameterCollectionAssetCache;
 	TAssetPreloadCache<UNiagaraParameterDefinitions> ParameterDefinitionsAssetCache;
+
+	TArray<UClass*> PluginAssetClassesPreloaded;
 };

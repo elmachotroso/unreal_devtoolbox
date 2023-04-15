@@ -4,11 +4,14 @@
 
 #include "CoreMinimal.h"
 
-#include "AssetData.h"
-#include "AssetRegistryState.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryState.h"
+#include "Containers/Map.h"
+#include "Cooker/PackageResultsMessage.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "Misc/Paths.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/Object.h"
 #include "UObject/UObjectHash.h"
 
 class FSandboxPlatformFile;
@@ -17,6 +20,11 @@ class ITargetPlatform;
 class IChunkDataGenerator;
 class UChunkDependencyInfo;
 struct FChunkDependencyTreeNode;
+struct FCookTagList;
+struct FSoftObjectPath;
+namespace UE::Cook { class FAssetRegistryPackageMessage; }
+namespace UE::Cook { class FCookWorkerClient; }
+namespace UE::Cook { struct FPackageData; }
 
 /**
  * Helper class for generating streaming install manifests
@@ -37,7 +45,7 @@ public:
 	/**
 	 * Initializes manifest generator - creates manifest lists, hooks up delegates.
 	 */
-	void Initialize(const TArray<FName> &StartupPackages);
+	void Initialize(const TArray<FName> &StartupPackages, bool bInitializeFromExisting);
 
 	const ITargetPlatform* GetTargetPlatform() const { return TargetPlatform; }
 
@@ -188,12 +196,20 @@ public:
 	void GetChunkAssignments(TArray<TSet<FName>>& OutAssignments) const;
 
 	/**
-	 * Attempts to update the metadata for a package in an asset registry generator
+	 * Attempts to update the metadata for a package in an asset registry generator.
+	 * This is only called for CookByTheBooks.
 	 *
 	 * @param Package The package to update info on
 	 * @param SavePackageResult The metadata to associate with the given package name
 	 */
-	void UpdateAssetRegistryPackageData(const UPackage& Package, FSavePackageResultStruct& SavePackageResult, TFuture<FMD5Hash>& CookedHash);
+	void UpdateAssetRegistryData(const UPackage& Package, FSavePackageResultStruct& SavePackageResult, FCookTagList&& InArchiveCookTagList);
+	void UpdateAssetRegistryData(UE::Cook::FPackageData& PackageData, UE::Cook::FAssetRegistryPackageMessage&& Message);
+
+	/**
+	 * Check config to see whether chunk assignments use the AssetManager. If so, run the once-per-process construction
+	 * of ManageReferences and store them in the global AssetRegistry.
+	 */
+	static void UpdateAssetManagerDatabase();
 
 private:
 	/**
@@ -219,8 +235,16 @@ private:
 	 */
 	void UpdateKeptPackages();
 
+	static void InitializeUseAssetManager();
+
 	/** State of the asset registry that is being built for this platform */
 	FAssetRegistryState State;
+	
+	/** 
+	 * The list of tags to add for each asset. This is populated during cook by the books,
+	 * and is only added to development registries.
+	 */
+	TMap<FSoftObjectPath, TArray<TPair<FName, FString>>> CookTagsToAdd;
 
 	TMap<FName, TPair<TArray<FAssetData>, FAssetPackageData>> PreviousPackagesToUpdate;
 	/** List of packages that were loaded at startup */
@@ -245,8 +269,6 @@ private:
 	TSet<FName> PackagesContainingMaps;
 	/** Should the chunks be generated or only asset registry */
 	bool bGenerateChunks;
-	/** True if we should use the AssetManager, false to use the deprecated path */
-	bool bUseAssetManager;
 	/** Highest chunk id, being used for geneating dependency tree */
 	int32 HighestChunkId;
 	/** Array of Maps with chunks<->packages assignments */
@@ -269,6 +291,9 @@ private:
 
 	/** Mapping from chunk id to pakchunk file index. If not defined, Pakchunk index will be the same as chunk id by default */
 	TMap<int32, int32> ChunkIdPakchunkIndexMapping;
+
+	/** True if we should use the AssetManager, false to use the deprecated path */
+	static bool bUseAssetManager;
 
 	struct FReferencePair
 	{
@@ -399,3 +424,67 @@ private:
 	 */
 	const FAssetData* CreateOrFindAssetData(UObject& Object);
 };
+
+namespace UE::Cook
+{
+
+class IAssetRegistryReporter
+{
+public:
+	virtual ~IAssetRegistryReporter() {}
+
+	virtual void UpdateAssetRegistryData(FPackageData& PackageData, const UPackage& Package,
+		FSavePackageResultStruct& SavePackageResult, FCookTagList&& InArchiveCookTagList) = 0;
+
+};
+
+class FAssetRegistryReporterLocal : public IAssetRegistryReporter
+{
+public:
+	FAssetRegistryReporterLocal(FAssetRegistryGenerator& InGenerator)
+		: Generator(InGenerator)
+	{
+	}
+
+	virtual void UpdateAssetRegistryData(FPackageData& PackageData, const UPackage& Package,
+		FSavePackageResultStruct& SavePackageResult, FCookTagList&& InArchiveCookTagList) override
+	{
+		Generator.UpdateAssetRegistryData(Package, SavePackageResult, MoveTemp(InArchiveCookTagList));
+	}
+
+private:
+	FAssetRegistryGenerator& Generator;
+};
+
+class FAssetRegistryReporterRemote : public IAssetRegistryReporter
+{
+public:
+	FAssetRegistryReporterRemote(FCookWorkerClient& InClient, const ITargetPlatform* InTargetPlatform);
+
+	virtual void UpdateAssetRegistryData(FPackageData& PackageData, const UPackage& Package,
+		FSavePackageResultStruct& SavePackageResult, FCookTagList&& InArchiveCookTagList) override;
+
+private:
+	FCookWorkerClient& Client;
+	const ITargetPlatform* TargetPlatform = nullptr;
+};
+
+class FAssetRegistryPackageMessage : public IPackageMessage
+{
+public:
+	virtual void Write(FCbWriter& Writer, const FPackageData& PackageData, const ITargetPlatform* TargetPlatform) const override;
+	virtual bool TryRead(FCbObject&& Object, FPackageData& PackageData, const ITargetPlatform* TargetPlatform) override;
+	virtual FGuid GetMessageType() const override { return MessageType; }
+
+	TArray<FAssetData> AssetDatas;
+	TMap<FSoftObjectPath, TArray<TPair<FName, FString>>> CookTags;
+	uint32 PackageFlags = 0;
+	int64 DiskSize = -1;
+
+public:
+	static FGuid MessageType;
+};
+
+
+
+}

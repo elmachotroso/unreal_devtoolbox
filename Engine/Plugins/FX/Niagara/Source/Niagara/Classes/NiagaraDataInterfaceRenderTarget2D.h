@@ -11,7 +11,6 @@
 class FNiagaraSystemInstance;
 class UTextureRenderTarget2D;
 
-
 struct FRenderTarget2DRWInstanceData_GameThread
 {
 	FRenderTarget2DRWInstanceData_GameThread()
@@ -49,9 +48,13 @@ struct FRenderTarget2DRWInstanceData_RenderThread
 	bool bReadThisFrame = false;
 	bool bWroteThisFrame = false;
 
-	FSamplerStateRHIRef SamplerStateRHI;
-	FTexture2DRHIRef TextureRHI;
-	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
+	FSamplerStateRHIRef	SamplerStateRHI;
+	FTexture2DRHIRef	TextureRHI;
+
+	FRDGTextureRef		TransientRDGTexture = nullptr;
+	FRDGTextureSRVRef	TransientRDGSRV = nullptr;
+	FRDGTextureUAVRef	TransientRDGUAV = nullptr;
+
 #if WITH_EDITORONLY_DATA
 	uint32 bPreviewTexture : 1;
 #endif
@@ -67,8 +70,8 @@ struct FNiagaraDataInterfaceProxyRenderTarget2DProxy : public FNiagaraDataInterf
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override {}
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
 
-	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
+	virtual void PostStage(const FNDIGpuComputePostStageContext& Context) override;
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
 
 	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override;
 
@@ -83,8 +86,6 @@ class NIAGARA_API UNiagaraDataInterfaceRenderTarget2D : public UNiagaraDataInter
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();	
-		
 	virtual void PostInitProperties() override;
 	
 	//~ UNiagaraDataInterface interface
@@ -101,9 +102,13 @@ public:
 
 	// GPU sim functionality
 #if WITH_EDITORONLY_DATA
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const  override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override {}
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -123,20 +128,8 @@ public:
 	virtual bool RenderVariableToCanvas(FNiagaraSystemInstanceID SystemInstanceID, FName VariableName, class FCanvas* Canvas, const FIntRect& DrawRect) const override;
 	//~ UNiagaraDataInterface interface END
 
-	void GetSize(FVectorVMExternalFunctionContext& Context); 
-	void SetSize(FVectorVMExternalFunctionContext& Context);
-
-	static const FName SetValueFunctionName;
-	static const FName GetValueFunctionName;
-	static const FName SampleValueFunctionName;
-	static const FName SetSizeFunctionName;
-	static const FName GetSizeFunctionName;
-	static const FName LinearToIndexName;
-
-	static const FString SizeName;
-	static const FString RWOutputName;
-	static const FString OutputName;
-	static const FString InputName;
+	void VMGetSize(FVectorVMExternalFunctionContext& Context); 
+	void VMSetSize(FVectorVMExternalFunctionContext& Context);
 
 	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings"))
 	FIntPoint Size;

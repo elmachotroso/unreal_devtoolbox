@@ -1,19 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SAnimTimeline.h"
+#include "AnimTimeline/SAnimTimeline.h"
 #include "Styling/ISlateStyle.h"
 #include "Widgets/SWidget.h"
-#include "AnimModel.h"
-#include "SAnimOutliner.h"
-#include "SAnimTrackArea.h"
+#include "AnimTimeline/AnimModel.h"
+#include "AnimTimeline/SAnimOutliner.h"
+#include "AnimTimeline/SAnimTrackArea.h"
+#include "SAnimTrack.h"
+#include "SAnimTrack.h"
 #include "Widgets/Layout/SSplitter.h"
-#include "SAnimTimelineOverlay.h"
-#include "SAnimTimelineSplitterOverlay.h"
+#include "AnimTimeline/SAnimTimelineOverlay.h"
+#include "AnimTimeline/SAnimTimelineSplitterOverlay.h"
 #include "ISequencerWidgetsModule.h"
 #include "FrameNumberNumericInterface.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SScrollBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Fonts/FontMeasure.h"
 #include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SSpacer.h"
@@ -30,12 +32,15 @@
 #include "ScopedTransaction.h"
 #include "Widgets/Input/STextEntryPopup.h"
 #include "AnimSequenceTimelineCommands.h"
+#include "AnimTimelineTrack_Curve.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "SAnimTimelineTransportControls.h"
+#include "AnimTimeline/SAnimTimelineTransportControls.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimData/AnimDataModel.h"
-#include "Runtime/Engine/Classes/Animation/AnimSequenceHelpers.h"
+#include "Animation/AnimSequenceHelpers.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "AnimTimeline/AnimTimeSliderController.h"
+#include "Framework/Commands/GenericCommands.h"
 
 #define LOCTEXT_NAMESPACE "SAnimTimeline"
 
@@ -186,7 +191,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 							[
 								// Current Play Time 
 								SNew(SSpinBox<double>)
-								.Style(&FEditorStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.PlayTimeSpinBox"))
+								.Style(&FAppStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.PlayTimeSpinBox"))
 								.Value_Lambda([this]() -> double
 								{
 									return Model.Pin()->GetScrubPosition().Value;
@@ -269,7 +274,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 					.RowSpan(2)
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 						[
 							SNew(SSpacer)
 						]
@@ -279,7 +284,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 					.Padding(ResizeBarPadding)
 					[
 						SNew( SBorder )
-						.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+						.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 						.BorderBackgroundColor( FLinearColor(.50f, .50f, .50f, 1.0f ) )
 						.Padding(0)
 						.Clipping(EWidgetClipping::ClipToBounds)
@@ -297,7 +302,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 						.DisplayScrubPosition( false )
 						.DisplayTickLines( true )
 						.Clipping(EWidgetClipping::ClipToBounds)
-						.PaintPlaybackRangeArgs(FPaintPlaybackRangeArgs(FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_L"), FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_R"), 6.f))
+						.PaintPlaybackRangeArgs(FPaintPlaybackRangeArgs(FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_L"), FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_R"), 6.f))
 					]
 
 					// Overlay that draws the scrub position
@@ -316,7 +321,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 					.Padding(ResizeBarPadding)
 					[
 						SNew(SBorder)
-						.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+						.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 						.BorderBackgroundColor( FLinearColor(0.5f, 0.5f, 0.5f, 1.0f ) )
 						.Clipping(EWidgetClipping::ClipToBounds)
 						.Padding(0)
@@ -329,7 +334,7 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 				[
 					// track area virtual splitter overlay
 					SNew(SAnimTimelineSplitterOverlay)
-					.Style(FEditorStyle::Get(), "AnimTimeline.Outliner.Splitter")
+					.Style(FAppStyle::Get(), "AnimTimeline.Outliner.Splitter")
 					.Visibility(EVisibility::SelfHitTestInvisible)
 
 					+ SSplitter::Slot()
@@ -359,7 +364,13 @@ FReply SAnimTimeline::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 
 		const bool bCloseAfterSelection = true;
 		FMenuBuilder MenuBuilder(bCloseAfterSelection, Model.Pin()->GetCommandList());
-
+		
+		MenuBuilder.BeginSection("SelectionEdit", LOCTEXT("TimelineSelectionEditSection", "Selection Edit"));
+		{
+			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
+		}
+		MenuBuilder.EndSection();
+		
 		MenuBuilder.BeginSection("SnapOptions", LOCTEXT("SnapOptions", "Snapping"));
 		{
 			MenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().SnapToFrames);
@@ -504,7 +515,7 @@ void SAnimTimeline::OnCropAnimSequence( bool bFromStart, float CurrentTime )
 				const float TrimEnd = bFromStart ? CurrentTime : AnimSequence->GetPlayLength();
 
 				// Trim off the user-selected part of the raw anim data.
-				UE::Anim::AnimationData::Trim(AnimSequence, TrimStart, TrimEnd);
+				UE::Anim::AnimationData::Trim(AnimSequence, TrimStart, TrimEnd, !bFromStart);
 
 
 				//Resetting slider position to the first frame

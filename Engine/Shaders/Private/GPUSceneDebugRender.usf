@@ -2,8 +2,7 @@
 
 #include "Common.ush"
 #include "SceneData.ush"
-#include "ShaderDrawDebug.ush"
-#include "ShaderPrintCommon.ush"
+#include "ShaderPrint.ush"
 
 int NumInstances;
 int NumScenePrimitives;
@@ -57,7 +56,7 @@ FPrimitiveSceneDebugNameInfo FindNameInfo(uint PrimitiveID)
 	return Out;
 }
 
-float2 PrintInstanceName(float2 InPos, uint PrimitiveID, FFontColor InColor)
+void PrintInstanceName(inout FShaderPrintContext Context, uint PrimitiveID, FFontColor InColor)
 {
 	const FPrimitiveSceneDebugNameInfo Info = FindNameInfo(PrimitiveID);
 	if (Info.PrimitiveID != INVALID_PRIMITIVEID && (Info.Length + Info.Offset) <= SelectedNameCharacterCount)
@@ -65,10 +64,9 @@ float2 PrintInstanceName(float2 InPos, uint PrimitiveID, FFontColor InColor)
 		for (uint It = 0; It < Info.Length; ++It)
 		{
 			const uint Char = SelectedPrimitiveNames[It + Info.Offset];
-			InPos = ShaderPrintSymbol(InPos, Char, InColor);
+			PrintSymbol(Context, Char, InColor);
 		}
 	}
-	return InPos;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -76,20 +74,15 @@ float2 PrintInstanceName(float2 InPos, uint PrimitiveID, FFontColor InColor)
 StructuredBuffer<uint> SelectedPrimitiveFlags;
 RWBuffer<uint> RWDrawCounter;
 
-void AddNewLine(float2 OriginalPos, inout float2 Pos)
-{
-	Pos = ShaderPrintNewline(Pos); Pos.x = OriginalPos.x;
-}
-
-void AddFlag(inout float2 Pos, bool bEnabled)
+void AddFlag(inout FShaderPrintContext Context, bool bEnabled)
 {
 	if (bEnabled)
 	{
-		Pos = ShaderPrintText(Pos, TEXT("On     "), FontGreen);
+		Print(Context, TEXT("On     "), FontGreen);
 	}
 	else
 	{
-		Pos = ShaderPrintText(Pos, TEXT("Off    "), FontRed);
+		Print(Context, TEXT("Off    "), FontRed);
 	}
 }
 [numthreads(NUM_THREADS_PER_GROUP, 1, 1)]
@@ -122,16 +115,19 @@ void GPUSceneDebugRenderCS(uint InstanceID : SV_DispatchThreadID)
 		return;
 	}
 
+	FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
+
+	const float3 InstanceBoxBoundsCenter = InstanceData.LocalBoundsCenter;
+	const float3 InstanceBoxBoundsExtent = InstanceData.LocalBoundsExtent * PrimitiveData.BoundsScale;
+
 	float3 LocalRayEnd = mul(float4(PickingRayEnd, 1.0f), LWCHackToFloat(InstanceData.WorldToLocal)).xyz;
-	float2 RayResult = LineBoxIntersect(LocalRayStart, LocalRayEnd, InstanceData.LocalBoundsCenter - InstanceData.LocalBoundsExtent, InstanceData.LocalBoundsCenter + InstanceData.LocalBoundsExtent);
+	float2 RayResult = LineBoxIntersect(LocalRayStart, LocalRayEnd, InstanceBoxBoundsCenter - InstanceBoxBoundsExtent, InstanceBoxBoundsCenter + InstanceBoxBoundsExtent);
 	bool bIsMouseOver = RayResult.x <= RayResult.y;
 	// Only draw selected
 	const uint BitsPerWord = 32U;
 	const uint Mask = 1U << (InstanceData.PrimitiveId % BitsPerWord);
 
 	bool bIsSelected = (InstanceData.PrimitiveId < NumScenePrimitives && (SelectedPrimitiveFlags[InstanceData.PrimitiveId / BitsPerWord] & Mask) != 0U);
-
-	FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
 
 	//float4 InstanceBoundColor = InstanceData.PrimitiveId < NumScenePrimitives ? float4(0.3f, 1.0f, 0.5f, 1.0f) : float4(0.3f, 0.3f, 0.3f, 0.5f);
 	float4 InstanceBoundColor = float4(ColorSilver.xyz, 0.5f);
@@ -166,9 +162,8 @@ void GPUSceneDebugRenderCS(uint InstanceID : SV_DispatchThreadID)
 	uint SlotHeight = 8;
 	if (InstanceID == 0 && SelectedNameInfoCount>0)
 	{
-		float2 OriginalPos = ShaderPrintGetPos(uint2(StartOffsetX, StartOffsetY + SlotHeight));
-		float2 Pos = OriginalPos;
-		Pos = ShaderPrintText(Pos, TEXT("Prim.ID     Inst.ID     Shadow Veloc. CusDat DynDat Name"), FontWhite);
+		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(StartOffsetX, StartOffsetY + SlotHeight));
+		Print(Context, TEXT("Prim.ID     Inst.ID     Shadow Veloc. CusDat DynDat Name"), FontWhite);
 	}
 
 	if (bIsSelected)
@@ -176,18 +171,17 @@ void GPUSceneDebugRenderCS(uint InstanceID : SV_DispatchThreadID)
 		uint SlotIndex = 0;
 		InterlockedAdd(RWDrawCounter[0], 1, SlotIndex);
 
-		float2 OriginalPos = ShaderPrintGetPos(uint2(StartOffsetX, StartOffsetY + 2*SlotHeight + SlotIndex * SlotHeight));
-		float2 Pos = OriginalPos;
+		FShaderPrintContext Context = InitShaderPrintContext(true, uint2(StartOffsetX, StartOffsetY + 2 * SlotHeight + SlotIndex * SlotHeight));
 
-		Pos = ShaderPrint(Pos, InstanceData.PrimitiveId, FontYellow);
-		Pos = ShaderPrint(Pos, InstanceID, FontOrange);
+		Print(Context, InstanceData.PrimitiveId, FontYellow);
+		Print(Context, InstanceID, FontOrange);
 
 		FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
-		AddFlag(Pos, 0u != (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS));
-		AddFlag(Pos, 0u != (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY));
-		AddFlag(Pos, 0u != (PrimitiveData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA));
-		AddFlag(Pos, 0u != (PrimitiveData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA));
+		AddFlag(Context, 0u != (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS));
+		AddFlag(Context, 0u != (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY));
+		AddFlag(Context, 0u != (PrimitiveData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA));
+		AddFlag(Context, 0u != (PrimitiveData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA));
 		
-		Pos = PrintInstanceName(Pos, InstanceData.PrimitiveId, FontSilver); AddNewLine(OriginalPos, Pos);
+		PrintInstanceName(Context, InstanceData.PrimitiveId, FontSilver); Newline(Context);
 	}
 }

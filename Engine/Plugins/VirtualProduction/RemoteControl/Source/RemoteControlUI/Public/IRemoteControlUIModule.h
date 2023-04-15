@@ -6,6 +6,8 @@
 #include "Modules/ModuleManager.h"
 #include "Modules/ModuleInterface.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/WeakFieldPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Layout/SSplitter.h"
 
 class FDelegateHandle;
@@ -32,8 +34,9 @@ struct FGenerateWidgetArgs
 	URemoteControlPreset* Preset = nullptr;
 	FRCColumnSizeData ColumnSizeData;
 	TSharedPtr<FRemoteControlEntity> Entity;
-	TAttribute<bool> bIsInEditMode;
+	TAttribute<bool> bIsInLiveMode;
 	TWeakPtr<FRCPanelWidgetRegistry> WidgetRegistry;
+	FText HighlightText;
 };
 
 /**
@@ -91,13 +94,13 @@ public:
 	TSharedPtr<IPropertyHandle> PropertyHandle;
 
 	/** Owner object for the property extension */
-	UObject* OwnerObject;
+	TWeakObjectPtr<UObject> OwnerObject;
 
 	/** Path of the exposed property */
 	FString PropertyPath;
 
 	/** Exposed property */
-	FProperty* Property;
+	TWeakFieldPtr<FProperty> Property;
 
 private:
 	/** Unique generated ID of the struct */
@@ -176,6 +179,11 @@ public:
 	virtual URemoteControlPreset* GetActivePreset() const = 0;
 
 	/**
+	 * Retrieves the advanced asset category type registered by Remote Control Module.
+	 */
+	virtual uint32 GetRemoteControlAssetCategory() const = 0;
+
+	/**
 	 * Register a widget factory to handle creating a widget in the control panel.
 	 */
 	virtual void RegisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType, const FOnGenerateRCWidget& OnGenerateRCWidgetDelegate) = 0;
@@ -184,4 +192,7 @@ public:
 	 * Unregister a previously registered widget factory.
 	 */
 	virtual void UnregisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType) = 0;
+
+	/** The section of EditorPerProjectUserSettings in which to save filter settings */
+	static const FString SettingsIniSection;
 };

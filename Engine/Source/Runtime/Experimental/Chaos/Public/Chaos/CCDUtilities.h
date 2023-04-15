@@ -57,6 +57,7 @@ namespace Chaos
 		int32 Island;
 		int32 ProcessedCount; // The number of times this constraint is processed in the current frame.
 		int32 FastMovingKinematicIndex;
+		FVec3 NetImpulse;
 
 		FCCDConstraint()
 			: SweptConstraint(nullptr)
@@ -64,6 +65,7 @@ namespace Chaos
 			, Island(INDEX_NONE)
 			, ProcessedCount(0)
 			, FastMovingKinematicIndex(INDEX_NONE)
+			, NetImpulse(0)
 		{}
 
 		FCCDConstraint(FPBDCollisionConstraint* const InConstraint, FCCDParticle* InParticle[], const FVec3 Displacements[])
@@ -72,6 +74,7 @@ namespace Chaos
 			, Island(INDEX_NONE)
 			, ProcessedCount(0)
 			, FastMovingKinematicIndex(GetFastMovingKinematicIndex(InConstraint, Displacements))
+			, NetImpulse(0)
 		{}
 
 		int32 GetFastMovingKinematicIndex(const FPBDCollisionConstraint* Constraint, const FVec3 Displacements[]) const;
@@ -83,8 +86,12 @@ namespace Chaos
 		FCCDManager(){}
 		void ApplyConstraintsPhaseCCD(const FReal Dt, FCollisionConstraintAllocator *CollisionAllocator, const int32 NumDynamicParticles = TNumericLimits<int32>::Max());
 
+		// A post process on CCD contacts to ensure that CCD objects never pass through non-dynamic objects
+		void ApplyCorrections(const FReal Dt);
+
 	private:
 		void ApplySweptConstraints(const FReal Dt, TArrayView<FPBDCollisionConstraint* const> InSweptConstraints, const int32 NumDynamicParticles = TNumericLimits<int32>::Max());
+		bool UpdateParticleSweptConstraints(FCCDParticle* CCDParticle, const FReal IslandTOI, const FReal Dt);
 		// This is called after ApplySweptConstraints. This function updates manifold data which will be used in normal solve.
 		void UpdateSweptConstraints(const FReal Dt, FCollisionConstraintAllocator *CollisionAllocator);
 		void OverwriteXUsingV(const FReal Dt);
@@ -93,6 +100,7 @@ namespace Chaos
 		void AssignConstraintIslandsAndRecordConstraintNum();
 		void GroupConstraintsWithIslands();
 		void ApplyIslandSweptConstraints(const int32 Island, const FReal Dt);
+		void ApplyIslandSweptConstraints2(const int32 Island, const FReal Dt);
 		void ResetIslandParticles(const int32 Island);
 		void ResetIslandConstraints(const int32 Island);
 		void AdvanceParticleXToTOI(FCCDParticle *CCDParticle, const FReal TOI, const FReal Dt) const;
@@ -112,5 +120,30 @@ namespace Chaos
 		TArray<FCCDParticle*> IslandStack; // Used to assign islands
 		TArray<int32> IslandParticleStart, IslandParticleNum; // IslandParticleNum is the number of dynamic particles in an island.
 		TArray<int32> IslandConstraintStart, IslandConstraintNum, IslandConstraintEnd; // The duplication of information in IslandConstraintNum and IslandConstraintEnd is needed when we group constraints using islands.
+	};
+
+	struct CCDHelpers
+	{
+		// Return true if DeltaX indicates a movement beyond a set of threshold
+		// distances for each local axis.
+		static bool DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R);
+		static bool DeltaExceedsThreshold(const FVec3& AxisThreshold, const FVec3& DeltaX, const FQuat& R, FVec3& OutAbsLocalDelta, FVec3& AxisThresholdScaled, FVec3& AxisThresholdDiff);
+
+		// Return true if a pair of DeltaXs potentially indicate closing
+		// motion between two bodies which would cause the crossing of a combined
+		// threshold on any local axis.
+		static bool DeltaExceedsThreshold(
+			const FVec3& AxisThreshold0, const FVec3& DeltaX0, const FQuat& R0,
+			const FVec3& AxisThreshold1, const FVec3& DeltaX1, const FQuat& R1);
+
+		// Variant of the two-particle of DeltaExceedsThreshold which chooses
+		// DeltaX: For rigid particles, use X-P. For non-rigids, use Vec3::ZeroVector.
+		// R: For rigid particles, use Q. For non-rigids, use R.
+		static bool DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1);
+
+		// Variant of the two-particle of DeltaExceedsThreshold which chooses
+		// DeltaX: For rigid particles, use V*Dt. For non-rigids, use Vec3::ZeroVector.
+		// R: For rigid particles, use Q. For non-rigids, use R.
+		static bool DeltaExceedsThreshold(const FGeometryParticleHandle& Particle0, const FGeometryParticleHandle& Particle1, const FReal Dt);
 	};
 }

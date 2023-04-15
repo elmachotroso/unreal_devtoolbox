@@ -10,12 +10,12 @@ public class TargetPlatform : ModuleRules
 		PrivateDependencyModuleNames.Add("Core");
 		PrivateDependencyModuleNames.Add("SlateCore");
 		PrivateDependencyModuleNames.Add("Slate");
-		PrivateDependencyModuleNames.Add("EditorStyle");
 		PrivateDependencyModuleNames.Add("Projects");
 		PrivateDependencyModuleNames.Add("RenderCore");
 		PublicDependencyModuleNames.Add("DeveloperSettings");
 		PublicDependencyModuleNames.Add("AudioPlatformConfiguration");
 		PublicDependencyModuleNames.Add("DesktopPlatform");
+		PublicDependencyModuleNames.Add("Analytics");
 
 		// TextureFormat contains public headers that were historically part of TargetPlatform, so it is exposed
 		// as a public include path on TargetPlatform.
@@ -89,11 +89,6 @@ public class TargetPlatform : ModuleRules
 					DynamicallyLoadedModuleNames.Add("AudioFormatBink");
 				}
 			}
-		}
-
-		if (Target.bBuildDeveloperTools == true && Target.bBuildRequiresCookedData && Target.bCompileAgainstEngine && Target.bCompilePhysX)
-		{
-			DynamicallyLoadedModuleNames.Add("PhysXCooking");
 		}
 	}
 }

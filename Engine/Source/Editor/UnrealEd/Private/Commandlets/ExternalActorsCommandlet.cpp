@@ -8,7 +8,7 @@
 #include "Engine/World.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageHelperFunctions.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogExternalActorsCommandlet, All, All);
@@ -36,6 +36,8 @@ UWorld* UExternalActorsCommandlet::LoadWorld(const FString& LevelToLoad)
 
 int32 UExternalActorsCommandlet::Main(const FString& Params)
 {
+	FPackageSourceControlHelper PackageHelper;
+
 	TArray<FString> Tokens, Switches;
 	ParseCommandLine(*Params, Tokens, Switches);
 

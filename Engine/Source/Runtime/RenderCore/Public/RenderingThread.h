@@ -6,15 +6,28 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
 #include "Async/TaskGraphInterfaces.h"
-#include "Templates/Atomic.h"
-#include "Trace/Trace.h"
-#include "Serialization/MemoryLayout.h"
+#include "Containers/Array.h"
+#include "CoreGlobals.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
+#include "HAL/PlatformMemory.h"
+#include "Misc/AssertionMacros.h"
+#include "MultiGPU.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "Serialization/MemoryLayout.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Atomic.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Trace/Trace.h"
 
-class FRHICommandListImmediate;
+namespace UE { namespace Trace { class FChannel; } }
 
 ////////////////////////////////////
 // Render thread API
@@ -63,7 +76,7 @@ extern RENDERCORE_API bool IsRenderingThreadHealthy();
 /**
  * Advances stats for the rendering thread. Called from the game thread.
  */
-extern RENDERCORE_API void AdvanceRenderingThreadStatsGT( bool bDiscardCallstack, int64 StatsFrame, int32 MasterDisableChangeTagStartFrame );
+extern RENDERCORE_API void AdvanceRenderingThreadStatsGT( bool bDiscardCallstack, int64 StatsFrame, int32 DisableChangeTagStartFrame );
 
 /**
  * Waits for the rendering thread to finish executing all pending rendering commands.  Should only be used from the game thread.
@@ -326,6 +339,46 @@ extern RENDERCORE_API FPendingCleanupObjects* GetPendingCleanupObjects();
 // RenderThread scoped work
 ////////////////////////////////////
 
+/** A utility to record RHI commands asynchronously and then enqueue the resulting commands to the render thread. */
+class FRHIAsyncCommandList
+{
+public:
+	FRHIAsyncCommandList(FRHIGPUMask InGPUMask = FRHIGPUMask::All())
+		: RHICmdListStack(InGPUMask, FRHICommandList::ERecordingThread::Any)
+	{}
+
+	FRHICommandList& GetCommandList()
+	{
+		return RHICmdListStack;
+	}
+
+	FRHICommandList& operator*()
+	{
+		return RHICmdListStack;
+	}
+
+	FRHICommandList* operator->()
+	{
+		return &RHICmdListStack;
+	}
+
+	~FRHIAsyncCommandList()
+	{
+		RHICmdListStack.FinishRecording();
+		if (RHICmdListStack.HasCommands())
+		{
+			ENQUEUE_RENDER_COMMAND(AsyncCommandListScope)(
+				[RHICmdList = new FRHICommandList(MoveTemp(RHICmdListStack))](FRHICommandListImmediate& RHICmdListImmediate)
+			{
+				RHICmdListImmediate.QueueAsyncCommandListSubmit(RHICmdList);
+			});
+		}
+	}
+
+private:
+	FRHICommandList RHICmdListStack;
+};
+
 class RENDERCORE_API FRenderThreadScope
 {
 	typedef TFunction<void(FRHICommandListImmediate&)> RenderCommandFunction;
@@ -359,6 +412,130 @@ public:
 
 private:
 	RenderCommandFunctionArray* RenderCommands;
+};
+
+struct FRenderThreadStructBase
+{
+	FRenderThreadStructBase() = default;
+
+	// Copy construction is not allowed. Used to avoid accidental copying in the command lambda.
+	FRenderThreadStructBase(const FRenderThreadStructBase&) = delete;
+
+	void InitRHI(FRHICommandListImmediate&) {}
+	void ReleaseRHI(FRHICommandListImmediate&) {}
+};
+
+/**  Represents a struct with a lifetime that spans multiple render commands with scoped initialization
+ *   and release on the render thread.
+ * 
+ *   Example:
+ * 
+ *   struct FMyStruct : public FRenderThreadStructBase
+ *   {
+ *       FInitializer { int32 Foo; int32 Bar; };
+ * 
+ *       FMyStruct(const FInitializer& InInitializer)
+ *            : Initializer(InInitializer)
+ *       {
+ *            // Called immediately by TRenderThreadStruct when created.
+ *       }
+ * 
+ *       ~FMyStruct()
+ *       {
+ *           // Called on the render thread when TRenderThreadStruct goes out of scope.
+ *       }
+ * 
+ *       void InitRHI(FRHICommandListImmediate& RHICmdList)
+ *       {
+ *           // Called on the render thread by TRenderThreadStruct when created.
+ *       }
+ * 
+ *       void ReleaseRHI(FRHICommandListImmediate& RHICmdList)
+ *       {
+ *           // Called on the render thread when TRenderThreadStruct goes out of scope.
+ *       }
+ * 
+ *       FInitializer Initializer;
+ *   };
+ *
+ *   // On Main Thread
+ * 
+ *   {
+ *       TRenderThreadStruct<FMyStruct> MyStruct(FMyStruct::FInitializer{1, 2});
+ * 
+ *       ENQUEUE_RENDER_COMMAND(CommandA)[MyStruct = MyStruct.Get()](FRHICommandListImmediate& RHICmdList)
+ *       {
+ *           // Do something with MyStruct.
+ *       };
+ * 
+ *       ENQUEUE_RENDER_COMMAND(CommandB)[MyStruct = MyStrucft.Get()](FRHICommandListImmediate& RHICmdList)
+ *       {
+ *           // Do something else with MyStruct.
+ *       };
+ * 
+ *       // MyStruct instance is automatically released and deleted on the render thread.
+ *   }
+ */
+template <typename StructType>
+class TRenderThreadStruct
+{
+public:
+	static_assert(TIsDerivedFrom<StructType, FRenderThreadStructBase>::IsDerived, "StructType must be derived from FRenderThreadStructBase.");
+
+	template <typename... TArgs>
+	TRenderThreadStruct(TArgs&&... Args)
+		: Struct(new StructType(Forward<TArgs&&>(Args)...))
+	{
+		ENQUEUE_RENDER_COMMAND(InitStruct)([Struct = Struct](FRHICommandListImmediate& RHICmdList)
+		{
+			Struct->InitRHI(RHICmdList);
+		});
+	}
+
+	~TRenderThreadStruct()
+	{
+		ENQUEUE_RENDER_COMMAND(DeleteStruct)([Struct = Struct](FRHICommandListImmediate& RHICmdList)
+		{
+			Struct->ReleaseRHI(RHICmdList);
+			delete Struct;
+		});
+		Struct = nullptr;
+	}
+
+	TRenderThreadStruct(const TRenderThreadStruct&) = delete;
+
+	const StructType* operator->() const
+	{
+		return Struct;
+	}
+
+	StructType* operator->()
+	{
+		return Struct;
+	}
+
+	const StructType& operator*() const
+	{
+		return *Struct;
+	}
+
+	StructType& operator*()
+	{
+		return *Struct;
+	}
+
+	const StructType* Get() const
+	{
+		return Struct;
+	}
+
+	StructType* Get()
+	{
+		return Struct;
+	}
+
+private:
+	StructType* Struct;
 };
 
 DECLARE_MULTICAST_DELEGATE(FStopRenderingThread);

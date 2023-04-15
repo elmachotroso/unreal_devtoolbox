@@ -41,6 +41,8 @@
 #include "UniformBuffer.h"
 #include "GPUSkinPublicDefs.h"
 #include "VertexFactory.h"
+#include "CanvasTypes.h"
+#include "CachedGeometry.h"
 
 class FGPUSkinPassthroughVertexFactory;
 class FGPUBaseSkinVertexFactory;
@@ -56,6 +58,8 @@ struct FRayTracingGeometrySegment;
 
 // Can the skin cache be used (ie shaders added, etc)
 extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
+
+extern bool ShouldWeCompileGPUSkinVFShaders(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel);
 
 extern ENGINE_API bool GPUSkinCacheNeedsDuplicatedVertices();
 
@@ -91,33 +95,6 @@ struct FGPUSkinBatchElementUserData
 	int32 Section;
 };
 
-class FRDGPooledBuffer;
-struct FCachedGeometry
-{
-	struct Section
-	{
-		FRDGBufferSRVRef RDGPositionBuffer = nullptr;		// Valid when the input comes from a manual skin cache (i.e. skinned run into compute on demand)
-		FRHIShaderResourceView* PositionBuffer = nullptr;	// Valid when the input comes from the skin cached (since it is not convert yet to RDG)
-		FRHIShaderResourceView* UVsBuffer = nullptr;
-		FRHIShaderResourceView* IndexBuffer = nullptr;
-		uint32 UVsChannelOffset = 0;
-		uint32 UVsChannelCount = 0;
-		uint32 NumPrimitives = 0;
-		uint32 NumVertices = 0;
-		uint32 VertexBaseIndex = 0;
-		uint32 IndexBaseIndex = 0;
-		uint32 TotalVertexCount = 0;
-		uint32 TotalIndexCount = 0;
-		uint32 SectionIndex = 0;
-		int32 LODIndex = 0;
-	};
-
-	int32 LODIndex = 0;
-	TArray<Section> Sections;
-	FRDGBufferRef DeformedPositionBuffer = nullptr;
-	FTransform LocalToWorld = FTransform::Identity;
-};
-
 enum class EGPUSkinCacheEntryMode
 {
 	Raster,
@@ -144,7 +121,6 @@ public:
 	struct FDispatchEntry
 	{
 		FGPUSkinCacheEntry* SkinCacheEntry = nullptr;
-		FSkeletalMeshLODRenderData* LODModel = nullptr;
 		uint32 RevisionNumber = 0;
 		uint32 Section = 0;	
 	};
@@ -153,9 +129,7 @@ public:
 	ENGINE_API FGPUSkinCache(ERHIFeatureLevel::Type InFeatureLevel, bool bInRequiresMemoryLimit, UWorld* InWorld);
 	ENGINE_API ~FGPUSkinCache();
 
-	ENGINE_API FCachedGeometry GetCachedGeometry(uint32 ComponentId, EGPUSkinCacheEntryMode InMode) const;
-	FCachedGeometry::Section GetCachedGeometry(FGPUSkinCacheEntry* InOutEntry, uint32 SectionId);
-	void UpdateSkinWeightBuffer(FGPUSkinCacheEntry* Entry);
+	static void UpdateSkinWeightBuffer(FGPUSkinCacheEntry* Entry);
 
 	bool ProcessEntry(
 		EGPUSkinCacheEntryMode Mode,
@@ -178,10 +152,8 @@ public:
 	static void GetShaderBindings(
 		const FGPUSkinCacheEntry* Entry,
 		int32 Section,
-		bool bVerticesInMotion,
 		const FGPUSkinPassthroughVertexFactory* VertexFactory,
 		FShaderResourceParameter GPUSkinCachePositionBuffer,
-		FShaderResourceParameter GPUSkinCachePreviousPositionBuffer,
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams);
 
@@ -197,6 +169,8 @@ public:
 	}
 
 	static bool IsEntryValid(FGPUSkinCacheEntry* SkinCacheEntry, int32 Section);
+	static FColor GetVisualizationDebugColor(const FName& GPUSkinCacheVisualizationMode, FGPUSkinCacheEntry* Entry, FGPUSkinCacheEntry* RayTracingEntry, uint32 SectionIndex);
+	ENGINE_API void DrawVisualizationInfoText(const FName& GPUSkinCacheVisualizationMode, FScreenMessageWriter& ScreenMessageWriter) const;
 
 	ENGINE_API uint64 GetExtraRequiredMemoryAndReset();
 
@@ -351,7 +325,7 @@ public:
 
 		inline uint32 GetNumBytes() const
 		{
-			return Allocation->GetNumBytes();
+			return IntCastChecked<uint32>(Allocation->GetNumBytes());
 		}
 
 		FSkinCacheRWBuffer* Find(const FVertexBufferAndSRV& BoneBuffer, uint32 Revision)
@@ -412,19 +386,20 @@ public:
 		const FVertexBufferAndSRV* BoneBuffers[NUM_BUFFERS];
 	};
 
-	ENGINE_API void TransitionAllToReadable(FRHICommandList& RHICmdList);
+	FGPUSkinCacheEntry const* GetSkinCacheEntry(uint32 ComponentId) const;
+	static FRWBuffer* GetPositionBuffer(FGPUSkinCacheEntry const* Entry, uint32 SectionIndex);
+	static FRWBuffer* GetPreviousPositionBuffer(FGPUSkinCacheEntry const* Entry, uint32 SectionIndex);
 
-	ENGINE_API FRWBuffer* GetPositionBuffer(uint32 ComponentId, uint32 SectionIndex) const;
-	ENGINE_API FRWBuffer* GetTangentBuffer(uint32 ComponentId, uint32 SectionIndex) const;
-	ENGINE_API FRHIShaderResourceView* GetBoneBuffer(uint32 ComponentId, uint32 SectionIndex) const;
+	// Deprecated function. Can remove include of CachedGeometry.h when this is removed.
+	UE_DEPRECATED(5.1, "Use GetPositionBuffer() or similar instead.")
+	FCachedGeometry::Section GetCachedGeometry(FGPUSkinCacheEntry* InOutEntry, uint32 SectionId);
 
 #if RHI_RAYTRACING
-	void ProcessRayTracingGeometryToUpdate(FRHICommandListImmediate& RHICmdList, FGPUSkinCacheEntry* SkinCacheEntry, FSkeletalMeshLODRenderData& LODModel);
+	void ProcessRayTracingGeometryToUpdate(FRHICommandListImmediate& RHICmdList, FGPUSkinCacheEntry* SkinCacheEntry);
 #endif // RHI_RAYTRACING
 
 	void BeginBatchDispatch(FRHICommandListImmediate& RHICmdList);
 	void EndBatchDispatch(FRHICommandListImmediate& RHICmdList);
-	bool IsBatchingDispatch() const { return bShouldBatchDispatches; }
 
 	inline ERHIFeatureLevel::Type GetFeatureLevel() const { return FeatureLevel; }
 
@@ -432,9 +407,9 @@ protected:
 	void MakeBufferTransitions(FRHICommandListImmediate& RHICmdList, TArray<FSkinCacheRWBuffer*>& Buffers, ERHIAccess ToState);
 	void GetBufferUAVs(const TArray<FSkinCacheRWBuffer*>& InBuffers, TArray<FRHIUnorderedAccessView*>& OutUAVs);
 
-	TSet<FSkinCacheRWBuffer*> BuffersToTransitionToRead;
 	TArray<FRWBuffersAllocation*> Allocations;
 	TArray<FGPUSkinCacheEntry*> Entries;
+	TSet<FGPUSkinCacheEntry*> PendingProcessRTGeometryEntries;
 	TArray<FDispatchEntry> BatchDispatches;
 
 	FRWBuffersAllocation* TryAllocBuffer(uint32 NumVertices, bool WithTangnents, bool UseIntermediateTangents, uint32 NumTriangles, FRHICommandListImmediate& RHICmdList);
@@ -453,10 +428,12 @@ protected:
 		FRHICommandListImmediate& RHICmdList, 
 		FGPUSkinCacheEntry* Entry, 
 		int32 Section, 
-		uint32 RevisionNumber
+		uint32 RevisionNumber,
+		TSet<FSkinCacheRWBuffer*>& BuffersToTransitionToRead
 		);
 
 	void Cleanup();
+	static void TransitionAllToReadable(FRHICommandList& RHICmdList, const TSet<FSkinCacheRWBuffer*>& BuffersToTransitionToRead);
 	static void ReleaseSkinCacheEntry(FGPUSkinCacheEntry* SkinCacheEntry);
 	static FGPUSkinBatchElementUserData* InternalGetFactoryUserData(FGPUSkinCacheEntry* Entry, int32 Section);
 	void InvalidateAllEntries();

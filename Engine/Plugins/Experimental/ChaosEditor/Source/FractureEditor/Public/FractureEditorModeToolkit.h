@@ -18,12 +18,15 @@ class FFractureToolContext;
 class FGeometryCollection;
 class SGeometryCollectionOutliner;
 class SGeometryCollectionHistogram;
+class SGeometryCollectionStatistics;
+struct FGeometryCollectionStatistics;
 class AGeometryCollectionActor;
 class UGeometryCollectionComponent;
 class UGeometryCollection;
 class FFractureEditorModeToolkit;
 class UFractureActionTool;
 class UFractureModalTool;
+enum class EMapChangeType : uint8;
 
 namespace GeometryCollection
 {
@@ -72,6 +75,16 @@ private:
 	FFractureEditorModeToolkit* Toolkit;
 };
 
+struct FTextAndSlateColor
+{
+	FTextAndSlateColor(const FText& InText, const FSlateColor& InColor)
+		: Text(InText)
+		, Color(InColor)
+	{}
+	FText Text;
+	FSlateColor Color;
+};
+
 class FRACTUREEDITOR_API FFractureEditorModeToolkit : public FModeToolkit, public FGCObject
 {
 public:
@@ -108,7 +121,7 @@ public:
 	void Shutdown();
 
 	void SetOutlinerComponents(const TArray<UGeometryCollectionComponent*>& InNewComponents);
-	void SetBoneSelection(UGeometryCollectionComponent* InRootComponent, const TArray<int32>& InSelectedBones, bool bClearCurrentSelection);
+	void SetBoneSelection(UGeometryCollectionComponent* InRootComponent, const TArray<int32>& InSelectedBones, bool bClearCurrentSelection, int32 FocusBoneIdx = -1);
 
 	// View Settings
 	float GetExplodedViewValue() const;
@@ -142,7 +155,7 @@ public:
 	static void AddAdditionalAttributesIfRequired(UGeometryCollection* GeometryCollectionObject);
 	int32 GetLevelCount();
 
-	FText GetStatisticsSummary() const;
+	void GetStatisticsSummary(FGeometryCollectionStatistics& Stats) const;
 	FText GetSelectionInfo() const;
 
 	/** Returns the number of Mode specific tabs in the mode toolbar **/ 
@@ -166,6 +179,8 @@ public:
 
 	void UpdateExplodedVectors(UGeometryCollectionComponent* GeometryCollectionComponent) const;
 
+	void RefreshOutliner();
+	
 	void RegenerateOutliner();
 	void RegenerateHistogram();
 
@@ -200,6 +215,8 @@ private:
 	/** Callback for map changes. */
 	void HandleMapChanged(UWorld* NewWorld, EMapChangeType MapChangeType);
 
+	FReply OnRefreshOutlinerButtonClicked();
+	
 private:
 	UFractureModalTool* ActiveTool;
 
@@ -217,5 +234,6 @@ private:
 	FMinorTabConfig HierarchyTabInfo;
 	TWeakPtr<SDockTab> StatisticsTab;
 	FMinorTabConfig StatisticsTabInfo;
+	TSharedPtr<SGeometryCollectionStatistics> StatisticsView;
 
 };

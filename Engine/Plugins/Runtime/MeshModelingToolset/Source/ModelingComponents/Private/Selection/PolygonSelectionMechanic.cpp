@@ -10,9 +10,27 @@
 #include "ToolSceneQueriesUtil.h"
 #include "ToolSetupUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PolygonSelectionMechanic)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UPolygonSelectionMechanic"
+
+void UPolygonSelectionMechanicProperties::InvertSelection()
+{
+	if (Mechanic.IsValid())
+	{
+		Mechanic->InvertSelection();
+	}
+}
+
+void UPolygonSelectionMechanicProperties::SelectAll()
+{
+	if (Mechanic.IsValid())
+	{
+		Mechanic->SelectAll();
+	}
+}
 
 UPolygonSelectionMechanic::~UPolygonSelectionMechanic()
 {
@@ -49,6 +67,7 @@ void UPolygonSelectionMechanic::Setup(UInteractiveTool* ParentToolIn)
 	ParentTool->AddInputBehavior(ClickOrDragBehavior, this);
 
 	Properties = NewObject<UPolygonSelectionMechanicProperties>(this);
+	Properties->Initialize(this);
 	if (bAddSelectionFilterPropertiesToParentTool)
 	{
 		AddToolPropertySource(Properties);
@@ -62,6 +81,12 @@ void UPolygonSelectionMechanic::Setup(UInteractiveTool* ParentToolIn)
 	Properties->WatchProperty(Properties->bSelectFaces, [this](bool bSelectFaces) {
 		UpdateMarqueeEnabled();
 	});
+	Properties->WatchProperty(Properties->bSelectEdgeLoops, [this](bool bSelectEdgeLoops) {
+		UpdateMarqueeEnabled();
+	});
+	Properties->WatchProperty(Properties->bSelectEdgeRings, [this](bool bSelectEdgeRings) {
+		UpdateMarqueeEnabled();
+	});
 	Properties->WatchProperty(Properties->bEnableMarquee, [this](bool bEnableMarquee) { 
 		UpdateMarqueeEnabled(); 
 	});
@@ -69,14 +94,16 @@ void UPolygonSelectionMechanic::Setup(UInteractiveTool* ParentToolIn)
 	// set up visualizers
 	PolyEdgesRenderer.LineColor = FLinearColor::Red;
 	PolyEdgesRenderer.LineThickness = 2.0;
+	PolyEdgesRenderer.PointColor = FLinearColor::Red;
+	PolyEdgesRenderer.PointSize = 8.0f;
 	HilightRenderer.LineColor = FLinearColor::Green;
 	HilightRenderer.LineThickness = 4.0f;
 	HilightRenderer.PointColor = FLinearColor::Green;
-	HilightRenderer.PointSize = 5.0f;
+	HilightRenderer.PointSize = 10.0f;
 	SelectionRenderer.LineColor = LinearColors::Gold3f();
 	SelectionRenderer.LineThickness = 4.0f;
 	SelectionRenderer.PointColor = LinearColors::Gold3f();
-	SelectionRenderer.PointSize = 5.0f;
+	SelectionRenderer.PointSize = 10.0f;
 
 	float HighlightedFacePercentDepthOffset = 0.5f;
 	HighlightedFaceMaterial = ToolSetupUtil::GetSelectionMaterial(FLinearColor::Green, ParentToolIn->GetToolManager(), HighlightedFacePercentDepthOffset);
@@ -233,6 +260,14 @@ void UPolygonSelectionMechanic::Render(IToolsContextRenderAPI* RenderAPI)
 			PolyEdgesRenderer.DrawLine(A, B);
 		}
 	}
+	if (bShowSelectableCorners)
+	{
+		for (const FGroupTopology::FCorner& Corner : Topology->Corners)
+		{
+			FVector3d A = TargetMesh->GetVertex(Corner.VertexID);
+			PolyEdgesRenderer.DrawPoint(A);
+		}
+	}
 	PolyEdgesRenderer.EndFrame();
 
 	if (PersistentSelection.IsEmpty() == false)
@@ -345,7 +380,7 @@ FGroupTopologySelector::FSelectionSettings UPolygonSelectionMechanic::GetTopoSel
 	FGroupTopologySelector::FSelectionSettings Settings;
 
 	Settings.bEnableFaceHits = Properties->bSelectFaces;
-	Settings.bEnableEdgeHits = Properties->bSelectEdges;
+	Settings.bEnableEdgeHits = Properties->bSelectEdges || Properties->bSelectEdgeLoops || Properties->bSelectEdgeRings;
 	Settings.bEnableCornerHits = Properties->bSelectVertices;
 	Settings.bHitBackFaces = Properties->bHitBackFaces;
 
@@ -527,6 +562,105 @@ void UPolygonSelectionMechanic::ClearSelection()
 	OnSelectionChanged.Broadcast();
 }
 
+void UPolygonSelectionMechanic::InvertSelection()
+{
+	if (PersistentSelection.IsEmpty())
+	{
+		SelectAll();
+		return;
+	}
+
+	ParentTool->GetToolManager()->BeginUndoTransaction(LOCTEXT("SelectionChange", "Selection"));
+	BeginChange();
+
+	const FGroupTopologySelection PreviousSelection = PersistentSelection;
+	PersistentSelection.Clear();
+
+	if (!PreviousSelection.SelectedCornerIDs.IsEmpty())
+	{
+		for (int32 CornerID = 0; CornerID < Topology->Corners.Num(); ++CornerID)
+		{
+			if (!PreviousSelection.SelectedCornerIDs.Contains(CornerID))
+			{
+				PersistentSelection.SelectedCornerIDs.Add(CornerID);
+			}
+		}
+	}
+	else if (!PreviousSelection.SelectedEdgeIDs.IsEmpty())
+	{
+		for (int32 EdgeID = 0; EdgeID < Topology->Edges.Num(); ++EdgeID)
+		{
+			if (!PreviousSelection.SelectedEdgeIDs.Contains(EdgeID))
+			{
+				PersistentSelection.SelectedEdgeIDs.Add(EdgeID);
+			}
+		}
+	}
+	else if (!PreviousSelection.SelectedGroupIDs.IsEmpty())
+	{
+		for (const FGroupTopology::FGroup& Group : Topology->Groups)
+		{
+			if (!PreviousSelection.SelectedGroupIDs.Contains(Group.GroupID))
+			{
+				PersistentSelection.SelectedGroupIDs.Add(Group.GroupID);
+			}
+		}
+	}
+
+	SelectionTimestamp++;
+	OnSelectionChanged.Broadcast();
+	EndChangeAndEmitIfModified();
+	ParentTool->GetToolManager()->EndUndoTransaction();
+}
+
+void UPolygonSelectionMechanic::SelectAll()
+{
+	const FGroupTopologySelection PreviousSelection = PersistentSelection;
+
+	ParentTool->GetToolManager()->BeginUndoTransaction(LOCTEXT("SelectionChange", "Selection"));
+	BeginChange();
+
+	auto SelectAllIndices = [](int32 MaxExclusiveIndex, TSet<int32>& ContainerOut)
+	{
+		for (int32 i = 0; i < MaxExclusiveIndex; ++i)
+		{
+			ContainerOut.Add(i);
+		}
+	};
+
+	PersistentSelection.Clear();
+
+	// Select based on settings, prefering corners to edges to groups (since this is the preference we have
+	// elsewhere, eg in marquee).
+	if (Properties->bSelectVertices)
+	{
+		SelectAllIndices(Topology->Corners.Num(), PersistentSelection.SelectedCornerIDs);
+	}
+	else if (Properties->bSelectEdges || Properties->bSelectEdgeLoops || Properties->bSelectEdgeRings)
+	{
+		SelectAllIndices(Topology->Edges.Num(), PersistentSelection.SelectedEdgeIDs);
+	}
+	else if (Properties->bSelectFaces)
+	{
+		for (const FGroupTopology::FGroup& Group : Topology->Groups)
+		{
+			PersistentSelection.SelectedGroupIDs.Add(Group.GroupID);
+		}
+	}
+
+	SelectionTimestamp++;
+	OnSelectionChanged.Broadcast();
+	
+	if (PreviousSelection != PersistentSelection)
+	{
+		SelectionTimestamp++;
+		OnSelectionChanged.Broadcast();
+	}
+	
+	EndChangeAndEmitIfModified();
+	ParentTool->GetToolManager()->EndUndoTransaction();
+}
+
 FInputRayHit UPolygonSelectionMechanic::IsHitByClick(const FInputDeviceRay& ClickPos)
 {
 	if (!bIsEnabled)
@@ -674,7 +808,8 @@ void UPolygonSelectionMechanic::UpdateMarqueeEnabled()
 	MarqueeMechanic->SetIsEnabled(
 		bIsEnabled 
 		&& Properties->bEnableMarquee
-		&& (Properties->bSelectVertices || Properties->bSelectEdges || Properties->bSelectFaces));
+		&& (Properties->bSelectVertices || Properties->bSelectEdges || Properties->bSelectFaces
+			|| Properties->bSelectEdgeLoops || Properties->bSelectEdgeRings));
 }
 
 
@@ -759,6 +894,11 @@ FAxisAlignedBox3d UPolygonSelectionMechanic::GetSelectionBounds(bool bWorld) con
 			return Mesh->GetBounds();
 		}
 	}
+}
+
+void UPolygonSelectionMechanic::SetShowSelectableCorners(bool bShowCorners)
+{
+	bShowSelectableCorners = bShowCorners;
 }
 
 

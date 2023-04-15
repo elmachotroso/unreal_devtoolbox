@@ -9,7 +9,7 @@
 #include "LumenCardCommon.ush"
 #include "LumenCardTile.ush"
 #include "LumenSceneLighting.ush"
-#include "LumenSurfaceCacheSampling.ush"
+#include "SurfaceCache/LumenSurfaceCacheSampling.ush"
 #include "Radiosity/LumenRadiosity.ush"
 
 #ifndef THREADGROUP_SIZE
@@ -40,6 +40,8 @@ uint CardPageNum;
 uint MaxDirectLightingTilesToUpdate;
 uint MaxIndirectLightingTilesToUpdate;
 float FirstClipmapWorldExtentRcp;
+uint NumCameraOrigins;
+float4 WorldCameraOrigins[2];
 
 float DirectLightingUpdateFactor;
 float IndirectLightingUpdateFactor;
@@ -106,11 +108,16 @@ uint GetPriorityBucketIndex(FLumenCardData Card, FLumenCardPageData CardPage, ui
 	// [0;MAX_UPDATE_FREQUENCY]
 	float Frequency = 0.0f;
 	{
-		float3 CardSpaceViewPosition = mul(LWCHackToFloat(PrimaryView.WorldCameraOrigin) - Card.Origin, Card.WorldToLocalRotation);
-		float3 CardPageLocalCenter;
-		float3 CardPageLocalExtent;
-		GetCardPageLocalBBox(CardPage, Card, CardPageLocalCenter, CardPageLocalExtent);
-		const float DistanceFromViewer = sqrt(ComputeSquaredDistanceFromBoxToPoint(CardPageLocalCenter, CardPageLocalExtent, CardSpaceViewPosition));
+		float DistanceFromViewer = 100000000.0f;
+
+		for (uint ViewIndex = 0; ViewIndex < NumCameraOrigins; ViewIndex++)
+		{
+			float3 CardSpaceViewPosition = mul(WorldCameraOrigins[ViewIndex].xyz - Card.Origin, Card.WorldToLocalRotation);
+			float3 CardPageLocalCenter;
+			float3 CardPageLocalExtent;
+			GetCardPageLocalBBox(CardPage, Card, CardPageLocalCenter, CardPageLocalExtent);
+			DistanceFromViewer = min(DistanceFromViewer, sqrt(ComputeSquaredDistanceFromBoxToPoint(CardPageLocalCenter, CardPageLocalExtent, CardSpaceViewPosition)));
+		}
 		Frequency = MAX_UPDATE_FREQUENCY - clamp(DistanceFromViewer * FirstClipmapWorldExtentRcp, 0.0f, MAX_UPDATE_FREQUENCY);
 	}
 
@@ -448,17 +455,9 @@ void RasterizeToCardsVS(
 	}
 }
 
-float DiffuseReflectivityOverride;
-
 float3 CombineFinalLighting(float3 Albedo, float3 Emissive, float3 DirectLighting, float3 IndirectLighting)
 {
 	Albedo = DecodeSurfaceCacheAlbedo(Albedo);
-
-	if (DiffuseReflectivityOverride > 0.0f)
-	{
-		float AlbedoMaxComponent = max(Albedo.x, max(Albedo.y, Albedo.z));
-		Albedo = saturate(Albedo * max(AlbedoMaxComponent / max(AlbedoMaxComponent, .0001f), 1.0f));
-	}
 
 	float3 FinalLighting = (DirectLighting + IndirectLighting) * Diffuse_Lambert(Albedo) + Emissive;
 
@@ -468,18 +467,42 @@ float3 CombineFinalLighting(float3 Albedo, float3 Emissive, float3 DirectLightin
 	return FinalLighting;
 }
 
-void CombineLumenSceneLightingPS(
-	FCardVSToPS CardInterpolants,
-	out float4 OutFinalLighting : SV_Target0)
+SamplerState BilinearClampedSampler;
+StructuredBuffer<uint> CardTiles;
+RWTexture2D<float3> RWFinalLightingAtlas;
+float2 IndirectLightingAtlasHalfTexelSize;
+
+[numthreads(CARD_TILE_SIZE, CARD_TILE_SIZE, 1)]
+void CombineLumenSceneLightingCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID)
 {
-	float3 Albedo = Texture2DSampleLevel(AlbedoAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).xyz;
-	float3 Emissive = Texture2DSampleLevel(EmissiveAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).xyz;
-	float3 DirectLighting = Texture2DSampleLevel(DirectLightingAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).xyz;
-	float3 IndirectLighting = Texture2DSampleLevel(IndirectLightingAtlas, GlobalBilinearClampedSampler, CardInterpolants.IndirectLightingAtlasUV, 0).xyz;
+	uint CardTileIndex = GroupId.x;
+	uint2 TexelCoordInTile = GroupThreadId.xy;
+
+	FCardTileData CardTile = UnpackCardTileData(CardTiles[CardTileIndex]);
+
+	FLumenCardPageData CardPage = GetLumenCardPageData(CardTile.CardPageIndex);
+	FLumenCardData Card = GetLumenCardData(CardPage.CardIndex);
+
+	uint2 CoordInCardPage = CARD_TILE_SIZE * CardTile.TileCoord + TexelCoordInTile;
+	uint2 AtlasCoord = CardPage.PhysicalAtlasCoord + CoordInCardPage;
+	float2 AtlasUV = CardPage.PhysicalAtlasUVRect.xy + CardPage.PhysicalAtlasUVTexelScale * (CoordInCardPage + 0.5);
+
+#if RADIOSITY_ATLAS_DOWNSAMPLE_FACTOR == 1
+	float2 IndirectLightingAtlasUV = AtlasUV;
+#else
+	// When sampling from a downsampled Indirect Lighting atlas we need to appropriately clamp input UVs to prevent bilinear reading outside of the valid area
+	float2 IndirectLightingAtlasUV = clamp(AtlasUV, CardPage.PhysicalAtlasUVRect.xy + IndirectLightingAtlasHalfTexelSize, CardPage.PhysicalAtlasUVRect.zw - IndirectLightingAtlasHalfTexelSize);
+#endif
+	
+	float3 Albedo = Texture2DSampleLevel(AlbedoAtlas, BilinearClampedSampler, AtlasUV, 0).xyz;
+	float3 Emissive = Texture2DSampleLevel(EmissiveAtlas, BilinearClampedSampler, AtlasUV, 0).xyz;
+	float3 DirectLighting = Texture2DSampleLevel(DirectLightingAtlas, BilinearClampedSampler, AtlasUV, 0).xyz;
+	float3 IndirectLighting = Texture2DSampleLevel(IndirectLightingAtlas, BilinearClampedSampler, IndirectLightingAtlasUV, 0).xyz;
 
 	float3 FinalLighting = CombineFinalLighting(Albedo, Emissive, DirectLighting, IndirectLighting);
-
-	OutFinalLighting = float4(FinalLighting, 0);
+	RWFinalLightingAtlas[AtlasCoord] = FinalLighting;
 }
 
 void ClearLumenCardsPS(
@@ -541,9 +564,9 @@ void ResampleLightingHistoryToCardCaptureAtlasPS(
 		FLumenCardSample CardSample = ComputeSurfaceCacheSample(OldCard, CardIndex, LocalSamplePosition, 0.0f, true);
 		if (CardSample.bValid)
 		{
-			OutDirectLightingCardCaptureAtlas = Texture2DSampleLevel(DirectLightingAtlas, SURFACE_CACHE_ATLAS_SAMPLER, CardSample.PhysicalAtlasUV, 0.0f).xyz;
-			OutRadiosityCardCaptureAtlas = Texture2DSampleLevel(IndirectLightingAtlas, SURFACE_CACHE_ATLAS_SAMPLER, CardSample.IndirectLightingPhysicalAtlasUV, 0.0f).xyz;
-			OutRadiosityNumFramesAccumulatedCardCaptureAtlas = Texture2DSampleLevel(RadiosityNumFramesAccumulatedAtlas, SURFACE_CACHE_ATLAS_SAMPLER, CardSample.IndirectLightingPhysicalAtlasUV, 0.0f).x;
+			OutDirectLightingCardCaptureAtlas = Texture2DSampleLevel(DirectLightingAtlas, GlobalBilinearClampedSampler, CardSample.PhysicalAtlasUV, 0.0f).xyz;
+			OutRadiosityCardCaptureAtlas = Texture2DSampleLevel(IndirectLightingAtlas, GlobalBilinearClampedSampler, CardSample.IndirectLightingPhysicalAtlasUV, 0.0f).xyz;
+			OutRadiosityNumFramesAccumulatedCardCaptureAtlas = Texture2DSampleLevel(RadiosityNumFramesAccumulatedAtlas, GlobalBilinearClampedSampler, CardSample.IndirectLightingPhysicalAtlasUV, 0.0f).x;
 		}
 	}
 }

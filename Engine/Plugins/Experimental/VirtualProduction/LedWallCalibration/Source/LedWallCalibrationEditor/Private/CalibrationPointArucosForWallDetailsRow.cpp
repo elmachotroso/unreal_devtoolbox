@@ -2,12 +2,12 @@
 
 #include "CalibrationPointArucosForWallDetailsRow.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "CalibrationPointComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DetailWidgetRow.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 #include "Dialogs/DlgPickAssetPath.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Texture2D.h"
@@ -96,10 +96,10 @@ void FCalibrationPointArucosForWallDetailsRow::CreateArucos(
 	TSharedRef<SCustomDialog> OptionsWindow =
 		SNew(SCustomDialog)
 		.Title(LOCTEXT("ArucoGenerationOptions", "Aruco Generation Options"))
-		.DialogContent
-		(
-			ArucoGenerationOptionsDetailsView->GetWidget()
-		)
+		.Content()
+		[
+			ArucoGenerationOptionsDetailsView->GetWidget().ToSharedRef()
+		]
 		.Buttons
 		({
 			SCustomDialog::FButton(LOCTEXT("Ok", "Ok")),

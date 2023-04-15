@@ -29,17 +29,21 @@ namespace UE::LevelSnapshots::Private
 
 		//~ Begin ILevelSnapshotsModule Interface
 		virtual void RegisterRestorabilityOverrider(TSharedRef<ISnapshotRestorabilityOverrider> Overrider) override;
-		virtual void UnregisterRestorabilityOverrider(TSharedRef<ISnapshotRestorabilityOverrider> Overrider) override;
+		virtual void UnregisterRestorabilityOverrider(const TSharedRef<ISnapshotRestorabilityOverrider>& Overrider) override;
 		virtual void AddSkippedSubobjectClasses(const TSet<UClass*>& Classes) override;
 		virtual void RemoveSkippedSubobjectClasses(const TSet<UClass*>& Classes) override;
 		virtual void RegisterPropertyComparer(UClass* Class, TSharedRef<IPropertyComparer> Comparer) override;
-		virtual void UnregisterPropertyComparer(UClass* Class, TSharedRef<IPropertyComparer> Comparer) override;
+		virtual void UnregisterPropertyComparer(UClass* Class, const TSharedRef<IPropertyComparer>& Comparer) override;
 		virtual void RegisterCustomObjectSerializer(UClass* Class, TSharedRef<ICustomObjectSnapshotSerializer> CustomSerializer, bool bIncludeBlueprintChildClasses = true);
 		virtual void UnregisterCustomObjectSerializer(UClass* Class) override;
+		virtual void RegisterGlobalActorFilter(TSharedRef<IActorSnapshotFilter> Filter) override;
+		virtual void UnregisterGlobalActorFilter(const TSharedRef<IActorSnapshotFilter>& Filter) override;
 		virtual void RegisterSnapshotLoader(TSharedRef<ISnapshotLoader> Loader) override;
-		virtual void UnregisterSnapshotLoader(TSharedRef<ISnapshotLoader> Loader) override;
+		virtual void UnregisterSnapshotLoader(const TSharedRef<ISnapshotLoader>& Loader) override;
 		virtual void RegisterRestorationListener(TSharedRef<IRestorationListener> Listener) override;
-		virtual void UnregisterRestorationListener(TSharedRef<IRestorationListener> Listener) override;
+		virtual void UnregisterRestorationListener(const TSharedRef<IRestorationListener>& Listener) override;
+		virtual void RegisterSnapshotFilterExtender(TSharedRef<ISnapshotFilterExtender> Extender) override;
+		virtual void UnregisterSnapshotFilterExtender(const TSharedRef<ISnapshotFilterExtender>& Listener) override;
 		virtual void AddExplicitilySupportedProperties(const TSet<const FProperty*>& Properties) override;
 		virtual void RemoveAdditionallySupportedProperties(const TSet<const FProperty*>& Properties) override;
 		virtual void AddExplicitlyUnsupportedProperties(const TSet<const FProperty*>& Properties) override;
@@ -60,12 +64,18 @@ namespace UE::LevelSnapshots::Private
 
 		TSharedPtr<ICustomObjectSnapshotSerializer> GetCustomSerializerForClass(UClass* Class) const;
 
+		bool CanRecreateActor(const FCanRecreateActorParams& Params) const;
+		bool CanDeleteActor(const AActor* EditorActor) const;
+
 		virtual void AddCanTakeSnapshotDelegate(FName DelegateName, FCanTakeSnapshot Delegate) override;
 		virtual void RemoveCanTakeSnapshotDelegate(FName DelegateName) override;
 		virtual bool CanTakeSnapshot(const FPreTakeSnapshotEventData& Event) const override;
 
 		void OnPostLoadSnapshotObject(const FPostLoadSnapshotObjectParams& Params);
 
+		void OnPreApplySnapshot(const FApplySnapshotParams& Params);
+		void OnPostApplySnapshot(const FApplySnapshotParams& Params);
+		
 		void OnPreApplySnapshotProperties(const FApplySnapshotPropertiesParams& Params);
 		void OnPostApplySnapshotProperties(const FApplySnapshotPropertiesParams& Params);
 
@@ -75,13 +85,16 @@ namespace UE::LevelSnapshots::Private
 		void OnPreCreateActor(UWorld* World, TSubclassOf<AActor> ActorClass, FActorSpawnParameters& InOutSpawnParams);
 		void OnPostRecreateActor(AActor* Actor);
 		
-		void OnPreRemoveActor(AActor* Actor);
+		void OnPreRemoveActor(const FPreRemoveActorParams& Params);
+		void OnPostRemoveActors(const FPostRemoveActorsParams& Params);
 		
 		void OnPreRecreateComponent(const FPreRecreateComponentParams& Params);
 		void OnPostRecreateComponent(UActorComponent* RecreatedComponent);
 
 		void OnPreRemoveComponent(UActorComponent* ComponentToRemove);
 		void OnPostRemoveComponent(const FPostRemoveComponentParams& Params);
+
+		FPostApplyFiltersResult PostApplyFilters(const FPostApplyFiltersParams& Params);
 		
 	private:
 
@@ -99,9 +112,11 @@ namespace UE::LevelSnapshots::Private
 		
 		TMap<FSoftClassPath, TArray<TSharedRef<IPropertyComparer>>> PropertyComparers;
 		TMap<FSoftClassPath, FCustomSerializer> CustomSerializers;
-		
+
+		TArray<TSharedRef<IActorSnapshotFilter>> GlobalFilters;
 		TArray<TSharedRef<ISnapshotLoader>> SnapshotLoaders;
 		TArray<TSharedRef<IRestorationListener>> RestorationListeners;
+		TArray<TSharedRef<ISnapshotFilterExtender>> FilterExtenders;
 
 		/* Allows these properties even when the default behaviour would exclude them. */
 		TSet<const FProperty*> SupportedProperties;

@@ -2,9 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/Array.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "HAL/CriticalSection.h"
+#include "Templates/UnrealTemplate.h"
+
+#include <type_traits>
+
+class FText;
 
 namespace UE::Core::Private
 {
@@ -170,6 +176,11 @@ public:
 	 * @return Root directory.
 	 */
 	static FString RootDir();
+
+#if WITH_EDITOR
+	/** Returns the special path used when mounting FeaturePaks in editor */
+	static const TCHAR* GameFeatureRootPrefix();
+#endif
 
 	/**
 	 * Returns the base directory of the current project by looking at FApp::GetProjectName().
@@ -344,6 +355,11 @@ public:
 	 * Returns a list of editor-specific localization paths
 	 */
 	static const TArray<FString>& GetEditorLocalizationPaths();
+
+	/**
+	 * Returns a list of cooked editor-specific localization paths
+	 */
+	static const TArray<FString>& GetCookedEditorLocalizationPaths();
 
 	/** 
 	 * Returns a list of property name localization paths

@@ -11,7 +11,7 @@
 CSV_DEFINE_CATEGORY(MassEntities, true);
 CSV_DEFINE_CATEGORY(MassEntitiesCounters, true);
 
-namespace UE::FLWCCommand {
+namespace UE::Mass::Command {
 
 #if CSV_PROFILER
 bool bEnableDetailedStats = false;
@@ -20,39 +20,38 @@ FAutoConsoleVariableRef CVarEnableDetailedCommandStats(TEXT("massentities.Enable
 	TEXT("Set to true create a dedicated stat per type of command."), ECVF_Default);
 
 /** CSV stat names */
-static FString DefaultName = TEXT("Command");
-static TArray<FName> CommandFNames;
+static FString DefaultBatchedName = TEXT("BatchedCommand");
+static TArray<FName> CommandBatchedFNames;
 
 /** CSV custom stat names (ANSI) */
 static const int32 MaxNameLength = 64;
 typedef ANSICHAR ANSIName[MaxNameLength];
-static ANSIName DefaultANSIName = "Command";
-static TArray<ANSIName> CommandANSINames;
+static ANSIName DefaultANSIBatchedName = "BatchedCommand";
+static TArray<ANSIName> CommandANSIBatchedNames;
 
 /**
  * Provides valid names for CSV profiling.
- * @param Entry is the view on the command
+ * @param Command is the command instance
  * @param OutName is the name to use for csv custom stats
  * @param OutANSIName is the name to use for csv stats
  */
-void GetCommandStatNames(FStructView Entry, FString& OutName, ANSIName*& OutANSIName)
+void GetCommandStatNames(FMassBatchedCommand& Command, FString& OutName, ANSIName*& OutANSIName)
 {
-	OutANSIName = &DefaultANSIName;
-	OutName = DefaultName;
-	if (!bEnableDetailedStats ||
-		!ensureMsgf(Entry.GetScriptStruct() != nullptr, TEXT("Unable to get stat name for an invalid entry. Using default name.")))
+	OutANSIName = &DefaultANSIBatchedName;
+	OutName = DefaultANSIBatchedName;
+	if (!bEnableDetailedStats)
 	{
 		return;
 	}
 
-	const FName CommandFName = Entry.GetScriptStruct()->GetFName();
+	const FName CommandFName = Command.GetFName();
 	OutName = CommandFName.ToString();
 
-	const int32 Index = CommandFNames.Find(CommandFName);
+	const int32 Index = CommandBatchedFNames.Find(CommandFName);
 	if (Index == INDEX_NONE)
 	{
-		CommandFNames.Emplace(CommandFName);
-		OutANSIName = &CommandANSINames.AddZeroed_GetRef();
+		CommandBatchedFNames.Emplace(CommandFName);
+		OutANSIName = &CommandANSIBatchedNames.AddZeroed_GetRef();
 		// Use prefix for easier parsing in reports
 		//const FString CounterName = FString::Printf(TEXT("Num%s"), *OutName);
 		//FMemory::Memcpy(OutANSIName, StringCast<ANSICHAR>(*CounterName).Get(), FMath::Min(CounterName.Len(), MaxNameLength - 1) * sizeof(ANSICHAR));
@@ -60,52 +59,16 @@ void GetCommandStatNames(FStructView Entry, FString& OutName, ANSIName*& OutANSI
 	}
 	else
 	{
-		OutANSIName = &CommandANSINames[Index];
+		OutANSIName = &CommandANSIBatchedNames[Index];
 	}
 }
 
 #endif
-} // UE::FLWCCommand
-
-
-//////////////////////////////////////////////////////////////////////
-// FMassObservedTypeCollection
-
-void FMassObservedTypeCollection::Append(const FMassObservedTypeCollection& Other)
-{
-	for (auto It : Other.Types)
-	{
-		TArray<FMassEntityHandle> Contents = Types.FindOrAdd(It.Key);
-		Contents.Append(It.Value);
-	}
-}
+} // UE::Mass::Command
 
 //////////////////////////////////////////////////////////////////////
-// FMassCommandsObservedTypes
-
-void FMassCommandsObservedTypes::Reset()
-{
-	for (FMassObservedTypeCollection& Collection : Fragments)
-	{
-		Collection.Reset();
-	};
-	for (FMassObservedTypeCollection& Collection : Tags)
-	{
-		Collection.Reset();
-	};
-}
-
-void FMassCommandsObservedTypes::Append(const FMassCommandsObservedTypes& Other)
-{
-	for (int i = 0; i < (int)EMassObservedOperation::MAX; ++i)
-	{
-		Fragments[i].Append(Other.Fragments[i]);
-	}
-	for (int i = 0; i < (int)EMassObservedOperation::MAX; ++i)
-	{
-		Tags[i].Append(Other.Tags[i]);
-	}
-}
+// FMassBatchedCommand
+std::atomic<uint32> FMassBatchedCommand::CommandsCounter;
 
 //////////////////////////////////////////////////////////////////////
 // FMassCommandBuffer
@@ -113,236 +76,121 @@ void FMassCommandsObservedTypes::Append(const FMassCommandsObservedTypes& Other)
 FMassCommandBuffer::~FMassCommandBuffer()
 {
 	ensureMsgf(HasPendingCommands() == false, TEXT("Destroying FMassCommandBuffer while there are still unprocessed commands. These operations will never be performed now."));
+
+	for (FMassBatchedCommand*& Command : CommandInstances)
+	{
+		delete Command;
+	}
 }
 
-void FMassCommandBuffer::Flush(UMassEntitySubsystem& EntitySystem)
+void FMassCommandBuffer::Flush(FMassEntityManager& EntityManager)
 {
 	check(!bIsFlushing);
 	TGuardValue FlushingGuard(bIsFlushing, true);
 
 	// short-circuit exit
-	if (EntitiesToDestroy.Num() == 0 && PendingCommands.IsEmpty())
+	if (HasPendingCommands() == false)
 	{
 		return;
 	}
 
-	FMassObserverManager& ObserverManager = EntitySystem.GetObserverManager();
-
-	const FMassFragmentBitSet* ObservedFragments = ObserverManager.GetObservedFragmentBitSets();
-	const FMassTagBitSet* ObservedTags = ObserverManager.GetObservedTagBitSets();
-
-	for (auto It : ObservedTypes.GetObservedFragments(EMassObservedOperation::Remove))
 	{
-		check(It.Key);
-		if (ObservedFragments[(uint8)EMassObservedOperation::Remove].Contains(*It.Key))
+		UE_MT_SCOPED_WRITE_ACCESS(PendingBatchCommandsDetector);
+		LLM_SCOPE_BYNAME(TEXT("Mass/FlushCommands"));
+
+		// array used to group commands depending on their operations. Based on EMassCommandOperationType
+		// @todo I'm opened to suggestions on how to better implement this
+		constexpr int32 CommandTypeOrder[] =
 		{
-			TArray<FMassArchetypeSubChunks> ChunkCollections;
-			UE::Mass::Utils::CreateSparseChunks(EntitySystem, It.Value, FMassArchetypeSubChunks::FoldDuplicates, ChunkCollections);
-			for (FMassArchetypeSubChunks& Collection : ChunkCollections)
-			{
-				check(It.Key);
-				ObserverManager.OnPreFragmentOrTagRemoved(*It.Key, Collection);
-			}
-		}
-	}
-	
-	for (auto It : ObservedTypes.GetObservedTags(EMassObservedOperation::Remove))
-	{
-		check(It.Key);
-		if (ObservedTags[(uint8)EMassObservedOperation::Remove].Contains(*It.Key))
-		{
-			TArray<FMassArchetypeSubChunks> ChunkCollections;
-			UE::Mass::Utils::CreateSparseChunks(EntitySystem, It.Value, FMassArchetypeSubChunks::FoldDuplicates, ChunkCollections);
-			for (FMassArchetypeSubChunks& Collection : ChunkCollections)
-			{
-				check(It.Key);
-				ObserverManager.OnPreFragmentOrTagRemoved(*It.Key, Collection);
-			}
-		}
-	}
-	
-	TArray<FMassArchetypeSubChunks> EntityChunksToDestroy;
-	if (EntitiesToDestroy.Num())
-	{
-		UE::Mass::Utils::CreateSparseChunks(EntitySystem, EntitiesToDestroy, FMassArchetypeSubChunks::FoldDuplicates, EntityChunksToDestroy);
-		for (FMassArchetypeSubChunks& Collection : EntityChunksToDestroy)
-		{
-			EntitySystem.BatchDestroyEntityChunks(Collection);
-		}
-	}
-	EntitiesToDestroy.Reset();
+			MAX_int32 - 1, // None
+			0, // Create
+			3, // Add
+			1, // Remove
+			2, // ChangeComposition
+			3, // Set
+			4, // Destroy
+		};
+		static_assert((sizeof(CommandTypeOrder) / sizeof(CommandTypeOrder[0])) == (int)EMassCommandOperationType::MAX, "CommandTypeOrder needs to correspond to all EMassCommandOperationType\'s entries");
 
+		struct FBatchedCommandsSortedIndex
+		{
+			FBatchedCommandsSortedIndex(const int32 InIndex, const int32 InGroupOrder)
+				: Index(InIndex), GroupOrder(InGroupOrder)
+			{}
 
-	UE_MT_SCOPED_WRITE_ACCESS(PendingCommandsDetector);
-	PendingCommands.ForEach([&EntitySystem](FStructView Entry)
-	{
-		const FCommandBufferEntryBase* Command = Entry.GetPtr<FCommandBufferEntryBase>();
-		checkf(Command, TEXT("Either the entry is null or the command does not derive from FCommandBufferEntryBase"));
+			const int32 Index = -1;
+			const int32 GroupOrder = MAX_int32;
+			bool IsValid() const { return GroupOrder < MAX_int32; }
+			bool operator<(const FBatchedCommandsSortedIndex& Other) const { return GroupOrder < Other.GroupOrder; }
+		};
+		TArray<FBatchedCommandsSortedIndex> CommandsOrder;
+		CommandsOrder.Reserve(CommandInstances.Num());
+		for (int32 i = 0; i < CommandInstances.Num(); ++i)
+		{
+			const FMassBatchedCommand* Command = CommandInstances[i];
+			CommandsOrder.Add(FBatchedCommandsSortedIndex(i, (Command && Command->HasWork())? CommandTypeOrder[(int)Command->GetOperationType()] : MAX_int32));
+		}
+		CommandsOrder.Sort();
+				
+		for (int32 k = 0; k < CommandsOrder.Num() && CommandsOrder[k].IsValid(); ++k)
+		{
+			FMassBatchedCommand* Command = CommandInstances[CommandsOrder[k].Index];
+			check(Command)
 
 #if CSV_PROFILER
-		using namespace UE::FLWCCommand;
+			using namespace UE::Mass::Command;
 
-		// Extract name (default or detailed)
-		ANSIName* ANSIName = &DefaultANSIName;
-		FString Name = DefaultName;
-		GetCommandStatNames(Entry, Name, ANSIName);
+			// Extract name (default or detailed)
+			ANSIName* ANSIName = &DefaultANSIBatchedName;
+			FString Name = DefaultBatchedName;
+			GetCommandStatNames(*Command, Name, ANSIName);
 
-		// Push stats
-		FScopedCsvStat ScopedCsvStat(*ANSIName, CSV_CATEGORY_INDEX(MassEntities));
-		FCsvProfiler::RecordCustomStat(*Name, CSV_CATEGORY_INDEX(MassEntitiesCounters), 1, ECsvCustomStatOp::Accumulate);
+			// Push stats
+			FScopedCsvStat ScopedCsvStat(*ANSIName, CSV_CATEGORY_INDEX(MassEntities));
+			FCsvProfiler::RecordCustomStat(*Name, CSV_CATEGORY_INDEX(MassEntitiesCounters), Command->GetNumOperationsStat(), ECsvCustomStatOp::Accumulate);
 #endif // CSV_PROFILER
 
-		Command->Execute(EntitySystem);
-	});
-
-	// Using Clear() instead of Reset(), as otherwise the chunks moved into the PendingCommands in MoveAppend() can accumulate.
-	PendingCommands.Clear();
-
-	for (auto It : ObservedTypes.GetObservedFragments(EMassObservedOperation::Add))
-	{
-		check(It.Key);
-		if (ObservedFragments[(uint8)EMassObservedOperation::Add].Contains(*It.Key))
-		{
-			TArray<FMassArchetypeSubChunks> ChunkCollections;
-			UE::Mass::Utils::CreateSparseChunks(EntitySystem, It.Value, FMassArchetypeSubChunks::FoldDuplicates, ChunkCollections);
-			for (FMassArchetypeSubChunks& Collection : ChunkCollections)
-			{
-				check(It.Key);
-				ObserverManager.OnPostFragmentOrTagAdded(*It.Key, Collection);
-			}
+			Command->Execute(EntityManager);
+			Command->Reset();
 		}
 	}
-
-	for (auto It : ObservedTypes.GetObservedTags(EMassObservedOperation::Add))
-	{
-		check(It.Key);
-		if (ObservedTags[(uint8)EMassObservedOperation::Add].Contains(*It.Key))
-		{
-			TArray<FMassArchetypeSubChunks> ChunkCollections;
-			UE::Mass::Utils::CreateSparseChunks(EntitySystem, It.Value, FMassArchetypeSubChunks::FoldDuplicates, ChunkCollections);
-			for (FMassArchetypeSubChunks& Collection : ChunkCollections)
-			{
-				check(It.Key);
-				ObserverManager.OnPostFragmentOrTagAdded(*It.Key, Collection);
-			}
-		}
-	}
-
-	ObservedTypes.Reset();
 }
  
 void FMassCommandBuffer::CleanUp()
 {
-	PendingCommands.Reset();
-	EntitiesToDestroy.Reset();
-	ObservedTypes.Reset();
+	for (FMassBatchedCommand* Command : CommandInstances)
+	{
+		if (Command)
+		{
+			Command->Reset();
+		}
+	}
 }
 
 void FMassCommandBuffer::MoveAppend(FMassCommandBuffer& Other)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(MassCommandBuffer_MoveAppend);
+
 	// @todo optimize, there surely a way to do faster then this.
-	UE_MT_SCOPED_READ_ACCESS(Other.PendingCommandsDetector);
-	if (Other.HasPendingCommands() || Other.EntitiesToDestroy.Num())
+	UE_MT_SCOPED_READ_ACCESS(Other.PendingBatchCommandsDetector);
+	if (Other.HasPendingCommands())
 	{
 		FScopeLock Lock(&AppendingCommandsCS);
-		UE_MT_SCOPED_WRITE_ACCESS(PendingCommandsDetector);
-		PendingCommands.Append(MoveTemp(Other.PendingCommands));
-		EntitiesToDestroy.Append(MoveTemp(Other.EntitiesToDestroy));
-		ObservedTypes.Append(Other.ObservedTypes);
+		UE_MT_SCOPED_WRITE_ACCESS(PendingBatchCommandsDetector);
+		CommandInstances.Append(MoveTemp(Other.CommandInstances));
 	}
 }
 
-//////////////////////////////////////////////////////////////////////
-// Command implementations
-
-void FCommandAddFragmentInstance::Execute(UMassEntitySubsystem& System) const
+SIZE_T FMassCommandBuffer::GetAllocatedSize() const
 {
-	System.AddFragmentInstanceListToEntity(TargetEntity, MakeArrayView(&Struct, 1));
-}
-
-void FMassCommandAddFragmentInstanceList::Execute(UMassEntitySubsystem& System) const
-{
-	System.AddFragmentInstanceListToEntity(TargetEntity, FragmentList);
-}
-
-void FCommandSwapTags::Execute(UMassEntitySubsystem& System) const
-{
-	if (System.IsEntityValid(TargetEntity) == false)
+	SIZE_T TotalSize = 0;
+	for (FMassBatchedCommand* Command : CommandInstances)
 	{
-		return;
-}
-
-	if (OldTagType && NewTagType)
-	{
-		System.SwapTagsForEntity(TargetEntity, OldTagType, NewTagType);
-	}
-	else if (OldTagType)
-	{
-		System.RemoveTagFromEntity(TargetEntity, OldTagType);
-	}
-	else if (NewTagType)
-	{
-		System.AddTagToEntity(TargetEntity, NewTagType);
-	}
-}
-
-void FBuildEntityFromFragmentInstance::Execute(UMassEntitySubsystem& System) const
-{
-	System.BuildEntity(TargetEntity, MakeArrayView(&Struct, 1), SharedFragmentValues);
-}
-
-void FBuildEntityFromFragmentInstances::Execute(UMassEntitySubsystem& System) const
-{
-	System.BuildEntity(TargetEntity, Instances, SharedFragmentValues);
-}
-
-void FCommandAddFragment::Execute(UMassEntitySubsystem& System) const
-{
-	System.AddFragmentToEntity(TargetEntity, StructParam);
-}
-
-void FCommandRemoveFragment::Execute(UMassEntitySubsystem& System) const
-{
-	// note that we should probably add checks like this to all the commands, but that would impact the performance,
-	// and this specific approach of command execution is going to be replaced in a way that doesn't require such 
-	// per-entity testing.
-	if (System.IsEntityActive(TargetEntity))
-	{
-		System.RemoveFragmentFromEntity(TargetEntity, StructParam);
-	}
-}
-
-void FCommandAddFragmentList::Execute(UMassEntitySubsystem& System) const
-{
-	System.AddFragmentListToEntity(TargetEntity, FragmentList);
-}
-
-void FCommandRemoveFragmentList::Execute(UMassEntitySubsystem& System) const
-{
-	System.RemoveFragmentListFromEntity(TargetEntity, FragmentList);
-}
-
-void FCommandAddTag::Execute(UMassEntitySubsystem & System) const 
-{
-	if (System.IsEntityValid(TargetEntity) == false)
-	{
-		return;
+		TotalSize += Command ? Command->GetAllocatedSize() : 0;
 	}
 
-	System.AddTagToEntity(TargetEntity, StructParam);
+	TotalSize += CommandInstances.GetAllocatedSize();
+	
+	return TotalSize;
 }
 
-void FCommandRemoveTag::Execute(UMassEntitySubsystem& System) const
-{
-	System.RemoveTagFromEntity(TargetEntity, StructParam);
-}
-
-void FCommandRemoveComposition::Execute(UMassEntitySubsystem& System) const
-{
-	if (System.IsEntityValid(TargetEntity) == false)
-	{
-		return;
-	}
-
-	System.RemoveCompositionFromEntity(TargetEntity, Descriptor);
-}

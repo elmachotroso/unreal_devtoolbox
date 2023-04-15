@@ -5,6 +5,10 @@
 
 #include "Async/Fundamental/Scheduler.h"
 #include "Experimental/Async/AwaitableTask.h"
+#include "Experimental/Coroutine/CoroEvent.h"
+#include "Experimental/Coroutine/CoroParallelFor.h"
+#include "Experimental/Coroutine/CoroSpinLock.h"
+#include "Experimental/Coroutine/CoroTimeout.h"
 
 #include <atomic>
 
@@ -76,7 +80,7 @@ namespace Tasks2Tests
 			}
 
 			FTask SignalTask;
-			SignalTask.Init(TEXT("Empty Signal Task"), [](){}, [&Tasks]()
+			SignalTask.Init(TEXT("Empty Signal Task"), [&Tasks]()
 			{
 				for (int i = 0; i < NumTasks; i++)
 				{
@@ -200,7 +204,7 @@ namespace Tasks2Tests
 			}
 
 			FTask SignalTask;
-			SignalTask.Init(TEXT("Signal Task"), [](){}, [&Tasks]()
+			SignalTask.Init(TEXT("Signal Task"), [&Tasks]()
 			{
 				for (int i = 0; i < NumTasks; i++)
 				{
@@ -376,7 +380,7 @@ namespace Tasks2Tests
 			}
 
 			FTask SignalTask;
-			SignalTask.Init(TEXT("Signal Task"), [](){}, [&Tasks]()
+			SignalTask.Init(TEXT("Signal Task"), [&Tasks]()
 			{
 				for (int i = 0; i < NumTasks; i++)
 				{
@@ -491,9 +495,15 @@ namespace Tasks2Tests
 				{
 					TestValue = 42;
 				});
+				verify(Task.TryCancel(ECancellationFlags::PrelaunchCancellation));
+				verify(Task.TryRevive());
 				TryLaunch(Task);
 
 				bool WasCanceled = TestCancel && Task.TryCancel();
+				if(WasCanceled)
+				{
+					WasCanceled = !Task.TryRevive();
+				}	
 				BusyWaitForTask(Task);
 
 				if (WasCanceled)
@@ -513,10 +523,10 @@ namespace Tasks2Tests
 				using FTaskHandle = TSharedPtr<FTask, ESPMode::ThreadSafe>;
 				FTaskHandle TaskHandle = MakeShared<FTask, ESPMode::ThreadSafe>();
 
-				TaskHandle->Init(TEXT("Refcounted Test"), [&TestValue]()
+				TaskHandle->Init(TEXT("Refcounted Test"), [&TestValue, TaskHandle]()
 				{
 					TestValue = 42;
-				}, [TaskHandle](){});
+				});
 				TryLaunch(*TaskHandle);
 
 				bool WasCanceled = TestCancel && TaskHandle->TryCancel();
@@ -530,6 +540,25 @@ namespace Tasks2Tests
 				{
 					verify(TestValue == 42);
 				}
+			}
+
+			//expedite
+			{
+				uint32 TestValue = 1337;
+
+				FTask Task;
+				Task.Init(TEXT("expedite Test"), [&TestValue]()
+				{
+					TestValue = 42;
+				});
+				verify(!Task.TryExpedite());
+				TryLaunch(Task);
+				Task.TryExpedite();
+
+				verify(!Task.TryCancel());
+				BusyWaitForTask(Task);
+
+				verify(TestValue == 42);
 			}
 		}
 
@@ -554,17 +583,111 @@ namespace Tasks2Tests
 			using FTaskHandle = TUniquePtr<FTask>;
 			FTaskHandle TaskHandle = MakeUnique<FTask>();
 			FTask& Task = *TaskHandle;
-			Task.Init(TEXT("Uniqueptr Test"), [TestValue]()
+			Task.Init(TEXT("Uniqueptr Test"), [TestValue, TaskHandle = MoveTemp(TaskHandle)]()
 			{
 				*TestValue = 42;
-			}, [TestValue, TaskHandle = MoveTemp(TaskHandle)]()
-			{
-				verify(*TestValue == 42);
 				delete TestValue;
 			});
 			TryLaunch(Task);
 		}
 
+		//symetric switch
+		{
+			uint32 TestValue = 1337;
+
+			FTask TaskA;
+			FTask TaskB;
+			TaskB.Init(TEXT("TaskB"), [&TestValue]()
+			{
+				TestValue = 42;
+			});
+			TaskA.Init(TEXT("TaskA"), [&TaskB]() -> FTask*
+			{
+				return &TaskB;
+			});
+			verify(TryLaunch(TaskA));
+			BusyWaitForTask(TaskB);
+
+			verify(TestValue == 42);
+		}
+		return true;
+	}
+
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTasksCoroutineTests, "System.Core.Coroutine.UnitTests", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
+	bool FTasksCoroutineTests::RunTest(const FString& Parameters)
+	{
+#if WITH_CPP_COROUTINES
+		{
+			FCoroEvent Event;
+			auto InnerFrame = [&]() -> CORO_FRAME(void)
+			{
+				CO_AWAIT Event;
+			};
+
+			auto WorkLambda = [&]() -> CORO_TASK(int)
+			{
+				CORO_INVOKE(InnerFrame());
+				CO_RETURN_TASK(42);
+			};
+
+			LAUNCHED_TASK(int) Task = WorkLambda().Launch(TEXT("CoroUnitTest"), ETaskPriority::BackgroundLow);
+			FPlatformProcess::Sleep(0.001f);
+			Event.Trigger();
+			int Value = Task.SpinWait();
+			verify(Value == 42);
+		}
+		{
+			TCoroLocal<int> CLS(0);
+			auto WorkLambda = [&]() -> CORO_TASK(void)
+			{
+				for(int i = 0; i < 1000; i++)
+				{
+					*CLS += 1;
+					int intermediate_value = *CLS;
+					verify(intermediate_value == i+1);
+				}
+				int final_value = *CLS;
+				verify(final_value == 1000);
+				CO_RETURN_TASK();
+			};
+
+			TArray<LAUNCHED_TASK(void)> Tasks;
+			for(int i = 0; i < 100; i++)
+			{
+				Tasks.Emplace(WorkLambda().Launch(TEXT("CoroLocalStateTest")));
+			}
+
+			for(int i = 0; i < 100; i++)
+			{
+				Tasks[i].SpinWait();
+			}
+		}
+		{
+			FCoroSpinLock SpinLock;
+			int Mutable = 0;
+			auto WorkLambda = [&](int32) -> CORO_FRAME(void)
+			{
+				auto LockScope = CO_AWAIT SpinLock.Lock();
+				Mutable++;
+				LockScope.Release();
+				CO_RETURN;
+			};
+
+			CoroParallelFor(TEXT("CoroParallelForTest"), 100, WorkLambda, EParallelForFlags::None);
+			verify(Mutable == 100);
+		}
+		{	
+			auto WorkLambda = [&](int32) -> CORO_FRAME(void)
+			{
+				FCoroTimeoutAwaitable Timeout(FTimespan::FromMilliseconds(1), ECoroTimeoutFlags::Suspend_Worker);
+				FPlatformProcess::Sleep(0.001f);
+				CO_AWAIT Timeout;
+				CO_RETURN;
+			};
+
+			CoroParallelFor(TEXT("CoroTimeoutForTest"), 100, WorkLambda, EParallelForFlags::None);
+		}
+#endif
 		return true;
 	}
 }

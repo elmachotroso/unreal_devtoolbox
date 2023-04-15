@@ -14,14 +14,16 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Input/SComboBox.h"
-#include "Developer/AutomationWindow/Private/SAutomationGraphicalResultBox.h"
-#include "Developer/AutomationWindow/Private/SAutomationTestTreeView.h"
+#include "SAutomationGraphicalResultBox.h"
+#include "SAutomationTestTreeView.h"
 
 #if WITH_EDITOR
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #endif
 
 class FAutomationFilter;
+class FAutomationGroupFilter;
+struct FAutomatedTestFilter;
 class FAutomationTestPresetManager;
 class FUICommandList;
 class SAutomationWindowCommandBar;
@@ -221,6 +223,13 @@ private:
 	 * @return New combo item widget.
 	 */
 	TSharedRef<SWidget> GenerateRequestedFilterComboItem(TSharedPtr<FString> InItem);
+
+	/**
+	 * Creates a combo item for a test group.
+	 *
+	 * @return New combo item widget.
+	 */
+	TSharedRef<SWidget> GenerateGroupComboItem(TSharedPtr<FString> InItem);
 		
 	/**
 	 * Populates OutSearchStrings with the strings that should be used in searching.
@@ -312,11 +321,17 @@ private:
 	/** Toggles filtering of tests based on error condition */
 	void OnToggleErrorFilter();
 	
-	/** Returns if analytics should be sent to the back end*/
+	/** Returns if analytics should be sent to the back end */
 	ECheckBoxState IsSendAnalyticsCheckBoxChecked() const;
 
-	/** Toggles if we are sending analytics results from the tests*/
+	/** Toggles if we are sending analytics results from the tests */
 	void HandleSendAnalyticsBoxCheckStateChanged(ECheckBoxState CheckBoxState);
+
+	/** Returns if PIE should be kept open when test pass end */
+	ECheckBoxState KeepPIEOpenCheckBoxChecked() const;
+
+	/** Toggles if PIE should be kept open when test pass end */
+	void HandleKeepPIEOpenBoxCheckStateChanged(ECheckBoxState CheckBoxState);
 
 	/** Returns if a device group is enabled */
 	ECheckBoxState IsDeviceGroupCheckBoxIsChecked(const int32 DeviceGroupFlag) const;
@@ -463,6 +478,9 @@ private:
 	/** Handles if the add preset text box should be visible. */
 	EVisibility HandlePresetTextVisibility( ) const;
 
+	/** Handles if the groups combo box should be visible. */
+	EVisibility HandleGroupsVisibility() const;
+
 	/** Called when the user commits the text in the add preset text box. */
 	void HandlePresetTextCommited( const FText& CommittedText, ETextCommit::Type CommitType );
 
@@ -470,6 +488,8 @@ private:
 	void HandlePresetChanged( TSharedPtr<FAutomationTestPreset> Item, ESelectInfo::Type SelectInfo );
 	/** Called when the user changes the requested test filter */
 	void HandleRequesteFilterChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo);
+	/** Called when the user changes the test group */
+	void HandleGroupChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo);
 
 	/** Expands the test tree to show all enabled tests. */
 	void ExpandEnabledTests( TSharedPtr< IAutomationReport > InReport );
@@ -478,6 +498,8 @@ private:
 	FText GetPresetComboText() const;
 	/** Gets the text to display for the requested filter combo box. */
 	FText GetRequestedFilterComboText() const;
+	/** Gets the combo box text to display for the selected group. */
+	FText GetGroupComboText() const;
 
 	/**
 	 * Handle the copy button clicked in the command bar.
@@ -527,7 +549,7 @@ private:
 	}
 
 #if WITH_EDITOR
-	void OnAssetRegistryFileLoadProgress(const IAssetRegistry::FFileLoadProgressUpdateData& ProgressUpdateData);
+	void OnAssetRegistryFilesLoaded();
 #endif
 
 private:
@@ -577,6 +599,9 @@ private:
 	/** The automation general filter - for smoke tests / warnings and Errors. */
 	TSharedPtr< FAutomationFilter > AutomationGeneralFilter;
 
+	/** The automation group filter - filters tests based on selected group filter. */
+	TSharedPtr< FAutomationGroupFilter > AutomationGroupFilter;
+
 	/** The automation filter collection - contains the automation filters. */
 	TSharedPtr< AutomationFilterCollection > AutomationFilters;
 
@@ -613,6 +638,13 @@ private:
 	/** Holds a pointer to the preset combo box widget. */
 	TSharedPtr< SComboBox< TSharedPtr<FString> > >	RequestedFilterComboBox;
 	TArray< TSharedPtr< FString > >					RequestedFilterComboList;
+
+	/** Holds a pointer to the groups combo box widget. */
+	TSharedPtr< SComboBox< TSharedPtr<FString> > >	GroupComboBox;
+	TArray< TSharedPtr< FString > >					GroupComboList;
+
+	/** Map for fast access of test group filters by name. */
+	TMap< FString, TArray<FAutomatedTestFilter> > GroupFiltersMap;
 
 	/** Holds a pointer to the preset text box. */
 	TSharedPtr<SEditableTextBox> PresetTextBox;

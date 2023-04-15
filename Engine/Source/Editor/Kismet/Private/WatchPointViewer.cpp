@@ -3,7 +3,7 @@
 #include "WatchPointViewer.h"
 
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -15,7 +15,7 @@
 #include "EdGraphSchema_K2.h"
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "Editor.h"
 #include "ToolMenus.h"
@@ -419,9 +419,12 @@ public:
 
 		if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 		{
-			FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
-			AssetRegistryModule.Get().OnAssetRenamed().RemoveAll(this);
+			IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+			if (AssetRegistry)
+			{
+				AssetRegistry->OnAssetRemoved().RemoveAll(this);
+				AssetRegistry->OnAssetRenamed().RemoveAll(this);
+			}
 		}
 	}
 
@@ -505,8 +508,8 @@ void SWatchViewer::Construct(const FArguments& InArgs, TArray<TSharedRef<FWatchR
 	ChildSlot
 	[
 		SNew(SBorder)
-		.Padding(4)
-		.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+		.Padding(4.0f)
+		.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 		[
 			SNew(SOverlay)
 			+SOverlay::Slot()
@@ -670,7 +673,7 @@ void SWatchTreeWidgetItem::Construct(const FArguments& InArgs, SWatchViewer* InO
 	this->WatchRow = InArgs._WatchToVisualize;
 	Owner = InOwner;
 
-	SMultiColumnTableRow< TSharedRef<FWatchRow> >::Construct(SMultiColumnTableRow< TSharedRef<FWatchRow> >::FArguments().Padding(1), InOwnerTableView);
+	SMultiColumnTableRow<TSharedRef<FWatchRow>>::Construct(SMultiColumnTableRow<TSharedRef<FWatchRow>>::FArguments().Padding(1.0f), InOwnerTableView);
 }
 
 TSharedRef<SWidget> SWatchTreeWidgetItem::GenerateWidgetForColumn(const FName& ColumnName)
@@ -780,7 +783,7 @@ void WatchViewer::UpdateInstancedWatchDisplay()
 #if DO_BLUEPRINT_GUARD
 	{
 		Private_InstanceWatchSource.Reset();
-		const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+		TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 
 		TSet<const UBlueprint*> SeenBlueprints;
 
@@ -1019,7 +1022,7 @@ void WatchViewer::RegisterTabSpawner(FTabManager& TabManager)
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush( TEXT("NoBorder") ) )
+					.BorderImage( FAppStyle::GetBrush( TEXT("NoBorder") ) )
 					[
 						ToolbarWidget
 					]
@@ -1028,7 +1031,7 @@ void WatchViewer::RegisterTabSpawner(FTabManager& TabManager)
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+					.BorderImage( FAppStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
 					[
 						SNew(SWatchViewer, Source)
 					]

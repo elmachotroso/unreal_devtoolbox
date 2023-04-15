@@ -13,7 +13,7 @@
 #include "VariantObjectBinding.h"
 
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
 #include "ISinglePropertyView.h"
@@ -62,11 +62,6 @@ FText FVariantManagerPropertyNode::GetDisplayNameToolTipText() const
 const FSlateBrush* FVariantManagerPropertyNode::GetIconOverlayBrush() const
 {
 	return nullptr;
-}
-
-FSlateColor FVariantManagerPropertyNode::GetNodeBackgroundTint() const
-{
-	return FLinearColor(FColor(62, 62, 62, 255));
 }
 
 FText FVariantManagerPropertyNode::GetIconToolTipText() const
@@ -133,7 +128,7 @@ TOptional<EItemDropZone> FVariantManagerPropertyNode::CanDrop(const FDragDropEve
 	{
 		FText NewHoverText = FText::Format( LOCTEXT("CanDrop_Captures", "Reorder '{0}'"), PropOrFuncNodes[0]->GetDisplayName());
 
-		const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+		const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 
 		VarManDragDrop->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -334,7 +329,7 @@ TSharedPtr<SWidget> FVariantManagerPropertyNode::GetPropertyValueWidget()
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("UnsupportedPropertyType", "Unsupported property type!"))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 			.ColorAndOpacity(this, &FVariantManagerDisplayNode::GetDisplayNameColor)
 			.ToolTipText(FText::Format(
 				LOCTEXT("UnsupportedPropertyTypeTooltip", "Properties of class '{0}' can't be captured yet!"),
@@ -372,27 +367,26 @@ TSharedPtr<SWidget> FVariantManagerPropertyNode::GetPropertyValueWidget()
 
 TSharedRef<SWidget> FVariantManagerPropertyNode::GetCustomOutlinerContent(TSharedPtr<SVariantManagerTableRow> InTableRow)
 {
-	// Using this syncs all splitters between property nodes and also the header
+	// Using this syncs all splitters between property nodes
 	TSharedPtr<SVariantManager> VariantManagerWidget = GetVariantManager().Pin()->GetVariantManagerWidget();
-	FColumnSizeData& ColumnSizeData = VariantManagerWidget->GetPropertiesColumnSizeData();
+	FVariantManagerPropertiesColumnSizeData& ColumnSizeData = VariantManagerWidget->GetPropertiesColumnSizeData();
 
 	return SNew(SBox)
 	[
 		SNew(SBorder)
 		.VAlign(VAlign_Center)
 		.BorderImage(this, &FVariantManagerDisplayNode::GetNodeBorderImage)
-		.BorderBackgroundColor(this, &FVariantManagerDisplayNode::GetNodeBackgroundTint)
 		.Padding(FMargin(2.0f, 0.0f, 2.0f, 0.0f))
 		[
 			SNew(SSplitter)
-			.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+			.Style(FAppStyle::Get(), "DetailsView.Splitter")
 			.PhysicalSplitterHandleSize(1.0f)
 			.HitDetectionSplitterHandleSize(5.0f)
 			.Orientation(Orient_Horizontal)
 
 			+ SSplitter::Slot()
-			.Value(ColumnSizeData.MiddleColumnWidth)
-			.OnSlotResized(SSplitter::FOnSlotResized::CreateLambda([](float InNewWidth) {}))
+			.Value(ColumnSizeData.NameColumnWidth)
+			.OnSlotResized(ColumnSizeData.OnSplitterNameColumnChanged)
 			[
 				SNew(SBox)
 				.VAlign(VAlign_Center)
@@ -402,7 +396,7 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetCustomOutlinerContent(TShare
 				[
 					SAssignNew(EditableLabel, SInlineEditableTextBlock)
 					.IsReadOnly(true)
-					.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+					.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 					.ColorAndOpacity(this, &FVariantManagerDisplayNode::GetDisplayNameColor)
 					.OnTextCommitted(this, &FVariantManagerDisplayNode::HandleNodeLabelTextChanged)
 					.Text(this, &FVariantManagerDisplayNode::GetDisplayName)
@@ -412,8 +406,8 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetCustomOutlinerContent(TShare
 			]
 
 			+ SSplitter::Slot()
-			.Value(ColumnSizeData.MiddleColumnWidth)
-			.OnSlotResized(SSplitter::FOnSlotResized::CreateLambda([](float InNewWidth) {}))
+			.Value(ColumnSizeData.ValueColumnWidth)
+			.OnSlotResized(ColumnSizeData.OnSplitterValueColumnChanged)
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -428,22 +422,22 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetCustomOutlinerContent(TShare
 				+SHorizontalBox::Slot()
 				.Padding( FMargin(0.0f, 0.0f, 3.0f, 0.0) )
 				.AutoWidth()
-				.VAlign( VAlign_Top )
+				.VAlign( VAlign_Center )
 				[
 					SNew(SBox)
 					[
 						SAssignNew(RecordButton, SButton)
 						.IsFocusable(false)
 						.ToolTipText(LOCTEXT("UseCurrentTooltip", "Record the current value for this property"))
-						.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+						.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 						.ContentPadding(6.0f)
 						.OnClicked(this, &FVariantManagerPropertyNode::RecordMultipleValues)
 						.Visibility(FVariantManagerPropertyNode::GetRecordButtonVisibility())
 						.Content()
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 							.ShadowColorAndOpacity(FVector::ZeroVector)
 							.ShadowOffset(FVector::ZeroVector)
 							.Text(FEditorFontGlyphs::Download)
@@ -456,21 +450,21 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetCustomOutlinerContent(TShare
 				+SHorizontalBox::Slot()
 				.Padding( FMargin(0.0f, 0.0f, 3.0f, 0.0) )
 				.AutoWidth()
-				.VAlign( VAlign_Top )
+				.VAlign(VAlign_Center)
 				[
 					SNew(SBox)
 					[
 						SAssignNew(ResetButton, SButton)
 						.IsFocusable(false)
 						.ToolTipText(LOCTEXT("ResetTooltip", "Reset to the property's default value"))
-						.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+						.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 						.ContentPadding(FMargin(3.0f, 8.0f))
 						.OnClicked(this, &FVariantManagerPropertyNode::ResetMultipleValuesToDefault)
 						.Visibility(FVariantManagerPropertyNode::GetResetButtonVisibility())
 						.Content()
 						[
 							SNew(SImage)
-							.Image( FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
+							.Image( FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
 						]
 					]
 				]
@@ -657,7 +651,7 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetMultipleValuesWidget()
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("MultipleValuesLabel", "Multiple Values"))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 			.ColorAndOpacity(this, &FVariantManagerDisplayNode::GetDisplayNameColor)
 			.ToolTipText(LOCTEXT("MultipleValuesTooltip", "The selected actors have different values for this property"))
 		];
@@ -687,7 +681,7 @@ TSharedRef<SWidget> FVariantManagerPropertyNode::GetFailedToResolveWidget(const 
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("FailedToResolveText", "Failed to resolve!"))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
 			.ColorAndOpacity(this, &FVariantManagerDisplayNode::GetDisplayNameColor)
 			.ToolTipText(FText::Format(
 			LOCTEXT("FailedToResolveTooltip", "Make sure actor '{0}' has a property with path '{1}'"),

@@ -18,7 +18,7 @@
 #include "ScenePrivate.h"
 #include "RenderGraphEvent.h"
 #include "PostProcess/PostProcessing.h"
-#include "ShaderDebug.h"
+#include "ShaderPrint.h"
 #include "Lumen/LumenRadianceCache.h"
 #include "Lumen/LumenScreenProbeGather.h"
 #include "IndirectLightRendering.h"
@@ -121,7 +121,7 @@ class FHairEnvironmentAO : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualVoxelParameters, VirtualVoxel)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -137,7 +137,7 @@ static void AddHairStrandsEnvironmentAOPass(
 	FRDGTextureRef Output)
 {
 	check(Output);
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
 
 	const FIntRect Viewport = View.ViewRect;
 	const FIntRect HalfResViewport = FIntRect::DivideAndRoundUp(Viewport, 2);
@@ -172,9 +172,9 @@ static void AddHairStrandsEnvironmentAOPass(
 		ViewRect = View.ViewRect;
 	}
 
-	if (ShaderDrawDebug::IsEnabled(View))
+	if (ShaderPrint::IsValid(View.ShaderPrintData))
 	{
-		ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, PassParameters->ShaderDrawParameters);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
 	}
 
 	FHairEnvironmentAO::FPermutationDomain PermutationVector;
@@ -237,7 +237,7 @@ class FHairEnvironmentLightingPS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSkyDiffuseLightingParameters, SkyDiffuseLighting)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCache)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FHairStrandsDebugData::FWriteParameters, DebugData)
 
 		SHADER_PARAMETER(uint32, bDynamicSkyLight)
@@ -317,7 +317,7 @@ static void AddHairStrandsEnvironmentLightingPassPS(
 	const FHairStrandsVoxelResources& VirtualVoxelResources,
 	const FRDGTextureRef SceneColorTexture,
 	const EHairLightingSourceType LightingType,
-	const FHairStrandsDebugData::Data* DebugData)
+	const FHairStrandsDebugData::FPlotData* DebugData)
 {
 	if (!Scene)
 	{
@@ -341,7 +341,7 @@ static void AddHairStrandsEnvironmentLightingPassPS(
 	}
 
 	// The specular sky light contribution is also needed by RT Reflections as a fallback.
-	const bool bSkyLight = Scene->SkyLight && Scene->SkyLight->ProcessedTexture && !Scene->SkyLight->bHasStaticLighting;
+	const bool bSkyLight = Scene->SkyLight && !Scene->SkyLight->bHasStaticLighting;
 
 	const bool bDynamicSkyLight = ShouldRenderDeferredDynamicSkyLight(Scene, *View.Family);
 	const bool bReflectionEnv = ShouldDoReflectionEnvironment(Scene, *View.Family);
@@ -354,11 +354,11 @@ static void AddHairStrandsEnvironmentLightingPassPS(
 	// Sanity check
 	if (bHasStaticLighting) { check(LightingType != EHairLightingSourceType::Lumen); }
 
-	// Early out if there is no static lighting, no sky lighting, nor reflection probes
-	if (!bSkyLight && !bDynamicSkyLight && !bHasStaticLighting && !bReflectionEnv)
+	// Early out if there is no static lighting, no sky lighting, nor reflection probes, nor Lumen
+	if (!bSkyLight && !bDynamicSkyLight && !bHasStaticLighting && !bReflectionEnv && !bLumenActive)
 		return;
 
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
 
 	check(VirtualVoxelResources.IsValid());
 
@@ -377,7 +377,7 @@ static void AddHairStrandsEnvironmentLightingPassPS(
 	ParametersPS->MultipleScatterSampleCount = FMath::Max(uint32(GHairStrandsSkyLightingSampleCount), 1u);
 	ParametersPS->HairDualScatteringRoughnessOverride = GetHairDualScatteringRoughnessOverride();
 	ParametersPS->TransmissionDensityScaleFactor = FMath::Max(0.f, GHairStrandsTransmissionDensityScaleFactor);
-	ParametersPS->PreIntegratedGF = GSystemTextures.PreintegratedGF->GetRenderTargetItem().ShaderResourceTexture;
+	ParametersPS->PreIntegratedGF = GSystemTextures.PreintegratedGF->GetRHI();
 	ParametersPS->PreIntegratedGFSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	ParametersPS->SceneTextures = SceneTextures;
 	ParametersPS->VirtualVoxel = VirtualVoxelResources.UniformBuffer;
@@ -392,16 +392,16 @@ static void AddHairStrandsEnvironmentLightingPassPS(
 
 	if (LightingType == EHairLightingSourceType::Lumen)
 	{
-		const FRadianceCacheState& RadianceCacheState = View.ViewState->RadianceCacheState;
+		const FRadianceCacheState& RadianceCacheState = View.ViewState->Lumen.RadianceCacheState;
 		const LumenRadianceCache::FRadianceCacheInputs RadianceCacheInputs = LumenScreenProbeGatherRadianceCache::SetupRadianceCacheInputs(View);
 		LumenRadianceCache::GetInterpolationParameters(View, GraphBuilder, RadianceCacheState, RadianceCacheInputs, ParametersPS->RadianceCache);
 	}
 	ParametersPS->ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
 	ParametersPS->OutLightingBuffer = nullptr;
 
-	if (ShaderDrawDebug::IsEnabled(View))
+	if (ShaderPrint::IsValid(View.ShaderPrintData))
 	{
-		ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, ParametersPS->ShaderDrawParameters);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, ParametersPS->ShaderPrintParameters);
 	}
 
 	if (DebugData)
@@ -509,7 +509,7 @@ static void InternalRenderHairStrandsEnvironmentLighting(
 		return;
 	}
 	
-	AddHairStrandsEnvironmentLightingPassPS(GraphBuilder, Scene, View, VisibilityData, VoxelResources, nullptr, LightingType, View.HairStrandsViewData.DebugData.IsPlotDataValid() ? &View.HairStrandsViewData.DebugData.Resources : nullptr);
+	AddHairStrandsEnvironmentLightingPassPS(GraphBuilder, Scene, View, VisibilityData, VoxelResources, nullptr, LightingType, View.HairStrandsViewData.DebugData.IsPlotDataValid() ? &View.HairStrandsViewData.DebugData.PlotData : nullptr);
 }
 
 void RenderHairStrandsLumenLighting(

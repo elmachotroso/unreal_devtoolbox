@@ -15,7 +15,7 @@
 #include "Modules/ModuleManager.h"
 #endif
 
-
+LLM_DEFINE_TAG(LiveLink_LiveLinkLogInstance);
 #define LOCTEXT_NAMESPACE "LiveLinkLogInstance"
 
 
@@ -90,6 +90,7 @@ namespace LiveLinkLogDetail
 
 void FLiveLinkLogInstance::CreateInstance()
 {
+	LLM_SCOPE_BYTAG(LiveLink_LiveLinkLogInstance);
 	ensure(FLiveLinkLog::Instance == nullptr);
 	if (FLiveLinkLog::Instance)
 	{
@@ -102,6 +103,7 @@ void FLiveLinkLogInstance::CreateInstance()
 
 void FLiveLinkLogInstance::DestroyInstance()
 {
+	LLM_SCOPE_BYTAG(LiveLink_LiveLinkLogInstance);
 	ensure(FLiveLinkLog::Instance);
 	FLiveLinkLog::Instance.Reset();
 	FLiveLinkLog::Instance = nullptr;
@@ -292,7 +294,7 @@ void FLiveLinkLogInstance::LogMessage(EMessageSeverity::Type Severity, FName Mes
 
 			if (bLog)
 			{
-				Message = FString::Printf(TEXT("Occured %d time. Last occurence %s. %s")
+				Message = FString::Printf(TEXT("Occurred %d time. Last occurrence %s. %s")
 					, FoundRepeatableMessage->Data->Occurrence.Load()
 					, *(FoundRepeatableMessage->Data->LastTimeOccured.Load().ToString())
 					, *Message);
@@ -438,7 +440,6 @@ void FLiveLinkLogInstance::LogMessage(EMessageSeverity::Type Severity, const FSt
 
 	switch (Severity)
 	{
-	case EMessageSeverity::CriticalError:
 	case EMessageSeverity::Error:
 		UE_LOG(LogLiveLink, Error, TEXT("%s"), *Message);
 		break;
@@ -457,7 +458,6 @@ void FLiveLinkLogInstance::IncrementLogCount(EMessageSeverity::Type Severity)
 {
 	switch (Severity)
 	{
-	case EMessageSeverity::CriticalError:
 	case EMessageSeverity::Error:
 		++ErrorCount;
 		break;

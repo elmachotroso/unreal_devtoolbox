@@ -1,8 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/BitWriter.h"
-#include "Logging/LogMacros.h"
+
 #include "CoreGlobals.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/UnrealMemory.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Serialization/Archive.h"
+#include "Trace/Detail/Channel.h"
 
 PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
@@ -127,7 +133,7 @@ void FBitWriter::SerializeInt(uint32& Value, uint32 ValueMax)
 
 	if (WriteValue >= ValueMax)
 	{
-		const TCHAR Msg[] = TEXT("FBitWriter::SerializeInt(): Value out of bounds (Value: %u, ValueMax: %u)");
+		const auto& Msg = TEXT("FBitWriter::SerializeInt(): Value out of bounds (Value: %u, ValueMax: %u)");
 
 		UE_LOG(LogSerialization, Error, Msg, WriteValue, ValueMax);
 		ensureMsgf(false, Msg, WriteValue, ValueMax);

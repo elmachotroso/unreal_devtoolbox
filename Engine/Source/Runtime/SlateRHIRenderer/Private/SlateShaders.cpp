@@ -18,7 +18,9 @@ IMPLEMENT_SHADER_TYPE(, FSlateDebugOverdrawPS, TEXT("/Engine/Private/SlateElemen
 
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessBlurPS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("GaussianBlurMain"), SF_Pixel);
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessDownsamplePS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("DownsampleMain"), SF_Pixel);
-IMPLEMENT_SHADER_TYPE(, FSlatePostProcessUpsamplePS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("UpsampleMain"), SF_Pixel);
+IMPLEMENT_SHADER_TYPE(template<>, FSlatePostProcessUpsamplePS<ESlatePostProcessUpsamplePSPermutation::SDR>, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("UpsampleMain"), SF_Pixel);
+IMPLEMENT_SHADER_TYPE(template<>, FSlatePostProcessUpsamplePS<ESlatePostProcessUpsamplePSPermutation::HDR_SCRGB>, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("UpsampleMain"), SF_Pixel);
+IMPLEMENT_SHADER_TYPE(template<>, FSlatePostProcessUpsamplePS<ESlatePostProcessUpsamplePSPermutation::HDR_PQ10>, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("UpsampleMain"), SF_Pixel);
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessColorDeficiencyPS, TEXT("/Engine/Private/SlatePostProcessColorDeficiencyPixelShader.usf"), TEXT("ColorDeficiencyMain"), SF_Pixel);
 
 IMPLEMENT_SHADER_TYPE(, FSlateMaskingVS, TEXT("/Engine/Private/SlateMaskingShader.usf"), TEXT("MainVS"), SF_Vertex);
@@ -73,7 +75,7 @@ TGlobalResource<FSlateMaskingVertexDeclaration> GSlateMaskingVertexDeclaration;
 void FSlateVertexDeclaration::InitRHI()
 {
 	FVertexDeclarationElementList Elements;
-	uint32 Stride = sizeof(FSlateVertex);
+	uint16 Stride = sizeof(FSlateVertex);
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, TexCoords), VET_Float4, 0, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, MaterialTexCoords), VET_Float2, 1, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Position), VET_Float2, 2, Stride));
@@ -96,7 +98,7 @@ void FSlateVertexDeclaration::ReleaseRHI()
 void FSlateInstancedVertexDeclaration::InitRHI()
 {
 	FVertexDeclarationElementList Elements;
-	uint32 Stride = sizeof(FSlateVertex);
+	uint16 Stride = sizeof(FSlateVertex);
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, TexCoords), VET_Float4, 0, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, MaterialTexCoords), VET_Float2, 1, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Position), VET_Float2, 2, Stride));
@@ -110,7 +112,7 @@ void FSlateInstancedVertexDeclaration::InitRHI()
 void FSlateElementPS::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
-	OutEnvironment.SetDefine(TEXT("USE_709"), CVar ? (CVar->GetValueOnGameThread() == 1) : 1);
+	OutEnvironment.SetDefine(TEXT("USE_709"), CVar ? (CVar->GetValueOnGameThread() == (int32)EDisplayOutputFormat::SDR_Rec709) : 1);
 }
 
 
@@ -120,7 +122,7 @@ void FSlateElementPS::ModifyCompilationEnvironment(const FGlobalShaderPermutatio
 void FSlateMaskingVertexDeclaration::InitRHI()
 {
 	FVertexDeclarationElementList Elements;
-	uint32 Stride = sizeof(uint32);
+	uint16 Stride = sizeof(uint32);
 	Elements.Add(FVertexElement(0, 0, VET_UByte4, 0, Stride));
 
 	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
@@ -141,7 +143,6 @@ FSlateElementVS::FSlateElementVS( const ShaderMetaType::CompiledShaderInitialize
 {
 	ViewProjection.Bind(Initializer.ParameterMap, TEXT("ViewProjection"));
 	VertexShaderParams.Bind( Initializer.ParameterMap, TEXT("VertexShaderParams"));
-	SwitchVerticalAxisMultiplier.Bind( Initializer.ParameterMap, TEXT("SwitchVerticalAxisMultiplier"));
 }
 
 void FSlateElementVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection )
@@ -154,11 +155,6 @@ void FSlateElementVS::SetShaderParameters(FRHICommandList& RHICmdList, const FVe
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), VertexShaderParams, ShaderParams );
 }
 
-void FSlateElementVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier )
-{
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
-}
-
 /** Serializes the shader data */
 /*bool FSlateElementVS::Serialize( FArchive& Ar )
 {
@@ -166,7 +162,6 @@ void FSlateElementVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, flo
 
 	Ar << ViewProjection;
 	Ar << VertexShaderParams;
-	Ar << SwitchVerticalAxisMultiplier;
 
 	return bShaderHasOutdatedParameters;
 }*/
@@ -181,7 +176,6 @@ FSlateMaskingVS::FSlateMaskingVS(const ShaderMetaType::CompiledShaderInitializer
 {
 	ViewProjection.Bind(Initializer.ParameterMap, TEXT("ViewProjection"));
 	MaskRect.Bind(Initializer.ParameterMap, TEXT("MaskRectPacked"));
-	SwitchVerticalAxisMultiplier.Bind(Initializer.ParameterMap, TEXT("SwitchVerticalAxisMultiplier"));
 }
 
 void FSlateMaskingVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection)
@@ -189,15 +183,9 @@ void FSlateMaskingVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatr
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection);
 }
 
-void FSlateMaskingVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier )
+void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2f TopLeft, const FVector2f TopRight, const FVector2f BotLeft, const FVector2f BotRight)
 {
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
-}
-
-void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& TopLeft, const FVector2D& TopRight, const FVector2D& BotLeft, const FVector2D& BotRight)
-{
-	//FVector4f MaskRectVal[4] = { FVector4f(TopLeft, FVector2D::ZeroVector), FVector4f(TopRight, FVector2D::ZeroVector), FVector4f(BotLeft, FVector2D::ZeroVector), FVector4f(BotRight, FVector2D::ZeroVector) };
-	FVector4f MaskRectVal[2] = { FVector4f(FVector2f(TopLeft), FVector2f(TopRight)), FVector4f(FVector2f(BotLeft), FVector2f(BotRight)) };	// LWC_TODO: Precision loss
+	FVector4f MaskRectVal[2] = { FVector4f(TopLeft, TopRight), FVector4f(BotLeft, BotRight) };
 
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), MaskRect, MaskRectVal);
 }
@@ -209,7 +197,6 @@ void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& 
 
 	Ar << ViewProjection;
 	Ar << MaskRect;
-	Ar << SwitchVerticalAxisMultiplier;
 
 	return bShaderHasOutdatedParameters;
 }*/

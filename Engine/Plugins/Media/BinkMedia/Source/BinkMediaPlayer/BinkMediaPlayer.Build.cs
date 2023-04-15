@@ -23,8 +23,6 @@ public class BinkMediaPlayer : ModuleRules
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "BinkMediaPlayerSDK");
 
-        PrivatePCHHeaderFile = "Private/BinkMediaPlayerPCH.h";
-
         if (Target.bBuildEditor == true)
         {
 			PublicDependencyModuleNames.Add("Slate");
@@ -38,7 +36,7 @@ public class BinkMediaPlayer : ModuleRules
             PublicDefinitions.Add("BINKPLUGIN_UE4_EDITOR=0");
         }
 
-		RuntimeDependencies.Add("$(ProjectDir)/Content/Movies/..."); // For chunked streaming
+		//RuntimeDependencies.Add("$(ProjectDir)/Content/Movies/..."); // For chunked streaming
 
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{

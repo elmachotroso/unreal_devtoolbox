@@ -96,28 +96,6 @@ void FNiagaraSystemInstanceController::NotifyRenderersComplete(FNiagaraSystemRen
 	}
 }
 
-int32 FNiagaraSystemInstanceController::GetNumMaterials() const
-{
-	TArray<UMaterialInterface*> UsedMaterials;
-	if (SystemInstance)
-	{
-		for (TSharedPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInst : SystemInstance->GetEmitters())
-		{
-			if (UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter())
-			{
-				Emitter->ForEachEnabledRenderer(
-					[&](UNiagaraRendererProperties* Properties)
-					{
-						Properties->GetUsedMaterials(EmitterInst.Get(), UsedMaterials);
-					}
-				);
-			}
-		}
-	}
-
-	return UsedMaterials.Num();
-}
-
 void FNiagaraSystemInstanceController::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials)
 {
 	if (!SystemInstance.IsValid())
@@ -127,9 +105,9 @@ void FNiagaraSystemInstanceController::GetUsedMaterials(TArray<UMaterialInterfac
 
 	for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInst : SystemInstance->GetEmitters())
 	{
-		if (UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter())
+		if (FVersionedNiagaraEmitterData* EmitterData = EmitterInst->GetCachedEmitterData())
 		{
-			Emitter->ForEachEnabledRenderer(
+			EmitterData->ForEachEnabledRenderer(
 				[&](UNiagaraRendererProperties* Properties)
 				{
 					bool bCreateMidsForUsedMaterials = Properties->NeedsMIDsForMaterials();
@@ -151,6 +129,25 @@ void FNiagaraSystemInstanceController::GetUsedMaterials(TArray<UMaterialInterfac
 					OutMaterials.Append(Mats);
 				}
 			);
+		}
+	}
+}
+
+void FNiagaraSystemInstanceController::GetStreamingMeshInfo(const FBoxSphereBounds& OwnerBounds, FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const
+{
+	if (!SystemInstance.IsValid())
+	{
+		return;
+	}
+
+	for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInst : SystemInstance->GetEmitters())
+	{
+		if (FVersionedNiagaraEmitterData* EmitterData = EmitterInst->GetCachedEmitter().GetEmitterData())
+		{
+			EmitterData->ForEachEnabledRenderer([&](UNiagaraRendererProperties* Properties)
+			{
+				Properties->GetStreamingMeshInfo(OwnerBounds, &EmitterInst.Get(), OutStreamingRenderAssets);
+			});
 		}
 	}
 }
@@ -241,7 +238,7 @@ void FNiagaraSystemInstanceController::DebugDump(bool bFullDump)
 		{
 			for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Emitter : SystemInstance->GetEmitters())
 			{
-				if ( Emitter->GetCachedEmitter() != nullptr )
+				if ( Emitter->GetCachedEmitter().Emitter != nullptr )
 				{
 					UE_LOG(LogNiagara, Log, TEXT("\tEmitter '%s' ExecutionState(%s) NumParticles(%d)"), *Emitter->GetEmitterHandle().GetUniqueInstanceName(), *ExecutionStateEnum->GetNameStringByIndex((int32)Emitter->GetExecutionState()), Emitter->GetNumParticles());
 				}
@@ -277,9 +274,9 @@ void FNiagaraSystemInstanceController::UpdateEmitterMaterials()
 		for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
 		{
 			FNiagaraEmitterInstance* EmitterInst = &SystemInstance->GetEmitters()[i].Get();
-			if (UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter())
+			if (FVersionedNiagaraEmitterData* EmitterData = EmitterInst->GetCachedEmitterData())
 			{
-				Emitter->ForEachEnabledRenderer(
+				EmitterData->ForEachEnabledRenderer(
 					[&](UNiagaraRendererProperties* Properties)
 					{
 						// Nothing to do if we don't create MIDs for this material
@@ -404,6 +401,15 @@ void FNiagaraSystemInstanceController::SetVariable(FName InVariableName, FQuat4f
 	if (OverrideParameters)
 	{
 		const FNiagaraVariable VariableDesc(FNiagaraTypeDefinition::GetQuatDef(), InVariableName);
+		OverrideParameters->SetParameterValue(InValue, VariableDesc, true);
+	}
+}
+
+void FNiagaraSystemInstanceController::SetVariable(FName InVariableName, const FMatrix44f& InValue)
+{
+	if (OverrideParameters)
+	{
+		const FNiagaraVariable VariableDesc(FNiagaraTypeDefinition::GetMatrix4Def(), InVariableName);
 		OverrideParameters->SetParameterValue(InValue, VariableDesc, true);
 	}
 }

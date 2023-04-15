@@ -3,6 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "UObject/NameTypes.h"
 
 class FArchive;
 class FStructuredArchiveSlot;
@@ -17,7 +20,7 @@ class FPackageId
 public:
 	FPackageId() = default;
 
-	CORE_API static FPackageId FromName(const FName& Name, bool bAsOptional = false);
+	CORE_API static FPackageId FromName(const FName& Name);
 
 	static FPackageId FromValue(const uint64 Value)
 	{

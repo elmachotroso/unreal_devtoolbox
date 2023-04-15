@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Avoidance/MassAvoidanceTrait.h"
 #include "Avoidance/MassAvoidanceFragments.h"
@@ -7,26 +7,25 @@
 #include "MassCommonFragments.h"
 #include "MassNavigationFragments.h"
 #include "Engine/World.h"
+#include "MassEntityUtils.h"
 
-void UMassObstacleAvoidanceTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+
+void UMassObstacleAvoidanceTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
-	check(EntitySubsystem);
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
 
-	BuildContext.AddFragment<FAgentRadiusFragment>();
+	BuildContext.RequireFragment<FAgentRadiusFragment>();
 	BuildContext.AddFragment<FMassNavigationEdgesFragment>();
-	BuildContext.AddFragment<FTransformFragment>();
-	BuildContext.AddFragment<FMassVelocityFragment>();
-	BuildContext.AddFragment<FMassForceFragment>();
-	BuildContext.AddFragment<FMassMoveTargetFragment>();
+	BuildContext.RequireFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassVelocityFragment>();
+	BuildContext.RequireFragment<FMassForceFragment>();
+	BuildContext.RequireFragment<FMassMoveTargetFragment>();
 
 	const FMassMovingAvoidanceParameters MovingValidated = MovingParameters.GetValidated();
-	const uint32 MovingHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(MovingValidated));
-	const FConstSharedStruct MovingFragment = EntitySubsystem->GetOrCreateConstSharedFragment(MovingHash, MovingValidated);
+	const FConstSharedStruct MovingFragment = EntityManager.GetOrCreateConstSharedFragment(MovingValidated);
 	BuildContext.AddConstSharedFragment(MovingFragment);
 
 	const FMassStandingAvoidanceParameters StandingValidated = StandingParameters.GetValidated();
-	const uint32 StandingHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(StandingValidated));
-	const FConstSharedStruct StandingFragment = EntitySubsystem->GetOrCreateConstSharedFragment(StandingHash, StandingValidated);
+	const FConstSharedStruct StandingFragment = EntityManager.GetOrCreateConstSharedFragment(StandingValidated);
 	BuildContext.AddConstSharedFragment(StandingFragment);
 }

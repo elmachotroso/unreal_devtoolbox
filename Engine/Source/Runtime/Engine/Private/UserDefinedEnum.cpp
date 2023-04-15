@@ -2,6 +2,11 @@
 
 #include "Engine/UserDefinedEnum.h"
 #include "UObject/EditorObjectVersion.h"
+#include "UObject/ObjectSaveContext.h"
+#include "CookedMetaData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UserDefinedEnum)
+
 #if WITH_EDITOR
 #include "Kismet2/EnumEditorUtils.h"
 #include "UObject/MetaData.h"
@@ -76,6 +81,16 @@ void UUserDefinedEnum::PostDuplicate(bool bDuplicateForPIE)
 void UUserDefinedEnum::PostLoad()
 {
 	Super::PostLoad();
+
+	if (GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		if (const UEnumCookedMetaData* CookedMetaData = FindCookedMetaData())
+		{
+			CookedMetaData->ApplyMetaData(this);
+			PurgeCookedMetaData();
+		}
+	}
+
 	FEnumEditorUtils::UpdateAfterPathChanged(this);
 	if (NumEnums() > 1 && DisplayNameMap.Num() == 0) // >1 because User Defined Enums always have a "MAX" entry
 	{
@@ -121,6 +136,33 @@ void UUserDefinedEnum::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) 
 	FString DescriptionString;
 	FTextStringHelper::WriteToBuffer(/*out*/ DescriptionString, EnumDescription);
 	OutTags.Emplace(GET_MEMBER_NAME_CHECKED(UUserDefinedEnum, EnumDescription), DescriptionString, FAssetRegistryTag::TT_Hidden);
+}
+
+void UUserDefinedEnum::PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext)
+{
+	Super::PreSaveRoot(ObjectSaveContext);
+
+	if (ObjectSaveContext.IsCooking() && (ObjectSaveContext.GetSaveFlags() & SAVE_Optional))
+	{
+		UEnumCookedMetaData* CookedMetaData = NewCookedMetaData();
+		CookedMetaData->CacheMetaData(this);
+
+		if (!CookedMetaData->HasMetaData())
+		{
+			PurgeCookedMetaData();
+		}
+	}
+	else
+	{
+		PurgeCookedMetaData();
+	}
+}
+
+void UUserDefinedEnum::PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext)
+{
+	Super::PostSaveRoot(ObjectSaveContext);
+
+	PurgeCookedMetaData();
 }
 
 FString UUserDefinedEnum::GenerateNewEnumeratorName()
@@ -180,7 +222,7 @@ bool UUserDefinedEnum::SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm I
 	ensure(bAddMaxKeyIfMissing);
 	if (Names.Num() > 0)
 	{
-		RemoveNamesFromMasterList();
+		RemoveNamesFromPrimaryList();
 	}
 	Names = InNames;
 	CppForm = InCppForm;
@@ -195,11 +237,11 @@ bool UUserDefinedEnum::SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm I
 		const FString EnumPrefix = (TryNum == 0) ? BaseEnumPrefix : FString::Printf(TEXT("%s_%d"), *BaseEnumPrefix, TryNum - 1);
 		const FName MaxEnumItem = *GenerateFullEnumName(*(EnumPrefix + TEXT("_MAX")));
 		const int64 MaxEnumItemIndex = GetValueByName(MaxEnumItem);
-		if ((MaxEnumItemIndex == INDEX_NONE) && (LookupEnumName(MaxEnumItem) == INDEX_NONE))
+		if ((MaxEnumItemIndex == INDEX_NONE) && (LookupEnumName(GetPackage()->GetFName(), MaxEnumItem) == INDEX_NONE))
 		{
 			int64 MaxEnumValue = (InNames.Num() == 0)? 0 : GetMaxEnumValue() + 1;
 			Names.Emplace(MaxEnumItem, MaxEnumValue);
-			AddNamesToMasterList();
+			AddNamesToPrimaryList();
 			return true;
 		}
 	}
@@ -208,3 +250,37 @@ bool UUserDefinedEnum::SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm I
 
 	return false;
 }
+
+#if WITH_EDITORONLY_DATA
+TSubclassOf<UEnumCookedMetaData> UUserDefinedEnum::GetCookedMetaDataClass() const
+{
+	return UEnumCookedMetaData::StaticClass();
+}
+
+UEnumCookedMetaData* UUserDefinedEnum::NewCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::NewCookedMetaData<UEnumCookedMetaData>(this, "CookedEnumMetaData", GetCookedMetaDataClass());
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+const UEnumCookedMetaData* UUserDefinedEnum::FindCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::FindCookedMetaData<UEnumCookedMetaData>(this, TEXT("CookedEnumMetaData"));
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+void UUserDefinedEnum::PurgeCookedMetaData()
+{
+	if (CachedCookedMetaDataPtr)
+	{
+		CookedMetaDataUtil::PurgeCookedMetaData<UEnumCookedMetaData>(CachedCookedMetaDataPtr);
+	}
+}
+#endif // WITH_EDITORONLY_DATA
+

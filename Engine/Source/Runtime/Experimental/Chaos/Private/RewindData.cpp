@@ -6,6 +6,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Chaos/PBDJointConstraints.h"
 #include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 namespace Chaos
 {
@@ -159,26 +161,26 @@ bool FRewindData::RewindToFrame(int32 Frame)
 	FFrameAndPhase RewindFrameAndPhase{ Frame, FFrameAndPhase::PostPushData };
 	FFrameAndPhase CurFrameAndPhase{ CurFrame, FFrameAndPhase::PrePushData };
 
-	auto RewindHelper = [RewindFrameAndPhase, CurFrameAndPhase, this](auto Obj, bool bResimAsSlave, auto& Property, const auto& RewindFunc) -> bool
+	auto RewindHelper = [RewindFrameAndPhase, CurFrameAndPhase, this](auto Obj, bool bResimAsFollower, auto& Property, const auto& RewindFunc) -> bool
 	{
-		if (bResimAsSlave)
+		if (bResimAsFollower)
 		{
-	//If we're rewinding a particle that doesn't need to save head (resim as slave never checks for desync so we don't care about head)
-		if (auto Val = Property.Read(RewindFrameAndPhase, PropertiesPool))
-		{
+			//If we're rewinding a particle that doesn't need to save head (resim as follower never checks for desync so we don't care about head)
+			if (auto Val = Property.Read(RewindFrameAndPhase, PropertiesPool))
+			{
 				RewindFunc(Obj, *Val);
 			}
 		}
 		else
-	{
-			//If we're rewinding an object that needs to save head (during resim when we get back to latest frame and phase we need to check for desync)
-		if (!Property.IsClean(RewindFrameAndPhase))
 		{
+			//If we're rewinding an object that needs to save head (during resim when we get back to latest frame and phase we need to check for desync)
+			if (!Property.IsClean(RewindFrameAndPhase))
+			{
 				CopyDataFromObject(Property.WriteAccessMonotonic(CurFrameAndPhase, PropertiesPool), *Obj);
 				RewindFunc(Obj, *Property.Read(RewindFrameAndPhase, PropertiesPool));
 
-			return true;
-		}
+				return true;
+			}
 		}
 
 		return false;
@@ -193,16 +195,16 @@ bool FRewindData::RewindToFrame(int32 Frame)
 		
 		FGeometryParticleStateBase& History = DirtyParticleInfo.AddFrame(CurFrame);	//non-const in case we need to record what's at head for a rewind (CurFrame has already been increased to the next frame)
 
-		const bool bResimAsSlave = DirtyParticleInfo.bResimAsSlave;
-		bool bAnyChange = RewindHelper(PTParticle, bResimAsSlave, History.ParticlePositionRotation, [](auto Particle, const auto& Data) {Particle->SetXR(Data); });
-		bAnyChange |= RewindHelper(PTParticle, bResimAsSlave, History.NonFrequentData, [](auto Particle, const auto& Data) {Particle->SetNonFrequentData(Data); });
-		bAnyChange |= RewindHelper(PTParticle->CastToKinematicParticle(), bResimAsSlave, History.Velocities, [](auto Particle, const auto& Data) {Particle->SetVelocities(Data); });
-		bAnyChange |= RewindHelper(PTParticle->CastToKinematicParticle(), bResimAsSlave, History.KinematicTarget, [](auto Particle, const auto& Data) {Particle->SetKinematicTarget(Data); });
-		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsSlave,  History.Dynamics, [](auto Particle, const auto& Data) {Particle->SetDynamics(Data); });
-		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsSlave,  History.DynamicsMisc, [Evolution = Solver->GetEvolution()](auto Particle, const auto& Data) {Particle->SetDynamicMisc(Data, *Evolution); });
-		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsSlave,  History.MassProps, [](auto Particle, const auto& Data) {Particle->SetMassProps(Data); });
+		const bool bResimAsFollower = DirtyParticleInfo.bResimAsFollower;
+		bool bAnyChange = RewindHelper(PTParticle, bResimAsFollower, History.ParticlePositionRotation, [](auto Particle, const auto& Data) {Particle->SetXR(Data); });
+		bAnyChange |= RewindHelper(PTParticle, bResimAsFollower, History.NonFrequentData, [](auto Particle, const auto& Data) {Particle->SetNonFrequentData(Data); });
+		bAnyChange |= RewindHelper(PTParticle->CastToKinematicParticle(), bResimAsFollower, History.Velocities, [](auto Particle, const auto& Data) {Particle->SetVelocities(Data); });
+		bAnyChange |= RewindHelper(PTParticle->CastToKinematicParticle(), bResimAsFollower, History.KinematicTarget, [](auto Particle, const auto& Data) {Particle->SetKinematicTarget(Data); });
+		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsFollower,  History.Dynamics, [](auto Particle, const auto& Data) {Particle->SetDynamics(Data); });
+		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsFollower,  History.DynamicsMisc, [Evolution = Solver->GetEvolution()](auto Particle, const auto& Data) {Particle->SetDynamicMisc(Data, *Evolution); });
+		bAnyChange |= RewindHelper(PTParticle->CastToRigidParticle(),bResimAsFollower,  History.MassProps, [](auto Particle, const auto& Data) {Particle->SetMassProps(Data); });
 
-		if (!bResimAsSlave)
+		if (!bResimAsFollower)
 		{
 			if (bAnyChange)
 			{
@@ -273,14 +275,15 @@ void FRewindData::FinishFrame()
 		auto FinishHelper = [this, FutureFrame](auto& DirtyObjs)
 		{
 			for (auto& Info : DirtyObjs)
-		{
-			if (Info.bResimAsSlave)
 			{
-				//resim as slave means always in sync and no cleanup needed
-				continue;
-			}
+				if (Info.bResimAsFollower)
+				{
+					//resim as follower means always in sync and no cleanup needed
+					continue;
+				}
 
-			auto& Handle = *Info.GetObjectPtr();
+				auto& Handle = *Info.GetObjectPtr();
+
 				if (Handle.ResimType() == EResimType::FullResim)
 				{
 					if (IsFinalResim())
@@ -311,6 +314,36 @@ void FRewindData::FinishFrame()
 	LatestFrame = FMath::Max(LatestFrame, CurFrame);
 }
 
+void FRewindData::DumpHistory_Internal(const int32 FramePrintOffset, const FString& Filename)
+{
+	FStringOutputDevice Out;
+	const int32 EarliestFrame = GetEarliestFrame_Internal();
+	for(int32 Frame = EarliestFrame; Frame < CurFrame; ++Frame)
+	{
+		for (int32 Phase = 0; Phase < FFrameAndPhase::EParticleHistoryPhase::NumPhases; ++Phase)
+		{
+			for(const FDirtyParticleInfo& Info : DirtyParticles)
+			{
+				Out.Logf(TEXT("Frame:%d Phase:%d\n"), Frame + FramePrintOffset, Phase);
+				FGeometryParticleState State = GetPastStateAtFrame(*Info.GetObjectPtr(), Frame, (FFrameAndPhase::EParticleHistoryPhase)Phase);
+				Out.Logf(TEXT("%s\n"), *State.ToString());
+			}
+
+			for (const FDirtyJointInfo& Info : DirtyJoints)
+			{
+				Out.Logf(TEXT("Frame:%d Phase:%d\n"), Frame + FramePrintOffset, Phase);
+
+				FJointState State = GetPastJointStateAtFrame(*Info.GetObjectPtr(), Frame, (FFrameAndPhase::EParticleHistoryPhase)Phase);
+				Out.Logf(TEXT("%s\n"), *State.ToString()); 
+			}
+		}
+	}
+
+	FString Path = FPaths::ProfilingDir() + FString::Printf(TEXT("/RewindData/%s_%d_%d.txt"), *Filename, EarliestFrame + FramePrintOffset, CurFrame - 1 + FramePrintOffset);
+	FFileHelper::SaveStringToFile(Out, *Path);
+	UE_LOG(LogChaos, Warning, TEXT("Saved:%s"), *Path);
+}
+
 CHAOS_API int32 SkipDesyncTest = 0;
 FAutoConsoleVariableRef CVarSkipDesyncTest(TEXT("p.SkipDesyncTest"), SkipDesyncTest, TEXT("Skips hard desync test, this means all particles will assume to be clean except spawning at different times. This is useful for a perf lower bound, not actually correct"));
 
@@ -338,9 +371,9 @@ void FRewindData::AdvanceFrameImp(IResimCacheBase* ResimCache)
 		{
 
 			auto Handle = Info.GetObjectPtr();
-			Info.bResimAsSlave = Handle->ResimType() == EResimType::ResimAsSlave;
+			Info.bResimAsFollower = Handle->ResimType() == EResimType::ResimAsFollower;
 
-			if (IsResim() && !Info.bResimAsSlave)
+			if (IsResim() && !Info.bResimAsFollower)
 			{
 					DesyncIfNecessary</*bSkipDynamics=*/false>(Info, FrameAndPhase);
 			}
@@ -526,11 +559,12 @@ void FRewindData::SpawnProxyIfNeeded(FSingleParticlePhysicsProxy& Proxy)
 		FGeometryParticleHandle* Handle = Proxy.GetHandle_LowLevel();
 		FDirtyParticleInfo& Info = FindOrAddDirtyObj(*Handle, CurFrame);
 
-		Solver->GetEvolution()->EnableParticle(Handle, nullptr);
+		Solver->GetEvolution()->EnableParticle(Handle);
 		if(Proxy.GetInitializedStep() != CurFrame)
 		{
 			DesyncObject(Info, FFrameAndPhase{ Proxy.GetInitializedStep(), FFrameAndPhase::PrePushData });	//Spawned earlier so mark as desynced from that first frame
 			Proxy.SetInitialized(CurFrame);
+			Info.InitializedOnStep = CurFrame;
 		}
 	}
 }

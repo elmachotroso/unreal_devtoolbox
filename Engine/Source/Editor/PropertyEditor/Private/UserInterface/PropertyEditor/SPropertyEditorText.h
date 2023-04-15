@@ -1,25 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "EditorStyleSet.h"
+#include "Misc/Attribute.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Presentation/PropertyEditor/PropertyEditor.h"
-#include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 
+class FText;
 class SEditableTextBox;
 class SMultiLineEditableTextBox;
+struct FFocusEvent;
+struct FGeometry;
 
 class SPropertyEditorText : public SCompoundWidget
 {
 public:
 
 	SLATE_BEGIN_ARGS( SPropertyEditorText )
-		: _Font( FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
+		: _Font( FAppStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
 		{}
 		SLATE_ATTRIBUTE( FSlateFontInfo, Font )
 	SLATE_END_ARGS()
@@ -38,11 +42,7 @@ private:
 
 	void OnTextCommitted( const FText& NewText, ETextCommit::Type CommitInfo );
 
-	/** Called if the single line widget text changes */
-	void OnSingleLineTextChanged( const FText& NewText );
-
-	/** Called if the multi line widget text changes */
-	void OnMultiLineTextChanged( const FText& NewText );
+	bool OnVerifyTextChanged(const FText& Text, FText& OutError);
 
 	/** @return True if the property can be edited */
 	bool CanEdit() const;
@@ -65,6 +65,6 @@ private:
 	/** Cached flag as we would like multi-line text widgets to be slightly larger */
 	bool bIsMultiLine;
 	
-	/** True if property is an FName property which causes us to run extra size validation checks */
-	bool bIsFNameProperty;
+	/** The maximum length of the value that can be edited, or <=0 for unlimited */
+	int32 MaxLength = 0;
 };

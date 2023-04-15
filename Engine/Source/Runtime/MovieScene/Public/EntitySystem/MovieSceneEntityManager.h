@@ -2,22 +2,40 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Containers/BitArray.h"
-#include "Containers/SparseArray.h"
+#include "Algo/AllOf.h"
+#include "Algo/AnyOf.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
-#include "Misc/InlineValue.h"
-#include "UObject/StrongObjectPtr.h"
-#include "MovieSceneSequenceID.h"
-#include "Evaluation/MovieScenePlayback.h"
-#include "EntitySystem/MovieSceneEntityIDs.h"
-#include "EntitySystem/MovieSceneEntitySystemTypes.h"
-#include "EntitySystem/MovieSceneEntityFactoryTypes.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "EntitySystem/MovieSceneComponentTypeHandler.h"
 #include "EntitySystem/MovieSceneComponentTypeInfo.h"
-#include "Algo/AnyOf.h"
-#include "Algo/AllOf.h"
+#include "EntitySystem/MovieSceneEntityFactoryTypes.h"
+#include "EntitySystem/MovieSceneEntityIDs.h"
+#include "EntitySystem/MovieSceneEntitySystemTypes.h"
+#include "Evaluation/MovieScenePlayback.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/InlineValue.h"
+#include "MovieSceneSequenceID.h"
+#include "Templates/Atomic.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectArray.h"
 
+#include <initializer_list>
+
+class FArchive;
+class FReferenceCollector;
+class UObjectBase;
+struct FGuid;
 struct FMovieSceneExportedEntity;
 
 namespace UE
@@ -25,12 +43,15 @@ namespace UE
 namespace MovieScene
 {
 
-struct FComponentRegistry;
-struct FFreeEntityOperation;
 struct FChildEntityInitializer;
-struct FMutualEntityInitializer;
-struct IMovieSceneEntityMutation;
+struct FComponentRegistry;
 struct FEntityAllocationIteratorProxy;
+struct FFreeEntityOperation;
+struct FMutualEntityInitializer;
+struct IComponentTypeHandler;
+struct IMovieSceneEntityMutation;
+template <typename T> struct TReadOptional;
+template <typename T> struct TWriteOptional;
 
 
 enum class EEntityRecursion : uint8
@@ -482,7 +503,7 @@ public:
 		{
 			if (Header.ComponentType == ComponentTypeID)
 			{
-				return TComponentLock<TWriteOptional<T>>(Header, FEntityAllocationWriteContext(*this), ComponentOffset);
+				return TComponentLock<TWriteOptional<T>>(&Header, FEntityAllocationWriteContext(*this), ComponentOffset);
 			}
 		}
 
@@ -499,7 +520,7 @@ public:
 	 * @param Value                The value to write
 	 */
 	template<typename T, typename ValueType>
-	void WriteComponentChecked(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID, ValueType&& Value) const
+	void WriteComponentChecked(FMovieSceneEntityID Entity, TComponentTypeID<T> ComponentTypeID, ValueType&& Value)
 	{
 		TComponentLock<TWriteOptional<T>> ComponentPtr = WriteComponent(Entity, ComponentTypeID);
 		check(ComponentPtr);
@@ -678,6 +699,17 @@ public:
 		return Algo::AnyOf(ComponentTypeIDs, [&Mask](FComponentTypeID In){ return Mask.Contains(In); });
 	}
 
+	/**
+	 * Check whether any entity in this manager has any of the specified components
+	 *
+	 * @param ComponentTypeIDs     The types of the component that are being tested for
+	 * @return true if any one of the specified components exist anywhere in this manager, false otherwise
+	 */
+	bool ContainsAnyComponent(const FComponentMask& ComponentTypeIDs) const
+	{
+		const FComponentMask& Mask = GetAccumulatedMask();
+		return FComponentMask::BitwiseAND(Mask, ComponentTypeIDs, EBitwiseOperatorFlags::MinSize).NumComponents() != 0;
+	}
 
 	/**
 	 * Check whether all of the specified components exist anywhere in this entity manager
@@ -829,6 +861,11 @@ public:
 private:
 	friend struct FEntityInitializer; 
 
+	enum class EMemoryType
+	{
+		Uninitialized,
+		DefaultConstructed
+	};
 	void OnStructureChanged();
 
 	FEntityAllocation* CreateEntityAllocation(const FComponentMask& EntityComponentMask, uint16 InitialCapacity, uint16 MaxCapacity, FEntityAllocation* MigrateComponentDataFrom = nullptr);
@@ -839,7 +876,7 @@ private:
 
 	void CopyComponents(int32 DestAllocationIndex, int32 DestEntityIndex, int32 SourceAllocationIndex, int32 SourceEntityIndex, const FComponentMask* OptionalMask = nullptr);
 
-	int32 AddEntityToAllocation(int32 AllocationIndex, FMovieSceneEntityID ID);
+	int32 AddEntityToAllocation(int32 AllocationIndex, FMovieSceneEntityID ID, EMemoryType MemoryType = EMemoryType::DefaultConstructed);
 	void RemoveEntityFromAllocation(int32 AllocationIndex, int32 SourceEntryIndexWithinAllocation);
 
 	FEntityAllocation* MigrateAllocation(int32 AllocationIndex, const FComponentMask& NewComponentMask);

@@ -57,13 +57,13 @@ typedef FAndroidTypes FPlatformTypes;
 #define PLATFORM_UI_HAS_MOBILE_SCROLLBARS			1
 #define PLATFORM_UI_NEEDS_TOOLTIPS					0
 #define PLATFORM_UI_NEEDS_FOCUS_OUTLINES			0
-#define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK		1 // movies will start before engine is initalized
+#define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK		1 // movies will start before engine is initialized
 #define PLATFORM_SUPPORTS_GEOMETRY_SHADERS			0
 #define PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING	1
 #define PLATFORM_USE_ANSI_POSIX_MALLOC				1
-#define PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING 1
-
+#define PLATFORM_USE_MINIMAL_HANG_DETECTION			1
 #define PLATFORM_CODE_SECTION(Name)					__attribute__((section(Name)))
+#define PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE	0
 
 #define PLATFORM_GLOBAL_LOG_CATEGORY				LogAndroid
 #define PLATFORM_RHITHREAD_DEFAULT_BYPASS			0
@@ -99,6 +99,11 @@ typedef FAndroidTypes FPlatformTypes;
 #endif
 #ifndef USE_ANDROID_EVENTS
 	#define USE_ANDROID_EVENTS						1
+#endif
+
+// Enable to set thread nice values when setting runnable thread priorities
+#ifndef ANDROID_USE_NICE_VALUE_THREADPRIORITY
+	#define ANDROID_USE_NICE_VALUE_THREADPRIORITY 0
 #endif
 
 // Function type macros.

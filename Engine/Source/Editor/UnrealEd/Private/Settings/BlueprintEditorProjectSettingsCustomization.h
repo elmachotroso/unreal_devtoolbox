@@ -14,9 +14,6 @@ public:
 	// Factory creation.
 	static TSharedRef<IDetailCustomization> MakeInstance();
 
-	// Virtual destructor.
-	virtual ~FBlueprintEditorProjectSettingsCustomization();
-
 	// IDetailCustomization interface
 	virtual void CustomizeDetails(IDetailLayoutBuilder& LayoutBuilder) override;
 	// End IDetailCustomization interface

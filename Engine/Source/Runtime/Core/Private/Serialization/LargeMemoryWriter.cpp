@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/LargeMemoryWriter.h"
-#include "Logging/LogMacros.h"
+
 #include "CoreGlobals.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Trace/Detail/Channel.h"
 
 /*----------------------------------------------------------------------------
 	FLargeMemoryWriter

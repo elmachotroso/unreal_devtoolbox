@@ -38,43 +38,51 @@ public class FDatasmithFacadeActor : FDatasmithFacadeElement {
   public FDatasmithFacadeActor(string InElementName) : this(DatasmithFacadeCSharpPINVOKE.new_FDatasmithFacadeActor(InElementName), true) {
   }
 
-  public void SetWorldTransform(float[] InWorldMatrix, bool bRowMajor) {
+  public void SetWorldTransform(double[] InWorldMatrix, bool bRowMajor) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetWorldTransform__SWIG_0(swigCPtr, InWorldMatrix, bRowMajor);
   }
 
-  public void SetWorldTransform(float[] InWorldMatrix) {
+  public void SetWorldTransform(double[] InWorldMatrix) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetWorldTransform__SWIG_1(swigCPtr, InWorldMatrix);
   }
 
-  public void SetScale(float X, float Y, float Z) {
+  public void SetWorldTransform(float[] InWorldMatrix, bool bRowMajor) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetWorldTransform__SWIG_2(swigCPtr, InWorldMatrix, bRowMajor);
+  }
+
+  public void SetWorldTransform(float[] InWorldMatrix) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetWorldTransform__SWIG_3(swigCPtr, InWorldMatrix);
+  }
+
+  public void SetScale(double X, double Y, double Z) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetScale(swigCPtr, X, Y, Z);
   }
 
-  public void GetScale(out float OutX, out float OutY, out float OutZ) {
+  public void GetScale(out double OutX, out double OutY, out double OutZ) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetScale(swigCPtr, out OutX, out OutY, out OutZ);
   }
 
-  public void SetRotation(float Pitch, float Yaw, float Roll) {
+  public void SetRotation(double Pitch, double Yaw, double Roll) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetRotation__SWIG_0(swigCPtr, Pitch, Yaw, Roll);
   }
 
-  public void GetRotation(out float OutPitch, out float OutYaw, out float OutRoll) {
+  public void GetRotation(out double OutPitch, out double OutYaw, out double OutRoll) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetRotation__SWIG_0(swigCPtr, out OutPitch, out OutYaw, out OutRoll);
   }
 
-  public void SetRotation(float X, float Y, float Z, float W) {
+  public void SetRotation(double X, double Y, double Z, double W) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetRotation__SWIG_1(swigCPtr, X, Y, Z, W);
   }
 
-  public void GetRotation(out float OutX, out float OutY, out float OutZ, out float OutW) {
+  public void GetRotation(out double OutX, out double OutY, out double OutZ, out double OutW) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetRotation__SWIG_1(swigCPtr, out OutX, out OutY, out OutZ, out OutW);
   }
 
-  public void SetTranslation(float X, float Y, float Z) {
+  public void SetTranslation(double X, double Y, double Z) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetTranslation(swigCPtr, X, Y, Z);
   }
 
-  public void GetTranslation(out float OutX, out float OutY, out float OutZ) {
+  public void GetTranslation(out double OutX, out double OutY, out double OutZ) {
     DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetTranslation(swigCPtr, out OutX, out OutY, out OutZ);
   }
 
@@ -149,6 +157,8 @@ public class FDatasmithFacadeActor : FDatasmithFacadeElement {
 			return new FDatasmithFacadeActorMesh(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Camera:
 			return new FDatasmithFacadeActorCamera(objectPtr, true);
+		case FDatasmithFacadeActor.EActorType.Decal:
+			return new FDatasmithFacadeActorDecal(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Actor:
 			return new FDatasmithFacadeActor(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Unsupported:
@@ -188,6 +198,8 @@ public class FDatasmithFacadeActor : FDatasmithFacadeElement {
 			return new FDatasmithFacadeActorMesh(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Camera:
 			return new FDatasmithFacadeActorCamera(objectPtr, true);
+		case FDatasmithFacadeActor.EActorType.Decal:
+			return new FDatasmithFacadeActorDecal(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Actor:
 			return new FDatasmithFacadeActor(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Unsupported:
@@ -206,6 +218,15 @@ public class FDatasmithFacadeActor : FDatasmithFacadeElement {
     return ret;
   }
 
+  public void SetCastShadow(bool bInCastShadow) {
+    DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_SetCastShadow(swigCPtr, bInCastShadow);
+  }
+
+  public bool GetCastShadow() {
+    bool ret = DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetCastShadow(swigCPtr);
+    return ret;
+  }
+
   public FDatasmithFacadeActor.EActorType GetActorType() {
     FDatasmithFacadeActor.EActorType ret = (FDatasmithFacadeActor.EActorType)DatasmithFacadeCSharpPINVOKE.FDatasmithFacadeActor_GetActorType(swigCPtr);
     return ret;
@@ -221,6 +242,7 @@ public class FDatasmithFacadeActor : FDatasmithFacadeElement {
     StaticMeshActor,
     Camera,
     Actor,
+    Decal,
     Unsupported
   }
 

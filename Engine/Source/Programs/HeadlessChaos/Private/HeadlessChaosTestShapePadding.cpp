@@ -86,8 +86,9 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
 		FCollisionConstraintAllocator CollisionAllocator;
+		CollisionAllocator.SetMaxContexts(1);
 
-		TUniquePtr<FPBDCollisionConstraint> Constraint = FPBDCollisionConstraint::Make(
+		FPBDCollisionConstraintPtr Constraint = CollisionAllocator.GetContextAllocator(0)->CreateConstraint(
 			Box0,
 			Box0->Geometry().Get(),
 			Box0->ShapesArray()[0].Get(),
@@ -197,9 +198,10 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Y, Size.Y, Tolerance);
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
-		FCollisionConstraintAllocator CollisionConstraintAllocator;
+		FCollisionConstraintAllocator CollisionAllocator;
+		CollisionAllocator.SetMaxContexts(1);
 
-		TUniquePtr<FPBDCollisionConstraint> Constraint = FPBDCollisionConstraint::Make(
+		FPBDCollisionConstraintPtr Constraint = CollisionAllocator.GetContextAllocator(0)->CreateConstraint(
 			Box0,
 			Box0->Geometry().Get(),
 			Box0->ShapesArray()[0].Get(),

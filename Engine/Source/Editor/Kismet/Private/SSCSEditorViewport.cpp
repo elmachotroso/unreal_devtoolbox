@@ -1,19 +1,56 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSCSEditorViewport.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+
+#include "BlueprintEditor.h"
 #include "BlueprintEditorCommands.h"
-#include "SSubobjectEditor.h"
-#include "Slate/SceneViewport.h"
-#include "SViewportToolBar.h"
-#include "STransformViewportToolbar.h"
-#include "EditorViewportCommands.h"
-#include "SEditorViewportToolBarMenu.h"
-#include "BlueprintEditorTabs.h"
 #include "BlueprintEditorSettings.h"
+#include "BlueprintEditorTabs.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor/EditorEngine.h"
+#include "EditorViewportClient.h"
+#include "EditorViewportCommands.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "PreviewScene.h"
+#include "RHIDefinitions.h"
+#include "SCSEditorViewportClient.h"
+#include "SEditorViewportToolBarMenu.h"
+#include "SSubobjectEditor.h"
+#include "STransformViewportToolbar.h"
+#include "SViewportToolBar.h"
+#include "Slate/SceneViewport.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SOverlay.h"
+
+class FDragDropEvent;
+class SDockTab;
+class SWidget;
+struct FGeometry;
 
 /*-----------------------------------------------------------------------------
    SSCSEditorViewportToolBar
@@ -155,6 +192,10 @@ public:
 			case VMI_BrushWireframe:
 				Label = NSLOCTEXT("BlueprintEditor", "ViewMenuTitle_Wireframe", "Wireframe");
 				break;
+
+			case VMI_CollisionVisibility:
+				Label = NSLOCTEXT("BlueprintEditor", "ViewMenuTitle_CollisionVisibility", "Collision Visibility");
+				break;
 			}
 		}
 
@@ -171,6 +212,7 @@ public:
 		ViewMenuBuilder.AddMenuEntry(FEditorViewportCommands::Get().LitMode, NAME_None, NSLOCTEXT("BlueprintEditor", "LitModeMenuOption", "Lit"));
 		ViewMenuBuilder.AddMenuEntry(FEditorViewportCommands::Get().UnlitMode, NAME_None, NSLOCTEXT("BlueprintEditor", "UnlitModeMenuOption", "Unlit"));
 		ViewMenuBuilder.AddMenuEntry(FEditorViewportCommands::Get().WireframeMode, NAME_None, NSLOCTEXT("BlueprintEditor", "WireframeModeMenuOption", "Wireframe"));
+		ViewMenuBuilder.AddMenuEntry(FEditorViewportCommands::Get().CollisionVisibility, NAME_None, NSLOCTEXT("BlueprintEditor", "CollisionVisibilityMenuOption", "Visibility Collision"));
 
 		return ViewMenuBuilder.MakeWidget();
 	}
@@ -320,7 +362,7 @@ void SSCSEditorViewport::BindCommands()
 	// Toggle camera lock on/off
 	CommandList->MapAction(
 		Commands.ResetCamera,
-		FExecuteAction::CreateSP(ViewportClient.Get(), &FSCSEditorViewportClient::ResetCamera) );
+		FExecuteAction::CreateSP(ViewportClient.Get(), &FSCSEditorViewportClient::ResetCamera));
 
 	CommandList->MapAction(
 		Commands.ShowFloor,

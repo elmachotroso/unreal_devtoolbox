@@ -5,7 +5,7 @@
 #include "Graph/ControlRigGraphNode.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor/EditorEngine.h"
 #include "ObjectEditorUtils.h"
 #include "EditorCategoryUtils.h"
@@ -15,6 +15,8 @@
 #include "ControlRigBlueprint.h"
 #include "ControlRigBlueprintUtils.h"
 #include "RigVMModel/Nodes/RigVMVariableNode.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigVariableNodeSpawner)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -110,6 +112,7 @@ UEdGraphNode* UControlRigVariableNodeSpawner::Invoke(UEdGraph* ParentGraph, FBin
 	UControlRigGraphNode* NewNode = nullptr;
 
 	bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
+	bool const bIsUserFacingNode = !bIsTemplateNode;
 
 	// First create a backing member for our node
 	UControlRigGraph* RigGraph = Cast<UControlRigGraph>(ParentGraph);
@@ -128,7 +131,7 @@ UEdGraphNode* UControlRigVariableNodeSpawner::Invoke(UEdGraph* ParentGraph, FBin
 
 	URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->GetController(ParentGraph);
 
-	if (!bIsTemplateNode)
+	if (bIsUserFacingNode)
 	{
 		Controller->OpenUndoBracket(TEXT("Add Variable"));
 	}
@@ -170,7 +173,7 @@ UEdGraphNode* UControlRigVariableNodeSpawner::Invoke(UEdGraph* ParentGraph, FBin
 			}
 		}
 
-		if (!bIsTemplateNode)
+		if (bIsUserFacingNode)
 		{
 			if (NewNode)
 			{
@@ -199,3 +202,4 @@ UEdGraphNode* UControlRigVariableNodeSpawner::Invoke(UEdGraph* ParentGraph, FBin
 }
 
 #undef LOCTEXT_NAMESPACE
+

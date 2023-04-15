@@ -2,12 +2,11 @@
 
 #include "NiagaraSystemFactoryNew.h"
 #include "CoreMinimal.h"
-#include "Misc/ConfigCacheIni.h"
 #include "NiagaraSystem.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraGraph.h"
 #include "NiagaraEditorSettings.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "ContentBrowserModule.h"
 #include "ImageUtils.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
@@ -21,13 +20,14 @@
 #include "NiagaraSettings.h"
 #include "ObjectTools.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSystemFactoryNew)
+
 #define LOCTEXT_NAMESPACE "NiagaraSystemFactory"
 
 UNiagaraSystemFactoryNew::UNiagaraSystemFactoryNew(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
 {
 	SupportedClass = UNiagaraSystem::StaticClass();
-	bCreateNew = false;
 	bEditAfterNew = true;
 	bCreateNew = true;
 }
@@ -76,7 +76,7 @@ bool UNiagaraSystemFactoryNew::ConfigureProperties()
 			UNiagaraEmitter* EmitterToAdd = Cast<UNiagaraEmitter>(EmitterAssetToAdd.GetAsset());
 			if (EmitterToAdd != nullptr)
 			{
-				EmittersToAddToNewSystem.Add(EmitterToAdd);
+				EmittersToAddToNewSystem.Add(FVersionedNiagaraEmitter(EmitterToAdd, EmitterToAdd->GetExposedVersion().VersionGuid));
 			}
 			else
 			{
@@ -157,9 +157,9 @@ UObject* UNiagaraSystemFactoryNew::FactoryCreateNew(UClass* Class, UObject* InPa
 		NewSystem = NewObject<UNiagaraSystem>(InParent, Class, Name, Flags | RF_Transactional);
 		InitializeSystem(NewSystem, true);
 
-		for (UNiagaraEmitter* EmitterToAddToNewSystem : EmittersToAddToNewSystem)
+		for (FVersionedNiagaraEmitter& EmitterToAddToNewSystem : EmittersToAddToNewSystem)
 		{
-			FNiagaraEditorUtilities::AddEmitterToSystem(*NewSystem, *EmitterToAddToNewSystem);
+			FNiagaraEditorUtilities::AddEmitterToSystem(*NewSystem, *EmitterToAddToNewSystem.Emitter, EmitterToAddToNewSystem.Version);
 		}
 	}
 	else
@@ -214,3 +214,4 @@ void UNiagaraSystemFactoryNew::InitializeSystem(UNiagaraSystem* System, bool bCr
 }
 
 #undef LOCTEXT_NAMESPACE
+

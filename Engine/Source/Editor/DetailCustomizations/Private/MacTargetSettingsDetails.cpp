@@ -3,6 +3,7 @@
 #include "MacTargetSettingsDetails.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
+#include "Misc/EngineVersion.h"
 #include "Modules/ModuleManager.h"
 #include "Layout/Margin.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -21,6 +22,8 @@
 #include "Dialogs/Dialogs.h"
 #include "Widgets/Notifications/SErrorText.h"
 #include "IDetailPropertyRow.h"
+#include "RHI.h"
+#include "ShaderFormatsPropertyDetails.h"
 
 namespace MacTargetSettingsDetailsConstants
 {
@@ -100,6 +103,65 @@ static FString GetIconFilename(EMacImageScope::Type Scope)
 	}
 }
 
+static FText GetFriendlyNameFromRHINameMac(FName InRHIName)
+{
+	FText FriendlyRHIName;
+
+	const EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(InRHIName);
+	switch (Platform)
+	{
+	case SP_PCD3D_SM5:
+		FriendlyRHIName = LOCTEXT("D3DSM5", "Direct3D 11+ (SM5)");
+		break;
+	case SP_PCD3D_ES3_1:
+		FriendlyRHIName = LOCTEXT("D3DES31", "Direct3D (ES3.1, Mobile Preview)");
+		break;
+	case SP_OPENGL_PCES3_1:
+		FriendlyRHIName = LOCTEXT("OpenGLES31PC", "OpenGL (ES3.1, Mobile Preview)");
+		break;
+	case SP_OPENGL_ES3_1_ANDROID:
+		FriendlyRHIName = LOCTEXT("OpenGLES31", "OpenGLES 3.1 (Mobile)");
+		break;
+	case SP_METAL:
+		FriendlyRHIName = LOCTEXT("Metal", "iOS Metal Mobile Renderer (ES3.1, Metal 2.4+, iOS 15.0 or later)");
+		break;
+	case SP_METAL_MRT:
+		FriendlyRHIName = LOCTEXT("MetalMRT", "iOS Metal Desktop Renderer (SM5, Metal 2.4+, iOS 15.0 or later)");
+		break;
+	case SP_METAL_TVOS:
+		FriendlyRHIName = LOCTEXT("MetalTV", "tvOS Metal Mobile Renderer (ES3.1, Metal 2.4+, tvOS 15.0 or later)");
+		break;
+	case SP_METAL_MRT_TVOS:
+		FriendlyRHIName = LOCTEXT("MetalMRTTV", "tvOS Metal Desktop Renderer (SM5, Metal 2.4+, tvOS 15.0 or later)");
+		break;
+	case SP_METAL_SM5:
+		FriendlyRHIName = LOCTEXT("MetalSM5", "Mac Metal Desktop Renderer (SM5, Metal 2.4+, macOS Monterey 12.0 or later)");
+		break;
+	case SP_METAL_MACES3_1:
+		FriendlyRHIName = LOCTEXT("MetalES3.1", "Mac Metal High-End Mobile Preview (ES3.1)");
+		break;
+	case SP_METAL_MRT_MAC:
+		FriendlyRHIName = LOCTEXT("MetalMRTMac", "Mac Metal iOS/tvOS Desktop Renderer Preview (SM5)");
+		break;
+	case SP_VULKAN_SM5:
+	case SP_VULKAN_SM5_ANDROID:
+		FriendlyRHIName = LOCTEXT("VulkanSM5", "Vulkan (SM5)");
+		break;
+	case SP_VULKAN_PCES3_1:
+	case SP_VULKAN_ES3_1_ANDROID:
+		FriendlyRHIName = LOCTEXT("VulkanES31", "Vulkan (ES 3.1)");
+		break;
+	case SP_D3D_ES3_1_HOLOLENS:
+		FriendlyRHIName = LOCTEXT("D3DES31HL", "Direct3D (ES3.1, Hololens)");
+		break;
+	default:
+		FriendlyRHIName = FText::FromString(InRHIName.ToString());
+		break;
+	}
+
+	return FriendlyRHIName;
+}
+
 void FMacTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder )
 {
 	FSimpleDelegate OnUpdateShaderStandardWarning = FSimpleDelegate::CreateSP(this, &FMacTargetSettingsDetails::UpdateShaderStandardWarning);
@@ -109,7 +171,7 @@ void FMacTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBu
 	// Setup the supported/targeted RHI property view
 	TargetShaderFormatsDetails = MakeShareable(new FShaderFormatsPropertyDetails(&DetailBuilder, TEXT("TargetedRHIs"), TEXT("Targeted RHIs")));
 	TargetShaderFormatsDetails->SetOnUpdateShaderWarning(OnUpdateShaderStandardWarning);
-	TargetShaderFormatsDetails->CreateTargetShaderFormatsPropertyView(TargetPlatform, FShaderFormatsPropertyDetails::GetFriendlyNameFromRHINameMac);
+	TargetShaderFormatsDetails->CreateTargetShaderFormatsPropertyView(TargetPlatform, &GetFriendlyNameFromRHINameMac);
 	
 	// Setup the shader version property view
     // Handle max. shader version a little specially.
@@ -122,7 +184,7 @@ void FMacTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBu
 		ShaderVersionPropertyRow.CustomWidget()
 		.NameContent()
 		[
-            ShaderVersionPropertyHandle->CreatePropertyNameWidget()
+			ShaderVersionPropertyHandle->CreatePropertyNameWidget()
 		]
 		.ValueContent()
 		.HAlign(HAlign_Fill)
@@ -282,16 +344,15 @@ bool FMacTargetSettingsDetails::HandlePostExternalIconCopy(const FString& InChos
 }
 
 static uint32 GMacTargetSettingsMinOSVers[][3] = {
-	{10,15,0},
-	{11, 0,0},
-    {12, 0,0}
+	{12,0,0},
+    {13,0,0}
 };
 
 TSharedRef<SWidget> FMacTargetSettingsDetails::OnGetShaderVersionContent()
 {
 	FMenuBuilder MenuBuilder(true, NULL);
 	
-	UEnum* Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EMacMetalShaderStandard"), true);
+	UEnum* Enum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/MacTargetPlatform.EMacMetalShaderStandard"), true);
 	
 	for (int32 i = 0; i < Enum->GetMaxEnumValue(); i++)
 	{
@@ -314,7 +375,7 @@ FText FMacTargetSettingsDetails::GetShaderVersionDesc() const
     int32 EnumValue;
     ShaderVersionPropertyHandle->GetValue(EnumValue);
 	
-	UEnum* Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EMacMetalShaderStandard"), true);
+	UEnum* Enum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/MacTargetPlatform.EMacMetalShaderStandard"), true);
 	
 	if (EnumValue < Enum->GetMaxEnumValue() && Enum->IsValidEnumValue(EnumValue))
 	{
@@ -333,9 +394,11 @@ void FMacTargetSettingsDetails::SetShaderStandard(int32 Value)
     }
     
     ShaderVersionWarningTextBox->SetError(TEXT(""));
-    if (Value < 5) // EMacMetalShaderStandard::MacMetalSLStandard_Minimum
+    if (Value < 5 && Value != 0) // EMacMetalShaderStandard::MacMetalSLStandard_Minimum
     {
-        ShaderVersionWarningTextBox->SetError(TEXT("Metal Shader Standard is 2.2 on UE5.0"));
+        FString EngineIdentifier = FEngineVersion::Current().ToString(EVersionComponent::Minor);
+        
+        ShaderVersionWarningTextBox->SetError(FString::Printf(TEXT("Minimum Metal Version is 2.2 in UE %s"), *EngineIdentifier));
     }
 }
 
@@ -347,9 +410,9 @@ void FMacTargetSettingsDetails::UpdateShaderStandardWarning()
     if (ShaderVersionPropertyHandle->IsValidHandle())
     {
         ShaderVersionPropertyHandle->GetValue(EnumValue);
-        if (EnumValue < 5)
+        if (EnumValue < 7 && EnumValue != 0)
         {
-            SetShaderStandard(5); // EMacMetalShaderStandard::MacMetalSLStandard_Minimum
+            SetShaderStandard(0); // EMacMetalShaderStandard::MacMetalSLStandard_Minimum
         }
     }
 }

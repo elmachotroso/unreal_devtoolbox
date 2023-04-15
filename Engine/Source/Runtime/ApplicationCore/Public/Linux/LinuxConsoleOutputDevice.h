@@ -19,6 +19,12 @@ private:
 	/** true if we are outputting to a terminal */
 	bool bOutputtingToTerminal;
 
+	/** true if window is visible */
+	bool bIsWindowShown;
+
+	/** true if stdout is set via the command line */
+	bool bIsStdoutSet;
+
 public:
 
 	/**
@@ -42,6 +48,9 @@ public:
 	virtual bool IsShown();
 
 	virtual bool IsAttached() {return false;}
+
+	virtual bool CanBeUsedOnAnyThread() const override;
+	virtual bool CanBeUsedOnPanicThread() const override;
 
 	/**
 	 * Displays text on the console and scrolls if necessary.

@@ -9,8 +9,8 @@
 #include "EngineUtils.h"
 #include "FunctionalTest.h"
 #include "EngineGlobals.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/CommandLine.h"
 #include "IAutomationControllerModule.h"
 
@@ -62,29 +62,25 @@ void FFunctionalTestingModule::ShutdownModule()
 void FFunctionalTestingModule::OnGetAssetTagsForWorld(const UWorld* World, TArray<UObject::FAssetRegistryTag>& OutTags)
 {
 #if WITH_EDITOR
-	int32 Tests = 0;
 	FString TestNames, TestNamesEditor;
 	for (TActorIterator<AFunctionalTest> ActorItr(const_cast<UWorld*>(World), AFunctionalTest::StaticClass(), EActorIteratorFlags::AllActors); ActorItr; ++ActorItr)
 	{
 		AFunctionalTest* FunctionalTest = *ActorItr;
 
-		// Only include enabled tests in the list of functional tests to run.
-		if (FunctionalTest->IsEnabled())
+		if (!FunctionalTest->IsPackageExternal())
 		{
-			bool bIsEditorOnly = IsEditorOnlyObject(FunctionalTest);
+			// Only include enabled tests in the list of functional tests to run.
+			if (FunctionalTest->IsEnabled())
+			{
+				bool bIsEditorOnly = IsEditorOnlyObject(FunctionalTest);
 
-			// Check if this class is editor only
-			FString& NamesAppend = bIsEditorOnly ? TestNamesEditor : TestNames;
+				// Check if this class is editor only
+				FString& NamesAppend = bIsEditorOnly ? TestNamesEditor : TestNames;
 
-			Tests++;
-			NamesAppend.Append(FunctionalTest->GetActorLabel() + TEXT("|") + FunctionalTest->GetName());
-			NamesAppend.Append(TEXT(";"));
+				NamesAppend.Append(FunctionalTest->GetActorLabel() + TEXT("|") + FunctionalTest->GetName());
+				NamesAppend.Append(TEXT(";"));
+			}
 		}
-	}
-
-	if (Tests > 0)
-	{
-		OutTags.Add(UObject::FAssetRegistryTag("Tests", FString::FromInt(Tests), UObject::FAssetRegistryTag::TT_Numerical));
 	}
 
 	if (!TestNames.IsEmpty())
@@ -118,7 +114,7 @@ void FFunctionalTestingModule::GetMapTests(bool bEditorOnlyTests, TArray<FString
 
 		TArray<FAssetData> MapList;
 		FARFilter Filter;
-		Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 		Filter.bIncludeOnlyOnDiskAssets = true;
 		if (AssetRegistry.GetAssets(Filter, /*out*/ MapList))
@@ -129,39 +125,78 @@ void FFunctionalTestingModule::GetMapTests(bool bEditorOnlyTests, TArray<FString
 
 			for (const FAssetData& MapAsset : MapList)
 			{
-				FString MapAssetPath = MapAsset.ObjectPath.ToString();
+				FString MapAssetPath = MapAsset.GetObjectPathString();
 				FString MapPackageName = MapAsset.PackageName.ToString();
 				if (!IsDeveloperDirectoryIncluded && MapPackageName.Find(TEXT("/Game/Developers")) == 0) continue;
-
-				FAssetDataTagMapSharedView::FFindTagResult Tests = MapAsset.TagsAndValues.FindTag(TEXT("Tests"));
-				FAssetDataTagMapSharedView::FFindTagResult TestNames = MapAsset.TagsAndValues.FindTag(bEditorOnlyTests ? TEXT("TestNamesEditor") : TEXT("TestNames"));
-
-				if (Tests.IsSet() && TestNames.IsSet())
+				FString PartialSuiteName = MapPackageName.RightChop(1).Replace(TEXT("/"), TEXT(".")); // use dot syntax
+				if (MapPackageName.StartsWith(TEXT("/Game/")))
 				{
-					int32 TestCount = FCString::Atoi(*Tests.GetValue());
-					if (TestCount > 0)
+					PartialSuiteName = PartialSuiteName.RightChop(5); // Remove "/Game/" from the name
+				}
+
+				FString AllTestNames;
+				FAssetDataTagMapSharedView::FFindTagResult MapTestNames = MapAsset.TagsAndValues.FindTag(bEditorOnlyTests ? TEXT("TestNamesEditor") : TEXT("TestNames"));
+
+				if (MapTestNames.IsSet())
+				{
+					AllTestNames = MapTestNames.GetValue();
+				}
+
+#if WITH_EDITOR
+				// Also append external functional test actors
+				if (ULevel::GetIsLevelUsingExternalActorsFromAsset(MapAsset))
+				{
+					const FString LevelExternalActorsPath = ULevel::GetExternalActorsPath(MapPackageName);
+
+					// Do a synchronous scan of the level external actors path.			
+					AssetRegistry.ScanPathsSynchronous({ LevelExternalActorsPath }, /*bForceRescan*/false, /*bIgnoreDenyListScanFilters*/false);
+
+					FARFilter ActorsFilter;
+					ActorsFilter.bRecursivePaths = true;
+					ActorsFilter.bIncludeOnlyOnDiskAssets = true;
+					ActorsFilter.PackagePaths.Add(*LevelExternalActorsPath);
+
+					TArray<FAssetData> ActorList;
+					AssetRegistry.GetAssets(ActorsFilter, ActorList);
+
+					for (const FAssetData& ActorAsset : ActorList)
 					{
-						TArray<FString> MapTests;
-						TestNames.GetValue().ParseIntoArray(MapTests, TEXT(";"), true);
+						FAssetDataTagMapSharedView::FFindTagResult ActorTestName = ActorAsset.TagsAndValues.FindTag(bEditorOnlyTests ? TEXT("TestNameEditor") : TEXT("TestName"));
 
-						for (const FString& MapTest : MapTests)
+						if (ActorTestName.IsSet())
 						{
-							FString BeautifulTestName;
-							FString RealTestName;
-
-							if (MapTest.Split(TEXT("|"), &BeautifulTestName, &RealTestName))
+							if (!AllTestNames.IsEmpty())
 							{
-								OutBeautifiedNames.Add(MapPackageName + TEXT(".") + *BeautifulTestName);
-								OutTestCommands.Add(MapAssetPath + TEXT(";") + MapAsset.PackageName.ToString() + TEXT(";") + *RealTestName);
-								OutTestMapAssets.AddUnique(MapAssetPath);
+								AllTestNames += TEXT(";");
 							}
+
+							AllTestNames += ActorTestName.GetValue();
+						}
+					}
+				}
+#endif
+				if (!AllTestNames.IsEmpty())
+				{
+					TArray<FString> MapTests;
+					AllTestNames.ParseIntoArray(MapTests, TEXT(";"), true);
+
+					for (const FString& MapTest : MapTests)
+					{
+						FString BeautifulTestName;
+						FString RealTestName;
+
+						if (MapTest.Split(TEXT("|"), &BeautifulTestName, &RealTestName))
+						{
+							OutBeautifiedNames.Add(PartialSuiteName + TEXT(".") + *BeautifulTestName);
+							OutTestCommands.Add(MapAssetPath + TEXT(";") + MapPackageName + TEXT(";") + *RealTestName);
+							OutTestMapAssets.AddUnique(MapAssetPath);
 						}
 					}
 				}
 				else if (!bEditorOnlyTests && MapAsset.AssetName.ToString().Find(TEXT("FTEST_")) == 0)
 				{
 					OutBeautifiedNames.Add(MapAsset.AssetName.ToString());
-					OutTestCommands.Add(MapAssetPath + TEXT(";") + MapAsset.PackageName.ToString());
+					OutTestCommands.Add(MapAssetPath + TEXT(";") + MapPackageName);
 					OutTestMapAssets.AddUnique(MapAssetPath);
 				}
 			}

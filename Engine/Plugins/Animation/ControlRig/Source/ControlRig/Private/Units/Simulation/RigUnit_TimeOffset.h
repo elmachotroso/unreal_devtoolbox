@@ -2,13 +2,13 @@
 
 #pragma once
 
-#include "Units/Simulation/RigUnit_SimBase.h"
+#include "RigUnit_SimBase.h"
 #include "RigUnit_TimeOffset.generated.h"
 
 /**
  * Records a value over time and can access the value from the past
  */
-USTRUCT(meta=(DisplayName="Value Over Time (Float)", Category = "Simulation|Time", PrototypeName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
+USTRUCT(meta=(DisplayName="Value Over Time (Float)", Category = "Simulation|Time", TemplateName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
 struct CONTROLRIG_API FRigUnit_TimeOffsetFloat : public FRigUnit_SimBase
 {
 	GENERATED_BODY()
@@ -61,7 +61,7 @@ struct CONTROLRIG_API FRigUnit_TimeOffsetFloat : public FRigUnit_SimBase
 /**
  * Records a value over time and can access the value from the past
  */
-USTRUCT(meta=(DisplayName="Value Over Time (Vector)", Category = "Simulation|Time", PrototypeName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
+USTRUCT(meta=(DisplayName="Value Over Time (Vector)", Category = "Simulation|Time", TemplateName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
 struct CONTROLRIG_API FRigUnit_TimeOffsetVector : public FRigUnit_SimBase
 {
 	GENERATED_BODY()
@@ -114,7 +114,7 @@ struct CONTROLRIG_API FRigUnit_TimeOffsetVector : public FRigUnit_SimBase
 /**
  * Records a value over time and can access the value from the past
  */
-USTRUCT(meta=(DisplayName="Value Over Time (Transform)", Category = "Simulation|Time", PrototypeName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
+USTRUCT(meta=(DisplayName="Value Over Time (Transform)", Category = "Simulation|Time", TemplateName="TimeOffset", Keywords="Buffer,Delta,History,Previous,TimeOffset,Delay"))
 struct CONTROLRIG_API FRigUnit_TimeOffsetTransform : public FRigUnit_SimBase
 {
 	GENERATED_BODY()

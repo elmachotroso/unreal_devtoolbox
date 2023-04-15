@@ -21,7 +21,11 @@ namespace UnrealBuildTool.Rules
 					"RenderCore",
 					"Projects",
 					"RHI",
-					"InputCore"
+					"InputCore",
+					"GeometryCore",
+					"MeshConversion",
+					"MeshDescription",
+					"StaticMeshDescription"
 				}
             );
 
@@ -33,7 +37,6 @@ namespace UnrealBuildTool.Rules
 						"EditorFramework",
 						"UnrealEd",
 						"PropertyEditor",
-						"EditorStyle",
 						"ContentBrowser",
 						"AssetRegistry"
 					}

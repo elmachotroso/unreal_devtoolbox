@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "D3D11RHIPrivate.h"
+#include "D3D11ConstantBuffer.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
@@ -14,9 +15,6 @@
 	#include "amd_ags.h"
 	#endif
 #include "Windows/HideWindowsPlatformTypes.h"
-
-#include "dxgi1_5.h"
-
 
 bool D3D11RHI_ShouldCreateWithD3DDebug()
 {
@@ -124,6 +122,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	{
 		GPixelFormats[PF_DepthStencil].PlatformFormat = DXGI_FORMAT_R24G8_TYPELESS;
 		GPixelFormats[PF_DepthStencil].BlockBytes = 4;
+		GPixelFormats[PF_DepthStencil].bIs24BitUnormDepthStencil = true;
 		GPixelFormats[PF_X24_G8].PlatformFormat = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
 		GPixelFormats[PF_X24_G8].BlockBytes = 4;
 	}
@@ -131,6 +130,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	{
 		GPixelFormats[PF_DepthStencil].PlatformFormat = DXGI_FORMAT_R32G8X24_TYPELESS;
 		GPixelFormats[PF_DepthStencil].BlockBytes = 5;
+		GPixelFormats[PF_DepthStencil].bIs24BitUnormDepthStencil = false;
 		GPixelFormats[PF_X24_G8].PlatformFormat = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
 		GPixelFormats[PF_X24_G8].BlockBytes = 5;
 	}
@@ -205,6 +205,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GMaxTextureDimensions = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 	GMaxCubeTextureDimensions = D3D11_REQ_TEXTURECUBE_DIMENSION;
 	GMaxTextureArrayLayers = D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
+	GRHIMaxConstantBufferByteSize = MAX_GLOBAL_CONSTANT_BUFFER_SIZE;
 	GRHISupportsMSAADepthSampleAccess = true;
 	GRHISupportsRHIThread = !!EXPERIMENTAL_D3D11_RHITHREAD;
 
@@ -213,8 +214,6 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GMaxShadowDepthBufferSizeX = GMaxTextureDimensions;
 	GMaxShadowDepthBufferSizeY = GMaxTextureDimensions;
 	GSupportsTimestampRenderQueries = true;
-	GRHISupportsResolveCubemapFaces = true;
-	GRHISupportsCopyToTextureMultipleMips = true;
 
 	GRHIMaxDispatchThreadGroupsPerDimension.X = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
 	GRHIMaxDispatchThreadGroupsPerDimension.Y = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
@@ -470,11 +469,12 @@ void FD3D11DynamicRHI::SetupAfterDeviceCreation()
                 ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureGather,    D3D11_FORMAT_SUPPORT_SHADER_GATHER);
                 ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TextureAtomics,   D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
                 ConvertCap1(RTVFormatSupport, EPixelFormatCapabilities::TextureBlendable, D3D11_FORMAT_SUPPORT_BLENDABLE);
+                ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TextureStore,     D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
             }
 
             if (EnumHasAnyFlags(Capabilities, EPixelFormatCapabilities::Buffer))
             {
-                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::BufferLoad,       D3D11_FORMAT_SUPPORT_SHADER_LOAD);
+                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::BufferLoad,       D3D11_FORMAT_SUPPORT_BUFFER);
                 ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferStore,      D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
                 ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferAtomics,    D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
             }
@@ -613,7 +613,6 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 		} while (NumDeletes > 0);
 
 		ReleasePooledUniformBuffers();
-		ReleasePooledTextures();
 		ReleaseCachedQueries();
 
 

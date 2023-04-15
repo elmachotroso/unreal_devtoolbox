@@ -13,6 +13,8 @@
 #include "Widgets/Views/STreeView.h"
 #include "Widgets/Views/STableRow.h"
 
+#include "STimedDataListView.generated.h"
+
 enum class ETimedDataInputEvaluationType : uint8;
 struct FTimedDataInputTableRowData;
 struct FSlateBrush;
@@ -20,6 +22,15 @@ class STimedDataInputListView;
 class STimedDataInputTableRow;
 class STimedDataMonitorPanel;
 class STimingDiagramWidget;
+
+UENUM()
+enum class ETimedDataInputEvaluationOffsetType : uint8
+{
+	/** The input offset is specified in seconds. */
+	Seconds UMETA(DisplayName = "s"),
+	/** The input offset is specified in frames. */
+	Frames UMETA(DisplayName = "f"),
+};
 
 
 /**
@@ -55,9 +66,11 @@ private:
 	FSlateColor GetStateColorAndOpacity() const;
 
 	FText GetDescription() const;
-	float GetEvaluationOffset() const;
+	double GetFloatEvaluationOffset() const;
+	int32 GetIntEvaluationOffset() const;
 	FText GetEvaluationOffsetText() const;
-	void SetEvaluationOffset(float NewValue, ETextCommit::Type CommitType);
+	void SetEvaluationOffset(double NewValue, ETextCommit::Type CommitType);
+	void SetEvaluationOffset(int32 NewValue, ETextCommit::Type CommitType);
 	int32 GetBufferSize() const;
 	FText GetBufferSizeText() const;
 	void SetBufferSize(int32 NewValue, ETextCommit::Type CommitType);
@@ -71,6 +84,8 @@ private:
 	FText GetBufferUnderflowCount() const;
 	FText GetBufferOverflowCount() const;
 	FText GetFrameDroppedCount() const;
+
+	void OnEvaluationOffsetTypeChanged(int32 NewValue, ESelectInfo::Type);
 
 private:
 	FTimedDataInputTableRowDataPtr Item;

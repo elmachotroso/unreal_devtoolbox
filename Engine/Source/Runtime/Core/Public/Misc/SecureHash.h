@@ -2,20 +2,34 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "HAL/UnrealMemory.h"
-#include "Containers/UnrealString.h"
+#include "Async/AsyncWork.h"
+#include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "Containers/StringConv.h"
 #include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
-#include "Stats/Stats.h"
-#include "Async/AsyncWork.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "HAL/UnrealMemory.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Serialization/Archive.h"
 #include "Serialization/BufferReader.h"
+#include "Serialization/MemoryLayout.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
 #include "String/BytesToHex.h"
 #include "String/HexToBytes.h"
-#include "Serialization/MemoryLayout.h"
+#include "Templates/UnrealTemplate.h"
 
+class FCbFieldView;
+class FCbWriter;
+class FMemoryImageWriter;
+class FMemoryUnfreezeContent;
+class FPointerTableBase;
+class FSHA1;
 struct FMD5Hash;
 
 /*-----------------------------------------------------------------------------
@@ -184,13 +198,6 @@ private:
  *	Web: http://www.dominik-reichl.de/
  */
 
-
-typedef union
-{
-	uint8  c[64];
-	uint32 l[16];
-} SHA1_WORKSPACE_BLOCK;
-
 /** This divider string is beween full file hashes and script hashes */
 #define HASHES_SHA_DIVIDER "+++"
 
@@ -206,6 +213,11 @@ public:
 	}
 
 	static constexpr int32 GetStringLen() { return UE_ARRAY_COUNT(Hash) * 2; }
+
+	inline void AppendString(FString& Out) const
+	{
+		BytesToHex((const uint8*)Hash, sizeof(Hash), Out);
+	}
 
 	inline FString ToString() const
 	{
@@ -269,6 +281,8 @@ DECLARE_INTRINSIC_TYPE_LAYOUT(FSHAHash);
 
 inline FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
 inline FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
+CORE_API FCbWriter& operator<<(FCbWriter& Writer, const FSHAHash& Hash);
+CORE_API bool LoadFromCompactBinary(FCbFieldView Field, FSHAHash& OutHash);
 
 class CORE_API FSHA1
 {
@@ -280,7 +294,7 @@ public:
 	~FSHA1();
 
 	uint32 m_state[5];
-	uint32 m_count[2];
+	uint64 m_count;
 	uint32 __reserved1[1];
 	uint8  m_buffer[64];
 	uint8  m_digest[20];
@@ -368,11 +382,7 @@ public:
 
 private:
 	// Private SHA-1 transformation
-	void Transform(uint32 *state, const uint8 *buffer);
-
-	// Member variables
-	uint8 m_workspace[64];
-	SHA1_WORKSPACE_BLOCK *m_block; // SHA1 pointer to the byte array above
+	void Transform(const uint8* buffer, uint64 len);
 
 	/** Global map of filename to hash value, filled out in InitializeFileHashesFromBuffer */
 	static TMap<FString, uint8*> FullFileSHAHashMap;

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/FbxErrors.h"
+
+#include "CoreTypes.h"
 	
 /** Generic */
 FLazyName FFbxErrors::Generic_ImportingNewObjectFailed(TEXT("Generic_ImportingNewObjectFailed"));
@@ -166,8 +168,8 @@ FLazyName FFbxErrors::Animation_CurveNotFound(TEXT("Animation_CurveNotFound"));
 
 namespace
 {
-	constexpr TCHAR FbxErrorsURLPath[] = TEXT("WorkingWithContent/Importing/FBX/FbxErrors/");
-	constexpr TCHAR FbxErrorsLocalPath[] = TEXT("Shared/Editor/FbxErrors");
+	const TCHAR* FbxErrorsURLPath = TEXT("WorkingWithContent/Importing/FBX/FbxErrors/");
+	const TCHAR* FbxErrorsLocalPath = TEXT("Shared/Editor/FbxErrors");
 }
 
 FFbxErrorToken::FFbxErrorToken(const FName& InErrorName)

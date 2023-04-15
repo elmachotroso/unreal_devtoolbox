@@ -4,6 +4,7 @@
 #include "Render/Viewport/DisplayClusterViewportHelpers.h"
 #include "Render/Viewport/DisplayClusterViewportManager.h"
 #include "Render/Viewport/DisplayClusterViewportProxy.h"
+#include "Render/Viewport/DisplayClusterViewportManagerProxy.h"
 
 #include "Render/Viewport/Configuration/DisplayClusterViewportConfiguration.h"
 
@@ -32,17 +33,42 @@ FDisplayClusterViewport::FDisplayClusterViewport(FDisplayClusterViewportManager&
 	, ClusterNodeId(InClusterNodeId)
 	, Owner(InOwner)
 {
+	check(!ClusterNodeId.IsEmpty());
+	check(!ViewportId.IsEmpty());
 	check(UninitializedProjectionPolicy.IsValid());
 
 	// Create scene proxy pair with on game thread. Outside, in ViewportManager added to proxy array on render thread
-	ViewportProxy = new FDisplayClusterViewportProxy(Owner.ImplGetProxy(), *this);
+	ViewportProxy = MakeShared<FDisplayClusterViewportProxy, ESPMode::ThreadSafe>(*this);
+
+	// Add viewport proxy on renderthread
+	ENQUEUE_RENDER_COMMAND(CreateDisplayClusterViewportProxy)(
+		[ViewportManagerProxy = Owner.GetViewportManagerProxy(), ViewportProxy = ViewportProxy](FRHICommandListImmediate& RHICmdList)
+		{
+			ViewportManagerProxy->CreateViewport_RenderThread(ViewportProxy);
+		}
+	);
 }
 
 FDisplayClusterViewport::~FDisplayClusterViewport()
 {
+	// Remove viewport proxy on render_thread
+	ENQUEUE_RENDER_COMMAND(DeleteDisplayClusterViewportProxy)(
+		[ViewportManagerProxy = Owner.GetViewportManagerProxy(), ViewportProxy = ViewportProxy](FRHICommandListImmediate& RHICmdList)
+		{
+			ViewportManagerProxy->DeleteViewport_RenderThread(ViewportProxy);
+		}
+	);
+
+	ViewportProxy.Reset();
+
 	HandleEndScene();
 
-	// ViewportProxy deleted on render thread from FDisplayClusterViewportManagerProxy::ImplDeleteViewport()
+	// Handle projection policy event
+	ProjectionPolicy.Reset();
+	UninitializedProjectionPolicy.Reset();
+
+	// Reset RTT size after viewport delete
+	Owner.ResetSceneRenderTargetSize();
 }
 
 IDisplayClusterViewportManager& FDisplayClusterViewport::GetOwner() const
@@ -202,7 +228,16 @@ bool FDisplayClusterViewport::ShouldUseFullSizeFrameTargetableResource() const
 void FDisplayClusterViewport::SetupSceneView(uint32 ContextNum, class UWorld* World, FSceneViewFamily& InOutViewFamily, FSceneView& InOutView) const
 {
 	check(IsInGameThread());
-	check(ContextNum < (uint32)Contexts.Num());
+	check(Contexts.IsValidIndex(ContextNum));
+
+	// MRQ only uses viewport visibility settings
+	if(RenderSettings.CaptureMode == EDisplayClusterViewportCaptureMode::MoviePipeline)
+	{
+		// Apply visibility settigns to view
+		VisibilitySettings.SetupSceneView(World, InOutView);
+
+		return;
+	}
 
 	// Setup MGPU features:
 	if(Contexts[ContextNum].GPUIndex >= 0)
@@ -218,9 +253,9 @@ void FDisplayClusterViewport::SetupSceneView(uint32 ContextNum, class UWorld* Wo
 	{
 	case EDisplayClusterViewportCaptureMode::Chromakey:
 	case EDisplayClusterViewportCaptureMode::Lightcard:
-	case EDisplayClusterViewportCaptureMode::Lightcard_OCIO:
 
 		InOutView.bAllowRayTracing = false;
+		
 		break;
 
 	default:
@@ -396,6 +431,7 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 				ContextIt.StereoscopicPass = FDisplayClusterViewportStereoscopicPass::EncodeStereoscopicPass(ContextIt.ContextNum, ViewportContextAmount, InFrameSettings);
 				ContextIt.StereoViewIndex = (int32)(InStereoViewIndex + ContextIt.ContextNum);
 				ContextIt.bDisableRender = true;
+				ContextIt.FrameTargetRect = GetValidRect(DesiredFrameTargetRect, TEXT("Context Frame"));
 			}
 
 			return true;
@@ -559,7 +595,18 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InStereoViewIndex
 		Context.RenderTargetRect = RenderTargetRect;
 		Context.ContextSize = ContextSize;
 
-		Context.CustomBufferRatio = CustomBufferRatio;
+		// r.ScreenPercentage
+		switch (RenderSettings.CaptureMode)
+		{
+		case EDisplayClusterViewportCaptureMode::Chromakey:
+		case EDisplayClusterViewportCaptureMode::Lightcard:
+			// we should not change the size of the Chromakey\Lighcards due to the way copy\resolve works for RT's
+			// if the viewfamily resolves to RenderTarget it will remove alpha channel
+			// if the viewfamily copying to RenderTarget, the texture would not match the size of RTT (when ScreenPercentage applied)
+			break;
+		default:
+			Context.CustomBufferRatio = CustomBufferRatio;
+		}
 
 		Context.bDisableRender = bDisableRender;
 

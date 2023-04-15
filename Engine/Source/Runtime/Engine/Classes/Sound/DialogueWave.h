@@ -52,7 +52,7 @@ struct ENGINE_API FDialogueContextMapping
 	FDialogueContext Context;
 
 	/** The soundwave to play for this dialogue. */
-	UPROPERTY(EditAnywhere, Category=DialogueContextMapping )
+	UPROPERTY(EditAnywhere, Category=DialogueContextMapping, meta = (DisallowedClasses= "/Script/MetasoundEngine.MetaSoundSource, /Script/Engine.SoundSourceBus"))
 	TObjectPtr<USoundWave> SoundWave;
 
 	/**
@@ -77,7 +77,7 @@ ENGINE_API bool operator!=(const FDialogueContextMapping& LHS, const FDialogueCo
 
 class UDialogueWaveFactory;
 
-UCLASS(hidecategories=Object, editinlinenew, MinimalAPI, BlueprintType)
+UCLASS(hidecategories=Object, editinlinenew, MinimalAPI, BlueprintType, Meta = (LoadBehavior = "LazyOnDemand"))
 class UDialogueWave : public UObject
 {
 	GENERATED_UCLASS_BODY()

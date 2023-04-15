@@ -8,16 +8,19 @@
 
 class FSlatePostProcessResource;
 class IRendererModule;
+struct IPooledRenderTarget;
 
 struct FPostProcessRectParams
 {
-	FTexture2DRHIRef SourceTexture;
+	FTextureRHIRef SourceTexture;
 	FSlateRect SourceRect;
 	FSlateRect DestRect;
-	FVector4 CornerRadius;
+	FVector4f CornerRadius;
 	FIntPoint SourceTextureSize;
-	TFunction<void(FRHICommandListImmediate&, FGraphicsPipelineStateInitializer&)> RestoreStateFunc;
+	TFunction<void(FRHICommandListImmediate&, FGraphicsPipelineStateInitializer&, FRHIRenderPassInfo&)> RestoreStateFunc;
+	TRefCountPtr<IPooledRenderTarget> UITarget; // not using FTextureRHIRef because we want to be able to use FRenderTargetWriteMask::Decode
 	uint32 StencilRef{};
+	EDisplayColorGamut HDRDisplayColorGamut;
 };
 
 struct FBlurRectParams
@@ -40,9 +43,9 @@ public:
 	void ReleaseRenderTargets();
 
 private:
-	void DownsampleRect(FRHICommandListImmediate& RHICmdList, IRendererModule& RendererModule, const FPostProcessRectParams& Params, const FIntPoint& DownsampleSize);
-	void UpsampleRect(FRHICommandListImmediate& RHICmdList, IRendererModule& RendererModule, const FPostProcessRectParams& Params, const FIntPoint& DownsampleSize, FSamplerStateRHIRef& Sampler);
+	void DownsampleRect(FRHICommandListImmediate& RHICmdList, IRendererModule& RendererModule, const FPostProcessRectParams& Params, const FIntPoint& DownsampleSize, FSlatePostProcessResource* IntermediateTargets);
+	void UpsampleRect(FRHICommandListImmediate& RHICmdList, IRendererModule& RendererModule, const FPostProcessRectParams& Params, const FIntPoint& DownsampleSize, FSamplerStateRHIRef& Sampler, FSlatePostProcessResource* IntermediateTargets);
 	int32 ComputeBlurWeights(int32 KernelSize, float StdDev, TArray<FVector4f>& OutWeightsAndOffsets);
 private:
-	FSlatePostProcessResource* IntermediateTargets;
+	TArray<FSlatePostProcessResource*> IntermediateTargetsArray;
 };

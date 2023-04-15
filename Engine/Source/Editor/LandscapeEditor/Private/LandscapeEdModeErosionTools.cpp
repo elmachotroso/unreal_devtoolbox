@@ -180,7 +180,7 @@ public:
 										uint16 Slope = HeightData[Center] - HeightData[Neighbor[Idx]];
 										if (Slope > Thresh)
 										{
-											float WeightDiff = Softness * UISettings->ToolStrength * Pressure * ((float)Slope / SlopeTotal) * BrushValue;
+											float WeightDiff = Softness * UISettings->GetCurrentToolStrength() * Pressure * ((float)Slope / SlopeTotal) * BrushValue;
 											//uint16 HeightDiff = (uint16)((SlopeMax - Thresh) * WeightDiff);
 											float HeightDiff = (SlopeMax - Thresh) * WeightDiff;
 											HeightData[Neighbor[Idx]] += HeightDiff;
@@ -210,7 +210,7 @@ public:
 								if (bWeightApplied)
 								{
 									float TotalWeight = 0.0f;
-									float WeightDiff = Softness * UISettings->ToolStrength * Pressure * BrushValue;
+									float WeightDiff = Softness * UISettings->GetCurrentToolStrength() * Pressure * BrushValue;
 
 									for (int32 LayerIdx = 0; LayerIdx < LayerNum; LayerIdx++)
 									{
@@ -238,9 +238,9 @@ public:
 		}
 
 		float BrushSizeAdjust = 1.0f;
-		if (UISettings->BrushRadius < UISettings->MaximumValueRadius)
+		if (UISettings->GetCurrentToolBrushRadius() < UISettings->MaximumValueRadius)
 		{
-			BrushSizeAdjust = UISettings->BrushRadius / UISettings->MaximumValueRadius;
+			BrushSizeAdjust = UISettings->GetCurrentToolBrushRadius() / UISettings->MaximumValueRadius;
 		}
 
 		// Make some noise...
@@ -254,7 +254,7 @@ public:
 
 				if (BrushValue > 0.0f)
 				{
-					FNoiseParameter NoiseParam(0, UISettings->ErosionNoiseScale, BrushValue * Thresh * UISettings->ToolStrength * BrushSizeAdjust);
+					FNoiseParameter NoiseParam(0, UISettings->ErosionNoiseScale, BrushValue * Thresh * UISettings->GetCurrentToolStrength() * BrushSizeAdjust);
 					float PaintAmount = NoiseModeConversion((ELandscapeToolNoiseMode)UISettings->ErosionNoiseMode, NoiseParam.NoiseAmount, NoiseParam.Sample(X, Y));
 					HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] = FLandscapeHeightCache::ClampValue(HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] + PaintAmount);
 				}
@@ -278,9 +278,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Erosion"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erosion", "Erosion"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erosion_Message", "The Erosion tool uses a thermal erosion simulation to adjust the height of the landscape. This simulates the transfer of soil from higher elevations to lower elevations. The larger the difference in elevation, the more erosion will occur. This tool also applies a noise effect on top of the erosion, if desired, to provide a more natural random appearance. "); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Erosion"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erosion", "Erosion"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erosion_Message", "The Erosion tool uses a thermal erosion simulation to adjust the height of the landscape. This simulates the transfer of soil from higher elevations to lower elevations. The larger the difference in elevation, the more erosion will occur. This tool also applies a noise effect on top of the erosion, if desired, to provide a more natural random appearance. "); };
 
 };
 
@@ -329,7 +329,7 @@ public:
 
 		const int32 Iteration = UISettings->HErodeIterationNum;
 		const uint16 RainAmount = UISettings->RainAmount;
-		const float DissolvingRatio = 0.07 * UISettings->ToolStrength * Pressure;  //0.01;
+		const float DissolvingRatio = 0.07 * UISettings->GetCurrentToolStrength() * Pressure;  //0.01;
 		const float EvaporateRatio = 0.5;
 		const float SedimentCapacity = 0.10 * UISettings->SedimentCapacity; //DissolvingRatio; //0.01;
 
@@ -435,7 +435,7 @@ public:
 							// This is not mathematically correct, but makes good result
 							if (TotalHeightDiff)
 							{
-								AverageAltitude *= (1.0f - 0.1 * UISettings->ToolStrength * Pressure);
+								AverageAltitude *= (1.0f - 0.1 * UISettings->GetCurrentToolStrength() * Pressure);
 								//AverageAltitude -= 4000.0f * UISettings->ToolStrength;
 							}
 
@@ -499,9 +499,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("HydraErosion"); } // formerly HydraulicErosion
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_HydraErosion", "Hydraulic Erosion"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_HydraErosion_Message", "The Hydro Erosion tool simulates erosion from water to adjust the height of the landscape. A noise filter is used to determine where the initial rain is distributed. Then the simulation is calculated to determine water flow from that initial rain as well as dissolving, water transfer, and evaporation. The result of that calculation provides the actual value used to lower the heightmap."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("HydraErosion"); } // formerly HydraulicErosion
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_HydraErosion", "Hydraulic Erosion"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_HydraErosion_Message", "The Hydro Erosion tool simulates erosion from water to adjust the height of the landscape. A noise filter is used to determine where the initial rain is distributed. Then the simulation is calculated to determine water flow from that initial rain as well as dissolving, water transfer, and evaporation. The result of that calculation provides the actual value used to lower the heightmap."); };
 
 };
 

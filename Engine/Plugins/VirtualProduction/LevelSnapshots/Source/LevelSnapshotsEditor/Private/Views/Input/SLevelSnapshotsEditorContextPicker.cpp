@@ -4,9 +4,9 @@
 
 #include "Data/LevelSnapshotsEditorData.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/World.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Misc/MessageDialog.h"
@@ -50,7 +50,7 @@ void SLevelSnapshotsEditorContextPicker::Construct(const FArguments& InArgs, ULe
         SNew(SComboButton)
         .ContentPadding(0)
         .ForegroundColor(FSlateColor::UseForeground())
-        .ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+        .ButtonStyle(FAppStyle::Get(), "ToggleButton")
         .OnGetMenuContent(this, &SLevelSnapshotsEditorContextPicker::BuildWorldPickerMenu)
         .ToolTipText(LOCTEXT("WorldPickerButtonTooltip", "The world context whose Level Snapshots you want to view"))
         .ButtonContent()
@@ -61,7 +61,7 @@ void SLevelSnapshotsEditorContextPicker::Construct(const FArguments& InArgs, ULe
             .AutoWidth()
             [
                 SNew(SImage)
-                .Image(FEditorStyle::GetBrush("SceneOutliner.World"))
+                .Image(FAppStyle::GetBrush("SceneOutliner.World"))
             ]
 
             + SHorizontalBox::Slot()
@@ -80,7 +80,7 @@ UWorld* SLevelSnapshotsEditorContextPicker::GetSelectedWorld() const
 {
 	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
-	return Cast<UWorld>(AssetRegistryModule.Get().GetAssetByObjectPath(FName(SelectedWorldPath.GetAssetPathString())).GetAsset());
+	return Cast<UWorld>(AssetRegistryModule.Get().GetAssetByObjectPath(SelectedWorldPath.GetWithoutSubPath()).GetAsset());
 }
 
 FSoftObjectPath SLevelSnapshotsEditorContextPicker::GetSelectedWorldSoftPath() const
@@ -95,7 +95,7 @@ TSharedRef<SWidget> SLevelSnapshotsEditorContextPicker::BuildWorldPickerMenu()
 	// Get all worlds
 	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FAssetData> WorldAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(UWorld::StaticClass()->GetFName(), WorldAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), WorldAssets);
 
 	MenuBuilder.BeginSection("Other Worlds", LOCTEXT("OtherWorldsHeader", "Other Worlds")); 
 	for (const FAssetData& Asset : WorldAssets)
@@ -196,11 +196,11 @@ const FSlateBrush* SLevelSnapshotsEditorContextPicker::GetBorderBrush(FSoftObjec
 
 	if (CurrentWorld->WorldType == EWorldType::PIE)
 	{
-		return GEditor->bIsSimulatingInEditor ? FEditorStyle::GetBrush("LevelViewport.StartingSimulateBorder") : FEditorStyle::GetBrush("LevelViewport.StartingPlayInEditorBorder");
+		return GEditor->bIsSimulatingInEditor ? FAppStyle::GetBrush("LevelViewport.StartingSimulateBorder") : FAppStyle::GetBrush("LevelViewport.StartingPlayInEditorBorder");
 	}
 	else
 	{
-		return FEditorStyle::GetBrush("LevelViewport.NoViewportBorder");
+		return FAppStyle::GetBrush("LevelViewport.NoViewportBorder");
 	}
 }
 

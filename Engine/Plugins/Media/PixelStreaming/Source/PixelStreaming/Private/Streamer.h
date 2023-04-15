@@ -2,138 +2,152 @@
 
 #pragma once
 
-#include "SignallingServerConnection.h"
-#include "ProtocolDefs.h"
+#include "IPixelStreamingStreamer.h"
+#include "IPixelStreamingSignallingConnectionObserver.h"
+#include "PixelStreamingPeerConnection.h"
+#include "VideoSourceGroup.h"
+#include "ThreadSafeMap.h"
+#include "Dom/JsonObject.h"
+#include "IPixelStreamingInputHandler.h"
+#include "PixelStreamingSignallingConnection.h"
 #include "Templates/SharedPointer.h"
-#include "RHI.h"
-#include "HAL/Thread.h"
-#include "IPixelStreamingSessions.h"
-#include "ThreadSafePlayerSessions.h"
-#include "FixedFPSPump.h"
-#include "GPUFencePoller.h"
 
-namespace UE
+class IPixelStreamingModule;
+
+namespace UE::PixelStreaming
 {
-	namespace PixelStreaming
+	class FStreamer : public IPixelStreamingStreamer, public IPixelStreamingSignallingConnectionObserver, public TSharedFromThis<FStreamer>
 	{
-		class FPlayerSession;
-		class FVideoEncoderFactory;
-		class FSimulcastEncoderFactory;
-		class FSetSessionDescriptionObserver;
+	public:
+		static TSharedPtr<FStreamer> Create(const FString& StreamerId);
+		virtual ~FStreamer();
 
-		class FStreamer : public FSignallingServerConnectionObserver, public IPixelStreamingSessions
+		virtual void SetStreamFPS(int32 InFramesPerSecond) override;
+		virtual int32 GetStreamFPS() override;
+		virtual void SetCoupleFramerate(bool bCouple) override;
+
+		virtual void SetVideoInput(TSharedPtr<FPixelStreamingVideoInput> Input) override;
+		virtual TWeakPtr<FPixelStreamingVideoInput> GetVideoInput() override;
+		virtual void SetTargetViewport(TWeakPtr<SViewport> InTargetViewport) override;
+		virtual TWeakPtr<SViewport> GetTargetViewport() override;
+		virtual void SetTargetWindow(TWeakPtr<SWindow> InTargetWindow) override;
+		virtual TWeakPtr<SWindow> GetTargetWindow() override;
+		virtual void SetTargetScreenSize(TWeakPtr<FIntPoint> InTargetScreenSize) override;
+		virtual TWeakPtr<FIntPoint> GetTargetScreenSize() override;
+
+		virtual void SetSignallingServerURL(const FString& InSignallingServerURL) override;
+		virtual FString GetSignallingServerURL() override;
+		virtual FString GetId() override { return StreamerId; };
+		virtual bool IsSignallingConnected() override;
+		virtual void StartStreaming() override;
+		virtual void StopStreaming() override;
+		virtual bool IsStreaming() const override { return bStreamingStarted; }
+
+		virtual FStreamingStartedEvent& OnStreamingStarted() override;
+		virtual FStreamingStoppedEvent& OnStreamingStopped() override;
+
+		virtual void ForceKeyFrame() override;
+		void PushFrame();
+
+		virtual void FreezeStream(UTexture2D* Texture) override;
+		virtual void UnfreezeStream() override;
+
+		virtual void SendPlayerMessage(uint8 Type, const FString& Descriptor) override;
+		virtual void SendFileData(const TArray64<uint8>& ByteData, FString& MimeType, FString& FileExtension) override;
+		virtual void KickPlayer(FPixelStreamingPlayerId PlayerId) override;
+
+		virtual void SetInputHandler(TSharedPtr<IPixelStreamingInputHandler> InInputHandler) override { InputHandler = InInputHandler; }
+		virtual TWeakPtr<IPixelStreamingInputHandler> GetInputHandler() override { return InputHandler; }
+		virtual void SetInputHandlerType(EPixelStreamingInputType InputType) override;
+
+		virtual IPixelStreamingAudioSink* GetPeerAudioSink(FPixelStreamingPlayerId PlayerId) override;
+		virtual IPixelStreamingAudioSink* GetUnlistenedAudioSink() override;
+		TSharedPtr<IPixelStreamingAudioInput> CreateAudioInput() override;
+		void RemoveAudioInput(TSharedPtr<IPixelStreamingAudioInput> AudioInput) override;
+
+		// TODO(Luke) hook this back up so that the Engine can change how the interface is working browser side
+		void AddPlayerConfig(TSharedRef<FJsonObject>& JsonObject);
+
+	private:
+		FStreamer(const FString& StreamerId);
+
+		bool CreateSession(FPixelStreamingPlayerId PlayerId);
+		void AddStreams(FPixelStreamingPlayerId PlayerId);
+
+		// IPixelStreamingSignallingConnectionObserver impl
+		virtual void OnSignallingConfig(const webrtc::PeerConnectionInterface::RTCConfiguration& Config) override;
+		virtual void OnSignallingSessionDescription(FPixelStreamingPlayerId PlayerId, webrtc::SdpType Type, const FString& Sdp) override;
+		virtual void OnSignallingRemoteIceCandidate(FPixelStreamingPlayerId PlayerId, const FString& SdpMid, int SdpMLineIndex, const FString& Sdp) override;
+		virtual void OnSignallingPlayerConnected(FPixelStreamingPlayerId PlayerId, const FPixelStreamingPlayerConfig& PlayerConfig) override;
+		virtual void OnSignallingPlayerDisconnected(FPixelStreamingPlayerId PlayerId) override;
+		virtual void OnSignallingSFUPeerDataChannels(FPixelStreamingPlayerId SFUId, FPixelStreamingPlayerId PlayerId, int32 SendStreamId, int32 RecvStreamId) override;
+		virtual void OnSignallingConnected() override;
+		virtual void OnSignallingDisconnected(int32 StatusCode, const FString& Reason, bool bWasClean) override;
+		virtual void OnSignallingError(const FString& ErrorMsg) override;
+
+		// own methods
+		void OnProtocolUpdated();
+		void ConsumeStats(FPixelStreamingPlayerId PlayerId, FName StatName, float StatValue);
+		void OnOffer(FPixelStreamingPlayerId PlayerId, const FString& Sdp);
+		void OnAnswer(FPixelStreamingPlayerId PlayerId, const FString& Sdp);
+		void OnPlayerConnected(FPixelStreamingPlayerId PlayerId, const FPixelStreamingPlayerConfig& PlayerConfig, bool bSendOffer);
+		void DeletePlayerSession(FPixelStreamingPlayerId PlayerId);
+		void DeleteAllPlayerSessions();
+		void AddNewDataChannel(FPixelStreamingPlayerId PlayerId, TSharedPtr<FPixelStreamingDataChannel> NewChannel);
+		void OnDataChannelOpen(FPixelStreamingPlayerId PlayerId);
+		void OnDataChannelClosed(FPixelStreamingPlayerId PlayerId);
+		void OnDataChannelMessage(FPixelStreamingPlayerId PlayerId, uint8 Type, const webrtc::DataBuffer& RawBuffer);
+		void SendInitialSettings(FPixelStreamingPlayerId PlayerId) const;
+		void SendProtocol(FPixelStreamingPlayerId PlayerId) const;
+		void SendPeerControllerMessages(FPixelStreamingPlayerId PlayerId) const;
+		void SendLatencyReport(FPixelStreamingPlayerId PlayerId) const;
+		void SendFreezeFrame(TArray<FColor> RawData, const FIntRect& Rect);
+		void SendCachedFreezeFrameTo(FPixelStreamingPlayerId PlayerId) const;
+		bool ShouldPeerGenerateFrames(FPixelStreamingPlayerId PlayerId) const;
+
+		void SetQualityController(FPixelStreamingPlayerId PlayerId);
+		void TriggerMouseLeave(FString InStreamerId);
+
+	private:
+		FString StreamerId;
+		FString CurrentSignallingServerURL;
+
+		TSharedPtr<IPixelStreamingInputHandler> InputHandler;
+		TUniquePtr<FPixelStreamingSignallingConnection> SignallingServerConnection;
+		double LastSignallingServerConnectionAttemptTimestamp = 0;
+
+		webrtc::PeerConnectionInterface::RTCConfiguration PeerConnectionConfig;
+
+		struct FPlayerContext
 		{
-		public:
-			static bool IsPlatformCompatible();
-
-			explicit FStreamer(const FString& SignallingServerUrl, const FString& StreamerId);
-			virtual ~FStreamer() override;
-
-			void SendPlayerMessage(Protocol::EToPlayerMsg Type, const FString& Descriptor);
-			void SendFreezeFrame(const TArray64<uint8>& JpegBytes);
-			void SendUnfreezeFrame();
-			void SendFileData(TArray<uint8>& ByteData, FString& MimeType, FString& FileExtension);
-			void KickPlayer(FPixelStreamingPlayerId PlayerId);
-			void ForceKeyFrame();
-
-			bool IsStreaming() const { return bStreamingStarted; }
-			void SetStreamingStarted(bool bStarted) { bStreamingStarted = bStarted; }
-			FSignallingServerConnection* GetSignallingServerConnection() const { return SignallingServerConnection.Get(); }
-			FVideoEncoderFactory* GetP2PVideoEncoderFactory() const { return P2PVideoEncoderFactory; }
-			FFixedFPSPump& GetPumpThread() { return PumpThread; }
-			FGPUFencePoller& GetFencePollerThread() { return FencePollerThread; }
-
-			// data coming from the engine
-			void OnFrameBufferReady(const FTexture2DRHIRef& FrameBuffer);
-
-			// Begin IPixelStreamingSessions interface.
-			virtual int GetNumPlayers() const override;
-			virtual IPixelStreamingAudioSink* GetAudioSink(FPixelStreamingPlayerId PlayerId) const override;
-			virtual IPixelStreamingAudioSink* GetUnlistenedAudioSink() const override;
-			virtual bool IsQualityController(FPixelStreamingPlayerId PlayerId) const override;
-			virtual void SetQualityController(FPixelStreamingPlayerId PlayerId) override;
-			virtual bool SendMessage(FPixelStreamingPlayerId PlayerId, Protocol::EToPlayerMsg Type, const FString& Descriptor) const override;
-			virtual void SendLatestQP(FPixelStreamingPlayerId PlayerId, int LatestQP) const override;
-			virtual void SendFreezeFrameTo(FPixelStreamingPlayerId PlayerId, const TArray64<uint8>& JpegBytes) const override;
-			virtual void PollWebRTCStats() const override;
-			// End IPixelStreamingSessions interface.
-
-			void SendCachedFreezeFrameTo(FPixelStreamingPlayerId PlayerId) const;
-
-		private:
-			webrtc::PeerConnectionInterface* CreateSession(FPixelStreamingPlayerId PlayerId, int Flags);
-			webrtc::AudioProcessing* SetupAudioProcessingModule();
-
-			// Procedure for WebRTC inter-thread communication
-			void StartWebRtcSignallingThread();
-			void ConnectToSignallingServer();
-
-			// ISignallingServerConnectionObserver impl
-			virtual void OnConfig(const webrtc::PeerConnectionInterface::RTCConfiguration& Config) override;
-			virtual void OnSessionDescription(FPixelStreamingPlayerId PlayerId, webrtc::SdpType Type, const FString& Sdp) override;
-			virtual void OnRemoteIceCandidate(FPixelStreamingPlayerId PlayerId, const std::string& SdpMid, int SdpMLineIndex, const std::string& Sdp) override;
-			virtual void OnPlayerConnected(FPixelStreamingPlayerId PlayerId, int Flags) override;
-			virtual void OnPlayerDisconnected(FPixelStreamingPlayerId PlayerId) override;
-			virtual void OnSignallingServerDisconnected() override;
-
-			// own methods
-			void OnOffer(FPixelStreamingPlayerId PlayerId, const FString& Sdp);
-			void ModifyTransceivers(std::vector<rtc::scoped_refptr<webrtc::RtpTransceiverInterface>> Transceivers, int Flags);
-			void MungeRemoteSDP(cricket::SessionDescription* SessionDescription);
-			void DeletePlayerSession(FPixelStreamingPlayerId PlayerId);
-			void DeleteAllPlayerSessions();
-			void AddStreams(FPixelStreamingPlayerId PlayerId, webrtc::PeerConnectionInterface* PeerConnection, int Flags);
-			void SetupVideoTrack(FPixelStreamingPlayerId PlayerId, webrtc::PeerConnectionInterface* PeerConnection, FString const VideoStreamId, FString const VideoTrackLabel, int Flags);
-			void SetupAudioTrack(FPixelStreamingPlayerId PlayerId, webrtc::PeerConnectionInterface* PeerConnection, const FString AudioStreamId, const FString AudioTrackLabel, int Flags);
-			std::vector<webrtc::RtpEncodingParameters> CreateRTPEncodingParams(int Flags);
-			void SendAnswer(FPixelStreamingPlayerId PlayerId, webrtc::PeerConnectionInterface* PeerConnection, TUniquePtr<webrtc::SessionDescriptionInterface> Sdp);
-			void OnDataChannelOpen(FPixelStreamingPlayerId PlayerId, webrtc::DataChannelInterface* DataChannel);
-			void OnQualityControllerChanged(FPixelStreamingPlayerId PlayerId);
-			void PostPlayerDeleted(FPixelStreamingPlayerId PlayerId, bool WasQualityController);
-			void SetLocalDescription(webrtc::PeerConnectionInterface* PeerConnection, FSetSessionDescriptionObserver* Observer, webrtc::SessionDescriptionInterface* SDP);
-			FString GetAudioStreamID() const;
-			FString GetVideoStreamID() const;
-			rtc::scoped_refptr<webrtc::AudioDeviceModule> CreateAudioDeviceModule() const;
-
-		private:
-			FString SignallingServerUrl;
-			FString StreamerId;
-			const FString AudioTrackLabel = TEXT("pixelstreaming_audio_track_label");
-			const FString VideoTrackLabel = TEXT("pixelstreaming_video_track_label");
-
-			TUniquePtr<rtc::Thread> WebRtcSignallingThread;
-
-			TUniquePtr<FSignallingServerConnection> SignallingServerConnection;
-			double LastSignallingServerConnectionAttemptTimestamp = 0;
-
-			webrtc::PeerConnectionInterface::RTCConfiguration PeerConnectionConfig;
-
-			/* P2P Peer Connections use these exclusively */
-			rtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> P2PPeerConnectionFactory;
-			FVideoEncoderFactory* P2PVideoEncoderFactory;
-			/* P2P Peer Connections use these exclusively */
-
-			/* SFU Peer Connections use these exclusively */
-			rtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> SFUPeerConnectionFactory;
-			FSimulcastEncoderFactory* SFUVideoEncoderFactory;
-			/* SFU Peer Connections use these exclusively */
-
-			rtc::scoped_refptr<webrtc::AudioSourceInterface> AudioSource;
-			cricket::AudioOptions AudioSourceOptions;
-
-			// When we send a freeze frame we retain the data so we send freeze frame to new peers if they join during a freeze frame.
-			TArray64<uint8> CachedJpegBytes;
-
-			FThreadSafeBool bStreamingStarted = false;
-
-			FThreadSafePlayerSessions PlayerSessions;
-			FStats Stats;
-
-			FFixedFPSPump PumpThread;
-			FGPUFencePoller FencePollerThread;
-
-			TUniquePtr<webrtc::SessionDescriptionInterface> SFULocalDescription;
-			TUniquePtr<webrtc::SessionDescriptionInterface> SFURemoteDescription;
+			FPixelStreamingPlayerConfig Config;
+			TSharedPtr<FPixelStreamingPeerConnection> PeerConnection;
+			TSharedPtr<FPixelStreamingDataChannel> DataChannel;
 		};
-	} // namespace PixelStreaming
-} // namespace UE
+
+		TThreadSafeMap<FPixelStreamingPlayerId, FPlayerContext> Players;
+
+		FPixelStreamingPlayerId QualityControllingId = INVALID_PLAYER_ID;
+		FPixelStreamingPlayerId SFUPlayerId = INVALID_PLAYER_ID;
+		FPixelStreamingPlayerId InputControllingId = INVALID_PLAYER_ID;
+
+		bool bStreamingStarted = false;
+		bool bCaptureNextBackBufferAndStream = false;
+
+		// When we send a freeze frame we retain the data so we send freeze frame to new peers if they join during a freeze frame.
+		TArray64<uint8> CachedJpegBytes;
+
+		FStreamingStartedEvent StreamingStartedEvent;
+		FStreamingStoppedEvent StreamingStoppedEvent;
+
+		TUniquePtr<webrtc::SessionDescriptionInterface> SFULocalDescription;
+		TUniquePtr<webrtc::SessionDescriptionInterface> SFURemoteDescription;
+
+		TSharedPtr<FVideoSourceGroup> VideoSourceGroup;
+
+		FDelegateHandle ConsumeStatsHandle;
+		FDelegateHandle AllConnectionsClosedHandle;
+
+		IPixelStreamingModule& Module;
+	};
+} // namespace UE::PixelStreaming

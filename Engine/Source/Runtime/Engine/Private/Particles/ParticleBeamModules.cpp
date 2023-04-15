@@ -22,6 +22,7 @@
 #include "Particles/ParticleLODLevel.h"
 #include "Distributions/DistributionFloatConstantCurve.h"
 #include "Engine/InterpCurveEdSetup.h"
+#include "ParticleBeamTrailVertexFactory.h"
 
 /*-----------------------------------------------------------------------------
 	Abstract base modules used for categorization.
@@ -524,7 +525,7 @@ void UParticleModuleTypeDataBeam2::Update(FParticleEmitterInstance* Owner, int32
 			}
 
 			BeamData->TriangleCount	= BeamData->Steps * 2;
-			if (BeamData->TravelRatio > KINDA_SMALL_NUMBER)
+			if (BeamData->TravelRatio > UE_KINDA_SMALL_NUMBER)
 			{
 //070305.SAS.		BeamData->TriangleCount	+= 2;
 			}
@@ -552,7 +553,7 @@ void UParticleModuleTypeDataBeam2::Update(FParticleEmitterInstance* Owner, int32
 					BeamData->TriangleCount	+= NoiseTess * 2;
 				}
 				else
-				if (BeamData->TravelRatio > KINDA_SMALL_NUMBER)
+				if (BeamData->TravelRatio > UE_KINDA_SMALL_NUMBER)
 				{
 					//@todo.SAS. Fix this!
 					// When the data fills in (vertices), it is incorrect.
@@ -581,7 +582,7 @@ void UParticleModuleTypeDataBeam2::Update(FParticleEmitterInstance* Owner, int32
 					BeamData->TriangleCount	+= NoiseTess * 2;
 				}
 				else
-				if (BeamData->TravelRatio > KINDA_SMALL_NUMBER)
+				if (BeamData->TravelRatio > UE_KINDA_SMALL_NUMBER)
 				{
 					//@todo.SAS. Fix this!
 					// When the data fills in (vertices), it is incorrect.
@@ -693,6 +694,11 @@ FParticleEmitterInstance* UParticleModuleTypeDataBeam2::CreateInstance(UParticle
 	Instance->InitParameters(InEmitterParent, InComponent);
 
 	return Instance;
+}
+
+const FVertexFactoryType* UParticleModuleTypeDataBeam2::GetVertexFactoryType() const
+{
+	return &FParticleBeamTrailVertexFactory::StaticType;
 }
 
 void UParticleModuleTypeDataBeam2::CacheModuleInfo(UParticleEmitter* Emitter)
@@ -1504,7 +1510,7 @@ void UParticleModuleBeamNoise::Update(FParticleEmitterInstance* Owner, int32 Off
 				float	StepSize	= 1.0f / (Freq + 1);
 
 				// Fill in the points...
-				if (NoiseLockTime > KINDA_SMALL_NUMBER)
+				if (NoiseLockTime > UE_KINDA_SMALL_NUMBER)
 				{
 					//@todo. Add support for moving noise points!
 					// Check the times...
@@ -2316,7 +2322,7 @@ bool UParticleModuleBeamTarget::ResolveTargetData(FParticleBeam2EmitterInstance*
 		{
 			// Set the particle target based on the distance
 			float	Distance		= BeamInst->BeamTypeData->Distance.GetValue(Particle.RelativeTime, BeamInst->Component);
-			if (FMath::Abs(Distance) < KINDA_SMALL_NUMBER)
+			if (FMath::Abs(Distance) < UE_KINDA_SMALL_NUMBER)
 			{
 				Distance	= 0.001f;
 			}

@@ -8,6 +8,7 @@
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "ImageCore.h"
+#include "ImageCoreUtils.h"
 #include "Interfaces/ITextureFormat.h"
 #include "Interfaces/ITextureFormatModule.h"
 #include "Memory/CompositeBuffer.h"
@@ -18,6 +19,7 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/FileRegions.h"
 #include "Serialization/MemoryWriter.h"
+#include "TextureBuildUtilities.h"
 #include "TextureCompressorModule.h"
 #include "TextureFormatManager.h"
 
@@ -27,27 +29,15 @@ DEFINE_LOG_CATEGORY_STATIC(LogTextureBuildFunction, Log, All);
 // MUST have a corresponding change to this version. Individual texture formats have a version to
 // change that is specific to the format. A merge conflict affecting the version MUST be resolved
 // by generating a new version.
-static const FGuid TextureDerivedDataVersion(TEXT("19ffd7ab-ea5c-4a18-b6f4-6b0b5eedd606"));
+static const FGuid TextureDerivedDataVersion(TEXT("9C3A0F67-3973-4F4D-85FB-35B44FEA8089"));
 
-#ifndef CASE_ENUM_TO_TEXT
-#define CASE_ENUM_TO_TEXT(txt) case txt: return TEXT(#txt);
-#endif
-
-static const TCHAR* GetPixelFormatString(EPixelFormat InPixelFormat)
-{
-	switch (InPixelFormat)
-	{
-		FOREACH_ENUM_EPIXELFORMAT(CASE_ENUM_TO_TEXT)
-	default:
-		return TEXT("PF_Unknown");
-	}
-}
 
 static void ReadCbField(FCbFieldView Field, bool& OutValue) { OutValue = Field.AsBool(OutValue); }
 static void ReadCbField(FCbFieldView Field, int32& OutValue) { OutValue = Field.AsInt32(OutValue); }
 static void ReadCbField(FCbFieldView Field, uint8& OutValue) { OutValue = Field.AsUInt8(OutValue); }
 static void ReadCbField(FCbFieldView Field, uint32& OutValue) { OutValue = Field.AsUInt32(OutValue); }
 static void ReadCbField(FCbFieldView Field, float& OutValue) { OutValue = Field.AsFloat(OutValue); }
+static void ReadCbField(FCbFieldView Field, FGuid& OutValue) { OutValue = Field.AsUuid(); }
 
 static void ReadCbField(FCbFieldView Field, FName& OutValue)
 {
@@ -94,6 +84,7 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	FTextureBuildSettings BuildSettings;
 	BuildSettings.FormatConfigOverride = Object["FormatConfigOverride"].AsObjectView();
 	FCbObjectView ColorAdjustmentCbObj = Object["ColorAdjustment"].AsObjectView();
+	ReadCbField(ColorAdjustmentCbObj["CompressionCacheId"], BuildSettings.CompressionCacheId);
 	FColorAdjustmentParameters& ColorAdjustment = BuildSettings.ColorAdjustment;
 	ReadCbField(ColorAdjustmentCbObj["AdjustBrightness"], ColorAdjustment.AdjustBrightness);
 	ReadCbField(ColorAdjustmentCbObj["AdjustBrightnessCurve"], ColorAdjustment.AdjustBrightnessCurve);
@@ -103,12 +94,14 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	ReadCbField(ColorAdjustmentCbObj["AdjustHue"], ColorAdjustment.AdjustHue);
 	ReadCbField(ColorAdjustmentCbObj["AdjustMinAlpha"], ColorAdjustment.AdjustMinAlpha);
 	ReadCbField(ColorAdjustmentCbObj["AdjustMaxAlpha"], ColorAdjustment.AdjustMaxAlpha);
+	BuildSettings.bUseNewMipFilter = Object["bUseNewMipFilter"].AsBool(BuildSettings.bUseNewMipFilter);
 	BuildSettings.bDoScaleMipsForAlphaCoverage = Object["bDoScaleMipsForAlphaCoverage"].AsBool(BuildSettings.bDoScaleMipsForAlphaCoverage);
 	ReadCbField(Object["AlphaCoverageThresholds"], BuildSettings.AlphaCoverageThresholds);
 	ReadCbField(Object["MipSharpening"], BuildSettings.MipSharpening);
 	ReadCbField(Object["DiffuseConvolveMipLevel"], BuildSettings.DiffuseConvolveMipLevel);
 	ReadCbField(Object["SharpenMipKernelSize"], BuildSettings.SharpenMipKernelSize);
 	ReadCbField(Object["MaxTextureResolution"], BuildSettings.MaxTextureResolution);
+	check( BuildSettings.MaxTextureResolution != 0 );
 	ReadCbField(Object["TextureFormatName"], BuildSettings.TextureFormatName);
 	ReadCbField(Object["bHDRSource"], BuildSettings.bHDRSource);
 	ReadCbField(Object["MipGenSettings"], BuildSettings.MipGenSettings);
@@ -128,7 +121,6 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	BuildSettings.bPreserveBorder = Object["bPreserveBorder"].AsBool(BuildSettings.bPreserveBorder);
 	BuildSettings.bForceNoAlphaChannel = Object["bForceNoAlphaChannel"].AsBool(BuildSettings.bForceNoAlphaChannel);
 	BuildSettings.bForceAlphaChannel = Object["bForceAlphaChannel"].AsBool(BuildSettings.bForceAlphaChannel);
-	BuildSettings.bDitherMipMapAlpha = Object["bDitherMipMapAlpha"].AsBool(BuildSettings.bDitherMipMapAlpha);
 	BuildSettings.bComputeBokehAlpha = Object["bComputeBokehAlpha"].AsBool(BuildSettings.bComputeBokehAlpha);
 	BuildSettings.bReplicateRed = Object["bReplicateRed"].AsBool(BuildSettings.bReplicateRed);
 	BuildSettings.bReplicateAlpha = Object["bReplicateAlpha"].AsBool(BuildSettings.bReplicateAlpha);
@@ -146,7 +138,7 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	ReadCbField(Object["TopMipSize"], BuildSettings.TopMipSize);
 	ReadCbField(Object["VolumeSizeZ"], BuildSettings.VolumeSizeZ);
 	ReadCbField(Object["ArraySlices"], BuildSettings.ArraySlices);
-	BuildSettings.bStreamable = Object["bStreamable"].AsBool(BuildSettings.bStreamable);
+	BuildSettings.bStreamable_Unused = Object["bStreamable"].AsBool(BuildSettings.bStreamable_Unused);
 	BuildSettings.bVirtualStreamable = Object["bVirtualStreamable"].AsBool(BuildSettings.bVirtualStreamable);
 	BuildSettings.bChromaKeyTexture = Object["bChromaKeyTexture"].AsBool(BuildSettings.bChromaKeyTexture);
 	ReadCbField(Object["PowerOfTwoMode"], BuildSettings.PowerOfTwoMode);
@@ -161,8 +153,6 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	ReadCbField(Object["VirtualAddressingModeY"], BuildSettings.VirtualAddressingModeY);
 	ReadCbField(Object["VirtualTextureTileSize"], BuildSettings.VirtualTextureTileSize);
 	ReadCbField(Object["VirtualTextureBorderSize"], BuildSettings.VirtualTextureBorderSize);
-	BuildSettings.bVirtualTextureEnableCompressZlib = Object["bVirtualTextureEnableCompressZlib"].AsBool(BuildSettings.bVirtualTextureEnableCompressZlib);
-	BuildSettings.bVirtualTextureEnableCompressCrunch = Object["bVirtualTextureEnableCompressCrunch"].AsBool(BuildSettings.bVirtualTextureEnableCompressCrunch);
 	BuildSettings.OodleEncodeEffort = Object["OodleEncodeEffort"].AsUInt8(BuildSettings.OodleEncodeEffort);
 	BuildSettings.OodleUniversalTiling = Object["OodleUniversalTiling"].AsUInt8(BuildSettings.OodleUniversalTiling);
 	BuildSettings.bOodleUsesRDO = Object["bOodleUsesRDO"].AsBool(BuildSettings.bOodleUsesRDO);
@@ -172,28 +162,13 @@ static FTextureBuildSettings ReadBuildSettingsFromCompactBinary(const FCbObjectV
 	return BuildSettings;
 }
 
-static void ReadOutputSettingsFromCompactBinary(const FCbObjectView& Object, int32& NumInlineMips)
-{
-	NumInlineMips = Object["NumInlineMips"].AsInt32();
-}
-
 static ERawImageFormat::Type ComputeRawImageFormat(ETextureSourceFormat SourceFormat)
 {
-	switch (SourceFormat)
-	{
-	case TSF_G8:		return ERawImageFormat::G8;
-	case TSF_G16:		return ERawImageFormat::G16;
-	case TSF_BGRA8:		return ERawImageFormat::BGRA8;
-	case TSF_BGRE8:		return ERawImageFormat::BGRE8;
-	case TSF_RGBA16:	return ERawImageFormat::RGBA16;
-	case TSF_RGBA16F:	return ERawImageFormat::RGBA16F;
-	default:
-		checkf(false, TEXT("Invalid source texture format encountered: %d."), SourceFormat);
-		return ERawImageFormat::G8;
-	}
+	return FImageCoreUtils::ConvertToRawImageFormat(SourceFormat);
 }
 
-static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::DerivedData::FBuildContext& Context, TArray<FImage>& OutMips)
+static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::DerivedData::FBuildContext& Context,
+												const FTextureBuildSettings & BuildSettings, TArray<FImage>& OutMips)
 {
 	FSharedBuffer InputBuffer = Context.FindInput(Source.GetName());
 	if (!InputBuffer)
@@ -220,6 +195,8 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 	int32 MipSizeY = SizeY;
 
 	const uint8* DecompressedSourceData = (const uint8*)InputBuffer.GetData();
+	int64 DecompressedSourceDataSize = InputBuffer.GetSize();
+
 	TArray64<uint8> IntermediateDecompressedData;
 	if (CompressionFormat != TSCF_None)
 	{
@@ -245,6 +222,7 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 			return false;
 		}
 		DecompressedSourceData = IntermediateDecompressedData.GetData();
+		DecompressedSourceDataSize = IntermediateDecompressedData.Num();
 		InputBuffer.Reset();
 	}
 
@@ -263,13 +241,18 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 			GammaSpace
 		);
 
+		check( MipOffset + MipSize <= DecompressedSourceDataSize );
+		check( SourceMip->GetImageSizeBytes() == MipSize );
+
 		if ((MipsCbArrayView.Num() == 1) && (CompressionFormat != TSCF_None))
 		{
 			// In the case where there is only one mip and its already in a TArray, there is no need to allocate new array contents, just use a move instead
+			check( MipOffset == 0 );
 			SourceMip->RawData = MoveTemp(IntermediateDecompressedData);
 		}
 		else
 		{
+			SourceMip->RawData.Reset(MipSize);
 			SourceMip->RawData.AddUninitialized(MipSize);
 			FMemory::Memcpy(
 				SourceMip->RawData.GetData(),
@@ -280,23 +263,13 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 
 		MipSizeX = FMath::Max(MipSizeX / 2, 1);
 		MipSizeY = FMath::Max(MipSizeY / 2, 1);
+		if ( BuildSettings.bVolume )
+		{
+			NumSlices = FMath::Max(NumSlices / 2, 1);
+		}
 	}
 
 	return true;
-}
-
-// Estimate peak memory usage required to cook this texture, excluding raw input / source data
-// Similar to UTexture::GetBuildRequiredMemory()
-// This is a rough blackbox estimate that can be improved
-static uint64 EstimateTextureBuildMemoryUsage(const FCbObject& Settings)
-{
-	uint64 InputSize = 0;
-	for (FCbField Mip : Settings["Source"]["Mips"])
-	{
-		InputSize += Mip["Size"].AsInt64();
-	}
-
-	return static_cast<uint64>(InputSize * 7.5);
 }
 
 FGuid FTextureBuildFunction::GetVersion() const
@@ -322,8 +295,11 @@ FGuid FTextureBuildFunction::GetVersion() const
 
 void FTextureBuildFunction::Configure(UE::DerivedData::FBuildConfigContext& Context) const
 {
-	Context.SetCacheBucket(UE::DerivedData::FCacheBucket("Texture"_ASV));
-	Context.SetRequiredMemory(EstimateTextureBuildMemoryUsage(Context.FindConstant(UTF8TEXTVIEW("Settings"))));
+	Context.SetCacheBucket(UE::DerivedData::FCacheBucket(ANSITEXTVIEW("Texture")));
+
+	const FCbObject Settings = Context.FindConstant(UTF8TEXTVIEW("Settings"));
+	const int64 RequiredMemoryEstimate = Settings["RequiredMemoryEstimate"].AsInt64();
+	Context.SetRequiredMemory(RequiredMemoryEstimate);
 }
 
 void FTextureBuildFunction::Build(UE::DerivedData::FBuildContext& Context) const
@@ -336,136 +312,272 @@ void FTextureBuildFunction::Build(UE::DerivedData::FBuildContext& Context) const
 	}
 
 	const FTextureBuildSettings BuildSettings = ReadBuildSettingsFromCompactBinary(Settings["Build"].AsObjectView());
-
+	
 	const uint16 RequiredTextureFormatVersion = Settings["FormatVersion"].AsUInt16();
+	const ITextureFormat* TextureFormat;
 	if (ITextureFormatManagerModule* TFM = GetTextureFormatManager())
 	{
-		const ITextureFormat* TextureFormat = TFM->FindTextureFormat(BuildSettings.TextureFormatName);
-		const uint16 CurrentTextureFormatVersion = TextureFormat ? TextureFormat->GetVersion(BuildSettings.TextureFormatName, &BuildSettings) : 0;
-		if (CurrentTextureFormatVersion != RequiredTextureFormatVersion)
-		{
-			UE_LOG(LogTextureBuildFunction, Error, TEXT("%s has version %hu when version %hu is required."),
-				*BuildSettings.TextureFormatName.ToString(), CurrentTextureFormatVersion, RequiredTextureFormatVersion);;
-			return;
-		}
+		TextureFormat = TFM->FindTextureFormat(BuildSettings.TextureFormatName);
+	}
+	else
+	{
+		UE_LOG(LogTextureBuildFunction, Error, TEXT("TextureFormatManager not found!"));
+		return;
 	}
 
-	int32 NumInlineMips;
-	ReadOutputSettingsFromCompactBinary(Settings["Output"].AsObjectView(), NumInlineMips);
+	const uint16 CurrentTextureFormatVersion = TextureFormat ? TextureFormat->GetVersion(BuildSettings.TextureFormatName, &BuildSettings) : 0;
+	if (CurrentTextureFormatVersion != RequiredTextureFormatVersion)
+	{
+		UE_LOG(LogTextureBuildFunction, Error, TEXT("%s has version %hu when version %hu is required."),
+			*BuildSettings.TextureFormatName.ToString(), CurrentTextureFormatVersion, RequiredTextureFormatVersion);;
+		return;
+	}
+	
+	FTextureEngineParameters EngineParameters;
+	if (UE::TextureBuildUtilities::TextureEngineParameters::FromCompactBinary(EngineParameters, Context.FindConstant(UTF8TEXTVIEW("EngineParameters"))) == false)
+	{
+		UE_LOG(LogTextureBuildFunction, Error, TEXT("Engine parameters are not available."));
+		return;
+	}
+
 
 	TArray<FImage> SourceMips;
-	if (!TryReadTextureSourceFromCompactBinary(Settings["Source"], Context, SourceMips))
+	if (!TryReadTextureSourceFromCompactBinary(Settings["Source"], Context,BuildSettings, SourceMips))
 	{
 		return;
 	}
 
 	TArray<FImage> AssociatedNormalSourceMips;
 	if (FCbFieldView CompositeSource = Settings["CompositeSource"];
-		CompositeSource && !TryReadTextureSourceFromCompactBinary(CompositeSource, Context, AssociatedNormalSourceMips))
+		CompositeSource && !TryReadTextureSourceFromCompactBinary(CompositeSource, Context,BuildSettings, AssociatedNormalSourceMips))
 	{
 		return;
 	}
 
 	UE_LOG(LogTextureBuildFunction, Display, TEXT("Compressing %d source mip(s) (%dx%d) to %s..."), SourceMips.Num(), SourceMips[0].SizeX, SourceMips[0].SizeY, *BuildSettings.TextureFormatName.ToString());
 
+	ITextureCompressorModule& TextureCompressorModule = FModuleManager::GetModuleChecked<ITextureCompressorModule>(TEXTURE_COMPRESSOR_MODULENAME);
+	
 	TArray<FCompressedImage2D> CompressedMips;
 	uint32 NumMipsInTail;
 	uint32 ExtData;
+	bool bImageHasAlpha = false;
+	
+	
+	/*
+	for( const FImage & Image : SourceMips )
+	{
+		UE_LOG(LogInit,Display,TEXT("FTextureBuildFunction: SourceMips : %dx%dx%d"),
+			Image.SizeX,Image.SizeY,Image.NumSlices);
+	}
+	*/
 
-	bool bBuildSucceeded = FModuleManager::GetModuleChecked<ITextureCompressorModule>(TEXTURE_COMPRESSOR_MODULENAME).BuildTexture(
+	bool bBuildSucceeded = TextureCompressorModule.BuildTexture(
 		SourceMips,
 		AssociatedNormalSourceMips,
 		BuildSettings,
 		Context.GetName(),
 		CompressedMips,
 		NumMipsInTail,
-		ExtData);
+		ExtData,
+		&bImageHasAlpha);
 	if (!bBuildSucceeded)
 	{
 		return;
 	}
 	check(CompressedMips.Num() > 0);
 
-	int32 MipCount = CompressedMips.Num();
-	const bool bForceAllMipsToBeInlined = BuildSettings.bCubemap || (BuildSettings.bVolume && !BuildSettings.bStreamable) || (BuildSettings.bTextureArray && !BuildSettings.bStreamable);
-	const int32 FirstInlineMip = bForceAllMipsToBeInlined ? 0 : FMath::Max(0, MipCount - FMath::Max(NumInlineMips, (int32)NumMipsInTail));
+
+	FEncodedTextureDescription TextureDescription;
 
 	{
-		FCbWriter DescriptionWriter;
-		DescriptionWriter.BeginObject();
+		int32 CalculatedMip0SizeX = 0, CalculatedMip0SizeY = 0, CalculatedMip0NumSlices = 0;
+		int32 CalculatedMipCount = TextureCompressorModule.GetMipCountForBuildSettings(SourceMips[0].SizeX, SourceMips[0].SizeY, SourceMips[0].NumSlices, SourceMips.Num(), BuildSettings, CalculatedMip0SizeX, CalculatedMip0SizeY, CalculatedMip0NumSlices);
+		BuildSettings.GetEncodedTextureDescription(&TextureDescription, TextureFormat, CalculatedMip0SizeX, CalculatedMip0SizeY, CalculatedMip0NumSlices, CalculatedMipCount, bImageHasAlpha);
+	}
 
-		DescriptionWriter.BeginArray("Size"_ASV);
-		DescriptionWriter.AddInteger(CompressedMips[0].SizeX);
-		DescriptionWriter.AddInteger(CompressedMips[0].SizeY);
-		const int32 NumSlices = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? CompressedMips[0].SizeZ : BuildSettings.bCubemap ? 6 : 1;
-		DescriptionWriter.AddInteger(NumSlices);
-		DescriptionWriter.EndArray();
+	FEncodedTextureExtendedData ExtendedData;
 
-		DescriptionWriter.AddString("PixelFormat"_ASV, GetPixelFormatString((EPixelFormat)CompressedMips[0].PixelFormat));
-		DescriptionWriter.AddBool("bCubeMap"_ASV, BuildSettings.bCubemap);
-		DescriptionWriter.AddInteger("ExtData"_ASV, ExtData);
-		DescriptionWriter.AddInteger("NumMips"_ASV, MipCount);
-		DescriptionWriter.AddInteger("NumStreamingMips"_ASV, FirstInlineMip);
-		DescriptionWriter.AddInteger("NumMipsInTail"_ASV, NumMipsInTail);
+	// ExtendedData is only really useful for textures that have a post build step for tiling,
+	// however it's possible that we ran the old build process where the tiling occurs as part
+	// of the BuildTexture->CompressImage step via child texture formats. In that case, we've already
+	// tiled and we need to pass the data back out. Otherwise, this gets ignored and the tiling step
+	// regenerates it.
+	{
+		ExtendedData.NumMipsInTail = NumMipsInTail;
+		ExtendedData.ExtData = ExtData;
 
-		DescriptionWriter.BeginArray("Mips"_ASV);
-		int64 MipOffset = 0;
-		for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
+		int32 EncodedMipCount = TextureDescription.GetNumEncodedMips(&ExtendedData);
+		ExtendedData.MipSizesInBytes.AddUninitialized(EncodedMipCount);
+		for (int32 MipIndex = 0; MipIndex < EncodedMipCount; MipIndex++)
 		{
-			FCompressedImage2D& CompressedMip = CompressedMips[MipIndex];
-
-			DescriptionWriter.BeginObject();
-			
-			DescriptionWriter.BeginArray("Size"_ASV);
-			DescriptionWriter.AddInteger(CompressedMip.SizeX);
-			DescriptionWriter.AddInteger(CompressedMip.SizeY);
-			DescriptionWriter.AddInteger(CompressedMip.SizeZ);
-			DescriptionWriter.EndArray();
-
-			const bool bIsInlineMip = MipIndex >= FirstInlineMip;
-
-			EFileRegionType FileRegion = FFileRegion::SelectType(EPixelFormat(CompressedMip.PixelFormat));
-			DescriptionWriter.AddInteger("FileRegion"_ASV, static_cast<int32>(FileRegion));
-			if (bIsInlineMip)
-			{
-				DescriptionWriter.AddInteger("MipOffset"_ASV, MipOffset);
-			}
-			DescriptionWriter.AddInteger("NumBytes"_ASV, CompressedMip.RawData.Num());
-
-			DescriptionWriter.EndObject();
-
-			if (bIsInlineMip)
-			{
-				MipOffset += CompressedMip.RawData.Num();
-			}
+			ExtendedData.MipSizesInBytes[MipIndex] = CompressedMips[MipIndex].RawData.Num();
 		}
-		DescriptionWriter.EndArray();
-
-		DescriptionWriter.EndObject();
-		FCbObject DescriptionObject = DescriptionWriter.Save().AsObject();
-		Context.AddValue(UE::DerivedData::FValueId::FromName("Description"_ASV), DescriptionObject);
 	}
 
-	// Streaming mips
-	for (int32 MipIndex = 0; MipIndex < FirstInlineMip; ++MipIndex)
+	// Long term, this will be supplied to the build and this would only be called to verify.
+	int32 NumStreamingMips = TextureDescription.GetNumStreamingMips(&ExtendedData, EngineParameters);
+
+	// \todo save bImageHasAlphaChannel back out so that if textures get edited after a build then saved,
+	// we can capture the update.
+
+	
 	{
-		TAnsiStringBuilder<16> MipName;
-		MipName << "Mip"_ASV << MipIndex;
+		Context.AddValue(UE::DerivedData::FValueId::FromName(ANSITEXTVIEW("EncodedTextureDescription")), UE::TextureBuildUtilities::EncodedTextureDescription::ToCompactBinary(TextureDescription));
+		Context.AddValue(UE::DerivedData::FValueId::FromName(ANSITEXTVIEW("EncodedTextureExtendedData")), UE::TextureBuildUtilities::EncodedTextureExtendedData::ToCompactBinary(ExtendedData));
 
-		FSharedBuffer MipData = MakeSharedBufferFromArray(MoveTemp(CompressedMips[MipIndex].RawData));
-		Context.AddValue(UE::DerivedData::FValueId::FromName(MipName), MipData);
+		// Streaming mips
+		for (int32 MipIndex = 0; MipIndex < NumStreamingMips; ++MipIndex)
+		{
+			TAnsiStringBuilder<16> MipName;
+			MipName << ANSITEXTVIEW("Mip") << MipIndex;
+
+			FSharedBuffer MipData = MakeSharedBufferFromArray(MoveTemp(CompressedMips[MipIndex].RawData));
+			Context.AddValue(UE::DerivedData::FValueId::FromName(MipName), MipData);
+		}
+
+		// Mip tail
+		TArray<FSharedBuffer> MipTailComponents;
+		for (int32 MipIndex = NumStreamingMips; MipIndex < TextureDescription.NumMips; ++MipIndex)
+		{
+			FSharedBuffer MipData = MakeSharedBufferFromArray(MoveTemp(CompressedMips[MipIndex].RawData));
+			MipTailComponents.Add(MipData);
+		}
+		FCompositeBuffer MipTail(MipTailComponents);
+		if (MipTail.GetSize() > 0)
+		{
+			Context.AddValue(UE::DerivedData::FValueId::FromName(ANSITEXTVIEW("MipTail")), MipTail);
+		}
 	}
+}
 
-	// Mip tail
-	TArray<FSharedBuffer> MipTailComponents;
-	for (int32 MipIndex = FirstInlineMip; MipIndex < MipCount; ++MipIndex)
+void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, const ITextureTiler* Tiler)
+{
+	// The texture description is either passed as a constant or as an output from the other build ("build input").
+	FEncodedTextureDescription TextureDescription;
 	{
-		FSharedBuffer MipData = MakeSharedBufferFromArray(MoveTemp(CompressedMips[MipIndex].RawData));
-		MipTailComponents.Add(MipData);
+		FCbObject TextureDescriptionCb = Context.FindConstant(UTF8TEXTVIEW("EncodedTextureDescriptionConstant"));
+		if (!TextureDescriptionCb)
+		{
+			FSharedBuffer RawTextureDescription = Context.FindInput(UTF8TEXTVIEW("EncodedTextureDescriptionInput"));
+			if (!RawTextureDescription)
+			{
+				return;
+			}
+			TextureDescriptionCb = FCbObject(RawTextureDescription);
+		}
+		UE::TextureBuildUtilities::EncodedTextureDescription::FromCompactBinary(TextureDescription, TextureDescriptionCb);
 	}
-	FCompositeBuffer MipTail(MipTailComponents);
+
+	// The extended data is either passed as a constant, but is not output from the linear build - it's
+	// our job to make it.
+	FEncodedTextureExtendedData TextureExtendedData;
+	{
+		FCbObject TextureExtendedDataCb = Context.FindConstant(UTF8TEXTVIEW("EncodedTextureExtendedDataConstant"));
+		if (TextureExtendedDataCb)
+		{
+			UE::TextureBuildUtilities::EncodedTextureExtendedData::FromCompactBinary(TextureExtendedData, TextureExtendedDataCb);
+		}
+		else
+		{
+			TextureExtendedData = Tiler->GetExtendedDataForTexture(TextureDescription);
+		}
+	}
+
+	FTextureEngineParameters EngineParameters;
+	{
+		FCbObject EngineParametersCb = Context.FindConstant(UTF8TEXTVIEW("EngineParameters"));
+		UE::TextureBuildUtilities::TextureEngineParameters::FromCompactBinary(EngineParameters, EngineParametersCb);
+	}
+
+	//
+	// Careful - the linear build might have a different streaming mip count than we output due to mip tail
+	// packing.
+	//
+	int32 InputTextureNumStreamingMips = TextureDescription.GetNumStreamingMips(nullptr, EngineParameters);
+	int32 OutputTextureNumStreamingMips = TextureDescription.GetNumStreamingMips(&TextureExtendedData, EngineParameters);
+
+	FSharedBuffer InputTextureMipTailData;
+	if (TextureDescription.NumMips > InputTextureNumStreamingMips)
+	{
+		InputTextureMipTailData = Context.FindInput(UTF8TEXTVIEW("MipTail"));
+	}
+
+	// We might be packing several mips in to a single tiled mip at the end, so we need to have all the buffers available
+	// to potentially pass to ProcessMipLevel. Can do this on demand so that the highest mip level isn't in memory for the entire
+	// mip chain... however all the time is also spent on it and it's only +33% size for the entire chain, so not really worth.
+	TArray<FSharedBuffer> InputTextureMipBuffers;
+	TArray<FMemoryView> InputTextureMipViews;
+
+	uint64 CurrentMipTailOffset = 0;
+	for (int32 MipIndex = 0; MipIndex < TextureDescription.NumMips; MipIndex++)
+	{
+		FMemoryView SourceMipView;
+		if (MipIndex >= InputTextureNumStreamingMips)
+		{
+			// Mip tail.
+			uint64 SourceMipSize = TextureDescription.GetMipSizeInBytes(MipIndex);
+			SourceMipView = InputTextureMipTailData.GetView().Mid(CurrentMipTailOffset, SourceMipSize);
+			CurrentMipTailOffset += SourceMipSize;
+		}
+		else
+		{
+			TUtf8StringBuilder<10> StreamingMipName;
+			StreamingMipName << "Mip" << MipIndex;
+
+			FSharedBuffer SourceData = Context.FindInput(StreamingMipName);
+			SourceMipView = SourceData.GetView();
+			InputTextureMipBuffers.Add(SourceData);
+		}
+		InputTextureMipViews.Add(SourceMipView);
+	}
+
+	// If the platform packs mip tails, we need to pass all the relevant mip buffers at once.
+	int32 FirstMipTailIndex = TextureDescription.NumMips - 1;
+	int32 MipTailCount = 1;
+	if (TextureExtendedData.NumMipsInTail > 1)
+	{
+		MipTailCount = TextureExtendedData.NumMipsInTail;
+		FirstMipTailIndex = TextureDescription.NumMips - MipTailCount;
+	}
+
+
+	// Process the mips
+	TArray<FSharedBuffer> MipTailBuffers;
+	for (int32 MipIndex = 0; MipIndex < FirstMipTailIndex + 1; MipIndex++)
+	{
+		TUtf8StringBuilder<10> StreamingMipName;
+		StreamingMipName << "Mip" << MipIndex;
+
+		TArrayView<FMemoryView> MipsForLevel = MakeArrayView(InputTextureMipViews.GetData() + MipIndex, 1);
+		if (MipIndex == FirstMipTailIndex)
+		{
+			MipsForLevel = MakeArrayView(InputTextureMipViews.GetData() + MipIndex, MipTailCount);
+		}
+		FSharedBuffer MipData = Tiler->ProcessMipLevel(TextureDescription, TextureExtendedData, MipsForLevel, MipIndex);
+
+		// Make sure we got the size we advertised prior to the build. If this ever fires then we
+		// have a critical mismatch!
+		check(TextureExtendedData.MipSizesInBytes[MipIndex] == MipData.GetSize());
+
+		// Save the data to the output.
+		if (MipIndex < OutputTextureNumStreamingMips)
+		{
+			Context.AddValue(UE::DerivedData::FValueId::FromName(StreamingMipName), MipData);
+		}
+		else
+		{
+			MipTailBuffers.Add(MipData);
+		}
+	} // end for each mip
+
+	// The mip tail is a bunch of mips all together in one "Value", so assemble them here.
+	FCompositeBuffer MipTail(MipTailBuffers);
 	if (MipTail.GetSize() > 0)
 	{
-		Context.AddValue(UE::DerivedData::FValueId::FromName("MipTail"_ASV), MipTail);
+		Context.AddValue(UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("MipTail")), MipTail);
 	}
+
+	Context.AddValue(UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("EncodedTextureDescription")), UE::TextureBuildUtilities::EncodedTextureDescription::ToCompactBinary(TextureDescription));
+	Context.AddValue(UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("EncodedTextureExtendedData")), UE::TextureBuildUtilities::EncodedTextureExtendedData::ToCompactBinary(TextureExtendedData));
 }

@@ -18,13 +18,15 @@ namespace MovieScene
 struct FNotImplemented;
 struct FComponentTypeDebugInfo;
 
+
 /**
  * Stub for components that do not need reference collection. Overload void AddReferencedObjectForComponent(FReferenceCollector* ReferenceCollector, T* Component) for your own implementation
  * NOTE: The return value is _very_ important - overloaded AddReferencedObjectForComponent functions should return void otherwise they will not get called by the entity manager.
  */
 inline FNotImplemented* AddReferencedObjectForComponent(...) { return nullptr; }
 
-inline void AddReferencedObjectForComponent(FReferenceCollector* ReferenceCollector, UObject** Component)
+template<typename T>
+typename TEnableIf<TPointerIsConvertibleFromTo<T, UObject>::Value>::Type AddReferencedObjectForComponent(FReferenceCollector* ReferenceCollector, T** Component)
 {
 	ReferenceCollector->AddReferencedObject(*Component);
 }
@@ -34,10 +36,15 @@ typename TEnableIf< TIsSame<decltype(T::StaticStruct()), decltype(T::StaticStruc
 {
 	for (TPropertyValueIterator<const FObjectProperty> It(T::StaticStruct(), Component); It; ++It)
 	{
-		UObject** ObjectPtr = static_cast<UObject**>(const_cast<void*>(It.Value()));
-		ReferenceCollector->AddReferencedObject(*ObjectPtr);
+		ReferenceCollector->AddReferencedObject(It.Key()->GetObjectPtrPropertyValueRef(It.Value()));
 	}
 }
+
+template<typename T>
+struct THasAddReferencedObjectForComponent
+{
+	static constexpr bool Value = !TIsSame< FNotImplemented*, decltype( AddReferencedObjectForComponent((FReferenceCollector*)0, (T*)0) ) >::Value;
+};
 
 /**
  * Class that is instantiated to specify custom behavior for interacting with component data

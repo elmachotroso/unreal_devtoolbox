@@ -4,6 +4,7 @@
 
 #include "Chaos/ErrorReporter.h"
 #include "Chaos/Levelset.h"
+#include "Chaos/Utilities.h"
 #include "Chaos/PBDRigidClusteringCollisionParticleAlgo.h"
 #include "Chaos/PBDRigidsEvolutionGBF.h"
 
@@ -65,9 +66,7 @@ namespace Chaos
 			ChildRotation = Child->R();
 
 			const FReal ChildMass = Child->M();
-			const FMatrix33 IMatrix(Child->I());
-			const FMatrix33 ChildWorldSpaceI =
-				(ChildRotation * FMatrix::Identity) * IMatrix * (ChildRotation * FMatrix::Identity).GetTransposed();
+			const FMatrix33 ChildWorldSpaceI = Chaos::Utilities::ComputeWorldSpaceInertia(ChildRotation, Child->I());
 			if (ChildWorldSpaceI.ContainsNaN())
 			{
 				continue;
@@ -91,9 +90,7 @@ namespace Chaos
 				const FRotation3& ChildRotation = Child->R();
 				const FReal ChildMass = Child->M();
 
-				const FMatrix33 IMatrix(Child->I());
-				const FMatrix33 ChildWorldSpaceI =
-					(ChildRotation * FMatrix::Identity) * IMatrix * (ChildRotation * FMatrix::Identity).GetTransposed();
+				const FMatrix33 ChildWorldSpaceI = Chaos::Utilities::ComputeWorldSpaceInertia(ChildRotation, Child->I());
 				if (ChildWorldSpaceI.ContainsNaN())
 				{
 					continue;
@@ -109,14 +106,14 @@ namespace Chaos
 		for (int32 i = 0; i < 3; i++)
 		{
 			const FVec3& InertiaTensor = Parent->I();
-			if (InertiaTensor[i] < SMALL_NUMBER)
+			if (InertiaTensor[i] < UE_SMALL_NUMBER)
 			{
 				Parent->SetI(TVec3<FRealSingle>(1.f, 1.f, 1.f));
 				break;
 			}
 		}
 
-		if (!ensure(bHasChild) || !ensure(Parent->M() > SMALL_NUMBER))
+		if (!ensure(bHasChild) || !ensure(Parent->M() > UE_SMALL_NUMBER))
 		{
 			Parent->M() = 1.0;
 			Parent->X() = FVec3(0);
@@ -134,7 +131,7 @@ namespace Chaos
 			return;
 		}
 
-		check(Parent->M() > SMALL_NUMBER);
+		check(Parent->M() > UE_SMALL_NUMBER);
 
 		Parent->X() /= Parent->M();
 		Parent->V() /= Parent->M();
@@ -171,6 +168,12 @@ namespace Chaos
 						m * (p2 * p2 + p0 * p0), -m * p2 * p1, m * (p1 * p1 + p0 * p0));
 			}
 		}
+
+		if (ForceMassOrientation)
+		{
+			ParentInertia = ForceMassOrientation->GetRotation().ToMatrix() * ParentInertia * ForceMassOrientation->GetRotation().ToMatrix().GetTransposed();
+		}
+
 		if (ParentInertia.ContainsNaN())
 		{
 			ParentInertia = FMatrix33(1,1,1);
@@ -179,7 +182,7 @@ namespace Chaos
 		{
 			for (int32 i = 0; i < 3; i++)
 			{
-				if (ParentInertia.GetColumn(i)[i] < SMALL_NUMBER)
+				if (ParentInertia.GetColumn(i)[i] < UE_SMALL_NUMBER)
 				{
 					ParentInertia = FMatrix33(1,1,1);
 					break;
@@ -213,7 +216,7 @@ namespace Chaos
 	void 
 		UpdateKinematicProperties(
 			Chaos::FPBDRigidParticleHandle* InParent,
-			FRigidClustering::FClusterMap& MChildren,
+			const FRigidClustering::FClusterMap& MChildren,
 			FRigidClustering::FRigidEvolution& MEvolution)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_UpdateKinematicProperties);
@@ -225,41 +228,62 @@ namespace Chaos
 		{
 			if (MChildren.Contains(ClusteredCurrentNode) && MChildren[ClusteredCurrentNode].Num())
 			{
-				// TQueue is a linked list, which has no preallocator.
-				TQueue<Chaos::FPBDRigidParticleHandle*> Queue;
-				for (Chaos::FPBDRigidParticleHandle* Child : MChildren[ClusteredCurrentNode])
+				if (ClusteredCurrentNode->IsAnchored())
 				{
-					Queue.Enqueue(Child);
+					ObjectState = EObjectStateType::Kinematic;
 				}
-
-				Chaos::FPBDRigidParticleHandle* CurrentHandle;
-				while (Queue.Dequeue(CurrentHandle) && ObjectState == EObjectStateType::Dynamic)
+				else
 				{
-					if (FClusterHandle CurrentClusterHandle = CurrentHandle->CastToClustered())
+					// TQueue is a linked list, which has no preallocator.
+					TQueue<Chaos::FPBDRigidParticleHandle*> Queue;
+					for (Chaos::FPBDRigidParticleHandle* Child : MChildren[ClusteredCurrentNode])
 					{
-						// @question : Maybe we should just store the leaf node bodies in a
-						// map, that will require Memory(n*log(n))
-						if (MChildren.Contains(CurrentClusterHandle))
+						Queue.Enqueue(Child);
+					}
+
+					Chaos::FPBDRigidParticleHandle* CurrentHandle;
+					while (Queue.Dequeue(CurrentHandle) && ObjectState == EObjectStateType::Dynamic)
+					{
+						bool bIsAnchored = false;
+						if (FClusterHandle CurrentClusterHandle = CurrentHandle->CastToClustered())
 						{
-							for (Chaos::FPBDRigidParticleHandle* Child : MChildren[CurrentClusterHandle])
+							// @question : Maybe we should just store the leaf node bodies in a
+							// map, that will require Memory(n*log(n))
+							if (MChildren.Contains(CurrentClusterHandle))
 							{
-								Queue.Enqueue(Child);
+								for (Chaos::FPBDRigidParticleHandle* Child : MChildren[CurrentClusterHandle])
+								{
+									Queue.Enqueue(Child);
+								}
+							}
+							
+							bIsAnchored = CurrentClusterHandle->IsAnchored();
+						}
+
+						if (bIsAnchored)
+						{
+							ObjectState = EObjectStateType::Kinematic;
+						}
+						else
+						{
+							const EObjectStateType CurrState = CurrentHandle->ObjectState();
+							if (CurrState == EObjectStateType::Kinematic)
+							{
+								ObjectState = EObjectStateType::Kinematic;
+							}
+							else if (CurrState == EObjectStateType::Static)
+							{
+								ObjectState = EObjectStateType::Static;
 							}
 						}
-					}
-
-					const EObjectStateType CurrState = CurrentHandle->ObjectState();
-					if (CurrState == EObjectStateType::Kinematic)
-					{
-						ObjectState = EObjectStateType::Kinematic;
-					}
-					else if (CurrState == EObjectStateType::Static)
-					{
-						ObjectState = EObjectStateType::Static;
 					}
 				}
 
 				MEvolution.SetParticleObjectState(ClusteredCurrentNode, ObjectState);
+				if (ObjectState == Chaos::EObjectStateType::Dynamic)
+				{
+					MEvolution.SetParticleKinematicTarget(ClusteredCurrentNode, FKinematicTarget());
+				}
 			}
 		}
 	}
@@ -275,6 +299,7 @@ namespace Chaos
 	UpdateGeometry(
 		Chaos::FPBDRigidClusteredParticleHandle* Parent,
 		const TSet<FPBDRigidParticleHandle*>& Children,
+		const FRigidClustering::FClusterMap& ChildrenMap,
 		TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe> ProxyGeometry,
 		const FClusterCreationParameters& Parameters)
 	{
@@ -297,34 +322,6 @@ namespace Chaos
 
 		const bool bUseCollisionPoints = (ProxyGeometry || Parameters.bCopyCollisionParticles) && !Parameters.CollisionParticles;
 		bool bUseParticleImplicit = false;
-
-		// Need to extract a filter off one of the cluster children 
-		FCollisionFilterData SimFilter, QueryFilter;
-		for (FPBDRigidParticleHandle* Child : Children)
-		{
-			bool bFilterValid = false;
-			for (const TUniquePtr<FPerShapeData>& Shape : Child->ShapesArray())
-			{
-				if (Shape)
-				{
-					SimFilter = Shape->GetSimData();
-					bFilterValid = SimFilter.Word0 != 0 || SimFilter.Word1 != 0 || SimFilter.Word2 != 0 || SimFilter.Word3 != 0;
-
-					QueryFilter = Shape->GetQueryData();
-				}
-
-				if (bFilterValid)
-				{
-					break;
-				}
-			}
-
-			// Bail once we've found one
-			if (bFilterValid)
-			{
-				break;
-			}
-		}
 
 		{ // STAT_UpdateGeometry_GatherObjects
 			SCOPE_CYCLE_COUNTER(STAT_UpdateGeometry_GatherObjects);
@@ -395,7 +392,7 @@ namespace Chaos
 		// ignore unions for now as we don't yet support deep copy of it
 		// on the GT they are only used by clusters that aggregate their children shapes ( see GeometryCollectionPhysicsProxy.cpp )
 		// by failing artificially this condition thmake sure we create a FImplicitObjectUnionClustered for this particle 
-		if (ProxyGeometry && ProxyGeometry->GetType() != ImplicitObjectType::Union)
+		if (ProxyGeometry)
 		{
 			const FVector Scale = Parameters.Scale;
 			auto DeepCopyImplicit = [&Scale](const TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe>& ImplicitToCopy) -> TUniquePtr<Chaos::FImplicitObject>
@@ -518,12 +515,52 @@ namespace Chaos
 			Parent->UpdateWorldSpaceState(Xf, FVec3(0));
 		}
 
-		// Set the captured filter to our new shapes
-		for (const TUniquePtr<FPerShapeData>& Shape : Parent->ShapesArray())
+		
+		// Update filter data on new shapes
+		const FRigidClustering::FRigidHandleArray& ChildrenArray = ChildrenMap[Parent];
+		UpdateClusterFilterDataFromChildren(Parent, ChildrenArray);
+	}
+	
+	void UpdateClusterFilterDataFromChildren(FPBDRigidClusteredParticleHandle* ClusterParent, const TArray<FPBDRigidParticleHandle*>& Children)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_GCUpdateFilterData);
+
+		FCollisionFilterData SelectedSimFilter, SelectedQueryFilter;
+		bool bFilterValid = false;
+		for (FPBDRigidParticleHandle* ChildHandle : Children)
 		{
-			Shape->SetSimData(SimFilter);
-			Shape->SetQueryData(QueryFilter);
+			for (const TUniquePtr<FPerShapeData>& Shape : ChildHandle->ShapesArray())
+			{
+				if (Shape)
+				{
+					SelectedSimFilter = Shape->GetSimData();
+					bFilterValid = SelectedSimFilter.Word0 != 0 || SelectedSimFilter.Word1 != 0 || SelectedSimFilter.Word2 != 0 || SelectedSimFilter.Word3 != 0;
+					SelectedQueryFilter = Shape->GetQueryData();
+
+					if (bFilterValid)
+					{
+						break;
+					}
+				}
+			}
+
+			if (bFilterValid)
+			{
+				break;
+			}
+		}
+
+		// Apply selected filters to shapes
+		if (bFilterValid)
+		{
+			const FShapesArray& ShapesArray = ClusterParent->ShapesArray();
+			for (const TUniquePtr<FPerShapeData>& Shape : ShapesArray)
+			{
+				Shape->SetQueryData(SelectedQueryFilter);
+				Shape->SetSimData(SelectedSimFilter);
+			}
 		}
 	}
+
 
 } // namespace Chaos

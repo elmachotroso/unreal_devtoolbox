@@ -5,25 +5,23 @@
 #include "Blackmagic.h"
 #include "BlackmagicMediaPrivate.h"
 #include "BlackmagicMediaSource.h"
-#include "IBlackmagicMediaModule.h"
 
+#include "Engine/GameEngine.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformProcess.h"
-#include "Misc/ScopeLock.h"
-#include "Templates/Atomic.h"
-
+#include "IBlackmagicMediaModule.h"
 #include "IMediaEventSink.h"
 #include "IMediaOptions.h"
-
 #include "MediaIOCoreEncodeTime.h"
 #include "MediaIOCoreFileWriter.h"
 #include "MediaIOCoreSamples.h"
-
-#include "Engine/GameEngine.h"
 #include "Misc/App.h"
+#include "Misc/ScopeLock.h"
+#include "RenderCommandFence.h"
 #include "Slate/SceneViewport.h"
 #include "Stats/Stats2.h"
 #include "Styling/SlateStyle.h"
+#include "Templates/Atomic.h"
 
 #include "BlackmagicMediaSource.h"
 
@@ -35,7 +33,6 @@
 #define LOCTEXT_NAMESPACE "BlackmagicMediaPlayer"
 
 DECLARE_CYCLE_STAT(TEXT("Blackmagic MediaPlayer Process received frame"), STAT_Blackmagic_MediaPlayer_ProcessReceivedFrame, STATGROUP_Media);
-
 
 bool bBlackmagicWriteOutputRawDataCmdEnable = false;
 static FAutoConsoleCommand BlackmagicWriteOutputRawDataCmd(
@@ -187,11 +184,23 @@ namespace BlackmagicMediaPlayerHelpers
 				}
 				if (bReceivedValidFrame || CurrentTime - LastHasFrameTime > TimeAllowedToConnect)
 				{
-					UE_LOG(LogBlackmagicMedia, Error, TEXT("There is no video input for '%s'."), *MediaPlayer->GetUrl());
-					MediaState = EMediaState::Error;
+					if (!MediaPlayer->bAutoDetect)
+					{
+						UE_LOG(LogBlackmagicMedia, Error, TEXT("There is no video input for '%s'."), *MediaPlayer->GetUrl());
+						MediaState = EMediaState::Error;
+					}
+					else
+					{
+						MediaState = EMediaState::Paused;
+					}
 				}
 				return;
 			}
+			else if (MediaState == EMediaState::Paused)
+			{
+				MediaState = EMediaState::Playing;
+			}
+
 			bReceivedValidFrame = bReceivedValidFrame || InFrameInfo.bHasInputSource;
 
 			FTimespan DecodedTime = FTimespan::FromSeconds(MediaPlayer->GetPlatformSeconds());
@@ -259,7 +268,7 @@ namespace BlackmagicMediaPlayerHelpers
 
 				if (InFrameInfo.VideoBuffer)
 				{
-					const bool bIsProgressivePicture = InFrameInfo.FieldDominance != BlackmagicDesign::EFieldDominance::Interlaced;
+					const bool bIsProgressivePicture = InFrameInfo.FieldDominance == BlackmagicDesign::EFieldDominance::Progressive;
 					EMediaTextureSampleFormat SampleFormat = EMediaTextureSampleFormat::CharBGRA;
 					EMediaIOCoreEncodePixelFormat EncodePixelFormat = EMediaIOCoreEncodePixelFormat::CharUYVY;
 					FString OutputFilename = "";
@@ -293,25 +302,69 @@ namespace BlackmagicMediaPlayerHelpers
 							EncodeTime.Render(SetTimecode.Hours, SetTimecode.Minutes, SetTimecode.Seconds, SetTimecode.Frames);
 						}
 
-						auto TextureSample = MediaPlayer->TextureSamplePool->AcquireShared();
-						if (TextureSample->Initialize(InFrameInfo.VideoBuffer
-							, InFrameInfo.VideoPitch * InFrameInfo.VideoHeight
-							, InFrameInfo.VideoPitch
-							, InFrameInfo.VideoWidth
-							, InFrameInfo.VideoHeight
-							, SampleFormat
-							, DecodedTime
-							, MediaPlayer->VideoFrameRate
-							, DecodedTimecode
-							, bIsSRGBInput))
+						bool bGPUDirectTexturesAvailable = false;
+						if (MediaPlayer->CanUseGPUTextureTransfer())
 						{
-							MediaPlayer->Samples->AddVideo(TextureSample);
+							if (!MediaPlayer->Textures.Num())
+							{
+								bGPUDirectTexturesAvailable = false;
+								UE_LOG(LogBlackmagicMedia, Error, TEXT("No texture available while doing a gpu texture transfer."));
+							}
+							else
+							{
+								bGPUDirectTexturesAvailable = true;
+							}
+						}
+
+						auto TextureSample = MediaPlayer->TextureSamplePool->AcquireShared();
+						bool bInitializeResult = false;
+						if (bGPUDirectTexturesAvailable)
+						{
+							bInitializeResult = TextureSample->SetProperties(InFrameInfo.VideoPitch, InFrameInfo.VideoWidth, InFrameInfo.VideoHeight, SampleFormat, DecodedTime, MediaPlayer->VideoFrameRate, DecodedTimecode, bIsSRGBInput);
+							if (bInitializeResult)
+							{
+								TextureSample->SetBuffer(InFrameInfo.VideoBuffer);
+							}
+						}
+						else
+						{
+							bInitializeResult = TextureSample->Initialize(InFrameInfo.VideoBuffer
+								, InFrameInfo.VideoPitch * InFrameInfo.VideoHeight
+								, InFrameInfo.VideoPitch
+								, InFrameInfo.VideoWidth
+								, InFrameInfo.VideoHeight
+								, SampleFormat
+								, DecodedTime
+								, MediaPlayer->VideoFrameRate
+								, DecodedTimecode
+								, bIsSRGBInput);
+						}
+
+						if (bInitializeResult)
+						{
+							if (bGPUDirectTexturesAvailable && MediaPlayer->CanUseGPUTextureTransfer())
+							{
+								MediaPlayer->PreGPUTransfer(TextureSample);
+								MediaPlayer->ExecuteGPUTransfer(TextureSample);
+							}
+							else
+							{
+								MediaPlayer->Samples->AddVideo(TextureSample);
+							}
 						}
 					}
 					else
 					{
+						bool bEven = true;
+
+						if (FMediaIOCorePlayerBase::CVarExperimentalFieldFlipFix.GetValueOnAnyThread())
+						{
+							bEven = GFrameCounterRenderThread % 2 != FMediaIOCorePlayerBase::CVarFlipInterlaceFields.GetValueOnAnyThread();
+						}
+
 						auto TextureSampleEven = MediaPlayer->TextureSamplePool->AcquireShared();
-						if (TextureSampleEven->InitializeWithEvenOddLine(true
+
+						if (TextureSampleEven->InitializeWithEvenOddLine(bEven
 							, InFrameInfo.VideoBuffer
 							, InFrameInfo.VideoPitch * InFrameInfo.VideoHeight
 							, InFrameInfo.VideoPitch
@@ -327,7 +380,7 @@ namespace BlackmagicMediaPlayerHelpers
 						}
 
 						auto TextureSampleOdd = MediaPlayer->TextureSamplePool->AcquireShared();
-						if (TextureSampleOdd->InitializeWithEvenOddLine(false
+						if (TextureSampleOdd->InitializeWithEvenOddLine(!bEven
 							, InFrameInfo.VideoBuffer
 							, InFrameInfo.VideoPitch * InFrameInfo.VideoHeight
 							, InFrameInfo.VideoPitch
@@ -348,11 +401,18 @@ namespace BlackmagicMediaPlayerHelpers
 
 		virtual void OnFrameFormatChanged(const BlackmagicDesign::FFormatInfo& NewFormat) override
 		{
-			UE_LOG(LogBlackmagicMedia, Error, TEXT("The video format changed for '%s'."), MediaPlayer ? *MediaPlayer->GetUrl() : TEXT("<Invalid>"));
-			MediaState = EMediaState::Error;
+			if (MediaPlayer->bAutoDetect)
+			{
+				MediaPlayer->VideoFrameRate = FFrameRate(NewFormat.FrameRateNumerator, NewFormat.FrameRateDenominator);
+			}
+			else
+			{
+				UE_LOG(LogBlackmagicMedia, Error, TEXT("The video format changed for '%s'."), MediaPlayer ? *MediaPlayer->GetUrl() : TEXT("<Invalid>"));
+				MediaState = EMediaState::Error;
+			}
 		}
 
-		virtual void OnInterlacedOddFieldEvent() override
+		virtual void OnInterlacedOddFieldEvent(int64 FrameNumber) override
 		{
 			
 		}
@@ -402,8 +462,8 @@ namespace BlackmagicMediaPlayerHelpers
 FBlackmagicMediaPlayer::FBlackmagicMediaPlayer(IMediaEventSink& InEventSink)
 	: Super(InEventSink)
 	, EventCallback(nullptr)
-	, AudioSamplePool(new FBlackmagicMediaAudioSamplePool)
-	, TextureSamplePool(new FBlackmagicMediaTextureSamplePool)
+	, AudioSamplePool(MakeUnique<FBlackmagicMediaAudioSamplePool>())
+	, TextureSamplePool(MakeUnique<FBlackmagicMediaTextureSamplePool>())
 	, bVerifyFrameDropCount(false)
 	, SupportedSampleTypes(EMediaIOSampleType::None)
 {
@@ -412,8 +472,6 @@ FBlackmagicMediaPlayer::FBlackmagicMediaPlayer(IMediaEventSink& InEventSink)
 FBlackmagicMediaPlayer::~FBlackmagicMediaPlayer()
 {
 	Close();
-	delete TextureSamplePool;
-	delete AudioSamplePool;
 }
 
 /* IMediaPlayer interface
@@ -432,6 +490,9 @@ void FBlackmagicMediaPlayer::Close()
 
 	//Disable all our channels from the monitor
 	Samples->EnableTimedDataChannels(this, EMediaIOSampleType::None);
+
+	UnregisterSampleBuffers();
+	UnregisterTextures();
 
 	Super::Close();
 }
@@ -460,7 +521,10 @@ bool FBlackmagicMediaPlayer::Open(const FString& Url, const IMediaOptions* Optio
 	{
 		return false;
 	}
-
+	
+	const EMediaIOAutoDetectableTimecodeFormat TimecodeFormat = (EMediaIOAutoDetectableTimecodeFormat)(Options->GetMediaOption(BlackmagicMediaOption::TimecodeFormat, (int64)EMediaIOAutoDetectableTimecodeFormat::None));
+	const bool bAutoDetectTimecode = TimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::Auto;
+	
 	BlackmagicDesign::FChannelInfo ChannelInfo;
 	ChannelInfo.DeviceIndex = Options->GetMediaOption(BlackmagicMediaOption::DeviceIndex, (int64)0);
 
@@ -468,23 +532,27 @@ bool FBlackmagicMediaPlayer::Open(const FString& Url, const IMediaOptions* Optio
 	EventCallback = new BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback(this, ChannelInfo);
 
 	BlackmagicDesign::FInputChannelOptions ChannelOptions;
+	ChannelOptions.bAutoDetect = bAutoDetect;
 	ChannelOptions.CallbackPriority = 10;
 	ChannelOptions.bReadVideo = Options->GetMediaOption(BlackmagicMediaOption::CaptureVideo, true);
 	ChannelOptions.FormatInfo.DisplayMode = Options->GetMediaOption(BlackmagicMediaOption::BlackmagicVideoFormat, (int64)BlackmagicMediaOption::DefaultVideoFormat);
-	EBlackmagicMediaSourceColorFormat ColorFormat = (EBlackmagicMediaSourceColorFormat)(Options->GetMediaOption(BlackmagicMediaOption::ColorFormat, (int64)EBlackmagicMediaSourceColorFormat::YUV8));
-	ChannelOptions.PixelFormat = ColorFormat == EBlackmagicMediaSourceColorFormat::YUV8 ? BlackmagicDesign::EPixelFormat::pf_8Bits : BlackmagicDesign::EPixelFormat::pf_10Bits;
+	BlackmagicColorFormat = (EBlackmagicMediaSourceColorFormat)(Options->GetMediaOption(BlackmagicMediaOption::ColorFormat, (int64)EBlackmagicMediaSourceColorFormat::YUV8));
+
+	ChannelOptions.PixelFormat = BlackmagicColorFormat == EBlackmagicMediaSourceColorFormat::YUV8 ? BlackmagicDesign::EPixelFormat::pf_8Bits : BlackmagicDesign::EPixelFormat::pf_10Bits;
 	const bool bIsSRGBInput = Options->GetMediaOption(BlackmagicMediaOption::SRGBInput, true);
 
-	const EMediaIOTimecodeFormat TimecodeFormat = (EMediaIOTimecodeFormat)(Options->GetMediaOption(BlackmagicMediaOption::TimecodeFormat, (int64)EMediaIOTimecodeFormat::None));
 	switch (TimecodeFormat)
 	{
-	case EMediaIOTimecodeFormat::LTC:
+	case EMediaIOAutoDetectableTimecodeFormat::Auto:
+		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_Auto;
+		break;
+	case EMediaIOAutoDetectableTimecodeFormat::LTC:
 		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_LTC;
 		break;
-	case EMediaIOTimecodeFormat::VITC:
+	case EMediaIOAutoDetectableTimecodeFormat::VITC:
 		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_VITC1;
 		break;
-	case EMediaIOTimecodeFormat::None:
+	case EMediaIOAutoDetectableTimecodeFormat::None:
 	default:
 		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_None;
 		break;
@@ -503,7 +571,7 @@ bool FBlackmagicMediaPlayer::Open(const FString& Url, const IMediaOptions* Optio
 	Samples->EnableTimedDataChannels(this, SupportedSampleTypes);
 
 	bVerifyFrameDropCount = Options->GetMediaOption(BlackmagicMediaOption::LogDropFrame, false);
-	const bool bEncodeTimecodeInTexel = TimecodeFormat != EMediaIOTimecodeFormat::None && Options->GetMediaOption(BlackmagicMediaOption::EncodeTimecodeInTexel, false);
+	const bool bEncodeTimecodeInTexel = TimecodeFormat != EMediaIOAutoDetectableTimecodeFormat::None && Options->GetMediaOption(BlackmagicMediaOption::EncodeTimecodeInTexel, false);
 	MaxNumAudioFrameBuffer = Options->GetMediaOption(BlackmagicMediaOption::MaxAudioFrameBuffer, (int64)8);
 	MaxNumVideoFrameBuffer = Options->GetMediaOption(BlackmagicMediaOption::MaxVideoFrameBuffer, (int64)8);
 
@@ -535,7 +603,6 @@ bool FBlackmagicMediaPlayer::Open(const FString& Url, const IMediaOptions* Optio
 
 	return bSuccess;
 }
-
 
 void FBlackmagicMediaPlayer::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 {
@@ -607,6 +674,11 @@ void FBlackmagicMediaPlayer::SetupSampleChannels()
 	FMediaIOSamplingSettings AudioSettings = BaseSettings;
 	AudioSettings.BufferSize = MaxNumAudioFrameBuffer;
 	Samples->InitializeAudioBuffer(AudioSettings);
+}
+
+void FBlackmagicMediaPlayer::AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample)
+{
+	Samples->AddVideo(InSample);
 }
 
 #undef LOCTEXT_NAMESPACE

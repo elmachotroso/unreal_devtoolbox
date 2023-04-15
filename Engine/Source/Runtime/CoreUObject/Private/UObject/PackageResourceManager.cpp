@@ -3,6 +3,7 @@
 #include "UObject/PackageResourceManager.h"
 
 #include "Async/AsyncFileHandle.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageSegment.h"
 #include "Misc/PreloadableFile.h"
@@ -256,6 +257,13 @@ EPackageFormat ExtensionToPackageFormat(EPackageExtension Extension)
 	}
 }
 
+FOpenAsyncPackageResult::FOpenAsyncPackageResult(TUniquePtr<IAsyncReadFileHandle>&& InHandle, EPackageFormat InFormat, bool bInNeedsEngineVersionChecks)
+	: Handle(MoveTemp(InHandle))
+	, Format(InFormat)
+	, bNeedsEngineVersionChecks(bInNeedsEngineVersionChecks)
+{
+}
+
 FOpenAsyncPackageResult::~FOpenAsyncPackageResult()
 {
 	// Defined in CPP so we can forward declare IAsyncReadFileHandle
@@ -270,6 +278,17 @@ bool IsEditorDomainEnabled()
 		{
 			return false;
 		}
+
+		if (FParse::Param(FCommandLine::Get(), TEXT("NoEditorDomain")))
+		{
+			return false;
+		}
+
+		if (FParse::Param(FCommandLine::Get(), TEXT("EditorDomain")))
+		{
+			return true;
+		}
+
 		bool bEnabledByConfig = true;
 		GConfig->GetBool(TEXT("EditorDomain"), TEXT("EditorDomainEnabled"), bEnabledByConfig, GEditorIni);
 		if (GConfig->GetBool(TEXT("CookSettings"), TEXT("EditorDomainEnabled"), bEnabledByConfig, GEditorIni))

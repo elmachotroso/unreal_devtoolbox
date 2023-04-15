@@ -54,7 +54,7 @@ static uint32 ComputeHashTextureStreamingDataForActor(AActor* InActor)
 	}
 	
 	TInlineComponentArray<UPrimitiveComponent*> Primitives;
-	InActor->GetComponents<UPrimitiveComponent>(Primitives);
+	InActor->GetComponents(Primitives);
 
 	TArray<uint32> PrimitiveHashes;
 	for (UPrimitiveComponent* Primitive : Primitives)
@@ -90,7 +90,7 @@ void BuildActorTextureStreamingData(AActor* InActor, EMaterialQualityLevel::Type
 	BuiltDataComponent->InitializeTextureStreamingContainer(GetPackedTextureStreamingQualityLevelFeatureLevel(InQualityLevel, InFeatureLevel));
 
 	TInlineComponentArray<UPrimitiveComponent*> Primitives;
-	InActor->GetComponents<UPrimitiveComponent>(Primitives);
+	InActor->GetComponents(Primitives);
 	for (UPrimitiveComponent* Primitive : Primitives)
 	{
 		if (Primitive)
@@ -141,7 +141,7 @@ bool BuildLevelTextureStreamingComponentDataFromActors(ULevel* InLevel)
 		}
 
 		TInlineComponentArray<UPrimitiveComponent*> Primitives;
-		Actor->GetComponents<UPrimitiveComponent>(Primitives);
+		Actor->GetComponents(Primitives);
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
 			if (Primitive && Primitive->bIsActorTextureStreamingBuiltData)
@@ -165,7 +165,12 @@ bool GetTextureIsStreamable(const UTexture& Texture)
 bool GetTextureIsStreamableOnPlatform(const UTexture& Texture, const ITargetPlatform& TargetPlatform)
 {
 	const bool bPlatformSupportsTextureStreaming = TargetPlatform.SupportsFeature(ETargetPlatformFeatures::TextureStreaming);
-	
+	if ( ! bPlatformSupportsTextureStreaming )
+	{
+		// IsCandidateForTextureStreamingOnPlatformDuringCook also checks this
+		return false;
+	}
+
 	bool bStreamable = false;
 	if (Texture.IsA(UTexture2DArray::StaticClass()))
 	{
@@ -180,7 +185,7 @@ bool GetTextureIsStreamableOnPlatform(const UTexture& Texture, const ITargetPlat
 		bStreamable = true;
 	}
 
-	bStreamable &= Texture.IsCandidateForTextureStreaming(&TargetPlatform);
+	bStreamable &= Texture.IsCandidateForTextureStreamingOnPlatformDuringCook(&TargetPlatform);
 	return bStreamable;
 }
 
@@ -283,7 +288,7 @@ ENGINE_API bool BuildTextureStreamingComponentData(UWorld* InWorld, EMaterialQua
 			}
 
 			TInlineComponentArray<UPrimitiveComponent*> Primitives;
-			Actor->GetComponents<UPrimitiveComponent>(Primitives);
+			Actor->GetComponents(Primitives);
 
 			for (UPrimitiveComponent* Primitive : Primitives)
 			{
@@ -345,7 +350,7 @@ uint32 PackRelativeBox(const FVector& RefOrigin, const FVector& RefExtent, const
 {
 	const FVector RefMin = RefOrigin - RefExtent;
 	// 15.5 and 31.5 have the / 2 scale included 
-	const FVector PackScale = FVector(15.5f, 15.5f, 31.5f) / RefExtent.ComponentMax(FVector(KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER));
+	const FVector PackScale = FVector(15.5f, 15.5f, 31.5f) / RefExtent.ComponentMax(FVector(UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER));
 
 	const FVector Min = Origin - Extent;
 	const FVector Max = Origin + Extent;
@@ -367,7 +372,7 @@ uint32 PackRelativeBox(const FVector& RefOrigin, const FVector& RefExtent, const
 uint32 PackRelativeBox(const FBox& RefBox, const FBox& Box)
 {
 	// 15.5 and 31.5 have the / 2 scale included 
-	const FVector PackScale = FVector(15.5f, 15.5f, 31.5f) / RefBox.GetExtent().ComponentMax(FVector(KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER));
+	const FVector PackScale = FVector(15.5f, 15.5f, 31.5f) / RefBox.GetExtent().ComponentMax(FVector(UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER));
 
 	const FVector RelMin = (Box.Min - RefBox.Min) * PackScale;
 	const FVector RelMax = (Box.Max - RefBox.Min) * PackScale;
@@ -401,7 +406,7 @@ void UnpackRelativeBox(const FBoxSphereBounds& InRefBounds, uint32 InPackedRelBo
 
 		const FVector RefMin = InRefBounds.Origin - InRefBounds.BoxExtent;
 		// 15.5 and 31.5 have the / 2 scale included 
-		const FVector UnpackScale = InRefBounds.BoxExtent.ComponentMax(FVector(KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER, KINDA_SMALL_NUMBER)) / FVector(15.5f, 15.5f, 31.5f);
+		const FVector UnpackScale = InRefBounds.BoxExtent.ComponentMax(FVector(UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER, UE_KINDA_SMALL_NUMBER)) / FVector(15.5f, 15.5f, 31.5f);
 
 		const FVector Min = FVector((float)PackedMinX, (float)PackedMinY, (float)PackedMinZ) * UnpackScale + RefMin;
 		const FVector Max = FVector((float)PackedMaxX, (float)PackedMaxY, (float)PackedMaxZ) * UnpackScale + RefMin;
@@ -437,11 +442,11 @@ uint32 FStreamingTextureBuildInfo::ComputeHash() const
 }
 #endif
 
-bool FStreamingTextureLevelContext::UseTextureStreamingBuiltData = true;
-FAutoConsoleCommand FStreamingTextureLevelContext::UseTextureStreamingBuiltDataCommand(
+static int32 GUseTextureStreamingBuiltData = 1;
+static FAutoConsoleVariableRef CVarUseTextureStreamingBuiltData(
 	TEXT("r.Streaming.UseTextureStreamingBuiltData"),
-	TEXT("Turn on/off usage of texture streaming built data (0 to turn off)."),
-	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args) { FStreamingTextureLevelContext::UseTextureStreamingBuiltData = (Args.Num() != 1) || (Args[0] != TEXT("0")); }));
+	GUseTextureStreamingBuiltData,
+	TEXT("Turn on/off usage of texture streaming built data (0 to turn off)."));
 
 FStreamingTextureLevelContext::FStreamingTextureLevelContext(EMaterialQualityLevel::Type InQualityLevel, const UPrimitiveComponent* Primitive)
 	: TextureGuidToLevelIndex(nullptr)
@@ -544,7 +549,7 @@ void FStreamingTextureLevelContext::UpdateQualityAndFeatureLevel(EMaterialQualit
 
 bool FStreamingTextureLevelContext::CanUseTextureStreamingBuiltData() const
 {
-	return bIsBuiltDataValid && FStreamingTextureLevelContext::UseTextureStreamingBuiltData;
+	return bIsBuiltDataValid && GUseTextureStreamingBuiltData != 0;
 }
 
 FStreamingTextureLevelContext::~FStreamingTextureLevelContext()
@@ -757,7 +762,7 @@ void CheckTextureStreamingBuildValidity(UWorld* InWorld)
 					}
 
 					TInlineComponentArray<UPrimitiveComponent*> Primitives;
-					Actor->GetComponents<UPrimitiveComponent>(Primitives);
+					Actor->GetComponents(Primitives);
 
 					for (UPrimitiveComponent* Primitive : Primitives)
 					{

@@ -6,17 +6,20 @@
 #include "MassCommonFragments.h"
 #include "StructUtilsTypes.h"
 #include "MassLODFragments.h"
+#include "MassEntityUtils.h"
 
-void UMassLODCollectorTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+
+void UMassLODCollectorTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
 	BuildContext.AddFragment<FMassViewerInfoFragment>();
 	BuildContext.AddTag<FMassCollectLODViewerInfoTag>();
+	BuildContext.RequireFragment<FTransformFragment>();
 }
 
-void UMassSimulationLODTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+void UMassSimulationLODTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	BuildContext.AddTag<FMassCollectLODViewerInfoTag>(); // Depends on FMassViewerInfoFragment
-	BuildContext.AddFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassViewerInfoFragment>();
+	BuildContext.RequireFragment<FTransformFragment>();
 
 	FMassSimulationLODFragment& LODFragment = BuildContext.AddFragment_GetRef<FMassSimulationLODFragment>();
 
@@ -27,13 +30,13 @@ void UMassSimulationLODTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 		BuildContext.AddTag<FMassOffLODTag>();
 	}
 
-	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
-	check(EntitySubsystem);
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
+
+	FConstSharedStruct ParamsFragment = EntityManager.GetOrCreateConstSharedFragment(Params);
+	BuildContext.AddConstSharedFragment(ParamsFragment);
 
 	uint32 ParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(Params));
-	FConstSharedStruct ParamsFragment = EntitySubsystem->GetOrCreateConstSharedFragment(ParamsHash, Params);
-	BuildContext.AddConstSharedFragment(ParamsFragment);
-	FSharedStruct SharedFragment = EntitySubsystem->GetOrCreateSharedFragment<FMassSimulationLODSharedFragment>(ParamsHash, Params);
+	FSharedStruct SharedFragment = EntityManager.GetOrCreateSharedFragmentByHash<FMassSimulationLODSharedFragment>(ParamsHash, Params);
 	BuildContext.AddSharedFragment(SharedFragment);
 
 	// Variable ticking from simulation LOD
@@ -42,10 +45,11 @@ void UMassSimulationLODTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 		BuildContext.AddFragment<FMassSimulationVariableTickFragment>();
 		BuildContext.AddChunkFragment<FMassSimulationVariableTickChunkFragment>();
 
-		uint32 VariableTickParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(VariableTickParams));
-		FConstSharedStruct VariableTickParamsFragment = EntitySubsystem->GetOrCreateConstSharedFragment(VariableTickParamsHash, VariableTickParams);
+		FConstSharedStruct VariableTickParamsFragment = EntityManager.GetOrCreateConstSharedFragment(VariableTickParams);
 		BuildContext.AddConstSharedFragment(VariableTickParamsFragment);
-		FSharedStruct VariableTickSharedFragment = EntitySubsystem->GetOrCreateSharedFragment<FMassSimulationVariableTickSharedFragment>(VariableTickParamsHash, VariableTickParams);
+
+		uint32 VariableTickParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(VariableTickParams));
+		FSharedStruct VariableTickSharedFragment = EntityManager.GetOrCreateSharedFragmentByHash<FMassSimulationVariableTickSharedFragment>(VariableTickParamsHash, VariableTickParams);
 		BuildContext.AddSharedFragment(VariableTickSharedFragment);
 	}
 }

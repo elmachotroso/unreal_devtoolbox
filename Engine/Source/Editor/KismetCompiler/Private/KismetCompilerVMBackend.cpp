@@ -63,7 +63,7 @@ public:
 	
 	void Serialize( void* V, int64 Length ) override
 	{
-		int32 iStart = ScriptBuffer.AddUninitialized( Length );
+		int32 iStart = ScriptBuffer.AddUninitialized(IntCastChecked<int32, int64>(Length));
 		FMemory::Memcpy( &(ScriptBuffer[iStart]), V, Length );
 	}
 
@@ -73,11 +73,12 @@ public:
 	{
 		FArchive& Ar = *this;
 
-		// We can't call Serialize directly as we need to store the data endian clean.
-		FScriptName ScriptName = NameToScriptName(Name);
-		Ar << ScriptName.ComparisonIndex;
-		Ar << ScriptName.DisplayIndex;
-		Ar << ScriptName.Number;
+		// This must match the format and endianness expected by XFERNAME 
+		FNameEntryId ComparisonIndex = Name.GetComparisonIndex(), DisplayIndex = Name.GetDisplayIndex();
+		uint32 Number = Name.GetNumber();
+		Ar << ComparisonIndex;
+		Ar << DisplayIndex;
+		Ar << Number;
 
 		return Ar;
 	}
@@ -124,14 +125,14 @@ public:
 	{
 		checkSlow(E < 0xFF);
 
-		uint8 B = E; 
+		uint8 B = static_cast<uint8>(E); 
 		Serialize(&B, 1); 
 		return *this;
 	}
 
 	FArchive& operator<<(ECastToken E)
 	{
-		uint8 B = E; 
+		uint8 B = static_cast<uint8>(E);
 		Serialize(&B, 1); 
 		return *this;
 	}
@@ -147,7 +148,7 @@ public:
 
 	FArchive& operator<<(EPropertyType E)
 	{
-		uint8 B = E; 
+		uint8 B = static_cast<uint8>(E);
 		Serialize(&B, 1); 
 		return *this;
 	}
@@ -615,8 +616,8 @@ public:
 			// Additional Validation, since we cannot trust custom k2nodes
 			if (CoerceProperty && ensure(Schema) && ensure(CurrentCompilerContext))
 			{
-			    const bool bSecialCaseSelf = (Term->Type.PinSubCategory == UEdGraphSchema_K2::PN_Self);
-				if(!bSecialCaseSelf)
+			    const bool bSpecialCaseSelf = (Term->Type.PinSubCategory == UEdGraphSchema_K2::PN_Self);
+				if(!bSpecialCaseSelf)
 			    {
 				    FEdGraphPinType TrueType;
 				    const bool bValidProperty = Schema->ConvertPropertyToPinType(CoerceProperty, TrueType);
@@ -641,12 +642,12 @@ public:
 					    }
 					    return true;
 				    };
-    
-				    if (!bValidProperty || !AreTypesBinaryCompatible(Term->Type, TrueType))
-				    {
-					    const FString ErrorMessage = FString::Printf(TEXT("ICE: The type of property %s doesn't match a term. @@"), *CoerceProperty->GetPathName());
-					    CurrentCompilerContext->MessageLog.Error(*ErrorMessage, Term->SourcePin);
-				    }
+
+					if (bValidProperty && !AreTypesBinaryCompatible(Term->Type, TrueType))
+					{
+						const FString ErrorMessage = FString::Printf(TEXT("ICE: The type of property %s doesn't match the terminal type for pin @@."), *CoerceProperty->GetPathName());
+						CurrentCompilerContext->MessageLog.Error(*ErrorMessage, Term->SourcePin);
+					}
 				}
 			}
 
@@ -912,11 +913,17 @@ public:
 							continue;
 						}
 
+						// Create a new term for each property, and serialize it out
 						for (int32 ArrayIter = 0; ArrayIter < Prop->ArrayDim; ++ArrayIter)
 						{
-							// Create a new term for each property, and serialize it out
 							FBPTerminal NewTerm;
-							Schema->ConvertPropertyToPinType(Prop, NewTerm.Type);
+							if(!Schema->ConvertPropertyToPinType(Prop, NewTerm.Type))
+							{								
+								// Do nothing for unsupported/unhandled property types. This will leave the value unchanged from its constructed default.
+								Writer << EX_Nothing;
+								continue;
+							}
+
 							NewTerm.bIsLiteral = true;
 							NewTerm.Source = Term->Source;
 							NewTerm.SourcePin = Term->SourcePin;
@@ -943,7 +950,7 @@ public:
 				FProperty* InnerProp = ArrayPropr->Inner;
 				ensure(InnerProp);
 				FScriptArray ScriptArray;
-				ArrayPropr->ImportText(*Term->Name, &ScriptArray, 0, NULL, GLog);
+				ArrayPropr->ImportText_Direct(*Term->Name, &ScriptArray, NULL, 0, GLog);
 
 				FScriptArrayHelper ScriptArrayHelper(ArrayPropr, &ScriptArray);
 				int32 ElementNum = ScriptArrayHelper.Num();
@@ -964,7 +971,7 @@ public:
 				ensure(InnerProp);
 
 				FScriptSet ScriptSet;
-				SetPropr->ImportText(*Term->Name, &ScriptSet, 0, NULL, GLog);
+				SetPropr->ImportText_Direct(*Term->Name, &ScriptSet, NULL, 0, GLog);
 				int32 ElementNum = ScriptSet.Num();
 
 				FScriptSetHelper ScriptSetHelper(SetPropr, &ScriptSet);
@@ -992,7 +999,7 @@ public:
 				ensure(KeyProp && ValProp);
 
 				FScriptMap ScriptMap;
-				MapPropr->ImportText(*Term->Name, &ScriptMap, 0, NULL, GLog);
+				MapPropr->ImportText_Direct(*Term->Name, &ScriptMap, NULL, 0, GLog);
 				int32 ElementNum = ScriptMap.Num();
 
 				FScriptMapHelper ScriptMapHelper(MapPropr, &ScriptMap);
@@ -1143,7 +1150,7 @@ public:
 		StructProperty->InitializeValue(StructData);
 
 		// Assume that any errors on the import of the name string have been caught in the function call generation
-		StructProperty->ImportText(*Term->Name, StructData, 0, NULL, GLog);
+		StructProperty->ImportText_Direct(*Term->Name, StructData, NULL, 0, GLog);
 
 		Writer << EX_StructConst;
 		Writer << LatentInfoStruct;
@@ -1170,11 +1177,18 @@ public:
 			{
 				// Create a new term for each property, and serialize it out
 				FBPTerminal NewTerm;
-				Schema->ConvertPropertyToPinType(Prop, NewTerm.Type);
-				NewTerm.bIsLiteral = true;
-				Prop->ExportText_InContainer(0, NewTerm.Name, StructData, StructData, NULL, PPF_None);
+				if(Schema->ConvertPropertyToPinType(Prop, NewTerm.Type))
+				{
+					NewTerm.bIsLiteral = true;
+					Prop->ExportText_InContainer(0, NewTerm.Name, StructData, StructData, NULL, PPF_None);
 
-				EmitTermExpr(&NewTerm, Prop);
+					EmitTermExpr(&NewTerm, Prop);
+				}
+				else
+				{
+					// Do nothing for unsupported/unhandled property types. This will leave the value unchanged from its constructed default.
+					Writer << EX_Nothing;
+				}
 			}
 		}
 
@@ -1618,7 +1632,8 @@ public:
 		EmitTerm(DestinationExpression);
 
 		Writer << EX_Cast;
-		uint8 CastType = !bIsInterfaceCast ? CST_ObjectToBool : CST_InterfaceToBool;
+		ECastToken CastToken = !bIsInterfaceCast ? CST_ObjectToBool : CST_InterfaceToBool;
+		uint8 CastType = static_cast<uint8>(CastToken);
 		Writer << CastType;
 		
 		FProperty* TargetProperty = !bIsInterfaceCast ? ((FProperty*)(GetDefault<FObjectProperty>())) : ((FProperty*)(GetDefault<FInterfaceProperty>()));
@@ -1849,7 +1864,7 @@ public:
 
 		Writer << EX_SwitchValue;
 		// number of cases (without default)
-		uint16 NumCases = ((Statement.RHS.Num() - 2) / TermsPerCase);
+		uint16 NumCases = IntCastChecked<uint16, int32>((Statement.RHS.Num() - 2) / TermsPerCase);
 		Writer << NumCases;
 		// end goto index
 		CodeSkipSizeType PatchUpNeededAtOffset = Writer.EmitPlaceholderSkip();
@@ -2058,50 +2073,8 @@ public:
 			case KCST_DoubleToFloatCast:
 				CastType = CST_DoubleToFloat;
 				break;
-			case KCST_DoubleToFloatArrayCast:
-				CastType = CST_DoubleToFloatArray;
-				break;
-			case KCST_DoubleToFloatSetCast:
-				CastType = CST_DoubleToFloatSet;
-				break;
 			case KCST_FloatToDoubleCast:
 				CastType = CST_FloatToDouble;
-				break;
-			case KCST_FloatToDoubleArrayCast:
-				CastType = CST_FloatToDoubleArray;
-				break;
-			case KCST_FloatToDoubleSetCast:
-				CastType = CST_FloatToDoubleSet;
-				break;
-			case KCST_VectorToVector3fCast:
-				CastType = CST_VectorToVector3f;
-				break;
-			case KCST_Vector3fToVectorCast:
-				CastType = CST_Vector3fToVector;
-				break;
-			case KCST_FloatToDoubleKeys_MapCast:
-				CastType = CST_FloatToDoubleKeys_Map;
-				break;
-			case KCST_DoubleToFloatKeys_MapCast:
-				CastType = CST_DoubleToFloatKeys_Map;
-				break;
-			case KCST_FloatToDoubleValues_MapCast:
-				CastType = CST_FloatToDoubleValues_Map;
-				break;
-			case KCST_DoubleToFloatValues_MapCast:
-				CastType = CST_DoubleToFloatValues_Map;
-				break;
-			case KCST_FloatToDoubleKeys_FloatToDoubleValues_MapCast:
-				CastType = CST_FloatToDoubleKeys_FloatToDoubleValues_Map;
-				break;
-			case KCST_DoubleToFloatKeys_FloatToDoubleValues_MapCast:
-				CastType = CST_DoubleToFloatKeys_FloatToDoubleValues_Map;
-				break;
-			case KCST_DoubleToFloatKeys_DoubleToFloatValues_MapCast:
-				CastType = CST_DoubleToFloatKeys_DoubleToFloatValues_Map;
-				break;
-			case KCST_FloatToDoubleKeys_DoubleToFloatValues_MapCast:
-				CastType = CST_FloatToDoubleKeys_DoubleToFloatValues_Map;
 				break;
 			default:
 				check(false);
@@ -2240,25 +2213,7 @@ public:
 			EmitCreateMapStatement(Statement);
 			break;
 		case KCST_DoubleToFloatCast:
-		case KCST_DoubleToFloatArrayCast:
-		case KCST_DoubleToFloatSetCast:
 		case KCST_FloatToDoubleCast:
-		case KCST_FloatToDoubleArrayCast:
-		case KCST_FloatToDoubleSetCast:
-		case KCST_VectorToVector3fCast:
-		case KCST_VectorToVector3fArrayCast:
-		case KCST_VectorToVector3fSetCast:
-		case KCST_Vector3fToVectorCast:
-		case KCST_Vector3fToVectorArrayCast:
-		case KCST_Vector3fToVectorSetCast:
-		case KCST_FloatToDoubleKeys_MapCast:
-		case KCST_DoubleToFloatKeys_MapCast:
-		case KCST_FloatToDoubleValues_MapCast:
-		case KCST_DoubleToFloatValues_MapCast:
-		case KCST_FloatToDoubleKeys_FloatToDoubleValues_MapCast:
-		case KCST_DoubleToFloatKeys_FloatToDoubleValues_MapCast:
-		case KCST_DoubleToFloatKeys_DoubleToFloatValues_MapCast:
-		case KCST_FloatToDoubleKeys_DoubleToFloatValues_MapCast:
 			EmitCastStatement(Statement);
 			break;
 		default:
@@ -2341,25 +2296,34 @@ void FKismetCompilerVMBackend::ConstructFunction(FKismetFunctionContext& Functio
 			UEdGraphNode* StatementNode = FunctionContext.LinearExecutionList[NodeIndex];
 			TArray<FBlueprintCompiledStatement*>* StatementList = FunctionContext.StatementsPerNode.Find(StatementNode);
 
-			if (StatementList != NULL)
+			if (StatementList != nullptr)
 			{
 				for (int32 StatementIndex = 0; StatementIndex < StatementList->Num(); ++StatementIndex)
 				{
 					FBlueprintCompiledStatement* Statement = (*StatementList)[StatementIndex];
 
 					ScriptWriter.GenerateCodeForStatement(CompilerContext, FunctionContext, *Statement, StatementNode);
-					
-					const bool bUberGraphFunctionCall = Statement->FunctionToCall && (Statement->FunctionToCall == Class->UberGraphFunction)
-						&& (EKismetCompiledStatementType::KCST_CallFunction == Statement->Type);
-					const bool bIsReducible = FKismetCompilerUtilities::IsStatementReducible(Statement->Type) || bUberGraphFunctionCall;
-					bAnyNonReducibleFunctionGenerated |= !bIsReducible;
+
+					// Abort code generation on error (no need to process additional statements).
+					if (FunctionContext.MessageLog.NumErrors > 0)
+					{
+						break;
+					}
 				}
+			}
+
+			// Reduce to a stub if any errors were raised. This ensures the VM won't attempt to evaluate an incomplete expression.
+			if (FunctionContext.MessageLog.NumErrors > 0)
+			{
+				ScriptArray.Empty();
+				ReturnStatement.bIsJumpTarget = false;
+				break;
 			}
 		}
 	}
 
 	// Handle the function return value
-	ScriptWriter.GenerateCodeForStatement(CompilerContext, FunctionContext, ReturnStatement, NULL);	
+	ScriptWriter.GenerateCodeForStatement(CompilerContext, FunctionContext, ReturnStatement, nullptr);	
 
 	// Fix up jump addresses
 	ScriptWriter.PerformFixups();

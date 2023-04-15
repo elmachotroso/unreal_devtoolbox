@@ -2,9 +2,14 @@
 
 
 #include "SViewportToolBar.h"
-#include "Framework/Application/SlateApplication.h"
+
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 #include "Widgets/Input/SMenuAnchor.h"
-#include "EditorStyleSet.h"
+
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "ViewportToolBar"
 
@@ -115,7 +120,7 @@ const FSlateBrush* SViewportToolBar::GetCameraMenuLabelIconFromViewportType(cons
 		break;
 	}
 
-	return FEditorStyle::GetBrush(Icon);
+	return FAppStyle::GetBrush(Icon);
 }
 
 bool SViewportToolBar::IsViewModeSupported(EViewModeIndex ViewModeIndex) const 

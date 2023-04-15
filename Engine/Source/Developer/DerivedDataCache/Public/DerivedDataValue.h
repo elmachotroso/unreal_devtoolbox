@@ -2,11 +2,13 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Compression/CompressedBuffer.h"
+#include "CoreTypes.h"
 #include "DerivedDataValueId.h"
 #include "IO/IoHash.h"
 #include "Memory/MemoryFwd.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/UnrealTemplate.h"
 
 #define UE_API DERIVEDDATACACHE_API
 

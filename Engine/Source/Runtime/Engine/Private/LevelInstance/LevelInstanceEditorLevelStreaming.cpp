@@ -2,14 +2,17 @@
 
 #include "LevelInstance/LevelInstanceEditorLevelStreaming.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelInstanceEditorLevelStreaming)
+
 #if WITH_EDITOR
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "LevelInstance/LevelInstanceEditorPivotActor.h"
+#include "LevelInstance/LevelInstanceEditorPivot.h"
 #include "EditorLevelUtils.h"
 #include "Editor.h"
 #include "Engine/LevelBounds.h"
 #include "GameFramework/WorldSettings.h"
+#include "PackageTools.h"
 #endif
 
 #if WITH_EDITOR
@@ -35,15 +38,25 @@ ULevelStreamingLevelInstanceEditor::ULevelStreamingLevelInstanceEditor(const FOb
 #if WITH_EDITOR
 TOptional<FFolder::FRootObject> ULevelStreamingLevelInstanceEditor::GetFolderRootObject() const
 {
-	if (ALevelInstance* LevelInstance = GetLevelInstanceActor())
+	if (ILevelInstanceInterface* LevelInstance = GetLevelInstance())
 	{
-		return FFolder::FRootObject(LevelInstance);
+		if (AActor* Actor = CastChecked<AActor>(LevelInstance))
+		{
+			return FFolder::FRootObject(Actor);
+		}
+	}
+
+	if (!LevelInstanceID.IsValid())
+	{
+		// When creating a new level instance, we have an invalid LevelInstanceID (until it gets loaded)
+		// Return the world as root object.
+		return FFolder::GetWorldRootFolder(GetWorld()).GetRootObject();
 	}
 
 	return TOptional<FFolder::FRootObject>();
 }
 
-ALevelInstance* ULevelStreamingLevelInstanceEditor::GetLevelInstanceActor() const
+ILevelInstanceInterface* ULevelStreamingLevelInstanceEditor::GetLevelInstance() const
 {
 	if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 	{
@@ -53,20 +66,52 @@ ALevelInstance* ULevelStreamingLevelInstanceEditor::GetLevelInstanceActor() cons
 	return nullptr;
 }
 
-ULevelStreamingLevelInstanceEditor* ULevelStreamingLevelInstanceEditor::Load(ALevelInstance* LevelInstanceActor)
+ULevelStreamingLevelInstanceEditor* ULevelStreamingLevelInstanceEditor::Load(ILevelInstanceInterface* LevelInstance)
 {
+	AActor* LevelInstanceActor = CastChecked<AActor>(LevelInstance);
 	UWorld* CurrentWorld = LevelInstanceActor->GetWorld();
 
-	TGuardValue<FLevelInstanceID> GuardEditLevelInstanceID(EditLevelInstanceID, LevelInstanceActor->GetLevelInstanceID());
-	if (ULevelStreamingLevelInstanceEditor* LevelStreaming = Cast<ULevelStreamingLevelInstanceEditor>(EditorLevelUtils::AddLevelToWorld(CurrentWorld, *LevelInstanceActor->GetWorldAssetPackage(), ULevelStreamingLevelInstanceEditor::StaticClass(), LevelInstanceActor->GetTransform())))
+	// Make sure the level is not already loaded
+	// For instance, drag and drop a Level into a Level Instance, then Edit the Level Instance will
+	// result in the level at the wrong location (level transform wasn't applied)
+	UPackage* LevelPackage = FindObject<UPackage>(nullptr, *LevelInstance->GetWorldAssetPackage());
+	UWorld* LevelWorld = LevelPackage ? UWorld::FindWorldInPackage(LevelPackage) : nullptr;
+	if (LevelWorld && LevelWorld->bIsWorldInitialized && !LevelWorld->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
+	{
+		UPackageTools::UnloadPackages({ LevelPackage });
+	}
+
+	TGuardValue<FLevelInstanceID> GuardEditLevelInstanceID(EditLevelInstanceID, LevelInstance->GetLevelInstanceID());
+	ULevelStreamingLevelInstanceEditor* LevelStreaming = nullptr;
+	// If Asset is null we can create a level here
+	if (LevelInstance->GetWorldAsset().IsNull())
+	{
+		LevelStreaming = Cast<ULevelStreamingLevelInstanceEditor>(EditorLevelUtils::CreateNewStreamingLevelForWorld(*CurrentWorld, ULevelStreamingLevelInstanceEditor::StaticClass(), TEXT(""), false, nullptr, true, TFunction<void(ULevel*)>(), LevelInstanceActor->GetTransform()));
+		if (LevelStreaming)
+		{
+			LevelInstanceActor->Modify();
+			LevelInstance->SetWorldAsset(LevelStreaming->GetLoadedLevel()->GetTypedOuter<UWorld>());
+		}
+	}
+	else
+	{
+		LevelStreaming = Cast<ULevelStreamingLevelInstanceEditor>(EditorLevelUtils::AddLevelToWorld(CurrentWorld, *LevelInstance->GetWorldAssetPackage(), ULevelStreamingLevelInstanceEditor::StaticClass(), LevelInstanceActor->GetTransform()));
+	}
+		
+	if (LevelStreaming)
 	{
 		check(LevelStreaming);
-		check(LevelStreaming->LevelInstanceID == LevelInstanceActor->GetLevelInstanceID());
+		check(LevelStreaming->LevelInstanceID == LevelInstance->GetLevelInstanceID());
 
 		GEngine->BlockTillLevelStreamingCompleted(LevelInstanceActor->GetWorld());
 
+		if (ULevel* LoadedLevel = LevelStreaming->GetLoadedLevel())
+		{
+			LoadedLevel->OnLoadedActorAddedToLevelEvent.AddUObject(LevelStreaming, &ULevelStreamingLevelInstanceEditor::OnLoadedActorAddedToLevel);
+		}
+
 		// Create special actor that will handle changing the pivot of this level
-		ALevelInstancePivot::Create(LevelInstanceActor, LevelStreaming);
+		FLevelInstanceEditorPivotHelper::Create(LevelInstance, LevelStreaming);
 
 		return LevelStreaming;
 	}
@@ -78,8 +123,17 @@ void ULevelStreamingLevelInstanceEditor::Unload(ULevelStreamingLevelInstanceEdit
 {
 	if (ULevelInstanceSubsystem* LevelInstanceSubsystem = LevelStreaming->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 	{
-		LevelInstanceSubsystem->RemoveLevelsFromWorld({ LevelStreaming->GetLoadedLevel() });
+		if (ULevel* LoadedLevel = LevelStreaming->GetLoadedLevel())
+		{
+			LoadedLevel->OnLoadedActorAddedToLevelEvent.RemoveAll(LevelStreaming);
+			LevelInstanceSubsystem->RemoveLevelsFromWorld({ LoadedLevel });
+		}
 	}
+}
+
+void ULevelStreamingLevelInstanceEditor::OnLoadedActorAddedToLevel(AActor& InActor)
+{
+	OnLevelActorAdded(&InActor);
 }
 
 void ULevelStreamingLevelInstanceEditor::OnLevelActorAdded(AActor* InActor)

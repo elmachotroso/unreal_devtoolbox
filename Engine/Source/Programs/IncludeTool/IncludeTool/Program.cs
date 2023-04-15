@@ -2,6 +2,8 @@
 
 using IncludeTool.Reports;
 using IncludeTool.Support;
+using EpicGames.Core;
+using UnrealBuildBase;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -66,7 +68,7 @@ namespace IncludeTool
 	/// </summary>
 	public enum TargetConfiguration
 	{
-		Debug, 
+		Debug,
 		Development,
 		Test,
 		Shipping
@@ -273,14 +275,14 @@ namespace IncludeTool
 
 			// Parse the command line options
 			CommandLineOptions Options = new CommandLineOptions();
-			if(!CommandLine.Parse(Args, Options))
+			if(!Support.CommandLine.Parse(Args, Options))
 			{
 				return 1;
 			}
 
 			// Make sure we've got an output directory
 			DirectoryReference WorkingDir = new DirectoryReference(Options.WorkingDir);
-			WorkingDir.CreateDirectory();
+			DirectoryReference.CreateDirectory(WorkingDir);
 
 			// Create an output log
 			FileReference LogFile = FileReference.Combine(WorkingDir, "Log.txt");
@@ -297,17 +299,17 @@ namespace IncludeTool
 					InputDir = new DirectoryReference(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "..\\..\\..\\.."));
 				}
 
-				// Generate the exported task list 
+				// Generate the exported task list
 				FileReference TaskListFile = FileReference.Combine(WorkingDir, "Targets", String.Format("{0} {1} {2}.xml", Options.Target, Options.Platform, Options.Configuration));
-				if (Options.CleanTaskList || !TaskListFile.Exists())
+				if (Options.CleanTaskList || !FileReference.Exists(TaskListFile))
 				{
 					Log.WriteLine("Generating task list for {0} {1} {2}...", Options.Target, Options.Platform, Options.Configuration);
-					TaskListFile.Directory.CreateDirectory();
+					DirectoryReference.CreateDirectory(TaskListFile.Directory);
 					GenerateTaskList(InputDir, Options.Target, Options.Platform, Options.Configuration, Options.Precompile, TaskListFile, Log);
 				}
 
 				// Read the exported target information
-				BuildTarget Target = BuildTarget.Read(TaskListFile.ChangeExtension(".json").FullName);
+				BuildTarget Target = BuildTarget.Read(TaskListFile.ChangeExtension(".json"));
 
 				/// Cache all the files
 				Log.WriteLine("Caching contents of {0}...", InputDir.FullName);
@@ -380,7 +382,8 @@ namespace IncludeTool
 					{
 						for(int Idx = 0; Idx < Cycles.Count; Idx++)
 						{
-							Log.WriteLine("warning: include cycle: {0}: {1}", Idx, Cycles[Idx].ToString());
+							Log.WriteLine("Error: include cycle: {0}: {1}", Idx, Cycles[Idx].ToString());
+							Log.WriteLine("Error: Unable to continue until this cycle has been removed.");
 						}
 						return 1;
 					}
@@ -466,9 +469,9 @@ namespace IncludeTool
 					foreach(string Name in StandardModuleDirectoryNames)
 					{
 						DirectoryReference BaseDir = DirectoryReference.Combine(Module.Directory, Name);
-						if(BaseDir.Exists())
+						if(DirectoryReference.Exists(BaseDir))
 						{
-							foreach(DirectoryReference ChildDir in BaseDir.EnumerateDirectoryReferences("*", SearchOption.AllDirectories))
+							foreach(DirectoryReference ChildDir in DirectoryReference.EnumerateDirectories(BaseDir, "*", SearchOption.AllDirectories))
 							{
 								RebaseIncludePaths[ChildDir] = BaseDir;
 							}
@@ -500,7 +503,7 @@ namespace IncludeTool
 						foreach(string Name in StandardModuleDirectoryNames)
 						{
 							DirectoryReference IncludePath = DirectoryReference.Combine(Pair.Key.Module.Directory, Name);
-							if(IncludePath.Exists())
+							if(DirectoryReference.Exists(IncludePath))
 							{
 								IncludePaths.Add(IncludePath);
 							}
@@ -573,7 +576,8 @@ namespace IncludeTool
 					// Warn about any files that appear to be PCHs but actually include declarations
 					foreach (SourceFile PreprocessedFile in PreprocessedFiles)
 					{
-						if(PreprocessedFile.Location.HasExtension("PCH.h") && (PreprocessedFile.Flags & SourceFileFlags.Aggregate) == 0)
+						if(PreprocessedFile.Location.HasExtension("PCH.h") &&
+						   (PreprocessedFile.Flags & SourceFileFlags.Aggregate) == 0)
 						{
 							Log.WriteWarning(PreprocessedFile.Location, "file appears to be PCH but also contains declarations, will not be optimized out.");
 						}
@@ -582,28 +586,34 @@ namespace IncludeTool
 					// Test for any headers with old-style include guards
 					foreach(SourceFile PreprocessedFile in PreprocessedFiles)
 					{
-						if(PreprocessedFile.HasHeaderGuard && PreprocessedFile.BodyMaxIdx < PreprocessedFile.Markup.Length && (PreprocessedFile.Flags & SourceFileFlags.External) == 0 && Rules.IgnoreOldStyleHeaderGuards("/" + PreprocessedFile.Location.MakeRelativeTo(InputDir).ToLowerInvariant()))
+						if(PreprocessedFile.HasHeaderGuard &&
+						   PreprocessedFile.BodyMaxIdx < PreprocessedFile.Markup.Length &&
+						   (PreprocessedFile.Flags & SourceFileFlags.External) == 0 &&
+						   !Rules.IgnoreOldStyleHeaderGuards(PreprocessedFile.Location))
 						{
-							Log.WriteWarning(PreprocessedFile.Location, "file has old-style header guard");
+							int LineIdx = PreprocessedFile.Markup[0].Location.LineIdx;
+							Log.WriteWarning(PreprocessedFile.Location, LineIdx, $"File has old-style header guard: {PreprocessedFile.Text.Lines[LineIdx]}");
 						}
 					}
 
 					// Test for any headers without include guards
 					foreach(SourceFile PreprocessedFile in PreprocessedFiles)
 					{
-						if(!PreprocessedFile.HasHeaderGuard && (PreprocessedFile.Flags & (SourceFileFlags.TranslationUnit | SourceFileFlags.Inline | SourceFileFlags.External | SourceFileFlags.GeneratedHeader)) == 0 && PreprocessedFile.Counterpart == null && PreprocessedFile.Location.HasExtension(".h"))
+						if(!PreprocessedFile.HasHeaderGuard &&
+						   (PreprocessedFile.Flags & (SourceFileFlags.TranslationUnit | SourceFileFlags.Inline | SourceFileFlags.External | SourceFileFlags.GeneratedHeader)) == 0 &&
+						   PreprocessedFile.Counterpart == null &&
+						   PreprocessedFile.Location.HasExtension(".h") &&
+						   !PreprocessedFile.Location.GetFileName().Equals("MonolithicHeaderBoilerplate.h", StringComparison.OrdinalIgnoreCase))
 						{
-							if(!PreprocessedFile.Location.GetFileName().Equals("MonolithicHeaderBoilerplate.h", StringComparison.OrdinalIgnoreCase))
-							{
-								Log.WriteWarning(PreprocessedFile.Location, "missing header guard");
-							}
+							Log.WriteWarning(PreprocessedFile.Location, "missing header guard");
 						}
 					}
 
 					// Test for any headers that include files after the first block of code
 					foreach(SourceFile PreprocessedFile in PreprocessedFiles)
 					{
-						if((PreprocessedFile.Flags & SourceFileFlags.TranslationUnit) == 0 && (PreprocessedFile.Flags & SourceFileFlags.AllowMultipleFragments) == 0)
+						if((PreprocessedFile.Flags & SourceFileFlags.TranslationUnit) == 0 &&
+						   (PreprocessedFile.Flags & SourceFileFlags.AllowMultipleFragments) == 0)
 						{
 							int FirstTextIdx = Array.FindIndex(PreprocessedFile.Markup, x => x.Type == PreprocessorMarkupType.Text);
 							if(FirstTextIdx != -1)
@@ -611,7 +621,8 @@ namespace IncludeTool
 								int LastIncludeIdx = Array.FindLastIndex(PreprocessedFile.Markup, x => x.Type == PreprocessorMarkupType.Include && x.IsActive && (x.IncludedFile.Flags & (SourceFileFlags.Pinned | SourceFileFlags.Inline)) == 0);
 								if(FirstTextIdx < LastIncludeIdx)
 								{
-									Log.WriteWarning(PreprocessedFile.Location, "includes after first code block");
+									int LineIdx = PreprocessedFile.Markup[LastIncludeIdx].Location.LineIdx;
+									Log.WriteWarning(PreprocessedFile.Location, LineIdx, $"Include after first code block: {PreprocessedFile.Text.Lines[LineIdx]}");
 								}
 							}
 						}
@@ -641,7 +652,7 @@ namespace IncludeTool
 						{
 							if (Result.ToString().Contains("\\"))
 							{
-								Log.WriteWarning(PreprocessedFile.Location, "include directive using '\\' as path separator {0}", Result);
+								Log.WriteWarning(PreprocessedFile.Location, Result.Location.LineIdx, $"Include directive using '\\' as path separator: {PreprocessedFile.Text.Lines[Result.Location.LineIdx]}");
 							}
 						}
 					}
@@ -731,7 +742,7 @@ namespace IncludeTool
 
 						// Create the intermediate directory
 						DirectoryReference IntermediateDir = DirectoryReference.Combine(WorkingDir, "Intermediate");
-						IntermediateDir.CreateDirectory();
+						DirectoryReference.CreateDirectory(IntermediateDir);
 
 						// If we're just checking fragments, do so now
 						if(Options.Mode == ToolMode.Verify)
@@ -749,7 +760,7 @@ namespace IncludeTool
 							Dictionary<FileReference, DateTime> FileToTime = new Dictionary<FileReference, DateTime>();
 							if(Options.NumShards > 1)
 							{
-								foreach(FileReference IntermediateFile in IntermediateDir.EnumerateFileReferences())
+								foreach(FileReference IntermediateFile in DirectoryReference.EnumerateFiles(IntermediateDir))
 								{
 									DateTime LastWriteTime = new FileInfo(IntermediateFile.FullName).LastWriteTimeUtc;
 									FileToTime[IntermediateFile] = LastWriteTime;
@@ -763,10 +774,10 @@ namespace IncludeTool
 							if(Options.NumShards > 1)
 							{
 								DirectoryReference ShardDir = DirectoryReference.Combine(WorkingDir, "Shard");
-								ShardDir.CreateDirectory();
+								DirectoryReference.CreateDirectory(ShardDir);
 								Log.WriteLine("Copying shard outputs to {0}...", ShardDir);
 
-								foreach(FileReference IntermediateFile in IntermediateDir.EnumerateFileReferences())
+								foreach(FileReference IntermediateFile in DirectoryReference.EnumerateFiles(IntermediateDir))
 								{
 									if(IntermediateFile.HasExtension(".txt") || IntermediateFile.HasExtension(".response") || IntermediateFile.HasExtension(".state") || IntermediateFile.HasExtension(".permutation"))
 									{
@@ -886,26 +897,25 @@ namespace IncludeTool
 		static void GenerateTaskList(DirectoryReference RootDir, string Target, TargetPlatform Platform, TargetConfiguration Configuration, bool Precompile, FileReference TaskListFile, LineBasedTextWriter Log)
 		{
 			DirectoryReference IntermediateDir = DirectoryReference.Combine(RootDir, "Engine", "Intermediate", "Build");
-			if(IntermediateDir.Exists())
+			if(DirectoryReference.Exists(IntermediateDir))
 			{
-				foreach(FileReference IntermediateFile in IntermediateDir.EnumerateFileReferences("UBTExport*.xml"))
+				foreach(FileReference IntermediateFile in DirectoryReference.EnumerateFiles(IntermediateDir, "UBTExport*.xml"))
 				{
-					IntermediateFile.Delete();
+					FileReference.Delete(IntermediateFile);
 				}
 			}
 
-			DirectoryReference WorkingDir = DirectoryReference.Combine(RootDir, "Engine");
-
-			FileReference UnrealBuildTool = FileReference.Combine(RootDir, "Engine", "Binaries", "DotNET", "UnrealBuildTool", "UnrealBuildTool.exe");
-			if (Utility.Run(UnrealBuildTool, String.Format("-Mode=JsonExport {0} {1} {2}{3} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1 -execcodegenactions -outputfile=\"{4}\"", Target, Configuration, Platform, Precompile? " -precompile" : "", TaskListFile.ChangeExtension(".json").FullName), WorkingDir, Log) != 0)
+			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" -Mode=JsonExport {1} {2} {3}{4} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1 -execcodegenactions -outputfile=\"{5}\"",
+				Unreal.UnrealBuildToolDllPath, Target, Configuration, Platform, Precompile? " -precompile" : "", TaskListFile.ChangeExtension(".json").FullName), Unreal.EngineDirectory, Log) != 0)
 			{
 				throw new Exception("UnrealBuildTool failed");
 			}
-			if (Utility.Run(UnrealBuildTool, String.Format("{0} {1} {2}{3} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1", Target, Configuration, Platform, Precompile? " -precompile" : ""), WorkingDir, Log) != 0)
+			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" {1} {2} {3}{4} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1",
+				Unreal.UnrealBuildToolDllPath, Target, Configuration, Platform, Precompile? " -precompile" : ""), Unreal.EngineDirectory, Log) != 0)
 			{
 				throw new Exception("UnrealBuildTool failed");
 			}
-			TaskListFile.Directory.CreateDirectory();
+			DirectoryReference.CreateDirectory(TaskListFile.Directory);
 			File.Copy(FileReference.Combine(RootDir, "Engine", "Intermediate", "Build", "UBTExport.000.xge.xml").FullName, TaskListFile.FullName, true);
 		}
 
@@ -920,7 +930,7 @@ namespace IncludeTool
 		}
 
 		/// <summary>
-		/// Class used to record 
+		/// Class used to record
 		/// </summary>
 		class MarkupState
 		{
@@ -1053,6 +1063,7 @@ namespace IncludeTool
 							&& !File.Location.GetFileName().Contains("FramePro")
 							&& !File.Location.GetFileName().Contains("Recast")
 							&& !File.Location.FullName.Contains("libSampleRate")
+							&& !File.Location.FullName.Contains("libav")
 							&& !File.Location.FullName.Contains("lz4")
 							&& !File.Location.FullName.Contains("NeuralNetworkInference")
 							&& !File.Location.FullName.Contains("NNI")
@@ -1081,9 +1092,29 @@ namespace IncludeTool
 					}
 					else if((File.Flags & SourceFileFlags.External) == 0)
 					{
+						bool bIgnoreInconsistentState = false;
+						int IgnoreInconsistentStateIdx = -1;
+
 						// Another thread has already derived the active markup for this file; check it's identical.
 						for(int Idx = 0; Idx < File.Markup.Length; Idx++)
 						{
+							if (File.Markup[Idx].Type == PreprocessorMarkupType.Define && File.Markup[Idx].Tokens[0].Text == "UE_INCLUDETOOL_IGNORE_INCONSISTENT_STATE")
+							{
+								IgnoreInconsistentStateIdx = Idx;
+								bIgnoreInconsistentState = true;
+							}
+
+							if (bIgnoreInconsistentState)
+							{
+								if (File.Markup[Idx].Type == PreprocessorMarkupType.Undef && File.Markup[Idx].Tokens[0].Text == "UE_INCLUDETOOL_IGNORE_INCONSISTENT_STATE")
+								{
+									IgnoreInconsistentStateIdx = -1;
+									bIgnoreInconsistentState = false;
+								}
+
+								continue;
+							}
+
 							if(ActiveMarkup.Flags[Idx] != CurrentActiveMarkup.Flags[Idx] && !Rules.AllowDifferentMarkup(File, Idx))
 							{
 								lock(Log)
@@ -1101,6 +1132,11 @@ namespace IncludeTool
 									}
 								}
 							}
+						}
+
+						if (bIgnoreInconsistentState)
+						{
+							Log.WriteLine($"{File.Location.FullName}({File.Markup[IgnoreInconsistentStateIdx].Location.LineIdx + 1}): warning: UE_INCLUDE_IGNORE_INCONSISTENT_STATE was defined, but not undefined. Add '#undef UE_INCLUDE_IGNORE_INCONSISTENT_STATE' to this file.");
 						}
 					}
 				}
@@ -1231,7 +1267,7 @@ namespace IncludeTool
 		static void WriteFragments(IEnumerable<SourceFile> Files, DirectoryReference OutputDir)
 		{
 			// Create the output directory
-			OutputDir.CreateDirectory();
+			DirectoryReference.CreateDirectory(OutputDir);
 
 			// Assign names to all the fragments
 			HashSet<SourceFile> VisitedFiles = new HashSet<SourceFile>();
@@ -1363,7 +1399,7 @@ namespace IncludeTool
 			// Keep track of the number of failures and successes
 			int NumFailed = 0;
 			int NumSucceeded = 0;
-			
+
 			// Create the work queue outside a try/finally block, to clean them up on abnormal termination
 			List<SequenceProbe> ActiveProbes = new List<SequenceProbe>();
 			try
@@ -1413,7 +1449,7 @@ namespace IncludeTool
 								Progress[Idx] = '.';
 							}
 							Log.WriteLine("[{0}] Optimize <{1}> {2}/{3} probes, {4}{5} active, {6}/{7} fragments ({8}%)", Timer.Elapsed.ToString(@"hh\:mm\:ss"), new string(Progress), NumCompletedProbes, FragmentToProbe.Count, (NumFailed == 0)? "" : String.Format("{0} failed, ", NumFailed), ActiveProbes.Count, NumCompletedFragments, TotalFragments, (TotalFragments == 0)? 100 : (NumCompletedFragments * 100) / TotalFragments);
-							
+
 							// Check the time limit
 							if(TimeLimit > 0 && Timer.Elapsed.TotalHours > TimeLimit)
 							{
@@ -1550,7 +1586,7 @@ namespace IncludeTool
 				string Contents = Writer.ToString();
 
 				FileReference NewLocation = FileReference.Combine(OutputDir, OutputFile.Location.MakeRelativeTo(InputDir));
-				if(!NewLocation.Exists() || File.ReadAllText(NewLocation.FullName).TrimEnd() != Contents.TrimEnd())
+				if(!FileReference.Exists(NewLocation) || File.ReadAllText(NewLocation.FullName).TrimEnd() != Contents.TrimEnd())
 				{
 					OutputFileContents.Add(NewLocation, Contents);
 				}
@@ -1573,7 +1609,7 @@ namespace IncludeTool
 		static bool WriteOutputFiles(DirectoryReference OutputDir, Dictionary<FileReference, string> OutputFileContents, bool bWithP4, LineBasedTextWriter Log)
 		{
 			// Create the output directory
-			OutputDir.CreateDirectory();
+			DirectoryReference.CreateDirectory(OutputDir);
 
 			// Check out any that are read-only from perforce
 			if(bWithP4)
@@ -1608,7 +1644,7 @@ namespace IncludeTool
 			foreach(KeyValuePair<FileReference, string> OutputFile in OutputFileContents)
 			{
 				Log.WriteLine("{0}", OutputFile.Key);
-				OutputFile.Key.Directory.CreateDirectory();
+				DirectoryReference.CreateDirectory(OutputFile.Key.Directory);
 				File.WriteAllText(OutputFile.Key.FullName, OutputFile.Value);
 			}
 			return true;

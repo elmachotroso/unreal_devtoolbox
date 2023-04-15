@@ -99,9 +99,19 @@ void SMultiLineEditableText::GetCurrentTextLine(FString& OutTextLine) const
 	EditableTextLayout->GetCurrentTextLine(OutTextLine);
 }
 
+void SMultiLineEditableText::GetTextLine(const int32 InLineIndex, FString& OutTextLine) const
+{
+	EditableTextLayout->GetTextLine(InLineIndex, OutTextLine);
+}
+
 void SMultiLineEditableText::SetText(const TAttribute< FText >& InText)
 {
 	EditableTextLayout->SetText(InText);
+}
+
+int32 SMultiLineEditableText::GetTextLineCount()
+{
+	return EditableTextLayout->GetTextLineCount();
 }
 
 FText SMultiLineEditableText::GetText() const
@@ -134,6 +144,16 @@ FText SMultiLineEditableText::GetSearchText() const
 	return EditableTextLayout->GetSearchText();
 }
 
+int32 SMultiLineEditableText::GetSearchResultIndex() const
+{
+	return EditableTextLayout->GetSearchResultIndex();
+}
+
+int32 SMultiLineEditableText::GetNumSearchResults() const
+{
+	return EditableTextLayout->GetNumSearchResults();
+}
+
 void SMultiLineEditableText::SetTextStyle(const FTextBlockStyle* InTextStyle)
 {
 	if (InTextStyle)
@@ -153,6 +173,12 @@ void SMultiLineEditableText::SetFont(const TAttribute< FSlateFontInfo >& InNewFo
 	FTextBlockStyle TextStyle = EditableTextLayout->GetTextStyle();
 	TextStyle.SetFont(InNewFont.Get());
 	EditableTextLayout->SetTextStyle(TextStyle);
+}
+
+FSlateFontInfo SMultiLineEditableText::GetFont() const
+{
+	FTextBlockStyle TextStyle = EditableTextLayout->GetTextStyle();
+	return TextStyle.Font;
 }
 
 void SMultiLineEditableText::SetTextShapingMethod(const TOptional<ETextShapingMethod>& InTextShapingMethod)
@@ -433,6 +459,16 @@ float SMultiLineEditableText::UpdateAndClampVerticalScrollBar(const float InView
 	return EditableTextLayout->GetScrollOffset().Y;
 }
 
+void SMultiLineEditableText::BeginEditTransaction()
+{
+	EditableTextLayout->BeginEditTransation();
+}
+
+void SMultiLineEditableText::EndEditTransaction()
+{
+	EditableTextLayout->EndEditTransaction();
+}
+
 FReply SMultiLineEditableText::OnFocusReceived( const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent )
 {
 	EditableTextLayout->HandleFocusReceived(InFocusEvent);
@@ -455,6 +491,11 @@ void SMultiLineEditableText::SelectAllText()
 	EditableTextLayout->SelectAllText();
 }
 
+void SMultiLineEditableText::SelectText(const FTextLocation& InSelectionStart, const FTextLocation& InCursorLocation)
+{
+	EditableTextLayout->SelectText(InSelectionStart, InCursorLocation);
+}
+
 void SMultiLineEditableText::ClearSelection()
 {
 	EditableTextLayout->ClearSelection();
@@ -463,6 +504,16 @@ void SMultiLineEditableText::ClearSelection()
 FText SMultiLineEditableText::GetSelectedText() const
 {
 	return EditableTextLayout->GetSelectedText();
+}
+
+FTextSelection SMultiLineEditableText::GetSelection() const
+{
+	return EditableTextLayout->GetSelection();
+}
+
+void SMultiLineEditableText::DeleteSelectedText()
+{
+	EditableTextLayout->DeleteSelectedText();
 }
 
 void SMultiLineEditableText::InsertTextAtCursor(const FText& InText)
@@ -528,6 +579,11 @@ TArray<TSharedRef<const IRun>> SMultiLineEditableText::GetSelectedRuns() const
 FTextLocation SMultiLineEditableText::GetCursorLocation() const
 {
 	return EditableTextLayout->GetCursorLocation();
+}
+
+TCHAR SMultiLineEditableText::GetCharacterAt(const FTextLocation& Location) const
+{
+	return EditableTextLayout->GetCharacterAt(Location);
 }
 
 TSharedPtr<const SScrollBar> SMultiLineEditableText::GetHScrollBar() const

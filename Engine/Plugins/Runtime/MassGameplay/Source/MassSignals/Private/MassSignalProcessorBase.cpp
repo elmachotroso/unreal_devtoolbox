@@ -4,15 +4,17 @@
 #include "MassSignalSubsystem.h"
 #include "MassArchetypeTypes.h"
 #include "Engine/World.h"
+#include "Misc/ScopeLock.h"
 
-void UMassSignalProcessorBase::Initialize(UObject& Owner)
+
+UMassSignalProcessorBase::UMassSignalProcessorBase(const FObjectInitializer& ObjectInitializer)
+	: EntityQuery(*this)
 {
-	SignalSubsystem = UWorld::GetSubsystem<UMassSignalSubsystem>(Owner.GetWorld());
 }
 
 void UMassSignalProcessorBase::BeginDestroy()
 {
-	if (SignalSubsystem)
+	if (UMassSignalSubsystem* SignalSubsystem = UWorld::GetSubsystem<UMassSignalSubsystem>(GetWorld()))
 	{
 		for (const FName& SignalName : RegisteredSignals)
 		{
@@ -23,18 +25,18 @@ void UMassSignalProcessorBase::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-void UMassSignalProcessorBase::SubscribeToSignal(const FName SignalName)
+void UMassSignalProcessorBase::SubscribeToSignal(UMassSignalSubsystem& SignalSubsystem, const FName SignalName)
 {
-	check(SignalSubsystem);
 	check(!RegisteredSignals.Contains(SignalName));
 	RegisteredSignals.Add(SignalName);
-	SignalSubsystem->GetSignalDelegateByName(SignalName).AddUObject(this, &UMassSignalProcessorBase::OnSignalReceived);
+	SignalSubsystem.GetSignalDelegateByName(SignalName).AddUObject(this, &UMassSignalProcessorBase::OnSignalReceived);
 }
 
-void UMassSignalProcessorBase::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassSignalProcessorBase::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(SignalEntities);
 
+	UE_MT_ACQUIRE_WRITE_ACCESS(ReceivedSignalAccessDetector);
 	// Frame buffer handling
 	const int32 ProcessingFrameBufferIndex = CurrentFrameBufferIndex;
 	CurrentFrameBufferIndex = (CurrentFrameBufferIndex + 1) % 2;
@@ -42,16 +44,18 @@ void UMassSignalProcessorBase::Execute(UMassEntitySubsystem& EntitySubsystem, FM
 	TArray<FEntitySignalRange>& ReceivedSignalRanges = ProcessingFrameBuffer.ReceivedSignalRanges;
 	TArray<FMassEntityHandle>& SignaledEntities = ProcessingFrameBuffer.SignaledEntities;
 
+	UE_MT_RELEASE_WRITE_ACCESS(ReceivedSignalAccessDetector);
+
 	if (ReceivedSignalRanges.IsEmpty())
 	{
 		return;
 	}
 
-	EntityQuery.CacheArchetypes(EntitySubsystem);
+	EntityQuery.CacheArchetypes(EntityManager);
 	if (EntityQuery.GetArchetypes().Num() > 0)
 	{
 		// EntitySet stores unique array of entities per specified archetype.
-		// FMassArchetypeSubChunks expects an array of entities, a set is used to detect unique ones.
+		// FMassArchetypeEntityCollection expects an array of entities, a set is used to detect unique ones.
 		struct FEntitySet
 		{
 			void Reset()
@@ -97,11 +101,11 @@ void UMassSignalProcessorBase::Execute(UMassEntitySubsystem& EntitySubsystem, FM
 				for (const FMassEntityHandle Entity : Entities)
 				{
 					// Add to set of supported archetypes. Dont process if we don't care about the type.
-					FMassArchetypeHandle Archetype = EntitySubsystem.GetArchetypeForEntity(Entity);
+					FMassArchetypeHandle Archetype = EntityManager.GetArchetypeForEntity(Entity);
 					FEntitySet* Set = PrevSet->Archetype == Archetype ? PrevSet : EntitySets.FindByPredicate([&Archetype](const FEntitySet& Set) { return Archetype == Set.Archetype; });
 					if (Set != nullptr)
 					{
-						// We don't care about duplicates here, the FMassArchetypeSubChunks creation below will handle it
+						// We don't care about duplicates here, the FMassArchetypeEntityCollection creation below will handle it
 						Set->Entities.Add(Entity);
 						SignalNameLookup.AddSignalToEntity(Entity, SignalFlag);
 						PrevSet = Set;
@@ -117,9 +121,9 @@ void UMassSignalProcessorBase::Execute(UMassEntitySubsystem& EntitySubsystem, FM
 			{
 				if (Set.Entities.Num() > 0)
 				{
-					Context.SetChunkCollection(FMassArchetypeSubChunks(Set.Archetype, Set.Entities, FMassArchetypeSubChunks::FoldDuplicates));
-					SignalEntities(EntitySubsystem, Context, SignalNameLookup);
-					Context.ClearChunkCollection();
+					Context.SetEntityCollection(FMassArchetypeEntityCollection(Set.Archetype, Set.Entities, FMassArchetypeEntityCollection::FoldDuplicates));
+					SignalEntities(EntityManager, Context, SignalNameLookup);
+					Context.ClearEntityCollection();
 				}
 				Set.Reset();
 			}
@@ -132,6 +136,10 @@ void UMassSignalProcessorBase::Execute(UMassEntitySubsystem& EntitySubsystem, FM
 
 void UMassSignalProcessorBase::OnSignalReceived(FName SignalName, TConstArrayView<FMassEntityHandle> Entities)
 {
+	UE::TScopeLock<UE::FSpinLock> ScopeLock(ReceivedSignalLock);
+
+	UE_MT_SCOPED_WRITE_ACCESS(ReceivedSignalAccessDetector);
+
 	FFrameReceivedSignals& CurrentFrameBuffer = FrameReceivedSignals[CurrentFrameBufferIndex];
 
 	FEntitySignalRange& Range = CurrentFrameBuffer.ReceivedSignalRanges.AddDefaulted_GetRef();

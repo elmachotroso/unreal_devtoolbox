@@ -7,7 +7,7 @@
 #include "Framework/Docking/SDockingTarget.h"
 #include "Framework/Docking/FDockingDragOperation.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "STabSidebar.h"
+#include "Framework/Docking/STabSidebar.h"
 
 
 void SDockingArea::Construct( const FArguments& InArgs, const TSharedRef<FTabManager>& InTabManager, const TSharedRef<FTabManager::FArea>& PersistentNode )
@@ -659,6 +659,9 @@ void SDockingArea::UpdateWindowChromeAndSidebar()
 				ParentWindow->GetTitleBar()->SetAllowMenuBar(bAccountForMenuBarPadding);
 			}
 		}
+
+		// Call the delegate for when the window is activated, to update the global menu bar without the user having to click on it
+		OnOwningWindowActivated();
 	}
 
 }

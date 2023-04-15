@@ -3,6 +3,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/Guid.h"
+#include "UObject/DevObjectVersion.h"
 
 // Custom serialization version for changes made in //UE5/Release-* stream
 struct CORE_API FUE5ReleaseStreamObjectVersion
@@ -120,6 +121,21 @@ struct CORE_API FUE5ReleaseStreamObjectVersion
 		// For Blueprint real numbers, ensure that legacy float data is serialized as single-precision
 		SerializeFloatPinDefaultValuesAsSinglePrecision,
 
+		// Upgrade the BlendMasks array in existing LayeredBoneBlend nodes
+		AnimLayeredBoneBlendMasks,
+
+		// Uses RG11B10 format to store the encoded reflection capture data on mobile
+		StoreReflectionCaptureEncodedHDRDataInRG11B10Format,
+		
+		// Add WithSerializer type trait and implementation for FRawAnimSequenceTrack
+		RawAnimSequenceTrackSerializer,
+
+		// Removed font from FEditableTextBoxStyle, and added FTextBlockStyle instead.
+		RemoveDuplicatedStyleInfo,
+
+		// Added member reference to linked anim graphs
+		LinkedAnimGraphMemberReference,
+		
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
@@ -127,6 +143,8 @@ struct CORE_API FUE5ReleaseStreamObjectVersion
 
 	// The GUID for this custom version number
 	const static FGuid GUID;
+
+	static TMap<FGuid, FGuid> GetSystemGuids();
 
 	FUE5ReleaseStreamObjectVersion() = delete;
 };

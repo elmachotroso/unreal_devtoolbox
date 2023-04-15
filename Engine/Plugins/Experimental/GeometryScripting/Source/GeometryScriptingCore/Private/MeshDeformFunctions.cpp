@@ -15,6 +15,8 @@
 
 #include "UDynamicMesh.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshDeformFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshDeformFunctions"
@@ -223,12 +225,17 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyMathWarpToMesh(
 
 UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyPerlinNoiseToMesh(
 	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
 	FGeometryScriptPerlinNoiseOptions Options,
 	UGeometryScriptDebug* Debug)
 {
 	if (TargetMesh == nullptr)
 	{
 		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyPerlinNoiseToMesh_InvalidInput", "ApplyPerlinNoiseToMesh: TargetMesh is Null"));
+		return TargetMesh;
+	}
+	if (Selection.IsEmpty() && Options.EmptyBehavior != EGeometryScriptEmptySelectionBehavior::FullMeshSelection )
+	{
 		return TargetMesh;
 	}
 
@@ -250,30 +257,45 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyPerlinNoiseToMesh
 			Normals.ComputeVertexNormals();
 		}
 
-		ParallelFor(EditMesh.MaxVertexID(), [&](int32 vid)
+		auto GetDisplacedPosition = [&EditMesh, &Options, &Offsets, &Normals, bAlignWithNormal](int32 VertexID)
 		{
-			if (EditMesh.IsVertex(vid))
+			FVector3d Pos = EditMesh.GetVertex(VertexID);
+			if (bAlignWithNormal)
 			{
-				FVector3d Pos = EditMesh.GetVertex(vid);
-				if (bAlignWithNormal)
-				{
-					FVector NoisePos = (FVector)( (double)Options.BaseLayer.Frequency * (Pos + Offsets[0]) );
-					float Displacement = Options.BaseLayer.Magnitude * FMath::PerlinNoise3D(Options.BaseLayer.Frequency * NoisePos);
-					Pos += Displacement * Normals[vid];
-				}
-				else
-				{
-					FVector3d Displacement;
-					for (int32 k = 0; k < 3; ++k)
-					{
-						FVector NoisePos = (FVector)( (double)Options.BaseLayer.Frequency * (Pos + Offsets[k]) );
-						Displacement[k] = Options.BaseLayer.Magnitude * FMath::PerlinNoise3D(Options.BaseLayer.Frequency * NoisePos);
-					}
-					Pos += Displacement;
-				}
-				EditMesh.SetVertex(vid, Pos);
+				FVector NoisePos = (FVector)((double)Options.BaseLayer.Frequency * (Pos + Offsets[0]));
+				float Displacement = Options.BaseLayer.Magnitude * FMath::PerlinNoise3D(Options.BaseLayer.Frequency * NoisePos);
+				Pos += Displacement * Normals[VertexID];
 			}
-		});
+			else
+			{
+				FVector3d Displacement;
+				for (int32 k = 0; k < 3; ++k)
+				{
+					FVector NoisePos = (FVector)((double)Options.BaseLayer.Frequency * (Pos + Offsets[k]));
+					Displacement[k] = Options.BaseLayer.Magnitude * FMath::PerlinNoise3D(Options.BaseLayer.Frequency * NoisePos);
+				}
+				Pos += Displacement;
+			}
+			return Pos;
+		};
+
+		if (Selection.IsEmpty())
+		{
+			ParallelFor(EditMesh.MaxVertexID(), [&](int32 VertexID)
+			{
+				if (EditMesh.IsVertex(VertexID))
+				{
+					EditMesh.SetVertex(VertexID, GetDisplacedPosition(VertexID));
+				}
+			});
+		}
+		else
+		{
+			Selection.ProcessByVertexID(EditMesh, [&](int32 VertexID)
+			{
+				EditMesh.SetVertex(VertexID, GetDisplacedPosition(VertexID));
+			});
+		}
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 
@@ -288,6 +310,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyPerlinNoiseToMesh
 
 UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyIterativeSmoothingToMesh(
 	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
 	FGeometryScriptIterativeMeshSmoothingOptions Options,
 	UGeometryScriptDebug* Debug)
 {
@@ -296,6 +319,11 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyIterativeSmoothin
 		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyIterativeSmoothingToMesh_InvalidInput", "ApplyIterativeSmoothingToMesh: TargetMesh is Null"));
 		return TargetMesh;
 	}
+	if (Selection.IsEmpty() && Options.EmptyBehavior != EGeometryScriptEmptySelectionBehavior::FullMeshSelection )
+	{
+		return TargetMesh;
+	}
+
 	double ClampAlpha = FMathd::Clamp((double)Options.Alpha, 0.0, 1.0);
 	int ClampIters = FMath::Clamp(Options.NumIterations, 0, 100);
 	if (ClampIters == 0 || ClampAlpha == 0.0)
@@ -309,25 +337,48 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyIterativeSmoothin
 		TArray<FVector3d> SmoothPositions;
 		SmoothPositions.SetNum(MaxVertices);
 
-		for (int32 k = 0; k < ClampIters; ++k)
+		if (Selection.GetNumSelected() > 0)
 		{
-			ParallelFor(MaxVertices, [&](int32 VertexID)
+			TArray<int32> Vertices;
+			Selection.ConvertToMeshIndexArray(EditMesh, Vertices, EGeometryScriptIndexType::Vertex);
+			int32 NumVertices = Vertices.Num();
+			for (int32 k = 0; k < ClampIters; ++k)
 			{
-				if (EditMesh.IsVertex(VertexID))
+				ParallelFor(NumVertices, [&](int32 i)
 				{
+					int32 VertexID = Vertices[i];
 					FVector3d Centroid;
 					EditMesh.GetVtxOneRingCentroid(VertexID, Centroid);
 					SmoothPositions[VertexID] = Lerp(EditMesh.GetVertex(VertexID), Centroid, ClampAlpha);
-				}
-			});
-			for (int32 VertexID = 0; VertexID < MaxVertices; ++VertexID)
-			{
-				if (EditMesh.IsVertex(VertexID))
+				});
+				for (int32 VertexID : Vertices)
 				{
 					EditMesh.SetVertex(VertexID, SmoothPositions[VertexID]);
 				}
 			}
-		}		
+		}
+		else
+		{
+			for (int32 k = 0; k < ClampIters; ++k)
+			{
+				ParallelFor(MaxVertices, [&](int32 VertexID)
+				{
+					if (EditMesh.IsVertex(VertexID))
+					{
+						FVector3d Centroid;
+						EditMesh.GetVtxOneRingCentroid(VertexID, Centroid);
+						SmoothPositions[VertexID] = Lerp(EditMesh.GetVertex(VertexID), Centroid, ClampAlpha);
+					}
+				});
+				for (int32 VertexID = 0; VertexID < MaxVertices; ++VertexID)
+				{
+					if (EditMesh.IsVertex(VertexID))
+					{
+						EditMesh.SetVertex(VertexID, SmoothPositions[VertexID]);
+					}
+				}
+			}
+		}
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 
@@ -344,6 +395,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyIterativeSmoothin
 UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyDisplaceFromTextureMap(
 	UDynamicMesh* TargetMesh,
 	UTexture2D* TextureAsset,
+	FGeometryScriptMeshSelection Selection,
 	FGeometryScriptDisplaceFromTextureOptions Options,
 	int32 UVLayer,
 	UGeometryScriptDebug* Debug)
@@ -359,10 +411,15 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyDisplaceFromTextu
 		return TargetMesh;
 	}
 
+	if (Selection.IsEmpty() && Options.EmptyBehavior != EGeometryScriptEmptySelectionBehavior::FullMeshSelection)
+	{
+		return TargetMesh;
+	}
+
 	TImageBuilder<FVector4f> ImageData;
 	if (UE::AssetUtils::ReadTexture(TextureAsset, ImageData, false) == false)
 	{
-		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("ApplyDisplaceFromTextureMap_TexReadFailed", "ApplyDisplaceFromTextureMap: Error reading source texture data"));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("ApplyDisplaceFromTextureMap_TexReadFailed", "ApplyDisplaceFromTextureMap: Error reading source texture data. If using this function at Runtime, The Compression Settings type on the UTexture2D Asset must be set to VectorDisplacementmap (RGBA8)."));
 		return TargetMesh;
 	}
 	int UseImageChannel = FMath::Clamp(Options.ImageChannel, 0, 3);
@@ -422,10 +479,6 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyDisplaceFromTextu
 				UV.Y *= VHeight;
 
 				double Offset = DisplaceField.BilinearSampleClamped(UV);
-				//if (AdjustmentCurve)
-				//{
-				//	Offset = AdjustmentCurve->Eval(Offset);
-				//}
 				Offset -= Options.Center;
 
 				FVector3f Normal = Normals->GetElement(NormalTri[j]);
@@ -436,14 +489,84 @@ UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyDisplaceFromTextu
 			}
 		}
 
-		for (int32 vid : EditMesh.VertexIndicesItr())
+		// This is not necessarily the most efficient strategy, as we have computed the full-mesh displacement and
+		// then are potentially discarding most of that work. However if we filter by triangles then we might
+		// get different results when averaging per-triangle normals.
+		if (Selection.IsEmpty() == false)
 		{
-			if (Counts[vid] != 0)
+			Selection.ProcessByVertexID(EditMesh, [&](int32 VertexID)
 			{
-				EditMesh.SetVertex(vid, DisplacedPositions[vid] / (double)Counts[vid]);
+				if (Counts[VertexID] != 0)
+				{
+					EditMesh.SetVertex(VertexID, DisplacedPositions[VertexID] / (double)Counts[VertexID]);
+				}
+			});
+		}
+		else
+		{
+			for (int32 vid : EditMesh.VertexIndicesItr())
+			{
+				if (Counts[vid] != 0)
+				{
+					EditMesh.SetVertex(vid, DisplacedPositions[vid] / (double)Counts[vid]);
+				}
 			}
 		}
 
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
+
+
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshDeformFunctions::ApplyDisplaceFromPerVertexVectors(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
+	const FGeometryScriptVectorList& VectorList, 
+	float Magnitude,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyDisplaceFromPerVertexVectors_InvalidInput", "ApplyDisplaceFromPerVertexVectors: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+	{
+		if (VectorList.List.IsValid() == false || VectorList.List->Num() < EditMesh.MaxVertexID())
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyDisplaceFromPerVertexVectors_InvalidVectorLength", "ApplyDisplaceFromPerVertexVectors: VectorList Length is less than TargetMesh MaxVertexID"));
+			return;
+		}
+
+		const TArray<FVector>& Vectors = *VectorList.List;
+
+		auto UpdateVertex = [&EditMesh, &Magnitude, &Vectors](int32 VertexID)
+		{
+			FVector Position = EditMesh.GetVertex(VertexID);
+			FVector Vector = Magnitude * Vectors[VertexID];
+			if (Vector.Length() < UE_FLOAT_HUGE_DISTANCE)		// this is a bit arbitrary but should avoid disasters
+			{
+				EditMesh.SetVertex(VertexID, Position + Vector);
+			}
+		};
+
+		if (Selection.IsEmpty())
+		{
+			for (int32 vid : EditMesh.VertexIndicesItr())
+			{
+				UpdateVertex(vid);
+			}
+		}
+		else
+		{
+			Selection.ProcessByVertexID(EditMesh, [&](int32 VertexID) { UpdateVertex(VertexID); });
+		}
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 

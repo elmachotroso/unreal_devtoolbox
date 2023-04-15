@@ -21,7 +21,7 @@ public class MovieRenderPipelineCore : ModuleRules
 				"Networking",
 				"HTTP",
 				"DeveloperSettings",
-				"CinematicCamera"
+				"ClothingSystemRuntimeInterface"
 
 			}
 		);
@@ -35,6 +35,7 @@ public class MovieRenderPipelineCore : ModuleRules
 				"Engine",
 				"ImageWriteQueue", // For debug tile writing
 				"OpenColorIO",
+				"CinematicCamera",
 			}
 		);
 

@@ -1,19 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_EaseFunction.h"
-#include "Framework/Commands/UIAction.h"
-#include "ToolMenus.h"
-#include "EdGraphSchema_K2.h"
-#include "EdGraph/EdGraphNodeUtils.h"
-#include "K2Node_CallFunction.h"
-#include "Kismet2/BlueprintEditorUtils.h"
 
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintNodeSpawner.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraphSchema_K2.h"
 #include "EditorCategoryUtils.h"
-#include "KismetCompiler.h"
-#include "ScopedTransaction.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Commands/UIAction.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CallFunction.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompiler.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_EaseFunction"
 
@@ -147,7 +165,7 @@ FSlateIcon UK2Node_EaseFunction::GetIconAndTint(FLinearColor& OutColor) const
 {
 	// The function icon seams the best choice!
 	OutColor = GetNodeTitleColor();
-	static FSlateIcon Icon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 	return Icon;
 }
 
@@ -463,7 +481,7 @@ void UK2Node_EaseFunction::RefreshPinVisibility()
 	const auto EaseFuncPin = GetEaseFuncPin();
 	UEnum * Enum = StaticEnum<EEasingFunc::Type>();
 	check(Enum != NULL);
-	const int32 NewEasingFunc = CanCustomizeCurve() ? Enum->GetValueByName(*EaseFuncPin->DefaultValue) : -1;
+	const int64 NewEasingFunc = CanCustomizeCurve() ? Enum->GetValueByName(*EaseFuncPin->DefaultValue) : -1;
 	
 	// Early exit in case no changes are required
 	const UEdGraphSchema_K2* K2Schema = Cast<const UEdGraphSchema_K2>(GetSchema());

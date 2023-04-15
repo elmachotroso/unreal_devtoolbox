@@ -26,6 +26,34 @@ struct FLWCVector4
 	float4 Offset;
 };
 
+struct FLWCScalarDeriv
+{
+	FLWCScalar Value;
+	float Ddx;
+	float Ddy;
+};
+
+struct FLWCVector2Deriv
+{
+	FLWCVector2 Value;
+	float2 Ddx;
+	float2 Ddy;
+};
+
+struct FLWCVector3Deriv
+{
+	FLWCVector3 Value;
+	float3 Ddx;
+	float3 Ddy;
+};
+
+struct FLWCVector4Deriv
+{
+	FLWCVector4 Value;
+	float4 Ddx;
+	float4 Ddy;
+};
+
 // Transforms *to* absolute world space
 struct FLWCMatrix
 {
@@ -176,6 +204,26 @@ FLWCScalar LWCGetComponent(FLWCVector4 V, int C) { return MakeLWCScalar(LWCGetTi
 #define LWCGetZ(V) LWCGetComponent(V, 2)
 #define LWCGetW(V) LWCGetComponent(V, 3)
 
+FLWCScalar LWCSwizzle(FLWCScalar V, int C0) { return V; }
+FLWCScalar LWCSwizzle(FLWCVector2 V, int C0) { return LWCGetComponent(V, C0); }
+FLWCScalar LWCSwizzle(FLWCVector3 V, int C0) { return LWCGetComponent(V, C0); }
+FLWCScalar LWCSwizzle(FLWCVector4 V, int C0) { return LWCGetComponent(V, C0); }
+
+FLWCVector2 LWCSwizzle(FLWCScalar V, int C0, int C1) { return MakeLWCVector(V, V); }
+FLWCVector2 LWCSwizzle(FLWCVector2 V, int C0, int C1) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1)); }
+FLWCVector2 LWCSwizzle(FLWCVector3 V, int C0, int C1) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1)); }
+FLWCVector2 LWCSwizzle(FLWCVector4 V, int C0, int C1) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1)); }
+
+FLWCVector3 LWCSwizzle(FLWCScalar V, int C0, int C1, int C2) { return MakeLWCVector(V, V, V); }
+FLWCVector3 LWCSwizzle(FLWCVector2 V, int C0, int C1, int C2) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2)); }
+FLWCVector3 LWCSwizzle(FLWCVector3 V, int C0, int C1, int C2) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2)); }
+FLWCVector3 LWCSwizzle(FLWCVector4 V, int C0, int C1, int C2) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2)); }
+
+FLWCVector4 LWCSwizzle(FLWCScalar V, int C0, int C1, int C2, int C3) { return MakeLWCVector(V, V, V, V); }
+FLWCVector4 LWCSwizzle(FLWCVector2 V, int C0, int C1, int C2, int C3) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2), LWCGetComponent(V, C3)); }
+FLWCVector4 LWCSwizzle(FLWCVector3 V, int C0, int C1, int C2, int C3) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2), LWCGetComponent(V, C3)); }
+FLWCVector4 LWCSwizzle(FLWCVector4 V, int C0, int C1, int C2, int C3) { return MakeLWCVector(LWCGetComponent(V, C0), LWCGetComponent(V, C1), LWCGetComponent(V, C2), LWCGetComponent(V, C3)); }
+
 float LWCToFloat(FLWCScalar Value)   { return LWCGetTileOffset(Value) + Value.Offset; }
 float2 LWCToFloat(FLWCVector2 Value) { return LWCGetTileOffset(Value) + Value.Offset; }
 float3 LWCToFloat(FLWCVector3 Value) { return LWCGetTileOffset(Value) + Value.Offset; }
@@ -230,13 +278,6 @@ FLWCVector3 LWCMultiply(float3 Position, FLWCMatrix InMatrix)
 {
 	// Explicit operations rather than mul() avoids z-fighting between depth/base passes
 	float3 Offset = (Position.xxx * InMatrix.M[0].xyz + Position.yyy * InMatrix.M[1].xyz + Position.zzz * InMatrix.M[2].xyz) + InMatrix.M[3].xyz;
-	return MakeLWCVector3(LWCGetTile(InMatrix), Offset);
-}
-
-FLWCVector3 LWCInvariantMultiply(float3 Position, FLWCMatrix InMatrix)
-{
-	// Explicit operations rather than mul() avoids z-fighting between depth/base passes
-	float3 Offset = INVARIANT((Position.xxx * InMatrix.M[0].xyz + Position.yyy * InMatrix.M[1].xyz + Position.zzz * InMatrix.M[2].xyz) + InMatrix.M[3].xyz);
 	return MakeLWCVector3(LWCGetTile(InMatrix), Offset);
 }
 
@@ -368,59 +409,30 @@ void LWCSetOrigin(inout FLWCMatrix InOutMatrix, FLWCVector3 Origin)
 #undef FBoolType
 #undef LWCConstructor
 
-FLWCScalar LWCDot(FLWCScalar Lhs, FLWCScalar Rhs)
+// Creates a coordinate with the same value, but relative to the specified tile, while keeping precision loss as low as possible
+FLWCScalar LWCMakeRelativeToTile(FLWCScalar V, float NewTile) { return MakeLWCScalar(NewTile, LWCToFloat(LWCSubtract(V, MakeLWCScalar(NewTile, (float)0.0f)))); }
+FLWCVector2 LWCMakeRelativeToTile(FLWCVector2 V, float2 NewTile) { return MakeLWCVector2(NewTile, LWCToFloat(LWCSubtract(V, MakeLWCVector2(NewTile, (float2)0.0f)))); }
+FLWCVector3 LWCMakeRelativeToTile(FLWCVector3 V, float3 NewTile) { return MakeLWCVector3(NewTile, LWCToFloat(LWCSubtract(V, MakeLWCVector3(NewTile, (float3)0.0f)))); }
+FLWCVector4 LWCMakeRelativeToTile(FLWCVector4 V, float4 NewTile) { return MakeLWCVector4(NewTile, LWCToFloat(LWCSubtract(V, MakeLWCVector4(NewTile, (float4)0.0f)))); }
+FLWCMatrix LWCMakeRelativeToTile(FLWCMatrix M, float3 NewTile)
 {
-	return LWCMultiply(Lhs, Rhs);
-}
-FLWCScalar LWCDot(FLWCScalar Lhs, float Rhs)
-{
-	return LWCMultiply(Lhs, Rhs);
-}
-
-FLWCScalar LWCDot(FLWCVector2 Lhs, FLWCVector2 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), LWCGetX(Rhs));
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), LWCGetY(Rhs));
-	return LWCAdd(X2, Y2);
-}
-FLWCScalar LWCDot(FLWCVector2 Lhs, float2 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), Rhs.x);
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), Rhs.y);
-	return LWCAdd(X2, Y2);
+	LWCSetOrigin(M, LWCMakeRelativeToTile(LWCGetOrigin(M), NewTile));
+	return M;
 }
 
-FLWCScalar LWCDot(FLWCVector3 Lhs, FLWCVector3 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), LWCGetX(Rhs));
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), LWCGetY(Rhs));
-	FLWCScalar Z2 = LWCMultiply(LWCGetZ(Lhs), LWCGetZ(Rhs));
-	return LWCAdd(LWCAdd(X2, Y2), Z2);
-}
-FLWCScalar LWCDot(FLWCVector3 Lhs, float3 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), Rhs.x);
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), Rhs.y);
-	FLWCScalar Z2 = LWCMultiply(LWCGetZ(Lhs), Rhs.z);
-	return LWCAdd(LWCAdd(X2, Y2), Z2);
-}
+FLWCScalar LWCVectorSum(FLWCScalar V) { return V; }
+FLWCScalar LWCVectorSum(FLWCVector2 V) { return LWCAdd(LWCGetX(V), LWCGetY(V)); }
+FLWCScalar LWCVectorSum(FLWCVector3 V) { return LWCAdd(LWCAdd(LWCGetX(V), LWCGetY(V)), LWCGetZ(V)); }
+FLWCScalar LWCVectorSum(FLWCVector4 V) { return LWCAdd(LWCAdd(LWCAdd(LWCGetX(V), LWCGetY(V)), LWCGetZ(V)), LWCGetW(V)); }
 
-FLWCScalar LWCDot(FLWCVector4 Lhs, FLWCVector4 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), LWCGetX(Rhs));
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), LWCGetY(Rhs));
-	FLWCScalar Z2 = LWCMultiply(LWCGetZ(Lhs), LWCGetZ(Rhs));
-	FLWCScalar W2 = LWCMultiply(LWCGetW(Lhs), LWCGetW(Rhs));
-	return LWCAdd(LWCAdd(LWCAdd(X2, Y2), Z2), W2);
-}
-FLWCScalar LWCDot(FLWCVector4 Lhs, float4 Rhs)
-{
-	FLWCScalar X2 = LWCMultiply(LWCGetX(Lhs), Rhs.x);
-	FLWCScalar Y2 = LWCMultiply(LWCGetY(Lhs), Rhs.y);
-	FLWCScalar Z2 = LWCMultiply(LWCGetZ(Lhs), Rhs.z);
-	FLWCScalar W2 = LWCMultiply(LWCGetW(Lhs), Rhs.w);
-	return LWCAdd(LWCAdd(LWCAdd(X2, Y2), Z2), W2);
-}
+FLWCScalar LWCDot(FLWCScalar Lhs, FLWCScalar Rhs) { return LWCMultiply(Lhs, Rhs); }
+FLWCScalar LWCDot(FLWCScalar Lhs, float Rhs) { return LWCMultiply(Lhs, Rhs); }
+FLWCScalar LWCDot(FLWCVector2 Lhs, FLWCVector2 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
+FLWCScalar LWCDot(FLWCVector2 Lhs, float2 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
+FLWCScalar LWCDot(FLWCVector3 Lhs, FLWCVector3 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
+FLWCScalar LWCDot(FLWCVector3 Lhs, float3 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
+FLWCScalar LWCDot(FLWCVector4 Lhs, FLWCVector4 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
+FLWCScalar LWCDot(FLWCVector4 Lhs, float4 Rhs) { return LWCVectorSum(LWCMultiply(Lhs, Rhs)); }
 
 // LWCLength2Scaled returns the length2 of the vector, scaled by the LWC tile size
 FLWCScalar LWCLength2Scaled(FLWCScalar V)

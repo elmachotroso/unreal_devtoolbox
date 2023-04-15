@@ -3,11 +3,11 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/Char.h"
-#include "Misc/AssertionMacros.h"
 #include "GenericPlatform/GenericPlatformStricmp.h"
 #include "GenericPlatform/GenericPlatformString.h"
 #include "HAL/PlatformCrt.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Char.h"
 
 #if PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
 
@@ -45,20 +45,6 @@ public:
 		for (; *String1 || *String2; String1++, String2++)
 		{
 			WIDECHAR A = *String1, B = *String2;
-			if (A != B)
-			{
-				return A - B;
-			}
-		}
-		return 0;
-	}
-
-	CORE_API static int32 Strncmp( const WIDECHAR* String1, const WIDECHAR* String2, SIZE_T Count )
-	{
-		// walk the strings, comparing them case sensitively, up to a max size
-		for (; (*String1 || *String2) && Count; String1++, String2++, Count--)
-		{
-			TCHAR A = *String1, B = *String2;
 			if (A != B)
 			{
 				return A - B;

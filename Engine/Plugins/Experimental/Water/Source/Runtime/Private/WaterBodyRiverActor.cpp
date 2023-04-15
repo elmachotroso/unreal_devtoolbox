@@ -4,6 +4,8 @@
 #include "WaterBodyRiverComponent.h"
 #include "Components/SplineMeshComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyRiverActor)
+
 #if WITH_EDITOR
 #include "WaterIconHelper.h"
 #endif
@@ -14,9 +16,6 @@ AWaterBodyRiver::AWaterBodyRiver(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	WaterBodyType = EWaterBodyType::River;
-#if WITH_EDITOR
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyRiverSprite"));
-#endif
 }
 
 void AWaterBodyRiver::PostLoad()

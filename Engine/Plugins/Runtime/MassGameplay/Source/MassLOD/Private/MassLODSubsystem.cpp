@@ -21,14 +21,6 @@ namespace MassLOD
 }
 }
 
-void UMassLODProcessorBase::Initialize(UObject& Owner)
-{
-	Super::Initialize(Owner);
-
-	World = Owner.GetWorld();
-	LODSubsystem = UWorld::GetSubsystem<UMassLODSubsystem>(World);
-}
-
 void UMassLODSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Collection.InitializeDependency(UMassSimulationSubsystem::StaticClass());

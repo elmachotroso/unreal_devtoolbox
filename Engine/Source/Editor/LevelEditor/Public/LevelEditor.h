@@ -12,9 +12,11 @@
 #include "ILevelEditor.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "ViewportTypeDefinition.h"
+#include "LevelEditorOutlinerSettings.h"
 
 class AActor;
 class IAssetViewport;
+class SDockTab;
 class SLevelEditor;
 class UAnimSequence;
 class USkeletalMeshComponent;
@@ -42,6 +44,9 @@ public:
 	static const FName PlacementBrowser;
 	static const FName LevelEditorBuildAndSubmit;
 	static const FName LevelEditorSceneOutliner;
+	static const FName LevelEditorSceneOutliner2;
+	static const FName LevelEditorSceneOutliner3;
+	static const FName LevelEditorSceneOutliner4;
 	static const FName LevelEditorStatsViewer;
 	static const FName LevelEditorLayerBrowser;
 	static const FName LevelEditorDataLayerBrowser;
@@ -109,7 +114,7 @@ public:
 	 * Spawns a new sequencer tab if one doesn't exist already
 	 * @todo This only works with the first level editor. Fix it.
 	 */
-	virtual void AttachSequencer(TSharedPtr<SWidget> SequencerWidget, TSharedPtr<class IAssetEditorInstance> SequencerAssetEditor );
+	virtual TSharedPtr<SDockTab> AttachSequencer(TSharedPtr<SWidget> SequencerWidget, TSharedPtr<class IAssetEditorInstance> SequencerAssetEditor );
 
 	/**
 	 * Starts a play in editor session using the active viewport
@@ -332,6 +337,25 @@ public:
 	/** Delegate used to capture skeltal meshes to single-frame animations when 'keeping simulation changes' */
 	DECLARE_DELEGATE_RetVal_OneParam(UAnimSequence*, FCaptureSingleFrameAnimSequence, USkeletalMeshComponent* /*Component*/);
 	virtual FCaptureSingleFrameAnimSequence& OnCaptureSingleFrameAnimSequence() { return CaptureSingleFrameAnimSequenceDelegate; }
+	
+	/**  Add a custom filter to the outliner filter bar. These are all AND'd together
+	 * @see FLevelEditorOutlinerSettings
+	 *   @see FGenericFilter on how to create generic filters
+	 *   NOTE: Currently does not support adding filters dynamically, they must be added before the Level Editor is init
+	 */
+	virtual void AddCustomFilterToOutliner(TSharedRef<FFilterBase<SceneOutliner::FilterBarType>> InCustomFilter);
+
+	/**  Add a custom class filter to the outliner filter bar. These represent asset/actor type filters and are OR'd
+	 *   @see FLevelEditorOutlinerSettings
+	 *   Can be created using IAssetTypeActions or UClass (@see constructor)
+	 *   NOTE: Currently does not support adding filters dynamically, they must be added before the Level Editor is init
+	 */
+	virtual void AddCustomClassFilterToOutliner(TSharedRef<FCustomClassFilterData> InCustomClassFilterData);
+	
+	/** Get the FFilterCategory attached to the given category name. Use this to add filters to the built in categories
+	 *  @see FLevelEditorOutlinerBuiltInCategories
+	 */
+	virtual TSharedPtr<FFilterCategory> GetOutlinerFilterCategory(const FName& CategoryName) const;
 
 public:
 
@@ -360,6 +384,9 @@ public:
 		}
 		return true;
 	}
+
+	/** Return the settings (containing the outliner filters) used to create the level editor's outliners  */
+	TSharedPtr<FLevelEditorOutlinerSettings> GetLevelEditorOutlinerSettings() const;
 
 public:
 	
@@ -491,4 +518,7 @@ private:
 
 	/** Array of delegates that are used to check if the specified objects should be editable on the details panel */
 	TArray<FAreObjectsEditable> AreObjectsEditableDelegates;
+
+	/** The settings used to create any Outliners in the Level Editor */
+	TSharedPtr<FLevelEditorOutlinerSettings> OutlinerSettings;
 };

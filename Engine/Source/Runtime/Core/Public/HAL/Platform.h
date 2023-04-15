@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
+// IWYU pragma: begin_exports
 #pragma once
 
 #include "Misc/Build.h"
@@ -10,18 +10,12 @@
 #if !defined(PLATFORM_WINDOWS)
 	#define PLATFORM_WINDOWS 0
 #endif
-#if !defined(PLATFORM_XBOXONE)
-	#define PLATFORM_XBOXONE 0
-#endif
 #if !defined(PLATFORM_MAC)
 	#define PLATFORM_MAC 0
 	// If PLATFORM_MAC is defined these will be set appropriately in
 	// MacPlatform.h
 	#define PLATFORM_MAC_X86 0
 	#define PLATFORM_MAC_ARM64 0
-#endif
-#if !defined(PLATFORM_PS4)
-	#define PLATFORM_PS4 0
 #endif
 #if !defined(PLATFORM_IOS)
 	#define PLATFORM_IOS 0
@@ -121,6 +115,10 @@
 	#define USING_ADDRESS_SANITISER 0
 #endif
 
+#ifndef PLATFORM_HAS_ASAN_INCLUDE
+	#define PLATFORM_HAS_ASAN_INCLUDE __has_include(<sanitizer/asan_interface.h>)
+#endif
+
 //---------------------------------------------------------
 // Include main platform setup header (XXX/XXXPlatform.h)
 //---------------------------------------------------------
@@ -182,6 +180,12 @@
 #ifndef PLATFORM_ALWAYS_HAS_FMA3
 	#define PLATFORM_ALWAYS_HAS_FMA3			0
 #endif
+#ifndef PLATFORM_ALWAYS_HAS_AESNI
+	#define PLATFORM_ALWAYS_HAS_AESNI			0
+#endif
+#ifndef PLATFORM_ALWAYS_HAS_SHA
+	#define PLATFORM_ALWAYS_HAS_SHA				0
+#endif
 
 
 #ifndef PLATFORM_HAS_CPUID
@@ -199,6 +203,9 @@
 #ifndef PLATFORM_ENABLE_VECTORINTRINSICS_NEON
 	#define PLATFORM_ENABLE_VECTORINTRINSICS_NEON	0
 #endif
+#ifndef UE_VALIDATE_FORMAT_STRINGS
+	#define UE_VALIDATE_FORMAT_STRINGS 0
+#endif
 #ifndef PLATFORM_USE_LS_SPEC_FOR_WIDECHAR
 	#define PLATFORM_USE_LS_SPEC_FOR_WIDECHAR	1
 #endif
@@ -208,24 +215,8 @@
 #ifndef PLATFORM_COMPILER_DISTINGUISHES_INT_AND_LONG
 	#define PLATFORM_COMPILER_DISTINGUISHES_INT_AND_LONG			0
 #endif
-#ifdef _MSC_VER
-	#define PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES 1
-	#ifndef __clang__
-		#pragma deprecated("PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES")
-	#endif
-#else
-	#define PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES 1 DEPRECATED_MACRO(4.19, "PLATFORM_COMPILER_HAS_AUTO_RETURN_TYPES has been deprecated and should be replaced with 1.")
-#endif
 #ifndef PLATFORM_COMPILER_HAS_GENERIC_KEYWORD
 	#define PLATFORM_COMPILER_HAS_GENERIC_KEYWORD	0
-#endif
-#ifdef _MSC_VER
-	#define PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS 1
-	#ifndef __clang__
-		#pragma deprecated("PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS")
-	#endif
-#else
-	#define PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS 1 DEPRECATED_MACRO(4.19, "PLATFORM_COMPILER_HAS_DEFAULTED_FUNCTIONS has been deprecated and should be replaced with 1.")
 #endif
 #ifndef PLATFORM_COMPILER_COMMON_LANGUAGE_RUNTIME_COMPILATION
 	#define PLATFORM_COMPILER_COMMON_LANGUAGE_RUNTIME_COMPILATION 0
@@ -236,8 +227,13 @@
 #ifndef PLATFORM_COMPILER_HAS_DECLTYPE_AUTO
 	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 1
 #endif
-#ifndef PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+#ifdef _MSC_VER
 	#define PLATFORM_COMPILER_HAS_IF_CONSTEXPR 1
+	#ifndef __clang__
+		#pragma deprecated("PLATFORM_COMPILER_HAS_IF_CONSTEXPR")
+	#endif
+#else
+	#define PLATFORM_COMPILER_HAS_IF_CONSTEXPR 1 UE_DEPRECATED_MACRO(5.1, "PLATFORM_COMPILER_HAS_IF_CONSTEXPR has been deprecated and should be replaced with 1.")
 #endif
 #ifndef PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS
 	#define PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS 0
@@ -254,7 +250,7 @@
 #endif
 #define PLATFORM_WIDECHAR_IS_CHAR16 PLATFORM_TCHAR_IS_CHAR16
 #ifndef PLATFORM_TCHAR_IS_UTF8CHAR
-	#define PLATFORM_TCHAR_IS_UTF8CHAR			0
+	#define PLATFORM_TCHAR_IS_UTF8CHAR			USE_UTF8_TCHARS
 #endif
 #ifndef PLATFORM_UCS2CHAR_IS_UTF16CHAR
 	// Currently true, but we don't want it to be true
@@ -301,6 +297,9 @@
 #endif
 #ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_IOCTL
 	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_IOCTL	1
+#endif
+#ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_POLL
+	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_POLL	0
 #endif
 #ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_SELECT
 	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_SELECT	1
@@ -353,6 +352,10 @@
 
 #ifndef PLATFORM_SUPPORTS_MESH_SHADERS
 	#define PLATFORM_SUPPORTS_MESH_SHADERS 0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_BINDLESS_RENDERING
+	#define PLATFORM_SUPPORTS_BINDLESS_RENDERING 0
 #endif
 
 #ifndef PLATFORM_BUILTIN_VERTEX_HALF_FLOAT
@@ -516,10 +519,6 @@
 	#define PLATFORM_USE_MINIMAL_HANG_DETECTION					0
 #endif
 
-#ifndef PLATFORM_PRESENT_HANG_DETECTION_ON_BY_DEFAULT
-	#define PLATFORM_PRESENT_HANG_DETECTION_ON_BY_DEFAULT		0
-#endif
-
 #ifndef PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
 	#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			1
 #endif
@@ -596,7 +595,7 @@
 #endif
 
 #ifndef PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
-	#define PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING 0
+	#define PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING 0 UE_DEPRECATED_MACRO(5.1, "PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING has been deprecated and should be replaced with 0.")
 #endif
 
 #ifndef PLATFORM_USE_GENERIC_LAUNCH_IMPLEMENTATION
@@ -615,21 +614,9 @@
 	#define PLATFORM_SUPPORTS_COLORIZED_OUTPUT_DEVICE PLATFORM_DESKTOP
 #endif
 
-#ifndef PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-	#define PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING 0
-#endif
-
-#ifndef PLATFORM_USE_SEPARATE_BACKBUFFER_WRITE_TRANSITION
-	#define PLATFORM_USE_SEPARATE_BACKBUFFER_WRITE_TRANSITION 0
-#endif
-
 #ifndef PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER
 	#define PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER	0
 #endif
-
-#ifndef PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
-	#define PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND 0
-#endif // #ifndef PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
 
 #ifndef PLATFORM_HAS_DIRECT_TEXTURE_MEMORY_ACCESS
 	#define PLATFORM_HAS_DIRECT_TEXTURE_MEMORY_ACCESS 0
@@ -637,10 +624,6 @@
 
 #ifndef PLATFORM_DIRECT_TEXTURE_MEMORY_ACCESS_LOCK_MODE 
 	#define PLATFORM_DIRECT_TEXTURE_MEMORY_ACCESS_LOCK_MODE RLM_ReadOnly 
-#endif
-
-#ifndef PLATFORM_NEEDS_GPU_UAV_RESOURCE_INIT_WORKAROUND
-	#define PLATFORM_NEEDS_GPU_UAV_RESOURCE_INIT_WORKAROUND 0
 #endif
 
 #ifndef PLATFORM_USE_REPORT_ENSURE
@@ -655,12 +638,16 @@
 	#define PLATFORM_USES_UNFAIR_LOCKS 0
 #endif
 
-#ifndef PLATFORM_SUPPORTS_GPU_FRAMETIME_WITHOUT_MGPU
-	#define PLATFORM_SUPPORTS_GPU_FRAMETIME_WITHOUT_MGPU 0
+#ifndef PLATFORM_HAS_FENV_H
+	#define PLATFORM_HAS_FENV_H 1
 #endif
 
 #ifndef PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND
 	#define PLATFORM_REQUIRES_TYPELESS_RESOURCE_DISCARD_WORKAROUND 0
+#endif
+
+#ifndef PLATFORM_CONSOLE_DYNAMIC_LINK
+	#define PLATFORM_CONSOLE_DYNAMIC_LINK 0
 #endif
 
 // deprecated, do not use
@@ -700,26 +687,6 @@
 	#define RESTRICT __restrict						/* no alias hint */
 #endif
 
-/* Wrap a function signature in these to warn that callers should not ignore the return value */
-#ifndef FUNCTION_CHECK_RETURN_START
-	#define FUNCTION_CHECK_RETURN_START \
-		DEPRECATED_MACRO(4.26, "FUNCTION_CHECK_RETURN_START has been deprecated - please use UE_NODISCARD")
-#endif
-#ifndef FUNCTION_CHECK_RETURN_END
-	#define FUNCTION_CHECK_RETURN_END \
-		DEPRECATED_MACRO(4.26, "FUNCTION_CHECK_RETURN_END has been deprecated - please use UE_NODISCARD")
-#endif
-
-/* Wrap a function signature in these to indicate that the function never returns */
-#ifndef FUNCTION_NO_RETURN_START
-	#define FUNCTION_NO_RETURN_START \
-		DEPRECATED_MACRO(4.26, "FUNCTION_NO_RETURN_START has been deprecated - please use UE_NORETURN")
-#endif
-#ifndef FUNCTION_NO_RETURN_END
-	#define FUNCTION_NO_RETURN_END \
-		DEPRECATED_MACRO(4.26, "FUNCTION_NO_RETURN_END has been deprecated - please use UE_NORETURN")
-#endif
-
 /* Use before a function declaration to warn that callers should not ignore the return value */
 #if !defined(UE_NODISCARD) && defined(__has_cpp_attribute)
 	#if __has_cpp_attribute(nodiscard)
@@ -728,6 +695,20 @@
 #endif
 #ifndef UE_NODISCARD
 	#define UE_NODISCARD
+#endif
+
+// Use before a constructor declaration to warn when an unnamed temporary object is ignored, e.g. FScopeLock(CS); instead of FScopeLock Lock(CS);
+// We can't just use UE_NODISCARD in this case because older compilers don't like [[nodiscard]] on constructors.
+#if !defined(UE_NODISCARD_CTOR) && defined(__has_cpp_attribute)
+	#if __has_cpp_attribute(nodiscard)
+		#if (defined(_MSC_VER) && _MSC_VER >= 1924) || (defined(__clang__) && __clang_major__ >= 10)
+			#define UE_NODISCARD_CTOR [[nodiscard]]
+		#endif
+	#endif
+#endif
+
+#ifndef UE_NODISCARD_CTOR
+	#define UE_NODISCARD_CTOR
 #endif
 
 /* Use before a function declaration to indicate that the function never returns */
@@ -756,10 +737,6 @@
 	#define FUNCTION_NON_NULL_RETURN_END
 #endif
 
-#ifndef FUNCTION_CHECK_RETURN
-	#define FUNCTION_CHECK_RETURN(...) DEPRECATED_MACRO(4.12, "FUNCTION_CHECK_RETURN has been deprecated and should be replaced with FUNCTION_CHECK_RETURN_START and FUNCTION_CHECK_RETURN_END.") FUNCTION_CHECK_RETURN_START __VA_ARGS__ FUNCTION_CHECK_RETURN_END
-#endif
-
 /** Promise expression is true. Compiler can optimize accordingly with undefined behavior if wrong. Static analyzers understand this.  */
 #ifndef UE_ASSUME
 	#if defined(__clang__)
@@ -770,8 +747,6 @@
 		#define UE_ASSUME(x)
 	#endif
 #endif
-
-#define ASSUME(x) UE_ASSUME(x) DEPRECATED_MACRO(4.25, "Please use UE_ASSUME instead.")
 
 /** Branch prediction hints */
 #ifndef LIKELY						/* Hints compiler that expression is likely to be true, much softer than UE_ASSUME - allows (penalized by worse performance) expression to be false */
@@ -826,6 +801,12 @@
 #endif
 #ifndef CONSTEXPR
 	#define CONSTEXPR constexpr
+#endif
+#ifndef IN
+	#define IN
+#endif
+#ifndef OUT
+	#define OUT
 #endif
 
 // String constants
@@ -923,10 +904,6 @@
 #endif
 #ifndef FAST_BOOT_HACKS
 	#define FAST_BOOT_HACKS  0
-#endif
-
-#ifndef DEPRECATED_FORGAME
-	#define DEPRECATED_FORGAME(...) DEPRECATED_MACRO(4.22, "The DEPRECATED_FORGAME macro has been deprecated in favor of UE_DEPRECATED_FORGAME().")
 #endif
 
 // Console ANSICHAR/TCHAR command line handling
@@ -1196,5 +1173,7 @@ namespace UE::Core::Private
 }
 
 #define UTF8TEXT(x) (UE::Core::Private::ToUTF8Literal(UTF8TEXT_PASTE(x)))
-
+#define UTF16TEXT(x) UTF16TEXT_PASTE(x)
 #define WIDETEXT(str) WIDETEXT_PASTE(str)
+
+// IWYU pragma: end_exports

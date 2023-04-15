@@ -21,10 +21,12 @@
 #include "Protocols/VideoCaptureProtocol.h"
 #include "Slate/SceneViewport.h"
 #include "Engine/Engine.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/UObjectIterator.h"
 #include "Protocols/AudioCaptureProtocol.h"
 #include "Misc/DateTime.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCapture)
 
 #define LOCTEXT_NAMESPACE "MovieSceneCapture"
 
@@ -38,7 +40,7 @@ TArray<UClass*> FindAllCaptureProtocolClasses()
 	TArray<FAssetData> BlueprintList;
 
 	FARFilter Filter;
-	Filter.ClassNames.Add(UMovieSceneCaptureProtocolBase::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UMovieSceneCaptureProtocolBase::StaticClass()->GetClassPathName());
 
 	// Include any Blueprint based objects as well, this includes things like Blutilities, UMG, and GameplayAbility objects
 	Filter.bRecursiveClasses = true;
@@ -884,3 +886,4 @@ int32 FRealTimeCaptureStrategy::GetDroppedFrames(double CurrentTimeSeconds, uint
 }
 
 #undef LOCTEXT_NAMESPACE
+

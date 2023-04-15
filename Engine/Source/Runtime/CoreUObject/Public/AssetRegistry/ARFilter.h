@@ -5,37 +5,66 @@
 #include "CoreMinimal.h"
 #include "UObject/Class.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/TopLevelAssetPath.h"
 
 struct FAssetData;
 
 /**
  * A struct to serve as a filter for Asset Registry queries.
  * Each component element is processed as an 'OR' operation while all the components are processed together as an 'AND' operation.
+ * This type is mirrored in NoExportTypes.h 
  */
 struct FARFilter
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Compilers can complain about deprecated members in compiler generated code
+	FARFilter() = default;
+	FARFilter(FARFilter&&) = default;
+	FARFilter(const FARFilter&) = default;
+	FARFilter& operator=(FARFilter&&) = default;
+	FARFilter& operator=(const FARFilter&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** The filter component for package names */
 	TArray<FName> PackageNames;
 
 	/** The filter component for package paths */
 	TArray<FName> PackagePaths;
 
+#if WITH_EDITORONLY_DATA
 	/** The filter component containing specific object paths */
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	TArray<FName> ObjectPaths;
+#endif
 
-	/** The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	/** 
+	 * The filter component containing the paths of specific assets to match. 
+	 * Matches against FAssetData::ToSoftObjectPath().
+	 * This is a top level asset path for most assets and a subobject path for assets such as world partition external actors.
+	 */
+	TArray<FSoftObjectPath> SoftObjectPaths;
+	
+	/** Deprecated. The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use ClassPaths.")
 	TArray<FName> ClassNames;
+
+	/** The filter component for class path names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	TArray<FTopLevelAssetPath> ClassPaths;
 
 	/** The filter component for properties marked with the AssetRegistrySearchable flag */
 	TMultiMap<FName, TOptional<FString>> TagsAndValues;
 
-	/** Only if bRecursiveClasses is true, the results will exclude classes (and subclasses) in this list */
+	/** Deprecated. Only if bRecursiveClasses is true, the results will exclude classes (and subclasses) in this list */
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use RecursiveClassPathsExclusionSet.")
 	TSet<FName> RecursiveClassesExclusionSet;
+
+	/** Only if bRecursiveClasses is true, the results will exclude classes (and subclasses) in this list */
+	TSet<FTopLevelAssetPath> RecursiveClassPathsExclusionSet;
 
 	/** If true, PackagePath components will be recursive */
 	bool bRecursivePaths = false;
 
-	/** If true, subclasses of ClassNames will also be included and RecursiveClassesExclusionSet will be excluded. */
+	/** If true, subclasses of ClassPaths will also be included and RecursiveClassPathsExclusionSet will be excluded. */
 	bool bRecursiveClasses = false;
 
 	/** If true, only on-disk assets will be returned. Be warned that this is rarely what you want and should only be used for performance reasons */
@@ -52,15 +81,15 @@ struct FARFilter
 	{
 		PackageNames.Append(Other.PackageNames);
 		PackagePaths.Append(Other.PackagePaths);
-		ObjectPaths.Append(Other.ObjectPaths);
-		ClassNames.Append(Other.ClassNames);
+		SoftObjectPaths.Append(Other.SoftObjectPaths);
+		ClassPaths.Append(Other.ClassPaths);
 
 		for (auto TagIt = Other.TagsAndValues.CreateConstIterator(); TagIt; ++TagIt)
 		{
 			TagsAndValues.Add(TagIt.Key(), TagIt.Value());
 		}
 
-		RecursiveClassesExclusionSet.Append(Other.RecursiveClassesExclusionSet);
+		RecursiveClassPathsExclusionSet.Append(Other.RecursiveClassPathsExclusionSet);
 
 		bRecursivePaths |= Other.bRecursivePaths;
 		bRecursiveClasses |= Other.bRecursiveClasses;
@@ -72,7 +101,7 @@ struct FARFilter
 	/** Returns true if this filter has no entries */
 	bool IsEmpty() const
 	{
-		return PackageNames.Num() + PackagePaths.Num() + ObjectPaths.Num() + ClassNames.Num() + TagsAndValues.Num() + WithoutPackageFlags + WithPackageFlags == 0;
+		return PackageNames.Num() + PackagePaths.Num() + SoftObjectPaths.Num() + ClassPaths.Num() + TagsAndValues.Num() + WithoutPackageFlags + WithPackageFlags == 0;
 	}
 
 	/** Returns true if this filter is recursive */
@@ -86,10 +115,10 @@ struct FARFilter
 	{
 		PackageNames.Empty();
 		PackagePaths.Empty();
-		ObjectPaths.Empty();
-		ClassNames.Empty();
+		SoftObjectPaths.Empty();
+		ClassPaths.Empty();
 		TagsAndValues.Empty();
-		RecursiveClassesExclusionSet.Empty();
+		RecursiveClassPathsExclusionSet.Empty();
 
 		bRecursivePaths = false;
 		bRecursiveClasses = false;
@@ -99,7 +128,19 @@ struct FARFilter
 
 		ensure(IsEmpty());
 	}
+
+	void PostSerialize(const FArchive& Ar);
 };
+
+template<>
+struct TStructOpsTypeTraits<FARFilter> : public TStructOpsTypeTraitsBase2<FARFilter>
+{
+	enum
+	{
+		WithPostSerialize = true,
+	};
+};
+
 /**
  * A struct to serve as a filter for Asset Registry queries.
  * Each component element is processed as an 'OR' operation while all the components are processed together as an 'AND' operation.
@@ -107,6 +148,14 @@ struct FARFilter
  */
 struct FARCompiledFilter
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Compilers can complain about deprecated members in compiler generated code
+	FARCompiledFilter() = default;
+	FARCompiledFilter(FARCompiledFilter&&) = default;
+	FARCompiledFilter(const FARCompiledFilter&) = default;
+	FARCompiledFilter& operator=(FARCompiledFilter&&) = default;
+	FARCompiledFilter& operator=(const FARCompiledFilter&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** The filter component for package names */
 	TSet<FName> PackageNames;
 
@@ -114,10 +163,18 @@ struct FARCompiledFilter
 	TSet<FName> PackagePaths;
 
 	/** The filter component containing specific object paths */
+	UE_DEPRECATED(5.1, "Object path FNames have been deprecated, use FSoftObjectPath instead.")
 	TSet<FName> ObjectPaths;
 
-	/** The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	/** The filter component containing specific object paths */
+	TSet<FSoftObjectPath> SoftObjectPaths;
+
+	/** Deprecated. The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use ClassPaths.")
 	TSet<FName> ClassNames;
+
+	/** The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	TSet<FTopLevelAssetPath> ClassPaths;
 
 	/** The filter component for properties marked with the AssetRegistrySearchable flag */
 	TMultiMap<FName, TOptional<FString>> TagsAndValues;
@@ -134,7 +191,7 @@ struct FARCompiledFilter
 	/** Returns true if this filter has no entries */
 	bool IsEmpty() const
 	{
-		return PackageNames.Num() + PackagePaths.Num() + ObjectPaths.Num() + ClassNames.Num() + TagsAndValues.Num() == 0;
+		return PackageNames.Num() + PackagePaths.Num() + SoftObjectPaths.Num() + ClassPaths.Num() + TagsAndValues.Num() == 0;
 	}
 
 	/** Clears this filter of all entries */
@@ -142,8 +199,8 @@ struct FARCompiledFilter
 	{
 		PackageNames.Empty();
 		PackagePaths.Empty();
-		ObjectPaths.Empty();
-		ClassNames.Empty();
+		SoftObjectPaths.Empty();
+		ClassPaths.Empty();
 		TagsAndValues.Empty();
 
 		bIncludeOnlyOnDiskAssets = false;

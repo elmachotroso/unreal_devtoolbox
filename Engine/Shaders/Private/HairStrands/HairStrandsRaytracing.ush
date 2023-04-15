@@ -12,19 +12,14 @@
 #include "../HairStrands/HairStrandsVoxelPageTraversal.ush"
 
 
+// RayOrigin is in translated world space
 float InternalTraverseHair(uint2 PixelCoord, float3 RayOrigin, float3 RayDirection, float InMinT, float InOcclusionThreshold, float3 VoxelRandom, float RayRandom)
 {
 	float HitT = InMinT;
 
-	// Note: VirtualVoxel.TranslatedWorldOffset should be equivalent to LWCHackToFloat(PrimaryView.WorldCameraOrigin), but insures the value is consistent
-	RayOrigin = RayOrigin + VirtualVoxel.TranslatedWorldOffset; // HAIR_LWC
-
 	// Depth bias
 	// Origin is shifted voxels away towards the light + a constant bias of the size of the voxel
-	{
-		const float3 DepthBias = VirtualVoxel.VoxelWorldSize * (RayRandom * RayDirection + VoxelRandom);
-		RayOrigin += DepthBias;
-	}
+	const float3 NormalizedDepthBias = (RayRandom * RayDirection + VoxelRandom);
 
 	#if VOXEL_TRAVERSAL_DEBUG
 	const bool bDebugEnabled = PixelCoord.x == GetCursorPos().x && PixelCoord.y == GetCursorPos().y;
@@ -39,9 +34,9 @@ float InternalTraverseHair(uint2 PixelCoord, float3 RayOrigin, float3 RayDirecti
 
 	FVirtualVoxelCommonDesc CommonDesc;
 	CommonDesc.PageCountResolution = VirtualVoxel.PageCountResolution;
-	CommonDesc.VoxelWorldSize = VirtualVoxel.VoxelWorldSize;
 	CommonDesc.PageTextureResolution = VirtualVoxel.PageTextureResolution;
 	CommonDesc.PageResolution = VirtualVoxel.PageResolution;
+	CommonDesc.PageResolutionLog2 = VirtualVoxel.PageResolutionLog2;
 
 	const float3 P0 = RayOrigin;
 	const float3 P1 = RayOrigin + RayDirection * (HitT>=0 ? min(HitT, DistanceThreshold) : DistanceThreshold);
@@ -61,9 +56,10 @@ float InternalTraverseHair(uint2 PixelCoord, float3 RayOrigin, float3 RayDirecti
 		TraversalSettings.bUseOpaqueVisibility = false;
 		TraversalSettings.bCastShadow = true;
 
+		const float3 DepthBias = NormalizedDepthBias * NodeDesc.VoxelWorldSize;
 		Result = ComputeHairCountVirtualVoxel(
-			P0,
-			P1,
+			P0 + DepthBias,
+			P1 + DepthBias,
 			CommonDesc,
 			NodeDesc,
 			VirtualVoxel.PageIndexBuffer,

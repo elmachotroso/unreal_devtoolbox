@@ -2,15 +2,32 @@
 
 
 #include "K2Node_VariableSetRef.h"
+
+#include "BPTerminal.h"
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintActionFilter.h"
+#include "BlueprintCompiledStatement.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphUtilities.h"
-#include "KismetCastingUtils.h"
-#include "KismetCompiler.h"
-#include "VariableSetHandler.h"
-#include "BlueprintActionFilter.h"
-#include "BlueprintNodeSpawner.h"
 #include "EditorCategoryUtils.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCastingUtils.h"
+#include "KismetCompiledFunctionContext.h"
+#include "KismetCompiler.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "VariableSetHandler.h"
 
 static FName TargetVarPinName(TEXT("Target"));
 static FName VarValuePinName(TEXT("Value"));
@@ -45,19 +62,16 @@ public:
 
 			if ((VariablePinNet != nullptr) && (ValuePinNet != nullptr))
 			{
-				TOptional<CastingUtils::StatementNamePair> ConversionType =
-					CastingUtils::GetFloatingPointConversionType(*ValuePinNet, *VariablePinNet);
+				CastingUtils::FConversion Conversion =
+					CastingUtils::GetFloatingPointConversion(*ValuePinNet, *VariablePinNet);
 
-				if (ConversionType)
+				if (Conversion.Type != CastingUtils::FloatingPointCastType::None)
 				{
 					check(!ImplicitCastMap.Contains(VarRefNode));
 
-					FBPTerminal* NewTerminal = Context.CreateLocalTerminal();
-					UEdGraphNode* OwningNode = VariablePinNet->GetOwningNode();
-					NewTerminal->CopyFromPin(VariablePinNet, Context.NetNameMap->MakeValidName(VariablePin, ConversionType->Get<1>()));
-					NewTerminal->Source = OwningNode;
+					FBPTerminal* NewTerminal = CastingUtils::MakeImplicitCastTerminal(Context, VariablePinNet);
 
-					ImplicitCastMap.Add(VarRefNode, TPair<FBPTerminal*, EKismetCompiledStatementType>{ NewTerminal, ConversionType->Get<0>() });
+					ImplicitCastMap.Add(VarRefNode, CastingUtils::FImplicitCastParams{Conversion, NewTerminal, Node});
 				}
 			}
 		}
@@ -103,17 +117,11 @@ private:
 				using namespace UE::KismetCompiler;
 
 				UK2Node_VariableSetRef* VarRefNode = CastChecked<UK2Node_VariableSetRef>(Node);
-				if (TPair<FBPTerminal*, EKismetCompiledStatementType>* CastEntry = ImplicitCastMap.Find(VarRefNode))
+				if (CastingUtils::FImplicitCastParams* CastParams = ImplicitCastMap.Find(VarRefNode))
 				{
-					FBPTerminal* CastTerminal = CastEntry->Get<0>();
-					EKismetCompiledStatementType StatementType = CastEntry->Get<1>();
-
-					FBlueprintCompiledStatement& CastStatement = Context.AppendStatementForNode(Node);
-					CastStatement.LHS = CastTerminal;
-					CastStatement.Type = StatementType;
-					CastStatement.RHS.Add(RHSTerm);
-
-					RHSTerm = CastTerminal;
+					CastingUtils::InsertImplicitCastStatement(Context, *CastParams, RHSTerm);
+					
+					RHSTerm = CastParams->TargetTerminal;
 
 					ImplicitCastMap.Remove(VarRefNode);
 
@@ -146,7 +154,7 @@ private:
 		}
 	}
 
-	TMap<UK2Node_VariableSetRef*, TPair<FBPTerminal*, EKismetCompiledStatementType>> ImplicitCastMap;
+	TMap<UK2Node_VariableSetRef*, UE::KismetCompiler::CastingUtils::FImplicitCastParams> ImplicitCastMap;
 };
 
 UK2Node_VariableSetRef::UK2Node_VariableSetRef(const FObjectInitializer& ObjectInitializer)
@@ -247,16 +255,28 @@ void UK2Node_VariableSetRef::NotifyPinConnectionListChanged(UEdGraphPin* Pin)
 		// If both target and value pins are unlinked, then reset types to wildcard
 		if(TargetPin->LinkedTo.Num() == 0 && ValuePin->LinkedTo.Num() == 0)
 		{
+			// collapse SubPins back into their parent if there are any
+			auto TryRecombineSubPins = [](UEdGraphPin* ParentPin)
+			{
+				if (!ParentPin->SubPins.IsEmpty())
+				{
+					const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
+					K2Schema->RecombinePin(ParentPin->SubPins[0]);
+				}
+			};
+			
 			// Pin disconnected...revert to wildcard
 			TargetPin->PinType.PinCategory = UEdGraphSchema_K2::PC_Wildcard;
 			TargetPin->PinType.PinSubCategory = NAME_None;
 			TargetPin->PinType.PinSubCategoryObject = nullptr;
 			TargetPin->BreakAllPinLinks();
+			TryRecombineSubPins(TargetPin);
 
 			ValuePin->PinType.PinCategory = UEdGraphSchema_K2::PC_Wildcard;
 			ValuePin->PinType.PinSubCategory = NAME_None;
 			ValuePin->PinType.PinSubCategoryObject = nullptr;
-			ValuePin->BreakAllPinLinks();			
+			ValuePin->BreakAllPinLinks();
+			TryRecombineSubPins(ValuePin);
 		}
 
 		CachedNodeTitle.MarkDirty();

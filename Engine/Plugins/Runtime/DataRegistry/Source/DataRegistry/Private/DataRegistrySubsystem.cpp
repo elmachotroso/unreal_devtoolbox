@@ -6,12 +6,14 @@
 #include "Engine/AssetManager.h"
 #include "DataRegistrySettings.h"
 #include "Stats/StatsMisc.h"
-#include "AssetData.h"
-#include "ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/ARFilter.h"
 #include "UnrealEngine.h"
 #include "Misc/WildcardString.h"
 #include "Curves/RealCurve.h"
 #include "Misc/CoreDelegates.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistrySubsystem)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -35,6 +37,7 @@ DEFINE_FUNCTION(UDataRegistrySubsystem::execGetCachedItemBP)
 	P_GET_STRUCT(FDataRegistryId, ItemId);
 
 	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.MostRecentPropertyContainer = nullptr;
 	Stack.StepCompiledIn<FStructProperty>(nullptr);
 
 	void* OutItemDataPtr = Stack.MostRecentPropertyAddress;
@@ -80,6 +83,7 @@ DEFINE_FUNCTION(UDataRegistrySubsystem::execFindCachedItemBP)
 	P_GET_ENUM_REF(EDataRegistrySubsystemGetItemResult, OutResult)
 
 	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.MostRecentPropertyContainer = nullptr;
 	Stack.StepCompiledIn<FStructProperty>(nullptr);
 
 	void* OutItemDataPtr = Stack.MostRecentPropertyAddress;
@@ -123,6 +127,7 @@ DEFINE_FUNCTION(UDataRegistrySubsystem::execGetCachedItemFromLookupBP)
 	P_GET_STRUCT_REF(FDataRegistryLookup, ResolvedLookup);
 
 	Stack.MostRecentPropertyAddress = nullptr;
+	Stack.MostRecentPropertyContainer = nullptr;
 	Stack.StepCompiledIn<FStructProperty>(nullptr);
 
 	void* OutItemDataPtr = Stack.MostRecentPropertyAddress;
@@ -656,6 +661,7 @@ void UDataRegistrySubsystem::ApplyPreregisterMap(UDataRegistry* Registry)
 
 	if (FoundPreregister)
 	{
+		const FTopLevelAssetPath ObjectClassPath(TEXT("/Script/CoreUObject"), TEXT("Object"));
 		for (int32 i = 0; i < FoundPreregister->Num(); i++)
 		{
 			bool bRegistered = false;
@@ -668,7 +674,7 @@ void UDataRegistrySubsystem::ApplyPreregisterMap(UDataRegistry* Registry)
 			else if (Settings->CanIgnoreMissingAssetData())
 			{
 				// Construct fake asset data and register that
-				AssetData = FAssetData(AssetPath.GetLongPackageName(), AssetPath.GetAssetPathString(), NAME_Object);
+				AssetData = FAssetData(AssetPath.GetLongPackageName(), AssetPath.GetAssetPathString(), ObjectClassPath);
 				bRegistered = Registry->RegisterSpecificAsset(AssetData, (*FoundPreregister)[i].Value);
 			}
 

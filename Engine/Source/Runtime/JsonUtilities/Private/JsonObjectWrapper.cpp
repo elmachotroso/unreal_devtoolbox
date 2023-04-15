@@ -5,6 +5,8 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(JsonObjectWrapper)
+
 FJsonObjectWrapper::FJsonObjectWrapper()
 {
 	JsonObject = MakeShared<FJsonObject>();
@@ -19,7 +21,11 @@ bool FJsonObjectWrapper::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, U
 		int32 NumCharsRead = 0;
 		if (!FParse::QuotedString(Buffer, Json, &NumCharsRead))
 		{
-			ErrorText->Logf(ELogVerbosity::Warning, TEXT("FJsonObjectWrapper::ImportTextItem: Bad quoted string: %s\n"), Buffer);
+			if (ErrorText)
+			{
+				ErrorText->Logf(ELogVerbosity::Warning, TEXT("FJsonObjectWrapper::ImportTextItem: Bad quoted string: %s\n"), Buffer);
+			}
+			
 			return false;
 		}
 		Buffer += NumCharsRead;
@@ -94,4 +100,5 @@ bool FJsonObjectWrapper::JsonObjectFromString(const FString& Str)
 	TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(Str);
 	return FJsonSerializer::Deserialize(JsonReader, JsonObject);
 }
+
 

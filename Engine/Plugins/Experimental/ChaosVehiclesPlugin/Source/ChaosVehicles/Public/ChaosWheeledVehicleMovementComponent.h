@@ -16,7 +16,7 @@
 PRAGMA_DISABLE_OPTIMIZATION
 #endif
 
-struct FWheeledVehicleDebugParams
+struct CHAOSVEHICLES_API FWheeledVehicleDebugParams
 {
 	bool ShowWheelCollisionNormal = false;
 	bool ShowSuspensionRaycasts = false;
@@ -40,8 +40,6 @@ struct FWheeledVehicleDebugParams
 
 	float OverlapTestExpansionXY = 100.f;
 	float OverlapTestExpansionZ = 50.f;
-
-	//bool DisableSuspensionConstraint = false;
 };
 
 /**
@@ -49,7 +47,7 @@ struct FWheeledVehicleDebugParams
  * Advance through pages using p.Vehicles.NextDebugPage | p.Vehicles.PrevDebugPage which can be hooked
  * up to the keyboard or a controller in blueprint using execCommand
  */
-enum EDebugPages : uint8
+enum CHAOSVEHICLES_API EDebugPages : uint8
 {
 	BasicPage = 0,
 	PerformancePage,
@@ -161,7 +159,7 @@ struct CHAOSVEHICLES_API FWheelStatus
 };
 
 USTRUCT()
-struct FVehicleDifferentialConfig
+struct CHAOSVEHICLES_API FVehicleDifferentialConfig
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -201,7 +199,7 @@ struct FVehicleDifferentialConfig
 };
 
 USTRUCT()
-struct FVehicleEngineConfig
+struct CHAOSVEHICLES_API FVehicleEngineConfig
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -290,7 +288,7 @@ private:
 };
 
 USTRUCT()
-struct FVehicleTransmissionConfig
+struct CHAOSVEHICLES_API FVehicleTransmissionConfig
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -420,7 +418,7 @@ enum class ESteeringType : uint8
 
 
 USTRUCT()
-struct FVehicleSteeringConfig
+struct CHAOSVEHICLES_API FVehicleSteeringConfig
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -525,6 +523,7 @@ struct CHAOSVEHICLES_API FWheelState
 		WorldWheelVelocity.Init(FVector::ZeroVector, NumWheels);
 		LocalWheelVelocity.Init(FVector::ZeroVector, NumWheels);
 		Trace.SetNum(NumWheels);
+		TraceResult.SetNum(NumWheels);
 	}
 
 	/** Commonly used Wheel state - evaluated once used wherever required for that frame */
@@ -538,16 +537,17 @@ struct CHAOSVEHICLES_API FWheelState
 	TArray<FVector> WorldWheelVelocity; /** Current velocity at wheel location In World Coordinates - combined linear and angular */
 	TArray<FVector> LocalWheelVelocity; /** Local velocity of Wheel */
 	TArray<Chaos::FSuspensionTrace> Trace;
+	TArray<FHitResult> TraceResult;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class UChaosWheeledVehicleSimulation : public UChaosVehicleSimulation
+class CHAOSVEHICLES_API UChaosWheeledVehicleSimulation : public UChaosVehicleSimulation
 {
 public:
 
-	UChaosWheeledVehicleSimulation(TArray<class UChaosVehicleWheel*>& WheelsIn)
-		: Wheels(WheelsIn), bOverlapHit(false)
+	UChaosWheeledVehicleSimulation()
+		: bOverlapHit(false)
 	{
 		QueryBox.Init();
 	}
@@ -579,7 +579,7 @@ public:
 	virtual void ApplyInput(const FControlInputs& ControlInputs, float DeltaTime) override;
 
 	/** Perform suspension ray/shape traces */
-	virtual void PerformSuspensionTraces(const TArray<Chaos::FSuspensionTrace>& SuspensionTrace, FCollisionQueryParams& TraceParams, FCollisionResponseContainer& CollisionResponse);
+	virtual void PerformSuspensionTraces(const TArray<Chaos::FSuspensionTrace>& SuspensionTrace, FCollisionQueryParams& TraceParams, FCollisionResponseContainer& CollisionResponse, TArray<FWheelTraceParams>& WheelTraceParams);
 
 
 	/** Update the engine/transmission simulation */
@@ -600,9 +600,6 @@ public:
 
 	/** Draw 3D debug lines and things along side the 3D model */
 	virtual void DrawDebug3D() override;
-
-	// #TODO - should not exist here, now duplicated, best not to access at all from Physics 
-	TArray<class UChaosVehicleWheel*>& Wheels;
 
 	FWheelState WheelState;	/** Cached state that holds wheel data for this frame */
 
@@ -626,6 +623,9 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 
 	UPROPERTY(EditAnywhere, Category = WheelSetup)
 	bool bWheelFrictionEnabled;
+
+	UPROPERTY(EditAnywhere, Category = WheelSetup)
+	bool bLegacyWheelFrictionPosition;
 
 	/** Wheels to create */
 	UPROPERTY(EditAnywhere, Category = WheelSetup)
@@ -655,7 +655,7 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 
 	// Our instanced wheels
 	UPROPERTY(transient, duplicatetransient, BlueprintReadOnly, Category = Vehicle)
-	TArray<class UChaosVehicleWheel*> Wheels;
+	TArray<TObjectPtr<class UChaosVehicleWheel>> Wheels;
 
 	/** Get current engine's rotation speed */
 	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
@@ -703,6 +703,7 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 	}
 
 	virtual float GetSuspensionOffset(int WheelIndex) override;
+	UPhysicalMaterial* GetPhysMaterial(int WheelIndex);
 
 	/** Set all channels to the specified response - for wheel raycasts */
 	void SetWheelTraceAllChannels(ECollisionResponse NewResponse)
@@ -722,7 +723,8 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 	//////////////////////////////////////////////////////////////////////////
 	// Public
 
-	virtual void Serialize(FArchive & Ar) override;
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 
 	// Get output data from Physics Thread
 	virtual void ParallelUpdate(float DeltaSeconds);
@@ -828,11 +830,20 @@ class CHAOSVEHICLES_API UChaosWheeledVehicleMovementComponent : public UChaosVeh
 	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
 	void SetWheelMaxSteerAngle(int WheelIndex, float AngleDegrees);
 
+	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
+	void SetTorqueCombineMethod(ETorqueCombineMethod InCombineMethod, int32 WheelIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
+	void SetDriveTorque(float DriveTorque, int32 WheelIndex);
+	
+	UFUNCTION(BlueprintCallable, Category = "Game|Components|ChaosWheeledVehicleMovement")
+	void SetBrakeTorque(float BrakeTorque, int32 WheelIndex);
+
 	/** */
 	virtual TUniquePtr<Chaos::FSimpleWheeledVehicle> CreatePhysicsVehicle() override
 	{
 		// Make the Vehicle Simulation class that will be updated from the physics thread async callback
-		VehicleSimulationPT = MakeUnique<UChaosWheeledVehicleSimulation>(Wheels);
+		VehicleSimulationPT = MakeUnique<UChaosWheeledVehicleSimulation>();
 
 		return UChaosVehicleMovementComponent::CreatePhysicsVehicle();
 	}

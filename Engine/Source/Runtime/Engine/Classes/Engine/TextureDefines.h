@@ -87,6 +87,8 @@ enum TextureGroup
 	TEXTUREGROUP_Project14 UMETA(DisplayName="ini:Project Group 14"),
 	TEXTUREGROUP_Project15 UMETA(DisplayName="ini:Project Group 15"),
 	TEXTUREGROUP_Project16 UMETA(DisplayName="ini:Project Group 16"),
+	TEXTUREGROUP_Project17 UMETA(DisplayName="ini:Project Group 17"),
+	TEXTUREGROUP_Project18 UMETA(DisplayName="ini:Project Group 18"),
 	TEXTUREGROUP_MAX,
 };
 
@@ -219,12 +221,49 @@ UENUM()
 enum ETextureLossyCompressionAmount
 {
 	TLCA_Default		UMETA(DisplayName = "Default"),
-	TLCA_None			UMETA(DisplayName = "No lossy compression"),
-	TLCA_Lowest			UMETA(DisplayName = "Lowest (Best image quality, largest filesize)"),
-	TLCA_Low			UMETA(DisplayName = "Low"),
-	TLCA_Medium			UMETA(DisplayName = "Medium"),
-	TLCA_High			UMETA(DisplayName = "High"),
-	TLCA_Highest		UMETA(DisplayName = "Highest (Worst image quality, smallest filesize)"),
+	TLCA_None			UMETA(DisplayName = "No lossy compression (Oodle RDO disabled)"),
+	TLCA_Lowest			UMETA(DisplayName = "Lowest (Best image quality, largest filesize) (Oodle RDO 1)"),
+	TLCA_Low			UMETA(DisplayName = "Low (Oodle RDO 10)"),
+	TLCA_Medium			UMETA(DisplayName = "Medium (Oodle RDO 20)"),
+	TLCA_High			UMETA(DisplayName = "High (Oodle RDO 30)"),
+	TLCA_Highest		UMETA(DisplayName = "Highest (Worst image quality, smallest filesize) (Oodle RDO 40)"),
+};
+
+// Certain settings can be changed to facilitate how fast a texture build takes. This
+// controls which of those settings is used. It is resolved prior to the settings reaching
+// the encoder.
+//
+// In many places where this is used, FinalIfAvailable is invalid.
+UENUM()
+enum class ETextureEncodeSpeed : uint8
+{
+	// Use the "Final" encode speed settings in UTextureEncodingProjectSettings
+	Final = 0,
+	// Try and fetch the final encode speed settings, but if they don't exist, encode
+	// with Fast.
+	FinalIfAvailable = 1,
+	// Use the "Fast" encode settings in UTextureEncodingProjectSettings
+	Fast = 2
+};
+
+UENUM()
+enum class ETextureClass : uint8
+{
+	Invalid,
+	// Engine types with source data :
+	TwoD,
+	Cube,
+	Array,
+	CubeArray,
+	Volume,
+	
+	// Engine types without source data :
+	TwoDDynamic,
+	RenderTarget, // can be 2D or Cube
+
+	// User types :
+	Other2DNoSource, // Media, Web, etc. that should have derived from TwoDDynamic but didn't
+	OtherUnknown
 };
 
 UENUM()
@@ -249,13 +288,14 @@ enum ECompositeTextureMode
 UENUM()
 enum ETextureSourceCompressionFormat
 {
-	TSCF_None	UMETA(DisplayName = "ZLib"),
+	TSCF_None	UMETA(DisplayName = "None"),
 	TSCF_PNG	UMETA(DisplayName = "PNG"),
 	TSCF_JPEG	UMETA(DisplayName = "JPEG"),
 
 	TSCF_MAX
 };
 
+// ETextureSourceFormat should map one-to-one to ImageCore ERawImageFormat::Type
 UENUM()
 enum ETextureSourceFormat
 {
@@ -266,14 +306,22 @@ enum ETextureSourceFormat
 	TSF_RGBA16,
 	TSF_RGBA16F,
 
-	//@todo: Deprecated!
-	TSF_RGBA8,
-	//@todo: Deprecated!
-	TSF_RGBE8,
+	// these are mapped to TSF_BGRA8/TSF_BGRE8 on load, so the runtime will never see them after loading :
+	// keep them here to preserve enum values
+	TSF_RGBA8_DEPRECATED,
+	TSF_RGBE8_DEPRECATED,
 
 	TSF_G16,
+	TSF_RGBA32F,
+	TSF_R16F,
+	TSF_R32F,
 
-	TSF_MAX
+	TSF_MAX,
+
+	// provide aliases to the old names with deprecation warnings
+	//  remove these someday
+	TSF_RGBA8 UE_DEPRECATED(5.1,"Legacy ETextureSourceFormat not supported, use BGRA8") = TSF_RGBA8_DEPRECATED,
+	TSF_RGBE8 UE_DEPRECATED(5.1,"Legacy ETextureSourceFormat not supported, use BGRE8") = TSF_RGBE8_DEPRECATED
 };
 
 // This needs to be mirrored in EditorFactories.cpp.
@@ -283,18 +331,20 @@ enum TextureCompressionSettings
 	TC_Default					UMETA(DisplayName = "Default (DXT1/5, BC1/3 on DX11)"),
 	TC_Normalmap				UMETA(DisplayName = "Normalmap (DXT5, BC5 on DX11)"),
 	TC_Masks					UMETA(DisplayName = "Masks (no sRGB)"),
-	TC_Grayscale				UMETA(DisplayName = "Grayscale (R8, RGB8 sRGB)"),
-	TC_Displacementmap			UMETA(DisplayName = "Displacementmap (8/16bit)"),
+	TC_Grayscale				UMETA(DisplayName = "Grayscale (G8/16, RGB8 sRGB)"),
+	TC_Displacementmap			UMETA(DisplayName = "Displacementmap (G8/16)"),
 	TC_VectorDisplacementmap	UMETA(DisplayName = "VectorDisplacementmap (RGBA8)"),
-	TC_HDR						UMETA(DisplayName = "HDR (RGB, no sRGB)"),
+	TC_HDR						UMETA(DisplayName = "HDR (RGBA16F, no sRGB)"),
 	TC_EditorIcon				UMETA(DisplayName = "UserInterface2D (RGBA)"),
 	TC_Alpha					UMETA(DisplayName = "Alpha (no sRGB, BC4 on DX11)"),
-	TC_DistanceFieldFont		UMETA(DisplayName = "DistanceFieldFont (R8)"),
-	TC_HDR_Compressed			UMETA(DisplayName = "HDRCompressed (RGB, BC6H, DX11)"),
+	TC_DistanceFieldFont		UMETA(DisplayName = "DistanceFieldFont (G8)"),
+	TC_HDR_Compressed			UMETA(DisplayName = "HDR Compressed (RGB, BC6H, DX11)"),
 	TC_BC7						UMETA(DisplayName = "BC7 (DX11, optional A)"),
 	TC_HalfFloat				UMETA(DisplayName = "Half Float (R16F)"),
 	TC_LQ				        UMETA(Hidden, DisplayName = "Low Quality (BGR565/BGR555A1)", ToolTip = "BGR565/BGR555A1, fallback to DXT1/DXT5 on Mac platform"),
-	TC_EncodedReflectionCapture		UMETA(Hidden),
+	TC_EncodedReflectionCapture	UMETA(Hidden),
+	TC_SingleFloat				UMETA(DisplayName = "Single Float (R32F)"),
+	TC_HDR_F32					UMETA(DisplayName = "HDR High Precision (RGBA32F)"),
 	TC_MAX,
 };
 
@@ -353,4 +403,47 @@ enum class ETextureChromaticAdaptationMethod : uint8
 	TCAM_Bradford	= 1 UMETA(DisplayName = "Bradford", ToolTip = "Chromatic adaptation is applied using the Bradford method."),
 	TCAM_CAT02		= 2 UMETA(DisplayName = "CAT02", ToolTip = "Chromatic adaptation is applied using the CAT02 method."),
 };
+
+
+namespace UE
+{
+namespace TextureDefines
+{
+
+static FORCEINLINE bool IsHDR(ETextureSourceFormat Format)
+{
+	return (Format == TSF_BGRE8 || Format == TSF_RGBA16F || Format == TSF_RGBA32F || Format == TSF_R16F || Format == TSF_R32F);
+}
+
+static FORCEINLINE bool IsHDR(TextureCompressionSettings CompressionSettings)
+{
+	switch(CompressionSettings)
+	{
+	case TC_HDR:
+	case TC_HDR_F32:
+	case TC_HDR_Compressed:
+	case TC_HalfFloat:
+	case TC_SingleFloat:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static FORCEINLINE bool IsUncompressed(TextureCompressionSettings CompressionSettings)
+{
+	return (CompressionSettings == TC_Grayscale ||
+			CompressionSettings == TC_Displacementmap ||
+			CompressionSettings == TC_VectorDisplacementmap ||
+			CompressionSettings == TC_HDR ||
+			CompressionSettings == TC_HDR_F32 ||
+			CompressionSettings == TC_EditorIcon ||
+			CompressionSettings == TC_DistanceFieldFont ||
+			CompressionSettings == TC_HalfFloat ||
+			CompressionSettings == TC_SingleFloat
+		);
+}
+
+} // TextureDefines
+} // UE
 

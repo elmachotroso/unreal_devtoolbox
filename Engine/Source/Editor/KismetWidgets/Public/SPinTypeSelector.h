@@ -2,27 +2,52 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
 #include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Misc/Attribute.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Types/SlateStructs.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STreeView.h"
-#include "EditorStyleSet.h"
 #include "EdGraphSchema_K2.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlateFwd.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
+class ITableRow;
 class SComboButton;
 class SMenuOwner;
+class SSearchBox;
 class SToolTip;
+class SWidget;
+class UEdGraphSchema;
+struct FEdGraphSchemaAction;
+struct FGeometry;
 struct FObjectReferenceType;
+struct FPointerEvent;
+struct FSlateBrush;
 
 DECLARE_DELEGATE_OneParam(FOnPinTypeChanged, const FEdGraphPinType&)
 
@@ -36,6 +61,7 @@ typedef STreeView<FPinTypeTreeItem> SPinTypeTreeView;
 DECLARE_DELEGATE_TwoParams(FGetPinTypeTree, TArray<FPinTypeTreeItem >&, ETypeTreeFilter);
 
 struct FObjectReferenceType;
+
 typedef TSharedPtr<struct FObjectReferenceType> FObjectReferenceListItem;
 
 /** Widget for modifying the type for a variable or pin */
@@ -66,7 +92,7 @@ public:
 		, _bAllowArrays(true)
 		, _TreeViewWidth(300.f)
 		, _TreeViewHeight(400.f)
-		, _Font(FEditorStyle::GetFontStyle(TEXT("NormalFont")))
+		, _Font(FAppStyle::GetFontStyle(TEXT("NormalFont")))
 		, _SelectorType(ESelectorType::Full)
 		, _ReadOnly(false)
 		{}
@@ -82,7 +108,8 @@ public:
 		SLATE_ATTRIBUTE( FSlateFontInfo, Font )
 		SLATE_ARGUMENT( ESelectorType, SelectorType )
 		SLATE_ATTRIBUTE(bool, ReadOnly)
-		SLATE_ARGUMENT(TSharedPtr<class IPinTypeSelectorFilter>, CustomFilter)
+		SLATE_ARGUMENT_DEPRECATED(TSharedPtr<class IPinTypeSelectorFilter>, CustomFilter, 5.1, "Please use CustomFilters instead")
+		SLATE_ARGUMENT(TArray<TSharedPtr<class IPinTypeSelectorFilter>>, CustomFilters)
 	SLATE_END_ARGS()
 public:
 	void Construct(const FArguments& InArgs, FGetPinTypeTree GetPinTypeTreeFunc);
@@ -107,13 +134,13 @@ protected:
 	FSlateColor GetSecondaryTypeIconColor() const;
 
 	/** Gets a succinct type description for the type being manipulated */
-	FText GetTypeDescription() const;
+	FText GetTypeDescription(bool bIncludeSubcategory = false) const;
 
 	/** Gets the secondary type description. E.g. the value type for TMaps */
-	FText GetSecondaryTypeDescription() const;
+	FText GetSecondaryTypeDescription(bool bIncludeSubcategory = false) const;
 
 	/** Gets a combined description of the primary, container, and secondary types. E.g. "Map of Strings to Floats" */
-	FText GetCombinedTypeDescription() const;
+	FText GetCombinedTypeDescription(bool bIncludeSubcategory = false) const;
 
 	TSharedPtr<SComboButton>		TypeComboButton;
 	TSharedPtr<SComboButton>		SecondaryTypeComboButton;
@@ -166,7 +193,7 @@ protected:
 	TWeakPtr<SMenuOwner> PinTypeSelectorMenuOwner;
 
 	/** An interface to optionally apply a custom filter to the available pin type items for display. */
-	TSharedPtr<class IPinTypeSelectorFilter> CustomFilter;
+	TArray<TSharedPtr<class IPinTypeSelectorFilter>> CustomFilters;
 
 	/** Array checkbox support functions */
 	ECheckBoxState IsArrayChecked() const;

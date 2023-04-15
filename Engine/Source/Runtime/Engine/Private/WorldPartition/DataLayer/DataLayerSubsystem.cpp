@@ -2,7 +2,8 @@
 
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/WorldDataLayersActorDesc.h"
+#include "WorldPartition/DataLayer/DataLayerAsset.h"
 #include "WorldPartition/WorldPartitionDebugHelper.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
@@ -10,14 +11,26 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/Canvas.h"
+#include "EngineUtils.h"
 #include "Algo/Transform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataLayerSubsystem)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Modules/ModuleManager.h"
+#include "ProfilingDebugging/ScopedTimers.h"
+#include "WorldPartition/DataLayer/DataLayerUtils.h"
 #include "WorldPartition/DataLayer/IDataLayerEditorModule.h"
+#include "WorldPartition/WorldPartitionEditorPerProjectUserSettings.h"
 #endif
 
 extern int32 GDrawDataLayersLoadTime;
+
+#if WITH_EDITOR
+FOnWorldDataLayersPostRegister UDataLayerSubsystem::OnWorldDataLayerPostRegister;
+FOnWorldDataLayersPreUnregister UDataLayerSubsystem::OnWorldDataLayerPreUnregister;
+#endif
 
 static FAutoConsoleCommandWithOutputDevice GDumpDataLayersCmd(
 	TEXT("wp.DumpDataLayers"),
@@ -38,22 +51,24 @@ static FAutoConsoleCommandWithOutputDevice GDumpDataLayersCmd(
 	})
 );
 
-UDataLayerSubsystem::UDataLayerSubsystem()
-{}
-
-bool UDataLayerSubsystem::ShouldCreateSubsystem(UObject* Outer) const
+#if WITH_EDITOR
+FDataLayersEditorBroadcast& FDataLayersEditorBroadcast::Get()
 {
-	if (!Super::ShouldCreateSubsystem(Outer))
-	{
-		return false;
-	}
+	static FDataLayersEditorBroadcast DataLayersEditorBroadcast;
+	return DataLayersEditorBroadcast;
+}
 
-	if (UWorld* WorldOuter = Cast<UWorld>(Outer))
-	{
-		return WorldOuter->IsPartitionedWorld();
-	}
+void FDataLayersEditorBroadcast::StaticOnActorDataLayersEditorLoadingStateChanged(bool bIsFromUserChange)
+{
+	Get().DataLayerEditorLoadingStateChanged.Broadcast(bIsFromUserChange);
+}
+#endif
 
-	return false;
+UDataLayerSubsystem::UDataLayerSubsystem()
+{
+#if WITH_EDITOR
+	DataLayerActorEditorContextID = 0;
+#endif
 }
 
 void UDataLayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -65,47 +80,218 @@ void UDataLayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		FModuleManager::LoadModuleChecked<IDataLayerEditorModule>("DataLayerEditor");
 	}
+
+	RegisterEarlyLoadedWorldDataLayers();
+
+	UActorDescContainer::OnActorDescContainerInitialized.AddUObject(this, &UDataLayerSubsystem::OnActorDescContainerInitialized);
 #endif
 }
 
-const TSet<FName>& UDataLayerSubsystem::GetEffectiveActiveDataLayerNames() const
+void UDataLayerSubsystem::Deinitialize()
 {
-	static TSet<FName> EmptySet;
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	return WorldDataLayers ? WorldDataLayers->GetEffectiveActiveDataLayerNames() : EmptySet;
+	Super::Deinitialize();
+
+	WorldDataLayerCollection.Empty();
+
+#if WITH_EDITOR
+	UActorDescContainer::OnActorDescContainerInitialized.RemoveAll(this);
+#endif
 }
 
-const TSet<FName>& UDataLayerSubsystem::GetEffectiveLoadedDataLayerNames() const
+bool UDataLayerSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
 {
-	static TSet<FName> EmptySet;
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	return WorldDataLayers ? WorldDataLayers->GetEffectiveLoadedDataLayerNames() : EmptySet;
+	return Super::DoesSupportWorldType(WorldType) || WorldType == EWorldType::Inactive;
 }
 
-UDataLayer* UDataLayerSubsystem::GetDataLayer(const FActorDataLayer& InDataLayer) const
+
+#if WITH_EDITOR
+
+bool UDataLayerSubsystem::CanResolveDataLayers() const
 {
-	return GetDataLayerFromName(InDataLayer.Name);
+	return !WorldDataLayerCollection.IsEmpty();
 }
 
-UDataLayer* UDataLayerSubsystem::GetDataLayerFromLabel(FName InDataLayerLabel) const
+bool UDataLayerSubsystem::RemoveDataLayer(const UDataLayerInstance* InDataLayerInstance)
 {
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	return WorldDataLayers ? const_cast<UDataLayer*>(WorldDataLayers->GetDataLayerFromLabel(InDataLayerLabel)) : nullptr;
-}
-
-UDataLayer* UDataLayerSubsystem::GetDataLayerFromName(FName InDataLayerName) const
-{
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	return WorldDataLayers ? const_cast<UDataLayer*>(WorldDataLayers->GetDataLayerFromName(InDataLayerName)) : nullptr;
-}
-
-void UDataLayerSubsystem::SetDataLayerRuntimeState(const UDataLayer* InDataLayer, EDataLayerRuntimeState InState, bool bInIsRecursive)
-{
-	if (InDataLayer)
+	bool bIsDataLayerRemoved = false;
+	WorldDataLayerCollection.ForEachWorldDataLayers([InDataLayerInstance, &bIsDataLayerRemoved](AWorldDataLayers* WorldDataLayer)
 	{
-		if (AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+		bIsDataLayerRemoved = WorldDataLayer->RemoveDataLayer(InDataLayerInstance);
+		return !bIsDataLayerRemoved;
+	});
+
+	return bIsDataLayerRemoved;
+}
+
+int32 UDataLayerSubsystem::RemoveDataLayers(const TArray<UDataLayerInstance*>& InDataLayerInstances)
+{
+	int32 DataLayerRemovedCount = 0;
+	WorldDataLayerCollection.ForEachWorldDataLayers([InDataLayerInstances, &DataLayerRemovedCount](AWorldDataLayers* WorldDataLayer)
+	{
+		DataLayerRemovedCount += WorldDataLayer->RemoveDataLayers(InDataLayerInstances);
+		return DataLayerRemovedCount != InDataLayerInstances.Num();
+	});
+
+	return DataLayerRemovedCount;
+}
+
+void UDataLayerSubsystem::UpdateDataLayerEditorPerProjectUserSettings() const
+{
+	TArray<FName> DataLayersNotLoadedInEditor;
+	TArray<FName> DataLayersLoadedInEditor;
+
+	GetUserLoadedInEditorStates(DataLayersLoadedInEditor, DataLayersNotLoadedInEditor);
+
+	GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetWorldDataLayersNonDefaultEditorLoadStates(GetWorld(), DataLayersLoadedInEditor, DataLayersNotLoadedInEditor);
+}
+
+void UDataLayerSubsystem::GetUserLoadedInEditorStates(TArray<FName>& OutDataLayersLoadedInEditor, TArray<FName>& OutDataLayersNotLoadedInEditor) const
+{
+	OutDataLayersLoadedInEditor.Empty();
+	OutDataLayersNotLoadedInEditor.Empty();
+
+	const TArray<FName>& SettingsDataLayersNotLoadedInEditor = GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetWorldDataLayersNotLoadedInEditor(GetWorld());
+	const TArray<FName>& SettingsDataLayersLoadedInEditor = GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetWorldDataLayersLoadedInEditor(GetWorld());
+
+	ForEachDataLayer([&OutDataLayersLoadedInEditor, &OutDataLayersNotLoadedInEditor, &SettingsDataLayersNotLoadedInEditor, &SettingsDataLayersLoadedInEditor](UDataLayerInstance* DataLayerInstance)
+	{
+		if (DataLayerInstance->IsLoadedInEditorChangedByUserOperation())
 		{
-			WorldDataLayers->SetDataLayerRuntimeState(FActorDataLayer(InDataLayer->GetFName()), InState, bInIsRecursive);
+			if (!DataLayerInstance->IsLoadedInEditor() && DataLayerInstance->IsInitiallyLoadedInEditor())
+			{
+				OutDataLayersNotLoadedInEditor.Add(DataLayerInstance->GetDataLayerFName());
+			}
+			else if (DataLayerInstance->IsLoadedInEditor() && !DataLayerInstance->IsInitiallyLoadedInEditor())
+			{
+				OutDataLayersLoadedInEditor.Add(DataLayerInstance->GetDataLayerFName());
+			}
+
+			DataLayerInstance->ClearLoadedInEditorChangedByUserOperation();
+		}
+		else
+		{
+			if (SettingsDataLayersNotLoadedInEditor.Contains(DataLayerInstance->GetDataLayerFName()))
+			{
+				OutDataLayersNotLoadedInEditor.Add(DataLayerInstance->GetDataLayerFName());
+			}
+			else if (SettingsDataLayersLoadedInEditor.Contains(DataLayerInstance->GetDataLayerFName()))
+			{
+				OutDataLayersLoadedInEditor.Add(DataLayerInstance->GetDataLayerFName());
+			}
+		}
+
+		return true;
+	});
+}
+
+TArray<const UDataLayerInstance*> UDataLayerSubsystem::GetRuntimeDataLayerInstances(UWorld* InWorld, const TArray<FName>& DataLayerInstanceNames)
+{
+	TArray<const UDataLayerInstance*> DataLayerInstances;
+	if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(InWorld))
+	{
+		for (const FName& DataLayerInstanceName : DataLayerInstanceNames)
+		{
+			if (const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
+			{
+				if (ensure(DataLayerInstance->IsRuntime()))
+				{
+					DataLayerInstances.Add(DataLayerInstance);
+				}
+			}
+		}
+	}
+	return DataLayerInstances;
+}
+
+#endif
+
+TSet<FName> UDataLayerSubsystem::GetEffectiveActiveDataLayerNames() const
+{
+	TSet<FName> EffectiveActiveDataLayerNames;
+	WorldDataLayerCollection.ForEachWorldDataLayers([&EffectiveActiveDataLayerNames](AWorldDataLayers* WorldDataLayers)
+	{
+		EffectiveActiveDataLayerNames.Append(WorldDataLayers->GetEffectiveActiveDataLayerNames());
+	});
+	
+	return EffectiveActiveDataLayerNames;
+}
+
+TSet<FName> UDataLayerSubsystem::GetEffectiveLoadedDataLayerNames() const
+{
+	TSet<FName> EffectiveLoadedDataLayerNames;
+	WorldDataLayerCollection.ForEachWorldDataLayers([&EffectiveLoadedDataLayerNames](AWorldDataLayers* WorldDataLayers)
+	{
+		EffectiveLoadedDataLayerNames.Append(WorldDataLayers->GetEffectiveLoadedDataLayerNames());
+	});
+
+	return EffectiveLoadedDataLayerNames;
+}
+
+void UDataLayerSubsystem::RegisterWorldDataLayer(AWorldDataLayers* WorldDataLayers)
+{
+	// Don't register WorldDataLayers in game if it's not relevant at runtime
+	if (GetWorld()->IsGameWorld() && WorldDataLayers && !WorldDataLayers->IsRuntimeRelevant())
+	{
+		return;
+	}
+
+	if (WorldDataLayerCollection.RegisterWorldDataLayer(WorldDataLayers))
+	{
+#if WITH_EDITOR
+		OnWorldDataLayerPostRegister.Broadcast(WorldDataLayers);
+#endif
+	}
+}
+
+void UDataLayerSubsystem::UnregisterWorldDataLayer(AWorldDataLayers* WorldDataLayers)
+{
+	if (WorldDataLayerCollection.Contains(WorldDataLayers))
+	{
+#if WITH_EDITOR
+		OnWorldDataLayerPreUnregister.Broadcast(WorldDataLayers);
+#endif
+
+		WorldDataLayerCollection.UnregisterWorldDataLayer(WorldDataLayers);
+	}
+}
+
+void UDataLayerSubsystem::ForEachWorldDataLayer(TFunctionRef<bool(AWorldDataLayers*)> Func)
+{
+	WorldDataLayerCollection.ForEachWorldDataLayersBreakable(Func);
+}
+
+void UDataLayerSubsystem::ForEachWorldDataLayer(TFunctionRef<bool(AWorldDataLayers*)> Func) const
+{
+	const_cast<UDataLayerSubsystem*>(this)->ForEachWorldDataLayer(Func);
+}
+
+UDataLayerInstance* UDataLayerSubsystem::GetDataLayerInstanceFromAsset(const UDataLayerAsset* InDataLayerAsset) const
+{
+	return GetDataLayerInstance(InDataLayerAsset);
+}
+
+void UDataLayerSubsystem::SetDataLayerInstanceRuntimeState(const UDataLayerAsset* InDataLayerAsset, EDataLayerRuntimeState InState, bool bInIsRecursive)
+{
+	SetDataLayerRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset), InState, bInIsRecursive);
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerInstanceRuntimeState(const UDataLayerAsset* InDataLayerAsset) const
+{
+	return GetDataLayerRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset));
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerInstanceEffectiveRuntimeState(const UDataLayerAsset* InDataLayerAsset) const
+{
+	return GetDataLayerEffectiveRuntimeState(GetDataLayerInstanceFromAsset(InDataLayerAsset));
+}
+
+void UDataLayerSubsystem::SetDataLayerRuntimeState(const UDataLayerInstance* InDataLayerInstance, EDataLayerRuntimeState InState, bool bInIsRecursive)
+{
+	if (InDataLayerInstance)
+	{
+		if (AWorldDataLayers* WorldDataLayers = InDataLayerInstance->GetOuterAWorldDataLayers())
+		{
+			WorldDataLayers->SetDataLayerRuntimeState(InDataLayerInstance, InState, bInIsRecursive);
 		}
 	}
 	else
@@ -114,102 +300,36 @@ void UDataLayerSubsystem::SetDataLayerRuntimeState(const UDataLayer* InDataLayer
 	}
 }
 
-void UDataLayerSubsystem::SetDataLayerRuntimeStateByName(const FName& InDataLayerName, EDataLayerRuntimeState InState, bool bInIsRecursive)
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeState(const UDataLayerInstance* InDataLayerInstance) const
 {
-	if (UDataLayer* DataLayer = GetDataLayerFromName(InDataLayerName))
-	{
-		SetDataLayerRuntimeState(DataLayer, InState, bInIsRecursive);
-	}
-	else
-	{
-		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerRuntimeStateByName unknown Data Layer: '%s'"), *InDataLayerName.ToString());
-	}
-}
-
-void UDataLayerSubsystem::SetDataLayerRuntimeState(const FActorDataLayer& InDataLayer, EDataLayerRuntimeState InState, bool bInIsRecursive)
-{
-	if (UDataLayer* DataLayer = GetDataLayerFromName(InDataLayer.Name))
-	{
-		SetDataLayerRuntimeState(DataLayer, InState, bInIsRecursive);
-	}
-	else
-	{
-		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerRuntimeState unknown Data Layer: '%s'"), *InDataLayer.Name.ToString());
-	}
-}
-
-void UDataLayerSubsystem::SetDataLayerRuntimeStateByLabel(const FName& InDataLayerLabel, EDataLayerRuntimeState InState, bool bInIsRecursive)
-{
-	if (UDataLayer* DataLayer = GetDataLayerFromLabel(InDataLayerLabel))
-	{
-		SetDataLayerRuntimeState(DataLayer, InState, bInIsRecursive);
-	}
-	else
-	{
-		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerRuntimeStateByLabel unknown Data Layer: '%s'"), *InDataLayerLabel.ToString());
-	}
-}
-
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeState(const UDataLayer* InDataLayer) const
-{
-	if (!InDataLayer)
-	{
-		return EDataLayerRuntimeState::Unloaded;
-	}
-
-	return GetDataLayerRuntimeStateByName(InDataLayer->GetFName());
+	AWorldDataLayers* WorldDataLayers = InDataLayerInstance->GetOuterAWorldDataLayers();
+	return WorldDataLayers->GetDataLayerRuntimeStateByName(InDataLayerInstance->GetDataLayerFName());
 }
 
 EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeStateByName(const FName& InDataLayerName) const
 {
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	if (!WorldDataLayers)
-	{
-		return EDataLayerRuntimeState::Unloaded;
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerInstance(InDataLayerName))
+	{		
+		return GetDataLayerRuntimeState(DataLayerInstance);
 	}
-
-	return WorldDataLayers->GetDataLayerRuntimeStateByName(InDataLayerName);
+	
+	return EDataLayerRuntimeState::Unloaded;
 }
 
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeState(const FActorDataLayer& InDataLayer) const
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeState(const UDataLayerInstance* InDataLayerInstance) const
 {
-	return GetDataLayerRuntimeStateByName(InDataLayer.Name);
-}
-
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeStateByLabel(const FName& InDataLayerLabel) const
-{
-	return GetDataLayerRuntimeState(GetDataLayerFromLabel(InDataLayerLabel));
-}
-
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeState(const UDataLayer* InDataLayer) const
-{
-	if (!InDataLayer)
-	{
-		return EDataLayerRuntimeState::Unloaded;
-	}
-
-	return GetDataLayerEffectiveRuntimeStateByName(InDataLayer->GetFName());
+	AWorldDataLayers* WorldDataLayers = InDataLayerInstance->GetOuterAWorldDataLayers();
+	return WorldDataLayers->GetDataLayerEffectiveRuntimeStateByName(InDataLayerInstance->GetDataLayerFName());
 }
 
 EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeStateByName(const FName& InDataLayerName) const
 {
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	if (!WorldDataLayers)
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerInstance(InDataLayerName))
 	{
-		return EDataLayerRuntimeState::Unloaded;
+		return GetDataLayerEffectiveRuntimeState(DataLayerInstance);
 	}
 
-	return WorldDataLayers->GetDataLayerEffectiveRuntimeStateByName(InDataLayerName);
-}
-
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeState(const FActorDataLayer& InDataLayer) const
-{
-	return GetDataLayerEffectiveRuntimeStateByName(InDataLayer.Name);
-}
-
-EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeStateByLabel(const FName& InDataLayerLabel) const
-{
-	return GetDataLayerEffectiveRuntimeState(GetDataLayerFromLabel(InDataLayerLabel));
+	return EDataLayerRuntimeState::Unloaded;
 }
 
 bool UDataLayerSubsystem::IsAnyDataLayerInEffectiveRuntimeState(const TArray<FName>& InDataLayerNames, EDataLayerRuntimeState InState) const
@@ -244,22 +364,22 @@ void UDataLayerSubsystem::DrawDataLayersStatus(UCanvas* Canvas, FVector2D& Offse
 		{
 			FWorldPartitionDebugHelper::DrawText(Canvas, Title, GEngine->GetSmallFont(), HeaderColor, Pos, &MaxTextWidth);
 
-			TArray<UDataLayer*> DataLayers;
+			TArray<const UDataLayerInstance*> DataLayers;
 			DataLayers.Reserve(LayerNames.Num());
 			for (const FName& DataLayerName : LayerNames)
 			{
-				if (UDataLayer* DataLayer = GetDataLayerFromName(DataLayerName))
+				if (const UDataLayerInstance* DataLayer = GetDataLayerInstance(DataLayerName))
 				{
 					DataLayers.Add(DataLayer);
 				}
 			}
 
-			DataLayers.Sort([](const UDataLayer& A, const UDataLayer& B) { return A.GetDataLayerLabel().LexicalLess(B.GetDataLayerLabel()); });
+			DataLayers.Sort([](const UDataLayerInstance& A, const UDataLayerInstance& B) { return A.GetDataLayerFullName() < B.GetDataLayerFullName(); });
 
 			UFont* DataLayerFont = GEngine->GetSmallFont();
-			for (UDataLayer* DataLayer : DataLayers)
+			for (const UDataLayerInstance* DataLayer : DataLayers)
 			{
-				FString DataLayerString = DataLayer->GetDataLayerLabel().ToString();
+				FString DataLayerString = DataLayer->GetDataLayerShortName();
 
 				if (GDrawDataLayersLoadTime)
 				{
@@ -288,22 +408,19 @@ void UDataLayerSubsystem::DrawDataLayersStatus(UCanvas* Canvas, FVector2D& Offse
 	DrawLayerNames(TEXT("Active Data Layers"), FColor::Green, FColor::White, ActiveDataLayers);
 
 	TSet<FName> UnloadedDataLayers;
-	if (AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
-	{		
-		WorldDataLayers->ForEachDataLayer([&LoadedDataLayers, &ActiveDataLayers, &UnloadedDataLayers](UDataLayer* DataLayer)
+	ForEachDataLayer([&LoadedDataLayers, &ActiveDataLayers, &UnloadedDataLayers](UDataLayerInstance* DataLayer)
+	{
+		if (DataLayer->IsRuntime())
 		{
-			if (DataLayer->IsRuntime())
+			const FName DataLayerName = DataLayer->GetDataLayerFName();
+			if (!LoadedDataLayers.Contains(DataLayerName) && !ActiveDataLayers.Contains(DataLayerName))
 			{
-				const FName DataLayerName = DataLayer->GetFName();
-				if (!LoadedDataLayers.Contains(DataLayerName) && !ActiveDataLayers.Contains(DataLayerName))
-				{
-					UnloadedDataLayers.Add(DataLayerName);
-				}
+				UnloadedDataLayers.Add(DataLayerName);
 			}
-			return true;
-		});
-		DrawLayerNames(TEXT("Unloaded Data Layers"), FColor::Silver, FColor(192,192,192), UnloadedDataLayers);
-	}
+		}
+		return true;
+	});
+	DrawLayerNames(TEXT("Unloaded Data Layers"), FColor::Silver, FColor(192, 192, 192), UnloadedDataLayers);
 
 	Offset.X += MaxTextWidth + 10;
 
@@ -312,32 +429,32 @@ void UDataLayerSubsystem::DrawDataLayersStatus(UCanvas* Canvas, FVector2D& Offse
 	{
 		for (FName DataLayerName : UnloadedDataLayers)
 		{
-			if (UDataLayer* DataLayer = GetDataLayerFromName(DataLayerName))
+			if (const UDataLayerInstance* DataLayer = GetDataLayerInstance(DataLayerName))
 			{
 				ActiveDataLayersLoadTime.Remove(DataLayer);
 			}
 		}
 
-		TArray<UDataLayer*> LoadingDataLayers;
+		TArray<const UDataLayerInstance*> LoadingDataLayers;
 		LoadingDataLayers.Reserve(LoadedDataLayers.Num() + ActiveDataLayers.Num());
-		auto CopyLambda = [this](FName DataLayerName) { return GetDataLayerFromName(DataLayerName); };
+		auto CopyLambda = [this](FName DataLayerName) { return GetDataLayerInstance(DataLayerName); };
 		Algo::Transform(LoadedDataLayers, LoadingDataLayers, CopyLambda);
 		Algo::Transform(ActiveDataLayers, LoadingDataLayers, CopyLambda);
 
-		for (UDataLayer* DataLayer : LoadingDataLayers)
+		for (const UDataLayerInstance* DataLayer : LoadingDataLayers)
 		{
 			double* DataLayerLoadTime = ActiveDataLayersLoadTime.Find(DataLayer);
 
-			auto IsDataLayerReady = [WorldPartitionSubsystem](UDataLayer* DataLayer, EWorldPartitionRuntimeCellState TargetState)
+			auto IsDataLayerReady = [WorldPartitionSubsystem](const UDataLayerInstance* DataLayer, EWorldPartitionRuntimeCellState TargetState)
 			{
 				FWorldPartitionStreamingQuerySource QuerySource;
 				QuerySource.bDataLayersOnly = true;
 				QuerySource.bSpatialQuery = false;
-				QuerySource.DataLayers.Add(DataLayer->GetFName());
+				QuerySource.DataLayers.Add(DataLayer->GetDataLayerFName());
 				return WorldPartitionSubsystem->IsStreamingCompleted(TargetState, { QuerySource }, true);
 			};
 
-			const EWorldPartitionRuntimeCellState TargetState = ActiveDataLayers.Contains(DataLayer->GetFName()) ? EWorldPartitionRuntimeCellState::Activated : EWorldPartitionRuntimeCellState::Loaded;
+			const EWorldPartitionRuntimeCellState TargetState = ActiveDataLayers.Contains(DataLayer->GetDataLayerFName()) ? EWorldPartitionRuntimeCellState::Activated : EWorldPartitionRuntimeCellState::Loaded;
 
 			if (!DataLayerLoadTime)
 			{
@@ -362,9 +479,9 @@ void UDataLayerSubsystem::DrawDataLayersStatus(UCanvas* Canvas, FVector2D& Offse
 	}
 }
 
-TArray<UDataLayer*> UDataLayerSubsystem::ConvertArgsToDataLayers(UWorld* World, const TArray<FString>& InArgs)
+TArray<UDataLayerInstance*> UDataLayerSubsystem::ConvertArgsToDataLayers(UWorld* World, const TArray<FString>& InArgs)
 {
-	TSet<UDataLayer*> OutDataLayers;
+	TSet<UDataLayerInstance*> OutDataLayers;
 
 	const TCHAR* QuoteChar = TEXT("\"");
 	bool bQuoteStarted = false;
@@ -406,31 +523,34 @@ TArray<UDataLayer*> UDataLayerSubsystem::ConvertArgsToDataLayers(UWorld* World, 
 		Args.Add(Builder.ToString());
 	}
 
+	
+	UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World);
 	for (const FString& Arg : Args)
 	{
-		FName DataLayerLabel = FName(Arg);
-		if (const AWorldDataLayers* WorldDataLayers = World->GetWorldDataLayers())
+		FName DataLayerName = FName(Arg);
+		bool bShortNameFound = false;
+		FString SanitizedDataLayerName = DataLayerName.ToString().Replace(TEXT(" "), TEXT(""));
+		DataLayerSubsystem->ForEachDataLayer([&OutDataLayers, &SanitizedDataLayerName, &bShortNameFound](UDataLayerInstance* DataLayerInstance)
 		{
-			UDataLayer* DataLayer = const_cast<UDataLayer*>(WorldDataLayers->GetDataLayerFromLabel(DataLayerLabel));
-			if (!DataLayer)
+			if (DataLayerInstance->GetDataLayerShortName().Compare(SanitizedDataLayerName, ESearchCase::IgnoreCase) == 0)
 			{
-				// Try to find Data Layer by ignoring whitespaces and case
-				FString DataLayerLabelToFind = DataLayerLabel.ToString().Replace(TEXT(" "), TEXT(""));
-				WorldDataLayers->ForEachDataLayer([&DataLayerLabelToFind, &DataLayer](UDataLayer* It)
+				if (bShortNameFound)
 				{
-					if (It->GetDataLayerLabel().ToString().Replace(TEXT(" "), TEXT("")).Compare(DataLayerLabelToFind, ESearchCase::IgnoreCase) == 0)
-					{
-						DataLayer = It;
-						return false;
-					}
-					return true;
-				});
+					UE_LOG(LogWorldPartition, Error, TEXT("Found 2 data layers with the ShortName %s when converting arguments. Consider using the data layers FullName or renaming one of the two."), *SanitizedDataLayerName);
+					return false;
+				}
+	
+				OutDataLayers.Add(DataLayerInstance);
+				bShortNameFound = true;
 			}
-			if (DataLayer)
+			else if (DataLayerInstance->GetDataLayerFullName().Find(SanitizedDataLayerName, ESearchCase::IgnoreCase) == 0)
 			{
-				OutDataLayers.Add(DataLayer);
+				OutDataLayers.Add(DataLayerInstance);
+				return false;
 			}
-		}
+	
+			return true;
+		});
 	}
 
 	return OutDataLayers.Array();
@@ -438,28 +558,51 @@ TArray<UDataLayer*> UDataLayerSubsystem::ConvertArgsToDataLayers(UWorld* World, 
 
 void UDataLayerSubsystem::DumpDataLayers(FOutputDevice& OutputDevice) const
 {
-	if (const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+	WorldDataLayerCollection.ForEachWorldDataLayers([&OutputDevice](AWorldDataLayers* WorldDataLayers)
 	{
 		WorldDataLayers->DumpDataLayers(OutputDevice);
-	}
+	});
+}
+
+const UDataLayerInstance* UDataLayerSubsystem::GetDataLayerInstanceFromAssetName(const FName& InDataLayerAssetFullName) const
+{
+	const UDataLayerInstance* DataLayerInstance = nullptr;
+
+	WorldDataLayerCollection.ForEachWorldDataLayers([&DataLayerInstance, &InDataLayerAssetFullName](const AWorldDataLayers* WorldDataLayers)
+	{
+		DataLayerInstance = WorldDataLayers->GetDataLayerInstanceFromAssetName(InDataLayerAssetFullName);
+		return DataLayerInstance == nullptr;
+	});
+
+	return const_cast<UDataLayerInstance*>(DataLayerInstance);
+}
+
+void UDataLayerSubsystem::ForEachDataLayer(TFunctionRef<bool(UDataLayerInstance*)> Func, const ULevel* InLevelContext /* = nullptr */)
+{
+	WorldDataLayerCollection.ForEachDataLayerBreakable(Func, InLevelContext);
+}
+
+void UDataLayerSubsystem::ForEachDataLayer(TFunctionRef<bool(UDataLayerInstance*)> Func, const ULevel* InLevelContext /* = nullptr */) const
+{
+	const_cast<UDataLayerSubsystem*>(this)->ForEachDataLayer(Func, InLevelContext);
 }
 
 FAutoConsoleCommand UDataLayerSubsystem::ToggleDataLayerActivation(
 	TEXT("wp.Runtime.ToggleDataLayerActivation"),
-	TEXT("Toggles DataLayers active state. Args [DataLayerLabels]"),
+	TEXT("Toggles DataLayers active state. Args [DataLayerNames]"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& InArgs)
 	{
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
 		{
 			UWorld* World = Context.World();
-			if (World && World->IsGameWorld())
+			if (World && World->IsGameWorld() && !World->IsNetMode(NM_Client))
 			{
 				if (UDataLayerSubsystem* DataLayerSubsystem = World->GetSubsystem<UDataLayerSubsystem>())
 				{
-					TArray<UDataLayer*> DataLayers = UDataLayerSubsystem::ConvertArgsToDataLayers(World, InArgs);
-					for (UDataLayer* DataLayer : DataLayers)
+					TArray<UDataLayerInstance*> DataLayerInstances = UDataLayerSubsystem::ConvertArgsToDataLayers(World, InArgs);
+					for (UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 					{
-						DataLayerSubsystem->SetDataLayerRuntimeState(DataLayer, DataLayerSubsystem->GetDataLayerRuntimeState(DataLayer) == EDataLayerRuntimeState::Activated ? EDataLayerRuntimeState::Unloaded : EDataLayerRuntimeState::Activated);
+						DataLayerSubsystem->SetDataLayerRuntimeState(DataLayerInstance, DataLayerSubsystem->GetDataLayerRuntimeState(DataLayerInstance) == EDataLayerRuntimeState::Activated ? EDataLayerRuntimeState::Unloaded : EDataLayerRuntimeState::Activated);
 					}
 				}
 			}
@@ -469,7 +612,7 @@ FAutoConsoleCommand UDataLayerSubsystem::ToggleDataLayerActivation(
 
 FAutoConsoleCommand UDataLayerSubsystem::SetDataLayerRuntimeStateCommand(
 	TEXT("wp.Runtime.SetDataLayerRuntimeState"),
-	TEXT("Sets Runtime DataLayers state. Args [State = Unloaded, Loaded, Activated] [DataLayerLabels]"),
+	TEXT("Sets Runtime DataLayers state. Args [State = Unloaded, Loaded, Activated] [DataLayerNames]"),
 	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& InArgs)
 	{
 		if (InArgs.Num() < 2)
@@ -484,21 +627,21 @@ FAutoConsoleCommand UDataLayerSubsystem::SetDataLayerRuntimeStateCommand(
 		EDataLayerRuntimeState State;
 		if (!GetDataLayerRuntimeStateFromName(StatetStr, State))
 		{
-			UE_LOG(LogWorldPartition, Warning, TEXT("wp.Runtime.SetDataLayerRuntimeState : Invalid first argument, expencted one of these values : Unloaded, Loaded, Activated."));
+			UE_LOG(LogWorldPartition, Warning, TEXT("wp.Runtime.SetDataLayerRuntimeState : Invalid first argument, expected one of these values : Unloaded, Loaded, Activated."));
 			return;
 		}
 
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
 		{
 			UWorld* World = Context.World();
-			if (World && World->IsGameWorld())
+			if (World && World->IsGameWorld() && !World->IsNetMode(NM_Client))
 			{
 				if (UDataLayerSubsystem* DataLayerSubsystem = World->GetSubsystem<UDataLayerSubsystem>())
 				{
-					TArray<UDataLayer*> DataLayers = UDataLayerSubsystem::ConvertArgsToDataLayers(World, Args);
-					for (UDataLayer* DataLayer : DataLayers)
+					TArray<UDataLayerInstance*> DataLayerInstances = UDataLayerSubsystem::ConvertArgsToDataLayers(World, Args);
+					for (UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 					{
-						DataLayerSubsystem->SetDataLayerRuntimeState(DataLayer, State);
+						DataLayerSubsystem->SetDataLayerRuntimeState(DataLayerInstance, State);
 					}
 				}
 			}
@@ -509,16 +652,164 @@ FAutoConsoleCommand UDataLayerSubsystem::SetDataLayerRuntimeStateCommand(
 void UDataLayerSubsystem::GetDataLayerDebugColors(TMap<FName, FColor>& OutMapping) const
 {
 	OutMapping.Reset();
-
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	if (!WorldDataLayers)
-	{
-		return;
-	}
 	
-	WorldDataLayers->ForEachDataLayer([&OutMapping](UDataLayer* DataLayer)
+	ForEachDataLayer([&OutMapping](UDataLayerInstance* DataLayer)
 	{
-		OutMapping.Add(DataLayer->GetFName(), DataLayer->GetDebugColor());
+		OutMapping.Add(DataLayer->GetDataLayerFName(), DataLayer->GetDebugColor());
 		return true;
 	});
 }
+
+#if WITH_EDITOR
+
+void UDataLayerSubsystem::PushActorEditorContext() const
+{
+	++DataLayerActorEditorContextID;
+	WorldDataLayerCollection.ForEachWorldDataLayers([this](AWorldDataLayers* WorldDataLayers)
+	{
+		WorldDataLayers->PushActorEditorContext(DataLayerActorEditorContextID);
+	});
+}
+
+void UDataLayerSubsystem::PopActorEditorContext() const
+{
+	check(DataLayerActorEditorContextID > 0);
+	WorldDataLayerCollection.ForEachWorldDataLayers([this](AWorldDataLayers* WorldDataLayers)
+	{
+		WorldDataLayers->PopActorEditorContext(DataLayerActorEditorContextID);
+	});
+	--DataLayerActorEditorContextID;
+}
+
+TArray<UDataLayerInstance*> UDataLayerSubsystem::GetActorEditorContextDataLayers() const
+{
+	TArray<UDataLayerInstance*> DataLayersInstances;
+	WorldDataLayerCollection.ForEachWorldDataLayers([&DataLayersInstances](AWorldDataLayers* WorldDataLayers)
+	{
+		DataLayersInstances += WorldDataLayers->GetActorEditorContextDataLayers();
+	});
+
+	return DataLayersInstances;
+}
+
+uint32 UDataLayerSubsystem::GetDataLayerEditorContextHash() const
+{
+	TArray<FName> DataLayerInstanceNames;
+	for (UDataLayerInstance* DataLayerInstance : GetActorEditorContextDataLayers())
+	{
+		DataLayerInstanceNames.Add(DataLayerInstance->GetDataLayerFName());
+	}
+	return FDataLayerEditorContext(GetWorld(), DataLayerInstanceNames).GetHash();
+}
+
+void UDataLayerSubsystem::OnActorDescContainerInitialized(UActorDescContainer* InActorDescContainer)
+{
+	check(InActorDescContainer);
+
+	auto GetWorldDataLayersActorDesc = [](const UActorDescContainer* InContainer) -> TArray<const FWorldDataLayersActorDesc*>
+	{
+		TArray<const FWorldDataLayersActorDesc*> WorldDataLayersActorDecs;
+		if (InContainer)
+		{
+			for (FActorDescList::TIterator<AWorldDataLayers> Iterator(const_cast<UActorDescContainer*>(InContainer)); Iterator; ++Iterator)
+			{
+				// IsValid will return false for maps that don't have a valid WorldDataLayers actors
+				if (Iterator->IsValid())
+				{
+					WorldDataLayersActorDecs.Add(*Iterator);
+				}
+			}
+		}
+
+		return WorldDataLayersActorDecs;
+	};
+
+	const TArray<const FWorldDataLayersActorDesc*> WorldDataLayersActorDescs = GetWorldDataLayersActorDesc(InActorDescContainer);
+	for (FActorDescList::TIterator<> Iterator(InActorDescContainer); Iterator; ++Iterator)
+	{
+		FWorldPartitionActorDesc* ActorDesc = *Iterator;
+		check(ActorDesc->GetContainer() == InActorDescContainer);
+		ActorDesc->SetDataLayerInstanceNames(FDataLayerUtils::ResolvedDataLayerInstanceNames(ActorDesc, WorldDataLayersActorDescs));
+	}
+}
+
+void UDataLayerSubsystem::RegisterEarlyLoadedWorldDataLayers()
+{
+	// ULevel::WorldDatalayers is loaded before the subsystem is created and miss their registration.
+	RegisterWorldDataLayer(GetWorld()->GetWorldDataLayers());
+}
+
+#endif
+
+//~ Begin Deprecated
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+UDataLayerInstance* UDataLayerSubsystem::GetDataLayer(const FActorDataLayer& InDataLayer) const
+{
+	return GetDataLayerFromName(InDataLayer.Name);
+}
+
+UDataLayerInstance* UDataLayerSubsystem::GetDataLayerFromLabel(FName InDataLayerLabel) const
+{
+	if (AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+	{
+		const UDataLayerInstance* DataLayerInstance = WorldDataLayers->GetDataLayerFromLabel(InDataLayerLabel);
+		return const_cast<UDataLayerInstance*>(DataLayerInstance);
+	}
+
+	return nullptr;
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeStateByLabel(const FName& InDataLayerLabel) const
+{
+	return GetDataLayerRuntimeState(GetDataLayerFromLabel(InDataLayerLabel));
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeStateByLabel(const FName& InDataLayerLabel) const
+{
+	return GetDataLayerEffectiveRuntimeState(GetDataLayerFromLabel(InDataLayerLabel));
+}
+
+void UDataLayerSubsystem::SetDataLayerRuntimeState(const FActorDataLayer& InDataLayer, EDataLayerRuntimeState InState, bool bInIsRecursive)
+{
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerFromName(InDataLayer.Name))
+	{
+		SetDataLayerRuntimeState(DataLayerInstance, InState, bInIsRecursive);
+	}
+	else
+	{
+		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerRuntimeState unknown Data Layer: '%s'"), *InDataLayer.Name.ToString());
+	}
+}
+
+void UDataLayerSubsystem::SetDataLayerRuntimeStateByLabel(const FName& InDataLayerLabel, EDataLayerRuntimeState InState, bool bInIsRecursive)
+{
+	if (UDataLayerInstance* DataLayerInstance = GetDataLayerFromLabel(InDataLayerLabel))
+	{
+		SetDataLayerRuntimeState(DataLayerInstance, InState, bInIsRecursive);
+	}
+	else
+	{
+		UE_LOG(LogWorldPartition, Warning, TEXT("UDataLayerSubsystem::SetDataLayerRuntimeStateByLabel unknown Data Layer: '%s'"), *InDataLayerLabel.ToString());
+	}
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+UDataLayerInstance* UDataLayerSubsystem::GetDataLayerFromName(FName InDataLayerName) const
+{
+	return GetDataLayerInstance(InDataLayerName);
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerRuntimeState(const FActorDataLayer& InDataLayer) const
+{
+	return GetDataLayerRuntimeStateByName(InDataLayer.Name);
+}
+
+EDataLayerRuntimeState UDataLayerSubsystem::GetDataLayerEffectiveRuntimeState(const FActorDataLayer& InDataLayer) const
+{
+	return GetDataLayerEffectiveRuntimeStateByName(InDataLayer.Name);
+}
+
+//~ End Deprecated

@@ -12,13 +12,21 @@
 #include "UObject/LinkerPlaceholderExportObject.h"
 #include "Misc/StringBuilder.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 /*-----------------------------------------------------------------------------
 	FObjectPropertyBase.
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FObjectPropertyBase)
+
+FObjectPropertyBase::FObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParams& Prop, EPropertyFlags AdditionalPropertyFlags /*= CPF_None*/)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop, AdditionalPropertyFlags)
+{
+	PropertyClass = Prop.ClassFunc ? Prop.ClassFunc() : nullptr;
+}
+FObjectPropertyBase::FObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParamsWithoutClass& Prop, EPropertyFlags AdditionalPropertyFlags /*= CPF_None*/)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop, AdditionalPropertyFlags)
+	, PropertyClass(nullptr)
+{
+}
 
 #if WITH_EDITORONLY_DATA
 FObjectPropertyBase::FObjectPropertyBase(UField* InField)
@@ -171,7 +179,12 @@ void FObjectPropertyBase::AddReferencedObjects(FReferenceCollector& Collector)
 	Super::AddReferencedObjects( Collector );
 }
 
-FString FObjectPropertyBase::GetExportPath(const UObject* Object, const UObject* Parent, const UObject* ExportRootScope, const uint32 PortFlags)
+FString FObjectPropertyBase::GetExportPath(FTopLevelAssetPath ClassPathName, const FString& ObjectPathName)
+{
+	return FString::Printf(TEXT("%s.%s'%s'"), *ClassPathName.GetPackageName().ToString(), *ClassPathName.GetAssetName().ToString(), *ObjectPathName);
+}
+
+FString FObjectPropertyBase::GetExportPath(const TObjectPtr<const UObject>& Object, const UObject* Parent /*= nullptr*/, const UObject* ExportRootScope /*= nullptr*/, const uint32 PortFlags /*= PPF_None*/)
 {
 	bool bExportFullyQualified = true;
 
@@ -207,19 +220,28 @@ FString FObjectPropertyBase::GetExportPath(const UObject* Object, const UObject*
 
 	// Take the path name relative to the stopping point outermost ptr.
 	// This is so that cases like a component referencing a component in another actor work correctly when pasted
-	FString PathName = Object->GetPathName(StopOuter);
-	int32 ResultIdx = 0;
+	FString PathName = StopOuter ? Object->GetPathName(StopOuter) : Object.GetPathName();
 	// Object names that contain invalid characters and paths that contain spaces must be put into quotes to be handled correctly
 	if (PortFlags & PPF_Delimited)
 	{
 		PathName = FString::Printf(TEXT("\"%s\""), *PathName.ReplaceQuotesWithEscapedQuotes());
 	}
-	return FString::Printf( TEXT("%s'%s'"), *Object->GetClass()->GetName(), *PathName );
+	const FTopLevelAssetPath ClassPathName = Object.GetClass()->GetClassPathName();
+	return GetExportPath(ClassPathName, *PathName);
 }
 
-void FObjectPropertyBase::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FObjectPropertyBase::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
-	UObject* Temp = GetObjectPropertyValue(PropertyValue);
+	TObjectPtr<UObject> Temp;
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		GetValue_InContainer(PropertyValueOrContainer, &Temp);
+	}
+	else
+	{
+		Temp = GetObjectPtrPropertyValue(PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType));
+	}
 
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -232,31 +254,38 @@ void FObjectPropertyBase::ExportTextItem( FString& ValueStr, const void* Propert
 		return;
 	}
 
-	if( Temp != nullptr )
+	if (!Temp)
+	{
+		ValueStr += TEXT("None");
+	}
+	else
 	{
 		if (PortFlags & PPF_DebugDump)
 		{
-			ValueStr += Temp->GetFullName();
+			ValueStr += Temp ? Temp->GetFullName() : TEXT("None");
 		}
-		else if (Parent && !Parent->HasAnyFlags(RF_ClassDefaultObject) && Temp->IsDefaultSubobject())
+		else if (
+		         Parent && !Parent->HasAnyFlags(RF_ClassDefaultObject)
+				 // @NOTE: OBJPTR: In the event that we're trying to handle a default subobject, the requirement would 
+				 // be that it's inside the package we are currently in, which means the Temp pointer should be resolved 
+				 // already.  So don't move forward with the check unless it's resolved, we don't want to force a deferred
+				 // loaded asset if we don't have to with this check.
+				 && Temp.IsResolved() && Temp && Temp->IsDefaultSubobject()
+				)
 		{
 			if (PortFlags & PPF_Delimited)
 			{
-				ValueStr += FString::Printf(TEXT("\"%s\""), *Temp->GetName().ReplaceQuotesWithEscapedQuotes());
+				ValueStr += Temp ? FString::Printf(TEXT("\"%s\""), *Temp->GetName().ReplaceQuotesWithEscapedQuotes()) : TEXT("None");
 			}
 			else
 			{
-				ValueStr += Temp->GetName();
+				ValueStr += Temp.GetName();
 			}
 		}
 		else
 		{
 			ValueStr += GetExportPath(Temp, Parent, ExportRootScope, PortFlags);
 		}
-	}
-	else
-	{
-		ValueStr += TEXT("None");
 	}
 }
 
@@ -293,7 +322,7 @@ bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UO
 		return false;
 	}
 
-	if ( Temp == TEXT("None"_SV) )
+	if ( Temp == TEXTVIEW("None") )
 	{
 		out_ResolvedValue = nullptr;
 	}
@@ -319,7 +348,7 @@ bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UO
 				return false;
 			}
 
-			// ignore the object class, it isn't fully qualified, and searching ANY_PACKAGE might get the wrong one!
+			// ignore the object class, it isn't fully qualified, and searching globally might get the wrong one!
 			// Try the find the object.
 			out_ResolvedValue = FObjectPropertyBase::FindImportedObject(Property, OwnerObject, ObjectClass, RequiredMetaClass, Temp.ToString(), PortFlags, InSerializeContext, bAllowAnyPackage);
 		}
@@ -354,7 +383,7 @@ bool FObjectPropertyBase::ParseObjectPropertyValue(const FProperty* Property, UO
 	return true;
 }
 
-const TCHAR* FObjectPropertyBase::ImportText_Internal( const TCHAR* InBuffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const
+const TCHAR* FObjectPropertyBase::ImportText_Internal( const TCHAR* InBuffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText ) const
 {
 	const TCHAR* Buffer = InBuffer;
 	UObject* Result = nullptr;
@@ -373,18 +402,27 @@ const TCHAR* FObjectPropertyBase::ImportText_Internal( const TCHAR* InBuffer, vo
 			ExistingObject->Rename(nullptr, nullptr, REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 		}
 
-		Result = DuplicateObject<UObject>(Result, Parent, DesiredName);
+		FObjectDuplicationParameters ObjectDuplicationParams = InitStaticDuplicateObjectParams(Result, Parent, DesiredName);
+		EnumRemoveFlags(ObjectDuplicationParams.FlagMask, RF_ArchetypeObject);
 		if (Parent->IsTemplate())
 		{
-			Result->SetFlags(RF_ArchetypeObject);
+			EnumAddFlags(ObjectDuplicationParams.ApplyFlags, RF_ArchetypeObject);
 		}
 		else
 		{
-			Result->ClearFlags(RF_ArchetypeObject);
+			EnumRemoveFlags(ObjectDuplicationParams.ApplyFlags, RF_ArchetypeObject);
 		}
+		Result = StaticDuplicateObjectEx(ObjectDuplicationParams);
 	}
 
-	SetObjectPropertyValue(Data, Result);
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		SetObjectPropertyValue_InContainer(ContainerOrPropertyPtr, Result);
+	}
+	else
+	{
+		SetObjectPropertyValue(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), Result);
+	}
 	return Buffer;
 }
 
@@ -456,8 +494,9 @@ UObject* FObjectPropertyBase::FindImportedObject( const FProperty* Property, UOb
 
 		if (Result == nullptr && bAllowAnyPackage)
 		{
+			// RobM: We should delete this path
 			// match any object of the correct class who shares the same name regardless of package path
-			Result = StaticFindObjectSafe(ObjectClass, ANY_PACKAGE, Text);
+			Result = StaticFindFirstObject(ObjectClass, Text, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("FindImportedObject"));
 			// disallow class default subobjects here while importing defaults
 			if (Result != nullptr && (PortFlags & PPF_ParsingDefaultProperties) && Result->IsTemplate(RF_ClassDefaultObject))
 			{
@@ -501,7 +540,7 @@ UObject* FObjectPropertyBase::FindImportedObject( const FProperty* Property, UOb
 
 			if (bDeferAssetImports)
 			{
-				Result = Linker->RequestPlaceholderValue(ObjectClass, Text);
+				Result = Linker->RequestPlaceholderValue(Property, ObjectClass, Text);
 			}
 			
 			if (Result == nullptr)
@@ -541,10 +580,27 @@ FName FObjectPropertyBase::GetID() const
 	return NAME_ObjectProperty;
 }
 
+TObjectPtr<UObject> FObjectPropertyBase::GetObjectPtrPropertyValue(const void* PropertyValueAddress) const
+{
+	checkf(false, TEXT("%s is missing implementation of GetObjectPtrPropertyValue"), *GetFullName());
+	return TObjectPtr<UObject>();
+}
+
 UObject* FObjectPropertyBase::GetObjectPropertyValue(const void* PropertyValueAddress) const
 {
-	check(0);
+	checkf(false, TEXT("%s is missing implementation of GetObjectPropertyValue"), *GetFullName());
 	return nullptr;
+}
+
+UObject* FObjectPropertyBase::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
+{
+	checkf(false, TEXT("%s is missing implementation of GetObjectPropertyValue_InContainer"), *GetFullName());
+	return nullptr;
+}
+
+void FObjectPropertyBase::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
+{
+	checkf(false, TEXT("%s is missing implementation of SetObjectPropertyValue_InContainer"), *GetFullName());
 }
 
 void FObjectPropertyBase::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
@@ -562,9 +618,9 @@ bool FObjectPropertyBase::AllowObjectTypeReinterpretationTo(const FObjectPropert
 	return false;
 }
 
-void FObjectPropertyBase::CheckValidObject(void* Value) const
+void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue) const
 {
-	UObject *Object = GetObjectPropertyValue(Value);
+	UObject *Object = GetObjectPropertyValue(ValueAddress);
 	if (Object)
 	{
 		//
@@ -598,6 +654,8 @@ void FObjectPropertyBase::CheckValidObject(void* Value) const
 
 		if ((PropertyClass != nullptr) && !ObjectClass->IsChildOf(PropertyClass) && !ObjectClass->GetAuthoritativeClass()->IsChildOf(PropertyClass) && !bIsReplacingClassRefs && !bIsDeferringValueLoad)
 		{
+			if (!HasAnyPropertyFlags(CPF_NonNullable))
+			{
 			UE_LOG(LogProperty, Warning,
 				TEXT("Serialized %s for a property of %s. Reference will be nullptred.\n    Property = %s\n    Item = %s"),
 				*Object->GetClass()->GetFullName(),
@@ -605,7 +663,21 @@ void FObjectPropertyBase::CheckValidObject(void* Value) const
 				*GetFullName(),
 				*Object->GetFullName()
 			);
-			SetObjectPropertyValue(Value, nullptr);
+				SetObjectPropertyValue(ValueAddress, nullptr);
+			}
+			else
+			{
+				checkf(OldValue, TEXT("CheckValidObject(\"%s\") trying to assign null object value to non-nullable property \"%s\""), *Object->GetFullName(), *GetFullName());
+				UE_LOG(LogProperty, Warning,
+					TEXT("Serialized %s for a property of %s. Reference will be reverted back to %s.\n    Property = %s\n    Item = %s"),
+					*Object->GetClass()->GetFullName(),
+					*PropertyClass->GetFullName(),
+					*OldValue->GetFullName(),
+					*GetFullName(),
+					*Object->GetFullName()
+				);
+				SetObjectPropertyValue(ValueAddress, OldValue);
+			}
 		}
 	}
 }
@@ -642,5 +714,3 @@ void FObjectPropertyBase::CopyCompleteValueFromScriptVM( void* Dest, void const*
 		SetObjectPropertyValue(((uint8*)Dest) + Index * ElementSize, ((UObject**)Src)[Index]);
 	}
 }
-
-#include "UObject/DefineUPropertyMacros.h"

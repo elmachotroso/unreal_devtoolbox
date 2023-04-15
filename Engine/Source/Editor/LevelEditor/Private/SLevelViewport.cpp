@@ -5,6 +5,7 @@
 #include "Engine/Selection.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Subsystems/EditorAssetSubsystem.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -27,8 +28,9 @@
 #include "Widgets/Views/SHeaderRow.h"
 #include "Framework/Docking/LayoutService.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Editor/Transactor.h"
 #include "Exporters/ExportTextContainer.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -69,15 +71,15 @@
 #include "FoliageType.h"
 #include "IVREditorModule.h"
 #include "ShowFlagMenuCommands.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "BufferVisualizationMenuCommands.h"
 #include "NaniteVisualizationMenuCommands.h"
 #include "LumenVisualizationMenuCommands.h"
 #include "VirtualShadowMapVisualizationMenuCommands.h"
 #include "EditorLevelUtils.h"
 #include "Engine/LevelStreaming.h"
-#include "Editor/WorldBrowser/Public/WorldBrowserModule.h"
+#include "WorldBrowserModule.h"
 #include "Bookmarks/IBookmarkTypeTools.h"
 #include "ToolMenus.h"
 #include "Bookmarks/IBookmarkTypeTools.h"
@@ -86,10 +88,14 @@
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
 #include "SInViewportDetails.h"
 #include "Viewports/InViewportUIDragOperation.h"
+#include "SActorEditorContext.h"
+#include "SWorldPartitionViewportWidget.h"
+#include "LevelViewportLayout.h"
+#include "EditorViewportTabContent.h"
 
 static const FName LevelEditorName("LevelEditor");
 static FAutoConsoleCommand EnableInViewportMenu(TEXT("Editor.EnableInViewportMenu"), TEXT("Enables the new in-viewport property menu"), FConsoleCommandDelegate::CreateStatic(&SLevelViewport::EnableInViewportMenu));
@@ -145,6 +151,7 @@ SLevelViewport::~SLevelViewport()
 	FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>( LevelEditorName );
 	LevelEditor.OnRedrawLevelEditingViewports().RemoveAll( this );
 	LevelEditor.OnActorSelectionChanged().RemoveAll( this );
+	LevelEditor.OnElementSelectionChanged().RemoveAll( this );
 	LevelEditor.OnMapChanged().RemoveAll( this );
 
 	if(UObjectInitialized())
@@ -282,108 +289,113 @@ void SLevelViewport::ConstructViewportOverlayContent()
 		SAssignNew( ActorPreviewHorizontalBox, SHorizontalBox )
 	];
 
+	auto GetCombinedVisibility = [this]()
+	{
+		if (GetCurrentScreenPercentageVisibility() == EVisibility::Collapsed &&
+			GetCurrentFeatureLevelPreviewTextVisibility() == EVisibility::Collapsed &&
+			GetSelectedActorsCurrentLevelTextVisibility() == EVisibility::Collapsed &&
+			!IsActorEditorContextVisible())
+		{
+			return EVisibility::Collapsed;
+		}
+
+		return EVisibility::Visible;
+	};
+
 	ViewportOverlay->AddSlot( SlotIndex )
 	.VAlign( VAlign_Bottom )
 	.HAlign( HAlign_Right )
 	.Padding( 5.0f )
 	[
-		SNew(SBorder)
-		.BorderImage(FAppStyle::Get().GetBrush("FloatingBorder"))
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(2.0f, 1.0f, 2.0f, 1.0f)
-			[
-				SNew(SHorizontalBox)
-				.Visibility(this, &SLevelViewport::GetCurrentScreenPercentageVisibility)
-				// Current screen percentage label
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(2.0f, 1.0f, 2.0f, 1.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("ScreenPercentageLabel", "Screen Percentage"))
-					.ShadowOffset(FVector2D(1, 1))
-				]
-
-				// Current screen percentage
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(4.0f, 1.0f, 2.0f, 1.0f)
-				[
-					SNew(STextBlock)
-					.Text(this, &SLevelViewport::GetCurrentScreenPercentageText)
-					.ShadowOffset(FVector2D(1, 1))
-				]
-			]
-			// add feature level widget
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(2.0f, 1.0f, 2.0f, 1.0f)
-			[
-				BuildFeatureLevelWidget()
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(2.0f, 1.0f, 2.0f, 1.0f)
+			SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("FloatingBorder"))
 			[
 				SNew(SVerticalBox)
-				.Visibility(this, &SLevelViewport::GetSelectedActorsCurrentLevelTextVisibility)
-				// Current level label
+				.Visibility_Lambda(GetCombinedVisibility)
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				.Padding(2.0f, 1.0f, 2.0f, 1.0f)
 				[
-					SNew(STextBlock)
-					.Text(this, &SLevelViewport::GetSelectedActorsCurrentLevelText, true)
-					.ShadowOffset(FVector2D(1, 1))
-				]
-				// Current level
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(4.0f, 1.0f, 2.0f, 1.0f)
-				[
-					SNew(STextBlock)
-					.Text(this, &SLevelViewport::GetSelectedActorsCurrentLevelText, false)
-					.ShadowOffset(FVector2D(1, 1))
-				]
-			]
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(2.0f, 1.0f, 2.0f, 1.0f)
-			[
-				SNew(SComboButton)
-				.Cursor(EMouseCursor::Default)
-				// Allows users to drag with the mouse to select options after opening the menu */
-				.VAlign(VAlign_Center)
-				.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
-				.Visibility(this, &SLevelViewport::GetCurrentLevelButtonVisibility)
-				.OnGetMenuContent(this, &SLevelViewport::GenerateLevelMenu)
-				.OnMenuOpenChanged_Lambda([this](bool){	OnFloatingButtonClicked(); })
-				.ButtonContent()
-				[
 					SNew(SHorizontalBox)
-					.Visibility(this, &SLevelViewport::GetCurrentLevelTextVisibility)
-					// Current level label
+					.Visibility(this, &SLevelViewport::GetCurrentScreenPercentageVisibility)
+					// Current screen percentage label
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.Padding(2.0f, 1.0f, 2.0f, 1.0f)
 					[
 						SNew(STextBlock)
-						.Text(this, &SLevelViewport::GetCurrentLevelText, true)
-						.ShadowOffset(FVector2D(1,1))
+						.Text(LOCTEXT("ScreenPercentageLabel", "Screen Percentage"))
+						.ShadowOffset(FVector2D(1, 1))
 					]
-					// Current level
+
+					// Current screen percentage
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.Padding(4.0f, 1.0f, 2.0f, 1.0f)
 					[
 						SNew(STextBlock)
-						.Text(this, &SLevelViewport::GetCurrentLevelText, false)
+						.Text(this, &SLevelViewport::GetCurrentScreenPercentageText)
 						.ShadowOffset(FVector2D(1, 1))
 					]
 				]
+				// add feature level widget
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2.0f, 1.0f, 2.0f, 1.0f)
+				[
+					BuildFeatureLevelWidget()
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(2.0f, 1.0f, 2.0f, 1.0f)
+				[
+					SNew(SVerticalBox)
+					.Visibility(this, &SLevelViewport::GetSelectedActorsCurrentLevelTextVisibility)
+					// Current level label
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(2.0f, 1.0f, 2.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(this, &SLevelViewport::GetSelectedActorsCurrentLevelText, true)
+						.ShadowOffset(FVector2D(1, 1))
+					]
+					// Current level
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.0f, 1.0f, 2.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(this, &SLevelViewport::GetSelectedActorsCurrentLevelText, false)
+						.ShadowOffset(FVector2D(1, 1))
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SActorEditorContext)
+					.World(GetWorld())
+					.Visibility_Lambda([this]() { return IsActorEditorContextVisible() ? OnGetViewportContentVisibility() : EVisibility::Collapsed; })
+				]
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0.0f, 4.0f, 0.0f, 0.0f)
+		[
+			SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("FloatingBorder"))
+			[
+				SAssignNew(WorldPartitionViewportWidget, SWorldPartitionViewportWidget)
+				.Clickable(true)
+				.Visibility_Lambda([this]() 
+				{ 
+					return (!ActiveViewport.IsValid() || IsPlayInEditorViewportActive()) ? EVisibility::Collapsed : WorldPartitionViewportWidget->GetVisibility(GetWorld());
+				})
 			]
 		]
 	];
@@ -398,25 +410,16 @@ void SLevelViewport::ConstructViewportOverlayContent()
 	];
 }
 
-
-TSharedRef<SWidget> SLevelViewport::GenerateLevelMenu() const
+bool SLevelViewport::IsActorEditorContextVisible() const
 {
-	FWorldBrowserModule& WorldBrowserModule = FModuleManager::LoadModuleChecked<FWorldBrowserModule>("WorldBrowser");
-	// Get all menu extenders for this context menu from the level editor module
-	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-	TSharedRef<FUICommandList> InCommandList = GetCommandList().ToSharedRef();
-	TSharedPtr<FExtender> MenuExtender = LevelEditorModule.AssembleExtenders(InCommandList, LevelEditorModule.GetAllLevelEditorLevelMenuExtenders());
-
-	// Create the menu
-	const bool bShouldCloseWindowAfterMenuSelection = true;
-	FMenuBuilder LevelMenuBuilder(bShouldCloseWindowAfterMenuSelection, InCommandList, MenuExtender);
-	
-	LevelMenuBuilder.BeginSection("LevelListing", LOCTEXT("Levels", "Levels"));
-	LevelMenuBuilder.EndSection();
-
-	return LevelMenuBuilder.MakeWidget();
+	return GetDefault<ULevelEditorViewportSettings>()->bShowActorEditorContext &&
+		GetWorld() &&
+		GetWorld()->GetCurrentLevel() &&
+		(&GetLevelViewportClient() == GCurrentLevelEditingViewportClient) &&
+		ActiveViewport.IsValid() &&
+		(ActiveViewport->GetPlayInEditorIsSimulate() || !ActiveViewport->GetClient()->GetWorld()->IsGameWorld()) &&
+		SActorEditorContext::IsVisible(GetWorld());
 }
-
 
 void SLevelViewport::ConstructLevelEditorViewportClient(FLevelEditorViewportInstanceSettings& ViewportInstanceSettings)
 {
@@ -488,6 +491,7 @@ void SLevelViewport::ConstructLevelEditorViewportClient(FLevelEditorViewportInst
 	LevelViewportClient->CurrentLumenVisualizationMode = ViewportInstanceSettings.LumenVisualizationMode;
 	LevelViewportClient->CurrentVirtualShadowMapVisualizationMode = ViewportInstanceSettings.VirtualShadowMapVisualizationMode;
 	LevelViewportClient->CurrentRayTracingDebugVisualizationMode = ViewportInstanceSettings.RayTracingDebugVisualizationMode;
+	LevelViewportClient->CurrentGPUSkinCacheVisualizationMode = ViewportInstanceSettings.GPUSkinCacheVisualizationMode;
 	LevelViewportClient->ExposureSettings = ViewportInstanceSettings.ExposureSettings;
 	if(ViewportInstanceSettings.ViewportType == LVT_Perspective)
 	{
@@ -744,7 +748,7 @@ bool SLevelViewport::HandleDragObjects(const FGeometry& MyGeometry, const FDragD
 	}
 	else
 	{
-		SelectedAssetDatas = AssetUtil::ExtractAssetDataFromDrag( DragDropEvent );
+		GetAssetsFromDrag(DragDropEvent, SelectedAssetDatas);
 
 		if ( SelectedAssetDatas.Num() > 0 )
 		{
@@ -899,7 +903,8 @@ bool SLevelViewport::HandlePlaceDraggedObjects(const FGeometry& MyGeometry, cons
 		bValidDrop = true;
 		DroppedObjects.Empty();
 
-		TArray<FAssetData> DroppedAssetDatas = AssetUtil::ExtractAssetDataFromDrag(DragDropEvent);
+		TArray<FAssetData> DroppedAssetDatas;
+		GetAssetsFromDrag(DragDropEvent, DroppedAssetDatas);
 
 		bAllAssetWereLoaded = true;
 		for (int32 AssetIdx = 0; AssetIdx < DroppedAssetDatas.Num(); ++AssetIdx)
@@ -994,6 +999,38 @@ bool SLevelViewport::HandlePlaceDraggedObjects(const FGeometry& MyGeometry, cons
 	}
 	
 	return false;
+}
+
+void SLevelViewport::GetAssetsFromDrag(const FDragDropEvent& DragDropEvent, TArray<FAssetData>& AssetDataArray)
+{
+	AssetDataArray = AssetUtil::ExtractAssetDataFromDrag(DragDropEvent);
+
+	// Did we get anything?
+	if (AssetDataArray.Num() == 0)
+	{
+		// Get files from the drag/drop.
+		const TSharedPtr<FDragDropOperation>& Operation = DragDropEvent.GetOperation();
+		if (Operation.IsValid())
+		{
+			if (Operation->IsOfType<FExternalDragOperation>())
+			{
+				TSharedPtr<FExternalDragOperation> DragDropOp = StaticCastSharedPtr<FExternalDragOperation>(Operation);
+				if (DragDropOp->HasFiles())
+				{
+					const TArray<FString>& Files = DragDropOp->GetFiles();
+					if (Files.Num() > 0)
+					{
+						// See if anyone else can get us an asset.
+						UEditorAssetSubsystem* EditorAssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>();
+						if (EditorAssetSubsystem != nullptr)
+						{
+							EditorAssetSubsystem->GetOnExtractAssetFromFile().Broadcast(Files, AssetDataArray);
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 FReply SLevelViewport::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent )
@@ -1367,34 +1404,34 @@ void SLevelViewport::BindOptionCommands( FUICommandList& OutCommandList )
 		);
 
 	IAssetRegistry & AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	TArray<FName> ClassNames;
-	TSet<FName> DerivedClassNames;
-	ClassNames.Add(ACameraActor::StaticClass()->GetFName());
-	AssetRegistry.GetDerivedClassNames(ClassNames, TSet<FName>(), DerivedClassNames);
+	TArray<FTopLevelAssetPath> ClassNames;
+	TSet<FTopLevelAssetPath> DerivedClassNames;
+	ClassNames.Add(ACameraActor::StaticClass()->GetClassPathName());
+	AssetRegistry.GetDerivedClassNames(ClassNames, TSet<FTopLevelAssetPath>(), DerivedClassNames);
 
-	for (FName Name : DerivedClassNames)
+	for (FTopLevelAssetPath ClassPathName : DerivedClassNames)
 	{
+		FString Name = ClassPathName.ToString();
 		// Ignore generated types that cannot be spawned
-		if (Name.ToString().StartsWith("SKEL_") || Name.ToString().StartsWith("REINST_"))
+		if (Name.Contains("SKEL_") || Name.Contains("REINST_"))
 		{
 			continue;
-		}
-		
-		// Remove _C from display names for blueprint classes
-		FName DisplayName = Name;
-		if (Name.ToString().EndsWith("_C"))
-		{
-			DisplayName = FName(*DisplayName.ToString().LeftChop(2));
 		}
 
-		UClass* CameraClass = FindObject<UClass>(ANY_PACKAGE, *Name.ToString());
-		if (!CameraClass || CameraClass->HasAllClassFlags(CLASS_Abstract))
+		UClass* CameraClass = FindObject<UClass>(ClassPathName);
+		if (!CameraClass || CameraClass->HasAnyClassFlags(CLASS_Abstract|CLASS_NotPlaceable|CLASS_HideDropDown|CLASS_Hidden))
 		{
 			continue;
 		}
-		
+
 		// Look for existing UI Command info so one isn't created for every viewport
-		TSharedPtr<FUICommandInfo> * FoundCamera = FLevelViewportCommands::Get().CreateCameras.FindByPredicate([Name](TSharedPtr<FUICommandInfo> Camera) { return Camera->GetCommandName() == Name; });
+		FName CommandName;
+		{
+			int32 DotIndex = -1;
+			Name.FindLastChar('.', DotIndex);
+			CommandName = *Name.Mid(DotIndex + 1);
+		}
+		TSharedPtr<FUICommandInfo> * FoundCamera = FLevelViewportCommands::Get().CreateCameras.FindByPredicate([CommandName](TSharedPtr<FUICommandInfo> Camera) { return Camera->GetCommandName() == CommandName; });
 		
 		if (FoundCamera)
 		{
@@ -1406,7 +1443,7 @@ void SLevelViewport::BindOptionCommands( FUICommandList& OutCommandList )
 		else
 		{
 			// If command info isn't found, create a new one
-			TSharedRef<FUICommandInfo> NewCamera = FUICommandInfoDecl(FLevelViewportCommands::Get().AsShared(), Name, FText::FromName(DisplayName), FText::Format(LOCTEXT("SpawnCamerasTooltip", "Spawn Camera here of type {0}"), FText::FromName(Name))).UserInterfaceType(EUserInterfaceActionType::Button).DefaultChord(FInputChord());
+			TSharedRef<FUICommandInfo> NewCamera = FUICommandInfoDecl(FLevelViewportCommands::Get().AsShared(), CommandName, CameraClass->GetDisplayNameText(), FText::Format(LOCTEXT("SpawnCamerasTooltip", "Spawn Camera here of type {0}"), FText::FromString(Name))).UserInterfaceType(EUserInterfaceActionType::Button).DefaultChord(FInputChord());
 			
 			OutCommandList.MapAction(
 				NewCamera,
@@ -1492,7 +1529,7 @@ void SLevelViewport::BindViewCommands( FUICommandList& OutCommandList )
 
 	if (TSharedPtr<FLevelViewportLayout> LayoutPinned = ParentLayout.Pin())
 	{
-		if (TSharedPtr<FLevelViewportTabContent> ParentTabContentPinned = StaticCastSharedPtr<FLevelViewportTabContent>(LayoutPinned->GetParentTabContent().Pin()))
+		if (TSharedPtr<FEditorViewportTabContent> ParentTabContentPinned = LayoutPinned->GetParentTabContent().Pin())
 		{
 			ParentTabContentPinned->BindViewportLayoutCommands(OutCommandList, ConfigKey);
 		}
@@ -1541,7 +1578,7 @@ void SLevelViewport::BindShowCommands( FUICommandList& OutCommandList )
 
 	// Show Layers
 	{
-		auto CanToggleAllLayers = [this]() { return !UWorld::HasSubsystem<UWorldPartitionSubsystem>(GetWorld()); };
+		auto CanToggleAllLayers = [this]() { return !UWorld::IsPartitionedWorld(GetWorld()); };
 		// Map 'Show All' and 'Hide All' commands
 		OutCommandList.MapAction(
 			LevelViewportCommands.ShowAllLayers,
@@ -2202,6 +2239,7 @@ void SLevelViewport::SaveConfig(const FString& ConfigName) const
 		ViewportInstanceSettings.LumenVisualizationMode = LevelViewportClient->CurrentLumenVisualizationMode;
 		ViewportInstanceSettings.VirtualShadowMapVisualizationMode = LevelViewportClient->CurrentVirtualShadowMapVisualizationMode;
 		ViewportInstanceSettings.RayTracingDebugVisualizationMode = LevelViewportClient->CurrentRayTracingDebugVisualizationMode;
+		ViewportInstanceSettings.GPUSkinCacheVisualizationMode = LevelViewportClient->CurrentGPUSkinCacheVisualizationMode;
 		ViewportInstanceSettings.ExposureSettings = LevelViewportClient->ExposureSettings;
 		ViewportInstanceSettings.FOVAngle = LevelViewportClient->FOVAngle;
 	
@@ -2548,7 +2586,7 @@ TSharedRef< ISceneOutlinerColumn > SLevelViewport::CreateActorLockSceneOutlinerC
 					.Padding(FMargin(2.0f, 0.0f, 0.0f, 0.0f))
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush(bLocked ? "PropertyWindow.Locked" : "PropertyWindow.Unlocked"))
+						.Image(FAppStyle::GetBrush(bLocked ? "PropertyWindow.Locked" : "PropertyWindow.Unlocked"))
 					.ColorAndOpacity(bLocked ? FLinearColor::White : FLinearColor(1.0f, 1.0f, 1.0f, 0.5f))
 					];
 			}
@@ -2895,7 +2933,7 @@ void SActorPreview::Construct( const FArguments& InArgs )
 
 		.Visibility(EVisibility::SelfHitTestInvisible)
 
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Bottom)
 		.Padding(FMargin(0, 0, PaddingBeforeBorder, PaddingBeforeBorder))
@@ -2906,7 +2944,7 @@ void SActorPreview::Construct( const FArguments& InArgs )
 				SNew( SBorder )
 					.Visibility(BorderVisibility)
 					.Padding( 16.0f )
-					.BorderImage( FEditorStyle::GetBrush( "UniformShadow_Tint" ) )
+					.BorderImage( FAppStyle::GetBrush( "UniformShadow_Tint" ) )
 					.BorderBackgroundColor( this, &SActorPreview::GetBorderColorAndOpacity )
 					.ColorAndOpacity( this, &SActorPreview::GetColorAndOpacity )
 
@@ -2954,7 +2992,7 @@ void SActorPreview::Construct( const FArguments& InArgs )
 				SNew(SButton)
 					.ContentPadding(0)
 					.ForegroundColor(FSlateColor::UseForeground())
-					.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+					.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 
 					.IsFocusable(false)
 					[
@@ -2983,7 +3021,7 @@ void SActorPreview::Construct( const FArguments& InArgs )
 					SNew( SButton )
 						.ContentPadding(0)
 						.ForegroundColor( FSlateColor::UseForeground() )
-						.ButtonStyle( FEditorStyle::Get(), "ToggleButton" )
+						.ButtonStyle( FAppStyle::Get(), "ToggleButton" )
 
 						.IsFocusable(false)
 						[
@@ -3013,7 +3051,7 @@ void SActorPreview::Construct( const FArguments& InArgs )
 					SNew(SButton)
 						.ContentPadding(0)
 						.ForegroundColor(FSlateColor::UseForeground())
-						.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+						.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 						.IsFocusable(false)
 						[
 							SNew(SImage)
@@ -3077,11 +3115,11 @@ const FSlateBrush * SActorPreview::GetVRPinButtonIconBrush() const
 	{
 		if (ParentViewportPtr->IsActorPreviewPinned(PreviewActorPtr))
 		{
-			IconBrush = FEditorStyle::GetBrush("VRViewportActorPreview.Pinned");
+			IconBrush = FAppStyle::GetBrush("VRViewportActorPreview.Pinned");
 		}
 		else
 		{
-			IconBrush = FEditorStyle::GetBrush("VRViewportActorPreview.Unpinned");
+			IconBrush = FAppStyle::GetBrush("VRViewportActorPreview.Unpinned");
 		}
 
 	}
@@ -3099,11 +3137,11 @@ const FSlateBrush* SActorPreview::GetPinButtonIconBrush() const
 	{
 		if ( ParentViewportPtr->IsActorPreviewPinned(PreviewActorPtr) )
 		{
-			IconBrush = FEditorStyle::GetBrush( "ViewportActorPreview.Pinned" );
+			IconBrush = FAppStyle::GetBrush( "ViewportActorPreview.Pinned" );
 		}
 		else
 		{
-			IconBrush = FEditorStyle::GetBrush( "ViewportActorPreview.Unpinned" );
+			IconBrush = FAppStyle::GetBrush( "ViewportActorPreview.Unpinned" );
 		}
 
 	}
@@ -3150,11 +3188,11 @@ const FSlateBrush* SActorPreview::GetDetachButtonIconBrush() const
 	{
 		if (ParentViewportPtr->IsActorPreviewDetached(PreviewActorPtr))
 		{
-			IconBrush = FEditorStyle::GetBrush("VRViewportActorPreview.Attached");
+			IconBrush = FAppStyle::GetBrush("VRViewportActorPreview.Attached");
 		}
 		else
 		{
-			IconBrush = FEditorStyle::GetBrush("VRViewportActorPreview.Detached");
+			IconBrush = FAppStyle::GetBrush("VRViewportActorPreview.Detached");
 		}
 
 	}
@@ -3274,7 +3312,7 @@ FSlateColor SActorPreview::GetBorderColorAndOpacity() const
 	if (HighlightSequence.IsPlaying())
 	{
 		static const FName SelectionColorName("SelectionColor");
-		const FLinearColor SelectionColor = FEditorStyle::Get().GetSlateColor(SelectionColorName).GetSpecifiedColor().CopyWithNewOpacity(0.5f);
+		const FLinearColor SelectionColor = FAppStyle::Get().GetSlateColor(SelectionColorName).GetSpecifiedColor().CopyWithNewOpacity(0.5f);
 		
 		const float Interp = FMath::Sin(HighlightSequence.GetLerp()*6*PI) / 2 + 1;
 		Color = FMath::Lerp(SelectionColor, Color, Interp);
@@ -3748,72 +3786,6 @@ FText SLevelViewport::GetCurrentScreenPercentageText() const
 	return FText::FromString(FString::Printf(TEXT("%3d%%"), int32(GetLevelViewportClient().GetPreviewScreenPercentage())));
 }
 
-FText SLevelViewport::GetCurrentLevelText( bool bDrawOnlyLabel ) const
-{
-	// Display the current level and current level grid volume in the status bar
-	FText LabelName;
-	FText CurrentLevelName;
-
-	
-	if( ActiveViewport.IsValid() && (&GetLevelViewportClient() == GCurrentLevelEditingViewportClient) && GetWorld() && GetWorld()->GetCurrentLevel() != nullptr )
-	{
-		if( ActiveViewport->GetPlayInEditorIsSimulate() || !ActiveViewport->GetClient()->GetWorld()->IsGameWorld() )
-		{
-			if(bDrawOnlyLabel)
-			{
-				LabelName = LOCTEXT("CurrentLevelLabel", "Level");
-			}
-			else
-			{
-				// Get the level name 
-				FText ActualLevelName = FText::FromName(FPackageName::GetShortFName(GetWorld()->GetCurrentLevel()->GetOutermost()->GetFName()));
-
-				if(GetWorld()->GetCurrentLevel() == GetWorld()->PersistentLevel)
-				{
-					FFormatNamedArguments Args;
-					Args.Add(TEXT("ActualLevelName"), ActualLevelName);
-					CurrentLevelName = FText::Format(LOCTEXT("LevelName", "{0} (Persistent)"), ActualLevelName);
-				}
-				else
-				{
-					CurrentLevelName = ActualLevelName;
-				}
-			}
-
-			if(bDrawOnlyLabel)
-			{
-				return LabelName;
-			}
-		}
-	}
-
-	return CurrentLevelName;
-}
-
-EVisibility SLevelViewport::GetCurrentLevelTextVisibility() const
-{
-	EVisibility ContentVisibility = OnGetViewportContentVisibility();
-	if (ContentVisibility == EVisibility::Visible)
-	{
-		ContentVisibility = EVisibility::SelfHitTestInvisible;
-	}
-	return (&GetLevelViewportClient() == GCurrentLevelEditingViewportClient) 
-		&& !IsPlayInEditorViewportActive() 
-		&& GetWorld() && GetWorld()->GetCurrentLevel()->OwningWorld->GetLevels().Num() > 1
-		&& !GetWorld()->IsPartitionedWorld()
-		?  ContentVisibility : EVisibility::Collapsed;
-}
-
-EVisibility SLevelViewport::GetCurrentLevelButtonVisibility() const
-{
-	EVisibility TextVisibility = GetCurrentLevelTextVisibility();
-	if (TextVisibility == EVisibility::SelfHitTestInvisible)
-	{
-		TextVisibility = EVisibility::Visible;
-	}
-	return TextVisibility;
-}
-
 EVisibility SLevelViewport::GetSelectedActorsCurrentLevelTextVisibility() const
 {
 	EVisibility ContentVisibility = OnGetViewportContentVisibility();
@@ -3825,6 +3797,7 @@ EVisibility SLevelViewport::GetSelectedActorsCurrentLevelTextVisibility() const
 		&& (GEditor->GetSelectedActorCount() > 0) 
 		&& !IsPlayInEditorViewportActive() 
 		&& GetWorld() && GetWorld()->GetCurrentLevel() && GetWorld()->GetCurrentLevel()->OwningWorld->GetLevels().Num() > 1
+		&& !GetWorld()->IsPartitionedWorld()
 		? ContentVisibility : EVisibility::Collapsed;
 }
 
@@ -3981,15 +3954,19 @@ void SLevelViewport::SetViewportTypeWithinLayout(FName InLayoutType)
 
 void SLevelViewport::ToggleViewportTypeActivationWithinLayout(FName InLayoutType)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (GetViewportTypeWithinLayout() != InLayoutType)
 	{
 		SetViewportTypeWithinLayout(InLayoutType);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool SLevelViewport::IsViewportTypeWithinLayoutEqual(FName InLayoutType)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return GetViewportTypeWithinLayout() == InLayoutType;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void SLevelViewport::StartPlayInEditorSession(UGameViewportClient* PlayClient, const bool bInSimulateInEditor)
@@ -4093,7 +4070,7 @@ FLinearColor SLevelViewport::GetMouseCaptureLabelColorAndOpacity() const
 {
 	static const FName DefaultForegroundName("DefaultForeground");
 
-	FSlateColor SlateColor = FEditorStyle::GetSlateColor(DefaultForegroundName);
+	FSlateColor SlateColor = FAppStyle::GetSlateColor(DefaultForegroundName);
 	FLinearColor Col = SlateColor.IsColorSpecified() ? SlateColor.GetSpecifiedColor() : FLinearColor::White; 
 
 	float Alpha = 0.0f;
@@ -4157,14 +4134,14 @@ void SLevelViewport::ShowMouseCaptureLabel(ELabelAnchorMode AnchorMode)
 		.VAlign(VAlign)
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+			.BorderImage( FAppStyle::GetBrush("NoBorder") )
 			.Visibility(this, &SLevelViewport::GetMouseCaptureLabelVisibility)
 			.ColorAndOpacity( this, &SLevelViewport::GetMouseCaptureLabelColorAndOpacity )
 			.ForegroundColor( FLinearColor::White )
 			.Padding(15.0f)
 			[
 				SNew( SButton )
-				.ButtonStyle( FEditorStyle::Get(), "EditorViewportToolBar.MenuButton" )
+				.ButtonStyle( FAppStyle::Get(), "EditorViewportToolBar.MenuButton" )
 				.IsFocusable(false)
 				.ButtonColorAndOpacity( FSlateColor(FLinearColor::Black) )
 				.ForegroundColor( FLinearColor::White )
@@ -4180,7 +4157,7 @@ void SLevelViewport::ShowMouseCaptureLabel(ELabelAnchorMode AnchorMode)
 						.MaxHeight(16.f)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("LevelViewport.CursorIcon"))
+							.Image(FAppStyle::GetBrush("LevelViewport.CursorIcon"))
 						]
 					]
 					+ SHorizontalBox::Slot()

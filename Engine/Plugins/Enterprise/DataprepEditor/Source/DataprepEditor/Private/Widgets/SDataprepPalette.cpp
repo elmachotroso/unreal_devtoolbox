@@ -16,11 +16,11 @@
 
 // Engine includes
 #include "AssetDiscoveryIndicator.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Brushes/SlateColorBrush.h"
 #include "EditorFontGlyphs.h"
 #include "EdGraph/EdGraphSchema.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorWidgetsModule.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -144,8 +144,8 @@ void SDataprepPalette::Construct(const FArguments& InArgs)
 					.HAlign( HAlign_Left )
 					[
 						SNew( SComboButton )
-						.ComboButtonStyle( FEditorStyle::Get(), "ToolbarComboButton" )
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+						.ComboButtonStyle( FAppStyle::Get(), "ToolbarComboButton" )
+						.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 						.ForegroundColor(FLinearColor::White)
 						.ContentPadding(FMargin(6, 2))
 						.OnGetMenuContent_Lambda( [this]{ return ConstructAddActionMenu(); } )
@@ -160,8 +160,8 @@ void SDataprepPalette::Construct(const FArguments& InArgs)
 							.AutoWidth()
 							[
 								SNew(STextBlock)
-								.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+								.TextStyle(FAppStyle::Get(), "NormalText.Important")
+								.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 								.Text(FEditorFontGlyphs::File)
 							]
 
@@ -172,7 +172,7 @@ void SDataprepPalette::Construct(const FArguments& InArgs)
 							.Padding(4, 0, 0, 0)
 							[
 								SNew( STextBlock )
-								.TextStyle( FEditorStyle::Get(), "NormalText.Important" )
+								.TextStyle( FAppStyle::Get(), "NormalText.Important" )
 								.Text( LOCTEXT( "AddNewButton", "Add New" ) )
 							]
 
@@ -183,8 +183,8 @@ void SDataprepPalette::Construct(const FArguments& InArgs)
 							.Padding(4, 0, 0, 0)
 							[
 								SNew(STextBlock)
-								.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+								.TextStyle(FAppStyle::Get(), "NormalText.Important")
+								.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 								.Text(FEditorFontGlyphs::Caret_Down)
 							]
 						]
@@ -218,7 +218,7 @@ void SDataprepPalette::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(2.0f)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			[
 				SNew(SVerticalBox)
 				// Content list
@@ -534,18 +534,17 @@ void SDataprepPalette::RefreshAssetInRegistry(const FAssetData& InAssetData)
 	FAssetDataTagMapSharedView::FFindTagResult GeneratedClassPathPtr = InAssetData.TagsAndValues.FindTag( TEXT("GeneratedClass") );
 	if (GeneratedClassPathPtr.IsSet())
 	{
-		const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath( GeneratedClassPathPtr.GetValue() );
-		const FString ClassName = FPackageName::ObjectPathToObjectName( ClassObjectPath );
+		const FTopLevelAssetPath ClassObjectPath(FPackageName::ExportTextPathToObjectPath( GeneratedClassPathPtr.GetValue() ));
 
-		TArray<FName> OutAncestorClassNames;
+		TArray<FTopLevelAssetPath> OutAncestorClassNames;
 
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked< FAssetRegistryModule >( TEXT("AssetRegistry") );
-		AssetRegistryModule.Get().GetAncestorClassNames( FName( *ClassName ) , OutAncestorClassNames );
+		AssetRegistryModule.Get().GetAncestorClassNames(ClassObjectPath, OutAncestorClassNames);
 		
 		bool bIsTrackedClass = false;
-		for ( FName Ancestor : OutAncestorClassNames )
+		for ( FTopLevelAssetPath Ancestor : OutAncestorClassNames )
 		{
-			if ( Ancestor == UDataprepOperation::StaticClass()->GetFName() )
+			if ( Ancestor == UDataprepOperation::StaticClass()->GetClassPathName() )
 			{
 				bIsTrackedClass = true;
 				break;

@@ -4,7 +4,10 @@ using SolidWorks.Interop.sldworks;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace DatasmithSolidworks
@@ -12,15 +15,162 @@ namespace DatasmithSolidworks
 	public enum EActorType
 	{
 		SimpleActor,
-		MeshActor
+		MeshActor,
+		PointLightActor,
+		SpotLightActor,
+		DirLightActor
 	};
+
+	// Wrapping Component Name and Actor Name to distinguish one from the other in the code. This helps to
+	//  - make explicit which name where
+	//  - avoid using sanitized name to check component's name and vice versa
+
+	[ComVisible(false)]
+	public struct FActorName
+	{
+		private string Value;
+
+		public FActorName(FComponentName ComponentName)
+		{
+			Value = FDatasmithExporter.SanitizeName(ComponentName.GetString());
+		}
+
+		public static FActorName FromString(string Value)
+		{
+			return new FActorName(Value);
+		}
+
+		private FActorName(string InValue)
+		{
+			Value = InValue;
+		}
+
+		public bool IsValid()
+		{
+			return !string.IsNullOrEmpty(Value);
+		}
+
+		public string GetString()
+		{
+			return Value;
+		}
+
+		public override string ToString()
+		{
+			return Value;
+		}
+
+		public override bool Equals(object Obj)
+		{
+			if (Obj is FActorName Other)
+			{
+				return this == Other;
+			}			
+			return false;
+		}
+
+		public static bool operator ==(FActorName A, FActorName B)
+		{
+			return A.Value == B.Value;
+		}
+
+		public static bool operator !=(FActorName A, FActorName B)
+		{
+			return !(A == B);
+		}
+
+		public override int GetHashCode()
+		{
+			return Value.GetHashCode();
+		}
+	}
+
+	[ComVisible(false)]
+	public struct FComponentName
+	{
+		private string Value;
+
+		public FComponentName(Component2 Component)
+		{
+			Value = Component.Name2;
+		}
+
+		public FComponentName(IComponent2 Component)
+		{
+			Value = Component.Name2;
+		}
+
+		private FComponentName(string Name)
+		{
+			Value = Name;
+		}
+
+		/// Used to convert string to component name ONLY when received from Solidworks API
+		public static FComponentName FromApiString(string Name)
+		{
+			return new FComponentName(Name);
+		}
+
+		/// Used to convert from a custom string to represent something 'like' a Solidworks component
+		/// todo: may want to avoid trying to mix components and non-components into the same 'entity'?
+		public static FComponentName FromCustomString(string Value)
+		{
+			return new FComponentName(Value);
+		}
+
+		public bool IsValid() => !string.IsNullOrEmpty(Value);
+
+		public string GetString()
+		{
+			return Value;
+		}
+
+		public FActorName GetActorName()
+		{
+			return new FActorName(this);
+		}
+
+		public string GetLabel()
+		{
+			return Value.Split('/').Last();
+		}
+
+		public override string ToString()
+		{
+			return Value;
+		}
+
+		public override bool Equals(object Obj)
+		{
+			if (Obj is FComponentName Other)
+			{
+				return this == Other;
+			}			
+			return false;
+		}
+
+		public static bool operator ==(FComponentName A, FComponentName B)
+		{
+			return A.Value == B.Value;
+		}
+
+		public static bool operator !=(FComponentName A, FComponentName B)
+		{
+			return !(A == B);
+		}
+
+		public override int GetHashCode()
+		{
+			return Value.GetHashCode();
+		}
+	}
 
 	public class FDatasmithActorExportInfo
 	{
 		public EActorType Type;
 		public string Label;
-		public string Name;
-		public string ParentName;
+		public FActorName Name;
+		public FActorName ParentName;
 		public string MeshName;
 		public float[] Transform;
 		public bool bVisible;
@@ -28,9 +178,9 @@ namespace DatasmithSolidworks
 
 	public class FDatasmithExporter
 	{
-		private Dictionary<string, Tuple<EActorType, FDatasmithFacadeActor>> ExportedActorsMap = new Dictionary<string, Tuple<EActorType, FDatasmithFacadeActor>>();
+		private Dictionary<FActorName, Tuple<EActorType, FDatasmithFacadeActor>> ExportedActorsMap = new Dictionary<FActorName, Tuple<EActorType, FDatasmithFacadeActor>>();
 		private ConcurrentDictionary<string, Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh>> ExportedMeshesMap = new ConcurrentDictionary<string, Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh>>();
-		private ConcurrentDictionary<int, FDatasmithFacadeMasterMaterial> ExportedMaterialsMap = new ConcurrentDictionary<int, FDatasmithFacadeMasterMaterial>();
+		private ConcurrentDictionary<int, FDatasmithFacadeMaterialInstance> ExportedMaterialsMap = new ConcurrentDictionary<int, FDatasmithFacadeMaterialInstance>();
 		private ConcurrentDictionary<string, FDatasmithFacadeTexture> ExportedTexturesMap = new ConcurrentDictionary<string, FDatasmithFacadeTexture>();
 		private Dictionary<string, FDatasmithFacadeActorBinding> ExportedActorBindingsMap = new Dictionary<string, FDatasmithFacadeActorBinding>();
 		private Dictionary<string, FDatasmithFacadeVariant> ExportedVariantsMap = new Dictionary<string, FDatasmithFacadeVariant>();
@@ -42,7 +192,7 @@ namespace DatasmithSolidworks
 			DatasmithScene = InScene;
 		}
 
-		public EActorType? GetExportedActorType(string InActorName)
+		public EActorType? GetExportedActorType(FActorName InActorName)
 		{
 			Tuple<EActorType, FDatasmithFacadeActor> ActorInfo = null;
 			if (ExportedActorsMap.TryGetValue(InActorName, out ActorInfo))
@@ -52,7 +202,7 @@ namespace DatasmithSolidworks
 			return null;
 		}
 
-		public void ExportOrUpdateActor(FDatasmithActorExportInfo InExportInfo)
+		public FDatasmithFacadeActor ExportOrUpdateActor(FDatasmithActorExportInfo InExportInfo)
 		{
 			FDatasmithFacadeActor Actor = null;
 
@@ -76,16 +226,20 @@ namespace DatasmithSolidworks
 			{
 				switch (InExportInfo.Type)
 				{
-					case EActorType.SimpleActor: Actor = new FDatasmithFacadeActor(InExportInfo.Name); break;
-					case EActorType.MeshActor: Actor = new FDatasmithFacadeActorMesh(InExportInfo.Name); break;
+					case EActorType.SimpleActor: Actor = new FDatasmithFacadeActor(InExportInfo.Name.GetString()); break;
+					case EActorType.MeshActor: Actor = new FDatasmithFacadeActorMesh(InExportInfo.Name.GetString()); break;
+					case EActorType.PointLightActor: Actor = new FDatasmithFacadePointLight(InExportInfo.Name.GetString()); break;
+					case EActorType.SpotLightActor: Actor = new FDatasmithFacadeSpotLight(InExportInfo.Name.GetString()); break;
+					case EActorType.DirLightActor: Actor = new FDatasmithFacadeDirectionalLight(InExportInfo.Name.GetString()); break;
 				}
-				
-				Actor.AddTag(InExportInfo.Name);
+
+				Actor.AddTag(InExportInfo.Name.GetString());
 
 				ExportedActorsMap[InExportInfo.Name] = new Tuple<EActorType, FDatasmithFacadeActor>(InExportInfo.Type, Actor);
 
 				Tuple<EActorType, FDatasmithFacadeActor> ParentExportInfo = null;
-				if (!string.IsNullOrEmpty(InExportInfo.ParentName) && ExportedActorsMap.TryGetValue(InExportInfo.ParentName, out ParentExportInfo))
+
+				if (InExportInfo.ParentName.IsValid() && ExportedActorsMap.TryGetValue(InExportInfo.ParentName, out ParentExportInfo))
 				{
 					FDatasmithFacadeActor ParentActor = ParentExportInfo.Item2;
 					ParentActor.AddChild(Actor);
@@ -106,9 +260,32 @@ namespace DatasmithSolidworks
 				FDatasmithFacadeActorMesh MeshActor = Actor as FDatasmithFacadeActorMesh;
 				MeshActor.SetMesh(InExportInfo.MeshName);
 			}
+
+			return Actor;
 		}
 
-		public void RemoveActor(string InActorName)
+		public string AddMesh(Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> NewMesh)
+		{
+			string Name = NewMesh.Item1.GetName();
+			RemoveMesh(Name);
+			ExportedMeshesMap.TryAdd(Name, NewMesh);
+			DatasmithScene.AddMesh(NewMesh.Item1);
+			return Name;
+		}
+
+		public void RemoveMesh(string MeshName)
+		{
+            if (MeshName == null)
+            {
+                return;
+            }
+			if (ExportedMeshesMap.TryRemove(MeshName, out Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> OldMesh))
+			{
+				DatasmithScene.RemoveMesh(OldMesh.Item1);
+			}
+		}
+
+		public void RemoveActor(FActorName InActorName)
 		{
 			if (ExportedActorsMap.ContainsKey(InActorName))
 			{
@@ -119,21 +296,85 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		public string ExportMesh(string InMeshName, FMeshData InData, string InUpdateMeshActor, out Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> OutMeshPair)
+		public void ExportLight(FLight InLight)
 		{
+			FDatasmithActorExportInfo ExportInfo = new FDatasmithActorExportInfo();
+			ExportInfo.Label = InLight.LightLabel;
+			ExportInfo.Name = FActorName.FromString(InLight.LightName);
+			ExportInfo.bVisible = true;
+
+			FVec3 LightPosition = null;
+			FVec3 LightDirection = null;
+
+			switch (InLight.LightType)
+			{
+				case FLight.EType.Directional:
+				{
+					LightDirection = InLight.DirLightDirection;
+					ExportInfo.Type = EActorType.DirLightActor;
+				}
+				break;
+				case FLight.EType.Point:
+				{
+					LightPosition = InLight.PointLightPosition;
+					ExportInfo.Type = EActorType.PointLightActor;
+				}
+				break;
+				case FLight.EType.Spot:
+				{
+					LightPosition = InLight.SpotLightPosition;
+					LightDirection = (InLight.SpotLightPosition - InLight.SpotLightTarget ).Normalized();  // Inverted direction
+					ExportInfo.Type = EActorType.SpotLightActor;
+				}
+				break;
+
+				default: return; // Unsupported light type
+			}
+
+			if (LightDirection != null)
+			{
+				ExportInfo.Transform = MathUtils.LookAt(LightDirection, LightPosition, 100f);
+			}
+			else if (LightPosition != null)
+			{
+				ExportInfo.Transform = MathUtils.Translation(LightPosition, 100f);
+			}
+
+			FDatasmithFacadeActorLight LightActor = ExportOrUpdateActor(ExportInfo) as FDatasmithFacadeActorLight;
+
+			const float MaxIntensity = 500f; // Map from SW (normlized) to Datasmith intensity
+
+			LightActor.SetIntensity(InLight.Intensity * MaxIntensity);
+			LightActor.SetColor(InLight.Color.X, InLight.Color.Y, InLight.Color.Z, 1f);
+			LightActor.SetEnabled(InLight.bIsEnabled);
+
+			if (LightActor is FDatasmithFacadeSpotLight SpotLight)
+			{
+				// Solidworks spot light has only one cone angle
+				SpotLight.SetInnerConeAngle(InLight.SpotLightConeAngle);
+				SpotLight.SetOuterConeAngle(InLight.SpotLightConeAngle);
+			}
+		}
+
+		public bool ExportMesh(string InMeshName, FMeshData InData, FActorName InUpdateMeshActor, out Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> OutMeshPair)
+		{
+			Addin.Instance.LogDebug($"ExportMesh(MeshName: {InMeshName}, MeshActor: {InUpdateMeshActor.GetString()})");
+
+			InMeshName = SanitizeName(InMeshName);  //Compute mesh name early(it might be needed to remove old mesh)
+
 			OutMeshPair = null;
 
 			if (InData.Vertices == null || InData.Normals == null || InData.TexCoords == null || InData.Triangles == null)
 			{
-				return null;
+				Addin.Instance.LogDebug($"  skipping(some attributes are null) - Vertices:{InData.Vertices == null}, Normals:{InData.Normals == null}, TexCoords: {InData.TexCoords == null}, Triangles:{InData.Triangles}");
+				return false;
 			}
 
 			if (InData.Vertices.Length == 0 || InData.Normals.Length == 0 || InData.TexCoords.Length == 0 || InData.Triangles.Length == 0)
 			{
-				return null;
+				Addin.Instance.LogDebug($"  skipping - Vertices: {InData.Vertices.Length}, Normals: {InData.Normals.Length}, TexCoords: {InData.TexCoords.Length} Triangles: {InData.Triangles.Length}");
+				return false;
 			}
-
-			InMeshName = SanitizeName(InMeshName);
 
 			FDatasmithFacadeMesh Mesh = new FDatasmithFacadeMesh();
 			Mesh.SetName(InMeshName);
@@ -174,11 +415,15 @@ namespace DatasmithSolidworks
 				{
 					if (!MeshAddedMaterials.Contains(Triangle.MaterialID))
 					{
-						FDatasmithFacadeMasterMaterial Material = null;
+						Addin.Instance.LogDebug($"  set material if it's exported: {Triangle.MaterialID}");
+
+						FDatasmithFacadeMaterialInstance Material = null;
 						ExportedMaterialsMap.TryGetValue(Triangle.MaterialID, out Material);
 
 						if (Material != null)
 						{
+							Addin.Instance.LogDebug($" SetMaterial({Material.GetName()}, SlotId: {Triangle.MaterialID})");
+
 							MeshAddedMaterials.Add(Triangle.MaterialID);
 							MeshElement.SetMaterial(Material.GetName(), Triangle.MaterialID);
 							MatID = Triangle.MaterialID;
@@ -198,19 +443,18 @@ namespace DatasmithSolidworks
 
 			DatasmithScene.ExportDatasmithMesh(MeshElement, Mesh);
 
-			ExportedMeshesMap.TryAdd(InMeshName, new Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh>(MeshElement, Mesh));
-
-			if (!string.IsNullOrEmpty(InUpdateMeshActor))
+			if (InUpdateMeshActor.IsValid())
 			{
 				Tuple<EActorType, FDatasmithFacadeActor> ExportedActorInfo = null;
 				if (ExportedActorsMap.TryGetValue(InUpdateMeshActor, out ExportedActorInfo) && ExportedActorInfo.Item1 == EActorType.MeshActor)
 				{
 					FDatasmithFacadeActorMesh MeshActor = ExportedActorInfo.Item2 as FDatasmithFacadeActorMesh;
+					Addin.Instance.LogDebug($"  SetMesh on MeshActor: {MeshActor.GetName()}: {MeshActor.GetLabel()}  )");
 					MeshActor.SetMesh(InMeshName);
 				}
 			}
 
-			return InMeshName;
+			return true;
 		}
 
 		public void ExportMetadata(FMetadata InMetadata)
@@ -219,6 +463,7 @@ namespace DatasmithSolidworks
 
 			if (InMetadata.OwnerType == FMetadata.EOwnerType.Actor)
 			{
+				
 				if (ExportedActorsMap.ContainsKey(InMetadata.OwnerName))
 				{
 					Tuple<EActorType, FDatasmithFacadeActor> ActorInfo = ExportedActorsMap[InMetadata.OwnerName];
@@ -249,12 +494,17 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		FDatasmithFacadeActorBinding GetActorBinding(string InActorName, FDatasmithFacadeVariant InVariant)
+		FDatasmithFacadeActorBinding GetActorBinding(FComponentName InComponentName, FDatasmithFacadeVariant InVariant)
+		{
+			return GetActorBinding(InComponentName.GetActorName(), InVariant);
+		}
+
+		private FDatasmithFacadeActorBinding GetActorBinding(FActorName ActorName, FDatasmithFacadeVariant InVariant)
 		{
 			for (int BindingIndex = 0; BindingIndex < InVariant.GetActorBindingsCount(); ++BindingIndex)
 			{
 				FDatasmithFacadeActorBinding Binding = InVariant.GetActorBinding(BindingIndex);
-				if (Binding.GetName() == InActorName)
+				if (ActorName.Equals(Binding.GetName()))
 				{
 					return Binding;
 				}
@@ -264,9 +514,8 @@ namespace DatasmithSolidworks
 
 			FDatasmithFacadeActor Actor = null;
 
-			if (ExportedActorsMap.ContainsKey(InActorName))
+			if (ExportedActorsMap.TryGetValue(ActorName, out Tuple<EActorType, FDatasmithFacadeActor> ActorInfo))
 			{
-				Tuple<EActorType, FDatasmithFacadeActor> ActorInfo = ExportedActorsMap[InActorName];
 				Actor = ActorInfo.Item2;
 			}
 			else
@@ -331,7 +580,7 @@ namespace DatasmithSolidworks
 						foreach (var MatID in UniqueMaterialsSet)
 						{
 							FMaterial Material = Materials.GetMaterial(MatID);
-							FDatasmithFacadeMasterMaterial DatasmithMaterial = null;
+							FDatasmithFacadeMaterialInstance DatasmithMaterial = null;
 							if (Material != null && ExportedMaterialsMap.TryGetValue(Material.ID, out DatasmithMaterial))
 							{
 								Binding.AddMaterialCapture(DatasmithMaterial);
@@ -458,9 +707,28 @@ namespace DatasmithSolidworks
 
 			if (ConfigurationVariants != null)
 			{
+				// todo: visibility variants may drop ComponentName from FConfigurationData
+				// at this point only actor names may stay
 				ExportActorVisibilityVariants(ConfigurationVariants);
 				ExportMaterialVariants(ConfigurationVariants);
 				ExportTransformVariants(ConfigurationVariants);
+
+				// Geometry variants
+				foreach (Tuple<FConfigurationData, FDatasmithFacadeVariant> KVP in ConfigurationVariants)
+				{
+					FConfigurationData Config = KVP.Item1;
+					FDatasmithFacadeVariant Variant = KVP.Item2;
+
+					// Make visible mesh actor corresponding this configuration only
+					foreach (FConfigurationData.FComponentGeometryVariant GeometryVariant in Config.ComponentGeometry.Values)
+					{
+						foreach (FActorName ActorName in GeometryVariant.All)
+						{
+							bool bVisible = GeometryVariant.VisibleActor == ActorName;
+							GetActorBinding(ActorName, Variant)?.AddVisibilityCapture(bVisible);
+						}
+					}
+				}
 			}
 
 			if (DisplayStateVariants != null)
@@ -472,11 +740,11 @@ namespace DatasmithSolidworks
 		public void ExportMaterials(ConcurrentDictionary<int, FMaterial> InMaterialsMap)
 		{
 			ConcurrentBag<FDatasmithFacadeTexture> CreatedTextures = new ConcurrentBag<FDatasmithFacadeTexture>();
-			ConcurrentBag<FDatasmithFacadeMasterMaterial> CreatedMaterials = new ConcurrentBag<FDatasmithFacadeMasterMaterial>();
+			ConcurrentBag<FDatasmithFacadeMaterialInstance> CreatedMaterials = new ConcurrentBag<FDatasmithFacadeMaterialInstance>();
 			Parallel.ForEach(InMaterialsMap, MatKVP =>
 			{
 				List<FDatasmithFacadeTexture> NewMaterialTextures = null;
-				FDatasmithFacadeMasterMaterial NewMaterial = null;
+				FDatasmithFacadeMaterialInstance NewMaterial = null;
 				if (CreateAndCacheMaterial(MatKVP.Value, out NewMaterialTextures, out NewMaterial))
 				{
 					CreatedMaterials.Add(NewMaterial);
@@ -487,9 +755,12 @@ namespace DatasmithSolidworks
 					}
 				}
 			});
+
+			Addin.Instance.LogDebug($"AddMaterials");
 			// Adding stuff to a datasmith scene cannot be multithreaded!
-			foreach (FDatasmithFacadeMasterMaterial Mat in CreatedMaterials)
+			foreach (FDatasmithFacadeMaterialInstance Mat in CreatedMaterials)
 			{
+				Addin.Instance.LogDebug($"  AddMaterial: {Mat.GetName()}: {Mat.GetLabel()}");
 				DatasmithScene.AddMaterial(Mat);
 			}
 			foreach (FDatasmithFacadeTexture Texture in CreatedTextures)
@@ -498,15 +769,20 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		private bool CreateAndCacheMaterial(FMaterial InMaterial, out List<FDatasmithFacadeTexture> OutCreatedTextures, out FDatasmithFacadeMasterMaterial OutCreatedMaterial)
+		private bool CreateAndCacheMaterial(FMaterial InMaterial, out List<FDatasmithFacadeTexture> OutCreatedTextures, out FDatasmithFacadeMaterialInstance OutCreatedMaterial)
 		{
+			Addin.Instance.LogDebug($"CreateAndCacheMaterial({InMaterial.Name}: {InMaterial.ID})");
+
 			OutCreatedTextures = null;
 			OutCreatedMaterial = null;
 
 			if (ExportedMaterialsMap.ContainsKey(InMaterial.ID))
 			{
+				Addin.Instance.LogDebug($"  skipping, already present in map");
 				return false;
 			}
+
+			Addin.Instance.LogDebug($"  making, ShaderName: '{InMaterial.ShaderName}'");
 
 			FMaterial.EMaterialType Type = FMaterial.GetMaterialType(InMaterial.ShaderName);
 
@@ -547,28 +823,28 @@ namespace DatasmithSolidworks
 			float G = Mult * InMaterial.PrimaryColor.G * 1.0f / 255.0f;
 			float B = Mult * InMaterial.PrimaryColor.B * 1.0f / 255.0f;
 
-			FDatasmithFacadeMasterMaterial MasterMaterial = new FDatasmithFacadeMasterMaterial(InMaterial.Name);
+			FDatasmithFacadeMaterialInstance MaterialInstance = new FDatasmithFacadeMaterialInstance(InMaterial.Name);
 
 			OutCreatedTextures = new List<FDatasmithFacadeTexture>();
-			OutCreatedMaterial = MasterMaterial;
+			OutCreatedMaterial = MaterialInstance;
 
-			MasterMaterial.SetMaterialType(FDatasmithFacadeMasterMaterial.EMasterMaterialType.Opaque);
-			MasterMaterial.AddColor("TintColor", R, G, B, 1.0F);
-			MasterMaterial.AddFloat("RoughnessAmount", Roughness);
+			MaterialInstance.SetMaterialType(FDatasmithFacadeMaterialInstance.EMaterialInstanceType.Opaque);
+			MaterialInstance.AddColor("TintColor", R, G, B, 1.0F);
+			MaterialInstance.AddFloat("RoughnessAmount", Roughness);
 
 			if (InMaterial.Transparency > 0.0)
 			{
-				MasterMaterial.SetMaterialType(FDatasmithFacadeMasterMaterial.EMasterMaterialType.Transparent);
-				MasterMaterial.AddFloat("Metalness", Metallic);
+				MaterialInstance.SetMaterialType(FDatasmithFacadeMaterialInstance.EMaterialInstanceType.Transparent);
+				MaterialInstance.AddFloat("Metalness", Metallic);
 
-				MasterMaterial.AddColor("OpacityAndRefraction",
+				MaterialInstance.AddColor("OpacityAndRefraction",
 					0.25f,                              // Opacity
 					1.0f,                               // Refraction
 					0.0f,                               // Refraction Exponent
 					1f - (float)InMaterial.Transparency // Fresnel Opacity
 				);
 
-				FDatasmithFacadeTexture NormalMap = ExportNormalMap(InMaterial, MasterMaterial, "NormalMap");
+				FDatasmithFacadeTexture NormalMap = ExportNormalMap(InMaterial, MaterialInstance, "NormalMap");
 
 				if (NormalMap != null)
 				{
@@ -577,17 +853,17 @@ namespace DatasmithSolidworks
 			}
 			else
 			{
-				MasterMaterial.AddFloat("MetallicAmount", Metallic);
+				MaterialInstance.AddFloat("MetallicAmount", Metallic);
 
 				if (InMaterial.Emission > 0.0)
 				{
-					MasterMaterial.SetMaterialType(FDatasmithFacadeMasterMaterial.EMasterMaterialType.Emissive);
-					MasterMaterial.AddFloat("LuminanceAmount", (float)InMaterial.Emission);
-					MasterMaterial.AddColor("LuminanceFilter", R, G, B, 1.0f);
+					MaterialInstance.SetMaterialType(FDatasmithFacadeMaterialInstance.EMaterialInstanceType.Emissive);
+					MaterialInstance.AddFloat("LuminanceAmount", (float)InMaterial.Emission);
+					MaterialInstance.AddColor("LuminanceFilter", R, G, B, 1.0f);
 				}
 
-				FDatasmithFacadeTexture DiffuseMap = ExportDiffuseMap(InMaterial, MasterMaterial, "ColorMap");
-				FDatasmithFacadeTexture NormalMap = ExportNormalMap(InMaterial, MasterMaterial, "NormalMap");
+				FDatasmithFacadeTexture DiffuseMap = ExportDiffuseMap(InMaterial, MaterialInstance, "ColorMap");
+				FDatasmithFacadeTexture NormalMap = ExportNormalMap(InMaterial, MaterialInstance, "NormalMap");
 
 				if (DiffuseMap != null)
 				{
@@ -599,7 +875,7 @@ namespace DatasmithSolidworks
 				}
 			}
 
-			ExportedMaterialsMap[InMaterial.ID] = MasterMaterial;
+			ExportedMaterialsMap[InMaterial.ID] = MaterialInstance;
 
 			return true;
 		}
@@ -620,16 +896,13 @@ namespace DatasmithSolidworks
 				{
 					FMatrix4 LocalMatrix = Keyframe.LocalMatrix;
 
-					// Get euler angles in degrees
-					float X = MathUtils.Rad2Deg * (float)Math.Atan2(LocalMatrix[6], LocalMatrix[10]);
-					float Y = MathUtils.Rad2Deg * (float)Math.Atan2(-LocalMatrix[2], Math.Sqrt(LocalMatrix[6] * LocalMatrix[6] + LocalMatrix[10] * LocalMatrix[10]));
-					float Z = MathUtils.Rad2Deg * (float)Math.Atan2(LocalMatrix[1], LocalMatrix[0]);
+					FVec3 Euler = MathUtils.ToEuler(LocalMatrix);
 
 					float Scale = LocalMatrix[15];
 
 					FVec3 Translation = new FVec3(LocalMatrix[12], LocalMatrix[13], LocalMatrix[14]);
 
-					Anim.AddFrame(EDatasmithFacadeAnimationTransformType.Rotation, Keyframe.Step, X, -Y, -Z);
+					Anim.AddFrame(EDatasmithFacadeAnimationTransformType.Rotation, Keyframe.Step, -Euler.X, Euler.Y, -Euler.Z);
 					Anim.AddFrame(EDatasmithFacadeAnimationTransformType.Scale, Keyframe.Step, Scale, Scale, Scale);
 					Anim.AddFrame(EDatasmithFacadeAnimationTransformType.Translation, Keyframe.Step, Translation.X, -Translation.Y, Translation.Z);
 				}
@@ -653,7 +926,7 @@ namespace DatasmithSolidworks
 			DatasmithScene.AddLevelSequence(LevelSeq);
 		}
 
-		private FDatasmithFacadeTexture ExportDiffuseMap(FMaterial InMaterial, FDatasmithFacadeMasterMaterial InMasterMaterial, string InParamName)
+		private FDatasmithFacadeTexture ExportDiffuseMap(FMaterial InMaterial, FDatasmithFacadeMaterialInstance InMaterialInstance, string InParamName)
 		{
 			if (!string.IsNullOrEmpty(InMaterial.Texture) && !File.Exists(InMaterial.Texture))
 			{
@@ -678,14 +951,14 @@ namespace DatasmithSolidworks
 					TextureElement.SetTextureMode(TextureMode);
 					ExportedTexturesMap.TryAdd(InMaterial.Texture, TextureElement);
 
-					InMasterMaterial.AddTexture(InParamName, TextureElement);
+					InMaterialInstance.AddTexture(InParamName, TextureElement);
 				}
 			}
 
 			return TextureElement;
 		}
 
-		private FDatasmithFacadeTexture ExportNormalMap(FMaterial InMaterial, FDatasmithFacadeMasterMaterial InMasterMaterial, string InParamName)
+		private FDatasmithFacadeTexture ExportNormalMap(FMaterial InMaterial, FDatasmithFacadeMaterialInstance InMaterialInstance, string InParamName)
 		{
 			if (!string.IsNullOrEmpty(InMaterial.BumpTextureFileName) && !File.Exists(InMaterial.BumpTextureFileName))
 			{
@@ -710,7 +983,7 @@ namespace DatasmithSolidworks
 					TextureElement.SetTextureMode(TextureMode);
 					ExportedTexturesMap.TryAdd(InMaterial.BumpTextureFileName, TextureElement);
 
-					InMasterMaterial.AddTexture(InParamName, TextureElement);
+					InMaterialInstance.AddTexture(InParamName, TextureElement);
 				}
 			}
 

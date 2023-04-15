@@ -1,16 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialAttributePropertyDetails.h"
-#include "Widgets/Text/STextBlock.h"
-#include "MaterialShared.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "HAL/PlatformCrt.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
-#include "Widgets/Input/SComboBox.h"
+#include "Internationalization/Text.h"
+#include "MaterialShared.h"
 #include "Materials/MaterialExpressionGetMaterialAttributes.h"
 #include "Materials/MaterialExpressionSetMaterialAttributes.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "Templates/Tuple.h"
+
+class SToolTip;
 
 TSharedRef<IDetailCustomization> FMaterialAttributePropertyDetails::MakeInstance()
 {
@@ -22,14 +32,19 @@ void FMaterialAttributePropertyDetails::CustomizeDetails(IDetailLayoutBuilder& D
 	// Populate combo boxes with material property list
 	FMaterialAttributeDefinitionMap::GetAttributeNameToIDList(AttributeNameToIDList);
 
+	static const FString ExcludedFrontMaterialName = FString("FrontMaterial");
+
 	AttributeDisplayNameList.Empty(AttributeNameToIDList.Num());
 	for (const TPair<FString, FGuid>& NameGUIDPair : AttributeNameToIDList)
 	{
-		if (NameGUIDPair.Key == TEXT("FrontMaterial"))
+		// We remove unwanted elements from the list of material attributes that can be used in the material layer workflow.
+		// We do not want to blend strata BSDF which could increase the complexity of the material (BSDF / Slab count) for each blend operation.
+		// Only parameters are allowed to finally be transform into Strata at the end of the chain.
+		// This filtering is ran only when constructing the UI element.
+		if (NameGUIDPair.Key != ExcludedFrontMaterialName)
 		{
-			continue;// STRATA_DISABLED
+			AttributeDisplayNameList.Add(MakeShareable(new FString(NameGUIDPair.Key)));
 		}
-		AttributeDisplayNameList.Add(MakeShareable(new FString(NameGUIDPair.Key)));
 	}
 
 	// Fetch root property we're dealing with
@@ -61,6 +76,45 @@ void FMaterialAttributePropertyDetails::OnBuildChild(TSharedRef<IPropertyHandle>
 	// Add an overridden combo box
 	IDetailPropertyRow& PropertyArrayRow = ChildrenBuilder.AddProperty(ChildHandle);
 
+	FPropertyComboBoxArgs ComboArgs(
+		ChildHandle,
+		FOnGetPropertyComboBoxStrings::CreateLambda([=](TArray<TSharedPtr<FString>>& OutComboBoxStrings, TArray<TSharedPtr<SToolTip>>& OutToolTips, TArray<bool>& OutRestrictedItems) -> void  
+		{									
+			OutComboBoxStrings = AttributeDisplayNameList;
+		}), 
+		FOnGetPropertyComboBoxValue::CreateLambda( [=]() -> FString
+		{
+			FString AttributeName;
+			if (ChildHandle->IsValidHandle())
+			{
+				// Convert attribute ID string to display name
+				FString IDString; FGuid IDValue;
+				ChildHandle->GetValueAsFormattedString(IDString);
+				FGuid::ParseExact(IDString, EGuidFormats::Digits, IDValue);
+
+				AttributeName = FMaterialAttributeDefinitionMap::GetAttributeName(IDValue);
+			} 
+			return AttributeName;
+		}),
+		FOnPropertyComboBoxValueSelected::CreateLambda( [=] (const FString& Selection)
+		{
+			if (ChildHandle->IsValidHandle())
+			{
+				// Convert display name to attribute ID
+				for (const auto& NameIDPair : AttributeNameToIDList)
+				{
+					if (NameIDPair.Key == Selection)
+					{
+						ChildHandle->SetValueFromFormattedString(NameIDPair.Value.ToString(EGuidFormats::Digits));
+						break;
+					}
+				}
+			}
+		})
+	);
+	ComboArgs.ShowSearchForItemCount = 1;
+
+
 	PropertyArrayRow.CustomWidget()
 	.NameContent()
 	[
@@ -68,53 +122,7 @@ void FMaterialAttributePropertyDetails::OnBuildChild(TSharedRef<IPropertyHandle>
 	]
 	.ValueContent()
 	[
-		SNew(SHorizontalBox)
-		+SHorizontalBox::Slot()
-		[
-			SNew(SComboBox<TSharedPtr<FString>>)
-			.OptionsSource(&AttributeDisplayNameList)
- 			.OnGenerateWidget_Lambda( [] (TSharedPtr<FString> InItem)
-			{
-				return SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text(FText::FromString(*InItem));
-			})
-			.OnSelectionChanged_Lambda( [=] (TSharedPtr<FString> Selection, ESelectInfo::Type)
-			{
-				if (ChildHandle->IsValidHandle())
-				{
-					// Convert display name to attribute ID
-					for (const auto& NameIDPair : AttributeNameToIDList)
-					{
-						if (NameIDPair.Key == *Selection)
-						{
-							ChildHandle->SetValueFromFormattedString(NameIDPair.Value.ToString(EGuidFormats::Digits));
-							break;
-						}
-					}
-				}
-			})
-			.ContentPadding(FMargin(2, 0))
-			[
-				SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text_Lambda( [=]() -> FText
-				{ 
-					if (ChildHandle->IsValidHandle())
-					{
-						// Convert attribute ID string to display name
-						FString IDString; FGuid IDValue;
-						ChildHandle->GetValueAsFormattedString(IDString);
-						FGuid::ParseExact(IDString, EGuidFormats::Digits, IDValue);
-
-						FString AttributeName = FMaterialAttributeDefinitionMap::GetAttributeName(IDValue);
-						return FText::FromString(AttributeName);
-					}
-
-					return FText::GetEmpty();
-				} )
-			]
-		]
+		PropertyCustomizationHelpers::MakePropertyComboBox(ComboArgs)
 	];
 }
 

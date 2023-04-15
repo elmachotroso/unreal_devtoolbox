@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IConcertEndpoint.h"
 #include "IConcertSession.h"
 
 class UConcertServerConfig;
@@ -37,6 +38,24 @@ public:
 	 * Get the server information set by Configure
 	 */
 	virtual const FConcertServerInfo& GetServerInfo() const = 0;
+
+	
+	/**
+	 * Gets all remote admin endpoint IDs.
+	 * A remote admin endpoint is not connected to any session and communicating with the server otherwise, e.g. discovering sessions.
+	 */
+	virtual TArray<FConcertEndpointContext> GetRemoteAdminEndpoints() const = 0;
+	
+	/** Callback when a remote admin endpoint connection changes. */
+	virtual FOnConcertRemoteEndpointConnectionChanged& OnRemoteEndpointConnectionChanged() = 0;
+	
+	/**
+	 * Gets the address of a remote admin endpoint, i.e. a client that is sending FConcertEndpointDiscoveryEvents. 
+	 */
+	virtual FMessageAddress GetRemoteAddress(const FGuid& AdminEndpointId) const = 0;
+
+	/** Callback when a message has been acknowledged by a remote endpoint */
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() = 0;
 
 	/**
 	 *	Returns if the server has already been started up.
@@ -74,22 +93,34 @@ public:
 	virtual FConcertSessionInfo CreateSessionInfo() const = 0;
 
 	/**
-	 * Get the sessions information list
+	 * Get the live session information list
 	 */
-	virtual	TArray<FConcertSessionInfo> GetSessionsInfo() const = 0;
+	virtual	TArray<FConcertSessionInfo> GetLiveSessionInfos() const = 0;
 
 	/**
-	 * Get all server sessions
+	 * Gets the archived session information list
+	 */
+	virtual TArray<FConcertSessionInfo> GetArchivedSessionInfos() const = 0;
+
+	/**
+	 * Get all live server sessions
 	 * @return array of server sessions
 	 */
-	virtual TArray<TSharedPtr<IConcertServerSession>> GetSessions() const = 0;
+	virtual TArray<TSharedPtr<IConcertServerSession>> GetLiveSessions() const = 0;
 
 	/**
-	 * Get a server session
+	 * Get a live server session
 	 * @param SessionId The ID of the session we want
 	 * @return the server session or an invalid pointer if no session was found
 	 */
-	virtual TSharedPtr<IConcertServerSession> GetSession(const FGuid& SessionId) const = 0;
+	virtual TSharedPtr<IConcertServerSession> GetLiveSession(const FGuid& SessionId) const = 0;
+
+	/**
+	 * Gets an archived session info
+	 * @param SessionId The ID of the session we want
+	 * @return The info of the archived session if found
+	 */
+	virtual TOptional<FConcertSessionInfo> GetArchivedSessionInfo(const FGuid& SessionId) const = 0;
 
 	/** 
 	 * Create a new Concert server session based on the passed session info
@@ -126,9 +157,10 @@ public:
 	 * @param ArchiveNameOverride The name override to give to the archived session.
 	 * @param SessionFilter The filter controlling which activities from the session should be archived.
 	 * @param OutFailureReason The reason the operation fails if the function returns false, undefined otherwise.
+	 * @param ArchiveSessionIdOverride The ID the archived session is supposed to have
 	 * @return The ID of the archived session on success, or an invalid GUID otherwise.
 	 */
-	virtual FGuid ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason) = 0;
+	virtual FGuid ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason, FGuid ArchiveSessionIdOverride = FGuid::NewGuid()) = 0;
 
 	/**
 	 * Copy the session data to a destination folder for external usage.
@@ -159,11 +191,4 @@ public:
 	 * @return true if the session was found and destroyed
 	 */
 	virtual bool DestroySession(const FGuid& SessionId, FText& OutFailureReason) = 0;
-
-	/**
-	 * Get the list of clients for a session
-	 * @param SessionId The session ID
-	 * @return A list of clients connected to the session
-	 */
-	virtual TArray<FConcertSessionClientInfo> GetSessionClients(const FGuid& SessionId) const = 0;
 };

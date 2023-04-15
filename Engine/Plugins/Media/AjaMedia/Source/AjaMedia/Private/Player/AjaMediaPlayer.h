@@ -4,8 +4,11 @@
 
 #include "MediaIOCorePlayerBase.h"
 
+#include "AjaDeviceProvider.h"
 #include "AjaMediaPrivate.h"
 #include "AjaMediaSource.h"
+#include "HAL/CriticalSection.h"
+#include "Templates/PimplPtr.h"
 
 #include <atomic>
 
@@ -84,6 +87,8 @@ protected:
 	virtual bool OnInputFrameReceived(const AJA::AJAInputFrameData& InInputFrame, const AJA::AJAAncillaryFrameData& InAncillaryFrame, const AJA::AJAAudioFrameData& AudioFrame, const AJA::AJAVideoFrameData& VideoFrame) override;
 	virtual bool OnOutputFrameCopied(const AJA::AJAOutputFrameData& InFrameData) override;
 	virtual void OnCompletion(bool bSucceed) override;
+	virtual void OnFormatChange(AJA::FAJAVideoFormat Format) override;
+
 
 protected:
 
@@ -97,18 +102,34 @@ protected:
 	/** Verify if we lost some frames since last Tick*/
 	void VerifyFrameDropCount();
 
-
 	virtual bool IsHardwareReady() const override;
 
 	//~ FMediaIOCorePlayerBase interface
 	virtual void SetupSampleChannels() override;
 
+	virtual uint32 GetNumVideoFrameBuffers() const override
+	{
+		return MaxNumVideoFrameBuffer;
+	}
+
+	virtual EMediaIOCoreColorFormat GetColorFormat() const override
+	{
+		return AjaColorFormat == EAjaMediaSourceColorFormat::YUV2_8bit ? EMediaIOCoreColorFormat::YUV8 : EMediaIOCoreColorFormat::YUV10;
+	}
+
+	virtual void AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample) override;
+
+private:
+	bool Open_Internal(const FString& Url, const IMediaOptions* Options, AJA::AJAInputOutputChannelOptions AjaOptions);
+	void OpenFromFormatChange(AJA::AJADeviceOptions DeviceOptions, AJA::AJAInputOutputChannelOptions AjaOptions);
+	void OnAutoDetected(TArray<FAjaDeviceProvider::FMediaIOConfigurationWithTimecodeFormat> Configurations, FString Url, const IMediaOptions* Options, bool bAutoDetectVideoFormat, bool bAutoDetectTimecodeFormat);
+
 private:
 
 	/** Audio, MetaData, Texture  sample object pool. */
-	FAjaMediaAudioSamplePool* AudioSamplePool;
-	FAjaMediaBinarySamplePool* MetadataSamplePool;
-	FAjaMediaTextureSamplePool* TextureSamplePool;
+	TUniquePtr<FAjaMediaAudioSamplePool> AudioSamplePool;
+	TUniquePtr<FAjaMediaBinarySamplePool> MetadataSamplePool;
+	TUniquePtr<FAjaMediaTextureSamplePool> TextureSamplePool;
 
 	TSharedPtr<FMediaIOCoreBinarySampleBase, ESPMode::ThreadSafe> AjaThreadCurrentAncSample;
 	TSharedPtr<FMediaIOCoreBinarySampleBase, ESPMode::ThreadSafe> AjaThreadCurrentAncF2Sample;
@@ -163,12 +184,17 @@ private:
 	/** Used to flag which sample types we advertise as supported for timed data monitoring */
 	EMediaIOSampleType SupportedSampleTypes;
 
-	/** Frame Description from capture device */
-	AJA::FAJAVideoFormat LastVideoFormatIndex;
-
 	/** Previous frame timecode for stats purpose */
 	AJA::FTimecode AjaThreadPreviousFrameTimecode;
 
 	/** Flag to indicate that pause is being requested */
 	std::atomic<bool> bPauseRequested;
+
+	EAjaMediaSourceColorFormat AjaColorFormat = EAjaMediaSourceColorFormat::YUV2_8bit;
+
+	/** Device provider used to autodetect input format. */
+	TPimplPtr<class FAjaDeviceProvider> DeviceProvider;
+
+	/** Autodetected or specified Timecode format. */
+	EMediaIOTimecodeFormat TimecodeFormat = EMediaIOTimecodeFormat::None; 
 };

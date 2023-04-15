@@ -1,41 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+using AutomationTool;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
-using AutomationTool;
-using System.Runtime.Serialization;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using UnrealBuildBase;
 using UnrealBuildTool;
-using EpicGames.MCP.Automation;
 
 namespace EpicGames.MCP.Automation
 {
-	using EpicGames.MCP.Config;
-	using System.Threading.Tasks;
 	using EpicGames.Core;
+	using EpicGames.MCP.Config;
 	using System.ComponentModel;
 	using System.Globalization;
-
-	public static class Extensions
-	{
-		public static Type[] SafeGetLoadedTypes(this Assembly Dll)
-		{
-			Type[] AllTypes;
-			try
-			{
-				AllTypes = Dll.GetTypes();
-			}
-			catch (ReflectionTypeLoadException e)
-			{
-				AllTypes = e.Types.Where(x => x != null).ToArray();
-			}
-			return AllTypes;
-		}
-	}
+	using System.Threading.Tasks;
 
     /// <summary>
     /// Utility class to provide commit/rollback functionality via an RAII-like functionality.
@@ -1354,7 +1335,7 @@ namespace EpicGames.MCP.Automation
 			public string ManifestA;
 			/// <summary>
 			/// The install tags to use for ManifestA.
-			/// </summary
+			/// </summary>
 			public HashSet<string> InstallTagsA;
 			/// <summary>
 			/// The file path to the update manifest.
@@ -1495,7 +1476,7 @@ namespace EpicGames.MCP.Automation
 			public string ArtifactId;
 			/// <summary>
 			/// The install tags to use for ManifestA.
-			/// </summary
+			/// </summary>
 			public HashSet<string> InstallTagsA;
 			/// <summary>
 			/// The build version to generate optimized deltas from 
@@ -1582,7 +1563,7 @@ namespace EpicGames.MCP.Automation
 			/// from files that are not expected to be available. Most of the time this should be the union of all tags in TagSetSplit, unless tagging is changed between the two manifests.
 			/// An empty string must be included to include untagged files.
 			/// Leaving this variable null will include all files.
-			/// </summary
+			/// </summary>
 			public HashSet<string> PrevManifestTags;
 			/// <summary>
 			/// Optionally provide a list of tagsets to split chunkdb files on. First all data from the tagset at index 0 will be saved, then any extra data needed
@@ -1974,8 +1955,9 @@ namespace EpicGames.MCP.Automation
 		/// Gets an OAuth client token for an environment using the default client id and client secret
 		/// </summary>
 		/// <param name="McpConfig">A descriptor for the environment we want a token for</param>
+		/// <param name="bSuppressLogs">Whether to suppress output logs</param>
 		/// <returns>An OAuth client token for the specified environment.</returns>
-		public string GetClientToken(McpConfigData McpConfig)
+		public string GetClientToken(McpConfigData McpConfig, bool bSuppressLogs = false)
 		{
 			lock(CachedTokensLock)
 			{
@@ -1984,14 +1966,17 @@ namespace EpicGames.MCP.Automation
 					Tuple<string, DateTime> TokenWithExpiry = CachedTokens[McpConfig.Name];
 					if (TokenWithExpiry.Item2 > DateTime.UtcNow)
 					{
-						CommandUtils.LogInformation("Reusing client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, TokenWithExpiry.Item2);
+						if(!bSuppressLogs)
+						{
+							CommandUtils.LogInformation("Reusing client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, TokenWithExpiry.Item2);
+						}
 						return TokenWithExpiry.Item1;
 					}
 				}
 			}
 
 			DateTime Expiry;
-			string Result = GetClientToken(McpConfig, McpConfig.ClientId, McpConfig.ClientSecret, out Expiry);
+			string Result = GetClientToken(McpConfig, McpConfig.ClientId, McpConfig.ClientSecret.Invoke(), out Expiry);
 
 			lock(CachedTokensLock)
 			{
@@ -2003,7 +1988,10 @@ namespace EpicGames.MCP.Automation
 				{
 					CachedTokens.Add(McpConfig.Name, new Tuple<string, DateTime>(Result, Expiry));
 				}
-				CommandUtils.LogInformation("Obtained new client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, Expiry);
+				if (!bSuppressLogs)
+				{
+					CommandUtils.LogInformation("Obtained new client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, Expiry);
+				}
 			}
 			return Result;
 		}
@@ -2472,7 +2460,7 @@ namespace EpicGames.MCP.Automation
 				Assembly[] LoadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
 				foreach (var Dll in LoadedAssemblies)
 				{
-					Type[] AllTypes = Dll.GetTypes();
+					Type[] AllTypes = Dll.SafeGetLoadedTypes();
 					foreach (var PotentialConfigType in AllTypes)
 					{
 						if (PotentialConfigType != typeof(CatalogServiceBase) && typeof(CatalogServiceBase).IsAssignableFrom(PotentialConfigType))
@@ -2555,19 +2543,21 @@ namespace EpicGames.MCP.Config
                                 McpConfigData Config = Activator.CreateInstance(PotentialConfigType) as McpConfigData;
                                 if (Config != null)
                                 {
+                                    Config.Initialize(PotentialConfigType.Name);
                                     Configs.Add(Config.Name, Config);
                                 }
                             }
                             catch (Exception Ex)
                             {
-                                var ErrorBuilder = new System.Text.StringBuilder(Ex.Message);
-                                if (Ex.InnerException != null)
-                                {
-                                    ErrorBuilder.AppendLine(Ex.InnerException.Message);
-                                }
-                                ErrorBuilder.AppendLine(Ex.StackTrace);
-                                BuildCommand.LogWarning("Unable to create McpConfig [{0}] with error: {1}",
-                                    PotentialConfigType.Name, ErrorBuilder.ToString());
+                               	var Inner = Ex.InnerException;
+								while(null != Inner)
+								{
+									BuildCommand.LogWarning("Exception encountered creating McpConfig [{0}] with error: {1}",
+										PotentialConfigType.Name, Inner.Message);
+									Inner = Inner.InnerException;
+								}
+								BuildCommand.LogWarning("Unable to create McpConfig [{0}] with error: {1} \n {2}",
+									PotentialConfigType.Name, Ex.Message, Ex.StackTrace);
                             }
                         }
                     }
@@ -2586,7 +2576,15 @@ namespace EpicGames.MCP.Config
     // Class for storing mcp configuration data
     public class McpConfigData
     {
+		public McpConfigData() { }
+
+		[Obsolete("This constructor is deprecated. Use the alternative which accepts a Func<string> for the client secret.", false)]
 		public McpConfigData(string InName, string InAccountBaseUrl, string InFortniteBaseUrl, string InLauncherBaseUrl, string InBuildInfoV2BaseUrl, string InLauncherV2BaseUrl, string InCatalogBaseUrl, string InClientId, string InClientSecret)
+			: this(InName, InAccountBaseUrl, InFortniteBaseUrl, InLauncherBaseUrl, InBuildInfoV2BaseUrl, InLauncherV2BaseUrl, InCatalogBaseUrl, InClientId, () => InClientSecret)
+		{
+		}
+
+		public McpConfigData(string InName, string InAccountBaseUrl, string InFortniteBaseUrl, string InLauncherBaseUrl, string InBuildInfoV2BaseUrl, string InLauncherV2BaseUrl, string InCatalogBaseUrl, string InClientId, Func<string> InClientSecret)
         {
             Name = InName;
             AccountBaseUrl = InAccountBaseUrl;
@@ -2599,15 +2597,19 @@ namespace EpicGames.MCP.Config
             ClientSecret = InClientSecret;
         }
 
-        public string Name;
-        public string AccountBaseUrl;
-        public string FortniteBaseUrl;
-        public string LauncherBaseUrl;
-		public string BuildInfoV2BaseUrl;
-		public string LauncherV2BaseUrl;
-		public string CatalogBaseUrl;
-        public string ClientId;
-        public string ClientSecret;
+        public string Name { get; set; }
+        public string AccountBaseUrl { get; set; }
+        public string FortniteBaseUrl { get; set; }
+        public string LauncherBaseUrl { get; set; }
+		public string BuildInfoV2BaseUrl { get; set; }
+		public string LauncherV2BaseUrl { get; set; }
+		public string CatalogBaseUrl { get; set; }
+        public string ClientId { get; set; }
+        public Func<string> ClientSecret;
+
+		public virtual void Initialize(string ConfigName)
+		{
+		}
 
         public void SpewValues()
         {

@@ -7,6 +7,8 @@
 #include "Polygroups/PolygroupsGenerator.h"
 #include "UDynamicMesh.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshPolygroupFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshPolygroupFunctions"
@@ -286,6 +288,46 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPolygroupFunctions::ComputePolygroupsFr
 }
 
 
+UDynamicMesh* UGeometryScriptLibrary_MeshPolygroupFunctions::ComputePolygroupsFromPolygonDetection( 
+	UDynamicMesh* TargetMesh, 
+	FGeometryScriptGroupLayer GroupLayer,
+	bool bRespectUVSeams,
+	bool bRespectHardNormals,
+	double QuadAdjacencyWeight,
+	double QuadMetricClamp,
+	int MaxSearchRounds,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ComputePolygroupsFromPolygonDetection_InvalidInput", "ComputePolygroupsFromPolygonDetection: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
+	{
+		TUniquePtr<FPolygroupSet> OutputGroups;
+		FPolygroupLayer InputGroupLayer{ GroupLayer.bDefaultLayer, GroupLayer.ExtendedLayerIndex };
+		if (InputGroupLayer.CheckExists(&EditMesh) == false)
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ComputePolygroupsFromPolygonDetection_MissingGroups", "ComputePolygroupsFromPolygonDetection: Target Polygroup Layer does not exist"));
+			return;
+		}
+		OutputGroups = MakeUnique<FPolygroupSet>(&EditMesh, InputGroupLayer);
+
+		FPolygroupsGenerator Generator(&EditMesh);
+		Generator.bApplyPostProcessing = false;
+		Generator.bCopyToMesh = false;
+		Generator.FindSourceMeshPolygonPolygroups(
+			bRespectUVSeams, bRespectHardNormals,
+			QuadAdjacencyWeight, QuadMetricClamp, MaxSearchRounds);
+		Generator.CopyPolygroupsToPolygroupSet(*OutputGroups, EditMesh);
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
 
 
 int32 UGeometryScriptLibrary_MeshPolygroupFunctions::GetTrianglePolygroupID( 
@@ -423,6 +465,43 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPolygroupFunctions::GetTrianglesInPolyg
 		}
 		return 0;
 	});
+	return TargetMesh;
+}
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshPolygroupFunctions::SetPolygroupForMeshSelection(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptGroupLayer GroupLayer,
+	FGeometryScriptMeshSelection Selection,
+	int& SetPolygroupIDOut,
+	int SetPolygroupID,
+	bool bGenerateNewPolygroup,
+	bool bDeferChangeNotifications)
+{
+	SetPolygroupIDOut = SetPolygroupID;
+	if (TargetMesh)
+	{
+		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+		{
+			FPolygroupLayer InputGroupLayer{ GroupLayer.bDefaultLayer, GroupLayer.ExtendedLayerIndex };
+			if (InputGroupLayer.CheckExists(&EditMesh) == false)
+			{
+				UE_LOG(LogGeometry, Warning, TEXT("SetPolygroupForMeshSelection: Specified Polygroup Layer does not exist"));
+				return;
+			}
+
+			FPolygroupSet Groups(&EditMesh, InputGroupLayer);
+			if (bGenerateNewPolygroup)
+			{
+				SetPolygroupID = Groups.AllocateNewGroupID();
+				SetPolygroupIDOut = SetPolygroupID;
+			}
+			Selection.ProcessByTriangleID(EditMesh,
+				[&](int32 TriangleID) { Groups.SetGroup(TriangleID, SetPolygroupID, EditMesh); } );
+
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, bDeferChangeNotifications);
+	}
 	return TargetMesh;
 }
 

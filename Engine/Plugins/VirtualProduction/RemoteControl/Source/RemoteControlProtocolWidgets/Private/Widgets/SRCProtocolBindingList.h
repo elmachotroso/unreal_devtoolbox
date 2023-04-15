@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,9 +14,7 @@ class FProtocolEntityViewModel;
 class IRCTreeNodeViewModel;
 class ITableRow;
 class SRCProtocolBinding;
-class SRCProtocolList;
 class STableViewBase;
-class URemoteControlProtocolWidgetsSettings;
 
 /** The root view for a given entity. A (vertical) list of bindings, where each binding has a protocol. */
 class REMOTECONTROLPROTOCOLWIDGETS_API SRCProtocolBindingList final : public SCompoundWidget, public IRCProtocolBindingList
@@ -35,6 +33,18 @@ public:
 	{
 		return AwaitingProtocolEntities;
 	}
+
+private:
+
+	/** Start recording incoming protocol message handler */
+	virtual void OnStartRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity) override;
+
+	/** Stop recording incoming protocol message handler */
+	virtual void OnStopRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity) override;
+
+	/** Refresh protocol binding list. Returns false if the backing widget wasn't valid. */
+	virtual bool Refresh(bool bNavigateToEnd = false) override;
+
 	//~ End IRCProtocolBindingList Interface
 
 private:
@@ -44,11 +54,8 @@ private:
 	/** Check if the bound entity type is supported by Protocol. */
 	bool CanAddProtocol();
 
-	/** Toggles visibility of the given protocol. */
-	void ToggleShowProtocol(const FName& InProtocolName);
-
-	/** Check if the given protocol name is being displayed. */
-	bool IsProtocolShown(const FName& InProtocolName);
+	/** Retrieves the appropriate tooltip based on the active protocol. */
+	FText HandleAddBindingToolTipText() const;
 
 	/** Called to get the visibility of the scrollbar based on options, needs to be dynamic to avoid layout changing on expansion */
 	EVisibility GetScrollBarVisibility() const;
@@ -85,30 +92,12 @@ private:
 		SecondaryColumnWidth = InWidth;
 	}
 
-	/** Start recording incoming protocol message handler */
-	void OnStartRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity);
-
-	/** Stop recording incoming protocol message handler */
-	void OnStopRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity);
-
-	/** Get (mutable) module settings */
-	URemoteControlProtocolWidgetsSettings* GetSettings();
-
-	/** Refresh protocol binding list. Returns false if the backing widget wasn't valid. */
-	bool Refresh(bool bNavigateToEnd = false);
-
 private:
 	/** ViewModel for the Protocol Entity. */
 	TSharedPtr<FProtocolEntityViewModel> ViewModel;
 
 	/** Current status message, if any */
 	FText StatusMessage;
-
-	/** List of all available protocol names */
-	TArray<FName> ProtocolNames;
-
-	/** Dropdown list of available protocol names to add */
-	TSharedPtr<SRCProtocolList> ProtocolList;
 
 	/** ListView widget for each protocol binding */
 	TSharedPtr<SListView<TSharedPtr<IRCTreeNodeViewModel>>> BindingList;
@@ -127,9 +116,6 @@ private:
 
 	/** Relative width to control secondary splitters */
 	float SecondaryColumnWidth = 0.5f;
-
-	/** Reference to (mutable) settings class for this module */
-	TWeakObjectPtr<URemoteControlProtocolWidgetsSettings> Settings;
 
 	/** Set of protocol entities with awaiting state and waiting for binding */
 	FRemoteControlProtocolEntitySet AwaitingProtocolEntities;

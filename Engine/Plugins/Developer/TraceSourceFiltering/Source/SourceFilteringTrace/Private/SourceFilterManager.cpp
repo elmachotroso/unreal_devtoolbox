@@ -116,8 +116,7 @@ FSourceFilterManager::~FSourceFilterManager()
 	if (IsValidRef(DrawTask) && !DrawTask->IsComplete())
 	{
 		// Mark drawing task as finished (would otherwise have been executed on GT)
-		TArray<FBaseGraphTask*> NewTasks;
-		DrawTask->DispatchSubsequents(NewTasks, ENamedThreads::GameThread);
+		DrawTask->DispatchSubsequents(ENamedThreads::GameThread);
 	}
 
 	if (Settings)
@@ -656,7 +655,10 @@ void FSourceFilterManager::DrawFilterResults(const AActor* Actor)
 
 void FSourceFilterManager::SetupAsyncTasks(ENamedThreads::Type CurrentThread)
 {
-	static FGraphEventRef LastApplyAsyncTaskEvent = nullptr;
+	static FGraphEventRef LastApplyAsyncTaskEvent;
+
+	// if the static var left alive it can be destroyed after its allocator
+	UE_CALL_ONCE([] { FCoreDelegates::OnEnginePreExit.AddLambda([] { LastApplyAsyncTaskEvent = nullptr; }); });
 
 	if (CAN_TRACE_OBJECT(World))
 	{
@@ -757,9 +759,7 @@ void FSourceFilterManager::WaitForAsyncTasks()
 		if (IsValidRef(AsyncTasks[0]) && !AsyncTasks[0]->IsComplete())
 		{			
 			ApplyGameThreadFilters();
-
-			TArray<FBaseGraphTask*> NewTasks;
-			AsyncTasks[0]->DispatchSubsequents(NewTasks, ENamedThreads::GameThread);
+			AsyncTasks[0]->DispatchSubsequents(ENamedThreads::GameThread);
 		}
 
 		FTaskGraphInterface::Get().WaitUntilTaskCompletes(FinishTask);

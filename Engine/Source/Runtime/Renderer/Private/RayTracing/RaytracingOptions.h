@@ -18,8 +18,8 @@ enum class ERayTracingPrimaryRaysFlag: uint32
 {
 	None                      =      0,
 	UseGBufferForMaxDistance  = 1 << 0,
-	ConsiderSurfaceScatter	  = 1 << 1,
-	AllowSkipSkySample		  = 1 << 2,
+	PrimaryView	              = 1 << 1,
+	AllowSkipSkySample        = 1 << 2,
 };
 
 ENUM_CLASS_FLAGS(ERayTracingPrimaryRaysFlag);
@@ -75,6 +75,7 @@ extern bool EnableRayTracingShadowTwoSidedGeometry();
 extern float GetRaytracingMaxNormalBias();
 extern int32 GetRayTracingCulling();
 extern float GetRayTracingCullingRadius();
+extern bool IsRayTracingInstanceDebugDataEnabled(const FViewInfo& View);
 
 extern bool CanUseRayTracingAMDHitToken();
 
@@ -151,6 +152,11 @@ FORCEINLINE float GetRayTracingCullingRadius()
 }
 
 FORCEINLINE bool CanUseRayTracingAMDHitToken()
+{
+	return false;
+}
+
+FORCEINLINE bool IsRayTracingInstanceDebugDataEnabled()
 {
 	return false;
 }

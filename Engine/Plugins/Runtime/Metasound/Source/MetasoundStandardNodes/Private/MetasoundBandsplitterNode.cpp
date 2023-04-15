@@ -173,16 +173,36 @@ namespace Metasound
 				// audio channels
 				for (uint32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
 				{
-					InputInterface.Add(TInputDataVertexModel<FAudioBuffer>(GetAudioInputName(ChannelIndex), GetAudioInputDescription(ChannelIndex)));
+#if WITH_EDITOR
+					const FDataVertexMetadata AudioInputMetadata
+					{
+						GetAudioInputDescription(ChannelIndex),
+						GetAudioInputDisplayName(ChannelIndex)
+					};
+#else 
+					const FDataVertexMetadata AudioInputMetadata;
+#endif // WITH_EDITOR
+
+					InputInterface.Add(TInputDataVertex<FAudioBuffer>(GetAudioInputName(ChannelIndex), AudioInputMetadata));
 				}
 
-				InputInterface.Add(TInputDataVertexModel<FEnumBandSplitterFilterOrder>(METASOUND_GET_PARAM_NAME_AND_TT(InputFilterOrder)));
-				InputInterface.Add(TInputDataVertexModel<bool>(METASOUND_GET_PARAM_NAME_AND_TT(InputPhaseCompensate), true));
+				InputInterface.Add(TInputDataVertex<FEnumBandSplitterFilterOrder>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputFilterOrder)));
+				InputInterface.Add(TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPhaseCompensate), true));
 
 				// Crossover frequencies
 				for (uint32 InputIndex = 0; InputIndex < NumBands - 1; InputIndex++)
 				{
-					InputInterface.Add(TInputDataVertexModel<float>(GetCrossoverInputName(InputIndex), GetCrossoverInputDescription(InputIndex), (1 + InputIndex) * 500.0f));
+#if WITH_EDITOR
+					const FDataVertexMetadata CrossoverInputMetadata
+					{
+						GetCrossoverInputDescription(InputIndex),
+						GetCrossoverInputDisplayName(InputIndex)
+					};
+#else
+					const FDataVertexMetadata CrossoverInputMetadata;
+#endif // WITH_EDITOR
+
+					InputInterface.Add(TInputDataVertex<float>(GetCrossoverInputName(InputIndex), CrossoverInputMetadata, (1 + InputIndex) * 500.0f));
 				}
 
 				// outputs
@@ -191,7 +211,17 @@ namespace Metasound
 				{
 					for (uint32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
 					{
-						OutputInterface.Add(TOutputDataVertexModel<FAudioBuffer>(GetAudioOutputName(OutputIndex, ChannelIndex), GetAudioOutputDescription(OutputIndex, ChannelIndex)));
+#if WITH_EDITOR
+						const FDataVertexMetadata AudioOutputMetadata
+						{
+							GetAudioOutputDescription(OutputIndex, ChannelIndex),
+							GetAudioOutputDisplayName(OutputIndex, ChannelIndex)
+						};
+#else 
+						const FDataVertexMetadata AudioOutputMetadata;
+#endif // WITH_EDITOR 
+
+						OutputInterface.Add(TOutputDataVertex<FAudioBuffer>(GetAudioOutputName(OutputIndex, ChannelIndex), AudioOutputMetadata));
 					}
 				}
 
@@ -230,34 +260,42 @@ namespace Metasound
 
 		void UpdateFilterSettings()
 		{
-			bool bNeedsUpdate = false;
+			bool bNeedsReinitFilters = false;
+			bool bNeedsUpdateCrossovers = false;
 
 			for (int32 CrossoverIndex = 0; CrossoverIndex < Crossovers.Num(); CrossoverIndex++)
 			{
 				if (Crossovers[CrossoverIndex] != *CrossoverFrequencies[CrossoverIndex])
 				{
-					bNeedsUpdate = true;
+					bNeedsUpdateCrossovers = true;
 					Crossovers[CrossoverIndex] = *CrossoverFrequencies[CrossoverIndex];
 				}
 			}
 
 			if (*bPhaseCompensate != bPrevPhaseCompensate)
 			{
-				bNeedsUpdate = true;
+				bNeedsReinitFilters = true;
 				bPrevPhaseCompensate = *bPhaseCompensate;
 			}
 
 			if (PrevFilterOrder != GetFilterOrder(*FilterOrder))
 			{
-				bNeedsUpdate = true;
+				bNeedsReinitFilters = true;
 				PrevFilterOrder = GetFilterOrder(*FilterOrder);
 			}
 
-			if (bNeedsUpdate)
+			if (bNeedsReinitFilters)
 			{
 				for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
 				{
 					Filters[ChannelIndex].Init(1, Settings.GetSampleRate(), PrevFilterOrder, bPrevPhaseCompensate, Crossovers);
+				}
+			}
+			else if (bNeedsUpdateCrossovers)
+			{
+				for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
+				{
+					Filters[ChannelIndex].SetCrossovers(Crossovers);
 				}
 			}
 		}
@@ -334,19 +372,9 @@ namespace Metasound
 			return *FString::Printf(TEXT("In %i"), ChannelIndex);
 		}
 
-		static const FText GetAudioInputDescription(uint32 ChannelIndex)
-		{
-			return METASOUND_LOCTEXT_FORMAT("BandSplitterAudioInputDescription", "Audio Channel: {0}", ChannelIndex);
-		}
-
 		static const FVertexName GetCrossoverInputName(uint32 InputIndex)
 		{
 			return *FString::Printf(TEXT("Crossover %i"), InputIndex);
-		}
-
-		static const FText GetCrossoverInputDescription(uint32 InputIndex)
-		{
-			return METASOUND_LOCTEXT_FORMAT("BandSplitterCrossoverInputDescription", "Crossover Input #: {0}", InputIndex);
 		}
 
 		static const FVertexName GetAudioOutputName(uint32 OutputIndex, uint32 ChannelIndex)
@@ -363,10 +391,69 @@ namespace Metasound
 			return *FString::Printf(TEXT("Band %i Out %i"), OutputIndex, ChannelIndex);
 		}
 
+#if WITH_EDITOR
+		static const FText GetAudioInputDescription(uint32 ChannelIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("BandSplitterAudioInputDescription", "Audio Channel: {0}", ChannelIndex);
+		}
+
+		static const FText GetAudioInputDisplayName(uint32 ChannelIndex)
+		{
+			if (NumChannels == 1)
+			{
+				return METASOUND_LOCTEXT("BandsplitterAudioInputIn1", "In");
+			}
+			else if (NumChannels == 2)
+			{
+				if (ChannelIndex == 0)
+				{
+					return METASOUND_LOCTEXT("BandsplitterAudioInputIn2L", "In L");
+				}
+				else
+				{
+					return METASOUND_LOCTEXT("BandsplitterAudioInputIn2R", "In R");
+				}
+			}
+
+			return METASOUND_LOCTEXT_FORMAT("BandsplitterAudioInputIn", "In {0}", ChannelIndex);
+		}
+
+		static const FText GetCrossoverInputDisplayName(uint32 InputIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("BandsplitterCrossoverInputDisplayName", "Crossover {0}", InputIndex);
+		}
+
+		static const FText GetCrossoverInputDescription(uint32 InputIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("BandSplitterCrossoverInputDescription", "Crossover Input #: {0}", InputIndex);
+		}
+
 		static const FText GetAudioOutputDescription(uint32 OutputIndex, uint32 ChannelIndex)
 		{
 			return METASOUND_LOCTEXT_FORMAT("BandSplitterAudioOutputDescription", "Channel {0} Output for Band {1}", ChannelIndex, OutputIndex);
 		}
+
+		static const FText GetAudioOutputDisplayName(uint32 OutputIndex, uint32 ChannelIndex)
+		{
+			if (NumChannels == 1)
+			{
+				return METASOUND_LOCTEXT_FORMAT("BandsplitterAudioOutputOut1", "Band {0} Out", OutputIndex);
+			}
+			else if (NumChannels == 2)
+			{
+				if (ChannelIndex == 0)
+				{
+					return METASOUND_LOCTEXT_FORMAT("BandsplitterAudioOutputOut2L", "Band {0} L", OutputIndex);
+				}
+				else
+				{
+					return METASOUND_LOCTEXT_FORMAT("BandsplitterAudioOutputOut2R", "Band {0} R", OutputIndex);
+				}
+			}
+
+			return METASOUND_LOCTEXT_FORMAT("BandsplitterAudioOutputOut", "Band {0} Out {1}", OutputIndex, ChannelIndex);
+		}
+#endif // WITH_EDITOR
 
 		FORCEINLINE Audio::EFilterOrder GetFilterOrder(EBandSplitterFilterOrder InFilterOrder) const
 		{

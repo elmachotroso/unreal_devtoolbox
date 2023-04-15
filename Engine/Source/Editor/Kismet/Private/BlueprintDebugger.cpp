@@ -2,20 +2,46 @@
 
 #include "BlueprintDebugger.h"
 
+#include "BlueprintEditorTabs.h"
 #include "CallStackViewer.h"
+#include "CoreGlobals.h"
 #include "Debugging/SKismetDebuggingView.h"
-#include "EditorStyleSet.h"
+#include "Delegates/Delegate.h"
+#include "Engine/Blueprint.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/Commands.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/LayoutService.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Layout/WidgetPath.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
-#include "BlueprintEditorTabs.h"
-#include "ToolMenus.h"
-#include "Kismet2/DebuggerCommands.h"
+
+class SWidget;
+class SWindow;
 
 #define LOCTEXT_NAMESPACE "BlueprintDebugger"
 
@@ -76,7 +102,7 @@ FBlueprintDebuggerImpl::FBlueprintDebuggerImpl()
 		.SetDisplayName(NSLOCTEXT("BlueprintDebugger", "TabTitle", "Blueprint Debugger"))
 		.SetTooltipText(NSLOCTEXT("BlueprintDebugger", "TooltipText", "Open the Blueprint Debugger tab."))
 		.SetGroup(MenuStructure.GetDeveloperToolsDebugCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "BlueprintDebugger.TabIcon"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "BlueprintDebugger.TabIcon"));
 }
 
 FBlueprintDebuggerImpl::~FBlueprintDebuggerImpl()
@@ -257,6 +283,7 @@ TSharedRef<SDockTab> FBlueprintDebuggerImpl::CreateBluprintDebuggerTab(const FSp
 			})
 	);
 	
+
 	TSharedRef<SWidget> MenuBarWidget = MenuBarBuilder.MakeWidget();
 
 	NomadTab->SetContent(
@@ -269,7 +296,7 @@ TSharedRef<SDockTab> FBlueprintDebuggerImpl::CreateBluprintDebuggerTab(const FSp
 		+SVerticalBox::Slot()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 			.Padding(FMargin(0.f, 2.f))
 			[
 				TabContents
@@ -277,6 +304,7 @@ TSharedRef<SDockTab> FBlueprintDebuggerImpl::CreateBluprintDebuggerTab(const FSp
 		]
 	);
 	
+
 	// Tell tab-manager about the multi-box for platforms with a global menu bar
 	DebuggingToolsTabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox(), MenuBarWidget);
 

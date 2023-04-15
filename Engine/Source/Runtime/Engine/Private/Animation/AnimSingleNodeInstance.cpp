@@ -10,6 +10,8 @@
 #include "Animation/BlendSpace.h"
 #include "Animation/AnimSingleNodeInstanceProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimSingleNodeInstance)
+
 /////////////////////////////////////////////////////
 // UAnimSingleNodeInstance
 /////////////////////////////////////////////////////
@@ -40,7 +42,7 @@ void UAnimSingleNodeInstance::SetAnimationAsset(class UAnimationAsset* NewAsset,
 	USkeletalMeshComponent* MeshComponent = GetSkelMeshComponent();
 	if (MeshComponent)
 	{
-		if (MeshComponent->SkeletalMesh == nullptr)
+		if (MeshComponent->GetSkeletalMeshAsset() == nullptr)
 		{
 			// if it does not have SkeletalMesh, we nullify it
 			CurrentAsset = nullptr;
@@ -48,7 +50,7 @@ void UAnimSingleNodeInstance::SetAnimationAsset(class UAnimationAsset* NewAsset,
 		else if (CurrentAsset != nullptr)
 		{
 			// if we have an asset, make sure their skeleton matches, otherwise, null it
-			if (!MeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(CurrentAsset->GetSkeleton()))
+			if (!MeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(CurrentAsset->GetSkeleton()))
 			{
 				// clear asset since we do not have matching skeleton
 				CurrentAsset = nullptr;
@@ -426,7 +428,7 @@ void UAnimSingleNodeInstance::StepForward()
 		const FFrameNumber LastSequenceFrameNumber = FrameRate.AsFrameTime(Sequence->GetPlayLength()).RoundToFrame();
 		
 		// Step forward a small amount and ceil to the next frame number 
-		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() + KINDA_SMALL_NUMBER).CeilToFrame();		
+		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() + UE_KINDA_SMALL_NUMBER).CeilToFrame();		
 		if (IsLooping())
 		{
 			// Wrap around to start of the sequence
@@ -464,7 +466,7 @@ void UAnimSingleNodeInstance::StepBackward()
 		const FFrameNumber LastSequenceFrameNumber = FrameRate.AsFrameTime(Sequence->GetPlayLength()).RoundToFrame();
 
 		// Step backwards a small amount and floor to the previous frame number 
-		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() - KINDA_SMALL_NUMBER).FloorToFrame();
+		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() - UE_KINDA_SMALL_NUMBER).FloorToFrame();
 		if (IsLooping())
 		{
 			// Wrap around to end of sequence
@@ -507,3 +509,4 @@ FVector UAnimSingleNodeInstance::GetFilterLastOutput()
 
 	return FVector::ZeroVector;
 }
+

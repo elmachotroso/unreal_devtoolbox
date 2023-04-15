@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TemplateSequence.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Components/ActorComponent.h"
@@ -18,6 +19,8 @@
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Evaluation/MovieScenePlayback.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TemplateSequence)
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, TemplateSequence);
 
@@ -199,7 +202,7 @@ FGuid UTemplateSequence::FindOrAddBinding(UObject* InObject)
 		FMovieScenePossessable* ChildPossessable = MovieScene->FindPossessable(NewGuid);
 		if (ensure(ChildPossessable))
 		{
-			ChildPossessable->SetParent(ParentGuid);
+			ChildPossessable->SetParent(ParentGuid, MovieScene);
 		}
 
 		FMovieSceneSpawnable* ParentSpawnable = MovieScene->FindSpawnable(ParentGuid);
@@ -235,7 +238,7 @@ void UTemplateSequence::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags)
 
 	if (BoundActorClass.IsValid())
 	{
-		FAssetRegistryTag Tag("BoundActorClass", BoundActorClass->GetName(), FAssetRegistryTag::TT_Alphabetical);
+		FAssetRegistryTag Tag("BoundActorClass", BoundActorClass->GetPathName(), FAssetRegistryTag::TT_Alphabetical);
 		OutTags.Add(Tag);
 	}
 	else
@@ -245,6 +248,23 @@ void UTemplateSequence::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags)
 }
 
 #if WITH_EDITOR
+
+void UTemplateSequence::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+
+	static const FName BoundActorClassTagName(TEXT("BoundActorClass"));
+	FString BoundActorClassTagValue = InAssetData.GetTagValueRef<FString>(BoundActorClassTagName);
+	if (!BoundActorClassTagValue.IsEmpty() && FPackageName::IsShortPackageName(BoundActorClassTagValue))
+	{
+		FTopLevelAssetPath BoundActorClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(BoundActorClassTagValue, ELogVerbosity::Warning, TEXT("UTemplateSequence::PostLoadAssetRegistryTags"));
+		if (!BoundActorClassPathName.IsNull())
+		{
+			OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(BoundActorClassTagName, BoundActorClassPathName.ToString(), FAssetRegistryTag::TT_Alphabetical));
+		}
+	}
+}
+
 FText UTemplateSequence::GetDisplayName() const
 {
 	return UMovieSceneSequence::GetDisplayName();
@@ -273,3 +293,4 @@ void UTemplateSequence::GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTa
 }
 
 #endif
+

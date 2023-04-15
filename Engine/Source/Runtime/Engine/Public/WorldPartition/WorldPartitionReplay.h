@@ -16,8 +16,14 @@ struct FWorldPartitionReplayStreamingSource : public FWorldPartitionStreamingSou
 	}
 
 	FWorldPartitionReplayStreamingSource(const FWorldPartitionStreamingSource& InStreamingSource)
-		: FWorldPartitionStreamingSource(InStreamingSource.Name, InStreamingSource.Location, InStreamingSource.Rotation, InStreamingSource.TargetState, InStreamingSource.bBlockOnSlowLoading, InStreamingSource.Priority, InStreamingSource.Velocity)
+		: FWorldPartitionReplayStreamingSource(InStreamingSource.Name, InStreamingSource.Location, InStreamingSource.Rotation, InStreamingSource.TargetState, InStreamingSource.bBlockOnSlowLoading, InStreamingSource.Priority, InStreamingSource.Velocity)
 	{
+	}
+
+	FWorldPartitionReplayStreamingSource(FName InName, const FVector& InLocation, const FRotator& InRotation, EStreamingSourceTargetState InTargetState, bool bInBlockOnSlowLoading, EStreamingSourcePriority InPriority, float InVelocity)
+		: FWorldPartitionStreamingSource(InName, InLocation, InRotation, InTargetState, bInBlockOnSlowLoading, InPriority, false, InVelocity)
+	{
+		bReplay = true;
 	}
 
 	friend FArchive& operator<<(FArchive& Ar, FWorldPartitionReplayStreamingSource& StreamingSource);
@@ -45,13 +51,12 @@ class ENGINE_API AWorldPartitionReplay : public AActor
 
 public:
 	static void Initialize(UWorld* World);
-	static bool IsEnabled(UWorld* World);
+	static bool IsPlaybackEnabled(UWorld* World);
+	static bool IsRecordingEnabled(UWorld* World);
 
-	virtual void BeginPlay() override;
 	virtual void RewindForReplay() override;
 	virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
 		
-	bool IsEnabled() const { return bEnabled; }
 	bool GetReplayStreamingSources(TArray<FWorldPartitionStreamingSource>& OutStreamingSources);
 		
 private:
@@ -63,6 +68,5 @@ private:
 	TArray<FName> StreamingSourceNames;
 
 	TArray<FWorldPartitionReplaySample> ReplaySamples;
-	bool bEnabled = false;
 };
 

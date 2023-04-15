@@ -20,7 +20,7 @@ public:
 public:
 
 	/** Helper function used to uncompress BMP data from a buffer */
-	void UncompressBMPData(const ERGBFormat InFormat, const int32 InBitDepth);
+	bool UncompressBMPData(const ERGBFormat InFormat, const int32 InBitDepth);
 
 	/** 
 	 * Load the header information, returns true if successful.
@@ -34,7 +34,7 @@ public:
 	 *
 	 * @return true if successful
 	 */
-	bool LoadBMPInfoHeader();
+	bool LoadBMPInfoHeader(int64 HeaderOffset);
 
 public:
 
@@ -43,6 +43,9 @@ public:
 	virtual void Compress(int32 Quality) override;
 	virtual void Uncompress(const ERGBFormat InFormat, int32 InBitDepth) override;
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
+	
+	virtual bool CanSetRawFormat(const ERGBFormat InFormat, const int32 InBitDepth) const override;
+	virtual ERawImageFormat::Type GetSupportedRawFormat(const ERawImageFormat::Type InFormat) const override;
 
 private:
 

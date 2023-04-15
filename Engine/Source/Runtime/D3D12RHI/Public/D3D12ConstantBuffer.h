@@ -15,9 +15,6 @@ class FD3D12FastConstantAllocator;
 class FD3D12ConstantBuffer : public FD3D12DeviceChild
 {
 public:
-#if USE_STATIC_ROOT_SIGNATURE
-	FD3D12ConstantBufferView* View;
-#endif
 	FD3D12ConstantBuffer(FD3D12Device* InParent, FD3D12FastConstantAllocator& InAllocator);
 	virtual ~FD3D12ConstantBuffer();
 
@@ -48,7 +45,15 @@ public:
 
 	bool Version(FD3D12ResourceLocation& BufferOut, bool bDiscardSharedConstants);
 
+#if USE_STATIC_ROOT_SIGNATURE
+	inline D3D12_CPU_DESCRIPTOR_HANDLE GetOfflineCpuHandle() const { return View->GetOfflineCpuHandle(); }
+#endif
+
 protected:
+#if USE_STATIC_ROOT_SIGNATURE
+	FD3D12ConstantBufferView* View = nullptr;
+#endif
+
 	TArray<uint8> ShadowData;
 	
 	/** Size of all constants that has been updated since the last call to Commit. */

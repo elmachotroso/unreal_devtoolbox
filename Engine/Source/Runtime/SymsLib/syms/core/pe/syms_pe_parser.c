@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #ifndef SYMS_PE_PARSER_C
 #define SYMS_PE_PARSER_C
 
@@ -61,7 +62,8 @@ syms_pe_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeFileAcc
     SYMS_U64 clamped_sec_count = (sec_array_opl - sec_array_off)/sizeof(SYMS_CoffSection);
     SYMS_CoffSection *sections = (SYMS_CoffSection*)((SYMS_U8*)base + sec_array_off);
     
-    // get data directory from optional
+    // read ptional header
+    SYMS_U64 image_base = 0;
     SYMS_U32 data_dir_count = 0;
     SYMS_U64Range *data_dirs_file = 0;
     SYMS_U64Range *data_dirs_virt = 0;
@@ -78,6 +80,9 @@ syms_pe_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeFileAcc
         {
           SYMS_PeOptionalPe32 pe_optional = {0};
           syms_based_range_read_struct(base, optional_range, 0, &pe_optional);
+          
+          image_base = pe_optional.image_base;
+          
           reported_data_dir_offset = sizeof(pe_optional);
           reported_data_dir_count = pe_optional.data_dir_count;
         }break;
@@ -85,6 +90,9 @@ syms_pe_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeFileAcc
         {
           SYMS_PeOptionalPe32Plus pe_optional = {0};
           syms_based_range_read_struct(base, optional_range, 0, &pe_optional);
+          
+          image_base = pe_optional.image_base;
+          
           reported_data_dir_offset = sizeof(pe_optional);
           reported_data_dir_count = pe_optional.data_dir_count;
         }break;
@@ -151,6 +159,7 @@ syms_pe_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeFileAcc
     // fill result
     result = syms_push_array(arena, SYMS_PeBinAccel, 1);
     result->format = SYMS_FileFormat_PE;
+    result->image_base = image_base;
     result->section_array_off = sec_array_off;
     result->section_count = clamped_sec_count;
     result->dbg_path_off = dbg_path_off;
@@ -167,8 +176,28 @@ syms_pe_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeFileAcc
   return(result);
 }
 
+SYMS_API SYMS_CoffFileAccel*
+syms_coff_file_accel_from_data(SYMS_Arena *arena, SYMS_String8 data){
+  SYMS_CoffFileAccel *result = (SYMS_CoffFileAccel *)&syms_format_nil;
+  // TODO(allen): 
+  return(result);
+}
+
+SYMS_API SYMS_CoffBinAccel*
+syms_coff_bin_accel_from_file(SYMS_Arena *arena, SYMS_String8 data, SYMS_CoffFileAccel *file){
+  SYMS_CoffBinAccel *result = (SYMS_CoffBinAccel *)&syms_format_nil;
+  // TODO(allen): 
+  return(result);
+}
+
 SYMS_API SYMS_Arch
 syms_pe_arch_from_bin(SYMS_PeBinAccel *bin){
+  SYMS_Arch result = bin->arch;
+  return(result);
+}
+
+SYMS_API SYMS_Arch
+syms_coff_arch_from_bin(SYMS_CoffBinAccel *bin){
   SYMS_Arch result = bin->arch;
   return(result);
 }
@@ -200,6 +229,14 @@ syms_pe_coff_section(SYMS_String8 data, SYMS_PeBinAccel *bin, SYMS_U64 n){
 }
 
 SYMS_API SYMS_SecInfoArray
+syms_pe_coff_sec_info_array_from_data(SYMS_Arena *arena, SYMS_String8 data,
+                                      SYMS_U64 sec_array_off, SYMS_U64 sec_count){
+  SYMS_SecInfoArray result = {0};
+  // TODO(allen): 
+  return(result);
+}
+
+SYMS_API SYMS_SecInfoArray
 syms_pe_sec_info_array_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBinAccel *bin){
   SYMS_SecInfoArray result = {0};
   result.count = bin->section_count;
@@ -226,6 +263,211 @@ syms_pe_sec_info_array_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBin
   return(result);
 }
 
+SYMS_API SYMS_SecInfoArray
+syms_coff_sec_info_array_from_bin(SYMS_Arena *arena, SYMS_String8 data,
+                                  SYMS_CoffBinAccel *bin){
+  SYMS_SecInfoArray result = {0};
+  // TODO(allen): 
+  return(result);
+}
+
+SYMS_API SYMS_ImportArray
+syms_pe_imports_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBinAccel *bin){
+  SYMS_ArenaTemp scratch = syms_get_scratch(&arena, 1);
+  
+  //- rjf: grab prerequisites
+  void *base = (void*)data.str;
+  SYMS_Arch arch = syms_pe_arch_from_bin(bin);
+  (void)arch;
+  SYMS_U64 arch_bit_size = syms_address_size_from_arch(bin->arch);
+  SYMS_U64 arch_byte_size = arch_bit_size / 8;
+  
+  //- rjf: grab ranges
+  SYMS_U64Range dir_range = bin->data_dirs_file[SYMS_PeDataDirectoryIndex_IMPORT];
+  SYMS_U64Range data_range = syms_make_u64_range(0, data.size);
+  
+  //- rjf: parse import list
+  SYMS_PeImportDllNode *first_dll = 0;
+  SYMS_PeImportDllNode *last_dll = 0;
+  SYMS_U32 dll_count = 0;
+  {
+    for(SYMS_U64 read_offset = 0;;)
+    {
+      // rjf: read entry
+      SYMS_PeImportDirectoryEntry import_entry = {0};
+      read_offset += syms_based_range_read_struct(base, dir_range, read_offset, &import_entry);
+      
+      // rjf: break if this is the last entry
+      SYMS_B32 is_last_import_directory = (import_entry.lookup_table_virt_off == 0 &&
+                                           import_entry.timestamp == 0 &&
+                                           import_entry.forwarder_chain == 0 &&
+                                           import_entry.name_virt_off == 0 &&
+                                           import_entry.import_addr_table_virt_off == 0);
+      if(is_last_import_directory)
+      {
+        break;
+      }
+      
+      // rjf: grab offsets
+      SYMS_U64 roff__dll_name_file = syms_pe_bin_virt_off_to_file_off(data, bin, import_entry.name_virt_off);
+      SYMS_U64 roff__lookup_table = syms_pe_bin_virt_off_to_file_off(data, bin, import_entry.lookup_table_virt_off);
+      
+      // rjf: build import DLL node
+      SYMS_PeImportDllNode *dll_node = syms_push_array(scratch.arena, SYMS_PeImportDllNode, 1);
+      dll_node->next = 0;
+      dll_node->import_entry = import_entry;
+      dll_node->name = syms_based_range_read_string(base, data_range, roff__dll_name_file);
+      dll_node->first_import = 0;
+      dll_node->last_import = 0;
+      dll_node->import_count = 0;
+      dll_count += 1;
+      SYMS_QueuePush(first_dll, last_dll, dll_node);
+      
+      // rjf: build list of all imports for this DLL
+      for(;;)
+      {
+        // rjf: parse entry
+        SYMS_U64 lookup_entry = 0;
+        roff__lookup_table += syms_based_range_read(base, data_range, roff__lookup_table, arch_byte_size, &lookup_entry);
+        
+        // rjf: break if we're done
+        if(lookup_entry == 0)
+        {
+          break;
+        }
+        
+        // rjf: build node
+        SYMS_PeImportNode *import_node = syms_push_array_zero(scratch.arena, SYMS_PeImportNode, 1);
+        SYMS_QueuePush(dll_node->first_import, dll_node->last_import, import_node);
+        dll_node->import_count += 1;
+        
+        // rjf: grab name/ordinal
+        SYMS_B32 is_ordinal = !!((arch_bit_size == 64) ? lookup_entry & 0x8000000000000000 : lookup_entry & 0x80000000);
+        if(is_ordinal)
+        {
+          import_node->ordinal = lookup_entry & 0xFFFF;
+        }
+        else
+        {
+          SYMS_U64 hn_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, lookup_entry);
+          syms_based_range_read_struct(base, data_range, hn_file_off, &import_node->hint);
+          import_node->name = syms_based_range_read_string(base, data_range, hn_file_off + sizeof(import_node->hint));
+        }
+      }
+      
+    }
+  }
+  
+  //- rjf: sum imports
+  SYMS_U64 total_import_count = 0;
+  for(SYMS_PeImportDllNode *n = first_dll; n != 0; n = n->next)
+  {
+    total_import_count += n->import_count;
+  }
+  
+  //- rjf: build+fill result
+  SYMS_ImportArray import_array = {0};
+  {
+    SYMS_U64 import_write_idx = 0;
+    import_array.count = total_import_count;
+    import_array.imports = syms_push_array_zero(arena, SYMS_Import, import_array.count);
+    for(SYMS_PeImportDllNode *dll_node = first_dll;
+        dll_node != 0;
+        dll_node = dll_node->next)
+    {
+      for(SYMS_PeImportNode *import_node = dll_node->first_import;
+          import_node != 0;
+          import_node = import_node->next)
+      {
+        SYMS_Import *imp = &import_array.imports[import_write_idx];
+        imp->library_name = syms_push_string_copy(arena, dll_node->name);
+        imp->name = syms_push_string_copy(arena, import_node->name);
+        imp->ordinal = import_node->ordinal;
+        import_write_idx += 1;
+      }
+    }
+  }
+  
+  //- rjf: return
+  syms_release_scratch(scratch);
+  return import_array;
+}
+
+SYMS_API SYMS_ExportArray
+syms_pe_exports_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBinAccel *bin){
+  SYMS_U64Range dir_range = bin->data_dirs_file[SYMS_PeDataDirectoryIndex_EXPORT];
+  SYMS_U64Range data_range = syms_make_u64_range(0, data.size);
+  void *base = (void*)data.str;
+  
+  SYMS_PeExportTable header; syms_memzero_struct(&header);
+  syms_based_range_read_struct(base, dir_range, 0, &header);
+  
+  SYMS_U32 export_address_table_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, header.export_address_table_virt_off);
+  SYMS_U32 name_pointer_table_file_off   = syms_pe_bin_virt_off_to_file_off(data, bin, header.name_pointer_table_virt_off);
+  SYMS_U32 ordinal_table_file_off        = syms_pe_bin_virt_off_to_file_off(data, bin, header.ordinal_table_virt_off);
+  
+  SYMS_U64Range export_table_range       = syms_make_u64_inrange(data_range, export_address_table_file_off, sizeof(SYMS_U32) * header.export_address_table_count);
+  SYMS_U64Range name_pointer_table_range = syms_make_u64_inrange(data_range, name_pointer_table_file_off,   sizeof(SYMS_U32) * header.name_pointer_table_count);
+  SYMS_U64Range ordinal_table_range      = syms_make_u64_inrange(data_range, ordinal_table_file_off,        sizeof(SYMS_U16) * header.name_pointer_table_count);
+  
+  // NOTE(nick): There is a DLL name string in the export header. This is
+  // intersting because if we read image from memory we can figure out its
+  // name by reading this string.
+#if 0
+  SYMS_U32 dll_name_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, header.name_virt_off);
+  SYMS_String8 dll_name = syms_based_range_read_string(base, data_range, dll_name_file_off);
+#endif
+  
+  SYMS_ExportArray export_array;
+  export_array.count = header.name_pointer_table_count;
+  export_array.exports = syms_push_array_zero(arena, SYMS_Export, export_array.count);
+  
+  for (SYMS_U32 i = 0; i < header.name_pointer_table_count; i += 1) {
+    SYMS_U32 name_virt_off = 0;
+    syms_based_range_read_struct(base, name_pointer_table_range, i * sizeof(name_virt_off), &name_virt_off);
+    SYMS_U32 name_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, name_virt_off);
+    SYMS_String8 name = syms_based_range_read_string(base, data_range, name_file_off);
+    
+    SYMS_U16 ordinal = 0;
+    syms_based_range_read_struct(base, ordinal_table_range, i * sizeof(ordinal), &ordinal);
+    SYMS_U32 biased_ordinal = ordinal + header.ordinal_base;
+    
+    SYMS_U32 export_virt_off = 0;
+    syms_based_range_read_struct(base, export_table_range, ordinal * sizeof(export_virt_off), &export_virt_off);
+    SYMS_U32 export_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, export_virt_off);
+    
+    SYMS_Export *exp = &export_array.exports[i];
+    SYMS_B32 is_virt_off_forwarder = bin->data_dirs_virt[SYMS_PeDataDirectoryIndex_EXPORT].min <= export_virt_off && export_virt_off < bin->data_dirs_virt[SYMS_PeDataDirectoryIndex_EXPORT].max;
+    if (is_virt_off_forwarder) {
+      SYMS_String8 library_name = syms_str8_lit("@MALFORMED_LIBRARY_NAME@");
+      SYMS_String8 import_name = syms_str8_lit("@MALFORMED_IMPORT_NAME@");
+      // parse forwarder command string that is formatted like "<DLL>.<IMPORT>"
+      SYMS_String8 forwarder = syms_based_range_read_string(base, data_range, export_file_off);
+      SYMS_ArenaTemp temp = syms_arena_temp_begin(arena);
+      SYMS_String8List list = syms_string_split(temp.arena, forwarder, '.');
+      if (list.node_count == 2) {
+        library_name = list.first->string;
+        import_name  = list.last->string;
+      }
+      syms_arena_temp_end(temp);
+      // fill out export
+      exp->name = syms_push_string_copy(arena, name);
+      exp->address = 0;
+      exp->ordinal = biased_ordinal;
+      exp->forwarder_library_name = syms_push_string_copy(arena, library_name);
+      exp->forwarder_import_name = syms_push_string_copy(arena, import_name);
+    } else {
+      // fill out export
+      exp->name = syms_push_string_copy(arena, name);
+      exp->address = export_virt_off;
+      exp->ordinal = biased_ordinal;
+    }
+  }
+  
+  return export_array;
+}
+
+
 ////////////////////////////////
 // NOTE(allen): PE Specific Helpers
 
@@ -234,7 +476,7 @@ syms_pe_binary_search_intel_pdata(SYMS_String8 data, SYMS_PeBinAccel *bin, SYMS_
   SYMS_ASSERT(bin->arch == SYMS_Arch_X86 || bin->arch == SYMS_Arch_X64);
   SYMS_U64 pdata_off = bin->data_dirs_file[SYMS_PeDataDirectoryIndex_EXCEPTIONS].min;
   SYMS_U64 pdata_count = syms_u64_range_size(bin->data_dirs_file[SYMS_PeDataDirectoryIndex_EXCEPTIONS]) / sizeof(SYMS_PeIntelPdata);
-
+  
   SYMS_U64 result = 0;
   // check if this bin includes a pdata array
   if (pdata_count > 0){
@@ -341,8 +583,7 @@ syms_pe_ptr_from_voff(SYMS_String8 data, SYMS_PeBinAccel *bin, SYMS_U64 voff){
 }
 
 SYMS_API SYMS_U64
-syms_pe_virt_off_to_file_off(SYMS_CoffSection *sections, SYMS_U32 section_count, SYMS_U64 virt_off)
-{
+syms_pe_virt_off_to_file_off(SYMS_CoffSection *sections, SYMS_U32 section_count, SYMS_U64 virt_off){
   SYMS_U64 file_off = 0;
   for (SYMS_U32 sect_idx = 0; sect_idx < section_count; sect_idx += 1){
     SYMS_CoffSection *sect = &sections[sect_idx];
@@ -354,206 +595,8 @@ syms_pe_virt_off_to_file_off(SYMS_CoffSection *sections, SYMS_U32 section_count,
 }
 
 SYMS_API SYMS_U64
-syms_pe_bin_virt_off_to_file_off(SYMS_String8 data, SYMS_PeBinAccel *bin, SYMS_U64 virt_off)
-{
+syms_pe_bin_virt_off_to_file_off(SYMS_String8 data, SYMS_PeBinAccel *bin, SYMS_U64 virt_off){
   return syms_pe_virt_off_to_file_off((SYMS_CoffSection*)((SYMS_U8*)data.str + bin->section_array_off), bin->section_count, virt_off);
-}
-
-SYMS_API SYMS_ImportArray
-syms_pe_imports_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBinAccel *bin)
-{
-  SYMS_ArenaTemp scratch = syms_get_scratch(&arena, 1);
-  
-  //- rjf: grab prerequisites
-  void *base = (void*)data.str;
-  SYMS_Arch arch = syms_pe_arch_from_bin(bin);
-  SYMS_U64 arch_bit_size = syms_address_size_from_arch(bin->arch);
-  SYMS_U64 arch_byte_size = arch_bit_size / 8;
-  
-  //- rjf: grab ranges
-  SYMS_U64Range dir_range = bin->data_dirs_file[SYMS_PeDataDirectoryIndex_IMPORT];
-  SYMS_U64Range data_range = syms_make_u64_range(0, data.size);
-  
-  //- rjf: parse import list
-  SYMS_PeImportDllNode *first_dll = 0;
-  SYMS_PeImportDllNode *last_dll = 0;
-  SYMS_U32 dll_count = 0;
-  {
-    for(SYMS_U64 read_offset = 0;;)
-    {
-      // rjf: read entry
-      SYMS_PeImportDirectoryEntry import_entry = {0};
-      read_offset += syms_based_range_read_struct(base, dir_range, read_offset, &import_entry);
-      
-      // rjf: break if this is the last entry
-      SYMS_B32 is_last_import_directory = (import_entry.lookup_table_virt_off == 0 &&
-                                           import_entry.timestamp == 0 &&
-                                           import_entry.forwarder_chain == 0 &&
-                                           import_entry.name_virt_off == 0 &&
-                                           import_entry.import_addr_table_virt_off == 0);
-      if(is_last_import_directory)
-      {
-        break;
-      }
-      
-      // rjf: grab offsets
-      SYMS_U64 roff__dll_name_file = syms_pe_bin_virt_off_to_file_off(data, bin, import_entry.name_virt_off);
-      SYMS_U64 roff__lookup_table = syms_pe_bin_virt_off_to_file_off(data, bin, import_entry.lookup_table_virt_off);
-      
-      // rjf: build import DLL node
-      SYMS_PeImportDllNode *dll_node = syms_push_array(scratch.arena, SYMS_PeImportDllNode, 1);
-      dll_node->next = 0;
-      dll_node->import_entry = import_entry;
-      dll_node->name = syms_based_range_read_string(base, data_range, roff__dll_name_file);
-      dll_node->first_import = 0;
-      dll_node->last_import = 0;
-      dll_node->import_count = 0;
-      dll_count += 1;
-      SYMS_QueuePush(first_dll, last_dll, dll_node);
-      
-      // rjf: build list of all imports for this DLL
-      for(;;)
-      {
-        // rjf: parse entry
-        SYMS_U64 lookup_entry = 0;
-        roff__lookup_table += syms_based_range_read(base, data_range, roff__lookup_table, arch_byte_size, &lookup_entry);
-        
-        // rjf: break if we're done
-        if(lookup_entry == 0)
-        {
-          break;
-        }
-        
-        // rjf: build node
-        SYMS_PeImportNode *import_node = syms_push_array_zero(scratch.arena, SYMS_PeImportNode, 1);
-        SYMS_QueuePush(dll_node->first_import, dll_node->last_import, import_node);
-        dll_node->import_count += 1;
-        
-        // rjf: grab name/ordinal
-        SYMS_B32 is_ordinal = (arch_bit_size == 64) ? lookup_entry & 0x8000000000000000 : lookup_entry & 0x80000000;
-        if(is_ordinal)
-        {
-          import_node->ordinal = lookup_entry & 0xFFFF;
-        }
-        else
-        {
-          SYMS_U64 hn_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, lookup_entry);
-          syms_based_range_read_struct(base, data_range, hn_file_off, &import_node->hint);
-          import_node->name = syms_based_range_read_string(base, data_range, hn_file_off + sizeof(import_node->hint));
-        }
-      }
-      
-    }
-  }
-  
-  //- rjf: sum imports
-  SYMS_U64 total_import_count = 0;
-  for(SYMS_PeImportDllNode *n = first_dll; n != 0; n = n->next)
-  {
-    total_import_count += n->import_count;
-  }
-  
-  //- rjf: build+fill result
-  SYMS_ImportArray import_array = {0};
-  {
-    SYMS_U64 import_write_idx = 0;
-    import_array.count = total_import_count;
-    import_array.imports = syms_push_array_zero(arena, SYMS_Import, import_array.count);
-    for(SYMS_PeImportDllNode *dll_node = first_dll;
-        dll_node != 0;
-        dll_node = dll_node->next)
-    {
-      for(SYMS_PeImportNode *import_node = dll_node->first_import;
-          import_node != 0;
-          import_node = import_node->next)
-      {
-        SYMS_Import *imp = &import_array.imports[import_write_idx];
-        imp->library_name = syms_push_string_copy(arena, dll_node->name);
-        imp->name = syms_push_string_copy(arena, import_node->name);
-        imp->ordinal = import_node->ordinal;
-        import_write_idx += 1;
-      }
-    }
-  }
-  
-  //- rjf: return
-  syms_release_scratch(scratch);
-  return import_array;
-}
-
-SYMS_API SYMS_ExportArray
-syms_pe_exports_from_bin(SYMS_Arena *arena, SYMS_String8 data, SYMS_PeBinAccel *bin)
-{
-  SYMS_U64Range dir_range = bin->data_dirs_file[SYMS_PeDataDirectoryIndex_EXPORT];
-  SYMS_U64Range data_range = syms_make_u64_range(0, data.size);
-  void *base = (void*)data.str;
-  
-  SYMS_PeExportTable header; syms_memzero_struct(&header);
-  syms_based_range_read_struct(base, dir_range, 0, &header);
-  
-  SYMS_U32 export_address_table_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, header.export_address_table_virt_off);
-  SYMS_U32 name_pointer_table_file_off   = syms_pe_bin_virt_off_to_file_off(data, bin, header.name_pointer_table_virt_off);
-  SYMS_U32 ordinal_table_file_off        = syms_pe_bin_virt_off_to_file_off(data, bin, header.ordinal_table_virt_off);
-  
-  SYMS_U64Range export_table_range       = syms_make_u64_inrange(data_range, export_address_table_file_off, sizeof(SYMS_U32) * header.export_address_table_count);
-  SYMS_U64Range name_pointer_table_range = syms_make_u64_inrange(data_range, name_pointer_table_file_off,   sizeof(SYMS_U32) * header.name_pointer_table_count);
-  SYMS_U64Range ordinal_table_range      = syms_make_u64_inrange(data_range, ordinal_table_file_off,        sizeof(SYMS_U16) * header.name_pointer_table_count);
-  
-  // NOTE(nick): There is a DLL name string in the export header. This is
-  // intersting because if we read image from memory we can figure out its
-  // name by reading this string.
-#if 0
-  SYMS_U32 dll_name_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, header.name_virt_off);
-  SYMS_String8 dll_name = syms_based_range_read_string(base, data_range, dll_name_file_off);
-#endif
-  
-  SYMS_ExportArray export_array;
-  export_array.count = header.name_pointer_table_count;
-  export_array.exports = syms_push_array_zero(arena, SYMS_Export, export_array.count);
-  
-  for (SYMS_U32 i = 0; i < header.name_pointer_table_count; i += 1) {
-    SYMS_U32 name_virt_off = 0;
-    syms_based_range_read_struct(base, name_pointer_table_range, i * sizeof(name_virt_off), &name_virt_off);
-    SYMS_U32 name_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, name_virt_off);
-    SYMS_String8 name = syms_based_range_read_string(base, data_range, name_file_off);
-    
-    SYMS_U16 ordinal = 0;
-    syms_based_range_read_struct(base, ordinal_table_range, i * sizeof(ordinal), &ordinal);
-    SYMS_U32 biased_ordinal = ordinal + header.ordinal_base;
-    
-    SYMS_U32 export_virt_off = 0;
-    syms_based_range_read_struct(base, export_table_range, ordinal * sizeof(export_virt_off), &export_virt_off);
-    SYMS_U32 export_file_off = syms_pe_bin_virt_off_to_file_off(data, bin, export_virt_off);
-    
-    SYMS_Export *exp = &export_array.exports[i];
-    SYMS_B32 is_virt_off_forwarder = bin->data_dirs_virt[SYMS_PeDataDirectoryIndex_EXPORT].min <= export_virt_off && export_virt_off < bin->data_dirs_virt[SYMS_PeDataDirectoryIndex_EXPORT].max;
-    if (is_virt_off_forwarder) {
-      SYMS_String8 library_name = syms_str8_lit("@MALFORMED_LIBRARY_NAME@");
-      SYMS_String8 import_name = syms_str8_lit("@MALFORMED_IMPORT_NAME@");
-      // parse forwarder command string that is formatted like "<DLL>.<IMPORT>"
-      SYMS_String8 forwarder = syms_based_range_read_string(base, data_range, export_file_off);
-      SYMS_ArenaTemp temp = syms_arena_temp_begin(arena);
-      SYMS_String8List list = syms_string_split(temp.arena, forwarder, '.');
-      if (list.node_count == 2) {
-        library_name = list.first->string;
-        import_name  = list.last->string;
-      }
-      syms_arena_temp_end(temp);
-      // fill out export
-      exp->name = syms_push_string_copy(arena, name);
-      exp->address = 0;
-      exp->ordinal = biased_ordinal;
-      exp->forwarder_library_name = syms_push_string_copy(arena, library_name);
-      exp->forwarder_import_name = syms_push_string_copy(arena, import_name);
-    } else {
-      // fill out export
-      exp->name = syms_push_string_copy(arena, name);
-      exp->address = export_virt_off;
-      exp->ordinal = biased_ordinal;
-    }
-  }
-  
-  return export_array;
 }
 
 #endif //SYMS_PE_PARSER_C

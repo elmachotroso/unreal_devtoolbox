@@ -2,10 +2,13 @@
 
 #pragma once
 
-#include "HAL/Platform.h"
+#include "Async/Future.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
 #include "Dom/JsonObject.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "Misc/Optional.h"
 #include "Misc/TVariant.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
@@ -13,7 +16,10 @@
 #include "Templates/PimplPtr.h"
 #include "Templates/UniquePtr.h"
 #include "ZenGlobals.h"
-#include "Async/Future.h"
+
+#if UE_WITH_ZEN
+#	include "ZenStatistics.h"
+#endif
 
 #define UE_API ZEN_API
 
@@ -52,11 +58,9 @@ private:
 	bool TryApplyAutoLaunchOverride();
 };
 
-};
+}
 
 #if UE_WITH_ZEN
-
-#include "ZenStatistics.h"
 
 namespace UE::Zen
 {
@@ -124,7 +128,7 @@ public:
 	UE_API bool IsServiceReady();
 	UE_API bool IsServiceRunningLocally() const { return bIsRunningLocally; }
 
-	static UE_API uint16 GetAutoLaunchedPort() { return AutoLaunchedPort; }
+	static UE_API uint16 GetAutoLaunchedPort();
 
 private:
 

@@ -1,16 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/VerticalAlignmentCustomization.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Widgets/SBoxPanel.h"
-#include "Styling/SlateTypes.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "PropertyHandle.h"
+
 #include "DetailWidgetRow.h"
-#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SSegmentedControl.h"
+
+class IDetailChildrenBuilder;
 
 
 #define LOCTEXT_NAMESPACE "UMG"
@@ -32,16 +34,16 @@ void FVerticalAlignmentCustomization::CustomizeHeader(TSharedRef<IPropertyHandle
 		.Value(this, &FVerticalAlignmentCustomization::GetCurrentAlignment, PropertyHandle)
 		.OnValueChanged(this, &FVerticalAlignmentCustomization::OnCurrentAlignmentChanged, PropertyHandle)
 		+ SSegmentedControl<EVerticalAlignment>::Slot(EVerticalAlignment::VAlign_Top)
-			.Icon(FEditorStyle::GetBrush("VerticalAlignment_Top"))
+			.Icon(FAppStyle::GetBrush("VerticalAlignment_Top"))
 			.ToolTip(LOCTEXT("VAlignTop", "Top Align Vertically"))
 		+ SSegmentedControl<EVerticalAlignment>::Slot(EVerticalAlignment::VAlign_Center)
-			.Icon(FEditorStyle::GetBrush("VerticalAlignment_Center"))
+			.Icon(FAppStyle::GetBrush("VerticalAlignment_Center"))
 			.ToolTip(LOCTEXT("VAlignCenter", "Center Align Vertically"))
 		+ SSegmentedControl<EVerticalAlignment>::Slot(EVerticalAlignment::VAlign_Bottom)
-			.Icon(FEditorStyle::GetBrush("VerticalAlignment_Bottom"))
+			.Icon(FAppStyle::GetBrush("VerticalAlignment_Bottom"))
 			.ToolTip(LOCTEXT("VAlignBottom", "Bottom Align Vertically"))
 		+ SSegmentedControl<EVerticalAlignment>::Slot(EVerticalAlignment::VAlign_Fill)
-			.Icon(FEditorStyle::GetBrush("VerticalAlignment_Fill"))
+			.Icon(FAppStyle::GetBrush("VerticalAlignment_Fill"))
 			.ToolTip(LOCTEXT("VAlignFill", "Fill Vertically"))
 	];
 }

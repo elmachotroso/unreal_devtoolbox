@@ -5,6 +5,8 @@
 #include "HelperUtil.h"
 #include "TwoBoneIK.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_TwoBoneIKFK)
+
 FRigUnit_TwoBoneIKFK_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -115,5 +117,11 @@ FRigUnit_TwoBoneIKFK_Execute()
 			PreviousFKIKBlend = IKBlend;
 		}
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_TwoBoneIKFK::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 

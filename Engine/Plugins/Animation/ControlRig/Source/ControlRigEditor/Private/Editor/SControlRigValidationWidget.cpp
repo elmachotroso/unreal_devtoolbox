@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SControlRigValidationWidget.h"
+#include "Editor/SControlRigValidationWidget.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SScrollBar.h"
@@ -10,10 +10,10 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "ControlRigEditorStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SlateOptMacros.h"
 #include "HAL/ConsoleManager.h"
-#include "MessageLog/Private/UserInterface/SMessageLogListing.h"
+#include "UserInterface/SMessageLogListing.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ControlRigBlueprint.h"
 
@@ -116,7 +116,8 @@ void SControlRigValidationWidget::Construct(const FArguments& InArgs, UControlRi
 	ClassItems.Reset();
 	for (TObjectIterator<UClass> ClassIterator; ClassIterator; ++ClassIterator)
 	{
-		if (ClassIterator->IsChildOf(UControlRigValidationPass::StaticClass()) && !ClassIterator->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		const bool bIsValidationPassChild = (*ClassIterator) && ClassIterator->IsChildOf(UControlRigValidationPass::StaticClass());
+		if (bIsValidationPassChild && !ClassIterator->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
 		{
 			ClassItems.Add(MakeShared<FControlRigValidationPassItem>(*ClassIterator));
 		}
@@ -132,7 +133,7 @@ void SControlRigValidationWidget::Construct(const FArguments& InArgs, UControlRi
 			[
 				SNew(SBorder)
 				.Visibility(EVisibility::Visible)
-				.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+				.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 				[
 					SNew(SListView<TSharedPtr<FControlRigValidationPassItem>>)
 					.ListItemsSource(&ClassItems)

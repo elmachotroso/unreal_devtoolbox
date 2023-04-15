@@ -11,6 +11,8 @@
 #include "Engine/Engine.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_AimOffsetLookAt)
+
 TAutoConsoleVariable<int32> CVarAimOffsetLookAtEnable(TEXT("a.AnimNode.AimOffsetLookAt.Enable"), 1, TEXT("Enable/Disable LookAt AimOffset"));
 TAutoConsoleVariable<int32> CVarAimOffsetLookAtDebug(TEXT("a.AnimNode.AimOffsetLookAt.Debug"), 0, TEXT("Toggle LookAt AimOffset debug"));
 
@@ -31,7 +33,7 @@ void FAnimNode_AimOffsetLookAt::OnInitializeAnimInstance(const FAnimInstanceProx
 	SocketBoneReference.BoneName = NAME_None;
 	if (USkeletalMeshComponent* SkelMeshComp = InAnimInstance->GetSkelMeshComponent())
 	{
-		if (USkeletalMesh* SkelMesh = SkelMeshComp->SkeletalMesh)
+		if (USkeletalMesh* SkelMesh = SkelMeshComp->GetSkeletalMeshAsset())
 		{
 			if (const USkeletalMeshSocket* Socket = SkelMesh->FindSocket(SourceSocketName))
 			{
@@ -199,3 +201,4 @@ FAnimNode_AimOffsetLookAt::FAnimNode_AimOffsetLookAt()
 	, bIsLODEnabled(false)
 {
 }
+

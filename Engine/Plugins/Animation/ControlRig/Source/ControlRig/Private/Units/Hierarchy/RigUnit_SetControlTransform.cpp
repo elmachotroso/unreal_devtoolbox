@@ -3,6 +3,9 @@
 #include "RigUnit_SetControlTransform.h"
 #include "Units/RigUnitContext.h"
 #include "Math/ControlRigMathLibrary.h"
+#include "Units/Hierarchy/RigUnit_SetTransform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SetControlTransform)
 
 FRigUnit_SetControlBool_Execute()
 {
@@ -491,6 +494,20 @@ FRigUnit_SetControlTransform_Execute()
 	}
 }
 
+FRigVMStructUpgradeInfo FRigUnit_SetControlTransform::GetUpgradeInfo() const
+{
+	FRigUnit_SetTransform NewNode;
+	NewNode.Item = FRigElementKey(Control, ERigElementType::Control);
+	NewNode.Space = Space;
+	NewNode.Value = Transform;
+	NewNode.Weight = Weight;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Control"), TEXT("Item.Name"));
+	Info.AddRemappedPin(TEXT("Transform"), TEXT("Value"));
+	return Info;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Units/RigUnitTest.h"
 #include "Units/Math/RigUnit_MathTransform.h"
@@ -695,3 +712,4 @@ IMPLEMENT_RIGUNIT_AUTOMATION_TEST(FRigUnit_SetMultiControlRotator)
 }
 
 #endif
+

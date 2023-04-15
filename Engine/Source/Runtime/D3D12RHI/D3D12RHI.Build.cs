@@ -4,13 +4,10 @@ using UnrealBuildTool;
 
 public class D3D12RHI : ModuleRules
 {
+	protected virtual bool bUsesWindowsD3D12 { get => false; }
+
 	public D3D12RHI(ReadOnlyTargetRules Target) : base(Target)
 	{
-		if (Target.Platform == UnrealTargetPlatform.HoloLens)
-		{
-			PrivateIncludePaths.Add("Runtime/D3D12RHI/Private/HoloLens");
-		}
-		PrivateIncludePaths.Add("Runtime/D3D12RHI/Private");
 		PrivateIncludePaths.Add("../Shaders/Shared");
 
 		PrivateDependencyModuleNames.AddRange(
@@ -22,6 +19,12 @@ public class D3D12RHI : ModuleRules
 				"RHICore",
 				"RenderCore",
 				}
+			);
+
+		PublicIncludePathModuleNames.AddRange(
+			new string[] {
+					"HeadMountedDisplay"
+			}
 			);
 
 		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
@@ -41,8 +44,10 @@ public class D3D12RHI : ModuleRules
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
 
         if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) ||
-            Target.Platform == UnrealTargetPlatform.HoloLens)
+			bUsesWindowsD3D12)
 		{
+			PublicDefinitions.Add("D3D12RHI_PLATFORM_HAS_CUSTOM_INTERFACE=0");
+
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
 
@@ -54,9 +59,8 @@ public class D3D12RHI : ModuleRules
 				PublicDependencyModuleNames.Add("WinPixEventRuntime");
 			}
 
-			if (Target.Platform != UnrealTargetPlatform.HoloLens)
+			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
             {
-				PrivateDependencyModuleNames.Add("GeForceNOWWrapper");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
             	AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");

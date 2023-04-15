@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "MassZoneGraphNavigationTrait.h"
 #include "MassEntityTemplateRegistry.h"
 #include "MassCommonFragments.h"
@@ -6,22 +6,23 @@
 #include "MassNavigationFragments.h"
 #include "MassZoneGraphNavigationFragments.h"
 #include "Engine/World.h"
+#include "MassEntityUtils.h"
 
-void UMassZoneGraphNavigationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+
+void UMassZoneGraphNavigationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
-	check(EntitySubsystem);
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
 
-	BuildContext.AddFragment<FAgentRadiusFragment>();
-	BuildContext.AddFragment<FTransformFragment>();
-	BuildContext.AddFragment<FMassVelocityFragment>();
-	BuildContext.AddFragment<FMassMoveTargetFragment>();
+	BuildContext.RequireFragment<FAgentRadiusFragment>();
+	BuildContext.RequireFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassVelocityFragment>();
+	BuildContext.RequireFragment<FMassMoveTargetFragment>();
 
 	BuildContext.AddFragment<FMassZoneGraphLaneLocationFragment>();
 	BuildContext.AddFragment<FMassZoneGraphPathRequestFragment>();
 	BuildContext.AddFragment<FMassZoneGraphShortPathFragment>();
 	BuildContext.AddFragment<FMassZoneGraphCachedLaneFragment>();
 
-	const FConstSharedStruct ZGMovementParamsFragment = EntitySubsystem->GetOrCreateConstSharedFragment(UE::StructUtils::GetStructCrc32(FConstStructView::Make(NavigationParameters)), NavigationParameters);
+	const FConstSharedStruct ZGMovementParamsFragment = EntityManager.GetOrCreateConstSharedFragment(NavigationParameters);
 	BuildContext.AddConstSharedFragment(ZGMovementParamsFragment);
 }

@@ -19,23 +19,33 @@
 #include "Engine/Texture2D.h"
 #include "EngineUtils.h"
 
+#if WITH_EDITOR
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#endif
+
 
 // Register the custom version with core
 FCustomVersionRegistration GRegisterLandscapeCustomVersion(FLandscapeCustomVersion::GUID, FLandscapeCustomVersion::LatestVersion, TEXT("Landscape"));
 
-class FLandscapeModule : public IModuleInterface
+class FLandscapeModule : public ILandscapeModule
 {
 public:
 	/** IModuleInterface implementation */
 	void StartupModule() override;
 	void ShutdownModule() override;
 
+	virtual TSharedPtr<FLandscapeSceneViewExtension, ESPMode::ThreadSafe> GetLandscapeSceneViewExtension() const override { return SceneViewExtension; }
+
+	virtual void SetLandscapeEditorServices(ILandscapeEditorServices* InLandscapeEditorServices) override { LandscapeEditorServices = InLandscapeEditorServices; }
+	virtual ILandscapeEditorServices* GetLandscapeEditorServices() const override { return LandscapeEditorServices; }
 private:
 	void OnPostEngineInit();
 	void OnEnginePreExit();
 
 private:
 	TSharedPtr<FLandscapeSceneViewExtension, ESPMode::ThreadSafe> SceneViewExtension;
+	ILandscapeEditorServices* LandscapeEditorServices = nullptr;
 };
 
 /**
@@ -207,6 +217,24 @@ void FLandscapeModule::StartupModule()
 
 	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FLandscapeModule::OnPostEngineInit);
 	FCoreDelegates::OnEnginePreExit.AddRaw(this, &FLandscapeModule::OnEnginePreExit);
+
+#if WITH_EDITOR
+	// Register LandscapeSplineActorDesc Deprecation
+	FWorldPartitionActorDesc::RegisterActorDescDeprecator(ALandscapeSplineActor::StaticClass(), [](FArchive& Ar, FWorldPartitionActorDesc* ActorDesc)
+	{
+		check(Ar.IsLoading());
+		if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::AddedLandscapeSplineActorDesc)
+		{
+			ActorDesc->AddProperty(ALandscape::AffectsLandscapeActorDescProperty);
+		}
+		else if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::LandscapeSplineActorDescDeprecation)
+		{
+			FGuid LandscapeGuid;
+			Ar << LandscapeGuid;
+			ActorDesc->AddProperty(ALandscape::AffectsLandscapeActorDescProperty, *LandscapeGuid.ToString());
+		}
+	});
+#endif
 }
 
 void FLandscapeModule::OnPostEngineInit()

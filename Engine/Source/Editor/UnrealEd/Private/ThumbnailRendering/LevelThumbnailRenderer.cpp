@@ -58,6 +58,7 @@ FSceneView* ULevelThumbnailRenderer::CreateView(ULevel* Level, FSceneViewFamily*
 		return nullptr;
 	}
 
+
 	FSceneViewInitOptions ViewInitOptions;
 
 	ViewInitOptions.SetViewRectangle(ViewRect);
@@ -71,14 +72,13 @@ FSceneView* ULevelThumbnailRenderer::CreateView(ULevel* Level, FSceneViewFamily*
 		FPlane(0,				0,				-1,		0),
 		FPlane(0,				0,				0,		1));
 
-	const float ZOffset = WORLD_MAX;
+	const FMatrix::FReal ZOffset = UE_OLD_WORLD_MAX;
 	ViewInitOptions.ProjectionMatrix =  FReversedZOrthoMatrix(
 		LevelBox.GetSize().X/2.f,
 		LevelBox.GetSize().Y/2.f,
 		0.5f / ZOffset,
 		ZOffset
 		);
-
 	FSceneView* NewView = new FSceneView(ViewInitOptions);
 	ViewFamily->Views.Add(NewView);
 	return NewView;

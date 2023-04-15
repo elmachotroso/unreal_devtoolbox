@@ -5,7 +5,7 @@
 #include "CADKernel/Math/MathConst.h"
 
 // this will eventually be reconciled with what the Geometry team is using.
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 class FPoint2D;
@@ -23,7 +23,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-		double XYZ[3];
+			double XYZ[3];
 	};
 
 public:
@@ -57,16 +57,16 @@ public:
 
 	constexpr double& operator[](int32 Index)
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZ[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZ[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr double operator[](int32 Index) const
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZ[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZ[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	bool operator==(const FPoint& Point) const
@@ -85,6 +85,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FPoint operator+(const FVector& Point) const
+	{
+		return FPoint(X + Point.X, Y + Point.Y, Z + Point.Z);
+	}
+
+	FPoint operator+(const FVector3f& Point) const
 	{
 		return FPoint(X + Point.X, Y + Point.Y, Z + Point.Z);
 	}
@@ -136,6 +141,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FPoint& operator+=(const FVector& Point)
+	{
+		X += Point.X;
+		Y += Point.Y;
+		Z += Point.Z;
+		return *this;
+	}
+
+	FPoint& operator+=(const FVector3f& Point)
 	{
 		X += Point.X;
 		Y += Point.Y;
@@ -200,9 +213,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return (Compare < 0);
 	}
 
-	operator FVector()
+	operator FVector() const
 	{
 		return FVector(X, Y, Z);
+	}
+
+	operator FVector3f() const
+	{
+		return FVector3f((float)X, (float)Y, (float)Z);
 	}
 
 	void SetMin(const FPoint& Point)
@@ -308,6 +326,15 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	double SignedAngle(const FPoint& Vector2, const FPoint& Normal) const;
 
+	/**
+	 * Return the projection of the point on the diagonal axis (of vector (1,1,1))
+	 * i.e. return X + Y + Z
+	 */
+	double DiagonalAxisCoordinate() const
+	{
+		return X + Y + Z;
+	}
+
 	static double MixedTripleProduct(const FPoint& VectorA, const FPoint& VectorB, const FPoint& VectorC)
 	{
 		return VectorA * (VectorB ^ VectorC);
@@ -343,7 +370,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-		double XYZW[4];
+			double XYZW[4];
 	};
 
 public:
@@ -378,16 +405,16 @@ public:
 
 	constexpr double& operator[](int32 Index)
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZW[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZW[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr double operator[](int32 Index) const
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZW[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZW[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FPointH operator+(const FPointH& Point) const
@@ -629,6 +656,15 @@ public:
 		return FPoint2D(-V, U);
 	}
 
+	/**
+	 * Return the projection of the point on the diagonal axis (of vector (1,1))
+	 * i.e. return U + V
+	 */
+	double DiagonalAxisCoordinate() const
+	{
+		return U + V;
+	}
+
 	friend FArchive& operator<<(FArchive& Ar, FPoint2D& Point)
 	{
 		Ar.Serialize(&Point, sizeof(FPoint2D));
@@ -668,7 +704,7 @@ public:
 		};
 
 		UE_DEPRECATED(all, "For internal use only")
-		float XYZ[3];
+			float XYZ[3];
 	};
 
 	/** A zero point (0,0,0)*/
@@ -692,16 +728,16 @@ public:
 
 	constexpr float& operator[](int32 Index)
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZ[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZ[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	constexpr float operator[](int32 Index) const
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return XYZ[Index];
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return XYZ[Index];
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FFPoint& operator=(const FPoint& Point)
@@ -728,17 +764,17 @@ inline FPoint2D operator*(double s, const FPoint2D& Point)
 
 }
 
-inline uint32 GetTypeHash(const CADKernel::FPoint& Point)
+inline uint32 GetTypeHash(const UE::CADKernel::FPoint& Point)
 {
 	return HashCombine(GetTypeHash(Point.X), HashCombine(GetTypeHash(Point.Y), GetTypeHash(Point.Z)));
 }
 
-inline uint32 GetTypeHash(const CADKernel::FPoint2D& Point)
+inline uint32 GetTypeHash(const UE::CADKernel::FPoint2D& Point)
 {
 	return HashCombine(GetTypeHash(Point.U), GetTypeHash(Point.V));
 }
 
-inline uint32 GetTypeHash(const CADKernel::FPointH& Point)
+inline uint32 GetTypeHash(const UE::CADKernel::FPointH& Point)
 {
 	return HashCombine(GetTypeHash(Point.X), HashCombine(GetTypeHash(Point.Y), HashCombine(GetTypeHash(Point.Z), GetTypeHash(Point.W))));
 }

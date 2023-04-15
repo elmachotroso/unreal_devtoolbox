@@ -33,7 +33,7 @@ struct FAttenuationListenerData;
  */
 struct FAttenuationFocusData
 {
-	/** Azimuth of the active sound relative to the listener. Used by sound focus. */
+	/** Azimuth of the active sound relative to the listener. Used by sound  focus. */
 	float Azimuth = 0.0f;
 
 	/** Absolute azimuth of the active sound relative to the listener. Used for 3d audio calculations. */
@@ -160,6 +160,9 @@ struct FSoundParseParameters
 	// What source data override plugin source settings to use
 	USourceDataOverridePluginSourceSettingsBase* SourceDataOverridePluginSettings;
 
+	// If using AudioLink, this allows the settings to be overriden.
+	UAudioLinkSettingsAbstract* AudioLinkSettingsOverride = nullptr;
+
 	// What source effect chain to use
 	USoundEffectSourcePresetChain* SourceEffectChain;
 
@@ -188,6 +191,8 @@ struct FSoundParseParameters
 	uint32 bEnableSubmixSends : 1;
 
 	uint32 bEnableSourceDataOverride : 1;
+
+	uint32 bEnableSendToAudioLink : 1;
 
 	// Whether the sound should be spatialized
 	uint8 bUseSpatialization:1;
@@ -239,6 +244,7 @@ struct FSoundParseParameters
 		, OcclusionPluginSettings(nullptr)
 		, ReverbPluginSettings(nullptr)
 		, SourceDataOverridePluginSettings(nullptr)
+		, AudioLinkSettingsOverride(nullptr)
 		, SourceEffectChain(nullptr)
 		, LowPassFilterFrequency(MAX_FILTER_FREQUENCY)
 		, AttenuationLowpassFilterFrequency(MAX_FILTER_FREQUENCY)
@@ -376,71 +382,7 @@ private:
 
 	TMap<UPTRINT, FWaveInstance*> WaveInstances;
 
-	class FParameterTransmitter
-	{
-	public:
-		FParameterTransmitter() = default;
-		FParameterTransmitter(FParameterTransmitter&&) = default;
-		FParameterTransmitter& operator=(FParameterTransmitter&&) = default;
-
-		FParameterTransmitter(TUniquePtr<Audio::IParameterTransmitter>&& InTransmitterImpl)
-		:	TransmitterImpl(MoveTemp(InTransmitterImpl))
-		{
-		}
-
-		FParameterTransmitter(const FParameterTransmitter& InOther)
-		{
-			if (InOther.IsValid())
-			{
-				TransmitterImpl = InOther->Clone();
-			}
-		}
-
-		FParameterTransmitter& operator=(const FParameterTransmitter& InOther)
-		{
-			TransmitterImpl.Reset();
-			if (InOther.IsValid())
-			{
-				TransmitterImpl = InOther->Clone();
-			}
-			return *this;
-		}
-
-		FParameterTransmitter& operator=(TUniquePtr<Audio::IParameterTransmitter>&& InTransmitterImpl)
-		{
-			TransmitterImpl = MoveTemp(InTransmitterImpl);
-			return *this;
-		}
-
-		bool IsValid() const
-		{
-			return TransmitterImpl.IsValid();
-		}
-
-		Audio::IParameterTransmitter* Get()
-		{
-			return TransmitterImpl.Get();
-		}
-		const Audio::IParameterTransmitter* Get() const
-		{
-			return TransmitterImpl.Get();
-		}
-
-		Audio::IParameterTransmitter* operator->()
-		{
-			return TransmitterImpl.Get();
-		}
-
-		const Audio::IParameterTransmitter* operator->() const
-		{
-			return TransmitterImpl.Get();
-		}
-
-	private:
-		TUniquePtr<Audio::IParameterTransmitter> TransmitterImpl;
-	};
-
-	FParameterTransmitter InstanceTransmitter;
+	TSharedPtr<Audio::IParameterTransmitter> InstanceTransmitter;
 
 public:
 	Audio::IParameterTransmitter* GetTransmitter()
@@ -451,6 +393,11 @@ public:
 	const Audio::IParameterTransmitter* GetTransmitter() const
 	{
 		return InstanceTransmitter.Get();
+	}
+
+	void ClearTransmitter()
+	{
+		return InstanceTransmitter.Reset();
 	}
 
 	enum class EFadeOut : uint8

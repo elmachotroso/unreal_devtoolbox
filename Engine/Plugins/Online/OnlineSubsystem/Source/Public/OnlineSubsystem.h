@@ -10,6 +10,7 @@
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
 #include "OnlineSubsystemNames.h"
+#include "HAL/LowLevelMemTracker.h"
 
 class FOnlineNotificationHandler;
 class FOnlineNotificationTransportManager;
@@ -30,7 +31,6 @@ class IOnlinePurchase;
 class IOnlineSession;
 class IOnlineSharedCloud;
 class IOnlineSharing;
-class IOnlineStore;
 class IOnlineStoreV2;
 class IOnlineTime;
 class IOnlineTitleFile;
@@ -42,6 +42,8 @@ class IOnlineStats;
 class IOnlineGameActivity;
 class IOnlineGameItemStats;
 class IOnlineGameMatches;
+
+LLM_DECLARE_TAG_API(OnlineSubsystem, ONLINESUBSYSTEM_API);
 
 ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnline, Log, All);
 ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineGame, Log, All);
@@ -71,6 +73,13 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("VoiceInt"), STAT_Voice_Interface, STATGROUP_Onli
 	UE_CLOG(Conditional, LogOnline, Verbosity, TEXT("%s%s"), ONLINE_LOG_PREFIX, *FString::Printf(Format, ##__VA_ARGS__)); \
 }
 
+#define UE_LOG_ONLINE_ONCE(Verbosity, Format, ...) \
+{ \
+	static bool bLogged = false; \
+	UE_CLOG_ONLINE(!bLogged, Verbosity, Format, ##__VA_ARGS__); \
+	bLogged = true; \
+}
+
 /** Forward declarations of all interface classes */
 typedef TSharedPtr<class IOnlineSession, ESPMode::ThreadSafe> IOnlineSessionPtr;
 typedef TSharedPtr<class IOnlineFriends, ESPMode::ThreadSafe> IOnlineFriendsPtr;
@@ -86,9 +95,6 @@ typedef TSharedPtr<class IOnlineExternalUI, ESPMode::ThreadSafe> IOnlineExternal
 typedef TSharedPtr<class IOnlineTime, ESPMode::ThreadSafe> IOnlineTimePtr;
 typedef TSharedPtr<class IOnlineIdentity, ESPMode::ThreadSafe> IOnlineIdentityPtr;
 typedef TSharedPtr<class IOnlineTitleFile, ESPMode::ThreadSafe> IOnlineTitleFilePtr;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-typedef TSharedPtr<class IOnlineStore, ESPMode::ThreadSafe> IOnlineStorePtr;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 typedef TSharedPtr<class IOnlineStoreV2, ESPMode::ThreadSafe> IOnlineStoreV2Ptr;
 typedef TSharedPtr<class IOnlinePurchase, ESPMode::ThreadSafe> IOnlinePurchasePtr;
 typedef TSharedPtr<class IOnlineEvents, ESPMode::ThreadSafe> IOnlineEventsPtr;
@@ -374,13 +380,6 @@ public:
 	 * @return Interface pointer for the appropriate title file service
 	 */
 	virtual IOnlineTitleFilePtr GetTitleFileInterface() const = 0;
-
-	/** 
-	 * Get the interface for accessing an online store
-	 * @return Interface pointer for the appropriate online store service
-	 */
-	UE_DEPRECATED(4.26, "GetStoreInterface() is deprecated, please use GetStoreV2Interface() and GetPurchaseInterface() instead.")
-	virtual IOnlineStorePtr GetStoreInterface() const { return nullptr; }
 
 	/** 
 	 * Get the interface for accessing an online store

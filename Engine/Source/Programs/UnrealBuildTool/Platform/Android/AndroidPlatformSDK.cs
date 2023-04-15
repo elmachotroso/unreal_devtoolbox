@@ -6,48 +6,66 @@ using System.IO;
 using EpicGames.Core;
 using System.Text.RegularExpressions;
 using System.Linq;
+using Microsoft.Extensions.Logging;
+
+///////////////////////////////////////////////////////////////////
+// If you are looking for supported version numbers, look in the
+// AndroidPlatformSDK.Versions.cs file next to this file
+///////////////////////////////////////////////////////////////////
 
 namespace UnrealBuildTool
 {
-	class AndroidPlatformSDK : UEBuildPlatformSDK
+	partial class AndroidPlatformSDK : UEBuildPlatformSDK
 	{
-		public override string GetMainVersion()
+		public AndroidPlatformSDK(ILogger Logger)
+			: base(Logger)
 		{
-			return "r21b";
-		}
-		public override string GetAutoSDKDirectoryForMainVersion()
-		{
-			return "-23";
 		}
 
-		public override void GetValidVersionRange(out string MinVersion, out string MaxVersion)
-		{
-			MinVersion = "r21a";
-			MaxVersion = "r23a";
-		}
-
-		public override void GetValidSoftwareVersionRange(out string? MinVersion, out string? MaxVersion)
-		{
-			MinVersion = MaxVersion = null;
-		}
-
-		public override string GetPlatformSpecificVersion(string VersionType)
-		{
-			switch (VersionType.ToLower())
-			{
-				case "platforms": return "android-28";
-				case "build-tools": return "28.0.3";
-				case "cmake": return "3.10.2.4988404";
-				case "ndk": return "21.4.7075529";
-			}
-
-			return "";
-		}
-
-
-		public override string? GetInstalledSDKVersion()
+		private string? GetNDKRoot()
 		{
 			string? NDKPath = Environment.GetEnvironmentVariable("NDKROOT");
+
+			// don't register if we don't have an NDKROOT specified
+			if (!String.IsNullOrEmpty(NDKPath))
+			{
+				return NDKPath.Replace("\"", "");
+			}
+
+			if (OperatingSystem.IsMacOS())
+			{
+				string BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bash_profile");
+				if (!File.Exists(BashProfilePath))
+				{
+					// Try .bashrc if didn't fine .bash_profile
+					BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bashrc");
+				}
+				if (File.Exists(BashProfilePath))
+				{
+					string[] BashProfileContents = File.ReadAllLines(BashProfilePath);
+
+					// Walk backwards so we keep the last export setting instead of the first
+					string SdkKey = "NDKROOT";
+					for (int LineIndex = BashProfileContents.Length - 1; LineIndex >= 0; --LineIndex)
+					{
+						if (BashProfileContents[LineIndex].StartsWith("export " + SdkKey + "="))
+						{
+							string PathVar = BashProfileContents[LineIndex].Split
+('=')[1].Replace("\"", "");
+Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
+							return PathVar;
+						}
+
+					}
+				}
+			}
+	
+			return null;
+		}
+
+		protected override string? GetInstalledSDKVersion()
+		{
+			string? NDKPath = GetNDKRoot();
 
 			// don't register if we don't have an NDKROOT specified
 			if (String.IsNullOrEmpty(NDKPath))
@@ -97,7 +115,7 @@ namespace UnrealBuildTool
 		}
 
 
-		public override bool TryConvertVersionToInt(string? StringValue, out UInt64 OutValue)
+		public override bool TryConvertVersionToInt(string? StringValue, out UInt64 OutValue, string? Hint)
 		{
 			// convert r<num>[letter] to hex
 			if (!string.IsNullOrEmpty(StringValue))

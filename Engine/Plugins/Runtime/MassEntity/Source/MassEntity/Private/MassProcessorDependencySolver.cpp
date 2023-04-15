@@ -10,32 +10,163 @@
 
 #define LOCTEXT_NAMESPACE "Mass"
 
-//----------------------------------------------------------------------//
-//  FProcessorDependencySolver::FNode
-//----------------------------------------------------------------------//
-int32 FProcessorDependencySolver::FNode::FindOrAddGroupNodeIndex(const FString& GroupName)
+namespace UE::Mass::Private
 {
-	const FName GroupNodeName = FName(*GroupName);
-	const int32* GroupNodeIndex = Indices.Find(GroupNodeName);
-	if (GroupNodeIndex)
+	FString NameViewToString(TConstArrayView<FName> View)
 	{
-		return *GroupNodeIndex;
+		if (View.Num() == 0)
+		{
+			return TEXT("[]");
+		}
+		FString ReturnVal = FString::Printf(TEXT("[%s"), *View[0].ToString());
+		for (int i = 1; i < View.Num(); ++i)
+		{
+			ReturnVal += FString::Printf(TEXT(", %s"), *View[i].ToString());
+		}
+		return ReturnVal + TEXT("]");
+	}
+}
+
+//----------------------------------------------------------------------//
+//  FMassExecutionRequirements
+//----------------------------------------------------------------------//
+void FMassExecutionRequirements::Append(const FMassExecutionRequirements& Other)
+{
+	for (int i = 0; i < EMassAccessOperation::MAX; ++i)
+	{
+		Fragments[i] += Other.Fragments[i];
+		ChunkFragments[i] += Other.ChunkFragments[i];
+		SharedFragments[i] += Other.SharedFragments[i];
+		RequiredSubsystems[i] += Other.RequiredSubsystems[i];
+	}
+	RequiredAllTags += Other.RequiredAllTags;
+	RequiredAnyTags += Other.RequiredAnyTags;
+	RequiredNoneTags += Other.RequiredNoneTags;
+
+	// signal that it requires recalculation;
+	ResourcesUsedCount = INDEX_NONE;
+}
+
+void FMassExecutionRequirements::CountResourcesUsed()
+{
+	ResourcesUsedCount = 0;
+
+	for (int i = 0; i < EMassAccessOperation::MAX; ++i)
+	{
+		ResourcesUsedCount += Fragments[i].CountStoredTypes();
+		ResourcesUsedCount += ChunkFragments[i].CountStoredTypes();
+		ResourcesUsedCount += SharedFragments[i].CountStoredTypes();
+		ResourcesUsedCount += RequiredSubsystems[i].CountStoredTypes();
+	}
+}
+
+int32 FMassExecutionRequirements::GetTotalBitsUsedCount()
+{
+	CountResourcesUsed();
+
+	return ResourcesUsedCount + RequiredAllTags.CountStoredTypes()
+		+ RequiredAnyTags.CountStoredTypes() + RequiredNoneTags.CountStoredTypes();
+}
+
+bool FMassExecutionRequirements::IsEmpty() const
+{
+	return Fragments.IsEmpty() && ChunkFragments.IsEmpty() 
+		&& SharedFragments.IsEmpty() && RequiredSubsystems.IsEmpty()
+		&& RequiredAllTags.IsEmpty() && RequiredAnyTags.IsEmpty() && RequiredNoneTags.IsEmpty();
+}
+
+//----------------------------------------------------------------------//
+//  FProcessorDependencySolver::FResourceUsage
+//----------------------------------------------------------------------//
+FProcessorDependencySolver::FResourceUsage::FResourceUsage()
+{
+	for (int i = 0; i < EMassAccessOperation::MAX; ++i)
+	{
+		FragmentsAccess[i].Access.AddZeroed(FMassFragmentBitSet::GetMaxNum());
+		ChunkFragmentsAccess[i].Access.AddZeroed(FMassChunkFragmentBitSet::GetMaxNum());
+		SharedFragmentsAccess[i].Access.AddZeroed(FMassSharedFragmentBitSet::GetMaxNum());
+		RequiredSubsystemsAccess[i].Access.AddZeroed(FMassExternalSubsystemBitSet::GetMaxNum());
+	}
+}
+
+template<typename TBitSet>
+void FProcessorDependencySolver::FResourceUsage::HandleElementType(TMassExecutionAccess<FResourceAccess>& ElementAccess
+	, const TMassExecutionAccess<TBitSet>& TestedRequirements, FProcessorDependencySolver::FNode& InOutNode, const int32 NodeIndex)
+{
+	// for every bit set in TestedRequirements we do the following
+	// 1. For every read only requirement we make InOutNode depend on the currently stored Writer of this resource
+	//    - note that this operation is not destructive, meaning we don't destructively consume the data, since all 
+	//      subsequent read access to the given resource will also depend on the Writer
+	// 2. For every read-write requirement we make InOutNode depend on all the readers and writers currently stored. 
+	//    - once that's done we clean currently stored Readers and Writers since every subsequent operation on this 
+	//      resource will be blocked by currently considered InOutNode (as the new Writer)
+	// 3. For all accessed resources we store information that InOutNode is accessing it
+
+	// 1. For every read only requirement we make InOutNode depend on the currently stored Writer of this resource
+	for (auto It = TestedRequirements.Read.GetIndexIterator(); It; ++It)
+	{
+		InOutNode.OriginalDependencies.Append(ElementAccess.Write.Access[*It].Users);
 	}
 
-	const int32 Index = SubNodes.Add({ GroupNodeName, nullptr });
-	Indices.Add(GroupNodeName, Index);
-	return Index;
+	// 2. For every read-write requirement we make InOutNode depend on all the readers and writers currently stored. 
+	for (auto It = TestedRequirements.Write.GetIndexIterator(); It; ++It)
+	{
+		InOutNode.OriginalDependencies.Append(ElementAccess.Read.Access[*It].Users);
+		ElementAccess.Read.Access[*It].Users.Reset();
+
+		// with the algorithm described above we expect there to only ever be at most one Writer
+		ensure(ElementAccess.Write.Access[*It].Users.Num() <= 1);
+		InOutNode.OriginalDependencies.Append(ElementAccess.Write.Access[*It].Users);
+		ElementAccess.Write.Access[*It].Users.Reset();
+	}
+
+	// 3. For all accessed resources we store information that InOutNode is accessing it
+	for (auto It = TestedRequirements.Read.GetIndexIterator(); It; ++It)
+	{
+		// mark Element at index indicated by It as being used in mode EMassAccessOperation(i) by NodeIndex
+		ElementAccess.Read.Access[*It].Users.Add(NodeIndex);
+	}
+	for (auto It = TestedRequirements.Write.GetIndexIterator(); It; ++It)
+	{
+		// mark Element at index indicated by It as being used in mode EMassAccessOperation(i) by NodeIndex
+		ElementAccess.Write.Access[*It].Users.Add(NodeIndex);
+	}
 }
 
-int32 FProcessorDependencySolver::FNode::FindNodeIndex(FName InNodeName) const
+template<typename TBitSet>
+bool FProcessorDependencySolver::FResourceUsage::CanAccess(const TMassExecutionAccess<TBitSet>& StoredElements, const TMassExecutionAccess<TBitSet>& TestedElements)
 {
-	const int32* GroupNodeIndex = Indices.Find(InNodeName);
-	return GroupNodeIndex ? *GroupNodeIndex : INDEX_NONE;
+	// see if there's an overlap of tested write operations with existing read & write operations, as well as 
+	// tested read operations with existing write operations
+	
+	return !(
+		// if someone's already writing to what I want to write
+		TestedElements.Write.HasAny(StoredElements.Write)
+		// or if someone's already reading what I want to write
+		|| TestedElements.Write.HasAny(StoredElements.Read)
+		// or if someone's already writing what I want to read
+		|| TestedElements.Read.HasAny(StoredElements.Write)
+	);
 }
 
-bool FProcessorDependencySolver::FNode::HasDependencies() const
+bool FProcessorDependencySolver::FResourceUsage::CanAccessRequirements(const FMassExecutionRequirements& TestedRequirements) const
 {
-	return ExecuteBefore.Num() > 0 || ExecuteAfter.Num() > 0;
+	bool bCanAccess = CanAccess<FMassFragmentBitSet>(Requirements.Fragments, TestedRequirements.Fragments)
+		&& CanAccess<FMassChunkFragmentBitSet>(Requirements.ChunkFragments, TestedRequirements.ChunkFragments)
+		&& CanAccess<FMassSharedFragmentBitSet>(Requirements.SharedFragments, TestedRequirements.SharedFragments)
+		&& CanAccess<FMassExternalSubsystemBitSet>(Requirements.RequiredSubsystems, TestedRequirements.RequiredSubsystems);
+
+	return bCanAccess;
+}
+
+void FProcessorDependencySolver::FResourceUsage::SubmitNode(const int32 NodeIndex, FNode& InOutNode)
+{
+	HandleElementType<FMassFragmentBitSet>(FragmentsAccess, InOutNode.Requirements.Fragments, InOutNode, NodeIndex);
+	HandleElementType<FMassChunkFragmentBitSet>(ChunkFragmentsAccess, InOutNode.Requirements.ChunkFragments, InOutNode, NodeIndex);
+	HandleElementType<FMassSharedFragmentBitSet>(SharedFragmentsAccess, InOutNode.Requirements.SharedFragments, InOutNode, NodeIndex);
+	HandleElementType<FMassExternalSubsystemBitSet>(RequiredSubsystemsAccess, InOutNode.Requirements.RequiredSubsystems, InOutNode, NodeIndex);
+
+	Requirements.Append(InOutNode.Requirements);
 }
 
 //----------------------------------------------------------------------//
@@ -43,66 +174,56 @@ bool FProcessorDependencySolver::FNode::HasDependencies() const
 //----------------------------------------------------------------------//
 FProcessorDependencySolver::FProcessorDependencySolver(TArrayView<UMassProcessor*> InProcessors, const FName Name, const FString& InDependencyGraphFileName /*= FString()*/)
 	: Processors(InProcessors)
-	, GroupRootNode({Name, nullptr})
 	, DependencyGraphFileName(InDependencyGraphFileName)
+	, CollectionName(Name)
 {}
 
-FString FProcessorDependencySolver::NameViewToString(TConstArrayView<FName> View)
+bool FProcessorDependencySolver::PerformSolverStep(FResourceUsage& ResourceUsage, TArray<int32>& InOutIndicesRemaining, TArray<int32>& OutNodeIndices)
 {
-	if (View.Num() == 0)
-	{
-		return TEXT("[]");
-	}
-	FString ReturnVal = FString::Printf(TEXT("[%s"), *View[0].ToString());
-	for (int i = 1; i < View.Num(); ++i)
-	{
-		ReturnVal += FString::Printf(TEXT(", %s"), *View[i].ToString());
-	}
-	return ReturnVal + TEXT("]");
-}
+	int32 AcceptedNodeIndex = INDEX_NONE;
+	int32 FallbackAcceptedNodeIndex = INDEX_NONE;
 
-int32 FProcessorDependencySolver::PerformSolverStep(FNode& RootNode, TArray<int32>& InOutIndicesRemaining, TArray<int32>& OutNodeIndices)
-{
-	const int32 StartingCount = OutNodeIndices.Num();
-
-	for (int32 i = InOutIndicesRemaining.Num() - 1; i >= 0; --i)
+	for (int32 i = 0; i < InOutIndicesRemaining.Num(); ++i)
 	{
 		const int32 NodeIndex = InOutIndicesRemaining[i];
-		if (RootNode.SubNodes[NodeIndex].TransientDependencies.Num() == 0)
+		if (AllNodes[NodeIndex].TransientDependencies.Num() == 0)
 		{
-			InOutIndicesRemaining.RemoveAtSwap(i, 1, /*bAllowShrinking=*/false);
-			OutNodeIndices.Add(NodeIndex);
+			if (ResourceUsage.CanAccessRequirements(AllNodes[NodeIndex].Requirements))
+			{
+				AcceptedNodeIndex = NodeIndex;
+				break;
+			}
+			else if (FallbackAcceptedNodeIndex == INDEX_NONE)
+			{
+				// if none of the nodes left can "cleanly" execute (i.e. without conflicting with already stored nodes)
+				// we'll just pick this one up and go with it. 
+				FallbackAcceptedNodeIndex = NodeIndex;
+			}
 		}
 	}
 
-	for (const int32 NodeIndex : OutNodeIndices)
+	if (AcceptedNodeIndex != INDEX_NONE || FallbackAcceptedNodeIndex != INDEX_NONE)
 	{
+		const int32 NodeIndex = AcceptedNodeIndex != INDEX_NONE ? AcceptedNodeIndex : FallbackAcceptedNodeIndex;
+
+		// Note that this is not an unexpected event and will happen during every dependency solving. It's a part 
+		// of the algorithm. We initially look for all the things we can run without conflicting with anything else. 
+		// But that can't last forever, at some point we'll end up in a situation where every node left waits for 
+		// something that has been submitted already. Then we just pick one of the waiting ones (the one indicated by 
+		// FallbackAcceptedNodeIndex), "run it" and proceed.
+		UE_CLOG(AcceptedNodeIndex == INDEX_NONE, LogMass, Verbose, TEXT("No dependency-free node can be picked, due to resource requirements. Picking %s as the next node.")
+			, *AllNodes[NodeIndex].Name.ToString());
+
+		ResourceUsage.SubmitNode(NodeIndex, AllNodes[NodeIndex]);
+		InOutIndicesRemaining.RemoveSingle(NodeIndex);
+		OutNodeIndices.Add(NodeIndex);
+
 		for (const int32 RemainingNodeIndex : InOutIndicesRemaining)
 		{
-			RootNode.SubNodes[RemainingNodeIndex].TransientDependencies.RemoveSingleSwap(NodeIndex, /*bAllowShrinking=*/false);
+			AllNodes[RemainingNodeIndex].TransientDependencies.RemoveSingleSwap(NodeIndex, /*bAllowShrinking=*/false);
 		}
-	}
-
-	return OutNodeIndices.Num() - StartingCount;
-}
-
-bool FProcessorDependencySolver::PerformPrioritySolverStep(FNode& RootNode, TArray<int32>& InOutPriorityIndicesRemaining, TArray<int32>& OutNodeIndices)
-{
-	for (int32 i = 0; i < InOutPriorityIndicesRemaining.Num(); ++i)
-	{
-		const int32 NodeIndex = InOutPriorityIndicesRemaining[i];
-		if (RootNode.SubNodes[NodeIndex].TransientDependencies.Num() == 0)
-		{
-			InOutPriorityIndicesRemaining.RemoveAt(i, 1, /*bAllowShrinking=*/false);
-			OutNodeIndices.Add(NodeIndex);
-
-			for (const int32 RemainingNodeIndex : InOutPriorityIndicesRemaining)
-			{
-				RootNode.SubNodes[RemainingNodeIndex].TransientDependencies.RemoveSingleSwap(NodeIndex, /*bAllowShrinking=*/false);
-			}
-
-			return true;
-		}
+		
+		return true;
 	}
 
 	return false;
@@ -129,171 +250,210 @@ void FProcessorDependencySolver::CreateSubGroupNames(FName InGroupName, TArray<F
 	}
 }
 
-void FProcessorDependencySolver::AddNode(FName InGroupName, UMassProcessor& Processor)
+void FProcessorDependencySolver::CreateNodes(UMassProcessor& Processor)
 {
 	check(Processor.GetClass());
 	const FName ProcName = Processor.GetClass()->GetFName();
 
-	if (InGroupName.IsNone())
+	if (NodeIndexMap.Find(ProcName) != nullptr)
 	{
-		if (GroupRootNode.Indices.Find(ProcName) == nullptr)
-		{
-			GroupRootNode.Indices.Add(ProcName, GroupRootNode.SubNodes.Num());
-			GroupRootNode.SubNodes.Add({ProcName, &Processor});
-		}
-		else
-		{
-			UE_LOG(LogMass, Warning, TEXT("%s Processor %s already registered. Duplicates are not supported.")
-				, ANSI_TO_TCHAR(__FUNCTION__), *ProcName.ToString());
-		}
+		UE_LOG(LogMass, Warning, TEXT("%s Processor %s already registered. Duplicates are not supported.")
+			, ANSI_TO_TCHAR(__FUNCTION__), *ProcName.ToString());
+		return;
 	}
-	else
+
+	const FMassProcessorExecutionOrder& ExecutionOrder = Processor.GetExecutionOrder();
+
+	// first figure out the groups so that the group nodes come before the processor nodes, this is required for child
+	// nodes to inherit group's dependencies like in scenarios where some processor required to ExecuteBefore a given group
+	int32 ParentGroupNodeIndex = INDEX_NONE;
+	if (ExecutionOrder.ExecuteInGroup.IsNone() == false)
 	{
-		// The idea here is that we create a tree-like structure to place the Processor as a leaf.
-		// The levels of InGroupName are used to create tree successive branch nodes, so a group name A.B.C
-		// will result in creating node A, then that node will have node A.B created for it and that one in 
-		// turn will get A.B.C; Every node created gets information about the subnodes it hosts for faster 
-		// lookup during dependency resolving
-
-		// first we need to figure out all the subgroups indicated by InGroupName
 		TArray<FString> AllGroupNames;
-		CreateSubGroupNames(InGroupName, AllGroupNames);
+		CreateSubGroupNames(ExecutionOrder.ExecuteInGroup, AllGroupNames);
+	
+		check(AllGroupNames.Num() > 0);
 
-		// now drill down into the successive levels of the free and find or create the necessary nodes. 
-		FNode* CurrentNode = &GroupRootNode;
-		for (int GroupNameIndex = 0; GroupNameIndex < AllGroupNames.Num(); ++GroupNameIndex)
+		for (const FString& GroupName : AllGroupNames)
 		{
-			const int32 NodeIndex = CurrentNode->FindOrAddGroupNodeIndex(AllGroupNames[GroupNameIndex]);
-			CurrentNode->Indices.Add(ProcName, NodeIndex);
-			// we make every node aware of all the subgroups it contains
-			for (int SubgroupIndex = GroupNameIndex + 1; SubgroupIndex < AllGroupNames.Num(); ++SubgroupIndex)
+			const FName GroupFName(GroupName);
+			int32* LocalGroupIndex = NodeIndexMap.Find(GroupFName);
+			// group name hasn't been encountered yet - create it
+			if (LocalGroupIndex == nullptr)
 			{
-				CurrentNode->Indices.Add(*AllGroupNames[SubgroupIndex], NodeIndex);
+				int32 NewGroupNodeIndex = AllNodes.Num();
+				NodeIndexMap.Add(GroupFName, NewGroupNodeIndex);
+				FNode& GroupNode = AllNodes.Add_GetRef({ GroupFName, nullptr, NewGroupNodeIndex });
+				// just ignore depending on the dummy "root" node
+				if (ParentGroupNodeIndex != INDEX_NONE)
+				{
+					GroupNode.OriginalDependencies.Add(ParentGroupNodeIndex);
+					AllNodes[ParentGroupNodeIndex].SubNodeIndices.Add(NewGroupNodeIndex);
+				}
+
+				ParentGroupNodeIndex = NewGroupNodeIndex;
+			}
+			else
+			{	
+				ParentGroupNodeIndex = *LocalGroupIndex;
 			}
 
-			CurrentNode = &CurrentNode->SubNodes[NodeIndex];
 		}
+	}
 
-		// at this point CurrentNode points at the leaf group where we need to add the processor itself
-		if (CurrentNode->Indices.Find(ProcName) == nullptr)
-		{
-			const int32 ProcNodeIndex = CurrentNode->SubNodes.Add({ProcName, &Processor});
-			CurrentNode->Indices.Add(ProcName, ProcNodeIndex);
-		}
-		else
-		{
-			UE_LOG(LogMass, Warning, TEXT("%s Processor %s already registered. Duplicates are not supported.")
-				, ANSI_TO_TCHAR(__FUNCTION__), *ProcName.ToString());
-		}
+	const int32 NodeIndex = AllNodes.Num();
+	NodeIndexMap.Add(ProcName, NodeIndex);
+	FNode& ProcessorNode = AllNodes.Add_GetRef({ ProcName, &Processor, NodeIndex });
+
+	ProcessorNode.ExecuteAfter.Append(ExecutionOrder.ExecuteAfter);
+	ProcessorNode.ExecuteBefore.Append(ExecutionOrder.ExecuteBefore);
+	Processor.ExportRequirements(ProcessorNode.Requirements);
+	ProcessorNode.Requirements.CountResourcesUsed();
+
+	if (ParentGroupNodeIndex > 0)
+	{
+		AllNodes[ParentGroupNodeIndex].SubNodeIndices.Add(NodeIndex);
 	}
 }
 
-void FProcessorDependencySolver::BuildDependencies(FNode& RootNode)
+void FProcessorDependencySolver::BuildDependencies()
 {
-	// The main idea here is that for every subnode we convert its dependencies (expressed via ExecuteBefore and ExecuteAfter)
-	// into a single dependency list by reversing the order of ExecuteBefore relationship - so if A.ExecuteBefore contains B then
-	// we turn it into B.ExecuteAfter += A. The dependency names get converted to node indices. If given dependency name 
-	// is unknown at the RootNode's level (i.e. it's not present in its subtree) we make that name a dependency of RootNode. 
-	// Handling of this dependency will then be taken over by RootNode's parent.
-
-	for (int32 NodeIndex = 0; NodeIndex < RootNode.SubNodes.Num(); ++NodeIndex)
+	// at this point we have collected all the known processors and groups in AllNodes so we can transpose 
+	// A.ExecuteBefore(B) type of dependencies into B.ExecuteAfter(A)
+	for (int32 NodeIndex = 0; NodeIndex < AllNodes.Num(); ++NodeIndex)
 	{
-		FNode& Node = RootNode.SubNodes[NodeIndex];
-		TConstArrayView<FName> ExecuteBefore;
-		TConstArrayView<FName> ExecuteAfter;
-
-		if (Node.Processor)
+		for (int i = 0; i < AllNodes[NodeIndex].ExecuteBefore.Num(); ++i)
 		{
-			ExecuteBefore = Node.Processor->GetExecutionOrder().ExecuteBefore;
-			ExecuteAfter = Node.Processor->GetExecutionOrder().ExecuteAfter;
-		}
-		else
-		{
-			BuildDependencies(Node);
-			ExecuteBefore = Node.ExecuteBefore;
-			ExecuteAfter = Node.ExecuteAfter;
-		}
-		
-		for (const FName& DependencyName : ExecuteBefore)
-		{
-			const int32 DependencyIndex = RootNode.FindNodeIndex(DependencyName);
-			// RootNode doesn't know about DependencyName then add it to RootNode's dependencies
-			if (DependencyIndex == INDEX_NONE)
+			const FName BeforeDependencyName = AllNodes[NodeIndex].ExecuteBefore[i];
+			int32 DependentNodeIndex = INDEX_NONE;
+			int32* DependentNodeIndexPtr = NodeIndexMap.Find(BeforeDependencyName);
+			if (DependentNodeIndexPtr == nullptr)
 			{
-				RootNode.ExecuteBefore.AddUnique(DependencyName);
+				// missing dependency. Adding a "dummy" node representing those to still support ordering based on missing groups or processors 
+				// For example, if Processor A and B declare dependency, respectively, "Before C" and "After C" we still 
+				// expect A to come before B regardless of whether C exists or not.
+				
+				DependentNodeIndex = AllNodes.Num();
+				NodeIndexMap.Add(BeforeDependencyName, DependentNodeIndex);
+				AllNodes.Add({ BeforeDependencyName, nullptr, DependentNodeIndex });
+
+				UE_LOG(LogMass, Log, TEXT("Unable to find dependency \"%s\" declared by %s. Creating a dummy dependency node.")
+					, *BeforeDependencyName.ToString(), *AllNodes[NodeIndex].Name.ToString());
 			}
 			else
 			{
-				if (NodeIndex != DependencyIndex)
+				DependentNodeIndex = *DependentNodeIndexPtr;
+			}
+
+			check(AllNodes.IsValidIndex(DependentNodeIndex));
+			AllNodes[DependentNodeIndex].ExecuteAfter.Add(AllNodes[NodeIndex].Name);
+		}
+		AllNodes[NodeIndex].ExecuteBefore.Reset();
+	}
+
+	// at this point all nodes contain:
+	// - single "original dependency" pointing at its parent group
+	// - ExecuteAfter populated with node names
+
+	// Now, for every Name in ExecuteAfter we do the following:
+	//	if Name represents a processor, add it as "original dependency"
+	//	else, if Name represents a group:
+	//		- append all group's child node names to ExecuteAfter
+	// 
+	for (int32 NodeIndex = 0; NodeIndex < AllNodes.Num(); ++NodeIndex)
+	{
+		for (int i = 0; i < AllNodes[NodeIndex].ExecuteAfter.Num(); ++i)
+		{
+			const FName AfterDependencyName = AllNodes[NodeIndex].ExecuteAfter[i];
+			int32* PrerequisiteNodeIndexPtr = NodeIndexMap.Find(AfterDependencyName);
+			int32 PrerequisiteNodeIndex = INDEX_NONE;
+
+			if (PrerequisiteNodeIndexPtr == nullptr)
+			{
+				// missing dependency. Adding a "dummy" node representing those to still support ordering based on missing groups or processors 
+				// For example, if Processor A and B declare dependency, respectively, "Before C" and "After C" we still 
+				// expect A to come before B regardless of whether C exists or not.
+
+				PrerequisiteNodeIndex = AllNodes.Num();
+				NodeIndexMap.Add(AfterDependencyName, PrerequisiteNodeIndex);
+				AllNodes.Add({ AfterDependencyName, nullptr, PrerequisiteNodeIndex });
+
+				UE_LOG(LogMass, Log, TEXT("Unable to find dependency \"%s\" declared by %s. Creating a dummy dependency node.")
+					, *AfterDependencyName.ToString(), *AllNodes[NodeIndex].Name.ToString());
+			}
+			else
+			{
+				PrerequisiteNodeIndex = *PrerequisiteNodeIndexPtr;
+			}
+
+			const FNode& PrerequisiteNode = AllNodes[PrerequisiteNodeIndex];
+
+			if (PrerequisiteNode.IsGroup())
+			{
+				for (int32 SubNodeIndex : PrerequisiteNode.SubNodeIndices)
 				{
-					// just make DependencyIndex depend on Node
-					RootNode.SubNodes[DependencyIndex].OriginalDependencies.AddUnique(NodeIndex);
+					AllNodes[NodeIndex].ExecuteAfter.AddUnique(AllNodes[SubNodeIndex].Name);
 				}
-				else
-				{
-					UE_LOG(LogMass, Warning, TEXT("%s a node (%s) tried to add a circular dependency on itself")
-						, ANSI_TO_TCHAR(__FUNCTION__), *Node.Name.ToString());
-				}
+			}
+			else
+			{
+				AllNodes[NodeIndex].OriginalDependencies.AddUnique(PrerequisiteNodeIndex);
 			}
 		}
-		for (const FName& DependencyName : ExecuteAfter)
+
+		// if this node is a group push all the dependencies down on all the children
+		// by design all child nodes come after group nodes so the child nodes' dependencies have not been processed yet
+		if (AllNodes[NodeIndex].IsGroup() && AllNodes[NodeIndex].SubNodeIndices.Num())
 		{
-			const int32 DependencyIndex = RootNode.FindNodeIndex(DependencyName);
-			// RootNode doesn't know about DependencyName then add it to RootNode's dependencies
-			if (DependencyIndex == INDEX_NONE)
+			for (int32 PrerequisiteNodeIndex : AllNodes[NodeIndex].OriginalDependencies)
 			{
-				RootNode.ExecuteAfter.AddUnique(DependencyName);
-			}
-			else 
-			{
-				if (NodeIndex != DependencyIndex)
+				checkSlow(PrerequisiteNodeIndex != NodeIndex);
+				// in case of processor nodes we can store it directly
+				if (AllNodes[PrerequisiteNodeIndex].IsGroup() == false)
 				{
-					// just make Node depend on DependencyIndex
-					Node.OriginalDependencies.AddUnique(DependencyIndex);
+					for (int32 ChildNodeIndex : AllNodes[NodeIndex].SubNodeIndices)
+					{
+						AllNodes[ChildNodeIndex].OriginalDependencies.AddUnique(PrerequisiteNodeIndex);
+					}
 				}
-				else
+				// special case - if dependency is a group and we haven't processed that group yet, we need to add it by name
+				else if (PrerequisiteNodeIndex > NodeIndex)
 				{
-					UE_LOG(LogMass, Warning, TEXT("%s a node (%s) tried to add a circular dependency on itself")
-						, ANSI_TO_TCHAR(__FUNCTION__), *Node.Name.ToString());
+					const FName& PrerequisiteName = AllNodes[PrerequisiteNodeIndex].Name;
+					for (int32 ChildNodeIndex : AllNodes[NodeIndex].SubNodeIndices)
+					{
+						AllNodes[ChildNodeIndex].ExecuteAfter.AddUnique(PrerequisiteName);
+					}
 				}
 			}
 		}
 	}
 }
 
-void FProcessorDependencySolver::LogNode(const FNode& RootNode, const FNode* ParentNode, int Indent)
+void FProcessorDependencySolver::LogNode(const FNode& Node, int Indent)
 {
-	FString Dependencies;
-	for (const int32 DependencyIndex : RootNode.OriginalDependencies)
+	using UE::Mass::Private::NameViewToString;
+
+	if (Node.IsGroup())
 	{
-		if (ensure(ParentNode && ParentNode->SubNodes.IsValidIndex(DependencyIndex)))
+		UE_LOG(LogMass, Log, TEXT("%*s%s before:%s after:%s"), Indent, TEXT(""), *Node.Name.ToString()
+			, *NameViewToString(Node.ExecuteBefore)
+			, *NameViewToString(Node.ExecuteAfter));
+
+		for (const int32 NodeIndex : Node.SubNodeIndices)
 		{
-			Dependencies += ParentNode->SubNodes[DependencyIndex].Name.ToString() + TEXT(", ");
-		}
-	}
-
-	UE_LOG(LogMass, Log, TEXT("%*s%s %s%s"), Indent, TEXT(""), *RootNode.Name.ToString()
-		, Dependencies.Len() > 0 ? TEXT("after: ") : TEXT(""), *Dependencies);
-
-	if (RootNode.Processor == nullptr)
-	{
-		UE_LOG(LogMass, Log, TEXT("%*s%s before:%s after:%s"), Indent, TEXT(""), *RootNode.Name.ToString()
-			, *NameViewToString(RootNode.ExecuteBefore)
-			, *NameViewToString(RootNode.ExecuteAfter));
-
-		for (const FNode& Node : RootNode.SubNodes)
-		{
-			LogNode(Node, &RootNode, Indent + 4);
+			LogNode(AllNodes[NodeIndex], Indent + 4);
 		}
 	}
 	else
 	{
-		UE_LOG(LogMass, Log, TEXT("%*s%s before:%s after:%s"), Indent, TEXT(""), *RootNode.Name.ToString()
-			, *NameViewToString(RootNode.Processor->GetExecutionOrder().ExecuteBefore)
-			, *NameViewToString(RootNode.Processor->GetExecutionOrder().ExecuteAfter));
+		UE_LOG(LogMass, Log, TEXT("%*s%s before:%s after:%s"), Indent, TEXT(""), *Node.Name.ToString()
+			, *NameViewToString(Node.Processor->GetExecutionOrder().ExecuteBefore)
+			, *NameViewToString(Node.Processor->GetExecutionOrder().ExecuteAfter));
 	}
 }
 
+#if 0 // disabled the graph building for now, leaving the old code here for reference
 struct FDumpGraphDependencyUtils
 {
 	static void DumpGraphNode(FArchive& LogFile, const FProcessorDependencySolver::FNode& Node, int Indent, TSet<const FProcessorDependencySolver::FNode*>& AllNodes, const bool bRoot)
@@ -681,90 +841,58 @@ void FProcessorDependencySolver::DumpGraph(FArchive& LogFile) const
 	LogFile.Logf(TEXT("}"));
 }
 
-void FProcessorDependencySolver::Solve(FNode& RootNode, TConstArrayView<const FName> PriorityNodes, TArray<FProcessorDependencySolver::FOrderInfo>& OutResult, int LoggingIndent)
+#endif // 0; disabled the graph building for now, leaving the old code here for reference
+
+void FProcessorDependencySolver::Solve(TArray<FProcessorDependencySolver::FOrderInfo>& OutResult)
 {
-	if (RootNode.SubNodes.Num() == 0)
+	using UE::Mass::Private::NameViewToString;
+
+	if (AllNodes.Num() == 0)
 	{
 		return;
 	}
 
-	for (FNode& SubNode : RootNode.SubNodes)
+	for (FNode& Node : AllNodes)
 	{
-		SubNode.TransientDependencies = SubNode.OriginalDependencies;
+		Node.TransientDependencies = Node.OriginalDependencies;
 	}
 
 	TArray<int32> IndicesRemaining;
-	// populate with priority nodes and their dependencies first
-	
-	if (PriorityNodes.Num())
+	IndicesRemaining.Reserve(AllNodes.Num());
+	for (int32 i = 0; i < AllNodes.Num(); ++i)
 	{
-		IndicesRemaining.Reserve(RootNode.SubNodes.Num());
-		for (const FName& PriorityNodeName : PriorityNodes)
+		// skip all the group nodes, all group dependencies have already been converted to individual processor dependencies
+		if (AllNodes[i].IsGroup() == false)
 		{
-			// @todo complex names
-			const int32* PriorityNodeIndex = RootNode.Indices.Find(PriorityNodeName);
-			if (PriorityNodeIndex && RootNode.SubNodes.IsValidIndex(*PriorityNodeIndex)
-				// remember that RootNode.Indices points to a whole group's index for elements from a given group
-				&& RootNode.SubNodes[*PriorityNodeIndex].Name == PriorityNodeName)
-			{ 
-				const int32 StartIndex = IndicesRemaining.Add(*PriorityNodeIndex);
-				// in this loop we'll be potentially adding elements to IndicesRemaining and the idea is to process
-				// the values freshly added as well, so that we populate IndicesRemaining with all super-dependencies of 
-				// the priority node currently processed
-				for (int i = StartIndex; i < IndicesRemaining.Num(); ++i)
-				{
-					const int32 SubNodeIndex = IndicesRemaining[i];
-					for (const int32 DependencyIndex : RootNode.SubNodes[SubNodeIndex].OriginalDependencies)
-					{
-						// some dependencies may have already been added to IndicesRemaining by higher-priority nodes
-						// thus we're adding only unique items (IndicesRemaining is a 1-1 mapping of all RootNode's child nodes).
-						IndicesRemaining.AddUnique(DependencyIndex);
-					}
-				}
-			}
+			IndicesRemaining.Add(i);
 		}
 	}
+	// order the indices to process according to calculated resource hunger
+	IndicesRemaining.Sort([this](const int32 IndexA, const int32 IndexB){
+		return AllNodes[IndexA].Requirements.ResourcesUsedCount < AllNodes[IndexB].Requirements.ResourcesUsedCount;
+	});
 
-	if (IndicesRemaining.Num())
-	{
-		// some node indices already added, fill up with missing ones
-		for (int32 i = 0; i < RootNode.SubNodes.Num(); ++i)
-		{
-			IndicesRemaining.AddUnique(i);
-		}
-	}
-	else
-	{
-		IndicesRemaining.AddZeroed(RootNode.SubNodes.Num());
-		// no priority nodes, just use add all indices in sequence
-		// start from 1 since IndicesRemaining[0] = 0 already
-		for (int32 i = 1; i < RootNode.SubNodes.Num(); ++i)
-		{
-			IndicesRemaining[i] = i;
-		}
-	}
-	
+	// this is where we'll be tracking what's being accessed by whom
+	FResourceUsage ResourceUsage;
+
 	TArray<int32> SortedNodeIndices;
-	SortedNodeIndices.Reserve(RootNode.SubNodes.Num());
+	SortedNodeIndices.Reserve(AllNodes.Num());
 
-	bool bCyclesDetected = false;
-	int32 Steps = 0;
 	while (IndicesRemaining.Num())
 	{
-		bCyclesDetected = (PerformPrioritySolverStep(RootNode, IndicesRemaining, SortedNodeIndices) == false);
-		++Steps;
+		const bool bStepSuccessful = PerformSolverStep(ResourceUsage, IndicesRemaining, SortedNodeIndices);
 
-		if (bCyclesDetected)
+		if (bStepSuccessful == false)
 		{
 			bAnyCyclesDetected = true;
 
 			UE_LOG(LogMass, Error, TEXT("Detected processing dependency cycle:"));
 			for (const int32 Index : IndicesRemaining)
 			{
-				UMassProcessor* Processor = RootNode.SubNodes[Index].Processor;
+				UMassProcessor* Processor = AllNodes[Index].Processor;
 				if (Processor)
 				{
-					UE_LOG(LogMass, Error, TEXT("\t%s, group: %s, before: %s, after %s")
+					UE_LOG(LogMass, Warning, TEXT("\t%s, group: %s, before: %s, after %s")
 						, *Processor->GetName()
 						, *Processor->GetExecutionOrder().ExecuteInGroup.ToString()
 						, *NameViewToString(Processor->GetExecutionOrder().ExecuteBefore)
@@ -773,53 +901,59 @@ void FProcessorDependencySolver::Solve(FNode& RootNode, TConstArrayView<const FN
 				else
 				{
 					// group
-					UE_LOG(LogMass, Error, TEXT("\tGroup %s"), *RootNode.SubNodes[Index].Name.ToString());
+					UE_LOG(LogMass, Warning, TEXT("\tGroup %s"), *AllNodes[Index].Name.ToString());
 				}
 			}
-			UE_LOG(LogMass, Error, TEXT("Cutting the chain at an arbitrary location."));
+			UE_LOG(LogMass, Warning, TEXT("Cutting the chain at an arbitrary location."));
 
 			// remove first dependency
 			// note that if we're in a cycle handling scenario every node does have some dependencies left
-			RootNode.SubNodes[IndicesRemaining[0]].TransientDependencies.Pop(/*bAllowShrinking=*/false);
+			const int32 DependencyNodeIndex = AllNodes[IndicesRemaining[0]].TransientDependencies.Pop(/*bAllowShrinking=*/false);
+			// we need to remove this dependency from original dependencies as well, otherwise we'll still have the cycle
+			// in the data being produces as a result of the whole algorithm
+			AllNodes[IndicesRemaining[0]].OriginalDependencies.Remove(DependencyNodeIndex);
 		}
 	}
 
-	// now we have the desired order in SortedNodeIndices. We have to traverse it recursively to add to OutResult
+	// now we have the desired order in SortedNodeIndices. We have to traverse it to add to OutResult
 	for (int i = 0; i < SortedNodeIndices.Num(); ++i)
 	{
 		const int32 NodeIndex = SortedNodeIndices[i];
 
 		TArray<FName> DependencyNames;
-		for (const int32 DependencyIndex : RootNode.SubNodes[NodeIndex].OriginalDependencies)
+		for (const int32 DependencyIndex : AllNodes[NodeIndex].OriginalDependencies)
 		{
-			DependencyNames.Add(RootNode.SubNodes[DependencyIndex].Name);
+			DependencyNames.AddUnique(AllNodes[DependencyIndex].Name);
 		}
 
-		if (RootNode.SubNodes[NodeIndex].Processor != nullptr)
+		// at this point we expect SortedNodeIndices to only point to regular processors (i.e. no groups)
+		if (ensure(AllNodes[NodeIndex].Processor != nullptr))
 		{
-			OutResult.Add({ RootNode.SubNodes[NodeIndex].Name, RootNode.SubNodes[NodeIndex].Processor, EDependencyNodeType::Processor, DependencyNames });
-		}
-		else if (RootNode.SubNodes[NodeIndex].SubNodes.Num() > 0)
-		{
-			OutResult.Add({ RootNode.SubNodes[NodeIndex].Name, RootNode.SubNodes[NodeIndex].Processor, EDependencyNodeType::GroupStart, DependencyNames });
-			Solve(RootNode.SubNodes[NodeIndex], PriorityNodes, OutResult, LoggingIndent);
-			DependencyNames.Reset(RootNode.SubNodes[NodeIndex].SubNodes.Num());
-			for (const FNode& ChildNode : RootNode.SubNodes[NodeIndex].SubNodes)
-			{
-				DependencyNames.Add(ChildNode.Name);
-			}
-			OutResult.Add({ RootNode.SubNodes[NodeIndex].Name, RootNode.SubNodes[NodeIndex].Processor, EDependencyNodeType::GroupEnd, DependencyNames });
+			OutResult.Add({ AllNodes[NodeIndex].Name, AllNodes[NodeIndex].Processor, EDependencyNodeType::Processor, DependencyNames });
 		}
 	}
 }
 
-void FProcessorDependencySolver::ResolveDependencies(TArray<FProcessorDependencySolver::FOrderInfo>& OutResult, TConstArrayView<const FName> PriorityNodes)
+void FProcessorDependencySolver::ResolveDependencies(TArray<FProcessorDependencySolver::FOrderInfo>& OutResult)
 {
+	if (Processors.Num() == 0)
+	{
+		return;
+	}
+
 	FScopedCategoryAndVerbosityOverride LogOverride(TEXT("LogMass"), ELogVerbosity::Log);
 
 	bAnyCyclesDetected = false;
 
 	UE_LOG(LogMass, Log, TEXT("Gathering dependencies data:"));
+
+	AllNodes.Reset();
+	NodeIndexMap.Reset();
+	// as the very first node we add a "root" node that represents the "top level group" and also simplifies the rest
+	// of the lookup code - if a processor declares it's in group None or depends on Node it we don't need to check that 
+	// explicitly. 
+	AllNodes.Add(FNode(CollectionName, nullptr, 0));
+	NodeIndexMap.Add(FName(), 0);
 
 	// gather the processors information first
 	for (UMassProcessor* Processor : Processors)
@@ -829,73 +963,24 @@ void FProcessorDependencySolver::ResolveDependencies(TArray<FProcessorDependency
 			UE_LOG(LogMass, Warning, TEXT("%s nullptr found in Processors collection being processed"), ANSI_TO_TCHAR(__FUNCTION__));
 			continue;
 		}
-		AddNode(Processor->GetExecutionOrder().ExecuteInGroup, *Processor);
+		CreateNodes(*Processor);
 	}
 
-	BuildDependencies(GroupRootNode);
-	// @todo anything in GroupRootNode.Dependencies is an undefined symbol
+	check(AllNodes.Num());
+	LogNode(AllNodes[0]);
 
-	// Any dependencies that are promoted to the root node means they are unresolved.
-    const bool bAnyUnresolvedDependencies = GroupRootNode.HasDependencies();
-	if (bAnyUnresolvedDependencies)
-	{
-		const UWorld* World = Processors.IsEmpty() ? nullptr : Processors[0]->GetWorld();
-	    for (const FName& DependencyName : GroupRootNode.ExecuteBefore)
-	    {
-		    UE_LOG(LogMass, Warning, TEXT("(%s) %s found an unresolved execute before dependency (%s)"),
-		    	World != nullptr ? *ToString(World->GetNetMode()) : TEXT("unknown"), ANSI_TO_TCHAR(__FUNCTION__), *DependencyName.ToString());
-	    }
-    
-	    for (const FName& DependencyName : GroupRootNode.ExecuteAfter)
-	    {
-		    UE_LOG(LogMass, Warning, TEXT("(%s) %s found an unresolved execute after dependency (%s)"),
-		    	World != nullptr ? *ToString(World->GetNetMode()) : TEXT("unknown"), ANSI_TO_TCHAR(__FUNCTION__), *DependencyName.ToString());
-	    }
-	}
+	BuildDependencies();
 
-	LogNode(GroupRootNode);
-	
-	if (!DependencyGraphFileName.IsEmpty())
-	{
-		const FString FileName = FString::Printf(TEXT("%s%s-%s.dot"), *FPaths::ProjectLogDir(), *DependencyGraphFileName, *FDateTime::Now().ToString());
-		if (FArchive* LogFile = IFileManager::Get().CreateFileWriter(*FileName))
-		{
-			DumpGraph(*LogFile);
+	// now none of the processor nodes depend on groups - we replaced these dependencies with depending directly 
+	// on individual processors. However, we keep the group nodes around since we store the dependencies via index, so 
+	// removing nodes would mess that up. Solve below ignores group nodes and OutResult will not have any groups once its done.
 
-			LogFile->Close();
-			delete LogFile;
-		}
-		else
-		{
-			UE_LOG(LogMass, Error, TEXT("%s Unable to dump dependency graph into filename %s"), ANSI_TO_TCHAR(__FUNCTION__), *DependencyGraphFileName);
-		}
-	}
+	Solve(OutResult);
 
-	GroupRootNode.TransientDependencies = GroupRootNode.OriginalDependencies;
-	Solve(GroupRootNode, PriorityNodes, OutResult);
-
-#if WITH_UNREAL_DEVELOPER_TOOLS
-	if (bAnyCyclesDetected || bAnyUnresolvedDependencies)
-	{
-		FMessageLog EditorErrors("LogMass");
-		if(bAnyCyclesDetected)
-		{
-		EditorErrors.Error(LOCTEXT("ProcessorDependenciesCycle", "Processor dependencies cycle found!"));
-		    EditorErrors.Notify(LOCTEXT("ProcessorDependenciesCycle", "Processor dependencies cycle found!"));
-		}
-		if(bAnyUnresolvedDependencies)
-		{
-		    EditorErrors.Error(LOCTEXT("ProcessorUnresolvedDependencies", "Unresolved processor dependencies found!"));
-		    EditorErrors.Notify(LOCTEXT("ProcessorUnresolvedDependencies", "Unresolved processor dependencies found!"));
-		}
-		EditorErrors.Info(FText::FromString(TEXT("See the log for details")));
-	}
-#endif // WITH_UNREAL_DEVELOPER_TOOLS
-
-	UE_LOG(LogMass, Log, TEXT("Dependency order:"));
+	UE_LOG(LogMass, Verbose, TEXT("Dependency order:"));
 	for (const FProcessorDependencySolver::FOrderInfo& Info : OutResult)
 	{
-		UE_LOG(LogMass, Log, TEXT("\t%s"), *Info.Name.ToString());
+		UE_LOG(LogMass, Verbose, TEXT("\t%s"), *Info.Name.ToString());
 	}
 }
 

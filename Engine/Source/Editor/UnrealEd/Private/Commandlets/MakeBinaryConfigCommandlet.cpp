@@ -1,13 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/MakeBinaryConfigCommandlet.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
+
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "CoreGlobals.h"
+#include "HAL/PlatformCrt.h"
 #include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/IPluginManager.h"
-#include "Misc/CoreDelegates.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/CoreMisc.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Serialization/Archive.h"
+#include "Serialization/MemoryWriter.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
 
 UMakeBinaryConfigCommandlet::UMakeBinaryConfigCommandlet(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -36,7 +51,8 @@ int32 UMakeBinaryConfigCommandlet::Main(const FString& Params)
 	FString PlatformName = Platforms[0]->IniPlatformName();
 
 	FConfigCacheIni Config(EConfigCacheType::Temporary);
-	Config.InitializeKnownConfigFiles(*PlatformName, false);
+	FConfigContext Context = FConfigContext::ReadIntoConfigSystem(&Config, PlatformName);
+	Config.InitializeKnownConfigFiles(Context);
 
 	// removing for now, because this causes issues with some plugins not getting ini files merged in
 //	IPluginManager::Get().IntegratePluginsIntoConfig(Config, *FinalConfigFilenames.EngineIni, *PlatformName, *StagedPluginsFile);
@@ -45,8 +61,8 @@ int32 UMakeBinaryConfigCommandlet::Main(const FString& Params)
 
 	TArray<FString> KeyDenyListStrings;
 	TArray<FString> SectionsDenyList;
-	GConfig->GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniKeyBlacklist"), KeyDenyListStrings, GGameIni);
-	GConfig->GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniSectionBlacklist"), SectionsDenyList, GGameIni);
+	GConfig->GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniKeyDenylist"), KeyDenyListStrings, GGameIni);
+	GConfig->GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniSectionDenylist"), SectionsDenyList, GGameIni);
 	TArray<FName> KeysDenyList;
 	for (FString Key : KeyDenyListStrings)
 	{
@@ -78,7 +94,7 @@ int32 UMakeBinaryConfigCommandlet::Main(const FString& Params)
 
 	// check the deny list removed itself
 	KeyDenyListStrings.Empty();
-	Config.GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniKeyBlacklist"), KeyDenyListStrings, GGameIni);
+	Config.GetArray(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("IniKeyDenylist"), KeyDenyListStrings, GGameIni);
 	check(KeyDenyListStrings.Num() == 0);
 
 	// allow delegates to modify the config data with some tagged binary data

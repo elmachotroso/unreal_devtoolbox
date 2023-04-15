@@ -39,7 +39,7 @@ UAnimGraphNode_BlendSpaceGraphBase::UAnimGraphNode_BlendSpaceGraphBase()
 
 FText UAnimGraphNode_BlendSpaceGraphBase::GetMenuCategory() const
 {
-	return LOCTEXT("BlendSpaceCategory_Label", "BlendSpaces");
+	return LOCTEXT("BlendSpaceCategory_Label", "Animation|Blend Spaces");
 }
 
 FLinearColor UAnimGraphNode_BlendSpaceGraphBase::GetNodeTitleColor() const
@@ -49,7 +49,7 @@ FLinearColor UAnimGraphNode_BlendSpaceGraphBase::GetNodeTitleColor() const
 
 FSlateIcon UAnimGraphNode_BlendSpaceGraphBase::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", "ClassIcon.BlendSpace");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.BlendSpace");
 }
 
 FText UAnimGraphNode_BlendSpaceGraphBase::GetTooltipText() const

@@ -9,9 +9,17 @@
 #include "MediaUtils/Public/MediaSamples.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
 #include "Misc/MessageDialog.h"
+#include "RenderingThread.h"
 
 #include "HLMediaLibrary.h"
 #include "HLMediaPlayerTracks.h"
+
+#include "ID3D12DynamicRHI.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_START
+	#include <d3d11on12.h>
+THIRD_PARTY_INCLUDES_END
+#include "Windows/HideWindowsPlatformTypes.h"
 
 #define LOCTEXT_NAMESPACE "HLMediaPlayer"
 
@@ -373,14 +381,14 @@ bool FHLMediaPlayer::InitializePlayer(const TSharedPtr<FArchive, ESPMode::Thread
     {
         UE_LOG(LogHLMediaPlayer, Verbose, TEXT("HLMediaPlayer %p: FHLMediaPlayer::InitializePlayer::Async()"), this);
 
-        ID3D11Device* Device = static_cast<ID3D11Device*>(GDynamicRHI->RHIGetNativeDevice());
+		ID3D11Device* Device = GetID3D11DynamicRHI()->RHIGetDevice();
 		checkf(Device, TEXT("No available D3D11Device"));
-		FString RHIString = FApp::GetGraphicsRHI();
-		if (RHIString == TEXT("DirectX 12"))
+
+		if (RHIGetInterfaceType() == ERHIInterfaceType::D3D12)
 		{
 			ID3D11Device* PrevDevice = Device;
-			ID3D12Device* D3d12Device = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
-			void* CommandQueue = GDynamicRHI->RHIGetNativeGraphicsQueue();
+			ID3D12Device* D3d12Device = GetID3D12DynamicRHI()->RHIGetDevice(0);
+			ID3D12CommandQueue* CommandQueue = GetID3D12DynamicRHI()->RHIGetCommandQueue();
 
 			ID3D11DeviceContext* D3d11DeviceContext;
 			if (FAILED(D3D11On12CreateDevice(

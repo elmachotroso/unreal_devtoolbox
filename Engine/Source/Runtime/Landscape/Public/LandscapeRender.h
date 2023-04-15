@@ -27,6 +27,7 @@ LandscapeRender.h: New terrain rendering
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
 #include "SceneViewExtension.h"
+#include "Tasks/Task.h"
 
 // This defines the number of border blocks to surround terrain by when generating lightmaps
 #define TERRAIN_PATCH_EXPAND_SCALAR	1
@@ -100,7 +101,6 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, LANDSCAP
     SHADER_PARAMETER(FVector4f, SubsectionSizeVertsLayerUVPan)
     SHADER_PARAMETER(FVector4f, SubsectionOffsetParams)
     SHADER_PARAMETER(FVector4f, LightmapSubsectionOffsetParams)
-	SHADER_PARAMETER(FVector4f, BlendableLayerMask)
 	SHADER_PARAMETER(FMatrix44f, LocalToWorldNoScaling)
 	SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
@@ -197,6 +197,11 @@ public:
 	* Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
 	*/
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	
+	/**
+	* Get vertex elements used when during PSO precaching materials using this vertex factory type
+	*/
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 
 	/**
 	* Copy the data from another vertex factory
@@ -333,7 +338,7 @@ public:
 	FLandscapeSharedBuffers(int32 SharedBuffersKey, int32 SubsectionSizeQuads, int32 NumSubsections, ERHIFeatureLevel::Type FeatureLevel);
 
 	template <typename INDEX_TYPE>
-	void CreateIndexBuffers(ERHIFeatureLevel::Type InFeatureLevel);
+	void CreateIndexBuffers();
 	
 #if WITH_EDITOR
 	template <typename INDEX_TYPE>
@@ -360,10 +365,13 @@ public:
 	virtual float ComputeLODBias() const = 0;
 	virtual int32 GetSectionPriority() const { return INDEX_NONE; }
 
+	/** Computes the worldspace units per vertex of the landscape section. */
+	virtual double ComputeSectionResolution() const { return -1.0; }
+
 public:
-	uint32		LandscapeKey;
-	FIntPoint	ComponentBase;
-	bool		bRegistered;
+	uint32 LandscapeKey;
+	FIntPoint ComponentBase;
+	bool bRegistered;
 };
 
 struct FLandscapeRenderSystem
@@ -422,8 +430,9 @@ struct FLandscapeRenderSystem
 
 	TMap<FViewKey, TResourceArray<float>> CachedSectionLODValues;
 
-	FGraphEventRef FetchHeightmapLODBiasesEventRef;
-	
+	/** Forced LOD level which overrides the ForcedLOD level of all the sections under this LandscapeRenderSystem. */
+	int8 ForcedLODOverride;
+
 	FLandscapeRenderSystem();
 	~FLandscapeRenderSystem();
 
@@ -460,18 +469,8 @@ struct FLandscapeRenderSystem
 	}
 
 	const TResourceArray<float>& ComputeSectionsLODForView(const FSceneView& InView);
-
-	void BeginRender();
-
-	void BeginFrame();
-
 	void FetchHeightmapLODBiases();
-
 	void UpdateBuffers();
-
-	void EndFrame();
-
-	void WaitForTasksCompletion();
 
 private:
 	void CreateResources_Internal(FLandscapeSectionInfo* InSectionInfo);
@@ -488,19 +487,35 @@ public:
 	FLandscapeSceneViewExtension(const FAutoRegister& AutoReg);
 	virtual ~FLandscapeSceneViewExtension();
 
-	void BeginFrame_RenderThread();
 	void EndFrame_RenderThread();
 
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
 
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
+	virtual void PreInitViews_RenderThread(FRDGBuilder& GraphBuilder) override;
 
+	LANDSCAPE_API const TMap<uint32, FLandscapeRenderSystem*>& GetLandscapeRenderSystems() const;
 private:
 	FBufferRHIRef LandscapeLODDataBuffer;
 	FBufferRHIRef LandscapeIndirectionBuffer;
+
+	struct FLandscapeViewData
+	{
+		FLandscapeViewData() = default;
+
+		FLandscapeViewData(FSceneView& InView)
+			: View(&InView)
+		{}
+
+		FSceneView* View = nullptr;
+		TResourceArray<uint32> LandscapeIndirection;
+		TResourceArray<float> LandscapeLODData;
+	};
+
+	TArray<FLandscapeViewData> LandscapeViews;
+	UE::Tasks::FTask LandscapeSetupTask;
 };
 
 
@@ -585,7 +600,7 @@ class LANDSCAPE_API FLandscapeComponentSceneProxy : public FPrimitiveSceneProxy,
 	{
 	public:
 		/** Initialization constructor. */
-		FLandscapeLCI(const ULandscapeComponent* InComponent)
+		FLandscapeLCI(const ULandscapeComponent* InComponent, ERHIFeatureLevel::Type FeatureLevel)
 			: FLightCacheInterface()
 		{
 			const FMeshMapBuildData* MapBuildData = InComponent->GetMeshMapBuildData();
@@ -595,6 +610,12 @@ class LANDSCAPE_API FLandscapeComponentSceneProxy : public FPrimitiveSceneProxy,
 				SetLightMap(MapBuildData->LightMap);
 				SetShadowMap(MapBuildData->ShadowMap);
 				SetResourceCluster(MapBuildData->ResourceCluster);
+				if (FeatureLevel >= ERHIFeatureLevel::SM5)
+				{
+					// Landscape does not support GPUScene on mobile
+					// TODO: enable this when GPUScene support is implemented
+					bCanUsePrecomputedLightingParametersFromGPUScene = true;
+				}
 				IrrelevantLights = MapBuildData->IrrelevantLights;
 			}
 		}
@@ -682,6 +703,8 @@ protected:
 	// Storage for static draw list batch params
 	TArray<FLandscapeBatchElementParams> StaticBatchParamArray;
 
+	bool bNaniteActive;
+
 
 #if WITH_EDITOR
 	// Precomputed grass rendering MeshBatch and per-LOD params
@@ -698,8 +721,8 @@ protected:
 #if WITH_EDITOR
 	TArray<FLinearColor> LayerColors;
 #endif
-	UTexture2D* HeightmapTexture; // PC : Heightmap, Mobile : Weightmap
-	UTexture2D* NormalmapTexture; // PC : Heightmap, Mobile : Weightmap
+	// Heightmap in RG and Normalmap in BA
+	UTexture2D* HeightmapTexture; 
 	UTexture2D* BaseColorForGITexture;
 	FVector4f HeightmapScaleBias;
 	float HeightmapSubsectionOffsetU;
@@ -707,14 +730,12 @@ protected:
 
 	UTexture2D* XYOffsetmapTexture;
 
-	uint8 BlendableLayerMask;
-
 	uint32						SharedBuffersKey;
 	FLandscapeSharedBuffers*	SharedBuffers;
 	FLandscapeVertexFactory*	VertexFactory;
 	FLandscapeVertexFactory*	FixedGridVertexFactory;
 
-	/** All available materials for non mobile, including LOD Material, Tessellation generated materials*/
+	/** All available materials, including LOD Material, Tessellation generated materials*/
 	TArray<UMaterialInterface*> AvailableMaterials;
 
 	// FLightCacheInterface
@@ -792,10 +813,6 @@ public:
 	friend class FLandscapeXYOffsetVertexFactoryVertexShaderParameters;
 	friend class FLandscapeVertexFactoryPixelShaderParameters;
 	friend struct FLandscapeBatchElementParams;
-	friend class FLandscapeVertexFactoryMobileVertexShaderParameters;
-	friend class FLandscapeVertexFactoryMobilePixelShaderParameters;
-	friend class FLandscapeFixedGridVertexFactoryVertexShaderParameters;
-	friend class FLandscapeFixedGridVertexFactoryMobileVertexShaderParameters;
 
 #if WITH_EDITOR
 	const FMeshBatch& GetGrassMeshBatch() const { return GrassMeshBatch; }
@@ -820,9 +837,10 @@ public:
 	virtual bool IsRayTracingRelevant() const override { return true; }
 #endif
 
-	// FLandscapeSceneInfo interface
+	// FLandscapeSectionInfo interface
 	virtual float ComputeLODForView(const FSceneView& InView) const override;
 	virtual float ComputeLODBias() const override;
+	virtual double ComputeSectionResolution() const override;
 };
 
 class FLandscapeDebugMaterialRenderProxy : public FMaterialRenderProxy

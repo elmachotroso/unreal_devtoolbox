@@ -3,21 +3,37 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 #include "CoreMinimal.h"
-#include "SlateFwd.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Text/SlateHyperlinkRun.h"
+#include "IStructureDetailsView.h"
+#include "Internationalization/Text.h"
 #include "Layout/Visibility.h"
-#include "Widgets/SWidget.h"
+#include "PropertyEditorDelegates.h"
+#include "SlateFwd.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakFieldPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Framework/Text/SlateHyperlinkRun.h"
-#include "Editor/PropertyEditor/Public/PropertyEditorDelegates.h"
-#include "IStructureDetailsView.h"
-#include "UObject/WeakFieldPtr.h"
+#include "Widgets/SWidget.h"
 
 class FBlueprintEditor;
+class FProperty;
+class FStructOnScope;
 class IDetailsView;
 class SBorder;
+class SDockTab;
 class SMyBlueprint;
+class SWidget;
+class UObject;
+struct FGeometry;
+struct FPropertyChangedEvent;
 
 typedef TSet<class UObject*> FInspectorSelectionSet;
 
@@ -33,6 +49,7 @@ public:
 		, _HideNameArea(true)
 		, _SetNotifyHook(true)
 		, _ShowTitleArea(false)
+		, _ShowLocalVariables(false)
 		{}
 
 		SLATE_ARGUMENT(TWeakPtr<FBlueprintEditor>, Kismet2)
@@ -44,6 +61,7 @@ public:
 		SLATE_ARGUMENT( FName, ViewIdentifier)
 		SLATE_ARGUMENT( bool, SetNotifyHook)
 		SLATE_ARGUMENT( bool, ShowTitleArea)
+		SLATE_ARGUMENT( bool, ShowLocalVariables)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -207,7 +225,7 @@ protected:
 	ECheckBoxState GetPublicViewCheckboxState() const;
 	void SetPublicViewCheckboxState(ECheckBoxState InIsChecked);
 
-	bool IsAnyParentContainerSelected(const FPropertyAndParent& PropertyAndParent) const;
+	bool IsAnyParentOrContainerSelected(const FPropertyAndParent& PropertyAndParent) const;
 
 	/** Callback invoked after a value change on the selected object(s) */
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& InPropertyChangedEvent);

@@ -19,6 +19,8 @@
 #include "UObject/UObjectIterator.h"
 #include "StaticMeshResources.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ArrowComponent)
+
 #define DEFAULT_SCREEN_SIZE	(0.0025f)
 #define ARROW_SCALE			(80.0f)
 #define ARROW_RADIUS_FACTOR	(0.03f)
@@ -151,7 +153,7 @@ public:
 				Mesh.MaterialRenderProxy = ArrowMaterialRenderProxy;
 
 				FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-				DynamicPrimitiveUniformBuffer.Set(FScaleMatrix(ViewScale) * EffectiveLocalToWorld, FScaleMatrix(ViewScale) * EffectiveLocalToWorld, GetBounds(), GetLocalBounds(), true, false, DrawsVelocity(), false);
+				DynamicPrimitiveUniformBuffer.Set(FScaleMatrix(ViewScale) * EffectiveLocalToWorld, FScaleMatrix(ViewScale) * EffectiveLocalToWorld, GetBounds(), GetLocalBounds(), true, false, AlwaysHasVelocity());
 				BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 				BatchElement.FirstIndex = 0;
@@ -255,13 +257,13 @@ FPrimitiveSceneProxy* UArrowComponent::CreateSceneProxy()
 }
 
 #if WITH_EDITOR
-bool UArrowComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UArrowComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	// Arrow components not treated as 'selectable' in editor
 	return false;
 }
 
-bool UArrowComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UArrowComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	// Arrow components not treated as 'selectable' in editor
 	return false;
@@ -290,3 +292,4 @@ void UArrowComponent::SetEditorScale(float InEditorScale)
 	}
 }
 #endif
+

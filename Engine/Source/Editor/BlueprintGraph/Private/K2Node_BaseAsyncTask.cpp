@@ -1,26 +1,51 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_BaseAsyncTask.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "CoreGlobals.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
-#include "UObject/UnrealType.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Kismet/KismetSystemLibrary.h"
-#include "K2Node_CallFunction.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "EngineLogs.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_AddDelegate.h"
 #include "K2Node_AssignmentStatement.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Self.h"
 #include "K2Node_TemporaryVariable.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Engine/MemberReference.h"
-
+#include "Kismet2/CompilerResultsLog.h"
 #include "KismetCompiler.h"
-#include "BlueprintNodeSpawner.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Parse.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+struct FStringFormatArg;
 
 #define LOCTEXT_NAMESPACE "UK2Node_BaseAsyncTask"
 
@@ -169,6 +194,13 @@ void UK2Node_BaseAsyncTask::AllocateDefaultPins()
 
 			if (bPinGood)
 			{
+				// Check for a display name override
+				const FString& PinDisplayName = Param->GetMetaData(FBlueprintMetadata::MD_DisplayName);
+				if (!PinDisplayName.IsEmpty())
+				{
+					Pin->PinFriendlyName = FText::FromString(PinDisplayName);
+				}
+				
 				//Flag pin as read only for const reference property
 				Pin->bDefaultValueIsIgnored = Param->HasAllPropertyFlags(CPF_ConstParm | CPF_ReferenceParm) && (!Function->HasMetaData(FBlueprintMetadata::MD_AutoCreateRefTerm) || Pin->PinType.IsContainer());
 
@@ -646,7 +678,7 @@ UK2Node::ERedirectType UK2Node_BaseAsyncTask::DoPinsMatchForReconstruction(const
 					FParse::Value(*It.Value().GetValue(), TEXT("OldPinName="), OldPinString);
 					FParse::Value(*It.Value().GetValue(), TEXT("NewPinName="), NewPinString);
 
-					UClass* RedirectProxyClass = FindObject<UClass>(ANY_PACKAGE, *ProxyClassString);
+					UClass* RedirectProxyClass = UClass::TryFindTypeSlow<UClass>(ProxyClassString);
 					if (RedirectProxyClass)
 					{
 						FAsyncTaskPinRedirectMapInfo& PinRedirectInfo = AsyncTaskPinRedirectMap.FindOrAdd(*OldPinString);

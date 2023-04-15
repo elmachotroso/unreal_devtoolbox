@@ -29,11 +29,20 @@
 			"Name": "ConcertMain",
 			"Enabled": true
 		},
+		{
+			"Name": "ConcertSharedSlate",
+			"Enabled": true
+		}
 	],
 	"Modules": [
 		{
 			"Name": "ConsoleVariablesEditor",
 			"Type": "UncookedOnly",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ConsoleVariablesEditorRuntime",
+			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}
 	]

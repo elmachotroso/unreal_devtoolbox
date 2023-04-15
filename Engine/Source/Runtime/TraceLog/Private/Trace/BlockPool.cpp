@@ -62,7 +62,7 @@ static FPoolBlockList Writer_AddPageToPool(uint32 PageSize)
 	for (int i = 1, n = PageSize / GPoolBlockSize; ; ++i)
 	{
 		auto* Buffer = (FWriteBuffer*)Block;
-		Buffer->Size = BufferSize;
+		Buffer->Size = uint16(BufferSize);
 		if (i >= n)
 		{
 			break;
@@ -162,7 +162,6 @@ void Writer_FreeBlockListToPool(FWriteBuffer* Head, FWriteBuffer* Tail)
 ////////////////////////////////////////////////////////////////////////////////
 void Writer_InitializePool()
 {
-	Writer_AddPageToPool(GPoolBlockSize);
 	static_assert(GPoolPageSize >= 0x10000, "Page growth must be >= 64KB");
 	static_assert(GPoolInitPageSize >= 0x10000, "Initial page size must be >= 64KB");
 }

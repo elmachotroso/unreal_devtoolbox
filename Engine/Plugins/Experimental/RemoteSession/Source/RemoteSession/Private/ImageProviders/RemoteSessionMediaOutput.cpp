@@ -6,6 +6,8 @@
 #include "Modules/ModuleManager.h"
 #include "RemoteSessionModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RemoteSessionMediaOutput)
+
 
 UMediaCapture* URemoteSessionMediaOutput::CreateMediaCaptureImpl()
 {
@@ -43,15 +45,7 @@ void URemoteSessionMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureB
 	}
 }
 
-bool URemoteSessionMediaCapture::CaptureSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
-{
-	CacheValues();
-
-	SetState(EMediaCaptureState::Capturing);
-	return true;
-}
-
-bool URemoteSessionMediaCapture::CaptureRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget)
+bool URemoteSessionMediaCapture::InitializeCapture()
 {
 	CacheValues();
 

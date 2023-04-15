@@ -15,8 +15,6 @@
 struct FOpenGL4 : public FOpenGL3
 {
 	static FORCEINLINE bool SupportsDrawIndirect()						{ return true; }
-	static FORCEINLINE bool SupportsTextureView()						{ return bSupportsTextureView; }
-
 
 	// Optional
 
@@ -101,7 +99,6 @@ struct FOpenGL4 : public FOpenGL3
 	static void ProcessQueryGLInt();
 	static void ProcessExtensions( const FString& ExtensionsString );
 
-	static FORCEINLINE GLint GetMaxComputeTextureImageUnits() { check(MaxComputeTextureImageUnits != -1); return MaxComputeTextureImageUnits; }
 	static FORCEINLINE GLint GetMaxComputeUniformComponents() { check(MaxComputeUniformComponents != -1); return MaxComputeUniformComponents; }
 
 	static FORCEINLINE GLint GetFirstComputeUAVUnit()			{ return 0; }
@@ -116,7 +113,6 @@ struct FOpenGL4 : public FOpenGL3
 	static FORCEINLINE int32 GetReadHalfFloatPixelsEnum() { return GL_HALF_FLOAT; }
 
 protected:
-	static GLint MaxComputeTextureImageUnits;
 	static GLint MaxComputeUniformComponents;
 
 	static GLint MaxCombinedUAVUnits;
@@ -124,6 +120,4 @@ protected:
 	static GLint MaxPixelUAVUnits;
 
 	static bool bSupportsGPUMemoryInfo;
-	static bool bSupportsTextureView;
-
 };

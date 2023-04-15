@@ -1,37 +1,60 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBehaviorTreeBlackboardView.h"
-#include "SBehaviorTreeBlackboardEditor.h"
-#include "Styling/SlateBrush.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Misc/Paths.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType.h"
+#include "BehaviorTree/BlackboardAssetProvider.h"
 #include "BehaviorTree/BlackboardData.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UnrealType.h"
-#include "UObject/UObjectIterator.h"
-#include "Widgets/SBoxPanel.h"
+#include "BehaviorTreeEditorCommands.h"
+#include "Editor/EditorPerProjectUserSettings.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Editor/EditorPerProjectUserSettings.h"
-#include "EditorStyleSet.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/AssetRegistryInterface.h"
+#include "Misc/Attribute.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Modules/ModuleManager.h"
+#include "SBehaviorTreeBlackboardEditor.h"
 #include "SGraphActionMenu.h"
 #include "SGraphPalette.h"
-#include "BehaviorTree/BehaviorTree.h"
-#include "BehaviorTree/BlackboardAssetProvider.h"
-#include "Styling/SlateIconFinder.h"
-#include "Styling/CoreStyle.h"
 #include "ScopedTransaction.h"
-#include "BehaviorTreeEditorCommands.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateIconFinder.h"
+#include "Templates/Casts.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SBehaviorTreeBlackboardView"
 
@@ -100,7 +123,7 @@ class SBehaviorTreeBlackboardItem : public SGraphPaletteItem
 
 		ActionPtr = InCreateData->Action;
 		
-		FSlateBrush const* IconBrush   = FEditorStyle::GetBrush(TEXT("NoBrush"));
+		FSlateBrush const* IconBrush   = FAppStyle::GetBrush(TEXT("NoBrush"));
 		GetPaletteItemIcon(GraphAction, IconBrush);
 
 		TSharedRef<SWidget> IconWidget = CreateIconWidget( GraphAction->GetTooltipDescription(), IconBrush, FLinearColor::White );
@@ -473,7 +496,7 @@ void SBehaviorTreeBlackboardView::Construct(const FArguments& InArgs, TSharedRef
 	[
 		SNew(SBorder)
 		.Padding(4.0f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 			+SVerticalBox::Slot()

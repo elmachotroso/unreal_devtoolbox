@@ -40,7 +40,10 @@ class WATER_API IWaterBrushActorInterface
 	/**
 	 * Returns true if this water actor could potentially be affecting (i.e. being rendered by) a AWaterZoneActor :
 	 */
-	virtual bool CanAffectWaterMesh() const = 0;
+	virtual bool CanEverAffectWaterMesh() const = 0;
+
+	UE_DEPRECATED(5.1, "Renamed to CanEverAffectWaterMesh")
+	virtual bool CanAffectWaterMesh() const { return CanEverAffectWaterMesh(); };
 
 #if WITH_EDITOR
 	/** 
@@ -78,12 +81,21 @@ class WATER_API IWaterBrushActorInterface
 	 */
 	struct FWaterBrushActorChangedEventParams
 	{
-		FWaterBrushActorChangedEventParams(IWaterBrushActorInterface* InWaterBrushActor)
+		FWaterBrushActorChangedEventParams(IWaterBrushActorInterface* InWaterBrushActor, const FPropertyChangedEvent& InPropertyChangedEvent = FPropertyChangedEvent(/*InProperty = */nullptr))
 			: WaterBrushActor(InWaterBrushActor)
+			, PropertyChangedEvent(InPropertyChangedEvent)
 		{}
 
+		/** The water brush actor that has changed */
 		IWaterBrushActorInterface* WaterBrushActor = nullptr;
+
+		/** Provides some additional context about how the water brush actor data has changed (property, type of change...) */
+		FPropertyChangedEvent PropertyChangedEvent;
+
+		/** Indicates that property related to the water brush actor's visual shape has changed */
 		bool bShapeOrPositionChanged = false;
+
+		/** Indicates that a property affecting the terrain weightmaps has changed */
 		bool bWeightmapSettingsChanged = false;
 	};
 
@@ -91,11 +103,7 @@ class WATER_API IWaterBrushActorInterface
 	 * Event sent whenever a data change occurs on a water brush actor
 	 */
 	DECLARE_EVENT_OneParam(IWaterBrushActorInterface, FWaterBrushActorChangedEvent, const FWaterBrushActorChangedEventParams&);
-	static FWaterBrushActorChangedEvent& GetOnWaterBrushActorChangedEvent()
-	{
-		static FWaterBrushActorChangedEvent WaterBrushActorChangedEvent;
-		return WaterBrushActorChangedEvent;
-	}
+	static FWaterBrushActorChangedEvent& GetOnWaterBrushActorChangedEvent();
 
 	void BroadcastWaterBrushActorChangedEvent(const FWaterBrushActorChangedEventParams& InParams)
 	{

@@ -1,5 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
+using OpenTracing;
+using OpenTracing.Util;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -7,16 +10,12 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml;
 using System.Xml.Serialization;
 using UnrealBuildTool;
-using AutomationTool;
-using EpicGames.Core;
-using OpenTracing;
-using OpenTracing.Util;
-using Microsoft.Extensions.Logging;
 
 namespace AutomationTool
 {
@@ -380,10 +379,10 @@ namespace AutomationTool
 		/// <summary>
 		/// Load a manifest from disk
 		/// </summary>
-		/// <param name="File">File to load</param>
-		static public TempStorageManifest Load(FileReference File)
+		/// <param name="file">File to load</param>
+		static public TempStorageManifest Load(FileReference file)
 		{
-			using(StreamReader Reader = new StreamReader(File.FullName))
+			using (StreamReader Reader = new(file.FullName))
 			{
 				return (TempStorageManifest)Serializer.Deserialize(Reader);
 			}
@@ -397,7 +396,11 @@ namespace AutomationTool
 		{
 			using(StreamWriter Writer = new StreamWriter(File.FullName))
 			{
-				Serializer.Serialize(Writer, this);
+				XmlWriterSettings WriterSettings = new() { Indent = true };
+				using (XmlWriter XMLWriter = XmlWriter.Create(Writer, WriterSettings))
+				{
+					Serializer.Serialize(XMLWriter, this);
+				}
 			}
 		}
 	}
@@ -485,9 +488,13 @@ namespace AutomationTool
 		/// <param name="File">File to save</param>
 		public void Save(FileReference File)
 		{
-			using(StreamWriter Writer = new StreamWriter(File.FullName))
+			using (StreamWriter Writer = new StreamWriter(File.FullName))
 			{
-				Serializer.Serialize(Writer, this);
+				XmlWriterSettings WriterSettings = new() { Indent = true };
+				using (XmlWriter XMLWriter = XmlWriter.Create(Writer, WriterSettings))
+				{
+					Serializer.Serialize(XMLWriter, this);
+				}
 			}
 		}
 
@@ -912,7 +919,13 @@ namespace AutomationTool
 					// Unzip all the build products
 					DirectoryReference SharedNodeDir = GetDirectoryForNode(SharedDir, NodeName);
 					FileInfo[] ZipFiles = Manifest.ZipFiles.Select(x => new FileInfo(FileReference.Combine(SharedNodeDir, x.Name).FullName)).ToArray();
-					ParallelUnzipFiles(ZipFiles, RootDir);
+					string Result = ParallelUnzipFiles(ZipFiles, RootDir);
+					if (!string.IsNullOrWhiteSpace(Result))
+					{
+						string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Manifest - {NodeName}.log");
+						CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+						File.WriteAllText(LogPath, Result);
+					}
 
 					// Update the timestamps to match the manifest. Zip files only use local time, and there's no guarantee it matches the local clock.
 					foreach(TempStorageFile ManifestFile in Manifest.Files)
@@ -993,7 +1006,7 @@ namespace AutomationTool
 
 			// order the files in descending order so our threads pick up the biggest ones first.
 			// We want to end with the smaller files to more effectively fill in the gaps
-			var FilesToZip = new ConcurrentQueue<FileReference>(FilesInfo.OrderByDescending(FileInfo => FileInfo.FileSize).Select(FileInfo => FileInfo.File));
+			ConcurrentQueue<FileReference> FilesToZip = new(FilesInfo.OrderByDescending(FileInfo => FileInfo.FileSize).Select(FileInfo => FileInfo.File));
 
 			ConcurrentBag<FileInfo> ZipFiles = new ConcurrentBag<FileInfo>();
 
@@ -1035,23 +1048,7 @@ namespace AutomationTool
 							throw new AutomationException("Unable to open file {0}", ZipFileName.FullName);
 						}
 
-						try
-						{
-							// if we are using a staging dir, copy to the final location and delete the staged copy.
-							string FinalZipFile = ZipFileName.FullName;
-							if (StagingDir != null)
-							{
-								FinalZipFile = CommandUtils.CombinePaths(OutputDir.FullName, ZipFileName.GetFileName());
-								CommandUtils.CopyFile(ZipFileName.FullName, FinalZipFile, bQuiet: true, bRetry: true);
-								FileReference.Delete(ZipFileName);
-							}
-							ZipFiles.Add(new FileInfo(FinalZipFile));
-						}
-						catch (IOException Ex)
-						{
-							CommandUtils.LogError("Unable to copy file \"{0}\" to TempStorage: {1}", ZipFileName.FullName, Ex);
-							throw new AutomationException("Unable to copy file {0}", ZipFileName.FullName);
-						}
+						ZipFiles.Add(new FileInfo(ZipFileName.FullName));
 					}
 				})).ToList();
 
@@ -1062,7 +1059,25 @@ namespace AutomationTool
 			}
 
 			ZipThreads.ForEach(thread => thread.Join());
-			
+
+			if (ZipFiles.Any() && !string.IsNullOrWhiteSpace(StagingDir.FullName))
+			{
+				try
+				{
+					string CopyResult = CopyDirectory(ZipDir, OutputDir);
+					string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Files to Temp Storage.log");
+					CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+					File.WriteAllText(LogPath, string.Join(Environment.NewLine, CopyResult));
+					Parallel.ForEach(ZipFiles, (z) => z.Delete());
+					ZipFiles = new ConcurrentBag<FileInfo>(ZipFiles.Select(z => new FileInfo(CommandUtils.MakeRerootedFilePath(z.FullName, StagingDir.FullName, OutputDir.FullName))));
+				}
+				catch (IOException Ex)
+				{
+					CommandUtils.LogError("Unable to copy staging directory {0} to {1}, Ex: {2}", ZipDir.FullName, OutputDir.FullName, Ex);
+					throw new AutomationException(Ex, "Unable to copy staging directory {0} to {1}", ZipDir.FullName, OutputDir.FullName);
+				}
+			}
+
 			return ZipFiles.OrderBy(x => x.Name).ToArray();
 		}
 
@@ -1075,18 +1090,15 @@ namespace AutomationTool
 		/// <remarks>
 		/// The code is expected to be the used as the symmetrical inverse of <see cref="ParallelZipFiles"/>, but could be used independently, as long as the files in the zip do not overlap.
 		/// </remarks>
-		static void ParallelUnzipFiles(FileInfo[] ZipFiles, DirectoryReference RootDir)
+		private static string ParallelUnzipFiles(FileInfo[] ZipFiles, DirectoryReference RootDir)
 		{
+			ConcurrentBag<string> CopyResults = new ConcurrentBag<string>();
 			Parallel.ForEach(ZipFiles,
 				(ZipFile) =>
 				{
-					// Copy the zip file locally before unzipped to harden against network hiccups.
-					string LocalZipPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Intermediate/Manifests", ZipFile.Name);
-					CommandUtils.CopyFile(ZipFile.FullName, LocalZipPath, bQuiet: true, bRetry: true);
-					if (!File.Exists(LocalZipPath))
-					{
-						throw new AutomationException("Failed to copy manifest {0} to {1}", ZipFile, LocalZipPath);
-					}
+					// Copy the ZIP to the local drive before unzipping to harden against network issues.
+					CopyResults.Add(CopyFile(ZipFile, RootDir));
+					string LocalZipFile = CommandUtils.CombinePaths(RootDir.FullName, ZipFile.Name);
 
 					// unzip the files manually instead of caling ZipFile.ExtractToDirectory() because we need to overwrite readonly files. Because of this, creating the directories is up to us as well.
 					List<string> ExtractedPaths = new List<string>();
@@ -1095,7 +1107,7 @@ namespace AutomationTool
 					{
 						try
 						{
-							using (ZipArchive ZipArchive = System.IO.Compression.ZipFile.OpenRead(LocalZipPath))
+							using (ZipArchive ZipArchive = System.IO.Compression.ZipFile.OpenRead(LocalZipFile))
 							{
 								foreach (ZipArchiveEntry Entry in ZipArchive.Entries)
 								{
@@ -1143,7 +1155,7 @@ namespace AutomationTool
 													throw;
 												}
 
-												Log.TraceWarning("Failed to unzip '{0}' from '{1}' to '{2}', retrying.. (Error: {3})", Entry.FullName, LocalZipPath, ExtractedFilename, IOEx.Message);
+												Log.TraceWarning("Failed to unzip '{0}' from '{1}' to '{2}', retrying.. (Error: {3})", Entry.FullName, LocalZipFile, ExtractedFilename, IOEx.Message);
 											}
 										}
 									}
@@ -1156,22 +1168,30 @@ namespace AutomationTool
 						{
 							if (UnzipFileAttempts == 0)
 							{
-								Log.TraceError("All retries exhausted attempting to unzip entries from '{0}'. Terminating.", LocalZipPath);
+								Log.TraceError("All retries exhausted attempting to unzip entries from '{0}'. Terminating.", LocalZipFile);
+								string LogPath = CommandUtils.CombinePaths(RootDir.FullName, "Engine/Programs/AutomationTool/Saved/Logs", $"Copy Manifest - {ZipFile.Name}.log");
+								CommandUtils.LogInformation("Saving copy log to {0}", LogPath);
+								File.WriteAllText(LogPath, string.Join(Environment.NewLine, CopyResults));
 								throw;
 							}
 
 							// Some exceptions may be caused by networking hiccups. We want to retry in those cases.
 							if ((Ex is IOException || Ex is InvalidDataException))
 							{
-								Log.TraceWarning("Failed to unzip entries from '{0}' to '{1}', retrying.. (Error: {2})", LocalZipPath, RootDir.FullName, Ex.Message);
+								Log.TraceWarning("Failed to unzip entries from '{0}' to '{1}', retrying.. (Error: {2})", LocalZipFile, RootDir.FullName, Ex.Message);
 							}
 						}
 						finally
 						{
-							File.Delete(LocalZipPath);
+							if (File.Exists(LocalZipFile))
+							{
+								File.Delete(LocalZipFile);
+							}
 						}
 					}
 				});
+
+			return string.Join(Environment.NewLine, CopyResults);
 		}
 
 		/// <summary>
@@ -1243,7 +1263,7 @@ namespace AutomationTool
 			{
 				return true;
 			}
-			if (FileName.Equals("tbb.dll", StringComparison.OrdinalIgnoreCase) || FileName.Equals("libtbb.dylib", StringComparison.OrdinalIgnoreCase))
+			if (FileName.Equals("tbb.dll", StringComparison.OrdinalIgnoreCase) || FileName.Equals("tbb.pdb", StringComparison.OrdinalIgnoreCase) || FileName.Equals("libtbb.dylib", StringComparison.OrdinalIgnoreCase) || FileName.Equals("tbb.psym", StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}
@@ -1263,11 +1283,56 @@ namespace AutomationTool
 			{
 				return true;
 			}
+			if (FileName.StartsWith("lib", StringComparison.OrdinalIgnoreCase) && FileName.Contains(".so.", StringComparison.OrdinalIgnoreCase))
+			{
+				// e.g. a Unix shared library with a version number suffix.
+				return true;
+			}
 			if (FileName.Equals("plugInfo.json", StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}
 			return false;
+		}
+
+		static string CopyFile(FileInfo ZipFile, DirectoryReference RootDir)
+		{
+			if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
+			{
+				return CommandUtils.RunAndLog(GetRoboCopyExe(), $"\"{ZipFile.DirectoryName}\" \"{RootDir}\" \"{ZipFile.Name}\" /w:5 /r:10", MaxSuccessCode: 3, Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
+			}
+			else
+			{
+				return CommandUtils.RunAndLog("rsync", $"-v \"{ZipFile.DirectoryName}/{ZipFile.Name}\" \"{RootDir}/{ZipFile.Name}\"", Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
+			}
+		}
+
+		static string CopyDirectory(DirectoryReference SourceDir, DirectoryReference DestinationDir)
+		{
+			if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
+			{
+				return CommandUtils.RunAndLog(GetRoboCopyExe(), $"\"{SourceDir}\" \"{DestinationDir}\" * /S /w:5 /r:10", MaxSuccessCode: 3, Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
+			}
+			else
+			{
+				return CommandUtils.RunAndLog("rsync", $"-vam --include=\"**\" \"{SourceDir}/\" \"{DestinationDir}/\"", Options: CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoLoggingOfRunCommand);
+			}
+		}
+
+		static string GetRoboCopyExe()
+		{
+			var Result = CommandUtils.CombinePaths(Environment.SystemDirectory, "robocopy.exe");
+			if (!CommandUtils.FileExists(Result))
+			{
+				// Use Regex.Replace so we can do a case-insensitive replacement of System32
+				var SysNativeDirectory = Regex.Replace(Environment.SystemDirectory, "System32", "Sysnative", RegexOptions.IgnoreCase);
+				var SysNativeExe = CommandUtils.CombinePaths(SysNativeDirectory, "robocopy.exe");
+				if (CommandUtils.FileExists(SysNativeExe))
+				{
+					Result = SysNativeExe;
+				}
+			}
+			return Result;
 		}
 	}
 
@@ -1462,7 +1527,7 @@ namespace AutomationTool
 						}
 						catch (Exception Ex)
 						{
-							Log.TraceError("Exception while trying to delete {0}: {1}", BuildDirectory, Ex);
+							Log.TraceError("Exception while trying to scan files under {0}: {1}", BuildDirectory, Ex);
 						}
 					}
 				}
@@ -1474,11 +1539,27 @@ namespace AutomationTool
 			CommandUtils.LogInformation("Found {0} builds; {1} to delete.", NumBuilds, BuildsToDelete.Count);
 
 			// Loop through them all, checking for files older than the delete time
-			for (int Idx = 0; Idx < BuildsToDelete.Count; Idx++)
+			int Idx = BuildsToDelete.Count;
+			while (Idx-- > 0)
 			{
 				try
 				{
-					CommandUtils.LogInformation("[{0}/{1}] Deleting {2}...", Idx + 1, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
+					// Done if something already cleaned up this folder.
+					if (!BuildsToDelete[Idx].Exists)
+					{
+						continue;
+					}
+
+					// Check if there is a marker file, if so skip this folder unless it has been twenty minutes.
+					FileInfo DeleteInProgressFile = BuildsToDelete[Idx].GetFiles("DeleteInProgress.tmp").FirstOrDefault();
+					if (DeleteInProgressFile != null && DeleteInProgressFile.LastWriteTimeUtc < (DateTimeOffset.UtcNow - TimeSpan.FromMinutes(20)))
+					{
+						CommandUtils.LogInformation("[{0}/{1}] {2} flagged as delete in progress, skipping...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
+						continue;
+					}
+
+					File.WriteAllBytes(Path.Combine(BuildsToDelete[Idx].FullName, "DeleteInProgress.tmp"), Array.Empty<byte>());
+					CommandUtils.LogInformation("[{0}/{1}] Deleting {2}...", BuildsToDelete.Count - Idx, BuildsToDelete.Count, BuildsToDelete[Idx].FullName);
 					BuildsToDelete[Idx].Delete(true);
 				}
 				catch (Exception Ex)

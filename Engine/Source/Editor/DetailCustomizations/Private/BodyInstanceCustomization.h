@@ -2,19 +2,41 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Layout/Visibility.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "Engine/EngineTypes.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "IPropertyTypeCustomization.h"
-#include "PropertyHandle.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Misc/Optional.h"
 #include "PhysicsEngine/BodyInstance.h"
+#include "Serialization/Archive.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Input/SComboBox.h"
 
+class FDetailWidgetRow;
 class IDetailCategoryBuilder;
+class IDetailChildrenBuilder;
 class IDetailGroup;
 class IDetailLayoutBuilder;
+class IPropertyHandle;
+class SWidget;
 class UCollisionProfile;
+class UObject;
 class UPrimitiveComponent;
 class UStaticMeshComponent;
 
@@ -39,8 +61,8 @@ public:
 	}
 
 	/** IPropertyTypeCustomization interface */
-	virtual void CustomizeHeader( TSharedRef<IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils ) override {};
-	virtual void CustomizeChildren( TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils ) override;
+	virtual void CustomizeHeader( TSharedRef<IPropertyHandle> StructPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils ) override {};
+	virtual void CustomizeChildren( TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils ) override;
 
 private:
 
@@ -84,7 +106,7 @@ private:
 	bool AreAllCollisionUsingDefault() const;
 
 	// utility functions between property and struct
-	void CreateCustomCollisionSetup( TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailGroup& CollisionGroup );
+	void CreateCustomCollisionSetup( TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailGroup& CollisionGroup );
 	void SetCollisionResponseContainer(const FCollisionResponseContainer& ResponseContainer);
 	void SetResponse(int32 ValidIndex, ECollisionResponse InCollisionResponse);
 	void UpdateCollisionProfile();
@@ -92,8 +114,8 @@ private:
 
 	void UpdateValidCollisionChannels();
 
-	void AddPhysicsCategory(TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils);
-	void AddCollisionCategory(TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils);
+	void AddPhysicsCategory(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils);
+	void AddCollisionCategory(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils);
 
 private:
 	// property handles

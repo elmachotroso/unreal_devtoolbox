@@ -123,7 +123,6 @@ public:
 	static FORCEINLINE bool SupportsSeparateAlphaBlend()				{ return bSupportsDrawBuffersBlend; }
 	static FORCEINLINE void EnableSupportsClipControl()					{ bSupportsClipControl = true; }
 	static FORCEINLINE bool SupportsClipControl()						{ return bSupportsClipControl; }
-	static FORCEINLINE bool SupportsTextureView()						{ return false; }
 	static FORCEINLINE bool SupportsSeamlessCubeMap()					{ return false; }
 	static FORCEINLINE bool SupportsDrawIndirect()						{ return false; }
 	static FORCEINLINE bool SupportsGenerateMipmap()					{ return false; }
@@ -133,8 +132,8 @@ public:
 	static FORCEINLINE bool SupportsBindlessTexture()					{ return false; }
 	static FORCEINLINE bool HasHardwareHiddenSurfaceRemoval()			{ return false; }
 	static FORCEINLINE bool AmdWorkaround()								{ return false; }
-	static FORCEINLINE bool SupportsSeparateShaderObjects()				{ return false; }
 	static FORCEINLINE bool SupportsProgramBinary()						{ return false; }
+	static FORCEINLINE bool SupportsDepthClamp()						{ return true; }
 	
 	static FORCEINLINE bool SupportsASTCDecodeMode()					{ return false; }
 
@@ -144,7 +143,7 @@ public:
 	static FORCEINLINE GLint GetMaxTextureImageUnits()			{ check(MaxTextureImageUnits != -1); return MaxTextureImageUnits; }
 	static FORCEINLINE GLint GetMaxVertexTextureImageUnits()	{ check(MaxVertexTextureImageUnits != -1); return MaxVertexTextureImageUnits; }
 	static FORCEINLINE GLint GetMaxGeometryTextureImageUnits()	{ check(MaxGeometryTextureImageUnits != -1); return MaxGeometryTextureImageUnits; }
-	static FORCEINLINE GLint GetMaxComputeTextureImageUnits()	{ return 0; }
+	static FORCEINLINE GLint GetMaxComputeTextureImageUnits()	{ check(MaxComputeTextureImageUnits != -1); return MaxComputeTextureImageUnits; }
 	static FORCEINLINE GLint GetMaxCombinedTextureImageUnits()	{ check(MaxCombinedTextureImageUnits != -1); return MaxCombinedTextureImageUnits; }
 	static FORCEINLINE GLint GetTextureBufferAlignment()		{ return TextureBufferAlignment; }
 
@@ -221,12 +220,15 @@ public:
 	{
 		glFramebufferTexture2D(Target, Attachment, TexTarget, Texture, Level);
 	}
+	static FORCEINLINE void FramebufferTexture2DMultisample(GLenum Target, GLenum Attachment, GLenum TexTarget, GLuint Texture, GLint Level, GLint NumSamples) UGL_REQUIRED_VOID
 	static FORCEINLINE void FramebufferTexture3D(GLenum Target, GLenum Attachment, GLenum TexTarget, GLuint Texture, GLint Level, GLint ZOffset) UGL_REQUIRED_VOID
 	static FORCEINLINE void FramebufferTextureLayer(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLint Layer) UGL_REQUIRED_VOID
 	static FORCEINLINE void FramebufferRenderbuffer(GLenum Target, GLenum Attachment, GLenum RenderBufferTarget, GLuint RenderBuffer)
 	{
 		glFramebufferRenderbuffer(Target, Attachment, RenderBufferTarget, RenderBuffer);
 	}
+	static FORCEINLINE void FramebufferTextureMultiviewOVR(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLint BaseViewIndex, GLsizei NumViews) UGL_REQUIRED_VOID
+	static FORCEINLINE void FramebufferTextureMultisampleMultiviewOVR(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLsizei NumSamples, GLint BaseViewIndex, GLsizei NumViews) UGL_REQUIRED_VOID
 	static FORCEINLINE void BlitFramebuffer(GLint SrcX0, GLint SrcY0, GLint SrcX1, GLint SrcY1, GLint DstX0, GLint DstY0, GLint DstX1, GLint DstY1, GLbitfield Mask, GLenum Filter) UGL_REQUIRED_VOID
 	static FORCEINLINE void DrawBuffers(GLsizei NumBuffers, const GLenum *Buffers) UGL_REQUIRED_VOID
 	static FORCEINLINE void DepthRange(GLdouble Near, GLdouble Far) UGL_REQUIRED_VOID
@@ -283,6 +285,7 @@ public:
 	static FORCEINLINE void MemoryBarrier(GLbitfield Barriers) UGL_REQUIRED_VOID
 	static FORCEINLINE bool TexStorage2D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLenum Format, GLenum Type, ETextureCreateFlags Flags) UGL_OPTIONAL(false)
 	static FORCEINLINE bool TexStorage2DMultisample(GLenum Target, GLsizei Samples, GLint InternalFormat, GLsizei Width, GLsizei Height, GLboolean FixedSampleLocations) UGL_OPTIONAL(false)
+	static FORCEINLINE void RenderbufferStorageMultisample(GLenum Target, GLsizei Samples, GLint InternalFormat, GLsizei Width, GLsizei Height) UGL_REQUIRED_VOID
 	static FORCEINLINE void TexStorage3D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLsizei Depth, GLenum Format, GLenum Type) UGL_REQUIRED_VOID
 	static FORCEINLINE void CompressedTexSubImage3D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint ZOffset, GLsizei Width, GLsizei Height, GLsizei Depth, GLenum Format, GLsizei ImageSize, const GLvoid* PixelData) UGL_REQUIRED_VOID
 	static FORCEINLINE void CopyImageSubData(GLuint SrcName, GLenum SrcTarget, GLint SrcLevel, GLint SrcX, GLint SrcY, GLint SrcZ, GLuint DstName, GLenum DstTarget, GLint DstLevel, GLint DstX, GLint DstY, GLint DstZ, GLsizei Width, GLsizei Height, GLsizei Depth) UGL_REQUIRED_VOID
@@ -330,7 +333,7 @@ public:
 
 	static FORCEINLINE void CheckFrameBuffer()
 	{
-#if UE_BUILD_DEBUG 
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT 
 		GLenum CompleteResult = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 		if (CompleteResult != GL_FRAMEBUFFER_COMPLETE)
 		{
@@ -371,6 +374,7 @@ public:
 protected:
 	static GLint MaxTextureImageUnits;
 	static GLint MaxCombinedTextureImageUnits;
+	static GLint MaxComputeTextureImageUnits;
 	static GLint MaxVertexTextureImageUnits;
 	static GLint MaxGeometryTextureImageUnits;
 	static GLint MaxVertexUniformComponents;
@@ -636,4 +640,10 @@ protected:
 
 #ifndef TEXTURE_ASTC_DECODE_PRECISION_EXT
 #define TEXTURE_ASTC_DECODE_PRECISION_EXT 0x8F69
+#endif
+
+#ifndef GL_EXT_shader_pixel_local_storage
+#define GL_MAX_SHADER_PIXEL_LOCAL_STORAGE_FAST_SIZE_EXT 0x8F63
+#define GL_MAX_SHADER_PIXEL_LOCAL_STORAGE_SIZE_EXT 0x8F67
+#define GL_SHADER_PIXEL_LOCAL_STORAGE_EXT 0x8F64
 #endif

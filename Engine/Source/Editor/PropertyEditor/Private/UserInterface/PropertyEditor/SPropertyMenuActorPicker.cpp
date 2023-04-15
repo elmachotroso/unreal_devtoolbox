@@ -7,13 +7,13 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
-#include "Editor/SceneOutliner/Public/SceneOutlinerPublicTypes.h"
-#include "Editor/SceneOutliner/Public/SceneOutlinerModule.h"
-#include "AssetRegistryModule.h"
+#include "SceneOutlinerPublicTypes.h"
+#include "SceneOutlinerModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UserInterface/PropertyEditor/PropertyEditorAssetConstants.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "SceneOutlinerPublicTypes.h"
@@ -175,7 +175,7 @@ bool SPropertyMenuActorPicker::CanPaste()
 	else
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( *PossibleObjectPath ).IsValid();
+		bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( FSoftObjectPath(PossibleObjectPath) ).IsValid();
 	}
 
 	return bCanPaste;

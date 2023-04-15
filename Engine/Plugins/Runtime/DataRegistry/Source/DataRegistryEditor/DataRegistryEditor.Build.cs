@@ -9,11 +9,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public DataRegistryEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"DataRegistryEditor/Private",
-				});
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -29,8 +24,7 @@ namespace UnrealBuildTool.Rules
 					"InputCore",
 					"PropertyEditor",
 					"Slate",
-					"SlateCore",
-					"EditorStyle",
+					"SlateCore",					
 					"BlueprintGraph",
 					"Kismet",
 					"KismetCompiler",

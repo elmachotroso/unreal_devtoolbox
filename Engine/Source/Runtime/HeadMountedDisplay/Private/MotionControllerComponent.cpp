@@ -19,6 +19,8 @@
 #include "XRMotionControllerBase.h"
 #include "IXRTrackingSystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MotionControllerComponent)
+
 DEFINE_LOG_CATEGORY_STATIC(LogMotionControllerComponent, Log, All);
 
 namespace {
@@ -475,6 +477,55 @@ void UMotionControllerComponent::RefreshDisplayComponent(const bool bForceDestro
 	}
 }
 
+namespace UEMotionController {
+	// A scoped lock that must be explicitly locked and will unlock upon destruction if locked.
+	// Convenient if you only sometimes want to lock and the scopes are complicated.
+	class FScopeLockOptional
+	{
+	public:
+		FScopeLockOptional()
+		{
+		}
+
+		void Lock(FCriticalSection* InSynchObject)
+		{
+			SynchObject = InSynchObject;
+			SynchObject->Lock();
+		}
+
+		/** Destructor that performs a release on the synchronization object. */
+		~FScopeLockOptional()
+		{
+			Unlock();
+		}
+
+		void Unlock()
+		{
+			if (SynchObject)
+			{
+				SynchObject->Unlock();
+				SynchObject = nullptr;
+			}
+		}
+
+	private:
+		/** Copy constructor( hidden on purpose). */
+		FScopeLockOptional(const FScopeLockOptional& InScopeLock);
+
+		/** Assignment operator (hidden on purpose). */
+		FScopeLockOptional& operator=(FScopeLockOptional& InScopeLock)
+		{
+			return *this;
+		}
+
+	private:
+
+		// Holds the synchronization object to aggregate and scope manage.
+		FCriticalSection* SynchObject = nullptr;
+	};
+}
+
+
 //=============================================================================
 bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator& Orientation, float WorldToMetersScale)
 {
@@ -483,11 +534,40 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 		// Cache state from the game thread for use on the render thread
 		const AActor* MyOwner = GetOwner();
 		bHasAuthority = MyOwner->HasLocalNetOwner();
+
 	}
 
 	if(bHasAuthority)
 	{
-		TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+		UEMotionController::FScopeLockOptional LockOptional;
+
+		TArray<IMotionController*> MotionControllers;
+		if (IsInGameThread())
+		{
+			MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+			{
+				FScopeLock Lock(&PolledMotionControllerMutex);
+				PolledMotionController_GameThread = nullptr;
+			}
+		}
+		else if (IsInRenderingThread())
+		{
+			LockOptional.Lock(&PolledMotionControllerMutex);
+			if (PolledMotionController_RenderThread != nullptr)
+			{
+				MotionControllers.Add(PolledMotionController_RenderThread);
+			}
+		}
+		else
+		{
+			// If we are in some other thread we can't use the game thread code, because the ModularFeature access isn't threadsafe.
+			// The render thread code might work, or not.  
+			// Let's do the fully safe locking version, and assert because this case is not expected.
+			checkNoEntry();
+			IModularFeatures::FScopedLockModularFeatureList FeatureListLock;
+			MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+		}
+
 		for (auto MotionController : MotionControllers)
 		{
 			if (MotionController == nullptr)
@@ -503,6 +583,11 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 					InUseMotionController = MotionController;
 					OnMotionControllerUpdated();
 					InUseMotionController = nullptr;
+
+					{
+						FScopeLock Lock(&PolledMotionControllerMutex);
+						PolledMotionController_GameThread = MotionController;  // We only want a render thread update from the motion controller we polled on the game thread.
+					}
 				}
 				return true;
 			}
@@ -525,6 +610,20 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 	return false;
 }
 
+void UMotionControllerComponent::OnModularFeatureUnregistered(const FName& Type, class IModularFeature* ModularFeature)
+{
+	FScopeLock Lock(&PolledMotionControllerMutex);
+
+	if (ModularFeature == PolledMotionController_GameThread)
+	{
+		PolledMotionController_GameThread = nullptr;
+	}
+	if (ModularFeature == PolledMotionController_RenderThread)
+	{
+		PolledMotionController_RenderThread = nullptr;
+	}
+}
+
 //=============================================================================
 UMotionControllerComponent::FViewExtension::FViewExtension(const FAutoRegister& AutoRegister, UMotionControllerComponent* InMotionControllerComponent)
 	: FSceneViewExtensionBase(AutoRegister)
@@ -544,7 +643,7 @@ void UMotionControllerComponent::FViewExtension::BeginRenderViewFamily(FSceneVie
 }
 
 //=============================================================================
-void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 {
 	if (!MotionControllerComponent)
 	{
@@ -558,6 +657,11 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 		if (!MotionControllerComponent)
 		{
 			return;
+		}
+
+		{
+			FScopeLock Lock(&MotionControllerComponent->PolledMotionControllerMutex);
+			MotionControllerComponent->PolledMotionController_RenderThread = MotionControllerComponent->PolledMotionController_GameThread;
 		}
 
 		// Find a view that is associated with this player.
@@ -640,3 +744,4 @@ void UMotionControllerComponent::OnDisplayModelLoaded(UPrimitiveComponent* InDis
 		DisplayModelLoadState = EModelLoadStatus::Complete;
 	}	
 }
+

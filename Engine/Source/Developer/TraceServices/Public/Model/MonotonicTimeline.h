@@ -7,7 +7,6 @@
 #include "Common/PagedArray.h"
 #include "Model/AsyncEnumerateTask.h"
 #include "Model/MonotonicTimelineData.h"
-#include "TraceServices/AnalysisService.h"
 #include "TraceServices/Containers/Timelines.h"
 
 namespace TraceServices
@@ -30,9 +29,35 @@ struct FMonotonicTimelineDefaultSettings
 	}
 };
 
+/*
+* An interface that can consume timed serial events (a timeline).
+*/
+template<typename InEventType>
+class IEditableTimeline
+{
+public:
+	virtual ~IEditableTimeline() = default;
+
+	/*
+	* Begin a new timed event.
+	* 
+	* @param StartTime	The starting timestamp of the event in seconds.
+	* @param Event		The event information.
+	*/
+	virtual void AppendBeginEvent(double StartTime, const InEventType& Event) = 0;
+
+	/*
+	* End a new timed event. This ends the event started by the prior call to AppendBeginEvent.
+	* 
+	* @param EndTime	The ending timestamp of the event in seconds.
+	*/
+	virtual void AppendEndEvent(double EndTime) = 0;
+};
+
 template<typename InEventType, typename SettingsType = FMonotonicTimelineDefaultSettings>
 class TMonotonicTimeline
 	: public ITimeline<InEventType>
+	, public IEditableTimeline<InEventType>
 {
 	friend class FEnumerateAsyncTask<InEventType, SettingsType>;
 
@@ -56,7 +81,7 @@ public:
 
 	virtual ~TMonotonicTimeline() = default;
 
-	void AppendBeginEvent(double StartTime, const EventType& Event)
+	virtual void AppendBeginEvent(double StartTime, const EventType& Event) override
 	{
 		int32 CurrentDepth = DetailLevels[0].InsertionState.CurrentDepth;
 		if (CurrentDepth >= SettingsType::MaxDepth)
@@ -122,7 +147,7 @@ public:
 		++ModCount;
 	}
 
-	void AppendEndEvent(double EndTime)
+	virtual void AppendEndEvent(double EndTime) override
 	{
 		if (ExtraDepthEvents > 0)
 		{
@@ -217,8 +242,7 @@ public:
 		{
 			--FirstScopePageIndex;
 		}
-		auto ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
-		const FEventScopeEntryPage* ScopePage = ScopeEntryIterator.GetCurrentPage();
+		const FEventScopeEntryPage* ScopePage = DetailLevel.ScopeEntries.GetPage(FirstScopePageIndex);
 		if (ScopePage->BeginTime > IntervalEnd)
 		{
 			return;
@@ -227,7 +251,7 @@ public:
 		{
 			return;
 		}
-		auto EventsIterator = DetailLevel.Events.GetIteratorFromItem(ScopePage->BeginEventIndex);
+
 		struct FEnumerationStackEntry
 		{
 			double StartTime;
@@ -243,11 +267,15 @@ public:
 			EnumerationStackEntry.Event = DetailLevel.GetEvent(EventStackEntry.EventIndex);
 		}
 
+		auto ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
 		const FEventScopeEntry* ScopeEntry = ScopeEntryIterator.GetCurrentItem();
+
+		auto EventsIterator = DetailLevel.Events.GetIteratorFromItem(ScopePage->BeginEventIndex);
 		const EventType* Event = EventsIterator.GetCurrentItem();
+
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) < IntervalStart)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth < SettingsType::MaxDepth);
 				FEnumerationStackEntry& StackEntry = EventStack[CurrentStackDepth++];
@@ -276,7 +304,7 @@ public:
 		}
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) <= IntervalEnd)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth < SettingsType::MaxDepth);
 				FEnumerationStackEntry& StackEntry = EventStack[CurrentStackDepth++];
@@ -309,7 +337,7 @@ public:
 				bSearchEndTimeUsingPages = true;
 				break;
 			}
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				++ExitDepth;
 			}
@@ -335,11 +363,10 @@ public:
 
 		if (bSearchEndTimeUsingPages)
 		{
+			const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
 			do
 			{
-				const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
 				check(CurrentStackDepth <= CurrentScopePage->InitialStackCount);
-
 				while (CurrentStackDepth > 0 && CurrentScopePage->InitialStack[CurrentStackDepth - 1].EndTime > 0)
 				{
 					--CurrentStackDepth;
@@ -349,7 +376,9 @@ public:
 						return;
 					}
 				}
-			} while (ScopeEntryIterator.NextPage());
+				CurrentScopePage = ScopeEntryIterator.NextPage();
+			}
+			while (CurrentScopePage != nullptr);
 		}
 
 		while (CurrentStackDepth > 0)
@@ -401,7 +430,7 @@ public:
 		{
 			// If we have a page we can start from, start enumerating backwards from the begining of that page.
 			ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(LastScopePageIndex);
-			const FEventScopeEntryPage* ScopePage = ScopeEntryIterator.GetCurrentPage();
+			const FEventScopeEntryPage* ScopePage = DetailLevel.ScopeEntries.GetPage(LastScopePageIndex);
 
 			EventsIterator = DetailLevel.Events.GetIteratorFromItem(ScopePage->BeginEventIndex);
 			CurrentStackDepth = ScopePage->InitialStackCount;
@@ -432,7 +461,6 @@ public:
 			// We start enumerating from the previous page.
 			ScopeEntry = ScopeEntryIterator.PrevItem();
 			EventsIterator.PrevItem();
-
 		}
 		else
 		{
@@ -452,7 +480,7 @@ public:
 		const EventType* Event = EventsIterator.GetCurrentItem();
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) > IntervalEnd)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth > 0);
 				--CurrentStackDepth;
@@ -480,7 +508,7 @@ public:
 		// Enumerate backwards between IntervalEnd and IntervalStart.
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) >= IntervalStart)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth > 0);
 				FEnumerationStackEntry& StackEntry = EventStack[--CurrentStackDepth];
@@ -516,7 +544,7 @@ public:
 				bSearchStartTimeUsingPages = true;
 				break;
 			}
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				if (ExitDepth == 0)
 				{
@@ -543,11 +571,10 @@ public:
 
 		if (bSearchStartTimeUsingPages)
 		{
+			const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
 			do
 			{
-				const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
 				check(CurrentStackDepth <= CurrentScopePage->InitialStackCount);
-
 				while (CurrentStackDepth > 0)
 				{
 					--CurrentStackDepth;
@@ -558,7 +585,9 @@ public:
 						return;
 					}
 				}
-			} while (ScopeEntryIterator.PrevPage());
+				CurrentScopePage = ScopeEntryIterator.PrevPage();
+			}
+			while (CurrentScopePage != nullptr);
 		}
 	}
 
@@ -633,10 +662,11 @@ public:
 			});
 
 		TArray<TSharedRef<FAsyncTask<FEnumarateAsyncTask>>> WorkerTasks;
-		uint64 NumPages = FMath::Max(LastScopePageIndex - FirstScopePageIndex, 1ULL);
 
+		check(LastScopePageIndex >= FirstScopePageIndex);
+		uint32 NumPages = FMath::Max(static_cast<uint32>(LastScopePageIndex - FirstScopePageIndex), 1u);
 		uint32 NumThreads = GThreadPool->GetNumThreads();
-		uint32 NumTasks = FMath::Min((uint64)NumThreads, NumPages);
+		uint32 NumTasks = FMath::Min(NumThreads, NumPages);
 		uint32 PagesPerTask = NumPages / NumTasks;
 		uint32 RemainingPages = NumPages % NumTasks; // The remaining pages will be split between the first tasks
 
@@ -802,7 +832,7 @@ public:
 		{
 			--FirstScopePageIndex;
 			ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
-			ScopePage = ScopeEntryIterator.GetCurrentPage();
+			ScopePage = DetailLevel.ScopeEntries.GetPage(FirstScopePageIndex);
 		}
 
 		auto EventsIterator = DetailLevel.Events.GetIteratorFromItem(ScopePage->BeginEventIndex);
@@ -826,7 +856,7 @@ public:
 		//Iterate from the start of the page to the start time of our interval
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) <= IntervalStart)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth < SettingsType::MaxDepth);
 				FEventInfoStackEntry& StackEntry = EventStack[CurrentStackDepth++];
@@ -918,16 +948,14 @@ public:
 		ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
 		auto EventLastPageIterator = ScopeEntryIterator;
 
-		while (ScopeEntryIterator.NextPage() != nullptr)
+		while (const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.NextPage())
 		{
-			const FEventScopeEntryPage* CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
-
 			if (CurrentScopePage->InitialStackCount <= Depth)
 			{
 				break;
 			}
-			double StartTime = DetailLevel.GetScopeEntryTime(CurrentScopePage->InitialStack[Depth].EnterScopeIndex);
 
+			double StartTime = DetailLevel.GetScopeEntryTime(CurrentScopePage->InitialStack[Depth].EnterScopeIndex);
 			if (StartTime != TargetEntry.StartTime)
 			{
 				break;
@@ -967,7 +995,7 @@ public:
 		while (ScopeEntry &&
 			   Depth < CurrentStackDepth)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(CurrentStackDepth < SettingsType::MaxDepth);
 				FEventInfoStackEntry& StackEntry = EventStack[CurrentStackDepth++];
@@ -1022,8 +1050,7 @@ public:
 		{
 			--FirstScopePageIndex;
 		}
-		auto ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
-		const FEventScopeEntryPage* ScopePage = ScopeEntryIterator.GetCurrentPage();
+		const FEventScopeEntryPage* ScopePage = DetailLevel.ScopeEntries.GetPage(FirstScopePageIndex);
 		if (ScopePage->BeginTime > Time)
 		{
 			return 0;
@@ -1031,10 +1058,11 @@ public:
 
 		int32 CurrentStackDepth = ScopePage->InitialStackCount;
 
+		auto ScopeEntryIterator = DetailLevel.ScopeEntries.GetIteratorFromPage(FirstScopePageIndex);
 		const FEventScopeEntry* ScopeEntry = ScopeEntryIterator.GetCurrentItem();
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) < Time)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				CurrentStackDepth++;
 			}
@@ -1225,11 +1253,11 @@ private:
 			}
 		}
 
-		const FEventScopeEntryPage* NextScopePage = nullptr;
-		if (!bIsInCurrentPageInitStack && ScopeEntryIterator.NextPage() != nullptr)
+		if (!bIsInCurrentPageInitStack)
 		{
-			NextScopePage = ScopeEntryIterator.GetCurrentPage();
-			if (NextScopePage->InitialStackCount > Depth)
+			const FEventScopeEntryPage* NextScopePage = ScopeEntryIterator.NextPage();
+			if (NextScopePage != nullptr &&
+				NextScopePage->InitialStackCount > Depth)
 			{
 				FEventStackEntry& NextPageStackEntry = NextScopePage->InitialStack[Depth];
 				double StartTime = DetailLevel.GetScopeEntryTime(NextPageStackEntry.EnterScopeIndex);
@@ -1246,9 +1274,14 @@ private:
 			return false;
 		}
 
-		while (ScopeEntryIterator.NextPage() != nullptr && CurrentScopePage->InitialStack[Depth].EndTime < 0)
+		while (CurrentScopePage->InitialStack[Depth].EndTime < 0)
 		{
-			CurrentScopePage = ScopeEntryIterator.GetCurrentPage();
+			const FEventScopeEntryPage* NextScopePage = ScopeEntryIterator.NextPage();
+			if (NextScopePage == nullptr)
+			{
+				break;
+			}
+			CurrentScopePage = NextScopePage;
 		}
 
 		OutPageStackEntry = CurrentScopePage->InitialStack[Depth];
@@ -1270,7 +1303,7 @@ private:
 		//......]...]....]...TargetExactTime
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) <= InParams.TargetExactTime)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(IterationState.StackDepth < SettingsType::MaxDepth);
 				FEventInfoStackEntry& StackEntry = IterationState.EventStack[IterationState.StackDepth++];
@@ -1322,7 +1355,7 @@ private:
 		bool bHasStartEvent = false;
 		while (ScopeEntry && FMath::Abs(ScopeEntry->Time) <= InParams.TargetEndTime)
 		{
-			if (FMath::IsNegative(ScopeEntry->Time))
+			if (ScopeEntry->Time < 0.0)
 			{
 				check(IterationState.StackDepth < SettingsType::MaxDepth);
 				FEventInfoStackEntry& StackEntry = IterationState.EventStack[IterationState.StackDepth++];

@@ -6,6 +6,7 @@
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "Async/ParallelFor.h"
 #include "ComponentSourceInterfaces.h"
+#include "TargetInterfaces/MaterialProvider.h"
 
 using namespace UE::Geometry;
 
@@ -47,6 +48,8 @@ void FMeshRenderDecomposition::BuildMaterialDecomposition(const FDynamicMesh3* M
 		Group.Material = UseMaterials->Materials[k];
 	}
 
+	TArray<int32> InvalidTris;
+
 	for (int32 tid : Mesh->TriangleIndicesItr())
 	{
 		int32 MatIdx = 0;
@@ -59,6 +62,21 @@ void FMeshRenderDecomposition::BuildMaterialDecomposition(const FDynamicMesh3* M
 			FMeshRenderDecomposition::FGroup& Group = Decomp.GetGroup(MatIdx);
 			Group.Triangles.Add(tid);
 		}
+		else
+		{
+			InvalidTris.Add(tid);		// MaterialID refers to missing material
+		}
+	}
+
+	// If any triangles were not allocated to a specific material group, put them into a new group.
+	// Possibly these will not be rendered correctly by higher-level code, but at least we can
+	// guarantee that they are not lost here
+	if (InvalidTris.Num() > 0)
+	{
+		int32 NewGroup = Decomp.AppendGroup();
+		FMeshRenderDecomposition::FGroup& Group = Decomp.GetGroup(NewGroup);
+		Group.Triangles = MoveTemp(InvalidTris);
+		Group.Material = nullptr;
 	}
 }
 

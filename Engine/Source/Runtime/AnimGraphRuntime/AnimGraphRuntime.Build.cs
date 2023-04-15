@@ -7,8 +7,6 @@ public class AnimGraphRuntime : ModuleRules
 {
 	public AnimGraphRuntime(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Runtime/AnimGraphRuntime/Private");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] { 
 				"Core", 
@@ -31,13 +29,10 @@ public class AnimGraphRuntime : ModuleRules
                 "Eigen"
                 );
 
-        if (Target.bCompileChaos || Target.bUseChaos)
-        {
-            PublicDependencyModuleNames.AddRange(
-                new string[] {
-					"GeometryCollectionEngine",
-                }
-            );
-        }
+        PublicDependencyModuleNames.AddRange(
+            new string[] {
+				"GeometryCollectionEngine",
+            }
+        );
     }
 }

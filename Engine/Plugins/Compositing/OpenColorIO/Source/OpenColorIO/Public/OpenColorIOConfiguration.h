@@ -35,9 +35,13 @@ public:
 	UOpenColorIOConfiguration(const FObjectInitializer& ObjectInitializer);
 
 public:
+	bool GetRenderResources(ERHIFeatureLevel::Type InFeatureLevel, const FOpenColorIOColorConversionSettings& InSettings, FOpenColorIOTransformResource*& OutShaderResource, TSortedMap<int32, FTextureResource*>& OutTextureResources);
+	UE_DEPRECATED(5.1, "GetShaderAndLUTResources is deprecated, please use GetRenderResources instead.")
 	bool GetShaderAndLUTResources(ERHIFeatureLevel::Type InFeatureLevel, const FString& InSourceColorSpace, const FString& InDestinationColorSpace, FOpenColorIOTransformResource*& OutShaderResource, FTextureResource*& OutLUT3dResource);
 	bool HasTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace);
+	bool HasTransform(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection);
 	bool HasDesiredColorSpace(const FOpenColorIOColorSpace& ColorSpace) const;
+	bool HasDesiredDisplayView(const FOpenColorIODisplayView& DisplayView) const;
 	bool Validate() const;
 
 	/** This forces to reload colorspaces and corresponding shaders if those are not loaded already. */
@@ -55,6 +59,7 @@ public:
 
 protected:
 	void CreateColorTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace);
+	void CreateColorTransform(const FString& InSourceColorSpace, const FString& InDisplay, const FString& InView, EOpenColorIOViewTransformDirection InDirection);
 	void CleanupTransforms();
 
 	/** Same as above except user can specify the path manually. */
@@ -67,6 +72,10 @@ public:
 
 	//~ Begin UObject interface
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 	virtual void BeginDestroy() override;
 
@@ -89,10 +98,13 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ColorSpace", meta=(OCIOConfigFile="ConfigurationFile"))
 	TArray<FOpenColorIOColorSpace> DesiredColorSpaces;
 
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "ColorSpace", DisplayName="Desired Display-Views", meta = (OCIOConfigFile = "ConfigurationFile"))
+	TArray<FOpenColorIODisplayView> DesiredDisplayViews;
+
 private:
 
 	UPROPERTY()
-	TArray<UOpenColorIOColorTransform*> ColorTransforms;
+	TArray<TObjectPtr<UOpenColorIOColorTransform>> ColorTransforms;
 
 #if WITH_EDITORONLY_DATA && WITH_OCIO
 	OCIO_NAMESPACE::ConstConfigRcPtr LoadedConfig;

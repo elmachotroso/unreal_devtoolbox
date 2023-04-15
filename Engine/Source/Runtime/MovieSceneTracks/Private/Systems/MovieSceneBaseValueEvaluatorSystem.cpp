@@ -10,6 +10,8 @@
 #include "Channels/MovieSceneDoubleChannel.h"
 #include "Channels/MovieSceneFloatChannel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBaseValueEvaluatorSystem)
+
 namespace UE
 {
 namespace MovieScene
@@ -17,12 +19,14 @@ namespace MovieScene
 
 struct FEvaluateBaseFloatValues
 {
-	void ForEachEntity(FSourceFloatChannel FloatChannel, FFrameTime FrameTime, float& OutResult)
+	void ForEachEntity(FSourceFloatChannel FloatChannel, FFrameTime FrameTime, double& OutResult)
 	{
-		if (!FloatChannel.Source->Evaluate(FrameTime, OutResult))
+		float Result;
+		if (!FloatChannel.Source->Evaluate(FrameTime, Result))
 		{
-			OutResult = MIN_flt;
+			Result = MIN_flt;
 		}
+		OutResult = (double)Result;
 	}
 };
 
@@ -47,6 +51,7 @@ UMovieSceneBaseValueEvaluatorSystem::UMovieSceneBaseValueEvaluatorSystem(const F
 
 	Phase = ESystemPhase::Instantiation;
 	RelevantComponent = FBuiltInComponentTypes::Get()->BaseValueEvalTime;
+	SystemCategories = EEntitySystemCategory::ChannelEvaluators;
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -61,17 +66,17 @@ void UMovieSceneBaseValueEvaluatorSystem::OnRun(FSystemTaskPrerequisites& InPrer
 	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 
 	static_assert(
-			UE_ARRAY_COUNT(BuiltInComponents->BaseFloat) == UE_ARRAY_COUNT(BuiltInComponents->FloatChannel),
+			UE_ARRAY_COUNT(BuiltInComponents->BaseDouble) == UE_ARRAY_COUNT(BuiltInComponents->FloatChannel),
 			"There should be a matching number of float channels and float base values.");
-	for (size_t Index = 0; Index < UE_ARRAY_COUNT(BuiltInComponents->BaseFloat); ++Index)
+	for (size_t Index = 0; Index < UE_ARRAY_COUNT(BuiltInComponents->BaseDouble); ++Index)
 	{
-		const TComponentTypeID<float> BaseFloat = BuiltInComponents->BaseFloat[Index];
+		const TComponentTypeID<double> BaseDouble = BuiltInComponents->BaseDouble[Index];
 		const TComponentTypeID<FSourceFloatChannel> FloatChannel = BuiltInComponents->FloatChannel[Index];
 
 		FEntityTaskBuilder()
 		.Read(FloatChannel)
 		.Read(BuiltInComponents->BaseValueEvalTime)
-		.Write(BaseFloat)
+		.Write(BaseDouble)
 		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
 		.FilterNone({ BuiltInComponents->Tags.Ignored })
 		.RunInline_PerEntity(&Linker->EntityManager, FEvaluateBaseFloatValues());
@@ -94,3 +99,4 @@ void UMovieSceneBaseValueEvaluatorSystem::OnRun(FSystemTaskPrerequisites& InPrer
 		.RunInline_PerEntity(&Linker->EntityManager, FEvaluateBaseDoubleValues());
 	}
 }
+

@@ -6,6 +6,7 @@
 #include "Styling/ISlateStyle.h"
 #include "Toolkits/IToolkitHost.h"
 #include "AssetTypeActions_Base.h"
+#include "AssetTypeCategories.h"
 
 
 /**
@@ -21,12 +22,11 @@ public:
 	 *
 	 * @param InStyle The style set to use for asset editor toolkits.
 	 */
-	FLevelSequenceActions(const TSharedRef<ISlateStyle>& InStyle);
+	FLevelSequenceActions(const TSharedRef<ISlateStyle>& InStyle, const EAssetTypeCategories::Type InCategory);
 
 public:
 	
 	// IAssetTypeActions interface
-
 	virtual uint32 GetCategories() override;
 	virtual FText GetName() const override;
 	virtual UClass* GetSupportedClass() const override;
@@ -34,10 +34,11 @@ public:
 	virtual void OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>()) override;
 	virtual bool ShouldForceWorldCentric() override;
 	virtual bool CanLocalize() const override { return false; }
-	virtual bool HasActions(const TArray<UObject*>& InObjects) const { return false; }
 
 private:
 
 	/** Pointer to the style set to use for toolkits. */
 	TSharedRef<ISlateStyle> Style;
+
+	const EAssetTypeCategories::Type AssetCategory;
 };

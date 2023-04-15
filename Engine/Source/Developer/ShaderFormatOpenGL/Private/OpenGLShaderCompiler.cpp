@@ -9,6 +9,7 @@
 #include "ShaderFormatOpenGL.h"
 #include "HlslccHeaderWriter.h"
 #include "SpirvReflectCommon.h"
+#include "ShaderParameterParser.h"
 #include <algorithm>
 #include <regex>
 
@@ -80,15 +81,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogOpenGLShaderCompiler, Log, All);
 static FORCEINLINE bool IsPCESPlatform(GLSLVersion Version)
 {
 	return (Version == GLSL_150_ES3_1);
-}
-
-// This function should match OpenGLShaderPlatformSeparable
-bool FOpenGLFrontend::SupportsSeparateShaderObjects(GLSLVersion Version)
-{
-	// Only desktop shader platforms can use separable shaders for now,
-	// the generated code relies on macros supplied at runtime to determine whether
-	// shaders may be separable and/or linked.
-	return Version == GLSL_150_ES3_1;
 }
 
 /*------------------------------------------------------------------------------
@@ -712,7 +704,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-			ParameterMap.AddParameterAllocation(*UniformBlock.Name, UBIndex, 0, 0, EShaderParameterType::UniformBuffer);
+			HandleReflectedUniformBuffer(UniformBlock.Name, UBIndex, ShaderOutput);
 		}
 		Header.Bindings.NumUniformBuffers++;
 	}
@@ -743,13 +735,13 @@ void FOpenGLFrontend::BuildShaderOutput(
 		if (bIgnore)
 			continue;
 
-		ParameterMap.AddParameterAllocation(
-			*PackedGlobal.Name,
+		HandleReflectedGlobalConstantBufferMember(
+			PackedGlobal.Name,
 			PackedGlobal.PackedType,
-			PackedGlobal.Offset * BytesPerComponent,
-			PackedGlobal.Count * BytesPerComponent,
-			EShaderParameterType::LooseData
-			);
+			PackedGlobal.Offset* BytesPerComponent,
+			PackedGlobal.Count* BytesPerComponent,
+			ShaderOutput
+		);
 
 		uint16& Size = PackedGlobalArraySize.FindOrAdd(PackedGlobal.PackedType);
 		Size = FMath::Max<uint16>(BytesPerComponent * (PackedGlobal.Offset + PackedGlobal.Count), Size);
@@ -769,7 +761,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-			ParameterMap.AddParameterAllocation(*PackedUB.Attribute.Name, PackedUB.Attribute.Index, 0, 0, EShaderParameterType::UniformBuffer);
+			HandleReflectedUniformBuffer(PackedUB.Attribute.Name, PackedUB.Attribute.Index, ShaderOutput);
 		}
 		Header.Bindings.NumUniformBuffers++;
 
@@ -884,13 +876,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-		ParameterMap.AddParameterAllocation(
-			*Sampler.Name,
-			0,
-			Sampler.Offset,
-			Sampler.Count,
-			EShaderParameterType::SRV
-			);
+			HandleReflectedShaderResource(Sampler.Name, Sampler.Offset, Sampler.Count, ShaderOutput);
 		}
 
 		Header.Bindings.NumSamplers = FMath::Max<uint8>(
@@ -907,13 +893,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 			}
 			else
 			{
-				ParameterMap.AddParameterAllocation(
-					*SamplerState,
-					0,
-					Sampler.Offset,
-					Sampler.Count,
-					EShaderParameterType::Sampler
-					);
+				HandleReflectedShaderSampler(SamplerState, Sampler.Offset, Sampler.Count, ShaderOutput);
 			}
 		}
 	}
@@ -930,13 +910,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-		ParameterMap.AddParameterAllocation(
-			*UAV.Name,
-			0,
-			UAV.Offset,
-			UAV.Count,
-			EShaderParameterType::UAV
-			);
+			HandleReflectedShaderUAV(UAV.Name, UAV.Offset, UAV.Count, ShaderOutput);
 		}
 
 		Header.Bindings.NumUAVs = FMath::Max<uint8>(
@@ -1181,11 +1155,6 @@ uint32 FOpenGLFrontend::CalculateCrossCompilerFlags(GLSLVersion Version, const b
 		CCFlags |= HLSLCC_ExpandUBMemberArrays;
 	}
 
-	if (SupportsSeparateShaderObjects(Version))
-	{
-		CCFlags |= HLSLCC_SeparateShaderObjects;
-	}
-
 	if (CompilerFlags.Contains(CFLAG_UsesExternalTexture))
 	{
 		CCFlags |= HLSLCC_UsesExternalTexture;
@@ -1383,7 +1352,7 @@ void AddMemberToPackedUB(const std::string& FrequencyPrefix,
 			Name += Buff;
 		}
 
-		for (uint32_t i = 0; i < type.traits.numeric.matrix.row_count; ++i)
+		for (uint32_t i = 0; i < type.traits.numeric.matrix.column_count; ++i)
 		{
 			if (i > 0)
 			{
@@ -1397,7 +1366,7 @@ void AddMemberToPackedUB(const std::string& FrequencyPrefix,
 			std::string Buff = "[" + OffsetString + " + " + std::to_string(i) + "]";
 			Name += Buff;
 
-			switch (type.traits.numeric.matrix.column_count)
+			switch (type.traits.numeric.matrix.row_count)
 			{
 			case 0:
 			case 1:
@@ -1657,7 +1626,9 @@ void ParseReflectionData(const FShaderCompilerInput& ShaderInput, CrossCompiler:
 		}
 		else
 		{
-			if (bEmulatedUBs)
+			const FUniformBufferEntry* UniformBufferEntry = ShaderInput.Environment.UniformBufferMap.Find(Binding->name);
+
+			if (bEmulatedUBs && (UniformBufferEntry == nullptr || !UniformBufferEntry->bNoEmulatedUniformBuffer))
 			{
 				check(UBOIndices);
 				uint32 Index = FPlatformMath::CountTrailingZeros(UBOIndices);
@@ -2649,7 +2620,163 @@ bool GenerateGlslShader(std::string& OutString, GLSLCompileParameters& GLSLCompi
 	return true;
 }
 
-bool GenerateDeferredMobileShaders(std::string& GlslSource, GLSLCompileParameters& GLSLCompileParams, const std::string& HlslString, ReflectionData& ReflectData, bool bWriteToCCHeader, bool bIsDeferred, bool bEmulatedUBs)
+enum EDecalBlendFlags
+{
+	DecalOut_MRT0  	= 1,
+	DecalOut_MRT1  	= 1 << 1,
+	DecalOut_MRT2  	= 1 << 2,
+	DecalOut_MRT3  	= 1 << 3,
+	Translucent		= 1 << 4,
+	AlphaComposite  = 1 << 5,
+	Modulate		= 1 << 6,
+};
+
+bool EnvironmentHasMatchingKeyValue(const TMap<FString, FString>& Definitions, const FString& Key, const FString& Value)
+{
+	const FString* MatchedKey = Definitions.Find(Key);
+	if (MatchedKey)
+	{
+		return *MatchedKey == Value;
+	}
+	return false;
+}
+
+uint32_t GetDecalBlendFlags(const FShaderCompilerInput& Input)
+{
+	uint32_t Flags = 0;
+
+	const TMap<FString, FString>& Definitions = Input.Environment.GetDefinitions();
+	
+	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT0"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::DecalOut_MRT0;
+	}
+	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT1"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::DecalOut_MRT1;
+	}
+	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT2"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::DecalOut_MRT2;
+	}
+	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("DECAL_OUT_MRT3"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::DecalOut_MRT3;
+	}
+
+	if (!Flags)
+	{
+		return 0;
+	}
+
+	if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_ALPHACOMPOSITE"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::AlphaComposite;
+	}
+	else if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_MODULATE"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::Modulate;
+	}
+	else if (EnvironmentHasMatchingKeyValue(Definitions, TEXT("MATERIALBLENDING_TRANSLUCENT"), TEXT("1")))
+	{
+		Flags |= EDecalBlendFlags::Translucent;
+	}
+
+	return Flags;
+}
+
+enum class EDecalBlendFunction
+{
+	SrcAlpha_One,
+	SrcAlpha_InvSrcAlpha,
+	DstColor_InvSrcAlpha,
+	One_InvSrcAlpha,
+	None
+};
+
+//																	Emissive,							Normal,										Metallic\Specular\Roughness,				BaseColor
+static const EDecalBlendFunction TranslucentBlendFunctions[]	= { EDecalBlendFunction::SrcAlpha_One,	EDecalBlendFunction::SrcAlpha_InvSrcAlpha,	EDecalBlendFunction::SrcAlpha_InvSrcAlpha,  EDecalBlendFunction::SrcAlpha_InvSrcAlpha };
+static const EDecalBlendFunction AlphaCompositeBlendFunctions[] = { EDecalBlendFunction::SrcAlpha_One,	EDecalBlendFunction::None,					EDecalBlendFunction::One_InvSrcAlpha,		EDecalBlendFunction::One_InvSrcAlpha };
+static const EDecalBlendFunction ModulateBlendFunctions[]		= { EDecalBlendFunction::SrcAlpha_One,	EDecalBlendFunction::SrcAlpha_InvSrcAlpha,	EDecalBlendFunction::SrcAlpha_InvSrcAlpha,  EDecalBlendFunction::DstColor_InvSrcAlpha };
+
+void GetDecalBlendFunctionString(const EDecalBlendFunction BlendFunction, const std::string& AttachmentString, const std::string& TempOutputName, std::string& OutputString)
+{
+	switch (BlendFunction)
+	{
+		case EDecalBlendFunction::SrcAlpha_One:
+		{
+			OutputString = AttachmentString + ".rgb = " + TempOutputName + ".a * " + TempOutputName + ".rgb + " + AttachmentString + ".rgb";
+			break;
+		}
+		case EDecalBlendFunction::SrcAlpha_InvSrcAlpha:
+		{
+			OutputString = AttachmentString + ".rgb = " + TempOutputName + ".a * " + TempOutputName + ".rgb + (1.0 - " + TempOutputName + ".a) * " + AttachmentString + ".rgb";
+			break;
+		}
+		case EDecalBlendFunction::DstColor_InvSrcAlpha:
+		{
+			OutputString = AttachmentString + ".rgb = " + TempOutputName + ".rgb * " + AttachmentString + ".rgb + (1.0 - " + TempOutputName + ".a) * " + AttachmentString + ".rgb";
+			break;
+		}
+		case EDecalBlendFunction::One_InvSrcAlpha:
+		{
+			OutputString = AttachmentString + ".rgb = " + TempOutputName + ".rgb + (1.0 - " + TempOutputName + ".a) * " + AttachmentString + ".rgb";
+			break;
+		}
+		case EDecalBlendFunction::None:
+		{
+			OutputString = "";
+			break;
+		}
+	}
+}
+
+void ModifyDecalBlending(std::string& SourceString, const uint32_t BlendFlags)
+{
+	for (uint32_t i = 0; i < 4; ++i)
+	{
+		std::string OutIndex = std::to_string(i);
+		std::string AttachmentString = "GENERATED_SubpassFetchAttachment" + OutIndex;
+		std::string AttachmentAssignmentString = AttachmentString + " =";
+
+		size_t AssignmentPos = SourceString.find(AttachmentAssignmentString);
+		if (AssignmentPos != std::string::npos)
+		{
+			size_t AssignmentEndPos = AssignmentPos + AttachmentAssignmentString.size();
+			size_t StringEndPos = SourceString.find(";", AssignmentEndPos);
+
+			std::string TempOutputName = "TempMulOut" + OutIndex;
+			std::string TempOut = "highp vec4 " + TempOutputName + " = " + SourceString.substr(AssignmentEndPos, StringEndPos - AssignmentEndPos) + "; \n";
+
+			SourceString.erase(AssignmentPos, StringEndPos - AssignmentPos);
+
+			if (1 << i & BlendFlags)
+			{
+				std::string BlendFnString;
+
+				if (BlendFlags & EDecalBlendFlags::Translucent)
+				{
+					GetDecalBlendFunctionString(TranslucentBlendFunctions[i], AttachmentString, TempOutputName, BlendFnString);
+				}
+				if (BlendFlags & EDecalBlendFlags::AlphaComposite)
+				{
+					GetDecalBlendFunctionString(AlphaCompositeBlendFunctions[i], AttachmentString, TempOutputName, BlendFnString);
+				}
+				if (BlendFlags & EDecalBlendFlags::Modulate)
+				{
+					GetDecalBlendFunctionString(ModulateBlendFunctions[i], AttachmentString, TempOutputName, BlendFnString);
+				}
+
+				TempOut += BlendFnString;
+
+				SourceString.insert(AssignmentPos, TempOut);
+			}			
+		}
+	}
+}
+
+bool GenerateDeferredMobileShaders(std::string& GlslSource, GLSLCompileParameters& GLSLCompileParams, const std::string& HlslString, ReflectionData& ReflectData,
+																		bool bWriteToCCHeader, bool bIsDeferred, bool bEmulatedUBs, uint32_t DecalBlendFlags)
 {
 	bool bHasGbufferTextures[4];
 	bHasGbufferTextures[0] = HlslString.find("GENERATED_SubpassFetchAttachment0") != std::string::npos;
@@ -2772,8 +2899,7 @@ bool GenerateDeferredMobileShaders(std::string& GlslSource, GLSLCompileParameter
 		}
 
 		// Replace assignment of output to buffer 0 to additive if the output proxy additive is used
-		if (HlslString.find("OutProxyAdditive") != std::string::npos ||
-			HlslString.find("OutTarget0") != std::string::npos)
+		if (HlslString.find("OutProxyAdditive") != std::string::npos)
 		{
 			std::string OutProxyString = "GENERATED_SubpassFetchAttachment0 =";
 			std::string OutProxyModifiedString = "GENERATED_SubpassFetchAttachment0 +=";
@@ -2784,6 +2910,11 @@ bool GenerateDeferredMobileShaders(std::string& GlslSource, GLSLCompileParameter
 				PLSSourceString.replace(OutProxyStringPos, OutProxyString.size(), OutProxyModifiedString);
 				OutProxyStringPos = PLSSourceString.find(OutProxyString);
 			}
+		}
+
+		if (DecalBlendFlags)
+		{
+			ModifyDecalBlending(PLSSourceString, DecalBlendFlags);
 		}
 
 		// Strip version string
@@ -2830,6 +2961,12 @@ static bool CompileToGlslWithShaderConductor(
 	Options.bRemapAttributeLocations = true;
 	Options.bPreserveStorageInput = true;
 	
+	// Enable HLSL 2021 if specified
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021))
+	{
+		Options.HlslVersion = 2021;
+	}
+
 	// Convert input strings from FString to ANSI strings
 	std::string SourceData(TCHAR_TO_UTF8(*PreprocessedShader));
 	std::string FileName(TCHAR_TO_UTF8(*Input.VirtualSourceFilePath));
@@ -2887,6 +3024,8 @@ static bool CompileToGlslWithShaderConductor(
 		}
 	}
 
+	uint32_t BlendFlags = GetDecalBlendFlags(Input);
+
 	// Load shader source into compiler context
 	CompilerContext.LoadSource(SourceData.c_str(), FileName.c_str(), EntryPointName.c_str(), Frequency, &AdditionalDefines);
 
@@ -2922,6 +3061,17 @@ static bool CompileToGlslWithShaderConductor(
 		// Flush compile errors
 		CompilerContext.FlushErrors(Output.Errors);
 		bCompilationFailed = true;
+	}
+
+	// Reduce arrays with const accessors to structs, which will then be packed to an array by GL cross compile
+	if(!bCompilationFailed && !Options.bDisableOptimizations && (Version == GLSL_ES3_1_ANDROID || Version == GLSL_150_ES3_1))
+	{
+		const char* OptArgs[] = { "--reduce-const-array-to-struct" };
+		if (!CompilerContext.OptimizeSpirv(SpirvData, OptArgs, UE_ARRAY_COUNT(OptArgs)))
+		{
+			UE_LOG(LogOpenGLShaderCompiler, Error, TEXT("Failed to apply reduce-const-array-to-struct for Android"));
+			return false;
+		} 
 	}
 
 	if (!bCompilationFailed)
@@ -2968,8 +3118,9 @@ static bool CompileToGlslWithShaderConductor(
 		default:
 			TargetDesc.CompileFlags.SetDefine(TEXT("force_flattened_io_blocks"), 1);
 			TargetDesc.CompileFlags.SetDefine(TEXT("emit_uniform_buffer_as_plain_uniforms"), 1);
+			TargetDesc.CompileFlags.SetDefine(TEXT("pad_ubo_blocks"), 1);
 			// TODO: Currently disabled due to bug when assigning an array to temporary variable
-			///TargetDesc.CompileFlags.SetDefine(TEXT("force_temporary"), 1);
+			//TargetDesc.CompileFlags.SetDefine(TEXT("force_temporary"), 1);
 
 			// If we have mobile multiview define set then set the view count and enable extension
 			const FString* MultiViewDefine = Input.Environment.GetDefinitions().Find(TEXT("MOBILE_MULTI_VIEW"));
@@ -3010,7 +3161,7 @@ static bool CompileToGlslWithShaderConductor(
 					FString Name = TextureExternalName;
 					if (Name.RemoveFromEnd(TEXT(";")))
 					{
-						ExternalTextures.Add(TEXT("SPIRV_Cross_Combined") + Name + Name + TEXT("Sampler"));
+						ExternalTextures.Add(Name + TEXT("Sampler"));
 					}
 				}
 			}
@@ -3022,7 +3173,7 @@ static bool CompileToGlslWithShaderConductor(
 		{
 			for (const FString& ExternalTex : ExternalTextures)
 			{
-				if (VariableName.Len() == ExternalTex.Len() && FCStringWide::Strncmp(ANSI_TO_TCHAR(VariableName.GetData()), *ExternalTex, ExternalTex.Len()) == 0)
+				if (FCStringWide::Strstr(ANSI_TO_TCHAR(VariableName.GetData()), *ExternalTex))
 				{
 					OutRenamedTypeName = TEXT("samplerExternalOES");
 					return true;
@@ -3047,11 +3198,12 @@ static bool CompileToGlslWithShaderConductor(
 		std::string GlslSource;
 
 		// Handle PLS and FBF in OpenGL
-		if (Input.Environment.GetDefinitions().Contains("SHADING_PATH_MOBILE") && Input.Environment.GetDefinitions()["SHADING_PATH_MOBILE"] == "1" &&
-			Input.Environment.GetDefinitions().Contains("MOBILE_DEFERRED_SHADING") && Input.Environment.GetDefinitions()["MOBILE_DEFERRED_SHADING"] == "1" &&
+
+		if (EnvironmentHasMatchingKeyValue(Input.Environment.GetDefinitions(), TEXT("SHADING_PATH_MOBILE"), TEXT("1")) &&
+			EnvironmentHasMatchingKeyValue(Input.Environment.GetDefinitions(), TEXT("MOBILE_DEFERRED_SHADING"), TEXT("1")) &&
 			Version == GLSL_ES3_1_ANDROID)
 		{
-			bCompilationFailed = !GenerateDeferredMobileShaders(GlslSource, GLSLCompileParams, SourceData, ReflectData, true, false, bEmulatedUBs);
+			bCompilationFailed = !GenerateDeferredMobileShaders(GlslSource, GLSLCompileParams, SourceData, ReflectData, true, false, bEmulatedUBs, BlendFlags);
 		}
 		else
 		{
@@ -3197,8 +3349,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	}
 
 	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndMoveShaderParametersToRootConstantBuffer(
-		Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -3206,6 +3357,9 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 
 	// This requires removing the HLSLCC_NoPreprocess flag later on!
 	RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShader);
+
+	// Process TEXT macro.
+	TransformStringIntoCharacterArray(PreprocessedShader);
 
 	uint32 CCFlags = CalculateCrossCompilerFlags(Version, Input.Environment.FullPrecisionInPS, Input.Environment.CompilerFlags);
 
@@ -3233,6 +3387,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 			}
 		}
 
+		CCFlags |= HLSLCC_NoValidation;
 		FGlslCodeBackend* BackEnd = CreateBackend(Version, CCFlags, HlslCompilerTarget);
 
 		bool bDefaultPrecisionIsHalf = (CCFlags & HLSLCC_UseFullPrecisionInPS) == 0;
@@ -3326,7 +3481,6 @@ enum class EPlatformType
 struct FDeviceCapabilities
 {
 	EPlatformType TargetPlatform = EPlatformType::Android;
-	bool bSupportsSeparateShaderObjects;
 };
 
 void FOpenGLFrontend::FillDeviceCapsOfflineCompilation(struct FDeviceCapabilities& Capabilities, const GLSLVersion ShaderVersion) const
@@ -3340,7 +3494,6 @@ void FOpenGLFrontend::FillDeviceCapsOfflineCompilation(struct FDeviceCapabilitie
 	else
 	{
 		Capabilities.TargetPlatform = EPlatformType::Desktop;
-		Capabilities.bSupportsSeparateShaderObjects = true;
 	}
 }
 
@@ -3386,7 +3539,7 @@ inline bool OpenGLShaderPlatformSeparable(const GLSLVersion InShaderPlatform)
 	switch (InShaderPlatform)
 	{
 		case GLSL_150_ES3_1:
-			return true;
+			return false;
 
 		case GLSL_ES3_1_ANDROID:
 			return false;
@@ -3445,7 +3598,6 @@ TSharedPtr<ANSICHAR> FOpenGLFrontend::PrepareCodeForOfflineCompilation(const GLS
 	// OpenGL SM5 shader platforms require location declarations for the layout, but don't necessarily use SSOs
 	if (Capabilities.TargetPlatform == EPlatformType::Desktop)
 	{
-		StrOutSource.Append(TEXT("#extension GL_ARB_separate_shader_objects : enable\n"));
 		StrOutSource.Append(TEXT("#define INTERFACE_BLOCK(Pos, Interp, Modifiers, Semantic, PreType, PostType) layout(location=Pos) Interp Modifiers struct { PreType PostType; }\n"));
 	}
 	else

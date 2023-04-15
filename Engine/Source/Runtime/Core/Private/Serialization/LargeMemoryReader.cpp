@@ -1,8 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/LargeMemoryReader.h"
-#include "Logging/LogMacros.h"
+
 #include "CoreGlobals.h"
+#include "HAL/UnrealMemory.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Trace/Detail/Channel.h"
 
 /*----------------------------------------------------------------------------
 	FLargeMemoryReader

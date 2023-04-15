@@ -1,15 +1,57 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodeEditMode.h"
-#include "EditorViewportClient.h"
-#include "IPersonaPreviewScene.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#include "BoneControllers/AnimNode_SkeletalControlBase.h"
-#include "EngineUtils.h"
+
+#include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_SkeletalControlBase.h"
+#include "Animation/BoneSocketReference.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Animation/Skeleton.h"
 #include "AssetEditorModeManager.h"
+#include "BoneContainer.h"
+#include "BoneControllers/AnimNode_SkeletalControlBase.h"
+#include "BoneIndices.h"
+#include "BonePose.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Containers/UnrealString.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorModeManager.h"
+#include "EditorViewportClient.h"
+#include "Engine/SkeletalMesh.h"
+#include "EngineLogs.h"
+#include "EngineUtils.h"
+#include "HAL/PlatformCrt.h"
+#include "HitProxies.h"
+#include "IPersonaPreviewScene.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Axis.h"
+#include "Math/Vector.h"
+#include "Math/Vector4.h"
+#include "Math/VectorRegister.h"
+#include "Misc/AssertionMacros.h"
+#include "ReferenceSkeleton.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectBaseUtility.h"
+#include "UObject/UnrealNames.h"
+#include "UnrealClient.h"
+
+class FSceneView;
+class FText;
+struct FAnimNode_Base;
 
 #define LOCTEXT_NAMESPACE "AnimNodeEditMode"
+
+const bool operator==(const FAnimNodeEditMode::EditorRuntimeNodePair& Lhs, const FAnimNodeEditMode::EditorRuntimeNodePair& Rhs)
+{
+	return (Lhs.EditorAnimNode == Rhs.EditorAnimNode) && (Lhs.RuntimeAnimNode == Rhs.RuntimeAnimNode);
+}
 
 FAnimNodeEditMode::FAnimNodeEditMode()
 	: bManipulating(false)
@@ -35,7 +77,7 @@ IPersonaPreviewScene& FAnimNodeEditMode::GetAnimPreviewScene() const
 
 void FAnimNodeEditMode::GetOnScreenDebugInfo(TArray<FText>& OutDebugInfo) const
 {
-	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+	for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 	{
 		if ((CurrentNodePair.EditorAnimNode != nullptr) && (CurrentNodePair.RuntimeAnimNode != nullptr))
 		{
@@ -115,7 +157,7 @@ void FAnimNodeEditMode::EnterMode(UAnimGraphNode_Base* InEditorNode, FAnimNode_B
 
 	if (InEditorNode && InRuntimeNode)
 	{
-		AnimNodes.Add(EditorRuntimeNodePair(InEditorNode, InRuntimeNode));
+		SelectedAnimNodes.Add(EditorRuntimeNodePair(InEditorNode, InRuntimeNode));
 
 		UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(InEditorNode);
 		if (SkelControl != nullptr)
@@ -133,7 +175,7 @@ void FAnimNodeEditMode::EnterMode(UAnimGraphNode_Base* InEditorNode, FAnimNode_B
 
 void FAnimNodeEditMode::ExitMode()
 {
-	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+	for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 	{
 		if (CurrentNodePair.EditorAnimNode != nullptr)
 		{
@@ -147,23 +189,60 @@ void FAnimNodeEditMode::ExitMode()
 		}
 	}
 
-	AnimNodes.Empty();
+	SelectedAnimNodes.Empty();
+	PoseWatchedAnimNodes.Empty();
 }
 
 void FAnimNodeEditMode::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
-	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+	USkeletalMeshComponent* const PreviewSkelMeshComp = GetAnimPreviewScene().GetPreviewMeshComponent();
+
+	check(View);
+	check(PDI);
+	check(PreviewSkelMeshComp);
+
+	// Build a unique list of all selected or pose watched nodes, 0 = Node, 1 = IsSelected, 2 = IsPoseWatchEnabled. 
+	using DrawParameters = TTuple<UAnimGraphNode_Base*, bool, bool>;
+
+	TArray< DrawParameters > DrawParameterList;
+
+	// Collect selected nodes.	
+	for (const FAnimNodeEditMode::EditorRuntimeNodePair& CurrentNodePair : SelectedAnimNodes)
 	{
 		if (CurrentNodePair.EditorAnimNode != nullptr)
 		{
-			CurrentNodePair.EditorAnimNode->Draw(PDI, GetAnimPreviewScene().GetPreviewMeshComponent());
+			DrawParameterList.Add(DrawParameters(CurrentNodePair.EditorAnimNode, true, false));
 		}
+	}
+
+	// Collect pose watched nodes.
+	for (const FAnimNodeEditMode::EditorRuntimeNodePair& CurrentNodePair : PoseWatchedAnimNodes)
+	{
+		if (CurrentNodePair.EditorAnimNode != nullptr)
+		{
+			if (DrawParameters* Parameter = DrawParameterList.FindByPredicate([CurrentNodePair](DrawParameters& Other) { return Other.Get<0>() == CurrentNodePair.EditorAnimNode; }))
+			{
+				// Add pose watch flag to existing, selected node's draw parameters.
+				Parameter->Get<2>() = true;
+			}
+			else
+			{
+				// Create a new draw parameter for this pose watched but not selected node.
+				DrawParameterList.Add(DrawParameters(CurrentNodePair.EditorAnimNode, false, true));
+			}
+		}
+	}
+
+	// Draw all collected nodes.
+	for (DrawParameters CurrentParameters : DrawParameterList)
+	{
+		CurrentParameters.Get<0>()->Draw(PDI, PreviewSkelMeshComp, CurrentParameters.Get<1>(), CurrentParameters.Get<2>());
 	}
 }
 
 void FAnimNodeEditMode::DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
 {
-	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+	for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 	{
 		if (CurrentNodePair.EditorAnimNode != nullptr)
 		{
@@ -179,7 +258,7 @@ bool FAnimNodeEditMode::HandleClick(FEditorViewportClient* InViewportClient, HHi
 		HActor* ActorHitProxy = static_cast<HActor*>(HitProxy);
 		GetAnimPreviewScene().SetSelectedActor(ActorHitProxy->Actor);
 
-		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+		for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 		{
 			UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(CurrentNodePair.EditorAnimNode);
 			if (SkelControl != nullptr)
@@ -216,7 +295,7 @@ bool FAnimNodeEditMode::StartTracking(FEditorViewportClient* InViewportClient, F
 	{
 		GEditor->BeginTransaction(LOCTEXT("EditSkelControlNodeTransaction", "Edit Skeletal Control Node"));
 
-		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+		for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 		{
 			if (CurrentNodePair.EditorAnimNode != nullptr)
 			{
@@ -304,7 +383,7 @@ bool FAnimNodeEditMode::InputDelta(FEditorViewportClient* InViewportClient, FVie
 			DoScale(InScale);
 		}
 
-		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+		for (EditorRuntimeNodePair CurrentNodePair : SelectedAnimNodes)
 		{
 			if (CurrentNodePair.EditorAnimNode)
 			{
@@ -398,14 +477,19 @@ void FAnimNodeEditMode::Exit()
 {
 	IAnimNodeEditMode::Exit();
 
-	AnimNodes.Empty();
+	SelectedAnimNodes.Empty();
+}
+
+void FAnimNodeEditMode::RegisterPoseWatchedNode(UAnimGraphNode_Base* InEditorNode, FAnimNode_Base* InRuntimeNode)
+{
+	PoseWatchedAnimNodes.Add(FAnimNodeEditMode::EditorRuntimeNodePair(InEditorNode, InRuntimeNode));
 }
 
 UAnimGraphNode_Base* FAnimNodeEditMode::GetActiveWidgetAnimNode() const
 {
-	if (AnimNodes.Num() > 0)
+	if (SelectedAnimNodes.Num() > 0)
 	{
-		return AnimNodes.Last().EditorAnimNode;
+		return SelectedAnimNodes.Last().EditorAnimNode;
 	}
 
 	return nullptr;
@@ -413,9 +497,9 @@ UAnimGraphNode_Base* FAnimNodeEditMode::GetActiveWidgetAnimNode() const
 
 FAnimNode_Base* FAnimNodeEditMode::GetActiveWidgetRuntimeAnimNode() const
 {
-	if (AnimNodes.Num() > 0)
+	if (SelectedAnimNodes.Num() > 0)
 	{
-		return AnimNodes.Last().RuntimeAnimNode;
+		return SelectedAnimNodes.Last().RuntimeAnimNode;
 	}
 
 	return nullptr;
@@ -423,7 +507,8 @@ FAnimNode_Base* FAnimNodeEditMode::GetActiveWidgetRuntimeAnimNode() const
 
 void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComponent* SkelComp, const FTransform & InTransform, FTransform & OutCSTransform, int32 BoneIndex, EBoneControlSpace Space)
 {
-	USkeleton* Skeleton = SkelComp->SkeletalMesh->GetSkeleton();
+	USkeletalMesh* SkelMesh = SkelComp->GetSkeletalMeshAsset();
+	USkeleton* Skeleton = SkelMesh->GetSkeleton();
 
 	switch (Space)
 	{
@@ -447,7 +532,7 @@ void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComp
 			const int32 ParentIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 			if (ParentIndex != INDEX_NONE)
 			{
-				const int32 MeshParentIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelComp->SkeletalMesh, ParentIndex);
+				const int32 MeshParentIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelMesh, ParentIndex);
 				if (MeshParentIndex != INDEX_NONE)
 				{
 					const FTransform ParentTM = SkelComp->GetBoneTransform(MeshParentIndex);
@@ -464,7 +549,7 @@ void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComp
 	case BCS_BoneSpace:
 		if (BoneIndex != INDEX_NONE)
 		{
-			const int32 MeshBoneIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelComp->SkeletalMesh, BoneIndex);
+			const int32 MeshBoneIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelMesh, BoneIndex);
 			if (MeshBoneIndex != INDEX_NONE)
 			{
 				const FTransform BoneTM = SkelComp->GetBoneTransform(MeshBoneIndex);
@@ -478,9 +563,9 @@ void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComp
 		break;
 
 	default:
-		if (SkelComp->SkeletalMesh)
+		if (SkelMesh)
 		{
-			UE_LOG(LogAnimation, Warning, TEXT("ConvertToComponentSpaceTransform: Unknown BoneSpace %d  for Mesh: %s"), (uint8)Space, *SkelComp->SkeletalMesh->GetFName().ToString());
+			UE_LOG(LogAnimation, Warning, TEXT("ConvertToComponentSpaceTransform: Unknown BoneSpace %d  for Mesh: %s"), (uint8)Space, *SkelMesh->GetFName().ToString());
 		}
 		else
 		{
@@ -493,7 +578,8 @@ void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComp
 
 void FAnimNodeEditMode::ConvertToBoneSpaceTransform(const USkeletalMeshComponent* SkelComp, const FTransform & InCSTransform, FTransform & OutBSTransform, int32 BoneIndex, EBoneControlSpace Space)
 {
-	USkeleton* Skeleton = SkelComp->SkeletalMesh->GetSkeleton();
+	USkeletalMesh* SkelMesh = SkelComp->GetSkeletalMeshAsset();
+	USkeleton* Skeleton = SkelMesh->GetSkeleton();
 
 	switch(Space)
 	{
@@ -517,7 +603,7 @@ void FAnimNodeEditMode::ConvertToBoneSpaceTransform(const USkeletalMeshComponent
 				const int32 ParentIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 				if(ParentIndex != INDEX_NONE)
 				{
-					const int32 MeshParentIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelComp->SkeletalMesh, ParentIndex);
+					const int32 MeshParentIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelMesh, ParentIndex);
 					if(MeshParentIndex != INDEX_NONE)
 					{
 						const FTransform ParentTM = SkelComp->GetBoneTransform(MeshParentIndex);
@@ -536,7 +622,7 @@ void FAnimNodeEditMode::ConvertToBoneSpaceTransform(const USkeletalMeshComponent
 		{
 			if(BoneIndex != INDEX_NONE)
 			{
-				const int32 MeshBoneIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelComp->SkeletalMesh, BoneIndex);
+				const int32 MeshBoneIndex = Skeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkelMesh, BoneIndex);
 				if(MeshBoneIndex != INDEX_NONE)
 				{
 					FTransform BoneCSTransform = SkelComp->GetBoneTransform(MeshBoneIndex);
@@ -552,7 +638,7 @@ void FAnimNodeEditMode::ConvertToBoneSpaceTransform(const USkeletalMeshComponent
 
 		default:
 		{
-			UE_LOG(LogAnimation, Warning, TEXT("ConvertToBoneSpaceTransform: Unknown BoneSpace %d  for Mesh: %s"), (int32)Space, *GetNameSafe(SkelComp->SkeletalMesh));
+			UE_LOG(LogAnimation, Warning, TEXT("ConvertToBoneSpaceTransform: Unknown BoneSpace %d  for Mesh: %s"), (int32)Space, *GetNameSafe(SkelMesh));
 			break;
 		}
 	}
@@ -757,7 +843,7 @@ FVector FAnimNodeEditMode::ConvertWidgetLocation(const USkeletalMeshComponent* S
 	{
 		if (InMeshBases.GetPose().IsValid())
 		{
-			USkeleton* Skeleton = InSkelComp->SkeletalMesh->GetSkeleton();
+			USkeleton* Skeleton = InSkelComp->GetSkeletalMeshAsset()->GetSkeleton();
 			const int32 MeshBoneIndex = InSkelComp->GetBoneIndex(InBoneName);
 			if (MeshBoneIndex != INDEX_NONE)
 			{

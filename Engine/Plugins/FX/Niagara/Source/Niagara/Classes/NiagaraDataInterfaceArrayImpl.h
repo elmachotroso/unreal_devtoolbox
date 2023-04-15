@@ -4,23 +4,79 @@
 
 #include "NiagaraClearCounts.h"
 #include "NiagaraDataInterfaceArray.h"
+#include "NiagaraDataInterfaceUtilities.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "Niagara/Private/NiagaraGpuReadbackManager.h"
 #include "Niagara/Private/NiagaraStats.h"
 #include "NiagaraSystemInstance.h"
 
 #include "Async/Async.h"
+#include "Containers/ArrayView.h"
 #include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Helpers
 
+#define NDIARRAY_GENERATE_BODY(CLASSNAME, TYPENAME, MEMBERNAME) \
+	using FProxyType = FNDIArrayProxyImpl<TYPENAME, CLASSNAME>; \
+	virtual void PostInitProperties() override \
+	{ \
+		Proxy.Reset(new FProxyType(this)); \
+		Super::PostInitProperties(); \
+	} \
+	TArray<TYPENAME>& GetArrayReference() { return MEMBERNAME; }
+
+#if WITH_EDITORONLY_DATA
+	#define NDIARRAY_GENERATE_BODY_LWC(CLASSNAME, TYPENAME, MEMBERNAME) \
+		using FProxyType = FNDIArrayProxyImpl<TYPENAME, CLASSNAME>; \
+		virtual void PostInitProperties() override \
+		{ \
+			Super::PostInitProperties(); \
+			Proxy.Reset(new FProxyType(this)); \
+		} \
+		virtual void PostLoad() override \
+		{ \
+			Super::PostLoad(); \
+			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MakeArrayView(MEMBERNAME)); \
+		} \
+		virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override \
+		{ \
+			Super::PostEditChangeProperty(PropertyChangedEvent); \
+			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MakeArrayView(MEMBERNAME)); \
+		} \
+		virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override \
+		{ \
+			if ( Super::CopyToInternal(Destination) == false ) \
+			{ \
+				return false; \
+			} \
+			CLASSNAME* TypedDestination = Cast<CLASSNAME>(Destination); \
+			if ( TypedDestination != nullptr ) \
+			{ \
+				TypedDestination->MEMBERNAME = MEMBERNAME; \
+			} \
+			return TypedDestination != nullptr;  \
+		} \
+		virtual bool Equals(const UNiagaraDataInterface* Other) const override \
+		{ \
+			const CLASSNAME* TypedOther = Cast<const CLASSNAME>(Other); \
+			return \
+				Super::Equals(Other) && \
+				TypedOther != nullptr && \
+				TypedOther->MEMBERNAME == MEMBERNAME; \
+		} \
+		TArray<TYPENAME>& GetArrayReference() { return Internal##MEMBERNAME; }
+#else
+	#define NDIARRAY_GENERATE_BODY_LWC(CLASSNAME, TYPENAME, MEMBERNAME) NDIARRAY_GENERATE_BODY(CLASSNAME, TYPENAME, Internal##MEMBERNAME)
+#endif
+
 template<typename TArrayType>
 struct FNDIArrayImplHelperBase
 {
 	static constexpr bool bSupportsCPU = true;
 	static constexpr bool bSupportsGPU = true;
+	static constexpr bool bSupportsAtomicOps = false;
 
 	//-OPT: We can reduce the differences between read and RW if we have typed UAV loads
 	//static constexpr TCHAR const* HLSLVariableType		= TEXT("float");
@@ -35,15 +91,24 @@ struct FNDIArrayImplHelperBase
 	//static const FNiagaraTypeDefinition& GetTypeDefinition() { return FNiagaraTypeDefinition::GetFloatDef(); }
 	//static const TArrayType GetDefaultValue();
 
-	static void CopyToGpuMemory(void* Dest, const TArrayType* Src, int32 NumElements)
+	static void CopyCpuToCpuMemory(TArrayType* Dest, const TArrayType* Src, int32 NumElements)
 	{
 		FMemory::Memcpy(Dest, Src, NumElements * sizeof(TArrayType));
 	}
 
-	static void CopyToCpuMemory(void* Dest, const void* Src, int32 NumElements)
+	static void CopyCpuToGpuMemory(void* Dest, const TArrayType* Src, int32 NumElements)
 	{
 		FMemory::Memcpy(Dest, Src, NumElements * sizeof(TArrayType));
 	}
+
+	static void CopyGpuToCpuMemory(void* Dest, const void* Src, int32 NumElements)
+	{
+		FMemory::Memcpy(Dest, Src, NumElements * sizeof(TArrayType));
+	}
+
+	//static TArrayType AtomicAdd(TArrayType* Dest, TArrayType Value) { check(false); }
+	//static TArrayType AtomicMin(TArrayType* Dest, TArrayType Value) { check(false); }
+	//static TArrayType AtomicMax(TArrayType* Dest, TArrayType Value) { check(false); }
 };
 
 template<typename TArrayType>
@@ -79,24 +144,18 @@ struct FNiagaraDataInterfaceArrayImplHelper
 	static const FName Function_AddName;
 	static const FName Function_RemoveLastElemName;
 
+	static const FName Function_AtomicAddName;
+	static const FName Function_AtomicMinName;
+	static const FName Function_AtomicMaxName;
+
 #if WITH_EDITORONLY_DATA
 	static bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature);
 #endif
-	static const TCHAR* GetHLSLTemplateFile()
+	static const TCHAR* GetHLSLTemplateFile(bool bIsRWArray)
 	{
-		return SupportsGpuRW() ? FNiagaraDataInterfaceArrayImplHelper::HLSLReadWriteTemplateFile : FNiagaraDataInterfaceArrayImplHelper::HLSLReadTemplateFile;
+		return bIsRWArray ? FNiagaraDataInterfaceArrayImplHelper::HLSLReadWriteTemplateFile : FNiagaraDataInterfaceArrayImplHelper::HLSLReadTemplateFile;
 	}
-	static bool SupportsGpuRW();
-};
-
-//////////////////////////////////////////////////////////////////////////
-// Compute Shader Impl
-struct FNiagaraDataInterfaceParametersCS_ArrayImpl : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_ArrayImpl, NonVirtual);
-
-	LAYOUT_FIELD(FShaderResourceParameter, BufferParam);
-	LAYOUT_FIELD(FShaderParameter, BufferParamsParam);
+	static bool IsRWFunction(const FName FunctionName);
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -129,14 +188,14 @@ struct FNDIArrayInstanceData_RenderThread
 
 	bool IsReadOnly() const { return CountOffset == INDEX_NONE; }
 
-	void Initialize(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* InComputeInterface, int32 InDefaultElements)
+	void Initialize(FRHICommandListImmediate& RHICmdList, FNiagaraGpuComputeDispatchInterface* InComputeInterface, int32 InDefaultElements, bool bRWGpuArray)
 	{
 		ComputeInterface = InComputeInterface;
 		DefaultElements = 0;
 		NumElements = INDEX_NONE;
 		CountOffset = INDEX_NONE;
 
-		if (FNiagaraDataInterfaceArrayImplHelper::SupportsGpuRW())
+		if (bRWGpuArray)
 		{
 			DefaultElements = InDefaultElements;
 			CountOffset = ComputeInterface->GetGPUInstanceCounterManager().AcquireOrAllocateEntry(RHICmdList);
@@ -164,7 +223,7 @@ struct FNDIArrayInstanceData_RenderThread
 
 			// Create Buffer
 			FRHIResourceCreateInfo CreateInfo(TEXT("NiagaraDataInterfaceArray"));
-			const EBufferUsageFlags BufferUsage = BUF_ShaderResource | BUF_VertexBuffer | (IsReadOnly() ? BUF_None : BUF_UnorderedAccess | BUF_SourceCopy);
+			const EBufferUsageFlags BufferUsage = BUF_Static | BUF_ShaderResource | BUF_VertexBuffer | (IsReadOnly() ? BUF_None : BUF_UnorderedAccess | BUF_SourceCopy);
 			const ERHIAccess DefaultAccess = IsReadOnly() ? ERHIAccess::SRVCompute : ERHIAccess::UAVCompute;
 			ArrayBuffer = RHICreateBuffer(ArrayNumBytes, BufferUsage, TypeStride, DefaultAccess, CreateInfo);
 
@@ -180,11 +239,11 @@ struct FNDIArrayInstanceData_RenderThread
 			uint8* GPUMemory = reinterpret_cast<uint8*>(RHILockBuffer(ArrayBuffer, 0, ArrayNumBytes, RLM_WriteOnly));
 			if (InArrayData.Num() > 0)
 			{
-				T::CopyToGpuMemory(GPUMemory, InArrayData.GetData(), InArrayData.Num());
+				T::CopyCpuToGpuMemory(GPUMemory, InArrayData.GetData(), InArrayData.Num());
 			}
 
 			const TArrayType DefaultValue = TArrayType(FNDIArrayImplHelper<TArrayType>::GetDefaultValue());
-			T::CopyToGpuMemory(GPUMemory + (sizeof(TVMArrayType) * NumElements), &DefaultValue, 1);
+			T::CopyCpuToGpuMemory(GPUMemory + (sizeof(TVMArrayType) * NumElements), &DefaultValue, 1);
 
 			RHIUnlockBuffer(ArrayBuffer);
 		}
@@ -272,19 +331,32 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 
 	struct FWriteArrayRef
 	{
-		FWriteArrayRef(TOwnerType* Owner, FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData)
+		FWriteArrayRef(TOwnerType* Owner, FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData, bool bFromBP=false)
 		{
 			if (InstanceData)
 			{
 				LockObject = &InstanceData->ArrayRWGuard;
 				LockObject->WriteLock();
 
-				if (InstanceData->bIsModified == false)
+				if (bFromBP)//Writes from BP are for user parameters and we should discard modifications and write to the actual DI.
 				{
-					InstanceData->bIsModified = true;
-					InstanceData->ArrayData = Owner->GetArrayReference();
-				}
-				ArrayData = &InstanceData->ArrayData;
+					if (InstanceData->bIsModified)
+					{
+						Owner->GetArrayReference() = InstanceData->ArrayData;
+					}
+					InstanceData->bIsModified = false;
+					InstanceData->ArrayData.Empty();
+					ArrayData = &Owner->GetArrayReference();
+ 				}
+ 				else
+ 				{
+ 					if (InstanceData->bIsModified == false)
+ 					{
+ 						InstanceData->bIsModified = true;
+ 						InstanceData->ArrayData = Owner->GetArrayReference();
+ 					}
+					ArrayData = &InstanceData->ArrayData;
+ 				}
 			}
 			else
 			{
@@ -380,21 +452,21 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		return INDEX_NONE;
 	}
 
-	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override
 	{
 		if (bShouldSyncToCpu == false)
 		{
 			return;
 		}
 		
-		const FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = PerInstanceData_RenderThread.Find(Context.SystemInstanceID);
+		const FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = PerInstanceData_RenderThread.Find(Context.GetSystemInstanceID());
 		if ( !InstanceData_RT || InstanceData_RT->IsReadOnly() || (InstanceData_RT->ArrayNumBytes == 0) )
 		{
 			return;
 		}
 
-		const FNiagaraGPUInstanceCountManager& CountManager = Context.ComputeDispatchInterface->GetGPUInstanceCounterManager();
-		FNiagaraGpuReadbackManager* ReadbackManager = Context.ComputeDispatchInterface->GetGpuReadbackManager();
+		const FNiagaraGPUInstanceCountManager& CountManager = Context.GetComputeDispatchInterface().GetGPUInstanceCounterManager();
+		FNiagaraGpuReadbackManager* ReadbackManager = Context.GetComputeDispatchInterface().GetGpuReadbackManager();
 
 		const FNiagaraGpuReadbackManager::FBufferRequest BufferRequests[] =
 		{
@@ -413,71 +485,86 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			FRHITransitionInfo(InstanceData_RT->ArrayBuffer, ERHIAccess::CopySrc, ERHIAccess::UAVCompute),
 		};
 
-		RHICmdList.Transition(TransitionsBefore);
-		ReadbackManager->EnqueueReadbacks(
-			RHICmdList,
-			BufferRequests,
-			[SystemInstanceID=Context.SystemInstanceID, WeakOwner=TWeakObjectPtr(Owner), Proxy=this](TConstArrayView<TPair<void*, uint32>> ReadbackData)
+		AddPass(
+			Context.GetGraphBuilder(),
+			RDG_EVENT_NAME("NDIArrayReadback"),
+			[BufferRequests, TransitionsBefore, TransitionsAfter, SystemInstanceID=Context.GetSystemInstanceID(), WeakOwner=TWeakObjectPtr(Owner), Proxy=this, ReadbackManager](FRHICommandListImmediate& RHICmdList)
 			{
-				const int32 NumElements = *reinterpret_cast<const uint32*>(ReadbackData[0].Key);
-				TArray<TArrayType> ArrayData;
-				if ( NumElements > 0 )
-				{
-					ArrayData.AddUninitialized(NumElements);
-					FNDIArrayImplHelper<TArrayType>::CopyToCpuMemory(ArrayData.GetData(), reinterpret_cast<const TVMArrayType*>(ReadbackData[1].Key), NumElements);
-				}
-
-				AsyncTask(
-					ENamedThreads::GameThread,
-					[SystemInstanceID, ArrayData=MoveTemp(ArrayData), WeakOwner, Proxy]()
+				RHICmdList.Transition(TransitionsBefore);
+				ReadbackManager->EnqueueReadbacks(
+					RHICmdList,
+					BufferRequests,
+					[SystemInstanceID, WeakOwner, Proxy](TConstArrayView<TPair<void*, uint32>> ReadbackData)
 					{
-						// If this is nullptr the proxy is no longer valid so discard
-						if ( WeakOwner.Get() == nullptr )
+						const int32 NumElements = *reinterpret_cast<const uint32*>(ReadbackData[0].Key);
+						TArray<TArrayType> ArrayData;
+						if ( NumElements > 0 )
 						{
-							return;
+							ArrayData.AddUninitialized(NumElements);
+							FNDIArrayImplHelper<TArrayType>::CopyGpuToCpuMemory(ArrayData.GetData(), reinterpret_cast<const TVMArrayType*>(ReadbackData[1].Key), NumElements);
 						}
 
-						Proxy->SetArrayData(SystemInstanceID, ArrayData);
+						AsyncTask(
+							ENamedThreads::GameThread,
+							[SystemInstanceID, ArrayData=MoveTemp(ArrayData), WeakOwner, Proxy]()
+							{
+								// If this is nullptr the proxy is no longer valid so discard
+								if ( WeakOwner.Get() == nullptr )
+								{
+									return;
+								}
+
+								Proxy->SetInstanceArrayData(SystemInstanceID, ArrayData);
+							}
+						);
 					}
 				);
+				RHICmdList.Transition(TransitionsAfter);
 			}
 		);
-		RHICmdList.Transition(TransitionsAfter);
 	}
 
 	//////////////////////////////////////////////////////////////////////////
 	// BP user parameter accessors, should remove if we every start to share the object between instances
-	void SetArrayData(const TArray<TArrayType>& InArrayData)
+	template<typename TFromArrayType>
+	void SetArrayData(TConstArrayView<TFromArrayType> InArrayData)
 	{
 		if (PerInstanceData_GameThread.IsEmpty())
 		{
-			Owner->GetArrayReference() = InArrayData;
+			Owner->GetArrayReference().SetNumUninitialized(InArrayData.Num());
+			FNDIArrayImplHelper<TArrayType>::CopyCpuToCpuMemory(Owner->GetArrayReference().GetData(), InArrayData.GetData(), InArrayData.Num());
 		}
 		else
 		{
 			ensure(PerInstanceData_GameThread.Num() == 1);
 			FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.CreateConstIterator().Value();
 			FWriteScopeLock	ScopeLock(InstanceData->ArrayRWGuard);
-			InstanceData->bIsModified = true;
+			InstanceData->bIsModified = false;
 			InstanceData->bIsRenderDirty = bShouldSyncToGpu;
-			InstanceData->ArrayData = InArrayData;
+			InstanceData->ArrayData.Empty();
+			Owner->GetArrayReference().SetNum(InArrayData.Num());
+			FNDIArrayImplHelper<TArrayType>::CopyCpuToCpuMemory(Owner->GetArrayReference().GetData(), InArrayData.GetData(), InArrayData.Num());
 		}
 	}
 
-	TArray<TArrayType> GetArrayData()
+	template<typename TToArrayType>
+	TArray<TToArrayType> GetArrayDataCopy()
 	{
 		ensure(PerInstanceData_GameThread.Num() <= 1);
 		FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.IsEmpty() ? nullptr : PerInstanceData_GameThread.CreateConstIterator().Value();
 		FReadArrayRef ArrayRef(Owner, InstanceData);
-		return ArrayRef.GetArray();
+		TArray<TToArrayType> OutArray;
+		OutArray.SetNum(ArrayRef.GetArray().Num());
+		FNDIArrayImplHelper<TArrayType>::CopyCpuToCpuMemory(OutArray.GetData(), ArrayRef.GetArray().GetData(), ArrayRef.GetArray().Num());
+		return OutArray;
 	}
 
-	void SetArrayValue(int Index, const TArrayType& Value, bool bSizeToFit)
+	template<typename TFromArrayType>
+	void SetArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit)
 	{
 		ensure(PerInstanceData_GameThread.Num() <= 1);
 		FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.IsEmpty() ? nullptr : PerInstanceData_GameThread.CreateConstIterator().Value();
-		FWriteArrayRef ArrayRef(Owner, InstanceData);
-
+		FWriteArrayRef ArrayRef(Owner, InstanceData, true);
 		if (!ArrayRef.GetArray().IsValidIndex(Index))
 		{
 			if (!bSizeToFit)
@@ -487,10 +574,11 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			ArrayRef.GetArray().AddDefaulted(Index + 1 - ArrayRef.GetArray().Num());
 		}
 
-		ArrayRef.GetArray()[Index] = Value;
+		FNDIArrayImplHelper<TArrayType>::CopyCpuToCpuMemory(ArrayRef.GetArray().GetData() + Index, &Value, 1);
 	}
 
-	TArrayType GetArrayValue(int Index)
+	template<typename TToArrayType>
+	TToArrayType GetArrayValue(int Index)
 	{
 		TArrayType ValueOut = TArrayType(FNDIArrayImplHelper<TArrayType>::GetDefaultValue());
 
@@ -503,12 +591,14 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			ValueOut = ArrayRef.GetArray()[Index];
 		}
 
-		return ValueOut;
+		TToArrayType ToValueOut;
+		FNDIArrayImplHelper<TArrayType>::CopyCpuToCpuMemory(&ToValueOut, &ValueOut, 1);
+		return ToValueOut;
 	}
 
 	//////////////////////////////////////////////////////////////////////////
 	// VM accessors to ensure we maintain per correctness for shared data interfaces
-	void SetArrayData(FNiagaraSystemInstanceID InstanceID, const TArray<TArrayType>& InArrayData)
+	void SetInstanceArrayData(FNiagaraSystemInstanceID InstanceID, const TArray<TArrayType>& InArrayData)
 	{
 		if ( FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.FindRef(InstanceID) )
 		{
@@ -583,99 +673,146 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultImmutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_LengthName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_LengthDesc", "Gets the number of elements in the array.");
-			#endif
 			Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Num"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_LengthDesc", "Gets the number of elements in the array.");
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultImmutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_IsValidIndexName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_IsValidIndexDesc", "Tests to see if the index is valid and exists in the array.");
-			#endif
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
 			Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Valid"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_IsValidIndexDesc", "Tests to see if the index is valid and exists in the array.");
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultImmutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_LastIndexName;
-#if WITH_EDITORONLY_DATA
-			Sig.Description = NSLOCTEXT("Niagara", "Array_LastIndexDesc", "Returns the last valid index in the array, will be -1 if no elements.");
-#endif
 			Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_LastIndexDesc", "Returns the last valid index in the array, will be -1 if no elements.");
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultImmutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_GetName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_GetDesc", "Gets the value from the array at the given zero based index.");
-			#endif
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
 			Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_GetDesc", "Gets the value from the array at the given zero based index.");
+		#endif
 		}
 
 		// Mutable functions
 		FNiagaraFunctionSignature DefaultMutableSig = DefaultImmutableSig;
-		DefaultMutableSig.bSupportsGPU = FNDIArrayImplHelper<TArrayType>::bSupportsGPU && FNiagaraDataInterfaceArrayImplHelper::SupportsGpuRW();
+		DefaultMutableSig.bSupportsGPU = FNDIArrayImplHelper<TArrayType>::bSupportsGPU;
 		DefaultMutableSig.bRequiresExecPin = true;
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_ClearName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_ClearDesc", "Clears the array, removing all elements");
-			#endif
 			Sig.ModuleUsageBitmask = ENiagaraScriptUsageMask::System | ENiagaraScriptUsageMask::Emitter;
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_ClearDesc", "Clears the array, removing all elements");
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_ResizeName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_ResizeDesc", "Resizes the array to the specified size, initializing new elements with the default value.");
-			#endif
 			Sig.ModuleUsageBitmask = ENiagaraScriptUsageMask::System | ENiagaraScriptUsageMask::Emitter;
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Num"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_ResizeDesc", "Resizes the array to the specified size, initializing new elements with the default value.");
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_SetArrayElemName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_SetArrayElemDesc", "Sets the value at the given zero based index (i.e the first element is 0).");
-			#endif
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipSet"));
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
 			Sig.Inputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_SetArrayElemDesc", "Sets the value at the given zero based index (i.e the first element is 0).");
+			Sig.InputDescriptions.Add(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_SetArrayElemDesc_SkipSet", "When enabled will not set the array value."));
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_AddName;
-			#if WITH_EDITORONLY_DATA
-				Sig.Description = NSLOCTEXT("Niagara", "Array_AddDesc", "Optionally add a value onto the end of the array.");
-			#endif
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipAdd"));
 			Sig.Inputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_AddDesc", "Optionally add a value onto the end of the array.");
+			Sig.InputDescriptions.Add(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AddDesc_SkipAdd", "When enabled we will not add an element to the array."));
+		#endif
 		}
 
 		{
 			FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
 			Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_RemoveLastElemName;
-#if WITH_EDITORONLY_DATA
-			Sig.Description = NSLOCTEXT("Niagara", "Array_RemoveLastElemDesc", "Optionally remove the last element from the array.  Returns the default value if no elements are in the array or you skip the remove.");
-#endif
 			Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipRemove"));
 			Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
 			Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid"));
+		#if WITH_EDITORONLY_DATA
+			Sig.Description = NSLOCTEXT("Niagara", "Array_RemoveLastElemDesc", "Optionally remove the last element from the array.  Returns the default value if no elements are in the array or you skip the remove.");
+			Sig.InputDescriptions.Add(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_RemoveLastElemDesc_SkipRemove", "When enabled will not remove a value from the array, the return value will therefore be invalid."));
+			Sig.OutputDescriptions.Add(Sig.Outputs[1], NSLOCTEXT("Niagara", "Array_RemoveLastElemDesc_IsValid", "True if we removed a value from the array, False if no entries or we skipped the remove."));
+		#endif
+		}
+
+		if (FNDIArrayImplHelper<TArrayType>::bSupportsAtomicOps)
+		{
+			{
+				FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
+				Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_AtomicAddName;
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipAdd"));
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+				Sig.Inputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("PreviousValue"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("CurrentValue"));
+				Sig.SetDescription(NSLOCTEXT("Niagara", "Array_AtomicAddDesc", "Optionally perform an atomic add on the array element."));
+				Sig.SetInputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicAdd_SkipAdd", "When enabled will not perform the add operation, the return values will therefore be invalid."));
+				Sig.SetOutputDescription(Sig.Inputs[0], NSLOCTEXT("Niagara", "Array_AtomicAdd_PrevValue", "The value before the operation was performed."));
+				Sig.SetOutputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicAdd_CurrValue", "The value after the operation was performed."));
+			}
+			{
+				FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
+				Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMinName;
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipMin"));
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+				Sig.Inputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("PreviousValue"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("CurrentValue"));
+				Sig.SetDescription(NSLOCTEXT("Niagara", "Array_AtomicMinDesc", "Optionally perform an atomic min on the array element."));
+				Sig.SetInputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicMin_SkipMin", "When enabled will not perform the min operation, the return values will therefore be invalid."));
+				Sig.SetOutputDescription(Sig.Inputs[0], NSLOCTEXT("Niagara", "Array_AtomicMin_PrevValue", "The value before the operation was performed."));
+				Sig.SetOutputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicMin_CurrValue", "The value after the operation was performed."));
+			}
+			{
+				FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultMutableSig);
+				Sig.Name = FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMaxName;
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("SkipMax"));
+				Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+				Sig.Inputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("Value"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("PreviousValue"));
+				Sig.Outputs.Emplace(FNDIArrayImplHelper<TArrayType>::GetTypeDefinition(), TEXT("CurrentValue"));
+				Sig.SetDescription(NSLOCTEXT("Niagara", "Array_AtomicMaxDesc", "Optionally perform an atomic max on the array element."));
+				Sig.SetInputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicMax_SkipMax", "When enabled will not perform the max operation, the return values will therefore be invalid."));
+				Sig.SetOutputDescription(Sig.Inputs[0], NSLOCTEXT("Niagara", "Array_AtomicMax_PrevValue", "The value before the operation was performed."));
+				Sig.SetOutputDescription(Sig.Inputs[1], NSLOCTEXT("Niagara", "Array_AtomicMax_CurrValue", "The value after the operation was performed."));
+			}
 		}
 	}
 
 	template<typename T = FNDIArrayImplHelper<TArrayType>>
-	typename TEnableIf<T::bSupportsCPU>::Type GetVMExternalFunction_Internal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
+	typename TEnableIf<T::bSupportsCPU>::Type GetVMExternalFunction_Internal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
 	{
 		// Immutable functions
 		if (BindingInfo.Name == FNiagaraDataInterfaceArrayImplHelper::Function_LengthName)
@@ -727,16 +864,52 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	}
 
 	template<typename T = FNDIArrayImplHelper<TArrayType>>
-	typename TEnableIf<!T::bSupportsCPU>::Type GetVMExternalFunction_Internal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
+	typename TEnableIf<!T::bSupportsCPU>::Type GetVMExternalFunction_Internal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
 	{
 	}
 
-	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<T::bSupportsAtomicOps>::Type GetVMExternalFunction_AtomicInternal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
+	{
+		if (BindingInfo.Name == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicAddName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->VMAtomicAdd(Context); });
+		}
+		else if (BindingInfo.Name == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMinName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->VMAtomicMin(Context); });
+		}
+		else if (BindingInfo.Name == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMaxName)
+		{
+			OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->VMAtomicMax(Context); });
+		}
+	}
+
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<!T::bSupportsAtomicOps>::Type GetVMExternalFunction_AtomicInternal(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
+	{
+	}
+
+	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc) override
 	{
 		GetVMExternalFunction_Internal(BindingInfo, InstanceData, OutFunc);
+		if (OutFunc.IsBound() == false)
+		{
+			GetVMExternalFunction_AtomicInternal(BindingInfo, InstanceData, OutFunc);
+		}
 	}
 
 #if WITH_EDITORONLY_DATA
+	bool IsRWGpuArray(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo) const
+	{
+		return ParamInfo.GeneratedFunctions.ContainsByPredicate(
+			[&](const FNiagaraDataInterfaceGeneratedFunction& Function)
+			{
+				return FNiagaraDataInterfaceArrayImplHelper::IsRWFunction(Function.DefinitionName);
+			}
+		);
+	}
+
 	template<typename T = FNDIArrayImplHelper<TArrayType>>
 	typename TEnableIf<T::bSupportsGPU>::Type GetParameterDefinitionHLSL_Internal(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) const
 	{
@@ -749,10 +922,11 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			{TEXT("RWBufferType"),		FNDIArrayImplHelper<TArrayType>::RWHLSLBufferType},
 			{TEXT("RWBufferRead"),		FNDIArrayImplHelper<TArrayType>::RWHLSLBufferRead},
 			{TEXT("RWBufferWrite"),		FNDIArrayImplHelper<TArrayType>::RWHLSLBufferWrite},
+			{TEXT("bSupportsAtomicOps"),	FNDIArrayImplHelper<TArrayType>::bSupportsAtomicOps ? 1 : 0},
 		};
 
 		FString TemplateFile;
-		LoadShaderSourceFile(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+		LoadShaderSourceFile(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(IsRWGpuArray(ParamInfo)), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 		OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 	}
 
@@ -778,13 +952,20 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 				return true;
 			}
 
-			if ( FNiagaraDataInterfaceArrayImplHelper::SupportsGpuRW() )
+			if ((FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_ClearName) ||
+				(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_ResizeName) ||
+				(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_SetArrayElemName) ||
+				(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_AddName) ||
+				(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_RemoveLastElemName))
 			{
-				if ((FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_ClearName) ||
-					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_ResizeName) ||
-					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_SetArrayElemName) ||
-					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_AddName) ||
-					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_RemoveLastElemName))
+				return true;
+			}
+
+			if ( FNDIArrayImplHelper<TArrayType>::bSupportsAtomicOps )
+			{
+				if ((FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicAddName) ||
+					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMinName) ||
+					(FunctionInfo.DefinitionName == FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMaxName) )
 				{
 					return true;
 				}
@@ -797,12 +978,10 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	{
 		if (FNDIArrayImplHelper<TArrayType>::bSupportsGPU)
 		{
-			const bool bSupportsRWArrays = FNiagaraDataInterfaceArrayImplHelper::SupportsGpuRW();
-
-			FSHAHash Hash = GetShaderFileHash(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(), EShaderPlatform::SP_PCD3D_SM5);
+			FSHAHash Hash = GetShaderFileHash(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(false), EShaderPlatform::SP_PCD3D_SM5);
 			InVisitor->UpdateString(TEXT("NiagaraDataInterfaceArrayTemplateHLSLSource"), Hash.ToString());
-
-			InVisitor->UpdatePOD(TEXT("NDIArray_SupportsGpuRW"), bSupportsRWArrays);
+			Hash = GetShaderFileHash(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(true), EShaderPlatform::SP_PCD3D_SM5);
+			InVisitor->UpdateString(TEXT("NiagaraDataInterfaceArrayTemplateHLSLSource"), Hash.ToString());
 		}
 		return true;
 	}
@@ -810,6 +989,18 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) const override
 	{
 		return FNiagaraDataInterfaceArrayImplHelper::UpgradeFunctionCall(FunctionSignature);
+	}
+#endif
+#if WITH_NIAGARA_DEBUGGER
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override
+	{
+		FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.FindRef(SystemInstance->GetId());
+		if (InstanceData == nullptr )
+		{
+			return;
+		}
+		FReadArrayRef ArrayData(Owner, InstanceData);
+		VariableDataString = FString::Printf(TEXT("ArrayType(%s) CpuLength(%d)"), *FNDIArrayImplHelper<TArrayType>::GetTypeDefinition().GetName(), ArrayData.GetArray().Num());
 	}
 #endif
 
@@ -831,7 +1022,7 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		return sizeof(FNDIArrayInstanceData_GameThread<TArrayType>);
 	}
 
-	virtual bool InitPerInstanceData(void* InPerInstanceData, FNiagaraSystemInstance* SystemInstance) override
+	virtual bool InitPerInstanceData(UNiagaraDataInterface* DataInterface, void* InPerInstanceData, FNiagaraSystemInstance* SystemInstance) override
 	{
 		// Ensure we have the latest sync mode settings
 		CachePropertiesFromOwner();
@@ -843,12 +1034,22 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 
 		if ( FNDIArrayImplHelper<TArrayType>::bSupportsGPU && Owner->IsUsedWithGPUEmitter() )
 		{
+			bool bRWGpuArray = false;
+			FNiagaraDataInterfaceUtilities::ForEachGpuFunction(
+				DataInterface, SystemInstance,
+				[&](const FNiagaraDataInterfaceGeneratedFunction& Function) -> bool
+				{
+					bRWGpuArray = FNiagaraDataInterfaceArrayImplHelper::IsRWFunction(Function.DefinitionName);
+					return !bRWGpuArray;
+				}
+			);
+
 			ENQUEUE_RENDER_COMMAND(FNDIArrayProxyImpl_AddProxy)
 			(
-				[Proxy_RT=this, InstanceID_RT=SystemInstance->GetId(), ComputeInterface_RT=SystemInstance->GetComputeDispatchInterface(), MaxElements_RT=Owner->MaxElements](FRHICommandListImmediate& RHICmdList)
+				[Proxy_RT=this, InstanceID_RT=SystemInstance->GetId(), ComputeInterface_RT=SystemInstance->GetComputeDispatchInterface(), MaxElements_RT=Owner->MaxElements, bRWGpuArray_RT = bRWGpuArray](FRHICommandListImmediate& RHICmdList)
 				{
 					FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = &Proxy_RT->PerInstanceData_RenderThread.Add(InstanceID_RT);
-					InstanceData_RT->Initialize(RHICmdList, ComputeInterface_RT, MaxElements_RT);
+					InstanceData_RT->Initialize(RHICmdList, ComputeInterface_RT, MaxElements_RT, bRWGpuArray_RT);
 				}
 			);
 		}
@@ -874,75 +1075,20 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		InstanceData_GT->~FNDIArrayInstanceData_GameThread<TArrayType>();
 	}
 
-	FNiagaraDataInterfaceParametersCS* CreateComputeParameters() const
+	virtual void SetShaderParameters(FShaderParameters* ShaderParameters, FNiagaraSystemInstanceID SystemInstanceID) const override
 	{
-		if (FNDIArrayImplHelper<TArrayType>::bSupportsGPU)
-		{
-			return new FNiagaraDataInterfaceParametersCS_ArrayImpl();
-		}
-		return nullptr;
-	}
-
-	const FTypeLayoutDesc* GetComputeParametersTypeDesc() const
-	{
-		if (FNDIArrayImplHelper<TArrayType>::bSupportsGPU)
-		{
-			return &StaticGetTypeLayoutDesc<FNiagaraDataInterfaceParametersCS_ArrayImpl>();
-		}
-		return nullptr;
-	}
-
-	void BindParameters(FNiagaraDataInterfaceParametersCS* Base, const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{
-		check(FNDIArrayImplHelper<TArrayType>::bSupportsGPU);
-
-		FNiagaraDataInterfaceParametersCS_ArrayImpl* TypedCS = static_cast<FNiagaraDataInterfaceParametersCS_ArrayImpl*>(Base);
-		TypedCS->BufferParam.Bind(ParameterMap, *(TEXT("ArrayBuffer_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		TypedCS->BufferParamsParam.Bind(ParameterMap, *(TEXT("ArrayBufferParams_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-
-	void SetParameters(const FNiagaraDataInterfaceParametersCS* Base, FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(FNDIArrayImplHelper<TArrayType>::bSupportsGPU);
-
-		const FNiagaraDataInterfaceParametersCS_ArrayImpl* TypedCS = static_cast<const FNiagaraDataInterfaceParametersCS_ArrayImpl*>(Base);
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-
-		const auto* ArrayProxy = static_cast<const FNDIArrayProxyImpl<TArrayType, TOwnerType>*>(Context.DataInterface);
-		const auto* InstanceData_RT = &ArrayProxy->PerInstanceData_RenderThread.FindChecked(Context.SystemInstanceID);
-
+		const auto* InstanceData_RT = &PerInstanceData_RenderThread.FindChecked(SystemInstanceID);
 		if ( InstanceData_RT->IsReadOnly() )
 		{
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, TypedCS->BufferParam, InstanceData_RT->ArraySRV);
-
-			// Where x=Length & y=max(Length-1,0)
-			const int32 BufferParams[] = { InstanceData_RT->NumElements, FMath::Max(0, InstanceData_RT->NumElements - 1) };
-			SetShaderValue(RHICmdList, ComputeShaderRHI, TypedCS->BufferParamsParam, BufferParams);
+			ShaderParameters->ArrayBufferParams.X	= InstanceData_RT->NumElements;
+			ShaderParameters->ArrayBufferParams.Y	= FMath::Max(0, InstanceData_RT->NumElements - 1);
+			ShaderParameters->ArrayReadBuffer		= InstanceData_RT->ArraySRV;
 		}
 		else
 		{
-			SetUAVParameter(RHICmdList, ComputeShaderRHI, TypedCS->BufferParam, InstanceData_RT->ArrayUAV);
-
-			// Where x=CountOffset & y=BufferCapacity
-			const int32 BufferParams[] = { (int32)InstanceData_RT->CountOffset, InstanceData_RT->NumElements };
-			SetShaderValue(RHICmdList, ComputeShaderRHI, TypedCS->BufferParamsParam, BufferParams);
-		}
-	}
-
-	void UnsetParameters(const FNiagaraDataInterfaceParametersCS* Base, FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(FNDIArrayImplHelper<TArrayType>::bSupportsGPU);
-
-		const FNiagaraDataInterfaceParametersCS_ArrayImpl* TypedCS = static_cast<const FNiagaraDataInterfaceParametersCS_ArrayImpl*>(Base);
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		const auto* ArrayProxy = static_cast<const FNDIArrayProxyImpl<TArrayType, TOwnerType>*>(Context.DataInterface);
-		const auto* InstanceData_RT = &ArrayProxy->PerInstanceData_RenderThread.FindChecked(Context.SystemInstanceID);
-
-		if ( !InstanceData_RT->IsReadOnly() )
-		{
-			SetUAVParameter(RHICmdList, ComputeShaderRHI, TypedCS->BufferParam, nullptr);
-			//-OPT: Should be batched
-			RHICmdList.Transition(FRHITransitionInfo(InstanceData_RT->ArrayUAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+			ShaderParameters->ArrayBufferParams.X	= (int32)InstanceData_RT->CountOffset;
+			ShaderParameters->ArrayBufferParams.Y	= InstanceData_RT->NumElements;
+			ShaderParameters->ArrayRWBuffer			= InstanceData_RT->ArrayUAV;
 		}
 	}
 
@@ -1115,6 +1261,118 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			{
 				OutValue.SetAndAdvance(TVMArrayType(ArrayData.GetArray().Pop()));
 				OutIsValid.SetAndAdvance(true);
+			}
+		}
+
+		InstanceData->bIsRenderDirty = bShouldSyncToGpu;
+	}
+
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<!T::bSupportsAtomicOps>::Type VMAtomicAdd(FVectorVMExternalFunctionContext& Context) { check(false); }
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<!T::bSupportsAtomicOps>::Type VMAtomicMin(FVectorVMExternalFunctionContext& Context) { check(false); }
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<!T::bSupportsAtomicOps>::Type VMAtomicMax(FVectorVMExternalFunctionContext& Context) { check(false); }
+
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<T::bSupportsAtomicOps>::Type VMAtomicAdd(FVectorVMExternalFunctionContext& Context)
+	{
+		VectorVM::FUserPtrHandler<FNDIArrayInstanceData_GameThread<TArrayType>> InstanceData(Context);
+		FNDIInputParam<FNiagaraBool>	InSkipOp(Context);
+		FNDIInputParam<int32>			InIndex(Context);
+		FNDIInputParam<TVMArrayType>	InValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutPrevValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutCurrValue(Context);
+		
+		const TVMArrayType DefaultValue = FNDIArrayImplHelper<TArrayType>::GetDefaultValue();
+
+		//-OPT: Can do a in batches or single atomic op rather than one per instance
+		FWriteArrayRef ArrayData(Owner, InstanceData);
+		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+		{
+			const bool bSkipExecute = InSkipOp.GetAndAdvance();
+			const int32 Index = InIndex.GetAndAdvance();
+			const TVMArrayType Value = InValue.GetAndAdvance();
+			if (!bSkipExecute && ArrayData.GetArray().IsValidIndex(Index))
+			{
+				TVMArrayType PreviousValue = FNDIArrayImplHelper<TArrayType>::AtomicAdd(&ArrayData.GetArray().GetData()[Index], Value);
+				OutPrevValue.SetAndAdvance(PreviousValue);
+				OutCurrValue.SetAndAdvance(PreviousValue + Value);
+			}
+			else
+			{
+				OutPrevValue.SetAndAdvance(DefaultValue);
+				OutCurrValue.SetAndAdvance(DefaultValue);
+			}
+		}
+
+		InstanceData->bIsRenderDirty = bShouldSyncToGpu;
+	}
+
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<T::bSupportsAtomicOps>::Type VMAtomicMin(FVectorVMExternalFunctionContext& Context)
+	{
+		VectorVM::FUserPtrHandler<FNDIArrayInstanceData_GameThread<TArrayType>> InstanceData(Context);
+		FNDIInputParam<FNiagaraBool>	InSkipOp(Context);
+		FNDIInputParam<int32>			InIndex(Context);
+		FNDIInputParam<TVMArrayType>	InValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutPrevValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutCurrValue(Context);
+
+		const TVMArrayType DefaultValue = FNDIArrayImplHelper<TArrayType>::GetDefaultValue();
+
+		//-OPT: Can do a in batches or single atomic op rather than one per instance
+		FWriteArrayRef ArrayData(Owner, InstanceData);
+		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+		{
+			const bool bSkipExecute = InSkipOp.GetAndAdvance();
+			const int32 Index = InIndex.GetAndAdvance();
+			const TVMArrayType Value = InValue.GetAndAdvance();
+			if (!bSkipExecute && ArrayData.GetArray().IsValidIndex(Index))
+			{
+				TVMArrayType PreviousValue = FNDIArrayImplHelper<TArrayType>::AtomicMin(&ArrayData.GetArray().GetData()[Index], Value);
+				OutPrevValue.SetAndAdvance(PreviousValue);
+				OutCurrValue.SetAndAdvance(PreviousValue + Value);
+			}
+			else
+			{
+				OutPrevValue.SetAndAdvance(DefaultValue);
+				OutCurrValue.SetAndAdvance(DefaultValue);
+			}
+		}
+
+		InstanceData->bIsRenderDirty = bShouldSyncToGpu;
+	}
+
+	template<typename T = FNDIArrayImplHelper<TArrayType>>
+	typename TEnableIf<T::bSupportsAtomicOps>::Type VMAtomicMax(FVectorVMExternalFunctionContext& Context)
+	{
+		VectorVM::FUserPtrHandler<FNDIArrayInstanceData_GameThread<TArrayType>> InstanceData(Context);
+		FNDIInputParam<FNiagaraBool>	InSkipOp(Context);
+		FNDIInputParam<int32>			InIndex(Context);
+		FNDIInputParam<TVMArrayType>	InValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutPrevValue(Context);
+		FNDIOutputParam<TVMArrayType>	OutCurrValue(Context);
+
+		const TVMArrayType DefaultValue = FNDIArrayImplHelper<TArrayType>::GetDefaultValue();
+
+		//-OPT: Can do a in batches or single atomic op rather than one per instance
+		FWriteArrayRef ArrayData(Owner, InstanceData);
+		for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+		{
+			const bool bSkipExecute = InSkipOp.GetAndAdvance();
+			const int32 Index = InIndex.GetAndAdvance();
+			const TVMArrayType Value = InValue.GetAndAdvance();
+			if (!bSkipExecute && ArrayData.GetArray().IsValidIndex(Index))
+			{
+				TVMArrayType PreviousValue = FNDIArrayImplHelper<TArrayType>::AtomicMax(&ArrayData.GetArray().GetData()[Index], Value);
+				OutPrevValue.SetAndAdvance(PreviousValue);
+				OutCurrValue.SetAndAdvance(PreviousValue + Value);
+			}
+			else
+			{
+				OutPrevValue.SetAndAdvance(DefaultValue);
+				OutCurrValue.SetAndAdvance(DefaultValue);
 			}
 		}
 

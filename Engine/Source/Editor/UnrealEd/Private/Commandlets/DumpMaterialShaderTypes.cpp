@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/DumpMaterialShaderTypes.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AnalyticsET.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "GlobalShader.h"
 #include "HAL/FileManager.h"
+#include "IAnalyticsProviderET.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Materials/Material.h"
@@ -19,14 +22,32 @@ class FShaderStatsGatheringContext
 {
 public:
 	FShaderStatsGatheringContext() = delete;
-	FShaderStatsGatheringContext(const FString& FileName)
+	FShaderStatsGatheringContext(const FString& InFileName) : FileName(InFileName)
 	{
-		DebugWriter = IFileManager::Get().CreateFileWriter(*FileName);
+		OutputFileName = FPaths::Combine(*FPaths::ProjectSavedDir(), TEXT("MaterialStats"), FileName);
+		DebugWriter = IFileManager::Get().CreateFileWriter(*OutputFileName);
 	}
 	~FShaderStatsGatheringContext()
 	{
 		DebugWriter->Close();
 		delete DebugWriter;
+
+		// Copy to the automation directory.
+		const FString AutomationFilePath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Programs"), TEXT("AutomationTool"), TEXT("Saved"), TEXT("Logs"), FileName);
+		IFileManager::Get().Copy(*AutomationFilePath, *OutputFileName);
+	}
+
+	void AddToGlobalShaderTypeHistogram(const TCHAR* GlobalShaderName)
+	{
+		FString Name(GlobalShaderName);
+		if (int32* Existing = GlobalShaderTypeHistogram.Find(Name))
+		{
+			++(*Existing);
+		}
+		else
+		{
+			GlobalShaderTypeHistogram.FindOrAdd(Name, 1);
+		}
 	}
 
 	void AddToHistogram(const TCHAR* VertexFactoryName, const TCHAR* ShaderPipelineName, const TCHAR* ShaderTypeName)
@@ -69,6 +90,8 @@ public:
 
 	void PrintHistogram(int TotalShaders)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(PrintHistogram);
+
 		if (ShaderTypeHistogram.Num() > 0)
 		{
 			{
@@ -136,6 +159,8 @@ public:
 
 	void PrintAlphabeticList()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(PrintAlphabeticList);
+
 		if (ShaderTypeHistogram.Num() > 0)
 		{
 			ShaderTypeHistogram.KeySort(TLess<FString>());
@@ -176,11 +201,48 @@ public:
 		}
 	}
 
+	void PrintUniqueMaterialInstances()
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(PrintUniqueMaterialInstances);
+
+		// Sort by number of mat instances.
+		struct TArraySizeSort
+		{
+			bool operator()(const TArray<FString>& A, const TArray<FString>& B) const
+			{
+				return A.Num() > B.Num();
+			}
+		};
+		UniqueMaterialInstances.ValueSort(TArraySizeSort());
+
+		// Write out header.
+		const char MatInstHeader[] = "\nUnique Material Instances\n";
+		DebugWriter->Serialize(const_cast<char*>(MatInstHeader), sizeof(MatInstHeader) - 1);
+
+		// Print each item.
+		for (TPair<FSHAHash, TArray<FString>> UniqueMaterialInstance : UniqueMaterialInstances)
+		{
+			FString DuplicateLine = FString::Printf(TEXT("Duplicates: %d\n"), UniqueMaterialInstance.Value.Num());
+			DebugWriter->Serialize(const_cast<ANSICHAR*>(StringCast<ANSICHAR>(*DuplicateLine).Get()), DuplicateLine.Len());
+
+			for (const FString& InstanceName : UniqueMaterialInstance.Value)
+			{
+				FString OuputLine = FString::Printf(TEXT("\t%s\n"), *InstanceName);
+				DebugWriter->Serialize(const_cast<ANSICHAR*>(StringCast<ANSICHAR>(*OuputLine).Get()), OuputLine.Len());
+			}
+		}
+	}
+
 	void Log(const FString& OutString)
 	{
-		//UE_LOG(LogDumpMaterialShaderTypesCommandlet, Log, TEXT("%s"), *OutString);
 		FString OuputLine = OutString + TEXT("\n");
 		DebugWriter->Serialize(const_cast<ANSICHAR*>(StringCast<ANSICHAR>(*OuputLine).Get()), OuputLine.Len());
+	}
+
+	void AddMaterialInstance(const FString& MaterialInstanceName, const FSHAHash& StaticParameterHash)
+	{
+		TArray<FString>& InstanceList = UniqueMaterialInstances.FindOrAdd(StaticParameterHash);
+		InstanceList.Add(MaterialInstanceName);
 	}
 
 private:
@@ -194,6 +256,18 @@ private:
 
 	/** Map of vertex factory display names to their counts. */
 	TMap<FString, int32>	VertexFactoryTypeHistogram;
+
+	/** Map of global shader type display names to their counts. */
+	TMap<FString, int32>	GlobalShaderTypeHistogram;
+
+	/** Unique material instances. */
+	TMap<FSHAHash, TArray<FString>> UniqueMaterialInstances;
+
+	/** Store a copy of the the filename. */
+	FString FileName;
+
+	/** Store the full path to the output file. */
+	FString OutputFileName;
 };
 
 UDumpMaterialShaderTypesCommandlet::UDumpMaterialShaderTypesCommandlet(const FObjectInitializer& ObjectInitializer)
@@ -287,8 +361,10 @@ void PrintDebugShaderInfo(FShaderStatsGatheringContext& Output, const TArray<FDe
 	}
 }
 
-int ProcessMaterials(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, FShaderStatsGatheringContext& Output, TArray<FAssetData>& MaterialList)
+int ProcessMaterials(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, FShaderStatsGatheringContext& Output, const TArray<FAssetData>& MaterialList)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProcessMaterials);
+
 	int TotalShaders = 0;
 
 	for (const FAssetData& AssetData : MaterialList)
@@ -302,22 +378,24 @@ int ProcessMaterials(const ITargetPlatform* TargetPlatform, const EShaderPlatfor
 			TotalShaders += TotalShadersForMaterial;
 
 			Output.Log(TEXT(""));
-			Output.Log(FString::Printf(TEXT("Material: %s - %d shaders"), *AssetData.AssetName.ToString(), TotalShadersForMaterial));
+			Output.Log(FString::Printf(TEXT("Material: %s - %d shaders"), *AssetData.GetObjectPathString(), TotalShadersForMaterial));
 
 			PrintDebugShaderInfo(Output, OutShaderInfo);
 		}
 	}
 
 	Output.Log(TEXT(""));
-	Output.Log(TEXT("Summary"));
+	Output.Log(TEXT("MaterialSummary"));
 	Output.Log(FString::Printf(TEXT("Total Materials: %d"), MaterialList.Num()));
-	Output.Log(FString::Printf(TEXT("Total Shaders: %d"), TotalShaders));
+	Output.Log(FString::Printf(TEXT("Total Material Shaders: %d"), TotalShaders));
 
 	return TotalShaders;
 }
 
-int ProcessMaterialInstances(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, FShaderStatsGatheringContext& Output, TArray<FAssetData>& MaterialInstanceList)
+int ProcessMaterialInstances(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, FShaderStatsGatheringContext& Output, const TArray<FAssetData>& MaterialInstanceList)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProcessMaterialInstances);
+
 	int TotalShaders = 0;
 
 	int StaticPermutations = 0;
@@ -331,26 +409,57 @@ int ProcessMaterialInstances(const ITargetPlatform* TargetPlatform, const EShade
 			const int TotalShadersForMaterial = GetTotalShaders(OutShaderInfo);
 			TotalShaders += TotalShadersForMaterial;
 
-			FString StaticParameterString(TEXT(""));
-
-			if (MaterialInstance->bHasStaticPermutationResource)
+			// Find the root parent that is a material.
+			UMaterialInterface* Top = MaterialInstance->Parent;
+			while (Top)
 			{
-				const FStaticParameterSet& ParameterSet = MaterialInstance->GetStaticParameters();
-				for (int32 StaticSwitchIndex = 0; StaticSwitchIndex < ParameterSet.StaticSwitchParameters.Num(); ++StaticSwitchIndex)
+				if (UMaterial* Material = Cast<UMaterial>(Top))
 				{
-					const FStaticSwitchParameter& StaticSwitchParameter = ParameterSet.StaticSwitchParameters[StaticSwitchIndex];
-					StaticParameterString += FString::Printf(
-						TEXT(", StaticSwitch'%s'=%s"),
-						*StaticSwitchParameter.ParameterInfo.ToString(),
-						StaticSwitchParameter.Value ? TEXT("True") : TEXT("False")
-					);
+					break;
+				}
+				else if (UMaterialInstance* MatInst = Cast<UMaterialInstance>(Top))
+				{
+					Top = MatInst->Parent;
+				}
+				else
+				{
+					Top = nullptr;
 				}
 			}
 
 			Output.Log(TEXT(""));
 			Output.Log(FString::Printf(TEXT("Material Instance: %s - %d shaders"), *AssetData.AssetName.ToString(), TotalShadersForMaterial));
-			Output.Log(FString::Printf(TEXT("Static Parameter %s"), *StaticParameterString));
-			Output.Log(FString::Printf(TEXT("Parent: %s"), MaterialInstance->Parent ? *MaterialInstance->Parent->GetName() : TEXT("NO PARENT")));
+			Output.Log(FString::Printf(TEXT("Parent: %s"), Top ? *Top->GetFullName() : TEXT("NO PARENT")));
+			Output.Log(FString::Printf(TEXT("Static Parameters: %d"), MaterialInstance->bHasStaticPermutationResource ? MaterialInstance->GetStaticParameters().EditorOnly.StaticSwitchParameters.Num() : 0));
+
+			FSHAHash OutHash;
+
+			if (MaterialInstance->bHasStaticPermutationResource)
+			{
+				FSHA1 Hasher;
+				const FStaticParameterSet& ParameterSet = MaterialInstance->GetStaticParameters();
+				for (int32 StaticSwitchIndex = 0; StaticSwitchIndex < ParameterSet.EditorOnly.StaticSwitchParameters.Num(); ++StaticSwitchIndex)
+				{
+					const FStaticSwitchParameter& StaticSwitchParameter = ParameterSet.EditorOnly.StaticSwitchParameters[StaticSwitchIndex];
+
+					StaticSwitchParameter.UpdateHash(Hasher);
+
+					Output.Log(FString::Printf(TEXT("\t%s : %s"), *StaticSwitchParameter.ParameterInfo.ToString(), StaticSwitchParameter.Value ? TEXT("True") : TEXT("False")));
+				}
+
+				Hasher.Final();
+				Hasher.GetHash(&OutHash.Hash[0]);
+
+				Output.AddMaterialInstance(AssetData.AssetName.ToString(), OutHash);
+				Output.Log(FString::Printf(TEXT("Static Parameter Hash: %s"), *OutHash.ToString()));
+			}
+
+			Output.Log(FString::Printf(TEXT("Base Property Overrides: %s"), MaterialInstance->HasOverridenBaseProperties() ? TEXT("True") : TEXT("False")));
+
+			if (MaterialInstance->HasOverridenBaseProperties())
+			{
+				Output.Log(FString::Printf(TEXT("\t%s"), *MaterialInstance->GetBasePropertyOverrideString()));
+			}
 
 			PrintDebugShaderInfo(Output, OutShaderInfo);
 
@@ -362,20 +471,72 @@ int ProcessMaterialInstances(const ITargetPlatform* TargetPlatform, const EShade
 	}
 
 	Output.Log(TEXT(""));
-	Output.Log(TEXT("Summary"));
+	Output.Log(TEXT("Material Instances Summary"));
 	Output.Log(FString::Printf(TEXT("Total Material Instances: %d"), MaterialInstanceList.Num()));
 	Output.Log(FString::Printf(TEXT("Material Instances w/ Static Permutations: %d"), StaticPermutations));
-	Output.Log(FString::Printf(TEXT("Total Shaders: %d"), TotalShaders));
+	Output.Log(FString::Printf(TEXT("Total Material Instances Shaders: %d"), TotalShaders));
 
 	return TotalShaders;
 }
 
-void ProcessForTargetAndShaderPlatform(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, const FString& Params, TArray<FAssetData>& MaterialList, TArray<FAssetData> MaterialInstanceList)
+int ProcessGlobalShaders(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, FShaderStatsGatheringContext& Output)
 {
-	const double StartTime = FPlatformTime::Seconds();
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProcessGlobalShaders);
+
+	Output.Log(TEXT(""));
+	Output.Log(TEXT("Global Shaders"));
+
+	TArray<const FGlobalShaderType*> GlobalShaderTypes;
+	for (TLinkedList<FShaderType*>::TIterator ShaderTypeIt(FShaderType::GetTypeList()); ShaderTypeIt; ShaderTypeIt.Next())
+	{
+		FGlobalShaderType* GlobalShaderType = ShaderTypeIt->GetGlobalShaderType();
+		if (!GlobalShaderType)
+		{
+			continue;
+		}
+
+		GlobalShaderTypes.Add(GlobalShaderType);
+	}
+	Algo::SortBy(GlobalShaderTypes, [](const FGlobalShaderType* GS) { return GS->GetName(); }, FNameLexicalLess());
+
+	int TotalShaders = 0;
+
+	FPlatformTypeLayoutParameters LayoutParams;
+	LayoutParams.InitializeForPlatform(TargetPlatform);
+	EShaderPermutationFlags PermutationFlags = GetShaderPermutationFlags(LayoutParams);
+
+	for (const FGlobalShaderType* GS : GlobalShaderTypes)
+	{
+		int PermutationCount = 0;
+		for (int32 id = 0; id < GS->GetPermutationCount(); id++)
+		{
+			if (GS->ShouldCompilePermutation(ShaderPlatform, id, PermutationFlags))
+			{
+				PermutationCount++;
+				TotalShaders++;
+				Output.AddToGlobalShaderTypeHistogram(GS->GetName());
+			}
+		}
+
+		if (PermutationCount)
+		{
+			Output.Log(FString::Printf(TEXT("%s - %d permutations"), GS->GetName(), PermutationCount));
+		}
+	}
+
+	Output.Log(TEXT(""));
+	Output.Log(TEXT("Global Shaders Summary"));
+	Output.Log(FString::Printf(TEXT("Total Global Shaders: %d"), TotalShaders));
+
+	return TotalShaders;
+}
+
+void ProcessForTargetAndShaderPlatform(const ITargetPlatform* TargetPlatform, const EShaderPlatform ShaderPlatform, const FString& Params, const TArray<FAssetData>& MaterialList, const TArray<FAssetData>& MaterialInstanceList, TSharedPtr<IAnalyticsProviderET> Provider)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProcessForTargetAndShaderPlatform);
 
 	const FString TimeNow = FDateTime::Now().ToString();
-	FString FileName = FPaths::Combine(*FPaths::ProjectSavedDir(), FString::Printf(TEXT("MaterialStats/ShaderTypes-%s-%s-%s.txt"), *TargetPlatform->PlatformName(), *LexToString(ShaderPlatform), *TimeNow));
+	FString FileName = FString::Printf(TEXT("%s-ShaderTypes-%s-%s-%s.txt"), FApp::GetProjectName(), *TargetPlatform->PlatformName(), *LexToString(ShaderPlatform), *TimeNow);
 
 	FShaderStatsGatheringContext Output(FileName);
 
@@ -389,19 +550,47 @@ void ProcessForTargetAndShaderPlatform(const ITargetPlatform* TargetPlatform, co
 	TotalShaders += ProcessMaterialInstances(TargetPlatform, ShaderPlatform, Output, MaterialInstanceList);
 	TotalAssets += MaterialInstanceList.Num();
 
+	const int TotalGlobalShaders = ProcessGlobalShaders(TargetPlatform, ShaderPlatform, Output);
+	TotalShaders += TotalGlobalShaders;
+
+	int TotalDefaultMaterialShaders = 0;
+	{
+		for (int32 Domain = 0; Domain < MD_MAX; ++Domain)
+		{
+			UMaterial* Material = UMaterial::GetDefaultMaterial((EMaterialDomain)Domain);
+			if (Material)
+			{
+				TArray<FDebugShaderTypeInfo> OutShaderInfo;
+				Material->GetShaderTypes(ShaderPlatform, TargetPlatform, OutShaderInfo);
+				TotalDefaultMaterialShaders += GetTotalShaders(OutShaderInfo);
+			}
+		}
+	}
+
 	Output.Log(TEXT(""));
 	Output.Log(TEXT("Summary"));
 	Output.Log(FString::Printf(TEXT("Total Assets: %d"), TotalAssets));
 	Output.Log(FString::Printf(TEXT("Total Shaders: %d"), TotalShaders));
+	Output.Log(FString::Printf(TEXT("Total Default Material Shaders: %d"), TotalDefaultMaterialShaders));
 	Output.Log(FString::Printf(TEXT("Histogram:")));
 	Output.PrintHistogram(TotalShaders);
 	Output.Log(FString::Printf(TEXT("\nAlphabetic list of types:")));
 	Output.PrintAlphabeticList();
 
-	const double EndTime = FPlatformTime::Seconds() - StartTime;
-	Output.Log(TEXT(""));
-	Output.Log(FString::Printf(TEXT("Commandlet Took: %lf"), EndTime));
-
+	if (Provider.IsValid())
+	{
+		Provider->RecordEvent(TEXT("DumpMaterialShaderTypes"), MakeAnalyticsEventAttributeArray(
+			TEXT("ProjectName"), FApp::GetProjectName(),
+			TEXT("BuildVersion"), FApp::GetBuildVersion(),
+			TEXT("Platform"), TargetPlatform->PlatformName(),
+			TEXT("ShaderPlatform"), LexToString(ShaderPlatform),
+			TEXT("TotalShaders"), TotalShaders,
+			TEXT("TotalMaterials"), MaterialList.Num(),
+			TEXT("TotalMaterialInstances"), MaterialInstanceList.Num(),
+			TEXT("TotalGlobalShaders"), TotalGlobalShaders,
+			TEXT("TotalDefaultMaterialShaders"), TotalDefaultMaterialShaders
+			));
+	}
 }
 
 int32 UDumpMaterialShaderTypesCommandlet::Main(const FString& Params)
@@ -419,52 +608,91 @@ int32 UDumpMaterialShaderTypesCommandlet::Main(const FString& Params)
 		UE_LOG(LogDumpMaterialShaderTypesCommandlet, Log, TEXT("Options:"));
 		UE_LOG(LogDumpMaterialShaderTypesCommandlet, Log, TEXT(" Required: -targetplatform=<platform(s)>     (Which target platform do you want results, e.g. WindowsClient, WindowsEditor. Multiple shader platforms are allowed)."));
 		UE_LOG(LogDumpMaterialShaderTypesCommandlet, Log, TEXT(" Optional: -collection=<name>                (You can also specify a collection of assets to narrow down the results e.g. if you maintain a collection that represents the actually used in-game assets)."));
+		UE_LOG(LogDumpMaterialShaderTypesCommandlet, Log, TEXT(" Optional: -analytics                        (Whether or not to send analytics data for tracking purposes)."));
 		return 0;
 	}
 
-	UE_LOG(LogDumpMaterialShaderTypesCommandlet, Display, TEXT("Searching the asset registry for all assets..."));
-	IAssetRegistry& AssetRegistry = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	AssetRegistry.SearchAllAssets(true);
+	const bool bSendAnalytics = FParse::Param(FCommandLine::Get(), TEXT("analytics"));
+
+	const double AssetRegistryStart = FPlatformTime::Seconds();
 
 	TArray<FAssetData> MaterialList;
 	TArray<FAssetData> MaterialInstanceList;
 
-	// Parse collection
-	FString CollectionName;
-	if (FParse::Value(*Params, TEXT("collection="), CollectionName, true))
 	{
-		if (!CollectionName.IsEmpty())
+		TRACE_CPUPROFILER_EVENT_SCOPE(UDumpMaterialShaderTypesCommandlet.AssetRegistryScan);
+
+		UE_LOG(LogDumpMaterialShaderTypesCommandlet, Display, TEXT("Searching the asset registry for all assets..."));
+		IAssetRegistry& AssetRegistry = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		AssetRegistry.SearchAllAssets(true);
+
+		// Parse collection
+		FString CollectionName;
+		if (FParse::Value(*Params, TEXT("collection="), CollectionName, true))
 		{
-			// Get the list of materials from a collection
-			FARFilter Filter;
-			Filter.PackagePaths.Add(FName(TEXT("/Game")));
-			Filter.bRecursivePaths = true;
-			Filter.ClassNames.Add(UMaterial::StaticClass()->GetFName());
+			if (!CollectionName.IsEmpty())
+			{
+				// Get the list of materials from a collection
+				FARFilter Filter;
+				Filter.PackagePaths.Add(FName(TEXT("/Game")));
+				Filter.bRecursivePaths = true;
+				Filter.ClassPaths.Add(UMaterial::StaticClass()->GetClassPathName());
 
-			FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-			CollectionManagerModule.Get().GetObjectsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, Filter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren);
+				FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				CollectionManagerModule.Get().GetObjectsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, Filter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-			AssetRegistry.GetAssets(Filter, MaterialList);
+				AssetRegistry.GetAssets(Filter, MaterialList);
 
-			Filter.ClassNames.Empty();
-			Filter.ClassNames.Add(UMaterialInstance::StaticClass()->GetFName());
-			Filter.ClassNames.Add(UMaterialInstanceConstant::StaticClass()->GetFName());
+				Filter.ClassPaths.Empty();
+				Filter.ClassPaths.Add(UMaterialInstance::StaticClass()->GetClassPathName());
+				Filter.ClassPaths.Add(UMaterialInstanceConstant::StaticClass()->GetClassPathName());
 
-			AssetRegistry.GetAssets(Filter, MaterialInstanceList);
+				AssetRegistry.GetAssets(Filter, MaterialInstanceList);
+			}
+		}
+		else
+		{
+			if (!AssetRegistry.IsLoadingAssets())
+			{
+				AssetRegistry.GetAssetsByClass(UMaterial::StaticClass()->GetClassPathName(), MaterialList, true);
+				AssetRegistry.GetAssetsByClass(UMaterialInstance::StaticClass()->GetClassPathName(), MaterialInstanceList, true);
+			}
 		}
 	}
-	else
-	{
-		if (!AssetRegistry.IsLoadingAssets())
-		{
-			AssetRegistry.GetAssetsByClass(UMaterial::StaticClass()->GetFName(), MaterialList, true);
-			AssetRegistry.GetAssetsByClass(UMaterialInstance::StaticClass()->GetFName(), MaterialInstanceList, true);
-		}
-	}
+
+	const double AssetRegistryEnd = FPlatformTime::Seconds();
+	UE_LOG(LogDumpMaterialShaderTypesCommandlet, Display, TEXT("Asset scan took: %.3f"), AssetRegistryEnd - AssetRegistryStart);
+
+	// Sort the material lists by name so the order is stable.
+	Algo::SortBy(MaterialList, [](const FAssetData& AssetData) { return AssetData.GetSoftObjectPath(); }, [](const FSoftObjectPath& A, const FSoftObjectPath& B) { return A.LexicalLess(B); });
+	Algo::SortBy(MaterialInstanceList, [](const FAssetData& AssetData) { return AssetData.GetSoftObjectPath(); }, [](const FSoftObjectPath& A, const FSoftObjectPath& B) { return A.LexicalLess(B); });
 
 	// For all active platforms
 	ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
 	const TArray<ITargetPlatform*>& Platforms = TPM->GetActiveTargetPlatforms();
+
+	TSharedPtr<IAnalyticsProviderET> Provider;
+	if (bSendAnalytics)
+	{
+		FAnalyticsET::Config Config;
+		Config.APIKeyET = FString(TEXT("StudioAnalytics.Dev"));
+		Config.APIServerET = FString(TEXT("https://datarouter.ol.epicgames.com/"));
+		Config.AppVersionET = FEngineVersion::Current().ToString();
+
+		// There are other things to configure, but the default are usually fine.
+		Provider = FAnalyticsET::Get().CreateAnalyticsProvider(Config);
+		if (Provider.IsValid())
+		{
+			const FString UserID = FPlatformProcess::UserName(false);
+			Provider->SetUserID(UserID);
+			Provider->StartSession(MakeAnalyticsEventAttributeArray(
+				TEXT("ProjectName"), FApp::GetProjectName(),
+				TEXT("Version"), FApp::GetBuildVersion()
+			));
+		}
+	}
 
 	for (int32 Index = 0; Index < Platforms.Num(); Index++)
 	{
@@ -476,8 +704,11 @@ int32 UDumpMaterialShaderTypesCommandlet::Main(const FString& Params)
 			const EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(DesiredShaderFormats[FormatIndex]);
 
 			UE_LOG(LogDumpMaterialShaderTypesCommandlet, Display, TEXT("Dumping material shader types for '%s' - '%s'..."), *Platforms[Index]->PlatformName(), *LexToString(ShaderPlatform));
-			ProcessForTargetAndShaderPlatform(Platforms[Index], ShaderPlatform, Params, MaterialList, MaterialInstanceList);
+			ProcessForTargetAndShaderPlatform(Platforms[Index], ShaderPlatform, Params, MaterialList, MaterialInstanceList, Provider);
 		}
 	}
+
+	UE_LOG(LogDumpMaterialShaderTypesCommandlet, Display, TEXT("Dumping stats took: %.3f"), FPlatformTime::Seconds() - AssetRegistryEnd);
+
 	return 0;
 }

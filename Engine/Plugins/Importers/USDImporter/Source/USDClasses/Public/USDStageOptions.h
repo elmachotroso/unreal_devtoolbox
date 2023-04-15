@@ -4,6 +4,8 @@
 
 #include "USDStageOptions.generated.h"
 
+struct FAnalyticsEventAttribute;
+
 UENUM( BlueprintType )
 enum class EUsdUpAxis : uint8
 {
@@ -24,3 +26,16 @@ struct USDCLASSES_API FUsdStageOptions
 	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Stage options" )
 	EUsdUpAxis UpAxis = EUsdUpAxis::ZAxis;
 };
+
+namespace UsdUtils
+{
+	USDCLASSES_API void AddAnalyticsAttributes(
+		const FUsdStageOptions& Options,
+		TArray< FAnalyticsEventAttribute >& InOutAttributes
+	);
+
+	USDCLASSES_API void HashForExport(
+		const FUsdStageOptions& Options,
+		FSHA1& HashToUpdate
+	);
+}

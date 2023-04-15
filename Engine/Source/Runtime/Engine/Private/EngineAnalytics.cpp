@@ -13,7 +13,6 @@
 #include "IAnalyticsProviderET.h"
 #include "AnalyticsET.h"
 #include "GeneralProjectSettings.h"
-#include "EngineSessionManager.h"
 #include "Misc/EngineVersion.h"
 #include "RHI.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
@@ -29,12 +28,13 @@
 
 bool FEngineAnalytics::bIsInitialized;
 TSharedPtr<IAnalyticsProviderET> FEngineAnalytics::Analytics;
-TSharedPtr<FEngineSessionManager> FEngineAnalytics::SessionManager;
 
 #if WITH_EDITOR
 static TUniquePtr<FAnalyticsSessionSummaryManager> AnalyticsSessionSummaryManager;
 static TUniquePtr<FEditorAnalyticsSessionSummary> EditorAnalyticSessionSummary;
 static TSharedPtr<FAnalyticsSessionSummarySender> AnalyticsSessionSummarySender;
+FSimpleMulticastDelegate FEngineAnalytics::OnInitializeEngineAnalytics;
+FSimpleMulticastDelegate FEngineAnalytics::OnShutdownEngineAnalytics;
 #endif
 
 static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
@@ -52,7 +52,10 @@ static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
 		FString UETypeOverride;
 		bool bHasOverride = GConfig->GetString(TEXT("Analytics"), TEXT("UE4TypeOverride"), UETypeOverride, GEngineIni);
 		const TCHAR* UETypeStr = bHasOverride ? *UETypeOverride : FEngineBuildSettings::IsPerforceBuild() ? TEXT("Perforce") : TEXT("UnrealEngine");
-		Config.APIKeyET = FString::Printf(TEXT("UEEditor.%s.%s"), UETypeStr, BuildTypeStr);
+
+		FString AppID;
+		GConfig->GetString(TEXT("Analytics"), TEXT("AppIdOverride"), AppID, GEditorIni);
+		Config.APIKeyET = FString::Printf(TEXT("%s.%s.%s"), AppID.IsEmpty() ? TEXT("UEEditor") : *AppID, UETypeStr, BuildTypeStr);
 	}
 	Config.APIServerET = TEXT("https://datarouter.ol.epicgames.com/");
 	Config.AppEnvironment = TEXT("datacollector-binary");
@@ -68,6 +71,15 @@ IAnalyticsProviderET& FEngineAnalytics::GetProvider()
 
 	return *Analytics.Get();
 }
+
+#if WITH_EDITOR
+FAnalyticsSessionSummaryManager& FEngineAnalytics::GetSummaryManager()
+{
+	checkf(bIsInitialized && AnalyticsSessionSummaryManager.IsValid(), TEXT("FEngineAnalytics::GetSessionManager called outside of Initialize/Shutdown."));
+
+	return *AnalyticsSessionSummaryManager.Get();
+}
+#endif
 
 void FEngineAnalytics::Initialize()
 {
@@ -127,6 +139,13 @@ void FEngineAnalytics::Initialize()
 			StartSessionAttributes.Emplace(TEXT("OSMinor"), OSMinor);
 			StartSessionAttributes.Emplace(TEXT("OSVersion"), FPlatformMisc::GetOSVersion());
 			StartSessionAttributes.Emplace(TEXT("Is64BitOS"), FPlatformMisc::Is64bitOperatingSystem());
+#if PLATFORM_MAC
+#if PLATFORM_MAC_ARM64
+            StartSessionAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("AppleSilicon")));
+#else
+            StartSessionAttributes.Emplace(TEXT("UEBuildArch"), FString(TEXT("Intel(Mac)")));
+#endif
+#endif
 
 			// allow editor events to be correlated to StudioAnalytics events (if there is a studio analytics provider)
 			if (FStudioAnalytics::IsAvailable())
@@ -137,13 +156,6 @@ void FEngineAnalytics::Initialize()
 			Analytics->StartSession(MoveTemp(StartSessionAttributes));
 
 			bIsInitialized = true;
-		}
-
-		// Create the session manager singleton
-		if (!SessionManager.IsValid())
-		{
-			SessionManager = MakeShared<FEngineSessionManager>(EEngineSessionManagerMode::Editor);
-			SessionManager->Initialize();
 		}
 
 #if WITH_EDITOR
@@ -168,6 +180,8 @@ void FEngineAnalytics::Initialize()
 				// Create the object responsible to collect the Editor session properties.
 				EditorAnalyticSessionSummary = MakeUnique<FEditorAnalyticsSessionSummary>(EditorPropertyStore, FGenericCrashContext::GetOutOfProcessCrashReporterProcessId());
 			}
+
+			OnInitializeEngineAnalytics.Broadcast();
 		}
 #endif
 	}
@@ -175,14 +189,9 @@ void FEngineAnalytics::Initialize()
 
 void FEngineAnalytics::Shutdown(bool bIsEngineShutdown)
 {
-	// Destroy the session manager singleton if it exists
-	if (SessionManager.IsValid() && bIsEngineShutdown)
-	{
-		SessionManager->Shutdown();
-		SessionManager.Reset();
-	}
-
 #if WITH_EDITOR
+	OnShutdownEngineAnalytics.Broadcast();
+
 	if (EditorAnalyticSessionSummary)
 	{
 		EditorAnalyticSessionSummary->Shutdown();
@@ -214,11 +223,6 @@ void FEngineAnalytics::Shutdown(bool bIsEngineShutdown)
 void FEngineAnalytics::Tick(float DeltaTime)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FEngineAnalytics_Tick);
-
-	if (SessionManager.IsValid())
-	{
-		SessionManager->Tick(DeltaTime);
-	}
 
 #if WITH_EDITOR
 	if (EditorAnalyticSessionSummary)

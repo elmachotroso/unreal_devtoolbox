@@ -6,8 +6,11 @@
 #include "HAL/MallocAnsi.h"
 #include "HAL/UnrealMemory.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ProfilingDebugging/MemoryTrace.h"
 #include "Templates/UniquePtr.h"
 #include "Templates/UnrealTypeTraits.h"
+#include "Containers/LockFreeFixedSizeAllocator.h"
+#include "Misc/MemStack.h"
 
 #ifdef USE_MALLOC_BINNED3
 #if USE_MALLOC_BINNED3
@@ -19,7 +22,7 @@
 #define SUPPORTS_VERY_LARGE_ALIGNMENTS 1
 #endif
 
-#if __has_include(<sanitizer/asan_interface.h>)
+#if PLATFORM_HAS_ASAN_INCLUDE
 #include <sanitizer/asan_interface.h>
 #if defined(__SANITIZE_ADDRESS__)
 #define IS_ASAN_ENABLED 1
@@ -41,12 +44,16 @@ struct FOsAllocator
 	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
 	{
 		//LLM_SCOPED_PAUSE_TRACKING(ELLMAllocType::System);
-		return FPlatformMemory::BinnedAllocFromOS(Size);
+		void* Pointer = FMemory::Malloc(Size);
+		MemoryTrace_Alloc(uint64(Pointer), Size, Alignment);
+		MemoryTrace_MarkAllocAsHeap(uint64(Pointer), EMemoryTraceRootHeap::SystemMemory);
+		return Pointer;
 	}
 
 	FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
 	{
-		return FPlatformMemory::BinnedFreeToOS(Pointer, Size);
+		MemoryTrace_Free(uint64(Pointer));
+		FMemory::Free(Pointer);
 	}
 };
 
@@ -132,15 +139,47 @@ public:
 	}
 };
 
+template <uint32 BlockSize, typename Allocator = FOsAllocator>
+class TBlockAllocationLockFreeCache
+{
+public:
+	static_assert(BlockSize == FPageAllocator::PageSize, "Only 64k pages are supported with this cache.");
+	static constexpr bool SupportsAlignment = Allocator::SupportsAlignment;
+
+	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
+	{
+		if (Size == BlockSize)
+		{
+			return FPageAllocator::Get().Alloc();
+		}
+		else
+		{
+			return Allocator::Malloc(Size, Alignment);
+		}
+	}
+
+	FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
+	{
+		if (Size == BlockSize)
+		{
+			FPageAllocator::Get().Free(Pointer);
+		}
+		else
+		{
+			Allocator::Free(Pointer, Size);
+		}
+	}
+};
+
 struct FDefaultBlockAllocationTag 
 {
 	static constexpr uint32 BlockSize = 64 * 1024;		// Blocksize used to allocate from
 	static constexpr bool AllowOversizedBlocks = true;  // The allocator supports oversized Blocks and will store them in a seperate Block with counter 1
 	static constexpr bool RequiresAccurateSize = true;  // GetAllocationSize returning the accurate size of the allocation otherwise it could be relaxed to return the size to the end of the Block
 	static constexpr bool InlineBlockAllocation = false;  // Inline or Noinline the BlockAllocation which can have an impact on Performance
-	static constexpr const TCHAR* TagName = TEXT("DefaultLinear");
+	static constexpr const char* TagName = "DefaultLinear";
 
-	using Allocator = FOsAllocator;
+	using Allocator = TBlockAllocationLockFreeCache<BlockSize, FOsAllocator>;
 };
 
 // This concurrent fast linear Allocator can be used for temporary allocations that are usually produced and consumed on different threads and within the lifetime of a frame.
@@ -262,6 +301,12 @@ public:
 		return Malloc(Size, Alignment);
 	}
 
+	template<typename T>
+	static FORCEINLINE_DEBUGGABLE void* Malloc()
+	{
+		return Malloc(sizeof(T), alignof(T));
+	}
+
 	static FORCEINLINE_DEBUGGABLE void* Malloc(SIZE_T Size, uint32 Alignment)
 	{
 		checkSlow(Alignment >= 1 && FMath::IsPowerOfTwo(Alignment));
@@ -296,6 +341,7 @@ public:
 				Header->NextAllocationPtr = AlignedOffset + Size;
 				Header->Num++;
 
+				MemoryTrace_Alloc(uint64(AlignedOffset), Size, Alignment);
 				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(AlignedOffset), Size, ELLMTag::LinearAllocator) );
 				return reinterpret_cast<void*>(AlignedOffset);
 			}
@@ -316,6 +362,7 @@ public:
 
 					checkSlow(LargeAlignedOffset + Size <= LargeHeader->NextAllocationPtr);
 
+					MemoryTrace_Alloc(uint64(LargeAlignedOffset), Size, Alignment);
 					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(LargeAlignedOffset), Size, ELLMTag::LinearAllocator) );
 					return reinterpret_cast<void*>(LargeAlignedOffset);
 				}
@@ -335,6 +382,7 @@ public:
 				new (AllocationHeader) FAllocationHeader(Header, Size);
 				ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
 
+				MemoryTrace_Alloc(uint64(AllocationHeader), Size + sizeof(FAllocationHeader), Alignment);
 				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator) );
 				return reinterpret_cast<void*>(AlignedOffset);
 			}
@@ -357,6 +405,7 @@ public:
 					FAllocationHeader* AllocationHeader = new (reinterpret_cast<FAllocationHeader*>(LargeAlignedOffset) - 1) FAllocationHeader(LargeHeader, Size);
 					ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
 
+					MemoryTrace_Alloc(uint64(AllocationHeader), Size + sizeof(FAllocationHeader), Alignment);
 					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator) );
 					return reinterpret_cast<void*>(LargeAlignedOffset);
 				}
@@ -388,6 +437,7 @@ public:
 		{
 			if constexpr (SupportsFastPath)
 			{
+				MemoryTrace_Free(uint64(Pointer));
 				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, Pointer));
 				FBlockHeader* Header = reinterpret_cast<FBlockHeader*>(AlignDown(Pointer, BlockAllocationTag::BlockSize));
 
@@ -402,6 +452,7 @@ public:
 			{
 				FAllocationHeader* AllocationHeader = GetAllocationHeader(Pointer);
 				ASAN_UNPOISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
+				MemoryTrace_Free(uint64(AllocationHeader));
 				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, AllocationHeader));
 				FBlockHeader* Header = AllocationHeader->GetBlockHeader();
 				ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) + AllocationHeader->GetAllocationSize() );
@@ -464,6 +515,12 @@ public:
 	{
 		static_assert(TIsDerivedFrom<ObjectType, TConcurrentLinearObject<ObjectType, BlockAllocationTag>>::Value, "TConcurrentLinearObject must be base of it's ObjectType (see CRTP)");
 		return TConcurrentLinearAllocator<BlockAllocationTag>::template Malloc<alignof(ObjectType)>(Size);
+	}
+
+	FORCEINLINE_DEBUGGABLE static void* operator new(size_t Size, void* Object)
+	{
+		static_assert(TIsDerivedFrom<ObjectType, TConcurrentLinearObject<ObjectType, BlockAllocationTag>>::Value, "TConcurrentLinearObject must be base of it's ObjectType (see CRTP)");
+		return Object;
 	}
 
 	FORCEINLINE_DEBUGGABLE static void* operator new[](size_t Size)
@@ -682,6 +739,41 @@ public:
 		{
 		}
 		return Alloc;
+	}
+
+	inline void* MallocAndMemset(SIZE_T Size, uint32 Alignment, uint8 MemsetChar)
+	{
+		void* Ptr = Malloc(Size, Alignment);
+		FMemory::Memset(Ptr, MemsetChar, Size);
+		return Ptr;
+	}
+
+	template <typename T>
+	inline T* Malloc()
+	{
+		return reinterpret_cast<T*>(Malloc(sizeof(T), alignof(T)));
+	}
+
+	template <typename T>
+	inline T* MallocAndMemset(uint8 MemsetChar)
+	{
+		void* Ptr = Malloc(sizeof(T), alignof(T));
+		FMemory::Memset(Ptr, MemsetChar, sizeof(T));
+		return reinterpret_cast<T*>(Ptr);
+	}
+
+	template <typename T>
+	inline T* MallocArray(SIZE_T Num)
+	{
+		return reinterpret_cast<T*>(Malloc(sizeof(T) * Num, alignof(T)));
+	}
+
+	template <typename T>
+	inline T* MallocAndMemsetArray(SIZE_T Num, uint8 MemsetChar)
+	{
+		void* Ptr = Malloc(sizeof(T) * Num, alignof(T));
+		FMemory::Memset(Ptr, MemsetChar, sizeof(T) * Num);
+		return reinterpret_cast<T*>(Ptr);
 	}
 
 	template<typename T, typename... TArgs>

@@ -7,6 +7,7 @@
 #include "Delegates/DelegateCombinations.h"
 
 // Insights
+#include "Insights/Common/AsyncOperationProgress.h"
 #include "Insights/Common/SimpleRtti.h"
 #include "Insights/Table/ViewModels/BaseTreeNode.h"
 #include "Insights/Table/ViewModels/TableColumn.h"
@@ -17,6 +18,7 @@
 namespace Insights
 {
 
+class IAsyncOperationProgress;
 class FTable;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -64,7 +66,7 @@ public:
 	virtual FName GetColumnId() const override { return NAME_None; }
 
 	virtual FTreeNodeGroupInfo GetGroupForNode(const FBaseTreeNodePtr InNode) const { return { FName(), false }; }
-	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const;
+	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const;
 
 protected:
 	FText ShortName;
@@ -85,7 +87,7 @@ public:
 	FTreeNodeGroupingFlat();
 	virtual ~FTreeNodeGroupingFlat() {}
 
-	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const override;
+	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const override;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -118,18 +120,34 @@ public:
 	TTreeNodeGroupingByUniqueValue(TSharedRef<FTableColumn> InColumnRef) : FTreeNodeGroupingByUniqueValue(InColumnRef) {}
 	virtual ~TTreeNodeGroupingByUniqueValue() {}
 
-	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const override;
+	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const override;
 
 private:
 	static Type GetValue(const FTableCellValue& CellValue);
-	static FText GetValueAsText(const FTableColumn& Column, const FTableTreeNode& Node)
-	{
-		return Column.GetValueAsTooltipText(Node);
-	}
+	static FName GetGroupName(const FTableColumn& Column, const FTableTreeNode& Node);
 };
 
 template<typename Type>
-void TTreeNodeGroupingByUniqueValue<Type>::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const
+FName TTreeNodeGroupingByUniqueValue<Type>::GetGroupName(const FTableColumn& Column, const FTableTreeNode& Node)
+{
+	FText ValueAsText = Column.GetValueAsGroupingText(Node);
+
+	if (ValueAsText.IsEmpty())
+	{
+		static FName EmptyGroupName(TEXT("N/A"));
+		return EmptyGroupName;
+	}
+
+	FStringView StringView(ValueAsText.ToString());
+	if (StringView.Len() >= NAME_SIZE)
+	{
+		StringView = FStringView(StringView.GetData(), NAME_SIZE - 1);
+	}
+	return FName(StringView, 0);
+}
+
+template<typename Type>
+void TTreeNodeGroupingByUniqueValue<Type>::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const
 {
 	TMap<Type, FTableTreeNodePtr> GroupMap;
 	FTableTreeNodePtr UnsetGroupPtr = nullptr;
@@ -138,7 +156,7 @@ void TTreeNodeGroupingByUniqueValue<Type>::GroupNodes(const TArray<FTableTreeNod
 
 	for (FTableTreeNodePtr NodePtr : Nodes)
 	{
-		if (bCancelGrouping)
+		if (InAsyncOperationProgress.ShouldCancelAsyncOp())
 		{
 			return;
 		}
@@ -160,13 +178,8 @@ void TTreeNodeGroupingByUniqueValue<Type>::GroupNodes(const TArray<FTableTreeNod
 			FTableTreeNodePtr* GroupPtrPtr = GroupMap.Find(Value);
 			if (!GroupPtrPtr)
 			{
-				FText ValueAsText = GetValueAsText(Column, *NodePtr);
-				FStringView GroupName(ValueAsText.ToString());
-				if (GroupName.Len() >= NAME_SIZE)
-				{
-					GroupName = FStringView(GroupName.GetData(), NAME_SIZE - 1);
-				}
-				GroupPtr = MakeShared<FTableTreeNode>(FName(GroupName, 0), InParentTable);
+				const FName GroupName = GetGroupName(Column, *NodePtr);
+				GroupPtr = MakeShared<FTableTreeNode>(GroupName, InParentTable);
 				GroupPtr->SetExpansion(false);
 				ParentGroup.AddChildAndSetGroupPtr(GroupPtr);
 				GroupMap.Add(Value, GroupPtr);
@@ -195,7 +208,21 @@ typedef TTreeNodeGroupingByUniqueValue<bool> FTreeNodeGroupingByUniqueValueBool;
 typedef TTreeNodeGroupingByUniqueValue<int64> FTreeNodeGroupingByUniqueValueInt64;
 typedef TTreeNodeGroupingByUniqueValue<float> FTreeNodeGroupingByUniqueValueFloat;
 typedef TTreeNodeGroupingByUniqueValue<double> FTreeNodeGroupingByUniqueValueDouble;
-typedef TTreeNodeGroupingByUniqueValue<const TCHAR*> FTreeNodeGroupingByUniqueValueCString;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** Creates a group for each unique value (assumes data type of cell values is const TCHAR*). */
+class FTreeNodeGroupingByUniqueValueCString : public FTreeNodeGroupingByUniqueValue
+{
+public:
+	FTreeNodeGroupingByUniqueValueCString(TSharedRef<FTableColumn> InColumnRef) : FTreeNodeGroupingByUniqueValue(InColumnRef) {}
+	virtual ~FTreeNodeGroupingByUniqueValueCString() {}
+
+	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const override;
+
+private:
+	static FName GetGroupName(const TCHAR* Value);
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -223,6 +250,26 @@ public:
 	virtual ~FTreeNodeGroupingByType() {}
 
 	virtual FTreeNodeGroupInfo GetGroupForNode(const FBaseTreeNodePtr InNode) const override;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** Creates a tree hierarchy out of the path structure of string values. */
+class FTreeNodeGroupingByPathBreakdown : public FTreeNodeGrouping
+{
+	INSIGHTS_DECLARE_RTTI(FTreeNodeGroupingByPathBreakdown, FTreeNodeGrouping);
+
+public:
+	FTreeNodeGroupingByPathBreakdown(TSharedRef<FTableColumn> InColumnRef);
+	virtual ~FTreeNodeGroupingByPathBreakdown() {}
+
+	virtual void GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const override;
+
+	virtual FName GetColumnId() const override { return ColumnRef->GetId(); }
+	TSharedRef<FTableColumn> GetColumn() const { return ColumnRef; }
+
+private:
+	TSharedRef<FTableColumn> ColumnRef;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

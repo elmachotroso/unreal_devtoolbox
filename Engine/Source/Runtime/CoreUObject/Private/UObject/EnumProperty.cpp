@@ -12,17 +12,11 @@
 #include "Misc/NetworkVersion.h"
 #include "Hash/Blake3.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 namespace UEEnumProperty_Private
 {
 	template <typename OldIntType>
-	void ConvertIntToEnumProperty(FStructuredArchive::FSlot Slot, FEnumProperty* EnumProp, FNumericProperty* UnderlyingProp, UEnum* Enum, void* Obj)
+	void ConvertIntValueToEnumProperty(OldIntType OldValue, FEnumProperty* EnumProp, FNumericProperty* UnderlyingProp, UEnum* Enum, void* Obj)
 	{
-		OldIntType OldValue;
-		Slot << OldValue;
-
 		using LargeIntType = typename TChooseClass<TIsSigned<OldIntType>::Value, int64, uint64>::Result;
 
 		LargeIntType NewValue = OldValue;
@@ -43,6 +37,15 @@ namespace UEEnumProperty_Private
 
 		UnderlyingProp->SetIntPropertyValue(Obj, NewValue);
 	}
+
+	template <typename OldIntType>
+	void ConvertIntToEnumProperty(FStructuredArchive::FSlot Slot, FEnumProperty* EnumProp, FNumericProperty* UnderlyingProp, UEnum* Enum, void* Obj)
+	{
+		OldIntType OldValue;
+		Slot << OldValue;
+
+		ConvertIntValueToEnumProperty(OldValue, EnumProp, UnderlyingProp, Enum, Obj);
+	}
 }
 
 IMPLEMENT_FIELD(FEnumProperty)
@@ -56,7 +59,9 @@ FEnumProperty::FEnumProperty(FFieldVariant InOwner, const FName& InName, EObject
 }
 
 FEnumProperty::FEnumProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, UEnum* InEnum)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: FProperty(InOwner, InName, InObjectFlags, 0, CPF_HasGetValueTypeHash)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, Enum(InEnum)
 {
 	// This is expected to be set post-construction by AddCppProperty
@@ -64,9 +69,20 @@ FEnumProperty::FEnumProperty(FFieldVariant InOwner, const FName& InName, EObject
 }
 
 FEnumProperty::FEnumProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UEnum* InEnum)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: FProperty(InOwner, InName, InObjectFlags, InOffset, InFlags | CPF_HasGetValueTypeHash)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, Enum(InEnum)
 {
+	// This is expected to be set post-construction by AddCppProperty
+	UnderlyingProp = nullptr;
+}
+
+FEnumProperty::FEnumProperty(FFieldVariant InOwner, const UECodeGen_Private::FEnumPropertyParams& Prop)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop, CPF_HasGetValueTypeHash)
+{
+	Enum = Prop.EnumFunc ? Prop.EnumFunc() : nullptr;
+
 	// This is expected to be set post-construction by AddCppProperty
 	UnderlyingProp = nullptr;
 }
@@ -237,7 +253,7 @@ FString FEnumProperty::GetCPPType(FString* ExtendedTypeText, uint32 CPPExportFla
 	return EnumName;
 }
 
-void FEnumProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
+void FEnumProperty::ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
 	if (Enum == nullptr)
 	{
@@ -252,7 +268,19 @@ void FEnumProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue,
 
 	check(UnderlyingProp);
 
+	int64 LocalValue = 0;
+	void* PropertyValue = nullptr;
 	FNumericProperty* LocalUnderlyingProp = UnderlyingProp;
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		PropertyValue = &LocalValue;
+		GetValue_InContainer(PropertyValueOrContainer, PropertyValue);
+	}
+	else
+	{
+		PropertyValue = PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType);
+	}
 
 	if (PortFlags & PPF_ExportCpp)
 	{
@@ -266,7 +294,7 @@ void FEnumProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue,
 		if (GoodValue == MaxValue)
 		{
 			// not all native enums have Max value declared
-			ValueStr += FString::Printf(TEXT("(%s)(%ull)"), *FullyQualifiedEnumName, ActualValue);
+			ValueStr += FString::Printf(TEXT("(%s)(%llu)"), *FullyQualifiedEnumName, ActualValue);
 		}
 		else
 		{
@@ -278,7 +306,7 @@ void FEnumProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue,
 
 	if (PortFlags & PPF_ConsoleVariable)
 	{
-		UnderlyingProp->ExportTextItem(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags, ExportRootScope);
+		UnderlyingProp->ExportText_Internal(ValueStr, PropertyValue, EPropertyPointerType::Direct, DefaultValue, Parent, PortFlags, ExportRootScope);
 		return;
 	}
 
@@ -307,7 +335,7 @@ void FEnumProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue,
 	}
 }
 
-const TCHAR* FEnumProperty::ImportText_Internal(const TCHAR* InBuffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FEnumProperty::ImportText_Internal(const TCHAR* InBuffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 	check(Enum);
 	check(UnderlyingProp);
@@ -326,7 +354,15 @@ const TCHAR* FEnumProperty::ImportText_Internal(const TCHAR* InBuffer, void* Dat
 			}
 			if (EnumIndex != INDEX_NONE)
 			{
-				UnderlyingProp->SetIntPropertyValue(Data, Enum->GetValueByIndex(EnumIndex));
+				int64 EnumValue = Enum->GetValueByIndex(EnumIndex);
+				if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+				{
+					SetValue_InContainer(ContainerOrPropertyPtr, &EnumValue);
+				}
+				else
+				{
+					UnderlyingProp->SetIntPropertyValue(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), EnumValue);
+				}
 				return Buffer;
 			}
 
@@ -341,12 +377,13 @@ const TCHAR* FEnumProperty::ImportText_Internal(const TCHAR* InBuffer, void* Dat
 					SerializedObject = LoadContext->SerializedObject;
 				}
 			}
-			UE_LOG(LogClass, Warning, TEXT("In asset '%s', there is an enum property of type '%s' with an invalid value of '%s'"), *GetPathNameSafe(SerializedObject ? SerializedObject : FUObjectThreadContext::Get().ConstructedObject), *Enum->GetName(), *Temp);
+			ErrorText->Logf(ELogVerbosity::Warning, TEXT("In asset '%s', there is an enum property of type '%s' with an invalid value of '%s'"), *GetPathNameSafe(SerializedObject ? SerializedObject : FUObjectThreadContext::Get().ConstructedObject), *Enum->GetName(), *Temp);
 			return nullptr;
 		}
 	}
 
-	const TCHAR* Result = UnderlyingProp->ImportText(InBuffer, Data, PortFlags, Parent, ErrorText);
+	// UnderlyingProp has a 0 offset so we need to make sure we convert the container pointer to the actual value pointer
+	const TCHAR* Result = UnderlyingProp->ImportText_Internal(InBuffer, PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), EPropertyPointerType::Direct, Parent, PortFlags, ErrorText);
 	return Result;
 }
 
@@ -464,6 +501,10 @@ EConvertFromTypeResult FEnumProperty::ConvertFromType(const FPropertyTag& Tag, F
 	{
 		UEEnumProperty_Private::ConvertIntToEnumProperty<uint64>(Slot, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
 	}
+	else if (Tag.Type == NAME_BoolProperty)
+	{
+		UEEnumProperty_Private::ConvertIntValueToEnumProperty<uint8>(Tag.BoolVal, this, UnderlyingProp, Enum, ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex));
+	}
 	else
 	{
 		return EConvertFromTypeResult::UseSerializeItem;
@@ -522,5 +563,3 @@ uint64 FEnumProperty::GetMaxNetSerializeBits() const
 	
 	return FMath::Min(DesiredBits, MaxBits);
 }
-
-#include "UObject/DefineUPropertyMacros.h"

@@ -9,6 +9,8 @@
 #include "PyWrapperTypeRegistry.h"
 #include "UObject/Package.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PythonScriptLibrary)
+
 bool UPythonScriptLibrary::IsPythonAvailable()
 {
 	return IPythonScriptPlugin::Get()->IsPythonAvailable();
@@ -118,7 +120,9 @@ DEFINE_FUNCTION(UPythonScriptLibrary::execExecutePythonScript)
 
 		// Execute the Python command
 		FPyObjectPtr PyResult = FPyObjectPtr::StealReference(FPythonScriptPlugin::Get()->EvalString(*PythonScript, TEXT("<string>"), Py_file_input, PyTempGlobalDict, PyTempGlobalDict));
+		Py_BEGIN_ALLOW_THREADS
 		FPyWrapperTypeReinstancer::Get().ProcessPending();
+		Py_END_ALLOW_THREADS
 
 		// Read the output values from the Python context
 		if (PyResult)
@@ -165,3 +169,4 @@ DEFINE_FUNCTION(UPythonScriptLibrary::execExecutePythonScript)
 	*(bool*)RESULT_PARAM = false;
 #endif	// WITH_PYTHON
 }
+

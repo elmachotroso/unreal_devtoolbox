@@ -126,6 +126,9 @@ void FLightPrimitiveInteraction::Create(FLightSceneInfo* LightSceneInfo,FPrimiti
 	check(PrimitiveSceneInfo->Proxy && LightSceneInfo->Proxy);
 	PrimitiveSceneInfo->Proxy->GetLightRelevance(LightSceneInfo->Proxy, bDynamic, bRelevant, bIsLightMapped, bShadowMapped);
 
+	// Mobile renders stationary and dynamic local lights as dynamic
+	bDynamic |= (PrimitiveSceneInfo->Scene->GetShadingPath() == EShadingPath::Mobile && bShadowMapped && LightSceneInfo->Proxy->IsLocalLight());
+
 	if (bRelevant && bDynamic
 		// Don't let lights with static shadowing or static lighting affect primitives that should use static lighting, but don't have valid settings (lightmap res 0, etc)
 		// This prevents those components with invalid lightmap settings from causing lighting to remain unbuilt after a build
@@ -172,7 +175,7 @@ FLightPrimitiveInteraction::FLightPrimitiveInteraction(
 	bHasTranslucentObjectShadow(bInHasTranslucentObjectShadow),
 	bHasInsetObjectShadow(bInHasInsetObjectShadow),
 	bSelfShadowOnly(false),
-	bMobileDynamicPointLight(false)
+	bMobileDynamicLocalLight(false)
 {
 	// Determine whether this light-primitive interaction produces a shadow.
 	if(PrimitiveSceneInfo->Proxy->HasStaticLighting())
@@ -233,23 +236,25 @@ FLightPrimitiveInteraction::FLightPrimitiveInteraction(
 		// Add the interaction to the light's interaction list.
 		PrevPrimitiveLink = PrimitiveSceneInfo->Proxy->IsMeshShapeOftenMoving() ? &LightSceneInfo->DynamicInteractionOftenMovingPrimitiveList : &LightSceneInfo->DynamicInteractionStaticPrimitiveList;
 
-		// mobile movable spotlights / point lights
-		if (PrimitiveSceneInfo->Scene->GetShadingPath() == EShadingPath::Mobile && LightSceneInfo->Proxy->IsMovable())
+		// mobile local lights with dynamic lighting
+		if (PrimitiveSceneInfo->Scene->GetShadingPath() == EShadingPath::Mobile && LightSceneInfo->ShouldRenderLightViewIndependent())
 		{
 			const uint8 LightType = LightSceneInfo->Proxy->GetLightType();
-			static const auto MobileEnableMovableSpotLightsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableMovableSpotLights"));
 
 			const bool bIsValidLightType = 
 				   LightType == LightType_Rect
 				|| LightType == LightType_Point
-				|| (LightType == LightType_Spot && MobileEnableMovableSpotLightsVar->GetValueOnRenderThread());
+				|| LightType == LightType_Spot;
 
 			if( bIsValidLightType )
 			{
-				bMobileDynamicPointLight = true;
-				PrimitiveSceneInfo->NumMobileMovablePointLights++;
-				// The mobile renderer needs to update the shader bindings of movable point lights uniform buffer, so we have to update any static meshes in drawlists
-				PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshes();
+				bMobileDynamicLocalLight = true;
+				PrimitiveSceneInfo->NumMobileDynamicLocalLights++;
+				if (PrimitiveSceneInfo->NumMobileDynamicLocalLights == 1)
+				{
+					// Update static meshes to choose the shader permutation with local lights.
+					PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshes();
+				}
 			} 
 		}
 	}
@@ -306,12 +311,15 @@ FLightPrimitiveInteraction::~FLightPrimitiveInteraction()
 
 	FlushCachedShadowMapData();
 
-	// Track mobile movable point light count
-	if (bMobileDynamicPointLight)
+	// Track mobile movable local light count
+	if (bMobileDynamicLocalLight)
 	{
-		PrimitiveSceneInfo->NumMobileMovablePointLights--;
-		// The mobile renderer needs to use a different shader for movable point lights, so we have to update any static meshes in drawlists
-		PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshes();
+		PrimitiveSceneInfo->NumMobileDynamicLocalLights--;
+		if (PrimitiveSceneInfo->NumMobileDynamicLocalLights == 0)
+		{
+			// Update static meshes to choose the shader permutation without local lights.
+			PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshes();
+		}
 	}
 
 	// Remove the interaction from the light's interaction list.
@@ -418,7 +426,12 @@ FExponentialHeightFogSceneInfo::FExponentialHeightFogSceneInfo(const UExponentia
 	VolumetricFogEmissive.G = FMath::Max(VolumetricFogEmissive.G * UnitScale, 0.0f);
 	VolumetricFogEmissive.B = FMath::Max(VolumetricFogEmissive.B * UnitScale, 0.0f);
 	VolumetricFogExtinctionScale = FMath::Max(InComponent->VolumetricFogExtinctionScale, 0.0f);
-	VolumetricFogDistance = FMath::Max(InComponent->VolumetricFogDistance, 0.0f);
+	VolumetricFogDistance = FMath::Max(InComponent->VolumetricFogStartDistance + InComponent->VolumetricFogDistance, 0.0f);
 	VolumetricFogStaticLightingScatteringIntensity = FMath::Max(InComponent->VolumetricFogStaticLightingScatteringIntensity, 0.0f);
 	bOverrideLightColorsWithFogInscatteringColors = InComponent->bOverrideLightColorsWithFogInscatteringColors;
+
+	VolumetricFogStartDistance = InComponent->VolumetricFogStartDistance;
+	VolumetricFogNearFadeInDistance = InComponent->VolumetricFogNearFadeInDistance;
+
+	SkyAtmosphereAmbientContributionColorScale = InComponent->SkyAtmosphereAmbientContributionColorScale;
 }

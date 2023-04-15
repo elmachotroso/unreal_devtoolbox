@@ -3,13 +3,13 @@
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetTypeActions_Base.h"
 #include "Brushes/SlateImageBrush.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphUtilities.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "HAL/IConsoleManager.h"
 #include "IDetailCustomization.h"
 #include "ISettingsModule.h"
@@ -32,6 +32,7 @@
 #include "MetasoundSettings.h"
 #include "MetasoundSource.h"
 #include "MetasoundTime.h"
+#include "MetasoundTrace.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundUObjectRegistry.h"
 #include "Modules/ModuleInterface.h"
@@ -53,7 +54,7 @@ DEFINE_LOG_CATEGORY(LogMetasoundEditor);
 
 static int32 MetaSoundEditorAsyncRegistrationEnabledCVar = 1;
 FAutoConsoleVariableRef CVarMetaSoundEditorAsyncRegistrationEnabled(
-	TEXT("au.MetaSounds.Editor.AsyncRegistrationEnabled"),
+	TEXT("au.MetaSound.Editor.AsyncRegistrationEnabled"),
 	MetaSoundEditorAsyncRegistrationEnabledCVar,
 	TEXT("Enable registering all MetaSound asset classes asyncronously on editor load.\n")
 	TEXT("0: Disabled, !0: Enabled (default)"),
@@ -66,6 +67,8 @@ namespace Metasound
 {
 	namespace Editor
 	{
+		using FMetasoundGraphPanelPinFactory = FGraphPanelPinFactory;
+
 		static const FName AssetToolName { "AssetTools" };
 
 		template <typename T>
@@ -83,7 +86,7 @@ namespace Metasound
 			FSlateStyle()
 				: FSlateStyleSet("MetaSoundStyle")
 			{
-				SetParentStyleName(FEditorStyle::GetStyleSetName());
+				SetParentStyleName(FAppStyle::GetAppStyleSetName());
 
 				SetContentRoot(FPaths::EnginePluginsDir() / TEXT("Runtime/Metasound/Content/Editor/Slate"));
 				SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
@@ -98,11 +101,29 @@ namespace Metasound
 
 				// Metasound Editor
 				{
+					Set("MetaSoundPatch.Color", FColor(31, 133, 31));
+					Set("MetaSoundSource.Color", FColor(103, 214, 66));
+
 					// Actions
-					Set("MetasoundEditor.Play", new FSlateImageBrush(RootToContentDir(TEXT("Icons/play_40x.png")), Icon40x40));
-					Set("MetasoundEditor.Play.Small", new FSlateImageBrush(RootToContentDir(TEXT("Icons/play_40x.png")), Icon20x20));
-					Set("MetasoundEditor.Stop", new FSlateImageBrush(RootToContentDir(TEXT("Icons/stop_40x.png")), Icon40x40));
-					Set("MetasoundEditor.Stop.Small", new FSlateImageBrush(RootToContentDir(TEXT("Icons/stop_40x.png")), Icon20x20));
+					Set("MetasoundEditor.Play", new IMAGE_BRUSH_SVG(TEXT("Icons/play"), Icon40x40));
+					Set("MetasoundEditor.Play.Small", new IMAGE_BRUSH_SVG(TEXT("Icons/play"), Icon20x20));
+					Set("MetasoundEditor.Play.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/play_thumbnail"), Icon64));
+					Set("MetasoundEditor.Play.Thumbnail.Hovered", new IMAGE_BRUSH_SVG(TEXT("Icons/play_thumbnail_hover"), Icon64));
+
+					Set("MetasoundEditor.Play.Active.Valid", new IMAGE_BRUSH_SVG(TEXT("Icons/play_active_valid"), Icon40x40));
+					Set("MetasoundEditor.Play.Active.Warning", new IMAGE_BRUSH_SVG(TEXT("Icons/play_active_warning"), Icon40x40));
+					Set("MetasoundEditor.Play.Inactive.Valid", new IMAGE_BRUSH_SVG(TEXT("Icons/play_inactive_valid"), Icon40x40));
+					Set("MetasoundEditor.Play.Inactive.Warning", new IMAGE_BRUSH_SVG(TEXT("Icons/play_inactive_warning"), Icon40x40));
+					Set("MetasoundEditor.Play.Error", new IMAGE_BRUSH_SVG(TEXT("Icons/play_error"), Icon40x40));
+
+					Set("MetasoundEditor.Stop", new IMAGE_BRUSH_SVG(TEXT("Icons/stop"), Icon40x40));
+
+					Set("MetasoundEditor.Stop.Disabled", new IMAGE_BRUSH_SVG(TEXT("Icons/stop_disabled"), Icon40x40));
+					Set("MetasoundEditor.Stop.Active", new IMAGE_BRUSH_SVG(TEXT("Icons/stop_active"), Icon40x40));
+					Set("MetasoundEditor.Stop.Inactive", new IMAGE_BRUSH_SVG(TEXT("Icons/stop_inactive"), Icon40x40));
+					Set("MetasoundEditor.Stop.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/stop_thumbnail"), Icon64));
+					Set("MetasoundEditor.Stop.Thumbnail.Hovered", new IMAGE_BRUSH_SVG(TEXT("Icons/stop_thumbnail_hover"), Icon64));
+
 					Set("MetasoundEditor.Import", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/build_40x.png")), Icon40x40));
 					Set("MetasoundEditor.Import.Small", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/build_40x.png")), Icon20x20));
 					Set("MetasoundEditor.Export", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/build_40x.png")), Icon40x40));
@@ -122,6 +143,7 @@ namespace Metasound
 					Set("MetasoundEditor.Graph.Node.Class.Graph", new IMAGE_BRUSH_SVG(TEXT("Icons/graph_node"), Icon16));
 					Set("MetasoundEditor.Graph.Node.Class.Input", new IMAGE_BRUSH_SVG(TEXT("Icons/input_node"), FVector2D(16.0f, 13.0f)));
 					Set("MetasoundEditor.Graph.Node.Class.Output", new IMAGE_BRUSH_SVG(TEXT("Icons/output_node"), FVector2D(16.0f, 13.0f)));
+					Set("MetasoundEditor.Graph.Node.Class.Reroute", new IMAGE_BRUSH_SVG(TEXT("Icons/reroute_node"), Icon16));
 					Set("MetasoundEditor.Graph.Node.Class.Variable", new IMAGE_BRUSH_SVG(TEXT("Icons/variable_node"), FVector2D(16.0f, 13.0f)));
 
 					Set("MetasoundEditor.Graph.Node.Math.Add", new FSlateImageBrush(RootToContentDir(TEXT("/Graph/node_math_add_40x.png")), Icon40x40));
@@ -132,6 +154,13 @@ namespace Metasound
 					Set("MetasoundEditor.Graph.Node.Math.Power", new FSlateImageBrush(RootToContentDir(TEXT("/Graph/node_math_power_40x.png")), Icon40x40));
 					Set("MetasoundEditor.Graph.Node.Math.Logarithm", new FSlateImageBrush(RootToContentDir(TEXT("/Graph/node_math_logarithm_40x.png")), Icon40x40));
 					Set("MetasoundEditor.Graph.Node.Conversion", new FSlateImageBrush(RootToContentDir(TEXT("/Graph/node_conversion_40x.png")), Icon40x40));
+
+					Set("MetasoundEditor.Graph.InvalidReroute", new IMAGE_BRUSH_SVG(TEXT("Icons/invalid_reroute"), Icon16));
+					Set("MetasoundEditor.Graph.ConstructorPinArray", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/array_pin_rotated.png")), Icon16));
+					Set("MetasoundEditor.Graph.ConstructorPinArrayDisconnected", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/array_pin_rotated_disconnected.png")), Icon16));
+					Set("MetasoundEditor.Graph.ArrayPin", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/array_pin.png")), Icon16));
+					Set("MetasoundEditor.Graph.ConstructorPin", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/square_pin_rotated.png")), Icon16));
+					Set("MetasoundEditor.Graph.ConstructorPinDisconnected", new FSlateImageBrush(RootToContentDir(TEXT("/Icons/square_pin_rotated_disconnected.png")), Icon16));
 
 					// Analyzers
 					Set("MetasoundEditor.Analyzers.BackgroundColor", FLinearColor(0.0075f, 0.0075f, 0.0075, 1.0f));
@@ -150,17 +179,51 @@ namespace Metasound
 						Set(*FString::Printf(TEXT("ClassThumbnail.%s"), *ClassName), new IMAGE_BRUSH_SVG(IconFileName, InIcon64));
 					};
 
-					SetClassIcon(TEXT("Metasound"));
+					SetClassIcon(TEXT("MetasoundPatch"));
 					SetClassIcon(TEXT("MetasoundSource"));
+
+					Set("MetasoundEditor.MetasoundPatch.Icon", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundpatch_icon"), Icon20x20));
+					Set("MetasoundEditor.MetasoundPatch.Preset.Icon", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundpatchpreset_icon"), Icon20x20));
+					Set("MetasoundEditor.MetasoundSource.Icon", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundsource_icon"), Icon20x20));
+					Set("MetasoundEditor.MetasoundSource.Preset.Icon", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundsourcepreset_icon"), Icon20x20));
+					Set("MetasoundEditor.MetasoundPatch.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundpatch_thumbnail"), Icon20x20));
+					Set("MetasoundEditor.MetasoundPatch.Preset.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundpatchpreset_thumbnail"), Icon20x20));
+					Set("MetasoundEditor.MetasoundSource.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundsource_thumbnail"), Icon20x20));
+					Set("MetasoundEditor.MetasoundSource.Preset.Thumbnail", new IMAGE_BRUSH_SVG(TEXT("Icons/metasoundsourcepreset_thumbnail"), Icon20x20));
 				}
 
 				FSlateStyleRegistry::RegisterSlateStyle(*this);
 			}
 		};
 
-		class FMetasoundGraphPanelPinFactory : public FGraphPanelPinFactory
+		namespace Style
 		{
-		};
+			FSlateIcon CreateSlateIcon(FName InName)
+			{
+				return { "MetaSoundStyle", InName};
+			}
+
+			const FSlateBrush& GetSlateBrushSafe(FName InName)
+			{
+				const ISlateStyle* MetaSoundStyle = FSlateStyleRegistry::FindSlateStyle("MetaSoundStyle");
+				if (ensureMsgf(MetaSoundStyle, TEXT("Missing slate style 'MetaSoundStyle'")))
+				{
+					const FSlateBrush* Brush = MetaSoundStyle->GetBrush(InName);
+					if (ensureMsgf(Brush, TEXT("Missing brush '%s'"), *InName.ToString()))
+					{
+						return *Brush;
+					}
+				}
+
+				if (const FSlateBrush* NoBrush = FAppStyle::GetBrush("NoBrush"))
+				{
+					return *NoBrush;
+				}
+
+				static const FSlateBrush NullBrush;
+				return NullBrush;
+			}
+		}
 
 		class FModule : public IMetasoundEditorModule
 		{
@@ -223,7 +286,7 @@ namespace Metasound
 			{
 				using namespace Frontend;
 
-				if (!IsMetaSoundAssetClass(InAssetData.AssetClass))
+				if (!IsMetaSoundAssetClass(InAssetData.AssetClassPath))
 				{
 					return;
 				}
@@ -250,7 +313,7 @@ namespace Metasound
 			{
 				using namespace Frontend;
 
-				if (!IsMetaSoundAssetClass(InAssetData.AssetClass))
+				if (!IsMetaSoundAssetClass(InAssetData.AssetClassPath))
 				{
 					return;
 				}
@@ -290,7 +353,7 @@ namespace Metasound
 				{
 					if (UObject* Obj = Pair.Key)
 					{
-						if (IsMetaSoundAssetClass(Obj->GetClass()->GetFName()))
+						if (IsMetaSoundAssetClass(Obj->GetClass()->GetClassPathName()))
 						{
 							check(GEngine);
 							UMetaSoundAssetSubsystem* AssetSubsystem = GEngine->GetEngineSubsystem<UMetaSoundAssetSubsystem>();
@@ -304,7 +367,7 @@ namespace Metasound
 
 					if (UObject* Obj = Pair.Value)
 					{
-						if (IsMetaSoundAssetClass(Obj->GetClass()->GetFName()))
+						if (IsMetaSoundAssetClass(Obj->GetClass()->GetClassPathName()))
 						{
 							check(GEngine);
 							UMetaSoundAssetSubsystem* AssetSubsystem = GEngine->GetEngineSubsystem<UMetaSoundAssetSubsystem>();
@@ -339,7 +402,7 @@ namespace Metasound
 
 			void RemoveAssetFromClassRegistry(const FAssetData& InAssetData)
 			{
-				if (IsMetaSoundAssetClass(InAssetData.AssetClass))
+				if (IsMetaSoundAssetClass(InAssetData.AssetClassPath))
 				{
 					check(GEngine);
 					UMetaSoundAssetSubsystem* AssetSubsystem = GEngine->GetEngineSubsystem<UMetaSoundAssetSubsystem>();
@@ -356,7 +419,7 @@ namespace Metasound
 
 			void RenameAssetInClassRegistry(const FAssetData& InAssetData, const FString& InOldObjectPath)
 			{
-				if (IsMetaSoundAssetClass(InAssetData.AssetClass))
+				if (IsMetaSoundAssetClass(InAssetData.AssetClassPath))
 				{
 					check(GEngine);
 					UMetaSoundAssetSubsystem* AssetSubsystem = GEngine->GetEngineSubsystem<UMetaSoundAssetSubsystem>();
@@ -401,7 +464,7 @@ namespace Metasound
 				}
 			}
 
-			void RegisterCoreDataTypes()
+			void RegisterCorePinTypes()
 			{
 				using namespace Metasound::Frontend;
 
@@ -418,23 +481,11 @@ namespace Metasound
 						FName PinCategory = DataTypeName;
 						FName PinSubCategory;
 
-						// Execution path triggers are specialized
-						if (DataTypeName == GetMetasoundDataTypeName<FTrigger>())
+						// Types like triggers & AudioBuffer are specialized, so ignore their preferred
+						// literal types to classify the category.
+						if (!FGraphBuilder::IsPinCategoryMetaSoundCustomDataType(PinCategory))
 						{
-							PinCategory = FGraphBuilder::PinCategoryTrigger;
-						}
-
-						// GraphEditor by default designates specialized connection
-						// specification for Int64, so use it even though literal is
-						// boiled down to int32
-						//else if (DataTypeName == Frontend::GetDataTypeName<int64>())
-						//{
-						//	PinCategory = FGraphBuilder::PinCategoryInt64;
-						//}
-
-						// Primitives
-						else
-						{
+							// Primitives
 							switch (RegistryInfo.PreferredLiteralType)
 							{
 								case ELiteralType::Boolean:
@@ -445,36 +496,47 @@ namespace Metasound
 								break;
 
 								case ELiteralType::Float:
-								case ELiteralType::FloatArray:
 								{
 									PinCategory = FGraphBuilder::PinCategoryFloat;
+								}
+								break;
 
-									// Doubles use the same preferred literal
-									// but different colorization
-									//if (DataTypeName == Frontend::GetDataTypeName<double>())
-									//{
-									//	PinCategory = FGraphBuilder::PinCategoryDouble;
-									//}
-
-									// Differentiate stronger numeric types associated with audio
-									if (DataTypeName == GetMetasoundDataTypeName<FTime>())
+								case ELiteralType::FloatArray:
+								{
+									if (RegistryInfo.bIsArrayType)
 									{
-										PinSubCategory = FGraphBuilder::PinSubCategoryTime;
+										PinCategory = FGraphBuilder::PinCategoryFloat;
 									}
 								}
 								break;
 
 								case ELiteralType::Integer:
-								case ELiteralType::IntegerArray:
 								{
 									PinCategory = FGraphBuilder::PinCategoryInt32;
 								}
 								break;
 
+								case ELiteralType::IntegerArray:
+								{
+									if (RegistryInfo.bIsArrayType)
+									{
+										PinCategory = FGraphBuilder::PinCategoryInt32;
+									}
+								}
+								break;
+
 								case ELiteralType::String:
-								case ELiteralType::StringArray:
 								{
 									PinCategory = FGraphBuilder::PinCategoryString;
+								}
+								break;
+
+								case ELiteralType::StringArray:
+								{
+									if (RegistryInfo.bIsArrayType)
+									{
+										PinCategory = FGraphBuilder::PinCategoryString;
+									}
 								}
 								break;
 
@@ -486,30 +548,37 @@ namespace Metasound
 								break;
 
 								case ELiteralType::None:
+								case ELiteralType::NoneArray:
 								case ELiteralType::Invalid:
 								default:
 								{
-									// Audio types are ubiquitous, so added as subcategory
-									// to be able to stylize connections (i.e. wire color & wire animation)
-									if (DataTypeName == GetMetasoundDataTypeName<FAudioBuffer>())
-									{
-										PinCategory = FGraphBuilder::PinCategoryAudio;
-									}
 									static_assert(static_cast<int32>(ELiteralType::Invalid) == 12, "Possible missing binding of pin category to primitive type");
 								}
 								break;
 							}
 						}
 
-						const bool bIsArray = RegistryInfo.IsArrayType();
-						const EPinContainerType ContainerType = bIsArray ? EPinContainerType::Array : EPinContainerType::None;
-						FEdGraphPinType PinType(PinCategory, PinSubCategory, nullptr, ContainerType, false, FEdGraphTerminalType());
-						UClass* ClassToUse = DataTypeRegistry.GetUClassForDataType(DataTypeName);
-						PinType.PinSubCategoryObject = Cast<UObject>(ClassToUse);
-
-						DataTypeInfo.Emplace(DataTypeName, FEditorDataType(MoveTemp(PinType), MoveTemp(RegistryInfo)));
+						RegisterPinType(DataTypeName, PinCategory, PinSubCategory);
 					}
 				}
+			}
+
+			void RegisterPinType(FName InDataTypeName, FName InPinCategory, FName InPinSubCategory)
+			{
+				using namespace Frontend;
+
+				FDataTypeRegistryInfo DataTypeInfo;
+				IDataTypeRegistry::Get().GetDataTypeInfo(InDataTypeName, DataTypeInfo);
+
+				// Default to object as most calls to this outside of the MetaSound Editor will be for custom UObject types
+				const FName PinCategory = InPinCategory.IsNone() ? FGraphBuilder::PinCategoryObject : InPinCategory;
+
+				const EPinContainerType ContainerType = DataTypeInfo.bIsArrayType ? EPinContainerType::Array : EPinContainerType::None;
+				FEdGraphPinType PinType(PinCategory, InPinSubCategory, nullptr, ContainerType, false, FEdGraphTerminalType());
+				UClass* ClassToUse = IDataTypeRegistry::Get().GetUClassForDataType(InDataTypeName);
+				PinType.PinSubCategoryObject = Cast<UObject>(ClassToUse);
+
+				PinTypes.Emplace(InDataTypeName, MoveTemp(PinType));
 			}
 
 			void ShutdownAssetClassRegistry()
@@ -540,7 +609,7 @@ namespace Metasound
 					AssetPrimeStatus = EAssetPrimeStatus::InProgress;
 
 					FARFilter Filter;
-					Filter.ClassNames = MetaSoundClassNames;
+					Filter.ClassPaths = MetaSoundClassNames;
 
 					FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 					AssetRegistryModule.Get().EnumerateAssets(Filter, [this](const FAssetData& AssetData)
@@ -588,30 +657,27 @@ namespace Metasound
 				return InputDefaultLiteralClassRegistry.FindRef(InLiteralType);
 			}
 
-			virtual const FEditorDataType* FindDataType(FName InDataTypeName) const override
+			virtual const FSlateBrush* GetIconBrush(FName InDataType, const bool bIsConstructorType) const override
 			{
-				return DataTypeInfo.Find(InDataTypeName);
-			}
+				Frontend::FDataTypeRegistryInfo Info;
+				Frontend::IDataTypeRegistry::Get().GetDataTypeInfo(InDataType, Info);
 
-			virtual const FEditorDataType& FindDataTypeChecked(FName InDataTypeName) const override
-			{
-				return DataTypeInfo.FindChecked(InDataTypeName);
-			}
-
-			virtual bool IsRegisteredDataType(FName InDataTypeName) const override
-			{
-				return DataTypeInfo.Contains(InDataTypeName);
-			}
-
-			virtual void IterateDataTypes(TUniqueFunction<void(const FEditorDataType&)> InDataTypeFunction) const override
-			{
-				for (const TPair<FName, FEditorDataType>& Pair : DataTypeInfo)
+				if (Info.bIsArrayType)
 				{
-					InDataTypeFunction(Pair.Value);
+					return bIsConstructorType ? &Style::GetSlateBrushSafe("MetasoundEditor.Graph.ConstructorPinArray") : &Style::GetSlateBrushSafe("MetasoundEditor.Graph.ArrayPin");
+				}
+				else
+				{
+					return bIsConstructorType ? &Style::GetSlateBrushSafe("MetasoundEditor.Graph.ConstructorPin") : FAppStyle::GetBrush("Icons.BulletPoint");
 				}
 			}
 
-			virtual bool IsMetaSoundAssetClass(const FName InClassName) const override
+			virtual const FEdGraphPinType* FindPinType(FName InDataTypeName) const
+			{
+				return PinTypes.Find(InDataTypeName);
+			}
+
+			virtual bool IsMetaSoundAssetClass(const FTopLevelAssetPath& InClassName) const override
 			{
 				// TODO: Move to IMetasoundUObjectRegistry (overload IsRegisteredClass to take in class name?)
 				return MetaSoundClassNames.Contains(InClassName);
@@ -619,17 +685,18 @@ namespace Metasound
 
 			virtual void StartupModule() override
 			{
+				METASOUND_LLM_SCOPE;
 				// Register Metasound asset type actions
 				IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(AssetToolName).Get();
 
-				AddAssetAction<FAssetTypeActions_MetaSound>(AssetTools, AssetActions);
+				AddAssetAction<FAssetTypeActions_MetaSoundPatch>(AssetTools, AssetActions);
 				AddAssetAction<FAssetTypeActions_MetaSoundSource>(AssetTools, AssetActions);
 
 				FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 				
 				PropertyModule.RegisterCustomClassLayout(
-					UMetaSound::StaticClass()->GetFName(),
-					FOnGetDetailCustomizationInstance::CreateLambda([]() { return MakeShared<FMetasoundDetailCustomization>(UMetaSound::GetDocumentPropertyName()); }));
+					UMetaSoundPatch::StaticClass()->GetFName(),
+					FOnGetDetailCustomizationInstance::CreateLambda([]() { return MakeShared<FMetasoundDetailCustomization>(UMetaSoundPatch::GetDocumentPropertyName()); }));
 
 				PropertyModule.RegisterCustomClassLayout(
 					UMetaSoundSource::StaticClass()->GetFName(),
@@ -669,7 +736,7 @@ namespace Metasound
 
 				StyleSet = MakeShared<FSlateStyle>();
 
-				RegisterCoreDataTypes();
+				RegisterCorePinTypes();
 				RegisterInputDefaultClasses();
 
 				GraphConnectionFactory = MakeShared<FGraphConnectionDrawingPolicyFactory>();
@@ -689,10 +756,13 @@ namespace Metasound
 					GetMutableDefault<UMetasoundEditorSettings>()
 				);
 
-				MetaSoundClassNames.Add(UMetaSound::StaticClass()->GetFName());
-				MetaSoundClassNames.Add(UMetaSoundSource::StaticClass()->GetFName());
+				MetaSoundClassNames.Add(UMetaSoundPatch::StaticClass()->GetClassPathName());
+				MetaSoundClassNames.Add(UMetaSoundSource::StaticClass()->GetClassPathName());
 
-				FAssetTypeActions_MetaSound::RegisterMenuActions();
+				// Required to query MetaSound assets (that have been redirected to MetaSoundPatch assets) created before UE Release 5.1
+				MetaSoundClassNames.Add(FTopLevelAssetPath(TEXT("/Script/MetasoundEngine.MetaSound")));
+
+				FAssetTypeActions_MetaSoundPatch::RegisterMenuActions();
 				FAssetTypeActions_MetaSoundSource::RegisterMenuActions();
 
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -712,10 +782,20 @@ namespace Metasound
 				FModuleManager::LoadModuleChecked<IModuleInterface>("MetasoundEngine");
 
 				RegisterExplicitProxyClass(*USoundWave::StaticClass());
+
+				// Required to ensure logic to order nodes for presets exclusive to
+				// editor is propagated to transform instances while editing in editor.
+				Frontend::DocumentTransform::RegisterNodeDisplayNameProjection([](const Frontend::FNodeHandle& NodeHandle)
+				{
+					constexpr bool bIncludeNamespace = false;
+					return FGraphBuilder::GetDisplayName(*NodeHandle, bIncludeNamespace);
+				});
 			}
 
 			virtual void ShutdownModule() override
 			{
+				METASOUND_LLM_SCOPE;
+
 				if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
 				{
 					SettingsModule->UnregisterSettings("Editor", "Audio", "MetaSound Editor");
@@ -750,15 +830,15 @@ namespace Metasound
 				ShutdownAssetClassRegistry();
 
 				AssetActions.Reset();
-				DataTypeInfo.Reset();
+				PinTypes.Reset();
 				MetaSoundClassNames.Reset();
 			}
 
-			TArray<FName> MetaSoundClassNames;
+			TArray<FTopLevelAssetPath> MetaSoundClassNames;
 
 			TArray<TSharedPtr<FAssetTypeActions_Base>> AssetActions;
-			TMap<FName, FEditorDataType> DataTypeInfo;
 			TMap<EMetasoundFrontendLiteralType, const TSubclassOf<UMetasoundEditorGraphMemberDefaultLiteral>> InputDefaultLiteralClassRegistry;
+			TMap<FName, FEdGraphPinType> PinTypes;
 
 			TMap<UClass*, TUniquePtr<IMemberDefaultLiteralCustomizationFactory>> LiteralCustomizationFactories;
 

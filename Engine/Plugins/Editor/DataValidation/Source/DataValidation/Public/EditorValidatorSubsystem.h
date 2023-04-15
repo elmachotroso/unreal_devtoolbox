@@ -11,7 +11,7 @@
 #include "UObject/ObjectMacros.h"
 #include "EditorValidatorBase.h"
 #include "Engine/EngineTypes.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Logging/LogMacros.h"
 #include "DataValidationModule.h"
 
@@ -73,6 +73,9 @@ struct DATAVALIDATION_API FValidateAssetsSettings
 	/** The usecase requiring datavalidation */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Validation")
 	EDataValidationUsecase ValidationUsecase = EDataValidationUsecase::None;
+
+	/** If false, unloaded assets will get skipped from validation. */
+	bool bLoadAssetsForValidation = true;
 };
 
 /**

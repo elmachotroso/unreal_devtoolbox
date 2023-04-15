@@ -4,6 +4,11 @@
 # (and can take the same arguments) but performs some interpretation of arguments that come from Xcode
 # Values for $ACTION: "" = building, "clean" = cleaning
 
+if [ ["$UE_SKIP_UBT"] == ["1"] ]; then
+	echo Skipping UBT per request
+	exit 0
+fi
+
 # Setup Environment
 source  Engine/Build/BatchFiles/Mac/SetupEnvironment.sh -dotnet Engine/Build/BatchFiles/Mac
 
@@ -64,7 +69,7 @@ if [[ $ARCHS ]]; then
 	# convert the space in xcode's multiple architecture (arm64 x86_64) argument into the standard + that UBT expects (arm64+x86_64)
 	UBT_ARCHFLAG="-architecture=${ARCHS/ /+}" 
 else
-  	UBT_ARCHFLAG=""
+	UBT_ARCHFLAG=""
 fi
 
 echo "Processing $ACTION for Target=$TARGET Platform=$PLATFORM Configuration=$CONFIGURATION $UBT_ARCHFLAG $TRAILINGARGS "
@@ -103,7 +108,7 @@ if [ "$ACTION" == "build" ]; then
 
 	# Build SCW if this is an editor target
 	if [[ "$TARGET" == *"Editor" ]]; then
-		dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll ShaderCompileWorker Mac Development
+		dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll ShaderCompileWorker Mac Development $UBT_ARCHFLAG
 	fi
 
 elif [ $ACTION == "clean" ]; then
@@ -111,7 +116,8 @@ elif [ $ACTION == "clean" ]; then
 fi
 
 echo Running dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
-dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
+# set an envvar to let UBT know that it's being run from xcode (envvar allows children to get the setting if needed)
+UE_BUILD_FROM_XCODE=1 dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
 
 ExitCode=$?
 if [ $ExitCode -eq 254 ] || [ $ExitCode -eq 255 ] || [ $ExitCode -eq 2 ]; then

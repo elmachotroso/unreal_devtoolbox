@@ -5,6 +5,7 @@
 #include "Engine/Attenuation.h"
 #include "IAudioExtensionPlugin.h"
 #include "IAudioParameterInterfaceRegistry.h"
+#include "AudioLinkSettingsAbstract.h"
 
 #include "SoundAttenuation.generated.h"
 
@@ -203,13 +204,29 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSourceDataOverride, meta = (DisplayName = "Enable Source Data Override"))
 	uint8 bEnableSourceDataOverride : 1;
 
+	/** Enables/Disables AudioLink on all sources using this attenuation */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAudioLink, meta = (DisplayName = "Enable Send to AudioLink"))
+	uint8 bEnableSendToAudioLink : 1;
+
 	/** What method we use to spatialize the sound. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize", DisplayName = "Spatialization Method"))
 	TEnumAsByte<enum ESoundSpatializationAlgorithm> SpatializationAlgorithm;
 
+	/** AudioLink Setting Overrides */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAudioLink, meta = (DisplayName = "AudioLink Settings Override", EditCondition = "bEnableSendToAudioLink"))
+	TObjectPtr<UAudioLinkSettingsAbstract> AudioLinkSettingsOverride;
+
 	/** What min radius to use to swap to non-binaural audio when a sound starts playing. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize"))
 	float BinauralRadius;
+
+	/* The normalized custom curve to use for the air absorption lowpass frequency values. Does a mapping from defined distance values (x-axis) and defined frequency values (y-axis) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
+	FRuntimeFloatCurve CustomLowpassAirAbsorptionCurve;
+
+	/* The normalized custom curve to use for the air absorption highpass frequency values. Does a mapping from defined distance values (x-axis) and defined frequency values (y-axis) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
+	FRuntimeFloatCurve CustomHighpassAirAbsorptionCurve;
 
 	/** What method to use to map distance values to frequency absorption values. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
@@ -258,14 +275,6 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	/* The max distance range at which to apply an absorption LPF filter. Absorption freq cutoff interpolates between filter frequency ranges between these distance values. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption, meta = (DisplayName = "Max Distance Range"))
 	float LPFRadiusMax;
-
-	/* The normalized custom curve to use for the air absorption lowpass frequency values. Does a mapping from defined distance values (x-axis) and defined frequency values (y-axis) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
-	FRuntimeFloatCurve CustomLowpassAirAbsorptionCurve;
-
-	/* The normalized custom curve to use for the air absorption highpass frequency values. Does a mapping from defined distance values (x-axis) and defined frequency values (y-axis) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
-	FRuntimeFloatCurve CustomHighpassAirAbsorptionCurve;
 
 	/* The range of the cutoff frequency (in Hz) of the lowpass absorption filter. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption, meta = (DisplayName = "Low Pass Cutoff Frequency Min"))
@@ -363,14 +372,6 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
 	float ManualReverbSendLevel;
 
-	/* The custom reverb send curve to use for distance-based send level. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
-	FRuntimeFloatCurve CustomReverbSendCurve;
-
-	/** Set of submix send settings to use to send audio to submixes as a function of distance. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSubmixSend)
-	TArray<FAttenuationSubmixSendSettings> SubmixSendSettings;
-
 	/** Interpolated value to scale priority against when the sound is at the minimum priority attenuation distance from the closest listener. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1.0", DisplayName = "Priority Attenuation At Min Distance"))
 	float PriorityAttenuationMin;
@@ -390,6 +391,14 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	/* Static priority scalar to use (doesn't change as a function of distance). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1.0", DisplayName = "Attenuation Priority"))
 	float ManualPriorityAttenuation;
+
+	/* The custom reverb send curve to use for distance-based send level. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
+	FRuntimeFloatCurve CustomReverbSendCurve;
+
+	/** Set of submix send settings to use to send audio to submixes as a function of distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSubmixSend)
+	TArray<FAttenuationSubmixSendSettings> SubmixSendSettings;
 
 	/* The custom curve to use for distance-based priority attenuation. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority)
@@ -413,7 +422,9 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 		, bEnableLogFrequencyScaling(false)
 		, bEnableSubmixSends(false)
 		, bEnableSourceDataOverride(false)
+		, bEnableSendToAudioLink(true)
 		, SpatializationAlgorithm(ESoundSpatializationAlgorithm::SPATIALIZATION_Default)
+		, AudioLinkSettingsOverride(nullptr)
 		, BinauralRadius(0.0f)
 		, AbsorptionMethod(EAirAbsorptionMethod::Linear)
 		, OcclusionTraceChannel(ECC_Visibility)

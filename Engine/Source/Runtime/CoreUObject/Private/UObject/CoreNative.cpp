@@ -115,6 +115,14 @@ void FObjectInstancingGraph::SetDestinationRoot(UObject* DestinationSubobjectRoo
 	SourceToDestinationMap.Add(SourceRoot, DestinationRoot);
 
 	bCreatingArchetype = DestinationSubobjectRoot->HasAnyFlags(RF_ArchetypeObject);
+	if (DestinationSubobjectRoot->GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		//We are never updating archetypes when loading cooked packages,
+		//and we can't safely run the reconstruct logic with UObject destruction from the async loading thread.
+		//Make sure to never reconstruct found existing destination subobjects in cooked packages,
+		//they should always have been created from the correct up-to-date template already.
+		bCreatingArchetype = false;
+	}
 }
 
 UObject* FObjectInstancingGraph::GetDestinationObject(UObject* SourceObject)
@@ -196,13 +204,9 @@ UObject* FObjectInstancingGraph::GetInstancedSubobject( UObject* SourceSubobject
 
 							FName SubobjectName = SourceSubobject->GetFName();
 
-							// final archetype archetype will be the archetype of the template
-							UObject* FinalSubobjectArchetype = CurrentValue->GetArchetype();
-
 							// Don't search for the existing subobjects on Blueprint-generated classes. What we'll find is a subobject
 							// created by the constructor which may not have all of its fields initialized to the correct value (which
 							// should be coming from a blueprint).
-							// NOTE: Since this function is called ONLY for Blueprint-generated classes, we may as well delete this 'if'.
 							if (!SubobjectOuter->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 							{
 								InstancedSubobject = StaticFindObjectFast(nullptr, SubobjectOuter, SubobjectName);
@@ -268,7 +272,7 @@ UObject* FObjectInstancingGraph::InstancePropertyValue(UObject* SubObjectTemplat
 
 	check(CurrentValue);
 
-	if (CurrentValue->GetClass()->HasAnyClassFlags(CLASS_DefaultToInstanced))
+	if (CurrentValue != nullptr && CurrentValue->GetClass()->HasAnyClassFlags(CLASS_DefaultToInstanced))
 	{
 		bCausesInstancing = true; // these are always instanced no matter what
 	}
@@ -283,7 +287,7 @@ UObject* FObjectInstancingGraph::InstancePropertyValue(UObject* SubObjectTemplat
 	// if the object we're instancing the subobjects for (Owner) has the current subobject's outer in its archetype chain, and its archetype has a nullptr value
 	// for this subobject property it means that the archetype didn't instance its subobject, so we shouldn't either.
 
-	if (SubObjectTemplate == nullptr && CurrentValue != nullptr && (Owner && Owner->IsBasedOnArchetype(CurrentValue->GetOuter())))
+	if (SubObjectTemplate == nullptr && (Owner != nullptr && CurrentValue != nullptr && Owner->IsBasedOnArchetype(CurrentValue->GetOuter())))
 	{
 		NewValue = nullptr;
 	}

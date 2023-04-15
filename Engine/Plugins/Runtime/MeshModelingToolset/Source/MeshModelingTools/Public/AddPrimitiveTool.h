@@ -9,10 +9,13 @@
 #include "Properties/MeshMaterialProperties.h"
 #include "PropertySets/CreateMeshObjectTypeProperties.h"
 #include "UObject/NoExportTypes.h"
+#include "InteractiveToolQueryInterfaces.h"
 
 #include "AddPrimitiveTool.generated.h"
 
 PREDECLARE_USE_GEOMETRY_CLASS(FDynamicMesh3);
+class UCombinedTransformGizmo;
+class UDragAlignmentMechanic;
 
 /**
  * Builder
@@ -77,10 +80,6 @@ class MESHMODELINGTOOLS_API UProceduralShapeToolProperties : public UInteractive
 	GENERATED_BODY()
 
 public:
-	/** Create instances of the last created asset rather than creating a whole new asset, provided the Shape settings have not changed.
-	  * If false, all created actors will have separate underlying mesh assets. */
-	UPROPERTY(EditAnywhere, Category = Asset)
-	bool bInstanceIfPossible = false;
 
 	/** How Polygroups are assigned to shape primitives. */
 	UPROPERTY(EditAnywhere, Category = Shape, meta = (ProceduralShapeSetting))
@@ -89,10 +88,6 @@ public:
 	/** How the shape is placed in the scene. */
 	UPROPERTY(EditAnywhere, Category = Positioning)
 	EMakeMeshPlacementType TargetSurface = EMakeMeshPlacementType::OnScene;
-
-	/** If true, the shape pivot is snapped to the grid. This is only relevant if the coordinate system is set to world space. */
-	UPROPERTY(EditAnywhere, Category = Positioning)
-	bool bSnapToGrid = true;
 
 	/** Location of pivot within the shape */
 	UPROPERTY(EditAnywhere, Category = Positioning, meta = (ProceduralShapeSetting))
@@ -106,7 +101,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = Positioning, meta = (EditCondition = "TargetSurface == EMakeMeshPlacementType::OnScene"))
 	bool bAlignToNormal = true;
 
-	bool IsEquivalent( const UProceduralShapeToolProperties* ) const;
+	/** Show a gizmo to allow the mesh to be repositioned after the initial placement click. */
+	UPROPERTY(EditAnywhere, Category = Positioning, meta = (EditCondition = "bShowGizmoOptions", EditConditionHides, HideEditConditionToggle))
+	bool bShowGizmo = true;
+
+	//~ Not user visible- used to hide the bShowGizmo option when not yet placed mesh.
+	UPROPERTY(meta = (TransientToolProperty))
+	bool bShowGizmoOptions = false;
 };
 
 UCLASS()
@@ -427,37 +428,11 @@ public:
 };
 
 
-UCLASS(Transient)
-class MESHMODELINGTOOLS_API ULastActorInfo : public UObject
-{
-	GENERATED_BODY()
-
-public:
-	FString Label = "";
-
-	UPROPERTY()
-	TObjectPtr<AActor> Actor = nullptr;
-
-	UPROPERTY()
-	TObjectPtr<UStaticMesh> StaticMesh = nullptr;
-
-	UPROPERTY()
-	TObjectPtr<UProceduralShapeToolProperties> ShapeSettings;
-
-	UPROPERTY()
-	TObjectPtr<UNewMeshMaterialProperties> MaterialProperties;
-
-	bool IsInvalid() const
-	{
-		return Actor == nullptr || StaticMesh == nullptr || ShapeSettings == nullptr || MaterialProperties == nullptr;
-	}
-};
-
 /**
  * Base tool to create primitives
  */
 UCLASS()
-class MESHMODELINGTOOLS_API UAddPrimitiveTool : public USingleClickTool, public IHoverBehaviorTarget
+class MESHMODELINGTOOLS_API UAddPrimitiveTool : public USingleClickTool, public IHoverBehaviorTarget, public IInteractiveToolCameraFocusAPI
 {
 	GENERATED_BODY()
 
@@ -471,14 +446,15 @@ public:
 
 	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
 
-	virtual bool HasCancel() const override { return false; }
-	virtual bool HasAccept() const override { return false; }
-	virtual bool CanAccept() const override { return false; }
+	virtual bool HasCancel() const override { return true; }
+	virtual bool HasAccept() const override { return true; }
+	virtual bool CanAccept() const override;
 
 	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;
 
+	// USingleClickTool
 	virtual void OnClicked(const FInputDeviceRay& ClickPos) override;
-
+	virtual FInputRayHit IsHitByClick(const FInputDeviceRay& ClickPos) override;
 
 	// IHoverBehaviorTarget interface
 	virtual FInputRayHit BeginHoverSequenceHitTest(const FInputDeviceRay& PressPos) override;
@@ -486,10 +462,27 @@ public:
 	virtual bool OnUpdateHover(const FInputDeviceRay& DevicePos) override;
 	virtual void OnEndHover() override;
 
+	// IInteractiveToolCameraFocusAPI implementation
+	virtual bool SupportsWorldSpaceFocusBox() override;
+	virtual FBox GetWorldSpaceFocusBox() override;
+	virtual bool SupportsWorldSpaceFocusPoint() override;
+	virtual bool GetWorldSpaceFocusPoint(const FRay& WorldRay, FVector& PointOut) override;
+
 
 protected:
+	enum class EState
+	{
+		PlacingPrimitive,
+		AdjustingSettings
+	};
+
+	EState CurrentState = EState::PlacingPrimitive;
+	void SetState(EState NewState);
+
 	virtual void GenerateMesh(FDynamicMesh3* OutMesh) const {}
 	virtual UProceduralShapeToolProperties* CreateShapeSettings(){return nullptr;}
+
+	virtual void GenerateAsset();
 
 	/** Property set for type of output object (StaticMesh, Volume, etc) */
 	UPROPERTY()
@@ -501,27 +494,14 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UNewMeshMaterialProperties> MaterialProperties;
 
-
-	/**
-	 * Checks if the passed-in settings would create the same asset as the current settings
-	 */
-	bool IsEquivalentLastGeneratedAsset() const
-	{
-		if (LastGenerated == nullptr || LastGenerated->IsInvalid())
-		{
-			return false;
-		}
-		return (LastGenerated->MaterialProperties->UVScale == MaterialProperties->UVScale) &&
-			(LastGenerated->MaterialProperties->bWorldSpaceUVScale == MaterialProperties->bWorldSpaceUVScale) &&
-			ShapeSettings->IsEquivalent(LastGenerated->ShapeSettings);
-	}
-
-
 	UPROPERTY()
 	TObjectPtr<UPreviewMesh> PreviewMesh;
 
 	UPROPERTY()
-	TObjectPtr<ULastActorInfo> LastGenerated;
+	TObjectPtr<UCombinedTransformGizmo> Gizmo = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UDragAlignmentMechanic> DragAlignmentMechanic = nullptr;
 
 	UPROPERTY()
 	FString AssetName = TEXT("GeneratedAsset");
@@ -532,6 +512,26 @@ protected:
 	UE::Geometry::FFrame3d ShapeFrame;
 
 	void UpdatePreviewMesh() const;
+
+	// Used to make the initial placement of the mesh undoable
+	class FStateChange : public FToolCommandChange
+	{
+	public:
+		FStateChange(const FTransform& MeshTransformIn)
+			: MeshTransform(MeshTransformIn)
+		{
+		}
+
+		virtual void Apply(UObject* Object) override;
+		virtual void Revert(UObject* Object) override;
+		virtual FString ToString() const override
+		{
+			return TEXT("UAddPrimitiveTool::FStateChange");
+		}
+
+	protected:
+		FTransform MeshTransform;
+	};
 };
 
 
@@ -581,6 +581,7 @@ class UAddDiscPrimitiveTool : public UAddPrimitiveTool
 	GENERATED_BODY()
 public:
 	explicit UAddDiscPrimitiveTool(const FObjectInitializer& ObjectInitializer);
+	virtual void Setup() override;
 protected:
 	virtual void GenerateMesh(FDynamicMesh3* OutMesh) const override;
 };

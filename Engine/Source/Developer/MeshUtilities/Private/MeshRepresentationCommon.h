@@ -83,6 +83,7 @@ class FEmbreeScene
 public:
 	bool bUseEmbree = false;
 	int32 NumIndices = 0;
+	bool bMostlyTwoSided = false;
 
 	// Embree
 	RTCDevice EmbreeDevice = nullptr;
@@ -133,6 +134,9 @@ struct FEmbreeIntersectionContext : public RTCIntersectContext
 		// MaterialIndex on the build triangles was set to 1 if two-sided, or 0 if one-sided
 		return ElementIndex == 1;
 	}
+
+	// Hit against this primitive will be ignored
+	int32 SkipPrimId = RTC_INVALID_GEOMETRY_ID;
 
 	// Additional Outputs.
 	int32 ElementIndex; // Material Index

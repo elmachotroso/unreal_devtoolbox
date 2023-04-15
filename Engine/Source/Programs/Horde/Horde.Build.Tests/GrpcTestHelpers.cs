@@ -25,7 +25,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Grpc.Core;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
 	public class TestServerStreamWriter<T> : IServerStreamWriter<T> where T : class
 	{
@@ -110,9 +110,9 @@ namespace HordeServerTests
 		{
 			_serverCallContext.CancellationToken.ThrowIfCancellationRequested();
 
-			if (await _channel.Reader.WaitToReadAsync())
+			if (await _channel.Reader.WaitToReadAsync(cancellationToken))
 			{
-				if (_channel.Reader.TryRead(out var message))
+				if (_channel.Reader.TryRead(out T? message))
 				{
 					Current = message;
 					return true;

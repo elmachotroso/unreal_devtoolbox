@@ -11,7 +11,10 @@ class IConcertLocalEndpoint;
 struct FConcertServerSettings;
 
 /** Implementation of a Concert Server session */
-class FConcertServerSession : public IConcertServerSession, private FConcertSessionCommonImpl
+class FConcertServerSession
+	: public IConcertServerSession
+	, public TSharedFromThis<FConcertServerSession>
+	, private FConcertSessionCommonImpl
 {
 public:
 	FConcertServerSession(const FConcertSessionInfo& InSessionInfo, const FConcertServerSettings& InSettings, TSharedPtr<IConcertLocalEndpoint> InServerSessionEndpoint, const FString& InSessionDirectory);
@@ -34,6 +37,16 @@ public:
 	{
 		CommonSetName(NewName);
 		SendSessionNameChanged();
+	}
+
+	virtual FMessageAddress GetClientAddress(const FGuid& ClientEndpointId) const override
+	{
+		return ServerSessionEndpoint->GetRemoteAddress(ClientEndpointId);
+	}
+
+	void SetLastModifiedToNow()
+	{
+		SessionInfo.SetLastModifiedToNow();
 	}
 
 	virtual const FConcertSessionInfo& GetSessionInfo() const override
@@ -68,6 +81,7 @@ public:
 
 	virtual FOnConcertServerSessionTick& OnTick() override;
 	virtual FOnConcertServerSessionClientChanged& OnSessionClientChanged() override;
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() override;
 	virtual FString GetSessionWorkingDirectory() const override;
 
 protected:

@@ -1,19 +1,41 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkinnedMeshComponentDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "GameFramework/Actor.h"
+
+#include "Animation/SkinWeightProfile.h"
+#include "Components/ActorComponent.h"
 #include "Components/SkinnedMeshComponent.h"
-#include "Editor.h"
-#include "PropertyHandle.h"
-#include "DetailLayoutBuilder.h"
+#include "Containers/Set.h"
+#include "Delegates/Delegate.h"
 #include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/SkeletalMesh.h"
+#include "Fonts/SlateFontInfo.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "SNameComboBox.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SkinnedMeshComponentDetails"
 
@@ -183,7 +205,7 @@ void FSkinnedMeshComponentDetails::PopulateSkinWeightProfileNames()
 	// Retrieve all possible skin weight profiles from the component
 	if (USkinnedMeshComponent* Component = WeakSkinnedMeshComponent.Get())
 	{
-		if (USkeletalMesh* Mesh = Component->SkeletalMesh)
+		if (USkeletalMesh* Mesh = Cast<USkeletalMesh>(Component->GetSkinnedAsset()))
 		{			
 			for (const FSkinWeightProfileInfo& Profile : Mesh->GetSkinWeightProfiles())
 			{

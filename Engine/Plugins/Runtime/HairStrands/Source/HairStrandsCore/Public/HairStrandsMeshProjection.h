@@ -24,7 +24,9 @@ struct FHairStrandsProjectionMeshData
 	{
 		FTransform LocalToWorld;
 		FRDGBufferSRVRef RDGPositionBuffer = nullptr;
+		FRDGBufferSRVRef RDGPreviousPositionBuffer = nullptr;
 		FRHIShaderResourceView* PositionBuffer = nullptr;
+		FRHIShaderResourceView* PreviousPositionBuffer = nullptr;
 		FRHIShaderResourceView* UVsBuffer = nullptr;
 		FRHIShaderResourceView* IndexBuffer = nullptr;
 		uint32 UVsChannelCount = 0;
@@ -113,22 +115,17 @@ void AddComputeMipsPass(
 	FGlobalShaderMap* ShaderMap,
 	FRDGTextureRef& OutTexture);
 
-void AddHairStrandInterpolateMeshTrianglesPass(
-	FRDGBuilder& GraphBuilder,
-	FGlobalShaderMap* ShaderMap,
-	const int32 LODIndex,
-	const FHairStrandsProjectionMeshData::LOD& MeshData,
-	FHairStrandsRestRootResource* RestResources,
-	FHairStrandsDeformedRootResource* DeformedResources);
-
 void AddSkinUpdatePass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
+	uint32 SectionIndex,
+	uint32 BonesOffset, 
 	class FSkinWeightVertexBuffer* SkinWeight,
 	class FSkeletalMeshLODRenderData& RenderData,
-	FRDGBufferRef BoneMatrices,
-	FRDGBufferRef MatrixOffsets,
-	FRDGBufferRef OutDeformedosition);
+	FRHIShaderResourceView* BoneMatrices,
+	FRHIShaderResourceView* PrevBoneMatrices,
+	FRDGBufferRef OutDeformedosition,
+	FRDGBufferRef OutPreviousDeformedosition);
 
 void AddHairMeshesRBFInterpolationPass(
 	FRDGBuilder& GraphBuilder,

@@ -4,29 +4,24 @@
 
 #include "Common.ush"
 #include "SHCommon.ush"
+
+#if MATERIAL_SHADER
 #include "/Engine/Generated/Material.ush"
+#endif
 
 // Reroute MobileSceneTextures uniform buffer references to the base pass uniform buffer
 #define MobileSceneTextures		MobileBasePass.SceneTextures
 #define ForwardLightData		MobileBasePass.Forward
 #define PlanarReflectionStruct	MobileBasePass.PlanarReflection
+#define ReflectionStruct		MobileBasePass.ReflectionsParameters
+#define PreIntegratedGF			ReflectionStruct.PreIntegratedGF
+#define PreIntegratedGFSampler	ReflectionStruct.PreIntegratedGFSampler
 
-#include "DynamicLightingCommon.ush"
-#include "ReflectionEnvironmentShared.ush"
-#include "LightGridCommon.ush"
-#include "MobileShadingModels.ush"
-#include "IESLightProfilesCommon.ush"
+#include "MobileLightingCommon.ush"
+#if MATERIAL_SHADER
 #include "LightFunctionCommon.ush"
-#include "PlanarReflectionShared.ush"
-
-#if APPLY_SKY_REFLECTION
-#define ENABLE_SKY_LIGHT 1
 #endif
-#define REFLECTION_COMPOSITE_USE_BLENDED_REFLECTION_CAPTURES 1
-#define REFLECTION_COMPOSITE_SUPPORT_SKYLIGHT_BLEND 1
-#define REFLECTION_COMPOSITE_HAS_SPHERE_CAPTURES 1
-#define REFLECTION_COMPOSITE_HAS_BOX_CAPTURES 1
-#include "ReflectionEnvironmentComposite.ush"
+
 #if METAL_PROFILE
 #include "/Engine/Public/Platform/Metal/MetalSubpassSupport.ush"
 #elif VULKAN_PROFILE
@@ -39,81 +34,53 @@
 #define IS_SPOT_LIGHT 0 
 #endif 
 
-#ifndef USE_CLUSTERED
-#define USE_CLUSTERED 0
-#endif 
-
-
-struct FMobileLightData
+void FetchGBuffer(in float2 UV, out half4 GBufferA, out half4 GBufferB, out half4 GBufferC, out half4 GBufferD, out float SceneDepth)
 {
-	float3 TranslatedWorldPosition;
-	float  InvRadius;
-	float3 Color;
-	float  FalloffExponent;
-	float3 Direction;
-	float2 SpotAngles;
-	float SourceRadius;
-	float SpecularScale;
-	bool bInverseSquared;
-	bool bSpotLight;
-};
+	GBufferD = 0;
 
-void FetchGBuffer(in float2 UV, out float4 GBufferA, out float4 GBufferB, out float4 GBufferC, out float4 GBufferD, out float SceneDepth)
-{
 #if VULKAN_PROFILE
 	GBufferA = VulkanSubpassFetch1(); 
 	GBufferB = VulkanSubpassFetch2(); 
-	GBufferC = VulkanSubpassFetch3(); 
-	GBufferD = 0;
+	GBufferC = VulkanSubpassFetch3();
+	#if MOBILE_EXTENDED_GBUFFER
+		GBufferD = VulkanSubpassFetch4();
+	#endif
 	SceneDepth = ConvertFromDeviceZ(VulkanSubpassDepthFetch());
 #elif METAL_PROFILE
 	GBufferA = SubpassFetchRGBA_1(); 
 	GBufferB = SubpassFetchRGBA_2(); 
 	GBufferC = SubpassFetchRGBA_3(); 
-	GBufferD = 0; 
+	#if MOBILE_EXTENDED_GBUFFER
+		GBufferD = SubpassFetchRGBA_4();
+	#endif
 	SceneDepth = ConvertFromDeviceZ(SubpassFetchR_4());
 #elif USE_GLES_FBF_DEFERRED
 	GBufferA = GLSubpassFetch1(); 
 	GBufferB = GLSubpassFetch2(); 
 	GBufferC = GLSubpassFetch3();  
-	GBufferD = 0;   
+	GBufferD = 0; // PLS is limited to 128bits
 	SceneDepth = ConvertFromDeviceZ(DepthbufferFetchES2());
 #else
 	GBufferA = Texture2DSampleLevel(MobileSceneTextures.GBufferATexture, MobileSceneTextures.GBufferATextureSampler, UV, 0); 
 	GBufferB = Texture2DSampleLevel(MobileSceneTextures.GBufferBTexture, MobileSceneTextures.GBufferBTextureSampler, UV, 0);
 	GBufferC = Texture2DSampleLevel(MobileSceneTextures.GBufferCTexture, MobileSceneTextures.GBufferCTextureSampler, UV, 0);
-	GBufferD = 0;
+	#if MOBILE_EXTENDED_GBUFFER
+		GBufferD = Texture2DSampleLevel(MobileSceneTextures.GBufferDTexture, MobileSceneTextures.GBufferDTextureSampler, UV, 0);
+	#endif
 	SceneDepth = ConvertFromDeviceZ(Texture2DSampleLevel(MobileSceneTextures.SceneDepthTexture, MobileSceneTextures.SceneDepthTextureSampler, UV, 0).r);
 #endif
 }
 
-FGBufferData DecodeGBufferMobile(
-	float4 InGBufferA,
-	float4 InGBufferB,
-	float4 InGBufferC,
-	float4 InGBufferD)
+FGBufferData FetchAndDecodeGBuffer(in float2 UV)
 {
-	FGBufferData GBuffer = (FGBufferData)0;
-	GBuffer.WorldNormal = OctahedronToUnitVector( InGBufferA.xy * 2.0f - 1.0f );
-	GBuffer.PrecomputedShadowFactors = InGBufferA.z;
-	GBuffer.PerObjectGBufferData = InGBufferA.a;  
-	GBuffer.Metallic	= InGBufferB.r;
-	GBuffer.Specular	= InGBufferB.g;
-	GBuffer.Roughness	= max(0.015625, InGBufferB.b);
-	// Note: must match GetShadingModelId standalone function logic
-	// Also Note: SimpleElementPixelShader directly sets SV_Target2 ( GBufferB ) to indicate unlit.
-	// An update there will be required if this layout changes.
-	GBuffer.ShadingModelID = DecodeShadingModelId(InGBufferB.a);
-	GBuffer.SelectiveOutputMask = DecodeSelectiveOutputMask(InGBufferB.a);
-	GBuffer.BaseColor = DecodeBaseColor(InGBufferC.rgb);
-#if ALLOW_STATIC_LIGHTING
-	GBuffer.GBufferAO = 1;
-	GBuffer.IndirectIrradiance = DecodeIndirectIrradiance(InGBufferC.a);
-#else
-	GBuffer.GBufferAO = InGBufferC.a;
-	GBuffer.IndirectIrradiance = 1;
-#endif
-	GBuffer.CustomData = HasCustomGBufferData(GBuffer.ShadingModelID) ? InGBufferD : 0;
+	float SceneDepth = 0;
+	half4 GBufferA = 0;
+	half4 GBufferB = 0;
+	half4 GBufferC = 0;
+	half4 GBufferD = 0;
+	FetchGBuffer(UV, GBufferA, GBufferB, GBufferC, GBufferD, SceneDepth);
+	FGBufferData GBuffer = MobileDecodeGBuffer(GBufferA, GBufferB, GBufferC, GBufferD);
+	GBuffer.Depth = SceneDepth;
 	return GBuffer;
 }
 
@@ -141,104 +108,25 @@ half ComputeLightFunctionMultiplier(float3 TranslatedWorldPosition)
 #endif
 }
 
-void GetDirectLighting(
-	FMobileLightData LightData, 
-	FMobileShadingModelContext ShadingModelContext, 
-	FGBufferData GBuffer, 
-	float3 TranslatedWorldPosition, 
+void ReflectionEnvironmentSkyLighting(
+	FGBufferData GBuffer,
 	half3 CameraVector,
-	inout FMobileLightAccumulator MobileLightAccumulator)
+	float3 TranslatedWorldPosition,
+	half3 ReflectionVector,
+	uint GridIndex,
+	inout FLightAccumulator DirectLighting)
 {
-	float3 ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
-	float DistanceSqr = dot(ToLight, ToLight);
-	float3 L = ToLight * rsqrt(DistanceSqr);
-		
-	float Attenuation = 0.0;
-	if (LightData.bInverseSquared)
-	{
-		// Sphere falloff (technically just 1/d2 but this avoids inf)
-		Attenuation = 1.0f / (DistanceSqr + 1.0f);
-		Attenuation *= Square(saturate(1 - Square(DistanceSqr * Square(LightData.InvRadius))));
-	}
-	else
-	{
-		Attenuation = RadialAttenuation(ToLight * LightData.InvRadius, LightData.FalloffExponent);
-	}
-
-	if (LightData.bSpotLight)
-	{
-		Attenuation *= SpotAttenuation(L, -LightData.Direction, LightData.SpotAngles);
-	}
-		
-	if (Attenuation > 0.0)
-	{
-		half3 H = normalize(CameraVector + L);
-		half NoL = max(0.0, dot(GBuffer.WorldNormal, L));
-		half NoH = max(0.0, dot(GBuffer.WorldNormal, H));
-		half VoH = max(0.0, dot(CameraVector, H));
-		FMobileDirectLighting Lighting = MobileIntegrateBxDF(ShadingModelContext, GBuffer, NoL, NoH, VoH, CameraVector, L);
-		MobileLightAccumulator_Add(MobileLightAccumulator, Lighting.Diffuse, Lighting.Specular * LightData.SpecularScale, LightData.Color * (1.0 / PI) * Attenuation);
-	}
-}
-
-/**
- * Adds local lighting using the light grid, does not apply directional lights, as they are done elsewhere.
- * Does not support dynamic shadows, as these require the per-light shadow mask.
- */
-void GetLightGridLocalLighting(
-	const FCulledLightsGridData InLightGridData, 
-	FMobileShadingModelContext ShadingModelContext, 
-	FGBufferData GBuffer, 
-	float3 TranslatedWorldPosition, 
-	half3 CameraVector, 
-	uint EyeIndex, 
-	uint FirstNonSimpleLightIndex,
-	inout FMobileLightAccumulator MobileLightAccumulator)
-{
-	// Limit max to ForwardLightData.NumLocalLights.
-	// This prevents GPU hangs when the PS tries to read from uninitialized NumCulledLightsGrid buffer
-	const uint NumLocalLights = min(InLightGridData.NumLocalLights, GetNumLocalLights(EyeIndex));
-	LOOP
-	for (uint LocalLightListIndex = FirstNonSimpleLightIndex; LocalLightListIndex < NumLocalLights; LocalLightListIndex++)
-	{
-		const FLocalLightData LocalLight = GetLocalLightData(InLightGridData.DataStartIndex + LocalLightListIndex, EyeIndex);
-
-		// The lights are sorted such that all that support clustered deferred are at the beginning, there might be others
-		// (e.g., lights with dynamic shadows) so we break out when the condition fails.
-		if (!LocalLight.bClusteredDeferredSupported)
-		{
-			break;
-		}
-		
-		FMobileLightData LightData = (FMobileLightData)0;
-		LightData.TranslatedWorldPosition = LocalLight.LightPositionAndInvRadius.xyz;
-		LightData.InvRadius = LocalLight.LightPositionAndInvRadius.w;
-		// extra-early out since we know light grid is sloppy and all lights in list are radial (have a range)
-		// appears useless
-		float invLightRadiusSq = LightData.InvRadius*LightData.InvRadius;
-		float3 LightToCamera = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
-		if (dot(LightToCamera, LightToCamera) * invLightRadiusSq > 1.0f)
-		{
-			continue;
-		}
-
-		LightData.Color = LocalLight.LightColorAndFalloffExponent.xyz;
-		LightData.FalloffExponent = LocalLight.LightColorAndFalloffExponent.w;
-		LightData.Direction = LocalLight.LightDirectionAndShadowMask.xyz;
-		LightData.SpotAngles = LocalLight.SpotAnglesAndSourceRadiusPacked.xy;
-		LightData.bInverseSquared = LightData.FalloffExponent == 0;
-		LightData.SpecularScale = 1.0;
-		uint LightTypeAndPackedShadowMapChannelMask = asuint(LocalLight.LightDirectionAndShadowMask.w);
-		// bits [17:16] really
-		uint LightType = LightTypeAndPackedShadowMapChannelMask >> 16;
-		// TODO: not sure if this check is even needed, standard deferred always seems to set it to true?
-		LightData.bSpotLight = (LightType == LIGHT_TYPE_SPOT);
-		
-		GetDirectLighting(LightData, ShadingModelContext, GBuffer, TranslatedWorldPosition, CameraVector, MobileLightAccumulator);
-	}
+	// IBL
+	AccumulateReflection(GBuffer
+		, CameraVector
+		, TranslatedWorldPosition
+		, ReflectionVector
+		, GBuffer.IndirectIrradiance
+		, GridIndex
+		, DirectLighting);
 }
   
-void MobileDirectLightPS(
+void MobileDirectionalLightPS(
 	noperspective float4 UVAndScreenPos : TEXCOORD0, 
 	float4 SvPosition : SV_POSITION, 
 #if USE_GLES_FBF_DEFERRED
@@ -253,125 +141,101 @@ void MobileDirectLightPS(
 {
 	ResolvedView = ResolveView();
 
-	FGBufferData GBuffer = (FGBufferData)0;
-	float SceneDepth = 0; 
-	{
-		float4 GBufferA = 0; 
-		float4 GBufferB = 0; 
-		float4 GBufferC = 0; 
-		float4 GBufferD = 0;
-		FetchGBuffer(UVAndScreenPos.xy, GBufferA, GBufferB, GBufferC, GBufferD, SceneDepth);
-		GBuffer = DecodeGBufferMobile(GBufferA, GBufferB, GBufferC, GBufferD);
-	}
-	
+	FGBufferData GBuffer = FetchAndDecodeGBuffer(UVAndScreenPos.xy);
 	float2 ScreenPos = UVAndScreenPos.zw;
-	float3 TranslatedWorldPosition = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	float3 TranslatedWorldPosition = mul(float4(ScreenPos * GBuffer.Depth, GBuffer.Depth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
 
-	half3 CameraVector = normalize(PrimaryView.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
-	half NoV = max(0, dot(GBuffer.WorldNormal, CameraVector));
-	half3 ReflectionVector = GBuffer.WorldNormal * (NoV * 2.0) - CameraVector;
-	
-	// Directional light
-	half3 L = MobileDirectionalLight.DirectionalLightDirectionAndShadowTransition.xyz;
-	half NoL = max(0, dot(GBuffer.WorldNormal, L));
-	half3 H = normalize(CameraVector + L);
-	half NoH = max(0, dot(GBuffer.WorldNormal, H));
-	half VoH = max(0, dot(CameraVector, H));
+	half3 CameraVector = normalize(TranslatedWorldPosition);
+	half3 V = -CameraVector;
+	half NoV = dot(GBuffer.WorldNormal, V);
+	half3 ReflectionVector = GBuffer.WorldNormal * (NoV * 2.0) - V;
 
-	FMobileLightAccumulator MobileLightAccumulator = (FMobileLightAccumulator)0;
-	// Check movable light param to determine if we should be using precomputed shadows
-	half Shadow = LightFunctionParameters2.z > 0.0f ? 1.0f : GBuffer.PrecomputedShadowFactors.r;
-	
-#if APPLY_CSM && !ENABLE_DISTANCE_FIELD
-	// TODO: we don't need to fully compute ScreenPosition here
-	float  ShadowPositionZ = 0;
-	float4 ScreenPosition = SvPositionToScreenPosition(float4(SvPosition.xyz,SceneDepth));
-	float ShadowMap = MobileDirectionalLightCSM(ScreenPosition.xy, SceneDepth, NoL, ShadowPositionZ);
-	Shadow = min(ShadowMap, Shadow);
-#endif
+	FLightAccumulator DirectLighting = (FLightAccumulator)0;
 
-#if ENABLE_DISTANCE_FIELD
-	Shadow = Texture2DSample(MobileBasePass.ScreenSpaceShadowMaskTexture, MobileBasePass.ScreenSpaceShadowMaskSampler, SvPositionToBufferUV(SvPosition)).x;
-	Shadow = DecodeLightAttenuation(Shadow);
-#endif
-
-	FMobileShadingModelContext ShadingModelContext = (FMobileShadingModelContext)0;
-	InitShadingModelContext(ShadingModelContext, GBuffer, CameraVector);
+	float4 ScreenPosition = SvPositionToScreenPosition(float4(SvPosition.xyz, GBuffer.Depth));
 	
 	float2 LocalPosition = SvPosition.xy - View.ViewRectMin.xy;
-	uint GridIndex = ComputeLightGridCellIndex(uint2(LocalPosition.x, LocalPosition.y), SceneDepth);
+	uint GridIndex = ComputeLightGridCellIndex(uint2(LocalPosition.x, LocalPosition.y), GBuffer.Depth);
 	// Local lights
-#if USE_CLUSTERED
+#if ENABLE_CLUSTERED_LIGHTS
 	{
 		const uint EyeIndex = 0;
 		const FCulledLightsGridData CulledLightGridData = GetCulledLightsGrid(GridIndex, EyeIndex);
-		GetLightGridLocalLighting(CulledLightGridData, ShadingModelContext, GBuffer, TranslatedWorldPosition, CameraVector, EyeIndex, 0, MobileLightAccumulator);
+		half4 LocalLightDynamicShadowFactors = 1.0f;
+		AccumulateLightGridLocalLighting(CulledLightGridData, GBuffer, TranslatedWorldPosition, CameraVector, EyeIndex, 0, LocalLightDynamicShadowFactors, DirectLighting);
 	}
 #endif
 
-	FMobileDirectLighting Lighting = MobileIntegrateBxDF(ShadingModelContext, GBuffer, NoL, NoH, VoH, CameraVector, L, Shadow);
-	MobileLightAccumulator_Add(MobileLightAccumulator, Lighting.Diffuse, Lighting.Specular * MobileDirectionalLight.DirectionalLightDistanceFadeMADAndSpecularScale.z, MobileDirectionalLight.DirectionalLightColor.rgb);
+	// Directional light
+	half4 DynamicShadowFactors = 1.0f;
+	float DirectionalLightShadow = 1.0f;
+	AccumulateDirectionalLighting(GBuffer, TranslatedWorldPosition, CameraVector, ScreenPosition, SvPosition, DynamicShadowFactors, DirectionalLightShadow, DirectLighting);
 
-#if APPLY_REFLECTION
-	uint NumCulledEntryIndex = (ForwardLightData.NumGridCells + GridIndex) * NUM_CULLED_LIGHTS_GRID_STRIDE;
-	uint NumLocalReflectionCaptures = min(ForwardLightData.NumCulledLightsGrid[NumCulledEntryIndex + 0], ForwardLightData.NumReflectionCaptures);
-	uint DataStartIndex = ForwardLightData.NumCulledLightsGrid[NumCulledEntryIndex + 1];
-
-	float3 SpecularIBL = CompositeReflectionCapturesAndSkylightTWS(
-		1.0f,
-		TranslatedWorldPosition,
-		ReflectionVector,//RayDirection,
-		GBuffer.Roughness,
-		GBuffer.IndirectIrradiance,
-		1.0f,
-		0.0f,
-		NumLocalReflectionCaptures,
-		DataStartIndex,
-		0,
-		true);
-
-	BRANCH
-	if (abs(dot(PlanarReflectionStruct.ReflectionPlane.xyz, 1)) > .0001f)
-	{
-		half4 PlanarReflection = GetPlanarReflection(TranslatedWorldPosition, GBuffer.WorldNormal, GBuffer.Roughness);
-		// Planar reflections win over reflection environment
-		SpecularIBL = lerp(SpecularIBL, PlanarReflection.rgb, PlanarReflection.a);
-	}
-	  
-	MobileLightAccumulator_Add(MobileLightAccumulator, 0.0f, SpecularIBL * ShadingModelContext.EnvBrdf, 1.0f);
-#elif APPLY_SKY_REFLECTION
-	float SkyAverageBrightness = 1.0f;
-	float3 SpecularIBL = GetSkyLightReflection(ReflectionVector, GBuffer.Roughness, SkyAverageBrightness);
-	SpecularIBL *= ComputeMixingWeight(GBuffer.IndirectIrradiance, SkyAverageBrightness, GBuffer.Roughness);
-	MobileLightAccumulator_Add(MobileLightAccumulator, 0.0f, SpecularIBL * ShadingModelContext.EnvBrdf, 1.0f);
-#endif
-	half3 SkyDiffuseLighting = GetSkySHDiffuseSimple(GBuffer.WorldNormal);
-	half3 DiffuseColorForSky = ShadingModelContext.DiffuseColor;
-
-#if MOBILE_SHADINGMODEL_SUPPORT
-	if (GBuffer.ShadingModelID == SHADINGMODELID_SUBSURFACE || GBuffer.ShadingModelID == SHADINGMODELID_PREINTEGRATED_SKIN)
-	{
-		half3 SubsurfaceColor = ExtractSubsurfaceColor(GBuffer);
-		// Add subsurface energy to diffuse
-		DiffuseColorForSky += SubsurfaceColor;
-	}
+#if ENABLE_CLUSTERED_REFLECTION || ENABLE_SKY_LIGHT || ENABLE_PLANAR_REFLECTION
+	// If we have a single directional light, apply relfection and sky contrubution here
+	ReflectionEnvironmentSkyLighting(GBuffer, CameraVector, TranslatedWorldPosition, ReflectionVector, GridIndex, DirectLighting);
 #endif
 
-	MobileLightAccumulator_Add(MobileLightAccumulator, SkyDiffuseLighting, 0.0f, half3(View.SkyLightColor.rgb) * DiffuseColorForSky * GBuffer.GBufferAO);
-	
-	half3 Color = MobileLightAccumulator_GetResult(MobileLightAccumulator);
-
-	half LightAttenuation = ComputeLightFunctionMultiplier(TranslatedWorldPosition);
-
+	half3 Color = DirectLighting.TotalLight * ComputeLightFunctionMultiplier(TranslatedWorldPosition);
 	// MobileHDR applies PreExposure in tonemapper
-	LightAttenuation *= View.PreExposure;
+	Color *= View.PreExposure;
 
+	Color = SafeGetOutColor(Color);
 #if defined(MOBILE_DEFERRED_SHADING) && USE_GLES_FBF_DEFERRED == 1
-	OutProxyAdditive.rgb = Color.rgb * LightAttenuation;
+	OutProxyAdditive.rgb = Color;
 #else
-	OutColor.rgb = Color.rgb * LightAttenuation;
+	OutColor.rgb = Color;
 	OutColor.a = 1;
 #endif
+}
+
+#if SUPPORT_SPOTLIGHTS_SHADOW
+float4			SpotLightShadowSharpenAndFadeFractionAndReceiverDepthBiasAndSoftTransitionScale;
+float4			SpotLightShadowmapMinMax;
+float4x4		SpotLightShadowWorldToShadowMatrix;
+Texture2D		LocalLightShadowTexture;
+SamplerState	LocalLightShadowSampler;
+float4			LocalLightShadowBufferSize;
+#endif
+
+FDeferredLightData SetupLightDataForStandardDeferred()
+{
+	// Build the light data struct using the DeferredLightUniforms and light defines
+	// We are heavily relying on the shader compiler to optimize out constant subexpressions in GetDynamicLighting()
+
+	FDeferredLightData LightData = (FDeferredLightData)0;
+	LightData.TranslatedWorldPosition = GetDeferredLightTranslatedWorldPosition();
+	LightData.InvRadius = DeferredLightUniforms.InvRadius;
+	LightData.Color = DeferredLightUniforms.Color;
+	LightData.FalloffExponent = DeferredLightUniforms.FalloffExponent;
+	LightData.Direction = DeferredLightUniforms.Direction;
+//	LightData.Tangent = DeferredLightUniforms.Tangent;
+	LightData.SpotAngles = DeferredLightUniforms.SpotAngles;
+//	LightData.SourceRadius = DeferredLightUniforms.SourceRadius;
+//	LightData.SourceLength = DeferredLightUniforms.SourceLength;
+//	LightData.SoftSourceRadius = DeferredLightUniforms.SoftSourceRadius;
+	LightData.SpecularScale = DeferredLightUniforms.SpecularScale;
+//	LightData.ContactShadowLength = abs(DeferredLightUniforms.ContactShadowLength);
+//	LightData.ContactShadowLengthInWS = DeferredLightUniforms.ContactShadowLength < 0.0f;
+//	LightData.ContactShadowNonShadowCastingIntensity = DeferredLightUniforms.ContactShadowNonShadowCastingIntensity;
+//	LightData.DistanceFadeMAD = DeferredLightUniforms.DistanceFadeMAD;
+	LightData.ShadowMapChannelMask = DeferredLightUniforms.ShadowMapChannelMask;
+	LightData.ShadowedBits = DeferredLightUniforms.ShadowedBits;
+	LightData.bInverseSquared = DeferredLightUniforms.FalloffExponent == 0; // Directional lights don't use 'inverse squared attenuation'
+	LightData.bRadialLight = true;
+	//@todo - permutation opportunity
+	LightData.bSpotLight = IS_SPOT_LIGHT;
+	LightData.bRectLight = false;
+	
+//	LightData.RectLightBarnCosAngle = DeferredLightUniforms.RectLightBarnCosAngle;
+//	LightData.RectLightBarnLength = DeferredLightUniforms.RectLightBarnLength;
+//	LightData.RectLightAtlasMaxLevel = DeferredLightUniforms.RectLightAtlasMaxLevel;
+//	LightData.RectLightAtlasUVOffset = DeferredLightUniforms.RectLightAtlasUVOffset;
+//	LightData.RectLightAtlasUVScale  = DeferredLightUniforms.RectLightAtlasUVScale;
+
+	LightData.HairTransmittance = InitHairTransmittanceData();
+
+	return LightData;
 }
 
 void MobileRadialLightPS(
@@ -387,55 +251,122 @@ void MobileRadialLightPS(
 #endif
 )
 {
-	FGBufferData GBuffer = (FGBufferData)0;
-	float SceneDepth = 0; 
-	{
-		float2 ScreenUV = InScreenPosition.xy / InScreenPosition.w * View.ScreenPositionScaleBias.xy + View.ScreenPositionScaleBias.wz;
-		float4 GBufferA = 0;  
-		float4 GBufferB = 0; 
-		float4 GBufferC = 0; 
-		float4 GBufferD = 0;
-		FetchGBuffer(ScreenUV, GBufferA, GBufferB, GBufferC, GBufferD, SceneDepth);
-		GBuffer = DecodeGBufferMobile(GBufferA, GBufferB, GBufferC, GBufferD);
-	}
-	
+	ResolvedView = ResolveView();
+
+	float2 ScreenUV = InScreenPosition.xy / InScreenPosition.w * View.ScreenPositionScaleBias.xy + View.ScreenPositionScaleBias.wz;
+	FGBufferData GBuffer = FetchAndDecodeGBuffer(ScreenUV);
 	// With a perspective projection, the clip space position is NDC * Clip.w
 	// With an orthographic projection, clip space is the same as NDC
-	float2 ClipPosition = InScreenPosition.xy / InScreenPosition.w * (View.ViewToClip[3][3] < 1.0f ? SceneDepth : 1.0f);
-	float3 TranslatedWorldPosition = mul(float4(ClipPosition, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
-	half3 CameraVector = normalize(PrimaryView.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
-	half NoV = max(0, dot(GBuffer.WorldNormal, CameraVector));
-		
-	FMobileLightData LightData = (FMobileLightData)0;
+	float2 ClipPosition = InScreenPosition.xy / InScreenPosition.w * (View.ViewToClip[3][3] < 1.0f ? GBuffer.Depth : 1.0f);
+	float3 TranslatedWorldPosition = mul(float4(ClipPosition, GBuffer.Depth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	half3 CameraVector = normalize(TranslatedWorldPosition);
+			
+	FLightAccumulator DirectLighting = (FLightAccumulator)0;
+	FDeferredLightData LightData = SetupLightDataForStandardDeferred();
+	
+	// Affect the light color by any other shadow/transmittance before the lighting is evaluated
 	{
-		LightData.TranslatedWorldPosition = DeferredLightUniforms.TranslatedWorldPosition;
-		LightData.InvRadius = DeferredLightUniforms.InvRadius;
-		LightData.Color = DeferredLightUniforms.Color;
-		LightData.FalloffExponent = DeferredLightUniforms.FalloffExponent;
-		LightData.Direction = DeferredLightUniforms.Direction;
-		LightData.SpotAngles = DeferredLightUniforms.SpotAngles;
-		LightData.SpecularScale = 1.0;
-		LightData.bInverseSquared = DeferredLightUniforms.FalloffExponent == 0;
-		LightData.bSpotLight = IS_SPOT_LIGHT; 
+		half Attenuation = ComputeLightProfileMultiplier(TranslatedWorldPosition, DeferredLightUniforms.TranslatedWorldPosition, -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
+		LightData.Color *= Attenuation;
 	}
 
-	FMobileShadingModelContext ShadingModelContext = (FMobileShadingModelContext)0;
-	InitShadingModelContext(ShadingModelContext, GBuffer, CameraVector);
-			
-	FMobileLightAccumulator MobileLightAccumulator = (FMobileLightAccumulator)0;
-	GetDirectLighting(LightData, ShadingModelContext, GBuffer, TranslatedWorldPosition, CameraVector, MobileLightAccumulator);
-	half3 Color = MobileLightAccumulator_GetResult(MobileLightAccumulator);
-	
-	half LightAttenuation = ComputeLightProfileMultiplier(TranslatedWorldPosition, DeferredLightUniforms.TranslatedWorldPosition, -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
-	LightAttenuation*= ComputeLightFunctionMultiplier(TranslatedWorldPosition);
+	half Shadow = 1.0;
+#if SUPPORT_SPOTLIGHTS_SHADOW && IS_SPOT_LIGHT
+	float3 ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
+	float3 LocalPosition = -ToLight;
+	float DistanceSqr = dot(ToLight, ToLight);
+	half3 L = ToLight * rsqrt(DistanceSqr);
+	half3 N = GBuffer.WorldNormal;
+	half NoL = saturate(dot(N, L));
 
+	FPCFSamplerSettings Settings;
+	Settings.ShadowDepthTexture = LocalLightShadowTexture;
+	Settings.ShadowDepthTextureSampler = LocalLightShadowSampler;
+	Settings.ShadowBufferSize = LocalLightShadowBufferSize;
+	Settings.bSubsurface = false;
+	Settings.bTreatMaxDepthUnshadowed = false;
+	Settings.DensityMulConstant = 0;
+	Settings.ProjectionDepthBiasParameters = 0;
+	
+	float SpotLightShadowSharpen = SpotLightShadowSharpenAndFadeFractionAndReceiverDepthBiasAndSoftTransitionScale.x;
+	float SpotLightFadeFraction = SpotLightShadowSharpenAndFadeFractionAndReceiverDepthBiasAndSoftTransitionScale.y;
+	float SpotLightReceiverDepthBias = SpotLightShadowSharpenAndFadeFractionAndReceiverDepthBiasAndSoftTransitionScale.z;
+	float SpotLightSoftTransitionScale = SpotLightShadowSharpenAndFadeFractionAndReceiverDepthBiasAndSoftTransitionScale.w;
+
+	float4 HomogeneousShadowPosition = mul(float4(LocalPosition, 1), SpotLightShadowWorldToShadowMatrix);
+	float2 ShadowUVs = HomogeneousShadowPosition.xy / HomogeneousShadowPosition.w;
+	if (all(ShadowUVs >= SpotLightShadowmapMinMax.xy && ShadowUVs <= SpotLightShadowmapMinMax.zw))
+	{
+		// Clamp pixel depth in light space for shadowing opaque, because areas of the shadow depth buffer that weren't rendered to will have been cleared to 1
+		// We want to force the shadow comparison to result in 'unshadowed' in that case, regardless of whether the pixel being shaded is in front or behind that plane
+		// Invert ShadowZ as the shadow space has been changed (but not yet the filtering code)
+		float ShadowZ = 1.0f - HomogeneousShadowPosition.z;
+		float LightSpacePixelDepthForOpaque = min(ShadowZ, 0.99999f);
+		Settings.SceneDepth = LightSpacePixelDepthForOpaque;
+		Settings.TransitionScale = SpotLightSoftTransitionScale * lerp(SpotLightReceiverDepthBias, 1.0, NoL);
+
+		Shadow = MobileShadowPCF(ShadowUVs, Settings);
+
+		Shadow = saturate((Shadow - 0.5) * SpotLightShadowSharpen + 0.5f);
+
+		Shadow = lerp(1.0f, Square(Shadow), SpotLightFadeFraction);
+	}
+#endif
+
+	half4 LightAttenuation = half4(1, 1, Shadow, Shadow);
+
+	float SurfaceShadow = 0;
+	DirectLighting = AccumulateDynamicLighting(TranslatedWorldPosition, CameraVector, GBuffer, 1, GBuffer.ShadingModelID, LightData, LightAttenuation, 0, uint2(0, 0), SurfaceShadow);
+
+	half3 Color = DirectLighting.TotalLight * ComputeLightFunctionMultiplier(TranslatedWorldPosition);
+	
 	// MobileHDR applies PreExposure in tonemapper
-	LightAttenuation*= View.PreExposure;
+	Color *= View.PreExposure;
+
+	Color = SafeGetOutColor(Color);
+#if defined(MOBILE_DEFERRED_SHADING) && USE_GLES_FBF_DEFERRED == 1
+	OutProxyAdditive.rgb = Color;
+#else
+	OutColor.rgb = Color;
+	OutColor.a = 1;
+#endif
+}
+
+void MobileReflectionEnvironmentSkyLightingPS(
+	noperspective float4 UVAndScreenPos : TEXCOORD0
+	, float4 SvPosition : SV_POSITION
+#if USE_GLES_FBF_DEFERRED
+	, out HALF4_TYPE OutProxyAdditive : SV_Target0
+	, out HALF4_TYPE OutGBufferA : SV_Target1
+	, out HALF4_TYPE OutGBufferB : SV_Target2
+	, out HALF4_TYPE OutGBufferC : SV_Target3
+#else
+	, out HALF4_TYPE OutColor : SV_Target0
+#endif
+)
+{
+	ResolvedView = ResolveView();
+	FGBufferData GBuffer = FetchAndDecodeGBuffer(UVAndScreenPos.xy);
+	float2 ScreenPos = UVAndScreenPos.zw;
+	float3 TranslatedWorldPosition = mul(float4(ScreenPos * GBuffer.Depth, GBuffer.Depth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	half3 CameraVector = normalize(TranslatedWorldPosition);
+	half3 V = -CameraVector;
+	half NoV = max(0, dot(GBuffer.WorldNormal, V));
+	half3 ReflectionVector = GBuffer.WorldNormal * (NoV * 2.0) - V;
+
+	float2 LocalPosition = SvPosition.xy - View.ViewRectMin.xy;
+	uint GridIndex = ComputeLightGridCellIndex(uint2(LocalPosition.x, LocalPosition.y), GBuffer.Depth);
+	
+	FLightAccumulator DirectLighting = (FLightAccumulator)0;
+	ReflectionEnvironmentSkyLighting(GBuffer, CameraVector, TranslatedWorldPosition, ReflectionVector, GridIndex, DirectLighting);
+	half3 ReflectionAndSky = DirectLighting.TotalLight;
+
+	ReflectionAndSky *= View.PreExposure;
 
 #if defined(MOBILE_DEFERRED_SHADING) && USE_GLES_FBF_DEFERRED == 1
-	OutProxyAdditive.rgb = Color.rgb * LightAttenuation;
+	OutProxyAdditive.rgb = ReflectionAndSky.rgb;
 #else
-	OutColor.rgb = Color.rgb * LightAttenuation;
+	OutColor.rgb = ReflectionAndSky.rgb;
 	OutColor.a = 1;
 #endif
 }

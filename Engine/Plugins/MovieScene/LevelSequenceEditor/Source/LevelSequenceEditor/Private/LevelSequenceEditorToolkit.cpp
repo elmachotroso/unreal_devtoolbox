@@ -2,11 +2,12 @@
 
 #include "LevelSequenceEditorToolkit.h"
 #include "Misc/LevelSequencePlaybackContext.h"
+#include "Misc/LevelSequenceEditorMenuContext.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "UObject/UnrealType.h"
 #include "GameFramework/Actor.h"
 #include "EngineGlobals.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Components/PrimitiveComponent.h"
 #include "Editor.h"
 #include "Animation/AnimInstance.h"
@@ -51,6 +52,9 @@
 #include "MovieSceneCaptureDialogModule.h"
 #include "MovieScene.h"
 #include "UnrealEdMisc.h"
+#include "ToolMenus.h"
+#include "ClassViewerFilter.h"
+#include "ClassViewerModule.h"
 
 // @todo sequencer: hack: setting defaults for transform tracks
 
@@ -154,6 +158,11 @@ FLevelSequenceEditorToolkit::~FLevelSequenceEditorToolkit()
 
 void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, ULevelSequence* InLevelSequence)
 {
+	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	// Clear out the existing sequencer
+	LevelEditorModule.AttachSequencer(nullptr, nullptr);
+
 	// create tab layout
 	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_LevelSequenceEditor")
 		->AddArea
@@ -191,16 +200,15 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 		SequencerInitParams.ViewParams.UniqueName = "LevelSequenceEditor";
 		SequencerInitParams.ViewParams.ScrubberStyle = ESequencerScrubberStyle::FrameBlock;
 		SequencerInitParams.ViewParams.OnReceivedFocus.BindRaw(this, &FLevelSequenceEditorToolkit::OnSequencerReceivedFocus);
+		SequencerInitParams.ViewParams.OnInitToolMenuContext.BindRaw(this, &FLevelSequenceEditorToolkit::OnInitToolMenuContext);
 
 		SequencerInitParams.HostCapabilities.bSupportsCurveEditor = true;
 		SequencerInitParams.HostCapabilities.bSupportsSaveMovieSceneAsset = true;
 		SequencerInitParams.HostCapabilities.bSupportsRecording = true;
 		SequencerInitParams.HostCapabilities.bSupportsRenderMovie = true;
-
-		TSharedRef<FExtender> ToolbarExtender = MakeShared<FExtender>();
-		ToolbarExtender->AddToolBarExtension("Base Commands", EExtensionHook::Before, nullptr, FToolBarExtensionDelegate::CreateSP(this, &FLevelSequenceEditorToolkit::ExtendSequencerToolbar));
-		SequencerInitParams.ViewParams.ToolbarExtender = ToolbarExtender;
 	}
+
+	ExtendSequencerToolbar("Sequencer.MainToolBar");
 
 	Sequencer = FModuleManager::LoadModuleChecked<ISequencerModule>("Sequencer").CreateSequencer(SequencerInitParams);
 	SpawnRegister->SetSequencer(Sequencer);
@@ -213,9 +221,6 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	FLevelEditorSequencerIntegration::Get().AddSequencer(Sequencer.ToSharedRef(), Options);
 	ULevelSequenceEditorBlueprintLibrary::SetSequencer(Sequencer.ToSharedRef());
 
-	// @todo remove when world-centric mode is added
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-
 	// Reopen the scene outliner so that is refreshed with the sequencer columns
 	{
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
@@ -227,7 +232,12 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	}
 	
 	// Now Attach so this window will apear in the correct front first order
-	LevelEditorModule.AttachSequencer(Sequencer->GetSequencerWidget(), SharedThis(this));
+	TSharedPtr<SDockTab> DockTab = LevelEditorModule.AttachSequencer(Sequencer->GetSequencerWidget(), SharedThis(this));
+	if (DockTab.IsValid())
+	{
+		TAttribute<FText> LabelSuffix = TAttribute<FText>(this, &FLevelSequenceEditorToolkit::GetTabSuffix);
+		DockTab->SetTabLabelSuffix(LabelSuffix);
+	}
 
 	// We need to find out when the user loads a new map, because we might need to re-create puppet actors
 	// when previewing a MovieScene
@@ -286,13 +296,55 @@ FString FLevelSequenceEditorToolkit::GetWorldCentricTabPrefix() const
 	return LOCTEXT("WorldCentricTabPrefix", "Sequencer ").ToString();
 }
 
+FText FLevelSequenceEditorToolkit::GetTabSuffix() const
+{
+	UMovieSceneSequence* Sequence = Sequencer->GetFocusedMovieSceneSequence();
+
+	if (Sequence == nullptr)
+	{
+		return FText::GetEmpty();
+	}
+	
+	const bool bIsDirty = Sequence->GetMovieScene()->GetOuter()->GetOutermost()->IsDirty();
+	if (bIsDirty)
+	{
+		return LOCTEXT("TabSuffixAsterix", "*");
+	}
+
+	return FText::GetEmpty();
+}
 
 /* FLevelSequenceEditorToolkit implementation
  *****************************************************************************/
 
-void FLevelSequenceEditorToolkit::ExtendSequencerToolbar(FToolBarBuilder& ToolbarBuilder)
+void FLevelSequenceEditorToolkit::ExtendSequencerToolbar(FName InToolMenuName)
 {
-	ToolbarBuilder.AddWidget(PlaybackContext->BuildWorldPickerCombo());
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	UToolMenu* ToolMenu = UToolMenus::Get()->ExtendMenu(InToolMenuName);
+
+	const FToolMenuInsert SectionInsertLocation("BaseCommands", EToolMenuInsertType::Before);
+
+	{
+		ToolMenu->AddDynamicSection("LevelSequenceEditorDynamic", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+		{	
+			ULevelSequenceEditorMenuContext* LevelSequenceEditorMenuContext = InMenu->FindContext<ULevelSequenceEditorMenuContext>();
+			if (LevelSequenceEditorMenuContext && LevelSequenceEditorMenuContext->Toolkit.IsValid())
+			{
+				const FName SequencerToolbarStyleName = "SequencerToolbar";
+			
+				FToolMenuEntry PlaybackContextEntry = FToolMenuEntry::InitWidget(
+					"PlaybackContext",
+					LevelSequenceEditorMenuContext->Toolkit.Pin()->PlaybackContext->BuildWorldPickerCombo(),
+					LOCTEXT("PlaybackContext", "PlaybackContext")
+				);
+				PlaybackContextEntry.StyleNameOverride = SequencerToolbarStyleName;
+
+				FToolMenuSection& Section = InMenu->AddSection("LevelSequenceEditor");
+				Section.AddEntry(PlaybackContextEntry);
+			}
+		}), SectionInsertLocation);
+	}
 }
 
 void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const FGuid Binding)
@@ -353,6 +405,11 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 				if (!NewTrack)
 				{
 					NewTrack = MovieScene->AddTrack(TrackClass, Binding);
+				}
+
+				if (!NewTrack)
+				{
+					continue;
 				}
 
 				bool bCreateDefaultSection = false;
@@ -538,6 +595,13 @@ void FLevelSequenceEditorToolkit::OnSequencerReceivedFocus()
 	}
 }
 
+void FLevelSequenceEditorToolkit::OnInitToolMenuContext(FToolMenuContext& MenuContext)
+{
+	ULevelSequenceEditorMenuContext* LevelSequenceEditorMenuContext = NewObject<ULevelSequenceEditorMenuContext>();
+	LevelSequenceEditorMenuContext->Toolkit = SharedThis(this);
+	MenuContext.AddObject(LevelSequenceEditorMenuContext);
+}
+
 void FLevelSequenceEditorToolkit::HandleAddComponentActionExecute(UActorComponent* Component)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddComponent", "Add Component"));
@@ -669,9 +733,12 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 	{	
 		// Create a cine camera asset
 		ACineCameraActor* NewCamera = GCurrentLevelEditingViewportClient->GetWorld()->SpawnActor<ACineCameraActor>();
-		
+		NewCamera->SetActorLocation(GCurrentLevelEditingViewportClient->GetViewLocation(), false);
+		NewCamera->SetActorRotation(GCurrentLevelEditingViewportClient->GetViewRotation());
+		//pNewCamera->CameraComponent->FieldOfView = ViewportClient->ViewFOV; //@todo set the focal length from this field of view
+
 		const USequencerSettings* SequencerSettings = GetDefault<USequencerSettings>();
-		bool bCreateSpawnableCamera = SequencerSettings->GetCreateSpawnableCameras();
+		const bool bCreateSpawnableCamera = SequencerSettings->GetCreateSpawnableCameras() && ShotSequence->AllowsSpawnableObjects();
 
 		FGuid CameraGuid;
 		if (bCreateSpawnableCamera)
@@ -688,9 +755,6 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 		{
 			CameraGuid = GetSequencer()->CreateBinding(*NewCamera, NewCamera->GetActorLabel());
 		}
-		NewCamera->SetActorLocation( GCurrentLevelEditingViewportClient->GetViewLocation(), false );
-		NewCamera->SetActorRotation( GCurrentLevelEditingViewportClient->GetViewRotation() );
-		//pNewCamera->CameraComponent->FieldOfView = ViewportClient->ViewFOV; //@todo set the focal length from this field of view
 		
 		AddDefaultTracksForActor(*NewCamera, CameraGuid);
 
@@ -818,6 +882,11 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 	{
 		return;
 	}
+	
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+	const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = ClassViewerModule.GetGlobalClassViewerFilter();
+	TSharedRef<FClassViewerFilterFuncs> ClassFilterFuncs = ClassViewerModule.CreateFilterFuncs();
+	FClassViewerInitializationOptions ClassViewerOptions = {};
 
 	AActor* Actor = Cast<AActor>(ContextObjects[0]);
 	if (Actor != nullptr)
@@ -829,7 +898,17 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 			{
 				if (Component)
 				{
-					SortedComponents.Add(Component->GetName(), Component);
+					bool bValidComponent = Component && !Component->IsVisualizationComponent();
+
+					if (GlobalClassFilter.IsValid())
+					{
+						bValidComponent = GlobalClassFilter->IsClassAllowed(ClassViewerOptions, Component->GetClass(), ClassFilterFuncs);
+					}
+
+					if (bValidComponent)
+					{
+						SortedComponents.Add(Component->GetName(), Component);
+					}
 				}
 			}
 			SortedComponents.KeySort([](const FString& A, const FString& B) 
@@ -854,30 +933,49 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 			UAnimInstance* AnimInstance = SkeletalComponent->GetAnimInstance();
 			
 			FText AnimInstanceLabel = LOCTEXT("AnimInstanceLabel", "Anim Instance");
-			FText DetailedInstanceText = AnimInstance
-				? FText::Format(LOCTEXT("AnimInstanceLabelFormat", "Anim Instance '{0}'"), FText::FromString(AnimInstance->GetName()))
+			FText DetailedAnimInstanceText = AnimInstance ? 
+				FText::Format(LOCTEXT("AnimInstanceLabelFormat", "Anim Instance '{0}'"), FText::FromString(AnimInstance->GetName()))
 				: AnimInstanceLabel;
 
 			AddTrackMenuBuilder.BeginSection("Anim Instance", AnimInstanceLabel);
 			{
 				AddTrackMenuBuilder.AddMenuEntry(
-					DetailedInstanceText,
+					DetailedAnimInstanceText,
 					LOCTEXT("AnimInstanceToolTip", "Add this skeletal mesh component's animation instance."),
 					FSlateIcon(),
 					FUIAction(
-						FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::BindAnimationInstance, SkeletalComponent)
+						FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::BindAnimationInstance, SkeletalComponent, AnimInstance)
 					)
 				);
 			}
 			AddTrackMenuBuilder.EndSection();
+
+			if (UAnimInstance* PostProcessInstance = SkeletalComponent->GetPostProcessInstance())
+			{
+				FText PostProcessInstanceLabel = LOCTEXT("PostProcessInstanceLabel", "Post Process Instance");
+				FText DetailedPostProcessInstanceText = PostProcessInstance ?
+					FText::Format(LOCTEXT("PostProcessInstanceLabelFormat", "Post Process Instance '{0}'"), FText::FromString(PostProcessInstance->GetName()))
+					: PostProcessInstanceLabel;
+
+				AddTrackMenuBuilder.BeginSection("Post Process Instance", PostProcessInstanceLabel);
+				{
+					AddTrackMenuBuilder.AddMenuEntry(
+						DetailedPostProcessInstanceText,
+						LOCTEXT("PostProcessInstanceToolTip", "Add this skeletal mesh component's post process instance."),
+						FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::BindAnimationInstance, SkeletalComponent, PostProcessInstance)
+						)
+					);
+				}
+				AddTrackMenuBuilder.EndSection();
+			}
 		}
 	}
 }
 
-void FLevelSequenceEditorToolkit::BindAnimationInstance(USkeletalMeshComponent* SkeletalComponent)
+void FLevelSequenceEditorToolkit::BindAnimationInstance(USkeletalMeshComponent* SkeletalComponent, UAnimInstance* AnimInstance)
 {
-	UAnimInstance* AnimInstance = SkeletalComponent->GetAnimInstance();
-
 	// If there is no script instance at the moment, just use a dummy instance for the purposes of setting up the binding in the first place.
 	// This temporary object will get GC'd later on and is never actually applied to the anim instance
 	Sequencer->GetHandleToObject(AnimInstance ? AnimInstance : NewObject<UAnimInstance>(SkeletalComponent));

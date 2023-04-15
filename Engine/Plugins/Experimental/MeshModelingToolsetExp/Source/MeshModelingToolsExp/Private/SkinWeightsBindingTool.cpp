@@ -19,6 +19,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkinWeightsBindingTool)
+
 
 // #pragma optimize( "", off )
 
@@ -734,7 +736,7 @@ UMultiSelectionMeshEditingTool* USkinWeightsBindingToolBuilder::CreateNewTool(co
 }
 
 
-USkeleton* USkinWeightsBindingToolProperties::GetSkeleton(bool& bInvalidSkeletonIsError)
+USkeleton* USkinWeightsBindingToolProperties::GetSkeleton(bool& bInvalidSkeletonIsError, const IPropertyHandle* PropertyHandle)
 {
 	bInvalidSkeletonIsError = false;
 	return SkeletalMesh ? SkeletalMesh->GetSkeleton() : nullptr;
@@ -770,9 +772,9 @@ void USkinWeightsBindingTool::Setup()
 	
 	const USkeletalMeshComponent* SkelMeshComponent = Cast<USkeletalMeshComponent>(UE::ToolTarget::GetTargetComponent(Targets[0]));
 	
-	if (SkelMeshComponent && SkelMeshComponent->SkeletalMesh)
+	if (SkelMeshComponent && SkelMeshComponent->GetSkeletalMeshAsset())
 	{
-		USkeletalMesh* SkeletalMesh = SkelMeshComponent->SkeletalMesh;
+		USkeletalMesh* SkeletalMesh = SkelMeshComponent->GetSkeletalMeshAsset();
 
 		// Initialize the bone browser
 		FCurveEvaluationOption CurveEvalOption(
@@ -1074,3 +1076,4 @@ void USkinWeightsBindingTool::UpdateVisualization(bool bInForce)
 #undef LOCTEXT_NAMESPACE
 
 // #pragma optimize( "", on )
+

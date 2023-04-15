@@ -63,7 +63,7 @@ private:
 	/** Called when Fixture Patches were selected in Fixture Patch Shared Data */
 	void OnFixturePatchesSelected();
 
-	/** Called when an Entity was added fromt he edited DMX Library */
+	/** Called when an Entity was added from the edited DMX Library */
 	void OnEntitiesAdded(UDMXLibrary* Library, TArray<UDMXEntity*> Entities);
 
 	/** Called when an Entity was removed from the edited DMX Library */
@@ -74,6 +74,9 @@ private:
 
 	/** Called when the Add button was clicked */
 	FReply OnAddNewFixtureTypeClicked();
+
+	/** Adds a new Fixture Type to the Library */
+	void AddNewFixtureType();
 
 	/** Returns the row that corresponds to the node */
 	TSharedPtr<SDMXFixtureTypeTreeFixtureTypeRow> FindEntityRowByNode(const TSharedRef<FDMXEntityTreeEntityNode>& EntityNode);

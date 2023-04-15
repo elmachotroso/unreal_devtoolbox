@@ -28,7 +28,7 @@ void MainCS(in uint3 ThreadID : SV_DispatchThreadID)
 ////////////////////////////////////////////////////////////////////////////////////
 
 #if NIAGARA_DEBUGDRAW_DRAWLINE_VS
-Buffer<float>	GpuLineBuffer;
+Buffer<uint>	GpuLineBuffer;
 
 void MainVS(
 	in uint InstanceID		: SV_InstanceID,
@@ -57,6 +57,7 @@ float2 OutputInvResolution;
 float2 OriginalViewRectMin;
 float2 OriginalViewSize;
 float2 OriginalBufferInvSize;
+float OccludedColorScale;
 
 void MainPS (
 	in float4 Position	: SV_POSITION,
@@ -70,7 +71,7 @@ void MainPS (
 	const float Depth		= DepthTexture.SampleLevel(DepthSampler, DepthUV, 0);
 	const bool bIsHidden	= Position.z < Depth; // Reverse-Z
 
-	const float ColorScale = bIsHidden ? 0.1f : 1;
+	const float ColorScale = bIsHidden ? OccludedColorScale : 1;
 	OutColor = Color * ColorScale;
 }
 #endif

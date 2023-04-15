@@ -8,7 +8,7 @@
 #include "Layout/WidgetPath.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Editor/UnrealEdEngine.h"
 #include "LevelEditorViewport.h"
@@ -20,8 +20,8 @@
 #include "LightmapResRatioAdjust.h"
 #include "LevelEditorActions.h"
 #include "LevelEditorModesActions.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 #include "MessageLogModule.h"
 #include "EditorViewportCommands.h"
 #include "LevelViewportActions.h"
@@ -34,13 +34,15 @@
 #include "CommonMenuExtensionsModule.h"
 #include "ProjectDescriptor.h"
 #include "PlatformInfo.h"
+#include "Editor.h"
+#include "SLevelViewport.h"
 
 // @todo Editor: remove this circular dependency
 #include "Interfaces/IMainFrameModule.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Misc/EngineBuildSettings.h"
 #include "Subsystems/PanelExtensionSubsystem.h"
-#include "Classes/EditorStyleSettings.h"
+#include "LevelEditorOutlinerSettings.h"
 
 #define LOCTEXT_NAMESPACE "LevelEditor"
 
@@ -63,6 +65,9 @@ const FName LevelEditorTabIds::LevelEditorSelectionDetails4(TEXT("LevelEditorSel
 const FName LevelEditorTabIds::PlacementBrowser(TEXT("PlacementBrowser"));
 const FName LevelEditorTabIds::LevelEditorBuildAndSubmit(TEXT("LevelEditorBuildAndSubmit"));
 const FName LevelEditorTabIds::LevelEditorSceneOutliner(TEXT("LevelEditorSceneOutliner"));
+const FName LevelEditorTabIds::LevelEditorSceneOutliner2(TEXT("LevelEditorSceneOutliner2"));
+const FName LevelEditorTabIds::LevelEditorSceneOutliner3(TEXT("LevelEditorSceneOutliner3"));
+const FName LevelEditorTabIds::LevelEditorSceneOutliner4(TEXT("LevelEditorSceneOutliner4"));
 const FName LevelEditorTabIds::LevelEditorStatsViewer(TEXT("LevelEditorStatsViewer"));
 const FName LevelEditorTabIds::LevelEditorLayerBrowser(TEXT("LevelEditorLayerBrowser"));
 const FName LevelEditorTabIds::LevelEditorDataLayerBrowser(TEXT("LevelEditorDataLayerBrowser"));
@@ -147,7 +152,7 @@ public:
 		TSharedRef<SWidget> DefaultNamePlate = SNew(STextBlock)
 			.Text(RightContentText)
 			.Visibility(EVisibility::HitTestInvisible)
-			.TextStyle(FEditorStyle::Get(), "SProjectBadge.Text")
+			.TextStyle(FAppStyle::Get(), "SProjectBadge.Text")
 			.ColorAndOpacity(BadgeTextColor);
 
 		SBox::Construct(SBox::FArguments()
@@ -156,7 +161,7 @@ public:
 			.Padding(FMargin(0.0f, 0.0f, 2.0f, 0.0f))
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("SProjectBadge.BadgeShape"))
+				.BorderImage(FAppStyle::GetBrush("SProjectBadge.BadgeShape"))
 				.Padding(FAppStyle::Get().GetMargin("SProjectBadge.BadgePadding"))
 				.BorderBackgroundColor(BadgeBackgroundColor)
 				.VAlign(VAlign_Top)
@@ -203,6 +208,8 @@ TSharedRef<SDockTab> FLevelEditorModule::SpawnLevelEditor( const FSpawnTabArgs& 
 		IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>( MainFrame );
 		OwnerWindow = MainFrameModule.GetParentWindow();
 	}
+
+	OutlinerSettings->CreateDefaultFilters();
 
 	TSharedPtr<SLevelEditor> LevelEditorTmp;
 	if (OwnerWindow.IsValid())
@@ -290,6 +297,9 @@ void FLevelEditorModule::StartupModule()
 
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	MessageLogModule.RegisterLogListing("BuildAndSubmitErrors", LOCTEXT("BuildAndSubmitErrors", "Build and Submit Errors"));
+
+	OutlinerSettings = MakeShared<FLevelEditorOutlinerSettings>();
+	OutlinerSettings->SetupBuiltInCategories();
 }
 
 /**
@@ -317,17 +327,20 @@ void FLevelEditorModule::ShutdownModule()
 
 	// If the level editor tab is currently open, close it
 	{
-		TSharedPtr<SDockTab> LevelEditorTab = LevelEditorInstanceTabPtr.Pin();
-		if (LevelEditorTab.IsValid())
+		if (!IsEngineExitRequested())
 		{
-			LevelEditorTab->RemoveTabFromParent();
+			TSharedPtr<SDockTab> LevelEditorTab = LevelEditorInstanceTabPtr.Pin();
+			if (LevelEditorTab.IsValid())
+			{
+				LevelEditorTab->RemoveTabFromParent();
+			}
+			LevelEditorInstanceTabPtr.Reset();
 		}
-		LevelEditorInstanceTabPtr.Reset();
 	}
 
 	// Clear out some globals that may be referencing this module
 	SetLevelEditorTabManager(nullptr);
-	WorkspaceMenu::GetModule().ResetLevelEditorCategory();
+	WorkspaceMenu::GetMenuStructure().GetLevelEditorCategory()->ClearItems();
 
 	if (FSlateApplication::IsInitialized() && FModuleManager::Get().IsModuleLoaded("SlateReflector"))
 	{
@@ -377,13 +390,15 @@ void FLevelEditorModule::SummonWorldBrowserComposition()
 }
 
 // @todo remove when world-centric mode is added
-void FLevelEditorModule::AttachSequencer( TSharedPtr<SWidget> SequencerWidget, TSharedPtr<IAssetEditorInstance> SequencerAssetEditor )
+TSharedPtr<SDockTab> FLevelEditorModule::AttachSequencer(TSharedPtr<SWidget> SequencerWidget, TSharedPtr<IAssetEditorInstance> SequencerAssetEditor)
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
 	if (LevelEditorInstance)
 	{
-		LevelEditorInstance->AttachSequencer(SequencerWidget, SequencerAssetEditor);
+		return LevelEditorInstance->AttachSequencer(SequencerWidget, SequencerAssetEditor);
 	}
+
+	return nullptr;
 }
 
 TSharedPtr<IAssetViewport> FLevelEditorModule::GetFirstActiveViewport()
@@ -743,6 +758,12 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		);
 
 	ActionList.MapAction(
+		Commands.SaveActor,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SaveActor_Clicked),
+		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SaveActor_CanExecute)
+		);
+
+	ActionList.MapAction(
 		Commands.ShowActorHistory,
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::ShowActorHistory_Clicked),
 		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::ShowActorHistory_CanExecute)
@@ -751,7 +772,9 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 	ActionList.MapAction(
 		Commands.GoToCodeForActor, 
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::GoToCodeForActor_Clicked ),
-		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::GoToCodeForActor_CanExecute )
+		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::GoToCodeForActor_CanExecute ),
+		FIsActionChecked(),
+		FIsActionButtonVisible::CreateStatic(&FLevelEditorActionCallbacks::GoToCodeForActor_IsVisible)
 		);
 
 	ActionList.MapAction( 
@@ -1465,10 +1488,16 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::BuildPathsOnly_Execute ) );
 
 	ActionList.MapAction(Commands.BuildHLODs,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildHLODs_Execute));
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildHLODs_Execute),
+		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::IsWorldPartitionStreamingEnabled));
 	
 	ActionList.MapAction(Commands.BuildMinimap,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildMinimap_Execute));
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildMinimap_Execute),
+		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::IsWorldPartitionEnabled));
+
+	ActionList.MapAction(Commands.BuildLandscapeSplineMeshes,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildLandscapeSplineMeshes_Execute),
+		FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::IsWorldPartitionStreamingEnabled));
 
 	ActionList.MapAction(Commands.BuildTextureStreamingOnly,
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildTextureStreamingOnly_Execute));
@@ -1764,21 +1793,37 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FIsActionButtonVisible::CreateStatic(FLevelEditorActionCallbacks::IsPreviewModeButtonVisible));
 
 	const TArray<FPreviewPlatformMenuItem>& MenuItems = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems();
-	check(MenuItems.Num() == Commands.PreviewPlatformOverrides.Num());
+	// We need one extra slot for the Disable Preview option
+	check(MenuItems.Num() + 1 == Commands.PreviewPlatformOverrides.Num());
 
 	for (int32 Index=0; Index < MenuItems.Num(); Index++)
 	{
 		const FPreviewPlatformMenuItem& Item = MenuItems[Index];
-		EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(Item.ShaderFormat);
-		ERHIFeatureLevel::Type FeatureLevel = GetMaxSupportedFeatureLevel(ShaderPlatform);
+		EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(Item.PreviewShaderPlatformName);
+		
+		if (ShaderPlatform < SP_NumPlatforms)
+		{
+			ERHIFeatureLevel::Type FeatureLevel = GetMaxSupportedFeatureLevel(ShaderPlatform);
 
-		const bool IsDefaultActive = ShaderPlatform == GMaxRHIShaderPlatform;
-		const bool AllowPreview = !IsDefaultActive;
+			const bool IsDefaultActive = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(ShaderPlatform) == GMaxRHIShaderPlatform;
+			const bool AllowPreview = !IsDefaultActive;
 
-		FPreviewPlatformInfo PreviewFeatureLevelInfo(FeatureLevel, IsDefaultActive ? NAME_None : Item.PlatformName, IsDefaultActive ? NAME_None : Item.ShaderFormat, IsDefaultActive ? NAME_None : Item.DeviceProfileName, AllowPreview);
 
+			FPreviewPlatformInfo PreviewFeatureLevelInfo(FeatureLevel, (EShaderPlatform)ShaderPlatform, IsDefaultActive ? NAME_None : Item.PlatformName, IsDefaultActive ? NAME_None : Item.ShaderFormat, IsDefaultActive ? NAME_None : Item.DeviceProfileName, AllowPreview, Item.PreviewShaderPlatformName);
+
+			ActionList.MapAction(
+				Commands.PreviewPlatformOverrides[Index],
+				FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, PreviewFeatureLevelInfo),
+				FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::CanExecutePreviewPlatform, PreviewFeatureLevelInfo),
+				FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, PreviewFeatureLevelInfo));
+		}
+	}
+
+	// Add the Disable Preview Menu Item
+	{
+		FPreviewPlatformInfo PreviewFeatureLevelInfo(GMaxRHIFeatureLevel, GMaxRHIShaderPlatform, NAME_None, NAME_None, NAME_None, true, NAME_None);
 		ActionList.MapAction(
-			Commands.PreviewPlatformOverrides[Index],
+			Commands.PreviewPlatformOverrides[MenuItems.Num()],
 			FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, PreviewFeatureLevelInfo),
 			FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::CanExecutePreviewPlatform, PreviewFeatureLevelInfo),
 			FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, PreviewFeatureLevelInfo));
@@ -1790,5 +1835,24 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		);
 }
 
+TSharedPtr<FLevelEditorOutlinerSettings> FLevelEditorModule::GetLevelEditorOutlinerSettings() const
+{
+	return OutlinerSettings;
+}
+
+void FLevelEditorModule::AddCustomFilterToOutliner(TSharedRef<FFilterBase<SceneOutliner::FilterBarType>> InCustomFilter)
+{
+	OutlinerSettings->AddCustomFilter(InCustomFilter);
+}
+
+void FLevelEditorModule::AddCustomClassFilterToOutliner(TSharedRef<FCustomClassFilterData> InCustomClassFilterData)
+{
+	OutlinerSettings->AddCustomClassFilter(InCustomClassFilterData);
+}
+
+TSharedPtr<FFilterCategory> FLevelEditorModule::GetOutlinerFilterCategory(const FName& CategoryName) const
+{
+	return OutlinerSettings->GetFilterCategory(CategoryName);
+}
 
 #undef LOCTEXT_NAMESPACE

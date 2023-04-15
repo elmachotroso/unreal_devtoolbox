@@ -8,6 +8,7 @@
 #include "ConcertServerSession.h"
 #include "ConcertServerSessionRepositories.h"
 #include "ConcertLogGlobal.h"
+#include "ConcertTransportEvents.h"
 #include "IConcertServerEventSink.h"
 
 #include "Algo/AnyOf.h"
@@ -21,18 +22,20 @@
 #include "Backends/JsonStructDeserializerBackend.h"
 #include "HAL/FileManager.h"
 
+#include "Templates/NonNullPointer.h"
+
 #define LOCTEXT_NAMESPACE "ConcertServer"
 
 namespace ConcertServerUtil
 {
 
-const TCHAR* GetServerSystemMutexName()
+static const TCHAR* GetServerSystemMutexName()
 {
 	// A system wide mutex name used by this application instances that will unlikely be found in other applications.
 	return TEXT("Unreal_ConcertServer_67822dAB");
 }
 
-FString GetArchiveName(const FString& SessionName, const FConcertSessionSettings& Settings)
+static FString GetArchiveName(const FString& SessionName, const FConcertSessionSettings& Settings)
 {
 	if (Settings.ArchiveNameOverride.IsEmpty())
 	{
@@ -44,12 +47,12 @@ FString GetArchiveName(const FString& SessionName, const FConcertSessionSettings
 	}
 }
 
-FString GetSessionRepositoryDatabasePathname(const FString& Role)
+static FString GetSessionRepositoryDatabasePathname(const FString& Role)
 {
 	return FPaths::ProjectSavedDir() / Role / TEXT("Repositories.json");
 }
 
-bool SaveSessionRepositoryDatabase(const FString& Role, const FConcertServerSessionRepositoryDatabase& RepositoryDb)
+static bool SaveSessionRepositoryDatabase(const FString& Role, const FConcertServerSessionRepositoryDatabase& RepositoryDb)
 {
 	if (TUniquePtr<FArchive> FileWriter = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*GetSessionRepositoryDatabasePathname(Role))))
 	{
@@ -63,7 +66,7 @@ bool SaveSessionRepositoryDatabase(const FString& Role, const FConcertServerSess
 	return false;
 }
 
-bool LoadSessionRepositoryDatabase(const FString& Role, FConcertServerSessionRepositoryDatabase& RepositoryDb)
+static bool LoadSessionRepositoryDatabase(const FString& Role, FConcertServerSessionRepositoryDatabase& RepositoryDb)
 {
 	if (TUniquePtr<FArchive> FileReader = TUniquePtr<FArchive>(IFileManager::Get().CreateFileReader(*GetSessionRepositoryDatabasePathname(Role))))
 	{
@@ -76,7 +79,6 @@ bool LoadSessionRepositoryDatabase(const FString& Role, FConcertServerSessionRep
 
 	return false;
 }
-
 }
 
 FConcertServer::FConcertServer(const FString& InRole, const FConcertSessionFilter& InAutoArchiveSessionFilter, IConcertServerEventSink* InEventSink, const TSharedPtr<IConcertEndpointProvider>& InEndpointProvider)
@@ -148,6 +150,34 @@ const FConcertServerInfo& FConcertServer::GetServerInfo() const
 	return ServerInfo;
 }
 
+TArray<FConcertEndpointContext> FConcertServer::GetRemoteAdminEndpoints() const
+{
+	if (IsStarted())
+	{
+		return ServerAdminEndpoint->GetRemoteEndpoints();
+	}
+	return {};
+}
+
+FOnConcertRemoteEndpointConnectionChanged& FConcertServer::OnRemoteEndpointConnectionChanged()
+{
+	return OnConcertRemoteEndpointConnectionChangedDelegate;
+}
+
+FMessageAddress FConcertServer::GetRemoteAddress(const FGuid& AdminEndpointId) const
+{
+	if (IsStarted())
+	{
+		return ServerAdminEndpoint->GetRemoteAddress(AdminEndpointId);
+	}
+	return {};
+}
+
+FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& FConcertServer::OnConcertMessageAcknowledgementReceived()
+{
+	return OnConcertMessageAcknowledgementReceivedFromLocalEndpoint;
+}
+
 bool FConcertServer::IsStarted() const
 {
 	return ServerAdminEndpoint.IsValid();
@@ -159,8 +189,23 @@ void FConcertServer::Startup()
 	if (!ServerAdminEndpoint.IsValid() && EndpointProvider.IsValid())
 	{
 		// Create the server administration endpoint
-		ServerAdminEndpoint = EndpointProvider->CreateLocalEndpoint(TEXT("Admin"), Settings->EndpointSettings, &FConcertLogger::CreateLogger);
+		ServerAdminEndpoint = EndpointProvider->CreateLocalEndpoint(TEXT("Admin"), Settings->EndpointSettings, [this](const FConcertEndpointContext& Context)
+		{
+			return FConcertLogger::CreateLogger(Context, [this](const FConcertLog& Log)
+			{
+				ConcertTransportEvents::OnConcertServerLogEvent().Broadcast(*this, Log);
+			});
+		});
 		ServerInfo.AdminEndpointId = ServerAdminEndpoint->GetEndpointContext().EndpointId;
+		ServerAdminEndpoint->OnConcertMessageAcknowledgementReceived().AddLambda(
+		[this](const FConcertEndpointContext& LocalEndpoint, const FConcertEndpointContext& RemoteEndpoint, const TSharedRef<IConcertMessage>& AckedMessage, const FConcertMessageContext& MessageContext)
+			{
+				OnConcertMessageAcknowledgementReceivedFromLocalEndpoint.Broadcast(LocalEndpoint, RemoteEndpoint, AckedMessage, MessageContext);
+			});
+		ServerAdminEndpoint->OnRemoteEndpointConnectionChanged().AddLambda([this](const FConcertEndpointContext& Context, EConcertRemoteEndpointConnection Connection)
+		{
+			OnConcertRemoteEndpointConnectionChangedDelegate.Broadcast(Context, Connection);
+		});
 
 		// Make it discoverable
 		ServerAdminEndpoint->SubscribeEventHandler<FConcertAdmin_DiscoverServersEvent>(this, &FConcertServer::HandleDiscoverServersEvent);
@@ -172,6 +217,7 @@ void FConcertServer::Startup()
 		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_ArchiveSessionRequest, FConcertAdmin_ArchiveSessionResponse>(this, &FConcertServer::HandleArchiveSessionRequest);
 		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_RenameSessionRequest, FConcertAdmin_RenameSessionResponse>(this, &FConcertServer::HandleRenameSessionRequest);
 		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_DeleteSessionRequest, FConcertAdmin_DeleteSessionResponse>(this, &FConcertServer::HandleDeleteSessionRequest);
+		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_BatchDeleteSessionRequest, FConcertAdmin_BatchDeleteSessionResponse>(this, &FConcertServer::HandleBatchDeleteSessionRequest);
 
 		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_GetAllSessionsRequest, FConcertAdmin_GetAllSessionsResponse>(this, &FConcertServer::HandleGetAllSessionsRequest);
 		ServerAdminEndpoint->RegisterRequestHandler<FConcertAdmin_GetLiveSessionsRequest, FConcertAdmin_GetSessionsResponse>(this, &FConcertServer::HandleGetLiveSessionsRequest);
@@ -464,8 +510,10 @@ void FConcertServer::RecoverSessions(const FConcertServerSessionRepository& InRe
 {
 	// Find any existing live sessions to automatically restore when recovering from an improper server shutdown
 	TArray<FConcertSessionInfo> LiveSessionInfos;
-	EventSink->GetSessionsFromPath(*this, InRepository.WorkingDir, LiveSessionInfos);
-
+	TArray<FDateTime> LiveSessionCreationTimes;
+	EventSink->GetSessionsFromPath(*this, InRepository.WorkingDir, LiveSessionInfos, &LiveSessionCreationTimes);
+	UpdateLastModified(LiveSessionInfos, LiveSessionCreationTimes);
+	
 	// Restore any existing live sessions
 	for (FConcertSessionInfo& LiveSessionInfo : LiveSessionInfos)
 	{
@@ -490,7 +538,8 @@ void FConcertServer::RecoverSessions(const FConcertServerSessionRepository& InRe
 		// In theory, archives are immutable, but the server will end up touching the files and change the 'modification time'. Ensure to look at 'creation time'.
 		EventSink->GetSessionsFromPath(*this, InRepository.SavedDir, ArchivedSessionInfos, &ArchivedSessionCreationTimes);
 		check(ArchivedSessionInfos.Num() == ArchivedSessionCreationTimes.Num());
-
+		UpdateLastModified(ArchivedSessionInfos, ArchivedSessionCreationTimes);
+		
 		// Trim the oldest archived sessions.
 		if (bCleanupExpiredSessions && Settings->NumSessionsToKeep > 0 && ArchivedSessionInfos.Num() > Settings->NumSessionsToKeep)
 		{
@@ -542,6 +591,14 @@ void FConcertServer::RecoverSessions(const FConcertServerSessionRepository& InRe
 	}
 }
 
+void FConcertServer::UpdateLastModified(TArray<FConcertSessionInfo>& SessionInfos, const TArray<FDateTime>& SessionCreationTimes)
+{
+	for (int32 i = 0; i < SessionInfos.Num(); ++i)
+	{
+		SessionInfos[i].SetLastModified(SessionCreationTimes[i]);
+	}
+}
+
 void FConcertServer::ArchiveOfflineSessions(const FConcertServerSessionRepository& InRepository)
 {
 	// Find existing live session files to automatically archive them when recovering from an improper server shutdown.
@@ -555,6 +612,7 @@ void FConcertServer::ArchiveOfflineSessions(const FConcertServerSessionRepositor
 		FConcertSessionInfo ArchivedSessionInfo = LiveSessionInfo;
 		ArchivedSessionInfo.SessionId = FGuid::NewGuid();
 		ArchivedSessionInfo.SessionName = ConcertServerUtil::GetArchiveName(LiveSessionInfo.SessionName, LiveSessionInfo.Settings);
+		ArchivedSessionInfo.SetLastModifiedToNow();
 
 		if (EventSink->ArchiveSession(*this, InRepository.GetSessionWorkingDir(LiveSessionInfo.SessionId), InRepository.GetSessionSavedDir(ArchivedSessionInfo.SessionId), ArchivedSessionInfo, AutoArchiveSessionFilter))
 		{
@@ -565,7 +623,7 @@ void FConcertServer::ArchiveOfflineSessions(const FConcertServerSessionRepositor
 	}
 }
 
-FGuid FConcertServer::ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason)
+FGuid FConcertServer::ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason, FGuid ArchiveSessionIdOverride)
 {
 	if (GetArchivedSessionIdByName(ArchiveNameOverride).IsValid())
 	{
@@ -573,7 +631,7 @@ FGuid FConcertServer::ArchiveSession(const FGuid& SessionId, const FString& Arch
 		return FGuid();
 	}
 
-	const FGuid ArchivedSessionId = ArchiveLiveSession(SessionId, ArchiveNameOverride, SessionFilter);
+	const FGuid ArchivedSessionId = ArchiveLiveSession(SessionId, ArchiveNameOverride, SessionFilter, MoveTemp(ArchiveSessionIdOverride));
 	if (!ArchivedSessionId.IsValid())
 	{
 		OutFailureReason = LOCTEXT("Error_ArchiveSession_FailedToCopy", "Could not copy session data to the archive");
@@ -621,17 +679,7 @@ bool FConcertServer::DestroySession(const FGuid& SessionId, FText& OutFailureRea
 	return Response.ResponseCode == EConcertResponseCode::Success;
 }
 
-TArray<FConcertSessionClientInfo> FConcertServer::GetSessionClients(const FGuid& SessionId) const
-{
-	TSharedPtr<IConcertServerSession> ServerSession = GetSession(SessionId);
-	if (ServerSession)
-	{
-		return ServerSession->GetSessionClients();
-	}
-	return TArray<FConcertSessionClientInfo>();
-}
-
-TArray<FConcertSessionInfo> FConcertServer::GetSessionsInfo() const
+TArray<FConcertSessionInfo> FConcertServer::GetLiveSessionInfos() const
 {
 	TArray<FConcertSessionInfo> SessionsInfo;
 	SessionsInfo.Reserve(LiveSessions.Num());
@@ -642,7 +690,18 @@ TArray<FConcertSessionInfo> FConcertServer::GetSessionsInfo() const
 	return SessionsInfo;
 }
 
-TArray<TSharedPtr<IConcertServerSession>> FConcertServer::GetSessions() const
+TArray<FConcertSessionInfo> FConcertServer::GetArchivedSessionInfos() const
+{
+	TArray<FConcertSessionInfo> SessionsInfo;
+	SessionsInfo.Reserve(ArchivedSessions.Num());
+	for (auto& SessionPair : ArchivedSessions)
+	{
+		SessionsInfo.Add(SessionPair.Value);
+	}
+	return SessionsInfo;
+}
+
+TArray<TSharedPtr<IConcertServerSession>> FConcertServer::GetLiveSessions() const
 {
 	TArray<TSharedPtr<IConcertServerSession>> SessionsArray;
 	SessionsArray.Reserve(LiveSessions.Num());
@@ -653,9 +712,15 @@ TArray<TSharedPtr<IConcertServerSession>> FConcertServer::GetSessions() const
 	return SessionsArray;
 }
 
-TSharedPtr<IConcertServerSession> FConcertServer::GetSession(const FGuid& SessionId) const
+TSharedPtr<IConcertServerSession> FConcertServer::GetLiveSession(const FGuid& SessionId) const
 {
 	return LiveSessions.FindRef(SessionId);
+}
+
+TOptional<FConcertSessionInfo> FConcertServer::GetArchivedSessionInfo(const FGuid& SessionId) const
+{
+	const FConcertSessionInfo* SessionInfo = ArchivedSessions.Find(SessionId);
+	return SessionInfo ? *SessionInfo : TOptional<FConcertSessionInfo>{};
 }
 
 const FString& FConcertServer::GetSessionRepositoriesRootDir() const
@@ -1049,7 +1114,7 @@ TFuture<FConcertAdmin_SessionInfoResponse> FConcertServer::HandleFindSessionRequ
 	FConcertAdmin_SessionInfoResponse ResponseData;
 
 	// Find the session requested
-	TSharedPtr<IConcertServerSession> ServerSession = GetSession(Message->SessionId);
+	TSharedPtr<IConcertServerSession> ServerSession = GetLiveSession(Message->SessionId);
 	const TCHAR* ServerSessionNamePtr = ServerSession ? *ServerSession->GetName() : TEXT("<unknown>");
 	if (CanJoinSession(ServerSession, Message->SessionSettings, Message->VersionInfo, &ResponseData.Reason))
 	{
@@ -1110,7 +1175,7 @@ TFuture<FConcertAdmin_ArchiveSessionResponse> FConcertServer::HandleArchiveSessi
 	FConcertAdmin_ArchiveSessionResponse ResponseData;
 
 	// Find the session requested.
-	TSharedPtr<IConcertServerSession> ServerSession = GetSession(Message->SessionId);
+	TSharedPtr<IConcertServerSession> ServerSession = GetLiveSession(Message->SessionId);
 	ResponseData.SessionId = Message->SessionId;
 	ResponseData.SessionName = ServerSession ? ServerSession->GetName() : TEXT("<unknown>");
 	if (ServerSession)
@@ -1153,7 +1218,7 @@ FConcertAdmin_RenameSessionResponse FConcertServer::RenameSessionInternal(const 
 	ResponseData.SessionId = Request.SessionId;
 	ResponseData.ResponseCode = EConcertResponseCode::Failed;
 
-	if (TSharedPtr<IConcertServerSession> ServerSession = GetSession(Request.SessionId)) // Live session?
+	if (TSharedPtr<IConcertServerSession> ServerSession = GetLiveSession(Request.SessionId)) // Live session?
 	{
 		ResponseData.OldName = ServerSession->GetName();
 
@@ -1208,6 +1273,92 @@ FConcertAdmin_RenameSessionResponse FConcertServer::RenameSessionInternal(const 
 	return ResponseData;
 }
 
+TFuture<FConcertAdmin_BatchDeleteSessionResponse> FConcertServer::HandleBatchDeleteSessionRequest(const FConcertMessageContext& Context)
+{
+	FConcertAdmin_BatchDeleteSessionResponse ResponseData;
+	ResponseData.ResponseCode = EConcertResponseCode::Failed;
+	
+	const FConcertAdmin_BatchDeleteSessionRequest& Request = *Context.GetMessage<FConcertAdmin_BatchDeleteSessionRequest>();
+	TMap<FGuid, FString> SessionNames;
+	if (ValidateBatchDeletionRequest(Request, ResponseData, SessionNames))
+	{
+		ResponseData.ResponseCode = EConcertResponseCode::Success;
+		FConcertAdmin_DeleteSessionRequest DeleteSingleSessionRequest;
+		for (const FGuid& SessionToDelete : Request.SessionIds)
+		{
+			const bool bSkip = ResponseData.NotOwnedByClient.ContainsByPredicate([&SessionToDelete](const FDeletedSessionInfo& Info ){ return Info.SessionId == SessionToDelete; });
+			if (bSkip)
+			{
+				continue;
+			}
+			
+			DeleteSingleSessionRequest.SessionId = SessionToDelete;
+			const FConcertAdmin_DeleteSessionResponse DeleteResponse = DeleteSessionInternal(DeleteSingleSessionRequest, false);
+			if (DeleteResponse.ResponseCode == EConcertResponseCode::Success)
+			{
+				ResponseData.DeletedItems.Add({ SessionToDelete, SessionNames[SessionToDelete] });
+			}
+			else
+			{
+				// We may already have deleted some files ... maybe we should restore them in the future...
+				ResponseData.ResponseCode = EConcertResponseCode::Failed;
+				break;
+			}
+		}
+	}
+
+	return FConcertAdmin_BatchDeleteSessionResponse::AsFuture(MoveTemp(ResponseData));
+}
+
+bool FConcertServer::ValidateBatchDeletionRequest(const FConcertAdmin_BatchDeleteSessionRequest& Request, FConcertAdmin_BatchDeleteSessionResponse& OutResponse, TMap<FGuid, FString>& PreparedSessionInfo) const
+{
+	TArray<FDeletedSessionInfo> NotOwnedByClient;
+	for (const FGuid& SessionToDelete : Request.SessionIds)
+	{
+		if (TSharedPtr<IConcertServerSession> ServerSession = GetLiveSession(SessionToDelete))
+		{
+			const bool bHasPermission = IsRequestFromSessionOwner(ServerSession, Request.UserName, Request.DeviceName);
+			if (!bHasPermission && (Request.Flags & EBatchSessionDeletionFlags::SkipForbiddenSessions) != EBatchSessionDeletionFlags::Strict)
+			{
+				NotOwnedByClient.Add({ SessionToDelete, ServerSession->GetName() });
+			}
+			else if (!bHasPermission)
+			{
+				OutResponse.Reason = LOCTEXT("Error_BatchDelete_InvalidPerms_NotOwner", "Not the session owner.");
+				UE_LOG(LogConcert, Display, TEXT("User %s failed to delete live session '%s' (Id: %s, Owner: %s, Reason: %s)"), *Request.UserName, *ServerSession->GetName(), *SessionToDelete.ToString(), *ServerSession->GetSessionInfo().OwnerUserName, *OutResponse.Reason.ToString());
+				return false;
+			}
+
+			PreparedSessionInfo.Add(SessionToDelete, ServerSession->GetName());
+		}
+		else if (const FConcertSessionInfo* ArchivedSessionInfo = ArchivedSessions.Find(SessionToDelete))
+		{
+			const bool bHasPermission = IsRequestFromSessionOwner(*ArchivedSessionInfo, Request.UserName, Request.DeviceName);
+			if (!bHasPermission && (Request.Flags & EBatchSessionDeletionFlags::SkipForbiddenSessions) != EBatchSessionDeletionFlags::Strict)
+			{
+				NotOwnedByClient.Add({ SessionToDelete, ArchivedSessionInfo->SessionName });
+			}
+			else if (!bHasPermission)
+			{
+				OutResponse.Reason = LOCTEXT("Error_BatchDelete_InvalidPerms_NotOwner", "Not the session owner.");
+				UE_LOG(LogConcert, Display, TEXT("User %s failed to delete live session '%s' (Id: %s, Owner: %s, Reason: %s)"), *Request.UserName, *ArchivedSessionInfo->SessionName, *SessionToDelete.ToString(), *ArchivedSessionInfo->OwnerUserName, *OutResponse.Reason.ToString());
+				return false;
+			}
+			
+			PreparedSessionInfo.Add(SessionToDelete, ArchivedSessionInfo->SessionName);
+		}
+		else
+		{
+			OutResponse.Reason = FText::Format(LOCTEXT("Error_BatchDelete_SessionDoesNotExist", "Session ID {0} does not exist."), FText::FromString(SessionToDelete.ToString()));
+			UE_LOG(LogConcert, Display, TEXT("User %s failed to delete session (Id: %s, Reason: %s)"), *Request.UserName, *SessionToDelete.ToString(), *OutResponse.Reason.ToString());
+			return false;
+		}
+	}
+
+	OutResponse.NotOwnedByClient = MoveTemp(NotOwnedByClient);
+	return true;
+}
+
 TFuture<FConcertAdmin_DeleteSessionResponse> FConcertServer::HandleDeleteSessionRequest(const FConcertMessageContext & Context)
 {
 	return FConcertAdmin_DeleteSessionResponse::AsFuture(DeleteSessionInternal(*Context.GetMessage<FConcertAdmin_DeleteSessionRequest>(), /*bCheckPermission*/true));
@@ -1219,7 +1370,7 @@ FConcertAdmin_DeleteSessionResponse FConcertServer::DeleteSessionInternal(const 
 	ResponseData.SessionId = Request.SessionId;
 	ResponseData.ResponseCode = EConcertResponseCode::Failed;
 
-	if (TSharedPtr<IConcertServerSession> ServerSession = GetSession(Request.SessionId)) // Live session?
+	if (TSharedPtr<IConcertServerSession> ServerSession = GetLiveSession(Request.SessionId)) // Live session?
 	{
 		ResponseData.SessionName = ServerSession->GetName();
 
@@ -1273,7 +1424,7 @@ TFuture<FConcertAdmin_GetAllSessionsResponse> FConcertServer::HandleGetAllSessio
 	const FConcertAdmin_GetAllSessionsRequest* Message = Context.GetMessage<FConcertAdmin_GetAllSessionsRequest>();
 
 	FConcertAdmin_GetAllSessionsResponse ResponseData;
-	ResponseData.LiveSessions = GetSessionsInfo();
+	ResponseData.LiveSessions = GetLiveSessionInfos();
 	for (const auto& ArchivedSessionPair : ArchivedSessions)
 	{
 		ResponseData.ArchivedSessions.Add(ArchivedSessionPair.Value);
@@ -1287,7 +1438,7 @@ TFuture<FConcertAdmin_GetSessionsResponse> FConcertServer::HandleGetLiveSessions
 	const FConcertAdmin_GetLiveSessionsRequest* Message = Context.GetMessage<FConcertAdmin_GetLiveSessionsRequest>();
 
 	FConcertAdmin_GetSessionsResponse ResponseData;
-	ResponseData.Sessions = GetSessionsInfo();
+	ResponseData.Sessions = GetLiveSessionInfos();
 	
 	return FConcertAdmin_GetSessionsResponse::AsFuture(MoveTemp(ResponseData));
 }
@@ -1310,7 +1461,7 @@ TFuture<FConcertAdmin_GetSessionClientsResponse> FConcertServer::HandleGetSessio
 	const FConcertAdmin_GetSessionClientsRequest* Message = Context.GetMessage<FConcertAdmin_GetSessionClientsRequest>();
 
 	FConcertAdmin_GetSessionClientsResponse ResponseData;
-	ResponseData.SessionClients = GetSessionClients(Message->SessionId);
+	ResponseData.SessionClients = ConcertUtil::GetSessionClients(*this, Message->SessionId);
 	
 	return FConcertAdmin_GetSessionClientsResponse::AsFuture(MoveTemp(ResponseData));
 }
@@ -1320,7 +1471,7 @@ TFuture<FConcertAdmin_GetSessionActivitiesResponse> FConcertServer::HandleGetSes
 	FConcertAdmin_GetSessionActivitiesResponse ResponseData;
 
 	const FConcertAdmin_GetSessionActivitiesRequest* Message = Context.GetMessage<FConcertAdmin_GetSessionActivitiesRequest>();
-	if (EventSink->GetSessionActivities(*this, Message->SessionId, Message->FromActivityId, Message->ActivityCount, ResponseData.Activities, ResponseData.EndpointClientInfoMap, Message->bIncludeDetails))
+	if (EventSink->GetUnmutedSessionActivities(*this, Message->SessionId, Message->FromActivityId, Message->ActivityCount, ResponseData.Activities, ResponseData.EndpointClientInfoMap, Message->bIncludeDetails))
 	{
 		ResponseData.ResponseCode = EConcertResponseCode::Success;
 	}
@@ -1363,14 +1514,19 @@ bool FConcertServer::CanJoinSession(const TSharedPtr<IConcertServerSession>& Ser
 	return true;
 }
 
-bool FConcertServer::IsRequestFromSessionOwner(const TSharedPtr<IConcertServerSession>& SessionToDelete, const FString& FromUserName, const FString& FromDeviceName)
+bool FConcertServer::IsRequestFromSessionOwner(const TSharedPtr<IConcertServerSession>& SessionToDelete, const FString& FromUserName, const FString& FromDeviceName) const
 {
 	if (SessionToDelete)
 	{
 		const FConcertSessionInfo& SessionInfo = SessionToDelete->GetSessionInfo();
-		return SessionInfo.OwnerUserName == FromUserName && SessionInfo.OwnerDeviceName == FromDeviceName;
+		return IsRequestFromSessionOwner(SessionInfo, FromUserName, FromDeviceName);
 	}
 	return false;
+}
+
+bool FConcertServer::IsRequestFromSessionOwner(const FConcertSessionInfo& SessionInfo, const FString& FromUserName, const FString& FromDeviceName) const
+{
+	return SessionInfo.OwnerUserName == FromUserName && SessionInfo.OwnerDeviceName == FromDeviceName;
 }
 
 TSharedPtr<IConcertServerSession> FConcertServer::CreateLiveSession(const FConcertSessionInfo& SessionInfo, const FConcertServerSessionRepository& InRepository)
@@ -1385,15 +1541,31 @@ TSharedPtr<IConcertServerSession> FConcertServer::CreateLiveSession(const FConce
 		UE_CLOG(LiveSessionInfo.VersionInfos.Num() > 0, LogConcert, Warning, TEXT("Clearing version information when creating session '%s' due to -CONCERTIGNORE. This session will be unversioned!"), *LiveSessionInfo.SessionName);
 		LiveSessionInfo.VersionInfos.Reset();
 	}
+	
+	TSharedPtr<IConcertLocalEndpoint> SessionEndpoint = EndpointProvider->CreateLocalEndpoint(LiveSessionInfo.SessionName, Settings->EndpointSettings, [this](const FConcertEndpointContext& Context)
+		{
+			return FConcertLogger::CreateLogger(Context, [this](const FConcertLog& Log)
+			{
+				ConcertTransportEvents::OnConcertServerLogEvent().Broadcast(*this, Log);
+			});
+		});
+	SessionEndpoint->OnConcertMessageAcknowledgementReceived().AddLambda(
+		[this](const FConcertEndpointContext& LocalEndpoint, const FConcertEndpointContext& RemoteEndpoint, const TSharedRef<IConcertMessage>& AckedMessage, const FConcertMessageContext& MessageContext)
+		{
+			OnConcertMessageAcknowledgementReceivedFromLocalEndpoint.Broadcast(LocalEndpoint, RemoteEndpoint, AckedMessage, MessageContext);
+		});
 
 	TSharedPtr<FConcertServerSession> LiveSession = MakeShared<FConcertServerSession>(
 		LiveSessionInfo,
 		Settings->ServerSettings,
-		EndpointProvider->CreateLocalEndpoint(LiveSessionInfo.SessionName, Settings->EndpointSettings, &FConcertLogger::CreateLogger),
+		SessionEndpoint,
 		InRepository.GetSessionWorkingDir(LiveSessionInfo.SessionId)
 		);
 
-	if (EventSink->OnLiveSessionCreated(*this, LiveSession.ToSharedRef())) // EventSync could complete the session initialization?
+	FInternalLiveSessionCreationParams CreationParams;
+	CreationParams.OnModifiedCallback.BindSP(LiveSession.Get(), &FConcertServerSession::SetLastModifiedToNow);
+	
+	if (EventSink->OnLiveSessionCreated(*this, LiveSession.ToSharedRef(), CreationParams)) // EventSync could complete the session initialization?
 	{
 		LiveSessions.Add(LiveSessionInfo.SessionId, LiveSession);
 		LiveSession->Startup();
@@ -1423,7 +1595,7 @@ bool FConcertServer::DestroyLiveSession(const FGuid& LiveSessionId, const bool b
 	return false;
 }
 
-FGuid FConcertServer::ArchiveLiveSession(const FGuid& LiveSessionId, const FString& ArchivedSessionNameOverride, const FConcertSessionFilter& SessionFilter)
+FGuid FConcertServer::ArchiveLiveSession(const FGuid& LiveSessionId, const FString& ArchivedSessionNameOverride, const FConcertSessionFilter& SessionFilter, FGuid ArchiveSessionIdOverride)
 {
 	TSharedPtr<IConcertServerSession> LiveSession = LiveSessions.FindRef(LiveSessionId);
 	if (LiveSession)
@@ -1442,7 +1614,7 @@ FGuid FConcertServer::ArchiveLiveSession(const FGuid& LiveSessionId, const FStri
 		const FConcertServerSessionRepository& SessionRepository = GetSessionRepository(LiveSession->GetSessionInfo().SessionId);
 
 		FConcertSessionInfo ArchivedSessionInfo = LiveSession->GetSessionInfo();
-		ArchivedSessionInfo.SessionId = FGuid::NewGuid();
+		ArchivedSessionInfo.SessionId = ensure(ArchiveSessionIdOverride.IsValid()) ? MoveTemp(ArchiveSessionIdOverride) : FGuid::NewGuid();
 		ArchivedSessionInfo.SessionName = MoveTemp(ArchivedSessionName);
 		if (EventSink->ArchiveSession(*this, LiveSession.ToSharedRef(), SessionRepository.GetSessionSavedDir(ArchivedSessionInfo.SessionId), ArchivedSessionInfo, SessionFilter))
 		{
@@ -1504,8 +1676,11 @@ TSharedPtr<IConcertServerSession> FConcertServer::RestoreArchivedSession(const F
 		}
 
 		FConcertSessionInfo LiveSessionInfo = NewSessionInfo;
+		// Detect restoring the same archived session twice by hashing archived ID
+		LiveSessionInfo.SessionId = FGuid::NewGuid();
 		LiveSessionInfo.SessionName = MoveTemp(LiveSessionName);
 		LiveSessionInfo.VersionInfos = ArchivedSessionInfo->VersionInfos;
+		LiveSessionInfo.SetLastModifiedToNow();
 
 		// Ensure the new version is compatible with the old version, and append this new version if it is different to the last used version
 		// Note: Older archived sessions didn't used to have any version info stored for them, and the version info may be missing completely when using -CONCERTIGNORE

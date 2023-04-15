@@ -1,8 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
 
 /**
  * Usage stats for the derived data cache nodes. At the end of the app or commandlet, the DDC
@@ -103,6 +110,23 @@ public:
 #endif
 };
 
+/** Performance stats for this backend */
+struct FDerivedDataCacheSpeedStats
+{
+	double		ReadSpeedMBs = 0.0;
+	double		WriteSpeedMBs = 0.0;
+	double		LatencyMS = 0.0;
+};
+
+enum class EDerivedDataCacheStatus
+{
+	None = 0,
+	Information,
+	Warning,
+	Error,
+	Deactivation
+};
+
 /**
  *  Hierarchical usage stats for the DDC nodes.
  */
@@ -111,9 +135,11 @@ class FDerivedDataCacheStatsNode : public TSharedFromThis<FDerivedDataCacheStats
 public:
 	FDerivedDataCacheStatsNode() = default;
 
-	FDerivedDataCacheStatsNode(const FString& InCacheType, const FString& InCacheName, bool bInIsLocal)
+	FDerivedDataCacheStatsNode(const FString& InCacheType, const FString& InCacheName, bool bInIsLocal, EDerivedDataCacheStatus InCacheStatus = EDerivedDataCacheStatus::None, const TCHAR* InCacheStatusText = nullptr)
 		: CacheType(InCacheType)
 		, CacheName(InCacheName)
+		, CacheStatusText(InCacheStatusText)
+		, CacheStatus(InCacheStatus)
 		, bIsLocal(bInIsLocal)
 	{
 	}
@@ -122,13 +148,17 @@ public:
 
 	const FString& GetCacheName() const { return CacheName; }
 
+	const EDerivedDataCacheStatus GetCacheStatus() const { return CacheStatus; }
+
+	const FString& GetCacheStatusText() const { return CacheStatusText; }
+
 	bool IsLocal() const { return bIsLocal; }
 
 	TMap<FString, FDerivedDataCacheUsageStats> ToLegacyUsageMap() const
 	{
-		TMap<FString, FDerivedDataCacheUsageStats> UsageStats;
-		GatherLegacyUsageStats(UsageStats, TEXT(" 0"));
-		return UsageStats;
+		TMap<FString, FDerivedDataCacheUsageStats> Stats;
+		GatherLegacyUsageStats(Stats, TEXT(" 0"));
+		return Stats;
 	}
 
 	void ForEachDescendant(TFunctionRef<void(TSharedRef<const FDerivedDataCacheStatsNode>)> Predicate) const
@@ -144,16 +174,16 @@ public:
 public:
 	void GatherLegacyUsageStats(TMap<FString, FDerivedDataCacheUsageStats>& UsageStatsMap, FString&& GraphPath) const
 	{
-		if (Stats.Num() == 1)
+		if (UsageStats.Num() == 1)
 		{
-			for (const auto& KVP : Stats)
+			for (const auto& KVP : UsageStats)
 			{
 				COOK_STAT(UsageStatsMap.Add(FString::Printf(TEXT("%s: %s"), *GraphPath, *GetCacheName()), KVP.Value));
 			}
 		}
 		else
 		{ //-V523
-			for (const auto& KVP : Stats)
+			for (const auto& KVP : UsageStats)
 			{
 				COOK_STAT(UsageStatsMap.Add(FString::Printf(TEXT("%s: %s.%s"), *GraphPath, *GetCacheName(), *KVP.Key), KVP.Value));
 			}
@@ -166,13 +196,16 @@ public:
 		}
 	}
 
-	TMap<FString, FDerivedDataCacheUsageStats> Stats;
+	TMap<FString, FDerivedDataCacheUsageStats> UsageStats;
+	FDerivedDataCacheSpeedStats SpeedStats;
 
 	TArray<TSharedRef<FDerivedDataCacheStatsNode>> Children;
 
 protected:
 	FString CacheType;
 	FString CacheName;
+	FString CacheStatusText;
+	EDerivedDataCacheStatus CacheStatus;
 	bool bIsLocal;
 };
 

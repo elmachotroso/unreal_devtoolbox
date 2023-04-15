@@ -4,6 +4,7 @@
 
 
 #include "CADFileData.h"
+#include "CADOptions.h"
 #include "CADKernelTools.h"
 #include "TechSoftUtils.h"
 #include "TechSoftBridge.h"
@@ -27,6 +28,8 @@ namespace CADLibrary
 FTechSoftFileParserCADKernelTessellator::FTechSoftFileParserCADKernelTessellator(FCADFileData& InCADData, const FString& EnginePluginsPath)
 	: FTechSoftFileParser(InCADData, EnginePluginsPath)
 	, LastHostIdUsed(1 << 30)
+	, GeometricTolerance(FImportParameters::GStitchingTolerance * 10) // cm to mm
+	, ForceFactor(FImportParameters::GStitchingForceFactor)
 {
 }
 
@@ -34,6 +37,7 @@ FTechSoftFileParserCADKernelTessellator::FTechSoftFileParserCADKernelTessellator
 
 void FTechSoftFileParserCADKernelTessellator::GenerateBodyMeshes()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::GenerateBodyMeshes);
 	if (bForceSew || CADFileData.GetImportParameters().GetStitchingTechnique() == EStitchingTechnique::StitchingSew)
 	{
 		SewAndGenerateBodyMeshes();
@@ -47,12 +51,14 @@ void FTechSoftFileParserCADKernelTessellator::GenerateBodyMeshes()
 
 void FTechSoftFileParserCADKernelTessellator::SewAndGenerateBodyMeshes()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::SewAndGenerateBodyMeshes);
+
 	int32 RepresentationCount = RepresentationItemsCache.Num();
 	TMap<FCadId, TArray<A3DRiRepresentationItem*>> OccurenceIdToRepresentations;
-	for (TPair<A3DRiRepresentationItem*, int32>& Entry : RepresentationItemsCache)
+	for (TPair<A3DRiRepresentationItem*, FCadId>& Entry : RepresentationItemsCache)
 	{
 		A3DRiRepresentationItem* RepresentationItemPtr = Entry.Key;
-		FArchiveBody& Body = CADFileData.GetBodyAt(Entry.Value);
+		FArchiveBody& Body = SceneGraph.GetBody(Entry.Value);
 
 		TArray<A3DRiRepresentationItem*>& Representations = OccurenceIdToRepresentations.FindOrAdd(Body.ParentId);
 		if (Representations.Max() == 0)
@@ -67,35 +73,38 @@ void FTechSoftFileParserCADKernelTessellator::SewAndGenerateBodyMeshes()
 	{
 		SewAndMesh(Representations.Value);
 	}
-
 }
 
 void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentationItem*>& Representations)
 {
-	double GeometricTolerance = CADFileData.GetImportParameters().ConvertMMToImportUnit(0.01); // mm
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::SewAndMesh);
 
-	CADKernel::FSession CADKernelSession(GeometricTolerance);
+	using namespace UE::CADKernel;
+
+	const bool bTryToImproveSew = FImportParameters::bGStitchingForceSew;
+	const bool bRemoveThinSurface = FImportParameters::bGStitchingRemoveThinFaces;
+
+	FSession CADKernelSession(GeometricTolerance);
 	CADKernelSession.SetFirstNewHostId(LastHostIdUsed);
-	CADKernel::FModel& CADKernelModel = CADKernelSession.GetModel();
+	FModel& CADKernelModel = CADKernelSession.GetModel();
 
-	CADKernel::FCADFileReport Report;
-	FTechSoftBridge TechSoftBridge(*this, CADKernelSession, Report);
+	FTechSoftBridge TechSoftBridge(*this, CADKernelSession);
 
 	for (A3DRiRepresentationItem* Representation : Representations)
 	{
-		int32* BodyIndex = RepresentationItemsCache.Find(Representation);
+		FCadId* BodyIndex = RepresentationItemsCache.Find(Representation);
 		if (BodyIndex == nullptr)
 		{
 			continue;
 		}
-		FArchiveBody& Body = CADFileData.GetBodyAt(*BodyIndex);
+		FArchiveBody& Body = SceneGraph.GetBody(*BodyIndex);
 
-		CADKernel::FBody* CADKernelBody = TechSoftBridge.AddBody(Representation, Body.MetaData, Body.BodyUnit);
+		FBody* CADKernelBody = TechSoftBridge.AddBody(Representation, Body.MetaData, Body.Unit);
 	}
 
 	// Sew if needed
-	CADKernel::FTopomaker Topomaker(CADKernelSession, GeometricTolerance);
-	Topomaker.Sew();
+	FTopomaker Topomaker(CADKernelSession, GeometricTolerance, ForceFactor);
+	Topomaker.Sew(bTryToImproveSew, bRemoveThinSurface);
 	Topomaker.SplitIntoConnectedShells();
 	Topomaker.OrientShells();
 
@@ -105,15 +114,14 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 	// The new bodies will be linked to FArchiveBody of deleted bodies but the metadata of these FArchiveBody havbe to be cleaned
 
 	int32 BodyCount = CADKernelModel.GetBodies().Num();
-	int32 DeletedBodyCount = Representations.Num() - BodyCount;
 
-	TArray<CADKernel::FBody*> NewBodies;
-	TArray<CADKernel::FBody*> ExistingBodies;
+	TArray<FBody*> NewBodies;
+	TArray<FBody*> ExistingBodies;
 	NewBodies.Reserve(BodyCount);
 	ExistingBodies.Reserve(BodyCount);
 
 	// find new and existing bodies
-	for (const TSharedPtr<CADKernel::FBody>& CADKernelBody : CADKernelModel.GetBodies())
+	for (const TSharedPtr<FBody>& CADKernelBody : CADKernelModel.GetBodies())
 	{
 		if (!CADKernelBody.IsValid())
 		{
@@ -132,105 +140,132 @@ void FTechSoftFileParserCADKernelTessellator::SewAndMesh(TArray<A3DRiRepresentat
 	}
 
 	// find Representation of deleted bodies to find unused FArchiveBody
-	//int32 DeletedBodyCount = Representations.Num() - BodyCount;
-	TArray<int32> ArchiveBodyIndexOfDeletedRepresentation;
-	ArchiveBodyIndexOfDeletedRepresentation.Reserve(DeletedBodyCount);
-
-	for (A3DRiRepresentationItem* Representation : Representations)
+	TArray<FCadId> ArchiveBodyIdOfDeletedRepresentation;
+	int32 DeletedBodyCount = Representations.Num() - BodyCount;
+	if (DeletedBodyCount > 0)
 	{
-		CADKernel::FBody* Body = TechSoftBridge.GetBody(Representation);
-		if (Body == nullptr)
+		ArchiveBodyIdOfDeletedRepresentation.Reserve(DeletedBodyCount);
+
+		for (A3DRiRepresentationItem* Representation : Representations)
 		{
-			int32* ArchiveBodyIndex = RepresentationItemsCache.Find(Representation);
-			if (ArchiveBodyIndex == nullptr)
+			FBody* Body = TechSoftBridge.GetBody(Representation);
+			if (Body == nullptr)
 			{
-				continue; // should not append
+				FCadId* ArchiveBodyId = RepresentationItemsCache.Find(Representation);
+				if (ArchiveBodyId == nullptr)
+				{
+					continue; // should not happen
+				}
+				ArchiveBodyIdOfDeletedRepresentation.Add(*ArchiveBodyId);
 			}
-			ArchiveBodyIndexOfDeletedRepresentation.Add(*ArchiveBodyIndex);
 		}
 	}
 
 	// Process existing bodies
-	for (CADKernel::FBody* Body : ExistingBodies)
+	for (FBody* Body : ExistingBodies)
 	{
 		const A3DRiRepresentationItem* Representation = TechSoftBridge.GetA3DBody(Body);
 
-		int32* ArchiveBodyIndex = RepresentationItemsCache.Find(Representation);
-		if (ArchiveBodyIndex == nullptr)
+		FCadId* ArchiveBodyId = RepresentationItemsCache.Find(Representation);
+		if (ArchiveBodyId == nullptr)
 		{
 			continue; // should not append
 		}
 
-		FArchiveBody& ArchiveBody = CADFileData.GetBodyAt(*ArchiveBodyIndex);
+		FArchiveBody& ArchiveBody = SceneGraph.GetBody(*ArchiveBodyId);
 		MeshAndGetTessellation(CADKernelSession, ArchiveBody, *Body);
 	}
 
-	// Process new bodies
-	int32 Index = 0;
-	for (CADKernel::FBody* Body : NewBodies)
+	if (ArchiveBodyIdOfDeletedRepresentation.Num())
 	{
-		int32 ArchiveBodyIndex = ArchiveBodyIndexOfDeletedRepresentation[Index++];
-		FArchiveBody& ArchiveBody = CADFileData.GetBodyAt(ArchiveBodyIndex);
-		MeshAndGetTessellation(CADKernelSession, ArchiveBody, *Body);
+		// Process new bodies
+		int32 Index = 0;
+		for (FBody* Body : NewBodies)
+		{
+			FCadId ArchiveBodyId = ArchiveBodyIdOfDeletedRepresentation[Index++];
+			FArchiveBody& ArchiveBody = SceneGraph.GetBody(ArchiveBodyId);
+			MeshAndGetTessellation(CADKernelSession, ArchiveBody, *Body);
+		}
+
+		// Delete unused FArchiveBody
+		for (; Index < ArchiveBodyIdOfDeletedRepresentation.Num(); ++Index)
+		{
+			FCadId ArchiveBodyId = ArchiveBodyIdOfDeletedRepresentation[Index++];
+			FArchiveBody& ArchiveBody = SceneGraph.GetBody(ArchiveBodyId);
+			ArchiveBody.Delete();
+		}
 	}
 
-	// Delete unused FArchiveBody
-	for (; Index < ArchiveBodyIndexOfDeletedRepresentation.Num(); ++Index)
+	// Delete unused ArchiveBody
+	for (FArchiveBody& ArchiveBody : SceneGraph.Bodies)
 	{
-		int32 ArchiveBodyIndex = ArchiveBodyIndexOfDeletedRepresentation[Index++];
-		FArchiveBody& ArchiveBody = CADFileData.GetBodyAt(ArchiveBodyIndex);
-		ArchiveBody.MetaData.Empty();
-		ArchiveBody.ParentId = 0;
-		ArchiveBody.MeshActorName = 0;
+		if (ArchiveBody.MeshActorUId == 0)
+		{
+			ArchiveBody.Delete();
+		}
 	}
 }
 
 void FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh(A3DRiRepresentationItem* Representation, FArchiveBody& ArchiveBody)
 {
-	double GeometricTolerance = CADFileData.GetImportParameters().ConvertMMToImportUnit(0.01); // mm
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::GenerateBodyMesh);
+	using namespace UE::CADKernel;
 
-	CADKernel::FSession CADKernelSession(GeometricTolerance);
+	FSession CADKernelSession(GeometricTolerance);
 	CADKernelSession.SetFirstNewHostId(LastHostIdUsed);
-	CADKernel::FModel& CADKernelModel = CADKernelSession.GetModel();
+	FModel& CADKernelModel = CADKernelSession.GetModel();
 
-	CADKernel::FCADFileReport Report;
-	FTechSoftBridge TechSoftBridge(*this, CADKernelSession, Report);
+	FTechSoftBridge TechSoftBridge(*this, CADKernelSession);
 
-	CADKernel::FBody* CADKernelBody = TechSoftBridge.AddBody(Representation, ArchiveBody.MetaData, ArchiveBody.BodyUnit);
+	FBody* CADKernelBody = TechSoftBridge.AddBody(Representation, ArchiveBody.MetaData, ArchiveBody.Unit);
+	if (CADKernelBody == nullptr)
+	{
+		ArchiveBody.Delete();
+		return;
+	}
 
 	if (CADFileData.GetImportParameters().GetStitchingTechnique() == StitchingHeal)
 	{
-		double Tolerance = CADFileData.GetImportParameters().ConvertMMToImportUnit(0.1); // mm
-		CADKernel::FTopomaker Topomaker(CADKernelSession, Tolerance);
-		Topomaker.Sew();
+		const bool bTryToImproveSew = FImportParameters::bGStitchingForceSew;
+		const bool bRemoveThinSurface = FImportParameters::bGStitchingRemoveThinFaces;
+
+		FTopomaker Topomaker(CADKernelSession, GeometricTolerance, ForceFactor);
+		Topomaker.Sew(bTryToImproveSew, bRemoveThinSurface);
 		Topomaker.OrientShells();
 	}
 
 	MeshAndGetTessellation(CADKernelSession, ArchiveBody, *CADKernelBody);
 }
 
-void FTechSoftFileParserCADKernelTessellator::MeshAndGetTessellation(CADKernel::FSession& CADKernelSession, FArchiveBody& ArchiveBody, CADKernel::FBody& CADKernelBody)
+void FTechSoftFileParserCADKernelTessellator::MeshAndGetTessellation(UE::CADKernel::FSession& CADKernelSession, FArchiveBody& ArchiveBody, UE::CADKernel::FBody& CADKernelBody)
 {
-	FBodyMesh& BodyMesh = CADFileData.AddBodyMesh(ArchiveBody.ObjectId, ArchiveBody);
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::MeshAndGetTessellation);
+	using namespace UE::CADKernel;
+
+	FBodyMesh& BodyMesh = CADFileData.AddBodyMesh(ArchiveBody.Id, ArchiveBody);
 	ArchiveBody.ColorFaceSet = BodyMesh.ColorSet;
 	ArchiveBody.MaterialFaceSet = BodyMesh.MaterialSet;
 
 	// Save Body in CADKernelArchive file for re-tessellation
 	if (CADFileData.IsCacheDefined())
 	{
-		FString BodyFilePath = CADFileData.GetBodyCachePath(ArchiveBody.MeshActorName);
-		CADKernelSession.SaveDatabase(*BodyFilePath);
+		FString BodyFilePath = CADFileData.GetBodyCachePath(ArchiveBody.MeshActorUId);
+		CADKernelSession.SaveDatabase(*BodyFilePath, CADKernelBody);
 	}
 
 	// Tessellate the body
-	TSharedRef<CADKernel::FModelMesh> CADKernelModelMesh = CADKernel::FEntity::MakeShared<CADKernel::FModelMesh>();
+	TSharedRef<FModelMesh> CADKernelModelMesh = FEntity::MakeShared<FModelMesh>();
 
 	FCADKernelTools::DefineMeshCriteria(CADKernelModelMesh.Get(), CADFileData.GetImportParameters(), CADKernelSession.GetGeometricTolerance());
 
-	CADKernel::FParametricMesher Mesher(*CADKernelModelMesh);
+	FParametricMesher Mesher(*CADKernelModelMesh);
 	Mesher.MeshEntity(CADKernelBody);
 
 	FCADKernelTools::GetBodyTessellation(*CADKernelModelMesh, CADKernelBody, BodyMesh);
+	if (BodyMesh.Faces.Num() == 0)
+	{
+		ArchiveBody.Delete();
+	}
 
 	ArchiveBody.ColorFaceSet = BodyMesh.ColorSet;
 	ArchiveBody.MaterialFaceSet = BodyMesh.MaterialSet;
@@ -238,6 +273,8 @@ void FTechSoftFileParserCADKernelTessellator::MeshAndGetTessellation(CADKernel::
 
 A3DStatus FTechSoftFileParserCADKernelTessellator::AdaptBRepModel()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTechSoftFileParserCADKernelTessellator::AdaptBRepModel);
+
 	const A3DUns32 ValidSurfaceCount = 9;
 	A3DUns32 AcceptedSurfaces[ValidSurfaceCount] = {
 		//kA3DTypeSurfBlend01,

@@ -17,9 +17,14 @@ class ULidarPointCloud;
 class FLidarPointCloudOctree;
 struct FLidarPointCloudTraversalOctree;
 struct FLidarPointCloudTraversalOctreeNode;
-
 class FLidarPointCloudRenderBuffer;
 class FLidarPointCloudVertexFactory;
+class FLidarPointCloudRayTracingGeometry;
+
+namespace LidarPointCloudMeshing
+{
+	struct FMeshBuffers;
+};
 
 /**
  * WARNING: Exercise caution when modifying the contents of the Octree, as it may be in use by the Rendering Thread via FPointCloudSceneProxy
@@ -69,6 +74,9 @@ private:
 	/** Marks the node as being used for rendering */
 	bool bInUse;
 
+	/** Marks the node as containing active selection */
+	bool bHasSelection;
+
 	/** Stores the number of visible points */
 	uint32 NumVisiblePoints;
 
@@ -97,7 +105,8 @@ private:
 	/** Holds render data for this node */
 	TSharedPtr<FLidarPointCloudRenderBuffer> DataCache;
 	TSharedPtr<FLidarPointCloudVertexFactory> VertexFactory;
-
+	TSharedPtr<FLidarPointCloudRayTracingGeometry> RayTracingGeometry;
+	
 	bool bRenderDataDirty;
 
 	/** Used to keep track, which data is available for rendering */
@@ -126,12 +135,15 @@ public:
 
 	/** Return a pointer to the vertex factory containing pre-cached geometry */
 	FORCEINLINE TSharedPtr<FLidarPointCloudVertexFactory> GetVertexFactory() { return VertexFactory; }
+	
+	/** Return a pointer to the ray tracing geometry */
+	FORCEINLINE TSharedPtr<FLidarPointCloudRayTracingGeometry> GetRayTracingGeometry() { return RayTracingGeometry; }
 
 	/**
 	 * Builds and updates the necessary render data buffers
 	 * Returns true if successful
 	 */
-	bool BuildDataCache(bool bUseStaticBuffers);
+	bool BuildDataCache(bool bUseStaticBuffers, bool bUseRayTracing);
 
 	/** Returns the sum of grid and padding points allocated to this node. */
 	FORCEINLINE uint32 GetNumPoints() const { return NumPoints; }
@@ -272,16 +284,11 @@ private:
 	FByteBulkData BulkData;
 
 #if WITH_EDITOR
-	struct FLidarPointCloudBulkData : public FByteBulkData
+	struct FLidarPointCloudBulkData : public FBulkData
 	{
-		FLidarPointCloudOctree* Octree;
-		int32 ElementSize = 1;
+		FSerializeBulkDataElements SerializeElementsCallback;
 		
 		FLidarPointCloudBulkData(FLidarPointCloudOctree* Octree);
-		virtual int32 GetElementSize() const override { return ElementSize; }
-		virtual void SerializeElements(FArchive& Ar, void* Data) override { Octree->SerializeBulkData(Ar); }
-		virtual bool RequiresSingleElementSerialization(FArchive& Ar) override { return true; }
-		void Serialize(FArchive& Ar);
 	} SavingBulkData;
 #endif
 	
@@ -355,6 +362,9 @@ public:
 
 	/** Returns pointer to the collision data */
 	const FTriMeshCollisionData* GetCollisionData() const { return &CollisionMesh; }
+
+	/** Constructs and returns the MeshBuffers struct from the data */
+	void BuildStaticMeshBuffers(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform);
 
 	/** Populates the given array with points from the tree */
 	void GetPoints(TArray<FLidarPointCloudPoint*>& SelectedPoints, int64 StartIndex = 0, int64 Count = -1);
@@ -471,6 +481,21 @@ public:
 	
 	/** Marks render data of all nodes within the given convex volume as dirty. */
 	void MarkRenderDataInConvexVolumeDirty(const FConvexVolume& ConvexVolume);
+
+#if WITH_EDITOR
+	void SelectByConvexVolume(const FConvexVolume& ConvexVolume, bool bAdditive, bool bVisibleOnly);
+	void SelectBySphere(const FSphere& Sphere, bool bAdditive, bool bVisibleOnly);
+	void HideSelected();
+	void DeleteSelected();
+	void InvertSelection();
+	int64 NumSelectedPoints() const;
+	bool HasSelectedPoints() const;
+	void GetSelectedPoints(TArray64<FLidarPointCloudPoint*>& SelectedPoints) const;
+	void GetSelectedPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, const FTransform& Transform) const;
+	void GetSelectedPointsInBox(TArray64<const FLidarPointCloudPoint*>& SelectedPoints, const FBox& Box) const;
+	void ClearSelection();
+	void BuildStaticMeshBuffersForSelection(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform);
+#endif
 
 	/** Initializes the Octree properties. */
 	void Initialize(const FVector3f& InExtent);

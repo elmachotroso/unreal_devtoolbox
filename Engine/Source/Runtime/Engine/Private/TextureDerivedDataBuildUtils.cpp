@@ -3,6 +3,7 @@
 #include "TextureDerivedDataBuildUtils.h"
 
 #if WITH_EDITOR
+#include "ChildTextureFormat.h"
 #include "DerivedDataBuild.h"
 #include "DerivedDataBuildFunctionRegistry.h"
 #include "DerivedDataSharedString.h"
@@ -84,6 +85,13 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 
 	Writer.BeginObject();
 
+#if PLATFORM_CPU_ARM_FAMILY
+	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
+	// input. Add the arm specifically so that a) we avoid rebuilding the current DDC and
+	// b) we can remove it once we get arm64 to be consistent.
+	WriteCbField<bool>(Writer, "bBuildIsArm64", true);
+#endif
+
 	if (BuildSettings.FormatConfigOverride)
 	{
 		Writer.AddObject("FormatConfigOverride", BuildSettings.FormatConfigOverride);
@@ -120,11 +128,13 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 		// AlphaCoverageThresholds do not affect build if bDoScaleMipsForAlphaCoverage is off
 		WriteCbFieldWithDefault(Writer, "AlphaCoverageThresholds", BuildSettings.AlphaCoverageThresholds, DefaultSettings.AlphaCoverageThresholds);
 	}
+	WriteCbFieldWithDefault(Writer, "CompressionCacheId", BuildSettings.CompressionCacheId, DefaultSettings.CompressionCacheId);
+	WriteCbFieldWithDefault<bool>(Writer, "bUseNewMipFilter", BuildSettings.bUseNewMipFilter, DefaultSettings.bUseNewMipFilter);
 	WriteCbFieldWithDefault(Writer, "MipSharpening", BuildSettings.MipSharpening, DefaultSettings.MipSharpening);
 	WriteCbFieldWithDefault(Writer, "DiffuseConvolveMipLevel", BuildSettings.DiffuseConvolveMipLevel, DefaultSettings.DiffuseConvolveMipLevel);
 	WriteCbFieldWithDefault(Writer, "SharpenMipKernelSize", BuildSettings.SharpenMipKernelSize, DefaultSettings.SharpenMipKernelSize);
 	WriteCbFieldWithDefault(Writer, "MaxTextureResolution", BuildSettings.MaxTextureResolution, DefaultSettings.MaxTextureResolution);
-	WriteCbFieldWithDefault(Writer, "TextureFormatName", WriteToString<64>(BuildSettings.TextureFormatName).ToView(), TEXT(""_SV));
+	WriteCbFieldWithDefault(Writer, "TextureFormatName", WriteToString<64>(BuildSettings.TextureFormatName).ToView(), TEXTVIEW(""));
 	WriteCbFieldWithDefault(Writer, "bHDRSource", BuildSettings.bHDRSource, DefaultSettings.bHDRSource);
 	WriteCbFieldWithDefault(Writer, "MipGenSettings", BuildSettings.MipGenSettings, DefaultSettings.MipGenSettings);
 	WriteCbFieldWithDefault<bool>(Writer, "bCubemap", BuildSettings.bCubemap, DefaultSettings.bCubemap);
@@ -143,7 +153,6 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	WriteCbFieldWithDefault<bool>(Writer, "bPreserveBorder", BuildSettings.bPreserveBorder, DefaultSettings.bPreserveBorder);
 	WriteCbFieldWithDefault<bool>(Writer, "bForceNoAlphaChannel", BuildSettings.bForceNoAlphaChannel, DefaultSettings.bForceNoAlphaChannel);
 	WriteCbFieldWithDefault<bool>(Writer, "bForceAlphaChannel", BuildSettings.bForceAlphaChannel, DefaultSettings.bForceAlphaChannel);
-	WriteCbFieldWithDefault<bool>(Writer, "bDitherMipMapAlpha", BuildSettings.bDitherMipMapAlpha, DefaultSettings.bDitherMipMapAlpha);
 	WriteCbFieldWithDefault<bool>(Writer, "bComputeBokehAlpha", BuildSettings.bComputeBokehAlpha, DefaultSettings.bComputeBokehAlpha);
 	WriteCbFieldWithDefault<bool>(Writer, "bReplicateRed", BuildSettings.bReplicateRed, DefaultSettings.bReplicateRed);
 	WriteCbFieldWithDefault<bool>(Writer, "bReplicateAlpha", BuildSettings.bReplicateAlpha, DefaultSettings.bReplicateAlpha);
@@ -161,7 +170,7 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	WriteCbFieldWithDefault(Writer, "TopMipSize", BuildSettings.TopMipSize, DefaultSettings.TopMipSize);
 	WriteCbFieldWithDefault(Writer, "VolumeSizeZ", BuildSettings.VolumeSizeZ, DefaultSettings.VolumeSizeZ);
 	WriteCbFieldWithDefault(Writer, "ArraySlices", BuildSettings.ArraySlices, DefaultSettings.ArraySlices);
-	WriteCbFieldWithDefault<bool>(Writer, "bStreamable", BuildSettings.bStreamable, DefaultSettings.bStreamable);
+	WriteCbFieldWithDefault<bool>(Writer, "bStreamable", BuildSettings.bStreamable_Unused, DefaultSettings.bStreamable_Unused);
 	WriteCbFieldWithDefault<bool>(Writer, "bVirtualStreamable", BuildSettings.bVirtualStreamable, DefaultSettings.bVirtualStreamable);
 	WriteCbFieldWithDefault<bool>(Writer, "bChromaKeyTexture", BuildSettings.bChromaKeyTexture, DefaultSettings.bChromaKeyTexture);
 	WriteCbFieldWithDefault(Writer, "PowerOfTwoMode", BuildSettings.PowerOfTwoMode, DefaultSettings.PowerOfTwoMode);
@@ -176,8 +185,6 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	WriteCbFieldWithDefault(Writer, "VirtualAddressingModeY", BuildSettings.VirtualAddressingModeY, DefaultSettings.VirtualAddressingModeY);
 	WriteCbFieldWithDefault(Writer, "VirtualTextureTileSize", BuildSettings.VirtualTextureTileSize, DefaultSettings.VirtualTextureTileSize);
 	WriteCbFieldWithDefault(Writer, "VirtualTextureBorderSize", BuildSettings.VirtualTextureBorderSize, DefaultSettings.VirtualTextureBorderSize);
-	WriteCbFieldWithDefault<bool>(Writer, "bVirtualTextureEnableCompressZlib", BuildSettings.bVirtualTextureEnableCompressZlib, DefaultSettings.bVirtualTextureEnableCompressZlib);
-	WriteCbFieldWithDefault<bool>(Writer, "bVirtualTextureEnableCompressCrunch", BuildSettings.bVirtualTextureEnableCompressCrunch, DefaultSettings.bVirtualTextureEnableCompressCrunch);
 
 	WriteCbFieldWithDefault<uint8>(Writer, "OodleEncodeEffort", (uint8)BuildSettings.OodleEncodeEffort, (uint8)DefaultSettings.OodleEncodeEffort);	
 	WriteCbFieldWithDefault<uint8>(Writer, "OodleUniversalTiling", (uint8)BuildSettings.OodleUniversalTiling, (uint8)DefaultSettings.OodleUniversalTiling);
@@ -186,14 +193,14 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	
 	WriteCbFieldWithDefault(Writer, "OodleTextureSdkVersion", BuildSettings.OodleTextureSdkVersion, DefaultSettings.OodleTextureSdkVersion);
 	
-	Writer.EndObject();
-}
-
-static void WriteOutputSettings(FCbWriter& Writer, int32 NumInlineMips)
-{
-	Writer.BeginObject();
-
-	Writer.AddInteger("NumInlineMips", NumInlineMips);
+	if ( BuildSettings.bVolume )
+	{
+		WriteCbField<bool>(Writer, "bVolume_ForceNewDDcKey", true); 
+	}
+	if ( BuildSettings.bVirtualStreamable && BuildSettings.bSRGB && BuildSettings.bUseLegacyGamma )
+	{
+		WriteCbField<bool>(Writer, "VTPow22_ForceNewDDcKey", true); 
+	}
 
 	Writer.EndObject();
 }
@@ -208,14 +215,7 @@ static void WriteSource(FCbWriter& Writer, const UTexture& Texture, int32 LayerI
 
 	Writer.BeginObject();
 
-	ETextureSourceCompressionFormat CompressionFormat = Source.GetSourceCompression();
-	if ((CompressionFormat == ETextureSourceCompressionFormat::TSCF_PNG) && !Source.IsPNGCompressed())
-	{
-		// CompressionFormat might mismatch with IsPNGCompressed.  In that case IsPNGCompressed is authoritative.
-		// This behavior matches FTextureSource::Decompress
-		CompressionFormat = ETextureSourceCompressionFormat::TSCF_None;
-	}
-	Writer.AddInteger("CompressionFormat", CompressionFormat);
+	Writer.AddInteger("CompressionFormat", Source.GetSourceCompression());
 	Writer.AddInteger("SourceFormat", Source.GetFormat(LayerIndex));
 	Writer.AddInteger("GammaSpace", static_cast<uint8>(GammaSpace));
 	Writer.AddInteger("NumSlices", (BuildSettings.bCubemap || BuildSettings.bTextureArray || BuildSettings.bVolume) ? Source.GetNumSlices() : 1);
@@ -245,20 +245,25 @@ UE::DerivedData::FUtf8SharedString FindTextureBuildFunction(const FName TextureF
 {
 	using namespace UE::DerivedData;
 
-	if (FReadScopeLock Lock(GTextureBuildFunctionLock); const FUtf8SharedString* Function = GTextureBuildFunctionMap.Find(TextureFormatName))
 	{
-		return *Function;
+		FReadScopeLock Lock(GTextureBuildFunctionLock);
+		if (const FUtf8SharedString* Function = GTextureBuildFunctionMap.Find(TextureFormatName))
+		{
+			return *Function;
+		}
 	}
 
 	FName TextureFormatModuleName;
-
-	if (ITextureFormatManagerModule* TFM = GetTextureFormatManager())
+	ITextureFormatManagerModule* TFM = GetTextureFormatManager();
+	if (TFM == nullptr)
 	{
-		ITextureFormatModule* TextureFormatModule = nullptr;
-		if (!TFM->FindTextureFormatAndModule(TextureFormatName, TextureFormatModuleName, TextureFormatModule))
-		{
-			return {};
-		}
+		return {};
+	}
+
+	ITextureFormatModule* TextureFormatModule = nullptr;
+	if (!TFM->FindTextureFormatAndModule(TextureFormatName, TextureFormatModuleName, TextureFormatModule))
+	{
+		return {};
 	}
 
 	TStringBuilder<128> FunctionName;
@@ -287,7 +292,7 @@ UE::DerivedData::FUtf8SharedString FindTextureBuildFunction(const FName TextureF
 	return Function;
 }
 
-FCbObject SaveTextureBuildSettings(const UTexture& Texture, const FTextureBuildSettings& BuildSettings, int32 LayerIndex, int32 NumInlineMips, bool bUseCompositeTexture)
+FCbObject SaveTextureBuildSettings(const UTexture& Texture, const FTextureBuildSettings& BuildSettings, int32 LayerIndex, bool bUseCompositeTexture, int64 RequiredMemoryEstimate)
 {
 	const ITextureFormat* TextureFormat = nullptr;
 	if (ITextureFormatManagerModule* TFM = GetTextureFormatManager())
@@ -305,6 +310,8 @@ FCbObject SaveTextureBuildSettings(const UTexture& Texture, const FTextureBuildS
 	Writer.BeginObject();
 
 	Writer.AddUuid("BuildVersion", GetTextureDerivedDataVersion());
+	
+	Writer.AddInteger("RequiredMemoryEstimate", RequiredMemoryEstimate);
 
 	if (uint16 TextureFormatVersion = TextureFormat->GetVersion(BuildSettings.TextureFormatName, &BuildSettings))
 	{
@@ -313,9 +320,6 @@ FCbObject SaveTextureBuildSettings(const UTexture& Texture, const FTextureBuildS
 
 	Writer.SetName("Build");
 	WriteBuildSettings(Writer, BuildSettings, TextureFormat);
-
-	Writer.SetName("Output");
-	WriteOutputSettings(Writer, NumInlineMips);
 
 	Writer.SetName("Source");
 	WriteSource(Writer, Texture, LayerIndex, BuildSettings);

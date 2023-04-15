@@ -19,25 +19,27 @@ public:
 		NameMapType = InNameMapType;
 	}
 
-	void AddName(const FName& Name)
+	void AddName(FName Name)
 	{
-		const FNameEntryId ComparisonIndex = Name.GetComparisonIndex();
-		const FNameEntryId DisplayIndex = Name.GetDisplayIndex();
-		NameMap.Add(DisplayIndex);
+		AddName(FDisplayNameEntryId(Name));
+	}
+
+	void AddName(FDisplayNameEntryId DisplayId)
+	{
+		NameMap.Add(DisplayId);
 		int32 Index = NameMap.Num();
-		NameIndices.Add(ComparisonIndex, Index);
+		NameIndices.Add(DisplayId, Index);
 	}
 
 	void MarkNamesAsReferenced(const TArray<FName>& Names, TArray<int32>& OutNameIndices)
 	{
-		for (const FName& Name : Names)
+		for (FName Name : Names)
 		{
-			const FNameEntryId ComparisonIndex = Name.GetComparisonIndex();
-			const FNameEntryId DisplayIndex = Name.GetDisplayIndex();
-			int32& Index = NameIndices.FindOrAdd(ComparisonIndex);
+			FDisplayNameEntryId DisplayId(Name);
+			int32& Index = NameIndices.FindOrAdd(DisplayId);
 			if (Index == 0)
 			{
-				NameMap.Add(DisplayIndex);
+				NameMap.Add(DisplayId);
 				Index = NameMap.Num();
 			}
 
@@ -45,27 +47,24 @@ public:
 		}
 	}
 
-	void MarkNameAsReferenced(const FName& Name)
+	void MarkNameAsReferenced(FName Name)
 	{
-		const FNameEntryId ComparisonIndex = Name.GetComparisonIndex();
-		const FNameEntryId DisplayIndex = Name.GetDisplayIndex();
-		int32& Index = NameIndices.FindOrAdd(ComparisonIndex);
+		FDisplayNameEntryId DisplayId(Name);
+		int32& Index = NameIndices.FindOrAdd(DisplayId);
 		if (Index == 0)
 		{
-			NameMap.Add(DisplayIndex);
+			NameMap.Add(DisplayId);
 			Index = NameMap.Num();
 		}
 	}
 
-	FMappedName MapName(const FName& Name) const
+	FMappedName MapName(FName Name) const
 	{
-		const FNameEntryId Id = Name.GetComparisonIndex();
-		const int32* Index = NameIndices.Find(Id);
-		check(Index);
-		return FMappedName::Create(*Index - 1, Name.GetNumber(), NameMapType);
+		int32 Index = NameIndices.FindChecked(FDisplayNameEntryId(Name));
+		return FMappedName::Create(Index - 1, Name.GetNumber(), NameMapType);
 	}
 
-	const TArray<FNameEntryId>& GetNameMap() const
+	TConstArrayView<FDisplayNameEntryId> GetNameMap() const
 	{
 		return NameMap;
 	}
@@ -77,8 +76,8 @@ public:
 	}
 
 private:
-	TMap<FNameEntryId, int32> NameIndices;
-	TArray<FNameEntryId> NameMap;
+	TMap<FDisplayNameEntryId, int32> NameIndices;
+	TArray<FDisplayNameEntryId> NameMap;
 	FMappedName::EType NameMapType = FMappedName::EType::Package;
 };
 
@@ -155,6 +154,11 @@ public:
 		return ShaderMapHashes;
 	}
 
+	const bool HasEditorData() const
+	{
+		return (PackageFlags & PKG_FilterEditorOnly) == 0;
+	}
+
 private:
 	struct FExportGraphNode;
 
@@ -205,7 +209,6 @@ private:
 		FName FromPackageName;
 		int32 FromPackageNameLen = 0;
 		FPackageId FromPackageId;
-		FPackageId FromOptionalPackageId;
 		bool bIsScriptImport = false;
 		bool bIsImportOfPackage = false;
 		bool bIsImportOptional = false;
@@ -296,7 +299,6 @@ private:
 	bool bPermanentMark = false;
 
 	bool bIsRedirected = false;
-	bool bIsOptional = false;
 
 	friend class FPackageStoreOptimizer;
 };
@@ -342,8 +344,9 @@ public:
 	FPackageStorePackage* CreatePackageFromPackageStoreHeader(const FName& Name, const FIoBuffer& Buffer, const FPackageStoreEntryResource& PackageStoreEntry) const;
 	void FinalizePackage(FPackageStorePackage* Package);
 	FIoBuffer CreatePackageBuffer(const FPackageStorePackage* Package, const FIoBuffer& CookedExportsBuffer, TArray<FFileRegion>* InOutFileRegions) const;
-	FPackageStoreEntryResource CreatePackageStoreEntry(const FPackageStorePackage* Package) const;
+	FPackageStoreEntryResource CreatePackageStoreEntry(const FPackageStorePackage* Package, const FPackageStorePackage* OptionalSegmentPackage) const;
 	FIoContainerHeader CreateContainerHeader(const FIoContainerId& ContainerId, TArrayView<const FPackageStoreEntryResource> PackageStoreEntries) const;
+	FIoContainerHeader CreateOptionalContainerHeader(const FIoContainerId& ContainerId, TArrayView<const FPackageStoreEntryResource> PackageStoreEntries) const;
 	IOSTOREUTILITIES_API FIoBuffer CreateScriptObjectsBuffer() const;
 	void LoadScriptObjectsBuffer(const FIoBuffer& ScriptObjectsBuffer);
 	void ProcessRedirects(const TMap<FPackageId, FPackageStorePackage*>& PackagesMap, bool bIsBuildingDLC) const;
@@ -374,7 +377,7 @@ private:
 		TOptional<FZenPackageVersioningInfo> VersioningInfo;
 		TArray<FPackageId> ImportedPackageIds;
 		TArray<uint64> ImportedPublicExportHashes;
-		TArray<FNameEntryId> NameMap;
+		TArray<FDisplayNameEntryId> NameMap;
 		TArray<FPackageObjectIndex> Imports; // FH: Imports might need to have more info to be able to resolve export hash with import as outer
 		TArray<FExportMapEntry> Exports;
 		TArray<FExportBundleHeader> ExportBundleHeaders;
@@ -392,9 +395,9 @@ private:
 	void ResolveImport(FPackageStorePackage::FUnresolvedImport* Imports, const FObjectImport* ObjectImports, int32 LocalImportIndex) const;
 	void ProcessImports(const FCookedHeaderData& CookedHeaderData, FPackageStorePackage* Package, TArray<FPackageStorePackage::FUnresolvedImport>& UnresolvedImports) const;
 	void ProcessImports(const FPackageStoreHeaderData& PackageStoreHeaderData, FPackageStorePackage* Package) const;
-	void ResolveExport(FPackageStorePackage::FExport* Exports, const FObjectExport* ObjectExports, const int32 LocalExportIndex, const FName& PackageName, FPackageStorePackage::FUnresolvedImport* Imports = nullptr, const FObjectImport* ObjectImports = nullptr) const;
+	void ResolveExport(FPackageStorePackage::FExport* Exports, const FObjectExport* ObjectExports, const int32 LocalExportIndex, const FName& PackageName, FPackageStorePackage::FUnresolvedImport* Imports, const FObjectImport* ObjectImports) const;
 	void ResolveExport(FPackageStorePackage::FExport* Exports, const int32 LocalExportIndex, const FName& PackageName) const;
-	void ProcessExports(const FCookedHeaderData& CookedHeaderData, FPackageStorePackage* Package, FPackageStorePackage::FUnresolvedImport* Imports = nullptr) const;
+	void ProcessExports(const FCookedHeaderData& CookedHeaderData, FPackageStorePackage* Package, FPackageStorePackage::FUnresolvedImport* Imports) const;
 	void ProcessExports(const FPackageStoreHeaderData& PackageStoreHeaderData, FPackageStorePackage* Package) const;
 	void ProcessPreloadDependencies(const FCookedHeaderData& CookedHeaderData, FPackageStorePackage* Package) const;
 	void ProcessPreloadDependencies(const FPackageStoreHeaderData& PackageStoreHeaderData, FPackageStorePackage* Package) const;
@@ -407,6 +410,7 @@ private:
 	void FinalizePackageHeader(FPackageStorePackage* Package) const;
 	void FindScriptObjectsRecursive(FPackageObjectIndex OuterIndex, UObject* Object);
 	void FindScriptObjects();
+	FIoContainerHeader CreateContainerHeaderInternal(const FIoContainerId& ContainerId, TArrayView<const FPackageStoreEntryResource> PackageStoreEntries, bool bIsOptional) const;
 
 	TMap<FPackageObjectIndex, FScriptObjectData> ScriptObjectsMap;
 	uint64 TotalPackageCount = 0;

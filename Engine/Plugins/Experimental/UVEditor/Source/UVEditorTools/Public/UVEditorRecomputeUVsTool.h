@@ -6,10 +6,10 @@
 #include "BaseTools/SingleSelectionMeshEditingTool.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "PropertySets/PolygroupLayersProperties.h"
-#include "Properties/RecomputeUVsProperties.h"
 #include "Polygroups/PolygroupSet.h"
 #include "Drawing/UVLayoutPreview.h"
 #include "UVEditorToolAnalyticsUtils.h"
+#include "Selection/UVToolSelectionAPI.h"
 
 #include "UVEditorRecomputeUVsTool.generated.h"
 
@@ -19,7 +19,8 @@ class UDynamicMeshComponent;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UUVEditorToolMeshInput;
-class URecomputeUVsOpFactory;
+class UUVEditorRecomputeUVsToolProperties;
+class UUVEditorRecomputeUVsOpFactory;
 
 /**
  *
@@ -43,7 +44,7 @@ public:
  * UUVEditorRecomputeUVsTool Recomputes UVs based on existing segmentations of the mesh
  */
 UCLASS()
-class UVEDITORTOOLS_API UUVEditorRecomputeUVsTool : public UInteractiveTool 
+class UVEDITORTOOLS_API UUVEditorRecomputeUVsTool : public UInteractiveTool, public IUVToolSupportsSelection
 {
 	GENERATED_BODY()
 
@@ -75,17 +76,21 @@ protected:
 	TArray<TObjectPtr<UUVEditorToolMeshInput>> Targets;
 
 	UPROPERTY()
-	TObjectPtr<URecomputeUVsToolProperties> Settings = nullptr;
+	TObjectPtr<UUVEditorRecomputeUVsToolProperties> Settings = nullptr;
 
 	UPROPERTY()
 	TObjectPtr<UPolygroupLayersProperties> PolygroupLayerProperties = nullptr;
 
 	UPROPERTY()
-	TArray<TObjectPtr<URecomputeUVsOpFactory>> Factories;
+	TArray<TObjectPtr<UUVEditorRecomputeUVsOpFactory>> Factories;
+
+	UPROPERTY()
+	TObjectPtr<UUVToolSelectionAPI> UVToolSelectionAPI = nullptr;
+
 
 	TSharedPtr<UE::Geometry::FPolygroupSet, ESPMode::ThreadSafe> ActiveGroupSet;
 	void OnSelectedGroupLayerChanged();
-	void UpdateActiveGroupLayer();
+	void UpdateActiveGroupLayer(bool bUpdateFactories = true);
 
 	//
 	// Analytics

@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorModes.h"
-#include "EdMode.h"
+
+#include "Editor.h"
+#include "HAL/Platform.h"
+#include "UObject/UnrealNames.h"
 
 
 DEFINE_LOG_CATEGORY(LogEditorModes);
@@ -12,7 +15,6 @@ namespace FBuiltinEditorModes
 	const FEditorModeID EM_None = NAME_None;
 	const FEditorModeID EM_Default(TEXT("EM_Default"));
 	const FEditorModeID EM_Placement(TEXT("PLACEMENT"));
-	const FEditorModeID EM_InterpEdit(TEXT("EM_InterpEdit"));
 	const FEditorModeID EM_MeshPaint(TEXT("EM_MeshPaint"));
 	const FEditorModeID EM_Landscape(TEXT("EM_Landscape"));
 	const FEditorModeID EM_Foliage(TEXT("EM_Foliage"));

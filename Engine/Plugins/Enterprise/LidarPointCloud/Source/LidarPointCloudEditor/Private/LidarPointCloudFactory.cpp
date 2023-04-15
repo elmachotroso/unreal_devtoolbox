@@ -6,11 +6,13 @@
 #include "LidarPointCloudImportUI.h"
 #include "LidarPointCloudEditor.h"
 #include "IO/LidarPointCloudFileIO.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Editor.h"
+#include "LidarPointCloudEditorHelper.h"
+
 #include "Misc/ScopedSlowTask.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageTools.h"
 
 #define LOCTEXT_NAMESPACE "LidarPointCloud"
@@ -28,36 +30,12 @@ void FAssetTypeActions_LidarPointCloud::GetActions(const TArray<UObject*>& InObj
 		PointClouds.Add(CastChecked<ULidarPointCloud>(Object));
 	}
 
-	// Make sure at least one asset has source assigned
-	bool bSourceExists = false;
-	for (ULidarPointCloud* PointCloud : PointClouds)
-	{
-		if (!PointCloud->GetSourcePath().IsEmpty())
-		{
-			bSourceExists = true;
-			break;
-		}
-	}
-
-	if (bSourceExists)
-	{
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("LidarPointCloud_Reimport", "Reimport Selected"),
-			LOCTEXT("LidarPointCloud_ReimportTooltip", "Reimports this point cloud asset."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "TextureEditor.Reimport"),
-			FUIAction(
-				FExecuteAction::CreateSP(this, &FAssetTypeActions_LidarPointCloud::ExecuteReimport, PointClouds),
-				FCanExecuteAction()
-			)
-		);
-	}
-
 	if (PointClouds.Num() > 1)
 	{
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("LidarPointCloud_Merge", "Merge Selected"),
 			LOCTEXT("LidarPointCloud_MergeTooltip", "Merges selected point cloud assets."),
-			FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.Merge"),
+			FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.ToolkitMerge"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FAssetTypeActions_LidarPointCloud::ExecuteMerge, PointClouds),
 				FCanExecuteAction()
@@ -67,7 +45,7 @@ void FAssetTypeActions_LidarPointCloud::GetActions(const TArray<UObject*>& InObj
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("LidarPointCloud_Align", "Align Selected"),
 			LOCTEXT("LidarPointCloud_AlignTooltip", "Aligns selected point cloud assets."),
-			FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.Align"),
+			FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.ToolkitAlign"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FAssetTypeActions_LidarPointCloud::ExecuteAlign, PointClouds),
 				FCanExecuteAction()
@@ -78,7 +56,7 @@ void FAssetTypeActions_LidarPointCloud::GetActions(const TArray<UObject*>& InObj
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("LidarPointCloud_BuildCollision", "Build Collision"),
 		LOCTEXT("LidarPointCloud_BuildCollisionTooltip", "Builds collision for all selected point cloud assets."),
-		FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.BuildCollision"),
+		FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.ToolkitCollision"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_LidarPointCloud::ExecuteCollision, PointClouds),
 			FCanExecuteAction()
@@ -88,7 +66,7 @@ void FAssetTypeActions_LidarPointCloud::GetActions(const TArray<UObject*>& InObj
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("LidarPointCloud_CalculateNormals", "Calculate Normals"),
 		LOCTEXT("LidarPointCloud_CalculateNormalsTooltip", "Calculates normals for all selected point cloud assets."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "AnimViewportMenu.SetShowNormals"),
+		FSlateIcon("LidarPointCloudStyle", "LidarPointCloudEditor.ToolkitNormals"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_LidarPointCloud::ExecuteNormals, PointClouds),
 			FCanExecuteAction()
@@ -110,11 +88,14 @@ void FAssetTypeActions_LidarPointCloud::OpenAssetEditor(const TArray<UObject*>& 
 	}
 }
 
-void FAssetTypeActions_LidarPointCloud::ExecuteReimport(TArray<ULidarPointCloud*> PointClouds)
+void FAssetTypeActions_LidarPointCloud::GetResolvedSourceFilePaths(const TArray<UObject*>& TypeAssets, TArray<FString>& OutSourceFilePaths) const
 {
-	for (ULidarPointCloud* PC : PointClouds)
+	for (auto& Asset : TypeAssets)
 	{
-		PC->Reimport(GetDefault<ULidarPointCloudSettings>()->bUseAsyncImport);
+		if (const ULidarPointCloud* PointCloud = CastChecked<ULidarPointCloud>(Asset))
+		{
+			OutSourceFilePaths.Add(PointCloud->GetSourcePath());
+		}
 	}
 }
 
@@ -132,17 +113,8 @@ void FAssetTypeActions_LidarPointCloud::ExecuteMerge(TArray<ULidarPointCloud*> P
 		MergedCloudPackage->SetPackageFlags(PKG_NewlyCreated);
 
 		ULidarPointCloud* PC = NewObject<ULidarPointCloud>(MergedCloudPackage, FName(*FPaths::GetBaseFilename(MergedCloudPackage->GetName())), EObjectFlags::RF_Public | EObjectFlags::RF_Standalone | EObjectFlags::RF_Transactional);
-		if (IsValid(PC))
-		{
-			FScopedSlowTask ProgressDialog(PointClouds.Num() + 2, LOCTEXT("Merge", "Merging Point Clouds..."));
-			ProgressDialog.MakeDialog();
 
-			PC->Merge(PointClouds, [&ProgressDialog]() { ProgressDialog.EnterProgressFrame(1.f); });
-
-			PC->MarkPackageDirty();
-
-			FAssetRegistryModule::AssetCreated(PC);
-		}
+		FLidarPointCloudEditorHelper::MergeLidar(PC, PointClouds);
 	}
 }
 

@@ -1,23 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBlueprintLibraryPalette.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Commands/InputChord.h"
-#include "Framework/Commands/Commands.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/SToolTip.h"
-#include "Widgets/Input/SComboButton.h"
-#include "EditorStyleSet.h"
-#include "Engine/Blueprint.h"
-#include "Editor/EditorPerProjectUserSettings.h"
-#include "EdGraphSchema_K2.h"
-#include "ClassViewerModule.h"
-#include "ClassViewerFilter.h"
-#include "BlueprintPaletteFavorites.h"
+
 #include "BlueprintActionFilter.h"
 #include "BlueprintActionMenuBuilder.h"
 #include "BlueprintActionMenuUtils.h"
+#include "BlueprintEditor.h"
+#include "BlueprintPaletteFavorites.h"
+#include "ClassViewerFilter.h"
+#include "ClassViewerModule.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor/EditorPerProjectUserSettings.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Visibility.h"
+#include "Modules/ModuleManager.h"
+#include "SGraphActionMenu.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "BlueprintLibraryPalette"
 
@@ -148,7 +177,7 @@ public:
 		( "BlueprintLibraryPalette"
 		, LOCTEXT("LibraryPaletteContext", "Library Palette")
 		, NAME_None
-		, FEditorStyle::GetStyleSetName() )
+		, FAppStyle::GetAppStyleSetName() )
 	{
 	}
 
@@ -196,7 +225,7 @@ void SBlueprintLibraryPalette::Construct(FArguments const& InArgs, TWeakPtr<FBlu
 {
 	SBlueprintSubPalette::FArguments SuperArgs;
 	SuperArgs._Title       = LOCTEXT("PaletteTitle", "Find a Node");
-	SuperArgs._Icon        = FEditorStyle::GetBrush("Icons.Search");
+	SuperArgs._Icon        = FAppStyle::GetBrush("Icons.Search");
 	SuperArgs._ToolTipText = LOCTEXT("PaletteToolTip", "An all encompassing list of every node that is available for this blueprint.");
 	SuperArgs._ShowFavoriteToggles = true;
 
@@ -220,6 +249,7 @@ void SBlueprintLibraryPalette::CollectAllActions(FGraphActionListBuilderBase& Ou
 	
 	FBlueprintActionContext FilterContext;
 	FilterContext.Blueprints.Add(GetBlueprint());
+	FilterContext.EditorPtr = BlueprintEditorPtr;
 	
 	UClass* ClassFilter = nullptr;
 	if (FilterClass.IsValid())
@@ -374,11 +404,11 @@ TSharedRef<SWidget> SBlueprintLibraryPalette::ConstructClassFilterDropdownConten
 	SAssignNew(ClearFilterToolTip, SToolTip).Text(LOCTEXT("ClearFilter", "Clears the class filter so you can see all available nodes for placement."));
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		[
 			// achieving fixed width by nesting items within a fixed width box.
 			SNew(SBox)
-				.WidthOverride(350)
+				.WidthOverride(350.0f)
 			[
 				SNew(SVerticalBox)
 				

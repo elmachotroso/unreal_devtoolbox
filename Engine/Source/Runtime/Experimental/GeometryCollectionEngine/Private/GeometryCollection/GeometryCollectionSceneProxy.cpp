@@ -6,7 +6,7 @@
 #include "Engine/Engine.h"
 #include "MaterialShaderType.h"
 #include "Materials/Material.h"
-#include "RenderCore/Public/CommonRenderResources.h"
+#include "CommonRenderResources.h"
 #include "Rendering/NaniteResources.h"
 #include "PrimitiveSceneInfo.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
@@ -84,9 +84,16 @@ FAutoConsoleVariableRef CVarRayTracingGeometryCollectionProxyMeshes(
 	ECVF_RenderThreadSafe
 );
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
-bool bGeometryCollection_SetDynamicData_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarGeometryCollectionSetDynamicDataISPCEnabled(TEXT("r.GeometryCollectionSetDynamicData.ISPC"), bGeometryCollection_SetDynamicData_ISPC_Enabled, TEXT("Whether to use ISPC optimizations to set dynamic data in geometry collections"));
+#if !defined(CHAOS_GEOMETRY_COLLECTION_SET_DYNAMIC_DATA_ISPC_ENABLED_DEFAULT)
+#define CHAOS_GEOMETRY_COLLECTION_SET_DYNAMIC_DATA_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bGeometryCollection_SetDynamicData_ISPC_Enabled = INTEL_ISPC && CHAOS_GEOMETRY_COLLECTION_SET_DYNAMIC_DATA_ISPC_ENABLED_DEFAULT;
+#else
+static bool bGeometryCollection_SetDynamicData_ISPC_Enabled = CHAOS_GEOMETRY_COLLECTION_SET_DYNAMIC_DATA_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarGeometryCollectionSetDynamicDataISPCEnabled(TEXT("r.GeometryCollectionSetDynamicData.ISPC"), bGeometryCollection_SetDynamicData_ISPC_Enabled, TEXT("Whether to use ISPC optimizations to set dynamic data in geometry collections"));
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(FGeometryCollectionSceneProxyLogging, Log, All);
@@ -228,7 +235,7 @@ FGeometryCollectionSceneProxy::FGeometryCollectionSceneProxy(UGeometryCollection
 			[this](FRHICommandListImmediate& RHICmdList)
 			{
 				FRayTracingGeometryInitializer Initializer;
-				Initializer.DebugName = TEXT("GeometryCollection");
+				Initializer.DebugName = FName(TEXT("GeometryCollection"));
 				Initializer.GeometryType = RTGT_Triangles;
 				Initializer.bFastBuild = true;
 				Initializer.bAllowUpdate = false;
@@ -346,7 +353,7 @@ void FGeometryCollectionSceneProxy::InitResources()
 	VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(&VertexFactory, Data);
 
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
-	if (bEnableBoneSelection)
+	// Note: Could skip this when bEnableBoneSelection is false if the hitproxy shader was made to not require per-vertex hit proxy IDs in that case
 	{
 		HitProxyIdBuffer.Init(NumVertices);
 		HitProxyIdBuffer.InitResource();
@@ -440,9 +447,11 @@ void FGeometryCollectionSceneProxy::BuildGeometry( const FGeometryCollectionCons
 			FDynamicMeshVertex(
 				ConstantDataIn->Vertices[PointIdx],
 				ConstantDataIn->UVs[PointIdx][0],
-				bShowBoneColors||bEnableBoneSelection ?
-				ConstantDataIn->BoneColors[PointIdx].ToFColor(true) :
-				ConstantDataIn->Colors[PointIdx].ToFColor(true)
+				(bShowBoneColors||bEnableBoneSelection) 
+					? bShowBoneColors 
+						? ConstantDataIn->BoneColors[PointIdx].ToFColor(true)
+						: (ConstantDataIn->BoneColors[PointIdx] * ConstantDataIn->Colors[PointIdx]).ToFColor(true)
+					: ConstantDataIn->Colors[PointIdx].ToFColor(true)
 			);
 		OutVertices[PointIdx].SetTangents(ConstantDataIn->TangentU[PointIdx], ConstantDataIn->TangentV[PointIdx], ConstantDataIn->Normals[PointIdx]);
 
@@ -513,14 +522,15 @@ void FGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometryCollec
 			}
 			VertexBuffers.ColorVertexBuffer.VertexColor(i) = Vertex.Color;
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
-			if (bEnableBoneSelection)
+			if (bEnableBoneSelection && PerBoneHitProxies.Num())
 			{
 				// One proxy per bone
 				const int32 ProxyIndex = ConstantData->BoneMap[i];
-				if (PerBoneHitProxies.Num())
-				{ 
-					HitProxyIdBuffer.VertexColor(i) = PerBoneHitProxies[ProxyIndex]->Id.GetColor();
-				}
+				HitProxyIdBuffer.VertexColor(i) = PerBoneHitProxies[ProxyIndex]->Id.GetColor();
+			}
+			else
+			{
+				HitProxyIdBuffer.VertexColor(i) = WholeObjectHitProxyColor;
 			}
 #endif
 		});
@@ -540,7 +550,7 @@ void FGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometryCollec
 		}
 
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
-		if (bEnableBoneSelection)
+		// Note: Could skip this when bEnableBoneSelection is false if the hitproxy shader was made to not require per-vertex hit proxy IDs in that case
 		{
 			auto& VertexBuffer = HitProxyIdBuffer;
 			void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
@@ -599,17 +609,16 @@ void FGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometryCollec
 		}
 
 		// Update mesh sections
-		check(Sections.Num() == ConstantData->Sections.Num());
+		Sections.Reset(ConstantData->Sections.Num());
 		// #todo(dmp): We should restructure the component/SceneProxy usage to avoid this messy stuff.  We need to know the sections
 		// when we create the sceneproxy for the hit proxy to work, but then we are updating the sections here with potentially differing
 		// vertex counts due to hiding geometry.  Ideally, the SceneProxy is treated as const and recreated whenever the geometry
 		// changes rather than this.  SetConstantData_RenderThread should be done in the constructor for the sceneproxy, most likely
-		int i = 0;
 		for (FGeometryCollectionSection Section : ConstantData->Sections)
 		{
 			if (Section.NumTriangles > 0)
 			{
-				FGeometryCollectionSection &NewSection = Sections[i++];
+				FGeometryCollectionSection& NewSection = Sections.AddDefaulted_GetRef();
 				NewSection.MaterialID = Section.MaterialID;
 				NewSection.FirstIndex = Section.FirstIndex;
 				NewSection.NumTriangles = Section.NumTriangles;
@@ -828,6 +837,63 @@ void FGeometryCollectionSceneProxy::GetDynamicMeshElements(const TArray<const FS
 	if (GetRequiredVertexCount())
 	{
 		const bool bWireframe = AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe;
+		const bool bProxyIsSelected = IsSelected();
+
+		const FEngineShowFlags& EngineShowFlags = ViewFamily.EngineShowFlags;
+
+		auto SetDebugMaterial = [this, &Collector, &EngineShowFlags, bProxyIsSelected](FMeshBatch& Mesh) -> void
+		{
+#if UE_ENABLE_DEBUG_DRAWING
+
+			// flag to indicate whether we've set a debug material yet
+			// Note: Will be used if we add more debug material options
+			// (compare to variable of same name in StaticMeshRender.cpp)
+			bool bDebugMaterialRenderProxySet = false;
+
+			if (!bDebugMaterialRenderProxySet && bProxyIsSelected && EngineShowFlags.VertexColors && AllowDebugViewmodes())
+			{
+				// Override the mesh's material with our material that draws the vertex colors
+				UMaterial* VertexColorVisualizationMaterial = NULL;
+				switch (GVertexColorViewMode)
+				{
+				case EVertexColorViewMode::Color:
+					VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_ColorOnly;
+					break;
+
+				case EVertexColorViewMode::Alpha:
+					VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_AlphaAsColor;
+					break;
+
+				case EVertexColorViewMode::Red:
+					VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_RedOnly;
+					break;
+
+				case EVertexColorViewMode::Green:
+					VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_GreenOnly;
+					break;
+
+				case EVertexColorViewMode::Blue:
+					VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_BlueOnly;
+					break;
+				}
+				check(VertexColorVisualizationMaterial != NULL);
+
+				// Note: static mesh renderer does something more complicated involving per-section selection,
+				// but whole component selection seems ok for now
+				bool bSectionIsSelected = bProxyIsSelected;
+
+				auto VertexColorVisualizationMaterialInstance = new FColoredMaterialRenderProxy(
+					VertexColorVisualizationMaterial->GetRenderProxy(),
+					GetSelectionColor(FLinearColor::White, bSectionIsSelected, IsHovered())
+				);
+
+				Collector.RegisterOneFrameMaterialProxy(VertexColorVisualizationMaterialInstance);
+				Mesh.MaterialRenderProxy = VertexColorVisualizationMaterialInstance;
+
+				bDebugMaterialRenderProxySet = true;
+			}
+#endif
+		};
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
@@ -875,9 +941,10 @@ void FGeometryCollectionSceneProxy::GetDynamicMeshElements(const TArray<const FS
 					int32 SingleCaptureIndex;
 					bool bOutputVelocity;
 					GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+					bOutputVelocity |= AlwaysHasVelocity();
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity);
+					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity);
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 					*/
 
@@ -896,6 +963,9 @@ void FGeometryCollectionSceneProxy::GetDynamicMeshElements(const TArray<const FS
 						Mesh.BatchHitProxyId = Section.HitProxy ? Section.HitProxy->Id : FHitProxyId();
 					}
 				#endif
+
+					SetDebugMaterial(Mesh);
+
 					Collector.AddMesh(ViewIndex, Mesh);
 				}
 			}
@@ -945,6 +1015,9 @@ void FGeometryCollectionSceneProxy::GetDynamicMeshElements(const TArray<const FS
 						Mesh.BatchHitProxyId = Section.HitProxy ? Section.HitProxy->Id : FHitProxyId();
 					}
 				#endif
+
+					SetDebugMaterial(Mesh);
+
 					Collector.AddMesh(ViewIndex, Mesh);
 				}
 			}
@@ -953,7 +1026,7 @@ void FGeometryCollectionSceneProxy::GetDynamicMeshElements(const TArray<const FS
 			// bone selection is already contained in the rendered colors
 			// #note: This renders the geometry again but with the bone selection material.  Ideally we'd have one render pass and one
 			// material.
-			if ((bShowBoneColors || bEnableBoneSelection) && !bSuppressSelectionMaterial)
+			if ((bShowBoneColors || bEnableBoneSelection) && !bSuppressSelectionMaterial && Materials.IsValidIndex(BoneSelectionMaterialID))
 			{
 				FMaterialRenderProxy* MaterialRenderProxy = Materials[BoneSelectionMaterialID]->GetRenderProxy();
 
@@ -1031,11 +1104,7 @@ void FGeometryCollectionSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 			FRayTracingInstance RayTracingInstance;
 			RayTracingInstance.Geometry = &RayTracingGeometry;
-			RayTracingInstance.InstanceTransforms.Reserve(DynamicData->Transforms.Num());
-			for (int32 TransformIndex = 0; TransformIndex < DynamicData->Transforms.Num(); ++TransformIndex)
-			{
-				RayTracingInstance.InstanceTransforms.Emplace(GetLocalToWorld());
-			}
+			RayTracingInstance.InstanceTransforms.Emplace(GetLocalToWorld());
 
 			// Grab the material proxies we'll be using for each section
 			TArray<FMaterialRenderProxy*, TInlineAllocator<32>> MaterialProxies;
@@ -1091,24 +1160,24 @@ void FGeometryCollectionSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 				}
 #endif
 				//#TODO: bone color, bone selection and render bound?
-				
-				FRWBuffer* VertexBuffer = RayTracingDynamicVertexBuffer.NumBytes > 0 ? &RayTracingDynamicVertexBuffer : nullptr;
-
-				const uint32 VertexCount = Section.MaxVertexIndex + 1;
-				Context.DynamicRayTracingGeometriesToUpdate.Add(
-					FRayTracingDynamicGeometryUpdateParams
-					{
-						RayTracingInstance.Materials,
-						false,
-						VertexCount,
-						VertexCount * (uint32)sizeof(FVector3f),
-						RayTracingGeometry.Initializer.TotalPrimitiveCount,
-						&RayTracingGeometry,
-						VertexBuffer,
-						true
-					}
-				);
 			}
+
+			FRWBuffer* VertexBuffer = RayTracingDynamicVertexBuffer.NumBytes > 0 ? &RayTracingDynamicVertexBuffer : nullptr;
+
+			const uint32 VertexCount = MaxVertexIndex + 1;
+			Context.DynamicRayTracingGeometriesToUpdate.Add(
+				FRayTracingDynamicGeometryUpdateParams
+				{
+					RayTracingInstance.Materials,
+					false,
+					VertexCount,
+					VertexCount * (uint32)sizeof(FVector3f),
+					RayTracingGeometry.Initializer.TotalPrimitiveCount,
+					&RayTracingGeometry,
+					VertexBuffer,
+					true
+				}
+			);
 
 			RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 
@@ -1149,7 +1218,8 @@ void FGeometryCollectionSceneProxy::UpdatingRayTracingGeometry_RenderingThread(F
 		if (RayTracingGeometry.Initializer.TotalPrimitiveCount > 0)
 		{
 			RayTracingGeometry.Initializer.IndexBuffer = InIndexBuffer->IndexBufferRHI;
-			RayTracingGeometry.UpdateRHI();
+			// Create the ray tracing geometry but delay the acceleration structure build.
+			RayTracingGeometry.CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority::Skip);
 		}
 
 		bGeometryResourceUpdated = false;
@@ -1181,6 +1251,7 @@ HHitProxy* FGeometryCollectionSceneProxy::CreateHitProxies(UPrimitiveComponent* 
 	// In order to be able to click on static meshes when they're batched up, we need to have catch all default
 	// hit proxy to return.
 	HHitProxy* DefaultHitProxy = FPrimitiveSceneProxy::CreateHitProxies(Component, OutHitProxies);
+	WholeObjectHitProxyColor = DefaultHitProxy->Id.GetColor();
 
 	// @todo FractureTools - Reconcile with subsection hit proxies.  Subsection is a draw call per hit proxy but is not suitable per-vertex as written
 	if (bEnableBoneSelection)
@@ -1199,6 +1270,8 @@ HHitProxy* FGeometryCollectionSceneProxy::CreateHitProxies(UPrimitiveComponent* 
 	else if (Component->GetOwner())
 	{
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
+		// Note the below-created subsection hitproxies are never drawn, because the per-vertex hitproxy 
+		// rendering path is always on for geometry collections (i.e., USE_PER_VERTEX_HITPROXY_ID is 1)
 		const int32 NumTransforms = (Sections.Num() > 0) ? SubSectionHitProxies.Num() / Sections.Num(): 0;
 		for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); ++SectionIndex)
 		{
@@ -1452,6 +1525,7 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 
 		UMaterialInterface* MaterialInterface = bValidMeshSection ? Component->GetMaterial(MeshSection.MaterialID) : nullptr;
 
+		// TODO: PROG_RASTER (Implement programmable raster support)
 		const bool bInvalidMaterial = !MaterialInterface || MaterialInterface->GetBlendMode() != BLEND_Opaque;
 		if (bInvalidMaterial)
 		{
@@ -1482,6 +1556,7 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 		check(MaterialInterface->GetBlendMode() == BLEND_Opaque);
 
 		MaterialSections[SectionIndex].ShadingMaterialProxy = MaterialInterface->GetRenderProxy();
+		MaterialSections[SectionIndex].RasterMaterialProxy  = MaterialInterface->GetRenderProxy(); // TODO: PROG_RASTER (Implement programmable raster support)
 		MaterialSections[SectionIndex].MaterialIndex = MeshSection.MaterialID;
 	}
 
@@ -1547,6 +1622,12 @@ FNaniteGeometryCollectionSceneProxy::FNaniteGeometryCollectionSceneProxy(UGeomet
 
 		InstanceLocalBounds[GeometryIndex] = FRenderBounds();
 	}
+}
+
+SIZE_T FNaniteGeometryCollectionSceneProxy::GetTypeHash() const
+{
+	static size_t UniquePointer;
+	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
 FPrimitiveViewRelevance FNaniteGeometryCollectionSceneProxy::GetViewRelevance(const FSceneView* View) const
@@ -1622,6 +1703,25 @@ void FNaniteGeometryCollectionSceneProxy::GetNaniteResourceInfo(uint32& Resource
 	ResourceID = NaniteResourceID;
 	HierarchyOffset = NaniteHierarchyOffset;
 	ImposterIndex = INDEX_NONE;	// Imposters are not supported (yet?)
+}
+
+Nanite::FResourceMeshInfo FNaniteGeometryCollectionSceneProxy::GetResourceMeshInfo() const
+{
+	Nanite::FResources& Resource = GeometryCollection->NaniteData->NaniteResource;
+
+	Nanite::FResourceMeshInfo OutInfo;
+
+	OutInfo.NumClusters = Resource.NumClusters;
+	OutInfo.NumNodes = Resource.NumHierarchyNodes;
+	OutInfo.NumVertices = Resource.NumInputVertices;
+	OutInfo.NumTriangles = Resource.NumInputTriangles;
+	OutInfo.NumMaterials = MaterialMaxIndex + 1;
+	OutInfo.DebugName = GeometryCollection->GetFName();
+
+	// TODO: SegmentMapping
+	OutInfo.NumSegments = 0;
+
+	return MoveTemp(OutInfo);
 }
 
 void FNaniteGeometryCollectionSceneProxy::SetConstantData_RenderThread(FGeometryCollectionConstantData* NewConstantData, bool ForceInit)

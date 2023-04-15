@@ -76,11 +76,12 @@ public:
 	FNiagaraSystemSimulationPtr GetSoloSystemSimulation() const { return ensure(IsValid() && SystemInstance->IsSolo()) ? SystemInstance->GetSystemSimulation() : nullptr; }
 
 	FNiagaraSystemInstanceID GetSystemInstanceID() const { ensure(IsValid()); return SystemInstance->GetId(); }
-
-	int32 GetNumMaterials() const;
+	
 	void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials);
 	UMaterialInterface* GetMaterialOverride(const UNiagaraRendererProperties* InProps, int32 InMaterialSubIndex) const;
 	void SetOnMaterialsUpdated(const FOnMaterialsUpdated& Delegate) { OnMaterialsUpdatedDelegate = Delegate; }
+
+	void GetStreamingMeshInfo(const FBoxSphereBounds& OwnerBounds, FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const;
 
 	bool GetParticleValueVec3_DebugOnly(TArray<FVector>& OutValues, FName EmitterName, FName ValueName) const;
 	bool GetParticleValues_DebugOnly(TArray<float>& OutValues, FName EmitterName, FName ValueName) const;
@@ -118,6 +119,7 @@ public:
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(IsPendingSpawn, const)
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(Reset,)
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(ManualTick,)
+	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(SimCacheTick_GameThread,)
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(SetTickBehavior,)
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(GetTickBehavior,)
 	NIAGARA_SYSTEM_INSTANCE_CONTROLLER_SHIM(AdvanceSimulation,)
@@ -157,6 +159,7 @@ private:
 	void SetVariable(FName InVariableName, FVector4f InValue);
 	void SetVariable(FName InVariableName, FLinearColor InValue);
 	void SetVariable(FName InVariableName, FQuat4f InValue);
+	void SetVariable(FName InVariableName, const FMatrix44f& InValue);
 	void SetVariable(FName InVariableName, TWeakObjectPtr<UObject> Object);
 	void SetVariable(FName InVariableName, TWeakObjectPtr<UMaterialInterface> Object);
 	void SetVariable(FName InVariableName, TWeakObjectPtr<UStaticMesh> Object);

@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
 #include "Animation/AnimSequence.h"
-#include "AnimTimelineTrack.h"
-#include "AnimTimelineTrack_Notifies.h"
-#include "AnimTimelineTrack_NotifiesPanel.h"
-#include "AnimTimelineTrack_Curves.h"
-#include "AnimTimelineTrack_Curve.h"
-#include "AnimTimelineTrack_FloatCurve.h"
-#include "AnimTimelineTrack_VectorCurve.h"
-#include "AnimTimelineTrack_TransformCurve.h"
-#include "AnimTimelineTrack_Attributes.h"
-#include "AnimTimelineTrack_PerBoneAttributes.h"
-#include "AnimTimelineTrack_Attribute.h"
+#include "AnimTimeline/AnimTimelineTrack.h"
+#include "AnimTimeline/AnimTimelineTrack_Notifies.h"
+#include "AnimTimeline/AnimTimelineTrack_NotifiesPanel.h"
+#include "AnimTimeline/AnimTimelineTrack_Curves.h"
+#include "AnimTimeline/AnimTimelineTrack_Curve.h"
+#include "AnimTimeline/AnimTimelineTrack_FloatCurve.h"
+#include "AnimTimeline/AnimTimelineTrack_VectorCurve.h"
+#include "AnimTimeline/AnimTimelineTrack_TransformCurve.h"
+#include "AnimTimeline/AnimTimelineTrack_Attributes.h"
+#include "AnimTimeline/AnimTimelineTrack_PerBoneAttributes.h"
+#include "AnimTimeline/AnimTimelineTrack_Attribute.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "Framework/Commands/UICommandList.h"
 #include "IAnimationEditor.h"
@@ -22,8 +22,10 @@
 #include "IPersonaPreviewScene.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimPreviewInstance.h"
+#include "AnimTimelineClipboard.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "ScopedTransaction.h"
-
+#include "Animation/AnimCurveTypes.h"
 
 #define LOCTEXT_NAMESPACE "FAnimModel_AnimSequence"
 
@@ -42,25 +44,14 @@ FAnimModel_AnimSequenceBase::FAnimModel_AnimSequenceBase(const TSharedRef<IPerso
 		bElementNodeDisplayFlag = false;
 	}
 
-	AnimSequenceBase->RegisterOnNotifyChanged(UAnimSequenceBase::FOnNotifyChanged::CreateRaw(this, &FAnimModel_AnimSequenceBase::RefreshSnapTimes));
-	
-	if(GEditor)
-	{
-		GEditor->RegisterForUndo(this);
-	}
+	AnimSequenceBase->RegisterOnNotifyChanged(UAnimSequenceBase::FOnNotifyChanged::CreateRaw(this, &FAnimModel_AnimSequenceBase::RefreshSnapTimes));	
 
 	AnimSequenceBase->GetDataModel()->GetModifiedEvent().AddRaw(this, &FAnimModel_AnimSequenceBase::OnDataModelChanged);
 }
 
 FAnimModel_AnimSequenceBase::~FAnimModel_AnimSequenceBase()
 {
-	if(GEditor)
-	{
-		GEditor->UnregisterForUndo(this);
-	}
-
 	AnimSequenceBase->UnregisterOnNotifyChanged(this);
-
 	AnimSequenceBase->GetDataModel()->GetModifiedEvent().RemoveAll(this);
 }
 
@@ -88,9 +79,9 @@ void FAnimModel_AnimSequenceBase::Initialize()
 		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CanEditSelectedCurves));
 
 	CommandList->MapAction(
-		Commands.RemoveSelectedCurves,
-		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::RemoveSelectedCurves));
-
+		Commands.CopySelectedCurveNames,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CopySelectedCurveNamesToClipboard));
+	
 	CommandList->MapAction(
 		Commands.DisplayFrames,
 		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::SetDisplayFormat, EFrameNumberDisplayFormats::Frames),
@@ -142,14 +133,40 @@ void FAnimModel_AnimSequenceBase::Initialize()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &FAnimModel_AnimSequenceBase::IsSnapChecked, FAnimModel::FSnapType::MontageSection.Type),
 		FIsActionButtonVisible::CreateSP(this, &FAnimModel_AnimSequenceBase::IsSnapAvailable, FAnimModel::FSnapType::MontageSection.Type));
+
+	CommandList->MapAction(
+		FGenericCommands::Get().Copy,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CopyToClipboard),
+		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CanCopyToClipboard));
+
+	CommandList->MapAction(
+		Commands.PasteDataIntoCurve,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::PasteDataFromClipboardToSelectedCurve),
+		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CanPasteDataFromClipboardToSelectedCurve));
+
+	CommandList->MapAction(
+		FGenericCommands::Get().Paste,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::PasteFromClipboard),
+		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CanPasteFromClipboard));
+	
+	CommandList->MapAction(
+		FGenericCommands::Get().Cut,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CutToClipboard),
+		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::CanCutToClipboard));
+
+	CommandList->MapAction(
+		FGenericCommands::Get().Delete,
+		FExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::RemoveSelectedCurves),
+		FCanExecuteAction::CreateSP(this, &FAnimModel_AnimSequenceBase::AreAnyCurvesSelected));
 }
+
 
 void FAnimModel_AnimSequenceBase::RefreshTracks()
 {
 	ClearTrackSelection();
 
 	// Clear all tracks
-	RootTracks.Empty();
+	ClearRootTracks();
 
 	// Add notifies
 	RefreshNotifyTracks();
@@ -183,7 +200,7 @@ void FAnimModel_AnimSequenceBase::RefreshNotifyTracks()
 	}
 
 	NotifyRoot->ClearChildren();
-	RootTracks.Add(NotifyRoot.ToSharedRef());
+	AddRootTrack(NotifyRoot.ToSharedRef());
 
 	if(!NotifyPanel.IsValid())
 	{
@@ -203,7 +220,7 @@ void FAnimModel_AnimSequenceBase::RefreshCurveTracks()
 	}
 
 	CurveRoot->ClearChildren();
-	RootTracks.Add(CurveRoot.ToSharedRef());
+	AddRootTrack(CurveRoot.ToSharedRef());
 
 	// Next add a track for each float curve
 	const FAnimationCurveData& AnimationModelCurveData = AnimSequenceBase->GetDataModel()->GetCurveData();
@@ -222,7 +239,7 @@ void FAnimModel_AnimSequenceBase::RefreshCurveTracks()
 		}
 
 		AdditiveRoot->ClearChildren();
-		RootTracks.Add(AdditiveRoot.ToSharedRef());
+		AddRootTrack(AdditiveRoot.ToSharedRef());
 
 		// Next add a track for each transform curve
 		for(const FTransformCurve& TransformCurve : AnimationModelCurveData.TransformCurves)
@@ -284,7 +301,7 @@ void FAnimModel_AnimSequenceBase::RefreshAttributeTracks()
 		}
 
 		AttributesRoot->ClearChildren();
-		RootTracks.Add(AttributesRoot.ToSharedRef());
+		AddRootTrack(AttributesRoot.ToSharedRef());
 			   
 		TMap<FName, TSharedPtr<FAnimTimelineTrack_PerBoneAttributes>> BoneTracks;
 
@@ -323,6 +340,7 @@ void FAnimModel_AnimSequenceBase::OnDataModelChanged(const EAnimDataModelNotifyT
 	switch(NotifyType)
 	{ 
 		case EAnimDataModelNotifyType::CurveAdded:
+		case EAnimDataModelNotifyType::CurveChanged:
 		case EAnimDataModelNotifyType::CurveRemoved:
 		case EAnimDataModelNotifyType::TrackAdded:
 		case EAnimDataModelNotifyType::TrackChanged:
@@ -424,14 +442,6 @@ void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 				FSmartName TrackName;
 				if (AnimSequenceBase->GetSkeleton()->GetSmartNameByUID(USkeleton::AnimCurveMappingName, CurveName.UID, TrackName))
 				{
-					// Stop editing this curve in the external editor window
-					FSmartName Name;
-					ERawCurveTrackTypes Type;
-					int32 CurveEditIndex;
-					FloatCurveTrack->GetCurveEditInfo(0, Name, Type, CurveEditIndex);
-					IAnimationEditor::FCurveEditInfo EditInfo(Name, Type, CurveEditIndex);
-					OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ EditInfo }));
-
 					Controller.RemoveCurve(FloatCurveId);
 					bDeletedCurve = true;
 				}
@@ -451,20 +461,6 @@ void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 				FSmartName CurveToDelete;
 				if (AnimSequenceBase->GetSkeleton()->GetSmartNameByUID(USkeleton::AnimTrackCurveMappingName, CurveName.UID, CurveToDelete))
 				{
-					// Stop editing these curves in the external editor window
-					TArray<IAnimationEditor::FCurveEditInfo> CurveEditInfo;
-					for(int32 CurveIndex = 0; CurveIndex < TransformCurveTrack->GetCurves().Num(); ++CurveIndex)
-					{
-						FSmartName Name;
-						ERawCurveTrackTypes Type;
-						int32 CurveEditIndex;
-						TransformCurveTrack->GetCurveEditInfo(CurveIndex, Name, Type, CurveEditIndex);
-						IAnimationEditor::FCurveEditInfo EditInfo(Name, Type, CurveEditIndex);
-						CurveEditInfo.Add(EditInfo);
-					}
-
-					OnStopEditingCurves.ExecuteIfBound(CurveEditInfo);
-
 					Controller.RemoveCurve(TransformCurveId);
 					bDeletedCurve = true;
 				}
@@ -484,6 +480,31 @@ void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 		}
 	}
 }
+
+
+void FAnimModel_AnimSequenceBase::CopySelectedCurveNamesToClipboard()
+{
+	TArray<FString> TrackNames; 
+	for(TSharedRef<FAnimTimelineTrack>& SelectedTrack : SelectedTracks)
+	{
+		if(SelectedTrack->IsA<FAnimTimelineTrack_FloatCurve>())
+		{
+			TSharedRef<FAnimTimelineTrack_FloatCurve> FloatCurveTrack = StaticCastSharedRef<FAnimTimelineTrack_FloatCurve>(SelectedTrack);
+			TrackNames.Add(FloatCurveTrack->GetName().DisplayName.ToString());
+		}
+		else if(SelectedTrack->IsA<FAnimTimelineTrack_TransformCurve>())
+		{
+			TSharedRef<FAnimTimelineTrack_TransformCurve> TransformCurveTrack = StaticCastSharedRef<FAnimTimelineTrack_TransformCurve>(SelectedTrack);
+			TrackNames.Add(TransformCurveTrack->GetName().DisplayName.ToString());
+		}
+
+	}
+	if (!TrackNames.IsEmpty())
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*FString::Join(TrackNames, TEXT("\n")));
+	}
+}
+
 
 void FAnimModel_AnimSequenceBase::SetDisplayFormat(EFrameNumberDisplayFormats InFormat)
 {
@@ -515,17 +536,114 @@ bool FAnimModel_AnimSequenceBase::IsDisplaySecondaryChecked() const
 	return GetDefault<UPersonaOptions>()->bTimelineDisplayFormatSecondary;
 }
 
-void FAnimModel_AnimSequenceBase::HandleUndoRedo()
+bool FAnimModel_AnimSequenceBase::AreAnyCurvesSelected() const
 {
-	// Close any curves that are no longer editable
-	for (const FFloatCurve& FloatCurve : AnimSequenceBase->GetDataModel()->GetCurveData().FloatCurves)
+	if (!SelectedTracks.IsEmpty())
 	{
-		if(FloatCurve.GetCurveTypeFlag(AACF_Metadata))
+		for (const TSharedRef<FAnimTimelineTrack>& SelectedTrack : SelectedTracks)
 		{
-			IAnimationEditor::FCurveEditInfo CurveEditInfo(FloatCurve.Name, ERawCurveTrackTypes::RCT_Float, 0);
-			OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ CurveEditInfo }));
+			if (SelectedTrack->IsA<FAnimTimelineTrack_Curve>())
+			{
+				return true;
+			}
 		}
 	}
+
+	return false;
+}
+
+void FAnimModel_AnimSequenceBase::CopyToClipboard() const
+{
+	if (!SelectedTracks.IsEmpty())
+	{
+		if (UAnimTimelineClipboardContent * ClipboardContent = UAnimTimelineClipboardContent::Create())
+		{
+			FAnimTimelineClipboardUtilities::CopySelectedTracksToClipboard(SelectedTracks, ClipboardContent);
+			FAnimTimelineClipboardUtilities::CopyContentToClipboard(ClipboardContent);
+		}
+		else
+		{
+			UE_LOG(LogAnimation, Warning, TEXT("Failed to get create valid clipboard object for Animation Timeline while attempting to copy data"));
+		}
+	}
+}
+
+bool FAnimModel_AnimSequenceBase::CanCopyToClipboard()
+{
+	if (!SelectedTracks.IsEmpty())
+	{
+		for (const TSharedRef<FAnimTimelineTrack> & Track : SelectedTracks)
+		{
+			if (!Track->SupportsCopy())
+			{
+				return false;
+			}
+		}
+	}
+	else
+	{
+		return false;
+	}
+	
+	return true;
+}
+
+void FAnimModel_AnimSequenceBase::PasteDataFromClipboardToSelectedCurve()
+{
+	if (const UAnimTimelineClipboardContent* ClipboardContent = FAnimTimelineClipboardUtilities::GetContentFromClipboard())
+	{
+		// Setup for modifying animation sequence 
+		const FScopedTransaction Transaction(LOCTEXT("AnimSequenceBase_PasteCurveData", "Paste Data To Selected Curve"));
+		AnimSequenceBase->Modify();
+
+		// Paste data
+		FAnimTimelineClipboardUtilities::OverwriteSelectedCurveDataFromClipboard(ClipboardContent, SelectedTracks, AnimSequenceBase);
+	}
+	else
+	{
+		UE_LOG(LogAnimation, Warning, TEXT("Failed to get valid clipboard for Animation Timeline while attempting to paste data"));
+	}
+}
+
+bool FAnimModel_AnimSequenceBase::CanPasteDataFromClipboardToSelectedCurve()
+{
+	return FAnimTimelineClipboardUtilities::CanOverwriteSelectedCurveDataFromClipboard(SelectedTracks);
+}
+
+void FAnimModel_AnimSequenceBase::PasteFromClipboard()
+{
+	if (const UAnimTimelineClipboardContent* ClipboardContent = FAnimTimelineClipboardUtilities::GetContentFromClipboard())
+	{
+		// Setup for modifying animation sequence 
+		const FScopedTransaction Transaction(LOCTEXT("AnimSequenceBase_PasteCurves", "Paste"));
+		AnimSequenceBase->Modify();
+
+		// Paste curves from clipboard
+		FAnimTimelineClipboardUtilities::OverwriteOrAddCurvesFromClipboardContent(ClipboardContent, AnimSequenceBase);
+	}
+	else
+	{
+		UE_LOG(LogAnimation, Warning, TEXT("Failed to get valid clipboard for Animation Timeline while attempting to paste data"));
+	}
+}
+
+bool FAnimModel_AnimSequenceBase::CanPasteFromClipboard()
+{
+	const UAnimTimelineClipboardContent* ClipboardContent = FAnimTimelineClipboardUtilities::GetContentFromClipboard();
+	return ClipboardContent && !ClipboardContent->IsEmpty();
+}
+
+void FAnimModel_AnimSequenceBase::CutToClipboard()
+{
+	const FScopedTransaction Transaction(LOCTEXT("AnimSequenceBase_CutCurveSelection", "Cut Selection"));
+	
+	CopyToClipboard();
+	RemoveSelectedCurves();
+}
+
+bool FAnimModel_AnimSequenceBase::CanCutToClipboard()
+{
+	return CanCopyToClipboard();
 }
 
 void FAnimModel_AnimSequenceBase::UpdateRange()

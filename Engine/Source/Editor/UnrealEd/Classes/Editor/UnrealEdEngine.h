@@ -12,6 +12,7 @@
 #include "ISourceControlProvider.h"
 #include "ComponentVisualizer.h"
 #include "ComponentVisualizerManager.h"
+#include "TemplateMapInfo.h"
 #include "UnrealEdEngine.generated.h"
 
 class AGroupActor;
@@ -79,37 +80,6 @@ struct FClassMoveInfo
 
 };
 
-/** Used by new level dialog. */
-USTRUCT()
-struct FTemplateMapInfo
-{
-	GENERATED_USTRUCT_BODY()
-
-	/** The Texture2D associated with this map template */
-	UPROPERTY()
-	TSoftObjectPtr<UTexture2D> ThumbnailTexture;
-
-	/** The Texture associated with this map template */
-	UPROPERTY(config, meta = (AllowedClasses = "Texture2D"))
-	FSoftObjectPath Thumbnail;
-
-	/** The object path to the template map */
-	UPROPERTY(config, meta = (AllowedClasses = "World"))
-	FSoftObjectPath Map;
-
-	/** Optional display name override for this map template  */
-	UPROPERTY(config)
-	FText DisplayName;
-
-	/* Optional category used for sorting */
-	UPROPERTY(config)
-	FString Category;
-
-	FTemplateMapInfo()
-	{
-	}
-};
-
 class FPerformanceMonitor;
 
 
@@ -169,6 +139,10 @@ public:
 	/** Cooker server incase we want to cook on the side while editing... */
 	UPROPERTY()
 	TObjectPtr<class UCookOnTheFlyServer> CookServer;
+
+	/** When deleting actors, these types should not generate warnings when references will be broken (this should only be types that don't affect gameplay) */
+	UPROPERTY()
+	TArray<TObjectPtr<UClass>> ClassesToIgnoreDeleteReferenceWarning;
 
 	/** A list of packages dirtied this tick */
 	TArray<TWeakObjectPtr<UPackage>> PackagesDirtiedThisTick;
@@ -798,10 +772,6 @@ public:
 	 */
 	virtual bool CanSavePackage( UPackage* PackageToSave );
 
-	/** Converts kismet based matinees in the current level to matinees controlled via matinee actors */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	void ConvertMatinees() {}
-
 	/**
 	 * Updates the volume actor visibility for all viewports based on the passed in volume class
 	 *
@@ -847,7 +817,7 @@ public:
 	static void GetSortedVolumeClasses( TArray< UClass* >* VolumeClasses );
 
 	/**
-	 * Checks the destination level visibility and warns the user if he is trying to paste to a hidden level, offering the option to cancel the operation or unhide the level that is hidden
+	 * Checks the destination level visibility and warns the user if they are trying to paste to a hidden level, offering the option to cancel the operation or unhide the level that is hidden
 	 * 
 	 * @param InWorld			World context
 	 */
@@ -896,9 +866,6 @@ public:
 	/** Gets the project default map templates without any runtime overrides */
 	const TArray<FTemplateMapInfo>& GetProjectDefaultMapTemplates() const;
 
-	/** Called after files are deleted to perform necessary cleanups. */
-	void OnSourceControlFilesDeleted(const TArray<FString>& InDeletedFiles);
-
 protected:
 
 	/** Called when global editor selection changes */
@@ -923,11 +890,6 @@ protected:
 
 	/** Instance responsible for monitoring this editor's performance */
 	FPerformanceMonitor* PerformanceMonitor;
-
-	/** Handle to the registered OnMatineeEditorClosed delegate. */
-	FDelegateHandle OnMatineeEditorClosedDelegateHandle;
-	/** Handle to the registered UpdateEdModeOnMatineeClose delegate. */
-	FDelegateHandle UpdateEdModeOnMatineeCloseDelegateHandle;
 
 	/** Whether the pivot has been moved independently */
 	bool bPivotMovedIndependently;
@@ -956,6 +918,9 @@ private:
 
 	/** Transient unsaved version of template map infos used by the editor. */
 	TArray<FTemplateMapInfo> TemplateMapInfoCache;
+
+	/** Proxy for a cotf server running in a separate process */
+	class FExternalCookOnTheFlyServer* ExternalCookOnTheFlyServer = nullptr;
 
 	/**
 	* Internal helper function to count how many dirty packages require checkout.

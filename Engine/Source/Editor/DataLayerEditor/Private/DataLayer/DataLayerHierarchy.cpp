@@ -1,21 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataLayerHierarchy.h"
-#include "DataLayerMode.h"
-#include "DataLayerActorTreeItem.h"
-#include "DataLayersActorDescTreeItem.h"
-#include "DataLayerTreeItem.h"
-#include "DataLayerMode.h"
+
 #include "DataLayer/DataLayerEditorSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "DataLayerActorTreeItem.h"
+#include "DataLayerMode.h"
+#include "DataLayerTreeItem.h"
+#include "DataLayersActorDescTreeItem.h"
+#include "Delegates/Delegate.h"
 #include "Engine/Engine.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
-#include "Editor.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "ISceneOutlinerMode.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
 #include "Modules/ModuleManager.h"
-#include "WorldPartition/WorldPartitionHelpers.h"
+#include "SceneOutlinerStandaloneTypes.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "WorldDataLayersTreeItem.h"
+#include "WorldPartition/ActorDescContainerCollection.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/IWorldPartitionEditorModule.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 
 TUniquePtr<FDataLayerHierarchy> FDataLayerHierarchy::Create(FDataLayerMode* Mode, const TWeakObjectPtr<UWorld>& World)
 {
@@ -31,6 +46,7 @@ FDataLayerHierarchy::FDataLayerHierarchy(FDataLayerMode* Mode, const TWeakObject
 	, bShowUnloadedActors(true)
 	, bShowOnlySelectedActors(false)
 	, bHighlightSelectedDataLayers(false)
+	, bShowLevelInstanceContent(false)
 {
 	if (GEngine)
 	{
@@ -49,6 +65,9 @@ FDataLayerHierarchy::FDataLayerHierarchy(FDataLayerMode* Mode, const TWeakObject
 			World->PersistentLevel->OnLoadedActorAddedToLevelEvent.AddRaw(this, &FDataLayerHierarchy::OnLoadedActorAdded);
 			World->PersistentLevel->OnLoadedActorRemovedFromLevelEvent.AddRaw(this, &FDataLayerHierarchy::OnLoadedActorRemoved);
 		}
+
+		World->OnWorldPartitionInitialized().AddRaw(this, &FDataLayerHierarchy::OnWorldPartitionInitialized);
+		World->OnWorldPartitionUninitialized().AddRaw(this, &FDataLayerHierarchy::OnWorldPartitionUninitialized);
 		
 		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 		{
@@ -82,6 +101,9 @@ FDataLayerHierarchy::~FDataLayerHierarchy()
 			RepresentingWorld->PersistentLevel->OnLoadedActorAddedToLevelEvent.RemoveAll(this);
 			RepresentingWorld->PersistentLevel->OnLoadedActorRemovedFromLevelEvent.RemoveAll(this);
 		}
+
+		RepresentingWorld->OnWorldPartitionInitialized().RemoveAll(this);
+		RepresentingWorld->OnWorldPartitionUninitialized().RemoveAll(this);
 		
 		if (UWorldPartition* WorldPartition = RepresentingWorld->GetWorldPartition())
 		{
@@ -97,20 +119,20 @@ FDataLayerHierarchy::~FDataLayerHierarchy()
 }
 
 
-bool FDataLayerHierarchy::IsDataLayerPartOfSelection(const UDataLayer* DataLayer) const
+bool FDataLayerHierarchy::IsDataLayerPartOfSelection(const UDataLayerInstance* DataLayerInstance) const
 {
 	if (!bShowOnlySelectedActors)
 	{
 		return true;
 	}
 
-	if (UDataLayerEditorSubsystem::Get()->DoesDataLayerContainSelectedActors(DataLayer))
+	if (UDataLayerEditorSubsystem::Get()->DoesDataLayerContainSelectedActors(DataLayerInstance))
 	{
 		return true;
 	}
 
 	bool bFoundSelected = false;
-	DataLayer->ForEachChild([this, &bFoundSelected](const UDataLayer* Child)
+	DataLayerInstance->ForEachChild([this, &bFoundSelected](const UDataLayerInstance* Child)
 	{
 		bFoundSelected = IsDataLayerPartOfSelection(Child);
 		return !bFoundSelected; // Continue iterating if not found
@@ -118,7 +140,7 @@ bool FDataLayerHierarchy::IsDataLayerPartOfSelection(const UDataLayer* DataLayer
 	return bFoundSelected;
 };
 
-FSceneOutlinerTreeItemPtr FDataLayerHierarchy::CreateDataLayerTreeItem(UDataLayer* InDataLayer, bool bInForce) const
+FSceneOutlinerTreeItemPtr FDataLayerHierarchy::CreateDataLayerTreeItem(UDataLayerInstance* InDataLayer, bool bInForce) const
 {
 	FSceneOutlinerTreeItemPtr Item = Mode->CreateItemFor<FDataLayerTreeItem>(InDataLayer, bInForce);
 	if (FDataLayerTreeItem* DataLayerTreeItem = Item ? Item->CastTo<FDataLayerTreeItem>() : nullptr)
@@ -128,43 +150,72 @@ FSceneOutlinerTreeItemPtr FDataLayerHierarchy::CreateDataLayerTreeItem(UDataLaye
 	return Item;
 }
 
+UWorld* FDataLayerHierarchy::GetOwningWorld() const
+{
+	UWorld* World = RepresentingWorld.Get();
+	return World ? World->PersistentLevel->GetWorld() : nullptr;
+}
+
 void FDataLayerHierarchy::CreateItems(TArray<FSceneOutlinerTreeItemPtr>& OutItems) const
 {
-	const AWorldDataLayers* WorldDataLayers = RepresentingWorld.Get()->GetWorldDataLayers();
-	if (!WorldDataLayers)
-	{
-		return;
-	}
+	const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetOwningWorld());
 
-	auto IsDataLayerShown = [this](const UDataLayer* DataLayer)
+	auto IsDataLayerShown = [this](const UDataLayerInstance* DataLayerInstance)
 	{
-		const bool bIsRuntimeDataLayer = DataLayer->IsRuntime();
-		return ((bIsRuntimeDataLayer && bShowRuntimeDataLayers) || (!bIsRuntimeDataLayer && bShowEditorDataLayers)) && IsDataLayerPartOfSelection(DataLayer);
+		const bool bIsRuntimeDataLayer = DataLayerInstance->IsRuntime();
+		return ((bIsRuntimeDataLayer && bShowRuntimeDataLayers) || (!bIsRuntimeDataLayer && bShowEditorDataLayers)) && IsDataLayerPartOfSelection(DataLayerInstance);
 	};
 
-	WorldDataLayers->ForEachDataLayer([this, &OutItems, IsDataLayerShown](UDataLayer* DataLayer)
+	auto CreateDataLayerTreeItems = [this, DataLayerSubsystem, &OutItems, IsDataLayerShown](const ULevel* OuterLevel)
 	{
-		if (IsDataLayerShown(DataLayer))
+		DataLayerSubsystem->ForEachDataLayer([this, &OutItems, IsDataLayerShown](UDataLayerInstance* DataLayer)
 		{
-			if (FSceneOutlinerTreeItemPtr DataLayerItem = CreateDataLayerTreeItem(DataLayer))
+			if (IsDataLayerShown(DataLayer))
 			{
-				OutItems.Add(DataLayerItem);
+				if (FSceneOutlinerTreeItemPtr DataLayerItem = CreateDataLayerTreeItem(DataLayer))
+				{
+					OutItems.Add(DataLayerItem);
+				}
 			}
+			return true;
+		}, OuterLevel);
+	};
+
+	CreateDataLayerTreeItems(GetOwningWorld()->PersistentLevel);
+
+	// CurrentLevel represents the current level if different than the PersistentLevel
+	ULevel* CurrentLevel = (GetOwningWorld()->GetCurrentLevel() && !GetOwningWorld()->GetCurrentLevel()->IsPersistentLevel()) ? GetOwningWorld()->GetCurrentLevel() : nullptr;
+	if (CurrentLevel != nullptr)
+	{
+		CreateDataLayerTreeItems(CurrentLevel);
+	}
+
+	// Create Tree items for WorldDataLayers(WDL) which are part of the current world (not subworld) but are not the ULevel::AWorldDataLayers.
+	// The only way to create data layer instances for in these WDL is to right-click on the WDL tree item and select create new.
+	// We cannot rely on creating the WDL tree item only if it has DataLayerInstance (::FindOrCreateParentItem), as it prevents to initially create a new instance.
+	DataLayerSubsystem->ForEachWorldDataLayer([this, &OutItems](AWorldDataLayers* WorldDataLayers)
+	{
+		if (!WorldDataLayers->IsSubWorldDataLayers() && !WorldDataLayers->IsTheMainWorldDataLayers())
+		{
+			FSceneOutlinerTreeItemPtr WorldDataLayerItem = Mode->CreateItemFor<FWorldDataLayersTreeItem>(WorldDataLayers, true);
+			OutItems.Add(WorldDataLayerItem);
 		}
+
 		return true;
 	});
 
 	if (bShowDataLayerActors)
 	{
-		for (AActor* Actor : FActorRange(RepresentingWorld.Get()))
+		for (AActor* Actor : FActorRange(GetOwningWorld()))
 		{
-			if (Actor->HasDataLayers())
+			// Only consider actors of current level (if there is one)
+			if (!CurrentLevel || (Actor->GetLevel() == CurrentLevel))
 			{
-				for (const UDataLayer* DataLayer : Actor->GetDataLayerObjects())
+				for (const UDataLayerInstance* DataLayerInstance : Actor->GetDataLayerInstances())
 				{
-					if (IsDataLayerShown(DataLayer))
+					if (IsDataLayerShown(DataLayerInstance))
 					{
-						if (FSceneOutlinerTreeItemPtr DataLayerActorItem = Mode->CreateItemFor<FDataLayerActorTreeItem>(FDataLayerActorTreeItemData(Actor, const_cast<UDataLayer*>(DataLayer))))
+						if (FSceneOutlinerTreeItemPtr DataLayerActorItem = Mode->CreateItemFor<FDataLayerActorTreeItem>(FDataLayerActorTreeItemData(Actor, const_cast<UDataLayerInstance*>(DataLayerInstance))))
 						{
 							OutItems.Add(DataLayerActorItem);
 						}
@@ -175,26 +226,42 @@ void FDataLayerHierarchy::CreateItems(TArray<FSceneOutlinerTreeItemPtr>& OutItem
 
 		if (bShowUnloadedActors)
 		{
-			if (UWorldPartition* const WorldPartition = RepresentingWorld.Get()->GetWorldPartition())
+			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(GetOwningWorld());
+			if (UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(GetOwningWorld()))
 			{
-				FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [this, WorldPartition, WorldDataLayers, IsDataLayerShown, &OutItems](const FWorldPartitionActorDesc* ActorDesc)
+				WorldPartitionSubsystem->ForEachWorldPartition([this, CurrentLevel, LevelInstanceSubsystem, DataLayerSubsystem, IsDataLayerShown, &OutItems](UWorldPartition* WorldPartition)
 				{
-					if (ActorDesc != nullptr && !ActorDesc->IsLoaded())
+					// Skip WorldPartition if it's not the one of the current level (the editing level instance)
+					// or if we hide the content of level instances
+					UWorld* OuterWorld = WorldPartition->GetTypedOuter<UWorld>();
+					ULevel* OuterLevel = OuterWorld ? OuterWorld->PersistentLevel : nullptr;
+					if ((CurrentLevel && (CurrentLevel != OuterLevel)) ||
+						(!bShowLevelInstanceContent && OuterLevel && LevelInstanceSubsystem && LevelInstanceSubsystem->GetOwningLevelInstance(OuterLevel)))
 					{
-						for (const FName& DataLayerName : ActorDesc->GetDataLayers())
+						return true;
+					}
+
+					// Create an FDataLayerActorDescTreeItem for each unloaded actor of this WorldPartition
+					FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [this, DataLayerSubsystem, IsDataLayerShown, &OutItems](const FWorldPartitionActorDesc* ActorDesc)
+					{
+						if (ActorDesc != nullptr && !ActorDesc->IsLoaded())
 						{
-							if (const UDataLayer* const DataLayer = WorldDataLayers->GetDataLayerFromName(DataLayerName))
+							for (const FName& DataLayerInstanceName : ActorDesc->GetDataLayerInstanceNames())
 							{
-								if (IsDataLayerShown(DataLayer))
+								if (const UDataLayerInstance* const DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
 								{
-									if (const FSceneOutlinerTreeItemPtr ActorDescItem = Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(ActorDesc->GetGuid(), WorldPartition, const_cast<UDataLayer*>(DataLayer))))
+									if (IsDataLayerShown(DataLayerInstance))
 									{
-										OutItems.Add(ActorDescItem);
+										if (const FSceneOutlinerTreeItemPtr ActorDescItem = Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(ActorDesc->GetGuid(), ActorDesc->GetContainer(), const_cast<UDataLayerInstance*>(DataLayerInstance))))
+										{
+											OutItems.Add(ActorDescItem);
+										}
 									}
 								}
 							}
 						}
-					}
+						return true;
+					});
 					return true;
 				});
 			}
@@ -206,9 +273,9 @@ FSceneOutlinerTreeItemPtr FDataLayerHierarchy::FindOrCreateParentItem(const ISce
 {
 	if (const FDataLayerTreeItem* DataLayerTreeItem = Item.CastTo<FDataLayerTreeItem>())
 	{
-		if (UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer())
+		if (UDataLayerInstance* DataLayerInstance = DataLayerTreeItem->GetDataLayer())
 		{
-			if (UDataLayer* ParentDataLayer = DataLayer->GetParent())
+			if (UDataLayerInstance* ParentDataLayer = DataLayerInstance->GetParent())
 			{
 				if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(ParentDataLayer))
 				{
@@ -219,33 +286,48 @@ FSceneOutlinerTreeItemPtr FDataLayerHierarchy::FindOrCreateParentItem(const ISce
 					return CreateDataLayerTreeItem(ParentDataLayer, true);
 				}
 			}
+			else
+			{
+				// Parent WorldDataLayers
+				if (AWorldDataLayers* OuterWorldDataLayers = DataLayerInstance->GetOuterAWorldDataLayers())
+				{
+					if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(OuterWorldDataLayers))
+					{
+						return *ParentItem;
+					}
+					else if (bCreate)
+					{
+						return Mode->CreateItemFor<FWorldDataLayersTreeItem>(OuterWorldDataLayers, true);
+					}
+				}
+			}
 		}
 	}
 	else if (const FDataLayerActorTreeItem* DataLayerActorTreeItem = Item.CastTo<FDataLayerActorTreeItem>())
 	{
-		if (UDataLayer* DataLayer = DataLayerActorTreeItem->GetDataLayer())
+		if (UDataLayerInstance* DataLayerInstance = DataLayerActorTreeItem->GetDataLayer())
 		{
-			if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(DataLayer))
+			if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(DataLayerInstance))
 			{
 				return *ParentItem;
 			}
 			else if (bCreate)
 			{
-				return CreateDataLayerTreeItem(DataLayer, true);
+				return CreateDataLayerTreeItem(DataLayerInstance, true);
 			}
 		}
 	}
 	else if (const FDataLayerActorDescTreeItem* DataLayerActorDescTreeItem = Item.CastTo<FDataLayerActorDescTreeItem>())
 	{
-		if (UDataLayer* DataLayer = DataLayerActorDescTreeItem->GetDataLayer())
+		if (UDataLayerInstance* DataLayerInstance = DataLayerActorDescTreeItem->GetDataLayer())
 		{
-			if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(DataLayer))
+			if (const FSceneOutlinerTreeItemPtr* ParentItem = Items.Find(DataLayerInstance))
 			{
 				return *ParentItem;
 			}
 			else if (bCreate)
 			{
-				return CreateDataLayerTreeItem(DataLayer, true);
+				return CreateDataLayerTreeItem(DataLayerInstance, true);
 			}
 		}
 	}
@@ -267,20 +349,20 @@ void FDataLayerHierarchy::OnLevelActorsAdded(const TArray<AActor*>& InActors)
 		return;
 	}
 
-	if (UWorld* CurrentWorld = RepresentingWorld.Get())
+	if (UWorld* OwningWorld = GetOwningWorld())
 	{
 		FSceneOutlinerHierarchyChangedData EventData;
 		EventData.Type = FSceneOutlinerHierarchyChangedData::Added;
 
 		for (AActor* Actor : InActors)
 		{
-			if (Actor != nullptr && Actor->HasDataLayers() && Actor->GetWorld() == CurrentWorld)
+			if (Actor && (Actor->GetWorld() == OwningWorld))
 			{
-				TArray<const UDataLayer*> DataLayers = Actor->GetDataLayerObjects();
-				EventData.Items.Reserve(DataLayers.Num());
-				for (const UDataLayer* DataLayer : DataLayers)
+				TArray<const UDataLayerInstance*> DataLayerInstances = Actor->GetDataLayerInstances();
+				EventData.Items.Reserve(DataLayerInstances.Num());
+				for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 				{
-					EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorTreeItem>(FDataLayerActorTreeItemData(Actor, const_cast<UDataLayer*>(DataLayer))));
+					EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorTreeItem>(FDataLayerActorTreeItemData(Actor, const_cast<UDataLayerInstance*>(DataLayerInstance))));
 				}
 			}
 		}
@@ -294,24 +376,19 @@ void FDataLayerHierarchy::OnLevelActorsAdded(const TArray<AActor*>& InActors)
 
 void FDataLayerHierarchy::OnLevelActorsRemoved(const TArray<AActor*>& InActors)
 {
-	if(UWorld* CurrentWorld = RepresentingWorld.Get())
+	if (UWorld* OwningWorld = GetOwningWorld())
 	{
 		FSceneOutlinerHierarchyChangedData EventData;
 		EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
 
-		if (AWorldDataLayers* WorldDataLayers = CurrentWorld->GetWorldDataLayers())
+		for (AActor* Actor : InActors)
 		{
-			for (AActor* Actor : InActors)
+			if (Actor != nullptr)
 			{
-				if (Actor != nullptr && Actor->HasDataLayers())
+				const TArray<const UDataLayerInstance*> DataLayerInstances = Actor->GetDataLayerInstances();
+				for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 				{
-					// It is possible here that Actor doesn't have world anymore
-					const TArray<const UDataLayer*> DataLayers = Actor->GetDataLayerObjects(WorldDataLayers);
-					EventData.ItemIDs.Reserve(DataLayers.Num());
-					for (const UDataLayer* DataLayer : DataLayers)
-					{
-						EventData.ItemIDs.Add(FDataLayerActorTreeItem::ComputeTreeItemID(Actor, DataLayer));
-					}
+					EventData.ItemIDs.Add(FDataLayerActorTreeItem::ComputeTreeItemID(Actor, DataLayerInstance));
 				}
 			}
 		}
@@ -331,16 +408,16 @@ void FDataLayerHierarchy::OnLevelActorAdded(AActor* InActor)
 void FDataLayerHierarchy::OnActorDataLayersChanged(const TWeakObjectPtr<AActor>& InActor)
 {
 	AActor* Actor = InActor.Get();
-	if (Actor && RepresentingWorld.Get() == Actor->GetWorld())
+	if (Actor && (GetOwningWorld() == Actor->GetWorld()))
 	{
 		FullRefreshEvent();
 	}
 }
 
-void FDataLayerHierarchy::OnDataLayerChanged(const EDataLayerAction Action, const TWeakObjectPtr<const UDataLayer>& ChangedDataLayer, const FName& ChangedProperty)
+void FDataLayerHierarchy::OnDataLayerChanged(const EDataLayerAction Action, const TWeakObjectPtr<const UDataLayerInstance>& ChangedDataLayer, const FName& ChangedProperty)
 {
-	const UDataLayer* DataLayer = ChangedDataLayer.Get();
-	if ((DataLayer && (RepresentingWorld.Get() == DataLayer->GetWorld())) || (Action == EDataLayerAction::Delete) || (Action == EDataLayerAction::Reset))
+	const UDataLayerInstance* DataLayerInstance = ChangedDataLayer.Get();
+	if (DataLayerInstance || (Action == EDataLayerAction::Delete) || (Action == EDataLayerAction::Reset))
 	{
 		FullRefreshEvent();
 	}
@@ -356,9 +433,19 @@ void FDataLayerHierarchy::OnLevelActorListChanged()
 	FullRefreshEvent();
 }
 
+void FDataLayerHierarchy::OnWorldPartitionInitialized(UWorldPartition* InWorldPartition)
+{
+	FullRefreshEvent();
+}
+
+void FDataLayerHierarchy::OnWorldPartitionUninitialized(UWorldPartition* InWorldPartition)
+{
+	FullRefreshEvent();
+}
+
 void FDataLayerHierarchy::OnLevelAdded(ULevel* InLevel, UWorld* InWorld)
 {
-	if (InLevel != nullptr && RepresentingWorld.Get() == InWorld)
+	if (!InWorld->IsGameWorld() && InLevel && (GetOwningWorld() == InWorld))
 	{
 		OnLevelActorsAdded(InLevel->Actors);
 	}
@@ -366,7 +453,7 @@ void FDataLayerHierarchy::OnLevelAdded(ULevel* InLevel, UWorld* InWorld)
 
 void FDataLayerHierarchy::OnLevelRemoved(ULevel* InLevel, UWorld* InWorld)
 {
-	if (InLevel != nullptr && RepresentingWorld.Get() == InWorld)
+	if (!InWorld->IsGameWorld() && InLevel && (GetOwningWorld() == InWorld))
 	{
 		OnLevelActorsRemoved(InLevel->Actors);
 	}
@@ -383,18 +470,23 @@ void FDataLayerHierarchy::OnLoadedActorAdded(AActor& InActor)
 	OnLevelActorAdded(&InActor);
 
 	// Remove corresponding actor desc items
-	if (RepresentingWorld.Get() == InActor.GetWorld() && InActor.HasDataLayers())
+	if ((GetOwningWorld() == InActor.GetWorld()))
 	{
-		FSceneOutlinerHierarchyChangedData EventData;
-		EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
-		
-		const TArray<const UDataLayer*> DataLayers = InActor.GetDataLayerObjects();
-		EventData.ItemIDs.Reserve(DataLayers.Num());
-		for (const UDataLayer* DataLayer : DataLayers)
+		const TArray<const UDataLayerInstance*> DataLayerInstances = InActor.GetDataLayerInstances();
+		if (DataLayerInstances.Num() > 0)
 		{
-			EventData.ItemIDs.Add(FDataLayerActorDescTreeItem::ComputeTreeItemID(InActor.GetActorGuid(), DataLayer));
+			FSceneOutlinerHierarchyChangedData EventData;
+			EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
+			EventData.ItemIDs.Reserve(DataLayerInstances.Num());
+			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(GetOwningWorld());
+			TArray<AActor*> ParentActors = LevelInstanceSubsystem->GetParentLevelInstanceActors(InActor.GetLevel());
+
+			for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
+			{
+				EventData.ItemIDs.Add(FDataLayerActorDescTreeItem::ComputeTreeItemID(InActor.GetActorGuid(), DataLayerInstance, ParentActors));
+			}
+			HierarchyChangedEvent.Broadcast(EventData);
 		}
-		HierarchyChangedEvent.Broadcast(EventData);
 	}
 }
 
@@ -404,19 +496,21 @@ void FDataLayerHierarchy::OnLoadedActorRemoved(AActor& InActor)
 	OnLevelActorDeleted(&InActor);
 
 	// Add any corresponding actor desc items for this actor
-	UWorldPartition* const WorldPartition = RepresentingWorld.Get()->GetWorldPartition();
-	if (RepresentingWorld.Get() == InActor.GetWorld() && InActor.HasDataLayers() && WorldPartition != nullptr)
+	UWorldPartition* const WorldPartition = RepresentingWorld->GetWorldPartition();
+	if ((GetOwningWorld() == InActor.GetWorld()) && WorldPartition != nullptr)
 	{
-		FSceneOutlinerHierarchyChangedData EventData;
-		EventData.Type = FSceneOutlinerHierarchyChangedData::Added;
-
-		const TArray<const UDataLayer*> DataLayers = InActor.GetDataLayerObjects();
-		EventData.Items.Reserve(DataLayers.Num());
-		for (const UDataLayer* DataLayer : DataLayers)
+		const TArray<const UDataLayerInstance*> DataLayerInstances = InActor.GetDataLayerInstances();
+		if (DataLayerInstances.Num() > 0)
 		{
-			EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(InActor.GetActorGuid(), WorldPartition, const_cast<UDataLayer*>(DataLayer))));
+			FSceneOutlinerHierarchyChangedData EventData;
+			EventData.Type = FSceneOutlinerHierarchyChangedData::Added;
+			EventData.Items.Reserve(DataLayerInstances.Num());
+			for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
+			{
+				EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(InActor.GetActorGuid(), WorldPartition, const_cast<UDataLayerInstance*>(DataLayerInstance))));
+			}
+			HierarchyChangedEvent.Broadcast(EventData);
 		}
-		HierarchyChangedEvent.Broadcast(EventData);
     }
 }
 
@@ -427,20 +521,20 @@ void FDataLayerHierarchy::OnActorDescAdded(FWorldPartitionActorDesc* InActorDesc
 		return;
 	}
 
-	UWorldPartition* const WorldPartition = RepresentingWorld.Get()->GetWorldPartition();
-	const AWorldDataLayers* const WorldDataLayers = RepresentingWorld.Get()->GetWorldDataLayers();
-	const TArray<FName>& DataLayerNames = InActorDesc->GetDataLayers();
+	UWorldPartition* const WorldPartition = RepresentingWorld->GetWorldPartition();
+	const UDataLayerSubsystem* const DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetOwningWorld());
+	const TArray<FName>& DataLayerInstanceNames = InActorDesc->GetDataLayerInstanceNames();
 
-	if (WorldDataLayers != nullptr && RepresentingWorld->GetWorldPartition() == WorldPartition && DataLayerNames.Num() > 0)
+	if (DataLayerSubsystem && DataLayerInstanceNames.Num() > 0)
 	{
 		FSceneOutlinerHierarchyChangedData EventData;
 		EventData.Type = FSceneOutlinerHierarchyChangedData::Added;
 
-		EventData.Items.Reserve(DataLayerNames.Num());
-		for (const FName& DataLayerName : DataLayerNames)
+		EventData.Items.Reserve(DataLayerInstanceNames.Num());
+		for (const FName& DataLayerInstanceName : DataLayerInstanceNames)
 		{
-			const UDataLayer* const DataLayer = WorldDataLayers->GetDataLayerFromName(DataLayerName);
-			EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(InActorDesc->GetGuid(), WorldPartition, const_cast<UDataLayer*>(DataLayer))));
+			const UDataLayerInstance* const DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName);
+			EventData.Items.Add(Mode->CreateItemFor<FDataLayerActorDescTreeItem>(FDataLayerActorDescTreeItemData(InActorDesc->GetGuid(), WorldPartition, const_cast<UDataLayerInstance*>(DataLayerInstance))));
 		}
 		HierarchyChangedEvent.Broadcast(EventData);
 	}
@@ -453,19 +547,20 @@ void FDataLayerHierarchy::OnActorDescRemoved(FWorldPartitionActorDesc* InActorDe
 		return;
 	}
 
-	const AWorldDataLayers* const WorldDataLayers = RepresentingWorld.Get()->GetWorldDataLayers();
-	const TArray<FName>& DataLayerNames = InActorDesc->GetDataLayers();
+	const UDataLayerSubsystem* const DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetOwningWorld());
+	const TArray<FName>& DataLayerInstanceNames = InActorDesc->GetDataLayerInstanceNames();
 	
-	if (WorldDataLayers != nullptr && DataLayerNames.Num() > 0)
+	if (DataLayerSubsystem && DataLayerInstanceNames.Num() > 0)
 	{
 		FSceneOutlinerHierarchyChangedData EventData;
 		EventData.Type = FSceneOutlinerHierarchyChangedData::Removed;
-		EventData.ItemIDs.Reserve(DataLayerNames.Num());
+		EventData.ItemIDs.Reserve(DataLayerInstanceNames.Num());
+		TArray<AActor*> ParentActors = FDataLayerActorDescTreeItem::GetParentActors(InActorDesc->GetContainer());
 
-		for (const FName& DataLayerName : DataLayerNames)
+		for (const FName& DataLayerInstanceName : DataLayerInstanceNames)
 		{
-			const UDataLayer* const DataLayer = WorldDataLayers->GetDataLayerFromName(DataLayerName);
-			EventData.ItemIDs.Add(FDataLayerActorDescTreeItem::ComputeTreeItemID(InActorDesc->GetGuid(), DataLayer));
+			const UDataLayerInstance* const DataLayer = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName);
+			EventData.ItemIDs.Add(FDataLayerActorDescTreeItem::ComputeTreeItemID(InActorDesc->GetGuid(), DataLayer, ParentActors));
 		}
 		HierarchyChangedEvent.Broadcast(EventData);
 	}

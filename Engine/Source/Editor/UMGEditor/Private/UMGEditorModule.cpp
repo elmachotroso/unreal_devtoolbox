@@ -10,6 +10,10 @@
 #include "Settings/WidgetDesignerSettings.h"
 #include "WidgetBlueprint.h"
 #include "Animation/WidgetAnimation.h"
+#include "EdGraphUtilities.h"
+#include "Graph/GraphFunctionDetailsCustomization.h"
+#include "Graph/UMGGraphPanelPinFactory.h"
+#include "Graph/GraphVariableDetailsCustomization.h"
 
 #include "AssetToolsModule.h"
 #include "IAssetTypeActions.h"
@@ -36,10 +40,11 @@
 
 #include "BlueprintEditorModule.h"
 #include "PropertyEditorModule.h"
-#include "DynamicEntryBoxDetails.h"
-#include "ListViewBaseDetails.h"
+#include "Customizations/DynamicEntryBoxDetails.h"
+#include "Customizations/IBlueprintWidgetCustomizationExtender.h"
+#include "Customizations/ListViewBaseDetails.h"
 #include "WidgetBlueprintThumbnailRenderer.h"
-#include "WidgetThumbnailCustomization.h"
+#include "Customizations/WidgetThumbnailCustomization.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -80,9 +85,22 @@ public:
 
 		DesignerExtensibilityManager->AddDesignerExtensionFactory(SWidgetDesignerNavigation::MakeDesignerExtension());
 
+		PropertyBindingExtensibilityManager = MakeShared<FPropertyBindingExtensibilityManager>();
+
 		// Register widget blueprint compiler we do this no matter what.
 		IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
 		KismetCompilerModule.GetCompilers().Add(&WidgetBlueprintCompiler);
+
+		// Add Customization for variable in Graph editor
+		if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
+		{
+			BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
+			BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
+		}
+		else
+		{
+			ModuleChangedHandle = FModuleManager::Get().OnModulesChanged().AddRaw(this, &FUMGEditorModule::HandleModuleChanged);
+		}
 
 		// Register asset types
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
@@ -108,6 +126,9 @@ public:
 		PropertyModule.RegisterCustomClassLayout(TEXT("ListViewBase"), FOnGetDetailCustomizationInstance::CreateStatic(&FListViewBaseDetails::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout(TEXT("WidgetBlueprint"), FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetThumbnailCustomization::MakeInstance));
 	
+		GraphPanelPinFactory = MakeShared<FUMGGraphPanelPinFactory>();
+		FEdGraphUtilities::RegisterVisualPinFactory(GraphPanelPinFactory);
+
 		CVarThumbnailRenderEnable->AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&FUMGEditorModule::ThumbnailRenderingEnabled));
 	}
 
@@ -115,6 +136,7 @@ public:
 	virtual void ShutdownModule() override
 	{
 		FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+		FModuleManager::Get().OnModulesChanged().Remove(ModuleChangedHandle);
 
 		if (UObjectInitialized() && bThumbnailRenderersRegistered && IConsoleManager::Get().FindConsoleVariable(TEXT("UMGEditor.ThumbnailRenderer.Enable"))->GetBool())
 		{
@@ -124,8 +146,20 @@ public:
 		MenuExtensibilityManager.Reset();
 		ToolBarExtensibilityManager.Reset();
 
-		IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
-		KismetCompilerModule.GetCompilers().Remove(&WidgetBlueprintCompiler);
+		if (IKismetCompilerInterface* KismetCompilerModule = FModuleManager::GetModulePtr<IKismetCompilerInterface>("KismetCompiler"))
+		{
+			KismetCompilerModule->GetCompilers().Remove(&WidgetBlueprintCompiler);
+		}
+
+		// Remove Customization for variable in Graph editor
+		if (BlueprintVariableCustomizationHandle.IsValid() || BlueprintFunctionCustomizationHandle.IsValid())
+		{
+			if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>("Kismet"))
+			{
+				BlueprintEditorModule->UnregisterVariableCustomization(FProperty::StaticClass(), BlueprintVariableCustomizationHandle);
+				BlueprintEditorModule->UnregisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), BlueprintFunctionCustomizationHandle);
+			}
+		}
 
 		// Unregister all the asset types that we registered
 		if ( FModuleManager::Get().IsModuleLoaded("AssetTools") )
@@ -154,7 +188,15 @@ public:
 		FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
 		if (PropertyModule != nullptr)
 		{
+			PropertyModule->UnregisterCustomClassLayout(TEXT("DynamicEntryBoxBase"));
+			PropertyModule->UnregisterCustomClassLayout(TEXT("DynamicEntryBox"));
+			PropertyModule->UnregisterCustomClassLayout(TEXT("ListViewBase"));
 			PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetBlueprint"));
+		}
+
+		if (UObjectInitialized() && !IsEngineExitRequested())
+		{
+			FEdGraphUtilities::UnregisterVisualPinFactory(GraphPanelPinFactory);
 		}
 
 		//// Unregister the setting
@@ -171,6 +213,7 @@ public:
 	virtual TSharedPtr<FExtensibilityManager> GetMenuExtensibilityManager() override { return MenuExtensibilityManager; }
 	virtual TSharedPtr<FExtensibilityManager> GetToolBarExtensibilityManager() override { return ToolBarExtensibilityManager; }
 	virtual TSharedPtr<FDesignerExtensibilityManager> GetDesignerExtensibilityManager() override { return DesignerExtensibilityManager; }
+	virtual TSharedPtr<FPropertyBindingExtensibilityManager> GetPropertyBindingExtensibilityManager() override { return PropertyBindingExtensibilityManager; }
 
 	/** Register settings objects. */
 	void RegisterSettings()
@@ -218,11 +261,65 @@ public:
 		return &WidgetBlueprintCompiler;
 	}
 
+	/** Register common tabs */
+	virtual FOnRegisterTabs& OnRegisterTabsForEditor() override
+	{
+		return RegisterTabsForEditor;
+	}
+
+	virtual void AddWidgetEditorToolbarExtender(FWidgetEditorToolbarExtender&& InToolbarExtender) override
+	{
+		WidgetEditorToolbarExtenders.Add(MoveTemp(InToolbarExtender));
+	}
+
+	virtual TArrayView<FWidgetEditorToolbarExtender> GetAllWidgetEditorToolbarExtenders() override
+	{
+		return WidgetEditorToolbarExtenders;
+	}
+
+	virtual void AddWidgetCustomizationExtender(const TSharedRef<IBlueprintWidgetCustomizationExtender>& WidgetCustomizationExtender) override
+	{
+		WidgetCustomizationExtenders.AddUnique(WidgetCustomizationExtender);
+	}
+
+	virtual void RemoveWidgetCustomizationExtender(const TSharedRef<IBlueprintWidgetCustomizationExtender>& WidgetCustomizationExtender) override
+	{
+		WidgetCustomizationExtenders.RemoveSingleSwap(WidgetCustomizationExtender, false);
+	}
+
+	virtual TArrayView<TSharedRef<IBlueprintWidgetCustomizationExtender>> GetAllWidgetCustomizationExtenders() override
+	{
+		return WidgetCustomizationExtenders;
+	}
+
+	virtual FOnRegisterLayoutExtensions& OnRegisterLayoutExtensions() override 
+	{
+		return RegisterLayoutExtensions; 
+	}
+
 private:
 	void RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action)
 	{
 		AssetTools.RegisterAssetTypeActions(Action);
 		CreatedAssetTypeActions.Add(Action);
+	}
+
+	void HandleModuleChanged(FName ModuleName, EModuleChangeReason ChangeReason)
+	{
+		const FName KismetModule = "Kismet";
+		if (ModuleName == KismetModule && ChangeReason == EModuleChangeReason::ModuleLoaded)
+		{
+			if (!BlueprintVariableCustomizationHandle.IsValid())
+			{
+				if (FBlueprintEditorModule* BlueprintEditorModule = FModuleManager::GetModulePtr<FBlueprintEditorModule>(KismetModule))
+				{
+					BlueprintVariableCustomizationHandle = BlueprintEditorModule->RegisterVariableCustomization(FProperty::StaticClass(), FOnGetVariableCustomizationInstance::CreateStatic(&FGraphVariableDetailsCustomization::MakeInstance));
+					BlueprintFunctionCustomizationHandle = BlueprintEditorModule->RegisterFunctionCustomization(UK2Node_FunctionEntry::StaticClass(), FOnGetFunctionCustomizationInstance::CreateStatic(&FGraphFunctionDetailsCustomization::MakeInstance));
+				}
+			}
+			FModuleManager::Get().OnModulesChanged().Remove(ModuleChangedHandle);
+			ModuleChangedHandle.Reset();
+		}
 	}
 
 	void OnPostEngineInit()
@@ -258,6 +355,8 @@ private:
 	TSharedPtr<FExtensibilityManager> MenuExtensibilityManager;
 	TSharedPtr<FExtensibilityManager> ToolBarExtensibilityManager;
 	TSharedPtr<FDesignerExtensibilityManager> DesignerExtensibilityManager;
+	TSharedPtr<FPropertyBindingExtensibilityManager> PropertyBindingExtensibilityManager;
+	TSharedPtr<FGraphPanelPinFactory> GraphPanelPinFactory;
 
 	FDelegateHandle SequenceEditorHandle;
 	FDelegateHandle MarginTrackEditorCreateTrackEditorHandle;
@@ -267,10 +366,27 @@ private:
 	/** All created asset type actions.  Cached here so that we can unregister it during shutdown. */
 	TArray< TSharedPtr<IAssetTypeActions> > CreatedAssetTypeActions;
 
+	/** All toolbar extenders. Utilized by tool palette */
+	TArray<FWidgetEditorToolbarExtender> WidgetEditorToolbarExtenders;
+	TArray<TSharedRef<IBlueprintWidgetCustomizationExtender>> WidgetCustomizationExtenders;
+
 	USequencerSettings* Settings;
 
 	/** Compiler customization for Widgets */
 	FWidgetBlueprintCompiler WidgetBlueprintCompiler;
+
+	/** */
+	FOnRegisterTabs RegisterTabsForEditor;
+
+	/** Support layout extensions */
+	FOnRegisterLayoutExtensions	RegisterLayoutExtensions;
+
+	/** Handle for the FModuleManager::OnModulesChanged */
+	FDelegateHandle ModuleChangedHandle;
+	/** Handle for FBlueprintEditorModule::RegisterVariableCustomization */
+	FDelegateHandle BlueprintVariableCustomizationHandle;
+	/** Handle for FBlueprintEditorModule::RegisterFunctionCustomization */
+	FDelegateHandle BlueprintFunctionCustomizationHandle;
 
 	bool bThumbnailRenderersRegistered;
 	bool bOnPostEngineInitHandled;

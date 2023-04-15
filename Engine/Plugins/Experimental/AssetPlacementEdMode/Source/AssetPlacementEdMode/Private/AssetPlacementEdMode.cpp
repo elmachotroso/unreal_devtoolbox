@@ -10,6 +10,7 @@
 #include "EditorModeManager.h"
 #include "Selection.h"
 #include "EngineUtils.h"
+#include "AssetPlacementEdModeModule.h"
 
 #include "Tools/AssetEditorContextInterface.h"
 #include "Tools/PlacementSelectTool.h"
@@ -26,6 +27,9 @@
 
 #include "Settings/LevelEditorMiscSettings.h"
 #include "Modes/PlacementModeSubsystem.h"
+#include "AssetPlacementEdModeModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AssetPlacementEdMode)
 
 #define LOCTEXT_NAMESPACE "AssetPlacementEdMode"
 
@@ -56,10 +60,16 @@ void UAssetPlacementEdMode::Enter()
 
 	const FAssetPlacementEdModeCommands& PlacementModeCommands = FAssetPlacementEdModeCommands::Get();
 	RegisterTool(PlacementModeCommands.Select, UPlacementModeSelectTool::ToolName, NewObject<UPlacementModeSelectToolBuilder>(this));
-	RegisterTool(PlacementModeCommands.Place, UPlacementModePlacementTool::ToolName, NewObject<UPlacementModePlacementToolBuilder>(this));
-	RegisterTool(PlacementModeCommands.LassoSelect, UPlacementModeLassoSelectTool::ToolName, NewObject<UPlacementModeLassoSelectToolBuilder>(this));
 	RegisterTool(PlacementModeCommands.PlaceSingle, UPlacementModePlaceSingleTool::ToolName, NewObject<UPlacementModePlaceSingleToolBuilder>(this));
-	RegisterTool(PlacementModeCommands.Erase, UPlacementModeEraseTool::ToolName, NewObject<UPlacementModeEraseToolBuilder>(this));
+
+#if !UE_IS_COOKED_EDITOR
+	if (AssetPlacementEdModeUtil::AreInstanceWorkflowsEnabled())
+	{
+		RegisterTool(PlacementModeCommands.Place, UPlacementModePlacementTool::ToolName, NewObject<UPlacementModePlacementToolBuilder>(this));
+		RegisterTool(PlacementModeCommands.LassoSelect, UPlacementModeLassoSelectTool::ToolName, NewObject<UPlacementModeLassoSelectToolBuilder>(this));
+		RegisterTool(PlacementModeCommands.Erase, UPlacementModeEraseTool::ToolName, NewObject<UPlacementModeEraseToolBuilder>(this));
+	}
+#endif // !UE_IS_COOKED_EDITOR
 
 	// Stash the current editor selection, since this mode will modify it.
 	Owner->StoreSelection(AssetPlacementEdModeID);
@@ -71,7 +81,12 @@ void UAssetPlacementEdMode::Enter()
 	// Enable the select tool by default.
 	GetInteractiveToolsContext()->StartTool(UPlacementModeSelectTool::ToolName);
 
-	SMInstanceElementDataUtil::OnSMInstanceElementsEnabledChanged().AddUObject(this, &UAssetPlacementEdMode::OnSMIsntancedElementsEnabledChanged);
+#if !UE_IS_COOKED_EDITOR
+	if (AssetPlacementEdModeUtil::AreInstanceWorkflowsEnabled())
+	{
+		SMInstanceElementDataUtil::OnSMInstanceElementsEnabledChanged().AddUObject(this, &UAssetPlacementEdMode::OnSMIsntancedElementsEnabledChanged);
+	}
+#endif // !UE_IS_COOKED_EDITOR
 }
 
 void UAssetPlacementEdMode::Exit()
@@ -118,14 +133,7 @@ bool UAssetPlacementEdMode::IsSelectionAllowed(AActor* InActor, bool bInSelectio
 	}
 
 	// Otherwise, need to be in selection tool for selection to be allowed
-	if (!bIsInSelectionTool)
-	{
-		return false;
-	}
-
-	// And we need to have a valid palette item.
-	FTypedElementHandle ActorHandle = UEngineElementsLibrary::AcquireEditorActorElementHandle(InActor);
-	return SettingsObjectAsPlacementSettings->DoesActivePaletteSupportElement(ActorHandle);
+	return bIsInSelectionTool;
 }
 
 void UAssetPlacementEdMode::OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
@@ -238,3 +246,4 @@ void UAssetPlacementEdMode::OnSMIsntancedElementsEnabledChanged()
 }
 
 #undef LOCTEXT_NAMESPACE
+

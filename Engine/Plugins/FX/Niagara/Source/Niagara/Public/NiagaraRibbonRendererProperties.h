@@ -67,10 +67,10 @@ struct FNiagaraRibbonShapeCustomVertex
 	FNiagaraRibbonShapeCustomVertex();
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
-	FVector2D Position;
+	FVector2f Position;
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
-	FVector2D Normal;
+	FVector2f Normal;
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
 	float TextureV;
@@ -113,6 +113,8 @@ enum class ENiagaraRibbonUVDistributionMode
 	/** Ribbon UVs will be tiled along the length of the ribbon evenly, based on RibbonUVDistance parameter and the TilingLength scale value, to create 'traintrack' style UVs. NOTE: Dependent on Particle Attribute RibbonUVDistance */
 	TiledFromStartOverRibbonLength UMETA(DisplayName = "Tiled By Distance (By Particles.RibbonUVDistance)")
 };
+
+
 
 /** Defines settings for UV behavior for a UV channel on ribbons. */
 USTRUCT()
@@ -181,6 +183,7 @@ namespace ENiagaraRibbonVFLayout
 		PrevRibbonWidth,
 		PrevRibbonFacing,
 		PrevRibbonTwist,
+		LinkOrder,
 		Num,
 	};
 };
@@ -199,8 +202,8 @@ public:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
-	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter) override;
-	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter) override;
+	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter) override;
+	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter) override;
 #endif
 	//UObject Interface END
 
@@ -210,23 +213,25 @@ public:
 	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
-	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return (InSimTarget == ENiagaraSimTarget::CPUSim); };
-	bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore);
+	virtual const FVertexFactoryType* GetVertexFactoryType() const override;
+	virtual bool IsBackfaceCullingDisabled() const override;
+	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
+	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) override;
 
 #if WITH_EDITOR
-	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
-	virtual void FixMaterial(UMaterial* Material);
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
 	virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
 	virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const override;
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
+	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
+
+	virtual TArray<FNiagaraVariable> GetBoundAttributes() const override; 
 #endif
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 	
 #if WITH_EDITORONLY_DATA
-	bool IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const;
+	virtual bool IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const override;
 #endif
 	//UNiagaraRendererProperties Interface END
 
@@ -275,6 +280,20 @@ private:
 
 public:
 
+	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")	
+	int32 MaxNumRibbons;
+	
+	/**
+	*	Whether we use the CPU or GPU to generate ribbon geometry for CPU systems.
+	*	GPU systems will always use a fully GPU initialization pipeline,
+	*	Will fall back to CPU init when GPU init isn't available.
+	*/ 
+	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")	
+	bool bUseGPUInit;
+
+
+	
+
 	/** If true, the particles are only sorted when using a translucent material. */
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
 	ENiagaraRibbonDrawDirection DrawDirection;
@@ -312,7 +331,7 @@ public:
 	/** Defines the curve tension, or how long the curve's tangents are.
 	  * Ranges from 0 to 1. The higher the value, the sharper the curve becomes.
 	  */
-	UPROPERTY(EditAnywhere, Category = "Tessellation", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, Category = "Tessellation", meta = (ClampMin = "0", ClampMax = "0.99"))
 	float CurveTension;
 
 	/** Defines the tessellation mode allowing custom tessellation parameters or disabling tessellation entirely. */
@@ -418,7 +437,12 @@ public:
 
 	/** If this array has entries, we will create a MaterialInstanceDynamic per Emitter instance from Material and set the Material parameters using the Niagara simulation variables listed.*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
-	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings;
+	FNiagaraRendererMaterialParameters MaterialParameters;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings_DEPRECATED;
+#endif
 
 	/** Implicit binding for previous position */
 	UPROPERTY(Transient)
@@ -454,17 +478,19 @@ public:
 
 	FNiagaraDataSetAccessor<int32>		RibbonIdDataSetAccessor;
 	FNiagaraDataSetAccessor<FNiagaraID>	RibbonFullIDDataSetAccessor;
+	
+	FNiagaraDataSetAccessor<float>		RibbonLinkOrderDataSetAccessor;
 
 	uint32 MaterialParamValidMask = 0;
 	FNiagaraRendererLayout RendererLayout;
 
 protected:
 	void InitBindings();
-	void SetPreviousBindings(const UNiagaraEmitter* SrcEmitter);
+	void SetPreviousBindings(const FVersionedNiagaraEmitter& SrcEmitter);
 
 	void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit);
 
-	virtual bool NeedsMIDsForMaterials() const { return MaterialParameterBindings.Num() > 0; }
+	virtual bool NeedsMIDsForMaterials() const { return MaterialParameters.HasAnyBindings(); }
 private: 
 	static TArray<TWeakObjectPtr<UNiagaraRibbonRendererProperties>> RibbonRendererPropertiesToDeferredInit;
 };

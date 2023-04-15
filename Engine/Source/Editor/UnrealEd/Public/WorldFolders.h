@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/WeakObjectPtr.h"
+#include "Misc/Guid.h"
 #include "WorldFoldersImplementation.h"
 #include "WorldPersistentFolders.h"
 #include "WorldTransientFolders.h"
@@ -28,6 +29,42 @@ struct FActorFolderProps
 	bool bIsExpanded;
 };
 
+USTRUCT()
+struct FActorPlacementFolder
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FName Path;
+
+	UPROPERTY()
+	TWeakObjectPtr<UObject> RootObjectPtr;
+	
+	UPROPERTY()
+	FGuid ActorFolderGuid;
+
+	void Reset()
+	{
+		Path = NAME_None;
+		RootObjectPtr.Reset();
+		ActorFolderGuid.Invalidate();
+	}
+
+	FActorPlacementFolder& operator = (const FFolder& InOtherFolder)
+	{
+		Path = InOtherFolder.GetPath();
+		RootObjectPtr = InOtherFolder.GetRootObjectPtr();
+		ActorFolderGuid = InOtherFolder.GetActorFolderGuid();
+		return *this;
+	}
+
+	FFolder GetFolder() const
+	{
+		FFolder::FRootObject RootObject = FFolder::FRootObject(RootObjectPtr.Get());
+		return ActorFolderGuid.IsValid() ? FFolder(RootObject, ActorFolderGuid) : FFolder(RootObject, Path);
+	}
+};
+
 /** Per-World Actor Folders UObject (used to support undo/redo reliably) */
 UCLASS()
 class UNREALED_API UWorldFolders : public UObject
@@ -43,10 +80,14 @@ public:
 	bool RenameFolder(const FFolder& InOldFolder, const FFolder& InNewFolder);
 	bool IsFolderExpanded(const FFolder& InFolder) const;
 	bool SetIsFolderExpanded(const FFolder& InFolder, bool bIsExpanded);
+	FFolder GetActorEditorContextFolder(bool bMustMatchCurrentLevel) const;
+	bool SetActorEditorContextFolder(const FFolder& InFolder);
+	void PushActorEditorContext();
+	void PopActorEditorContext();
 	bool ContainsFolder(const FFolder& InFolder) const;
 	void ForEachFolder(TFunctionRef<bool(const FFolder&)> Operation);
 	void ForEachFolderWithRootObject(const FFolder::FRootObject& InFolderRootObject, TFunctionRef<bool(const FFolder&)> Operation);
-	void OnWorldSaved();
+	void SaveState();
 	UWorld* GetWorld() const;
 
 	//~ Begin UObject
@@ -68,7 +109,6 @@ private:
 
 	FString GetWorldStateFilename() const;
 	void LoadState();
-	void SaveState();
 
 	TUniquePtr<FWorldPersistentFolders> PersistentFolders;
 	TUniquePtr<FWorldTransientFolders> TransientFolders;
@@ -76,6 +116,11 @@ private:
 	TWeakObjectPtr<UWorld> World;
 	TMap<FFolder, FActorFolderProps> FoldersProperties;
 	TMap<FFolder, FActorFolderProps> LoadedStateFoldersProperties;
+
+	UPROPERTY()
+	FActorPlacementFolder CurrentFolder;
+
+	TArray<FActorPlacementFolder> CurrentFolderStack;
 
 	friend class FWorldFoldersImplementation;
 	friend class FWorldPersistentFolders;

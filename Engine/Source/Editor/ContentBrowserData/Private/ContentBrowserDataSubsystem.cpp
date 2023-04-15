@@ -1,17 +1,76 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContentBrowserDataSubsystem.h"
-#include "ContentBrowserDataSource.h"
+
+#include "Containers/StringView.h"
 #include "Containers/Ticker.h"
-#include "Misc/PackageName.h"
-#include "Misc/Paths.h"
-#include "Features/IModularFeatures.h"
-#include "Stats/Stats.h"
-#include "UObject/UObjectThreadContext.h"
-#include "Settings/ContentBrowserSettings.h"
-#include "Interfaces/IPluginManager.h"
-#include "Framework/Application/SlateApplication.h"
+#include "ContentBrowserDataSource.h"
+#include "ContentBrowserItemPath.h"
 #include "Editor.h"
+#include "Features/IModularFeatures.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
+#include "IContentBrowserDataModule.h"
+#include "Interfaces/IPluginManager.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/PackageName.h"
+#include "Misc/PathViews.h"
+#include "Misc/StringBuilder.h"
+#include "PluginDescriptor.h"
+#include "Settings/ContentBrowserSettings.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Function.h"
+#include "Templates/Less.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/UObjectThreadContext.h"
+
+class FSubsystemCollectionBase;
+class UObject;
+struct FAssetData;
+
+DEFINE_LOG_CATEGORY_STATIC(LogContentBrowserDataSubsystem, Log, All);
+
+namespace ContentBrowserDataSubsystem
+{
+	FAutoConsoleCommand CVarContentBrowserDebug_TryConvertVirtualPath = FAutoConsoleCommand(
+		TEXT("ContentBrowser.Debug.TryConvertVirtualPath"),
+		TEXT("Try to convert virtual path"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() > 0)
+			{
+				const FString& VirtualPath = Args[0];
+				FNameBuilder ConvertedPath;
+				EContentBrowserPathType PathType = IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath(VirtualPath, ConvertedPath);
+				UE_LOG(LogContentBrowserDataSubsystem, Log, TEXT("InputVirtualPath: %s, ConvertedPath: %s, ConvertedPathType: %s"), *VirtualPath, *ConvertedPath, *UEnum::GetValueAsString(PathType));
+			}
+		}
+	));
+
+	FAutoConsoleCommand CVarContentBrowserDebug_ConvertInternalPathToVirtual = FAutoConsoleCommand(
+		TEXT("ContentBrowser.Debug.ConvertInternalPathToVirtual"),
+		TEXT("Convert internal path"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() > 0)
+			{
+				const FString& InternalPath = Args[0];
+				FNameBuilder ConvertedPath;
+				IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(InternalPath, ConvertedPath);
+				UE_LOG(LogContentBrowserDataSubsystem, Log, TEXT("InputInternalPath: %s, ConvertedVirtualPath: %s"), *InternalPath, *ConvertedPath);
+			}
+		}
+	));
+}
 
 void UContentBrowserDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -334,7 +393,7 @@ void UContentBrowserDataSubsystem::EnumerateItemsAtPath(const FName InPath, cons
 	}
 }
 
-bool UContentBrowserDataSubsystem::EnumerateItemsAtPaths(const TArrayView<class FContentBrowserItemPath> InItemPaths, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const
+bool UContentBrowserDataSubsystem::EnumerateItemsAtPaths(const TArrayView<struct FContentBrowserItemPath> InItemPaths, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const
 {
 	for (const auto& ActiveDataSourcePair : ActiveDataSources)
 	{
@@ -403,6 +462,39 @@ FContentBrowserItem UContentBrowserDataSubsystem::GetItemAtPath(const FName InPa
 	});
 	return FoundItem;
 }
+
+TArray<FContentBrowserItemPath> UContentBrowserDataSubsystem::GetAliasesForPath(const FContentBrowserItemPath InPath) const
+{
+	return GetAliasesForPath(InPath.GetInternalPathName());
+}
+
+TArray<FContentBrowserItemPath> UContentBrowserDataSubsystem::GetAliasesForPath(const FSoftObjectPath& InInternalPath) const
+{
+	TArray<FContentBrowserItemPath> Aliases;
+
+	for (const auto& ActiveDataSourcePair : ActiveDataSources)
+	{
+		UContentBrowserDataSource* DataSource = ActiveDataSourcePair.Value;
+		Aliases.Append(DataSource->GetAliasesForPath(InInternalPath));
+	}
+
+	return Aliases;
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TArray<FContentBrowserItemPath> UContentBrowserDataSubsystem::GetAliasesForPath(const FName InInternalPath) const
+{
+	TArray<FContentBrowserItemPath> Aliases;
+
+	for (const auto& ActiveDataSourcePair : ActiveDataSources)
+	{
+		UContentBrowserDataSource* DataSource = ActiveDataSourcePair.Value;
+		Aliases.Append(DataSource->GetAliasesForPath(InInternalPath));
+	}
+
+	return Aliases;
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 bool UContentBrowserDataSubsystem::IsDiscoveringItems(TArray<FText>* OutStatus) const
 {
@@ -708,8 +800,7 @@ void UContentBrowserDataSubsystem::ConvertInternalPathToVirtual(const FStringVie
 		}
 		else
 		{
-			bool bHadClassesPrefix = false;
-			const FStringView MountPointStringView = FContentBrowserVirtualPathTree::GetMountPointFromPath(InPath, bHadClassesPrefix);
+			const FStringView MountPointStringView = FPathViews::GetMountPointNameFromPath(InPath);
 
 			if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(MountPointStringView))
 			{

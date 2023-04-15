@@ -36,6 +36,7 @@ class UK2Node_ExecutePythonScript : public UK2Node_CallFunction
 	virtual bool CanPasteHere(const UEdGraph* TargetGraph) const override;
 	virtual bool IsActionFilteredOut(const class FBlueprintActionFilter& Filter) override;
 	virtual void GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const override;
+	virtual int32 GetNodeRefreshPriority() const override { return EBaseNodeRefreshPriority::Low_UsesDependentWildcard; }
 	//~ End UK2Node Interface.
 
 private:

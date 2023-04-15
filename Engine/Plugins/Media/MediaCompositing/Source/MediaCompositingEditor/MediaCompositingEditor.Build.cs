@@ -12,7 +12,6 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"EditorFramework",
-					"EditorStyle",
 					"EditorWidgets",
 					"Engine",
 					"ImgMedia",
@@ -22,7 +21,6 @@ namespace UnrealBuildTool.Rules
 					"MediaCompositing",
 					"MediaUtils",
 					"MovieScene",
-					"MovieSceneTools",
 					"MovieSceneTracks",
 					"RHI",
 					"Sequencer",
@@ -31,6 +29,12 @@ namespace UnrealBuildTool.Rules
 					"SlateCore",
 					"UnrealEd",
 					"TimeManagement"
+				});
+
+			PublicDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"MovieSceneTools",
 				});
 
 			PrivateIncludePaths.AddRange(

@@ -2,28 +2,30 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+using Horde.Build.Jobs;
+using Horde.Build.Logs;
+using Horde.Build.Server;
+using Horde.Build.Projects;
+using Horde.Build.Streams;
+using Horde.Build.Jobs.Templates;
+using Horde.Build.Jobs.Schedules;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
 using HordeCommon;
-using HordeServer.Collections.Impl;
-using HordeServer.Models;
-using HordeServer.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using PoolId = HordeServer.Utilities.StringId<HordeServer.Models.IPool>;
-using StreamId = HordeServer.Utilities.StringId<HordeServer.Models.IStream>;
-using ProjectId = HordeServer.Utilities.StringId<HordeServer.Models.IProject>;
-using TemplateRefId = HordeServer.Utilities.StringId<HordeServer.Models.TemplateRef>;
-using HordeServer.Api;
-using MongoDB.Bson;
-using System.Linq;
-using HordeServerTests.Stubs.Services;
-using HordeServer.Collections;
-using HordeServer.Utilities;
+using Horde.Build.Jobs.Graphs;
+using Horde.Build.Perforce;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
+	using ProjectId = StringId<IProject>;
+	using StreamId = StringId<IStream>;
+	using TemplateRefId = StringId<TemplateRef>;
 
 	[TestClass]
     public class SchedulerTests : TestSetup
@@ -32,63 +34,65 @@ namespace HordeServerTests
 		StreamId StreamId { get; } = new StreamId("ue5-main");
 		TemplateRefId TemplateRefId { get; } = new TemplateRefId("template1");
 
-		ITemplate Template;
-		HashSet<JobId> InitialJobIds;
+		readonly ITemplate _template;
+		readonly HashSet<JobId> _initialJobIds;
 
 		public SchedulerTests()
 		{
-			IUser Bob = UserCollection.FindOrAddUserByLoginAsync("Bob").Result;
+			IUser bob = UserCollection.FindOrAddUserByLoginAsync("Bob").Result;
 
-			IProject ? Project = ProjectService.Collection.AddOrUpdateAsync(ProjectId, "", "", 0, new ProjectConfig { Name = "UE5" }).Result;
-			Assert.IsNotNull(Project);
+			IProject ? project = ProjectService.Collection.AddOrUpdateAsync(ProjectId, "", "", 0, new ProjectConfig { Name = "UE5" }).Result;
+			Assert.IsNotNull(project);
 
-			Template = TemplateCollection.AddAsync("Test template", null, false, null, null, new List<string>(), new List<Parameter>()).Result;
+			_template = TemplateCollection.AddAsync("Test template").Result;
 
-			InitialJobIds = new HashSet<JobId>(JobCollection.FindAsync().Result.Select(x => x.Id));
-
-			PerforceService.Changes.Clear();
-			PerforceService.AddChange("//UE5/Main", 100, Bob, "", new[] { "code.cpp" });
-			PerforceService.AddChange("//UE5/Main", 101, Bob, "", new[] { "content.uasset" });
-			PerforceService.AddChange("//UE5/Main", 102, Bob, "", new[] { "content.uasset" });
-		}
-
-		async Task<IStream> SetScheduleAsync(CreateScheduleRequest Schedule)
-		{
-			IStream? Stream = await StreamService.GetStreamAsync(StreamId);
-
-			StreamConfig Config = new StreamConfig();
-			Config.Name = "//UE5/Main";
-			Config.Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<string> { TemplateRefId.ToString() } });
-			Config.Templates.Add(new CreateTemplateRefRequest { Id = TemplateRefId.ToString(), Name = "Test", Schedule = Schedule });
-
-			return (await StreamService.StreamCollection.TryCreateOrReplaceAsync(StreamId, Stream, "", "", ProjectId, Config))!; 
-		}
-
-		public async Task<List<IJob>> FileTestHelperAsync(params string[] Files)
-		{
-			IUser Bob = UserCollection.FindOrAddUserByLoginAsync("Bob", "Bob").Result;
+			_initialJobIds = new HashSet<JobId>(JobCollection.FindAsync().Result.Select(x => x.Id));
 
 			PerforceService.Changes.Clear();
-			PerforceService.AddChange("//UE5/Main", 100, Bob, "", new[] { "code.cpp" });
-			PerforceService.AddChange("//UE5/Main", 101, Bob, "", new[] { "content.uasset" });
-			PerforceService.AddChange("//UE5/Main", 102, Bob, "", new[] { "content.uasset" });
-			PerforceService.AddChange("//UE5/Main", 103, Bob, "", new[] { "foo/code.cpp" });
-			PerforceService.AddChange("//UE5/Main", 104, Bob, "", new[] { "bar/code.cpp" });
-			PerforceService.AddChange("//UE5/Main", 105, Bob, "", new[] { "foo/bar/content.uasset" });
-			PerforceService.AddChange("//UE5/Main", 106, Bob, "", new[] { "bar/foo/content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 100, bob, "", new[] { "code.cpp" });
+			PerforceService.AddChange("//UE5/Main", 101, bob, "", new[] { "content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 102, bob, "", new[] { "content.uasset" });
+		}
 
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+		async Task<IStream> SetScheduleAsync(CreateScheduleRequest schedule)
+		{
+			await ScheduleService.ResetAsync();
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.MaxChanges = 10;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { Interval = 1 });
-			Schedule.Files = Files.ToList();
-			await SetScheduleAsync(Schedule);
+			IStream? stream = await StreamService.GetStreamAsync(StreamId);
 
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			StreamConfig config = new StreamConfig();
+			config.Name = "//UE5/Main";
+			config.Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<TemplateRefId> { TemplateRefId } });
+			config.Templates.Add(new TemplateRefConfig { Id = TemplateRefId, Name = "Test", Schedule = schedule });
+
+			return (await CreateOrReplaceStreamAsync(StreamId, stream, ProjectId, config))!; 
+		}
+
+		public async Task<List<IJob>> FileTestHelperAsync(params string[] files)
+		{
+			IUser bob = await UserCollection.FindOrAddUserByLoginAsync("Bob", "Bob");
+
+			PerforceService.Changes.Clear();
+			PerforceService.AddChange("//UE5/Main", 100, bob, "", new[] { "code.cpp" });
+			PerforceService.AddChange("//UE5/Main", 101, bob, "", new[] { "content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 102, bob, "", new[] { "content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 103, bob, "", new[] { "foo/code.cpp" });
+			PerforceService.AddChange("//UE5/Main", 104, bob, "", new[] { "bar/code.cpp" });
+			PerforceService.AddChange("//UE5/Main", 105, bob, "", new[] { "foo/bar/content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 106, bob, "", new[] { "bar/foo/content.uasset" });
+
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
+
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.MaxChanges = 10;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { Interval = 1 });
+			schedule.Files = files.ToList();
+			await SetScheduleAsync(schedule);
+
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
 			return await GetNewJobs();
 		}
@@ -96,392 +100,531 @@ namespace HordeServerTests
 		[TestMethod]
 		public async Task FileTest1Async()
 		{
-			List<IJob> Jobs = await FileTestHelperAsync("....cpp");
-			Assert.AreEqual(3, Jobs.Count);
-			Assert.AreEqual(100, Jobs[0].Change);
-			Assert.AreEqual(103, Jobs[1].Change);
-			Assert.AreEqual(104, Jobs[2].Change);
+			List<IJob> jobs = await FileTestHelperAsync("....cpp");
+			Assert.AreEqual(3, jobs.Count);
+			Assert.AreEqual(100, jobs[0].Change);
+			Assert.AreEqual(103, jobs[1].Change);
+			Assert.AreEqual(104, jobs[2].Change);
 		}
 
 		[TestMethod]
 		public async Task FileTest2Async()
 		{
-			List<IJob> Jobs = await FileTestHelperAsync("/foo/...");
-			Assert.AreEqual(2, Jobs.Count);
-			Assert.AreEqual(103, Jobs[0].Change);
-			Assert.AreEqual(105, Jobs[1].Change);
+			List<IJob> jobs = await FileTestHelperAsync("/foo/...");
+			Assert.AreEqual(2, jobs.Count);
+			Assert.AreEqual(103, jobs[0].Change);
+			Assert.AreEqual(105, jobs[1].Change);
 		}
 
 		[TestMethod]
 		public async Task FileTest3Async()
 		{
-			List<IJob> Jobs = await FileTestHelperAsync("....uasset", "-/bar/...");
-			Assert.AreEqual(3, Jobs.Count);
-			Assert.AreEqual(101, Jobs[0].Change);
-			Assert.AreEqual(102, Jobs[1].Change);
-			Assert.AreEqual(105, Jobs[2].Change);
+			List<IJob> jobs = await FileTestHelperAsync("....uasset", "-/bar/...");
+			Assert.AreEqual(3, jobs.Count);
+			Assert.AreEqual(101, jobs[0].Change);
+			Assert.AreEqual(102, jobs[1].Change);
+			Assert.AreEqual(105, jobs[2].Change);
 		}
 
 		[TestMethod]
 		public void DayScheduleTest()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			Schedule Schedule = new Schedule(RequireSubmittedChange: false);
-			Schedule.Patterns.Add(new SchedulePattern(new List<DayOfWeek> { DayOfWeek.Friday, DayOfWeek.Sunday }, 13 * 60, null, null));
+			Schedule schedule = new Schedule(Clock.UtcNow, requireSubmittedChange: false);
+			schedule.Patterns.Add(new SchedulePattern(new List<DayOfWeek> { DayOfWeek.Friday, DayOfWeek.Sunday }, 13 * 60, null, null));
 
-			DateTimeOffset? NextTime = Schedule.GetNextTriggerTime(StartTime, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0), NextTime!.Value);
+			DateTime? nextTime = schedule.GetNextTriggerTimeUtc(startTime, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0 + 24.0 * 2.0), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0 + 24.0 * 2.0), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0 + 24.0 * 7.0), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0 + 24.0 * 7.0), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0 + 24.0 * 9.0), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0 + 24.0 * 9.0), nextTime!.Value);
 		}
 
 		[TestMethod]
 		public void MulticheduleTest()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			Schedule Schedule = new Schedule(RequireSubmittedChange: false);
-			Schedule.Patterns.Add(new SchedulePattern(null, 13 * 60, 14 * 60, 15));
+			Schedule schedule = new Schedule(Clock.UtcNow, requireSubmittedChange: false);
+			schedule.Patterns.Add(new SchedulePattern(null, 13 * 60, 14 * 60, 15));
 
-			DateTimeOffset? NextTime = Schedule.GetNextTriggerTime(StartTime, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0), NextTime!.Value);
+			DateTime? nextTime = schedule.GetNextTriggerTimeUtc(startTime, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.25), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.25), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.5), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.5), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.75), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.75), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(2.0), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(2.0), nextTime!.Value);
 
-			NextTime = Schedule.GetNextTriggerTime(NextTime.Value, TimeZoneInfo.Utc);
-			Assert.AreEqual(StartTime + TimeSpan.FromHours(1.0 + 24.0), NextTime!.Value);
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(1.0 + 24.0), nextTime!.Value);
+		}
+
+		[TestMethod]
+		public void MultiPatternTest()
+		{
+			DateTime startTime = new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
+
+			Schedule schedule = new Schedule(Clock.UtcNow, requireSubmittedChange: false);
+			schedule.Patterns.Add(new SchedulePattern(null, 11 * 60, 0, 0));
+			schedule.Patterns.Add(new SchedulePattern(null, 19 * 60, 0, 0));
+
+			DateTime? nextTime = schedule.GetNextTriggerTimeUtc(startTime, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(11), nextTime!.Value);
+
+			nextTime = schedule.GetNextTriggerTimeUtc(nextTime.Value, TimeZoneInfo.Utc);
+			Assert.AreEqual(startTime + TimeSpan.FromHours(19), nextTime!.Value);
 		}
 
 		[TestMethod]
 		public async Task NoSubmittedChangeTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
 //			Schedule.LastTriggerTime = StartTime;
-			await SetScheduleAsync(Schedule);
+			await SetScheduleAsync(schedule);
 
 			// Initial tick
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs1 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs1.Count);
+			List<IJob> jobs1 = await GetNewJobs();
+			Assert.AreEqual(0, jobs1.Count);
 
 			// Trigger a job
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs2.Count);
-			Assert.AreEqual(102, Jobs2[0].Change);
-			Assert.AreEqual(100, Jobs2[0].CodeChange);
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(1, jobs2.Count);
+			Assert.AreEqual(102, jobs2[0].Change);
+			Assert.AreEqual(100, jobs2[0].CodeChange);
 		}
 
 		[TestMethod]
 		public async Task RequireSubmittedChangeTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			IStream Stream = await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			IStream stream = await SetScheduleAsync(schedule);
 
 			// Initial tick
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs1 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs1.Count);
+			List<IJob> jobs1 = await GetNewJobs();
+			Assert.AreEqual(0, jobs1.Count);
 
 			// Trigger a job
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs2.Count);
-			Assert.AreEqual(102, Jobs2[0].Change);
-			Assert.AreEqual(100, Jobs2[0].CodeChange);
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(1, jobs2.Count);
+			Assert.AreEqual(102, jobs2[0].Change);
+			Assert.AreEqual(100, jobs2[0].CodeChange);
 
-			IStream Stream2 = (await StreamCollection.GetAsync(Stream.Id))!;
-			Schedule Schedule2 = Stream2.Templates.First().Value.Schedule!;
-			Assert.AreEqual(102, Schedule2.LastTriggerChange);
-			Assert.AreEqual(Clock.UtcNow, Schedule2.LastTriggerTime);
+			IStream stream2 = (await StreamCollection.GetAsync(stream.Id))!;
+			Schedule schedule2 = stream2.Templates.First().Value.Schedule!;
+			Assert.AreEqual(102, schedule2.LastTriggerChange);
+			Assert.AreEqual(Clock.UtcNow, schedule2.LastTriggerTime);
 
 			// Trigger another job
-			Clock.Advance(TimeSpan.FromHours(0.5));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(0.5));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs3 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs3.Count);
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(0, jobs3.Count);
 		}
 
 		[TestMethod]
 		public async Task MultipleJobsTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			Schedule.MaxChanges = 2;
-			Schedule.Filter = new List<ChangeContentFlags> { ChangeContentFlags.ContainsCode };
-			await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			schedule.MaxChanges = 2;
+			schedule.Filter = new List<ChangeContentFlags> { ChangeContentFlags.ContainsCode };
+			await SetScheduleAsync(schedule);
 
 			// Initial tick
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs1 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs1.Count);
+			List<IJob> jobs1 = await GetNewJobs();
+			Assert.AreEqual(0, jobs1.Count);
 
 			// Trigger some jobs
-			IUser Bob = UserCollection.FindOrAddUserByLoginAsync("Bob").Result;
-			PerforceService.AddChange("//UE5/Main", 103, Bob, "", new string[] { "foo.cpp" });
-			PerforceService.AddChange("//UE5/Main", 104, Bob, "", new string[] { "foo.cpp" });
-			PerforceService.AddChange("//UE5/Main", 105, Bob, "", new string[] { "foo.uasset" });
-			PerforceService.AddChange("//UE5/Main", 106, Bob, "", new string[] { "foo.cpp" });
+			IUser bob = await UserCollection.FindOrAddUserByLoginAsync("Bob");
+			PerforceService.AddChange("//UE5/Main", 103, bob, "", new string[] { "foo.cpp" });
+			PerforceService.AddChange("//UE5/Main", 104, bob, "", new string[] { "foo.cpp" });
+			PerforceService.AddChange("//UE5/Main", 105, bob, "", new string[] { "foo.uasset" });
+			PerforceService.AddChange("//UE5/Main", 106, bob, "", new string[] { "foo.cpp" });
 
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(2, Jobs2.Count);
-			Assert.AreEqual(104, Jobs2[0].Change);
-			Assert.AreEqual(104, Jobs2[0].CodeChange);
-			Assert.AreEqual(106, Jobs2[1].Change);
-			Assert.AreEqual(106, Jobs2[1].CodeChange);
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(2, jobs2.Count);
+			Assert.AreEqual(104, jobs2[0].Change);
+			Assert.AreEqual(104, jobs2[0].CodeChange);
+			Assert.AreEqual(106, jobs2[1].Change);
+			Assert.AreEqual(106, jobs2[1].CodeChange);
+		}
+
+		[TestMethod]
+		public async Task SkipCiTestAsync()
+		{
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
+
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			schedule.MaxChanges = 2;
+			schedule.Filter = new List<ChangeContentFlags> { ChangeContentFlags.ContainsCode };
+			await SetScheduleAsync(schedule);
+
+			// Initial tick
+			await ScheduleService.TickForTestingAsync();
+
+			List<IJob> jobs1 = await GetNewJobs();
+			Assert.AreEqual(0, jobs1.Count);
+
+			// Trigger some jobs
+			IUser bob = await UserCollection.FindOrAddUserByLoginAsync("Bob");
+			PerforceService.AddChange("//UE5/Main", 103, bob, "", new string[] { "foo.cpp" });
+			PerforceService.AddChange("//UE5/Main", 104, bob, "Don't build this change!\n#skipci", new string[] { "foo.cpp" });
+			PerforceService.AddChange("//UE5/Main", 105, bob, "", new string[] { "foo.uasset" });
+			PerforceService.AddChange("//UE5/Main", 106, bob, "", new string[] { "foo.cpp" });
+
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
+
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(2, jobs2.Count);
+			Assert.AreEqual(103, jobs2[0].Change);
+			Assert.AreEqual(103, jobs2[0].CodeChange);
+			Assert.AreEqual(106, jobs2[1].Change);
+			Assert.AreEqual(106, jobs2[1].CodeChange);
 		}
 
 		[TestMethod]
 		public async Task MaxActiveTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.RequireSubmittedChange = false;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			Schedule.MaxActive = 1;
-			await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.RequireSubmittedChange = false;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			schedule.MaxActive = 1;
+			await SetScheduleAsync(schedule);
 
 			// Trigger a job
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs2.Count);
-			Assert.AreEqual(102, Jobs2[0].Change);
-			Assert.AreEqual(100, Jobs2[0].CodeChange);
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(1, jobs2.Count);
+			Assert.AreEqual(102, jobs2[0].Change);
+			Assert.AreEqual(100, jobs2[0].CodeChange);
 
 			// Test that another job does not trigger
-			Clock.Advance(TimeSpan.FromHours(0.5));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(0.5));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs3 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs3.Count);
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(0, jobs3.Count);
 
 			// Mark the original job as complete
-			await JobService.UpdateJobAsync(Jobs2[0], AbortedByUserId: KnownUsers.System);
+			await JobService.UpdateJobAsync(jobs2[0], abortedByUserId: KnownUsers.System);
 
 			// Test that another job does not trigger
-			Clock.Advance(TimeSpan.FromHours(0.5));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(0.5));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs4 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs4.Count);
-			Assert.AreEqual(102, Jobs4[0].Change);
-			Assert.AreEqual(100, Jobs4[0].CodeChange);
+			List<IJob> jobs4 = await GetNewJobs();
+			Assert.AreEqual(1, jobs4.Count);
+			Assert.AreEqual(102, jobs4[0].Change);
+			Assert.AreEqual(100, jobs4[0].CodeChange);
 		}
 
 		[TestMethod]
 		public async Task CreateNewChangeTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			IStream Stream = await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			/*IStream stream = */await SetScheduleAsync(schedule);
 
 			// Trigger a job
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs2.Count);
-			Assert.AreEqual(102, Jobs2[0].Change);
-			Assert.AreEqual(100, Jobs2[0].CodeChange);
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(1, jobs2.Count);
+			Assert.AreEqual(102, jobs2[0].Change);
+			Assert.AreEqual(100, jobs2[0].CodeChange);
 
 			// Check another job does not trigger due to the change above
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs3 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs3.Count);
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(0, jobs3.Count);
 		}
 
 		[TestMethod]
 		public async Task GateTestAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
 			// Create two templates, the second dependent on the first
-			ITemplate? NewTemplate1 = await TemplateCollection.AddAsync("Test template 1");
-			TemplateRef NewTemplateRef1 = new TemplateRef(NewTemplate1);
-			TemplateRefId NewTemplateRefId1 = new TemplateRefId("new-template-1");
+			ITemplate? newTemplate1 = await TemplateCollection.AddAsync("Test template 1");
+			//TemplateRef newTemplateRef1 = new TemplateRef(newTemplate1);
+			TemplateRefId newTemplateRefId1 = new TemplateRefId("new-template-1");
 
-			ITemplate? NewTemplate2 = await TemplateCollection.AddAsync("Test template 2");
-			TemplateRef NewTemplateRef2 = new TemplateRef(NewTemplate2);
-			NewTemplateRef2.Schedule = new Schedule();
-			NewTemplateRef2.Schedule.Gate = new ScheduleGate(NewTemplateRefId1, "TriggerNext");
-			NewTemplateRef2.Schedule.Patterns.Add(new SchedulePattern(null, 0, null, 10));
-			NewTemplateRef2.Schedule.LastTriggerTime = StartTime;
-			TemplateRefId NewTemplateRefId2 = new TemplateRefId("new-template-2");
+			ITemplate? newTemplate2 = await TemplateCollection.AddAsync("Test template 2");
+			TemplateRef newTemplateRef2 = new TemplateRef(newTemplate2);
+			newTemplateRef2.Schedule = new Schedule(Clock.UtcNow);
+			newTemplateRef2.Schedule.Gate = new ScheduleGate(newTemplateRefId1, "TriggerNext");
+			newTemplateRef2.Schedule.Patterns.Add(new SchedulePattern(null, 0, null, 10));
+			newTemplateRef2.Schedule.LastTriggerTime = startTime;
+			TemplateRefId newTemplateRefId2 = new TemplateRefId("new-template-2");
 
-			IStream? Stream = await StreamService.GetStreamAsync(StreamId);
+			IStream? stream = await StreamService.GetStreamAsync(StreamId);
 
-			StreamConfig Config = new StreamConfig();
-			Config.Name = "//UE5/Main";
-			Config.Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<string> { NewTemplateRefId1.ToString(), NewTemplateRefId2.ToString() } });
+			StreamConfig config = new StreamConfig();
+			config.Name = "//UE5/Main";
+			config.Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<TemplateRefId> { newTemplateRefId1, newTemplateRefId2 } });
 
-			Stream = (await StreamService.StreamCollection.TryCreateOrReplaceAsync(StreamId, Stream, "", "", ProjectId, Config))!;
+			stream = (await CreateOrReplaceStreamAsync(StreamId, stream, ProjectId, config))!;
 
 			// Create the TriggerNext step and mark it as complete
-			IGraph GraphA = await GraphCollection.AddAsync(NewTemplate1);
-			NewGroup GroupA = new NewGroup("win", new List<NewNode> { new NewNode("TriggerNext") });
-			GraphA = await GraphCollection.AppendAsync(GraphA, new List<NewGroup> { GroupA });
+			IGraph graphA = await GraphCollection.AddAsync(newTemplate1);
+			NewGroup groupA = new NewGroup("win", new List<NewNode> { new NewNode("TriggerNext") });
+			graphA = await GraphCollection.AppendAsync(graphA, new List<NewGroup> { groupA });
 
 			// Tick the schedule and make sure it doesn't trigger
-			await ScheduleService.TickSharedOnlyForTestingAsync();
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs2.Count);
+			await ScheduleService.TickForTestingAsync();
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(0, jobs2.Count);
 
 			// Create a job and fail it
-			IJob Job1 = await JobService.CreateJobAsync(null, Stream, NewTemplateRefId1, Template.Id, GraphA, "Hello", 1234, 1233, 999, null, null, null, null, null, null, true, true, null, null, new List<string> { "-Target=TriggerNext" });
-			Job1 = Deref(await JobService.UpdateBatchAsync(Job1, Job1.Batches[0].Id, LogId.GenerateNewId(), JobStepBatchState.Running));
-			Assert.IsNotNull(await JobService.UpdateStepAsync(Job1, Job1.Batches[0].Id, Job1.Batches[0].Steps[0].Id, JobStepState.Completed, JobStepOutcome.Failure));
-			Job1 = Deref(await JobService.UpdateBatchAsync(Job1, Job1.Batches[0].Id, LogId.GenerateNewId(), JobStepBatchState.Complete));
+			IJob job1 = await JobService.CreateJobAsync(null, stream, newTemplateRefId1, _template.Id, graphA, "Hello", 1234, 1233, 999, null, null, null, null, null, null, null, null, true, true, null, null, new List<string> { "-Target=TriggerNext" });
+			SubResourceId batchId1 = job1.Batches[0].Id;
+			SubResourceId stepId1 = job1.Batches[0].Steps[0].Id;
+			job1 = Deref(await JobService.UpdateBatchAsync(job1, batchId1, LogId.GenerateNewId(), JobStepBatchState.Running));
+			job1 = Deref(await JobService.UpdateStepAsync(job1, batchId1, stepId1, JobStepState.Completed, JobStepOutcome.Failure));
+			job1 = Deref(await JobService.UpdateBatchAsync(job1, batchId1, LogId.GenerateNewId(), JobStepBatchState.Complete));
+			Assert.IsNotNull(job1);
 			await GetNewJobs();
 
 			// Tick the schedule and make sure it doesn't trigger
-			Clock.Advance(TimeSpan.FromMinutes(30.0));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
-			List<IJob> Jobs3 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs3.Count);
+			await Clock.AdvanceAsync(TimeSpan.FromMinutes(30.0));
+			await ScheduleService.TickForTestingAsync();
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(0, jobs3.Count);
 
 			// Create a job and make it succeed
-			IJob Job2 = await JobService.CreateJobAsync(null, Stream, NewTemplateRefId1, Template.Id, GraphA, "Hello", 1234, 1233, 999, null, null, null, null, null, null, true, true, null, null, new List<string> { "-Target=TriggerNext" });
-			Job2 = Deref(await JobService.UpdateBatchAsync(Job2, Job2.Batches[0].Id, LogId.GenerateNewId(), JobStepBatchState.Running));
-			Assert.IsNotNull(await JobService.UpdateStepAsync(Job2, Job2.Batches[0].Id, Job2.Batches[0].Steps[0].Id, JobStepState.Completed, JobStepOutcome.Success));
+			IJob job2 = await JobService.CreateJobAsync(null, stream, newTemplateRefId1, _template.Id, graphA, "Hello", 1234, 1233, 999, null, null, null, null, null, null, null, null, true, true, null, null, new List<string> { "-Target=TriggerNext" });
+			SubResourceId batchId2 = job2.Batches[0].Id;
+			SubResourceId stepId2 = job2.Batches[0].Steps[0].Id;
+			job2 = Deref(await JobService.UpdateBatchAsync(job2, batchId2, LogId.GenerateNewId(), JobStepBatchState.Running));
+			job2 = Deref(await JobService.UpdateStepAsync(job2, batchId2, stepId2, JobStepState.Completed, JobStepOutcome.Success));
+			Assert.IsNotNull(job2);
 
 			// Tick the schedule and make sure it does trigger
-			await ScheduleService.TickSharedOnlyForTestingAsync();
-			List<IJob> Jobs4 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs4.Count);
-			Assert.AreEqual(1234, Jobs4[0].Change);
-			Assert.AreEqual(1233, Jobs4[0].CodeChange);
+			await ScheduleService.TickForTestingAsync();
+			List<IJob> jobs4 = await GetNewJobs();
+			Assert.AreEqual(1, jobs4.Count);
+			Assert.AreEqual(1234, jobs4[0].Change);
+			Assert.AreEqual(1233, jobs4[0].CodeChange);
+		}
+
+		[TestMethod]
+		public async Task GateTest2Async()
+		{
+			IUser bob = await UserCollection.FindOrAddUserByLoginAsync("Bob");
+
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
+
+			PerforceService.Changes.Clear();
+			PerforceService.AddChange("//UE5/Main", 1230, bob, "", new[] { "code.cpp" });
+			PerforceService.AddChange("//UE5/Main", 1231, bob, "", new[] { "content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 1232, bob, "", new[] { "content.uasset" });
+			PerforceService.AddChange("//UE5/Main", 1233, bob, "", new[] { "code.cpp" });
+
+			// Create two templates, the second dependent on the first
+			TemplateRefId newTemplateRefId1 = new TemplateRefId("new-template-1");
+			TemplateRefConfig newTemplate1 = new TemplateRefConfig();
+			newTemplate1.Id = newTemplateRefId1;
+
+			TemplateRefId newTemplateRefId2 = new TemplateRefId("new-template-2");
+			TemplateRefConfig newTemplate2 = new TemplateRefConfig();
+			newTemplate2.Id = newTemplateRefId2;
+			newTemplate2.Name = "Test template 2";
+			newTemplate2.Schedule = new CreateScheduleRequest();
+			newTemplate2.Schedule.MaxChanges = 4;
+			newTemplate2.Schedule.Filter = new List<ChangeContentFlags> { ChangeContentFlags.ContainsCode };
+			newTemplate2.Schedule.Gate = new CreateScheduleGateRequest { TemplateId = newTemplateRefId1.ToString(), Target = "TriggerNext" };
+			newTemplate2.Schedule.Patterns.Add(new CreateSchedulePatternRequest { Interval = 10 });// (null, 0, null, 10));
+//			NewTemplate2.Schedule.LastTriggerTime = StartTime;
+
+			IStream? stream = await StreamService.GetStreamAsync(StreamId);
+
+			StreamConfig config = new StreamConfig();
+			config.Name = "//UE5/Main";
+			config.Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<TemplateRefId> { newTemplateRefId1, newTemplateRefId2 } });
+			config.Templates.Add(newTemplate1);
+			config.Templates.Add(newTemplate2);
+
+			stream = (await CreateOrReplaceStreamAsync(StreamId, stream, ProjectId, config))!;
+
+			ITemplate template1 = (await TemplateCollection.GetAsync(stream.Templates[newTemplateRefId1].Hash))!;
+			Assert.IsNotNull(template1);
+			ITemplate template2 = (await TemplateCollection.GetAsync(stream.Templates[newTemplateRefId2].Hash))!;
+			Assert.IsNotNull(template2);
+
+			// Create the graph
+			IGraph graphA = await GraphCollection.AddAsync(template1);
+			NewGroup groupA = new NewGroup("win", new List<NewNode> { new NewNode("TriggerNext") });
+			graphA = await GraphCollection.AppendAsync(graphA, new List<NewGroup> { groupA });
+
+			// Create successful jobs for all the changes we added above
+			for (int change = 1230; change <= 1233; change++)
+			{
+				int codeChange = (change < 1233) ? 1230 : 1233;
+
+				IJob job1 = await JobService.CreateJobAsync(null, stream, newTemplateRefId1, _template.Id, graphA, "Hello", change, codeChange, null, null, null, null, null, null, false, null, null, true, true, null, null, new List<string> { "-Target=TriggerNext" });
+				for (int batchIdx = 0; batchIdx < job1.Batches.Count; batchIdx++)
+				{
+					SubResourceId batchId1 = job1.Batches[batchIdx].Id;
+					job1 = Deref(await JobService.UpdateBatchAsync(job1, batchId1, LogId.GenerateNewId(), JobStepBatchState.Running));
+					for (int stepIdx = 0; stepIdx < job1.Batches[batchIdx].Steps.Count; stepIdx++)
+					{
+						SubResourceId stepId1 = job1.Batches[batchIdx].Steps[stepIdx].Id;
+						job1 = Deref(await JobService.UpdateStepAsync(job1, batchId1, stepId1, JobStepState.Completed, JobStepOutcome.Success, newLogId: LogId.GenerateNewId()));
+					}
+					job1 = Deref(await JobService.UpdateBatchAsync(job1, batchId1, LogId.GenerateNewId(), JobStepBatchState.Complete));
+				}
+			}
+			await GetNewJobs();
+
+			// Tick the schedule and make sure it doesn't trigger
+			await Clock.AdvanceAsync(TimeSpan.FromMinutes(30.0));
+			await ScheduleService.TriggerAsync(StreamId, newTemplateRefId2, Clock.UtcNow, default);
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(2, jobs3.Count);
+			Assert.AreEqual(1230, jobs3[0].Change);
+			Assert.AreEqual(1233, jobs3[1].Change);
 		}
 
 		[TestMethod]
 		public async Task UpdateConfigAsync()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Local); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.RequireSubmittedChange = false;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			Schedule.MaxActive = 2;
-			await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.RequireSubmittedChange = false;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			schedule.MaxActive = 2;
+			await SetScheduleAsync(schedule);
 
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs1 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs1.Count);
-			Assert.AreEqual(102, Jobs1[0].Change);
-			Assert.AreEqual(100, Jobs1[0].CodeChange);
+			List<IJob> jobs1 = await GetNewJobs();
+			Assert.AreEqual(1, jobs1.Count);
+			Assert.AreEqual(102, jobs1[0].Change);
+			Assert.AreEqual(100, jobs1[0].CodeChange);
 
 			// Make sure the job is registered
-			IStream? Stream1 = await StreamService.GetStreamAsync(StreamId);
-			TemplateRef TemplateRef1 = Stream1!.Templates.First().Value;
-			Assert.AreEqual(1, TemplateRef1.Schedule!.ActiveJobs.Count);
-			Assert.AreEqual(Jobs1[0].Id, TemplateRef1.Schedule!.ActiveJobs[0]);
+			IStream? stream1 = await StreamService.GetStreamAsync(StreamId);
+			TemplateRef templateRef1 = stream1!.Templates.First().Value;
+			Assert.AreEqual(1, templateRef1.Schedule!.ActiveJobs.Count);
+			Assert.AreEqual(jobs1[0].Id, templateRef1.Schedule!.ActiveJobs[0]);
 
 			// Test that another job does not trigger
-			await SetScheduleAsync(Schedule);
+			await SetScheduleAsync(schedule);
 
 			// Make sure the job is still registered
-			IStream? Stream2 = await StreamService.GetStreamAsync(StreamId);
-			TemplateRef TemplateRef2 = Stream2!.Templates.First().Value;
-			Assert.AreEqual(1, TemplateRef2.Schedule!.ActiveJobs.Count);
-			Assert.AreEqual(Jobs1[0].Id, TemplateRef2.Schedule!.ActiveJobs[0]);
+			IStream? stream2 = await StreamService.GetStreamAsync(StreamId);
+			TemplateRef templateRef2 = stream2!.Templates.First().Value;
+			Assert.AreEqual(1, templateRef2.Schedule!.ActiveJobs.Count);
+			Assert.AreEqual(jobs1[0].Id, templateRef2.Schedule!.ActiveJobs[0]);
 		}
 
 		[TestMethod]
 		public async Task StreamPausing()
 		{
-			DateTime StartTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
-			Clock.UtcNow = StartTime;
+			DateTime startTime = new DateTime(2021, 1, 1, 12, 0, 0, DateTimeKind.Utc); // Friday Jan 1, 2021 
+			Clock.UtcNow = startTime;
 
-			CreateScheduleRequest Schedule = new CreateScheduleRequest();
-			Schedule.Enabled = true;
-			Schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
-			IStream Stream = await SetScheduleAsync(Schedule);
+			CreateScheduleRequest schedule = new CreateScheduleRequest();
+			schedule.Enabled = true;
+			schedule.Patterns.Add(new CreateSchedulePatternRequest { MinTime = 13 * 60, MaxTime = 14 * 60, Interval = 15 });
+			IStream stream = await SetScheduleAsync(schedule);
 
-			IStreamCollection StreamCollection = ServiceProvider.GetRequiredService<IStreamCollection>();
-			await StreamCollection.TryUpdatePauseStateAsync(Stream, NewPausedUntil: StartTime.AddHours(5), NewPauseComment: "testing");
-			
+			IStreamCollection streamCollection = ServiceProvider.GetRequiredService<IStreamCollection>();
+			await streamCollection.TryUpdatePauseStateAsync(stream, newPausedUntil: startTime.AddHours(5), newPauseComment: "testing");
+
 			// Try trigger a job. No job should be scheduled as the stream is paused
-			Clock.Advance(TimeSpan.FromHours(1.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
-			List<IJob> Jobs2 = await GetNewJobs();
-			Assert.AreEqual(0, Jobs2.Count);
+			await Clock.AdvanceAsync(TimeSpan.FromHours(1.25));
+			await ScheduleService.TickForTestingAsync();
+			List<IJob> jobs2 = await GetNewJobs();
+			Assert.AreEqual(0, jobs2.Count);
 
 			// Advance time beyond the pause period. A build should now trigger
-			Clock.Advance(TimeSpan.FromHours(5.25));
-			await ScheduleService.TickSharedOnlyForTestingAsync();
+			await Clock.AdvanceAsync(TimeSpan.FromHours(5.25));
+			await ScheduleService.TickForTestingAsync();
 
-			List<IJob> Jobs3 = await GetNewJobs();
-			Assert.AreEqual(1, Jobs3.Count);
-			Assert.AreEqual(102, Jobs3[0].Change);
-			Assert.AreEqual(100, Jobs3[0].CodeChange);
+			List<IJob> jobs3 = await GetNewJobs();
+			Assert.AreEqual(1, jobs3.Count);
+			Assert.AreEqual(102, jobs3[0].Change);
+			Assert.AreEqual(100, jobs3[0].CodeChange);
 		}
 
 		async Task<List<IJob>> GetNewJobs()
 		{
-			List<IJob> Jobs = await JobCollection.FindAsync();
-			Jobs.RemoveAll(x => InitialJobIds.Contains(x.Id));
-			InitialJobIds.UnionWith(Jobs.Select(x => x.Id));
-			return Jobs.OrderBy(x => x.Change).ToList();
+			List<IJob> jobs = await JobCollection.FindAsync();
+			jobs.RemoveAll(x => _initialJobIds.Contains(x.Id));
+			_initialJobIds.UnionWith(jobs.Select(x => x.Id));
+			return jobs.OrderBy(x => x.Change).ToList();
 		}
 	}
 }

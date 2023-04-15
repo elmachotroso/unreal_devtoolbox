@@ -2,22 +2,19 @@
 #include "WorldPartitionEditorModule.h"
 
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionVolume.h"
-
 #include "WorldPartition/WorldPartitionHLODsBuilder.h"
 #include "WorldPartition/WorldPartitionMiniMapBuilder.h"
-
+#include "WorldPartition/WorldPartitionLandscapeSplineMeshesBuilder.h"
+#include "WorldPartition/WorldPartitionActorLoaderInterface.h"
 #include "WorldPartition/HLOD/HLODLayerAssetTypeActions.h"
-
 #include "WorldPartition/SWorldPartitionEditor.h"
 #include "WorldPartition/SWorldPartitionEditorGridSpatialHash.h"
-
 #include "WorldPartition/Customizations/WorldPartitionDetailsCustomization.h"
-
+#include "WorldPartition/Customizations/WorldPartitionHLODDetailsCustomization.h"
+#include "WorldPartition/Customizations/WorldPartitionRuntimeSpatialHashDetailsCustomization.h"
 #include "WorldPartition/SWorldPartitionConvertDialog.h"
 #include "WorldPartition/WorldPartitionConvertOptions.h"
 #include "WorldPartition/WorldPartitionEditorSettings.h"
-
 #include "WorldPartition/HLOD/SWorldPartitionBuildHLODsDialog.h"
 
 #include "LevelEditor.h"
@@ -40,28 +37,46 @@
 #include "DirectoryWatcherModule.h"
 #include "ContentBrowserModule.h"
 #include "EditorDirectories.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PropertyEditorModule.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 #include "Framework/Docking/LayoutExtender.h"
 #include "Widgets/Docking/SDockTab.h"
+
+#include "Styling/AppStyle.h"
+#include "WorldPartition/ContentBundle/SContentBundleBrowser.h"
+#include "Selection.h"
+#include "WorldPartition/ContentBundle/ContentBundleEditorSubsystem.h"
+#include "UObject/UObjectBase.h"
+#include "WorldPartition/ContentBundle/ContentBundleEditor.h"
 
 IMPLEMENT_MODULE( FWorldPartitionEditorModule, WorldPartitionEditor );
 
 #define LOCTEXT_NAMESPACE "WorldPartition"
 
 const FName WorldPartitionEditorTabId("WorldBrowserPartitionEditor");
+const FName ContentBundleBrowserTabId("ContentBundleBrowser");
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionEditor, All, All);
 
-// World Partition
-static void OnLoadSelectedWorldPartitionVolumes(TArray<TWeakObjectPtr<AActor>> Volumes)
+static void OnSelectedWorldPartitionVolumesToggleLoading(TArray<TWeakObjectPtr<AActor>> Volumes, bool bLoad)
 {
 	for (TWeakObjectPtr<AActor> Actor: Volumes)
 	{
-		AWorldPartitionVolume* WorldPartitionVolume = CastChecked<AWorldPartitionVolume>(Actor.Get());
-		WorldPartitionVolume->LoadIntersectingCells(true);
+		if (Actor->Implements<UWorldPartitionActorLoaderInterface>())
+		{
+			IWorldPartitionActorLoaderInterface::ILoaderAdapter* LoaderAdapter = Cast<IWorldPartitionActorLoaderInterface>(Actor)->GetLoaderAdapter();
+
+			if (bLoad)
+			{
+				LoaderAdapter->Load();
+			}
+			else
+			{
+				LoaderAdapter->Unload();
+			}
+		}
 	}
 }
 
@@ -70,10 +85,18 @@ static void CreateLevelViewportContextMenuEntries(FMenuBuilder& MenuBuilder, TAr
 	MenuBuilder.BeginSection("WorldPartition", LOCTEXT("WorldPartition", "World Partition"));
 
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("WorldPartitionLoad", "Load selected world partition volumes"),
-		LOCTEXT("WorldPartitionLoad_Tooltip", "Load selected world partition volumes"),
+		LOCTEXT("WorldPartitionLoad", "Load selected volumes"),
+		LOCTEXT("WorldPartitionLoad_Tooltip", "Load selected volumes"),
 		FSlateIcon(),
-		FExecuteAction::CreateStatic(OnLoadSelectedWorldPartitionVolumes, Volumes),
+		FExecuteAction::CreateStatic(OnSelectedWorldPartitionVolumesToggleLoading, Volumes, true),
+		NAME_None,
+		EUserInterfaceActionType::Button);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("WorldPartitionUnload", "Unload selected volumes"),
+		LOCTEXT("WorldPartitionUnload_Tooltip", "Load selected volumes"),
+		FSlateIcon(),
+		FExecuteAction::CreateStatic(OnSelectedWorldPartitionVolumesToggleLoading, Volumes, false),
 		NAME_None,
 		EUserInterfaceActionType::Button);
 
@@ -87,7 +110,7 @@ static TSharedRef<FExtender> OnExtendLevelEditorMenu(const TSharedRef<FUICommand
 	TArray<TWeakObjectPtr<AActor> > Volumes;
 	for (AActor* Actor : SelectedActors)
 	{
-		if (Actor->IsA(AWorldPartitionVolume::StaticClass()))
+		if (Actor->Implements<UWorldPartitionActorLoaderInterface>())
 		{
 			Volumes.Add(Actor);
 		}
@@ -110,31 +133,7 @@ void FWorldPartitionEditorModule::StartupModule()
 	SWorldPartitionEditorGrid::RegisterPartitionEditorGridCreateInstanceFunc(NAME_None, &SWorldPartitionEditorGrid::CreateInstance);
 	SWorldPartitionEditorGrid::RegisterPartitionEditorGridCreateInstanceFunc(TEXT("SpatialHash"), &SWorldPartitionEditorGridSpatialHash::CreateInstance);
 	
-	if (!IsRunningGame())
-	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		TArray<FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors>& MenuExtenderDelegates = LevelEditorModule.GetAllLevelViewportContextMenuExtenders();
-
-
-		LevelEditorModule.OnRegisterTabs().AddRaw(this, &FWorldPartitionEditorModule::RegisterWorldPartitionTabs);
-		LevelEditorModule.OnRegisterLayoutExtensions().AddRaw(this, &FWorldPartitionEditorModule::RegisterWorldPartitionLayout);
-
-		MenuExtenderDelegates.Add(FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors::CreateStatic(&OnExtendLevelEditorMenu));
-		LevelEditorExtenderDelegateHandle = MenuExtenderDelegates.Last().GetHandle();
-
-		FToolMenuOwnerScoped OwnerScoped(this);
-		UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools");
-		FToolMenuSection& Section = Menu->AddSection("WorldPartition", LOCTEXT("WorldPartition", "World Partition"));
-		Section.AddEntry(FToolMenuEntry::InitMenuEntry(
-			"WorldPartition",
-			LOCTEXT("WorldPartitionConvertTitle", "Convert Level..."),
-			LOCTEXT("WorldPartitionConvertTooltip", "Converts a Level to World Partition."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "DeveloperTools.MenuIcon"),
-			FUIAction(FExecuteAction::CreateRaw(this, &FWorldPartitionEditorModule::OnConvertMap))
-		));
-
-		FEditorDelegates::MapChange.AddRaw(this, &FWorldPartitionEditorModule::OnMapChanged);
-	}
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FWorldPartitionEditorModule::RegisterMenus));	
 
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	HLODLayerAssetTypeActions = MakeShareable(new FHLODLayerAssetTypeActions);
@@ -142,6 +141,8 @@ void FWorldPartitionEditorModule::StartupModule()
 
 	FPropertyEditorModule& PropertyEditor = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	PropertyEditor.RegisterCustomClassLayout("WorldPartition", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionDetails::MakeInstance));
+	PropertyEditor.RegisterCustomClassLayout("WorldPartitionRuntimeSpatialHash", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionRuntimeSpatialHashDetails::MakeInstance));
+	PropertyEditor.RegisterCustomClassLayout("WorldPartitionHLOD", FOnGetDetailCustomizationInstance::CreateStatic(&FWorldPartitionHLODDetailsCustomization::MakeInstance));
 }
 
 void FWorldPartitionEditorModule::ShutdownModule()
@@ -164,6 +165,7 @@ void FWorldPartitionEditorModule::ShutdownModule()
 
 		FEditorDelegates::MapChange.RemoveAll(this);
 
+		UToolMenus::UnRegisterStartupCallback(this);
 		UToolMenus::UnregisterOwner(this);
 	}
 
@@ -185,10 +187,43 @@ void FWorldPartitionEditorModule::ShutdownModule()
 	}
 }
 
+void FWorldPartitionEditorModule::RegisterMenus()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TArray<FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors>& MenuExtenderDelegates = LevelEditorModule.GetAllLevelViewportContextMenuExtenders();
+
+	LevelEditorModule.OnRegisterTabs().AddRaw(this, &FWorldPartitionEditorModule::RegisterWorldPartitionTabs);
+	LevelEditorModule.OnRegisterLayoutExtensions().AddRaw(this, &FWorldPartitionEditorModule::RegisterWorldPartitionLayout);
+
+	MenuExtenderDelegates.Add(FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors::CreateStatic(&OnExtendLevelEditorMenu));
+	LevelEditorExtenderDelegateHandle = MenuExtenderDelegates.Last().GetHandle();
+
+	FToolMenuOwnerScoped OwnerScoped(this);
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools");
+	FToolMenuSection& Section = Menu->AddSection("WorldPartition", LOCTEXT("WorldPartition", "World Partition"));
+	Section.AddEntry(FToolMenuEntry::InitMenuEntry(
+		"WorldPartition",
+		LOCTEXT("WorldPartitionConvertTitle", "Convert Level..."),
+		LOCTEXT("WorldPartitionConvertTooltip", "Converts a Level to World Partition."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "DeveloperTools.MenuIcon"),
+		FUIAction(FExecuteAction::CreateRaw(this, &FWorldPartitionEditorModule::OnConvertMap))
+	));
+
+	FEditorDelegates::MapChange.AddRaw(this, &FWorldPartitionEditorModule::OnMapChanged);
+}
+
 TSharedRef<SWidget> FWorldPartitionEditorModule::CreateWorldPartitionEditor()
 {
 	UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
 	return SNew(SWorldPartitionEditor).InWorld(EditorWorld);
+}
+
+TSharedRef<SWidget> FWorldPartitionEditorModule::CreateContentBundleBrowser()
+{
+	check(ContentBundleBrowser == nullptr);
+	TSharedRef<SContentBundleBrowser> NewDataLayerBrowser = SNew(SContentBundleBrowser);
+	ContentBundleBrowser = NewDataLayerBrowser;
+	return NewDataLayerBrowser;
 }
 
 int32 FWorldPartitionEditorModule::GetPlacementGridSize() const
@@ -202,6 +237,31 @@ int32 FWorldPartitionEditorModule::GetInstancedFoliageGridSize() const
 	return GetDefault<UWorldPartitionEditorSettings>()->InstancedFoliageGridSize;
 }
 
+int32 FWorldPartitionEditorModule::GetMinimapLowQualityWorldUnitsPerPixelThreshold() const
+{
+	return GetDefault<UWorldPartitionEditorSettings>()->MinimapLowQualityWorldUnitsPerPixelThreshold;
+}
+
+bool FWorldPartitionEditorModule::GetDisableLoadingInEditor() const
+{
+	return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor;
+}
+
+void FWorldPartitionEditorModule::SetDisableLoadingInEditor(bool bInDisableLoadingInEditor)
+{
+	GetMutableDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor = bInDisableLoadingInEditor;
+}
+
+bool FWorldPartitionEditorModule::GetDisablePIE() const
+{
+	return GetDefault<UWorldPartitionEditorSettings>()->bDisablePIE;
+}
+
+void FWorldPartitionEditorModule::SetDisablePIE(bool bInDisablePIE)
+{
+	GetMutableDefault<UWorldPartitionEditorSettings>()->bDisablePIE = bInDisablePIE;
+}
+
 void FWorldPartitionEditorModule::OnConvertMap()
 {
 	IContentBrowserSingleton& ContentBrowserSingleton = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
@@ -213,7 +273,7 @@ void FWorldPartitionEditorModule::OnConvertMap()
 	{
 		Config.DefaultPath = OutPathName;
 	}	
-	Config.AssetClassNames.Add(UWorld::StaticClass()->GetFName());
+	Config.AssetClassNames.Add(UWorld::StaticClass()->GetClassPathName());
 
 	TArray<FAssetData> Assets = ContentBrowserSingleton.CreateModalOpenAssetDialog(Config);
 	if (Assets.Num() == 1)
@@ -271,7 +331,7 @@ static void RescanAssetsAndLoadMap(const FString& MapToLoad)
 	}
 }
 
-static void RunCommandletAsExternalProcess(const FString& InCommandletArgs, const FText& InOperationDescription, int32& OutResult, bool& bOutCancelled, FString& OutCommandletOutput)
+void FWorldPartitionEditorModule::RunCommandletAsExternalProcess(const FString& InCommandletArgs, const FText& InOperationDescription, int32& OutResult, bool& bOutCancelled, FString& OutCommandletOutput)
 {
 	OutResult = 0;
 	bOutCancelled = false;
@@ -288,13 +348,26 @@ static void RunCommandletAsExternalProcess(const FString& InCommandletArgs, cons
 
 	FString CurrentExecutableName = FPlatformProcess::ExecutablePath();
 
+	TArray<FString> AdditionalArgs;
+	OnExecuteCommandletEvent.Broadcast(AdditionalArgs);
+
 	// Try to provide complete Path, if we can't try with project name
 	FString ProjectPath = FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : FApp::GetProjectName();
 
-	uint32 ProcessID;
-	FString Arguments = FString::Printf(TEXT("\"%s\" %s -unattended"), *ProjectPath, *InCommandletArgs);
+	FString Arguments;
+	Arguments += TEXT("\"") + ProjectPath + TEXT('"');
+	Arguments += TEXT(" -BaseDir=\"") + FString(FPlatformProcess::BaseDir()) + TEXT('"');
+	Arguments += TEXT(" -Unattended");
+	Arguments += TEXT(" ") + InCommandletArgs;
+	for (const FString& AdditionalArg : AdditionalArgs)
+	{
+		Arguments += " ";
+		Arguments += AdditionalArg;
+	}
 	
 	UE_LOG(LogWorldPartitionEditor, Display, TEXT("Running commandlet: %s %s"), *CurrentExecutableName, *Arguments);
+
+	uint32 ProcessID;
 	const bool bLaunchDetached = true;
 	const bool bLaunchHidden = true;
 	const bool bLaunchReallyHidden = true;
@@ -385,8 +458,6 @@ bool FWorldPartitionEditorModule::ConvertMap(const FString& InLongPackageName)
 		RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled, CommandletOutput);
 		if (!bCancelled && Result == 0)
 		{	
-			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("ConvertMapCompleted", "Conversion completed:\n{0}"), FText::FromString(CommandletOutput)));
-
 #if	PLATFORM_DESKTOP
 			if (DefaultConvertOptions->bGenerateIni)
 			{
@@ -410,31 +481,44 @@ bool FWorldPartitionEditorModule::ConvertMap(const FString& InLongPackageName)
 		}
 		else if(Result != 0)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("ConvertMapFailed", "Conversion failed:\n{0}"), FText::FromString(CommandletOutput)));
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("ConvertMapFailed", "Conversion failed! See log for details."));
 		}
 	}
 
 	return false;
 }
 
-bool FWorldPartitionEditorModule::RunBuilder(TSubclassOf<UWorldPartitionBuilder> InWorldPartitionBuilder, const FString& InLongPackageName)
+bool IWorldPartitionEditorModule::RunBuilder(TSubclassOf<UWorldPartitionBuilder> InWorldPartitionBuilder, UWorld* InWorld)
+{
+	FRunBuilderParams Params;
+	Params.BuilderClass = InWorldPartitionBuilder;
+	Params.World = InWorld;
+	return RunBuilder(Params);
+}
+
+bool FWorldPartitionEditorModule::RunBuilder(const FRunBuilderParams& InParams)
 {
 	// Ideally this should be improved to automatically register all builders & present their options in a consistent way...
 
-	if (InWorldPartitionBuilder == UWorldPartitionHLODsBuilder::StaticClass())
+	if (InParams.BuilderClass == UWorldPartitionHLODsBuilder::StaticClass())
 	{
-		return BuildHLODs(InLongPackageName);
+		return BuildHLODs(InParams);
 	}
 	
-	if (InWorldPartitionBuilder == UWorldPartitionMiniMapBuilder::StaticClass())
+	if (InParams.BuilderClass == UWorldPartitionMiniMapBuilder::StaticClass())
 	{
-		return BuildMinimap(InLongPackageName);
+		return BuildMinimap(InParams);
 	}
 
-	return false;
+	if (InParams.BuilderClass == UWorldPartitionLandscapeSplineMeshesBuilder::StaticClass())
+	{
+		return BuildLandscapeSplineMeshes(InParams.World);
+	}
+
+	return Build(InParams);
 }
 
-bool FWorldPartitionEditorModule::BuildHLODs(const FString& InMapToProcess)
+bool FWorldPartitionEditorModule::BuildHLODs(const FRunBuilderParams& InParams)
 {
 	TSharedPtr<SWindow> DlgWindow =
 		SNew(SWindow)
@@ -456,57 +540,53 @@ bool FWorldPartitionEditorModule::BuildHLODs(const FString& InMapToProcess)
 
 	if (BuildHLODsDialog->GetDialogResult() != SWorldPartitionBuildHLODsDialog::DialogResult::Cancel)
 	{
-		FString MapPackage = InMapToProcess;
-		if (!UnloadCurrentMap(/*bAskSaveContentPackages=*/true, MapPackage))
-		{
-			return false;
-		}
+		FRunBuilderParams ParamsCopy(InParams);
+		ParamsCopy.ExtraArgs = BuildHLODsDialog->GetDialogResult() == SWorldPartitionBuildHLODsDialog::DialogResult::BuildHLODs ? "-SetupHLODs -BuildHLODs -AllowCommandletRendering" : "-DeleteHLODs";
+		ParamsCopy.OperationDescription = LOCTEXT("HLODBuildProgress", "Building HLODs...");
 
-		const FString BuildArgs = BuildHLODsDialog->GetDialogResult() == SWorldPartitionBuildHLODsDialog::DialogResult::BuildHLODs ? "-SetupHLODs -BuildHLODs -AllowCommandletRendering" : "-DeleteHLODs";
-		const FString CommandletArgs = MapPackage + " -run=WorldPartitionBuilderCommandlet -Builder=WorldPartitionHLODsBuilder " + BuildArgs;
-		const FText OperationDescription = LOCTEXT("HLODBuildProgress", "Building HLODs...");
-
-		int32 Result;
-		bool bCancelled;
-		FString CommandletOutput;
-		RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled, CommandletOutput);
-
-		bool bSuccess = !bCancelled && Result == 0;
-		if (bSuccess)
-		{
-			RescanAssetsAndLoadMap(MapPackage);
-		}
-		else if (bCancelled)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("HLODBuildCancelled", "HLOD build cancelled!"));
-		}
-		else if (Result != 0)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("HLODBuildFailed", "HLOD build failed:\n{0}"), FText::FromString(CommandletOutput)));
-		}
-
-		return bSuccess;
+		return Build(ParamsCopy);
 	}
 
 	return false;
 }
 
-bool FWorldPartitionEditorModule::BuildMinimap(const FString& InMapToProcess)
+
+bool FWorldPartitionEditorModule::BuildMinimap(const FRunBuilderParams& InParams)
 {
-	FString MapPackage = InMapToProcess;
+	FRunBuilderParams ParamsCopy(InParams);
+	ParamsCopy.ExtraArgs = "-AllowCommandletRendering";
+	ParamsCopy.OperationDescription = LOCTEXT("MinimapBuildProgress", "Building minimap...");
+	return Build(ParamsCopy);
+}
+
+bool FWorldPartitionEditorModule::Build(const FRunBuilderParams& InParams)
+{
+	FString MapPackage = InParams.World->GetPackage()->GetName();
 	if (!UnloadCurrentMap(/*bAskSaveContentPackages=*/true, MapPackage))
 	{
 		return false;
 	}
 
-	const FString CommandletArgs = MapPackage + " -run=WorldPartitionBuilderCommandlet -Builder=WorldPartitionMinimapBuilder -AllowCommandletRendering";
-	const FText OperationDescription = LOCTEXT("MinimapBuildProgress", "Building minimap...");
+	TStringBuilder<512> CommandletArgsBuilder;
+	CommandletArgsBuilder.Append(MapPackage);
+	CommandletArgsBuilder.Append(" -run=WorldPartitionBuilderCommandlet -Builder=");
+	CommandletArgsBuilder.Append(InParams.BuilderClass->GetName());
+		
+	if (!InParams.ExtraArgs.IsEmpty())
+	{
+		CommandletArgsBuilder.Append(" ");
+		CommandletArgsBuilder.Append(InParams.ExtraArgs);
+	}
+
+	const FText OperationDescription = InParams.OperationDescription.IsEmptyOrWhitespace() ? LOCTEXT("BuildProgress", "Building...") : InParams.OperationDescription;
 
 	int32 Result;
 	bool bCancelled;
 	FString CommandletOutput;
+
+	FString CommandletArgs(CommandletArgsBuilder.ToString());
 	RunCommandletAsExternalProcess(CommandletArgs, OperationDescription, Result, bCancelled, CommandletOutput);
-	
+
 	bool bSuccess = !bCancelled && Result == 0;
 	if (bSuccess)
 	{
@@ -514,14 +594,24 @@ bool FWorldPartitionEditorModule::BuildMinimap(const FString& InMapToProcess)
 	}
 	else if (bCancelled)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("MinimapBuildCancelled", "Minimap build cancelled!"));
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("BuildCancelled", "Build cancelled!"));
 	}
 	else if (Result != 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("MinimapBuildFailed", "Minimap build failed:\n{0}"), FText::FromString(CommandletOutput)));
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("BuildFailed", "Build failed! See log for details."));
 	}
 
 	return bSuccess;
+}
+
+bool FWorldPartitionEditorModule::BuildLandscapeSplineMeshes(UWorld* InWorld)
+{
+	if (!UWorldPartitionLandscapeSplineMeshesBuilder::RunOnInitializedWorld(InWorld))
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("LandscapeSplineMeshesBuildFailed", "Landscape Spline Meshes build failed! See log for details."));
+		return false;
+	}
+	return true;
 }
 
 void FWorldPartitionEditorModule::OnMapChanged(uint32 MapFlags)
@@ -562,11 +652,24 @@ TSharedRef<SDockTab> FWorldPartitionEditorModule::SpawnWorldPartitionTab(const F
 	return NewTab;
 }
 
+TSharedRef<SDockTab> FWorldPartitionEditorModule::SpawnContentBundleTab(const FSpawnTabArgs& Args)
+{
+	TSharedRef<SDockTab> NewTab =
+		SNew(SDockTab)
+		.Label(NSLOCTEXT("LevelEditor", "ContentBundleTabTitle", "Content Bundles"))
+		[
+			CreateContentBundleBrowser()
+		];
+
+	ContentBundleTab = NewTab;
+	return NewTab;
+}
+
 void FWorldPartitionEditorModule::RegisterWorldPartitionTabs(TSharedPtr<FTabManager> InTabManager)
 {
 	const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
 
-	const FSlateIcon WorldPartitionIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.WorldPartition");
+	const FSlateIcon WorldPartitionIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.WorldPartition");
 
 	InTabManager->RegisterTabSpawner(WorldPartitionEditorTabId,
 		FOnSpawnTab::CreateRaw(this, &FWorldPartitionEditorModule::SpawnWorldPartitionTab))
@@ -574,6 +677,15 @@ void FWorldPartitionEditorModule::RegisterWorldPartitionTabs(TSharedPtr<FTabMana
 		.SetTooltipText(NSLOCTEXT("LevelEditorTabs", "WorldPartitionEditorTooltipText", "Open the World Partition Editor."))
 		.SetGroup(MenuStructure.GetLevelEditorWorldPartitionCategory())
 		.SetIcon(WorldPartitionIcon);
+
+	constexpr TCHAR PLACEHOLDER_ContentBundleIcon[] = TEXT("LevelEditor.Tabs.DataLayers"); // todo_ow: create placeholder icon for content bundle tab
+	const FSlateIcon DataLayersIcon(FAppStyle::GetAppStyleSetName(), PLACEHOLDER_ContentBundleIcon);
+	InTabManager->RegisterTabSpawner(ContentBundleBrowserTabId,
+		FOnSpawnTab::CreateRaw(this, &FWorldPartitionEditorModule::SpawnContentBundleTab))
+		.SetDisplayName(NSLOCTEXT("LevelEditorTabs", "LevelEditorContentBundleBrowser", "Content Bundles Outliner"))
+		.SetTooltipText(NSLOCTEXT("LevelEditorTabs", "LevelEditorContentBundleBrowserTooltipText", "Open the Content Bundles Outliner."))
+		.SetGroup(MenuStructure.GetLevelEditorWorldPartitionCategory())
+		.SetIcon(DataLayersIcon);
 }
 
 void FWorldPartitionEditorModule::RegisterWorldPartitionLayout(FLayoutExtender& Extender)
@@ -585,6 +697,9 @@ UWorldPartitionEditorSettings::UWorldPartitionEditorSettings()
 {
 	CommandletClass = UWorldPartitionConvertCommandlet::StaticClass();
 	InstancedFoliageGridSize = 25600;
+	MinimapLowQualityWorldUnitsPerPixelThreshold = 12800;
+	bDisableLoadingInEditor = false;
+	bDisablePIE = false;
 }
 
 FString UWorldPartitionConvertOptions::ToCommandletArgs() const

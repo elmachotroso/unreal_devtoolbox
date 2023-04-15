@@ -5,7 +5,7 @@
 #define SYMS_DEBUG_INFO_H
 
 ////////////////////////////////
-//~ NOTE(allen): Generated Types
+//~ allen: Generated Types
 
 #include "syms/core/generated/syms_meta_debug_info.h"
 
@@ -34,7 +34,7 @@ typedef struct SYMS_BinInfoArray{
 } SYMS_BinInfoArray;
 
 ////////////////////////////////
-//~ NOTE(allen): Binary Imports & Exports
+//~ allen: Binary Imports & Exports
 
 typedef struct SYMS_Import{
   SYMS_String8 name;
@@ -72,7 +72,7 @@ typedef struct SYMS_ExportArray{
 } SYMS_ExportArray;
 
 ////////////////////////////////
-//~ NOTE(allen): Compilation Unit Types
+//~ allen: Compilation Unit Types
 
 typedef SYMS_U64 SYMS_UnitID;
 
@@ -100,7 +100,7 @@ typedef struct SYMS_UnitRangeArray{
 } SYMS_UnitRangeArray;
 
 ////////////////////////////////
-//~ NOTE(allen): External File Types
+//~ allen: External File Types
 
 typedef struct SYMS_ExtMatchKey{
   SYMS_U8 v[16];
@@ -123,7 +123,7 @@ typedef struct SYMS_ExtFileList{
 } SYMS_ExtFileList;
 
 ////////////////////////////////
-//~ NOTE(allen): Line Info Types
+//~ allen: Line Info Types
 
 typedef SYMS_U64 SYMS_FileID;
 
@@ -137,6 +137,13 @@ typedef struct SYMS_Line{
   SYMS_SrcCoord src_coord;
   SYMS_U64 voff;
 } SYMS_Line;
+
+typedef struct SYMS_ResolvedLine{
+  SYMS_String8 file_name;
+  SYMS_U32 line;
+  SYMS_U32 col;
+  SYMS_U64 voff;
+} SYMS_ResolvedLine;
 
 typedef struct SYMS_FileIDArray{
   SYMS_FileID *ids;
@@ -161,7 +168,7 @@ typedef struct SYMS_LineParseOut{
 } SYMS_LineParseOut;
 
 ////////////////////////////////
-//~ NOTE(allen): Type Info Types
+//~ allen: Type Info Types
 
 // TODO(allen): go to the mc file
 // TODO(allen): just yanked right from PDB
@@ -203,7 +210,7 @@ typedef enum SYMS_SizeInterpretation{
 } SYMS_SizeInterpretation;
 
 ////////////////////////////////
-//~ NOTE(allen): Symbol API Types
+//~ allen: Symbol API Types
 
 typedef SYMS_U64 SYMS_SymbolID;
 
@@ -240,6 +247,10 @@ typedef struct SYMS_USIDList{
   SYMS_U64 count;
 } SYMS_USIDList;
 
+typedef struct SYMS_USIDArray{
+  SYMS_USID *usid;
+  SYMS_U64 count;
+} SYMS_USIDArray;
 
 typedef struct SYMS_SigHandle{
   SYMS_U64 v;
@@ -292,16 +303,6 @@ typedef struct SYMS_ConstInfo{
   SYMS_U64 val;
 } SYMS_ConstInfo;
 
-typedef struct SYMS_StrippedInfo{
-  SYMS_String8 name;
-  SYMS_U64 voff;
-} SYMS_StrippedInfo;
-
-typedef struct SYMS_StrippedInfoArray{
-  SYMS_StrippedInfo *info;
-  SYMS_U64 count;
-} SYMS_StrippedInfoArray;
-
 typedef enum SYMS_MemKind{
   SYMS_MemKind_Null,
   SYMS_MemKind_DataField,
@@ -348,12 +349,56 @@ typedef struct SYMS_EnumInfoArray{
 } SYMS_EnumInfoArray;
 
 ////////////////////////////////
-// NOTE(allen): Nil For Accelerators
+// allen: Location Types
+
+typedef SYMS_U64 SYMS_LocID;
+
+typedef struct SYMS_LocRange{
+  SYMS_U64Range vrange;
+  SYMS_LocID loc_id;
+} SYMS_LocRange;
+
+typedef struct SYMS_LocRangeArray{
+  SYMS_LocRange *loc_ranges;
+  SYMS_U64 count;
+} SYMS_LocRangeArray;
+
+typedef struct SYMS_LocRangeNode{
+  struct SYMS_LocRangeNode *next;
+  SYMS_LocRange loc_range;
+} SYMS_LocRangeNode;
+
+typedef struct SYMS_LocRangeList{
+  SYMS_LocRangeNode *first;
+  SYMS_LocRangeNode *last;
+  SYMS_U64 count;
+} SYMS_LocRangeList;
+
+typedef enum SYMS_ProcLoc{
+  SYMS_ProcLoc_FrameBase,
+  SYMS_ProcLoc_ReturnAddress,
+} SYMS_ProcLoc;
+
+////////////////////////////////
+// allen: Link Name Types
+
+typedef struct SYMS_LinkNameRec{
+  SYMS_String8 name;
+  SYMS_U64 voff;
+} SYMS_LinkNameRec;
+
+typedef struct SYMS_LinkNameRecArray{
+  SYMS_LinkNameRec *recs;
+  SYMS_U64 count;
+} SYMS_LinkNameRecArray;
+
+////////////////////////////////
+// allen: Nil For Accelerators
 
 SYMS_READ_ONLY SYMS_GLOBAL SYMS_FileFormat syms_format_nil = SYMS_FileFormat_Null;
 
 ////////////////////////////////
-//~ NOTE(allen): Symbol Helper Functions
+//~ allen: Symbol Helper Functions
 
 SYMS_C_LINKAGE_BEGIN
 
@@ -365,10 +410,12 @@ SYMS_API SYMS_USID    syms_make_usid(SYMS_UnitID uid, SYMS_SymbolID sid);
 SYMS_API SYMS_TypeKind syms_type_kind_fwd_from_main(SYMS_TypeKind type_kind);
 SYMS_API SYMS_TypeKind syms_type_kind_main_from_fwd(SYMS_TypeKind type_kind);
 SYMS_API SYMS_B32      syms_type_kind_is_basic(SYMS_TypeKind kind);
+SYMS_API SYMS_B32      syms_type_kind_is_basic_or_enum(SYMS_TypeKind kind);
 SYMS_API SYMS_B32      syms_type_kind_is_integer(SYMS_TypeKind kind);
 SYMS_API SYMS_B32      syms_type_kind_is_signed(SYMS_TypeKind kind);
 SYMS_API SYMS_B32      syms_type_kind_is_complex(SYMS_TypeKind kind);
 SYMS_API SYMS_B32      syms_type_kind_is_user_defined(SYMS_TypeKind kind);
+SYMS_API SYMS_B32      syms_type_kind_is_forward(SYMS_TypeKind kind);
 
 SYMS_API SYMS_SymbolIDArray syms_sid_array_from_list(SYMS_Arena *arena, SYMS_SymbolIDList *list);
 

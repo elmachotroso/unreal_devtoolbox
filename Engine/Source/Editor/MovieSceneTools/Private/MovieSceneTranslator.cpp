@@ -5,14 +5,14 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "LevelSequence.h"
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "Sections/MovieSceneAudioSection.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "MovieSceneTimeHelpers.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Sound/SoundWave.h"
 #include "Sound/SoundCue.h"
 #include "EditorFramework/AssetImportData.h"
@@ -677,7 +677,7 @@ TSharedPtr<FMovieSceneImportCinematicSectionData> FMovieSceneImportData::CreateC
 
 	// Collect a full list of assets with the specified class
 	TArray<FAssetData> AssetDataArray;
-	AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetFName(), AssetDataArray);
+	AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), AssetDataArray);
 
 	for (FAssetData AssetData : AssetDataArray)
 	{
@@ -815,7 +815,7 @@ TSharedPtr<FMovieSceneImportAudioSectionData> FMovieSceneImportData::CreateAudio
 
 	// Collect a full list of assets with the specified class
 	TArray<FAssetData> AssetDataArray;
-	AssetRegistryModule.Get().GetAssetsByClass(USoundWave::StaticClass()->GetFName(), AssetDataArray);
+	AssetRegistryModule.Get().GetAssetsByClass(USoundWave::StaticClass()->GetClassPathName(), AssetDataArray);
 
 	for (FAssetData AssetData : AssetDataArray)
 	{

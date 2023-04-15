@@ -21,7 +21,7 @@ class UMaterialExpressionDesaturation : public UMaterialExpression
 	UPROPERTY()
 	FExpressionInput Fraction;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionDesaturation)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionDesaturation, Meta = (ShowAsInputPin = "Advanced"))
 	FLinearColor LuminanceFactors;    // Color component factors for converting a color to greyscale.
 
 
@@ -32,6 +32,7 @@ class UMaterialExpressionDesaturation : public UMaterialExpression
 	{
 		OutCaptions.Add(TEXT("Desaturation"));
 	}
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 };

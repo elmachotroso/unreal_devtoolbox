@@ -6,11 +6,11 @@
 #include "Algo/StableSort.h"
 #include "Algo/Transform.h"
 #include "Compression/OodleDataCompression.h"
+#include "DerivedDataBackendInterface.h"
 #include "DerivedDataCachePrivate.h"
 #include "DerivedDataCacheRecord.h"
 #include "DerivedDataCacheUsageStats.h"
 #include "DerivedDataChunk.h"
-#include "DerivedDataRequest.h"
 #include "DerivedDataRequestOwner.h"
 #include "DerivedDataValue.h"
 #include "HAL/CriticalSection.h"
@@ -30,7 +30,6 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
-#include "Tasks/Task.h"
 #include "Templates/Greater.h"
 #include "Templates/UniquePtr.h"
 
@@ -48,44 +47,11 @@ public:
 
 	void Close() final;
 
-	/** Return a name for this interface */
-	FString GetName() const final;
+	bool IsWritable() const final { return bWriting && !bClosed; }
 
-	/** return true if this cache is writable **/
-	bool IsWritable() const final;
-
-	/** Returns a class of speed for this interface **/
-	ESpeedClass GetSpeedClass() const final;
-
-	bool BackfillLowerCacheLevels() const final;
-
-	/**
-	 * Synchronous test for the existence of a cache item
-	 *
-	 * @param	CacheKey	Alphanumeric+underscore key of this cache item
-	 * @return				true if the data probably will be found, this can't be guaranteed because of concurrency in the backends, corruption, etc
-	 */
-	bool CachedDataProbablyExists(const TCHAR* CacheKey) final;
-
-	/**
-	 * Synchronous retrieve of a cache item
-	 *
-	 * @param	CacheKey	Alphanumeric+underscore key of this cache item
-	 * @param	OutData		Buffer to receive the results, if any were found
-	 * @return				true if any data was found, and in this case OutData is non-empty
-	 */
-	bool GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData) override;
-
-	/**
-	 * Asynchronous, fire-and-forget placement of a cache item
-	 *
-	 * @param	CacheKey	Alphanumeric+underscore key of this cache item
-	 * @param	InData		Buffer containing the data to cache, can be destroyed after the call returns, immediately
-	 * @param	bPutEvenIfExists	If true, then do not attempt skip the put even if CachedDataProbablyExists returns true
-	 */
-	EPutStatus PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists) override;
-
-	void RemoveCachedData(const TCHAR* CacheKey, bool bTransient) final;
+	bool CachedDataProbablyExists(const TCHAR* CacheKey);
+	bool GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData);
+	void PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists);
 
 	/**
 	 * Save the cache to disk
@@ -110,18 +76,7 @@ public:
 		return CachePath;
 	}
 
-	TSharedRef<FDerivedDataCacheStatsNode> GatherUsageStats() const final;
-
-	TBitArray<> TryToPrefetch(TConstArrayView<FString> CacheKeys) final
-	{
-		return CachedDataProbablyExistsBatch(CacheKeys);
-	}
-
-	bool WouldCache(const TCHAR* CacheKey, TArrayView<const uint8> InData) final { return true; }
-
-	bool ApplyDebugOptions(FBackendDebugOptions& InOptions) final { return false; }
-
-	EBackendLegacyMode GetLegacyMode() const final { return EBackendLegacyMode::ValueWithLegacyFallback; }
+	// ICacheStore
 
 	void Put(
 		TConstArrayView<FCachePutRequest> Requests,
@@ -147,6 +102,11 @@ public:
 		TConstArrayView<FCacheGetChunkRequest> Requests,
 		IRequestOwner& Owner,
 		FOnCacheGetChunkComplete&& OnComplete) final;
+
+	// ILegacyCacheStore
+
+	void LegacyStats(FDerivedDataCacheStatsNode& OutNode) final;
+	bool LegacyDebugOptions(FBackendDebugOptions& Options) final;
 
 private:
 	[[nodiscard]] bool PutCacheRecord(FStringView Name, const FCacheRecord& Record, const FCacheRecordPolicy& Policy, uint64& OutWriteSize);
@@ -192,6 +152,7 @@ private:
 
 private:
 	FDerivedDataCacheUsageStats UsageStats;
+	FBackendDebugOptions DebugOptions;
 
 	struct FCacheValue
 	{
@@ -279,11 +240,6 @@ FPakFileCacheStore::~FPakFileCacheStore()
 	Close();
 }
 
-FString FPakFileCacheStore::GetName() const
-{
-	return CachePath;
-}
-
 void FPakFileCacheStore::Close()
 {
 	FDerivedDataBackend::Get().WaitForQuiescence();
@@ -300,24 +256,13 @@ void FPakFileCacheStore::Close()
 	}
 }
 
-bool FPakFileCacheStore::IsWritable() const
-{
-	return bWriting && !bClosed;
-}
-
-FDerivedDataBackendInterface::ESpeedClass FPakFileCacheStore::GetSpeedClass() const
-{
-	return ESpeedClass::Local;
-}
-
-bool FPakFileCacheStore::BackfillLowerCacheLevels() const
-{
-	return false;
-}
-
 bool FPakFileCacheStore::CachedDataProbablyExists(const TCHAR* CacheKey)
 {
 	COOK_STAT(auto Timer = UsageStats.TimeProbablyExists());
+	if (bClosed)
+	{
+		return false;
+	}
 	FReadScopeLock ScopeLock(SynchronizationObject);
 	bool Result = CacheItems.Contains(FString(CacheKey));
 	if (Result)
@@ -357,12 +302,12 @@ bool FPakFileCacheStore::GetCachedData(const TCHAR* CacheKey, TArray<uint8>& Out
 		{
 			check(Item->Size);
 			check(!OutData.Num());
-			OutData.AddUninitialized(Item->Size);
+			OutData.AddUninitialized(int32(Item->Size));
 			if (!FileHandle->Read(OutData.GetData(), int64(Item->Size)))
 			{
 				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Pak file, bad read."), *CachePath);
 			}
-			else if (uint32 TestCrc = FCrc::MemCrc_DEPRECATED(OutData.GetData(), Item->Size); TestCrc != Item->Crc)
+			else if (uint32 TestCrc = FCrc::MemCrc_DEPRECATED(OutData.GetData(), int32(Item->Size)); TestCrc != Item->Crc)
 			{
 				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Pak file, bad crc."), *CachePath);
 			}
@@ -383,13 +328,10 @@ bool FPakFileCacheStore::GetCachedData(const TCHAR* CacheKey, TArray<uint8>& Out
 	return false;
 }
 
-FDerivedDataBackendInterface::EPutStatus FPakFileCacheStore::PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists)
+void FPakFileCacheStore::PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists)
 {
 	COOK_STAT(auto Timer = UsageStats.TimePut());
-	if (!IsWritable())
-	{
-		return EPutStatus::NotCached;
-	}
+	if (bWriting && !bClosed)
 	{
 		FWriteScopeLock ScopeLock(SynchronizationObject);
 		FString Key(CacheKey);
@@ -418,12 +360,12 @@ FDerivedDataBackendInterface::EPutStatus FPakFileCacheStore::PutCachedData(const
 						Item->Crc = Crc.GetValue();
 						FileHandle->Seek(Offset);
 					}
-					return EPutStatus::Cached;
+					return;
 				}
 
 				UE_LOG(LogDerivedDataCache, Warning,
-					TEXT("%s: Repeated put of %s with different sized contents. Multiple contents will be in the file, ")
-					TEXT("but only the last will be in the index. This has wasted %" INT64_FMT " bytes in the file."),
+					TEXT("%s: Repeated put of %s with different sized contents. Multiple contents will be in the file, "
+					     "but only the last will be in the index. This has wasted %" INT64_FMT " bytes in the file."),
 					*CachePath, CacheKey, Item->Size);
 				CacheItems.Remove(Key);
 			}
@@ -435,7 +377,6 @@ FDerivedDataBackendInterface::EPutStatus FPakFileCacheStore::PutCachedData(const
 			CacheItems.Empty();
 			FileHandle.Reset();
 			UE_LOG(LogDerivedDataCache, Fatal, TEXT("%s: Could not write pak file... out of disk space?"), *CachePath);
-			return EPutStatus::NotCached;
 		}
 		else
 		{
@@ -447,23 +388,8 @@ FDerivedDataBackendInterface::EPutStatus FPakFileCacheStore::PutCachedData(const
 			FileHandle->Write(InData.GetData(), InData.Num());
 			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Put %s"), *CachePath, CacheKey);
 			CacheItems.Add(Key, FCacheValue(Offset, InData.Num(), Crc.GetValue()));
-			return EPutStatus::Cached;
 		}
 	}
-}
-
-void FPakFileCacheStore::RemoveCachedData(const TCHAR* CacheKey, bool bTransient)
-{
-	if (bClosed || bTransient)
-	{
-		return;
-	}
-	// strangish. We can delete from a pak, but it only deletes the index 
-	// if this is a read cache, it will read it next time
-	// if this is a write cache, we wasted space
-	FWriteScopeLock ScopeLock(SynchronizationObject);
-	FString Key(CacheKey);
-	CacheItems.Remove(Key);
 }
 
 bool FPakFileCacheStore::SaveCache()
@@ -669,21 +595,25 @@ bool IPakFileCacheStore::SortAndCopy(const FString &InputFilename, const FString
 
 	// Write out a TOC listing for debugging
 	FStringOutputDevice Output;
-	Output.Logf(TEXT("Asset,Size") LINE_TERMINATOR);
+	Output.Logf(TEXT("Asset,Size" LINE_TERMINATOR_ANSI));
 	for(int KeyIndex = 0; KeyIndex < KeyNames.Num(); KeyIndex++)
 	{
-		Output.Logf(TEXT("%s,%d") LINE_TERMINATOR, *KeyNames[KeyIndex], KeySizes[KeyIndex]);
+		Output.Logf(TEXT("%s,%d" LINE_TERMINATOR_ANSI), *KeyNames[KeyIndex], KeySizes[KeyIndex]);
 	}
 	FFileHelper::SaveStringToFile(Output, *FPaths::Combine(*FPaths::GetPath(OutputFilename), *(FPaths::GetBaseFilename(OutputFilename) + TEXT(".csv"))));
 	return true;
 }
 
-TSharedRef<FDerivedDataCacheStatsNode> FPakFileCacheStore::GatherUsageStats() const
+void FPakFileCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
-	TSharedRef<FDerivedDataCacheStatsNode> Usage =
-		MakeShared<FDerivedDataCacheStatsNode>(TEXT("PakFile"), CachePath, /*bIsLocal*/ true);
-	Usage->Stats.Add(TEXT(""), UsageStats);
-	return Usage;
+	OutNode = {TEXT("PakFile"), CachePath, /*bIsLocal*/ true};
+	OutNode.UsageStats.Add(TEXT(""), UsageStats);
+}
+
+bool FPakFileCacheStore::LegacyDebugOptions(FBackendDebugOptions& InOptions)
+{
+	DebugOptions = InOptions;
+	return true;
 }
 
 void FPakFileCacheStore::Put(
@@ -693,21 +623,24 @@ void FPakFileCacheStore::Put(
 {
 	for (const FCachePutRequest& Request : Requests)
 	{
-		const FCacheRecord& Record = Request.Record;
-		TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Put);
-		COOK_STAT(auto Timer = UsageStats.TimePut());
-		uint64 WriteSize = 0;
-		if (PutCacheRecord(Request.Name, Record, Request.Policy, WriteSize))
+		bool bOk;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Record.GetKey()), *Request.Name);
-			COOK_STAT(if (WriteSize) { Timer.AddHit(WriteSize); });
-			OnComplete(Request.MakeResponse(EStatus::Ok));
+			const FCacheRecord& Record = Request.Record;
+			TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Put);
+			COOK_STAT(auto Timer = UsageStats.TimePut());
+			uint64 WriteSize = 0;
+			bOk = PutCacheRecord(Request.Name, Record, Request.Policy, WriteSize);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Record.GetKey()), *Request.Name);
+				if (WriteSize)
+				{
+					COOK_STAT(Timer.AddHit(WriteSize));
+				}
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete(Request.MakeResponse(bOk ? EStatus::Ok : EStatus::Error));
 	}
 }
 
@@ -718,20 +651,23 @@ void FPakFileCacheStore::Get(
 {
 	for (const FCacheGetRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_GetValue);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
-		EStatus Status = EStatus::Ok;
-		if (FOptionalCacheRecord Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status))
+		EStatus Status = EStatus::Error;
+		FOptionalCacheRecord Record;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
-			OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
+			TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Get);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			if ((Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status)))
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
+			}
+			else
+			{
+				Record = FCacheRecordBuilder(Request.Key).Build();
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(Status));
-		}
+		OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
 	}
 }
 
@@ -742,20 +678,23 @@ void FPakFileCacheStore::PutValue(
 {
 	for (const FCachePutValueRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Put);
-		COOK_STAT(auto Timer = UsageStats.TimePut());
-		uint64 WriteSize = 0;
-		if (PutCacheValue(Request.Name, Request.Key, Request.Value, Request.Policy, WriteSize))
+		bool bOk;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			COOK_STAT(if (WriteSize) { Timer.AddHit(WriteSize); });
-			OnComplete(Request.MakeResponse(EStatus::Ok));
+			TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_PutValue);
+			COOK_STAT(auto Timer = UsageStats.TimePut());
+			uint64 WriteSize = 0;
+			bOk = PutCacheValue(Request.Name, Request.Key, Request.Value, Request.Policy, WriteSize);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				if (WriteSize)
+				{
+					COOK_STAT(Timer.AddHit(WriteSize));
+				}
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete(Request.MakeResponse(bOk ? EStatus::Ok : EStatus::Error));
 	}
 }
 
@@ -766,20 +705,20 @@ void FPakFileCacheStore::GetValue(
 {
 	for (const FCacheGetValueRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Get);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
+		bool bOk;
 		FValue Value;
-		if (GetCacheValue(Request.Name, Request.Key, Request.Policy, Value))
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
-			OnComplete({Request.Name, Request.Key, Value, Request.UserData, EStatus::Ok});
+			TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_GetValue);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			bOk = GetCacheValue(Request.Name, Request.Key, Request.Policy, Value);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete({Request.Name, Request.Key, Value, Request.UserData, bOk ? EStatus::Ok : EStatus::Error});
 	}
 }
 
@@ -800,67 +739,68 @@ void FPakFileCacheStore::GetChunks(
 	FOptionalCacheRecord Record;
 	for (const FCacheGetChunkRequest& Request : SortedRequests)
 	{
-		const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
-		TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Get);
-		COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
-		if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
+		EStatus Status = EStatus::Error;
+		FSharedBuffer Buffer;
+		uint64 RawSize = 0;
 		{
-			ValueReader.ResetSource();
-			ValueAr.Reset();
-			ValueKey = {};
-			ValueId.Reset();
-			Value.Reset();
-			bHasValue = false;
-			if (Request.Id.IsValid())
+			TRACE_CPUPROFILER_EVENT_SCOPE(PakFileDDC_Get);
+			const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
+			COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
+			if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
 			{
-				if (!(Record && Record.Get().GetKey() == Request.Key))
+				ValueReader.ResetSource();
+				ValueAr.Reset();
+				ValueKey = {};
+				ValueId.Reset();
+				Value.Reset();
+				bHasValue = false;
+				if (Request.Id.IsValid())
 				{
-					FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
-					PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
-					Record.Reset();
-					Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
-				}
-				if (Record)
-				{
-					if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+					if (!(Record && Record.Get().GetKey() == Request.Key))
 					{
-						bHasValue = true;
-						Value = ValueWithId;
-						ValueId = Request.Id;
-						ValueKey = Request.Key;
-						GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
+						PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
+						Record.Reset();
+						Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
+					}
+					if (Record)
+					{
+						if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+						{
+							bHasValue = true;
+							Value = ValueWithId;
+							ValueId = Request.Id;
+							ValueKey = Request.Key;
+							GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						}
+					}
+				}
+				else
+				{
+					ValueKey = Request.Key;
+					bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
+					if (bHasValue)
+					{
+						GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
 					}
 				}
 			}
-			else
+			if (bHasValue)
 			{
-				ValueKey = Request.Key;
-				bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
-				if (bHasValue)
+				const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
+				RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
+				COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
+				if (!bExistsOnly)
 				{
-					GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
+					Buffer = ValueReader.Decompress(RawOffset, RawSize);
 				}
+				Status = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
 			}
 		}
-		if (bHasValue)
-		{
-			const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
-			const uint64 RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
-			COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
-			FSharedBuffer Buffer;
-			if (!bExistsOnly)
-			{
-				Buffer = ValueReader.Decompress(RawOffset, RawSize);
-			}
-			const EStatus ChunkStatus = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
-			OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
-				RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, ChunkStatus});
-			continue;
-		}
-
-		OnComplete(Request.MakeResponse(EStatus::Error));
+		OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
+			RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, Status});
 	}
 }
 
@@ -870,7 +810,7 @@ bool FPakFileCacheStore::PutCacheRecord(
 	const FCacheRecordPolicy& Policy,
 	uint64& OutWriteSize)
 {
-	if (!IsWritable())
+	if (!bWriting || bClosed)
 	{
 		return false;
 	}
@@ -886,12 +826,12 @@ bool FPakFileCacheStore::PutCacheRecord(
 		return false;
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for put of %s from '%.*s'"),
-	//		*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return false;
-	//}
+	if (DebugOptions.ShouldSimulatePutMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for put of %s from '%.*s'"),
+			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return false;
+	}
 
 	TStringBuilder<256> Path;
 	FPathViews::Append(Path, TEXT("Buckets"), Key);
@@ -952,12 +892,12 @@ FOptionalCacheRecord FPakFileCacheStore::GetCacheRecordOnly(
 		return FOptionalCacheRecord();
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
-	//		*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return FOptionalCacheRecord();
-	//}
+	if (DebugOptions.ShouldSimulateGetMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
+			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return FOptionalCacheRecord();
+	}
 
 	TStringBuilder<256> Path;
 	FPathViews::Append(Path, TEXT("Buckets"), Key);
@@ -1055,7 +995,7 @@ bool FPakFileCacheStore::PutCacheValue(
 	const ECachePolicy Policy,
 	uint64& OutWriteSize)
 {
-	if (!IsWritable())
+	if (!bWriting || bClosed)
 	{
 		return false;
 	}
@@ -1068,12 +1008,12 @@ bool FPakFileCacheStore::PutCacheValue(
 		return false;
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for put of %s from '%.*s'"),
-	//		*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return false;
-	//}
+	if (DebugOptions.ShouldSimulatePutMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for put of %s from '%.*s'"),
+			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return false;
+	}
 
 	// Check if there is an existing value package.
 	bool bValueExists = false;
@@ -1149,12 +1089,12 @@ bool FPakFileCacheStore::GetCacheValueOnly(
 		return false;
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
-	//		*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return false;
-	//}
+	if (DebugOptions.ShouldSimulateGetMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
+			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return false;
+	}
 
 	TStringBuilder<256> Path;
 	FPathViews::Append(Path, TEXT("Buckets"), Key);
@@ -1519,36 +1459,10 @@ bool FPakFileCacheStore::FileExists(const FStringView Path)
 	return CacheItems.ContainsByHash(PathHash, Path);
 }
 
-static void ScheduleAsyncRequest(IRequestOwner& Owner, const TCHAR* DebugName, TUniqueFunction<void (IRequestOwner& Owner)>&& Function)
-{
-	class FAsyncRequest final : public FRequestBase
-	{
-	public:
-		Tasks::FTask Task;
-		TUniqueFunction<void (IRequestOwner& Owner)> Function;
-
-		void SetPriority(EPriority Priority) final {}
-		void Cancel() final { Task.Wait(); }
-		void Wait() final { Task.Wait(); }
-	};
-
-	FAsyncRequest* Request = new FAsyncRequest;
-	Request->Function = MoveTemp(Function);
-	Tasks::FTaskEvent TaskEvent(TEXT("ScheduleAsyncRequest"));
-	Request->Task = Tasks::Launch(DebugName,
-		[Request, &Owner] { Owner.End(Request, [Request, &Owner] { Request->Function(Owner); }); },
-		TaskEvent, Tasks::ETaskPriority::BackgroundNormal);
-	Owner.Begin(Request);
-	TaskEvent.Trigger();
-}
-
 class FCompressedPakFileCacheStore final : public FPakFileCacheStore
 {
 public:
 	FCompressedPakFileCacheStore(const TCHAR* InFilename, bool bInWriting);
-
-	EPutStatus PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists) final;
-	bool GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData) final;
 
 	void Put(
 		TConstArrayView<FCachePutRequest> Requests,
@@ -1561,8 +1475,6 @@ public:
 		FOnCachePutValueComplete&& OnComplete) final;
 
 private:
-	static const EName CompressionFormat = NAME_Zlib;
-	static const ECompressionFlags CompressionFlags = COMPRESS_BiasMemory;
 	static const ECompressedBufferCompressor RequiredCompressor = ECompressedBufferCompressor::Kraken;
 	static const ECompressedBufferCompressionLevel MinRequiredCompressionLevel = ECompressedBufferCompressionLevel::Optimal2;
 
@@ -1574,44 +1486,13 @@ FCompressedPakFileCacheStore::FCompressedPakFileCacheStore(const TCHAR* InFilena
 {
 }
 
-FDerivedDataBackendInterface::EPutStatus FCompressedPakFileCacheStore::PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists)
-{
-	int32 UncompressedSize = InData.Num();
-	int32 CompressedSize = FCompression::CompressMemoryBound(CompressionFormat, UncompressedSize, CompressionFlags);
-
-	TArray<uint8> CompressedData;
-	CompressedData.AddUninitialized(CompressedSize + sizeof(UncompressedSize));
-
-	FMemory::Memcpy(&CompressedData[0], &UncompressedSize, sizeof(UncompressedSize));
-	verify(FCompression::CompressMemory(CompressionFormat, CompressedData.GetData() + sizeof(UncompressedSize), CompressedSize, InData.GetData(), InData.Num(), CompressionFlags));
-	CompressedData.SetNum(CompressedSize + sizeof(UncompressedSize), false);
-
-	return FPakFileCacheStore::PutCachedData(CacheKey, CompressedData, bPutEvenIfExists);
-}
-
-bool FCompressedPakFileCacheStore::GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData)
-{
-	TArray<uint8> CompressedData;
-	if(!FPakFileCacheStore::GetCachedData(CacheKey, CompressedData))
-	{
-		return false;
-	}
-
-	int32 UncompressedSize;
-	FMemory::Memcpy(&UncompressedSize, &CompressedData[0], sizeof(UncompressedSize));
-	OutData.SetNum(UncompressedSize);
-	verify(FCompression::UncompressMemory(CompressionFormat, OutData.GetData(), UncompressedSize, CompressedData.GetData() + sizeof(UncompressedSize), CompressedData.Num() - sizeof(UncompressedSize), CompressionFlags));
-
-	return true;
-}
-
 void FCompressedPakFileCacheStore::Put(
 	const TConstArrayView<FCachePutRequest> Requests,
 	IRequestOwner& Owner,
 	FOnCachePutComplete&& OnComplete)
 {
-	ScheduleAsyncRequest(Owner, TEXT("PakFileDDC_Put"),
-		[this, Requests = TArray<FCachePutRequest, TInlineAllocator<1>>(Requests), OnComplete = MoveTemp(OnComplete)](IRequestOwner& Owner) mutable
+	Owner.LaunchTask(TEXT("PakFileDDC_Put"),
+		[this, &Owner, Requests = TArray<FCachePutRequest, TInlineAllocator<1>>(Requests), OnComplete = MoveTemp(OnComplete)]() mutable
 		{
 			for (FCachePutRequest& Request : Requests)
 			{
@@ -1623,8 +1504,8 @@ void FCompressedPakFileCacheStore::Put(
 				}
 				Request.Record = Builder.Build();
 			}
-			Private::ExecuteInCacheThreadPool(Owner,
-				[this, Requests = MoveTemp(Requests), OnComplete = MoveTemp(OnComplete)](IRequestOwner& Owner, bool bCancel) mutable
+			Private::LaunchTaskInCacheThreadPool(Owner,
+				[this, &Owner, Requests = MoveTemp(Requests), OnComplete = MoveTemp(OnComplete)]() mutable
 				{
 					FPakFileCacheStore::Put(Requests, Owner, MoveTemp(OnComplete));
 				});
@@ -1636,15 +1517,15 @@ void FCompressedPakFileCacheStore::PutValue(
 	IRequestOwner& Owner,
 	FOnCachePutValueComplete&& OnComplete)
 {
-	ScheduleAsyncRequest(Owner, TEXT("PakFileDDC_PutValue"),
-		[this, Requests = TArray<FCachePutValueRequest, TInlineAllocator<1>>(Requests), OnComplete = MoveTemp(OnComplete)](IRequestOwner& Owner) mutable
+	Owner.LaunchTask(TEXT("PakFileDDC_PutValue"),
+		[this, &Owner, Requests = TArray<FCachePutValueRequest, TInlineAllocator<1>>(Requests), OnComplete = MoveTemp(OnComplete)]() mutable
 		{
 			for (FCachePutValueRequest& Request : Requests)
 			{
 				Request.Value = Compress(Request.Value);
 			}
-			Private::ExecuteInCacheThreadPool(Owner,
-				[this, Requests = MoveTemp(Requests), OnComplete = MoveTemp(OnComplete)](IRequestOwner& Owner, bool bCancel) mutable
+			Private::LaunchTaskInCacheThreadPool(Owner,
+				[this, &Owner, Requests = MoveTemp(Requests), OnComplete = MoveTemp(OnComplete)]() mutable
 				{
 					FPakFileCacheStore::PutValue(Requests, Owner, MoveTemp(OnComplete));
 				});

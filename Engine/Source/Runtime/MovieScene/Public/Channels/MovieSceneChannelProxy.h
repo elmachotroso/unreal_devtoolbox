@@ -2,14 +2,25 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Templates/UnrealTemplate.h"
-#include "Misc/InlineValue.h"
+#include "Algo/BinarySearch.h"
 #include "Channels/MovieSceneChannelEditorDataEntry.h"
 #include "Channels/MovieSceneChannelHandle.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/InlineValue.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "UObject/NameTypes.h"
 
-struct FMovieSceneChannelProxyData;
+struct FMovieSceneChannel;
+struct FMovieSceneChannelMetaData;
 struct FMovieSceneChannelProxy;
+struct FMovieSceneChannelProxyData;
 
 /**
  * An entry within FMovieSceneChannelProxy that contains all channels (and editor data) for any given channel type
@@ -97,6 +108,27 @@ struct FMovieSceneChannelProxyData
 	/**
 	 * Add a new channel to the proxy. Channel's address is stored internally as a voic* and should exist as long as the channel proxy does
 	 *
+	 * @param InChannel          The channel to add to this proxy. Should live for as long as the proxy does. Any re-allocation should be accompanied with a re-creation of the proxy
+	 * @param InMetaData         The editor meta data to be associated with this channel
+	 */
+	template<typename ChannelType>
+	FMovieSceneChannelHandle AddWithDefaultEditorData(ChannelType& InChannel, const FMovieSceneChannelMetaData& InMetaData)
+	{
+		static_assert(!TIsSame<typename TMovieSceneChannelTraits<ChannelType>::ExtendedEditorDataType, void>::Value, "This method is for channels with typed editor data. You *must* call SetExtendedEditorData afterwards.");
+		static_assert(!TIsSame<ChannelType, FMovieSceneChannel>::Value, "Cannot add channels by their base FMovieSceneChannel type.");
+
+		// Add the channel
+		const int32 ChannelTypeIndex = AddInternal(InChannel);
+		// Add a default editor data at the same index, hopefully the caller will set it afterwards
+		Entries[ChannelTypeIndex].AddMetaData<ChannelType>(InMetaData, typename TMovieSceneChannelTraits<ChannelType>::ExtendedEditorDataType());
+		// Return index usable for SetExtendedEditorData
+		const FName ChannelTypeName = ChannelType::StaticStruct()->GetFName();
+		return FMovieSceneChannelHandle(nullptr, ChannelTypeName, Entries[ChannelTypeIndex].GetChannels().Num() - 1);
+	}
+
+	/**
+	 * Add a new channel to the proxy. Channel's address is stored internally as a voic* and should exist as long as the channel proxy does
+	 *
 	 * @param InChannel             The channel to add to this proxy. Should live for as long as the proxy does. Any re-allocation should be accompanied with a re-creation of the proxy
 	 * @param InMetaData            The editor meta data to be associated with this channel
 	 * @param InExtendedEditorData  Additional editor data to be associated with this channel as per its traits
@@ -111,6 +143,20 @@ struct FMovieSceneChannelProxyData
 		const int32 ChannelTypeIndex = AddInternal(InChannel);
 		// Add the editor data at the same index
 		Entries[ChannelTypeIndex].AddMetaData<ChannelType>(InMetaData, Forward<ExtendedEditorDataType>(InExtendedEditorData));
+	}
+
+	template<typename ChannelType, typename ExtendedEditorDataType>
+	void SetExtendedEditorData(FMovieSceneChannelHandle ChannelHandle, ExtendedEditorDataType&& InExtendedEditorData)
+	{
+		// Find the entry
+		// TODO: we rely on ChannelType's extended editor data to be the same as the overriden extended editor data!
+		const FName ChannelTypeName = ChannelHandle.GetChannelTypeName();
+		FMovieSceneChannelEntry* Entry = Entries.FindByPredicate([=](const FMovieSceneChannelEntry& CurEntry)
+				{ return CurEntry.ChannelTypeName == ChannelTypeName; });
+		if (ensure(Entry))
+		{
+			Entry->SetExtendedEditorData<ChannelType>(ChannelHandle.GetChannelIndex(), InExtendedEditorData);
+		}
 	}
 
 #else
@@ -228,6 +274,12 @@ public:
 	FMovieSceneChannel* GetChannel(FName ChannelTypeName, int32 ChannelIndex) const;
 
 	/**
+	 * Returns the total number of channels
+	 * @return The total number of channels
+	 */
+	int32 NumChannels() const;
+
+	/**
 	 * Make a channel handle out for the specified index and channel type name
 	 *
 	 * @return A handle to the supplied channel that will become nullptr when the proxy is reallocated, or nullptr if the index or channel type name are invalid.
@@ -247,7 +299,6 @@ public:
 	}
 
 #if !WITH_EDITOR
-
 
 	/**
 	 * Construction via a single channel, and its editor data
@@ -282,6 +333,21 @@ public:
 	TArrayView<const FMovieSceneChannelMetaData> GetMetaData() const;
 
 	/**
+	 * Get the channel with the specified name, assuming it is of a given type
+	 *
+	 * @return A typed handle to the channel, or an invalid handle if no channel of that name was found, or it wasn't of the specified type
+	 */
+	template<typename ChannelType>
+	TMovieSceneChannelHandle<ChannelType> GetChannelByName(FName ChannelName) const;
+
+	/**
+	 * Get the channel with the specified name
+	 *
+	 * @return A handle to the channel, or an invalid handle if no channel of that name was found
+	 */
+	FMovieSceneChannelHandle GetChannelByName(FName ChannelName) const;
+
+	/**
 	 * Access all the extended data for the templated channel type
 	 *
 	 * @return A potentially empty array view for all the extended editor data for the template channel type
@@ -289,7 +355,7 @@ public:
 	template<typename ChannelType>
 	TArrayView<const typename TMovieSceneChannelTraits<ChannelType>::ExtendedEditorDataType> GetAllExtendedEditorData() const;
 
-#endif
+#endif  // !WITH_EDITOR
 
 private:
 
@@ -298,6 +364,18 @@ private:
 
 	/** Array of channel entries, one per channel type. Should never be changed or reallocated after construction to keep pointers alive. */
 	TArray<FMovieSceneChannelEntry, TInlineAllocator<1>> Entries;
+
+#if WITH_EDITOR
+
+	/** Populate the named channel table */
+	void EnsureHandlesByNamePopulated() const;
+
+	/** Lazy-created lookup table between a channel name and a channel handle */
+	mutable TMap<FName, FMovieSceneChannelHandle> HandlesByName;
+	/** Whether the named channel table has been populated */
+	mutable bool bHandlesByNamePopulated = false;
+
+#endif // WITH_EDITOR
 };
 
 
@@ -359,7 +437,6 @@ ChannelType* FMovieSceneChannelProxy::GetChannel(int32 ChannelIndex) const
 	TArrayView<ChannelType*> Channels = GetChannels<ChannelType>();
 	return Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex] : nullptr;
 }
-
 
 #if !WITH_EDITOR
 
@@ -452,5 +529,25 @@ TArrayView<const FMovieSceneChannelMetaData> FMovieSceneChannelProxy::GetMetaDat
 	}
 	return TArrayView<const FMovieSceneChannelMetaData>();
 }
+
+
+/**
+ * Get the channel for the specified sort index of a particular type.
+ *
+ * @return A pointer to the channel, or nullptr if the index was invalid, or the type was not present
+ */
+template<typename ChannelType>
+TMovieSceneChannelHandle<ChannelType> FMovieSceneChannelProxy::GetChannelByName(FName ChannelName) const
+{
+	const FMovieSceneChannelHandle UntypedHandle = GetChannelByName(ChannelName);
+	const FName ChannelTypeName = ChannelType::StaticStruct()->GetFName();
+	// Invalid handles will have a type name of 'None', so we will always fail this test and retrun a null typed handle
+	if (UntypedHandle.GetChannelTypeName() == ChannelTypeName)
+	{
+		return UntypedHandle.Cast<ChannelType>();
+	}
+	return TMovieSceneChannelHandle<ChannelType>();
+}
+
 
 #endif	// !WITH_EDITOR

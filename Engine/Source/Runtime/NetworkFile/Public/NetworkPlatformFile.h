@@ -2,13 +2,32 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/SpscQueue.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
 #include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Event.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/CoreMisc.h" // included for FSelfRegisteringExec
+#include "Misc/DateTime.h"
 #include "NetworkMessage.h"
 #include "ServerTOC.h"
-#include "Misc/CoreMisc.h" // included for FSelfRegisteringExec
+#include "Templates/SharedPointer.h"
 
+class FArrayReader;
+class FOutputDevice;
 class FScopedEvent;
+struct FPackageFileVersion;
+
+namespace UE { namespace Cook
+{
+	class FCookOnTheFlyMessage;
+	class ICookOnTheFlyServerConnection;
+}}
 
 DECLARE_LOG_CATEGORY_EXTERN(LogNetworkPlatformFile, Log, All);
 
@@ -222,6 +241,8 @@ private:
 	 */
 	void EnsureFileIsLocal(const FString& Filename);
 
+	void OnCookOnTheFlyMessage(const UE::Cook::FCookOnTheFlyMessage& Message);
+
 protected:
 	/**
 	* Does normal path standardization, and also any extra modifications to make string comparisons against
@@ -289,8 +310,9 @@ private:
 	FScopedEvent *FinishedAsyncNetworkReadUnsolicitedFiles;
 	FScopedEvent *FinishedAsyncWriteUnsolicitedFiles;
 
-    // Our network Transport. 
-	class ITransport* Transport; 
+	TSharedPtr<UE::Cook::ICookOnTheFlyServerConnection> Connection;
+	TSpscQueue<TArray<uint8>> PendingPayloads;
+	FEventRef NewPayloadEvent;
 
 	static FString MP4Extension;
 	static FString BulkFileExtension;

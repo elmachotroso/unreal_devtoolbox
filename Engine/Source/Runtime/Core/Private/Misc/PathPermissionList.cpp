@@ -1,8 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/NamePermissionList.h"
+#include "Misc/PathViews.h"
 #include "Misc/StringBuilder.h"
-
+#include "Templates/ChooseClass.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
 bool FPathPermissionList::PassesFilter(const FStringView Item) const
 {
@@ -10,6 +23,8 @@ bool FPathPermissionList::PassesFilter(const FStringView Item) const
 	{
 		return false;
 	}
+
+	VerifyItemMatchesListType(Item);
 
 	if (AllowList.Num() > 0 || DenyList.Num() > 0)
 	{
@@ -41,12 +56,14 @@ bool FPathPermissionList::PassesFilter(const TCHAR* Item) const
 
 bool FPathPermissionList::PassesStartsWithFilter(const FStringView Item, const bool bAllowParentPaths) const
 {
+	VerifyItemMatchesListType(Item);
+
 	if (AllowList.Num() > 0)
 	{
 		bool bPassedAllowList = false;
 		for (const auto& Other : AllowList)
 		{
-			if (Item.StartsWith(Other.Key) && (Item.Len() <= Other.Key.Len() || Item[Other.Key.Len()] == TEXT('/')))
+			if (FPathViews::IsParentPathOf(Other.Key, Item))
 			{
 				bPassedAllowList = true;
 				break;
@@ -55,7 +72,7 @@ bool FPathPermissionList::PassesStartsWithFilter(const FStringView Item, const b
 			if (bAllowParentPaths)
 			{
 				// If allowing parent paths (eg, when filtering folders), then we must also check if the item has a AllowList child path
-				if (FStringView(Other.Key).StartsWith(Item) && (Other.Key.Len() <= Item.Len() || Other.Key[Item.Len()] == TEXT('/')))
+				if (FPathViews::IsParentPathOf(Item, Other.Key))
 				{
 					bPassedAllowList = true;
 					break;
@@ -73,7 +90,7 @@ bool FPathPermissionList::PassesStartsWithFilter(const FStringView Item, const b
 	{
 		for (const auto& Other : DenyList)
 		{
-			if (Item.StartsWith(Other.Key) && (Item.Len() <= Other.Key.Len() || Item[Other.Key.Len()] == TEXT('/')))
+			if (FPathViews::IsParentPathOf(Other.Key, Item))
 			{
 				return false;
 			}
@@ -100,6 +117,8 @@ bool FPathPermissionList::PassesStartsWithFilter(const TCHAR* Item, const bool b
 
 bool FPathPermissionList::AddDenyListItem(const FName OwnerName, const FStringView Item)
 {
+	VerifyItemMatchesListType(Item);
+
 	const uint32 ItemHash = GetTypeHash(Item);
 
 	FPermissionListOwners* Owners = DenyList.FindByHash(ItemHash, Item);
@@ -129,8 +148,42 @@ bool FPathPermissionList::AddDenyListItem(const FName OwnerName, const TCHAR* It
 	return AddDenyListItem(OwnerName, FStringView(Item));
 }
 
+bool FPathPermissionList::RemoveDenyListItem(const FName OwnerName, const FStringView Item)
+{
+	const uint32 ItemHash = GetTypeHash(Item);
+
+	FPermissionListOwners* Owners = DenyList.FindByHash(ItemHash, Item);
+	if (Owners && Owners->Remove(OwnerName) == 1)
+	{
+		if (Owners->Num() == 0)
+		{
+			DenyList.RemoveByHash(ItemHash, Item);
+		}
+
+		if (!bSuppressOnFilterChanged)
+		{
+			OnFilterChanged().Broadcast();
+		}
+		return true;
+	}
+
+	return false;
+}
+
+bool FPathPermissionList::RemoveDenyListItem(const FName OwnerName, const FName Item)
+{
+	return RemoveDenyListItem(OwnerName, FNameBuilder(Item));
+}
+
+bool FPathPermissionList::RemoveDenyListItem(const FName OwnerName, const TCHAR* Item)
+{
+	return RemoveDenyListItem(OwnerName, FStringView(Item));
+}
+
 bool FPathPermissionList::AddAllowListItem(const FName OwnerName, const FStringView Item)
 {
+	VerifyItemMatchesListType(Item);
+
 	const uint32 ItemHash = GetTypeHash(Item);
 
 	FPermissionListOwners* Owners = AllowList.FindByHash(ItemHash, Item);
@@ -172,6 +225,38 @@ bool FPathPermissionList::AddDenyListAll(const FName OwnerName)
 	}
 
 	return bFilterChanged;
+}
+
+bool FPathPermissionList::RemoveAllowListItem(const FName OwnerName, const FStringView Item)
+{
+	const uint32 ItemHash = GetTypeHash(Item);
+
+	FPermissionListOwners* Owners = AllowList.FindByHash(ItemHash, Item);
+	if (Owners && Owners->Remove(OwnerName) == 1)
+	{
+		if (Owners->Num() == 0)
+		{
+			AllowList.RemoveByHash(ItemHash, Item);
+		}
+
+		if (!bSuppressOnFilterChanged)
+		{
+			OnFilterChanged().Broadcast();
+		}
+		return true;
+	}
+
+	return false;
+}
+
+bool FPathPermissionList::RemoveAllowListItem(const FName OwnerName, const FName Item)
+{
+	return RemoveAllowListItem(OwnerName, FNameBuilder(Item));
+}
+
+bool FPathPermissionList::RemoveAllowListItem(const FName OwnerName, const TCHAR* Item)
+{
+	return RemoveAllowListItem(OwnerName, FStringView(Item));
 }
 
 bool FPathPermissionList::HasFiltering() const
@@ -263,6 +348,8 @@ bool FPathPermissionList::UnregisterOwners(const TArray<FName>& OwnerNames)
 
 bool FPathPermissionList::Append(const FPathPermissionList& Other)
 {
+	ensureAlwaysMsgf(ListType == Other.ListType, TEXT("Trying to combine PathPermissionLists of different types"));
+
 	bool bFilterChanged = false;
 	{
 		TGuardValue<bool> Guard(bSuppressOnFilterChanged, true);
@@ -374,4 +461,19 @@ bool FPathPermissionList::UnregisterOwnersAndAppend(const TArray<FName>& OwnerNa
 	}
 
 	return bFilterChanged;
+}
+
+// Extracted the ensure condition into a separate function so that logs are easier to read
+FORCEINLINE static bool IsClassPathNameOrNone(const FStringView Item)
+{
+	return !Item.Len() || Item[0] == '/' || Item == TEXTVIEW("None");
+}
+
+void FPathPermissionList::VerifyItemMatchesListType(const FStringView Item) const
+{
+	if (ListType == EPathPermissionListType::ClassPaths)
+	{
+		// Long names always have / as first character
+		ensureAlwaysMsgf(IsClassPathNameOrNone(Item), TEXT("Short class name \"%.*s\" provided for PathPermissionList representing class paths"), Item.Len(), Item.GetData());
+	}
 }

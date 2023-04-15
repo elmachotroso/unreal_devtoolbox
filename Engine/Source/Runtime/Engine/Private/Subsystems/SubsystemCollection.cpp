@@ -173,12 +173,14 @@ void FSubsystemCollectionBase::Deinitialize()
 	check(IsInGameThread());
 
 	// already Deinitialize'd :
-	if ( Outer == nullptr )
+	if (Outer == nullptr)
+	{
 		return;
+	}
 
 	// Remove static tracking 
 	GlobalSubsystemCollections.Remove(this);
-	if (GlobalSubsystemCollections.Num() == 0)
+	if (GlobalSubsystemCollections.IsEmpty())
 	{
 		FSubsystemModuleWatcher::DeinitializeModuleWatcher();
 	}
@@ -189,7 +191,7 @@ void FSubsystemCollectionBase::Deinitialize()
 	{
 		UClass* KeyClass = Iter.Key();
 		USubsystem* Subsystem = Iter.Value();
-		if ( Subsystem != nullptr && Subsystem->GetClass() == KeyClass)
+		if (Subsystem != nullptr && Subsystem->GetClass() == KeyClass)
 		{
 			Subsystem->Deinitialize();
 			Subsystem->InternalOwningSubsystem = nullptr;
@@ -215,14 +217,9 @@ USubsystem* FSubsystemCollectionBase::InitializeDependency(TSubclassOf<USubsyste
 	return Subsystem;
 }
 
-void FSubsystemCollectionBase::AddReferencedObjects(FReferenceCollector& Collector)
+void FSubsystemCollectionBase::AddReferencedObjects(UObject* Referencer, FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObjects(SubsystemMap);
-}
-
-FString FSubsystemCollectionBase::GetReferencerName() const
-{
-	return TEXT("FSubsystemCollectionBase");
+	Collector.AddReferencedObjects(SubsystemMap, Referencer);
 }
 
 USubsystem* FSubsystemCollectionBase::AddAndInitializeSubsystem(UClass* SubsystemClass)
@@ -242,6 +239,8 @@ USubsystem* FSubsystemCollectionBase::AddAndInitializeSubsystem(UClass* Subsyste
 			{	
 				return nullptr;
 			}
+
+			UE_SCOPED_ENGINE_ACTIVITY(TEXT("Initializing Subsystem %s"), *SubsystemClass->GetName());
 
 			const USubsystem* CDO = SubsystemClass->GetDefaultObject<USubsystem>();
 			if (CDO->ShouldCreateSubsystem(Outer))
@@ -267,6 +266,16 @@ void FSubsystemCollectionBase::RemoveAndDeinitializeSubsystem(USubsystem* Subsys
 	check(Subsystem);
 	USubsystem* SubsystemFound = SubsystemMap.FindAndRemoveChecked(Subsystem->GetClass());
 	check(Subsystem == SubsystemFound);
+
+	const UClass* SubsystemClass = Subsystem->GetClass();
+
+	for (auto& Pair : SubsystemArrayMap)
+	{
+		if (SubsystemClass->IsChildOf(Pair.Key))
+		{
+			Pair.Value.Remove(Subsystem);
+		}
+	}
 
 	Subsystem->Deinitialize();
 	Subsystem->InternalOwningSubsystem = nullptr;

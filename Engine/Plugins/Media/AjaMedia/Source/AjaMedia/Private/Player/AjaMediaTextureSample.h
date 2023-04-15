@@ -14,7 +14,6 @@ class FAjaMediaTextureSample
 	using Super = FMediaIOCoreTextureSampleBase;
 
 public:
-
 	/**
 	 * Initialize the sample.
 	 *
@@ -74,7 +73,6 @@ public:
 	{
 		return MediaShaders::YuvToRgbRec709Scaled;
 	}
-
 };
 
 /*

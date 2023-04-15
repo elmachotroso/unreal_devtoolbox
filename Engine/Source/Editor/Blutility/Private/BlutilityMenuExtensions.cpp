@@ -1,30 +1,72 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlutilityMenuExtensions.h"
-#include "AssetRegistryModule.h"
-#include "EditorUtilityBlueprint.h"
-#include "Misc/PackageName.h"
 
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetDataTagMap.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "BlueprintEditorModule.h"
-#include "GlobalEditorUtilityBase.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Application/SlateApplication.h"
-#include "PropertyEditorModule.h"
-#include "IStructureDetailsView.h"
-#include "EditorStyleSet.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Editor.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailsViewArgs.h"
 #include "EdGraphSchema_K2.h"
-#include "UObject/PropertyPortFlags.h"
-#include "Widgets/Layout/SScrollBox.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorUtilityBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GameFramework/Actor.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "IDetailsView.h"
+#include "IStructureDetailsView.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "AssetData.h"
-#include "PropertyPathHelpers.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
+#include "Toolkits/IToolkit.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/Package.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/Script.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
 
-#include "UObject/NoExportTypes.h"
+class IToolkitHost;
 
 #define LOCTEXT_NAMESPACE "BlutilityMenuExtensions"
 
@@ -74,7 +116,25 @@ class SFunctionParamDialog : public SCompoundWidget
 		// Hide any property that has been marked as such
 		StructureDetailsView->GetDetailsView()->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateLambda([HiddenPropertyName](const FPropertyAndParent& InPropertyAndParent)
 		{
-			return InPropertyAndParent.Property.HasAnyPropertyFlags(CPF_Parm) && InPropertyAndParent.Property.GetFName() != HiddenPropertyName;
+			if (InPropertyAndParent.Property.GetFName() == HiddenPropertyName)
+			{
+				return false;
+			}
+
+			if (InPropertyAndParent.Property.HasAnyPropertyFlags(CPF_Parm))
+			{
+				return true;
+			}
+
+			for (const FProperty* Parent : InPropertyAndParent.ParentProperties)
+			{
+				if (Parent->HasAnyPropertyFlags(CPF_Parm))
+				{
+					return true;
+				}
+			}
+
+			return false;
 		}));
 
 		StructureDetailsView->GetDetailsView()->ForceRefresh();
@@ -95,7 +155,7 @@ class SFunctionParamDialog : public SCompoundWidget
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Right)
 				[
@@ -105,7 +165,7 @@ class SFunctionParamDialog : public SCompoundWidget
 					.AutoWidth()
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+						.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 						.ForegroundColor(FLinearColor::White)
 						.ContentPadding(FMargin(6, 2))
 						.OnClicked_Lambda([this, InParentWindow, InArgs]()
@@ -120,7 +180,7 @@ class SFunctionParamDialog : public SCompoundWidget
 						.ToolTipText(InArgs._OkButtonTooltipText)
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 							.Text(InArgs._OkButtonText)
 						]
 					]
@@ -129,7 +189,7 @@ class SFunctionParamDialog : public SCompoundWidget
 					.AutoWidth()
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+						.ButtonStyle(FAppStyle::Get(), "FlatButton")
 						.ForegroundColor(FLinearColor::White)
 						.ContentPadding(FMargin(6, 2))
 						.OnClicked_Lambda([InParentWindow]()
@@ -142,7 +202,7 @@ class SFunctionParamDialog : public SCompoundWidget
 						})
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 							.Text(LOCTEXT("Cancel", "Cancel"))
 						]
 					]
@@ -154,21 +214,21 @@ class SFunctionParamDialog : public SCompoundWidget
 	bool bOKPressed;
 };
 
-void FBlutilityMenuExtensions::GetBlutilityClasses(TArray<FAssetData>& OutAssets, const FName& InClassName)
+void FBlutilityMenuExtensions::GetBlutilityClasses(TArray<FAssetData>& OutAssets, FTopLevelAssetPath InClassName)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
 	// Get class names
-	TArray<FName> BaseNames;
+	TArray<FTopLevelAssetPath> BaseNames;
 	BaseNames.Add(InClassName);
-	TSet<FName> Excluded;
-	TSet<FName> DerivedNames;
+	TSet<FTopLevelAssetPath> Excluded;
+	TSet<FTopLevelAssetPath> DerivedNames;
 	AssetRegistry.GetDerivedClassNames(BaseNames, Excluded, DerivedNames);
 
 	// Now get all UEditorUtilityBlueprint assets
 	FARFilter Filter;
-	Filter.ClassNames.Add(UEditorUtilityBlueprint::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UEditorUtilityBlueprint::StaticClass()->GetClassPathName());
 	Filter.bRecursiveClasses = true;
 	Filter.bRecursivePaths = true;
 
@@ -181,10 +241,9 @@ void FBlutilityMenuExtensions::GetBlutilityClasses(TArray<FAssetData>& OutAssets
 		FAssetDataTagMapSharedView::FFindTagResult Result = Asset.TagsAndValues.FindTag(FBlueprintTags::GeneratedClassPath);
 		if (Result.IsSet())
 		{
-			const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath(Result.GetValue());
-			const FString ClassName = FPackageName::ObjectPathToObjectName(ClassObjectPath);
+			const FTopLevelAssetPath ClassObjectPath(FPackageName::ExportTextPathToObjectPath(Result.GetValue()));
 
-			if (DerivedNames.Contains(*ClassName))
+			if (DerivedNames.Contains(ClassObjectPath))
 			{
 				OutAssets.Add(Asset);
 			}
@@ -311,7 +370,7 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 			SubMenuBuilder.AddMenuEntry(
 				FunctionAndUtil.Function->GetDisplayNameText(),
 				TooltipText,
-				FSlateIcon("EditorStyle", "GraphEditor.Event_16x"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x"),
 				FExecuteAction::CreateLambda([FunctionAndUtil, Selection, IsValidPropertyType]
 				{
 					if (FSlateApplication::Get().GetModifierKeys().IsShiftDown())
@@ -337,7 +396,7 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 								FString Defaults;
 								if (UEdGraphSchema_K2::FindFunctionParameterDefaultValue(FunctionAndUtil.Function, *It, Defaults))
 								{
-									It->ImportText(*Defaults, It->ContainerPtrToValuePtr<uint8>(FuncParams->GetStructMemory()), PPF_None, nullptr);
+									It->ImportText_Direct(*Defaults, It->ContainerPtrToValuePtr<uint8>(FuncParams->GetStructMemory()), nullptr, PPF_None);
 								}
 
 								// Check to see if the first parameter matches the selection object type, in that case we can directly forward the selection to it

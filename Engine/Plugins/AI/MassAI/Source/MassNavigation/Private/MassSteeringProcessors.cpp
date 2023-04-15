@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Steering/MassSteeringProcessors.h"
 #include "MassCommonUtils.h"
@@ -51,6 +51,7 @@ namespace UE::MassNavigation
 //  UMassSteerToMoveTargetProcessor
 //----------------------------------------------------------------------//
 UMassSteerToMoveTargetProcessor::UMassSteerToMoveTargetProcessor()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = int32(EProcessorExecutionFlags::All);
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Tasks);
@@ -74,9 +75,9 @@ void UMassSteerToMoveTargetProcessor::ConfigureQueries()
 	EntityQuery.AddTagRequirement<FMassOffLODTag>(EMassFragmentPresence::None);
 }
 
-void UMassSteerToMoveTargetProcessor::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassSteerToMoveTargetProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FTransformFragment> TransformList = Context.GetFragmentView<FTransformFragment>();

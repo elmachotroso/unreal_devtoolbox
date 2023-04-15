@@ -18,6 +18,8 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LiveLinkBlueprintVirtualSubjectFactory)
+
 
 #define LOCTEXT_NAMESPACE "LiveLinkBlueprintVirtualSubjectFactory"
 
@@ -135,7 +137,7 @@ bool ULiveLinkBlueprintVirtualSubjectFactory::ConfigureProperties()
 					[
 						SNew(SBorder)
 						.Padding(4)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 						[
 							ClassViewerModule.CreateClassViewer(Options, FOnClassPicked::CreateSP(this, &FVirtualSubjectFactoryUI::OnPickedRole))
 						]
@@ -160,7 +162,7 @@ bool ULiveLinkBlueprintVirtualSubjectFactory::ConfigureProperties()
 				.SupportsMaximize(false)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+					.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 					.Padding(10)
 					[
 						SNew(SVerticalBox)
@@ -219,13 +221,13 @@ bool ULiveLinkBlueprintVirtualSubjectFactory::ConfigureProperties()
 	return Role != nullptr;
 }
 
-UObject* ULiveLinkBlueprintVirtualSubjectFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+UObject* ULiveLinkBlueprintVirtualSubjectFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn, FName CallingContext)
 {
 	UBlueprint* VirtualSubject = nullptr;
 	if (Role && ensure(SupportedClass == Class))
 	{
 		ensure(0 != (RF_Public & Flags));
-		VirtualSubject = FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), NAME_None);
+		VirtualSubject = FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BlueprintType, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
 		if (TSubclassOf<UObject> GeneratedClass = VirtualSubject->GeneratedClass)
 		{
 			if (ULiveLinkBlueprintVirtualSubject* DefaultSubject = GeneratedClass->GetDefaultObject<ULiveLinkBlueprintVirtualSubject>())

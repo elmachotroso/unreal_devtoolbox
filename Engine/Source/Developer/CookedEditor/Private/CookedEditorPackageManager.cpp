@@ -3,9 +3,9 @@
 #include "CookedEditorPackageManager.h"
 #include "CoreMinimal.h"
 #include "Logging/LogMacros.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/AssetManager.h"
 #include "GameDelegates.h"
 
@@ -98,7 +98,8 @@ FIniCookedEditorPackageManager::FIniCookedEditorPackageManager(bool bInIsCookedC
 	TArray<FString> DisallowedObjectClassNamesToLoad = GetConfigArray(TEXT("DisallowedObjectClassesToLoad"));;
 	for (const FString& ClassName : DisallowedObjectClassNamesToLoad)
 	{
-		UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+		check(FPackageName::IsValidObjectPath(ClassName));
+		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
 		check(Class);
 
 		DisallowedObjectClassesToLoad.Add(Class);
@@ -107,7 +108,8 @@ FIniCookedEditorPackageManager::FIniCookedEditorPackageManager(bool bInIsCookedC
 	TArray<FString> DisallowedAssetClassNamesToGather = GetConfigArray(TEXT("DisallowedAssetClassesToGather"));;
 	for (const FString& ClassName : DisallowedAssetClassNamesToGather)
 	{
-		UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+		check(FPackageName::IsValidObjectPath(ClassName));
+		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
 		check(Class);
 
 		DisallowedAssetClassesToGather.Add(Class);
@@ -139,9 +141,11 @@ void FIniCookedEditorPackageManager::FilterGatheredPackages(TArray<FName>& Packa
 	// now filter based on ini settings
 	PackageNames.RemoveAll([this](FName& AssetPath)
 		{
+			FNameBuilder AssetPathBuilder(AssetPath);
+			const FStringView AssetPathView(AssetPathBuilder);
 			for (const FString& Path : DisallowedPathsToGather)
 			{
-				if (AssetPath.ToString().StartsWith(Path))
+				if (AssetPathView.StartsWith(Path))
 				{
 					return true;
 				}
@@ -196,7 +200,7 @@ bool FIniCookedEditorPackageManager::AllowAssetToBeGathered(const struct FAssetD
 {
 	for (UClass* Class : DisallowedAssetClassesToGather)
 	{
-		if (AssetData.GetClass()->IsChildOf(Class))
+		if (AssetData.IsInstanceOf(Class))
 		{
 			return false;
 		}

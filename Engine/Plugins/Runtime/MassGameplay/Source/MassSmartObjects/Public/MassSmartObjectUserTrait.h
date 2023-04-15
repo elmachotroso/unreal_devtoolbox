@@ -3,6 +3,7 @@
 #pragma once
 
 #include "MassEntityTraitBase.h"
+#include "GameplayTagContainer.h"
 #include "MassSmartObjectUserTrait.generated.h"
 
 /**
@@ -14,5 +15,9 @@ class MASSSMARTOBJECTS_API UMassSmartObjectUserTrait : public UMassEntityTraitBa
 	GENERATED_BODY()
 
 protected:
-	virtual void BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const override;
+	virtual void BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const override;
+
+	/** Tags describing the SmartObject user. Used when searching smart objects. */
+	UPROPERTY(EditAnywhere, Category = Parameter)
+	FGameplayTagContainer UserTags;
 };

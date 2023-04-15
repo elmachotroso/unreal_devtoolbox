@@ -7,12 +7,12 @@
 #include "Styling/SlateColor.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
-#include "Editor/LandscapeEditor/Private/LandscapeEdMode.h"
+#include "LandscapeEdMode.h"
 #include "LandscapeFileFormatInterface.h"
 #include "IDetailCustomization.h"
 #include "IPropertyTypeCustomization.h"
 #include "PropertyHandle.h"
-#include "Editor/LandscapeEditor/Private/LandscapeEditorDetailCustomization_Base.h"
+#include "LandscapeEditorDetailCustomization_Base.h"
 
 class IDetailLayoutBuilder;
 
@@ -57,10 +57,18 @@ public:
 
 	FText GetTotalComponentCount() const;
 
+	bool IsCreateButtonEnabled() const;
+	EVisibility GetNewLandscapeErrorVisibility() const;
+	FText GetNewLandscapeErrorText() const;
+	
 	FReply OnCreateButtonClicked();
 	FReply OnFillWorldButtonClicked();
 
 	static EVisibility GetVisibilityOnlyInNewLandscapeMode(ENewLandscapePreviewMode value);
+
+	/** Called to generate ImportLayer children */
+	void GenerateLayersArrayElementWidget(TSharedRef<IPropertyHandle> InPropertyHandle, int32 InArrayIndex, IDetailChildrenBuilder& InChildrenBuilder);
+	EVisibility GetLayerVisibility(TSharedRef<IPropertyHandle> InPropertyHandle) const;
 
 	// Import
 	static EVisibility GetHeightmapErrorVisibility(TSharedRef<IPropertyHandle> PropertyHandle_HeightmapImportResult);

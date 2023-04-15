@@ -36,7 +36,8 @@ public:
 	bool DoesChunkExist(const FIoChunkId& ChunkId) const;
 	TIoStatusOr<uint64> GetSizeForChunk(const FIoChunkId& ChunkId) const;
 	const FIoOffsetAndLength* Resolve(const FIoChunkId& ChunkId) const;
-	const FFileIoStoreContainerFile& GetContainerFile() const { return ContainerFile; }
+	FFileIoStoreContainerFile* GetContainerFile() { return &ContainerFile; }
+	const FFileIoStoreContainerFile* GetContainerFile() const { return &ContainerFile; }
 	IMappedFileHandle* GetMappedContainerFileHandle(uint64 TocOffset);
 	const FIoContainerId& GetContainerId() const { return ContainerId; }
 	int32 GetOrder() const { return Order; }
@@ -80,9 +81,9 @@ public:
 	~FFileIoStoreRequestTracker();
 
 	FFileIoStoreCompressedBlock* FindOrAddCompressedBlock(FFileIoStoreBlockKey Key, bool& bOutWasAdded);
-	void RemoveCompressedBlock(const FFileIoStoreCompressedBlock* CompressedBlock);
+	void RemoveCompressedBlock(const FFileIoStoreCompressedBlock* CompressedBlock, bool bRemoveFromCancel = false);
 	FFileIoStoreReadRequest* FindOrAddRawBlock(FFileIoStoreBlockKey Key, bool& bOutWasAdded);
-	void RemoveRawBlock(const FFileIoStoreReadRequest* RawBlock);
+	void RemoveRawBlock(const FFileIoStoreReadRequest* RawBlock, bool bRemoveFromCancel = false);
 	void AddReadRequestsToResolvedRequest(FFileIoStoreCompressedBlock* CompressedBlock, FFileIoStoreResolvedRequest& ResolvedRequest);
 	void AddReadRequestsToResolvedRequest(const FFileIoStoreReadRequestList& Requests, FFileIoStoreResolvedRequest& ResolvedRequest);
 	bool CancelIoRequest(FFileIoStoreResolvedRequest& ResolvedRequest);

@@ -590,6 +590,108 @@ namespace ChaosTest {
 			});
 	}
 
+	GTEST_TEST(AllTraits, RewindTest_SpawnEarlierCorrection2)
+	{
+		// Test resim when object spawned earlier as part of correction
+		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
+			{
+				FSingleParticlePhysicsProxy* SpawnedProxy = nullptr;
+				FSingleParticlePhysicsProxy* SpawnedProxyNoCorrection = nullptr;
+
+				bool bHasResimmed = false;
+
+				FRewindCallbackTestHelper* Helper = RegisterCallbackHelper(Solver);
+				Helper->TriggerRewindFunc = [&SpawnedProxy, &SpawnedProxyNoCorrection, &bHasResimmed](int32 PhysicsStep) -> int32
+				{
+					
+					if(!bHasResimmed && SpawnedProxy)
+					{
+						bHasResimmed = true;
+						return 0;
+					}
+					
+					return INDEX_NONE;
+				};
+
+				Helper->ProcessInputsFunc = [RewindData = Solver->GetRewindData(), SimDt, &SpawnedProxy, &SpawnedProxyNoCorrection, &bHasResimmed](int32 PhysicsStep, bool bIsResimming)
+				{
+					const FReal Time = PhysicsStep * SimDt;
+
+					if (bIsResimming && SpawnedProxy)
+					{
+						if (PhysicsStep == 10)
+						{
+							RewindData->SpawnProxyIfNeeded(*SpawnedProxy);
+							SpawnedProxy->GetPhysicsThreadAPI()->SetX(FVec3(500, 0, 100.0));
+							
+						}
+					}
+
+					if (SpawnedProxy && SpawnedProxyNoCorrection)
+					{
+						auto PT0 = SpawnedProxy->GetPhysicsThreadAPI();
+						auto PT1 = SpawnedProxyNoCorrection->GetPhysicsThreadAPI();
+						
+						// After we've applied the correction and simmed past frame 10, we expect the first proxy to be "ahead" of the second one that didn't get corrected
+						if (bHasResimmed && PhysicsStep > 10)
+						{
+							EXPECT_LT(PT0->X()[2], PT1->X()[2]);
+						}
+					}					
+				};
+
+				const int32 LastGameStep = 32;
+				
+				auto SphereGeom = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TSphere<FReal, 3>(FVec3(0), 10));
+
+				auto& Particle = Proxy->GetGameThreadAPI();
+				Particle.SetGravityEnabled(false);
+				Particle.SetV(FVec3(0, 0, -1));
+				Particle.SetX(FVec3(0, 0, 14.5));
+
+				ChaosTest::SetParticleSimDataToCollide({ Proxy->GetParticle_LowLevel() });
+
+				for (int Step = 0; Step <= LastGameStep; ++Step)
+				{
+					TickSolverHelper(Solver);
+
+					//spawn floor way late to ensure no collision on first run
+					if (Step == 12)
+					{
+
+						// Make particles. E.g:
+						//	we just found out from the server these were spawned and these are the latest positions replicated from the server.
+						//	but actually these positions are the server positions from frame 10. Lets see if we can correct this.
+						{
+							SpawnedProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
+							auto& GT = SpawnedProxy->GetGameThreadAPI();
+
+							GT.SetV(FVec3(0, 0, 0.0));
+							GT.SetX(FVec3(500, 0, 100.0));
+
+							GT.SetGeometry(SphereGeom);
+							Solver->RegisterObject(SpawnedProxy);
+							ChaosTest::SetParticleSimDataToCollide({ SpawnedProxy->GetParticle_LowLevel() });
+						}
+
+						{
+							SpawnedProxyNoCorrection = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
+							auto& GT = SpawnedProxyNoCorrection->GetGameThreadAPI();
+
+							GT.SetV(FVec3(0, 0, 0.0));
+							GT.SetX(FVec3(100, 0, 100.0));
+
+							GT.SetGeometry(SphereGeom);
+							Solver->RegisterObject(SpawnedProxyNoCorrection);
+							ChaosTest::SetParticleSimDataToCollide({ SpawnedProxyNoCorrection->GetParticle_LowLevel() });
+						}
+						
+
+					}
+				}
+			});
+	}
+
 	GTEST_TEST(AllTraits, RewindTest_MovingToNotMovingInterpolation)
 	{
 		//
@@ -648,10 +750,6 @@ namespace ChaosTest {
 
 				auto FloorGeom = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-100, -100, -1), FVec3(100, 100, 0)));
 
-				const FReal LeashTime = 3;
-
-				Solver->GetResultsManager().SetResimInterpTime(LeashTime);
-
 				auto& Particle = Proxy->GetGameThreadAPI();
 				Particle.SetGravityEnabled(false);
 				Particle.SetV(FVec3(0, 0, 0));
@@ -662,7 +760,6 @@ namespace ChaosTest {
 				const FReal StartMovingTimeDiscrete = FMath::FloorToInt(StartMovingTime / SimDt) * SimDt;
 				const FReal GTDt = 1;
 				const FReal InterpStartTime = ResimTime + SimDt;
-				const FReal InterpEndTime = ResimTime + LeashTime + SimDt;
 				const FReal SleepLocation = SleepTime - StartMovingTimeDiscrete;
 				const FReal CorrectedLocation = SimDt <= 1 ? 0 : 4;
 				FReal PrevZDuringInterp = SleepLocation;	//shouldn't be further then this because already interpolating back to 0
@@ -703,18 +800,10 @@ namespace ChaosTest {
 					}
 					else
 					{
-						if (InterpolatedTime >= InterpEndTime)
-						{
-							//not moving and no longer in leash mode
-							EXPECT_NEAR(Particle.X()[2], CorrectedLocation, 1e-2);
-						}
-						else
-						{
-							//leash mode
-							EXPECT_GT(Particle.X()[2], CorrectedLocation);
-							EXPECT_LT(Particle.X()[2], PrevZDuringInterp);
-							PrevZDuringInterp = Particle.X()[2];
-						}
+						//leash mode
+						EXPECT_GE(Particle.X()[2], CorrectedLocation);
+						EXPECT_LE(Particle.X()[2], PrevZDuringInterp);
+						PrevZDuringInterp = Particle.X()[2];
 					}
 				}
 
@@ -1781,6 +1870,51 @@ namespace ChaosTest {
 			});
 	}
 
+	struct FSimCallbackHelperInput2 : FSimCallbackInput
+	{
+		void Reset() { StepToCounter.Reset(); }
+		TMap<int32, int32> StepToCounter;
+	};
+
+	GTEST_TEST(AllTraits, RewindTest_SimCallbackProcessExternalInputs)
+	{
+		//If inputs are not set until external callback, make sure they are associated with the right frame
+		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
+			{
+				struct FSimCallbackHelper : TSimCallbackObject<FSimCallbackHelperInput2>
+				{
+					FPBDRigidsSolver* Solver = nullptr;
+					virtual void OnPreSimulate_Internal() override
+					{
+						EXPECT_EQ(GetConsumerInput_Internal()->StepToCounter[Solver->GetCurrentFrame()], Solver->GetCurrentFrame());
+					}
+				};
+
+				struct FRewindCallback : public IRewindCallback
+				{
+					FSimCallbackHelper* SimCallback;
+					FRewindCallback(FSimCallbackHelper* Callback) : SimCallback(Callback){}
+					virtual void InjectInputs_External(int32 PhysicsStep, int32 NumSteps) override
+					{
+						for(int32 Idx = 0; Idx < NumSteps; ++Idx)
+						{
+							const int32 Step = Idx + PhysicsStep;
+							SimCallback->GetProducerInputData_External()->StepToCounter.Add(Step, Step);
+						}
+					}
+				};
+
+				FSimCallbackHelper* SimCallback = Solver->CreateAndRegisterSimCallbackObject_External<FSimCallbackHelper>();
+				SimCallback->Solver = Solver;
+				Solver->SetRewindCallback(MakeUnique<FRewindCallback>(SimCallback));
+
+				for (int Step = 0; Step < 32; ++Step)
+				{
+					TickSolverHelper(Solver);
+				}
+			});
+	}
+
 	GTEST_TEST(AllTraits, RewindTest_SimCallbackInputsCorrection)
 	{
 		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
@@ -1964,11 +2098,6 @@ namespace ChaosTest {
 					}
 				};
 
-				const FReal InterpTime = 10;
-				const FReal InterpStrength = 0.25;
-				Solver->GetResultsManager().SetResimInterpTime(InterpTime);
-				Solver->GetResultsManager().SetResimInterpStrength(InterpStrength);
-
 				const int32 LastGameStep = 20;
 				const int32 NumPhysSteps = FMath::TruncToInt(LastGameStep / SimDt);
 
@@ -2024,11 +2153,10 @@ namespace ChaosTest {
 						//expected interpolation from pt to gt
 						const int32 NextSimStep = FMath::CeilToInt(InterpolatedTime / SimDt);
 						const FReal NextSimStepTime = NextSimStep * SimDt;
-						const FReal InterpEndTime = 20 + InterpTime;
 						const FReal ExpectedValue = ZStart + ZVel * InterpolatedTime;
 						const FReal TargetValue = ZStart + ZVel * NextSimStepTime;
 
-						if(InterpolatedTime >= InterpEndTime || InterpolatedTime <= 20)
+						if(!Proxy->GetInterpolationData().IsResimSmoothing())
 						{
 							//no resim interpolation, just simple value interpolation
 							EXPECT_NEAR(Particle.X()[2], ExpectedValue, 1e-2);
@@ -2036,7 +2164,7 @@ namespace ChaosTest {
 						else
 						{
 							//exponential decay from current state to target
-							EXPECT_NEAR(Particle.X()[2], FMath::Lerp(PrevZ, ExpectedValue, InterpStrength), 1e-2);
+							EXPECT_NEAR(Particle.X()[2], FMath::Lerp(PrevZ, ExpectedValue, Chaos::ResimInterpStrength), 1e-2);
 						}
 					}
 				}
@@ -2117,7 +2245,7 @@ namespace ChaosTest {
 		});
 	}
 
-	GTEST_TEST(AllTraits, RewindTest_ResimFallingObjectWithTeleportAsSlave)
+	GTEST_TEST(AllTraits, RewindTest_ResimFallingObjectWithTeleportAsFollower)
 	{
 		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
 		{
@@ -2128,7 +2256,7 @@ namespace ChaosTest {
 				Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -1));
 				Particle.SetGravityEnabled(true);
 				Particle.SetX(FVec3(0, 0, 100));
-				Particle.SetResimType(EResimType::ResimAsSlave);
+				Particle.SetResimType(EResimType::ResimAsFollower);
 
 				for (int Step = 0; Step <= LastGameStep; ++Step)
 				{
@@ -2166,7 +2294,7 @@ namespace ChaosTest {
 				else
 				{
 #if REWIND_DESYNC
-					//we'll see the teleport automatically because ResimAsSlave
+					//we'll see the teleport automatically because ResimAsFollower
 					//but it's done by solver so before tick teleport is not known
 					EXPECT_NEAR(Particle.X()[2], ExpectedXZ, 1e-4);
 					EXPECT_NEAR(Particle.V()[2], ExpectedVZ, 1e-4);
@@ -2793,7 +2921,7 @@ namespace ChaosTest {
 		}
 	}
 
-	GTEST_TEST(AllTraits, RewindTest_ResimAsSlave)
+	GTEST_TEST(AllTraits, RewindTest_ResimAsFollower)
 	{
 #if REWIND_DESYNC
 		for (int Optimization = 0; Optimization < 2; ++Optimization)
@@ -2831,7 +2959,7 @@ namespace ChaosTest {
 				Dynamic.SetGravityEnabled(false);
 				Dynamic.SetV(FVec3(0, 0, -1));
 				Dynamic.SetObjectState(EObjectStateType::Dynamic);
-				Dynamic.SetResimType(EResimType::ResimAsSlave);
+				Dynamic.SetResimType(EResimType::ResimAsFollower);
 
 				Kinematic.SetX(FVec3(0, 0, 0));
 
@@ -2862,14 +2990,14 @@ namespace ChaosTest {
 
 			for (int Step = RewindStep; Step <= LastStep; ++Step)
 			{
-				//Resim but dynamic will take old path since it's marked as ResimAsSlave
+				//Resim but dynamic will take old path since it's marked as ResimAsFollower
 				TickSolverHelper(Solver);
 
 				EXPECT_VECTOR_FLOAT_EQ(Dynamic.X(), Xs[Step]);
 			}
 
 #if REWIND_DESYNC
-			//slave so dynamic in sync, kinematic desync
+			// follower - so dynamic in sync, kinematic desync
 			const TArray<FDesyncedParticleInfo> DesyncedParticles = RewindData->ComputeDesyncInfo();
 			EXPECT_EQ(DesyncedParticles.Num(), 1);
 			EXPECT_EQ(DesyncedParticles[0].MostDesynced, ESyncState::HardDesync);
@@ -2979,7 +3107,7 @@ namespace ChaosTest {
 		}
 	}
 
-	GTEST_TEST(AllTraits, DISABLED_RewindTest_ResimAsSlaveFallIgnoreCollision)
+	GTEST_TEST(AllTraits, DISABLED_RewindTest_ResimAsFollowerFallIgnoreCollision)
 	{
 		for (int Optimization = 0; Optimization < 2; ++Optimization)
 		{
@@ -3015,7 +3143,7 @@ namespace ChaosTest {
 				Dynamic.SetGravityEnabled(false);
 				Dynamic.SetV(FVec3(0, 0, -1));
 				Dynamic.SetObjectState(EObjectStateType::Dynamic);
-				Dynamic.SetResimType(EResimType::ResimAsSlave);
+				Dynamic.SetResimType(EResimType::ResimAsFollower);
 
 				Kinematic.SetX(FVec3(0, 0, -1000));
 
@@ -3047,7 +3175,7 @@ namespace ChaosTest {
 
 			for (int Step = RewindStep; Step <= LastStep; ++Step)
 			{
-				//Resim ignores collision since it's ResimAsSlave
+				//Resim ignores collision since it's ResimAsFollower
 				TickSolverHelper(Solver);
 
 				EXPECT_VECTOR_FLOAT_EQ(Dynamic.X(), Xs[Step]);
@@ -3058,7 +3186,7 @@ namespace ChaosTest {
 			EXPECT_LE(Dynamic.X()[2], 6);
 
 #if REWIND_DESYNC
-			//dynamic slave so only kinematic desyncs
+			//dynamic follower so only kinematic desyncs
 			const TArray<FDesyncedParticleInfo> DesyncedParticles = RewindData->ComputeDesyncInfo();
 			EXPECT_EQ(DesyncedParticles.Num(), 1);
 			EXPECT_EQ(DesyncedParticles[0].MostDesynced, ESyncState::HardDesync);
@@ -3069,7 +3197,7 @@ namespace ChaosTest {
 		}
 	}
 
-	GTEST_TEST(AllTraits, RewindTest_ResimAsSlaveWithForces)
+	GTEST_TEST(AllTraits, RewindTest_ResimAsFollowerWithForces)
 	{
 #if REWIND_DESYNC
 		for (int Optimization = 0; Optimization < 2; ++Optimization)
@@ -3086,37 +3214,37 @@ namespace ChaosTest {
 
 			// Make particles
 			auto FullSimProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
-			auto SlaveSimProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
+			auto FollowerSimProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
 			const int32 LastStep = 11;
 			TArray<FVec3> Xs;
 
 			{
 				auto& FullSim = FullSimProxy->GetGameThreadAPI();
-				auto& SlaveSim = SlaveSimProxy->GetGameThreadAPI();
+				auto& FollowerSim = FollowerSimProxy->GetGameThreadAPI();
 
 				FullSim.SetGeometry(Box);
 				FullSim.SetGravityEnabled(false);
 				Solver->RegisterObject(FullSimProxy);
 
-				SlaveSim.SetGeometry(Box);
-				SlaveSim.SetGravityEnabled(false);
-				Solver->RegisterObject(SlaveSimProxy);
+				FollowerSim.SetGeometry(Box);
+				FollowerSim.SetGravityEnabled(false);
+				Solver->RegisterObject(FollowerSimProxy);
 
 				FullSim.SetX(FVec3(0, 0, 20));
 				FullSim.SetObjectState(EObjectStateType::Dynamic);
 				FullSim.SetM(1);
 				FullSim.SetInvM(1);
 
-				SlaveSim.SetX(FVec3(0, 0, 0));
-				SlaveSim.SetResimType(EResimType::ResimAsSlave);
-				SlaveSim.SetM(1);
-				SlaveSim.SetInvM(1);
+				FollowerSim.SetX(FVec3(0, 0, 0));
+				FollowerSim.SetResimType(EResimType::ResimAsFollower);
+				FollowerSim.SetM(1);
+				FollowerSim.SetInvM(1);
 
-				ChaosTest::SetParticleSimDataToCollide({ FullSimProxy->GetParticle_LowLevel(),SlaveSimProxy->GetParticle_LowLevel() });
+				ChaosTest::SetParticleSimDataToCollide({ FullSimProxy->GetParticle_LowLevel(),FollowerSimProxy->GetParticle_LowLevel() });
 
 				for (int Step = 0; Step <= LastStep; ++Step)
 				{
-					SlaveSim.SetLinearImpulse(FVec3(0, 0, 0.5));
+					FollowerSim.SetLinearImpulse(FVec3(0, 0, 0.5));
 					TickSolverHelper(Solver);
 					Xs.Add(FullSim.X());
 				}
@@ -3125,21 +3253,21 @@ namespace ChaosTest {
 			FPhysicsThreadContextScope Scope(true);
 			const int RewindStep = 5;
 			auto& FullSim = *FullSimProxy->GetPhysicsThreadAPI();
-			auto& SlaveSim = *SlaveSimProxy->GetPhysicsThreadAPI();
+			auto& FollowerSim = *FollowerSimProxy->GetPhysicsThreadAPI();
 
 			FRewindData* RewindData = Solver->GetRewindData();
 			EXPECT_TRUE(RewindData->RewindToFrame(RewindStep));
 
 			for (int Step = RewindStep; Step <= LastStep; ++Step)
 			{
-				//resim - slave sim should have its impulses automatically added thus moving FullSim in the exact same way
+				//resim - follower sim should have its impulses automatically added thus moving FullSim in the exact same way
 				TickSolverHelper(Solver);
 
 				EXPECT_VECTOR_FLOAT_EQ(FullSim.X(), Xs[Step]);
 			}
 
 #if REWIND_DESYNC
-			//slave so no desync
+			//follower so no desync
 			const TArray<FDesyncedParticleInfo> DesyncedParticles = RewindData->ComputeDesyncInfo();
 			EXPECT_EQ(DesyncedParticles.Num(), 0);
 #endif
@@ -3149,7 +3277,7 @@ namespace ChaosTest {
 #endif
 	}
 
-	GTEST_TEST(AllTraits, RewindTest_ResimAsSlaveWokenUp)
+	GTEST_TEST(AllTraits, RewindTest_ResimAsFollowerWokenUp)
 	{
 #if REWIND_DESYNC
 		for (int Optimization = 0; Optimization < 2; ++Optimization)
@@ -3187,13 +3315,13 @@ namespace ChaosTest {
 				ImpulsedObj.SetX(FVec3(0, 0, 20));
 				ImpulsedObj.SetM(1);
 				ImpulsedObj.SetInvM(1);
-				ImpulsedObj.SetResimType(EResimType::ResimAsSlave);
+				ImpulsedObj.SetResimType(EResimType::ResimAsFollower);
 				ImpulsedObj.SetObjectState(EObjectStateType::Sleeping);
 
 				HitObj.SetX(FVec3(0, 0, 0));
 				HitObj.SetM(1);
 				HitObj.SetInvM(1);
-				HitObj.SetResimType(EResimType::ResimAsSlave);
+				HitObj.SetResimType(EResimType::ResimAsFollower);
 				HitObj.SetObjectState(EObjectStateType::Sleeping);
 
 
@@ -3229,7 +3357,7 @@ namespace ChaosTest {
 			}
 
 #if REWIND_DESYNC
-			//slave so no desync
+			//follower so no desync
 			const TArray<FDesyncedParticleInfo> DesyncedParticles = RewindData->ComputeDesyncInfo();
 			EXPECT_EQ(DesyncedParticles.Num(), 0);
 #endif
@@ -3239,7 +3367,7 @@ namespace ChaosTest {
 #endif
 	}
 
-	GTEST_TEST(AllTraits, RewindTest_ResimAsSlaveWokenUpNoHistory)
+	GTEST_TEST(AllTraits, RewindTest_ResimAsFollowerWokenUpNoHistory)
 	{
 #if REWIND_DESYNC
 		for (int Optimization = 0; Optimization < 2; ++Optimization)
@@ -3282,7 +3410,7 @@ namespace ChaosTest {
 				HitObj.SetX(FVec3(0, 0, 0));
 				HitObj.SetM(1);
 				HitObj.SetInvM(1);
-				HitObj.SetResimType(EResimType::ResimAsSlave);
+				HitObj.SetResimType(EResimType::ResimAsFollower);
 				HitObj.SetObjectState(EObjectStateType::Sleeping);
 
 
@@ -3313,12 +3441,12 @@ namespace ChaosTest {
 
 				TickSolverHelper(Solver);
 
-				//even though there's now a different collision in the sim, the final result of slave is the same as before
+				//even though there's now a different collision in the sim, the final result of follower is the same as before
 				EXPECT_VECTOR_FLOAT_EQ(HitObj.X(), Xs[Step]);
 			}
 
 #if REWIND_DESYNC
-			//only desync non-slave
+			//only desync non-follower
 			const TArray<FDesyncedParticleInfo> DesyncedParticles = RewindData->ComputeDesyncInfo();
 			EXPECT_EQ(DesyncedParticles.Num(), 1);
 			EXPECT_EQ(DesyncedParticles[0].MostDesynced, ESyncState::HardDesync);
@@ -3733,7 +3861,7 @@ namespace ChaosTest {
 		}
 
 		static void ComputeMaxErrors(const FSimComparisonHelper& A, const FSimComparisonHelper& B, FReal& OutMaxLinearError,
-			FReal& OutMaxAngularError, int32 HistoryMultiple = 1)
+			FReal& OutMaxAngularError, int32 HistoryMultiple = 1, const TArray<int32>* BMapping = nullptr)
 		{
 			ensure(B.History.Num() == (A.History.Num() * HistoryMultiple));
 
@@ -3747,7 +3875,7 @@ namespace ChaosTest {
 				const FEntry& OtherEntry = B.History[OtherIdx];
 
 				FReal MaxLinearError, MaxAngularError;
-				FEntry::CompareEntry(Entry, OtherEntry, MaxLinearError, MaxAngularError);
+				FEntry::CompareEntry(Entry, OtherEntry, MaxLinearError, MaxAngularError, BMapping);
 
 				MaxLinearError2 = FMath::Max(MaxLinearError2, MaxLinearError * MaxLinearError);
 				MaxAngularError2 = FMath::Max(MaxAngularError2, MaxAngularError * MaxAngularError);
@@ -3763,23 +3891,28 @@ namespace ChaosTest {
 			TArray<FVec3> X;
 			TArray<FRotation3> R;
 
-			static void CompareEntry(const FEntry& A, const FEntry& B, FReal& OutMaxLinearError, FReal& OutMaxAngularError)
+			static void CompareEntry(const FEntry& A, const FEntry& B, FReal& OutMaxLinearError, FReal& OutMaxAngularError, const TArray<int32>* BMapping = nullptr)
 			{
 				FReal MaxLinearError2 = 0;
 				FReal MaxAngularError2 = 0;
+				
+				auto BMappingHelper = [BMapping](const int32 Idx)
+				{
+					return BMapping ? (*BMapping)[Idx] : Idx;
+				};
 
 				check(A.X.Num() == A.R.Num());
 				check(A.X.Num() == B.X.Num());
 				for (int32 Idx = 0; Idx < A.X.Num(); ++Idx)
 				{
-					const FReal LinearError2 = (A.X[Idx] - B.X[Idx]).SizeSquared();
+					const FReal LinearError2 = (A.X[Idx] - B.X[BMappingHelper(Idx)]).SizeSquared();
 					MaxLinearError2 = FMath::Max(LinearError2, MaxLinearError2);
 
 					//if exactly the same we want 0 for testing purposes, inverse does not get that so just skip it
-					if (B.R[Idx] != A.R[Idx])
+					if (B.R[BMappingHelper(Idx)] != A.R[Idx])
 					{
 						//For angular error we look at the rotation needed to go from B to A
-						const FRotation3 Delta = B.R[Idx] * A.R[Idx].Inverse();
+						const FRotation3 Delta = B.R[BMappingHelper(Idx)] * A.R[Idx].Inverse();
 
 						FVec3 Axis;
 						FReal Angle;
@@ -3798,7 +3931,7 @@ namespace ChaosTest {
 	};
 
 	template <typename InitLambda>
-	void RunHelper(FSimComparisonHelper& SimComparison, int32 NumSteps, FReal Dt, const InitLambda& InitFunc)
+	void RunHelper(FSimComparisonHelper& SimComparison, int32 NumSteps, FReal Dt, const InitLambda& InitFunc, const TArray<int32>* Mapping = nullptr)
 	{
 		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
 
@@ -3807,7 +3940,7 @@ namespace ChaosTest {
 		InitSolverSettings(Solver);
 		Solver->SetIsDeterministic(true);
 
-		TArray<FPhysicsActorHandle> Storage = InitFunc(Solver);
+		TArray<FPhysicsActorHandle> Storage = InitFunc(Solver, Mapping);
 
 		for (int32 Step = 0; Step < NumSteps; ++Step)
 		{
@@ -3822,7 +3955,7 @@ namespace ChaosTest {
 	{
 		auto Box = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-10, -10, -10), FVec3(10, 10, 10)));
 
-		const auto InitLambda = [&Box](auto& Solver)
+		const auto InitLambda = [&Box](auto& Solver, auto)
 		{
 			TArray<FPhysicsActorHandle> Storage;
 			auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
@@ -3857,7 +3990,7 @@ namespace ChaosTest {
 		FVec3 StartPos(0);
 		FRotation3 StartRotation = FRotation3::FromIdentity();
 
-		const auto InitLambda = [&Box, &StartPos, &StartRotation](auto& Solver)
+		const auto InitLambda = [&Box, &StartPos, &StartRotation](auto& Solver, auto)
 		{
 			TArray<FPhysicsActorHandle> Storage;
 			auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
@@ -3907,7 +4040,7 @@ namespace ChaosTest {
 	{
 		auto Box = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-10, -10, -10), FVec3(10, 10, 10)));
 
-		const auto InitLambda = [&Box](auto& Solver)
+		const auto InitLambda = [&Box](auto& Solver, auto)
 		{
 			TArray<FPhysicsActorHandle> Storage;
 			auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
@@ -3942,7 +4075,7 @@ namespace ChaosTest {
 		auto Box = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-10, -10, -10), FVec3(10, 10, 10)));
 		const FReal Gravity = -980;
 
-		const auto InitLambda = [&Box, Gravity](auto& Solver)
+		const auto InitLambda = [&Box, Gravity](auto& Solver, auto)
 		{
 			TArray<FPhysicsActorHandle> Storage;
 			auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
@@ -3996,7 +4129,7 @@ namespace ChaosTest {
 	{
 		auto Sphere = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TSphere<FReal, 3>(FVec3(0), 50));
 
-		const auto InitLambda = [&Sphere](auto& Solver)
+		const auto InitLambda = [&Sphere](auto& Solver, auto)
 		{
 			TArray<FPhysicsActorHandle> Storage;
 			auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
@@ -4043,7 +4176,7 @@ namespace ChaosTest {
 		auto SmallBox = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-50, -50, -50), FVec3(50, 50, 50)));
 		auto Box = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-1000, -1000, -1000), FVec3(1000, 1000, 0)));
 
-		const auto InitLambda = [&SmallBox, &Box](auto& Solver)
+		const auto InitLambda = [&SmallBox, &Box](auto& Solver, auto)
 		{
 			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980));
 			TArray<FPhysicsActorHandle> Storage;
@@ -4102,5 +4235,136 @@ namespace ChaosTest {
 
 		FSimComparisonHelper::ComputeMaxErrors(FirstRun, ThirdRun, MaxLinearError, MaxAngularError, 2);
 	}
+	
+	GTEST_TEST(AllTraits, DeterministicSim_DifferentCreationOrder)
+	{
+		auto SmallBox = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-50, -50, -50), FVec3(50, 50, 50)));
+		auto Box = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TBox<FReal, 3>(FVec3(-1000, -1000, -1000), FVec3(1000, 1000, 0)));
+
+		const int32 NumParticles = 50;
+		const auto InitLambda = [&SmallBox, &Box, NumParticles](auto& Solver, const TArray<int32>* Mapping)
+		{
+			auto MappingHelper = [Mapping](const int32 Idx) { return Mapping ? (*Mapping)[Idx] : Idx; };
+			Solver->GetEvolution()->GetGravityForces().SetAcceleration(FVec3(0, 0, -980));
+			TArray<FPhysicsActorHandle> Storage;
+			for (int Idx = 0; Idx < NumParticles; ++Idx)
+			{
+				auto DynamicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
+				auto& Dynamic = DynamicProxy->GetGameThreadAPI();
+
+				Dynamic.SetGeometry(SmallBox);
+				Solver->RegisterObject(DynamicProxy);
+				Dynamic.SetObjectState(EObjectStateType::Dynamic);
+				Dynamic.SetGravityEnabled(true);
+				Dynamic.SetParticleID(FParticleID{ MappingHelper(Idx), INDEX_NONE });
+				Dynamic.SetX(FVec3(0, 5 * MappingHelper(Idx), 100 * MappingHelper(Idx) + 50));	//slightly offset
+				Dynamic.SetI(FVec3(1000, 1000, 1000));
+				Dynamic.SetInvI(FVec3(1/1000.0, 1/1000.0, 1/1000.0));
+
+				Storage.Add(DynamicProxy);
+			}
+
+			auto KinematicProxy = FSingleParticlePhysicsProxy::Create(Chaos::FKinematicGeometryParticle::CreateParticle());
+			auto& Kinematic = KinematicProxy->GetGameThreadAPI();
+
+			Kinematic.SetGeometry(Box);
+			Solver->RegisterObject(KinematicProxy);
+			Kinematic.SetX(FVec3(0, 0, 0));
+
+			Storage.Add(KinematicProxy);
+
+			for (int i = 0; i < Storage.Num(); ++i)
+			{
+				for (int j = i + 1; j < Storage.Num(); ++j)
+				{
+					ChaosTest::SetParticleSimDataToCollide({ Storage[i]->GetParticle_LowLevel(),Storage[j]->GetParticle_LowLevel() });
+				}
+			}
+
+			return Storage;
+		};
+
+		const int32 NumSteps = 20;
+		FSimComparisonHelper FirstRun;
+
+		RunHelper(FirstRun, NumSteps, 1 / 30.f, InitLambda);
+
+		//tick twice as often
+
+		TArray<int32> Mapping;
+		for (int32 Idx = 0; Idx < NumParticles; ++Idx)
+		{
+			Mapping.Add(NumParticles - Idx - 1);
+			//Mapping.Add(Idx);
+		}
+
+		FSimComparisonHelper SecondRun;
+		RunHelper(SecondRun, NumSteps, 1 / 30.f, InitLambda, &Mapping);
+
+		//make sure deterministic
+		FReal MaxLinearError, MaxAngularError;
+		FSimComparisonHelper::ComputeMaxErrors(FirstRun, SecondRun, MaxLinearError, MaxAngularError, 1, &Mapping);
+		EXPECT_EQ(MaxLinearError, 0);
+		EXPECT_EQ(MaxAngularError, 0);
+	}
+
+
+	GTEST_TEST(AllTraits, RewindTest_InterpolatedTwoChannels)
+	{
+		int32 PrevNumActiveChannels = Chaos::DefaultNumActiveChannels;
+		Chaos::DefaultNumActiveChannels = 2;
+		//Have two moving particles, one in each channel to see that there's a delay in time on second channel
+		TRewindHelper::TestDynamicSphere([](auto* Solver, FReal SimDt, int32 Optimization, auto Proxy, auto Sphere)
+		{
+			if (!Solver->IsUsingAsyncResults()) { return; }
+			auto& Particle = Proxy->GetGameThreadAPI();
+			Particle.SetV(FVec3(0, 0, 1));
+			Particle.SetGravityEnabled(false);
+
+			auto Proxy2 = FSingleParticlePhysicsProxy::Create(Chaos::FPBDRigidParticle::CreateParticle());
+			auto& Particle2 = Proxy2->GetGameThreadAPI();
+
+			auto Sphere2 = TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(new TSphere<FReal, 3>(FVec3(0), 10));
+			Particle2.SetGeometry(Sphere2);
+			Particle2.SetV(FVec3(0, 0, 1));
+			Particle2.SetGravityEnabled(false);
+			Proxy2->GetInterpolationData().SetInterpChannel_External(1);
+			Solver->RegisterObject(Proxy2);
+
+			FReal Time = 0;
+			const FReal GtDt = 1;
+			for (int Step = 0; Step < 32; ++Step)
+			{
+				TickSolverHelper(Solver);
+
+				Time += GtDt;
+				const FReal InterpolatedTime0 = Time - SimDt * Chaos::AsyncInterpolationMultiplier;
+				const FReal InterpolatedTime1 = InterpolatedTime0 - Chaos::SecondChannelDelay;
+
+				if (InterpolatedTime0 < 0)
+				{
+					//No movement yet
+					EXPECT_NEAR(Particle.X()[2], 0, 1e-2);
+				}
+				else
+				{
+					EXPECT_NEAR(Particle.X()[2], InterpolatedTime0, 1e-2);
+				}
+
+				if (InterpolatedTime1 < 0)
+				{
+					//No movement yet
+					EXPECT_NEAR(Particle2.X()[2], 0, 1e-2);
+				}
+				else
+				{
+					EXPECT_NEAR(Particle2.X()[2], InterpolatedTime1, 1e-2);
+				}
+			}
+		});
+
+		Chaos::DefaultNumActiveChannels = PrevNumActiveChannels;
+	}
+
 
 }

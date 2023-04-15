@@ -26,7 +26,7 @@ namespace UE::LevelSnapshots::Private
 	 * @param OnSnapshotComponentUnmatched Called when component exists on snapshot but not on editor world
 	 * @param OnWorldComponentUnmatched Called when component exists in editor world but not in snapshot world
 	 */
-	void IterateComponents(AActor* SnapshotActor, AActor* WorldActor, FHandleMatchedActorComponent OnComponentsMatched, FHandleUnmatchedActorComponent OnSnapshotComponentUnmatched, FHandleUnmatchedActorComponent OnWorldComponentUnmatched);
+	void IterateRestorableComponents(ULevelSnapshot* Snapshot, AActor* SnapshotActor, AActor* WorldActor, FHandleMatchedActorComponent OnComponentsMatched, FHandleUnmatchedActorComponent OnSnapshotComponentUnmatched, FHandleUnmatchedActorComponent OnWorldComponentUnmatched);
 
 	/** Tries to find an actor component by following its full outer path, e.g. /Game/Map.Map:PersistentLevel.SomeActor.SomeParentComp.SomeChildComp will find SomeChildComp with an outer SomeParentComp. */
 	UActorComponent* FindMatchingComponent(AActor* ActorToSearchOn, const FSoftObjectPath& ComponentPath);
@@ -44,6 +44,7 @@ namespace UE::LevelSnapshots::Private
 	 */
 	bool AreSnapshotAndOriginalPropertiesEquivalent(ULevelSnapshot* Snapshot, const FProperty* LeafProperty, void* SnapshotContainer, void* WorldContainer, AActor* SnapshotActor, AActor* WorldActor);
 
+	
 	/**
 	 * Two object properties are equivalent if they are
 	 *  - both null
@@ -55,4 +56,7 @@ namespace UE::LevelSnapshots::Private
 	
 	/** Checks whether two pointers point to "equivalent" objects. */
 	bool AreReferencesEquivalent(ULevelSnapshot* Snapshot, UObject* SnapshotPropertyValue, UObject* OriginalPropertyValue, AActor* SnapshotActor, AActor* OriginalActor);
+
+	/** Checks whether the two actors are equivalent */
+	bool AreActorsEquivalent(UObject* SnapshotPropertyValue, AActor* OriginalActorReference, const FWorldSnapshotData& WorldData, const FSnapshotDataCache& Cache);
 }

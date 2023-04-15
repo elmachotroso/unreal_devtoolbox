@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeAssignment.h"
-#include "UObject/UnrealType.h"
 #include "NiagaraGraph.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraScript.h"
@@ -9,19 +8,19 @@
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeOutput.h"
 #include "EdGraphSchema_Niagara.h"
-#include "Modules/ModuleManager.h"
 #include "NiagaraComponent.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraNodeParameterMapGet.h"
 #include "NiagaraNodeParameterMapSet.h"
 #include "NiagaraConstants.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ScopedTransaction.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "NiagaraCustomVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeAssignment)
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeAssigment"
 
@@ -125,8 +124,7 @@ void UNiagaraNodeAssignment::PostLoad()
 		if (Pin != nullptr && Pin->LinkedTo.Num() == 1)
 		{
 			// Likely we have a set node going into us, check to see if it has any variables that need to be cleaned up.
-			UNiagaraNodeParameterMapSet* SetNode = Cast<UNiagaraNodeParameterMapSet>(Pin->LinkedTo[0]->GetOwningNode());
-			if (SetNode)
+			if (UNiagaraNodeParameterMapSet* SetNode = Cast<UNiagaraNodeParameterMapSet>(Pin->LinkedTo[0]->GetOwningNode()))
 			{
 				SetNode->ConditionalPostLoad();
 
@@ -179,7 +177,18 @@ void UNiagaraNodeAssignment::PostLoad()
 			TArray<UNiagaraScript*> Scripts;
 			if (Emitter)
 			{
-				Emitter->GetScripts(Scripts, false);
+				if (UNiagaraScript* OuterScript = GetTypedOuter<UNiagaraScript>())
+				{
+					OuterScript->GetOuterEmitter().GetEmitterData()->GetScripts(Scripts, false);
+				}
+				else if (UNiagaraScriptSource* OuterSource = GetTypedOuter<UNiagaraScriptSource>())
+				{
+					OuterSource->GetOuterEmitter().GetEmitterData()->GetScripts(Scripts, false);
+				}
+				else
+				{
+					ensureMsgf(false, TEXT("Unable to find path from emitter %s to %s"), *Emitter->GetPathName(), *this->GetPathName());
+				}
 			}
 			if (System)
 			{
@@ -238,12 +247,27 @@ void UNiagaraNodeAssignment::PostLoad()
 	RefreshTitle();
 }
 
+#if WITH_EDITORONLY_DATA
+void UNiagaraNodeAssignment::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraGraph::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraNodeInput::StaticClass()));	
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraNodeOutput::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraNodeParameterMapGet::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraNodeParameterMapSet::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraScript::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraScriptSource::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraScriptVariable::StaticClass()));	
+}
+#endif
+
 void UNiagaraNodeAssignment::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive /*= true*/, bool bFilterForCompilation /*= true*/) const
 {
 	Super::BuildParameterMapHistory(OutHistory, bRecursive, bFilterForCompilation);
 }
 
-void UNiagaraNodeAssignment::GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const
+void UNiagaraNodeAssignment::GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const
 {
 	// Assignment nodes own their function graphs and therefore have no external dependencies so we override the default function behavior here to avoid 
 	// adding additional non-deterministic guids to the compile id generation which can invalid the DDC for compiled scripts, especially during emitter merging.
@@ -489,8 +513,7 @@ void UNiagaraNodeAssignment::InitializeScript(UNiagaraScript* NewScript)
 
 				if (FNiagaraConstants::IsNiagaraConstant(AssignmentTargets[i]))
 				{
-					const FNiagaraVariableMetaData* FoundMetaData = FNiagaraConstants::GetConstantMetaData(AssignmentTargets[i]);
-					if (FoundMetaData)
+					if (const FNiagaraVariableMetaData* FoundMetaData = FNiagaraConstants::GetConstantMetaData(AssignmentTargets[i]))
 					{
 						FNiagaraVariableMetaData NewMetaData;
 						TOptional<FNiagaraVariableMetaData> ExistingMetaData = CreatedGraph->GetMetaData(TargetVar);
@@ -642,3 +665,4 @@ bool UNiagaraNodeAssignment::RenameAssignmentTarget(FName OldName, FName NewName
 }
 
 #undef LOCTEXT_NAMESPACE
+

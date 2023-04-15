@@ -2,14 +2,13 @@
 #pragma once
 
 #include "CADKernel/Core/Types.h"
-
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/Aabb.h"
 #include "CADKernel/Math/MathConst.h"
 #include "CADKernel/Math/MatrixH.h"
 #include "CADKernel/Math/Point.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 enum EPolygonSide : uint8
 {
@@ -502,8 +501,8 @@ CADKERNEL_API void FindLoopIntersectionsWithIso(const EIso Iso, const double Iso
  */
 inline bool FastIntersectSegments2D(const TSegment<FPoint2D>& SegmentAB, const TSegment<FPoint2D>& SegmentCD)
 {
-	constexpr const double Min = -SMALL_NUMBER;
-	constexpr const double Max = 1. + SMALL_NUMBER;
+	constexpr const double Min = -DOUBLE_SMALL_NUMBER;
+	constexpr const double Max = 1. + DOUBLE_SMALL_NUMBER;
 
 	FPoint2D AB = SegmentAB[1] - SegmentAB[0];
 	FPoint2D CD = SegmentCD[1] - SegmentCD[0];
@@ -531,25 +530,22 @@ inline bool FastIntersectSegments2D(const TSegment<FPoint2D>& SegmentAB, const T
  */
 inline FPoint2D FindIntersectionOfSegments2D(const TSegment<FPoint2D>& SegmentAB, const TSegment<FPoint2D>& SegmentCD, double& OutABIntersectionCoordinate)
 {
-	constexpr const double Min = -SMALL_NUMBER;
-	constexpr const double Max = 1. + SMALL_NUMBER;
-
-	FPoint2D AB = SegmentAB[1] - SegmentAB[0];
-	FPoint2D DC = SegmentCD[0] - SegmentCD[1];
-	FPoint2D AC = SegmentCD[0] - SegmentAB[0];
+	const FPoint2D AB = SegmentAB[1] - SegmentAB[0];
+	const FPoint2D DC = SegmentCD[0] - SegmentCD[1];
+	const FPoint2D AC = SegmentCD[0] - SegmentAB[0];
 
 	double ParallelCoef = DC ^ AB;
 	if (FMath::IsNearlyZero(ParallelCoef))
 	{
-		double SquareAB = AB * AB;
+		const double SquareAB = AB * AB;
 		double CCoordinate = (AB * AC) / SquareAB;
 
-		FPoint2D AD = SegmentCD[1] - SegmentAB[0];
+		const FPoint2D AD = SegmentCD[1] - SegmentAB[0];
 		double DCoordinate = (AB * AD) / SquareAB;
 
-		if (CCoordinate >= -KINDA_SMALL_NUMBER && CCoordinate <= 1 + KINDA_SMALL_NUMBER)
+		if (CCoordinate >= -DOUBLE_KINDA_SMALL_NUMBER && CCoordinate <= 1 + DOUBLE_KINDA_SMALL_NUMBER)
 		{
-			if (DCoordinate >= -KINDA_SMALL_NUMBER && DCoordinate <= 1 + KINDA_SMALL_NUMBER)
+			if (DCoordinate >= -DOUBLE_KINDA_SMALL_NUMBER && DCoordinate <= 1 + DOUBLE_KINDA_SMALL_NUMBER)
 			{
 				OutABIntersectionCoordinate = (DCoordinate + CCoordinate) * 0.5;
 				return SegmentCD[0].Middle(SegmentCD[1]);
@@ -559,7 +555,7 @@ inline FPoint2D FindIntersectionOfSegments2D(const TSegment<FPoint2D>& SegmentAB
 			OutABIntersectionCoordinate = CCoordinate;
 			return SegmentCD[0];
 		}
-		else if (DCoordinate >= -KINDA_SMALL_NUMBER && DCoordinate <= 1 + KINDA_SMALL_NUMBER)
+		else if (DCoordinate >= -DOUBLE_KINDA_SMALL_NUMBER && DCoordinate <= 1 + DOUBLE_KINDA_SMALL_NUMBER)
 		{
 			DCoordinate = FMath::Clamp(DCoordinate, 0., 1.);
 			OutABIntersectionCoordinate = DCoordinate;
@@ -588,6 +584,29 @@ inline FPoint2D FindIntersectionOfSegments2D(const TSegment<FPoint2D>& SegmentAB
 }
 
 /**
+ * @return false if the lines are parallele
+ */
+inline bool FindIntersectionOfLines2D(const TSegment<FPoint2D>& LineAB, const TSegment<FPoint2D>& LineCD, FPoint2D& OutIntersectionPoint)
+{
+	constexpr const double Min = -DOUBLE_SMALL_NUMBER;
+	constexpr const double Max = 1. + DOUBLE_SMALL_NUMBER;
+
+	const FPoint2D AB = LineAB[1] - LineAB[0];
+	const FPoint2D DC = LineCD[0] - LineCD[1];
+	const FPoint2D AC = LineCD[0] - LineAB[0];
+
+	double ParallelCoef = DC ^ AB;
+	if (FMath::IsNearlyZero(ParallelCoef))
+	{
+		return false;
+	}
+
+	double OutABIntersectionCoordinate = (DC ^ AC) / ParallelCoef;
+	OutIntersectionPoint = LineAB[0] + AB * OutABIntersectionCoordinate;
+	return true;
+}
+
+/**
  * Similar as FastIntersectSegments2D but check intersection if both segment are carried by the same line.
  * This method is 50% slower than FastIntersectSegments2D even if the segments tested are never carried by the same line
  */
@@ -604,5 +623,5 @@ inline double ComputeCosinus(FVector Vector, FVector OtherVector)
 }
 
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

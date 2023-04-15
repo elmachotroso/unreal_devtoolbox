@@ -6,6 +6,7 @@
 #include "IConcertSyncServer.h"
 #include "IConcertSyncServerModule.h"
 
+#include "CoreGlobals.h"
 #include "LaunchEngineLoop.h"
 #include "Containers/Ticker.h"
 #include "Misc/ConfigCacheIni.h"
@@ -18,20 +19,10 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSyncServer, Log, All);
 
-
-void ConcertLogCommandLineArguments( int ArgC, TCHAR** ArgV )
+int32 ConcertSyncServerLoop(const TCHAR* CommandLine, const FConcertSyncServerLoopInitArgs& InitArgs)
 {
-	FString CmdLine;
-	for ( int i = 0 ; i < ArgC; i ++ )
-	{
-		CmdLine += " ";
-		CmdLine += ArgV[i];
-	}
-	UE_LOG( LogSyncServer, Display, TEXT( "Launch : %s" ), *CmdLine );
-}
-
-int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLoopInitArgs& InitArgs)
-{
+	FTaskTagScope Scope(ETaskTag::EGameThread);
+	
 	// Validate the init settings
 	checkf(InitArgs.IdealFramerate > 0, TEXT("IdealFramerate must be greater than zero!"));
 	checkf(InitArgs.SessionFlags != EConcertSyncSessionFlags::None, TEXT("SessionFlags cannot be None!"));
@@ -40,13 +31,13 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 
 	// start up the main loop, adding some extra command line arguments:
 	//	-Messaging enables MessageBus transports
-	int32 Result = GEngineLoop.PreInit(ArgC, ArgV, TEXT(" -Messaging"));
+	int32 Result = GEngineLoop.PreInit(*FString::Printf(TEXT("%s %s"), CommandLine, TEXT(" -Messaging")));
 	check(GConfig && GConfig->IsReadyForUse());
 
 	if (InitArgs.bShowConsole)
 	{
 		GLogConsole->Show(true);
-		ConcertLogCommandLineArguments( ArgC, ArgV );
+		UE_LOG(LogSyncServer, Display, TEXT( "Launch : %s" ), CommandLine);
 	}
 
 	FModuleManager::Get().StartProcessingNewlyLoadedObjects();
@@ -90,6 +81,9 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 
 	if (Result >= 0)
 	{
+		// Give external modules to do early initialisation
+		InitArgs.PreInitServerLoop.Broadcast();
+		
 		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UdpMessaging"));
 		if (!Plugin || !Plugin->IsEnabled())
 		{
@@ -143,9 +137,10 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 				}
 			}
 		}
-
+		
 		UE_LOG(LogSyncServer, Display, TEXT("%s Initialized (Name: %s, Version: %d.%d, Role: %s)"), *InitArgs.ServiceFriendlyName, *ConcertSyncServer->GetConcertServer()->GetServerInfo().ServerName, ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, *ConcertSyncServer->GetConcertServer()->GetRole());
-
+		InitArgs.PostInitServerLoop.Broadcast(ConcertSyncServer.ToSharedRef());
+		
 		double LastTime = FPlatformTime::Seconds();
 		const float IdealFrameTime = 1.0f / InitArgs.IdealFramerate;
 
@@ -157,6 +152,7 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 
 			// Pump & Tick objects
+			InitArgs.TickPostGameThread.Broadcast(DeltaTime);
 			FTSTicker::GetCoreTicker().Tick(DeltaTime);
 
 			GFrameCounter++;

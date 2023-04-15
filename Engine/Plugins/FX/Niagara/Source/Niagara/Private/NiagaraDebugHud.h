@@ -13,8 +13,11 @@ Class used help debugging Niagara simulations
 #include "NiagaraGPUProfilerInterface.h"
 #include "Particles/ParticlePerfStatsManager.h"
 
+#if WITH_NIAGARA_DEBUGGER
+
 #if WITH_PARTICLE_PERF_STATS
 
+class FNiagaraDataSet;
 class FNiagaraDebugHud;
 
 struct FNiagaraDebugHudFrameStat
@@ -85,7 +88,7 @@ public:
 
 class FNiagaraDebugHud
 {
-	typedef TSharedPtr<struct FNiagaraScriptDebuggerInfo, ESPMode::ThreadSafe> FGpuDataSetPtr;
+	typedef TSharedPtr<class FNiagaraDataSetReadback, ESPMode::ThreadSafe> FGpuDataSetPtr;
 
 	struct FSystemDebugInfo
 	{
@@ -99,7 +102,8 @@ class FNiagaraDebugHud
 
 		bool		bShowInWorld = false;
 		bool		bPassesSystemFilter = true;
-		int32		TotalSystems = 0;
+		int32		TotalRegistered = 0;
+		int32		TotalActive = 0;
 		int32		TotalScalability = 0;
 		int32		TotalEmitters = 0;
 		int32		TotalParticles = 0;
@@ -117,7 +121,8 @@ class FNiagaraDebugHud
 		{
 			bShowInWorld = false;
 			bPassesSystemFilter = true;
-			TotalSystems = 0;
+			TotalRegistered = 0;
+			TotalActive = 0;
 			TotalScalability = 0;
 			TotalEmitters = 0;
 			TotalParticles = 0;
@@ -225,7 +230,7 @@ public:
 	void RemoveMessage(FName Key);
 
 private:
-	class FNiagaraDataSet* GetParticleDataSet(class FNiagaraSystemInstance* SystemInstance, class FNiagaraEmitterInstance* EmitterInstance, int32 iEmitter);
+	const FNiagaraDataSet* GetParticleDataSet(class FNiagaraSystemInstance* SystemInstance, class FNiagaraEmitterInstance* EmitterInstance, int32 iEmitter);
 	FValidationErrorInfo& GetValidationErrorInfo(class UNiagaraComponent* NiagaraComponent);
 
 	static void DebugDrawCallback(class UCanvas* Canvas, class APlayerController* PC);
@@ -237,11 +242,13 @@ private:
 	void DrawValidation(class FNiagaraWorldManager* WorldManager, class FCanvas* DrawCanvas, FVector2D& TextLocation);
 	void DrawComponents(class FNiagaraWorldManager* WorldManager, class UCanvas* Canvas);
 	void DrawMessages(class FNiagaraWorldManager* WorldManager, class FCanvas* DrawCanvas, FVector2D& TextLocation);
+	void DrawDebugGeomerty(class FNiagaraWorldManager* WorldManager, class UCanvas* DrawCanvas);
 
 private:
 	TWeakObjectPtr<class UWorld>	WeakWorld;
 
-	int32 GlobalTotalSystems = 0;
+	int32 GlobalTotalRegistered = 0;
+	int32 GlobalTotalActive = 0;
 	int32 GlobalTotalScalability = 0;
 	int32 GlobalTotalEmitters = 0;
 	int32 GlobalTotalParticles = 0;
@@ -273,7 +280,6 @@ private:
 	uint64						GpuResultsGameFrameCounter = 0;
 
 	FSmoothedCounter<int32>		GpuTotalDispatches;
-	FSmoothedCounter<int32>		GpuTotalDispatchGroups;
 	FSmoothedCounter<uint64>	GpuTotalMicroseconds;
 
 	struct FGpuUsagePerStage
@@ -312,4 +318,43 @@ private:
 
 	/** Generic messages that the debugger or other parts of Niagara can post to the HUD. */
 	TMap<FName, FNiagaraDebugMessage> Messages;
+
+	//Additional debug geometry helpers
+	struct FDebugLine2D
+	{
+		FVector2D Start;
+		FVector2D End;
+		FLinearColor Color;
+		float Thickness;
+		float Lifetime;
+	};
+	TArray<FDebugLine2D> Lines2D;
+	struct FDebugCircle2D
+	{
+		FVector2D Pos;
+		float Rad;
+		float Segments;
+		FLinearColor Color;
+		float Thickness;
+		float Lifetime;
+	};
+	TArray<FDebugCircle2D> Circles2D;
+	struct FDebugBox2D
+	{
+		FVector2D Pos;
+		FVector2D Extents;
+		FLinearColor Color;
+		float Thickness;
+		float Lifetime;
+	};
+	TArray<FDebugBox2D> Boxes2D;
+
+public:
+	/** Add a 2D line to the debug renering. Positions are in normalized screen space. (0,0) in top left, (1,1) bottom right.*/
+	void AddLine2D(FVector2D Start, FVector2D End, FLinearColor Color, float Thickness, float Lifetime);
+	void AddCircle2D(FVector2D Pos, float Rad, float Segments, FLinearColor Color, float Thickness, float Lifetime);
+	void AddBox2D(FVector2D Pos, FVector2D Extents, FLinearColor Color, float Thickness, float Lifetime);
+	//Additional debug geometry helpers END
 };
+
+#endif //WITH_NIAGARA_DEBUGGER

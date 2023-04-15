@@ -1,12 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeServer.Utilities;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using StackExchange.Redis;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -14,8 +8,14 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using EpicGames.Core;
+using EpicGames.Redis;
+using Horde.Build.Utilities;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
-namespace HordeServer.Services
+namespace Horde.Build.Server
 {
 	/// <summary>
 	/// Manages the lifetime of a bundled Redis instance
@@ -30,20 +30,21 @@ namespace HordeServer.Services
 		/// <summary>
 		/// The managed process group containing the Redis server
 		/// </summary>
-		ManagedProcessGroup? RedisProcessGroup;
+		ManagedProcessGroup? _redisProcessGroup;
 
 		/// <summary>
 		/// The server process
 		/// </summary>
-		ManagedProcess? RedisProcess;
+		ManagedProcess? _redisProcess;
 
 		/// <summary>
 		/// Connection multiplexer
 		/// </summary>
-		public ConnectionMultiplexer Multiplexer { get; }
+		private readonly ConnectionMultiplexer _multiplexer;
 
 		/// <summary>
-		/// The database interface
+		/// The database interface.
+		/// If possible, use ConnectionPool instead. 
 		/// </summary>
 		public IDatabase Database { get; }
 
@@ -55,73 +56,86 @@ namespace HordeServer.Services
 		/// <summary>
 		/// Logger factory
 		/// </summary>
-		ILoggerFactory LoggerFactory;
+		readonly ILoggerFactory _loggerFactory;
 
 		/// <summary>
 		/// Logging instance
 		/// </summary>
-		ILogger<RedisService> Logger;
-
-		/// <summary>
-		/// The output task
-		/// </summary>
-		Task? OutputTask;
+		readonly ILogger<RedisService> _logger;
 
 		/// <summary>
 		/// Hack to initialize RedisService early enough to use data protection
 		/// </summary>
-		/// <param name="Settings"></param>
-		public RedisService(ServerSettings Settings)
-			: this(Options.Create<ServerSettings>(Settings), new Serilog.Extensions.Logging.SerilogLoggerFactory(Serilog.Log.Logger))
+		/// <param name="settings"></param>
+		public RedisService(ServerSettings settings)
+			: this(Options.Create(settings), new Serilog.Extensions.Logging.SerilogLoggerFactory(Serilog.Log.Logger))
 		{
 		}
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Options"></param>
-		/// <param name="LoggerFactory"></param>
-		public RedisService(IOptions<ServerSettings> Options, ILoggerFactory LoggerFactory)
+		public RedisService(IOptions<ServerSettings> options, ILoggerFactory loggerFactory)
+			: this(options.Value.RedisConnectionConfig, -1, loggerFactory)
 		{
-			this.LoggerFactory = LoggerFactory;
-			this.Logger = LoggerFactory.CreateLogger<RedisService>();
+		}
 
-			ServerSettings Settings = Options.Value;
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="connectionString">Redis connection string. If null, we will start a temporary redis instance on the local machine.</param>
+		/// <param name="dbNum">Override for the database to use. Set to -1 to use the default from the connection string.</param>
+		/// <param name="loggerFactory"></param>
+		public RedisService(string? connectionString, int dbNum, ILoggerFactory loggerFactory)
+		{
+			_loggerFactory = loggerFactory;
+			_logger = loggerFactory.CreateLogger<RedisService>();
 
-			string? ConnectionString = Settings.RedisConnectionConfig;
-			if (ConnectionString == null)
+			if (connectionString == null)
 			{
 				if (IsRunningOnDefaultPort())
 				{
-					ConnectionString = $"localhost:{RedisPort}";
+					connectionString = $"localhost:{RedisPort}";
 				}
 				else if (TryStartRedisServer())
 				{
-					ConnectionString = $"localhost:{RedisPort}";
+					connectionString = $"localhost:{RedisPort}";
 				}
 				else
 				{
-					throw new Exception($"Unable to connect to Redis. Please set {nameof(Settings.RedisConnectionConfig)} in {Program.UserConfigFile}");
+					throw new Exception($"Unable to connect to Redis. Please set {nameof(ServerSettings.RedisConnectionConfig)} in {Program.UserConfigFile}");
 				}
 			}
 
-			Multiplexer = ConnectionMultiplexer.Connect(ConnectionString);
-			Database = Multiplexer.GetDatabase();
-			ConnectionPool = new RedisConnectionPool(20, ConnectionString);
+			_multiplexer = ConnectionMultiplexer.Connect(connectionString);
+			Database = _multiplexer.GetDatabase(dbNum);
+			ConnectionPool = new RedisConnectionPool(20, connectionString, dbNum);
+		}
+
+		/// <summary>
+		/// Get the least-loaded Redis database from the connection pool
+		/// Don't store the returned object and try to resolve this as late as possible to ensure load is balanced.
+		/// </summary>
+		/// <returns>A Redis database</returns>
+		public IDatabase GetDatabase()
+		{
+			return ConnectionPool.GetDatabase();
 		}
 
 		/// <inheritdoc/>
 		public void Dispose()
 		{
-			if (RedisProcess != null)
+			_multiplexer.Dispose();
+
+			if (_redisProcess != null)
 			{
-				RedisProcess.Dispose();
-				RedisProcess = null;
+				_redisProcess.Dispose();
+				_redisProcess = null;
 			}
-			if (RedisProcessGroup != null)
+			if (_redisProcessGroup != null)
 			{
-				RedisProcessGroup.Dispose();
-				RedisProcessGroup = null;
+				_redisProcessGroup.Dispose();
+				_redisProcessGroup = null;
 			}
 		}
 
@@ -131,10 +145,10 @@ namespace HordeServer.Services
 		/// <returns></returns>
 		static bool IsRunningOnDefaultPort()
 		{
-			IPGlobalProperties IpGlobalProperties = IPGlobalProperties.GetIPGlobalProperties();
+			IPGlobalProperties ipGlobalProperties = IPGlobalProperties.GetIPGlobalProperties();
 
-			IPEndPoint[] Listeners = IpGlobalProperties.GetActiveTcpListeners();
-			if (Listeners.Any(x => x.Port == RedisPort))
+			IPEndPoint[] listeners = ipGlobalProperties.GetActiveTcpListeners();
+			if (listeners.Any(x => x.Port == RedisPort))
 			{
 				return true;
 			}
@@ -153,36 +167,36 @@ namespace HordeServer.Services
 				return false;
 			}
 
-			FileReference RedisExe = FileReference.Combine(Program.AppDir, "ThirdParty", "Redis", "redis-server.exe");
-			if (!FileReference.Exists(RedisExe))
+			FileReference redisExe = FileReference.Combine(Program.AppDir, "ThirdParty", "Redis", "redis-server.exe");
+			if (!FileReference.Exists(redisExe))
 			{
-				Logger.LogDebug("Redis executable does not exist at {ExePath}", RedisExe);
+				_logger.LogDebug("Redis executable does not exist at {ExePath}", redisExe);
 				return false;
 			}
 
-			DirectoryReference RedisDir = DirectoryReference.Combine(Program.DataDir, "Redis");
-			DirectoryReference.CreateDirectory(RedisDir);
+			DirectoryReference redisDir = DirectoryReference.Combine(Program.DataDir, "Redis");
+			DirectoryReference.CreateDirectory(redisDir);
 
-			FileReference RedisConfigFile = FileReference.Combine(RedisDir, "redis.conf");
-			if(!FileReference.Exists(RedisConfigFile))
+			FileReference redisConfigFile = FileReference.Combine(redisDir, "redis.conf");
+			if (!FileReference.Exists(redisConfigFile))
 			{
-				using (StreamWriter Writer = new StreamWriter(RedisConfigFile.FullName))
+				using (StreamWriter writer = new StreamWriter(redisConfigFile.FullName))
 				{
-					Writer.WriteLine("# redis.conf");
+					writer.WriteLine("# redis.conf");
 				}
 			}
 
-			RedisProcessGroup = new ManagedProcessGroup();
+			_redisProcessGroup = new ManagedProcessGroup();
 			try
 			{
-				RedisProcess = new ManagedProcess(RedisProcessGroup, RedisExe.FullName, "", null, null, ProcessPriorityClass.Normal);
-				RedisProcess.StdIn.Close();
-				OutputTask = Task.Run(() => RelayRedisOutput());
+				_redisProcess = new ManagedProcess(_redisProcessGroup, redisExe.FullName, "", null, null, ProcessPriorityClass.Normal);
+				_redisProcess.StdIn.Close();
+				Task.Run(() => RelayRedisOutput());
 				return true;
 			}
-			catch (Exception Ex)
+			catch (Exception ex)
 			{
-				Logger.LogWarning(Ex, "Unable to start Redis server process");
+				_logger.LogWarning(ex, "Unable to start Redis server process");
 				return false;
 			}
 		}
@@ -193,20 +207,20 @@ namespace HordeServer.Services
 		/// <returns></returns>
 		async Task RelayRedisOutput()
 		{
-			ILogger RedisLogger = LoggerFactory.CreateLogger("Redis");
+			ILogger redisLogger = _loggerFactory.CreateLogger("Redis");
 			for (; ; )
 			{
-				string? Line = await RedisProcess!.ReadLineAsync();
-				if (Line == null)
+				string? line = await _redisProcess!.ReadLineAsync();
+				if (line == null)
 				{
 					break;
 				}
-				if (Line.Length > 0)
+				if (line.Length > 0)
 				{
-					RedisLogger.Log(LogLevel.Information, Line);
+					redisLogger.Log(LogLevel.Information, "{Output}", line);
 				}
 			}
-			RedisLogger.LogInformation("Exit code {ExitCode}", RedisProcess.ExitCode);
+			redisLogger.LogInformation("Exit code {ExitCode}", _redisProcess.ExitCode);
 		}
 	}
 }

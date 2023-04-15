@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "SRigCurveContainer.h"
+#include "Editor/SRigCurveContainer.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SSpinBox.h"
@@ -9,8 +9,8 @@
 #include "Widgets/Input/STextEntryPopup.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "RigCurveContainerCommands.h"
-#include "ControlRigEditor.h"
+#include "Editor/RigCurveContainerCommands.h"
+#include "Editor/ControlRigEditor.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "ControlRig.h"
@@ -632,9 +632,9 @@ void SRigCurveContainer::CreateImportMenu(FMenuBuilder& MenuBuilder)
 		.Padding(3)
 		[
 			SNew(STextBlock)
-			.Font(FEditorStyle::GetFontStyle("ControlRig.Curve.Menu"))
+			.Font(FAppStyle::GetFontStyle("ControlRig.Curve.Menu"))
 			.Text(LOCTEXT("ImportMesh_Title", "Select Mesh"))
-			.ToolTipText(LOCTEXT("ImportMesh_Tooltip", "Select Mesh to import Curve from... It will only import if the node doens't exists in the current Curve."))
+			.ToolTipText(LOCTEXT("ImportMesh_Tooltip", "Select Mesh to import Curve from... It will only import if the node doesn't exist in the current Curve."))
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -652,8 +652,8 @@ void SRigCurveContainer::CreateImportMenu(FMenuBuilder& MenuBuilder)
 
 bool SRigCurveContainer::ShouldFilterOnImport(const FAssetData& AssetData) const
 {
-	return (AssetData.AssetClass != USkeletalMesh::StaticClass()->GetFName() &&
-		AssetData.AssetClass != USkeleton::StaticClass()->GetFName());
+	return (AssetData.AssetClassPath != USkeletalMesh::StaticClass()->GetClassPathName() &&
+		AssetData.AssetClassPath != USkeleton::StaticClass()->GetClassPathName());
 }
 
 void SRigCurveContainer::ImportCurve(const FAssetData& InAssetData)

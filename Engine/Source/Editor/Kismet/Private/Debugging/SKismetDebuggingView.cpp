@@ -2,41 +2,61 @@
 
 
 #include "Debugging/SKismetDebuggingView.h"
-#include "Debugging/SKismetDebugTreeView.h"
-#include "BlueprintEditor.h"
+
 #include "ClassViewerFilter.h"
 #include "ClassViewerModule.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/Blueprint.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Images/SImage.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "GameFramework/Actor.h"
-#include "Editor/EditorEngine.h"
-#include "EngineGlobals.h"
-#include "Engine/BlueprintGeneratedClass.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "Debugging/SKismetDebugTreeView.h"
+#include "Delegates/Delegate.h"
 #include "Editor.h"
-#include "GraphEditorSettings.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "K2Node.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/World.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/Breakpoint.h"
-#include "Kismet2/KismetDebugUtilities.h"
 #include "Kismet2/DebuggerCommands.h"
-#include "Widgets/Input/SHyperlink.h"
+#include "Kismet2/KismetDebugUtilities.h"
+#include "Layout/Children.h"
+#include "Logging/LogMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "ToolMenu.h"
+#include "ToolMenuContext.h"
 #include "ToolMenus.h"
-#include "PropertyEditor/Private/SDetailsView.h"
-#include "Styling/SlateIconFinder.h"
-#include "Styling/StyleColors.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "PropertyInfoViewStyle.h"
-#include "GenericPlatform/GenericPlatformApplicationMisc.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Script.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
-#include "HAL/PlatformApplicationMisc.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class SWidget;
+struct FGeometry;
+struct FToolMenuSection;
 
 #define LOCTEXT_NAMESPACE "DebugViewUI"
 
@@ -263,7 +283,7 @@ void SKismetDebuggingView::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			[
 				SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush( TEXT("NoBorder") ) )
+					.BorderImage( FAppStyle::GetBrush( TEXT("NoBorder") ) )
 					[
 						ToolbarWidget
 					]
@@ -378,6 +398,14 @@ void SKismetDebuggingView::Tick(const FGeometry& AllottedGeometry, const double 
 		return;
 	}
 
+	// If there is no play world, immediately clear the list. this avoids showing a phantom 'nullptr' item when ending PIE
+	const bool bIsDebugging = GEditor->PlayWorld != nullptr;
+	if (!bIsDebugging && DebugTreeView->GetRootTreeItems().Num() > 0)
+	{
+		DebugTreeView->ClearTreeItems();
+		return;
+	}
+
 	// update less often to avoid lag
 	TreeUpdateTimer += InDeltaTime;
 	if (TreeUpdateTimer < UpdateInterval)
@@ -397,8 +425,6 @@ void SKismetDebuggingView::Tick(const FGeometry& AllottedGeometry, const double 
 	}
 
 	// Gather what we'd like to be the new root set
-	const bool bIsDebugging = GEditor->PlayWorld != nullptr;
-
 	TSet<UObject*> NewRootSet;
 
 	const auto TryAddBlueprintToNewRootSet = [&NewRootSet](UBlueprint* InBlueprint)

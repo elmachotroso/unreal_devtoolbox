@@ -100,7 +100,7 @@ namespace Chaos
 			ComputeUnitMassInertiaTensorAndRotationOfMass(Volume);
 		}
 
-		FConvex(const TArray<FVec3Type>& InVertices, const FReal InMargin)
+		FConvex(const TArray<FVec3Type>& InVertices, const FReal InMargin, FConvexBuilder::EBuildMethod BuildMethod = FConvexBuilder::EBuildMethod::Default)
 		    : FImplicitObject(EImplicitObject::IsConvex | EImplicitObject::HasBoundingBox, ImplicitObjectType::Convex)
 		{
 			const int32 NumVertices = InVertices.Num();
@@ -110,23 +110,17 @@ namespace Chaos
 			}
 
 			TArray<TArray<int32>> FaceIndices;
-			FConvexBuilder::Build(InVertices, Planes, FaceIndices, Vertices, LocalBoundingBox);
+			FConvexBuilder::Build(InVertices, Planes, FaceIndices, Vertices, LocalBoundingBox, BuildMethod);
 			CHAOS_ENSURE(Planes.Num() == FaceIndices.Num());
 
 			// @todo(chaos): this only works with triangles. Fix that an we can run MergeFaces before calling this
 			CalculateVolumeAndCenterOfMass(Vertices, FaceIndices, Volume, CenterOfMass);
 
-			// @todo(chaos): should be based on size, or passed in
-			if (!FConvexBuilder::bUseGeometryTConvexHull3)
-			{
-				// @todo(convex) : TConvexHull3 does not need to merge faces, and 
-				// it appears that this code path can leave the convex in an
-				// undefined state. We should consider removing the merge faces when
-				// we transition to the UE::Geometry convex generation. 
-				const FRealType DistanceTolerance = 1.0f;
-				FConvexBuilder::MergeFaces(Planes, FaceIndices, Vertices, DistanceTolerance);
-				CHAOS_ENSURE(Planes.Num() == FaceIndices.Num());
-			}
+			// it appears that this code path can leave the convex in an
+			// undefined state.
+			const FRealType DistanceTolerance = 1.0f;
+			FConvexBuilder::MergeFaces(Planes, FaceIndices, Vertices, DistanceTolerance);
+			CHAOS_ENSURE(Planes.Num() == FaceIndices.Num());
 
 			CreateStructureData(MoveTemp(FaceIndices));
 
@@ -271,7 +265,7 @@ namespace Chaos
 
 			const TVector<FReal, 3> Difference = X - ClosestPoint;
 			Phi = Difference.Size();
-			if (Phi > SMALL_NUMBER)
+			if (Phi > UE_SMALL_NUMBER)
 			{
 				Normal = (Difference) / Phi;
 			}
@@ -339,7 +333,7 @@ namespace Chaos
 
 			const FVec3 Difference = X - ClosestPoint;
 			const FReal DifferenceLen = Difference.Size();
-			if (DifferenceLen > SMALL_NUMBER)
+			if (DifferenceLen > UE_SMALL_NUMBER)
 			{
 				Normal = Difference / DifferenceLen;
 				MaxPhi = DifferenceLen;
@@ -726,9 +720,53 @@ namespace Chaos
 			return SupportPoint;
 		}
 
-		virtual FString ToString() const
+		virtual FString ToString() const override
 		{
-			return FString::Printf(TEXT("Convex"));
+			return ToStringSummary();
+		}
+
+		// A one-line summary of the convex
+		FString ToStringSummary() const
+		{
+			return FString::Printf(TEXT("Convex: Verts: %d, Edges %d, Planes: %d, Margin %f"), NumVertices(), NumEdges(), NumPlanes(), GetMargin());
+		}
+
+		// Print all the datas
+		FString ToStringFull() const
+		{
+			FString S = ToStringSummary();
+			S.Append(TEXT("\n"));
+			for (int32 VertexIndex = 0; VertexIndex < NumVertices(); ++VertexIndex)
+			{
+				const FVec3 Vert = GetVertex(VertexIndex);
+				S.Append(FString::Printf(TEXT("  Vertex %d: [%f, %f, %f]\n"), VertexIndex, Vert.X, Vert.Y, Vert.Z));
+			}
+			for (int32 PlaneIndex = 0; PlaneIndex < NumPlanes(); ++PlaneIndex)
+			{
+				const TPlaneConcrete<FReal, 3> Plane = GetPlane(PlaneIndex);
+				S.Append(FString::Printf(TEXT("  Plane %d: Normal: [%f, %f, %f], Distance: %f, Verts: ["), PlaneIndex, Plane.Normal().X, Plane.Normal().Y, Plane.Normal().Z, FVec3::DotProduct(Plane.X(), Plane.Normal())));
+				const int32 PlaneVertexCount = NumPlaneVertices(PlaneIndex);
+				for (int32 PlaneVertexIndex = 0; PlaneVertexIndex < PlaneVertexCount; ++PlaneVertexIndex)
+				{
+					S.Append(FString::Printf(TEXT("%d"), GetPlaneVertex(PlaneIndex, PlaneVertexIndex)));
+					if (PlaneVertexIndex < PlaneVertexCount - 1)
+					{
+						S.Append(FString::Printf(TEXT(", ")));
+					}
+				}
+				S.Append(FString::Printf(TEXT("]\n")));
+			}
+			S.Append(FString::Printf(TEXT("  Edges: ")));
+			for (int32 EdgeIndex = 0; EdgeIndex < NumEdges(); ++EdgeIndex)
+			{
+				S.Append(FString::Printf(TEXT("[%d, %d]"), GetEdgeVertex(EdgeIndex, 0), GetEdgeVertex(EdgeIndex, 1)));
+				if (EdgeIndex < NumEdges() - 1)
+				{
+					S.Append(FString::Printf(TEXT(", ")));
+				}
+			}
+			S.Append(FString::Printf(TEXT("\n")));
+			return S;
 		}
 
 		const TArray<FVec3Type>& GetVertices() const

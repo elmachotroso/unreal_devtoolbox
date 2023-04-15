@@ -1,34 +1,79 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeEditorModule.h"
-#include "Modules/ModuleManager.h"
-#include "Developer/AssetTools/Public/IAssetTools.h"
-#include "Developer/AssetTools/Public/AssetToolsModule.h"
+#include "AssetToolsModule.h"
 #include "AssetTypeActions_StateTree.h"
-#include "Customizations/StateTreeTransitionDetails.h"
-#include "Customizations/StateTreeStateLinkDetails.h"
-#include "Customizations/StateTreeStateDetails.h"
-#include "Customizations/StateTreeEditorNodeDetails.h"
-#include "Customizations/StateTreeAnyEnumDetails.h"
-#include "StateTreeEditor.h"
-#include "StateTree.h"
-#include "StateTreeEditorStyle.h"
-#include "StateTreeEvaluatorBase.h"
-#include "StateTreeTaskBase.h"
-#include "StateTreeConditionBase.h"
-#include "StateTreeNodeClassCache.h"
+#include "Blueprint/StateTreeConditionBlueprintBase.h"
 #include "Blueprint/StateTreeEvaluatorBlueprintBase.h"
 #include "Blueprint/StateTreeTaskBlueprintBase.h"
-#include "Blueprint/StateTreeConditionBlueprintBase.h"
+#include "Customizations/StateTreeAnyEnumDetails.h"
+#include "Customizations/StateTreeEditorDataDetails.h"
+#include "Customizations/StateTreeEditorNodeDetails.h"
+#include "Customizations/StateTreeReferenceDetails.h"
+#include "Customizations/StateTreeStateDetails.h"
+#include "Customizations/StateTreeStateLinkDetails.h"
+#include "Customizations/StateTreeStateParametersDetails.h"
+#include "Customizations/StateTreeTransitionDetails.h"
+#include "IAssetTools.h"
+#include "Modules/ModuleManager.h"
+#include "StateTree.h"
+#include "StateTreeCompiler.h"
+#include "StateTreeCompilerLog.h"
+#include "StateTreeConditionBase.h"
+#include "StateTreeDelegates.h"
+#include "StateTreeEditor.h"
 #include "StateTreeEditorCommands.h"
-
+#include "StateTreeEditorStyle.h"
+#include "StateTreeEvaluatorBase.h"
+#include "StateTreeNodeClassCache.h"
+#include "StateTreeTaskBase.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
+DEFINE_LOG_CATEGORY(LogStateTreeEditor);
+
 IMPLEMENT_MODULE(FStateTreeEditorModule, StateTreeEditorModule)
+
+namespace UE::StateTree::Editor
+{
+	// @todo Could we make this a IModularFeature?
+	static bool CompileStateTree(UStateTree& StateTree)
+	{
+		// Compile the StateTree asset.
+		UE::StateTree::Editor::ValidateAsset(StateTree);
+		const uint32 EditorDataHash = UE::StateTree::Editor::CalcAssetHash(StateTree);
+
+		FStateTreeCompilerLog Log;
+		FStateTreeCompiler Compiler(Log);
+
+		const bool bSuccess = Compiler.Compile(StateTree);
+
+		if (bSuccess)
+		{
+			// Success
+			StateTree.LastCompiledEditorDataHash = EditorDataHash;
+			UE::StateTree::Delegates::OnPostCompile.Broadcast(StateTree);
+			UE_LOG(LogStateTreeEditor, Log, TEXT("Compile StateTree '%s' succeeded."), *StateTree.GetFullName());
+		}
+		else
+		{
+			// Make sure not to leave stale data on failed compile.
+			StateTree.ResetCompiled();
+			StateTree.LastCompiledEditorDataHash = 0;
+
+			UE_LOG(LogStateTreeEditor, Error, TEXT("Failed to compile '%s', errors follow."), *StateTree.GetFullName());
+			Log.DumpToLog(LogStateTreeEditor);
+		}
+
+		return bSuccess;
+	}
+
+}; // UE::StateTree::Editor
 
 void FStateTreeEditorModule::StartupModule()
 {
+	UE::StateTree::Delegates::OnRequestCompile.BindStatic(&UE::StateTree::Editor::CompileStateTree);
+
 	MenuExtensibilityManager = MakeShareable(new FExtensibilityManager);
 	ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
 
@@ -50,14 +95,19 @@ void FStateTreeEditorModule::StartupModule()
 	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeTransition", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeTransitionDetails::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeStateLink", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeStateLinkDetails::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeEditorNode", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeEditorNodeDetails::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeStateParameters", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeStateParametersDetails::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeAnyEnum", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeAnyEnumDetails::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout("StateTreeReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStateTreeReferenceDetails::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout("StateTreeState", FOnGetDetailCustomizationInstance::CreateStatic(&FStateTreeStateDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("StateTreeEditorData", FOnGetDetailCustomizationInstance::CreateStatic(&FStateTreeEditorDataDetails::MakeInstance));
 
 	PropertyModule.NotifyCustomizationModuleChanged();
 }
 
 void FStateTreeEditorModule::ShutdownModule()
 {
+	UE::StateTree::Delegates::OnRequestCompile.Unbind();
+	
 	MenuExtensibilityManager.Reset();
 	ToolBarExtensibilityManager.Reset();
 
@@ -84,9 +134,8 @@ void FStateTreeEditorModule::ShutdownModule()
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeTransition");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeStateLink");
-		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeEvaluatorItem");
-		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeTaskItem");
-		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeConditionItem");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeEditorNode");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeStateParameters");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("StateTreeAnyEnum");
 		PropertyModule.NotifyCustomizationModuleChanged();
 	}
@@ -94,6 +143,13 @@ void FStateTreeEditorModule::ShutdownModule()
 }
 
 TSharedRef<IStateTreeEditor> FStateTreeEditorModule::CreateStateTreeEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UStateTree* StateTree)
+{
+	TSharedRef<FStateTreeEditor> NewEditor(new FStateTreeEditor());
+	NewEditor->InitEditor(Mode, InitToolkitHost, StateTree);
+	return NewEditor;
+}
+
+TSharedPtr<FStateTreeNodeClassCache> FStateTreeEditorModule::GetNodeClassCache()
 {
 	if (!NodeClassCache.IsValid())
 	{
@@ -104,11 +160,11 @@ TSharedRef<IStateTreeEditor> FStateTreeEditorModule::CreateStateTreeEditor(const
 		NodeClassCache->AddRootClass(UStateTreeEvaluatorBlueprintBase::StaticClass());
 		NodeClassCache->AddRootClass(UStateTreeTaskBlueprintBase::StaticClass());
 		NodeClassCache->AddRootClass(UStateTreeConditionBlueprintBase::StaticClass());
+		NodeClassCache->AddRootClass(UStateTreeSchema::StaticClass());
 	}
-	
-	TSharedRef<FStateTreeEditor> NewEditor(new FStateTreeEditor());
-	NewEditor->InitEditor(Mode, InitToolkitHost, StateTree);
-	return NewEditor;
+
+	return NodeClassCache;
 }
+
 
 #undef LOCTEXT_NAMESPACE

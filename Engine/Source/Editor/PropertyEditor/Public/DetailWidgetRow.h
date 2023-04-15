@@ -146,6 +146,7 @@ public:
 
 	/** IDetailLayoutRow interface */
 	virtual FName GetRowName() const override { return RowTagName; }
+	virtual TOptional<FResetToDefaultOverride> GetCustomResetToDefault() const override { return CustomResetToDefault; }
 
 	/**
 	 * Assigns content to the entire row
@@ -339,6 +340,17 @@ public:
 	*/
 	const TArray<TSharedPtr<IPropertyHandle>>& GetPropertyHandles() const { return PropertyHandles;  }
 
+	/**
+	 * Sets whether or not this property should auto-expand
+	 *
+	 * @param bForceExpansion	true to force the property to be expanded
+	 */
+	FDetailWidgetRow& ShouldAutoExpand(bool bForceExpansion = true)
+	{
+		ForceAutoExpansion = bForceExpansion;
+		return *this;
+	}
+
 public:
 	/** Name column content */
 	FDetailWidgetDecl NameWidget;
@@ -389,5 +401,7 @@ public:
 	TSharedPtr<IDetailDragDropHandler> CustomDragDropHandler;
 	/* All property handle that this custom widget represent */
 	TArray<TSharedPtr<IPropertyHandle>> PropertyHandles;
+	/** True to force auto-expansion */
+	TOptional<bool> ForceAutoExpansion;
 };
 

@@ -2,15 +2,21 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Templates/UnrealTemplate.h"
-#include "Templates/Decay.h"
 #include "Containers/Array.h"
+#include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
-#include "Templates/Function.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/PreprocessorHelpers.h"
 #include "HAL/ThreadSafeCounter64.h"
+#include "Templates/Decay.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Trace.h"
+
+namespace UE { namespace Trace { class FChannel; } }
 
 #ifndef ENABLE_COOK_STATS
 #define ENABLE_COOK_STATS WITH_EDITOR
@@ -18,6 +24,14 @@
 
 template <typename FuncType> class TFunctionRef;
 template <typename T> struct TDecay;
+
+enum class EPackageEventStatType : uint8
+{
+	LoadPackage = 0,
+	SavePackage = 1,
+	BeginCacheForCookedPlatformData = 2,
+	IsCachedCookedPlatformDataLoaded = 3,
+};
 
 #if ENABLE_COOK_STATS
 /**
@@ -240,12 +254,12 @@ public:
 						TEXT("Call"), CallName,
 						TEXT("HitOrMiss"), HitOrMiss == EHitOrMiss::Hit ? TEXT("Hit") : TEXT("Miss"),
 						TEXT("Count"), GetAccumulatedValue(HitOrMiss, EStatType::Counter, bGameThread),
-						TEXT("TimeSec"), GetAccumulatedValue(HitOrMiss, EStatType::Cycles, bGameThread) * FPlatformTime::GetSecondsPerCycle(),
-						TEXT("MB"), GetAccumulatedValue(HitOrMiss, EStatType::Bytes, bGameThread) / (1024.0 * 1024.0),
+						TEXT("TimeSec"), (double)GetAccumulatedValue(HitOrMiss, EStatType::Cycles, bGameThread) * FPlatformTime::GetSecondsPerCycle(),
+						TEXT("MB"), (double)GetAccumulatedValue(HitOrMiss, EStatType::Bytes, bGameThread) / (1024.0 * 1024.0),
 						TEXT("MB/s"), GetAccumulatedValue(HitOrMiss, EStatType::Cycles, bGameThread) == 0
 							? 0.0
-							: GetAccumulatedValue(HitOrMiss, EStatType::Bytes, bGameThread) / (1024.0 * 1024.0) /
-							 (GetAccumulatedValue(HitOrMiss, EStatType::Cycles, bGameThread) * FPlatformTime::GetSecondsPerCycle()),
+							: (double)GetAccumulatedValue(HitOrMiss, EStatType::Bytes, bGameThread) / (1024.0 * 1024.0) /
+							 ((double)GetAccumulatedValue(HitOrMiss, EStatType::Cycles, bGameThread) * FPlatformTime::GetSecondsPerCycle()),
 						TEXT("Node"), NodeName
 						));
 				}
@@ -423,6 +437,63 @@ struct FDerivedDataUsageStats
 /** any expression inside this block will be compiled out if ENABLE_COOK_STATS is not true. Shorthand for the multi-line #if ENABLE_COOK_STATS guard. */
 #define COOK_STAT(...) __VA_ARGS__
 
+CORE_API UE_TRACE_CHANNEL_EXTERN(CookChannel);
+
+CORE_API void TracePackage(uint64 InId, const FStringView InName);
+CORE_API void TracePackageStat(uint64 InId, uint64 Duration, EPackageEventStatType StatType);
+CORE_API void TracePackageAssetClass(uint64 InId, const FStringView InName);
+CORE_API bool ShouldTracePackageInfo();
+
+struct FScopedCookStat
+{
+	FScopedCookStat(const FScopedCookStat&) = delete;
+	FScopedCookStat(FScopedCookStat&&) = delete;
+
+	FScopedCookStat(uint64 Id, EPackageEventStatType InStatType)
+		: Id(Id)
+		, StatType(InStatType)
+	{
+		StartTimestamp = FPlatformTime::Cycles64();
+	}
+
+	~FScopedCookStat()
+	{
+		TracePackageStat(Id, FPlatformTime::Cycles64() - StartTimestamp, StatType);
+	}
+
+private:
+	uint64 Id;
+	uint64 StartTimestamp;
+	EPackageEventStatType StatType;
+};
+
+#define UE_SCOPED_COOK_STAT(Name, StatType) \
+	FScopedCookStat  PREPROCESSOR_JOIN(__CookTimerScope, __LINE__)(Name.ToUnstableInt(), StatType);
+
+#define UE_MULTI_SCOPED_COOK_STAT_INIT() \
+	TOptional<FScopedCookStat> __CookStatScope; \
+	FName __PrevPackageName = NAME_None;
+
+#define UE_MULTI_SCOPED_COOK_STAT(Name, StatType) \
+	if (__PrevPackageName != Name) \
+	{ \
+		__CookStatScope.Emplace(Name.ToUnstableInt(), EPackageEventStatType::LoadPackage); \
+		__PrevPackageName = Name; \
+	}
+
+#define UE_MULTI_SCOPED_COOK_STAT_RESET() \
+	__CookStatScope.Reset(); \
+	__PrevPackageName = NAME_None;
 #else
 #define COOK_STAT(...)
+#define UE_SCOPED_COOK_STAT(...)
+#define UE_MULTI_SCOPED_COOK_STAT_INIT(...)
+#define UE_MULTI_SCOPED_COOK_STAT(...)
+#define UE_MULTI_SCOPED_COOK_STAT_RESET(...)
+
+#define TracePackage(...)
+#define TracePackageStat(...)
+#define TracePackageAssetClass(...)
+#define ShouldTracePackageInfo(...) false
+
 #endif

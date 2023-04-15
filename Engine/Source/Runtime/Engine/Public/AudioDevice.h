@@ -6,10 +6,11 @@
 #include "Components/AudioComponent.h"
 #include "CoreMinimal.h"
 #include "DSP/MultithreadedPatching.h"
-#include "DSP/SpectrumAnalyzer.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
+#include "HAL/LowLevelMemStats.h"
 #include "IAudioExtensionPlugin.h"
+#include "ISubmixBufferListener.h"
 #include "AudioDynamicParameter.h"
 #include "Sound/AudioSettings.h"
 #include "Sound/AudioVolume.h"
@@ -26,6 +27,11 @@
 #include "AudioVirtualLoop.h"
 #include "AudioMixer.h"
 #include "UObject/StrongObjectPtr.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "DSP/SpectrumAnalyzer.h"
+#endif // UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+
 
 /**
  * Forward declares
@@ -59,8 +65,11 @@ struct FActiveSound;
 struct FAttenuationFocusData;
 struct FAudioComponentParam;
 struct FAudioQualitySettings;
-UE_DECLARE_LWC_TYPE(Rotator, 3);
 struct FWaveInstance;
+
+LLM_DECLARE_TAG_API(Audio_SpatializationPlugins, ENGINE_API);
+// Convenience macro for Audio_SpatializationPlugins LLM scope to avoid misspells.
+#define AUDIO_SPATIALIZATION_PLUGIN_LLM_SCOPE LLM_SCOPE_BYTAG(Audio_SpatializationPlugins);
 
 namespace Audio
 {
@@ -399,22 +408,13 @@ public:
 	virtual void OnDefaultDeviceChanged() = 0;
 };
 
-/** Abstract interface for receiving audio data from a given submix. */
-class ENGINE_API ISubmixBufferListener
+struct FAudioDeviceRenderInfo
 {
-public:
-	/**
-	Called when a new buffer has been rendered for a given submix
-	@param OwningSubmix	The submix object which has rendered a new buffer
-	@param AudioData		Ptr to the audio buffer
-	@param NumSamples		The number of audio samples in the audio buffer
-	@param NumChannels		The number of channels of audio in the buffer (e.g. 2 for stereo, 6 for 5.1, etc)
-	@param SampleRate		The sample rate of the audio buffer
-	@param AudioClock		Double audio clock value, from start of audio rendering.
-	*/
-	virtual void OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* AudioData, int32 NumSamples, int32 NumChannels, const int32 SampleRate, double AudioClock) = 0;
+	int32 NumFrames = 0;
 };
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnAudioDevicePreRender, const FAudioDeviceRenderInfo&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnAudioDevicePostRender, const FAudioDeviceRenderInfo&);
 
 class ENGINE_API FAudioDevice : public FExec
 {
@@ -502,9 +502,9 @@ public:
 	 */
 	FAudioDevice();
 
-	virtual ~FAudioDevice()
-	{
-	}
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // supress deprecation warning in default dtor
+	virtual ~FAudioDevice() = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Returns an array of available audio devices names for the platform */
 	virtual void GetAudioDeviceList(TArray<FString>& OutAudioDeviceNames) const
@@ -890,6 +890,14 @@ protected:
 	// Handle for our device destroyed delegate
 	FDelegateHandle DeviceDestroyedHandle;
 
+	FCriticalSection RenderStateCallbackListCritSec;
+
+	// Callback as audio device is about to render a buffer
+	FOnAudioDevicePreRender OnAudioDevicePreRender;
+
+	// Callback as audio device has just finished rendering a buffer
+	FOnAudioDevicePostRender OnAudioDevicePostRender;
+
 public:
 	/**
 	 * Registers a sound class with the audio device
@@ -943,6 +951,29 @@ public:
 		return nullptr;
 	}
 
+	virtual void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic)
+	{
+	}
+
+	virtual void StopAudioBus(uint32 InAudioBusId)
+	{
+	}
+
+	virtual bool IsAudioBusActive(uint32 InAudioBusId) const
+	{
+		return false;
+	}
+
+	virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f)
+	{
+		return nullptr;
+	}
+
+	virtual Audio::FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f)
+	{
+		return nullptr;
+	}
+	
 	virtual void InitSoundEffectPresets() {}
 
 	/**
@@ -994,6 +1025,11 @@ public:
 	*/
 	bool GetDistanceSquaredToNearestListener(const FVector& Location, float& OutSqDistance) const;
 		
+	/**
+	* Returns the global maximum distance used in the audio engine.
+	*/
+	static float GetMaxWorldDistance();
+
 	/**
 	* Returns a position from the appropriate listener representation, depending on calling thread.
 	*
@@ -1276,17 +1312,32 @@ public:
 	/** Returns the buffer length of the audio device. */
 	int32 GetBufferLength() const { return PlatformSettings.CallbackBufferFrameSize; }
 
+	/** Returns the number of buffers the audio device keeps queued. */
+	int32 GetNumBuffers() const { return PlatformSettings.NumBuffers; }
+
 	/** Whether or not there's a spatialization plugin enabled. */
 	bool IsSpatializationPluginEnabled() const
 	{
 		return bSpatializationInterfaceEnabled;
 	}
 
+	/** Set and initialize the current Spatialization plugin (by name) */
+	bool SetCurrentSpatializationPlugin(FName PluginName);
+
+	/** Get the current list of available spatialization plugins */
+	TArray<FName> GetAvailableSpatializationPluginNames() const;
+
 	/** Return the spatialization plugin interface. */
 	TAudioSpatializationPtr GetSpatializationPluginInterface()
 	{
-		return SpatializationPluginInterface;
+		return GetCurrentSpatializationPluginInterfaceInfo().SpatializationPlugin;
 	}
+
+	/** Return the spatialization plugin interface info (requested by name). */
+	struct FAudioSpatializationInterfaceInfo;
+	FAudioSpatializationInterfaceInfo GetCurrentSpatializationPluginInterfaceInfo();
+
+	bool SpatializationPluginInterfacesAvailable();
 
 	/** Whether or not there's a modulation plugin enabled. */
 	bool IsModulationPluginEnabled() const
@@ -1421,7 +1472,13 @@ public:
 		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
 	}
 
+	UE_DEPRECATED(5.1, "UpdateSubmixModulationSettings taking single modulators is deprecated.  Use the overload that allows for modulator sets")
 	virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer & 'UpdateSubmixModulationSettings' function taking single modulators no longer supported."));
+	}
+
+	virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, const TSet<TObjectPtr<USoundModulatorBase>>& InOutputModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InWetLevelModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InDryLevelModulation)
 	{
 		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
 	}
@@ -1496,7 +1553,11 @@ protected:
 	 */
 	virtual void OnListenerUpdated(const TArray<FListener>& InListeners) {};
 
-	private:
+	void NotifyAudioDevicePreRender(const FAudioDeviceRenderInfo& InInfo);
+
+	void NotifyAudioDevicePostRender(const FAudioDeviceRenderInfo& InInfo);
+
+private:
 
 	/**
 	 * Adds an active sound to the audio device. Can be a new active sound or one provided by the re-triggering
@@ -1704,6 +1765,14 @@ public:
 		DefaultBaseSoundMix = InDefaultBaseSoundMix;
 	}
 
+	FDelegateHandle AddPreRenderDelegate(const FOnAudioDevicePreRender::FDelegate& InDelegate);
+
+	bool RemovePreRenderDelegate(const FDelegateHandle& InHandle);
+
+	FDelegateHandle AddPostRenderDelegate(const FOnAudioDevicePostRender::FDelegate& InDelegate);
+
+	bool RemovePostRenderDelegate(const FDelegateHandle& InHandle);
+
 private:
 	/**
 	 * Internal helper function used by ParseSoundClasses to traverse the tree.
@@ -1826,11 +1895,20 @@ public:
 
 	bool AreStartupSoundsPreCached() const { return bStartupSoundsPreCached; }
 
-	float GetTransientMasterVolume() const { check(IsInAudioThread()); return TransientMasterVolume; }
-	void SetTransientMasterVolume(float TransientMasterVolume);
+	UE_DEPRECATED(5.1, "GetTransientMasterVolume has been deprecated. Please use GetTransientPrimaryVolume instead.")
+	float GetTransientMasterVolume() const { check(IsInAudioThread()); return TransientPrimaryVolume; }
+
+	UE_DEPRECATED(5.1, "SetTransientMasterVolume has been deprecated. Please use SetTransientPrimaryVolume instead.")
+	void SetTransientMasterVolume(float TransientPrimaryVolume);
+
+	UE_DEPRECATED(5.1, "GetMasterVolume has been deprecated. Please use GetPrimaryVolume instead.")
+	float GetMasterVolume() const { return PrimaryVolume; }
+
+	float GetTransientPrimaryVolume() const { check(IsInAudioThread()); return TransientPrimaryVolume; }
+	void SetTransientPrimaryVolume(float TransientPrimaryVolume);
 
 	/** Returns the volume that combines transient master volume and the FApp::GetVolumeMultiplier() value */
-	float GetMasterVolume() const { return MasterVolume; }
+	float GetPrimaryVolume() const { return PrimaryVolume; }
 
 	FSoundSource* GetSoundSource(FWaveInstance* WaveInstance) const;
 
@@ -1935,9 +2013,34 @@ public:
 	/** The handle for this audio device used in the audio device manager. */
 	Audio::FDeviceId DeviceID;
 
-	/** 3rd party audio spatialization interface. */
-	TAudioSpatializationPtr SpatializationPluginInterface;
+	struct ENGINE_API FAudioSpatializationInterfaceInfo
+	{
+		// ctors
+		FAudioSpatializationInterfaceInfo() = default;
+		FAudioSpatializationInterfaceInfo(FName InPluginName, FAudioDevice* InAudioDevice, IAudioSpatializationFactory* InAudioSpatializationFactoryPtr);
 
+		bool IsValid() const;
+
+		FName PluginName;
+		TAudioSpatializationPtr SpatializationPlugin = nullptr;
+		int32 MaxChannelsSupportedBySpatializationPlugin = 1;
+		uint8 bSpatializationIsExternalSend:1;
+		uint8 bIsInitialized:1;
+	};
+
+	UE_DEPRECATED(5.1, "Do not access this member directly, it is not used. Call GetSpatializationPluginInterface() instead.")
+	TAudioSpatializationPtr SpatializationPluginInterface = nullptr;
+
+protected:
+	/** 3rd party audio spatialization interface. */
+	FName CurrentSpatializationPluginInterfaceName;
+	TArray<FAudioSpatializationInterfaceInfo> SpatializationInterfaces;
+	FAudioSpatializationInterfaceInfo* CurrentSpatializationInterfaceInfoPtr = nullptr;
+
+	/** Cached parameters passed to the initialization of various audio plugins */
+	FAudioPluginInitializationParams PluginInitializationParams;
+
+public:
 	/** 3rd party source data override interface. */
 	TAudioSourceDataOverridePtr SourceDataOverridePluginInterface;
 
@@ -1977,10 +2080,10 @@ private:
 	TEnumAsByte<enum EDebugState> DebugState;
 
 	/** transient master volume multiplier that can be modified at runtime without affecting user settings automatically reset to 1.0 on level change */
-	float TransientMasterVolume;
+	float TransientPrimaryVolume;
 
-	/** The master volume of the game combines the FApp::GetVolumeMultipler() value and the TransientMastervolume. */
-	float MasterVolume;
+	/** The master volume of the game combines the FApp::GetVolumeMultipler() value and the TransientPrimaryVolume. */
+	float PrimaryVolume;
 
 	/** Global dynamic pitch scale parameter */
 	FDynamicParameter GlobalPitchScale;
@@ -2077,13 +2180,20 @@ public:
 	/** Whether or not the audio mixer module is being used by this device. */
 	uint8 bAudioMixerModuleLoaded : 1;
 
-	/** Whether of not various audio plugin interfaces are external sends. */
-	uint8 bSpatializationIsExternalSend:1;
+	/** Whether or not various audio plugin interfaces are external sends. */
 	uint8 bOcclusionIsExternalSend:1;
 	uint8 bReverbIsExternalSend:1;
 
+// deprecate these as they have been moved to the info struct.
+
+	UE_DEPRECATED(5.1, "This member is no longer  in use. Use the return value of GetCurrentSpatializationPluginInterfaceInfo()")
+	uint8 bSpatializationIsExternalSend:1;
+
 	/** Max amount of channels a source can be to be spatialized by our active spatialization plugin. */
+	UE_DEPRECATED(5.1, "This member is no longer  in use. Use the return value of GetCurrentSpatializationPluginInterfaceInfo()")
 	int32 MaxChannelsSupportedBySpatializationPlugin;
+
+
 
 private:
 	/** True once the startup sounds have been precached */

@@ -5,21 +5,23 @@
 #include "CoreMinimal.h"
 #include "UObject/GCObject.h"
 #include "Toolkits/IToolkitHost.h"
-#include "Toolkits/AssetEditorToolkit.h"
 #include "EditorUndoClient.h"
+#include "NiagaraEditorModule.h"
 
 #include "ISequencer.h"
 #include "ISequencerTrackEditor.h"
 
-#include "NiagaraCommon.h"
-#include "NiagaraScript.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
 #include "Widgets/SItemSelector.h"
 #include "ViewModels/NiagaraSystemGraphSelectionViewModel.h"
+#include "WorkflowOrientedApp/WorkflowCentricApplication.h"
 
 #if WITH_NIAGARA_GPU_PROFILER
 	#include "NiagaraGPUProfilerInterface.h"
 #endif
 
+class SNiagaraEmitterVersionWidget;
+class UNiagaraVersionMetaData;
 class FNiagaraSystemInstance;
 class FNiagaraSystemViewModel;
 class FNiagaraObjectSelection;
@@ -41,18 +43,22 @@ class FNiagaraBakerViewModel;
 
 /** Viewer/editor for a NiagaraSystem
 */
-class FNiagaraSystemToolkit : public FAssetEditorToolkit, public FGCObject, public FEditorUndoClient
+class FNiagaraSystemToolkit : public FWorkflowCentricApplication, public FGCObject, public FEditorUndoClient
 {
+private:
 	enum class ESystemToolkitMode
 	{
 		System,
 		Emitter,
 	};
 
-public:
-	virtual void RegisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
-	virtual void UnregisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
+	enum class ESystemToolkitWorkflowMode
+	{
+		Default,
+		Scalability
+	};
 
+public:
 	/** Edits the specified Niagara System */
 	void InitializeWithSystem(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UNiagaraSystem& InSystem);
 
@@ -60,8 +66,8 @@ public:
 	void InitializeWithEmitter(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UNiagaraEmitter& InEmitter);
 
 	/** Destructor */
-	virtual ~FNiagaraSystemToolkit();
-
+	virtual ~FNiagaraSystemToolkit() override;
+	
 	//~ Begin IToolkit Interface
 	virtual FName GetToolkitFName() const override;
 	virtual FText GetBaseToolkitName() const override;
@@ -89,7 +95,41 @@ public:
 	void CompileSystem(bool bFullRebuild);
 
 	TSharedPtr<FNiagaraSystemViewModel> GetSystemViewModel();
+	TSharedPtr<FNiagaraSystemGraphSelectionViewModel> GetSystemGraphSelectionViewModel() {
+		return SystemGraphSelectionViewModel;
+	}
+	
+	// @todo This is a hack for now until we reconcile the default toolbar with application modes [duplicated from counterpart in Blueprint Editor]
+	void RegisterToolbarTab(const TSharedRef<class FTabManager>& TabManager);
 
+	TSharedPtr<SWidget> GetSystemOverview() const;
+	void SetSystemOverview(const TSharedPtr<SWidget>& SystemOverview);
+	TSharedPtr<SWidget> GetScriptScratchpadManager() const;
+	void SetScriptScratchpad(const TSharedPtr<SWidget>& ScriptScratchpad);
+	TSharedPtr<SWidget> GetVersioningWidget() const { return VersionsWidget; }
+	FText GetVersionButtonLabel() const;
+	TArray<FNiagaraAssetVersion> GetEmitterVersions() const;
+	TSharedRef<SWidget> GenerateVersioningDropdownMenu(TSharedRef<FUICommandList> InCommandList);
+	void SwitchToVersion(FGuid VersionGuid);
+	bool IsVersionSelected(FNiagaraAssetVersion Version) const;
+	FText GetVersionMenuLabel(FNiagaraAssetVersion Version) const;
+
+	void SetScriptScratchpadManager(const TSharedPtr<SWidget>& ScriptScratchpad);
+	
+	/** Mode exposed functions */
+	TSharedRef<SWidget> GenerateCompileMenuContent();
+	TSharedRef<SWidget> GenerateBoundsMenuContent(TSharedRef<FUICommandList> InCommandList);
+	TSharedRef<SWidget> GenerateStatConfigMenuContent(TSharedRef<FUICommandList> InCommandList);
+
+	bool HasEmitter() const { return SystemToolkitMode == ESystemToolkitMode::Emitter && Emitter != nullptr; }
+
+	bool HasSystem() const { return SystemToolkitMode == ESystemToolkitMode::System && System != nullptr; }
+
+	FAssetData GetEditedAsset() const; 
+
+	const TArray<UObject*>& GetObjectsBeingEdited() const;
+
+	
 public:
 	FRefreshItemSelectorDelegate RefreshItemSelector;
 
@@ -128,37 +168,17 @@ protected:
 	
 private:
 	void InitializeInternal(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& InitToolkitHost, const FGuid& MessageLogGuid);
+	void InitializeRapidIterationParameters(const FVersionedNiagaraEmitter& VersionedEmitter);
 
 	void UpdateOriginalEmitter();
 	void UpdateExistingEmitters();
 
-	TSharedRef<SDockTab> SpawnTab_Viewport(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_CurveEd(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_Sequencer(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SystemScript(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SystemParameters(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SystemParameters2(const FSpawnTabArgs& Args); //@todo(ng) cleanup
-	TSharedRef<SDockTab> SpawnTab_SystemParameterDefinitions(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SelectedEmitterStack(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SelectedEmitterGraph(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_DebugSpreadsheet(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_PreviewSettings(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_GeneratedCode(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_MessageLog(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_SystemOverview(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_ScratchPad(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_ScriptStats(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnTab_Baker(const FSpawnTabArgs& Args);
-
-	/** Builds the toolbar widget */
-	void ExtendToolbar();	
 	void SetupCommands();
 
 	void ResetSimulation();
 
 	void GetSequencerAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
 	TSharedRef<SWidget> CreateAddEmitterMenuContent();
-	TSharedRef<SWidget> GenerateCompileMenuContent();
 
 	void EmitterAssetSelected(const FAssetData& AssetData);
 
@@ -174,23 +194,25 @@ private:
 	void OnPinnedCurvesChanged();
 	void RefreshParameters();
 	void OnSystemSelectionChanged();
-	void OnViewModelRequestFocusTab(FName TabName);
-
-	void RenderBaker();
-
-	TSharedRef<SWidget> GenerateBoundsMenuContent(TSharedRef<FUICommandList> InCommandList);
-	TSharedRef<SWidget> GenerateStatConfigMenuContent(TSharedRef<FUICommandList> InCommandList);
+	void OnViewModelRequestFocusTab(FName TabName, bool bDrawAttention = false);
+	
 	const FName GetNiagaraSystemMessageLogName(UNiagaraSystem* InSystem) const;
 	void OnSaveThumbnailImage();
 	void OnThumbnailCaptured(UTexture2D* Thumbnail);
 
+	void ManageVersions();
+	TSharedPtr<FNiagaraEmitterViewModel> GetEditedEmitterViewModel() const;
+
 private:
 
 	/** The System being edited in system mode, or the placeholder system being edited in emitter mode. */
-	UNiagaraSystem* System;
+	UNiagaraSystem* System = nullptr;
 
-	/** The emitter being edited in emitter mode, or null when editing in system mode. */
-	UNiagaraEmitter* Emitter;
+	/** The emitter being edited in emitter mode, or null when editing in system mode. Note that we are NOT using the FVersionedEmitter here, because this is the full asset. The version being edited is defined by the emitter view model. */
+	UNiagaraEmitter* Emitter = nullptr;
+
+	/** Temp object to hold version data being edited in the versioning widget's property editor. */
+	UNiagaraVersionMetaData* VersionMetadata = nullptr;
 
 	/** The value of the emitter change id from the last time it was in sync with the original emitter. */
 	FGuid LastSyncedEmitterChangeId;
@@ -204,11 +226,14 @@ private:
 
 	ESystemToolkitMode SystemToolkitMode;
 
+	/** The currently active workflow mode */
+	ESystemToolkitWorkflowMode ActiveWorkflowMode;
+	
 	TSharedPtr<SNiagaraSystemViewport> Viewport;
 
 	/* The view model for the System being edited */
 	TSharedPtr<FNiagaraSystemViewModel> SystemViewModel;
-
+	
 	/* The view model for the selected Emitter Script graphs of the System being edited. */
 	TSharedPtr<FNiagaraSystemGraphSelectionViewModel> SystemGraphSelectionViewModel;
 
@@ -216,16 +241,14 @@ private:
 	TSharedPtr<FNiagaraMessageLogViewModel> NiagaraMessageLogViewModel;
 	TSharedPtr<class SWidget> NiagaraMessageLog;
 
+	/** The command list for this editor */
+	TSharedPtr<FUICommandList> EditorCommands;
+
 	/** Display for script stats on selected platforms */
 	TSharedPtr<FNiagaraScriptStatsViewModel> ScriptStats;
 
 	/** Baker preview */
 	TSharedPtr<FNiagaraBakerViewModel> BakerViewModel;
-
-	/** The command list for this editor */
-	TSharedPtr<FUICommandList> EditorCommands;
-
-	TSharedPtr<class SNiagaraParameterMapView> ParameterMapView;
 
 	TSharedPtr<FNiagaraSystemToolkitParameterPanelViewModel> ParameterPanelViewModel;
 	TSharedPtr<FNiagaraSystemToolkitParameterDefinitionsPanelViewModel> ParameterDefinitionsPanelViewModel;
@@ -234,32 +257,22 @@ private:
 	TSharedPtr<FNiagaraObjectSelection> ObjectSelectionForParameterMapView;
 
 	bool bChangesDiscarded;
-
 	bool bScratchPadChangesDiscarded;
 
+	TSharedPtr<SWidget> SystemOverview;
+	TSharedPtr<SWidget> VersionsWidget;
+	TSharedPtr<SWidget> ScriptScratchpadManager;
+	
 	static IConsoleVariable* VmStatEnabledVar;
 
 #if WITH_NIAGARA_GPU_PROFILER
 	TUniquePtr<FNiagaraGpuProfilerListener> GpuProfilerListener;
 #endif
+	static IConsoleVariable* GpuStatEnabledVar;
+	
+	friend class FNiagaraSystemToolkitModeBase;
 
 public:
-	static const FName ViewportTabID;
-	static const FName CurveEditorTabID;
-	static const FName SequencerTabID;
-	static const FName SystemScriptTabID;
-	static const FName SystemDetailsTabID;
-	static const FName SystemParametersTabID;
-	static const FName SystemParametersTabID2;
-	static const FName SystemParameterDefinitionsTabID;
-	static const FName SelectedEmitterStackTabID;
-	static const FName SelectedEmitterGraphTabID;
-	static const FName DebugSpreadsheetTabID;
-	static const FName PreviewSettingsTabId;
-	static const FName GeneratedCodeTabID;
-	static const FName MessageLogTabID;
-	static const FName SystemOverviewTabID;
-	static const FName ScratchPadTabID;
-	static const FName ScriptStatsTabID;
-	static const FName BakerTabID;
+	static const FName DefaultModeName;
+	static const FName ScalabilityModeName;
 };

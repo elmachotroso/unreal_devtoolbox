@@ -2,15 +2,37 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "Engine/Blueprint.h"
-#include "Kismet2/Breakpoint.h"
-#include "Kismet2/WatchedPin.h"
 #include "Engine/DeveloperSettings.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/Breakpoint.h"
 #include "Kismet2/KismetDebugUtilities.h"
+#include "Kismet2/WatchedPin.h"
+#include "Misc/NamePermissionList.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "BlueprintEditorSettings.generated.h"
+
+class UObject;
+struct FAssetData;
+struct FBPEditorBookmarkNode;
+struct FEditedDocumentInfo;
+struct FGuid;
 
 UENUM()
 enum ESaveOnCompile
@@ -49,6 +71,18 @@ template<> struct TStructOpsTypeTraits<FPerBlueprintSettings> : public TStructOp
 	};
 };
 
+USTRUCT()
+struct BLUEPRINTGRAPH_API FAdditionalBlueprintCategory
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Category)
+	FText Name;
+
+	UPROPERTY(EditAnywhere, Category = Category)
+	FSoftClassPath ClassFilter;
+};
+
 UCLASS(config=EditorPerProjectUserSettings)
 class BLUEPRINTGRAPH_API UBlueprintEditorSettings : public UDeveloperSettings
 {
@@ -74,6 +108,13 @@ public:
 
 // Workflow Settings
 public:
+	/** 
+	  * If enabled Input Action nodes will hide unsupported trigger pins and give warnings when using unsupported triggers.
+	  * This warning only works with triggers set up in an Input Action, not Input Mapping Contexts. 
+	  */
+	UPROPERTY(EditAnywhere, Config, Category=Workflow, meta=(DisplayName="Enhanced Input: Enable Input Trigger Support Warnings"))
+	bool bEnableInputTriggerSupportWarnings;
+	
 	/** If enabled, we'll save off your chosen target setting based off of the context (allowing you to have different preferences based off what you're operating on). */
 	UPROPERTY(EditAnywhere, config, Category=Workflow, meta=(DisplayName="Context Menu: Divide Context Target Preferences"))
 	bool bSplitContextTargetSettings;
@@ -135,6 +176,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Workflow, meta=(EditCondition="bEnableTypePromotion"))
 	TSet<FName> TypePromotionPinDenyList;
 
+	/** List of additional category names to show in Blueprints, optionally filtered by parent class type. */
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
+	TArray<FAdditionalBlueprintCategory> AdditionalBlueprintCategories;
+
 	/** How to handle previously-set breakpoints on reload. */
 	UPROPERTY(config, EditAnywhere, Category = Workflow)
 	EBlueprintBreakpointReloadMethod BreakpointReloadMethod;
@@ -143,26 +188,16 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Workflow)
 	bool bEnablePinValueInspectionTooltips;
 
-// Experimental
-public:
 	/** Whether to enable namespace importing and filtering features in the Blueprint editor */
-	UPROPERTY(config, EditAnywhere, Category = Experimental)
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
 	bool bEnableNamespaceEditorFeatures;
 
-	/** Whether to enable namespace filtering features in the Blueprint editor */
-	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
-	UPROPERTY(Transient)
-	bool bEnableNamespaceFilteringFeatures;
-
-	/** Whether to enable namespace importing features in the Blueprint editor */
-	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
-	UPROPERTY(Transient)
-	bool bEnableNamespaceImportingFeatures;
-
-	// The list of namespaces to always expose in any Blueprint (local per-user)
-	UPROPERTY(EditAnywhere, config, Category = Experimental, meta = (EditCondition = "bEnableNamespaceEditorFeatures"))
+	// A list of namespace identifiers that the Blueprint editor should always import by default. Requires Blueprint namespace features to be enabled and only applies to the current local user. Editing this list will also cause any visible Blueprint editor windows to be closed.
+	UPROPERTY(EditAnywhere, config, Category = Workflow, meta = (EditCondition = "bEnableNamespaceEditorFeatures", DisplayName = "Global Namespace Imports (Local User Only)"))
 	TArray<FString> NamespacesToAlwaysInclude;
 
+// Experimental
+public:
 	/** If enabled, then placed cast nodes will default to their "pure" form (meaning: without execution pins). */
 	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Experimental, meta = (DisplayName = "Default to Using Pure Cast Nodes"))
 	bool bFavorPureCastNodes;
@@ -250,12 +285,84 @@ public:
 	UPROPERTY(config)
 	TMap<int32, FEditedDocumentInfo> GraphEditorQuickJumps;
 
+	/** Whether to enable namespace filtering features in the Blueprint editor */
+	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
+	UPROPERTY(Transient)
+	bool bEnableNamespaceFilteringFeatures;
+
+	/** Whether to enable namespace importing features in the Blueprint editor */
+	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
+	UPROPERTY(Transient)
+	bool bEnableNamespaceImportingFeatures;
+
+	/** Whether to inherit the set of imported namespaces from the parent class hierarchy */
+	// @todo_namespaces - Remove this if/when this becomes a permanent setting. For now this is experimental.
+	UPROPERTY(Transient)
+	bool bInheritImportedNamespacesFromParentBP;
+
 	/**
 	 * Any blueprint deriving from one of these base classes will be allowed to recompile during Play-in-Editor
 	 * (This setting exists both as an editor preference and project setting, and will be allowed if listed in either place) 
 	 */
 	UPROPERTY(EditAnywhere, config, Category=Play, meta=(AllowAbstract))
 	TArray<TSoftClassPtr<UObject>> BaseClassesToAllowRecompilingDuringPlayInEditor;
+
+	/** Get allowed functions permissions list */
+	FPathPermissionList& GetFunctionPermissions() { return FunctionPermissions; }
+
+	/** Get allowed structs permissions list */
+	FPathPermissionList& GetStructPermissions() { return StructPermissions; }
+
+	/** Get allowed enums permissions list */
+	FPathPermissionList& GetEnumPermissions() { return EnumPermissions; }
+
+	/** Get allowed pin categories permissions list */
+	FNamePermissionList& GetPinCategoryPermissions() { return PinCategoryPermissions; }
+
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassAllowed, const UClass* /*InClass*/)
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassPathAllowed, const FTopLevelAssetPath& /*InClassPath*/)
+	
+	/** Delegates called to determine whether a class type is allowed */
+	void RegisterIsClassAllowedDelegate(const FName OwnerName, FOnIsClassAllowed Delegate);
+	void UnregisterIsClassAllowedDelegate(const FName OwnerName);
+	bool IsClassAllowed(const UClass* InClass) const;
+	bool HasClassFiltering() const { return IsClassAllowedDelegates.Num() > 0; }
+
+	void RegisterIsClassPathAllowedDelegate(const FName OwnerName, FOnIsClassPathAllowed Delegate);
+	void UnregisterIsClassPathAllowedDelegate(const FName OwnerName);
+	bool IsClassPathAllowed(const FTopLevelAssetPath& InClassPath) const;
+	bool HasClassPathFiltering() const { return IsClassPathAllowedDelegates.Num() > 0; }
+
+	void RegisterIsClassAllowedOnPinDelegate(const FName OwnerName, FOnIsClassAllowed Delegate);
+	void UnregisterIsClassAllowedOnPinDelegate(const FName OwnerName);
+	bool IsClassAllowedOnPin(const UClass* InClass) const;
+	bool HasClassOnPinFiltering() const { return IsClassAllowedOnPinDelegates.Num() > 0; }
+
+	void RegisterIsClassPathAllowedOnPinDelegate(const FName OwnerName, FOnIsClassPathAllowed Delegate);
+	void UnregisterIsClassPathAllowedOnPinDelegate(const FName OwnerName);
+	bool IsClassPathAllowedOnPin(const FTopLevelAssetPath& InClassPath) const;
+	bool HasClassPathOnPinFiltering() const { return IsClassPathAllowedOnPinDelegates.Num() > 0; }
+	
+private:
+	/** All function permissions */
+	FPathPermissionList FunctionPermissions;
+
+	/** All struct permissions */
+	FPathPermissionList StructPermissions;
+
+	/** All enum permissions */
+	FPathPermissionList EnumPermissions;
+
+	/** All pin category permissions */
+	FNamePermissionList PinCategoryPermissions;
+
+	/** Delegates called to determine whether a class type is allowed to be displayed */
+	TMap<FName, FOnIsClassAllowed> IsClassAllowedDelegates;
+	TMap<FName, FOnIsClassPathAllowed> IsClassPathAllowedDelegates;
+
+	/** Delegates called to determine whether a class type is allowed to be displayed on a pin */
+	TMap<FName, FOnIsClassAllowed> IsClassAllowedOnPinDelegates;
+	TMap<FName, FOnIsClassPathAllowed> IsClassPathAllowedOnPinDelegates;
 
 protected:
 	//~ Begin UObject Interface

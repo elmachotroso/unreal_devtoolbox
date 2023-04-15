@@ -19,12 +19,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogPushModel, All, All);
 
 struct FNetObjectManagerPushIdHelper
 {
-	static void ResetNetPushId(const FObjectKey& InObjectKey)
+	static void ResetObjectNetPushId(UObject* Object)
 	{
-		if (UObject* Object = InObjectKey.ResolveObjectPtr())
-		{
-			FObjectNetPushIdHelper::SetNetPushIdDynamic(Object, INDEX_NONE);
-		}
+		check(Object);
+		FObjectNetPushIdHelper::SetNetPushIdDynamic(Object, UEPushModelPrivate::FNetPushObjectId().GetValue());
 	}
 };
 
@@ -215,7 +213,7 @@ namespace UEPushModelPrivate
 			FCoreUObjectDelegates::GetPostGarbageCollect().Remove(PostGarbageCollectHandle);
 		}
 
-		void MarkPropertyDirty(const FNetPushObjectId ObjectId, const int32 RepIndex)
+		void MarkPropertyDirty(const FNetLegacyPushObjectId ObjectId, const int32 RepIndex)
 		{
 			const int32 ObjectIndex = ObjectId;
 			if (LIKELY(PerObjectStates.IsValidIndex(ObjectIndex)))
@@ -225,7 +223,7 @@ namespace UEPushModelPrivate
 			}
 		}
 
-		void MarkPropertyDirty(const FNetPushObjectId ObjectId, const int32 StartRepIndex, const int32 EndRepIndex)
+		void MarkPropertyDirty(const FNetLegacyPushObjectId ObjectId, const int32 StartRepIndex, const int32 EndRepIndex)
 		{
 			const int32 ObjectIndex = ObjectId;
 			if (LIKELY(PerObjectStates.IsValidIndex(ObjectIndex)))
@@ -240,7 +238,7 @@ namespace UEPushModelPrivate
 
 		const FPushModelPerNetDriverHandle AddNetworkObject(const FObjectKey ObjectKey, const uint16 NumReplicatedProperties)
 		{
-			FNetPushObjectId& InternalPushId = ObjectKeyToInternalId.FindOrAdd(ObjectKey, INDEX_NONE);
+			FNetLegacyPushObjectId& InternalPushId = ObjectKeyToInternalId.FindOrAdd(ObjectKey, INDEX_NONE);
 			if (INDEX_NONE == InternalPushId)
 			{
 				InternalPushId = PerObjectStates.EmplaceAtLowestFreeIndex(NewObjectLookupPosition, ObjectKey, NumReplicatedProperties);
@@ -272,28 +270,20 @@ namespace UEPushModelPrivate
 			// But we can shrink it.
 
 			// Go ahead and remove any PerObjectStates that aren't being tracked by any NetDrivers.
-			// We have to wait until GC for this, because the NetDrivers will periodically remove
-			// Network Objects that are still alive (but marked Pending Kill) but we don't have a way
-			// to safely clear the Push Model Handles from those objects.
-			//
-			// That means if we tried to remove these items from Push Model tracking, we could end up
-			// with cases where we reassign the Push Model ID to a new object, and the old object could
-			// inadvertently dirty its state.
-			//
-			// In theory, this should never happen because once the object is marked Pending Kill none
-			// of its properties should change again, but it's also possible that calls like BeginDestroy
-			// could modify properties, etc.
-			//
-			// Currently, none of these objects are actually removed though unless the networking system
-			// detects they are PendingKill (their WeakObjectPtr can't be resolved anymore), so there shouldn't
-			// be any cases where we remove these for "still alive" objects.
+			// We have to wait until GC for this, because the NetDriver's TickFlush() will periodically remove
+			// Network Objects that are flagged for destruction.
 			for (auto It = PerObjectStates.CreateIterator(); It; ++It)
 			{
 				if (!It->HasAnyNetDriverStates())
 				{
 					const FObjectKey& ObjectKey = It->GetObjectKey();
 
-					FNetObjectManagerPushIdHelper::ResetNetPushId(ObjectKey);
+					if (UObject* DestroyedObj = ObjectKey.ResolveObjectPtrEvenIfUnreachable())
+					{
+						// If the UObject ptr still exists even if flagged for destruction, reset it's PushModelId to prevent it from trying to set dirty states while it is destroying itself.
+						FNetObjectManagerPushIdHelper::ResetObjectNetPushId(DestroyedObj);
+					}
+
 					ObjectKeyToInternalId.Remove(ObjectKey);
 					It.RemoveCurrent();
 				}
@@ -334,7 +324,7 @@ namespace UEPushModelPrivate
 			return false;
 		}
 
-		bool ValidateObjectIdReassignment(FNetPushObjectId CurrentId, FNetPushObjectId NewId)
+		bool ValidateObjectIdReassignment(FNetLegacyPushObjectId CurrentId, FNetLegacyPushObjectId NewId)
 		{
 			if (!PerObjectStates.IsValidIndex(CurrentId))
 			{
@@ -399,7 +389,7 @@ namespace UEPushModelPrivate
 
 	private:
 		int32 NewObjectLookupPosition = 0;
-		TMap<FObjectKey, FNetPushObjectId> ObjectKeyToInternalId;
+		TMap<FObjectKey, FNetLegacyPushObjectId> ObjectKeyToInternalId;
 		TSparseArray<FPushModelPerObjectState> PerObjectStates;
 		FDelegateHandle PostGarbageCollectHandle;
 
@@ -436,14 +426,48 @@ namespace UEPushModelPrivate
 		TEXT("Whether or not properties declared in Blueprints will be forced to used Push Model")
 	);
 
-	void MarkPropertyDirty(const FNetPushObjectId ObjectId, const int32 RepIndex)
+#if UE_WITH_IRIS
+	static FIrisMarkPropertyDirty IrisMarkPropertyDirtyDelegate;
+	static FIrisMarkPropertiesDirty IrisMarkPropertiesDirtyDelegate;
+
+	void SetIrisMarkPropertyDirtyDelegate(const FIrisMarkPropertyDirty& Delegate)
 	{
-		PushObjectManager.MarkPropertyDirty(ObjectId, RepIndex);
+		IrisMarkPropertyDirtyDelegate = Delegate;
 	}
 
-	void MarkPropertyDirty(const FNetPushObjectId ObjectId, const int32 StartRepIndex, const int32 EndRepIndex)
+	void SetIrisMarkPropertiesDirtyDelegate(const FIrisMarkPropertiesDirty& Delegate)
 	{
-		PushObjectManager.MarkPropertyDirty(ObjectId, StartRepIndex, EndRepIndex);
+		IrisMarkPropertiesDirtyDelegate = Delegate;
+	}
+#endif // UE_WITH_IRIS
+
+	void MarkPropertyDirty(const UObject* Object, const FNetPushObjectId ObjectId, const int32 RepIndex)
+	{
+#if UE_WITH_IRIS
+		if (ObjectId.IsIrisId())
+		{
+			// Assume the delegate is bound. If it isn't we have an invalid ID, which is a bug that needs to be tracked down.
+			IrisMarkPropertyDirtyDelegate.Execute(Object, ObjectId.GetIrisPushObjectId(), RepIndex);
+		}
+		else
+#endif // UE_WITH_IRIS
+		{
+			PushObjectManager.MarkPropertyDirty(ObjectId.GetLegacyPushObjectId(), RepIndex);
+		}
+	}
+
+	void MarkPropertyDirty(const UObject* Object, const FNetPushObjectId ObjectId, const int32 StartRepIndex, const int32 EndRepIndex)
+	{
+#if UE_WITH_IRIS
+		if (ObjectId.IsIrisId())
+		{
+			IrisMarkPropertiesDirtyDelegate.Execute(Object, ObjectId.GetIrisPushObjectId(), StartRepIndex, EndRepIndex);
+		}
+		else
+#endif // UE_WITH_IRIS
+		{
+			PushObjectManager.MarkPropertyDirty(ObjectId.GetLegacyPushObjectId(), StartRepIndex, EndRepIndex);
+		}
 	}
 
 	/**
@@ -496,7 +520,7 @@ namespace UEPushModelPrivate
 		return PushObjectManager.DoesHaveDirtyPropertiesOrRecentlyCollectedGarbage(Handle);
 	}
 
-	bool ValidateObjectIdReassignment(FNetPushObjectId CurrentId, FNetPushObjectId NewId)
+	bool ValidateObjectIdReassignment(FNetLegacyPushObjectId CurrentId, FNetLegacyPushObjectId NewId)
 	{
 		return PushObjectManager.ValidateObjectIdReassignment(CurrentId, NewId);
 	}

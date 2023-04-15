@@ -9,6 +9,8 @@
 #include "OculusInputFunctionLibrary.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 namespace OculusInput
 {
 
@@ -515,8 +517,8 @@ struct FOculusRemoteControllerState
 
 struct FOculusControllerPair
 {
-	/** The Unreal controller index assigned to this pair */
-	int32 UnrealControllerIndex;
+	/** The input device ID for this oculus controller */
+	FInputDeviceId DeviceId;
 
 	/** Current device state for either hand */
 	FOculusTouchControllerState TouchControllerStates[2];
@@ -524,7 +526,7 @@ struct FOculusControllerPair
 	FOculusHandControllerState HandControllerStates[2];
 
 	FOculusControllerPair()
-	  : UnrealControllerIndex(INDEX_NONE),
+	  : DeviceId(INPUTDEVICEID_NONE),
 		TouchControllerStates(),
 		HandControllerStates()
 	{
@@ -537,5 +539,7 @@ struct FOculusControllerPair
 };
 
 } // namespace OculusInput
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif	// OCULUS_INPUT_SUPPORTED_PLATFORMS

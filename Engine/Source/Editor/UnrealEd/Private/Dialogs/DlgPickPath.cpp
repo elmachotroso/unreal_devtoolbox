@@ -7,7 +7,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
@@ -17,11 +17,13 @@
 void SDlgPickPath::Construct(const FArguments& InArgs)
 {
 	Path = FText::FromString(FPackageName::GetLongPackagePath(InArgs._DefaultPath.ToString()));
+	bAllowReadOnlyFolders = InArgs._AllowReadOnlyFolders;
 
 	FPathPickerConfig PathPickerConfig;
 	PathPickerConfig.DefaultPath = Path.ToString();
 	PathPickerConfig.OnPathSelected = FOnPathSelected::CreateSP(this, &SDlgPickPath::OnPathChange);
 	PathPickerConfig.bAddDefaultPath = true;
+	PathPickerConfig.bAllowReadOnlyFolders = bAllowReadOnlyFolders;
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 
@@ -38,7 +40,7 @@ void SDlgPickPath::Construct(const FArguments& InArgs)
 			.Padding(2,2,2,4)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -57,15 +59,15 @@ void SDlgPickPath::Construct(const FArguments& InArgs)
 			.VAlign(VAlign_Bottom)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0,0)
 				[
 					SNew(SButton)
 					.Text(LOCTEXT("OK", "OK"))
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgPickPath::OnButtonClick, EAppReturnType::Ok)
 				]
 				+SUniformGridPanel::Slot(1,0)
@@ -73,7 +75,7 @@ void SDlgPickPath::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgPickPath::OnButtonClick, EAppReturnType::Cancel)
 				]
 			]

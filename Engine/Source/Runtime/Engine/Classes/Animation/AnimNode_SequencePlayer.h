@@ -61,7 +61,7 @@ protected:
 	// Performed after PlayRateBasis.
 	virtual const FInputScaleBiasClampConstants& GetPlayRateScaleBiasClampConstants() const { static FInputScaleBiasClampConstants Dummy; return Dummy; }
 
-	// The start position in [0, 1] to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
+	// The start position [range: 0 - sequence length] to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
 	virtual float GetStartPosition() const { return 0.0f; }
 
 	// Should the animation loop back to the start when it reaches the end?
@@ -104,11 +104,13 @@ protected:
 	// If true, "Relevant anim" nodes that look for the highest weighted animation in a state will ignore this node
 	UPROPERTY(EditAnywhere, Category=Relevancy, meta=(FoldProperty, PinHiddenByDefault))
 	bool bIgnoreForRelevancyTest = false;
-	
+#endif
+
 	// The animation sequence asset to play
-	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, DisallowedClasses="AnimMontage", FoldProperty))
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, DisallowedClasses="/Script/Engine.AnimMontage"))
 	TObjectPtr<UAnimSequenceBase> Sequence = nullptr;
 
+#if WITH_EDITORONLY_DATA
 	// The Basis in which the PlayRate is expressed in. This is used to rescale PlayRate inputs.
 	// For example a Basis of 100 means that the PlayRate input will be divided by 100.
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, FoldProperty))
@@ -126,7 +128,7 @@ protected:
 	UPROPERTY()
 	FInputScaleBiasClamp PlayRateScaleBiasClamp_DEPRECATED;
 
-	// The start position in [0, 1] to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
+	// The start position between 0 and the length of the sequence to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, FoldProperty))
 	float StartPosition = 0.0f;
 
@@ -188,7 +190,7 @@ protected:
 	bool bIgnoreForRelevancyTest = false;
 
 	// The animation sequence asset to play
-	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, DisallowedClasses="AnimMontage"))
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, DisallowedClasses="/Script/Engine.AnimMontage"))
 	TObjectPtr<UAnimSequenceBase> Sequence = nullptr;
 
 	// The Basis in which the PlayRate is expressed in. This is used to rescale PlayRate inputs.
@@ -205,7 +207,7 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (DisplayName="PlayRateScaleBiasClamp"))
 	FInputScaleBiasClampConstants PlayRateScaleBiasClampConstants;
 
-	// The start position in [0, 1] to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
+	// The start position between 0 and the length of the sequence to use when initializing. When looping, play will still jump back to the beginning when reaching the end.
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault))
 	float StartPosition = 0.0f;
 

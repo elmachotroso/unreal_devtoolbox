@@ -1,10 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StructViewerNode.h"
-#include "AssetData.h"
-#include "PropertyHandle.h"
-#include "Misc/ScopedSlowTask.h"
+
+#include "AssetRegistry/AssetData.h"
 #include "Engine/UserDefinedStruct.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ScopedSlowTask.h"
+#include "PropertyHandle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "StructViewer"
 
@@ -28,7 +37,7 @@ FStructViewerNodeData::FStructViewerNodeData(const UScriptStruct* InStruct)
 
 FStructViewerNodeData::FStructViewerNodeData(const FAssetData& InStructAsset)
 	: StructName(InStructAsset.AssetName.ToString())
-	, StructPath(InStructAsset.ObjectPath)
+	, StructPath(InStructAsset.GetSoftObjectPath())
 {
 	// Attempt to find the struct asset in the case where it's already been loaded
 	Struct = FindObject<UScriptStruct>(nullptr, *StructPath.ToString());
@@ -57,7 +66,7 @@ bool FStructViewerNodeData::LoadStruct() const
 	}
 
 	// Attempt to load the struct
-	if (!StructPath.IsNone())
+	if (!StructPath.IsNull())
 	{
 		FScopedSlowTask SlowTask(0.0f, LOCTEXT("LoadingStruct", "Loading Struct..."));
 		SlowTask.MakeDialogDelayed(1.0f);
@@ -94,7 +103,7 @@ void FStructViewerNodeData::AddUniqueChild(const TSharedRef<FStructViewerNodeDat
 	}
 }
 
-bool FStructViewerNodeData::RemoveChild(const FName InStructPath)
+bool FStructViewerNodeData::RemoveChild(const FSoftObjectPath& InStructPath)
 {
 	for (auto ChildIt = ChildNodes.CreateIterator(); ChildIt; ++ChildIt)
 	{

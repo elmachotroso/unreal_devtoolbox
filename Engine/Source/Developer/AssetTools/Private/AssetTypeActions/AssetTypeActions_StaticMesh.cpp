@@ -1,19 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_StaticMesh.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ToolMenus.h"
-#include "EditorStyleSet.h"
-#include "EditorFramework/AssetImportData.h"
-#include "ThumbnailRendering/SceneThumbnailInfo.h"
+
 #include "AssetTools.h"
-#include "Editor/StaticMeshEditor/Public/StaticMeshEditorModule.h"
+#include "Editor.h"
+#include "EditorSupportDelegates.h"
+#include "StaticMeshEditorModule.h"
+#include "EditorFramework/AssetImportData.h"
 #include "FbxMeshUtils.h"
-#include "StaticMeshCompiler.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/ScopedSlowTask.h"
+#include "StaticMeshCompiler.h"
+#include "Styling/AppStyle.h"
+#include "ThumbnailRendering/SceneThumbnailInfo.h"
+#include "ToolMenus.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -114,28 +117,89 @@ void FAssetTypeActions_StaticMesh::GetResolvedSourceFilePaths(const TArray<UObje
 
 void FAssetTypeActions_StaticMesh::GetNaniteMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes)
 {
+	if (Meshes.Num() == 1)
+	{
+		TWeakObjectPtr<UStaticMesh> First = Meshes[0];
+		UStaticMesh* StaticMesh = First.Get();
+
+		MenuBuilder.AddMenuEntry(
+			NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteToggle", "Nanite"),
+			NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteToggleTooltip", "Toggle Nanite support on the selected mesh."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this, Meshes, StaticMesh]()
+					{
+						if (StaticMesh->NaniteSettings.bEnabled)
+						{
+							ExecuteNaniteDisable(Meshes);
+						}
+						else
+						{
+							ExecuteNaniteEnable(Meshes);
+						}
+					}),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([StaticMesh]()
+					{
+						return static_cast<bool>(StaticMesh->NaniteSettings.bEnabled);
+					})
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+	else
+	{
+		// Dummy action that cannot be executed to indicate when multiple meshes are selected
+		MenuBuilder.AddMenuEntry(
+			NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteMultipleSelected", "Multiple Meshes Selected"),
+			TAttribute<FText>(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction::CreateLambda([]() { return false; })
+			)
+		);
+	}
+
+	MenuBuilder.AddMenuSeparator();
+
 	MenuBuilder.AddMenuEntry(
-		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnable", "Enable"),
-		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnableTooltip", "Enables support for Nanite on the selected mesh(es)."),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnableAll", "Enable Nanite for Selected"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteEnableAllTooltip", "Enables support for Nanite on the selected meshes."),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteEnable, Meshes))
+		FUIAction(
+			FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteEnable, Meshes),
+			FCanExecuteAction::CreateLambda([Meshes]()
+				{
+					return Meshes.Num() > 1;
+				})
+		)
 	);
 
 	MenuBuilder.AddMenuEntry(
-		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisable", "Disable"),
-		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisableTooltip", "Disables support for Nanite on the selected mesh(es)."),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisableAll", "Disable Nanite for Selected"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_NaniteDisableAllTooltip", "Disables support for Nanite on the selected meshes."),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteDisable, Meshes))
+		FUIAction(
+			FExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::ExecuteNaniteDisable, Meshes),
+			FCanExecuteAction::CreateLambda([Meshes]()
+				{
+					return Meshes.Num() > 1;
+				})
+			)
 	);
 }
 
-void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects)
+void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects, bool bReimportWithNewFile)
 {
 	check(Objects.Num() > 0);
-	auto First = Objects[0];
+	TWeakObjectPtr<UStaticMesh> First = Objects[0];
 	UStaticMesh* StaticMesh = First.Get();
+	//Add 1 so we can Add LOD when we are not in "Reimport With New File" submenu
+	const int32 LodCount = First->GetNumLODs() + (bReimportWithNewFile ? 0 : 1);
 
-	for(int32 LOD = 1;LOD<=First->GetNumLODs();++LOD)
+	for(int32 LOD = 1; LOD < LodCount; ++LOD)
 	{
 		FText LODText = FText::AsNumber( LOD );
 		FText Description = FText::Format( NSLOCTEXT("AssetTypeActions_StaticMesh", "Reimport LOD (number)", "Reimport LOD {0}"), LODText );
@@ -147,17 +211,24 @@ void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuil
 		}
 
 		MenuBuilder.AddMenuEntry( Description, ToolTip, FSlateIcon(),
-			FUIAction(FExecuteAction::CreateStatic( &FAssetTypeActions_StaticMesh::ExecuteImportMeshLOD, static_cast<UObject*>(StaticMesh), LOD) )) ;
+			FUIAction(FExecuteAction::CreateStatic( &FAssetTypeActions_StaticMesh::ExecuteImportMeshLOD, static_cast<UObject*>(StaticMesh), LOD, bReimportWithNewFile) ));
 	}
 }
 
 void FAssetTypeActions_StaticMesh::GetLODMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes)
 {
+	constexpr bool bReimportWithNewFile = true;
 	MenuBuilder.AddSubMenu(
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLOD", "Import LOD"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLODtooltip", "Imports meshes into the LODs"),
-		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetImportLODMenu, Meshes)
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetImportLODMenu, Meshes, !bReimportWithNewFile)
 		);
+
+	MenuBuilder.AddSubMenu(
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLODWithNewFile", "Reimport LOD With New File"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_ImportLODWithNewFiletooltip", "Reimports meshes LODs with new file."),
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetImportLODMenu, Meshes, bReimportWithNewFile)
+	);
 
 	MenuBuilder.AddMenuSeparator();
 
@@ -186,11 +257,110 @@ void FAssetTypeActions_StaticMesh::GetLODMenu(class FMenuBuilder& MenuBuilder, T
 		FCanExecuteAction::CreateSP(this, &FAssetTypeActions_StaticMesh::CanPasteLODSettings, Meshes)
 		)
 	);
+
+	MenuBuilder.AddMenuSeparator();
+
+	MenuBuilder.AddSubMenu(
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_HiRes", "High Res"),
+		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_HiRestooltip", "High resolution version of the mesh. Used instead of LOD0 by systems that can benefit from more detailed geometry (Nanite, modeling, etc.)"),
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetImportHiResMenu, Meshes)
+	);
 }
 
-void FAssetTypeActions_StaticMesh::ExecuteImportMeshLOD(UObject* Mesh, int32 LOD)
+void FAssetTypeActions_StaticMesh::ExecuteImportMeshLOD(UObject* Mesh, int32 LOD, bool bReimportWithNewFile)
 {
-	FbxMeshUtils::ImportMeshLODDialog(Mesh, LOD);
+	FbxMeshUtils::ImportMeshLODDialog(Mesh, LOD, true, bReimportWithNewFile);
+}
+
+void FAssetTypeActions_StaticMesh::ExecuteImportHiResMesh(UStaticMesh* StaticMesh)
+{
+	if (FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh))
+	{
+		FEditorDelegates::RefreshEditor.Broadcast();
+		FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+	}
+}
+
+void FAssetTypeActions_StaticMesh::ExecuteReimportHiResMeshWithNewFile(UStaticMesh* StaticMesh)
+{
+	if (StaticMesh)
+	{
+		StaticMesh->GetHiResSourceModel().SourceImportFilename = FString();
+		if (FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh))
+		{
+			FEditorDelegates::RefreshEditor.Broadcast();
+			FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+		}
+	}
+}
+
+void FAssetTypeActions_StaticMesh::ExecuteRemoveHiResMesh(UStaticMesh* StaticMesh)
+{
+	if (FbxMeshUtils::RemoveStaticMeshHiRes(StaticMesh))
+	{
+		FEditorDelegates::RefreshEditor.Broadcast();
+		FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+	}
+}
+
+void FAssetTypeActions_StaticMesh::GetImportHiResMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Objects)
+{
+	check(Objects.Num() > 0);
+	TWeakObjectPtr<UStaticMesh> First = Objects[0];
+	UStaticMesh* StaticMesh = First.Get();
+
+	if (!StaticMesh)
+	{
+		return;
+	}
+
+	// Import / Reimport
+	{
+		if (!StaticMesh->IsHiResMeshDescriptionValid())
+		{
+			FText Description = NSLOCTEXT("AssetTypeActions_StaticMesh", "Import_HighRes", "Import High Res...");
+			FText ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "Import_HighResTip", "Adds a high resolution version of the mesh. Used instead of LOD0 by systems that can benefit from more detailed geometry (Nanite, modeling, etc.).");
+			MenuBuilder.AddMenuEntry(Description, ToolTip, FSlateIcon(),
+				FUIAction(FExecuteAction::CreateStatic(&FAssetTypeActions_StaticMesh::ExecuteImportHiResMesh, StaticMesh)));
+		}
+		else
+		{
+			FText Description = NSLOCTEXT("AssetTypeActions_StaticMesh", "Reimport_HighRes", "Reimport High Res");
+			FText ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "Reimport_HighRes_Tip", "Reimport over existing the existing high res mesh.");
+			MenuBuilder.AddMenuEntry(Description, ToolTip, FSlateIcon(),
+				FUIAction(FExecuteAction::CreateStatic(&FAssetTypeActions_StaticMesh::ExecuteImportHiResMesh, StaticMesh)));
+
+			Description = NSLOCTEXT("AssetTypeActions_StaticMesh", "Reimport_HighRes_WithNewFile", "Reimport High Res with new file...");
+			ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "Reimport_HighRes_WithNewFileTip", "Reimport the high resolution version of the mesh with a new file.");
+			MenuBuilder.AddMenuEntry(Description, ToolTip, FSlateIcon(),
+				FUIAction(FExecuteAction::CreateStatic(&FAssetTypeActions_StaticMesh::ExecuteReimportHiResMeshWithNewFile, StaticMesh)));
+		}
+	}
+
+	// Remove
+	{
+		FText Description = NSLOCTEXT("AssetTypeActions_StaticMesh", "Remove_HighRes", "Remove High Res");
+		FText ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "Remove_HighRes_Tip", "Remove the high res version of the mesh");
+
+		MenuBuilder.AddMenuEntry(Description, ToolTip, FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateStatic(&FAssetTypeActions_StaticMesh::ExecuteRemoveHiResMesh, StaticMesh),
+				FCanExecuteAction::CreateLambda(
+					[StaticMesh]()
+					{
+						if (StaticMesh)
+						{
+							return StaticMesh->IsHiResMeshDescriptionValid();
+						}
+						else
+						{
+							return false;
+						}
+					}
+				)
+			)
+		);
+	}
 }
 
 void FAssetTypeActions_StaticMesh::ExecuteCopyLODSettings(TArray<TWeakObjectPtr<UStaticMesh>> Objects)

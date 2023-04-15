@@ -155,6 +155,16 @@ namespace
 			true /* ShouldReplaceExistingValue */);
 	}
 
+	void AddPostProcessingConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		// Enable support for ExtendDefaultLuminanceRange by default for new projects
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"),
+			TEXT("True"),
+			false /* ShouldReplaceExistingValue */);
+	}
+
 	/** Get the configuration values for raytracing if enabled. */
 	void AddRaytracingConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
 	{
@@ -185,11 +195,10 @@ namespace
 	{
 		if (InProjectInfo.bIsBlankTemplate &&
 			InProjectInfo.bCopyStarterContent &&
-			GameProjectUtils::IsStarterContentAvailableForNewProjects())
+			GameProjectUtils::IsUsingEngineStarterContent(InProjectInfo) &&
+			GameProjectUtils::IsEngineStarterContentAvailable() )
 		{
-			const FString DefaultMap = InProjectInfo.TargetedHardware == EHardwareClass::Mobile ?
-				TEXT("/Game/MobileStarterContent/Maps/Minimal_Default") :
-				TEXT("/Game/StarterContent/Maps/Minimal_Default");
+			const FString DefaultMap = TEXT("/Game/StarterContent/Maps/Minimal_Default");
 
 			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
 				TEXT("/Script/EngineSettings.GameMapsSettings"),
@@ -631,6 +640,14 @@ bool GameProjectUtils::IsValidProjectFileForCreation(const FString& ProjectFile,
 		return false;
 	}
 
+	if (NameMatchesPlatformModuleName(BaseProjectFile))
+	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("PlatformModuleName"), FText::FromString(BaseProjectFile));
+		OutFailReason = FText::Format(LOCTEXT("ProjectNameConflictsWithPlatformModuleName", "Project name conflicts with a platform name: {PlatformModuleName}"), Args);
+		return false;
+	}
+
 	if ( !FPaths::ValidatePath(FPaths::GetPath(ProjectFile), &OutFailReason) )
 	{
 		return false;
@@ -766,24 +783,23 @@ bool GameProjectUtils::OpenCodeIDE(const FString& ProjectFile, FText& OutFailRea
 	return true;
 }
 
-bool GameProjectUtils::IsStarterContentAvailableForNewProjects()
+bool GameProjectUtils::IsEngineStarterContentAvailable()
 {
 	TArray<FString> OutFilenames;
 	IFileManager::Get().FindFilesRecursive(OutFilenames, *FPaths::FeaturePackDir(), TEXT("*StarterContent.upack"), /*Files=*/true, /*Directories=*/false);
 	return OutFilenames.Num() > 0;
 }
 
+bool GameProjectUtils::IsUsingEngineStarterContent(const FProjectInformation& InProjectInfo)
+{
+	return InProjectInfo.StarterContent.IsEmpty();
+}
 
 FString GameProjectUtils::GetStarterContentName(const FProjectInformation& InProjectInfo)
 {
 	if (!InProjectInfo.StarterContent.IsEmpty())
 	{
 		return InProjectInfo.StarterContent;
-	}
-
-	if (InProjectInfo.TargetedHardware == EHardwareClass::Mobile)
-	{
-		return TEXT("MobileStarterContent");
 	}
 
 	return TEXT("StarterContent");
@@ -945,7 +961,8 @@ void GameProjectUtils::CheckForOutOfDateGameProjectFile()
 			const FText UpdateProjectCancelText = LOCTEXT("UpdateProjectFileCancel", "Not Now");
 
 			FNotificationInfo Info(UpdateProjectText);
-			Info.bFireAndForget = false;
+			Info.ExpireDuration = 10;
+			Info.bFireAndForget = true;
 			Info.bUseLargeFont = false;
 			Info.bUseThrobber = false;
 			Info.bUseSuccessFailIcons = false;
@@ -1304,7 +1321,7 @@ UTemplateProjectDefs* GameProjectUtils::LoadTemplateDefs(const FString& ProjectD
 {
 	UTemplateProjectDefs* TemplateDefs = nullptr;
 
-	const FString TemplateDefsIniFilename = ProjectDirectory / TEXT("Config") / GetTemplateDefsFilename();
+	const FString TemplateDefsIniFilename = FConfigCacheIni::NormalizeConfigIniPath(ProjectDirectory / TEXT("Config") / GetTemplateDefsFilename());
 	if ( FPlatformFileManager::Get().GetPlatformFile().FileExists(*TemplateDefsIniFilename) )
 	{
 		UClass* ClassToConstruct = UDefaultTemplateProjectDefs::StaticClass();
@@ -1314,7 +1331,7 @@ UTemplateProjectDefs* GameProjectUtils::LoadTemplateDefs(const FString& ProjectD
 		const bool bFoundValue = GConfig->GetString(*UTemplateProjectDefs::StaticClass()->GetPathName(), TEXT("TemplateProjectDefsClass"), ClassName, TemplateDefsIniFilename);
 		if (bFoundValue && ClassName.Len() > 0)
 		{
-			UClass* OverrideClass = FindObject<UClass>(ANY_PACKAGE, *ClassName, false);
+			UClass* OverrideClass = UClass::TryFindTypeSlow<UClass>(ClassName);
 			if (nullptr != OverrideClass)
 			{
 				ClassToConstruct = OverrideClass;
@@ -1788,7 +1805,7 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 	AddLumenConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddNewProjectDefaultShadowConfigValues(InProjectInfo, ConfigValuesToSet);
-	AddDefaultMapConfigValues(InProjectInfo, ConfigValuesToSet);
+	AddPostProcessingConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
 	
 	TemplateDefs->AddConfigValues(ConfigValuesToSet, TemplateName, ProjectName, InProjectInfo.bShouldGenerateCode);
@@ -1951,6 +1968,28 @@ bool GameProjectUtils::NameContainsOnlyLegalCharacters(const FString& TestName, 
 	return !bContainsIllegalCharacters;
 }
 
+bool GameProjectUtils::NameMatchesPlatformModuleName(const FString& TestName)
+{
+	for (auto Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
+	{
+		FString PlatformNameString = Pair.Key.ToString();
+		if ((PlatformNameString == TestName) || ((PlatformNameString += "TargetPlatform") == TestName))
+		{
+			return true;
+		}
+	}
+	TArray<FString> CustomTargetPlatformModules;
+	GConfig->GetArray(TEXT("CustomTargetPlatforms"), TEXT("ModuleName"), CustomTargetPlatformModules, GEditorIni);
+	for (const FString& ModuleName : CustomTargetPlatformModules)
+	{
+		if (TestName == ModuleName)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool GameProjectUtils::ProjectFileExists(const FString& ProjectFile)
 {
 	return FPlatformFileManager::Get().GetPlatformFile().FileExists(*ProjectFile);
@@ -2030,12 +2069,30 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 		}
 	}
 
-	// New projects always have DX12 by default on Windows
-	ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
-		TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
-		TEXT("DefaultGraphicsRHI"),
-		TEXT("DefaultGraphicsRHI_DX12"),
-		false /* ShouldReplaceExistingValue */);
+	// Don't override these settings for templates
+	if (InProjectInfo.TemplateFile.IsEmpty())
+	{
+		// New projects always have DX12 by default on Windows
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+			TEXT("DefaultGraphicsRHI"),
+			TEXT("DefaultGraphicsRHI_DX12"),
+			false /* ShouldReplaceExistingValue */);
+
+		// Force clear D3D12TargetedShaderFormats since the BaseEngine list can change at any time.
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+			TEXT("!D3D12TargetedShaderFormats"),
+			TEXT("ClearArray"),
+			false /* ShouldReplaceExistingValue */);
+
+		// New projects always have DX12 only supporting SM6 by default on Windows
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+			TEXT("+D3D12TargetedShaderFormats"),
+			TEXT("PCD3D_SM6"),
+			false /* ShouldReplaceExistingValue */);
+	}
 }
 
 bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason, FGuid& OutProjectID)
@@ -2054,30 +2111,15 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		FileContents += TEXT("[Audio]") LINE_TERMINATOR;
 		FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
 
-		if (InProjectInfo.bForceExtendedLuminanceRange)
-		{
-			FileContents += LINE_TERMINATOR;
-			FileContents += TEXT("[/Script/Engine.RendererSettings]") LINE_TERMINATOR;
-			FileContents += TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True") LINE_TERMINATOR;
-		}
-
 		if (InProjectInfo.bCopyStarterContent)
 		{
 			FileContents += LINE_TERMINATOR;
 			FileContents += TEXT("[/Script/EngineSettings.GameMapsSettings]") LINE_TERMINATOR;
 
-			if (GameProjectUtils::IsStarterContentAvailableForNewProjects())
+			if (GameProjectUtils::IsEngineStarterContentAvailable() && GameProjectUtils::IsUsingEngineStarterContent(InProjectInfo)) // if use Engine StarterContent
 			{
-				if (InProjectInfo.TargetedHardware == EHardwareClass::Mobile)
-				{
-					FileContents += TEXT("EditorStartupMap=/Game/MobileStarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-					FileContents += TEXT("GameDefaultMap=/Game/MobileStarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-				}
-				else
-				{
-					FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-					FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
-				}
+				FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+				FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
 			}
 
 			if (InProjectInfo.bShouldGenerateCode)
@@ -2099,6 +2141,7 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		AddHardwareConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddLumenConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddNewProjectDefaultShadowConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddPostProcessingConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
 

@@ -2,28 +2,37 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "SceneOutlinerFwd.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "ISceneOutlinerTreeItem.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "SceneOutlinerFwd.h"
+#include "SceneOutlinerStandaloneTypes.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/ObjectKey.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+
+class ISceneOutliner;
+class SWidget;
+template <typename ItemType> class STableRow;
 
 struct FDataLayerTreeItem : ISceneOutlinerTreeItem
 {
 public:
-	FDataLayerTreeItem(UDataLayer* InDataLayer);
-	UDataLayer* GetDataLayer() const { return DataLayer.Get(); }
+	FDataLayerTreeItem(UDataLayerInstance* InDataLayerInstance);
+	UDataLayerInstance* GetDataLayer() const { return DataLayerInstance.Get(); }
 
 	/* Begin ISceneOutlinerTreeItem Implementation */
-	virtual bool IsValid() const override { return DataLayer.IsValid(); }
+	virtual bool IsValid() const override { return DataLayerInstance.IsValid(); }
 	virtual FSceneOutlinerTreeItemID GetID() const override { return ID; }
 	virtual FString GetDisplayString() const override;
-	virtual bool CanInteract() const override { return true; }
+	virtual bool CanInteract() const override;
 	virtual TSharedRef<SWidget> GenerateLabelWidget(ISceneOutliner& Outliner, const STableRow<FSceneOutlinerTreeItemPtr>& InRow) override;
 	virtual bool HasVisibilityInfo() const override { return true; }
 	virtual void OnVisibilityChanged(const bool bNewVisibility) override;
 	virtual bool GetVisibility() const override;
-	virtual bool ShouldShowVisibilityState() const { return true; }
+	virtual bool ShouldShowVisibilityState() const override;
 	/* End ISceneOutlinerTreeItem Implementation */
 
 	bool ShouldBeHighlighted() const;
@@ -31,8 +40,8 @@ public:
 
 	static const FSceneOutlinerTreeItemType Type;
 
-	DECLARE_DELEGATE_RetVal_OneParam(bool, FFilterPredicate, const UDataLayer*);
-	DECLARE_DELEGATE_RetVal_OneParam(bool, FInteractivePredicate, const UDataLayer*);
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FFilterPredicate, const UDataLayerInstance*);
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FInteractivePredicate, const UDataLayerInstance*);
 
 	bool Filter(FFilterPredicate Pred) const
 	{
@@ -45,7 +54,7 @@ public:
 	}
 
 private:
-	TWeakObjectPtr<UDataLayer> DataLayer;
+	TWeakObjectPtr<UDataLayerInstance> DataLayerInstance;
 	const FObjectKey ID;
 	bool bIsHighlighedtIfSelected;
 };

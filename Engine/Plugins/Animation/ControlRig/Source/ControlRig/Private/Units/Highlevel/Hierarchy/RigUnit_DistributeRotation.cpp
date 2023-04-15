@@ -4,6 +4,8 @@
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DistributeRotation)
+
 FRigUnit_DistributeRotation_Execute()
 {
 	TArray<FRigElementKey> Items;
@@ -57,9 +59,26 @@ FRigUnit_DistributeRotation_Execute()
 		Context);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_DistributeRotation::GetUpgradeInfo() const
+{
+	// this node is no longer supported and the upgrade path is too complex.
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_DistributeRotationForCollection_Execute()
 {
 	FRigUnit_DistributeRotationForItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Rotations, RotationEaseType, Weight, WorkData, ExecuteContext, Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DistributeRotationForCollection::GetUpgradeInfo() const
+{
+	FRigUnit_DistributeRotationForItemArray NewNode;
+	NewNode.Items = Items.Keys;
+	NewNode.Rotations = Rotations;
+	NewNode.RotationEaseType = RotationEaseType;
+	NewNode.Weight = Weight;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
 }
 
 FRigUnit_DistributeRotationForItemArray_Execute()

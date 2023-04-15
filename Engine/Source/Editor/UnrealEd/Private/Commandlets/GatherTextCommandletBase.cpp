@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/GatherTextCommandletBase.h"
+#include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
@@ -8,10 +9,10 @@
 #include "SourceControlOperations.h"
 #include "ISourceControlModule.h"
 #include "EngineGlobals.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
-#include "IAssetRegistry.h"
-#include "ARFilter.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/ARFilter.h"
 #include "PackageHelperFunctions.h"
 #include "ObjectTools.h"
 
@@ -22,9 +23,16 @@ FGatherTextDelegates::FGetAdditionalGatherPaths FGatherTextDelegates::GetAdditio
 //////////////////////////////////////////////////////////////////////////
 //UGatherTextCommandletBase
 
+const TCHAR* UGatherTextCommandletBase::ConfigParam = TEXT("Config");
+const TCHAR* UGatherTextCommandletBase::EnableSourceControlSwitch = TEXT("EnableSCC");
+const TCHAR* UGatherTextCommandletBase::DisableSubmitSwitch = TEXT("DisableSCCSubmit");
+const TCHAR* UGatherTextCommandletBase::PreviewSwitch = TEXT("Preview");
+const TCHAR* UGatherTextCommandletBase::GatherTypeParam = TEXT("GatherType");
+
 UGatherTextCommandletBase::UGatherTextCommandletBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	ShowErrorCount = false;
 }
 
 void UGatherTextCommandletBase::Initialize( const TSharedRef< FLocTextHelper >& InGatherManifestHelper, const TSharedPtr< FLocalizationSCC >& InSourceControlInfo )
@@ -108,7 +116,6 @@ bool UGatherTextCommandletBase::GetStringFromConfig( const TCHAR* Section, const
 
 void ResolveLocalizationPath(FString& InOutPath)
 {
-	static const bool bIsEngineTarget = FPaths::ProjectDir().IsEmpty();
 	static const FString AbsoluteEnginePath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir()) / FString();
 	static const FString AbsoluteProjectPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()) / FString();
 
@@ -117,7 +124,9 @@ void ResolveLocalizationPath(FString& InOutPath)
 
 	if (FPaths::IsRelative(InOutPath))
 	{
-		InOutPath.InsertAt(0, bIsEngineTarget ? AbsoluteEnginePath : AbsoluteProjectPath);
+		static const FString AbsoluteTargetPath = FPaths::ConvertRelativePathToFull(UGatherTextCommandletBase::GetProjectBasePath()) / FString();
+
+		InOutPath.InsertAt(0, AbsoluteTargetPath);
 	}
 
 	FPaths::CollapseRelativeDirectories(InOutPath);
@@ -154,6 +163,12 @@ int32 UGatherTextCommandletBase::GetPathArrayFromConfig( const TCHAR* Section, c
 	}
 
 	return count;
+}
+
+const FString& UGatherTextCommandletBase::GetProjectBasePath()
+{
+	static const FString ProjectBasePath = FApp::HasProjectName() ? FPaths::ProjectDir() : FPaths::EngineDir();
+	return ProjectBasePath;
 }
 
 

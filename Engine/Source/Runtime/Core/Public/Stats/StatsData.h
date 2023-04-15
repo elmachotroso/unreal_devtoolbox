@@ -2,21 +2,28 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "Templates/UnrealTemplate.h"
-#include "Math/NumericLimits.h"
 #include "Containers/Array.h"
-#include "Math/UnrealMathUtility.h"
-#include "Containers/UnrealString.h"
-#include "Containers/Set.h"
-#include "Containers/Map.h"
-#include "Misc/Parse.h"
-#include "UObject/NameTypes.h"
-#include "Delegates/Delegate.h"
-#include "HAL/ThreadSafeCounter.h"
 #include "Containers/IndirectArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMemory.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include "Misc/Parse.h"
 #include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Stats/StatsCommon.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
 struct FEventData;
 
@@ -809,7 +816,7 @@ struct CORE_API FStatsUtils
 /**
 * Contains helpers functions to manage complex stat messages.
 */
-struct FComplexStatUtils
+struct CORE_API FComplexStatUtils
 {
 	/** Accumulates a stat message into a complex stat message. */
 	static void AddAndMinMax( FComplexStatMessage& Dest, const FStatMessage& Item, EComplexStatField::Type SumIndex, EComplexStatField::Type MaxIndex, EComplexStatField::Type MinIndex);

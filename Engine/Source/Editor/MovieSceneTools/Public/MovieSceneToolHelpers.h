@@ -19,12 +19,10 @@
 #include "Animation/AnimSequence.h"
 #include "INodeAndChannelMappings.h"
 
-
 class ISequencer;
 class UMovieScene;
 class UMovieSceneSection;
 class UMovieSceneSequence;
-class UInterpTrackMoveAxis;
 struct FMovieSceneObjectBindingID;
 class UMovieSceneTrack;
 struct FMovieSceneEvaluationTrack;
@@ -39,6 +37,10 @@ template<typename ChannelType> struct TMovieSceneChannelData;
 enum class EVisibilityBasedAnimTickOption : uint8;
 class ACameraActor;
 struct FActorForWorldTransforms;
+class UMovieScene3DTransformSection;
+class UMovieSceneSubTrack;
+class UMovieSceneSubSection;
+enum class EMovieSceneTransformChannel : uint32;
 
 namespace fbxsdk
 {
@@ -131,9 +133,11 @@ public:
 	 * @param ShotPrefix The parsed shot prefix
 	 * @param ShotNumber The parsed shot number
 	 * @param TakeNumber The parsed take number
+	 * @param ShotNumberDigits The number of digits to pad for the shot number
+	 * @param TakeNumberDigits The number of digits to pad for the take number
 	 * @return Whether the shot name was parsed successfully
 	 */
-	static bool ParseShotName(const FString& ShotName, FString& ShotPrefix, uint32& ShotNumber, uint32& TakeNumber);
+	static bool ParseShotName(const FString& ShotName, FString& ShotPrefix, uint32& ShotNumber, uint32& TakeNumber, uint32& ShotNumberDigits, uint32& TakeNumberDigits);
 
 	/**
 	 * Compose a shot name given its components.
@@ -141,9 +145,11 @@ public:
 	 * @param ShotPrefix The shot prefix to use
 	 * @param ShotNumber The shot number to use
 	 * @param TakeNumber The take number to use
+	 * @param ShotNumberDigits The number of digits to pad for the shot number
+	 * @param TakeNumberDigits The number of digits to pad for the take number
 	 * @return The composed shot name
 	 */
-	static FString ComposeShotName(const FString& ShotPrefix, uint32 ShotNumber, uint32 TakeNumber);
+	static FString ComposeShotName(const FString& ShotPrefix, uint32 ShotNumber, uint32 TakeNumber, uint32 ShotNumberDigits, uint32 TakeNumberDigits);
 
 	/**
 	 * Generate a new shot package
@@ -163,6 +169,18 @@ public:
 	 */
 	static FString GenerateNewShotName(const TArray<UMovieSceneSection*>& AllSections, FFrameNumber Time);
 
+	/*
+	 * Create sub sequence
+	 *
+	 * @param NewSequenceName The new sequence name.
+	 * @param NewSequencePath The new sequence path. 
+	 * @param NewSequenceStartTime The time to start the new sequence at.
+	 * @param SubTrack The track to put the sequence onto.
+	 * @param SectionToDuplicate The section to duplicate.
+	 * @return The new subsequence.
+	 */
+	static UMovieSceneSubSection* CreateSubSequence(FString& NewSequenceName, FString& NewSequencePath, FFrameNumber NewSequenceStartTime, UMovieSceneSubTrack* SubTrack, UMovieSceneSubSection* SectionToDuplicate = nullptr);
+
 	/**
 	 * Gather takes - level sequence assets that have the same shot prefix and shot number in the same asset path (directory)
 	 * 
@@ -171,7 +189,6 @@ public:
 	 * @param OutCurrentTakeNumber The current take number of the section
 	 */
 	static void GatherTakes(const UMovieSceneSection* Section, TArray<FAssetData>& AssetData, uint32& OutCurrentTakeNumber);
-
 
 	/**
 	 * Get the take number for the given asset
@@ -392,33 +409,6 @@ public:
 
 
 	/*
-	 * Rich curve interpolation to matinee interpolation
-	 *
-	 * @param InterpMode The rich curve interpolation to convert
-	 * @return The converted matinee interpolation
-	 */
-	static EInterpCurveMode RichCurveInterpolationToMatineeInterpolation( ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode);
-
-	/*
-	 * Copy key data to move axis
-	 *
-	 * @param KeyData The key data to copy from
-	 * @param MoveAxis The move axis to copy to
-	 * @param FrameRate The frame rate of the source channel
-	 */
-	static void CopyKeyDataToMoveAxis(const TMovieSceneChannelData<FMovieSceneDoubleValue>& KeyData, UInterpTrackMoveAxis* MoveAxis, FFrameRate FrameRate);
-
-	/*
-	 * Export the object binding to a camera anim
-	 *
-	 * @param InMovieScene The movie scene to export the object binding from
-	 * @param InObjectBinding The object binding to export
-	 * @return The exported camera anim asset
-	 */
-	static UObject* ExportToCameraAnim(UMovieScene* InMovieScene, FGuid& InObjectBinding);
-
-
-	/*
 	 * Export the SkelMesh to an Anim Sequence for specified MovieScene and Player
 	 *
 	 * @param AnimSequence The sequence to save to.
@@ -554,6 +544,22 @@ public:
 	* @param Value  Value to Set
 	*/
 	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value);
+
+	/* 
+	* Set or add a key onto a float channel based on rich curve data.
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& Curve, FFrameNumber Time, float Value, 
+			float ArriveTangent, float LeaveTangent, ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode,
+			FFrameRate FrameRate, ERichCurveTangentWeightMode WeightedMode = RCTWM_WeightedNone, 
+			float ArriveTangentWeight = 0.0f, float LeaveTangentWeight = 0.0f);
+
+	/*
+	* Set or add a key onto a double channel based on rich curve data.
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& Curve, FFrameNumber Time, double Value, 
+			float ArriveTangent, float LeaveTangent, ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode,
+			FFrameRate FrameRate, ERichCurveTangentWeightMode WeightedMode = RCTWM_WeightedNone, 
+			float ArriveTangentWeight = 0.0f, float LeaveTangentWeight = 0.0f);
 	
 	/*
 	*  Get an actors world transforms at the specified times using a player
@@ -566,6 +572,30 @@ public:
 	*/
 	static void GetActorWorldTransforms(IMovieScenePlayer* Player, UMovieSceneSequence* InSequence, FMovieSceneSequenceIDRef Template,const FActorForWorldTransforms& Actors, const TArray<FFrameNumber>& Frames, TArray<FTransform>& OutWorldTransforms);
 
+	/*
+	 * Return whether this asset is valid for the given sequence
+	 */
+	static bool IsValidAsset(UMovieSceneSequence* Sequence, const FAssetData& InAssetData);
+
+	/** Returns the frame numbers between start and end. */
+	static void CalculateFramesBetween(
+		const UMovieScene* MovieScene,
+		FFrameNumber StartFrame,
+		FFrameNumber EndFrame,
+		TArray<FFrameNumber>& OutFrames);
+
+	/** Returns the transform section for that guid. */
+	static UMovieScene3DTransformSection* GetTransformSection(
+		const ISequencer* InSequencer,
+		const FGuid& InGuid,
+		const FTransform& InDefaultTransform = FTransform::Identity);
+
+	/** Adds transform keys to the section based on the channels filters. */
+	static bool AddTransformKeys(
+		const UMovieScene3DTransformSection* InTransformSection,
+		const TArray<FFrameNumber>& Frames,
+		const TArray<FTransform>& InLocalTransforms,
+		const EMovieSceneTransformChannel& InChannels);
 };
 
 // Helper to make spawnables persist throughout the export process and then restore properly afterwards

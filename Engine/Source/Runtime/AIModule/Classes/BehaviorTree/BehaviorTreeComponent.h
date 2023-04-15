@@ -21,7 +21,6 @@ class UBTNode;
 class UBTTask_RunBehavior;
 class UBTTask_RunBehaviorDynamic;
 class UBTTaskNode;
-struct FScopedBehaviorTreeLock;
 
 struct FBTNodeExecutionInfo
 {
@@ -32,7 +31,7 @@ struct FBTNodeExecutionInfo
 	FBTNodeIndex SearchEnd;
 
 	/** node to be executed */
-	UBTCompositeNode* ExecuteNode;
+	const UBTCompositeNode* ExecuteNode;
 
 	/** subtree index */
 	uint16 ExecuteInstanceIdx;
@@ -79,6 +78,28 @@ struct FBTTreeStartInfo
 	bool HasPendingInitialize() const { return bPendingInitialize && IsSet(); }
 };
 
+enum class EBTBranchAction : uint16
+{
+	None = 0x0,
+	DecoratorEvaluate = 0x1,
+	DecoratorActivate_IfNotExecuting = 0x2,
+	DecoratorActivate_EvenIfExecuting = 0x4,
+	DecoratorActivate = DecoratorActivate_IfNotExecuting | DecoratorActivate_EvenIfExecuting,
+	DecoratorDeactivate = 0x8,
+	UnregisterAuxNodes = 0x10,
+	StopTree_Safe = 0x20,
+	StopTree_Forced = 0x40,
+	ActiveNodeEvaluate = 0x80,
+	SubTreeEvaluate = 0x100,
+	ProcessPendingInitialize = 0x200,
+	Cleanup = 0x400,
+	UninitializeComponent = 0x800,
+	StopTree = StopTree_Safe | StopTree_Forced,
+	Changing_Topology_Actions = UnregisterAuxNodes | StopTree | ProcessPendingInitialize | Cleanup | UninitializeComponent,
+	All = DecoratorEvaluate | DecoratorActivate_IfNotExecuting | DecoratorActivate_EvenIfExecuting | DecoratorDeactivate | Changing_Topology_Actions | ActiveNodeEvaluate | SubTreeEvaluate,
+};
+ENUM_CLASS_FLAGS(EBTBranchAction);
+
 UCLASS(ClassGroup = AI, meta = (BlueprintSpawnableComponent))
 class AIMODULE_API UBehaviorTreeComponent : public UBrainComponent
 {
@@ -122,20 +143,29 @@ public:
 	void RestartTree();
 
 	/** request execution change */
-	void RequestExecution(UBTCompositeNode* RequestedOn, int32 InstanceIdx, 
+	void RequestExecution(const UBTCompositeNode* RequestedOn, int32 InstanceIdx, 
 		const UBTNode* RequestedBy, int32 RequestedByChildIndex,
 		EBTNodeResult::Type ContinueWithResult, bool bStoreForDebugger = true);
 
-	/** request execution change: helpers for decorator nodes */
-	void RequestExecution(const UBTDecorator* RequestedBy);
+	/** replaced by the RequestBranchEvaluation from decorator*/
+	void RequestExecution(const UBTDecorator* RequestedBy) { check(RequestedBy); RequestBranchEvaluation(*RequestedBy); }
 
-	/** request execution change: helpers for task nodes */
-	void RequestExecution(EBTNodeResult::Type ContinueWithResult);
+	/** replaced by RequestBranchEvaluation with EBTNodeResult */
+	void RequestExecution(EBTNodeResult::Type ContinueWithResult) { RequestBranchEvaluation(ContinueWithResult); }
 
 	/** request unregistration of aux nodes in the specified branch */
 	UE_DEPRECATED(5.0, "This function is deprecated. Please use RequestBranchDeactivation instead.")
 	void RequestUnregisterAuxNodesInBranch(const UBTCompositeNode* Node);
-		
+
+	/** request branch evaluation: helper for active node (ex: tasks) */
+	void RequestBranchEvaluation(EBTNodeResult::Type ContinueWithResult);
+
+	/** request branch evaluation: helper for decorator */
+	void RequestBranchEvaluation(const UBTDecorator& RequestedBy);
+
+	/** request branch activation: helper for decorator */
+	void RequestBranchActivation(const UBTDecorator& RequestedBy, const bool bRequestEvenIfExecuting);
+
 	/** request branch deactivation: helper for decorator */
 	void RequestBranchDeactivation(const UBTDecorator& RequestedBy);
 
@@ -268,8 +298,30 @@ protected:
 	/** result of ExecutionRequest, will be applied when current task finish aborting */
 	FBTPendingExecutionInfo PendingExecution;
 
-	/** list of all pending branch deactivation requests */
-	TArray<const UBTNode*> PendingBranchesToDeactivate;
+	struct FBranchActionInfo
+	{
+		FBranchActionInfo(const EBTBranchAction InAction)
+			: Action(InAction)
+		{}
+		FBranchActionInfo(const UBTNode* InNode, const EBTBranchAction InAction)
+			: Node(InNode)
+			, Action(InAction)
+		{}
+		FBranchActionInfo(const UBTNode* InNode, EBTNodeResult::Type InContinueWithResult, const EBTBranchAction InAction)
+			: Node(InNode)
+			, ContinueWithResult(InContinueWithResult)
+			, Action(InAction)
+		{}
+		const UBTNode* Node = nullptr;
+		EBTNodeResult::Type ContinueWithResult = EBTNodeResult::Succeeded;
+		EBTBranchAction Action;
+	};
+
+	/* Type of suspended branch action */
+	EBTBranchAction SuspendedBranchActions;
+
+	/** list of all pending branch action requests */
+	TArray<FBranchActionInfo> PendingBranchActionRequests;
 
 	/** stored data for starting new tree, waits until previously running finishes aborting */
 	FBTTreeStartInfo TreeStartInfo;
@@ -304,12 +356,6 @@ protected:
 	/** index of last active instance on stack */
 	uint16 ActiveInstanceIdx;
 
-	/** if set, StopTree calls will be deferred */
-	uint8 StopTreeLock;
-
-	/** if set, StopTree will be called at the end of tick */
-	uint8 bDeferredStopTree : 1;
-
 	/** loops tree execution */
 	uint8 bLoopExecution : 1;
 
@@ -327,9 +373,6 @@ protected:
 
 	/** if set, execution requests will be postponed */
 	uint8 bIsPaused : 1;
-
-	/** if set, all branch deactivation requests will be queued up */
-	uint8 bBranchDeactivationSuspended : 1;
 
 	/** push behavior tree instance on execution stack
 	 *	@NOTE: should never be called out-side of BT execution, meaning only BT tasks can push another BT instance! */
@@ -369,7 +412,7 @@ protected:
 	void ExecuteTask(UBTTaskNode* TaskNode);
 
 	/** deactivate all nodes up to requested one */
-	bool DeactivateUpTo(UBTCompositeNode* Node, uint16 NodeInstanceIdx, EBTNodeResult::Type& NodeResult, int32& OutLastDeactivatedChildIndex);
+	bool DeactivateUpTo(const UBTCompositeNode* Node, uint16 NodeInstanceIdx, EBTNodeResult::Type& NodeResult, int32& OutLastDeactivatedChildIndex);
 
 	/** returns true if execution was waiting on latent aborts and they are all finished;  */
 	bool TrackPendingLatentAborts();
@@ -418,28 +461,46 @@ protected:
 	/** Return NodeA's relative priority in regards to NodeB */
 	EBTNodeRelativePriority CalculateRelativePriority(const UBTNode* NodeA, const UBTNode* NodeB) const;
 
-	/** Deactivate a branch as the decorator condition is not passing anymore */
+	/** Evaluate a branch as current active node is finished */
+	void EvaluateBranch(EBTNodeResult::Type LastResult);
+
+	/** Evaluate a branch as the decorator conditions have changed */
+	void EvaluateBranch(const UBTDecorator& RequestedBy);
+
+	/** Activate a branch as the decorator conditions are now passing */
+	void ActivateBranch(const UBTDecorator& RequestedBy, bool bRequestEvenIfNotExecuting);
+
+	/** Deactivate a branch as the decorator conditions are not passing anymore */
 	void DeactivateBranch(const UBTDecorator& RequestedBy);
 
-	/** Suspend any branch deactivation and queue them to be processed later by ResumeBranchDeactivation() */
-	void SuspendBranchDeactivation();
+	/** Suspend any branch actions and queue them to be processed later by ResumeBranchActions() */
+	void SuspendBranchActions(EBTBranchAction BranchActions = EBTBranchAction::All);
 
-	/** Resume branch deactivation and execute all the queued up ones */
-	void ResumeBranchDeactivation();
+	/** Resume branch actions and execute all the queued up ones */
+	void ResumeBranchActions();
 
-	struct FBTSuspendBranchDeactivationScoped
+	UE_DEPRECATED(5.1, "This function is deprecated. Please use SuspendBranchActions instead.")
+	void SuspendBranchDeactivation() { SuspendBranchActions(); }
+
+	UE_DEPRECATED(5.1, "This function is deprecated. Please use ResumeBranchActions instead.")
+	void ResumeBranchDeactivation() { ResumeBranchActions(); }
+
+	struct FBTSuspendBranchActionsScoped
 	{
-		FBTSuspendBranchDeactivationScoped(UBehaviorTreeComponent& InBTComp)
+		FBTSuspendBranchActionsScoped(UBehaviorTreeComponent& InBTComp, EBTBranchAction BranchActions = EBTBranchAction::All)
 			: BTComp(InBTComp)
 		{
-			BTComp.SuspendBranchDeactivation();
+			BTComp.SuspendBranchActions(BranchActions);
 		}
-		~FBTSuspendBranchDeactivationScoped()
+		~FBTSuspendBranchActionsScoped()
 		{
-			BTComp.ResumeBranchDeactivation();
+			BTComp.ResumeBranchActions();
 		}
 		UBehaviorTreeComponent& BTComp;
 	};
+
+	UE_DEPRECATED(5.1, "This struct is deprecated. Please use FBTSuspendBranchActionsScoped instead.")
+	typedef FBTSuspendBranchActionsScoped FBTSuspendBranchDeactivationScoped;
 
 	friend UBTNode;
 	friend UBTCompositeNode;
@@ -448,7 +509,6 @@ protected:
 	friend UBTTask_RunBehaviorDynamic;
 	friend FBehaviorTreeDebugger;
 	friend FBehaviorTreeInstance;
-	friend FScopedBehaviorTreeLock;
 
 protected:
 	/** data asset defining the tree */

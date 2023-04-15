@@ -24,12 +24,12 @@ uint2 GetShadowTileHead(uint2 TileCoordinate, Buffer<uint> InShadowTileNumCulled
 		InShadowTileNumCulledObjects[TileIndex]); 
 }
 
-float4x4 WorldToShadow;
+float4x4 TranslatedWorldToShadow;
 
-void GetShadowTileCulledDataEx(float3 WorldPosition, Buffer<uint> InShadowTileNumCulledObjects, Buffer<uint> InShadowTileStartOffsets, out uint CulledDataStart, out uint NumIntersectingObjects)
+void GetShadowTileCulledDataEx(float3 TranslatedWorldPosition, Buffer<uint> InShadowTileNumCulledObjects, Buffer<uint> InShadowTileStartOffsets, out uint CulledDataStart, out uint NumIntersectingObjects)
 {
 	// Transform into shadow space
-	float4 HomogeneousShadowPosition = mul(float4(WorldPosition, 1), WorldToShadow);
+	float4 HomogeneousShadowPosition = mul(float4(TranslatedWorldPosition, 1), TranslatedWorldToShadow);
 	float2 NormalizedShadowPosition = HomogeneousShadowPosition.xy * .5f + .5f;
 	NormalizedShadowPosition.y = 1 - NormalizedShadowPosition.y;
 	// Quantize the shadow position to get our tile position
@@ -48,24 +48,24 @@ Buffer<uint> HeightfieldShadowTileNumCulledObjects;
 Buffer<uint> HeightfieldShadowTileStartOffsets;
 Buffer<uint> HeightfieldShadowTileArrayData;
 
-void GetShadowTileCulledData(float3 WorldPosition, out uint CulledDataStart, out uint NumIntersectingObjects)
+void GetShadowTileCulledData(float3 TranslatedWorldPosition, out uint CulledDataStart, out uint NumIntersectingObjects)
 {
-	GetShadowTileCulledDataEx(WorldPosition, ShadowTileNumCulledObjects, ShadowTileStartOffsets, CulledDataStart, NumIntersectingObjects);
+	GetShadowTileCulledDataEx(TranslatedWorldPosition, ShadowTileNumCulledObjects, ShadowTileStartOffsets, CulledDataStart, NumIntersectingObjects);
 }
 
-void GetHeightfieldShadowTileCulledData(float3 WorldPosition, out uint CulledDataStart, out uint NumIntersectingObjects)
+void GetHeightfieldShadowTileCulledData(float3 TranslatedWorldPosition, out uint CulledDataStart, out uint NumIntersectingObjects)
 {
-	GetShadowTileCulledDataEx(WorldPosition, HeightfieldShadowTileNumCulledObjects, HeightfieldShadowTileStartOffsets, CulledDataStart, NumIntersectingObjects);
+	GetShadowTileCulledDataEx(TranslatedWorldPosition, HeightfieldShadowTileNumCulledObjects, HeightfieldShadowTileStartOffsets, CulledDataStart, NumIntersectingObjects);
 }
 
 #define MAX_INTERSECTING_OBJECTS 1024
 groupshared uint IntersectingObjectIndices[MAX_INTERSECTING_OBJECTS * 2];
 
-float TwoSidedMeshDistanceBias;
+float TwoSidedMeshDistanceBiasScale;
 
 float ShadowRayTraceThroughCulledObjects(
-	float3 WorldRayStart, 
-	float3 WorldRayEnd, 
+	float3 TranslatedWorldRayStart, 
+	float3 TranslatedWorldRayEnd, 
 	float MaxRayTime,
 	float TanLightAngle, 
 	float MinSphereRadius, 
@@ -79,7 +79,7 @@ float ShadowRayTraceThroughCulledObjects(
 	bool bExpandSurface)
 {
 	float MinConeVisibility = 1;
-	float3 WorldRayUnitDirection = normalize(WorldRayEnd - WorldRayStart);
+	float3 WorldRayUnitDirection = normalize(TranslatedWorldRayEnd - TranslatedWorldRayStart);
 
 	LOOP
 	for (uint ListObjectIndex = 0; ListObjectIndex < NumIntersectingObjects; ListObjectIndex++)
@@ -106,9 +106,10 @@ float ShadowRayTraceThroughCulledObjects(
 
 		{
 			FDFObjectData DFObjectData = LoadDFObjectData(ObjectIndex);
+			float4x4 TranslatedWorldToVolume = LWCMultiplyTranslation(LWCNegate(PrimaryView.PreViewTranslation), DFObjectData.WorldToVolume);
 
-			float3 VolumeRayStart = mul(float4(WorldRayStart, 1), DFObjectData.WorldToVolume).xyz;
-			float3 VolumeRayEnd = mul(float4(WorldRayEnd, 1), DFObjectData.WorldToVolume).xyz;
+			float3 VolumeRayStart = mul(float4(TranslatedWorldRayStart, 1), TranslatedWorldToVolume).xyz;
+			float3 VolumeRayEnd = mul(float4(TranslatedWorldRayEnd, 1), TranslatedWorldToVolume).xyz;
 			float3 VolumeRayDirection = VolumeRayEnd - VolumeRayStart;
 			float VolumeRayLength = length(VolumeRayDirection);
 			VolumeRayDirection /= VolumeRayLength;
@@ -117,7 +118,6 @@ float ShadowRayTraceThroughCulledObjects(
 			float WorldToVolumeScale = 1.0f / max3(DFObjectData.VolumeToWorldScale.x, DFObjectData.VolumeToWorldScale.y, DFObjectData.VolumeToWorldScale.z);
 			float VolumeMinSphereRadius = MinSphereRadius * WorldToVolumeScale;
 			float VolumeMaxSphereRadius = MaxSphereRadius * WorldToVolumeScale;
-			float VolumeTwoSidedMeshDistanceBias = TwoSidedMeshDistanceBias * WorldToVolumeScale;
 			float SelfShadowScale = 1.0f / max(DFObjectData.SelfShadowBias * WorldToVolumeScale, .0001f);
 
 			// Expand the intersection box by the radius of the cone at the distance of the object along the cone
@@ -131,11 +131,15 @@ float ShadowRayTraceThroughCulledObjects(
 			{
 				FDFAssetData DFAssetData = LoadDFAssetDataHighestResolution(DFObjectData.AssetIndex);
 
+				const uint NumMips = LoadDFAssetData(DFObjectData.AssetIndex, 0).NumMips;
+				const float ExpandSurfaceDistance = DFObjectData.VolumeSurfaceBias * exp2(DF_MAX_NUM_MIPS - NumMips) * (DFObjectData.bMostlyTwoSided ? TwoSidedMeshDistanceBiasScale : 1);
+				const float ExpandSurfaceFalloff = 2.0f * ExpandSurfaceDistance;
+				
 				float MaxEncodedDistance = DFAssetData.DistanceFieldToVolumeScaleBias.x + DFAssetData.DistanceFieldToVolumeScaleBias.y;
 
-				if (DFObjectData.bMostlyTwoSided)
+				if (bExpandSurface || DFObjectData.bMostlyTwoSided)
 				{
-					MaxEncodedDistance -= VolumeTwoSidedMeshDistanceBias;
+					MaxEncodedDistance -= ExpandSurfaceDistance;
 				}
 
 				// Prevent incorrect shadowing when sampling invalid bricks by limiting VolumeMaxSphereRadius to MaxEncodedDistance
@@ -151,7 +155,6 @@ float ShadowRayTraceThroughCulledObjects(
 #endif
 				float MinStepSize = 1.0f / (4 * MaxSteps);
 
-				float MinDistance = 1000000;
 				uint StepIndex = 0;
 
 				LOOP
@@ -161,23 +164,14 @@ float ShadowRayTraceThroughCulledObjects(
 					float3 ClampedSamplePosition = clamp(SampleVolumePosition, -DFObjectData.VolumePositionExtent, DFObjectData.VolumePositionExtent);
 					float DistanceToClamped = length(ClampedSamplePosition - SampleVolumePosition);
 					float DistanceField = SampleSparseMeshSignedDistanceField(ClampedSamplePosition, DFAssetData) + DistanceToClamped;
-					
-					FLATTEN
-					if (DFObjectData.bMostlyTwoSided)
-					{
-						DistanceField -= VolumeTwoSidedMeshDistanceBias;
-					}
-					else if (bExpandSurface)
+
+					if (bExpandSurface || DFObjectData.bMostlyTwoSided)
 					{
 						// Expand the surface to find thin features, but only away from the start of the trace where it won't introduce incorrect self-occlusion
 						// This still causes incorrect self-occlusion at grazing angles
-						const float ExpandSurfaceDistance = DFObjectData.VolumeSurfaceBias;
-						const float ExpandSurfaceFalloff = 2.0f * ExpandSurfaceDistance;
 						const float ExpandSurfaceAmount = ExpandSurfaceDistance * saturate(SampleRayTime / ExpandSurfaceFalloff);
 						DistanceField -= ExpandSurfaceAmount;
 					}
-
-					MinDistance = min(MinDistance, DistanceField);
 
 					// Don't allow occlusion within an object's self shadow distance
 					float SelfShadowVisibility = 1 - saturate(SampleRayTime * SelfShadowScale);
@@ -307,8 +301,8 @@ float RayTraceHeightfieldLocal(
 }
 
 float ShadowRayTraceThroughCulledHeightFieldObjects(
-	float3 WorldRayStart,
-	float3 WorldRayEnd,
+	float3 TranslatedWorldRayStart,
+	float3 TranslatedWorldRayEnd,
 	float TanLightAngle,
 	float MaxSphereRadius,
 	float SelfShadowFadeDistance,
@@ -342,12 +336,12 @@ float ShadowRayTraceThroughCulledHeightFieldObjects(
 		}
 
 		FHeightfieldObjectData HeightfieldObject = LoadHeightfieldObjectData(ObjectIndex);
-		float4x4 WorldToLocal = HeightfieldObject.WorldToLocal;
+		float4x4 TranslatedWorldToLocal = LWCMultiplyTranslation(LWCNegate(PrimaryView.PreViewTranslation), HeightfieldObject.WorldToLocal);
 		float2 HeightFieldSize = HeightfieldObject.SizeScale.xy;
 		float WorldToLocalScale = HeightfieldObject.SizeScale.z;
 
-		float3 LocalRayStart = mul(float4(WorldRayStart, 1.0), WorldToLocal).xyz;
-		float3 LocalRayEnd = mul(float4(WorldRayEnd, 1.0), WorldToLocal).xyz;
+		float3 LocalRayStart = mul(float4(TranslatedWorldRayStart, 1.0), TranslatedWorldToLocal).xyz;
+		float3 LocalRayEnd = mul(float4(TranslatedWorldRayEnd, 1.0), TranslatedWorldToLocal).xyz;
 
 		float3 LocalBoundsMin = float3(0, 0, DecodePackedHeight(float2(0, 0)));
 		float3 LocalBoundsMax = float3(HeightFieldSize, DecodePackedHeight(float2(1, 1)));

@@ -74,6 +74,7 @@ public:
 	FAutomationScreenshotOptions()
 		: Resolution(ForceInit)
 		, Delay(0.2f)
+		, FrameDelay(5)
 		, bOverride_OverrideTimeTo(false)
 		, OverrideTimeTo(0.0f)
 		, bDisableNoisyRenderingFeatures(true)
@@ -92,6 +93,7 @@ public:
 	FAutomationScreenshotOptions(EComparisonTolerance InTolerance)
 		: Resolution(ForceInit)
 		, Delay(0.2f)
+		, FrameDelay(5)
 		, bOverride_OverrideTimeTo(false)
 		, OverrideTimeTo(0.0f)
 		, bDisableNoisyRenderingFeatures(true)
@@ -116,10 +118,16 @@ public:
 	FVector2D Resolution;
 
 	/**
-	 * The delay before we take the screenshot.
+	 * The delay before we take the screenshot (measured in seconds). Both this delay and the frame delay must be met before the screenshot is taken.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Screenshot")
 	float Delay;
+
+	/**
+	 * The delay before we take the screenshot (measured in number of frames). Both this frame delay and the time delay must be met before the screenshot is taken.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Screenshot")
+	int32 FrameDelay;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	bool bOverride_OverrideTimeTo;
@@ -130,7 +138,7 @@ public:
 	 * on the game thread is unaffected.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Screenshot", meta=(editcondition = "bOverride_OverrideTimeTo"))
-	float OverrideTimeTo;
+	double OverrideTimeTo;
 
 	/**
 	 * Disables Anti-Aliasing, Motion Blur, Screen Space Reflections, Eye Adaptation, Tonemapper and Contact

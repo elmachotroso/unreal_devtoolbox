@@ -4,6 +4,7 @@
 
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "NiagaraEditorCommon.h"
+#include "NiagaraValidationRule.h"
 #include "Widgets/Views/STableRow.h"
 #include "NiagaraStackEntry.generated.h"
 
@@ -454,6 +455,8 @@ public:
 	bool HasBaseEmitter() const;
 
 	bool HasIssuesOrAnyChildHasIssues() const;
+	bool HasUsagesOrAnyChildHasUsages() const;
+	void GetRecursiveUsages(bool& bRead, bool& bWrite) const;
 
 	int32 GetTotalNumberOfCustomNotes() const;
 	
@@ -468,6 +471,10 @@ public:
 	const TArray<FStackIssue>& GetIssues() const;
 
 	const TArray<UNiagaraStackEntry*>& GetAllChildrenWithIssues() const;
+	
+	void AddValidationIssue(EStackIssueSeverity Severity, const FText& SummaryText, const FText& Description, bool bCanBeDismissed, const TArray<FNiagaraValidationFix>& Fixes, const TArray<FNiagaraValidationFix>& Links);
+	void AddExternalIssue(EStackIssueSeverity Severity, const FText& SummaryText, const FText& Description, bool bCanBeDismissed);
+	void ClearExternalIssues();
 
 	virtual bool SupportsCut() const { return false; }
 
@@ -524,6 +531,17 @@ public:
 
 	virtual FText GetInheritanceMessage() const { return FText(); }
 
+	virtual void InvalidateCollectedUsage();
+
+
+	struct FCollectedUsageData
+	{
+	public:
+		bool bHasReferencedParameterRead = false;
+		bool bHasReferencedParameterWrite = false;
+	};
+	virtual const FCollectedUsageData& GetCollectedUsageData() const;
+
 protected:
 	virtual void BeginDestroy() override;
 
@@ -546,6 +564,12 @@ protected:
 	virtual void ChildStructureChangedInternal();
 
 	virtual void FinalizeInternal();
+
+
+	mutable TOptional<FCollectedUsageData> CachedCollectedUsageData;
+
+	bool IsSystemViewModelValid() const { return SystemViewModel.IsValid(); }
+
 
 private:
 	void ChildStructureChanged(ENiagaraStructureChangedFlags Info);
@@ -589,8 +613,9 @@ private:
 		TArray<UNiagaraStackEntry*> ChildrenWithIssues;
 	};
 
+
 	const FCollectedIssueData& GetCollectedIssueData() const;
-	
+
 	TWeakPtr<FNiagaraSystemViewModel> SystemViewModel;
 	TWeakPtr<FNiagaraEmitterViewModel> EmitterViewModel;
 
@@ -637,6 +662,7 @@ private:
 	FOnRequestDrop OnRequestDropDelegate;
 	
 	TArray<FStackIssue> StackIssues;
+	TArray<FStackIssue> ExternalStackIssues;
 
 	bool bIsFinalized;
 

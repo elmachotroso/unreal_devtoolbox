@@ -23,7 +23,7 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	 *
 	 * @return (Boolean)  status of HMD
 	 */
-	UFUNCTION(BlueprintPure, Category="Input|HeadMountedDisplay")
+	UFUNCTION(BlueprintPure, Category="Input|HeadMountedDisplay", meta = (KeyWords = "HMD"))
 	static bool IsHeadMountedDisplayEnabled();
 
 	/**
@@ -31,7 +31,7 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	*
 	* @return (Boolean)  status whether the HMD hardware is connected and ready to use.  It may or may not actually be in use. 
 	*/
-	UFUNCTION(BlueprintPure, Category = "Input|HeadMountedDisplay")
+	UFUNCTION(BlueprintPure, Category = "Input|HeadMountedDisplay", meta = (KeyWords = "HMD"))
 	static bool IsHeadMountedDisplayConnected();
 
 	/**
@@ -161,11 +161,6 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	 */
 	UFUNCTION(BlueprintCallable, Category="Input|HeadMountedDisplay")
 	static void SetClippingPlanes(float Near, float Far);
-
-	/** DEPRECATED - Use GetPixelDensity */
-	UE_DEPRECATED(4.19, "Use GetPixelDensity instead")
-	UFUNCTION(BlueprintPure, Category = "Input|HeadMountedDisplay", meta = (DeprecatedFunction, DeprecationMessage = "Use GetPixelDensity instead"))
-	static float GetScreenPercentage();
 
 	/** 
 	 * Returns the current VR pixel density. Pixel density sets the VR render 
@@ -333,10 +328,15 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
 	static void GetMotionControllerData(UObject* WorldContext, const EControllerHand Hand, FXRMotionControllerData& MotionControllerData);
 
-
 	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking", meta = (ToolTip = "Specify which gestures to capture."))
 	static bool ConfigureGestures(const FXRGestureConfig& GestureConfig);
 
+	/**
+	 * Get the openXR interaction profile name for the given controller. Returns true if the openxr call is successfully made.  The string may be empty
+	 * if there is no interaction profile associated with the controller.
+	 */	
+	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking|OpenXR")
+	static bool GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile);
 	
 	/** Connect to a remote device */
 	UFUNCTION(BlueprintCallable, Category = "XR|HeadMountedDisplay")
@@ -379,6 +379,18 @@ class HEADMOUNTEDDISPLAY_API UHeadMountedDisplayFunctionLibrary : public UBluepr
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
 	static FVector2D GetPlayAreaBounds(TEnumAsByte<EHMDTrackingOrigin::Type> Origin = EHMDTrackingOrigin::Stage);
+
+	/**
+	 * Get the transform of the specified tracking origin, if available.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
+	static bool GetTrackingOriginTransform(TEnumAsByte<EHMDTrackingOrigin::Type> Origin, FTransform& OutTransform);
+
+	/**
+	 * Get the transform and dimensions of the playable area rectangle.  Returns false if none currently specified/available.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Input|XRTracking")
+	static bool GetPlayAreaRect(FTransform& OutTransform, FVector2D& OutRect);
 
 	/** Breaks an XR key apart into the interaction profile, handedness, motion source, indentifier and component. */
 	UFUNCTION(BlueprintPure, Category = "Input|XRTracking", meta = (NativeBreakFunc))

@@ -8,9 +8,7 @@ namespace UnrealBuildTool.Rules
 	{
 		public ElectraSamples(ReadOnlyTargetRules Target) : base(Target)
 		{
-
 			bLegalToDistributeObjectCode = true;
-			PCHUsage = PCHUsageMode.NoPCHs;
 
 			DynamicallyLoadedModuleNames.AddRange(
 				new string[] {
@@ -24,7 +22,6 @@ namespace UnrealBuildTool.Rules
 					"MediaUtils",
 					"RenderCore",
 					"RHI",
-					"RHICore",
 					"ElectraBase",
 				});
 
@@ -43,12 +40,12 @@ namespace UnrealBuildTool.Rules
 				string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
 				PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
 
-				if (Target.Platform == UnrealTargetPlatform.Win64)
+				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					DirectXSDKDir += "/Lib/x64/";
 				}
 
-				if (Target.Platform == UnrealTargetPlatform.Win64)
+				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DX9");
 
@@ -81,9 +78,9 @@ namespace UnrealBuildTool.Rules
 				string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
 				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "ElectraSamples_UPL.xml"));
 			}
-			else if (Target.Platform == UnrealTargetPlatform.Linux)
+			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 			{
-				PublicIncludePaths.Add("$(ModuleDir)/Public/GStreamer");
+				PublicIncludePaths.Add("$(ModuleDir)/Public/Linux");
 			}
 		}
 	}

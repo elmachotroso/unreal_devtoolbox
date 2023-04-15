@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "EngineDefines.h"
+#include "EngineLogs.h"
 #include "PhysicsEngine/ShapeElem.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BoxElem.h"
@@ -15,13 +16,12 @@
 #include "Engine/Polys.h"
 #include "PhysXIncludes.h"
 #include "Chaos/Convex.h"
+#include "Chaos/Levelset.h"
 #if INTEL_ISPC
 #include "KAggregateGeom.ispc.generated.h"
 #endif
 
-#if WITH_CHAOS
 #include "Chaos/ImplicitObject.h"
-#endif
 
 
 #define MIN_HULL_VERT_DISTANCE		(0.1f)
@@ -33,11 +33,16 @@ static_assert(sizeof(ispc::FRotator) == sizeof(FRotator), "sizeof(ispc::FRotator
 static_assert(sizeof(ispc::FVector) == sizeof(FVector), "sizeof(ispc::FVector) != sizeof(FVector)");
 #endif
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
-bool bPhysics_AggregateGeom_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarPhysicsAggregateGeomISPCEnabled(TEXT("p.AggregateGeom.ISPC"), bPhysics_AggregateGeom_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in physics aggregate geometry calculations"));
+#if !defined(PHYSICS_AGGREGATE_GEOMETRY_ISPC_ENABLED_DEFAULT)
+#define PHYSICS_AGGREGATE_GEOMETRY_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bPhysics_AggregateGeom_ISPC_Enabled = INTEL_ISPC && PHYSICS_AGGREGATE_GEOMETRY_ISPC_ENABLED_DEFAULT;
 #else
-const bool bPhysics_AggregateGeom_ISPC_Enabled = INTEL_ISPC;
+static bool bPhysics_AggregateGeom_ISPC_Enabled = PHYSICS_AGGREGATE_GEOMETRY_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarPhysicsAggregateGeomISPCEnabled(TEXT("p.AggregateGeom.ISPC"), bPhysics_AggregateGeom_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in physics aggregate geometry calculations"));
 #endif
 
 ///////////////////////////////////////
@@ -102,6 +107,11 @@ FBox FKAggregateGeom::CalcAABB(const FTransform& Transform) const
 	for(int32 i=0; i<TaperedCapsuleElems.Num(); i++)
 	{
 		Box += TaperedCapsuleElems[i].CalcAABB(BoneTM, ScaleFactor);
+	}
+
+	for (int32 i = 0; i < LevelSetElems.Num(); i++)
+	{
+		Box += LevelSetElems[i].CalcAABB(BoneTM, (FVector)Scale3D);
 	}
 
 	return Box;
@@ -428,26 +438,6 @@ FBox FKConvexElem::CalcAABB(const FTransform& BoneTM, const FVector& Scale3D) co
 
 void FKConvexElem::GetPlanes(TArray<FPlane>& Planes) const
 {
-#if PHYSICS_INTERFACE_PHYSX
-	if (ConvexMesh != nullptr)
-	{
-		Planes.Empty();
-
-		PxU32 NumPolys = ConvexMesh->getNbPolygons();
-		for (PxU32 PolyIndex = 0; PolyIndex < NumPolys; PolyIndex++)
-		{
-			PxHullPolygon Data;
-			bool bStatus = ConvexMesh->getPolygonData(PolyIndex, Data);
-			check(bStatus);
-
-			// Convert to UE type
-			FPlane Plane(Data.mPlane[0], Data.mPlane[1], Data.mPlane[2], -Data.mPlane[3]);
-
-			// Add to output array
-			Planes.Add(Plane);
-		}
-	}
-#elif WITH_CHAOS
 	using FChaosPlane = Chaos::TPlaneConcrete<Chaos::FReal, 3>;
 	if(Chaos::FConvex* RawConvex = ChaosConvex.Get())
 	{
@@ -459,7 +449,6 @@ void FKConvexElem::GetPlanes(TArray<FPlane>& Planes) const
 			Planes.Add({Plane.X(), Plane.Normal()});
 		}
 	}
-#endif
 }
 
 ///////////////////////////////////////
@@ -491,6 +480,183 @@ FBox FKTaperedCapsuleElem::CalcAABB(const FTransform& BoneTM, float Scale) const
 	FBox Result(MinPos - Extent0, MaxPos + Extent1);
 
 	return Result;
+}
+
+
+///////////////////////////////////////
+//////// FKLevelSetElem ///////////////
+///////////////////////////////////////
+
+FBox FKLevelSetElem::CalcAABB(const FTransform& BoneTM, const FVector& Scale3D) const
+{
+	FBox Box;
+
+	if (LevelSet.IsValid())
+	{
+		Box = FBox(LevelSet->BoundingBox().Min(), LevelSet->BoundingBox().Max());
+		const FTransform LocalToWorld = FTransform(FQuat::Identity, FVector::ZeroVector, Scale3D) * BoneTM;
+		return Box.TransformBy(Transform * LocalToWorld);
+	}
+
+	return Box;
+}
+
+FBox FKLevelSetElem::UntransformedAABB() const
+{
+	FBox Box;
+
+	if (LevelSet.IsValid())
+	{
+		Box = FBox(LevelSet->BoundingBox().Min(), LevelSet->BoundingBox().Max());
+		return Box;
+	}
+
+	return Box;
+}
+
+void FKLevelSetElem::BuildLevelSet(const FTransform& GridTransform, const TArray<double>& GridValues, const FIntVector& GridDims, float GridCellSize)
+{
+	const Chaos::FVec3 Min(0, 0, 0);
+	const Chaos::FVec3 Max = Min + Chaos::FVec3(GridCellSize * (FVector)GridDims);
+	const Chaos::TVec3<int32> ChaosDim(GridDims[0], GridDims[1], GridDims[2]);
+	
+	Chaos::TUniformGrid<Chaos::FReal, 3> ChaosGrid(Min, Max, ChaosDim);
+	Chaos::TArrayND<Chaos::FReal, 3> Phi( Chaos::TVec3<int32>(GridDims[0], GridDims[1], GridDims[2]), GridValues );
+
+	LevelSet = TSharedPtr<Chaos::FLevelSet>(new Chaos::FLevelSet(MoveTemp(ChaosGrid), MoveTemp(Phi), 0));
+
+	Transform = GridTransform;
+}
+
+void FKLevelSetElem::GetLevelSetData(FTransform& OutGridTransform, TArray<double>& OutGridValues, FIntVector& OutGridDims, float& OutGridCellSize) const
+{
+	if (!ensure(LevelSet.IsValid()))
+	{
+		return;
+	}
+	const Chaos::TUniformGrid<Chaos::FReal, 3>& ChaosGrid = LevelSet->GetGrid();
+
+	OutGridTransform = Transform;
+	OutGridDims = FIntVector(ChaosGrid.Counts()[1], ChaosGrid.Counts()[0], ChaosGrid.Counts()[2]);
+
+	OutGridCellSize = ChaosGrid.Dx()[0];
+
+	OutGridValues.Init(0.0, LevelSet->GetPhiArray().Num());
+	for (int32 Index = 0; Index < ChaosGrid.GetNumCells(); ++Index)
+	{
+		OutGridValues[Index] = LevelSet->GetPhiArray()[Index];
+	}
+}
+
+
+void FKLevelSetElem::GetInteriorGridCells( TArray<FBox>& CellBoxes, double InteriorThreshold) const
+{
+	if (LevelSet.IsValid())
+	{
+		const Chaos::TUniformGrid<Chaos::FReal, 3>& Grid = LevelSet->GetGrid();
+		const Chaos::TVector<int32, 3> Cells = Grid.Counts();
+		for (int i = 0; i < Cells.X; ++i)
+		{
+			for (int j = 0; j < Cells.Y; ++j)
+			{
+				for (int k = 0; k < Cells.Z; ++k)
+				{
+					const double Value = LevelSet->GetPhiArray()(i, j, k);
+
+					if (Value <= InteriorThreshold)
+					{
+						const FVector3d CellMin = Grid.MinCorner() + Grid.Dx() * FVector3d(i, j, k);
+						const FVector3d CellMax = CellMin + Grid.Dx() * FVector3d(1, 1, 1);
+						CellBoxes.Emplace( FBox(CellMin, CellMax) );
+					}
+				}
+			}
+		}
+	}
+}
+
+
+void FKLevelSetElem::GetZeroIsosurfaceGridCellFaces(TArray<FVector3f>& Vertices, TArray<FIntVector>& Tris ) const
+{
+	if (LevelSet.IsValid())
+	{
+		const Chaos::TUniformGrid<Chaos::FReal, 3>& Grid = LevelSet->GetGrid();
+		const Chaos::TVector<int32, 3> Cells = Grid.Counts();
+		for (int i = 0; i < Cells.X-1; ++i)
+		{
+			for (int j = 0; j < Cells.Y-1; ++j)
+			{
+				for (int k = 0; k < Cells.Z-1; ++k)
+				{
+					const double Sign = FMath::Sign(LevelSet->GetPhiArray()(i, j, k));
+					const double SignNextI = FMath::Sign(LevelSet->GetPhiArray()(i+1, j, k));
+					const double SignNextJ = FMath::Sign(LevelSet->GetPhiArray()(i, j+1, k));
+					const double SignNextK = FMath::Sign(LevelSet->GetPhiArray()(i, j, k+1));
+
+					const FVector3d CellMin = Grid.MinCorner() + Grid.Dx() * FVector3d(i, j, k);
+
+					if (Sign > SignNextI)
+					{
+						const int32 V0 = Vertices.Emplace( CellMin + FVector3d(1, 0, 0) );
+						const int32 V1 = Vertices.Emplace( CellMin + FVector3d(1, 1, 0) );
+						const int32 V2 = Vertices.Emplace( CellMin + FVector3d(1, 1, 1) );
+						const int32 V3 = Vertices.Emplace( CellMin + FVector3d(1, 0, 1) );
+						Tris.Emplace(FIntVector(V0, V1, V2));
+						Tris.Emplace(FIntVector(V2, V3, V0));
+					}
+					else if (Sign < SignNextI)
+					{
+						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(1, 0, 0));
+						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
+						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
+						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
+						Tris.Emplace(FIntVector(V0, V2, V1));
+						Tris.Emplace(FIntVector(V2, V0, V3));
+					}
+
+					
+					if (Sign > SignNextJ)
+					{
+						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 1, 0));
+						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
+						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
+						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
+						Tris.Emplace(FIntVector(V0, V2, V1));
+						Tris.Emplace(FIntVector(V2, V0, V3));
+					}
+					else if (Sign < SignNextJ)
+					{
+						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 1, 0));
+						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
+						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
+						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
+						Tris.Emplace(FIntVector(V0, V1, V2));
+						Tris.Emplace(FIntVector(V2, V3, V0));
+					}
+
+					if (Sign > SignNextK)
+					{
+						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 0, 1));
+						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
+						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
+						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
+						Tris.Emplace(FIntVector(V0, V1, V2));
+						Tris.Emplace(FIntVector(V2, V3, V0));
+					}
+					else if (Sign < SignNextK)
+					{
+						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 0, 1));
+						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
+						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
+						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
+						Tris.Emplace(FIntVector(V0, V2, V1));
+						Tris.Emplace(FIntVector(V2, V0, V3));
+					}
+
+				}
+			}
+		}
+	}
 }
 
 static const float DIST_COMPARE_THRESH = 0.1f;
@@ -559,17 +725,15 @@ static void AddEdgeIfNotPresent(TArray<int32>& Edges, int32 Edge0, int32 Edge1)
 	Edges.Add(Edge1);
 }
 
-#define LOCAL_EPS SMALL_NUMBER
+#define LOCAL_EPS UE_SMALL_NUMBER
 
 void FKConvexElem::UpdateElemBox()
 {
-#if WITH_CHAOS
 	// Fixup indices in case an operation has invalidated them
 	{
 		IndexData.Reset();
 		ComputeChaosConvexIndices();
 	}
-#endif
 
 	ElemBox.Init();
 	for(int32 j=0; j<VertexData.Num(); j++)
@@ -595,10 +759,10 @@ bool FKConvexElem::HullFromPlanes(const TArray<FPlane>& InPlanes, const TArray<F
 
 		const FVector3f Base = FVector3f(InPlanes[i] * InPlanes[i].W);
 
-		new(Polygon.Vertices) FVector3f(Base + AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector3f(Base - AxisX * HALF_WORLD_MAX + AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector3f(Base - AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
-		new(Polygon.Vertices) FVector3f(Base + AxisX * HALF_WORLD_MAX - AxisY * HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base + AxisX * UE_OLD_HALF_WORLD_MAX + AxisY * UE_OLD_HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base - AxisX * UE_OLD_HALF_WORLD_MAX + AxisY * UE_OLD_HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base - AxisX * UE_OLD_HALF_WORLD_MAX - AxisY * UE_OLD_HALF_WORLD_MAX);
+		new(Polygon.Vertices) FVector3f(Base + AxisX * UE_OLD_HALF_WORLD_MAX - AxisY * UE_OLD_HALF_WORLD_MAX);
 
 		for(int32 j=0; j<InPlanes.Num(); j++)
 		{
@@ -625,7 +789,7 @@ bool FKConvexElem::HullFromPlanes(const TArray<FPlane>& InPlanes, const TArray<F
 			{
 				// We try and snap the vert to on of the ones supplied.
 				int32 NearestVert = INDEX_NONE;
-				float NearestDistSqr = BIG_NUMBER;
+				float NearestDistSqr = UE_BIG_NUMBER;
 
 				for(int32 k = 0; k < SnapVerts.Num(); k++)
 				{
@@ -798,13 +962,26 @@ FArchive& operator<<(FArchive& Ar,FKConvexElem& Elem)
 		// Initialize the TArray members
 		FMemory::Memzero(&Elem.VertexData, sizeof(Elem.VertexData));
 		FMemory::Memzero(&Elem.ElemBox, sizeof(Elem.ElemBox));
-#if PHYSICS_INTERFACE_PHYSX
-		Elem.ConvexMesh = NULL;
-		Elem.ConvexMeshNegX = NULL;
-#endif
-#if WITH_CHAOS
 		Elem.ChaosConvex.Reset();
-#endif
 	}
+
 	return Ar;
 }
+
+bool FKLevelSetElem::Serialize(FArchive& Ar)
+{
+	Ar << Transform;
+
+	if (Ar.IsLoading())
+	{
+		LevelSet = TSharedPtr<Chaos::FLevelSet>(new Chaos::FLevelSet());
+	}
+
+	if (LevelSet.IsValid())
+	{
+		LevelSet->Serialize(Ar);
+	}
+
+	return true;
+}
+

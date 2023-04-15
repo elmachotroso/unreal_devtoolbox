@@ -2,34 +2,70 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
+#include "Serialization/Archive.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "EditorConfigTests.generated.h"
 
+UENUM()
+enum class EEditorConfigTestEnum : uint8
+{
+	Zero,
+	One,
+	Two
+};
+
 USTRUCT()
-struct FEditorConfigTestStruct
+struct FEditorConfigTestEnumStruct
 {
 	GENERATED_BODY()
 
 	UPROPERTY()
-	bool BoolProperty = false;
+	int32 Before = 0;
 
 	UPROPERTY()
-	int32 IntProperty = 0;
+	EEditorConfigTestEnum Enum = EEditorConfigTestEnum::Zero;
 
 	UPROPERTY()
-	FString StringProperty;
-
-	UPROPERTY()
-	float FloatProperty = 0.0f;
-
-	UPROPERTY()
-	TArray<FString> ArrayProperty;
+	int32 After = 0;
 };
 
 USTRUCT()
-struct FEditorConfigTestKeyStruct
+struct FEditorConfigTestSimpleStruct
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	bool Bool = true;
+
+	UPROPERTY()
+	int32 Int = 5;
+
+	UPROPERTY(meta=(EditorConfig))
+	FString String;
+
+	UPROPERTY()
+	float Float = 5.0f;
+
+	UPROPERTY(meta=(EditorConfig))
+	TArray<FString> Array;
+
+	bool operator==(const FEditorConfigTestSimpleStruct& Other) const;
+	bool operator!=(const FEditorConfigTestSimpleStruct& Other) const;
+};
+
+USTRUCT()
+struct FEditorConfigTestKey
 {
 	GENERATED_BODY()
 	
@@ -37,28 +73,28 @@ struct FEditorConfigTestKeyStruct
 	FString Name;
 	
 	UPROPERTY()
-	double Number = 0.0;
+	double Number = 5.0;
 
-	bool operator==(const FEditorConfigTestKeyStruct& Other) const;
-	bool operator!=(const FEditorConfigTestKeyStruct& Other) const;
+	bool operator==(const FEditorConfigTestKey& Other) const;
+	bool operator!=(const FEditorConfigTestKey& Other) const;
 };
 
-FORCEINLINE uint32 GetTypeHash(const FEditorConfigTestKeyStruct& Struct)
+FORCEINLINE uint32 GetTypeHash(const FEditorConfigTestKey& Struct)
 {
 	return HashCombine(GetTypeHash(Struct.Name), GetTypeHash(Struct.Number));
 }
 
 USTRUCT()
-struct FEditorConfigTestComplexArrayStruct
+struct FEditorConfigTestComplexArray
 {
 	GENERATED_BODY()
 	
 	UPROPERTY()
-	TArray<FEditorConfigTestKeyStruct> Array;
+	TArray<FEditorConfigTestKey> Array;
 };
 
 USTRUCT()
-struct FEditorConfigTestSimpleMapStruct
+struct FEditorConfigTestSimpleMap
 {
 	GENERATED_BODY()
 
@@ -67,16 +103,25 @@ struct FEditorConfigTestSimpleMapStruct
 };
 
 USTRUCT()
-struct FEditorConfigTestComplexMapStruct
+struct FEditorConfigTestSimpleKeyComplexValueMap
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<FString, FEditorConfigTestKey> Map;
+};
+
+USTRUCT()
+struct FEditorConfigTestComplexMap
 {
 	GENERATED_BODY()
 	
 	UPROPERTY()
-	TMap<FEditorConfigTestKeyStruct, FEditorConfigTestKeyStruct> Map;
+	TMap<FEditorConfigTestKey, FEditorConfigTestKey> Map;
 };
 
 USTRUCT()
-struct FEditorConfigTestSimpleSetStruct
+struct FEditorConfigTestSimpleSet
 {
 	GENERATED_BODY()
 	
@@ -85,12 +130,12 @@ struct FEditorConfigTestSimpleSetStruct
 };
 
 USTRUCT()
-struct FEditorConfigTestComplexSetStruct
+struct FEditorConfigTestComplexSet
 {
 	GENERATED_BODY()
 	
 	UPROPERTY()
-	TSet<FEditorConfigTestKeyStruct> Set;
+	TSet<FEditorConfigTestKey> Set;
 };
 
 UCLASS()
@@ -98,15 +143,14 @@ class UEditorConfigTestObject : public UObject
 {
 	GENERATED_BODY()
 
+public:
+
 	UPROPERTY()
 	TObjectPtr<UObject> Object;
 
-	UPROPERTY()
-	FSoftObjectPath SoftObjectPath;
+	UPROPERTY(meta=(EditorConfig))
+	FEditorConfigTestSimpleStruct Struct;
 
-	UPROPERTY()
-	FEditorConfigTestStruct Struct;
-
-	UPROPERTY()
-	int32 Number;
+	UPROPERTY(meta=(EditorConfig))
+	int32 Number = 5;
 };

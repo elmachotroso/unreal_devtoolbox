@@ -14,17 +14,6 @@ struct FIoHash;
 namespace UE::Virtualization
 {
 
-/** Describes the result of a IVirtualizationBackend::Push operation */
-enum class EPushResult
-{
-	/** The push failed, the backend should print an error message to 'LogVirtualization'.*/
-	Failed = 0,
-	/** The payload already exists in the backend and does not need to be pushed. */
-	PayloadAlreadyExisted,
-	/** The payload was successfully pushed to the backend. */
-	Success
-};
-
 /**
  * The interface to derive from to create a new backend implementation.
  * 
@@ -37,26 +26,40 @@ enum class EPushResult
  */
 class IVirtualizationBackend
 {
-protected:
+public:
 	/** Enum detailing which operations a backend can support */
 	enum class EOperations : uint8
 	{
 		/** Supports no operations, this should only occur when debug settings are applied */
 		None = 0,
 		/** Supports only push operations */
-		Push,
+		Push = 1 << 0,
 		/** Supports only pull operations */
-		Pull,
-		/** Supports both push and pull operations */
-		Both
+		Pull = 1 << 1,
 	};
+
+	FRIEND_ENUM_CLASS_FLAGS(EOperations);
+
+	/** Status of the backends connection to its services */
+	enum class EConnectionStatus
+	{
+		/** No connection attempt has been made */
+		None,
+		/** The previous connection attempt ended with an error */
+		Error,
+		/** The connection has been made successfully */
+		Connected,
+	};
+
+protected:
 
 	IVirtualizationBackend(FStringView InConfigName, FStringView InDebugName, EOperations InSupportedOperations)
 		: SupportedOperations(InSupportedOperations)
+		, DebugDisabledOperations(EOperations::None)
 		, ConfigName(InConfigName)
 		, DebugName(InDebugName)
 	{
-		checkf(InSupportedOperations != EOperations::None, TEXT("Cannot create a backend without supporting at least one type of operation!"));
+		checkf(InSupportedOperations != EOperations::None, TEXT("Cannot create a backend with no supported operations!"));
 	}
 
 public:
@@ -66,67 +69,63 @@ public:
 	 * This will be called during the setup of the backend hierarchy. The entry config file
 	 * entry that caused the backend to be created will be passed to the method so that any
 	 * additional settings may be parsed from it.
-	 * Take care to clearly log any error that occurs so that the end user has a clear way 
+	 * Take care to clearly log any error that occurs so that the end user has a clear way
 	 * to fix them.
-	 * 
-	 * @param ConfigEntry	The entry for the backend from the config ini file that may 
+	 *
+	 * @param ConfigEntry	The entry for the backend from the config ini file that may
 	 *						contain additional settings.
-	 * @return				Returning false indicates that initialization failed in a way 
+	 * @return				Returning false indicates that initialization failed in a way
 	 *						that the backend will not be able to function correctly.
 	 */
 	virtual bool Initialize(const FString& ConfigEntry) = 0;
 
 	/**
-	 * The backend will attempt to store the given payload by what ever method the backend uses.
-	 * NOTE: It is assumed that the virtualization manager will run all appropriate validation
-	 * on the payload and it's id and that the inputs to PushData can be trusted.
-	 * 
-	 * @param Id		The Id of the payload
-	 * @param Payload	A potentially compressed buffer representing the payload
-	 * @return			The result of the push operation
+	 * Attempt to connect the backend to its services if not already connected.
 	 */
-	virtual EPushResult PushData(const FIoHash& Id, const FCompressedBuffer& Payload, const FString& PackageContext) = 0;
-
-	virtual bool PushData(TArrayView<FPushRequest> Requests)
+	virtual void Connect()
 	{
-		// TODO: Improve the error codes in the future
-		for (FPushRequest& Request : Requests)
+		if (ConnectionStatus != EConnectionStatus::Connected)
 		{
-			EPushResult Result = PushData(Request.Identifier, Request.Payload, Request.Context);
-			switch (Result)
-			{
-			case EPushResult::Failed:
-				Request.Status = FPushRequest::EStatus::Failed;
-				return false;
-
-			case EPushResult::PayloadAlreadyExisted:
-				// falls through
-			case EPushResult::Success:
-				Request.Status = FPushRequest::EStatus::Success;
-				break;
-
-			default:
-				Request.Status = FPushRequest::EStatus::Failed;
-				checkNoEntry();
-				break;
-			}
+			ConnectionStatus = OnConnect();
 		}
-
-		return true;
 	}
 
-	/** 
-	 * The backend will attempt to retrieve the given payload by what ever method the backend uses.
-	 * NOTE: It is assumed that the virtualization manager will validate the returned payload to 
-	 * make sure that it matches the requested id so there is no need for each backend to do this/
+	/**
+	 * Returns the connection status of the backend
 	 * 
-	 * @param Id	The Id of a payload to try and pull from the backend.
-	 * 
-	 * @return		A valid FCompressedBuffer containing the payload if the pull
-	 *				operation succeeded and a null FCompressedBuffer
-	 *				if it did not.
+	 * @return @see EConnectionStatus
 	 */
-	virtual FCompressedBuffer PullData(const FIoHash& Id) = 0;
+	EConnectionStatus GetConnectionStatus() const
+	{
+		return ConnectionStatus;
+	}
+
+	/**
+	 * @return True if all of the requests succeeded, false if one of more failed
+	 */
+	virtual bool PushData(TArrayView<FPushRequest> Requests) = 0;
+
+	/** 
+	 * The backend will attempt to retrieve the given payloads by what ever method the backend uses.
+	 * 
+	 * It should be assumed that the list of requests will not contain any duplicate or invalid
+	 * payload identifiers so there is no need for each backend to perform validation.
+	 * 
+	 * It should be assumed that the caller will validate all payloads that are successfully pulled
+	 * to make sure that match the requested payload identifiers  so there is no need for each 
+	 * backend to do this.
+	 * 
+	 * @param	Requests	An array of payload pull requests. @see FPullRequest
+	 * 
+	 * @return				True if no errors were encountered while pulling, otherwise false.
+	 *						Note that returning true does not mean that all of the payloads were
+	 *						found as a missing payload should not be considered an error condition.
+	 */
+
+	// Assume that the array only has unique requests
+	// Will set request error value if there is a problem with loading it
+	// Returns false on critical error, otherwise true
+	virtual bool PullData(TArrayView<FPullRequest> Requests) = 0;
 	
 	/**
 	 * Checks if a payload exists in the backends storage.
@@ -164,29 +163,33 @@ public:
 		return true;
 	}
 	
-	/** Used when debugging to disable the pull operation */
-	void DisablePullOperationSupport()
+	/** 
+	 * Returns true if the given operation is supported, this is set when the backend is created
+	 * and should not change over it's life time.
+	 */
+	bool IsOperationSupported(EOperations Operation) const
 	{
-		if (SupportedOperations == EOperations::Pull)
+		return EnumHasAnyFlags(SupportedOperations, Operation);
+	}
+
+	/** Enable or disable the given operation based on the 'bIsDisabled' parameter */
+	void SetOperationDebugState(EOperations Operation, bool bIsDisabled)
+	{
+		if (bIsDisabled)
 		{
-			SupportedOperations = EOperations::None;
+			EnumAddFlags(DebugDisabledOperations, Operation);
+			
 		}
-		else if (SupportedOperations == EOperations::Both)
+		else
 		{
-			SupportedOperations = EOperations::Push;
+			EnumRemoveFlags(DebugDisabledOperations, Operation);
 		}
 	}
 
-	/** Return true if the backend supports push operations. Returning true allows ::PushData to be called.  */
-	bool SupportsPushOperations() const 
-	{ 
-		return SupportedOperations == EOperations::Push || SupportedOperations == EOperations::Both;  
-	}
-
-	/** Return true if the backend supports pull operations. Returning true allows ::PullData to be called.  */
-	bool SupportsPullOperations() const
-	{ 
-		return SupportedOperations == EOperations::Pull || SupportedOperations == EOperations::Both;  
+	/** Returns true if the given operation is disabled for debugging purposes */
+	bool IsOperationDebugDisabled(EOperations Operation) const
+	{
+		return EnumHasAnyFlags(DebugDisabledOperations, Operation);
 	}
 
 	/** Returns a string containing the name of the backend as it appears in the virtualization graph in the config file */
@@ -203,14 +206,24 @@ public:
 
 private:
 
+	/** Override to implement the backends connection code */
+	virtual EConnectionStatus OnConnect() = 0;
+
+private:
+
 	/** The operations that this backend supports */
 	EOperations SupportedOperations;
+
+	EOperations DebugDisabledOperations;
 
 	/** The name assigned to the backend by the virtualization graph */
 	FString ConfigName;
 
 	/** Combination of the backend type and the name used to create it in the virtualization graph */
 	FString DebugName;
+
+	/** The status of the connection to the backends service */
+	EConnectionStatus ConnectionStatus = EConnectionStatus::None;
 };
 
 /** 
@@ -227,14 +240,17 @@ public:
 	/** 
 	 * Creates a new backend instance.
 	 * 
+	 * @param ProjectName	The name of the current project
 	 * @param ConfigName	The name given to the back end in the config ini file
 	 * @return A new backend instance
 	 */
-	virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ConfigName) = 0;
+	virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) = 0;
 
 	/** Returns the name used to identify the type in config ini files */
 	virtual FName GetName() = 0;
 };
+
+ENUM_CLASS_FLAGS(IVirtualizationBackend::EOperations);
 
 /**
  * This macro is used to generate a backend factories boilerplate code if you do not
@@ -246,15 +262,50 @@ public:
  * @param The name used in config ini files to reference this backend type.
  */
 #define UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY(BackendClass, ConfigName) \
-	class BackendClass##Factory : public IVirtualizationBackendFactory \
+	class F##BackendClass##Factory : public IVirtualizationBackendFactory \
 	{ \
 	public: \
-		BackendClass##Factory() { IModularFeatures::Get().RegisterModularFeature(FName("VirtualizationBackendFactory"), this); }\
-		virtual ~BackendClass##Factory() { IModularFeatures::Get().UnregisterModularFeature(FName("VirtualizationBackendFactory"), this); } \
+		F##BackendClass##Factory() { IModularFeatures::Get().RegisterModularFeature(FName("VirtualizationBackendFactory"), this); }\
+		virtual ~F##BackendClass##Factory() { IModularFeatures::Get().UnregisterModularFeature(FName("VirtualizationBackendFactory"), this); } \
 	private: \
-		virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ConfigName) override { return MakeUnique<BackendClass>(ConfigName, WriteToString<256>(#ConfigName, TEXT(" - "), ConfigName).ToString()); } \
+		virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
+		{ \
+			return MakeUnique<BackendClass>(ProjectName, ConfigName, WriteToString<256>(#ConfigName, TEXT(" - "), ConfigName).ToString()); \
+		} \
 		virtual FName GetName() override { return FName(#ConfigName); } \
 	}; \
-	static BackendClass##Factory BackendClass##Factory##Instance;
+	static F##BackendClass##Factory BackendClass##Factory##Instance;
+
+#define UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY_LEGACY_IMPL(FactoryName, BackendClass, LegacyConfigName, ConfigName) \
+	class F##FactoryName : public IVirtualizationBackendFactory \
+	{ \
+	public: \
+		F##FactoryName(const TCHAR* InLegacyConfigName, const TCHAR* InNewConfigName) \
+			: StoredLegacyConfigName(InLegacyConfigName) \
+			, StoredNewConfigName(InNewConfigName) \
+			{ IModularFeatures::Get().RegisterModularFeature(FName("VirtualizationBackendFactory"), this); }\
+		virtual ~F##FactoryName() { IModularFeatures::Get().UnregisterModularFeature(FName("VirtualizationBackendFactory"), this); } \
+	private: \
+		virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
+		{ \
+			UE_LOG(LogVirtualization, Warning, TEXT("Creating a backend via the legacy config name '%s' use '%s' instead"), *StoredLegacyConfigName, *StoredNewConfigName); \
+			return MakeUnique<BackendClass>(ProjectName, ConfigName, WriteToString<256>(#ConfigName, TEXT(" - "), ConfigName).ToString()); \
+		} \
+		virtual FName GetName() override { return FName(#LegacyConfigName); } \
+		FString StoredLegacyConfigName; \
+		FString StoredNewConfigName;\
+	}; \
+	static F##FactoryName FactoryName##Instance(TEXT(#LegacyConfigName), TEXT(#ConfigName));
+
+/** 
+ * This macro can be used to change the config name used to create backends while allowing older config file entries to continue working.
+ * If this factory is used to instantiate a backend then we will log a warning to the user so that they can update their config file.
+ * 
+ * @param BackendClass		The name of the class derived from 'IVirtualizationBackend' that the factory should create.
+ * @param LegacyConfigName	The old name that 'ConfigName' is now replacing.
+ * @param ConfigName		The name used in config ini files to reference this backend type.
+ */
+#define UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY_LEGACY(BackendClass, LegacyConfigName, ConfigName) \
+	UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY_LEGACY_IMPL(BackendClass##LegacyConfigName##To##ConfigName##Factory, BackendClass, LegacyConfigName, ConfigName)
 
 } // namespace UE::Virtualization

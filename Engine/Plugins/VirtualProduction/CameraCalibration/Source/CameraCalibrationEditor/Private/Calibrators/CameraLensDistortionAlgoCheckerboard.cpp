@@ -6,8 +6,13 @@
 #include "AssetEditor/LensDistortionTool.h"
 #include "AssetEditor/SSimulcamViewport.h"
 #include "CameraCalibrationCheckerboard.h"
+#include "CameraCalibrationEditorLog.h"
+#include "Dom/JsonObject.h"
 #include "EditorFontGlyphs.h"
+#include "Engine/Texture2D.h"
 #include "EngineUtils.h"
+#include "ImageUtils.h"
+#include "JsonObjectConverter.h"
 #include "Misc/MessageDialog.h"
 #include "PropertyCustomizationHelpers.h"
 #include "SphericalLensDistortionModelHandler.h"
@@ -18,19 +23,25 @@
 
 #define LOCTEXT_NAMESPACE "CameraLensDistortionAlgoCheckerboard"
 
+const int UCameraLensDistortionAlgoCheckerboard::DATASET_VERSION = 1;
+
+// String constants for import/export
+namespace UE::CameraCalibration::Private::LensDistortionCheckerboardExportFields
+{
+	static const FString Version(TEXT("Version"));
+}
 
 namespace CameraLensDistortionAlgoCheckerboard
 {
 	class SCalibrationRowGenerator
-		: public SMultiColumnTableRow<TSharedPtr<UCameraLensDistortionAlgoCheckerboard::FCalibrationRowData>>
+		: public SMultiColumnTableRow<TSharedPtr<FLensDistortionCheckerboardRowData>>
 	{
-		using FCalibrationRowData = UCameraLensDistortionAlgoCheckerboard::FCalibrationRowData;
 
 	public:
 		SLATE_BEGIN_ARGS(SCalibrationRowGenerator) {}
 
 		/** The list item for this row */
-		SLATE_ARGUMENT(TSharedPtr<FCalibrationRowData>, CalibrationRowData)
+		SLATE_ARGUMENT(TSharedPtr<FLensDistortionCheckerboardRowData>, CalibrationRowData)
 
 		SLATE_END_ARGS()
 
@@ -38,7 +49,7 @@ namespace CameraLensDistortionAlgoCheckerboard
 		{
 			CalibrationRowData = Args._CalibrationRowData;
 
-			SMultiColumnTableRow<TSharedPtr<FCalibrationRowData>>::Construct(
+			SMultiColumnTableRow<TSharedPtr<FLensDistortionCheckerboardRowData>>::Construct(
 				FSuperRowType::FArguments()
 				.Padding(1.0f),
 				OwnerTableView
@@ -85,7 +96,7 @@ namespace CameraLensDistortionAlgoCheckerboard
 
 
 	private:
-		TSharedPtr<FCalibrationRowData> CalibrationRowData;
+		TSharedPtr<FLensDistortionCheckerboardRowData> CalibrationRowData;
 	};
 
 };
@@ -145,16 +156,15 @@ void UCameraLensDistortionAlgoCheckerboard::Tick(float DeltaTime)
 		{
 			LastCameraData.bIsValid = false;
 
-			const FLensFileEvalData* LensFileEvalData = StepsController->GetLensFileEvalData();
+			const FLensFileEvaluationInputs LensFileEvalInputs = StepsController->GetLensFileEvaluationInputs();
 
 			// We require lens evaluation data.
-			if (!LensFileEvalData)
+			if (LensFileEvalInputs.bIsValid)
 			{
-				break;
+				LastCameraData.InputFocus = LensFileEvalInputs.Focus;
+				LastCameraData.InputZoom = LensFileEvalInputs.Zoom;
+				LastCameraData.bIsValid = true;
 			}
-
-			LastCameraData.LensFileEvalData = *LensFileEvalData;
-			LastCameraData.bIsValid = true;
 
 		} while (0);
 	}
@@ -218,7 +228,7 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 
 	if (!LastCameraData.bIsValid)
 	{
-		OutErrorMessage = LOCTEXT("InvalidLastCameraData", "Could not find a cached set of camera data (e.g. FIZ). Please ensure that the camera has a camera live link controller and that it is receiving FIZ data");
+		OutErrorMessage = LOCTEXT("InvalidLastCameraData", "Could not find a cached set of camera data (e.g. FIZ). Check the Lens Component to make sure it has valid evaluation inputs.");
 		return false;
 	}
 
@@ -251,12 +261,17 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 	cv::Mat CvGray;
 	cv::cvtColor(CvFrame, CvGray, cv::COLOR_RGBA2GRAY);
 
+	// Export the latest session data
+	ExportSessionData();
+
 	// Create the row that we're going to add
-	TSharedPtr<FCalibrationRowData> Row = MakeShared<FCalibrationRowData>();
+	TSharedPtr<FLensDistortionCheckerboardRowData> Row = MakeShared<FLensDistortionCheckerboardRowData>();
 
+	// Get the next row index for the current calibration session to assign to this new row
+	const uint32 RowIndex = Tool->AdvanceSessionRowIndex();
+
+	Row->Index = RowIndex;
 	Row->CameraData = LastCameraData;
-
-	Row->Index = CalibrationRows.Num();
 	Row->ImageHeight = CvGray.rows;
 	Row->ImageWidth = CvGray.cols;
 
@@ -280,32 +295,39 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 		std::vector<cv::Point2f> Corners;
 
 		const bool bCornersFound = cv::findChessboardCorners(
-			CvGray, 
+			CvGray,
 			CheckerboardSize,
 			Corners,
 			cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE
 		);
-		
+
 		if (!bCornersFound)
 		{
 			OutErrorMessage = FText::FromString(FString::Printf(TEXT(
 				"Could not identify the expected checkerboard points of interest. "
-				"The expected checkerboard has %dx%d inner corners."), 
+				"The expected checkerboard has %dx%d inner corners."),
 				Row->NumCornerCols, Row->NumCornerRows)
 			);
 
 			return false;
 		}
-		
+
 		// cv::TermCriteria::Type::EPS will stop the search when the error is under the given epsilon.
 		// cv::TermCriteria::Type::COUNT will stop after the specified number of iterations regardless of epsilon.
 		cv::TermCriteria Criteria(cv::TermCriteria::Type::EPS | cv::TermCriteria::Type::COUNT, 30, 0.001);
 		cv::cornerSubPix(CvGray, Corners, cv::Size(11, 11), cv::Size(-1, -1), Criteria);
 
-		for (cv::Point2f& Corner : Corners)
+		if (!Corners.empty())
 		{
-			Row->Points2d.Add(FVector2D(Corner.x, Corner.y));
+			for (cv::Point2f& Corner : Corners)
+			{
+				Row->Points2d.Add(FVector2D(Corner.x, Corner.y));
+			}
 		}
+
+		// Save an image view of the captured frame with the corners overlaid on it (for exporting)
+		FImageView ImageView = FImageView(CvFrame.data, CvFrame.cols, CvFrame.rows, ERawImageFormat::BGRA8);
+		Row->ImageView = ImageView;
 
 		// Update the coverage overlay image with information from the newly added row
 		cv::drawChessboardCorners(CvCoverage, CheckerboardSize, Corners, true);
@@ -316,11 +338,12 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 		// Show the detection to the user
 		if (bShouldShowDetectionWindow)
 		{
-			// Update the coverage overlay image with information from the newly added row
-			cv::drawChessboardCorners(CvFrame, CheckerboardSize, Corners, true);
+			cv::Mat CvFrameWithOverlay;
+			CvFrame.copyTo(CvFrameWithOverlay);
+			cv::drawChessboardCorners(CvFrameWithOverlay, CheckerboardSize, Corners, true);
 
 			FCameraCalibrationWidgetHelpers::DisplayTextureInWindowAlmostFullScreen(
-				FOpenCVHelper::TextureFromCvMat(CvFrame),
+				FOpenCVHelper::TextureFromCvMat(CvFrameWithOverlay),
 				LOCTEXT("CheckerboardDetection", "Checkerboard Detection")
 			);
 		}
@@ -350,6 +373,9 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 
 	// Add this data point
 	CalibrationRows.Add(Row);
+
+	// Export the data for this row to a .json file on disk
+	ExportRow(Row);
 
 	// Notify the ListView of the new data
 	if (CalibrationListView.IsValid())
@@ -399,7 +425,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildUI()
 		[ BuildCalibrationActionButtons() ];
 }
 
-bool UCameraLensDistortionAlgoCheckerboard::ValidateNewRow(TSharedPtr<FCalibrationRowData>& Row, FText& OutErrorMessage) const
+bool UCameraLensDistortionAlgoCheckerboard::ValidateNewRow(TSharedPtr<FLensDistortionCheckerboardRowData>& Row, FText& OutErrorMessage) const
 {
 	if (!Row.IsValid())
 	{
@@ -419,8 +445,6 @@ bool UCameraLensDistortionAlgoCheckerboard::ValidateNewRow(TSharedPtr<FCalibrati
 		return false;
 	}
 	
-	// FZ inputs are always valid, no need to verify them. They could be coming from LiveLink or fallback to a default one
-
 	// Valid image dimensions
 	if ((Row->ImageHeight < 1) || (Row->ImageWidth < 1))
 	{
@@ -463,7 +487,7 @@ bool UCameraLensDistortionAlgoCheckerboard::ValidateNewRow(TSharedPtr<FCalibrati
 		return false;
 	}
 
-	const TSharedPtr<FCalibrationRowData>& FirstRow = CalibrationRows[0];
+	const TSharedPtr<FLensDistortionCheckerboardRowData>& FirstRow = CalibrationRows[0];
 
 	// NumRows didn't change
 	if (Row->NumCornerRows != FirstRow->NumCornerRows)
@@ -520,7 +544,7 @@ bool UCameraLensDistortionAlgoCheckerboard::GetLensDistortion(
 	}
 
 	// All points are valid
-	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	for (const TSharedPtr<FLensDistortionCheckerboardRowData>& Row : CalibrationRows)
 	{
 		if (!ensure(Row.IsValid()))
 		{
@@ -548,7 +572,7 @@ bool UCameraLensDistortionAlgoCheckerboard::GetLensDistortion(
 		return false;
 	}
 
-	const TSharedPtr<FCalibrationRowData>& LastRow = CalibrationRows.Last();
+	const TSharedPtr<FLensDistortionCheckerboardRowData>& LastRow = CalibrationRows.Last();
 
 	// Only parameters data mode supported at the moment
 	if (LensFile->DataMode != ELensDataMode::Parameters)
@@ -578,7 +602,7 @@ bool UCameraLensDistortionAlgoCheckerboard::GetLensDistortion(
 	std::vector<std::vector<cv::Point2f>> Samples2d;
 	std::vector<std::vector<cv::Point3f>> Samples3d;
 
-	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	for (const TSharedPtr<FLensDistortionCheckerboardRowData>& Row : CalibrationRows)
 	{
 		// add 2d (image) points
 		{
@@ -623,8 +647,8 @@ bool UCameraLensDistortionAlgoCheckerboard::GetLensDistortion(
 	checkSlow(LastRow->ImageHeight > 0);
 
 	// FZ inputs to LUT
-	OutFocus = LastRow->CameraData.LensFileEvalData.Input.Focus;
-	OutZoom = LastRow->CameraData.LensFileEvalData.Input.Zoom;
+	OutFocus = LastRow->CameraData.InputFocus;
+	OutZoom = LastRow->CameraData.InputZoom;
 
 	// FocalLengthInfo
 	OutFocalLengthInfo.FxFy = FVector2D(
@@ -686,7 +710,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationDevic
 				if (AActor* TheCalibrator = GetCalibrator())
 				{
 					FAssetData AssetData(TheCalibrator, true);
-					return AssetData.ObjectPath.ToString();
+					return AssetData.GetObjectPathString();
 				}
 
 				return TEXT("");
@@ -700,7 +724,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationDevic
 			.Text(LOCTEXT("Spawn", "Spawn"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				const FCameraCalibrationStepsController* StepsController = GetStepsController();
@@ -719,7 +743,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationDevic
 			})
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.12"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
 				.Text(FEditorFontGlyphs::Plus)
 				.ColorAndOpacity(FLinearColor::White)
 			]
@@ -784,10 +808,10 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationActio
 
 TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationPointsTable()
 {
-	CalibrationListView = SNew(SListView<TSharedPtr<FCalibrationRowData>>)
+	CalibrationListView = SNew(SListView<TSharedPtr<FLensDistortionCheckerboardRowData>>)
 		.ItemHeight(24)
 		.ListItemsSource(&CalibrationRows)
-		.OnGenerateRow_Lambda([&](TSharedPtr<FCalibrationRowData> InItem, const TSharedRef<STableViewBase>& OwnerTable) -> TSharedRef<ITableRow>
+		.OnGenerateRow_Lambda([&](TSharedPtr<FLensDistortionCheckerboardRowData> InItem, const TSharedRef<STableViewBase>& OwnerTable) -> TSharedRef<ITableRow>
 		{
 			return SNew(CameraLensDistortionAlgoCheckerboard::SCalibrationRowGenerator, OwnerTable)
 				.CalibrationRowData(InItem);
@@ -804,11 +828,17 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationPoint
 			{
 				// Delete selected items
 
-				const TArray<TSharedPtr<FCalibrationRowData>> SelectedItems = CalibrationListView->GetSelectedItems();
+				const TArray<TSharedPtr<FLensDistortionCheckerboardRowData>> SelectedItems = CalibrationListView->GetSelectedItems();
 
-				for (const TSharedPtr<FCalibrationRowData>& SelectedItem : SelectedItems)
+				for (const TSharedPtr<FLensDistortionCheckerboardRowData>& SelectedItem : SelectedItems)
 				{
 					CalibrationRows.Remove(SelectedItem);
+
+					// Delete the previously exported .json file for the row that is being deleted
+					if (ULensDistortionTool* LensDistortionTool = Tool.Get())
+					{
+						LensDistortionTool->DeleteExportedRow(SelectedItem->Index);
+					}
 				}
 
 				CalibrationListView->RequestListRefresh();
@@ -908,6 +938,12 @@ void UCameraLensDistortionAlgoCheckerboard::ClearCalibrationRows()
 	}
 
 	RefreshCoverage();
+
+	// End the current calibration session (a new one will begin the next time a new row is added)
+	if (ULensDistortionTool* LenDistortionTool = Tool.Get())
+	{
+		LenDistortionTool->EndCalibrationSession();
+	}
 }
 
 void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
@@ -925,7 +961,7 @@ void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
 	CvCoverage.release();
 	CvCoverage = cv::Mat(cv::Size(Size.X, Size.Y), CV_8UC4);
 
-	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	for (const TSharedPtr<FLensDistortionCheckerboardRowData>& Row : CalibrationRows)
 	{
 		cv::Size CheckerboardSize(Row->NumCornerCols, Row->NumCornerRows);
 
@@ -943,6 +979,92 @@ void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
 
 	StepsController->RefreshOverlay();
 #endif
+}
+
+
+void UCameraLensDistortionAlgoCheckerboard::ExportSessionData()
+{
+	using namespace UE::CameraCalibration::Private;
+
+	if (ULensDistortionTool* LensDistortionTool = Tool.Get())
+	{
+		// Add all data to a json object that is needed to run this algorithm that is NOT part of a specific row
+		TSharedPtr<FJsonObject> JsonSessionData = MakeShared<FJsonObject>();
+
+		JsonSessionData->SetNumberField(LensDistortionCheckerboardExportFields::Version, DATASET_VERSION);
+
+		// Export the session data to a .json file
+		Tool->ExportSessionData(JsonSessionData.ToSharedRef());
+	}
+}
+
+void UCameraLensDistortionAlgoCheckerboard::ExportRow(TSharedPtr<FLensDistortionCheckerboardRowData> Row)
+{
+	if (ULensDistortionTool* LensDistortionTool = Tool.Get())
+	{
+		if (const TSharedPtr<FJsonObject>& RowObject = FJsonObjectConverter::UStructToJsonObject<FLensDistortionCheckerboardRowData>(Row.ToSharedRef().Get()))
+		{
+			// Export the row data to a .json file
+			LensDistortionTool->ExportCalibrationRow(Row->Index, RowObject.ToSharedRef(), Row->ImageView);
+		}
+	}
+}
+
+bool UCameraLensDistortionAlgoCheckerboard::HasCalibrationData() const
+{
+	return (CalibrationRows.Num() > 0);
+}
+
+void UCameraLensDistortionAlgoCheckerboard::PreImportCalibrationData()
+{
+	// Clear the current set of rows before importing new ones
+	CalibrationRows.Empty();
+}
+
+int32 UCameraLensDistortionAlgoCheckerboard::ImportCalibrationRow(const TSharedRef<FJsonObject>& CalibrationRowObject, const FImage& RowImage)
+{
+	// Create a new row to populate with data from the Json object
+	TSharedPtr<FLensDistortionCheckerboardRowData> NewRow = MakeShared<FLensDistortionCheckerboardRowData>();
+
+	// We enforce strict mode to ensure that every field in the UStruct of row data is present in the imported json.
+	// If any fields are missing, it is likely the row will be invalid, which will lead to errors in the calibration.
+	constexpr int64 CheckFlags = 0;
+	constexpr int64 SkipFlags = 0;
+	constexpr bool bStrictMode = true;
+	if (FJsonObjectConverter::JsonObjectToUStruct<FLensDistortionCheckerboardRowData>(CalibrationRowObject, NewRow.Get(), CheckFlags, SkipFlags, bStrictMode))
+	{
+		if (!RowImage.RawData.IsEmpty())
+		{
+			NewRow->ImageView = RowImage;
+
+			// Resize the image into a thumbnail, create a UTexture from it, and initialize the thumbnail viewport for this row
+			FImage RowThumbnail;
+			RowImage.ResizeTo(RowThumbnail, RowImage.GetWidth() / 4, RowImage.GetHeight() / 4, ERawImageFormat::BGRA8, RowImage.GetGammaSpace());
+
+			UTexture2D* ThumbnailTexture = FImageUtils::CreateTexture2DFromImage(RowThumbnail);
+			NewRow->Thumbnail = SNew(SSimulcamViewport, ThumbnailTexture).WithZoom(false).WithPan(false);
+		}
+
+		CalibrationRows.Add(NewRow);
+	}
+	else
+	{
+		UE_LOG(LogCameraCalibrationEditor, Warning, TEXT("LensDistortionCheckerboard algo failed to import calibration row because at least one field could not be deserialized from the json file."));
+	}
+
+	return NewRow->Index;
+}
+
+void UCameraLensDistortionAlgoCheckerboard::PostImportCalibrationData()
+{
+	// Sort imported calibration rows by row index
+	CalibrationRows.Sort([](const TSharedPtr<FLensDistortionCheckerboardRowData>& LHS, const TSharedPtr<FLensDistortionCheckerboardRowData>& RHS) { return LHS->Index < RHS->Index; });
+
+	// Notify the ListView of the new data
+	if (CalibrationListView.IsValid())
+	{
+		CalibrationListView->RequestListRefresh();
+	}
 }
 
 TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildHelpWidget()

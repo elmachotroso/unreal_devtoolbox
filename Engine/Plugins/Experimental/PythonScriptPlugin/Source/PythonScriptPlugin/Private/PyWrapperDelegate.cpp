@@ -13,6 +13,8 @@
 #include "UObject/StructOnScope.h"
 #include "Templates/Casts.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PyWrapperDelegate)
+
 const FName UPythonCallableForDelegate::GeneratedFuncName = "CallPython";
 
 DEFINE_FUNCTION(UPythonCallableForDelegate::CallPythonNative)
@@ -89,6 +91,28 @@ void InitializePyWrapperDelegate(PyGenUtil::FNativePythonModule& ModuleInfo)
 
 namespace PyDelegateUtil
 {
+
+/**
+ * Tests for callable equality
+ * ob_type->tp_call is the function pointer that will be called, so they need to be the same.
+ * If the callable is a method, check that the self parameter is also the same.
+ * 
+ * Lhs & Rhs need to be callables!
+ */
+bool AreCallablesEqual(PyObject* Lhs, PyObject* Rhs)
+{
+	check(PyCallable_Check(Lhs) && PyCallable_Check(Rhs));
+
+	bool bAreCallablesEqual = (Lhs->ob_type == Rhs->ob_type); // Must be of the same type
+	bAreCallablesEqual = bAreCallablesEqual && (Lhs->ob_type->tp_call == Rhs->ob_type->tp_call); // Must be calling the same function/method
+
+	if (bAreCallablesEqual && PyMethod_Check(Lhs))
+	{
+		bAreCallablesEqual = (PyMethod_Self(Lhs) == PyMethod_Self(Rhs)); // Must have the same self
+	}
+
+	return bAreCallablesEqual;
+}
 
 bool PythonArgsToDelegate_ObjectAndName(PyObject* InArgs, const PyGenUtil::FGeneratedWrappedFunction& InDelegateSignature, FScriptDelegate& OutDelegate, const TCHAR* InFuncCtxt, const TCHAR* InErrorCtxt)
 {
@@ -749,17 +773,20 @@ PyTypeObject InitializePyWrapperDelegateType()
 		}
 	};
 
+	// NOTE: The delegate couldn't be strictly type-hinted. The exact return/param types of the delegate are unknown here. In Python 3.11, we should be able
+	//       to use typing.Self for return type of __copy__() and copy() methods.
+	//       _T = typing.TypeVar('_T') and Type/Any/Callable/Union are defines by the Python typing module.
 	static PyMethodDef PyMethods[] = {
-		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "X.cast(object) -> struct -- cast the given object to this Unreal delegate type" },
-		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.__copy__() -> delegate -- copy this Unreal delegate" },
-		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.copy() -> struct -- copy this Unreal delegate" },
-		{ "is_bound", PyCFunctionCast(&FMethods::IsBound), METH_NOARGS, "x.is_bound() -> bool -- is this Unreal delegate bound to something?" },
-		{ "bind_delegate", PyCFunctionCast(&FMethods::BindDelegate), METH_VARARGS, "x.bind_delegate(delegate) -> None -- bind this Unreal delegate to the same object and function as another delegate" },
-		{ "bind_function", PyCFunctionCast(&FMethods::BindFunction), METH_VARARGS, "x.bind_function(obj, name) -> None -- bind this Unreal delegate to a named Unreal function on the given object instance" },
-		{ "bind_callable", PyCFunctionCast(&FMethods::BindCallable), METH_VARARGS, "x.bind_callable(callable) -> None -- bind this Unreal delegate to a Python callable" },
-		{ "unbind", PyCFunctionCast(&FMethods::Unbind), METH_NOARGS, "x.unbind() -> None -- unbind this Unreal delegate" },
-		{ "execute", PyCFunctionCast(&FMethods::Execute), METH_VARARGS, "x.execute(...) -> value -- call this Unreal delegate, but error if it's unbound" },
-		{ "execute_if_bound", PyCFunctionCast(&FMethods::ExecuteIfBound), METH_VARARGS, "x.execute_if_bound(...) -> value -- call this Unreal delegate, but only if it's bound to something" },
+		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal delegate type" },
+		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "__copy__(self) -> Any -- copy this Unreal delegate" },
+		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "copy(self) -> Any -- copy this Unreal delegate" },
+		{ "is_bound", PyCFunctionCast(&FMethods::IsBound), METH_NOARGS, "is_bound(self) -> bool -- is this Unreal delegate bound to something?" },
+		{ "bind_delegate", PyCFunctionCast(&FMethods::BindDelegate), METH_VARARGS, "bind_delegate(self, delegate: DelegateBase) -> None -- bind this Unreal delegate to the same object and function as another delegate" },
+		{ "bind_function", PyCFunctionCast(&FMethods::BindFunction), METH_VARARGS, "bind_function(self, obj: Object, name: Union[Name, str]) -> None -- bind this Unreal delegate to a named Unreal function on the given object instance" },
+		{ "bind_callable", PyCFunctionCast(&FMethods::BindCallable), METH_VARARGS, "bind_callable(self, callable: Callable[..., Any]) -> None -- bind this Unreal delegate to a Python callable" },
+		{ "unbind", PyCFunctionCast(&FMethods::Unbind), METH_NOARGS, "unbind(self) -> None -- unbind this Unreal delegate" },
+		{ "execute", PyCFunctionCast(&FMethods::Execute), METH_VARARGS, "execute(self, *args: Any) -> Any -- call this Unreal delegate, but error if it's unbound" },
+		{ "execute_if_bound", PyCFunctionCast(&FMethods::ExecuteIfBound), METH_VARARGS, "x.execute_if_bound(self, *args: Any) -> Any -- call this Unreal delegate, but only if it's bound to something" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -986,7 +1013,7 @@ PyTypeObject InitializePyWrapperMulticastDelegateType()
 			{
 				if (const UPythonCallableForDelegate* PythonCallableForDelegate = ::Cast<UPythonCallableForDelegate>(DelegateObj))
 				{
-					if (PythonCallableForDelegate->GetCallable() == PyCallable)
+					if (PyDelegateUtil::AreCallablesEqual(PythonCallableForDelegate->GetCallable(), PyCallable))
 					{
 						bAddDelegate = false;
 						break;
@@ -1051,7 +1078,7 @@ PyTypeObject InitializePyWrapperMulticastDelegateType()
 			{
 				if (UPythonCallableForDelegate* PythonCallableForDelegate = ::Cast<UPythonCallableForDelegate>(DelegateObj))
 				{
-					if (PythonCallableForDelegate->GetCallable() == PyCallable)
+					if (PyDelegateUtil::AreCallablesEqual(PythonCallableForDelegate->GetCallable(), PyCallable))
 					{
 						PythonCallableForDelegateToRemove = PythonCallableForDelegate;
 						break;
@@ -1134,7 +1161,7 @@ PyTypeObject InitializePyWrapperMulticastDelegateType()
 			{
 				if (const UPythonCallableForDelegate* PythonCallableForDelegate = ::Cast<UPythonCallableForDelegate>(DelegateObj))
 				{
-					if (PythonCallableForDelegate->GetCallable() == PyCallable)
+					if (PyDelegateUtil::AreCallablesEqual(PythonCallableForDelegate->GetCallable(), PyCallable))
 					{
 						bContainsCallable = true;
 						break;
@@ -1167,23 +1194,25 @@ PyTypeObject InitializePyWrapperMulticastDelegateType()
 			return FPyWrapperMulticastDelegate::CallDelegate(InSelf, InArgs);
 		}
 	};
-
+	// NOTE: The multicast delegate couldn't be strictly type-hinted. The exact param types of the delegate are unknown here. In Python 3.11, we should be able
+	//       to use typing.Self for return type of __copy__() and copy() methods.
+	//       _T = typing.TypeVar('_T') and Type/Any/Callable/Union are defines by the Python typing module.
 	static PyMethodDef PyMethods[] = {
-		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "X.cast(object) -> struct -- cast the given object to this Unreal delegate type" },
-		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.__copy__() -> struct -- copy this Unreal delegate" },
-		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.copy() -> struct -- copy this Unreal delegate" },
-		{ "is_bound", PyCFunctionCast(&FMethods::IsBound), METH_NOARGS, "x.is_bound() -> bool -- is this Unreal delegate bound to something?" },
-		{ "add_function", PyCFunctionCast(&FMethods::AddFunction), METH_VARARGS, "x.add_function(obj, name) -> None -- add a binding to a named Unreal function on the given object instance to the invocation list of this Unreal delegate" },
-		{ "add_callable", PyCFunctionCast(&FMethods::AddCallable), METH_VARARGS, "x.add_callable(callable) -> None -- add a binding to a Python callable to the invocation list of this Unreal delegate" },
-		{ "add_function_unique", PyCFunctionCast(&FMethods::AddFunctionUnique), METH_VARARGS, "x.add_function_unique(obj, name) -> None -- add a unique binding to a named Unreal function on the given object instance to the invocation list of this Unreal delegate" },
-		{ "add_callable_unique", PyCFunctionCast(&FMethods::AddCallableUnique), METH_VARARGS, "x.add_callable_unique(callable) -> None -- add a unique binding to a Python callable to the invocation list of this Unreal delegate" },
-		{ "remove_function", PyCFunctionCast(&FMethods::RemoveFunction), METH_VARARGS, "x.remove_function(obj, name) -> None -- remove a binding to a named Unreal function on the given object instance from the invocation list of this Unreal delegate" },
-		{ "remove_callable", PyCFunctionCast(&FMethods::RemoveCallable), METH_VARARGS, "x.remove_callable(callable) -> None -- remove a binding to a Python callable from the invocation list of this Unreal delegate" },
-		{ "remove_object", PyCFunctionCast(&FMethods::RemoveObject), METH_VARARGS, "x.remove_object(obj) -> None -- remove all bindings for the given object instance from the invocation list of this Unreal delegate" },
-		{ "contains_function", PyCFunctionCast(&FMethods::ContainsFunction), METH_VARARGS, "x.contains_function(obj, name) -> bool -- does the invocation list of this Unreal delegate contain a binding to a named Unreal function on the given object instance" },
-		{ "contains_callable", PyCFunctionCast(&FMethods::ContainsCallable), METH_VARARGS, "x.contains_callable(callable) -> bool -- does the invocation list of this Unreal delegate contain a binding to a Python callable" },
+		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal delegate type" },
+		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "__copy__(self) -> Any -- copy this Unreal delegate" },
+		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "copy(self) -> Any -- copy this Unreal delegate" },
+		{ "is_bound", PyCFunctionCast(&FMethods::IsBound), METH_NOARGS, "is_bound(self) -> bool -- is this Unreal delegate bound to something?" },
+		{ "add_function", PyCFunctionCast(&FMethods::AddFunction), METH_VARARGS, "add_function(self, obj: Object, name: Union[Name, str]) -> None -- add a binding to a named Unreal function on the given object instance to the invocation list of this Unreal delegate" },
+		{ "add_callable", PyCFunctionCast(&FMethods::AddCallable), METH_VARARGS, "add_callable(self, callable: Callable[..., Any]) -> None -- add a binding to a Python callable to the invocation list of this Unreal delegate" },
+		{ "add_function_unique", PyCFunctionCast(&FMethods::AddFunctionUnique), METH_VARARGS, "add_function_unique(self, obj: Object, name: Union[Name, str]) -> None -- add a unique binding to a named Unreal function on the given object instance to the invocation list of this Unreal delegate" },
+		{ "add_callable_unique", PyCFunctionCast(&FMethods::AddCallableUnique), METH_VARARGS, "add_callable_unique(self, callable: Callable[..., Any]) -> None -- add a unique binding to a Python callable to the invocation list of this Unreal delegate" },
+		{ "remove_function", PyCFunctionCast(&FMethods::RemoveFunction), METH_VARARGS, "remove_function(self, obj: Object, name: Union[Name, str]) -> None -- remove a binding to a named Unreal function on the given object instance from the invocation list of this Unreal delegate" },
+		{ "remove_callable", PyCFunctionCast(&FMethods::RemoveCallable), METH_VARARGS, "remove_callable(self, callable: Callable[..., Any]) -> None -- remove a binding to a Python callable from the invocation list of this Unreal delegate" },
+		{ "remove_object", PyCFunctionCast(&FMethods::RemoveObject), METH_VARARGS, "remove_object(self, obj: Object) -> None -- remove all bindings for the given object instance from the invocation list of this Unreal delegate" },
+		{ "contains_function", PyCFunctionCast(&FMethods::ContainsFunction), METH_VARARGS, "contains_function(self, obj: Object, name: Union[Name, str]) -> bool -- does the invocation list of this Unreal delegate contain a binding to a named Unreal function on the given object instance" },
+		{ "contains_callable", PyCFunctionCast(&FMethods::ContainsCallable), METH_VARARGS, "contains_callable(self, callable: Callable[..., Any]) -> bool -- does the invocation list of this Unreal delegate contain a binding to a Python callable" },
 		{ "clear", PyCFunctionCast(&FMethods::Clear), METH_NOARGS, "x.clear() -> None -- clear the invocation list of this Unreal delegate" },
-		{ "broadcast", PyCFunctionCast(&FMethods::Broadcast), METH_VARARGS, "x.broadcast(...) -> None -- invoke this Unreal multicast delegate" },
+		{ "broadcast", PyCFunctionCast(&FMethods::Broadcast), METH_VARARGS, "x.broadcast(*args: Any) -> None -- invoke this Unreal multicast delegate" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -1235,3 +1264,4 @@ void FPyWrapperMulticastDelegateMetaData::AddReferencedObjects(FPyWrapperBase* I
 }
 
 #endif	// WITH_PYTHON
+

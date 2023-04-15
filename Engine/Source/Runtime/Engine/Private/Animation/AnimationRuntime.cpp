@@ -15,9 +15,6 @@
 #include "Animation/AnimationPoseData.h"
 #include "Animation/BlendProfile.h"
 #include "Animation/MirrorDataTable.h"
-#if INTEL_ISPC
-#include "AnimationRuntime.ispc.generated.h"
-#endif
 
 DEFINE_LOG_CATEGORY(LogAnimation);
 DEFINE_LOG_CATEGORY(LogRootMotion);
@@ -30,16 +27,75 @@ DECLARE_CYCLE_STAT(TEXT("BlendPosesPerBoneFilter"), STAT_BlendPosesPerBoneFilter
 //////////////////////////////////////////////////////////////////////////
 
 #if INTEL_ISPC
+
+#include "AnimationRuntime.ispc.generated.h"
+
 static_assert(sizeof(ispc::FTransform) == sizeof(FTransform), "sizeof(ispc::FTransform) != sizeof(FTransform)");
 static_assert(sizeof(ispc::FVector) == sizeof(FVector), "sizeof(ispc::FVector) != sizeof(FVector)");
 static_assert(sizeof(ispc::FVector4) == sizeof(FQuat), "sizeof(ispc::FVector4) != sizeof(FQuat)");
 static_assert(sizeof(ispc::FPerBoneBlendWeight) == sizeof(FPerBoneBlendWeight), "sizeof(ispc::FPerBoneBlendWeight) != sizeof(FPerBoneBlendWeight)");
+
+#if !defined(ANIM_BLEND_POSE_OVERWRITE_ISPC_ENABLED_DEFAULT)
+#define ANIM_BLEND_POSE_OVERWRITE_ISPC_ENABLED_DEFAULT 1
 #endif
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
-bool bAnim_Runtime_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarAnimRuntimeISPCEnabled(TEXT("a.Runtime.ISPC"), bAnim_Runtime_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in animation runtime"));
+#if !defined(ANIM_BLEND_POSE_ACCUMULATE_ISPC_ENABLED_DEFAULT)
+#define ANIM_BLEND_POSE_ACCUMULATE_ISPC_ENABLED_DEFAULT 1
 #endif
+
+#if !defined(ANIM_BLEND_CURVES_ISPC_ENABLED_DEFAULT)
+#define ANIM_BLEND_CURVES_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(ANIM_LERP_BONE_TRANSFORMS_ISPC_ENABLED_DEFAULT)
+#define ANIM_LERP_BONE_TRANSFORMS_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(ANIM_CONVERT_POSE_TO_MESH_ROTATION_ISPC_ENABLED_DEFAULT)
+#define ANIM_CONVERT_POSE_TO_MESH_ROTATION_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(ANIM_CONVERT_MESH_ROTATION_TO_LOCAL_SPACE_ISPC_ENABLED_DEFAULT)
+#define ANIM_CONVERT_MESH_ROTATION_TO_LOCAL_SPACE_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(ANIM_ACCUMULATE_LOCAL_SPACE_ADDITIVE_POSE_ISPC_ENABLED_DEFAULT)
+#define ANIM_ACCUMULATE_LOCAL_SPACE_ADDITIVE_POSE_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(ANIM_BLEND_POSES_PER_BONE_FILTER_ISPC_ENABLED_DEFAULT)
+#define ANIM_BLEND_POSES_PER_BONE_FILTER_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if UE_BUILD_SHIPPING
+static constexpr bool bAnim_BlendPoseOverwrite_ISPC_Enabled = ANIM_BLEND_POSE_OVERWRITE_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_BlendPoseAccumulate_ISPC_Enabled = ANIM_BLEND_POSE_ACCUMULATE_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_BlendCurves_ISPC_Enabled = ANIM_BLEND_CURVES_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_LerpBoneTransforms_ISPC_Enabled = ANIM_LERP_BONE_TRANSFORMS_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_ConvertPoseToMeshRotation_ISPC_Enabled = ANIM_CONVERT_POSE_TO_MESH_ROTATION_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_ConvertMeshRotationPoseToLocalSpace_ISPC_Enabled = ANIM_CONVERT_MESH_ROTATION_TO_LOCAL_SPACE_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_AccumulateLocalSpaceAdditivePose_ISPC_Enabled = ANIM_ACCUMULATE_LOCAL_SPACE_ADDITIVE_POSE_ISPC_ENABLED_DEFAULT;
+static constexpr bool bAnim_BlendPosesPerBoneFilter_ISPC_Enabled = ANIM_BLEND_POSES_PER_BONE_FILTER_ISPC_ENABLED_DEFAULT;
+#else
+static bool bAnim_BlendPoseOverwrite_ISPC_Enabled = ANIM_BLEND_POSE_OVERWRITE_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarBlendPoseOverwriteISPCEnabled(TEXT("a.BlendPoseOverwrite.ISPC"), bAnim_BlendPoseOverwrite_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for over-write pose blending"));
+static bool bAnim_BlendPoseAccumulate_ISPC_Enabled = ANIM_BLEND_POSE_ACCUMULATE_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarBlendPoseAccumulateISPCEnabled(TEXT("a.BlendPoseAccumulate.ISPC"), bAnim_BlendPoseAccumulate_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for accumulation pose blending"));
+static bool bAnim_BlendCurves_ISPC_Enabled = ANIM_BLEND_CURVES_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarBlendCurvesISPCEnabled(TEXT("a.BlendCurves.ISPC"), bAnim_BlendCurves_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for curve blending"));
+static bool bAnim_LerpBoneTransforms_ISPC_Enabled = ANIM_LERP_BONE_TRANSFORMS_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarLerpBoneTransformsISPCEnabled(TEXT("a.LerpBoneTransforms.ISPC"), bAnim_LerpBoneTransforms_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for interpolating bone transforms"));
+static bool bAnim_ConvertPoseToMeshRotation_ISPC_Enabled = ANIM_CONVERT_POSE_TO_MESH_ROTATION_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarConvertPoseToMeshRotationISPCEnabled(TEXT("a.ConvertPoseToMeshRotation.ISPC"), bAnim_ConvertPoseToMeshRotation_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for converting local space rotations to mesh space"));
+static bool bAnim_ConvertMeshRotationPoseToLocalSpace_ISPC_Enabled = ANIM_CONVERT_MESH_ROTATION_TO_LOCAL_SPACE_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarConvertMeshRotationPoseToLocalSpace(TEXT("a.ConvertMeshRotationPoseToLocalSpace.ISPC"), bAnim_ConvertMeshRotationPoseToLocalSpace_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for converting mesh space rotations to local space"));
+static bool bAnim_AccumulateLocalSpaceAdditivePose_ISPC_Enabled = ANIM_ACCUMULATE_LOCAL_SPACE_ADDITIVE_POSE_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarAccumulateLocalSpaceAdditivePose(TEXT("a.AccumulateLocalSpaceAdditivePose.ISPC"), bAnim_AccumulateLocalSpaceAdditivePose_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for accumulating local space additive pose"));
+static bool bAnim_BlendPosesPerBoneFilter_ISPC_Enabled = ANIM_BLEND_POSES_PER_BONE_FILTER_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarBlendPosesPerBoneFilter(TEXT("a.BlendPosesPerBoneFilter.ISPC"), bAnim_BlendPosesPerBoneFilter_ISPC_Enabled, TEXT("Whether to use ISPC optimizations for blending poses with a per-bone filter"));
+#endif // UE_BUILD_SHIPPING
+
+#endif // INTEL_ISPC
 
 void FAnimationRuntime::NormalizeRotations(const FBoneContainer& RequiredBones, /*inout*/ FTransformArrayA2& Atoms)
 {
@@ -93,17 +149,17 @@ FORCEINLINE void BlendPose(const FCompactPose& SourcePose, FCompactPose& ResultP
 template <>
 FORCEINLINE void BlendPose<ETransformBlendMode::Overwrite>(const FCompactPose& SourcePose, FCompactPose& ResultPose, const float BlendWeight)
 {
-	if (bAnim_Runtime_ISPC_Enabled)
-	{
 #if INTEL_ISPC
+	if (bAnim_BlendPoseOverwrite_ISPC_Enabled)
+	{
 		ispc::BlendTransformOverwrite(
 			(ispc::FTransform*)&SourcePose.GetBones()[0],
 			(ispc::FTransform*)&ResultPose.GetBones()[0],
 			BlendWeight,
 			SourcePose.GetNumBones());
-#endif
 	}
 	else
+#endif
 	{
 		for (FCompactPoseBoneIndex BoneIndex : SourcePose.ForEachBoneIndex())
 		{
@@ -115,17 +171,17 @@ FORCEINLINE void BlendPose<ETransformBlendMode::Overwrite>(const FCompactPose& S
 template <>
 FORCEINLINE void BlendPose<ETransformBlendMode::Accumulate>(const FCompactPose& SourcePose, FCompactPose& ResultPose, const float BlendWeight)
 {
-	if (bAnim_Runtime_ISPC_Enabled)
-	{
 #if INTEL_ISPC
+	if (bAnim_BlendPoseAccumulate_ISPC_Enabled)
+	{
 		ispc::BlendTransformAccumulate(
 			(ispc::FTransform*)&SourcePose.GetBones()[0],
 			(ispc::FTransform*)&ResultPose.GetBones()[0],
 			BlendWeight,
 			SourcePose.GetNumBones());
-#endif
 	}
 	else
+#endif
 	{
 		for (FCompactPoseBoneIndex BoneIndex : SourcePose.ForEachBoneIndex())
 		{
@@ -164,9 +220,9 @@ FORCEINLINE void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves,
 {
 	if (SourceCurves.Num() > 0)
 	{
-		if (bAnim_Runtime_ISPC_Enabled)
-		{
 #if INTEL_ISPC
+		if (bAnim_BlendCurves_ISPC_Enabled)
+		{
 			OutCurve.InitFrom(SourceCurves[0]);
 			for (int32 CurveIndex = 0; CurveIndex < SourceCurves.Num(); ++CurveIndex)
 			{
@@ -180,9 +236,9 @@ FORCEINLINE void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves,
 					SourceWeights[CurveIndex]
 				);
 			}
-#endif
 		}
 		else
+#endif
 		{
 			OutCurve.Override(SourceCurves[0], SourceWeights[0]);
 			for (int32 CurveIndex = 1; CurveIndex < SourceCurves.Num(); ++CurveIndex)
@@ -478,7 +534,7 @@ void FAnimationRuntime::BlendTwoPosesTogetherPerBone(const FAnimationPoseData& S
 		{
 			OutPose[BoneIndex] = SourcePoseTwo[BoneIndex];
 		}
-		// if it doens't have weight, take source pose 1
+		// if it doesn't have weight, take source pose 1
 		else if (FAnimationRuntime::HasWeight(BlendWeight))
 		{
 			BlendTransform<ETransformBlendMode::Overwrite>(SourcePoseOne[BoneIndex], OutPose[BoneIndex], 1.f - BlendWeight);
@@ -576,7 +632,6 @@ void FAnimationRuntime::BlendPosesTogetherPerBone(TArrayView<const FCompactPose>
 	}
 
 	BlendPosePerBone<ETransformBlendMode::Overwrite>(PerBoneIndices, BlendSampleDataCache[0], OutPose, SourcePoses[0]);
-
 	for (int32 i = 1; i < SourcePoses.Num(); ++i)
 	{
 		BlendPosePerBone<ETransformBlendMode::Accumulate>(PerBoneIndices, BlendSampleDataCache[i], OutPose, SourcePoses[i]);
@@ -664,27 +719,34 @@ void FAnimationRuntime::BlendPosesTogetherPerBone(TArrayView<const FCompactPose>
 }
 
 void FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(
-	const TArrayView<FCompactPose> SourcePoses,
-	const TArrayView<const FBlendedCurve> SourceCurves,
-	const UBlendSpace* BlendSpace,
+	const TArrayView<FCompactPose>           SourcePoses,
+	const TArrayView<const FBlendedCurve>    SourceCurves,
+	const UBlendSpace*                       BlendSpace,
 	const TArrayView<const FBlendSampleData> BlendSampleDataCache,
-	/*out*/ FCompactPose& ResultPose,
-	/*out*/ FBlendedCurve& ResultCurve)
+	/*out*/ FCompactPose&                    ResultPose,
+	/*out*/ FBlendedCurve&                   ResultCurve)
 {
 	UE::Anim::FStackAttributeContainer TempAttributes;
 	FAnimationPoseData AnimationPoseData = { ResultPose, ResultCurve, TempAttributes };
 
-	BlendPosesTogetherPerBoneInMeshSpace(SourcePoses, SourceCurves, {}, BlendSpace, BlendSampleDataCache, AnimationPoseData);
+	BlendPosesTogetherPerBoneInMeshSpace(
+		SourcePoses, SourceCurves, {}, BlendSpace, BlendSampleDataCache, AnimationPoseData);
 }
 
-void FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(TArrayView<FCompactPose> SourcePoses, TArrayView<const FBlendedCurve> SourceCurves, TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes, const UBlendSpace* BlendSpace, TArrayView<const FBlendSampleData> BlendSampleDataCache, /*out*/ FAnimationPoseData& OutAnimationPoseData)
+void FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(
+	TArrayView<FCompactPose>                             SourcePoses, 
+	TArrayView<const FBlendedCurve>                      SourceCurves, 
+	TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes, 
+	const UBlendSpace*                                   BlendSpace, 
+	TArrayView<const FBlendSampleData>                   BlendSampleDataCache, 
+	/*out*/ FAnimationPoseData&                          OutAnimationPoseData)
 {
-	FQuat NewRotation;
-	USkeleton* Skeleton = BlendSpace->GetSkeleton();
-
 	FCompactPose& OutPose = OutAnimationPoseData.GetPose();
 
-	// all this is going to do is to convert SourcePoses.Rotation to be mesh space, and then once it goes through BlendPosesTogetherPerBone, convert back to local
+	// Convert the sources poses into mesh space, and then once they have gone through
+	// BlendPosesTogetherPerBone, convert back to local space
+
+	// Convert SourcePoses.Rotation to be mesh space
 	for (FCompactPose& Pose : SourcePoses)
 	{
 		for (const FCompactPoseBoneIndex BoneIndex : Pose.ForEachBoneIndex())
@@ -692,23 +754,17 @@ void FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(TArrayView<FCompact
 			const FCompactPoseBoneIndex ParentIndex = Pose.GetParentBoneIndex(BoneIndex);
 			if (ParentIndex != INDEX_NONE)
 			{
-				NewRotation = Pose[ParentIndex].GetRotation() * Pose[BoneIndex].GetRotation();
+				FQuat NewRotation = Pose[ParentIndex].GetRotation() * Pose[BoneIndex].GetRotation();
 				NewRotation.Normalize();
+				Pose[BoneIndex].SetRotation(NewRotation);
 			}
-			else
-			{
-				NewRotation = Pose[BoneIndex].GetRotation();
-			}
-
-			// now copy back to SourcePoses
-			Pose[BoneIndex].SetRotation(NewRotation);
 		}
 	}
 
 	// now we have mesh space rotation, call BlendPosesTogetherPerBone
 	BlendPosesTogetherPerBone(SourcePoses, SourceCurves, SourceAttributes, BlendSpace, BlendSampleDataCache, OutAnimationPoseData);
 
-	// now result atoms has the output with mesh space rotation. Convert back to local space, start from back
+	// Now OutPose has the output with mesh space rotation. Convert back to local space, start from back
 	for (const FCompactPoseBoneIndex BoneIndex : OutPose.ForEachBoneIndexReverse())
 	{
 		const FCompactPoseBoneIndex ParentIndex = OutPose.GetParentBoneIndex(BoneIndex);
@@ -847,9 +903,9 @@ void FAnimationRuntime::LerpBoneTransforms(TArray<FTransform>& A, const TArray<F
 		return;
 	}
 
-	if (bAnim_Runtime_ISPC_Enabled)
-	{
 #if INTEL_ISPC
+	if (bAnim_LerpBoneTransforms_ISPC_Enabled)
+	{
 		ispc::LerpBoneTransforms(
 			(ispc::FTransform*)A.GetData(),
 			(ispc::FTransform*)B.GetData(),
@@ -857,9 +913,9 @@ void FAnimationRuntime::LerpBoneTransforms(TArray<FTransform>& A, const TArray<F
 			RequiredBonesArray.GetData(),
 			RequiredBonesArray.Num()
 		);
-#endif
 	}
 	else
+#endif
 	{
 		FTransform* ATransformData = A.GetData();
 		const FTransform* BTransformData = B.GetData();
@@ -957,18 +1013,16 @@ void FAnimationRuntime::ConvertPoseToMeshRotation(FCompactPose& LocalPose)
 {
 	SCOPE_CYCLE_COUNTER(STAT_ConvertPoseToMeshRot);
 
-	// Convert all rotations to mesh space
-	// only the root bone doesn't have a parent. So skip it to save a branch in the iteration.
-	if (bAnim_Runtime_ISPC_Enabled)
-	{
 #if INTEL_ISPC
+	if (bAnim_ConvertPoseToMeshRotation_ISPC_Enabled)
+	{
 		ispc::ConvertPoseToMeshRotation(
 			(ispc::FTransform*)&LocalPose.GetBones()[0],
 			(int32*)&LocalPose.GetBoneContainer().GetCompactPoseParentBoneArray().GetData()[0],
 			LocalPose.GetNumBones());
-#endif
 	}
 	else
+#endif
 	{
 		for (FCompactPoseBoneIndex BoneIndex(1); BoneIndex < LocalPose.GetNumBones(); ++BoneIndex)
 		{
@@ -984,18 +1038,16 @@ void FAnimationRuntime::ConvertMeshRotationPoseToLocalSpace(FCompactPose& Pose)
 {
 	SCOPE_CYCLE_COUNTER(STAT_ConvertMeshRotPoseToLocalSpace);
 
-	// Convert all rotations to mesh space
-	// only the root bone doesn't have a parent. So skip it to save a branch in the iteration.
-	if (bAnim_Runtime_ISPC_Enabled)
-	{
 #if INTEL_ISPC
+	if (bAnim_ConvertMeshRotationPoseToLocalSpace_ISPC_Enabled)
+	{
 		ispc::ConvertMeshRotationPoseToLocalSpace(
 			(ispc::FTransform*)&Pose.GetBones()[0],
 			(int32*)&Pose.GetBoneContainer().GetCompactPoseParentBoneArray().GetData()[0],
 			Pose.GetNumBones());
-#endif
 	}
 	else
+#endif
 	{
 		for (FCompactPoseBoneIndex BoneIndex(Pose.GetNumBones() - 1); BoneIndex > 0; --BoneIndex)
 		{
@@ -1072,17 +1124,17 @@ void FAnimationRuntime::AccumulateLocalSpaceAdditivePoseInternal(FCompactPose& B
 		const ScalarRegister VBlendWeight(Weight);
 		if (FAnimWeight::IsFullWeight(Weight))
 		{
-			if (bAnim_Runtime_ISPC_Enabled)
-			{
 #if INTEL_ISPC
+			if (bAnim_AccumulateLocalSpaceAdditivePose_ISPC_Enabled)
+			{
 				ispc::AccumulateWithAdditiveScale(
 					(ispc::FTransform*)&BasePose.GetBones()[0],
 					(ispc::FTransform*)&AdditivePose.GetBones()[0],
 					Weight,
 					BasePose.GetNumBones());
-#endif
 			}
 			else
+#endif
 			{
 				// fast path, no need to weight additive.
 				for (FCompactPoseBoneIndex BoneIndex : BasePose.ForEachBoneIndex())
@@ -1736,7 +1788,7 @@ FAnimationPoseData& OutAnimationPoseData, TArray<FPerBoneBlendWeight>& BoneBlend
 	};
 	auto ConvertMeshToLocalSpaceScale = [&](FTransform& BlendAtom, FCompactPoseBoneIndex ParentIndex, FCompactPoseBoneIndex BoneIndex)
 	{
-		FVector ParentScaleInv = FTransform::GetSafeScaleReciprocal(BlendScales[ParentIndex], SMALL_NUMBER);
+		FVector ParentScaleInv = FTransform::GetSafeScaleReciprocal(BlendScales[ParentIndex], UE_SMALL_NUMBER);
 		FVector LocalBlendScale = ParentScaleInv * BlendScales[BoneIndex];
 		BlendAtom.SetScale3D(LocalBlendScale);
 	};
@@ -1759,9 +1811,9 @@ FAnimationPoseData& OutAnimationPoseData, TArray<FPerBoneBlendWeight>& BoneBlend
 	// blend poses with both mesh space rotation and scaling (we assume uniform scale)
 	if (bMeshSpaceRotationBlend && bMeshSpaceScaleBlend)
 	{
-		if (bAnim_Runtime_ISPC_Enabled)
-		{
 #if INTEL_ISPC
+		if (bAnim_BlendPosesPerBoneFilter_ISPC_Enabled)
+		{
 			ispc::BlendPosesPerBoneFilterScaleRotation(
 				(ispc::FTransform*)OutPose.GetBones().GetData(),
 				(ispc::FTransform*)BasePose.GetBones().GetData(),
@@ -1776,9 +1828,9 @@ FAnimationPoseData& OutAnimationPoseData, TArray<FPerBoneBlendWeight>& BoneBlend
 				(ispc::FPerBoneBlendWeight*)BoneBlendWeights.GetData(),
 				(int32*)BoneContainer.GetCompactPoseParentBoneArray().GetData(),
 				BasePose.GetNumBones());
-#endif
 		}
 		else
+#endif
 		{
 			for (const FCompactPoseBoneIndex BoneIndex : BasePose.ForEachBoneIndex())
 			{
@@ -2060,7 +2112,6 @@ void FAnimationRuntime::CreateMaskWeights(TArray<FPerBoneBlendWeight>& BoneBlend
 
 			if (!BlendMask || BlendMask->Mode != EBlendProfileMode::BlendMask)
 			{
-				ensureMsgf(false, TEXT("FAnimationRuntime::CreateMaskWeights BlendMask null or BlendProfile mode is not blend mask.  BlendProfile=%s"), *GetNameSafe(BlendMask));
 				continue;
 			}
 
@@ -2358,21 +2409,12 @@ void FAnimationRuntime::FillUpComponentSpaceTransformsRetargetBasePose(const USk
 }
 #endif // WITH_EDITOR
 
-/** See if an array of ActiveMorphTargets already contains the supplied anim */
-static int32 FindMorphTarget(const TArray<FActiveMorphTarget>& ActiveMorphTargets, UMorphTarget* InMorphTarget)
-{
-	for(int32 i=0; i<ActiveMorphTargets.Num(); i++)
-	{
-		if(ActiveMorphTargets[i].MorphTarget == InMorphTarget)
-		{
-			return i;
-		}
-	}
-
-	return INDEX_NONE;
-}
-
-void FAnimationRuntime::AppendActiveMorphTargets(const USkeletalMesh* InSkeletalMesh, const TMap<FName, float>& MorphCurveAnims, TArray<FActiveMorphTarget>& InOutActiveMorphTargets, TArray<float>& InOutMorphTargetWeights)
+void FAnimationRuntime::AppendActiveMorphTargets(
+	const USkeletalMesh* InSkeletalMesh,
+	const TMap<FName, float>& MorphCurveAnims,
+	FMorphTargetWeightMap& InOutActiveMorphTargets,
+	TArray<float>& InOutMorphTargetWeights
+	)
 {
 	if (!InSkeletalMesh)
 	{
@@ -2391,52 +2433,54 @@ void FAnimationRuntime::AppendActiveMorphTargets(const USkeletalMesh* InSkeletal
 	//
 	// if somehow it gets rendered without going through these places, there will be crash. Renderer expect the buffer size being same. 
 
-	if(MorphCurveAnims.Num() > 0)
+	if(MorphCurveAnims.IsEmpty())
 	{
-		const int32 NumMorphTargets = InSkeletalMesh->GetMorphTargets().Num();
-		InOutMorphTargetWeights.SetNumZeroed(NumMorphTargets);
+		return;
+	}
+	
+	const int32 NumMorphTargets = InSkeletalMesh->GetMorphTargets().Num();
+	InOutMorphTargetWeights.SetNumZeroed(NumMorphTargets);
 
-		if(NumMorphTargets > 0)
+	if(NumMorphTargets == 0)
+	{
+		return;
+	}
+	
+	// Then go over the CurveKeys finding morph targets by name
+	for(const TPair<FName, float>& MorphCurveAnim : MorphCurveAnims)
+	{
+		const FName& CurveName = MorphCurveAnim.Key;
+		const float Weight = MorphCurveAnim.Value;
+
+		// Find morph reference
+		int32 SkeletalMorphIndex = INDEX_NONE;
+		const UMorphTarget* Target = InSkeletalMesh->FindMorphTargetAndIndex(CurveName, SkeletalMorphIndex);
+		if (Target != nullptr)
 		{
-			// Then go over the CurveKeys finding morph targets by name
-			for(const TPair<FName, float>& MorphCurveAnim : MorphCurveAnims)
+			// See if this morph target already has an entry
+			const int32* FoundMorphIndex = InOutActiveMorphTargets.Find(Target);
+			
+			// If it has a valid weight
+			if (FMath::Abs(Weight) > MinMorphTargetBlendWeight)
 			{
-				const FName& CurveName = MorphCurveAnim.Key;
-				const float Weight = MorphCurveAnim.Value;
-
-				// Find morph reference
-				int32 SkeletalMorphIndex = INDEX_NONE;
-				UMorphTarget* Target = InSkeletalMesh->FindMorphTargetAndIndex(CurveName, SkeletalMorphIndex);
-				if (Target != nullptr)
+				// If not, add it
+				if (FoundMorphIndex == nullptr)
 				{
-					// If it has a valid weight
-					if (FMath::Abs(Weight) > MinMorphTargetBlendWeight)
-					{
-						// See if this morph target already has an entry
-						int32 MorphIndex = FindMorphTarget(InOutActiveMorphTargets, Target);
-						// If not, add it
-						if (MorphIndex == INDEX_NONE)
-						{
-							InOutActiveMorphTargets.Add(FActiveMorphTarget(Target, SkeletalMorphIndex));
-							InOutMorphTargetWeights[SkeletalMorphIndex] = Weight;
-						}
-						else
-						{
-							// If it does, use the max weight
-							check(SkeletalMorphIndex == InOutActiveMorphTargets[MorphIndex].WeightIndex);
-							InOutMorphTargetWeights[SkeletalMorphIndex] = Weight;
-						}
-					}
-					else
-					{
-						int32 MorphIndex = FindMorphTarget(InOutActiveMorphTargets, Target);
-						if (MorphIndex != INDEX_NONE)
-						{
-							// clear weight
-							InOutMorphTargetWeights[SkeletalMorphIndex] = 0.f;
-						}
-					}
+					InOutActiveMorphTargets.Add(Target, SkeletalMorphIndex);
+					InOutMorphTargetWeights[SkeletalMorphIndex] = Weight;
 				}
+				else
+				{
+					// If it does, use the max weight
+					check(SkeletalMorphIndex == *FoundMorphIndex);
+					InOutMorphTargetWeights[SkeletalMorphIndex] = Weight;
+				}
+			}
+			else if (FoundMorphIndex != nullptr)
+			{
+				// The target weight is below the minimum. Force to zero.
+				check(SkeletalMorphIndex == *FoundMorphIndex);
+				InOutMorphTargetWeights[SkeletalMorphIndex] = 0.f;
 			}
 		}
 	}
@@ -2525,7 +2569,7 @@ void FAnimationRuntime::RetargetBoneTransform(const USkeleton* SourceSkeleton, c
 				// @todo - precache that in FBoneContainer when we have SkeletonIndex->TrackIndex mapping. So we can just apply scale right away.
 				const TArray<FTransform>& SkeletonRefPoseArray = RetargetTransforms;
 				const float SourceTranslationLength = SkeletonRefPoseArray[SourceSkeletonBoneIndex].GetTranslation().Size();
-				if (SourceTranslationLength > KINDA_SMALL_NUMBER)
+				if (SourceTranslationLength > UE_KINDA_SMALL_NUMBER)
 				{
 					const float TargetTranslationLength = RequiredBones.GetRefPoseTransform(BoneIndex).GetTranslation().Size();
 					BoneTransform.ScaleTranslation(TargetTranslationLength / SourceTranslationLength);

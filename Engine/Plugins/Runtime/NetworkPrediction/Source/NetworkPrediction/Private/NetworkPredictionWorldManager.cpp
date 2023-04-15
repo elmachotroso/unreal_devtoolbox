@@ -13,6 +13,8 @@
 #include "RewindData.h"
 #include "NetworkPredictionReplicatedManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetworkPredictionWorldManager)
+
 // Do extra checks to make sure Physics and GameThread (PrimitiveComponent) are in sync at verious points in the rollback process
 #define NP_ENSURE_PHYSICS_GT_SYNC !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
@@ -580,7 +582,7 @@ void UNetworkPredictionWorldManager::SetUsingPhysics()
 	{
 		npCheckSlow(Physics.Solver == nullptr);
 		Physics.bUsingPhysics = true;
-#if WITH_CHAOS
+
 		Physics.Module = FChaosSolversModule::GetModule();
 		Physics.Solver = GetWorld()->GetPhysicsScene()->GetSolver();
 
@@ -602,7 +604,6 @@ void UNetworkPredictionWorldManager::SetUsingPhysics()
 			GEngine->bUseFixedFrameRate = true;
 			GEngine->FixedFrameRate = Settings.FixedTickFrameRate;
 		}
-#endif // WITH_CHAOS
 	}
 }
 
@@ -620,3 +621,4 @@ ENetworkPredictionTickingPolicy UNetworkPredictionWorldManager::PreferredDefault
 {
 	return Settings.PreferredTickingPolicy;
 }
+

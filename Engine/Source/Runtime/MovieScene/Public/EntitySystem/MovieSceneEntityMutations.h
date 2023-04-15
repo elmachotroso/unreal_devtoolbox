@@ -2,14 +2,17 @@
 
 #pragma once
 
-#include "EntitySystem/MovieSceneEntitySystemTypes.h"
-#include "EntitySystem/MovieSceneEntityManager.h"
 #include "Delegates/IntegerSequence.h"
+#include "EntitySystem/MovieSceneEntityIDs.h"
+#include "EntitySystem/MovieSceneEntityManager.h"
+#include "EntitySystem/MovieSceneEntitySystemTypes.h"
 
 namespace UE
 {
 namespace MovieScene
 {
+class FEntityManager;
+struct FEntityAllocation;
 
 struct IMovieSceneEntityMutation
 {
@@ -25,7 +28,7 @@ struct FAddSingleMutation : IMovieSceneEntityMutation
 		: ComponentToAdd(InType)
 	{}
 
-	virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
+	MOVIESCENE_API virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
 };
 
 struct FRemoveSingleMutation : IMovieSceneEntityMutation
@@ -36,26 +39,24 @@ struct FRemoveSingleMutation : IMovieSceneEntityMutation
 		: ComponentToRemove(InType)
 	{}
 
-	virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
+	MOVIESCENE_API virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
 };
 
 struct FAddMultipleMutation : IMovieSceneEntityMutation
 {
 	FComponentMask MaskToAdd;
 
-	virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
+	MOVIESCENE_API virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
 };
 
 struct FRemoveMultipleMutation : IMovieSceneEntityMutation
 {
+	/* Mask that defines components to remove by _unset_ bits. This acts as a bitmask applied as a binary AND for each mutated allocation. */
+	FComponentMask MaskToRemove;
 
 	void RemoveComponent(FComponentTypeID InComponentType);
 
-	virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
-
-private:
-
-	FComponentMask MaskToRemove;
+	MOVIESCENE_API virtual void CreateMutation(FEntityManager* EntityManager, FComponentMask* InOutEntityComponentTypes) const override;
 };
 
 } // namespace MovieScene

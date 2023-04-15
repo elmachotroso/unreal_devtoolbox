@@ -18,6 +18,9 @@
 #include "DisplayClusterConfigurationTypes_ICVFX.h"
 #include "DisplayClusterConfigurationTypes_PostRender.h"
 
+#include "IDisplayCluster.h"
+#include "Cluster/IDisplayClusterClusterManager.h"
+
 #include "ShaderParameters/DisplayClusterShaderParameters_PostprocessBlur.h"
 #include "ShaderParameters/DisplayClusterShaderParameters_GenerateMips.h"
 #include "ShaderParameters/DisplayClusterShaderParameters_Override.h"
@@ -73,6 +76,10 @@ namespace DisplayClusterViewportConfigurationHelpers_ICVFX_Impl
 	// Return unique ICVFX name
 	static FString ImplGetNameICVFX(const FString& InClusterNodeId, const FString& InViewportId, const FString& InResourceId)
 	{
+		check(!InClusterNodeId.IsEmpty());
+		check(!InViewportId.IsEmpty());
+		check(!InResourceId.IsEmpty());
+
 		return FString::Printf(TEXT("%s_%s_%s_%s"), *InClusterNodeId, DisplayClusterViewportStrings::icvfx::prefix, *InViewportId, *InResourceId);
 	}
 
@@ -110,8 +117,7 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
 	if (ViewportManager != nullptr)
 	{
-		const FDisplayClusterRenderFrameSettings& RenderFrameSettingsConstRef = ViewportManager->GetRenderFrameSettings();
-		return ViewportManager->ImplFindViewport(ImplGetNameICVFX(RenderFrameSettingsConstRef.ClusterNodeId, InViewportId, InResourceId));
+		return ViewportManager->ImplFindViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId));
 	}
 
 	return nullptr;
@@ -122,17 +128,17 @@ static bool ImplCreateProjectionPolicy(ADisplayClusterRootActor& RootActor, cons
 	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
 	if (ViewportManager != nullptr)
 	{
-		const FDisplayClusterRenderFrameSettings& RenderFrameSettingsConstRef = ViewportManager->GetRenderFrameSettings();
+		const FString& ClusterNodeId = ViewportManager->GetRenderFrameSettings().ClusterNodeId;
 
 		FDisplayClusterConfigurationProjection CameraProjectionPolicyConfig;
 		CameraProjectionPolicyConfig.Type = bIsCameraProjection ? DisplayClusterProjectionStrings::projection::Camera : DisplayClusterProjectionStrings::projection::Link;
 
 		// Create projection policy for viewport
-		OutProjPolicy = FDisplayClusterViewportManager::CreateProjectionPolicy(ImplGetNameICVFX(RenderFrameSettingsConstRef.ClusterNodeId, InViewportId, InResourceId), &CameraProjectionPolicyConfig);
+		OutProjPolicy = FDisplayClusterViewportManager::CreateProjectionPolicy(ImplGetNameICVFX(ClusterNodeId, InViewportId, InResourceId), &CameraProjectionPolicyConfig);
 
 		if (!OutProjPolicy.IsValid())
 		{
-			UE_LOG(LogDisplayClusterViewport, Error, TEXT("ICVFX Viewport '%s': projection policy for resource '%s' not created for node '%s'."), *InViewportId, *InResourceId, *RenderFrameSettingsConstRef.ClusterNodeId);
+			UE_LOG(LogDisplayClusterViewport, Error, TEXT("ICVFX Viewport '%s': projection policy for resource '%s' not created for node '%s'."), *InViewportId, *InResourceId, *ClusterNodeId);
 			return false;
 		}
 
@@ -153,10 +159,8 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
 	if (ViewportManager != nullptr)
 	{
-		const FDisplayClusterRenderFrameSettings& RenderFrameSettingsConstRef = ViewportManager->GetRenderFrameSettings();
-
 		// Create viewport for new projection policy
-		FDisplayClusterViewport* NewViewport = ViewportManager->ImplCreateViewport(ImplGetNameICVFX(RenderFrameSettingsConstRef.ClusterNodeId, InViewportId, InResourceId), InProjectionPolicy);
+		FDisplayClusterViewport* NewViewport = ViewportManager->ImplCreateViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId), InProjectionPolicy);
 		if (NewViewport != nullptr)
 		{
 			// Mark as internal resource
@@ -344,10 +348,10 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 	return ChromakeyViewport;
 }
 
-FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateLightcardViewport(FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor, bool bIsOpenColorIOViewportExist)
+FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateLightcardViewport(FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor)
 {
 	// Create new lightcard viewport
-	const FString ResourceId = bIsOpenColorIOViewportExist ? DisplayClusterViewportStrings::icvfx::lightcard_OCIO : DisplayClusterViewportStrings::icvfx::lightcard;
+	const FString ResourceId = DisplayClusterViewportStrings::icvfx::lightcard;
 
 	FDisplayClusterViewport* LightcardViewport = ImplFindViewport(RootActor, BaseViewport.GetId(), ResourceId);
 	if (LightcardViewport == nullptr)
@@ -370,10 +374,6 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 
 	// Add viewport ICVFX usage as Lightcard
 	LightcardViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXLightcard;
-	if (bIsOpenColorIOViewportExist)
-	{
-		LightcardViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXLightcardAlpha;
-	}
 
 	return LightcardViewport;
 }
@@ -560,6 +560,25 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 	// Support inner camera custom frustum
 	FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraCustomFrustum(DstViewport, CameraSettings.CustomFrustum);
 	UpdateCameraViewportBufferRatio(DstViewport, CameraSettings);
+
+	// Set media related configuration (runtime only for now)
+	if (IDisplayCluster::Get().GetOperationMode() == EDisplayClusterOperationMode::Cluster)
+	{
+		const FDisplayClusterConfigurationMedia& MediaSettings = InCameraComponent.CameraSettings.RenderSettings.Media;
+
+		const FString ThisClusterNodeId = DstViewport.GetClusterNodeId();
+		const bool bThisNodeSharesMedia = MediaSettings.IsMediaSharingUsed() && MediaSettings.MediaSharingNode.Equals(ThisClusterNodeId, ESearchCase::IgnoreCase);
+
+		// Don't render the viewport if media input assigned
+		DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaSettings.IsMediaSharingUsed() ?
+			!bThisNodeSharesMedia :
+			!!MediaSettings.MediaSource;
+
+		// Mark this viewport is going to be captured by a capture device
+		DstViewport.RenderSettings.bIsBeingCaptured = MediaSettings.IsMediaSharingUsed() ?
+			bThisNodeSharesMedia :
+			!!MediaSettings.MediaOutput;
+	}
 }
 
 void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportSettings(FDisplayClusterViewport& DstViewport, FDisplayClusterViewport& InCameraViewport, ADisplayClusterRootActor& RootActor, UDisplayClusterICVFXCameraComponent& InCameraComponent)
@@ -695,7 +714,7 @@ bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsShouldUseLightcard(con
 	return FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(InLightcardSettings.ShowOnlyList);
 }
 
-void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(FDisplayClusterViewport& DstViewport, FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor, bool bIsOpenColorIOViewportExist)
+void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(FDisplayClusterViewport& DstViewport, FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor)
 {
 	const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor.GetStageSettings();
 	const FDisplayClusterConfigurationICVFX_LightcardSettings& LightcardSettings = StageSettings.Lightcard;
@@ -708,32 +727,10 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 	// LIghtcard texture used as overlay
 	DstViewport.RenderSettings.bVisible = false;
 
-	bool bIsLightcardUseResolvedScene = false;
-	if (!bIsOpenColorIOViewportExist)
-	{
-		if (FDisplayClusterViewportConfigurationHelpers_Postprocess::UpdateLightcardPostProcessSettings(DstViewport, BaseViewport, RootActor))
-		{
-			bIsLightcardUseResolvedScene = true;
-		}
+	FDisplayClusterViewportConfigurationHelpers_Postprocess::UpdateLightcardPostProcessSettings(DstViewport, BaseViewport, RootActor);
+	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateLightcardViewport(DstViewport, BaseViewport, RootActor);
 
-		if (FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateLightcardViewport(DstViewport, BaseViewport, RootActor))
-		{
-			bIsLightcardUseResolvedScene = true;
-		}
-	}
-
-	if (bIsLightcardUseResolvedScene)
-	{
-		// ligthcard used OCIO - capture 2 vp, [1] color with OCIO and [2] alpha
-		// to support OCIO capture mode must be without alpha, so we need to render second vp with alpha
-		DstViewport.RenderSettings.CaptureMode = EDisplayClusterViewportCaptureMode::Lightcard_OCIO;
-		DstViewport.RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXLightcardColor;
-	}
-	else
-	{
-		// no OCIO, capture 1 vp - color+alpha
-		DstViewport.RenderSettings.CaptureMode = EDisplayClusterViewportCaptureMode::Lightcard;
-	}
+	DstViewport.RenderSettings.CaptureMode = EDisplayClusterViewportCaptureMode::Lightcard;
 
 	const FDisplayClusterConfigurationICVFX_LightcardRenderSettings& InRenderSettings = LightcardSettings.RenderSettings;
 	{
@@ -777,14 +774,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 	}
 	else
 	{
-		if (bIsLightcardUseResolvedScene)
-		{
-			BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard_OCIO.ViewportId = DstViewport.GetId();
-		}
-		else
-		{
-			BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard.ViewportId = DstViewport.GetId();
-		}
+		BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard.ViewportId = DstViewport.GetId();
 	}
 }
 

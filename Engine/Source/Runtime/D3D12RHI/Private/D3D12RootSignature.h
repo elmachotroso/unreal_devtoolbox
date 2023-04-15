@@ -4,6 +4,8 @@
 	D3D12RootSignature.h: D3D12 Root Signatures
 =============================================================================*/
 
+#include "D3D12RootSignatureDefinitions.h"
+
 // Root parameter keys grouped by visibility.
 enum ERootParameterKeys
 {
@@ -35,17 +37,14 @@ enum ERootParameterKeys
 	RPK_RootParameterKeyCount,
 };
 
+class FD3D12RootSignature;
+
 class FD3D12RootSignatureDesc
 {
 public:
 	explicit FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShaderState& QBSS, const D3D12_RESOURCE_BINDING_TIER ResourceBindingTier);
 
 	inline const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& GetDesc() const { return RootDesc; }
-
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& GetStaticGraphicsRootSignatureDesc();
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& GetStaticComputeRootSignatureDesc();
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& GetStaticRayTracingGlobalRootSignatureDesc();
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& GetStaticRayTracingLocalRootSignatureDesc();
 
 	static constexpr uint32 MaxRootParameters = 32;	// Arbitrary max, increase as needed.
 
@@ -66,23 +65,13 @@ private:
 	// Struct for all the useful info we want per shader stage.
 	struct ShaderStage
 	{
-		ShaderStage()
-			: MaxCBVCount(0u)
-			, MaxSRVCount(0u)
-			, MaxSamplerCount(0u)
-			, MaxUAVCount(0u)
-			, CBVRegisterMask(0u)
-			, bVisible(false)
-		{
-		}
-
 		// TODO: Make these arrays and index into them by type instead of individual variables.
-		uint8 MaxCBVCount;
-		uint8 MaxSRVCount;
-		uint8 MaxSamplerCount;
-		uint8 MaxUAVCount;
-		CBVSlotMask CBVRegisterMask;
-		bool bVisible;
+		uint8 MaxCBVCount = 0;
+		uint8 MaxSRVCount = 0;
+		uint8 MaxSamplerCount = 0;
+		uint8 MaxUAVCount = 0;
+		CBVSlotMask CBVRegisterMask = 0;
+		bool bVisible = false;
 	};
 
 public:
@@ -94,20 +83,16 @@ public:
 	{
 		Init(InQBSS);
 	}
-	explicit FD3D12RootSignature(FD3D12Adapter* InParent, const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& InDesc, uint32 BindingSpace = 0)
-		: FD3D12AdapterChild(InParent)
-	{
-		Init(InDesc, BindingSpace);
-	}
-	explicit FD3D12RootSignature(FD3D12Adapter* InParent, ID3DBlob* const InBlob, uint32 BindingSpace = 0)
-		: FD3D12AdapterChild(InParent)
-	{
-		Init(InBlob, BindingSpace);
-	}
 
 	void Init(const FD3D12QuantizedBoundShaderState& InQBSS);
 	void Init(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& InDesc, uint32 BindingSpace = 0);
-	void Init(ID3DBlob* const InBlob, uint32 BindingSpace = 0);
+
+	void InitStaticGraphicsRootSignature(ED3D12RootSignatureFlags InFlags);
+	void InitStaticComputeRootSignatureDesc(ED3D12RootSignatureFlags InFlags);
+#if D3D12_RHI_RAYTRACING
+	void InitStaticRayTracingGlobalRootSignatureDesc(ED3D12RootSignatureFlags InFlags);
+	void InitStaticRayTracingLocalRootSignatureDesc();
+#endif
 
 	ID3D12RootSignature* GetRootSignature() const { return RootSignature.GetReference(); }
 	ID3DBlob* GetRootSignatureBlob() const { return RootSignatureBlob.GetReference(); }
@@ -193,7 +178,11 @@ public:
 	inline bool HasUAVs() const { return bHasUAVs; }
 	inline bool HasSRVs() const { return bHasSRVs; }
 	inline bool HasCBVs() const { return bHasCBVs; }
+	inline bool HasResources() const { return bHasUAVs || bHasSRVs || bHasCBVs; }
 	inline bool HasSamplers() const { return bHasSamplers; }
+	inline bool UsesDynamicResources() const { return bUsesDynamicResources; }
+	inline bool UsesDynamicSamplers() const { return bUsesDynamicSamplers; }
+
 	inline bool HasVS() const { return Stage[SF_Vertex].bVisible; }
 	inline bool HasMS() const { return Stage[SF_Mesh].bVisible; }
 	inline bool HasAS() const { return Stage[SF_Amplification].bVisible; }
@@ -293,7 +282,6 @@ private:
 		*pBindSlot = RootParameterIndex;
 
 		bHasCBVs = true;
-		bHasRDTCBVs = true;
 	}
 
 	inline void SetCBVRDBindSlot(EShaderFrequency SF, uint8 RootParameterIndex)
@@ -318,7 +306,6 @@ private:
 		*pBindSlot = RootParameterIndex;
 
 		bHasCBVs = true;
-		bHasRDCBVs = true;
 	}
 
 	inline void SetUAVRDTBindSlot(EShaderFrequency SF, uint8 RootParameterIndex)
@@ -459,10 +446,10 @@ private:
 	uint8 bHasUAVs : 1;
 	uint8 bHasSRVs : 1;
 	uint8 bHasCBVs : 1;
-	uint8 bHasRDTCBVs : 1;
-	uint8 bHasRDCBVs : 1;
 	uint8 bHasSamplers : 1;
 	uint8 bHasVendorExtensionSpace : 1;
+	uint8 bUsesDynamicResources : 1;
+	uint8 bUsesDynamicSamplers : 1;
 	uint8 bUnused : 1;
 };
 

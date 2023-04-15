@@ -26,8 +26,8 @@ namespace UE::Mass::Debug
 	 * Fetches entity handles and their locations for entities indicated by index range as set by
 	 * ai.debug.mass.SetDebugEntityRange or ai.debug.mass.DebugEntity console commands.
 	 */
-	MASSGAMEPLAYDEBUG_API extern void GetDebugEntitiesAndLocations(const UMassEntitySubsystem& EntitySystem, TArray<FMassEntityHandle>& OutEntities, TArray<FVector>& OutLocations);
-	MASSGAMEPLAYDEBUG_API extern FMassEntityHandle ConvertEntityIndexToHandle(const UMassEntitySubsystem& EntitySystem, const int32 EntityIndex);
+	MASSGAMEPLAYDEBUG_API extern void GetDebugEntitiesAndLocations(const FMassEntityManager& EntitySubsystem, TArray<FMassEntityHandle>& OutEntities, TArray<FVector>& OutLocations);
+	MASSGAMEPLAYDEBUG_API extern FMassEntityHandle ConvertEntityIndexToHandle(const FMassEntityManager& EntitySubsystem, const int32 EntityIndex);
 } // namespace UE::Mass::Debug
 #endif // WITH_MASSGAMEPLAY_DEBUG
 
@@ -37,10 +37,10 @@ struct FSimDebugDataRow : public FTableRowBase
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = Debug)
-	UStaticMesh* Mesh = nullptr;
+	TObjectPtr<UStaticMesh> Mesh = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = Debug)
-	UMaterialInterface* MaterialOverride = nullptr;
+	TObjectPtr<UMaterialInterface> MaterialOverride = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = Debug)
 	float Scale = 1.f;
@@ -84,10 +84,10 @@ struct FAgentDebugVisualization : public FTableRowBase
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "Mass|Debug")
-	UStaticMesh* Mesh = nullptr;
+	TObjectPtr<UStaticMesh> Mesh = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "Mass|Debug")
-	UMaterialInterface* MaterialOverride = nullptr;
+	TObjectPtr<UMaterialInterface> MaterialOverride = nullptr;
 
 	/** Near cull distance to override default value for that agent type */
 	UPROPERTY(EditAnywhere, Category = "Mass|Debug")

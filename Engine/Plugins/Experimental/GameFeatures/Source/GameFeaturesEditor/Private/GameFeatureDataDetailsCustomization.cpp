@@ -19,7 +19,7 @@
 #include "Misc/Paths.h"
 
 #include "GameFeatureData.h"
-#include "../../GameFeatures/Private/GameFeaturePluginStateMachine.h"
+#include "GameFeatureTypes.h"
 
 #define LOCTEXT_NAMESPACE "GameFeatures"
 
@@ -51,7 +51,7 @@ void FGameFeatureDataDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder
 		GameFeature->GetOutermost()->GetName().ParseIntoArray(PathParts, TEXT("/"));
 
 		UGameFeaturesSubsystem& Subsystem = UGameFeaturesSubsystem::Get();
-		Subsystem.GetPluginURLForBuiltInPluginByName(PathParts[0], /*out*/ PluginURL);
+		Subsystem.GetPluginURLByName(PathParts[0], /*out*/ PluginURL);
 		PluginPtr = IPluginManager::Get().FindPlugin(PathParts[0]);
 
 		const float Padding = 8.0f;

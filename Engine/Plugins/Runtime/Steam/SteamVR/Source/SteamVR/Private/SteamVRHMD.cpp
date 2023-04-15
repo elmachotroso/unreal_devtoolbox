@@ -8,7 +8,6 @@
 #include "Misc/EngineVersion.h"
 #include "HardwareInfo.h"
 #include "RendererPrivate.h"
-#include "ScenePrivate.h"
 #include "Slate/SceneViewport.h"
 #include "PostProcess/PostProcessHMD.h"
 #include "SteamVRFunctionLibrary.h"
@@ -38,6 +37,8 @@
 #endif
 
 DEFINE_LOG_CATEGORY(LogSteamVR);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 // Visibility mesh
 static TAutoConsoleVariable<int32> CUseSteamVRVisibleAreaMesh(TEXT("vr.SteamVR.UseVisibleAreaMesh"), 1, TEXT("If non-zero, SteamVR will use the visible area mesh in addition to the hidden area mesh optimization.  This may be problematic on beta versions of platforms."));
@@ -312,26 +313,23 @@ public:
 
 	static inline D3DApiLevel GetD3DApiLevel()
 	{
-		FString RHIString;
+		if (GDynamicRHI == nullptr)
 		{
-			FString HardwareDetails = FHardwareInfo::GetHardwareDetailsString();
-			FString RHILookup = NAME_RHI.ToString() + TEXT("=");
-
-			if (!FParse::Value(*HardwareDetails, *RHILookup, RHIString))
-			{
-				// RHI might not be up yet. Let's check the command-line and see if DX12 was specified.
-				// This will get hit on startup since we don't have RHI details during stereo device bringup. 
-				// This is not a final fix; we should probably move the stereo device init to later on in startup.
-				bool bForceD3D12 = FParse::Param(FCommandLine::Get(), TEXT("d3d12")) || FParse::Param(FCommandLine::Get(), TEXT("dx12"));
-				return bForceD3D12 ? D3DApiLevel::Direct3D12 : D3DApiLevel::Direct3D11;
-			}
+			// RHI might not be up yet. Let's check the command-line and see if DX12 was specified.
+			// This will get hit on startup since we don't have RHI details during stereo device bringup. 
+			// This is not a final fix; we should probably move the stereo device init to later on in startup.
+			bool bForceD3D12 = FParse::Param(FCommandLine::Get(), TEXT("d3d12")) || FParse::Param(FCommandLine::Get(), TEXT("dx12"));
+			return bForceD3D12 ? D3DApiLevel::Direct3D12 : D3DApiLevel::Direct3D11;
 		}
 
-		if (RHIString == TEXT("D3D11"))
+		const ERHIInterfaceType RHIType = RHIGetInterfaceType();
+
+		if (RHIType == ERHIInterfaceType::D3D11)
 		{
 			return D3DApiLevel::Direct3D11;
 		}
-		if (RHIString == TEXT("D3D12"))
+
+		if (RHIType == ERHIInterfaceType::D3D12)
 		{
 			return D3DApiLevel::Direct3D12;
 		}
@@ -1435,6 +1433,8 @@ bool FSteamVRHMD::EnableStereo(bool bStereo)
 
 void FSteamVRHMD::AdjustViewRect(int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
 {
+	const float PixelDensity = GetPixelDenity();
+
 	SizeX = FMath::CeilToInt(IdealRenderTargetSize.X * PixelDensity);
 	SizeY = FMath::CeilToInt(IdealRenderTargetSize.Y * PixelDensity);
 
@@ -1546,6 +1546,24 @@ bool FSteamVRHMD::GetHMDDistortionEnabled(EShadingPath /* ShadingPath */) const
 	return false;
 }
 
+float FSteamVRHMD::GetPixelDenity() const
+{
+	const FTrackingFrame& TrackingFrame = GetTrackingFrame();
+	return TrackingFrame.PixelDensity;
+}
+
+void FSteamVRHMD::SetPixelDensity(const float NewDensity)
+{
+	check(IsInGameThread());
+	GameTrackingFrame.PixelDensity = NewDensity;
+
+	ENQUEUE_RENDER_COMMAND(UpdatePixelDensity)(
+		[this, PixelDensity = GameTrackingFrame.PixelDensity](FRHICommandListImmediate&)
+		{
+			RenderTrackingFrame.PixelDensity = PixelDensity;
+		});
+}
+
 void FSteamVRHMD::OnBeginRendering_GameThread()
 {
 	check(IsInGameThread());
@@ -1578,12 +1596,12 @@ FXRRenderBridge* FSteamVRHMD::GetActiveRenderBridge_GameThread(bool /* bUseSepar
 
 void FSteamVRHMD::CalculateRenderTargetSize(const class FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY)
 {
-	check(IsInGameThread());
-
 	if (!IsStereoEnabled())
 	{
 		return;
 	}
+
+	const float PixelDensity = GetPixelDenity();
 
 	InOutSizeX = FMath::CeilToInt(IdealRenderTargetSize.X * PixelDensity);
 	InOutSizeY = FMath::CeilToInt(IdealRenderTargetSize.Y * PixelDensity);
@@ -1652,21 +1670,26 @@ bool FSteamVRHMD::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32
 		return true;
 	}
 
+	FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("FSteamVRHMD"))
+		.SetExtent(SizeX, SizeY)
+		.SetFormat(PF_B8G8R8A8)
+		.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::SRVMask);
+
 	for (uint32 SwapChainIter = 0; SwapChainIter < SteamVRSwapChainLength; ++SwapChainIter)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("FSteamVRHMD"));
 #if PLATFORM_MAC
 		IOSurfaceRef Surface = MetalBridgePtr->GetSurface(SizeX, SizeY);
 		check(Surface != nil);
 
-		CreateInfo.BulkData = new FIOSurfaceResourceWrapper(Surface);
+		Desc.BulkData = new FIOSurfaceResourceWrapper(Surface);
 		CFRelease(Surface);
-		CreateInfo.ResourceArray = nullptr;
 #endif
 
-		FTexture2DRHIRef TargetableTexture, ShaderResourceTexture;
-		RHICreateTargetableShaderResource2D(SizeX, SizeY, PF_B8G8R8A8, 1, TexCreate_None, TexCreate_RenderTargetable, false, CreateInfo, TargetableTexture, ShaderResourceTexture, NumSamples);
-		check(TargetableTexture == ShaderResourceTexture);
+		FTexture2DRHIRef TargetableTexture;
+
+		TargetableTexture = RHICreateTexture(Desc);
 
 		SwapChainTextures.Add((FTextureRHIRef&)TargetableTexture);
 
@@ -1714,28 +1737,20 @@ bool FSteamVRHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY,
 
 	FClearValueBinding ClearValue(0.0f, 0);
 	ClearValue.ColorBinding = EClearBinding::EDepthStencilBound;
-	FRHIResourceCreateInfo CreateInfo(TEXT("SteamVRDepthStencil"), ClearValue);
+
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("SteamVRDepthStencil"))
+		.SetExtent(SizeX, SizeY)
+		.SetFormat(PF_DepthStencil)
+		.SetFlags(Flags | TargetableTextureFlags | ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::SRVMask)
+		.SetClearValue(ClearValue);
 
 	for (uint32 SwapChainIter = 0; SwapChainIter < SteamVRSwapChainLength; ++SwapChainIter)
 	{
-		FTexture2DRHIRef TargetableTexture, ShaderResourceTexture;
+		FTextureRHIRef TargetableTexture = RHICreateTexture(Desc);
 
-		RHICreateTargetableShaderResource2D(
-			SizeX,
-			SizeY,
-			PF_DepthStencil,
-			1,			// 1 mip for depth (0 is usually passed in above, which is invalid).
-			Flags,
-			TargetableTextureFlags,
-			false,
-			CreateInfo,
-			TargetableTexture,
-			ShaderResourceTexture,
-			1);
-
-		check(TargetableTexture == ShaderResourceTexture);
-
-		SwapChainTextures.Add((FTextureRHIRef&)TargetableTexture);
+		SwapChainTextures.Add(TargetableTexture);
 
 		if (BindingTexture == nullptr)
 		{
@@ -1763,7 +1778,6 @@ FSteamVRHMD::FSteamVRHMD(const FAutoRegister& AutoRegister, ISteamVRPlugin* InSt
 	bOcclusionMeshesBuilt(false),
 	WindowMirrorBoundsWidth(2160),
 	WindowMirrorBoundsHeight(1200),
-	PixelDensity(1.0f),
 	HMDWornMovementThreshold(50.0f),
 	HMDStartLocation(FVector::ZeroVector),
 	BaseOrientation(FQuat::Identity),
@@ -1823,7 +1837,7 @@ bool FSteamVRHMD::Startup()
 		static const auto PixelDensityCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("vr.PixelDensity"));
 		if (PixelDensityCVar)
 		{ 
-			PixelDensity = FMath::Clamp(PixelDensityCVar->GetFloat(), PixelDensityMin, PixelDensityMax);
+			SetPixelDensity(FMath::Clamp(PixelDensityCVar->GetFloat(), PixelDensityMin, PixelDensityMax));
 		}
 
 		// enforce finishcurrentframe
@@ -1998,6 +2012,8 @@ const FSteamVRHMD::FTrackingFrame& FSteamVRHMD::GetTrackingFrame() const
 		return GameTrackingFrame;
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif //STEAMVR_SUPPORTED_PLATFORMS
 

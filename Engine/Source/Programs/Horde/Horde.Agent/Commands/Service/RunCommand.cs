@@ -1,31 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeAgent.Commands;
-using HordeAgent.Services;
-using HordeAgent.Utility;
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Datadog.Trace;
+using Datadog.Trace.Configuration;
+using Datadog.Trace.OpenTracing;
+using EpicGames.Core;
+using EpicGames.Horde.Storage;
+using Horde.Agent.Services;
+using Horde.Agent.Utility;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Polly;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
-using System.Threading.Tasks;
-using EpicGames.Core;
-using System.IO;
-using System.Reflection;
 using OpenTracing;
 using OpenTracing.Util;
-using Datadog.Trace.Configuration;
-using Datadog.Trace;
+using Polly;
 
-namespace HordeAgent.Modes.Service
+namespace Horde.Agent.Modes.Service
 {
+	using ITracer = OpenTracing.ITracer;
+
 	/// <summary>
 	/// 
 	/// </summary>
@@ -33,106 +30,100 @@ namespace HordeAgent.Modes.Service
 	class RunCommand : Command
 	{
 		/// <summary>
-		/// The logger instance
-		/// </summary>
-		ILogger Logger = null!;
-
-		/// <summary>
 		/// Override for the server to use
 		/// </summary>
 		[CommandLine("-Server=")]
-		string? Server = null;
+		string? Server { get; set; } = null;
 
 		/// <summary>
 		/// Override the working directory
 		/// </summary>
 		[CommandLine("-WorkingDir=")]
-		string? WorkingDir = null;
+		string? WorkingDir { get; set; } = null;
 
 		/// <summary>
 		/// Runs the service indefinitely
 		/// </summary>
-		/// <param name="Logger">Logger to use</param>
 		/// <returns>Exit code</returns>
-		public override async Task<int> ExecuteAsync(ILogger Logger)
+		public override async Task<int> ExecuteAsync(ILogger logger)
 		{
-			this.Logger = Logger;
-
-			IHostBuilder HostBuilder = Host.CreateDefaultBuilder();
+			IHostBuilder hostBuilder = Host.CreateDefaultBuilder();
 
 			// Attempt to setup this process as a Windows service. A race condition inside Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService
 			// can result in accessing the parent process after it's terminated, so catch any exceptions that it throws.
 			try
 			{
-				HostBuilder = HostBuilder.UseWindowsService();
+				hostBuilder = hostBuilder.UseWindowsService();
 			}
 			catch (InvalidOperationException)
 			{
 			}
 
-			HostBuilder = HostBuilder
-				.ConfigureAppConfiguration(Builder =>
+			hostBuilder = hostBuilder
+				.ConfigureAppConfiguration(builder =>
 				{
-					Dictionary<string, string> Overrides = new Dictionary<string, string>();
+					Dictionary<string, string> overrides = new Dictionary<string, string>();
 					if (Server != null)
 					{
-						Overrides.Add($"{AgentSettings.SectionName}:{nameof(AgentSettings.Server)}", Server);
+						overrides.Add($"{AgentSettings.SectionName}:{nameof(AgentSettings.Server)}", Server);
 					}
 					if (WorkingDir != null)
 					{
-						Overrides.Add($"{AgentSettings.SectionName}:{nameof(AgentSettings.WorkingDir)}", WorkingDir);
+						overrides.Add($"{AgentSettings.SectionName}:{nameof(AgentSettings.WorkingDir)}", WorkingDir);
 					}
-					Builder.AddInMemoryCollection(Overrides);
+					builder.AddInMemoryCollection(overrides);
 				})
-				.ConfigureLogging(Builder =>
+				.ConfigureLogging(builder =>
 				{
-					Builder.ClearProviders();
-					Builder.AddProvider(new Logging.HordeLoggerProvider());
-					Builder.AddFilter<Logging.HordeLoggerProvider>(null, LogLevel.Trace);
+					builder.ClearProviders();
+					builder.AddProvider(new Logging.HordeLoggerProvider());
+					builder.AddFilter<Logging.HordeLoggerProvider>(null, LogLevel.Trace);
 				})
-				.ConfigureServices((HostContext, Services) =>
+				.ConfigureServices((hostContext, services) =>
 				{
-					Services.Configure<HostOptions>(Options =>
+					services.Configure<HostOptions>(options =>
 					{
 						// Allow the worker service to terminate any before shutting down
-						Options.ShutdownTimeout = TimeSpan.FromSeconds(30);
+						options.ShutdownTimeout = TimeSpan.FromSeconds(30);
 					});
 
-					IConfigurationSection ConfigSection = HostContext.Configuration.GetSection(AgentSettings.SectionName);
-					Services.AddOptions<AgentSettings>().Configure(Options => ConfigSection.Bind(Options)).ValidateDataAnnotations();
+					IConfigurationSection configSection = hostContext.Configuration.GetSection(AgentSettings.SectionName);
+					services.AddOptions<AgentSettings>().Configure(options => configSection.Bind(options)).ValidateDataAnnotations();
 
-					AgentSettings Settings = new AgentSettings();
-					ConfigSection.Bind(Settings);
+					AgentSettings settings = new AgentSettings();
+					configSection.Bind(settings);
 
-					ServerProfile ServerProfile = Settings.GetCurrentServerProfile();
-					ConfigureTracing(ServerProfile.Environment, Program.Version);
+					ServerProfile serverProfile = settings.GetCurrentServerProfile();
+					ConfigureTracing(serverProfile.Environment, Program.Version);
 
-					Logging.SetEnv(ServerProfile.Environment);
+					Logging.SetEnv(serverProfile.Environment);
 
-					Services.AddHttpClient(Program.HordeServerClientName, Config =>
+					services.AddHttpClient(Program.HordeServerClientName, config =>
 					{
-						Config.BaseAddress = new Uri(ServerProfile.Url);
-						Config.DefaultRequestHeaders.Add("Accept", "application/json");
-						Config.Timeout = TimeSpan.FromSeconds(300); // Need to make sure this doesn't cancel any long running gRPC streaming calls (eg. session update)
+						config.BaseAddress = serverProfile.Url;
+						config.DefaultRequestHeaders.Add("Accept", "application/json");
+						config.Timeout = TimeSpan.FromSeconds(300); // Need to make sure this doesn't cancel any long running gRPC streaming calls (eg. session update)
 					})
 					.ConfigurePrimaryHttpMessageHandler(() =>
 					{
-						HttpClientHandler Handler = new HttpClientHandler();
-						Handler.ServerCertificateCustomValidationCallback += (Sender, Cert, Chain, Errors) => CertificateHelper.CertificateValidationCallBack(Logger, Sender, Cert, Chain, Errors, ServerProfile);
-						return Handler;
+						HttpClientHandler handler = new HttpClientHandler();
+						handler.ServerCertificateCustomValidationCallback += (sender, cert, chain, errors) => CertificateHelper.CertificateValidationCallBack(logger, sender, cert, chain, errors, serverProfile);
+						return handler;
 					})
-					.AddTransientHttpErrorPolicy(Builder =>
+					.AddTransientHttpErrorPolicy(builder =>
 					{
-						return Builder.WaitAndRetryAsync(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10) });
+						return builder.WaitAndRetryAsync(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10) });
 					});
 
-					Services.AddSingleton<GrpcService>();
-					Services.AddHostedService<WorkerService>();
+					services.AddHordeStorage(settings => configSection.GetCurrentServerProfile().GetSection(nameof(serverProfile.Storage)).Bind(settings));
+
+					services.AddSingleton<GrpcService>();
+					services.AddHostedService<WorkerService>();
 				});
 
 			try
 			{
-				await HostBuilder.Build().RunAsync();
+				await hostBuilder.Build().RunAsync();
 			}
 			catch (OperationCanceledException)
 			{
@@ -142,18 +133,18 @@ namespace HordeAgent.Modes.Service
 			return 0;
 		}
 
-		static void ConfigureTracing(string Environment, string Version)
+		static void ConfigureTracing(string environment, string version)
 		{
-			TracerSettings Settings = TracerSettings.FromDefaultSources();
-			Settings.Environment = Environment;
-			Settings.ServiceName = "hordeagent";
-			Settings.ServiceVersion = Version;
-			Settings.LogsInjectionEnabled = true;
+			TracerSettings settings = TracerSettings.FromDefaultSources();
+			settings.Environment = environment;
+			settings.ServiceName = "hordeagent";
+			settings.ServiceVersion = version;
+			settings.LogsInjectionEnabled = true;
 
-			Tracer.Instance = new Tracer(Settings);
+			Tracer.Configure(settings);
 
-			ITracer OpenTracer = Datadog.Trace.OpenTracing.OpenTracingTracerFactory.WrapTracer(Tracer.Instance);
-			GlobalTracer.Register(OpenTracer);
+			ITracer openTracer = OpenTracingTracerFactory.WrapTracer(Tracer.Instance);
+			GlobalTracer.Register(openTracer);
 		}
 	}
 }

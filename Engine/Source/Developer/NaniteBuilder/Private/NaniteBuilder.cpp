@@ -6,7 +6,6 @@
 #include "StaticMeshResources.h"
 #include "Rendering/NaniteResources.h"
 #include "Hash/CityHash.h"
-#include "Math/UnrealMath.h"
 #include "GraphPartitioner.h"
 #include "Cluster.h"
 #include "ClusterDAG.h"
@@ -15,16 +14,21 @@
 #include "Async/ParallelFor.h"
 #include "NaniteEncode.h"
 #include "ImposterAtlas.h"
+#include "UObject/DevObjectVersion.h"
+#include "Compression/OodleDataCompressionUtil.h"
 
 #if WITH_MIKKTSPACE
 #include "mikktspace.h"
 #endif
 
-// If static mesh derived data needs to be rebuilt (new format, serialization
-// differences, etc.) replace the version GUID below with a new one.
-// In case of merge conflicts with DDC versions, you MUST generate a new GUID
-// and set this new GUID as the version.
-#define NANITE_DERIVEDDATA_VER TEXT("AC88CFBD-DA61-4A9C-8488-F64D2DAF699D")
+#define NANITE_LOG_COMPRESSED_SIZES		0
+
+static TAutoConsoleVariable<bool> CVarBuildImposters(
+	TEXT("r.Nanite.Builder.Imposters"),
+	false,
+	TEXT("Build imposters for small/distant object rendering. For scenes with lots of small or distant objects, imposters can sometimes speed up rendering, but they come at the cost of additional runtime memory and disk footprint overhead."),
+	ECVF_ReadOnly
+);
 
 namespace Nanite
 {
@@ -69,9 +73,17 @@ const FString& FBuilderModule::GetVersionString() const
 
 	if (VersionString.IsEmpty())
 	{
-		VersionString = FString::Printf(TEXT("%s%s%s"), NANITE_DERIVEDDATA_VER,
+		VersionString = FString::Printf(TEXT("%s%s%s%s"), *FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().NANITE_DERIVEDDATA_VER).ToString(EGuidFormats::DigitsWithHyphens),
 										NANITE_USE_CONSTRAINED_CLUSTERS ? TEXT("_CONSTRAINED") : TEXT(""),
-										NANITE_USE_UNCOMPRESSED_VERTEX_DATA ? TEXT("_UNCOMPRESSED") : TEXT(""));
+										NANITE_USE_UNCOMPRESSED_VERTEX_DATA ? TEXT("_UNCOMPRESSED") : TEXT(""),
+										CVarBuildImposters.GetValueOnAnyThread() ? TEXT("_IMPOSTERS") : TEXT(""));
+
+#if PLATFORM_CPU_ARM_FAMILY
+		// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
+		// input. Add the arm specifically so that a) we avoid rebuilding the current DDC and
+		// b) we can remove it once we get arm64 to be consistent.
+		VersionString.Append(TEXT("_arm64"));
+#endif
 	}
 
 	return VersionString;
@@ -164,7 +176,7 @@ void CalcTangents(
 #endif //WITH_MIKKTSPACE
 }
 
-static void BuildCoarseRepresentation(
+static float BuildCoarseRepresentation(
 	const TArray<FClusterGroup>& Groups,
 	const TArray<FCluster>& Clusters,
 	TArray<FStaticMeshBuildVertex>& Verts,
@@ -172,11 +184,12 @@ static void BuildCoarseRepresentation(
 	TArray<FStaticMeshSection, TInlineAllocator<1>>& Sections,
 	uint32& NumTexCoords,
 	uint32 TargetNumTris,
-	float TargetError )
+	float TargetError,
+	int32 FallbackLODIndex)
 {
 	TargetNumTris = FMath::Max( TargetNumTris, 64u );
 
-	FBinaryHeap< float > Heap = FindDAGCut( Groups, Clusters, TargetNumTris, TargetError, 4096 );
+	FBinaryHeap< float > Heap = FindDAGCut( Groups, Clusters, TargetNumTris, TargetError, 4096, nullptr );
 
 	// Merge
 	TArray< const FCluster*, TInlineAllocator<32> > MergeList;
@@ -194,7 +207,9 @@ static void BuildCoarseRepresentation(
 		} );
 
 	FCluster CoarseRepresentation( MergeList );
-	CoarseRepresentation.Simplify( TargetNumTris, TargetError, FMath::Min( TargetNumTris, 256u ) );
+	// FindDAGCut also produces error when TargetError is non-zero but this only happens for LOD0 whose MaxDeviation is always zero.
+	// Don't use the old weights for LOD0 since they change the error calculation and hence, change the meaning of TargetError.
+	float OutError = CoarseRepresentation.Simplify( TargetNumTris, TargetError, FMath::Min( TargetNumTris, 256u ), FallbackLODIndex > 0 );
 
 	TArray< FStaticMeshSection, TInlineAllocator<1> > OldSections = Sections;
 
@@ -282,6 +297,8 @@ static void BuildCoarseRepresentation(
 	}
 
 	CalcTangents(Verts, Indexes);
+
+	return OutError;
 }
 
 static void ClusterTriangles(
@@ -289,18 +306,19 @@ static void ClusterTriangles(
 	const TArrayView< const uint32 >& Indexes,
 	const TArrayView< const int32 >& MaterialIndexes,
 	TArray< FCluster >& Clusters,	// Append
-	const FBounds& MeshBounds,
+	const FBounds3f& MeshBounds,
 	uint32 NumTexCoords,
-	bool bHasColors )
+	bool bHasColors,
+	bool bPreserveArea )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Nanite::Build::ClusterTriangles);
+
 	uint32 Time0 = FPlatformTime::Cycles();
 
 	LOG_CRC( Verts );
 	LOG_CRC( Indexes );
 
 	uint32 NumTriangles = Indexes.Num() / 3;
-
-	const bool bSingleThreaded = NumTriangles <= 5000;
 
 	FAdjacency Adjacency( Indexes.Num() );
 	FEdgeHash EdgeHash( Indexes.Num() );
@@ -310,14 +328,13 @@ static void ClusterTriangles(
 		return Verts[ Indexes[ EdgeIndex ] ].Position;
 	};
 
-	ParallelFor( Indexes.Num(),
+	ParallelFor( TEXT("Nanite.ClusterTriangles.PF"), Indexes.Num(), 4096,
 		[&]( int32 EdgeIndex )
 		{
 			EdgeHash.Add_Concurrent( EdgeIndex, GetPosition );
-		},
-		bSingleThreaded );
+		} );
 
-	ParallelFor( Indexes.Num(),
+	ParallelFor( TEXT("Nanite.ClusterTriangles.PF"), Indexes.Num(), 1024,
 		[&]( int32 EdgeIndex )
 		{
 			int32 AdjIndex = -1;
@@ -333,8 +350,7 @@ static void ClusterTriangles(
 				AdjIndex = -2;
 
 			Adjacency.Direct[ EdgeIndex ] = AdjIndex;
-		},
-		bSingleThreaded );
+		} );
 
 	FDisjointSet DisjointSet( NumTriangles );
 
@@ -383,7 +399,7 @@ static void ClusterTriangles(
 			Center += Verts[ Indexes[ TriIndex * 3 + 2 ] ].Position;
 			return Center * (1.0f / 3.0f);
 		};
-		Partitioner.BuildLocalityLinks( DisjointSet, MeshBounds, GetCenter );
+		Partitioner.BuildLocalityLinks( DisjointSet, MeshBounds, MaterialIndexes, GetCenter );
 
 		auto* RESTRICT Graph = Partitioner.NewGraph( NumTriangles * 3 );
 
@@ -406,6 +422,8 @@ static void ClusterTriangles(
 		}
 		Graph->AdjacencyOffset[ NumTriangles ] = Graph->Adjacency.Num();
 
+		bool bSingleThreaded = NumTriangles < 5000;
+
 		Partitioner.PartitionStrict( Graph, FCluster::ClusterSize - 4, FCluster::ClusterSize, !bSingleThreaded );
 		check( Partitioner.Ranges.Num() );
 
@@ -422,7 +440,7 @@ static void ClusterTriangles(
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(Nanite::Build::BuildClusters);
-		ParallelFor( Partitioner.Ranges.Num(),
+		ParallelFor( TEXT("Nanite.BuildClusters.PF"), Partitioner.Ranges.Num(), 1024,
 			[&]( int32 Index )
 			{
 				auto& Range = Partitioner.Ranges[ Index ];
@@ -431,18 +449,31 @@ static void ClusterTriangles(
 					Verts,
 					Indexes,
 					MaterialIndexes,
-					NumTexCoords, bHasColors,
+					NumTexCoords, bHasColors, bPreserveArea,
 					Range.Begin, Range.End, Partitioner, Adjacency );
 
 				// Negative notes it's a leaf
 				Clusters[ BaseCluster + Index ].EdgeLength *= -1.0f;
-			},
-			bSingleThreaded );
+			});
 	}
 
 	uint32 LeavesTime = FPlatformTime::Cycles();
 	UE_LOG( LogStaticMesh, Log, TEXT("Leaves [%.2fs]"), FPlatformTime::ToMilliseconds( LeavesTime - ClusterTime ) / 1000.0f );
 }
+
+#if NANITE_LOG_COMPRESSED_SIZES
+static void CalculateCompressedNaniteDiskSize(FResources& Resources, int32& OutUncompressedSize, int32& OutCompressedSize)
+{
+	TArray<uint8> Data;
+	FMemoryWriter Ar(Data, true);
+	Resources.Serialize(Ar, nullptr, true);
+	OutUncompressedSize = Data.Num();
+
+	TArray<uint8> CompressedData;
+	FOodleCompressedArray::CompressTArray(CompressedData, Data, FOodleDataCompression::ECompressor::Mermaid, FOodleDataCompression::ECompressionLevel::Optimal2);
+	OutCompressedSize = CompressedData.Num();
+}
+#endif
 
 static bool BuildNaniteData(
 	FResources& Resources,
@@ -461,7 +492,7 @@ static bool BuildNaniteData(
 		NumTexCoords = NANITE_MAX_UVS;
 	}
 
-	FBounds	VertexBounds;
+	FBounds3f	VertexBounds;
 	uint32 Channel = 255;
 	for( auto& Vert : InputMeshData.Vertices )
 	{
@@ -480,7 +511,7 @@ static bool BuildNaniteData(
 
 	// Don't trust any input. We only have color if it isn't all white.
 	const bool bHasVertexColor = Channel != 255;
-	const bool bHasImposter = Resources.NumInputMeshes == 1;
+	const bool bHasImposter = CVarBuildImposters.GetValueOnAnyThread() && (Resources.NumInputMeshes == 1);
 
 	Resources.ResourceFlags = 0x0;
 
@@ -507,7 +538,7 @@ static bool BuildNaniteData(
 					InputMeshData.Vertices,
 					TArrayView< const uint32 >( &InputMeshData.TriangleIndices[BaseTriangle * 3], NumTriangles * 3 ),
 					TArrayView< const int32 >( &MaterialIndexes[BaseTriangle], NumTriangles ),
-					Clusters, VertexBounds, NumTexCoords, bHasVertexColor);
+					Clusters, VertexBounds, NumTexCoords, bHasVertexColor, Settings.bPreserveArea );
 			}
 			ClusterCountPerMesh.Add(Clusters.Num() - NumClustersBefore);
 			BaseTriangle += NumTriangles;
@@ -535,7 +566,7 @@ static bool BuildNaniteData(
 
 	uint32 Time0 = FPlatformTime::Cycles();
 
-	FBounds MeshBounds;	
+	FBounds3f MeshBounds;	
 	TArray<FClusterGroup> Groups;
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(Nanite::Build::DAG.Reduce);
@@ -554,13 +585,14 @@ static bool BuildNaniteData(
 		int32 TargetNumTris = Resources.NumInputTriangles * Settings.KeepPercentTriangles;
 		float TargetError = Settings.TrimRelativeError * 0.01f * FMath::Sqrt( FMath::Min( 2.0f * SurfaceArea, VertexBounds.GetSurfaceArea() ) );
 
-		FBinaryHeap< float > Heap = FindDAGCut( Groups, Clusters, TargetNumTris, TargetError, 0 );
+		TBitArray<> SelectedGroupsMask;
+		FBinaryHeap< float > Heap = FindDAGCut( Groups, Clusters, TargetNumTris, TargetError, 0, &SelectedGroupsMask );
+
+		for( int32 GroupIndex = 0; GroupIndex < SelectedGroupsMask.Num(); GroupIndex++ )
+		{
+			Groups[ GroupIndex ].bTrimmed = !SelectedGroupsMask[ GroupIndex ];
+		}
 	
-		float CutError = Clusters[ Heap.Top() ].LODError;
-
-		for( FClusterGroup& Group : Groups )
-			Group.bTrimmed = Group.MaxParentLODError <= CutError;
-
 		uint32 NumVerts = 0;
 		uint32 NumTris = 0;
 		for( uint32 i = 0; i < Heap.Num(); i++ )
@@ -575,6 +607,8 @@ static bool BuildNaniteData(
 
 		Resources.NumInputVertices	= FMath::Min( NumVerts, Resources.NumInputVertices );
 		Resources.NumInputTriangles	= NumTris;
+
+		UE_LOG( LogStaticMesh, Log, TEXT("Trimmed to %u tris"), NumTris );
 	}
 
 	uint32 ReduceTime = FPlatformTime::Cycles();
@@ -601,12 +635,14 @@ static bool BuildNaniteData(
 		{
 			Swap( FallbackLODMeshData.Vertices,			InputMeshData.Vertices );
 			Swap( FallbackLODMeshData.TriangleIndices,	InputMeshData.TriangleIndices );
-			CalcTangents( FallbackLODMeshData.Vertices, FallbackLODMeshData.TriangleIndices );
+			FallbackLODMeshData.MaxDeviation = 0.f;
 		}
 		else
 		{
 			TArray<FStaticMeshSection, TInlineAllocator<1>> FallbackSections = InputMeshData.Sections;
-			BuildCoarseRepresentation(Groups, Clusters, FallbackLODMeshData.Vertices, FallbackLODMeshData.TriangleIndices, FallbackSections, NumTexCoords, FallbackTargetNumTris, FallbackTargetError);
+			const float ReductionError = BuildCoarseRepresentation(Groups, Clusters, FallbackLODMeshData.Vertices, FallbackLODMeshData.TriangleIndices, FallbackSections, NumTexCoords, FallbackTargetNumTris, FallbackTargetError, FallbackLODIndex);
+
+			FallbackLODMeshData.MaxDeviation = FallbackLODIndex == 0 ? 0.f : ReductionError / 8.f;
 
 			// Fixup mesh section info with new coarse mesh ranges, while respecting original ordering and keeping materials
 			// that do not end up with any assigned triangles (due to decimation process).
@@ -657,21 +693,40 @@ static bool BuildNaniteData(
 	
 		FImposterAtlas ImposterAtlas( Resources.ImposterAtlas, MeshBounds );
 
-		ParallelFor(FMath::Square(FImposterAtlas::AtlasSize),
-			[&](int32 TileIndex)
-		{
-			FIntPoint TilePos(
-				TileIndex % FImposterAtlas::AtlasSize,
-				TileIndex / FImposterAtlas::AtlasSize);
-
-			for (int32 ClusterIndex = 0; ClusterIndex < RootChildren.Num(); ClusterIndex++)
+		ParallelFor( TEXT("Nanite.BuildData.PF"), FMath::Square(FImposterAtlas::AtlasSize), 1,
+			[&]( int32 TileIndex )
 			{
-				ImposterAtlas.Rasterize(TilePos, Clusters[RootChildren[ClusterIndex]], ClusterIndex);
-			}
-		});
+				FIntPoint TilePos(
+					TileIndex % FImposterAtlas::AtlasSize,
+					TileIndex / FImposterAtlas::AtlasSize);
+
+				for( int32 ClusterIndex = 0; ClusterIndex < RootChildren.Num(); ClusterIndex++ )
+				{
+					ImposterAtlas.Rasterize( TilePos, Clusters[ RootChildren[ ClusterIndex ] ], ClusterIndex) ;
+				}
+			} );
 
 		UE_LOG(LogStaticMesh, Log, TEXT("Imposter [%.2fs]"), FPlatformTime::ToMilliseconds(FPlatformTime::Cycles() - ImposterStartTime ) / 1000.0f);
 	}
+
+#if NANITE_LOG_COMPRESSED_SIZES
+	int32 UncompressedSize, CompressedSize;
+	CalculateCompressedNaniteDiskSize(Resources, UncompressedSize, CompressedSize);
+	UE_LOG(LogStaticMesh, Log, TEXT("Compressed size: %.2fMB -> %.2fMB"), UncompressedSize / 1048576.0f, CompressedSize / 1048576.0f);
+
+	{
+		static FCriticalSection CriticalSection;
+		FScopeLock Lock(&CriticalSection);
+		static uint32 TotalMeshes = 0;
+		static uint64 TotalMeshUncompressedSize = 0;
+		static uint64 TotalMeshCompressedSize = 0;
+
+		TotalMeshes++;
+		TotalMeshUncompressedSize += UncompressedSize;
+		TotalMeshCompressedSize += CompressedSize;
+		UE_LOG(LogStaticMesh, Log, TEXT("Total: %d Meshes, Uncompressed: %.2fMB, Compressed: %.2fMB"), TotalMeshes, TotalMeshUncompressedSize / 1048576.0f, TotalMeshCompressedSize / 1048576.0f);
+	}
+#endif
 
 	uint32 Time1 = FPlatformTime::Cycles();
 

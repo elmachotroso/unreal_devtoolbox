@@ -3,12 +3,19 @@
 #include "Components/NamedSlotInterface.h"
 #include "Components/Widget.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NamedSlotInterface)
+
 UNamedSlotInterface::UNamedSlotInterface(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 }
 
 bool INamedSlotInterface::ContainsContent(UWidget* Content) const
+{
+	return FindSlotForContent(Content) != NAME_None;
+}
+
+FName INamedSlotInterface::FindSlotForContent(UWidget* Content) const
 {
 	TArray<FName> SlotNames;
 	GetSlotNames(SlotNames);
@@ -17,11 +24,11 @@ bool INamedSlotInterface::ContainsContent(UWidget* Content) const
 	{
 		if ( GetContentForSlot(SlotName) == Content )
 		{
-			return true;
+			return SlotName;
 		}
 	}
 
-	return false;
+	return NAME_None;
 }
 
 void INamedSlotInterface::ReleaseNamedSlotSlateResources(bool bReleaseChildren)

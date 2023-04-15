@@ -6,7 +6,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/SWindow.h"
 #include "Misc/MessageDialog.h"
 #include "GameplayTagsModule.h"
@@ -28,10 +28,12 @@
 #include "SAddNewGameplayTagSourceWidget.h"
 #include "SAddNewRestrictedGameplayTagWidget.h"
 #include "SRenameGameplayTagDialog.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Brushes/SlateColorBrush.h"
+#include "Interfaces/IMainFrameModule.h"
 
 #define LOCTEXT_NAMESPACE "GameplayTagWidget"
 
@@ -84,7 +86,11 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 	bMultiSelect = InArgs._MultiSelect;
 	PropertyHandle = InArgs._PropertyHandle;
 	RootFilterString = InArgs._Filter;
+	TagFilter = InArgs._OnFilterTag;
 	GameplayTagUIMode = InArgs._GameplayTagUIMode;
+	bForceHideAddNewTag = InArgs._ForceHideAddNewTag;
+	bForceHideAddNewTagSource = InArgs._ForceHideAddNewTagSource;
+	bForceHideTagTreeControls = InArgs._ForceHideTagTreeControls;
 
 	bAddTagSectionExpanded = InArgs._NewTagControlsInitiallyExpanded;
 	bDelayRefresh = false;
@@ -95,7 +101,7 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 	UGameplayTagsManager::OnEditorRefreshGameplayTagTree.AddSP(this, &SGameplayTagWidget::RefreshOnNextTick);
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
-	Manager.GetFilteredGameplayRootTags(RootFilterString, TagItems);
+	GetFilteredGameplayRootTags(RootFilterString, TagItems);
 
 	if (bRestrictedTags)
 	{
@@ -153,7 +159,8 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.Padding(InArgs._Padding)
+		.BorderImage(InArgs._BackgroundBrush)
 		[
 			SNew(SVerticalBox)
 
@@ -170,12 +177,12 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 					SNew( SCheckBox )
 					.IsChecked(this, &SGameplayTagWidget::GetAddTagSectionExpansionState) 
 					.OnCheckStateChanged(this, &SGameplayTagWidget::OnAddTagSectionExpansionStateChanged)
-					.CheckedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.CheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Expanded_Hovered"))
-					.CheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.UncheckedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
-					.UncheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
-					.UncheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
+					.CheckedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.CheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Expanded_Hovered"))
+					.CheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.UncheckedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
+					.UncheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
+					.UncheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
 					.Visibility( this, &SGameplayTagWidget::DetermineExpandableUIVisibility )
 					[
 						SNew( STextBlock )
@@ -222,12 +229,12 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 					SNew(SCheckBox)
 					.IsChecked(this, &SGameplayTagWidget::GetAddSourceSectionExpansionState)
 					.OnCheckStateChanged(this, &SGameplayTagWidget::OnAddSourceSectionExpansionStateChanged)
-					.CheckedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.CheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Expanded_Hovered"))
-					.CheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.UncheckedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
-					.UncheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
-					.UncheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
+					.CheckedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.CheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Expanded_Hovered"))
+					.CheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.UncheckedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
+					.UncheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
+					.UncheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
 					.Visibility(this, &SGameplayTagWidget::DetermineAddNewSourceExpandableUIVisibility)
 					[
 						SNew(STextBlock)
@@ -251,6 +258,7 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 			.VAlign(VAlign_Top)
 			[
 				SNew(SHorizontalBox)
+				.Visibility(this, &SGameplayTagWidget::DetermineTagTreeControlsVisibility)
 
 				// Expand All nodes
 				+SHorizontalBox::Slot()
@@ -297,8 +305,7 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 			+SVerticalBox::Slot()
 			.MaxHeight(MaxHeight)
 			[
-				SAssignNew(TagTreeContainerWidget, SBorder)
-				.Padding(FMargin(4.f))
+				SAssignNew(TagTreeContainerWidget, SBox)
 				[
 					SAssignNew(TagTreeWidget, STreeView< TSharedPtr<FGameplayTagNode> >)
 					.TreeItemsSource(&TagItems)
@@ -310,6 +317,11 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 			]
 		]
 	];
+
+	if (InArgs._TagTreeViewBackgroundBrush)
+	{
+		TagTreeWidget->SetBackgroundBrush(InArgs._TagTreeViewBackgroundBrush);
+	}
 
 	// Force the entire tree collapsed to start
 	SetTagTreeItemExpansion(false);
@@ -497,7 +509,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 	}
 
 	return SNew(STableRow< TSharedPtr<FGameplayTagNode> >, OwnerTable)
-		.Style(FEditorStyle::Get(), "GameplayTagTreeView")
+		.Style(FAppStyle::Get(), "GameplayTagTreeView")
 		[
 			SNew( SHorizontalBox )
 
@@ -511,7 +523,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				.IsChecked(this, &SGameplayTagWidget::IsTagChecked, InItem)
 				.ToolTipText(TooltipText)
 				.IsEnabled(this, &SGameplayTagWidget::CanSelectTags)
-				.Visibility( GameplayTagUIMode == EGameplayTagUIMode::SelectionMode ? EVisibility::Visible : EVisibility::Collapsed )
+				.Visibility( GameplayTagUIMode == EGameplayTagUIMode::SelectionMode || GameplayTagUIMode == EGameplayTagUIMode::HybridMode ? EVisibility::Visible : EVisibility::Collapsed )
 				[
 					SNew(STextBlock)
 					.Text(FText::FromName(InItem->GetSimpleTagName()))
@@ -527,7 +539,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				.ToolTip( FSlateApplication::Get().MakeToolTip(TooltipText) )
 				.Text(FText::FromName( InItem->GetSimpleTagName()) )
 				.ColorAndOpacity(this, &SGameplayTagWidget::GetTagTextColour, InItem)
-				.Visibility( GameplayTagUIMode != EGameplayTagUIMode::SelectionMode ? EVisibility::Visible : EVisibility::Collapsed )
+				.Visibility( GameplayTagUIMode == EGameplayTagUIMode::ManagementMode ? EVisibility::Visible : EVisibility::Collapsed )
 			]
 
 			// Allows non-restricted children checkbox
@@ -550,7 +562,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				SNew( SButton )
 				.ToolTipText( LOCTEXT("AddSubtag", "Add Subtag") )
 				.Visibility(this, &SGameplayTagWidget::DetermineAddNewSubTagWidgetVisibility, InItem)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked( this, &SGameplayTagWidget::OnAddSubtagClicked, InItem )
 				.DesiredSizeScale(FVector2D(0.75f, 0.75f))
 				.ContentPadding(4.0f)
@@ -559,7 +571,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				.IsFocusable( false )
 				[
 					SNew( SImage )
-					.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+					.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
@@ -571,11 +583,12 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 			[
 				SNew( SComboButton )
 				.ToolTipText( LOCTEXT("MoreActions", "More Actions...") )
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ContentPadding(0)
 				.ForegroundColor(FSlateColor::UseForeground())
 				.HasDownArrow(true)
 				.OnGetMenuContent(this, &SGameplayTagWidget::MakeTagActionsMenu, InItem)
+				.CollapseMenuOnParentFocus(true)
 			]
 		];
 }
@@ -610,8 +623,6 @@ void SGameplayTagWidget::OnTagCheckStatusChanged(ECheckBoxState NewCheckState, T
 void SGameplayTagWidget::OnTagChecked(TSharedPtr<FGameplayTagNode> NodeChecked)
 {
 	FScopedTransaction Transaction( LOCTEXT("GameplayTagWidget_AddTags", "Add Gameplay Tags") );
-
-	UGameplayTagsManager& TagsManager = UGameplayTagsManager::Get();
 
 	for (int32 ContainerIdx = 0; ContainerIdx < TagContainers.Num(); ++ContainerIdx)
 	{
@@ -913,7 +924,7 @@ FReply SGameplayTagWidget::OnAddSubtagClicked(TSharedPtr<FGameplayTagNode> InTag
 
 TSharedRef<SWidget> SGameplayTagWidget::MakeTagActionsMenu(TSharedPtr<FGameplayTagNode> InTagNode)
 {
-	bool bShowManagement = (GameplayTagUIMode == EGameplayTagUIMode::ManagementMode && !bReadOnly);
+	bool bShowManagement = ((GameplayTagUIMode == EGameplayTagUIMode::ManagementMode || GameplayTagUIMode == EGameplayTagUIMode::HybridMode) && !bReadOnly);
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
 	if (!Manager.ShouldImportTagsFromINI())
@@ -954,7 +965,7 @@ TSharedRef<SWidget> SGameplayTagWidget::MakeTagActionsMenu(TSharedPtr<FGameplayT
 	}
 
 	// Only include these menu items if we have tag containers to modify
-	if (TagContainers.Num() > 0)
+	if (TagContainers.Num() > 0 && !bForceHideAddNewTag)
 	{
 		// Either Remove or Add Exact Tag depending on if we have the exact tag or not
 		if (IsExactTagInCollection(InTagNode))
@@ -992,10 +1003,21 @@ void SGameplayTagWidget::OnDeleteTag(TSharedPtr<FGameplayTagNode> InTagNode)
 	if (InTagNode.IsValid())
 	{
 		IGameplayTagsEditorModule& TagsEditor = IGameplayTagsEditorModule::Get();
+		
+		bool TagRemoved = false;
+		
+		if (GameplayTagUIMode == EGameplayTagUIMode::HybridMode)
+		{
+			for (int32 ContainerIdx = 0; ContainerIdx < TagContainers.Num(); ++ContainerIdx)
+			{
+				FGameplayTagContainer* Container = TagContainers[ContainerIdx].TagContainer;
+				TagRemoved |= Container->RemoveTag(InTagNode->GetCompleteTag());
+			}
+		}
 
 		const bool bDeleted = TagsEditor.DeleteTagFromINI(InTagNode);
 
-		if (bDeleted)
+		if (bDeleted || TagRemoved)
 		{
 			OnTagChanged.ExecuteIfBound();
 		}
@@ -1043,7 +1065,7 @@ void SGameplayTagWidget::OnSearchForReferences(TSharedPtr<FGameplayTagNode> InTa
 void SGameplayTagWidget::SetTagTreeItemExpansion(bool bExpand)
 {
 	TArray< TSharedPtr<FGameplayTagNode> > TagArray;
-	UGameplayTagsManager::Get().GetFilteredGameplayRootTags(TEXT(""), TagArray);
+	GetFilteredGameplayRootTags(TEXT(""), TagArray);
 	for (int32 TagIdx = 0; TagIdx < TagArray.Num(); ++TagIdx)
 	{
 		SetTagNodeItemExpansion(TagArray[TagIdx], bExpand);
@@ -1070,7 +1092,7 @@ void SGameplayTagWidget::LoadSettings()
 	MigrateSettings();
 
 	TArray< TSharedPtr<FGameplayTagNode> > TagArray;
-	UGameplayTagsManager::Get().GetFilteredGameplayRootTags(TEXT(""), TagArray);
+	GetFilteredGameplayRootTags(TEXT(""), TagArray);
 	for (int32 TagIdx = 0; TagIdx < TagArray.Num(); ++TagIdx)
 	{
 		LoadTagNodeItemExpansion(TagArray[TagIdx] );
@@ -1083,8 +1105,7 @@ const FString& SGameplayTagWidget::GetGameplayTagsEditorStateIni()
 
 	if (Filename.Len() == 0)
 	{
-		Filename = FString::Printf(TEXT("%s%s/GameplayTagsEditorState.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()));
-		FPaths::MakeStandardFilename(Filename);
+		Filename = FConfigCacheIni::NormalizeConfigIniPath(FString::Printf(TEXT("%s%s/GameplayTagsEditorState.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName())));
 	}
 
 	return Filename;
@@ -1178,7 +1199,7 @@ void SGameplayTagWidget::SetContainer(FGameplayTagContainer* OriginalContainer, 
 	}
 	else
 	{
-		// Not sure if we should get here, means the property handle hasnt been setup which could be right or wrong.
+		// Not sure if we should get here, means the property handle hasn't been setup which could be right or wrong.
 		if (OwnerObj)
 		{
 			OwnerObj->PreEditChange(PropertyHandle.IsValid() ? PropertyHandle->GetProperty() : nullptr);
@@ -1224,7 +1245,7 @@ void SGameplayTagWidget::OnGameplayTagAdded(const FString& TagName, const FStrin
 void SGameplayTagWidget::RefreshTags()
 {
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
-	Manager.GetFilteredGameplayRootTags(RootFilterString, TagItems);
+	GetFilteredGameplayRootTags(RootFilterString, TagItems);
 
 	if (bRestrictedTags)
 	{
@@ -1259,9 +1280,9 @@ EVisibility SGameplayTagWidget::DetermineExpandableUIVisibility() const
 {
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
-	if ( !Manager.ShouldImportTagsFromINI() )
+	if ( !Manager.ShouldImportTagsFromINI() || (bForceHideAddNewTag && bForceHideAddNewTagSource))
 	{
-		// If we can't support adding tags from INI files, we should never see this widget
+		// If we can't support adding tags from INI files, or both options are forcibly disabled, we should never see this widget
 		return EVisibility::Collapsed;
 	}
 
@@ -1270,7 +1291,7 @@ EVisibility SGameplayTagWidget::DetermineExpandableUIVisibility() const
 
 EVisibility SGameplayTagWidget::DetermineAddNewSourceExpandableUIVisibility() const
 {
-	if (bRestrictedTags)
+	if (bRestrictedTags || bForceHideAddNewTagSource)
 	{
 		return EVisibility::Collapsed;
 	}
@@ -1282,7 +1303,7 @@ EVisibility SGameplayTagWidget::DetermineAddNewTagWidgetVisibility() const
 {
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
-	if ( !Manager.ShouldImportTagsFromINI() || !bAddTagSectionExpanded || bRestrictedTags )
+	if ( !Manager.ShouldImportTagsFromINI() || !bAddTagSectionExpanded || bRestrictedTags || bForceHideAddNewTag )
 	{
 		// If we can't support adding tags from INI files, we should never see this widget
 		return EVisibility::Collapsed;
@@ -1295,7 +1316,7 @@ EVisibility SGameplayTagWidget::DetermineAddNewRestrictedTagWidgetVisibility() c
 {
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
-	if (!Manager.ShouldImportTagsFromINI() || !bAddTagSectionExpanded || !bRestrictedTags)
+	if (!Manager.ShouldImportTagsFromINI() || !bAddTagSectionExpanded || !bRestrictedTags || bForceHideAddNewTag )
 	{
 		// If we can't support adding tags from INI files, we should never see this widget
 		return EVisibility::Collapsed;
@@ -1308,9 +1329,19 @@ EVisibility SGameplayTagWidget::DetermineAddNewSourceWidgetVisibility() const
 {
 	UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
-	if (!Manager.ShouldImportTagsFromINI() || !bAddSourceSectionExpanded || bRestrictedTags)
+	if (!Manager.ShouldImportTagsFromINI() || !bAddSourceSectionExpanded || bRestrictedTags || bForceHideAddNewTagSource )
 	{
 		// If we can't support adding tags from INI files, we should never see this widget
+		return EVisibility::Collapsed;
+	}
+
+	return EVisibility::Visible;
+}
+
+EVisibility SGameplayTagWidget::DetermineTagTreeControlsVisibility() const
+{
+	if (bForceHideTagTreeControls)
+	{
 		return EVisibility::Collapsed;
 	}
 
@@ -1347,7 +1378,7 @@ EVisibility SGameplayTagWidget::DetermineClearSelectionVisibility() const
 
 bool SGameplayTagWidget::CanSelectTags() const
 {
-	return !bReadOnly && GameplayTagUIMode == EGameplayTagUIMode::SelectionMode;
+	return !bReadOnly && (GameplayTagUIMode == EGameplayTagUIMode::SelectionMode || GameplayTagUIMode == EGameplayTagUIMode::HybridMode);
 }
 
 bool SGameplayTagWidget::IsAddingNewTag() const
@@ -1402,9 +1433,18 @@ void SGameplayTagWidget::OpenRenameGameplayTagDialog(TSharedPtr<FGameplayTagNode
 
 	RenameTagWindow->SetContent(RenameTagDialog);
 
-	TSharedPtr<SWindow> CurrentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared() );
-
-	FSlateApplication::Get().AddModalWindow(RenameTagWindow, CurrentWindow);
+	const TSharedPtr<SWindow> CurrentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+	
+	if (CurrentWindow->IsRegularWindow())
+	{
+		FSlateApplication::Get().AddModalWindow(RenameTagWindow, CurrentWindow);
+	}
+	else
+	{
+		// AddModalWindow will crash if the parent window is a pop up, so we parent it to the MainFrame window instead.
+		const IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+		FSlateApplication::Get().AddModalWindow(RenameTagWindow, MainFrame.GetParentWindow());
+	}
 }
 
 TSharedPtr<SWidget> SGameplayTagWidget::GetWidgetToFocusOnOpen()
@@ -1457,6 +1497,29 @@ void SGameplayTagWidget::VerifyAssetTagValidity()
 				FMessageDialog::Open(EAppMsgType::Ok, DialogText, &DialogTitle);
 			}
 		}
+	}
+}
+
+void SGameplayTagWidget::GetFilteredGameplayRootTags(const FString& InFilterString, TArray<TSharedPtr<FGameplayTagNode>>& OutNodes) const
+{
+	OutNodes.Empty();
+	const UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
+
+	if (TagFilter.IsBound())
+	{
+		TArray<TSharedPtr<FGameplayTagNode>> UnfilteredItems;
+		Manager.GetFilteredGameplayRootTags(InFilterString, UnfilteredItems);
+		for (const TSharedPtr<FGameplayTagNode>& Node : UnfilteredItems)
+		{
+			if (TagFilter.Execute(Node) == ETagFilterResult::IncludeTag)
+			{
+				OutNodes.Add(Node);
+			}
+		}
+	}
+	else
+	{
+		Manager.GetFilteredGameplayRootTags(InFilterString, OutNodes);
 	}
 }
 

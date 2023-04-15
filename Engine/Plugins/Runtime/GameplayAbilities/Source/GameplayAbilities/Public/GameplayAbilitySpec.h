@@ -8,63 +8,15 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/NetSerialization.h"
 #include "AttributeSet.h"
+#include "GameplayAbilitySpecHandle.h"
 #include "GameplayEffectTypes.h"
 #include "GameplayPrediction.h"
+#include "ScalableFloat.h"
 #include "GameplayAbilitySpec.generated.h"
 
 class UAbilitySystemComponent;
 class UGameplayAbility;
 
-/**
- *	This file exists in addition so that GameplayEffect.h can use FGameplayAbilitySpec without having to include GameplayAbilityTypes.h which has depancies on
- *	GameplayEffect.h
- */
-
-/** Handle that points to a specific granted ability. These are globally unique */
-USTRUCT(BlueprintType)
-struct FGameplayAbilitySpecHandle
-{
-	GENERATED_USTRUCT_BODY()
-
-	FGameplayAbilitySpecHandle()
-		: Handle(INDEX_NONE)
-	{
-	}
-
-	/** True if GenerateNewHandle was called on this handle */
-	bool IsValid() const
-	{
-		return Handle != INDEX_NONE;
-	}
-
-	/** Sets this to a valid handle */
-	void GenerateNewHandle();
-
-	bool operator==(const FGameplayAbilitySpecHandle& Other) const
-	{
-		return Handle == Other.Handle;
-	}
-
-	bool operator!=(const FGameplayAbilitySpecHandle& Other) const
-	{
-		return Handle != Other.Handle;
-	}
-
-	friend uint32 GetTypeHash(const FGameplayAbilitySpecHandle& SpecHandle)
-	{
-		return ::GetTypeHash(SpecHandle.Handle);
-	}
-
-	FString ToString() const
-	{
-		return IsValid() ? FString::FromInt(Handle) : TEXT("Invalid");
-	}
-
-private:
-
-	UPROPERTY()
-	int32 Handle;
-};
 
 /** Describes the status of activating this ability, this is updated as prediction is handled */
 UENUM(BlueprintType)
@@ -133,7 +85,7 @@ struct FGameplayAbilitySpecDef
 
 	/** What granted this spec, not replicated or settable in editor */
 	UPROPERTY(NotReplicated)
-	UObject* SourceObject;
+	TWeakObjectPtr<UObject> SourceObject;
 
 	/** SetbyCaller Magnitudes that were passed in to this ability by a GE (GE's that grant abilities) */
 	TMap<FGameplayTag, float>	SetByCallerTagMagnitudes;
@@ -163,13 +115,7 @@ struct GAMEPLAYABILITIES_API FGameplayAbilityActivationInfo
 	{
 	}
 
-	FGameplayAbilityActivationInfo(AActor* InActor)
-		: bCanBeEndedByOtherInstance(false)	
-	{
-		// On Init, we are either Authority or NonAuthority. We haven't been given a PredictionKey and we haven't been confirmed.
-		// NonAuthority essentially means 'I'm not sure what how I'm going to do this yet'.
-		ActivationMode = (InActor->GetLocalRole() == ROLE_Authority ? EGameplayAbilityActivationMode::Authority : EGameplayAbilityActivationMode::NonAuthority);
-	}
+	FGameplayAbilityActivationInfo(AActor* InActor);
 
 	FGameplayAbilityActivationInfo(EGameplayAbilityActivationMode::Type InType)
 		: ActivationMode(InType)
@@ -236,7 +182,7 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 	
 	/** Ability of the spec (Always the CDO. This should be const but too many things modify it currently) */
 	UPROPERTY()
-	UGameplayAbility* Ability;
+	TObjectPtr<UGameplayAbility> Ability;
 	
 	/** Level of Ability */
 	UPROPERTY()
@@ -248,7 +194,7 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 
 	/** Object this ability was created from, can be an actor or static object. Useful to bind an ability to a gameplay object */
 	UPROPERTY()
-	UObject* SourceObject;
+	TWeakObjectPtr<UObject> SourceObject;
 
 	/** A count of the number of times this ability has been activated minus the number of times it has been ended. For instanced abilities this will be the number of currently active instances. Can't replicate until prediction accurately handles this.*/
 	UPROPERTY(NotReplicated)
@@ -280,11 +226,11 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpec : public FFastArraySerializerI
 
 	/** Non replicating instances of this ability. */
 	UPROPERTY(NotReplicated)
-	TArray<UGameplayAbility*> NonReplicatedInstances;
+	TArray<TObjectPtr<UGameplayAbility>> NonReplicatedInstances;
 
 	/** Replicated instances of this ability.. */
 	UPROPERTY()
-	TArray<UGameplayAbility*> ReplicatedInstances;
+	TArray<TObjectPtr<UGameplayAbility>> ReplicatedInstances;
 
 	/** Handle to GE that granted us (usually invalid) */
 	UPROPERTY(NotReplicated)
@@ -333,8 +279,8 @@ struct GAMEPLAYABILITIES_API FGameplayAbilitySpecContainer : public FFastArraySe
 	TArray<FGameplayAbilitySpec> Items;
 
 	/** Component that owns this list */
-	UPROPERTY()
-	UAbilitySystemComponent* Owner;
+	UPROPERTY(NotReplicated)
+	TObjectPtr<UAbilitySystemComponent> Owner;
 
 	/** Initializes Owner variable */
 	void RegisterWithOwner(UAbilitySystemComponent* Owner);

@@ -11,15 +11,14 @@
  #include "../Nanite/NaniteHZBCull.ush"
 
 #if ENABLE_DEBUG_MODE
-#include "../ShaderDrawDebug.ush"
+#include "../ShaderPrint.ush"
 #include "../ColorMap.ush"
 #endif
 
-#if INPUT_KIND == INPUT_KIND_LOAD_BALANCER
 #include "../InstanceCulling/InstanceCullingLoadBalancer.ush"
-#endif //
 
-RWStructuredBuffer<uint> OutDynamicCasterPageFlags;
+RWStructuredBuffer<FPhysicalPageMetaData> PrevPhysicalPageMetaDataOut;
+
 uint InstanceSceneDataSOAStride;
 uint GPUSceneNumAllocatedInstances;
 uint GPUSceneNumAllocatedPrimitives;
@@ -28,10 +27,28 @@ uint GPUSceneNumAllocatedPrimitives;
 uint bDrawBounds;
 #endif
 
-#if INPUT_KIND == INPUT_KIND_GPU_INSTANCES
-StructuredBuffer<uint> InvalidatingInstances;
-uint NumInvalidatingInstanceSlots;
-#endif
+struct FInstanceInvalidationPayload
+{
+	int VirtualShadowMapId;
+	bool bInvalidateStaticPage;
+};
+
+FInstanceInvalidationPayload DecodeInstanceInvalidationPayload(uint Payload)
+{
+	FInstanceInvalidationPayload Result;
+	Result.bInvalidateStaticPage = (Payload & 0x2) != 0;
+	if (Payload & 0x1)
+	{
+		// Single shadow map
+		Result.VirtualShadowMapId = Payload >> 2;
+	}
+	else
+	{
+		// All lights
+		Result.VirtualShadowMapId = INDEX_NONE;
+	}
+	return Result;
+}
 
 /**
  * Each thread loops over a range on instances loaded from a buffer. The instance bounds are projected to all cached virtual shadow map address space 
@@ -43,10 +60,12 @@ void VirtualSmInvalidateInstancePagesCS(
 	uint3 GroupId : SV_GroupID,
 	uint GroupThreadIndex : SV_GroupIndex)
 {
-	uint FirstVirtualShadowMapId = 0u;
-	uint NumVirtualShadowMapIds = VirtualShadowMap.NumShadowMaps;
+	// Loop only over the non-single-page VSMs
+	uint FirstVirtualShadowMapId = VSM_MAX_SINGLE_PAGE_SHADOW_MAPS;
+	uint EndVirtualShadowMapId = VSM_MAX_SINGLE_PAGE_SHADOW_MAPS + VirtualShadowMap.NumFullShadowMaps;
 
-#if INPUT_KIND == INPUT_KIND_LOAD_BALANCER
+	bool bForceInvalidateStaticPage = false;
+
 	FInstanceWorkSetup WorkSetup = InstanceCullingLoadBalancer_Setup(GroupId, GroupThreadIndex, 0U);
 
 	if (!WorkSetup.bValid)
@@ -54,25 +73,18 @@ void VirtualSmInvalidateInstancePagesCS(
 		return;
 	}
 
-	bool bSkipClipmaps = (WorkSetup.Item.Payload & 1U) != 0U;
-	uint SingleShadowMapId = WorkSetup.Item.Payload >> 1U;
-	if (SingleShadowMapId != 0U)
+	FInstanceInvalidationPayload Payload = DecodeInstanceInvalidationPayload(WorkSetup.Item.Payload);
+
+	bForceInvalidateStaticPage = Payload.bInvalidateStaticPage;
+	if (Payload.VirtualShadowMapId != INDEX_NONE)
 	{
-		FirstVirtualShadowMapId = SingleShadowMapId - 1U;
-		NumVirtualShadowMapIds = FirstVirtualShadowMapId + 1U;
+		// Do a single shadowmap
+		FirstVirtualShadowMapId = Payload.VirtualShadowMapId;
+		EndVirtualShadowMapId = FirstVirtualShadowMapId + 1U;
 	}
 
 	uint InstanceId = WorkSetup.Item.InstanceDataOffset + uint(WorkSetup.LocalItemIndex);
-#else // INPUT_KIND == INPUT_KIND_GPU_INSTANCES
-	// The 0th index stores the total number appended
-	if (DispatchIndex >= InvalidatingInstances[0])
-	{
-		return;
-	}
-	bool bSkipClipmaps = false;
 
-	int InstanceId = InvalidatingInstances[1 + DispatchIndex];
-#endif
 	{
 		checkSlow(InstanceId >= 0 && InstanceId < InstanceSceneDataSOAStride);
 		checkSlow(InstanceId >= 0 && InstanceId < GPUSceneNumAllocatedInstances);
@@ -84,11 +96,10 @@ void VirtualSmInvalidateInstancePagesCS(
 			return;
 		}
 
-		uint InvalidationFlags = ShouldCacheInstanceAsStatic(InstanceSceneData) ? VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG;
+		const bool bIsNanite = InstanceSceneData.NaniteRuntimeResourceID != 0xFFFFFFFFu;
 
-		// TODO: Clean up hardcoded flag field test.
 		bool bCastShadows = InstanceSceneData.ValidInstance 
-			&& (GetPrimitiveData(InstanceSceneData.PrimitiveId).Flags & 1U) != 0U;
+			&& (GetPrimitiveData(InstanceSceneData.PrimitiveId).Flags & PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS) != 0U;
 #if ENABLE_DEBUG_MODE
 		uint PageInvalidationCount = 0U;
 #endif
@@ -96,25 +107,37 @@ void VirtualSmInvalidateInstancePagesCS(
 		// TODO: test the flag on the instance instead once it is updated correctly InstanceSceneData.CastShadows
 		if (bCastShadows)
 		{
-			for (uint VirtualShadowMapId = FirstVirtualShadowMapId; VirtualShadowMapId < NumVirtualShadowMapIds;)
+			bool bAnyStaticPagesInvalidated = false;
+
+			for (uint VirtualShadowMapId = FirstVirtualShadowMapId; VirtualShadowMapId < EndVirtualShadowMapId; ++VirtualShadowMapId)
 			{
 				// 1. Load cached projection data
 				FVirtualShadowMapProjectionShaderData ProjectionData = GetVirtualShadowMapProjectionData(VirtualShadowMapId);
 				const bool bDirectionalLight = (ProjectionData.LightType == LIGHT_TYPE_DIRECTIONAL);
 
-				if (bSkipClipmaps && bDirectionalLight)
+				// Stop invalidations if the light is 'distant'
+				if (ProjectionData.bCurrentDistantLight)
 				{
-					VirtualShadowMapId += uint(ProjectionData.ClipmapLevelCount);
 					continue;
 				}
-				else
-				{
-					++VirtualShadowMapId;
-				}
-				
 				// NOTE: This is the *shadow view*'s translated world, not primary view
 				float4x4 LocalToTranslatedWorld = LWCMultiplyTranslation(InstanceSceneData.LocalToWorld, ProjectionData.PreViewTranslation);
 				
+				// distance cull invalidations for local lights
+				if (!bDirectionalLight)
+				{
+					float InstanceRadius = length(InstanceSceneData.LocalBoundsExtent * InstanceSceneData.NonUniformScale.xyz);
+					float3 TranslatedWorldCenter = mul(float4(InstanceSceneData.LocalBoundsCenter, 1.0f), LocalToTranslatedWorld).xyz;
+					if (length2(TranslatedWorldCenter) > Square(ProjectionData.LightRadius + InstanceRadius))
+					{
+						continue;
+					}
+				}
+
+				bool bInvalidateStaticPage = bForceInvalidateStaticPage || ShouldCacheInstanceAsStatic(InstanceSceneData, ProjectionData.bUnCached);
+				uint InvalidationFlags = (bInvalidateStaticPage ? VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG) << VSM_PHYSICAL_PAGE_INVALIDATION_FLAGS_SHIFT;
+				bAnyStaticPagesInvalidated = bAnyStaticPagesInvalidated || bInvalidateStaticPage;
+
 				// Go back to clip space
 				float4x4 UVToClip;
 				UVToClip[0] = float4(2, 0, 0, 0);
@@ -122,12 +145,15 @@ void VirtualSmInvalidateInstancePagesCS(
 				UVToClip[2] = float4(0, 0, 1, 0);
 				UVToClip[3] = float4(-1, 1, 0, 1);
 
-				float4x4 LocalToClip = mul(LocalToTranslatedWorld, mul(ProjectionData.TranslatedWorldToShadowUVMatrix, UVToClip));
-
-				FFrustumCullData Cull = BoxCullFrustum(InstanceSceneData.LocalBoundsCenter, InstanceSceneData.LocalBoundsExtent, LocalToClip, !bDirectionalLight, false);
+				const bool bIsOrtho = bDirectionalLight;
+				const bool bNearClip = !bDirectionalLight;
+				FFrustumCullData Cull = BoxCullFrustum(InstanceSceneData.LocalBoundsCenter, InstanceSceneData.LocalBoundsExtent, LocalToTranslatedWorld, mul(ProjectionData.TranslatedWorldToShadowUVMatrix, UVToClip), bIsOrtho, bNearClip, false);
+				float PixelEstRadius = CalcClipSpaceRadiusEstimate(bIsOrtho, InstanceSceneData, LocalToTranslatedWorld, ProjectionData.ShadowViewToClipMatrix) * float(VSM_VIRTUAL_MAX_RESOLUTION_XY);
 
 				if (Cull.bIsVisible)
 				{
+					bool bShouldCacheAsStatic = ShouldCacheInstanceAsStatic(InstanceSceneData, ProjectionData.bUnCached);
+
 					// 2. figure out overlap and all that
 					// case #1 mip-map VSM - loop all mip levels, case #2 clipmap, just one 'mip level'
 					int NumMipLevels = (ProjectionData.ClipmapLevelCount <= 0) ? VSM_MAX_MIP_LEVELS : 1;
@@ -144,53 +170,44 @@ void VirtualSmInvalidateInstancePagesCS(
 							// axis aligned boxes.
 							Rect.Depth += 1e-8f;
 
+							uint4 RectPages = GetPageRect(Rect, ProjectionData.VirtualShadowMapId, MipLevel);
+
+							uint FlagMask = VSM_ALLOCATED_FLAG | GetDetailGeometryFlagMaskForCulling(bShouldCacheAsStatic, bIsNanite, PixelEstRadius);
+							PixelEstRadius *= 0.5f;
+
 							// Use Hierarchical mip test to speed up (allows skipping invalidating areas that don't have any flags anyway)
-							if (OverlapsAnyValidPage(ProjectionData.VirtualShadowMapId, MipLevel, float2(0.0f, 0.0f), Rect, VSM_ALLOCATED_FLAG))
+							if (OverlapsAnyValidPage(ProjectionData.VirtualShadowMapId, MipLevel, RectPages, FlagMask))
 							{
-								uint4 RectPages = uint4(Rect.Pixels) >> VSM_LOG2_PAGE_SIZE;
-
 #if USE_HZB_OCCLUSION
-								FPageTestScreenRect HZBTestRect = SetupPageHZBRect(Rect);
+								FPageTestScreenRect HZBTestRect = SetupPageHZBRect(Rect, ProjectionData.VirtualShadowMapId, MipLevel);
 #endif // USE_HZB_OCCLUSION
 
-								// Clip to actually allocated pages
-								// TODO: move this to be done as part of or before the overlap test?
-								uint4 AllocatedBounds = VirtualShadowMap.PageRectBounds[ProjectionData.VirtualShadowMapId * VSM_MAX_MIP_LEVELS + MipLevel];
-								RectPages.xy = max(RectPages.xy, AllocatedBounds.xy);
-								RectPages.zw = min(RectPages.zw, AllocatedBounds.zw);
-								if (all(RectPages.zw >= RectPages.xy))
+								// 3. do invalidation
+								FVirtualSMLevelOffset PageTableLevelOffset = CalcPageTableLevelOffset(ProjectionData.VirtualShadowMapId, MipLevel);
+								for (uint y = RectPages.y; y <= RectPages.w; y++)
 								{
-									// 3. do invalidation
-									uint PageTableLevelOffset = CalcPageTableLevelOffset(ProjectionData.VirtualShadowMapId, MipLevel);
-									for (uint y = RectPages.y; y <= RectPages.w; y++)
+									for (uint x = RectPages.x; x <= RectPages.z; x++)
 									{
-										for (uint x = RectPages.x; x <= RectPages.z; x++)
-										{
-											uint PageFlagOffset = PageTableLevelOffset + CalcPageOffsetInLevel(MipLevel, uint2(x, y));
-											uint PageFlag = VirtualShadowMap.PageFlags[PageFlagOffset];
+										uint PageFlagOffset = CalcPageOffset(PageTableLevelOffset, MipLevel, uint2(x, y));
+										uint PageFlag = VirtualShadowMap.PageFlags[PageFlagOffset];
 
-											if ((PageFlag & VSM_ALLOCATED_FLAG) != 0)
-											{
+										if ((PageFlag & FlagMask) == FlagMask)
+										{
 #if USE_HZB_OCCLUSION
-												// When separate static caching is enabled we check against the static page
-												// rather than the dynamic one. This is not totally ideal for a number of reasons
-												// but it is generally better than checking against the dynamic one in most scenes.
-												// Ideally in fully cached cases we would check the cached/merged (dynamic) page at
-												// the very least.
-												const bool bSampleStaticPage = true;
-												if (!IsPageVisibleHZB(uint2(x, y), PageFlagOffset, HZBTestRect, bSampleStaticPage))
-												{
-													continue;
-												}
+											if (!IsPageVisibleHZB(uint2(x, y), PageFlagOffset, HZBTestRect))
+											{
+												continue;
+											}
 #endif // USE_HZB_OCCLUSION
-												// Accumulate static/dynamic invalidation flags
-												// TODO: Wave version
-												InterlockedOr(OutDynamicCasterPageFlags[PageFlagOffset], InvalidationFlags);
+											// Accumulate static/dynamic invalidation flags
+											// TODO: Wave version
+											uint2 PhysicalAddress = ShadowGetPhysicalPage(PageFlagOffset).PhysicalAddress;
+											uint PhysicalPageIndex = VSMPhysicalPageAddressToIndex(PhysicalAddress);
+											InterlockedOr(PrevPhysicalPageMetaDataOut[PhysicalPageIndex].Flags, InvalidationFlags);
 #if ENABLE_DEBUG_MODE
-												++PageInvalidationCount;
+											++PageInvalidationCount;
 #endif
 
-											}
 										}
 									}
 								}

@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "PixelFormat.h"
 #include "Serialization/BulkData.h"
+#include "Serialization/DerivedData.h"
 #include "Engine/Texture.h"
 #include "HAL/ThreadSafeBool.h"
 
@@ -23,8 +24,8 @@ enum class EVirtualTextureCodec : uint8
 	White,			//Special case codec, always outputs white pixels 255,255,255,255
 	Flat,			//Special case codec, always outputs 128,125,255,255 (flat normal map)
 	RawGPU,			//Uncompressed data in an GPU-ready format (e.g R8G8B8A8, BC7, ASTC, ...)
-	ZippedGPU,		//Same as RawGPU but with the data zipped
-	Crunch,			//Use the Crunch library to compress data
+	ZippedGPU_DEPRECATED,		//Same as RawGPU but with the data zipped
+	Crunch_DEPRECATED,			//Use the Crunch library to compress data
 	Max,			// Add new codecs before this entry
 };
 
@@ -35,6 +36,9 @@ struct FVirtualTextureChunkHeader
 
 struct FVirtualTextureDataChunk
 {
+	/** Reference to the data for the chunk if it can be streamed. */
+	UE::FDerivedData DerivedData;
+	/** Stores the data for the chunk when it is loaded. */
 	FByteBulkData BulkData;
 	FSHAHash BulkDataHash;
 	uint32 SizeInBytes;
@@ -66,7 +70,7 @@ struct FVirtualTextureDataChunk
 	bool ShortenKey(const FString& CacheKey, FString& Result);
 	FThreadSafeBool bFileAvailableInVTDDCDache;
 	bool bCorruptDataLoadedFromDDC = false;
-	int64 StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName, bool bReplaceExistingDDC);
+	int64 StoreInDerivedDataCache(FStringView InKey, FStringView InName, bool bReplaceExisting);
 #endif // WITH_EDITORONLY_DATA
 };
 

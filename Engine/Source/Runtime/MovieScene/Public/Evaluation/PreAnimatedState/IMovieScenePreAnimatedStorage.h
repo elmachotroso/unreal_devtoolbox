@@ -12,6 +12,7 @@
 struct FObjectKey;
 struct FMovieSceneEvaluationKey;
 
+class FReferenceCollector;
 class FTrackInstancePropertyBindings;
 class UMovieSceneEntitySystemLinker;
 
@@ -41,13 +42,15 @@ struct IPreAnimatedStorage : TSharedFromThis<IPreAnimatedStorage>
 
 	virtual IPreAnimatedObjectPropertyStorage* AsPropertyStorage() { return nullptr; }
 	virtual IPreAnimatedObjectEntityStorage*   AsObjectStorage()   { return nullptr; }
+
+	virtual void AddReferencedObjects(FReferenceCollector& ReferenceCollector) {}
 };
 
 
 
 struct IPreAnimatedObjectEntityStorage
 {
-	virtual void BeginTrackingEntities(const FPreAnimatedTrackerParams& Params, TRead<FMovieSceneEntityID> EntityIDs, TRead<FInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects) = 0;
+	virtual void BeginTrackingEntities(const FPreAnimatedTrackerParams& Params, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects) = 0;
 	virtual void CachePreAnimatedValues(const FCachePreAnimatedValueParams& Params, TArrayView<UObject* const> BoundObjects) = 0;
 };
 
@@ -55,7 +58,7 @@ struct IPreAnimatedObjectEntityStorage
 
 struct IPreAnimatedStateTokenStorage
 {
-	virtual void RestoreState(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneEvaluationKey& Key, FInstanceHandle InstanceHandle) = 0;
+	virtual void RestoreState(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneEvaluationKey& Key, FRootInstanceHandle InstanceHandle) = 0;
 };
 
 
@@ -64,7 +67,7 @@ struct IPreAnimatedObjectPropertyStorage
 {
 	using FThreeWayAccessor = TMultiReadOptional<FCustomPropertyIndex, uint16, TSharedPtr<FTrackInstancePropertyBindings>>;
 
-	virtual void BeginTrackingEntities(const FPreAnimatedTrackerParams& Params, TRead<FMovieSceneEntityID> EntityIDs, TRead<FInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects, TRead<FMovieScenePropertyBinding> PropertyBindings) = 0;
+	virtual void BeginTrackingEntities(const FPreAnimatedTrackerParams& Params, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects, TRead<FMovieScenePropertyBinding> PropertyBindings) = 0;
 	virtual void CachePreAnimatedValues(const FCachePreAnimatedValueParams& Params, FEntityAllocationProxy Item, TRead<UObject*> Objects, TRead<FMovieScenePropertyBinding> PropertyBindings, FThreeWayAccessor Properties) = 0;
 };
 

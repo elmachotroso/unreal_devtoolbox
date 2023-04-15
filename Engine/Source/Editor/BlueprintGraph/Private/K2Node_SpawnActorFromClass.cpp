@@ -1,21 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_SpawnActorFromClass.h"
-#include "UObject/UnrealType.h"
-#include "Engine/EngineTypes.h"
-#include "GameFramework/Actor.h"
-#include "Kismet/GameplayStatics.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/MemberReference.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_Select.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "KismetCompilerMisc.h"
-#include "KismetCompiler.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
-#include "BlueprintActionDatabaseRegistrar.h"
 #include "K2Node_EnumLiteral.h"
+#include "K2Node_Select.h"
+#include "Kismet/GameplayStatics.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompiler.h"
+#include "KismetCompilerMisc.h"
+#include "Math/Transform.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+
+struct FLinearColor;
 
 struct FK2Node_SpawnActorFromClassHelper
 {
@@ -54,7 +75,7 @@ void UK2Node_SpawnActorFromClass::AllocateDefaultPins()
 	UEdGraphPin* TransformPin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Struct, TransformStruct, FK2Node_SpawnActorFromClassHelper::SpawnTransformPinName);
 
 	// Collision handling method pin
-	UEnum* const MethodEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ESpawnActorCollisionHandlingMethod"), true);
+	UEnum* const MethodEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ESpawnActorCollisionHandlingMethod"), true);
 	UEdGraphPin* const CollisionHandlingOverridePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Byte, MethodEnum, FK2Node_SpawnActorFromClassHelper::CollisionHandlingOverridePinName);
 	CollisionHandlingOverridePin->DefaultValue = MethodEnum->GetNameStringByValue(static_cast<int>(ESpawnActorCollisionHandlingMethod::Undefined));
 
@@ -82,7 +103,7 @@ void UK2Node_SpawnActorFromClass::MaybeUpdateCollisionPin(TArray<UEdGraphPin*>& 
 				UEdGraphPin* const CollisionHandlingOverridePin = GetCollisionHandlingOverridePin();
 				if (CollisionHandlingOverridePin)
 				{
-					UEnum const* const MethodEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ESpawnActorCollisionHandlingMethod"), true);
+					UEnum const* const MethodEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ESpawnActorCollisionHandlingMethod"), true);
 					CollisionHandlingOverridePin->DefaultValue =
 						bOldCollisionPinValue
 						? MethodEnum->GetNameStringByValue(static_cast<int>(ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
@@ -97,7 +118,7 @@ void UK2Node_SpawnActorFromClass::MaybeUpdateCollisionPin(TArray<UEdGraphPin*>& 
 				UEdGraphPin* const CollisionHandlingOverridePin = GetCollisionHandlingOverridePin();
 				check(CollisionHandlingOverridePin);
 
-				UEnum* const MethodEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ESpawnActorCollisionHandlingMethod"), true);
+				UEnum* const MethodEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ESpawnActorCollisionHandlingMethod"), true);
 				
 				FGraphNodeCreator<UK2Node_EnumLiteral> AlwaysSpawnLiteralCreator(*GetGraph());
 				UK2Node_EnumLiteral* const AlwaysSpawnLiteralNode = AlwaysSpawnLiteralCreator.CreateNode();
@@ -234,7 +255,7 @@ void UK2Node_SpawnActorFromClass::GetPinHoverText(const UEdGraphPin& Pin, FStrin
 
 FSlateIcon UK2Node_SpawnActorFromClass::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.SpawnActor_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.SpawnActor_16x");
 	return Icon;
 }
 

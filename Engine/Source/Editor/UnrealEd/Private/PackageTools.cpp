@@ -42,15 +42,14 @@
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ComponentReregisterContext.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/GameEngine.h"
 #include "Engine/LevelStreaming.h"
-#include "Engine/MapBuildDataRegistry.h"
 #include "Engine/Selection.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Logging/MessageLog.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
@@ -379,42 +378,37 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 
 			OutErrorMessage = FText::Format( NSLOCTEXT("UnrealEd", "UnloadDirtyPackagesList", "The following assets have been modified and cannot be unloaded:{DirtyPackages}\nSaving these assets will allow them to be unloaded."), Args );
 		}
-
-		if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+		if (GEditor)
 		{
-			// Is the currently loaded world being unloaded? If so, we just reset the current world.
-			// We also need to skip the build data package as that will also be destroyed by the call to CreateNewMapForEditing.
-			if (PackagesToUnload.Contains(EditorWorld->GetOutermost()))
+			if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
 			{
-				// Remove the world package from the unload list
-				PackagesToUnload.Remove(EditorWorld->GetOutermost());
-
-				// Remove the level build data package from the unload list as creating a new map will unload build data for the current world
-				for (int32 LevelIndex = 0; LevelIndex < EditorWorld->GetNumLevels(); ++LevelIndex)
+				// Is the current world being unloaded?
+				if (PackagesToUnload.Contains(EditorWorld->GetPackage()))
 				{
-					ULevel* Level = EditorWorld->GetLevel(LevelIndex);
-					if (Level->MapBuildData)
+					TArray<TWeakObjectPtr<UPackage>> WeakPackages;
+					WeakPackages.Reserve(PackagesToUnload.Num());
+					for (UPackage* Package : PackagesToUnload)
 					{
-						PackagesToUnload.Remove(Level->MapBuildData->GetOutermost());
+						WeakPackages.Add(Package);
+					}
+
+					// Unload the current world
+					GEditor->CreateNewMapForEditing();
+
+					// Remove stale entries in PackagesToUnload (unloaded world, level build data, streaming levels, external actors, etc)
+					PackagesToUnload.Reset();
+					for (const TWeakObjectPtr<UPackage>& WeakPackage : WeakPackages)
+					{
+						if (UPackage* Package = WeakPackage.Get())
+						{
+							PackagesToUnload.Add(Package);
+						}
 					}
 				}
-
-				// Remove any streaming levels from the unload list as creating a new map will unload streaming levels for the current world
-				for (ULevelStreaming* EditorStreamingLevel : EditorWorld->GetStreamingLevels())
-				{
-					if (EditorStreamingLevel->IsLevelLoaded())
-					{
-						UPackage* EditorStreamingLevelPackage = EditorStreamingLevel->GetLoadedLevel()->GetOutermost();
-						PackagesToUnload.Remove(EditorStreamingLevelPackage);
-					}
-				}
-
-				// Unload the current world
-				GEditor->CreateNewMapForEditing();
 			}
 		}
 
-		if (PackagesToUnload.Num() > 0)
+		if (PackagesToUnload.Num() > 0 && GEditor)
 		{
 			const FScopedBusyCursor BusyCursor;
 
@@ -481,8 +475,34 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 					if (UBlueprint* BP = Cast<UBlueprint>(Obj))
 					{
 						BP->ClearEditorReferences();
+
+						// Remove from cached dependent lists.
+						for (const TWeakObjectPtr<UBlueprint> Dependency : BP->CachedDependencies)
+						{
+							if (UBlueprint* ResolvedDependency = Dependency.Get())
+							{
+								ResolvedDependency->CachedDependents.Remove(BP);
+							}
+						}
+
+						BP->CachedDependencies.Reset();
+
+						// Remove from cached dependency lists.
+						for (const TWeakObjectPtr<UBlueprint> Dependent : BP->CachedDependents)
+						{
+							if (UBlueprint* ResolvedDependent = Dependent.Get())
+							{
+								ResolvedDependent->CachedDependencies.Remove(BP);
+							}
+						}
+
+						BP->CachedDependents.Reset();
 					}
-					if (UWorld* World = Cast<UWorld>(Obj))
+					else if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Obj))
+					{
+						FKismetEditorUtilities::OnBlueprintGeneratedClassUnloaded.Broadcast(BPGC);
+					}
+					else if (UWorld* World = Cast<UWorld>(Obj))
 					{
 						if (World->bIsWorldInitialized)
 						{
@@ -848,6 +868,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 							{
 								CurrentWorldPtr->RemoveFromWorld(Level);
 								StreamingLevel->RemoveLevelFromCollectionForReload();
+								ULevelStreaming::RemoveLevelAnnotation(Level);
 								RemovedStreamingLevels.Add(StreamingLevel);
 								break;
 							}
@@ -957,6 +978,9 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 				for (ULevelStreaming* StreamingLevel : RemovedStreamingLevels)
 				{
 					ULevel* NewLevel = StreamingLevel->GetLoadedLevel();
+					ULevelStreaming::LevelAnnotations.AddAnnotation(
+						NewLevel,
+						ULevelStreaming::FLevelAnnotation(StreamingLevel));
 					CurrentWorldPtr->AddToWorld(NewLevel, StreamingLevel->LevelTransform, false);
 					StreamingLevel->AddLevelToCollectionAfterReload();
 				}
@@ -985,6 +1009,18 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 				if (UBlueprint* BP = Cast<UBlueprint>(InObject))
 				{
 					BP->ClearEditorReferences();
+
+					// Remove from cached dependent lists; this will be repopulated on reload, but we
+					// don't wish to consider every one of our dependencies as a potential referencer,
+					// and this set will be serialized by the archiver that's used to find those. Any
+					// references will instead be collected from other fields that reference the asset.
+					for (const TWeakObjectPtr<UBlueprint> Dependency : BP->CachedDependencies)
+					{
+						if (UBlueprint* ResolvedDependency = Dependency.Get())
+						{
+							ResolvedDependency->CachedDependents.Remove(BP);
+						}
+					}
 				}
 				if (UWorld* World = Cast<UWorld>(InObject))
 				{
@@ -1441,6 +1477,20 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 		return SanitizedName;
 	}
 
+	FString UPackageTools::PackageNameToFilename(const FString& InPackageName, const FString& Extension)
+	{
+		FString Result;
+		FPackageName::TryConvertLongPackageNameToFilename(InPackageName, Result, Extension);
+		return Result;
+	}
+
+	FString UPackageTools::FilenameToPackageName(const FString& InFilename)
+	{
+		FString Result;
+    	FPackageName::TryConvertFilenameToLongPackageName(InFilename, Result);
+    	return Result;
+	}
+
 	UPackage* UPackageTools::FindOrCreatePackageForAssetType(const FName LongPackageName, UClass* AssetClass)
 	{
 		if (AssetClass)
@@ -1456,7 +1506,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			if (NumberOfAssets == 1)
 			{
 				const FAssetData& AssetData = OutAssets[0];
-				if (AssetData.AssetClass != AssetClass->GetFName())
+				if (AssetData.AssetClassPath != AssetClass->GetClassPathName())
 				{
 					bShouldGenerateUniquePackageName = true;
 				}

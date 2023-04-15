@@ -4,6 +4,8 @@
 #include "AHEasing/easing.h"
 #include "TwoBoneIK.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigMathLibrary)
+
 float FControlRigMathLibrary::AngleBetween(const FVector& A, const FVector& B)
 {
 	if (A.IsNearlyZero() || B.IsNearlyZero())
@@ -374,3 +376,97 @@ FVector FControlRigMathLibrary::ClampSpatially(const FVector& Value, EAxis::Type
 
 	return Space.TransformPosition(Local);
 }
+
+FQuat FControlRigMathLibrary::FindQuatBetweenVectors(const FVector& A, const FVector& B)
+{
+	return FindQuatBetweenNormals(A.GetSafeNormal(), B.GetSafeNormal());
+}
+
+FQuat FControlRigMathLibrary::FindQuatBetweenNormals(const FVector& A, const FVector& B)
+{
+	const FQuat::FReal Dot = FVector::DotProduct(A, B);
+	FQuat::FReal W = 1 + Dot;
+	FQuat Result;
+
+	if (W < SMALL_NUMBER)
+	{
+		// A and B point in opposite directions
+		W = 2 - W;
+		Result = FQuat(
+			-A.Y * B.Z + A.Z * B.Y,
+			-A.Z * B.X + A.X * B.Z,
+			-A.X * B.Y + A.Y * B.X,
+			W).GetNormalized();
+
+		const FVector Normal = FMath::Abs(A.X) > FMath::Abs(A.Y) ?
+			FVector(0.f, 1.f, 0.f) : FVector(1.f, 0.f, 0.f);
+		const FVector BiNormal = FVector::CrossProduct(A, Normal);
+		const FVector TauNormal = FVector::CrossProduct(A, BiNormal);
+		Result = Result * FQuat(TauNormal, PI);
+	}
+	else
+	{
+		//Axis = FVector::CrossProduct(A, B);
+		Result = FQuat(
+			A.Y * B.Z - A.Z * B.Y,
+			A.Z * B.X - A.X * B.Z,
+			A.X * B.Y - A.Y * B.X,
+			W);
+	}
+
+	Result.Normalize();
+	return Result;
+}
+
+FVector FControlRigMathLibrary::GetEquivalentEulerAngle(const FVector& InEulerAngle, const EEulerRotationOrder& InOrder)
+{
+	FVector TheOtherAngle;
+
+	switch (InOrder)
+	{
+	case EEulerRotationOrder::XYZ:
+		TheOtherAngle.X = InEulerAngle.X + 180;
+		TheOtherAngle.Y = 180 - InEulerAngle.Y;
+		TheOtherAngle.Z = InEulerAngle.Z + 180;
+		break;
+	case EEulerRotationOrder::XZY:
+		TheOtherAngle.X = InEulerAngle.X + 180;
+		TheOtherAngle.Z = 180 - InEulerAngle.Z;
+		TheOtherAngle.Y = InEulerAngle.Y + 180;
+		break;
+	case EEulerRotationOrder::YXZ:
+		TheOtherAngle.Y = InEulerAngle.Y + 180;
+		TheOtherAngle.X = 180 - InEulerAngle.X;
+		TheOtherAngle.Z = InEulerAngle.Z + 180;
+		break;
+	case EEulerRotationOrder::YZX:
+		TheOtherAngle.Y = InEulerAngle.Y + 180;
+		TheOtherAngle.Z = 180 - InEulerAngle.Z;
+		TheOtherAngle.X = InEulerAngle.X + 180;
+		break;
+	case EEulerRotationOrder::ZXY:
+		TheOtherAngle.Z = InEulerAngle.Z + 180;
+		TheOtherAngle.X = 180 - InEulerAngle.X;
+		TheOtherAngle.Y = InEulerAngle.Y + 180;
+		break;
+	case EEulerRotationOrder::ZYX:
+		TheOtherAngle.Z = InEulerAngle.Z + 180;
+		TheOtherAngle.Y = 180 - InEulerAngle.Y;
+		TheOtherAngle.X = InEulerAngle.X + 180;
+		break;
+	};
+
+	TheOtherAngle.UnwindEuler();
+	
+	return TheOtherAngle;
+}
+
+FVector& FControlRigMathLibrary::ChooseBetterEulerAngleForAxisFilter(const FVector& Base, FVector& A, FVector& B)
+{
+	// simply compare the sum of difference should be enough
+	float Diff1 = (A - Base).GetAbs().Dot(FVector::OneVector);
+	float Diff2 = (B - Base).GetAbs().Dot(FVector::OneVector);
+
+	return Diff1 < Diff2 ? A : B;
+}
+

@@ -11,6 +11,14 @@ class IConcertServerSession;
 struct FConcertSessionInfo;
 struct FConcertSessionFilter;
 
+struct FInternalLiveSessionCreationParams
+{
+	DECLARE_DELEGATE(FOnSessionModified)
+
+	/** Called when the session was modified */
+	FOnSessionModified OnModifiedCallback;
+};
+
 /** Interface for events that Concert server can emit */
 class IConcertServerEventSink
 {
@@ -25,7 +33,7 @@ public:
 	 * @note This function is called for both newly created sessions and after recovering a live session during server start-up.
 	 * @return true if the session creation could be completed without error, false otherwise (ex if the database fails to open).
 	 */
-	virtual bool OnLiveSessionCreated(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession) = 0;
+	virtual bool OnLiveSessionCreated(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession, const FInternalLiveSessionCreationParams& AdditionalParams) = 0;
 	
 	/**
 	 * Called before the session is destroyed (and before Shutdown is called on it).
@@ -76,10 +84,10 @@ public:
 	virtual bool RestoreSession(const IConcertServer& InServer, const FGuid& InArchivedSessionId, const FString& InLiveSessionRoot, const FConcertSessionInfo& InLiveSessionInfo, const FConcertSessionFilter& InSessionFilter) = 0;
 
 	/**
-	 * Called to get the activities for an archived or a live session without being connected to it.
+	 * Called to get the all activities that are not muted (i.e. don't have EConcertSyncActivityFlags::Muted flag set) for an archived or a live session without being connected to it.
 	 * @note If ActivityCount is negative, the function returns the last activities (the tail) from Max(1, TotalActivityCount + ActivityCount + 1)
 	 */
-	virtual bool GetSessionActivities(const IConcertServer& InServer, const FGuid& SessionId, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& OutActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails) = 0;
+	virtual bool GetUnmutedSessionActivities(const IConcertServer& InServer, const FGuid& SessionId, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& OutActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails) = 0;
 
 	/**
 	 * Called when a live session is renamed.

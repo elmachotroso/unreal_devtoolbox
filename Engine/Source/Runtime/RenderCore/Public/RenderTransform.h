@@ -3,7 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Math/Box.h"
+#include "Math/BoxSphereBounds.h"
+#include "Math/Float32.h"
+#include "Math/Matrix.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Math/VectorRegister.h"
+#include "Serialization/Archive.h"
 #include "Serialization/MemoryLayout.h"
+#include "Serialization/StructuredArchiveAdapters.h"
 
 // TODO: Further compress data size with tighter encoding
 // LWC_TODO: Rebasing support (no 64bit types in here)
@@ -71,7 +82,7 @@ public:
 		return *this;
 	}
 
-	FORCEINLINE bool Equals(const FRenderTransform& Other, float Tolerance = KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Equals(const FRenderTransform& Other, float Tolerance = UE_KINDA_SMALL_NUMBER) const
 	{
 		return
 			TransformRows[0].Equals(Other.TransformRows[0], Tolerance) &&

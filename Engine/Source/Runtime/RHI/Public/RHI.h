@@ -12,6 +12,10 @@
 #include "RHIDefinitions.h"
 #include "Containers/StaticArray.h"
 #include "Containers/StringFwd.h"
+#include "Math/IntRect.h"
+#include "Math/PerspectiveMatrix.h"
+#include "Math/ScaleMatrix.h"
+#include "Math/TranslationMatrix.h"
 
 #ifndef RHI_COMMAND_LIST_DEBUG_TRACES
 #define RHI_COMMAND_LIST_DEBUG_TRACES 0
@@ -66,6 +70,7 @@ extern RHI_API int32 GRHIPersistentThreadGroupCount;
 extern RHI_API int32 GMaxTextureMipCount;
 
 /** Does the RHI implements CopyToTexture() with FRHICopyTextureInfo::NumMips > 1 */
+UE_DEPRECATED(5.1, "All RHIs now support copying to multiple mips.")
 extern RHI_API bool GRHISupportsCopyToTextureMultipleMips;
 
 /** true if this platform has quad buffer stereo support. */
@@ -137,14 +142,29 @@ RHI_API EPixelFormat RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelForm
 // helper to check which resource type should be used for clear (UAV) replacement shaders.
 RHI_API int32 RHIGetPreferredClearUAVRectPSResourceType(const FStaticShaderPlatform Platform);
 
+// helper to force dump all RHI resource to CSV file
+RHI_API void RHIDumpResourceMemoryToCSV();
+
 inline bool RHISupportsInstancedStereo(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetSupportsInstancedStereo(Platform);
 }
 
+UE_DEPRECATED(5.1, "RHISupportsMultiView has been deprecated. Use RHISupportsMultiViewport to avoid confusion.")
 inline bool RHISupportsMultiView(const FStaticShaderPlatform Platform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return FDataDrivenShaderPlatformInfo::GetSupportsMultiView(Platform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+/** 
+ * Can this platform implement instanced stereo rendering by rendering to multiple viewports.
+ * Note: run-time users should always check GRHISupportsArrayIndexFromAnyShader as well, since for some SPs (particularly PCD3D_SM5) minspec does not guarantee that feature.
+ **/
+inline bool RHISupportsMultiViewport(const FStaticShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsMultiViewport(Platform) != ERHIFeatureSupport::Unsupported;
 }
 
 inline bool RHISupportsMSAA(const FStaticShaderPlatform Platform)
@@ -166,7 +186,7 @@ inline bool RHISupportsVolumeTextures(const FStaticFeatureLevel FeatureLevel)
 
 inline bool RHISupportsVertexShaderLayer(const FStaticShaderPlatform Platform)
 {
-	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && FDataDrivenShaderPlatformInfo::GetSupportsVertexShaderLayer(Platform);
+	return FDataDrivenShaderPlatformInfo::GetSupportsVertexShaderLayer(Platform);
 }
 
 /** Return true if and only if the GPU support rendering to volume textures (2D Array, 3D) is guaranteed supported for a target platform.
@@ -191,6 +211,11 @@ inline bool RHISupports4ComponentUAVReadWrite(const FStaticShaderPlatform Platfo
 inline bool RHISupportsManualVertexFetch(const FStaticShaderPlatform InShaderPlatform)
 {
 	return FDataDrivenShaderPlatformInfo::GetSupportsManualVertexFetch(InShaderPlatform);
+}
+
+inline bool RHISupportsSwapchainUAVs(const FStaticShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsSwapchainUAVs(Platform);
 }
 
 /** 
@@ -227,6 +252,14 @@ inline RHI_API bool RHISupportsInlineRayTracing(const FStaticShaderPlatform Plat
 	return FDataDrivenShaderPlatformInfo::GetSupportsInlineRayTracing(Platform);
 }
 
+/** Whether this platform can compile ray tracing callable shaders.
+ *  To use at runtime, also check GRHISupportsRayTracing and r.RayTracing CVar (see IsRayTracingEnabled() helper).
+ **/
+inline RHI_API bool RHISupportsRayTracingCallableShaders(const FStaticShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsRayTracingCallableShaders(Platform);
+}
+
 /** Can this platform compile mesh shaders with tier0 capability.
  *  To use at runtime, also check GRHISupportsMeshShadersTier0.
  **/
@@ -253,7 +286,7 @@ inline uint32 RHIMaxMeshShaderThreadGroupSize(const FStaticShaderPlatform Platfo
  **/
 inline RHI_API bool RHISupportsWaveOperations(const FStaticShaderPlatform Platform)
 {
-	return FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Platform);
+	return FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Platform) != ERHIFeatureSupport::Unsupported;
 }
 
 /** True if the given shader platform supports a render target write mask */
@@ -266,6 +299,12 @@ inline bool RHISupportsRenderTargetWriteMask(const FStaticShaderPlatform Platfor
 inline RHI_API bool RHISupportsConservativeRasterization(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetSupportsConservativeRasterization(Platform);
+}
+
+/** True if the given shader platform supports bindless resources/views. */
+inline bool RHISupportsBindless(EShaderPlatform Platform)
+{
+	return FDataDrivenShaderPlatformInfo::GetSupportsBindless(Platform);
 }
 
 inline bool RHISupportsVolumeTextureAtomics(EShaderPlatform Platform)
@@ -447,6 +486,9 @@ extern RHI_API bool GRHISupportsDirectGPUMemoryLock;
 /** true if the multi-threaded shader creation is supported by (or desirable for) the RHI. */
 extern RHI_API bool GRHISupportsMultithreadedShaderCreation;
 
+/** Does the RHI support parallel resource commands (i.e. create / lock / unlock) on non-immediate command list APIs, recorded off the render thread. */
+extern RHI_API bool GRHISupportsMultithreadedResources;
+
 /** The minimum Z value in clip space for the RHI. This is a constant value to always match D3D clip-space. */
 constexpr float GMinClipZ = 0.0f;
 
@@ -482,6 +524,9 @@ extern RHI_API TRHIGlobal<int32> GMaxTextureDimensions;
 /** The maximum size allowed for 2D textures in both dimensions. */
 extern RHI_API TRHIGlobal<int64> GMaxBufferDimensions;
 
+/** The maximum size allowed for a contant buffer. */
+extern RHI_API TRHIGlobal<int64> GRHIMaxConstantBufferByteSize;
+
 /** The maximum size allowed for Shared Compute Memory. */
 extern RHI_API TRHIGlobal<int64> GMaxComputeSharedMemory;
 
@@ -491,9 +536,20 @@ extern RHI_API TRHIGlobal<int32> GMaxVolumeTextureDimensions;
 /** Whether RW texture buffers are supported */
 extern RHI_API bool GRHISupportsRWTextureBuffers;
 
+/** Whether a raw (ByteAddress) buffer view can be created for any buffer, regardless of its EBufferUsageFlags::ByteAddressBuffer flag. */
+extern RHI_API bool GRHISupportsRawViewsForAnyBuffer;
+
+/** Whether depth or stencil can individually be set to CopySrc/Dest access. */
+extern RHI_API bool GRHISupportsSeparateDepthStencilCopyAccess;
+
 FORCEINLINE uint64 GetMaxBufferDimension()
 {
 	return GMaxBufferDimensions;
+}
+
+FORCEINLINE uint64 GetMaxConstantBufferByteSize()
+{
+	return GRHIMaxConstantBufferByteSize;
 }
 
 FORCEINLINE uint64 GetMaxComputeSharedMemory()
@@ -583,13 +639,16 @@ extern RHI_API int32 GNumPrimitivesDrawnRHI[MAX_NUM_GPUS];
 
 /** Num draw calls and primitives this frame (only accurate on RenderThread) */
 extern RHI_API int32 GCurrentNumDrawCallsRHI[MAX_NUM_GPUS];
-extern RHI_API int32(*GCurrentNumDrawCallsRHIPtr)[MAX_NUM_GPUS];
 extern RHI_API int32 GCurrentNumPrimitivesDrawnRHI[MAX_NUM_GPUS];
+using FRHIDrawCallsStatPtr = int32(*)[MAX_NUM_GPUS];
+RHI_API void RHIIncCurrentNumDrawCallPtr(uint32 GPUIndex);
+RHI_API void RHISetCurrentNumDrawCallPtr(FRHIDrawCallsStatPtr InNumDrawCallsRHIPtr);
 
 /** Whether or not the RHI can handle a non-zero BaseVertexIndex - extra SetStreamSource calls will be needed if this is false */
 extern RHI_API bool GRHISupportsBaseVertexIndex;
 
 /** True if the RHI supports copying cubemap faces using CopyToResolveTarget */
+UE_DEPRECATED(5.1, "CopyToResoveTarget is deprecated.")
 extern RHI_API bool GRHISupportsResolveCubemapFaces;
 
 /** Whether or not the RHI can handle a non-zero FirstInstance to DrawIndexedPrimitive and friends - extra SetStreamSource calls will be needed if this is false */
@@ -694,6 +753,9 @@ extern RHI_API FIntVector GRHIMaxDispatchThreadGroupsPerDimension;
 /** Whether or not the RHI can support per-draw Variable Rate Shading. */
 extern RHI_API bool GRHISupportsPipelineVariableRateShading;
 
+/** Whether or not the Variable Rate Shading can be done at larger (2x4 or 4x2 or 4x4) sizes. */
+extern RHI_API bool GRHISupportsLargerVariableRateShadingSizes;
+
 /** Whether or not the RHI can support image-based Variable Rate Shading. */
 extern RHI_API bool GRHISupportsAttachmentVariableRateShading;
 
@@ -762,6 +824,12 @@ extern RHI_API bool GRHISupportsMapWriteNoOverwrite;
 /** Tables of all MSAA sample offset for all MSAA supported. Use GetMSAASampleOffsets() to read it. */
 extern RHI_API FVector2f GRHIDefaultMSAASampleOffsets[1 + 2 + 4 + 8 + 16];
 
+/** True if the RHI supports pipeline precompiling from any thread. */
+extern RHI_API bool GRHISupportsAsyncPipelinePrecompile;
+
+/** Whether dynamic (bindless) resources are supported */
+extern RHI_API bool GRHISupportsBindless;
+
 // Calculate the index of the sample in GRHIDefaultMSAASampleOffsets
 extern RHI_API int32 CalculateMSAASampleArrayIndex(int32 NumSamples, int32 SampleIndex);
 
@@ -786,61 +854,28 @@ enum class EPixelFormatCapabilities : uint32
 	TextureGather    = 1ull << 10,
 	TextureAtomics   = 1ull << 11,
 	TextureBlendable = 1ull << 12,
+	TextureStore     = 1ull << 13,
 
-	Buffer           = 1ull << 13,
-    VertexBuffer     = 1ull << 14,
-    IndexBuffer      = 1ull << 15,
-	BufferLoad       = 1ull << 16,
-    BufferStore      = 1ull << 17,
-    BufferAtomics    = 1ull << 18,
+	Buffer           = 1ull << 14,
+    VertexBuffer     = 1ull << 15,
+    IndexBuffer      = 1ull << 16,
+	BufferLoad       = 1ull << 17,
+    BufferStore      = 1ull << 18,
+    BufferAtomics    = 1ull << 19,
 
-	UAV              = 1ull << 19,
-    TypedUAVLoad     = 1ull << 20,
-	TypedUAVStore    = 1ull << 21,
+	UAV              = 1ull << 20,
+    TypedUAVLoad     = 1ull << 21,
+	TypedUAVStore    = 1ull << 22,
 
 	AnyTexture       = Texture1D | Texture2D | Texture3D | TextureCube,
 
-	AllTextureFlags  = AnyTexture | RenderTarget | DepthStencil | TextureMipmaps | TextureLoad | TextureSample | TextureGather | TextureAtomics | TextureBlendable,
+	AllTextureFlags  = AnyTexture | RenderTarget | DepthStencil | TextureMipmaps | TextureLoad | TextureSample | TextureGather | TextureAtomics | TextureBlendable | TextureStore,
 	AllBufferFlags   = Buffer | VertexBuffer | IndexBuffer | BufferLoad | BufferStore | BufferAtomics,
 	AllUAVFlags      = UAV | TypedUAVLoad | TypedUAVStore,
 
 	AllFlags         = AllTextureFlags | AllBufferFlags | AllUAVFlags
 };
 ENUM_CLASS_FLAGS(EPixelFormatCapabilities);
-
-/** Information about a pixel format. */
-struct FPixelFormatInfo
-{
-	FPixelFormatInfo() = delete;
-	FPixelFormatInfo(
-		EPixelFormat InUnrealFormat,
-		const TCHAR* InName,
-		int32 InBlockSizeX,
-		int32 InBlockSizeY,
-		int32 InBlockSizeZ,
-		int32 InBlockBytes,
-		int32 InNumComponents,
-		bool  InSupported);
-
-	const TCHAR*				Name;
-	EPixelFormat				UnrealFormat;
-	int32						BlockSizeX;
-	int32						BlockSizeY;
-	int32						BlockSizeZ;
-	int32						BlockBytes;
-	int32						NumComponents;
-
-	/** Per platform cabilities for the format */
-	EPixelFormatCapabilities	Capabilities{ EPixelFormatCapabilities::None };
-
-	/** Platform specific converted format */
-	uint32						PlatformFormat{ 0 };
-
-	/** Whether the texture format is supported on the current platform/ rendering combination	*/
-	bool						Supported;
-};
-
-extern RHI_API FPixelFormatInfo GPixelFormats[PF_MAX];		// Maps members of EPixelFormat to a FPixelFormatInfo describing the format.
 
 /** Initialize the 'best guess' pixel format capabilities. Platform formats and support must be filled out before calling this. */
 extern RHI_API void RHIInitDefaultPixelFormatCapabilities();
@@ -860,14 +895,14 @@ inline bool RHIIsTypedUAVStoreSupported(EPixelFormat InFormat)
 	return RHIPixelFormatHasCapabilities(InFormat, EPixelFormatCapabilities::TypedUAVStore);
 }
 
-//
-//	CalculateImageBytes
-//
-
+/**
+* Returns the memory required to store an image in the given pixel format (EPixelFormat). Use
+* GPixelFormats[Format].Get2D/3DImageSizeInBytes instead, unless you need PF_A1.
+*/
 extern RHI_API SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format);
 
-/** Called once per frame only from within an RHI. */
-extern RHI_API void RHIPrivateBeginFrame();
+/** Called once per frame only from RHIBeginFrame's command execution. */
+void RHIPrivateBeginFrame();
 
 
 RHI_API FName LegacyShaderPlatformToShaderFormat(EShaderPlatform Platform);
@@ -918,6 +953,9 @@ extern RHI_API FString LexToString(EShaderPlatform Platform);
 /** Stringifies ERHIFeatureLevel */
 extern RHI_API FString LexToString(ERHIFeatureLevel::Type Level);
 
+/** Stringifies ERHIDescriptorHeapType */
+extern RHI_API const TCHAR* LexToString(ERHIDescriptorHeapType InHeapType);
+
 /** Finds a corresponding ERHIShadingPath::Type given an FName, or returns false if one could not be found. */
 extern RHI_API bool GetShadingPathFromName(FName Name, ERHIShadingPath::Type& OutShadingPath);
 
@@ -932,6 +970,9 @@ extern RHI_API FString GetBufferUsageFlagsName(EBufferUsageFlags BufferUsage);
 
 /** Returns a string of friendly name bits for the texture create flags enum. */
 extern RHI_API FString GetTextureCreateFlagsName(ETextureCreateFlags TextureCreateFlags);
+
+/** Returns a string of friendly name bits for the texture create flags enum. */
+extern RHI_API const TCHAR* StringFromRHIResourceType(ERHIResourceType ResourceType);
 
 enum class ERHIPipeline : uint8
 {
@@ -1048,6 +1089,9 @@ enum class ERHIAccess
 
 	// A mask of all bits representing read-only states which cannot be combined with other write states.
 	ReadOnlyExclusiveMask = CPURead | Present | IndirectArgs | VertexOrIndexBuffer | SRVGraphics | SRVCompute | CopySrc | ResolveSrc | BVHRead,
+
+	// A mask of all bits representing read-only states on the compute pipe which cannot be combined with other write states.
+	ReadOnlyExclusiveComputeMask = CPURead | IndirectArgs | SRVCompute | CopySrc | BVHRead,
 
 	// A mask of all bits representing read-only states which may be combined with other write states.
 	ReadOnlyMask = ReadOnlyExclusiveMask | DSVRead | ShadingRateSource,
@@ -1225,6 +1269,16 @@ struct FVertexElement
 		bUseInstanceIndex = Other.bUseInstanceIndex;
 	}
 
+	bool operator==(const FVertexElement& Other) const
+	{
+		return (StreamIndex		== Other.StreamIndex &&
+				Offset			== Other.Offset &&
+				Type			== Other.Type &&
+				AttributeIndex	== Other.AttributeIndex &&
+				Stride			== Other.Stride &&
+				bUseInstanceIndex == Other.bUseInstanceIndex);
+	}
+
 	friend FArchive& operator<<(FArchive& Ar,FVertexElement& Element)
 	{
 		Ar << Element.StreamIndex;
@@ -1326,19 +1380,42 @@ struct FSamplerStateInitializerRHI
 
 struct FRasterizerStateInitializerRHI
 {
-	TEnumAsByte<ERasterizerFillMode> FillMode;
-	TEnumAsByte<ERasterizerCullMode> CullMode;
-	float DepthBias;
-	float SlopeScaleDepthBias;
-	bool bAllowMSAA;
-	bool bEnableLineAA;
-	
+	TEnumAsByte<ERasterizerFillMode> FillMode = FM_Point;
+	TEnumAsByte<ERasterizerCullMode> CullMode = CM_None;
+	float DepthBias = 0.0f;
+	float SlopeScaleDepthBias = 0.0f;
+	ERasterizerDepthClipMode DepthClipMode = ERasterizerDepthClipMode::DepthClip;
+	bool bAllowMSAA = false;
+	bool bEnableLineAA = false;
+
+	FRasterizerStateInitializerRHI() = default;
+
+	FRasterizerStateInitializerRHI(ERasterizerFillMode InFillMode, ERasterizerCullMode InCullMode, bool bInAllowMSAA, bool bInEnableLineAA)
+		: FillMode(InFillMode)
+		, CullMode(InCullMode)
+		, bAllowMSAA(bInAllowMSAA)
+		, bEnableLineAA(bInEnableLineAA)
+	{
+	}
+
+	FRasterizerStateInitializerRHI(ERasterizerFillMode InFillMode, ERasterizerCullMode InCullMode, float InDepthBias, float InSlopeScaleDepthBias, ERasterizerDepthClipMode InDepthClipMode, bool bInAllowMSAA, bool bInEnableLineAA)
+		: FillMode(InFillMode)
+		, CullMode(InCullMode)
+		, DepthBias(InDepthBias)
+		, SlopeScaleDepthBias(InSlopeScaleDepthBias)
+		, DepthClipMode(InDepthClipMode)
+		, bAllowMSAA(bInAllowMSAA)
+		, bEnableLineAA(bInEnableLineAA)
+	{
+	}
+
 	friend FArchive& operator<<(FArchive& Ar,FRasterizerStateInitializerRHI& RasterizerStateInitializer)
 	{
 		Ar << RasterizerStateInitializer.FillMode;
 		Ar << RasterizerStateInitializer.CullMode;
 		Ar << RasterizerStateInitializer.DepthBias;
 		Ar << RasterizerStateInitializer.SlopeScaleDepthBias;
+		Ar << RasterizerStateInitializer.DepthClipMode;
 		Ar << RasterizerStateInitializer.bAllowMSAA;
 		Ar << RasterizerStateInitializer.bEnableLineAA;
 		return Ar;
@@ -1580,6 +1657,7 @@ struct FRHIResourceInfo
 	ERHIResourceType Type{ RRT_None };
 	FVRamAllocation VRamAllocation;
 	bool IsTransient{ false };
+	bool bValid{ true };
 };
 
 enum class EClearBinding
@@ -1690,6 +1768,26 @@ struct FClearValueBinding
 			return true;
 		}
 		return false;
+	}
+
+	friend inline uint32 GetTypeHash(FClearValueBinding const& Binding)
+	{
+		uint32 Hash = GetTypeHash(Binding.ColorBinding);
+
+		if (Binding.ColorBinding == EClearBinding::EColorBound)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[0]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[1]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[2]));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.Color[3]));
+		}
+		else if (Binding.ColorBinding == EClearBinding::EDepthStencilBound)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.DSValue.Depth  ));
+			Hash = HashCombine(Hash, GetTypeHash(Binding.Value.DSValue.Stencil));
+		}
+
+		return Hash;
 	}
 
 	EClearBinding ColorBinding;
@@ -1867,6 +1965,16 @@ struct FResolveParams
 
 struct FRHICopyTextureInfo
 {
+	FIntRect GetSourceRect() const
+	{
+		return FIntRect(SourcePosition.X, SourcePosition.Y, SourcePosition.X + Size.X, SourcePosition.Y + Size.Y);
+	}
+	
+	FIntRect GetDestRect() const
+	{
+		return FIntRect(DestPosition.X, DestPosition.Y, DestPosition.X + Size.X, DestPosition.Y + Size.Y);
+	}
+
 	// Number of texels to copy. By default it will copy the whole resource if no size is specified.
 	FIntVector Size = FIntVector::ZeroValue;
 
@@ -1883,6 +1991,11 @@ struct FRHICopyTextureInfo
 	uint32 DestMipIndex = 0;
 	uint32 NumMips = 1;
 };
+
+inline constexpr bool IsReadOnlyExclusiveAccess(ERHIAccess Access)
+{
+	return EnumHasAnyFlags(Access, ERHIAccess::ReadOnlyExclusiveMask) && !EnumHasAnyFlags(Access, ~ERHIAccess::ReadOnlyExclusiveMask);
+}
 
 inline constexpr bool IsReadOnlyAccess(ERHIAccess Access)
 {
@@ -1925,7 +2038,9 @@ enum class ERHITransitionCreateFlags
 
 	// Indicates the transition will have no useful work between the Begin/End calls,
 	// so should use a partial flush rather than a fence as this is more optimal.
-	NoSplit = 1 << 1
+	NoSplit = 1 << 1,
+
+	BeginSimpleMode
 };
 ENUM_CLASS_FLAGS(ERHITransitionCreateFlags);
 
@@ -2019,6 +2134,7 @@ struct FRHITransitionInfo : public FRHISubresourceRange
 	union
 	{
 		class FRHIResource* Resource = nullptr;
+		class FRHIViewableResource* ViewableResource;
 		class FRHITexture* Texture;
 		class FRHIBuffer* Buffer;
 		class FRHIUnorderedAccessView* UAV;
@@ -2080,6 +2196,24 @@ struct FRHITransitionInfo : public FRHISubresourceRange
 		, Flags(InFlags)
 	{}
 
+	FRHITransitionInfo(class FRHITexture* InTexture, ERHIAccess InNewState)
+		: Texture(InTexture)
+		, Type(EType::Texture)
+		, AccessAfter(InNewState)
+	{}
+
+	FRHITransitionInfo(class FRHIUnorderedAccessView* InUAV, ERHIAccess InNewState)
+		: UAV(InUAV)
+		, Type(EType::UAV)
+		, AccessAfter(InNewState)
+	{}
+
+	FRHITransitionInfo(class FRHIBuffer* InRHIBuffer, ERHIAccess InNewState)
+		: Buffer(InRHIBuffer)
+		, Type(EType::Buffer)
+		, AccessAfter(InNewState)
+	{}
+
 	inline bool operator == (FRHITransitionInfo const& RHS) const
 	{
 		return Resource == RHS.Resource
@@ -2095,6 +2229,8 @@ struct FRHITransitionInfo : public FRHISubresourceRange
 		return !(*this == RHS);
 	}
 };
+
+RHI_API FRHIViewableResource* GetViewableResource(const FRHITransitionInfo& Info);
 
 struct FRHITransientAliasingOverlap
 {
@@ -2270,6 +2406,19 @@ struct FRHITransitionCreateInfo
 	TArrayView<const FRHITransientAliasingInfo> AliasingInfos;
 };
 
+struct FRHITrackedAccessInfo
+{
+	FRHITrackedAccessInfo() = default;
+
+	FRHITrackedAccessInfo(FRHIViewableResource* InResource, ERHIAccess InAccess)
+		: Resource(InResource)
+		, Access(InAccess)
+	{}
+
+	FRHIViewableResource* Resource = nullptr;
+	ERHIAccess Access = ERHIAccess::Unknown;
+};
+
 #include "RHIValidationCommon.h"
 
 // Opaque data structure used to represent a pending resource transition in the RHI.
@@ -2298,7 +2447,7 @@ private:
 
 	// Private constructor. Memory for transitions is allocated manually with extra space at the tail of the structure for RHI use.
 	FRHITransition(ERHIPipeline SrcPipelines, ERHIPipeline DstPipelines)
-		: State(int8(SrcPipelines) | (int8(DstPipelines) << int32(ERHIPipeline::Num)))
+		: State(int8(int32(SrcPipelines) | (int32(DstPipelines) << int32(ERHIPipeline::Num))))
 #if DO_CHECK || USING_CODE_ANALYSIS
 		, AllowedSrc(SrcPipelines)
 		, AllowedDst(DstPipelines)
@@ -2344,7 +2493,7 @@ private:
 	{
 		checkf(EnumHasAllFlags(AllowedDst, Pipeline), TEXT("Transition is being used on a destination pipeline that it wasn't created for."));
 
-		int8 Mask = int8(Pipeline) << int32(ERHIPipeline::Num);
+		int8 Mask = int8(int32(Pipeline) << int32(ERHIPipeline::Num));
 		int8 PreviousValue = FPlatformAtomics::InterlockedAnd(&State, ~Mask);
 		checkf((PreviousValue & Mask) == Mask, TEXT("RHIEndTransitions has been called twice on this transition for at least one pipeline."));
 
@@ -2579,7 +2728,7 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Lines drawn"),STAT_RHILines,STATGROUP_RH
 #if STATS
 #define RHI_DRAW_CALL_INC_MGPU(GPUIndex) \
 		INC_DWORD_STAT(STAT_RHIDrawPrimitiveCalls); \
-		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
+		RHIIncCurrentNumDrawCallPtr(GPUIndex);
 
 #define RHI_DRAW_CALL_STATS_MGPU(GPUIndex,PrimitiveType,NumPrimitives) \
 		RHI_DRAW_CALL_INC_MGPU(GPUIndex); \
@@ -2588,11 +2737,11 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Lines drawn"),STAT_RHILines,STATGROUP_RH
 		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI[GPUIndex], NumPrimitives);
 #else
 #define RHI_DRAW_CALL_INC_MGPU(GPUIndex) \
-		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
+		RHIIncCurrentNumDrawCallPtr(GPUIndex);
 
 #define RHI_DRAW_CALL_STATS_MGPU(GPUIndex,PrimitiveType,NumPrimitives) \
 		FPlatformAtomics::InterlockedAdd(&GCurrentNumPrimitivesDrawnRHI[GPUIndex], NumPrimitives); \
-		FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
+		RHIIncCurrentNumDrawCallPtr(GPUIndex);
 #endif
 
 #define RHI_DRAW_CALL_INC() RHI_DRAW_CALL_INC_MGPU(0)
@@ -2642,7 +2791,7 @@ inline void FRHITransition::Cleanup() const
 
 	// Explicit destruction of the transition.
 	Transition->~FRHITransition();
-	FMemory::Free(Transition);
+	FConcurrentLinearAllocator::Free(Transition);
 }
 
 #if ENABLE_RHI_VALIDATION
@@ -2652,13 +2801,12 @@ inline void RHIValidation::FTracker::AddOp(const RHIValidation::FOperation& Op)
 	if (GRHICommandList.Bypass() && CurrentList.Operations.Num() == 0)
 	{
 		auto& OpQueue = OpQueues[GetOpQueueIndex(Pipeline)];
-		if (!EnumHasAllFlags(Op.Replay(Pipeline, OpQueue.bAllowAllUAVsOverlap), EReplayStatus::Waiting))
+		if (!EnumHasAllFlags(Op.Replay(Pipeline, OpQueue.bAllowAllUAVsOverlap, OpQueue.Breadcrumbs), EReplayStatus::Waiting))
 		{
 			return;
 		}
 	}
 
-	// @todo: improve performance. Use a fast linear allocator
 	CurrentList.Operations.Add(Op);
 }
 

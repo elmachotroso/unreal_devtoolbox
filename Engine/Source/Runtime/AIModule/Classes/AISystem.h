@@ -29,15 +29,15 @@ class AIMODULE_API UAISystem : public UAISystemBase
 
 protected:
 	/** Class that will be used to spawn the perception system, can be game-specific */
-	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "AIPerceptionSystem", DisplayName = "Perception System Class"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "/Script/AIModule.AIPerceptionSystem", DisplayName = "Perception System Class"))
 	FSoftClassPath PerceptionSystemClassName;
 
 	/** Class that will be used to spawn the hot spot manager, can be game-specific */
-	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "AIHotSpotManager", DisplayName = "AIHotSpotManager Class"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "/Script/AIModule.AIHotSpotManager", DisplayName = "AIHotSpotManager Class"))
 	FSoftClassPath HotSpotManagerClassName;
 
 	/** Class that will be used to spawn the env query manager, can be game-specific */
-	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "EnvQueryManager", DisplayName = "EnvQueryManager Class"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "/Script/AIModule.EnvQueryManager", DisplayName = "EnvQueryManager Class"))
 	FSoftClassPath EnvQueryManagerClassName;
 public:
 	/** Default AI movement's acceptance radius used to determine whether 
@@ -142,7 +142,9 @@ public:
 	// UAISystemBase begin		
 	virtual void InitializeActorsForPlay(bool bTimeGotReset) override;
 	virtual void WorldOriginLocationChanged(FIntVector OldOriginLocation, FIntVector NewOriginLocation) override;
-	virtual void CleanupWorld(bool bSessionEnded = true, bool bCleanupResources = true, UWorld* NewWorld = NULL) override;
+	virtual void CleanupWorld(bool bSessionEnded = true, bool bCleanupResources = true) override;
+	UE_DEPRECATED(5.1, "NewWorld was unused and not always calculated correctly and we expect it is not needed; let us know on UDN if it is necessary.")
+	virtual void CleanupWorld(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld) override;
 	virtual void StartPlay() override;
 	// UAISystemBase end
 

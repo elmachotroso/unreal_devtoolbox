@@ -20,6 +20,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"IntelTBB",
+					"MaterialX", // Needed for the standard data libraries
 					"Projects", // For plugin manager within UnrealUSDWrapper.cpp
 					"USDClasses"
 				}
@@ -87,13 +88,9 @@ namespace UnrealBuildTool.Rules
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
 					var USDBinDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "Linux", "bin", Target.Architecture);
 					PrivateRuntimeLibraryPaths.Add(USDBinDir);
-					foreach (string LibPath in Directory.EnumerateFiles(USDBinDir, "*.so*", SearchOption.AllDirectories))
+					foreach (string LibPath in Directory.EnumerateFiles(USDBinDir, "*.so", SearchOption.AllDirectories))
 					{
-						if(LibPath.EndsWith(".so")) // Don't add all versions of libboost_python39.so as they're duplicates
-						{
-							PublicAdditionalLibraries.Add(LibPath);
-						}
-
+						PublicAdditionalLibraries.Add(LibPath);
 						RuntimeDependencies.Add(LibPath);
 					}
 					// Redirect plugInfo.json to Plugin/Binaries for the editor, but leave them pointing at the executable folder otherwise
@@ -165,7 +162,7 @@ namespace UnrealBuildTool.Rules
 
 			bool bEnableUsdSdk = (
 				Target.WindowsPlatform.Compiler != WindowsCompiler.Clang &&
-				Target.WindowsPlatform.StaticAnalyzer == WindowsStaticAnalyzer.None
+				Target.StaticAnalyzer == StaticAnalyzer.None
 			);
 
 			// Don't enable USD when running the include tool because it has issues parsing Boost headers

@@ -10,6 +10,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/RenderingObjectVersion.h"
+#include "UObject/FortniteNCBranchObjectVersion.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/CollisionProfile.h"
 #include "ContentStreaming.h"
@@ -17,6 +18,8 @@
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "StaticMeshResources.h"
+#include "NaniteSceneProxy.h"
+#include "PrimitiveSceneInfo.h"
 #include "Net/UnrealNetwork.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -46,12 +49,16 @@
 #include "HAL/IConsoleManager.h"
 #include "Algo/AllOf.h"
 #include "Algo/Transform.h"
+#include "PipelineStateCache.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshComponent)
 
 #define LOCTEXT_NAMESPACE "StaticMeshComponent"
 
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh VxColor Inst Mem" ), STAT_InstVertexColorMemory, STATGROUP_MemoryStaticMesh );
 DECLARE_MEMORY_STAT( TEXT( "StaticMesh PreCulled Index Memory" ), STAT_StaticMeshPreCulledIndexMemory, STATGROUP_MemoryStaticMesh );
 
+extern int32 GEnableNaniteMaterialOverrides;
 
 FStaticMeshComponentInstanceData::FStaticMeshComponentInstanceData(const UStaticMeshComponent* SourceComponent)
 	: FPrimitiveComponentInstanceData(SourceComponent)
@@ -197,6 +204,10 @@ UStaticMeshComponent::UStaticMeshComponent(const FObjectInitializer& ObjectIniti
 	bOverrideNavigationExport = false;
 	bForceNavigationObstacle = true;
 	bDisallowMeshPaintPerInstance = false;
+	bDisallowNanite = false;
+	bEvaluateWorldPositionOffset = true;
+	bEvaluateWorldPositionOffsetInRayTracing = false;
+	bInitialEvaluateWorldPositionOffset = false;
 	DistanceFieldIndirectShadowMinVisibility = .1f;
 	GetBodyInstance()->bAutoWeld = true;	//static mesh by default has auto welding
 
@@ -231,19 +242,21 @@ void UStaticMeshComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty 
 
 /// @endcond
 
-void UStaticMeshComponent::OnRep_StaticMesh(class UStaticMesh *OldStaticMesh)
+void UStaticMeshComponent::OnRep_StaticMesh(class UStaticMesh* OldStaticMesh)
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Only do stuff if this actually changed from the last local value
-	if (OldStaticMesh!= StaticMesh)
+	if (OldStaticMesh != StaticMesh)
 	{
-		// We have to force a call to SetStaticMesh with a new StaticMesh
-		UStaticMesh *NewStaticMesh = StaticMesh;
-		StaticMesh = OldStaticMesh;
+		// Properly handle replicated StaticMesh property change by putting the old value back
+		// and applying the modification through a proper call to SetStaticMesh.
+		UStaticMesh* NewStaticMesh = StaticMesh;
+
+		// Put back the old value with minimal logic involved
+		SetStaticMeshInternal(OldStaticMesh);
 		
+		// Go through all the logic required to properly apply a new static mesh.
 		SetStaticMesh(NewStaticMesh);
 	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UStaticMeshComponent::HasAnySockets() const
@@ -303,9 +316,21 @@ void UStaticMeshComponent::Serialize(FArchive& Ar)
 
 	LLM_SCOPE(ELLMTag::StaticMesh);
 
-	Super::Serialize(Ar);
-
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+
+	const bool bBeforeRemappedEvaluateWorldPositionOffset = (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) < FFortniteNCBranchObjectVersion::RemappedEvaluateWorldPositionOffsetInRayTracing
+		&& Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::RemappedEvaluateWorldPositionOffsetInRayTracing);
+
+	// When bEvaluateWorldPositionOffsetInRayTracing was named bEvaluateWorldPositionOffset the default value was false and now it is true. 
+	// Therefore if the default was not set in a blueprint it needs to be changed for old assets before Super::Serialize(Ar);
+	if (Ar.IsLoading() && bBeforeRemappedEvaluateWorldPositionOffset && !GetArchetype()->IsInBlueprint())
+	{
+		bEvaluateWorldPositionOffset = false; 
+	}
+
+	Super::Serialize(Ar);
 
 #if WITH_EDITORONLY_DATA
 	if (Ar.IsCooking())
@@ -346,7 +371,7 @@ void UStaticMeshComponent::Serialize(FArchive& Ar)
 			{
 				LODData[LODIndex].LegacyMapBuildData->IrrelevantLights = IrrelevantLights_DEPRECATED;
 				LegacyComponentData.Data.Emplace(LODData[LODIndex].MapBuildDataId, LODData[LODIndex].LegacyMapBuildData);
-				LODData[LODIndex].LegacyMapBuildData = NULL;
+				LODData[LODIndex].LegacyMapBuildData = nullptr;
 			}
 		}
 
@@ -359,7 +384,28 @@ void UStaticMeshComponent::Serialize(FArchive& Ar)
 	}
 #endif
 
+	if (Ar.IsLoading() && bBeforeRemappedEvaluateWorldPositionOffset)
+	{
+		bEvaluateWorldPositionOffsetInRayTracing = bEvaluateWorldPositionOffset;
+		bEvaluateWorldPositionOffset = true; // Default WPO evaluation on
+	}
+
 	NotifyIfStaticMeshChanged();
+
+	// NOTE: Must come after NotifyIfStaticMeshChanged to avoid an ensure in GetStaticMesh during cook.
+	// If the component has bUseDefaultCollision set to true and we are a Blueprint component, then our BodyInstance will 
+	// be saved with the CollisionProfile data copied from our StaticMesh, but the CollisionProfileName will be unchanged 
+	// and can be anything. But! UPrimitiveComponent::Serialize calls BodyInstance.FixupData which will replace the loaded 
+	// profile data with the named profile data. This would get replaced again (with the correct values) in OnRegister, 
+	// but we need the profile to be set up correctly immediately after load because, if the component is a blueprint 
+	// component, the blueprint may attempt to write into the CollisionProfile's ResponsesArray at an index that no longer 
+	// exists (e.g., the StaticMesh is BlockAll which has 8 elements by default, but the Component is NoCollision which has 2).
+	// See FORT-506503 for more context
+	if (Ar.IsLoading() && IsTemplate() && bUseDefaultCollision)
+	{
+		UpdateCollisionFromStaticMesh();
+		BodyInstance.FixupData(this);
+	}
 }
 
 void UStaticMeshComponent::PostApplyToComponent()
@@ -479,6 +525,7 @@ void UStaticMeshComponent::CheckForErrors()
 				->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_MoreMaterialsThanReferenced", "More overridden materials ({OverridenCount}) on static mesh component than are referenced ({ReferencedCount}) in source mesh '{MeshName}'" ), Arguments ) ))
 				->AddToken(FMapErrorToken::Create(FMapErrors::MoreMaterialsThanReferenced));
 		}
+
 		if (ZeroTriangleElements > 0)
 		{
 			FFormatNamedArguments Arguments;
@@ -715,11 +762,21 @@ void UStaticMeshComponent::OnRegister()
 #endif //WITH_EDITORONLY_DATA
 
 	Super::OnRegister();
+
+	// World transform might have changes causing negative determinant which changes the culling mode
+	PrecachePSOs();
 }
 
 void UStaticMeshComponent::OnUnregister()
 {
 	Super::OnUnregister();
+}
+
+void UStaticMeshComponent::BeginPlay()
+{
+	bInitialEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
+
+	Super::BeginPlay();
 }
 
 bool UStaticMeshComponent::RequiresGameThreadEndOfFrameRecreate() const
@@ -840,7 +897,12 @@ bool UStaticMeshComponent::RemapActorTextureStreamingBuiltDataToLevel(const UAct
 	FGuid TextureGuid;
 	for (FStreamingTextureBuildInfo& BuildInfo : StreamingTextureData)
 	{
-		if (!InActorTextureBuildData->GetStreamableTexture(BuildInfo.TextureLevelIndex, TextureName, TextureGuid))
+		uint16 TextureLevelIndex = InvalidRegisteredStreamableTexture;
+		if (InActorTextureBuildData->GetStreamableTexture(BuildInfo.TextureLevelIndex, TextureName, TextureGuid))
+		{
+			TextureLevelIndex = Level->RegisterStreamableTexture(TextureName, TextureGuid);
+		}
+		if (TextureLevelIndex == InvalidRegisteredStreamableTexture)
 		{
 			// If remapping failed, invalidate built texture streaming data (this should not happen with newly generated texture streaming build data)
 			UE_LOG(LogStaticMesh, Warning, TEXT("Clearing invalid texture streaming built data for %s"), *GetFullName());
@@ -848,7 +910,7 @@ bool UStaticMeshComponent::RemapActorTextureStreamingBuiltDataToLevel(const UAct
 			return false;
 		}
 		// Update BuildInfo's TextureLevelIndex
-		BuildInfo.TextureLevelIndex = Level->RegisterStreamableTexture(TextureName, TextureGuid);
+		BuildInfo.TextureLevelIndex = TextureLevelIndex;
 	}
 	return true;
 }
@@ -1036,7 +1098,7 @@ void UStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCon
 	
 	if (!CanSkipGetTextureStreamingRenderAssetInfo())
 	{
-		GetStreamingTextureInfoInner(LevelContext, Mobility == EComponentMobility::Static ? &StreamingTextureData : nullptr, GetTransformScale() * StreamingDistanceMultiplier, OutStreamingRenderAssets);
+		GetStreamingTextureInfoInner(LevelContext, Mobility == EComponentMobility::Static ? &StreamingTextureData : nullptr, StreamingDistanceMultiplier, OutStreamingRenderAssets);
 	}
 
 	// Process the lightmaps and shadowmaps entries.
@@ -1049,9 +1111,9 @@ void UStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCon
 		if (Lightmap && Lightmap->IsValid(LightmapIndex))
 		{
 			const FVector2D& Scale = Lightmap->GetCoordinateScale();
-			if (Scale.X > SMALL_NUMBER && Scale.Y > SMALL_NUMBER)
+			if (Scale.X > UE_SMALL_NUMBER && Scale.Y > UE_SMALL_NUMBER)
 			{
-				const float TexelFactor = GetStaticMesh()->GetLightmapUVDensity() * GetTransformScale() / FMath::Min(Scale.X, Scale.Y);
+				const float TexelFactor = GetStaticMesh()->GetLightmapUVDensity() / FMath::Min(Scale.X, Scale.Y);
 				new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(Lightmap->GetTexture(LightmapIndex), Bounds, TexelFactor, PackedRelativeBox_Identity);
 				new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(Lightmap->GetAOMaterialMaskTexture(), Bounds, TexelFactor, PackedRelativeBox_Identity);
 				new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(Lightmap->GetSkyOcclusionTexture(), Bounds, TexelFactor, PackedRelativeBox_Identity);
@@ -1062,9 +1124,9 @@ void UStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCon
 		if (Shadowmap && Shadowmap->IsValid())
 		{
 			const FVector2D& Scale = Shadowmap->GetCoordinateScale();
-			if (Scale.X > SMALL_NUMBER && Scale.Y > SMALL_NUMBER)
+			if (Scale.X > UE_SMALL_NUMBER && Scale.Y > UE_SMALL_NUMBER)
 			{
-				const float TexelFactor = GetStaticMesh()->GetLightmapUVDensity() * GetTransformScale() / FMath::Min(Scale.X, Scale.Y);
+				const float TexelFactor = GetStaticMesh()->GetLightmapUVDensity() / FMath::Min(Scale.X, Scale.Y);
 				new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(Shadowmap->GetTexture(), Bounds, TexelFactor, PackedRelativeBox_Identity);
 			}
 		}
@@ -1075,7 +1137,7 @@ void UStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCon
 		const float TexelFactor = ForcedLodModel > 0 ?
 			-(GetStaticMesh()->GetRenderData()->LODResources.Num() - ForcedLodModel + 1) :
 			(IsRegistered() ? Bounds.SphereRadius * 2.f : 0.f);
-		new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(GetStaticMesh(), Bounds, TexelFactor, PackedRelativeBox_Identity, true);
+		new (OutStreamingRenderAssets) FStreamingRenderAssetPrimitiveInfo(GetStaticMesh(), Bounds, TexelFactor, PackedRelativeBox_Identity, true, false);
 	}
 }
 
@@ -1287,7 +1349,7 @@ void UStaticMeshComponent::RemoveInstanceVertexColors()
 	}
 }
 
-void UStaticMeshComponent::CopyInstanceVertexColorsIfCompatible( UStaticMeshComponent* SourceComponent )
+void UStaticMeshComponent::CopyInstanceVertexColorsIfCompatible( const UStaticMeshComponent* SourceComponent )
 {
 	// The static mesh assets have to match, currently.
 	if (( GetStaticMesh()->GetPathName() == SourceComponent->GetStaticMesh()->GetPathName() ) &&
@@ -1315,7 +1377,7 @@ void UStaticMeshComponent::CopyInstanceVertexColorsIfCompatible( UStaticMeshComp
 			FStaticMeshLODResources& SourceLODModel = SourceComponent->GetStaticMesh()->GetRenderData()->LODResources[CurrentLOD];
 			if (SourceComponent->LODData.IsValidIndex(CurrentLOD))
 			{
-				FStaticMeshComponentLODInfo& SourceLODInfo = SourceComponent->LODData[CurrentLOD];
+				const FStaticMeshComponentLODInfo& SourceLODInfo = SourceComponent->LODData[CurrentLOD];
 
 				FStaticMeshLODResources& TargetLODModel = GetStaticMesh()->GetRenderData()->LODResources[CurrentLOD];
 				FStaticMeshComponentLODInfo& TargetLODInfo = LODData[CurrentLOD];
@@ -1323,7 +1385,7 @@ void UStaticMeshComponent::CopyInstanceVertexColorsIfCompatible( UStaticMeshComp
 				if ( SourceLODInfo.OverrideVertexColors != nullptr )
 				{
 					// Copy vertex colors from source to target.
-					FColorVertexBuffer* SourceColorBuffer = SourceLODInfo.OverrideVertexColors;
+					const FColorVertexBuffer* SourceColorBuffer = SourceLODInfo.OverrideVertexColors;
 
 					TArray< FColor > CopiedColors;
 					for ( uint32 ColorVertexIndex = 0; ColorVertexIndex < SourceColorBuffer->GetNumVertices(); ColorVertexIndex++ )
@@ -1462,6 +1524,50 @@ void UStaticMeshComponent::InitResources()
 	}
 }
 
+void UStaticMeshComponent::PrecachePSOs()
+{
+	if (!IsComponentPSOPrecachingEnabled() || StaticMesh == nullptr || StaticMesh->GetRenderData() == nullptr)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	ERHIFeatureLevel::Type FeatureLevel = World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+
+	bool bAnySectionCastsShadows = false;
+	TArray<int16, TInlineAllocator<2>> UsedMaterialIndices;
+	for (FStaticMeshLODResources& LODRenderData : StaticMesh->GetRenderData()->LODResources)
+	{
+		for (FStaticMeshSection& RenderSection : LODRenderData.Sections)
+		{
+			UsedMaterialIndices.AddUnique(RenderSection.MaterialIndex);
+			bAnySectionCastsShadows |= RenderSection.bCastShadow;
+		}
+	}
+
+	bool bIsLocalToWorldDeterminantNegative = GetRenderMatrix().Determinant() < 0;
+
+	FPSOPrecacheParams PrecachePSOParams;
+	SetupPrecachePSOParams(PrecachePSOParams);
+	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
+	PrecachePSOParams.bReverseCulling = bReverseCulling || bIsLocalToWorldDeterminantNegative;
+	PrecachePSOParams.bForceLODModel = ForcedLodModel > 0;
+
+	const FVertexFactoryType* VFType = ShouldCreateNaniteProxy() ? &Nanite::FVertexFactory::StaticType :  &FLocalVertexFactory::StaticType;
+
+	for (uint16 MaterialIndex : UsedMaterialIndices)
+	{
+		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
+		if (MaterialInterface)
+		{
+			PrecachePSOParams.bHasWorldPositionOffsetVelocity = SupportsWorldPositionOffsetVelocity()
+				&& MaterialInterface->GetRelevance_Concurrent(FeatureLevel).bUsesWorldPositionOffset;
+
+			MaterialInterface->PrecachePSOs(VFType, PrecachePSOParams);
+		}
+	}
+}
+
 #if WITH_EDITOR
 void UStaticMeshComponent::PrivateFixupOverrideColors()
 {
@@ -1494,18 +1600,19 @@ void UStaticMeshComponent::PrivateFixupOverrideColors()
 		TArray<FColor> NewOverrideColors;
 		if (bCustomOverrideVertexColorPerLOD)
 		{
-			//Since in custom we fix paint only if the component has some, the PaintedVertices should be allocate
-			check(LODInfo.PaintedVertices.Num() > 0);
-			//Use the existing LOD custom paint and remap it on the new mesh
-			RemapPaintedVertexColors(
-				LODInfo.PaintedVertices,
-				nullptr,
-				SourceRenderData.VertexBuffers.PositionVertexBuffer,
-				SourceRenderData.VertexBuffers.StaticMeshVertexBuffer,
-				CurRenderData.VertexBuffers.PositionVertexBuffer,
-				&CurRenderData.VertexBuffers.StaticMeshVertexBuffer,
-				NewOverrideColors
-				);
+			if (LODInfo.PaintedVertices.Num() > 0)
+			{
+				//Use the existing LOD custom paint and remap it on the new mesh
+				RemapPaintedVertexColors(
+					LODInfo.PaintedVertices,
+					nullptr,
+					SourceRenderData.VertexBuffers.PositionVertexBuffer,
+					SourceRenderData.VertexBuffers.StaticMeshVertexBuffer,
+					CurRenderData.VertexBuffers.PositionVertexBuffer,
+					&CurRenderData.VertexBuffers.StaticMeshVertexBuffer,
+					NewOverrideColors
+					);
+			}
 		}
 		else if(LOD0Info.PaintedVertices.Num() > 0)
 		{
@@ -1611,6 +1718,12 @@ void UStaticMeshComponent::UpdatePreCulledData(int32 LODIndex, const TArray<uint
 
 bool UStaticMeshComponent::ShouldCreateNaniteProxy() const
 {
+	if (bDisallowNanite || GetScene() == nullptr)
+	{
+		// Regardless of the static mesh asset supporting Nanite, this component does not want Nanite to be used
+		return false;
+	}
+
 	// Whether or not to allow Nanite for this component
 #if WITH_EDITORONLY_DATA
 	const bool bAllowNanite = !bDisplayNaniteFallbackMesh;
@@ -1618,7 +1731,8 @@ bool UStaticMeshComponent::ShouldCreateNaniteProxy() const
 	const bool bAllowNanite = true;
 #endif
 
-	return bAllowNanite && UseNanite(GetScene()->GetShaderPlatform()) && GetStaticMesh()->GetRenderData()->NaniteResources.PageStreamingStates.Num();
+	EShaderPlatform ShaderPlatform = GetScene() ? GetScene()->GetShaderPlatform() : GMaxRHIShaderPlatform;
+	return bAllowNanite && UseNanite(ShaderPlatform) && HasValidNaniteData();
 }
 
 void UStaticMeshComponent::ReleaseResources()
@@ -1679,6 +1793,10 @@ void UStaticMeshComponent::ExportCustomProperties(FOutputDevice& Out, uint32 Ind
 
 void UStaticMeshComponent::ImportCustomProperties(const TCHAR* SourceText, FFeedbackContext* Warn)
 {
+	// First thing that should be done after importing properties is to
+	// make sure notification is sent if the static mesh property has been modified.
+	NotifyIfStaticMeshChanged();
+
 	check(SourceText);
 	check(Warn);
 
@@ -1765,7 +1883,7 @@ void UStaticMeshComponent::PostEditUndo()
 	// Debug check command trying to track down undo related uninitialized resource
 	if (GetStaticMesh() != NULL && GetStaticMesh()->GetRenderData() && GetStaticMesh()->GetRenderData()->LODResources.Num() > 0)
 	{
-		FRenderResource* Resource = &GetStaticMesh()->GetRenderData()->LODResources[0].IndexBuffer;
+		FRenderResource* Resource = &GetStaticMesh()->GetRenderData()->LODResources[GetStaticMesh()->GetRenderData()->GetCurrentFirstLODIdx(0)].IndexBuffer;
 		ENQUEUE_RENDER_COMMAND(ResourceCheckCommand)(
 			[Resource](FRHICommandList& RHICmdList)
 			{
@@ -1806,7 +1924,7 @@ void UStaticMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 			// Broadcast that the static mesh has changed
 			OnStaticMeshChangedEvent.Broadcast(this);
 
-			// If the staticmesh changed, then the component needs a texture streaming rebuild.
+			// If the static mesh changed, then the component needs a texture streaming rebuild.
 			StreamingTextureData.Empty();
 			
 			if (OverrideMaterials.Num())
@@ -1863,6 +1981,11 @@ bool UStaticMeshComponent::CanEditChange(const FProperty* InProperty) const
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UStaticMeshComponent, DistanceFieldSelfShadowBias))
 		{
 			return bOverrideDistanceFieldSelfShadowBias && bAffectDistanceFieldLighting;
+		}
+
+		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UStaticMeshComponent, bEvaluateWorldPositionOffset))
+		{
+			return IsOptimizedWPO();
 		}
 	}
 
@@ -1987,6 +2110,9 @@ void UStaticMeshComponent::PostLoad()
 
 	// Initialize the resources for the freshly loaded component.
 	InitResources();
+
+	// Precache PSOs for the used materials
+	PrecachePSOs();
 }
 
 bool UStaticMeshComponent::IsPostLoadThreadSafe() const
@@ -2030,9 +2156,7 @@ bool UStaticMeshComponent::ShouldCreatePhysicsState() const
 
 void UStaticMeshComponent::SetStaticMeshInternal(UStaticMesh* NewMesh)
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	StaticMesh = NewMesh;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	NotifyIfStaticMeshChanged();
 }
@@ -2099,6 +2223,9 @@ bool UStaticMeshComponent::SetStaticMesh(UStaticMesh* NewMesh)
 	// Mark cached material parameter names dirty
 	MarkCachedMaterialParameterNameIndicesDirty();
 
+	// Precache the PSOs
+	PrecachePSOs();
+
 #if WITH_EDITOR
 	// Broadcast that the static mesh has changed
 	OnStaticMeshChangedEvent.Broadcast(this);
@@ -2112,6 +2239,32 @@ bool UStaticMeshComponent::SetStaticMesh(UStaticMesh* NewMesh)
 #endif
 
 	return true;
+}
+
+const Nanite::FResources* UStaticMeshComponent::GetNaniteResources() const
+{
+	if (OnGetNaniteResources().IsBound())
+	{
+		return OnGetNaniteResources().Execute();
+	}
+	else if (GetStaticMesh() && GetStaticMesh()->GetRenderData())
+	{
+		return &GetStaticMesh()->GetRenderData()->NaniteResources;
+	}
+
+	return nullptr;
+}
+
+bool UStaticMeshComponent::HasValidNaniteData() const
+{
+	const Nanite::FResources* NaniteResources = GetNaniteResources();
+	return NaniteResources ? NaniteResources->PageStreamingStates.Num() > 0 : false;
+}
+
+bool UStaticMeshComponent::UseNaniteOverrideMaterials() const
+{
+	// Check for valid data on this SMC and support for Nanite material overrides
+	return ShouldCreateNaniteProxy() && GEnableNaniteMaterialOverrides != 0;
 }
 
 void UStaticMeshComponent::SetForcedLodModel(int32 NewForcedLodModel)
@@ -2157,26 +2310,48 @@ void UStaticMeshComponent::SetDistanceFieldSelfShadowBias(float NewValue)
 
 void UStaticMeshComponent::SetEvaluateWorldPositionOffsetInRayTracing(bool NewValue)
 {
-	if (bEvaluateWorldPositionOffset != NewValue && GetScene() != nullptr)
+	// Skip when this doesn't have a valid static mesh or a valid scene
+	if (!GetStaticMesh() || GetScene() == nullptr || SceneProxy == nullptr)
+	{
+		return;
+	}
+
+	const bool bHasChanged = bEvaluateWorldPositionOffsetInRayTracing != NewValue;
+
+	// Update game thread data
+	bEvaluateWorldPositionOffsetInRayTracing = NewValue;
+
+	// Nanite doesn't support this hint yet, and the following code only works with regular SM proxies
+	if (SceneProxy->IsNaniteMesh())
+	{
+		return;
+	}
+
+	if (bHasChanged)
+	{
+		// Update render thread data
+		ENQUEUE_RENDER_COMMAND(UpdateEvaluateWPORTCmd)
+		([NewValue, Scene = GetScene(), PrimitiveSceneProxy = static_cast<FStaticMeshSceneProxy*>(SceneProxy)](FRHICommandList&)
+		{
+			PrimitiveSceneProxy->SetEvaluateWorldPositionOffsetInRayTracing(NewValue);
+		});
+	}
+}
+
+void UStaticMeshComponent::SetEvaluateWorldPositionOffset(bool NewValue)
+{
+	// Skip when this doesn't have a valid static mesh or a valid scene
+	if (!GetStaticMesh() || GetScene() == nullptr || SceneProxy == nullptr)
+	{
+		return;
+	}
+
+	if (bEvaluateWorldPositionOffset != NewValue)
 	{
 		// Update game thread data
 		bEvaluateWorldPositionOffset = NewValue;
-
-		// Skip when this doesn't have a valid static mesh 
-		if (!GetStaticMesh())
-		{
-			return;
-		}
-
 		// Update render thread data
-		ENQUEUE_RENDER_COMMAND(UpdateDFSelfShadowBiasCmd)(
-			[NewValue, PrimitiveSceneProxy = (FStaticMeshSceneProxy*)SceneProxy](FRHICommandList&)
-			{
-				if (PrimitiveSceneProxy)
-				{
-					PrimitiveSceneProxy->SetEvaluateWorldPositionOffsetInRayTracing(NewValue);
-				}
-			});
+		SceneProxy->SetEvaluateWorldPositionOffset_GameThread(NewValue);
 	}
 }
 
@@ -2479,16 +2654,42 @@ bool UStaticMeshComponent::IsMaterialSlotNameValid(FName MaterialSlotName) const
 
 UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex) const
 {
+	UMaterialInterface* OutMaterial = nullptr;
+
 	// If we have a base materials array, use that
-	if(OverrideMaterials.IsValidIndex(MaterialIndex) && OverrideMaterials[MaterialIndex])
+	if (OverrideMaterials.IsValidIndex(MaterialIndex) && OverrideMaterials[MaterialIndex])
+	{
+		OutMaterial = OverrideMaterials[MaterialIndex];
+	}
+	// Otherwise get from static mesh
+	else if (GetStaticMesh())
+	{
+		OutMaterial = GetStaticMesh()->GetMaterial(MaterialIndex);
+	}
+
+	// If we have a nanite override, use that
+	if (OutMaterial != nullptr && UseNaniteOverrideMaterials())
+	{
+		UMaterialInterface* NaniteOverride = OutMaterial->GetNaniteOverride();
+		OutMaterial = NaniteOverride != nullptr ? NaniteOverride : OutMaterial;
+	}
+
+	return OutMaterial;
+}
+
+UMaterialInterface* UStaticMeshComponent::GetEditorMaterial(int32 MaterialIndex) const
+{
+	// Same logic as GetMaterial() but without the nanite override.
+	// This makes it easier to see and edit the material which is actually set.
+	if (OverrideMaterials.IsValidIndex(MaterialIndex) && OverrideMaterials[MaterialIndex])
 	{
 		return OverrideMaterials[MaterialIndex];
 	}
-	// Otherwise get from static mesh
-	else
+	else if (GetStaticMesh())
 	{
-		return GetStaticMesh() ? GetStaticMesh()->GetMaterial(MaterialIndex) : nullptr;
+		return GetStaticMesh()->GetMaterial(MaterialIndex);
 	}
+	return nullptr;
 }
 
 void UStaticMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const
@@ -2523,6 +2724,11 @@ void UStaticMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMate
 			{
 				OutMaterials.Add(GetMaterial(MaterialIndex));
 			}
+
+			if (OverlayMaterial != nullptr)
+			{
+				OutMaterials.Add(OverlayMaterial);
+			}
 		}
 	}
 }
@@ -2530,8 +2736,8 @@ void UStaticMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMate
 #if WITH_EDITOR
 bool UStaticMeshComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
 {
-	if(OverrideMaterials.IsValidIndex(ElementIndex))
-	{				
+	if (OverrideMaterials.IsValidIndex(ElementIndex))
+	{
 		OutOwner = this;
 		OutPropertyPath = FString::Printf(TEXT("%s[%d]"), GET_MEMBER_NAME_STRING_CHECKED(UMeshComponent, OverrideMaterials), ElementIndex);
 		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(UMeshComponent::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UMeshComponent, OverrideMaterials))))
@@ -2541,6 +2747,7 @@ bool UStaticMeshComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*&
 
 		return true;
 	}
+
 	if (GetStaticMesh())
 	{
 		OutOwner = GetStaticMesh();
@@ -2756,6 +2963,11 @@ void UStaticMeshComponent::GetNavigationData(FNavigationRelevantData& Data) cons
 	}
 }
 
+bool UStaticMeshComponent::IsShown(const FEngineShowFlags& ShowFlags) const
+{
+	return ShowFlags.StaticMeshes;
+}
+
 #if WITH_EDITOR
 
 // UpdateBounds is currently the closest place we can get from the StaticMesh property
@@ -2795,19 +3007,25 @@ void UStaticMeshComponent::PostStaticMeshCompilation()
 	}
 }
 
-bool UStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
-	if (!bConsiderOnlyBSP && ShowFlags.StaticMeshes && GetStaticMesh() != nullptr && GetStaticMesh()->HasValidRenderData())
+	if (!bConsiderOnlyBSP && GetStaticMesh() != nullptr && GetStaticMesh()->HasValidRenderData())
 	{
+		// If the bounds are fully contains assume the static mesh component is fully contained
+		if (Super::ComponentIsTouchingSelectionBox(InSelBBox, bConsiderOnlyBSP, true))
+		{
+			return true;
+		}
+
 		// Check if we are even inside it's bounding box, if we are not, there is no way we colliding via the more advanced checks we will do.
-		if (Super::ComponentIsTouchingSelectionBox(InSelBBox, ShowFlags, bConsiderOnlyBSP, false))
+		if (Super::ComponentIsTouchingSelectionBox(InSelBBox, bConsiderOnlyBSP, false))
 		{
 			TArray<FVector> Vertex;
 
 			FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
 			FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
 
-			for (const auto& Section : LODModel.Sections)
+			for (const FStaticMeshSection& Section : LODModel.Sections)
 			{
 				// Iterate over each triangle.
 				for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
@@ -2847,32 +3065,53 @@ bool UStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox
 	return false;
 }
 
-
-bool UStaticMeshComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UStaticMeshComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
-	if (!bConsiderOnlyBSP && ShowFlags.StaticMeshes && GetStaticMesh() != nullptr && GetStaticMesh()->HasValidRenderData())
+	if (!bConsiderOnlyBSP && GetStaticMesh() && GetStaticMesh()->HasValidRenderData())
 	{
 		// Check if we are even inside it's bounding box, if we are not, there is no way we colliding via the more advanced checks we will do.
-		if (Super::ComponentIsTouchingSelectionFrustum(InFrustum, ShowFlags, bConsiderOnlyBSP, false))
+		bool bIsFullyContained = false;
+		if (InFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent, bIsFullyContained))
 		{
-			TArray<FVector> Vertex;
+			// If the bounds are fully contains assume the static mesh component is fully contained
+			if (bIsFullyContained)
+			{
+				return true;
+			}
 
 			FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
+			FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
 
-			uint32 NumVertices = LODModel.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
-			for (uint32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
+			const FTransform& TransformToWorld = GetComponentTransform();
+			for (const FStaticMeshSection& Section : LODModel.Sections)
 			{
-				const FVector3f& LocalPosition = LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex);
-				const FVector WorldPosition = GetComponentTransform().TransformPosition(FVector(LocalPosition));
-				bool bLocationIntersected = InFrustum.IntersectSphere(WorldPosition, 0.0f);
-				if (bLocationIntersected && !bMustEncompassEntireComponent)
+				// Iterate over each triangle.
+				for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
 				{
+					int32 Index = TriangleIndex * 3 + Section.FirstIndex;
+				
+					FVector PointA(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index]));
+					FVector PointB(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 1]));
+					FVector PointC(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 2]));
+
+					PointA = TransformToWorld.TransformPosition(PointA);
+					PointB = TransformToWorld.TransformPosition(PointB);
+					PointC = TransformToWorld.TransformPosition(PointC);
+
+					bool bFullyContained = false;
+					bool bIntersect = InFrustum.IntersectTriangle(PointA, PointB, PointC, bFullyContained);
+
+					if (!bMustEncompassEntireComponent && bIntersect)
+					{
+						// Needn't encompass entire component: any intersection, we consider as touching
 					return true;
 				}
-				else if (!bLocationIntersected && bMustEncompassEntireComponent)
+					else if (bMustEncompassEntireComponent && !bFullyContained)
 				{
+						// Must encompass entire component: any non intersection, we consider as not touching
 					return false;
 				}
+			}
 			}
 
 			// Either:
@@ -3091,11 +3330,42 @@ FArchive& operator<<(FArchive& Ar,FStaticMeshComponentLODInfo& I)
 		{}
 		check( LODIndex < I.OwningComponent->LODData.Num() );
 
-		bStrippedOverrideColors = !I.OverrideVertexColors || 
-			( I.OwningComponent->GetStaticMesh() == nullptr || 
-			I.OwningComponent->GetStaticMesh()->GetRenderData() == nullptr ||
-			LODIndex >= I.OwningComponent->GetStaticMesh()->GetRenderData()->LODResources.Num() ||
-			I.OverrideVertexColors->GetNumVertices() != I.OwningComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() );
+		bStrippedOverrideColors = true;
+
+		if (I.OverrideVertexColors &&
+			I.OwningComponent->GetStaticMesh() &&
+			I.OwningComponent->GetStaticMesh()->GetRenderData() &&
+			I.OwningComponent->GetStaticMesh()->GetRenderData()->LODResources.IsValidIndex(LODIndex))
+		{
+			const FStaticMeshLODResources& StaticMeshLODResources = I.OwningComponent->GetStaticMesh()->GetRenderData()->LODResources[LODIndex];
+			const int32 StaticMeshVertexBufferCount = StaticMeshLODResources.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices();
+			if (StaticMeshVertexBufferCount == I.OverrideVertexColors->GetNumVertices())
+			{
+				bStrippedOverrideColors = false;
+			}
+			else if (StaticMeshVertexBufferCount == 0)
+			{
+				// StaticMeshVertexBuffer is not available when StaticMesh loaded from a cooked build made with IsDataStrippedForServer()
+				// TODO: Could be using PKG_ServerSideOnly but PKG_ServerSideOnly flag is not currently being set
+				if (I.OwningComponent->GetStaticMesh()->GetPackage()->HasAllPackagesFlags(PKG_Cooked))
+				{
+					// Calculate VertexCount by iterating section data we do have access to
+					uint32 MaxMaxVertexIndex = 0;
+					const FStaticMeshSectionArray& SectionsList = StaticMeshLODResources.Sections;
+					for (const FStaticMeshSection& Section : SectionsList)
+					{
+						MaxMaxVertexIndex = FMath::Max<uint32>(Section.MaxVertexIndex, MaxMaxVertexIndex);
+					}
+
+					++MaxMaxVertexIndex;
+
+					if (I.OverrideVertexColors->GetNumVertices() == MaxMaxVertexIndex)
+					{
+						bStrippedOverrideColors = false;
+					}
+				}
+			}
+		}
 	}
 #endif // WITH_EDITORONLY_DATA
 	FStripDataFlags StripFlags( Ar, bStrippedOverrideColors ? OverrideColorsStripFlag : 0 );
@@ -3154,7 +3424,7 @@ FArchive& operator<<(FArchive& Ar,FStaticMeshComponentLODInfo& I)
 	}
 
 	// Serialize out cached vertex information if necessary.
-	if (!StripFlags.IsEditorDataStripped() && !(Ar.IsFilterEditorOnly() && Ar.IsCountingMemory()))
+	if (!StripFlags.IsEditorDataStripped() && !(Ar.IsFilterEditorOnly() && Ar.IsCountingMemory()) && !Ar.IsObjectReferenceCollector())
 	{
 		Ar << I.PaintedVertices;
 	}
@@ -3163,3 +3433,4 @@ FArchive& operator<<(FArchive& Ar,FStaticMeshComponentLODInfo& I)
 }
 
 #undef LOCTEXT_NAMESPACE
+

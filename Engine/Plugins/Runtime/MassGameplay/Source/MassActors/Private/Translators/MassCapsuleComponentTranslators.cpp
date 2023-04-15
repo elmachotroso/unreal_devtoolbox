@@ -2,7 +2,7 @@
 
 #include "Translators/MassCapsuleComponentTranslators.h"
 #include "MassCommonTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "Components/CapsuleComponent.h"
 
 
@@ -10,6 +10,7 @@
 // UMassCapsuleTransformToMassTranslator
 //----------------------------------------------------------------------//
 UMassCapsuleTransformToMassTranslator::UMassCapsuleTransformToMassTranslator()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)EProcessorExecutionFlags::All;
 	RequiredTags.Add<FMassCapsuleTransformCopyToMassTag>();
@@ -23,9 +24,9 @@ void UMassCapsuleTransformToMassTranslator::ConfigureQueries()
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassCapsuleTransformToMassTranslator::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassCapsuleTransformToMassTranslator::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 		{
 			const TConstArrayView<FCapsuleComponentWrapperFragment> CapsuleComponentList = Context.GetFragmentView<FCapsuleComponentWrapperFragment>();
 			const TArrayView<FTransformFragment> LocationList = Context.GetMutableFragmentView<FTransformFragment>();
@@ -43,11 +44,13 @@ void UMassCapsuleTransformToMassTranslator::Execute(UMassEntitySubsystem& Entity
 // UMassTransformToActorCapsuleTranslator
 //----------------------------------------------------------------------//
 UMassTransformToActorCapsuleTranslator::UMassTransformToActorCapsuleTranslator()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)EProcessorExecutionFlags::All;
 	RequiredTags.Add<FMassCapsuleTransformCopyToActorTag>();
 	ExecutionOrder.ExecuteInGroup = UE::Mass::ProcessorGroupNames::UpdateWorldFromMass;
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Movement);
+	bRequiresGameThreadExecution = true;
 }
 
 void UMassTransformToActorCapsuleTranslator::ConfigureQueries()
@@ -55,11 +58,12 @@ void UMassTransformToActorCapsuleTranslator::ConfigureQueries()
 	AddRequiredTagsToQuery(EntityQuery);
 	EntityQuery.AddRequirement<FCapsuleComponentWrapperFragment>(EMassFragmentAccess::ReadWrite);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.RequireMutatingWorldAccess(); // due to mutating World by setting component transform
 }
 
-void UMassTransformToActorCapsuleTranslator::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassTransformToActorCapsuleTranslator::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 		{
 			const TArrayView<FCapsuleComponentWrapperFragment> CapsuleComponentList = Context.GetMutableFragmentView<FCapsuleComponentWrapperFragment>();
 			const TConstArrayView<FTransformFragment> LocationList = Context.GetFragmentView<FTransformFragment>();

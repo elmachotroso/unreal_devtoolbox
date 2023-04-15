@@ -19,42 +19,42 @@ namespace Chaos
 		BufferMode = InBufferMode;
 	}
 
-	FDelegateHandle FPhysicsSolverBase::AddPreAdvanceCallback(FSolverPreAdvance::FDelegate InDelegate)
+	FDelegateHandle FPhysicsSolverEvents::AddPreAdvanceCallback(FSolverPreAdvance::FDelegate InDelegate)
 	{
 		return EventPreSolve.Add(InDelegate);
 	}
 
-	bool FPhysicsSolverBase::RemovePreAdvanceCallback(FDelegateHandle InHandle)
+	bool FPhysicsSolverEvents::RemovePreAdvanceCallback(FDelegateHandle InHandle)
 	{
 		return EventPreSolve.Remove(InHandle);
 	}
 
-	FDelegateHandle FPhysicsSolverBase::AddPreBufferCallback(FSolverPreBuffer::FDelegate InDelegate)
+	FDelegateHandle FPhysicsSolverEvents::AddPreBufferCallback(FSolverPreBuffer::FDelegate InDelegate)
 	{
 		return EventPreBuffer.Add(InDelegate);
 	}
 
-	bool FPhysicsSolverBase::RemovePreBufferCallback(FDelegateHandle InHandle)
+	bool FPhysicsSolverEvents::RemovePreBufferCallback(FDelegateHandle InHandle)
 	{
 		return EventPreBuffer.Remove(InHandle);
 	}
 
-	FDelegateHandle FPhysicsSolverBase::AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate)
+	FDelegateHandle FPhysicsSolverEvents::AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate)
 	{
 		return EventPostSolve.Add(InDelegate);
 	}
 
-	bool FPhysicsSolverBase::RemovePostAdvanceCallback(FDelegateHandle InHandle)
+	bool FPhysicsSolverEvents::RemovePostAdvanceCallback(FDelegateHandle InHandle)
 	{
 		return EventPostSolve.Remove(InHandle);
 	}
 
-	FDelegateHandle FPhysicsSolverBase::AddTeardownCallback(FSolverTeardown::FDelegate InDelegate)
+	FDelegateHandle FPhysicsSolverEvents::AddTeardownCallback(FSolverTeardown::FDelegate InDelegate)
 	{
 		return EventTeardown.Add(InDelegate);
 	}
 
-	bool FPhysicsSolverBase::RemoveTeardownCallback(FDelegateHandle InHandle)
+	bool FPhysicsSolverEvents::RemoveTeardownCallback(FDelegateHandle InHandle)
 	{
 		return EventTeardown.Remove(InHandle);
 	}
@@ -70,15 +70,9 @@ namespace Chaos
 	int32 PhysicsRunsOnGT = 0;
 	FAutoConsoleVariableRef CVarPhysicsRunsOnGT(TEXT("p.PhysicsRunsOnGT"), PhysicsRunsOnGT, TEXT("If true the physics thread runs on the game thread, but will still go wide on tasks like collision detection"));
 
-	FPhysicsSolverAdvanceTask::FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, FPushPhysicsData& InPushData)
-		: Solver(InSolver)
-		, PushData(&InPushData)	//store as ptr so that we can clear it after freed (but still want to force user to give us a valid push data)
+	ENamedThreads::Type FPhysicsSolverProcessPushDataTask::GetDesiredThread()
 	{
-	}
-
-	TStatId FPhysicsSolverAdvanceTask::GetStatId() const
-	{
-		RETURN_QUICK_DECLARE_CYCLE_STAT(FPhysicsSolverAdvanceTask,STATGROUP_TaskGraphTasks);
+		return CPrio_FPhysicsTickTask.Get();
 	}
 
 	ENamedThreads::Type FPhysicsSolverAdvanceTask::GetDesiredThread()
@@ -86,18 +80,7 @@ namespace Chaos
 		return PhysicsRunsOnGT == 0 ? CPrio_FPhysicsTickTask.Get() : ENamedThreads::GameThread;
 	}
 
-	ESubsequentsMode::Type FPhysicsSolverAdvanceTask::GetSubsequentsMode()
-	{
-		// The completion task relies on the collection of tick tasks in flight
-		return ESubsequentsMode::TrackSubsequents;
-	}
-
-	void FPhysicsSolverAdvanceTask::DoTask(ENamedThreads::Type CurrentThread,const FGraphEventRef& MyCompletionGraphEvent)
-	{
-		AdvanceSolver();
-	}
-
-	void FPhysicsSolverAdvanceTask::AdvanceSolver()
+	void FPhysicsSolverProcessPushDataTask::ProcessPushData()
 	{
 		using namespace Chaos;
 
@@ -113,11 +96,46 @@ namespace Chaos
 		Solver.SetExternalTimestampConsumed_Internal(PushData->ExternalTimestamp);
 		Solver.ProcessPushedData_Internal(*PushData);
 		
+		Solver.PrepareAdvanceBy(PushData->ExternalDt);
+
+	}
+
+	void FPhysicsSolverFrozenGTPreSimCallbacks::GTPreSimCallbacks()
+	{
+		LLM_SCOPE(ELLMTag::ChaosUpdate);
+		SCOPE_CYCLE_COUNTER(STAT_ChaosTick);
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Physics);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver);
+
+		//We are on GT, but we know PhysicsThread is waiting so we're actually going to operate on PT data
+#if PHYSICS_THREAD_CONTEXT
+		FPhysicsThreadContextScope Scope(/*IsPhysicsThreadContext=*/true);
+		FFrozenGameThreadContextScope FrozenScope;	//Make sure we fire ensures if any physics GT data is used
+#endif
+
+		Solver.SetGameThreadFrozen(true);
+		Solver.ApplyCallbacks_Internal();
+		Solver.SetGameThreadFrozen(false);
+		
+	}
+
+	void FPhysicsSolverAdvanceTask::AdvanceSolver()
+	{
+		LLM_SCOPE(ELLMTag::ChaosUpdate);
+		SCOPE_CYCLE_COUNTER(STAT_ChaosTick);
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Physics);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver);
+
+#if PHYSICS_THREAD_CONTEXT
+		FPhysicsThreadContextScope Scope(/*IsPhysicsThreadContext=*/true);
+#endif
+
 		// StepFraction: how much of the remaining time this step represents, used to interpolate kinematic targets
 		// E.g., for 4 steps this will be: 1/4, 1/3, 1/2, 1
 		const FReal PseudoFraction = (FReal)1 / (FReal)(PushData->IntervalNumSteps - PushData->IntervalStep);
-		
-		Solver.AdvanceSolverBy(PushData->ExternalDt, FSubStepInfo{PseudoFraction, PushData->IntervalStep, PushData->IntervalNumSteps, PushData->bSolverSubstepped});
+
+		Solver.AdvanceSolverBy(FSubStepInfo{ PseudoFraction, PushData->IntervalStep, PushData->IntervalNumSteps, PushData->bSolverSubstepped });
+
 		Solver.GetMarshallingManager().FreeDataToHistory_Internal(PushData);	//cannot use push data after this point
 		PushData = nullptr;
 
@@ -154,7 +172,7 @@ namespace Chaos
 		, AsyncDt(InAsyncDt)
 		, AccumulatedTime(0)
 		, MMaxDeltaTime(0.0)
-		, MMinDeltaTime(SMALL_NUMBER)
+		, MMinDeltaTime(UE_SMALL_NUMBER)
 		, MMaxSubSteps(1)
 		, ExternalSteps(0)
 #if !UE_BUILD_SHIPPING
@@ -189,8 +207,6 @@ namespace Chaos
 
 	FPhysicsSolverBase::~FPhysicsSolverBase()
 	{
-		//free pull results before MarshallingManager is destroyed (technically should be safe because constructed after, but this makes it more explicit)
-		PullResultsManager->SetHistoryLength_External(0);	//ok to use _External because solver going away means external thread released it
 		//reset history buffer before freeing any unremoved callback objects
 		MarshallingManager.SetHistoryLength_Internal(0);
 
@@ -226,6 +242,7 @@ namespace Chaos
 
 		// GeometryCollection particles do not always remove collision constraints on unregister,
 		// explicitly clear constraints so we will not crash when filling collision events in advance.
+		// @todo(chaos): fix this and remove
 		{
 			auto* Evolution = static_cast<FPBDRigidsSolver&>(InSolver).GetEvolution();
 			if (Evolution)
@@ -323,7 +340,6 @@ namespace Chaos
 		const bool bSubstepping = MMaxSubSteps > 1;
 		SetSolverSubstep_External(bSubstepping);
 		const FReal DtWithPause = bPaused_External ? 0.0f : InDt;
-		PullResultsManager->SetLastExternalDt_External(DtWithPause);
 		FReal InternalDt = DtWithPause;
 		int32 NumSteps = 1;
 
@@ -386,7 +402,7 @@ namespace Chaos
 			if(ThreadingMode == EThreadingModeTemp::SingleThread)
 			{
 				ensure(!PendingTasks || PendingTasks->IsComplete());	//if mode changed we should have already blocked
-				FPhysicsSolverAdvanceTask ImmediateTask(*this, *PushData);
+				FAllSolverTasks ImmediateTask(*this, PushData);
 #if !UE_BUILD_SHIPPING
 				if(bStealAdvanceTasksForTesting)
 				{
@@ -414,7 +430,17 @@ namespace Chaos
 					Prereqs.Add(PendingTasks);
 				}
 
-				PendingTasks = TGraphTask<FPhysicsSolverAdvanceTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this, *PushData);
+				PendingTasks = TGraphTask<FPhysicsSolverProcessPushDataTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this, PushData);
+				Prereqs.Add(PendingTasks);
+
+				if(bSolverHasFrozenGameThreadCallbacks)
+				{
+					PendingTasks = TGraphTask<FPhysicsSolverFrozenGTPreSimCallbacks>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this);
+					Prereqs.Add(PendingTasks);
+				}
+				
+				PendingTasks = TGraphTask<FPhysicsSolverAdvanceTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this, PushData);
+
 				if(IsUsingAsyncResults() == false)
 				{
 					BlockingTasks = PendingTasks;	//block right away
@@ -430,5 +456,13 @@ namespace Chaos
 		}
 
 		return BlockingTasks;
+	}
+
+
+	void FAllSolverTasks::AdvanceSolver()
+	{
+		ProcessPushData.ProcessPushData();
+		GTPreSimCallbacks.GTPreSimCallbacks();
+		AdvanceTask.AdvanceSolver();
 	}
 }

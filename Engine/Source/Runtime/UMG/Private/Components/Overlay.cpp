@@ -3,6 +3,8 @@
 #include "Components/Overlay.h"
 #include "Components/OverlaySlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Overlay)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -12,7 +14,7 @@ UOverlay::UOverlay(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UOverlay::ReleaseSlateResources(bool bReleaseChildren)
@@ -82,3 +84,4 @@ const FText UOverlay::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

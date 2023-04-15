@@ -7,7 +7,12 @@
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInstanceSupport.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "MaterialCachedData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialInstanceConstant)
+
 #if WITH_EDITOR
+#include "MaterialCachedHLSLTree.h"
 #include "MaterialEditor/DEditorScalarParameterValue.h"
 #include "ObjectCacheEventSink.h"
 #endif
@@ -104,7 +109,7 @@ void UMaterialInstanceConstant::CopyMaterialUniformParametersEditorOnly(UMateria
 			FStaticParameterSet MyParamSet;
 			GetStaticParameterValues(MyParamSet);
 
-			MyParamSet.StaticSwitchParameters = SourceParamSet.StaticSwitchParameters;
+			MyParamSet.EditorOnly.StaticSwitchParameters = SourceParamSet.EditorOnly.StaticSwitchParameters;
 
 			UpdateStaticPermutation(MyParamSet);
 
@@ -155,6 +160,24 @@ void UMaterialInstanceConstant::ClearParameterValuesEditorOnly()
 	ClearParameterValuesInternal();
 }
 
+#if WITH_EDITOR
+void FMaterialInstanceCachedData::InitializeForConstant(const FMaterialLayersFunctions* Layers, const FMaterialLayersFunctions* ParentLayers)
+{
+	const int32 NumLayers = Layers ? Layers->Layers.Num() : 0;
+	ParentLayerIndexRemap.Empty(NumLayers);
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+	{
+		int32 ParentLayerIndex = INDEX_NONE;
+		if (ParentLayers && Layers->EditorOnly.LayerLinkStates[LayerIndex] == EMaterialLayerLinkState::LinkedToParent)
+		{
+			const FGuid& LayerGuid = Layers->EditorOnly.LayerGuids[LayerIndex];
+			ParentLayerIndex = ParentLayers->EditorOnly.LayerGuids.Find(LayerGuid);
+		}
+		ParentLayerIndexRemap.Add(ParentLayerIndex);
+	}
+}
+#endif // WITH_EDITOR
+
 void UMaterialInstanceConstant::UpdateCachedData()
 {
 	COOK_STAT(FScopedDurationTimer BlockingTimer(MaterialInstanceCookStats::UpdateCachedExpressionDataSec));
@@ -181,7 +204,9 @@ void UMaterialInstanceConstant::UpdateCachedData()
 
 	if (!bLoadedCachedExpressionData)
 	{
-		FMaterialCachedExpressionData* LocalCachedExpressionData = nullptr;
+		const bool bUsingNewHLSLGenerator = IsUsingNewHLSLGenerator();
+		TUniquePtr<FMaterialCachedExpressionData> LocalCachedExpressionData;
+		TUniquePtr<FMaterialCachedHLSLTree> LocalCachedTree;
 
 		// If we have overriden material layers, need to create a local cached expression data
 		// Otherwise we can leave it as null, and use cached data from our parent
@@ -190,16 +215,46 @@ void UMaterialInstanceConstant::UpdateCachedData()
 		{
 			UMaterial* BaseMaterial = GetMaterial();
 
-			FMaterialCachedExpressionContext Context;
-			Context.LayerOverrides = &LocalStaticParameters.MaterialLayers;
-			LocalCachedExpressionData = new FMaterialCachedExpressionData();
-			LocalCachedExpressionData->Reset();
-			LocalCachedExpressionData->UpdateForExpressions(Context, BaseMaterial->Expressions, GlobalParameter, INDEX_NONE);
+			FMaterialLayersFunctions MaterialLayers;
+			LocalStaticParameters.GetMaterialLayers(MaterialLayers);
+			if (bUsingNewHLSLGenerator)
+			{
+				LocalCachedTree.Reset(new FMaterialCachedHLSLTree());
+				LocalCachedTree->GenerateTree(BaseMaterial, &MaterialLayers, nullptr);
+			}
+			else
+			{
+				FMaterialCachedExpressionContext Context;
+				Context.LayerOverrides = &MaterialLayers;
+				LocalCachedExpressionData.Reset(new FMaterialCachedExpressionData());
+				LocalCachedExpressionData->UpdateForExpressions(Context, BaseMaterial->GetExpressions(), GlobalParameter, INDEX_NONE);
+			}
 		}
-		CachedExpressionData.Reset(LocalCachedExpressionData);
+
+		CachedHLSLTree = MoveTemp(LocalCachedTree);
+
+		if (bUsingNewHLSLGenerator && bHasStaticPermutationResource)
+		{
+			check(!LocalCachedExpressionData);
+			LocalCachedExpressionData.Reset(new FMaterialCachedExpressionData());
+			LocalCachedExpressionData->UpdateForCachedHLSLTree(GetCachedHLSLTree(), &LocalStaticParameters);
+		}
+
+		CachedExpressionData = MoveTemp(LocalCachedExpressionData);
+		if (CachedExpressionData)
+		{
+			EditorOnlyData->CachedExpressionData = CachedExpressionData->EditorOnlyData;
+		}
 
 		FObjectCacheEventSink::NotifyReferencedTextureChanged_Concurrent(this);
 	}
+}
+
+void UMaterialInstanceConstant::SetNaniteOverrideMaterial(bool bInEnableOverride, UMaterialInterface* InOverrideMaterial)
+{
+	NaniteOverrideMaterial.bEnableOverride = bInEnableOverride;
+	NaniteOverrideMaterial.OverrideMaterialRef = InOverrideMaterial;
+	NaniteOverrideMaterial.PostEditChange();
 }
 
 #endif // #if WITH_EDITOR

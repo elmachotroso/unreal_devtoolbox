@@ -26,6 +26,8 @@
 #include "RayTracingInstanceBufferUtil.h"
 #include "ScreenPass.h"
 #include "RayTracingDynamicGeometryCollection.h"
+#include "ShaderCompiler.h"
+#include "RectLightTextureManager.h"
 
 class FCopyConvergedLightmapTilesCS : public FGlobalShader
 {
@@ -34,7 +36,7 @@ class FCopyConvergedLightmapTilesCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -55,6 +57,7 @@ class FCopyConvergedLightmapTilesCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, StagingHQLayer0)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, StagingHQLayer1)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, StagingShadowMask)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, StagingSkyOcclusion)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -65,7 +68,7 @@ class FUploadConvergedLightmapTilesCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -88,13 +91,13 @@ class FSelectiveLightmapOutputCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FSelectiveLightmapOutputCS)
 	SHADER_USE_PARAMETER_STRUCT(FSelectiveLightmapOutputCS, FGlobalShader)
 
-	class FOutputLayerDim : SHADER_PERMUTATION_INT("DIM_OUTPUT_LAYER", 3);
+	class FOutputLayerDim : SHADER_PERMUTATION_INT("DIM_OUTPUT_LAYER", 4);
 	class FDrawProgressBars : SHADER_PERMUTATION_BOOL("DRAW_PROGRESS_BARS");
 	using FPermutationDomain = TShaderPermutationDomain<FOutputLayerDim, FDrawProgressBars>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -106,6 +109,7 @@ class FSelectiveLightmapOutputCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(int32, NumBatchedTiles)
 		SHADER_PARAMETER(int32, NumTotalSamples)
+		SHADER_PARAMETER(int32, NumIrradianceCachePasses)
 		SHADER_PARAMETER(int32, NumRayGuidingTrialSamples)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGPUTileDescription>, BatchedTiles)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTileAtlas)
@@ -124,7 +128,7 @@ class FMultiTileClearCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -136,7 +140,7 @@ class FMultiTileClearCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(int32, NumTiles)
 		SHADER_PARAMETER(int32, TileSize)
-		SHADER_PARAMETER_SRV(Buffer<int2>, TilePositions)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<int2>, TilePositions)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, TilePool)
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -155,31 +159,70 @@ struct FGPUTileDescription
 	FIntPoint OutputLayer0Position;
 	FIntPoint OutputLayer1Position;
 	FIntPoint OutputLayer2Position;
+	FIntPoint OutputLayer3Position;
 	int32 FrameIndex;
 	int32 RenderPassIndex;
 };
+
+namespace GPULightmass
+{
 
 struct FGPUBatchedTileRequests
 {
 	FBufferRHIRef BatchedTilesBuffer;
 	FShaderResourceViewRHIRef BatchedTilesSRV;
 	TResourceArray<FGPUTileDescription> BatchedTilesDesc;
-};
 
-namespace GPULightmass
-{
+	void BuildFromTileDescs(TArray<FLightmapTileRequest>& TileRequests, FLightmapTilePoolGPU& LightmapTilePoolGPU, FLightmapTilePoolGPU& ScratchTilePoolGPU)
+	{
+		for (const FLightmapTileRequest& Tile : TileRequests)
+		{
+			FGPUTileDescription TileDesc = {};
+			TileDesc.LightmapSize = Tile.RenderState->GetSize();
+			TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
+			TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
+			TileDesc.ScratchPosition = ScratchTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
+			TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
+			TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
+			TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
+			TileDesc.OutputLayer3Position = Tile.OutputPhysicalCoordinates[3] * GPreviewLightmapPhysicalTileSize;
+			TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
+			TileDesc.RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex;
+			BatchedTilesDesc.Add(TileDesc);
+		}
+	}
+
+	void Commit(uint32 GPUIndex)
+	{
+		if (BatchedTilesDesc.Num() > 0)
+		{
+			FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
+			CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
+			CreateInfo.ResourceArray = &BatchedTilesDesc;
+
+			BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			BatchedTilesSRV = RHICreateShaderResourceView(BatchedTilesBuffer);
+		}
+	}
+};
 
 FLightmapRenderer::FLightmapRenderer(FSceneRenderState* InScene)
 	: Scene(InScene)
 	, LightmapTilePoolGPU(FIntPoint(Scene->Settings->LightmapTilePoolSize))
 {
-	bUseFirstBounceRayGuiding = Scene->Settings->bUseFirstBounceRayGuiding;
-	if (bUseFirstBounceRayGuiding)
+	NumTotalPassesToRender = Scene->Settings->GISamples;
+	
+	if (Scene->Settings->bUseIrradianceCaching)
 	{
-		NumFirstBounceRayGuidingTrialSamples = Scene->Settings->FirstBounceRayGuidingTrialSamples;
+		NumTotalPassesToRender += Scene->Settings->IrradianceCacheQuality;	
+	}
+	
+	if (Scene->Settings->bUseFirstBounceRayGuiding)
+	{
+		NumTotalPassesToRender += Scene->Settings->FirstBounceRayGuidingTrialSamples;
 	}
 
-	if (!bUseFirstBounceRayGuiding)
+	if (!Scene->Settings->bUseFirstBounceRayGuiding)
 	{
 		LightmapTilePoolGPU.Initialize(
 			{
@@ -215,10 +258,7 @@ FLightmapRenderer::FLightmapRenderer(FSceneRenderState* InScene)
 		TilesVisibleLastFewFrames.AddDefaulted(60);
 	}
 
-	if (Scene->Settings->bVisualizeIrradianceCache)
-	{
-		IrradianceCacheVisualizationDelegateHandle = GetRendererModule().RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(this, &FLightmapRenderer::RenderIrradianceCacheVisualization));
-	}
+	IrradianceCacheVisualizationDelegateHandle = GetRendererModule().RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(this, &FLightmapRenderer::RenderIrradianceCacheVisualization));
 }
 
 FLightmapRenderer::~FLightmapRenderer()
@@ -308,13 +348,21 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 			{
 				FStaticMeshInstanceRenderState& Instance = Scene.StaticMeshInstanceRenderStates.Elements[InstanceIndex];
 
-				FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = Instance.PrimitiveUniformShaderParameters;
-				PrimitiveUniformShaderParameters.LightmapDataIndex = LightmapSceneDataStartOffsets[InstanceIndex];
-				PrimitiveUniformShaderParameters.LightmapUVIndex = 0; // TODO: LightmapUVIndex
-				PrimitiveUniformShaderParameters.InstanceSceneDataOffset = InstanceIndex;
-				PrimitiveUniformShaderParameters.NumInstanceSceneDataEntries = 1;
-				PrimitiveUniformShaderParameters.InstancePayloadDataOffset = INDEX_NONE;
-				PrimitiveUniformShaderParameters.InstancePayloadDataStride = 0;
+				FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters =
+					FPrimitiveUniformShaderParametersBuilder{}
+					.Defaults()
+					.LocalToWorld(Instance.LocalToWorld)
+					.ActorWorldPosition(Instance.ActorPosition)
+					.WorldBounds(Instance.WorldBounds)
+					.LocalBounds(Instance.LocalBounds)
+					.LightingChannelMask(0b111)
+					.LightmapDataIndex(LightmapSceneDataStartOffsets[InstanceIndex])
+					.InstanceSceneDataOffset(InstanceIndex)
+					.NumInstanceSceneDataEntries(1)
+					.InstancePayloadDataOffset(INDEX_NONE)
+					.InstancePayloadDataStride(0)
+				.Build();
+				
 				PrimitiveSceneData[InstanceIndex] = FPrimitiveSceneShaderData(PrimitiveUniformShaderParameters);
 
 				InstanceDataOriginalOffsets[InstanceIndex] = InstanceIndex;
@@ -374,8 +422,6 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 					.NumInstanceSceneDataEntries(NumInstancesThisGroup)
 					.InstancePayloadDataOffset(InstancePayloadData.Num())
 					.InstancePayloadDataStride(1)
-					.CastContactShadow(true)
-					.CastShadow(true)
 				.Build();
 
 			InstanceDataOriginalOffsets.Add(InstanceSceneData.Num());
@@ -442,8 +488,6 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 					.LightmapDataIndex(LightmapSceneDataStartOffsets[PrimitiveId])
 					.InstanceSceneDataOffset(InstanceSceneData.Num())
 					.NumInstanceSceneDataEntries(1)
-					.CastContactShadow(true)
-					.CastShadow(true)
 				.Build();
 
 			InstanceDataOriginalOffsets.Add(InstanceSceneData.Num());
@@ -519,8 +563,8 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 			TRACE_CPUPROFILER_EVENT_SCOPE(InstanceSceneData);
 
 			TResourceArray<FVector4f> InstanceSceneDataSOA;
-			InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::DataStrideInFloat4s * InstanceSceneData.Num());
-			for (int32 ArrayIndex = 0; ArrayIndex < FInstanceSceneShaderData::DataStrideInFloat4s; ArrayIndex++)
+			InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::GetDataStrideInFloat4s() * InstanceSceneData.Num());
+			for (uint32 ArrayIndex = 0; ArrayIndex < FInstanceSceneShaderData::GetDataStrideInFloat4s(); ArrayIndex++)
 			{
 				for (int32 DataIndex = 0; DataIndex < InstanceSceneData.Num(); DataIndex++)
 				{
@@ -531,7 +575,7 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 			FRHIResourceCreateInfo CreateInfo(TEXT("InstanceSceneDataBuffer"), &InstanceSceneDataSOA);
 			if (InstanceSceneDataSOA.GetResourceDataSize() == 0)
 			{
-				InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::DataStrideInFloat4s);
+				InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::GetDataStrideInFloat4s());
 			}
 
 			InstanceSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), InstanceSceneDataSOA.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -551,9 +595,6 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 			InstancePayloadDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4f), InstancePayloadData.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 			InstancePayloadDataBufferSRV = RHICreateShaderResourceView(InstancePayloadDataBufferRHI);
 		}
-
-		FViewUniformShaderParameters ViewUniformBufferParameters;
-		CachedViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(ViewUniformBufferParameters, UniformBuffer_MultiFrame, EUniformBufferValidation::None);
 	}
 }
 
@@ -613,8 +654,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 
 			for (int32 SegmentIndex = 0; SegmentIndex < MeshBatches.Num(); SegmentIndex++)
 			{
-				const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-				const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetMaterialWithFallback(GMaxRHIFeatureLevel, FallbackMaterialRenderProxyPtr);
+				const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetIncompleteMaterialWithFallback(Scene.FeatureLevel);
 
 				bAllSegmentsUnlit &= Material.GetShadingModels().HasOnlyShadingModel(MSM_Unlit) || !MeshBatches[SegmentIndex].CastShadow;
 				bAllSegmentsOpaque &= Material.GetBlendMode() == EBlendMode::BLEND_Opaque;
@@ -641,7 +681,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 				for (int32 SegmentIndex = 0; SegmentIndex < MeshBatches.Num(); SegmentIndex++)
 				{
 					FFullyCachedRayTracingMeshCommandContext CommandContext(MeshCommandStorage, VisibleRayTracingMeshCommandsPerLOD[LODIndex], SegmentIndex, InstanceIndex);
-					FMeshPassProcessorRenderState PassDrawRenderState(CachedViewUniformBuffer, CachedViewUniformBuffer);
+					FMeshPassProcessorRenderState PassDrawRenderState;
 					FLightmapRayTracingMeshProcessor RayTracingMeshProcessor(&CommandContext, PassDrawRenderState);
 
 					RayTracingMeshProcessor.AddMeshBatch(MeshBatches[SegmentIndex], 1, nullptr);
@@ -666,8 +706,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 
 			for (int32 SegmentIndex = 0; SegmentIndex < MeshBatches.Num(); SegmentIndex++)
 			{
-				const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-				const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetMaterialWithFallback(GMaxRHIFeatureLevel, FallbackMaterialRenderProxyPtr);
+				const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetIncompleteMaterialWithFallback(Scene.FeatureLevel);
 
 				bAllSegmentsUnlit &= Material.GetShadingModels().HasOnlyShadingModel(MSM_Unlit) || !MeshBatches[SegmentIndex].CastShadow;
 				bAllSegmentsOpaque &= Material.GetBlendMode() == EBlendMode::BLEND_Opaque;
@@ -711,7 +750,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 				for (int32 SegmentIndex = 0; SegmentIndex < MeshBatches.Num(); SegmentIndex++)
 				{
 					FFullyCachedRayTracingMeshCommandContext CommandContext(MeshCommandStorage, VisibleRayTracingMeshCommandsPerLOD[LODIndex], SegmentIndex, InstanceIndex);
-					FMeshPassProcessorRenderState PassDrawRenderState(CachedViewUniformBuffer, CachedViewUniformBuffer);
+					FMeshPassProcessorRenderState PassDrawRenderState;
 					FLightmapRayTracingMeshProcessor RayTracingMeshProcessor(&CommandContext, PassDrawRenderState);
 
 					RayTracingMeshProcessor.AddMeshBatch(MeshBatches[SegmentIndex], 1, nullptr);
@@ -722,6 +761,14 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 #else // RHI_RAYTRACING
 	checkNoEntry();
 #endif // RHI_RAYTRACING
+}
+
+FCachedRayTracingSceneData::~FCachedRayTracingSceneData()
+{
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+	// Move OwnedRayTracingInstanceTransforms to RHIThread and it will get destroyed when the lambda is released
+	RHICmdList.EnqueueLambda([OwnedRayTracingInstanceTransforms = MoveTemp(OwnedRayTracingInstanceTransforms)](FRHICommandList&){});
 }
 
 bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
@@ -745,14 +792,21 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 		CalculateDistributionPrefixSumForAllLightmaps();
 	}
 
-	if (CachedRayTracingScene->RayTracingGeometryInstancesPerLOD[LODIndex].Num() == 0)
+	// If no LOD level is specified, select the first non empty level (and merge it with landscapes later)
+	if (LODIndex == INDEX_NONE)
 	{
-		return false;
+		for (int32 NonEmptyLODIndex = 0; NonEmptyLODIndex < MAX_STATIC_MESH_LODS; NonEmptyLODIndex++)
+		{
+			if (CachedRayTracingScene->RayTracingGeometryInstancesPerLOD[NonEmptyLODIndex].Num() > 0)
+			{
+				LODIndex = NonEmptyLODIndex;
+				break;
+			}
+		}
 	}
 
 #if 0 // Debug: verify cached ray tracing scene has up-to-date shader bindings
 	TUniquePtr<FCachedRayTracingSceneData> VerificationRayTracingScene = MakeUnique<FCachedRayTracingSceneData>();
-	VerificationRayTracingScene->CachedViewUniformBuffer = CachedRayTracingScene->CachedViewUniformBuffer;
 	VerificationRayTracingScene->SetupFromSceneRenderState(*this);
 
 	check(CachedRayTracingScene->VisibleRayTracingMeshCommands.Num() == VerificationRayTracingScene->VisibleRayTracingMeshCommands.Num());
@@ -824,14 +878,18 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 			}
 
 			View.ViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*View.CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
-
-			CachedRayTracingScene->CachedViewUniformBuffer.UpdateUniformBufferImmediate(*View.CachedViewUniformShaderParameters);
 		}
 
 		const_cast<TRange<int32>&>(View.DynamicPrimitiveCollector.GetPrimitiveIdRange()) = TRange<int32>(0,
 			FMath::Max(StaticMeshInstanceRenderStates.Elements.Num(), FMath::Max(InstanceGroupRenderStates.Elements.Num(), LandscapeRenderStates.Elements.Num()))
 			);
 		View.DynamicPrimitiveCollector.Commit();
+	}
+
+	// Early out if there's nothing in the scene: no instance in the selected LOD level, or no landscape (which effectively exists on every LOD level)
+	if ((LODIndex == INDEX_NONE || CachedRayTracingScene->RayTracingGeometryInstancesPerLOD[LODIndex].Num() == 0) && LandscapeRenderStates.Elements.Num() == 0)
+	{
+		return false;
 	}
 
 #if RHI_RAYTRACING
@@ -841,11 +899,12 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 
 		SCOPED_DRAW_EVENTF(RHICmdList, GPULightmassUpdateRayTracingScene, TEXT("GPULightmass UpdateRayTracingScene %d Instances"), StaticMeshInstanceRenderStates.Elements.Num());
 
-		FMemMark MemMark(FMemStack::Get());
-
 		TArray<FRayTracingGeometryInstance, SceneRenderingAllocator> RayTracingGeometryInstances;
-		RayTracingGeometryInstances.Append(CachedRayTracingScene->RayTracingGeometryInstancesPerLOD[LODIndex]);
-
+		if (LODIndex != INDEX_NONE)
+		{
+			RayTracingGeometryInstances.Append(CachedRayTracingScene->RayTracingGeometryInstancesPerLOD[LODIndex]);
+		}
+		
 		int32 LandscapeStartOffset = RayTracingGeometryInstances.Num();
 		for (FLandscapeRenderState& Landscape : LandscapeRenderStates.Elements)
 		{
@@ -858,11 +917,11 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 			}
 		}
 
-		FMemMark Mark(FMemStack::Get());
-
 		FRayTracingMeshCommandOneFrameArray VisibleRayTracingMeshCommands;
 		FDynamicRayTracingMeshCommandStorage DynamicRayTracingMeshCommandStorage;
 
+		TArray<TUniquePtr<FMatrix>> LandscapeTransforms;
+		
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(Landscapes);
 
@@ -924,6 +983,12 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 							MeshBatches[0].Elements[0].DynamicPrimitiveIndex += StaticMeshInstanceRenderStates.Elements.Num();
 							MeshBatches[0].Elements[0].DynamicPrimitiveIndex += InstanceGroupRenderStates.Elements.Num();
 
+							for (FMeshBatch& MeshBatch : MeshBatches)
+							{
+								// Override with default material as we're not considering WPO in GPULM landscape creation
+								MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+							}
+							
 							FRayTracingDynamicGeometryUpdateParams UpdateParams
 							{
 								MeshBatches,
@@ -949,6 +1014,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 							FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("RHILandscapeScratchBuffer"));
 							FBufferRHIRef ScratchBuffer = RHICreateBuffer(BLASScratchSize, BUF_StructuredBuffer | BUF_RayTracingScratch, 0, ERHIAccess::UAVCompute, ScratchBufferCreateInfo);
 
+							RHICmdList.SetStaticUniformBuffers({ReferenceView->ViewUniformBuffer});
 							DynamicGeometryCollection.DispatchUpdates(RHICmdList, ScratchBuffer);
 
 							// Landscape VF doesn't really use the vertex buffer in HitGroupSystemParameters
@@ -958,7 +1024,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 
 						FRayTracingGeometryInstance& RayTracingInstance = RayTracingGeometryInstances[InstanceIndex];
 						RayTracingInstance.GeometryRHI = Landscape.SectionRayTracingStates[SubSectionIdx]->Geometry.RayTracingGeometryRHI;
-						RayTracingInstance.Transforms = MakeArrayView(&FMatrix::Identity, 1);
+						RayTracingInstance.Transforms = MakeArrayView(LandscapeTransforms.Emplace_GetRef(MakeUnique<FMatrix>(Landscape.LocalToWorld)).Get(), 1);
 						RayTracingInstance.NumTransforms = 1;
 						RayTracingInstance.DefaultUserData = (uint32)(StaticMeshInstanceRenderStates.Elements.Num() + InstanceGroupRenderStates.Elements.Num() + LandscapeIndex);
 
@@ -981,13 +1047,12 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 						for (int32 SegmentIndex = 0; SegmentIndex < MeshBatches.Num(); SegmentIndex++)
 						{
 							FDynamicRayTracingMeshCommandContext CommandContext(DynamicRayTracingMeshCommandStorage, VisibleRayTracingMeshCommands, SegmentIndex, InstanceIndex);
-							FMeshPassProcessorRenderState PassDrawRenderState(View.ViewUniformBuffer, View.ViewUniformBuffer);
+							FMeshPassProcessorRenderState PassDrawRenderState;
 							FLightmapRayTracingMeshProcessor RayTracingMeshProcessor(&CommandContext, PassDrawRenderState);
 
 							RayTracingMeshProcessor.AddMeshBatch(MeshBatches[SegmentIndex], 1, nullptr);
 
-							const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-							const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetMaterialWithFallback(GMaxRHIFeatureLevel, FallbackMaterialRenderProxyPtr);
+							const FMaterial& Material = MeshBatches[SegmentIndex].MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
 
 							bAllSegmentsUnlit &= Material.GetShadingModels().HasOnlyShadingModel(MSM_Unlit) || !MeshBatches[SegmentIndex].CastShadow;
 							bAllSegmentsOpaque &= Material.GetBlendMode() == EBlendMode::BLEND_Opaque;
@@ -1021,6 +1086,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 
 			FRayTracingSceneWithGeometryInstances SceneWithGeometryInstances = CreateRayTracingSceneWithGeometryInstances(
 				RayTracingGeometryInstances,
+				1,
 				RAY_TRACING_NUM_SHADER_SLOTS,
 				1);
 
@@ -1028,7 +1094,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 
 			const FRayTracingSceneInitializer2& SceneInitializer = RayTracingScene->GetInitializer();
 
-			FRayTracingAccelerationStructureSize SizeInfo = RHICalcRayTracingSceneSize(SceneInitializer.NumNativeInstances, ERayTracingAccelerationStructureFlags::FastTrace);
+			FRayTracingAccelerationStructureSize SizeInfo = RHICalcRayTracingSceneSize(SceneInitializer.NumNativeInstancesPerLayer[0], ERayTracingAccelerationStructureFlags::FastTrace);
 			FRHIResourceCreateInfo BufferCreateInfo(TEXT("LightmassRayTracingSceneBuffer"));
 			RayTracingSceneBuffer = RHICreateBuffer(uint32(SizeInfo.ResultSize), BUF_AccelerationStructure, 0, ERHIAccess::BVHWrite, BufferCreateInfo);
 			RayTracingSceneSRV = RHICreateShaderResourceView(RayTracingSceneBuffer);
@@ -1036,11 +1102,11 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 			FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("LightmassRayTracingScratchBuffer"));
 			FBufferRHIRef ScratchBuffer = RHICreateBuffer(
 				uint32(SizeInfo.BuildScratchSize),
-				BUF_UnorderedAccess, GRHIRayTracingScratchBufferAlignment, ERHIAccess::UAVCompute,
+				BUF_StructuredBuffer | BUF_RayTracingScratch, GRHIRayTracingScratchBufferAlignment, ERHIAccess::UAVCompute,
 				ScratchBufferCreateInfo);
 
 			FRWBufferStructured InstanceBuffer;
-			InstanceBuffer.Initialize(TEXT("LightmassRayTracingInstanceBuffer"), GRHIRayTracingInstanceDescriptorSize, SceneInitializer.NumNativeInstances);
+			InstanceBuffer.Initialize(TEXT("LightmassRayTracingInstanceBuffer"), GRHIRayTracingInstanceDescriptorSize, SceneInitializer.NumNativeInstancesPerLayer[0]);
 
 			// Need to pass "BUF_MultiGPUAllocate", as acceleration structure virtual addresses are different per GPU
 			FByteAddressBuffer AccelerationStructureAddressesBuffer;
@@ -1049,7 +1115,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 				SceneInitializer.ReferencedGeometries.Num() * sizeof(FRayTracingAccelerationStructureAddress),
 				BUF_Volatile | BUF_MultiGPUAllocate);
 
-			const uint32 InstanceUploadBufferSize = SceneInitializer.NumNativeInstances * sizeof(FRayTracingInstanceDescriptorInput);
+			const uint32 InstanceUploadBufferSize = SceneInitializer.NumNativeInstancesPerLayer[0] * sizeof(FRayTracingInstanceDescriptorInput);
 			FBufferRHIRef InstanceUploadBuffer;
 			FShaderResourceViewRHIRef InstanceUploadSRV;
 			{
@@ -1072,12 +1138,13 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 				FVector4f* TransformUploadData = (FVector4f*)RHICmdList.LockBuffer(TransformUploadBuffer, 0, TransformUploadBufferSize, RLM_WriteOnly);
 				FillRayTracingInstanceUploadBuffer(
 					RayTracingScene,
+					View.ViewMatrices.GetPreViewTranslation(),
 					RayTracingGeometryInstances,
 					SceneWithGeometryInstances.InstanceGeometryIndices,
 					SceneWithGeometryInstances.BaseUploadBufferOffsets,
 					SceneWithGeometryInstances.NumNativeGPUSceneInstances,
 					SceneWithGeometryInstances.NumNativeCPUInstances,
-					MakeArrayView(InstanceUploadData, SceneInitializer.NumNativeInstances),
+					MakeArrayView(InstanceUploadData, SceneInitializer.NumNativeInstancesPerLayer[0]),
 					MakeArrayView(TransformUploadData, SceneWithGeometryInstances.NumNativeCPUInstances * 3));
 				RHICmdList.UnlockBuffer(TransformUploadBuffer);
 				RHICmdList.UnlockBuffer(InstanceUploadBuffer);
@@ -1106,9 +1173,14 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 					}
 				});
 
+			const FLargeWorldRenderPosition AbsoluteViewOrigin(View.ViewMatrices.GetViewOrigin());
+			const FVector ViewTileOffset = AbsoluteViewOrigin.GetTileOffset();
+
 			BuildRayTracingInstanceBuffer(
 				RHICmdList,
 				nullptr,
+				AbsoluteViewOrigin.GetTile(),
+				FVector3f(View.ViewMatrices.GetPreViewTranslation() + ViewTileOffset),
 				InstanceBuffer.UAV,
 				InstanceUploadSRV,
 				AccelerationStructureAddressesBuffer.SRV,
@@ -1129,34 +1201,49 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 				RHICmdList.BuildAccelerationStructure(BuildParams);
 			}
 
+			// Move LandscapeTransforms to RHIThread to extend its lifetime until RHI cmd execution
+			RHICmdList.EnqueueLambda([LandscapeTransforms = MoveTemp(LandscapeTransforms)](FRHICommandList&){});
+			
 			FRayTracingPipelineStateInitializer PSOInitializer;
 
 			PSOInitializer.MaxPayloadSizeInBytes = RAY_TRACING_MAX_ALLOWED_PAYLOAD_SIZE;
 			PSOInitializer.bAllowHitGroupIndexing = true;
 
+			FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
+
 			TArray<FRHIRayTracingShader*> RayGenShaderTable;
 			{
 				FLightmapPathTracingRGS::FPermutationDomain PermutationVector;
-				PermutationVector.Set<FLightmapPathTracingRGS::FUseFirstBounceRayGuiding>(LightmapRenderer->bUseFirstBounceRayGuiding);
+				PermutationVector.Set<FLightmapPathTracingRGS::FUseFirstBounceRayGuiding>(Settings->bUseIrradianceCaching && Settings->bUseFirstBounceRayGuiding);
 				PermutationVector.Set<FLightmapPathTracingRGS::FUseIrradianceCaching>(Settings->bUseIrradianceCaching);
-				RayGenShaderTable.Add(GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FLightmapPathTracingRGS>(PermutationVector).GetRayTracingShader());
+				PermutationVector.Set<FLightmapPathTracingRGS::FUseICBackfaceDetection>(Settings->bUseIrradianceCaching && Settings->bUseIrradianceCacheBackfaceDetection);
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FLightmapPathTracingRGS>(PermutationVector).GetRayTracingShader());
 			}
 			{
-				RayGenShaderTable.Add(GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStationaryLightShadowTracingRGS>().GetRayTracingShader());
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FStationaryLightShadowTracingRGS>().GetRayTracingShader());
+
+				FStaticShadowDepthMapTracingRGS::FPermutationDomain PermutationVector;
+				PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(0);
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector).GetRayTracingShader());
+				PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(1);
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector).GetRayTracingShader());
+				PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(2);
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector).GetRayTracingShader());
 			}
 			{
 				FVolumetricLightmapPathTracingRGS::FPermutationDomain PermutationVector;
 				PermutationVector.Set<FVolumetricLightmapPathTracingRGS::FUseIrradianceCaching>(Settings->bUseIrradianceCaching);
-				RayGenShaderTable.Add(GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FVolumetricLightmapPathTracingRGS>(PermutationVector).GetRayTracingShader());
+				RayGenShaderTable.Add(GlobalShaderMap->GetShader<FVolumetricLightmapPathTracingRGS>(PermutationVector).GetRayTracingShader());
 			}
 			PSOInitializer.SetRayGenShaderTable(RayGenShaderTable);
 
-			auto DefaultClosestHitShader = GetGlobalShaderMap(ERHIFeatureLevel::SM5)->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
-			TArray<FRHIRayTracingShader*> RayTracingMaterialLibrary;
-			FShaderMapResource::GetRayTracingMaterialLibrary(RayTracingMaterialLibrary, DefaultClosestHitShader);
+			auto DefaultClosestHitShader = GlobalShaderMap->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
+			TArray<FRHIRayTracingShader*> RayTracingHitGroupLibrary;
+			FShaderMapResource::GetRayTracingHitGroupLibrary(RayTracingHitGroupLibrary, DefaultClosestHitShader);
 
-			PSOInitializer.SetHitGroupTable(RayTracingMaterialLibrary);
-
+			PSOInitializer.SetHitGroupTable(RayTracingHitGroupLibrary);
+			
+			// TODO(UE-157946): This pipeline does not bind any miss shader and relies on the pipeline to do this automatically. This should be made explicit.
 			RayTracingPipelineState = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, PSOInitializer);
 
 			TUniquePtr<FRayTracingLocalShaderBindingWriter> BindingWriter = MakeUnique<FRayTracingLocalShaderBindingWriter>();
@@ -1164,34 +1251,45 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(SetRayTracingShaderBindings);
 
-				for (const FVisibleRayTracingMeshCommand VisibleMeshCommand : CachedRayTracingScene->VisibleRayTracingMeshCommandsPerLOD[LODIndex])
+				if (LODIndex != INDEX_NONE)
 				{
-					const FRayTracingMeshCommand& MeshCommand = *VisibleMeshCommand.RayTracingMeshCommand;
+					for (const FVisibleRayTracingMeshCommand VisibleMeshCommand : CachedRayTracingScene->VisibleRayTracingMeshCommandsPerLOD[LODIndex])
+					{
+						const FRayTracingMeshCommand& MeshCommand = *VisibleMeshCommand.RayTracingMeshCommand;
 
-					MeshCommand.ShaderBindings.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
-						VisibleMeshCommand.InstanceIndex,
-						MeshCommand.GeometrySegmentIndex,
-						MeshCommand.MaterialShaderIndex,
-						RAY_TRACING_SHADER_SLOT_MATERIAL);
+						MeshCommand.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+							View.ViewUniformBuffer,
+							nullptr,
+							VisibleMeshCommand.InstanceIndex,
+							MeshCommand.GeometrySegmentIndex,
+							MeshCommand.MaterialShaderIndex,
+							RAY_TRACING_SHADER_SLOT_MATERIAL);
 
-					MeshCommand.ShaderBindings.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
-						VisibleMeshCommand.InstanceIndex,
-						MeshCommand.GeometrySegmentIndex,
-						MeshCommand.MaterialShaderIndex,
-						RAY_TRACING_SHADER_SLOT_SHADOW);
+						MeshCommand.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+							View.ViewUniformBuffer,
+							nullptr,
+							VisibleMeshCommand.InstanceIndex,
+							MeshCommand.GeometrySegmentIndex,
+							MeshCommand.MaterialShaderIndex,
+							RAY_TRACING_SHADER_SLOT_SHADOW);
+					}
 				}
 
 				for (const FVisibleRayTracingMeshCommand VisibleMeshCommand : VisibleRayTracingMeshCommands)
 				{
 					const FRayTracingMeshCommand& MeshCommand = *VisibleMeshCommand.RayTracingMeshCommand;
 
-					MeshCommand.ShaderBindings.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+					MeshCommand.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+						View.ViewUniformBuffer,
+						nullptr,
 						VisibleMeshCommand.InstanceIndex,
 						MeshCommand.GeometrySegmentIndex,
 						MeshCommand.MaterialShaderIndex,
 						RAY_TRACING_SHADER_SLOT_MATERIAL);
 
-					MeshCommand.ShaderBindings.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+					MeshCommand.SetRayTracingShaderBindingsForHitGroup(BindingWriter.Get(),
+						View.ViewUniformBuffer,
+						nullptr,
 						VisibleMeshCommand.InstanceIndex,
 						MeshCommand.GeometrySegmentIndex,
 						MeshCommand.MaterialShaderIndex,
@@ -1206,9 +1304,11 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 						NumTotalBindings += Chunk->Num;
 					}
 
+					FConcurrentLinearBulkObjectAllocator Allocator;
+
 					const uint32 MergedBindingsSize = sizeof(FRayTracingLocalShaderBindings) * NumTotalBindings;
 					FRayTracingLocalShaderBindings* MergedBindings = (FRayTracingLocalShaderBindings*)(RHICmdList.Bypass()
-						? FMemStack::Get().Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings))
+						? Allocator.Malloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings))
 						: RHICmdList.Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings)));
 
 					uint32 MergedBindingIndex = 0;
@@ -1229,6 +1329,7 @@ bool FSceneRenderState::SetupRayTracingScene(int32 LODIndex)
 						NumTotalBindings, MergedBindings,
 						bCopyDataToInlineStorage);
 				}
+				RHICmdList.SetRayTracingMissShader(RayTracingScene, 0, RayTracingPipelineState, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 
 				// Move the ray tracing binding container ownership to the command list, so that memory will be
 				// released on the RHI thread timeline, after the commands that reference it are processed.
@@ -1270,6 +1371,7 @@ void FSceneRenderState::CalculateDistributionPrefixSumForAllLightmaps()
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLightmapGBufferPassParameters, )
+	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLightmapGBufferParams, PassUniformBuffer)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
 	RENDER_TARGET_BINDING_SLOTS()
@@ -1332,7 +1434,7 @@ void FLightmapRenderer::RenderMeshBatchesIntoGBuffer(
 	FRHICommandList& RHICmdList,
 	const FSceneView* View,
 	int32 GPUScenePrimitiveId,
-	TArray<FMeshBatch>& MeshBatches, 
+	TArray<FMeshBatch> MeshBatches, // Copy mesh batches over so we don't need to worry about their lifetime
 	FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias,
 	int32 RenderPassIndex,
 	FIntPoint ScratchTilePoolOffset)
@@ -1395,17 +1497,54 @@ void FLightmapRenderer::RenderMeshBatchesIntoGBuffer(
 			Cmd.PrimitiveIdInfo.DrawPrimitiveId = Scene->CachedRayTracingScene->InstanceDataOriginalOffsets[MeshBatch.Elements[0].DynamicPrimitiveIndex] + MeshBatch.Elements[0].UserIndex;
 		}
 
-		SortAndMergeDynamicPassMeshDrawCommands(*View, VisibleMeshDrawCommands, DynamicMeshDrawCommandStorage, PrimitiveIdVertexBuffer, InstanceFactor, nullptr);
+		SortAndMergeDynamicPassMeshDrawCommands(*View, RHICmdList, VisibleMeshDrawCommands, DynamicMeshDrawCommandStorage, PrimitiveIdVertexBuffer, InstanceFactor, nullptr);
 		SubmitMeshDrawCommands(VisibleMeshDrawCommands, GraphicsMinimalPipelineStateSet, PrimitiveIdVertexBuffer, PrimitiveIdBufferStride, 0, bDynamicInstancing, InstanceFactor, RHICmdList);
 	}
 
 	GPrimitiveIdVertexBufferPool.DiscardAll();
 }
 
+void ClearScratchTilePoolForMultipleTiles(
+	FRDGBuilder& GraphBuilder,
+	const TResourceArray<FIntPoint>& TilePositionsToClear,
+	const TStaticArray<FRDGTextureUAVRef, 3>& ScratchTilePoolLayerUAVs,
+	const FGlobalShaderMap* GlobalShaderMap)
+{
+	for (int ScratchLayerIndex = 0; ScratchLayerIndex < ScratchTilePoolLayerUAVs.Num(); ScratchLayerIndex++)
+	{
+		RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
+
+		FRDGBufferDesc TilePositionsBufferDesc = FRDGBufferDesc::CreateBufferDesc(TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num());
+		const FRDGBufferRef TilePositionsBuffer = CreateVertexBuffer(GraphBuilder, TEXT("TilePositionsBufferForClear"), TilePositionsBufferDesc, TilePositionsToClear.GetData(), TilePositionsToClear.GetResourceDataSize());
+		const FRDGBufferSRVRef TilePositionsBufferSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(TilePositionsBuffer, PF_R32G32_UINT));
+		FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
+		Parameters->NumTiles = TilePositionsToClear.Num();
+		Parameters->TileSize = GPreviewLightmapPhysicalTileSize;
+		Parameters->TilePositions = TilePositionsBufferSRV;
+		Parameters->TilePool = ScratchTilePoolLayerUAVs[ScratchLayerIndex];
+
+		TShaderMapRef<FMultiTileClearCS> ComputeShader(GlobalShaderMap);
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("MultiTileClear"),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(FIntPoint(GPreviewLightmapPhysicalTileSize * TilePositionsToClear.Num(), GPreviewLightmapPhysicalTileSize), FComputeShaderUtils::kGolden2DGroupSize));
+	}
+}
+	
 void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FLightmapRenderer::Finalize);
 
+	bool bIsCompilingShaders = GShaderCompilingManager && GShaderCompilingManager->IsCompiling();
+
+	if (bIsCompilingShaders)
+	{
+		PendingTileRequests.Empty();
+		return;
+	}
+	
 	if (PendingTileRequests.Num() == 0)
 	{
 		return;
@@ -1415,6 +1554,8 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 	{
 		return *GraphBuilder.AllocObject<FShaderResourceViewRHIRef>(View);
 	};
+
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(Scene->FeatureLevel);
 
 	// Upload & copy converged tiles directly
 	{
@@ -1432,16 +1573,18 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 			int32 NewSize = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(TileUploadRequests.Num())));
 			if (!UploadTilePoolGPU.IsValid() || UploadTilePoolGPU->SizeInTiles.X < NewSize)
 			{
-				UploadTilePoolGPU = MakeUnique<FLightmapTilePoolGPU>(3, FIntPoint(NewSize, NewSize), FIntPoint(GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize));
+				UploadTilePoolGPU = MakeUnique<FLightmapTilePoolGPU>(4, FIntPoint(NewSize, NewSize), FIntPoint(GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize));
 				UE_LOG(LogGPULightmass, Log, TEXT("Resizing GPULightmass upload tile pool to (%d, %d) %dx%d"), NewSize, NewSize, NewSize * GPreviewLightmapPhysicalTileSize, NewSize * GPreviewLightmapPhysicalTileSize);
 			}
 
 			{
 				uint32 DstRowPitch;
-				FLinearColor* Texture[3];
-				Texture[0] = (FLinearColor*)RHICmdList.LockTexture2D(UploadTilePoolGPU->PooledRenderTargets[0]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, RLM_WriteOnly, DstRowPitch, false);
-				Texture[1] = (FLinearColor*)RHICmdList.LockTexture2D(UploadTilePoolGPU->PooledRenderTargets[1]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, RLM_WriteOnly, DstRowPitch, false);
-				Texture[2] = (FLinearColor*)RHICmdList.LockTexture2D(UploadTilePoolGPU->PooledRenderTargets[2]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, RLM_WriteOnly, DstRowPitch, false);
+				FLinearColor* Texture[4];
+				check(UE_ARRAY_COUNT(Texture) == UploadTilePoolGPU->PooledRenderTargets.Num());
+				for (int32 LayerIndex = 0; LayerIndex < UE_ARRAY_COUNT(Texture); LayerIndex++)
+				{
+					Texture[LayerIndex] = (FLinearColor*)RHICmdList.LockTexture2D(UploadTilePoolGPU->PooledRenderTargets[LayerIndex]->GetRHI(), 0, RLM_WriteOnly, DstRowPitch, false);
+				}
 
 				TSet<FVirtualTile> TilesToDecompress;
 
@@ -1487,9 +1630,10 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 						if (!bLoadingOutOfBounds)
 						{
-							Tile.RenderState->TileStorage[SrcTileCoords].CPUTextureData[0]->Decompress();
-							Tile.RenderState->TileStorage[SrcTileCoords].CPUTextureData[1]->Decompress();
-							Tile.RenderState->TileStorage[SrcTileCoords].CPUTextureData[2]->Decompress();
+							for (int32 LayerIndex = 0; LayerIndex < UE_ARRAY_COUNT(Texture); LayerIndex++)
+							{
+								Tile.RenderState->TileStorage[SrcTileCoords].CPUTextureData[LayerIndex]->Decompress();
+							}
 						}
 					}
 				}
@@ -1534,49 +1678,29 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 								}
 							}
 
-							Texture[0][DstLinearIndex] = !bLoadingOutOfBounds ? TileUploadRequests[TileIndex].RenderState->TileStorage[SrcTileCoords].CPUTextureData[0]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
-							Texture[1][DstLinearIndex] = !bLoadingOutOfBounds ? TileUploadRequests[TileIndex].RenderState->TileStorage[SrcTileCoords].CPUTextureData[1]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
-							Texture[2][DstLinearIndex] = !bLoadingOutOfBounds ? TileUploadRequests[TileIndex].RenderState->TileStorage[SrcTileCoords].CPUTextureData[2]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
+							for (int32 LayerIndex = 0; LayerIndex < UE_ARRAY_COUNT(Texture); LayerIndex++)
+							{
+								Texture[LayerIndex][DstLinearIndex] = !bLoadingOutOfBounds ? TileUploadRequests[TileIndex].RenderState->TileStorage[SrcTileCoords].CPUTextureData[LayerIndex]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
+							}
 						}
 					}
 				});
 
-				RHICmdList.UnlockTexture2D(UploadTilePoolGPU->PooledRenderTargets[0]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, false);
-				RHICmdList.UnlockTexture2D(UploadTilePoolGPU->PooledRenderTargets[1]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, false);
-				RHICmdList.UnlockTexture2D(UploadTilePoolGPU->PooledRenderTargets[2]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), 0, false);
+				for (int32 LayerIndex = 0; LayerIndex < UE_ARRAY_COUNT(Texture); LayerIndex++)
+				{
+					RHICmdList.UnlockTexture2D(UploadTilePoolGPU->PooledRenderTargets[LayerIndex]->GetRHI(), 0, false);
+				}
 			}
 
 			FGPUBatchedTileRequests GPUBatchedTileRequests;
+			GPUBatchedTileRequests.BuildFromTileDescs(TileUploadRequests, LightmapTilePoolGPU, *ScratchTilePoolGPU);
+			GPUBatchedTileRequests.Commit(0);
 
-			{
-				for (const FLightmapTileRequest& Tile : TileUploadRequests)
-				{
-					FGPUTileDescription TileDesc;
-					TileDesc.LightmapSize = Tile.RenderState->GetSize();
-					TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
-					TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
-					TileDesc.ScratchPosition = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
-					TileDesc.RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex;
-					GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
-				}
-
-				FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
-				CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-				CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
-
-				GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-				GPUBatchedTileRequests.BatchedTilesSRV = RHICreateShaderResourceView(GPUBatchedTileRequests.BatchedTilesBuffer);
-			}
-
-			IPooledRenderTarget* OutputRenderTargets[3] = { nullptr, nullptr, nullptr };
+			IPooledRenderTarget* OutputRenderTargets[4] = { nullptr, nullptr, nullptr, nullptr };
 
 			for (auto& Tile : TileUploadRequests)
 			{
-				for (int32 RenderTargetIndex = 0; RenderTargetIndex < 3; RenderTargetIndex++)
+				for (int32 RenderTargetIndex = 0; RenderTargetIndex < UE_ARRAY_COUNT(OutputRenderTargets); RenderTargetIndex++)
 				{
 					if (Tile.OutputRenderTargets[RenderTargetIndex] != nullptr)
 					{
@@ -1596,25 +1720,26 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 			DispatchResolution.X = GPreviewLightmapPhysicalTileSize * GPUBatchedTileRequests.BatchedTilesDesc.Num();
 			DispatchResolution.Y = GPreviewLightmapPhysicalTileSize;
 
-			FRDGTextureRef StagingHQLayer0 = GraphBuilder.RegisterExternalTexture(UploadTilePoolGPU->PooledRenderTargets[0], TEXT("StagingHQLayer0"));
-			FRDGTextureRef StagingHQLayer1 = GraphBuilder.RegisterExternalTexture(UploadTilePoolGPU->PooledRenderTargets[1], TEXT("StagingHQLayer1"));
-			FRDGTextureRef StagingShadowMask = GraphBuilder.RegisterExternalTexture(UploadTilePoolGPU->PooledRenderTargets[2], TEXT("StagingShadowMask"));
-
-			FBufferRHIRef SrcTilePositionsBuffer;
-			FShaderResourceViewRHIRef SrcTilePositionsSRV;
-			FBufferRHIRef DstTilePositionsBuffer;
-			FShaderResourceViewRHIRef DstTilePositionsSRV;
-
-			if (OutputRenderTargets[0] != nullptr)
+			FString StagingTextureNames[4] = { TEXT("StagingHQLayer0"), TEXT("StagingHQLayer1"), TEXT("StagingShadowMask"), TEXT("StagingSkyOcclusion") };
+			
+			for (int32 RenderTargetIndex = 0; RenderTargetIndex < UE_ARRAY_COUNT(OutputRenderTargets); RenderTargetIndex++)
 			{
+				if (OutputRenderTargets[RenderTargetIndex] != nullptr)
 				{
+					FRDGTextureRef StagingTexture = GraphBuilder.RegisterExternalTexture(UploadTilePoolGPU->PooledRenderTargets[RenderTargetIndex], *StagingTextureNames[RenderTargetIndex]);
+
+					FBufferRHIRef SrcTilePositionsBuffer;
+					FShaderResourceViewRHIRef SrcTilePositionsSRV;
+					FBufferRHIRef DstTilePositionsBuffer;
+					FShaderResourceViewRHIRef DstTilePositionsSRV;
+
 					TResourceArray<FIntPoint> SrcTilePositions;
 					TResourceArray<FIntPoint> DstTilePositions;
-
+					
 					for (int32 TileIndex = 0; TileIndex < TileUploadRequests.Num(); TileIndex++)
 					{
 						SrcTilePositions.Add(FIntPoint(TileIndex % UploadTilePoolGPU->SizeInTiles.X, TileIndex / UploadTilePoolGPU->SizeInTiles.X) * GPreviewLightmapPhysicalTileSize);
-						DstTilePositions.Add(TileUploadRequests[TileIndex].OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize);
+						DstTilePositions.Add(TileUploadRequests[TileIndex].OutputPhysicalCoordinates[RenderTargetIndex] * GPreviewLightmapPhysicalTileSize);
 					}
 
 					{
@@ -1630,122 +1755,28 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
 						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
 					}
-				}
-
-				{
-					FRDGTextureRef RenderTargetTileAtlas0 = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[0], TEXT("GPULightmassRenderTargetTileAtlas0"));
-
-					FUploadConvergedLightmapTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FUploadConvergedLightmapTilesCS::FParameters>();
-
-					PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
-					PassParameters->SrcTexture = GraphBuilder.CreateUAV(StagingHQLayer0);
-					PassParameters->DstTexture = GraphBuilder.CreateUAV(RenderTargetTileAtlas0);
-					PassParameters->SrcTilePositions = HoldReference(GraphBuilder, SrcTilePositionsSRV);
-					PassParameters->DstTilePositions = HoldReference(GraphBuilder, DstTilePositionsSRV);
-
-					TShaderMapRef<FUploadConvergedLightmapTilesCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-					FComputeShaderUtils::AddPass(
-						GraphBuilder,
-						RDG_EVENT_NAME("UploadConvergedLightmapTiles"),
-						ComputeShader,
-						PassParameters,
-						FComputeShaderUtils::GetGroupCount(DispatchResolution, FComputeShaderUtils::kGolden2DGroupSize));
-				}
-			}
-
-			if (OutputRenderTargets[1] != nullptr)
-			{
-				{
-					TResourceArray<FIntPoint> SrcTilePositions;
-					TResourceArray<FIntPoint> DstTilePositions;
-
-					for (int32 TileIndex = 0; TileIndex < TileUploadRequests.Num(); TileIndex++)
-					{
-						SrcTilePositions.Add(FIntPoint(TileIndex % UploadTilePoolGPU->SizeInTiles.X, TileIndex / UploadTilePoolGPU->SizeInTiles.X) * GPreviewLightmapPhysicalTileSize);
-						DstTilePositions.Add(TileUploadRequests[TileIndex].OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize);
-					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(TEXT("SrcTilePositionsBuffer"), &SrcTilePositions);
-						CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-						SrcTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), SrcTilePositions.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-						SrcTilePositionsSRV = RHICreateShaderResourceView(SrcTilePositionsBuffer);
+						FString& DynamicDebugName = *GraphBuilder.AllocObject<FString>();
+						DynamicDebugName = TEXT("GPULightmassRenderTargetTileAtlas_") + StagingTextureNames[RenderTargetIndex];
+						FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[RenderTargetIndex], *DynamicDebugName);
+
+						FUploadConvergedLightmapTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FUploadConvergedLightmapTilesCS::FParameters>();
+
+						PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
+						PassParameters->SrcTexture = GraphBuilder.CreateUAV(StagingTexture);
+						PassParameters->DstTexture = GraphBuilder.CreateUAV(RenderTargetTileAtlas);
+						PassParameters->SrcTilePositions = HoldReference(GraphBuilder, SrcTilePositionsSRV);
+						PassParameters->DstTilePositions = HoldReference(GraphBuilder, DstTilePositionsSRV);
+
+						TShaderMapRef<FUploadConvergedLightmapTilesCS> ComputeShader(GlobalShaderMap);
+						FComputeShaderUtils::AddPass(
+							GraphBuilder,
+							RDG_EVENT_NAME("UploadConvergedLightmapTiles"),
+							ComputeShader,
+							PassParameters,
+							FComputeShaderUtils::GetGroupCount(DispatchResolution, FComputeShaderUtils::kGolden2DGroupSize));
 					}
-
-					{
-						FRHIResourceCreateInfo CreateInfo(TEXT("DstTilePositionsBuffer"), &DstTilePositions);
-						CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
-					}
-				}
-
-				{
-					FRDGTextureRef RenderTargetTileAtlas1 = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[1], TEXT("GPULightmassRenderTargetTileAtlas1"));
-
-					FUploadConvergedLightmapTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FUploadConvergedLightmapTilesCS::FParameters>();
-
-					PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
-					PassParameters->SrcTexture = GraphBuilder.CreateUAV(StagingHQLayer1);
-					PassParameters->DstTexture = GraphBuilder.CreateUAV(RenderTargetTileAtlas1);
-					PassParameters->SrcTilePositions = HoldReference(GraphBuilder, SrcTilePositionsSRV);
-					PassParameters->DstTilePositions = HoldReference(GraphBuilder, DstTilePositionsSRV);
-
-					TShaderMapRef<FUploadConvergedLightmapTilesCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-					FComputeShaderUtils::AddPass(
-						GraphBuilder,
-						RDG_EVENT_NAME("UploadConvergedLightmapTiles"),
-						ComputeShader,
-						PassParameters,
-						FComputeShaderUtils::GetGroupCount(DispatchResolution, FComputeShaderUtils::kGolden2DGroupSize));
-				}
-			}
-
-			if (OutputRenderTargets[2] != nullptr)
-			{
-				{
-					TResourceArray<FIntPoint> SrcTilePositions;
-					TResourceArray<FIntPoint> DstTilePositions;
-
-					for (int32 TileIndex = 0; TileIndex < TileUploadRequests.Num(); TileIndex++)
-					{
-						SrcTilePositions.Add(FIntPoint(TileIndex % UploadTilePoolGPU->SizeInTiles.X, TileIndex / UploadTilePoolGPU->SizeInTiles.X) * GPreviewLightmapPhysicalTileSize);
-						DstTilePositions.Add(TileUploadRequests[TileIndex].OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize);
-					}
-
-					{
-						FRHIResourceCreateInfo CreateInfo(TEXT("SrcTilePositionsBuffer"), &SrcTilePositions);
-						CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-						SrcTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), SrcTilePositions.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-						SrcTilePositionsSRV = RHICreateShaderResourceView(SrcTilePositionsBuffer);
-					}
-
-					{
-						FRHIResourceCreateInfo CreateInfo(TEXT("DstTilePositionsBuffer"), &DstTilePositions);
-						CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
-					}
-				}
-
-				{
-					FRDGTextureRef RenderTargetTileAtlas2 = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[2], TEXT("GPULightmassRenderTargetTileAtlas1"));
-
-					FUploadConvergedLightmapTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FUploadConvergedLightmapTilesCS::FParameters>();
-
-					PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
-					PassParameters->SrcTexture = GraphBuilder.CreateUAV(StagingShadowMask);
-					PassParameters->DstTexture = GraphBuilder.CreateUAV(RenderTargetTileAtlas2);
-					PassParameters->SrcTilePositions = HoldReference(GraphBuilder, SrcTilePositionsSRV);
-					PassParameters->DstTilePositions = HoldReference(GraphBuilder, DstTilePositionsSRV);
-
-					TShaderMapRef<FUploadConvergedLightmapTilesCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-					FComputeShaderUtils::AddPass(
-						GraphBuilder,
-						RDG_EVENT_NAME("UploadConvergedLightmapTiles"),
-						ComputeShader,
-						PassParameters,
-						FComputeShaderUtils::GetGroupCount(DispatchResolution, FComputeShaderUtils::kGolden2DGroupSize));
 				}
 			}
 		}
@@ -1970,7 +2001,12 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 		MostCommonLODIndex = NonZeroLODIndices[FrameNumber % NonZeroLODIndices.Num()];
 	}
 
-	Scene->SetupRayTracingScene(MostCommonLODIndex);
+	RectLightAtlas::UpdateRectLightAtlasTexture(GraphBuilder, Scene->FeatureLevel);
+
+	if (!Scene->SetupRayTracingScene(MostCommonLODIndex))
+	{
+		return;
+	}
 
 	TStaticArray<FRDGTextureUAVRef, 3> ScratchTilePoolLayerUAVs;
 
@@ -2014,11 +2050,12 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::GPU0());
 
-	IPooledRenderTarget* OutputRenderTargets[3] = { nullptr, nullptr, nullptr };
-
+	IPooledRenderTarget* OutputRenderTargets[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+	static_assert(UE_ARRAY_COUNT(OutputRenderTargets) <= UE_ARRAY_COUNT(FLightmapTileRequest::OutputRenderTargets));
+	
 	for (auto& Tile : PendingTileRequests)
 	{
-		for (int32 RenderTargetIndex = 0; RenderTargetIndex < 3; RenderTargetIndex++)
+		for (int32 RenderTargetIndex = 0; RenderTargetIndex < UE_ARRAY_COUNT(OutputRenderTargets); RenderTargetIndex++)
 		{
 			if (Tile.OutputRenderTargets[RenderTargetIndex] != nullptr)
 			{
@@ -2132,18 +2169,22 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 	}
 
 	int32 NumSamplesPerFrame = (bInsideBackgroundTick && bIsViewportNonRealtime) ? Scene->Settings->TilePassesInFullSpeedMode : Scene->Settings->TilePassesInSlowMode;
-	NumSamplesPerFrame = FMath::Max(FMath::Min(NumSamplesPerFrame, Scene->Settings->GISamples - 1), 0);
+	NumSamplesPerFrame = FMath::Max(FMath::Min(NumSamplesPerFrame, NumTotalPassesToRender - 1), 0);
 
 	{
-		auto& PendingGITileRequests = *GraphBuilder.AllocObject<TArray<FLightmapTileRequest>>(
-			PendingTileRequests.FilterByPredicate([NumGISamples = Scene->Settings->GISamples, MostCommonLODIndex](const FLightmapTileRequest& Tile)
-			{
-				return !Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, NumGISamples) && Tile.RenderState->GeometryInstanceRef.LODIndex == MostCommonLODIndex;
-			}));
+#if RHI_RAYTRACING
+		FLightmapPathTracingRGS::FParameters* PreviousPassParameters[MAX_NUM_GPUS] = {};
+#endif
 
 		// Render GI
 		for (int32 SampleIndex = 0; SampleIndex < NumSamplesPerFrame; SampleIndex++)
 		{
+			TArray<FLightmapTileRequest> PendingGITileRequests =
+				PendingTileRequests.FilterByPredicate([NumTotalPassesToRender = NumTotalPassesToRender, MostCommonLODIndex](const FLightmapTileRequest& Tile)
+					{
+					return !Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, NumTotalPassesToRender) && Tile.RenderState->GeometryInstanceRef.LODIndex == MostCommonLODIndex;
+					});
+			
 			if (PendingGITileRequests.Num() > 0)
 			{
 				const int32 AAvsGIMultiplier = 8;
@@ -2157,33 +2198,13 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						PendingGIRenderPassIndices.Add(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex);
 					}
 
-					for (int ScratchLayerIndex = 0; ScratchLayerIndex < 3; ScratchLayerIndex++)
+					TResourceArray<FIntPoint> TilePositionsToClear;
+					for (auto& Tile : PendingGITileRequests)
 					{
-						RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
-						
-						TResourceArray<FIntPoint> TilePositionsToClear;
-						for (auto& Tile : PendingGITileRequests)
-						{
-							TilePositionsToClear.Add(ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch));
-						}
-
-						FRWBuffer TilePositionsBuffer;
-						TilePositionsBuffer.Initialize(TEXT("TilePositionsBufferForClear"), TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, BUF_None, &TilePositionsToClear);
-
-						FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
-						Parameters->NumTiles = TilePositionsToClear.Num();
-						Parameters->TileSize = GPreviewLightmapPhysicalTileSize;
-						Parameters->TilePositions = HoldReference(GraphBuilder, TilePositionsBuffer.SRV);
-						Parameters->TilePool = ScratchTilePoolLayerUAVs[ScratchLayerIndex];
-
-						TShaderMapRef<FMultiTileClearCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-						FComputeShaderUtils::AddPass(
-							GraphBuilder,
-							RDG_EVENT_NAME("MultiTileClear"),
-							ComputeShader,
-							Parameters,
-							FComputeShaderUtils::GetGroupCount(FIntPoint(GPreviewLightmapPhysicalTileSize * TilePositionsToClear.Num(), GPreviewLightmapPhysicalTileSize), FComputeShaderUtils::kGolden2DGroupSize));
+						TilePositionsToClear.Add(ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch));
 					}
+					
+					ClearScratchTilePoolForMultipleTiles(GraphBuilder, TilePositionsToClear, ScratchTilePoolLayerUAVs, GlobalShaderMap);
 
 					{
 						for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
@@ -2191,46 +2212,73 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 							RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::FromIndex(GPUIndex));
 
 							auto* PassParameters = GraphBuilder.AllocParameters<FLightmapGBufferPassParameters>();
+							PassParameters->View = Scene->ReferenceView->ViewUniformBuffer;
 							PassParameters->PassUniformBuffer = PassUniformBuffer;
 							PassParameters->InstanceCulling = InstanceCullingUniformBuffer;
 
-							GraphBuilder.AddPass(
-								RDG_EVENT_NAME("LightmapGBuffer"),
-								PassParameters,
-								ERDGPassFlags::Raster,
-								[this, ReferenceView = Scene->ReferenceView, &PendingGITileRequests, &PendingGIRenderPassIndices, GPUIndex, AAvsGIMultiplier](FRHICommandListImmediate& RHICmdList)
+							for (int32 Index = 0; Index < PendingGITileRequests.Num(); Index++)
 							{
-								for (int32 Index = 0; Index < PendingGITileRequests.Num(); Index++)
+								const FLightmapTileRequest& Tile = PendingGITileRequests[Index];
+
+								uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
+								if (AssignedGPUIndex != GPUIndex) continue;
+
+								float ScaleX = Tile.RenderState->GetPaddedSizeInTiles().X * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
+								float ScaleY = Tile.RenderState->GetPaddedSizeInTiles().Y * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
+								float BiasX = (1.0f * (-Tile.VirtualCoordinates.Position.X * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
+								float BiasY = (1.0f * (-Tile.VirtualCoordinates.Position.Y * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
+
+								FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias = FVector4f(ScaleX, ScaleY, BiasX, BiasY);
+
+								TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
+
+								int32 EffectiveRenderPassIndex = PendingGIRenderPassIndices[Index];
+
+								if (Scene->Settings->bUseIrradianceCaching)
 								{
-									const FLightmapTileRequest& Tile = PendingGITileRequests[Index];
+									if (EffectiveRenderPassIndex >= Scene->Settings->IrradianceCacheQuality)
+									{
+										EffectiveRenderPassIndex -= Scene->Settings->IrradianceCacheQuality;
 
-									if (Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, Scene->Settings->GISamples)) continue;
-									uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
-									if (AssignedGPUIndex != GPUIndex) continue;
+										if (Scene->Settings->bUseFirstBounceRayGuiding)
+										{
+											if (EffectiveRenderPassIndex >= Scene->Settings->FirstBounceRayGuidingTrialSamples)
+											{
+												EffectiveRenderPassIndex -= Scene->Settings->FirstBounceRayGuidingTrialSamples;
+											}
+										}
+									}
+								}
 
-									RHICmdList.SetViewport(0, 0, 0.0f, GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize, 1.0f);
-
-									float ScaleX = Tile.RenderState->GetPaddedSizeInTiles().X * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
-									float ScaleY = Tile.RenderState->GetPaddedSizeInTiles().Y * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
-									float BiasX = (1.0f * (-Tile.VirtualCoordinates.Position.X * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
-									float BiasY = (1.0f * (-Tile.VirtualCoordinates.Position.Y * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
-
-									FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias = FVector4f(ScaleX, ScaleY, BiasX, BiasY);
-
-									TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
-
-									RenderMeshBatchesIntoGBuffer(
-										RHICmdList,
-										ReferenceView.Get(),
-										Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
+								GraphBuilder.AddPass(
+									RDG_EVENT_NAME("LightmapGBufferTile"),
+									PassParameters,
+									ERDGPassFlags::Raster,
+									[
+										this,
+										ReferenceView = Scene->ReferenceView,
+										PrimitiveId = Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
 										MeshBatches,
 										VirtualTexturePhysicalTileCoordinateScaleAndBias,
-										PendingGIRenderPassIndices[Index] / AAvsGIMultiplier,
-										ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch)* GPreviewLightmapPhysicalTileSize);
+										EffectiveRenderPassIndex,
+										AAvsGIMultiplier,
+										ScratchTilePoolOffset = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize
+										](FRHICommandListImmediate& RHICmdList)
+									{
+										RHICmdList.SetViewport(0, 0, 0.0f, GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize, 1.0f);
+										
+										RenderMeshBatchesIntoGBuffer(
+											RHICmdList,
+											ReferenceView.Get(),
+											PrimitiveId,
+											MeshBatches,
+											VirtualTexturePhysicalTileCoordinateScaleAndBias,
+											EffectiveRenderPassIndex / AAvsGIMultiplier,
+											ScratchTilePoolOffset);
 
-									GPrimitiveIdVertexBufferPool.DiscardAll();
-								}
-							});
+										GPrimitiveIdVertexBufferPool.DiscardAll();
+									});
+							}
 						}
 					}
 				}
@@ -2242,22 +2290,16 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					{
 						FGPUBatchedTileRequests GPUBatchedTileRequests;
 
+						TArray<FLightmapTileRequest> TileRequestsThisGPU;
+						
 						for (const FLightmapTileRequest& Tile : PendingGITileRequests)
 						{
 							uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
 							if (AssignedGPUIndex != GPUIndex) continue;
 
-							FGPUTileDescription TileDesc;
-							TileDesc.LightmapSize = Tile.RenderState->GetSize();
-							TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
-							TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
-							TileDesc.ScratchPosition = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
-							TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
-							TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
-							TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
-							TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
-							TileDesc.RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex;
-							if (!Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, Scene->Settings->GISamples))
+							TileRequestsThisGPU.Add(Tile);
+							
+							if (!Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, NumTotalPassesToRender))
 							{
 								Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex++;
 
@@ -2268,24 +2310,17 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 										Mip0WorkDoneLastFrame++;
 									}
 								}
-
-								GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
 							}
 						}
 
-						if (GPUBatchedTileRequests.BatchedTilesDesc.Num() > 0)
-						{
-							FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
-							CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
-							CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
-
-							GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-							GPUBatchedTileRequests.BatchedTilesSRV = HoldReference(GraphBuilder, RHICreateShaderResourceView(GPUBatchedTileRequests.BatchedTilesBuffer));
-						}
+						GPUBatchedTileRequests.BuildFromTileDescs(TileRequestsThisGPU, LightmapTilePoolGPU, *ScratchTilePoolGPU);
+						GPUBatchedTileRequests.Commit(GPUIndex);
+						// Let GraphBuilder references the SRV
+						GraphBuilder.AllocObject<FShaderResourceViewRHIRef>(GPUBatchedTileRequests.BatchedTilesSRV);
 
 						RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::FromIndex(GPUIndex));
 
-						if (GPUBatchedTileRequests.BatchedTilesDesc.Num() > 0)
+						if (TileRequestsThisGPU.Num() > 0)
 						{
 							FRDGTextureRef GBufferWorldPosition = GraphBuilder.RegisterExternalTexture(ScratchTilePoolGPU->PooledRenderTargets[0], TEXT("GBufferWorldPosition"));
 							FRDGTextureRef GBufferWorldNormal = GraphBuilder.RegisterExternalTexture(ScratchTilePoolGPU->PooledRenderTargets[1], TEXT("GBufferWorldNormal"));
@@ -2298,7 +2333,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 							FRDGTextureRef RayGuidingCDFX = nullptr;
 							FRDGTextureRef RayGuidingCDFY = nullptr;
 
-							if (bUseFirstBounceRayGuiding)
+							if (Scene->Settings->bUseFirstBounceRayGuiding)
 							{
 								RayGuidingLuminance = GraphBuilder.RegisterExternalTexture(LightmapTilePoolGPU.PooledRenderTargets[5], TEXT("RayGuidingLuminance"));
 								RayGuidingCDFX = GraphBuilder.RegisterExternalTexture(LightmapTilePoolGPU.PooledRenderTargets[6], TEXT("RayGuidingCDFX"));
@@ -2314,7 +2349,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 								{
 									FLightmapPathTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLightmapPathTracingRGS::FParameters>();
 									PassParameters->LastInvalidationFrame = LastInvalidationFrame;
-									PassParameters->NumTotalSamples = Scene->Settings->GISamples;
+									PassParameters->NumTotalSamples = NumTotalPassesToRender;
 									PassParameters->TLAS = Scene->RayTracingSceneSRV;
 									PassParameters->GBufferWorldPosition = GBufferWorldPosition;
 									PassParameters->GBufferWorldNormal = GBufferWorldNormal;
@@ -2323,31 +2358,47 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 									PassParameters->SHCorrectionAndStationarySkyLightBentNormal = GraphBuilder.CreateUAV(SHCorrectionAndStationarySkyLightBentNormal);
 									PassParameters->SHDirectionality = GraphBuilder.CreateUAV(SHDirectionality);
 
-									if (bUseFirstBounceRayGuiding)
+									if (Scene->Settings->bUseFirstBounceRayGuiding)
 									{
 										PassParameters->RayGuidingLuminance = GraphBuilder.CreateUAV(RayGuidingLuminance);
 										PassParameters->RayGuidingCDFX = RayGuidingCDFX;
 										PassParameters->RayGuidingCDFY = RayGuidingCDFY;
-										PassParameters->NumRayGuidingTrialSamples = NumFirstBounceRayGuidingTrialSamples;
+										PassParameters->NumRayGuidingTrialSamples = Scene->Settings->FirstBounceRayGuidingTrialSamples;
 									}
 
 									PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
 									PassParameters->ViewUniformBuffer = Scene->ReferenceView->ViewUniformBuffer;
 									PassParameters->IrradianceCachingParameters = Scene->IrradianceCache->IrradianceCachingParametersUniformBuffer;
 
-									SetupPathTracingLightParameters(Scene->LightSceneRenderState, GraphBuilder, *Scene->ReferenceView, PassParameters);
-
-									// TODO: find a way to share IES atlas with path tracer ...
-									PassParameters->IESTexture = GraphBuilder.RegisterExternalTexture(GSystemTextures.WhiteDummy, TEXT("IESTexture"));
-									PassParameters->IESTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+									if (PreviousPassParameters[GPUIndex] == nullptr)
+									{
+										SetupPathTracingLightParameters(Scene->LightSceneRenderState, GraphBuilder, *Scene->ReferenceView, PassParameters);
+										// store the first pass parameters so we don't have to re-create certain resources constantly
+										PreviousPassParameters[GPUIndex] = PassParameters;
+									}
+									else
+									{
+										PassParameters->LightGridParameters = PreviousPassParameters[GPUIndex]->LightGridParameters;
+										PassParameters->SceneLightCount = PreviousPassParameters[GPUIndex]->SceneLightCount;
+										PassParameters->SceneVisibleLightCount = PreviousPassParameters[GPUIndex]->SceneVisibleLightCount;
+										PassParameters->SceneLights = PreviousPassParameters[GPUIndex]->SceneLights;
+										PassParameters->SkylightTexture = PreviousPassParameters[GPUIndex]->SkylightTexture;
+										PassParameters->SkylightTextureSampler = PreviousPassParameters[GPUIndex]->SkylightTextureSampler;
+										PassParameters->SkylightPdf = PreviousPassParameters[GPUIndex]->SkylightPdf;
+										PassParameters->SkylightInvResolution = PreviousPassParameters[GPUIndex]->SkylightInvResolution;
+										PassParameters->SkylightMipCount = PreviousPassParameters[GPUIndex]->SkylightMipCount;
+										PassParameters->IESTexture = PreviousPassParameters[GPUIndex]->IESTexture;
+										PassParameters->IESTextureSampler = PreviousPassParameters[GPUIndex]->IESTextureSampler;
+									}
 
 									PassParameters->SSProfilesTexture = GetSubsurfaceProfileTexture();
 
 
 									FLightmapPathTracingRGS::FPermutationDomain PermutationVector;
-									PermutationVector.Set<FLightmapPathTracingRGS::FUseFirstBounceRayGuiding>(bUseFirstBounceRayGuiding);
+									PermutationVector.Set<FLightmapPathTracingRGS::FUseFirstBounceRayGuiding>(Scene->Settings->bUseIrradianceCaching && Scene->Settings->bUseFirstBounceRayGuiding);
 									PermutationVector.Set<FLightmapPathTracingRGS::FUseIrradianceCaching>(Scene->Settings->bUseIrradianceCaching);
-									auto RayGenerationShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FLightmapPathTracingRGS>(PermutationVector);
+									PermutationVector.Set<FLightmapPathTracingRGS::FUseICBackfaceDetection>(Scene->Settings->bUseIrradianceCaching && Scene->Settings->bUseIrradianceCacheBackfaceDetection);
+									auto RayGenerationShader = GlobalShaderMap->GetShader<FLightmapPathTracingRGS>(PermutationVector);
 									ClearUnusedGraphResources(RayGenerationShader, PassParameters);
 
 									GraphBuilder.AddPass(
@@ -2365,7 +2416,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 									});
 								}
 
-								if (bUseFirstBounceRayGuiding)
+								if (Scene->Settings->bUseFirstBounceRayGuiding)
 								{
 									FFirstBounceRayGuidingCDFBuildCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FFirstBounceRayGuidingCDFBuildCS::FParameters>();
 
@@ -2373,9 +2424,14 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 									PassParameters->RayGuidingLuminance = GraphBuilder.CreateUAV(RayGuidingLuminance);
 									PassParameters->RayGuidingCDFX = GraphBuilder.CreateUAV(RayGuidingCDFX);
 									PassParameters->RayGuidingCDFY = GraphBuilder.CreateUAV(RayGuidingCDFY);
-									PassParameters->NumRayGuidingTrialSamples = NumFirstBounceRayGuidingTrialSamples;
+									PassParameters->RayGuidingEndPassIndex = Scene->Settings->FirstBounceRayGuidingTrialSamples - 1;
 
-									TShaderMapRef<FFirstBounceRayGuidingCDFBuildCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+									if (Scene->Settings->bUseIrradianceCaching)
+									{
+										PassParameters->RayGuidingEndPassIndex += Scene->Settings->IrradianceCacheQuality;
+									}
+
+									TShaderMapRef<FFirstBounceRayGuidingCDFBuildCS> ComputeShader(GlobalShaderMap);
 									FComputeShaderUtils::AddPass(
 										GraphBuilder,
 										RDG_EVENT_NAME("FirstBounceRayGuidingCDFBuild"),
@@ -2406,44 +2462,22 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				{
 					RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::FromIndex(GPUIndex));
 
-					auto& PendingShadowTileRequests = *GraphBuilder.AllocObject<TArray<FLightmapTileRequest>>(
-						PendingShadowTileRequestsOnAllGPUs.FilterByPredicate(
+					TArray<FLightmapTileRequest> PendingShadowTileRequests = PendingShadowTileRequestsOnAllGPUs.FilterByPredicate(
 						[GPUIndex](const FLightmapTileRequest& Tile)
 					{
 						uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
 						return AssignedGPUIndex == GPUIndex;
-					}));
+					});
 
 					if (PendingShadowTileRequests.Num() == 0) continue;
 
-					for (int ScratchLayerIndex = 0; ScratchLayerIndex < 3; ScratchLayerIndex++)
+					TResourceArray<FIntPoint> TilePositionsToClear;
+					for (auto& Tile : PendingShadowTileRequests)
 					{
-						TResourceArray<FIntPoint> TilePositionsToClear;
-						for (auto& Tile : PendingShadowTileRequests)
-						{
-							TilePositionsToClear.Add(ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch));
-						}
-
-						FRHIResourceCreateInfo CreateInfo(TEXT("TilePositionsBufferForClear"));
-						CreateInfo.ResourceArray = &TilePositionsToClear;
-						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
-						FBufferRHIRef TilePositionsBuffer = RHICreateVertexBuffer(TilePositionsToClear.GetTypeSize() * TilePositionsToClear.Num(), BUF_ShaderResource, CreateInfo);
-						FShaderResourceViewRHIRef TilePositionsBufferSRV = RHICreateShaderResourceView(TilePositionsBuffer, TilePositionsToClear.GetTypeSize(), PF_R32G32_UINT);
-
-						FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
-						Parameters->NumTiles = TilePositionsToClear.Num();
-						Parameters->TileSize = GPreviewLightmapPhysicalTileSize;
-						Parameters->TilePositions = HoldReference(GraphBuilder, TilePositionsBufferSRV);
-						Parameters->TilePool = ScratchTilePoolLayerUAVs[ScratchLayerIndex];
-
-						TShaderMapRef<FMultiTileClearCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-						FComputeShaderUtils::AddPass(
-							GraphBuilder,
-							RDG_EVENT_NAME("MultiTileClear"),
-							ComputeShader,
-							Parameters,
-							FComputeShaderUtils::GetGroupCount(FIntPoint(GPreviewLightmapPhysicalTileSize * TilePositionsToClear.Num(), GPreviewLightmapPhysicalTileSize), FComputeShaderUtils::kGolden2DGroupSize));
+						TilePositionsToClear.Add(ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch));
 					}
+
+					ClearScratchTilePoolForMultipleTiles(GraphBuilder, TilePositionsToClear, ScratchTilePoolLayerUAVs, GlobalShaderMap);
 
 					FRDGTextureRef GBufferWorldPosition = GraphBuilder.RegisterExternalTexture(ScratchTilePoolGPU->PooledRenderTargets[0], TEXT("GBufferWorldPosition"));
 					FRDGTextureRef GBufferWorldNormal = GraphBuilder.RegisterExternalTexture(ScratchTilePoolGPU->PooledRenderTargets[1], TEXT("GBufferWorldNormal"));
@@ -2626,81 +2660,73 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					// Render GBuffer
 					{
 						auto* PassParameters = GraphBuilder.AllocParameters<FLightmapGBufferPassParameters>();
+						PassParameters->View = Scene->ReferenceView->ViewUniformBuffer;
 						PassParameters->PassUniformBuffer = PassUniformBuffer;
 						PassParameters->InstanceCulling = InstanceCullingUniformBuffer;
 
-						GraphBuilder.AddPass(
-							RDG_EVENT_NAME("LightmapGBuffer"),
-							PassParameters,
-							ERDGPassFlags::Raster,
-							[this, ReferenceView = Scene->ReferenceView, &PendingShadowTileRequests, &LightSampleIndexArray](FRHICommandListImmediate& RHICmdList)
+						for (int32 TileIndex = 0; TileIndex < PendingShadowTileRequests.Num(); TileIndex++)
 						{
-							for (int32 TileIndex = 0; TileIndex < PendingShadowTileRequests.Num(); TileIndex++)
-							{
-								const FLightmapTileRequest& Tile = PendingShadowTileRequests[TileIndex];
+							const FLightmapTileRequest& Tile = PendingShadowTileRequests[TileIndex];
 
-								RHICmdList.SetViewport(0, 0, 0.0f, GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize, 1.0f);
+							float ScaleX = Tile.RenderState->GetPaddedSizeInTiles().X * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
+							float ScaleY = Tile.RenderState->GetPaddedSizeInTiles().Y * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
+							float BiasX = (1.0f * (-Tile.VirtualCoordinates.Position.X * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
+							float BiasY = (1.0f * (-Tile.VirtualCoordinates.Position.Y * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
 
-								float ScaleX = Tile.RenderState->GetPaddedSizeInTiles().X * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
-								float ScaleY = Tile.RenderState->GetPaddedSizeInTiles().Y * GPreviewLightmapVirtualTileSize * 1.0f / (1 << Tile.VirtualCoordinates.MipLevel) / GPreviewLightmapPhysicalTileSize;
-								float BiasX = (1.0f * (-Tile.VirtualCoordinates.Position.X * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
-								float BiasY = (1.0f * (-Tile.VirtualCoordinates.Position.Y * GPreviewLightmapVirtualTileSize) - (-GPreviewLightmapTileBorderSize)) / GPreviewLightmapPhysicalTileSize;
+							FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias = FVector4f(ScaleX, ScaleY, BiasX, BiasY);
 
-								FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias = FVector4f(ScaleX, ScaleY, BiasX, BiasY);
+							TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
 
-								TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
-
-								RenderMeshBatchesIntoGBuffer(
-									RHICmdList,
-									ReferenceView.Get(),
-									Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
+							GraphBuilder.AddPass(
+								RDG_EVENT_NAME("LightmapGBuffer"),
+								PassParameters,
+								ERDGPassFlags::Raster,
+								[
+									this,
+									ReferenceView = Scene->ReferenceView,
+									PrimitiveId = Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
 									MeshBatches,
 									VirtualTexturePhysicalTileCoordinateScaleAndBias,
-									LightSampleIndexArray[TileIndex],
-									ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch)* GPreviewLightmapPhysicalTileSize);
+									RenderPassIndex = LightSampleIndexArray[TileIndex],
+									ScratchTilePoolOffset = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize
+									](FRHICommandListImmediate& RHICmdList)
+								{
+									RHICmdList.SetViewport(0, 0, 0.0f, GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize, 1.0f);
+									
+									RenderMeshBatchesIntoGBuffer(
+										RHICmdList,
+										ReferenceView.Get(),
+										PrimitiveId,
+										MeshBatches,
+										VirtualTexturePhysicalTileCoordinateScaleAndBias,
+										RenderPassIndex,
+										ScratchTilePoolOffset);
 
-								GPrimitiveIdVertexBufferPool.DiscardAll();
-							}
-						});
+									GPrimitiveIdVertexBufferPool.DiscardAll();
+								});
+						}
 					}
 
 #if RHI_RAYTRACING
 					if (IsRayTracingEnabled())
 					{
-						FGPUBatchedTileRequests GPUBatchedTileRequests;
-
+						FGPUBatchedTileRequests GPUBatchedTileRequests;						
+						GPUBatchedTileRequests.BuildFromTileDescs(PendingShadowTileRequests,LightmapTilePoolGPU, *ScratchTilePoolGPU);
+						for (int32 TileIndex = 0; TileIndex < PendingShadowTileRequests.Num(); TileIndex++)
 						{
-							for (int32 TileIndex = 0; TileIndex < PendingShadowTileRequests.Num(); TileIndex++)
-							{
-								const FLightmapTileRequest& Tile = PendingShadowTileRequests[TileIndex];
-								FGPUTileDescription TileDesc;
-								TileDesc.LightmapSize = Tile.RenderState->GetSize();
-								TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
-								TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
-								TileDesc.ScratchPosition = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
-								TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
-								TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
-								TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
-								TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
-								TileDesc.RenderPassIndex = LightSampleIndexArray[TileIndex];
-								GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
-							}
-
-							{
-								FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
-								CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
-								CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
-
-								GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-								GPUBatchedTileRequests.BatchedTilesSRV = HoldReference(GraphBuilder, RHICreateShaderResourceView(GPUBatchedTileRequests.BatchedTilesBuffer));
-							}
+							GPUBatchedTileRequests.BatchedTilesDesc[TileIndex].RenderPassIndex = LightSampleIndexArray[TileIndex];
 						}
+						GPUBatchedTileRequests.Commit(GPUIndex);
+						
+						// Let GraphBuilder references the SRV
+						GraphBuilder.AllocObject<FShaderResourceViewRHIRef>(GPUBatchedTileRequests.BatchedTilesSRV);
 
 						FIntPoint RayTracingResolution;
 						RayTracingResolution.X = GPreviewLightmapPhysicalTileSize * GPUBatchedTileRequests.BatchedTilesDesc.Num();
 						RayTracingResolution.Y = GPreviewLightmapPhysicalTileSize;
 
 						FStationaryLightShadowTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStationaryLightShadowTracingRGS::FParameters>();
+						PassParameters->ViewUniformBuffer = Scene->ReferenceView->ViewUniformBuffer;
 						PassParameters->TLAS = Scene->RayTracingSceneSRV;
 						PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
 						PassParameters->LightTypeArray = HoldReference(GraphBuilder, LightTypeSRV);
@@ -2713,7 +2739,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						PassParameters->ShadowMask = GraphBuilder.CreateUAV(ShadowMask);
 						PassParameters->ShadowMaskSampleCount = GraphBuilder.CreateUAV(ShadowMaskSampleCount);
 
-						auto RayGenerationShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStationaryLightShadowTracingRGS>();
+						auto RayGenerationShader = GlobalShaderMap->GetShader<FStationaryLightShadowTracingRGS>();
 						ClearUnusedGraphResources(RayGenerationShader, PassParameters);
 
 						GraphBuilder.AddPass(
@@ -2748,7 +2774,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					FIntRect GPURect;
 					GPURect.Min = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * LightmapTilePoolGPU.LayerFormatAndTileSize[RenderTargetIndex].TileSize;
 					GPURect.Max = GPURect.Min + LightmapTilePoolGPU.LayerFormatAndTileSize[RenderTargetIndex].TileSize;
-					Params.Add(FTransferResourceParams(LightmapTilePoolGPU.PooledRenderTargets[RenderTargetIndex]->GetRenderTargetItem().TargetableTexture->GetTexture2D(), GPURect, AssignedGPUIndex, 0, true, true));
+					Params.Add(FTransferResourceParams(LightmapTilePoolGPU.PooledRenderTargets[RenderTargetIndex]->GetRHI(), GPURect, AssignedGPUIndex, 0, true, true));
 				};
 
 				TransferTexture(0);
@@ -2757,7 +2783,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				TransferTexture(3);
 				TransferTexture(4);
 
-				if (bUseFirstBounceRayGuiding)
+				if (Scene->Settings->bUseFirstBounceRayGuiding)
 				{
 					TransferTexture(5);
 					TransferTexture(6);
@@ -2775,30 +2801,10 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 	// Output from working set to VT layers
 	{
 		FGPUBatchedTileRequests GPUBatchedTileRequests;
-
-		{
-			for (const FLightmapTileRequest& Tile : PendingTileRequests)
-			{
-				FGPUTileDescription TileDesc;
-				TileDesc.LightmapSize = Tile.RenderState->GetSize();
-				TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
-				TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
-				TileDesc.ScratchPosition = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
-				TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
-				TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
-				TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
-				TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
-				TileDesc.RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex;
-				GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
-			}
-
-			FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
-			CreateInfo.GPUMask = FRHIGPUMask::GPU0();
-			CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
-
-			GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-			GPUBatchedTileRequests.BatchedTilesSRV = HoldReference(GraphBuilder, RHICreateShaderResourceView(GPUBatchedTileRequests.BatchedTilesBuffer));
-		}
+		GPUBatchedTileRequests.BuildFromTileDescs(PendingTileRequests, LightmapTilePoolGPU, *ScratchTilePoolGPU);
+		GPUBatchedTileRequests.Commit(0);
+		// Let GraphBuilder references the SRV
+		GraphBuilder.AllocObject<FShaderResourceViewRHIRef>(GPUBatchedTileRequests.BatchedTilesSRV);
 
 		{
 			FRDGTextureRef IrradianceAndSampleCount = GraphBuilder.RegisterExternalTexture(LightmapTilePoolGPU.PooledRenderTargets[0], TEXT("IrradianceAndSampleCount"));
@@ -2811,20 +2817,21 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 			RayTracingResolution.X = GPreviewLightmapPhysicalTileSize * GPUBatchedTileRequests.BatchedTilesDesc.Num();
 			RayTracingResolution.Y = GPreviewLightmapPhysicalTileSize;
 
-			if (OutputRenderTargets[0] != nullptr || OutputRenderTargets[1] != nullptr)
+			if (OutputRenderTargets[0] != nullptr)
 			{
-				FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[0] != nullptr ? OutputRenderTargets[0] : OutputRenderTargets[1], TEXT("GPULightmassRenderTargetTileAtlas0"));
+				FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[0], TEXT("GPULightmassRenderTargetTileAtlas0"));
 
 				FSelectiveLightmapOutputCS::FPermutationDomain PermutationVector;
 				PermutationVector.Set<FSelectiveLightmapOutputCS::FOutputLayerDim>(0);
 				PermutationVector.Set<FSelectiveLightmapOutputCS::FDrawProgressBars>(Scene->Settings->bShowProgressBars);
 
-				auto Shader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
+				auto Shader = GlobalShaderMap->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
 
 				FSelectiveLightmapOutputCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSelectiveLightmapOutputCS::FParameters>();
 				PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
-				PassParameters->NumTotalSamples = Scene->Settings->GISamples;
-				PassParameters->NumRayGuidingTrialSamples = NumFirstBounceRayGuidingTrialSamples;
+				PassParameters->NumTotalSamples = NumTotalPassesToRender;
+				PassParameters->NumIrradianceCachePasses = Scene->Settings->bUseIrradianceCaching ? Scene->Settings->IrradianceCacheQuality : 0;
+				PassParameters->NumRayGuidingTrialSamples = Scene->Settings->bUseFirstBounceRayGuiding ? Scene->Settings->FirstBounceRayGuidingTrialSamples : 0;
 				PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
 				PassParameters->OutputTileAtlas = GraphBuilder.CreateUAV(RenderTargetTileAtlas);
 				PassParameters->IrradianceAndSampleCount = GraphBuilder.CreateUAV(IrradianceAndSampleCount);
@@ -2839,19 +2846,48 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					FComputeShaderUtils::GetGroupCount(RayTracingResolution, FComputeShaderUtils::kGolden2DGroupSize));
 			}
 
+			if (OutputRenderTargets[1] != nullptr)
+			{
+				FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[1], TEXT("GPULightmassRenderTargetTileAtlas1"));
+
+				FSelectiveLightmapOutputCS::FPermutationDomain PermutationVector;
+				PermutationVector.Set<FSelectiveLightmapOutputCS::FOutputLayerDim>(1);
+				PermutationVector.Set<FSelectiveLightmapOutputCS::FDrawProgressBars>(Scene->Settings->bShowProgressBars);
+
+				auto Shader = GlobalShaderMap->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
+
+				FSelectiveLightmapOutputCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSelectiveLightmapOutputCS::FParameters>();
+				PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
+				PassParameters->NumTotalSamples = NumTotalPassesToRender;
+				PassParameters->NumIrradianceCachePasses = Scene->Settings->bUseIrradianceCaching ? Scene->Settings->IrradianceCacheQuality : 0;
+				PassParameters->NumRayGuidingTrialSamples = Scene->Settings->bUseFirstBounceRayGuiding ? Scene->Settings->FirstBounceRayGuidingTrialSamples : 0;
+				PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
+				PassParameters->OutputTileAtlas = GraphBuilder.CreateUAV(RenderTargetTileAtlas);
+				PassParameters->IrradianceAndSampleCount = GraphBuilder.CreateUAV(IrradianceAndSampleCount);
+				PassParameters->SHDirectionality = GraphBuilder.CreateUAV(SHDirectionality);
+				PassParameters->SHCorrectionAndStationarySkyLightBentNormal = GraphBuilder.CreateUAV(SHCorrectionAndStationarySkyLightBentNormal);
+
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("SelectiveLightmapOutput 1"),
+					Shader,
+					PassParameters,
+					FComputeShaderUtils::GetGroupCount(RayTracingResolution, FComputeShaderUtils::kGolden2DGroupSize));
+			}
+
 			if (OutputRenderTargets[2] != nullptr)
 			{
 				FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[2], TEXT("GPULightmassRenderTargetTileAtlas2"));
 
 				FSelectiveLightmapOutputCS::FPermutationDomain PermutationVector;
 				PermutationVector.Set<FSelectiveLightmapOutputCS::FOutputLayerDim>(2);
-				PermutationVector.Set<FSelectiveLightmapOutputCS::FDrawProgressBars>(Scene->Settings->bShowProgressBars);
+				PermutationVector.Set<FSelectiveLightmapOutputCS::FDrawProgressBars>(false);
 
-				auto Shader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
+				auto Shader = GlobalShaderMap->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
 
 				FSelectiveLightmapOutputCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSelectiveLightmapOutputCS::FParameters>();
 				PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
-				PassParameters->NumTotalSamples = Scene->Settings->GISamples;
+				PassParameters->NumTotalSamples = NumTotalPassesToRender;
 				PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
 				PassParameters->OutputTileAtlas = GraphBuilder.CreateUAV(RenderTargetTileAtlas);
 				PassParameters->ShadowMask = GraphBuilder.CreateUAV(ShadowMask);
@@ -2860,6 +2896,31 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				FComputeShaderUtils::AddPass(
 					GraphBuilder,
 					RDG_EVENT_NAME("SelectiveLightmapOutput 2"),
+					Shader,
+					PassParameters,
+					FComputeShaderUtils::GetGroupCount(RayTracingResolution, FComputeShaderUtils::kGolden2DGroupSize));
+			}
+			
+			if (OutputRenderTargets[3] != nullptr)
+			{
+				FRDGTextureRef RenderTargetTileAtlas = GraphBuilder.RegisterExternalTexture(OutputRenderTargets[3], TEXT("GPULightmassRenderTargetTileAtlas3"));
+
+				FSelectiveLightmapOutputCS::FPermutationDomain PermutationVector;
+				PermutationVector.Set<FSelectiveLightmapOutputCS::FOutputLayerDim>(3);
+				PermutationVector.Set<FSelectiveLightmapOutputCS::FDrawProgressBars>(false);
+
+				auto Shader = GlobalShaderMap->GetShader<FSelectiveLightmapOutputCS>(PermutationVector);
+
+				FSelectiveLightmapOutputCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSelectiveLightmapOutputCS::FParameters>();
+				PassParameters->NumBatchedTiles = GPUBatchedTileRequests.BatchedTilesDesc.Num();
+				PassParameters->BatchedTiles = GPUBatchedTileRequests.BatchedTilesSRV;
+				PassParameters->OutputTileAtlas = GraphBuilder.CreateUAV(RenderTargetTileAtlas);
+				PassParameters->IrradianceAndSampleCount = GraphBuilder.CreateUAV(IrradianceAndSampleCount);
+				PassParameters->SHCorrectionAndStationarySkyLightBentNormal = GraphBuilder.CreateUAV(SHCorrectionAndStationarySkyLightBentNormal);
+
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("SelectiveLightmapOutput 3"),
 					Shader,
 					PassParameters,
 					FComputeShaderUtils::GetGroupCount(RayTracingResolution, FComputeShaderUtils::kGolden2DGroupSize));
@@ -2876,7 +2937,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 	{
 		auto ConvergedTileRequests = PendingTileRequests.FilterByPredicate(
 			[
-				NumGISamples = Scene->Settings->GISamples,
+				NumGISamples = NumTotalPassesToRender,
 				NumShadowSamples = Scene->Settings->StationaryLightShadowSamples,
 				bOnlyBakeWhatYouSee = bOnlyBakeWhatYouSee, 
 				bDenoiseDuringInteractiveBake = bDenoiseDuringInteractiveBake
@@ -2934,39 +2995,18 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				LightmapReadbackGroup.ConvergedTileRequests = ConvergedTileRequestsOnCurrentGPU;
 				if (!LightmapReadbackGroup.ReadbackTilePoolGPU.IsValid())
 				{
-					LightmapReadbackGroup.ReadbackTilePoolGPU = MakeUnique<FLightmapTilePoolGPU>(3, FIntPoint(NewSize, NewSize), FIntPoint(GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize));
+					LightmapReadbackGroup.ReadbackTilePoolGPU = MakeUnique<FLightmapTilePoolGPU>(4, FIntPoint(NewSize, NewSize), FIntPoint(GPreviewLightmapPhysicalTileSize, GPreviewLightmapPhysicalTileSize));
 					LightmapReadbackGroup.StagingHQLayer0Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("StagingHQLayer0Readback"));
 					LightmapReadbackGroup.StagingHQLayer1Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("StagingHQLayer1Readback"));
 					LightmapReadbackGroup.StagingShadowMaskReadback = MakeUnique<FRHIGPUTextureReadback>(TEXT("StagingShadowMaskReadback"));
+					LightmapReadbackGroup.StagingSkyOcclusionReadback = MakeUnique<FRHIGPUTextureReadback>(TEXT("StagingSkyOcclusionReadback"));
 				}
 
 				FGPUBatchedTileRequests GPUBatchedTileRequests;
-
-				for (const auto& Tile : LightmapReadbackGroup.ConvergedTileRequests)
-				{
-					uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
-					check(AssignedGPUIndex == GPUIndex);
-
-					FGPUTileDescription TileDesc;
-					TileDesc.LightmapSize = Tile.RenderState->GetSize();
-					TileDesc.VirtualTilePosition = Tile.VirtualCoordinates.Position * GPreviewLightmapVirtualTileSize;
-					TileDesc.WorkingSetPosition = LightmapTilePoolGPU.GetPositionFromLinearAddress(Tile.TileAddressInWorkingSet) * GPreviewLightmapPhysicalTileSize;
-					TileDesc.ScratchPosition = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer0Position = Tile.OutputPhysicalCoordinates[0] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer1Position = Tile.OutputPhysicalCoordinates[1] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.OutputLayer2Position = Tile.OutputPhysicalCoordinates[2] * GPreviewLightmapPhysicalTileSize;
-					TileDesc.FrameIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).Revision;
-					TileDesc.RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex;
-					GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
-				}
-
-				FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
-				CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
-				CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
-
-				GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
-				GPUBatchedTileRequests.BatchedTilesSRV = HoldReference(GraphBuilder, RHICreateShaderResourceView(GPUBatchedTileRequests.BatchedTilesBuffer));
-
+				GPUBatchedTileRequests.BuildFromTileDescs(LightmapReadbackGroup.ConvergedTileRequests, LightmapTilePoolGPU, *ScratchTilePoolGPU);
+				GPUBatchedTileRequests.Commit(GPUIndex);
+				// Let GraphBuilder references the SRV
+				GraphBuilder.AllocObject<FShaderResourceViewRHIRef>(GPUBatchedTileRequests.BatchedTilesSRV);
 
 				FIntPoint DispatchResolution;
 				DispatchResolution.X = GPreviewLightmapPhysicalTileSize * GPUBatchedTileRequests.BatchedTilesDesc.Num();
@@ -2981,6 +3021,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				FRDGTextureRef StagingHQLayer0 = GraphBuilder.RegisterExternalTexture(LightmapReadbackGroup.ReadbackTilePoolGPU->PooledRenderTargets[0], TEXT("StagingHQLayer0"));
 				FRDGTextureRef StagingHQLayer1 = GraphBuilder.RegisterExternalTexture(LightmapReadbackGroup.ReadbackTilePoolGPU->PooledRenderTargets[1], TEXT("StagingHQLayer1"));
 				FRDGTextureRef StagingShadowMask = GraphBuilder.RegisterExternalTexture(LightmapReadbackGroup.ReadbackTilePoolGPU->PooledRenderTargets[2], TEXT("StagingShadowMask"));
+				FRDGTextureRef StagingSkyOcclusion = GraphBuilder.RegisterExternalTexture(LightmapReadbackGroup.ReadbackTilePoolGPU->PooledRenderTargets[3], TEXT("StagingSkyOcclusion"));
 
 				{
 					FCopyConvergedLightmapTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FCopyConvergedLightmapTilesCS::FParameters>();
@@ -2996,8 +3037,9 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					PassParameters->StagingHQLayer0 = GraphBuilder.CreateUAV(StagingHQLayer0);
 					PassParameters->StagingHQLayer1 = GraphBuilder.CreateUAV(StagingHQLayer1);
 					PassParameters->StagingShadowMask = GraphBuilder.CreateUAV(StagingShadowMask);
+					PassParameters->StagingSkyOcclusion = GraphBuilder.CreateUAV(StagingSkyOcclusion);
 
-					TShaderMapRef<FCopyConvergedLightmapTilesCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+					TShaderMapRef<FCopyConvergedLightmapTilesCS> ComputeShader(GlobalShaderMap);
 					FComputeShaderUtils::AddPass(
 						GraphBuilder,
 						RDG_EVENT_NAME("CopyConvergedLightmapTiles"),
@@ -3009,6 +3051,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				AddEnqueueCopyPass(GraphBuilder, LightmapReadbackGroup.StagingHQLayer0Readback.Get(), StagingHQLayer0);
 				AddEnqueueCopyPass(GraphBuilder, LightmapReadbackGroup.StagingHQLayer1Readback.Get(), StagingHQLayer1);
 				AddEnqueueCopyPass(GraphBuilder, LightmapReadbackGroup.StagingShadowMaskReadback.Get(), StagingShadowMask);
+				AddEnqueueCopyPass(GraphBuilder, LightmapReadbackGroup.StagingSkyOcclusionReadback.Get(), StagingSkyOcclusion);
 
 				OngoingReadbacks.Emplace(ReadbackGroupToUse);
 			}
@@ -3024,15 +3067,107 @@ const int32 DenoiseTileProximity = 3;
 
 void FLightmapTileDenoiseAsyncTask::DoThreadedWork()
 {
-	static FDenoiserContext DenoiserContext;
+	TArray<FVector3f> SkyBentNormal;
+	SkyBentNormal.AddZeroed(Size.X * Size.Y);
+		
+	for (int32 Y = 0 ; Y < Size.Y; Y++)
+	{
+		for (int32 X = 0 ; X < Size.X; X++)
+		{
+			int32 LinearIndex = Y * Size.X + X;
+										
+			FLinearColor SkyOcclusion = TextureData->Texture[3][LinearIndex];
+										
+			// Revert sqrt in LightmapEncoding.ush for preview
+			float Length = SkyOcclusion.A * SkyOcclusion.A;
+			FVector3f UnpackedBentNormalVector = FVector3f(SkyOcclusion) * 2.0f - 1.0f;
+			SkyBentNormal[LinearIndex] = UnpackedBentNormalVector * Length;
+		}
+	}
+	
+	if (Denoiser == EGPULightmassDenoiser::SimpleFireflyRemover)
+	{
+		TLightSampleDataProvider<FLinearColor> GISampleData(Size, TextureData->Texture[0], TextureData->Texture[1]);
+		SimpleFireflyFilter(GISampleData);
 
-	DenoiseRawData(
-		Size,
-		TextureData->Texture[0],
-		TextureData->Texture[1],
-		DenoiserContext);
+		TLightSampleDataProvider<FVector3f> SkyBentNormalSampleData(Size, TextureData->Texture[0], SkyBentNormal);
+		SimpleFireflyFilter(SkyBentNormalSampleData);
+	}
+	else
+	{
+		static FDenoiserContext DenoiserContext;
+		
+		DenoiseRawData(
+			Size,
+			TextureData->Texture[0],
+			TextureData->Texture[1],
+			DenoiserContext);
+
+		DenoiseSkyBentNormal(Size, TextureData->Texture[0], SkyBentNormal, DenoiserContext);
+	}
+		
+	for (int32 Y = 0 ; Y < Size.Y; Y++)
+	{
+		for (int32 X = 0 ; X < Size.X; X++)
+		{
+			int32 LinearIndex = Y * Size.X + X;
+				
+			float Length = SkyBentNormal[LinearIndex].Length();
+			FVector3f PackedVector = SkyBentNormal[LinearIndex].GetSafeNormal() * 0.5f + 0.5f;
+				
+			TextureData->Texture[3][LinearIndex].R = PackedVector.X;
+			TextureData->Texture[3][LinearIndex].G = PackedVector.Y;
+			TextureData->Texture[3][LinearIndex].B = PackedVector.Z;
+			TextureData->Texture[3][LinearIndex].A = FMath::Sqrt(Length);
+		}
+	}
 
 	FPlatformAtomics::AtomicStore(&TextureData->bDenoisingFinished, 1);
+}
+
+bool CompareMostSignificantBit(uint32 A, uint32 B)
+{
+	return A < B && A < (A ^ B);
+}
+
+bool MortonCompare(FUintVector A, FUintVector B)
+{
+	int32 MostSignificantDim = 0;
+	for (int32 Dim = 1; Dim < FUintVector::Num(); Dim++)
+	{
+		if (CompareMostSignificantBit(A[MostSignificantDim] ^ B[MostSignificantDim], A[Dim] ^ B[Dim]))
+		{
+			MostSignificantDim = Dim;
+		}
+	}
+
+	return A[MostSignificantDim] < B[MostSignificantDim];
+}
+
+void FSceneRenderState::BuildMortonSortedLightmapRefList()
+{
+	FBox SceneBounds;
+
+	for (FLightmapRenderState& Lightmap : LightmapRenderStates.Elements)
+	{
+		SceneBounds += Lightmap.GeometryInstanceRef.GetOrigin();
+	}
+
+	for (FLightmapRenderState& Lightmap : LightmapRenderStates.Elements)
+	{
+		MortonSortedLightmapRefList.Add(FLightmapRenderStateRef(Lightmap, LightmapRenderStates));
+	}
+
+	if (SceneBounds.GetSize().GetMax() > UE_DOUBLE_SMALL_NUMBER)
+	{
+		MortonSortedLightmapRefList.Sort(
+			[SceneBounds](const FLightmapRenderStateRef& A, const FLightmapRenderStateRef& B)
+			{
+				const FUintVector QuantizedPosA = FUintVector((A->GeometryInstanceRef.GetOrigin() - SceneBounds.Min) / SceneBounds.GetSize().GetMax() * UINT_MAX);
+				const FUintVector QuantizedPosB = FUintVector((B->GeometryInstanceRef.GetOrigin() - SceneBounds.Min) / SceneBounds.GetSize().GetMax() * UINT_MAX);
+				return MortonCompare(QuantizedPosA, QuantizedPosB);
+			});
+	}
 }
 
 void FLightmapRenderer::BackgroundTick()
@@ -3080,6 +3215,8 @@ void FLightmapRenderer::BackgroundTick()
 				// While the data will be overwritten immediately, we still need to decompress to inform the LRU cache management
 				Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[0]->Decompress();
 				Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[1]->Decompress();
+				Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[2]->Decompress();
+				Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[3]->Decompress();
 
 				for (int32 Y = 0; Y < GPreviewLightmapVirtualTileSize; Y++)
 				{
@@ -3093,6 +3230,8 @@ void FLightmapRenderer::BackgroundTick()
 
 						Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[0]->Data[DstLinearIndex] = DenoiseGroup.TextureData->Texture[0][SrcLinearIndex];
 						Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[1]->Data[DstLinearIndex] = DenoiseGroup.TextureData->Texture[1][SrcLinearIndex];
+						Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[2]->Data[DstLinearIndex] = DenoiseGroup.TextureData->Texture[2][SrcLinearIndex];
+						Tile.RenderState->TileStorage[Tile.VirtualCoordinates].CPUTextureData[3]->Data[DstLinearIndex] = DenoiseGroup.TextureData->Texture[3][SrcLinearIndex];
 					}
 				}
 
@@ -3132,7 +3271,8 @@ void FLightmapRenderer::BackgroundTick()
 
 		if (ReadbackGroup.StagingHQLayer0Readback->IsReady(FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex)) &&
 			ReadbackGroup.StagingHQLayer1Readback->IsReady(FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex)) &&
-			ReadbackGroup.StagingShadowMaskReadback->IsReady(FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex)))
+			ReadbackGroup.StagingShadowMaskReadback->IsReady(FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex)) &&
+			ReadbackGroup.StagingSkyOcclusionReadback->IsReady(FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex)))
 		{
 			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 			SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::FromIndex(ReadbackGroup.GPUIndex));
@@ -3143,21 +3283,25 @@ void FLightmapRenderer::BackgroundTick()
 
 			// FLinearColor is in RGBA while the GPU texture is in ABGR
 			// TODO: apply swizzling in the copy compute shader if this becomes a problem
-			void* LockedData[3];
+			void* LockedData[4];
 			LockedData[0] = ReadbackGroup.StagingHQLayer0Readback->Lock(ReadbackGroup.TextureData->RowPitchInPixels[0]); // This forces a GPU stall
 			LockedData[1] = ReadbackGroup.StagingHQLayer1Readback->Lock(ReadbackGroup.TextureData->RowPitchInPixels[1]); // This forces a GPU stall
 			LockedData[2] = ReadbackGroup.StagingShadowMaskReadback->Lock(ReadbackGroup.TextureData->RowPitchInPixels[2]); // This forces a GPU stall
+			LockedData[3] = ReadbackGroup.StagingSkyOcclusionReadback->Lock(ReadbackGroup.TextureData->RowPitchInPixels[3]); // This forces a GPU stall
 
 			ReadbackGroup.TextureData->Texture[0].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[0]);
 			ReadbackGroup.TextureData->Texture[1].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[1]);
 			ReadbackGroup.TextureData->Texture[2].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[2]);
+			ReadbackGroup.TextureData->Texture[3].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[3]);
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[0].GetData(), LockedData[0], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[0] * sizeof(FLinearColor));
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[1].GetData(), LockedData[1], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[1] * sizeof(FLinearColor));
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[2].GetData(), LockedData[2], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[2] * sizeof(FLinearColor));
+			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[3].GetData(), LockedData[3], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[3] * sizeof(FLinearColor));
 
 			ReadbackGroup.StagingHQLayer0Readback->Unlock();
 			ReadbackGroup.StagingHQLayer1Readback->Unlock();
 			ReadbackGroup.StagingShadowMaskReadback->Unlock();
+			ReadbackGroup.StagingSkyOcclusionReadback->Unlock();
 
 			for (int32 TileIndex = 0; TileIndex < ReadbackGroup.ConvergedTileRequests.Num(); TileIndex++)
 			{
@@ -3179,11 +3323,14 @@ void FLightmapRenderer::BackgroundTick()
 				{
 					TileStorage.CPUTextureRawData[0]->Decompress();
 					TileStorage.CPUTextureRawData[1]->Decompress();
+					TileStorage.CPUTextureRawData[2]->Decompress();
+					TileStorage.CPUTextureRawData[3]->Decompress();
 				}
 
 				TileStorage.CPUTextureData[0]->Decompress();
 				TileStorage.CPUTextureData[1]->Decompress();
 				TileStorage.CPUTextureData[2]->Decompress();
+				TileStorage.CPUTextureData[3]->Decompress();
 
 				for (int32 Y = 0; Y < GPreviewLightmapVirtualTileSize; Y++)
 				{
@@ -3199,6 +3346,8 @@ void FLightmapRenderer::BackgroundTick()
 						{
 							TileStorage.CPUTextureRawData[0]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[0][SrcLinearIndex];
 							TileStorage.CPUTextureRawData[1]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[1][SrcLinearIndex];
+							TileStorage.CPUTextureRawData[2]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[2][SrcLinearIndex];
+							TileStorage.CPUTextureRawData[3]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[3][SrcLinearIndex];
 						}
 
 						// Always write into display data so we have something to show before denoising completes
@@ -3207,6 +3356,7 @@ void FLightmapRenderer::BackgroundTick()
 
 						// For shadow maps, pass through
 						TileStorage.CPUTextureData[2]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[2][SrcLinearIndex];
+						TileStorage.CPUTextureData[3]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[3][SrcLinearIndex];
 					}
 				}
 			}
@@ -3331,6 +3481,8 @@ void FLightmapRenderer::BackgroundTick()
 
 			DenoiseGroup.TextureData->Texture[0].AddZeroed(DenoiseTileProximity * DenoiseTileProximity * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize);
 			DenoiseGroup.TextureData->Texture[1].AddZeroed(DenoiseTileProximity * DenoiseTileProximity * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize);
+			DenoiseGroup.TextureData->Texture[2].AddZeroed(DenoiseTileProximity * DenoiseTileProximity * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize);
+			DenoiseGroup.TextureData->Texture[3].AddZeroed(DenoiseTileProximity * DenoiseTileProximity * GPreviewLightmapVirtualTileSize * GPreviewLightmapVirtualTileSize);
 
 			for (int Dx = -(DenoiseTileProximity / 2); Dx <= (DenoiseTileProximity / 2); Dx++)
 			{
@@ -3355,6 +3507,8 @@ void FLightmapRenderer::BackgroundTick()
 					{
 						Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[0]->Decompress();
 						Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[1]->Decompress();
+						Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[2]->Decompress();
+						Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[3]->Decompress();
 					}
 
 					for (int32 Y = 0; Y < GPreviewLightmapVirtualTileSize; Y++)
@@ -3369,6 +3523,8 @@ void FLightmapRenderer::BackgroundTick()
 
 							DenoiseGroup.TextureData->Texture[0][DstLinearIndex] = !bShouldWriteZero ? Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[0]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
 							DenoiseGroup.TextureData->Texture[1][DstLinearIndex] = !bShouldWriteZero ? Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[1]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
+							DenoiseGroup.TextureData->Texture[2][DstLinearIndex] = !bShouldWriteZero ? Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[2]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
+							DenoiseGroup.TextureData->Texture[3][DstLinearIndex] = !bShouldWriteZero ? Tile.RenderState->TileStorage[FTileVirtualCoordinates(SrcTilePosition, Tile.VirtualCoordinates.MipLevel)].CPUTextureRawData[3]->Data[SrcLinearIndex] : FLinearColor(0, 0, 0, 0);
 						}
 					}
 				}
@@ -3377,6 +3533,7 @@ void FLightmapRenderer::BackgroundTick()
 			DenoiseGroup.AsyncDenoisingWork = new FLightmapTileDenoiseAsyncTask();
 			DenoiseGroup.AsyncDenoisingWork->Size = FIntPoint(DenoiseTileProximity * GPreviewLightmapVirtualTileSize, DenoiseTileProximity * GPreviewLightmapVirtualTileSize);
 			DenoiseGroup.AsyncDenoisingWork->TextureData = DenoiseGroup.TextureData;
+			DenoiseGroup.AsyncDenoisingWork->Denoiser = Scene->Settings->Denoiser;
 			DenoisingThreadPool->AddQueuedWork(DenoiseGroup.AsyncDenoisingWork);
 
 			OngoingDenoiseGroups.Add(MoveTemp(DenoiseGroup));
@@ -3412,36 +3569,43 @@ void FLightmapRenderer::BackgroundTick()
 
 			TArray<FString> SelectedLightmapNames;
 
+			if (Scene->MortonSortedLightmapRefList.IsEmpty())
+			{
+				Scene->BuildMortonSortedLightmapRefList();
+			}
+
 			// We schedule VLM work to be after lightmaps (which forces LOD 0). Making LOD 0 last here reduces the chance of rebuilding cached scene
 			for (int32 LODIndex = MAX_STATIC_MESH_LODS - 1; LODIndex >= 0; LODIndex--)
 			{
-				for (FLightmapRenderState& Lightmap : Scene->LightmapRenderStates.Elements)
+				bool bLODIndexSelected = false;
+				
+				for (const FLightmapRenderStateRef& Lightmap : Scene->MortonSortedLightmapRefList)
 				{
-					if (Lightmap.GeometryInstanceRef.LODIndex != LODIndex)
+					if (Lightmap->GeometryInstanceRef.LODIndex != LODIndex)
 					{
 						continue;
 					}
 
 					bool bAnyTileSelected = false;
 
-					for (int32 Y = 0; Y < Lightmap.GetPaddedSizeInTiles().Y; Y++)
+					for (int32 Y = 0; Y < Lightmap->GetPaddedSizeInTiles().Y; Y++)
 					{
-						for (int32 X = 0; X < Lightmap.GetPaddedSizeInTiles().X; X++)
+						for (int32 X = 0; X < Lightmap->GetPaddedSizeInTiles().X; X++)
 						{
 							FTileVirtualCoordinates VirtualCoordinates(FIntPoint(X, Y), 0);
 
-							if (!Lightmap.DoesTileHaveValidCPUData(VirtualCoordinates, CurrentRevision) && Lightmap.RetrieveTileState(VirtualCoordinates).OngoingReadbackRevision != CurrentRevision)
+							if (!Lightmap->DoesTileHaveValidCPUData(VirtualCoordinates, CurrentRevision) && Lightmap->RetrieveTileState(VirtualCoordinates).OngoingReadbackRevision != CurrentRevision)
 							{
 								bAnyTileSelected = true;
 
-								FVTProduceTargetLayer TargetLayers[3];
+								FVTProduceTargetLayer TargetLayers[4];
 
-								Lightmap.LightmapPreviewVirtualTexture->ProducePageData(
+								Lightmap->LightmapPreviewVirtualTexture->ProducePageData(
 									RHICmdList,
-									ERHIFeatureLevel::SM5,
+									Scene->FeatureLevel,
 									EVTProducePageFlags::None,
 									FVirtualTextureProducerHandle(),
-									0b111,
+									0b1111,
 									0,
 									FMath::MortonCode2(X) | (FMath::MortonCode2(Y) << 1),
 									0,
@@ -3464,7 +3628,8 @@ void FLightmapRenderer::BackgroundTick()
 
 					if (bAnyTileSelected)
 					{
-						SelectedLightmapNames.Add(Lightmap.Name);
+						bLODIndexSelected = true;
+						SelectedLightmapNames.Add(Lightmap->Name);
 					}
 
 					if (WorkGenerated >= WorkToGenerate)
@@ -3473,13 +3638,14 @@ void FLightmapRenderer::BackgroundTick()
 					}
 				}
 
-				if (WorkGenerated >= WorkToGenerate)
+				// Do not mix different LODs together
+				if (bLODIndexSelected || WorkGenerated >= WorkToGenerate)
 				{
 					break;
 				}
 			}
 
-			if (bIsViewportNonRealtime && FrameNumber % 100 == 0)
+			if (!SelectedLightmapNames.IsEmpty() && bIsViewportNonRealtime && FrameNumber % 100 == 0)
 			{
 				FString AllNames;
 				for (FString& Name : SelectedLightmapNames)
@@ -3571,7 +3737,6 @@ void FLightmapRenderer::BackgroundTick()
 
 	// Render lightmap tiles
 	{
-		FMemMark MemMark(FMemStack::Get());
 		FRDGBuilder GraphBuilder(RHICmdList);
 		Finalize(GraphBuilder);
 		GraphBuilder.Execute();
@@ -3584,20 +3749,11 @@ void FLightmapRenderer::BackgroundTick()
 		// Purge resources when 'realtime' is not checked on editor viewport to avoid leak & slowing down
 		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 	}
-
-	if (Scene->Settings->bVisualizeIrradianceCache && !IrradianceCacheVisualizationDelegateHandle.IsValid())
-	{
-		IrradianceCacheVisualizationDelegateHandle = GetRendererModule().RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateRaw(this, &FLightmapRenderer::RenderIrradianceCacheVisualization));
-	}
-	else if (!Scene->Settings->bVisualizeIrradianceCache && IrradianceCacheVisualizationDelegateHandle.IsValid())
-	{
-		GetRendererModule().RemovePostOpaqueRenderDelegate(IrradianceCacheVisualizationDelegateHandle);
-		IrradianceCacheVisualizationDelegateHandle.Reset();
-	}
 }
 
 void FLightmapRenderer::BumpRevision()
 {
+	FrameNumber = 0;
 	CurrentRevision++;
 
 	for (TArray<FLightmapTileRequest>& FrameRequests : TilesVisibleLastFewFrames)
@@ -3605,9 +3761,12 @@ void FLightmapRenderer::BumpRevision()
 		FrameRequests.Empty();
 	}	
 
+	PendingTileRequests.Empty();
 	RecordedTileRequests.Empty();
 
 	LightmapTilePoolGPU.UnmapAll();
+
+	Scene->MortonSortedLightmapRefList.Empty();
 }
 
 void FLightmapRenderer::DeduplicateRecordedTileRequests()
@@ -3661,7 +3820,13 @@ void FLightmapRenderer::DeduplicateRecordedTileRequests()
 
 void FLightmapRenderer::RenderIrradianceCacheVisualization(FPostOpaqueRenderParameters& Parameters)
 {
+	if (!Scene->Settings->bVisualizeIrradianceCache)
+	{
+		return;
+	}
+	
 	FRDGBuilder& GraphBuilder = *Parameters.GraphBuilder;
+	const ERHIFeatureLevel::Type FeatureLevel = Scene->FeatureLevel;
 
 	auto* PassParameters = GraphBuilder.AllocParameters<FVisualizeIrradianceCachePS::FParameters>();
 	PassParameters->View = Parameters.View->ViewUniformBuffer;
@@ -3676,12 +3841,12 @@ void FLightmapRenderer::RenderIrradianceCacheVisualization(FPostOpaqueRenderPara
 		RDG_EVENT_NAME("ClearIrradiance"),
 		PassParameters,
 		ERDGPassFlags::Raster,
-		[ViewportRect, PassParameters, TextureExtent] (FRHICommandList& RHICmdList)
+		[ViewportRect, PassParameters, TextureExtent, FeatureLevel] (FRHICommandList& RHICmdList)
 	{
 		RHICmdList.SetViewport(0, 0, 0.0f, ViewportRect.Width(), ViewportRect.Height(), 1.0f);
 
-		TShaderMapRef<FPostProcessVS> VertexShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-		TShaderMapRef<FVisualizeIrradianceCachePS> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		TShaderMapRef<FPostProcessVS> VertexShader(GetGlobalShaderMap(FeatureLevel));
+		TShaderMapRef<FVisualizeIrradianceCachePS> PixelShader(GetGlobalShaderMap(FeatureLevel));
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);

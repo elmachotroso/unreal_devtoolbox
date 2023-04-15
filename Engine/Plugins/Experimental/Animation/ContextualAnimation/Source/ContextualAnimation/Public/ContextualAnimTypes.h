@@ -4,13 +4,32 @@
 
 #include "Animation/AnimSequence.h"
 #include "Templates/SubclassOf.h"
+#include "GameFramework/Actor.h"
+#include "GameplayTagContainer.h"
 #include "ContextualAnimTypes.generated.h"
 
 CONTEXTUALANIMATION_API DECLARE_LOG_CATEGORY_EXTERN(LogContextualAnim, Log, All);
 
 class AActor;
-class UAnimMontage;
-class UContextualAnimMetadata;
+class UAnimInstance;
+class UAnimSequenceBase;
+class UContextualAnimSelectionCriterion;
+class UContextualAnimSceneAsset;
+class UContextualAnimSceneInstance;
+class UContextualAnimSceneActorComponent;
+struct FAnimMontageInstance;
+
+namespace UE 
+{
+	namespace ContextualAnim 
+	{
+		enum class EForEachResult : uint8
+		{
+			Break,
+			Continue,
+		};
+	}
+}
 
 /** Container for alignment tracks */
 USTRUCT()
@@ -42,25 +61,13 @@ struct CONTEXTUALANIMATION_API FContextualAnimAlignmentTrackContainer
 	FTransform ExtractTransformAtTime(const FName& TrackName, float Time) const;
 };
 
-USTRUCT()
-struct CONTEXTUALANIMATION_API FContextualAnimRoleBonePair
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	FName RoleName = NAME_None;
-
-	UPROPERTY()
-	FName BoneName = NAME_None;
-};
-
 USTRUCT(BlueprintType)
-struct CONTEXTUALANIMATION_API FContextualAnimData
+struct CONTEXTUALANIMATION_API FContextualAnimTrack
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	UAnimMontage* Animation = nullptr;
+	TObjectPtr<UAnimSequenceBase> Animation = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	float AnimMaxStartTime = 0.f;
@@ -76,22 +83,30 @@ struct CONTEXTUALANIMATION_API FContextualAnimData
 	UPROPERTY()
 	FContextualAnimAlignmentTrackContainer IKTargetData;
 
-	/** Lookup map to go from TrackName to Target Role and Parent Bone */
-	UPROPERTY()
-	TMap<FName, FContextualAnimRoleBonePair> IKTargetTrackLookupMap;
-
 	UPROPERTY(EditAnywhere, Instanced, Category = "Defaults")
-	UContextualAnimMetadata* Metadata = nullptr;
+	TArray<TObjectPtr<UContextualAnimSelectionCriterion>> SelectionCriteria;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FTransform MeshToScene;
 
-	/** Index in the container of AnimData that owns us */
-	UPROPERTY()
-	int32 Index = INDEX_NONE;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	FName Role = NAME_None;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	int32 SectionIdx = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	int32 AnimSetIdx = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	int32 AnimTrackIdx = INDEX_NONE;
+
+	// DEPRECATED: Will go away soon
 	float GetSyncTimeForWarpSection(int32 WarpSectionIndex) const;
 	float GetSyncTimeForWarpSection(const FName& WarpSectionName) const;
+
+	void GetStartAndEndTimeForWarpSection(int32 WarpSectionIndex, float& OutStartTime, float& OutEndTime) const;
+	void GetStartAndEndTimeForWarpSection(const FName& WarpSectionName, float& OutStartTime, float& OutEndTime) const;
 
 	FORCEINLINE FTransform GetAlignmentTransformAtTime(float Time) const { return AlignmentData.ExtractTransformAtTime(0, Time); }
 	FORCEINLINE FTransform GetAlignmentTransformAtEntryTime() const { return AlignmentData.ExtractTransformAtTime(0, 0.f); }
@@ -99,7 +114,11 @@ struct CONTEXTUALANIMATION_API FContextualAnimData
 
 	float FindBestAnimStartTime(const FVector& LocalLocation) const;
 
-	static const FContextualAnimData EmptyAnimData;
+	bool DoesQuerierPassSelectionCriteria(const FContextualAnimSceneBindingContext& PrimaryActorData, const FContextualAnimSceneBindingContext& QuerierData) const;
+
+	FTransform GetRootTransformAtTime(float Time) const;
+
+	static const FContextualAnimTrack EmptyTrack;
 };
 
 /** Defines when the actor should start playing the animation */
@@ -108,25 +127,6 @@ enum class EContextualAnimJoinRule : uint8
 {
 	Default,
 	Late
-};
-
-USTRUCT(BlueprintType)
-struct FContextualAnimTransitionContainer
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TArray<FName> FromSections;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName ToSection = NAME_None;
-
-	UPROPERTY(EditAnywhere, Instanced, Category = "Defaults")
-	class UContextualAnimTransition* Transition = nullptr;
-
-	//@TODO: Remove this from here it should be on the EdMode
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	bool bForceTransition = false;
 };
 
 UENUM(BlueprintType)
@@ -145,41 +145,33 @@ enum class EContextualAnimIKTargetProvider : uint8
 };
 
 USTRUCT(BlueprintType)
-struct FContextualAnimIKTargetBoneParams
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName TargetRole = NAME_None;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName BoneName = NAME_None;
-};
-
-USTRUCT(BlueprintType)
 struct FContextualAnimIKTargetDefinition
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName IKGoalName = NAME_None;
+	FName GoalName = NAME_None;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FName BoneName = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FName AlphaCurveName = NAME_None;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	EContextualAnimIKTargetProvider Provider = EContextualAnimIKTargetProvider::Autogenerated;
 
-	//@TODO: Hide from the UI when Type != Auto
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (EditCondition = "Provider == EContextualAnimIKTargetProvider::Autogenerated"))
-	FContextualAnimIKTargetBoneParams AutoParams;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
+	FName TargetRoleName = NAME_None;
 
-	//@TODO: Hide from the UI when Type != Bone
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (EditCondition = "Provider == EContextualAnimIKTargetProvider::Bone"))
-	FContextualAnimIKTargetBoneParams BoneParams;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
+	FName TargetBoneName = NAME_None;
+
+	bool operator==(const FContextualAnimIKTargetDefinition& Other) const 
+	{
+		return  GoalName == Other.GoalName && 
+				BoneName == Other.BoneName && 
+				Provider == Other.Provider && 
+				TargetRoleName == Other.TargetRoleName &&
+				TargetBoneName == Other.TargetBoneName;
+	}
 };
 
 USTRUCT(BlueprintType)
@@ -196,78 +188,315 @@ struct CONTEXTUALANIMATION_API FContextualAnimIKTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FTransform Transform;
 
-	FContextualAnimIKTarget(){}
+	FContextualAnimIKTarget() {}
 	FContextualAnimIKTarget(const FName& InGoalName, float InAlpha, const FTransform& InTransform)
-		: GoalName(InGoalName), Alpha(InAlpha), Transform(InTransform){}
+		: GoalName(InGoalName), Alpha(InAlpha), Transform(InTransform) {}
 
 	static const FContextualAnimIKTarget InvalidIKTarget;
 };
 
 USTRUCT(BlueprintType)
-struct CONTEXTUALANIMATION_API FContextualAnimTrackSettings
+struct CONTEXTUALANIMATION_API FContextualAnimIKTargetDefContainer
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TSubclassOf<AActor> PreviewActorClass;
+	TArray<FContextualAnimIKTargetDefinition> IKTargetDefs;
+
+	static const FContextualAnimIKTargetDefContainer EmptyContainer;
+};
+
+// FContextualAnimRoleDefinition
+///////////////////////////////////////////////////////////////////////
+
+USTRUCT(BlueprintType)
+struct FContextualAnimRoleDefinition
+{
+	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	EContextualAnimJoinRule JoinRule = EContextualAnimJoinRule::Default;
+	FName Name = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TArray<FContextualAnimIKTargetDefinition> IKTargetDefinitions;
+	bool bIsCharacter = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FTransform MeshToComponent = FTransform(FRotator(0.f, -90.f, 0.f));
+
+	static const FContextualAnimRoleDefinition InvalidRoleDefinition;
 };
 
+// FContextualAnimSetPivotDefinition
+///////////////////////////////////////////////////////////////////////
+
+/** Rules used to compute the pivot for a AnimSet */
 USTRUCT(BlueprintType)
-struct FContextualAnimTrack
+struct FContextualAnimSetPivotDefinition
 {
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FContextualAnimTrackSettings Settings;
+	FName Name = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	FName Origin = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FContextualAnimData AnimData;
+	bool bAlongClosestDistance = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (GetOptions = "GetRoles", EditCondition = "bAlongClosestDistance"))
+	FName OtherRole = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0", EditCondition = "bAlongClosestDistance"))
+	float Weight = 0.f;
 };
 
+// FContextualAnimSetPivot
+///////////////////////////////////////////////////////////////////////
+
+/** Pivot for a AnimSet */
 USTRUCT(BlueprintType)
-struct FContextualAnimCompositeTrack
+struct FContextualAnimSetPivot
 {
 	GENERATED_BODY()
 
+	FContextualAnimSetPivot() = default;
+	FContextualAnimSetPivot(const FName InName, const FTransform& InTransform) : Name(InName), Transform(InTransform) {}
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FContextualAnimTrackSettings Settings;
+	FName Name = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TArray<FContextualAnimData> AnimDataContainer;
+	FTransform Transform;
+};
 
-	FTransform GetRootTransformForAnimDataAtIndex(int32 Index) const;
+// FContextualAnimSceneBindingContext
+///////////////////////////////////////////////////////////////////////
+
+USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/ContextualAnimation.ContextualAnimUtilities:BP_SceneBindingContext_MakeFromActor"))
+struct CONTEXTUALANIMATION_API FContextualAnimSceneBindingContext
+{
+	GENERATED_BODY()
+
+	FContextualAnimSceneBindingContext() {}
+
+	FContextualAnimSceneBindingContext(AActor* InActor, const TOptional<FTransform>& InExternalTransform = TOptional<FTransform>(), const TOptional<FVector>& InExternalVelocity = TOptional<FVector>())
+		: Actor(InActor), ExternalTransform(InExternalTransform), ExternalVelocity(InExternalVelocity) {}
+
+	FContextualAnimSceneBindingContext(const FTransform& InExternalTransform, const TOptional<FVector>& InExternalVelocity = TOptional<FVector>())
+		: ExternalTransform(InExternalTransform), ExternalVelocity(InExternalVelocity) {}
+
+	AActor* GetActor() const { return Actor.Get(); }
+
+	void SetExternalTransform(const FTransform& InTransform);
+
+	FTransform GetTransform() const;
+
+	FVector GetVelocity() const;
+
+	//@TODO: Add accessors for GameplayTags
+
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+private:
+
+	TWeakObjectPtr<AActor> Actor = nullptr;
+
+	TOptional<FTransform> ExternalTransform;
+
+	TOptional<FVector> ExternalVelocity;
+
+	FGameplayTagContainer ExternalGameplayTags;
+};
+
+template<>
+struct TStructOpsTypeTraits<FContextualAnimSceneBindingContext> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBindingContext>
+{
+	enum
+	{
+		WithNetSerializer = true
+	};
+};
+
+/** Represent an actor bound to a role in the scene */
+USTRUCT(BlueprintType)
+struct CONTEXTUALANIMATION_API FContextualAnimSceneBinding
+{
+	GENERATED_BODY()
+
+	FContextualAnimSceneBinding() {}
+	FContextualAnimSceneBinding(const FContextualAnimSceneBindingContext& InContext, const FContextualAnimTrack& InAnimTrack);
+
+	FORCEINLINE const FContextualAnimSceneBindingContext& GetContext() const { return Context; }
+	FORCEINLINE FContextualAnimSceneBindingContext& GetContext() { return Context; }
+	FORCEINLINE AActor* GetActor() const { return GetContext().GetActor(); }
+	FORCEINLINE FTransform GetTransform() const { return GetContext().GetTransform(); }
+	FORCEINLINE FVector GetVelocity()  const { return GetContext().GetVelocity(); }
+
+	FORCEINLINE int32 GetAnimTrackIdx() const { return AnimTrackIdx; }
+	
+	void SetAnimTrack(const FContextualAnimTrack& InAnimTrack);
+
+	/** Return the current playback time of the animation this actor is playing */
+	float GetAnimMontageTime() const;
+
+	FName GetCurrentSection() const;
+
+	int32 GetCurrentSectionIndex() const;
+
+	/** Returns the ActiveMontageInstance or null in the case of static actors */
+	FAnimMontageInstance* GetAnimMontageInstance() const;
+
+	UAnimInstance* GetAnimInstance() const;
+
+	USkeletalMeshComponent* GetSkeletalMeshComponent() const;
+
+	UContextualAnimSceneActorComponent* GetSceneActorComponent() const;
+
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	static const FContextualAnimSceneBinding InvalidBinding;
+
+private:
+
+	friend UContextualAnimSceneInstance;
+	friend struct FContextualAnimSceneBindings;
+
+	FContextualAnimSceneBindingContext Context;
+
+	int32 AnimTrackIdx = INDEX_NONE;
+};
+
+template<>
+struct TStructOpsTypeTraits<FContextualAnimSceneBinding> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBinding>
+{
+	enum
+	{
+		WithNetSerializer = true
+	};
 };
 
 USTRUCT(BlueprintType)
-struct FContextualAnimSceneBindings
+struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
+{
+	GENERATED_BODY()
+
+	FContextualAnimSceneBindings(){}
+	FContextualAnimSceneBindings(const UContextualAnimSceneAsset& InSceneAsset, int32 InSectionIdx, int32 InAnimSetIdx);
+
+	const FContextualAnimSceneBinding* FindBindingByActor(const AActor* Actor) const
+	{
+		return Actor ? Data.FindByPredicate([Actor](const FContextualAnimSceneBinding& Item) { return Item.GetActor() == Actor; }) : nullptr;
+	}
+
+	const FContextualAnimSceneBinding* FindBindingByRole(const FName& Role) const
+	{
+		return Role != NAME_None ? Data.FindByPredicate([this, &Role](const FContextualAnimSceneBinding& Item) { return GetAnimTrackFromBinding(Item).Role == Role; }) : nullptr;
+	}
+
+	FORCEINLINE const UContextualAnimSceneAsset* GetSceneAsset() const { return SceneAsset.Get(); }
+	FORCEINLINE int32 GetSectionIdx() const { return SectionIdx; }
+	FORCEINLINE int32 GetAnimSetIdx() const { return AnimSetIdx; }
+	FORCEINLINE int32 Num() const { return Data.Num(); }
+	FORCEINLINE int32 Add(const FContextualAnimSceneBinding& NewData) { return Data.Add(NewData); }
+	FORCEINLINE const TArray<FContextualAnimSceneBinding>& GetBindings() const { return Data; }
+	FORCEINLINE const UContextualAnimSceneInstance* GetSceneInstance() const { return SceneInstancePtr.Get(); }
+
+	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForIteratorType      begin() { return Data.begin(); }
+	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForConstIteratorType begin() const { return Data.begin(); }
+	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForIteratorType      end() { return Data.end(); }
+	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForConstIteratorType end() const { return Data.end(); }
+
+	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params, FContextualAnimSceneBindings& OutBindings);
+	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params, FContextualAnimSceneBindings& OutBindings);
+	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
+	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
+
+	void CalculateAnimSetPivots(TArray<FContextualAnimSetPivot>& OutScenePivots) const;
+	bool CalculateAnimSetPivot(const FContextualAnimSetPivotDefinition& AnimSetPivotDef, FContextualAnimSetPivot& OutScenePivot) const;
+
+	const FContextualAnimTrack& GetAnimTrackFromBinding(const FContextualAnimSceneBinding& Binding) const;
+	const FName& GetRoleFromBinding(const FContextualAnimSceneBinding& Binding) const;
+	FTransform GetAlignmentTransformFromBinding(const FContextualAnimSceneBinding& Binding, const FName& TrackName, float Time) const;
+	const FContextualAnimIKTargetDefContainer& GetIKTargetDefContainerFromBinding(const FContextualAnimSceneBinding& Binding) const;
+	FTransform GetIKTargetTransformFromBinding(const FContextualAnimSceneBinding& Binding, const FName& TrackName, float Time) const;
+
+	bool IsValid() const;
+
+	void Reset();
+
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+private:
+
+	friend class UContextualAnimManager;
+
+	UPROPERTY()
+	TWeakObjectPtr<const UContextualAnimSceneAsset> SceneAsset = nullptr;
+
+	UPROPERTY()
+	int32 SectionIdx = INDEX_NONE;
+
+	UPROPERTY()
+	int32 AnimSetIdx = INDEX_NONE;
+
+	/** List of actors bound to each role in the SceneAsset */
+	UPROPERTY()
+	TArray<FContextualAnimSceneBinding> Data;
+
+	/** Ptr back to the scene instance we belong to (if any) */
+	UPROPERTY()
+	TWeakObjectPtr<const UContextualAnimSceneInstance> SceneInstancePtr = nullptr;
+};
+
+template<>
+struct TStructOpsTypeTraits<FContextualAnimSceneBindings> : public TStructOpsTypeTraitsBase2<FContextualAnimSceneBindings>
+{
+	enum
+	{
+		WithNetSerializer = true
+	};
+};
+
+USTRUCT(BlueprintType)
+struct CONTEXTUALANIMATION_API FContextualAnimStartSceneParams
 {
 	GENERATED_BODY()
 
 	/** Map with actors to bind to each role in the scene */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TMap<FName, AActor*> RoleToActorMap;
+	TMap<FName, FContextualAnimSceneBindingContext> RoleToActorMap;
 
-	/** Desired AnimDataIndex. If INDEX_NONE the Manager will attempt to find the best AnimData to use */
+	/** Desired section. If INDEX_NONE the Manager will use or find best set in the first section. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	int32 AnimDataIndex = INDEX_NONE;
+	int32 SectionIdx = INDEX_NONE;
 
-	/** Desired start time. Only relevant if AnimDataIndex != INDEX_NONE */
+	/** Desired set. If INDEX_NONE the Manager will attempt to find the best set to use by running the selection criteria.
+	 * The selection will be performed in the section specified by SectionIdx or in the first section if SectionIdx == INDEX_NONE.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	float AnimStartTime = 0.f;
+	int32 AnimSetIdx = INDEX_NONE;
+
+	/** Precomputed pivots that could be provided when starting a scene.
+	 * When not provided, the pivots will be automatically computed using local context information.
+	 */
+	TArray<FContextualAnimSetPivot> Pivots;
+
+	void Reset()
+	{
+		RoleToActorMap.Reset();
+		SectionIdx = INDEX_NONE;
+		AnimSetIdx = INDEX_NONE;
+		Pivots.Reset();
+	}
 };
 
 ///////////////////////////////////////////////////////////////////////
 
-/** Stores the result of a query function */
+/** 
+ * Stores the result of a query function 
+ * @TODO: Only used by UContextualAnimSceneAsset::Query. Kept around only to do not break existing content. It will go away in the future.
+ */
 USTRUCT(BlueprintType)
 struct FContextualAnimQueryResult
 {
@@ -286,20 +515,23 @@ struct FContextualAnimQueryResult
 	float AnimStartTime = 0.f;
 
 	UPROPERTY(BlueprintReadWrite, Category = "Defaults")
-	int32 DataIndex = INDEX_NONE;
+	int32 AnimSetIdx = INDEX_NONE;
 
 	void Reset()
 	{
 		Animation.Reset();
 		EntryTransform = SyncTransform = FTransform::Identity;
 		AnimStartTime = 0.f;
-		DataIndex = INDEX_NONE;
+		AnimSetIdx = INDEX_NONE;
 	}
 
-	FORCEINLINE bool IsValid() const { return DataIndex != INDEX_NONE; }
+	FORCEINLINE bool IsValid() const { return AnimSetIdx != INDEX_NONE; }
 };
 
-/** Stores the parameters passed into query function */
+/** 
+ * Stores the parameters passed into query function 
+ * @TODO: Only used by UContextualAnimSceneAsset::Query. Kept around only to do not break existing content. It will go away in the future.
+ */
 USTRUCT(BlueprintType)
 struct FContextualAnimQueryParams
 {
@@ -324,36 +556,4 @@ struct FContextualAnimQueryParams
 
 	FContextualAnimQueryParams(const FTransform& InQueryTransform, bool bInComplexQuery, bool bInFindAnimStartTime)
 		: QueryTransform(InQueryTransform), bComplexQuery(bInComplexQuery), bFindAnimStartTime(bInFindAnimStartTime) {}
-};
-
-USTRUCT(BlueprintType)
-struct FContextualAnimQuerier
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TWeakObjectPtr<const AActor> Actor = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FTransform Transform;
-
-	FContextualAnimQuerier(){}
-	FContextualAnimQuerier(const AActor* InActor) : Actor(InActor) {}
-	FContextualAnimQuerier(const FTransform& InTransform) : Transform(InTransform) {}
-};
-
-USTRUCT(BlueprintType)
-struct FContextualAnimQueryContext
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	TWeakObjectPtr<const AActor> Actor = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
-	FTransform Transform;
-
-	FContextualAnimQueryContext() {}
-	FContextualAnimQueryContext(const AActor* InActor) : Actor(InActor) {}
-	FContextualAnimQueryContext(const FTransform& InTransform) : Transform(InTransform) {}
 };

@@ -22,15 +22,15 @@ class WORLDPARTITIONHLODUTILITIES_API UHLODBuilderMeshApproximateSettings : publ
 	FMeshApproximationSettings MeshApproximationSettings;
 
 	/** Material that will be used by the generated HLOD static mesh */
-	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = HLOD)
-	TSoftObjectPtr<UMaterial> HLODMaterial;
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = HLOD, meta = (DisplayName = "HLOD Material"))
+	TSoftObjectPtr<UMaterialInterface> HLODMaterial;
 };
 
 
 /**
  * Build an approximated mesh using geometry from the provided actors
  */
-UCLASS()
+UCLASS(HideDropdown)
 class WORLDPARTITIONHLODUTILITIES_API UHLODBuilderMeshApproximate : public UHLODBuilder
 {
 	GENERATED_UCLASS_BODY()

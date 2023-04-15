@@ -10,7 +10,7 @@
 #include "GameProjectGenerationModule.h"
 #include "MessageLogModule.h"
 #include "MRUFavoritesList.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Sound/SoundBase.h"
 #include "ISourceCodeAccessor.h"
@@ -18,7 +18,7 @@
 #include "Menus/MainMenu.h"
 #include "Frame/RootWindowLocation.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "Developer/HotReload/Public/IHotReload.h"
+#include "IHotReload.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -250,7 +250,7 @@ void FMainFrameModule::CreateDefaultMainFrameAuxiliary(const bool bStartImmersiv
 				const FText WarningText = FText::Format(LOCTEXT("MainFrameModuleVersionErrorBody", "The expected Unreal Editor layout version is \"{0}\", while only version \"{1}\" was found. I.e., the current layout was created with a previous version of Unreal that is deprecated and no longer compatible.\n\nUnreal will continue with the default layout for its current version, the deprecated one has been removed.\n\nYou can create and save your custom layouts with \"Window\"->\"Save Layout\"->\"Save Layout As...\"."),
 					FText::FromString(LayoutName.ToString()), FText::FromString(RemovedOlderLayoutVersions[0]));
 				UE_LOG(LogMainFrame, Warning, TEXT("%s"), *WarningText.ToString());
-				// If user is trying to load a specific layout with "Load", also warn him with a message dialog
+				// If user is trying to load a specific layout with "Load", also warn them with a message dialog
 				if (bIsBeingRecreated)
 				{
 					const FText TextTitle = LOCTEXT("MainFrameModuleVersionErrorTitle", "Unreal Editor Layout Version Mismatch");
@@ -438,9 +438,9 @@ TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFram
 		}
 	};
 
-	const FSlateFontInfo& SmallFixedFont = FEditorStyle::GetFontStyle(TEXT("MainFrame.DebugTools.SmallFont") );
-	const FSlateFontInfo& NormalFixedFont = FEditorStyle::GetFontStyle(TEXT("MainFrame.DebugTools.NormalFont") );
-	const FSlateFontInfo& LabelFont = FEditorStyle::GetFontStyle(TEXT("MainFrame.DebugTools.LabelFont") );
+	const FSlateFontInfo& SmallFixedFont = FAppStyle::GetFontStyle(TEXT("MainFrame.DebugTools.SmallFont") );
+	const FSlateFontInfo& NormalFixedFont = FAppStyle::GetFontStyle(TEXT("MainFrame.DebugTools.NormalFont") );
+	const FSlateFontInfo& LabelFont = FAppStyle::GetFontStyle(TEXT("MainFrame.DebugTools.LabelFont") );
 
 	TSharedRef<SHorizontalBox> DeveloperToolWidget =
 		SNew( SHorizontalBox )
@@ -495,7 +495,7 @@ TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFram
 		.Visibility( EVisibility::SelfHitTestInvisible )
 		.Padding( FMargin(0.0f, 0.0f, 0.0f, 1.0f) )
 		.VAlign(VAlign_Bottom)
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+		.BorderImage( FAppStyle::GetBrush("NoBorder") )
 		[
 			SNew( SHorizontalBox )
 			.Visibility( EVisibility::SelfHitTestInvisible )
@@ -644,7 +644,7 @@ void FMainFrameModule::HandleLevelEditorModuleCompileStarted( bool bIsAsyncCompi
 	}
 
 	FNotificationInfo Info( NSLOCTEXT("MainFrame", "RecompileInProgress", "Compiling C++ Code") );
-	Info.Image = FEditorStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
+	Info.Image = FAppStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
 	Info.ExpireDuration = 5.0f;
 	Info.bFireAndForget = false;
 	
@@ -746,7 +746,7 @@ void FMainFrameModule::HandleReloadFinished( EReloadCompleteReason Reason )
 	if( Reason == EReloadCompleteReason::HotReloadAutomatic )
 	{
 		FNotificationInfo Info( LOCTEXT("HotReloadFinished", "Hot Reload Complete!") );
-		Info.Image = FEditorStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
+		Info.Image = FAppStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
 		Info.FadeInDuration = 0.1f;
 		Info.FadeOutDuration = 0.5f;
 		Info.ExpireDuration = 1.5f;

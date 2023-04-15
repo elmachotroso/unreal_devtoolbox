@@ -4,52 +4,9 @@
 #include "CoreMinimal.h"
 #include "IRemoteControlModule.h"
 #include "RemoteControlModels.h"
+#include "RemoteControlWebsocketRoute.h"
+
 #include "RemoteControlRequest.generated.h"
-
-struct FBlockDelimiters
-{
-	int64 BlockStart = -1;
-	int64 BlockEnd = -1;
-
-	/** Get the size of current block */
-	int64 GetBlockSize() const { return BlockEnd - BlockStart; }
-};
-
-/**
- * Holds a request made to the remote control server.
- */
-USTRUCT()
-struct FRCRequest
-{
-	GENERATED_BODY()
-
-	virtual ~FRCRequest() = default;
-
-	TMap<FString, FBlockDelimiters>& GetStructParameters()
-	{
-		return StructParameters;
-	}
-
-	FBlockDelimiters& GetParameterDelimiters(const FString& ParameterName)
-	{
-		return StructParameters.FindChecked(ParameterName);
-	}
-
-	UPROPERTY()
-	FString Passphrase;
-
-	/** Holds the request's TCHAR payload. */
-	TArray<uint8> TCHARBody;
-
-protected:
-	void AddStructParameter(FString ParameterName)
-	{
-		StructParameters.Add(MoveTemp(ParameterName), FBlockDelimiters());
-	}
-
-	/** Holds the start and end of struct parameters */
-	TMap<FString, FBlockDelimiters> StructParameters;
-};
 
 USTRUCT()
 struct FRCRequestWrapper : public FRCRequest
@@ -271,6 +228,13 @@ struct FRCPresetSetPropertyRequest : public FRCRequest
 	static FString PropertyValueLabel() { return TEXT("PropertyValue"); }
 
 	/**
+	 * Which type of operation should be performed on the value of the property.
+	 * This will be ignored if ResetToDefault is true.
+	 */
+	UPROPERTY()
+	ERCModifyOperation Operation = ERCModifyOperation::EQUAL;
+
+	/**
 	 * Whether a transaction should be created for the call.
 	 */
 	UPROPERTY()
@@ -303,6 +267,45 @@ struct FRCPresetCallRequest : public FRCRequest
 	 */
 	UPROPERTY()
 	bool GenerateTransaction = false;
+};
+
+/**
+ * Holds a request to expose a property on a preset
+ */
+USTRUCT()
+struct FRCPresetExposePropertyRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	/**
+	 * The path of the target object.
+	 */
+	UPROPERTY()
+	FString ObjectPath;
+
+	/**
+	 * The property to expose.
+	 */
+	UPROPERTY()
+	FString PropertyName;
+
+	/**
+	 * The label to give the new exposed property (optional).
+	 */
+	UPROPERTY()
+	FString Label;
+
+	/**
+	 * The name of the group in which to place the new exposed property (optional).
+	 */
+	UPROPERTY()
+	FString GroupName;
+
+	/**
+	 * Whether to automatically enable the edit condition for the exposed property.
+	 */
+	UPROPERTY()
+	bool EnableEditCondition;
 };
 
 /**
@@ -525,7 +528,22 @@ struct FRCWebSocketRequest : public FRCRequest
 };
 
 /**
- * Holds a request made for web socket.
+ * Holds a request that wraps multiple requests..
+ */
+USTRUCT()
+struct FRCWebSocketBatchRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	/**
+	 * The list of batched requests.
+	 */
+	UPROPERTY()
+	TArray<FRCWebSocketRequest> Requests;
+};
+
+/**
+ * Holds a request made via websocket to register for events about a given preset.
  */
 USTRUCT()
 struct FRCWebSocketPresetRegisterBody : public FRCRequest
@@ -552,3 +570,241 @@ struct FRCWebSocketPresetRegisterBody : public FRCRequest
 	UPROPERTY()
 	bool IgnoreRemoteChanges = false;
 };
+
+/**
+ * Holds a request made via websocket to automatically destroy a transient preset when the calling client disconnects.
+ */
+USTRUCT()
+struct FRCWebSocketTransientPresetAutoDestroyBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketTransientPresetAutoDestroyBody()
+	{
+		AddStructParameter(ParametersFieldLabel());
+	}
+
+	/**
+	 * Get the label for the property value struct.
+	 */
+	static FString ParametersFieldLabel() { return TEXT("Parameters"); }
+
+	/**
+	 * Name of the transient preset to mark for automatic destruction.
+	 */
+	UPROPERTY()
+	FString PresetName;
+};
+
+/**
+ * Holds a request made via websocket to register for spawn/destroy events about a given actor type.
+ */
+USTRUCT()
+struct FRCWebSocketActorRegisterBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketActorRegisterBody()
+	{
+		AddStructParameter(ParametersFieldLabel());
+	}
+
+	/**
+	 * Get the label for the property value struct.
+	 */
+	static FString ParametersFieldLabel() { return TEXT("Parameters"); }
+
+	/**
+	 * Name of the actor class to register for.
+	 */
+	UPROPERTY()
+	FName ClassName;
+};
+
+/**
+ * Holds a request made via websocket to modify a property exposed in a preset.
+ */
+USTRUCT()
+struct FRCWebSocketPresetSetPropertyBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketPresetSetPropertyBody()
+	{
+		AddStructParameter(PropertyValueLabel());
+	}
+
+	/**
+	 * Get the label for the PropertyValue struct.
+	 */
+	static FString PropertyValueLabel() { return TEXT("PropertyValue"); }
+
+	/**
+	 * The name of the remote control preset to which the property belongs.
+	 */
+	UPROPERTY()
+	FName PresetName;
+
+	/**
+	 * The label of the property to modify.
+	 */
+	UPROPERTY()
+	FName PropertyLabel;
+
+	/**
+	 * Which type of operation should be performed on the value of the property.
+	 * This will be ignored if ResetToDefault is true.
+	 */
+	UPROPERTY()
+	ERCModifyOperation Operation = ERCModifyOperation::EQUAL;
+
+	/**
+	 * How to handle generating transactions for this property change.
+	 * If NONE, don't generate a transaction immediately.
+	 * If AUTOMATIC, let the Remote Control system automatically start and end the transaction after enough time passes.
+	 * If MANUAL, TransactionId must also be set and the changes will only be applied if that transaction is still active.
+	 */
+	UPROPERTY()
+	ERCTransactionMode TransactionMode = ERCTransactionMode::NONE;
+
+	/**
+	 * The ID of the transaction with which to associate these changes. Must be provided if TransactionMode is Manual.
+	 */
+	UPROPERTY()
+	int32 TransactionId = -1;
+
+	/**
+	 * If true, ignore the other parameters and just reset the property to its default value.
+	 */
+	UPROPERTY()
+	bool ResetToDefault = false;
+
+	/**
+	 * The sequence number of this change. The highest sequence number received from this client will be
+	 * sent back to the client in future PresetFieldsChanged events.
+	 */
+	UPROPERTY()
+	int64 SequenceNumber = -1;
+};
+
+/**
+ * Holds a request made via websocket to call an exposed function on an object.
+ */
+USTRUCT()
+struct FRCWebSocketCallBody : public FRCCallRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketCallBody()
+	: FRCCallRequest()
+	{
+	}
+
+	/**
+	 * How to handle generating transactions for this property change.
+	 * If NONE, don't generate a transaction immediately.
+	 * If AUTOMATIC, let the Remote Control system automatically start and end the transaction after enough time passes.
+	 * If MANUAL, TransactionId must also be set and the changes will only be applied if that transaction is still active.
+	 * If bGenerateTransaction is true, this value will be treated as if it was AUTOMATIC.
+	 */
+	UPROPERTY()
+	ERCTransactionMode TransactionMode = ERCTransactionMode::NONE;
+
+	/**
+	 * The ID of the transaction with which to associate these changes. Must be provided if TransactionMode is Manual.
+	 */
+	UPROPERTY()
+	int32 TransactionId = -1;
+
+	/**
+	 * The sequence number of this change. The highest sequence number received from this client will be
+	 * sent back to the client in future PresetFieldsChanged events.
+	 */
+	UPROPERTY()
+	int64 SequenceNumber = -1;
+};
+
+/**
+ * Holds a request made via websocket to start a transaction.
+ */
+USTRUCT()
+struct FRCWebSocketTransactionStartBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketTransactionStartBody()
+	{
+		AddStructParameter(ParametersFieldLabel());
+	}
+
+	/**
+	 * Get the label for the property value struct.
+	 */
+	static FString ParametersFieldLabel() { return TEXT("Parameters"); }
+
+	/**
+	 * The description of the transaction.
+	 */
+	UPROPERTY()
+	FString Description;
+
+	/**
+	 * The ID that will be used to refer to the transaction in future messages.
+	 */
+	UPROPERTY()
+	int32 TransactionId = -1;
+};
+
+
+/**
+ * Holds a request made via websocket to end a transaction.
+ */
+USTRUCT()
+struct FRCWebSocketTransactionEndBody : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCWebSocketTransactionEndBody()
+	{
+		AddStructParameter(ParametersFieldLabel());
+	}
+
+	/**
+	 * Get the label for the property value struct.
+	 */
+	static FString ParametersFieldLabel() { return TEXT("Parameters"); }
+
+	/**
+	 * The ID of the transaction. If this doesn't match the current editor transaction, it won't be ended.
+	 */
+	UPROPERTY()
+	int32 TransactionId = -1;
+};
+
+/**
+ * Struct representation of SetPresetController HTTP request
+ */
+USTRUCT()
+struct FRCPresetSetControllerRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	FRCPresetSetControllerRequest()
+	{
+		AddStructParameter(PropertyValueLabel());
+	}
+
+	/**
+	 * Get the label for the PropertyValue struct.
+	 */
+	static FString PropertyValueLabel() { return TEXT("PropertyValue"); }
+
+public:
+
+	/**
+	 * The name of the Controller being set (for a given Remote Control Preset asset)
+	 */
+	UPROPERTY()
+	FString ControllerName;
+};
+

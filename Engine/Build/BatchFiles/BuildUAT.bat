@@ -25,6 +25,10 @@ dir /s^
  Programs\Shared\EpicGames.Core\*.csproj^
  Programs\Shared\EpicGames.Build\*.cs^
  Programs\Shared\EpicGames.Build\*.csproj^
+ Programs\Shared\EpicGames.MsBuild\*.cs^
+ Programs\Shared\EpicGames.MsBuild\*.csproj^
+ Programs\Shared\EpicGames.UHT\*.cs^
+ Programs\Shared\EpicGames.UHT\*.csproj^
  Programs\UnrealBuildTool\*.cs^
  Programs\UnrealBuildTool\*.csproj^
  | find ".cs" >..\Intermediate\Build\AutomationToolFiles.txt
@@ -56,7 +60,7 @@ call "%~dp0GetDotnetPath.bat"
 if errorlevel 1 goto Error_NoDotnetSDK
 
 echo Building AutomationTool...
-dotnet msbuild /restore /target:build /property:Configuration=Development /nologo Programs\AutomationTool\AutomationTool.csproj /verbosity:%MSBUILD_LOGLEVEL%
+dotnet build Programs\AutomationTool\AutomationTool.csproj -c Development -v %MSBUILD_LOGLEVEL%
 if errorlevel 1 goto Error_UATCompileFailed
 
 rem record input files - regardless of how we got here, these are now our point of reference

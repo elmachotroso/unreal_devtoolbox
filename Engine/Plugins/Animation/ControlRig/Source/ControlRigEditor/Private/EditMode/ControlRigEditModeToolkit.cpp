@@ -3,14 +3,14 @@
 /**
 * Control Rig Edit Mode Toolkit
 */
-#include "ControlRigEditModeToolkit.h"
+#include "EditMode/ControlRigEditModeToolkit.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWidget.h"
 #include "EditorModes.h"
 #include "Toolkits/BaseToolkit.h"
 #include "EditorModeManager.h"
-#include "SControlRigEditModeTools.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/SControlRigEditModeTools.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "Modules/ModuleManager.h"
 #include "EditMode/SControlRigBaseListWidget.h"
 #include "EditMode/SControlRigTweenWidget.h"
@@ -19,10 +19,10 @@
 #include "Editor/SControlRigProfilingView.h"
 #include "Toolkits/AssetEditorModeUILayer.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "ControlRigEditModeSettings.h"
-#include "SControlRigDetails.h"
-#include "SControlRigOutliner.h"
-#include "SControlRigSpacePicker.h"
+#include "EditMode/ControlRigEditModeSettings.h"
+#include "EditMode/SControlRigDetails.h"
+#include "EditMode/SControlRigOutliner.h"
+#include "EditMode/SControlRigSpacePicker.h"
 #define LOCTEXT_NAMESPACE "FControlRigEditModeToolkit"
 
 namespace 
@@ -121,7 +121,7 @@ void FControlRigEditModeToolkit::TryInvokeToolkitUI(const FName InName)
 	}
 	else if (InName == TweenOverlayName)
 	{
-		if(TweenWidget)
+		if(TweenWidgetParent)
 		{ 
 			RemoveAndDestroyTweenOverlay();
 		}
@@ -130,6 +130,17 @@ void FControlRigEditModeToolkit::TryInvokeToolkitUI(const FName InName)
 			CreateAndShowTweenOverlay();
 		}
 	}
+}
+
+bool FControlRigEditModeToolkit::IsToolkitUIActive(const FName InName) const
+{
+	if (InName == TweenOverlayName)
+	{
+		return TweenWidgetParent.IsValid();
+	}
+
+	TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin();
+	return ModeUILayerPtr->GetTabManager()->FindExistingLiveTab(FTabId(InName)).IsValid();
 }
 
 FText FControlRigEditModeToolkit::GetActiveToolDisplayName() const
@@ -215,7 +226,7 @@ void FControlRigEditModeToolkit::CreateAndShowTweenOverlay()
 	}
 	UpdateTweenWidgetLocation(NewTweenWidgetLocation);
 
-	SAssignNew(TweenWidget, SHorizontalBox)
+	SAssignNew(TweenWidgetParent, SHorizontalBox)
 
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
@@ -223,35 +234,70 @@ void FControlRigEditModeToolkit::CreateAndShowTweenOverlay()
 		.HAlign(HAlign_Left)
 		.Padding(TAttribute<FMargin>(this, &FControlRigEditModeToolkit::GetTweenWidgetPadding))
 		[
-			SNew(SControlRigTweenWidget)
+			SAssignNew(TweenWidget, SControlRigTweenWidget)
 			.InOwningToolkit(SharedThis(this))
 		];
 
 	TryShowTweenOverlay();
 }
 
+void FControlRigEditModeToolkit::GetToNextActiveSlider()
+{
+	if (TweenWidgetParent && TweenWidget)
+	{
+		TweenWidget->GetToNextActiveSlider();
+	}
+}
+bool FControlRigEditModeToolkit::CanChangeAnimSliderTool() const
+{
+	return (TweenWidgetParent && TweenWidget);
+}
+
+void FControlRigEditModeToolkit::DragAnimSliderTool(double Val)
+{
+	if (TweenWidgetParent && TweenWidget)
+	{
+		TweenWidget->DragAnimSliderTool(Val);
+	}
+}
+void FControlRigEditModeToolkit::ResetAnimSlider()
+{
+	if (TweenWidgetParent && TweenWidget)
+	{
+		TweenWidget->ResetAnimSlider();
+	}
+}
+
+void FControlRigEditModeToolkit::StartAnimSliderTool()
+{
+	if (TweenWidgetParent && TweenWidget)
+	{
+		TweenWidget->StartAnimSliderTool();
+	}
+}
 void FControlRigEditModeToolkit::TryShowTweenOverlay()
 {
-	if (TweenWidget)
+	if (TweenWidgetParent)
 	{
-		GetToolkitHost()->AddViewportOverlayWidget(TweenWidget.ToSharedRef());
+		GetToolkitHost()->AddViewportOverlayWidget(TweenWidgetParent.ToSharedRef());
 	}
 }
 
 void FControlRigEditModeToolkit::RemoveAndDestroyTweenOverlay()
 {
 	TryRemoveTweenOverlay();
-	if (TweenWidget)
+	if (TweenWidgetParent)
 	{
+		TweenWidgetParent.Reset();
 		TweenWidget.Reset();
 	}
 }
 
 void FControlRigEditModeToolkit::TryRemoveTweenOverlay()
 {
-	if (IsHosted() && TweenWidget)
+	if (IsHosted() && TweenWidgetParent)
 	{
-		GetToolkitHost()->RemoveViewportOverlayWidget(TweenWidget.ToSharedRef());
+		GetToolkitHost()->RemoveViewportOverlayWidget(TweenWidgetParent.ToSharedRef());
 	}
 }
 

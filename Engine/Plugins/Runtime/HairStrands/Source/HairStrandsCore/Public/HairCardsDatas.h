@@ -11,12 +11,6 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////
 // Utils/Format data
 
-struct FUIntPoint
-{
-	uint32 X;
-	uint32 Y;
-};
-
 struct FHairCardsPositionFormat
 {
 	typedef FVector4f Type;
@@ -103,7 +97,7 @@ struct FHairCardsStrandsPositionFormat
 
 struct FHairCardsOffsetAndCount
 {
-	typedef FUIntPoint Type;
+	typedef FUintPoint Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_None;
@@ -190,7 +184,8 @@ struct FHairCardsGeometry
 	TArray<FVector3f>Tangents;
 	TArray<FVector3f>Positions;
 	TArray<uint32>   Indices;
-	TArray<float>    CoordU; // Transient data storing [0..1] parametric value along main axis. This is used for generating guides & interpolation data
+	TArray<float>    CoordU;  // Transient data storing [0..1] parametric value along main axis. This is used for generating guides & interpolation data
+	TArray<FVector2f>LocalUVs;// Transient data storing [0..1, 0..1] local UV of the cards. U is aligned with the card's main direction, and V is aligned perpendicularity
 
 	// Vertex offset and vertex count of each cards geometry
 	// No longer used, kept only for backward compatibility
@@ -322,8 +317,8 @@ struct FHairCardsProceduralGeometry : FHairCardsGeometry
 	TArray<Rect>   Rects;
 	TArray<float>  Lengths;
 	
-	TArray<FUIntPoint> CardIndexToClusterOffsetAndCount;
-	TArray<FUIntPoint> ClusterIndexToVertexOffsetAndCount;
+	TArray<FUintPoint> CardIndexToClusterOffsetAndCount;
+	TArray<FUintPoint> ClusterIndexToVertexOffsetAndCount;
 
 	TArray<FHairOrientedBound> Bounds;
 

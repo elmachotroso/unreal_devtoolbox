@@ -9,20 +9,22 @@ namespace Jupiter.Implementation
 {
     public class ClientCredentialOAuthAuthenticator: IAuthenticator
     {
-        public ClientCredentialOAuthAuthenticator(string authUrl, string clientId, string clientSecret, string scope)
+        public ClientCredentialOAuthAuthenticator(Uri authUrl, string clientId, string clientSecret, string scope, string schemeName)
         {
             _authUrl = authUrl;
             _clientId = clientId;
             _clientSecret = clientSecret;
             _scope = scope;
+            _schemeName = schemeName;
         }
 
         private string? _accessToken;
 
-        private readonly string _authUrl;
+        private readonly Uri _authUrl;
         private readonly string _clientId;
         private readonly string _clientSecret;
         private readonly string _scope;
+        private readonly string _schemeName;
         private DateTime _expiresAt;
 
         public void Authenticate(IRestClient client, IRestRequest request)
@@ -32,7 +34,7 @@ namespace Jupiter.Implementation
                 PreAuthenticate();
             }
 
-            request.AddHeader("Authorization", $"Bearer {_accessToken}");
+            request.AddHeader("Authorization", $"{_schemeName} {_accessToken}");
         }
 
         public string? Authenticate()
@@ -78,13 +80,11 @@ namespace Jupiter.Implementation
                 }
                 throw;
             }
-
         }
 
         private IRestResponse<ClientCredentialsResponse> DoAuthenticationRequest()
         {
-            Uri requestUri = new Uri(_authUrl);
-            RestClient client = new RestClient(requestUri);
+            RestClient client = new RestClient(_authUrl);
             RestRequest request = new RestRequest(Method.POST);
 
             request.AddParameter("grant_type", "client_credentials", ParameterType.GetOrPost);
@@ -109,7 +109,7 @@ namespace Jupiter.Implementation
         public string? scope { get; set; }
     }
 
-    internal class AuthenticationFailedException : Exception
+    public class AuthenticationFailedException : Exception
     {
         public AuthenticationFailedException(object errorResult) : base(errorResult.ToString()) { }
     }

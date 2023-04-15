@@ -2,13 +2,12 @@
 
 #include "/Engine/Private/Common.ush"	
 #include "/Engine/Private/MortonCode.ush"	
-//#include "/Engine/Private/ShaderPrintCommon.ush"	
-//#include "/Engine/Private/ShaderDrawDebug.ush"	
+//#include "/Engine/Private/ShaderPrint.ush"
 #include "VirtualHeightfieldMesh.ush"	
 
 groupshared uint NumGroupTasks;
-globallycoherent RWStructuredBuffer<WorkerQueueInfo> RWQueueInfo;
-globallycoherent RWBuffer<uint> RWQueueBuffer;
+RWStructuredBuffer<WorkerQueueInfo> RWQueueInfo;
+RWCoherentBuffer(uint) RWQueueBuffer;
 uint QueueBufferSizeMask;
 
 RWBuffer<uint2> RWQuadBuffer;

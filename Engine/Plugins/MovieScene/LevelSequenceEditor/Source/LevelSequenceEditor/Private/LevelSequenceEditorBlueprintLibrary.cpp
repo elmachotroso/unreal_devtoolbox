@@ -19,6 +19,10 @@
 //For custom colors on channels, stored in editor pref's
 #include "CurveEditorSettings.h"
 
+#include "Sections/MovieSceneSubSection.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequenceEditorBlueprintLibrary)
+
 namespace
 {
 	static TWeakPtr<ISequencer> CurrentSequencer;
@@ -50,6 +54,47 @@ ULevelSequence* ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence()
 		return Cast<ULevelSequence>(CurrentSequencer.Pin()->GetFocusedMovieSceneSequence());
 	}
 	return nullptr;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::FocusLevelSequence(UMovieSceneSubSection* SubSection)
+{
+	if (CurrentSequencer.IsValid() && IsValid(SubSection))
+	{
+		CurrentSequencer.Pin()->FocusSequenceInstance(*SubSection);
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::FocusParentSequence()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		const TArray<FMovieSceneSequenceID>& Hierarchy = CurrentSequencer.Pin()->GetSubSequenceHierarchy();
+
+		if (Hierarchy.Num() > 1)
+		{
+			CurrentSequencer.Pin()->PopToSequenceInstance(Hierarchy[Hierarchy.Num() -2]);
+		}
+	}
+}
+
+TArray<UMovieSceneSubSection*> ULevelSequenceEditorBlueprintLibrary::GetSubSequenceHierarchy()
+{
+	TArray<UMovieSceneSubSection*> SectionsHierarchy;
+	
+	if (CurrentSequencer.IsValid())
+	{
+		const TArray<FMovieSceneSequenceID>& Hierarchy = CurrentSequencer.Pin()->GetSubSequenceHierarchy();
+
+		for (const FMovieSceneSequenceID Item : Hierarchy)
+		{
+			if (Item != MovieSceneSequenceID::Root)
+			{
+				// We return the whole hierarchy anyways, leaving it to the user to check for invalid pointers.
+				SectionsHierarchy.Add(CurrentSequencer.Pin()->FindSubSection(Item));
+			}
+		}
+	}
+	return SectionsHierarchy;
 }
 
 void ULevelSequenceEditorBlueprintLibrary::CloseLevelSequence()
@@ -201,6 +246,24 @@ TArray<FGuid> ULevelSequenceEditorBlueprintLibrary::GetSelectedObjects()
 	return OutSelectedGuids;
 }
 
+TArray<FMovieSceneBindingProxy> ULevelSequenceEditorBlueprintLibrary::GetSelectedBindings()
+{
+	TArray<FMovieSceneBindingProxy> OutSelectedBindings;
+	if (CurrentSequencer.IsValid())
+	{
+		TArray<FGuid> OutSelectedGuids;
+		CurrentSequencer.Pin()->GetSelectedObjects(OutSelectedGuids);
+
+		UMovieSceneSequence* Sequence = CurrentSequencer.Pin()->GetFocusedMovieSceneSequence();
+
+		for (const FGuid& SelectedGuid : OutSelectedGuids)
+		{
+			OutSelectedBindings.Add(FMovieSceneBindingProxy(SelectedGuid, Sequence));
+		}
+	}
+	return OutSelectedBindings;
+}
+
 void ULevelSequenceEditorBlueprintLibrary::SelectTracks(const TArray<UMovieSceneTrack*>& Tracks)
 {
 	if (CurrentSequencer.IsValid())
@@ -258,6 +321,17 @@ void ULevelSequenceEditorBlueprintLibrary::SelectObjects(TArray<FGuid> ObjectBin
 		for (FGuid ObjectBinding : ObjectBindings)
 		{
 			CurrentSequencer.Pin()->SelectObject(ObjectBinding);
+		}
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SelectBindings(const TArray<FMovieSceneBindingProxy>& ObjectBindings)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		for (const FMovieSceneBindingProxy& ObjectBinding : ObjectBindings)
+		{
+			CurrentSequencer.Pin()->SelectObject(ObjectBinding.BindingID);
 		}
 	}
 }
@@ -561,4 +635,5 @@ void ULevelSequenceEditorBlueprintLibrary::SetLockCameraCutToViewport(bool bLock
 		Sequencer->ForceEvaluate();
 	}
 }
+
 

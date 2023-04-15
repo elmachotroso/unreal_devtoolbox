@@ -19,8 +19,10 @@ public:
 	URigHierarchyController()
 	: bReportWarningsAndErrors(true)
 	, Hierarchy(nullptr)
-	, bSuspendNotifications(false)
+	, bSuspendAllNotifications(false)
+	, bSuspendSelectionNotifications(false)
 	, bSuspendPythonPrinting(false)
+	, CurrentInstructionIndex(INDEX_NONE)
 	{}
 
 	virtual ~URigHierarchyController();
@@ -139,10 +141,48 @@ public:
         FRigElementKey InParent,
         FRigControlSettings InSettings,
         FRigControlValue InValue,
-        bool bSetupUndo = true
+        bool bSetupUndo = true,
+        bool bPrintPythonCommand = false
     )
 	{
-		return AddControl(InName, InParent, InSettings, InValue, FTransform::Identity, FTransform::Identity, bSetupUndo);
+		return AddControl(InName, InParent, InSettings, InValue, FTransform::Identity, FTransform::Identity, bSetupUndo, bPrintPythonCommand);
+	}
+
+		/**
+	 * Adds a control to the hierarchy
+	 * @param InName The suggested name of the new animation channel - will eventually be corrected by the namespace
+	 * @param InParentControl The parent of the new animation channel.
+	 * @param InSettings All of the animation channel's settings
+	 * @param bSetupUndo If set to true the stack will record the change for undo / redo
+	 * @param bPrintPythonCommand If set to true a python command equivalent to this call will be printed out
+	 * @return The key for the newly created animation channel.
+	 */
+    FRigElementKey AddAnimationChannel(
+    	FName InName,
+    	FRigElementKey InParentControl,
+    	FRigControlSettings InSettings,
+        bool bSetupUndo = true,
+        bool bPrintPythonCommand = false
+    );
+
+	/**
+	 * Adds a control to the hierarchy
+	 * @param InName The suggested name of the new animation channel - will eventually be corrected by the namespace
+	 * @param InParentControl The parent of the new animation channel.
+	 * @param InSettings All of the animation channel's settings
+	 * @param bSetupUndo If set to true the stack will record the change for undo / redo
+	 * @return The key for the newly created animation channel.
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchyController, meta = (DisplayName = "Add Control", ScriptName = "AddAnimationChannel"))
+    FORCEINLINE FRigElementKey AddAnimationChannel_ForBlueprint(
+        FName InName,
+        FRigElementKey InParentControl,
+        FRigControlSettings InSettings,
+        bool bSetupUndo = true,
+        bool bPrintPythonCommand = false
+    )
+	{
+		return AddAnimationChannel(InName, InParentControl, InSettings, bSetupUndo, bPrintPythonCommand);
 	}
 
 	/**
@@ -365,6 +405,18 @@ public:
     FRigElementKey RenameElement(FRigElementKey InElement, FName InName, bool bSetupUndo = false, bool bPrintPythonCommand = false, bool bClearSelection = true);
 
 	/**
+ 	 * Sets the display name on a control
+ 	 * @param InControl The key of the control to change the display name for
+ 	 * @param InDisplayName The new display name to set for the control
+ 	 * @param bRenameElement True if the control should also be renamed
+ 	 * @param bSetupUndo If set to true the stack will record the change for undo / redo
+ 	 * @param bPrintPythonCommand If set to true a python command equivalent to this call will be printed out
+	 * @return Returns the new display name used for the control
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
+	FName SetDisplayName(FRigElementKey InControl, FName InDisplayName, bool bRenameElement = false, bool bSetupUndo = false, bool bPrintPythonCommand = false);
+
+	/**
 	 * Adds a new parent to an element. For elements that allow only one parent the parent will be replaced (Same as ::SetParent).
 	 * @param InChild The key of the element to add the parent for
 	 * @param InParent The key of the new parent to add
@@ -494,7 +546,7 @@ public:
 	/**
 	 * Returns a reference to the suspend notifications flag
 	 */
-	FORCEINLINE bool& GetSuspendNotificationsFlag() { return bSuspendNotifications; }
+	FORCEINLINE bool& GetSuspendNotificationsFlag() { return bSuspendAllNotifications; }
 
 #if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
@@ -560,6 +612,15 @@ private:
     bool RenameElement(FRigBaseElement* InElement, const FName &InName, bool bClearSelection = true);
 
 	/**
+ 	 * Sets the display name on a control
+ 	 * @param InControlElement The element to change the display name for
+ 	 * @param InDisplayName The new display name to set for the control
+ 	 * @param bRenameElement True if the control should also be renamed
+ 	 * @return Returns true if successful.
+ 	 */
+	FName SetDisplayName(FRigControlElement* InControlElement, const FName &InDisplayName, bool bRenameElement = false);
+
+	/**
 	 * Removes an existing parent from an element in the hierarchy. For elements that allow only one parent the element will be unparented (same as ::RemoveAllParents)
 	 * @param InChild The element to remove the parent for
 	 * @param InParent The parent to remove
@@ -607,9 +668,14 @@ private:
 #endif
 
 	/** 
-	 * If set to true all notifs coming from this hierarchy will be suspended
+	 * If set to true all notifications coming from this hierarchy will be suspended
 	 */
-	bool bSuspendNotifications;
+	bool bSuspendAllNotifications;
+
+	/** 
+	 * If set to true selection related notifications coming from this hierarchy will be suspended
+	 */
+	bool bSuspendSelectionNotifications;
 
 	/** 
 	* If set to true all python printing can be disabled.  
@@ -617,10 +683,34 @@ private:
 	bool bSuspendPythonPrinting;
 
 	/**
+	 * If set the controller will mark new items as procedural and created at the current instruction
+	 */
+	int32 CurrentInstructionIndex;
+
+	/**
 	 * This function can be used to override the controller's logging mechanism
 	 */
 	TFunction<void(EMessageSeverity::Type,const FString&)> LogFunction = nullptr;
 
+	template<typename T>
+	T* MakeElement()
+	{
+		T* Element = GetHierarchy()->NewElement<T>();
+		Element->CreatedAtInstructionIndex = CurrentInstructionIndex;
+		return Element;
+	}
+	
 	friend class UControlRig;
 	friend class URigHierarchy;
+	friend class FRigHierarchyControllerInstructionBracket;
+};
+
+class CONTROLRIG_API FRigHierarchyControllerInstructionBracket : TGuardValue<int32>
+{
+public:
+	
+	FRigHierarchyControllerInstructionBracket(URigHierarchyController* InController, int32 InInstructionIndex)
+		: TGuardValue<int32>(InController->CurrentInstructionIndex, InInstructionIndex)
+	{
+	}
 };

@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayModMagnitudeCalculation.h"
+#include "AbilitySystemLog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayModMagnitudeCalculation)
 
 UGameplayModMagnitudeCalculation::UGameplayModMagnitudeCalculation(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -121,3 +124,4 @@ const FGameplayTagContainer& UGameplayModMagnitudeCalculation::GetTargetSpecTags
 {
 	return EffectSpec.CapturedTargetTags.GetSpecTags();
 }
+

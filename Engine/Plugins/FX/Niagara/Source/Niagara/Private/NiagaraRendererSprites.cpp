@@ -1,29 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraRendererSprites.h"
-#include "ParticleResources.h"
-#include "NiagaraDataSet.h"
-#include "NiagaraStats.h"
-#include "NiagaraSortingGPU.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "NiagaraComponent.h"
+#include "NiagaraCullProxyComponent.h"
 #include "NiagaraCutoutVertexBuffer.h"
+#include "NiagaraDataSet.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSettings.h"
+#include "NiagaraSortingGPU.h"
+#include "NiagaraStats.h"
+#include "ParticleResources.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingDynamicGeometryCollection.h"
 #include "RayTracingInstance.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "Renderer/Private/ScenePrivate.h"
-#include "NiagaraCullProxyComponent.h"
+#include "ScenePrivate.h"
 
-DECLARE_CYCLE_STAT(TEXT("Generate Sprite Dynamic Data [GT]"), STAT_NiagaraGenSpriteDynamicData, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Sprites [RT]"), STAT_NiagaraRenderSprites, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Sprites - CPU Sim Copy[RT]"), STAT_NiagaraRenderSpritesCPUSimCopy, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Sprites - CPU Sim Memcopy[RT]"), STAT_NiagaraRenderSpritesCPUSimMemCopy, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Sprites - Sorting[RT]"), STAT_NiagaraRenderSpritesSorting, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Sprites - GlobalSortCPU[RT]"), STAT_NiagaraRenderSpritesGlobalSortCPU, STATGROUP_Niagara);
-
-DECLARE_CYCLE_STAT(TEXT("Genereate GPU Buffers"), STAT_NiagaraGenSpriteGpuBuffers, STATGROUP_Niagara);
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumSprites"), STAT_NiagaraNumSprites, STATGROUP_Niagara);
 
 static int32 GbEnableNiagaraSpriteRendering = 1;
@@ -75,6 +67,7 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 	, NumIndicesPerInstance(0)
 	, bSubImageBlend(false)
 	, bRemoveHMDRollInVR(false)
+	, bSortHighPrecision(false)
 	, bSortOnlyWhenTranslucent(true)
 	, bGpuLowLatencyTranslucency(true)
 	, bEnableDistanceCulling(false)
@@ -98,8 +91,9 @@ FNiagaraRendererSprites::FNiagaraRendererSprites(ERHIFeatureLevel::Type FeatureL
 	NumIndicesPerInstance = Properties->GetNumIndicesPerInstance();
 	bSubImageBlend = Properties->bSubImageBlend;
 	bRemoveHMDRollInVR = Properties->bRemoveHMDRollInVR;
+	bSortHighPrecision = UNiagaraRendererProperties::IsSortHighPrecision(Properties->SortPrecision);
 	bSortOnlyWhenTranslucent = Properties->bSortOnlyWhenTranslucent;
-	bGpuLowLatencyTranslucency = Properties->bGpuLowLatencyTranslucency;
+	bGpuLowLatencyTranslucency = UNiagaraRendererProperties::IsGpuTranslucentThisFrame(Properties->GpuTranslucentLatency);
 	MinFacingCameraBlendDistance = Properties->MinFacingCameraBlendDistance;
 	MaxFacingCameraBlendDistance = Properties->MaxFacingCameraBlendDistance;
 	RendererVisibility = Properties->RendererVisibility;
@@ -202,7 +196,7 @@ void FNiagaraRendererSprites::CreateRenderThreadResources()
 		FRayTracingGeometryInitializer Initializer;
 		static const FName DebugName("FNiagaraRendererSprites");
 		static int32 DebugNumber = 0;
-		Initializer.DebugName = FName(DebugName, DebugNumber++);
+		Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
 		Initializer.IndexBuffer = nullptr;
 		Initializer.GeometryType = RTGT_Triangles;
 		Initializer.bFastBuild = true;
@@ -328,8 +322,6 @@ void FNiagaraRendererSprites::PrepareParticleRenderBuffers(FParticleSpriteRender
 	{
 		if ( SimTarget == ENiagaraSimTarget::CPUSim )
 		{
-			SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSpritesCPUSimCopy);
-
 			// For CPU simulations we do not gather int parameters inside TransferDataToGPU currently so we need to copy off
 			// integrate attributes if we are culling on the GPU.
 			TArray<uint32, TInlineAllocator<1>> IntParamsToCopy;
@@ -387,7 +379,7 @@ void FNiagaraRendererSprites::InitializeSortInfo(FParticleSpriteRenderData& Part
 
 	OutSortInfo.ParticleCount = ParticleSpriteRenderData.SourceParticleData->GetNumInstances();
 	OutSortInfo.SortMode = SortMode;
-	OutSortInfo.SetSortFlags(GNiagaraGPUSortingUseMaxPrecision != 0, ParticleSpriteRenderData.SourceParticleData->GetGPUDataReadyStage());
+	OutSortInfo.SetSortFlags(bSortHighPrecision, ParticleSpriteRenderData.SourceParticleData->GetGPUDataReadyStage());
 	OutSortInfo.bEnableCulling = ParticleSpriteRenderData.bNeedsCull;
 	OutSortInfo.RendererVisTagAttributeOffset = ParticleSpriteRenderData.RendererVisTagOffset;
 	OutSortInfo.RendererVisibility = RendererVisibility;
@@ -606,6 +598,7 @@ FNiagaraSpriteUniformBufferRef FNiagaraRendererSprites::CreateViewUniformBuffer(
 		}
 	}
 
+	PerViewUniformParameters.AccurateMotionVectors = false;
 	if (SourceMode == ENiagaraRendererSourceDataMode::Particles)
 	{
 		TConstArrayView<FNiagaraRendererVariableInfo> VFVariables = ParticleSpriteRenderData.RendererLayout->GetVFVariables_RenderThread();
@@ -628,6 +621,7 @@ FNiagaraSpriteUniformBufferRef FNiagaraRendererSprites::CreateViewUniformBuffer(
 		PerViewUniformParameters.MaterialRandomDataOffset = VFVariables[ENiagaraSpriteVFLayout::MaterialRandom].GetGPUOffset();
 		if (bAccurateMotionVectors)
 		{
+			PerViewUniformParameters.AccurateMotionVectors = true;
 			PerViewUniformParameters.PrevPositionDataOffset = VFVariables[ENiagaraSpriteVFLayout::PrevPosition].GetGPUOffset();
 			PerViewUniformParameters.PrevVelocityDataOffset = VFVariables[ENiagaraSpriteVFLayout::PrevVelocity].GetGPUOffset();
 			PerViewUniformParameters.PrevRotationDataOffset = VFVariables[ENiagaraSpriteVFLayout::PrevRotation].GetGPUOffset();
@@ -833,7 +827,7 @@ void FNiagaraRendererSprites::CreateMeshBatchForView(
 	FNiagaraSpriteVFLooseParameters VFLooseParams;
 	VFLooseParams.NiagaraParticleDataFloat = ParticleSpriteRenderData.ParticleFloatSRV;
 	VFLooseParams.NiagaraParticleDataHalf = ParticleSpriteRenderData.ParticleHalfSRV;
-	VFLooseParams.NiagaraFloatDataStride = ParticleSpriteRenderData.ParticleFloatDataStride;
+	VFLooseParams.NiagaraFloatDataStride = FMath::Max(ParticleSpriteRenderData.ParticleFloatDataStride, ParticleSpriteRenderData.ParticleHalfDataStride);
 
 	FMaterialRenderProxy* MaterialRenderProxy = ParticleSpriteRenderData.DynamicDataSprites->Material;
 	check(MaterialRenderProxy);
@@ -935,7 +929,6 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 		return;
 	}
 
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSprites);
 #if STATS
 	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
 #endif
@@ -983,19 +976,11 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 				InitializeSortInfo(ParticleSpriteRenderData, *SceneProxy, *View, ViewIndex, SortInfo);
 			}
 
-			FMeshCollectorResourcesBase* CollectorResources;
-			if ( bAccurateMotionVectors )
-			{
-				CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResourcesEx>();
-			}
-			else
-			{
-				CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResources>();
-			}
+			FMeshCollectorResources* CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResources>();
 
 			// Get the next vertex factory to use
 			// TODO: Find a way to safely pool these such that they won't be concurrently accessed by multiple views
-			FNiagaraSpriteVertexFactory& VertexFactory = CollectorResources->GetVertexFactory();
+			FNiagaraSpriteVertexFactory& VertexFactory = CollectorResources->VertexFactory;
 
 			// Sort/Cull particles if needed.
 			uint32 NumInstances = SourceMode == ENiagaraRendererSourceDataMode::Particles ? ParticleSpriteRenderData.SourceParticleData->GetNumInstances() : 1;
@@ -1015,7 +1000,7 @@ void FNiagaraRendererSprites::GetDynamicMeshElements(const TArray<const FSceneVi
 				else
 				{
 					FGlobalDynamicReadBuffer::FAllocation SortedIndices;
-					SortedIndices = Collector.GetDynamicReadBuffer().AllocateInt32(NumInstances);
+					SortedIndices = Collector.GetDynamicReadBuffer().AllocateUInt32(NumInstances);
 					NumInstances = SortAndCullIndices(SortInfo, *ParticleSpriteRenderData.SourceParticleData, SortedIndices);
 					VertexFactory.SetSortedIndices(SortedIndices.SRV, 0);
 				}
@@ -1056,8 +1041,7 @@ void FNiagaraRendererSprites::GetDynamicRayTracingInstances(FRayTracingMaterialG
 	{
 		return;
 	}
-
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderSprites);
+	
 #if STATS
 	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
 #endif
@@ -1071,22 +1055,13 @@ void FNiagaraRendererSprites::GetDynamicRayTracingInstances(FRayTracingMaterialG
 		InitializeSortInfo(ParticleSpriteRenderData, *SceneProxy, *Context.ReferenceView, 0, SortInfo);
 	}
 
-	FMeshCollectorResourcesBase* CollectorResources;
-	if (bAccurateMotionVectors)
-	{
-		CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResourcesEx>();
-	}
-	else
-	{
-		CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResources>();
-	}
-
-	if (!CollectorResources->GetVertexFactory().GetType()->SupportsRayTracingDynamicGeometry())
+	if (!FNiagaraSpriteVertexFactory::StaticType.SupportsRayTracingDynamicGeometry())
 	{
 		return;
 	}
 
-	FNiagaraSpriteVertexFactory& VertexFactory = CollectorResources->GetVertexFactory();
+	FMeshCollectorResources* CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResources>();
+	FNiagaraSpriteVertexFactory& VertexFactory = CollectorResources->VertexFactory;
 
 	// Sort/Cull particles if needed.
 	uint32 NumInstances = SourceMode == ENiagaraRendererSourceDataMode::Particles ? ParticleSpriteRenderData.SourceParticleData->GetNumInstances() : 1;
@@ -1106,7 +1081,7 @@ void FNiagaraRendererSprites::GetDynamicRayTracingInstances(FRayTracingMaterialG
 		else
 		{
 			FGlobalDynamicReadBuffer::FAllocation SortedIndices;
-			SortedIndices = DynamicReadBuffer.AllocateInt32(NumInstances);
+			SortedIndices = DynamicReadBuffer.AllocateUInt32(NumInstances);
 			NumInstances = SortAndCullIndices(SortInfo, *ParticleSpriteRenderData.SourceParticleData, SortedIndices);
 			VertexFactory.SetSortedIndices(SortedIndices.SRV, 0);
 		}
@@ -1187,8 +1162,6 @@ FNiagaraDynamicDataBase *FNiagaraRendererSprites::GenerateDynamicData(const FNia
 			}
 		}
 
-		SCOPE_CYCLE_COUNTER(STAT_NiagaraGenSpriteDynamicData);
-
 		FNiagaraDataBuffer* DataToRender = Emitter->GetData().GetCurrentData();
 		if(SimTarget == ENiagaraSimTarget::GPUComputeSim || (DataToRender != nullptr &&  (SourceMode == ENiagaraRendererSourceDataMode::Emitter || (SourceMode == ENiagaraRendererSourceDataMode::Particles && DataToRender->GetNumInstances() > 0))))
 		{
@@ -1211,9 +1184,9 @@ FNiagaraDynamicDataBase *FNiagaraRendererSprites::GenerateDynamicData(const FNia
 			DynamicData->ParameterDataBound = ParameterData.GetParameterDataArray();
 		}
 
-		if (DynamicData && Properties->MaterialParameterBindings.Num() != 0)
+		if (DynamicData && Properties->MaterialParameters.HasAnyBindings())
 		{
-			ProcessMaterialParameterBindings(MakeArrayView(Properties->MaterialParameterBindings), Emitter, MakeArrayView(BaseMaterials_GT));
+			ProcessMaterialParameterBindings(Properties->MaterialParameters, Emitter, MakeArrayView(BaseMaterials_GT));
 		}
 	}
 

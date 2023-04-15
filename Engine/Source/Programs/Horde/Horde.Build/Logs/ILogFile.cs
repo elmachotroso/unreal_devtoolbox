@@ -1,21 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeServer.Api;
-using HordeServer.Services;
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Threading.Tasks;
+using EpicGames.Core;
+using Horde.Build.Agents.Sessions;
+using Horde.Build.Jobs;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Models
+namespace Horde.Build.Logs
 {
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
+	using SessionId = ObjectId<ISession>;
 
 	/// <summary>
 	/// Information about a log file chunk
@@ -61,7 +57,7 @@ namespace HordeServer.Models
 		/// <summary>
 		/// The session allowed to write to this log
 		/// </summary>
-		public ObjectId? SessionId { get; }
+		public SessionId? SessionId { get; }
 
 		/// <summary>
 		/// Maximum line index in the file
@@ -92,33 +88,33 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Gets the chunk index containing the given offset.
 		/// </summary>
-		/// <param name="Chunks">The chunks to search</param>
-		/// <param name="Offset">The offset to search for</param>
+		/// <param name="chunks">The chunks to search</param>
+		/// <param name="offset">The offset to search for</param>
 		/// <returns>The chunk index containing the given offset</returns>
-		public static int GetChunkForOffset(this IReadOnlyList<ILogChunk> Chunks, long Offset)
+		public static int GetChunkForOffset(this IReadOnlyList<ILogChunk> chunks, long offset)
 		{
-			int ChunkIndex = Chunks.BinarySearch(x => x.Offset, Offset);
-			if (ChunkIndex < 0)
+			int chunkIndex = chunks.BinarySearch(x => x.Offset, offset);
+			if (chunkIndex < 0)
 			{
-				ChunkIndex = ~ChunkIndex - 1;
+				chunkIndex = ~chunkIndex - 1;
 			}
-			return ChunkIndex;
+			return chunkIndex;
 		}
 
 		/// <summary>
 		/// Gets the starting chunk index for the given line
 		/// </summary>
-		/// <param name="Chunks">The chunks to search</param>
-		/// <param name="LineIndex">Index of the line to query</param>
+		/// <param name="chunks">The chunks to search</param>
+		/// <param name="lineIndex">Index of the line to query</param>
 		/// <returns>Index of the chunk to fetch</returns>
-		public static int GetChunkForLine(this IReadOnlyList<ILogChunk> Chunks, int LineIndex)
+		public static int GetChunkForLine(this IReadOnlyList<ILogChunk> chunks, int lineIndex)
 		{
-			int ChunkIndex = Chunks.BinarySearch(x => x.LineIndex, LineIndex);
-			if(ChunkIndex < 0)
+			int chunkIndex = chunks.BinarySearch(x => x.LineIndex, lineIndex);
+			if(chunkIndex < 0)
 			{
-				ChunkIndex = ~ChunkIndex - 1;
+				chunkIndex = ~chunkIndex - 1;
 			}
-			return ChunkIndex;
+			return chunkIndex;
 		}
 	}
 }

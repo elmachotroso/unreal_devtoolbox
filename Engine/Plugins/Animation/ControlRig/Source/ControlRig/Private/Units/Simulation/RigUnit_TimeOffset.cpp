@@ -3,6 +3,8 @@
 #include "Units/Simulation/RigUnit_TimeOffset.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_TimeOffset)
+
 FRigUnit_TimeOffsetFloat_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -29,10 +31,8 @@ FRigUnit_TimeOffsetFloat_Execute()
 	}
 
 	int32 MaxSize = FMath::Clamp<int32>(BufferSize, 2, 512);
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(MaxSize);
 	DeltaTimes.SetNum(MaxSize);
-#endif
 	MaxSize = FMath::Min<int32>(MaxSize, Buffer.Num());
 
 	if (Context.State == EControlRigState::Init)
@@ -140,10 +140,8 @@ FRigUnit_TimeOffsetVector_Execute()
 	}
 
 	int32 MaxSize = FMath::Clamp<int32>(BufferSize, 2, 512);
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(MaxSize);
 	DeltaTimes.SetNum(MaxSize);
-#endif
 	MaxSize = FMath::Min<int32>(MaxSize, Buffer.Num());
 
 	if (Context.State == EControlRigState::Init)
@@ -251,10 +249,8 @@ FRigUnit_TimeOffsetTransform_Execute()
 	}
 
 	int32 MaxSize = FMath::Clamp<int32>(BufferSize, 2, 512);
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(MaxSize);
 	DeltaTimes.SetNum(MaxSize);
-#endif
 	MaxSize = FMath::Min<int32>(MaxSize, Buffer.Num());
 
 	if (Context.State == EControlRigState::Init)

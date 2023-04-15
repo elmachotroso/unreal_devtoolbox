@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SDeviceToolbar.h"
+#include "Widgets/Toolbar/SDeviceToolbar.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "SlateOptMacros.h"
@@ -50,7 +50,7 @@ void SDeviceToolbar::Construct(const FArguments& InArgs, const TSharedRef<FDevic
 	ChildSlot
 	[
 		SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.IsEnabled_Lambda(ToolbarIsEnabled)
 			.Padding(0.0f)
 			[

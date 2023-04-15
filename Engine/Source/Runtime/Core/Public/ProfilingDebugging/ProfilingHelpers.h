@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
 
 enum EStreamingStatus

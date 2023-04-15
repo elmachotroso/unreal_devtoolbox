@@ -2,7 +2,6 @@
 
 #pragma once
 
-#if WITH_CHAOS
 #include "CoreMinimal.h"
 #include "Tickable.h"
 #include "Physics/PhysScene.h"
@@ -13,6 +12,7 @@
 #include "Chaos/ChaosScene.h"
 #include "Chaos/ContactModification.h"
 #include "Chaos/Real.h"
+#include "UObject/ObjectKey.h"
 
 #ifndef CHAOS_WITH_PAUSABLE_SOLVER
 #define CHAOS_WITH_PAUSABLE_SOLVER 1
@@ -98,19 +98,11 @@ public:
 
 	using Super = FChaosScene;
 	
-#if !WITH_CHAOS_NEEDS_TO_BE_FIXED
-	FPhysScene_Chaos(AActor* InSolverActor
-#if CHAOS_DEBUG_NAME
-	, const FName& DebugName=NAME_None
-#endif
-);
-#else
 	FPhysScene_Chaos(AActor* InSolverActor=nullptr
 #if CHAOS_DEBUG_NAME
 	, const FName& DebugName=NAME_None
 #endif
 );
-#endif
 
 	virtual ~FPhysScene_Chaos();
 
@@ -121,12 +113,21 @@ public:
 
 	void UnRegisterForCollisionEvents(UPrimitiveComponent* Component);
 
+	void RegisterAsyncPhysicsTickComponent(UActorComponent* Component);
+	void UnregisterAsyncPhysicsTickComponent(UActorComponent* Component);
+
+	void RegisterAsyncPhysicsTickActor(AActor* Actor);
+	void UnregisterAsyncPhysicsTickActor(AActor* Actor);
+
+	void EnqueueAsyncPhysicsCommand(int32 PhysicsStep, UObject* OwningObject, const TFunction<void()>& Command);
+
+
 	/**
 	 * Called during creation of the physics state for gamethread objects to pass off an object to the physics thread
 	 */
 	void AddObject(UPrimitiveComponent* Component, FSkeletalMeshPhysicsProxy* InObject);
 	void AddObject(UPrimitiveComponent* Component, FStaticMeshPhysicsProxy* InObject);
-	void AddObject(UPrimitiveComponent* Component, FSingleParticlePhysicsProxy* InObject);
+	void AddObject(UPrimitiveComponent* Component, Chaos::FSingleParticlePhysicsProxy* InObject);
 	void AddObject(UPrimitiveComponent* Component, FGeometryCollectionPhysicsProxy* InObject);
 	
 	void AddToComponentMaps(UPrimitiveComponent* Component, IPhysicsProxyBase* InObject);
@@ -138,7 +139,7 @@ public:
 	 */
 	void RemoveObject(FSkeletalMeshPhysicsProxy* InObject);
 	void RemoveObject(FStaticMeshPhysicsProxy* InObject);
-	void RemoveObject(FSingleParticlePhysicsProxy* InObject);
+	void RemoveObject(Chaos::FSingleParticlePhysicsProxy* InObject);
 	void RemoveObject(FGeometryCollectionPhysicsProxy* InObject);
 
 	FPhysicsReplication* GetPhysicsReplication();
@@ -161,7 +162,7 @@ public:
 
 	/** Given a physics proxy, returns its associated body instance if any */
 	FBodyInstance* GetBodyInstanceFromProxy(const IPhysicsProxyBase* PhysicsProxy) const;
-
+	const FBodyInstance* GetBodyInstanceFromProxyAndShape(IPhysicsProxyBase* InProxy, int32 InShapeIndex) const;
 	/**
 	 * Callback when a world ends, to mark updated packages dirty. This can't be done in final
 	 * sync as the editor will ignore packages being dirtied in PIE. Also used to clean up any other references
@@ -201,9 +202,7 @@ public:
 
 	static bool SupportsOriginShifting();
 	void ApplyWorldOffset(FVector InOffset);
-#if WITH_CHAOS
 	virtual float OnStartFrame(float InDeltaTime) override;
-#endif
 
 	bool HandleExecCommands(const TCHAR* Cmd, FOutputDevice* Ar);
 	void ListAwakeRigidBodies(bool bIncludeKinematic);
@@ -230,6 +229,17 @@ public:
 	void DeferPhysicsStateCreation(UPrimitiveComponent* Component);
 	void RemoveDeferredPhysicsStateCreation(UPrimitiveComponent* Component);
 	void ProcessDeferredCreatePhysicsState();
+
+
+	// Storage structure for replication data
+	// probably should just expose read/write API not the structure directly itself like this.
+	struct FPrimitiveComponentReplicationCache
+	{
+		int32 ServerFrame = 0;
+		TMap<FObjectKey, FRigidBodyState>	Map;
+	};
+
+	FPrimitiveComponentReplicationCache ReplicationCache;
 
 private:
 	UPROPERTY()
@@ -278,9 +288,9 @@ private:
 	bool IsOwningWorldEditor() const;
 #endif
 
-#if WITH_CHAOS
 	virtual void OnSyncBodies(Chaos::FPhysicsSolverBase* Solver) override;
-#endif
+
+	void EnableAsyncPhysicsTickCallback();
 
 #if 0
 	void SetKinematicTransform(FPhysicsActorHandle& InActorReference,const Chaos::TRigidTransform<float,3>& NewTransform)
@@ -343,12 +353,14 @@ private:
 	// Maps Component to PhysicsProxy that is created
 	TMap<UPrimitiveComponent*, TArray<IPhysicsProxyBase*>> ComponentToPhysicsProxyMap;
 
+	//TSet<UActorComponent*> FixedTickComponents;
+	//TSet<AActor*> FixedTickActors;
+
 	/** The SolverActor that spawned and owns this scene */
 	TWeakObjectPtr<AActor> SolverActor;
 
-#if WITH_CHAOS
 	Chaos::FReal LastEventDispatchTime;
-#endif 
+	class FAsyncPhysicsTickCallback* AsyncPhysicsTickCallback = nullptr;
 
 #if WITH_EDITOR
 	// Counter used to check a match with the single step status.
@@ -360,8 +372,7 @@ private:
 #endif
 
 	// Allow other code to obtain read-locks when needed
-	friend struct FScopedSceneReadLock;
+	friend struct ChaosInterface::FScopedSceneReadLock;
 	friend struct FScopedSceneLock_Chaos;
 };
 
-#endif

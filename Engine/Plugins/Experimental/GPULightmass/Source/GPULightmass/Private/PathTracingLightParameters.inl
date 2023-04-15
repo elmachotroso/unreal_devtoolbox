@@ -7,9 +7,14 @@
 
 #if RHI_RAYTRACING
 
-RENDERER_API FRDGTexture* PrepareIESAtlas(const TMap<FTexture*, int>& InIESLightProfilesMap, FRDGBuilder& GraphBuilder);
+RENDERER_API FRDGTexture* PrepareIESAtlas(const TMap<FTexture*, int>& InIESLightProfilesMap, FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel);
 
-RENDERER_API void PrepareLightGrid(FRDGBuilder& GraphBuilder, const FViewInfo& View, FPathTracingLightGrid* LightGridParameters, const FPathTracingLight* Lights, uint32 NumLights, uint32 NumInfiniteLights, FRDGBufferSRV* LightsSRV);
+RENDERER_API void PrepareLightGrid(FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel, FPathTracingLightGrid* LightGridParameters, const FPathTracingLight* Lights, uint32 NumLights, uint32 NumInfiniteLights, FRDGBufferSRV* LightsSRV);
+
+static uint32 EncodeToF16x2(const FVector2f& In)
+{
+	return FFloat16(In.X).Encoded | (FFloat16(In.Y).Encoded << 16);
+}
 
 template<typename PassParameterType>
 void SetupPathTracingLightParameters(
@@ -26,7 +31,7 @@ void SetupPathTracingLightParameters(
 		DestLight.Color = FVector3f(LightScene.SkyLight->Color);
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
-		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
+		DestLight.Flags |= LightScene.SkyLight->bCastShadow ? PATHTRACER_FLAG_CAST_SHADOW_MASK : 0;
 		bool SkyLightIsStationary = LightScene.SkyLight->bStationary;
 		DestLight.Flags |= SkyLightIsStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_SKY;
@@ -53,16 +58,15 @@ void SetupPathTracingLightParameters(
 
 		DestLight.Normal = (FVector3f)-Light.Direction;
 		DestLight.Color = FVector3f(Light.Color);
-		DestLight.Dimensions = FVector3f(
+		DestLight.Dimensions = FVector2f(
 			FMath::Sin(0.5f * FMath::DegreesToRadians(Light.LightSourceAngle)),
-			FMath::Sin(0.5f * FMath::DegreesToRadians(Light.LightSourceSoftAngle)),
 			0.0f);
 		DestLight.Attenuation = 1.0;
 		DestLight.IESTextureSlice = -1;
 
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
-		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
+		DestLight.Flags |= Light.bCastShadow ? PATHTRACER_FLAG_CAST_SHADOW_MASK : 0;
 		DestLight.Flags |= Light.bStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_DIRECTIONAL;
 	}
@@ -81,7 +85,7 @@ void SetupPathTracingLightParameters(
 		DestLight.dPdu = (FVector3f)FVector::CrossProduct(Light.Tangent, Light.Direction);
 		DestLight.dPdv = (FVector3f)Light.Tangent;
 
-		DestLight.Dimensions = FVector3f(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
+		DestLight.Dimensions = FVector2f(Light.SourceRadius, Light.SourceLength);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
 		DestLight.FalloffExponent = Light.FalloffExponent;
 
@@ -96,7 +100,7 @@ void SetupPathTracingLightParameters(
 
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
-		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
+		DestLight.Flags |= Light.bCastShadow ? PATHTRACER_FLAG_CAST_SHADOW_MASK : 0;
 		DestLight.Flags |= Light.IsInverseSquared ? 0 : PATHTRACER_FLAG_NON_INVERSE_SQUARE_FALLOFF_MASK;
 		DestLight.Flags |= Light.bStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_POINT;
@@ -118,7 +122,7 @@ void SetupPathTracingLightParameters(
 		DestLight.dPdu = (FVector3f)FVector::CrossProduct(Light.Tangent, Light.Direction);
 		DestLight.dPdv = (FVector3f)Light.Tangent;
 		DestLight.Color = FVector3f(Light.Color);
-		DestLight.Dimensions = FVector3f(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
+		DestLight.Dimensions = FVector2f(Light.SourceRadius, Light.SourceLength);
 		DestLight.Shaping = FVector2f(Light.SpotAngles);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
 		DestLight.FalloffExponent = Light.FalloffExponent;
@@ -134,7 +138,7 @@ void SetupPathTracingLightParameters(
 
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
-		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
+		DestLight.Flags |= Light.bCastShadow ? PATHTRACER_FLAG_CAST_SHADOW_MASK : 0;
 		DestLight.Flags |= Light.IsInverseSquared ? 0 : PATHTRACER_FLAG_NON_INVERSE_SQUARE_FALLOFF_MASK;
 		DestLight.Flags |= Light.bStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_SPOT;
@@ -174,7 +178,7 @@ void SetupPathTracingLightParameters(
 		LightColor /= 0.5f * Light.SourceWidth * Light.SourceHeight;
 		DestLight.Color = FVector3f(LightColor);
 
-		DestLight.Dimensions = FVector3f(Light.SourceWidth, Light.SourceHeight, 0.0f);
+		DestLight.Dimensions = FVector2f(Light.SourceWidth, Light.SourceHeight);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
 		DestLight.Shaping = FVector2f(FMath::Cos(FMath::DegreesToRadians(Light.BarnDoorAngle)), Light.BarnDoorLength);
 
@@ -189,7 +193,7 @@ void SetupPathTracingLightParameters(
 
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
-		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
+		DestLight.Flags |= Light.bCastShadow ? PATHTRACER_FLAG_CAST_SHADOW_MASK : 0;
 		DestLight.Flags |= Light.bStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_RECT;
 
@@ -206,6 +210,13 @@ void SetupPathTracingLightParameters(
 		FVector3f Tip = Center + Normal * Radius;
 		DestLight.TranslatedBoundMin = Tip.ComponentMin(Center - Radius * Disc);
 		DestLight.TranslatedBoundMax = Tip.ComponentMax(Center + Radius * Disc);
+
+		DestLight.RectLightAtlasUVOffset = EncodeToF16x2(Light.RectLightAtlasUVOffset);
+		DestLight.RectLightAtlasUVScale  = EncodeToF16x2(Light.RectLightAtlasUVScale);
+		if (Light.RectLightAtlasMaxLevel < 16)
+		{
+			DestLight.Flags |= PATHTRACER_FLAG_HAS_RECT_TEXTURE_MASK;
+		}
 	}
 
 	PassParameters->SceneLightCount = Lights.Num();
@@ -221,14 +232,15 @@ void SetupPathTracingLightParameters(
 
 	if (IESLightProfilesMap.Num() > 0)
 	{
-		PassParameters->IESTexture = PrepareIESAtlas(IESLightProfilesMap, GraphBuilder);
+		PassParameters->IESTexture = PrepareIESAtlas(IESLightProfilesMap, GraphBuilder, View.GetFeatureLevel());
 	}
 	else
 	{
 		PassParameters->IESTexture = GraphBuilder.RegisterExternalTexture(GSystemTextures.WhiteDummy);
 	}
+	PassParameters->IESTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-	PrepareLightGrid(GraphBuilder, View, &PassParameters->LightGridParameters, Lights.GetData(), PassParameters->SceneLightCount, NumInfiniteLights, PassParameters->SceneLights);
+	PrepareLightGrid(GraphBuilder, View.GetFeatureLevel(), &PassParameters->LightGridParameters, Lights.GetData(), PassParameters->SceneLightCount, NumInfiniteLights, PassParameters->SceneLights);
 }
 
 #endif  // RHI_RAYTRACING

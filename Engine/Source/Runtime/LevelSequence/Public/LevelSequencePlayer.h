@@ -7,13 +7,16 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "IMovieScenePlayer.h"
+#endif
 #include "Evaluation/MovieScenePlayback.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Evaluation/PersistentEvaluationData.h"
 #include "MovieSceneSequencePlayer.h"
 #include "Misc/QualifiedFrameTime.h"
 #include "LevelSequence.h"
+#include "LevelSequenceCameraSettings.h"
 #include "LevelSequencePlayer.generated.h"
 
 class AActor;
@@ -67,18 +70,6 @@ struct FLevelSequencePlayerSnapshot
 	FMovieSceneSequenceID ShotID;
 };
 
-USTRUCT(BlueprintType)
-struct FLevelSequenceCameraSettings
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aspect Ratio")
-	bool bOverrideAspectRatioAxisConstraint = true;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aspect Ratio", meta = (EditCondition = bOverrideAspectRatioAxisConstraint))
-	TEnumAsByte<enum EAspectRatioAxisConstraint> AspectRatioAxisConstraint = EAspectRatioAxisConstraint::AspectRatio_MaintainXFOV;
-};
-
 /**
  * ULevelSequencePlayer is used to actually "play" an level sequence asset at runtime.
  *
@@ -99,12 +90,16 @@ public:
 	 *
 	 * @param InLevelSequence The level sequence to play.
 	 * @param InLevel The level that the animation is played in.
-	 * @param Settings The desired playback settings
+	 * @param InCameraSettings The desired camera settings
 	 */
-	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings);
+	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FLevelSequenceCameraSettings& InCameraSettings);
 
-	UE_DEPRECATED(4.23, "Added camera settings to Initialize.")
-	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings) { Initialize(InLevelSequence, InLevel, Settings, FLevelSequenceCameraSettings()); }
+	UE_DEPRECATED(5.1, "Use SetPlaybackSettings(...) then Initialize(ULevelSequence*, ULevel*, const FLevelSequenceCameraSettings&)")
+	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings)
+	{
+		SetPlaybackSettings(Settings);
+		Initialize(InLevelSequence, InLevel, InCameraSettings);
+	}
 
 public:
 
@@ -170,8 +165,8 @@ private:
 	/** The world this player will spawn actors in, if needed */
 	TWeakObjectPtr<ULevel> Level;
 
-	/** The full asset path (/Game/Folder/MapName.MapName) of the streaming level this player resides within. Bindings to actors with the same FSoftObjectPath::GetAssetPathName are resolved within the cached level, rather than globally.. */
-	FName StreamedLevelAssetPath;
+	/** The full asset path (/Game/Folder/MapName.MapName) of the streaming level this player resides within. Bindings to actors with the same FSoftObjectPath::GetAssetPath are resolved within the cached level, rather than globally.. */
+	FTopLevelAssetPath StreamedLevelAssetPath;
 
 	/** The camera settings to use when playing the sequence */
 	FLevelSequenceCameraSettings CameraSettings;

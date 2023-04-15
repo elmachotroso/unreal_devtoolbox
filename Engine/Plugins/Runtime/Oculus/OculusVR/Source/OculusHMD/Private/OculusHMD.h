@@ -28,6 +28,7 @@
 #include "XRThreadUtils.h"
 #include "ProceduralMeshComponent.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 namespace OculusHMD
 {
@@ -67,7 +68,7 @@ enum FRecenterTypes
 
 class FOculusHMD : public FHeadMountedDisplayBase, public FXRRenderTargetManager, public IStereoLayers, public FHMDSceneViewExtension, public FOculusAssetManager
 {
-	friend class UOculusFunctionLibrary;
+	friend class UDEPRECATED_UOculusFunctionLibrary;
 	friend FOculusHMDModule;
 	friend class FSplash;
 	friend class FConsoleCommands;
@@ -167,12 +168,13 @@ public:
 	virtual FMatrix GetStereoProjectionMatrix(const int32 ViewIndex) const override;
 	virtual void InitCanvasFromView(class FSceneView* InView, class UCanvas* Canvas) override;
 	//virtual void GetEyeRenderParams_RenderThread(const struct FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
-	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
+	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture* BackBuffer, class FRHITexture* SrcTexture, FVector2D WindowSize) const override;
 	//virtual void SetClippingPlanes(float NCP, float FCP) override;
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 	virtual IStereoLayers* GetStereoLayers() override { return this; }
 	//virtual void UseImplicitHmdPosition(bool bInImplicitHmdPosition) override;
 	//virtual bool GetUseImplicitHmdPosition() override;
+	virtual bool IsStandaloneStereoOnlyDevice() const override { return bIsStandaloneStereoOnlyDevice; }
 
 	// FHeadMountedDisplayBase interface
 	virtual FVector2D GetEyeCenterPoint_RenderThread(int32 ViewIndex) const override;
@@ -209,9 +211,9 @@ public:
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override;
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
-	virtual void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
+	virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
 	virtual int32 GetPriority() const override;
 //	virtual bool LateLatchingEnabled() const override;
 //	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
@@ -334,7 +336,7 @@ public:
 	OCULUSHMD_API void StartGameFrame_GameThread(); // Called from OnStartGameFrame or from FOculusInput::SendControllerEvents (first actual call of the frame)
 	void FinishGameFrame_GameThread(); // Called from OnEndGameFrame
 	void StartRenderFrame_GameThread(); // Called from BeginRenderViewFamily
-	void FinishRenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList); // Called from PostRenderViewFamily_RenderThread
+	void FinishRenderFrame_RenderThread(FRDGBuilder& GraphBuilder); // Called from PostRenderViewFamily_RenderThread
 	void StartRHIFrame_RenderThread(); // Called from PreRenderViewFamily_RenderThread
 	void FinishRHIFrame_RHIThread(); // Called from FinishRendering_RHIThread
 
@@ -420,6 +422,7 @@ protected:
 	TWeakPtr<SWindow> CachedWindow;
 	FVector2D CachedWindowSize;
 	float CachedWorldToMetersScale;
+	bool bIsStandaloneStereoOnlyDevice;
 
 	// Game thread
 	FSettingsPtr Settings;
@@ -465,5 +468,7 @@ typedef TSharedPtr< FOculusHMD, ESPMode::ThreadSafe > FOculusHMDPtr;
 
 
 } // namespace OculusHMD
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif //OCULUS_HMD_SUPPORTED_PLATFORMS

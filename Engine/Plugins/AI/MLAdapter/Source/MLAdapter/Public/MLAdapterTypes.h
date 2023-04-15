@@ -11,12 +11,12 @@
 class AActor;
 class AController;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogUnrealEditorMLAdapter, Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogMLAdapter, Log, All);
 
 #ifndef DEFINE_ENUM_TO_STRING
-#define DEFINE_ENUM_TO_STRING(EnumType) FString EnumToString(const EnumType Value) \
+#define DEFINE_ENUM_TO_STRING(EnumType, EnumPackage) FString EnumToString(const EnumType Value) \
 { \
-	static const UEnum* TypeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT(#EnumType)); \
+	static const UEnum* TypeEnum = FindObject<UEnum>(nullptr, TEXT(EnumPackage) TEXT(".") TEXT(#EnumType)); \
 	return TypeEnum->GetNameStringByIndex(static_cast<int32>(Value)); \
 }
 #endif //DEFINE_ENUM_TO_STRING
@@ -31,7 +31,8 @@ namespace FMLAdapter
 	static const uint32 InvalidSensorID = 0;
 	static const uint32 InvalidActuatorID = 0;
 
-	/** MLAdapter-flavored new object creation. We're using this with all the objects 
+	/**
+	 *	MLAdapter-flavored new object creation. We're using this with all the objects 
 	 *	we intend to access from outside the game-thread (most notably from the 
 	 *	rpc calls). This gives us more control over objects' life cycle.
 	 *
@@ -92,7 +93,7 @@ struct FMLAdapterMemoryWriter : FMemoryWriter
 
 struct FMLAdapterMemoryReader : FMemoryReader
 {
-	FMLAdapterMemoryReader(TArray<uint8>& InBytes, bool bIsPersistent = false)
+	FMLAdapterMemoryReader(const TArray<uint8>& InBytes, bool bIsPersistent = false)
 		: FMemoryReader(InBytes, bIsPersistent)
 	{}
 };

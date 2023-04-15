@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Online/CoreOnline.h"
+#include "Online/OnlineBase.h"
 #include "OnlineSubsystemNames.h"  // can be removed once we have no more temporary FUniqueNetId subtypes
 #include "OnlineSubsystemPackage.h"
 
@@ -24,34 +25,6 @@ extern ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
 #endif
 
 #define DEDICATED_SERVER_USER_INDEX 0
-
-#ifndef ONLINE_SUCCESS
-#define ONLINE_SUCCESS 0
-#endif
-
-#ifndef ONLINE_FAIL
-#define ONLINE_FAIL (uint32)-1
-#endif
-
-#ifndef ONLINE_IO_PENDING
-#define ONLINE_IO_PENDING 997
-#endif
-
-/**
- * Generates a random nonce (number used once) of the desired length
- *
- * @param Nonce the buffer that will get the randomized data
- * @param Length the number of bytes to generate random values for
- */
-inline void GenerateNonce(uint8* Nonce, uint32 Length)
-{
-//@todo joeg -- switch to CryptGenRandom() if possible or something equivalent
-	// Loop through generating a random value for each byte
-	for (uint32 NonceIndex = 0; NonceIndex < Length; NonceIndex++)
-	{
-		Nonce[NonceIndex] = (uint8)(FMath::Rand() & 255);
-	}
-}
 
 /**
  * Environment for the current online platform
@@ -255,7 +228,7 @@ namespace EFeaturePrivilegeLevel
 /** The state of an async task (read friends, read content, write cloud file, etc) request */
 namespace EOnlineAsyncTaskState
 {
-	enum Type
+	enum Type : int
 	{
 		/** The task has not been started */
 		NotStarted,
@@ -427,42 +400,6 @@ namespace ELeaderboardUpdateMethod
 		case Force:
 			{
 				return TEXT("Force");
-			}
-		}
-		return TEXT("");
-	}
-}
-
-/** Enum indicating the state the LAN beacon is in */
-namespace ELanBeaconState
-{
-	enum Type
-	{
-		/** The lan beacon is disabled */
-		NotUsingLanBeacon,
-		/** The lan beacon is responding to client requests for information */
-		Hosting,
-		/** The lan beacon is querying servers for information */
-		Searching
-	};
-
-	/** @return the stringified version of the enum passed in */
-	inline const TCHAR* ToString(ELanBeaconState::Type EnumVal)
-	{
-		switch (EnumVal)
-		{
-
-		case NotUsingLanBeacon:
-			{
-				return TEXT("NotUsingLanBeacon");
-			}
-		case Hosting:
-			{
-				return TEXT("Hosting");
-			}
-		case Searching:
-			{
-				return TEXT("Searching");
 			}
 		}
 		return TEXT("");
@@ -939,10 +876,9 @@ public:
 		}
 	}
 
-	/** Needed for TMap::GetTypeHash() */
-	friend uint32 GetTypeHash(const FUniqueNetIdString& A)
+	virtual uint32 GetTypeHash() const override
 	{
-		return ::GetTypeHash(A.UniqueNetIdStr);
+		return ::GetTypeHash(UniqueNetIdStr);
 	}
 
 public:

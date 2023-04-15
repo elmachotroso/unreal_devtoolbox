@@ -21,6 +21,15 @@
 
 const FName FRemoteControlProtocolDMX::ProtocolName = TEXT("DMX");
 
+#if WITH_EDITOR
+
+namespace RemoteControlDMXProtocolColumns
+{
+	static FName Channel = TEXT("Channel");
+	static FName Universe = TEXT("Universe");
+}
+
+#endif // WITH_EDITOR
 
 uint8 FRemoteControlDMXProtocolEntity::GetRangePropertySize() const
 {
@@ -74,6 +83,17 @@ const FString& FRemoteControlDMXProtocolEntity::GetRangePropertyMaxValue() const
 			}
 	}
 }
+
+#if WITH_EDITOR
+
+void FRemoteControlDMXProtocolEntity::RegisterProperties()
+{
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlDMXProtocolColumns::Universe, FRemoteControlDMXProtocolEntityExtraSetting, Universe);
+	
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlDMXProtocolColumns::Channel, FRemoteControlDMXProtocolEntityExtraSetting, StartingChannel);
+}
+
+#endif // WITH_EDITOR
 
 void FRemoteControlDMXProtocolEntity::Initialize()
 {
@@ -323,6 +343,20 @@ void FRemoteControlProtocolDMX::ProcessAutoBinding(const FRemoteControlProtocolE
 		}
 	}
 }
+
+void FRemoteControlProtocolDMX::RegisterColumns()
+{
+	FRemoteControlProtocol::RegisterColumns();
+
+	REGISTER_COLUMN(RemoteControlDMXProtocolColumns::Channel
+		, LOCTEXT("RCPresetChannelColumnHeader", "Channel")
+		, ProtocolColumnConstants::ColumnSizeMicro);
+
+	REGISTER_COLUMN(RemoteControlDMXProtocolColumns::Universe
+		, LOCTEXT("RCPresetUniverseColumnHeader", "Universe")
+		, ProtocolColumnConstants::ColumnSizeMicro);
+}
+
 #endif
 
 void FRemoteControlProtocolDMX::UnbindAll()

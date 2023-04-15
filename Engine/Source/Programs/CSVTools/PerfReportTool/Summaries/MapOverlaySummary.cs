@@ -7,6 +7,8 @@ using System.Linq;
 using System.Xml.Linq;
 using PerfReportTool;
 using CSVStats;
+using System.Drawing;
+using System.Drawing.Imaging;
 
 namespace PerfSummaries
 {
@@ -116,7 +118,24 @@ namespace PerfSummaries
 			return (int)(svgY + 0.5f);
 		}
 
-		public override void WriteSummaryData(System.IO.StreamWriter htmlFile, CsvStats csvStats, bool bWriteSummaryCsv, SummaryTableRowData rowData, string htmlFileName)
+		private void CopyAndResizeImage(string sourceImagePath, string destImagePath, int destWidth, int destHeight)
+		{
+			Console.WriteLine("Downsampling map image.\n  Source: " + sourceImagePath+"\n  Dest  : "+destImagePath);
+			using (FileStream fileStream = new FileStream(sourceImagePath, FileMode.Open, FileAccess.Read))
+			{
+				Console.WriteLine("Reading source image");
+				var image = System.Drawing.Image.FromStream(fileStream);
+				Console.WriteLine("Generating downsampled image");
+				var thumbnail = image.GetThumbnailImage(destWidth, destHeight, null, IntPtr.Zero);
+				using (var destImageStream = new FileStream(destImagePath, FileMode.OpenOrCreate, FileAccess.Write))
+				{
+					Console.WriteLine("Saving downsampled map image: " + destImageStream);
+					thumbnail.Save(destImageStream, ImageFormat.Jpeg);
+				}
+			}
+		}
+
+		public override void WriteSummaryData(System.IO.StreamWriter htmlFile, CsvStats csvStats, CsvStats csvStatsUnstripped, bool bWriteSummaryCsv, SummaryTableRowData rowData, string htmlFileName)
 		{
 			// Output HTML
 			if (htmlFile != null)
@@ -124,11 +143,20 @@ namespace PerfSummaries
 				string outputDirectory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(htmlFileName));
 				string outputMapFilename = System.IO.Path.Combine(outputDirectory, destImageFilename);
 
+				// Skip the copy if the output file already exists
 				if (!File.Exists(outputMapFilename))
 				{
-					// Copy the file to the reports folder and reset attributes to ensure it's not readonly if the source is
-					File.Copy(sourceImagePath, outputMapFilename);
-					File.SetAttributes(outputMapFilename, FileAttributes.Normal);
+					if (File.Exists(sourceImagePath))
+					{
+						// Copy the file to the reports folder and reset attributes to ensure it's not readonly if the source is
+						//					File.Copy(sourceImagePath, outputMapFilename);
+						//					File.SetAttributes(outputMapFilename, FileAttributes.Normal);
+						CopyAndResizeImage(sourceImagePath, outputMapFilename, (int)imageWidth, (int)imageHeight);
+					}
+					else
+					{
+						Console.WriteLine("[Warning] Can't find source map image: " + sourceImagePath);
+					}
 				}
 
 				// Check if the file exists in the output directory

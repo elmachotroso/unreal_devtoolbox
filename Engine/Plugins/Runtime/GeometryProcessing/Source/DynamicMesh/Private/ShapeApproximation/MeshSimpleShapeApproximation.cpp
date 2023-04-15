@@ -6,13 +6,16 @@
 #include "MinVolumeSphere3.h"
 #include "MinVolumeBox3.h"
 #include "FitCapsule3.h"
+#include "CompGeom/ConvexDecomposition3.h"
 //#include "DynamicMesh/DynamicMeshAABBTree3.h"
-
+#include "Implicit/SweepingMeshSDF.h"
 #include "ShapeApproximation/ShapeDetection3.h"
 #include "MeshQueries.h"
 #include "Operations/MeshConvexHull.h"
 #include "Operations/MeshProjectionHull.h"
 #include "Util/ProgressCancel.h"
+
+#define LOCTEXT_NAMESPACE "MeshSimpleShapeApproximation"
 
 using namespace UE::Geometry;
 
@@ -295,10 +298,46 @@ void FMeshSimpleShapeApproximation::Generate_ConvexHulls(FSimpleShapeSet3d& Shap
 
 		if (Hull.Compute(Progress))
 		{
-			FConvexShape3d NewConvex;
-			NewConvex.Mesh = MoveTemp(Hull.ConvexHull);
 			GeometryLock.Lock();
-			ShapeSetOut.Convexes.Add(NewConvex);
+			ShapeSetOut.Convexes.Emplace(MoveTemp(Hull.ConvexHull));
+			GeometryLock.Unlock();
+		}
+	});
+}
+
+
+
+void FMeshSimpleShapeApproximation::Generate_ConvexHullDecompositions(FSimpleShapeSet3d& ShapeSetOut, FProgressCancel* Progress)
+{
+	FCriticalSection GeometryLock;
+	ParallelFor(SourceMeshes.Num(), [&](int32 idx)
+	{
+		if (GetDetectedSimpleShape(SourceMeshCaches[idx], ShapeSetOut, GeometryLock))
+		{
+			return;
+		}
+
+		if (Progress && Progress->Cancelled())
+		{
+			return;
+		}
+
+		const FDynamicMesh3& SourceMesh = *SourceMeshes[idx];
+		// TODO: if (bSimplifyHulls), also consider simplifying the input?
+		FConvexDecomposition3 Decomposition(SourceMesh);
+		const int32 NumAdditionalSplits = FMath::FloorToInt32(float(ConvexDecompositionMaxPieces) * ConvexDecompositionSearchFactor);
+		Decomposition.Compute(ConvexDecompositionMaxPieces, NumAdditionalSplits, ConvexDecompositionErrorTolerance, ConvexDecompositionMinPartThickness);
+
+		for (int32 HullIdx = 0; HullIdx < Decomposition.NumHulls(); HullIdx++)
+		{
+			FDynamicMesh3 HullMesh = Decomposition.GetHullMesh(HullIdx);
+			if (bSimplifyHulls && FMeshConvexHull::SimplifyHull(HullMesh, HullTargetFaceCount, Progress) == false)
+			{
+				return;
+			}
+
+			GeometryLock.Lock();
+			ShapeSetOut.Convexes.Emplace(MoveTemp(HullMesh));
 			GeometryLock.Unlock();
 		}
 	});
@@ -373,7 +412,49 @@ void FMeshSimpleShapeApproximation::Generate_ProjectedHulls(FSimpleShapeSet3d& S
 }
 
 
+void FMeshSimpleShapeApproximation::Generate_LevelSets(FSimpleShapeSet3d& ShapeSetOut, FProgressCancel* Progress)
+{
+	FCriticalSection GeometryLock;
+	ParallelFor(SourceMeshes.Num(), [&](int32 MeshIndex)
+	{
+		if (GetDetectedSimpleShape(SourceMeshCaches[MeshIndex], ShapeSetOut, GeometryLock))
+		{
+			return;
+		}
 
+		const FAxisAlignedBox3d Bounds = SourceMeshes[MeshIndex]->GetBounds();
+		const double CellSize = Bounds.MaxDim() / LevelSetGridResolution;
+
+		TMeshAABBTree3<FDynamicMesh3> Spatial(SourceMeshes[MeshIndex]);
+
+		TSweepingMeshSDF<FDynamicMesh3> SDF;
+		SDF.Mesh = SourceMeshes[MeshIndex];
+		SDF.Spatial = &Spatial;
+		SDF.ComputeMode = TSweepingMeshSDF<FDynamicMesh3>::EComputeModes::NarrowBand_SpatialFloodFill;
+		SDF.CellSize = (float)CellSize;
+		SDF.NarrowBandMaxDistance = 2.0 * CellSize;
+		SDF.ExactBandWidth = FMath::CeilToInt32(SDF.NarrowBandMaxDistance / CellSize);
+		SDF.ExpandBounds = 2.0 * CellSize * FVector3d::One();
+
+		if (SDF.Compute(Bounds))
+		{
+			FLevelSetShape3d NewLevelSet;
+			NewLevelSet.GridTransform = FTransform((FVector3d)SDF.GridOrigin);
+			NewLevelSet.Grid = MoveTemp(SDF.Grid);
+			NewLevelSet.CellSize = SDF.CellSize;
+
+			GeometryLock.Lock();
+			ShapeSetOut.LevelSets.Add(MoveTemp(NewLevelSet));
+			GeometryLock.Unlock();
+		}
+		else if (Progress)
+		{
+			GeometryLock.Lock();
+			Progress->AddWarning(LOCTEXT("Generate_LevelSets_Failed", "Generating a new Level Set failed"), FProgressCancel::EMessageLevel::UserWarning);
+			GeometryLock.Unlock();
+		}
+	});
+}
 
 void FMeshSimpleShapeApproximation::Generate_MinVolume(FSimpleShapeSet3d& ShapeSetOut)
 {
@@ -429,3 +510,5 @@ void FMeshSimpleShapeApproximation::Generate_MinVolume(FSimpleShapeSet3d& ShapeS
 		}
 	});
 }
+
+#undef LOCTEXT_NAMESPACE

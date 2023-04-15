@@ -7,7 +7,7 @@
 #include "Engine/EngineBaseTypes.h"
 #include "Widgets/SWidget.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/TextureStreamingTypes.h"
 
 class FUICommandList;
@@ -138,6 +138,9 @@ public:
 
 	/** Changes the viewport to visualize virtual shadow map content */
 	TSharedPtr< FUICommandInfo > VisualizeVirtualShadowMapMode;
+
+	/** Changes the viewport to Skin Cache mode */
+	TSharedPtr< FUICommandInfo > VisualizeGPUSkinCacheMode;
 
 	/** Collision Draw Mode */
 	TSharedPtr< FUICommandInfo > CollisionPawn;

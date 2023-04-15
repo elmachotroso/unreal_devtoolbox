@@ -1,47 +1,91 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LocalizationTargetDetailCustomization.h"
-#include "LocalizationTargetTypes.h"
-#include "HAL/PlatformFileManager.h"
-#include "Misc/MessageDialog.h"
-#include "Internationalization/Culture.h"
-#include "Misc/ConfigCacheIni.h"
-#include "UObject/UnrealType.h"
+
+#include "CoreGlobals.h"
 #include "DesktopPlatformModule.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "FileHelpers.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/InputChord.h"
 #include "Framework/Commands/Commands.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Notifications/SErrorText.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/Input/SComboBox.h"
-#include "EditorStyleSet.h"
-#include "ISourceControlOperation.h"
-#include "SourceControlOperations.h"
-#include "FileHelpers.h"
-#include "ISourceControlModule.h"
-#include "PropertyHandle.h"
-#include "DetailLayoutBuilder.h"
-#include "LocalizationConfigurationScript.h"
-#include "SLocalizationTargetStatusButton.h"
-#include "SLocalizationTargetEditorCultureRow.h"
-#include "SCulturePicker.h"
-#include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "GenericPlatform/GenericWindow.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/PlatformMisc.h"
+#include "IDesktopPlatform.h"
 #include "IDetailsView.h"
-#include "LocalizationCommandletTasks.h"
-#include "ObjectEditorUtils.h"
-#include "LocalizationSettings.h"
-#include "ILocalizationServiceProvider.h"
 #include "ILocalizationServiceModule.h"
+#include "ILocalizationServiceProvider.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlOperation.h"
+#include "ISourceControlProvider.h"
+#include "ISourceControlState.h"
+#include "Internationalization/Culture.h"
+#include "Layout/Margin.h"
+#include "LocalizationCommandletTasks.h"
+#include "LocalizationConfigurationScript.h"
+#include "LocalizationSettings.h"
+#include "LocalizationTargetTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
+#include "Misc/Guid.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "ObjectEditorUtils.h"
+#include "PropertyHandle.h"
+#include "SCulturePicker.h"
+#include "SLocalizationTargetEditorCultureRow.h"
+#include "SLocalizationTargetStatusButton.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "SourceControlOperations.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/Function.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "LocalizationTargetEditor"
 
@@ -91,7 +135,7 @@ class FLocalizationTargetEditorCommands : public TCommands<FLocalizationTargetEd
 {
 public:
 	FLocalizationTargetEditorCommands() 
-		: TCommands<FLocalizationTargetEditorCommands>("LocalizationTargetEditor", NSLOCTEXT("Contexts", "LocalizationTargetEditor", "Localization Target Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FLocalizationTargetEditorCommands>("LocalizationTargetEditor", NSLOCTEXT("Contexts", "LocalizationTargetEditor", "Localization Target Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 
@@ -245,28 +289,28 @@ void FLocalizationTargetDetailCustomization::CustomizeDetails(IDetailLayoutBuild
 			return CanGatherText() ? FLocalizationTargetEditorCommands::Get().GatherText->GetDescription() : LOCTEXT("GatherDisabledToolTip", "Must have a native culture specified in order to gather.");
 		}));
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().GatherText, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::GatherText), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanGatherText));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().GatherText, NAME_None, TAttribute<FText>(), GatherToolTipTextAttribute, FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.GatherText"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().GatherText, NAME_None, TAttribute<FText>(), GatherToolTipTextAttribute, FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.GatherText"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().ImportTextAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::ImportTextAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanImportTextAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.ImportTextAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.ImportTextAllCultures"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().ExportTextAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::ExportTextAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanExportTextAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ExportTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.ExportTextAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ExportTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.ExportTextAllCultures"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().ImportDialogueScriptAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::ImportDialogueScriptAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanImportDialogueScriptAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportDialogueScriptAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.ImportDialogueScriptAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportDialogueScriptAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.ImportDialogueScriptAllCultures"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().ExportDialogueScriptAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::ExportDialogueScriptAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanExportDialogueScriptAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ExportDialogueScriptAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.ExportDialogueScriptAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ExportDialogueScriptAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.ExportDialogueScriptAllCultures"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().ImportDialogueAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::ImportDialogueAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanImportDialogueAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportDialogueAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.ImportDialogueAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().ImportDialogueAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.ImportDialogueAllCultures"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().CountWords, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CountWords), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanCountWords));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().CountWords, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.CountWords"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().CountWords, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.CountWords"));
 
 		CommandList->MapAction(FLocalizationTargetEditorCommands::Get().CompileTextAllCultures, FExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CompileTextAllCultures), FCanExecuteAction::CreateSP(this, &FLocalizationTargetDetailCustomization::CanCompileTextAllCultures));
-		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().CompileTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "LocalizationTargetEditor.CompileTextAllCultures"));
+		ToolBarBuilder.AddToolBarButton(FLocalizationTargetEditorCommands::Get().CompileTextAllCultures, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LocalizationTargetEditor.CompileTextAllCultures"));
 
 		if (ILocalizationServiceModule::Get().IsEnabled())
 		{
@@ -409,7 +453,7 @@ void FLocalizationTargetDetailCustomization::CustomizeDetails(IDetailLayoutBuild
 
 		static const TArray< TSharedPtr<ELocalizationTargetLoadingPolicy> > LoadingPolicies = []()
 		{
-			UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ELocalizationTargetLoadingPolicy"));
+			UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Localization.ELocalizationTargetLoadingPolicy"));
 			TArray< TSharedPtr<ELocalizationTargetLoadingPolicy> > Array;
 			for (int32 i = 0; i < LoadingPolicyEnum->NumEnums() - 1; ++i)
 			{
@@ -437,7 +481,7 @@ void FLocalizationTargetDetailCustomization::CustomizeDetails(IDetailLayoutBuild
 					.Font(DetailLayoutBuilder->GetDetailFont())
 					.Text_Lambda([this]() 
 					{
-						UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ELocalizationTargetLoadingPolicy"));
+						UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Localization.ELocalizationTargetLoadingPolicy"));
 						return LoadingPolicyEnum->GetDisplayNameTextByValue(static_cast<int64>(GetLoadingPolicy()));
 					})
 				]
@@ -672,8 +716,7 @@ void FLocalizationTargetDetailCustomization::SetLoadingPolicy(const ELocalizatio
 		}
 
 		// Reload the updated file into the config system.
-		FString FinalIniFileName;
-		GConfig->LoadGlobalIniFile(FinalIniFileName, *LoadingPolicyConfig.BaseConfigName, nullptr, /*bForceReload*/true);
+		FConfigContext::ForceReloadIntoGConfig().Load(*LoadingPolicyConfig.BaseConfigName);
 	};
 
 	for (const FLocalizationTargetLoadingPolicyConfig& LoadingPolicyConfig : LoadingPolicyConfigs)
@@ -700,7 +743,7 @@ void FLocalizationTargetDetailCustomization::OnLoadingPolicySelectionChanged(TSh
 
 TSharedRef<SWidget> FLocalizationTargetDetailCustomization::GenerateWidgetForLoadingPolicy(TSharedPtr<ELocalizationTargetLoadingPolicy> LoadingPolicy)
 {
-	UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ELocalizationTargetLoadingPolicy"));
+	UEnum* const LoadingPolicyEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Localization.ELocalizationTargetLoadingPolicy"));
 	return SNew(STextBlock)
 		.Font(DetailLayoutBuilder->GetDetailFont())
 		.Text(LoadingPolicyEnum->GetDisplayNameTextByValue(static_cast<int64>(*LoadingPolicy.Get())));

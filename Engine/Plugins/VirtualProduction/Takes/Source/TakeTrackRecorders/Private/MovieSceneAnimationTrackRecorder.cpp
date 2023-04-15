@@ -7,7 +7,7 @@
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "MovieScene.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SequenceRecorderSettings.h"
 #include "SequenceRecorderUtils.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -20,6 +20,8 @@
 #include "ObjectTools.h"
 #include "Editor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneAnimationTrackRecorder)
+
 #define LOCTEXT_NAMESPACE "MovieSceneAnimationTrackRecorder"
 
 DEFINE_LOG_CATEGORY(AnimationSerialization);
@@ -29,7 +31,7 @@ bool FMovieSceneAnimationTrackRecorderFactory::CanRecordObject(UObject* InObject
 	if (InObjectToRecord->IsA<USkeletalMeshComponent>())
 	{
 		USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InObjectToRecord);
-		if (SkeletalMeshComponent && SkeletalMeshComponent->SkeletalMesh)
+		if (SkeletalMeshComponent && SkeletalMeshComponent->GetSkeletalMeshAsset())
 		{
 			return true;
 		}
@@ -46,15 +48,15 @@ void UMovieSceneAnimationTrackRecorder::CreateAnimationAssetAndSequence(const AA
 {
 	UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
 
-	SkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+	SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 	if (SkeletalMesh.IsValid())
 	{
 		ComponentTransform = SkeletalMeshComponent->GetComponentToWorld().GetRelativeTransform(Actor->GetTransform());
 		FString AnimationAssetName = Actor->GetActorLabel();
 
-		if (ULevelSequence* MasterLevelSequence = OwningTakeRecorderSource->GetMasterLevelSequence())
+		if (ULevelSequence* LeaderLevelSequence = OwningTakeRecorderSource->GetMasterLevelSequence())
 		{
-			UTakeMetaData* AssetMetaData = MasterLevelSequence->FindMetaData<UTakeMetaData>();
+			UTakeMetaData* AssetMetaData = LeaderLevelSequence->FindMetaData<UTakeMetaData>();
 
 			AnimationAssetName = AssetMetaData->GenerateAssetPath(AnimSettings->AnimationAssetName);
 
@@ -72,7 +74,7 @@ void UMovieSceneAnimationTrackRecorder::CreateAnimationAssetAndSequence(const AA
 			FAssetRegistryModule::AssetCreated(AnimSequence.Get());
 
 			// Assign the skeleton we're recording to the newly created Animation Sequence.
-			AnimSequence->SetSkeleton(SkeletalMeshComponent->SkeletalMesh->GetSkeleton());
+			AnimSequence->SetSkeleton(SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton());
 		}
 	}
 
@@ -144,11 +146,11 @@ void UMovieSceneAnimationTrackRecorder::CreateTrackImpl()
 			USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
 			// add all frames
 
-			const USkinnedMeshComponent* const MasterPoseComponentInst = SkeletalMeshComponent->MasterPoseComponent.Get();
+			const USkinnedMeshComponent* const LeaderPoseComponentInst = SkeletalMeshComponent->LeaderPoseComponent.Get();
 			const TArray<FTransform>* SpaceBases;
-			if (MasterPoseComponentInst)
+			if (LeaderPoseComponentInst)
 			{
-				SpaceBases = &MasterPoseComponentInst->GetComponentSpaceTransforms();
+				SpaceBases = &LeaderPoseComponentInst->GetComponentSpaceTransforms();
 			}
 			else
 			{
@@ -157,7 +159,10 @@ void UMovieSceneAnimationTrackRecorder::CreateTrackImpl()
 			for (int32 BoneIndex = 0; BoneIndex < SpaceBases->Num(); ++BoneIndex)
 			{
 				// verify if this bone exists in skeleton
-				const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(SkeletalMeshComponent->MasterPoseComponent != nullptr ? SkeletalMeshComponent->MasterPoseComponent->SkeletalMesh : SkeletalMeshComponent->SkeletalMesh, BoneIndex);
+				const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(
+					SkeletalMeshComponent->LeaderPoseComponent != nullptr ? 
+					SkeletalMeshComponent->LeaderPoseComponent->GetSkinnedAsset() :
+					SkeletalMeshComponent->GetSkinnedAsset(), BoneIndex);
 				if (BoneTreeIndex != INDEX_NONE)
 				{
 					// add tracks for the bone existing
@@ -272,6 +277,12 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 		//If not removing root we also don't record in world space ( not totally sure if it matters but matching up with Sequence Recorder)
 		bool bRecordInWorldSpace = bRootWasRemoved == false ? false : true;
 
+		FTrackRecorderSettings TrackRecorderSettings;
+		if (OwningTakeRecorderSource)
+		{
+			TrackRecorderSettings = OwningTakeRecorderSource->GetTrackRecorderSettings();
+		}
+
 		if (bRecordInWorldSpace && AttachParent && OwningTakeRecorderSource)
 		{
 			// We capture world space transforms for actors if they're attached, but we're not recording the attachment parent
@@ -289,6 +300,8 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 		RecordingSettings.bRecordInWorldSpace = bRecordInWorldSpace;
 		RecordingSettings.bRemoveRootAnimation = bRootWasRemoved;
 		RecordingSettings.bCheckDeltaTimeAtBeginning = false;
+		RecordingSettings.IncludeAnimationNames = TrackRecorderSettings.IncludeAnimationNames;
+		RecordingSettings.ExcludeAnimationNames = TrackRecorderSettings.ExcludeAnimationNames;
 		AnimationRecorder.Init(SkeletalMeshComponent.Get(), AnimSequence.Get(), &AnimationSerializer, RecordingSettings);
 		AnimationRecorder.BeginRecording();
 	}
@@ -327,7 +340,9 @@ void UMovieSceneAnimationTrackRecorder::RemoveRootMotion()
 
 void UMovieSceneAnimationTrackRecorder::ProcessRecordedTimes(const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate)
 {
-	AnimationRecorder.ProcessRecordedTimes(AnimSequence.Get(), SkeletalMeshComponent.Get(), HoursName, MinutesName, SecondsName, FramesName, SubFramesName, SlateName, Slate);
+	UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
+
+	AnimationRecorder.ProcessRecordedTimes(AnimSequence.Get(), SkeletalMeshComponent.Get(), HoursName, MinutesName, SecondsName, FramesName, SubFramesName, SlateName, Slate, AnimSettings->TimecodeBoneMethod);
 }
 
 bool UMovieSceneAnimationTrackRecorder::LoadRecordedFile(const FString& FileName, UMovieScene *InMovieScene, TMap<FGuid, AActor*>& ActorGuidToActorMap,  TFunction<void()> InCompletionCallback)

@@ -35,10 +35,11 @@ class ENGINE_API UAISystemBase : public UObject
 	 * Called by UWorld::CleanupWorld.
 	 * Should be called by overriding functions.
 	 * @param bSessionEnded whether to notify the viewport that the game session has ended
-	 * @param NewWorld Optional new world that will be loaded after this world is cleaned up. Specify a new world to prevent it and it's sublevels from being GCed during map transitions.
 	 */
-	virtual void CleanupWorld(bool bSessionEnded = true, bool bCleanupResources = true, UWorld* NewWorld = NULL);
-
+	virtual void CleanupWorld(bool bSessionEnded = true, bool bCleanupResources = true);
+	UE_DEPRECATED(5.1, "NewWorld was unused and not always calculated correctly and we expect it is not needed; let us know on UDN if it is necessary.")
+	virtual void CleanupWorld(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld);
+	
 	/** 
 	 * Called by UWorld::BeginPlay to indicate the gameplay has started.
 	 * Should be called by overriding functions.
@@ -52,11 +53,11 @@ class ENGINE_API UAISystemBase : public UObject
 
 private:
 	/** List of specific AI system class to create, can be game-specific */
-	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", noclear, meta = (MetaClass = "AISystem", DisplayName = "AISystem Class"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", noclear, meta = (MetaClass = "/Script/AIModule.AISystem", DisplayName = "AISystem Class"))
 	FSoftClassPath AISystemClassName;
 
 	/** Name of a module used to spawn the AI system. If not empty, this module has to implement IAISystemModule */
-	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", noclear, meta = (MetaClass = "AISystem", DisplayName = "AISystem Module"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", noclear, meta = (MetaClass = "/Script/AIModule.AISystem", DisplayName = "AISystem Module"))
 	FName AISystemModuleName;
 
 	FDelegateHandle OnMatchStateSetHandle;

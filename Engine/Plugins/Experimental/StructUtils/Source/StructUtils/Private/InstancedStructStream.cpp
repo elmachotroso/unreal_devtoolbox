@@ -1,6 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 #include "InstancedStructStream.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InstancedStructStream)
+
 void FInstancedStructStream::Reset()
 {
 	ForEach([](FStructView View)
@@ -124,8 +126,7 @@ void FInstancedStructStream::AddStructReferencedObjects(class FReferenceCollecto
 				// The iterator will recursively loop through all structs in structs too.
 				for (TPropertyValueIterator<const FObjectProperty> It(ScriptStruct, StructMemory); It; ++It)
 				{
-					UObject** ObjectPtr = static_cast<UObject**>(const_cast<void*>(It.Value()));
-					Collector.AddReferencedObject(*ObjectPtr);
+					Collector.AddReferencedObject(It.Key()->GetObjectPtrPropertyValueRef(It.Value()));
 				}
 			}
 		}

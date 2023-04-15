@@ -4,6 +4,8 @@
 #include "WaterBodyOceanComponent.h"
 #include "OceanCollisionComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyOceanActor)
+
 #if WITH_EDITOR
 #include "WaterIconHelper.h"
 #endif
@@ -14,13 +16,10 @@ AWaterBodyOcean::AWaterBodyOcean(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	WaterBodyType = EWaterBodyType::Ocean;
-	
-#if WITH_EDITOR
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterBodyOceanSprite"));
-#endif
 
 #if WITH_EDITORONLY_DATA
 	CollisionExtents_DEPRECATED = FVector(50000.f, 50000.f, 10000.f);
+	bIsSpatiallyLoaded = false;
 #endif // WITH_EDITORONLY_DATA
 }
 

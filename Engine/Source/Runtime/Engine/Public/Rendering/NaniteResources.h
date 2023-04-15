@@ -12,6 +12,8 @@
 #include "Serialization/BulkData.h"
 #include "Misc/MemoryReadStream.h"
 #include "NaniteDefinitions.h"
+#include "Templates/DontCopy.h"
+#include "Templates/PimplPtr.h"
 
 /** Whether Nanite::FSceneProxy should store data and enable codepaths needed for debug rendering. */
 #if PLATFORM_WINDOWS
@@ -34,6 +36,9 @@ class UStaticMeshComponent;
 class UInstancedStaticMeshComponent;
 class UHierarchicalInstancedStaticMeshComponent;
 class FVertexFactory;
+class FNaniteVertexFactory;
+
+namespace UE::DerivedData { class FRequestOwner; }
 
 namespace Nanite
 {
@@ -103,6 +108,8 @@ struct FPackedCluster
 	uint32		UV_Prec;									// U0:4, V0:4, U1:4, V1:4, U2:4, V2:4, U3:4, V3:4
 	uint32		PackedMaterialInfo;
 
+	uint32		VertReuseBatchInfo[4];
+
 	uint32		GetNumVerts() const						{ return GetBits(NumVerts_PositionOffset, 9, 0); }
 	uint32		GetPositionOffset() const				{ return GetBits(NumVerts_PositionOffset, 23, 9); }
 
@@ -143,6 +150,22 @@ struct FPackedCluster
 	void		SetColorBitsA(uint32 NumBits)			{ SetBits(ColorBits_GroupIndex, NumBits, 4, 12); }
 
 	void		SetGroupIndex(uint32 GroupIndex)		{ SetBits(ColorBits_GroupIndex, GroupIndex & 0xFFFFu, 16, 16); }
+
+	void SetVertResourceBatchInfo(TArray<uint32>& BatchInfo, uint32 GpuPageOffset, uint32 NumMaterialRanges)
+	{
+		FMemory::Memzero(VertReuseBatchInfo, sizeof(VertReuseBatchInfo));
+		if (NumMaterialRanges <= 3)
+		{
+			check(BatchInfo.Num() <= 4);
+			FMemory::Memcpy(VertReuseBatchInfo, BatchInfo.GetData(), BatchInfo.Num() * sizeof(uint32));
+		}
+		else
+		{
+			check((GpuPageOffset & 0x3) == 0);
+			VertReuseBatchInfo[0] = GpuPageOffset >> 2;
+			VertReuseBatchInfo[1] = NumMaterialRanges;
+		}
+	}
 };
 
 struct FPageStreamingState
@@ -254,6 +277,7 @@ struct FResources
 	uint32							NumInputVertices	= 0;
 	uint16							NumInputMeshes		= 0;
 	uint16							NumInputTexCoords	= 0;
+	uint32							NumClusters			= 0;
 	uint32							ResourceFlags		= 0;
 
 	// Runtime State
@@ -265,11 +289,47 @@ struct FResources
 	uint32	PersistentHash			= NANITE_INVALID_PERSISTENT_HASH;
 
 #if WITH_EDITOR
+	FString							ResourceName;
 	FIoHash							DDCKeyHash;
 	FIoHash							DDCRawHash;
+private:
+	TDontCopy<TPimplPtr<UE::DerivedData::FRequestOwner>> DDCRequestOwner;
 
+	enum class EDDCRebuildState : uint8
+	{
+		Initial,
+		Pending,
+		Succeeded,
+		Failed,
+	};
+
+	struct FDDCRebuildState
+	{
+		std::atomic<EDDCRebuildState> State = EDDCRebuildState::Initial;
+
+		FDDCRebuildState() = default;
+		FDDCRebuildState(const FDDCRebuildState&) {}
+		FDDCRebuildState& operator=(const FDDCRebuildState&) { check(State == EDDCRebuildState::Initial); return *this; }
+	};
+
+	FDDCRebuildState		DDCRebuildState;
+
+	/** Begins an async rebuild of the bulk data from the cache. Must be paired with EndRebuildBulkDataFromCache. */
+	ENGINE_API void BeginRebuildBulkDataFromCache(const UObject* Owner);
+	/** Ends an async rebuild of the bulk data from the cache. May block if poll has not returned true. */
+	ENGINE_API void EndRebuildBulkDataFromCache();
+public:
 	ENGINE_API void DropBulkData();
+
+	UE_DEPRECATED(5.1, "Use RebuildBulkDataFromCacheAsync instead.")
 	ENGINE_API void RebuildBulkDataFromDDC(const UObject* Owner);
+
+	/** Requests (or polls) an async operation that rebuilds the streaming bulk data from the cache.
+		If a rebuild is already in progress, the call will just poll the pending operation.
+		If true is returned, the operation is complete and it is safe to access the streaming data.
+		If false is returned, the operation has not yet completed.
+		The operation can fail, which is indicated by the value of bFailed. */
+	ENGINE_API bool RebuildBulkDataFromCacheAsync(const UObject* Owner, bool& bFailed);
 #endif
 
 	ENGINE_API void InitResources(const UObject* Owner);
@@ -282,6 +342,27 @@ struct FResources
 	bool IsRootPage(uint32 PageIndex) const { return PageIndex < NumRootPages; }
 };
 
+
+class ENGINE_API FVertexFactory final : public ::FVertexFactory
+{
+	DECLARE_VERTEX_FACTORY_TYPE(FVertexFactory);
+
+public:
+	FVertexFactory(ERHIFeatureLevel::Type FeatureLevel) : ::FVertexFactory(FeatureLevel)
+	{
+	}
+	~FVertexFactory()
+	{
+		ReleaseResource();
+	}
+
+	virtual void InitRHI() override final;
+
+	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+};
+
 class FVertexFactoryResource : public FRenderResource
 {
 public:
@@ -289,11 +370,26 @@ public:
 	virtual void ReleaseRHI() override;
 
 	FVertexFactory* GetVertexFactory() { return VertexFactory; }
+	FNaniteVertexFactory* GetVertexFactory2() { return VertexFactory2; }
+
 private:
+	// TODO: Work in progress / experimental (having two factories is temporary).
+	// VertexFactory is the currently used one for VS/PS material shading in Nanite.
+	// VertexFactory2 is the WIP compute shader path.
 	class FVertexFactory* VertexFactory = nullptr;
+	class FNaniteVertexFactory* VertexFactory2 = nullptr;
 };
 
+enum class ERayTracingMode : uint8
+{
+	Fallback = 0u,
+	StreamOut = 1u,
+};
+
+ENGINE_API ERayTracingMode GetRayTracingMode();
 
 extern ENGINE_API TGlobalResource< FVertexFactoryResource > GVertexFactoryResource;
+
+ENGINE_API bool GetSupportsRayTracingProceduralPrimitive(EShaderPlatform InShaderPlatform);
 
 } // namespace Nanite

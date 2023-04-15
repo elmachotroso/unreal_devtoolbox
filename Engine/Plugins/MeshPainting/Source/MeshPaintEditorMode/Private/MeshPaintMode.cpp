@@ -15,6 +15,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "MeshPaintHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "GeometryCollection/GeometryCollectionComponent.h"
 #include "ScopedTransaction.h"
 #include "PackageTools.h"
 #include "MeshPaintHelpers.h"
@@ -27,6 +28,8 @@
 #include "Modules/ModuleManager.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #include "LevelEditor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshPaintMode)
 
 
 #define LOCTEXT_NAMESPACE "MeshPaintMode"
@@ -119,12 +122,11 @@ UMeshPaintMode::UMeshPaintMode()
 	: Super()
 {
 	SettingsClass = UMeshPaintModeSettings::StaticClass();
-	FModuleManager::Get().LoadModule("EditorStyle");
 
 	Info = FEditorModeInfo(
 		FName(TEXT("MeshPaintMode")),
 		LOCTEXT("ModeName", "Mesh Paint"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.MeshPaintMode", "LevelEditor.MeshPaintMode.Small"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.MeshPaintMode", "LevelEditor.MeshPaintMode.Small"),
 		true,
 		600
 	);
@@ -391,10 +393,9 @@ void UMeshPaintMode::UpdateSelectedMeshes()
 		FName PaletteName = Toolkit->GetCurrentPalette();
 
 		MeshPaintingSubsystem->ResetState();
-		const TArray<UMeshComponent*> CurrentMeshComponents = GetSelectedComponents<UMeshComponent>();
+		TArray<UMeshComponent*> CurrentMeshComponents = GetSelectedComponents<UMeshComponent>();
 		MeshPaintingSubsystem->AddSelectedMeshComponents(CurrentMeshComponents);
 		MeshPaintingSubsystem->bNeedsRecache = true;
-
 
 		// Check the current selection for a material that supports texture paint
 		if (PaletteName == UMeshPaintMode::MeshPaintMode_Texture)
@@ -513,7 +514,18 @@ void UMeshPaintMode::FillWithVertexColor()
 		{
 			GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>()->FillSkeletalMeshVertexColors(Cast<USkeletalMeshComponent>(Component), bPaintOnSpecificLOD ? ColorProperties->LODIndex : -1, FillColor, MaskColor);
 		}
-		
+		else if (MeshAdapter) 			// We don't have a custom fill function for this type of component; try to go through the adapter.
+		{
+			TArray<uint32> MeshIndices = MeshAdapter->GetMeshIndices();
+			UMeshPaintingSubsystem* PaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+			for (uint32 VID : MeshIndices)
+			{
+				FColor Color;
+				MeshAdapter->GetVertexColor((int32)VID, Color);
+				PaintingSubsystem->ApplyFillWithMask(Color, MaskColor, FillColor);
+				MeshAdapter->SetVertexColor((int32)VID, Color);
+			}
+		}
 
 		if (MeshAdapter)
 		{
@@ -526,12 +538,12 @@ void UMeshPaintMode::FillWithVertexColor()
 void UMeshPaintMode::PropagateVertexColorsToAsset()
 {
 	const TArray<UStaticMeshComponent*> StaticMeshComponents = GetSelectedComponents<UStaticMeshComponent>();
-	FSuppressableWarningDialog::FSetupInfo SetupInfo(LOCTEXT("PushInstanceVertexColorsPrompt_Message", "Copying the instance vertex colors to the source mesh will replace any of the source mesh's pre-existing vertex colors and affect every instance of the source mesh."),
-		LOCTEXT("PushInstanceVertexColorsPrompt_Title", "Warning: Copying vertex data overwrites all instances"), "Warning_PushInstanceVertexColorsPrompt");
+	FSuppressableWarningDialog::FSetupInfo SetupInfo(LOCTEXT("PushInstanceVertexColorsPrompt_Message", "This operation copies vertex colors from LOD 0 of the selected instance to all LODs of the source asset, overwriting any existing vertex colors.\n\nThis change will also propagate to all other instances of the same asset that do not have custom vertex colors."),
+		LOCTEXT("PushInstanceVertexColorsPrompt_Title", "Warning: Overwriting Vertex Colors on Source Asset"), "Warning_PushInstanceVertexColorsPrompt");
 
-	SetupInfo.ConfirmText = LOCTEXT("PushInstanceVertexColorsPrompt_ConfirmText", "Continue");
-	SetupInfo.CancelText = LOCTEXT("PushInstanceVertexColorsPrompt_CancelText", "Abort");
-	SetupInfo.CheckBoxText = LOCTEXT("PushInstanceVertexColorsPrompt_CheckBoxText", "Always copy vertex colors without prompting");
+	SetupInfo.ConfirmText = LOCTEXT("PushInstanceVertexColorsPrompt_ConfirmText", "Overwrite");
+	SetupInfo.CancelText = LOCTEXT("PushInstanceVertexColorsPrompt_CancelText", "Cancel");
+	SetupInfo.CheckBoxText = LOCTEXT("PushInstanceVertexColorsPrompt_CheckBoxText", "Always overwrite source asset without prompting");
 
 	FSuppressableWarningDialog VertexColorCopyWarning(SetupInfo);
 
@@ -583,9 +595,9 @@ void UMeshPaintMode::SavePaintedAssets()
 
 	for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		if (SkeletalMeshComponent && SkeletalMeshComponent->SkeletalMesh)
+		if (SkeletalMeshComponent && SkeletalMeshComponent->GetSkeletalMeshAsset())
 		{
-			ObjectsToSave.Add(SkeletalMeshComponent->SkeletalMesh);
+			ObjectsToSave.Add(SkeletalMeshComponent->GetSkeletalMeshAsset());
 		}
 	}
 
@@ -611,7 +623,7 @@ bool UMeshPaintMode::CanSaveMeshPackages() const
 		}
 		else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Component))
 		{
-			Object = SkeletalMeshComponent->SkeletalMesh;
+			Object = SkeletalMeshComponent->GetSkeletalMeshAsset();
 		}
 
 		if (Object != nullptr && Object->GetOutermost()->IsDirty())
@@ -746,12 +758,12 @@ void UMeshPaintMode::PropagateVertexColorsToLODs()
 	if (bSelectionContainsPerLODColors)
 	{
 		//Warn the user they will lose custom painting data
-		FSuppressableWarningDialog::FSetupInfo SetupInfo(LOCTEXT("LooseLowersLODsVertexColorsPrompt_Message", "Propagating Vertex Colors from LOD0 to all lower LODs. This mean all lower LODs custom vertex painting will be lost."),
-			LOCTEXT("LooseLowersLODsVertexColorsPrompt_Title", "Warning: Lowers LODs custom vertex painting will be lost!"), "Warning_LooseLowersLODsVertexColorsPrompt");
+		FSuppressableWarningDialog::FSetupInfo SetupInfo(LOCTEXT("LooseLowersLODsVertexColorsPrompt_Message", "This operation copies vertex colors from LOD 0 to all other LODs in this instance, overwriting any existing vertex colors.\n\nAt least one LOD has custom vertex colors that will be lost."),
+			LOCTEXT("LooseLowersLODsVertexColorsPrompt_Title", "Warning: Overwriting Vertex Colors on LODs"), "Warning_LooseLowersLODsVertexColorsPrompt");
 
-		SetupInfo.ConfirmText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_ConfirmText", "Continue");
-		SetupInfo.CancelText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_CancelText", "Abort");
-		SetupInfo.CheckBoxText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_CheckBoxText", "Always copy vertex colors without prompting");
+		SetupInfo.ConfirmText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_ConfirmText", "Overwrite");
+		SetupInfo.CancelText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_CancelText", "Cancel");
+		SetupInfo.CheckBoxText = LOCTEXT("LooseLowersLODsVertexColorsPrompt_CheckBoxText", "Always overwrite LODs without prompting");
 
 		FSuppressableWarningDialog LooseLowersLODsVertexColorsWarning(SetupInfo);
 	
@@ -829,6 +841,7 @@ TArray<ComponentClass*> UMeshPaintMode::GetSelectedComponents() const
 template TArray<UStaticMeshComponent*> UMeshPaintMode::GetSelectedComponents<UStaticMeshComponent>() const;
 template TArray<USkeletalMeshComponent*> UMeshPaintMode::GetSelectedComponents<USkeletalMeshComponent>() const;
 template TArray<UMeshComponent*> UMeshPaintMode::GetSelectedComponents<UMeshComponent>() const;
+template TArray<UGeometryCollectionComponent*> UMeshPaintMode::GetSelectedComponents<UGeometryCollectionComponent>() const;
 
 
 void UMeshPaintMode::UpdateCachedVertexDataSize()
@@ -956,4 +969,5 @@ void UMeshPaintMode::OnResetViewMode()
 
 
 #undef LOCTEXT_NAMESPACE
+
 

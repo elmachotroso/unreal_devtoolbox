@@ -3,21 +3,54 @@
 
 
 #include "KismetNodes/SGraphNodeK2Var.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/Level.h"
+#include "GameFramework/Actor.h"
+#include "GenericPlatform/ICursor.h"
 #include "GraphEditorSettings.h"
-#include "SCommentBubble.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
-#include "K2Node_StructOperation.h"
-#include "K2Node_StructMemberGet.h"
 #include "K2Node_Literal.h"
-#include "K2Node_StructMemberSet.h"
 #include "K2Node_MakeStruct.h"
+#include "K2Node_StructMemberGet.h"
+#include "K2Node_StructMemberSet.h"
+#include "K2Node_StructOperation.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "SCommentBubble.h"
+#include "SGraphNode.h"
+#include "SNodePanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
+#include "Templates/Casts.h"
 #include "TutorialMetaData.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 void SGraphNodeK2Var::Construct( const FArguments& InArgs, UK2Node* InNode )
 {
@@ -45,7 +78,7 @@ TSharedRef<SWidget> SGraphNodeK2Var::UpdateTitleWidget(FText InTitleText, TShare
 	if(!TitleWidget.IsValid())
 	{
 		TitleWidget = SNew(STextBlock)
-		.TextStyle( FEditorStyle::Get(), "Graph.Node.NodeTitle" )
+		.TextStyle( FAppStyle::Get(), "Graph.Node.NodeTitle" )
 		.Text(InTitleText);
 	}
 
@@ -158,7 +191,7 @@ void SGraphNodeK2Var::UpdateGraphNode()
 				[
 					SNew(STextBlock)
 						.WrapTextAt(128.0f)
-						.TextStyle( FEditorStyle::Get(), "Graph.Node.NodeTitle" )
+						.TextStyle( FAppStyle::Get(), "Graph.Node.NodeTitle" )
 						.Text(TitleText)
 				]
 
@@ -169,7 +202,7 @@ void SGraphNodeK2Var::UpdateGraphNode()
 					SNew(STextBlock)
 						.Visibility(TitleText.IsEmpty()? EVisibility::Collapsed : EVisibility::Visible)
 						.WrapTextAt(128.0f)
-						.TextStyle( FEditorStyle::Get(), "Graph.Node.NodeTitleExtraLines" )
+						.TextStyle( FAppStyle::Get(), "Graph.Node.NodeTitleExtraLines" )
 						.Text(SubTitleText)
 				]
 			];
@@ -212,19 +245,19 @@ void SGraphNodeK2Var::UpdateGraphNode()
 			+ SOverlay::Slot()
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Graph.VarNode.Body") )
+				.Image( FAppStyle::GetBrush("Graph.VarNode.Body") )
 			]
 			+ SOverlay::Slot()
 			.VAlign(VAlign_Top)
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Graph.VarNode.ColorSpill") )
+				.Image( FAppStyle::GetBrush("Graph.VarNode.ColorSpill") )
 				.ColorAndOpacity( this, &SGraphNodeK2Var::GetVariableColor )
 			]
 			+ SOverlay::Slot()
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Graph.VarNode.Gloss") )
+				.Image( FAppStyle::GetBrush("Graph.VarNode.Gloss") )
 			]
 			+SOverlay::Slot()
 			.VAlign(VAlign_Top)
@@ -329,5 +362,12 @@ void SGraphNodeK2Var::UpdateGraphNode()
 
 const FSlateBrush* SGraphNodeK2Var::GetShadowBrush(bool bSelected) const
 {
-	return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.VarNode.ShadowSelected")) : FEditorStyle::GetBrush(TEXT("Graph.VarNode.Shadow"));
+	return bSelected ? FAppStyle::GetBrush(TEXT("Graph.VarNode.ShadowSelected")) : FAppStyle::GetBrush(TEXT("Graph.VarNode.Shadow"));
 }
+
+void SGraphNodeK2Var::GetDiffHighlightBrushes(const FSlateBrush*& BackgroundOut, const FSlateBrush*& ForegroundOut) const
+{
+	BackgroundOut = FAppStyle::GetBrush(TEXT("Graph.VarNode.DiffHighlight"));
+	ForegroundOut = FAppStyle::GetBrush(TEXT("Graph.VarNode.DiffHighlightShading"));
+}
+

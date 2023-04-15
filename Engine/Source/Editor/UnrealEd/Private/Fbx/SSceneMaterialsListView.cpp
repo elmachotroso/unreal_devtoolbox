@@ -7,10 +7,10 @@
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Fbx/SSceneImportNodeTreeView.h"
@@ -51,7 +51,7 @@ public:
 
 		SMultiColumnTableRow<FbxMaterialInfoPtr>::Construct(
 			FSuperRowType::FArguments()
-			.Style(FEditorStyle::Get(), "DataTableEditor.CellListViewRow"),
+			.Style(FAppStyle::Get(), "DataTableEditor.CellListViewRow"),
 			InOwnerTableView
 			);
 	}
@@ -317,9 +317,9 @@ TSharedPtr<SWidget> SFbxSceneMaterialsListView::OnOpenContextMenu()
 	// We always create a section here, even if there is no parent so that clients can still extend the menu
 	MenuBuilder.BeginSection("FbxScene_MAT_ImportSection");
 	{
-		const FSlateIcon PlusIcon(FEditorStyle::GetStyleSetName(), "Plus");
+		const FSlateIcon PlusIcon(FAppStyle::GetAppStyleSetName(), "Plus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("CheckForImport", "Add Selection To Import"), FText(), PlusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneMaterialsListView::AddSelectionToImport)));
-		const FSlateIcon MinusIcon(FEditorStyle::GetStyleSetName(), "Icons.Minus");
+		const FSlateIcon MinusIcon(FAppStyle::GetAppStyleSetName(), "Icons.Minus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("UncheckForImport", "Remove Selection From Import"), FText(), MinusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneMaterialsListView::RemoveSelectionFromImport)));
 	}
 	MenuBuilder.EndSection();
@@ -335,19 +335,21 @@ TSharedPtr<SWidget> SFbxSceneMaterialsListView::OnOpenContextMenu()
 			// Configure filter for asset picker
 			FAssetPickerConfig Config;
 			Config.Filter.bRecursiveClasses = true;
-			Config.Filter.ClassNames.Add(UMaterialInterface::StaticClass()->GetFName());
+			Config.Filter.ClassPaths.Add(UMaterialInterface::StaticClass()->GetClassPathName());
 			Config.InitialAssetViewType = EAssetViewType::List;
 			Config.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SFbxSceneMaterialsListView::AssignMaterialAssetData);
 			Config.bAllowNullSelection = false;
 			Config.bFocusSearchBoxWhenOpened = true;
 			Config.bAllowDragging = false;
-			//Thumbnail are not working since we are in a modal dialog
-			Config.bCanShowRealTimeThumbnails = true;
-			// Don't show stuff in Engine
-			Config.Filter.PackagePaths.Add("/Game");
 			Config.Filter.bRecursivePaths = true;
+			Config.bForceShowEngineContent = false;
+			Config.bForceShowPluginContent = false;
+
+			//We have to limit the height in case there is a lot of item, the computed height can overpass the 16 bit integer maximum.
 			TSharedRef<SWidget> Widget =
 				SNew(SBox)
+				.WidthOverride(300)
+				.HeightOverride(300)
 				[
 					ContentBrowserModule.Get().CreateAssetPicker(Config)
 				];
@@ -419,7 +421,7 @@ void SFbxSceneMaterialsListView::AssignMaterialAssetData(const FAssetData& Asset
 				//Override the MeshInfo with the new asset path
 				ItemPtr->SetOverridePath(true);
 				ItemPtr->OverrideImportPath = AssetData.PackageName.ToString();
-				ItemPtr->OverrideFullImportName = AssetData.ObjectPath.ToString();
+				ItemPtr->OverrideFullImportName = AssetData.GetObjectPathString();
 			}
 		}
 	}
@@ -440,7 +442,7 @@ void SFbxSceneMaterialsListView::AssignMaterialToExisting()
 		SelectAssetConfig.DialogTitleOverride = LOCTEXT("FbxChooseMaterialAssetContentPath", "Choose a material asset");
 		//SelectAssetConfig.DefaultPath = ItemPtr->OriginalImportPath;
 		SelectAssetConfig.bAllowMultipleSelection = false;
-		SelectAssetConfig.AssetClassNames.Add(UMaterial::StaticClass()->GetFName());
+		SelectAssetConfig.AssetClassNames.Add(UMaterial::StaticClass()->GetClassPathName());
 		TArray<FAssetData> AssetData = ContentBrowserModule.Get().CreateModalOpenAssetDialog(SelectAssetConfig);
 		if (AssetData.Num() == 1)
 		{
@@ -453,7 +455,7 @@ void SFbxSceneMaterialsListView::AssignMaterialToExisting()
 					//Override the MeshInfo with the new asset path
 					ItemPtr->SetOverridePath(true);
 					ItemPtr->OverrideImportPath = AssetData[0].PackageName.ToString();
-					ItemPtr->OverrideFullImportName = AssetData[0].ObjectPath.ToString();
+					ItemPtr->OverrideFullImportName = AssetData[0].GetObjectPathString();
 				}
 			}
 		}

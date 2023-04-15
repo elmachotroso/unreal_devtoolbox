@@ -25,13 +25,15 @@ void FSmartObjectsModule::StartupModule()
 {
 	TArray<FCoreRedirect> Redirects;
 	Redirects.Emplace(ECoreRedirectFlags::Type_Class, TEXT("/Script/SmartObjectsModule.SmartObjectBehaviorConfigBase"), TEXT("/Script/SmartObjectsModule.SmartObjectBehaviorDefinition"));
-	Redirects.Emplace(ECoreRedirectFlags::Type_Class, TEXT("/Script/SmartObjectsModule.SmartObjectGameplayBehaviorConfig"), TEXT("/Script/SmartObjectsModule.SmartObjectGameplayBehaviorDefinition"));
 
 	Redirects.Emplace(ECoreRedirectFlags::Type_Struct, TEXT("/Script/SmartObjectsModule.SmartObjectSlot"), TEXT("/Script/SmartObjectsModule.SmartObjectSlotDefinition"));
+	Redirects.Emplace(ECoreRedirectFlags::Type_Struct, TEXT("SmartObjectSlot"), TEXT("/Script/SmartObjectsModule.SmartObjectSlotDefinition"));
 	Redirects.Emplace(ECoreRedirectFlags::Type_Struct, TEXT("/Script/SmartObjectsModule.SmartObjectID"), TEXT("/Script/SmartObjectsModule.SmartObjectHandle"));
+	Redirects.Emplace(ECoreRedirectFlags::Type_Struct, TEXT("SmartObjectID"), TEXT("/Script/SmartObjectsModule.SmartObjectHandle"));
 
 	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectDefinition.DefaultBehaviorConfigurations"), TEXT("/Script/SmartObjectsModule.SmartObjectDefinition.DefaultBehaviorDefinitions"));
-	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorConfigurationClass"), TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorDefinitionClass"));
+	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorConfigurationClass"), TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorDefinitionClass_DEPRECATED"));
+	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorDefinitionClass"), TEXT("/Script/SmartObjectsModule.SmartObjectRequestFilter.BehaviorDefinitionClass_DEPRECATED"));
 	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectSlot.BehaviorConfigurations"), TEXT("/Script/SmartObjectsModule.SmartObjectSlot.BehaviorDefinitions"));
 	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectComponent.RegisteredID"), TEXT("/Script/SmartObjectsModule.SmartObjectComponent.RegisteredHandle"));
 	Redirects.Emplace(ECoreRedirectFlags::Type_Property, TEXT("/Script/SmartObjectsModule.SmartObjectCollectionEntry.ID"), TEXT("/Script/SmartObjectsModule.SmartObjectCollectionEntry.Handle"));

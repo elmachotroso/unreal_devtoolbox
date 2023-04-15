@@ -19,6 +19,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeExit.h"
+#include "Modules/ModuleManager.h"
 #include "Apple/ApplePlatformCrashContext.h"
 #include "IOS/IOSPlatformCrashContext.h"
 #include "IOS/IOSPlatformPLCrashReporterIncludes.h"
@@ -74,8 +75,9 @@ static int32 GetFreeMemoryMB()
 void FIOSPlatformMisc::PlatformInit()
 {
 	// PlatformInit() starts the UI thread which creates the framebuffer and it requires
-	// "r.MobileContentScaleFactor" to be available before it's creation, so need to cache that value now.
-	[[IOSAppDelegate GetDelegate] LoadMobileContentScaleFactor];
+	// "r.MobileContentScaleFactor" and "r.Mobile.DesiredResX/Y" to be available before 
+	// it's creation, so need to cache those value now.
+	[[IOSAppDelegate GetDelegate] LoadScreenResolutionModifiers];
 		
 	FAppEntry::PlatformInit();
 
@@ -235,7 +237,7 @@ int FIOSPlatformMisc::GetBatteryLevel()
 float FIOSPlatformMisc::GetBrightness()
 {
 #if !PLATFORM_TVOS
-	return [UIScreen mainScreen].brightness;
+	return (float)[[[IOSAppDelegate GetDelegate] window] screen].brightness;
 #else
 	return 1.0f;
 #endif // !PLATFORM_TVOS
@@ -244,7 +246,9 @@ float FIOSPlatformMisc::GetBrightness()
 void FIOSPlatformMisc::SetBrightness(float Brightness)
 {
 #if !PLATFORM_TVOS
-	[UIScreen mainScreen].brightness = Brightness;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[[[IOSAppDelegate GetDelegate] window] screen].brightness = Brightness;
+	});
 #endif // !PLATFORM_TVOS
 }
 
@@ -293,6 +297,47 @@ EDeviceScreenOrientation ConvertFromUIInterfaceOrientation(UIInterfaceOrientatio
 #endif
 
 #if !PLATFORM_TVOS
+UIInterfaceOrientationMask GetUIInterfaceOrientationMask(EDeviceScreenOrientation ScreenOrientation)
+{
+	switch (ScreenOrientation)
+	{
+	default:
+		// Fallthrough...
+	case EDeviceScreenOrientation::Unknown:
+		return UIInterfaceOrientationMaskAll;
+		break;
+	case EDeviceScreenOrientation::Portrait:
+		return UIInterfaceOrientationMaskPortrait;
+		break;
+	case EDeviceScreenOrientation::PortraitUpsideDown:
+		return UIInterfaceOrientationMaskPortraitUpsideDown;
+		break;
+	case EDeviceScreenOrientation::LandscapeLeft:
+		return UIInterfaceOrientationMaskLandscapeLeft;
+		break;
+	case EDeviceScreenOrientation::LandscapeRight:
+		return UIInterfaceOrientationMaskLandscapeRight;
+		break;
+	case EDeviceScreenOrientation::FaceUp:
+		return UIInterfaceOrientationMaskAll;
+		break;
+	case EDeviceScreenOrientation::FaceDown:
+		return UIInterfaceOrientationMaskAll;
+		break;
+	case EDeviceScreenOrientation::PortraitSensor:
+		return UIInterfaceOrientationMaskPortrait;
+		break;
+	case EDeviceScreenOrientation::LandscapeSensor:
+		return UIInterfaceOrientationMaskLandscape;
+		break;
+	case EDeviceScreenOrientation::FullSensor:
+		return UIInterfaceOrientationMaskAll;
+		break;
+	}
+}
+#endif
+
+#if !PLATFORM_TVOS
 UIInterfaceOrientation GInterfaceOrientation = UIInterfaceOrientationUnknown;
 #endif
 
@@ -312,16 +357,23 @@ EDeviceScreenOrientation FIOSPlatformMisc::GetDeviceOrientation()
 
 void FIOSPlatformMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrientation)
 {
-	// not implemented yet
+	SetAllowedDeviceOrientation(NewDeviceOrientation);
 }
 
-#include "Modules/ModuleManager.h"
+void FIOSPlatformMisc::SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation)
+{
+	AllowedDeviceOrientation = NewAllowedDeviceOrientation;
+
+#if !PLATFORM_TVOS
+	[IOSAppDelegate GetDelegate].IOSView->SupportedInterfaceOrientations = GetUIInterfaceOrientationMask(NewAllowedDeviceOrientation);
+#endif
+}
 
 bool FIOSPlatformMisc::HasPlatformFeature(const TCHAR* FeatureName)
 {
 	if (FCString::Stricmp(FeatureName, TEXT("Metal")) == 0)
 	{
-		return [IOSAppDelegate GetDelegate].IOSView->bIsUsingMetal;
+		return true;
 	}
 
 	return FGenericPlatformMisc::HasPlatformFeature(FeatureName);
@@ -1362,8 +1414,7 @@ static void DefaultCrashHandler(FIOSCrashContext const& Context)
     Context.ReportCrash();
     if (GLog)
     {
-        GLog->SetCurrentThreadAsMasterThread();
-        GLog->Flush();
+        GLog->Panic();
     }
     if (GWarn)
     {
@@ -1413,7 +1464,7 @@ static void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Cont
     // make sure we write out as much as possible
     if (GLog)
     {
-        GLog->Flush();
+        GLog->Panic();
     }
     if (GWarn)
     {

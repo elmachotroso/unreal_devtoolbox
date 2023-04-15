@@ -13,6 +13,7 @@
 #include "Serialization/MemoryWriter.h"
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundSubmix.h"
+#include "SoundWaveCompiler.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
@@ -35,6 +36,8 @@
 #include "Misc/OutputDeviceArchiveWrapper.h"
 #include "Async/Async.h"
 #include "Misc/CommandLine.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "Sound/AudioFormatSettings.h"
 
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
@@ -62,7 +65,7 @@ FAutoConsoleVariableRef CVarDisableRetaining(
 	TEXT("au.streamcache.DisableRetaining"),
 	DisableRetainingCVar,
 	TEXT("When set to 1, USoundWaves will not retain chunks of their own audio.\n")
-	TEXT("0: Don't disable retaining, 1: retaining."),
+	TEXT("0: Don't disable retaining, 1: disable retaining."),
 	ECVF_Default);
 
 static int32 BlockOnChunkLoadCompletionCVar = 0;
@@ -134,6 +137,7 @@ namespace SoundWaveCookStats
 }
 #endif
 
+
 FSoundWaveData::~FSoundWaveData()
 {
 	// at this point, first chunk data should have been cleared by the last reference holder
@@ -154,27 +158,18 @@ void FSoundWaveData::InitializeDataFromSoundWave(USoundWave& InWave)
 	}
 
 	// cache the runtime format for the wave
-	if (GEngine)
+	// note if this fails, it will ensure, and keep the "FSoundWaveProxy_InvalidFormat" as its value.
+	FName FoundFormat = FindRuntimeFormat(InWave);
+	if (!FoundFormat.IsNone())
 	{
-		FAudioDevice* LocalAudioDevice = GEngine->GetMainAudioDeviceRaw();
-		if (LocalAudioDevice)
-		{
-			RuntimeFormat = LocalAudioDevice->GetRuntimeFormat(&InWave);
-		}
+		RuntimeFormat = FoundFormat;
 	}
-
+	
 	SoundWaveKeyCached = FObjectKey(&InWave);
 	CuePoints = InWave.CuePoints;
 	SampleRate = InWave.GetSampleRateForCurrentPlatform();
 	Duration = InWave.Duration;
 	NumChannels = InWave.NumChannels;
-	
-	// GetNumChunks() can't be called w/o RunningPlateformData
-	NumChunks = 0;
-	if (RunningPlatformData.NumChunks > 0)
-	{
-		NumChunks = InWave.GetNumChunks();
-	}
 
 	NumFrames = (int32)(Duration * (float)SampleRate);
 
@@ -182,24 +177,93 @@ void FSoundWaveData::InitializeDataFromSoundWave(USoundWave& InWave)
 	bIsLooping = InWave.IsLooping();
 	bIsTemplate = InWave.IsTemplate();
 	bIsStreaming = InWave.IsStreaming(nullptr);
+	bIsSeekable = InWave.IsSeekable();
 	SoundAssetCompressionType = InWave.GetSoundAssetCompressionType();
 	bShouldUseStreamCaching = InWave.ShouldUseStreamCaching();
+
+#if WITH_EDITOR
+	bLoadedFromCookedData = InWave.IsLoadedFromCookedData();
+#endif //WITH_EDITOR
+}
+
+FName FSoundWaveData::FindRuntimeFormat(const USoundWave& InWave) const
+{		
+#if WITH_EDITOR	
+	// If this is an editor build, we can ask ITargetPlatform.
+	if (ITargetPlatformManagerModule* TPM = GetTargetPlatformManager())
+	{
+		if (ITargetPlatform* RunningTarget = TPM->GetRunningTargetPlatform())
+		{
+			return RunningTarget->GetWaveFormat(&InWave);
+		}
+	}
+#endif //WITH_EDITOR
+
+	// If we can't render audio, we won't contain any compressed data.
+	if (InWave.IsTemplate() || !FApp::CanEverRenderAudio())
+	{
+		return {};
+	}
+
+	// If the data is "forceinline" it will exist in the CompressedFormatData.
+	if (LoadingBehavior == ESoundWaveLoadingBehavior::ForceInline)
+	{
+		TArray<FName> ContainedFormats;
+		CompressedFormatData.GetContainedFormats(ContainedFormats);
+
+		// Only one format is supported currently.
+		if (ensureMsgf(ContainedFormats.Num() == 1, TEXT("ContainedFormats::Num()=%d"), ContainedFormats.Num()))
+		{			
+			FName CompressedFormat = ContainedFormats[0];
+			FString CompressedFormatString = CompressedFormat.GetPlainNameString();
+
+			// If the format contains a delimiter, it's using a platform cook overrides with a suffix.
+			// Return up to the first delimiter e.g. "ADPCM_some_suffix" -> "ADPCM"
+			int32 DelimIndex = 0;
+			if (CompressedFormatString.FindChar('_', DelimIndex))
+			{
+				return *CompressedFormatString.Left(DelimIndex);
+			}
+			else
+			{
+				return CompressedFormat;
+			}
+		}
+		
+		// Fail.
+		return {};
+	}
+	// ... else the audio format is written in RunningPlatformData (i.e. stream cache).
+	else
+	{
+		return RunningPlatformData.GetAudioFormat();
+	}
 }
 
 uint32 FSoundWaveData::GetNumChunks() const
 {
 	// This function shouldn't be called on audio marked "ForceInline."
-	ensureMsgf(LoadingBehavior != ESoundWaveLoadingBehavior::ForceInline, TEXT("Calling GetNumChunks without RunnigPlatformData is not allowed! SoundWave: %s - %s")
+	ensureMsgf(LoadingBehavior != ESoundWaveLoadingBehavior::ForceInline, TEXT("Calling GetNumChunks without RunningPlatformData is not allowed! SoundWave: %s - %s")
 		, *GetFName().ToString(), EnumToString(LoadingBehavior));
 
-	return RunningPlatformData.Chunks.Num();
+	return RunningPlatformData.GetNumChunks();
+}
+
+void FSoundWaveData::DiscardZerothChunkData()
+{
+#if WITH_EDITORONLY_DATA
+	// Make sure that no async tasks are running before discarding the zeroth chunk
+	RunningPlatformData.FinishCache();
+#endif
+
+	ZerothChunkData.Empty();
 }
 
 FSoundWaveData::MaxChunkSizeResults FSoundWaveData::GetMaxChunkSizeResults() const
 {
 	MaxChunkSizeResults Results;
 
-	for (auto& Chunk : RunningPlatformData.Chunks)
+	for (auto& Chunk : RunningPlatformData.GetChunks())
 	{
 		Results.MaxUnevictableSize = FMath::Max<uint32>(Results.MaxUnevictableSize, Chunk.AudioDataSize);
 		Results.MaxSizeInCache += Chunk.AudioDataSize;
@@ -213,13 +277,13 @@ uint32 FSoundWaveData::GetSizeOfChunk(uint32 ChunkIndex) const
 	check(ChunkIndex < GetNumChunks());
 
 	// This function shouldn't be called on audio marked "ForceInline."
-	ensureMsgf(RunningPlatformData.NumChunks
-		, TEXT("Calling GetNumChunks() without RunnigPlatformData is not allowed! SoundWave: %s - %s")
+	ensureMsgf(RunningPlatformData.GetNumChunks()
+		, TEXT("Calling GetNumChunks() without RunningPlatformData is not allowed! SoundWave: %s - %s")
 		, *GetFName().ToString()
 		, EnumToString(LoadingBehavior));
 
 	check((ChunkIndex < (uint32)GetNumChunks()));
-	return RunningPlatformData.Chunks[ChunkIndex].AudioDataSize;
+	return RunningPlatformData.GetChunks()[ChunkIndex].AudioDataSize;
 }
 
 void FSoundWaveData::ReleaseCompressedAudio()
@@ -331,50 +395,101 @@ bool FSoundWaveData::GetChunkData(int32 ChunkIndex, uint8** OutChunkData, bool b
 
 bool FSoundWaveData::IsZerothChunkDataLoaded() const
 {
-	return ZerothChunkData.GetView().Num() > 0;
+	return GetZerothChunkData().GetView().Num() > 0;
+}
+
+FBulkDataBuffer<uint8>& FSoundWaveData::GetZerothChunkData() const
+{
+	// Async loading only exists in editor builds
+	FSoundWaveData* MutableThis = const_cast<FSoundWaveData*>(this);
+
+#if WITH_EDITOR
+	MutableThis->LoadZerothChunk();
+#endif // #if WITH_EDITOR
+
+	return MutableThis->ZerothChunkData;
 }
 
 const TArrayView<uint8> FSoundWaveData::GetZerothChunkDataView() const
 {
-	FBulkDataBuffer<uint8>::ViewType View = ZerothChunkData.GetView();
+	FBulkDataBuffer<uint8>::ViewType View = GetZerothChunkData().GetView();
 	check(View.Num() <= MAX_int32);
 	return TArrayView<uint8>(View.GetData(), static_cast<int32>(View.Num()));
 }
 
-void FSoundWaveData::EnsureZerothChunkIsLoaded()
+bool FSoundWaveData::LoadZerothChunk()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FSoundWaveData::LoadZerothChunk);
+
 	LLM_SCOPE(ELLMTag::AudioSoundWaves);
 
-	// If the zeroth chunk is already loaded, early exit.
-	if (ZerothChunkData.GetView().Num() > 0 || !bShouldUseStreamCaching)
+	if (!ShouldUseStreamCaching())
 	{
-		return;
+		return false;
 	}
 
-	// #if WITH_EDITOR
-#ifdef WITH_EDITOR
-	// If we're running the editor, we'll need to retrieve the chunked audio from the DDC:
-	uint8* TempChunkBuffer = nullptr;
-	int32 ChunkSizeInBytes = GetChunkFromDDC(0, &TempChunkBuffer, true);
-	// Since we block for the DDC in the previous call we should always have the chunk loaded.
-	if (ChunkSizeInBytes == 0)
 	{
-		return;
-	}
+		FScopeLock ZerothChunkDataScopeLock(&LoadZerothChunkDataCriticalSection);
 
-	ZerothChunkData.Reset(TempChunkBuffer, ChunkSizeInBytes);
+		if (ZerothChunkData.GetView().Num() == 0)
+		{
+#if WITH_EDITOR
+			if (!bLoadedFromCookedData)
+			{
+				// In editor, we wait until the zeroth chunk is required to force finish compilation
+				// and retrieve it from DDC.  The rational is that async compilation will either prefetch
+				// chunks or rebuild them if unavailable so that this DDC request will be fulfilled from local cache.
+				uint8* TempChunkBuffer = nullptr;
+				int32 ChunkSizeInBytes = 0;
 
-#else // WITH_EDITOR
-	// Otherwise, the zeroth chunk is cooked out to SharedRuntimeData::RunningPlatformData, and we just need to retrieve it.
-	check(GetNumChunks() > 0);
-	const FStreamedAudioChunk& ZerothChunk = GetChunk(0);
-	// Some sanity checks to ensure that the bulk size set up
-	UE_CLOG(ZerothChunk.BulkData.GetBulkDataSize() != ZerothChunk.DataSize, LogAudio, Warning
-		, TEXT("Bulk data serialized out had a mismatched size with the DataSize field. Soundwave: %s Bulk Data Reported Size: %d Bulk Data Actual Size: %ld")
-		, *GetFullName(), ZerothChunk.DataSize, ZerothChunk.BulkData.GetBulkDataSize());
+				// GetNumChunks will force finish compilation if an async task still exists.
+				// Do not query chunk from DDC if no chunk exists as it would ensure inside GetChunkFromDDC.
+				if (RunningPlatformData.GetNumChunks() > 0)
+				{
+					ChunkSizeInBytes = GetChunkFromDDC(0, &TempChunkBuffer, true);
+				}
 
-	ZerothChunkData = ZerothChunk.BulkData.GetCopyAsBuffer(ZerothChunk.AudioDataSize, true);
+				// Since we block for the DDC in the previous call we should always have the chunk loaded.
+				if (ChunkSizeInBytes != 0)
+				{
+					ZerothChunkData.Reset(TempChunkBuffer, ChunkSizeInBytes);
+				}
+				else
+				{
+					ZerothChunkData.Empty();
+					UE_LOG(LogAudio, Warning, TEXT("FSoundWaveData::LoadZerothChunk: Unsuccessful load of zeroth chunk from DDC. Asset requires manual re-cook.\n\tAsset: '%s'\n\tDerivedDataKey: '%s'"),
+						*GetFName().ToString(),
+						*RunningPlatformData.DerivedDataKey);
+					return false;
+				}
+			}
+			else
 #endif // WITH_EDITOR
+			{
+				// The zeroth chunk is cooked out to RunningPlatformData, so retrieve it.
+				if (ensureMsgf(GetNumChunks() > 0, TEXT("SoundWave '%s' is cooked but contains no chunks."), *GetFName().ToString()))
+				{
+					FStreamedAudioChunk& ZerothChunk = GetChunk(0);
+
+					// Sanity check to ensure bulk size is set up
+					UE_CLOG(ZerothChunk.BulkData.GetBulkDataSize() != ZerothChunk.DataSize, LogAudio, Warning
+						, TEXT("SoundWave '%s' bulk data serialized out had a mismatched size with the DataSize field."
+							"\nBulk Data Reported Size: %d"
+							"\nBulk Data Actual Size: %ld")
+						, *GetFName().ToString(), ZerothChunk.DataSize, ZerothChunk.BulkData.GetBulkDataSize());
+
+					ZerothChunkData = ZerothChunk.BulkData.GetCopyAsBuffer(ZerothChunk.AudioDataSize, true);
+				}
+				else
+				{
+					// failed as we have no chunks.
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
 }
 
 #if WITH_EDITOR
@@ -387,21 +502,21 @@ int32 FSoundWaveData::GetCurrentChunkRevision() const
 FStreamedAudioChunk& FSoundWaveData::GetChunk(uint32 ChunkIndex)
 {
 	// This function shouldn't be called on audio marked "ForceInline."
-	ensureMsgf(RunningPlatformData.NumChunks
-		, TEXT("Calling GetNumChunks() without RunnigPlatformData is not allowed! SoundWave: %s - %s")
+	ensureMsgf(RunningPlatformData.GetNumChunks()
+		, TEXT("Calling GetNumChunks() without RunningPlatformData is not allowed! SoundWave: %s - %s")
 		, *GetFName().ToString()
 		, EnumToString(LoadingBehavior));
 
 	check((ChunkIndex < (uint32)GetNumChunks()));
-	return RunningPlatformData.Chunks[ChunkIndex];
+	return RunningPlatformData.GetChunks()[ChunkIndex];
 }
 
 int32 FSoundWaveData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutChunkData, bool bMakeSureChunkIsLoaded)
 {
 	LLM_SCOPE(ELLMTag::AudioSoundWaves);
 	// This function shouldn't be called on audio marked "ForceInline."
-	ensureMsgf(RunningPlatformData.NumChunks
-		, TEXT("Calling GetNumChunks on a FSoundWaveProxy without RunnigPlatformData is not allowed! SoundWave: %s - %s")
+	ensureMsgf(RunningPlatformData.GetNumChunks()
+		, TEXT("Calling GetNumChunks on a FSoundWaveProxy without RunningPlatformData is not allowed! SoundWave: %s - %s")
 		, *GetFName().ToString()
 		, EnumToString(LoadingBehavior));
 
@@ -411,11 +526,11 @@ int32 FSoundWaveData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutChunkData, bo
 #if WITH_EDITORONLY_DATA
 FString FSoundWaveData::GetDerivedDataKey() const
 {
-	check(RunningPlatformData.NumChunks);
+	check(RunningPlatformData.GetNumChunks());
 
 	// This function shouldn't be called on audio marked "ForceInline."
-	ensureMsgf(RunningPlatformData.NumChunks
-		, TEXT("Calling GetNumChunks on a FSoundWaveProxy without RunnigPlatformData is not allowed! SoundWave: %s - %s")
+	ensureMsgf(RunningPlatformData.GetNumChunks()
+		, TEXT("Calling GetNumChunks on a FSoundWaveProxy without RunningPlatformData is not allowed! SoundWave: %s - %s")
 		, *GetFName().ToString()
 		, EnumToString(LoadingBehavior));
 
@@ -423,6 +538,42 @@ FString FSoundWaveData::GetDerivedDataKey() const
 }
 #endif // #if WITH_EDITORONLY_DATA
 
+
+#if WITH_EDITOR
+
+/** IInterface_AsyncCompilation implementation begin*/
+
+bool USoundWave::IsCompiling() const
+{
+	return SoundWaveDataPtr != nullptr && SoundWaveDataPtr->RunningPlatformData.IsCompiling();
+}
+
+/** IInterface_AsyncCompilation implementation end*/
+
+bool USoundWave::IsAsyncWorkComplete() const
+{
+	return SoundWaveDataPtr == nullptr || SoundWaveDataPtr->RunningPlatformData.IsAsyncWorkComplete();
+}
+
+void USoundWave::PostImport()
+{
+	if (SoundWaveDataPtr)
+	{
+		SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
+	}
+}
+
+bool USoundWave::RescheduleAsyncTask(FQueuedThreadPool* InThreadPool, EQueuedWorkPriority InPriority)
+{
+	return SoundWaveDataPtr ? SoundWaveDataPtr->RunningPlatformData.RescheduleAsyncTask(InThreadPool, InPriority) : false;
+}
+
+bool USoundWave::WaitAsyncTaskWithTimeout(float InTimeoutInSeconds)
+{
+	return SoundWaveDataPtr ? SoundWaveDataPtr->RunningPlatformData.WaitAsyncTaskWithTimeout(InTimeoutInSeconds) : false;
+}
+
+#endif // #if WITH_EDITOR
 
 int32 USoundWave::GetResourceSize() const
 {
@@ -588,7 +739,7 @@ USoundWave::USoundWave(const FObjectInitializer& ObjectInitializer)
 	bProcedural = false;
 	bRequiresStopFade = false;
 
-	SoundAssetCompressionType = ESoundAssetCompressionType::BinkAudio;
+	SoundAssetCompressionType = ESoundAssetCompressionType::ProjectDefined;	
 
 #if WITH_EDITOR
 	bWasStreamCachingEnabledOnLastCook = FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching();
@@ -623,8 +774,12 @@ void USoundWave::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 
 	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(CookedEnvelopeTimeData.Num() * sizeof(FSoundWaveEnvelopeTimeData));
 
-	// Add zeroth chunk data, if it's used (if this USoundWave isn't streaming, this won't report).
-	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(SoundWaveDataPtr->ZerothChunkData.GetView().Num());
+	// Add zeroth chunk data, if it's used (if this USoundWave isn't streaming,
+	// or the bulk data is culled on this platform, this won't report).
+	if(FApp::CanEverRenderAudio())
+	{
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(SoundWaveDataPtr->GetZerothChunkData().GetView().Num());
+	}
 
 	// Finally, report the actual audio memory being used, if this asset isn't using the stream cache.
 	if (FAudioDevice* LocalAudioDevice = GEngine->GetMainAudioDeviceRaw())
@@ -649,6 +804,32 @@ void USoundWave::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 	}
 }
 
+
+#if WITH_EDITORONLY_DATA
+
+void USoundWave::SetTimecodeInfo(const FSoundWaveTimecodeInfo& InTimecode)
+{
+	// Keep editor info on the SoundWave.
+	TimecodeInfo = InTimecode;
+
+	// Set SoundBase offset.
+	FSoundTimecodeOffset Offset;
+	Offset.NumOfSecondsSinceMidnight = InTimecode.GetNumSecondsSinceMidnight();
+	SetTimecodeOffset(Offset);
+}
+
+TOptional<FSoundWaveTimecodeInfo> USoundWave::GetTimecodeInfo() const
+{
+	// Do we have any time-code info that's not the defaults?
+	static const FSoundWaveTimecodeInfo Defaults;
+	if(Defaults == TimecodeInfo)
+	{
+		return {};
+	}
+	return TimecodeInfo;
+}
+
+#endif //WITH_EDITORONLY_DATA
 
 int32 USoundWave::GetResourceSizeForFormat(FName Format)
 {
@@ -721,6 +902,7 @@ void USoundWave::Serialize( FArchive& Ar )
 	}
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	if (Ar.IsLoading() && (Ar.UEVer() >= VER_UE4_SOUND_COMPRESSION_TYPE_ADDED) && (Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::RemoveSoundWaveCompressionName))
 	{
@@ -731,11 +913,19 @@ void USoundWave::Serialize( FArchive& Ar )
 	bool bShouldStreamSound = false;
 
 #if WITH_EDITORONLY_DATA
+	FByteBulkData TempOldBulkData;
+	bool bBulkDataConverted = false;
+
 	bLoadedFromCookedData = Ar.IsLoading() && bCooked;
 	if (bVirtualizeWhenSilent_DEPRECATED)
 	{
 		bVirtualizeWhenSilent_DEPRECATED = 0;
 		VirtualizationMode = EVirtualizationMode::PlayWhenSilent;
+	}
+
+	if (Ar.IsLoading())
+	{
+		ModulationSettings.VersionModulators();
 	}
 
 	// If we have deprecated properties with data, migrate the data to the new enum
@@ -793,11 +983,14 @@ void USoundWave::Serialize( FArchive& Ar )
 	if (bCooked)
 	{
 #if WITH_EDITOR
-		// Temporary workaround for allowing editors to load data that was saved for platforms that had streaming disabled. There is nothing int
-		// the serialized data that lets us know what is actually stored on disc, so we have to be explicitly told. Ideally, we'd just store something
-		// on disc to say how the serialized data is arranged, but doing so would cause a major patch delta.
-		static const bool bSoundWaveDataHasStreamingDisabled = FParse::Param(FCommandLine::Get(), TEXT("SoundWaveDataHasStreamingDisabled"));
-		bShouldStreamSound = bShouldStreamSound && !bSoundWaveDataHasStreamingDisabled;
+		if (Ar.IsLoading())
+		{
+			// Temporary workaround for allowing editors to load data that was saved for platforms that had streaming disabled. There is nothing int
+			// the serialized data that lets us know what is actually stored on disc, so we have to be explicitly told. Ideally, we'd just store something
+			// on disc to say how the serialized data is arranged, but doing so would cause a major patch delta.
+			static const bool bSoundWaveDataHasStreamingDisabled = FParse::Param(FCommandLine::Get(), TEXT("SoundWaveDataHasStreamingDisabled"));
+			bShouldStreamSound = bShouldStreamSound && !bSoundWaveDataHasStreamingDisabled;
+		}
 #endif
 
 		// Only want to cook/load full data if we don't support streaming
@@ -847,16 +1040,35 @@ void USoundWave::Serialize( FArchive& Ar )
 			}
 		}
 	}
-	else
+	else if (!Ar.IsObjectReferenceCollector()) // Skip bulk data serialization when collecting references
 	{
 		// only save the raw data for non-cooked packages
-		RawData.Serialize(Ar, this, INDEX_NONE, false);
+#if WITH_EDITORONLY_DATA
+		FScopeLock ScopeLock(&RawDataCriticalSection);
+
+		if (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::SoundWaveVirtualizationUpdate)
+		{
+			TempOldBulkData.Serialize(Ar, this, INDEX_NONE, false);	
+			bBulkDataConverted = true;
+		}
+		else
+		{
+			RawData.Serialize(Ar, this);
+		}
+#endif
 	}
 
 	Ar << CompressedDataGuid;
 
-	bool bBuiltStreamedAudio = false;
-
+#if WITH_EDITORONLY_DATA	
+	// If we're converting to FEditorBulkData, we need to first serialize the CompressedDataGuid, as we use it as our key.
+	if (bBulkDataConverted)
+	{
+		FScopeLock ScopeLock(&RawDataCriticalSection);
+		RawData.CreateFromBulkData(TempOldBulkData, CompressedDataGuid, this); 
+	}
+#endif //WITH_EDITORONLY_DATA	
+	
 	if (bShouldStreamSound)
 	{
 		if (bCooked)
@@ -867,69 +1079,72 @@ void USoundWave::Serialize( FArchive& Ar )
 				SerializeCookedPlatformData(Ar);
 			}
 		}
-
-#if WITH_EDITORONLY_DATA
-		if (Ar.IsLoading() && !Ar.IsTransacting() && !bCooked && !GetOutermost()->HasAnyPackageFlags(PKG_ReloadingForCooker) && FApp::CanEverRenderAudio())
-		{
-			CachePlatformData(false);
-			bBuiltStreamedAudio = true;
-		}
-#endif // #if WITH_EDITORONLY_DATA
 	}
 
-	if (!(IsTemplate() || IsRunningDedicatedServer()) &&  Ar.IsLoading())
+	if (!(IsTemplate() || IsRunningDedicatedServer()) && Ar.IsLoading())
 	{
 		// For non-editor builds, we can immediately cache the sample rate.
 		SampleRate = GetSampleRateForCurrentPlatform();
-
-		const bool bShouldLoadChunks = bCooked || bBuiltStreamedAudio;
-
-		// If stream caching is enabled, here we determine if we should retain or prime this wave on load.
-		if (bShouldStreamSound && bShouldLoadChunks && FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching() && FApp::CanEverRenderAudio())
-		{
-			ESoundWaveLoadingBehavior CurrentLoadingBehavior = GetLoadingBehavior(false);
-
-			//EnsureZerothChunkIsLoaded();
-			const bool bHasFirstChunk = GetNumChunks() > 1;
-			
-			if (!bHasFirstChunk)
-			{
-				return;
-			}
-
-			if (!GIsEditor && CurrentLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
-			{
-				RetainCompressedAudio(true);
-			}
-			else if ((CurrentLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad)
-				|| (GIsEditor && CurrentLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad))
-			{
-				// Prime first chunk of audio.
-				SoundWaveDataPtr->LoadingBehavior = ESoundWaveLoadingBehavior::PrimeOnLoad;
-				SoundWaveDataPtr->bLoadingBehaviorOverridden = true;
-
-				if (!InternalProxy.IsValid())
-				{
-					InternalProxy = CreateSoundWaveProxy();
-				}
-				IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
-			}
-		}
 	}
 }
 
 ESoundAssetCompressionType USoundWave::GetSoundAssetCompressionType() const
 {
+	// If we are told to use the proejct-defined asset compression type, then we need to look it up
+	if (SoundAssetCompressionType == ESoundAssetCompressionType::ProjectDefined)
+	{
+#if WITH_EDITOR
+		// In the editor, always retrieve the settings
+		UAudioSettings* Settings = GetMutableDefault<UAudioSettings>();
+		return Audio::ToSoundAssetCompressionType(Settings->DefaultAudioCompressionType);
+#else
+		// Only query the project settings once when retrieving the asset compression type when not running with the editor
+		static bool bDefaultCompressionTypeCached = false;
+		static ESoundAssetCompressionType DefaultAudioCompressionType = ESoundAssetCompressionType::PlatformSpecific;
+
+		if (!bDefaultCompressionTypeCached)
+		{
+			UAudioSettings* Settings = GetMutableDefault<UAudioSettings>();
+			DefaultAudioCompressionType = Audio::ToSoundAssetCompressionType(Settings->DefaultAudioCompressionType);
+			bDefaultCompressionTypeCached = true;
+		}
+		return DefaultAudioCompressionType;
+#endif
+	}
+	else
+	{
+		return SoundAssetCompressionType;
+	}
+}
+
+ESoundAssetCompressionType USoundWave::GetSoundAssetCompressionTypeEnum() const
+{
 	return SoundAssetCompressionType;
 }
 
-void USoundWave::SetSoundAssetCompressionType(ESoundAssetCompressionType InSoundAssetCompressionType)
+void USoundWave::SetSoundAssetCompressionType(ESoundAssetCompressionType InSoundAssetCompressionType, bool bMarkDirty)
 {
 #if WITH_EDITOR
-	SoundAssetCompressionType = InSoundAssetCompressionType;
+	/*
+	 * This is a bit of a hack to make viable for a hot-fixable.
+	 * If bMarkDirty is False and the current compression type is project defined,
+	 * it means the project default codec was changed.  In this scenario we don't want
+	 * to change the SoundAssetCompressionType field, as this will change the property
+	 * on the USoundWave to whatever the new project default is.
+	 */
+	if(bMarkDirty || SoundAssetCompressionType != ESoundAssetCompressionType::ProjectDefined)
+	{
+		SoundAssetCompressionType = InSoundAssetCompressionType;
+	}
 	SoundWaveDataPtr->bIsSeekable = IsSeekable();
-	UpdateAsset();
+	SoundWaveDataPtr->RuntimeFormat = SoundWaveDataPtr->FindRuntimeFormat(*this);
+	UpdateAsset(bMarkDirty);
 #endif // #if WITH_EDITOR
+}
+
+FName USoundWave::GetRuntimeFormat() const
+{
+	return SoundWaveDataPtr->GetRuntimeFormat();
 }
 
 float USoundWave::GetSubtitlePriority() const
@@ -1016,36 +1231,6 @@ const FPlatformAudioCookOverrides* USoundWave::GetPlatformCompressionOverridesFo
 	return FPlatformCompressionUtilities::GetCookOverrides();
 }
 
-namespace SoundWavePrivate
-{
-	struct FBulkDataReadScopeLock
-	{
-		FBulkDataReadScopeLock(const FUntypedBulkData& InBulkData)
-		:	BulkData(InBulkData)
-		{
-			RawPtr = BulkData.LockReadOnly();
-		}
-
-		template<typename T>
-		const T* GetData() const
-		{
-			return static_cast<const T*>(RawPtr);
-		}
-			
-		~FBulkDataReadScopeLock()
-		{
-			if (BulkData.IsLocked())
-			{
-				BulkData.Unlock();
-			}
-		}
-
-		private:
-			const FUntypedBulkData& BulkData;
-			const void* RawPtr = nullptr;
-	};
-}
-
 #if WITH_EDITOR
 bool USoundWave::GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, uint16& OutNumChannels) const
 {
@@ -1067,18 +1252,20 @@ bool USoundWave::GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& 
 
 bool USoundWave::GetImportedSoundWaveData(TArray<uint8>& OutRawPCMData, uint32& OutSampleRate, TArray<EAudioSpeakers>& OutChannelOrder) const
 {
-	using namespace SoundWavePrivate;
-
 	OutRawPCMData.Reset();
 	OutSampleRate = 0;
 	OutChannelOrder.Reset();
 
+#if WITH_EDITORONLY_DATA
+	FScopeLock ScopeLock(&RawDataCriticalSection);
+#endif
+
 	// Can only get sound wave data if there is bulk data 
-	if (RawData.GetBulkDataSize() > 0)
+	if (RawData.HasPayloadData())
 	{
-		FBulkDataReadScopeLock LockedBulkData(RawData);
-		const uint8* Data = LockedBulkData.GetData<uint8>();
-		int32 DataSize = RawData.GetBulkDataSize();
+		TFuture<FSharedBuffer> BufferFuture = RawData.GetPayload();
+		const uint8* Data = (const uint8*) BufferFuture.Get().GetData(); // Will block.
+		int32 DataSize = BufferFuture.Get().GetSize();
 
 		if (NumChannels > 2)
 		{
@@ -1267,10 +1454,11 @@ FName USoundWave::GetPlatformSpecificFormat(FName Format, const FPlatformAudioCo
 
 void USoundWave::BeginGetCompressedData(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(USoundWave::BeginGetCompressedData);
 	check(SoundWaveDataPtr);
 
 #if WITH_EDITOR
-	if (IsTemplate() || IsRunningDedicatedServer())
+	if (IsTemplate() || IsRunningDedicatedServer() || bLoadedFromCookedData)
 	{
 		return;
 	}
@@ -1299,6 +1487,30 @@ void USoundWave::BeginGetCompressedData(FName Format, const FPlatformAudioCookOv
 	// No async DDC read in non-editor, nothing to precache
 #endif
 }
+
+#if WITH_EDITOR
+
+bool USoundWave::IsCompressedDataReady(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(USoundWave::IsCompressedDataReady);
+
+	FName PlatformSpecificFormat = GetPlatformSpecificFormat(Format, CompressionOverrides);
+
+	const uint32* AsyncHandle = AsyncLoadingDataFormats.Find(PlatformSpecificFormat);
+	if (AsyncHandle)
+	{
+		return GetDerivedDataCacheRef().PollAsynchronousCompletion(*AsyncHandle);
+	}
+	
+	return true;
+}
+
+bool USoundWave::IsLoadedFromCookedData() const
+{
+	return bLoadedFromCookedData;
+}
+
+#endif
 
 FByteBulkData* USoundWave::GetCompressedData(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides)
 {
@@ -1362,11 +1574,15 @@ FByteBulkData* USoundWave::GetCompressedData(FName Format, const FPlatformAudioC
 
 void USoundWave::InvalidateCompressedData(bool bFreeResources, bool bRebuildStreamingChunks)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(USoundWave::InvalidateCompressedData);
+
 	check(SoundWaveDataPtr);
 
 	CompressedDataGuid = FGuid::NewGuid();
-	SoundWaveDataPtr->ZerothChunkData.Empty();
+	SoundWaveDataPtr->DiscardZerothChunkData();
 	SoundWaveDataPtr->CompressedFormatData.FlushData();
+	SoundWaveDataPtr->ResourceSize = 0;
+	SoundWaveDataPtr->ResourceData.Empty();
 
 	if (bFreeResources)
 	{
@@ -1383,7 +1599,7 @@ void USoundWave::InvalidateCompressedData(bool bFreeResources, bool bRebuildStre
 
 	if (bRebuildStreamingChunks)
 	{
-		CachePlatformData();
+		CachePlatformData(true /* bAsyncCache */);
 
 		SoundWaveDataPtr->CurrentChunkRevision += 1;
 	}
@@ -1420,7 +1636,7 @@ void USoundWave::FlushAsyncLoadingDataFormats()
 bool USoundWave::HasStreamingChunks()
 {
 	check(SoundWaveDataPtr);
-	return SoundWaveDataPtr->RunningPlatformData.Chunks.Num() > 0;
+	return SoundWaveDataPtr->RunningPlatformData.GetNumChunks() > 0;
 }
 
 void USoundWave::PostLoad()
@@ -1450,47 +1666,57 @@ void USoundWave::PostLoad()
 
 	CacheInheritedLoadingBehavior();
 	
-	// If our loading behavior is defined by a sound class, we need to update whether this sound wave actually needs to retain its audio data or not.
-	ESoundWaveLoadingBehavior ActualLoadingBehavior = GetLoadingBehavior();
-
-	// no need for a proxy if we can't render audio!
-	if (!InternalProxy.IsValid() && ActualLoadingBehavior != ESoundWaveLoadingBehavior::ForceInline && FApp::CanEverRenderAudio())
+	if (FApp::CanEverRenderAudio())
 	{
-		InternalProxy = CreateSoundWaveProxy();
-	}
-
-	if (FApp::CanEverRenderAudio() && ShouldUseStreamCaching() && ActualLoadingBehavior != GetLoadingBehavior(false))
-	{
-		if (!GIsEditor && !DisableRetainingCVar && ActualLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
+#if WITH_EDITORONLY_DATA
+		if (IsStreaming(nullptr) && FPlatformProperties::SupportsAudioStreaming())
 		{
-			UE_LOG(LogAudio, Display, TEXT("Sound Wave '%s' will have to load its compressed audio data async."), *GetName());
-			RetainCompressedAudio(false);
+			CachePlatformData(true /* bAsyncCache */);
 		}
-		else
-		{
-			// if a sound class defined our loading behavior as something other than Retain and our cvar default is to retain, we need to release our handle.
-			ReleaseCompressedAudio();
+#endif // #if WITH_EDITORONLY_DATA
 
-			const bool bHasMultipleChunks = GetNumChunks() > 1;
-			bool bShouldPrime = (ActualLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad);
-			bShouldPrime |= (GIsEditor && (ActualLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)); // treat this scenario like PrimeOnLoad
-			
-			if (bShouldPrime && bHasMultipleChunks)
+		ESoundWaveLoadingBehavior ActualLoadingBehavior = GetLoadingBehavior();
+
+		if (!InternalProxy.IsValid() && ActualLoadingBehavior != ESoundWaveLoadingBehavior::ForceInline)
+		{
+			InternalProxy = CreateSoundWaveProxy();
+		}
+
+		if (ShouldUseStreamCaching())
+		{
+			if (!GIsEditor && !DisableRetainingCVar && ActualLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
 			{
-				IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+				RetainCompressedAudio(true);
 			}
-		}
+			else
+			{
+				// if a sound class defined our loading behavior as something other than Retain and our cvar default is to retain, we need to release our handle.
+				ReleaseCompressedAudio();
 
-		// If DisableRetainingCVar was set after this USoundWave was loaded by the ALT, release its compressed audio here.
-		if (DisableRetainingCVar)
-		{
-			ReleaseCompressedAudio();
-		}
+				bool bShouldPrime = (ActualLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad);
+				bShouldPrime |= (GIsEditor && (ActualLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)); // treat this scenario like PrimeOnLoad
 
-		if (!GIsEditor)
-		{
-			// In case any code accesses bStreaming directly, we fix up bStreaming based on the current platform's cook overrides.
-			bStreaming = IsStreaming(nullptr);
+				if (bShouldPrime) 
+				{
+					const bool bHasMultipleChunks = GetNumChunks() > 1;
+					if (bHasMultipleChunks)
+					{
+						IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+					}
+				}
+			}
+
+			// If DisableRetainingCVar was set after this USoundWave was loaded by the ALT, release its compressed audio here.
+			if (DisableRetainingCVar)
+			{
+				ReleaseCompressedAudio();
+			}
+
+			if (!GIsEditor)
+			{
+				// In case any code accesses bStreaming directly, we fix up bStreaming based on the current platform's cook overrides.
+				bStreaming = IsStreaming(nullptr);
+			}
 		}
 	}
 
@@ -1502,7 +1728,8 @@ void USoundWave::PostLoad()
 #else
 	const bool bShouldLoadCompressedData = true;
 #endif
-	if (TPM && bShouldLoadCompressedData)
+	// Don't anticipate use of compressed data for streamed sound. The CachePlatformData call will request it on demand instead.
+	if (TPM && bShouldLoadCompressedData && !IsStreaming(nullptr))
 	{
 		const TArray<ITargetPlatform*>& Platforms = TPM->GetActiveTargetPlatforms();
 
@@ -1515,6 +1742,12 @@ void USoundWave::PostLoad()
 		}
 	}
 
+	// update shared state
+	if (!HasAnyFlags(RF_ClassDefaultObject) && FApp::CanEverRenderAudio())
+	{
+		SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
+	}
+
 	// We don't precache default objects and we don't precache in the Editor as the latter will
 	// most likely cause us to run out of memory.
 	if (!GIsEditor && !IsTemplate(RF_ClassDefaultObject) && GEngine)
@@ -1525,30 +1758,19 @@ void USoundWave::PostLoad()
 			// Upload the data to the hardware, but only if we've precached startup sounds already
 			AudioDevice->Precache(this);
 		}
-		// remove bulk data if no AudioDevice is used and no sounds were initialized
-		else if (IsRunningGame())
-		{
-			RawData.RemoveBulkData();
-		}
 	}
 
 	// Only add this streaming sound if the platform supports streaming
 	if (FApp::CanEverRenderAudio() && IsStreaming(nullptr) && FPlatformProperties::SupportsAudioStreaming())
 	{
-#if WITH_EDITORONLY_DATA
-		FinishCachePlatformData();
-#endif // #if WITH_EDITORONLY_DATA
 		if (!ShouldUseStreamCaching())
 		{
 			IStreamingManager::Get().GetAudioStreamingManager().AddStreamingSoundWave(InternalProxy);
 		}
-	}
 
-	const bool bDoesSoundWaveHaveStreamingAudioData = HasStreamingChunks();
-
-	if (ShouldUseStreamCaching() && bDoesSoundWaveHaveStreamingAudioData)
-	{
-		EnsureZerothChunkIsLoaded();
+		// Only request loading the zeroth chunk when streaming is supported and we can render audio.
+		// Especially important to avoid computing unneeded running platform related data during cook.
+		LoadZerothChunk();
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -1568,21 +1790,15 @@ void USoundWave::PostLoad()
 	INC_FLOAT_STAT_BY(STAT_AudioBufferTime, Duration);
 	INC_FLOAT_STAT_BY(STAT_AudioBufferTimeChannels, NumChannels * Duration);
 
-	// update shared state if loading behavior dictates we'll be using the streaming cache
-	if (ActualLoadingBehavior != ESoundWaveLoadingBehavior::ForceInline)
-	{
-		SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
-	}
 }
 
-void USoundWave::EnsureZerothChunkIsLoaded()
+bool USoundWave::LoadZerothChunk()
 {
 	check(SoundWaveDataPtr);
 
-	// If the zeroth chunk is already loaded, early exit.
-	if (SoundWaveDataPtr->ZerothChunkData.GetView().Num() > 0 || !ShouldUseStreamCaching())
+	if (!ShouldUseStreamCaching())
 	{
-		return;
+		return true;
 	}
 
 #if WITH_EDITOR 
@@ -1590,38 +1806,41 @@ void USoundWave::EnsureZerothChunkIsLoaded()
 	if (!SoundWaveDataPtr.IsValid())
 	{
 		// we may be in the middle of garbage collection, don't access RunningPlatformData
-		return;
+		return false;
 	}
 
-	CachePlatformData(false);
-
-	// If we're running the editor, we'll need to retrieve the chunked audio from the DDC:
-	uint8* TempChunkBuffer = nullptr;
-	int32 ChunkSizeInBytes = SoundWaveDataPtr->RunningPlatformData.GetChunkFromDDC(0, &TempChunkBuffer, true);
-	// Since we block for the DDC in the previous call we should always have the chunk loaded.
-	if (ChunkSizeInBytes == 0)
-	{
-		return;
-	}
-
-	SoundWaveDataPtr->ZerothChunkData.Reset(TempChunkBuffer, ChunkSizeInBytes);
+	// Make sure the preparation has been done or push one async so it's hopefully ready when
+	// we actually need the Zeroth Chunk
+	CachePlatformData(true /* bAsyncCache */);
 
 #else // WITH_EDITOR
+	// If the zeroth chunk is already loaded, early exit.
+	if (SoundWaveDataPtr->ZerothChunkData.GetView().Num() > 0)
+	{
+		return true;
+	}
+
+	if (SoundWaveDataPtr->RunningPlatformData.Chunks.Num() <= 0)
+	{
+		return false;
+	}
+
 	// Otherwise, the zeroth chunk is cooked out to RunningPlatformData, and we just need to retrieve it.
-	check(SoundWaveDataPtr->RunningPlatformData.Chunks.Num() > 0);
 	FStreamedAudioChunk& ZerothChunk = SoundWaveDataPtr->RunningPlatformData.Chunks[0];
 	// Some sanity checks to ensure that the bulk size set up
 	UE_CLOG(ZerothChunk.BulkData.GetBulkDataSize() != ZerothChunk.DataSize, LogAudio, Warning, TEXT("Bulk data serialized out had a mismatched size with the DataSize field. Soundwave: %s Bulk Data Reported Size: %d Bulk Data Actual Size: %ld"), *GetFullName(), ZerothChunk.DataSize, ZerothChunk.BulkData.GetBulkDataSize());
 
 	SoundWaveDataPtr->ZerothChunkData = ZerothChunk.BulkData.GetCopyAsBuffer(ZerothChunk.AudioDataSize, true);
 #endif // WITH_EDITOR
+
+	return true;
 }
 
 uint32 USoundWave::GetNumChunks() const
 {
 	if (SoundWaveDataPtr.IsValid())
 	{
-		return SoundWaveDataPtr->RunningPlatformData.Chunks.Num();
+		return SoundWaveDataPtr->RunningPlatformData.GetNumChunks();
 	}
 	else if (IsTemplate() || IsRunningDedicatedServer())
 	{
@@ -1645,7 +1864,7 @@ uint32 USoundWave::GetSizeOfChunk(uint32 ChunkIndex)
 
 	if (SoundWaveDataPtr.IsValid())
 	{
-		return SoundWaveDataPtr->RunningPlatformData.Chunks[ChunkIndex].AudioDataSize;
+		return SoundWaveDataPtr->RunningPlatformData.GetChunks()[ChunkIndex].AudioDataSize;
 	}
 	else
 	{
@@ -1798,10 +2017,10 @@ void USoundWave::InvalidateSoundWaveIfNeccessary()
 		InvalidateCompressedData(true);
 		bWasStreamCachingEnabledOnLastCook = bIsStreamCachingEnabled;
 
-		// If stream caching is now turned on, recook the streaming audio if neccessary.
+		// If stream caching is now turned on, recook the streaming audio if necessary.
 		if (bIsStreamCachingEnabled && IsStreaming(nullptr))
 		{
-			EnsureZerothChunkIsLoaded();
+			LoadZerothChunk();
 		}
 	}
 }
@@ -2033,7 +2252,7 @@ void USoundWave::BakeFFTAnalysis()
 			float SampleValue = 0.0f;
 			for (uint16 ChannelIndex = 0; ChannelIndex < RawDataNumChannels; ++ChannelIndex)
 			{
-				SampleValue += (float)InputData[FrameIndex * RawDataNumChannels] / 32767.0f;
+				SampleValue += (float)InputData[(FrameIndex * RawDataNumChannels) + ChannelIndex] / 32767.0f;
 			}
 			SampleValue /= RawDataNumChannels;
 
@@ -2189,7 +2408,7 @@ void USoundWave::BakeEnvelopeAnalysis()
 			float SampleValue = 0.0f;
 			for (uint16 ChannelIndex = 0; ChannelIndex < RawDataNumChannels; ++ChannelIndex)
 			{
-				SampleValue += (float)InputData[FrameIndex * RawDataNumChannels] / 32767.0f;
+				SampleValue += (float)InputData[(FrameIndex * RawDataNumChannels) + ChannelIndex] / 32767.0f;
 			}
 			SampleValue /= RawDataNumChannels;
 
@@ -2215,11 +2434,25 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	check(SoundWaveDataPtr);
 
+	if (PropertyChangedEvent.Property == nullptr)
+	{
+		//an empty event property field might mean the update comes from an undo
+		//we can't discern what properties where reverted so we update the asset and bakes
+
+		UpdateAsset();
+		BakeFFTAnalysis();
+		BakeEnvelopeAnalysis();
+
+		return;
+	}
+
 	static const FName CompressionQualityFName = GET_MEMBER_NAME_CHECKED(USoundWave, CompressionQuality);
 	static const FName SampleRateFName = GET_MEMBER_NAME_CHECKED(USoundWave,SampleRateQuality);
 	static const FName StreamingFName = GET_MEMBER_NAME_CHECKED(USoundWave, bStreaming);
 	static const FName SoundAssetCompressionTypeFName = GET_MEMBER_NAME_CHECKED(USoundWave, SoundAssetCompressionType);
 	static const FName LoadingBehaviorFName = GET_MEMBER_NAME_CHECKED(USoundWave, LoadingBehavior);
+	static const FName InitialChunkSizeFName = GET_MEMBER_NAME_CHECKED(USoundWave, InitialChunkSize);
+	static const FName TransformationsFName = GET_MEMBER_NAME_CHECKED(USoundWave, Transformations);
 
 	// force proxy flags to be up to date
 	SoundWaveDataPtr->bIsSeekable = IsSeekable();
@@ -2227,14 +2460,20 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	SoundWaveDataPtr->bIsStreaming = IsStreaming(nullptr);
 	SoundWaveDataPtr->bShouldUseStreamCaching = ShouldUseStreamCaching();
 
-	// Prevent constant re-compression of SoundWave while properties are being changed interactively
-	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	if (FProperty* PropertyThatChanged = PropertyChangedEvent.Property)
 	{
-		// Regenerate on save any compressed sound formats or if analysis needs to be re-done
-		if (FProperty* PropertyThatChanged = PropertyChangedEvent.Property)
-		{
-			const FName& Name = PropertyThatChanged->GetFName();
+		const FName& Name = PropertyThatChanged->GetFName();
 
+		//Keep transformations UObjects configurations up to date
+		if (Name == TransformationsFName)
+		{
+			UpdateTransformations();
+		}
+	
+		// Prevent constant re-compression of SoundWave while properties are being changed interactively
+		if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+		{
+			// Regenerate on save any compressed sound formats or if analysis needs to be re-done
 			if (Name == LoadingBehaviorFName)
 			{
 				// Update and cache new loading behavior if it has changed. This
@@ -2252,7 +2491,17 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 				}
 			}
 
-			if (Name == CompressionQualityFName || Name == SampleRateFName || Name == StreamingFName || Name == SoundAssetCompressionTypeFName || Name == LoadingBehaviorFName)
+			if(Name == SoundAssetCompressionTypeFName)
+			{
+				SetSoundAssetCompressionType(SoundAssetCompressionType);
+			}
+
+			if (Name == CompressionQualityFName
+				|| Name == SampleRateFName
+				|| Name == StreamingFName
+				|| Name == LoadingBehaviorFName
+				|| Name == InitialChunkSizeFName
+				|| Name == TransformationsFName)
 			{
 				UpdateAsset();
 			}
@@ -2269,7 +2518,25 @@ void USoundWave::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 		}
 	}
 }
+
 #endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+TArray<Audio::FTransformationPtr> USoundWave::CreateTransformations() const
+{
+	TArray<Audio::FTransformationPtr> TransformationPtrs;
+
+	for(UWaveformTransformationBase* Transformation : Transformations)
+	{
+		if(Transformation)
+		{
+			TransformationPtrs.Add(Transformation->CreateTransformation());
+		}
+	}
+	
+	return TransformationPtrs;
+}
+#endif // WITH_EDITORONLY_DATA
 
 void USoundWave::FreeResources(bool bStopSoundsUsingThisResource)
 {
@@ -2480,18 +2747,21 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 
 		WaveInstance = &HandleStart(ActiveSound, NodeWaveInstanceHash);
 	}
-	// If the procedural sound has notified as finished, honor it.
-	// Procedural sounds should always only have one instance max.
 	else
 	{
-		if (WaveInstance->bIsFinished && WaveInstance->bAlreadyNotifiedHook && bProcedural)
+		// If WaveInstance is finished & sound is procedurally generated and has
+		// virtualization disabled, early out to stop playback at the ActiveSound level.
+		const bool bVirtualizationDisabled = VirtualizationMode == EVirtualizationMode::Disabled;
+		const bool bInstanceIsFinished = WaveInstance->bIsFinished;
+		const bool bFinishedNotify = bInstanceIsFinished && WaveInstance->bAlreadyNotifiedHook;
+		if (bFinishedNotify && bProcedural && bVirtualizationDisabled)
 		{
 			return;
 		}
 	}
 
 	// Looping sounds are never actually finished
-	if (bLooping || ParseParams.bLooping)
+	if (!IsOneShot() || ParseParams.bLooping)
 	{
 		WaveInstance->bIsFinished = false;
 
@@ -2640,7 +2910,7 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 
 	WaveInstance->WaveData = this;
 	WaveInstance->NotifyBufferFinishedHooks = ParseParams.NotifyBufferFinishedHooks;
-	WaveInstance->LoopingMode = ((bLooping || ParseParams.bLooping) ? LOOP_Forever : LOOP_Never);
+	WaveInstance->LoopingMode = ((!IsOneShot() || ParseParams.bLooping) ? LOOP_Forever : LOOP_Never);
 	WaveInstance->bIsPaused = ParseParams.bIsPaused;
 
 	// If we're normalizing 3d stereo spatialized sounds, we need to scale by -6 dB
@@ -2753,8 +3023,12 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 		if (EnableSubmixSendsOnPreview())
 		{
 			WaveInstance->bEnableSubmixSends = ParseParams.bEnableSubmixSends;
+			WaveInstance->bEnableBaseSubmix = ParseParams.bEnableBaseSubmix;
 		}
-		WaveInstance->bEnableBaseSubmix = true;
+		else
+		{
+			WaveInstance->bEnableBaseSubmix = true;
+		}
 		WaveInstance->bEnableBusSends = ParseParams.bEnableBusSends;
 	}
 
@@ -2770,6 +3044,9 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 	WaveInstance->SourceDataOverridePluginSettings = ParseParams.SourceDataOverridePluginSettings;
 
 	WaveInstance->bEnableSourceDataOverride = ParseParams.bEnableSourceDataOverride;
+
+	WaveInstance->bShouldUseAudioLink = ParseParams.bEnableSendToAudioLink;
+	WaveInstance->AudioLinkSettingsOverride = ParseParams.AudioLinkSettingsOverride;
 
 	if (WaveInstance->IsPlaying())
 	{
@@ -2902,10 +3179,10 @@ TArrayView<const uint8> USoundWave::GetZerothChunk(bool bForImmediatePlayback)
 		// In editor, we actually don't have a zeroth chunk until we try to play an audio file.
 		if (GIsEditor)
 		{
-			EnsureZerothChunkIsLoaded();
+			LoadZerothChunk();
 		}
 
-		check(SoundWaveDataPtr->ZerothChunkData.GetView().Num() > 0);
+		check(SoundWaveDataPtr->GetZerothChunkData().GetView().Num() > 0);
 
 		if (GetNumChunks() > 1)
 		{
@@ -2917,7 +3194,7 @@ TArrayView<const uint8> USoundWave::GetZerothChunk(bool bForImmediatePlayback)
 			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult InResult) {}, ENamedThreads::AnyThread, bForImmediatePlayback);
 		}
 
-		FBulkDataBuffer<uint8>::ViewType View = SoundWaveDataPtr->ZerothChunkData.GetView();
+		FBulkDataBuffer<uint8>::ViewType View = SoundWaveDataPtr->GetZerothChunkData().GetView();
 		check(View.Num() <= MAX_int32);
 		return TArrayView<uint8>(View.GetData(), static_cast<int32>(View.Num()));
 	}
@@ -2942,8 +3219,6 @@ bool USoundWave::IsSeekable() const
 	{
 		Result = false;
 	}
-
-	SoundWaveDataPtr->bIsSeekable = Result; // update shared flags
 
 	return Result;
 }
@@ -2984,11 +3259,11 @@ int32 USoundWave::GetCompressionQuality() const
 
 FSoundWaveProxyPtr USoundWave::CreateSoundWaveProxy()
 {
-#if WITH_EDITORONLY_DATA
-	EnsureZerothChunkIsLoaded();
-#endif // #if WITH_EDITORONLY_DATA
-
 	LLM_SCOPE(ELLMTag::AudioSoundWaveProxies);
+
+#if WITH_EDITORONLY_DATA
+	LoadZerothChunk();
+#endif // #if WITH_EDITORONLY_DATA
 
 	check(SoundWaveDataPtr);
 	SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
@@ -2999,12 +3274,14 @@ FSoundWaveProxyPtr USoundWave::CreateSoundWaveProxy()
 TUniquePtr<Audio::IProxyData> USoundWave::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
 {
 	check(SoundWaveDataPtr);
+	LLM_SCOPE(ELLMTag::AudioSoundWaveProxies);
 
 #if WITH_EDITORONLY_DATA
-	EnsureZerothChunkIsLoaded();
+	if (!LoadZerothChunk())
+	{
+		return nullptr;
+	}
 #endif // #if WITH_EDITORONLY_DATA
-
-	LLM_SCOPE(ELLMTag::AudioSoundWaveProxies);
 
 	check(SoundWaveDataPtr);
 	SoundWaveDataPtr->InitializeDataFromSoundWave(*this);
@@ -3055,7 +3332,7 @@ void USoundWave::UpdatePlatformData()
 		IStreamingManager::Get().GetAudioStreamingManager().RemoveStreamingSoundWave(InternalProxy);
 
 		// Recache platform data if the source has changed.
-		CachePlatformData();
+		CachePlatformData(true /* bAsyncCache */);
 
 		// Add back to the streaming manager to reload first chunk
 		IStreamingManager::Get().GetAudioStreamingManager().AddStreamingSoundWave(InternalProxy);
@@ -3521,6 +3798,8 @@ bool USoundWave::IsRetainingAudio()
 
 void USoundWave::OverrideLoadingBehavior(ESoundWaveLoadingBehavior InLoadingBehavior)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(USoundWave::OverrideLoadingBehavior);
+
 	const ESoundWaveLoadingBehavior OldBehavior = GetLoadingBehavior(false);
 	const bool bAlreadySetToRetained = (OldBehavior == ESoundWaveLoadingBehavior::RetainOnLoad);
 	const bool bAlreadyLoaded = !HasAnyFlags(RF_NeedLoad);
@@ -3536,7 +3815,6 @@ void USoundWave::OverrideLoadingBehavior(ESoundWaveLoadingBehavior InLoadingBeha
 	{
 		InLoadingBehavior = ESoundWaveLoadingBehavior::PrimeOnLoad;
 	}
-
 
 	// record the new loading behavior
 	// (if this soundwave isn't loaded yet, 
@@ -3555,25 +3833,41 @@ void USoundWave::OverrideLoadingBehavior(ESoundWaveLoadingBehavior InLoadingBeha
 			ConditionalPostLoad();
 			RetainCompressedAudio();
 		}
-		else if (InLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad && GetNumChunks() > 1)
+		else if (InLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad)
 		{
+#if WITH_EDITOR
+			// In editor, just make sure that data is available in the local DDC cache for quick access.
+			CachePlatformData(true /* bAsyncCache */);
+
 			if (!InternalProxy.IsValid())
 			{
 				InternalProxy = CreateSoundWaveProxy();
 			}
+#else
+			if (GetNumChunks() > 1)
+			{
+				if (!InternalProxy.IsValid())
+				{
+					InternalProxy = CreateSoundWaveProxy();
+				}
 
-			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+				IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InternalProxy, 1, [](EAudioChunkLoadResult) {});
+			}
+#endif
 		}
 	}
 }
 
 #if WITH_EDITOR
-void USoundWave::UpdateAsset()
+void USoundWave::UpdateAsset(bool bMarkDirty)
 {
 	InvalidateCompressedData();
 	FreeResources();
 	UpdatePlatformData();
-	MarkPackageDirty();
+	if(bMarkDirty)
+	{
+		MarkPackageDirty();
+	}
 
 	// if we are force inline, we need to make sure the shared data is pulled from the DDC
 	// before we attempt to use a decoder on the proxy (not using stream caching)
@@ -3595,6 +3889,39 @@ void USoundWave::UpdateAsset()
 		}
 	}
 }
+
+const FWaveTransformUObjectConfiguration& USoundWave::GetTransformationChainConfig() const
+{
+	return TransformationChainConfig;
+}
+
+const FWaveTransformUObjectConfiguration& USoundWave::UpdateTransformations()
+{
+	TransformationChainConfig = FWaveTransformUObjectConfiguration();
+
+	if (TotalSamples == 0)
+	{
+		UE_LOG(LogAudio, Warning, TEXT("Found %d total samples when updating transformations on soundwave %s"), TotalSamples, *GetNameSafe(this));
+		UE_LOG(LogAudio, Warning, TEXT("Consider reimporting the asset, transformations might not work correctly"));
+		return TransformationChainConfig;
+	}
+
+	TransformationChainConfig.NumChannels = NumChannels;
+	TransformationChainConfig.SampleRate = ImportedSampleRate > 0 ? ImportedSampleRate : GetSampleRateForCurrentPlatform();
+	TransformationChainConfig.StartTime = 0.f;
+	TransformationChainConfig.EndTime = TotalSamples / TransformationChainConfig.SampleRate;
+
+	for (TObjectPtr<UWaveformTransformationBase>& Transformation : Transformations)
+	{
+		if (Transformation)
+		{
+			Transformation->UpdateConfiguration(TransformationChainConfig);
+		}
+	}
+
+	return TransformationChainConfig;
+}
+
 #endif // #if WITH_EDITOR
 
 void USoundWave::CacheInheritedLoadingBehavior() const
@@ -3780,10 +4107,10 @@ void FSoundWaveProxy::ReleaseCompressedAudio()
 	return SoundWaveDataPtr->ReleaseCompressedAudio();
 }
 
-void FSoundWaveProxy::EnsureZerothChunkIsLoaded()
+bool FSoundWaveProxy::LoadZerothChunk()
 {
 	check(SoundWaveDataPtr);
-	return SoundWaveDataPtr->EnsureZerothChunkIsLoaded();
+	return SoundWaveDataPtr->LoadZerothChunk();
 }
 
 bool FSoundWaveProxy::GetChunkData(int32 ChunkIndex, uint8** OutChunkData, bool bMakeSureChunkIsLoaded)
@@ -3943,10 +4270,10 @@ TArrayView<const uint8> FSoundWaveProxy::GetZerothChunk(const FSoundWaveProxyPtr
 	{
 		if (GIsEditor)
 		{
-			SoundWaveProxy->EnsureZerothChunkIsLoaded();
+			SoundWaveProxy->LoadZerothChunk();
 		}
 
-		if (ensure(SoundWaveProxy->IsZerothChunkDataLoaded()))
+		if (SoundWaveProxy->IsZerothChunkDataLoaded())
 		{
 			if (SoundWaveProxy->SoundWaveDataPtr->ShouldUseStreamCaching())
 			{

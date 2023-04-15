@@ -1,8 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ComponentVisualizer.h"
-#include "GameFramework/Actor.h"
+
 #include "ActorEditorUtils.h"
+#include "Components/ChildActorComponent.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
 
 IMPLEMENT_HIT_PROXY(HComponentVisProxy, HHitProxy);
 
@@ -243,7 +253,7 @@ void FComponentVisualizer::NotifyPropertiesModified(UActorComponent* Component, 
 
 	for (FProperty* Property : Properties)
 	{
-		FPropertyChangedEvent PropertyChangedEvent(Property);
+		FPropertyChangedEvent PropertyChangedEvent(Property, PropertyChangeType);
 		Component->PostEditChangeProperty(PropertyChangedEvent);
 	}
 

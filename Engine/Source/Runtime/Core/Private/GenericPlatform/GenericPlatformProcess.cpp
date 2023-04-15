@@ -278,6 +278,13 @@ void FGenericPlatformProcess::TerminateProc( FProcHandle & ProcessHandle, bool K
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::TerminateProc not implemented on this platform"));
 }
 
+void FGenericPlatformProcess::TerminateProcTreeWithPredicate(
+	FProcHandle& ProcessHandle,
+	TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate)
+{
+	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::TerminateProcTreeWithPredicate not implemented on this platform"));
+}
+
 FGenericPlatformProcess::EWaitAndForkResult FGenericPlatformProcess::WaitAndFork()
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::WaitAndFork not implemented on this platform"));
@@ -480,7 +487,7 @@ FEvent* FGenericPlatformProcess::CreateSynchEvent(bool bIsManualReset)
 	
 	// Create fake singlethread events in environments that don't support multithreading
 	// For processes that intend to fork: create real events even in the master process since the allocated mutex might get reused by the
-	//forked child process when he gets to run in multithread mode.
+	//forked child process when it gets to run in multithread mode.
 	const bool bIsMultithread = FPlatformProcess::SupportsMultithreading() || FForkProcessHelper::SupportsMultithreadingPostFork();
 
 	if (bIsMultithread)
@@ -640,11 +647,9 @@ bool FGenericPlatformProcess::Daemonize()
 
 bool FGenericPlatformProcess::IsFirstInstance()
 {
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return GIsFirstInstance;
-#else
-	return true;
-#endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FSystemWideCriticalSectionNotImplemented::FSystemWideCriticalSectionNotImplemented(const FString& Name, FTimespan Timeout)

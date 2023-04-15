@@ -2,17 +2,27 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
-#include "Widgets/SWidget.h"
-#include "Particles/ParticleModule.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "EditorViewportClient.h"
+#include "Math/Color.h"
+#include "Math/IntPoint.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Particles/ParticleModule.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
 
 class FCanvas;
 class FCascade;
 class FMenuBuilder;
+class FTexture;
+class FViewport;
 class SCascadeEmitterCanvas;
+class SWidget;
 class UParticleEmitter;
+class UTexture2D;
+struct FInputKeyEventArgs;
 
 /*-----------------------------------------------------------------------------
    FCascadeCanvasClient
@@ -27,7 +37,7 @@ public:
 
 	/** FViewportClient interface */
 	virtual void Draw(FViewport* Viewport, FCanvas* Canvas) override;
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.0f, bool bGamepad = false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
 	virtual void CapturedMouseMove(FViewport* Viewport, int32 X, int32 Y) override;
 
 	/** Returns the ratio of the size of the particle emitters to the size of the viewport */

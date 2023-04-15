@@ -25,6 +25,8 @@
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayDebuggerLocalController)
+
 #if WITH_EDITOR
 #include "Editor/GameplayDebuggerEdMode.h"
 #include "EditorModeManager.h"
@@ -39,6 +41,7 @@ UGameplayDebuggerLocalController::UGameplayDebuggerLocalController(const FObject
 	bIsLocallyEnabled = false;
 	bPrevLocallyEnabled = false;
 	bEnableTextShadow = false;
+	bPrevScreenMessagesEnabled = false;
 	ActiveRowIdx = 0;
 #if WITH_EDITOR
 	bActivateOnPIEEnd = false;
@@ -167,7 +170,14 @@ void UGameplayDebuggerLocalController::OnDebugDraw(class UCanvas* Canvas, class 
 			RebuildDataPackMap();
 		}
 
-		CachedReplicator->SetViewPoint(Canvas->SceneView->ViewLocation, Canvas->SceneView->ViewRotation.Vector());
+		if (Canvas->SceneView->ViewActor == nullptr)
+		{
+			CachedReplicator->SetViewPoint(Canvas->SceneView->ViewLocation, Canvas->SceneView->ViewRotation.Vector());
+		}
+		else if (CachedReplicator->IsViewPointSet())
+		{
+			CachedReplicator->ResetViewPoint();
+		}
 
 		const bool bHasDebugActor = CachedReplicator->HasDebugActor();
 		for (int32 Idx = 0; Idx < NumCategories; Idx++)
@@ -500,7 +510,6 @@ bool UGameplayDebuggerLocalController::IsKeyBound(const FName KeyName) const
 
 void UGameplayDebuggerLocalController::OnActivationPressed()
 {
-	bPrevLocallyEnabled = bIsLocallyEnabled;
 	if (CachedReplicator)
 	{
 		const float HoldTimeThr = 0.2f * (FApp::UseFixedTimeStep() ? (FApp::GetFixedDeltaTime() * 60.0f) : 1.0f);
@@ -518,16 +527,27 @@ void UGameplayDebuggerLocalController::ToggleActivation()
 {
 	if (CachedReplicator)
 	{
-		UWorld* World = CachedReplicator->GetWorld();
+		const UWorld* World = CachedReplicator->GetWorld();
 		if (!bIsSelectingActor || StartSelectingActorHandle.IsValid())
 		{
+			bPrevLocallyEnabled = bIsLocallyEnabled;
 			bIsLocallyEnabled = !CachedReplicator->IsEnabled();
 			CachedReplicator->SetEnabled(bIsLocallyEnabled);
 
 			if (bIsLocallyEnabled)
 			{
+				bPrevScreenMessagesEnabled = GAreScreenMessagesEnabled;
+				GAreScreenMessagesEnabled = false;
 				DebugActorCandidate = nullptr;
 				OnSelectActorTick();
+			}
+			else
+			{
+				// if Screen message are still disabled, restore previous state
+				if (!GAreScreenMessagesEnabled)
+				{
+					GAreScreenMessagesEnabled = bPrevScreenMessagesEnabled;
+				}
 			}
 		}
 
@@ -632,8 +652,11 @@ void UGameplayDebuggerLocalController::OnStartSelectingActor()
 	{
 		if (!CachedReplicator->IsEnabled())
 		{
+			bPrevLocallyEnabled = bIsLocallyEnabled;
 			bIsLocallyEnabled = true;
 			CachedReplicator->SetEnabled(bIsLocallyEnabled);
+			bPrevScreenMessagesEnabled = GAreScreenMessagesEnabled;
+			GAreScreenMessagesEnabled = false;
 		}
 
 		bIsSelectingActor = true;
@@ -1060,3 +1083,4 @@ FAutoConsoleCommandWithWorldAndArgs FGameplayDebuggerConsoleCommands::SetFontSiz
 	TEXT("Configures gameplay debugger's font size. Usage: gdt.fontsize <fontSize> (default = 10)"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&FGameplayDebuggerConsoleCommands::SetFontSize)
 );
+

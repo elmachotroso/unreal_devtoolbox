@@ -45,6 +45,10 @@
 #include "StaticMeshAttributes.h"
 #include "TextureCompiler.h"
 
+#include "TriangleTypes.h"
+#include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
+
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Tests/AutomationEditorCommon.h"
@@ -153,7 +157,7 @@ UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage*
 			SwitchParameter.ParameterInfo.Name = *(TEXT("Use") + TrimmedPropertyName);
 			SwitchParameter.Value = true;
 			SwitchParameter.bOverride = true;
-			NewStaticParameterSet.StaticSwitchParameters.Add(SwitchParameter);
+			NewStaticParameterSet.EditorOnly.StaticSwitchParameters.Add(SwitchParameter);
 		}
 		else
 		{
@@ -188,10 +192,10 @@ UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage*
 		SwitchParameter.ParameterInfo.Name = TEXT("UseCustomUV");
 		SwitchParameter.Value = true;
 		SwitchParameter.bOverride = true;
-		NewStaticParameterSet.StaticSwitchParameters.Add(SwitchParameter);
+		NewStaticParameterSet.EditorOnly.StaticSwitchParameters.Add(SwitchParameter);
 
 		SwitchParameter.ParameterInfo.Name = *(TEXT("UseUV") + FString::FromInt(MeshData.TextureCoordinateIndex));
-		NewStaticParameterSet.StaticSwitchParameters.Add(SwitchParameter);
+		NewStaticParameterSet.EditorOnly.StaticSwitchParameters.Add(SwitchParameter);
 	}
 
 	Material->UpdateStaticPermutation(NewStaticParameterSet);
@@ -680,6 +684,7 @@ public:
 	}
 	virtual bool IsMasked() const override									{ return false; }
 	virtual enum EBlendMode GetBlendMode() const override					{ return BLEND_Opaque; }
+	virtual enum EStrataBlendMode GetStrataBlendMode() const override		{ return EStrataBlendMode::SBM_Opaque; }
 	virtual FMaterialShadingModelField GetShadingModels() const override	{ return MSM_Unlit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override		{ return false; }
 	virtual float GetOpacityMaskClipValue() const override					{ return 0.5f; }
@@ -957,7 +962,7 @@ static bool ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TS
 							FPlane(0,	0,	-1,	0),
 							FPlane(0,	0,	0,	1));
 				
-	const float ZOffset = WORLD_MAX;
+	const FMatrix::FReal ZOffset = UE_OLD_WORLD_MAX;
 	FMatrix ProjectionMatrix =  FReversedZOrthoMatrix(
 		LandscapeExtent.X,
 		LandscapeExtent.Y,
@@ -1021,6 +1026,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 	Material->SetShadingModel(MSM_DefaultLit);
 	OutGeneratedAssets.Add(Material);
 
+	UMaterialEditorOnlyData* MaterialEditorOnly = Material->GetEditorOnlyData();
+
 	int32 MaterialNodeY = -150;
 	int32 MaterialNodeStepY = 180;
 
@@ -1039,8 +1046,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		BasecolorExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 		BasecolorExpression->MaterialExpressionEditorX = -400;
 		BasecolorExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(BasecolorExpression);
-		Material->BaseColor.Expression = BasecolorExpression;
+		Material->GetExpressionCollection().AddExpression(BasecolorExpression);
+		MaterialEditorOnly->BaseColor.Expression = BasecolorExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
@@ -1052,17 +1059,16 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		BaseColorExpression->Constant = BaseColor;
 		BaseColorExpression->MaterialExpressionEditorX = -400;
 		BaseColorExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(BaseColorExpression);
-		Material->BaseColor.Expression = BaseColorExpression;
+		Material->GetExpressionCollection().AddExpression(BaseColorExpression);
+		MaterialEditorOnly->BaseColor.Expression = BaseColorExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
 
-
 	// Whether or not a material property is baked down
 	const bool bHasMetallic = InFlattenMaterial.DoesPropertyContainData(EFlattenMaterialProperties::Metallic) && !InFlattenMaterial.IsPropertyConstant(EFlattenMaterialProperties::Metallic);
-	const bool bHasRoughness = InFlattenMaterial.DoesPropertyContainData(EFlattenMaterialProperties::Roughness) && !InFlattenMaterial.IsPropertyConstant(EFlattenMaterialProperties::Roughness);
 	const bool bHasSpecular = InFlattenMaterial.DoesPropertyContainData(EFlattenMaterialProperties::Specular) && !InFlattenMaterial.IsPropertyConstant(EFlattenMaterialProperties::Specular);
+	const bool bHasRoughness = InFlattenMaterial.DoesPropertyContainData(EFlattenMaterialProperties::Roughness) && !InFlattenMaterial.IsPropertyConstant(EFlattenMaterialProperties::Roughness);
 
 	// Number of material properties baked down to textures
 	const int BakedMaterialPropertyCount = bHasMetallic + bHasRoughness + bHasSpecular;
@@ -1081,22 +1087,19 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		MergedSize = (bHasMetallic && MergedSize.X == 0) ? PropertySize : MergedSize;
 	}
 	bSameTextureSize &= bHasMetallic ? (SampleCount == InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Metallic).Num()) : true;
-	bSameTextureSize &= bHasRoughness ? (SampleCount == InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Roughness).Num()) : true;
 	bSameTextureSize &= bHasSpecular ? (SampleCount == InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Specular).Num()) : true;
+	bSameTextureSize &= bHasRoughness ? (SampleCount == InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Roughness).Num()) : true;
 
 	// Merge values into one texture if more than one material property exists
 	if (BakedMaterialPropertyCount > 1 && bSameTextureSize)
 	{
-		// Metallic = R, Roughness = G, Specular = B
+		// Metallic = R, Specular = G, Roughness = B
 		TArray<FColor> MergedSamples;
 		MergedSamples.AddZeroed(SampleCount);
 		
 		// R G B masks
-#if PLATFORM_LITTLE_ENDIAN
-		const uint32 ColorMask[3] = { 0x0000FF00, 0x00FF0000, 0xFF000000 };
-#else // PLATFORM_LITTLE_ENDIAN
 		const uint32 ColorMask[3] = { 0x00FF0000, 0x0000FF00, 0x000000FF };
-#endif
+
 		for (int32 PropertyIndex = 0; PropertyIndex < 3; ++PropertyIndex)
 		{
 			EFlattenMaterialProperties Property = (EFlattenMaterialProperties)(PropertyIndex + (int32)EFlattenMaterialProperties::Metallic);
@@ -1113,7 +1116,7 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			}
 		}
 
-		const FString AssetName = TEXT("T_") + AssetBaseName + TEXT("_MRS");
+		const FString AssetName = TEXT("T_") + AssetBaseName + TEXT("_MSR");
 		const bool bSRGB = true;
 		UTexture2D* Texture = CreateTexture(InOuter, AssetBasePath / AssetName, MergedSize, MergedSamples, TC_Default, InTextureGroup, Flags, bSRGB);
 		OutGeneratedAssets.Add(Texture);
@@ -1123,39 +1126,39 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		MergedExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 		MergedExpression->MaterialExpressionEditorX = -400;
 		MergedExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(MergedExpression);
+		Material->GetExpressionCollection().AddExpression(MergedExpression);
 
 		// Metallic
 		if (bHasMetallic)
 		{
-			Material->Metallic.Expression = MergedExpression;
-			Material->Metallic.Mask = Material->Metallic.Expression->GetOutputs()[0].Mask;
-			Material->Metallic.MaskR = 1;
-			Material->Metallic.MaskG = 0;
-			Material->Metallic.MaskB = 0;
-			Material->Metallic.MaskA = 0;
+			MaterialEditorOnly->Metallic.Expression = MergedExpression;
+			MaterialEditorOnly->Metallic.Mask = MaterialEditorOnly->Metallic.Expression->GetOutputs()[0].Mask;
+			MaterialEditorOnly->Metallic.MaskR = 1;
+			MaterialEditorOnly->Metallic.MaskG = 0;
+			MaterialEditorOnly->Metallic.MaskB = 0;
+			MaterialEditorOnly->Metallic.MaskA = 0;
+		}
+
+		// Specular
+		if (bHasSpecular)
+		{
+			MaterialEditorOnly->Specular.Expression = MergedExpression;
+			MaterialEditorOnly->Specular.Mask = MaterialEditorOnly->Specular.Expression->GetOutputs()[0].Mask;
+			MaterialEditorOnly->Specular.MaskR = 0;
+			MaterialEditorOnly->Specular.MaskG = 1;
+			MaterialEditorOnly->Specular.MaskB = 0;
+			MaterialEditorOnly->Specular.MaskA = 0;
 		}
 
 		// Roughness
 		if (bHasRoughness)
 		{
-			Material->Roughness.Expression = MergedExpression;
-			Material->Roughness.Mask = Material->Roughness.Expression->GetOutputs()[0].Mask;
-			Material->Roughness.MaskR = 0;
-			Material->Roughness.MaskG = 1;
-			Material->Roughness.MaskB = 0;
-			Material->Roughness.MaskA = 0;
-		}
-		
-		// Specular
-		if (bHasSpecular)
-		{
-			Material->Specular.Expression = MergedExpression;
-			Material->Specular.Mask = Material->Specular.Expression->GetOutputs()[0].Mask;
-			Material->Specular.MaskR = 0;
-			Material->Specular.MaskG = 0;
-			Material->Specular.MaskB = 1;
-			Material->Specular.MaskA = 0;
+			MaterialEditorOnly->Roughness.Expression = MergedExpression;
+			MaterialEditorOnly->Roughness.Mask = MaterialEditorOnly->Roughness.Expression->GetOutputs()[0].Mask;
+			MaterialEditorOnly->Roughness.MaskR = 0;
+			MaterialEditorOnly->Roughness.MaskG = 0;
+			MaterialEditorOnly->Roughness.MaskB = 1;
+			MaterialEditorOnly->Roughness.MaskA = 0;
 		}
 
 		MaterialNodeY += MaterialNodeStepY;
@@ -1175,8 +1178,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			MetallicExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 			MetallicExpression->MaterialExpressionEditorX = -400;
 			MetallicExpression->MaterialExpressionEditorY = MaterialNodeY;
-			Material->Expressions.Add(MetallicExpression);
-			Material->Metallic.Expression = MetallicExpression;
+			Material->GetExpressionCollection().AddExpression(MetallicExpression);
+			MaterialEditorOnly->Metallic.Expression = MetallicExpression;
 
 			MaterialNodeY += MaterialNodeStepY;
 		}
@@ -1194,8 +1197,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			SpecularExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 			SpecularExpression->MaterialExpressionEditorX = -400;
 			SpecularExpression->MaterialExpressionEditorY = MaterialNodeY;
-			Material->Expressions.Add(SpecularExpression);
-			Material->Specular.Expression = SpecularExpression;
+			Material->GetExpressionCollection().AddExpression(SpecularExpression);
+			MaterialEditorOnly->Specular.Expression = SpecularExpression;
 
 			MaterialNodeY += MaterialNodeStepY;
 		}
@@ -1213,8 +1216,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			RoughnessExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 			RoughnessExpression->MaterialExpressionEditorX = -400;
 			RoughnessExpression->MaterialExpressionEditorY = MaterialNodeY;
-			Material->Expressions.Add(RoughnessExpression);
-			Material->Roughness.Expression = RoughnessExpression;
+			Material->GetExpressionCollection().AddExpression(RoughnessExpression);
+			MaterialEditorOnly->Roughness.Expression = RoughnessExpression;
 
 			MaterialNodeY += MaterialNodeStepY;
 		}
@@ -1226,8 +1229,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		MetallicExpression->R = MaterialProxySettings.bMetallicMap ? FLinearColor(InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Metallic)[0]).R : MaterialProxySettings.MetallicConstant;
 		MetallicExpression->MaterialExpressionEditorX = -400;
 		MetallicExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(MetallicExpression);
-		Material->Metallic.Expression = MetallicExpression;
+		Material->GetExpressionCollection().AddExpression(MetallicExpression);
+		MaterialEditorOnly->Metallic.Expression = MetallicExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
@@ -1239,8 +1242,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		SpecularExpression->R = MaterialProxySettings.bSpecularMap ? FLinearColor(InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Specular)[0]).R : MaterialProxySettings.SpecularConstant;
 		SpecularExpression->MaterialExpressionEditorX = -400;
 		SpecularExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(SpecularExpression);
-		Material->Specular.Expression = SpecularExpression;
+		Material->GetExpressionCollection().AddExpression(SpecularExpression);
+		MaterialEditorOnly->Specular.Expression = SpecularExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
@@ -1252,8 +1255,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		RoughnessExpression->R = MaterialProxySettings.bRoughnessMap ? FLinearColor(InFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Roughness)[0]).R : MaterialProxySettings.RoughnessConstant;
 		RoughnessExpression->MaterialExpressionEditorX = -400;
 		RoughnessExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(RoughnessExpression);
-		Material->Roughness.Expression = RoughnessExpression;
+		Material->GetExpressionCollection().AddExpression(RoughnessExpression);
+		MaterialEditorOnly->Roughness.Expression = RoughnessExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
@@ -1271,8 +1274,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		NormalExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
 		NormalExpression->MaterialExpressionEditorX = -400;
 		NormalExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(NormalExpression);
-		Material->Normal.Expression = NormalExpression;
+		Material->GetExpressionCollection().AddExpression(NormalExpression);
+		MaterialEditorOnly->Normal.Expression = NormalExpression;
 
 		MaterialNodeY+= MaterialNodeStepY;
 	}
@@ -1288,8 +1291,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			EmissiveColorExpression->Constant = EmissiveColor.ReinterpretAsLinear() * InFlattenMaterial.EmissiveScale;
 			EmissiveColorExpression->MaterialExpressionEditorX = -400;
 			EmissiveColorExpression->MaterialExpressionEditorY = MaterialNodeY;
-			Material->Expressions.Add(EmissiveColorExpression);
-			Material->EmissiveColor.Expression = EmissiveColorExpression;
+			Material->GetExpressionCollection().AddExpression(EmissiveColorExpression);
+			MaterialEditorOnly->EmissiveColor.Expression = EmissiveColorExpression;
 
 			MaterialNodeY += MaterialNodeStepY;
 		}
@@ -1307,16 +1310,16 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		EmissiveColorExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 		EmissiveColorExpression->MaterialExpressionEditorX = -400;
 		EmissiveColorExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(EmissiveColorExpression);
+		Material->GetExpressionCollection().AddExpression(EmissiveColorExpression);
 
 		UMaterialExpressionMultiply* EmissiveColorScale = NewObject<UMaterialExpressionMultiply>(Material);
 		EmissiveColorScale->A.Expression = EmissiveColorExpression;
 		EmissiveColorScale->ConstB = InFlattenMaterial.EmissiveScale;
 		EmissiveColorScale->MaterialExpressionEditorX = -200;
 		EmissiveColorScale->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(EmissiveColorScale);
+		Material->GetExpressionCollection().AddExpression(EmissiveColorScale);
 
-		Material->EmissiveColor.Expression = EmissiveColorScale;
+		MaterialEditorOnly->EmissiveColor.Expression = EmissiveColorScale;
 		MaterialNodeY += MaterialNodeStepY;
 	}
 
@@ -1328,8 +1331,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		OpacityExpression->R = Opacity.R;
 		OpacityExpression->MaterialExpressionEditorX = -400;
 		OpacityExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(OpacityExpression);
-		Material->Opacity.Expression = OpacityExpression;
+		Material->GetExpressionCollection().AddExpression(OpacityExpression);
+		MaterialEditorOnly->Opacity.Expression = OpacityExpression;
 
 		MaterialNodeY += MaterialNodeStepY;
 	}
@@ -1346,8 +1349,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		OpacityExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 		OpacityExpression->MaterialExpressionEditorX = -400;
 		OpacityExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(OpacityExpression);
-		Material->Opacity.Expression = OpacityExpression;
+		Material->GetExpressionCollection().AddExpression(OpacityExpression);
+		MaterialEditorOnly->Opacity.Expression = OpacityExpression;
 		MaterialNodeY += MaterialNodeStepY;
 	}
 
@@ -1363,8 +1366,8 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 			SubSurfaceColorExpression->Constant = (SubSurfaceColor.ReinterpretAsLinear());
 			SubSurfaceColorExpression->MaterialExpressionEditorX = -400;
 			SubSurfaceColorExpression->MaterialExpressionEditorY = MaterialNodeY;
-			Material->Expressions.Add(SubSurfaceColorExpression);
-			Material->SubsurfaceColor.Expression = SubSurfaceColorExpression;
+			Material->GetExpressionCollection().AddExpression(SubSurfaceColorExpression);
+			MaterialEditorOnly->SubsurfaceColor.Expression = SubSurfaceColorExpression;
 
 			MaterialNodeY += MaterialNodeStepY;
 		}
@@ -1385,9 +1388,9 @@ UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenM
 		SubSurfaceColorExpression->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Color;
 		SubSurfaceColorExpression->MaterialExpressionEditorX = -400;
 		SubSurfaceColorExpression->MaterialExpressionEditorY = MaterialNodeY;
-		Material->Expressions.Add(SubSurfaceColorExpression);
+		Material->GetExpressionCollection().AddExpression(SubSurfaceColorExpression);
 
-		Material->SubsurfaceColor.Expression = SubSurfaceColorExpression;
+		MaterialEditorOnly->SubsurfaceColor.Expression = SubSurfaceColorExpression;
 		MaterialNodeY += MaterialNodeStepY;
 
 		Material->SetShadingModel(MSM_Subsurface);
@@ -1482,7 +1485,7 @@ bool FMaterialUtilities::ExportBaseColor(ULandscapeComponent* LandscapeComponent
 		FPlane(0, 0, -1, 0),
 		FPlane(0, 0, 0, 1));
 
-	const float ZOffset = WORLD_MAX;
+	const FMatrix::FReal ZOffset = UE_OLD_WORLD_MAX;
 	FMatrix ProjectionMatrix = FReversedZOrthoMatrix(
 		LandscapeExtent.X,
 		LandscapeExtent.Y,
@@ -1509,11 +1512,11 @@ FFlattenMaterial FMaterialUtilities::CreateFlattenMaterialWithSettings(const FMa
 	// Create new material.
 	FFlattenMaterial Material;
 
-	// TODO REMOVE THIS FEATURE?
-	FIntPoint MaximumSize = FIntPoint::ZeroValue;// InMaterialLODSettings.TextureSize;
-	// If the user is manually overriding the texture size, make sure we have the max texture size to render with
+	FIntPoint MaximumSize = FIntPoint::ZeroValue;
+
 	if (InMaterialLODSettings.TextureSizingType == TextureSizingType_UseManualOverrideTextureSize)
 	{
+		// If the user is manually overriding the texture size, make sure we have the max texture size to render with
 		MaximumSize = (MaximumSize.X < InMaterialLODSettings.DiffuseTextureSize.X) ? InMaterialLODSettings.DiffuseTextureSize : MaximumSize ;
 		MaximumSize = (InMaterialLODSettings.bSpecularMap && (MaximumSize.X < InMaterialLODSettings.SpecularTextureSize.X)) ? InMaterialLODSettings.SpecularTextureSize	:	MaximumSize;
 		MaximumSize = (InMaterialLODSettings.bMetallicMap && (MaximumSize.X < InMaterialLODSettings.MetallicTextureSize.X)) ? InMaterialLODSettings.MetallicTextureSize	:	MaximumSize;
@@ -1521,12 +1524,8 @@ FFlattenMaterial FMaterialUtilities::CreateFlattenMaterialWithSettings(const FMa
 		MaximumSize = (InMaterialLODSettings.bNormalMap && (MaximumSize.X < InMaterialLODSettings.NormalTextureSize.X)) ? InMaterialLODSettings.NormalTextureSize :			MaximumSize;
 		MaximumSize = (InMaterialLODSettings.bEmissiveMap && (MaximumSize.X < InMaterialLODSettings.EmissiveTextureSize.X)) ? InMaterialLODSettings.EmissiveTextureSize :	MaximumSize;
 		MaximumSize = (InMaterialLODSettings.bOpacityMap && (MaximumSize.X < InMaterialLODSettings.OpacityTextureSize.X)) ? InMaterialLODSettings.OpacityTextureSize :		MaximumSize;
-	}
 	
-	if (InMaterialLODSettings.TextureSizingType == TextureSizingType_UseManualOverrideTextureSize)
-	{
 		Material.RenderSize = MaximumSize;
-
 		Material.SetPropertySize(EFlattenMaterialProperties::Diffuse, InMaterialLODSettings.DiffuseTextureSize);
 		Material.SetPropertySize(EFlattenMaterialProperties::Specular, InMaterialLODSettings.bSpecularMap ? InMaterialLODSettings.SpecularTextureSize : FIntPoint::ZeroValue);
 		Material.SetPropertySize(EFlattenMaterialProperties::Metallic, InMaterialLODSettings.bMetallicMap ? InMaterialLODSettings.MetallicTextureSize : FIntPoint::ZeroValue);
@@ -1539,15 +1538,13 @@ FFlattenMaterial FMaterialUtilities::CreateFlattenMaterialWithSettings(const FMa
 	{
 		Material.RenderSize = InMaterialLODSettings.TextureSize;
 		
-		int NormalSizeX, DiffuseSizeX, PropertiesSizeX;
-		NormalSizeX = InMaterialLODSettings.TextureSize.X;
-		DiffuseSizeX = FMath::Max(InMaterialLODSettings.TextureSize.X >> 1, 32);
-		PropertiesSizeX = FMath::Max(InMaterialLODSettings.TextureSize.X >> 2, 16);
+		int NormalSize = InMaterialLODSettings.TextureSize.X;
+		int DiffuseSize = FMath::Max(InMaterialLODSettings.TextureSize.X >> 1, 32);
+		int OtherSize = FMath::Max(InMaterialLODSettings.TextureSize.X >> 2, 16);
+		FIntPoint PropertiesSize = FIntPoint(OtherSize, OtherSize);
 
-		Material.SetPropertySize(EFlattenMaterialProperties::Diffuse, FIntPoint(DiffuseSizeX, DiffuseSizeX));
-		Material.SetPropertySize(EFlattenMaterialProperties::Normal, (InMaterialLODSettings.bNormalMap) ? FIntPoint(NormalSizeX, NormalSizeX) : FIntPoint::ZeroValue);
-
-		FIntPoint PropertiesSize = FIntPoint(PropertiesSizeX, PropertiesSizeX);
+		Material.SetPropertySize(EFlattenMaterialProperties::Diffuse, FIntPoint(DiffuseSize, DiffuseSize));
+		Material.SetPropertySize(EFlattenMaterialProperties::Normal, (InMaterialLODSettings.bNormalMap) ? FIntPoint(NormalSize, NormalSize) : FIntPoint::ZeroValue);
 		Material.SetPropertySize(EFlattenMaterialProperties::Specular, (InMaterialLODSettings.bSpecularMap) ? PropertiesSize : FIntPoint::ZeroValue );
 		Material.SetPropertySize(EFlattenMaterialProperties::Metallic, (InMaterialLODSettings.bMetallicMap) ? PropertiesSize : FIntPoint::ZeroValue );
 		Material.SetPropertySize(EFlattenMaterialProperties::Roughness, (InMaterialLODSettings.bRoughnessMap) ? PropertiesSize : FIntPoint::ZeroValue );
@@ -1564,6 +1561,10 @@ FFlattenMaterial FMaterialUtilities::CreateFlattenMaterialWithSettings(const FMa
 		Material.SetPropertySize(EFlattenMaterialProperties::Normal, (InMaterialLODSettings.bNormalMap) ? InMaterialLODSettings.TextureSize : FIntPoint::ZeroValue);
 		Material.SetPropertySize(EFlattenMaterialProperties::Emissive, (InMaterialLODSettings.bEmissiveMap) ? InMaterialLODSettings.TextureSize : FIntPoint::ZeroValue);
 		Material.SetPropertySize(EFlattenMaterialProperties::Opacity, (InMaterialLODSettings.bOpacityMap) ? InMaterialLODSettings.TextureSize : FIntPoint::ZeroValue);
+	}
+	else
+	{
+		UE_LOG(LogMaterialUtilities, Error, TEXT("Unsupported TextureSizingType value. You should resolve the material texture size first with ResolveTextureSize()"));
 	}
 
 	return Material;
@@ -1746,12 +1747,12 @@ void FMaterialUtilities::RemapUniqueMaterialIndices(const TArray<FSectionInfo>& 
 				TArray<int32>& NewMeshMaterialMap = OutMaterialMap.Add(FMeshIdAndLOD(MeshIndex, LODIndex));
 				UStaticMesh* StaticMesh = InMeshData[MeshIndex].SourceStaticMesh;
 
-		if (!OutMeshShouldBakeVertexData[MeshIndex])
-		{
-			// No vertex data needed - could merge materials with other meshes.
-			// Set to 'nullptr' if don't need to bake vertex data to be able to merge materials with any meshes
-			// which don't require vertex data baking too.
-			StaticMesh = nullptr;
+				if (!OutMeshShouldBakeVertexData[MeshIndex])
+				{
+					// No vertex data needed - could merge materials with other meshes.
+					// Set to 'nullptr' if don't need to bake vertex data to be able to merge materials with any meshes
+					// which don't require vertex data baking too.
+					StaticMesh = nullptr;
 
 					for (int32 LocalMaterialIndex = 0; LocalMaterialIndex < MeshMaterialMap.Num(); LocalMaterialIndex++)
 					{
@@ -2284,8 +2285,8 @@ bool FMaterialUtilities::ExportMaterial(struct FMaterialMergeData& InMaterialDat
 
 	// Determine whether or not certain properties can be rendered
 	const bool bRenderNormal = (Material->GetMaterial()->HasNormalConnected() || Material->GetMaterial()->bUseMaterialAttributes) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Normal);
-	const bool bRenderTangent = (Material->GetMaterial()->Tangent.IsConnected() || Material->GetMaterial()->bUseMaterialAttributes) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Tangent);
-	const bool bRenderEmissive = (Material->GetMaterial()->EmissiveColor.IsConnected() || Material->GetMaterial()->bUseMaterialAttributes) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Emissive);
+	const bool bRenderTangent = (Material->GetMaterial()->IsPropertyConnected(MP_Tangent) || Material->GetMaterial()->bUseMaterialAttributes) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Tangent);
+	const bool bRenderEmissive = (Material->GetMaterial()->IsPropertyConnected(MP_EmissiveColor) || Material->GetMaterial()->bUseMaterialAttributes) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Emissive);
 	const bool bRenderOpacityMask = Material->IsPropertyActive(MP_OpacityMask) && Material->GetBlendMode() == BLEND_Masked && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Opacity);
 	const bool bRenderOpacity = Material->IsPropertyActive(MP_Opacity) && IsTranslucentBlendMode(Material->GetBlendMode()) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Opacity);
 	const bool bRenderSubSurface = Material->IsPropertyActive(MP_SubsurfaceColor) && OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::SubSurface);
@@ -2696,7 +2697,7 @@ void FMaterialUtilities::GeneratedBinnedTextureSquares(const FVector2D Destinati
 			for (int32 AreaIndex = 0; AreaIndex < UnusedAreas.Num(); ++AreaIndex)
 			{
 				const FUnusedArea& UnusedArea = UnusedAreas[AreaIndex];
-				if (UnusedArea.GetSize() >= TextureSize)
+				if (UnusedArea.GetSize().ComponentwiseAllGreaterOrEqual(TextureSize))
 				{
 					const float Remainder = UnusedArea.GetArea() - TextureSurface;
 					if (Remainder < RemainingArea && Remainder >= 0)
@@ -2822,4 +2823,109 @@ float FMaterialUtilities::ComputeRequiredTexelDensityFromDrawDistance(const floa
 	float TexelDensityPerMeter = ScreenSizePixel / WorldSizeMeter;
 
 	return TexelDensityPerMeter;
+}
+
+static int32 ComputeTextureSizeFromTexelRatio(const double TexelRatio, const double TargetTexelDensity)
+{
+	// Compute the perfect texture size that would get us to our texture density
+	// Also compute the nearest power of two sizes (below and above our target)
+	const int32 SizePerfect = FMath::CeilToInt(TargetTexelDensity / TexelRatio);
+	const int32 SizeHi = FMath::RoundUpToPowerOfTwo(SizePerfect);
+	const int32 SizeLo = SizeHi >> 1;
+
+	// Compute the texel density we achieve with these two texture sizes
+	const double TexelDensityLo = SizeLo * TexelRatio;
+	const double TexelDensityHi = SizeHi * TexelRatio;
+
+	// Select best match between low & high res textures.
+	const double TexelDensityLoDiff = TargetTexelDensity - TexelDensityLo;
+	const double TexelDensityHiDiff = TexelDensityHi - TargetTexelDensity;
+	const int32 BestTextureSize = TexelDensityLoDiff < TexelDensityHiDiff ? SizeLo : SizeHi;
+
+	return BestTextureSize;
+}
+
+int32 FMaterialUtilities::GetTextureSizeFromTargetTexelDensity(const UE::Geometry::FDynamicMesh3& Mesh, float InTargetTexelDensity)
+{
+	const UE::Geometry::FDynamicMeshUVOverlay* UVOverlay = Mesh.Attributes()->PrimaryUV();
+
+	double Mesh3DArea = 0;
+	double MeshUVArea = 0;
+
+	// If no UVs, assume perfect UV space usage.
+	const bool bHasUVs = UVOverlay != nullptr;
+	if (!bHasUVs)
+	{
+		MeshUVArea = 1.0;
+	}
+
+	for (int TriangleID : Mesh.TriangleIndicesItr())
+	{
+		// World space area
+		Mesh3DArea += Mesh.GetTriArea(TriangleID);
+
+		// UV space area
+		if (bHasUVs)
+		{
+			UE::Geometry::FIndex3i UVVertices = UVOverlay->GetTriangle(TriangleID);
+			UE::Geometry::FTriangle2d TriangleUV = UE::Geometry::FTriangle2d(
+				(FVector2d)UVOverlay->GetElement(UVVertices.A),
+				(FVector2d)UVOverlay->GetElement(UVVertices.B),
+				(FVector2d)UVOverlay->GetElement(UVVertices.C));
+
+			MeshUVArea += TriangleUV.Area();
+		}
+	}
+
+	return GetTextureSizeFromTargetTexelDensity(Mesh3DArea, MeshUVArea, InTargetTexelDensity);
+}
+
+int32 FMaterialUtilities::GetTextureSizeFromTargetTexelDensity(const FMeshDescription& InMesh, float InTargetTexelDensity)
+{
+	FStaticMeshConstAttributes Attributes(InMesh);
+
+	TVertexAttributesConstRef<FVector3f> Positions = Attributes.GetVertexPositions();
+	TUVAttributesConstRef<FVector2f> UVs = Attributes.GetUVCoordinates(0);
+
+	double Mesh3DArea = 0;
+	double MeshUVArea = 0;
+
+	// If no UVs, assume perfect UV space usage.
+	const bool bHasUVs = UVs.IsValid() && UVs.GetNumElements() != 0;
+	if (!bHasUVs)
+	{
+		MeshUVArea = 1.0;
+	}
+
+	for (const FTriangleID TriangleID : InMesh.Triangles().GetElementIDs())
+	{
+		// World space area
+		TArrayView<const FVertexID> TriVertices = InMesh.GetTriangleVertices(TriangleID);
+		Mesh3DArea += UE::Geometry::VectorUtil::Area(Positions[TriVertices[0]], Positions[TriVertices[1]], Positions[TriVertices[2]]);
+
+		// UV space area
+		if (bHasUVs)
+		{
+			TArrayView<const FUVID> TriUVs = InMesh.GetTriangleUVIndices(TriangleID);
+			MeshUVArea += UE::Geometry::VectorUtil::Area(UVs[0], UVs[1], UVs[2]);
+		}
+	}
+
+	return GetTextureSizeFromTargetTexelDensity(Mesh3DArea, MeshUVArea, InTargetTexelDensity);
+}
+
+int32 FMaterialUtilities::GetTextureSizeFromTargetTexelDensity(double InMesh3DArea, double InMeshUVArea, double InTargetTexelDensity)
+{
+	double TexelRatio = FMath::Sqrt(InMeshUVArea / InMesh3DArea) * 100;
+
+	static const int32 MinTextureSize = 16;
+	static const int32 MaxTextureSize = 8192;
+
+	int32 TextureSize = ComputeTextureSizeFromTexelRatio(TexelRatio, InTargetTexelDensity);
+	if (TextureSize > MaxTextureSize)
+	{
+		UE_LOG(LogMaterialUtilities, Warning, TEXT("Mesh would require %d x %d textures, clamping down to maximum (%d x %d)"), TextureSize, TextureSize, MaxTextureSize, MaxTextureSize);
+	}
+
+	return FMath::Clamp(TextureSize, MinTextureSize, MaxTextureSize);
 }

@@ -8,12 +8,14 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "UObject/ScriptInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraLensEffectInterface)
+
 TArray<UFXSystemComponent*> ICameraLensEffectInterface::GetParticleComponents() const
 {
 	const AActor* const ConstActorThis = Cast<AActor>(this);
 	AActor* const ActorThis = const_cast<AActor*>(ConstActorThis);
 	TArray<UFXSystemComponent*> ParticleComps;
-	ActorThis->GetComponents<UFXSystemComponent>(ParticleComps, true);
+	ActorThis->GetComponents(ParticleComps, true);
 	return ParticleComps;
 }
 
@@ -40,7 +42,7 @@ FTransform ICameraLensEffectInterface::GetAttachedEmitterTransform(const AActor*
 		// base dist uses BaseFOV which is set on the indiv camera lens effect class
 		FTransform RelativeTransformAdjustedForFOV = InterfaceEmitter->GetRelativeTransform();
 		FVector AdjustedRelativeLoc = RelativeTransformAdjustedForFOV.GetLocation();
-		AdjustedRelativeLoc.X *= FMath::Tan(InterfaceEmitter->GetBaseFOV() * 0.5f * PI / 180.f) / FMath::Tan(CamFOVDeg * 0.5f * PI / 180.f);
+		AdjustedRelativeLoc.X *= FMath::Tan(InterfaceEmitter->GetBaseFOV() * 0.5f * UE_PI / 180.f) / FMath::Tan(CamFOVDeg * 0.5f * UE_PI / 180.f);
 		RelativeTransformAdjustedForFOV.SetLocation(AdjustedRelativeLoc);
 
 		FTransform const CameraToWorld(CamRot, CamLoc);
@@ -110,3 +112,4 @@ void UCameraLensEffectInterfaceClassSupportLibrary::SetInterfaceClass(TSubclassO
 		}
 	}
 }
+

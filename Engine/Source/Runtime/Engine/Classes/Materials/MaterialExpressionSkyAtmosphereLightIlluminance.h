@@ -14,7 +14,7 @@ class UMaterialExpressionSkyAtmosphereLightIlluminance : public UMaterialExpress
 	GENERATED_UCLASS_BODY()
 
 	/** Index of the atmosphere light to sample. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionTextureCoordinate, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionTextureCoordinate, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1", ShowAsInputPin = "Primary"))
 	int32 LightIndex;
 
 	/** World position of the sample. If not specified, the pixel world position will be used. */
@@ -37,8 +37,12 @@ class UMaterialExpressionSkyAtmosphereLightDiskLuminance : public UMaterialExpre
 	GENERATED_UCLASS_BODY()
 
 	/** Index of the atmosphere light to sample. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionTextureCoordinate, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionTextureCoordinate, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1", ShowAsInputPin = "Primary"))
 	int32 LightIndex;
+
+	/** Override the angular diameter of the disk in degree. If not specified, the radius specified on the directional light will be used. This can be used to decouple the directional light visual disk size used for the specular disk reflection on surfaces. However, be aware that screen space reflections will still catch the visual disk. */
+	UPROPERTY()
+	FExpressionInput DiskAngularDiameterOverride;
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR

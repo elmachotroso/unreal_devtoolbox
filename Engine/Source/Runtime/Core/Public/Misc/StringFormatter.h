@@ -2,12 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
-#include "Containers/UnrealString.h"
-#include "Templates/ValueOrError.h"
 #include "Misc/ExpressionParserTypes.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/ValueOrError.h"
 
+struct FStringFormatArg;
 template<typename KeyType,typename ValueType,typename SetAllocator ,typename KeyFuncs > class TMap;
 
 /** A string formatter is responsible for formatting string patterns using a set of named, or ordered arguments */

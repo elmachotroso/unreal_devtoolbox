@@ -4,8 +4,8 @@
 
 #include "Engine/DeveloperSettings.h"
 #include "Agents/MLAdapterAgent.h"
-#include "MLAdapterSession.h"
-#include "MLAdapterManager.h"
+#include "Sessions/MLAdapterSession.h"
+#include "Managers/MLAdapterManager.h"
 #include "MLAdapterSettings.generated.h"
 
 
@@ -35,14 +35,14 @@ public:
 	static uint16 GetDefaultRPCServerPort() { return GET_CONFIG_VALUE(DefaultRPCServerPort); }
 
 protected:
-	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "MLAdapterManager"))
+	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "/Script/MLAdapter.MLAdapterManager"))
 	FSoftClassPath ManagerClass;
 
-	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "MLAdapterSession"))
+	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "/Script/MLAdapter.MLAdapterSession"))
 	FSoftClassPath SessionClass;
-	
-	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "MLAdapterAgent"))
-	FSoftClassPath DefautAgentClass;
+
+	UPROPERTY(EditAnywhere, config, Category = MLAdapter, meta = (MetaClass = "/Script/MLAdapter.MLAdapterAgent"))
+	FSoftClassPath DefaultAgentClass;
 
 	UPROPERTY(EditAnywhere, config, Category = MLAdapter)
 	uint16 DefaultRPCServerPort = 15151;

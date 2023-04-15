@@ -3,6 +3,8 @@
 #include "RigUnit_ModifyBoneTransforms.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_ModifyBoneTransforms)
+
 FRigUnit_ModifyBoneTransforms_Execute()
 {
 	TArray<FRigUnit_ModifyTransforms_PerItem> ItemsToModify;
@@ -24,6 +26,12 @@ FRigUnit_ModifyBoneTransforms_Execute()
 		WorkData,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_ModifyBoneTransforms::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

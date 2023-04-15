@@ -3,6 +3,9 @@
 
 #include "VRNotificationsComponent.h"
 #include "Misc/CoreDelegates.h"
+#include "XRTrackingSystemBase.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRNotificationsComponent)
 
 UVRNotificationsComponent::UVRNotificationsComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -22,6 +25,8 @@ void UVRNotificationsComponent::OnRegister()
 	FCoreDelegates::VRHeadsetPutOnHead.AddUObject(this, &UVRNotificationsComponent::HMDPutOnHeadDelegate_Handler);
 	FCoreDelegates::VRHeadsetRemovedFromHead.AddUObject(this, &UVRNotificationsComponent::HMDRemovedFromHeadDelegate_Handler);
 	FCoreDelegates::VRControllerRecentered.AddUObject(this, &UVRNotificationsComponent::VRControllerRecentered_Handler);
+	FXRTrackingSystemDelegates::OnXRTrackingOriginChanged.AddUObject(this, &UVRNotificationsComponent::XRTrackingOriginChanged_Handler);
+	FXRTrackingSystemDelegates::OnXRPlayAreaChanged.AddUObject(this, &UVRNotificationsComponent::XRPlayAreaChanged_Handler);
 }
 
 void UVRNotificationsComponent::OnUnregister()
@@ -37,4 +42,7 @@ void UVRNotificationsComponent::OnUnregister()
 	FCoreDelegates::VRHeadsetPutOnHead.RemoveAll(this);
 	FCoreDelegates::VRHeadsetRemovedFromHead.RemoveAll(this);
 	FCoreDelegates::VRControllerRecentered.RemoveAll(this);
+	FXRTrackingSystemDelegates::OnXRTrackingOriginChanged.RemoveAll(this);
+	FXRTrackingSystemDelegates::OnXRPlayAreaChanged.RemoveAll(this);
 }
+

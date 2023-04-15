@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SDataGraph.h"
+
+#if STATS
+
 #include "Fonts/SlateFontInfo.h"
 #include "Misc/Paths.h"
 #include "Rendering/DrawElements.h"
@@ -18,10 +21,11 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
 #include "ProfilerDataProvider.h"
 #include "ProfilerManager.h"
 #include "Widgets/StatDragDropOp.h"
+#include "ProfilerStyle.h"
+#include "SSimpleButton.h"
 
 #define LOCTEXT_NAMESPACE "SDataGraph"
 
@@ -65,7 +69,6 @@ public:
 		OnGetMouseFrameIndex = InArgs._OnGetMouseFrameIndex;
 
 		const FSlateColor TextColor( TrackedStat->GraphColor );
-		const FName CloseButtonStyle = TEXT("Docking.MajorTab.CloseButton");
 		FFormatNamedArguments Args;
 		Args.Add( TEXT("StatName"), FText::FromString( TrackedStat->GraphDataSource->GetStatName() ) );
 		const FText ToolTipText = FText::Format( LOCTEXT("DataGraphSummary_CloseButton_TT", "Click to stop tracking '{StatName}' stat"), Args );
@@ -81,15 +84,10 @@ public:
 			.VAlign(VAlign_Center)
 			.Padding( 1.0f )
 			[
-				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), CloseButtonStyle )
+				SNew(SSimpleButton)
+				.Icon(FAppStyle::GetBrush("Icons.Stop"))
 				.OnClicked( this, &SDataGraphSummary::CloseButton_OnClicked )
-				.ContentPadding( 0 )
 				.ToolTipText( ToolTipText )
-				[
-					SNew(SSpacer)
-					.Size( FEditorStyle::GetBrush(CloseButtonStyle, ".Normal" )->ImageSize )
-				]
 			]
 
 			// Stat group name.
@@ -101,7 +99,7 @@ public:
 			[
 				SNew(STextBlock)
 				.ColorAndOpacity( TextColor )
-				.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+				.TextStyle( FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 				.Text( this, &SDataGraphSummary::SummaryInformation_GetGroupName )
 			]
 
@@ -114,7 +112,7 @@ public:
 			[
 				SNew(STextBlock)
 				.ColorAndOpacity( TextColor )
-				.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+				.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 				.Text( this, &SDataGraphSummary::SummaryInformation_GetStatName )
 			]
 
@@ -127,7 +125,7 @@ public:
 			[
 				SNew(STextBlock)
 				.ColorAndOpacity( TextColor )
-				.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+				.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 				.Text( this, &SDataGraphSummary::SummaryInformation_GetSummary )
 			]
 		];
@@ -303,8 +301,8 @@ int32 SDataGraph::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 	// Rendering info.
 	const bool bEnabled  = ShouldBeEnabled( bParentEnabled );
 	ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
-	const FSlateBrush* TimelineAreaBrush = FEditorStyle::GetBrush("Profiler.LineGraphArea");
-	const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteTexture");
+	const FSlateBrush* TimelineAreaBrush = FProfilerStyle::Get().GetBrush("Brushes.White25");
+	const FSlateBrush* WhiteBrush = FProfilerStyle::Get().GetBrush("Brushes.White");
 
 	/** Width of the alloted geometry that is used to draw a data graph. */
 	const float AreaX0 = 0.0f;
@@ -841,7 +839,7 @@ int32 SDataGraph::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 					OutDrawElements,
 					LayerId,
 					AllottedGeometry.ToPaintGeometry( FVector2D(LocalGraphSelectionX[Nx]-HalfGraphMarkerWidth,0.0f), FVector2D(GraphMarkerWidth, AllottedGeometry.GetLocalSize().Y) ),
-					FEditorStyle::GetBrush("Brushes.Foldout"),
+					FAppStyle::GetBrush("Brushes.Foldout"),
 					DrawEffects,
 					FColor(64,64,255,128)
 				);
@@ -863,7 +861,7 @@ int32 SDataGraph::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 					OutDrawElements,
 					LayerId,
 					AllottedGeometry.ToPaintGeometry( FVector2D(GraphSelectionX0/*+HalfGraphMarkerWidth*/,0.0f), FVector2D(GraphSelectionW/*-GraphMarkerWidth*/, AllottedGeometry.GetLocalSize().Y) ),
-					FEditorStyle::GetBrush("Brushes.Foldout"),
+					FAppStyle::GetBrush("Brushes.Foldout"),
 					DrawEffects,
 					FColor(64,64,255,32)
 				);
@@ -1342,3 +1340,5 @@ void SDataGraph::EventGraph_OnRestoredFromHistory( uint32 FrameStartIndex, uint3
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

@@ -12,7 +12,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "Dialogs/SBuildProgress.h"
 #include "Interfaces/IMainFrameModule.h"
@@ -108,7 +108,7 @@ public:
 				.AutoHeight()
 				[
 					SNew(SBox)
-					.HeightOverride(MainBarHeight)
+					.HeightOverride(static_cast<float>(MainBarHeight))
 					[
 						SNew(SProgressBar)
 						.BorderPadding(FVector2D::ZeroVector)
@@ -142,7 +142,7 @@ public:
 		}
 
 		SBorder::Construct( SBorder::FArguments()
-			.BorderImage(FEditorStyle::GetBrush("Brushes.Header"))
+			.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(FixedPaddingH))
 			[
@@ -512,6 +512,8 @@ void FFeedbackContextEditor::FinalizeSlowTask()
 
 void FFeedbackContextEditor::ProgressReported( const float TotalProgressInterp, FText DisplayMessage )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FFeedbackContextEditor::ProgressReported);
+
 	if (!(FPlatformSplash::IsShown() || BuildProgressWidget.IsValid() || SlowTaskWindow.IsValid()))
 	{
 		return;
@@ -549,7 +551,7 @@ void FFeedbackContextEditor::ProgressReported( const float TotalProgressInterp, 
 				BuildProgressWidget->SetBuildStatusText(DisplayMessage);
 			}
 
-			BuildProgressWidget->SetBuildProgressPercent(TotalProgressInterp * 100, 100);
+			BuildProgressWidget->SetBuildProgressPercent(static_cast<int32>(TotalProgressInterp * 100), 100);
 			TickSlate(BuildProgressWindow.Pin());
 		}
 		else if (SlowTaskWindow.IsValid())

@@ -37,6 +37,43 @@ FAutoConsoleVariableRef CVarNetPacketHandlerCRCDump(
 	TEXT("net.PacketHandlerCRCDump"),
 	GPacketHandlerCRCDump,
 	TEXT("Enables or disables dumping of packet CRC's for every HandlerComponent, Incoming and Outgoing, for debugging."));
+
+static int32 GPacketHandlerTimeguardLimit = 20;
+static float GPacketHandlerTimeguardThresholdMS = 0.0f;
+bool GPacketHandlerDiscardTimeguardMeasurement = false;
+
+static FAutoConsoleVariableRef CVarNetPacketHandlerTimeguardThresholdMS(
+	TEXT("net.PacketHandlerTimeguardThresholdMS"),
+	GPacketHandlerTimeguardThresholdMS,
+	TEXT("Threshold in milliseconds for the HandlerComponent timeguard, Incoming and Outgoing."),
+	ECVF_Default);
+static FAutoConsoleVariableRef CVarNetPacketHandlerTimeguardLimit(
+	TEXT("net.PacketHandlerTimeguardLimit"),
+	GPacketHandlerTimeguardLimit,
+	TEXT("Sets the maximum number of HandlerComponent timeguard logs.\n"),
+	ECVF_Default
+);
+
+// Lightweight time guard. Note: Threshold of 0 disables the timeguard
+#define NET_LIGHTWEIGHT_TIME_GUARD_BEGIN( Name, ThresholdMS ) \
+	float PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) = ThresholdMS; \
+	uint64 PREPROCESSOR_JOIN(__TimeGuard_StartCycles_, Name) = ( ThresholdMS > 0.0f && GPacketHandlerTimeguardLimit > 0 ) ? FPlatformTime::Cycles64() : 0; \
+	GPacketHandlerDiscardTimeguardMeasurement = false;
+
+#define NET_LIGHTWEIGHT_TIME_GUARD_END( Name, NameStringCode ) \
+	if ( PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) > 0.0f && GPacketHandlerTimeguardLimit > 0 && !GPacketHandlerDiscardTimeguardMeasurement ) \
+	{\
+		float PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_,Name) = FPlatformTime::ToMilliseconds64( FPlatformTime::Cycles64() - PREPROCESSOR_JOIN(__TimeGuard_StartCycles_,Name) ); \
+		if ( PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_,Name) > PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) ) \
+		{ \
+			FString ReportName = NameStringCode; \
+			UE_LOG(PacketHandlerLog, Warning, TEXT("PacketHandler: %s - %s took %.2fms!"), TEXT(#Name), *ReportName, PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_,Name)); \
+			GPacketHandlerTimeguardLimit--; \
+		} \
+	}
+#else // UE_BUILD_SHIPPING
+  #define NET_LIGHTWEIGHT_TIME_GUARD_BEGIN( Name, ThresholdMS )
+  #define NET_LIGHTWEIGHT_TIME_GUARD_END( Name, NameStringCode )
 #endif
 
 
@@ -50,7 +87,7 @@ PacketHandler::PacketHandler(FDDoSDetection* InDDoS/*=nullptr*/)
 	, DDoS(InDDoS)
 	, LowLevelSendDel()
 	, HandshakeCompleteDel()
-	, OutgoingPacket()
+	, OutgoingPacket(MAX_PACKET_SIZE * 8)
 	, IncomingPacket()
 	, HandlerComponents()
 	, MaxPacketBits(0)
@@ -346,7 +383,7 @@ TSharedPtr<HandlerComponent> PacketHandler::AddHandler(const FString& ComponentS
 			{
 				// Every HandlerComponentFactory type has one instance, loaded as a named singleton
 				FString SingletonName = ComponentName.Mid(FactoryComponentDelim + 1) + TEXT("_Singleton");
-				UHandlerComponentFactory* Factory = FindObject<UHandlerComponentFactory>(ANY_PACKAGE, *SingletonName);
+				UHandlerComponentFactory* Factory = FindFirstObject<UHandlerComponentFactory>(*SingletonName, EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
 
 				if (Factory == nullptr)
 				{
@@ -593,7 +630,11 @@ EIncomingResult PacketHandler::Incoming_Internal(FReceivedPacketView& PacketView
 				}
 				else
 				{
+					NET_LIGHTWEIGHT_TIME_GUARD_BEGIN(Incoming, GPacketHandlerTimeguardThresholdMS);
+
 					CurComponent.Incoming(PacketRef);
+
+					NET_LIGHTWEIGHT_TIME_GUARD_END(Incoming, CurComponent.GetName().ToString());
 				}
 			}
 		}
@@ -710,7 +751,11 @@ const ProcessedPacket PacketHandler::Outgoing_Internal(uint8* Packet, int32 Coun
 						}
 						else
 						{
+							NET_LIGHTWEIGHT_TIME_GUARD_BEGIN(Outgoing, GPacketHandlerTimeguardThresholdMS);
+
 							CurComponent.Outgoing(OutgoingPacket, Traits);
+
+							NET_LIGHTWEIGHT_TIME_GUARD_END(Outgoing, CurComponent.GetName().ToString());
 						}
 					}
 					else

@@ -23,14 +23,14 @@ class UMaterialExpressionPanner : public UMaterialExpression
 	UPROPERTY(meta = (RequiredInput = "false", ToolTip = "Vector2 speed scale, if specified"))
 	FExpressionInput Speed;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionPanner)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionPanner, meta = (OverridingInputProperty = "Speed"))
 	float SpeedX;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionPanner)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionPanner, meta = (OverridingInputProperty = "Speed"))
 	float SpeedY;
 
 	/** only used if Coordinate is not hooked up */
-	UPROPERTY(EditAnywhere, Category = MaterialExpressionPanner)
+	UPROPERTY(EditAnywhere, Category = MaterialExpressionPanner, meta = (OverridingInputProperty = "Coordinate"))
 	uint32 ConstCoordinate;
 
 	// Output only the fractional part of the pan calculation for greater precision.
@@ -40,6 +40,7 @@ class UMaterialExpressionPanner : public UMaterialExpression
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual bool NeedsRealtimePreview() override { return Time.Expression==NULL && (SpeedX != 0.f || SpeedY != 0.f); }

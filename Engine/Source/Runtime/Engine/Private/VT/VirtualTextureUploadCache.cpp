@@ -303,8 +303,16 @@ void FVirtualTextureUploadCache::Finalize(FRDGBuilder& GraphBuilder)
 				DEC_MEMORY_STAT_BY(STAT_TotalGPUUploadSize, CalcTextureSize(StagingTexture.RHITexture->GetSizeX(), StagingTexture.RHITexture->GetSizeY(), PoolEntry.Format, 1u));
 			}
 
-			FRHIResourceCreateInfo CreateInfo(TEXT("FVirtualTextureUploadCache_StagingTexture"));
-			StagingTexture.RHITexture = RHICreateTexture2D(TileSize * WidthInTiles, TileSize * HeightInTiles, PoolEntry.Format, 1, 1, bIsCpuWritable ? TexCreate_CPUWritable : TexCreate_None, CreateInfo);
+			FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("FVirtualTextureUploadCache_StagingTexture"), TileSize * WidthInTiles, TileSize * HeightInTiles, PoolEntry.Format);
+
+			if (bIsCpuWritable)
+			{
+				Desc.AddFlags(ETextureCreateFlags::CPUWritable);
+			}
+
+			StagingTexture.RHITexture = RHICreateTexture(Desc);
+
 			StagingTexture.WidthInTiles = WidthInTiles;
 			StagingTexture.BatchCapacity = WidthInTiles * HeightInTiles;
 			StagingTexture.bIsCPUWritable = bIsCpuWritable;
@@ -370,8 +378,7 @@ void FVirtualTextureUploadCache::Finalize(FRDGBuilder& GraphBuilder)
 	}
 
 	// Transition all updates textures back to SRV
-	FMemMark Mark(FMemStack::Get());
-	TArray<FRHITransitionInfo, TMemStackAllocator<>> SRVTransitions;
+	TArray<FRHITransitionInfo, SceneRenderingAllocator> SRVTransitions;
 	SRVTransitions.Reserve(UpdatedTextures.Num());
 	for (int32 Index = 0; Index < UpdatedTextures.Num(); ++Index)
 	{

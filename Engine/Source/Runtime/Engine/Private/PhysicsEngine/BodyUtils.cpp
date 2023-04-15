@@ -5,21 +5,19 @@
 #include "PhysicsEngine/BodyInstance.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 
-#if WITH_CHAOS
 #include "Chaos/MassProperties.h"
 #include "Chaos/Utilities.h"
 #include "Physics/Experimental/ChaosInterfaceUtils.h"
-#endif
-
-#if PHYSICS_INTERFACE_PHYSX
-#include "PhysXPublic.h"
-#include "PhysicsEngine/PhysXSupport.h"
-#endif
-
-//PRAGMA_DISABLE_OPTIMIZATION
 
 namespace BodyUtils
 {
+	namespace CVars
+	{
+		bool bPhysicsComNudgeAdjustInertia = true;
+		FAutoConsoleVariableRef CVarPhysicsComNudgeAffectsInertia(TEXT("p.ComNudgeAffectsInertia"), bPhysicsComNudgeAdjustInertia, TEXT(""));
+	}
+
+
 	inline float KgPerM3ToKgPerCm3(float KgPerM3)
 	{
 		//1m = 100cm => 1m^3 = (100cm)^3 = 1000000cm^3
@@ -47,7 +45,6 @@ namespace BodyUtils
 		return DensityKGPerCubicUU;
 	}
 
-#if WITH_CHAOS
 	Chaos::FMassProperties ApplyMassPropertiesModifiers(const FBodyInstance* OwningBodyInstance, Chaos::FMassProperties MassProps, const FTransform& MassModifierTransform, const bool bInertaScaleIncludeMass)
 	{
 		float OldMass = MassProps.Mass;
@@ -63,7 +60,7 @@ namespace BodyUtils
 				RaiseMassToPower = PhysMat->RaiseMassToPower;
 			}
 
-			float UsePow = FMath::Clamp<float>(RaiseMassToPower, KINDA_SMALL_NUMBER, 1.f);
+			float UsePow = FMath::Clamp<float>(RaiseMassToPower, UE_KINDA_SMALL_NUMBER, 1.f);
 			NewMass = FMath::Pow(OldMass, UsePow);
 
 			// Apply user-defined mass scaling.
@@ -93,6 +90,17 @@ namespace BodyUtils
 			MassProps.InertiaTensor = Chaos::Utilities::ScaleInertia(MassProps.InertiaTensor, OwningBodyInstance->InertiaTensorScale, bInertaScaleIncludeMass);
 		}
 
+		// If we move the center of mass, we need to update the inertia using parallel-axis theorem. If we don't do this
+		// and the center of mass is moved significantly it can cause jitter (inertia too small for the contact positions)
+		// NOTE: This must come after ScaleInertia because ScaleInertia effectively calculates the "equivalent box" dimensions
+		// which is not always possible, e.g., if we move the CoM outside of a box you will get negative elements in the scaled inertia!
+		if (CVars::bPhysicsComNudgeAdjustInertia)
+		{
+			MassProps.InertiaTensor.M[0][0] += MassProps.Mass * OwningBodyInstance->COMNudge.X * OwningBodyInstance->COMNudge.X;
+			MassProps.InertiaTensor.M[1][1] += MassProps.Mass * OwningBodyInstance->COMNudge.Y * OwningBodyInstance->COMNudge.Y;
+			MassProps.InertiaTensor.M[2][2] += MassProps.Mass * OwningBodyInstance->COMNudge.Z * OwningBodyInstance->COMNudge.Z;
+		}
+
 		return MassProps;
 	}
 
@@ -101,6 +109,9 @@ namespace BodyUtils
 		// Calculate the mass properties based on the shapes assuming uniform density
 		Chaos::FMassProperties MassProps;
 		ChaosInterface::CalculateMassPropertiesFromShapeCollection(MassProps, Shapes, GetBodyInstanceDensity(OwningBodyInstance));
+
+		// Diagonalize the inertia
+		Chaos::TransformToLocalSpace(MassProps);
 
 		// Apply the BodyInstance's mass and inertia modifiers
 		return ApplyMassPropertiesModifiers(OwningBodyInstance, MassProps, MassModifierTransform, bInertaScaleIncludeMass);
@@ -112,55 +123,10 @@ namespace BodyUtils
 		Chaos::FMassProperties MassProps;
 		ChaosInterface::CalculateMassPropertiesFromShapeCollection(MassProps, Shapes, bContributesToMass, GetBodyInstanceDensity(OwningBodyInstance));
 
+		// Diagonalize the inertia
+		Chaos::TransformToLocalSpace(MassProps);
+
 		// Apply the BodyInstance's mass and inertia modifiers
 		return ApplyMassPropertiesModifiers(OwningBodyInstance, MassProps, MassModifierTransform, bInertaScaleIncludeMass);
 	}
-
-
-#elif PHYSICS_INTERFACE_PHYSX
-
-	/** Computes and adds the mass properties (inertia, com, etc...) based on the mass settings of the body instance. */
-	PxMassProperties ComputeMassProperties(const FBodyInstance* OwningBodyInstance, TArray<FPhysicsShapeHandle> Shapes, const FTransform& MassModifierTransform, const bool bUnused)
-	{
-		// physical material - nothing can weigh less than hydrogen (0.09 kg/m^3)
-		float DensityKGPerCubicUU = 1.0f;
-		float RaiseMassToPower = 0.75f;
-		if (UPhysicalMaterial* PhysMat = OwningBodyInstance->GetSimplePhysicalMaterial())
-		{
-			DensityKGPerCubicUU = FMath::Max(KgPerM3ToKgPerCm3(0.09f), gPerCm3ToKgPerCm3(PhysMat->Density));
-			RaiseMassToPower = PhysMat->RaiseMassToPower;
-		}
-
-		PxMassProperties MassProps;
-		FPhysicsInterface::CalculateMassPropertiesFromShapeCollection(MassProps, Shapes, DensityKGPerCubicUU);
-
-		float OldMass = MassProps.mass;
-		float NewMass = 0.f;
-
-		if (OwningBodyInstance->bOverrideMass == false)
-		{
-			float UsePow = FMath::Clamp<float>(RaiseMassToPower, KINDA_SMALL_NUMBER, 1.f);
-			NewMass = FMath::Pow(OldMass, UsePow);
-
-			// Apply user-defined mass scaling.
-			NewMass = FMath::Max(OwningBodyInstance->MassScale * NewMass, 0.001f);	//min weight of 1g
-		}
-		else
-		{
-			NewMass = FMath::Max(OwningBodyInstance->GetMassOverride(), 0.001f);	//min weight of 1g
-		}
-
-		check(NewMass > 0.f);
-
-		float MassRatio = NewMass / OldMass;
-
-		PxMassProperties FinalMassProps = MassProps * MassRatio;
-
-		FinalMassProps.centerOfMass += U2PVector(MassModifierTransform.TransformVector(OwningBodyInstance->COMNudge));
-		FinalMassProps.inertiaTensor = PxMassProperties::scaleInertia(FinalMassProps.inertiaTensor, PxQuat(PxIdentity), U2PVector(OwningBodyInstance->InertiaTensorScale));
-
-		return FinalMassProps;
-	}
-#endif
-
 }

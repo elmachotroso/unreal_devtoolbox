@@ -2,7 +2,6 @@
 #pragma once
 
 #include "Chaos/ChaosPerfTest.h"
-#include "Chaos/Collision/NarrowPhase.h"
 #include "Chaos/Collision/SpatialAccelerationBroadPhase.h"
 #include "Chaos/Collision/SpatialAccelerationCollisionDetector.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
@@ -17,7 +16,9 @@
 #include "Chaos/PerParticleInitForce.h"
 #include "Chaos/PerParticlePBDEulerStep.h"
 #include "Chaos/CCDUtilities.h"
+#include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/PBDSuspensionConstraints.h"
+#include "Chaos/ChaosDebugDraw.h"
 
 namespace Chaos
 {
@@ -30,8 +31,10 @@ namespace Chaos
 	{
 		CHAOS_API extern FRealSingle HackMaxAngularVelocity;
 		CHAOS_API extern FRealSingle HackMaxVelocity;
-		CHAOS_API extern FRealSingle CCDEnableThresholdBoundsScale;
+		CHAOS_API extern FRealSingle SmoothedPositionLerpRate;
 		CHAOS_API extern bool bChaosCollisionCCDUseTightBoundingBox;
+		CHAOS_API extern int32 ChaosCollisionCCDConstraintMaxProcessCount;
+		CHAOS_API extern int32 ChaosSolverDrawCCDThresholds;
 	}
 
 	using FPBDRigidsEvolutionCallback = TFunction<void()>;
@@ -46,64 +49,21 @@ namespace Chaos
 	{
 	public:
 		using Base = FPBDRigidsEvolutionBase;
-		using Base::Particles;
-		using typename Base::FForceRule;
-		using Base::ForceRules;
-		using Base::PrepareTick;
-		using Base::UnprepareTick;
-		using Base::ApplyKinematicTargets;
-		using Base::UpdateConstraintPositionBasedState;
-		using Base::InternalAcceleration;
-		using Base::CreateConstraintGraph;
-		using Base::CreateIslands;
-		using Base::GetParticles;
-		using Base::DirtyParticle;
-		using Base::SetPhysicsMaterial;
-		using Base::SetPerParticlePhysicsMaterial;
-		using Base::GetPerParticlePhysicsMaterial;
-		using Base::CreateParticle;
-		using Base::GenerateUniqueIdx;
-		using Base::DestroyParticle;
-		using Base::CreateClusteredParticles;
-		using Base::EnableParticle;
-		using Base::DisableParticles;
-		using Base::NumIslands;
-		using Base::GetNonDisabledClusteredView;
-		using Base::DisableParticle;
-		using Base::GetConstraintGraph;
-		using Base::PhysicsMaterials;
-		using Base::PerParticlePhysicsMaterials;
-		using Base::ParticleDisableCount;
-		using Base::SolverPhysicsMaterials;
-		using Base::CaptureRewindData;
-		using Base::Collided;
-		using Base::SetParticleUpdatePositionFunction;
-		using Base::AddForceFunction;
-		using Base::AddConstraintRule;
-		using Base::ParticleUpdatePosition;
-		using Base::GetAllRemovals;
 
 		using FGravityForces = FPerParticleGravity;
 		using FCollisionConstraints = FPBDCollisionConstraints;
-		using FCollisionConstraintRule = TPBDConstraintColorRule<FCollisionConstraints>;
 		using FCollisionDetector = FSpatialAccelerationCollisionDetector;
 		using FExternalForces = FPerParticleExternalForces;
-		using FJointConstraintsRule = TPBDConstraintIslandRule<FPBDJointConstraints>;
-		using FSuspensionConstraintsRule = TPBDConstraintIslandRule<FPBDSuspensionConstraints>;
 		using FJointConstraints = FPBDJointConstraints;
-		using FJointConstraintRule = TPBDConstraintIslandRule<FJointConstraints>;
 
 		// Default iteration counts
-		static constexpr int32 DefaultNumIterations = 8;
-		static constexpr int32 DefaultNumCollisionPairIterations = 1;
-		static constexpr int32 DefaultNumPushOutIterations = 1;
-		static constexpr int32 DefaultNumCollisionPushOutPairIterations = 1;
+		static constexpr int32 DefaultNumPositionIterations = 8;
+		static constexpr int32 DefaultNumVelocityIterations = 1;
+		static constexpr int32 DefaultNumProjectionIterations = 1;
 		static constexpr FRealSingle DefaultCollisionMarginFraction = 0.05f;
 		static constexpr FRealSingle DefaultCollisionMarginMax = 10.0f;
 		static constexpr FRealSingle DefaultCollisionCullDistance = 3.0f;
 		static constexpr FRealSingle DefaultCollisionMaxPushOutVelocity = 1000.0f;
-		static constexpr int32 DefaultNumJointPairIterations = 1;
-		static constexpr int32 DefaultNumJointPushOutPairIterations = 1;
 		static constexpr int32 DefaultRestitutionThreshold = 1000;
 
 		CHAOS_API FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr, bool InIsSingleThreaded = false);
@@ -122,16 +82,6 @@ namespace Chaos
 		FORCEINLINE void SetPreApplyCallback(const FPBDRigidsEvolutionCallback& Cb)
 		{
 			PreApplyCallback = Cb;
-		}
-
-		FORCEINLINE void SetPostApplyCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
-		{
-			PostApplyCallback = Cb;
-		}
-
-		FORCEINLINE void SetPostApplyPushOutCallback(const FPBDRigidsEvolutionIslandCallback& Cb)
-		{
-			PostApplyPushOutCallback = Cb;
 		}
 
 		FORCEINLINE void SetInternalParticleInitilizationFunction(const FPBDRigidsEvolutionInternalHandleCallback& Cb)
@@ -155,9 +105,6 @@ namespace Chaos
 		FORCEINLINE FCollisionConstraints& GetCollisionConstraints() { return CollisionConstraints; }
 		FORCEINLINE const FCollisionConstraints& GetCollisionConstraints() const { return CollisionConstraints; }
 
-		FORCEINLINE FCollisionConstraintRule& GetCollisionConstraintsRule() { return CollisionRule; }
-		FORCEINLINE const FCollisionConstraintRule& GetCollisionConstraintsRule() const { return CollisionRule; }
-
 		FORCEINLINE FCollisionDetector& GetCollisionDetector() { return CollisionDetector; }
 		FORCEINLINE const FCollisionDetector& GetCollisionDetector() const { return CollisionDetector; }
 
@@ -173,11 +120,31 @@ namespace Chaos
 		FORCEINLINE FPBDSuspensionConstraints& GetSuspensionConstraints() { return SuspensionConstraints; }
 		FORCEINLINE const FPBDSuspensionConstraints& GetSuspensionConstraints() const { return SuspensionConstraints; }
 
+
+		//
+		// Particle API (most of the particle API is in the base class)
+		//
+
 		/**
-		 * Reload the particles cache within an island
-		 * @param Island Index of the island in which the cache will be used
+		 * User has moved a particle
 		 */
-		void ReloadParticlesCache(const int32 Island);
+		CHAOS_API void SetParticleTransform(FGeometryParticleHandle* InParticle, const FVec3& InPos, const FRotation3& InRot, const bool bIsTeleport)
+		{
+			const FVec3 PrevX = InParticle->X();
+			const FRotation3 PrevR = InParticle->R();
+
+			FGenericParticleHandle(InParticle)->SetTransform(InPos, InRot);
+
+			OnParticleMoved(InParticle, PrevX, PrevR, bIsTeleport);
+		}
+
+		CHAOS_API void OnParticleMoved(FGeometryParticleHandle* InParticle, const FVec3& PrevX, const FRotation3& PrevR, const bool bIsTeleport);
+
+
+		/**
+		 * Reload the particles cache for all particles where appropriate
+		 */
+		void ReloadParticlesCache();
 
 		/**
 		 * Build the list of disables particles and update the sleeping flag on the island
@@ -187,9 +154,9 @@ namespace Chaos
 		 */
 		void BuildDisabledParticles(const int32 Island, TArray<TArray<FPBDRigidParticleHandle*>>& DisabledParticles, TArray<bool>& SleepedIslands);
 
-		void DestroyConstraint(FConstraintHandle* Constraint);
-
 		void DestroyParticleCollisionsInAllocator(FGeometryParticleHandle* Particle);
+
+		virtual void DestroyTransientConstraints(FGeometryParticleHandle* Particle) override;
 
 		CHAOS_API inline void EndFrame(FReal Dt)
 		{
@@ -199,17 +166,20 @@ namespace Chaos
 			});
 		}
 
+		// Called when a the material changes one or more shapes on a particle. Required because collisions cache material properties
+		void ParticleMaterialChanged(FGeometryParticleHandle* Particle);
+
 		template<typename TParticleView>
 		void Integrate(const TParticleView& InParticles, FReal Dt)
 		{
 			//SCOPE_CYCLE_COUNTER(STAT_Integrate);
 			CHAOS_SCOPED_TIMER(Integrate);
 
-			const FReal BoundsThickness = GetNarrowPhase().GetBoundsExpansion();
+			const FReal BoundsThickness = GetCollisionDetector().GetSettings().BoundsExpansion;
 			const FReal MaxAngularSpeedSq = CVars::HackMaxAngularVelocity * CVars::HackMaxAngularVelocity;
 			const FReal MaxSpeedSq = CVars::HackMaxVelocity * CVars::HackMaxVelocity;
-			InParticles.ParallelFor([&](auto& GeomParticle, int32 Index) {
-	
+			InParticles.ParallelFor([&](auto& GeomParticle, int32 Index) 
+			{
 				//question: can we enforce this at the API layer? Right now islands contain non dynamic which makes this hard
 				auto PBDParticle = GeomParticle.CastToRigidParticle();
 				if (PBDParticle && PBDParticle->ObjectState() == EObjectStateType::Dynamic)
@@ -293,23 +263,32 @@ namespace Chaos
 
 					if (!Particle.CCDEnabled())
 					{
+						// Expand bounds about P/Q by a small amount. This can still result in missed collisions, especially
+						// when we have joints that pull the body back to X/R, if P-X is greater than the BoundsThickness
 						Particle.UpdateWorldSpaceState(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness));
 					}
 					else
 					{
-						const FReal MinBoundsAxis = Particle.LocalBounds().Extents().Min();
-						const FReal LengthCCDThreshold = MinBoundsAxis *  CVars::CCDEnableThresholdBoundsScale;
-						const FReal PXSizeSquared = (Particle.P() - Particle.X()).SizeSquared();
-						if (PXSizeSquared > LengthCCDThreshold * LengthCCDThreshold)
+
+#if CHAOS_DEBUG_DRAW
+						if (CVars::ChaosSolverDrawCCDThresholds)
 						{
-							if (CVars::bChaosCollisionCCDUseTightBoundingBox)
+							DebugDraw::DrawCCDAxisThreshold(Particle.X(), Particle.CCDAxisThreshold(), Particle.P() - Particle.X(), Particle.Q());
+						}
+#endif
+
+						if (CCDHelpers::DeltaExceedsThreshold(Particle.CCDAxisThreshold(), Particle.P() - Particle.X(), Particle.Q()))
+						{
+							// We sweep the bounds from P back along the velocity and expand by a small amount.
+							// If not using tight bounds we also expand the bounds in all directions by Velocity. This is necessary only for secondary CCD collisions
+							// @todo(chaos): expanding the bounds by velocity is very expensive - revisit this
+							const FVec3 VDt = Particle.V() * Dt;
+							FReal CCDBoundsExpansion = BoundsThickness;
+							if (!CVars::bChaosCollisionCCDUseTightBoundingBox && (CVars::ChaosCollisionCCDConstraintMaxProcessCount > 1))
 							{
-								Particle.UpdateWorldSpaceStateSwept(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness), Particle.X() - Particle.P());
+								CCDBoundsExpansion += VDt.GetAbsMax();
 							}
-							else
-							{
-								Particle.UpdateWorldSpaceState(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(BoundsThickness) + Particle.V() * Dt);
-							}
+							Particle.UpdateWorldSpaceStateSwept(FRigidTransform3(Particle.P(), Particle.Q()), FVec3(CCDBoundsExpansion), -VDt);
 						}
 						else
 						{
@@ -325,36 +304,41 @@ namespace Chaos
 			}
 		}
 
-		// First phase of constraint solver
-		// For GBF this is the velocity solve phase
-		// For PBD/QuasiPBD this is the position solve phase
-		void ApplyConstraintsPhase1(const FReal Dt, int32 GroupIndex);
-
-		// Calculate the implicit velocites based on the change in position from ApplyConstraintsPhase1
-		void SetImplicitVelocities(const FReal Dt, int32 GroupIndex);
-		
-		// Second phase of constraint solver (after implicit velocity calculation following results of phase 1)
-		// For GBF this is the pushout phase
-		// For QuasiPBD this is the velocity solve phase
-		void ApplyConstraintsPhase2(const FReal Dt, int32 GroupIndex);
-
-
 		CHAOS_API void Serialize(FChaosArchive& Ar);
 
 		CHAOS_API TUniquePtr<IResimCacheBase> CreateExternalResimCache() const;
 		CHAOS_API void SetCurrentStepResimCache(IResimCacheBase* InCurrentStepResimCache);
 
 		CHAOS_API FSpatialAccelerationBroadPhase& GetBroadPhase() { return BroadPhase; }
-		CHAOS_API FNarrowPhase& GetNarrowPhase() { return NarrowPhase; }
 
 		CHAOS_API void TransferJointConstraintCollisions();
 
+		// Resets VSmooth value to something plausible based on external forces to prevent object from going back to sleep if it was just impulsed.
+		template <bool bPersistent>
+		void ResetVSmoothFromForces(TPBDRigidParticleHandleImp<FReal, 3, bPersistent>& Particle)
+		{
+			const FReal SmoothRate = FMath::Clamp(CVars::SmoothedPositionLerpRate, 0.0f, 1.0f);
+	
+			// Reset VSmooth to something roughly in the same direction as what V will be after integration.
+			// This is temp fix, if this is only re-computed after solve, island will get incorrectly put back to sleep even if it was just impulsed.
+			FReal FakeDT = (FReal)1. / (FReal)30.;
+			if (Particle.LinearImpulseVelocity().IsNearlyZero() == false || Particle.Acceleration().IsNearlyZero() == false)
+			{
+				const FVec3 PredictedLinearVelocity = Particle.V() + Particle.Acceleration() * FakeDT + Particle.LinearImpulseVelocity();
+				Particle.VSmooth() =FMath::Lerp(Particle.VSmooth(), PredictedLinearVelocity, SmoothRate);
+			}
+			if (Particle.AngularImpulseVelocity().IsNearlyZero() == false || Particle.AngularAcceleration().IsNearlyZero() == false)
+			{
+				const FVec3 PredictedAngularVelocity = Particle.W() + Particle.AngularAcceleration() * FakeDT + Particle.AngularImpulseVelocity();
+				Particle.WSmooth() = FMath::Lerp(Particle.WSmooth(), PredictedAngularVelocity, SmoothRate);
+			}
+		}
+		
 	protected:
 
 		CHAOS_API void AdvanceOneTimeStepImpl(const FReal dt, const FSubStepInfo& SubStepInfo);
 
-		void GatherSolverInput(FReal Dt, int32 GroupIndex);
-		void ScatterSolverOutput(FReal Dt, int32 GroupIndex);
+		void UpdateInertiaConditioning();
 
 		FEvolutionResimCache* GetCurrentStepResimCache()
 		{
@@ -364,22 +348,16 @@ namespace Chaos
 		FRigidClustering Clustering;
 
 		FPBDJointConstraints JointConstraints;
-		TPBDConstraintIslandRule<FPBDJointConstraints> JointConstraintRule;
 		FPBDSuspensionConstraints SuspensionConstraints;
-		TPBDConstraintIslandRule<FPBDSuspensionConstraints> SuspensionConstraintRule;
 
 		FGravityForces GravityForces;
 		FCollisionConstraints CollisionConstraints;
-		FCollisionConstraintRule CollisionRule;
 		FSpatialAccelerationBroadPhase BroadPhase;
-		FNarrowPhase NarrowPhase;
 		FSpatialAccelerationCollisionDetector CollisionDetector;
 
 		FPBDRigidsEvolutionCallback PostIntegrateCallback;
 		FPBDRigidsEvolutionCallback PostDetectCollisionsCallback;
 		FPBDRigidsEvolutionCallback PreApplyCallback;
-		FPBDRigidsEvolutionIslandCallback PostApplyCallback;
-		FPBDRigidsEvolutionIslandCallback PostApplyPushOutCallback;
 		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 		FEvolutionResimCache* CurrentStepResimCacheImp;
 		const TArray<ISimCallbackObject*>* CollisionModifiers;
@@ -387,6 +365,20 @@ namespace Chaos
 		FCCDManager CCDManager;
 
 		bool bIsDeterministic;
+
+		// Test Mode for Collision issues
+		// @todo(chaos): remove this when no longer needed
+		void TestModeResetParticles();
+		void TestModeResetCollisions();
+
+		struct FTestModeParticleData
+		{
+			FVec3 X, P, V, W;
+			FRotation3 R, Q;
+		};
+		TMap<FPBDRigidParticleHandle*, FTestModeParticleData> TestModeData;
+		// End Test Mode
 	};
 
 }
+

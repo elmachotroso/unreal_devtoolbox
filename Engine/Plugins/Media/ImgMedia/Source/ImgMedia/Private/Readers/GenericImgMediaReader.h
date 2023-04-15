@@ -2,10 +2,12 @@
 
 #pragma once
 
+#include "Containers/ContainersFwd.h"
 #include "IImgMediaReader.h"
 
 class FImgMediaLoader;
 class FRgbaInputFile;
+class IImageWrapper;
 class IImageWrapperModule;
 
 
@@ -32,10 +34,12 @@ public:
 	//~ IImgMediaReader interface
 
 	virtual bool GetFrameInfo(const FString& ImagePath, FImgMediaFrameInfo& OutInfo) override;
-	virtual bool ReadFrame(int32 FrameId, int32 MipLevel, const FImgMediaTileSelection& InTileSelectio, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame) override;
+	virtual bool ReadFrame(int32 FrameId, const TMap<int32, FImgMediaTileSelection>& InMipTiles, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame) override;
 	virtual void CancelFrame(int32 FrameNumber) override {};
 
 private:
+
+	TSharedPtr<IImageWrapper> LoadFrameImage(const FString& ImagePath, TArray64<uint8>& OutBuffer, FImgMediaFrameInfo& OutInfo, bool bUseLoaderFirstFrame);
 
 	/** The image wrapper module. */
 	IImageWrapperModule& ImageWrapperModule;

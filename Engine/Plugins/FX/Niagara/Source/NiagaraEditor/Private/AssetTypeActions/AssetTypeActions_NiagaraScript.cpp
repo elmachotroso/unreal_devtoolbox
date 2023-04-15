@@ -4,7 +4,7 @@
 #include "NiagaraScript.h"
 #include "NiagaraScriptToolkit.h"
 #include "NiagaraEditorStyle.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "NiagaraEditorUtilities.h"
 #include "ToolMenus.h"
 
@@ -60,18 +60,6 @@ FText FAssetTypeActions_NiagaraScript::GetDisplayNameFromAssetData(const FAssetD
 	}
 
 	return FAssetTypeActions_NiagaraScript::GetName();
-}
-
-bool FAssetTypeActions_NiagaraScript::HasActions(const TArray<UObject*>& InObjects) const
-{
-	for (UObject* ActionObject : InObjects)
-	{
-		if (FNiagaraEditorUtilities::IsCompilableAssetClass(ActionObject->GetClass()) == false)
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 void FAssetTypeActions_NiagaraScript::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)

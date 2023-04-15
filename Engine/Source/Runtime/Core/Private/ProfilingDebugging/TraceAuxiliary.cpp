@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProfilingDebugging/TraceAuxiliary.h"
+#include "ProfilingDebugging/StringsTrace.h"
 #include "Trace/Trace.h"
 #include "CoreGlobals.h"
 
@@ -12,6 +13,10 @@
 
 #if !defined(WITH_UNREAL_TRACE_LAUNCH)
 #	define WITH_UNREAL_TRACE_LAUNCH (PLATFORM_DESKTOP && !UE_BUILD_SHIPPING && !IS_PROGRAM)
+#endif
+
+#if !defined(UE_TRACE_AUTOSTART)
+	#define UE_TRACE_AUTOSTART 1
 #endif
 
 #if WITH_UNREAL_TRACE_LAUNCH
@@ -51,6 +56,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 const TCHAR* GDefaultChannels = TEXT("cpu,gpu,frame,log,bookmark");
 const TCHAR* GMemoryChannels = TEXT("memtag,memalloc,callstack,module");
+const TCHAR* GTraceConfigSection = TEXT("Trace.Config");
 
 ////////////////////////////////////////////////////////////////////////////////
 CSV_DEFINE_CATEGORY(Trace, true);
@@ -58,6 +64,7 @@ CSV_DEFINE_CATEGORY(Trace, true);
 ////////////////////////////////////////////////////////////////////////////////
 DECLARE_STATS_GROUP(TEXT("TraceLog"), STATGROUP_Trace, STATCAT_Advanced);
 DECLARE_MEMORY_STAT(TEXT("Memory used"), STAT_TraceMemoryUsed, STATGROUP_Trace);
+DECLARE_MEMORY_STAT(TEXT("Important event cache"), STAT_TraceCacheAllocated, STATGROUP_Trace);
 DECLARE_MEMORY_STAT(TEXT("Important event cache used"), STAT_TraceCacheUsed, STATGROUP_Trace);
 DECLARE_MEMORY_STAT(TEXT("Important event cache waste"), STAT_TraceCacheWaste, STATGROUP_Trace);
 DECLARE_MEMORY_STAT(TEXT("Sent"), STAT_TraceSent, STATGROUP_Trace);
@@ -78,7 +85,7 @@ public:
 	void					GetActiveChannelsString(FStringBuilderBase& String) const;
 	void					AddCommandlineChannels(const TCHAR* ChannelList);
 	void					ResetCommandlineChannels();
-	bool					HasCommandlineChannels() const { return !CommandlineChannels.IsEmpty(); };
+	bool					HasCommandlineChannels() const { return !CommandlineChannels.IsEmpty(); }
 	void					EnableChannels(const TCHAR* ChannelList);
 	void					DisableChannels(const TCHAR* ChannelList);
 	bool					Connect(ETraceConnectType Type, const TCHAR* Parameter, const FTraceAuxiliary::FLogCategoryAlias& LogCategory);
@@ -86,10 +93,15 @@ public:
 	void					ResumeChannels();
 	void					PauseChannels();
 	void					EnableCommandlineChannels();
+	void					EnableCommandlineChannelsPostInitialize();
 	void					SetTruncateFile(bool bTruncateFile);
 	void					UpdateCsvStats() const;
 	void					StartWorkerThread();
 	void					StartEndFramePump();
+	bool					WriteSnapshot(const TCHAR* InFilePath, const FTraceAuxiliary::FLogCategoryAlias& LogCategory);
+
+	// True if this is parent process with forking requested before forking.
+	bool					IsParentProcessAndPreFork();
 
 private:
 	enum class EState : uint8
@@ -112,10 +124,12 @@ private:
 	void					DisableChannel(const TCHAR* Channel);
 	bool					SendToHost(const TCHAR* Host, const FTraceAuxiliary::FLogCategoryAlias& LogCategory);
 	bool					WriteToFile(const TCHAR* Path, const FTraceAuxiliary::FLogCategoryAlias& LogCategory);
+	bool					FinalizeFilePath(const TCHAR* InPath, FString& OutPath, const FTraceAuxiliary::FLogCategoryAlias& LogCategory);
 
 	typedef TMap<uint32, FChannelEntry, TInlineSetAllocator<128>> ChannelSet;
 	ChannelSet				CommandlineChannels;
 	FString					TraceDest;
+	FTraceAuxiliary::EConnectionType TraceType = FTraceAuxiliary::EConnectionType::None;
 	EState					State = EState::Stopped;
 	bool					bTruncateFile = false;
 	bool					bWorkerThreadStarted = false;
@@ -125,6 +139,17 @@ private:
 static FTraceAuxiliaryImpl GTraceAuxiliary;
 static FDelegateHandle GEndFrameDelegateHandle;
 static FDelegateHandle GEndFrameStatDelegateHandle;
+static FDelegateHandle GOnPostForkHandle;
+
+// Whether to start tracing automatically at start or wait to initiate via Console Command.
+// This value can also be set by passing '-traceautostart=[0|1]' on command line.
+static bool GTraceAutoStart = UE_TRACE_AUTOSTART ? true : false;
+
+////////////////////////////////////////////////////////////////////////////////
+bool FTraceAuxiliaryImpl::IsParentProcessAndPreFork()
+{
+	return FForkProcessHelper::IsForkRequested() && !FForkProcessHelper::IsForkedChildProcess();
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliaryImpl::AddCommandlineChannels(const TCHAR* ChannelList)
@@ -265,6 +290,8 @@ bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter
 			{
 				UE_LOG_REF(LogCategory, Error, TEXT("Trace failed to connect (trace server: %s)!"), Parameter ? Parameter : TEXT(""));
 			}
+
+			TraceType = FTraceAuxiliary::EConnectionType::Network;
 		}
 
 		else if (Type == ETraceConnectType::File)
@@ -278,6 +305,13 @@ bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter
 			{
 				UE_LOG_REF(LogCategory, Error, TEXT("Trace failed to connect (file: \"%s\")!"), Parameter ? Parameter : TEXT(""));
 			}
+
+			TraceType = FTraceAuxiliary::EConnectionType::File;
+		}
+
+		if (bConnected)
+		{
+			FTraceAuxiliary::OnTraceStarted.Broadcast(TraceType, TraceDest);
 		}
 	}
 
@@ -293,12 +327,20 @@ bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter
 ////////////////////////////////////////////////////////////////////////////////
 bool FTraceAuxiliaryImpl::Stop()
 {
+	if (IsParentProcessAndPreFork())
+	{
+		return false;
+	}
+
 	if (!UE::Trace::Stop())
 	{
 		return false;
 	}
 
+	FTraceAuxiliary::OnTraceStopped.Broadcast(TraceType, TraceDest);
+
 	State = EState::Stopped;
+	TraceType = FTraceAuxiliary::EConnectionType::None;
 	TraceDest.Reset();
 	return true;
 }
@@ -367,12 +409,27 @@ void FTraceAuxiliaryImpl::PauseChannels()
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliaryImpl::EnableCommandlineChannels()
 {
+	if (IsParentProcessAndPreFork())
+	{
+		return;
+	}
+
 	for (auto& ChannelPair : CommandlineChannels)
 	{
 		if (!ChannelPair.Value.bActive)
 		{
 			ChannelPair.Value.bActive = EnableChannel(*ChannelPair.Value.Name);
 		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FTraceAuxiliaryImpl::EnableCommandlineChannelsPostInitialize()
+{
+	for (auto& ChannelPair : CommandlineChannels)
+	{
+		// Intentionally enable channel without checking current state.
+		ChannelPair.Value.bActive = EnableChannel(*ChannelPair.Value.Name);
 	}
 }
 
@@ -396,7 +453,7 @@ bool FTraceAuxiliaryImpl::SendToHost(const TCHAR* Host, const FTraceAuxiliary::F
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool FTraceAuxiliaryImpl::WriteToFile(const TCHAR* InPath, const FTraceAuxiliary::FLogCategoryAlias& LogCategory)
+bool FTraceAuxiliaryImpl::FinalizeFilePath(const TCHAR* InPath, FString& OutPath, const FTraceAuxiliary::FLogCategoryAlias& LogCategory)
 {
 	const FStringView Path(InPath);
 
@@ -406,7 +463,7 @@ bool FTraceAuxiliaryImpl::WriteToFile(const TCHAR* InPath, const FTraceAuxiliary
 	if (Path.IsEmpty())
 	{
 		const FString Name = GetDefaultName();
-		return WriteToFile(*Name, LogCategory);
+		return FinalizeFilePath(*Name, OutPath, LogCategory);
 	}
 
 	FString WritePath;
@@ -460,22 +517,61 @@ bool FTraceAuxiliaryImpl::WriteToFile(const TCHAR* InPath, const FTraceAuxiliary
 		return false;
 	}
 
-	// Finally, tell trace to write the trace to a file.
+	OutPath = MoveTemp(NativePath);
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FTraceAuxiliaryImpl::WriteToFile(const TCHAR* Path, const FTraceAuxiliary::FLogCategoryAlias& LogCategory)
+{
+	FString NativePath;
+	if (!FinalizeFilePath(Path, NativePath, LogCategory))
+	{
+		return false;
+	}
+
 	if (!UE::Trace::WriteTo(*NativePath))
 	{
-		if (FPathViews::Equals(NativePath, WritePath))
+		if (FPathViews::Equals(NativePath, FStringView(Path)))
 		{
 			UE_LOG_REF(LogCategory, Warning, TEXT("Unable to trace to file '%s'"), *NativePath);
 		}
 		else
 		{
-			UE_LOG_REF(LogCategory, Warning, TEXT("Unable to trace to file '%s' (transformed from '%s')"), *NativePath, *WritePath);
+			UE_LOG_REF(LogCategory, Warning, TEXT("Unable to trace to file '%s' (transformed from '%s')"), *NativePath, Path ? Path : TEXT("null"));
 		}
 		return false;
 	}
 
 	TraceDest = MoveTemp(NativePath);
 	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FTraceAuxiliaryImpl::WriteSnapshot(const TCHAR* InFilePath, const FTraceAuxiliary::FLogCategoryAlias& LogCategory)
+{
+	double StartTime = FPlatformTime::Seconds();
+
+	FString NativePath;
+	if (!FinalizeFilePath(InFilePath, NativePath, LogCategory))
+	{
+		return false;
+	}
+
+	UE_LOG_REF(LogCategory, Log, TEXT("Writing trace snapshot to '%s'..."), *NativePath);
+
+	const bool bResult = UE::Trace::WriteSnapshotTo(*NativePath);
+
+	if (bResult)
+	{
+		UE_LOG_REF(LogCategory, Display, TEXT("Trace snapshot generated in %.3f seconds to \"%s\"."), FPlatformTime::Seconds() - StartTime, *NativePath);
+	}
+	else
+	{
+		UE_LOG_REF(LogCategory, Error, TEXT("Failed to trace snapshot to \"%s\"."), *NativePath);
+	}
+
+	return bResult;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -550,6 +646,7 @@ void FTraceAuxiliaryImpl::StartEndFramePump()
 			UE::Trace::FStatistics Stats;
 			UE::Trace::GetStatistics(Stats);
 			SET_MEMORY_STAT(STAT_TraceMemoryUsed, Stats.MemoryUsed);
+			SET_MEMORY_STAT(STAT_TraceCacheAllocated, Stats.CacheAllocated);
 			SET_MEMORY_STAT(STAT_TraceCacheUsed, Stats.CacheUsed);
 			SET_MEMORY_STAT(STAT_TraceCacheWaste, Stats.CacheWaste);
 			SET_MEMORY_STAT(STAT_TraceSent, Stats.BytesSent);
@@ -557,6 +654,35 @@ void FTraceAuxiliaryImpl::StartEndFramePump()
 	}
 }
 
+////////////////////////////////////////////////////////////////////////////////
+void OnConnectionCallback()
+{
+	FTraceAuxiliary::OnConnection.Broadcast();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+static void SetupInitFromConfig(UE::Trace::FInitializeDesc& OutDesc)
+{
+	if (!GConfig)
+	{
+		return;
+	}
+
+	int32 SleepTimeConfig = 0;
+	if (GConfig->GetInt(GTraceConfigSection, TEXT("SleepTimeInMS"), SleepTimeConfig, GEngineIni))
+	{
+		if (SleepTimeConfig > 0)
+		{
+			OutDesc.ThreadSleepTimeInMS = SleepTimeConfig;
+		}
+	}
+
+	int32 TailSizeBytesConfig = 0;
+	if (GConfig->GetInt(GTraceConfigSection, TEXT("TailSizeBytes"), TailSizeBytesConfig, GEngineIni))
+	{
+		OutDesc.TailSizeBytes = TailSizeBytesConfig;
+	}
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 static void TraceAuxiliaryConnectEpilogue()
@@ -629,9 +755,7 @@ static void TraceAuxiliaryFile(const TArray<FString>& Args)
 		return;
 	}
 
-	FTraceAuxiliary::Options Opts;
-	Opts.bNoWorkerThread = true;
-	if (FTraceAuxiliary::Start(FTraceAuxiliary::EConnectionType::File, Filepath, Channels, &Opts, LogConsoleResponse))
+	if (FTraceAuxiliary::Start(FTraceAuxiliary::EConnectionType::File, Filepath, Channels, nullptr, LogConsoleResponse))
 	{
 		TraceAuxiliaryConnectEpilogue();
 	}
@@ -671,15 +795,24 @@ static void TraceAuxiliaryStatus()
 	UE_LOG(LogConsoleResponse, Display, TEXT("Trace status ----------------------------------------------------------"));
 
 	// Status of data connection
-	const TCHAR* Dest = GTraceAuxiliary.GetDest();
 	TStringBuilder<256> ConnectionStr;
-	if (Dest && FCString::Strlen(Dest) > 0)
+	if (UE::Trace::IsTracing())
 	{
-		ConnectionStr.Appendf(TEXT("Tracing to '%s'"), Dest);
+		const TCHAR* Dest = GTraceAuxiliary.GetDest();
+		if (Dest && FCString::Strlen(Dest) > 0)
+		{
+			ConnectionStr.Appendf(TEXT("Tracing to '%s'"), Dest);
+		}
+		else
+		{
+			// If GTraceAux doesn't know about the target but we are still tracing this is an externally initiated connection
+			// (e.g. connection command from Insights).
+			ConnectionStr = TEXT("Tracing to unknown target (externally set)");
+		}
 	}
 	else
 	{
-		ConnectionStr.Append(TEXT("Not tracing"));
+		ConnectionStr = TEXT("Not tracing");
 	}
 	UE_LOG(LogConsoleResponse, Display, TEXT("- Connection: %s"), ConnectionStr.ToString());
 
@@ -689,11 +822,11 @@ static void TraceAuxiliaryStatus()
 	constexpr double MiB = 1.0 / (1024.0 * 1024.0);
 	UE_LOG(LogConsoleResponse, Display, TEXT("- Memory used: %.02f MiB"),
 		double(Stats.MemoryUsed) * MiB);
-	// Stats.CacheWaste is actually the total size of allocated buffers.
-	UE_LOG(LogConsoleResponse, Display, TEXT("- Important Events cache: %.02f MiB (%.02f MiB used + %0.02f MiB waste)"),
-		double(Stats.CacheWaste) * MiB,
+	UE_LOG(LogConsoleResponse, Display, TEXT("- Important Events cache: %.02f MiB (%.02f MiB used + %0.02f MiB unused | %0.02f MiB waste)"),
+		double(Stats.CacheAllocated) * MiB,
 		double(Stats.CacheUsed) * MiB,
-		double(Stats.CacheWaste - Stats.CacheUsed) * MiB);
+		double(Stats.CacheAllocated - Stats.CacheUsed) * MiB,
+		double(Stats.CacheWaste) * MiB);
 	UE_LOG(LogConsoleResponse, Display, TEXT("- Sent: %.02f MiB"),
 		double(Stats.BytesSent) * MiB);
 
@@ -766,6 +899,30 @@ static void TraceAuxiliaryDisableChannels(const TArray<FString>& Args)
 	TStringBuilder<128> EnabledChannels;
 	GTraceAuxiliary.GetActiveChannelsString(EnabledChannels);
 	UE_LOG(LogConsoleResponse, Display, TEXT("Enabled channels: %s"), EnabledChannels.ToString());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+static void TraceAuxiliarySnapshotFile(const TArray<FString>& Args)
+{
+	const TCHAR* FilePath = nullptr;
+
+	if (Args.Num() == 1)
+	{
+		FilePath = *Args[0];
+	}
+	else if (Args.Num() > 1)
+	{
+		UE_LOG(LogConsoleResponse, Warning, TEXT("Invalid arguments. Usage: Trace.SnapshotFile [Path]"));
+		return;
+	}
+
+	GTraceAuxiliary.WriteSnapshot(FilePath, LogConsoleResponse);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+static void TraceBookmark(const TArray<FString>& Args)
+{
+	TRACE_BOOKMARK(TEXT("%s"), Args.Num() ? *Args[0] : TEXT(""));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -844,6 +1001,22 @@ static FAutoConsoleCommand TraceAuxiliaryChannelDisableCmd(
 	FConsoleCommandWithArgsDelegate::CreateStatic(TraceAuxiliaryDisableChannels)
 );
 
+////////////////////////////////////////////////////////////////////////////////
+static FAutoConsoleCommand TraceAuxiliarySnapshotFileCmd(
+	TEXT("Trace.SnapshotFile"),
+	TEXT("[Path] - Writes a snapshot of the current in-memory trace buffer to a file."
+	),
+	FConsoleCommandWithArgsDelegate::CreateStatic(TraceAuxiliarySnapshotFile)
+);
+
+////////////////////////////////////////////////////////////////////////////////
+static FAutoConsoleCommand TraceBookmarkCmd(
+	TEXT("Trace.Bookmark"),
+	TEXT("[Name] - Emits a TRACE_BOOKMARK() event with the given string name."
+	),
+	FConsoleCommandWithArgsDelegate::CreateStatic(TraceBookmark)
+);
+
 #endif // UE_TRACE_ENABLED
 
 
@@ -871,7 +1044,7 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 	uint32 CreateProcFlags = CREATE_BREAKAWAY_FROM_JOB;
 	if (FParse::Param(CommandLine, TEXT("traceshowstore")))
 	{
-		CreateProcFlags |= DETACHED_PROCESS;
+		CreateProcFlags |= CREATE_NEW_CONSOLE;
 	}
 	else
 	{
@@ -998,7 +1171,7 @@ UE_TRACE_EVENT_BEGIN(Diagnostics, Session2, NoSync|Important)
 UE_TRACE_EVENT_END()
 
 ////////////////////////////////////////////////////////////////////////////////
-static bool StartFromCommandlineArguments(const TCHAR* CommandLine)
+static bool StartFromCommandlineArguments(const TCHAR* CommandLine, bool& bOutStartWorkerThread)
 {
 #if UE_TRACE_ENABLED
 
@@ -1011,6 +1184,12 @@ static bool StartFromCommandlineArguments(const TCHAR* CommandLine)
 	{
 		Channels = GDefaultChannels;
 	}
+#if WITH_EDITOR
+	else
+	{
+		Channels = GDefaultChannels;
+	}
+#endif
 
 	// By default, if any channels are enabled we trace to memory.
 	FTraceAuxiliary::EConnectionType Type = FTraceAuxiliary::EConnectionType::None;
@@ -1018,7 +1197,13 @@ static bool StartFromCommandlineArguments(const TCHAR* CommandLine)
 	// Setup options
 	FTraceAuxiliary::Options Opts;
 	Opts.bTruncateFile = FParse::Param(CommandLine, TEXT("tracefiletrunc"));
-	Opts.bNoWorkerThread = !FPlatformProcess::SupportsMultithreading();
+
+	const bool bWorkerThreadAllowed = FGenericPlatformProcess::SupportsMultithreading() || FForkProcessHelper::IsForkedMultithreadInstance();
+
+	if (!bWorkerThreadAllowed || FParse::Param(FCommandLine::Get(), TEXT("notracethreading")))
+	{
+		Opts.bNoWorkerThread = true;
+	}
 
 	// Find if a connection type is specified
 	FString Parameter;
@@ -1058,16 +1243,38 @@ static bool StartFromCommandlineArguments(const TCHAR* CommandLine)
 		return false;
 	}
 
-	// Finally, start tracing to the requested connection.
+	if (!GTraceAutoStart)
+	{
+		GTraceAuxiliary.AddCommandlineChannels(*Channels);
+		return false;
+	}
+
+	// Trace's worker thread should really only be started by Trace itself as
+	// order is important. At the very least it must be done after Trace is
+	// initialised. It isn't yet here so we defer it.
+	bOutStartWorkerThread = !Opts.bNoWorkerThread;
+	Opts.bNoWorkerThread = true;
+
+	// Finally start tracing to the requested connection
 	return FTraceAuxiliary::Start(Type, Target, *Channels, &Opts);
 #endif
 	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+FTraceAuxiliary::FOnConnection FTraceAuxiliary::OnConnection;
+FTraceAuxiliary::FOnTraceStarted FTraceAuxiliary::OnTraceStarted;
+FTraceAuxiliary::FOnTraceStopped FTraceAuxiliary::OnTraceStopped;
+
+////////////////////////////////////////////////////////////////////////////////
 bool FTraceAuxiliary::Start(EConnectionType Type, const TCHAR* Target, const TCHAR* Channels, Options* Options, const FLogCategoryAlias& LogCategory)
 {
 #if UE_TRACE_ENABLED
+	if (GTraceAuxiliary.IsParentProcessAndPreFork())
+	{
+		return false;
+	}
+
 	if (GTraceAuxiliary.IsConnected())
 	{
 		UE_LOG_REF(LogCategory, Error, TEXT("Unable to start trace, already tracing to %s"), GTraceAuxiliary.GetDest());
@@ -1077,7 +1284,10 @@ bool FTraceAuxiliary::Start(EConnectionType Type, const TCHAR* Target, const TCH
 	// Make sure the worker thread is started unless explicitly opt out.
 	if (!Options || !Options->bNoWorkerThread)
 	{
-		GTraceAuxiliary.StartWorkerThread();
+		if (FGenericPlatformProcess::SupportsMultithreading() || FForkProcessHelper::IsForkedMultithreadInstance())
+		{
+			GTraceAuxiliary.StartWorkerThread();
+		}
 	}
 
 	if (Channels)
@@ -1138,6 +1348,45 @@ bool FTraceAuxiliary::Resume()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+bool FTraceAuxiliary::WriteSnapshot(const TCHAR* InFilePath)
+{
+#if UE_TRACE_ENABLED
+	return GTraceAuxiliary.WriteSnapshot(InFilePath, LogCore);
+#else
+	return true;
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////
+#if UE_TRACE_ENABLED
+static void TraceAuxiliaryAddPostForkCallback(const TCHAR* CommandLine)
+{
+	if (GTraceAutoStart)
+	{
+		UE_LOG(LogCore, Display, TEXT("Trace not started in parent because forking is expected. Use -NoFakeForking to trace parent."));
+	}
+
+	checkf(!GOnPostForkHandle.IsValid(), TEXT("TraceAuxiliaryAddPostForkCallback should only be called once."));
+
+	GOnPostForkHandle = FCoreDelegates::OnPostFork.AddLambda([](EForkProcessRole Role)
+	{
+		if (Role == EForkProcessRole::Child)
+		{
+			FString CmdLine = FCommandLine::Get();
+
+			FTraceAuxiliary::Initialize(*CmdLine);
+			FTraceAuxiliary::TryAutoConnect();
+
+			// InitializePresets is needed in the regular startup phase since dynamically loaded modules can define
+			// presets and channels and we need to enable those after modules have been loaded. In the case of forked
+			// process all modules should already have been loaded.
+			// FTraceAuxiliary::InitializePresets(*CmdLine);
+		}
+	});
+}
+#endif // UE_TRACE_ENABLED
+
+////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTraceAux_Init);
@@ -1151,6 +1400,22 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 #endif
 
 #if UE_TRACE_ENABLED
+	UE_LOG(LogCore, Log, TEXT("Initializing trace..."));
+
+	FParse::Bool(CommandLine, TEXT("-traceautostart="), GTraceAutoStart);
+	UE_LOG(LogCore, Verbose, TEXT("Trace auto start = %d."), GTraceAutoStart);
+
+	if (GTraceAuxiliary.IsParentProcessAndPreFork())
+	{
+		UE_LOG(LogCore, Log, TEXT("Trace initialization skipped for parent process (pre fork)."));
+
+		GTraceAuxiliary.DisableChannels(nullptr);
+
+		// Set our post fork callback up and return - children will pass through and Initialize when they're created.
+		TraceAuxiliaryAddPostForkCallback(CommandLine);
+		return;
+	}
+
 	const TCHAR* AppName = TEXT(UE_APP_NAME);
 #if IS_MONOLITHIC && !IS_PROGRAM
 	extern TCHAR GInternalProjectName[];
@@ -1158,10 +1423,6 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	{
 		AppName = GInternalProjectName;
 	}
-#endif
-
-#if UE_MEMORY_TRACE_ENABLED
-	MemoryTrace_InitializeLate();
 #endif
 
 	// Trace out information about this session. This is done before initialisation,
@@ -1189,21 +1450,54 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 		<< Session2.ConfigurationType(uint8(FApp::GetBuildConfiguration()))
 		<< Session2.TargetType(uint8(FApp::GetBuildTargetType()));
 
+	// Attempt to send trace data somewhere from the command line. It perhaps
+	// seems odd to do this before initialising Trace, but it is done this way
+	// to support disabling the "important" cache without losing any events.
+	bool bShouldStartWorkerThread = false;
+	StartFromCommandlineArguments(CommandLine, bShouldStartWorkerThread);
+
 	// Initialize Trace
 	UE::Trace::FInitializeDesc Desc;
-	Desc.bUseWorkerThread = false;
+	SetupInitFromConfig(Desc);
+	
+	Desc.bUseWorkerThread = bShouldStartWorkerThread;
+	Desc.bUseImportantCache = (FParse::Param(CommandLine, TEXT("tracenocache")) == false);
+	Desc.OnConnectionFunc = &OnConnectionCallback;
 	if (FParse::Value(CommandLine, TEXT("-tracetailmb="), Desc.TailSizeBytes))
 	{
 		Desc.TailSizeBytes <<= 20;
 	}
+
+	// Memory tracing is very chatty. To reduce load on trace we'll speed up the
+	// worker thread so it can clear events faster.
+	extern bool MemoryTrace_IsActive();
+	if (MemoryTrace_IsActive())
+	{
+		int32 SleepTimeMs = 5;
+		if (GConfig)
+		{
+			GConfig->GetInt(GTraceConfigSection, TEXT("SleepTimeWhenMemoryTracingInMS"), SleepTimeMs, GEngineIni);
+		}
+
+		if (Desc.ThreadSleepTimeInMS)
+		{
+			SleepTimeMs = FMath::Min<uint32>(Desc.ThreadSleepTimeInMS, SleepTimeMs);
+		}
+
+		Desc.ThreadSleepTimeInMS = SleepTimeMs;
+	}
+
 	UE::Trace::Initialize(Desc);
+
+	// Workaround for the fact that even if StartFromCommandlineArguments will enable channels
+	// specified by the commandline, UE::Trace::Initialize will reset all channels.
+	GTraceAuxiliary.EnableCommandlineChannelsPostInitialize();
+
+	// Setup known on connection callbacks
+	OnConnection.AddStatic(FStringTrace::OnConnection);
 
 	// Always register end frame updates. This path is short circuited if a worker thread exists.
 	GTraceAuxiliary.StartEndFramePump();
-	if (!FForkProcessHelper::IsForkRequested())
-	{
-		GTraceAuxiliary.StartWorkerThread();
-	}
 
 	// Initialize callstack tracing with the regular malloc (it might have already been initialized by memory tracing).
 	CallstackTrace_Create(GMalloc);
@@ -1213,34 +1507,38 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	uint32 Microseconds = 1000;
 	FParse::Value(CommandLine, TEXT("-samplinginterval="), Microseconds);
 	PlatformEvents_Init(Microseconds);
+	PlatformEvents_PostInit();
 
 #if CSV_PROFILER
 	FCoreDelegates::OnEndFrame.AddRaw(&GTraceAuxiliary, &FTraceAuxiliaryImpl::UpdateCsvStats);
 #endif
 
-	FModuleManager::Get().OnModulesChanged().AddLambda([](FName Name, EModuleChangeReason Reason)
+	if (GTraceAutoStart)
 	{
-		if (Reason == EModuleChangeReason::ModuleLoaded)
+		FModuleManager::Get().OnModulesChanged().AddLambda([](FName Name, EModuleChangeReason Reason)
 		{
-			GTraceAuxiliary.EnableCommandlineChannels();
-		}
-	});
+			if (Reason == EModuleChangeReason::ModuleLoaded)
+			{
+				GTraceAuxiliary.EnableCommandlineChannels();
+			}
+		});
+	}
 
 	UE::Trace::ThreadRegister(TEXT("GameThread"), FPlatformTLS::GetCurrentThreadId(), -1);
 
-	// When forking, only the forked child should start the actual tracing.
-	const bool bShouldStartTracingNow = !FForkProcessHelper::IsForkRequested();
-	if (bShouldStartTracingNow)
-	{
-		StartFromCommandlineArguments(CommandLine);
-	}
-#endif
+	UE_LOG(LogCore, Log, TEXT("Finished trace initialization."));
+#endif //UE_TRACE_ENABLED
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliary::InitializePresets(const TCHAR* CommandLine)
 {
 #if UE_TRACE_ENABLED
+	if (GTraceAuxiliary.IsParentProcessAndPreFork() || !GTraceAutoStart)
+	{
+		return;
+	}
+
 	// Second pass over trace arguments, this time to allow config defined presets
 	// to be applied.
 	FString Parameter;
@@ -1256,6 +1554,11 @@ void FTraceAuxiliary::InitializePresets(const TCHAR* CommandLine)
 void FTraceAuxiliary::Shutdown()
 {
 #if UE_TRACE_ENABLED
+	if (GTraceAuxiliary.IsParentProcessAndPreFork())
+	{
+		return;
+	}
+
 	// Make sure all platform event functionality has shut down as on some
 	// platforms it impacts whole system, even if application has terminated.
 	PlatformEvents_Stop();
@@ -1270,15 +1573,43 @@ void FTraceAuxiliary::EnableChannels()
 #endif
 }
 
+void FTraceAuxiliary::DisableChannels(const TCHAR* Channels)
+{
+#if UE_TRACE_ENABLED
+	GTraceAuxiliary.DisableChannels(Channels);
+#endif
+}
+
+const TCHAR* FTraceAuxiliary::GetTraceDestination()
+{
+#if UE_TRACE_ENABLED
+	return GTraceAuxiliary.GetDest();
+#endif
+	return nullptr;
+}
+
+bool FTraceAuxiliary::IsConnected()
+{
+#if UE_TRACE_ENABLED
+	return GTraceAuxiliary.IsConnected();
+#endif
+	return false;
+}
+
+void FTraceAuxiliary::GetActiveChannelsString(FStringBuilderBase& String)
+{
+#if UE_TRACE_ENABLED
+	GTraceAuxiliary.GetActiveChannelsString(String);
+#endif
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliary::TryAutoConnect()
 {
 #if UE_TRACE_ENABLED
-	// Do not attempt to autoconnect when forking is requested.
-	const bool bShouldAutoConnect = !FForkProcessHelper::IsForkRequested();
-	if (bShouldAutoConnect)
+#if PLATFORM_WINDOWS
+	if (GTraceAutoStart)
 	{
-	#if PLATFORM_WINDOWS
 		// If we can detect a named event it means UnrealInsights (Browser Mode) is running.
 		// In this case, we try to auto-connect with the Trace Server.
 		HANDLE KnownEvent = ::OpenEvent(EVENT_ALL_ACCESS, false, TEXT("Local\\UnrealInsightsBrowser"));
@@ -1288,7 +1619,7 @@ void FTraceAuxiliary::TryAutoConnect()
 			Start(EConnectionType::Network, TEXT("127.0.0.1"), GTraceAuxiliary.HasCommandlineChannels() ? nullptr : TEXT("default"), nullptr);
 			::CloseHandle(KnownEvent);
 		}
-	#endif
 	}
-#endif
+#endif // PLATFORM_WINDOWS
+#endif // UE_TRACE_ENABLED
 }

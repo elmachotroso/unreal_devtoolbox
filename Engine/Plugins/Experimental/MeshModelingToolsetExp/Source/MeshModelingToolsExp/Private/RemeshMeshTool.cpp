@@ -25,6 +25,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ToolTargetManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RemeshMeshTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "URemeshMeshTool"
@@ -64,7 +66,10 @@ URemeshMeshToolProperties::URemeshMeshToolProperties()
 	bSplits = true;
 	bCollapses = true;
 	bReproject = true;
+	bReprojectConstraints = false;
+	BoundaryCornerAngleThreshold = 45.0;
 	bPreventNormalFlips = true;
+	bPreventTinyTriangles = true;
 	bUseTargetEdgeLength = false;
 }
 
@@ -110,19 +115,14 @@ void URemeshMeshTool::Setup()
 
 	OriginalMeshSpatial = MakeShared<FDynamicMeshAABBTree3, ESPMode::ThreadSafe>(OriginalMesh.Get(), true);
 
-	// calculate initial mesh area (no utility fn yet)
-	// TODO: will need to change to account for component transform's Scale3D
-	InitialMeshArea = 0;
-	for (int tid : OriginalMesh->TriangleIndicesItr())
-	{
-		InitialMeshArea += OriginalMesh->GetTriArea(tid);
-	}
+	// calculate initial mesh area
+	InitialMeshArea = TMeshQueries<FDynamicMesh3>::GetVolumeArea(*OriginalMesh).Y;
 
 	// set properties defaults
 
 	// arbitrary threshold of 5000 tris seems reasonable?
 	BasicProperties->TargetTriangleCount = (OriginalMesh->TriangleCount() < 5000) ? 5000 : OriginalMesh->TriangleCount();
-	BasicProperties->TargetEdgeLength = CalculateTargetEdgeLength(BasicProperties->TargetTriangleCount);
+	BasicProperties->TargetEdgeLength = FRemeshMeshOp::CalculateTargetEdgeLength(OriginalMesh.Get(), BasicProperties->TargetTriangleCount, InitialMeshArea);
 
 	// add properties to GUI
 	AddToolPropertySource(BasicProperties);
@@ -198,7 +198,7 @@ TUniquePtr<FDynamicMeshOperator> URemeshMeshTool::MakeNewOperator()
 
 	if (!BasicProperties->bUseTargetEdgeLength)
 	{
-		Op->TargetEdgeLength = CalculateTargetEdgeLength(BasicProperties->TargetTriangleCount);
+		Op->TargetEdgeLength = FRemeshMeshOp::CalculateTargetEdgeLength(OriginalMesh.Get(), BasicProperties->TargetTriangleCount, InitialMeshArea);
 		Op->TriangleCountHint = 2.0 * BasicProperties->TargetTriangleCount;
 	}
 	else
@@ -216,7 +216,10 @@ TUniquePtr<FDynamicMeshOperator> URemeshMeshTool::MakeNewOperator()
 	Op->GroupBoundaryConstraint = (EEdgeRefineFlags)BasicProperties->GroupBoundaryConstraint;
 	Op->MaterialBoundaryConstraint = (EEdgeRefineFlags)BasicProperties->MaterialBoundaryConstraint;
 	Op->bPreventNormalFlips = BasicProperties->bPreventNormalFlips;
+	Op->bPreventTinyTriangles = BasicProperties->bPreventTinyTriangles;
 	Op->bReproject = BasicProperties->bReproject;
+	Op->bReprojectConstraints = BasicProperties->bReprojectConstraints;
+	Op->BoundaryCornerAngleThreshold = BasicProperties->BoundaryCornerAngleThreshold;
 	Op->bSplits = BasicProperties->bSplits;
 	Op->RemeshIterations = BasicProperties->RemeshIterations;
 	Op->MaxRemeshIterations = BasicProperties->MaxRemeshIterations;
@@ -250,10 +253,9 @@ void URemeshMeshTool::OnPropertyModified(UObject* PropertySet, FProperty* Proper
 
 void URemeshMeshTool::UpdateVisualization()
 {
-	FComponentMaterialSet MaterialSet;
 	if (BasicProperties->bShowGroupColors)
 	{
-		MaterialSet.Materials = {ToolSetupUtil::GetSelectionMaterial(GetToolManager())};
+		Preview->OverrideMaterial = ToolSetupUtil::GetSelectionMaterial(GetToolManager());
 		Preview->PreviewMesh->SetTriangleColorFunction([this](const FDynamicMesh3* Mesh, int TriangleID)
 		{
 			return LinearColors::SelectFColor(Mesh->GetTriangleGroup(TriangleID));
@@ -262,18 +264,9 @@ void URemeshMeshTool::UpdateVisualization()
 	}
 	else
 	{
-		MaterialSet = UE::ToolTarget::GetMaterialSet(Targets[0]);
+		Preview->OverrideMaterial = nullptr;
 		Preview->PreviewMesh->ClearTriangleColorFunction(UPreviewMesh::ERenderUpdateMode::FastUpdate);
 	}
-	Preview->ConfigureMaterials(MaterialSet.Materials,
-								ToolSetupUtil::GetDefaultWorkingMaterial(GetToolManager()));
-}
-
-double URemeshMeshTool::CalculateTargetEdgeLength(int TargetTriCount)
-{
-	double TargetTriArea = InitialMeshArea / (double)TargetTriCount;
-	double EdgeLen = TriangleUtil::EquilateralEdgeLengthForArea(TargetTriArea);
-	return (double)FMath::RoundToInt(EdgeLen*100.0) / 100.0;
 }
 
 bool URemeshMeshTool::CanAccept() const
@@ -284,3 +277,4 @@ bool URemeshMeshTool::CanAccept() const
 
 
 #undef LOCTEXT_NAMESPACE
+

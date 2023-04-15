@@ -6,6 +6,7 @@
 #include "Misc/ScopeLock.h"
 #include "Serialization/MemoryWriter.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/OutputDeviceConsole.h"
@@ -51,9 +52,10 @@
 #include "HAL/ThreadSafeCounter.h"
 #include "Math/InterpCurvePoint.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
-
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "AssetRegistry/AssetData.h"
+#include "HAL/PlatformStackWalk.h"
+#include "String/Find.h"
 
 // This flag enables some expensive class tree validation that is meant to catch mutations of 
 // the class tree outside of SetSuperStruct. It has been disabled because loading blueprints 
@@ -63,7 +65,7 @@
 DEFINE_LOG_CATEGORY(LogScriptSerialization);
 DEFINE_LOG_CATEGORY(LogClass);
 
-IMPLEMENT_STRUCT(TestUninitializedScriptStructMembersTest);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", TestUninitializedScriptStructMembersTest);
 
 #if defined(_MSC_VER) && _MSC_VER == 1900
 	#ifdef PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
@@ -95,7 +97,6 @@ COREUOBJECT_API void InitializePrivateStaticClass(
 	)
 {
 	TRACE_LOADTIME_CLASS_INFO(TClass_PrivateStaticClass, Name);
-	NotifyRegistrationEvent(PackageName, Name, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Started);
 
 	/* No recursive ::StaticClass calls allowed. Setup extras. */
 	if (TClass_Super_StaticClass != TClass_PrivateStaticClass)
@@ -114,8 +115,6 @@ COREUOBJECT_API void InitializePrivateStaticClass(
 		// Defer
 		TClass_PrivateStaticClass->Register(PackageName, Name);
 	}
-	
-	NotifyRegistrationEvent(PackageName, Name, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Finished);
 }
 
 void FNativeFunctionRegistrar::RegisterFunction(class UClass* Class, const ANSICHAR* InName, FNativeFuncPtr InPointer)
@@ -523,14 +522,14 @@ void UField::SetMetaData(const FName& Key, const TCHAR* InValue)
 UClass* UField::GetClassMetaData(const TCHAR* Key) const
 {
 	const FString& ClassName = GetMetaData(Key);
-	UClass* const FoundObject = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+	UClass* const FoundObject = UClass::TryFindTypeSlow<UClass>(ClassName);
 	return FoundObject;
 }
 
 UClass* UField::GetClassMetaData(const FName& Key) const
 {
 	const FString& ClassName = GetMetaData(Key);
-	UClass* const FoundObject = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+	UClass* const FoundObject = UClass::TryFindTypeSlow<UClass>(ClassName);
 	return FoundObject;
 }
 
@@ -610,6 +609,7 @@ UStruct::UStruct(EStaticConstructor, int32 InSize, int32 InMinAlignment, EObject
 {
 #if WITH_EDITORONLY_DATA
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
+	bHasAssetRegistrySearchableProperties = false;
 #endif // WITH_EDITORONLY_DATA
 }
 
@@ -631,6 +631,7 @@ UStruct::UStruct(UStruct* InSuperStruct, SIZE_T ParamsSize, SIZE_T Alignment)
 #endif
 #if WITH_EDITORONLY_DATA
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
+	bHasAssetRegistrySearchableProperties = false;
 #endif // WITH_EDITORONLY_DATA
 }
 
@@ -652,6 +653,7 @@ UStruct::UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperSt
 #endif
 #if WITH_EDITORONLY_DATA
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
+	bHasAssetRegistrySearchableProperties = false;
 #endif // WITH_EDITORONLY_DATA
 }
 
@@ -958,6 +960,12 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 			PostConstructLinkPtr = &(*PostConstructLinkPtr)->PostConstructLinkNext;
 		}
 
+#if WITH_EDITORONLY_DATA
+		// Set the bHasAssetRegistrySearchableProperties flag.
+		// Note that we're also iterating over super class properties here so this flag is being automatically inherited
+		bHasAssetRegistrySearchableProperties |= Property->HasAnyPropertyFlags(CPF_AssetRegistrySearchable);
+#endif
+
 		*PropertyLinkPtr = Property;
 		PropertyLinkPtr = &(*PropertyLinkPtr)->PropertyLinkNext;
 	}
@@ -1132,7 +1140,7 @@ void UStruct::LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8
 		FName PropertyName = *PropertyNameString;
 
 		// If this property has a guid attached then we need to resolve it to the right name before we start loading
-		TOptional<FStructuredArchiveSlot> PropertyGuidSlot = PropertySlot.TryEnterAttribute(SA_FIELD_NAME(TEXT("PropertyGuid")), false);
+		TOptional<FStructuredArchiveSlot> PropertyGuidSlot = PropertySlot.TryEnterAttribute(TEXT("PropertyGuid"), false);
 		if (PropertyGuidSlot.IsSet())
 		{
 			FGuid PropertyGuid;
@@ -1283,7 +1291,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 	//SCOPED_LOADTIMER(SerializeTaggedPropertiesTime);
 
 	// Determine if this struct supports optional property guid's (UBlueprintGeneratedClasses Only)
-	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UEVer() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && !FPlatformProperties::RequiresCookedData() && ArePropertyGuidsAvailable();
+	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UEVer() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && ArePropertyGuidsAvailable();
 	const bool bUseRedirects = (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && !UnderlyingArchive.IsLoadingFromCookedPackage();
 
 	if (UnderlyingArchive.IsLoading())
@@ -1332,7 +1340,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 				}
 				bAdvanceProperty = false;
 
-				// Optionally resolve properties using Guid Property tags in non cooked builds that support it.
+				// Optionally resolve properties using Guid Property tags if the class supports it.
 				if (bArePropertyGuidsAvailable && Tag.HasPropertyGuid)
 				{
 					// Use property guids from blueprint generated classes to redirect serialised data.
@@ -1448,7 +1456,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 					}
 					else
 					{
-						FStructuredArchive::FSlot ValueSlot = PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value")));
+						FStructuredArchive::FSlot ValueSlot = PropertyRecord.EnterField(TEXT("Value"));
 
 						switch (Property->ConvertFromType(Tag, ValueSlot, Data, DefaultsStruct))
 						{
@@ -1531,7 +1539,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 				if (((LoopMax - 1) > LoopMin) && UnderlyingArchive.IsTextFormat())
 				{
 					int32 NumItems = LoopMax - LoopMin;
-					StaticArrayContainer.Emplace(PropertiesRecord.EnterArray(SA_FIELD_NAME((*Property->GetName())), NumItems));
+					StaticArrayContainer.Emplace(PropertiesRecord.EnterArray(*Property->GetName(), NumItems));
 				}
 
 				for (int32 Idx = LoopMin; Idx < LoopMax; Idx++)
@@ -1561,7 +1569,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 
 						TStringBuilder<256> TagName;
 						Tag.Name.ToString(TagName);
-						FStructuredArchive::FSlot PropertySlot = StaticArrayContainer.IsSet() ? StaticArrayContainer->EnterElement() : PropertiesRecord.EnterField(SA_FIELD_NAME(TagName.ToString()));
+						FStructuredArchive::FSlot PropertySlot = StaticArrayContainer.IsSet() ? StaticArrayContainer->EnterElement() : PropertiesRecord.EnterField(TagName.ToString());
 
 						PropertySlot << Tag;
 
@@ -1640,6 +1648,7 @@ void UStruct::DestroyChildPropertiesAndResetPropertyLinks()
 	PostConstructLink = nullptr;
 #if WITH_EDITORONLY_DATA
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
+	bHasAssetRegistrySearchableProperties = false;
 #endif // WITH_EDITORONLY_DATA
 	DestroyUnversionedSchema(this);
 }
@@ -2152,7 +2161,7 @@ void UStruct::InstanceSubobjectTemplates( void* Data, void const* DefaultData, U
 
 	for ( FProperty* Property = RefLink; Property != NULL; Property = Property->NextRef )
 	{
-		if (Property->ContainsInstancedObjectProperty())
+		if (Property->ContainsInstancedObjectProperty() && (!InstanceGraph || !InstanceGraph->IsPropertyInSubobjectExclusionList(Property)))
 		{
 			Property->InstanceSubobjects( Property->ContainerPtrToValuePtr<uint8>(Data), (uint8*)Property->ContainerPtrToValuePtrForDefaults<uint8>(DefaultStruct, DefaultData), Owner, InstanceGraph );
 		}
@@ -2161,7 +2170,7 @@ void UStruct::InstanceSubobjectTemplates( void* Data, void const* DefaultData, U
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UStruct, UField,
 	{
-		Class->ClassAddReferencedObjects = &UStruct::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UStruct);
 		Class->EmitObjectReference(STRUCT_OFFSET(UStruct, SuperStruct), TEXT("SuperStruct"));
 		Class->EmitObjectReference(STRUCT_OFFSET(UStruct, Children), TEXT("Children"));
 
@@ -2193,6 +2202,10 @@ void UStruct::TagSubobjects(EObjectFlags NewFlags)
 #if USTRUCT_FAST_ISCHILDOF_COMPARE_WITH_OUTERWALK || USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_OUTERWALK
 bool UStruct::IsChildOf( const UStruct* SomeBase ) const
 {
+	// If you're looking at this check it is due to calling IsChildOf with a this nullptr. *MAKE* sure you do not call this function
+	// with a this nullptr. It is undefined behavior, and some compilers, clang13 have started to optimize out this == nullptr checks.
+	check(this);
+
 	if (SomeBase == nullptr)
 	{
 		return false;
@@ -2360,9 +2373,9 @@ struct TStructOpsTypeTraits<FTestStruct> : public TStructOpsTypeTraitsBase2<FTes
 /** Used to hold virtual methods to construct, destruct, etc native structs in a generic and dynamic fashion 
  * singleton-style to avoid issues with static constructor order
 **/
-static TMap<FName,UScriptStruct::ICppStructOps*>& GetDeferredCppStructOps()
+static TMap<FTopLevelAssetPath,UScriptStruct::ICppStructOps*>& GetDeferredCppStructOps()
 {
-	static struct TMapWithAutoCleanup : public TMap<FName, UScriptStruct::ICppStructOps*>
+	static struct TMapWithAutoCleanup : public TMap<FTopLevelAssetPath, UScriptStruct::ICppStructOps*>
 	{
 		~TMapWithAutoCleanup()
 		{
@@ -2502,9 +2515,9 @@ UScriptStruct::UScriptStruct(const FObjectInitializer& ObjectInitializer)
 	* @param Target Name of the struct 
 	* @param InCppStructOps Cpp ops for this struct
 **/
-void UScriptStruct::DeferCppStructOps(FName Target, ICppStructOps* InCppStructOps)
+void UScriptStruct::DeferCppStructOps(FTopLevelAssetPath Target, ICppStructOps* InCppStructOps)
 {
-	TMap<FName,UScriptStruct::ICppStructOps*>& DeferredStructOps = GetDeferredCppStructOps();
+	TMap<FTopLevelAssetPath, UScriptStruct::ICppStructOps*>& DeferredStructOps = GetDeferredCppStructOps();
 
 	if (UScriptStruct::ICppStructOps* ExistingOps = DeferredStructOps.FindRef(Target))
 	{
@@ -2521,11 +2534,11 @@ void UScriptStruct::DeferCppStructOps(FName Target, ICppStructOps* InCppStructOp
 		}
 		// in reload, we will just leak these...they may be in use.
 	}
-	DeferredStructOps.Add(Target,InCppStructOps);
+	DeferredStructOps.Add(Target, InCppStructOps);
 }
 
 #if HACK_HEADER_GENERATOR
-UScriptStruct::ICppStructOps* UScriptStruct::FindDeferredCppStructOps(FName StructName)
+UScriptStruct::ICppStructOps* UScriptStruct::FindDeferredCppStructOps(FTopLevelAssetPath StructName)
 {
 	return GetDeferredCppStructOps().FindRef(StructName);
 }
@@ -2539,13 +2552,18 @@ void UScriptStruct::PrepareCppStructOps()
 		return;
 	}
 	if (!CppStructOps)
-	{
-		CppStructOps = GetDeferredCppStructOps().FindRef(GetFName());
+	{	
+		// RobM: the use of GetFlattenedStructPathName() is a bit of a hack to make AnimBPs work as they create nested structs.
+		// Theoretically we could just wrap the line below in if (StructFlags&STRUCT_Native) but the native flag is set after
+		// CppStructOps struct is actually found (see below).
+		// It's also confusing why PrepareCppStructOps is being called from UScriptStruct::Serialize when loading since serialized
+		// structs are not native and they should not implement CppStructOps
+		CppStructOps = GetDeferredCppStructOps().FindRef(GetFlattenedStructPathName());
 		if (!CppStructOps)
 		{
 			if (!GIsUCCMakeStandaloneHeaderGenerator && (StructFlags&STRUCT_Native))
 			{
-				UE_LOG(LogClass, Fatal,TEXT("Couldn't bind to native struct %s. Headers need to be rebuilt, or a noexport class is missing a IMPLEMENT_STRUCT."),*GetName());
+				UE_LOG(LogClass, Fatal, TEXT("Couldn't bind to native struct %s. Headers need to be rebuilt, or a noexport class is missing a IMPLEMENT_STRUCT."),*GetName());
 			}
 			check(!bPrepareCppStructOpsCompleted); // recursion is unacceptable
 			bPrepareCppStructOpsCompleted = true;
@@ -2686,6 +2704,13 @@ void UScriptStruct::PrepareCppStructOps()
 		UE_LOG(LogClass, Verbose, TEXT("Native struct %s has native SerializeFromMismatchedTag."),*GetName());
 		StructFlags = EStructFlags(StructFlags | STRUCT_SerializeFromMismatchedTag);
 	}
+#if WITH_EDITOR
+	if (CppStructOps->HasCanEditChange())
+	{
+		UE_LOG(LogClass, Verbose, TEXT("Native struct %s has native CanEditChange."), *GetName());
+		StructFlags = EStructFlags(StructFlags | STRUCT_CanEditChange);
+	}
+#endif
 
 	check(!bPrepareCppStructOpsCompleted); // recursion is unacceptable
 	bPrepareCppStructOpsCompleted = true;
@@ -3266,7 +3291,7 @@ FGuid UScriptStruct::GetCustomGuid() const
 	return FGuid();
 }
 
-FString UScriptStruct::GetStructCPPName() const
+FString UScriptStruct::GetStructCPPName(uint32 CPPExportFlags/*=0*/) const
 {
 	return FString::Printf(TEXT("F%s"), *GetName());
 }
@@ -3283,9 +3308,41 @@ struct FScriptStructTestWrapper
 {
 public:
 
-	FScriptStructTestWrapper(UScriptStruct* InStruct, uint8 InitValue = 0xFD, EScriptStructTestCtorSyntax ConstrutorSyntax = EScriptStructTestCtorSyntax::NoInit)
+	FScriptStructTestWrapper(UScriptStruct* InStruct, uint8 InInitValue = 0xFD, EScriptStructTestCtorSyntax InConstrutorSyntax = EScriptStructTestCtorSyntax::NoInit)
 		: ScriptStruct(InStruct)
 		, TempBuffer(nullptr)
+		, InitValue(InInitValue)
+		, ConstrutorSyntax(InConstrutorSyntax)
+		, bTempBufferAttemptedCreate(false)
+	{
+	}
+
+	~FScriptStructTestWrapper()
+	{
+		if (TempBuffer != nullptr)
+		{
+			// Destroy it
+			ScriptStruct->DestroyStruct(TempBuffer);
+			FMemory::Free(TempBuffer);
+		}
+	}
+
+	static bool CanRunTests(UScriptStruct* Struct)
+	{
+		return (Struct != nullptr) && Struct->IsNative() && (!Struct->GetCppStructOps() || !Struct->GetCppStructOps()->HasZeroConstructor());
+	}
+
+	uint8* GetData()
+	{
+		if (!bTempBufferAttemptedCreate)
+		{
+			AttemptCreateTempBuffer();
+		}
+		return TempBuffer;
+	}
+private:
+
+	void AttemptCreateTempBuffer()
 	{
 		if (ScriptStruct->IsNative())
 		{
@@ -3306,7 +3363,7 @@ public:
 					if (!ensure(RequiredAllocSize >= CppAllocSize))
 					{
 						UE_LOG(LogClass, Warning, TEXT("Struct %s%s has Cpp alloc size = %d > ScriptStruct->GetStructureSize() = %d, this could result in allocations that are too small to fit the structure."),
-							InStruct->GetPrefixCPP(), *InStruct->GetName(), CppAllocSize, RequiredAllocSize);
+							ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), CppAllocSize, RequiredAllocSize);
 						// We'd probably crash below, so use a larger allocated size.
 						RequiredAllocSize = StructOps->GetSize();
 					}
@@ -3353,27 +3410,15 @@ public:
 				}
 			}
 		}
+
+		bTempBufferAttemptedCreate = true;
 	}
 
-	~FScriptStructTestWrapper()
-	{
-		if (TempBuffer != nullptr)
-		{
-			// Destroy it
-			ScriptStruct->DestroyStruct(TempBuffer);
-			FMemory::Free(TempBuffer);
-		}
-	}
-
-	static bool CanRunTests(UScriptStruct* Struct)
-	{
-		return (Struct != nullptr) && Struct->IsNative() && (!Struct->GetCppStructOps() || !Struct->GetCppStructOps()->HasZeroConstructor());
-	}
-
-	uint8* GetData() { return TempBuffer; }
-private:
 	UScriptStruct* ScriptStruct;
 	uint8* TempBuffer;
+	uint8 InitValue;
+	EScriptStructTestCtorSyntax ConstrutorSyntax;
+	bool bTempBufferAttemptedCreate;
 };
 
 static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, EScriptStructTestCtorSyntax ConstructorSyntax, TSet<const FProperty*>& OutUninitializedProperties)
@@ -3446,23 +3491,24 @@ static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, ES
 	}
 }
 
+static FString GetFieldLocation(const UField* Field)
+{
+	check(Field);
+	UPackage* ScriptPackage = Field->GetOutermost();
+	FString StructLocation = FString::Printf(TEXT(" Module:%s"), *FPackageName::GetShortName(ScriptPackage->GetName()));
+#if WITH_EDITORONLY_DATA
+	static const FName NAME_ModuleRelativePath(TEXT("ModuleRelativePath"));
+	const FString& ModuleRelativeIncludePath = Field->GetMetaData(NAME_ModuleRelativePath);
+	if (!ModuleRelativeIncludePath.IsEmpty())
+	{
+		StructLocation += FString::Printf(TEXT(" File:%s"), *ModuleRelativeIncludePath);
+	}
+#endif
+	return StructLocation;
+};
+
 int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 {
-	auto GetStructLocation = [](const UScriptStruct* ScriptStruct) -> FString {
-		check(ScriptStruct);
-		UPackage* ScriptPackage = ScriptStruct->GetOutermost();
-		FString StructLocation = FString::Printf(TEXT(" Module:%s"), *FPackageName::GetShortName(ScriptPackage->GetName()));
-#if WITH_EDITORONLY_DATA
-		static const FName NAME_ModuleRelativePath(TEXT("ModuleRelativePath"));
-		const FString& ModuleRelativeIncludePath = ScriptStruct->GetMetaData(NAME_ModuleRelativePath);
-		if (!ModuleRelativeIncludePath.IsEmpty())
-		{
-			StructLocation += FString::Printf(TEXT(" File:%s"), *ModuleRelativeIncludePath);
-		}
-#endif
-		return StructLocation;
-	};
-
 	auto DetermineIfModuleIsEngine = [](const UScriptStruct* ScriptStruct) -> bool
 	{
 		UPackage* ScriptPackage = ScriptStruct->GetOutermost();
@@ -3569,7 +3615,7 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 				{
 					++UninitializedObjectPropertyCount;
 				}
-				UE_LOG(LogClass, Warning, TEXT("%s %s%s::%s is not initialized properly even though its struct probably has a custom default constructor.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+				UE_LOG(LogClass, Warning, TEXT("%s %s%s::%s is not initialized properly even though its struct probably has a custom default constructor.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetFieldLocation(ScriptStruct));
 			}
 			for (const FProperty* Property : UninitializedPropertiesNoInit)
 			{
@@ -3586,7 +3632,7 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 					}
 
 #if !NO_LOGGING
-					FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Verbosity, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+					FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Verbosity, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetFieldLocation(ScriptStruct));
 #endif
 				}
 			}
@@ -3608,11 +3654,11 @@ FAutoConsoleCommandWithWorldAndArgs GCmdListBadScriptStructs(
 	TEXT("Finds USTRUCT() structs that fail to initialize reflected member variables"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(
 		[](const TArray<FString>& Params, UWorld* World)
-{
-	FStructUtils::AttemptToFindUninitializedScriptStructMembers();
-}));
+		{
+			FStructUtils::AttemptToFindUninitializedScriptStructMembers();
+		}));
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindUninitializedScriptStructMembers, "UObject.Class AttemptToFindUninitializedScriptStructMembers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindUninitializedScriptStructMembers, "UObject.Class AttemptToFindUninitializedScriptStructMembers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
 bool FAutomationTestAttemptToFindUninitializedScriptStructMembers::RunTest(const FString& Parameters)
 {
 	// This test fails when running tests under UHT because there is no TestUninitializedScriptStructMembersTest, so just skip it in that config.
@@ -3628,7 +3674,212 @@ bool FAutomationTestAttemptToFindUninitializedScriptStructMembers::RunTest(const
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+/** 
+* Checks if MetaData value contains short type name 
+* @param MetaDataKey MetaData key name
+* @param MetaDataValue Value stored under MetaData key
+* @param OutParsedMetaDataValue If short type name is stored in MetaData value this parameter will contain the short type name
+* @returns true if MetaData value contains short type name
+**/
+static bool CheckIfMetaDataValueIsShortTypeName(FName MetaDataKey, const FString& MetaDataValue, FString& OutParsedMetaDataValue)
+{
+	// Some keys require additional parsing
+	static const FName NAME_RequiredAssetDataTags(TEXT("RequiredAssetDataTags"));
+
+	if (MetaDataKey == NAME_RequiredAssetDataTags) // @see SPropertyEditorAsset::InitializeAssetDataTags
+	{
+		TArray<FString> RequiredAssetDataTagsAndValues;
+		MetaDataValue.ParseIntoArray(RequiredAssetDataTagsAndValues, TEXT(","), true);
+
+		for (const FString& TagAndOptionalValueString : RequiredAssetDataTagsAndValues)
+		{
+			TArray<FString> TagAndOptionalValue;
+			TagAndOptionalValueString.ParseIntoArray(TagAndOptionalValue, TEXT("="), true);
+			if (TagAndOptionalValue.Num() == 2 && TagAndOptionalValue[0] == TEXT("RowStructure"))
+			{
+				if (FPackageName::IsShortPackageName(TagAndOptionalValue[1]))
+				{
+					OutParsedMetaDataValue = TagAndOptionalValue[1];
+					return true;
+				}
+			}
+		}
+	}
+	else if (FPackageName::IsShortPackageName(MetaDataValue))
+	{
+		OutParsedMetaDataValue = MetaDataValue;
+		return true;
+	}
+	return false;
+}
+
+/** Tries to find a path name for short type name **/
+static FString GetSuggestedPathNameForTypeShortName(const FString& ShortName)
+{
+	UField* FoundType = FindFirstObject<UField>(*ShortName);
+	if (FoundType)
+	{
+		return FString::Printf(TEXT("Suggested pathname: \"%s\"."), *FoundType->GetPathName());
+	}
+	else
+	{
+		return FString(TEXT("No valid type found in memory."));
+	}
+}
+
+/** Logs a field that defines MetaData entry with a short type name **/
+template <typename T>
+static void LogMetaDataShortTypeName(const T* Field, FName MetaDataKey, const FString& MetaDataValue)
+{
+	if constexpr (std::is_base_of_v<T, UField>)
+	{
+		if (const UFunction* Func = Cast<UFunction>(Field))
+		{
+			UStruct* FuncOwner = CastChecked<UStruct>(Func->GetOuter());
+			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("Function %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+				FuncOwner->GetPrefixCPP(),
+				*FuncOwner->GetName(),
+				*Func->GetName(),
+				*MetaDataKey.ToString(),
+				*MetaDataValue,
+				*GetSuggestedPathNameForTypeShortName(MetaDataValue),
+				*GetFieldLocation(Func));
+		}
+		else
+		{
+			FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("%s %s%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+				*Field->GetClass()->GetName(),
+				Field->template IsA<UStruct>() ? CastChecked<UStruct>(Field)->GetPrefixCPP() : TEXT(""),
+				*Field->GetName(),
+				*MetaDataKey.ToString(),
+				*MetaDataValue,
+				*GetSuggestedPathNameForTypeShortName(MetaDataValue),
+				*GetFieldLocation(Field));
+		}
+	}
+	else if constexpr (std::is_same_v<T, FProperty>)
+	{
+		UStruct* OwnerStruct = Field->GetOwnerStruct();
+		FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), ELogVerbosity::Warning, TEXT("Property %s %s%s::%s defines MetaData key \"%s\" which contains short type name \"%s\". %s%s"),
+			*Field->GetClass()->GetName(),
+			OwnerStruct->GetPrefixCPP(),
+			*OwnerStruct->GetName(),
+			*Field->GetName(),
+			*MetaDataKey.ToString(),
+			*MetaDataValue,
+			*GetSuggestedPathNameForTypeShortName(MetaDataValue),
+			*GetFieldLocation(OwnerStruct));
+	}
+}
+
+/** Checks MetaData values for known MetaData keys to see if they contain short type names **/
+template <typename T>
+static int32 FindFieldMetaDataShortTypeNames(const T* Field, const TArray<FName>& MetaDataKeys)
+{
+	int32 ShortTypeNameCount = 0;
+	for (FName MetaDataKey : MetaDataKeys)
+	{
+		const FString* MetaData = Field->FindMetaData(MetaDataKey);
+		if (MetaData && !MetaData->IsEmpty())
+		{
+			FString ParsedMetaDataValue;
+			int32 CommaIndex = -1;
+			// Some keys can store multiple type names separated with a comma
+			if (MetaData->FindChar(TCHAR(','), CommaIndex))
+			{
+				TArray<FString> MetaDataValues;
+				MetaData->ParseIntoArrayWS(MetaDataValues, TEXT(","), true);
+				for (const FString& MetaDataValue : MetaDataValues)
+				{
+					if (CheckIfMetaDataValueIsShortTypeName(MetaDataKey, MetaDataValue, ParsedMetaDataValue))
+					{
+						LogMetaDataShortTypeName(Field, MetaDataKey, ParsedMetaDataValue);
+						ShortTypeNameCount++;
+					}
+				}
+			}
+			else if (CheckIfMetaDataValueIsShortTypeName(MetaDataKey, *MetaData, ParsedMetaDataValue))
+			{
+				LogMetaDataShortTypeName(Field, MetaDataKey, ParsedMetaDataValue);
+				ShortTypeNameCount++;
+			}
+		}
+	}
+	return ShortTypeNameCount;
+}
+
+int32 FStructUtils::AttemptToFindShortTypeNamesInMetaData()
+{
+	static struct FShortTypeNameMetaDataSettings
+	{
+		TArray<FName> MetaDataKeys;
+		FShortTypeNameMetaDataSettings()
+		{
+			TArray<FString> ConfigMetaDataKeys;
+			if (GConfig->GetArray(TEXT("CoreUObject.ShortTypeNameInMetaDataCheck"), TEXT("MetaDataKeys"), ConfigMetaDataKeys, GEngineIni))
+			{
+				MetaDataKeys.Reserve(ConfigMetaDataKeys.Num());
+				for (const FString& Key : ConfigMetaDataKeys)
+				{
+					MetaDataKeys.Add(FName(*Key));
+				}
+			}
+		}
+	} Settings;
+
+	int32 ShortTypeNamesCount = 0;
+
+	if (Settings.MetaDataKeys.Num())
+	{
+		for (TObjectIterator<UField> FieldIt; FieldIt; ++FieldIt)
+		{
+			// Check MetaData stored with classes / enums / structs
+			ShortTypeNamesCount += FindFieldMetaDataShortTypeNames(*FieldIt, Settings.MetaDataKeys);
+
+			// Check struct members but no need to check function parameters
+			UStruct* StructWithMembers = Cast<UStruct>(*FieldIt);
+			if (StructWithMembers && !StructWithMembers->IsA<UFunction>())
+			{
+				for (TFieldIterator<FProperty> PropertyIt(StructWithMembers, EFieldIterationFlags::None); PropertyIt; ++PropertyIt)
+				{
+					ShortTypeNamesCount += FindFieldMetaDataShortTypeNames(*PropertyIt, Settings.MetaDataKeys);
+				}
+			}
+		}
+	}
+
+	if (ShortTypeNamesCount > 0)
+	{
+		UE_LOG(LogClass, Display, TEXT("%i short type names in reflected types' MetaData"), ShortTypeNamesCount);
+	}
+
+	return ShortTypeNamesCount;
+}
+
+FAutoConsoleCommandWithWorldAndArgs GCmdListShortTypeNamesInMetaData(
+	TEXT("CoreUObject.AttemptToFindShortTypeNamesInMetaData"),
+	TEXT("Finds short type names stored in known MetaData entries"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(
+		[](const TArray<FString>& Params, UWorld* World)
+		{
+			FStructUtils::AttemptToFindShortTypeNamesInMetaData();
+		}));
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindShortTypeNamesInMetaData, "UObject.Class AttemptToFindShortTypeNamesInMetaData", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+bool FAutomationTestAttemptToFindShortTypeNamesInMetaData::RunTest(const FString& Parameters)
+{
+	// This test is not necessary when running under UHT so just skip it in that config.
+#if !HACK_HEADER_GENERATOR
+	return FStructUtils::AttemptToFindShortTypeNamesInMetaData() == 0;
+#else
+	return true;
 #endif
+}
+
+#endif // WITH_EDITORONLY_DATA
+
+#endif // !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UScriptStruct, UStruct,
 	{
@@ -3647,10 +3898,9 @@ void UClass::PostInitProperties()
 	Super::PostInitProperties();
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		if (ClassAddReferencedObjects == NULL)
+		if (!CppClassStaticFunctions.IsInitialized())
 		{
-			// Default__Class uses its own AddReferencedObjects function.
-			ClassAddReferencedObjects = &UClass::AddReferencedObjects;
+			CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UClass);
 		}
 	}
 }
@@ -3724,8 +3974,8 @@ void UClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collecto
 			// The iterator will recursively loop through all structs in structs too.
 			for (TPropertyValueIterator<FObjectProperty> It(This->SparseClassDataStruct, This->SparseClassData); It; ++It)
 			{
-				UObject** ObjectPtr = static_cast<UObject**>(const_cast<void*>(It.Value()));
-				Collector.AddReferencedObject(*ObjectPtr);
+				// @TODO: OBJPTR: 
+				Collector.AddReferencedObject(It.Key()->GetObjectPtrPropertyValueRef(It.Value()));
 			}
 		}
 	}
@@ -3756,8 +4006,8 @@ class FRestoreClassInfo: public FRestoreForUObjectOverwrite
 	UClass::ClassConstructorType Constructor;
 	/** Saved ClassVTableHelperCtorCaller **/
 	UClass::ClassVTableHelperCtorCallerType ClassVTableHelperCtorCaller;
-	/** Saved ClassConstructor **/
-	UClass::ClassAddReferencedObjectsType AddReferencedObjects;
+	/** Saved CppClassStaticFunctions **/
+	FUObjectCppClassStaticFunctions CppClassStaticFunctions;
 	/** Saved NativeFunctionLookupTable. */
 	TArray<FNativeFunctionLookup> NativeFunctionLookupTable;
 public:
@@ -3778,7 +4028,7 @@ public:
 		CastFlags(Save->ClassCastFlags),
 		Constructor(Save->ClassConstructor),
 		ClassVTableHelperCtorCaller(Save->ClassVTableHelperCtorCaller),
-		AddReferencedObjects(Save->ClassAddReferencedObjects),
+		CppClassStaticFunctions(Save->CppClassStaticFunctions),
 		NativeFunctionLookupTable(Save->NativeFunctionLookupTable)
 	{
 	}
@@ -3795,7 +4045,7 @@ public:
 		Target->ClassCastFlags |= CastFlags;
 		Target->ClassConstructor = Constructor;
 		Target->ClassVTableHelperCtorCaller = ClassVTableHelperCtorCaller;
-		Target->ClassAddReferencedObjects = AddReferencedObjects;
+		Target->CppClassStaticFunctions = CppClassStaticFunctions;
 		Target->NativeFunctionLookupTable = NativeFunctionLookupTable;
 	}
 };
@@ -3866,17 +4116,6 @@ UObject* UClass::CreateDefaultObject()
 			// NULL (so we don't invalidate one that has already been setup)
 			if (ClassDefaultObject == NULL)
 			{
-				FString PackageName;
-				FString CDOName;
-				bool bDoNotify = false;
-				if (GIsInitialLoad && GetOutermost()->HasAnyPackageFlags(PKG_CompiledIn) && !GetOutermost()->HasAnyPackageFlags(PKG_RuntimeGenerated))
-				{
-					PackageName = GetOutermost()->GetFName().ToString();
-					CDOName = GetDefaultObjectName().ToString();
-					NotifyRegistrationEvent(*PackageName, *CDOName, ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Started);
-					bDoNotify = true;
-				}
-
 				// RF_ArchetypeObject flag is often redundant to RF_ClassDefaultObject, but we need to tag
 				// the CDO as RF_ArchetypeObject in order to propagate that flag to any default sub objects.
 				ClassDefaultObject = StaticAllocateObject(this, GetOuter(), NAME_None, EObjectFlags(RF_Public|RF_ClassDefaultObject|RF_ArchetypeObject));
@@ -3895,9 +4134,13 @@ UObject* UClass::CreateDefaultObject()
 					InitOptions |= EObjectInitializerOptions::InitializeProperties;
 				}
 				(*ClassConstructor)(FObjectInitializer(ClassDefaultObject, ParentDefaultObject, InitOptions));
-				if (bDoNotify)
+				if (GetOutermost()->HasAnyPackageFlags(PKG_CompiledIn) && !GetOutermost()->HasAnyPackageFlags(PKG_RuntimeGenerated))
 				{
-					NotifyRegistrationEvent(*PackageName, *CDOName, ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Finished);
+					TCHAR PackageName[FName::StringBufferSize];
+					TCHAR CDOName[FName::StringBufferSize];
+					GetOutermost()->GetFName().ToString(PackageName);
+					GetDefaultObjectName().ToString(CDOName);
+					NotifyRegistrationEvent(PackageName, CDOName, ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Finished, nullptr, false, ClassDefaultObject);
 				}
 				ClassDefaultObject->PostCDOContruct();
 			}
@@ -4049,7 +4292,7 @@ void UClass::Bind()
 	}
 
 	UClass* SuperClass = GetSuperClass();
-	if (SuperClass && (ClassConstructor == nullptr || ClassAddReferencedObjects == nullptr
+	if (SuperClass && (ClassConstructor == nullptr || !CppClassStaticFunctions.IsInitialized()
 		|| ClassVTableHelperCtorCaller == nullptr
 		))
 	{
@@ -4063,9 +4306,9 @@ void UClass::Bind()
 		{
 			ClassVTableHelperCtorCaller = SuperClass->ClassVTableHelperCtorCaller;
 		}
-		if (!ClassAddReferencedObjects)
+		if (!CppClassStaticFunctions.IsInitialized())
 		{
-			ClassAddReferencedObjects = SuperClass->ClassAddReferencedObjects;
+			CppClassStaticFunctions = SuperClass->CppClassStaticFunctions;
 		}
 
 		// propagate flags.
@@ -4199,7 +4442,7 @@ void UClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 #if WITH_EDITOR
 	static const FName ParentClassFName = "ParentClass";
 	const UClass* const ParentClass = GetSuperClass();
-	OutTags.Add( FAssetRegistryTag(ParentClassFName, ((ParentClass) ? ParentClass->GetFName() : NAME_None).ToString(), FAssetRegistryTag::TT_Alphabetical) );
+	OutTags.Add( FAssetRegistryTag(ParentClassFName, ((ParentClass) ? ParentClass->GetPathName() : FString()), FAssetRegistryTag::TT_Alphabetical) );
 
 	static const FName ModuleNameFName = "ModuleName";
 	const UPackage* const ClassPackage = GetOuterUPackage();
@@ -4210,6 +4453,24 @@ void UClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	OutTags.Add( FAssetRegistryTag(ModuleRelativePathFName, ClassModuleRelativeIncludePath, FAssetRegistryTag::TT_Alphabetical) );
 #endif
 }
+
+#if WITH_EDITOR
+void UClass::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+
+	static const FName ParentClassFName(TEXT("ParentClass"));
+	FString ParentClassTagValue = InAssetData.GetTagValueRef<FString>(ParentClassFName);
+	if (!ParentClassTagValue.IsEmpty() && FPackageName::IsShortPackageName(ParentClassTagValue))
+	{
+		FTopLevelAssetPath ParentClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(ParentClassTagValue, ELogVerbosity::Warning, TEXT("UClass::PostLoadAssetRegistryTags"));
+		if (!ParentClassPathName.IsNull())
+		{
+			OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(ParentClassFName, ParentClassPathName.ToString(), FAssetRegistryTag::TT_Alphabetical));
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 void UClass::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 {
@@ -4392,63 +4653,169 @@ void UClass::ValidateRuntimeReplicationData()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Class ValidateRuntimeReplicationData"), STAT_Class_ValidateRuntimeReplicationData, STATGROUP_Game);
 
+	bool bCheckLifetimeProps = true;
+
 	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint) || bLayoutChanging)
 	{
 		// Blueprint classes don't always generate a GetLifetimeReplicatedProps function. 
 		// Assume the Blueprint compiler was ok to do this.
-		return;
+		bCheckLifetimeProps = false;
 	}
 
-	if (HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) == false)
+	if (bCheckLifetimeProps && HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) == false)
 	{
 		UE_LOG(LogClass, Warning, TEXT("ValidateRuntimeReplicationData for class %s called before ReplicationData was setup."), *GetName());
-		return;
+		bCheckLifetimeProps = false;
 	}
 
 	// Our replication data was set up, but there are no class reps, so there's nothing to do.
 	if (ClassReps.Num() == 0)
 	{
-		return;
+		bCheckLifetimeProps = false;
 	}
 
 	// Let's compare the CDO's registered lifetime properties with the Class's net properties
-	TArray<FLifetimeProperty> LifetimeProps;
-	LifetimeProps.Reserve(ClassReps.Num());
-
-	const UObject* Object = GetDefaultObject();
-	Object->GetLifetimeReplicatedProps(LifetimeProps);
-
-	if (LifetimeProps.Num() == ClassReps.Num())
+	if (bCheckLifetimeProps)
 	{
-		// All replicated properties were registered for this class
-		return;
-	}
+		TArray<FLifetimeProperty> LifetimeProps;
+		LifetimeProps.Reserve(ClassReps.Num());
 
-	// Find which properties where not registered by the user code
-	for (int32 RepIndex = 0; RepIndex < ClassReps.Num(); ++RepIndex)
-	{
-		const FProperty* RepProp = ClassReps[RepIndex].Property;
+		const UObject* Object = GetDefaultObject();
+		Object->GetLifetimeReplicatedProps(LifetimeProps);
 
-		const FLifetimeProperty* LifetimeProp = LifetimeProps.FindByPredicate([&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
-
-		if (LifetimeProp == nullptr)
+		// Find which properties where not registered by the user code
+		if (LifetimeProps.Num() != ClassReps.Num())
 		{
-			// Check if this unregistered property type uses a custom delta serializer
-			if (const FStructProperty* StructProperty = CastField<FStructProperty>(RepProp))
+			for (int32 RepIndex=0; RepIndex<ClassReps.Num(); ++RepIndex)
 			{
-				const UScriptStruct* Struct = StructProperty->Struct;
+				const FProperty* RepProp = ClassReps[RepIndex].Property;
 
-				if (EnumHasAnyFlags(Struct->StructFlags, STRUCT_NetDeltaSerializeNative))
+				const FLifetimeProperty* LifetimeProp = LifetimeProps.FindByPredicate(
+					[&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
+
+				if (LifetimeProp == nullptr)
 				{
-					UE_LOG(LogClass, Warning, TEXT("Property %s::%s (SourceClass: %s) with custom net delta serializer was not registered in GetLifetimeReplicatedProps. This property will replicate but you should still register it."),
-						*GetName(), *RepProp->GetName(), *RepProp->GetOwnerClass()->GetName());
-					continue;
+					// Check if this unregistered property type uses a custom delta serializer
+					if (const FStructProperty* StructProperty = CastField<FStructProperty>(RepProp))
+					{
+						const UScriptStruct* Struct = StructProperty->Struct;
+
+						if (EnumHasAnyFlags(Struct->StructFlags, STRUCT_NetDeltaSerializeNative))
+						{
+							UE_LOG(LogClass, Warning,
+									TEXT("Property %s::%s (SourceClass: %s) with custom net delta serializer was not registered in "
+									     "GetLifetimeReplicatedProps. This property will replicate but you should still register it."),
+									ToCStr(GetName()), ToCStr(RepProp->GetName()), ToCStr(RepProp->GetOwnerClass()->GetName()));
+
+							continue;
+						}
+					}
+
+					UE_LOG(LogClass, Warning,
+							TEXT("Property %s::%s (SourceClass: %s) was not registered in GetLifetimeReplicatedProps. "
+							     "This property will not be replicated. Use DISABLE_REPLICATED_PROPERTY if not replicating was intentional."),
+							ToCStr(GetName()), ToCStr(RepProp->GetName()), ToCStr(RepProp->GetOwnerClass()->GetName()));
 				}
 			}
-
-			UE_LOG(LogClass, Warning, TEXT("Property %s::%s (SourceClass: %s) was not registered in GetLifetimeReplicatedProps. This property will not be replicated. Use DISABLE_REPLICATED_PROPERTY if not replicating was intentional."),
-				*GetName(), *RepProp->GetName(), *RepProp->GetOwnerClass()->GetName());
 		}
+	}
+
+	// Find NetDeltaSerialize properties which are not top-level/parent properties (e.g. nested in another struct)
+	for (const FRepRecord& RepRecord : ClassReps)
+	{
+		const FProperty* BaseProp = RepRecord.Property;
+		TArray<const UStruct*, TInlineAllocator<16>> RecursiveStructList;
+
+		enum class ECheckStructType : uint8
+		{
+			TopLevel,	// Parent/top-level - NetDeltaSerialize is valid
+			Recursive	// Recursive (within other structs/arrays) - NetDeltaSerialize is not valid
+		};
+
+		auto CheckStructRecursive = [&BaseProp, &RecursiveStructList]
+									(auto CheckStructRecursive, const FProperty* InProp, ECheckStructType CheckType)
+									-> void
+			{
+				auto BadStruct = [&BaseProp](const FStructProperty* StructProp)
+					{
+						UE_LOG(LogClass, Warning, TEXT("Property %s contained nested NetDeltaSerialize struct '%s', ")
+								TEXT("when this is not supported. Only use NetDeltaSerialize structs at class level. ")
+								TEXT("Struct will replicate using non-delta serialization."),
+								ToCStr(BaseProp->GetPathName()), ToCStr(StructProp->GetPathName()));
+					};
+
+				const FStructProperty* ParamStructProp = nullptr;
+				bool bNonDeltaArrayStruct = false;
+
+				if (!EnumHasAnyFlags(InProp->PropertyFlags, CPF_RepSkip))
+				{
+					if (const FStructProperty* StructProp = CastField<FStructProperty>(InProp))
+					{
+						ParamStructProp = StructProp;
+					}
+					else if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(InProp))
+					{
+						if (const FStructProperty* ArrayStructProp = CastField<FStructProperty>(ArrayProp->Inner))
+						{
+							if (EnumHasAnyFlags(ArrayStructProp->Struct->StructFlags, STRUCT_NetDeltaSerializeNative))
+							{
+								BadStruct(ArrayStructProp);
+							}
+							else
+							{
+								ParamStructProp = ArrayStructProp;
+								bNonDeltaArrayStruct = true;
+							}
+						}
+					}
+				}
+
+
+				const bool bTopLevelNonDeltaStruct = ParamStructProp != nullptr && CheckType == ECheckStructType::TopLevel &&
+					(bNonDeltaArrayStruct || !EnumHasAnyFlags(ParamStructProp->Struct->StructFlags, STRUCT_NetDeltaSerializeNative));
+
+				const bool bFreshRecursiveStruct = ParamStructProp != nullptr && CheckType == ECheckStructType::Recursive &&
+													!RecursiveStructList.Contains(ParamStructProp->Struct);
+
+				if (bTopLevelNonDeltaStruct || bFreshRecursiveStruct || bNonDeltaArrayStruct)
+				{
+					RecursiveStructList.Add(ParamStructProp->Struct);
+
+					for (TFieldIterator<FProperty> It(ParamStructProp->Struct); It; ++It)
+					{
+						if (!EnumHasAnyFlags(It->PropertyFlags, CPF_RepSkip))
+						{
+							const FStructProperty* CurLevelStructProp = nullptr;
+
+							if (const FStructProperty* StructProp = CastField<FStructProperty>(*It))
+							{
+								CurLevelStructProp = StructProp;
+							}
+							else if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(*It))
+							{
+								if (const FStructProperty* ArrayStructProp = CastField<FStructProperty>(ArrayProp->Inner))
+								{
+									CurLevelStructProp = ArrayStructProp;
+								}
+							}
+
+							if (CurLevelStructProp != nullptr)
+							{
+								if (EnumHasAnyFlags(CurLevelStructProp->Struct->StructFlags, STRUCT_NetDeltaSerializeNative))
+								{
+									BadStruct(CurLevelStructProp);
+								}
+								else
+								{
+									CheckStructRecursive(CheckStructRecursive, CurLevelStructProp, ECheckStructType::Recursive);
+								}
+							}
+						}
+					}
+				}
+			};
+
+		CheckStructRecursive(CheckStructRecursive, BaseProp, ECheckStructType::TopLevel);
 	}
 }
 
@@ -4769,7 +5136,7 @@ void UClass::Serialize( FArchive& Ar )
 
 	if( Ar.IsLoading() )
 	{
-		if (ClassDefaultObject == NULL)
+		if (ClassDefaultObject == nullptr)
 		{
 			check(GConfig);
 			if (GEventDrivenLoaderEnabled || Ar.IsLoadingFromCookedPackage())
@@ -4780,10 +5147,20 @@ void UClass::Serialize( FArchive& Ar )
 			}
 			else if( !Ar.HasAnyPortFlags(PPF_DuplicateForPIE|PPF_Duplicate) )
 			{
-				UE_LOG(LogClass, Error, TEXT("CDO for class %s did not load!"), *GetPathName());
-				ensure(ClassDefaultObject != NULL);
-				ClassDefaultObject = GetDefaultObject();
-				Ar.ForceBlueprintFinalization();
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+				// Blueprint CDO serialization is deferred (see FLinkerLoad::CreateExport).
+				const FLinkerLoad* LinkerLoad = Cast<FLinkerLoad>(Ar.GetLinker());
+				const bool bHasDeferredCDOSerialization = HasAnyClassFlags(CLASS_CompiledFromBlueprint)
+					&& GetClass()->HasAnyClassFlags(CLASS_NeedsDeferredDependencyLoading)
+					&& LinkerLoad && LinkerLoad->IsBlueprintFinalizationPending();
+				if (!bHasDeferredCDOSerialization)
+#endif	// USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+				{
+					UE_LOG(LogClass, Error, TEXT("CDO for class %s did not load!"), *GetPathName());
+					ensure(ClassDefaultObject != nullptr);
+					ClassDefaultObject = GetDefaultObject();
+					Ar.ForceBlueprintFinalization();
+				}
 			}
 		}
 	}
@@ -4949,7 +5326,7 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	RefLink = nullptr;
 	PropertyLink = nullptr;
 	DestructorLink = nullptr;
-	ClassAddReferencedObjects = nullptr;
+	CppClassStaticFunctions.Reset();
 
 	ScriptAndPropertyObjectReferences.Empty();
 	DeleteUnresolvedScriptProperties();
@@ -4984,6 +5361,7 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	}
 	// Update the serial number so that FFieldPaths that point to properties of this struct know they need to resolve themselves again
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
+	bHasAssetRegistrySearchableProperties = false;
 #else
 	{
 		// Destroy all properties owned by this struct
@@ -5137,12 +5515,12 @@ UClass::UClass
 	EObjectFlags	InFlags,
 	ClassConstructorType InClassConstructor,
 	ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	ClassAddReferencedObjectsType InClassAddReferencedObjects
+	FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions
 )
 :	UStruct					( EC_StaticConstructor, InSize, InAlignment, InFlags )
 ,	ClassConstructor		( InClassConstructor )
 ,	ClassVTableHelperCtorCaller(InClassVTableHelperCtorCaller)
-,	ClassAddReferencedObjects( InClassAddReferencedObjects )
+,	CppClassStaticFunctions(MoveTemp(InCppClassStaticFunctions))
 ,	ClassUnique				( 0 )
 ,	bCooked					( false )
 ,	bLayoutChanging			( false )
@@ -5189,6 +5567,8 @@ void* UClass::CreateSparseClassData()
 		{
 			SparseClassDataArchetypeStruct->CopyScriptStruct(SparseClassData, SparseArchetypeData);
 		}
+
+		FCoreUObjectDelegates::OnPostInitSparseClassData.Broadcast(this, SparseClassDataStruct, SparseClassData);
 	}
 
 	return SparseClassData;
@@ -5315,7 +5695,7 @@ bool UClass::HotReloadPrivateStaticClass(
 	const TCHAR*    InConfigName,
 	ClassConstructorType InClassConstructor,
 	ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	ClassAddReferencedObjectsType InClassAddReferencedObjects,
+	FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions,
 	class UClass* TClass_Super_StaticClass,
 	class UClass* TClass_WithinClass_StaticClass
 	)
@@ -5336,7 +5716,7 @@ bool UClass::HotReloadPrivateStaticClass(
 	ClassConstructorType OldClassConstructor = ClassConstructor;
 	ClassConstructor = InClassConstructor;
 	ClassVTableHelperCtorCaller = InClassVTableHelperCtorCaller;
-	ClassAddReferencedObjects = InClassAddReferencedObjects;
+	CppClassStaticFunctions = InCppClassStaticFunctions; // Not MoveTemp; it is used again below
 	/* No recursive ::StaticClass calls allowed. Setup extras. */
 	/* @todo safe? 
 	if (TClass_Super_StaticClass != this)
@@ -5367,6 +5747,11 @@ bool UClass::HotReloadPrivateStaticClass(
 	UObject* TempObjectForVTable = nullptr;
 	{
 		TGuardValue<bool> Guard(GIsRetrievingVTablePtr, true);
+
+		// Mark we're in the constructor now.
+		FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
+		TScopeCounter<int32> InConstructor(ThreadContext.IsInConstructor);
+
 		FVTableHelper Helper;
 		TempObjectForVTable = ClassVTableHelperCtorCaller(Helper);
 		TempObjectForVTable->AtomicallyClearInternalFlags(EInternalObjectFlags::PendingConstruction);
@@ -5403,7 +5788,7 @@ bool UClass::HotReloadPrivateStaticClass(
 				{
 					Class->ClassConstructor = ClassConstructor;
 					Class->ClassVTableHelperCtorCaller = ClassVTableHelperCtorCaller;
-					Class->ClassAddReferencedObjects = ClassAddReferencedObjects;
+					Class->CppClassStaticFunctions = InCppClassStaticFunctions; // Not MoveTemp; it is used in later loop iterations
 					CountClass++;
 				}
 			}
@@ -5621,10 +6006,168 @@ const FString UClass::GetConfigName() const
 	{
 		// generate the class ini name, and make sure it's up to date
 		FString ConfigGameName;
-		FConfigCacheIni::LoadGlobalIniFile(ConfigGameName, *ClassConfigName.ToString());
+		FConfigContext::ReadIntoGConfig().Load(*ClassConfigName.ToString(), ConfigGameName);
 		return ConfigGameName;
 	}
 }
+
+UField* UClass::TryFindTypeSlow(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions)
+{
+	checkf(TypeClass && TypeClass->IsChildOf(UField::StaticClass()), TEXT("TryFindType requires a valid TypeClass parameter which is a subclass of UField. \"%s\" provided."), *GetFullNameSafe(TypeClass));
+
+	UField* FoundType = nullptr;
+	if (!InPathNameOrShortName.IsEmpty())
+	{
+		if (!FPackageName::IsShortPackageName(InPathNameOrShortName))
+		{
+			FoundType = (UField*)StaticFindObject(TypeClass, nullptr, *InPathNameOrShortName, !!(InOptions & EFindFirstObjectOptions::ExactClass));
+		}
+		else
+		{
+			// RobM: I can't decide if this should be an ensure. Maybe in the future?
+			TStringBuilder<1024> Callstack;
+			ANSICHAR Buffer[1024];			
+			uint64 StackFrames[10];
+			uint32 NumStackFrames = FPlatformStackWalk::CaptureStackBackTrace(StackFrames, UE_ARRAY_COUNT(StackFrames));
+			for (uint32 Idx = 0; Idx < NumStackFrames && Idx < UE_ARRAY_COUNT(StackFrames); Idx++)
+			{
+				Buffer[0] = '\0';
+				FPlatformStackWalk::ProgramCounterToHumanReadableString(Idx, StackFrames[Idx], Buffer, sizeof(Buffer));
+				ANSICHAR* TrimmedBuffer = FCStringAnsi::Strstr(Buffer, "!");
+				if (!TrimmedBuffer)
+				{
+					TrimmedBuffer = Buffer;
+				}
+				else
+				{
+					TrimmedBuffer++;
+				}
+				Callstack.Append(TrimmedBuffer);
+				Callstack.Append(TEXT("\r\n"));
+			}
+			
+			FoundType = (UField*)StaticFindFirstObject(TypeClass, *InPathNameOrShortName, InOptions | EFindFirstObjectOptions::EnsureIfAmbiguous | EFindFirstObjectOptions::NativeFirst, ELogVerbosity::Error, TEXT("TryFindType"));
+
+			UE_LOG(LogClass, Warning, TEXT("Short type name \"%s\" provided for TryFindType. Please convert it to a path name (suggested: \"%s\"). Callstack:\r\n\r\n%s"), *InPathNameOrShortName, *GetPathNameSafe(FoundType), Callstack.ToString());
+		}
+	}
+	return FoundType;
+}
+
+UField* UClass::TryFindTypeSlowSafe(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions)
+{
+	if (!UE::IsSavingPackage(nullptr) && !IsGarbageCollectingAndLockingUObjectHashTables())
+	{
+		return TryFindTypeSlow(TypeClass, InPathNameOrShortName, InOptions);
+	}
+	return nullptr;
+}
+
+FTopLevelAssetPath UClass::TryConvertShortTypeNameToPathName(UClass* TypeClass, const FString& InShortTypeName, ELogVerbosity::Type AmbiguousMessageVerbosity /*= ELogVerbosity::NoLogging*/, const TCHAR* AmbiguousClassMessage /*= nullptr*/)
+{
+	checkf(TypeClass && TypeClass->IsChildOf(UField::StaticClass()), TEXT("TryConvertShortTypeNameToPathName requires a valid TypeClass parameter which is a subclass of UField. \"%s\" provided."), *GetFullNameSafe(TypeClass));
+
+	if (InShortTypeName.IsEmpty())
+	{
+		return FTopLevelAssetPath();
+	}
+	else if (!FPackageName::IsShortPackageName(InShortTypeName))
+	{
+		return FTopLevelAssetPath(InShortTypeName);
+	}
+	else
+	{
+		FTopLevelAssetPath Result;
+		EFindFirstObjectOptions Options = EFindFirstObjectOptions::NativeFirst;
+		if (AmbiguousMessageVerbosity != ELogVerbosity::NoLogging && AmbiguousMessageVerbosity <= ELogVerbosity::Error)
+		{
+			Options |= EFindFirstObjectOptions::EnsureIfAmbiguous;
+		}
+		UField* FoundType = (UField*)StaticFindFirstObject(TypeClass, *InShortTypeName, Options, AmbiguousMessageVerbosity, AmbiguousClassMessage);
+		if (FoundType)
+		{
+			// UField does not define a GetFieldPathName so do what GetStructPathName does (this is the only place that needs it)
+			checkf(FoundType->GetOuter() == FoundType->GetOutermost(), TEXT("Trying to construct FTopLevelAssetPath for nested type: \"%s\""), *FoundType->GetPathName());
+			Result = FTopLevelAssetPath(FoundType->GetOuter()->GetFName(), FoundType->GetFName());
+		}
+		return Result;
+	}
+}
+
+bool UClass::TryFixShortClassNameExportPath(FString& InOutExportPathToFix, ELogVerbosity::Type AmbiguousMessageVerbosity /*= ELogVerbosity::NoLogging*/, const TCHAR* AmbiguousClassMessage /*= nullptr*/)
+{
+	FString ClassName;
+	FString ObjectPath;
+	if (FPackageName::ParseExportTextPath(*InOutExportPathToFix, &ClassName, &ObjectPath))
+	{
+		if (FPackageName::IsShortPackageName(ClassName))
+		{
+			FTopLevelAssetPath ClassPathName = UClass::TryConvertShortTypeNameToPathName<UClass>(ClassName, AmbiguousMessageVerbosity, AmbiguousClassMessage);
+			if (!ClassPathName.IsNull())
+			{
+				InOutExportPathToFix = FObjectPropertyBase::GetExportPath(ClassPathName, ObjectPath);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+FString UClass::ConvertPathNameToShortTypeName(FStringView InPathName)
+{
+	return FString(FPackageName::ObjectPathToObjectName(InPathName));
+}
+
+FString UClass::ConvertFullNameToShortTypeFullName(FStringView InFullName)
+{
+	FStringView ClassPath, PackageName, ObjectName, SubObjectName;
+	FPackageName::SplitFullObjectPath(InFullName, ClassPath, PackageName, ObjectName, SubObjectName);
+	if (ClassPath.IsEmpty() || PackageName.IsEmpty())
+	{
+		// Not a valid FullName, return it untransformed
+		return FString(InFullName);
+	}
+	FStringView ClassObjectName = FPackageName::ObjectPathToObjectName(ClassPath);
+	if (ClassObjectName.Len() == ClassPath.Len())
+	{
+		// Already a ShortTypeFullName, return it untransformed
+		return FString(InFullName);
+	}
+
+	FString Result;
+	Result.Reserve(InFullName.Len());
+	Result += ClassObjectName;
+	Result += TEXT(" ");
+	Result += PackageName;
+	if (ObjectName.Len())
+	{
+		Result += TEXT(".");
+		Result += ObjectName;
+		if (SubObjectName.Len())
+		{
+			Result += SUBOBJECT_DELIMITER;
+			Result += SubObjectName;
+		}
+	}
+	return Result;
+}
+
+bool UClass::IsShortTypeName(FStringView InClassPath)
+{
+	if (InClassPath.Len() == 0)
+	{
+		// Arbitrary
+		return true;
+	}
+	// If it starts with '/' it is definitely not a ShortTypeName
+	// If it doesn't start with '/', most of the time it is a ShortTypeName because this function is usually called on either PathNames or ShortTypeNames
+	if (InClassPath[0] == '/')
+	{
+		return false;
+	}
+	return UE::String::FindFirstOfAnyChar(InClassPath, TEXT("./\\" SUBOBJECT_DELIMITER_ANSI)) == INDEX_NONE;
+}
+
 
 #if WITH_EDITOR || HACK_HEADER_GENERATOR
 void UClass::GetHideFunctions(TArray<FString>& OutHideFunctions) const
@@ -5728,7 +6271,7 @@ bool UClass::IsClassGroupName(const TCHAR* InGroupName) const
 #if WITH_EDITORONLY_DATA
 IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 	{
-		Class->ClassAddReferencedObjects = &UClass::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UClass);
 
 		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassDefaultObject), TEXT("ClassDefaultObject"));
 		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassWithin), TEXT("ClassWithin"));
@@ -5739,7 +6282,7 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 #else
 IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 	{
-		Class->ClassAddReferencedObjects = &UClass::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UClass);
 
 		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassDefaultObject), TEXT("ClassDefaultObject"));
 		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassWithin), TEXT("ClassWithin"));
@@ -5760,7 +6303,7 @@ void GetPrivateStaticClassBody(
 	const TCHAR* InConfigName,
 	UClass::ClassConstructorType InClassConstructor,
 	UClass::ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	UClass::ClassAddReferencedObjectsType InClassAddReferencedObjects,
+	FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions,
 	UClass::StaticClassFunctionType InSuperClassFn,
 	UClass::StaticClassFunctionType InWithinClassFn
 	)
@@ -5781,7 +6324,7 @@ void GetPrivateStaticClassBody(
 					InConfigName,
 					InClassConstructor,
 					InClassVTableHelperCtorCaller,
-					InClassAddReferencedObjects,
+					FUObjectCppClassStaticFunctions(InCppClassStaticFunctions),
 					InSuperClassFn(),
 					InWithinClassFn()
 					))
@@ -5817,7 +6360,7 @@ void GetPrivateStaticClassBody(
 		EObjectFlags(RF_Public | RF_Standalone | RF_Transient | RF_MarkAsNative | RF_MarkAsRootSet),
 		InClassConstructor,
 		InClassVTableHelperCtorCaller,
-		InClassAddReferencedObjects
+		MoveTemp(InCppClassStaticFunctions)
 		);
 	check(ReturnClass);
 	
@@ -6126,7 +6669,7 @@ UStruct* FStructUtils::FindStructureInPackageChecked(const TCHAR* StructName, co
 	}
 	else
 	{
-		return FindObjectChecked<UStruct>(ANY_PACKAGE, StructName);
+		return CastChecked<UStruct>(UClass::TryFindTypeSlow<UStruct>(StructName));
 	}
 }
 
@@ -6177,7 +6720,7 @@ static UScriptStruct* StaticGetBaseStructureInternal(FName Name)
 {
 	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
 
-	UScriptStruct* Result = (UScriptStruct*)StaticFindObjectFastInternal(UScriptStruct::StaticClass(), CoreUObjectPkg, Name, false, false, RF_NoFlags, EInternalObjectFlags::None);
+	UScriptStruct* Result = (UScriptStruct*)StaticFindObjectFastInternal(UScriptStruct::StaticClass(), CoreUObjectPkg, Name, false, RF_NoFlags, EInternalObjectFlags::None);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (!Result)
@@ -6186,6 +6729,24 @@ static UScriptStruct* StaticGetBaseStructureInternal(FName Name)
 	}
 #endif
 	return Result;
+}
+
+UScriptStruct* TBaseStructure<FIntPoint>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("IntPoint"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FIntVector>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("IntVector"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FIntVector4>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("IntVector4"));
+	return ScriptStruct;
 }
 
 UScriptStruct* TBaseStructure<FLinearColor>::Get()
@@ -6350,6 +6911,12 @@ UScriptStruct* TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get()
 	return ScriptStruct;
 }
 
+UScriptStruct* TBaseStructure<FTopLevelAssetPath>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("TopLevelAssetPath"));
+	return ScriptStruct;
+}
+
 
 
 #define UE_DEFINE_CORE_VARIANT_TYPE(VARIANT, CORE)												\
@@ -6443,7 +7010,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IMPLEMENT_CORE_INTRINSIC_CLASS(UDynamicClass, UClass,
 {
-	Class->ClassAddReferencedObjects = &UDynamicClass::AddReferencedObjects;
+	Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UDynamicClass);
 }
 );
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -6452,5 +7019,3 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 	#endif
 #endif
-
-#include "UObject/DefineUPropertyMacros.h"

@@ -97,7 +97,8 @@ public:
 	*
 	* @param InPos Integer point used to set this vector.
 	*/
-	FORCEINLINE TVector2<T>(FIntPoint InPos);
+	template <typename IntType>
+	FORCEINLINE TVector2<T>(TIntPoint<IntType> InPos);
 
 	/**
 	* Constructor which initializes all components to zero.
@@ -230,36 +231,85 @@ public:
 	bool operator!=(const TVector2<T>& V) const;
 
 	/**
-	* Checks whether both components of this vector are less than another.
+	* Deprecated comparison operator. Use ComponentwiseAllLessThan.
 	*
 	* @param Other The vector to compare against.
 	* @return true if this is the smaller vector, otherwise false.
 	*/
-	bool operator<(const TVector2<T>& Other) const;
+	UE_DEPRECATED(5.1, "TVector2 comparison operators are deprecated. Use ComponentwiseAllLessThan. For componentwise min/max/abs, use TVector2::{Min,Max,GetAbs}, FMath::{Min,Max,Abs} compute something different.")
+	bool operator<(const TVector2<T>& Other) const
+	{
+		return ComponentwiseAllLessThan(Other);
+	}
+
+	/**
+	* Deprecated comparison operator. Use ComponentwiseAllGreaterThan.
+	*
+	* @param Other The vector to compare against.
+	* @return true if this is the larger vector, otherwise false.
+	*/
+	UE_DEPRECATED(5.1, "TVector2 comparison operators are deprecated. Use ComponentwiseAllGreaterThan. For componentwise min/max/abs, use TVector2::{Min,Max,GetAbs}, FMath::{Min,Max,Abs} compute something different.")
+	bool operator>(const TVector2<T>& Other) const
+	{
+		return ComponentwiseAllGreaterThan(Other);
+	}
+
+	/**
+	* Deprecated comparison operator. Use ComponentwiseAllLessOrEqual.
+	*
+	* @param Other The vector to compare against.
+	* @return true if this vector is less than or equal to the other vector, otherwise false.
+	*/
+	UE_DEPRECATED(5.1, "TVector2 comparison operators are deprecated. Use ComponentwiseAllLessOrEqual. For componentwise min/max/abs, use TVector2::{Min,Max,GetAbs}, FMath::{Min,Max,Abs} compute something different.")
+	bool operator<=(const TVector2<T>& Other) const
+	{
+		return ComponentwiseAllLessOrEqual(Other);
+	}
+
+	/**
+	* Deprecated comparison operator. Use ComponentwiseAllGreaterOrEqual.
+	*
+	* @param Other The vector to compare against.
+	* @return true if this vector is greater than or equal to the other vector, otherwise false.
+	*/
+	UE_DEPRECATED(5.1, "TVector2 comparison operators are deprecated. Use ComponentwiseAllGreaterOrEqual. For componentwise min/max/abs, use TVector2::{Min,Max,GetAbs}, FMath::{Min,Max,Abs} compute something different.")
+	bool operator>=(const TVector2<T>& Other) const
+	{
+		return ComponentwiseAllGreaterOrEqual(Other);
+	}
+
+	/**
+	* Checks whether both components of this vector are less than another.
+	*
+	* @param Other The vector to compare against.
+	* @return true if both components of this are less than Other, otherwise false.
+	*/
+	bool ComponentwiseAllLessThan(const TVector2<T>& Other) const;
 
 	/**
 	* Checks whether both components of this vector are greater than another.
 	*
 	* @param Other The vector to compare against.
-	* @return true if this is the larger vector, otherwise false.
+	* @return true if both components of this are greater than Other, otherwise false.
 	*/
-	bool operator>(const TVector2<T>& Other) const;
+	bool ComponentwiseAllGreaterThan(const TVector2<T>& Other) const;
 
 	/**
 	* Checks whether both components of this vector are less than or equal to another.
 	*
 	* @param Other The vector to compare against.
-	* @return true if this vector is less than or equal to the other vector, otherwise false.
+	* @return true if both components of this are less than or equal to Other, otherwise false.
 	*/
-	bool operator<=(const TVector2<T>& Other) const;
+	bool ComponentwiseAllLessOrEqual(const TVector2<T>& Other) const;
 
 	/**
 	* Checks whether both components of this vector are greater than or equal to another.
 	*
 	* @param Other The vector to compare against.
-	* @return true if this vector is greater than or equal to the other vector, otherwise false.
+	* @return true if both components of this are greater than or equal to Other, otherwise false.
 	*/
-	bool operator>=(const TVector2<T>& Other) const;
+	bool ComponentwiseAllGreaterOrEqual(const TVector2<T>& Other) const;
+
 
 	/**
 	* Gets a negated copy of the vector.
@@ -411,7 +461,7 @@ public:
 	* @param Tolerance Error tolerance.
 	* @return true if the vectors are equal within specified tolerance, otherwise false.
 	*/
-	bool Equals(const TVector2<T>& V, T Tolerance=KINDA_SMALL_NUMBER) const;
+	bool Equals(const TVector2<T>& V, T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
 	/**
 	* Set the values of the vector directly.
@@ -497,15 +547,17 @@ public:
 	* @param Tolerance Minimum squared length of vector for normalization.
 	* @return A normalized copy of the vector if safe, (0,0) otherwise.
 	*/
-	TVector2<T> GetSafeNormal(T Tolerance=SMALL_NUMBER) const;
+	TVector2<T> GetSafeNormal(T Tolerance=UE_SMALL_NUMBER) const;
 
 	/**
 	* Normalize this vector in-place if it is large enough, set it to (0,0) otherwise.
+	* (Note this is different from TVector<>::Normalize, which leaves the vector unchanged if it is too small to normalize.)
 	*
 	* @param Tolerance Minimum squared length of vector for normalization.
 	* @see GetSafeNormal()
+	* @return true if the vector was normalized correctly, false if it was too small and set to zero.
 	*/
-	void Normalize(T Tolerance=SMALL_NUMBER);
+	bool Normalize(T Tolerance=UE_SMALL_NUMBER);
 
 	/**
 	* Checks whether vector is near to zero within a specified tolerance.
@@ -513,7 +565,7 @@ public:
 	* @param Tolerance Error tolerance.
 	* @return true if vector is in tolerance to zero, otherwise false.
 	*/
-	bool IsNearlyZero(T Tolerance=KINDA_SMALL_NUMBER) const;
+	bool IsNearlyZero(T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
 	/**
 	* Util to convert this vector into a unit direction vector and its original length.
@@ -626,7 +678,7 @@ public:
 	*/
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 	{
-		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES)
+		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 		{
 			Ar << X << Y;
 		}
@@ -764,7 +816,8 @@ FORCEINLINE TVector2<T>::TVector2(T InF)
 { }
 
 template<typename T>
-FORCEINLINE TVector2<T>::TVector2(FIntPoint InPos)
+template<typename IntType>
+FORCEINLINE TVector2<T>::TVector2(TIntPoint<IntType> InPos)
 {
 	X = (T)InPos.X;
 	Y = (T)InPos.Y;
@@ -886,25 +939,25 @@ FORCEINLINE bool TVector2<T>::operator!=(const TVector2<T>& V) const
 }
 
 template<typename T>
-FORCEINLINE bool TVector2<T>::operator<(const TVector2<T>& Other) const
+FORCEINLINE bool TVector2<T>::ComponentwiseAllLessThan(const TVector2<T>& Other) const
 {
 	return X < Other.X && Y < Other.Y;
 }
 
 template<typename T>
-FORCEINLINE bool TVector2<T>::operator>(const TVector2<T>& Other) const
+FORCEINLINE bool TVector2<T>::ComponentwiseAllGreaterThan(const TVector2<T>& Other) const
 {
 	return X > Other.X && Y > Other.Y;
 }
 
 template<typename T>
-FORCEINLINE bool TVector2<T>::operator<=(const TVector2<T>& Other) const
+FORCEINLINE bool TVector2<T>::ComponentwiseAllLessOrEqual(const TVector2<T>& Other) const
 {
 	return X <= Other.X && Y <= Other.Y;
 }
 
 template<typename T>
-FORCEINLINE bool TVector2<T>::operator>=(const TVector2<T>& Other) const
+FORCEINLINE bool TVector2<T>::ComponentwiseAllGreaterOrEqual(const TVector2<T>& Other) const
 {
 	return X >= Other.X && Y >= Other.Y;
 }
@@ -1049,7 +1102,7 @@ FORCEINLINE TVector2<T> TVector2<T>::GetSafeNormal(T Tolerance) const
 }
 
 template<typename T>
-FORCEINLINE void TVector2<T>::Normalize(T Tolerance)
+FORCEINLINE bool TVector2<T>::Normalize(T Tolerance)
 {
 	const T SquareSum = X*X + Y*Y;
 	if(SquareSum > Tolerance)
@@ -1057,17 +1110,18 @@ FORCEINLINE void TVector2<T>::Normalize(T Tolerance)
 		const T Scale = FMath::InvSqrt(SquareSum);
 		X *= Scale;
 		Y *= Scale;
-		return;
+		return true;
 	}
 	X = 0.0f;
 	Y = 0.0f;
+	return false;
 }
 
 template<typename T>
 FORCEINLINE void TVector2<T>::ToDirectionAndLength(TVector2<T> &OutDir, double &OutLength) const
 {
 	OutLength = Size();
-	if (OutLength > SMALL_NUMBER)
+	if (OutLength > UE_SMALL_NUMBER)
 	{
 		T OneOverLength = 1.0f / OutLength;
 		OutDir = TVector2<T>(X*OneOverLength, Y*OneOverLength);
@@ -1082,7 +1136,7 @@ template<typename T>
 FORCEINLINE void TVector2<T>::ToDirectionAndLength(TVector2<T> &OutDir, float &OutLength) const
 {
 	OutLength = Size();
-	if (OutLength > SMALL_NUMBER)
+	if (OutLength > UE_SMALL_NUMBER)
 	{
 		float OneOverLength = 1.0f / OutLength;
 		OutDir = TVector2<T>(X*OneOverLength, Y*OneOverLength);
@@ -1125,7 +1179,15 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 template<typename T>
 FORCEINLINE FIntPoint TVector2<T>::IntPoint() const
 {
-	return FIntPoint(FMath::RoundToInt(X), FMath::RoundToInt(Y));
+	if constexpr (std::is_same_v<T, float>)
+	{
+		return FIntPoint( FMath::RoundToInt32(X), FMath::RoundToInt32(Y) );
+	}
+	else
+	{
+		// FIntPoint constructor from FInt64Point checks that the int64 fits in int32.
+		return FIntPoint( FInt64Point(FMath::RoundToInt64(X), FMath::RoundToInt64(Y)) );
+	}
 }
 
 template<typename T>
@@ -1135,7 +1197,10 @@ FORCEINLINE TVector2<T> TVector2<T>::RoundToVector() const
 	{
 		return TVector2<T>(FMath::RoundToFloat(X), FMath::RoundToFloat(Y));
 	}
-	return TVector2<T>(FMath::RoundToDouble(X), FMath::RoundToDouble(Y));
+	else
+	{
+		return TVector2<T>(FMath::RoundToDouble(X), FMath::RoundToDouble(Y));
+	}
 }
 
 template<typename T>

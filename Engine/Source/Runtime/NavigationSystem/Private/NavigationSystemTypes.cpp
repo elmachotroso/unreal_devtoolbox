@@ -5,8 +5,6 @@
 #include "NavMesh/RecastNavMeshGenerator.h"
 #include "NavigationSystem.h"
 #include "Engine/World.h"
-#include "AbstractNavData.h"
-#include "NavigationOctree.h"
 #include "NavCollision.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Components/StaticMeshComponent.h"
@@ -233,13 +231,7 @@ namespace NavigationHelper
 
 	bool IsBodyNavigationRelevant(const UBodySetup& BodySetup)
 	{
-#if PHYSICS_INTERFACE_PHYSX
-		const bool bBodyHasGeometry = (BodySetup.AggGeom.GetElementCount() > 0 || BodySetup.TriMeshes.Num() > 0);
-#elif WITH_CHAOS
 		const bool bBodyHasGeometry = (BodySetup.AggGeom.GetElementCount() > 0 || BodySetup.ChaosTriMeshes.Num() > 0);
-#else
-		const bool bBodyHasGeometry = (BodySetup.AggGeom.GetElementCount() > 0);
-#endif
 
 		// has any colliding geometry
 		return bBodyHasGeometry
@@ -247,25 +239,6 @@ namespace NavigationHelper
 			&& (BodySetup.DefaultInstance.GetResponseToChannel(ECC_Pawn) == ECR_Block || BodySetup.DefaultInstance.GetResponseToChannel(ECC_Vehicle) == ECR_Block)
 			// AND has full colliding capabilities 
 			&& BodySetup.DefaultInstance.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics;
-	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// DEPRECATED FUNCTIONS
-
-	void DefaultNavLinkProcessorImpl(FCompositeNavModifier* OUT CompositeModifier, const AActor* Actor, const TArray<FNavigationLink>& IN NavLinks)
-	{
-		if (Actor)
-		{
-			DefaultNavLinkProcessorImpl(CompositeModifier, FNavLinkOwnerData(*Actor), NavLinks);
-		}
-	}
-
-	void DefaultNavLinkSegmentProcessorImpl(FCompositeNavModifier* OUT CompositeModifier, const AActor* Actor, const TArray<FNavigationSegmentLink>& IN NavLinks)
-	{
-		if (Actor)
-		{
-			DefaultNavLinkSegmentProcessorImpl(CompositeModifier, FNavLinkOwnerData(*Actor), NavLinks);
-		}
 	}
 }
 

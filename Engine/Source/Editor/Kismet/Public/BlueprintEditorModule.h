@@ -2,32 +2,59 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Modules/ModuleInterface.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Commands/UICommandList.h"
+#include "K2Node_EditablePinBase.h"
+#include "Math/Vector2D.h"
+#include "Modules/ModuleInterface.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UniquePtr.h"
 #include "Toolkits/AssetEditorToolkit.h"
+#include "Toolkits/IToolkit.h"
+#include "UObject/NameTypes.h"
+#include "UObject/SoftObjectPath.h"
 #include "WorkflowOrientedApp/WorkflowCentricApplication.h"
 
-class FSCSEditorTreeNode;
-class UUserDefinedEnum;
-class UUserDefinedStruct;
-struct Rect;
-
-class IBlueprintEditor;
 class FBlueprintEditor;
+class FExtender;
+class FFieldClass;
+class FKismetCompilerContext;
+class FLayoutExtender;
+class FSCSEditorTreeNode;
+class FSubobjectEditorTreeNode;
+class FUICommandList;
+class FWorkflowAllowedTabSet;
+class IBlueprintEditor;
+class IDetailCustomization;
+class IToolkitHost;
+class SWidget;
+class UEdGraphNode;
+class UEdGraphPin;
+class UEdGraphSchema;
+class UK2Node_EditablePinBase;
+class UObject;
+class UUserDefinedEnum;
 class UUserDefinedEnum;
 class UUserDefinedStruct;
-class IDetailCustomization;
-class FKismetCompilerContext;
+class UUserDefinedStruct;
 struct FBlueprintDebugger;
-class FSubobjectEditorTreeNode;
+struct Rect;
 
 /** Delegate used to customize variable display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
 
 /** Delegate used to customize local variable display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetLocalVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
+
+/** Delegate used to customize function display */
+DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetFunctionCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
 
 /** Delegate used to customize graph display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetGraphCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
@@ -105,10 +132,17 @@ public:
 	virtual TSharedPtr<class IClassViewerFilter> GetImportedClassViewerFilter() const { return nullptr; }
 
 	/** Return the pin type selector filter associated with the current set of imported namespaces within this editor context. Default is NULL (no filter). */
+	UE_DEPRECATED(5.1, "Please use GetPinTypeSelectorFilters")
 	virtual TSharedPtr<class IPinTypeSelectorFilter> GetImportedPinTypeSelectorFilter() const { return nullptr; }
 
+	/** Get all the the pin type selector filters within this editor context. */
+	virtual void GetPinTypeSelectorFilters(TArray<TSharedPtr<class IPinTypeSelectorFilter>>& OutFilters) const {}
+	
 	/** Return whether the given object falls outside the scope of the current set of imported namespaces within this editor context. Default is FALSE (imported). */
 	virtual bool IsNonImportedObject(const UObject* InObject) const { return false; }
+
+	/** Return whether the given object (referenced by path) falls outside the scope of the current set of imported namespaces within this editor context. Default is FALSE (imported). */
+	virtual bool IsNonImportedObject(const FSoftObjectPath& InObject) const { return false; }
 
 	UE_DEPRECATED(5.0, "GetSelectedSCSEditorTreeNodes has been deprecated. Use GetSelectedSubobjectEditorTreeNodes instead.")
 	virtual TArray<TSharedPtr<class FSCSEditorTreeNode> >  GetSelectedSCSEditorTreeNodes() const = 0;
@@ -209,26 +243,42 @@ public:
 	 * @param	InStruct				The type of the variable to create the customization for
 	 * @param	InOnGetDetailCustomization	The delegate used to create customization instances
 	 */
-	virtual void RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization);
+	virtual FDelegateHandle RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization);
 
 	/** 
 	 * Unregister a previously registered customization for BP variables
 	 * @param	InStruct				The type to create the customization for
 	 */
+	UE_DEPRECATED(5.1, "UnregisterVariableCustomization without a delegate handle is deprecated.")
 	virtual void UnregisterVariableCustomization(FFieldClass* InFieldClass);
 
+	/**
+	 * Unregister a previously registered customization for BP variables
+	 * @param	InStruct				The type to create the customization for
+	 * @param	InHandle				The handle returned by RegisterVariableCustomization
+	 */
+	virtual void UnregisterVariableCustomization(FFieldClass* InFieldClass, FDelegateHandle InHandle);
+
 	/** 
-	* Register a customization for for Blueprint local variables
-	* @param	InFieldClass				The type of the variable to create the customization for
-	* @param	InOnGetLocalVariableCustomization	The delegate used to create customization instances
-	*/
-	virtual void RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization);
+	 * Register a customization for for Blueprint local variables
+	 * @param	InFieldClass				The type of the variable to create the customization for
+	 * @param	InOnGetLocalVariableCustomization	The delegate used to create customization instances
+	 */
+	virtual FDelegateHandle RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization);
 
 	/** 
 	* Unregister a previously registered customization for BP local variables
 	* @param	InFieldClass				The type to create the customization for
-	*/
+	 */
+	UE_DEPRECATED(5.1, "UnregisterLocalVariableCustomization without a delegate handle is deprecated.")
 	virtual void UnregisterLocalVariableCustomization(FFieldClass* InFieldClass);
+
+	/** 
+	 * Unregister a previously registered customization for BP local variables
+	 * @param	InFieldClass				The type to create the customization for
+	 * @param	InHandle				The handle returned by RegisterLocalVariableCustomization
+	 */
+	virtual void UnregisterLocalVariableCustomization(FFieldClass* InFieldClass, FDelegateHandle InHandle);
 
 	/** 
 	 * Register a customization for for Blueprint graphs
@@ -242,6 +292,20 @@ public:
 	 * @param	InGraphSchema				The schema of the graph to create the customization for
 	 */
 	virtual void UnregisterGraphCustomization(const UEdGraphSchema* InGraphSchema);
+
+	/**
+	 * Register a customization for for Blueprint functions
+	 * @param	InStruct				The type of the pin to create the customization for
+	 * @param	InOnGetFunctionCustomization	The delegate used to create customization instances
+	 */
+	virtual FDelegateHandle RegisterFunctionCustomization(TSubclassOf<UK2Node_EditablePinBase> InFieldClass, FOnGetFunctionCustomizationInstance InOnGetFunctionCustomization);
+
+	/**
+	 * Unregister a previously registered customization for BP functions
+	 * @param	InStruct				The type to create the customization for
+	 * @param	InHandle				The handle returned by UnregisterFunctionCustomization
+	 */
+	virtual void UnregisterFunctionCustomization(TSubclassOf<UK2Node_EditablePinBase> InFieldClass, FDelegateHandle InHandle);
 
 
 	/** 
@@ -257,6 +321,13 @@ public:
 	 * @param	InBlueprintEditor		The Blueprint Editor the customization will be created for
 	 */
 	virtual TArray<TSharedPtr<IDetailCustomization>> CustomizeGraph(const UEdGraphSchema* InGraphSchema, TSharedPtr<IBlueprintEditor> InBlueprintEditor);
+
+	/** 
+	 * Build a set of details customizations for function with the passed-in type, if possible.
+	 * @param	InFunctionClass		The type to create the customization for
+	 * @param	InBlueprintEditor		The Blueprint Editor the customization will be created for
+	 */
+	virtual TArray<TSharedPtr<IDetailCustomization>> CustomizeFunction(TSubclassOf<UK2Node_EditablePinBase> InFunctionClass, TSharedPtr<IBlueprintEditor> InBlueprintEditor);
 
 	/** Delegate for binding functions to be called when the blueprint editor finishes getting created */
 	DECLARE_EVENT_OneParam( FBlueprintEditorModule, FBlueprintEditorOpenedEvent, EBlueprintType );
@@ -296,13 +367,16 @@ private:
 	TMap<FName, FSCSEditorCustomizationBuilder> SCSEditorCustomizations;
 
 	/** Customizations for Blueprint variables */
-	TMap<FFieldClass*, FOnGetVariableCustomizationInstance> VariableCustomizations;
+	TMultiMap<FFieldClass*, FOnGetVariableCustomizationInstance> VariableCustomizations;
 
 	/** Customizations for Blueprint local variables */
-	TMap<FFieldClass*, FOnGetLocalVariableCustomizationInstance> LocalVariableCustomizations;
+	TMultiMap<FFieldClass*, FOnGetLocalVariableCustomizationInstance> LocalVariableCustomizations;
 
 	/** Customizations for Blueprint graphs */
 	TMap<const UEdGraphSchema*, FOnGetGraphCustomizationInstance> GraphCustomizations;
+
+	/** Customizations for Blueprint functions */
+	TMultiMap<TSubclassOf<UK2Node_EditablePinBase>, FOnGetFunctionCustomizationInstance> FunctionCustomizations;
 
 	/** Root customization for the BP editor details panel. */
 	TSharedPtr<class IDetailRootObjectCustomization> DetailsRootCustomization;

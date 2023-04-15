@@ -275,6 +275,9 @@ public:
 
 	// UAnimGraphNode_Base interface
 
+	// Whether or not you can add a pose watch on this node
+	virtual bool IsPoseWatchable() const { return true; }
+
 	// Gets the menu category this node belongs in
 	virtual FString GetNodeCategory() const;
 
@@ -329,6 +332,9 @@ public:
 	 */
 	virtual void OnNodeSelected(bool bInIsSelected, class FEditorModeTools& InModeTools, struct FAnimNode_Base* InRuntimeNode);
 
+	/** Pose Watch change notification callback. Should be called every time a pose watch on this node is created or destroyed. */
+	virtual void OnPoseWatchChanged(const bool IsPoseWatchEnabled, TObjectPtr<class UPoseWatch> InPoseWatch, FEditorModeTools& InModeTools, FAnimNode_Base* InRuntimeNode);
+
 	/**
 	 * Override this function to push an editor mode when this node is selected
 	 * @return the editor mode to use when this node is selected
@@ -337,8 +343,16 @@ public:
 
 	// Draw function for supporting visualization
 	virtual void Draw(FPrimitiveDrawInterface* PDI, USkeletalMeshComponent * PreviewSkelMeshComp) const {}
+	/**
+	 *	Draw function called on nodes that are selected and / or have a pose watch enabled.
+	 *	Default implementation calls the basic draw function for selected nodes and does nothing for pose watched nodes. Nodes
+	 *	that should render something when a pose watch is enabled but they are not selected should override this function.
+	 */
+	virtual void Draw(FPrimitiveDrawInterface* PDI, USkeletalMeshComponent* PreviewSkelMeshComp, const bool bIsSelected, const bool bIsPoseWatchEnabled) const;
+
 	// Canvas draw function to draw to viewport
 	virtual void DrawCanvas(FViewport& InViewport, FSceneView& View, FCanvas& Canvas, USkeletalMeshComponent * PreviewSkelMeshComp) const {}
+
 	// Function to collect strings from nodes to display in the viewport.
 	// Use this rather than DrawCanvas when adding general text to the viewport.
 	virtual void GetOnScreenDebugInfo(TArray<FText>& DebugInfo, FAnimNode_Base* RuntimeAnimNode, USkeletalMeshComponent* PreviewSkelMeshComp) const {}
@@ -411,6 +425,14 @@ public:
 	 * @return true if the pin is present and bound
 	 */
 	bool IsPinExposedAndBound(const FString& InPinName, const EEdGraphPinDirection InDirection = EGPD_MAX) const;
+
+	/**
+	 * Helper function to check whether a pin is not linked, not bound via property access and still has its default value
+	 * @param	InPinName		The name of the pin @see UEdGraphNode::FindPin
+	 * @param	InPinDirection	The direction of the pin we are looking for. If this is EGPD_MAX, all directions are considered
+	 * @return true if the pin is unlinked, unbound and still has its default value
+	 */
+	bool IsPinUnlinkedUnboundAndUnset(const FString& InPinName, const EEdGraphPinDirection InDirection) const;
 
 	// Event that is broadcast to inform observers that the node title has changed
 	// The default SAnimationGraphNode uses this to invalidate cached node title text
@@ -501,8 +523,12 @@ public:
 
 	// Get the currently-debugged runtime anim node (in the anim BP debugger that this node is currently being edited in)
 	// @return nullptr if the node cannot be found
-	FAnimNode_Base* GetDebuggedAnimNode() const;
-	
+	FAnimNode_Base* GetDebuggedAnimNode() const { return GetDebuggedAnimNode<FAnimNode_Base>(); }
+
+	// Get the currently-debugged runtime anim node of a specified type (in the anim BP debugger that this node is currently being edited in)
+	// @return nullptr if the node cannot be found
+	template< typename TNodeType > TNodeType* GetDebuggedAnimNode() const;
+
 	// Refreshes the debugged component post-edit.
 	// This is required to see changes as the component may be either an editor-only component that is not ticking,
 	// or in a paused PIE world
@@ -595,6 +621,9 @@ protected:
 	// Helper function used to refresh the type of a binding
 	void RecalculateBindingType(FAnimGraphNodePropertyBinding& InBinding);
 	
+	/** @return the current object being debugged from the blueprint for this node. Can be nullptr. */
+	UObject* GetObjectBeingDebugged() const;
+
 protected:
 	// Old shown pins. Needs to be a member variable to track pin visibility changes between Pre and PostEditChange 
 	TArray<FName> OldShownPins;
@@ -616,4 +645,17 @@ template<class AssetType>
 void UAnimGraphNode_Base::HandleAnimReferenceReplacement(TObjectPtr<AssetType>& OriginalAsset, const TMap<UAnimationAsset*, UAnimationAsset*>& AnimAssetReplacementMap)
 {
 	HandleAnimReferenceReplacement(static_cast<AssetType*&>(OriginalAsset), AnimAssetReplacementMap);
+}
+
+template<class TNodeType> TNodeType* UAnimGraphNode_Base::GetDebuggedAnimNode() const
+{
+	if (UObject* ActiveObject = GetObjectBeingDebugged())
+	{
+		if (UAnimBlueprintGeneratedClass* Class = Cast<UAnimBlueprintGeneratedClass>((UObject*)ActiveObject->GetClass()))
+		{
+			return Class->GetPropertyInstance<TNodeType>(ActiveObject, this);
+		}
+	}
+
+	return nullptr;
 }

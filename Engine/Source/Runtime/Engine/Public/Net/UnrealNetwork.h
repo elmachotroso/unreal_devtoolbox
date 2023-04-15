@@ -16,12 +16,16 @@
 #include "EngineLogs.h"
 #include "UObject/UnrealType.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Net/Core/Connection/NetResult.h"
+#include "Net/Core/PropertyConditions/PropertyConditions.h"
+#include "Net/ReplayResult.h"
 
 class AActor;
 
 /*class	UNetDriver;*/
 class	UNetConnection;
 class	UPendingNetGame;
+struct  FOverridableReplayVersionData;
 
 /*-----------------------------------------------------------------------------
 	Types.
@@ -37,8 +41,15 @@ inline int32 MakeRelative( int32 Value, int32 Reference, int32 Max )
 	return Reference + BestSignedDifference(Value,Reference,Max);
 }
 
+UE_DEPRECATED(5.1, "No longer used.")
 DECLARE_MULTICAST_DELEGATE_OneParam(FPreActorDestroyReplayScrub, AActor*);
+
+/** Fired at the start of replay checkpoint loading */
 DECLARE_MULTICAST_DELEGATE_OneParam(FPreReplayScrub, UWorld*);
+
+/** Fired mid-checkpoint load after the previous game state is torn down, and prior to any GC */
+DECLARE_MULTICAST_DELEGATE_OneParam(FReplayScrubTeardown, UWorld*);
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnWriteGameSpecificDemoHeader, TArray<FString>& /*GameSpecificData*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnProcessGameSpecificDemoHeader, const TArray<FString>& /*GameSpecificData*/, FString& /*Error*/);
 
@@ -46,17 +57,31 @@ typedef TMap<FString, TArray<uint8>> FDemoFrameDataMap;
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWriteGameSpecificFrameData, UWorld* /*World*/, float /*FrameTime*/, FDemoFrameDataMap& /*Data*/);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnProcessGameSpecificFrameData, UWorld* /*World*/, float /*FrameTime*/, const FDemoFrameDataMap& /*Data*/);
 
+// Games can use these to override Version Data of Replay Headers
+DECLARE_DELEGATE_OneParam(FGetOverridableVersionDataForDemoHeaderReadDelegate, FOverridableReplayVersionData& /*OveridableReplayVersionData*/);
+DECLARE_DELEGATE_OneParam(FGetOverridableVersionDataForDemoHeaderWriteDelegate, FOverridableReplayVersionData& /*OveridableReplayVersionData*/);
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayStartedDelegate, UWorld* /*World*/);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UE_DEPRECATED(5.1, "Deprecated in favor of FOnReplayPlaybackFailureDelegate")
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnReplayStartFailureDelegate, UWorld* /*World*/, EDemoPlayFailure::Type /*Error*/);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnReplayPlaybackFailureDelegate, UWorld* /*World*/, const UE::Net::TNetResult<EReplayResult>& /*Error*/);
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayScrubCompleteDelegate, UWorld* /*World*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayPlaybackCompleteDelegate, UWorld* /*World*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayRecordingStartAttemptDelegate, UWorld* /*World*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayRecordingCompleteDelegate, UWorld* /*World*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPauseChannelsChangedDelegate, UWorld* /*World*/, bool /*bPaused*/);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnReplayIDChangedDelegate, UWorld* /*World*/, const FString& /*ReplayID*/);
 
 struct ENGINE_API FNetworkReplayDelegates
 {
 	/** global delegate called one time prior to scrubbing */
 	static FPreReplayScrub OnPreScrub;
+	static FReplayScrubTeardown OnScrubTeardown;
 
 	/** Game specific demo headers */
 	static FOnWriteGameSpecificDemoHeader OnWriteGameSpecificDemoHeader;
@@ -66,11 +91,21 @@ struct ENGINE_API FNetworkReplayDelegates
 	static FOnWriteGameSpecificFrameData OnWriteGameSpecificFrameData;
 	static FOnProcessGameSpecificFrameData OnProcessGameSpecificFrameData;
 
+	/** Game Overridable Header Version Data */
+	static FGetOverridableVersionDataForDemoHeaderReadDelegate  GetOverridableVersionDataForHeaderRead;
+	static FGetOverridableVersionDataForDemoHeaderWriteDelegate GetOverridableVersionDataForHeaderWrite;
+
 	/** Public delegate for external systems to be notified when a replay begins */
 	static FOnReplayStartedDelegate OnReplayStarted;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Public delegate to be notified when a replay failed to start */
+	UE_DEPRECATED(5.1, "Deprecated in favor of OnReplayPlaybackFailure")
 	static FOnReplayStartFailureDelegate OnReplayStartFailure;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/** Public delegate to be notified when replay playback failed */
+	static FOnReplayPlaybackFailureDelegate OnReplayPlaybackFailure;
 
 	/** Public delegate for external systems to be notified when scrubbing is complete. Only called for successful scrub. */
 	static FOnReplayScrubCompleteDelegate OnReplayScrubComplete;
@@ -78,11 +113,17 @@ struct ENGINE_API FNetworkReplayDelegates
 	/** Delegate for external systems to be notified when playback ends */
 	static FOnReplayPlaybackCompleteDelegate OnReplayPlaybackComplete;
 
+	/** Public Delegate for external systems to be notified when replay recording is about to start. */
+	static FOnReplayRecordingStartAttemptDelegate OnReplayRecordingStartAttempt;
+
 	/** Public Delegate for external systems to be notified when replay recording is about to finish. */
 	static FOnReplayRecordingCompleteDelegate OnReplayRecordingComplete;
 
 	/** Delegate for external systems to be notified when channels are paused during playback, usually waiting for data to be available. */
 	static FOnPauseChannelsChangedDelegate OnPauseChannelsChanged;
+
+	/** Delegate for external systems to be notified when the SessionName has changed (The replay identifier). */
+	static FOnReplayIDChangedDelegate OnReplayIDChanged;
 };
 
 /**
@@ -102,6 +143,12 @@ struct ENGINE_API FDoRepLifetimeParams
 	
 	/** Whether or not this property uses Push Model. See PushModel.h */
 	bool bIsPushBased = false;
+
+#if UE_WITH_IRIS
+	/** Function to create and register a ReplicationFragment for the property */
+	UE::Net::CreateAndRegisterReplicationFragmentFunc CreateAndRegisterReplicationFragmentFunction = nullptr;
+#endif
+
 };
 
 namespace NetworkingPrivate
@@ -201,7 +248,10 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
 	const TCHAR* DoRepPropertyName_##c_##v(TEXT(#v)); \
 	const NetworkingPrivate::FRepPropertyDescriptor PropertyDescriptor_##c_##v(DoRepPropertyName_##c_##v, (int32)c::ENetFields_Private::v, 1); \
-	RegisterReplicatedLifetimeProperty(PropertyDescriptor_##c_##v, OutLifetimeProps, params); \
+\
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+	RegisterReplicatedLifetimeProperty(PropertyDescriptor_##c_##v, OutLifetimeProps, FixupParams<decltype(c::v)>(params)); \
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS \
 }
 
 #define DOREPLIFETIME_WITH_PARAMS_FAST_STATIC_ARRAY(c,v,params) \
@@ -215,7 +265,9 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 #define DOREPLIFETIME_WITH_PARAMS(c,v,params) \
 { \
 	FProperty* ReplicatedProperty = GetReplicatedProperty(StaticClass(), c::StaticClass(),GET_MEMBER_NAME_CHECKED(c,v)); \
-	RegisterReplicatedLifetimeProperty(ReplicatedProperty, OutLifetimeProps, params); \
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+	RegisterReplicatedLifetimeProperty(ReplicatedProperty, OutLifetimeProps, FixupParams<decltype(c::v)>(params)); \
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS \
 }
 
 #define DOREPLIFETIME(c,v) DOREPLIFETIME_WITH_PARAMS(c,v,FDoRepLifetimeParams())
@@ -238,6 +290,7 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 
 #define DOREPLIFETIME_CONDITION(c,v,cond) \
 { \
+	static_assert(cond != COND_NetGroup, "COND_NetGroup cannot be used on replicated properties. Only when registering subobjects"); \
 	FDoRepLifetimeParams LocalDoRepParams; \
 	LocalDoRepParams.Condition = cond; \
 	DOREPLIFETIME_WITH_PARAMS(c,v,LocalDoRepParams); \
@@ -246,12 +299,12 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 /** Allows gamecode to specify RepNotify condition: REPNOTIFY_OnChanged (default) or REPNOTIFY_Always for when repnotify function is called  */
 #define DOREPLIFETIME_CONDITION_NOTIFY(c,v,cond,rncond) \
 { \
+	static_assert(cond != COND_NetGroup, "COND_NetGroup cannot be used on replicated properties. Only when registering subobjects"); \
 	FDoRepLifetimeParams LocalDoRepParams; \
 	LocalDoRepParams.Condition = cond; \
 	LocalDoRepParams.RepNotifyCondition = rncond; \
 	DOREPLIFETIME_WITH_PARAMS(c,v,LocalDoRepParams); \
 }
-
 
 #define DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(c,v,active) \
 { \
@@ -277,23 +330,25 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 	} \
 }
 
-UE_DEPRECATED(4.24, "Please use the RESET_REPLIFETIME_CONDITION macro")
-ENGINE_API void DeprecatedChangeCondition(FProperty* ReplicatedProperty, TArray< FLifetimeProperty >& OutLifetimeProps, ELifetimeCondition InCondition);
-
-
-//~ This is already using a deprecated method, don't bother updating it.
-#define DOREPLIFETIME_CHANGE_CONDITION(c,v,cond) \
+#define DOREPCUSTOMCONDITION_ACTIVE_FAST(c,v,active) \
 { \
-	FProperty* sp##v = GetReplicatedProperty(StaticClass(), c::StaticClass(),GET_MEMBER_NAME_CHECKED(c,v));			\
-	DeprecatedChangeCondition(sp##v, OutLifetimeProps, cond);														\
+	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
+	OutActiveState.SetActiveState((uint16)c::ENetFields_Private::v, active); \
 }
 
-UE_DEPRECATED(4.24, "Use RegisterReplicatedLifetimeProperty that takes FDoRepLifetimeParams.")
-ENGINE_API void RegisterReplicatedLifetimeProperty(
-	const FProperty* ReplicatedProperty,
-	TArray<FLifetimeProperty>& OutLifetimeProps,
-	ELifetimeCondition InCondition,
-	ELifetimeRepNotifyCondition InRepNotifyCondition = REPNOTIFY_OnChanged);
+#define DOREPCUSTOMCONDITION_SETACTIVE_FAST(c,v,active) \
+{ \
+	UE::Net::Private::FNetPropertyConditionManager::Get().SetPropertyActive(this, (uint16)c::ENetFields_Private::v, active); \
+}
+
+#define DOREPCUSTOMCONDITION_SETACTIVE_FAST_STATIC_ARRAY(c,v,active) \
+{ \
+	for (int32 i = 0; i < (int32)c::EArrayDims_Private::v; ++i) \
+	{ \
+		UE::Net::Private::FNetPropertyConditionManager::Get().SetPropertyActive(this, (uint16)c::ENetFields_Private::v##_STATIC_ARRAY + i, active); \
+	} \
+}
+
 
 ENGINE_API void RegisterReplicatedLifetimeProperty(
 	const FProperty* ReplicatedProperty,
@@ -304,6 +359,31 @@ ENGINE_API void RegisterReplicatedLifetimeProperty(
 	const NetworkingPrivate::FRepPropertyDescriptor& PropertyDescriptor,
 	TArray<FLifetimeProperty>& OutLifetimeProps,
 	const FDoRepLifetimeParams& Params);
+
+/*-----------------------------------------------------------------------------
+	Capture additional parameters required to bind FastArrays when using Iris
+-----------------------------------------------------------------------------*/
+struct CGetFastArrayCreateReplicationFragmentFuncable
+{
+	template <typename T, typename...>
+	auto Requires(T* FastArray) -> decltype(FastArray->GetFastArrayCreateReplicationFragmentFunction());
+};
+
+#if UE_WITH_IRIS
+template<typename T>
+inline typename TEnableIf<TModels<CGetFastArrayCreateReplicationFragmentFuncable, T>::Value, const FDoRepLifetimeParams>::Type FixupParams(const FDoRepLifetimeParams& Params)
+{
+	FDoRepLifetimeParams NewParams(Params);
+	NewParams.CreateAndRegisterReplicationFragmentFunction = T::GetFastArrayCreateReplicationFragmentFunction();
+	return NewParams;
+}
+#endif
+
+template<typename T>
+inline typename TEnableIf<!TModels<CGetFastArrayCreateReplicationFragmentFuncable, T>::Value, const FDoRepLifetimeParams&>::Type FixupParams(const FDoRepLifetimeParams& Params)
+{
+	return Params;
+}
 
 /*-----------------------------------------------------------------------------
 	Disable macros.
@@ -347,7 +427,7 @@ DisableAllReplicatedPropertiesOfClass(StaticClass(), c::StaticClass(), SuperClas
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT("DISABLE_ALL_CLASS_REPLICATED_PROPERTIES")); \
 	const TCHAR* DoRepPropertyName_##c(TEXT(#c)); \
 	const NetworkingPrivate::FRepClassDescriptor ClassDescriptor_##c(DoRepPropertyName_##c, (int32)c::ENetFields_Private::NETFIELD_REP_START, (int32)c::ENetFields_Private::NETFIELD_REP_END); \
-	DisableAllReplicatedPropertiesOfClass(StaticClass(), c::StaticClass(), SuperClassBehavior, OutLifetimeProps); \
+	DisableAllReplicatedPropertiesOfClass(ClassDescriptor_##c, SuperClassBehavior, OutLifetimeProps); \
 }	
 
 ENGINE_API void DisableReplicatedLifetimeProperty(const UClass* ThisClass, const UClass* PropertyClass, FName PropertyName, TArray< FLifetimeProperty >& OutLifetimeProps);
@@ -370,7 +450,7 @@ ENGINE_API void DisableAllReplicatedPropertiesOfClass(const NetworkingPrivate::F
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
 	const TCHAR* DoRepPropertyName_##c_##v(TEXT(#v)); \
 	const NetworkingPrivate::FRepPropertyDescriptor PropertyDescriptor_##c_##v(DoRepPropertyName_##c_##v, (int32)c::ENetFields_Private::v, 1); \
-	ResetReplicatedLifetimeProperty(StaticClass(), c::StaticClass(), GET_MEMBER_NAME_CHECKED(c,v), cond, OutLifetimeProps); \
+	ResetReplicatedLifetimeProperty(PropertyDescriptor_##c_##v, cond, OutLifetimeProps); \
 }
 
 #define RESET_REPLIFETIME_CONDITION_FAST_STATIC_ARRAY(c,v,cond) \
@@ -378,7 +458,7 @@ ENGINE_API void DisableAllReplicatedPropertiesOfClass(const NetworkingPrivate::F
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
 	const TCHAR* DoRepPropertyName_##c_##v(TEXT(#v)); \
 	const NetworkingPrivate::FRepPropertyDescriptor PropertyDescriptor_##c_##v(DoRepPropertyName_##c_##v, (int32)c::ENetFields_Private::v##_STATIC_ARRAY, (int32)c::EArrayDims_Private::v); \
-	ResetReplicatedLifetimeProperty(StaticClass(), c::StaticClass(), GET_MEMBER_NAME_CHECKED(c,v), cond, OutLifetimeProps); \
+	ResetReplicatedLifetimeProperty(PropertyDescriptor_##c_##v, cond, OutLifetimeProps); \
 }
 
 #define RESET_REPLIFETIME_FAST(c,v) RESET_REPLIFETIME_CONDITION_FAST(c, v, COND_None)
@@ -391,7 +471,7 @@ ENGINE_API void DisableAllReplicatedPropertiesOfClass(const NetworkingPrivate::F
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
 	const TCHAR* DoRepPropertyName_##c_##v(TEXT(#v)); \
 	const NetworkingPrivate::FRepPropertyDescriptor PropertyDescriptor_##c_##v(DoRepPropertyName_##c_##v, (int32)c::ENetFields_Private::v, 1); \
-	ResetReplicatedLifetimeProperty(StaticClass(), c::StaticClass(), GET_MEMBER_NAME_CHECKED(c,v), params, OutLifetimeProps); \
+	ResetReplicatedLifetimeProperty(PropertyDescriptor_##c_##v, params, OutLifetimeProps); \
 }
 
 ENGINE_API void ResetReplicatedLifetimeProperty(

@@ -2,33 +2,74 @@
 
 #include "RetargetEditor/IKRetargetAnimInstanceProxy.h"
 #include "RetargetEditor/IKRetargetAnimInstance.h"
+#include "AnimNodes/AnimNode_RetargetPoseFromMesh.h"
+#include "RetargetEditor/IKRetargetEditorController.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRetargetAnimInstanceProxy)
 
-FIKRetargetAnimInstanceProxy::FIKRetargetAnimInstanceProxy(UAnimInstance* InAnimInstance, FAnimNode_RetargetPoseFromMesh* InNode)
+FIKRetargetAnimInstanceProxy::FIKRetargetAnimInstanceProxy(
+	UAnimInstance* InAnimInstance,
+	FAnimNode_PreviewRetargetPose* InPreviewPoseNode,
+	FAnimNode_RetargetPoseFromMesh* InRetargetNode)
 	: FAnimPreviewInstanceProxy(InAnimInstance),
-	IKRetargetNode(InNode)
+	PreviewPoseNode(InPreviewPoseNode),
+	RetargetNode(InRetargetNode),
+	OutputMode(ERetargeterOutputMode::ShowRetargetPose)
 {
 }
 
 void FIKRetargetAnimInstanceProxy::Initialize(UAnimInstance* InAnimInstance)
 {
 	FAnimPreviewInstanceProxy::Initialize(InAnimInstance);
+	PreviewPoseNode->InputPose.SetLinkNode(RetargetNode);
+
+	FAnimationInitializeContext InitContext(this);
+	PreviewPoseNode->Initialize_AnyThread(InitContext);
+	RetargetNode->Initialize_AnyThread(InitContext);
+}
+
+void FIKRetargetAnimInstanceProxy::CacheBones()
+{
+	if (bBoneCachesInvalidated)
+	{
+		FAnimationCacheBonesContext Context(this);
+		SingleNode.CacheBones_AnyThread(Context);
+		RetargetNode->CacheBones_AnyThread(Context);
+		PreviewPoseNode->CacheBones_AnyThread(Context);
+		bBoneCachesInvalidated = false;
+	}
 }
 
 bool FIKRetargetAnimInstanceProxy::Evaluate(FPoseContext& Output)
-{
-	IKRetargetNode->Evaluate_AnyThread(Output);
+{	
+	if (OutputMode == ERetargeterOutputMode::RunRetarget)
+	{
+		if (SourceOrTarget == ERetargetSourceOrTarget::Source)
+		{
+			FAnimPreviewInstanceProxy::Evaluate(Output);
+		}
+		else
+		{
+			RetargetNode->Evaluate_AnyThread(Output);
+		}
+	}
+	else
+	{
+		PreviewPoseNode->Evaluate_AnyThread(Output);
+	}
+	
 	return true;
 }
 
 FAnimNode_Base* FIKRetargetAnimInstanceProxy::GetCustomRootNode()
 {
-	return IKRetargetNode;
+	return PreviewPoseNode;
 }
 
 void FIKRetargetAnimInstanceProxy::GetCustomNodes(TArray<FAnimNode_Base*>& OutNodes)
 {
-	OutNodes.Add(IKRetargetNode);
+	OutNodes.Add(RetargetNode);
+	OutNodes.Add(PreviewPoseNode);
 }
 
 void FIKRetargetAnimInstanceProxy::UpdateAnimationNode(const FAnimationUpdateContext& InContext)
@@ -39,18 +80,42 @@ void FIKRetargetAnimInstanceProxy::UpdateAnimationNode(const FAnimationUpdateCon
 	}
 	else
 	{
-		IKRetargetNode->Update_AnyThread(InContext);
+		PreviewPoseNode->Update_AnyThread(InContext);
+		RetargetNode->Update_AnyThread(InContext);
 	}
 }
 
-void FIKRetargetAnimInstanceProxy::SetRetargetAssetAndSourceComponent(
+void FIKRetargetAnimInstanceProxy::ConfigureAnimInstance(
+	const ERetargetSourceOrTarget& InSourceOrTarget,
 	UIKRetargeter* InIKRetargetAsset,
-	TWeakObjectPtr<USkeletalMeshComponent> InSourceMeshComponent) const
+	TWeakObjectPtr<USkeletalMeshComponent> InSourceMeshComponent)
 {
-	IKRetargetNode->IKRetargeterAsset = InIKRetargetAsset;
-	IKRetargetNode->bUseAttachedParent = false;
-	IKRetargetNode->SourceMeshComponent = InSourceMeshComponent;
-	IKRetargetNode->bDriveTargetIKRigWithAsset = true;
-	IKRetargetNode->SetProcessorNeedsInitialized();
+	SourceOrTarget = InSourceOrTarget;
+
+	PreviewPoseNode->SourceOrTarget = InSourceOrTarget;
+	PreviewPoseNode->IKRetargeterAsset = InIKRetargetAsset;
+
+	if (SourceOrTarget == ERetargetSourceOrTarget::Target)
+	{
+		RetargetNode->IKRetargeterAsset = InIKRetargetAsset;
+		RetargetNode->bUseAttachedParent = false;
+		RetargetNode->SourceMeshComponent = InSourceMeshComponent;
+		RetargetNode->bDriveWithAsset = true;
+		if (UIKRetargetProcessor* Processor = RetargetNode->GetRetargetProcessor())
+		{
+			Processor->SetNeedsInitialized();
+		}
+	}
 }
+
+void FIKRetargetAnimInstanceProxy::SetRetargetMode(const ERetargeterOutputMode& InOutputMode)
+{
+	OutputMode = InOutputMode;
+}
+
+void FIKRetargetAnimInstanceProxy::SetRetargetPoseBlend(const float& InRetargetPoseBlend) const
+{
+	PreviewPoseNode->RetargetPoseBlend = InRetargetPoseBlend;
+}
+
 

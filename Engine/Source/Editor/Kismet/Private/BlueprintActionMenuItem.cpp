@@ -1,16 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintActionMenuItem.h"
-#include "EdGraph/EdGraph.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node.h"
+
 #include "BlueprintNodeSpawner.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "ScopedTransaction.h"
-#include "SNodePanel.h"
-#include "IDocumentationPage.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "HAL/PlatformCrt.h"
 #include "IDocumentation.h"
+#include "IDocumentationPage.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "SNodePanel.h"
+#include "ScopedTransaction.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
+class UBlueprint;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "BlueprintActionMenuItem"
 
@@ -239,9 +258,9 @@ UEdGraphNode* FBlueprintActionMenuItem::PerformAction(UEdGraph* ParentGraph, UEd
 		{
 			UEdGraphNode* FromNode = FromPin->GetOwningNode();
 			check(FromNode != nullptr);
-			float const FromNodeX = FromNode->NodePosX;
+			const double FromNodeX = FromNode->NodePosX;
 
-			static const float MinNodeDistance = 60.f; // min distance between spawned nodes (to keep them from overlapping)
+			static const double MinNodeDistance = 60.0; // min distance between spawned nodes (to keep them from overlapping)
 			if (MinNodeDistance > FMath::Abs(FromNodeX - Location.X))
 			{
 				ModifiedLocation.X = FromNodeX - MinNodeDistance;
@@ -253,7 +272,7 @@ UEdGraphNode* FBlueprintActionMenuItem::PerformAction(UEdGraph* ParentGraph, UEd
 	}
 
 	TSet<const UEdGraphNode*> NodesToFocus;
-	int32 const PreSpawnNodeCount = ParentGraph->Nodes.Num();
+	const int32 PreSpawnNodeCount = ParentGraph->Nodes.Num();
 
 	UEdGraphNode* LastSpawnedNode = nullptr;
 	auto BoundObjIt = Bindings.CreateConstIterator();
@@ -268,7 +287,7 @@ UEdGraphNode* FBlueprintActionMenuItem::PerformAction(UEdGraph* ParentGraph, UEd
 			}
 		}
 
-		int32 const PreInvokeNodeCount = ParentGraph->Nodes.Num();
+		const int32 PreInvokeNodeCount = ParentGraph->Nodes.Num();
 
 		bool bNewNode = false;
 		LastSpawnedNode = InvokeAction(Action, ParentGraph, ModifiedLocation, BindingsSubset, /*out*/ bNewNode);
@@ -297,7 +316,7 @@ UEdGraphNode* FBlueprintActionMenuItem::PerformAction(UEdGraph* ParentGraph, UEd
 
 	if (bSelectNewNode)
 	{
-		int32 const PostSpawnCount = ParentGraph->Nodes.Num();
+		const int32 PostSpawnCount = ParentGraph->Nodes.Num();
 		for (int32 NodeIndex = PreSpawnNodeCount; NodeIndex < PostSpawnCount; ++NodeIndex)
 		{
 			NodesToFocus.Add(ParentGraph->Nodes[NodeIndex]);

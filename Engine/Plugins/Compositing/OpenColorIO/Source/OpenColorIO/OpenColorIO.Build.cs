@@ -18,9 +18,6 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"Core",
-					"CoreUObject",
-					"Engine",
 					"Projects",
 					"RenderCore",
 					"RHI",
@@ -37,12 +34,15 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					//required for FPostProcessMaterialInputs
-					"../../../../Source/Runtime/Renderer/Private",
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"), //required for FPostProcessMaterialInputs
 				});
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
+					"Core",
+					"CoreUObject",
+					"Engine",
+					"DeveloperSettings"
 				});
 
 			if (Target.bBuildEditor == true)

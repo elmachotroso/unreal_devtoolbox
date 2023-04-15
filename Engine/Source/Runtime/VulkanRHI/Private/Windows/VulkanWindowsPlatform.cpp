@@ -4,6 +4,7 @@
 #include "../VulkanRHIPrivate.h"
 #include "../VulkanDevice.h"
 #include "../VulkanRayTracing.h"
+#include "../VulkanExtensions.h"
 
 // Disable warning about forward declared enumeration without a type, since the D3D specific enums are not used in this translation unit
 #pragma warning(push)
@@ -80,7 +81,7 @@ bool FVulkanWindowsPlatform::LoadVulkanLibrary()
 
 	if (GVulkanDLLModule)
 	{
-#define GET_VK_ENTRYPOINTS(Type,Func) VulkanDynamicAPI::Func = (Type)FPlatformProcess::GetDllExport(GVulkanDLLModule, L#Func);
+#define GET_VK_ENTRYPOINTS(Type,Func) VulkanDynamicAPI::Func = (Type)FPlatformProcess::GetDllExport(GVulkanDLLModule, L""#Func);
 		ENUM_VK_ENTRYPOINTS_BASE(GET_VK_ENTRYPOINTS);
 
 		bool bFoundAllEntryPoints = true;
@@ -144,7 +145,7 @@ bool FVulkanWindowsPlatform::LoadVulkanInstanceFunctions(VkInstance inInstance)
 #endif
 
 #if VULKAN_RHI_RAYTRACING
-	const bool bFoundRayTracingEntries = FVulkanRayTracingPlatform::LoadVulkanInstanceFunctions(inInstance);
+	const bool bFoundRayTracingEntries = FVulkanRayTracingPlatform::CheckVulkanInstanceFunctions(inInstance);
 	if (!bFoundRayTracingEntries)
 	{
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Vulkan RHI ray tracing is enabled, but failed to load instance functions."));
@@ -170,81 +171,21 @@ void FVulkanWindowsPlatform::FreeVulkanLibrary()
 
 #include "Windows/HideWindowsPlatformTypes.h"
 
-
-
-void FVulkanWindowsPlatform::GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions)
+void FVulkanWindowsPlatform::GetInstanceExtensions(FVulkanInstanceExtensionArray& OutExtensions)
 {
-	// windows surface extension
-	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
-
-#if VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
-	// Required by Fullscreen
-	OutExtensions.Add(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
-#endif
+	OutExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
+	OutExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE, VULKAN_EXTENSION_NOT_PROMOTED));
 }
 
 
-void FVulkanWindowsPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions)
+void FVulkanWindowsPlatform::GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions)
 {
-	const bool bAllowVendorDevice = !FParse::Param(FCommandLine::Get(), TEXT("novendordevice"));
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE, 
+														VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTFullscreenExclusive)));
 
-#if VULKAN_SUPPORTS_DRIVER_PROPERTIES
-	OutExtensions.Add(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
-	OutExtensions.Add(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
-#endif
-	if (GGPUCrashDebuggingEnabled)
-	{
-#if VULKAN_SUPPORTS_AMD_BUFFER_MARKER
-		if (VendorId == EGpuVendorId::Amd && bAllowVendorDevice)
-		{
-			OutExtensions.Add(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
-		}
-#endif
-#if VULKAN_SUPPORTS_NV_DIAGNOSTICS
-		if (VendorId == EGpuVendorId::Nvidia && bAllowVendorDevice)
-		{
-			OutExtensions.Add(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
-			OutExtensions.Add(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
-		}
-#endif
-	}
-
-#if VULKAN_SUPPORTS_COLOR_CONVERSIONS
-	// YCbCr requires BindMem2 and GetMemReqs2
-	OutExtensions.Add(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
-	// Fullscreen requires Instance capabilities2
-	OutExtensions.Add(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
-#endif
-
-#if VULKAN_RHI_RAYTRACING
-	FVulkanRayTracingPlatform::GetDeviceExtensions(VendorId, OutExtensions);
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
-	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
-	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_RENDERPASS2
-	OutExtensions.Add(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
-#endif
+	// Manually activated extensions
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME, VULKAN_SUPPORTS_EXTERNAL_MEMORY, 
+														VULKAN_EXTENSION_NOT_PROMOTED, nullptr, FVulkanExtensionBase::ManuallyActivate));
 }
 
 void FVulkanWindowsPlatform::CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface)
@@ -287,134 +228,4 @@ void FVulkanWindowsPlatform::WriteCrashMarker(const FOptionalVulkanDeviceExtensi
 			VulkanDynamicAPI::vkCmdSetCheckpointNV(CmdBuffer, (void*)(size_t)Value);
 		}
 	}
-}
-
-void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId VendorId, const VkPhysicalDeviceProperties& Props)
-{
-	const bool bAllowVendorDevice = !FParse::Param(FCommandLine::Get(), TEXT("novendordevice"));
-	if (VendorId == EGpuVendorId::Amd && bAllowVendorDevice)
-	{
-		AGSGPUInfo AmdGpuInfo;
-		AGSContext* AmdAgsContext = nullptr;
-		if (agsInitialize(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdGpuInfo) == AGS_SUCCESS)
-		{
-			const char* Version = AmdGpuInfo.radeonSoftwareVersion;
-			if (DeviceIndex < (uint32)AmdGpuInfo.numDevices && Version && *Version)
-			{
-				auto& DeviceInfo = AmdGpuInfo.devices[DeviceIndex];
-				bool bIsPreGCN = DeviceInfo.asicFamily == AGSDeviceInfo::AsicFamily_PreGCN;
-				if (DeviceInfo.asicFamily != AGSDeviceInfo::AsicFamily_Unknown)
-				{
-					// "Major.Minor.Revision"
-					do
-					{
-						int32 MajorVersion = FCStringAnsi::Atoi(Version);
-						while (*Version >= '0' && *Version <= '9')
-						{
-							++Version;
-						}
-
-						if (*Version != '.')
-						{
-							break;
-						}
-						++Version;
-
-						int32 MinorVersion = FCStringAnsi::Atoi(Version);
-						while (*Version >= '0' && *Version <= '9')
-						{
-							++Version;
-						}
-
-						if (*Version != '.')
-						{
-							break;
-						}
-						++Version;
-
-						int32 RevisionVersion = FCStringAnsi::Atoi(Version);
-
-						if (MajorVersion > 0)
-						{
-							if (MajorVersion < 18)
-							{
-								// Deny drivers older than 18.xx.xx drivers
-								FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, TEXT("There are known issues with older Vulkan Radeon drivers; the recommended version is 19.4.1; please try updating your driver to that version."), TEXT("Vulkan driver version"));
-								FPlatformMisc::RequestExitWithStatus(true, 1);
-							}
-							else if (WITH_EDITOR)
-							{
-								bool bBadVersion = false;
-								if (MajorVersion == 19)
-								{
-									if (MinorVersion < 4 || (MinorVersion == 4 && RevisionVersion < 1))
-									{
-										bBadVersion = true;
-									}
-								}
-								else if (MajorVersion == 18)
-								{
-									if (MinorVersion > 12 || (MinorVersion == 12 && RevisionVersion >= 2))
-									{
-										bBadVersion = true;
-									}
-								}
-
-								if (bBadVersion)
-								{
-									// Deny drivers between 18.12.2 and 19.2.1, as they as it introduced an issue with Slate windows/Vulkan viewports on the editor; 19.3.x also have crashes
-									FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, TEXT("There are known issues with Vulkan on the editor with the some \nRadeon drivers; the recommended version is 19.4.1: please try updating your driver to that version."), TEXT("Vulkan driver version"));
-									FPlatformMisc::RequestExitWithStatus(true, 1);
-								}
-							}
-						}
-					}
-					while (0);
-
-					GRHIDeviceIsAMDPreGCNArchitecture = GRHIDeviceIsAMDPreGCNArchitecture || bIsPreGCN;
-					if (GRHIDeviceIsAMDPreGCNArchitecture)
-					{
-						UE_LOG(LogVulkanRHI, Log, TEXT("AMD Pre GCN architecture detected, some driver workarounds will be in place"));
-					}
-					UE_LOG(LogVulkanRHI, Display, TEXT("AMD User Driver Version = %s"), ANSI_TO_TCHAR(AmdGpuInfo.radeonSoftwareVersion));
-				}
-			}
-
-			agsDeInitialize(AmdAgsContext);
-		}
-	}
-	else if (VendorId == EGpuVendorId::Nvidia)
-	{
-		UNvidiaDriverVersion NvidiaVersion;
-		static_assert(sizeof(NvidiaVersion) == sizeof(Props.driverVersion), "Mismatched Nvidia pack driver version!");
-		NvidiaVersion.Packed = Props.driverVersion;
-
-		if (GRHIAdapterName.Contains(TEXT("RTX 20")))
-		{
-			if (NvidiaVersion.Major < 430)
-			{
-				// Workaround a crash on 20xx family
-				UE_LOG(LogVulkanRHI, Warning, TEXT("Nvidia 20xx family of GPUs have a known crash on drivers < 430. Compatibility mode (slow!) will now be enabled"));
-
-				extern TAutoConsoleVariable<int32> GRHIThreadCvar;
-				GRHIThreadCvar->SetWithCurrentPriority(0);
-				IConsoleVariable* BypassVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RHICmdBypass"));
-				BypassVar->SetWithCurrentPriority(1);
-			}
-		}
-
-		if ((NvidiaVersion.Major < 496) || ((NvidiaVersion.Major == 496) && (NvidiaVersion.Minor < 13)))
-		{
-			UE_LOG(LogVulkanRHI, Warning, TEXT("Nvidia drivers < 496.13 do not support Nanite/Lumen in Vulkan."));
-			extern TAutoConsoleVariable<int32> GRHIAllow64bitShaderAtomicsCvar;
-			GRHIAllow64bitShaderAtomicsCvar->SetWithCurrentPriority(0);
-		}
-	}
-}
-
-void FVulkanWindowsPlatform::EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device)
-{
-#if VULKAN_RHI_RAYTRACING
-	FVulkanRayTracingPlatform::EnablePhysicalDeviceFeatureExtensions(DeviceInfo, Device);
-#endif
 }

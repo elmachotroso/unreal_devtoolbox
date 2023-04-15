@@ -289,6 +289,10 @@ public:
 	void SetGravityScale( float SliderPos );
 	float GetGravityScaleSliderValue() const;
 
+	/** Adjustable bone draw size */
+	void SetBoneDrawSize(float BoneDrawSize);
+	float GetBoneDrawSize() const;
+
 	/** Function to set LOD model selection*/
 	void OnSetLODModel(int32 LODSelectionType);
 	void OnSetLODTrackDebuggedInstance();
@@ -311,7 +315,7 @@ private:
 	 * Binds our UI commands to delegates
 	 */ 
 	void BindCommands();
-
+	
 	/** Show Morphtarget of SkeletalMesh **/
 	void OnShowMorphTargets();
 
@@ -373,7 +377,7 @@ private:
 
 	/** Function to check whether morphtarget overlay is displayed or not*/
 	bool IsShowingOverlayMorphTargetVerts() const;
-
+	
 	/** Function to set Local axes mode of the specificed type */
 	void OnSetBoneDrawMode(int32 BoneDrawMode);
 
@@ -422,6 +426,17 @@ private:
 	bool CanShowPreviewMesh() const;
 	bool IsShowPreviewMeshEnabled() const;
 
+	/** Run a lambda function on each preview mesh in the scene */
+	FORCEINLINE_DEBUGGABLE void ForEachDebugMesh(TFunction<void (UDebugSkelMeshComponent*)> PerMeshFunction)
+	{
+		TArray<UDebugSkelMeshComponent*> PreviewMeshComponents;
+		GetPreviewScene()->GetActor()->GetComponents(PreviewMeshComponents, true);
+		for (UDebugSkelMeshComponent* PreviewMesh : PreviewMeshComponents)
+		{
+			PerMeshFunction(PreviewMesh);
+		}
+	}
+
 	/** Called to toggle using in-game bound on current preview mesh */
 	void UseInGameBound();
 	bool CanUseInGameBound() const;
@@ -466,9 +481,11 @@ private:
 	/** Focus the viewport on the preview mesh */
 	void HandleFocusCamera();
 
+public:
 	/** Called to determine whether the camera mode menu options should be enabled */
 	bool CanChangeCameraMode() const;
 
+private:
 	/** Tests to see if bone move mode buttons should be visible */
 	EVisibility GetBoneMoveModeButtonVisibility() const;
 
@@ -510,10 +527,12 @@ public:
 	void SetCameraFollowMode(EAnimationViewportCameraFollowMode InCameraFollowMode, FName InBoneName);
 	bool IsCameraFollowEnabled(EAnimationViewportCameraFollowMode InCameraFollowMode) const;
 	FName GetCameraFollowBoneName() const;
-
+	void ToggleRotateCameraToFollowBone();
+	bool GetShouldRotateCameraToFollowBone() const;
+	void TogglePauseAnimationOnCameraMove();
+	bool GetShouldPauseAnimationOnCameraMove() const;
 	bool IsTurnTableSpeedSelected(int32 SpeedIndex) const;
 
-#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 	/** 
 	 * clothing show options 
 	*/
@@ -536,8 +555,6 @@ private:
 	void OnSetSectionsDisplayMode(ESectionDisplayMode DisplayMode);
 	bool IsSectionsDisplayMode(ESectionDisplayMode DisplayMode) const;
 
-#endif // #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
-
 private:
 	/** Weak pointer back to the preview scene we are viewing */
 	TWeakPtr<class FAnimationEditorPreviewScene> PreviewScenePtr;
@@ -553,6 +570,9 @@ private:
 
 	/** Whether we should always show the transform toolbar for this viewport */
 	bool bAlwaysShowTransformToolbar;
+
+	/** Whether to align the camera's rotation to the bone's orientation */
+	bool bCameraFollowLockRotation;
 
 	/** Level viewport client */
 	TSharedPtr<FEditorViewportClient> LevelViewportClient;

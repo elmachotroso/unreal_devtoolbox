@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "Algo/BinarySearch.h"
 #include "Algo/Sort.h"
+#include "Algo/StableSort.h"
 #include "Containers/ArrayView.h"
 #include "CoreGlobals.h"
 #include "HAL/UnrealMemory.h"
@@ -52,14 +53,106 @@ struct FAuxData
 	const uint8*	Data;
 	uint32			DataSize;
 	uint16			FieldIndex;
-	int16			FieldSizeAndType;
+	int8			FieldSizeAndType;
+	uint8			bSigned		: 1;
+	uint8			bFragmented	: 1;
+	uint8			bOwnsData	: 1;
+	uint8			_Unused		: 5;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 struct FAuxDataCollector
-: public TArray<FAuxData, TInlineAllocator<8>>
+	: public TArray<FAuxData, TInlineAllocator<8>>
 {
+	using	Super = TArray<FAuxData, TInlineAllocator<8>>;
+
+			~FAuxDataCollector() { Reset(); }
+	void	Add(const FAuxData& Data);
+	void	Defragment(FAuxData& Head);
+	void	Reset();
 };
+
+////////////////////////////////////////////////////////////////////////////////
+void FAuxDataCollector::Add(const FAuxData& Data)
+{
+	if (Num() == 0)
+	{
+		Super::Add(Data);
+		return;
+	}
+
+	FAuxData* Prev = &Last();
+	if (Prev->FieldIndex != Data.FieldIndex)
+	{
+		Super::Add(Data);
+		return;
+	}
+
+	while (Prev > GetData())
+	{
+		if (Prev[-1].FieldIndex != Data.FieldIndex)
+		{
+			break;
+		}
+
+		--Prev;
+	}
+
+	Prev->bFragmented = 1;
+	Super::Add(Data);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FAuxDataCollector::Defragment(FAuxData& Data)
+{
+	check(Data.bFragmented);
+
+	uint32 Size = Data.DataSize;
+	for (FAuxData* Read = &Data + 1;;)
+	{
+		Size += Read->DataSize;
+
+		++Read;
+		if (Read > &Last() || Read->FieldIndex != Data.FieldIndex)
+		{
+			break;
+		}
+	}
+
+	uint8* Buffer = (uint8*)(FMemory::Malloc(Size));
+
+	uint8* Write = Buffer;
+	uint8* End = Buffer + Size;
+	for (FAuxData* Read = &Data;; ++Read)
+	{
+		FMemory::Memcpy(Write, Read->Data, Read->DataSize);
+		Write += Read->DataSize;
+		if (Write >= End)
+		{
+			break;
+		}
+	}
+
+	Data.Data = Buffer;
+	Data.DataSize = Size;
+	Data.bOwnsData = 1;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FAuxDataCollector::Reset()
+{
+	for (const FAuxData& AuxData : *this)
+	{
+		if (!AuxData.bOwnsData)
+		{
+			continue;
+		}
+
+		FMemory::Free((void*)(AuxData.Data));
+	}
+
+	Super::Reset();
+}
 
 
 
@@ -266,6 +359,7 @@ struct FDispatch
 		Flag_Important		= 1 << 0,
 		Flag_MaybeHasAux	= 1 << 1,
 		Flag_NoSync			= 1 << 2,
+		Flag_Definition		= 1 << 3,
 	};
 
 	struct FField
@@ -277,6 +371,7 @@ struct FDispatch
 		int8		SizeAndType;		// value == byte_size, sign == float < 0 < int
 		uint8		Class : 7;
 		uint8		bArray : 1;
+		uint32		RefUid;			// If reference field, uuid of ref type
 	};
 
 	int32			GetFieldIndex(const ANSICHAR* Name) const;
@@ -322,6 +417,7 @@ public:
 	void				SetImportant();
 	void				SetMaybeHasAux();
 	void				SetNoSync();
+	void				SetDefinition();
 	FDispatch::FField&	AddField(const ANSICHAR* Name, int32 NameSize, uint16 Size);
 	FDispatch*			Finalize();
 
@@ -352,14 +448,14 @@ FDispatch* FDispatchBuilder::Finalize()
 	for (int i = 0, n = Dispatch->FieldCount; i < n; ++i)
 	{
 		auto* Field = Dispatch->Fields + i;
-		Field->NameOffset += Buffer.Num() - uint32(UPTRINT(Field) - UPTRINT(Dispatch));
+		Field->NameOffset += (uint16)(Buffer.Num() - uint32(UPTRINT(Field) - UPTRINT(Dispatch)));
 	}
 
 	// Calculate this dispatch's hash.
 	if (Dispatch->LoggerNameOffset || Dispatch->EventNameOffset)
 	{
-		Dispatch->LoggerNameOffset += Buffer.Num();
-		Dispatch->EventNameOffset += Buffer.Num();
+		Dispatch->LoggerNameOffset += (uint16)Buffer.Num();
+		Dispatch->EventNameOffset += (uint16)Buffer.Num();
 
 		FFnv1aHash Hash;
 		Hash.Add((const ANSICHAR*)Dispatch + Dispatch->LoggerNameOffset);
@@ -381,14 +477,14 @@ void FDispatchBuilder::SetUid(uint16 Uid)
 void FDispatchBuilder::SetLoggerName(const ANSICHAR* Name, int32 NameSize)
 {
 	auto* Dispatch = (FDispatch*)(Buffer.GetData());
-	Dispatch->LoggerNameOffset += AppendName(Name, NameSize);
+	Dispatch->LoggerNameOffset += (uint16)AppendName(Name, NameSize);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 void FDispatchBuilder::SetEventName(const ANSICHAR* Name, int32 NameSize)
 {
 	auto* Dispatch = (FDispatch*)(Buffer.GetData());
-	Dispatch->EventNameOffset = AppendName(Name, NameSize);
+	Dispatch->EventNameOffset = (uint16)AppendName(Name, NameSize);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -413,12 +509,20 @@ void FDispatchBuilder::SetNoSync()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+void FDispatchBuilder::SetDefinition()
+{
+	auto* Dispatch = (FDispatch*)(Buffer.GetData());
+	Dispatch->Flags |= FDispatch::Flag_Definition;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 FDispatch::FField& FDispatchBuilder::AddField(const ANSICHAR* Name, int32 NameSize, uint16 Size)
 {
 	int32 Bufoff = Buffer.AddUninitialized(sizeof(FDispatch::FField));
 	auto* Field = (FDispatch::FField*)(Buffer.GetData() + Bufoff);
-	Field->NameOffset = AppendName(Name, NameSize);
+	Field->NameOffset = (uint16)AppendName(Name, NameSize);
 	Field->Size = Size;
+	Field->RefUid = 0;
 
 	FFnv1aHash Hash;
 	Hash.Add((const uint8*)Name, NameSize);
@@ -498,6 +602,17 @@ const IAnalyzer::FEventFieldInfo* IAnalyzer::FEventTypeInfo::GetFieldInfo(uint32
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+IAnalyzer::FEventFieldHandle IAnalyzer::FEventTypeInfo::GetFieldHandleUnchecked(uint32 Index) const
+{
+	const auto* Inner = (const FDispatch*)this;
+	if (Index >= Inner->FieldCount)
+	{
+		return FEventFieldHandle { -1 };
+	}
+	return FEventFieldHandle {Inner->Fields[Index].Offset };
+}
+
+////////////////////////////////////////////////////////////////////////////////
 IAnalyzer::FEventFieldHandle IAnalyzer::FEventTypeInfo::GetFieldHandleImpl(
 	const ANSICHAR* FieldName,
 	int16& SizeAndType) const
@@ -530,6 +645,18 @@ IAnalyzer::FEventFieldInfo::EType IAnalyzer::FEventFieldInfo::GetType() const
 {
 	const auto* Inner = (const FDispatch::FField*)this;
 
+	if (Inner->RefUid != 0)
+	{
+		switch(Inner->Size)
+		{
+			case sizeof(uint8): return EType::Reference8;
+			case sizeof(uint16): return EType::Reference16;
+			case sizeof(uint32): return EType::Reference32;
+			case sizeof(uint64): return EType::Reference64;
+			default: check(false); // Unsupported width
+		}
+	}
+	
 	if (Inner->Class == UE::Trace::Protocol0::Field_String)
 	{
 		return (Inner->SizeAndType == 1) ? EType::AnsiString : EType::WideString;
@@ -555,7 +682,19 @@ bool IAnalyzer::FEventFieldInfo::IsArray() const
 	return Inner->bArray;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+bool IAnalyzer::FEventFieldInfo::IsSigned() const
+{
+	const auto* Inner = (const FDispatch::FField*)this;
+	return (Inner->Class & UE::Trace::Protocol0::Field_Signed) != 0;
+}
 
+////////////////////////////////////////////////////////////////////////////////
+uint8 IAnalyzer::FEventFieldInfo::GetSize() const
+{
+	const auto* Inner = (const FDispatch::FField*)this;
+	return uint8(Inner->Size);
+}
 
 // {{{1 array-reader -----------------------------------------------------------
 
@@ -569,7 +708,7 @@ uint32 IAnalyzer::FArrayReader::Num() const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-const void* IAnalyzer::FArrayReader::GetImpl(uint32 Index, int16& SizeAndType) const
+const void* IAnalyzer::FArrayReader::GetImpl(uint32 Index, int8& SizeAndType) const
 {
 	const auto* Inner = (const FAuxData*)this;
 	SizeAndType = Inner->FieldSizeAndType;
@@ -610,7 +749,14 @@ const FAuxData* FEventDataInfo::GetAuxData(uint32 FieldIndex) const
 	{
 		if (Data.FieldIndex == FieldIndex)
 		{
-			Data.FieldSizeAndType = Info->Dispatch.Fields[FieldIndex].SizeAndType;
+			if (Data.bFragmented)
+			{
+				Info->AuxCollector->Defragment(Data);
+			}
+
+			const FDispatch::FField& Field = Info->Dispatch.Fields[FieldIndex];
+			Data.FieldSizeAndType = Field.SizeAndType;
+			Data.bSigned = (Field.Class & UE::Trace::Protocol0::Field_Signed) != 0;
 			return &Data;
 		}
 	}
@@ -644,7 +790,7 @@ const IAnalyzer::FArrayReader* IAnalyzer::FEventData::GetArrayImpl(const ANSICHA
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-const void* IAnalyzer::FEventData::GetValueImpl(const ANSICHAR* FieldName, int16& SizeAndType) const
+const void* IAnalyzer::FEventData::GetValueImpl(const ANSICHAR* FieldName, int8& SizeAndType) const
 {
 	const auto* Info = (const FEventDataInfo*)this;
 	const auto& Dispatch = Info->Dispatch;
@@ -689,7 +835,7 @@ bool IAnalyzer::FEventData::GetString(const ANSICHAR* FieldName, FAnsiStringView
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool IAnalyzer::FEventData::GetString(const ANSICHAR* FieldName, FStringView& Out) const
+bool IAnalyzer::FEventData::GetString(const ANSICHAR* FieldName, FWideStringView& Out) const
 {
 	const auto* Info = (const FEventDataInfo*)this;
 	const auto& Dispatch = Info->Dispatch;
@@ -701,18 +847,18 @@ bool IAnalyzer::FEventData::GetString(const ANSICHAR* FieldName, FStringView& Ou
 	}
 
 	const auto& Field = Dispatch.Fields[Index];
-	if (Field.Class != UE::Trace::Protocol0::Field_String || Field.SizeAndType != sizeof(TCHAR))
+	if (Field.Class != UE::Trace::Protocol0::Field_String || Field.SizeAndType != sizeof(WIDECHAR))
 	{
 		return false;
 	}
 
 	if (const FAuxData* Data = Info->GetAuxData(Index))
 	{
-		Out = FStringView((const TCHAR*)(Data->Data), Data->DataSize / sizeof(TCHAR));
+		Out = FWideStringView((const WIDECHAR*)(Data->Data), Data->DataSize / sizeof(WIDECHAR));
 		return true;
 	}
 
-	Out = FStringView();
+	Out = FWideStringView();
 	return true;
 }
 
@@ -744,9 +890,9 @@ bool IAnalyzer::FEventData::GetString(const ANSICHAR* FieldName, FString& Out) c
 			return true;
 		}
 
-		if (Field.SizeAndType == sizeof(TCHAR))
+		if (Field.SizeAndType == sizeof(WIDECHAR))
 		{
-			Out = FStringView((const TCHAR*)(Data->Data), Data->DataSize / sizeof(TCHAR));
+			Out = FWideStringView((const WIDECHAR*)(Data->Data), Data->DataSize / sizeof(WIDECHAR));
 			return true;
 		}
 	}
@@ -759,9 +905,12 @@ uint32 IAnalyzer::FEventData::GetSize() const
 {
 	const auto* Info = (const FEventDataInfo*)this;
 	uint32 Size = Info->Size;
-	for (const FAuxData& Data : *(Info->AuxCollector))
+	if (Info->AuxCollector)
 	{
-		Size += Data.DataSize;
+		for (const FAuxData& Data : *(Info->AuxCollector))
+		{
+			Size += Data.DataSize;
+		}
 	}
 	return Size;
 }
@@ -782,6 +931,17 @@ void IAnalyzer::FEventData::SerializeToCbor(TArray<uint8>& Out) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+const void* IAnalyzer::FEventData::GetValueRaw(FEventFieldHandle Handle) const
+{
+	const auto* Info = (const FEventDataInfo*)this;
+	if (!Handle.IsValid())
+	{
+		return nullptr;
+	}
+	return Info->Ptr + Handle.Detail;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 const uint8* IAnalyzer::FEventData::GetAttachment() const
 {
 	const auto* Info = (const FEventDataInfo*)this;
@@ -794,6 +954,51 @@ uint32 IAnalyzer::FEventData::GetAttachmentSize() const
 	const auto* Info = (const FEventDataInfo*)this;
 	return Info->Size - Info->Dispatch.EventSize;
 }
+
+////////////////////////////////////////////////////////////////////////////////
+bool IAnalyzer::FEventData::IsDefinitionImpl(uint32& OutTypeId) const
+{
+	const auto* Info = (const FEventDataInfo*)this;
+	OutTypeId = Info->Dispatch.Uid;
+	return (Info->Dispatch.Flags & FDispatch::Flag_Definition) != 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const void* IAnalyzer::FEventData::GetReferenceValueImpl(const char* FieldName, uint16& OutSizeType, uint32& OutTypeUid) const
+{
+	const auto* Info = (const FEventDataInfo*)this;
+	const auto& Dispatch = Info->Dispatch;
+
+	const int32 Index = Dispatch.GetFieldIndex(FieldName);
+	if (Index < 0)
+	{
+		return nullptr;
+	}
+
+	const auto& Field = Dispatch.Fields[Index];
+	if (Field.RefUid)
+	{
+		OutSizeType = Field.SizeAndType;
+		OutTypeUid = Field.RefUid;
+		return (Info->Ptr + Field.Offset);
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const void* IAnalyzer::FEventData::GetReferenceValueImpl(uint32 FieldIndex, uint32& OutTypeUid) const
+{
+	const auto* Info = (const FEventDataInfo*)this;
+	const auto& Dispatch = Info->Dispatch;
+	const auto& Field = Dispatch.Fields[FieldIndex];
+	if (Field.RefUid)
+	{
+		OutTypeUid = Field.RefUid;
+		return (Info->Ptr + Field.Offset);
+	}
+	return nullptr;
+}
+
 // }}}
 
 
@@ -805,7 +1010,9 @@ public:
 	typedef FDispatch FTypeInfo;
 
 						~FTypeRegistry();
-	const FTypeInfo*	Add(const void* TraceData);
+	const FTypeInfo*	Add(const void* TraceData, uint32 Version);
+	const FTypeInfo*	AddVersion4(const void* TraceData);
+	const FTypeInfo*	AddVersion6(const void* TraceData);
 	void				Add(FTypeInfo* TypeInfo);
 	const FTypeInfo*	Get(uint32 Uid) const;
 	bool				IsUidValid(uint32 Uid) const;
@@ -824,6 +1031,20 @@ FTypeRegistry::~FTypeRegistry()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+const FTypeRegistry::FTypeInfo* FTypeRegistry::Add(const void* TraceData, uint32 Version)
+{
+	switch(Version)
+	{
+	case 0: return AddVersion4(TraceData);
+	case 4: return AddVersion4(TraceData);
+	case 6: return AddVersion6(TraceData);
+	default:
+		check(false); // Unknown version
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 const FTypeRegistry::FTypeInfo* FTypeRegistry::Get(uint32 Uid) const
 {
 	if (Uid >= uint32(TypeInfos.Num()))
@@ -835,7 +1056,7 @@ const FTypeRegistry::FTypeInfo* FTypeRegistry::Get(uint32 Uid) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-const FTypeRegistry::FTypeInfo* FTypeRegistry::Add(const void* TraceData)
+const FTypeRegistry::FTypeInfo* FTypeRegistry::AddVersion4(const void* TraceData)
 {
 	FDispatchBuilder Builder;
 
@@ -855,7 +1076,7 @@ const FTypeRegistry::FTypeInfo* FTypeRegistry::Add(const void* TraceData)
 	{
 		const auto& Field = NewEvent.Fields[i];
 
-		uint16 TypeSize = 1 << (Field.TypeInfo & Protocol0::Field_Pow2SizeMask);
+		int8 TypeSize = 1 << (Field.TypeInfo & Protocol0::Field_Pow2SizeMask);
 		if (Field.TypeInfo & Protocol0::Field_Float)
 		{
 			TypeSize = -TypeSize;
@@ -884,6 +1105,104 @@ const FTypeRegistry::FTypeInfo* FTypeRegistry::Add(const void* TraceData)
 	if (NewEvent.Flags & uint32(Protocol4::EEventFlags::NoSync))
 	{
 		Builder.SetNoSync();
+	}
+
+	FTypeInfo* TypeInfo = Builder.Finalize();
+	Add(TypeInfo);
+
+	return TypeInfo;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+const FTypeRegistry::FTypeInfo* FTypeRegistry::AddVersion6(const void* TraceData)
+{
+	using namespace Protocol6;
+	FDispatchBuilder Builder;
+
+	const auto& NewEvent = *(FNewEventEvent*)(TraceData);
+
+	const auto* NameCursor = (const ANSICHAR*)(NewEvent.Fields + NewEvent.FieldCount);
+
+	Builder.SetLoggerName(NameCursor, NewEvent.LoggerNameSize);
+	NameCursor += NewEvent.LoggerNameSize;
+
+	Builder.SetEventName(NameCursor, NewEvent.EventNameSize);
+	NameCursor += NewEvent.EventNameSize;
+	Builder.SetUid(NewEvent.EventUid);
+
+	// Fill out the fields
+	for (int32 i = 0, n = NewEvent.FieldCount; i < n; ++i)
+	{
+		const auto& Field = NewEvent.Fields[i];
+		if (Field.FieldType == EFieldFamily::Regular)
+		{
+			int8 TypeSize = 1 << (Field.Regular.TypeInfo & Protocol0::Field_Pow2SizeMask);
+			if (Field.Regular.TypeInfo & Protocol0::Field_Float)
+			{
+				TypeSize = -TypeSize;
+			}
+
+			auto& OutField = Builder.AddField(NameCursor, Field.Regular.NameSize, Field.Regular.Size);
+			OutField.Offset = Field.Regular.Offset;
+			OutField.SizeAndType = TypeSize;
+
+			OutField.Class = Field.Regular.TypeInfo & Protocol0::Field_SpecialMask;
+			OutField.bArray = !!(Field.Regular.TypeInfo & Protocol0::Field_Array);
+
+			NameCursor += Field.Regular.NameSize;
+		}
+		else if (Field.FieldType == EFieldFamily::Reference)
+		{
+			check((Field.Reference.TypeInfo & Protocol0::Field_CategoryMask) == Protocol0::Field_Integer);
+			const int8 TypeSize = 1 << (Field.Reference.TypeInfo & Protocol0::Field_Pow2SizeMask);
+
+			auto& OutField = Builder.AddField(NameCursor, Field.Reference.NameSize, TypeSize);
+			OutField.Offset = Field.Reference.Offset;
+			OutField.SizeAndType = TypeSize;
+			OutField.RefUid = uint32(Field.Reference.RefUid);
+			OutField.Class = 0;
+			OutField.bArray = false;
+
+			NameCursor += Field.Reference.NameSize;
+		}
+		else if (Field.FieldType == EFieldFamily::DefinitionId)
+		{
+			check((Field.DefinitionId.TypeInfo & Protocol0::Field_CategoryMask) == Protocol0::Field_Integer);
+			const int8 TypeSize = 1 << (Field.DefinitionId.TypeInfo & Protocol0::Field_Pow2SizeMask);
+			
+			auto DefinitionIdFieldName = ANSITEXTVIEW("DefinitionId");
+			auto& OutField = Builder.AddField(DefinitionIdFieldName.GetData(), DefinitionIdFieldName.Len(), TypeSize);
+			OutField.Offset = Field.DefinitionId.Offset;
+			OutField.SizeAndType = TypeSize;
+			OutField.RefUid = NewEvent.EventUid;
+			OutField.Class = 0;
+			OutField.bArray = false;
+		}
+		else
+		{
+			// Error!
+			continue;
+		}
+	}
+
+	if (NewEvent.Flags & uint32(EEventFlags::Important))
+	{
+		Builder.SetImportant();
+	}
+
+	if (NewEvent.Flags & uint32(EEventFlags::MaybeHasAux))
+	{
+		Builder.SetMaybeHasAux();
+	}
+
+	if (NewEvent.Flags & uint32(EEventFlags::NoSync))
+	{
+		Builder.SetNoSync();
+	}
+
+	if (NewEvent.Flags & uint32(EEventFlags::Definition))
+	{
+		Builder.SetDefinition();
 	}
 
 	FTypeInfo* TypeInfo = Builder.Finalize();
@@ -926,6 +1245,7 @@ class FAnalyzerHub
 public:
 	void				End();
 	void				SetAnalyzers(TArray<IAnalyzer*>&& InAnalyzers);
+	uint32				GetActiveAnalyzerNum() const;
 	void				OnNewType(const FTypeRegistry::FTypeInfo* TypeInfo);
 	void				OnEvent(const FTypeRegistry::FTypeInfo& TypeInfo, IAnalyzer::EStyle Style, const IAnalyzer::FOnEventContext& Context);
 	void				OnThreadInfo(const FThreads::FInfo& ThreadInfo);
@@ -979,6 +1299,17 @@ void FAnalyzerHub::SetAnalyzers(TArray<IAnalyzer*>&& InAnalyzers)
 {
 	Analyzers = MoveTemp(InAnalyzers);
 	BuildRoutes();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+uint32 FAnalyzerHub::GetActiveAnalyzerNum() const
+{
+	uint32 Count = 0;
+	for (IAnalyzer* Analyzer : Analyzers)
+	{
+		Count += (Analyzer != nullptr);
+	}
+	return Count;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1129,7 +1460,7 @@ void FAnalyzerHub::BuildRoutes()
 	Builder.Self = this;
 
 	IAnalyzer::FOnAnalysisContext OnAnalysisContext = { Builder };
-	for (uint16 i = 0, n = Analyzers.Num(); i < n; ++i)
+	for (uint16 i = 0, n = uint16(Analyzers.Num()); i < n; ++i)
 	{
 		uint32 RouteCount = Routes.Num();
 
@@ -1171,7 +1502,7 @@ void FAnalyzerHub::BuildRoutes()
 	};
 
 	FRoute* Cursor = FixupRoute(Routes.GetData());
-	for (uint16 i = 1, n = Routes.Num(); i < n; ++i)
+	for (uint16 i = 1, n = uint16(Routes.Num()); i < n; ++i)
 	{
 		FRoute* Route = Routes.GetData() + i;
 		if (Route->Hash == Cursor->Hash)
@@ -1458,6 +1789,7 @@ public:
 	typedef FAnalysisState::FSerial FSerial;
 
 						FAnalysisBridge(TArray<IAnalyzer*>&& Analyzers);
+	bool				IsStillAnalyzing() const;
 	void				Reset();
 	uint32				GetUserUidBias() const;
 	FSerial&			GetSerial();
@@ -1484,6 +1816,13 @@ FAnalysisBridge::FAnalysisBridge(TArray<IAnalyzer*>&& Analyzers)
 	TArray<IAnalyzer*> TempAnalyzers(MoveTemp(Analyzers));
 	TempAnalyzers.Add(&TraceAnalyzer);
 	AnalyzerHub.SetAnalyzers(MoveTemp(TempAnalyzers));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FAnalysisBridge::IsStillAnalyzing() const
+{
+	// "> 1" because TraceAnalyzer is always present but shouldn't be considered
+	return AnalyzerHub.GetActiveAnalyzerNum() > 1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1628,8 +1967,9 @@ public:
 		Error,
 		Abort,
 		NotEnoughData,
-		Eof,
+		EndOfStream,
 		Continue,
+		Sync,
 	};
 
 	struct FMachineContext
@@ -1796,7 +2136,7 @@ FProtocol0Stage::EStatus FProtocol0Stage::OnData(
 		{
 			// There is no need to check size here as the runtime never builds
 			// packets that fragment new-event events.
-			const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(Header->EventData);
+			const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(Header->EventData, 0);
 			Context.Bridge.OnNewType(TypeInfo);
 			Transport->Advance(BlockSize);
 			continue;
@@ -1820,7 +2160,7 @@ FProtocol0Stage::EStatus FProtocol0Stage::OnData(
 		Transport->Advance(BlockSize);
 	}
 
-	return Reader.IsEmpty() ? EStatus::Eof : EStatus::NotEnoughData;
+	return Reader.IsEmpty() ? EStatus::EndOfStream : EStatus::NotEnoughData;
 }
 
 
@@ -1915,7 +2255,7 @@ FProtocol2Stage::EStatus FProtocol2Stage::OnData(
 		uint32				ThreadId;
 		FStreamReader*		Reader;
 
-		bool operator < (const FRotaItem& Rhs)
+		bool operator < (const FRotaItem& Rhs) const
 		{
 			int32 Delta = Rhs.Serial - Serial;
 			int32 Wrapped = uint32(Delta + 0x007f'fffe) >= uint32(0x00ff'fffd);
@@ -1932,9 +2272,10 @@ FProtocol2Stage::EStatus FProtocol2Stage::OnData(
 	}
 
 	auto& Serial = Context.Bridge.GetSerial();
-	uint32 ActiveCount = uint32(Rota.Num());
 	while (true)
 	{
+		uint32 ActiveCount = uint32(Rota.Num());
+
 		for (uint32 i = 0; i < ActiveCount;)
 		{
 			FRotaItem& RotaItem = Rota[i];
@@ -2065,7 +2406,7 @@ FProtocol2Stage::EStatus FProtocol2Stage::OnData(
 		}
 	}
 
-	return Reader.IsEmpty() ? EStatus::Eof : EStatus::NotEnoughData;
+	return Reader.IsEmpty() ? EStatus::EndOfStream : EStatus::NotEnoughData;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2158,7 +2499,7 @@ int32 FProtocol2Stage::OnData(FStreamReader& Reader, FAnalysisBridge& Bridge)
 		{
 			// There is no need to check size here as the runtime never builds
 			// packets that fragment new-event events.
-			TypeInfo = TypeRegistry.Add(EventData);
+			TypeInfo = TypeRegistry.Add(EventData, 0);
 			Bridge.OnNewType(TypeInfo);
 		}
 		else
@@ -2211,7 +2552,7 @@ int32 FProtocol2Stage::OnDataAux(FStreamReader& Reader, FAuxDataCollector& Colle
 		}
 
 		// Attach to event
-		FAuxData AuxData;
+		FAuxData AuxData = {};
 		AuxData.Data = Header->Data;
 		AuxData.DataSize = uint32(BlockSize - sizeof(*Header));
 		AuxData.FieldIndex = uint16(Header->FieldIndex & Protocol1::FAuxHeader::FieldMask);
@@ -2401,7 +2742,7 @@ int32 FProtocol4Stage::OnDataKnown(
 	case Protocol4::EKnownEventUids::NewEvent:
 		{
 			const auto* Size = Reader.GetPointer<uint16>();
-			const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(Size + 1);
+			const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(Size + 1, 4);
 			Bridge.OnNewType(TypeInfo);
 			Reader.Advance(sizeof(*Size) + *Size);
 			return 1;
@@ -2475,7 +2816,7 @@ class FProtocol5Stage
 public:
 							FProtocol5Stage(FTransport* InTransport);
 
-private:
+protected:
 	struct alignas(16) FEventDesc
 	{
 		union
@@ -2531,6 +2872,7 @@ private:
 	virtual EStatus			OnData(FStreamReader& Reader, const FMachineContext& Context) override;
 	EStatus					OnDataNewEvents(const FMachineContext& Context);
 	EStatus					OnDataImportant(const FMachineContext& Context);
+	EStatus					OnDataNonCachedImportant(const FMachineContext& Context);
 	EStatus					OnDataNormal(const FMachineContext& Context);
 	int32					ParseImportantEvents(FStreamReader& Reader, EventDescArray& OutEventDescs);
 	int32					ParseEvents(FStreamReader& Reader, EventDescArray& OutEventDescs);
@@ -2539,14 +2881,15 @@ private:
 	int32					DispatchEvents(FAnalysisBridge& Bridge, const FEventDesc* EventDesc, uint32 Count);
 	int32					DispatchEvents(FAnalysisBridge& Bridge, TArray<FEventDescStream>& EventDescHeap);
 	void					DetectSerialGaps(TArray<FEventDescStream>& EventDescHeap);
-	template <typename CALLBACK>
-	void					ForEachSerialGap(const TArray<FEventDescStream>& EventDescHeap, CALLBACK&& Callback);
+	template <typename Callback>
+	void					ForEachSerialGap(const TArray<FEventDescStream>& EventDescHeap, Callback&& InCallback);
 	FTypeRegistry			TypeRegistry;
 	FTidPacketTransport&	Transport;
 	EventDescArray			EventDescs;
 	EventDescArray			SerialGaps;
 	uint32					NextSerial = ~0u;
 	uint32					SyncCount;
+	uint32					EventVersion = 4; //Protocol version 5 uses the event version from protocol 4
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2581,15 +2924,13 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnData(
 		return Ret;
 	}
 
-	bool bNotEnoughData;
-
 	// Important events
 	Ret = OnDataImportant(Context);
 	if (Ret == EStatus::Error)
 	{
 		return Ret;
 	}
-	bNotEnoughData = (Ret != EStatus::Eof);
+	bool bNotEnoughData = (Ret == EStatus::NotEnoughData);
 
 	// Normal events
 	Ret = OnDataNormal(Context);
@@ -2597,9 +2938,19 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnData(
 	{
 		return Ret;
 	}
+	if (Ret == EStatus::Sync)
+	{
+		// After processing a SYNC packet, we need to read data once more.
+		return OnData(Reader, Context);
+	}
 	bNotEnoughData |= (Ret == EStatus::NotEnoughData);
 
-	return bNotEnoughData ? EStatus::NotEnoughData : EStatus::Eof;
+	if (bNotEnoughData)
+	{
+		return EStatus::NotEnoughData;
+	}
+
+	return Reader.CanMeetDemand() ? EStatus::Continue : EStatus::EndOfStream;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2610,7 +2961,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNewEvents(const FMachineContext&
 	FStreamReader* ThreadReader = Transport.GetThreadStream(ETransportTid::Events);
 	if (ThreadReader->IsEmpty())
 	{
-		return EStatus::Eof;
+		return EStatus::EndOfStream;
 	}
 
 	if (ParseImportantEvents(*ThreadReader, EventDescs) < 0)
@@ -2620,11 +2971,11 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNewEvents(const FMachineContext&
 
 	for (const FEventDesc& EventDesc : EventDescs)
 	{
-		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(EventDesc.Data);
+		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(EventDesc.Data, EventVersion);
 		Context.Bridge.OnNewType(TypeInfo);
 	}
 
-	return EStatus::Eof;
+	return EStatus::EndOfStream;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2637,7 +2988,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 	FStreamReader* ThreadReader = Transport.GetThreadStream(ETransportTid::Importants);
 	if (ThreadReader->IsEmpty())
 	{
-		return EStatus::Eof;
+		return EStatus::EndOfStream;
 	}
 
 	if (ParseImportantEvents(*ThreadReader, EventDescs) < 0)
@@ -2649,7 +3000,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 
 	if (EventDescs.Num() <= 0)
 	{
-		return bNotEnoughData ? EStatus::NotEnoughData : EStatus::Eof;
+		return bNotEnoughData ? EStatus::NotEnoughData : EStatus::EndOfStream;
 	}
 
 	// Dispatch looks ahead to the next desc looking for runs of aux blobs. As
@@ -2663,7 +3014,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 		return EStatus::Error;
 	}
 
-	return bNotEnoughData ? EStatus::NotEnoughData : EStatus::Eof;
+	return bNotEnoughData ? EStatus::NotEnoughData : EStatus::EndOfStream;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2830,7 +3181,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 	// Early out if there isn't any events available.
 	if (UNLIKELY(EventDescHeap.IsEmpty()))
 	{
-		return bNotEnoughData ? EStatus::NotEnoughData : EStatus::Eof;
+		return bNotEnoughData ? EStatus::NotEnoughData : EStatus::EndOfStream;
 	}
 
 	// Provided that less than approximately "SerialRange * BytesPerSerial"
@@ -2847,6 +3198,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 		NextSerial = EventDescHeap.HeapTop().EventDescs[0].Serial;
 	}
 
+	const bool bSync = (SyncCount != Transport.GetSyncCount());
 	DetectSerialGaps(EventDescHeap);
 
 	if (DispatchEvents(Context.Bridge, EventDescHeap) < 0)
@@ -2854,7 +3206,12 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 		return EStatus::Error;
 	}
 
-	return bNotEnoughData ? EStatus::NotEnoughData : EStatus::Eof;
+	if (bSync)
+	{
+		return EStatus::Sync;
+	}
+
+	return bNotEnoughData ? EStatus::NotEnoughData : EStatus::EndOfStream;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3038,10 +3395,10 @@ int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray&
 			if (EventDesc.bHasAux)
 			{
 				AuxKeyStack.Add(uint16(AuxKey));
-				bUnsorted = true;
-
-				++AuxKey; // Add a gap for aux-blocks to sort into
 			}
+
+			// This event maybe in the middle of an earlier event's aux data blocks.
+			bUnsorted = true;
 		}
 
 		OutEventDescs.Add(EventDesc);
@@ -3062,7 +3419,7 @@ int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray&
 	{
 		uint32 NumDescs = OutEventDescs.Num() - FirstDescIndex;
 		TArrayView<FEventDesc> DescsView(OutEventDescs.GetData() + FirstDescIndex, NumDescs);
-		Algo::Sort(
+		Algo::StableSort(
 			DescsView,
 			[] (const FEventDesc& Lhs, const FEventDesc& Rhs)
 			{
@@ -3159,10 +3516,10 @@ int32 FProtocol5Stage::ParseEvent(FStreamReader& Reader, FEventDesc& EventDesc)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-template <typename CALLBACK>
+template <typename Callback>
 void FProtocol5Stage::ForEachSerialGap(
 	const TArray<FEventDescStream>& EventDescHeap,
-	CALLBACK&& Callback)
+	Callback&& InCallback)
 {
 	TArray<FEventDescStream> HeapCopy(EventDescHeap);
 	int Serial = HeapCopy.HeapTop().EventDescs[0].Serial;
@@ -3171,7 +3528,7 @@ void FProtocol5Stage::ForEachSerialGap(
 	// already been consumed.
 	if (NextSerial != Serial)
 	{
-		if (!Callback(NextSerial, Serial))
+		if (!InCallback(NextSerial, Serial))
 		{
 			return;
 		}
@@ -3188,7 +3545,7 @@ void FProtocol5Stage::ForEachSerialGap(
 		// the previous stream we have found a gap. Celebration ensues.
 		if (Serial != EventDesc->Serial)
 		{
-			if (!Callback(Serial, EventDesc->Serial))
+			if (!InCallback(Serial, EventDesc->Serial))
 			{
 				return;
 			}
@@ -3262,19 +3619,30 @@ void FProtocol5Stage::DetectSerialGaps(TArray<FEventDescStream>& EventDescHeap)
 		uint32 GapCount = 0;
 		auto RecordGap = [this, &GapCount] (int32 Lhs, int32 Rhs)
 		{
-			for (uint32 n = SerialGaps.Num(); GapCount < n; ++GapCount)
+			if (SerialGaps.IsEmpty() || GapCount >= (uint32)SerialGaps.Num())
 			{
-				FEventDesc& SerialGap = SerialGaps[GapCount];
-
-				if (SerialGap.Serial >= Lhs)
-				{
-					GapCount += (SerialGap.Serial == Lhs);
-					break;
-				}
-
 				return false;
 			}
-			return true;
+			
+			const FEventDesc& SerialGap = SerialGaps[GapCount];
+
+			if (SerialGap.Serial == Lhs)
+			{
+				/* This is the expected case */
+				++GapCount;
+				return true;
+			}
+
+			if (SerialGap.Serial > Lhs)
+			{
+				/* We've started receiving new gaps that are exist because not all
+				* data has been received yet. They're false positives. No need to process
+				* any further */
+				return false;
+			}
+
+			// If we're here something's probably gone wrong
+			return false;
 		};
 
 		ForEachSerialGap(EventDescHeap, RecordGap);
@@ -3370,7 +3738,7 @@ int32 FProtocol5Stage::DispatchEvents(
 
 				const auto* AuxHeader = ((FAuxHeader*)(Cursor->Data)) - 1;
 
-				FAuxData AuxData;
+				FAuxData AuxData = {};
 				AuxData.Data = AuxHeader->Data;
 				AuxData.DataSize = (AuxHeader->Pack >> FAuxHeader::SizeShift);
 				AuxData.FieldIndex = AuxHeader->FieldIndex_Size & FAuxHeader::FieldMask;
@@ -3388,6 +3756,23 @@ int32 FProtocol5Stage::DispatchEvents(
 }
 
 
+// {{{1 protocol-6 -------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+class FProtocol6Stage : public FProtocol5Stage
+{
+public:
+							FProtocol6Stage(FTransport* InTransport);
+protected:	
+	using EKnownUids		= Protocol6::EKnownEventUids;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+FProtocol6Stage::FProtocol6Stage(FTransport* InTransport)
+	: FProtocol5Stage(InTransport)
+{
+	EventVersion = 6;
+}
 
 // {{{1 est.-transport ---------------------------------------------------------
 
@@ -3447,6 +3832,11 @@ FEstablishTransportStage::EStatus FEstablishTransportStage::OnData(
 
 	case Protocol5::EProtocol::Id:
 		Context.Machine.QueueStage<FProtocol5Stage>(Transport);
+		Context.Machine.Transition();
+		break;
+
+	case Protocol6::EProtocol::Id:
+		Context.Machine.QueueStage<FProtocol6Stage>(Transport);
 		Context.Machine.Transition();
 		break;
 
@@ -3592,7 +3982,9 @@ void FAnalysisEngine::FImpl::End()
 ////////////////////////////////////////////////////////////////////////////////
 bool FAnalysisEngine::FImpl::OnData(FStreamReader& Reader)
 {
-	return (Machine.OnData(Reader) != FAnalysisMachine::EStatus::Error);
+	bool bRet = (Machine.OnData(Reader) != FAnalysisMachine::EStatus::Error);
+	bRet &= Bridge.IsStillAnalyzing();
+	return bRet;
 }
 
 

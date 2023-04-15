@@ -20,6 +20,8 @@ class FGPUScene;
 * This way native GPUScene and CPU instance descriptors can be built in a single dispatch per type.
 * Followed by one dispatch per GPU instance (since GPU transforms of each GPU instance are stored in separate buffers).
 * 
+* If the raytracing scene contains multiple layers, the instance buffer is divided into multiple subranges as expected by the RHI.
+* 
 */
 
 struct FRayTracingInstanceDescriptorInput
@@ -30,6 +32,7 @@ struct FRayTracingInstanceDescriptorInput
 	uint32 InstanceId;
 	uint32 InstanceMaskAndFlags;
 	uint32 InstanceContributionToHitGroupIndex;
+	uint32 bApplyLocalBoundsTransform;
 };
 
 struct FRayTracingGPUInstance
@@ -55,6 +58,14 @@ struct FRayTracingSceneWithGeometryInstances
 // Helper function to create FRayTracingSceneRHI using array of high level instances
 // Also outputs data required to build the instance buffer
 RENDERER_API FRayTracingSceneWithGeometryInstances CreateRayTracingSceneWithGeometryInstances(
+	TConstArrayView<FRayTracingGeometryInstance> Instances,
+	uint8 NumLayers,
+	uint32 NumShaderSlotsPerGeometrySegment,
+	uint32 NumMissShaderSlots,
+	uint32 NumCallableShaderSlots = 0);
+
+UE_DEPRECATED(5.1, "Specify NumLayers instead.")
+RENDERER_API FRayTracingSceneWithGeometryInstances CreateRayTracingSceneWithGeometryInstances(
 	TArrayView<FRayTracingGeometryInstance> Instances,
 	uint32 NumShaderSlotsPerGeometrySegment,
 	uint32 NumMissShaderSlots);
@@ -63,6 +74,7 @@ RENDERER_API FRayTracingSceneWithGeometryInstances CreateRayTracingSceneWithGeom
 // Transforms of CPU instances are copied to OutTransformData
 RENDERER_API void FillRayTracingInstanceUploadBuffer(
 	FRayTracingSceneRHIRef RayTracingSceneRHI,
+	FVector PreViewTranslation,
 	TConstArrayView<FRayTracingGeometryInstance> Instances,
 	TConstArrayView<uint32> InstanceGeometryIndices,
 	TConstArrayView<uint32> BaseUploadBufferOffsets,
@@ -74,6 +86,8 @@ RENDERER_API void FillRayTracingInstanceUploadBuffer(
 RENDERER_API void BuildRayTracingInstanceBuffer(
 	FRHICommandList& RHICmdList,
 	const FGPUScene* GPUScene,
+	FVector3f ViewTilePosition,
+	FVector3f RelativePreViewTranslation,
 	FUnorderedAccessViewRHIRef InstancesUAV,
 	FShaderResourceViewRHIRef InstanceUploadSRV,
 	FShaderResourceViewRHIRef AccelerationStructureAddressesSRV,

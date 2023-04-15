@@ -127,24 +127,17 @@ namespace Chaos
 			return NetAngularImpulse;
 		}
 
-		inline int32 GetNumActiveConstraints() const
-		{
-			// We use -1 as unitialized, but that should not be exposed outside the solver
-			return FMath::Max(NumActiveConstraints, 0);
-		}
-
-		inline bool GetIsActive() const
-		{
-			return bIsActive;
-		}
-
-
 		FPBDJointSolver();
+
+		void SetSolverBodies(FSolverBody* SolverBody0, FSolverBody* SolverBody1)
+		{
+			SolverBodies[0] = *SolverBody0;
+			SolverBodies[1] = *SolverBody1;
+		}
 
 		// Called once per frame to initialze the joint solver from the joint settings
 		void Init(
 			const FReal Dt,
-			const FSolverBodyPtrPair& SolverBodyPair,
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings,
 			const FRigidTransform3& XL0,
@@ -180,11 +173,10 @@ namespace Chaos
 		// @todo(chaos): this can be build into the Apply phase when the whole solver is PBD
 		void ApplyProjections(
 			const FReal Dt,
-			const FReal InSolverStiffness,
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings);
 
-		void SetInvMassScales(
+		void SetShockPropagationScales(
 			const FReal InvMScale0, 
 			const FReal InvMScale1);
 
@@ -199,14 +191,6 @@ namespace Chaos
 
 		void UpdateMass0();
 		void UpdateMass1();
-
-		// Check to see if this constraint still needs further solved
-		// @todo(chaos): the term "active" is used inconsistently with the meaning elsewhere. Active should
-		// mean "contributed impusles". Should use "solved" rather than "active"
-		bool UpdateIsActive(
-			const FReal Dt,
-			const FPBDJointSolverSettings& SolverSettings,
-			const FPBDJointSettings& JointSettings);
 
 		void ApplyPositionConstraints(
 			const FReal Dt,
@@ -640,37 +624,6 @@ namespace Chaos
 			const FVec3 Axis,
 			FReal& InOutAngle);
 
-		inline bool HasLinearConstraintPadding(const int32 AxisIndex) const
-		{
-			return LinearConstraintPadding[AxisIndex] >= 0.0f;
-		}
-
-		inline FReal GetLinearConstraintPadding(const int32 AxisIndex) const
-		{
-			return FMath::Max(LinearConstraintPadding[AxisIndex], 0.0f);
-		}
-
-		inline void SetLinearConstraintPadding(const int32 AxisIndex, FReal Padding)
-		{
-			LinearConstraintPadding[AxisIndex] = Padding;
-		}
-
-
-		inline bool HasAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex) const
-		{
-			return AngularConstraintPadding[(int32)ConstraintIndex] >= 0.0f;
-		}
-
-		inline FReal GetAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex) const
-		{
-			return FMath::Max(AngularConstraintPadding[(int32)ConstraintIndex], 0.0f);
-		}
-
-		inline void SetAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex, FReal Padding)
-		{
-			AngularConstraintPadding[(int32)ConstraintIndex] = Padding;
-		}
-
 		// Calculate linear velocities along constraint axes based on the constraint type in JointSettings. CV is the relative linear velocity of joint connectors.
 		void CalculateConstraintAxisLinearVelocities(
 			const FPBDJointSettings& JointSettings,
@@ -763,10 +716,6 @@ namespace Chaos
 		// \todo(chaos): remove Stiffness from SolverSettings (because it is not a solver constant)
 		FReal SolverStiffness;
 
-		// Constraint padding which can act something like a velocity constraint (for reslockfreetitution)
-		FVec3 LinearConstraintPadding;
-		FVec3 AngularConstraintPadding;
-
 		// Tolerances below which we stop solving
 		FReal PositionTolerance;					// Distance error below which we consider a constraint or drive solved
 		FReal AngleTolerance;						// Angle error below which we consider a constraint or drive solved
@@ -776,8 +725,6 @@ namespace Chaos
 		FRotation3 LastQs[MaxConstrainedBodies];	// Rotations at the beginning of the iteration
 		FVec3 InitConstraintAxisLinearVelocities; // Linear velocities along the constraint axes at the begining of the frame, used by restitution
 		FVec3 InitConstraintAxisAngularVelocities; // Angular velocities along the constraint axes at the begining of the frame, used by restitution
-		int32 NumActiveConstraints;					// The number of active constraints and drives in the last iteration (-1 initial value)
-		bool bIsActive;								// Whether any constraints actually moved any bodies in last iteration
 	};
 
 }

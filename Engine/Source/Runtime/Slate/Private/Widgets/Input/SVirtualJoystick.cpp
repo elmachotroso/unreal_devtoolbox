@@ -4,7 +4,7 @@
 #include "Rendering/DrawElements.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Framework/Application/SlateApplication.h"
-
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 const float OPACITY_LERP_RATE = 3.f;
 
@@ -415,9 +415,30 @@ void SVirtualJoystick::Tick(const FGeometry& AllottedGeometry, const double InCu
 			const FGamepadKeyNames::Type YAxis = (Control.Info.AltInputKey.IsValid() ? Control.Info.AltInputKey.GetFName() : (ControlIndex == 0 ? FGamepadKeyNames::LeftAnalogY : FGamepadKeyNames::RightAnalogY));
 
 			FSlateApplication::Get().SetAllUserFocusToGameViewport();
-			FSlateApplication::Get().OnControllerAnalog(XAxis, 0, NormalizedOffset.X);
-			FSlateApplication::Get().OnControllerAnalog(YAxis, 0, -NormalizedOffset.Y);
+			
+			FInputDeviceId PrimaryInputDevice = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(FSlateApplicationBase::SlateAppPrimaryPlatformUser);
+
+			auto ApplyInput = [PrimaryInputDevice](const FGamepadKeyNames::Type KeyName, float Delta)
+			{
+				FKey Key(KeyName);
+				if (Key.IsAnalog())
+				{
+					FSlateApplication::Get().OnControllerAnalog(KeyName, FSlateApplicationBase::SlateAppPrimaryPlatformUser, PrimaryInputDevice, Delta);
+				}
+				else if (Delta != 0.0f)
+				{
+					FSlateApplication::Get().OnControllerButtonPressed(KeyName, FSlateApplicationBase::SlateAppPrimaryPlatformUser, PrimaryInputDevice, false);
+				}
+				else
+				{
+					FSlateApplication::Get().OnControllerButtonReleased(KeyName, FSlateApplicationBase::SlateAppPrimaryPlatformUser, PrimaryInputDevice, false);
+				}
+			};
+
+			ApplyInput(XAxis, NormalizedOffset.X);
+			ApplyInput(YAxis, -NormalizedOffset.Y);
 		}
+		
 
 		// is this active?
 		if (Control.CapturedPointerIndex != -1)

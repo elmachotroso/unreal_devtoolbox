@@ -33,6 +33,7 @@ struct FGameplayEffectModCallbackData;
 struct FGameplayEffectSpec;
 struct FAggregatorEvaluateParameters;
 struct FAggregatorMod;
+struct FVisualLogEntry;
 
 /** Enumeration outlining the possible gameplay effect magnitude calculation policies. */
 UENUM()
@@ -1012,6 +1013,9 @@ struct GAMEPLAYABILITIES_API FGameplayEffectSpec
 	/** Appends all tags granted by this gameplay effect spec */
 	void GetAllGrantedTags(OUT FGameplayTagContainer& Container) const;
 
+	/** Appends all blocked ability tags granted by this gameplay effect spec */
+	void GetAllBlockedAbilityTags(FGameplayTagContainer& OutContainer) const;
+
 	/** Appends all tags that apply to this gameplay effect spec */
 	void GetAllAssetTags(OUT FGameplayTagContainer& Container) const;
 
@@ -1089,7 +1093,7 @@ public:
 
 	/** GameplayEfect definition. The static data that this spec points to. */
 	UPROPERTY()
-	const UGameplayEffect* Def;
+	TObjectPtr<const UGameplayEffect> Def;
 	
 	/** A list of attributes that were modified during the application of this spec */
 	UPROPERTY()
@@ -1187,7 +1191,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectSpecForRPC
 
 	/** GameplayEfect definition. The static data that this spec points to. */
 	UPROPERTY()
-	const UGameplayEffect* Def;
+	TObjectPtr<const UGameplayEffect> Def;
 
 	UPROPERTY()
 	TArray<FGameplayEffectModifiedAttribute> ModifiedAttributes;
@@ -1390,7 +1394,7 @@ public:
 
 	/** Matches on GameplayEffects which come from this source */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Query)
-	const UObject* EffectSource;
+	TObjectPtr<const UObject> EffectSource;
 
 	/** Matches on GameplayEffects with this definition */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Query)
@@ -1575,6 +1579,13 @@ struct GAMEPLAYABILITIES_API FActiveGameplayEffectsContainer : public FFastArray
 
 	const FActiveGameplayEffect* GetActiveGameplayEffect(const FActiveGameplayEffectHandle Handle) const;
 
+	/** Predictively execute a given effect spec. Any attribute modifications and effect execution calculations in the effect will run and then if desired predict gameplay cues
+		@note: This method will not predictively run any conditional effects that may be set up in the effect that apply post execution and will only happen if/when this spec is
+		applied on the server. 
+		
+		@note: WARNING: This will locally perform attribute changes on your client so beware. */
+	void PredictivelyExecuteEffectSpec(FGameplayEffectSpec& Spec, FPredictionKey PredictionKey, const bool bPredictGameplayCues = false);
+
 	void ExecuteActiveEffectsFrom(FGameplayEffectSpec &Spec, FPredictionKey PredictionKey = FPredictionKey() );
 	
 	void ExecutePeriodicGameplayEffect(FActiveGameplayEffectHandle Handle);	// This should not be outward facing to the skill system API, should only be called by the owning AbilitySystemComponent
@@ -1734,6 +1745,9 @@ struct GAMEPLAYABILITIES_API FActiveGameplayEffectsContainer : public FFastArray
 	/** Recomputes the start time for all active abilities */
 	void RecomputeStartWorldTimes(const float WorldTime, const float ServerWorldTime);
 
+	/** Called every time data has been modified by the FastArraySerializer */
+	void PostReplicatedReceive(const FFastArraySerializer::FPostReplicatedReceiveParameters& Parameters);
+
 private:
 
 	/**
@@ -1842,8 +1856,8 @@ private:
 	FGameplayTagCountContainer ApplicationImmunityGameplayTagCountContainer;
 
 	/** Active GEs that have immunity queries. This is an acceleration list to avoid searching through the Active GameplayEffect list frequetly. (We only search for the active GE if immunity procs) */
-	UPROPERTY()
-	TArray<const UGameplayEffect*> ApplicationImmunityQueryEffects;
+	UPROPERTY(NotReplicated)
+	TArray<TObjectPtr<const UGameplayEffect>> ApplicationImmunityQueryEffects;
 
 	FAggregatorRef& FindOrCreateAttributeAggregator(FGameplayAttribute Attribute);
 
@@ -1937,6 +1951,7 @@ public:
 	static const float INVALID_LEVEL;
 
 	virtual void GetOwnedGameplayTags(FGameplayTagContainer& TagContainer) const override;
+	virtual void GetBlockedAbilityTags(FGameplayTagContainer& OutTagContainer) const;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
@@ -2031,7 +2046,7 @@ public:
 
 	/** Data for the UI representation of this effect. This should include things like text, icons, etc. Not available in server-only builds. */
 	UPROPERTY(EditDefaultsOnly, Instanced, BlueprintReadOnly, Category = Display)
-	class UGameplayEffectUIData* UIData;
+	TObjectPtr<class UGameplayEffectUIData> UIData;
 
 	// ----------------------------------------------------------------------
 	//	Tag Containers
@@ -2041,9 +2056,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Tags, meta = (DisplayName = "GameplayEffectAssetTag", Categories="GameplayEffectTagsCategory"))
 	FInheritedTagContainer InheritableGameplayEffectTags;
 	
-	/** "These tags are applied to the actor I am applied to" */
+	/** These tags are applied to the actor I am applied to */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Tags, meta=(DisplayName="GrantedTags", Categories="OwnedTagsCategory"))
 	FInheritedTagContainer InheritableOwnedTagsContainer;
+	
+	/** These blocked ability tags are applied to the actor I am applied to */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Tags, meta=(DisplayName="GrantedBlockedAbilityTags", Categories="BlockedAbilityTagsCategory"))
+	FInheritedTagContainer InheritableBlockedAbilityTagsContainer;
 	
 	/** Once Applied, these tags requirements are used to determined if the GameplayEffect is "on" or "off". A GameplayEffect can be off and do nothing, but still applied. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Tags, meta=(Categories="OngoingTagRequirementsCategory"))

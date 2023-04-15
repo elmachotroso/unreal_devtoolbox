@@ -89,13 +89,13 @@ FConnectionDrawingPolicy::FConnectionDrawingPolicy(int32 InBackLayerID, int32 In
 	, DrawElementsList(InDrawElements)
 	, LocalMousePosition(0.0f, 0.0f)
 {
-	ArrowImage = FEditorStyle::GetBrush( TEXT("Graph.Arrow") );
+	ArrowImage = FAppStyle::GetBrush( TEXT("Graph.Arrow") );
 	ArrowRadius = ArrowImage->ImageSize * ZoomFactor * 0.5f;
 	MidpointImage = nullptr;
 	MidpointRadius = FVector2D::ZeroVector;
 	HoverDeemphasisDarkFraction = 0.8f;
 
-	BubbleImage = FEditorStyle::GetBrush( TEXT("Graph.ExecutionBubble") );
+	BubbleImage = FAppStyle::GetBrush( TEXT("Graph.ExecutionBubble") );
 }
 
 void FConnectionDrawingPolicy::DrawSplineWithArrow(const FVector2D& StartPoint, const FVector2D& EndPoint, const FConnectionParams& Params)
@@ -150,6 +150,9 @@ void FConnectionDrawingPolicy::SetHoveredPins(const TSet< FEdGraphPinReference >
 		}
 	}
 
+	// When we have only a single pin selected, we'll extend selection to apply the hover effect on the links
+	const bool bMakeConnectedPinsHovered = (InHoveredPins.Num() == 1);
+
 	// Convert the widget pointer for hovered pins to be EdGraphPin pointers for their connected nets (both ends of any connection)
 	for (auto PinIt = InHoveredPins.CreateConstIterator(); PinIt; ++PinIt)
 	{
@@ -159,9 +162,12 @@ void FConnectionDrawingPolicy::SetHoveredPins(const TSet< FEdGraphPinReference >
 			{
 				HoveredPins.Add(Pin);
 
-				for (auto LinkIt = Pin->LinkedTo.CreateConstIterator(); LinkIt; ++LinkIt)
+				if (bMakeConnectedPinsHovered)
 				{
-					HoveredPins.Add(*LinkIt);
+					for (auto LinkIt = Pin->LinkedTo.CreateConstIterator(); LinkIt; ++LinkIt)
+					{
+						HoveredPins.Add(*LinkIt);
+					}
 				}
 			}
 		}
@@ -483,6 +489,14 @@ void FConnectionDrawingPolicy::DrawPinGeometries(TMap<TSharedRef<SWidget>, FArra
 				{
 					FConnectionParams Params;
 					DetermineWiringStyle(ThePin, TargetPin, /*inout*/ Params);
+					const TSharedPtr<SGraphPin>* ConnectedPinWidget = PinToPinWidgetMap.Find(TargetPin);
+					if (ConnectedPinWidget && ConnectedPinWidget->IsValid())
+					{
+						if ( PinWidget.AreConnectionsFaded() && (*ConnectedPinWidget)->AreConnectionsFaded() )
+						{
+							Params.WireColor.A = 0.2f;
+						}
+					}
 					DrawSplineWithArrow(LinkStartWidgetGeometry->Geometry, LinkEndWidgetGeometry->Geometry, Params);
 				}
 			}
@@ -599,3 +613,14 @@ bool FGraphSplineOverlapResult::GetPins(const class SGraphPanel& InGraphPanel, U
 	return (OutPin1 != nullptr) && (OutPin2 != nullptr);
 }
 
+void FGraphSplineOverlapResult::GetPinWidgets(const class SGraphPanel& InGraphPanel, TSharedPtr<class SGraphPin>& OutPin1, TSharedPtr<class SGraphPin>& OutPin2) const
+{
+	OutPin1 = nullptr;
+	OutPin2 = nullptr;
+
+	if (IsValid())
+	{
+		OutPin1 = Pin1Handle.FindInGraphPanel(InGraphPanel);
+		OutPin2 = Pin2Handle.FindInGraphPanel(InGraphPanel);
+	}
+}

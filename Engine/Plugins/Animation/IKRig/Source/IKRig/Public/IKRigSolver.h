@@ -36,13 +36,6 @@ public:
 	* NOTE: Only ADD to the incoming set, do not remove from it. */
 	virtual void GetBonesWithSettings(TSet<FName>& OutBonesWithSettings) const {};
 	
-	//** END ROOT BONE */
-
-#if WITH_EDITORONLY_DATA
-	/** callback whenever this solver is edited */
-	DECLARE_EVENT_OneParam(UIKRigSolver, FIKRigSolverModified, UIKRigSolver*);
-	FIKRigSolverModified& OnSolverModified(){ return IKRigSolverModified; };
-
 	/** get if this solver is enabled */
 	bool IsEnabled() const { return bIsEnabled; };
 	/** turn solver on/off (will be skipped during execution if disabled) */
@@ -54,6 +47,16 @@ public:
 	 * This is necessary because at runtime, the IKRigProcessor creates a copy of your solver class
 	 * and the copy must be notified of changes made to the class settings in the source asset.*/
 	virtual void UpdateSolverSettings(UIKRigSolver* InSettings){};
+
+	/** override to support REMOVING a goal from custom solver */
+	virtual void RemoveGoal(const FName& GoalName) PURE_VIRTUAL("RemoveGoal");
+
+#if WITH_EDITORONLY_DATA
+	
+	/** callback whenever this solver is edited */
+	DECLARE_EVENT_OneParam(UIKRigSolver, FIKRigSolverModified, UIKRigSolver*);
+	FIKRigSolverModified& OnSolverModified(){ return IKRigSolverModified; };
+	
 	/** override to give your solver a nice name to display in the UI */
 	virtual FText GetNiceName() const { checkNoEntry() return FText::GetEmpty(); };
 	/** override to provide warning to user during setup of any missing components. return false if no warnings. */
@@ -63,8 +66,6 @@ public:
 	//** GOALS */
 	/** override to support ADDING a new goal to custom solver */
 	virtual void AddGoal(const UIKRigEffectorGoal& NewGoal) PURE_VIRTUAL("AddGoal");
-	/** override to support REMOVING a goal from custom solver */
-	virtual void RemoveGoal(const FName& GoalName) PURE_VIRTUAL("RemoveGoal");
 	/** override to support RENAMING an existing goal */
 	virtual void RenameGoal(const FName& OldName, const FName& NewName) PURE_VIRTUAL("RenameGoal");
 	/** override to support CHANGING BONE for an existing goal */
@@ -113,9 +114,8 @@ private:
 
 	/** Register callbacks to update IK Rig when a solver is modified */
 	FIKRigSolverModified IKRigSolverModified;
-
+#endif
+	
 	UPROPERTY()
 	bool bIsEnabled = true;
-#endif
-
 };

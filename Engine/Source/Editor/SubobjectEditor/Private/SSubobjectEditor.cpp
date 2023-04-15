@@ -14,6 +14,9 @@
 #include "Kismet2/ChildActorComponentEditorUtils.h"
 #include "GraphEditorActions.h"
 #include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 #include "ISCSEditorUICustomization.h"	// #TODO_BH Rename this to subobject
 #include "SubobjectEditorMenuContext.h"
 #include "Toolkits/ToolkitManager.h"
@@ -42,7 +45,7 @@
 #include "GameProjectGenerationModule.h"	// Adding new component classes
 #include "AddToProjectConfig.h"
 #include "FeaturedClasses.inl"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 
 #include "Subsystems/PanelExtensionSubsystem.h"	// SExtensionPanel
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -527,7 +530,7 @@ void FSubobjectRowDragDropOp::HoverTargetChanged()
 	bool bHoverHandled = false;
 
 	FSlateColor IconTint = FLinearColor::White;
-	const FSlateBrush* ErrorSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+	const FSlateBrush* ErrorSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 	if(SourceNodes.Num() > 1)
 	{
@@ -712,8 +715,8 @@ void SSubobject_RowWidget::Construct(const FArguments& InArgs, TWeakPtr<SSubobje
 
 	FSuperRowType::FArguments Args = FSuperRowType::FArguments()
 		.Style(bIsSeparator ?
-			&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.NoHoverTableRow") :
-			&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow")) //@todo create editor style for the SCS tree
+			&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.NoHoverTableRow") :
+			&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow")) //@todo create editor style for the SCS tree
 		.Padding(FMargin(0.f, 4.f, 0.f, 4.f))
 		.ShowSelection(!bIsSeparator)
 		.OnDragDetected(this, &SSubobject_RowWidget::HandleOnDragDetected)
@@ -896,7 +899,7 @@ EVisibility SSubobject_RowWidget::GetAssetVisibility() const
 
 const FSlateBrush* SSubobject_RowWidget::GetIconBrush() const
 {
-	const FSlateBrush* ComponentIcon = FEditorStyle::GetBrush("SCS.NativeComponent");
+	const FSlateBrush* ComponentIcon = FAppStyle::GetBrush("SCS.NativeComponent");
 
 	if (FSubobjectEditorTreeNodePtrType NodePtr = GetSubobjectPtr())
 	{
@@ -1223,8 +1226,8 @@ void SSubobject_RowWidget::HandleOnDragEnter(const FDragDropEvent& DragDropEvent
 		}
 		
 		const FSlateBrush* StatusSymbol = DragRowOp->PendingDropAction != FSubobjectRowDragDropOp::DropAction_None
-			? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
-			: FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
+			: FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 	
 		if (Message.IsEmpty())
 		{
@@ -1415,7 +1418,7 @@ void SSubobject_RowWidget::AddToToolTipInfoBox(const TSharedRef<SVerticalBox>& I
 		  .Padding(0, 0, 4, 0)
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(),
+			.TextStyle(FAppStyle::Get(),
 			           bImportant ? "SCSEditor.ComponentTooltip.ImportantLabel" : "SCSEditor.ComponentTooltip.Label")
 		.Text(FText::Format(LOCTEXT("AssetViewTooltipFormat", "{0}:"), Key))
 		]
@@ -1430,7 +1433,7 @@ void SSubobject_RowWidget::AddToToolTipInfoBox(const TSharedRef<SVerticalBox>& I
 		.AutoWidth()
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(),
+			.TextStyle(FAppStyle::Get(),
 			           bImportant ? "SCSEditor.ComponentTooltip.ImportantValue" : "SCSEditor.ComponentTooltip.Value")
 		.Text(Value)
 		]
@@ -1477,7 +1480,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateComponentTooltipWidget(const FS
 				       .Padding(FMargin(0, 2, 0, 4))
 				[
 					SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.ClassDescription")
+						.TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.ClassDescription")
 						.Text(ClassTooltip)
 						.WrapTextAt(400.0f)
 				];
@@ -1514,7 +1517,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateComponentTooltipWidget(const FS
 	}
 
 	TSharedRef<SBorder> TooltipContent = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.Padding(0)
 	[
 		SNew(SVerticalBox)
@@ -1534,7 +1537,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateComponentTooltipWidget(const FS
 				  .Padding(2)
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.Title")
+					.TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.Title")
 					.Text(this, &SSubobject_RowWidget::GetTooltipText)
 				]
 			]
@@ -1544,7 +1547,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateComponentTooltipWidget(const FS
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.Padding(2)
 			[
 				InfoBox
@@ -1572,7 +1575,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateActorTooltipWidget(const FSubob
 	AddToToolTipInfoBox(InfoBox, LOCTEXT("TooltipMobility", "Mobility"), SNullWidget::NullWidget, TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SSubobject_RowWidget::GetActorMobilityText)), false);
 
 	TSharedRef<SBorder> TooltipContent = SNew(SBorder)
-        .BorderImage(FEditorStyle::GetBrush("NoBorder"))
+        .BorderImage(FAppStyle::GetBrush("NoBorder"))
         .Padding(0)
         [
             SNew(SVerticalBox)
@@ -1594,7 +1597,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateActorTooltipWidget(const FSubob
                     .Padding(4)
                     [
                         SNew(STextBlock)
-                        .TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.Title")
+                        .TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.Title")
                         .Text(this, &SSubobject_RowWidget::GetActorDisplayText)
                     ]
                 ]
@@ -1604,7 +1607,7 @@ TSharedRef<SToolTip> SSubobject_RowWidget::CreateActorTooltipWidget(const FSubob
             .AutoHeight()
             [
                 SNew(SBorder)
-                .BorderImage(FEditorStyle::GetBrush("NoBorder"))
+                .BorderImage(FAppStyle::GetBrush("NoBorder"))
                 .Padding(4)
                 [
                     InfoBox
@@ -1721,11 +1724,10 @@ TSharedRef<SWidget> SSubobject_RowWidget::GetInheritedLinkWidget()
 {
 	FSubobjectEditorTreeNodePtrType NodePtr = GetSubobjectPtr();
     const FSubobjectData* Data = NodePtr ? NodePtr->GetDataSource() : nullptr;
-
 	if(!Data)
 	{
 		return SNullWidget::NullWidget;
-	}	
+	}
 	
 	// Native components are inherited and have a gray hyperlink to their C++ class
 	if(Data->IsNativeComponent())
@@ -1733,22 +1735,25 @@ TSharedRef<SWidget> SSubobject_RowWidget::GetInheritedLinkWidget()
 		static const FText NativeCppLabel = LOCTEXT("NativeCppInheritedLabel", "Edit in C++");
 
 		return SNew(SHyperlink)
-			.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
+			.Style(FAppStyle::Get(), "Common.GotoNativeCodeHyperlink")
 			.OnNavigate(this, &SSubobject_RowWidget::OnEditNativeCppClicked)
 			.Text(NativeCppLabel)
-			.ToolTipText(FText::Format(LOCTEXT("GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSelectedSourceCodeIDE()));	
+			.ToolTipText(FText::Format(LOCTEXT("GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSelectedSourceCodeIDE()))
+			.Visibility(this, &SSubobject_RowWidget::GetEditNativeCppVisibility);
 	}
 	// If the subobject is inherited and not native then it must be from a blueprint
 	else if(Data->IsInstancedInheritedComponent() || Data->IsBlueprintInheritedComponent())
 	{
-		const UBlueprint* BP = Data->GetBlueprint();
-		static const FText InheritedBPLabel = LOCTEXT("InheritedBpLabel", "Edit in Blueprint");
-		
-		return SNew(SHyperlink)
-			.Style(FEditorStyle::Get(), "Common.GotoBlueprintHyperlink")
-			.OnNavigate(this, &SSubobject_RowWidget::OnEditBlueprintClicked)
-			.Text(InheritedBPLabel)
-			.ToolTipText(LOCTEXT("EditBlueprint_ToolTip", "Click to edit the blueprint"));
+		if(const UBlueprint* BP = Data->GetBlueprint())
+		{
+			static const FText InheritedBPLabel = LOCTEXT("InheritedBpLabel", "Edit in Blueprint");
+			return SNew(SHyperlink)
+				.Style(FAppStyle::Get(), "Common.GotoBlueprintHyperlink")
+				.OnNavigate(this, &SSubobject_RowWidget::OnEditBlueprintClicked)
+				.Text(InheritedBPLabel)
+				.ToolTipText(LOCTEXT("EditBlueprint_ToolTip", "Click to edit the blueprint"))
+				.Visibility(this, &SSubobject_RowWidget::GetEditBlueprintVisibility);
+		}
 	}
 
 	// Non-inherited subobjects shouldn't show anything! 
@@ -1789,6 +1794,29 @@ void SSubobject_RowWidget::OnEditBlueprintClicked()
 			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
 		}
 	}
+}
+
+EVisibility SSubobject_RowWidget::GetEditBlueprintVisibility() const
+{
+	FSubobjectEditorTreeNodePtrType NodePtr = GetSubobjectPtr();
+	const FSubobjectData* Data = NodePtr ? NodePtr->GetDataSource() : nullptr;
+
+	if (!Data)
+	{
+		return EVisibility::Collapsed;
+	}
+
+	if (const UBlueprint* BP = Data->GetBlueprint())
+	{
+		return GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->IsAssetEditable(BP) ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+
+	return EVisibility::Collapsed;
+}
+
+EVisibility SSubobject_RowWidget::GetEditNativeCppVisibility() const
+{
+	return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 void SSubobject_RowWidget::OnEditNativeCppClicked()
@@ -1878,11 +1906,11 @@ FSlateBrush const* SSubobject_RowWidget::GetMobilityIconImage() const
 			{
 				if (SceneComponentTemplate->Mobility == EComponentMobility::Movable)
 				{
-					return FEditorStyle::GetBrush(TEXT("ClassIcon.MovableMobilityIcon"));
+					return FAppStyle::GetBrush(TEXT("ClassIcon.MovableMobilityIcon"));
 				}
 				else if (SceneComponentTemplate->Mobility == EComponentMobility::Stationary)
 				{
-					return FEditorStyle::GetBrush(TEXT("ClassIcon.StationaryMobilityIcon"));
+					return FAppStyle::GetBrush(TEXT("ClassIcon.StationaryMobilityIcon"));
 				}
 				// static components don't get an icon (because static is the most common
 				// mobility type, and we'd like to keep the icon clutter to a minimum)
@@ -2431,14 +2459,8 @@ void SSubobjectEditor::UpdateTree(bool bRegenerateTreeNodes /* = true */)
 		return;
 	}
 
-	UObject* Context = GetObjectContext();
-
-	if (bRegenerateTreeNodes && Context)
+	if (bRegenerateTreeNodes)
 	{
-		// Obtain the set of expandable tree nodes that are currently collapsed
-		TSet<FSubobjectEditorTreeNodePtrType> CollapsedTreeNodes;
-		GetCollapsedNodes(RootNodes.Num() > 0 ? RootNodes[0] : FSubobjectEditorTreeNodePtrType(), CollapsedTreeNodes);
-
 		// Obtain the list of selected items
 		TArray<FSubobjectEditorTreeNodePtrType> SelectedTreeNodes = GetSelectedNodes();
 
@@ -2449,75 +2471,78 @@ void SSubobjectEditor::UpdateTree(bool bRegenerateTreeNodes /* = true */)
 		}
 		RootNodes.Empty();
 
-		ensureMsgf(FModuleManager::Get().LoadModule("SubobjectDataInterface"), TEXT("The Subobject Data Interface module is required."));
-
-		USubobjectDataSubsystem* DataSubsystem = USubobjectDataSubsystem::Get();
-		check(DataSubsystem);
-
-		TArray<FSubobjectDataHandle> SubobjectData;
-				
-		DataSubsystem->GatherSubobjectData(Context, SubobjectData);
-		
-		FSubobjectEditorTreeNodePtrType SeperatorNode;
-		TMap<FSubobjectDataHandle, FSubobjectEditorTreeNodePtrType> AddedNodes;
-
-		// By default, root node will always be expanded. If possible we will restore the collapsed state later.
-		if (SubobjectData.Num() > 0)
+		if (UObject* Context = GetObjectContext())
 		{
-			FSubobjectEditorTreeNodePtrType Node = MakeShareable<FSubobjectEditorTreeNode>(
-				new FSubobjectEditorTreeNode(SubobjectData[0]));
-			RootNodes.Add(Node);
-			AddedNodes.Add(Node->GetDataHandle(), Node);
-			CachedRootHandle = Node->GetDataHandle();
-			
-			TreeWidget->SetItemExpansion(Node, true);
-			TreeWidget->SetItemExpansion(SeperatorNode, true);
+			ensureMsgf(FModuleManager::Get().LoadModule("SubobjectDataInterface"), TEXT("The Subobject Data Interface module is required."));
 
-			RefreshFilteredState(Node, false);
-		}
+			USubobjectDataSubsystem* DataSubsystem = USubobjectDataSubsystem::Get();
+			check(DataSubsystem);
 
-		// Create slate nodes for each subobject
-		for (FSubobjectDataHandle& Handle : SubobjectData)
-		{
-			// Do we have a slate node for this handle already? If not, then we need to make one
-			FSubobjectEditorTreeNodePtrType NewNode = SSubobjectEditor::FindOrCreateSlateNodeForHandle(Handle, AddedNodes);
-			
-			FSubobjectData* Data = Handle.GetData();
+			TArray<FSubobjectDataHandle> SubobjectData;
 
-			const FSubobjectDataHandle& ParentHandle = Data->GetParentHandle();
+			DataSubsystem->GatherSubobjectData(Context, SubobjectData);
 
-			// Have parent? 
-			if (ParentHandle.IsValid())
+			FSubobjectEditorTreeNodePtrType SeperatorNode;
+			TMap<FSubobjectDataHandle, FSubobjectEditorTreeNodePtrType> AddedNodes;
+
+			// By default, root node will always be expanded. If possible we will restore the collapsed state later.
+			if (SubobjectData.Num() > 0)
 			{
-				// Get the parent node for this subobject
-				FSubobjectEditorTreeNodePtrType ParentNode = SSubobjectEditor::FindOrCreateSlateNodeForHandle(ParentHandle, AddedNodes);
+				FSubobjectEditorTreeNodePtrType Node = MakeShareable<FSubobjectEditorTreeNode>(
+					new FSubobjectEditorTreeNode(SubobjectData[0]));
+				RootNodes.Add(Node);
+				AddedNodes.Add(Node->GetDataHandle(), Node);
+				CachedRootHandle = Node->GetDataHandle();
 
-				check(ParentNode);
-				ParentNode->AddChild(NewNode);
-				TreeWidget->SetItemExpansion(ParentNode, true);			
+				TreeWidget->SetItemExpansion(Node, true);
+				TreeWidget->SetItemExpansion(SeperatorNode, true);
 
-				// Add a seperator after the default scene root, but only if there are more items below it
-				if (Data->IsDefaultSceneRoot() && Data->IsInheritedComponent() && SubobjectData.Find(Handle) < SubobjectData.Num() - 1)
-				{
-					SeperatorNode = MakeShareable<FSubobjectEditorTreeNode>(
-						new FSubobjectEditorTreeNode(FSubobjectDataHandle::InvalidHandle, /** bIsSeperator */true));
-					AddedNodes.Add(SeperatorNode->GetDataHandle(), SeperatorNode);
-					ParentNode->AddChild(SeperatorNode);
-				}
-				
+				RefreshFilteredState(Node, false);
 			}
-			TreeWidget->SetItemExpansion(NewNode, true);
-		}
 
-		RestoreSelectionState(SelectedTreeNodes);
-
-		// If we have a pending deferred rename request, redirect it to the new tree node
-		if(DeferredRenameRequest.IsValid())
-		{
-			FSubobjectEditorTreeNodePtrType NodeToRenamePtr = FindSlateNodeForHandle(DeferredRenameRequest);
-			if(NodeToRenamePtr.IsValid())
+			// Create slate nodes for each subobject
+			for (FSubobjectDataHandle& Handle : SubobjectData)
 			{
-				TreeWidget->RequestScrollIntoView(NodeToRenamePtr);
+				// Do we have a slate node for this handle already? If not, then we need to make one
+				FSubobjectEditorTreeNodePtrType NewNode = SSubobjectEditor::FindOrCreateSlateNodeForHandle(Handle, AddedNodes);
+
+				FSubobjectData* Data = Handle.GetData();
+
+				const FSubobjectDataHandle& ParentHandle = Data->GetParentHandle();
+
+				// Have parent? 
+				if (ParentHandle.IsValid())
+				{
+					// Get the parent node for this subobject
+					FSubobjectEditorTreeNodePtrType ParentNode = SSubobjectEditor::FindOrCreateSlateNodeForHandle(ParentHandle, AddedNodes);
+
+					check(ParentNode);
+					ParentNode->AddChild(NewNode);
+					TreeWidget->SetItemExpansion(ParentNode, true);
+
+					// Add a seperator after the default scene root, but only if there are more items below it
+					if (Data->IsDefaultSceneRoot() && Data->IsInheritedComponent() && SubobjectData.Find(Handle) < SubobjectData.Num() - 1)
+					{
+						SeperatorNode = MakeShareable<FSubobjectEditorTreeNode>(
+							new FSubobjectEditorTreeNode(FSubobjectDataHandle::InvalidHandle, /** bIsSeperator */true));
+						AddedNodes.Add(SeperatorNode->GetDataHandle(), SeperatorNode);
+						ParentNode->AddChild(SeperatorNode);
+					}
+
+				}
+				TreeWidget->SetItemExpansion(NewNode, true);
+			}
+
+			RestoreSelectionState(SelectedTreeNodes);
+
+			// If we have a pending deferred rename request, redirect it to the new tree node
+			if (DeferredRenameRequest.IsValid())
+			{
+				FSubobjectEditorTreeNodePtrType NodeToRenamePtr = FindSlateNodeForHandle(DeferredRenameRequest);
+				if (NodeToRenamePtr.IsValid())
+				{
+					TreeWidget->RequestScrollIntoView(NodeToRenamePtr);
+				}
 			}
 		}
 	}
@@ -2638,7 +2663,7 @@ FReply SSubobjectEditor::TryHandleAssetDragDropOperation(const FDragDropEvent& D
 						PotentialActorClass = BPClass->GeneratedClass;
 					}
 				}
-				else if (AssetClass->IsChildOf(UClass::StaticClass()))
+				else if (AssetClass && AssetClass->IsChildOf(UClass::StaticClass()))
 				{
 					UClass* AssetAsClass = CastChecked<UClass>(Asset);
 					if (AssetAsClass->IsChildOf(UActorComponent::StaticClass()))
@@ -3460,7 +3485,7 @@ FSubobjectDataHandle SSubobjectEditor::PerformComboAddClass(TSubclassOf<UActorCo
 			}
 			
 			FNotificationInfo Info(OutFailReason);
-			Info.Image = FEditorStyle::GetBrush(TEXT("Icons.Error"));
+			Info.Image = FAppStyle::GetBrush(TEXT("Icons.Error"));
 			Info.bFireAndForget = true;
 			Info.bUseSuccessFailIcons = false;
 			Info.ExpireDuration = 5.0f;

@@ -1,11 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintEventNodeSpawner.h"
+
+#include "BlueprintNodeTemplateCache.h"
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "BlueprintNodeTemplateCache.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/Package.h"
+
+class UObject;
 
 #define LOCTEXT_NAMESPACE "BlueprintEventNodeSpawner"
 
@@ -74,7 +95,7 @@ UBlueprintEventNodeSpawner* UBlueprintEventNodeSpawner::Create(UFunction const* 
 	{
 		MenuSignature.Keywords = FText::FromString(TEXT(" "));
 	}
-	MenuSignature.Icon = FSlateIcon("EditorStyle", "GraphEditor.Event_16x");
+	MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
 
 	return NodeSpawner;
 }
@@ -95,13 +116,13 @@ UBlueprintEventNodeSpawner* UBlueprintEventNodeSpawner::Create(TSubclassOf<UK2No
 	if (CustomEventName.IsNone())
 	{
 		MenuSignature.MenuName = LOCTEXT("AddCustomEvent", "Add Custom Event...");
-		MenuSignature.Icon = FSlateIcon("EditorStyle", "GraphEditor.CustomEvent_16x");
+		MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.CustomEvent_16x");
 	}
 	else
 	{
 		FText const EventName = FText::FromName(CustomEventName);
 		MenuSignature.MenuName = FText::Format(LOCTEXT("EventWithSignatureName", "Event {0}"), EventName);
-		MenuSignature.Icon = FSlateIcon("EditorStyle", "GraphEditor.Event_16x");
+		MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
 	}
 	//MenuSignature.Category, will be pulled from the node template
 	//MenuSignature.Tooltip,  will be pulled from the node template 

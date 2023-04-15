@@ -10,10 +10,6 @@
 
 #include "Misc/Guid.h"
 
-#if PLATFORM_DESKTOP && !PLATFORM_APPLE
-#include "VulkanRHIBridge.h"
-#endif
-
 #if PLATFORM_WINDOWS
 #include "MicrosoftCommon.h"
 #endif
@@ -35,12 +31,12 @@ namespace AVEncoder
 
 	// --- construct video encoder input based on expected input frame format -------------------------
 
-	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateDummy(uint32 InWidth, uint32 InHeight, bool bIsResizable)
+	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateDummy(bool bIsResizable)
 	{
 		TSharedPtr<FVideoEncoderInputImpl>	Input = MakeShared<FVideoEncoderInputImpl>();
 		Input->bIsResizable = bIsResizable;
 
-		if (!Input->SetupForDummy(InWidth, InHeight))
+		if (!Input->SetupForDummy())
 		{
 			Input.Reset();
 		}
@@ -59,7 +55,7 @@ namespace AVEncoder
 		return Input;
 	}
 
-	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForD3D11(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight, bool bIsResizable, bool IsShared)
+	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForD3D11(void* InApplicationD3DDevice, bool bIsResizable, bool IsShared)
 	{
 		TSharedPtr<FVideoEncoderInputImpl>	Input = MakeShared<FVideoEncoderInputImpl>();
 
@@ -68,14 +64,14 @@ namespace AVEncoder
 
 		if (IsShared)
 		{
-			if (!Input->SetupForD3D11Shared(static_cast<ID3D11Device*>(InApplicationD3DDevice), InWidth, InHeight))
+			if (!Input->SetupForD3D11Shared(static_cast<ID3D11Device*>(InApplicationD3DDevice)))
 			{
 				Input.Reset();
 			}
 		}
 		else
 		{
-			if (!Input->SetupForD3D11(static_cast<ID3D11Device*>(InApplicationD3DDevice), InWidth, InHeight))
+			if (!Input->SetupForD3D11(static_cast<ID3D11Device*>(InApplicationD3DDevice)))
 			{
 				Input.Reset();
 			}
@@ -87,7 +83,7 @@ namespace AVEncoder
 	}
 
 
-	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForD3D12(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight, bool bIsResizable, bool IsShared)
+	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForD3D12(void* InApplicationD3DDevice, bool bIsResizable, bool IsShared)
 	{
 		TSharedPtr<FVideoEncoderInputImpl>	Input = MakeShared<FVideoEncoderInputImpl>();
 
@@ -96,14 +92,14 @@ namespace AVEncoder
 
 		if (IsShared)
 		{
-			if (!Input->SetupForD3D12Shared(static_cast<ID3D12Device*>(InApplicationD3DDevice), InWidth, InHeight))
+			if (!Input->SetupForD3D12Shared(static_cast<ID3D12Device*>(InApplicationD3DDevice)))
 			{
 				Input.Reset();
 			}
 		}
 		else
 		{
-			if (!Input->SetupForD3D12(static_cast<ID3D12Device*>(InApplicationD3DDevice), InWidth, InHeight))
+			if (!Input->SetupForD3D12(static_cast<ID3D12Device*>(InApplicationD3DDevice)))
 			{
 				Input.Reset();
 			}
@@ -114,12 +110,12 @@ namespace AVEncoder
 		return Input;
 	}
 
-	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForCUDA(void* InApplicationContext, uint32 InWidth, uint32 InHeight, bool bIsResizable)
+	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForCUDA(void* InApplicationContext, bool bIsResizable)
 	{
 		TSharedPtr<FVideoEncoderInputImpl> Input = MakeShared<FVideoEncoderInputImpl>();
 		Input->bIsResizable = bIsResizable;
 
-		if (!Input->SetupForCUDA(reinterpret_cast<CUcontext>(InApplicationContext), InWidth, InHeight))
+		if (!Input->SetupForCUDA(reinterpret_cast<CUcontext>(InApplicationContext)))
 		{
 			Input.Reset();
 		}
@@ -127,14 +123,14 @@ namespace AVEncoder
 	}
 
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
-	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForVulkan(void* InApplicationVulkanData, uint32 InWidth, uint32 InHeight, bool bIsResizable)
+	TSharedPtr<FVideoEncoderInput> FVideoEncoderInput::CreateForVulkan(void* InApplicationVulkanData, bool bIsResizable)
 	{
 		TSharedPtr<FVideoEncoderInputImpl>	Input = MakeShared<FVideoEncoderInputImpl>();
 		Input->bIsResizable = bIsResizable;
 
 		FVulkanDataStruct* VulkanData = static_cast<FVulkanDataStruct*>(InApplicationVulkanData);
 
-		if (!Input->SetupForVulkan(VulkanData->VulkanInstance, VulkanData->VulkanPhysicalDevice, VulkanData->VulkanDevice, InWidth, InHeight))
+		if (!Input->SetupForVulkan(VulkanData->VulkanInstance, VulkanData->VulkanPhysicalDevice, VulkanData->VulkanDevice))
 		{
 			Input.Reset();
 		}
@@ -143,11 +139,6 @@ namespace AVEncoder
 	}
 #endif
 
-	void FVideoEncoderInput::SetResolution(uint32 InWidth, uint32 InHeight)
-	{
-		Width = InWidth;
-		Height = InHeight;
-	}
 
 	void FVideoEncoderInput::SetMaxNumBuffers(uint32 InMaxNumBuffers)
 	{
@@ -170,32 +161,21 @@ namespace AVEncoder
 			}
 
 			check(ActiveFrames.Num() == 0);
-
-			while (!AvailableFrames.IsEmpty())
-			{
-				FVideoEncoderInputFrameImpl* Frame = nullptr;
-				AvailableFrames.Dequeue(Frame);
-				delete Frame;
-			}
 		}
 #if PLATFORM_WINDOWS
 		//	DEBUG_D3D11_REPORT_LIVE_DEVICE_OBJECT(FrameInfoD3D.EncoderDeviceD3D11);
 #endif
 	}
 
-	bool FVideoEncoderInputImpl::SetupForDummy(uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForDummy()
 	{
 		FrameFormat = EVideoFrameFormat::Undefined;
-		this->Width = InWidth;
-		this->Height = InHeight;
 		return true;
 	}
 
 	bool FVideoEncoderInputImpl::SetupForYUV420P(uint32 InWidth, uint32 InHeight)
 	{
 		FrameFormat = EVideoFrameFormat::YUV420P;
-		this->Width = InWidth;
-		this->Height = InHeight;
 		FrameInfoYUV420P.StrideY = InWidth;
 		FrameInfoYUV420P.StrideU = (InWidth + 1) / 2;
 		FrameInfoYUV420P.StrideV = (InWidth + 1) / 2;
@@ -204,7 +184,7 @@ namespace AVEncoder
 		return true;
 	}
 
-	bool FVideoEncoderInputImpl::SetupForD3D11(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForD3D11(void* InApplicationD3DDevice)
 	{
 #if PLATFORM_WINDOWS
 		TRefCountPtr<IDXGIDevice>	DXGIDevice;
@@ -245,8 +225,6 @@ namespace AVEncoder
 		DEBUG_SET_D3D11_OBJECT_NAME(FrameInfoD3D.EncoderDeviceContextD3D11, "FVideoEncoderInputImpl");
 
 		FrameFormat = EVideoFrameFormat::D3D11_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
@@ -255,7 +233,7 @@ namespace AVEncoder
 		return false;
 	}
 
-	bool FVideoEncoderInputImpl::SetupForD3D11Shared(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForD3D11Shared(void* InApplicationD3DDevice)
 	{
 #if PLATFORM_WINDOWS
 
@@ -297,8 +275,6 @@ namespace AVEncoder
 		DEBUG_SET_D3D11_OBJECT_NAME(FrameInfoD3D.EncoderDeviceContextD3D11, "FVideoEncoderInputImpl");
 
 		FrameFormat = EVideoFrameFormat::D3D11_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
@@ -307,7 +283,7 @@ namespace AVEncoder
 		return false;
 	}
 
-	bool FVideoEncoderInputImpl::SetupForD3D12(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForD3D12(void* InApplicationD3DDevice)
 	{
 #if PLATFORM_WINDOWS
 
@@ -336,8 +312,6 @@ namespace AVEncoder
 		}
 
 		FrameFormat = EVideoFrameFormat::D3D12_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
@@ -347,7 +321,7 @@ namespace AVEncoder
 		return false;
 	}
 
-	bool FVideoEncoderInputImpl::SetupForD3D12Shared(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForD3D12Shared(void* InApplicationD3DDevice)
 	{
 #if PLATFORM_WINDOWS
 
@@ -398,8 +372,6 @@ namespace AVEncoder
 		DEBUG_SET_D3D11_OBJECT_NAME(FrameInfoD3D.EncoderDeviceContextD3D11, "FVideoEncoderInputImpl");
 
 		FrameFormat = EVideoFrameFormat::D3D11_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
@@ -410,28 +382,24 @@ namespace AVEncoder
 	}
 
 
-	bool FVideoEncoderInputImpl::SetupForCUDA(void* InApplicationContext, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForCUDA(void* InApplicationContext)
 	{
 		FrameInfoCUDA.EncoderContextCUDA = static_cast<CUcontext>(InApplicationContext);
 
 		FrameFormat = EVideoFrameFormat::CUDA_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
 	}
 
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
-	bool FVideoEncoderInputImpl::SetupForVulkan(VkInstance InApplicationVulkanInstance, VkPhysicalDevice InApplicationVulkanPhysicalDevice, VkDevice InApplicationVulkanDevice, uint32 InWidth, uint32 InHeight)
+	bool FVideoEncoderInputImpl::SetupForVulkan(VkInstance InApplicationVulkanInstance, VkPhysicalDevice InApplicationVulkanPhysicalDevice, VkDevice InApplicationVulkanDevice)
 	{
 		FrameInfoVulkan.VulkanInstance = InApplicationVulkanInstance;
 		FrameInfoVulkan.VulkanPhysicalDevice = InApplicationVulkanPhysicalDevice;
 		FrameInfoVulkan.VulkanDevice = InApplicationVulkanDevice;
 
 		FrameFormat = EVideoFrameFormat::VULKAN_R8G8B8A8_UNORM;
-		this->Width = InWidth;
-		this->Height = InHeight;
 
 		CollectAvailableEncoders();
 		return true;
@@ -507,9 +475,9 @@ namespace AVEncoder
 
 	// --- encoder input frames -----------------------------------------------------------------------
 
-	FVideoEncoderInputFrame* FVideoEncoderInputImpl::ObtainInputFrame()
+	TSharedPtr<FVideoEncoderInputFrame> FVideoEncoderInputImpl::ObtainInputFrame()
 	{
-		FVideoEncoderInputFrameImpl* Frame = nullptr;
+		TSharedPtr<FVideoEncoderInputFrameImpl> Frame;
 		FScopeLock						Guard(&ProtectFrames);
 
 		if (!AvailableFrames.IsEmpty())
@@ -520,7 +488,7 @@ namespace AVEncoder
 		}
 		else
 		{
-			Frame = CreateFrame();
+			Frame = MakeShareable(CreateFrame());
 			UE_LOG(LogVideoEncoder, Verbose, TEXT("Created new frame total frames: %d"), NumBuffers);
 		}
 
@@ -533,7 +501,8 @@ namespace AVEncoder
 			++NextFrameID; // skip 0 id
 		}
 
-		return const_cast<FVideoEncoderInputFrame*>(Frame->Obtain());
+		Frame->Obtain();
+		return Frame;
 	}
 
 	FVideoEncoderInputFrameImpl* FVideoEncoderInputImpl::CreateFrame()
@@ -582,7 +551,15 @@ namespace AVEncoder
 			}
 		}
 
-		int32 NumRemoved = ActiveFrames.Remove(InFrameImpl);
+		TSharedPtr<FVideoEncoderInputFrameImpl>* InFramePtrPtr = ActiveFrames.FindByPredicate([InFrameImpl](TSharedPtr<FVideoEncoderInputFrameImpl> ActiveFrame) { return ActiveFrame.Get() == InFrameImpl; });
+		if (!InFramePtrPtr)
+		{
+			// releasing a non active frame. might be after we flushed or something. ignore it.
+			return;
+		}
+
+		TSharedPtr<FVideoEncoderInputFrameImpl> InFramePtr = *InFramePtrPtr;
+		int32 NumRemoved = ActiveFrames.Remove(InFramePtr);
 		check(NumRemoved == 1);
 		if (NumRemoved > 0)
 		{
@@ -590,55 +567,33 @@ namespace AVEncoder
 			if (InFrame->GetFormat() != FrameFormat)
 			{
 				ProtectFrames.Unlock();
-				delete InFrameImpl;
 				NumBuffers--;
 				UE_LOG(LogVideoEncoder, Verbose, TEXT("Deleted buffer (format mismatch) total remaining: %d"), NumBuffers);
-				return;
-			}
-
-			// drop frame if resolution changed
-			if (bIsResizable && (InFrame->GetWidth() != this->Width || InFrame->GetHeight() != this->Height))
-			{
-				ProtectFrames.Unlock();
-				delete InFrameImpl;
-				NumBuffers--;
-				UE_LOG(LogVideoEncoder, Verbose, TEXT("Deleted buffer (size mismatch) total remaining: %d"), NumBuffers);
 				return;
 			}
 
 			if (!AvailableFrames.IsEmpty() && NumBuffers > MaxNumBuffers)
 			{
 				ProtectFrames.Unlock();
-				delete InFrameImpl;
 				NumBuffers--;
 				UE_LOG(LogVideoEncoder, Verbose, TEXT("Deleted buffer (too many) total frames: %d"), NumBuffers);
 				return;
 			}
 
-			AvailableFrames.Enqueue(InFrameImpl);
+			AvailableFrames.Enqueue(InFramePtr);
 		}
 	}
 
 	void FVideoEncoderInputImpl::Flush()
 	{
-		ProtectFrames.Lock();
-		while (!AvailableFrames.IsEmpty())
-		{
-			FVideoEncoderInputFrameImpl* Frame = nullptr;
-			AvailableFrames.Dequeue(Frame);
-			ProtectFrames.Unlock();
-			delete Frame;
-			NumBuffers--;
-			ProtectFrames.Lock();
-		}
-		ProtectFrames.Unlock();
+		FScopeLock ScopeLock(&ProtectFrames);
+		AvailableFrames.Empty();
+		NumBuffers = 0;
 	}
 
 	void FVideoEncoderInputImpl::SetupFrameYUV420P(FVideoEncoderInputFrameImpl* Frame)
 	{
 		Frame->SetFormat(EVideoFrameFormat::YUV420P);
-		Frame->SetWidth(this->Width);
-		Frame->SetHeight(this->Height);
 		FVideoEncoderInputFrame::FYUV420P& YUV420P = Frame->GetYUV420P();
 		YUV420P.StrideY = FrameInfoYUV420P.StrideY;
 		YUV420P.StrideU = FrameInfoYUV420P.StrideU;
@@ -650,8 +605,6 @@ namespace AVEncoder
 	{
 #if PLATFORM_WINDOWS
 		Frame->SetFormat(FrameFormat);
-		Frame->SetWidth(this->Width);
-		Frame->SetHeight(this->Height);
 
 		FVideoEncoderInputFrame::FD3D11& Data = Frame->GetD3D11();
 		Data.EncoderDevice = FrameInfoD3D.EncoderDeviceD3D11;
@@ -662,8 +615,6 @@ namespace AVEncoder
 	{
 #if PLATFORM_WINDOWS
 		Frame->SetFormat(FrameFormat);
-		Frame->SetWidth(this->Width);
-		Frame->SetHeight(this->Height);
 
 		if (FrameFormat == EVideoFrameFormat::D3D11_R8G8B8A8_UNORM)
 		{
@@ -682,8 +633,6 @@ namespace AVEncoder
 	{
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
 		Frame->SetFormat(FrameFormat);
-		Frame->SetWidth(this->Width);
-		Frame->SetHeight(this->Height);
 
 		FVideoEncoderInputFrame::FVulkan& Data = Frame->GetVulkan();
 		Data.EncoderDevice = FrameInfoVulkan.VulkanDevice;
@@ -693,8 +642,6 @@ namespace AVEncoder
 	void FVideoEncoderInputImpl::SetupFrameCUDA(FVideoEncoderInputFrameImpl* Frame)
 	{
 		Frame->SetFormat(FrameFormat);
-		Frame->SetWidth(this->Width);
-		Frame->SetHeight(this->Height);
 		FVideoEncoderInputFrame::FCUDA& Data = Frame->GetCUDA();
 		Data.EncoderDevice = FrameInfoCUDA.EncoderContextCUDA;
 	}

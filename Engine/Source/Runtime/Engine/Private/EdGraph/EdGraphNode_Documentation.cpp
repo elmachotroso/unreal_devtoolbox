@@ -7,6 +7,10 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #endif
 
+#include "Styling/AppStyle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EdGraphNode_Documentation)
+
 #define LOCTEXT_NAMESPACE "EdGraph"
 
 /////////////////////////////////////////////////////
@@ -51,7 +55,7 @@ FText UEdGraphNode_Documentation::GetNodeTitle( ENodeTitleType::Type TitleType )
 
 FSlateIcon UEdGraphNode_Documentation::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "Icons.Documentation");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "Icons.Documentation");
 	return Icon;
 }
 
@@ -95,3 +99,4 @@ TSharedPtr<class INameValidatorInterface> UEdGraphNode_Documentation::MakeNameVa
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

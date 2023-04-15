@@ -5,6 +5,7 @@
 #include "Chaos/Framework/Parallel.h"
 #include "Chaos/ImplicitObjectTransformed.h"
 #include "Chaos/ImplicitObjectUnion.h"
+#include "Chaos/MassConditioning.h"
 #include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDCollisionSpringConstraints.h"
 #include "Chaos/PerParticleEtherDrag.h"
@@ -28,7 +29,7 @@
 namespace Chaos
 {
 #if !UE_BUILD_SHIPPING
-	CHAOS_API bool bPendingHierarchyDump = false;
+	CHAOS_API bool bPendingHierarchyDump = false; 
 #else
 	const bool bPendingHierarchyDump = false;
 #endif
@@ -48,9 +49,8 @@ namespace Chaos
 		int CollisionDisableCulledContacts = 0;
 		FAutoConsoleVariableRef CVarDisableCulledContacts(TEXT("p.CollisionDisableCulledContacts"), CollisionDisableCulledContacts, TEXT("Allow the PBDRigidsEvolutionGBF collision constraints to throw out contacts mid solve if they are culled."));
 
-		// @todo(chaos): this should be 0 but we need it for CCD atm
 		FRealSingle BoundsThicknessVelocityMultiplier = 0.0f;
-		FAutoConsoleVariableRef CVarBoundsThicknessVelocityMultiplier(TEXT("p.CollisionBoundsVelocityInflation"), BoundsThicknessVelocityMultiplier, TEXT("Collision velocity inflation for speculatibe contact generation.[def:2.0]"));
+		FAutoConsoleVariableRef CVarBoundsThicknessVelocityMultiplier(TEXT("p.CollisionBoundsVelocityInflation"), BoundsThicknessVelocityMultiplier, TEXT("Collision velocity inflation for speculative contact generation.[def:0.0]"));
 
 		FRealSingle SmoothedPositionLerpRate = 0.1f;
 		FAutoConsoleVariableRef CVarSmoothedPositionLerpRate(TEXT("p.Chaos.SmoothedPositionLerpRate"), SmoothedPositionLerpRate, TEXT("The interpolation rate for the smoothed position calculation. Used for sleeping."));
@@ -58,15 +58,9 @@ namespace Chaos
 		int DisableParticleUpdateVelocityParallelFor = 0;
 		FAutoConsoleVariableRef CVarDisableParticleUpdateVelocityParallelFor(TEXT("p.DisableParticleUpdateVelocityParallelFor"), DisableParticleUpdateVelocityParallelFor, TEXT("Disable Particle Update Velocity ParallelFor and run the update on a single thread"));
 
-		bool bChaosUseCCD = true;
-		FAutoConsoleVariableRef  CVarChaosUseCCD(TEXT("p.Chaos.CCD.UseCCD"), bChaosUseCCD , TEXT("Global flag to turn CCD on or off. Default is true"));
-
-		FRealSingle CCDEnableThresholdBoundsScale = 0.4f;
-		FAutoConsoleVariableRef  CVarCCDEnableThresholdBoundsScale(TEXT("p.Chaos.CCD.EnableThresholdBoundsScale"), CCDEnableThresholdBoundsScale , TEXT("CCD is used when object position is changing > smallest bound's extent * BoundsScale. 0 will always Use CCD. Values < 0 disables CCD."));
-
-		bool bChaosCollisionCCDUseTightBoundingBox = true; 
+		// NOTE: If we have mrope than 1 CCD iteration (ChaosCollisionCCDConstraintMaxProcessCount), the tight bounding box will cause us to miss secondary CCD collisions if the first one(s) result in a change in direction
+		bool bChaosCollisionCCDUseTightBoundingBox = true;
 		FAutoConsoleVariableRef  CVarChaosCollisionCCDUseTightBoundingBox(TEXT("p.Chaos.Collision.CCD.UseTightBoundingBox"), bChaosCollisionCCDUseTightBoundingBox , TEXT(""));
-
 
 		int32 ChaosSolverCollisionPriority = 0;
 		FAutoConsoleVariableRef CVarChaosSolverCollisionPriority(TEXT("p.Chaos.Solver.Collision.Priority"), ChaosSolverCollisionPriority, TEXT("Set constraint priority. Larger values are evaluated later [def:0]"));
@@ -92,6 +86,25 @@ namespace Chaos
 		bool TransferCollisionsDebugTestAgainstMaxClamp = false;
 		FAutoConsoleVariableRef CVarTransferCollisionsDebugTestAgainstMaxClamp(TEXT("p.Chaos.Solver.Joint.TransferCollisionsDebugTestAgainstMaxClamp"), TransferCollisionsDebugTestAgainstMaxClamp, TEXT("Force all joint collision constraint settings to max clamp value to validate stability [def:false]"));
 
+		bool DoFinalProbeNarrowPhase = true;
+		FAutoConsoleVariableRef CVarDoFinalProbeNarrowPhase(TEXT("p.Chaos.Solver.DoFinalProbeNarrowPhase"), DoFinalProbeNarrowPhase, TEXT(""));
+
+		// Enable inertia conditioning for joint and collisions stabilization for small and thin objects
+		bool bChaosSolverInertiaConditioningEnabled = true;
+		FAutoConsoleVariableRef  CVarChaosSolverInertiaConditioningEnabled(TEXT("p.Chaos.Solver.InertiaConditioning.Enabled"), bChaosSolverInertiaConditioningEnabled, TEXT("Enable/Disable constraint stabilization through inertia conditioning"));
+
+		// The largest joint error we expect to resolve in a moderately stable way
+		FRealSingle ChaosSolverInertiaConditioningDistance = 20;
+		FAutoConsoleVariableRef  CVarChaosSolverInertiaConditioningDistance(TEXT("p.Chaos.Solver.InertiaConditioning.Distance"), ChaosSolverInertiaConditioningDistance, TEXT("An input to inertia conditioning system. The joint distance error which needs to be stable (generate a low rotation)."));
+
+		// The ratio of joint error correction that comes from particle rotation versus translation
+		FRealSingle ChaosSolverInertiaConditioningRotationRatio = 2;
+		FAutoConsoleVariableRef  CVarChaosSolverInertiaConditioningRotationRatio(TEXT("p.Chaos.Solver.InertiaConditioning.RotationRatio"), ChaosSolverInertiaConditioningRotationRatio, TEXT("An input to inertia conditioning system. The maximum ratio of joint correction from rotation versus translation"));
+
+		// If > 1, limits the inverse inertia components to be mo more than this multiple of the smallest component. Makes the objects more round. Set to 0 to disable.
+		FRealSingle ChaosSolverMaxInvInertiaComponentRatio = 0;
+		FAutoConsoleVariableRef  CVarChaosSolverInertiaConditioningMaxInvInertiaComponentRatio(TEXT("p.Chaos.Solver.InertiaConditioning.MaxInvInertiaComponentRatio"), ChaosSolverMaxInvInertiaComponentRatio, TEXT("An input to inertia conditioning system. The largest inertia component must be at least least multiple of the smallest component"));
+
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::AdvanceOneTimeStep"), STAT_Evolution_AdvanceOneTimeStep, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::UnclusterUnions"), STAT_Evolution_UnclusterUnions, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::Integrate"), STAT_Evolution_Integrate, STATGROUP_Chaos);
@@ -99,12 +112,9 @@ namespace Chaos
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::PostIntegrateCallback"), STAT_Evolution_PostIntegrateCallback, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::CollisionModifierCallback"), STAT_Evolution_CollisionModifierCallback, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::CCD"), STAT_Evolution_CCD, STATGROUP_Chaos);
+		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::CCDCorrection"), STAT_Evolution_CCDCorrection, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::GraphColor"), STAT_Evolution_GraphColor, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::Gather"), STAT_Evolution_Gather, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::Scatter"), STAT_Evolution_Scatter, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::ApplyConstraintsPhase1"), STAT_Evolution_ApplyConstraintsPhase1, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::UpdateVelocities"), STAT_Evolution_UpdateVelocites, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::ApplyConstraintsPhase2"), STAT_Evolution_ApplyConstraintsPhase2, STATGROUP_Chaos);
+		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::BuildGroups"), STAT_Evolution_BuildGroups, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::DetectCollisions"), STAT_Evolution_DetectCollisions, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::TransferJointCollisions"), STAT_Evolution_TransferJointCollisions, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::PostDetectCollisionsCallback"), STAT_Evolution_PostDetectCollisionsCallback, STATGROUP_Chaos);
@@ -112,21 +122,49 @@ namespace Chaos
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::ComputeIntermediateSpatialAcceleration"), STAT_Evolution_ComputeIntermediateSpatialAcceleration, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::CreateConstraintGraph"), STAT_Evolution_CreateConstraintGraph, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::CreateIslands"), STAT_Evolution_CreateIslands, STATGROUP_Chaos);
-		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::UpdateAccelerationStructures"), STAT_Evolution_UpdateAccelerationStructures, STATGROUP_Chaos);
+		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::PruneCollisions"), STAT_Evolution_PruneCollisions, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::AddSleepingContacts"), STAT_Evolution_AddSleepingContacts, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::PreApplyCallback"), STAT_Evolution_PreApplyCallback, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::ParallelSolve"), STAT_Evolution_ParallelSolve, STATGROUP_Chaos);
+		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::BuildDisabledParticles"), STAT_Evolution_BuildDisabledParticles, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::SaveParticlePostSolve"), STAT_Evolution_SavePostSolve, STATGROUP_Chaos);
 		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::DeactivateSleep"), STAT_Evolution_DeactivateSleep, STATGROUP_Chaos);
+		DECLARE_CYCLE_STAT(TEXT("FPBDRigidsEvolutionGBF::InertiaConditioning"), STAT_Evolution_InertiaConditioning, STATGROUP_Chaos);
 
 		int32 SerializeEvolution = 0;
 		FAutoConsoleVariableRef CVarSerializeEvolution(TEXT("p.SerializeEvolution"), SerializeEvolution, TEXT(""));
 
 		bool bChaos_CollisionStore_Enabled = true;
 		FAutoConsoleVariableRef CVarCollisionStoreEnabled(TEXT("p.Chaos.CollisionStore.Enabled"), bChaos_CollisionStore_Enabled, TEXT(""));
+
+		// Put the solver into a mode where it reset particles to their initial positions each frame.
+		// This is used to test collision detection and - it will be removed
+		// @chaos(todo): remove this when no longer needed
+		bool bChaos_Solver_TestMode  = false;
+		FAutoConsoleVariableRef CVarChaosSolverTestMode(TEXT("p.Chaos.Solver.TestMode"), bChaos_Solver_TestMode, TEXT(""));
+
+	}
+	using namespace CVars;
+
+	// We want to have largish blocks, but when we are running on multiple cores we don't want to waste too much memory
+	int32 CalculateNumCollisionsPerBlock()
+	{
+		const int32 NumCollisionsPerBlock = 2000;
+		const int32 MinCollisionsPerBlock = 100;
+
+		const bool bIsMultithreaded = (FApp::ShouldUseThreadingForPerformance() && !GSingleThreadedPhysics);
+		if (!bIsMultithreaded)
+		{
+			return NumCollisionsPerBlock;
+		}
+		else
+		{
+			const int32 NumWorkers = FMath::Min(FTaskGraphInterface::Get().GetNumWorkerThreads(), Chaos::MaxNumWorkers);
+			const int32 NumTasks = FMath::Max(NumWorkers, 1);
+			return FMath::Max(NumCollisionsPerBlock / NumTasks, MinCollisionsPerBlock);
+		}
 	}
 
-	using namespace CVars;
 
 #if !UE_BUILD_SHIPPING
 template <typename TEvolution>
@@ -200,35 +238,41 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt,const FSubStepInf
 	UnprepareTick();
 }
 
-void FPBDRigidsEvolutionGBF::ReloadParticlesCache(const int32 Island)
+void FPBDRigidsEvolutionGBF::ReloadParticlesCache()
 {
-	if(!GetConstraintGraph().GetSolverIsland(Island)->IsSleeping())
+	// @todo(chaos): Parallelize
+	FEvolutionResimCache* ResimCache = GetCurrentStepResimCache();
+	if ((ResimCache != nullptr) && ResimCache->IsResimming())
 	{
-		FEvolutionResimCache* ResimCache = GetCurrentStepResimCache();
-		if (ResimCache && ResimCache->IsResimming() && GetConstraintGraph().IslandNeedsResim(Island) == false)
+		for (int32 IslandIndex = 0; IslandIndex < GetConstraintGraph().NumIslands(); ++IslandIndex)
 		{
-			for (auto Particle : GetConstraintGraph().GetIslandParticles(Island))
+			FPBDIsland* Island = GetConstraintGraph().GetIsland(IslandIndex);
+			bool bIsUsingCache = false;
+			if (!Island->IsSleeping() && !GetConstraintGraph().IslandNeedsResim(IslandIndex))
 			{
-				if (auto Rigid = Particle->CastToRigidParticle())
+				for (FPBDIslandParticle& IslandParticle : Island->GetParticles())
 				{
-					ResimCache->ReloadParticlePostSolve(*Rigid);
+					if (auto Rigid = IslandParticle.GetParticle()->CastToRigidParticle())
+					{
+						ResimCache->ReloadParticlePostSolve(*Rigid);
+					}
 				}
+				bIsUsingCache = true;
 			}
-			GetConstraintGraph().GetSolverIsland(Island)->SetIsUsingCache(true);
+			Island->SetIsUsingCache(bIsUsingCache);
 		}
-		GetConstraintGraph().GetSolverIsland(Island)->SetIsUsingCache(false);
 	}
 }
 
 void FPBDRigidsEvolutionGBF::BuildDisabledParticles(const int32 Island, TArray<TArray<FPBDRigidParticleHandle*>>& DisabledParticles, TArray<bool>& SleepedIslands)
 {
-	for (auto Particle : GetConstraintGraph().GetIslandParticles(Island))
+	for (FPBDIslandParticle& IslandParticle : GetConstraintGraph().GetIsland(Island)->GetParticles())
 	{
 		// If a dynamic particle is moving slowly enough for long enough, disable it.
 		// @todo(mlentine): Find a good way of not doing this when we aren't using this functionality
 
 		// increment the disable count for the particle
-		auto PBDRigid = Particle->CastToRigidParticle();
+		auto PBDRigid = IslandParticle.GetParticle()->CastToRigidParticle();
 		if (PBDRigid && PBDRigid->ObjectState() == EObjectStateType::Dynamic)
 		{
 			if (PBDRigid->AuxilaryValue(PhysicsMaterials) && PBDRigid->V().SizeSquared() < PBDRigid->AuxilaryValue(PhysicsMaterials)->DisabledLinearThreshold &&
@@ -258,66 +302,6 @@ void FPBDRigidsEvolutionGBF::BuildDisabledParticles(const int32 Island, TArray<T
 int32 DrawAwake = 0;
 FAutoConsoleVariableRef CVarDrawAwake(TEXT("p.chaos.DebugDrawAwake"),DrawAwake,TEXT("Draw particles that are awake"));
 
-#define CSV_CUSTOM_STAT_PER_ISLAND_HELPER(Stat) CSV_CUSTOM_STAT(PhysicsVerbose, Stat, Stats[Stat] * 1000.0, ECsvCustomStatOp::Set);
-
-//Using aligned to avoid false sharing during perf capture
-struct alignas(64) FPerIslandStats
-{
-#if CSV_PROFILER
-
-	enum EPerIslandStat
-	{
-		/** Any stat added to this enum must be added to ReportStats. Can use inl if it's a problem, but seems fine to just copy paste here*/
-		PerIslandSolve_ReloadCacheTotalSerialized = 0,
-		PerIslandSolve_GatherTotalSerialized,
-		PerIslandSolve_ApplyTotalSerialized,
-		PerIslandSolve_UpdateVelocitiesTotalSerialized,
-		PerIslandSolve_ApplyPushOutTotalSerialized,
-		PerIslandSolve_ScatterTotalSerialized,
-		NumStats
-	};
-
-	void ReportStats() const
-	{
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_ReloadCacheTotalSerialized);
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_GatherTotalSerialized);
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_ApplyTotalSerialized);
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_UpdateVelocitiesTotalSerialized);
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_ApplyPushOutTotalSerialized);
-		CSV_CUSTOM_STAT_PER_ISLAND_HELPER(PerIslandSolve_ScatterTotalSerialized);
-	}
-
-	FPerIslandStats()
-	{
-		for (double& Stat : Stats) { Stat = 0.0; }
-	}
-
-	static FPerIslandStats Flatten(const TArray<FPerIslandStats>& PerIslandStats)
-	{
-		FPerIslandStats Flat;
-		for(const FPerIslandStats& IslandStats : PerIslandStats)
-		{
-			for(int32 Stat = 0; Stat < NumStats; ++Stat)
-			{
-				Flat.Stats[Stat] += IslandStats.Stats[Stat];
-			}
-		}
-
-		return Flat;
-	}
-
-	double Stats[EPerIslandStat::NumStats];
-#else
-	void ReportStats() const{}
-#endif
-
-};
-
-#if CSV_PROFILER
-#define CSV_SCOPED_PER_ISLAND_TIMING_STAT(Stat) FScopedDurationTimer Timer_##Stat(PerIslandStats[GroupIndex].Stats[FPerIslandStats::Stat])
-#else
-#define CSV_SCOPED_PER_ISLAND_TIMING_STAT(Stat)
-#endif
 void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubStepInfo& SubStepInfo)
 {
 	SCOPE_CYCLE_COUNTER(STAT_Evolution_AdvanceOneTimeStep);
@@ -348,6 +332,12 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubSt
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_Integrate);
 		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_Integrate);
 		Integrate(Particles.GetActiveParticlesView(), Dt);
+	}
+
+	if (bChaos_Solver_TestMode)
+	{
+		TestModeResetParticles();
+		TestModeResetCollisions();
 	}
 
 	{
@@ -398,7 +388,11 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubSt
 		CollisionConstraints.ApplyCollisionModifier(*CollisionModifiers, Dt);
 	}
 
-	if (bChaosUseCCD)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Evolution_InertiaConditioning);
+		UpdateInertiaConditioning();
+	}
+
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_CCD);
 		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, CCD);
@@ -416,122 +410,73 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubSt
 		CreateIslands();
 	}
 	{
-		// We keep the graph color stat name for now to compare with previous implementation
-		// @todo : change the name to sort constraints
-		SCOPE_CYCLE_COUNTER(STAT_Evolution_GraphColor);
-		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_GraphColor);
-		SortConstraints();
+		// Once the graph is built (constraints are removed/added) we can destroy any collision that are not required
+		SCOPE_CYCLE_COUNTER(STAT_Evolution_PruneCollisions);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_PruneCollisions);
+		CollisionConstraints.GetConstraintAllocator().PruneExpiredItems();
 	}
+
 	if (PreApplyCallback != nullptr)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_PreApplyCallback);
 		PreApplyCallback();
 	}
+
 	CollisionConstraints.SetGravity(GetGravityForces().GetAcceleration());
+
+	// Use the cache to update particles in islands that do not require resimming (not desynched)
+	{
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_ReloadCacheTotalSerialized);
+		ReloadParticlesCache();
+	}
+
+	// Assign all islands to a set of groups. Each group is solved in parallel with the others.
+	int32 NumGroups = 0;
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Evolution_BuildGroups);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_BuildGroups);
+		NumGroups = IslandGroupManager.BuildGroups();
+	}
+
 
 	TArray<bool> SleepedIslands;
 	SleepedIslands.SetNum(GetConstraintGraph().NumIslands());
 	TArray<TArray<FPBDRigidParticleHandle*>> DisabledParticles;
 	DisabledParticles.SetNum(GetConstraintGraph().NumIslands());
-	SleepedIslands.SetNum(GetConstraintGraph().NumIslands());
 	if(Dt > 0)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_Evolution_ParallelSolve);
-		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_PerIslandSolve);
-		const int32 NumGroups = GetConstraintGraph().NumGroups();
-		CSV_CUSTOM_STAT(PhysicsCounters, NumIslandGroups, NumGroups, ECsvCustomStatOp::Set);
-		TArray<FPerIslandStats> PerIslandStats;
-#if CSV_PROFILER
-		PerIslandStats.AddDefaulted(NumGroups);
-#endif
+		// Solve all the constraints
+		{
+			SCOPE_CYCLE_COUNTER(STAT_Evolution_ParallelSolve);
+			CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver_PerIslandSolve);
 
-		PhysicsParallelFor(NumGroups, [&](int32 GroupIndex) {
+			IslandGroupManager.SetNumIterations(NumPositionIterations, NumVelocityIterations, NumProjectionIterations);
+			IslandGroupManager.Solve(Dt);
+		}
 
-			if(GetConstraintGraph().GetIslandGroups().IsValidIndex(GroupIndex) &&
-			  !GetConstraintGraph().GetIslandGroup(GroupIndex)->IsValid())
-			  	
-				return;
-			
-			// Reload cache if necessary
+		{
+			SCOPE_CYCLE_COUNTER(STAT_Evolution_CCDCorrection);
+			CSV_SCOPED_TIMING_STAT(PhysicsVerbose, CCDCorrection);
+			CCDManager.ApplyCorrections(Dt);
+		}
+
+		// Determine which particles can be disabled and which islands are sleeping
+		{
+			SCOPE_CYCLE_COUNTER(STAT_Evolution_BuildDisabledParticles);
+
+			// @todo(chaos): improve this - batching will be poor when some island are much larger than others. 
+			// We can't just loop over groups because there are some islands with no constraints (and usually a single particle) 
+			// that do not get added to a group but still need otbe checked for sleeping
+			const int32 NumIslands = GetConstraintGraph().NumIslands();
+			PhysicsParallelFor(NumIslands, [&](const int32 IslandIndex)
 			{
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_ReloadCacheTotalSerialized);
-				for(auto& IslandSolver : GetConstraintGraph().GetGroupIslands(GroupIndex))
+				FPBDIsland* Island = GetConstraintGraph().GetIsland(IslandIndex);
+				if (!Island->IsSleeping() && !Island->IsUsingCache())
 				{
-					ReloadParticlesCache(IslandSolver->GetIslandIndex());
+					BuildDisabledParticles(IslandIndex, DisabledParticles, SleepedIslands);
 				}
-			}
-
-			// Collect all the data that the constraint solvers operate on
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Evolution_Gather);
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_GatherTotalSerialized);
-				GatherSolverInput(Dt, GroupIndex);
-			}
-
-			// Run the first phase of the constraint solvers
-			// For GBF this is the hybrid velocity solving step (which also moves the bodies to make the implicit velocity be what it should be)
-			// For PBD/QPBD this is the position solve step
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Evolution_ApplyConstraintsPhase1);
-				CSV_SCOPED_TIMING_STAT(Chaos, ApplyConstraints);
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_ApplyTotalSerialized);
-				ApplyConstraintsPhase1(Dt, GroupIndex);
-			}
-
-			for(auto& IslandSolver : GetConstraintGraph().GetGroupIslands(GroupIndex))
-			{
-				if(!IslandSolver->IsSleeping() && !IslandSolver->IsUsingCache())
-				{
-					if (PostApplyCallback != nullptr)
-					{
-						PostApplyCallback(IslandSolver->GetIslandIndex());
-					}
-				}
-			}
-
-			// Update implicit velocities from results of constraint solver phase 1
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Evolution_UpdateVelocites);
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_UpdateVelocitiesTotalSerialized);
-				SetImplicitVelocities(Dt, GroupIndex);
-			}
-
-			// Run the second phase of the constraint solvers
-			// For GBF this is the pushout step
-			// For PBD this does nothing
-			// For QPBD this is the velocity solve step
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Evolution_ApplyConstraintsPhase2);
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_ApplyPushOutTotalSerialized);
-				ApplyConstraintsPhase2(Dt, GroupIndex);
-			}
-
-			// Update the particles with the results of the constraint solvers, and also update constraint data
-			// that is accessed externally (net impusles, break info, etc)
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Evolution_Scatter);
-				CSV_SCOPED_PER_ISLAND_TIMING_STAT(PerIslandSolve_ScatterTotalSerialized);
-				ScatterSolverOutput(Dt, GroupIndex);
-			}
-
-			for(auto& IslandSolver : GetConstraintGraph().GetGroupIslands(GroupIndex))
-			{
-				if(!IslandSolver->IsSleeping() && !IslandSolver->IsUsingCache())
-				{
-					const int32 Island = IslandSolver->GetIslandIndex();
-					if (PostApplyPushOutCallback != nullptr)
-					{
-						PostApplyPushOutCallback(Island);
-					}
-					BuildDisabledParticles(Island, DisabledParticles, SleepedIslands);
-				}
-			}
-		});
-
-#if CSV_PROFILER
-		FPerIslandStats FlattenedStats = FPerIslandStats::Flatten(PerIslandStats);
-		FlattenedStats.ReportStats();
-#endif
+			});
+		}
 	}
 
 	{
@@ -582,6 +527,20 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubSt
 
 	ParticleUpdatePosition(Particles.GetDirtyParticlesView(), Dt);
 
+	// Clean up the transient data from the constraint graph (e.g., Islands get cleared here)
+	GetConstraintGraph().EndTick();
+
+	if (bChaos_Solver_TestMode)
+	{
+		TestModeResetParticles();
+	}
+
+	if (CVars::DoFinalProbeNarrowPhase)
+	{
+		// Run contact updates on probe constraints
+		GetCollisionConstraints().DetectProbeCollisions(Dt);
+	}
+
 #if !UE_BUILD_SHIPPING
 	if(SerializeEvolution)
 	{
@@ -619,147 +578,77 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FSubSt
 #endif
 }
 
-void FPBDRigidsEvolutionGBF::GatherSolverInput(FReal Dt, int32 GroupIndex)
-{
-	// We must initialize the solver body container to be large enough to hold all particles in the
-	// island so that the pointers remain valid (the array should not grow and relocate)
-	if(FPBDIslandGroup* IslandGroup = ConstraintGraph.GetIslandGroups()[GroupIndex].Get())
-	{
-		IslandGroup->GetBodyContainer().Reset(IslandGroup->GetNumParticles());
-
-		for(auto& SolverIsland : IslandGroup->GetIslands())
-		{
-			// We pre-add all the dynamic particles solver bodies involved in any constraint to speed up the gather 
-			const TArray<FGeometryParticleHandle*>& IslandParticles = SolverIsland->GetParticles();
-
-			if(!SolverIsland->IsSleeping() && !SolverIsland->IsUsingCache())
-			{
-				for(auto& Particle : IslandParticles)
-				{
-					FGenericParticleHandle GenericHandle = Particle->Handle();
-					GenericHandle->SetSolverBodyIndex(INDEX_NONE);
-					
-					if(GenericHandle->ObjectState() == EObjectStateType::Dynamic)
-					{
-						if(FPBDRigidParticleHandle* PBDRigid = Particle->Handle()->CastToRigidParticle())
-						{
-							if(ConstraintGraph.GetGraphNodes().IsValidIndex(PBDRigid->ConstraintGraphIndex()))
-							{
-								if(ConstraintGraph.GetGraphNodes()[PBDRigid->ConstraintGraphIndex()].NodeEdges.Num() > 0)
-								{
-									// Only the non sleeping dynamic rigid particles involved in any constraints will be added
-									// by default to the solver bodies
-									const int32 BodyIndex = IslandGroup->GetBodyContainer().GetBodies().Emplace(GenericHandle);
-									GenericHandle->SetSolverBodyIndex(BodyIndex);
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// NOTE: SolverBodies are gathered as part of the constraint gather, in the order that they are first seen 
-	for (FPBDConstraintGraphRule* ConstraintRule : PrioritizedConstraintRules)
-	{
-		ConstraintRule->GatherSolverInput(Dt, GroupIndex);
-	}
-}
-
-void FPBDRigidsEvolutionGBF::ScatterSolverOutput(FReal Dt, int32 GroupIndex)
-{
-	// Scatter solver results for constraints (impulses, break events, etc)
-	for (FPBDConstraintGraphRule* ConstraintRule : PrioritizedConstraintRules)
-	{
-		ConstraintRule->ScatterSolverOutput(Dt, GroupIndex);
-	}
-
-	// Scatter body results back to particles (position, rotation, etc)
-	if(FPBDIslandGroup* IslandGroup = ConstraintGraph.GetIslandGroups()[GroupIndex].Get())
-	{
-		IslandGroup->GetBodyContainer().ScatterOutput();
-	}
-}
-
-void FPBDRigidsEvolutionGBF::ApplyConstraintsPhase1(const FReal Dt, int32 GroupIndex)
-{
-	int32 LocalNumIterations = ChaosNumContactIterationsOverride >= 0 ? ChaosNumContactIterationsOverride : NumIterations;
-	// @todo(ccaulfield): track whether we are sufficiently solved and can early-out
-	for (int i = 0; i < LocalNumIterations; ++i)
-	{
-		bool bNeedsAnotherIteration = false;
-		for (FPBDConstraintGraphRule* ConstraintRule : PrioritizedConstraintRules)
-		{
-			bNeedsAnotherIteration |= ConstraintRule->ApplyConstraints(Dt, GroupIndex, i, LocalNumIterations);
-		}
-
-		if (ChaosRigidsEvolutionApplyAllowEarlyOutCVar && !bNeedsAnotherIteration)
-		{
-			break;
-		}
-	}
-}
-
-void FPBDRigidsEvolutionGBF::SetImplicitVelocities(const FReal Dt, int32 GroupIndex)
-{
-	if(FPBDIslandGroup* IslandGroup = GetConstraintGraph().GetIslandGroups()[GroupIndex].Get())
-	{
-		IslandGroup->GetBodyContainer().SetImplicitVelocities(Dt);
-	}
-}
-
-void FPBDRigidsEvolutionGBF::ApplyConstraintsPhase2(const FReal Dt, int32 GroupIndex)
-{
-	int32 LocalNumPushOutIterations = ChaosNumPushOutIterationsOverride >= 0 ? ChaosNumPushOutIterationsOverride : NumPushOutIterations;
-	bool bNeedsAnotherIteration = true;
-	for (int32 It = 0; It < LocalNumPushOutIterations; ++It)
-	{
-		bNeedsAnotherIteration = false;
-		for (FPBDConstraintGraphRule* ConstraintRule : PrioritizedConstraintRules)
-		{
-			bNeedsAnotherIteration |= ConstraintRule->ApplyPushOut(Dt, GroupIndex, It, LocalNumPushOutIterations);
-		}
-
-		if (ChaosRigidsEvolutionApplyPushoutAllowEarlyOutCVar && !bNeedsAnotherIteration)
-		{
-			break;
-		}
-	}
-}
-
 void FPBDRigidsEvolutionGBF::SetIsDeterministic(const bool bInIsDeterministic)
 {
 	// We detect collisions in parallel, so order is non-deterministic without additional processing
 	CollisionConstraints.SetIsDeterministic(bInIsDeterministic);
 }
 
+
+void FPBDRigidsEvolutionGBF::TestModeResetParticles()
+{
+	for (auto& Rigid : Particles.GetNonDisabledDynamicView())
+	{
+		FTestModeParticleData* Data = TestModeData.Find(Rigid.Handle());
+		if (Data != nullptr)
+		{
+			Rigid.X() = Data->X;
+			Rigid.P() = Data->P;
+			Rigid.R() = Data->R;
+			Rigid.Q() = Data->Q;
+			Rigid.V() = Data->V;
+			Rigid.W() = Data->W;
+		}
+		if (Data == nullptr)
+		{
+			Data = &TestModeData.Add(Rigid.Handle());
+			Data->X = Rigid.X();
+			Data->P = Rigid.P();
+			Data->R = Rigid.R();
+			Data->Q = Rigid.Q();
+			Data->V = Rigid.V();
+			Data->W = Rigid.W();
+		}
+	}
+}
+
+void FPBDRigidsEvolutionGBF::TestModeResetCollisions()
+{
+	for (FPBDCollisionConstraintHandle* Collision : CollisionConstraints.GetConstraintHandles())
+	{
+		Collision->GetContact().ResetManifold();
+		Collision->GetContact().ResetModifications();
+		Collision->GetContact().GetGJKWarmStartData().Reset();
+	}
+}
+
 FPBDRigidsEvolutionGBF::FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles,THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InCollisionModifiers, bool InIsSingleThreaded)
-	: Base(InParticles, SolverPhysicsMaterials, DefaultNumIterations, DefaultNumPushOutIterations, InIsSingleThreaded)
+	: Base(InParticles, SolverPhysicsMaterials, InIsSingleThreaded)
 	, Clustering(*this, Particles.GetClusteredParticles())
-	, JointConstraintRule(JointConstraints, ChaosSolverJointPriority)
-	, SuspensionConstraintRule(SuspensionConstraints, ChaosSolverSuspensionPriority)
-	, CollisionConstraints(InParticles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, &SolverPhysicsMaterials, DefaultNumCollisionPairIterations, DefaultNumCollisionPushOutPairIterations, DefaultRestitutionThreshold)
-	, CollisionRule(CollisionConstraints, ChaosSolverCollisionPriority)
+	, CollisionConstraints(InParticles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, &SolverPhysicsMaterials, CalculateNumCollisionsPerBlock(), DefaultRestitutionThreshold)
 	, BroadPhase(InParticles)
-	, NarrowPhase(DefaultCollisionCullDistance, BoundsThicknessVelocityMultiplier, CollisionConstraints.GetConstraintAllocator())
-	, CollisionDetector(BroadPhase, NarrowPhase, CollisionConstraints)
+	, CollisionDetector(BroadPhase, CollisionConstraints)
 	, PostIntegrateCallback(nullptr)
 	, PreApplyCallback(nullptr)
-	, PostApplyCallback(nullptr)
-	, PostApplyPushOutCallback(nullptr)
 	, CurrentStepResimCacheImp(nullptr)
 	, CollisionModifiers(InCollisionModifiers)
 	, CCDManager()
 	, bIsDeterministic(false)
 {
+	SetNumPositionIterations(DefaultNumPositionIterations);
+	SetNumVelocityIterations(DefaultNumVelocityIterations);
+	SetNumProjectionIterations(DefaultNumProjectionIterations);
+
 	CollisionConstraints.SetCanDisableContacts(!!CollisionDisableCulledContacts);
+
+	CollisionDetector.SetBoundsExpansion(DefaultCollisionCullDistance);
+	CollisionDetector.SetBoundsVelocityInflation(BoundsThicknessVelocityMultiplier);
 
 	SetParticleUpdatePositionFunction([this](const TParticleView<FPBDRigidParticles>& ParticlesInput, const FReal Dt)
 	{
 		ParticlesInput.ParallelFor([&](auto& Particle, int32 Index)
 		{
-			if (Dt > SMALL_NUMBER)
+			if (Dt > UE_SMALL_NUMBER)
 			{
 				const FReal SmoothRate = FMath::Clamp(SmoothedPositionLerpRate, 0.0f, 1.0f);
 				const FVec3 VImp = FVec3::CalculateVelocity(Particle.X(), Particle.P(), Dt);
@@ -781,21 +670,18 @@ FPBDRigidsEvolutionGBF::FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles,THand
 		GravityForces.Apply(HandleIn, Dt);
 	});
 
-	AddConstraintRule(&SuspensionConstraintRule);
-	AddConstraintRule(&CollisionRule);
-	AddConstraintRule(&JointConstraintRule);
+	AddConstraintContainer(SuspensionConstraints, ChaosSolverSuspensionPriority);
+	AddConstraintContainer(CollisionConstraints, ChaosSolverCollisionPriority);
+	AddConstraintContainer(JointConstraints, ChaosSolverJointPriority);
 
 	SetInternalParticleInitilizationFunction([](const FGeometryParticleHandle*, const FGeometryParticleHandle*) {});
-
-	NarrowPhase.GetContext().bFilteringEnabled = true;
-	NarrowPhase.GetContext().bDeferUpdate = false;
-	NarrowPhase.GetContext().bAllowManifolds = false;
 }
 
 FPBDRigidsEvolutionGBF::~FPBDRigidsEvolutionGBF()
 {
-	// Not sure we need to reset the indices since all the particles and constraints are going to be destroyed
-	//GetConstraintGraph().ResetIndices();
+	// This is really only needed to ensure proper cleanup (we verify that constraints have been removed from 
+	// the graph in the destructor). This can be optimized if it's a problem but it shouldn't be
+	GetConstraintGraph().Reset();
 }
 
 void FPBDRigidsEvolutionGBF::Serialize(FChaosArchive& Ar)
@@ -849,7 +735,7 @@ void FPBDRigidsEvolutionGBF::TransferJointConstraintCollisions()
 				ChildParticle->Handle()->ParticleCollisions().VisitCollisions(
 					[&](const FPBDCollisionConstraint* VisitedConstraint)
 					{
-						if (VisitedConstraint->GetCCDType() != ECollisionCCDType::Disabled)
+						if (VisitedConstraint->GetCCDEnabled())
 						{
 							return;
 						}
@@ -991,6 +877,90 @@ void FPBDRigidsEvolutionGBF::DestroyParticleCollisionsInAllocator(FGeometryParti
 	{
 		CollisionConstraints.GetConstraintAllocator().RemoveParticle(Particle);
 		Particle->ParticleCollisions().Reset();
+	}
+}
+
+void FPBDRigidsEvolutionGBF::DestroyTransientConstraints(FGeometryParticleHandle* Particle)
+{
+	if (Particle != nullptr)
+	{
+		// Remove all the particle's collisions from the graph
+		GetConstraintGraph().RemoveParticleConstraints(Particle, CollisionConstraints.GetContainerId());
+
+		// Mark all collision constraints for destruction
+		DestroyParticleCollisionsInAllocator(Particle);
+	}
+}
+
+void FPBDRigidsEvolutionGBF::OnParticleMoved(FGeometryParticleHandle* InParticle, const FVec3& PrevX, const FRotation3& PrevR, const bool bIsTeleport)
+{
+	// When a particle is moved, we need to tell the collisions because they cache friction state and 
+	// would attempt to undo small translations within the friction cone
+	InParticle->ParticleCollisions().VisitCollisions([this, InParticle](FPBDCollisionConstraint& Collision)
+		{
+			Collision.UpdateParticleTransform(InParticle);
+			return ECollisionVisitorResult::Continue;
+		});
+
+	// If this is a teleport, we assume other state has been set separately (V, W, etc) if required, which 
+	// would include resetting any sleep-related state. If this is not a teleport, we want to prevent 
+	// sleeping if the user keeps moving the body without changing the velocity.
+	if (!bIsTeleport)
+	{
+		if (FPBDRigidParticleHandle* Rigid = InParticle->CastToRigidParticle())
+		{
+			// No need to do this for kinematics
+			if (Rigid->IsDynamic())
+			{
+				// @todo(chaos): better sleep system! We should probably have a sleep accumulator per particle
+				const FReal InvDt = FReal(30.0);
+				const FVec3 DV = (PrevX - Rigid->X()) * InvDt;
+				const FReal SmoothRate = FMath::Clamp(CVars::SmoothedPositionLerpRate, 0.0f, 1.0f);
+				Rigid->VSmooth() = FMath::Lerp(Rigid->VSmooth(), Rigid->V() + DV, SmoothRate);
+			}
+		}
+	}
+}
+
+void FPBDRigidsEvolutionGBF::ParticleMaterialChanged(FGeometryParticleHandle* Particle)
+{
+	Particle->ParticleCollisions().VisitCollisions([this](FPBDCollisionConstraint& Collision)
+	{
+		CollisionConstraints.UpdateConstraintMaterialProperties(Collision);
+		return ECollisionVisitorResult::Continue;
+	});
+}
+
+
+void FPBDRigidsEvolutionGBF::UpdateInertiaConditioning()
+{
+	// The maximum contribution to error correction from rotation
+	const FRealSingle MaxRotationRatio = ChaosSolverInertiaConditioningRotationRatio;
+
+	// The error distance that the constraint correction must be stable for
+	// @todo(chaos): should probably be tied to constraint teleport threshold?
+	const FRealSingle MaxDistance = ChaosSolverInertiaConditioningDistance;
+
+	// A limit on the relative sizes of the inertia components (inverse)
+	const FRealSingle MaxInvInertiaComponentRatio = ChaosSolverMaxInvInertiaComponentRatio;
+
+	// @todo(chaos): we should only visit particles that are dirty
+	for (auto& Rigid : Particles.GetNonDisabledDynamicView())
+	{
+		if (Rigid.InertiaConditioningDirty())
+		{
+			const bool bWantInertiaConditioning = Rigid.IsDynamic() && Rigid.InertiaConditioningEnabled() && bChaosSolverInertiaConditioningEnabled;
+			if (bWantInertiaConditioning)
+			{
+				const FVec3f InvInertiaScale = CalculateParticleInertiaConditioning(Rigid.Handle(), MaxDistance, MaxRotationRatio, MaxInvInertiaComponentRatio);
+				Rigid.SetInvIConditioning(InvInertiaScale);
+			}
+			else
+			{
+				Rigid.SetInvIConditioning(FVec3f(1));
+			}
+			Rigid.ClearInertiaConditioningDirty();
+		}
 	}
 }
 

@@ -17,12 +17,12 @@ namespace UE::Mass::Crowd
 	// @todo provide a better way of selecting agents to debug
 	constexpr int32 MaxAgentsDraw = 300;
 
-	void DebugDrawReplicatedAgent(FMassEntityHandle Entity, const UMassEntitySubsystem& EntitySystem)
+	void DebugDrawReplicatedAgent(FMassEntityHandle Entity, const FMassEntityManager& EntityManager)
 	{
 		static const FVector DebugCylinderHeight = FVector(0.f, 0.f, 200.f);
 		static constexpr float DebugCylinderRadius = 50.f;
 
-		const FMassEntityView EntityView(EntitySystem, Entity);
+		const FMassEntityView EntityView(EntityManager, Entity);
 
 		const FTransformFragment& TransformFragment = EntityView.GetFragmentData<FTransformFragment>();
 		const FMassNetworkIDFragment& NetworkIDFragment = EntityView.GetFragmentData<FMassNetworkIDFragment>();
@@ -50,7 +50,7 @@ namespace UE::Mass::Crowd
 			DebugCylinderColor = FColor(InitialColor / 256 % 256, InitialColor / 256 / 256 % 256, InitialColor % 256);
 		}
 
-		const UWorld* World = EntitySystem.GetWorld();
+		const UWorld* World = EntityManager.GetWorld();
 		if (World != nullptr && World->GetNetMode() == NM_Client)
 		{
 			DrawDebugCylinder(World, Pos, Pos + 0.5f * DebugCylinderHeight, DebugCylinderRadius, /*segments = */24, DebugCylinderColor);
@@ -68,10 +68,10 @@ void FMassCrowdClientBubbleHandler::DebugValidateBubbleOnServer()
 {
 	Super::DebugValidateBubbleOnServer();
 
+#if UE_REPLICATION_COMPILE_SERVER_CODE
 	if (UE::Mass::Crowd::bDebugReplicationPositions)
 	{
-		UMassEntitySubsystem* EntitySystem = Serializer->GetEntitySystem();
-		check(EntitySystem);
+		const FMassEntityManager& EntityManager = Serializer->GetEntityManagerChecked();
 
 		// @todo cap at MaxAgentsDraw for now
 		const int32 MaxAgentsDraw = FMath::Min(UE::Mass::Crowd::MaxAgentsDraw, (*Agents).Num());
@@ -84,9 +84,10 @@ void FMassCrowdClientBubbleHandler::DebugValidateBubbleOnServer()
 
 			check(LookupData.Entity.IsSet());
 
-			UE::Mass::Crowd::DebugDrawReplicatedAgent(LookupData.Entity, *EntitySystem);
+			UE::Mass::Crowd::DebugDrawReplicatedAgent(LookupData.Entity, EntityManager);
 		}
 	}
+#endif // UE_REPLICATION_COMPILE_SERVER_CODE
 }
 #endif // WITH_MASSGAMEPLAY_DEBUG && WITH_EDITOR
 
@@ -97,8 +98,7 @@ void FMassCrowdClientBubbleHandler::DebugValidateBubbleOnClient()
 
 	if (UE::Mass::Crowd::bDebugReplicationPositions)
 	{
-		UMassEntitySubsystem* EntitySystem = Serializer->GetEntitySystem();
-		check(EntitySystem);
+		const FMassEntityManager& EntityManager = Serializer->GetEntityManagerChecked();
 
 		UMassReplicationSubsystem* ReplicationSubsystem = Serializer->GetReplicationSubsystem();
 		check(ReplicationSubsystem);
@@ -114,7 +114,7 @@ void FMassCrowdClientBubbleHandler::DebugValidateBubbleOnClient()
 
 			check(EntityInfo->Entity.IsSet());
 
-			UE::Mass::Crowd::DebugDrawReplicatedAgent(EntityInfo->Entity, *EntitySystem);
+			UE::Mass::Crowd::DebugDrawReplicatedAgent(EntityInfo->Entity, EntityManager);
 		}
 	}
 }

@@ -64,19 +64,20 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	}
 
 	TSharedPtr<ITextureEditorToolkit> TextureEditorPinned = TextureEditorPtr.Pin();
-	
+	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
+
 	UTexture* Texture = TextureEditorPinned->GetTexture();
 	FVector2D Ratio = FVector2D(GetViewportHorizontalScrollBarRatio(), GetViewportVerticalScrollBarRatio());
 	FVector2D ViewportSize = FVector2D(TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY());
 	FVector2D ScrollBarPos = GetViewportScrollBarPositions();
-	int32 YOffset = (Ratio.Y > 1.0f)? ((ViewportSize.Y - (ViewportSize.Y / Ratio.Y)) * 0.5f): 0;
-	int32 YPos = YOffset - ScrollBarPos.Y;
-	int32 XOffset = (Ratio.X > 1.0f)? ((ViewportSize.X - (ViewportSize.X / Ratio.X)) * 0.5f): 0;
-	int32 XPos = XOffset - ScrollBarPos.X;
+	int32 BorderSize = Settings.TextureBorderEnabled ? 1 : 0;
+	float YOffset = (Ratio.Y > 1.0f) ? ((ViewportSize.Y - (ViewportSize.Y / Ratio.Y)) * 0.5f) : 0;
+	int32 YPos = FMath::RoundToInt(YOffset - ScrollBarPos.Y + BorderSize);
+	float XOffset = (Ratio.X > 1.0f) ? ((ViewportSize.X - (ViewportSize.X / Ratio.X)) * 0.5f) : 0;
+	int32 XPos = FMath::RoundToInt(XOffset - ScrollBarPos.X + BorderSize);
 	
 	UpdateScrollBars();
 
-	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
 
 	Canvas->Clear( Settings.BackgroundColor );
 
@@ -97,10 +98,11 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	TextureEditorPinned->PopulateQuickInfo();
 
 	// Figure out the size we need
-	uint32 Width, Height, Depth, ArraySize;;
-	TextureEditorPinned->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+	int32 Width, Height, Depth, ArraySize;
+	TextureEditorPinned->CalculateTextureDimensions(Width, Height, Depth, ArraySize, false);
 	const float MipLevel = (float)TextureEditorPinned->GetMipLevel();
 	const float LayerIndex = (float)TextureEditorPinned->GetLayer();
+	const float SliceIndex = (float)TextureEditorPinned->GetSlice();
 
 	bool bIsVirtualTexture = false;
 
@@ -110,27 +112,42 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	{
 		if (TextureCube || TextureCubeArray || RTTextureCube)
 		{
-			BatchedElementParameters = new FMipLevelBatchedElementParameters(MipLevel, false);
+			const int32 FaceIndex = TextureEditorPinned->GetFace();
+			const FVector4f& IdentityW = FVector4f(FVector3f::ZeroVector, 1);
+			// when the face index is not specified, generate a view matrix based on the tracked orientation in the texture editor
+			// (assuming that identity matrix displays the face 0 properly oriented in space),
+			// otherwise generate a view matrix which displays the selected face using DDS orientation and face order
+			// (positive x, negative x, positive y, negative y, positive z, negative z)
+			const FMatrix44f& ViewMatrix =
+				FaceIndex < 0 ? FMatrix44f(FRotationMatrix::Make(TextureEditorPinned->GetOrientation())) :
+				FaceIndex == 0 ? FMatrix44f(FVector3f::ForwardVector, FVector3f::DownVector, FVector3f::RightVector, IdentityW) :
+				FaceIndex == 1 ? FMatrix44f(FVector3f::BackwardVector, FVector3f::UpVector, FVector3f::RightVector, IdentityW) :
+				FaceIndex == 2 ? FMatrix44f(FVector3f::RightVector, FVector3f::ForwardVector, FVector3f::DownVector, IdentityW) :
+				FaceIndex == 3 ? FMatrix44f(FVector3f::LeftVector, FVector3f::ForwardVector, FVector3f::UpVector, IdentityW) :
+				FaceIndex == 4 ? FMatrix44f(FVector3f::UpVector, FVector3f::ForwardVector, FVector3f::RightVector, IdentityW) :
+				FMatrix44f(FVector3f::DownVector, FVector3f::BackwardVector, FVector3f::RightVector, IdentityW);
+			const bool bShowLongLatUnwrap = TextureEditorPinned->GetCubemapViewMode() == TextureEditorCubemapViewMode_2DView && FaceIndex < 0;
+			BatchedElementParameters = new FMipLevelBatchedElementParameters(MipLevel, SliceIndex, TextureCubeArray != nullptr, ViewMatrix, bShowLongLatUnwrap, false);
 		}
 		else if (VolumeTexture)
 		{
 			BatchedElementParameters = new FBatchedElementVolumeTexturePreviewParameters(
-				Settings.VolumeViewMode == TextureEditorVolumeViewMode_DepthSlices, 
+				TextureEditorPinned->GetVolumeViewMode() == TextureEditorVolumeViewMode_DepthSlices,
 				FMath::Max<int32>(VolumeTexture->GetSizeZ(), 1), 
 				MipLevel, 
 				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true, 
-				TextureEditorPinned->GetVolumeOrientation());
+				TextureEditorPinned->GetOrientation());
 		}
 		else if (RTTextureVolume)
 		{
 			BatchedElementParameters = new FBatchedElementVolumeTexturePreviewParameters(
-				Settings.VolumeViewMode == TextureEditorVolumeViewMode_DepthSlices,
+				TextureEditorPinned->GetVolumeViewMode() == TextureEditorVolumeViewMode_DepthSlices,
 				FMath::Max<int32>(RTTextureVolume->SizeZ >> RTTextureVolume->GetCachedLODBias(), 1),
 				MipLevel,
 				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true,
-				TextureEditorPinned->GetVolumeOrientation());
+				TextureEditorPinned->GetOrientation());
 		}
 		else if (Texture2D)
 		{
@@ -138,26 +155,26 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 			bool bIsSingleChannel = Texture2D->CompressionSettings == TC_Grayscale || Texture2D->CompressionSettings == TC_Alpha;
 			bool bSingleVTPhysicalSpace = Texture2D->IsVirtualTexturedWithSinglePhysicalSpace();
 			bIsVirtualTexture = Texture2D->IsCurrentlyVirtualTextured();
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, bIsNormalMap, bIsSingleChannel, bSingleVTPhysicalSpace, bIsVirtualTexture, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, bSingleVTPhysicalSpace, bIsVirtualTexture, false);
 		}
 		else if (Texture2DArray) 
 		{
 			bool bIsNormalMap = Texture2DArray->IsNormalMap();
 			bool bIsSingleChannel = Texture2DArray->CompressionSettings == TC_Grayscale || Texture2DArray->CompressionSettings == TC_Alpha;
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, bIsNormalMap, bIsSingleChannel, false, false, true);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, bIsNormalMap, bIsSingleChannel, false, false, true);
 		}
 		else if (TextureRT2D)
 		{
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
 		}
 		else if (TextureRT2DArray)
 		{
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, true);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, true);
 		}
 		else
 		{
 			// Default to treating any UTexture derivative as a 2D texture resource
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, false);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
 		}
 	}
 
@@ -177,7 +194,8 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		}
 	}
 
-	float Exposure = FMath::Pow(2.0f, (float)TextureEditorPinned->GetExposureBias());
+	FTexturePlatformData** RunningPlatformDataPtr = Texture->GetRunningPlatformData();
+	float Exposure = RunningPlatformDataPtr && *RunningPlatformDataPtr && IsHDR((*RunningPlatformDataPtr)->PixelFormat) ? FMath::Pow(2.0f, (float)TextureEditorPinned->GetExposureBias()) : 1.0f;
 
 	if ( Texture->GetResource() != nullptr )
 	{
@@ -198,7 +216,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		// Draw a white border around the texture to show its extents
 		if (Settings.TextureBorderEnabled)
 		{
-			FCanvasBoxItem BoxItem( FVector2D(XPos, YPos), FVector2D(Width , Height ) );
+			FCanvasBoxItem BoxItem(FVector2D(XPos, YPos), FVector2D(Width + BorderSize, Height + BorderSize));
 			BoxItem.SetColor( Settings.TextureBorderColor );
 			Canvas->DrawItem( BoxItem );
 		}
@@ -253,61 +271,54 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 }
 
 
-bool FTextureEditorViewportClient::InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool Gamepad)
+bool FTextureEditorViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 {
-	if (Event == IE_Pressed)
+	if (InEventArgs.Event == IE_Pressed)
 	{
-		if (Key == EKeys::MouseScrollUp)
+		if (InEventArgs.Key == EKeys::MouseScrollUp)
 		{
 			TextureEditorPtr.Pin()->ZoomIn();
 
 			return true;
 		}
-		else if (Key == EKeys::MouseScrollDown)
+		else if (InEventArgs.Key == EKeys::MouseScrollDown)
 		{
 			TextureEditorPtr.Pin()->ZoomOut();
 
 			return true;
 		}
-		else if (Key == EKeys::RightMouseButton)
+		else if (InEventArgs.Key == EKeys::MiddleMouseButton && TextureEditorPtr.Pin()->IsUsingOrientation())
 		{
-			TextureEditorPtr.Pin()->SetVolumeOrientation(FRotator(90, 0, -90));
+			TextureEditorPtr.Pin()->ResetOrientation();
 		}
 	}
 	return false;
 }
 
-bool IsTextureUsingVolumeOrientation(UTexture* Texture)
-{
-	return Texture && (Cast<UVolumeTexture>(Texture) || Cast<UTextureRenderTargetVolume>(Texture));
-}
-
-bool FTextureEditorViewportClient::InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
+bool FTextureEditorViewportClient::InputAxis(FViewport* Viewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	if (Key == EKeys::MouseX || Key == EKeys::MouseY)
 	{
-		UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
-		if (IsTextureUsingVolumeOrientation(Texture))
+		TSharedPtr<ITextureEditorToolkit> TextureEditorPinned = TextureEditorPtr.Pin();
+		if (TextureEditorPinned->IsUsingOrientation() && Viewport->KeyState(EKeys::LeftMouseButton))
 		{
-			FRotator DeltaRotator(ForceInitToZero);
 			const float RotationSpeed = .2f;
-			if (Key == EKeys::MouseY)
+			FRotator DeltaOrientation = FRotator(Key == EKeys::MouseY ? Delta * RotationSpeed : 0, Key == EKeys::MouseX ? Delta * RotationSpeed : 0, 0);
+			if (TextureEditorPinned->IsVolumeTexture())
 			{
-				DeltaRotator.Pitch = Delta * RotationSpeed;
+				TextureEditorPinned->SetOrientation((FRotationMatrix::Make(DeltaOrientation) * FRotationMatrix::Make(TextureEditorPinned->GetOrientation())).Rotator());
 			}
 			else
 			{
-				DeltaRotator.Yaw = Delta * RotationSpeed;
+				TextureEditorPinned->SetOrientation(TextureEditorPinned->GetOrientation() + DeltaOrientation);
 			}
-
-			TextureEditorPtr.Pin()->SetVolumeOrientation((FRotationMatrix::Make(DeltaRotator) * FRotationMatrix::Make(TextureEditorPtr.Pin()->GetVolumeOrientation())).Rotator());
 		}
 		else if (ShouldUseMousePanning(Viewport))
 		{
 			TSharedPtr<STextureEditorViewport> EditorViewport = TextureEditorViewportPtr.Pin();
 
-			uint32 Width, Height, Depth, ArraySize;
-			TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+			int32 Width, Height, Depth, ArraySize;
+			TextureEditorPinned->CalculateTextureDimensions(Width, Height, Depth, ArraySize, true);
 
 			if (Key == EKeys::MouseY)
 			{
@@ -332,7 +343,7 @@ bool FTextureEditorViewportClient::InputAxis(FViewport* Viewport, int32 Controll
 
 bool FTextureEditorViewportClient::ShouldUseMousePanning(FViewport* Viewport) const
 {
-	if (!IsTextureUsingVolumeOrientation(TextureEditorPtr.Pin()->GetTexture()) && Viewport->KeyState(EKeys::RightMouseButton))
+	if (Viewport->KeyState(EKeys::RightMouseButton))
 	{
 		TSharedPtr<STextureEditorViewport> EditorViewport = TextureEditorViewportPtr.Pin();
 		return EditorViewport.IsValid() && EditorViewport->GetVerticalScrollBar().IsValid() && EditorViewport->GetHorizontalScrollBar().IsValid();
@@ -380,32 +391,43 @@ void FTextureEditorViewportClient::ModifyCheckerboardTextureColors()
 FText FTextureEditorViewportClient::GetDisplayedResolution() const
 {
 	// Zero is the default size 
-	uint32 Height, Width, Depth, ArraySize;
-	TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+	int32 Height, Width, Depth, ArraySize;
+	TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize, false);
+
+	FText CubemapInfo;
+	UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
+	if (Texture->IsA(UTextureCube::StaticClass()) || Texture->IsA(UTextureCubeArray::StaticClass()) || Texture->IsA(UTextureRenderTargetCube::StaticClass()))
+	{
+		CubemapInfo = NSLOCTEXT("TextureEditor", "DisplayedPerCubeSide", "*6 (CubeMap)");
+	}
+
+	FNumberFormattingOptions Options;
+	Options.UseGrouping = false;
+
 	if (Depth > 0)
 	{
-		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionThreeDimension", "Displayed: {0}x{1}x{2}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)), FText::AsNumber(Depth));
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionThreeDimension", "Displayed: {0}x{1}x{2}"), FText::AsNumber(Width, &Options), FText::AsNumber(Height, &Options), FText::AsNumber(Depth, &Options));
 	}
 	else if (ArraySize > 0)
 	{
-		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolution", "Displayed: {0}x{1}*{2}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)), FText::AsNumber(ArraySize));
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolution", "Displayed: {0}x{1}{2}*{3}"), FText::AsNumber(Width, &Options), FText::AsNumber(Height, &Options), CubemapInfo, FText::AsNumber(ArraySize, &Options));
 	}
 	else
 	{
-		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionTwoDimension", "Displayed: {0}x{1}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)));
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionTwoDimension", "Displayed: {0}x{1}{2}"), FText::AsNumber(Width, &Options), FText::AsNumber(Height, &Options), CubemapInfo);
 	}
 }
 
 
 float FTextureEditorViewportClient::GetViewportVerticalScrollBarRatio() const
 {
-	uint32 Height = 1;
-	uint32 Width = 1;
+	int32 Height = 1;
+	int32 Width = 1;
 	float WidgetHeight = 1.0f;
 	if (TextureEditorViewportPtr.Pin()->GetVerticalScrollBar().IsValid())
 	{
-		uint32 Depth, ArraySize;
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+		int32 Depth, ArraySize;
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize, true);
 
 		WidgetHeight = TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().Y;
 	}
@@ -416,13 +438,13 @@ float FTextureEditorViewportClient::GetViewportVerticalScrollBarRatio() const
 
 float FTextureEditorViewportClient::GetViewportHorizontalScrollBarRatio() const
 {
-	uint32 Width = 1;
-	uint32 Height = 1;
+	int32 Width = 1;
+	int32 Height = 1;
 	float WidgetWidth = 1.0f;
 	if (TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar().IsValid())
 	{
-		uint32 Depth, ArraySize;
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+		int32 Depth, ArraySize;
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize, true);
 
 		WidgetWidth = TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().X;
 	}
@@ -442,14 +464,16 @@ void FTextureEditorViewportClient::UpdateScrollBars()
 
 	float VRatio = GetViewportVerticalScrollBarRatio();
 	float HRatio = GetViewportHorizontalScrollBarRatio();
+	float VDistFromTop = Viewport->GetVerticalScrollBar()->DistanceFromTop();
 	float VDistFromBottom = Viewport->GetVerticalScrollBar()->DistanceFromBottom();
+	float HDistFromTop = Viewport->GetHorizontalScrollBar()->DistanceFromTop();
 	float HDistFromBottom = Viewport->GetHorizontalScrollBar()->DistanceFromBottom();
 
 	if (VRatio < 1.0f)
 	{
 		if (VDistFromBottom < 1.0f)
 		{
-			Viewport->GetVerticalScrollBar()->SetState(FMath::Clamp(1.0f - VRatio - VDistFromBottom, 0.0f, 1.0f), VRatio);
+			Viewport->GetVerticalScrollBar()->SetState(FMath::Clamp((1.0f + VDistFromTop - VDistFromBottom - VRatio) * 0.5f, 0.0f, 1.0f - VRatio), VRatio);
 		}
 		else
 		{
@@ -461,7 +485,7 @@ void FTextureEditorViewportClient::UpdateScrollBars()
 	{
 		if (HDistFromBottom < 1.0f)
 		{
-			Viewport->GetHorizontalScrollBar()->SetState(FMath::Clamp(1.0f - HRatio - HDistFromBottom, 0.0f, 1.0f), HRatio);
+			Viewport->GetHorizontalScrollBar()->SetState(FMath::Clamp((1.0f + HDistFromTop - HDistFromBottom - HRatio) * 0.5f, 0.0f, 1.0f - HRatio), HRatio);
 		}
 		else
 		{
@@ -476,18 +500,20 @@ FVector2D FTextureEditorViewportClient::GetViewportScrollBarPositions() const
 	FVector2D Positions = FVector2D::ZeroVector;
 	if (TextureEditorViewportPtr.Pin()->GetVerticalScrollBar().IsValid() && TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar().IsValid())
 	{
-		uint32 Width, Height, Depth, ArraySize;
+		int32 Width, Height, Depth, ArraySize;
 		UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
 		float VRatio = GetViewportVerticalScrollBarRatio();
 		float HRatio = GetViewportHorizontalScrollBarRatio();
+		float VDistFromTop = TextureEditorViewportPtr.Pin()->GetVerticalScrollBar()->DistanceFromTop();
 		float VDistFromBottom = TextureEditorViewportPtr.Pin()->GetVerticalScrollBar()->DistanceFromBottom();
+		float HDistFromTop = TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar()->DistanceFromTop();
 		float HDistFromBottom = TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar()->DistanceFromBottom();
 	
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize, true);
 
 		if ((TextureEditorViewportPtr.Pin()->GetVerticalScrollBar()->GetVisibility() == EVisibility::Visible) && VDistFromBottom < 1.0f)
 		{
-			Positions.Y = FMath::Clamp(1.0f - VRatio - VDistFromBottom, 0.0f, 1.0f) * Height;
+			Positions.Y = FMath::Clamp((1.0f + VDistFromTop - VDistFromBottom - VRatio) * 0.5f, 0.0f, 1.0f - VRatio) * Height;
 		}
 		else
 		{
@@ -496,7 +522,7 @@ FVector2D FTextureEditorViewportClient::GetViewportScrollBarPositions() const
 
 		if ((TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar()->GetVisibility() == EVisibility::Visible) && HDistFromBottom < 1.0f)
 		{
-			Positions.X = FMath::Clamp(1.0f - HRatio - HDistFromBottom, 0.0f, 1.0f) * Width;
+			Positions.X = FMath::Clamp((1.0f + HDistFromTop - HDistFromBottom - HRatio) * 0.5f, 0.0f, 1.0f - HRatio) * Width;
 		}
 		else
 		{

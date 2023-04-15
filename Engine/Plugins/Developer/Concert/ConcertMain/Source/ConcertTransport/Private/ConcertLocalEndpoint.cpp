@@ -6,12 +6,15 @@
 
 #include "MessageEndpoint.h"
 #include "MessageEndpointBuilder.h"
+#include "Algo/Transform.h"
 
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 #include "Containers/Ticker.h"
 #include "Misc/DateTime.h"
 #include "Stats/Stats.h"
+
+LLM_DEFINE_TAG(Concert_ConcertLocalEndpoint);
 
 class FConcertLocalEndpointKeepAliveRunnable : public FRunnable
 {
@@ -137,32 +140,56 @@ const FConcertEndpointContext& FConcertLocalEndpoint::GetEndpointContext() const
 	return EndpointContext;
 }
 
+TArray<FConcertEndpointContext> FConcertLocalEndpoint::GetRemoteEndpoints() const
+{
+	FScopeLock RemoteEndpointsLock(&RemoteEndpointsCS);
+	TArray<FConcertEndpointContext> Result;
+	Algo::Transform(RemoteEndpoints, Result, [](const TPair<FGuid, FConcertRemoteEndpointPtr>& RemoteEndpoint)
+	{
+		return RemoteEndpoint.Value->GetEndpointContext();
+	});
+	return Result;
+}
+
+FMessageAddress FConcertLocalEndpoint::GetRemoteAddress(const FGuid& ConcertEndpointId) const
+{
+	const FConcertRemoteEndpointPtr RemoteEndpoint = FindRemoteEndpoint(ConcertEndpointId);
+	return RemoteEndpoint
+		? RemoteEndpoint->GetAddress()
+		: FMessageAddress();
+}
+
 FOnConcertRemoteEndpointConnectionChanged& FConcertLocalEndpoint::OnRemoteEndpointConnectionChanged()
 {
 	return OnRemoteEndpointConnectionChangedDelegate;
 }
 
-void FConcertLocalEndpoint::InternalAddRequestHandler(const FName& RequestMessageType, const TSharedRef<IConcertRequestHandler>& Handler)
+FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& FConcertLocalEndpoint::OnConcertMessageAcknowledgementReceived()
+{
+	return OnConcertMessageAcknowledgementReceivedDelegate;
+}
+
+void FConcertLocalEndpoint::InternalAddRequestHandler(const FTopLevelAssetPath& RequestMessageType, const TSharedRef<IConcertRequestHandler>& Handler)
 {
 	RequestHandlers.Add(RequestMessageType, Handler);
 }
 
-void FConcertLocalEndpoint::InternalAddEventHandler(const FName& EventMessageType, const TSharedRef<IConcertEventHandler>& Handler)
+void FConcertLocalEndpoint::InternalAddEventHandler(const FTopLevelAssetPath& EventMessageType, const TSharedRef<IConcertEventHandler>& Handler)
 {
 	EventHandlers.Add(EventMessageType, Handler);
 }
 
-void FConcertLocalEndpoint::InternalRemoveRequestHandler(const FName& RequestMessageType)
+void FConcertLocalEndpoint::InternalRemoveRequestHandler(const FTopLevelAssetPath& RequestMessageType)
 {
 	RequestHandlers.Remove(RequestMessageType);
 }
 
-void FConcertLocalEndpoint::InternalRemoveEventHandler(const FName& EventMessageType)
+void FConcertLocalEndpoint::InternalRemoveEventHandler(const FTopLevelAssetPath& EventMessageType)
 {
 	EventHandlers.Remove(EventMessageType);
 }
 
-void FConcertLocalEndpoint::InternalSubscribeToEvent(const FName& EventMessageType)
+void FConcertLocalEndpoint::InternalSubscribeToEvent(const FTopLevelAssetPath& EventMessageType)
 {
 	if (MessageEndpoint.IsValid())
 	{
@@ -170,7 +197,7 @@ void FConcertLocalEndpoint::InternalSubscribeToEvent(const FName& EventMessageTy
 	}
 }
 
-void FConcertLocalEndpoint::InternalUnsubscribeFromEvent(const FName& EventMessageType)
+void FConcertLocalEndpoint::InternalUnsubscribeFromEvent(const FTopLevelAssetPath& EventMessageType)
 {
 	if (MessageEndpoint.IsValid())
 	{
@@ -271,6 +298,12 @@ FConcertRemoteEndpointRef FConcertLocalEndpoint::CreateRemoteEndpoint(const FCon
 		FScopeLock RemoteEndpointsLock(&RemoteEndpointsCS);
 		RemoteEndpoints.Add(InEndpointContext.EndpointId, NewRemoteEndpoint);
 	}
+	
+	NewRemoteEndpoint->OnConcertMessageAcknowledgementReceived().AddLambda(
+		[this](const FConcertEndpointContext& Context, const TSharedRef<IConcertMessage>& AckedMessage, const FConcertMessageContext& AckMessageContext)
+		{
+			OnConcertMessageAcknowledgementReceivedDelegate.Broadcast(GetEndpointContext(), Context, AckedMessage, AckMessageContext);
+		});
 	return NewRemoteEndpoint;
 }
 
@@ -295,6 +328,7 @@ FConcertRemoteEndpointPtr FConcertLocalEndpoint::FindRemoteEndpoint(const FMessa
 
 bool FConcertLocalEndpoint::HandleTick(float DeltaTime)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertLocalEndpoint);
 	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_HandleTick);
 
 
@@ -520,6 +554,7 @@ void FConcertLocalEndpoint::ProcessKeepAliveMessage(const TSharedPtr<IMessageCon
 
 void FConcertLocalEndpoint::InternalHandleMessage(const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertLocalEndpoint);
 	SCOPED_CONCERT_TRACE(FConcertLocalEndpoint_InternalHandleMessage);
 	const UScriptStruct* MessageTypeInfo = Context->GetMessageTypeInfo().Get();
 
@@ -661,7 +696,7 @@ void FConcertLocalEndpoint::HandleMessage(const FConcertMessageContext& ConcertC
 void FConcertLocalEndpoint::ProcessEvent(const FConcertMessageContext& ConcertContext)
 {
 	const FConcertEventData* Event = ConcertContext.GetMessage<FConcertEventData>();
-	const FName EventType = ConcertContext.MessageType->GetFName();
+	const FTopLevelAssetPath EventType = ConcertContext.MessageType->GetStructPathName();
 
 	Logger.LogProcessEvent(ConcertContext, EndpointContext.EndpointId);
 	TSharedPtr<IConcertEventHandler> Handler = EventHandlers.FindRef(EventType);
@@ -679,7 +714,7 @@ void FConcertLocalEndpoint::ProcessEvent(const FConcertMessageContext& ConcertCo
 void FConcertLocalEndpoint::ProcessRequest(const FConcertMessageContext& ConcertContext)
 {
 	const FConcertRequestData* Request = ConcertContext.GetMessage<FConcertRequestData>();
-	const FName RequestType = ConcertContext.MessageType->GetFName();
+	const FTopLevelAssetPath RequestType = ConcertContext.MessageType->GetStructPathName();
 
 	// The response ID should match the request message, and the response should go back to the endpoint where the request came from
 	auto DispatchResponse = [this, RequestMessageId = ConcertContext.Message->MessageId, ResponseDestinationEndpointId = Request->ConcertEndpointId](TSharedPtr<IConcertResponse> Response)

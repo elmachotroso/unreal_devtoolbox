@@ -65,12 +65,17 @@ struct FStreamingRenderAssetPrimitiveInfo
 	UPROPERTY(Transient)
 	uint32 bAllowInvalidTexelFactorWhenUnregistered : 1;
 
+	/** Mesh texel factors aren't uv density and shouldn't be affected by component scales */
+	UPROPERTY(Transient)
+	uint32 bAffectedByComponentScale : 1;
+
 	FStreamingRenderAssetPrimitiveInfo() : 
 		RenderAsset(nullptr),
 		Bounds(ForceInit), 
 		TexelFactor(1.0f),
 		PackedRelativeBox(0),
-		bAllowInvalidTexelFactorWhenUnregistered(false)
+		bAllowInvalidTexelFactorWhenUnregistered(false),
+		bAffectedByComponentScale(true)
 	{
 	}
 
@@ -79,22 +84,27 @@ struct FStreamingRenderAssetPrimitiveInfo
 		const FBoxSphereBounds& InBounds,
 		float InTexelFactor,
 		uint32 InPackedRelativeBox = 0,
-		bool bInAllowInvalidTexelFactorWhenUnregistered = false) :
+		bool bInAllowInvalidTexelFactorWhenUnregistered = false,
+		bool bInAffectedByComponentScale = true) :
 		RenderAsset(InAsset),
 		Bounds(InBounds), 
 		TexelFactor(InTexelFactor),
 		PackedRelativeBox(InPackedRelativeBox),
-		bAllowInvalidTexelFactorWhenUnregistered(bInAllowInvalidTexelFactorWhenUnregistered)
+		bAllowInvalidTexelFactorWhenUnregistered(bInAllowInvalidTexelFactorWhenUnregistered),
+		bAffectedByComponentScale(bInAffectedByComponentScale)
 	{
 	}
 
 	bool CanBeStreamedByDistance(bool bOwningCompRegistered) const
 	{
-		return (TexelFactor > SMALL_NUMBER || (!bOwningCompRegistered && bAllowInvalidTexelFactorWhenUnregistered))
-			&& (Bounds.SphereRadius > SMALL_NUMBER || !bOwningCompRegistered)
+		return (TexelFactor > UE_SMALL_NUMBER || (!bOwningCompRegistered && bAllowInvalidTexelFactorWhenUnregistered))
+			&& (Bounds.SphereRadius > UE_SMALL_NUMBER || !bOwningCompRegistered)
 			&& ensure(FMath::IsFinite(TexelFactor));
 	}
 };
+
+// Invalid streamable texture registration index
+static const uint16 InvalidRegisteredStreamableTexture = (uint16)INDEX_NONE;
 
 /**
  * Interface for texture streaming container
@@ -252,10 +262,6 @@ class ENGINE_API FStreamingTextureLevelContext
 
 	int32* GetBuildDataIndexRef(UTexture* Texture, bool bForceUpdate = false);
 	void UpdateQualityAndFeatureLevel(EMaterialQualityLevel::Type InQualityLevel, ERHIFeatureLevel::Type InFeatureLevel, const ULevel* InLevel = nullptr);
-
-	/** Console command used to turn on/off usage of texture streaming built data. */
-	static class FAutoConsoleCommand UseTextureStreamingBuiltDataCommand;
-	static bool UseTextureStreamingBuiltData;
 
 public:
 

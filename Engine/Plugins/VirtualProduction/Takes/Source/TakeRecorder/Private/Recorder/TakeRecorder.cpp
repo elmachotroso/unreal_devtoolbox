@@ -3,11 +3,11 @@
 #include "Recorder/TakeRecorder.h"
 
 #include "Algo/Accumulate.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/EngineTypes.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "ISequencer.h"
 #include "LevelSequence.h"
 #include "Misc/CommandLine.h"
@@ -51,6 +51,8 @@
 #include "IAssetViewport.h"
 #include "LevelEditor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorder)
 
 #define LOCTEXT_NAMESPACE "TakeRecorder"
 
@@ -484,15 +486,14 @@ bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorde
 	{
 		Parameters.Project.bStartAtCurrentTimecode = false;
 		Parameters.User.bStopAtPlaybackEnd = true;
-		Parameters.User.bSaveRecordedAssets = false;
 		Parameters.User.bAutoLock = false;
 	}
 
-	// Figure out which world we're recording from
-	DiscoverSourceWorld();
-
 	// Perform any other parameter-configurable initialization. Must have a valid world at this point.
 	InitializeFromParameters();
+
+	// Figure out which world we're recording from
+	DiscoverSourceWorld();
 
 	// Open a recording notification
 
@@ -513,6 +514,13 @@ bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorde
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (Sequencer.IsValid())
 	{
+		// If a start frame was specified, adjust the playback range before rewinding to the beginning of the playback range
+		UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
+		MovieScene->SetPlaybackRange(TRange<FFrameNumber>(Parameters.StartFrame, MovieScene->GetPlaybackRange().GetUpperBoundValue()));
+
+		// Always start the recording at the beginning of the playback range
+		Sequencer->SetLocalTime(MovieScene->GetPlaybackRange().GetLowerBoundValue());
+
 		if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence)
 		{
 			USequencerSettings* SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
@@ -530,7 +538,6 @@ bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorde
 		// Center the view range around the current time about to be captured
 		FAnimatedRange Range = Sequencer->GetViewRange();
 		FTimecode CurrentTime = FApp::GetTimecode();
-		UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
 		FFrameRate FrameRate = MovieScene->GetDisplayRate();
 		FFrameNumber ViewRangeStart = CurrentTime.ToFrameNumber(FrameRate);
 		double ViewRangeStartSeconds = Parameters.Project.bStartAtCurrentTimecode ? FrameRate.AsSeconds(ViewRangeStart) : MovieScene->GetPlaybackRange().GetLowerBoundValue() / MovieScene->GetTickResolution();
@@ -562,13 +569,19 @@ void UTakeRecorder::DiscoverSourceWorld()
 	check(WorldToRecordIn);
 	WeakWorld = WorldToRecordIn;
 
-	UClass* Class = StaticLoadClass(UTakeRecorderOverlayWidget::StaticClass(), nullptr, TEXT("/Takes/UMG/DefaultRecordingOverlay.DefaultRecordingOverlay_C"));
-	if (Class)
+	// If CountdownSeconds is zero and the framerate is high, then we can create the overlay but it
+	// never ends up being visible. However, when the framerate is low (e.g. in debug) it does show
+	// for a single frame, which is undesirable, so only make it if it's going to last some time.
+	if (CountdownSeconds > 0)
 	{
-		OverlayWidget = CreateWidget<UTakeRecorderOverlayWidget>(WorldToRecordIn, Class);
-		OverlayWidget->SetFlags(RF_Transient);
-		OverlayWidget->SetRecorder(this);
-		OverlayWidget->AddToViewport();
+		UClass* Class = StaticLoadClass(UTakeRecorderOverlayWidget::StaticClass(), nullptr, TEXT("/Takes/UMG/DefaultRecordingOverlay.DefaultRecordingOverlay_C"));
+		if (Class)
+		{
+			OverlayWidget = CreateWidget<UTakeRecorderOverlayWidget>(WorldToRecordIn, Class);
+			OverlayWidget->SetFlags(RF_Transient);
+			OverlayWidget->SetRecorder(this);
+			OverlayWidget->AddToViewport();
+		}
 	}
 
 	bool bPlayInGame = WorldToRecordIn->WorldType == EWorldType::PIE || WorldToRecordIn->WorldType == EWorldType::Game;
@@ -718,28 +731,6 @@ void UTakeRecorder::InitializeFromParameters()
 			OnStopCleanup.Add(RestoreImmersiveMode);
 		}
 	}
-
-	// Apply engine Time Dilation
-	UWorld* RecordingWorld = GetWorld();
-	check(RecordingWorld);
-	if (AWorldSettings* WorldSettings = RecordingWorld->GetWorldSettings())
-	{
-		const float ExistingTimeDilation = WorldSettings->TimeDilation;
-		if (Parameters.User.EngineTimeDilation != ExistingTimeDilation)
-		{
-			WorldSettings->SetTimeDilation(Parameters.User.EngineTimeDilation);
-
-			// Restore it when we're done
-			auto RestoreTimeDilation = [ExistingTimeDilation, WeakWorldSettings = MakeWeakObjectPtr(WorldSettings)]
-			{
-				if (AWorldSettings* CleaupWorldSettings = WeakWorldSettings.Get())
-				{
-					CleaupWorldSettings->SetTimeDilation(ExistingTimeDilation);
-				}
-			};
-			OnStopCleanup.Add(RestoreTimeDilation);
-		}
-	}
 }
 
 bool UTakeRecorder::ShouldShowNotifications()
@@ -827,6 +818,8 @@ FQualifiedFrameTime UTakeRecorder::GetRecordTime() const
 
 void UTakeRecorder::InternalTick(float DeltaTime)
 {
+	UE::MovieScene::FScopedSignedObjectModifyDefer FlushOnTick(true);
+
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	FQualifiedFrameTime RecordTime = GetRecordTime();
 		
@@ -931,6 +924,36 @@ void UTakeRecorder::PreRecord()
 	if (Sequencer.IsValid())
 	{
 		Sequencer->RefreshTree();
+	}
+
+	// Apply engine Time Dilation after the countdown, otherwise the countdown will be dilated as well!
+	UWorld* RecordingWorld = GetWorld();
+	check(RecordingWorld);
+	if (AWorldSettings* WorldSettings = RecordingWorld->GetWorldSettings())
+	{
+		const float ExistingCinematicTimeDilation = WorldSettings->CinematicTimeDilation;
+
+		const bool bInvalidTimeDilation = Parameters.User.EngineTimeDilation == 0.f;
+
+		if (bInvalidTimeDilation)
+		{
+			UE_LOG(LogTakesCore, Warning, TEXT("Time dilation cannot be 0. Ignoring time dilation for this recording."));
+		}
+
+		if (Parameters.User.EngineTimeDilation != ExistingCinematicTimeDilation && !bInvalidTimeDilation)
+		{
+			WorldSettings->CinematicTimeDilation = Parameters.User.EngineTimeDilation;
+
+			// Restore it when we're done
+			auto RestoreTimeDilation = [ExistingCinematicTimeDilation, WeakWorldSettings = MakeWeakObjectPtr(WorldSettings)]
+			{
+				if (AWorldSettings* CleaupWorldSettings = WeakWorldSettings.Get())
+				{
+					CleaupWorldSettings->CinematicTimeDilation = ExistingCinematicTimeDilation;
+				}
+			};
+			OnStopCleanup.Add(RestoreTimeDilation);
+		}
 	}
 }
 
@@ -1179,27 +1202,6 @@ void UTakeRecorder::StopInternal(const bool bCancelled)
 		}
 	}
 
-	if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence && !bRecordingFinished)
-	{
-		if (GIsEditor)
-		{
-			// Recording was canceled before it started, so delete the asset. Note we can only do this on editor
-			// nodes. On -game nodes, this cannot be performed. This can only happen with Mult-user and -game node
-			// recording.
-			//
-			FAssetRegistryModule::AssetDeleted(SequenceAsset);
-		}
-
-		// Move the asset to the transient package so that new takes with the same number can be created in its place
-		FName DeletedPackageName = MakeUniqueObjectName(nullptr, UPackage::StaticClass(), *(FString(TEXT("/Temp/") + SequenceAsset->GetName() + TEXT("_Cancelled"))));
-		SequenceAsset->GetOutermost()->Rename(*DeletedPackageName.ToString());
-
-		SequenceAsset->ClearFlags(RF_Standalone | RF_Public);
-		SequenceAsset->RemoveFromRoot();
-		SequenceAsset->MarkAsGarbage();
-		SequenceAsset = nullptr;
-	}
-
 	// Perform any other cleanup that has been defined for this recording
 	for (const TFunction<void()>& Cleanup : OnStopCleanup)
 	{
@@ -1223,6 +1225,29 @@ void UTakeRecorder::StopInternal(const bool bCancelled)
 			OnRecordingCancelledEvent.Broadcast(this);
 			UTakeRecorderBlueprintLibrary::OnTakeRecorderCancelled();
 		}
+	}
+
+	// Delete the asset after OnTakeRecorderFinished and OnTakeRecorderCancelled because the ScopedSequencerPanel 
+	// will still have the current sequence before it is returned to the Pending Take.
+	if (Parameters.TakeRecorderMode == ETakeRecorderMode::RecordNewSequence && !bRecordingFinished)
+	{
+		if (GIsEditor)
+		{
+			// Recording was canceled before it started, so delete the asset. Note we can only do this on editor
+			// nodes. On -game nodes, this cannot be performed. This can only happen with Mult-user and -game node
+			// recording.
+			//
+			FAssetRegistryModule::AssetDeleted(SequenceAsset);
+		}
+
+		// Move the asset to the transient package so that new takes with the same number can be created in its place
+		FName DeletedPackageName = MakeUniqueObjectName(nullptr, UPackage::StaticClass(), *(FString(TEXT("/Temp/") + SequenceAsset->GetName() + TEXT("_Cancelled"))));
+		SequenceAsset->GetOutermost()->Rename(*DeletedPackageName.ToString());
+
+		SequenceAsset->ClearFlags(RF_Standalone | RF_Public);
+		SequenceAsset->RemoveFromRoot();
+		SequenceAsset->MarkAsGarbage();
+		SequenceAsset = nullptr;
 	}
 
 	if (SequenceAsset)
@@ -1291,3 +1316,4 @@ void UTakeRecorder::HandlePIE(bool bIsSimulating)
 }
 
 #undef LOCTEXT_NAMESPACE
+

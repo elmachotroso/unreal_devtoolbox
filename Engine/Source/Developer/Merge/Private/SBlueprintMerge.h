@@ -60,7 +60,7 @@ private:
 	bool IsActivelyMerging() const;
 
 	/** 
-	 * The user cannot start a merge until he/she has chosen a remote, base, &
+	 * The user cannot start a merge until they have chosen a remote, base, &
 	 * local asset/revision to use in the merge. This checks the state of their 
 	 * choices.
 	 *
@@ -114,7 +114,7 @@ private:
 	TSharedPtr< STreeView< TSharedPtr< class FBlueprintDifferenceTreeEntry > > > DifferencesTreeView;
 
 	/** List of differences collected across all panels: */
-	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > MasterDifferencesList;
+	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > PrimaryDifferencesList;
 
 	/** List of all differences, cached so that we can iterate only the differences and not labels, etc: */
 	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > RealDifferences;

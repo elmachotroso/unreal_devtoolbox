@@ -2,39 +2,66 @@
 
 
 #include "SBlueprintEditorToolbar.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Misc/CoreMisc.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Misc/MessageDialog.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/UObjectHash.h"
+
+#include "AssetToolsModule.h"
 #include "BlueprintEditor.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "ISourceControlModule.h"
-#include "SourceControlHelpers.h"
 #include "BlueprintEditorCommands.h"
-#include "Kismet2/DebuggerCommands.h"
+#include "BlueprintEditorContext.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "Engine/Blueprint.h"
 #include "Engine/LevelScriptBlueprint.h"
-#include "Kismet2/BlueprintEditorUtils.h"
+#include "FindInBlueprintManager.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/SlateDelegates.h"
 #include "GraphEditorActions.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/PlatformMisc.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
-#include "AssetToolsModule.h"
-#include "BlueprintEditorModes.h"
-#include "Widgets/SToolTip.h"
-#include "IDocumentation.h"
-#include "SBlueprintEditorSelectedDebugObjectWidget.h"
-#include "DesktopPlatformModule.h"
-#include "SBlueprintRevisionMenu.h"
-#include "ToolMenus.h"
-#include "BlueprintEditorContext.h"
-#include "FindInBlueprintManager.h"
-#include "ISourceCodeAccessor.h"
 #include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "ISourceControlRevision.h"
+#include "ISourceControlState.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/DebuggerCommands.h"
+#include "Layout/Margin.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "SBlueprintEditorSelectedDebugObjectWidget.h"
+#include "SBlueprintRevisionMenu.h"
+#include "SourceControlHelpers.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/Casts.h"
+#include "ToolMenu.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuMisc.h"
+#include "ToolMenuSection.h"
 #include "ToolMenus.h"
-#include "BlueprintEditorContext.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
+
+class FUICommandList;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "KismetToolbar"
 
@@ -51,7 +78,7 @@ public:
 	{
 		SBorder::Construct(
 			SBorder::FArguments()
-			.BorderImage(FEditorStyle::GetBrush("BlueprintEditor.PipelineSeparator"))
+			.BorderImage(FAppStyle::GetBrush("BlueprintEditor.PipelineSeparator"))
 			.Padding(0.0f)
 			);
 	}
@@ -165,7 +192,7 @@ void FKismet2Menu::FillDebugMenu(UToolMenu* InMenu)
 			FBlueprintEditorCommands::Get().OpenBlueprintDebugger,
 			/* InLabelOverride = */ LOCTEXT("BpDebuggerTitle", "Blueprint Debugger"),
 			/* InTooltipOverride = */ LOCTEXT("BpDebuggerTooltip","Open the Blueprint Debugger."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "BlueprintDebugger.TabIcon")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "BlueprintDebugger.TabIcon")
 		);
 	}
 	
@@ -257,46 +284,48 @@ void FFullBlueprintEditorCommands::RegisterCommands()
 
 namespace BlueprintEditorToolbarImpl
 {
-	static TSharedRef<SWidget> GenerateCompileOptionsWidget(TSharedRef<FUICommandList> CommandList);
-	static void MakeSaveOnCompileSubMenu(FMenuBuilder& InMenuBuilder);
-	static void MakeCompileDeveloperSubMenu(FMenuBuilder& InMenuBuilder);
+	static void GenerateCompileOptionsMenu(UToolMenu* InMenu);
+	static void MakeSaveOnCompileSubMenu(UToolMenu* InMenu);
+	static void MakeCompileDeveloperSubMenu(UToolMenu* InMenu);
 };
 
-static TSharedRef<SWidget> BlueprintEditorToolbarImpl::GenerateCompileOptionsWidget(TSharedRef<FUICommandList> CommandList)
+static void BlueprintEditorToolbarImpl::GenerateCompileOptionsMenu(UToolMenu* InMenu)
 {
-	FMenuBuilder MenuBuilder(/*bShouldCloseWindowAfterMenuSelection =*/true, CommandList);
-
+	FToolMenuSection& Section = InMenu->AddSection("Section");
 	const FFullBlueprintEditorCommands& Commands = FFullBlueprintEditorCommands::Get();
 
 	// @TODO: disable the menu and change up the tooltip when all sub items are disabled
-	MenuBuilder.AddSubMenu(
+	Section.AddSubMenu(
+		"SaveOnCompile",
 		LOCTEXT("SaveOnCompileSubMenu", "Save on Compile"),
 		LOCTEXT("SaveOnCompileSubMenu_ToolTip", "Determines how the Blueprint is saved whenever you compile it."),
-		FNewMenuDelegate::CreateStatic(&BlueprintEditorToolbarImpl::MakeSaveOnCompileSubMenu));
+		FNewToolMenuDelegate::CreateStatic(&BlueprintEditorToolbarImpl::MakeSaveOnCompileSubMenu));
 
-	MenuBuilder.AddMenuEntry(Commands.JumpToErrorNode);
+	Section.AddMenuEntry(Commands.JumpToErrorNode);
 
-// 	MenuBuilder.AddSubMenu(
+// 	Section.AddSubMenu(
+// 		"DevCompile",
 // 		LOCTEXT("DevCompileSubMenu", "Developer"),
 // 		LOCTEXT("DevCompileSubMenu_ToolTip", "Advanced settings that aid in devlopment/debugging of the Blueprint system as a whole."),
 // 		FNewMenuDelegate::CreateStatic(&BlueprintEditorToolbarImpl::MakeCompileDeveloperSubMenu));
 
-	return MenuBuilder.MakeWidget();
 }
 
-static void BlueprintEditorToolbarImpl::MakeSaveOnCompileSubMenu(FMenuBuilder& InMenuBuilder)
+static void BlueprintEditorToolbarImpl::MakeSaveOnCompileSubMenu(UToolMenu* InMenu)
 {
+	FToolMenuSection& Section = InMenu->AddSection("Section");
 	const FFullBlueprintEditorCommands& Commands = FFullBlueprintEditorCommands::Get();
-	InMenuBuilder.AddMenuEntry(Commands.SaveOnCompile_Never);
-	InMenuBuilder.AddMenuEntry(Commands.SaveOnCompile_SuccessOnly);
-	InMenuBuilder.AddMenuEntry(Commands.SaveOnCompile_Always);
+	Section.AddMenuEntry(Commands.SaveOnCompile_Never);
+	Section.AddMenuEntry(Commands.SaveOnCompile_SuccessOnly);
+	Section.AddMenuEntry(Commands.SaveOnCompile_Always);
 }
 
-static void BlueprintEditorToolbarImpl::MakeCompileDeveloperSubMenu(FMenuBuilder& InMenuBuilder)
+static void BlueprintEditorToolbarImpl::MakeCompileDeveloperSubMenu(UToolMenu* InMenu)
 {
+	FToolMenuSection& Section = InMenu->AddSection("Section");
 	const FBlueprintEditorCommands& EditorCommands = FBlueprintEditorCommands::Get();
-	InMenuBuilder.AddMenuEntry(EditorCommands.SaveIntermediateBuildProducts);
-	InMenuBuilder.AddMenuEntry(EditorCommands.ShowActionMenuItemSignatures);
+	Section.AddMenuEntry(EditorCommands.SaveIntermediateBuildProducts);
+	Section.AddMenuEntry(EditorCommands.ShowActionMenuItemSignatures);
 }
 
 
@@ -340,21 +369,22 @@ void FBlueprintEditorToolbar::AddCompileToolbar(UToolMenu* InMenu)
 			{
 				const FFullBlueprintEditorCommands& Commands = FFullBlueprintEditorCommands::Get();
 
-				FToolMenuEntry CompileButton = FToolMenuEntry::InitToolBarButton(
+				FToolMenuEntry& CompileButton = InSection.AddEntry(FToolMenuEntry::InitToolBarButton(
 					Commands.Compile,
 					TAttribute<FText>(),
 					TAttribute<FText>(BlueprintEditorToolbar.ToSharedRef(), &FBlueprintEditorToolbar::GetStatusTooltip),
 					TAttribute<FSlateIcon>(BlueprintEditorToolbar.ToSharedRef(), &FBlueprintEditorToolbar::GetStatusImage),
-					"CompileBlueprint");
-
+					"CompileBlueprint"));
 				CompileButton.StyleNameOverride = "CalloutToolbar";
 
-				CompileButton.AddOptionsDropdown(
+				FToolMenuEntry& CompileOptions = InSection.AddEntry(FToolMenuEntry::InitComboButton(
+					"CompileComboButton",
 					FUIAction(),
-					FOnGetContent::CreateStatic(&BlueprintEditorToolbarImpl::GenerateCompileOptionsWidget, Context->BlueprintEditor.Pin()->GetToolkitCommands()),
-					LOCTEXT("BlupeintCompileOptions_ToolbarTooltip", "Options to customize how Blueprints compile"));
-
-				InSection.AddEntry(CompileButton);
+					FNewToolMenuDelegate::CreateStatic(&BlueprintEditorToolbarImpl::GenerateCompileOptionsMenu),
+					LOCTEXT("BlupeintCompileOptions_ToolbarTooltip", "Options to customize how Blueprints compile")
+				));
+				CompileOptions.StyleNameOverride = "CalloutToolbar";
+				CompileOptions.ToolBarData.bSimpleComboBox = true;
 			}
 		}
 	}));
@@ -371,17 +401,15 @@ void FBlueprintEditorToolbar::AddCompileToolbar(UToolMenu* InMenu)
 				TSharedPtr<class FBlueprintEditorToolbar> BlueprintEditorToolbar = Context->BlueprintEditor.Pin()->GetToolbarBuilder();
 				if (BlueprintEditorToolbar.IsValid())
 				{
-					InSection.InsertPosition = FToolMenuInsert();
-					FToolMenuEntry DiffEntry = FToolMenuEntry::InitComboButton(
+					FToolMenuEntry& DiffEntry = InSection.AddEntry(FToolMenuEntry::InitComboButton(
 						"Diff",
 						FUIAction(),
 						FOnGetContent::CreateStatic(&FBlueprintEditorToolbar::MakeDiffMenu, Context),
 						LOCTEXT("Diff", "Diff"),
 						LOCTEXT("BlueprintEditorDiffToolTip", "Diff against previous revisions"),
 						FSlateIcon(FAppStyle::Get().GetStyleSetName(), "BlueprintDiff.ToolbarIcon")
-					);
+					));
 					DiffEntry.StyleNameOverride = "CalloutToolbar";
-					InSection.AddEntry(DiffEntry);
 				}
 			}
 		}));
@@ -424,7 +452,7 @@ void FBlueprintEditorToolbar::AddScriptingToolbar(UToolMenu* InMenu)
 				FBlueprintEditorCommands::Get().ToggleHideUnrelatedNodes,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "GraphEditor.ToggleHideUnrelatedNodes")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.ToggleHideUnrelatedNodes")
 			));
 
 			InSection.AddEntry(FToolMenuEntry::InitComboButton(
@@ -484,13 +512,13 @@ FSlateIcon FBlueprintEditorToolbar::GetStatusImage() const
 	default:
 	case BS_Unknown:
 	case BS_Dirty:
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
 	case BS_Error:
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusError);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusError);
 	case BS_UpToDate:
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusGood);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusGood);
 	case BS_UpToDateWithWarnings:
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusWarning);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusWarning);
 	}
 }
 

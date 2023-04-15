@@ -15,6 +15,8 @@
 #include "SceneManagement.h"
 #include "DynamicMeshBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LineBatchComponent)
+
 FLineBatcherSceneProxy::FLineBatcherSceneProxy(const ULineBatchComponent* InComponent) :
 	FPrimitiveSceneProxy(InComponent), Lines(InComponent->BatchedLines), 
 	Points(InComponent->BatchedPoints), Meshes(InComponent->BatchedMeshes)
@@ -254,7 +256,7 @@ void ULineBatchComponent::DrawDirectionalArrow(const FMatrix& ArrowToWorld,FColo
 /** Draw a circle */
 void ULineBatchComponent::DrawCircle(const FVector& Base,const FVector& X,const FVector& Y,FColor Color,float Radius,int32 NumSides,uint8 DepthPriority)
 {
-	const float	AngleDelta = 2.0f * PI / NumSides;
+	const float	AngleDelta = 2.0f * UE_PI / NumSides;
 	FVector	LastVertex = Base + X * Radius;
 
 	for(int32 SideIndex = 0;SideIndex < NumSides;SideIndex++)
@@ -416,3 +418,4 @@ void ULineBatchComponent::Flush()
 		MarkRenderStateDirty();
 	}
 }
+

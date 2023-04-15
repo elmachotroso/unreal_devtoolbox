@@ -14,6 +14,7 @@
 #include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Serialization/BulkData.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "NiagaraSystem.h"
@@ -35,8 +36,8 @@ static FAutoConsoleVariableRef CVarHairCardsBulkData_AsyncLoading(TEXT("r.HairSt
 static int32 GHairStrandsBulkData_Validation = 1;
 static FAutoConsoleVariableRef CVarHairStrandsBulkData_Validation(TEXT("r.HairStrands.Strands.BulkData.Validation"), GHairStrandsBulkData_Validation, TEXT("Validate some hair strands data at serialization/loading time."));
 
-static float GHairStrandsDebugVoxel_WorldSize = 1.0f;
-static int32 GHairStrandsDebugVoxel_MaxSegmentPerVoxel = 512;
+static float GHairStrandsDebugVoxel_WorldSize = 0.3f;
+static int32 GHairStrandsDebugVoxel_MaxSegmentPerVoxel = 2048;
 static FAutoConsoleVariableRef CVarHairStrandsDebugVoxel_WorldSize(TEXT("r.HairStrands.DebugData.VoxelSize"), GHairStrandsDebugVoxel_WorldSize, TEXT("Voxel size use for creating debug data."));
 static FAutoConsoleVariableRef CVarHairStrandsDebugVoxel_MaxSegmentPerVoxel(TEXT("r.HairStrands.DebugData.MaxSegmentPerVoxel"), GHairStrandsDebugVoxel_MaxSegmentPerVoxel, TEXT("Max number of segments per Voxel size when creating debug data."));
 
@@ -55,11 +56,6 @@ EHairResourceLoadingType GetHairResourceLoadingType(EHairGeometryType InGeometry
 #else
 	return EHairResourceLoadingType::Sync;
 #endif
-}
-
-namespace HairTransition
-{
-	void TransitToSRV(FRDGBuilder& GraphBuilder, FRDGBufferSRVRef InBuffer, ERDGPassFlags Flags);	
 }
 
 enum class EHairResourceUsageType : uint8
@@ -165,7 +161,7 @@ static FRDGBufferRef InternalCreateVertexBuffer(
 	uint64 InitialDataSize,
 	ERDGInitialDataFlags InitialDataFlags)
 {
-	checkf(Desc.UnderlyingType == FRDGBufferDesc::EUnderlyingType::VertexBuffer, TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), Name);
+	checkf(EnumHasAnyFlags(Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), Name);
 	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, Name, ERDGBufferFlags::MultiFrame);
 	if (InitialData && InitialDataSize)
 	{
@@ -207,7 +203,7 @@ void InternalCreateVertexBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByte
 	#if !WITH_EDITORONLY_DATA
 	if (bReleaseCPUData)
 	{
-		checkf(Desc.UnderlyingType == FRDGBufferDesc::EUnderlyingType::VertexBuffer, TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), DebugName);
+		checkf(EnumHasAnyFlags(Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), DebugName);
 		Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
 		if (BulkData && DataSizeInBytes)
 		{
@@ -480,7 +476,6 @@ void FHairCommonResource::InitRHI()
 
 	if (bUseRenderGraph)
 	{
-		FMemMark Mark(FMemStack::Get());
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 		FRDGBuilder GraphBuilder(RHICmdList);
 		InternalAllocate(GraphBuilder);
@@ -544,11 +539,6 @@ void FHairCommonResource::StreamInLODData(int32 LODIndex)
 	{
 		InternalIsLODDataLoaded(LODIndex);
 	}
-}
-
-void AsyncLoadHairBulkData(FByteBulkData& InData, bool& bIsLoading)
-{
-	bIsLoading = InData.StartAsyncLoading() || bIsLoading;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -691,13 +681,12 @@ void FHairCardsDeformedResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 
 		// Manually transit to SRVs, in case of the cards are rendered not visible, but still rendered (in shadows for instance). In such a case, the cards deformation pass is not called, and thus the 
 		// buffers are never transit from UAV (clear) to SRV for rasterization. 
-		HairTransition::TransitToSRV(GraphBuilder, Register(GraphBuilder, DeformedPositionBuffer[0], ERDGImportedBufferFlags::CreateSRV).SRV, ERDGPassFlags::Raster);
-		HairTransition::TransitToSRV(GraphBuilder, Register(GraphBuilder, DeformedPositionBuffer[1], ERDGImportedBufferFlags::CreateSRV).SRV, ERDGPassFlags::Raster);
+		GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, DeformedPositionBuffer[0], ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
+		GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, DeformedPositionBuffer[1], ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
 	}
 
 	FRDGImportedBuffer CardsDeformedNormalRDGBuffer = Register(GraphBuilder, DeformedNormalBuffer, ERDGImportedBufferFlags::CreateSRV);
-	HairTransition::TransitToSRV(GraphBuilder, CardsDeformedNormalRDGBuffer.SRV, ERDGPassFlags::Raster);
-	GraphBuilder.SetBufferAccessFinal(CardsDeformedNormalRDGBuffer.Buffer, ERHIAccess::SRVGraphics);
+	GraphBuilder.UseExternalAccessMode(CardsDeformedNormalRDGBuffer.Buffer, ERHIAccess::SRVMask);
 }
 
 void FHairCardsDeformedResource::InternalRelease()
@@ -792,22 +781,28 @@ FHairStrandsRestResource::FHairStrandsRestResource(FHairStrandsBulkData& InBulkD
 
 bool FHairStrandsRestResource::InternalIsDataLoaded()
 {
-	bool bIsLoading = false;
-
-	AsyncLoadHairBulkData(BulkData.Positions, bIsLoading);
-	AsyncLoadHairBulkData(BulkData.Attributes0, bIsLoading);
-	AsyncLoadHairBulkData(BulkData.Attributes1, bIsLoading);
-
-	if (!!(BulkData.Flags & FHairStrandsBulkData::DataFlags_HasMaterialData))
+	if (BulkDataRequest.IsNone())
 	{
-		AsyncLoadHairBulkData(BulkData.Materials, bIsLoading);
-	}
+		FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(4);
+		Batch.Read(BulkData.Positions);
+		Batch.Read(BulkData.Attributes0);
+		Batch.Read(BulkData.Attributes1);
 
-	return !bIsLoading;
+		if (!!(BulkData.Flags & FHairStrandsBulkData::DataFlags_HasMaterialData))
+		{
+			Batch.Read(BulkData.Materials);
+		}
+
+		Batch.Issue(BulkDataRequest);
+	}
+	
+	return BulkDataRequest.IsCompleted();
 }
 
 void FHairStrandsRestResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
+	BulkDataRequest = FBulkDataBatchRequest();
+
 	const uint32 PointCount = BulkData.PointCount;
 
 	// 1. Lock data, which force the loading data from files (on non-editor build/cooked data). These data are then uploaded to the GPU
@@ -824,12 +819,13 @@ void FHairStrandsRestResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 	TArray<FVector4f> RestOffset;
 	RestOffset.Add((FVector3f)BulkData.GetPositionOffset());// LWC_TODO: precision loss
 	InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, RestOffset, PositionOffsetBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PositionOffsetBuffer), ResourceName), EHairResourceUsageType::Static, ERDGInitialDataFlags::None);
-	HairTransition::TransitToSRV(GraphBuilder, Register(GraphBuilder, PositionOffsetBuffer, ERDGImportedBufferFlags::CreateSRV).SRV, ERDGPassFlags::Compute);
+	GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, PositionOffsetBuffer, ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
 }
 
 void AddHairTangentPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
+	uint32 VertexStart,
 	uint32 VertexCount,
 	FHairGroupPublicData* HairGroupPublicData,
 	FRDGBufferSRVRef PositionBuffer,
@@ -845,6 +841,7 @@ FRDGExternalBuffer FHairStrandsRestResource::GetTangentBuffer(FRDGBuilder& Graph
 		AddHairTangentPass(
 			GraphBuilder,
 			ShaderMap,
+			0,
 			BulkData.PointCount,
 			nullptr,
 			RegisterAsSRV(GraphBuilder, PositionBuffer),
@@ -1005,7 +1002,7 @@ void FHairStrandsClusterCullingBulkData::Validate(bool bIsSaving)
 	}
 	if (!bIsValid)
 	{
-		FString Name = ClusterLODInfos.GetPackagePath().GetPackageName();
+		FString Name = ClusterLODInfos.GetDebugName();
 		UE_LOG(LogHairStrands, Error, TEXT("[Groom/DDC] Strands - Invalid ClusterCullingBulkData when %s bulk data - %s"), bIsSaving ? TEXT("Saving") : TEXT("Loading"), *Name);
 	}
 
@@ -1023,16 +1020,23 @@ FHairStrandsClusterCullingResource::FHairStrandsClusterCullingResource(FHairStra
 
 bool FHairStrandsClusterCullingResource::InternalIsDataLoaded()
 {
-	bool bIsLoading = false;
-	AsyncLoadHairBulkData(BulkData.PackedClusterInfos, bIsLoading);
-	AsyncLoadHairBulkData(BulkData.ClusterLODInfos, bIsLoading);
-	AsyncLoadHairBulkData(BulkData.VertexToClusterIds, bIsLoading);
-	AsyncLoadHairBulkData(BulkData.ClusterVertexIds, bIsLoading);
-	return !bIsLoading;
+	if (BulkDataRequest.IsNone())
+	{
+		FBulkDataBatchRequest::NewBatch(4)
+			.Read(BulkData.PackedClusterInfos)
+			.Read(BulkData.ClusterLODInfos)
+			.Read(BulkData.VertexToClusterIds)
+			.Read(BulkData.ClusterVertexIds)
+			.Issue(BulkDataRequest);
+	}
+
+	return BulkDataRequest.IsCompleted();
 }
 
 void FHairStrandsClusterCullingResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
+	BulkDataRequest = FBulkDataBatchRequest();
+
 	if (GHairStrandsBulkData_Validation > 0)
 	{
 		BulkData.Validate(false);
@@ -1051,6 +1055,7 @@ void FHairStrandsClusterCullingResource::InternalRelease()
 	ClusterLODInfoBuffer.Release();
 	ClusterVertexIdBuffer.Release();
 	VertexToClusterIdBuffer.Release();
+	BulkDataRequest = FBulkDataBatchRequest();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1074,16 +1079,24 @@ void FHairStrandsRestRootResource::PopulateFromRootData()
 		LOD.Status = FLOD::EStatus::Invalid;
 		LOD.SampleCount = MeshProjectionLOD.SampleCount;
 	}
+	LODRequests.SetNum(BulkData.MeshProjectionLODs.Num());
 }
 
 bool FHairStrandsRestRootResource::InternalIsDataLoaded()
 {
-	bool bIsLoading = false;
-	if (BulkData.PointCount > 0)
+	if (BulkData.PointCount == 0)
 	{
-		AsyncLoadHairBulkData(BulkData.VertexToCurveIndexBuffer, bIsLoading);
+		return true;
 	}
-	return !bIsLoading;
+
+	if (BulkDataRequest.IsNone())
+	{
+		FBulkDataBatchRequest::NewBatch(1)
+			.Read(BulkData.VertexToCurveIndexBuffer)
+			.Issue(BulkDataRequest);
+	}
+
+	return BulkDataRequest.IsCompleted();
 }
 
 bool FHairStrandsRestRootResource::InternalIsLODDataLoaded(int32 LODIndex)
@@ -1093,25 +1106,38 @@ bool FHairStrandsRestRootResource::InternalIsLODDataLoaded(int32 LODIndex)
 	check(LODs.Num() == BulkData.MeshProjectionLODs.Num());
 	if (LODIndex >= 0 && LODIndex < LODs.Num())
 	{
-		FHairStrandsRootBulkData::FMeshProjectionLOD& CPUData = BulkData.MeshProjectionLODs[LODIndex];
-		const bool bHasValidCPUData = CPUData.RootTriangleBarycentricBuffer.GetBulkDataSize() > 0;
-		if (bHasValidCPUData)
+		FBulkDataBatchRequest& LODRequest = LODRequests[LODIndex];
+		if (LODRequest.IsNone())
 		{
-			AsyncLoadHairBulkData(CPUData.RootTriangleBarycentricBuffer, bIsLoading);
-			AsyncLoadHairBulkData(CPUData.RootTriangleIndexBuffer, bIsLoading);
+			FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(9);
+			FHairStrandsRootBulkData::FMeshProjectionLOD& CPUData = BulkData.MeshProjectionLODs[LODIndex];
+			const bool bHasValidCPUData = CPUData.RootBarycentricBuffer.GetBulkDataSize() > 0;
+			if (bHasValidCPUData)
+			{
+				Batch.Read(CPUData.RootBarycentricBuffer);
+				Batch.Read(CPUData.RootToUniqueTriangleIndexBuffer);
+				Batch.Read(CPUData.UniqueTriangleIndexBuffer);
 
-			AsyncLoadHairBulkData(CPUData.RestRootTrianglePosition0Buffer, bIsLoading);
-			AsyncLoadHairBulkData(CPUData.RestRootTrianglePosition1Buffer, bIsLoading);
-			AsyncLoadHairBulkData(CPUData.RestRootTrianglePosition2Buffer, bIsLoading);
+				Batch.Read(CPUData.RestUniqueTrianglePosition0Buffer);
+				Batch.Read(CPUData.RestUniqueTrianglePosition1Buffer);
+				Batch.Read(CPUData.RestUniqueTrianglePosition2Buffer);
+			}
+			
+			const bool bHasValidCPUWeights = CPUData.MeshSampleIndicesBuffer.GetBulkDataSize() > 0;
+			if (bHasValidCPUWeights)
+			{
+				Batch.Read(CPUData.MeshInterpolationWeightsBuffer);
+				Batch.Read(CPUData.MeshSampleIndicesBuffer);
+				Batch.Read(CPUData.RestSamplePositionsBuffer);
+			}
+			
+			if (bHasValidCPUData || bHasValidCPUWeights)
+			{
+				Batch.Issue(LODRequest);
+			}
 		}
 
-		const bool bHasValidCPUWeights = CPUData.MeshSampleIndicesBuffer.GetBulkDataSize() > 0;
-		if (bHasValidCPUWeights)
-		{
-			AsyncLoadHairBulkData(CPUData.MeshInterpolationWeightsBuffer, bIsLoading);
-			AsyncLoadHairBulkData(CPUData.MeshSampleIndicesBuffer, bIsLoading);
-			AsyncLoadHairBulkData(CPUData.RestSamplePositionsBuffer, bIsLoading);
-		}		
+		bIsLoading = LODRequest.IsCompleted() == false;
 	}
 
 	return !bIsLoading;
@@ -1146,31 +1172,35 @@ void FHairStrandsRestRootResource::InternalAllocateLOD(FRDGBuilder& GraphBuilder
 		{
 			return;
 		}
+		
+		LODRequests[LODIndex] = FBulkDataBatchRequest();
 
 		FHairStrandsRootBulkData::FMeshProjectionLOD& CPUData = BulkData.MeshProjectionLODs[LODIndex];
-		const bool bHasValidCPUData = CPUData.RootTriangleBarycentricBuffer.GetBulkDataSize() > 0;
+		const bool bHasValidCPUData = CPUData.RootBarycentricBuffer.GetBulkDataSize() > 0;
 		if (bHasValidCPUData)
 		{
 			GPUData.Status = FLOD::EStatus::Completed;
+			
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsRootBarycentricFormat>(GraphBuilder, CPUData.RootBarycentricBuffer, BulkData.RootCount, GPUData.RootBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleBarycentricBuffer), ResourceName), EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(GraphBuilder, CPUData.RootToUniqueTriangleIndexBuffer, BulkData.RootCount, GPUData.RootToUniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootToUniqueTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsUniqueTriangleIndexFormat>(GraphBuilder, CPUData.UniqueTriangleIndexBuffer, CPUData.UniqueTriangleCount, GPUData.UniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_UniqueTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Static);
 
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsCurveTriangleBarycentricFormat>(GraphBuilder, CPUData.RootTriangleBarycentricBuffer, BulkData.RootCount, GPUData.RootTriangleBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleBarycentricBuffer), ResourceName), EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsCurveTriangleIndexFormat>(GraphBuilder, CPUData.RootTriangleIndexBuffer, BulkData.RootCount, GPUData.RootTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Static);
-
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestRootTrianglePosition0Buffer, BulkData.RootCount, GPUData.RestRootTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition0Buffer), ResourceName), EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestRootTrianglePosition1Buffer, BulkData.RootCount, GPUData.RestRootTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition1Buffer), ResourceName), EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestRootTrianglePosition2Buffer, BulkData.RootCount, GPUData.RestRootTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition2Buffer), ResourceName), EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition0Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition0Buffer), ResourceName), EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition1Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition1Buffer), ResourceName), EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition2Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition2Buffer), ResourceName), EHairResourceUsageType::Static);
 		}
 		else
 		{
 			GPUData.Status = FLOD::EStatus::Initialized;
 			
-			InternalCreateVertexBufferRDG<FHairStrandsCurveTriangleBarycentricFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootTriangleBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleBarycentricBuffer), ResourceName), EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsCurveTriangleIndexFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsRootBarycentricFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootBarycentricBuffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsRootToUniqueTriangleIndexFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootToUniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootToUniqueTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsUniqueTriangleIndexFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.UniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_UniqueTriangleIndexBuffer), ResourceName), EHairResourceUsageType::Dynamic);
 			
 			// Create buffers. Initialization will be done by render passes
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, BulkData.RootCount, GPUData.RestRootTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition0Buffer), ResourceName), EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, BulkData.RootCount, GPUData.RestRootTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition1Buffer), ResourceName), EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, BulkData.RootCount, GPUData.RestRootTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestRootTrianglePosition2Buffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition0Buffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition1Buffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition2Buffer), ResourceName), EHairResourceUsageType::Dynamic);
 		}
 
 		GPUData.SampleCount = CPUData.SampleCount;
@@ -1199,17 +1229,19 @@ void FHairStrandsRestRootResource::InternalRelease()
 	for (FLOD& GPUData : LODs)
 	{
 		GPUData.Status = FLOD::EStatus::Invalid;
-		GPUData.RootTriangleIndexBuffer.Release();
-		GPUData.RootTriangleBarycentricBuffer.Release();
-		GPUData.RestRootTrianglePosition0Buffer.Release();
-		GPUData.RestRootTrianglePosition1Buffer.Release();
-		GPUData.RestRootTrianglePosition2Buffer.Release();
+		GPUData.RootBarycentricBuffer.Release();
+		GPUData.RootToUniqueTriangleIndexBuffer.Release();
+		GPUData.UniqueTriangleIndexBuffer.Release();
+		GPUData.RestUniqueTrianglePosition0Buffer.Release();
+		GPUData.RestUniqueTrianglePosition1Buffer.Release();
+		GPUData.RestUniqueTrianglePosition2Buffer.Release();
 		GPUData.SampleCount = 0;
 		GPUData.MeshInterpolationWeightsBuffer.Release();
 		GPUData.MeshSampleIndicesBuffer.Release();
 		GPUData.RestSamplePositionsBuffer.Release();
 	}
 	LODs.Empty();
+	LODRequests.Empty();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1249,13 +1281,28 @@ void FHairStrandsDeformedRootResource::InternalAllocateLOD(FRDGBuilder& GraphBui
 			LOD.Status = FLOD::EStatus::Initialized;
 			if (LOD.SampleCount > 0)
 			{
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount, LOD.DeformedSamplePositionsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedSamplePositionsBuffer), ResourceName), EHairResourceUsageType::Dynamic);
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount + 4, LOD.MeshSampleWeightsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer), ResourceName), EHairResourceUsageType::Dynamic); // offset added to workaround numerical issues when deformed and rest positions are far apart
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount, LOD.DeformedSamplePositionsBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedSamplePositionsBuffer0), ResourceName), EHairResourceUsageType::Dynamic);
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount + 4, LOD.MeshSampleWeightsBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer0), ResourceName), EHairResourceUsageType::Dynamic);
+
+				// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
+				if (IsHairStrandContinuousDecimationReorderingEnabled())
+				{
+					InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount, LOD.DeformedSamplePositionsBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedSamplePositionsBuffer1), ResourceName), EHairResourceUsageType::Dynamic);
+					InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount + 4, LOD.MeshSampleWeightsBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer1), ResourceName), EHairResourceUsageType::Dynamic);
+				}
 			}
 
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedRootTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedRootTrianglePosition0Buffer), ResourceName), EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedRootTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedRootTrianglePosition1Buffer), ResourceName), EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedRootTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedRootTrianglePosition2Buffer), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition0Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer0), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition1Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition1Buffer0), ResourceName), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition2Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition2Buffer0), ResourceName), EHairResourceUsageType::Dynamic);
+
+			// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
+			if (IsHairStrandContinuousDecimationReorderingEnabled())
+			{
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition0Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer1), ResourceName), EHairResourceUsageType::Dynamic);
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition1Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition1Buffer1), ResourceName), EHairResourceUsageType::Dynamic);
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition2Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition2Buffer1), ResourceName), EHairResourceUsageType::Dynamic);
+			}
 		}
 	}
 }
@@ -1265,11 +1312,21 @@ void FHairStrandsDeformedRootResource::InternalRelease()
 	for (FLOD& GPUData : LODs)
 	{
 		GPUData.Status = FLOD::EStatus::Invalid;
-		GPUData.DeformedRootTrianglePosition0Buffer.Release();
-		GPUData.DeformedRootTrianglePosition1Buffer.Release();
-		GPUData.DeformedRootTrianglePosition2Buffer.Release();
-		GPUData.DeformedSamplePositionsBuffer.Release();
-		GPUData.MeshSampleWeightsBuffer.Release();
+		GPUData.DeformedUniqueTrianglePosition0Buffer[0].Release();
+		GPUData.DeformedUniqueTrianglePosition1Buffer[0].Release();
+		GPUData.DeformedUniqueTrianglePosition2Buffer[0].Release();
+		GPUData.DeformedSamplePositionsBuffer[0].Release();
+		GPUData.MeshSampleWeightsBuffer[0].Release();
+	
+		// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
+		if (IsHairStrandContinuousDecimationReorderingEnabled())
+		{
+			GPUData.DeformedUniqueTrianglePosition0Buffer[1].Release();
+			GPUData.DeformedUniqueTrianglePosition1Buffer[1].Release();
+			GPUData.DeformedUniqueTrianglePosition2Buffer[1].Release();
+			GPUData.DeformedSamplePositionsBuffer[1].Release();
+			GPUData.MeshSampleWeightsBuffer[1].Release();
+		}
 	}
 	LODs.Empty();
 }
@@ -1296,7 +1353,7 @@ bool FHairStrandsRootBulkData::HasProjectionData() const
 const TArray<uint32>& FHairStrandsRootBulkData::GetValidSectionIndices(int32 LODIndex) const
 {
 	check(LODIndex >= 0 && LODIndex < MeshProjectionLODs.Num());
-	return MeshProjectionLODs[LODIndex].ValidSectionIndices;
+	return MeshProjectionLODs[LODIndex].UniqueSectionIndices;
 }
 
 static void InternalSerialize(FArchive& Ar, UObject* Owner, FHairStrandsRootBulkData::FMeshProjectionLOD& LOD)
@@ -1307,11 +1364,12 @@ static void InternalSerialize(FArchive& Ar, UObject* Owner, FHairStrandsRootBulk
 	if (Ar.IsSaving())
 	{
 		const uint32 BulkFlags = BULKDATA_Force_NOT_InlinePayload;
-		LOD.RootTriangleIndexBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.RootTriangleBarycentricBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestRootTrianglePosition0Buffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestRootTrianglePosition1Buffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestRootTrianglePosition2Buffer.SetBulkDataFlags(BulkFlags);
+		LOD.RootBarycentricBuffer.SetBulkDataFlags(BulkFlags);
+		LOD.RootToUniqueTriangleIndexBuffer.SetBulkDataFlags(BulkFlags);
+		LOD.UniqueTriangleIndexBuffer.SetBulkDataFlags(BulkFlags);
+		LOD.RestUniqueTrianglePosition0Buffer.SetBulkDataFlags(BulkFlags);
+		LOD.RestUniqueTrianglePosition1Buffer.SetBulkDataFlags(BulkFlags);
+		LOD.RestUniqueTrianglePosition2Buffer.SetBulkDataFlags(BulkFlags);
 
 		LOD.MeshInterpolationWeightsBuffer.SetBulkDataFlags(BulkFlags);
 		LOD.MeshSampleIndicesBuffer.SetBulkDataFlags(BulkFlags);
@@ -1319,11 +1377,13 @@ static void InternalSerialize(FArchive& Ar, UObject* Owner, FHairStrandsRootBulk
 	}
 
 	Ar << LOD.LODIndex;
-	LOD.RootTriangleIndexBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RootTriangleBarycentricBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestRootTrianglePosition0Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestRootTrianglePosition1Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestRootTrianglePosition2Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	Ar << LOD.UniqueTriangleCount;
+	LOD.RootBarycentricBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	LOD.RootToUniqueTriangleIndexBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	LOD.UniqueTriangleIndexBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	LOD.RestUniqueTrianglePosition0Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	LOD.RestUniqueTrianglePosition1Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
+	LOD.RestUniqueTrianglePosition2Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
 
 	Ar << LOD.SampleCount;
 	if (LOD.SampleCount)
@@ -1332,7 +1392,7 @@ static void InternalSerialize(FArchive& Ar, UObject* Owner, FHairStrandsRootBulk
 		LOD.MeshSampleIndicesBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
 		LOD.RestSamplePositionsBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
 	}
-		LOD.ValidSectionIndices.BulkSerialize(Ar);
+		LOD.UniqueSectionIndices.BulkSerialize(Ar);
 }
 
 static void InternalSerialize(FArchive& Ar, UObject* Owner, TArray<FHairStrandsRootBulkData::FMeshProjectionLOD>& LODs)
@@ -1375,26 +1435,28 @@ void FHairStrandsRootBulkData::Reset()
 	VertexToCurveIndexBuffer = FByteBulkData();
 	for (FMeshProjectionLOD& LOD : MeshProjectionLODs)
 	{
-		LOD.RootTriangleIndexBuffer.RemoveBulkData();
-		LOD.RootTriangleBarycentricBuffer.RemoveBulkData();
-		LOD.RestRootTrianglePosition0Buffer.RemoveBulkData();
-		LOD.RestRootTrianglePosition1Buffer.RemoveBulkData();
-		LOD.RestRootTrianglePosition2Buffer.RemoveBulkData();
+		LOD.RootBarycentricBuffer.RemoveBulkData();
+		LOD.RootToUniqueTriangleIndexBuffer.RemoveBulkData();
+		LOD.UniqueTriangleIndexBuffer.RemoveBulkData();
+		LOD.RestUniqueTrianglePosition0Buffer.RemoveBulkData();
+		LOD.RestUniqueTrianglePosition1Buffer.RemoveBulkData();
+		LOD.RestUniqueTrianglePosition2Buffer.RemoveBulkData();
 		LOD.MeshInterpolationWeightsBuffer.RemoveBulkData();
 		LOD.MeshSampleIndicesBuffer.RemoveBulkData();
 		LOD.RestSamplePositionsBuffer.RemoveBulkData();
 
 		// Reset the bulk byte buffer to ensure the (serialize) data size is reset to 0
-		LOD.RootTriangleIndexBuffer 		= FByteBulkData();
-		LOD.RootTriangleBarycentricBuffer 	= FByteBulkData();
-		LOD.RestRootTrianglePosition0Buffer = FByteBulkData();
-		LOD.RestRootTrianglePosition1Buffer = FByteBulkData();
-		LOD.RestRootTrianglePosition2Buffer = FByteBulkData();
-		LOD.MeshInterpolationWeightsBuffer 	= FByteBulkData();
-		LOD.MeshSampleIndicesBuffer 		= FByteBulkData();
-		LOD.RestSamplePositionsBuffer 		= FByteBulkData();
+		LOD.RootBarycentricBuffer 			 = FByteBulkData();
+		LOD.RootToUniqueTriangleIndexBuffer  = FByteBulkData();
+		LOD.UniqueTriangleIndexBuffer		 = FByteBulkData();
+		LOD.RestUniqueTrianglePosition0Buffer= FByteBulkData();
+		LOD.RestUniqueTrianglePosition1Buffer= FByteBulkData();
+		LOD.RestUniqueTrianglePosition2Buffer= FByteBulkData();
+		LOD.MeshInterpolationWeightsBuffer 	 = FByteBulkData();
+		LOD.MeshSampleIndicesBuffer 		 = FByteBulkData();
+		LOD.RestSamplePositionsBuffer 		 = FByteBulkData();
 
-		LOD.ValidSectionIndices.Empty();
+		LOD.UniqueSectionIndices.Empty();
 	}
 	MeshProjectionLODs.Empty();
 }
@@ -1411,14 +1473,15 @@ bool FHairStrandsRootData::HasProjectionData() const
 	bool bIsValid = MeshProjectionLODs.Num() > 0;
 	for (const FMeshProjectionLOD& LOD : MeshProjectionLODs)
 	{
-		const bool bHasValidCPUData = LOD.RootTriangleBarycentricBuffer.Num() > 0;
+		const bool bHasValidCPUData = LOD.RootBarycentricBuffer.Num() > 0;
 		if (bHasValidCPUData)
 		{
-			bIsValid = bIsValid && LOD.RootTriangleBarycentricBuffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RootTriangleIndexBuffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestRootTrianglePosition0Buffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestRootTrianglePosition1Buffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestRootTrianglePosition2Buffer.Num() > 0;
+			bIsValid = bIsValid && LOD.RootBarycentricBuffer.Num() > 0;
+			bIsValid = bIsValid && LOD.RootToUniqueTriangleIndexBuffer.Num() > 0;
+			bIsValid = bIsValid && LOD.UniqueTriangleIndexBuffer.Num() > 0;
+			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition0Buffer.Num() > 0;
+			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition1Buffer.Num() > 0;
+			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition2Buffer.Num() > 0;
 
 			if (!bIsValid) break;
 		}
@@ -1446,24 +1509,31 @@ FHairStrandsInterpolationResource::FHairStrandsInterpolationResource(FHairStrand
 
 bool FHairStrandsInterpolationResource::InternalIsDataLoaded()
 {
-	bool bIsLoading = false;
-	const bool bUseSingleGuide = !!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasSingleGuideData);
-	if (bUseSingleGuide)
+	if (BulkDataRequest.IsNone())
 	{
-		AsyncLoadHairBulkData(BulkData.Interpolation, bIsLoading);
-	}
-	else
-	{
-		AsyncLoadHairBulkData(BulkData.Interpolation0, bIsLoading);
-		AsyncLoadHairBulkData(BulkData.Interpolation1, bIsLoading);
-	}
-	AsyncLoadHairBulkData(BulkData.SimRootPointIndex, bIsLoading);
+		FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(4);
+		const bool bUseSingleGuide = !!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasSingleGuideData);
+		if (bUseSingleGuide)
+		{
+			Batch.Read(BulkData.Interpolation);
+		}
+		else
+		{
+			Batch.Read(BulkData.Interpolation0);
+			Batch.Read(BulkData.Interpolation1);
+		}
+		Batch.Read(BulkData.SimRootPointIndex);
 
-	return !bIsLoading;
+		Batch.Issue(BulkDataRequest);
+	}
+
+	return BulkDataRequest.IsCompleted();
 }
 
 void FHairStrandsInterpolationResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
+	BulkDataRequest = FBulkDataBatchRequest();
+
 	const bool bUseSingleGuide = !!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasSingleGuideData);
 	if (bUseSingleGuide)
 	{
@@ -1483,6 +1553,7 @@ void FHairStrandsInterpolationResource::InternalRelease()
 	Interpolation0Buffer.Release();
 	Interpolation1Buffer.Release();
 	SimRootPointIndexBuffer.Release();
+	BulkDataRequest = FBulkDataBatchRequest();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1587,9 +1658,9 @@ static uint32 ToLinearCoord(const FIntVector& T, const FIntVector& Resolution)
 	return T.X + T.Y * Resolution.X + T.Z * Resolution.X * Resolution.Y;
 }
 
-static FIntVector ToCoord(const FVector& T, const FIntVector& Resolution, const FVector& MinBound, const float VoxelSize)
+static FIntVector ToCoord(const FVector3f& T, const FIntVector& Resolution, const FVector3f& MinBound, const float VoxelSize)
 {
-	const FVector C = (T - MinBound) / VoxelSize;
+	const FVector3f C = (T - MinBound) / VoxelSize;
 	return FIntVector(
 		FMath::Clamp(FMath::FloorToInt(C.X), 0, Resolution.X - 1),
 		FMath::Clamp(FMath::FloorToInt(C.Y), 0, Resolution.Y - 1),
@@ -1600,16 +1671,18 @@ void CreateHairStrandsDebugDatas(
 	const FHairStrandsDatas& InData,
 	FHairStrandsDebugDatas& Out)
 {
-	const FVector BoundSize = InData.BoundingBox.Max - InData.BoundingBox.Min;
+	const FVector3f BoundSize = FVector3f(InData.BoundingBox.Max) - FVector3f(InData.BoundingBox.Min);
 	Out.VoxelDescription.VoxelSize = FMath::Clamp(GHairStrandsDebugVoxel_WorldSize, 0.1f, 10.f);
 	Out.VoxelDescription.VoxelResolution = FIntVector(FMath::CeilToInt(BoundSize.X / Out.VoxelDescription.VoxelSize), FMath::CeilToInt(BoundSize.Y / Out.VoxelDescription.VoxelSize), FMath::CeilToInt(BoundSize.Z / Out.VoxelDescription.VoxelSize));
-	Out.VoxelDescription.VoxelMinBound = InData.BoundingBox.Min;
-	Out.VoxelDescription.VoxelMaxBound = FVector(Out.VoxelDescription.VoxelResolution) * Out.VoxelDescription.VoxelSize + InData.BoundingBox.Min;
+	Out.VoxelDescription.VoxelMinBound = FVector3f(InData.BoundingBox.Min);
+	Out.VoxelDescription.VoxelMaxBound = FVector3f(Out.VoxelDescription.VoxelResolution) * Out.VoxelDescription.VoxelSize + FVector3f(InData.BoundingBox.Min);
 	Out.VoxelOffsetAndCount.Init(FHairStrandsDebugDatas::FOffsetAndCount(), Out.VoxelDescription.VoxelResolution.X * Out.VoxelDescription.VoxelResolution.Y * Out.VoxelDescription.VoxelResolution.Z);
 	Out.VoxelDescription.MaxSegmentPerVoxel = 0;
 
 	uint32 AllocationCount = 0;
 	TArray<TArray<FHairStrandsDebugDatas::FVoxel>> TempVoxelData;
+
+	const uint32 MaxNumberOfSegmentPerVoxel = uint32(FMath::Clamp(GHairStrandsDebugVoxel_MaxSegmentPerVoxel, 16, 64000));
 
 	// Fill in voxel (TODO: make it parallel)
 	const uint32 CurveCount = InData.StrandsCurves.Num();
@@ -1622,16 +1695,16 @@ void CreateHairStrandsDebugDatas(
 		{
 			const uint32 Index0 = PointOffset + PointIndex;
 			const uint32 Index1 = PointOffset + PointIndex + 1;
-			const FVector& P0 = (FVector)InData.StrandsPoints.PointsPosition[Index0];
-			const FVector& P1 = (FVector)InData.StrandsPoints.PointsPosition[Index1];
-			const FVector Segment = P1 - P0;
+			const FVector3f& P0 = InData.StrandsPoints.PointsPosition[Index0];
+			const FVector3f& P1 = InData.StrandsPoints.PointsPosition[Index1];
+			const FVector3f Segment = P1 - P0;
 
 			const float Length = Segment.Size();
-			const uint32 StepCount = FMath::CeilToInt(Length / Out.VoxelDescription.VoxelSize);
+			const uint32 StepCount = FMath::CeilToInt(Length / (0.25f * Out.VoxelDescription.VoxelSize));
 			uint32 PrevLinearCoord = ~0;
 			for (uint32 StepIt = 0; StepIt < StepCount + 1; ++StepIt)
 			{
-				const FVector P = P0 + Segment * StepIt / float(StepCount);
+				const FVector3f P = P0 + Segment * StepIt / float(StepCount);
 				const FIntVector Coord = ToCoord(P, Out.VoxelDescription.VoxelResolution, Out.VoxelDescription.VoxelMinBound, Out.VoxelDescription.VoxelSize);
 				const uint32 LinearCoord = ToLinearCoord(Coord, Out.VoxelDescription.VoxelResolution);
 				if (LinearCoord != PrevLinearCoord)
@@ -1642,9 +1715,12 @@ void CreateHairStrandsDebugDatas(
 						TempVoxelData.Add(TArray<FHairStrandsDebugDatas::FVoxel>());
 					}
 
-					const uint32 Offset = Out.VoxelOffsetAndCount[LinearCoord].Offset;
-					Out.VoxelOffsetAndCount[LinearCoord].Count += 1;
-					TempVoxelData[Offset].Add({Index0, Index1});
+					if (Out.VoxelOffsetAndCount[LinearCoord].Count+1 < MaxNumberOfSegmentPerVoxel)
+					{
+						const uint32 Offset = Out.VoxelOffsetAndCount[LinearCoord].Offset;
+						Out.VoxelOffsetAndCount[LinearCoord].Count += 1;
+						TempVoxelData[Offset].Add({Index0, Index1});
+					}
 
 					Out.VoxelDescription.MaxSegmentPerVoxel = FMath::Max(Out.VoxelDescription.MaxSegmentPerVoxel, Out.VoxelOffsetAndCount[LinearCoord].Count);
 
@@ -1655,16 +1731,27 @@ void CreateHairStrandsDebugDatas(
 			}
 		}
 	}
-	Out.VoxelDescription.MaxSegmentPerVoxel = FMath::Min(Out.VoxelDescription.MaxSegmentPerVoxel, uint32(FMath::Clamp(GHairStrandsDebugVoxel_MaxSegmentPerVoxel, 16, 64000)));
+
+	check(Out.VoxelDescription.MaxSegmentPerVoxel < MaxNumberOfSegmentPerVoxel);
 	Out.VoxelData.Reserve(AllocationCount);
 
 	for (int32 Index = 0, Count = Out.VoxelOffsetAndCount.Num(); Index < Count; ++Index)
 	{
-		const uint32 ArrayIndex = Out.VoxelOffsetAndCount[Index].Offset;
-		Out.VoxelOffsetAndCount[Index].Offset = Out.VoxelData.Num();
 		if (Out.VoxelOffsetAndCount[Index].Count > 0)
 		{
-			Out.VoxelData.Append(TempVoxelData[ArrayIndex]);
+			const uint32 ArrayIndex = Out.VoxelOffsetAndCount[Index].Offset;
+			const uint32 NewOffset = Out.VoxelData.Num();
+			Out.VoxelOffsetAndCount[Index].Offset = NewOffset;
+
+			for (FHairStrandsDebugDatas::FVoxel& Voxel : TempVoxelData[ArrayIndex])
+			{
+				Voxel.Index1 = NewOffset;
+				Out.VoxelData.Add(Voxel);
+			}
+		}
+		else
+		{
+			Out.VoxelOffsetAndCount[Index].Offset = 0;
 		}
 
 		// Sanity check
@@ -1697,8 +1784,6 @@ void CreateHairStrandsDebugResources(FRDGBuilder& GraphBuilder, const FHairStran
 		In->VoxelData.GetData(),
 		sizeof(FHairStrandsDebugDatas::FVoxel) * In->VoxelData.Num());
 
-	FRDGResourceAccessFinalizer ResourceAccessFinalizer;
-	Out->VoxelOffsetAndCount = ConvertToFinalizedExternalBuffer(GraphBuilder, ResourceAccessFinalizer, VoxelOffsetAndCount);
-	Out->VoxelData = ConvertToFinalizedExternalBuffer(GraphBuilder, ResourceAccessFinalizer, VoxelData);
-	ResourceAccessFinalizer.Finalize(GraphBuilder);
+	Out->VoxelOffsetAndCount = ConvertToExternalAccessBuffer(GraphBuilder, VoxelOffsetAndCount);
+	Out->VoxelData = ConvertToExternalAccessBuffer(GraphBuilder, VoxelData);
 }

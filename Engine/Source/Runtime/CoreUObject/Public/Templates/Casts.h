@@ -2,17 +2,29 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Class.h"
+#include "CoreTypes.h"
+#include "Templates/AndOrNot.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/EnableIf.h"
 #include "Templates/LosesQualifiersFromTo.h"
+#include "Templates/PointerIsConvertibleFromTo.h"
+#include "Templates/RemoveReference.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
 #include "Traits/IsVoidType.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectHandle.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class AActor;
 class APawn;
 class APlayerController;
+class FField;
 class FSoftClassProperty;
 class UBlueprint;
 class ULevel;
@@ -23,6 +35,9 @@ class USkinnedMeshComponent;
 class UStaticMeshComponent;
 /// @cond DOXYGEN_WARNINGS
 template<class TClass> class TSubclassOf;
+template <typename ...Types> struct TAnd;
+template <typename T> struct TIsPointer;
+template <typename Type> struct TCastFlags;
 /// @endcond
 
 UE_NORETURN COREUOBJECT_API void CastLogError(const TCHAR* FromType, const TCHAR* ToType);
@@ -125,11 +140,9 @@ struct TCastImpl
 
 	FORCEINLINE static To* DoCast( const FObjectPtr& Src )
 	{
-		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
-		if (SrcObj && Src->GetClass()->HasAnyCastFlag(TCastFlags<To>::Value))
+		if (Src && Src.GetClass()->HasAnyCastFlag(TCastFlags<To>::Value))
 		{
-			ObjectHandle_Private::OnHandleRead(SrcObj);
-			return (To*)SrcObj;
+			return (To*)Src.Get();
 		}
 		return nullptr;
 	}
@@ -167,11 +180,9 @@ struct TCastImpl<From, To, ECastType::UObjectToUObject>
 
 	FORCEINLINE static To* DoCast( const FObjectPtr& Src )
 	{
-		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
-		if (SrcObj && SrcObj->IsA<To>())
+		if (Src && Src.IsA<To>())
 		{
-			ObjectHandle_Private::OnHandleRead(SrcObj);
-			return (To*)SrcObj;
+			return (To*)Src.Get();
 		}
 		return nullptr;
 	}
@@ -393,7 +404,7 @@ template <class T, class U> FORCEINLINE T* ExactCast  ( const TObjectPtr<U>& Src
 template <class T, class U> FORCEINLINE T* CastChecked( const TObjectPtr<U>& Src, ECastCheckedType::Type CheckType = ECastCheckedType::NullChecked )
 {
 #if DO_CHECK
-	if (!Src.IsNull())
+	if (Src)
 	{
 		T* Result = Cast<T>(Src);
 		if (!Result)

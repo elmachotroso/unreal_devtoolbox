@@ -17,12 +17,15 @@
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
+#include "Misc/TransactionObjectEvent.h"
 #include "Editor/EditorEngine.h"
 extern UNREALED_API UEditorEngine* GEditor;
 #endif // WITH_EDITOR
 
 #include "Engine/Selection.h"
 #include "Components/BillboardComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EQSTestingPawn)
 
 //----------------------------------------------------------------------//
 // AEQSTestingPawn
@@ -302,17 +305,17 @@ void AEQSTestingPawn::UpdateDrawing()
 
 const FEnvQueryResult* AEQSTestingPawn::GetQueryResult() const 
 {
-	return StepResults.Num() > 0 ? &StepResults[StepToDebugDraw] : NULL;
+	return StepResults.IsValidIndex(StepToDebugDraw) ? &StepResults[StepToDebugDraw] : nullptr;
 }
 
 const FEnvQueryInstance* AEQSTestingPawn::GetQueryInstance() const 
 {
-	return StepResults.Num() > 0 ? &StepResults[StepToDebugDraw] : NULL;
+	return StepResults.IsValidIndex(StepToDebugDraw) ? &StepResults[StepToDebugDraw] : nullptr;
 }
 
 #if WITH_EDITOR
 
-void AEQSTestingPawn::PostEditChangeProperty( FPropertyChangedEvent& PropertyChangedEvent)
+void AEQSTestingPawn::OnPropertyChanged(const FName PropName)
 {
 	static const FName NAME_QueryTemplate = GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, QueryTemplate);
 	static const FName NAME_StepToDebugDraw = GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, StepToDebugDraw);
@@ -320,40 +323,44 @@ void AEQSTestingPawn::PostEditChangeProperty( FPropertyChangedEvent& PropertyCha
 	static const FName NAME_ShouldBeVisibleInGame = GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, bShouldBeVisibleInGame);
 	static const FName NAME_QueryingMode = GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, QueryingMode);
 
-	if (PropertyChangedEvent.Property != NULL)
+	if (PropName == NAME_QueryTemplate || PropName == NAME_QueryConfig)
 	{
-		const FName PropName = PropertyChangedEvent.MemberProperty->GetFName();
-		if (PropName == NAME_QueryTemplate || PropName == NAME_QueryConfig)
+		if (QueryTemplate)
 		{
-			if (QueryTemplate)
-			{
-				QueryTemplate->CollectQueryParams(*this, QueryConfig);
-			}
+			QueryTemplate->CollectQueryParams(*this, QueryConfig);
+		}
 
-			RunEQSQuery();
-		}
-		else if (PropName == NAME_StepToDebugDraw)
+		RunEQSQuery();
+	}
+	else if (PropName == NAME_StepToDebugDraw)
+	{
+		StepToDebugDraw  = FMath::Clamp(StepToDebugDraw, 0, StepResults.Num() - 1 );
+		UpdateDrawing();
+	}
+	else if (PropName == GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, bDrawFailedItems) ||
+		PropName == GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, HighlightMode))
+	{
+		UpdateDrawing();
+	}
+	else if (PropName == NAME_ShouldBeVisibleInGame)
+	{
+		UBillboardComponent* SpriteComponent = FindComponentByClass<UBillboardComponent>();
+		if (SpriteComponent != NULL)
 		{
-			StepToDebugDraw  = FMath::Clamp(StepToDebugDraw, 0, StepResults.Num() - 1 );
-			UpdateDrawing();
+			SpriteComponent->bHiddenInGame = !bShouldBeVisibleInGame;
 		}
-		else if (PropName == GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, bDrawFailedItems) ||
-			PropName == GET_MEMBER_NAME_CHECKED(AEQSTestingPawn, HighlightMode))
-		{
-			UpdateDrawing();
-		}
-		else if (PropName == NAME_ShouldBeVisibleInGame)
-		{
-			UBillboardComponent* SpriteComponent = FindComponentByClass<UBillboardComponent>();
-			if (SpriteComponent != NULL)
-			{
-				SpriteComponent->bHiddenInGame = !bShouldBeVisibleInGame;
-			}
-		}
-		else if (PropName == NAME_QueryingMode)
-		{
-			RunEQSQuery();
-		}
+	}
+	else if (PropName == NAME_QueryingMode)
+	{
+		RunEQSQuery();
+	}
+}
+
+void AEQSTestingPawn::PostEditChangeProperty( FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.Property != nullptr)
+	{
+		OnPropertyChanged(PropertyChangedEvent.MemberProperty->GetFName());
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -369,4 +376,27 @@ void AEQSTestingPawn::PostEditMove(bool bFinished)
 	}
 }
 
+void AEQSTestingPawn::PostTransacted(const FTransactionObjectEvent& TransactionEvent)
+{
+	Super::PostTransacted(TransactionEvent);
+
+	if (TransactionEvent.GetEventType() == ETransactionObjectEventType::UndoRedo)
+	{
+		if (TransactionEvent.GetChangedProperties().Num() > 0)
+		{
+			// targeted update
+			for (const FName PropertyName : TransactionEvent.GetChangedProperties())
+			{
+				OnPropertyChanged(PropertyName);
+			}
+		}
+		else
+		{
+			// fallback - make sure the results are up to date
+			RunEQSQuery();
+		}
+	}
+}
+
 #endif // WITH_EDITOR
+

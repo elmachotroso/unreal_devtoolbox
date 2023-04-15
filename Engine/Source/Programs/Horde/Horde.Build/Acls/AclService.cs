@@ -1,25 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Api;
-using HordeServer.Collections;
-using HordeServer.Models;
-using HordeServer.Utilities;
-using Microsoft.AspNetCore.Authentication.OAuth.Claims;
-using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
-using MongoDB.Bson;
-using MongoDB.Driver;
 using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Threading.Tasks;
+using Horde.Build.Agents;
+using Horde.Build.Agents.Sessions;
+using Horde.Build.Server;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+using MongoDB.Driver;
 
-namespace HordeServer.Services
+namespace Horde.Build.Acls
 {
+	using SessionId = ObjectId<ISession>;
 	using UserId = ObjectId<IUser>;
 
 	/// <summary>
@@ -28,9 +26,9 @@ namespace HordeServer.Services
 	public class GlobalPermissionsCache
 	{
 		/// <summary>
-		/// The global permissions list
+		/// The root acl
 		/// </summary>
-		public GlobalPermissions? GlobalPermissions { get; set; }
+		public Acl? RootAcl { get; set; }
 	}
 
 	/// <summary>
@@ -66,59 +64,39 @@ namespace HordeServer.Services
 		/// <summary>
 		/// Role for all agents
 		/// </summary>
-		public static AclClaim AgentClaim { get; } = new AclClaim(HordeClaimTypes.Role, "agent");
+		public static AclClaim AgentRoleClaim { get; } = new AclClaim(HordeClaimTypes.Role, "agent");
 
-		/// <summary>
-		/// The default permissions
-		/// </summary>
-		Acl DefaultAcl = new Acl();
-
-		/// <summary>
-		/// The database service
-		/// </summary>
-		DatabaseService DatabaseService;
-
-		/// <summary>
-		/// The global permissions singleton
-		/// </summary>
-		ISingletonDocument<GlobalPermissions> GlobalPermissions;
-
-		/// <summary>
-		/// The settings object
-		/// </summary>
-		ServerSettings Settings;
+		private readonly Acl _defaultAcl = new();
+		private readonly MongoService _mongoService;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="DatabaseService">The database service instance</param>
-		/// <param name="GlobalPermissions">The global permissions instance</param>
-		/// <param name="Settings">The settings object</param>
-		public AclService(DatabaseService DatabaseService, ISingletonDocument<GlobalPermissions> GlobalPermissions, IOptionsMonitor<ServerSettings> Settings)
+		/// <param name="mongoService">The database service instance</param>
+		/// <param name="settings">The settings object</param>
+		public AclService(MongoService mongoService, IOptionsMonitor<ServerSettings> settings)
 		{
-			this.DatabaseService = DatabaseService;
-			this.GlobalPermissions = GlobalPermissions;
-			this.Settings = Settings.CurrentValue;
+			_mongoService = mongoService;
 
-			List<AclAction> AdminActions = new List<AclAction>();
-			foreach (AclAction? Action in Enum.GetValues(typeof(AclAction)))
+            List<AclAction> adminActions = new();
+			foreach (AclAction? action in Enum.GetValues(typeof(AclAction)))
 			{
-				AdminActions.Add(Action!.Value);
+				adminActions.Add(action!.Value);
 			}
 
-			DefaultAcl = new Acl();
-			DefaultAcl.Entries.Add(new AclEntry(new AclClaim(ClaimTypes.Role, "internal:AgentRegistration"), new[] { AclAction.CreateAgent, AclAction.CreateSession }));
-			DefaultAcl.Entries.Add(new AclEntry(AgentRegistrationClaim, new[] { AclAction.CreateAgent, AclAction.CreateSession, AclAction.UpdateAgent, AclAction.DownloadSoftware }));
-			DefaultAcl.Entries.Add(new AclEntry(AgentClaim, new[] { AclAction.ViewProject, AclAction.ViewStream, AclAction.CreateEvent, AclAction.DownloadSoftware }));
-			DefaultAcl.Entries.Add(new AclEntry(DownloadSoftwareClaim, new[] { AclAction.DownloadSoftware }));
-			DefaultAcl.Entries.Add(new AclEntry(UploadSoftwareClaim, new[] { AclAction.UploadSoftware }));
-			DefaultAcl.Entries.Add(new AclEntry(ConfigureProjectsClaim, new[] { AclAction.CreateProject, AclAction.UpdateProject, AclAction.ViewProject, AclAction.CreateStream, AclAction.UpdateStream, AclAction.ViewStream, AclAction.ChangePermissions }));
-			DefaultAcl.Entries.Add(new AclEntry(StartChainedJobClaim, new[] { AclAction.CreateJob, AclAction.ExecuteJob, AclAction.UpdateJob, AclAction.ViewJob, AclAction.ViewTemplate, AclAction.ViewStream }));
+			_defaultAcl = new();
+			_defaultAcl.Entries.Add(new AclEntry(new AclClaim(ClaimTypes.Role, "internal:AgentRegistration"), new[] { AclAction.CreateAgent, AclAction.CreateSession }));
+			_defaultAcl.Entries.Add(new AclEntry(AgentRegistrationClaim, new[] { AclAction.CreateAgent, AclAction.CreateSession, AclAction.UpdateAgent, AclAction.DownloadSoftware, AclAction.CreatePool, AclAction.UpdatePool, AclAction.ViewPool, AclAction.DeletePool, AclAction.ListPools, AclAction.ViewStream, AclAction.ViewProject, AclAction.ViewJob, AclAction.ViewCosts }));
+			_defaultAcl.Entries.Add(new AclEntry(AgentRoleClaim, new[] { AclAction.ViewProject, AclAction.ViewStream, AclAction.CreateEvent, AclAction.DownloadSoftware }));
+			_defaultAcl.Entries.Add(new AclEntry(DownloadSoftwareClaim, new[] { AclAction.DownloadSoftware }));
+			_defaultAcl.Entries.Add(new AclEntry(UploadSoftwareClaim, new[] { AclAction.UploadSoftware }));
+			_defaultAcl.Entries.Add(new AclEntry(ConfigureProjectsClaim, new[] { AclAction.CreateProject, AclAction.UpdateProject, AclAction.ViewProject, AclAction.CreateStream, AclAction.UpdateStream, AclAction.ViewStream, AclAction.ChangePermissions }));
+			_defaultAcl.Entries.Add(new AclEntry(StartChainedJobClaim, new[] { AclAction.CreateJob, AclAction.ExecuteJob, AclAction.UpdateJob, AclAction.ViewJob, AclAction.ViewTemplate, AclAction.ViewStream }));
 
-			ServerSettings SettingsValue = Settings.CurrentValue;
-			if (SettingsValue.AdminClaimType != null && SettingsValue.AdminClaimValue != null)
+			ServerSettings settingsValue = settings.CurrentValue;
+			if (settingsValue.AdminClaimType != null && settingsValue.AdminClaimValue != null)
 			{
-				DefaultAcl.Entries.Add(new AclEntry(new AclClaim(SettingsValue.AdminClaimType, SettingsValue.AdminClaimValue), AdminActions.ToArray()));
+				_defaultAcl.Entries.Add(new AclEntry(new AclClaim(settingsValue.AdminClaimType, settingsValue.AdminClaimValue), adminActions.ToArray()));
 			}
 		}
 
@@ -126,144 +104,163 @@ namespace HordeServer.Services
 		/// Gets the root ACL scope table
 		/// </summary>
 		/// <returns>Scopes instance</returns>
-		public Task<GlobalPermissions> GetGlobalPermissionsAsync()
+		public async Task<Acl> GetRootAcl()
 		{
-			return GlobalPermissions.GetAsync();
-		}
-
-		/// <summary>
-		/// Updates the root ACL scopes
-		/// </summary>
-		/// <param name="NewPermissions">New permissions</param>
-		/// <returns>Async task</returns>
-		public Task<bool> TryUpdateGlobalPermissionsAsync(GlobalPermissions NewPermissions)
-		{
-			return GlobalPermissions.TryUpdateAsync(NewPermissions);
+			Globals globals = await _mongoService.GetGlobalsAsync();
+			return globals.RootAcl ?? new Acl();
 		}
 
 		/// <summary>
 		/// Authorizes a user against a given scope
 		/// </summary>
-		/// <param name="Action">The action being performed</param>
-		/// <param name="User">The principal to validate</param>
-		/// <param name="Cache">The ACL scope cache</param>
+		/// <param name="action">The action being performed</param>
+		/// <param name="user">The principal to validate</param>
+		/// <param name="cache">The ACL scope cache</param>
 		/// <returns>Async task</returns>
-		public async Task<bool> AuthorizeAsync(AclAction Action, ClaimsPrincipal User, GlobalPermissionsCache? Cache = null)
+		public async Task<bool> AuthorizeAsync(AclAction action, ClaimsPrincipal user, GlobalPermissionsCache? cache = null)
 		{
-			GlobalPermissions? GlobalPermissions;
-			if(Cache == null)
+			Acl? rootAcl;
+			if(cache == null)
 			{
-				GlobalPermissions = await GetGlobalPermissionsAsync();
+				rootAcl = await GetRootAcl();
 			}
-			else if(Cache.GlobalPermissions == null)
+			else if(cache.RootAcl == null)
 			{
-				GlobalPermissions = Cache.GlobalPermissions = await GetGlobalPermissionsAsync();
+				rootAcl = cache.RootAcl = await GetRootAcl();
 			}
 			else
 			{
-				GlobalPermissions = Cache.GlobalPermissions;
+				rootAcl = cache.RootAcl;
 			}
-			return GlobalPermissions.Acl.Authorize(Action, User) ?? DefaultAcl.Authorize(Action, User) ?? false;
+			return rootAcl.Authorize(action, user) ?? _defaultAcl.Authorize(action, user) ?? false;
 		}
 
 		/// <summary>
 		/// Issues a bearer token with the given roles
 		/// </summary>
-		/// <param name="Claims">List of claims to include</param>
-		/// <param name="Expiry">Time that the token expires</param>
+		/// <param name="claims">List of claims to include</param>
+		/// <param name="expiry">Time that the token expires</param>
 		/// <returns>JWT security token with a claim for creating new agents</returns>
-		public string IssueBearerToken(IEnumerable<AclClaim> Claims, TimeSpan? Expiry)
+		public string IssueBearerToken(IEnumerable<AclClaim> claims, TimeSpan? expiry)
 		{
-			return IssueBearerToken(Claims.Select(x => new Claim(x.Type, x.Value)), Expiry);
+			return IssueBearerToken(claims.Select(x => new Claim(x.Type, x.Value)), expiry);
 		}
 
 		/// <summary>
 		/// Issues a bearer token with the given claims
 		/// </summary>
-		/// <param name="Claims">List of claims to include</param>
-		/// <param name="Expiry">Time that the token expires</param>
+		/// <param name="claims">List of claims to include</param>
+		/// <param name="expiry">Time that the token expires</param>
 		/// <returns>JWT security token with a claim for creating new agents</returns>
-		public string IssueBearerToken(IEnumerable<Claim> Claims, TimeSpan? Expiry)
+		public string IssueBearerToken(IEnumerable<Claim> claims, TimeSpan? expiry)
 		{
-			SigningCredentials SigningCredentials = new SigningCredentials(DatabaseService.JwtSigningKey, SecurityAlgorithms.HmacSha256);
+			SigningCredentials signingCredentials = new(_mongoService.JwtSigningKey, SecurityAlgorithms.HmacSha256);
 
-			JwtSecurityToken Token = new JwtSecurityToken(DatabaseService.JwtIssuer, null, Claims, null, DateTime.UtcNow + Expiry, SigningCredentials);
-			return new JwtSecurityTokenHandler().WriteToken(Token);
+			JwtSecurityToken token = new(_mongoService.JwtIssuer, null, claims, null, DateTime.UtcNow + expiry, signingCredentials);
+			return new JwtSecurityTokenHandler().WriteToken(token);
 		}
 
 		/// <summary>
 		/// Get the roles for the given user
 		/// </summary>
-		/// <param name="User">The user to query roles for</param>
+		/// <param name="user">The user to query roles for</param>
 		/// <returns>Collection of roles</returns>
-		public static HashSet<string> GetRoles(ClaimsPrincipal User)
+		public static HashSet<string> GetRoles(ClaimsPrincipal user)
 		{
-			return new HashSet<string>(User.Claims.Where(x => x.Type == ClaimTypes.Role).Select(x => x.Value));
+			return new HashSet<string>(user.Claims.Where(x => x.Type == ClaimTypes.Role).Select(x => x.Value));
 		}
 
 		/// <summary>
 		/// Gets the user name from the given principal
 		/// </summary>
-		/// <param name="User">The principal to check</param>
+		/// <param name="user">The principal to check</param>
 		/// <returns></returns>
-		public static string? GetUserName(ClaimsPrincipal User)
+		public static string? GetUserName(ClaimsPrincipal user)
 		{
-			return (User.Claims.FirstOrDefault(x => x.Type == HordeClaimTypes.User) ?? User.Claims.FirstOrDefault(x => x.Type == ClaimTypes.Name))?.Value ?? "Anonymous";
+			return (user.Claims.FirstOrDefault(x => x.Type == HordeClaimTypes.User) ?? user.Claims.FirstOrDefault(x => x.Type == ClaimTypes.Name))?.Value ?? "Anonymous";
 		}
 
 		/// <summary>
-		/// Gets the role for a specific user
+		/// Gets the agent id associated with a particular user
 		/// </summary>
-		/// <param name="SessionId">The session id</param>
-		/// <returns>New claim instance</returns>
-		public static AclClaim GetSessionClaim(ObjectId SessionId)
-		{
-			return new AclClaim(HordeClaimTypes.AgentSessionId, SessionId.ToString());
-		}
-
-		/// <summary>
-		/// Determines whether the given user can masquerade as a given user
-		/// </summary>
-		/// <param name="User"></param>
-		/// <param name="UserId"></param>
+		/// <param name="user"></param>
 		/// <returns></returns>
-		public Task<bool> AuthorizeAsUserAsync(ClaimsPrincipal User, UserId UserId)
+		public static AgentId? GetAgentId(ClaimsPrincipal user)
 		{
-			UserId? CurrentUserId = User.GetUserId();
-			if (CurrentUserId != null && CurrentUserId.Value == UserId)
-			{
-				return Task.FromResult(true);
-			}
-			else
-			{
-				return AuthorizeAsync(AclAction.Impersonate, User);
-			}
-		}
-	}
-
-	static class ClaimExtensions
-	{
-		public static bool HasSessionClaim(this ClaimsPrincipal User, ObjectId SessionId)
-		{
-			return User.HasClaim(HordeClaimTypes.AgentSessionId, SessionId.ToString());
-		}
-
-		public static ObjectId? GetSessionClaim(this ClaimsPrincipal User)
-		{
-			Claim? Claim = User.FindFirst(HordeClaimTypes.AgentSessionId);
-			if (Claim == null || !ObjectId.TryParse(Claim.Value, out ObjectId SessionId))
+			Claim? claim = user.Claims.FirstOrDefault(x => x.Type == HordeClaimTypes.AgentId);
+			if (claim == null)
 			{
 				return null;
 			}
 			else
 			{
-				return SessionId;
+				return new AgentId(claim.Value);
+			}
+		}
+
+		/// <summary>
+		/// Gets the role for a specific agent
+		/// </summary>
+		/// <param name="agentId">The session id</param>
+		/// <returns>New claim instance</returns>
+		public static AclClaim GetAgentClaim(AgentId agentId)
+		{
+			return new AclClaim(HordeClaimTypes.AgentId, agentId.ToString());
+		}
+
+		/// <summary>
+		/// Gets the role for a specific agent session
+		/// </summary>
+		/// <param name="sessionId">The session id</param>
+		/// <returns>New claim instance</returns>
+		public static AclClaim GetSessionClaim(SessionId sessionId)
+		{
+			return new AclClaim(HordeClaimTypes.AgentSessionId, sessionId.ToString());
+		}
+
+		/// <summary>
+		/// Determines whether the given user can masquerade as a given user
+		/// </summary>
+		/// <param name="user"></param>
+		/// <param name="userId"></param>
+		/// <returns></returns>
+		public Task<bool> AuthorizeAsUserAsync(ClaimsPrincipal user, UserId userId)
+		{
+			UserId? currentUserId = user.GetUserId();
+			if (currentUserId != null && currentUserId.Value == userId)
+			{
+				return Task.FromResult(true);
+			}
+			else
+			{
+				return AuthorizeAsync(AclAction.Impersonate, user);
+			}
+		}
+	}
+
+    internal static class ClaimExtensions
+	{
+		public static bool HasSessionClaim(this ClaimsPrincipal user, SessionId sessionId)
+		{
+			return user.HasClaim(HordeClaimTypes.AgentSessionId, sessionId.ToString());
+		}
+
+		public static SessionId? GetSessionClaim(this ClaimsPrincipal user)
+		{
+			Claim? claim = user.FindFirst(HordeClaimTypes.AgentSessionId);
+			if (claim == null || !SessionId.TryParse(claim.Value, out SessionId sessionIdValue))
+			{
+				return null;
+			}
+			else
+			{
+				return sessionIdValue;
 			}
 		}
 		
-		public static string GetSessionClaimsAsString(this ClaimsPrincipal User)
+		public static string GetSessionClaimsAsString(this ClaimsPrincipal user)
 		{
-			return String.Join(",", User.Claims
+			return String.Join(",", user.Claims
 				.Where(c => c.Type == HordeClaimTypes.AgentSessionId)
 				.Select(c => c.Value));
 		}

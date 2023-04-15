@@ -6,6 +6,7 @@
 
 #include "Net/DataChannel.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/ObjectKey.h"
 #include "EngineStats.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
@@ -22,11 +23,17 @@
 #include "Stats/StatsMisc.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Net/NetworkGranularMemoryLogging.h"
+#include "Net/Subsystems/NetworkSubsystem.h"
 #include "Net/Core/Trace/NetTrace.h"
+#include "Net/Core/Misc/NetSubObjectRegistry.h"
+#include "Net/NetSubObjectRegistryGetter.h"
 #include "Misc/NetworkVersion.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "HAL/LowLevelMemStats.h"
+#include "Net/NetPing.h"
 
 DEFINE_LOG_CATEGORY(LogNet);
+DEFINE_LOG_CATEGORY(LogNetSubObject);
 DEFINE_LOG_CATEGORY(LogRep);
 DEFINE_LOG_CATEGORY(LogNetPlayerMovement);
 DEFINE_LOG_CATEGORY(LogNetTraffic);
@@ -39,6 +46,14 @@ DECLARE_CYCLE_STAT(TEXT("ActorChan_CleanUp"), Stat_ActorChanCleanUp, STATGROUP_N
 DECLARE_CYCLE_STAT(TEXT("ActorChan_PostNetInit"), Stat_PostNetInit, STATGROUP_Net);
 DECLARE_CYCLE_STAT(TEXT("Channel ReceivedRawBunch"), Stat_ChannelReceivedRawBunch, STATGROUP_Net);
 DECLARE_CYCLE_STAT(TEXT("ActorChan_FindOrCreateRep"), Stat_ActorChanFindOrCreateRep, STATGROUP_Net);
+
+DECLARE_LLM_MEMORY_STAT(TEXT("NetChannel"), STAT_NetChannelLLM, STATGROUP_LLMFULL);
+LLM_DEFINE_TAG(NetChannel, NAME_None, TEXT("Networking"), GET_STATFNAME(STAT_NetChannelLLM), GET_STATFNAME(STAT_NetworkingSummaryLLM));
+
+// Enable the code allowing to validate replicate subobjects when converting from the legacy method to the explicit registration list
+#ifndef SUBOBJECT_TRANSITION_VALIDATION
+	#define SUBOBJECT_TRANSITION_VALIDATION !UE_BUILD_SHIPPING
+#endif
 
 extern int32 GDoReplicationContextString;
 extern int32 GNetDormancyValidate;
@@ -63,7 +78,7 @@ static TAutoConsoleVariable<int32> CVarNetInstantReplayProcessQueuedBunchesMilli
 	8,
 	TEXT("Time threshold for processing queued bunches during instant replays. If it takes longer than this in a single frame, wait until the next frame to continue processing queued bunches. For unlimited time, set to 0."));
 
-int32 GCVarNetPartialBunchReliableThreshold = 0;
+int32 GCVarNetPartialBunchReliableThreshold = 8;
 FAutoConsoleVariableRef CVarNetPartialBunchReliableThreshold(
 	TEXT("net.PartialBunchReliableThreshold"),
 	GCVarNetPartialBunchReliableThreshold,
@@ -75,9 +90,7 @@ FAutoConsoleVariableRef CVarNetSkipReplicatorForDestructionInfos(
 	GSkipReplicatorForDestructionInfos,
 	TEXT("If enabled, skip creation of object replicator in SetChannelActor when we know there is no content payload and we're going to immediately destroy the actor."));
 
-extern TAutoConsoleVariable<int32> CVarFilterGuidRemapping;
 extern NETCORE_API TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters;
-
 
 // Fairly large number, and probably a bad idea to even have a bunch this size, but want to be safe for now and not throw out legitimate data
 static int32 NetMaxConstructedPartialBunchSizeBytes = 1024 * 64;
@@ -94,10 +107,121 @@ static FAutoConsoleVariableRef CVarDormancyHysteresis(
 	TEXT("When > 0, represents the time we'll wait before letting a channel become fully dormant (in seconds). This can prevent churn when objects are going in and out of dormant more frequently than normal.")
 );
 
+namespace UE::Net
+{
+	extern int32 FilterGuidRemapping;
+
+	static float QueuedBunchTimeoutSeconds = 30.0f;
+	static FAutoConsoleVariableRef CVarQueuedBunchTimeoutSeconds(
+		TEXT("net.QueuedBunchTimeoutSeconds"),
+		QueuedBunchTimeoutSeconds,
+		TEXT("Time in seconds to wait for queued bunches on a channel to flush before logging a warning."));
+
+	bool bNetReplicateOnlyBeginPlay = false;
+	static FAutoConsoleVariableRef CVarNetReplicateOnlyBeginPlay(
+		TEXT("net.ReplicateOnlyBeginPlay"),
+		bNetReplicateOnlyBeginPlay,
+		TEXT("Only allow property replication of actors that had BeginPlay called on them."), ECVF_Default);
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+	static int32 GCVarCompareSubObjectsReplicated = 0;
+	static FAutoConsoleVariableRef CVarCompareSubObjectsReplicated(
+		TEXT("net.SubObjects.CompareWithLegacy"),
+		GCVarCompareSubObjectsReplicated,
+		TEXT("When turned on we will collect the subobjects replicated by the ReplicateSubObjects method and compare them with the ones replicated via the Actor's registered list. If a divergence is detected it will trigger an ensure."));
+
+	static TAutoConsoleVariable<int32> CVarLogAllSubObjectComparisonErrors(
+		TEXT("net.SubObjects.LogAllComparisonErrors"),
+		0,
+		TEXT("If enabled log all the errors detected by the CompareWithLegacy cheat. Otherwise only the first ensure triggered gets logged."));
+#endif
+
+	static bool bEnableNetInitialSubObjects = true;
+	static FAutoConsoleVariableRef CVarEnableNetInitialSubObjects(
+		TEXT("net.EnableNetInitialSubObjects"),
+		bEnableNetInitialSubObjects,
+		TEXT("Enables new SubObjects to set bNetInitial to true to make sure all replicated properties are replicated.")
+	);
+
+	static bool bPushModelValidateSkipUpdate = false;
+	static FAutoConsoleVariableRef CVarNetPushModelValidateSkipUpdate(
+		TEXT("net.PushModelValidateSkipUpdate"),
+		bPushModelValidateSkipUpdate,
+		TEXT("If enabled, detect when we thought we could skip an object replication based on push model state, but we sent data anyway."), ECVF_Default);
+}; // namespace UE::Net
+
 template<typename T>
 static const bool IsBunchTooLarge(UNetConnection* Connection, T* Bunch)
 {
-	return !Connection->IsInternalAck() && Bunch != nullptr && Bunch->GetNumBytes() > NetMaxConstructedPartialBunchSizeBytes;
+	return !Connection->IsUnlimitedBunchSizeAllowed() && Bunch != nullptr && Bunch->GetNumBytes() > NetMaxConstructedPartialBunchSizeBytes;
+}
+
+namespace DataChannelInternal
+{
+	/**
+	* Track the owner of the next subobjects replicated via ReplicateSubObject.
+	* Nulled out after every call to UActorChannel::ReplicateActor()
+	*/
+	UObject* CurrentSubObjectOwner = nullptr;
+
+	/**
+	* When enabled we will ignore requests to replicate a subobject via the public ReplicateSubObject function.
+	* This occurs when the subobjects belong to an ActorComponent converted to the registered list, but the owner does not support it yet so we still call ReplicateSubObjects on the actor.
+	* This flag is controlled via UActorChannel::SetCurrentSubObjectOwner, so it is important for users to set the owner properly if they are controlling component replication themselves.
+	*/
+	bool bIgnoreLegacyReplicateSubObject = false;
+
+	/** When enabled store all subobjects written into the bunch in the ReplicatedSubObjectsTracker array */
+	bool bTrackReplicatedSubObjects = false;
+
+	/** 
+	* This flag is true when an actor using the new subobject list is calling the legacy function to look for divergences between the old and new method. 
+	* This ensures that the subobjects replicated the old way are only collected and not replicated.
+	*/
+	bool bTestingLegacyMethodForComparison = false;
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+    struct FSubObjectReplicatedInfo
+	{
+		// The replicated subobject
+		UObject* SubObject = nullptr;
+		// The owner of the subobject, usually an actor or actor component
+		UObject* SubObjectOwner = nullptr;
+
+		FSubObjectReplicatedInfo(UObject* InSubObject) : SubObject(InSubObject), SubObjectOwner(CurrentSubObjectOwner) {}
+
+		bool operator==(const FSubObjectReplicatedInfo& rhs) const { return SubObject == rhs.SubObject; }
+
+		FString Describe(AActor* ReplicatedActor) const
+		{
+			return FString::Printf(TEXT("Subobject %s(%s)::%s [owner %s]"), 
+				*ReplicatedActor->GetName(), 
+                ReplicatedActor->HasActorBegunPlay() ? TEXT("BegunPlay") : ReplicatedActor->IsActorBeginningPlay() ? TEXT("BeginningPlay") : TEXT("HasNotBegunPlay"),
+				*SubObject->GetName(),				
+				*GetPathNameSafe(SubObjectOwner));
+		}
+	};
+
+	/**
+	* List of replicated subobjects collected via Actor::ReplicateSubObjects.
+	* This list is static to prevent memory overhead on every actor channel.
+	* It is emptied at the end of every call to UActorChannel::ReplicateActor()
+	*/
+	TArray<FSubObjectReplicatedInfo> LegacySubObjectsCollected;
+
+    /**
+	* The subobjects actually replicated into the bunch.
+	* This list is static to prevent memory overhead on every actor channel. 
+    * It is emptied at the end of every call to UActorChannel::ReplicateActor()
+	*/
+	TArray<FSubObjectReplicatedInfo> ReplicatedSubObjectsTracker;
+#endif
+
+	/** 
+	* Temporary pointer to the NetworkSubsystem that gets set and released in ReplicateActor
+	* Prevents having to grab it for every unique subobject condition test.
+	*/
+	static UNetworkSubsystem* CachedNetworkSubsystem = nullptr;
 }
 
 /*-----------------------------------------------------------------------------
@@ -200,7 +324,6 @@ void UChannel::ConditionalCleanUp( const bool bForDestroy, EChannelCloseReason C
 
 bool UChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseReason)
 {
-	using namespace UE::Net;
 
 	checkSlow(Connection != NULL);
 	checkSlow(Connection->Channels[ChIndex] == this);
@@ -439,8 +562,6 @@ bool UChannel::ReceivedSequencedBunch( FInBunch& Bunch )
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UChannel::ReceivedRawBunch( FInBunch & Bunch, bool & bOutSkipAck )
 {
-	using namespace UE::Net;
-
 	SCOPE_CYCLE_COUNTER(Stat_ChannelReceivedRawBunch);
 
 	SCOPED_NAMED_EVENT(UChannel_ReceivedRawBunch, FColor::Green);
@@ -594,8 +715,6 @@ static void LogPartialBunch(const FString& Label, const FInBunch& UberBunch, con
 
 bool UChannel::ReceivedNextBunch( FInBunch & Bunch, bool & bOutSkipAck )
 {
-	using namespace UE::Net;
-
 	// We received the next bunch. Basically at this point:
 	//	-We know this is in order if reliable
 	//	-We dont know if this is partial or not
@@ -795,7 +914,7 @@ bool UChannel::ReceivedNextBunch( FInBunch & Bunch, bool & bOutSkipAck )
 
 		if (InPartialBunch && IsBunchTooLarge(Connection, InPartialBunch))
 		{
-			UE_LOG(LogNetPartialBunch, Error, TEXT("Received a partial bunch exceeding max allowed size. BunchSize=%d, MaximumSize=%d"), InPartialBunch->GetNumBytes(), NetMaxConstructedPartialBunchSizeBytes);
+			UE_LOG(LogNetPartialBunch, Error, TEXT("Received a partial bunch exceeding max allowed size. BunchSize=%d, MaximumSize=%d Channel: %s"), InPartialBunch->GetNumBytes(), NetMaxConstructedPartialBunchSizeBytes, *Describe());
 
 			Bunch.SetError();
 			AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::PartialTooLarge);
@@ -937,10 +1056,12 @@ UActorChannel::UActorChannel(const FObjectInitializer& ObjectInitializer)
 	QueuedCloseReason = EChannelCloseReason::Destroyed;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UActorChannel::~UActorChannel()
 {
 
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UActorChannel::AppendExportBunches( TArray<FOutBunch *>& OutExportBunches )
 {
@@ -999,7 +1120,7 @@ void UActorChannel::AppendMustBeMappedGuids( FOutBunch* Bunch )
 
 FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 {
-	using namespace UE::Net;
+	LLM_SCOPE_BYTAG(NetChannel);
 
 	if (!ensure(ChIndex != -1))
 	{
@@ -1007,9 +1128,9 @@ FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 		return FPacketIdRange(INDEX_NONE);
 	}
 
-	if (IsBunchTooLarge(Connection, Bunch))
+	if (!ensureMsgf(!IsBunchTooLarge(Connection, Bunch), TEXT("Attempted to send bunch exceeding max allowed size. BunchSize=%d, MaximumSize=%d Channel: %s"), Bunch->GetNumBytes(), NetMaxConstructedPartialBunchSizeBytes, *Describe()))
 	{
-		UE_LOG(LogNetPartialBunch, Error, TEXT("Attempted to send bunch exceeding max allowed size. BunchSize=%d, MaximumSize=%d"), Bunch->GetNumBytes(), NetMaxConstructedPartialBunchSizeBytes);
+		UE_LOG(LogNetPartialBunch, Error, TEXT("Attempted to send bunch exceeding max allowed size. BunchSize=%d, MaximumSize=%d Channel: %s"), Bunch->GetNumBytes(), NetMaxConstructedPartialBunchSizeBytes, *Describe());
 		Bunch->SetError();
 		return FPacketIdRange(INDEX_NONE);
 	}
@@ -1188,6 +1309,8 @@ FPacketIdRange UChannel::SendBunch( FOutBunch* Bunch, bool Merge )
 
 		// Bail out, we can't recover from this (without increasing RELIABLE_BUFFER)
 		FString ErrorMsg = NSLOCTEXT("NetworkErrors", "ClientReliableBufferOverflow", "Outgoing reliable buffer overflow").ToString();
+
+		Connection->SendCloseReason(ENetCloseResult::ReliableBufferOverflow);
 		FNetControlMessage<NMT_Failure>::Send(Connection, ErrorMsg);
 		Connection->FlushNet(true);
 		Connection->Close(ENetCloseResult::ReliableBufferOverflow);
@@ -1463,13 +1586,17 @@ IMPLEMENT_CONTROL_CHANNEL_MESSAGE(Abort);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(PCSwap);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(ActorChannelFailure);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(DebugText);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(NetGUIDAssign);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(SecurityViolation);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(GameSpecific);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(EncryptionAck);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(DestructionInfo);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(CloseReason);
+IMPLEMENT_CONTROL_CHANNEL_MESSAGE(NetPing);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(BeaconWelcome);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(BeaconJoin);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(BeaconAssignGUID);
 IMPLEMENT_CONTROL_CHANNEL_MESSAGE(BeaconNetGUIDAck);
-IMPLEMENT_CONTROL_CHANNEL_MESSAGE(EncryptionAck);
-IMPLEMENT_CONTROL_CHANNEL_MESSAGE(DestructionInfo);
 
 void UControlChannel::Init( UNetConnection* InConnection, int32 InChannelIndex, EChannelCreateFlags CreateFlags )
 {
@@ -1527,9 +1654,9 @@ bool UControlChannel::CheckEndianess(FInBunch& Bunch)
 
 void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 {
-	using namespace UE::Net;
-
 	check(!Closing);
+
+	UE_NET_TRACE_SCOPE(ControlChannel, Bunch, Connection->GetInTraceCollector(), ENetTraceVerbosity::Trace);
 
 	// If this is a new client connection inspect the raw packet for endianess
 	if (Connection && bNeedsEndianInspection && !CheckEndianess(Bunch))
@@ -1566,13 +1693,15 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 
 				if (FNetControlMessage<NMT_ActorChannelFailure>::Receive(Bunch, ChannelIndex))
 				{
-					UE_LOG(LogNet, Log, TEXT("Server connection received: %s %s"), FNetControlMessageInfo::GetName(MessageType), *Describe());
+					UE_LOG(LogNet, Log, TEXT("Server connection received: %s %d %s"), FNetControlMessageInfo::GetName(MessageType), ChannelIndex, *Describe());
 
 					// Check if Channel index provided by client is valid and within range of channel on server
 					if (ChannelIndex >= 0 && ChannelIndex < Connection->Channels.Num())
 					{
 						// Get the actor channel that the client provided as having failed
 						UActorChannel* ActorChan = Cast<UActorChannel>(Connection->Channels[ChannelIndex]);
+
+						UE_CLOG(ActorChan != nullptr, LogNet, Log, TEXT("Actor channel failed: %s"), *ActorChan->Describe());
 
 						// The channel and the actor attached to the channel exists on the server
 						if (ActorChan != nullptr && ActorChan->Actor != nullptr)
@@ -1596,7 +1725,7 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 							// but the client is reporting an actor channel failure that isn't the PlayerController
 							else
 							{
-								//UE_LOG(LogNet, Warning, TEXT("UControlChannel::RecievedBunch: PlayerController doesn't exist for the client, but the client is reporting an actor channel failure that isn't the PlayerController."));
+								//UE_LOG(LogNet, Warning, TEXT("UControlChannel::ReceivedBunch: PlayerController doesn't exist for the client, but the client is reporting an actor channel failure that isn't the PlayerController."));
 							}
 						}
 					}
@@ -1605,7 +1734,7 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 					// @PotentialDOSAttackDetection
 					else
 					{
-						UE_LOG(LogNet, Warning, TEXT("UControlChannel::RecievedBunch: The client is sending an actor channel failure message with an invalid actor channel index."));
+						UE_LOG(LogNet, Warning, TEXT("UControlChannel::ReceivedBunch: The client is sending an actor channel failure message with an invalid actor channel index."));
 					}
 				}
 			}
@@ -1636,15 +1765,47 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 			FString DebugMessage;
 			if (FNetControlMessage<NMT_SecurityViolation>::Receive(Bunch, DebugMessage))
 			{
-				UE_SECURITY_LOG(Connection, ESecurityEvent::Closed, TEXT("%s"), *DebugMessage);
+				UE_LOG(LogSecurity, Warning, TEXT("%s: Closed: %s"), *Connection->RemoteAddressToString(), *DebugMessage);
 				break;
 			}
 		}
 		else if (MessageType == NMT_DestructionInfo)
 		{
-			ReceiveDestructionInfo(Bunch);
+			if (!Connection->Driver->IsServer())
+			{
+				ReceiveDestructionInfo(Bunch);
+			}
+			else
+			{
+				UE_LOG(LogNet, Warning, TEXT("UControlChannel::ReceivedBunch: Server received a NMT_DestructionInfo which is not supported. Closing connection."));
+				Connection->Close(ENetCloseResult::ClientSentDestructionInfo);
+			}
 		}
-		else
+		else if (MessageType == NMT_CloseReason)
+		{
+			FString CloseReasonList;
+
+			if (FNetControlMessage<NMT_CloseReason>::Receive(Bunch, CloseReasonList) && !CloseReasonList.IsEmpty())
+			{
+				Connection->HandleReceiveCloseReason(CloseReasonList);
+			}
+
+			break;
+		}
+		else if (MessageType == NMT_NetPing)
+		{
+			ENetPingControlMessage NetPingMessageType;
+			FString MessageStr;
+
+			if (FNetControlMessage<NMT_NetPing>::Receive(Bunch, NetPingMessageType, MessageStr) &&
+				NetPingMessageType <= ENetPingControlMessage::Max)
+			{
+				UE::Net::FNetPing::HandleNetPingControlMessage(Connection, NetPingMessageType, MessageStr);
+			}
+
+			break;
+		}
+		else if (Connection->Driver->Notify != nullptr)
 		{
 			// Process control message on client/server connection
 			Connection->Driver->Notify->NotifyControlMessage(Connection, MessageType, Bunch);
@@ -1706,6 +1867,9 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 				case NMT_CloseReason:
 					FNetControlMessage<NMT_CloseReason>::Discard(Bunch);
 					break;
+				case NMT_NetPing:
+					FNetControlMessage<NMT_NetPing>::Discard(Bunch);
+					break;
 				case NMT_BeaconWelcome:
 					//FNetControlMessage<NMT_BeaconWelcome>::Discard(Bunch);
 					break;
@@ -1752,6 +1916,8 @@ void UControlChannel::ReceivedBunch( FInBunch& Bunch )
 
 void UControlChannel::QueueMessage(const FOutBunch* Bunch)
 {
+	LLM_SCOPE_BYTAG(NetChannel);
+
 	if (QueuedMessages.Num() >= MAX_QUEUED_CONTROL_MESSAGES)
 	{
 		// we're out of room in our extra buffer as well, so kill the connection
@@ -1773,8 +1939,6 @@ void UControlChannel::QueueMessage(const FOutBunch* Bunch)
 
 FPacketIdRange UControlChannel::SendBunch(FOutBunch* Bunch, bool Merge)
 {
-	using namespace UE::Net;
-
 	// if we already have queued messages, we need to queue subsequent ones to guarantee proper ordering
 	if (QueuedMessages.Num() > 0 || NumOutRec >= RELIABLE_BUFFER - 1 + Bunch->bClose)
 	{
@@ -1801,8 +1965,6 @@ FPacketIdRange UControlChannel::SendBunch(FOutBunch* Bunch, bool Merge)
 
 void UControlChannel::Tick()
 {
-	using namespace UE::Net;
-
 	Super::Tick();
 
 	if( !OpenAcked )
@@ -1917,6 +2079,7 @@ int64 UControlChannel::SendDestructionInfo(FActorDestructionInfo* DestructionInf
 void UControlChannel::ReceiveDestructionInfo(FInBunch& Bunch)
 {
 	checkf(Connection && Connection->PackageMap && Connection->Driver, TEXT("UControlChannel::ReceiveDestructionInfo requires a valid connection, package map, and driver: %s"), *Describe());
+	checkf(!Connection->Driver->IsServer(), TEXT("UControlChannel::ReceiveDestructionInfo should not be called on a server: %s"), *Describe());
 
 	EChannelCloseReason CloseReason = EChannelCloseReason::Destroyed;
 	Bunch << CloseReason;
@@ -1928,63 +2091,48 @@ void UControlChannel::ReceiveDestructionInfo(FInBunch& Bunch)
 	{
 		if (AActor* TheActor = Cast<AActor>(Object))
 		{
-			// If we're the client, destroy this actor.
-			if (!Connection->Driver->IsServer())
+			checkf(TheActor->IsValidLowLevel(), TEXT("ReceiveDestructionInfo serialized an invalid actor: %s"), *Describe());
+			checkSlow(Connection->IsValidLowLevel());
+			checkSlow(Connection->Driver->IsValidLowLevel());
+
+			if (TheActor->GetTearOff() && !Connection->Driver->ShouldClientDestroyTearOffActors())
 			{
-				checkf(TheActor->IsValidLowLevel(), TEXT("ReceiveDestructionInfo serialized an invalid actor: %s"), *Describe());
-				checkSlow(Connection->IsValidLowLevel());
-				checkSlow(Connection->Driver->IsValidLowLevel());
+				Connection->Driver->ClientSetActorTornOff(TheActor);
+			}
+			else if (Dormant && (CloseReason == EChannelCloseReason::Dormancy) && !TheActor->GetTearOff())
+			{
+				Connection->Driver->ClientSetActorDormant(TheActor);
+				Connection->Driver->NotifyActorFullyDormantForConnection(TheActor, Connection);
+			}
+			else if (!TheActor->bNetTemporary && TheActor->GetWorld() != nullptr && !IsEngineExitRequested() && Connection->Driver->ShouldClientDestroyActor(TheActor))
+			{
+				// Destroy the actor
 
-				if (TheActor->GetTearOff() && !Connection->Driver->ShouldClientDestroyTearOffActors())
+				// Unmap any components in this actor. This will make sure that once the Actor is remapped
+				// any references to components will be remapped as well.
+				for (UActorComponent* Component : TheActor->GetComponents())
 				{
-					if (!bTornOff)
-					{
-						TheActor->SetRole(ROLE_Authority);
-						TheActor->SetReplicates(false);
-						bTornOff = true;
-						if (TheActor->GetWorld() != nullptr && !IsEngineExitRequested())
-						{
-							TheActor->TornOff();
-						}
+					Connection->Driver->MoveMappedObjectToUnmapped(Component);
+				}
 
-						Connection->Driver->NotifyActorTornOff(TheActor);
+				// Unmap this object so we can remap it if it becomes relevant again in the future
+				Connection->Driver->MoveMappedObjectToUnmapped(TheActor);
+
+				TheActor->PreDestroyFromReplication();
+				TheActor->Destroy(true);
+
+				if (UE::Net::FilterGuidRemapping != 0)
+				{
+					// Remove this actor's NetGUID from the list of unmapped values, it will be added back if it replicates again
+					if (NetGUID.IsValid() && Connection != nullptr && Connection->Driver != nullptr && Connection->Driver->GuidCache.IsValid())
+					{
+						Connection->Driver->GuidCache->ImportedNetGuids.Remove(NetGUID);
 					}
 				}
-				else if (Dormant && (CloseReason == EChannelCloseReason::Dormancy) && !TheActor->GetTearOff())
+
+				if (UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(Connection->PackageMap))
 				{
-					Connection->Driver->ClientSetActorDormant(TheActor);
-					Connection->Driver->NotifyActorFullyDormantForConnection(TheActor, Connection);
-				}
-				else if (!TheActor->bNetTemporary && TheActor->GetWorld() != nullptr && !IsEngineExitRequested() && Connection->Driver->ShouldClientDestroyActor(TheActor))
-				{
-					// Destroy the actor
-
-					// Unmap any components in this actor. This will make sure that once the Actor is remapped
-					// any references to components will be remapped as well.
-					for (UActorComponent* Component : TheActor->GetComponents())
-					{
-						Connection->Driver->MoveMappedObjectToUnmapped(Component);
-					}
-
-					// Unmap this object so we can remap it if it becomes relevant again in the future
-					Connection->Driver->MoveMappedObjectToUnmapped(TheActor);
-
-					TheActor->PreDestroyFromReplication();
-					TheActor->Destroy(true);
-
-					if (CVarFilterGuidRemapping.GetValueOnAnyThread() > 0)
-					{
-						// Remove this actor's NetGUID from the list of unmapped values, it will be added back if it replicates again
-						if (NetGUID.IsValid() && Connection != nullptr && Connection->Driver != nullptr && Connection->Driver->GuidCache.IsValid())
-						{
-							Connection->Driver->GuidCache->ImportedNetGuids.Remove(NetGUID);
-						}
-					}
-
-					if (UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(Connection->PackageMap))
-					{
-						PackageMapClient->SetHasQueuedBunches(NetGUID, false);
-					}
+					PackageMapClient->SetHasQueuedBunches(NetGUID, false);
 				}
 			}
 		}
@@ -2014,6 +2162,19 @@ void UActorChannel::SetClosingFlag()
 	}
 
 	UChannel::SetClosingFlag();
+}
+
+void UActorChannel::ReleaseReferences(bool bKeepReplicators)
+{
+	Actor = nullptr;
+	CleanupReplicators(bKeepReplicators);
+	GetCreatedSubObjects().Empty();
+}
+
+void UActorChannel::BreakAndReleaseReferences()
+{
+	Broken = true;
+	ReleaseReferences(false);
 }
 
 int64 UActorChannel::Close(EChannelCloseReason Reason)
@@ -2056,8 +2217,7 @@ int64 UActorChannel::Close(EChannelCloseReason Reason)
 			Connection->RemoveActorChannel( Actor );
 		}
 
-		Actor = nullptr;
-		CleanupReplicators( bKeepReplicators );
+		ReleaseReferences(bKeepReplicators);
 	}
 
 	return NumBits;
@@ -2068,10 +2228,14 @@ void UActorChannel::CleanupReplicators(const bool bKeepReplicators)
 	// Cleanup or save replicators
 	for (auto CompIt = ReplicationMap.CreateIterator(); CompIt; ++CompIt)
 	{
+		TSharedRef< FObjectReplicator >& ObjectReplicatorRef = CompIt.Value();
+
 		// NOTE: FObjectReplicator::GetObject is just going to return a raw Object Pointer,
-		// so it won't actually check to see whether or not the Object was marked PendingKill.
-		if (bKeepReplicators && CompIt.Value()->GetObject() != nullptr)
+		// so it won't actually check to see whether or not the Object was marked PendingKill/Garbage.
+		if (bKeepReplicators && ObjectReplicatorRef->GetObject() != nullptr)
 		{
+			LLM_SCOPE_BYTAG(NetConnection);
+
 			// If we want to keep the replication state of the actor/sub-objects around, transfer ownership to the connection
 			// This way, if this actor opens another channel on this connection, we can reclaim or use this replicator to compare state, etc.
 			// For example, we may want to see if any state changed since the actor went dormant, and is now active again. 
@@ -2082,12 +2246,13 @@ void UActorChannel::CleanupReplicators(const bool bKeepReplicators)
 			//		KeepProcessingActorChannelBunchesMap will get in here, then when the channel closes a second time, we'll hit this assert
 			//		It should be okay to just set the most recent replicator
 			//check( Connection->DormantReplicatorMap.Find( CompIt.Value()->GetObject() ) == NULL );
-			Connection->DormantReplicatorMap.Add(CompIt.Value()->GetObject(), CompIt.Value());
-			CompIt.Value()->StopReplicating(this);		// Stop replicating on this channel
+			Connection->AddDormantReplicator(ObjectReplicatorRef->GetObject(), ObjectReplicatorRef);
+			ObjectReplicatorRef->StopReplicating(this);		// Stop replicating on this channel
 		}
 		else
 		{
-			CompIt.Value()->CleanUp();
+
+			ObjectReplicatorRef->CleanUp();
 		}
 	}
 
@@ -2107,6 +2272,7 @@ void UActorChannel::MoveMappedObjectToUnmapped(const UObject* Object)
 void UActorChannel::DestroyActorAndComponents()
 {
 	// Destroy any sub-objects we created
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (UObject* SubObject : CreateSubObjects)
 	{
 		if (SubObject != nullptr)
@@ -2116,7 +2282,7 @@ void UActorChannel::DestroyActorAndComponents()
 
 			if (Connection != nullptr && Connection->Driver != nullptr)
 			{
-				Connection->Driver->RepChangedPropertyTrackerMap.Remove(SubObject);
+				Connection->Driver->NotifySubObjectDestroyed(SubObject);
 			}
 
 			Actor->OnSubobjectDestroyFromReplication(SubObject); //-V595
@@ -2127,6 +2293,7 @@ void UActorChannel::DestroyActorAndComponents()
 	}
 
 	CreateSubObjects.Empty();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Destroy the actor
 	if (Actor != nullptr)
@@ -2145,7 +2312,7 @@ void UActorChannel::DestroyActorAndComponents()
 		Actor->Destroy(true);
 	}
 
-	if (CVarFilterGuidRemapping.GetValueOnAnyThread() > 0)
+	if (UE::Net::FilterGuidRemapping != 0)
 	{
 		// Remove this actor's NetGUID from the list of unmapped values, it will be added back if it replicates again
 		if (ActorNetGUID.IsValid() && Connection != nullptr && Connection->Driver != nullptr && Connection->Driver->GuidCache.IsValid())
@@ -2170,6 +2337,8 @@ bool UActorChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseRea
 
 	if (!bIsServer && QueuedBunches.Num() > 0 && ChIndex >= 0 && !bForDestroy)
 	{
+		LLM_SCOPE_BYTAG(NetConnection);
+
 		checkf(ActorNetGUID.IsValid(), TEXT("UActorChannel::Cleanup: ActorNetGUID is invalid! Channel: %i"), ChIndex);
 		
 		TArray<UActorChannel*>& ChannelsStillProcessing = Connection->KeepProcessingActorChannelBunchesMap.FindOrAdd(ActorNetGUID);
@@ -2217,15 +2386,8 @@ bool UActorChannel::CleanUp(const bool bForDestroy, EChannelCloseReason CloseRea
 			{
 				if (!bTornOff)
 				{
-					Actor->SetRole(ROLE_Authority);
-					Actor->SetReplicates(false);
 					bTornOff = true;
-					if (Actor->GetWorld() != NULL && !IsEngineExitRequested())
-					{
-						Actor->TornOff();
-					}
-
-					Connection->Driver->NotifyActorTornOff(Actor);
+					Connection->Driver->ClientSetActorTornOff(Actor);
 				}
 			}
 			else if (Dormant && (CloseReason == EChannelCloseReason::Dormancy) && !Actor->GetTearOff())	
@@ -2304,6 +2466,7 @@ void UActorChannel::ReceivedNak( int32 NakPacketId )
 		CompIt.Value()->ReceivedNak(NakPacketId);
 	}
 
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 	// Reset any subobject RepKeys that were sent on this packetId
 	FPacketRepKeyInfo * Info = SubobjectNakMap.Find(NakPacketId % SubobjectRepKeyBufferSize);
 	if (Info)
@@ -2318,6 +2481,7 @@ void UActorChannel::ReceivedNak( int32 NakPacketId )
 			}
 		}
 	}
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 }
 
 void UActorChannel::SetChannelActor(AActor* InActor, ESetChannelActorFlags Flags)
@@ -2348,7 +2512,8 @@ void UActorChannel::SetChannelActor(AActor* InActor, ESetChannelActorFlags Flags
 
 	UE_LOG(LogNetTraffic, VeryVerbose, TEXT("SetChannelActor: ChIndex: %i, Actor: %s, NetGUID: %s"), ChIndex, Actor ? *Actor->GetFullName() : TEXT("NULL"), *ActorNetGUID.ToString() );
 
-	if (ChIndex >= 0 && Connection->PendingOutRec[ChIndex] > 0)
+	// Internal ack connections never add to PendingOutRec
+	if (Connection->PendingOutRec.IsValidIndex(ChIndex) && Connection->PendingOutRec[ChIndex] > 0)
 	{
 		// send empty reliable bunches to synchronize both sides
 		// UE_LOG(LogNetTraffic, Log, TEXT("%i Actor %s WILL BE sending %i vs first %i"), ChIndex, *Actor->GetName(), Connection->PendingOutRec[ChIndex],Connection->OutReliable[ChIndex]);
@@ -2440,44 +2605,6 @@ void UActorChannel::NotifyActorChannelOpen(AActor* InActor, FInBunch& InBunch)
 			}
 		}
 	}
-}
-
-int64 UActorChannel::SetChannelActorForDestroy( FActorDestructionInfo *DestructInfo )
-{
-	int64 NumBits = 0;
-	check(Connection);
-	check(Connection->Channels[ChIndex]==this);
-	check(DestructInfo);
-
-	if
-	(	!Closing
-	&&	(Connection->GetConnectionState()==USOCK_Open || Connection->GetConnectionState()==USOCK_Pending) )
-	{
-		// Outer must be valid to call PackageMap->WriteObject. In the case of streaming out levels, this can go null out of from underneath us. In that case, just skip the destruct info.
-		// We assume that if server unloads a level that clients will to and this will implicitly destroy all actors in it, so not worried about leaking actors client side here.
-		if (UObject* ObjOuter = DestructInfo->ObjOuter.Get())
-		{
-
-		// Send a close notify, and wait for ack.
-		FOutBunch CloseBunch( this, 1 );
-		check(!CloseBunch.IsError());
-		check(CloseBunch.bClose);
-		CloseBunch.bReliable = 1;
-		CloseBunch.CloseReason = DestructInfo->Reason;
-
-		// Serialize DestructInfo
-		NET_CHECKSUM(CloseBunch); // This is to mirror the Checksum in UPackageMapClient::SerializeNewActor
-			Connection->PackageMap->WriteObject( CloseBunch, ObjOuter, DestructInfo->NetGUID, DestructInfo->PathName );
-
-		UE_LOG(LogNetTraffic, Log, TEXT("SetChannelActorForDestroy: Channel %d. NetGUID <%s> Path: %s. Bits: %d"), ChIndex, *DestructInfo->NetGUID.ToString(), *DestructInfo->PathName, CloseBunch.GetNumBits() );
-		UE_LOG(LogNetDormancy, Verbose, TEXT("SetChannelActorForDestroy: Channel %d. NetGUID <%s> Path: %s. Bits: %d"), ChIndex, *DestructInfo->NetGUID.ToString(), *DestructInfo->PathName, CloseBunch.GetNumBits() );
-
-		SendBunch( &CloseBunch, 0 );
-		NumBits = CloseBunch.GetNumBits();
-	}
-	}
-
-	return NumBits;
 }
 
 void UActorChannel::Tick()
@@ -2577,8 +2704,7 @@ bool UActorChannel::ProcessQueuedBunches()
 		}
 		else
 		{
-			const double QUEUED_BUNCH_TIMEOUT_IN_SECONDS = 30;
-			if ((FPlatformTime::Seconds() - QueuedBunchStartTime) > QUEUED_BUNCH_TIMEOUT_IN_SECONDS)
+			if ((FPlatformTime::Seconds() - QueuedBunchStartTime) > UE::Net::QueuedBunchTimeoutSeconds)
 			{
 				if (!bSuppressQueuedBunchWarningsDueToHitches && FPlatformProperties::RequiresCookedData())
 				{
@@ -2588,9 +2714,10 @@ bool UActorChannel::ProcessQueuedBunches()
 					{
 						for (const FNetworkGUID& Guid : PendingGuidResolves)
 						{
-							const bool bIsPending = Connection->Driver->GuidCache->IsGUIDPending(Guid);
-							const FString GuidPath = Connection->Driver->GuidCache->FullNetGUIDPath(Guid);
-							UE_LOG(LogNet, Log, TEXT("  PendingGuidResolve %s. Pending in cache: %d, path: %s"), *Guid.ToString(), !!bIsPending, *GuidPath);
+							UE_LOG(LogNet, Log, TEXT("  PendingGuidResolve [%s] %s"), *Guid.ToString(), *Connection->Driver->GuidCache->Describe(Guid));
+
+							const FNetworkGUID OuterGuid = Connection->Driver->GuidCache->GetOuterNetGUID(Guid);
+							UE_LOG(LogNet, Log, TEXT("      OuterGuid [%s] %s"), *OuterGuid.ToString(), *Connection->Driver->GuidCache->Describe(OuterGuid));
 						}
 					}
 				}
@@ -2613,7 +2740,7 @@ bool UActorChannel::ProcessQueuedBunches()
 
 void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 {
-	using namespace UE::Net;
+	LLM_SCOPE_BYTAG(NetChannel);
 
 	check(!Closing);
 
@@ -2770,8 +2897,6 @@ void UActorChannel::ReceivedBunch( FInBunch & Bunch )
 
 void UActorChannel::ProcessBunch( FInBunch & Bunch )
 {
-	using namespace UE::Net;
-
 	if ( Broken )
 	{
 		return;
@@ -2958,6 +3083,7 @@ void UActorChannel::ProcessBunch( FInBunch & Bunch )
 
 		if ( bHasUnmapped )
 		{
+			LLM_SCOPE_BYTAG(NetDriver);
 			Connection->Driver->UnmappedReplicators.Add( &Replicator.Get() );
 		}
 	}
@@ -2965,11 +3091,11 @@ void UActorChannel::ProcessBunch( FInBunch & Bunch )
 	for (auto RepComp = ReplicationMap.CreateIterator(); RepComp; ++RepComp)
 	{
 		TSharedRef<FObjectReplicator>& ObjectReplicator = RepComp.Value();
-		if (ObjectReplicator->GetObject() == nullptr)
+		if (!IsValid(ObjectReplicator->GetObject()))
 		{
 			if (!Connection->Driver->IsServer())
 			{
-				RepComp.RemoveCurrent();
+				RepComp.RemoveCurrent(); // This should cause the replicator to be cleaned up as there should be no outstandings refs. 
 			}
 			continue;
 		}
@@ -3004,13 +3130,13 @@ public:
 	~FScopedRoleDowngrade()
 	{
 		// Upgrade role back to autonomous proxy if needed
-		if ( Actor->GetRemoteRole() != ActualRemoteRole )
+		if (Actor->GetRemoteRole() != ActualRemoteRole)
 		{
-			Actor->SetReplicates( ActualRemoteRole != ROLE_None );
+			MARK_PROPERTY_DIRTY_FROM_NAME(AActor, RemoteRole, Actor);
 
-			if ( ActualRemoteRole == ROLE_AutonomousProxy )
+			if (ActualRemoteRole == ROLE_AutonomousProxy)
 			{
-				Actor->SetAutonomousProxy( true, false );
+				Actor->SetAutonomousProxy(true, false);
 			}
 		}
 	}
@@ -3026,6 +3152,7 @@ int32 GNumReplicateActorCalls = 0;
 
 int64 UActorChannel::ReplicateActor()
 {
+	LLM_SCOPE_BYTAG(NetChannel);
 	SCOPE_CYCLE_COUNTER(STAT_NetReplicateActorTime);
 
 	check(Actor);
@@ -3042,8 +3169,6 @@ int64 UActorChannel::ReplicateActor()
 #endif
 
 	const bool bReplay = Connection->IsReplay();
-	CSV_SCOPED_TIMING_STAT_EXCLUSIVE_CONDITIONAL(ReplicateActor, !bReplay);
-
 	const bool bEnableScopedCycleCounter = !bReplay && GReplicateActorTimingEnabled;
 	FSimpleScopeSecondsCounter ScopedSecondsCounter(GReplicateActorTimeSeconds, bEnableScopedCycleCounter);
 
@@ -3096,6 +3221,12 @@ int64 UActorChannel::ReplicateActor()
 		UE_LOG(LogNet, Verbose, TEXT("ReplicateActor: bPausedUntilReliableACK is ending now that reliables have been ACK'd. %s"), *Describe());
 	}
 
+	if (UE::Net::bNetReplicateOnlyBeginPlay && !IsActorReadyForReplication() && !bIsForcedSerializeFromRPC)
+	{
+		UE_LOG(LogNet, Verbose, TEXT("ReplicateActor ignored since actor is not BeginPlay yet: %s"), *Describe());
+		return 0;
+	}
+
 	const TArray<FNetViewer>& NetViewers = ActorWorld->GetWorldSettings()->ReplicationViewers;
 	bool bIsNewlyReplicationPaused = false;
 	bool bIsNewlyReplicationUnpaused = false;
@@ -3144,6 +3275,14 @@ int64 UActorChannel::ReplicateActor()
 		return 0;
 	}
 
+	// Cache the netgroup manager so we don't have to access it for every subobject.
+	DataChannelInternal::CachedNetworkSubsystem = ActorWorld->GetSubsystem<UNetworkSubsystem>();
+	check(DataChannelInternal::CachedNetworkSubsystem);
+	ON_SCOPE_EXIT
+	{
+		DataChannelInternal::CachedNetworkSubsystem = nullptr;
+	};
+
 #if UE_NET_TRACE_ENABLED
 	SetTraceCollector(Bunch, UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace));
 #endif
@@ -3152,7 +3291,6 @@ int64 UActorChannel::ReplicateActor()
 	{
 		Bunch.bReliable = true;
 		Bunch.bIsReplicationPaused = true;
-
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -3222,7 +3360,7 @@ int64 UActorChannel::ReplicateActor()
 	RepFlags.bNetSimulated	= (Actor->GetRemoteRole() == ROLE_SimulatedProxy);
 	RepFlags.bRepPhysics	= Actor->GetReplicatedMovement().bRepPhysics;
 	RepFlags.bReplay		= bReplay;
-	//RepFlags.bNetInitial	= RepFlags.bNetInitial;
+	RepFlags.bClientReplay	= ActorWorld->IsRecordingClientReplay();
 	RepFlags.bForceInitialDirty = Connection->IsForceInitialDirty();
 
 	UE_LOG(LogNetTraffic, Log, TEXT("Replicate %s, bNetInitial: %d, bNetOwner: %d"), *Actor->GetName(), RepFlags.bNetInitial, RepFlags.bNetOwner);
@@ -3243,14 +3381,17 @@ int64 UActorChannel::ReplicateActor()
 		{
 			UE_NET_TRACE_OBJECT_SCOPE(ActorReplicator->ObjectNetGUID, Bunch, GetTraceCollector(Bunch), ENetTraceVerbosity::Trace);
 
-			if (!ActorReplicator->CanSkipUpdate(RepFlags))
+			const bool bCanSkipUpdate = ActorReplicator->CanSkipUpdate(RepFlags);
+
+			if (UE::Net::bPushModelValidateSkipUpdate || !bCanSkipUpdate)
 			{
 				bWroteSomethingImportant |= ActorReplicator->ReplicateProperties(Bunch, RepFlags);
 			}
+
+			ensureMsgf(!UE::Net::bPushModelValidateSkipUpdate || !bCanSkipUpdate || !bWroteSomethingImportant, TEXT("Actor wrote data but we thought it was skippable: %s"), *GetFullNameSafe(Actor));
 		}
 
-		// The SubObjects
-		bWroteSomethingImportant |= Actor->ReplicateSubobjects(this, &Bunch, &RepFlags);
+		bWroteSomethingImportant |= DoSubObjectReplication(Bunch, RepFlags);
 
 		if (Connection->ResendAllDataState != EResendAllDataState::None)
 		{
@@ -3260,6 +3401,7 @@ int64 UActorChannel::ReplicateActor()
 			}
 
 			MemMark.Pop();
+			NETWORK_PROFILER(GNetworkProfiler.TrackReplicateActor(Actor, RepFlags, FPlatformTime::Cycles() - ActorReplicateStartTime, Connection));
 
 			return bWroteSomethingImportant;
 		}
@@ -3277,6 +3419,9 @@ int64 UActorChannel::ReplicateActor()
 				{
 					if (LocalReplicator->ObjectNetGUID.IsValid())
 					{
+						UE_NET_TRACE_SCOPE(ContentBlockForSubObjectDelete, Bunch, GetTraceCollector(Bunch), ENetTraceVerbosity::Trace);
+						UE_NET_TRACE_OBJECT_SCOPE(LocalReplicator->ObjectNetGUID, Bunch, GetTraceCollector(Bunch), ENetTraceVerbosity::Trace);
+
 						// Write a deletion content header:
 						WriteContentBlockForSubObjectDelete(Bunch, LocalReplicator->ObjectNetGUID);
 
@@ -3312,6 +3457,7 @@ int64 UActorChannel::ReplicateActor()
 	int64 NumBitsWrote = 0;
 	if (bWroteSomethingImportant)
 	{
+		// We must exit the collection scope to report data correctly
 		FPacketIdRange PacketRange = SendBunch( &Bunch, 1 );
 
 		if (!bIsNewlyReplicationPaused)
@@ -3321,6 +3467,7 @@ int64 UActorChannel::ReplicateActor()
 				RepComp.Value()->PostSendBunch(PacketRange, Bunch.bReliable);
 			}
 
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 			// If there were any subobject keys pending, add them to the NakMap
 			if (PendingObjKeys.Num() > 0)
 			{
@@ -3349,16 +3496,20 @@ int64 UActorChannel::ReplicateActor()
 					}
 				}
 			}
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 
 			if (Actor->bNetTemporary)
 			{
+				LLM_SCOPE_BYTAG(NetConnection);
 				Connection->SentTemporaries.Add(Actor);
 			}
 		}
 		NumBitsWrote = Bunch.GetNumBits();
 	}
 
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 	PendingObjKeys.Empty();
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 
 	// If we evaluated everything, mark LastUpdateTime, even if nothing changed.
 	LastUpdateTime = Connection->Driver->GetElapsedTime();
@@ -3371,6 +3522,325 @@ int64 UActorChannel::ReplicateActor()
 	return NumBitsWrote;
 }
 
+bool UActorChannel::DoSubObjectReplication(FOutBunch& Bunch, FReplicationFlags& OutRepFlags)
+{
+	bool bWroteSomethingImportant = false;
+
+	if (Actor->IsUsingRegisteredSubObjectList())
+	{
+		// If the actor replicates it's subobjects and those of it's components via the list.
+		bWroteSomethingImportant |= ReplicateRegisteredSubObjects(Bunch, OutRepFlags);
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+		if (UE::Net::GCVarCompareSubObjectsReplicated)
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_Validate_ReplicatedSubObjects);
+			ValidateReplicatedSubObjects();
+
+			DataChannelInternal::bTrackReplicatedSubObjects = false;
+		}
+#endif
+	}
+	else
+	{
+		// Replicate the subobjects using the virtual method.
+		bWroteSomethingImportant |= Actor->ReplicateSubobjects(this, &Bunch, &OutRepFlags);
+	}
+
+	AActor* TempNull(nullptr);
+	SetCurrentSubObjectOwner(TempNull);
+
+	return bWroteSomethingImportant;
+}
+
+bool UActorChannel::CanSubObjectReplicateToClient(ELifetimeCondition NetCondition, FObjectKey SubObjectKey, const TStaticBitArray<COND_Max>& ConditionMap) const
+{
+	bool bCanReplicateToClient = ConditionMap[NetCondition];
+
+	if (NetCondition == COND_NetGroup)
+	{
+		TArrayView<const FName> NetGroups = DataChannelInternal::CachedNetworkSubsystem->GetNetConditionGroupManager().GetSubObjectNetConditionGroups(SubObjectKey);
+
+		for (int i=0; i < NetGroups.Num() && !bCanReplicateToClient; ++i)
+		{
+			const FName NetGroup = NetGroups[i];
+
+			if (UE::Net::NetGroupOwner == NetGroup)
+			{
+				bCanReplicateToClient = ConditionMap[COND_OwnerOnly];
+			}
+			else if (UE::Net::NetGroupReplay == NetGroup)
+			{
+				bCanReplicateToClient = ConditionMap[COND_ReplayOnly];
+			}
+			else
+			{
+				bCanReplicateToClient = Connection->PlayerController->IsMemberOfNetConditionGroup(NetGroup);
+			}
+		}
+	}
+
+	return bCanReplicateToClient;
+}
+	
+bool UActorChannel::ReplicateRegisteredSubObjects(FOutBunch& Bunch, FReplicationFlags RepFlags)
+{
+	using namespace UE::Net;
+
+	check(Actor->IsUsingRegisteredSubObjectList());
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+	if (GCVarCompareSubObjectsReplicated)
+	{
+		TestLegacyReplicateSubObjects(Bunch, RepFlags);
+
+		// From here track all subobjects that write into the bunch.
+		DataChannelInternal::bTrackReplicatedSubObjects = true;
+	}
+#endif
+
+	const TStaticBitArray<COND_Max> ConditionMap = FSendingRepState::BuildConditionMapFromRepFlags(RepFlags);
+
+	bool bWroteSomethingImportant = false;
+
+	// Start with the Actor's subobjects
+	{
+		SetCurrentSubObjectOwner(Actor);
+		for (const FSubObjectRegistry::FEntry& SubObjectInfo : FSubObjectRegistryGetter::GetSubObjects(Actor).GetRegistryList())
+		{
+			if (CanSubObjectReplicateToClient(SubObjectInfo.NetCondition, SubObjectInfo.Key, ConditionMap))
+			{
+				checkf(IsValid(SubObjectInfo.SubObject), TEXT("Found invalid subobject (%s) registered in %s"), *GetNameSafe(SubObjectInfo.SubObject), *Actor->GetName());
+
+				bWroteSomethingImportant |= WriteSubObjectInBunch(SubObjectInfo.SubObject, Bunch, RepFlags);
+			}
+		}
+	}
+
+	// Now the replicated actor components
+	for( const FReplicatedComponentInfo& RepComponentInfo : FSubObjectRegistryGetter::GetReplicatedComponents(Actor) )
+	{
+		if (CanSubObjectReplicateToClient(RepComponentInfo.NetCondition, RepComponentInfo.Key, ConditionMap))
+		{
+			UActorComponent* ReplicatedComponent = RepComponentInfo.Component;
+
+			checkf(IsValid(ReplicatedComponent), TEXT("Found invalid replicated component (%s) registered in %s"), *GetNameSafe(ReplicatedComponent), *Actor->GetName());
+
+			SetCurrentSubObjectOwner(ReplicatedComponent);
+			if (ReplicatedComponent->IsUsingRegisteredSubObjectList())
+			{
+				bWroteSomethingImportant |= WriteSubObjects(ReplicatedComponent, RepComponentInfo.SubObjects, Bunch, RepFlags, ConditionMap);
+			}
+			else
+			{
+				// Replicate the component's SubObjects using the virtual method
+				bWroteSomethingImportant |= ReplicatedComponent->ReplicateSubobjects(this, &Bunch, const_cast<FReplicationFlags*>(&RepFlags));
+			}
+
+			// Finally replicate the component itself at the end. SubObjects have to be created before the component on the receiving end.
+			SetCurrentSubObjectOwner(Actor);
+			bWroteSomethingImportant |= WriteSubObjectInBunch(ReplicatedComponent, Bunch, RepFlags);
+		}
+	}
+
+	return bWroteSomethingImportant;
+}
+
+
+void UActorChannel::SetCurrentSubObjectOwner(AActor* SubObjectOwner)
+{
+	DataChannelInternal::CurrentSubObjectOwner = SubObjectOwner;
+	DataChannelInternal::bIgnoreLegacyReplicateSubObject = false;
+}
+
+void UActorChannel::SetCurrentSubObjectOwner(UActorComponent* SubObjectOwner)
+{
+	DataChannelInternal::CurrentSubObjectOwner = SubObjectOwner;
+	DataChannelInternal::bIgnoreLegacyReplicateSubObject = SubObjectOwner && SubObjectOwner->IsUsingRegisteredSubObjectList();
+}
+
+bool UActorChannel::ReplicateSubobject(UObject* SubObj, FOutBunch& Bunch, FReplicationFlags RepFlags)
+{
+	if (!IsValid(SubObj))
+	{
+		return false;
+	}
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+	if (DataChannelInternal::bTestingLegacyMethodForComparison)
+	{
+		DataChannelInternal::LegacySubObjectsCollected.Emplace(DataChannelInternal::FSubObjectReplicatedInfo(SubObj));
+		return false;
+	}
+#endif
+
+	bool bWroteSomethingImportant = false;
+
+	if (!DataChannelInternal::bIgnoreLegacyReplicateSubObject)
+	{
+		bWroteSomethingImportant = WriteSubObjectInBunch(SubObj, Bunch, RepFlags);
+	}
+	else
+	{
+		using namespace UE::Net;
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+		// Make sure the SubObjectOwner actually has the SubObject in its list and will replicate it later.
+		UActorComponent* Component = CastChecked<UActorComponent>(DataChannelInternal::CurrentSubObjectOwner);
+		const bool bIsInRegistry = FSubObjectRegistryGetter::IsSubObjectInRegistry(Actor, Component, SubObj);
+		ensureMsgf(bIsInRegistry, TEXT("ReplicatedSubObject %s was replicated using the legacy method but it is not in %s::%s registered list. It won't be replicated at all."), 
+			*SubObj->GetName(), *Actor->GetName(), *Component->GetName());
+#endif
+	}
+
+	return bWroteSomethingImportant;
+}
+
+void UActorChannel::TestLegacyReplicateSubObjects(FOutBunch& Bunch, FReplicationFlags RepFlags)
+{
+#if SUBOBJECT_TRANSITION_VALIDATION
+	// Call the legacy method but simply collect the subobjects it would have replicated
+	DataChannelInternal::bTestingLegacyMethodForComparison = true;
+
+	SetCurrentSubObjectOwner(Actor);
+	Actor->ReplicateSubobjects(this, &Bunch, &RepFlags);
+
+	DataChannelInternal::bTestingLegacyMethodForComparison = false;
+#endif
+}
+
+void UActorChannel::TestLegacyReplicateSubObjects(UActorComponent* ReplicatedComponent, FOutBunch& Bunch, FReplicationFlags RepFlags)
+{
+#if SUBOBJECT_TRANSITION_VALIDATION
+	// Call the legacy method but simply collect the subobjects it would have replicated
+	DataChannelInternal::bTestingLegacyMethodForComparison = true;
+
+	SetCurrentSubObjectOwner(ReplicatedComponent);
+	ReplicatedComponent->ReplicateSubobjects(this, &Bunch, &RepFlags);
+
+	DataChannelInternal::bTestingLegacyMethodForComparison = false;
+#endif
+}
+
+
+bool UActorChannel::ReplicateSubobject(UActorComponent* ReplicatedComponent, FOutBunch& Bunch, FReplicationFlags RepFlags)
+{
+	if (!IsValid(ReplicatedComponent))
+	{
+		return false;
+	}
+
+	// This traps actor components using the registration list even if their owning Actor isn't using the list itself.
+	if (ReplicatedComponent->IsUsingRegisteredSubObjectList() && !DataChannelInternal::bTestingLegacyMethodForComparison)
+	{
+#if SUBOBJECT_TRANSITION_VALIDATION
+		if (UE::Net::GCVarCompareSubObjectsReplicated)
+		{
+			TestLegacyReplicateSubObjects(ReplicatedComponent, Bunch, RepFlags);
+
+			// From here track all subobjects that write into the bunch.
+			DataChannelInternal::bTrackReplicatedSubObjects = true;
+		}
+#endif
+
+		bool bWroteSomethingImportant = false;
+
+		const TStaticBitArray<COND_Max> ConditionMap = FSendingRepState::BuildConditionMapFromRepFlags(RepFlags);
+
+		checkf(Actor->IsUsingRegisteredSubObjectList() == false, TEXT("This code should only be hit when an Actor that does NOT support the SubObjectList is replicating an ActorComponent that does: %s replicating %s."), 
+			*Actor->GetName(), *ReplicatedComponent->GetName());
+
+		// Write all the subobjects of the component
+		bWroteSomethingImportant |= WriteSubObjects(ReplicatedComponent, Bunch, RepFlags, ConditionMap);
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+		if (UE::Net::GCVarCompareSubObjectsReplicated)
+		{
+			ValidateReplicatedSubObjects();
+
+			DataChannelInternal::bTrackReplicatedSubObjects = false;
+		}
+#endif
+
+        // Finally write the component itself
+		SetCurrentSubObjectOwner(Actor);
+		bWroteSomethingImportant |= WriteSubObjectInBunch(ReplicatedComponent, Bunch, RepFlags);
+
+		return bWroteSomethingImportant;
+	}
+	else
+	{
+		return ReplicateSubobject(StaticCast<UObject*>(ReplicatedComponent), Bunch, RepFlags);
+	}
+}
+
+bool UActorChannel::WriteSubObjects(UActorComponent* ReplicatedComponent, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap)
+{
+	using namespace UE::Net;
+	if (const FSubObjectRegistry* SubObjectList = FSubObjectRegistryGetter::GetSubObjectsOfActorCompoment(Actor, ReplicatedComponent))
+	{
+		return WriteSubObjects(ReplicatedComponent, *SubObjectList, Bunch, RepFlags, ConditionMap);
+	}
+
+	return false;
+}
+
+bool UActorChannel::WriteSubObjects(UActorComponent* ReplicatedComponent, const UE::Net::FSubObjectRegistry& SubObjectList, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap)
+{
+	bool bWroteSomethingImportant = false;
+	for (const UE::Net::FSubObjectRegistry::FEntry& SubObjectInfo : SubObjectList.GetRegistryList())
+	{
+		checkf(IsValid(SubObjectInfo.SubObject), TEXT("Found invalid subobject (%s) registered in %s::%s"), *GetNameSafe(SubObjectInfo.SubObject), *Actor->GetName(), *GetNameSafe(ReplicatedComponent));
+
+		if (CanSubObjectReplicateToClient(SubObjectInfo.NetCondition, SubObjectInfo.Key, ConditionMap))
+		{
+			bWroteSomethingImportant |= WriteSubObjectInBunch(SubObjectInfo.SubObject, Bunch, RepFlags);
+		}
+	}
+
+	return bWroteSomethingImportant;
+}
+
+bool UActorChannel::ValidateReplicatedSubObjects()
+{
+#if SUBOBJECT_TRANSITION_VALIDATION
+	bool bErrorDetected = false;
+	const bool bLogAllErrors = UE::Net::CVarLogAllSubObjectComparisonErrors.GetValueOnAnyThread() != 0;
+
+	for (int32 i=DataChannelInternal::LegacySubObjectsCollected.Num()-1; i >= 0; i--)
+	{
+		const DataChannelInternal::FSubObjectReplicatedInfo& Info = DataChannelInternal::LegacySubObjectsCollected[i];
+
+		constexpr bool bNoShrinking = false;
+		const bool bWasFound = DataChannelInternal::ReplicatedSubObjectsTracker.RemoveSingleSwap(Info, bNoShrinking) != 0;
+
+		ensureMsgf(bWasFound, TEXT("%s was not replicated by the subobject list in %s. Only by the legacy ReplicateSubObjects method."),
+			*Info.Describe(Actor), *Connection->GetDriver()->NetDriverName.ToString());
+		UE_CLOG(!bWasFound && bLogAllErrors, LogNetSubObject, Warning, TEXT("%s was not replicated by the subobject list."), *Info.Describe(Actor));
+
+		bErrorDetected |= !bWasFound;
+	}
+
+	// Leftover subobjects in this list means we replicated more elements than the legacy method would.
+	for (int32 i=DataChannelInternal::ReplicatedSubObjectsTracker.Num()-1; i >= 0; i--)
+	{
+		const DataChannelInternal::FSubObjectReplicatedInfo& Info = DataChannelInternal::ReplicatedSubObjectsTracker[i];
+
+		ensureMsgf(false, TEXT("%s was replicated only in the registered subobject list in %s. Not in the legacy path."), 
+			*Info.Describe(Actor), *Info.Describe(Actor), *Connection->GetDriver()->NetDriverName.ToString());
+		UE_CLOG(bLogAllErrors, LogNet, Warning, TEXT("%s was replicated only in the registered subobject list. Not in the legacy path."), *Info.Describe(Actor));
+	}
+
+	bErrorDetected |= DataChannelInternal::ReplicatedSubObjectsTracker.Num() != 0;
+
+	DataChannelInternal::LegacySubObjectsCollected.Reset();
+	DataChannelInternal::ReplicatedSubObjectsTracker.Reset();
+
+	return bErrorDetected;
+#else
+	return false;
+#endif
+}
 
 FString UActorChannel::Describe()
 {
@@ -3417,6 +3887,7 @@ void UActorChannel::Serialize(FArchive& Ar)
 		);
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingGuidResolves", PendingGuidResolves.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("CreateSubObjects", GetCreatedSubObjects().CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("QueuedMustBeMappedGuidsInLastBunch", QueuedMustBeMappedGuidsInLastBunch.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("QueuedExportBunches",
@@ -3430,6 +3901,7 @@ void UActorChannel::Serialize(FArchive& Ar)
 			}
 		);
 
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SubobjectRepKeyMap", SubobjectRepKeyMap.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SubobjectNakMap",
@@ -3441,6 +3913,9 @@ void UActorChannel::Serialize(FArchive& Ar)
 		);
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingObjKeys", PendingObjKeys.CountBytes(Ar));
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("QueuedBunchObjectReferences", QueuedBunchObjectReferences.CountBytes(Ar));
 	}
 }
 
@@ -3452,6 +3927,11 @@ void UActorChannel::PrepareForRemoteFunction(UObject* TargetObj)
 	{
 		FindOrCreateReplicator(TargetObj);
 	}
+}
+
+bool UActorChannel::IsActorReadyForReplication() const
+{ 
+	return (Actor ? (Actor->HasActorBegunPlay() || Actor->IsActorBeginningPlay()) : false); 
 }
 
 void UActorChannel::QueueRemoteFunctionBunch( UObject* CallTarget, UFunction* Func, FOutBunch &Bunch )
@@ -3551,7 +4031,12 @@ void UActorChannel::WriteContentBlockHeader( UObject* Obj, FNetBitWriter &Bunch,
 		}
 		else
 		{
+			// Not a stable name
 			Bunch.WriteBit( 0 );
+
+			// Not a destroy message
+			Bunch.WriteBit( 0 );
+
 			UClass *ObjClass = Obj->GetClass();
 			Bunch << ObjClass;
 
@@ -3599,11 +4084,13 @@ void UActorChannel::WriteContentBlockForSubObjectDelete( FOutBunch & Bunch, FNet
 	// Send a 0 bit to indicate that this is not a stably named object
 	Bunch.WriteBit( 0 );
 
-	//	-Invalid NetGUID (interpreted as delete)
-	FNetworkGUID InvalidNetGUID;
-	InvalidNetGUID.Reset();
-	Bunch << InvalidNetGUID;
-	NET_CHECKSUM(Bunch); // Matches checksum in UPackageMapClient::InternalWriteObject
+	// Send that this is a delete message
+	Bunch.WriteBit( 1 );
+
+	uint8 DeleteFlags = 0; // flags will be defined later
+	Bunch << DeleteFlags;
+
+	NET_CHECKSUM(Bunch); // Matches checksum in UPackageMapClient::ReadContentBlockHeader - DeleteSubObject message
 
 	// Since the subobject has been deleted, we don't have a valid object to pass to the profiler.
 	NETWORK_PROFILER(GNetworkProfiler.TrackBeginContentBlock(nullptr, Bunch.GetNumBits() - NumStartingBits, Connection));
@@ -3612,20 +4099,22 @@ void UActorChannel::WriteContentBlockForSubObjectDelete( FOutBunch & Bunch, FNet
 int32 UActorChannel::WriteContentBlockPayload( UObject* Obj, FNetBitWriter &Bunch, const bool bHasRepLayout, FNetBitWriter& Payload )
 {
 	const int32 StartHeaderBits = Bunch.GetNumBits();
+	
+	// Trace header
+	{
+		UE_NET_TRACE_SCOPE(ContentBlockHeader, Bunch, GetTraceCollector(Bunch), ENetTraceVerbosity::Trace);
 
-	WriteContentBlockHeader( Obj, Bunch, bHasRepLayout );
+		WriteContentBlockHeader( Obj, Bunch, bHasRepLayout );
 
-	uint32 NumPayloadBits = Payload.GetNumBits();
+		uint32 NumPayloadBits = Payload.GetNumBits();
 
-	Bunch.SerializeIntPacked( NumPayloadBits );
+		Bunch.SerializeIntPacked( NumPayloadBits );
+	}
 
 	const int32 HeaderNumBits = Bunch.GetNumBits() - StartHeaderBits;
 
-	// Trace header
-	UE_NET_TRACE(ContentBlockHeader, GetTraceCollector(Bunch), StartHeaderBits, Bunch.GetNumBits(), ENetTraceVerbosity::Trace);
-
 	// Inject payload events right after header
-	UE_NET_TRACE_EVENTS(GetTraceCollector(Bunch), GetTraceCollector(Payload));
+	UE_NET_TRACE_EVENTS(GetTraceCollector(Bunch), GetTraceCollector(Payload), Bunch);
 
 	Bunch.SerializeBits( Payload.GetData(), Payload.GetNumBits() );
 
@@ -3634,8 +4123,6 @@ int32 UActorChannel::WriteContentBlockPayload( UObject* Obj, FNetBitWriter &Bunc
 
 UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDeleted, bool& bOutHasRepLayout)
 {
-	using namespace UE::Net;
-
 	CA_ASSUME(Connection != nullptr);
 
 	const bool IsServer = Connection->Driver->IsServer();
@@ -3649,7 +4136,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 		AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderRepLayoutFail);
 
-		return NULL;
+		return nullptr;
 	}
 
 	const bool bIsActor = Bunch.ReadBit() != 0 ? true : false;
@@ -3660,7 +4147,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 		AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderIsActorFail);
 
-		return NULL;
+		return nullptr;
 	}
 
 	if (bIsActor)
@@ -3675,7 +4162,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 	// Note this heavily mirrors what happens in UPackageMapClient::SerializeNewActor
 	FNetworkGUID NetGUID;
-	UObject* SubObj = NULL;
+	UObject* SubObj = nullptr;
 
 	// Manually serialize the object so that we can get the NetGUID (in order to assign it if we spawn the object here)
 	Connection->PackageMap->SerializeObject(Bunch, UObject::StaticClass(), SubObj, &NetGUID);
@@ -3689,7 +4176,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 		Bunch.SetError();
 		AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderObjFail);
 
-		return NULL;
+		return nullptr;
 	}
 
 	if (Bunch.AtEnd())
@@ -3699,21 +4186,21 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 		Bunch.SetError();
 		AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderPrematureEnd);
 
-		return NULL;
+		return nullptr;
 	}
 
 	// Validate existing sub-object
-	if (SubObj != NULL)
+	if (SubObj)
 	{
 		// Sub-objects can't be actors (should just use an actor channel in this case)
-		if (Cast< AActor >(SubObj) != NULL)
+		if (Cast< AActor >(SubObj) != nullptr)
 		{
 			UE_LOG(LogNetTraffic, Error, TEXT("UActorChannel::ReadContentBlockHeader: Sub-object not allowed to be actor type. SubObj: %s, Actor: %s"), *SubObj->GetName(), *Actor->GetName());
 
 			Bunch.SetError();
 			AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderSubObjectActor);
 
-			return NULL;
+			return nullptr;
 		}
 
 		// Sub-objects must reside within their actor parents
@@ -3727,7 +4214,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 				Bunch.SetError();
 				AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderBadParent);
 
-				return NULL;
+				return nullptr;
 			}
 		}
 	}
@@ -3735,14 +4222,14 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 	if (IsServer)
 	{
 		// The server should never need to create sub objects
-		if (SubObj == NULL)
+		if (!SubObj)
 		{
 			UE_LOG(LogNetTraffic, Error, TEXT("ReadContentBlockHeader: Client attempted to create sub-object. Actor: %s"), *Actor->GetName());
 
 			Bunch.SetError();
 			AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderInvalidCreate);
 
-			return NULL;
+			return nullptr;
 		}
 
 		return SubObj;
@@ -3756,13 +4243,13 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 		AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderStablyNamedFail);
 
-		return NULL;
+		return nullptr;
 	}
 
 	if (bStablyNamed)
 	{
 		// If this is a stably named sub-object, we shouldn't need to create it. Don't raise a bunch error though because this may happen while a level is streaming out.
-		if (SubObj == NULL)
+		if (!SubObj)
 		{
 			// (ignore though if this is for replays)
 			if (!Connection->IsInternalAck())
@@ -3770,20 +4257,50 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 				UE_LOG(LogNetTraffic, Log, TEXT("ReadContentBlockHeader: Stably named sub-object not found. Its level may have streamed out. Component: %s, Actor: %s"), *Connection->Driver->GuidCache->FullNetGUIDPath(NetGUID), *Actor->GetName());
 			}
 
-			return NULL;
+			return nullptr;
 		}
 
 		return SubObj;
 	}
 
-	// Serialize the class in case we have to spawn it.
-	// Manually serialize the object so that we can get the NetGUID (in order to assign it if we spawn the object here)
-	FNetworkGUID ClassNetGUID;
-	UObject* SubObjClassObj = NULL;
-	Connection->PackageMap->SerializeObject(Bunch, UObject::StaticClass(), SubObjClassObj, &ClassNetGUID);
+	bool bDeleteSubObject = false;
+	bool bSerializeClass = true;
 
-	// Delete sub-object
-	if (!ClassNetGUID.IsValid())
+	if (Bunch.EngineNetVer() >= HISTORY_SUBOBJECT_DESTROY_FLAG)
+	{
+		const bool bIsDestroyMessage = Bunch.ReadBit() != 0 ? true : false;
+
+		if (bIsDestroyMessage)
+		{
+			bDeleteSubObject = true;
+			bSerializeClass = false;
+
+			uint8 DestroyFlags = 0;
+			Bunch << DestroyFlags;  // Destroy flags to be defined later
+
+			NET_CHECKSUM(Bunch);
+		}
+	}
+	else
+	{
+		bSerializeClass = true;
+	}
+	
+
+	UObject* SubObjClassObj = nullptr;
+	if (bSerializeClass)
+	{
+		// Serialize the class in case we have to spawn it.
+		// Manually serialize the object so that we can get the NetGUID (in order to assign it if we spawn the object here)
+		FNetworkGUID ClassNetGUID;
+		Connection->PackageMap->SerializeObject(Bunch, UObject::StaticClass(), SubObjClassObj, &ClassNetGUID);
+
+		// When ClassNetGUID is empty it means the sender requested to delete the subobject
+		bDeleteSubObject = !ClassNetGUID.IsValid();
+	}
+	
+
+	if (bDeleteSubObject)
 	{
 		if (SubObj)
 		{
@@ -3791,11 +4308,11 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 			MoveMappedObjectToUnmapped(SubObj);
 
 			// Stop tracking this sub-object
-			CreateSubObjects.Remove(SubObj);
+			GetCreatedSubObjects().Remove(SubObj);
 
 			if (Connection != nullptr && Connection->Driver != nullptr)
 			{
-				Connection->Driver->RepChangedPropertyTrackerMap.Remove(SubObj);
+				Connection->Driver->NotifySubObjectDestroyed(SubObj);
 			}
 
 			Actor->OnSubobjectDestroyFromReplication(SubObj);
@@ -3804,17 +4321,17 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 			SubObj->MarkAsGarbage();
 		}
 		bObjectDeleted = true;
-		return NULL;
+		return nullptr;
 	}
 
 	UClass* SubObjClass = Cast< UClass >(SubObjClassObj);
 
-	if (SubObjClass == NULL)
+	if (!SubObjClass)
 	{
 		UE_LOG(LogNetTraffic, Warning, TEXT("UActorChannel::ReadContentBlockHeader: Unable to read sub-object class. Actor: %s"), *Actor->GetName());
 
 		// Valid NetGUID but no class was resolved - this is an error
-		if (SubObj == NULL)
+		if (!SubObj)
 		{
 			// (unless we're using replays, which could be backwards compatibility kicking in)
 			if (!Connection->IsInternalAck())
@@ -3823,7 +4340,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 				Bunch.SetError();
 				AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderNoSubObjectClass);
-				return NULL;
+				return nullptr;
 			}
 		}
 	}
@@ -3836,7 +4353,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 			Bunch.SetError();
 			AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderUObjectSubObject);
 
-			return NULL;
+			return nullptr;
 		}
 
 		if (SubObjClass->IsChildOf(AActor::StaticClass()))
@@ -3846,12 +4363,12 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 			Bunch.SetError();
 			AddToChainResultPtr(Bunch.ExtendedError, ENetCloseResult::ContentBlockHeaderAActorSubObject);
 
-			return NULL;
+			return nullptr;
 		}
 	}
 
 	UObject* ObjOuter = Actor;
-	if (Connection->EngineNetworkProtocolVersion >= HISTORY_SUBOBJECT_OUTER_CHAIN)
+	if (Bunch.EngineNetVer() >= HISTORY_SUBOBJECT_OUTER_CHAIN)
 	{
 		const bool bActorIsOuter = Bunch.ReadBit() != 0;
 
@@ -3877,7 +4394,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 				// When replicating subobjects, the engine will by default replicate lower subobjects before their outers, using the owning actor as the outer on the client.
 				// To have a chain of subobjects maintain their correct outers on the client, the subobjects should be replicated top-down, so the outers are received before any subobjects they own.
 				UE_LOG(LogNetTraffic, Log, TEXT("UActorChannel::ReadContentBlockHeader: Unable to serialize subobject's outer, using owning actor as outer instead. Class: %s, Actor: %s"), *GetNameSafe(SubObjClass), *GetNameSafe(Actor));
-
+				
 				ObjOuter = Actor;
 			}
 		}
@@ -3889,7 +4406,7 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 		return nullptr;
 	}
 
-	if ( SubObj == NULL )
+	if (!SubObj)
 	{
 		check( !IsServer );
 
@@ -3899,9 +4416,9 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 		SubObj = NewObject< UObject >(ObjOuter, SubObjClass);
 
 		// Sanity check some things
-		checkf(SubObj != NULL, TEXT("UActorChannel::ReadContentBlockHeader: Subobject is NULL after instantiating. Class: %s, Actor %s"), *GetNameSafe(SubObjClass), *Actor->GetName());
+		checkf(SubObj != nullptr, TEXT("UActorChannel::ReadContentBlockHeader: Subobject is NULL after instantiating. Class: %s, Actor %s"), *GetNameSafe(SubObjClass), *Actor->GetName());
 		checkf(SubObj->IsIn(ObjOuter), TEXT("UActorChannel::ReadContentBlockHeader: Subobject is not in Outer. SubObject: %s, Actor: %s, Outer: %s"), *SubObj->GetName(), *Actor->GetName(), *ObjOuter->GetName());
-		checkf(Cast< AActor >(SubObj) == NULL, TEXT("UActorChannel::ReadContentBlockHeader: Subobject is an Actor. SubObject: %s, Actor: %s"), *SubObj->GetName(), *Actor->GetName());
+		checkf(Cast< AActor >(SubObj) == nullptr, TEXT("UActorChannel::ReadContentBlockHeader: Subobject is an Actor. SubObject: %s, Actor: %s"), *SubObj->GetName(), *Actor->GetName());
 
 		// Notify actor that we created a component from replication
 		Actor->OnSubobjectCreatedFromReplication( SubObj );
@@ -3910,13 +4427,14 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 		Connection->Driver->GuidCache->RegisterNetGUID_Client( NetGUID, SubObj );
 
 		// Track which sub-object guids we are creating
-		CreateSubObjects.Add( SubObj );
+		GetCreatedSubObjects().Add( SubObj );
 
 		// Add this sub-object to the ImportedNetGuids list so we can possibly map this object if needed
 		if (ensureMsgf(NetGUID.IsValid(), TEXT("Channel tried to add an invalid GUID to the import list: %s"), *Describe()))
 		{
-		Connection->Driver->GuidCache->ImportedNetGuids.Add( NetGUID );
-	}
+			LLM_SCOPE_BYTAG(GuidCache);
+			Connection->Driver->GuidCache->ImportedNetGuids.Add( NetGUID );
+		}
 	}
 
 	return SubObj;
@@ -3924,8 +4442,6 @@ UObject* UActorChannel::ReadContentBlockHeader(FInBunch& Bunch, bool& bObjectDel
 
 UObject* UActorChannel::ReadContentBlockPayload( FInBunch &Bunch, FNetBitReader& OutPayload, bool& bOutHasRepLayout )
 {
-	using namespace UE::Net;
-
 	const int32 StartHeaderBits = Bunch.GetPosBits();
 	bool bObjectDeleted = false;
 	UObject* RepObj = ReadContentBlockHeader( Bunch, bObjectDeleted, bOutHasRepLayout );
@@ -4003,18 +4519,16 @@ int32 UActorChannel::WriteFieldHeaderAndPayload( FNetBitWriter& Bunch, const FCl
 
 	UE_NET_TRACE(FieldHeader, GetTraceCollector(Bunch), NumOriginalBits, Bunch.GetNumBits(), ENetTraceVerbosity::Trace);
 
-	Bunch.SerializeBits( Payload.GetData(), NumPayloadBits );
-
 	// Inject trace data from payload stream	
-	UE_NET_TRACE_EVENTS(GetTraceCollector(Bunch), GetTraceCollector(Payload));
+	UE_NET_TRACE_EVENTS(GetTraceCollector(Bunch), GetTraceCollector(Payload), Bunch);
+
+	Bunch.SerializeBits( Payload.GetData(), NumPayloadBits );
 
 	return Bunch.GetNumBits() - NumOriginalBits;
 }
 
 bool UActorChannel::ReadFieldHeaderAndPayload( UObject* Object, const FClassNetCache* ClassCache, FNetFieldExportGroup* NetFieldExportGroup, FNetBitReader& Bunch, const FFieldNetCache** OutField, FNetBitReader& OutPayload ) const
 {
-	using namespace UE::Net;
-
 	*OutField = nullptr;
 
 	if ( Bunch.GetBitsLeft() == 0 )
@@ -4224,7 +4738,6 @@ FObjectReplicator & UActorChannel::GetActorReplicationData()
 TSharedRef<FObjectReplicator>* UActorChannel::FindReplicator(UObject* Obj, bool* bOutFoundInvalid)
 {
 	CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat_ActorChanFindOrCreateRep, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
-	SCOPE_CYCLE_UOBJECT(ActorChannelFindOrCreateRep, Obj);
 
 	// First, try to find it on the channel replication map
 	TSharedRef<FObjectReplicator>* ReplicatorRefPtr = ReplicationMap.Find( Obj );
@@ -4248,17 +4761,22 @@ TSharedRef<FObjectReplicator>* UActorChannel::FindReplicator(UObject* Obj, bool*
 TSharedRef<FObjectReplicator>& UActorChannel::CreateReplicator(UObject* Obj, bool bCheckDormantReplicators)
 {
 	CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat_ActorChanFindOrCreateRep, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
-	SCOPE_CYCLE_UOBJECT(ActorChannelFindOrCreateRep, Obj);
 
 	// Try to find in the dormancy map if desired
 	TSharedPtr<FObjectReplicator> NewReplicator;
-	TSharedRef<FObjectReplicator>* ReplicatorRefPtr = (bCheckDormantReplicators ? Connection->DormantReplicatorMap.Find(Obj) : nullptr);
+	if (bCheckDormantReplicators)
+	{
+		NewReplicator = Connection->FindAndRemoveDormantReplicator(Obj);
+	}
+	else
+	{
+		Connection->FindAndRemoveDormantReplicator(Obj); // Discard dormant replicator if there was one that we're not using;
+	}
 
 	// Check if we found it and that it is has a valid object
-	if ( ReplicatorRefPtr != nullptr && ReplicatorRefPtr->Get().GetWeakObjectPtr().IsValid() )
+	if(NewReplicator.IsValid())
 	{
 		UE_LOG( LogNetTraffic, Log, TEXT( "Found existing replicator for %s" ), *Obj->GetName() );
-		NewReplicator = *ReplicatorRefPtr;
 	}
 	else
 	{
@@ -4269,9 +4787,6 @@ TSharedRef<FObjectReplicator>& UActorChannel::CreateReplicator(UObject* Obj, boo
 
 	// Add to the replication map
 	TSharedRef<FObjectReplicator>& NewRef = ReplicationMap.Add(Obj, NewReplicator.ToSharedRef());
-
-	// Remove from dormancy map in case we found it there
-	Connection->DormantReplicatorMap.Remove(Obj);
 
 	// Start replicating with this replicator
 	NewRef->StartReplicating(this);
@@ -4304,16 +4819,26 @@ bool UActorChannel::ObjectHasReplicator(const TWeakObjectPtr<UObject>& Obj) cons
 	return ReplicatorRefPtr != nullptr && Obj == ReplicatorRefPtr->Get().GetWeakObjectPtr();
 }
 
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 bool UActorChannel::KeyNeedsToReplicate(int32 ObjID, int32 RepKey)
 {
+	if (bPendingDormancy)
+	{
+		// Return true to keep the channel from being stuck unable to go dormant until the key changes
+		return true;
+	}
+
 	int32 &MapKey = SubobjectRepKeyMap.FindOrAdd(ObjID);
 	if (MapKey == RepKey)
+	{ 
 		return false;
+	}
 
 	MapKey = RepKey;
 	PendingObjKeys.Add(ObjID);
 	return true;
 }
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 
 void UActorChannel::AddedToChannelPool()
 {
@@ -4327,7 +4852,8 @@ void UActorChannel::AddedToChannelPool()
 	check(QueuedMustBeMappedGuidsInLastBunch.Num() == 0);
 	check(QueuedExportBunches.Num() == 0);
 
-	Actor = nullptr;
+	ReleaseReferences(false);
+
 	ActorNetGUID = FNetworkGUID();
 	CustomTimeDilation = 0;
 	RelevantTime = 0;
@@ -4340,26 +4866,37 @@ void UActorChannel::AddedToChannelPool()
 	bClearRecentActorRefs = true;
 	QueuedBunchStartTime = 0;
 	bSuppressQueuedBunchWarningsDueToHitches = false;
-	CreateSubObjects.Empty();
 #if !UE_BUILD_SHIPPING
 	bBlockChannelFailure = false;
 #endif
 	QueuedCloseReason = EChannelCloseReason::Destroyed;
+
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 	SubobjectRepKeyMap.Empty();
 	SubobjectNakMap.Empty();
 	PendingObjKeys.Empty();
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 }
 
-bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FReplicationFlags &RepFlags)
+bool UActorChannel::WriteSubObjectInBunch(UObject* Obj, FOutBunch& Bunch, FReplicationFlags RepFlags)
 {
-	SCOPE_CYCLE_UOBJECT(ActorChannelRepSubObj, Obj);
-
 	if (!IsValid(Obj))
 	{
 		return false;
 	}
 
-	if (RepFlags.bUseCustomSubobjectReplication)
+	check(DataChannelInternal::bTestingLegacyMethodForComparison == false);
+
+    SCOPE_CYCLE_UOBJECT(ActorChannelRepSubObj, Obj);
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+	if (DataChannelInternal::bTrackReplicatedSubObjects)
+	{
+		DataChannelInternal::ReplicatedSubObjectsTracker.Emplace(DataChannelInternal::FSubObjectReplicatedInfo(Obj));
+	}
+#endif
+
+    if (RepFlags.bUseCustomSubobjectReplication)
 	{
 		return ReplicateSubobjectCustom(Obj, Bunch, RepFlags);
 	}
@@ -4367,8 +4904,14 @@ bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FRe
 	bool bFoundInvalidReplicator = false;
 	TSharedRef<FObjectReplicator>* FoundReplicator = FindReplicator(Obj, &bFoundInvalidReplicator);
 	const bool bFoundReplicator = (FoundReplicator != nullptr);
-	
-	if (bFoundReplicator && (*FoundReplicator)->CanSkipUpdate(RepFlags))
+
+	// Special case for replay checkpoints where the replicator could already exist but we still need to consider this a new object even if it has an empty layout
+	const bool bNewToReplay = (Connection->ResendAllDataState == EResendAllDataState::SinceOpen)
+		|| ((Connection->ResendAllDataState == EResendAllDataState::SinceCheckpoint) && (!bFoundReplicator || (*FoundReplicator)->IsDirtyForReplay()));
+
+	const bool bCanSkipUpdate = bFoundReplicator && !bNewToReplay && (*FoundReplicator)->CanSkipUpdate(RepFlags);
+
+	if (!UE::Net::bPushModelValidateSkipUpdate && bCanSkipUpdate)
 	{
 		return false;
 	}
@@ -4381,13 +4924,15 @@ bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FRe
 	// Once we can lazily handle unmapped references on the client side, this can be simplified.
 	if ( !Connection->Driver->GuidCache->SupportsObject( Obj, &WeakObj ) )
 	{
-		Connection->Driver->GuidCache->AssignNewNetGUID_Server( Obj );	//Make sure he gets a NetGUID so that he is now 'supported'
+		Connection->Driver->GuidCache->AssignNewNetGUID_Server( Obj );	//Make sure it gets a NetGUID so that it is now 'supported'
 	}
 
 	bool NewSubobject = false;
 	
+	FReplicationFlags ObjRepFlags = RepFlags;
 	TSharedRef<FObjectReplicator>& ObjectReplicator = !bFoundReplicator ? CreateReplicator(Obj, !bFoundInvalidReplicator) : *FoundReplicator;
-	if (!bFoundReplicator)
+
+	if (!bFoundReplicator || bNewToReplay)
 	{
 		// This is the first time replicating this subobject
 		// This bunch should be reliable and we should always return true
@@ -4396,9 +4941,13 @@ bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FRe
 		// to spawn this on the client).
 		Bunch.bReliable = true;
 		NewSubobject = true;
+		if (UE::Net::bEnableNetInitialSubObjects)
+		{
+			ObjRepFlags.bNetInitial = true;
+		}	
 	}
 	UE_NET_TRACE_OBJECT_SCOPE(ObjectReplicator->ObjectNetGUID, Bunch, GetTraceCollector(Bunch), ENetTraceVerbosity::Trace);
-	bool bWroteSomething = ObjectReplicator.Get().ReplicateProperties(Bunch, RepFlags);
+	bool bWroteSomething = ObjectReplicator.Get().ReplicateProperties(Bunch, ObjRepFlags);
 	if (NewSubobject && !bWroteSomething)
 	{
 		// Write empty payload to force object creation
@@ -4406,6 +4955,8 @@ bool UActorChannel::ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FRe
 		WriteContentBlockPayload( Obj, Bunch, false, EmptyPayload );
 		bWroteSomething = true;
 	}
+
+	ensureMsgf(!UE::Net::bPushModelValidateSkipUpdate || !bCanSkipUpdate || !bWroteSomething, TEXT("Subobject wrote data but we thought it was skippable: %s Actor: %s"), *GetFullNameSafe(Obj), *GetFullNameSafe(Actor));
 
 	return bWroteSomething;
 }

@@ -65,7 +65,7 @@ ADisplayClusterRootActor* FDisplayClusterViewportConfiguration::GetRootActor() c
 	return nullptr;
 }
 
-bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, const FDisplayClusterPreviewSettings* InPreviewSettings)
+bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, const FDisplayClusterPreviewSettings* InPreviewSettings, const TArray<FString>* InViewportNames)
 {
 	check(IsInGameThread());
 
@@ -105,6 +105,12 @@ bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClust
 
 				RenderFrameSettings.bIsRenderingInEditor = true;
 				RenderFrameSettings.bIsPreviewRendering = true;
+				
+				if (InPreviewSettings->bIsPIE)
+				{
+					// Allow TextureShare+nDisplay from PIE
+					RenderFrameSettings.bIsPreviewRendering = false;
+				}
 			}
 			else
 			{
@@ -114,13 +120,21 @@ bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClust
 				RenderFrameSettings.bIsPreviewRendering = false;
 			}
 
-			ConfigurationBase.Update(InClusterNodeId);
+			if (InViewportNames)
+			{
+				ConfigurationBase.Update(*InViewportNames, RenderFrameSettings);
+			}
+			else
+			{
+				ConfigurationBase.Update(InClusterNodeId);
+			}
+
 			ConfigurationICVFX.Update();
 			ConfigurationProjectionPolicy.Update();
 			ConfigurationICVFX.PostUpdate();
 
 #if WITH_EDITOR
-			if (InPreviewSettings != nullptr && !InPreviewSettings->bIsPIE)
+			if (RenderFrameSettings.bIsPreviewRendering)
 			{
 				ConfigurationICVFX.PostUpdatePreview_Editor(*InPreviewSettings);
 			}
@@ -128,7 +142,11 @@ bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClust
 
 			ImplUpdateConfigurationVisibility(*RootActor, *ConfigurationData);
 
-			ConfigurationBase.UpdateClusterNodePostProcess(InClusterNodeId, RenderFrameSettings);
+			if (!InClusterNodeId.IsEmpty())
+			{
+				// support postprocess only for per-node render
+				ConfigurationBase.UpdateClusterNodePostProcess(InClusterNodeId, RenderFrameSettings);
+			}
 
 			ImplPostUpdateRenderFrameConfiguration();
 
@@ -141,7 +159,12 @@ bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClust
 
 bool FDisplayClusterViewportConfiguration::UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId)
 {
-	return ImplUpdateConfiguration(InRenderMode, InClusterNodeId, nullptr);
+	return ImplUpdateConfiguration(InRenderMode, InClusterNodeId, nullptr, nullptr);
+}
+
+bool FDisplayClusterViewportConfiguration::UpdateCustomConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const TArray<FString>& InViewportNames)
+{
+	return ImplUpdateConfiguration(InRenderMode, TEXT(""), nullptr, &InViewportNames);
 }
 
 #if WITH_EDITOR
@@ -162,7 +185,7 @@ bool FDisplayClusterViewportConfiguration::UpdatePreviewConfiguration(EDisplayCl
 				ConfigurationData->Cluster->GetNodeIds(ClusterNodesIDs);
 				for (const FString& ClusterNodeIdIt : ClusterNodesIDs)
 				{
-					ImplUpdateConfiguration(InRenderMode, ClusterNodeIdIt, &InPreviewSettings);
+					ImplUpdateConfiguration(InRenderMode, ClusterNodeIdIt, &InPreviewSettings, nullptr);
 				}
 
 				// all cluster nodes viewports updated
@@ -173,7 +196,7 @@ bool FDisplayClusterViewportConfiguration::UpdatePreviewConfiguration(EDisplayCl
 		return false;
 	}
 
-	return ImplUpdateConfiguration(InRenderMode, InClusterNodeId, &InPreviewSettings);
+	return ImplUpdateConfiguration(InRenderMode, InClusterNodeId, &InPreviewSettings, nullptr);
 }
 #endif
 

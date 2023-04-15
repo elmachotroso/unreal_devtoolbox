@@ -37,6 +37,8 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DynamicMeshSculptTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UDynamicMeshSculptTool"
@@ -143,7 +145,8 @@ void UDynamicMeshSculptTool::Setup()
 	PendingTargetUpdate.Wait();
 
 	// initialize brush radius range interval, brush properties
-	double MaxDimension = DynamicMeshComponent->GetMesh()->GetBounds(true).MaxDim();
+	FAxisAlignedBox3d Bounds = DynamicMeshComponent->GetMesh()->GetBounds(true);
+	double MaxDimension = Bounds.MaxDim();
 	BrushRelativeSizeRange = FInterval1d(MaxDimension*0.01, MaxDimension);
 	BrushProperties = NewObject<UDynamicMeshBrushProperties>(this);
 	BrushProperties->BrushSize.InitializeWorldSizeRange(
@@ -194,6 +197,7 @@ void UDynamicMeshSculptTool::Setup()
 	GizmoProperties = NewObject<UFixedPlaneBrushProperties>();
 	GizmoProperties->RestoreProperties(this);
 	AddToolPropertySource(GizmoProperties);
+	GizmoProperties->RecenterGizmoIfFar(CurTargetTransform.TransformPosition(Bounds.Center()), Bounds.MaxDim());
 
 	if (this->bEnableRemeshing)
 	{
@@ -342,6 +346,19 @@ void UDynamicMeshSculptTool::OnPropertyModified(UObject* PropertySet, FProperty*
 {
 	CalculateBrushRadius();
 }
+
+
+FBox UDynamicMeshSculptTool::GetWorldSpaceFocusBox()
+{
+	if (LastBrushTriangleID == INDEX_NONE)
+	{
+		return Super::GetWorldSpaceFocusBox();
+	}
+	FVector Center = LastBrushPosWorld;
+	double Size = CurrentBrushRadius;
+	return FBox(Center - FVector(Size), Center + FVector(Size));
+}
+
 
 bool UDynamicMeshSculptTool::HitTest(const FRay& Ray, FHitResult& OutHit)
 {
@@ -2195,6 +2212,10 @@ UPreviewMesh* UDynamicMeshSculptTool::MakeDefaultSphereMesh(UObject* Parent, UWo
 		SphereMesh->SetMaterial(BrushIndicatorMaterial);
 	}
 
+	// make sure raytracing is disabled on the brush indicator
+	Cast<UDynamicMeshComponent>(SphereMesh->GetRootComponent())->SetEnableRaytracing(false);
+	SphereMesh->SetShadowsEnabled(false);
+
 	return SphereMesh;
 }
 
@@ -2676,3 +2697,4 @@ void UDynamicMeshSculptTool::DiscardAttributes()
 }
 
 #undef LOCTEXT_NAMESPACE
+

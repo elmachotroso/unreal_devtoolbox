@@ -3,6 +3,8 @@
 #include "InsightsSkeletalMeshComponent.h"
 #include "IAnimationProvider.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InsightsSkeletalMeshComponent)
+
 void UInsightsSkeletalMeshComponent::SetPoseFromProvider(const IAnimationProvider& InProvider, const FSkeletalMeshPoseMessage& InMessage, const FSkeletalMeshInfo& SkeletalMeshInfo)
 {
 	// Grab transform and bone transforms from provider
@@ -29,9 +31,9 @@ void UInsightsSkeletalMeshComponent::SetPoseFromProvider(const IAnimationProvide
 
 void UInsightsSkeletalMeshComponent::InitAnim(bool bForceReInit)
 {
-	if(SkeletalMesh)
+	if(GetSkeletalMeshAsset())
 	{
-		const FReferenceSkeleton& SkeletalMeshRefSkeleton = SkeletalMesh->GetRefSkeleton();
+		const FReferenceSkeleton& SkeletalMeshRefSkeleton = GetSkeletalMeshAsset()->GetRefSkeleton();
 		// set up bone visibility states as this gets skipped since we allocate the component array before registration
 		for (int32 BaseIndex = 0; BaseIndex < 2; ++BaseIndex)
 		{
@@ -42,5 +44,7 @@ void UInsightsSkeletalMeshComponent::InitAnim(bool bForceReInit)
 				BoneVisibilityStates[BaseIndex][BoneIndex] = BVS_Visible;
 			}
 		}
+
+		MorphTargetWeights.SetNumZeroed(GetSkeletalMeshAsset()->GetMorphTargets().Num());
 	}
 }

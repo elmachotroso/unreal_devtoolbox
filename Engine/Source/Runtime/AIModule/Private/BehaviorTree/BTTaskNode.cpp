@@ -5,11 +5,14 @@
 #include "VisualLogger/VisualLogger.h"
 #include "GameplayTasksComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BTTaskNode)
+
 UBTTaskNode::UBTTaskNode(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
 	bNotifyTick = false;
 	bNotifyTaskFinished = false;
 	bIgnoreRestartSelf = false;
+	bTickIntervals = false;
 }
 
 EBTNodeResult::Type UBTTaskNode::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
@@ -20,6 +23,15 @@ EBTNodeResult::Type UBTTaskNode::ExecuteTask(UBehaviorTreeComponent& OwnerComp, 
 EBTNodeResult::Type UBTTaskNode::AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
 	return EBTNodeResult::Aborted;
+}
+
+void UBTTaskNode::SetNextTickTime(uint8* NodeMemory, float RemainingTime) const
+{
+	if (bTickIntervals)
+	{
+		FBTTaskMemory* TaskMemory = GetSpecialNodeMemory<FBTTaskMemory>(NodeMemory);
+		TaskMemory->NextTickRemainingTime = RemainingTime;
+	}
 }
 
 EBTNodeResult::Type UBTTaskNode::WrappedExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) const
@@ -41,12 +53,40 @@ bool UBTTaskNode::WrappedTickTask(UBehaviorTreeComponent& OwnerComp, uint8* Node
 {
 	if (bNotifyTick)
 	{
-		const UBTNode* NodeOb = bCreateNodeInstance ? GetNodeInstance(OwnerComp, NodeMemory) : this;
+		const UBTTaskNode* NodeOb = bCreateNodeInstance ? static_cast<UBTTaskNode*>(GetNodeInstance(OwnerComp, NodeMemory)) : this;
 		if (NodeOb)
 		{
-			((UBTTaskNode*)NodeOb)->TickTask(OwnerComp, NodeMemory, DeltaSeconds);
-			NextNeededDeltaTime = 0.0f;
-			return true;
+			if (NodeOb->bTickIntervals)
+			{
+				FBTTaskMemory* TaskMemory = GetSpecialNodeMemory<FBTTaskMemory>(NodeMemory);
+				TaskMemory->NextTickRemainingTime -= DeltaSeconds;
+				TaskMemory->AccumulatedDeltaTime += DeltaSeconds;
+
+				const bool bTick = TaskMemory->NextTickRemainingTime <= 0.0f;
+				if (bTick)
+				{
+				    const float UseDeltaTime = TaskMemory->AccumulatedDeltaTime;
+				    TaskMemory->AccumulatedDeltaTime = 0.0f;
+					TaskMemory->NextTickRemainingTime = 0.0f;
+    
+					UE_VLOG(OwnerComp.GetOwner(), LogBehaviorTree, Verbose, TEXT("Ticking aux node: %s"), *UBehaviorTreeTypes::DescribeNodeHelper(this));
+
+					const_cast<UBTTaskNode*>(NodeOb)->TickTask(OwnerComp, NodeMemory, UseDeltaTime);
+				}
+
+				if (TaskMemory->NextTickRemainingTime < NextNeededDeltaTime)
+				{
+					NextNeededDeltaTime = TaskMemory->NextTickRemainingTime;
+				}
+
+				return bTick;
+			}
+			else
+			{
+				const_cast<UBTTaskNode*>(NodeOb)->TickTask(OwnerComp, NodeMemory, DeltaSeconds);
+				NextNeededDeltaTime = 0.0f;
+				return true;
+			}
 		}
 	}
 	return false;
@@ -148,6 +188,11 @@ void UBTTaskNode::StopWaitingForMessages(UBehaviorTreeComponent& OwnerComp) cons
 	OwnerComp.UnregisterMessageObserversFrom(this);
 }
 
+uint16 UBTTaskNode::GetSpecialMemorySize() const
+{
+	return bTickIntervals ? sizeof(FBTTaskMemory) : Super::GetSpecialMemorySize();
+}
+
 #if WITH_EDITOR
 
 FName UBTTaskNode::GetNodeIconName() const
@@ -174,3 +219,4 @@ void UBTTaskNode::OnGameplayTaskDeactivated(UGameplayTask& Task)
 //----------------------------------------------------------------------//
 // DEPRECATED
 //----------------------------------------------------------------------//
+

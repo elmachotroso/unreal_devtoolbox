@@ -9,10 +9,6 @@ public class OnlineSubsystemTencent : ModuleRules
 	{
 		PrivateDefinitions.Add("ONLINESUBSYSTEM_TENCENT_PACKAGE=1");
 
-		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-
-		PrivateIncludePaths.Add("Private");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",

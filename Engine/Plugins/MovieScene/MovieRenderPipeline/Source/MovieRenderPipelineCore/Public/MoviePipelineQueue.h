@@ -7,12 +7,34 @@
 #include "MoviePipelineMasterConfig.h"
 #include "MoviePipelineShotConfig.h"
 #include "MoviePipelineConfigBase.h"
+#include "MovieSceneSequenceID.h"
 
 #include "MoviePipelineQueue.generated.h"
 
 class UMoviePipelineMasterConfig;
 class ULevel;
 class ULevelSequence;
+
+USTRUCT(BlueprintType)
+struct MOVIERENDERPIPELINECORE_API FMoviePipelineSidecarCamera
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movie Render Pipeline")
+	FGuid BindingId;
+
+	// FMovieSceneSequenceID isn't exposed to Blueprints and we need the full support
+	// of a FMovieSceneSequenceID so we can't just store a USequence* like the scripting
+	// layer does - we need to be able to handle the same sequence being in a sequence
+	// multiple times (which scripting does not). This data structure gets regenerated
+	// each time a render starts, so the property should be valid when we want to use
+	// it, even if it's not exposed to scripting.
+	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movie Render Pipeline")
+	FMovieSceneSequenceID SequenceId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movie Render Pipeline")
+	FString Name;
+};
 
 /**
 * This class represents a segment of work within the Executor Job. This should be owned
@@ -116,6 +138,15 @@ public:
 		return bEnabled;
 	}
 
+	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
+	FString GetCameraName(int32 InCameraIndex) const
+	{
+		if (InCameraIndex >= 0 && InCameraIndex < SidecarCameras.Num())
+		{
+			return SidecarCameras[InCameraIndex].Name;
+		}
+		return InnerName;
+	}
 protected:
 	// UMoviePipipelineExecutorShot Interface
 	virtual void SetStatusMessage_Implementation(const FString& InMessage) { StatusMessage = InMessage; }
@@ -137,10 +168,13 @@ public:
 	/** The name of the camera cut section that this shot represents. Can be empty. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
 	FString InnerName;
+
+	/** List of cameras to render for this shot. Only used if the setting flag is set in the Camera setting. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
+	TArray<FMoviePipelineSidecarCamera> SidecarCameras;
 public:
 	/** Transient information used by the active Movie Pipeline working on this shot. */
 	FMoviePipelineCameraCutInfo ShotInfo;
-
 
 protected:
 	UPROPERTY(Transient)
@@ -150,7 +184,7 @@ protected:
 
 private:
 	UPROPERTY()
-	UMoviePipelineShotConfig* ShotOverrideConfig;
+	TObjectPtr<UMoviePipelineShotConfig> ShotOverrideConfig;
 
 	UPROPERTY()
 	TSoftObjectPtr<UMoviePipelineShotConfig> ShotOverridePresetOrigin;
@@ -166,6 +200,7 @@ class MOVIERENDERPIPELINECORE_API UMoviePipelineExecutorJob : public UObject
 public:
 	UMoviePipelineExecutorJob()
 	{
+		bEnabled = true;
 		StatusProgress = 0.f;
 		bIsConsumed = false;
 		Configuration = CreateDefaultSubobject<UMoviePipelineMasterConfig>("DefaultConfig");
@@ -263,6 +298,32 @@ public:
 	bool IsConsumed() const;
 
 	/**
+	* Set the job to be enabled/disabled. This is exposed to the user in the Queue UI
+	* so they can disable a job after loading a queue to skip trying to run it.
+	*
+	* For C++ implementations override `virtual void SetIsEnabled_Implementation() override`
+	* For Python/BP implementations override
+	*	@unreal.ufunction(override=True)
+	*	def set_is_enabled(self, isEnabled):
+	*
+	* @param bInEnabled	True if the job should be enabled and rendered.
+	*/
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Movie Render Pipeline")
+	void SetIsEnabled(const bool bInEnabled);
+
+	/**
+	* Gets whether or not the job has been marked as being enabled. 
+	*
+	* For C++ implementations override `virtual bool IsEnabled_Implementation() const override`
+	* For Python/BP implementations override
+	*	@unreal.ufunction(override=True)
+	*	def is_enabled(self):
+	*		return ?
+	*/
+	UFUNCTION(BlueprintPure, BlueprintNativeEvent, Category = "Movie Render Pipeline")
+	bool IsEnabled() const;
+
+	/**
 	* Should be called to clear status and user data after duplication so that jobs stay
 	* unique and don't pick up ids or other unwanted behavior from the pareant job.
 	*
@@ -278,9 +339,9 @@ public:
 	void SetPresetOrigin(UMoviePipelineMasterConfig* InPreset);
 
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
-	UMoviePipelineMasterConfig* GetPresetOrigin() const
+	UMoviePipelineMasterConfig* GetPresetOrigin() const 
 	{
-		return PresetOrigin.Get();
+		return PresetOrigin.LoadSynchronous();
 	}
 
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
@@ -311,6 +372,8 @@ protected:
 	virtual float GetStatusProgress_Implementation() const { return StatusProgress; }
 	virtual bool IsConsumed_Implementation() const { return bIsConsumed; }
 	virtual void OnDuplicated_Implementation();
+	virtual void SetIsEnabled_Implementation(const bool bInEnabled) { bEnabled = bInEnabled; }
+	virtual bool IsEnabled_Implementation() const { return bEnabled; }
 	// ~UMoviePipelineExecutorJob Interface
 
 public:
@@ -319,20 +382,24 @@ public:
 	FString JobName;
 
 	/** Which sequence should this job render? */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, BlueprintSetter = "SetSequence", Category = "Movie Render Pipeline", meta = (AllowedClasses = "LevelSequence"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, BlueprintSetter = "SetSequence", Category = "Movie Render Pipeline", meta = (AllowedClasses = "/Script/LevelSequence.LevelSequence"))
 	FSoftObjectPath Sequence;
 
 	/** Which map should this job render on */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline", meta = (AllowedClasses = "World"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline", meta = (AllowedClasses = "/Script/Engine.World"))
 	FSoftObjectPath Map;
 
 	/** (Optional) If left blank, will default to system username. Can be shown in burn in as a first point of contact about the content. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
 	FString Author;
+	
+	/** (Optional) If specified, will be shown in the burn in to allow users to keep track of notes about a render. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline", meta = (MultiLine = true))
+	FString Comment;
 
 	/** (Optional) Shot specific information. If a shot is missing from this list it will assume to be enabled and will be rendered. */
 	UPROPERTY(BlueprintReadWrite, Instanced, Category = "Movie Render Pipeline")
-	TArray<UMoviePipelineExecutorShot*> ShotInfo;
+	TArray<TObjectPtr<UMoviePipelineExecutorShot>> ShotInfo;
 
 	/** 
 	* Arbitrary data that can be associated with the job. Not used by default implementations, nor read.
@@ -352,12 +419,16 @@ private:
 	/** 
 	*/
 	UPROPERTY(Instanced)
-	UMoviePipelineMasterConfig* Configuration;
+	TObjectPtr<UMoviePipelineMasterConfig> Configuration;
 
 	/**
 	*/
 	UPROPERTY()
 	TSoftObjectPtr<UMoviePipelineMasterConfig> PresetOrigin;
+
+	/** Whether this job is enabled and should be rendered. */
+	UPROPERTY()
+	bool bEnabled;
 };
 
 /**
@@ -449,7 +520,7 @@ public:
 
 private:
 	UPROPERTY(Instanced)
-	TArray<UMoviePipelineExecutorJob*> Jobs;
+	TArray<TObjectPtr<UMoviePipelineExecutorJob>> Jobs;
 	
 private:
 	int32 QueueSerialNumber;

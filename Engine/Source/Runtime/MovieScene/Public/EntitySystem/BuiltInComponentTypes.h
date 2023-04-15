@@ -2,31 +2,48 @@
 
 #pragma once
 
-#include "EntitySystem/MovieSceneEntityManager.h"
-#include "UObject/GCObjectScopeGuard.h"
+#include "CoreTypes.h"
 #include "EntitySystem/MovieSceneBlenderSystemTypes.h"
 #include "EntitySystem/MovieSceneEntityIDs.h"
+#include "EntitySystem/MovieSceneEntityManager.h"
+#include "EntitySystem/MovieSceneInitialValueCache.h"
+#include "EntitySystem/MovieScenePropertyRegistry.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
 #include "Evaluation/Blending/MovieSceneBlendType.h"
 #include "Evaluation/IMovieSceneEvaluationHook.h"
+#include "Misc/Guid.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/SubclassOf.h"
-
-#include "EntitySystem/MovieScenePropertyRegistry.h"
-#include "EntitySystem/MovieSceneInitialValueCache.h"
+#include "UObject/GCObjectScopeGuard.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ScriptInterface.h"
 
 #include "BuiltInComponentTypes.generated.h"
 
-enum class EMovieSceneBlendType : uint8;
-struct FMovieSceneByteChannel;
-struct FMovieSceneIntegerChannel;
-struct FMovieSceneFloatChannel;
-struct FMovieSceneDoubleChannel;
-struct FMovieScenePropertyBinding;
+class IMovieSceneEvaluationHook;
+namespace UE { namespace MovieScene { struct FCustomPropertyIndex; } }
+namespace UE { namespace MovieScene { struct FInitialValueIndex; } }
+namespace UE { namespace MovieScene { struct FInstanceHandle; } }
+namespace UE { namespace MovieScene { struct FInterrogationKey; } }
+namespace UE { namespace MovieScene { struct FRootInstanceHandle; } }
+struct FFrameTime;
+struct FMovieSceneBlendChannelID;
+struct FMovieSceneSequenceID;
 
+enum class EMovieSceneBlendType : uint8;
+class FTrackInstancePropertyBindings;
+class UMovieSceneBlenderSystem;
 class UMovieSceneSection;
 class UMovieSceneTrackInstance;
-class UMovieSceneBlenderSystem;
-class FTrackInstancePropertyBindings;
+struct FMovieSceneBoolChannel;
+struct FMovieSceneByteChannel;
+struct FMovieSceneDoubleChannel;
+struct FMovieSceneFloatChannel;
+struct FMovieSceneIntegerChannel;
+struct FMovieSceneObjectPathChannel;
+struct FMovieScenePropertyBinding;
 
 
 /**
@@ -90,6 +107,22 @@ namespace UE
 {
 namespace MovieScene
 {
+
+/**
+ * The component data for evaluating a bool channel
+ */
+struct FSourceBoolChannel
+{
+	FSourceBoolChannel()
+		: Source(nullptr)
+	{}
+
+	FSourceBoolChannel(const FMovieSceneBoolChannel* InSource)
+		: Source(InSource)
+	{}
+
+	const FMovieSceneBoolChannel* Source;
+};
 
 /**
  * The component data for evaluating a byte channel
@@ -170,6 +203,20 @@ struct FEvaluationHookFlags
 	bool bHasBegun = false;
 };
 
+struct FSourceObjectPathChannel
+{
+	FSourceObjectPathChannel()
+		: Source(nullptr)
+	{}
+
+	FSourceObjectPathChannel(const FMovieSceneObjectPathChannel* InSource)
+		: Source(InSource)
+	{}
+
+	const FMovieSceneObjectPathChannel* Source;
+};
+
+
 /**
  * Pre-defined built in component types
  */
@@ -183,13 +230,19 @@ public:
 
 public:
 
+	/**
+	 * Component mask where set bits denot component types that should trigger instantiation when present.
+	 * After instantiation, these components will be removed from any entities to prevent instantiation being run constantly
+	 */
+	FComponentMask RequiresInstantiationMask;
+
 	TComponentTypeID<FMovieSceneEntityID> ParentEntity;
 
 	TComponentTypeID<UObject*>            BoundObject;
 
 	TComponentTypeID<FInstanceHandle>     InstanceHandle;
 
-	TComponentTypeID<FInstanceHandle>     RootInstanceHandle;
+	TComponentTypeID<FRootInstanceHandle> RootInstanceHandle;
 
 	TComponentTypeID<FFrameTime>          EvalTime;
 
@@ -236,6 +289,9 @@ public:
 	// An integer representing the base value for the integer channel for the purposes of "additive from base" blending.
 	TComponentTypeID<int32> BaseInteger;
 
+	// An FMovieSceneBoolChannel
+	TComponentTypeID<FSourceBoolChannel> BoolChannel;
+
 	// An FMovieSceneFloatChannel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X, Color.R; 1 = Location.Y, Vector.Y, Color.G)
 	TComponentTypeID<FSourceFloatChannel> FloatChannel[9];
 	TComponentTypeID<FSourceFloatChannelFlags> FloatChannelFlags[9];
@@ -248,14 +304,11 @@ public:
 	TComponentTypeID<FSourceFloatChannel> WeightChannel;
 	TComponentTypeID<FSourceFloatChannelFlags> WeightChannelFlags;
 
-	// A float representing the output of the channel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X, Color.R; 1 = Location.Y, Vector.Y, Color.G)
-	TComponentTypeID<float> FloatResult[9];
+	// FMovieSceneObjectPathChannel that represents a changing object path over time
+	TComponentTypeID<FSourceObjectPathChannel> ObjectPathChannel;
 
 	// A double considered to be at index N within the source structure (ie 0 = Location.X, Vector.X; 1 = Location.Y, Vector.Y)
 	TComponentTypeID<double> DoubleResult[9];
-
-	// A float representing the base value for the float channel at index N, for the purposes of "additive from base" blending.
-	TComponentTypeID<float> BaseFloat[9];
 
 	// A double representing the base value for the double channel at index N, for the purposes of "additive from base" blending.
 	TComponentTypeID<double> BaseDouble[9];
@@ -264,7 +317,10 @@ public:
 	TComponentTypeID<FFrameTime> BaseValueEvalTime;
 
 	// A float representing the evaluated output of a weight channel
-	TComponentTypeID<float> WeightResult;
+	TComponentTypeID<double> WeightResult;
+
+	// The result of an evaluated FMovieSceneObjectPathChannel
+	TComponentTypeID<UObject*> ObjectResult;
 
 public:
 
@@ -278,7 +334,7 @@ public:
 	TComponentTypeID<FMovieSceneSequenceID> HierarchicalEasingProvider;
 
 	// A float representing the evaluated easing weight
-	TComponentTypeID<float> WeightAndEasingResult;
+	TComponentTypeID<double> WeightAndEasingResult;
 
 	/** A blender type that should be used for blending this entity */
 	TComponentTypeID<TSubclassOf<UMovieSceneBlenderSystem>> BlenderType;
@@ -350,6 +406,8 @@ public:
 
 	FComponentMask FinishedMask;
 
+public:
+
 	static void Destroy();
 
 	static FBuiltInComponentTypes* Get();
@@ -359,8 +417,13 @@ public:
 		return InObject == nullptr || !IsValidChecked(InObject) || InObject->IsUnreachable();
 	}
 
+	FComponentTypeID GetBaseValueComponentType(const FComponentTypeID& InResultComponentType);
+
 private:
+
 	FBuiltInComponentTypes();
+
+	TMap<FComponentTypeID, FComponentTypeID> ResultToBase;
 };
 
 

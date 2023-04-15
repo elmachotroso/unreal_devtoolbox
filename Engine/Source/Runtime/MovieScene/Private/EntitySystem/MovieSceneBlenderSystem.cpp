@@ -4,6 +4,8 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBlenderSystem)
+
 namespace UE
 {
 namespace MovieScene
@@ -26,6 +28,8 @@ UMovieSceneBlenderSystem::UMovieSceneBlenderSystem(const FObjectInitializer& Obj
 	: Super(ObjInit)
 {
 	using namespace UE::MovieScene;
+
+	SystemCategories = UE::MovieScene::EEntitySystemCategory::BlenderSystems;
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -84,3 +88,4 @@ void UMovieSceneBlenderSystem::CompactBlendChannels()
 		AllocatedBlendChannels.RemoveAt(LastBlendIndex + 1, AllocatedBlendChannels.Num() - LastBlendIndex - 1);
 	}
 }
+

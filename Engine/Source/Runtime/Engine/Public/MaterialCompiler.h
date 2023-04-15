@@ -29,7 +29,6 @@ class UMaterialParameterCollection;
 class URuntimeVirtualTexture;
 class UTexture;
 struct FMaterialParameterInfo;
-struct FStrataMaterialCompilationInfo;
 
 enum EMaterialForceCastFlags
 {
@@ -59,6 +58,24 @@ enum class EMaterialCompilerType
 	MaterialProxy, /** Flat material proxy compiler */
 };
 
+
+/** Whether we need some data export from a Strata material from spatially varying properties, e.g. diffuse color for Lighmass to generate lightmaps. */
+enum EStrataMaterialExport : uint8
+{
+	SME_None			= 0,
+	SME_Diffuse			= 1,
+	SME_Normal			= 2,
+	SME_Emissive		= 3,
+	SME_Transmittance	= 4,
+	SME_MaterialPreview	= 5
+};
+/** Exported materials are all opaque unlit. This is used to give some context to the export logic.*/
+enum EStrataMaterialExportContext : uint8
+{
+	SMEC_Opaque = 0,
+	SMEC_Translucent = 1
+};
+
 struct FStrataRegisteredSharedLocalBasis
 {
 	int32 NormalCodeChunk;
@@ -66,6 +83,96 @@ struct FStrataRegisteredSharedLocalBasis
 	uint64 NormalCodeChunkHash;
 	uint64 TangentCodeChunkHash;
 	uint8 GraphSharedLocalBasisIndex;
+
+	FStrataRegisteredSharedLocalBasis()
+	{
+		NormalCodeChunk = INDEX_NONE;
+		TangentCodeChunk = INDEX_NONE;
+		NormalCodeChunkHash = 0;
+		TangentCodeChunkHash = 0;
+		GraphSharedLocalBasisIndex = 0;
+	}
+};
+
+struct FStrataOperator
+{
+	int32 OperatorType;
+	bool bNodeRequestParameterBlending;
+
+	int32 Index;		// Index into the array of operators
+	int32 ParentIndex;	// Parent operator index
+	int32 LeftIndex;	// Left child operator index
+	int32 RightIndex;	// Right child operator index
+
+	// Data used for BSDF type nodes only
+	int32 BSDFIndex;	// Index in the array of BSDF if a BSDF operator
+	uint8 BSDFType;
+	FStrataRegisteredSharedLocalBasis BSDFRegisteredSharedLocalBasis;
+	bool  bBSDFHasSSS;
+	bool  bBSDFHasMFPPluggedIn;
+	bool  bBSDFHasEdgeColor;
+	bool  bBSDFHasFuzz;
+	bool  bBSDFHasSecondRoughnessOrSimpleClearCoat;
+	bool  bBSDFHasAnisotropy;
+
+	// Data derived after the tree has been built.
+	int32 MaxDistanceFromLeaves;
+	int32 LayerDepth;
+	bool bIsTop;
+	bool bIsBottom;
+	bool bUseParameterBlending;				// True when part of a sub tree where parameter blending is in use
+	bool bRootOfParameterBlendingSubTree;	// True when the root of a sub tree where parameter blending is in use. Only this node will register a BSDF
+
+	FStrataOperator()
+	{
+		OperatorType = INDEX_NONE;
+		bNodeRequestParameterBlending = false;
+		Index = INDEX_NONE;
+		ParentIndex = INDEX_NONE;
+		LeftIndex = INDEX_NONE;
+		RightIndex = INDEX_NONE;
+
+		BSDFIndex = INDEX_NONE;
+		BSDFType = 0;
+		bBSDFHasSSS = false;
+		bBSDFHasMFPPluggedIn = false;
+		bBSDFHasEdgeColor = false;
+		bBSDFHasFuzz = false;
+		bBSDFHasSecondRoughnessOrSimpleClearCoat = false;
+		bBSDFHasAnisotropy = false;
+
+		MaxDistanceFromLeaves = 0;
+		LayerDepth = 0;
+		bIsTop = false;
+		bIsBottom = false;
+		bUseParameterBlending = false;
+		bRootOfParameterBlendingSubTree = false;
+	}
+
+	void CombineFlagsForParameterBlending(FStrataOperator& A, FStrataOperator& B)
+	{
+		bBSDFHasSSS = A.bBSDFHasSSS || B.bBSDFHasSSS;
+		bBSDFHasMFPPluggedIn = A.bBSDFHasMFPPluggedIn || B.bBSDFHasMFPPluggedIn;
+		bBSDFHasEdgeColor = A.bBSDFHasEdgeColor || B.bBSDFHasEdgeColor;
+		bBSDFHasFuzz = A.bBSDFHasFuzz || B.bBSDFHasFuzz;
+		bBSDFHasSecondRoughnessOrSimpleClearCoat = A.bBSDFHasSecondRoughnessOrSimpleClearCoat || B.bBSDFHasSecondRoughnessOrSimpleClearCoat;
+		bBSDFHasAnisotropy = A.bBSDFHasAnisotropy || B.bBSDFHasAnisotropy;
+	}
+
+	void CopyFlagsForParameterBlending(FStrataOperator& A)
+	{
+		bBSDFHasSSS = A.bBSDFHasSSS;
+		bBSDFHasMFPPluggedIn = A.bBSDFHasMFPPluggedIn;
+		bBSDFHasEdgeColor = A.bBSDFHasEdgeColor;
+		bBSDFHasFuzz = A.bBSDFHasFuzz;
+		bBSDFHasSecondRoughnessOrSimpleClearCoat = A.bBSDFHasSecondRoughnessOrSimpleClearCoat;
+		bBSDFHasAnisotropy = A.bBSDFHasAnisotropy;
+	}
+
+	bool IsDiscarded()
+	{
+		return bUseParameterBlending && !bRootOfParameterBlendingSubTree;
+	}
 };
 
 /** 
@@ -110,10 +217,20 @@ public:
 	inline bool IsMaterialProxyCompiler() const { return GetCompilerType() == EMaterialCompilerType::MaterialProxy; }
 	inline bool IsLightmassCompiler() const { return GetCompilerType() == EMaterialCompilerType::Lightmass; }
 
+	inline void SetStrataMaterialExportType(EStrataMaterialExport InStrataMaterialExport, EStrataMaterialExportContext InStrataMaterialExportContext, uint8 InStrataMaterialExportLegacyBlendMode)
+	{
+		StrataMaterialExport = InStrataMaterialExport; 
+		StrataMaterialExportContext = InStrataMaterialExportContext;
+		StrataMaterialExportLegacyBlendMode = InStrataMaterialExportLegacyBlendMode;
+	}
+	inline EStrataMaterialExport GetStrataMaterialExportType() const { return StrataMaterialExport; }
+	inline EStrataMaterialExportContext GetStrataMaterialExportContext() const { return StrataMaterialExportContext; }
+	inline uint8 GetStrataMaterialExportLegacyBlendMode() const { return StrataMaterialExportLegacyBlendMode; }
+
 	inline bool IsVertexInterpolatorBypass() const
 	{
 		const EMaterialCompilerType Type = GetCompilerType();
-		return Type == EMaterialCompilerType::MaterialProxy || Type == EMaterialCompilerType::Lightmass;
+		return Type == EMaterialCompilerType::Lightmass;
 	}
 
 	virtual EMaterialValueType GetType(int32 Code) = 0;
@@ -170,6 +287,7 @@ public:
 	virtual int32 GenericConstant(const UE::Shader::FValue& Value) = 0;
 
 	virtual	int32 ViewProperty(EMaterialExposedViewProperty Property, bool InvProperty = false) = 0;
+	virtual int32 IsOrthographic() = 0;
 
 	virtual int32 GameTime(bool bPeriodic, float Period) = 0;
 	virtual int32 RealTime(bool bPeriodic, float Period) = 0;
@@ -353,8 +471,10 @@ public:
 
 	virtual int32 GIReplace(int32 Direct, int32 StaticIndirect, int32 DynamicIndirect) = 0;
 	virtual int32 ShadowReplace(int32 Default, int32 Shadow) = 0;
+	virtual int32 NaniteReplace(int32 Default, int32 Nanite) = 0;
 	virtual int32 RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced) = 0;
 	virtual int32 PathTracingQualitySwitchReplace(int32 Normal, int32 PathTraced) = 0;
+	virtual int32 LightmassReplace(int32 Realtime, int32 Lightmass) = 0;
 	virtual int32 VirtualTextureOutputReplace(int32 Default, int32 VirtualTexture) = 0;
 	virtual int32 ReflectionCapturePassSwitch(int32 Default, int32 Reflection) = 0;
 
@@ -384,12 +504,12 @@ public:
 	virtual int32 BlackBody( int32 Temp ) = 0;
 	virtual int32 DistanceToNearestSurface(int32 PositionArg) = 0;
 	virtual int32 DistanceFieldGradient(int32 PositionArg) = 0;
+	virtual int32 DistanceFieldApproxAO(int32 PositionArg, int32 NormalArg, int32 BaseDistanceArg, int32 RadiusArg, uint32 NumSteps, float StepScale) = 0;
 	virtual int32 SamplePhysicsField(int32 PositionArg, const int32 OutputType, const int32 TargetIndex) = 0;
 	virtual int32 DepthOfFieldFunction(int32 Depth, int32 FunctionValueIndex) = 0;
 	virtual int32 AtmosphericFogColor(int32 WorldPosition) = 0;
 	virtual int32 RotateScaleOffsetTexCoords(int32 TexCoordCodeIndex, int32 RotationScale, int32 Offset) = 0;
 	virtual int32 SpeedTree(int32 GeometryArg, int32 WindArg, int32 LODArg, float BillboardThreshold, bool bAccurateWindVelocities, bool bExtraBend, int32 ExtraBendArg) = 0;
-	virtual int32 TextureCoordinateOffset() = 0;
 	virtual int32 EyeAdaptation() = 0;
 	virtual int32 EyeAdaptationInverse(int32 LightValueArg, int32 AlphaArg) = 0;
 	virtual int32 AtmosphericLightVector() = 0;
@@ -397,7 +517,7 @@ public:
 
 	virtual int32 SkyAtmosphereLightIlluminance(int32 WorldPosition, int32 LightIndex) = 0;
 	virtual int32 SkyAtmosphereLightDirection(int32 LightIndex) = 0;
-	virtual int32 SkyAtmosphereLightDiskLuminance(int32 LightIndex) = 0;
+	virtual int32 SkyAtmosphereLightDiskLuminance(int32 LightIndex, int32 OverrideAtmosphereLightDiscCosHalfApexAngle) = 0;
 	virtual int32 SkyAtmosphereViewLuminance() = 0;
 	virtual int32 SkyAtmosphereAerialPerspective(int32 WorldPosition) = 0;
 	virtual int32 SkyAtmosphereDistantLightScatteredLuminance() = 0;
@@ -409,6 +529,9 @@ public:
 	virtual int32 GetCloudSampleNormAltitudeInLayer() = 0;
 	virtual int32 GetCloudSampleShadowSampleDistance() = 0;
 	virtual int32 GetVolumeSampleConservativeDensity() = 0;
+
+	virtual int32 GetCloudEmptySpaceSkippingSphereCenterWorldPosition() = 0;
+	virtual int32 GetCloudEmptySpaceSkippingSphereRadius() = 0;
 
 	virtual int32 GetHairUV() = 0;
 	virtual int32 GetHairDimensions() = 0;
@@ -448,13 +571,13 @@ public:
 		int32 BaseColor, int32 EdgeColor, int32 Specular, int32 Metallic,
 		int32 DiffuseAlbedo, int32 F0, int32 F90,
 		int32 Roughness, int32 Anisotropy,
-		int32 SSSProfileId, int32 SSSDMFP, int32 SSSDMFPScale,
+		int32 SSSProfileId, int32 SSSMFP, int32 SSSMFPScale, int32 SSSPhaseAniso, int32 UseSSSDiffusion,
 		int32 EmissiveColor, 
-		int32 Haziness, 
-		int32 ThinFilmThickness, 
+		int32 SecondRoughness, int32 SecondRoughnessWeight, int32 SecondRoughnessAsSimpleClearCoat,
 		int32 FuzzAmount, int32 FuzzColor,
 		int32 Thickness,
-		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro) = 0;
+		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
+		FStrataOperator* PromoteToOperator) = 0;
 	virtual int32 StrataConversionFromLegacy(
 		bool bHasDynamicShadingModels,
 		int32 BaseColor, int32 Specular, int32 Metallic,
@@ -467,28 +590,51 @@ public:
 		int32 WaterScatteringCoefficients, int32 WaterAbsorptionCoefficients, int32 WaterPhaseG, int32 ColorScaleBehindWater,
 		int32 ShadingModel,
 		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
-		int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro) = 0;
+		int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro,
+		int32 CustomTangent_Tangent,
+		FStrataOperator* PromoteToOperator) = 0;
 	virtual int32 StrataVolumetricFogCloudBSDF(int32 Albedo, int32 Extinction, int32 EmissiveColor, int32 AmbientOcclusion) = 0;
 	virtual int32 StrataUnlitBSDF(int32 EmissiveColor, int32 TransmittanceColor) = 0;
-	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro) = 0;
+	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataEyeBSDF(int32 DiffuseAlbedo, int32 Roughness, int32 IrisMask, int32 IrisDistance, int32 IrisNormal, int32 IrisPlaneNormal, int32 SSSProfileId, int32 EmissiveColor, int32 CorneaNormal, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) = 0;
 	virtual int32 StrataSingleLayerWaterBSDF(
 		int32 BaseColor, int32 Metallic, int32 Specular, int32 Roughness, int32 EmissiveColor, int32 TopMaterialOpacity, 
-		int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro) = 0;
-	virtual int32 StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix) = 0;
-	virtual int32 StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro) = 0;
-	virtual int32 StrataVerticalLayering(int32 Top, int32 Base) = 0;
-	virtual int32 StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk) = 0;
-	virtual int32 StrataAdd(int32 A, int32 B) = 0;
-	virtual int32 StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro) = 0;
-	virtual int32 StrataWeight(int32 A, int32 Weight) = 0;
+		int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix, int OperatorIndex, uint32 MaxDistanceFromLeaves) = 0;
+	virtual int32 StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataVerticalLayering(int32 Top, int32 Base, int OperatorIndex, uint32 MaxDistanceFromLeaves) = 0;
+	virtual int32 StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataAdd(int32 A, int32 B, int OperatorIndex, uint32 MaxDistanceFromLeaves) = 0;
+	virtual int32 StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataWeight(int32 A, int32 Weight, int OperatorIndex, uint32 MaxDistanceFromLeaves) = 0;
+	virtual int32 StrataWeightParameterBlending(int32 A, int32 Weight, FStrataOperator* PromoteToOperator) = 0;
+	virtual int32 StrataThinFilm(int32 A, int32 Thickness, int32 IOR, int OperatorIndex, uint32 MaxDistanceFromLeaves) = 0;
+	virtual int32 StrataThinFilmParameterBlending(int32 A, int32 Thickness, int32 IOR, int32 BSDFNormalCodeChunk, FStrataOperator* PromoteToOperator) = 0;
 	virtual int32 StrataTransmittanceToMFP(int32 TransmittanceColor, int32 DesiredThickness, int32 OutputIndex) = 0;
+	virtual int32 StrataMetalnessToDiffuseAlbedoF0(int32 BaseColor, int32 Specular, int32 Metallic, int32 OutputIndex) = 0;
+	virtual int32 StrataHazinessToSecondaryRoughness(int32 BaseRoughness, int32 Haziness, int32 OutputIndex) = 0;
+	virtual int32 StrataCompilePreview(int32 StrataDataCodeChunk) = 0;
 
-	virtual void StrataCompilationInfoRegisterCodeChunk(int32 CodeChunk, FStrataMaterialCompilationInfo& StrataMaterialCompilationInfo) = 0;
-	virtual bool StrataCompilationInfoContainsCodeChunk(int32 CodeChunk) = 0;
-	virtual const FStrataMaterialCompilationInfo& GetStrataCompilationInfo(int32 CodeChunk) = 0;
+	/**
+	 * This is dedicated to skip evaluating any opacity input when a material instance toggles the translucent blend mode to opaque.
+	 */
+	virtual bool StrataSkipsOpacityEvaluation() = 0;
+	
+	/**
+	 * Register an operator of the tree representation the Strata material and its topology.
+	 */
+	virtual FStrataOperator& StrataCompilationRegisterOperator(int32 OperatorType, UMaterialExpression* Expression, UMaterialExpression* Parent, bool bUseParameterBlending = false) = 0;
+	/**
+	 * Return the operator information for a given expression.
+	 */
+	virtual FStrataOperator& StrataCompilationGetOperator(UMaterialExpression* Expression) = 0;
+	/**
+	 * Return the operator information for a given index.
+	 */
+	virtual FStrataOperator* StrataCompilationGetOperatorFromIndex(int32 OperatorIndex) = 0;
+
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk) = 0;
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk, int32 TangentCodeChunk) = 0;
-	virtual uint8 StrataCompilationInfoGetSharedLocalBasesCount() = 0;
 	FString GetStrataSharedLocalBasisIndexMacro(const FStrataRegisteredSharedLocalBasis& SharedLocalBasis)
 	{
 		return FString::Printf(TEXT("SHAREDLOCALBASIS_INDEX_%u"), SharedLocalBasis.GraphSharedLocalBasisIndex);
@@ -505,6 +651,11 @@ public:
 	// If possible we should re-factor this to avoid having to deal with compiler state
 	virtual bool IsCurrentlyCompilingForPreviousFrame() const { return false; }
 	virtual bool IsDevelopmentFeatureEnabled(const FName& FeatureName) const { return true; }
+
+private:
+	EStrataMaterialExport StrataMaterialExport = SME_None;
+	EStrataMaterialExportContext StrataMaterialExportContext = SMEC_Opaque;
+	uint8 StrataMaterialExportLegacyBlendMode = 0;
 };
 
 /** 
@@ -567,6 +718,7 @@ public:
 	virtual int32 GenericConstant(const UE::Shader::FValue& Value) override { return Compiler->GenericConstant(Value); }
 
 	virtual	int32 ViewProperty(EMaterialExposedViewProperty Property, bool InvProperty) override { return Compiler->ViewProperty(Property, InvProperty); }
+	virtual int32 IsOrthographic() override { return Compiler->IsOrthographic(); }
 
 	virtual int32 GameTime(bool bPeriodic, float Period) override { return Compiler->GameTime(bPeriodic, Period); }
 	virtual int32 RealTime(bool bPeriodic, float Period) override { return Compiler->RealTime(bPeriodic, Period); }
@@ -723,8 +875,10 @@ public:
 
 	virtual int32 GIReplace(int32 Direct, int32 StaticIndirect, int32 DynamicIndirect) override { return Compiler->GIReplace(Direct, StaticIndirect, DynamicIndirect); }
 	virtual int32 ShadowReplace(int32 Default, int32 Shadow) override { return Compiler->ShadowReplace(Default, Shadow); }
+	virtual int32 NaniteReplace(int32 Default, int32 Nanite) override { return Compiler->NaniteReplace(Default, Nanite); }
 	virtual int32 RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced) override { return Compiler->RayTracingQualitySwitchReplace(Normal, RayTraced); }
 	virtual int32 PathTracingQualitySwitchReplace(int32 Normal, int32 PathTraced) override { return Compiler->PathTracingQualitySwitchReplace(Normal, PathTraced); }
+	virtual int32 LightmassReplace(int32 Realtime, int32 Lightmass) override { return Compiler->LightmassReplace(Realtime, Lightmass); }
 	virtual int32 VirtualTextureOutputReplace(int32 Default, int32 VirtualTexture) override { return Compiler->VirtualTextureOutputReplace(Default, VirtualTexture); }
 	virtual int32 ReflectionCapturePassSwitch(int32 Default, int32 Reflection) override { return Compiler->ReflectionCapturePassSwitch(Default, Reflection); }
 
@@ -762,6 +916,7 @@ public:
 	virtual int32 BlackBody(int32 Temp) override { return Compiler->BlackBody(Temp); }
 	virtual int32 DistanceToNearestSurface(int32 PositionArg) override { return Compiler->DistanceToNearestSurface(PositionArg); }
 	virtual int32 DistanceFieldGradient(int32 PositionArg) override { return Compiler->DistanceFieldGradient(PositionArg); }
+	virtual int32 DistanceFieldApproxAO(int32 PositionArg, int32 NormalArg, int32 BaseDistanceArg, int32 RadiusArg, uint32 NumSteps, float StepScale) override { return Compiler->DistanceFieldApproxAO(PositionArg, NormalArg, BaseDistanceArg, RadiusArg, NumSteps, StepScale); }
 	virtual int32 SamplePhysicsField(int32 PositionArg, const int32 OutputType, const int32 TargetIndex)  override { return Compiler->SamplePhysicsField(PositionArg, OutputType, TargetIndex); }
 	virtual int32 PerInstanceRandom() override { return Compiler->PerInstanceRandom(); }
 	virtual int32 PerInstanceFadeAmount() override { return Compiler->PerInstanceFadeAmount(); }
@@ -821,9 +976,9 @@ public:
 		return Compiler->SkyAtmosphereLightDirection(LightIndex);
 	}
 
-	virtual int32 SkyAtmosphereLightDiskLuminance(int32 LightIndex) override
+	virtual int32 SkyAtmosphereLightDiskLuminance(int32 LightIndex, int32 OverrideAtmosphereLightDiscCosHalfApexAngle) override
 	{
-		return Compiler->SkyAtmosphereLightDiskLuminance(LightIndex);
+		return Compiler->SkyAtmosphereLightDiskLuminance(LightIndex, OverrideAtmosphereLightDiscCosHalfApexAngle);
 	}
 
 	virtual int32 SkyAtmosphereViewLuminance() override
@@ -871,6 +1026,16 @@ public:
 		return Compiler->GetVolumeSampleConservativeDensity();
 	}
 
+	virtual int32 GetCloudEmptySpaceSkippingSphereCenterWorldPosition() override
+	{
+		return Compiler->GetCloudEmptySpaceSkippingSphereCenterWorldPosition();
+	}
+
+	virtual int32 GetCloudEmptySpaceSkippingSphereRadius() override
+	{
+		return Compiler->GetCloudEmptySpaceSkippingSphereRadius();
+	}
+
 	virtual int32 SceneDepthWithoutWater(int32 Offset, int32 ViewportUV, bool bUseOffset, float FallbackDepth) override
 	{
 		return Compiler->SceneDepthWithoutWater(Offset, ViewportUV, bUseOffset, FallbackDepth);
@@ -889,11 +1054,6 @@ public:
 	virtual int32 MapARPassthroughCameraUV(int32 UV) override
 	{
 		return Compiler->MapARPassthroughCameraUV(UV);
-	}
-
-	virtual int32 TextureCoordinateOffset() override
-	{
-		return Compiler->TextureCoordinateOffset();
 	}
 
 	virtual int32 EyeAdaptation() override
@@ -976,26 +1136,26 @@ public:
 		int32 BaseColor, int32 EdgeColor, int32 Specular, int32 Metallic,
 		int32 DiffuseAlbedo, int32 F0, int32 F90,
 		int32 Roughness, int32 Anisotropy,
-		int32 SSSProfileId, int32 SSSDMFP, int32 SSSDMFPScale,
+		int32 SSSProfileId, int32 SSSMFP, int32 SSSMFPScale, int32 SSSPhaseAniso, int32 UseSSSDiffusion,
 		int32 EmissiveColor, 
-		int32 Haziness, 
-		int32 ThinFilmThickness, 
+		int32 SecondRoughness, int32 SecondRoughnessWeight, int32 SecondRoughnessAsSimpleClearCoat,
 		int32 FuzzAmount, int32 FuzzColor,
 		int32 Thickness,
-		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro) override
+		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
+		FStrataOperator* PromoteToOperator) override
 	{
 		return Compiler->StrataSlabBSDF(
 			UseMetalness,
 			BaseColor, EdgeColor, Specular, Metallic,
 			DiffuseAlbedo, F0, F90,
 			Roughness, Anisotropy,
-			SSSProfileId, SSSDMFP, SSSDMFPScale,
+			SSSProfileId, SSSMFP, SSSMFPScale, SSSPhaseAniso, UseSSSDiffusion,
 			EmissiveColor, 
-			Haziness, 
-			ThinFilmThickness,
+			SecondRoughness, SecondRoughnessWeight, SecondRoughnessAsSimpleClearCoat,
 			FuzzAmount, FuzzColor,
 			Thickness,
-			Normal, Tangent, SharedLocalBasisIndexMacro);
+			Normal, Tangent, SharedLocalBasisIndexMacro,
+			PromoteToOperator);
 	}
 
 	virtual int32 StrataConversionFromLegacy(
@@ -1010,7 +1170,9 @@ public:
 		int32 WaterScatteringCoefficients, int32 WaterAbsorptionCoefficients, int32 WaterPhaseG, int32 ColorScaleBehindWater,
 		int32 ShadingModel,
 		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
-		int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro) override
+		int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro,
+		int32 CustomTangent_Tangent,
+		FStrataOperator* PromoteToOperator) override
 	{
 		return Compiler->StrataConversionFromLegacy(
 			bHasDynamicShadingModels,
@@ -1024,7 +1186,9 @@ public:
 			WaterScatteringCoefficients, WaterAbsorptionCoefficients, WaterPhaseG, ColorScaleBehindWater,
 			ShadingModel,
 			Normal, Tangent, SharedLocalBasisIndexMacro,
-			ClearCoat_Normal, ClearCoat_Tangent, ClearCoat_SharedLocalBasisIndexMacro);
+			ClearCoat_Normal, ClearCoat_Tangent, ClearCoat_SharedLocalBasisIndexMacro,
+			CustomTangent_Tangent,
+			PromoteToOperator);
 	}
 
 	virtual int32 StrataVolumetricFogCloudBSDF(int32 Albedo, int32 Extinction, int32 EmissiveColor, int32 AmbientOcclusion) override
@@ -1037,69 +1201,115 @@ public:
 		return Compiler->StrataUnlitBSDF(EmissiveColor, TransmittanceColor);
 	}
 
-	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro) override
+	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override
 	{
-		return Compiler->StrataHairBSDF(BaseColor, Scatter, Specular, Roughness, Backlit, EmissiveColor, Tangent, SharedLocalBasisIndexMacro);
+		return Compiler->StrataHairBSDF(BaseColor, Scatter, Specular, Roughness, Backlit, EmissiveColor, Tangent, SharedLocalBasisIndexMacro, PromoteToOperator);
+	}
+
+	virtual int32 StrataEyeBSDF(int32 DiffuseAlbedo, int32 Roughness, int32 IrisMask, int32 IrisDistance, int32 IrisNormal, int32 IrisPlaneNormal, int32 SSSProfileId, int32 EmissiveColor, int32 CorneaNormal, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override
+	{
+		return Compiler->StrataEyeBSDF(DiffuseAlbedo, Roughness, IrisMask, IrisDistance, IrisNormal, IrisPlaneNormal, SSSProfileId, EmissiveColor, CorneaNormal, SharedLocalBasisIndexMacro, PromoteToOperator);
 	}
 
 	virtual int32 StrataSingleLayerWaterBSDF(
 		int32 BaseColor, int32 Metallic, int32 Specular, int32 Roughness, int32 EmissiveColor, int32 TopMaterialOpacity, 
-		int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro) override
+		int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override
 	{
 		return Compiler->StrataSingleLayerWaterBSDF(
 			BaseColor, Metallic, Specular, Roughness, EmissiveColor, TopMaterialOpacity, 
-			WaterAlbedo, WaterExtinction, WaterPhaseG, ColorScaleBehindWater, Normal, SharedLocalBasisIndexMacro);
+			WaterAlbedo, WaterExtinction, WaterPhaseG, ColorScaleBehindWater, Normal, SharedLocalBasisIndexMacro, PromoteToOperator);
 	}
 
-	virtual int32 StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix) override
+	virtual int32 StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix, int OperatorIndex, uint32 MaxDistanceFromLeaves) override
 	{
-		return Compiler->StrataHorizontalMixing(Background, Foreground, Mix);
+		return Compiler->StrataHorizontalMixing(Background, Foreground, Mix, OperatorIndex, MaxDistanceFromLeaves);
 	}
 
-	virtual int32 StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro) override
+	virtual int32 StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override
 	{
-		return Compiler->StrataHorizontalMixingParameterBlending(Background, Foreground, HorizontalMixCodeChunk, NormalMixCodeChunk, SharedLocalBasisIndexMacro);
+		return Compiler->StrataHorizontalMixingParameterBlending(Background, Foreground, HorizontalMixCodeChunk, NormalMixCodeChunk, SharedLocalBasisIndexMacro, PromoteToOperator);
 	}
 
-	virtual int32 StrataVerticalLayering(int32 Top, int32 Base) override
+	virtual int32 StrataVerticalLayering(int32 Top, int32 Base, int OperatorIndex, uint32 MaxDistanceFromLeaves) override
 	{
-		return Compiler->StrataVerticalLayering(Top, Base);
+		return Compiler->StrataVerticalLayering(Top, Base, OperatorIndex, MaxDistanceFromLeaves);
 	}
 
-	virtual int32 StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk) override
+	virtual int32 StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk, FStrataOperator* PromoteToOperator) override
 	{
-		return Compiler->StrataVerticalLayeringParameterBlending(Top, Base, SharedLocalBasisIndexMacro, TopBSDFNormalCodeChunk);
+		return Compiler->StrataVerticalLayeringParameterBlending(Top, Base, SharedLocalBasisIndexMacro, TopBSDFNormalCodeChunk, PromoteToOperator);
 	}
 
-	virtual int32 StrataAdd(int32 A, int32 B) override
+	virtual int32 StrataAdd(int32 A, int32 B, int OperatorIndex, uint32 MaxDistanceFromLeaves) override
 	{
-		return Compiler->StrataAdd(A, B);
+		return Compiler->StrataAdd(A, B, OperatorIndex, MaxDistanceFromLeaves);
 	}
 
-	virtual int32 StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro) override
+	virtual int32 StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override
 	{
-		return Compiler->StrataAddParameterBlending(A, B, AMixWeight, SharedLocalBasisIndexMacro);
+		return Compiler->StrataAddParameterBlending(A, B, AMixWeight, SharedLocalBasisIndexMacro, PromoteToOperator);
 	}
 
-	virtual int32 StrataWeight(int32 A, int32 Weight) override
+	virtual int32 StrataWeight(int32 A, int32 Weight, int OperatorIndex, uint32 MaxDistanceFromLeaves) override
 	{
-		return Compiler->StrataWeight(A, Weight);
+		return Compiler->StrataWeight(A, Weight, OperatorIndex, MaxDistanceFromLeaves);
+	}
+
+	virtual int32 StrataThinFilm(int32 A, int32 Thickness, int32 IOR, int OperatorIndex, uint32 MaxDistanceFromLeaves) override
+	{
+		return Compiler->StrataThinFilm(A, Thickness, IOR, OperatorIndex, MaxDistanceFromLeaves);
+	}
+
+	virtual int32 StrataThinFilmParameterBlending(int32 A, int32 Thickness, int32 IOR, int32 BSDFNormalCodeChunk, FStrataOperator* PromoteToOperator) override
+	{
+		return Compiler->StrataThinFilmParameterBlending(A, Thickness, IOR, BSDFNormalCodeChunk, PromoteToOperator);
+	}
+
+	virtual int32 StrataWeightParameterBlending(int32 A, int32 Weight, FStrataOperator* PromoteToOperator) override
+	{
+		return Compiler->StrataWeightParameterBlending(A, Weight, PromoteToOperator);
 	}
 
 	virtual int32 StrataTransmittanceToMFP(int32 TransmittanceColor, int32 DesiredThickness, int32 OutputIndex) override
 	{
 		return Compiler->StrataTransmittanceToMFP(TransmittanceColor, DesiredThickness, OutputIndex);
 	}
-
-	virtual void StrataCompilationInfoRegisterCodeChunk(int32 CodeChunk, FStrataMaterialCompilationInfo& StrataMaterialCompilationInfo) override
+	
+	virtual int32 StrataMetalnessToDiffuseAlbedoF0(int32 BaseColor, int32 Specular, int32 Metallic, int32 OutputIndex) override
 	{
-		Compiler->StrataCompilationInfoRegisterCodeChunk(CodeChunk, StrataMaterialCompilationInfo);
+		return Compiler->StrataMetalnessToDiffuseAlbedoF0(BaseColor, Specular, Metallic, OutputIndex);
 	}
 
-	virtual bool StrataCompilationInfoContainsCodeChunk(int32 CodeChunk) override
+	virtual int32 StrataHazinessToSecondaryRoughness(int32 BaseRoughness, int32 Haziness, int32 OutputIndex) override
 	{
-		return Compiler->StrataCompilationInfoContainsCodeChunk(CodeChunk);
+		return Compiler->StrataHazinessToSecondaryRoughness(BaseRoughness, Haziness, OutputIndex);
 	}
+
+	virtual int32 StrataCompilePreview(int32 StrataDataCodeChunk) override
+	{
+		return Compiler->StrataCompilePreview(StrataDataCodeChunk);
+	}
+
+	virtual bool StrataSkipsOpacityEvaluation() override
+	{
+		return Compiler->StrataSkipsOpacityEvaluation();
+	}
+
+	virtual FStrataOperator& StrataCompilationRegisterOperator(int32 OperatorType, UMaterialExpression* Expression, UMaterialExpression* Parent, bool bUseParameterBlending = false) override
+	{
+		return Compiler->StrataCompilationRegisterOperator(OperatorType, Expression, Parent, bUseParameterBlending);
+	}
+
+	virtual FStrataOperator& StrataCompilationGetOperator(UMaterialExpression* Expression) override
+	{
+		return Compiler->StrataCompilationGetOperator(Expression);
+	}
+
+	virtual FStrataOperator* StrataCompilationGetOperatorFromIndex(int32 OperatorIndex) override
+	{
+		return Compiler->StrataCompilationGetOperatorFromIndex(OperatorIndex);
+	}
+
 
 	virtual int32 StrataAddParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 ACodeChunk, int32 BCodeChunk) override
 	{
@@ -1115,11 +1325,6 @@ public:
 	{
 		return Compiler->StrataHorizontalMixingParameterBlendingBSDFCoverageToNormalMixCodeChunk(BackgroundCodeChunk, ForegroundCodeChunk, HorizontalMixCodeChunk);
 	}
-	
-	virtual const FStrataMaterialCompilationInfo& GetStrataCompilationInfo(int32 CodeChunk) override
-	{
-		return Compiler->GetStrataCompilationInfo(CodeChunk);
-	}
 
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk) override
 	{
@@ -1129,11 +1334,6 @@ public:
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk, int32 TangentCodeChunk) override
 	{
 		return Compiler->StrataCompilationInfoRegisterSharedLocalBasis(NormalCodeChunk, TangentCodeChunk);
-	}
-
-	virtual uint8 StrataCompilationInfoGetSharedLocalBasesCount() override
-	{
-		return Compiler->StrataCompilationInfoGetSharedLocalBasesCount();
 	}
 
 protected:

@@ -2,7 +2,6 @@
 
 #include "SDetailsViewBase.h"
 
-#include "Classes/EditorStyleSettings.h"
 #include "Engine/Engine.h"
 #include "GameFramework/Actor.h"
 #include "Misc/ConfigCacheIni.h"
@@ -39,8 +38,8 @@ SDetailsViewBase::SDetailsViewBase() :
 	, NumVisibleTopLevelObjectNodes(0)
 	, bPendingCleanupTimerSet(false)
 {
-	UDetailsConfig* DetailsConfig = GetMutableDefault<UDetailsConfig>();
-	DetailsConfig->LoadEditorConfig();
+	UDetailsConfig::Initialize();
+	UDetailsConfig::Get()->LoadEditorConfig();
 
 	const FDetailsViewConfig* ViewConfig = GetConstViewConfig();
 	if (ViewConfig != nullptr)
@@ -72,6 +71,23 @@ TSharedRef<ITableRow> SDetailsViewBase::OnGenerateRowForDetailTree(TSharedRef<FD
 	return InTreeNode->GenerateWidgetForTableView(OwnerTable, DetailsViewArgs.bAllowFavoriteSystem);
 }
 
+void SDetailsViewBase::OnRowReleasedForDetailTree(const TSharedRef<ITableRow>& TableRow)
+{
+	// search upwards from the current keyboard-focused widget to see if it's contained in our row
+	TSharedPtr<SWidget> CurrentWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
+	while (CurrentWidget.IsValid())
+	{
+		if (CurrentWidget == TableRow->AsWidget())
+		{
+			// if so, clear focus so that any pending value changes are committed
+			FSlateApplication::Get().ClearKeyboardFocus();
+			return;
+		}
+
+		CurrentWidget = CurrentWidget->GetParentWidget();
+	}
+}
+
 void SDetailsViewBase::SetRootExpansionStates(const bool bExpand, const bool bRecurse)
 {
 	if(ContainsMultipleTopLevelObjects())
@@ -82,7 +98,7 @@ void SDetailsViewBase::SetRootExpansionStates(const bool bExpand, const bool bRe
 			Children.Reset();
 			(*Iter)->GetChildren(Children);
 
-			for(TSharedRef<class FDetailTreeNode>& Child : Children)
+			for(TSharedRef<FDetailTreeNode>& Child : Children)
 			{
 				SetNodeExpansionState(Child, bExpand, bRecurse);
 			}
@@ -111,7 +127,7 @@ void SDetailsViewBase::SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeN
 		if (bRecursive)
 		{
 			for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
-			{
+					{
 				TSharedRef<FDetailTreeNode> Child = Children[ChildIndex];
 
 				SetNodeExpansionState(Child, bIsItemExpanded, bRecursive);
@@ -174,65 +190,74 @@ TArray< FPropertyPath > SDetailsViewBase::GetPropertiesInOrderDisplayed() const
 	return Ret;
 }
 
-// @return populates OutNodes with the leaf node corresponding to property as the first entry in the list (e.g. [leaf, parent, grandparent]):
-static void FindTreeNodeFromPropertyRecursive( const TArray< TSharedRef<FDetailTreeNode> >& Nodes, const FPropertyPath& Property, TArray< TSharedPtr< FDetailTreeNode > >& OutNodes )
+// construct a map for fast FPropertyPath.ToString() -> FDetailTreeNode lookup
+static void GetPropertyPathToTreeNodes(const TArray<TSharedRef<FDetailTreeNode>>& RootTreeNodes, TMap<FString, TSharedRef<FDetailTreeNode>> &OutMap)
 {
-	if (Property == FPropertyPath())
+	for (const TSharedRef<FDetailTreeNode>& TreeNode : RootTreeNodes)
 	{
-		return;
-	}
-
-	for (const TSharedRef<FDetailTreeNode>& TreeNode : Nodes)
-	{
-		if (TreeNode->IsLeaf())
+		FPropertyPath Path = TreeNode->GetPropertyPath();
+		if (Path.IsValid())
 		{
-			FPropertyPath tmp = TreeNode->GetPropertyPath();
-			if( Property == tmp )
-			{
-				OutNodes.Push(TreeNode);
-				return;
-			}
+			OutMap.Add(Path.ToString(), TreeNode);
 		}
 
 		// Need to check children even if we're a leaf, because all DetailItemNodes are leaves, even if they may have sub-children
 		TArray< TSharedRef<FDetailTreeNode> > Children;
 		TreeNode->GetChildren(Children);
-		FindTreeNodeFromPropertyRecursive(Children, Property, OutNodes);
-		if (OutNodes.Num() > 0)
-		{
-			OutNodes.Push(TreeNode);
-			return;
-		}
+		GetPropertyPathToTreeNodes(Children, OutMap);
 	}
+}
+
+// Find an FDetailTreeNode in the tree that most closely matches the provided property.
+// If there isn't an exact match, the provided property will be trimmed until we find a match
+static TSharedPtr<FDetailTreeNode> FindBestFitTreeNodeFromProperty(const TArray<TSharedRef<FDetailTreeNode>>& RootTreeNodes, FPropertyPath Property)
+{
+	TMap<FString, TSharedRef<FDetailTreeNode>> PropertyPathToTreeNodes;
+	GetPropertyPathToTreeNodes(RootTreeNodes, PropertyPathToTreeNodes);
+	
+	TSharedRef< FDetailTreeNode >* TreeNode = PropertyPathToTreeNodes.Find(Property.ToString());
+
+	// if we couldn't find the exact property, trim the path to get the next best option
+	while (!TreeNode && Property.GetNumProperties() > 1)
+	{
+		Property = *Property.TrimPath(1);
+		TreeNode = PropertyPathToTreeNodes.Find(Property.ToString());
+	}
+	return TreeNode? *TreeNode : TSharedPtr<FDetailTreeNode>();
 }
 
 void SDetailsViewBase::HighlightProperty(const FPropertyPath& Property)
 {
+	if (!Property.IsValid())
+	{
+		return;
+	}
+	
 	TSharedPtr<FDetailTreeNode> PrevHighlightedNodePtr = CurrentlyHighlightedNode.Pin();
 	if (PrevHighlightedNodePtr.IsValid())
 	{
 		PrevHighlightedNodePtr->SetIsHighlighted(false);
 	}
 
-	TSharedPtr< FDetailTreeNode > FinalNodePtr = nullptr;
-	TArray< TSharedPtr< FDetailTreeNode > > TreeNodeChain;
-	FindTreeNodeFromPropertyRecursive(RootTreeNodes, Property, TreeNodeChain);
-	if (TreeNodeChain.Num() > 0)
+	const TSharedPtr< FDetailTreeNode > TreeNode = FindBestFitTreeNodeFromProperty(RootTreeNodes, Property);
+	if (TreeNode.IsValid())
 	{
-		FinalNodePtr = TreeNodeChain[0];
-		check(FinalNodePtr.IsValid());
-		FinalNodePtr->SetIsHighlighted(true);
+		// highlight the found node
+		TreeNode->SetIsHighlighted(true);
 
-		for (int ParentIndex = 1; ParentIndex < TreeNodeChain.Num(); ++ParentIndex)
+		// make sure all ancestors are expanded so we can see the found node
+		TSharedPtr< FDetailTreeNode > Ancestor = TreeNode;
+		while(Ancestor->GetParentNode().IsValid())
 		{
-			TSharedPtr< FDetailTreeNode > CurrentParent = TreeNodeChain[ParentIndex];
-			check(CurrentParent.IsValid());
-			DetailTree->SetItemExpansion(CurrentParent.ToSharedRef(), true);
+			Ancestor = Ancestor->GetParentNode().Pin();
+			DetailTree->SetItemExpansion(Ancestor.ToSharedRef(), true);
 		}
-
-		DetailTree->RequestScrollIntoView(FinalNodePtr.ToSharedRef());
+		
+		// scroll to the found node
+		DetailTree->RequestScrollIntoView(TreeNode.ToSharedRef());
 	}
-	CurrentlyHighlightedNode = FinalNodePtr;
+	
+	CurrentlyHighlightedNode = TreeNode;
 }
 
 void SDetailsViewBase::ShowAllAdvancedProperties()
@@ -275,11 +300,11 @@ const FSlateBrush* SDetailsViewBase::OnGetFilterButtonImageResource() const
 {
 	if (HasActiveSearch())
 	{
-		return FEditorStyle::GetBrush(TEXT("PropertyWindow.FilterCancel"));
+		return FAppStyle::GetBrush(TEXT("PropertyWindow.FilterCancel"));
 	}
 	else
 	{
-		return FEditorStyle::GetBrush(TEXT("PropertyWindow.FilterSearch"));
+		return FAppStyle::GetBrush(TEXT("PropertyWindow.FilterSearch"));
 	}
 }
 
@@ -424,8 +449,6 @@ void SDetailsViewBase::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> 
 
 	Args.LayoutData = &LayoutData;
 	Args.InstancedPropertyTypeToDetailLayoutMap = &InstancedTypeToLayoutMap;
-	Args.IsPropertyReadOnly = [this](const FPropertyAndParent& PropertyAndParent) { return IsPropertyReadOnly(PropertyAndParent); };
-	Args.IsPropertyVisible = [this](const FPropertyAndParent& PropertyAndParent) { return IsPropertyVisible(PropertyAndParent); };
 	Args.bEnableFavoriteSystem = bEnableFavoriteSystem;
 	Args.bUpdateFavoriteSystemOnly = false;
 	DetailLayoutHelpers::UpdateSinglePropertyMapRecursive(*RootPropertyNode, NAME_None, RootPropertyNode.Get(), Args);
@@ -529,7 +552,7 @@ void SDetailsViewBase::SetKeyframeHandler( TSharedPtr<class IDetailKeyframeHandl
 		ExtraWidth = -22;
 	}
 	
-	const float NewWidth = ColumnSizeData.GetRightColumnMinWidth() + ExtraWidth;
+	const float NewWidth = ColumnSizeData.GetRightColumnMinWidth().Get(0) + ExtraWidth;
 	ColumnSizeData.SetRightColumnMinWidth(NewWidth);
 
 	KeyframeHandler = InKeyframeHandler;
@@ -630,8 +653,7 @@ const FDetailsViewConfig* SDetailsViewBase::GetConstViewConfig() const
 		return nullptr;
 	}
 
-	const UDetailsConfig* DetailsConfig = GetDefault<UDetailsConfig>();
-	return DetailsConfig->Views.Find(DetailsViewArgs.ViewIdentifier);
+	return UDetailsConfig::Get()->Views.Find(DetailsViewArgs.ViewIdentifier);
 }
 
 FDetailsViewConfig* SDetailsViewBase::GetMutableViewConfig()
@@ -641,13 +663,12 @@ FDetailsViewConfig* SDetailsViewBase::GetMutableViewConfig()
 		return nullptr;
 	}
 
-	UDetailsConfig* DetailsConfig = GetMutableDefault<UDetailsConfig>();
-	return &DetailsConfig->Views.FindOrAdd(DetailsViewArgs.ViewIdentifier);
+	return &UDetailsConfig::Get()->Views.FindOrAdd(DetailsViewArgs.ViewIdentifier);
 }
 
 void SDetailsViewBase::SaveViewConfig()
 {
-	GetMutableDefault<UDetailsConfig>()->SaveEditorConfig();
+	UDetailsConfig::Get()->SaveEditorConfig();
 }
 
 void SDetailsViewBase::OnShowOnlyModifiedClicked()
@@ -766,7 +787,7 @@ TSharedPtr<SWidget> SDetailsViewBase::GetFilterAreaWidget()
 	return DetailsViewArgs.bCustomFilterAreaLocation ? FilterRow : nullptr;
 }
 
-TSharedPtr<class FUICommandList> SDetailsViewBase::GetHostCommandList() const
+TSharedPtr<FUICommandList> SDetailsViewBase::GetHostCommandList() const
 {
 	return DetailsViewArgs.HostCommandList;
 }
@@ -906,23 +927,25 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	HandlePendingCleanup();
 
 	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
-	if (ViewConfig && ViewConfig->ValueColumnWidth != ColumnSizeData.ValueColumnWidth.Get(0))
+	if (ViewConfig != nullptr && 
+		ViewConfig->ValueColumnWidth != ColumnSizeData.GetValueColumnWidth().Get(0))
 	{
-		ViewConfig->ValueColumnWidth = ColumnSizeData.ValueColumnWidth.Get(0);
+		ViewConfig->ValueColumnWidth = ColumnSizeData.GetValueColumnWidth().Get(0);
 		SaveViewConfig();
 	}
 
 	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
 
 	bool bHadDeferredActions = DeferredActions.Num() > 0;
-	auto PreProcessRootNode = [bHadDeferredActions, this](TSharedPtr<FComplexPropertyNode> RootPropertyNode) 
+	bool bDidPurgeObjects = false;
+	auto PreProcessRootNode = [bHadDeferredActions, &bDidPurgeObjects, this](TSharedPtr<FComplexPropertyNode> RootPropertyNode)
 	{
 		check(RootPropertyNode.IsValid());
 
 		// Purge any objects that are marked pending kill from the object list
 		if (FObjectPropertyNode* ObjectRoot = RootPropertyNode->AsObjectNode())
 		{
-			ObjectRoot->PurgeKilledObjects();
+			bDidPurgeObjects |= ObjectRoot->PurgeKilledObjects();
 		}
 
 		if (bHadDeferredActions)
@@ -977,7 +1000,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 
 	int32 FoundIndex = RootPropertyNodes.Find(LastRootPendingKill);
 	bool bUpdateFilteredDetails = false;
-	if (FoundIndex != INDEX_NONE)
+	if (FoundIndex != INDEX_NONE || bDidPurgeObjects)
 	{ 
 		// Reacquire the root property nodes.  It may have been changed by the deferred actions if something like a blueprint editor forcefully resets a details panel during a posteditchange
 		ForceRefresh();
@@ -993,7 +1016,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 		}
 		else // standard validation behavior
 		{
-			for (TSharedPtr<FComplexPropertyNode>& RootPropertyNode : RootPropertyNodes)
+			for (const TSharedPtr<FComplexPropertyNode>& RootPropertyNode : RootPropertyNodes)
 			{
 				EPropertyDataValidationResult Result = RootPropertyNode->EnsureDataIsValid();
 				if (Result == EPropertyDataValidationResult::PropertiesChanged || Result == EPropertyDataValidationResult::EditInlineNewValueChanged)
@@ -1001,8 +1024,14 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 					UpdatePropertyMaps();
 					bUpdateFilteredDetails = true;
 				}
-				else if (Result == EPropertyDataValidationResult::ArraySizeChanged || Result == EPropertyDataValidationResult::ChildrenRebuilt)
+				else if (Result == EPropertyDataValidationResult::ArraySizeChanged)
 				{
+					bUpdateFilteredDetails = true;
+				}
+				else if (Result == EPropertyDataValidationResult::ChildrenRebuilt)
+				{
+					RootPropertyNode->MarkChildrenAsRebuilt();
+				
 					bUpdateFilteredDetails = true;
 				}
 				else if (Result == EPropertyDataValidationResult::ObjectInvalid)
@@ -1049,13 +1078,11 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	if (bUpdateFilteredDetails)
 	{
 		UpdateFilteredDetails();
-
-		RestoreAllExpandedItems();
 	}
 
-	for(FDetailLayoutData& LayoutData : DetailLayouts)
+	for (FDetailLayoutData& LayoutData : DetailLayouts)
 	{
-		if(LayoutData.DetailLayout.IsValid())
+		if (LayoutData.DetailLayout.IsValid())
 		{
 			LayoutData.DetailLayout->Tick(InDeltaTime);
 		}
@@ -1130,9 +1157,26 @@ static void SetExpandedItems(TSharedPtr<FPropertyNode> InPropertyNode, const TSe
 		InPropertyNode->SetNodeFlags(EPropertyNodeFlags::Expanded, false);
 	}
 
-	for (int32 NodeIndex = 0; NodeIndex < InPropertyNode->GetNumChildNodes(); ++NodeIndex)
+	bool bAnyPrefix = false;
+	for (const FString& Item : InExpandedItems)
 	{
-		SetExpandedItems(InPropertyNode->GetChildNode(NodeIndex), InExpandedItems, bCollapseRest);
+		// check if this path is a prefix to some other path
+		// if it's not, we can early out and skip checking every child node, which is a win for very large child arrays
+		if (Item.Len() > Path.Len() && 
+			(Item[Path.Len()] == '[' || Item[Path.Len()] == '.') &&
+			Item.StartsWith(Path))
+		{
+			bAnyPrefix = true;
+			break;
+		}
+	}
+
+	if (bAnyPrefix)
+	{
+		for (int32 NodeIndex = 0; NodeIndex < InPropertyNode->GetNumChildNodes(); ++NodeIndex)
+		{
+			SetExpandedItems(InPropertyNode->GetChildNode(NodeIndex), InExpandedItems, bCollapseRest);
+		}
 	}
 }
 
@@ -1289,8 +1333,6 @@ void SDetailsViewBase::RestoreAllExpandedItems()
 
 void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 {
-	FString ExpandedCustomItems;
-
 	UStruct* BestBaseStruct = StartNode->FindComplexParent()->GetBaseStructure();
 
 	//while a valid class, and we're either the same as the base class (for multiple actors being selected and base class is AActor) OR we're not down to AActor yet)
@@ -1306,7 +1348,9 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 
 	if (BestBaseStruct)
 	{
+		FString ExpandedCustomItems;
 		GConfig->GetString(TEXT("DetailCustomWidgetExpansion"), *BestBaseStruct->GetName(), ExpandedCustomItems, GEditorPerProjectIni);
+
 		TArray<FString> ExpandedCustomItemsArray;
 		ExpandedCustomItems.ParseIntoArray(ExpandedCustomItemsArray, TEXT(","), true);
 
@@ -1340,43 +1384,44 @@ void SDetailsViewBase::HandleNodeAnimationComplete()
 	CurrentlyAnimatingNodePath = nullptr;
 }
 
+void SDetailsViewBase::FilterRootNode(const TSharedPtr<FComplexPropertyNode>& RootNode)
+{
+	if (RootNode.IsValid())
+	{
+		SaveExpandedItems(RootNode.ToSharedRef());
+
+		RootNode->FilterNodes(CurrentFilter.FilterStrings);
+		RootNode->ProcessSeenFlags(true);
+
+		RestoreExpandedItems(RootNode.ToSharedRef());
+	}
+}
+
 void SDetailsViewBase::UpdateFilteredDetails()
 {
 	RootTreeNodes.Reset();
 
 	FDetailNodeList InitialRootNodeList;
-	
 	NumVisibleTopLevelObjectNodes = 0;
 	
-	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
-	for(int32 RootNodeIndex = 0; RootNodeIndex < RootPropertyNodes.Num(); ++RootNodeIndex)
+	const FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
+	for (int32 RootNodeIndex = 0; RootNodeIndex < RootPropertyNodes.Num(); ++RootNodeIndex)
 	{
-		const TSharedPtr<FComplexPropertyNode>& RootPropertyNode = RootPropertyNodes[RootNodeIndex];
-		if(RootPropertyNode.IsValid())
+		if (RootPropertyNodes[RootNodeIndex].IsValid())
 		{
-			RootPropertyNode->FilterNodes(CurrentFilter.FilterStrings);
-			RootPropertyNode->ProcessSeenFlags(true);
-
-			RestoreExpandedItems(RootPropertyNode.ToSharedRef());
+			FilterRootNode(RootPropertyNodes[RootNodeIndex]);
 
 			const TSharedPtr<FDetailLayoutBuilderImpl>& DetailLayout = DetailLayouts[RootNodeIndex].DetailLayout;
-			if(DetailLayout.IsValid())
+			if (DetailLayout.IsValid())
 			{
-				FRootPropertyNodeList& ExternalRootPropertyNodes = DetailLayout->GetExternalRootPropertyNodes();
-				for (const TSharedPtr<FComplexPropertyNode>& ExternalRootNode : ExternalRootPropertyNodes)
+				for (const TSharedPtr<FComplexPropertyNode>& ExternalRootNode : DetailLayout->GetExternalRootPropertyNodes())
 				{
-					if (ExternalRootNode.IsValid())
-					{
-						ExternalRootNode->FilterNodes(CurrentFilter.FilterStrings);
-						ExternalRootNode->ProcessSeenFlags(true);
-
-						RestoreExpandedItems(ExternalRootNode.ToSharedRef());
-					}
+					FilterRootNode(ExternalRootNode);
 				}
 
 				DetailLayout->FilterDetailLayout(CurrentFilter);
 
-				FDetailNodeList& LayoutRoots = DetailLayout->GetFilteredRootTreeNodes();
+				const FDetailNodeList& LayoutRoots = DetailLayout->GetFilteredRootTreeNodes();
 				if (LayoutRoots.Num() > 0)
 				{
 					// A top level object nodes has a non-filtered away root so add one to the total number we have
@@ -1389,9 +1434,9 @@ void SDetailsViewBase::UpdateFilteredDetails()
 	}
 
 	// for multiple top level object we need to do a secondary pass on top level object nodes after we have determined if there is any nodes visible at all.  If there are then we ask the details panel if it wants to show childen
-	for(TSharedRef<class FDetailTreeNode> RootNode : InitialRootNodeList)
+	for (const TSharedRef<FDetailTreeNode>& RootNode : InitialRootNodeList)
 	{
-		if(RootNode->ShouldShowOnlyChildren())
+		if (RootNode->ShouldShowOnlyChildren())
 		{
 			RootNode->GetChildren(RootTreeNodes);
 		}

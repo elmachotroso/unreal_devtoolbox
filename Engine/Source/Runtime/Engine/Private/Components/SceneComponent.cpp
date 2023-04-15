@@ -35,6 +35,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include "Engine/ScopedMovementUpdate.h"
 
 #define LOCTEXT_NAMESPACE "SceneComponent"
 
@@ -55,13 +56,6 @@ DECLARE_CYCLE_STAT(TEXT("Component UpdateNavData"), STAT_ComponentUpdateNavData,
 DECLARE_CYCLE_STAT(TEXT("Component PostUpdateNavData"), STAT_ComponentPostUpdateNavData, STATGROUP_Component);
 
 
-FOverlapInfo::FOverlapInfo(UPrimitiveComponent* InComponent, int32 InBodyIndex)
-	: bFromSweep(false)
-{
-	OverlapInfo.HitObjectHandle = FActorInstanceHandle(InComponent ? InComponent->GetOwner() : nullptr);
-	OverlapInfo.Component = InComponent;
-	OverlapInfo.Item = InBodyIndex;
-}
 
 FName USceneComponent::GetDefaultSceneRootVariableName()
 {
@@ -469,7 +463,7 @@ static bool SceneComponentNeedsLoadForTarget(USceneComponent const* SceneCompone
 		}
 	}
 
-	return TargetPlatform->HasEditorOnlyData() || !SceneComponentObject->IsEditorOnly();
+	return TargetPlatform->AllowsEditorObjects() || !SceneComponentObject->IsEditorOnly();
 }
 
 static bool CheckDescendantsAreAlsoCulledForTarget(USceneComponent const* SceneComponentObject, const ITargetPlatform* TargetPlatform)
@@ -661,7 +655,7 @@ void USceneComponent::UpdateComponentToWorldWithParent(USceneComponent* Parent,F
 	bool bHasChanged;
 	{
 		//QUICK_SCOPE_CYCLE_COUNTER(STAT_USceneComponent_UpdateComponentToWorldWithParent_HasChanged);
-		bHasChanged = !GetComponentTransform().Equals(NewTransform, SMALL_NUMBER);
+		bHasChanged = !GetComponentTransform().Equals(NewTransform, UE_SMALL_NUMBER);
 	}
 
 	// We propagate here based on more than just the transform changing, as other components may depend on the teleport flag
@@ -695,6 +689,7 @@ void USceneComponent::OnRegister()
 			SetShouldBeAttached(false);
 			SetShouldSnapLocationWhenAttached(false);
 			SetShouldSnapRotationWhenAttached(false);
+			SetShouldSnapScaleWhenAttached(false);
 		}
 	}
 	
@@ -716,6 +711,11 @@ void USceneComponent::OnRegister()
 #if WITH_EDITORONLY_DATA
 void USceneComponent::CreateSpriteComponent(UTexture2D* SpriteTexture)
 {
+	CreateSpriteComponent(SpriteTexture, true);
+}
+
+void USceneComponent::CreateSpriteComponent(class UTexture2D* SpriteTexture, bool bRegister)
+{
 	if (bVisualizeComponent && SpriteComponent == nullptr && GetOwner() && !GetWorld()->IsGameWorld())
 	{
 		// Create a new billboard component to serve as a visualization of the actor until there is another primitive component
@@ -734,7 +734,11 @@ void USceneComponent::CreateSpriteComponent(UTexture2D* SpriteTexture)
 		SpriteComponent->OpacityMaskRefVal = .3f;
 
 		SpriteComponent->SetupAttachment(this);
-		SpriteComponent->RegisterComponent();
+
+		if (bRegister)
+		{
+			SpriteComponent->RegisterComponent();
+		}
 	}
 }
 #endif
@@ -744,6 +748,36 @@ void USceneComponent::OnUnregister()
 	CachedLevelCollection = nullptr;
 
 	Super::OnUnregister();
+}
+
+void USceneComponent::EndPlay(EEndPlayReason::Type Reason)
+{
+	Super::EndPlay(Reason);
+
+	if (Reason == EEndPlayReason::RemovedFromWorld && !HasBeenInitialized())
+	{
+		// Detach components which are in different streaming levels so that this level can be properly garbage collected.
+		// Note that we explicitly want to check the outer hierarchy and not the owning package because we want references that participate in GC.
+		UObject* Outermost = GetOutermostObject();
+		if (AttachParent && AttachParent->GetOutermostObject() != Outermost)
+		{
+			DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		}
+
+		TInlineComponentArray<USceneComponent*> ChildrenToDetach;
+		for (int32 i = 0; i < AttachChildren.Num(); ++i)
+		{
+			if (USceneComponent* AttachChild = AttachChildren[i].Get(); AttachChild && AttachChild->GetOutermostObject() != Outermost)
+			{
+				ChildrenToDetach.Add(AttachChild);
+			}
+		}
+
+		for (USceneComponent* Child : ChildrenToDetach)
+		{
+			Child->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		}
+	}
 }
 
 void USceneComponent::PropagateTransformUpdate(bool bTransformChanged, EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport)
@@ -841,6 +875,24 @@ void USceneComponent::PropagateTransformUpdate(bool bTransformChanged, EUpdateTr
 	}
 }
 
+bool USceneComponent::IsDeferringMovementUpdates(const FScopedMovementUpdate& ScopedUpdate) const
+{
+	return ScopedUpdate.IsDeferringUpdates();
+}
+
+bool USceneComponent::UpdateOverlaps(const TOverlapArrayView* PendingOverlaps /* = nullptr */, bool bDoNotifies /* = true */, const TOverlapArrayView* OverlapsAtEndLocation /* = nullptr */)
+{
+	if (IsDeferringMovementUpdates())
+	{
+		GetCurrentScopedMovement()->ForceOverlapUpdate();
+	}
+	else if (!ShouldSkipUpdateOverlaps())
+	{
+		bSkipUpdateOverlaps = UpdateOverlapsImpl(PendingOverlaps, bDoNotifies, OverlapsAtEndLocation);
+	}
+
+	return bSkipUpdateOverlaps;
+}
 
 void USceneComponent::EndScopedMovementUpdate(class FScopedMovementUpdate& CompletedScope)
 {
@@ -941,11 +993,15 @@ void USceneComponent::DestroyComponent(bool bPromoteChildren/*= false*/)
 				USceneComponent* const * FindResult =
 					AttachedChildren.FindByPredicate([Owner](USceneComponent* Child){ return Child != nullptr && !Child->IsEditorOnly() && Child->GetOwner() == Owner; });
 
+				const bool bIsNativeOwnerClass = Owner->GetClass()->IsNative();
+
 				if (FindResult != nullptr)
 				{
 					ChildToPromote = *FindResult;
 				}
-				else
+				// Native C++ classes do not need to always have a DefaultSceneRoot, it can be empty on
+				// instances placed in the level directly from the C++ class
+				else if (!bIsNativeOwnerClass)
 				{
 					// Didn't find a suitable component to promote so create a new default component
 
@@ -968,7 +1024,6 @@ void USceneComponent::DestroyComponent(bool bPromoteChildren/*= false*/)
 				Owner->Modify();
 
 				// Set the selected child node as the new root
-				check(ChildToPromote != nullptr);
 				Owner->SetRootComponent(ChildToPromote);
 			}
 			else    // ...not the root node, so we'll promote the selected child node to this position in its AttachParent's child array.
@@ -1055,8 +1110,13 @@ void USceneComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 	// If we're just destroying for the exit purge don't bother with any of this
 	if (!GExitPurge && !bComputeBoundsOnceForGame)
 	{
-		// If we're destroying the hierarchy we only have to make sure that we detach children from other Actor's
+		// If we're destroying the hierarchy we only have to make sure that we detach children from other Actors
 		AActor* MyOwner = GetOwner();
+
+		// Do not involve objects which will be destroyed in hierarchy fixups
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		constexpr EInternalObjectFlags SkipFlags = EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage | EInternalObjectFlags::Unreachable;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if (bDestroyingHierarchy)
 		{
@@ -1080,24 +1140,29 @@ void USceneComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 					{
 						if (Child->GetAttachParent() == this)
 						{
-							if (!bExternalAttachParentDetermined)
-							{
-								ExternalAttachParent = GetAttachParent();
-								while (ExternalAttachParent)
-								{
-									if (ExternalAttachParent->GetOwner() != MyOwner)
-									{
-										break;
-									}
-									ExternalAttachParent = ExternalAttachParent->GetAttachParent();
-								}
-								bExternalAttachParentDetermined = true;
-							}
-
 							bool bNeedsDetach = true;
-							if (ExternalAttachParent)
+							// If this child is going to be destroyed just detach it and don't find a new parent
+							if (!Child->HasAnyInternalFlags(SkipFlags))
 							{
-								bNeedsDetach = (Child->AttachToComponent(ExternalAttachParent, FAttachmentTransformRules::KeepWorldTransform) == false);
+								if (!bExternalAttachParentDetermined)
+								{
+									ExternalAttachParent = GetAttachParent();
+									while (ExternalAttachParent)
+									{
+										// Only attach to a parent which will not soon be destroyed
+										if (!ExternalAttachParent->HasAnyInternalFlags(SkipFlags) && ExternalAttachParent->GetOwner() != MyOwner)
+										{
+											break;
+										}
+										ExternalAttachParent = ExternalAttachParent->GetAttachParent();
+									}
+									bExternalAttachParentDetermined = true;
+								}
+
+								if (ExternalAttachParent)
+								{
+									bNeedsDetach = (Child->AttachToComponent(ExternalAttachParent, FAttachmentTransformRules::KeepWorldTransform) == false);
+								}
 							}
 							if (bNeedsDetach)
 							{
@@ -1152,12 +1217,23 @@ void USceneComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 				{
 					if (Child->GetAttachParent())
 					{
-						if (Child->GetAttachParent() == this)
+						// If the child is also being destroyed during GC, don't reattach it to anything
+						if (Child->HasAnyInternalFlags(SkipFlags))
+						{
+							Child->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+						}
+						else if (Child->GetAttachParent() == this)
 						{
 							bool bNeedsDetach = true;
-							if (GetAttachParent())
+							USceneComponent* NewParent = GetAttachParent();
+							// Walk up the hierarchy until we find a valid parent which is not marked for destruction by gameplay or GC 
+							while (NewParent && NewParent->HasAnyInternalFlags(SkipFlags))
 							{
-								bNeedsDetach = (Child->AttachToComponent(GetAttachParent(), FAttachmentTransformRules::KeepWorldTransform) == false);
+								NewParent = NewParent->GetAttachParent();
+							}
+							if (NewParent)
+							{
+								bNeedsDetach = (Child->AttachToComponent(NewParent, FAttachmentTransformRules::KeepWorldTransform) == false);
 							}
 							if (bNeedsDetach)
 							{
@@ -1777,17 +1853,20 @@ void USceneComponent::SetRelativeRotationCache(const FRotationConversionCache& I
 
 void USceneComponent::SetupAttachment(class USceneComponent* InParent, FName InSocketName)
 {
-	if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachToComponent. Once a component is registered you must use AttachToComponent. Owner [%s], InParent [%s], InSocketName [%s]"), *GetPathNameSafe(GetOwner()), *GetNameSafe(InParent), *InSocketName.ToString()))
+	if (InParent != AttachParent || InSocketName != AttachSocketName)
 	{
-		if (ensureMsgf(InParent != this, TEXT("Cannot attach a component to itself.")))
+		if (ensureMsgf(!bRegistered, TEXT("SetupAttachment should only be used to initialize AttachParent and AttachSocketName for a future AttachToComponent. Once a component is registered you must use AttachToComponent. Owner [%s], InParent [%s], InSocketName [%s]"), *GetPathNameSafe(GetOwner()), *GetNameSafe(InParent), *InSocketName.ToString()))
 		{
-			if (ensureMsgf(InParent == nullptr || !InParent->IsAttachedTo(this), TEXT("Setting up attachment would create a cycle.")))
+			if (ensureMsgf(InParent != this, TEXT("Cannot attach a component to itself.")))
 			{
-				if (ensureMsgf(AttachParent == nullptr || !AttachParent->AttachChildren.Contains(this), TEXT("SetupAttachment cannot be used once a component has already had AttachTo used to connect it to a parent.")))
+				if (ensureMsgf(InParent == nullptr || !InParent->IsAttachedTo(this), TEXT("Setting up attachment would create a cycle.")))
 				{
-					SetAttachParent(InParent);
-					SetAttachSocketName(InSocketName);
-					SetShouldBeAttached(AttachParent != nullptr);
+					if (ensureMsgf(AttachParent == nullptr || !AttachParent->AttachChildren.Contains(this), TEXT("SetupAttachment cannot be used once a component has already had AttachTo used to connect it to a parent.")))
+					{
+						SetAttachParent(InParent);
+						SetAttachSocketName(InSocketName);
+						SetShouldBeAttached(AttachParent != nullptr);
+					}
 				}
 			}
 		}
@@ -1852,6 +1931,7 @@ bool USceneComponent::AttachToComponent(USceneComponent* Parent, const FAttachme
 		SetupAttachment(Parent, SocketName);
 		SetShouldSnapLocationWhenAttached(false);
 		SetShouldSnapRotationWhenAttached(false);
+		SetShouldSnapScaleWhenAttached(false);
 
 		return true;
 	}
@@ -2016,13 +2096,16 @@ bool USceneComponent::AttachToComponent(USceneComponent* Parent, const FAttachme
 		SetAttachSocketName(SocketName);
 		SetShouldBeAttached(AttachParent != nullptr);
 
-		SetShouldSnapLocationWhenAttached(AttachmentRules.LocationRule == EAttachmentRule::SnapToTarget);
-		SetShouldSnapRotationWhenAttached(AttachmentRules.RotationRule == EAttachmentRule::SnapToTarget);
+		// Tell Client to snap to target if we use SnapToTarget rule or if we are using KeepWorld and Transform is same as Parent
+		SetShouldSnapLocationWhenAttached(AttachmentRules.LocationRule == EAttachmentRule::SnapToTarget || (AttachmentRules.LocationRule == EAttachmentRule::KeepWorld && GetRelativeLocation() == Parent->GetRelativeLocation()));
+		SetShouldSnapRotationWhenAttached(AttachmentRules.RotationRule == EAttachmentRule::SnapToTarget || (AttachmentRules.RotationRule == EAttachmentRule::KeepWorld && GetRelativeRotation() == Parent->GetRelativeRotation()));
+		SetShouldSnapScaleWhenAttached(   AttachmentRules.ScaleRule    == EAttachmentRule::SnapToTarget || (AttachmentRules.ScaleRule    == EAttachmentRule::KeepWorld && GetRelativeScale3D()  == Parent->GetRelativeScale3D()));
 
 		OnAttachmentChanged();
 
 		// Preserve order of previous attachment if valid (in case we're doing a reattach operation inside a loop that might assume the AttachChildren order won't change)
-		if(LastAttachIndex != INDEX_NONE)
+		// Don't do this if updating attachment from replication to avoid overwriting addresses in AttachChildren that may be unmapped
+		if(LastAttachIndex != INDEX_NONE && !bNetUpdateAttachment)
 		{
 			Parent->AttachChildren.Insert(this, LastAttachIndex);
 		}
@@ -2221,6 +2304,7 @@ void USceneComponent::DetachFromComponent(const FDetachmentTransformRules& Detac
 
 		SetShouldSnapLocationWhenAttached(false);
 		SetShouldSnapRotationWhenAttached(false);
+		SetShouldSnapScaleWhenAttached(false);
 
 		OnAttachmentChanged();
 
@@ -2274,6 +2358,19 @@ AActor* USceneComponent::GetAttachmentRootActor() const
 {
 	const USceneComponent* const AttachmentRootComponent = GetAttachmentRoot();
 	return AttachmentRootComponent ? AttachmentRootComponent->GetOwner() : nullptr;
+}
+
+FVector USceneComponent::GetActorPositionForRenderer() const
+{
+	const USceneComponent* Top;
+	for (Top = this; Top->GetAttachParent() && !Top->GetAttachParent()->bIsNotRenderAttachmentRoot; Top = Top->GetAttachParent());
+	return (Top->GetOwner() != nullptr) ? Top->GetOwner()->GetActorLocation() : FVector(ForceInitToZero);
+}
+
+AActor* USceneComponent::GetAttachParentActor() const
+{
+	const USceneComponent* const AttachParentComponent = GetAttachParent();
+	return AttachParentComponent ? AttachParentComponent->GetOwner() : nullptr;
 }
 
 bool USceneComponent::IsAttachedTo(const USceneComponent* TestComp) const
@@ -2373,7 +2470,16 @@ TStructOnScope<FActorComponentInstanceData> USceneComponent::GetComponentInstanc
 #if WITH_EDITOR
 FBox USceneComponent::GetStreamingBounds() const
 {
-	return Bounds.GetBox();
+	FBox Box = Bounds.GetBox();
+
+	// Temporarily disabled while we resolve why Config.AgentRadius is sometime humongous.
+	// if (IsNavigationRelevant())
+	// {
+	// 	const FNavDataConfig& Config = FNavigationSystem::GetBiggestSupportedAgent(GetWorld());
+	// 	Box = Box.ExpandBy(Config.AgentRadius);
+	// }
+
+	return Box;
 }
 #endif
 
@@ -2406,7 +2512,7 @@ void USceneComponent::UpdateChildTransforms(EUpdateTransformFlags UpdateTransfor
 				}
 				else
 				{
-					// If we're updating child only if he's using a socket. Skip if that's not the case.
+					// If we're updating child only if it's using a socket. Skip if that's not the case.
 					if (bOnlyUpdateIfUsingSocket && (ChildComp->AttachSocketName == NAME_None))
 					{
 						continue;
@@ -3311,6 +3417,10 @@ void USceneComponent::PostRepNotifies()
 		{
 			SetRelativeRotation_Direct(FRotator::ZeroRotator);
 		}
+		if (bShouldSnapScaleWhenAttached && !bNetUpdateTransform)
+		{
+			SetRelativeScale3D_Direct(FVector::OneVector);
+		}
 
 		// Check if this is a detach
 		if (AttachParent && !bShouldBeAttached)
@@ -3323,6 +3433,7 @@ void USceneComponent::PostRepNotifies()
 			const bool bOldShouldBeAttached = bShouldBeAttached;
 			const bool bOldShouldSnapLocationWhenAttached = bShouldSnapLocationWhenAttached;
 			const bool bOldShouldSnapRotationWhenAttached = bShouldSnapRotationWhenAttached;
+			const bool bOldShouldSnapScaleWhenAttached    = bShouldSnapScaleWhenAttached;
 
 			AttachToComponent(NetOldAttachParent, FAttachmentTransformRules::KeepRelativeTransform, NetOldAttachSocketName);
 
@@ -3330,6 +3441,7 @@ void USceneComponent::PostRepNotifies()
 			SetShouldBeAttached(bOldShouldBeAttached);
 			SetShouldSnapLocationWhenAttached(bOldShouldSnapLocationWhenAttached);
 			SetShouldSnapRotationWhenAttached(bOldShouldSnapRotationWhenAttached);
+			SetShouldSnapScaleWhenAttached(bOldShouldSnapScaleWhenAttached);
 		}
 
 		bNetUpdateAttachment = false;
@@ -3377,6 +3489,7 @@ void USceneComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & O
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bShouldBeAttached, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bShouldSnapLocationWhenAttached, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bShouldSnapRotationWhenAttached, SharedParams);
+	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bShouldSnapScaleWhenAttached, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachParent, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachChildren, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachSocketName, SharedParams);
@@ -3516,264 +3629,6 @@ FScopedPreventAttachedComponentMove::~FScopedPreventAttachedComponentMove()
 			}
 		}
 	}
-}
-
-
-/**
- * FScopedMovementUpdate implementation
- */
-
-static uint32 s_ScopedWarningCount = 0;
-
-FScopedMovementUpdate::FScopedMovementUpdate( class USceneComponent* Component, EScopedUpdate::Type ScopeBehavior, bool bRequireOverlapsEventFlagToQueueOverlaps )
-: Owner(Component)
-, OuterDeferredScope(nullptr)
-, CurrentOverlapState(EOverlapState::eUseParent)
-, TeleportType(ETeleportType::None)
-, FinalOverlapCandidatesIndex(INDEX_NONE)
-, bDeferUpdates(ScopeBehavior == EScopedUpdate::DeferredUpdates)
-, bHasMoved(false)
-, bRequireOverlapsEventFlag(bRequireOverlapsEventFlagToQueueOverlaps)
-{
-	if (IsValid(Component))
-	{
-		OuterDeferredScope = Component->GetCurrentScopedMovement();
-		InitialTransform = Component->GetComponentToWorld();
-		InitialRelativeLocation = Component->GetRelativeLocation();
-		InitialRelativeRotation = Component->GetRelativeRotation();
-		InitialRelativeScale = Component->GetRelativeScale3D();
-
-		if (ScopeBehavior == EScopedUpdate::ImmediateUpdates)
-		{
-			// We only allow ScopeUpdateImmediately if there is no outer scope, or if the outer scope is also ScopeUpdateImmediately.
-			if (OuterDeferredScope && OuterDeferredScope->bDeferUpdates)
-			{
-				if (s_ScopedWarningCount < 100 || (GFrameCounter & 31) == 0)
-				{
-					s_ScopedWarningCount++;
-					UE_LOG(LogSceneComponent, Error, TEXT("FScopedMovementUpdate attempting to use immediate updates within deferred scope, will use deferred updates instead."));
-				}
-
-				bDeferUpdates = true;
-			}
-		}			
-
-		if (bDeferUpdates)
-		{
-			Component->BeginScopedMovementUpdate(*this);
-		}
-	}
-	else
-	{
-		Owner = nullptr;
-	}
-}
-
-
-FScopedMovementUpdate::~FScopedMovementUpdate()
-{
-	if (bDeferUpdates && IsValid(Owner))
-	{
-		Owner->EndScopedMovementUpdate(*this);
-	}
-	Owner = nullptr;
-}
-
-
-bool FScopedMovementUpdate::IsTransformDirty() const
-{
-	if (Owner)
-	{
-		return !InitialTransform.Equals(Owner->GetComponentToWorld(), SMALL_NUMBER);
-	}
-
-	return false;
-}
-
-
-void FScopedMovementUpdate::RevertMove()
-{
-	USceneComponent* Component = Owner;
-	if (IsValid(Component))
-	{
-		FinalOverlapCandidatesIndex = INDEX_NONE;
-		PendingOverlaps.Reset();
-		BlockingHits.Reset();
-		
-		if (IsTransformDirty())
-		{
-			// Teleport to start
-			Component->ComponentToWorld = InitialTransform;
-			Component->RelativeLocation = InitialRelativeLocation;
-			Component->RelativeRotation = InitialRelativeRotation;
-			Component->RelativeScale3D = InitialRelativeScale;
-
-			if (!IsDeferringUpdates())
-			{
-				Component->PropagateTransformUpdate(true);
-				Component->UpdateOverlaps();
-			}
-		}
-	}
-	bHasMoved = false;
-	CurrentOverlapState = EOverlapState::eUseParent;
-	TeleportType = ETeleportType::None;
-}
-
-void FScopedMovementUpdate::AppendOverlapsAfterMove(const TOverlapArrayView& NewPendingOverlaps, bool bSweep, bool bIncludesOverlapsAtEnd)
-{
-	bHasMoved = true;
-	const bool bWasForcing = (CurrentOverlapState == EOverlapState::eForceUpdate);
-
-	if (bIncludesOverlapsAtEnd)
-	{
-		CurrentOverlapState = EOverlapState::eIncludesOverlaps;
-		if (NewPendingOverlaps.Num())
-		{
-			FinalOverlapCandidatesIndex = PendingOverlaps.Num();
-			PendingOverlaps.Append(NewPendingOverlaps.GetData(), NewPendingOverlaps.Num());
-		}
-		else
-		{
-			// No new pending overlaps means we're not overlapping anything at the end location.
-			FinalOverlapCandidatesIndex = INDEX_NONE;
-		}
-	}
-	else
-	{
-		// We don't know about the final overlaps in the case of a teleport.
-		CurrentOverlapState = EOverlapState::eUnknown;
-		FinalOverlapCandidatesIndex = INDEX_NONE;
-		PendingOverlaps.Append(NewPendingOverlaps.GetData(), NewPendingOverlaps.Num());
-	}
-
-	if (bWasForcing)
-	{
-		CurrentOverlapState = EOverlapState::eForceUpdate;
-	}
-}
-
-
-void FScopedMovementUpdate::OnInnerScopeComplete(const FScopedMovementUpdate& InnerScope)
-{
-	if (IsValid(Owner))
-	{
-		checkSlow(IsDeferringUpdates());
-		checkSlow(InnerScope.IsDeferringUpdates());
-		checkSlow(InnerScope.OuterDeferredScope == this);
-
-		// Combine with the next item on the stack.
-		if (InnerScope.HasMoved(EHasMovedTransformOption::eTestTransform))
-		{
-			bHasMoved = true;
-			
-			if (InnerScope.CurrentOverlapState == EOverlapState::eUseParent)
-			{
-				// Unchanged, use our own
-			}
-			else
-			{
-				// Bubble up from inner scope.
-				CurrentOverlapState = InnerScope.CurrentOverlapState;
-				if (InnerScope.FinalOverlapCandidatesIndex == INDEX_NONE)
-				{
-					FinalOverlapCandidatesIndex = INDEX_NONE;
-				}
-				else
-				{
-					checkSlow(InnerScope.GetPendingOverlaps().Num() > 0);
-					FinalOverlapCandidatesIndex = PendingOverlaps.Num() + InnerScope.FinalOverlapCandidatesIndex;
-				}
-				PendingOverlaps.Append(InnerScope.GetPendingOverlaps());
-				checkSlow(FinalOverlapCandidatesIndex < PendingOverlaps.Num());
-			}
-
-			if (InnerScope.TeleportType > TeleportType)
-			{
-				SetHasTeleported(InnerScope.TeleportType);
-			}
-		}
-		else
-		{
-			// Don't want to invalidate a parent scope when nothing changed in the child.
-			checkSlow(InnerScope.CurrentOverlapState == EOverlapState::eUseParent);
-		}
-
-		BlockingHits.Append(InnerScope.GetPendingBlockingHits());
-	}	
-}
-
-template<typename AllocatorType>
-TOptional<TOverlapArrayView> FScopedMovementUpdate::GetOverlapsAtEnd(class UPrimitiveComponent& PrimComponent, TArray<FOverlapInfo, AllocatorType>& OutEndOverlaps, bool bTransformChanged) const
-{
-	TOptional<TOverlapArrayView> Result;
-	switch (CurrentOverlapState)
-	{
-		case FScopedMovementUpdate::EOverlapState::eUseParent:
-		{
-			// Only rotation could have possibly changed
-			if (bTransformChanged && PrimComponent.AreSymmetricRotations(InitialTransform.GetRotation(), PrimComponent.GetComponentQuat(), PrimComponent.GetComponentScale()))
-			{
-				if (PrimComponent.ConvertRotationOverlapsToCurrentOverlaps(OutEndOverlaps, PrimComponent.GetOverlapInfos()))
-				{
-					Result = OutEndOverlaps;
-				}
-			}
-			else
-			{
-				// Use current overlaps (unchanged)
-				Result = PrimComponent.GetOverlapInfos();
-			}
-			break;
-		}
-		case FScopedMovementUpdate::EOverlapState::eUnknown:
-		case FScopedMovementUpdate::EOverlapState::eForceUpdate:
-		{
-			break;
-		}
-		case FScopedMovementUpdate::EOverlapState::eIncludesOverlaps:
-		{
-			if (FinalOverlapCandidatesIndex == INDEX_NONE)
-			{
-				// Overlapping nothing
-				Result = OutEndOverlaps;
-			}
-			else
-			{
-				// Fill in EndOverlaps with overlaps valid at the end location.
-				const bool bMatchingScale = FTransform::AreScale3DsEqual(InitialTransform, PrimComponent.GetComponentTransform());
-				if (bMatchingScale)
-				{
-					const bool bHasEndOverlaps = PrimComponent.ConvertSweptOverlapsToCurrentOverlaps(
-						OutEndOverlaps, PendingOverlaps, FinalOverlapCandidatesIndex,
-						PrimComponent.GetComponentLocation(), PrimComponent.GetComponentQuat());
-					
-					if (bHasEndOverlaps)
-					{
-						Result = OutEndOverlaps;
-					}
-				}
-			}
-			break;
-		}
-		default:
-		{
-			checkf(false, TEXT("Unknown FScopedMovementUpdate::EOverlapState value"));
-			break;
-		}
-	}
-
-	return Result;
-}
-
-
-bool FScopedMovementUpdate::SetWorldLocationAndRotation(FVector NewLocation, const FQuat& NewQuat, bool bNoPhysics /*= false*/, ETeleportType Teleport /*= ETeleportType::None*/)
-{
-	if (Owner)
-	{
-		return Owner->InternalSetWorldLocationAndRotation(NewLocation, NewQuat, bNoPhysics, Teleport);
-	}
-	return false;
 }
 
 FBoxSphereBounds USceneComponent::GetLocalBounds() const
@@ -4025,6 +3880,12 @@ void USceneComponent::SetShouldSnapRotationWhenAttached(bool bShouldSnapRotation
 {
 	bShouldSnapRotationWhenAttached = bShouldSnapRotation;
 	MARK_PROPERTY_DIRTY_FROM_NAME(USceneComponent, bShouldSnapRotationWhenAttached, this);
+}
+
+void USceneComponent::SetShouldSnapScaleWhenAttached(bool bShouldSnapScale)
+{
+	bShouldSnapScaleWhenAttached = bShouldSnapScale;
+	MARK_PROPERTY_DIRTY_FROM_NAME(USceneComponent, bShouldSnapScaleWhenAttached, this);
 }
 
 #undef LOCTEXT_NAMESPACE

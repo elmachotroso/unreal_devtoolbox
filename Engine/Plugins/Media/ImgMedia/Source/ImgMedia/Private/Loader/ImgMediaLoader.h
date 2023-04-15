@@ -6,12 +6,14 @@
 #include "Containers/LruCache.h"
 #include "Containers/Queue.h"
 #include "IMediaSamples.h"
+#include "IMediaTextureSample.h"
+#include "IMediaView.h"
+#include "Assets/ImgMediaMipMapInfo.h"
 #include "Misc/FrameRate.h"
 #include "Templates/SharedPointer.h"
 
 class FImgMediaGlobalCache;
 class FImgMediaLoaderWork;
-class FImgMediaMipMapInfo;
 class FImgMediaScheduler;
 class FImgMediaTextureSample;
 class FMediaTimeStamp;
@@ -20,8 +22,53 @@ class IImgMediaReader;
 class IQueuedWork;
 
 struct FImgMediaFrame;
-struct FImgMediaTileSelection;
+struct FImgMediaFrameInfo;
 
+/**
+ * Settings for the smart cache.
+ */
+struct FImgMediaLoaderSmartCacheSettings
+{
+	/** True if we are using the smart cache. */
+	bool bIsEnabled;
+	/** The cache will fill up with frames that are up to this time from the current time. */
+	float TimeToLookAhead;
+
+	/** Constructor. */
+	FImgMediaLoaderSmartCacheSettings(bool bInIsEnabled, float InTimeToLookAhead)
+		: bIsEnabled(bInIsEnabled)
+		, TimeToLookAhead(InTimeToLookAhead)
+	{
+	}
+};
+
+/**
+ * Sequence playback bandwidth requirements and estimates.
+ */
+struct FImgMediaLoaderBandwidth
+{
+	/** Number of bytes read per second from the last frame read. */
+	float Current;
+	/** Average bandwidth over time (including idle time). */
+	float Effective;
+	/** Minimum number of bytes per second needed to read all mip levels. */
+	float Required;
+
+	/** Constructor. */
+	FImgMediaLoaderBandwidth();
+
+	/** Updated calculated current and effective bandwidth numbers. */
+	void Update(const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame, double WorkTime);
+
+	/** Empty the read times cache and resets its index. */
+	void EmptyCache();
+
+private:
+	/** Work time cache for average bandwidth calculation. */
+	TArray<TPair<double, double>> ReadTimeCache;
+	/** Circular index for work time cache calculation. */
+	int32 ReadTimeCacheIndex;
+};
 
 /**
  * Loads image sequence frames from disk.
@@ -39,7 +86,8 @@ public:
 	FImgMediaLoader(const TSharedRef<FImgMediaScheduler, ESPMode::ThreadSafe>& InScheduler,
 		const TSharedRef<FImgMediaGlobalCache, ESPMode::ThreadSafe>& InGlobalCache,
 		const TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe>& InMipMapInfo,
-		bool bInFillGapsInSequence);
+		bool bInFillGapsInSequence,
+		const FImgMediaLoaderSmartCacheSettings& InSmartCacheSettings);
 
 	/** Virtual destructor. */
 	virtual ~FImgMediaLoader();
@@ -54,6 +102,15 @@ public:
 	 * @return Data rate (in bits per second).
 	 */
 	uint64 GetBitRate() const;
+
+#if WITH_EDITOR
+	/** Get the number of bytes read per second from the last frame read. */
+	float GetCurrentBandwidth() const { return Bandwidth.Current; }
+	/** Get the effective bandwidth. */
+	float GetEffectiveBandwidth() const { return Bandwidth.Effective; }
+	/** Get the minimum number of bytes per second needed to read all mip levels. */
+	float GetRequiredBandwidth() const { return Bandwidth.Required; }
+#endif
 
 	/**
 	 * Get the time ranges of frames that are being loaded right now.
@@ -135,6 +192,16 @@ public:
 	}
 
 	/**
+	 * Get the mipmap info object used by this loader, if any.
+	 *
+	 * @return The mipmap info object.
+	 */
+	const TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe>& GetMipMapInfo() const
+	{
+		return MipMapInfo;
+	}
+
+	/**
 	 * Get the width and height of the image sequence.
 	 *
 	 * The dimensions of the image sequence are determined by reading the attributes
@@ -188,10 +255,18 @@ public:
 	/**
 	 * Get the number of mipmap levels we have.
 	 */
-	int32 GetNumMipLevels() const
+	int32 GetNumMipLevels() const 
+	{ 
+		return NumMipLevels; 
+	};
+
+	/**
+	 * If mips are stored in separate files we should make sure to read it.
+	 */
+	bool MipsInSeparateFiles() const
 	{
-		return ImagePaths.Num();
-	}
+		return ImagePaths.Num() > 1;
+	};
 
 	/**
 	 * Get the number of images in a single mip level.
@@ -201,6 +276,27 @@ public:
 	int32 GetNumImages() const
 	{
 		return ImagePaths.Num() > 0 ? ImagePaths[0].Num() : 0;
+	}
+
+	/**
+	 * Get the number of tiles in the X direction.
+	 */
+	int32 GetNumTilesX() const
+	{
+		return TilingDescription.TileNum.X;
+	}
+
+	/**
+	 * Get the number of tiles in the Y direction.
+	 */
+	int32 GetNumTilesY() const
+	{
+		return TilingDescription.TileNum.Y;
+	}
+
+	bool IsTiled() const
+	{
+		return (TilingDescription.TileNum.X > 1) || (TilingDescription.TileNum.Y > 1);
 	}
 
 	/**
@@ -239,8 +335,10 @@ public:
 	 * @param CompletedWork The work item that completed.
 	 * @param FrameNumber Number of the frame that was read.
 	 * @param Frame The frame that was read, or nullptr if reading failed.
+	 * @param WorkTime How long to read this frame (in seconds).
 	 */
-	void NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int32 FrameNumber, const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame);
+	void NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int32 FrameNumber,
+		const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame, float WorkTime);
 
 	/**
 	 * Asynchronously request the image frame at the specified time.
@@ -256,6 +354,11 @@ public:
 	 * Reset "queued fetch" related state used to emulate player output queue behavior
 	 */
 	void ResetFetchLogic();
+
+	/**
+	 * Handler for when the (owning) player's state changes to EMediaState::Paused.
+	 */
+	void HandlePause();
 
 protected:
 
@@ -282,8 +385,18 @@ protected:
 	 * @param SequencePath Path to the image sequence.
 	 * @param FrameRateOverride The frame rate to use (0/0 = do not override).
 	 * @param Loop Whether the cache should loop around.
+	 * @param OutFirstFrameInfo Sequence information based on its first frame.
+	 * @return True when loading succeeds.
 	 */
-	void LoadSequence(const FString& SequencePath, const FFrameRate& FrameRateOverride, bool Loop);
+	bool LoadSequence(const FString& SequencePath, const FFrameRate& FrameRateOverride, bool Loop, FImgMediaFrameInfo& OutFirstFrameInfo);
+
+	/**
+	 * Warms up the player and start issuing requests from the start of the sequence.
+	 *
+	 * @param InFirstFrameInfo Sequence information based on its first frame.
+	 * @param Loop Whether the cache should loop around.
+	 */
+	void WarmupSequence(const FImgMediaFrameInfo& InFirstFrameInfo, bool Loop);
 
 	/**
 	 * Finds all the files in a directory and gets their path.
@@ -349,13 +462,12 @@ protected:
 	void AddFrameToCache(int32 FrameNumber, const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame);
 
 	/**
-	 * Get what mip level we should be using for a given frame.
+	 * Get what mip level and tiles we should be using for a given frame.
 	 *
 	 * @param FrameIndex Frame to get mip level for.
 	 * @param OutTileSelection Will be filled in with what tiles are actually needed.
-	 * @return Returns the mip level.
 	 */
-	int32 GetDesiredMipLevel(int32 FrameIndex, FImgMediaTileSelection& OutTileSelection);
+	void GetDesiredMipTiles(int32 FrameIndex, TMap<int32, FImgMediaTileSelection>& OutMipsAndTiles);
 
 	/***
 	 * Modulos the time so that it is between 0 and SequenceDuration.
@@ -420,7 +532,10 @@ private:
 	bool Initialized;
 
 	/** If true, then any gaps in the sequence will be filled with blank frames. */
-	bool bFillGapsInSequence;
+	const bool bFillGapsInSequence;
+
+	/** Tiling description. */
+	FMediaTextureTilingDescription TilingDescription;
 
 	/** The number of frames to load ahead of the play head. */
 	int32 NumLoadAhead;
@@ -430,6 +545,9 @@ private:
 
 	/** Total number of frames to load. */
 	int32 NumFramesToLoad;
+
+	/** Stores num of mip levels if the sequence is made out of files that contain all mips in one file. */
+	int32 NumMipLevels;
 
 	/** The image sequence reader to use. */
 	TSharedPtr<IImgMediaReader, ESPMode::ThreadSafe> Reader;
@@ -481,4 +599,13 @@ private:
 		uint64 CurrentSequenceIndex;
 	} QueuedSampleFetch;
 
+private:
+
+	/** Settings for the smart cache. */
+	FImgMediaLoaderSmartCacheSettings SmartCacheSettings;
+
+#if WITH_EDITOR
+	/** Bandwidth estimation. */
+	FImgMediaLoaderBandwidth Bandwidth;
+#endif
 };

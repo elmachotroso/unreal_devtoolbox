@@ -69,6 +69,51 @@ public:
 	FString GetFamilyNameAtDepth(int32 InDepth) const;
 };
 
+
+/**
+ * Transformation direction type for display-view transformations.
+ */
+UENUM(BlueprintType)
+enum class EOpenColorIOViewTransformDirection : uint8
+{
+	Forward = 0     UMETA(DisplayName = "Forward"),
+	Inverse = 1     UMETA(DisplayName = "Inverse")
+};
+
+
+USTRUCT(BlueprintType)
+struct OPENCOLORIO_API FOpenColorIODisplayView
+{
+	GENERATED_BODY()
+
+public:
+	/** Default constructor. */
+	FOpenColorIODisplayView();
+
+	/**
+	 * Create and initialize a new instance.
+	 */
+	FOpenColorIODisplayView(FStringView InDisplayName, FStringView InViewName);
+
+	UPROPERTY(VisibleAnywhere, Category = ColorSpace)
+	FString Display;
+
+	UPROPERTY(VisibleAnywhere, Category = ColorSpace)
+	FString View;
+
+	FString ToString() const;
+
+	/** Return true if the index and name have been set properly */
+	bool IsValid() const;
+
+	/** Reset members to default/empty values. */
+	void Reset();
+
+public:
+	bool operator==(const FOpenColorIODisplayView& Other) const { return Other.Display == Display && Other.View == View; }
+	bool operator!=(const FOpenColorIODisplayView& Other) const { return !operator==(Other); }
+};
+
 /**
  * Identifies a OCIO ColorSpace conversion.
  */
@@ -94,6 +139,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
 	FOpenColorIOColorSpace DestinationColorSpace;
 
+	/** The destination display view name. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
+	FOpenColorIODisplayView DestinationDisplayView;
+
+	/** The display view direction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
+	EOpenColorIOViewTransformDirection DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
+
 public:
 
 	/**
@@ -111,6 +164,10 @@ public:
 	* Ensure that the selected source and destination color spaces are valid, resets them otherwise.
 	*/
 	void ValidateColorSpaces();
+
+private:
+	/** Whether or not these settings are of the display-view type. */
+	bool IsDisplayView() const;
 };
 
 /**

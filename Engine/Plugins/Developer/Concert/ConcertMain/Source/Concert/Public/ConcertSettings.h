@@ -220,11 +220,11 @@ struct FConcertClientSettings
 	FLinearColor AvatarColor;
 
 	/** The desktop representation of this editor's user to other connected users */
-	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientDesktopPresenceActor"))
+	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "/Script/ConcertSyncClient.ConcertClientDesktopPresenceActor"))
 	FSoftClassPath DesktopAvatarActorClass;
 
 	/** The VR representation of this editor's user to other connected users */
-	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientVRPresenceActor", DisplayName = "VR Avatar Actor Class"))
+	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "/Script/ConcertSyncClient.ConcertClientVRPresenceActor", DisplayName = "VR Avatar Actor Class"))
 	FSoftClassPath VRAvatarActorClass;
 
 	/** The port to use to reach the server with static endpoints when launched through the editor. This port will be used over the unicast endpoint port in the UDP Messagging settings if non 0 when transferring the editor settings to the launched server. */
@@ -249,6 +249,15 @@ struct FConcertClientSettings
 	 */
 	UPROPERTY(config, EditAnywhere, DisplayName="Reflect Level Visibility to Game", AdvancedDisplay, Category="Client Settings")
 	bool bReflectLevelEditorInGame = false;
+
+	/**
+	 * Enable extended version support when using Multi-user with precompiled and source builds.  When using Unreal Game
+	 * Sync, it is possible to have the same engine CL but different engine version due to content changes.	 This setting
+	 * enables reading engine version CL from the Build.version file produced by UGS to determine engine version
+	 * information when joining a session.	This only applies when you intend to mix precompiled with source builds.
+	*/
+	UPROPERTY(config, EditAnywhere, DisplayName="Support Mixed Build Types", AdvancedDisplay, Category="Client Settings")
+	bool bSupportMixedBuildTypes = false;
 
 	/** Array of tags that can be used for grouping and categorizing. */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Client Settings")
@@ -285,6 +294,13 @@ struct FConcertSourceControlSettings
 
 	UPROPERTY(config, EditAnywhere, Category="Source Control Settings")
 	EConcertSourceValidationMode ValidationMode;
+};
+
+UENUM()
+enum class EConcertServerType
+{
+	Console,
+	Slate
 };
 
 UCLASS(config=Engine)
@@ -330,6 +346,14 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category="Client Settings")
 	bool bRetryAutoConnectOnError = false;
+
+	/**
+	 * Determines which server executable with be launched:
+	 *		Console -> UnrealMultiUserServer.exe
+	 *		Slate	-> UnrealMultiUserSlateServer.exe
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Client Settings")
+	EConcertServerType ServerType = EConcertServerType::Slate;
 
 	/** 
 	 * Default server url (just a name for now) to look for on auto or default connect. 

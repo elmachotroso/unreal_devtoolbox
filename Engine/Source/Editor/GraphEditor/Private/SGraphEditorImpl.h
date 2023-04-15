@@ -2,28 +2,53 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Misc/Attribute.h"
-#include "Layout/Visibility.h"
-#include "Styling/SlateColor.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h" // for FEdGraphPinReference
+#include "EdGraph/EdGraphSchema.h"
+#include "GraphEditor.h"
+#include "HAL/PlatformCrt.h"
 #include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SOverlay.h"
-#include "GraphEditor.h"
-#include "EdGraph/EdGraphPin.h" // for FEdGraphPinReference
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphSchema.h"
 
+class FActiveTimerHandle;
+class FUICommandList;
 class SGraphPanel;
-class UEdGraph;
-class UEdGraphSchema;
+class SNotificationList;
+class SWidget;
+class UClass;
+class UToolMenu;
+struct FDiffSingleResult;
 struct FEdGraphEditAction;
+struct FFocusEvent;
+struct FGeometry;
 struct FGraphContextMenuArguments;
+struct FKeyEvent;
 struct FNotificationInfo;
-struct Rect;
-struct FToolMenuSection;
-class UGraphNodeContextMenuContext;
+struct FPointerEvent;
+struct FToolMenuContext;
 
 
 /** Struct used for generically aligning nodes */
@@ -192,7 +217,8 @@ public:
 		SLATE_ARGUMENT( TSharedPtr<SWidget>, TitleBar )
 		SLATE_ATTRIBUTE( FGraphAppearanceInfo, Appearance )
 		SLATE_ARGUMENT( UEdGraph*, GraphToEdit )
-		SLATE_ARGUMENT( UEdGraph*, GraphToDiff )
+		SLATE_ARGUMENT(TSharedPtr<TArray<FDiffSingleResult>>, DiffResults )
+		SLATE_ATTRIBUTE(int32, FocusedDiffResult )
 		SLATE_ARGUMENT(SGraphEditor::FGraphEditorEvents, GraphEvents)
 		SLATE_ARGUMENT(bool, AutoExpandActionMenu)
 		SLATE_EVENT(FSimpleDelegate, OnNavigateHistoryBack)
@@ -376,13 +402,16 @@ private:
 	void GetPinContextMenuActionsForSchema(UToolMenu* InMenu) const;
 	void ExecuteBreakPinLinks(const FToolMenuContext& InContext) const;
 	bool IsBreakPinLinksVisible(const FToolMenuContext& InContext) const;
+	bool IsBreakThisLinkVisible(const FToolMenuContext& InContext) const;
 	bool HasAnyLinkedPins(const FToolMenuContext& InContext) const;
 
 	void ExecuteSelectConnectedNodesFromPin(const FToolMenuContext& InContext) const;
 	void SelectAllNodesInDirection(const UEdGraphPin* InGraphPin) const;
 	bool IsSelectConnectedNodesFromPinVisible(const FToolMenuContext& InContext, EEdGraphPinDirection DirectionToSelect) const;
 
+	EActiveTimerReturnType HandleFocusEditorDeferred(double InCurrentTime, float InDeltaTime);
 private:
+	TWeakPtr<FActiveTimerHandle> FocusEditorTimer;
 	bool bIsActiveTimerRegistered;
 	uint32 NumNodesAddedSinceLastPointerPosition;
 };

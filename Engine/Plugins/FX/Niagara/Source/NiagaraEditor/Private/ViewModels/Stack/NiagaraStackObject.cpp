@@ -7,6 +7,7 @@
 #include "NiagaraEditorModule.h"
 #include "NiagaraMessageManager.h"
 #include "NiagaraMessageUtilities.h"
+#include "NiagaraEditorSettings.h"
 
 #include "Modules/ModuleManager.h"
 #include "IPropertyRowGenerator.h"
@@ -15,6 +16,8 @@
 
 #include "NiagaraPlatformSet.h"
 #include "ViewModels/Stack/NiagaraStackObjectIssueGenerator.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackObject)
 
 UNiagaraStackObject::UNiagaraStackObject()
 {
@@ -255,6 +258,17 @@ void UNiagaraStackObject::RefreshChildrenInternal(const TArray<UNiagaraStackEntr
 		}
 	}
 
+	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
+	if (Object != nullptr && NiagaraEditorSettings->IsAllowedClass(Object->GetClass()) == false)
+	{
+		NewIssues.Add(FStackIssue(
+			EStackIssueSeverity::Error,
+			NSLOCTEXT("StackObject", "InvalidClassShort", "Unsupported Object Type"),
+			FText::Format(NSLOCTEXT("StackObject", "InvalidClassLongFormat", "Use of an object of type {0} is unsupported in the current editor context."), Object->GetClass()->GetDisplayNameText()),
+			GetStackEditorDataKey(),
+			false));
+	}
+
 	if(PropertyRowGenerator.IsValid())
 	{
 		TArray<TSharedRef<IDetailTreeNode>> DefaultRootTreeNodes = PropertyRowGenerator->GetRootTreeNodes();
@@ -322,3 +336,4 @@ void UNiagaraStackObject::OnMessageManagerRefresh(const TArray<TSharedRef<const 
 		RefreshChildren();
 	}
 }
+

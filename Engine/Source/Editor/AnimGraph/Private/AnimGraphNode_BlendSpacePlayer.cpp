@@ -80,7 +80,7 @@ void UAnimGraphNode_BlendSpacePlayer::GetMenuActions(FBlueprintActionDatabaseReg
 		{
 			if(InAssetData.IsValid())
 			{
-				return FText::Format(LOCTEXT("MenuDescTooltipFormat", "Blendspace Player\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+				return FText::Format(LOCTEXT("MenuDescTooltipFormat", "Blendspace Player\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 			}
 			else
 			{
@@ -106,6 +106,14 @@ void UAnimGraphNode_BlendSpacePlayer::SetAnimationAsset(UAnimationAsset* Asset)
 	if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(Asset))
 	{
 		Node.SetBlendSpace(BlendSpace);
+	}
+}
+
+void UAnimGraphNode_BlendSpacePlayer::CopySettingsFromAnimationAsset(UAnimationAsset* Asset)
+{
+	if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(Asset))
+	{
+		Node.SetLoop(BlendSpace->bLoop);
 	}
 }
 

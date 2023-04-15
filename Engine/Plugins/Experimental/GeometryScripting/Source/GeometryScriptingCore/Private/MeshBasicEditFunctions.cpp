@@ -7,6 +7,9 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "DynamicMesh/MeshTransforms.h"
 #include "DynamicMeshEditor.h"
+#include "TransformSequence.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshBasicEditFunctions)
 
 using namespace UE::Geometry;
 
@@ -299,12 +302,53 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::DeleteTrianglesFrom
 }
 
 
+UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::DeleteSelectedTrianglesFromMesh(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
+	int& NumDeleted,
+	bool bDeferChangeNotifications)
+{
+	if (TargetMesh && Selection.IsEmpty() == false )
+	{
+		NumDeleted = 0;
+		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+		{
+			TArray<int32> Triangles;
+			Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+			for (int32 TriangleID : Triangles)
+			{
+				EMeshResult Result = EditMesh.RemoveTriangle(TriangleID);
+				if (Result == EMeshResult::Ok)
+				{
+					NumDeleted++;
+				}
+			}
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, bDeferChangeNotifications);
+	}
+	return TargetMesh;
+}
+
+
+void FGeometryScriptAppendMeshOptions::UpdateAttributesForCombineMode(FDynamicMesh3& Target, const FDynamicMesh3& Source)
+{
+	if (CombineMode == EGeometryScriptCombineAttributesMode::EnableAllMatching)
+	{
+		Target.EnableMatchingAttributes(Source, false);
+	}
+	else if (CombineMode == EGeometryScriptCombineAttributesMode::UseSource)
+	{
+		Target.EnableMatchingAttributes(Source, true);
+	}
+	// else the mode is UseTarget, which already corresponds to the default behavior for AppendMesh
+}
+
 
 UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 	UDynamicMesh* TargetMesh,
 	UDynamicMesh* AppendMesh,
 	FTransform AppendTransform,
 	bool bDeferChangeNotifications,
+	FGeometryScriptAppendMeshOptions AppendOptions,
 	UGeometryScriptDebug* Debug)
 {
 	if (TargetMesh == nullptr)
@@ -322,6 +366,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 	{
 		AppendMesh->ProcessMesh([&](const FDynamicMesh3& OtherMesh)
 		{
+			AppendOptions.UpdateAttributesForCombineMode(AppendToMesh, OtherMesh);
 			FTransformSRT3d XForm(AppendTransform);
 			FMeshIndexMappings TmpMappings;
 			FDynamicMeshEditor Editor(&AppendToMesh);
@@ -343,6 +388,81 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
 
 
 
+UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshTransformed(
+	UDynamicMesh* TargetMesh,
+	UDynamicMesh* AppendMesh,
+	const TArray<FTransform>& AppendTransforms, 
+	FTransform ConstantTransform,
+	bool bConstantTransformIsRelative,
+	bool bDeferChangeNotifications,
+	FGeometryScriptAppendMeshOptions AppendOptions,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("AppendMeshTransformed_InvalidInput1", "AppendMeshTransformed: TargetMesh is Null"));
+		return TargetMesh;
+	}
+	if (AppendMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("AppendMeshTransformed_InvalidInput2", "AppendMeshTransformed: AppendMesh is Null"));
+		return TargetMesh;
+	}
+	if (AppendTransforms.IsEmpty())
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("AppendMeshTransformed_NoTransforms", "AppendMeshTransformed: AppendTransforms array is empty"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& AppendToMesh)
+	{
+		AppendMesh->ProcessMesh([&](const FDynamicMesh3& OtherMesh)
+		{
+			AppendOptions.UpdateAttributesForCombineMode(AppendToMesh, OtherMesh);
+			FMeshIndexMappings TmpMappings;
+			FDynamicMeshEditor Editor(&AppendToMesh);
+			const FDynamicMesh3* UseOtherMesh = &OtherMesh;
+			FDynamicMesh3 TmpMesh;
+			if (UseOtherMesh == &AppendToMesh)
+			{
+				TmpMesh = OtherMesh;	// need  to make a copy if we are appending to ourself
+				UseOtherMesh = &TmpMesh;
+			}
+			for (FTransform AppendTransform : AppendTransforms)
+			{
+				FTransformSequence3d TransformSequence;
+
+				if (bConstantTransformIsRelative)
+				{
+					TransformSequence.Append(ConstantTransform);
+					TransformSequence.Append(AppendTransform);
+				}
+				else
+				{
+					// want to apply the constant transform's rotate/scale after
+					// the main transform rotate/scale, so the main positioning 
+					// translation has to be deferred until after that
+					FVector Translation = AppendTransform.GetLocation();
+					AppendTransform.SetTranslation(FVector::Zero());
+
+					TransformSequence.Append(AppendTransform);
+					TransformSequence.Append(ConstantTransform);
+					TransformSequence.Append(FTransform(Translation));
+				}
+
+				Editor.AppendMesh(UseOtherMesh, TmpMappings,
+					[&](int, const FVector3d& Position) { return TransformSequence.TransformPosition(Position); },
+					[&](int, const FVector3d& Normal) { return TransformSequence.TransformNormal(Normal); });
+				TmpMappings.Reset();
+			}
+		});
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, bDeferChangeNotifications);
+
+	return TargetMesh;
+}
+
+
+
 UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 	UDynamicMesh* TargetMesh,
 	UDynamicMesh* AppendMesh,
@@ -350,6 +470,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 	int32 RepeatCount,
 	bool bApplyTransformToFirstInstance,
 	bool bDeferChangeNotifications,
+	FGeometryScriptAppendMeshOptions AppendOptions,
 	UGeometryScriptDebug* Debug)
 {
 	if (TargetMesh == nullptr)
@@ -369,10 +490,11 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 		AppendMesh->ProcessMesh([&](const FDynamicMesh3& OtherMesh) { TmpMesh.Copy(OtherMesh); });
 		if (bApplyTransformToFirstInstance)
 		{
-			MeshTransforms::ApplyTransform(TmpMesh, XForm);
+			MeshTransforms::ApplyTransform(TmpMesh, XForm, true);
 		}
 		TargetMesh->EditMesh([&](FDynamicMesh3& AppendToMesh)
 		{
+			AppendOptions.UpdateAttributesForCombineMode(AppendToMesh, TmpMesh);
 			FMeshIndexMappings TmpMappings;
 			FDynamicMeshEditor Editor(&AppendToMesh);
 			for (int32 k = 0; k < RepeatCount; ++k)
@@ -380,7 +502,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMeshRepeated(
 				Editor.AppendMesh(&TmpMesh, TmpMappings);
 				if (k < RepeatCount)
 				{
-					MeshTransforms::ApplyTransform(TmpMesh, XForm);
+					MeshTransforms::ApplyTransform(TmpMesh, XForm, true);
 					TmpMappings.Reset();
 				}
 			}
@@ -553,3 +675,4 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBasicEditFunctions::AppendBuffersToMesh
 
 
 #undef LOCTEXT_NAMESPACE
+

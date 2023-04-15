@@ -6,7 +6,7 @@
 #include "MassArchetypeTypes.h"
 
 class UWorld;
-class UMassEntitySubsystem;
+struct FMassEntityManager;
 struct FMassEntityHandle;
 
 namespace UE::Mass::Utils
@@ -16,11 +16,11 @@ namespace UE::Mass::Utils
 MASSENTITY_API extern EProcessorExecutionFlags GetProcessorExecutionFlagsForWold(const UWorld& World);
 
 /** 
- * Fills OutChunkCollections with per-archetype FMassArchetypeSubChunks instances. 
+ * Fills OutEntityCollections with per-archetype FMassArchetypeEntityCollection instances. 
  * @param DuplicatesHandling used to inform the function whether to expect duplicates.
  */
-MASSENTITY_API extern void CreateSparseChunks(const UMassEntitySubsystem& EntitySystem, const TConstArrayView<FMassEntityHandle> Entities
-	, const FMassArchetypeSubChunks::EDuplicatesHandling DuplicatesHandling, TArray<FMassArchetypeSubChunks>& OutChunkCollections);
+MASSENTITY_API extern void CreateEntityCollections(const FMassEntityManager& EntitySubsystem, const TConstArrayView<FMassEntityHandle> Entities
+	, const FMassArchetypeEntityCollection::EDuplicatesHandling DuplicatesHandling, TArray<FMassArchetypeEntityCollection>& OutEntityCollections);
 
 /**
 * AbstractSort is a sorting function that only needs to know how many items there are, how to compare items
@@ -75,6 +75,8 @@ inline void AbstractSort(const int32 NumElements, TPred&& Predicate, TSwap&& Swa
 	}
 }
 
+MASSENTITY_API extern FMassEntityManager* GetEntityManager(const UWorld* World);
+MASSENTITY_API extern FMassEntityManager& GetEntityManagerChecked(const UWorld& World);
 
 } // namespace UE::Mass::Utils
 

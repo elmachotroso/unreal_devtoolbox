@@ -2,9 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EditorStyleSet.h"
 #include "Framework/Commands/Commands.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 class FContentBrowserCommands
 	: public TCommands<FContentBrowserCommands>
@@ -13,7 +19,7 @@ public:
 
 	/** Default constructor. */
 	FContentBrowserCommands()
-		: TCommands<FContentBrowserCommands>(TEXT("ContentBrowser"), NSLOCTEXT( "ContentBrowser", "ContentBrowser", "Content Browser" ), NAME_None, FEditorStyle::GetStyleSetName() )
+		: TCommands<FContentBrowserCommands>(TEXT("ContentBrowser"), NSLOCTEXT( "ContentBrowser", "ContentBrowser", "Content Browser" ), NAME_None, FAppStyle::GetAppStyleSetName() )
 	{ }
 
 public:

@@ -9,7 +9,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Materials/MaterialInterface.h"
 #include "MaterialEditor/DEditorFontParameterValue.h"
 #include "MaterialEditor/DEditorMaterialLayersParameterValue.h"
@@ -260,6 +260,9 @@ void FMaterialInstanceParameterDetails::CustomizeDetails(IDetailLayoutBuilder& D
 			
 			// Append the base property overrides to the Material Property Override Group
 			CreateBasePropertyOverrideWidgets(DetailLayout, MaterialPropertyOverrideGroup);
+
+			// Append the nanite material override.
+			MaterialPropertyOverrideGroup.AddPropertyRow(DetailLayout.GetProperty("NaniteOverrideMaterial"));
 		}
 	}
 
@@ -287,19 +290,10 @@ void FMaterialInstanceParameterDetails::CreateGroupsWidget(TSharedRef<IPropertyH
 		{
 			bShowSaveButtons = true;
 			bool bCreateGroup = false;
-			bool bIsCookedMaterial = false;
-			if (MaterialEditorInstance->SourceInstance)
-			{
-				if (UMaterial* Material = MaterialEditorInstance->SourceInstance->GetMaterial())
-				{
-					bIsCookedMaterial = Material->GetPackage()->HasAnyPackageFlags(PKG_Cooked);
-				}
-			}
 			for (int32 ParamIdx = 0; ParamIdx < ParameterGroup.Parameters.Num() && !bCreateGroup; ++ParamIdx)
 			{
 				UDEditorParameterValue* Parameter = ParameterGroup.Parameters[ParamIdx];
-				// All parameters on cooked materials are visible since the underlying data to discover visibility has been stripped.
-				const bool bIsVisible = bIsCookedMaterial || MaterialEditorInstance->VisibleExpressions.Contains(Parameter->ParameterInfo);
+				const bool bIsVisible = MaterialEditorInstance->VisibleExpressions.Contains(Parameter->ParameterInfo);
 				bCreateGroup = bIsVisible && (!MaterialEditorInstance->bShowOnlyOverrides || FMaterialPropertyHelpers::IsOverriddenExpression(Parameter));
 			}
 			
@@ -559,7 +553,7 @@ void FMaterialInstanceParameterDetails::CreateMaskParameterValueWidget(UDEditorP
 				SNew(STextBlock)
 				.Text(ParameterName)
 				.ToolTipText(FMaterialPropertyHelpers::GetParameterTooltip(Parameter, MaterialEditorInstance))
-				.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+				.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 			]
 		.ValueContent()
 			.MaxDesiredWidth(200.0f)
@@ -573,7 +567,7 @@ void FMaterialInstanceParameterDetails::CreateMaskParameterValueWidget(UDEditorP
 			.HAlign(HAlign_Left)
 			.AutoWidth()
 			[
-				RMaskProperty->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+				RMaskProperty->CreatePropertyNameWidget()
 			]
 		+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
@@ -586,7 +580,7 @@ void FMaterialInstanceParameterDetails::CreateMaskParameterValueWidget(UDEditorP
 			.Padding(FMargin(10.0f, 0.0f, 0.0f, 0.0f))
 			.AutoWidth()
 			[
-				GMaskProperty->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+				GMaskProperty->CreatePropertyNameWidget()
 			]
 		+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
@@ -599,7 +593,7 @@ void FMaterialInstanceParameterDetails::CreateMaskParameterValueWidget(UDEditorP
 			.Padding(FMargin(10.0f, 0.0f, 0.0f, 0.0f))
 			.AutoWidth()
 			[
-				BMaskProperty->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+				BMaskProperty->CreatePropertyNameWidget()
 			]
 		+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
@@ -612,7 +606,7 @@ void FMaterialInstanceParameterDetails::CreateMaskParameterValueWidget(UDEditorP
 			.Padding(FMargin(10.0f, 0.0f, 0.0f, 0.0f))
 			.AutoWidth()
 			[
-				AMaskProperty->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+				AMaskProperty->CreatePropertyNameWidget()
 			]
 		+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
@@ -655,7 +649,7 @@ void FMaterialInstanceParameterDetails::CreateVectorChannelMaskParameterValueWid
 			SNew(STextBlock)
 			.Text(ParameterName)
 			.ToolTipText(FMaterialPropertyHelpers::GetParameterTooltip(Parameter, MaterialEditorInstance))
-			.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+			.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 		]
 		.ValueContent()
 		.MaxDesiredWidth(200.0f)
@@ -706,7 +700,7 @@ void FMaterialInstanceParameterDetails::CreateScalarAtlasPositionParameterValueW
 				SNew(STextBlock)
 				.Text(ParameterName)
 				.ToolTipText(FMaterialPropertyHelpers::GetParameterTooltip(Parameter, MaterialEditorInstance))
-				.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+				.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 			]
 			.ValueContent()
 			.HAlign(HAlign_Fill)
@@ -774,7 +768,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							SNew(STextBlock)
 							.Text(FText::FromName(Parameter->ParameterInfo.Name))
 						.ToolTipText(FMaterialPropertyHelpers::GetParameterTooltip(Parameter, MaterialEditorInstance))
-						.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+						.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 						]
 						];
 					DetailWidgetRow.ValueContent()
@@ -821,7 +815,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 								[
 									SNew(STextBlock)
 									.Text(FText::FromName(Red))
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 								]
 								+ SHorizontalBox::Slot()
 								.HAlign(HAlign_Left)
@@ -829,7 +823,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 								[
 									SNew(STextBlock)
 									.Text(TextureParam->ChannelNames.R)
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 								]
 							];
 					}
@@ -844,7 +838,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(FText::FromName(Green))
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 							]
 						+ SHorizontalBox::Slot()
 							.HAlign(HAlign_Left)
@@ -852,7 +846,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(TextureParam->ChannelNames.G)
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 							]
 							];
 					}
@@ -867,7 +861,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(FText::FromName(Blue))
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 							]
 						+ SHorizontalBox::Slot()
 							.HAlign(HAlign_Left)
@@ -875,7 +869,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(TextureParam->ChannelNames.B)
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 							]
 							];
 					}
@@ -890,7 +884,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(FText::FromName(Alpha))
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 							]
 						+ SHorizontalBox::Slot()
 							.HAlign(HAlign_Left)
@@ -898,7 +892,7 @@ void FMaterialInstanceParameterDetails::CreateLabeledTextureParameterValueWidget
 							[
 								SNew(STextBlock)
 								.Text(TextureParam->ChannelNames.A)
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 							]
 							];
 					}
@@ -1086,8 +1080,7 @@ void FMaterialInstanceParameterDetails::OnPasteParameterValues(int32 ParameterGr
 						FProperty* ParameterValueProperty = Parameter->GetClass()->FindPropertyByName("ParameterValue");
 						if (ParameterValueProperty != nullptr)
 						{
-							void* ParameterValuePtr = ParameterValueProperty->ContainerPtrToValuePtr<void>(Parameter);
-							ParameterValueProperty->ImportText(*ParsedValueString, ParameterValuePtr, PPF_Copy, Parameter);
+							ParameterValueProperty->ImportText_InContainer(*ParsedValueString, Parameter, Parameter, PPF_Copy);
 						}
 					}
 				}

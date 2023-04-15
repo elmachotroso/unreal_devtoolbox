@@ -192,7 +192,7 @@ void FArchiveState::Reset()
 	ArIsNetArchive						= false;
 	ArCustomPropertyList				= nullptr;
 	ArUseCustomPropertyList				= false;
-	CookingTargetPlatform				= nullptr;
+	CookData							= nullptr;
 	SerializedProperty					= nullptr;
 
 	delete SerializedPropertyChain;
@@ -252,7 +252,7 @@ void FArchiveState::CopyTrivialFArchiveStatusMembers(const FArchiveState& Archiv
 	ArIsNetArchive                       = ArchiveToCopy.ArIsNetArchive;
 	ArCustomPropertyList                 = ArchiveToCopy.ArCustomPropertyList;
 	ArUseCustomPropertyList              = ArchiveToCopy.ArUseCustomPropertyList;
-	CookingTargetPlatform                = ArchiveToCopy.CookingTargetPlatform;
+	CookData							 = ArchiveToCopy.CookData;
 	SerializedProperty					 = ArchiveToCopy.SerializedProperty;
 #if USE_STABLE_LOCALIZATION_KEYS
 	SetBaseLocalizationNamespace(ArchiveToCopy.GetBaseLocalizationNamespace());
@@ -712,7 +712,6 @@ void FArchive::SerializeCompressedNew(void* V, int64 Length, FName CompressionFo
 		//	assume it was CompressionFormatToDecodeOldV1Files (usually Zlib)
 		FName CompressionFormatToDecode = CompressionFormatToDecodeOldV1Files;
 
-		bool bHeaderWasValid=false;
 		bool bWasByteSwapped=false;
 		bool bReadCompressionFormat=false;
 		
@@ -725,20 +724,17 @@ void FArchive::SerializeCompressedNew(void* V, int64 Length, FName CompressionFo
 		if ( PackageFileTag.CompressedSize == PACKAGE_FILE_TAG )
 		{
 			// v1 header, not swapped
-			bHeaderWasValid = true;
 		}
 		else if ( PackageFileTag.CompressedSize == PACKAGE_FILE_TAG_SWAPPED ||
 			PackageFileTag.CompressedSize == BYTESWAP_ORDER64((uint64)PACKAGE_FILE_TAG) )
 		{
 			// v1 header, swapped
-			bHeaderWasValid = true;
 			bWasByteSwapped = true;
 		}
 		else if ( PackageFileTag.CompressedSize == ARCHIVE_V2_HEADER_TAG ||
 			PackageFileTag.CompressedSize == BYTESWAP_ORDER64((uint64)ARCHIVE_V2_HEADER_TAG) )
 		{
 			// v2 header
-			bHeaderWasValid = true;
 			bWasByteSwapped = ( PackageFileTag.CompressedSize != ARCHIVE_V2_HEADER_TAG );
 			bReadCompressionFormat = true;
 
@@ -911,10 +907,10 @@ void FArchive::SerializeCompressedNew(void* V, int64 Length, FName CompressionFo
 
 		// if there's a cooking target, and it wants to replace Zlib compression with another format, use it. When loading, 
 		// the platform will replace Zlib with that format above
-		if (CompressionFormatToEncode == NAME_Zlib && CookingTargetPlatform != nullptr)
+		if (CompressionFormatToEncode == NAME_Zlib && IsCooking())
 		{
 			// use the replacement format
-			CompressionFormatToEncode = CookingTargetPlatform->GetZlibReplacementFormat();
+			CompressionFormatToEncode = CookingTarget()->GetZlibReplacementFormat();
 
 			// with v2 headers, the modified CompressionFormatToEncode will be written in the archive
 		}
@@ -1319,7 +1315,7 @@ void FArchive::LogfImpl(const TCHAR* Fmt, ...)
 		GET_VARARGS_RESULT( Buffer, BufferSize, BufferSize-1, Fmt, Fmt, Result );
 		BufferSize *= 2;
 	};
-	Buffer[Result] = 0;
+	Buffer[Result] = TEXT('\0');
 
 	// Convert to ANSI and serialize as ANSI char.
 	for( int32 i=0; i<Result; i++ )

@@ -10,7 +10,6 @@ MONOLITHIC_HEADER_BOILERPLATE()
 
 #include "Misc/Timespan.h"
 #include "SlateBasics.h"
-#include "EditorStyle.h"
 
 #include "EditorComponents.h"
 #include "EditorReimportHandler.h"
@@ -295,9 +294,6 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "EditorModes.h"
 
 #include "MRUList.h"
-
-
-//#include "../Private/GeomFitUtils.h"
 
 #include "UnrealEdMisc.h"
 #include "EditorDirectories.h"

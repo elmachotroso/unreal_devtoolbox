@@ -57,26 +57,18 @@ FTraceTileResult UnpackTraceTileResult(FTraceTileResultPacked TraceTileResultPac
 
 Buffer<uint> RayAllocatorBuffer;
 RWBuffer<uint> RWHardwareRayTracingIndirectArgs;
+uint2 OutputThreadGroupSize;
 
 [numthreads(1, 1, 1)]
 void LumenRadianceCacheHardwareRayTracingIndirectArgsCS()
 {
 	uint NumRays = RayAllocatorBuffer[0];
+	uint NumGroups = (NumRays + OutputThreadGroupSize.x - 1) / OutputThreadGroupSize.x;
 
-	int3 IndirectArgs = GetRayTracingThreadCountWrapped(NumRays, RADIANCE_CACHE_TRACE_TILE_SIZE_1D);
+	int3 IndirectArgs = GetRayTracingThreadCountWrapped(NumGroups, RADIANCE_CACHE_TRACE_TILE_SIZE_1D);
 	RWHardwareRayTracingIndirectArgs[0] = IndirectArgs.x;
 	RWHardwareRayTracingIndirectArgs[1] = IndirectArgs.y;
 	RWHardwareRayTracingIndirectArgs[2] = IndirectArgs.z;
-
-#if DIM_INLINE_RAYTRACING
-	// For RayTraceDispatchIndirect we dispatch in threads but for DispatchIndirectComputeShader we dispatch in thread groups.
-	// We need to adjust it to get the same number of threads running.
-	uint NumGroups = (NumRays + INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X - 1) / INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X;
-	IndirectArgs = GetRayTracingThreadCountWrapped(NumGroups, RADIANCE_CACHE_TRACE_TILE_SIZE_1D);
-	RWHardwareRayTracingIndirectArgs[0] = IndirectArgs.x;
-	RWHardwareRayTracingIndirectArgs[1] = IndirectArgs.y;
-	RWHardwareRayTracingIndirectArgs[2] = IndirectArgs.z;
-#endif
 }
 
 #if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
@@ -132,12 +124,13 @@ FRayId UnpackRayId(FRayIdPacked RayIdPacked)
 
 RaytracingAccelerationStructure TLAS;
 
-RWStructuredBuffer<FTraceTileResultPacked> RWTraceTileResultPackedBuffer;
-RWStructuredBuffer<FTraceDataPacked> RWRetraceDataPackedBuffer;
-
 #if LUMEN_HARDWARE_INLINE_RAYTRACING
 StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
 #endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
+RWStructuredBuffer<FTraceTileResultPacked> RWTraceTileResultPackedBuffer;
+RWStructuredBuffer<FTraceDataPacked> RWRetraceDataPackedBuffer;
 
 uint PersistentTracingGroupCount;
 float FarFieldBias;
@@ -209,8 +202,8 @@ void LumenRadianceCacheHardwareRayTracingCommon(uint ThreadIndex)
 			// Evenly distributing the sphere solid angle among all cones instead of based on Octahedron distortion
 			float ConeHalfAngle = acosFast(1.0f - 1.0f / (float)(TraceResolution * TraceResolution));
 
-			RayDesc Ray;
-			Ray.Origin = ProbeWorldCenter;
+			FRayDesc Ray;
+			Ray.Origin = ProbeWorldCenter + LWCHackToFloat(PrimaryView.PreViewTranslation); // LUMEN_LWC_TODO
 			Ray.Direction = WorldConeDirection;
 			Ray.TMin = FinalMinTraceDistance;
 			Ray.TMax = FinalMaxTraceDistance;
@@ -220,7 +213,7 @@ void LumenRadianceCacheHardwareRayTracingCommon(uint ThreadIndex)
 
 #if DIM_CLIP_RAY
 			// Cull TMax by the bounding sphere of the near-field
-			float2 RaySphereHit = RayIntersectSphere(Ray.Origin, Ray.Direction, float4(LWCHackToFloat(PrimaryView.WorldCameraOrigin), RayTracingCullingRadius));
+			float2 RaySphereHit = RayIntersectSphere(Ray.Origin, Ray.Direction, float4(PrimaryView.TranslatedWorldCameraOrigin, RayTracingCullingRadius));
 			bool bInsideCullingSphere = RaySphereHit.x < 0 && RaySphereHit.y > 0;
 			Ray.TMax = bInsideCullingSphere ? RaySphereHit.y : Ray.TMin;
 #endif // DIM_CULL_RAY
@@ -245,6 +238,7 @@ void LumenRadianceCacheHardwareRayTracingCommon(uint ThreadIndex)
 			{
 #if LUMEN_HARDWARE_INLINE_RAYTRACING
 				Context.HitGroupData = HitGroupData;
+				Context.RayTracingSceneMetadata = RayTracingSceneMetadata;
 #endif // LUMEN_HARDWARE_INLINE_RAYTRACING
 
 				Result = TraceAndCalculateRayTracedLightingFromSurfaceCache(Ray, Context);
@@ -259,7 +253,7 @@ void LumenRadianceCacheHardwareRayTracingCommon(uint ThreadIndex)
 			{
 				FConeTraceResult TraceResult = (FConeTraceResult)0;
 				TraceResult.Transparency = 1;
-				EvaluateSkyRadianceForCone(Ray.Direction, tan(ConeHalfAngle), TraceResult);
+				ApplySkylightToTraceResult(Ray.Direction, TraceResult);
 				Result.Radiance = TraceResult.Lighting;
 				Result.TraceHitDistance = MaxTraceDistance;
 			}
@@ -361,8 +355,9 @@ void SplatRadianceCacheIntoAtlasCS(
 
 		if (TraceTileResultIndex >= TraceTileResultPackedBufferElementCount)
 		{
-			// Visual assert on overflow due to r.Lumen.RadianceCache.HardwareRayTracing.TemporaryBufferAllocationDownsampleFactor
-			Lighting = float3(0, 10000, 0) * View.PreExposure;
+			// r.Lumen.RadianceCache.HardwareRayTracing.TemporaryBufferAllocationDownsampleFactor overflow
+			Lighting = 0.0f;
+			//Lighting = float3(0, 10000, 0) * View.PreExposure;
 		}
 		
 		float HitDistance = TraceTileResult.HitDistance;
@@ -397,8 +392,9 @@ void SplatRadianceCacheIntoAtlasCS(
 
 					if (TraceTileResultIndex >= TraceTileResultPackedBufferElementCount)
 					{
-						// Visual assert on overflow due to r.Lumen.RadianceCache.HardwareRayTracing.TemporaryBufferAllocationDownsampleFactor
-						Lighting += float3(0, 10000, 0) * View.PreExposure;
+						// r.Lumen.RadianceCache.HardwareRayTracing.TemporaryBufferAllocationDownsampleFactor overflow
+						Lighting = 0.0f;
+						//Lighting = float3(0, 10000, 0) * View.PreExposure;
 					}
 				}
 			}

@@ -3,6 +3,8 @@
 #include "Units/Drawing/RigUnit_DrawContainer.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DrawContainer)
+
 FRigUnit_DrawContainerGetInstruction_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -33,6 +35,12 @@ FRigUnit_DrawContainerGetInstruction_Execute()
 	}
 }
 
+FRigVMStructUpgradeInfo FRigUnit_DrawContainerGetInstruction::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_DrawContainerSetThickness_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -55,6 +63,12 @@ FRigUnit_DrawContainerSetThickness_Execute()
 			break;
 		}
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DrawContainerSetThickness::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_DrawContainerSetColor_Execute()
@@ -81,6 +95,12 @@ FRigUnit_DrawContainerSetColor_Execute()
 	}
 }
 
+FRigVMStructUpgradeInfo FRigUnit_DrawContainerSetColor::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_DrawContainerSetTransform_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -104,3 +124,10 @@ FRigUnit_DrawContainerSetTransform_Execute()
 		}
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_DrawContainerSetTransform::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+

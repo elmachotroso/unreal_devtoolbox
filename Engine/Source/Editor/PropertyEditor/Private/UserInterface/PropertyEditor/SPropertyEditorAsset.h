@@ -12,13 +12,18 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Input/SComboButton.h"
-#include "EditorStyleSet.h"
-#include "AssetData.h"
+#include "Styling/AppStyle.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetThumbnail.h"
 #include "PropertyHandle.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "PropertyCustomizationHelpers.h"
 
+class FAssetThumbnail;
+class FPropertyEditor;
+class IPropertyHandle;
+class SBorder;
+class SComboButton;
 class UFactory;
 
 /**
@@ -58,6 +63,7 @@ public:
 		, _CustomContentSlot()
 	{}
 		SLATE_ARGUMENT(TOptional<bool>, AllowClear)
+		SLATE_ARGUMENT(TOptional<bool>, AllowCreate)
 		SLATE_ARGUMENT(bool, DisplayThumbnail)
 		SLATE_ARGUMENT(bool, DisplayUseSelected)
 		SLATE_ARGUMENT(bool, DisplayBrowse)
@@ -73,10 +79,11 @@ public:
 		SLATE_NAMED_SLOT(FArguments, CustomContentSlot)
 		SLATE_ARGUMENT(TSharedPtr<IPropertyHandle>, PropertyHandle)
 		SLATE_ARGUMENT(TArray<FAssetData>, OwnerAssetDataArray)
+		SLATE_EVENT(FOnShouldFilterActor, OnShouldFilterActor)
 
 	SLATE_END_ARGS()
 
-	static bool Supports( const TSharedRef< class FPropertyEditor >& InPropertyEditor );
+	static bool Supports( const TSharedRef<FPropertyEditor>& InPropertyEditor );
 	static bool Supports( const FProperty* NodeProperty );
 
 	/**
@@ -215,7 +222,7 @@ private:
 	 * Delegate for handling selection in the asset browser.
 	 * @param	Object	The chosen asset
 	 */
-	void OnAssetSelected( const struct FAssetData& AssetData );
+	void OnAssetSelected( const FAssetData& AssetData );
 
 	/** 
 	 * Delegate for handling selection in the scene outliner.
@@ -305,7 +312,7 @@ private:
 	bool CanSetBasedOnAssetReferenceFilter( const FAssetData& InAssetData, FText* OutOptionalFailureReason = nullptr ) const;
 
 	/** @return Returns the property handle most relevant */
-	TSharedPtr<class IPropertyHandle> GetMostSpecificPropertyHandle() const;
+	TSharedPtr<IPropertyHandle> GetMostSpecificPropertyHandle() const;
 
 	/**
 	 * Gets the class of the supplied property for use within the PropertyEditorAsset widget. Asserts if the property
@@ -335,13 +342,13 @@ private:
 private:
 
 	/** Main combobutton */
-	TSharedPtr< class SComboButton > AssetComboButton;
+	TSharedPtr<SComboButton> AssetComboButton;
 
 	/** The border surrounding the thumbnail image. */
-	TSharedPtr< class SBorder > ThumbnailBorder;
+	TSharedPtr<SBorder> ThumbnailBorder;
 
 	/** The property editor, if any */
-	TSharedPtr<class FPropertyEditor> PropertyEditor;
+	TSharedPtr<FPropertyEditor> PropertyEditor;
 
 	/** Path to the object being edited instead of accessing the value directly with a property handle */
 	TAttribute<FString> ObjectPath;
@@ -370,6 +377,9 @@ private:
 	/** Whether the asset can be 'None' in this case */
 	bool bAllowClear;
 
+	/** Whether the asset can be created from the asset picker */
+	bool bAllowCreate;
+
 	/** Whether the object we are editing is an Actor (i.e. requires a Scene Outliner to be displayed) */
 	bool bIsActor;
 
@@ -386,10 +396,13 @@ private:
 	FOnShouldFilterAsset OnShouldFilterAsset;
 
 	/** Thumbnail for the asset */
-	TSharedPtr<class FAssetThumbnail> AssetThumbnail;
+	TSharedPtr<FAssetThumbnail> AssetThumbnail;
 
 	/** The property handle, if any */
-	TSharedPtr<class IPropertyHandle> PropertyHandle;
+	TSharedPtr<IPropertyHandle> PropertyHandle;
+
+	/** Delegate for filtering valid actors */
+	FOnShouldFilterActor OnShouldFilterActor;
 
 	/*
 	 * The reference object on which the picker will assign the picked asset, if any.

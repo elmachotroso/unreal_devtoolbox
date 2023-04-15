@@ -7,6 +7,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Styling/CoreStyle.h"
 #include "Input/DragAndDrop.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 
 class SRCPanelGroup;
 class FExposedEntityDragDrop;
@@ -33,8 +34,9 @@ public:
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
-				.Padding(5.0f, 0.0f)
+				.Padding(5.f, 0.f)
 				.VAlign(VAlign_Center)
+				.AutoWidth()
 				[
 					SNew(SImage)
 					.Image(FCoreStyle::Get().GetBrush("VerticalBoxDragIndicatorShort"))

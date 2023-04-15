@@ -1,16 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDataLayerOutliner.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Components/HorizontalBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Images/SImage.h"
-#include "DataLayer/DataLayerTreeItem.h"
-#include "DataLayer/DataLayerEditorSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "DataLayerTransaction.h"
+
 #include "Algo/Transform.h"
+#include "DataLayer/DataLayerEditorSubsystem.h"
+#include "DataLayer/DataLayerTreeItem.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/Attribute.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
@@ -50,12 +60,12 @@ void SDataLayerOutliner::CustomAddToToolbar(TSharedPtr<SHorizontalBox> Toolbar)
 		];
 }
 
-TArray<UDataLayer*> SDataLayerOutliner::GetSelectedDataLayers() const
+TArray<UDataLayerInstance*> SDataLayerOutliner::GetSelectedDataLayers() const
 {
 	FSceneOutlinerItemSelection ItemSelection(GetSelection());
 	TArray<FDataLayerTreeItem*> SelectedDataLayerItems;
 	ItemSelection.Get<FDataLayerTreeItem>(SelectedDataLayerItems);
-	TArray<UDataLayer*> ValidSelectedDataLayers;
+	TArray<UDataLayerInstance*> ValidSelectedDataLayers;
 	Algo::TransformIf(SelectedDataLayerItems, ValidSelectedDataLayers, [](const auto Item) { return Item && Item->GetDataLayer(); }, [](const auto Item) { return Item->GetDataLayer(); });
 	return ValidSelectedDataLayers;
 }
@@ -64,8 +74,8 @@ bool SDataLayerOutliner::CanAddSelectedActorsToSelectedDataLayersClicked() const
 {
 	if (GEditor->GetSelectedActorCount() > 0)
 	{
-		TArray<UDataLayer*> SelectedDataLayers = GetSelectedDataLayers();
-		const bool bSelectedDataLayersContainsLocked = !!SelectedDataLayers.FindByPredicate([](const UDataLayer* DataLayer) { return DataLayer->IsLocked(); });
+		TArray<UDataLayerInstance*> SelectedDataLayers = GetSelectedDataLayers();
+		const bool bSelectedDataLayersContainsLocked = !!SelectedDataLayers.FindByPredicate([](const UDataLayerInstance* DataLayer) { return DataLayer->IsLocked(); });
 		return (!SelectedDataLayers.IsEmpty() && !bSelectedDataLayersContainsLocked);
 	}
 	return false;
@@ -80,8 +90,8 @@ FReply SDataLayerOutliner::OnAddSelectedActorsToSelectedDataLayersClicked()
 {
 	if (CanAddSelectedActorsToSelectedDataLayersClicked())
 	{
-		TArray<UDataLayer*> SelectedDataLayers = GetSelectedDataLayers();
-		const FScopedDataLayerTransaction Transaction(LOCTEXT("AddSelectedActorsToSelectedDataLayers", "Add Selected Actors to Selected Data Layers"), SelectedDataLayers[0]->GetWorld());
+		TArray<UDataLayerInstance*> SelectedDataLayers = GetSelectedDataLayers();
+		const FScopedTransaction Transaction(LOCTEXT("AddSelectedActorsToSelectedDataLayers", "Add Selected Actors to Selected Data Layers"));
 		UDataLayerEditorSubsystem::Get()->AddSelectedActorsToDataLayers(SelectedDataLayers);
 	}
 	return FReply::Handled();
@@ -91,8 +101,8 @@ FReply SDataLayerOutliner::OnRemoveSelectedActorsFromSelectedDataLayersClicked()
 {
 	if (CanRemoveSelectedActorsFromSelectedDataLayersClicked())
 	{
-		TArray<UDataLayer*> SelectedDataLayers = GetSelectedDataLayers();
-		const FScopedDataLayerTransaction Transaction(LOCTEXT("RemoveSelectedActorsFromSelectedDataLayers", "Remove Selected Actors from Selected Data Layers"), SelectedDataLayers[0]->GetWorld());
+		TArray<UDataLayerInstance*> SelectedDataLayers = GetSelectedDataLayers();
+		const FScopedTransaction Transaction(LOCTEXT("RemoveSelectedActorsFromSelectedDataLayers", "Remove Selected Actors from Selected Data Layers"));
 		UDataLayerEditorSubsystem::Get()->RemoveSelectedActorsFromDataLayers(SelectedDataLayers);
 	}
 	return FReply::Handled();

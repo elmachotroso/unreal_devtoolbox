@@ -15,6 +15,9 @@
 #include "UObject/ReleaseObjectVersion.h"
 #include "Logging/MessageLog.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/FortniteNCBranchObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsAsset)
 
 #if WITH_EDITOR
 #include "Misc/MessageDialog.h"
@@ -32,6 +35,7 @@ FPhysicsAssetSolverSettings::FPhysicsAssetSolverSettings()
 	, CullDistance(3.0f)
 	, MaxDepenetrationVelocity(0.0f)
 	, FixedTimeStep(0.0f)
+	, bUseLinearJointSolver(true)
 {
 }
 
@@ -205,8 +209,20 @@ void UPhysicsAsset::PostLoad()
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+void UPhysicsAsset::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+
+	OutConstructClasses.Add(FTopLevelAssetPath(USkeletalBodySetup::StaticClass()));
+}
+#endif
+
+
 void UPhysicsAsset::Serialize(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
+
 	Super::Serialize(Ar);
 	Ar << CollisionDisableTable;
 
@@ -217,6 +233,19 @@ void UPhysicsAsset::Serialize(FArchive& Ar)
 		DefaultSkelMesh_DEPRECATED = NULL;
 	}
 #endif
+
+	// Transfer the legacy solver iteration counts to the new ones. These settings are used by the RBAN solver.
+	// These settings are intended to be roughly equivalent to the previous settings (the new solver adds VelocityIterations
+	// and provides the linear/non-linear joint solver option). Any new PhysicsAssets will get the defaults (new linear solver etc)
+	const bool bRequiresSettingsTransfer = (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) < FFortniteNCBranchObjectVersion::PhysicsAssetNewSolverSettings);
+	if (bRequiresSettingsTransfer)
+	{
+		SolverSettings.PositionIterations = SolverIterations.SolverIterations * SolverIterations.JointIterations;
+		SolverSettings.VelocityIterations = 1;
+		SolverSettings.ProjectionIterations = SolverIterations.SolverPushOutIterations;
+		SolverSettings.bUseLinearJointSolver = false;
+		SolverSettings.CullDistance = 1.0f;
+	}
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
@@ -276,12 +305,10 @@ bool UPhysicsAsset::IsCollisionEnabled(int32 BodyIndexA, int32 BodyIndexB) const
 
 void UPhysicsAsset::SetPrimitiveCollision(int32 BodyIndex, EAggCollisionShape::Type PrimitiveType, int32 PrimitiveIndex, ECollisionEnabled::Type CollisionEnabled)
 {
-#if WITH_CHAOS
 	check(SkeletalBodySetups.IsValidIndex(BodyIndex));
 	FKAggregateGeom* AggGeom = &SkeletalBodySetups[BodyIndex]->AggGeom;
 	ensure(PrimitiveIndex < AggGeom->GetElementCount());
 	AggGeom->GetElement(PrimitiveType, PrimitiveIndex)->SetCollisionEnabled(CollisionEnabled);
-#endif
 }
 
 ECollisionEnabled::Type UPhysicsAsset::GetPrimitiveCollision(int32 BodyIndex, EAggCollisionShape::Type PrimitiveType, int32 PrimitiveIndex) const
@@ -386,7 +413,7 @@ FBox UPhysicsAsset::CalcAABB(const USkinnedMeshComponent* MeshComp, const FTrans
 	}
 	else
 	{
-		UE_LOG(LogPhysics, Log,  TEXT("UPhysicsAsset::CalcAABB : Non-uniform scale factor. You will not be able to collide with it.  Turn off collision and wrap it with a blocking volume.  MeshComp: %s  SkelMesh: %s"), *MeshComp->GetFullName(), MeshComp->SkeletalMesh ? *MeshComp->SkeletalMesh->GetFullName() : TEXT("NULL") );
+		UE_LOG(LogPhysics, Log,  TEXT("UPhysicsAsset::CalcAABB : Non-uniform scale factor. You will not be able to collide with it.  Turn off collision and wrap it with a blocking volume.  MeshComp: %s  SkelMesh: %s"), *MeshComp->GetFullName(), MeshComp->GetSkinnedAsset() ? *MeshComp->GetSkinnedAsset()->GetFullName() : TEXT("NULL") );
 	}
 
 	if(!Box.IsValid)
@@ -432,10 +459,10 @@ bool UPhysicsAsset::CanCalculateValidAABB(const USkinnedMeshComponent* MeshComp,
 			if (BoneIndex != INDEX_NONE)
 			{
 				FTransform WorldBoneTransform = MeshComp->GetBoneTransform(BoneIndex, LocalToWorld);
-				if (FMath::Abs(WorldBoneTransform.GetDeterminant()) >(float)KINDA_SMALL_NUMBER)
+				if (FMath::Abs(WorldBoneTransform.GetDeterminant()) >(float)UE_KINDA_SMALL_NUMBER)
 				{
 					FBox Box = bs->AggGeom.CalcAABB(WorldBoneTransform);
-					if (Box.GetSize().SizeSquared() > (float)KINDA_SMALL_NUMBER)
+					if (Box.GetSize().SizeSquared() > (float)UE_KINDA_SMALL_NUMBER)
 					{
 						ValidBox = true;
 						break;
@@ -665,7 +692,7 @@ void SanitizeProfilesHelper(const TArray<T*>& SetupInstances, const TArray<FName
 
 	if (ArrayIdx != INDEX_NONE)
 	{
-		if(PropertyChangedEvent.ChangeType != EPropertyChangeType::Unspecified && PropertyChangedEvent.ChangeType != EPropertyChangeType::ArrayRemove)
+		if(PropertyChangedEvent.ChangeType != EPropertyChangeType::ArrayMove && PropertyChangedEvent.ChangeType != EPropertyChangeType::ArrayRemove)
 		{
 			int32 CollisionCount = 0;
 			FName NewName = (PostProfiles[ArrayIdx] == NAME_None) ? FName(TEXT("New")) : PostProfiles[ArrayIdx];
@@ -963,3 +990,4 @@ void UPhysicsAsset::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 }
 
 #undef LOCTEXT_NAMESPACE
+

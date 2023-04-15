@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceIntRenderTarget2D.h"
+#include "NiagaraDataInterfaceRenderTargetCommon.h"
 #include "NiagaraShader.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
-#if NIAGARA_COMPUTEDEBUG_ENABLED
-#include "NiagaraGpuComputeDebug.h"
-#endif
+#include "NiagaraGpuComputeDebugInterface.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraShader.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraStats.h"
 
 #include "ShaderParameterUtils.h"
@@ -20,13 +21,27 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Texture2D.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceIntRenderTarget2D)
+
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceIntRenderTarget"
 
 namespace NDIIntRenderTarget2DLocal
 {
+	struct FFunctionVersion
+	{
+		enum Type
+		{
+			InitialVersion = 0,
+			AddedOptionalExecute = 1,
+
+			VersionPlusOne,
+			LatestVersion = VersionPlusOne - 1
+		};
+	};
+
 	static const TCHAR* TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceIntRenderTarget2D.ush");
 
-	static const int32 NumFunctions = 9;
+	static const int32 NumFunctions = 12;
 	static const FName GetValueFunctionName("GetValue");
 	static const FName SetValueFunctionName("SetValue");
 	static const FName AtomicAddFunctionName("AtomicAdd");
@@ -44,6 +59,9 @@ namespace NDIIntRenderTarget2DLocal
 
 	static const FName LinearToIndexFunctionName("LinearToIndex");
 	static const FName LinearToUVFunctionName("LinearToUV");
+
+	static const FName ExecToIndexFunctionName("ExecToIndex");
+	static const FName ExecToUVFunctionName("ExecToUV");
 
 	// Shader parameters
 	static const FString TextureSizeAndInvSizeName(TEXT("TextureSizeAndInvSize_"));
@@ -77,9 +95,11 @@ struct FNDIIntRenderTarget2DInstanceData_RenderThread
 	bool bWroteThisFrame = false;
 	bool bReadThisFrame = false;
 
-	FSamplerStateRHIRef SamplerStateRHI;
-	FTextureRHIRef TextureRHI;
-	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
+	FTextureRHIRef		TextureRHI;
+
+	FRDGTextureRef		TransientRDGTexture = nullptr;
+	FRDGTextureUAVRef	TransientRDGUAV = nullptr;
+
 #if STATS
 	void UpdateMemoryStats()
 	{
@@ -105,37 +125,33 @@ struct FNDIIntRenderTarget2DProxy : public FNiagaraDataInterfaceProxyRW
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override {}
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
 
-	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override
 	{
-		FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		if ( InstanceData == nullptr )
-		{
-			return;
-		}
+		FNDIIntRenderTarget2DInstanceData_RenderThread& InstanceData = SystemInstancesToProxyData_RT.FindChecked(Context.GetSystemInstanceID());
 
 		// We only need to transfer this frame if it was written to.
 		// If also read then we need to notify that the texture is important for the simulation
 		// We also assume the texture is important for rendering, without discovering renderer bindings we don't really know
-		if (InstanceData->bWroteThisFrame)
+		if (InstanceData.bWroteThisFrame)
 		{
-			Context.ComputeDispatchInterface->MultiGPUResourceModified(RHICmdList, InstanceData->TextureRHI, InstanceData->bReadThisFrame, true);
+			Context.GetComputeDispatchInterface().MultiGPUResourceModified(Context.GetGraphBuilder(), InstanceData.TextureRHI, InstanceData.bReadThisFrame, true);
 		}
 
-		InstanceData->bWroteThisFrame = true;
-		InstanceData->bReadThisFrame = true;
+		InstanceData.bWroteThisFrame = true;
+		InstanceData.bReadThisFrame = true;
 
 #if NIAGARA_COMPUTEDEBUG_ENABLED && WITH_EDITORONLY_DATA
-		if (InstanceData->bPreviewRenderTarget)
+		if (InstanceData.bPreviewRenderTarget && InstanceData.TransientRDGTexture)
 		{
-			if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.ComputeDispatchInterface->GetGpuComputeDebug())
-			{
-				if (FRHITexture* RHITexture = InstanceData->TextureRHI)
-				{
-					GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, RHITexture, InstanceData->PreviewDisplayRange);
-				}
-			}
+			FNiagaraGpuComputeDebugInterface GpuComputeDebugInterface = Context.GetComputeDispatchInterface().GetGpuComputeDebugInterface();
+			GpuComputeDebugInterface.AddTexture(Context.GetGraphBuilder(), Context.GetSystemInstanceID(), SourceDIName, InstanceData.TransientRDGTexture);
 		}
 #endif
+		if (Context.IsFinalPostSimulate())
+		{
+			InstanceData.TransientRDGTexture = nullptr;
+			InstanceData.TransientRDGUAV = nullptr;
+		}
 	}
 
 	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override
@@ -149,75 +165,6 @@ struct FNDIIntRenderTarget2DProxy : public FNiagaraDataInterfaceProxyRW
 
 	TMap<FNiagaraSystemInstanceID, FNDIIntRenderTarget2DInstanceData_RenderThread> SystemInstancesToProxyData_RT;
 };
-
-//////////////////////////////////////////////////////////////////////////
-
-struct FNDIIntRenderTarget2DParametersCS : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNDIIntRenderTarget2DParametersCS, NonVirtual);
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{			
-		TextureSizeAndInvSizeParam.Bind(ParameterMap, *(NDIIntRenderTarget2DLocal::TextureSizeAndInvSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-		TextureUAVParam.Bind(ParameterMap, *(NDIIntRenderTarget2DLocal::TextureUAVName + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		// Get shader and DI
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		FNDIIntRenderTarget2DProxy* DataInterfaceProxy = static_cast<FNDIIntRenderTarget2DProxy*>(Context.DataInterface);
-		FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = DataInterfaceProxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		check(InstanceData);
-
-		const FVector4f TextureSizeAndInvSize(InstanceData->Size.X, InstanceData->Size.Y, 1.0f / float(InstanceData->Size.X), 1.0f / float(InstanceData->Size.Y));
-		SetShaderValue(RHICmdList, ComputeShaderRHI, TextureSizeAndInvSizeParam, TextureSizeAndInvSize);
-	
-		if (TextureUAVParam.IsUAVBound())
-		{
-			InstanceData->bWroteThisFrame = true;
-			InstanceData->bReadThisFrame = true;
-
-			FRHIUnorderedAccessView* OutputUAV = InstanceData->UnorderedAccessViewRHI;
-			if (OutputUAV != nullptr)
-			{
-				RHICmdList.Transition(FRHITransitionInfo(OutputUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-			}
-			else
-			{
-				OutputUAV = Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Texture2D);
-			}
-
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, TextureUAVParam.GetUAVIndex(), OutputUAV);
-		}
-	}
-
-	void Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const 
-	{
-		if (TextureUAVParam.IsBound())
-		{
-			TextureUAVParam.UnsetUAV(RHICmdList, Context.Shader.GetComputeShader());
-
-			FNDIIntRenderTarget2DProxy* DIProxy = static_cast<FNDIIntRenderTarget2DProxy*>(Context.DataInterface);
-			if ( FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = DIProxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID) )
-			{
-				if (FRHIUnorderedAccessView* OutputUAV = InstanceData->UnorderedAccessViewRHI)
-				{
-					RHICmdList.Transition(FRHITransitionInfo(OutputUAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
-				}
-			}
-		}
-	}
-
-private:
-	LAYOUT_FIELD(FShaderParameter,		TextureSizeAndInvSizeParam);
-	LAYOUT_FIELD(FRWShaderParameter,	TextureUAVParam);
-};
-
-IMPLEMENT_TYPE_LAYOUT(FNDIIntRenderTarget2DParametersCS);
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceIntRenderTarget2D, FNDIIntRenderTarget2DParametersCS);
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -269,12 +216,14 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("GetValueDesc", "Gets the value from the render target at the pixel offset");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	{
 		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
 		Sig.Name = NDIIntRenderTarget2DLocal::SetValueFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("RenderTarget")));
+		Sig.Inputs.Add_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Execute"))).SetValue(true);
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelX")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelY")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Value")));
@@ -287,6 +236,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("SetValueDesc", "Sets the value on the render target at the pixel offset.");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	{
@@ -308,6 +258,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("AtomicAddDesc", "Atomic min the value to the pixel at the offset, returns the current & previous values.  This opertion is thread safe.");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	////static const FName AtomicAndFunctionName("AtomicAnd");
@@ -331,6 +282,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("AtomicCASFunctionDesc", "Compares the pixel value against the comparison value, if they are equal the value is replaced.  Original Value is the pixel value before the operation completes.  This opertion is thread safe.");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	////static const FName AtomicCSFunctionName("AtomicCompareStore");
@@ -354,6 +306,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("AtomicMaxDesc", "Atomic max the value to the pixel at the offset, returns the current & previous values.  This opertion is thread safe.");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	{
@@ -375,6 +328,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("AtomicMinDesc", "Atomic min the value to the pixel at the offset, returns the current & previous values.  This opertion is thread safe.");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	////static const FName AtomicOrFunctionName("AtomicOr");
@@ -393,6 +347,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("GetSizeDesc", "Gets the size of the rendertarget");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	{
@@ -411,6 +366,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = false;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("SetSizeDesc", "Sets the size of the rendertarget");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 
@@ -428,6 +384,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("LinearToIndexDesc", "Converts a linear index into a pixel coordinate");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 	{
@@ -443,9 +400,64 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.bSupportsGPU = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = LOCTEXT("LinearToUVDesc", "Converts a linear index into a UV coordinate");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
+#endif
+	}
+
+	{
+		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
+		Sig.Name = NDIIntRenderTarget2DLocal::ExecToIndexFunctionName;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("RenderTarget")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelX")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelY")));
+		Sig.bExperimental = true;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresContext = false;
+		Sig.bSupportsCPU = false;
+		Sig.bSupportsGPU = true;
+#if WITH_EDITORONLY_DATA
+		Sig.Description = LOCTEXT("ExecToIndexDesc", "Returns the execution index as a pixel coordinate");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
+#endif
+	}
+	{
+		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
+		Sig.Name = NDIIntRenderTarget2DLocal::ExecToUVFunctionName;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("RenderTarget")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("UV")));
+		Sig.bExperimental = true;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresContext = false;
+		Sig.bSupportsCPU = false;
+		Sig.bSupportsGPU = true;
+#if WITH_EDITORONLY_DATA
+		Sig.Description = LOCTEXT("ExecToUVDesc", "Returns the execution index as a UV coordinate");
+		Sig.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
 #endif
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+bool UNiagaraDataInterfaceIntRenderTarget2D::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
+{
+	bool bWasChanged = false;
+
+	if (FunctionSignature.FunctionVersion < NDIIntRenderTarget2DLocal::FFunctionVersion::AddedOptionalExecute)
+	{
+		if (FunctionSignature.Name == NDIIntRenderTarget2DLocal::SetValueFunctionName)
+		{
+			check(FunctionSignature.Inputs.Num() == 4);
+			FunctionSignature.Inputs.Insert_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Execute")), 1).SetValue(true);
+			bWasChanged = true;
+		}
+	}
+
+	// Set latest version
+	FunctionSignature.FunctionVersion = NDIIntRenderTarget2DLocal::FFunctionVersion::LatestVersion;
+
+	return bWasChanged;
+}
+#endif
 
 void UNiagaraDataInterfaceIntRenderTarget2D::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
 {
@@ -506,6 +518,7 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::AppendCompileHash(FNiagaraCompileHa
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
 	FSHAHash Hash = GetShaderFileHash(NDIIntRenderTarget2DLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
 	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceExportTemplateHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderParameters<FShaderParameters>();
 	return bSuccess;
 }
 
@@ -538,7 +551,9 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::GetFunctionHLSL(const FNiagaraDataI
 		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::GetSizeFunctionName) ||
 		//(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::SetSizeFunctionName) ||
 		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::LinearToIndexFunctionName) ||
-		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::LinearToUVFunctionName) )
+		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::LinearToUVFunctionName) ||
+		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::ExecToIndexFunctionName) ||
+		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::ExecToUVFunctionName) )
 	{
 		return true;
 	}
@@ -546,14 +561,74 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::GetFunctionHLSL(const FNiagaraDataI
 }
 #endif
 
+void UNiagaraDataInterfaceIntRenderTarget2D::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceIntRenderTarget2D::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	check(IsInRenderingThread());
+
+	FNDIIntRenderTarget2DProxy& DataInterfaceProxy = Context.GetProxy<FNDIIntRenderTarget2DProxy>();
+	FNDIIntRenderTarget2DInstanceData_RenderThread& InstanceData = DataInterfaceProxy.SystemInstancesToProxyData_RT.FindChecked(Context.GetSystemInstanceID());
+
+	// Set Parameters
+	FShaderParameters* Parameters = Context.GetParameterNestedStruct<FShaderParameters>();
+	Parameters->TextureSizeAndInvSize.X = InstanceData.Size.X;
+	Parameters->TextureSizeAndInvSize.Y = InstanceData.Size.Y;
+	Parameters->TextureSizeAndInvSize.Z = 1.0f / float(InstanceData.Size.X);
+	Parameters->TextureSizeAndInvSize.W = 1.0f / float(InstanceData.Size.Y);
+
+	if (Context.IsResourceBound(&Parameters->RWTextureUAV))
+	{
+		InstanceData.bWroteThisFrame = true;
+		InstanceData.bReadThisFrame = true;
+
+		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+
+		// Ensure RDG resources are ready to use
+		if (InstanceData.TransientRDGTexture == nullptr && InstanceData.TextureRHI.IsValid())
+		{
+			InstanceData.TransientRDGTexture = GraphBuilder.FindExternalTexture(InstanceData.TextureRHI);
+			if (InstanceData.TransientRDGTexture == nullptr)
+			{
+				InstanceData.TransientRDGTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(InstanceData.TextureRHI, TEXT("NiagaraIntRenderTarget2D")));
+			}
+			InstanceData.TransientRDGUAV = GraphBuilder.CreateUAV(InstanceData.TransientRDGTexture);
+			Context.GetRDGExternalAccessQueue().Add(InstanceData.TransientRDGTexture);
+		}
+
+		if (InstanceData.TransientRDGUAV != nullptr)
+		{
+			Parameters->RWTextureUAV = InstanceData.TransientRDGUAV;
+		}
+		else
+		{
+			Parameters->RWTextureUAV = Context.GetComputeDispatchInterface().GetEmptyTextureUAV(GraphBuilder, EPixelFormat::PF_R32_SINT, ETextureDimension::Texture2D);
+		}
+	}
+}
+
 bool UNiagaraDataInterfaceIntRenderTarget2D::InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)
 {
 	check(Proxy);
 
-	extern float GNiagaraRenderTargetResolutionMultiplier;
 	FNDIIntRenderTarget2DInstanceData_GameThread* InstanceData = new (PerInstanceData) FNDIIntRenderTarget2DInstanceData_GameThread();
-	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
-	InstanceData->Size.Y = FMath::Clamp<int>(int(float(Size.Y) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
+
+	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
+	{
+		return true;
+	}
+
+	// Note: If the Format can ever change we will need to replicate this elsewhere also
+	if (RHIIsTypedUAVStoreSupported(InstanceData->Format) == false)
+	{
+		return false;
+	}
+
+	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxTextureDimensions);
+	InstanceData->Size.Y = FMath::Clamp<int>(int(float(Size.Y) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxTextureDimensions);
 #if WITH_EDITORONLY_DATA
 	InstanceData->bPreviewRenderTarget = bPreviewRenderTarget;
 	InstanceData->PreviewDisplayRange = PreviewDisplayRange;
@@ -579,9 +654,7 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::InitPerInstanceData(void* PerInstan
 			{
 				if (FTextureRenderTarget2DResource* Resource2D = RT_TargetTexture->GetTextureRenderTarget2DResource())
 				{
-					InstanceData->SamplerStateRHI = Resource2D->SamplerStateRHI;
 					InstanceData->TextureRHI = Resource2D->GetTextureRHI();
-					InstanceData->UnorderedAccessViewRHI = Resource2D->GetUnorderedAccessViewRHI();
 				}
 			}
 		}
@@ -604,9 +677,8 @@ void UNiagaraDataInterfaceIntRenderTarget2D::DestroyPerInstanceData(void* PerIns
 	);
 
 	// Make sure to clear out the reference to the render target if we created one.
-	extern int32 GNiagaraReleaseResourceOnRemove;
 	decltype(ManagedRenderTargets)::ValueType ExistingRenderTarget = nullptr;
-	if ( ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
+	if ( ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove )
 	{
 		ExistingRenderTarget->ReleaseResource();
 	}
@@ -636,6 +708,12 @@ int32 UNiagaraDataInterfaceIntRenderTarget2D::PerInstanceDataSize() const
 
 bool UNiagaraDataInterfaceIntRenderTarget2D::PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds)
 {
+	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
+	{
+		return false;
+	}
+
 	FNDIIntRenderTarget2DInstanceData_GameThread* InstanceData = static_cast<FNDIIntRenderTarget2DInstanceData_GameThread*>(PerInstanceData);
 
 	{
@@ -656,16 +734,12 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::PerInstanceTickPostSimulate(void* P
 						InstanceData->bPreviewRenderTarget = RT_InstanceData.bPreviewRenderTarget;
 						InstanceData->PreviewDisplayRange = RT_InstanceData.PreviewDisplayRange;
 					#endif
-						InstanceData->SamplerStateRHI.SafeRelease();
 						InstanceData->TextureRHI.SafeRelease();
-						InstanceData->UnorderedAccessViewRHI.SafeRelease();
 						if (RT_TargetTexture)
 						{
 							if (FTextureRenderTarget2DResource* Resource2D = RT_TargetTexture->GetTextureRenderTarget2DResource())
 							{
-								InstanceData->SamplerStateRHI = Resource2D->SamplerStateRHI;
 								InstanceData->TextureRHI = Resource2D->GetTextureRHI();
-								InstanceData->UnorderedAccessViewRHI = Resource2D->GetUnorderedAccessViewRHI();
 							}
 						}
 					}
@@ -692,9 +766,8 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::UpdateInstanceTexture(FNiagaraSyste
 			{
 				InstanceData->TargetTexture = UserTargetTexture;
 
-				extern int32 GNiagaraReleaseResourceOnRemove;
 				decltype(ManagedRenderTargets)::ValueType ExistingRenderTarget = nullptr;
-				if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
+				if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove)
 				{
 					ExistingRenderTarget->ReleaseResource();
 				}
@@ -765,7 +838,6 @@ void UNiagaraDataInterfaceIntRenderTarget2D::VMSetSize(FVectorVMExternalFunction
 	FNDIInputParam<int32> InSizeY(Context);
 	FNDIOutputParam<FNiagaraBool> OutSuccess(Context);
 
-	extern float GNiagaraRenderTargetResolutionMultiplier;
 	for (int32 i=0; i < Context.GetNumInstances(); ++i)
 	{
 		const int SizeX = InSizeX.GetAndAdvance();
@@ -774,10 +846,11 @@ void UNiagaraDataInterfaceIntRenderTarget2D::VMSetSize(FVectorVMExternalFunction
 		OutSuccess.SetAndAdvance(bSuccess);
 		if (bSuccess)
 		{
-			InstData->Size.X = FMath::Clamp<int>(int(float(SizeX) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
-			InstData->Size.Y = FMath::Clamp<int>(int(float(SizeY) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
+			InstData->Size.X = FMath::Clamp<int>(int(float(SizeX) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxTextureDimensions);
+			InstData->Size.Y = FMath::Clamp<int>(int(float(SizeY) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxTextureDimensions);
 		}
 	}
 }
 
 #undef LOCTEXT_NAMESPACE
+

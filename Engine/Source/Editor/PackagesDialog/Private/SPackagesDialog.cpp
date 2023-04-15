@@ -1,22 +1,50 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPackagesDialog.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/SListView.h"
-#include "UObject/UObjectHash.h"
-#include "Textures/SlateIcon.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetToolsModule.h"
 #include "Framework/Commands/UIAction.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Framework/Views/ITypedTableView.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "AssetToolsModule.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/ChildrenBase.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/AssetRegistryInterface.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "SWarningOrErrorBox.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/StyleDefaults.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectHash.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
+
+class ITableRow;
+class STableViewBase;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SPackagesDialog"
 
@@ -47,23 +75,29 @@ UObject* FPackageItem::GetPackageObject() const
 
 bool FPackageItem::HasMultipleAssets() const
 {
-	bool bHasMultipleAssets = false;
 	if ( !FileName.StartsWith(TEXT("/Temp/Untitled")) )
 	{
 		int32 NumAssets = 0;
-		ForEachObjectWithPackage(Package, [&NumAssets](UObject* Obj)
+		int32 NumDeleted = 0;
+		ForEachObjectWithPackage(Package, [&NumAssets,&NumDeleted](UObject* Obj)
 			{
 				if (Obj->IsAsset() && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(Obj))
 				{
 					++NumAssets;
+
+					if (!IsValid(Obj))
+					{
+						++NumDeleted;
+					}
 				}
 				return true;
 			}, false /*bIncludeNestedObjects*/);
-		bHasMultipleAssets = NumAssets > 1;
-	}
-	return bHasMultipleAssets;
-}
 
+		return (NumAssets - NumDeleted) > 1;
+	}
+
+	return false;
+}
 
 bool FPackageItem::GetTypeNameAndColor(FText& OutName, FColor& OutColor) const
 {
@@ -86,15 +120,12 @@ bool FPackageItem::GetTypeNameAndColor(FText& OutName, FColor& OutColor) const
 				OutColor = FColor::White;
 				OutName = LOCTEXT("MultipleAssets", "Multiple Assets");
 			}
-			else
+			else // Just one asset in the package.
 			{
 				OutColor = !IsValidChecked(ObjectPtr) ? FColor::Red : AssetTypeActions->GetTypeColor();
 
-				OutName = AssetTypeActions->GetDisplayNameFromAssetData(FAssetData(ObjectPtr));
-				if (OutName.IsEmpty())
-				{
-					OutName = AssetTypeActions->GetName();
-				}
+				FAssetData AssetData(ObjectPtr);
+				OutName = FText::FromString(AssetData.AssetClassPath.ToString());
 			}
 			return true;
 		}
@@ -437,17 +468,15 @@ void SPackagesDialog::RefreshButtons()
 		FPackageButton& Button = *Buttons[ButtonIndex];
 		if(Button.GetType() == DRT_MakeWritable)
 		{
-			if(UndeterminedItems > 0 || CheckedItems > 0)
-				Button.SetDisabled(false);
-			else
-				Button.SetDisabled(true);
+			Button.SetDisabled(UndeterminedItems == 0 && CheckedItems == 0);
 		}
 		else if(Button.GetType() == DRT_CheckOut)
 		{
-			if(CheckedItems > 0)
-				Button.SetDisabled(false);
-			else
-				Button.SetDisabled(true);
+			Button.SetDisabled(CheckedItems == 0);
+		}
+		else if (Button.GetType() == DRT_Skip)
+		{
+			Button.SetDisabled(CheckedItems > 0);
 		}
 	}
 }
@@ -468,7 +497,7 @@ TSharedRef<SWidget> SPackagesDialog::GenerateWidgetForItemAndColumn( TSharedPtr<
 	check(Item.IsValid());
 
 	// Choose the icon based on the severity
-	const FSlateBrush* IconBrush = Item->GetIconName().IsEmpty() ? FStyleDefaults::GetNoBrush() : FEditorStyle::GetBrush(*(Item->GetIconName()));
+	const FSlateBrush* IconBrush = Item->GetIconName().IsEmpty() ? FStyleDefaults::GetNoBrush() : FAppStyle::GetBrush(*(Item->GetIconName()));
 
 	const FMargin RowPadding(3, 3, 3, 3);
 

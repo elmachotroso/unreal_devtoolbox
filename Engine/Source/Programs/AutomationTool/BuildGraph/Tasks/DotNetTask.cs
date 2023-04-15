@@ -1,14 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using AutomationTool.Tasks;
+using EpicGames.BuildGraph;
 using EpicGames.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Xml;
+using UnrealBuildBase;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	/// <summary>
 	/// Parameters for a DotNet task
@@ -78,15 +82,15 @@ namespace BuildGraph.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
-			FileReference DotNetFile = Parameters.DotNetPath == null ? HostPlatform.Current.GetDotnetExe() : Parameters.DotNetPath;
+			FileReference DotNetFile = Parameters.DotNetPath == null ? Unreal.DotnetPath : Parameters.DotNetPath;
 			if(!FileReference.Exists(DotNetFile))
 			{
 				throw new AutomationException("DotNet is missing from {0}", DotNetFile);
 			}
 
-			IProcessResult Result = Execute(DotNetFile.FullName, Parameters.Arguments, WorkingDir: Parameters.BaseDir, EnvVars: ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile));
+			IProcessResult Result = await ExecuteAsync(DotNetFile.FullName, Parameters.Arguments, WorkingDir: Parameters.BaseDir, EnvVars: ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile));
 			if (Result.ExitCode < 0 || Result.ExitCode >= Parameters.ErrorLevel)
 			{
 				throw new AutomationException("Docker terminated with an exit code indicating an error ({0})", Result.ExitCode);
@@ -117,6 +121,31 @@ namespace BuildGraph.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			yield break;
+		}
+	}
+
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Runs a command using dotnet.
+		/// </summary>
+		/// <param name="Arguments">Command-line arguments.</param>
+		/// <param name="BaseDir">Base directory for running the command.</param>
+		/// <param name="Environment">Environment variables to set.</param>
+		/// <param name="EnvironmentFile">File to read environment variables from.</param>
+		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
+		/// <param name="DotNetPath">Override path to dotnet executable.</param>
+		public static async Task DotNetAsync(string Arguments = null, DirectoryReference BaseDir = null, string Environment = null, FileReference EnvironmentFile = null, int ErrorLevel = 1, FileReference DotNetPath = null)
+		{
+			DotNetTaskParameters Parameters = new DotNetTaskParameters();
+			Parameters.Arguments = Arguments;
+			Parameters.BaseDir = BaseDir?.FullName;
+			Parameters.Environment = Environment;
+			Parameters.EnvironmentFile = EnvironmentFile?.FullName;
+			Parameters.ErrorLevel = ErrorLevel;
+			Parameters.DotNetPath = DotNetPath;
+			
+			await ExecuteAsync(new DotNetTask(Parameters));
 		}
 	}
 }

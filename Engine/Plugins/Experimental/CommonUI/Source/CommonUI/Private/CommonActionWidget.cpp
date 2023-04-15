@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonActionWidget.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonUISubsystemBase.h"
 #include "CommonInputSubsystem.h"
 #include "CommonWidgetPaletteCategories.h"
@@ -9,7 +9,10 @@
 #include "Widgets/Images/SImage.h"
 #include "CommonUITypes.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Input/UIActionBinding.h"
 #include "Input/UIActionRouterTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonActionWidget)
 
 UCommonActionWidget::UCommonActionWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -70,15 +73,15 @@ TSharedRef<SWidget> UCommonActionWidget::RebuildWidget()
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		[
-			SAssignNew(MyIcon, SImage)
-			.Image(&Icon)
+			SAssignNew(MyProgressImage, SImage)
+			.Image(&ProgressMaterialBrush)
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		[
-			SAssignNew(MyProgressImage, SImage)
-			.Image(&ProgressMaterialBrush)
+			SAssignNew(MyIcon, SImage)
+			.Image(&Icon)
 		]);
 	
 	return MyKeyBox.ToSharedRef();

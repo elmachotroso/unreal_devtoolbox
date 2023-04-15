@@ -5,7 +5,7 @@
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Geo/Sampling/SurfacicSampling.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FSphericalSurface::EvaluatePointGridInCylindricalSpace(const FCoordinateGrid& Coordinates, TArray<FPoint2D>& OutPoints) const
@@ -34,7 +34,7 @@ void FSphericalSurface::EvaluatePointGridInCylindricalSpace(const FCoordinateGri
 	{
 		double CosV = cos(VAngle);
 		double Rho = Radius * CosV;
-		double SwapOrientation = (VAngle < PI && VAngle >= 0) ? 1.0 : -1.0;
+		double SwapOrientation = (VAngle < DOUBLE_PI && VAngle >= 0) ? 1.0 : -1.0;
 
 		for (int32 Undex = 0; Undex < UCount; Undex++)
 		{

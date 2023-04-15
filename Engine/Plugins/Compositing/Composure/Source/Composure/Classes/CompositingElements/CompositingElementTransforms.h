@@ -25,7 +25,7 @@ public:
 	float RenderScale = 1.f;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, Category = "Compositing Pass", meta = (DisplayAfter = "RenderScale"))
-	TArray<UComposurePostProcessPassPolicy*> PostProcessPasses;
+	TArray<TObjectPtr<UComposurePostProcessPassPolicy>> PostProcessPasses;
 
 public:
 	//~ Begin UCompositingElementTransform interface
@@ -103,7 +103,7 @@ public:
 
 private:
 	UPROPERTY(Transient, DuplicateTransient, SkipSerialization)
-	UComposureTonemapperPassPolicy* TonemapPolicy;
+	TObjectPtr<UComposureTonemapperPassPolicy> TonemapPolicy;
 };
 
 /* UMultiPassChromaKeyer
@@ -114,7 +114,7 @@ class UMaterialInstanceDynamic;
 class UMaterialInterface;
 
 UCLASS(BlueprintType, Blueprintable)
-class UMultiPassChromaKeyer : public UCompositingElementTransform
+class COMPOSURE_API UMultiPassChromaKeyer : public UCompositingElementTransform
 {
 	GENERATED_BODY()
 
@@ -133,7 +133,7 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UTexture* DefaultWhiteTexture = nullptr;
+	TObjectPtr<UTexture> DefaultWhiteTexture = nullptr;
 };
 
 
@@ -145,7 +145,7 @@ class UMaterialInstanceDynamic;
 class UMaterialInterface;
 
 UCLASS(BlueprintType, Blueprintable)
-class UMultiPassDespill : public UCompositingElementTransform
+class COMPOSURE_API UMultiPassDespill : public UCompositingElementTransform
 {
 	GENERATED_BODY()
 
@@ -164,7 +164,7 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UTexture* DefaultWhiteTexture = nullptr;
+	TObjectPtr<UTexture> DefaultWhiteTexture = nullptr;
 };
 
 /* UAlphaTransformPass
@@ -173,7 +173,7 @@ private:
 class UMaterialInstanceDynamic;
 
 UCLASS(noteditinlinenew, hidedropdown)
-class UAlphaTransformPass : public UCompositingElementTransform
+class COMPOSURE_API UAlphaTransformPass : public UCompositingElementTransform
 {
 	GENERATED_BODY()
 
@@ -190,9 +190,9 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UMaterialInterface* DefaultMaterial;
+	TObjectPtr<UMaterialInterface> DefaultMaterial;
 	UPROPERTY(Transient)
-	UMaterialInstanceDynamic* AlphaTransformMID;
+	TObjectPtr<UMaterialInstanceDynamic> AlphaTransformMID;
 };
 
 

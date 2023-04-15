@@ -549,8 +549,8 @@ void AGroupActor::AddSelectedActorsToSelectedGroup()
 			}
 		}
 
-		AGroupActor* SelectedGroup = Cast<AGroupActor>(EditorWorld->ActiveGroupActors[SelectedGroupIndex]);
-		if( SelectedGroupIndex != -1 && SelectedGroup != NULL )
+		AGroupActor* SelectedGroup = SelectedGroupIndex != -1 ? Cast<AGroupActor>(EditorWorld->ActiveGroupActors[SelectedGroupIndex]) : nullptr;
+		if( SelectedGroup != nullptr )
 		{
 			ULevel* GroupLevel = SelectedGroup->GetLevel();
 
@@ -589,6 +589,7 @@ void AGroupActor::AddSelectedActorsToSelectedGroup()
 					}
 
 					SelectedGroup->CenterGroupLocation();
+					SelectedGroup->SetActorRotation(ActorsToAdd.Last()->GetActorRotation());
 				}
 			}
 			else
@@ -683,17 +684,13 @@ void AGroupActor::UnlockSelectedGroups()
 
 void AGroupActor::ToggleGroupMode()
 {
-	// Group mode can only be toggled when not in InterpEdit mode
-	if( !GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit) )
-	{
-		UActorGroupingUtils::SetGroupingActive(!UActorGroupingUtils::IsGroupingActive());
+	UActorGroupingUtils::SetGroupingActive(!UActorGroupingUtils::IsGroupingActive());
 
-		// Update group selection in the editor to reflect the toggle
-		SelectGroupsInSelection();
-		GEditor->RedrawAllViewports();
+	// Update group selection in the editor to reflect the toggle
+	SelectGroupsInSelection();
+	GEditor->RedrawAllViewports();
 
-		GEditor->SaveConfig();
-	}
+	GEditor->SaveConfig();
 }
 
 
@@ -821,6 +818,7 @@ void AGroupActor::PostRemove()
 				FScopedRefreshAllBrowsers LevelRefreshAllBrowsers;
 
 				// Destroy group and clear references.
+				GEditor->SelectActor( this, /*bSelected=*/ false, /*bNotify=*/ false );
 				ULayersSubsystem* LayersSubsystem = GEditor->GetEditorSubsystem<ULayersSubsystem>();
 				LayersSubsystem->DisassociateActorFromLayers( this );
 				MyWorld->EditorDestroyActor( this, false );			

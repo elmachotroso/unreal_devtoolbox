@@ -8,6 +8,7 @@ using System.Xml;
 using System.Xml.Linq;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -35,7 +36,7 @@ namespace UnrealBuildTool
 			return diff.ToString();
 		}
 
-		public override bool WriteProjectFile(List<UnrealTargetPlatform> InPlatforms, List<UnrealTargetConfiguration> InConfigurations, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		public override bool WriteProjectFile(List<UnrealTargetPlatform> InPlatforms, List<UnrealTargetConfiguration> InConfigurations, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
 			bool bSuccess = false;
 			string ProjectNameRaw = ProjectFilePath.GetFileNameWithoutExtension();
@@ -193,8 +194,8 @@ namespace UnrealBuildTool
 							{
 								//
 								// Look the the following folder
-								XAttribute attribute = element.Attribute("Name");
-								if (attribute.Value == FolderName)
+								XAttribute? attribute = element.Attribute("Name");
+								if (attribute?.Value == FolderName)
 								{
 									// Ok, we found the folder as subfolder, let's use it.
 									root = element;
@@ -397,7 +398,7 @@ namespace UnrealBuildTool
 					// Add the working directory for the custom build commands.
 					//
 					XElement CustomBuildWorkingDirectory = new XElement("WorkingDirectory");
-					XText CustuomBuildWorkingDirectory = new XText(UnrealBuildTool.GetUBTPath().Directory.FullName);
+					XText CustuomBuildWorkingDirectory = new XText(Unreal.UnrealBuildToolDllPath.Directory.FullName);
 					CustomBuildWorkingDirectory.Add(CustuomBuildWorkingDirectory);
 					CodeLiteConfigurationCustomBuild.Add(CustomBuildWorkingDirectory);
 
@@ -426,7 +427,7 @@ namespace UnrealBuildTool
 					}
 					else
 					{
-						BuildTarget = UnrealBuildTool.GetUBTPath().GetFileName() + " " + BuildTarget;
+						BuildTarget = $"{Unreal.DotnetPath} \"{Unreal.UnrealBuildToolDllPath}\" {BuildTarget}";
 					}
 
 					if (GameProjectFile.Length > 0)

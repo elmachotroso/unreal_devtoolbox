@@ -7,8 +7,14 @@ namespace UnrealBuildTool.Rules
     public class IKRigEditor : ModuleRules
     {
         public IKRigEditor(ReadOnlyTargetRules Target) : base(Target)
-        {
-            PublicDependencyModuleNames.AddRange(
+		{
+			PrivateIncludePaths.AddRange(
+				new string[] {
+					System.IO.Path.Combine(GetModuleDirectory("Persona"), "Private"),
+				}
+			);
+
+			PublicDependencyModuleNames.AddRange(
                 new string[]
                 {
 	                "Core",
@@ -31,11 +37,11 @@ namespace UnrealBuildTool.Rules
                     "EditorWidgets",
                     "Kismet",
                     "KismetWidgets",
-                    "EditorStyle",
                     "Persona",
                     "SkeletonEditor",
                     "ContentBrowser",
                     "AnimationBlueprintLibrary",
+                    "MessageLog",
                     
 					"PropertyEditor",
 					"BlueprintGraph",
@@ -48,15 +54,8 @@ namespace UnrealBuildTool.Rules
 					"AnimationCore",
                     "AnimationWidgets",
                     "ApplicationCore",
-				}
+                }
             );
-
-            PrivateIncludePathModuleNames.AddRange(
-                new string[]
-                {
-				}
-            );
-
         }
     }
 }

@@ -95,17 +95,6 @@ void FRuntimeAssetCacheAsyncWorker::DoWork()
 		return;
 	}
 
-	if (!CacheBuilder)
-	{
-		// Failed, cleanup data and return false.
-		INC_DWORD_STAT(STAT_RAC_NumFails);
-		Data = nullptr;
-		DataSize = 0;
-		bEntryRetrieved = false;
-		CurrentBucket->RemoveMetadataEntry(CacheKey);
-		return;
-	}
-
 	{
 		INC_DWORD_STAT(STAT_RAC_NumBuilds);
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("RAC async build time"), STAT_RAC_AsyncBuildTime, STATGROUP_RAC)
@@ -167,7 +156,7 @@ void FRuntimeAssetCacheAsyncWorker::DoWork()
 	bEntryRetrieved = true;
 }
 
-TStatId FRuntimeAssetCacheAsyncWorker::GetStatId()
+TStatId FRuntimeAssetCacheAsyncWorker::GetStatId() const
 {
 	return TStatId();
 }

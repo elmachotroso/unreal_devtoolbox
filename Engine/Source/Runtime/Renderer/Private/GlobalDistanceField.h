@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	GlobalDistanceField.h
-=============================================================================*/
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -29,13 +25,14 @@ namespace GlobalDistanceField
 	int32 GetMipFactor();
 	int32 GetClipmapMipResolution(bool bLumenEnabled);
 	float GetClipmapExtent(int32 ClipmapIndex, const FScene* Scene, bool bLumenEnabled);
+	int32 GetNumGlobalDistanceFieldClipmaps(bool bLumenEnabled, float LumenSceneViewDistance);
+
 	FIntVector GetPageAtlasSizeInPages(bool bLumenEnabled, float LumenSceneViewDistance);
 	FIntVector GetPageAtlasSize(bool bLumenEnabled, float LumenSceneViewDistance);
 	FIntVector GetCoverageAtlasSize(bool bLumenEnabled, float LumenSceneViewDistance);
 	uint32 GetPageTableClipmapResolution(bool bLumenEnabled);
 	FIntVector GetPageTableTextureResolution(bool bLumenEnabled, float LumenSceneViewDistance);
 	int32 GetMaxPageNum(bool bLumenEnabled, float LumenSceneViewDistance);
-	void ExpandDistanceFieldUpdateTrackingBounds(const FSceneViewState* ViewState, DistanceField::FUpdateTrackingBounds& UpdateTrackingBounds);
 };
 
 /** 
@@ -45,6 +42,7 @@ namespace GlobalDistanceField
  **/
 extern void UpdateGlobalDistanceFieldVolume(
 	FRDGBuilder& GraphBuilder,
+	FRDGExternalAccessQueue& ExternalAccessQueue,
 	FViewInfo& View, 
 	FScene* Scene, 
 	float MaxOcclusionDistance, 

@@ -2,40 +2,65 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "IO/IoContainerId.h"
+#include "Async/Future.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
-#include "Logging/LogMacros.h"
-#include "Templates/RefCounting.h"
-#include "Templates/UnrealTemplate.h"
-#include "Templates/TypeCompatibleBytes.h"
-#include "HAL/PlatformAtomics.h"
-#include "Memory/MemoryView.h"
-#include "Misc/SecureHash.h"
-#include "IO/IoHash.h"
-#include "Misc/AES.h"
-#include "Misc/IEngineCrypto.h"
-#include "Serialization/FileRegions.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "Async/Future.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformAtomics.h"
+#include "HAL/PlatformFile.h"
+#include "HAL/UnrealMemory.h"
+#include "IO/IoContainerId.h"
+#include "IO/IoHash.h"
+#include "Logging/LogMacros.h"
+#include "Math/NumericLimits.h"
+#include "Memory/MemoryFwd.h"
+#include "Memory/MemoryView.h"
+#include "Misc/AES.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include "Misc/ByteSwap.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Guid.h"
+#include "Misc/IEngineCrypto.h"
+#include "Misc/SecureHash.h"
+#include "Serialization/Archive.h"
+#include "Serialization/FileRegions.h"
+#include "String/BytesToHex.h"
+#include "Tasks/Task.h"
+#include "Templates/Function.h"
+#include "Templates/RefCounting.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeCompatibleBytes.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
-class FIoRequest;
-class FIoDispatcher;
-class FIoStoreReader;
-class FIoStoreEnvironment;
-
-class FIoRequestImpl;
+class FEvent;
 class FIoBatchImpl;
+class FIoDirectoryIndexReaderImpl;
+class FIoDispatcher;
 class FIoDispatcherImpl;
-class FIoStoreWriterContextImpl;
+class FIoRequest;
+class FIoRequestImpl;
+class FIoStoreEnvironment;
+class FIoStoreReader;
 class FIoStoreReaderImpl;
+class FIoStoreWriterContextImpl;
+class FPackageId;
 class IMappedFileHandle;
 class IMappedFileRegion;
-class FIoDirectoryIndexReaderImpl;
+struct FFileRegion;
 struct IIoDispatcherBackend;
-class FPackageId;
+template <typename CharType> class TStringBuilderBase;
 
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogIoDispatcher, Log, All);
 
@@ -66,26 +91,9 @@ enum class EIoErrorCode
  */
 static const TCHAR* GetIoErrorText(EIoErrorCode ErrorCode)
 {
-	static constexpr const TCHAR* ErrorCodeText[]
-	{
-		TEXT("OK"),
-		TEXT("Unknown Status"),
-		TEXT("Invalid Code"),
-		TEXT("Cancelled"),
-		TEXT("FileOpen Failed"),
-		TEXT("File Not Open"),
-		TEXT("Read Error"),
-		TEXT("Write Error"),
-		TEXT("Not Found"),
-		TEXT("Corrupt Toc"),
-		TEXT("Unknown ChunkID"),
-		TEXT("Invalid Parameter"),
-		TEXT("Signature Error"),
-		TEXT("Invalid Encryption Key"),
-		TEXT("Compression Error")
-	};
+	extern CORE_API const TCHAR* const* GetIoErrorText_ErrorCodeText;
 
-	return ErrorCodeText[static_cast<uint32>(ErrorCode)];
+	return GetIoErrorText_ErrorCodeText[static_cast<uint32>(ErrorCode)];
 }
 
 /**
@@ -445,10 +453,14 @@ public:
 	CORE_API			FIoBuffer();
 	CORE_API explicit	FIoBuffer(uint64 InSize);
 	CORE_API			FIoBuffer(const void* Data, uint64 InSize, const FIoBuffer& OuterBuffer);
+	CORE_API			FIoBuffer(FMemoryView Memory, const FIoBuffer& OuterBuffer);
 
 	CORE_API			FIoBuffer(EAssumeOwnershipTag,	const void* Data, uint64 InSize);
+	CORE_API			FIoBuffer(EAssumeOwnershipTag,	FMemoryView Memory);
 	CORE_API			FIoBuffer(ECloneTag,			const void* Data, uint64 InSize);
+	CORE_API			FIoBuffer(ECloneTag,			FMemoryView Memory);
 	CORE_API			FIoBuffer(EWrapTag,				const void* Data, uint64 InSize);
+	CORE_API			FIoBuffer(EWrapTag,				FMemoryView Memory);
 
 	// Note: we currently rely on implicit move constructor, thus we do not declare any
 	//		 destructor or copy/assignment operators or copy constructors
@@ -468,6 +480,8 @@ public:
 	inline bool			IsMemoryOwned() const	{ return CorePtr->IsMemoryOwned(); }
 
 	inline void			EnsureOwned() const		{ if (!CorePtr->IsMemoryOwned()) { MakeOwned(); } }
+
+	inline bool			operator!=(const FIoBuffer& Rhs) const { return DataSize() != Rhs.DataSize() || FMemory::Memcmp(GetData(), Rhs.GetData(), DataSize()) != 0; }
 
 	CORE_API void		MakeOwned() const;
 	
@@ -704,6 +718,8 @@ public:
 		return Builder;
 	}
 
+	friend CORE_API FString LexToString(const FIoChunkId& Id);
+
 	inline bool operator ==(const FIoChunkId& Rhs) const
 	{
 		return 0 == FMemory::Memcmp(Id, Rhs.Id, sizeof Id);
@@ -786,6 +802,12 @@ public:
 	FIoReadOptions(uint64 InOffset, uint64 InSize)
 		: RequestedOffset(InOffset)
 		, RequestedSize(InSize)
+	{ }
+	
+	FIoReadOptions(uint64 InOffset, uint64 InSize, void* InTargetVa)
+		: RequestedOffset(InOffset)
+		, RequestedSize(InSize)
+		, TargetVa(InTargetVa)
 	{ }
 
 	~FIoReadOptions() = default;
@@ -1192,16 +1214,6 @@ public:
 	virtual void FreeSourceBuffer() = 0;
 };
 
-class IIoStoreWriter
-{
-public:
-	CORE_API virtual ~IIoStoreWriter() = default;
-
-	CORE_API virtual void EnableDiskLayoutOrdering(const TArray<TUniquePtr<FIoStoreReader>>& PatchSourceReaders = TArray<TUniquePtr<FIoStoreReader>>()) = 0;
-	CORE_API virtual void Append(const FIoChunkId& ChunkId, FIoBuffer Chunk, const FIoWriteOptions& WriteOptions, uint64 OrderHint = MAX_uint64) = 0;
-	CORE_API virtual void Append(const FIoChunkId& ChunkId, IIoStoreWriteRequest* Request, const FIoWriteOptions& WriteOptions) = 0;
-	CORE_API virtual TIoStatusOr<FIoStoreWriterResult> GetResult() = 0;
-};
 
 struct FIoStoreTocChunkInfo
 {
@@ -1230,16 +1242,72 @@ struct FIoStoreTocCompressedBlockInfo
 struct FIoStoreCompressedBlockInfo
 {
 	FName CompressionMethod;
+	// The size of relevant data in the block (i.e. what you pass to decompress)
 	uint32 CompressedSize;
+	// The size of the _block_ after decompression. This is not adjusted for any FIoReadOptions used.
 	uint32 UncompressedSize;
+	// The size of the data this block takes in IoBuffer (i.e. after padding for decryption)
+	uint32 AlignedSize;
+	// Where in IoBuffer this block starts.
+	uint64 OffsetInBuffer;
 };
 
 struct FIoStoreCompressedReadResult
 {
 	FIoBuffer IoBuffer;
 	TArray<FIoStoreCompressedBlockInfo> Blocks;
-	uint64 UncompressedOffset;
-	uint64 UncompressedSize;
+	// There is where the data starts in IoBuffer (for when you pass in a data range via FIoReadOptions)
+	uint64 UncompressedOffset = 0;
+	// This is the total size requested via FIoReadOptions. Notably, if you requested a narrow range, you could
+	// add up all the block uncompressed sizes and it would be larger than this.
+	uint64 UncompressedSize = 0;
+	// This is the total size of compressed data, which is less than IoBuffer size due to padding for decryption.
+	uint64 TotalCompressedSize = 0;
+};
+
+
+class IIoStoreWriterReferenceChunkDatabase
+{
+public:
+	CORE_API virtual ~IIoStoreWriterReferenceChunkDatabase() = default;
+
+	/*
+	* Used by IIoStoreWriter to check and see if there's a reference chunk that matches the data that
+	* IoStoreWriter wants to compress and write. Validity checks must be synchronous - if a chunk can't be
+	* used for some reason (no matching chunk exists or otherwise), this function must return false and not 
+	* call InCompletionCallback. The input parameters are all for match finding and validating.
+	* 
+	* Once a matching chunk is found, it is read from the source iostore container asynchronously, and upon
+	* completion InCompletionCallback is called with the raw output from FIoStoreReader::ReadCompressed (i.e.
+	* FIoStoreCompressedReadResult). Failures once the async read process has started are currently fatal due to needing
+	* to rekick the BeginCompress for the chunk.
+	* 
+	* For the moment, changes in compression method are allowed.
+	* 
+	* RetrieveChunk is not currently thread safe and must be called from a single thread.
+	* 
+	* Chunks provided *MUST* decompress to bits that hash to the exact value provided in InChunkKey (i.e. be exactly the same bits),
+	* and also be the same number of blocks (i.e. same CompressionBlockSize)
+	*/
+	CORE_API virtual bool RetrieveChunk(const TPair<FIoContainerId, FIoChunkHash>& InChunkKey, const FName& InCompressionMethod, uint64 InUncompressedSize, uint64 InNumChunkBlocks, TUniqueFunction<void(TIoStatusOr<FIoStoreCompressedReadResult>)> InCompletionCallback) = 0;
+};
+
+
+class IIoStoreWriter
+{
+public:
+	CORE_API virtual ~IIoStoreWriter() = default;
+
+	/**
+	*	If a reference database is provided, the IoStoreWriter implementation may elect to reuse compressed blocks
+	*	from previous containers instead of recompressing input data. This must be set before any writes are appended.
+	*/
+	CORE_API virtual void SetReferenceChunkDatabase(TSharedPtr<IIoStoreWriterReferenceChunkDatabase> ReferenceChunkDatabase) = 0;
+	CORE_API virtual void EnableDiskLayoutOrdering(const TArray<TUniquePtr<FIoStoreReader>>& PatchSourceReaders = TArray<TUniquePtr<FIoStoreReader>>()) = 0;
+	CORE_API virtual void Append(const FIoChunkId& ChunkId, FIoBuffer Chunk, const FIoWriteOptions& WriteOptions, uint64 OrderHint = MAX_uint64) = 0;
+	CORE_API virtual void Append(const FIoChunkId& ChunkId, IIoStoreWriteRequest* Request, const FIoWriteOptions& WriteOptions) = 0;
+	CORE_API virtual TIoStatusOr<FIoStoreWriterResult> GetResult() = 0;
+	CORE_API virtual void EnumerateChunks(TFunction<bool(const FIoStoreTocChunkInfo&)>&& Callback) const = 0;
 };
 
 class FIoStoreReader
@@ -1256,9 +1324,18 @@ public:
 	CORE_API void EnumerateChunks(TFunction<bool(const FIoStoreTocChunkInfo&)>&& Callback) const;
 	CORE_API TIoStatusOr<FIoStoreTocChunkInfo> GetChunkInfo(const FIoChunkId& Chunk) const;
 	CORE_API TIoStatusOr<FIoStoreTocChunkInfo> GetChunkInfo(const uint32 TocEntryIndex) const;
+
+	// Reads the chunk off the disk, decrypting/decompressing as necessary.
 	CORE_API TIoStatusOr<FIoBuffer> Read(const FIoChunkId& Chunk, const FIoReadOptions& Options) const;
+	
+	// As Read(), except returns a task that will contain the result after a .Wait/.BusyWait.
+	CORE_API UE::Tasks::TTask<TIoStatusOr<FIoBuffer>> ReadAsync(const FIoChunkId& Chunk, const FIoReadOptions& Options) const;
+
+	// Reads and decrypts if necessary the compressed blocks, but does _not_ decompress them. The totality of the data is stored
+	// in FIoStoreCompressedReadResult::FIoBuffer as a contiguous buffer, however each block is padded during encryption, so
+	// either use FIoStoreCompressedBlockInfo::AlignedSize to advance through the buffer, or use FIoStoreCompressedBlockInfo::OffsetInBuffer
+	// directly.
 	CORE_API TIoStatusOr<FIoStoreCompressedReadResult> ReadCompressed(const FIoChunkId& Chunk, const FIoReadOptions& Options) const;
-	CORE_API TFuture<TIoStatusOr<FIoBuffer>> ReadAsync(const FIoChunkId& Chunk, const FIoReadOptions& Options) const;
 
 	CORE_API const FIoDirectoryIndexReader& GetDirectoryIndexReader() const;
 
@@ -1268,6 +1345,7 @@ public:
 	CORE_API uint64 GetCompressionBlockSize() const;
 	CORE_API const TArray<FName>& GetCompressionMethods() const;
 	CORE_API void EnumerateCompressedBlocks(TFunction<bool(const FIoStoreTocCompressedBlockInfo&)>&& Callback) const;
+	CORE_API void EnumerateCompressedBlocksForChunk(const FIoChunkId& Chunk, TFunction<bool(const FIoStoreTocCompressedBlockInfo&)>&& Callback) const;
 
 private:
 	FIoStoreReaderImpl* Impl;

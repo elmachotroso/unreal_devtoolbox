@@ -13,7 +13,7 @@
 #include "Shaders/Debugging/MetalShaderDebugCache.h"
 #include "Shaders/MetalCompiledShaderKey.h"
 #include "Shaders/MetalCompiledShaderCache.h"
-
+#include "RHICoreShader.h"
 
 //------------------------------------------------------------------------------
 
@@ -297,26 +297,45 @@ void TMetalBaseShader<BaseResourceType, ShaderType>::Init(TArrayView<const uint8
 			[PreprocessorMacros addEntriesFromDictionary: @{ @"MTLSL_ENABLE_DEBUG_INFO" : @(1)}];
 #endif
 			CompileOptions.SetPreprocessorMacros(PreprocessorMacros);
+			[PreprocessorMacros release];
 #endif
 
 			mtlpp::LanguageVersion MetalVersion;
 			switch (Header.Version)
 			{
+                case 8:
+                    MetalVersion = mtlpp::LanguageVersion::Version3_0;
+                    break;
 				case 7:
 					MetalVersion = mtlpp::LanguageVersion::Version2_4;
 					break;
+#if PLATFORM_MAC
 				case 6:
 					MetalVersion = mtlpp::LanguageVersion::Version2_3;
 					break;
 				case 5:
+					// Fall through
+				case 0:
+					// Fall through
+				default:
 					MetalVersion = mtlpp::LanguageVersion::Version2_2;
 					break;
+#else
+				case 0:
+                    MetalVersion = mtlpp::LanguageVersion::Version2_4;
+                    break;
 				default:
 					UE_LOG(LogRHI, Fatal, TEXT("Failed to create shader with unknown version %d: %s"), Header.Version, *FString(NewShaderString));
-					MetalVersion = mtlpp::LanguageVersion::Version2_2;
+					MetalVersion = mtlpp::LanguageVersion::Version2_4;
 					break;
+#endif
 			}
 			CompileOptions.SetLanguageVersion(MetalVersion);
+
+			if(ShaderType == SF_Vertex && MetalVersion > mtlpp::LanguageVersion::Version2_2)
+			{
+				[CompileOptions.GetPtr() setPreserveInvariance:YES];
+			}
 
 			ns::AutoReleasedError Error;
 			Library = GetMetalDeviceContext().GetDevice().NewLibrary(NewShaderString, CompileOptions, &Error);
@@ -341,19 +360,7 @@ void TMetalBaseShader<BaseResourceType, ShaderType>::Init(TArrayView<const uint8
 	UniformBuffersCopyInfo = Header.UniformBuffersCopyInfo;
 	SideTableBinding = Header.SideTable;
 
-	StaticSlots.Reserve(Bindings.ShaderResourceTable.ResourceTableLayoutHashes.Num());
-
-	for (uint32 LayoutHash : Bindings.ShaderResourceTable.ResourceTableLayoutHashes)
-	{
-		if (const FShaderParametersMetadata* Metadata = FindUniformBufferStructByLayoutHash(LayoutHash))
-		{
-			StaticSlots.Add(Metadata->GetLayout().StaticSlot);
-		}
-		else
-		{
-			StaticSlots.Add(MAX_UNIFORM_BUFFER_STATIC_SLOTS);
-		}
-	}
+	UE::RHICore::InitStaticUniformBufferSlots(StaticSlots, Bindings.ShaderResourceTable);
 }
 
 template<typename BaseResourceType, int32 ShaderType>

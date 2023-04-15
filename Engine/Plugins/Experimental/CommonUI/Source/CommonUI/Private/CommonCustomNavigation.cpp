@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonCustomNavigation.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonUISettings.h"
 #include "CommonWidgetPaletteCategories.h"
 
@@ -10,6 +10,8 @@
 #include "Components/BorderSlot.h"
 
 #include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonCustomNavigation)
 
 class SCustomNavBorder : public SBorder
 {
@@ -66,7 +68,7 @@ private:
 UCommonCustomNavigation::UCommonCustomNavigation(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Padding = FMargin(0);
+	SetPadding(FMargin(0.f));
 }
 
 TSharedRef<SWidget> UCommonCustomNavigation::RebuildWidget()
@@ -99,3 +101,4 @@ const FText UCommonCustomNavigation::GetPaletteCategory()
 	return CommonWidgetPaletteCategories::Default;
 }
 #endif // WITH_EDITOR
+

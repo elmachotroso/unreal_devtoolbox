@@ -24,9 +24,9 @@ namespace ChaosTest {
 			FReal Count = 0;
 			for(int32 Row = 0; Row < Rows; ++Row)
 			{
-				for(int32 Col = 0; Col < Columns; ++Col)
+				for(int32 Col = 0; Col < Columns; ++Col, ++Count)
 				{
-					Heights[Row * Columns + Col] = CountToWorldScale * Count++;
+					Heights[Row * Columns + Col] = CountToWorldScale * Count;
 				}
 			}
 
@@ -355,6 +355,174 @@ namespace ChaosTest {
 		
 	}
 
+	void RaycastOnFlatHeightField()
+	{
+		int32 Rows = 64;
+		int32 Columns = 64;
+		FVec3 Scale(100.0, 100.0, 100.0);
+		TArray<FReal> Heights;
+		Heights.AddZeroed(Rows * Columns);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+		FReal TOI;
+		FVec3 Position, Normal;
+		int32 FaceIdx = 0;
+	
+		const FVec3 Start(8224.6524537283822, 2631.7542424011549, 2265.2052028112184);
+		const FVec3 Dir(-0.92887444870972680, -0.11019885226781448, -0.35362193299208372);
+		EXPECT_TRUE(Heightfield.Raycast(Start, Dir, 2097152.0000000000, 0, TOI, Position, Normal, FaceIdx));
+	}
+
+	void RaycastVariousWalkOnHeightField()
+	{
+		{
+			constexpr int32 Rows = 64;
+			constexpr int32 Columns = Rows;
+			FVec3 Scale(1.0, 1.0, 1.0);
+			TArray<FReal> Heights;
+			Heights.AddZeroed(Rows * Columns);
+
+			// Add a mountain on the diagonal
+			for (int32 Index = 0; Index < Columns; ++Index)
+			{
+				Heights[Index * Columns + Index] = 20;
+			}
+			constexpr int32 BigMountainIndex = Columns / 2;
+			Heights[BigMountainIndex * Columns + BigMountainIndex] = 40;
+
+			TArray<FReal> HeightsCopy = Heights;
+
+			FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+			const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+			FReal TOI;
+			FVec3 Position, Normal;
+			int32 FaceIdx = 0;
+
+			// Hit the diagonal, used directly the three walks (LowRes / Fast / Slow)
+			{
+				const FVec3 Start(2.0, 0.0, 10.0);
+				FVec3 Dir(0.0, 1.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_TRUE(bResult);
+			}
+			// Miss the diagonal, used the three walks but miss them  (LowRes / Fast / Slow) (worse case)
+			{
+				const FVec3 Start(0.6, 0.0, 17.0);
+				FVec3 Dir(1.0, 1.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_FALSE(bResult);
+			}
+			// Hit the diagonal in the middle used Low Res for few steps then Fast walk for few step and Slow walks (optimal use case)
+			{
+				const FVec3 Start(64.0, 0.0, 10.0);
+				FVec3 Dir(-1.0, 1.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_TRUE(bResult);
+			}
+			// Miss the diagonal in the middle used Low Res for few steps then Fast walk and Slow walks, then miss, then use LowRes until the end
+			{
+				const FVec3 Start(63.0, 0.0, 36.0);
+				FVec3 Dir(-1.0, 1.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_FALSE(bResult);
+			}
+			// Hit at the HeightField end boundary testing the LowRes Heightfield not fully filled  
+			// (HeightField size) % LowResolution =>  64 % 6 = 4
+			{
+				const FVec3 Start(20.0, 63.0, 10.0);
+				FVec3 Dir(1.0, 0.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_TRUE(bResult);
+			}
+			// Along the diagonal without hitting, navigate in FastWalk
+			{
+				const FVec3 Start(4.0, 0.0, 10.0);
+				FVec3 Dir(1.0, 1.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_FALSE(bResult);
+			}
+
+		}
+		{
+			constexpr int32 Rows = 64;
+			constexpr int32 Columns = Rows;
+			FVec3 Scale(1.0, 1.0, 1.0);
+			TArray<FReal> Heights;
+			Heights.AddZeroed(Rows * Columns);
+
+			// Add a mountain close to the edge
+			for (int32 Index = 0; Index < Columns; ++Index)
+			{
+				Heights[Index * Columns + 62] = 20;
+			}
+
+			TArray<FReal> HeightsCopy = Heights;
+
+			FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+			const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+			FReal TOI;
+			FVec3 Position, Normal;
+			int32 FaceIdx = 0;
+
+			// Hit at the HeightField end boundary testing the LowRes Heightfield not fully filled  
+			// (HeightField size) % LowResolution =>  64 % 6 = 4
+			// Jira UE-162256
+			{
+				const FVec3 Start(58.0, 63.0, 10.0);
+				FVec3 Dir(1.0, 0.0, 0.0);
+				Dir.Normalize();
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_TRUE(bResult);
+			}
+
+		}
+		// Bug found in Fortnite: The raycast is falling in infinite loop if raycast in mode WalkFast 
+		// and leave the bounding volume of the HeightField
+		{
+			constexpr int32 Rows = 64;
+			constexpr int32 Columns = Rows;
+			FVec3 Scale(1.0, 1.0, 1.0);
+			TArray<FReal> Heights;
+			Heights.AddZeroed(Rows * Columns);
+
+			// Add a mountain in the middle
+			for (int32 Index = 0; Index < Columns; ++Index)
+			{
+				Heights[Index * Columns + 32] = 20;
+			}
+
+			TArray<FReal> HeightsCopy = Heights;
+
+			FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+			const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+			FReal TOI;
+			FVec3 Position, Normal;
+			int32 FaceIdx = 0;
+			{
+				const FVec3 Start(34.0, 0.0, 10.0);
+				FVec3 Dir(0.0, 1.0, 0.0);
+				Dir.Normalize();
+
+				const bool bResult = Heightfield.Raycast(Start, Dir, 100.0, 0, TOI, Position, Normal, FaceIdx);
+				EXPECT_FALSE(bResult);
+			}
+
+		}
+	}
+
+
 	void EditHeights()
 	{
 		const int32 Columns = 10;
@@ -455,9 +623,456 @@ namespace ChaosTest {
 	}
 
 
+	void SweepSmallSphereTest()
+	{
+		const int32 Columns = 10;
+		const int32 Rows = 10;
+		const FReal CountToWorldScale = 1;
+
+
+		TSphere<FReal, 3> Sphere(FVec3(0.0, 0.0, 0.0), 1.0);
+		{
+
+			TArray<FReal> Heights;
+			Heights.AddZeroed(Rows * Columns);
+
+			FReal Count = 0;
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col, ++Count)
+				{
+					Heights[Row * Columns + Col] = CountToWorldScale * Count;
+				}
+			}
+
+			auto AlongZTest = [&](const FVec3& Scale)
+			{
+				TArray<FReal> HeightsCopy = Heights;
+				FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+				const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+				//test straight down sweep
+				Count = 0;
+				FReal TOI;
+				FVec3 Position, Normal, FaceNormal;
+				int32 FaceIdx;
+
+				int32 ExpectedFaceIdx = 0;
+				for (int32 Row = 0; Row < Rows-1; ++Row)
+				{
+					for (int32 Col = 0; Col < Columns-1; ++Col)
+					{
+						const FVec3 Start(Col * Scale[0] + 0.5, Row * Scale[1]+0.5, 1000 * Scale[2]);
+						FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(0, 0, -1);
+
+						bool Result = Heightfield.SweepGeom(Sphere, StartTM, Dir, 2000 * Scale[2], TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+						EXPECT_TRUE(Result);
+					}
+				}
+			};
+
+			AlongZTest(FVec3(1));
+			AlongZTest(FVec3(1, 1, 3));
+			AlongZTest(FVec3(1, 1, .3));
+
+
+			auto AlongXTest = [&](const FVec3& Scale)
+			{
+				TArray<FReal> HeightsCopy = Heights;
+				FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+				const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+				//test straight down sweep
+				Count = 0;
+				FReal TOI;
+				FVec3 Position, Normal, FaceNormal;
+				int32 FaceIdx;
+
+				int32 ExpectedFaceIdx = 0;
+				for (int32 Row = 0; Row < Rows - 1; ++Row)
+				{
+					for (int32 Col = 0; Col < Columns - 1; ++Col)
+					{
+
+						const FVec3 Start(-Scale[0], Row * Scale[1], Heights[Row * Columns + Col] * Scale[2] + 0.01 * Scale[2]);
+						FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(1, 0, 0);
+
+						bool Result = Heightfield.SweepGeom(Sphere, StartTM, Dir, 2000 * Scale[0], TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+						EXPECT_TRUE(Result);
+					}
+				}
+			};
+
+			AlongXTest(FVec3(1));
+			AlongXTest(FVec3(1, 1, 3));
+			AlongXTest(FVec3(1, 1, .3));
+		}
+	}
+
+	void SweepSmallBoxTest()
+	{
+		const int32 Columns = 10;
+		const int32 Rows = 10;
+		const FReal CountToWorldScale = 1;
+
+		TBox<FReal, 3> Box(FVec3(-0.05, -0.05, -0.05), FVec3(0.05, 0.05, 0.05));
+		{
+
+			TArray<FReal> Heights;
+			Heights.AddZeroed(Rows * Columns);
+
+			FReal Count = 0;
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col, ++Count)
+				{
+					Heights[Row * Columns + Col] = CountToWorldScale * Count;
+				}
+			}
+
+			auto AlongZTest = [&](const FVec3& Scale)
+			{
+				TArray<FReal> HeightsCopy = Heights;
+				FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+				const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+				//test straight down sweep
+				Count = 0;
+				FReal TOI;
+				FVec3 Position, Normal, FaceNormal;
+				int32 FaceIdx;
+
+				int32 ExpectedFaceIdx = 0;
+				for (int32 Row = 0; Row < Rows - 1; ++Row)
+				{
+					for (int32 Col = 0; Col < Columns - 1; ++Col)
+					{
+						const FVec3 Start(Col * Scale[0] + 0.5, Row * Scale[1] + 0.5, 1000 * Scale[2]);
+						FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(0, 0, -1);
+
+						bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 2000 * Scale[2], TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+						EXPECT_TRUE(Result);
+					}
+				}
+			};
+
+			AlongZTest(FVec3(1));
+			AlongZTest(FVec3(1, 1, 3));
+			AlongZTest(FVec3(1, 1, .3));
+
+
+			auto AlongXTest = [&](const FVec3& Scale)
+			{
+				TArray<FReal> HeightsCopy = Heights;
+				FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+				const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+				//test straight down sweep
+				Count = 0;
+				FReal TOI;
+				FVec3 Position, Normal, FaceNormal;
+				int32 FaceIdx;
+
+				int32 ExpectedFaceIdx = 0;
+				for (int32 Row = 0; Row < Rows - 1; ++Row)
+				{
+					for (int32 Col = 0; Col < Columns - 1; ++Col)
+					{
+
+						const FVec3 Start(-Scale[0], Row * Scale[1], Heights[Row * Columns + Col] * Scale[2] + 0.01 * Scale[2]);
+						FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(1, 0, 0);
+
+						bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 2000 * Scale[0], TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+						EXPECT_TRUE(Result);
+					}
+				}
+			};
+
+			AlongXTest(FVec3(1));
+			AlongXTest(FVec3(1, 1, 3));
+			AlongXTest(FVec3(1, 1, .3));
+		}
+	}
+
+	TArray<FReal> CreateMountain(int32 Columns, int32 Rows)
+	{
+		TArray<FReal> Heights;
+		Heights.AddZeroed(Rows * Columns);
+		// Plane
+		for (int32 Row = 0; Row < Rows; ++Row)
+		{
+			for (int32 Col = 0; Col < Columns; ++Col)
+			{
+				Heights[Row * Columns + Col] = 0.0;
+			}
+		}
+
+		// Mountain
+		for (int32 Row = Rows / 2 - 1; Row <= Rows / 2 + 1; ++Row)
+		{
+			for (int32 Col = Columns / 2 - 1; Col <= Columns / 2 + 1; ++Col)
+			{
+				Heights[Row * Columns + Col] = 5.0;
+			}
+		}
+		// Submit
+		Heights[(Rows / 2) * Columns + Columns / 2] = 10.0;
+
+		return Heights;
+	}
+
+	void SweepBoxTest()
+	{
+		const FReal CountToWorldScale = 1;
+		const int32 Columns = 10;
+		const int32 Rows = 10;
+
+		TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -1.0), FVec3(1.0, 1.0, 1.0));
+
+		TArray<FReal> Heights = CreateMountain(Columns, Rows);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FVec3 Scale(1.0, 1.0, 1.0);
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+		FReal TOI;
+		FVec3 Position, Normal, FaceNormal;
+		int32 FaceIdx;
+		int32 ExpectedFaceIdx = 0;
+		{
+			// Miss on one side of the mountain
+			const FVec3 Start(0.0, 3.5, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(1, 0, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_FALSE(Result);
+		}
+		{
+			// Miss on the other side of the mountain
+			const FVec3 Start(0.0, 7.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(1, 0, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_FALSE(Result);
+		}
+		// TODO This unit test is not working, to investigate
+		{
+			// Same missing in Y 
+			const FVec3 Start(3.0, 0.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(0, 1, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_FALSE(Result);
+		}
+		{
+			const FVec3 Start(7.0, 0.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(0, 1, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_FALSE(Result);
+		}
+		// Hit on the side of the box
+		{
+			const FVec3 Start(0.0, 4.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(1, 0, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+		{
+			const FVec3 Start(0.0, 6.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(1, 0, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+		{
+			const FVec3 Start(4.0, 0.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>());
+			FVec3 Dir(0, 1, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+		{
+			const FVec3 Start(6.0, 0.0, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(0, 1, 0);
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+		// Hit in Diagonal
+		{
+
+			const FVec3 Start(0.5, 0.5, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(1, 1, 0);
+			Dir.SafeNormalize();
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+		{
+			const FVec3 Start(10.5, 10.5, 10.0);
+			FRigidTransform3 StartTM(Start, TRotation<FReal, 3>::Identity);
+			FVec3 Dir(-1, -1, 0);
+			Dir.SafeNormalize();
+			bool Result = Heightfield.SweepGeom(Box, StartTM, Dir, 100, TOI, Position, Normal, FaceIdx, FaceNormal, 0.0, true);
+			EXPECT_TRUE(Result);
+		}
+	}
+
+	void SweepTest()
+	{
+		SweepSmallSphereTest();
+		SweepSmallBoxTest();
+		SweepBoxTest();
+	}
+
+	void OverlapTest()
+	{
+		const FReal CountToWorldScale = 1;
+		const int32 Columns = 10;
+		const int32 Rows = 10;
+
+		
+
+		TArray<FReal> Heights = CreateMountain(Columns, Rows);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FVec3 Scale(1.0, 1.0, 1.0);
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+		// Long box
+		{
+			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -1.0), FVec3(1.0, 1.0, 10.0));
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					const FVec3 Translation(Col, Row, 1.5);
+					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>::Identity);
+					FVec3 Dir(1, 0, 0);
+					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					// No collision on the side of the mountain
+					if ((Col < 3 || Col > 7) && (Row < 3 || Row > 7))
+					{
+						EXPECT_FALSE(Result);
+					}
+					// Collision with the mountain
+					else if ((Col >= 3 && Col <= 7) && (Row >= 3 && Row <= 7))
+					{
+						EXPECT_TRUE(Result);
+					}
+					else
+					{
+						EXPECT_FALSE(Result);
+					}
+				}
+			}
+		}
+		// Box rotated in X
+		{
+			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -20.0), FVec3(1.0, 1.0, 20.0));
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					const FVec3 Translation(Col, Row, 2.0);
+					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 3.14159/2.0)));
+					FVec3 Dir(1, 0, 0);
+					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					// Collision with the mountain
+					if (Col >= 3 && Col <= 7)
+					{
+						EXPECT_TRUE(Result);
+					}
+					else
+					{
+						EXPECT_FALSE(Result);
+					}
+				}
+			}
+		}
+		// Box rotated in Y
+		{
+			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -20.0), FVec3(1.0, 1.0, 20.0));
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					const FVec3 Translation(Col, Row, 2.0);
+					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(0.0, 1.0, 0.0), 3.14159 / 2.0)));
+					FVec3 Dir(1, 0, 0);
+					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					// Collision with the mountain
+					if (Row >= 3 && Row <= 7)
+					{
+						EXPECT_TRUE(Result);
+					}
+					else
+					{
+						EXPECT_FALSE(Result);
+					}
+				}
+			}
+		}
+		// Thin Box
+		{
+			TBox<FReal, 3> Box(FVec3(-10.0, -10.0, -0.001), FVec3(10.0, 10.0, 0.001));
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					const FVec3 Translation(Col, Row, 2.0);
+					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 0.0)));
+					FVec3 Dir(1, 0, 0);
+					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					// Collision with the mountain
+					EXPECT_TRUE(Result);
+				}
+			}
+		}
+		// Thin Box on the top
+		{
+			TBox<FReal, 3> Box(FVec3(-10.0, -10.0, -0.001), FVec3(10.0, 10.0, 0.001));
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					const FVec3 Translation(Col, Row, 9.5);
+					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 0.0)));
+					FVec3 Dir(1, 0, 0);
+					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					// Collision with the mountain
+					EXPECT_TRUE(Result);
+				}
+			}
+		}
+
+		// Inclined Box
+		{
+			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -0.0001), FVec3(1.0, 1.0, 10.0));
+			const FVec3 Translation(5.0, 0.0, 15.0);
+			FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), -3*3.1415926 / 4.0)));
+			FVec3 Dir(1, 0, 0);
+			bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+			// Collision with the mountain
+			EXPECT_TRUE(Result);
+		}
+	}
+	
+
 	TEST(ChaosTests, Heightfield)
 	{
 		ChaosTest::Raycast();
+		ChaosTest::RaycastOnFlatHeightField();
+		ChaosTest::RaycastVariousWalkOnHeightField();
+		ChaosTest::SweepTest();
+		ChaosTest::OverlapTest();
 		EditHeights();
 		SUCCEED();
 	}

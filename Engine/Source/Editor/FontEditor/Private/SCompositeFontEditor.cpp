@@ -1,35 +1,74 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCompositeFontEditor.h"
-#include "Fonts/FontCache.h"
-#include "Fonts/FontBulkData.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SGridPanel.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SScrollBox.h"
-#include "EditorStyleSet.h"
-#include "EditorFontGlyphs.h"
-#include "EditorDirectories.h"
 
-#include "IFontEditor.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "ScopedTransaction.h"
-#include "Modules/ModuleManager.h"
-#include "DesktopPlatformModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Containers/ArrayView.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
-#include "PropertyCustomizationHelpers.h"
+#include "CoreTypes.h"
+#include "DesktopPlatformModule.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorDirectories.h"
+#include "EditorFontGlyphs.h"
 #include "Engine/Font.h"
 #include "Engine/FontFace.h"
-#include "Misc/FileHelper.h"
-#include "IContentBrowserSingleton.h"
-#include "FileHelpers.h"
-#include "Subsystems/ImportSubsystem.h"
-#include "Subsystems/AssetEditorSubsystem.h"
 #include "Factories/FontFileImportFactory.h"
+#include "Fonts/CompositeFont.h"
+#include "Fonts/FontCache.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Text/TextLayout.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GenericPlatform/GenericWindow.h"
+#include "IContentBrowserSingleton.h"
+#include "IDesktopPlatform.h"
+#include "IFontEditor.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Range.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
+#include "Rendering/SlateRenderer.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Subsystems/ImportSubsystem.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class SWidget;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "FontEditor"
 
@@ -201,10 +240,10 @@ void SCompositeFontEditor::Construct(const FArguments& InArgs)
 						[
 							SNew(SButton)
 							.Visibility(EVisibility::Hidden)
-							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+							.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Delete"))
+								.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Delete"))
 							]
 						]
 					]
@@ -322,10 +361,10 @@ TSharedRef<ITableRow> SCompositeFontEditor::MakeSubTypefaceEntryWidget(FSubTypef
 	{
 		// Dummy entry for the "Add" button
 		EntryWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.ToolTipText(LOCTEXT("AddSubFontFamilyTooltip", "Add a sub-font family to this composite font"))
 			.OnClicked(this, &SCompositeFontEditor::OnAddSubFontFamily)
@@ -339,7 +378,7 @@ TSharedRef<ITableRow> SCompositeFontEditor::MakeSubTypefaceEntryWidget(FSubTypef
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Add"))
+					.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Add"))
 				]
 
 				+SHorizontalBox::Slot()
@@ -348,7 +387,7 @@ TSharedRef<ITableRow> SCompositeFontEditor::MakeSubTypefaceEntryWidget(FSubTypef
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Text(LOCTEXT("AddSubFontFamily", "Add Sub-Font Family"))
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 				]
 			]
 		];
@@ -418,7 +457,7 @@ void STypefaceEditor::Construct(const FArguments& InArgs)
 	.Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 		.Padding(0.0f)
 		[
 			SNew(SVerticalBox)
@@ -434,7 +473,7 @@ void STypefaceEditor::Construct(const FArguments& InArgs)
 					SAssignNew(NameEditableTextBox, SInlineEditableTextBlock)
 					.Text(InArgs._TypefaceDisplayName)
 					.ToolTipText(InArgs._TypefaceDisplayNameToolTip)
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 					.OnTextCommitted(InArgs._OnDisplayNameCommitted)
 					.IsReadOnly(!InArgs._OnDisplayNameCommitted.IsBound())
 				]
@@ -513,10 +552,10 @@ TSharedRef<ITableRow> STypefaceEditor::MakeTypefaceEntryWidget(FTypefaceListView
 	{
 		// Dummy entry for the "Add" button
 		EntryWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.ToolTipText(LOCTEXT("AddFontTooltip", "Add a new font to this font family"))
 			.OnClicked(this, &STypefaceEditor::OnAddFont)
@@ -530,7 +569,7 @@ TSharedRef<ITableRow> STypefaceEditor::MakeTypefaceEntryWidget(FTypefaceListView
 				.HAlign(HAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Add"))
+					.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Add"))
 				]
 
 				+SVerticalBox::Slot()
@@ -540,7 +579,7 @@ TSharedRef<ITableRow> STypefaceEditor::MakeTypefaceEntryWidget(FTypefaceListView
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Text(LOCTEXT("AddFont", "Add Font"))
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 					.Justification(ETextJustify::Center)
 				]
 			]
@@ -680,7 +719,7 @@ void STypefaceEntryEditor::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(8.0f)
 		[
 			SNew(SVerticalBox)
@@ -719,7 +758,7 @@ void STypefaceEntryEditor::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ToolTipText(LOCTEXT("FontFilePathPickerToolTip", "Choose a font file from this computer"))
 					.OnClicked(this, &STypefaceEntryEditor::OnBrowseTypefaceEntryFontPath)
 					.ContentPadding(2.0f)
@@ -727,7 +766,7 @@ void STypefaceEntryEditor::Construct(const FArguments& InArgs)
 					.IsFocusable(false)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(FEditorFontGlyphs::Folder_Open)
 					]
 				]
@@ -769,7 +808,7 @@ void STypefaceEntryEditor::Construct(const FArguments& InArgs)
 					.Padding(FMargin(0.0f, 0.0f, 2.0f, 0.0f))
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::Get().GetBrush("Icons.Warning"))
+						.Image(FAppStyle::Get().GetBrush("Icons.Warning"))
 					]
 
 					+SHorizontalBox::Slot()
@@ -791,12 +830,12 @@ void STypefaceEntryEditor::Construct(const FArguments& InArgs)
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ToolTipText(LOCTEXT("DeleteFontTooltip", "Remove this font from the font family"))
 				.OnClicked(this, &STypefaceEntryEditor::OnDeleteFontClicked)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Delete"))
+					.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Delete"))
 				]
 			]
 		]
@@ -1075,7 +1114,7 @@ UFontFace* STypefaceEntryEditor::SaveFontFaceAsAsset(const UFontFace* InFontFace
 	FSaveAssetDialogConfig SaveAssetDialogConfig;
 	SaveAssetDialogConfig.DefaultPath = DefaultPackagePath;
 	SaveAssetDialogConfig.DefaultAssetName = DefaultFaceAssetName;
-	SaveAssetDialogConfig.AssetClassNames.Add(InFontFace->GetClass()->GetFName());
+	SaveAssetDialogConfig.AssetClassNames.Add(InFontFace->GetClass()->GetClassPathName());
 	SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 	SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveFontFaceDialogTitle", "Save Font Face");
 
@@ -1208,12 +1247,12 @@ void SSubTypefaceEditor::Construct(const FArguments& InArgs)
 				.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ToolTipText(LOCTEXT("DeleteFontFamilyTooltip", "Remove this sub-font family from the composite font"))
 					.OnClicked(this, &SSubTypefaceEditor::OnDeleteSubFontFamilyClicked)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Delete"))
+						.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Delete"))
 					]
 				]
 			]
@@ -1327,10 +1366,10 @@ TSharedRef<ITableRow> SSubTypefaceEditor::MakeCharacterRangesEntryWidget(FCharac
 	{
 		// Dummy entry for the "Add" button
 		EntryWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.ToolTipText(LOCTEXT("AddCharacterRangeTooltip", "Add a new character range to this sub-font family"))
 			.OnClicked(this, &SSubTypefaceEditor::OnAddCharacterRangeClicked)
@@ -1344,7 +1383,7 @@ TSharedRef<ITableRow> SSubTypefaceEditor::MakeCharacterRangesEntryWidget(FCharac
 				.HAlign(HAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Add"))
+					.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Add"))
 				]
 
 				+SVerticalBox::Slot()
@@ -1354,7 +1393,7 @@ TSharedRef<ITableRow> SSubTypefaceEditor::MakeCharacterRangesEntryWidget(FCharac
 					SNew(STextBlock)
 					.AutoWrapText(true)
 					.Text(LOCTEXT("AddCharacterRange", "Add Character Range"))
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 					.Justification(ETextJustify::Center)
 				]
 			]
@@ -1363,7 +1402,7 @@ TSharedRef<ITableRow> SSubTypefaceEditor::MakeCharacterRangesEntryWidget(FCharac
 	else
 	{
 		EntryWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(8.0f)
 		[
 			SNew(SVerticalBox)
@@ -1381,12 +1420,12 @@ TSharedRef<ITableRow> SSubTypefaceEditor::MakeCharacterRangesEntryWidget(FCharac
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ToolTipText(LOCTEXT("DeleteCharacterRangeTooltip", "Remove this character range from the sub-font family"))
 				.OnClicked(this, &SSubTypefaceEditor::OnDeleteCharacterRangeClicked, InCharacterRangeEntry)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("FontEditor.Button_Delete"))
+					.Image(FAppStyle::Get().GetBrush("FontEditor.Button_Delete"))
 				]
 			]
 		];
@@ -1563,7 +1602,7 @@ void SCharacterRangeEditor::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Text(FText::AsCultureInvariant(TEXT(" - ")))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 
 			// Maximum column

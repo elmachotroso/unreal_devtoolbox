@@ -696,7 +696,7 @@ struct FCachedKeyToActionInfo
 
 	/** Which PlayerInput object this has been built for */
 	UPROPERTY()
-	TObjectPtr<UPlayerInput> PlayerInput;
+	TWeakObjectPtr<UPlayerInput> PlayerInput;
 
 	/** What index of the player input's key mappings was the map built for. */
 	uint32 KeyMapBuiltForIndex;
@@ -723,7 +723,7 @@ struct FCachedKeyToActionInfo
  *
  * @see https://docs.unrealengine.com/latest/INT/Gameplay/Input/index.html
  */
-UCLASS(transient, config=Input, hidecategories=(Activation, "Components|Activation"))
+UCLASS(NotBlueprintable, transient, config=Input, hidecategories=(Activation, "Components|Activation"))
 class ENGINE_API UInputComponent
 	: public UActorComponent
 {
@@ -764,6 +764,9 @@ public:
 	/** Whether any components lower on the input stack should be allowed to receive input. */
 	uint8 bBlockInput:1;
 
+	/** Clears any inut callback delegates from the given UObject */
+	virtual void ClearBindingsForObject(UObject* InOwner);
+	
 	void ConditionalBuildKeyMap(UPlayerInput* PlayerInput);
 
 	/**
@@ -815,7 +818,7 @@ public:
 	 *
 	 * @see AddActionBinding, GetActionBinding, GetNumActionBindings, RemoveActionBinding
 	 */
-	void ClearActionBindings();
+	virtual void ClearActionBindings();
 
 	/**
 	 * Gets the action binding with the specified index.
@@ -910,6 +913,18 @@ public:
 		AxisBindings.Emplace(MoveTemp(AB));
 		return AxisBindings.Last();
 	}
+
+	/**
+	* Removes the axis binding with the specified name.
+	*
+	* @param AxisName the name of the axis to remove.
+	*/
+	void RemoveAxisBinding(const FName AxisName);
+
+	/**
+	* Removes all axis bindings.
+	*/
+	void ClearAxisBindings();
 
 	/**
 	 * Indicates that the InputComponent is interested in knowing the Axis value

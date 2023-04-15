@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Commands/Commands.h"
 
 // Actions that can be invoked in the reference viewer
@@ -33,6 +33,72 @@ public:
 
 	// Re-constructs the graph with the selected asset as the center
 	TSharedPtr<FUICommandInfo> ReCenterGraph;
+
+	// Increase Referencer Search Depth
+	TSharedPtr<FUICommandInfo> IncreaseReferencerSearchDepth;
+
+	// Decrease Referencer Search Depth
+	TSharedPtr<FUICommandInfo> DecreaseReferencerSearchDepth;
+
+	// Set the Referencer Serach Depth 
+	TSharedPtr<FUICommandInfo> SetReferencerSearchDepth;
+
+	// Increase Dependency Search Depth
+	TSharedPtr<FUICommandInfo> IncreaseDependencySearchDepth;
+
+	// Decrease Dependency Search Depth
+	TSharedPtr<FUICommandInfo> DecreaseDependencySearchDepth;
+
+	// Set the Dependency Serach Depth 
+	TSharedPtr<FUICommandInfo> SetDependencySearchDepth;
+
+	// Increase Search Breadth
+	TSharedPtr<FUICommandInfo> IncreaseBreadth;
+
+	// Decrease Search Breadth
+	TSharedPtr<FUICommandInfo> DecreaseBreadth;
+
+	// Set the Breadth LImit
+	TSharedPtr<FUICommandInfo> SetBreadth;;
+
+	// Toggles visiblity of Soft References
+	TSharedPtr<FUICommandInfo> ShowSoftReferences;
+
+	// Toggles visiblity of Hard References
+	TSharedPtr<FUICommandInfo> ShowHardReferences;
+
+	// Toggles visiblity of EditorOnly References
+	TSharedPtr<FUICommandInfo> ShowEditorOnlyReferences;
+
+	// Toggles visiblity of Management References (i.e. PrimaryAssetIDs)
+	TSharedPtr<FUICommandInfo> ShowManagementReferences;
+
+	// Toggles visiblity of Name References (i.e. Gameplay Tags and Data Table Row Handles)
+	TSharedPtr<FUICommandInfo> ShowNameReferences;
+
+	// Toggles visiblity of Native Packages
+	TSharedPtr<FUICommandInfo> ShowCodePackages;
+
+	// Toggles visiblity of Duplicate References
+	TSharedPtr<FUICommandInfo> ShowDuplicates;
+
+	// Toggles Compact Mode
+	TSharedPtr<FUICommandInfo> CompactMode;
+
+	// Toggles Path Comment 
+	TSharedPtr<FUICommandInfo> ShowCommentPath;
+
+	// Toggles FilterBar Filters On/Off
+	TSharedPtr<FUICommandInfo> Filters;
+
+	// Toggles if Asset Type Filters are Auto Populated & Updated
+	TSharedPtr<FUICommandInfo> AutoFilters;
+
+	// Copies the selected Asset Paths to the Clipboard
+	TSharedPtr<FUICommandInfo> CopyPaths;
+
+	// Toggles whether search results are filtered or just selected 
+	TSharedPtr<FUICommandInfo> FilterSearch;
 
 	// Copies the list of objects that the selected asset references
 	TSharedPtr<FUICommandInfo> CopyReferencedObjects;

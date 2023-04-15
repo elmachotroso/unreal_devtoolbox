@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "TraceServices/Model/AnalysisSession.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Async/TaskTrace.h"
 #include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "Templates/Function.h"
+#include "TraceServices/Model/AnalysisSession.h"
 
 namespace TraceServices
 {
@@ -42,6 +44,9 @@ namespace TraceServices
 		// execution done and all nested tasks are completed
 		double CompletedTimestamp = InvalidTimestamp;
 		uint32 CompletedThreadId;
+		// the last reference is released and the task is destroyed
+		double DestroyedTimestamp = InvalidTimestamp;
+		uint32 DestroyedThreadId;
 
 		//  relation with another task, when and where it was established
 		struct FRelationInfo
@@ -62,10 +67,10 @@ namespace TraceServices
 		TArray<FRelationInfo> Prerequisites;
 		// other tasks that wait for this task completion before they'll start execution
 		TArray<FRelationInfo> Subsequents;
+		// other tasks that have this task as a nested
+		TArray<FRelationInfo> ParentTasks;
 		// the task is completed only after all nested tasks are completed
 		TArray<FRelationInfo> NestedTasks;
-		// The parent task. Is valid only for nested tasks
-		TUniquePtr<FRelationInfo> ParentOfNestedTask;
 	};
 
 	struct FWaitingForTasks
@@ -96,6 +101,9 @@ namespace TraceServices
 
 		// returns an info about waiting for tasks completion for given thread and timestamp, if any, otherwise `nullptr`
 		virtual const FWaitingForTasks* TryGetWaiting(const TCHAR* TimerName, uint32 ThreadId, double Timestamp) const = 0;
+
+		// returns an info about ParallelFor tasks for given timer
+		virtual TArray<TaskTrace::FId> TryGetParallelForTasks(const TCHAR* TimerName, uint32 ThreadId, double StartTime, double EndTime) const = 0;
 
 		// returns the number of tasks stored in the provider
 		virtual int64 GetNumTasks() const = 0;

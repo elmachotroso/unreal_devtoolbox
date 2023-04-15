@@ -27,18 +27,18 @@
 #include "PropertyHandle.h"
 #include "PropertyRestriction.h"
 #include "SGraphPalette.h"
-#include "SlateCore/Public/Styling/SlateColor.h"
+#include "ScopedTransaction.h"
 #include "Sound/SoundWave.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
 #include "Templates/Casts.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Styling/SlateTypes.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "ScopedTransaction.h"
 
 
 #define LOCTEXT_NAMESPACE "MetaSoundEditor"
@@ -237,7 +237,7 @@ namespace Metasound
 						[
 							SNew(STextBlock)
 							.Text(ClassGuidName)
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 						]
 					]
 					.ValueContent()
@@ -248,6 +248,7 @@ namespace Metasound
 					GeneralCategoryBuilder.AddProperty(KeywordsHandle);
 
 					DetailLayout.HideCategory("Attenuation");
+					DetailLayout.HideCategory("Developer");
 					DetailLayout.HideCategory("Effects");
 					DetailLayout.HideCategory("Loading");
 					DetailLayout.HideCategory("Modulation");
@@ -261,29 +262,45 @@ namespace Metasound
 					DetailLayout.HideCategory("MetaSound");
 
 					const bool bShouldBeInitiallyCollapsed = true;
-					IDetailCategoryBuilder& SoundCategory = DetailLayout.EditCategory("Sound");
-					SoundCategory.InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+					TArray<TSharedRef<IPropertyHandle>>DeveloperProperties;
+					TArray<TSharedRef<IPropertyHandle>>SoundProperties;
+
+					DetailLayout.EditCategory("Sound")
+						.InitiallyCollapsed(bShouldBeInitiallyCollapsed)
+						.GetDefaultProperties(SoundProperties);
+					DetailLayout.EditCategory("Attenuation").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+					DetailLayout.EditCategory("Developer")
+						.InitiallyCollapsed(bShouldBeInitiallyCollapsed)
+						.GetDefaultProperties(DeveloperProperties);
+					DetailLayout.EditCategory("Effects").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+					DetailLayout.EditCategory("Modulation").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+					DetailLayout.EditCategory("Voice Management").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+
+					auto HideProperties = [](const TSet<FName>& PropsToHide, const TArray<TSharedRef<IPropertyHandle>>& Properties)
+					{
+						for (TSharedRef<IPropertyHandle> Property : Properties)
+						{
+							if (PropsToHide.Contains(Property->GetProperty()->GetFName()))
+							{
+								Property->MarkHiddenByCustomization();
+							}
+						}
+					};
 
 					static const TSet<FName> SoundPropsToHide =
 					{
 						GET_MEMBER_NAME_CHECKED(USoundWave, bLooping),
 						GET_MEMBER_NAME_CHECKED(USoundWave, SoundGroup)
 					};
+					HideProperties(SoundPropsToHide, SoundProperties);
 
-					TArray<TSharedRef<IPropertyHandle>>SoundProperties;
-					SoundCategory.GetDefaultProperties(SoundProperties);
-					for (TSharedRef<IPropertyHandle> Property : SoundProperties)
+					static const TSet<FName> DeveloperPropsToHide =
 					{
-						if (SoundPropsToHide.Contains(Property->GetProperty()->GetFName()))
-						{
-							Property->MarkHiddenByCustomization();
-						}
-					}
-
-					DetailLayout.EditCategory("Attenuation").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
-					DetailLayout.EditCategory("Effects").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
-					DetailLayout.EditCategory("Modulation").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
-					DetailLayout.EditCategory("Voice Management").InitiallyCollapsed(bShouldBeInitiallyCollapsed);
+						GET_MEMBER_NAME_CHECKED(USoundBase, Duration),
+						GET_MEMBER_NAME_CHECKED(USoundBase, MaxDistance),
+						GET_MEMBER_NAME_CHECKED(USoundBase, TotalSamples)
+					};
+					HideProperties(DeveloperPropsToHide, DeveloperProperties);
 
 					break;
 			}
@@ -291,16 +308,16 @@ namespace Metasound
 			// Hack to hide parent structs for nested metadata properties
 			DetailLayout.HideCategory("CustomView");
 
+			DetailLayout.HideCategory("Advanced");
+			DetailLayout.HideCategory("Analysis");
 			DetailLayout.HideCategory("Curves");
-			DetailLayout.HideCategory("Developer");
 			DetailLayout.HideCategory("File Path");
 			DetailLayout.HideCategory("Format");
 			DetailLayout.HideCategory("Info");
 			DetailLayout.HideCategory("Loading");
 			DetailLayout.HideCategory("Playback");
 			DetailLayout.HideCategory("Subtitles");
-			DetailLayout.HideCategory("Analysis");
-			DetailLayout.HideCategory("Advanced");
+			DetailLayout.HideCategory("Waveform Processing");;
 		}
 
 		FMetasoundInterfacesDetailCustomization::FMetasoundInterfacesDetailCustomization()
@@ -358,9 +375,10 @@ namespace Metasound
 					if (InSelectInfo != ESelectInfo::OnNavigation)
 					{
 						FMetasoundFrontendInterface InterfaceToAdd;
-						if (ensure(ISearchEngine::Get().FindInterfaceWithHighestVersion(FName(*NameToAdd.Get()), InterfaceToAdd)))
+						const FName InterfaceName { *NameToAdd.Get() };
+						if (ensure(ISearchEngine::Get().FindInterfaceWithHighestVersion(InterfaceName, InterfaceToAdd)))
 						{
-							FScopedTransaction(LOCTEXT("AddInterfaceTransaction", "Add MetaSound Interface"));
+							const FScopedTransaction Transaction(FText::Format(LOCTEXT("AddInterfaceTransactionFormat", "Add MetaSound Interface '{0}'"), FText::FromString(InterfaceToAdd.Version.ToString())));
 							MetaSound.Get()->Modify();
 							MetaSoundAsset->GetGraphChecked().Modify();
 
@@ -368,12 +386,10 @@ namespace Metasound
 							FModifyRootGraphInterfaces ModifyTransform({ }, { InterfaceToAdd });
 							ModifyTransform.SetDefaultNodeLocations(false); // Don't automatically add nodes to ed graph
 							ModifyTransform.Transform(DocumentHandle);
-							MetaSoundAsset->SetUpdateDetailsOnSynchronization();
 						}
 
 						UpdateInterfaceNames();
 						InterfaceComboBox->RefreshOptions();
-						MetaSoundAsset->SetSynchronizationRequired();
 						FGraphBuilder::RegisterGraphWithFrontend(*MetaSound.Get());
 					}
 				})
@@ -418,7 +434,7 @@ namespace Metasound
 						});
 
 						{
-							FScopedTransaction(LOCTEXT("RemoveAllInterfacesTransaction", "Remove All MetaSound Interfaces"));
+							const FScopedTransaction Transaction(LOCTEXT("RemoveAllInterfacesTransaction", "Remove All MetaSound Interfaces"));
 							MetaSound.Get()->Modify();
 							MetaSoundAsset->GetGraphChecked().Modify();
 
@@ -428,8 +444,6 @@ namespace Metasound
 
 						UpdateInterfaceNames();
 						InterfaceComboBox->RefreshOptions();
-						MetaSoundAsset->SetUpdateDetailsOnSynchronization();
-						MetaSoundAsset->SetSynchronizationRequired();
 						FGraphBuilder::RegisterGraphWithFrontend(*MetaSound.Get());
 
 					}), LOCTEXT("RemoveInterfaceTooltip1", "Removes all interfaces from the given MetaSound."))
@@ -454,7 +468,7 @@ namespace Metasound
 					return SNullWidget::NullWidget;
 				}
 
-				TSharedRef<SWidget> RemoveButtonWidget = PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateLambda([this, InterfaceEntry]()
+				TSharedRef<SWidget> RemoveButtonWidget = PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateLambda([this, InInterfaceName, InterfaceEntry]()
 				{
 					using namespace Frontend;
 
@@ -465,7 +479,7 @@ namespace Metasound
 					}
 
 					{
-						FScopedTransaction(LOCTEXT("RemoveInterfaceTransaction", "Remove MetaSound Interface"));
+						const FScopedTransaction Transaction(FText::Format(LOCTEXT("RemoveInterfaceTransactionFormat", "Remove MetaSound Interface '{0}'"), FText::FromString(InterfaceEntry.Version.ToString())));
 						MetaSound.Get()->Modify();
 						MetaSoundAsset->GetGraphChecked().Modify();
 
@@ -475,8 +489,6 @@ namespace Metasound
 
 					UpdateInterfaceNames();
 					InterfaceComboBox->RefreshOptions();
-					MetaSoundAsset->SetUpdateDetailsOnSynchronization();
-					MetaSoundAsset->SetSynchronizationRequired();
 					FGraphBuilder::RegisterGraphWithFrontend(*MetaSound.Get());
 
 				}), LOCTEXT("RemoveInterfaceTooltip2", "Removes the associated interface from the MetaSound."));

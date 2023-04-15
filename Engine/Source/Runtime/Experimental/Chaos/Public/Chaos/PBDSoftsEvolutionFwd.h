@@ -47,6 +47,7 @@ namespace Chaos
 		class FPBDSpringConstraints;
 		class FXPBDSpringConstraints;
 		class FPBDBendingConstraints;
+		class FXPBDBendingConstraints;
 		class FPBDAxialSpringConstraints;
 		class FXPBDAxialSpringConstraints;
 		class FPBDVolumeConstraint;
@@ -57,8 +58,11 @@ namespace Chaos
 		class FPBDAnimDriveConstraint;
 		class FPBDShapeConstraints;
 		class FPBDCollisionSpringConstraints;
+		class FPBDTriangleMeshIntersections;
+		class FPBDTriangleMeshCollisions;
 
 		// Softs solver forces
-		class FVelocityField;
+		class FVelocityAndPressureField;
+		using FVelocityField UE_DEPRECATED(5.1, "Chaos::Softs::FVelocityField has been renamed FVelocityAndPressureField to match its new behavior.") = FVelocityAndPressureField;
 	}  // End namespace Softs
 }  // End namespace Chaos

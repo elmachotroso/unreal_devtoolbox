@@ -11,6 +11,11 @@
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FLazyObjectProperty)
 
+FLazyObjectProperty::FLazyObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FLazyObjectPropertyParams& Prop)
+	: TFObjectPropertyBase(InOwner, Prop)
+{
+}
+
 FString FLazyObjectProperty::GetCPPType(FString* ExtendedTypeText/*=NULL*/, uint32 CPPExportFlags/*=0*/) const
 {
 	return GetCPPTypeCustom(ExtendedTypeText, CPPExportFlags,
@@ -54,7 +59,7 @@ void FLazyObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* V
 
 		if ((UnderlyingArchive.IsLoading() || UnderlyingArchive.IsModifyingWeakAndStrongReferences()) && ObjectValue != GetObjectPropertyValue(Value))
 		{
-			CheckValidObject(Value);
+			CheckValidObject(Value, ObjectValue);
 		}
 	}
 	else
@@ -100,14 +105,43 @@ bool FLazyObjectProperty::Identical( const void* A, const void* B, uint32 PortFl
 	return bResult;
 }
 
+TObjectPtr<UObject> FLazyObjectProperty::GetObjectPtrPropertyValue(const void* PropertyValueAddress) const
+{
+	return TObjectPtr<UObject>(GetPropertyValue(PropertyValueAddress).Get());
+}
+
 UObject* FLazyObjectProperty::GetObjectPropertyValue(const void* PropertyValueAddress) const
 {
 	return GetPropertyValue(PropertyValueAddress).Get();
 }
 
+UObject* FLazyObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
+{
+	return GetWrappedObjectPropertyValue_InContainer<FLazyObjectPtr>(ContainerAddress, ArrayIndex);
+}
+
 void FLazyObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
 {
-	SetPropertyValue(PropertyValueAddress, TCppType(Value));
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetPropertyValue(PropertyValueAddress, TCppType(Value));
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
+}
+
+void FLazyObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
+{
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetWrappedObjectPropertyValue_InContainer<FLazyObjectPtr>(ContainerAddress, Value, ArrayIndex);
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
 }
 
 bool FLazyObjectProperty::AllowCrossLevel() const

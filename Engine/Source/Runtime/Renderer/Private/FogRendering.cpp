@@ -8,27 +8,7 @@
 #include "SingleLayerWaterRendering.h"
 #include "ScreenPass.h"
 
-DECLARE_GPU_STAT(Fog);
-
-#if UE_ENABLE_DEBUG_DRAWING
-static TAutoConsoleVariable<float> CVarFogStartDistance(
-	TEXT("r.FogStartDistance"),
-	-1.0f,
-	TEXT("Allows to override the FogStartDistance setting (needs ExponentialFog in the level).\n")
-	TEXT(" <0: use default settings (default: -1)\n")
-	TEXT(">=0: override settings by the given value (in world units)"),
-	ECVF_Cheat | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<float> CVarFogDensity(
-	TEXT("r.FogDensity"),
-	-1.0f,
-	TEXT("Allows to override the FogDensity setting (needs ExponentialFog in the level).\n")
-	TEXT("Using a strong value allows to quickly see which pixel are affected by fog.\n")
-	TEXT("Using a start distance allows to cull pixels are can speed up rendering.\n")
-	TEXT(" <0: use default settings (default: -1)\n")
-	TEXT(">=0: override settings by the given value (0:off, 1=very dense fog)"),
-	ECVF_Cheat | ECVF_RenderThreadSafe);
-#endif
+DECLARE_GPU_DRAWCALL_STAT(Fog);
 
 static TAutoConsoleVariable<int32> CVarFog(
 	TEXT("r.Fog"),
@@ -51,6 +31,12 @@ static TAutoConsoleVariable<float> CVarUpsampleJitterMultiplier(
 	TEXT("Multiplier for random offset value used to jitter the sample position of the 3D fog volume to hide fog pixelization due to sampling from a lower resolution texture."),
 	ECVF_RenderThreadSafe | ECVF_Scalability);
 
+static TAutoConsoleVariable<bool> CVarUnderwaterFogWhenCameraIsAboveWater(
+	TEXT("r.Water.SingleLayer.UnderwaterFogWhenCameraIsAboveWater"), 
+	false, 
+	TEXT("Renders height fog behind the water surface even when the camera is above water. This avoids artifacts when entering and exiting the water with strong height fog in the scene but causes artifacts when looking at the water surface from a distance."),
+	ECVF_RenderThreadSafe);
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FFogUniformParameters, "FogStruct");
 
 void SetupFogUniformParameters(FRDGBuilder& GraphBuilder, const FViewInfo& View, FFogUniformParameters& OutParameters)
@@ -68,6 +54,7 @@ void SetupFogUniformParameters(FRDGBuilder& GraphBuilder, const FViewInfo& View,
 		OutParameters.ExponentialFogColorParameter = FVector4f(View.ExponentialFogColor, 1.0f - View.FogMaxOpacity);
 		OutParameters.ExponentialFogParameters2 = View.ExponentialFogParameters2;
 		OutParameters.ExponentialFogParameters3 = View.ExponentialFogParameters3;
+		OutParameters.SkyAtmosphereAmbientContributionColorScale = View.SkyAtmosphereAmbientContributionColorScale;
 		OutParameters.SinCosInscatteringColorCubemapRotation = View.SinCosInscatteringColorCubemapRotation;
 		OutParameters.FogInscatteringTextureParameters = (FVector3f)View.FogInscatteringTextureParameters;
 		OutParameters.InscatteringLightDirection = (FVector3f)View.InscatteringLightDirection;
@@ -91,6 +78,8 @@ void SetupFogUniformParameters(FRDGBuilder& GraphBuilder, const FViewInfo& View,
 			OutParameters.ApplyVolumetricFog = 0.0f;
 		}
 		OutParameters.IntegratedLightScatteringSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		OutParameters.VolumetricFogStartDistance = View.VolumetricFogStartDistance;
+		OutParameters.VolumetricFogNearFadeInDistanceInv = View.VolumetricFogNearFadeInDistanceInv;
 	}
 }
 
@@ -135,12 +124,12 @@ class FExponentialHeightFogPS : public FGlobalShader
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformBuffer)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, OcclusionTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, OcclusionSampler)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LinearDepthTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, LinearDepthSampler)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, WaterDepthTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, WaterDepthSampler)
 		SHADER_PARAMETER(float, bOnlyOnRenderedOpaque)
-		SHADER_PARAMETER(float, bUseLinearDepthTexture)
+		SHADER_PARAMETER(uint32, bUseWaterDepthTexture)
 		SHADER_PARAMETER(float, UpsampleJitterMultiplier)
-		SHADER_PARAMETER(FVector4f, LinearDepthTextureMinMaxUV)
+		SHADER_PARAMETER(FVector4f, WaterDepthTextureMinMaxUV)
 		SHADER_PARAMETER(FVector4f, OcclusionTextureMinMaxUV)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -179,18 +168,6 @@ TGlobalResource<FFogVertexDeclaration> GFogVertexDeclaration;
 
 void FSceneRenderer::InitFogConstants()
 {
-	// console command override
-	float FogDensityOverride = -1.0f;
-	float FogStartDistanceOverride = -1.0f;
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	{
-		// console variable overrides
-		FogDensityOverride = CVarFogDensity.GetValueOnAnyThread();
-		FogStartDistanceOverride = CVarFogStartDistance.GetValueOnAnyThread();
-	}
-#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-
 	for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
 	{
 		FViewInfo& View = Views[ViewIndex];
@@ -237,6 +214,8 @@ void FSceneRenderer::InitFogConstants()
 				const float InvRange = 1.0f / FMath::Max(FogInfo.FullyDirectionalInscatteringColorDistance - FogInfo.NonDirectionalInscatteringColorDistance, .00001f);
 				float NumMips = 1.0f;
 
+				View.SkyAtmosphereAmbientContributionColorScale = FogInfo.SkyAtmosphereAmbientContributionColorScale;
+
 				if (FogInfo.InscatteringColorCubemap)
 				{
 					NumMips = FogInfo.InscatteringColorCubemap->GetNumMips();
@@ -254,6 +233,9 @@ void FSceneRenderer::InitFogConstants()
 					View.DirectionalInscatteringColor = FogInfo.DirectionalInscatteringColor * SunLight->Proxy->GetColor().GetLuminance();
 				}
 				View.bUseDirectionalInscattering = SunLight != nullptr;
+				View.bEnableVolumetricFog = FogInfo.bEnableVolumetricFog;
+				View.VolumetricFogStartDistance = FogInfo.VolumetricFogStartDistance;
+				View.VolumetricFogNearFadeInDistanceInv = FogInfo.VolumetricFogNearFadeInDistance > 0.0f ? (1.0f / FogInfo.VolumetricFogNearFadeInDistance) : 100000000.0f;
 			}
 		}
 	}
@@ -272,7 +254,7 @@ static FFogPassParameters* CreateDefaultFogPassParameters(
 	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformbuffer,
 	TRDGUniformBufferRef<FFogUniformParameters>& FogUniformBuffer,
 	FRDGTextureRef LightShaftOcclusionTexture,
-	const FScreenPassTextureViewportParameters LightShaftParameters)
+	const FScreenPassTextureViewportParameters& LightShaftParameters)
 {
 	extern int32 GVolumetricFogGridPixelSize;
 
@@ -283,13 +265,13 @@ static FFogPassParameters* CreateDefaultFogPassParameters(
 	PassParameters->PS.FogUniformBuffer = FogUniformBuffer;
 	PassParameters->PS.OcclusionTexture = LightShaftOcclusionTexture != nullptr ? LightShaftOcclusionTexture : GSystemTextures.GetWhiteDummy(GraphBuilder);
 	PassParameters->PS.OcclusionSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	PassParameters->PS.LinearDepthTexture = GSystemTextures.GetDepthDummy(GraphBuilder);
-	PassParameters->PS.LinearDepthSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	PassParameters->PS.WaterDepthTexture = GSystemTextures.GetDepthDummy(GraphBuilder);
+	PassParameters->PS.WaterDepthSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	PassParameters->PS.OcclusionTextureMinMaxUV = FVector4f(LightShaftParameters.UVViewportBilinearMin, LightShaftParameters.UVViewportBilinearMax);
-	PassParameters->PS.LinearDepthTextureMinMaxUV = FVector4f::Zero();
+	PassParameters->PS.WaterDepthTextureMinMaxUV = FVector4f::Zero();
 	PassParameters->PS.UpsampleJitterMultiplier = CVarUpsampleJitterMultiplier.GetValueOnRenderThread() * GVolumetricFogGridPixelSize;
 	PassParameters->PS.bOnlyOnRenderedOpaque = View.bFogOnlyOnRenderedOpaque;
-	PassParameters->PS.bUseLinearDepthTexture = 0.0f;
+	PassParameters->PS.bUseWaterDepthTexture = false;
 	return PassParameters;
 }
 
@@ -324,12 +306,15 @@ static void RenderViewFog(
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
 	// Setup the depth bound optimization if possible on that platform.
-	GraphicsPSOInit.bDepthBounds = GSupportsDepthBoundsTest && CVarFogUseDepthBounds.GetValueOnAnyThread() && !bShouldRenderVolumetricFog;
+	GraphicsPSOInit.bDepthBounds = GSupportsDepthBoundsTest && CVarFogUseDepthBounds.GetValueOnAnyThread();
 	if (GraphicsPSOInit.bDepthBounds)
 	{
+		float ExpFogStartDistance = View.ExponentialFogParameters.W;
+		float VolFogStartDistance = bShouldRenderVolumetricFog ? View.VolumetricFogStartDistance : ExpFogStartDistance;
+
 		// The fog can be set to start at a certain euclidean distance.
-		// clamp the value to be behind the near plane z
-		float FogStartDistance = FMath::Max(30.0f, View.ExponentialFogParameters.W);
+		// clamp the value to be behind the near plane z, according to the smallest distance between volumetric fog and height fog (if they are enabled). 
+		float FogStartDistance = FMath::Max(30.0f, FMath::Min(ExpFogStartDistance, VolFogStartDistance));
 
 		// Here we compute the nearest z value the fog can start
 		// to skip shader execution on pixels that are closer.
@@ -346,6 +331,7 @@ static void RenderViewFog(
 		FVector ViewSpaceStartFogPoint(0.0f, 0.0f, FogStartDistance * Ratio);
 		FVector4f ClipSpaceMaxDistance = (FVector4f)View.ViewMatrices.GetProjectionMatrix().TransformPosition(ViewSpaceStartFogPoint); // LWC_TODO: precision loss
 		float FogClipSpaceZ = ClipSpaceMaxDistance.Z / ClipSpaceMaxDistance.W;
+		FogClipSpaceZ = FMath::Clamp(FogClipSpaceZ, 0.f, 1.f);
 
 		if (bool(ERHIZBuffer::IsInverted))
 		{
@@ -421,21 +407,18 @@ void FDeferredShadingSceneRenderer::RenderUnderWaterFog(
 		// Fog must be done in the base pass for MSAA to work
 		&& !IsForwardShadingEnabled(ShaderPlatform))
 	{
-		RDG_EVENT_SCOPE(GraphBuilder, "ExponentialHeightFog");
+		RDG_EVENT_SCOPE(GraphBuilder, "SLW::ExponentialHeightFog");
 		RDG_GPU_STAT_SCOPE(GraphBuilder, Fog);
 
-		FRDGTextureRef LinearDepthTexture = SceneWithoutWaterTextures.DepthTexture;
-		check(LinearDepthTexture);
+		FRDGTextureRef WaterDepthTexture = SceneWithoutWaterTextures.DepthTexture;
+		check(WaterDepthTexture);
 
 		const bool bShouldRenderVolumetricFog = ShouldRenderVolumetricFog();
-
-		// This must match SINGLE_LAYER_WATER_DEPTH_SCALE from SingleLayerWaterCommon.ush and SingleLayerWaterComposite.usf.
-		const float kSingleLayerWaterDepthScale = 100.0f;
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
-			if (View.IsPerspectiveProjection())
+			if (View.IsPerspectiveProjection() && (View.IsUnderwater() || CVarUnderwaterFogWhenCameraIsAboveWater.GetValueOnRenderThread()))
 			{
 				RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
 				RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
@@ -446,12 +429,12 @@ void FDeferredShadingSceneRenderer::RenderUnderWaterFog(
 
 				// TODO add support for occlusion texture on water
 				FRDGTextureRef LightShaftOcclusionTexture = nullptr;	
-				FScreenPassTextureViewportParameters LightShaftParameters = FScreenPassTextureViewportParameters();
+				FScreenPassTextureViewportParameters LightShaftParameters = GetScreenPassTextureViewportParameters(FScreenPassTextureViewport(FIntRect(0, 0, 1, 1)));
 
 				FFogPassParameters* PassParameters = CreateDefaultFogPassParameters(GraphBuilder, View, SceneTexturesWithDepth, FogUniformBuffer, LightShaftOcclusionTexture, LightShaftParameters);
-				PassParameters->PS.LinearDepthTexture = LinearDepthTexture;
-				PassParameters->PS.bUseLinearDepthTexture = kSingleLayerWaterDepthScale;
-				PassParameters->PS.LinearDepthTextureMinMaxUV = SceneWithoutWaterView.MinMaxUV;
+				PassParameters->PS.WaterDepthTexture = WaterDepthTexture;
+				PassParameters->PS.bUseWaterDepthTexture = true;
+				PassParameters->PS.WaterDepthTextureMinMaxUV = SceneWithoutWaterView.MinMaxUV;
 				PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneWithoutWaterTextures.ColorTexture, ERenderTargetLoadAction::ELoad);
 
 				GraphBuilder.AddPass(RDG_EVENT_NAME("FogBehindWater"), PassParameters, ERDGPassFlags::Raster, [this, &View, SceneWithoutWaterView, PassParameters, bShouldRenderVolumetricFog](FRHICommandList& RHICmdList)

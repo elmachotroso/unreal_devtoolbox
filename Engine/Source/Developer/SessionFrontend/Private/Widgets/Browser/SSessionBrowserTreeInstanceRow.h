@@ -18,10 +18,11 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
 #include "SlateOptMacros.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Models/SessionBrowserTreeItems.h"
 #include "Widgets/Images/SImage.h"
 #include "PlatformInfo.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "SSessionBrowserTreeRow"
 
@@ -52,7 +53,7 @@ public:
 		HighlightText = InArgs._HighlightText;
 		Item = InArgs._Item;
 
-		SMultiColumnTableRow<TSharedPtr<FSessionBrowserTreeItem>>::Construct(FSuperRowType::FArguments().ShowSelection(InArgs._ShowSelection).Style(FEditorStyle::Get(), "TableView.Row"), InOwnerTableView);
+		SMultiColumnTableRow<TSharedPtr<FSessionBrowserTreeItem>>::Construct(FSuperRowType::FArguments().ShowSelection(InArgs._ShowSelection).Style(FAppStyle::Get(), "TableView.Row"), InOwnerTableView);
 	}
 
 public:
@@ -85,7 +86,7 @@ public:
 					.HeightOverride(24)
 					[
 						SNew(SImage)
-						.Image((PlatformInfo) ? FEditorStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
+						.Image((PlatformInfo) ? FAppStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
 					]
 				]
 
@@ -129,7 +130,7 @@ public:
 						.VAlign(VAlign_Center)
 						[
 							SNew(STextBlock)
-							.Font(FEditorStyle::GetFontStyle("BoldFont"))
+							.Font(FAppStyle::GetFontStyle("BoldFont"))
 							.Text(FText::FromString(InstanceInfo->GetInstanceName()))
 						]
 					];
@@ -154,7 +155,8 @@ public:
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image(this, &SSessionBrowserTreeInstanceRow::HandleStatusImage)
+				.Image(FAppStyle::GetBrush("Icons.FilledCircle"))
+				.ColorAndOpacity(this, &SSessionBrowserTreeInstanceRow::HandleStatusImageColor)
 			];
 		}
 		else if (ColumnName == "Type")
@@ -187,7 +189,7 @@ private:
 
 		if (InstanceInfo.IsValid() && !InstanceInfo->IsAuthorized())
 		{
-			return FEditorStyle::GetBrush("SessionBrowser.SessionLocked");
+			return FAppStyle::GetBrush("Icons.Lock");
 		}
 
 		return nullptr;
@@ -228,10 +230,10 @@ private:
 		{
 			if (FDateTime::UtcNow() - InstanceInfo->GetLastUpdateTime() < FTimespan::FromSeconds(10.0))
 			{
-				return FEditorStyle::GetBrush("ErrorReporting.Box");
+				return FAppStyle::GetBrush("ErrorReporting.Box");
 			}
 
-			return FEditorStyle::GetBrush("ErrorReporting.EmptyBox");
+			return FAppStyle::GetBrush("ErrorReporting.EmptyBox");
 		}
 
 		return nullptr;
@@ -264,7 +266,7 @@ private:
 	}
 
 	/** Callback for getting the image of the Status icon. */
-	const FSlateBrush* HandleStatusImage() const
+	FSlateColor HandleStatusImageColor() const
 	{
 		TSharedPtr<ISessionInstanceInfo> InstanceInfo = Item->GetInstanceInfo();
 
@@ -272,13 +274,13 @@ private:
 		{
 			if (FDateTime::UtcNow() - InstanceInfo->GetLastUpdateTime() < FTimespan::FromSeconds(10.0))
 			{
-				return FEditorStyle::GetBrush("SessionBrowser.StatusRunning");
+				return FStyleColors::AccentGreen;
 			}
 
-			return FEditorStyle::GetBrush("SessionBrowser.StatusTimedOut");
+			return FStyleColors::AccentGray;
 		}
 
-		return nullptr;
+		return FStyleColors::Error;
 	}
 
 	/** Callback for getting the foreground text color. */

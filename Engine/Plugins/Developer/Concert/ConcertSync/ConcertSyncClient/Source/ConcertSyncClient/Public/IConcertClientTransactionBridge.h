@@ -71,6 +71,11 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConcertClientLocalTransactionFinalized, 
 class IConcertClientTransactionBridge
 {
 public:
+	/**
+	 * Create a new instance of the concrete implementation of this class. 
+	 */
+	CONCERTSYNCCLIENT_API static TUniquePtr<IConcertClientTransactionBridge> NewInstance();
+
 	/** Scoped struct to ignore a local transaction */
 	struct FScopedIgnoreLocalTransaction : private TGuardValue<bool>
 	{
@@ -81,6 +86,25 @@ public:
 	};
 
 	virtual ~IConcertClientTransactionBridge() = default;
+
+	/**
+	 * Set whether or not to include editor-only properties when serializing object and property changes.
+	 * @note This is set to true by default.
+	 */
+	virtual void SetIncludeEditorOnlyProperties(const bool InIncludeEditorOnlyProperties) = 0;
+
+	/**
+	 * Set whether to include non-property object data in updates, or whether to only include property changes.
+	 * @note This is set to true by default.
+	 */
+	virtual void SetIncludeNonPropertyObjectData(const bool InIncludeNonPropertyObjectData) = 0;
+
+	/**
+	 * Set whether to include object changes that have been generated via a transaction annotation 
+	 * (where possible), or whether to send the entire transaction annotation blob instead.
+	 * @note This is set to UConcertSyncConfig::bIncludeAnnotationObjectChanges by default.
+	 */
+	virtual void SetIncludeAnnotationObjectChanges(const bool InIncludeAnnotationObjectChanges) = 0;
 
 	/**
 	 * Called when an ongoing transaction is updated via a snapshot.

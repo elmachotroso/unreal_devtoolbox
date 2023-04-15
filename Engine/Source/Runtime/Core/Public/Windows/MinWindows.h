@@ -4,7 +4,7 @@
 
 // #TODO: redirect to platform-agnostic version for the time being. Eventually this will become an error
 #include "HAL/Platform.h"
-#if !PLATFORM_WINDOWS && !PLATFORM_HOLOLENS
+#if !PLATFORM_WINDOWS
 	#include "Microsoft/MinWindows.h"
 #else
 
@@ -39,7 +39,7 @@
 //#define NOCLIPBOARD			// Clipboard routines
 //#define NOCOLOR				// Screen colors
 //#define NOCTLMGR				// Control and Dialog routines
-#define NODRAWTEXT				// DrawText() and DT_*
+//#define NODRAWTEXT				// DrawText() and DT_*
 //#define NOGDI					// All GDI #defines and routines
 #define NOKERNEL				// All KERNEL #defines and routines
 //#define NOUSER				// All USER #defines and routines

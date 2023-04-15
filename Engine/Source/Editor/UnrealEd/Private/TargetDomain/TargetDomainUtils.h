@@ -4,18 +4,17 @@
 
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
 #include "DerivedDataBuildDefinition.h"
+#include "IO/IoHash.h"
 #include "Serialization/PackageWriter.h"
-#include "Templates/Function.h"
 #include "UObject/NameTypes.h"
 
-class ICookedPackageWriter;
-class ITargetPlatform;
 class FCbObject;
 class FString;
+class ITargetPlatform;
 class UPackage;
-struct FIoHash;
-namespace UE::DerivedData { class FBuildDefinition; }
+template <typename FuncType> class TUniqueFunction;
 
 namespace UE::TargetDomain
 {
@@ -36,7 +35,6 @@ FCbObject BuildDefinitionListToObject(TConstArrayView<UE::DerivedData::FBuildDef
 
 struct FCookAttachments
 {
-	const ITargetPlatform* TargetPlatform;
 	TArray<FName> BuildDependencies;
 	TArray<FName> RuntimeOnlyDependencies;
 	TArray<UE::DerivedData::FBuildDefinition> BuildDefinitionList;

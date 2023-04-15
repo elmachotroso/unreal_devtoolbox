@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_Attributes.h"
+#include "AnimTimeline/AnimTimelineTrack_Attributes.h"
 #include "PersonaUtils.h"
 #include "Widgets/SBoxPanel.h"
 #include "AnimSequenceTimelineCommands.h"
@@ -9,7 +9,7 @@
 #include "Widgets/Input/STextEntryPopup.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ScopedTransaction.h"
-#include "SAnimOutlinerItem.h"
+#include "AnimTimeline/SAnimOutlinerItem.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_Attributes"
 
@@ -26,7 +26,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Attributes::GenerateContainerWidgetForOut
 	TSharedPtr<SHorizontalBox> InnerHorizontalBox;
 	OutlinerWidget = GenerateStandardOutlinerWidget(InRow, false, OuterBorder, InnerHorizontalBox);
 
-	OuterBorder->SetBorderBackgroundColor(FEditorStyle::GetColor("AnimTimeline.Outliner.HeaderColor"));
+	OuterBorder->SetBorderBackgroundColor(FAppStyle::GetColor("AnimTimeline.Outliner.HeaderColor"));
 
 	InnerHorizontalBox->AddSlot()
 		.VAlign(VAlign_Center)
@@ -35,7 +35,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Attributes::GenerateContainerWidgetForOut
 		.AutoWidth()
 		[
 			SNew(STextBlock)
-			.TextStyle(&FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimTimeline.Outliner.Label"))
+			.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimTimeline.Outliner.Label"))
 			.Text(this, &FAnimTimelineTrack_Attributes::GetLabel)
 			.HighlightText(InRow->GetHighlightText())
 		];

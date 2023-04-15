@@ -9,6 +9,7 @@
 #include "GeometryCache.h"
 #include "GroomAssetImportData.h"
 #include "GroomBuilder.h"
+#include "GroomDeformerBuilder.h"
 #include "GroomImportOptions.h"
 #include "GroomImportOptionsWindow.h"
 #include "GroomCustomAssetEditorToolkit.h"
@@ -22,7 +23,7 @@
 #include "HairStrandsTranslator.h"
 #include "ToolMenuSection.h"
 #include "Misc/ScopedSlowTask.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "GroomBindingBuilder.h"
 #include "GroomTextureBuilder.h"
 #include "GroomBindingAsset.h"
@@ -48,15 +49,13 @@ bool FGroomActions::CanFilter()
 
 void FGroomActions::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
-	FAssetTypeActions_Base::GetActions(InObjects, Section);
-
 	TArray<TWeakObjectPtr<UGroomAsset>> GroomAssets = GetTypedWeakObjectPtrs<UGroomAsset>(InObjects);
 
 	Section.AddMenuEntry(
 		"RebuildGroom",
 		LOCTEXT("RebuildGroom", "Rebuild"),
 		LOCTEXT("RebuildGroomTooltip", "Rebuild the groom with new build settings"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FGroomActions::ExecuteRebuild, GroomAssets),
 			FCanExecuteAction::CreateSP(this, &FGroomActions::CanRebuild, GroomAssets)
@@ -67,7 +66,7 @@ void FGroomActions::GetActions(const TArray<UObject*>& InObjects, FToolMenuSecti
 		"CreateBindingAsset",
 		LOCTEXT("CreateBindingAsset", "Create Binding"),
 		LOCTEXT("CreateBindingAssetTooltip", "Create a binding asset between a skeletal mesh and a groom asset"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FGroomActions::ExecuteCreateBindingAsset, GroomAssets),
 			FCanExecuteAction::CreateSP(this, &FGroomActions::CanCreateBindingAsset, GroomAssets)
@@ -78,7 +77,7 @@ void FGroomActions::GetActions(const TArray<UObject*>& InObjects, FToolMenuSecti
 		"CreateFollicleTexture",
 		LOCTEXT("CreateFollicleTexture", "Create Follicle Texture"),
 		LOCTEXT("CreateFollicleTextureTooltip", "Create a follicle texture for the selected groom assets"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FGroomActions::ExecuteCreateFollicleTexture, GroomAssets),
 			FCanExecuteAction::CreateSP(this, &FGroomActions::CanCreateFollicleTexture, GroomAssets)
@@ -89,7 +88,7 @@ void FGroomActions::GetActions(const TArray<UObject*>& InObjects, FToolMenuSecti
 		"CreateStrandsTextures",
 		LOCTEXT("CreateStrandsTextures", "Create Strands Textures"),
 		LOCTEXT("CreateStrandsTexturesTooltip", "Create projected strands textures onto meshes"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FGroomActions::ExecuteCreateStrandsTextures, GroomAssets),
 			FCanExecuteAction::CreateSP(this, &FGroomActions::CanCreateStrandsTextures, GroomAssets)
@@ -127,11 +126,6 @@ UClass* FGroomActions::GetSupportedClass() const
 FColor FGroomActions::GetTypeColor() const
 {
 	return FColor::White;
-}
-
-bool FGroomActions::HasActions(const TArray<UObject*>& InObjects) const
-{
-	return true;
 }
 
 void FGroomActions::OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor)
@@ -180,9 +174,9 @@ void FGroomActions::ExecuteRebuild(TArray<TWeakObjectPtr<UGroomAsset>> Objects) 
 				// Duplicate the options to prevent dirtying the asset when they are modified but the rebuild is cancelled
 				UGroomImportOptions* CurrentOptions = DuplicateObject<UGroomImportOptions>(GroomAssetImportData->ImportOptions, nullptr);
 			
+				const uint32 GroupCount = GroomAsset->GetNumHairGroups();
 				UGroomHairGroupsPreview* GroupsPreview = NewObject<UGroomHairGroupsPreview>();
 				{					
-					const uint32 GroupCount = GroomAsset->GetNumHairGroups();
 					for (uint32 GroupIndex = 0; GroupIndex < GroupCount; GroupIndex++)
 					{
 						FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
@@ -190,8 +184,12 @@ void FGroomActions::ExecuteRebuild(TArray<TWeakObjectPtr<UGroomAsset>> Objects) 
 						OutGroup.GroupName	= GroomAsset->HairGroupsInfo[GroupIndex].GroupName;
 						OutGroup.CurveCount = GroomAsset->HairGroupsData[GroupIndex].Strands.BulkData.GetNumCurves();
 						OutGroup.GuideCount = GroomAsset->HairGroupsData[GroupIndex].Guides.BulkData.GetNumCurves();
-						OutGroup.InterpolationSettings = GroomAsset->HairGroupsInterpolation[GroupIndex];
+						OutGroup.bHasRootUV = false;
+						OutGroup.bHasColorAttributes = false;
+						OutGroup.bHasRoughnessAttributes = false;
 						OutGroup.bHasPrecomputedWeights = false;
+						OutGroup.InterpolationSettings = GroomAsset->HairGroupsInterpolation[GroupIndex];
+						OutGroup.InterpolationSettings.RiggingSettings.bCanEditRigging = true;
 					}
 				}
 				TSharedPtr<SGroomImportOptionsWindow> GroomOptionWindow = SGroomImportOptionsWindow::DisplayRebuildOptions(CurrentOptions, GroupsPreview, Filename);
@@ -201,9 +199,23 @@ void FGroomActions::ExecuteRebuild(TArray<TWeakObjectPtr<UGroomAsset>> Objects) 
 					continue;
 				}
 
+				// Apply new interpolation settings to the groom, prior to rebuilding the groom
+				bool bEnableRigging = false;
+				for (uint32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex)
+				{
+					GroomAsset->HairGroupsInterpolation[GroupIndex] = GroupsPreview->Groups[GroupIndex].InterpolationSettings;
+					GroomAsset->HairGroupsInterpolation[GroupIndex].RiggingSettings.bCanEditRigging = false;
+					bEnableRigging |= GroomAsset->HairGroupsInterpolation[GroupIndex].RiggingSettings.bEnableRigging &&
+						GroomAsset->HairGroupsInterpolation[GroupIndex].InterpolationSettings.bOverrideGuides;
+				}
+
 				bool bSucceeded = GroomAsset->CacheDerivedDatas();
 				if (bSucceeded)
 				{
+					if(bEnableRigging)
+					{
+						GroomAsset->RiggedSkeletalMesh = FGroomDeformerBuilder::CreateSkeletalMesh(GroomAsset.Get());
+					}
 					// Move the transient ImportOptions to the asset package and set it on the GroomAssetImportData for serialization
 					CurrentOptions->Rename(nullptr, GroomAssetImportData);
 					for (const FGroomHairGroupPreview& GroupPreview : GroupsPreview->Groups)

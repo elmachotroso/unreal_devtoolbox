@@ -5,7 +5,6 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale; 
-  color:#0F0F0FFF;
   overflow: hidden;
 }
 
@@ -35,20 +34,15 @@ code {
 
 .job-item:hover {
   background:rgb(243, 242, 241);
-  user-select: none;
-  cursor: pointer;
 }
 
 .job-item.selected {
   background:rgb(243, 242, 241);
-  user-select: none;
-  cursor: pointer;
 }
 
 
 .view-log-link, .view-log-link:visited, .view-log-link:hover {
   text-decoration: none;
-  color: rgb(48, 66, 97);
   user-select: none;
   cursor: pointer;
 }
@@ -81,9 +75,19 @@ code {
   border-width: 0;
 }
 
+@keyframes red-pulse {
+  0% {
+    background-color: #CC0000;
+    border: 1px solid #CC0000;
+  }
+  50% {
+    background-color: #FF0000;
+    border: 1px solid #FF0000;
+  }
+  100% {
+    background-color: #CC0000;
+    border: 1px solid #CC0000;
+  }
 
-div[data-automation-key="ViewLogColumn"] {
-  padding: 0
 }
-
 

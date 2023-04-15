@@ -2,29 +2,55 @@
 
 #pragma once
 
+#include "Animation/CurveSequence.h"
+#include "BlueprintUtilities.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Misc/Guid.h"
-#include "Misc/Attribute.h"
+#include "Delegates/Delegate.h"
 #include "EdGraph/EdGraphPin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Layout/Geometry.h"
+#include "GraphEditAction.h"
+#include "GraphEditor.h"
+#include "GraphSplineOverlapResult.h"
+#include "HAL/PlatformMath.h"
 #include "Input/Events.h"
 #include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Animation/CurveSequence.h"
-#include "UObject/GCObject.h"
-#include "GraphEditor.h"
-#include "SNodePanel.h"
+#include "Layout/Clipping.h"
+#include "Layout/Geometry.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
 #include "SGraphNode.h"
-#include "GraphEditAction.h"
 #include "SGraphPin.h"
-#include "GraphSplineOverlapResult.h"
+#include "SNodePanel.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "UObject/GCObject.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SWidget.h"
 
 class FActiveTimerHandle;
+class FArrangedChildren;
+class FDragDropEvent;
+class FPaintArgs;
+class FReferenceCollector;
+class FSlateRect;
 class FSlateWindowElementList;
-class IToolTip;
+class FText;
+class FWidgetStyle;
 class IMenu;
+class IToolTip;
+class SGraphNode;
+class SWidget;
 class UEdGraph;
+class UEdGraphNode;
+class UObject;
+struct FAssetData;
+struct FDiffSingleResult;
+struct FEdGraphEditAction;
+struct FGuid;
 
 DECLARE_DELEGATE( FOnUpdateGraphPanel )
 
@@ -55,7 +81,6 @@ public:
 		, _OnSelectionChanged()
 		, _OnNodeDoubleClicked()
 		, _GraphObj( static_cast<UEdGraph*>(NULL) )
-		, _GraphObjToDiff( static_cast<UEdGraph*>(NULL) )
 		, _InitialZoomToFit( false )
 		, _IsEditable( true )
 		, _DisplayAsReadOnly( false )
@@ -71,7 +96,8 @@ public:
 		SLATE_EVENT( SGraphEditor::FOnDropActor, OnDropActor )
 		SLATE_EVENT( SGraphEditor::FOnDropStreamingLevel, OnDropStreamingLevel )
 		SLATE_ARGUMENT( class UEdGraph*, GraphObj )
-		SLATE_ARGUMENT( class UEdGraph*, GraphObjToDiff )
+		SLATE_ARGUMENT( TSharedPtr<TArray<FDiffSingleResult>>, DiffResults )
+		SLATE_ATTRIBUTE( int32, FocusedDiffResult )
 		SLATE_ARGUMENT( bool, InitialZoomToFit )
 		SLATE_ATTRIBUTE( bool, IsEditable )
 		SLATE_ATTRIBUTE( bool, DisplayAsReadOnly )
@@ -220,7 +246,11 @@ private:
 
 protected:
 	UEdGraph* GraphObj;
-	UEdGraph* GraphObjToDiff;//if it exists, this is 
+	
+	// if this graph is displaying the results of a diff, this will provide info
+	// on how to display the nodes
+	TSharedPtr<TArray<FDiffSingleResult>> DiffResults;
+	TAttribute<int32> FocusedDiffResult;
 
 	// Should we ignore the OnStopMakingConnection unless forced?
 	bool bPreservePinPreviewConnection;

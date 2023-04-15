@@ -14,8 +14,8 @@ public class ApexDestructionEditor : ModuleRules
 				"Engine",
                 "ApexDestruction",
                 "AssetTools",
-                "PhysX",
-                "APEX",
+//                "PhysX",
+//                "APEX",
                 "InputCore",
                 "RenderCore",
                 "RHI",
@@ -28,7 +28,7 @@ public class ApexDestructionEditor : ModuleRules
                 "AssetRegistry",
                 "ContentBrowser",
                 "Projects",
-                "ApexDestructionLib"
+//                "ApexDestructionLib"
             }
 		);
 

@@ -1,14 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
-using HordeServer.Services;
-using HordeServer.Utilities;
-using MongoDB.Bson;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Models
+namespace Horde.Build.Issues
 {
 	using UserId = ObjectId<IUser>;
 
@@ -58,6 +55,21 @@ namespace HordeServer.Models
 		IReadOnlyList<IUser> SuspectUsers { get; }
 
 		/// <summary>
+		/// Issue key in external issue tracker
+		/// </summary>
+		string? ExternalIssueKey { get; }
+
+		/// <summary>
+		/// User who quarantined the issue
+		/// </summary>
+		IUser? QuarantinedBy { get; }
+
+		/// <summary>
+		/// The UTC time when the issue was quarantined
+		/// </summary>
+		DateTime? QuarantineTimeUtc { get; }
+
+		/// <summary>
 		/// Determines whether the given user should be notified about the given issue
 		/// </summary>
 		/// <returns>True if the user should be notified for this change</returns>
@@ -66,9 +78,9 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Determines if the issue is relevant to the given user
 		/// </summary>
-		/// <param name="UserId">The user to query</param>
+		/// <param name="userId">The user to query</param>
 		/// <returns>True if the issue is relevant to the given user</returns>
-		bool IncludeForUser(UserId UserId);
+		bool IncludeForUser(UserId userId);
 	}
 
 	/// <summary>
@@ -79,17 +91,17 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Gets an issue details object for a specific issue id
 		/// </summary>
-		/// <param name="IssueService">The issue service</param>
-		/// <param name="IssueId">Issue id to query </param>
+		/// <param name="issueService">The issue service</param>
+		/// <param name="issueId">Issue id to query </param>
 		/// <returns></returns>
-		public static async Task<IIssueDetails?> GetIssueDetailsAsync(this IIssueService IssueService, int IssueId)
+		public static async Task<IIssueDetails?> GetIssueDetailsAsync(this IssueService issueService, int issueId)
 		{
-			IIssue? Issue = await IssueService.GetIssueAsync(IssueId);
-			if(Issue == null)
+			IIssue? issue = await issueService.Collection.GetIssueAsync(issueId);
+			if(issue == null)
 			{
 				return null;
 			}
-			return await IssueService.GetIssueDetailsAsync(Issue);
+			return await issueService.GetIssueDetailsAsync(issue);
 		}
 	}
 }

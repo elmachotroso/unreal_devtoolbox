@@ -3,6 +3,12 @@
 #include "Rigs/RigHierarchyDefines.h"
 #include "Rigs/RigHierarchy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigHierarchyDefines)
+
+#if WITH_EDITOR
+#include "RigVMPythonUtils.h"
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////
 // FRigControlLimitEnabled
 ////////////////////////////////////////////////////////////////////////////////
@@ -76,6 +82,17 @@ void FRigElementKey::Load(FArchive& Ar)
 	Ar << Name;
 }
 
+FString FRigElementKey::ToPythonString() const
+{
+#if WITH_EDITOR
+	return FString::Printf(TEXT("unreal.RigElementKey(type=%s, name='%s')"),
+		*RigVMPythonUtils::EnumValueToPythonString<ERigElementType>((int64)Type),
+		*Name.ToString());
+#else
+	return FString();
+#endif
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // FRigElementKeyCollection
 ////////////////////////////////////////////////////////////////////////////////
@@ -146,10 +163,15 @@ FRigElementKeyCollection FRigElementKeyCollection::MakeFromName(
 
 	check(InHierarchy);
 
-	FRigElementKeyCollection Collection(InHierarchy->GetAllKeys(true));
-	Collection = Collection.FilterByType(InElementTypes);
-	Collection = Collection.FilterByName(InPartialName);
-	return Collection;
+	constexpr bool bTraverse = true;
+
+	const FString PartialNameString = InPartialName.ToString();
+	
+	return InHierarchy->GetKeysByPredicate([PartialNameString, InElementTypes](const FRigBaseElement& InElement) -> bool
+	{
+		return InElement.IsTypeOf(static_cast<ERigElementType>(InElementTypes)) &&
+			   InElement.GetNameString().Contains(PartialNameString);
+	}, bTraverse);
 }
 
 FRigElementKeyCollection FRigElementKeyCollection::MakeFromChain(
@@ -378,3 +400,4 @@ FArchive& operator<<(FArchive& Ar, FRigControlValue& Value)
 
 	return Ar;
 }
+

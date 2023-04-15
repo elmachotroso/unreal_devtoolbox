@@ -8,7 +8,8 @@
 #include "Templates/Casts.h"
 #include "Distributions/DistributionFloat.h"
 #include "Distributions/DistributionVector.h"
-#include "Matinee/InterpTrack.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InterpCurveEdSetup)
 
 
 void UInterpCurveEdSetup::PostLoad()
@@ -49,12 +50,6 @@ FCurveEdInterface* UInterpCurveEdSetup::GetCurveEdInterfacePointer(const FCurveE
 	if(VectorDist)
 	{
 		return VectorDist;
-	}
-
-	UInterpTrack* InterpTrack = Cast<UInterpTrack>(Entry.CurveObject);
-	if(InterpTrack)
-	{
-		return InterpTrack;
 	}
 
 	return NULL;
@@ -227,3 +222,4 @@ void UInterpCurveEdSetup::ResetTabs()
 
 	Tabs.Add(Tab);
 }
+

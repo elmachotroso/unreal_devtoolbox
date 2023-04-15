@@ -1,15 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VCamBlueprintFunctionLibrary.h"
+
+#include "CineCameraActor.h"
 #include "CineCameraComponent.h"
 #include "LevelSequence.h"
 #include "VirtualCameraClipsMetaData.h"
 #include "Components/SceneCaptureComponent2D.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "VirtualCameraUserSettings.h"
 #include "GameFramework/PlayerController.h"
+#include "MovieScene.h"
+
 #if WITH_EDITOR
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "EditorAssetLibrary.h"
 #include "ITakeRecorderModule.h"
 #include "LevelEditor.h"
@@ -22,6 +27,8 @@
 #include "Subsystems/UnrealEditorSubsystem.h"
 #include "LevelEditor/Public/LevelEditorSubsystem.h"
 #include "Modules/ModuleManager.h"
+#include "Recorder/TakeRecorderBlueprintLibrary.h"
+#include "Recorder/TakeRecorderPanel.h"
 #endif
 
 bool UVCamBlueprintFunctionLibrary::IsGameRunning()
@@ -278,7 +285,18 @@ void UVCamBlueprintFunctionLibrary::PilotActor(AActor* SelectedActor)
 
 		if (LevelEditorSubsystem)
 		{
-			return LevelEditorSubsystem->PilotLevelActor(SelectedActor);
+			LevelEditorSubsystem->PilotLevelActor(SelectedActor);
+
+			FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+			TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor();
+			if (LevelEditor)
+			{
+				TSharedPtr<SLevelViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
+				if (ActiveLevelViewport && !ActiveLevelViewport->IsLockedCameraViewEnabled())
+				{
+					ActiveLevelViewport->ToggleActorPilotCameraView();
+				}
+			}
 		}
 	}
 #endif
@@ -380,11 +398,13 @@ void UVCamBlueprintFunctionLibrary::EditorSetGameView(bool bIsToggled)
 
 void UVCamBlueprintFunctionLibrary::EnableDebugFocusPlane(UCineCameraComponent* CineCamera, bool bEnabled)
 {
+#if WITH_EDITOR
 	if (!CineCamera)
 	{
 		return;
 	}
 	CineCamera->FocusSettings.bDrawDebugFocusPlane = bEnabled;
+#endif
 }
 
 FString UVCamBlueprintFunctionLibrary::GetNextUndoDescription()
@@ -397,6 +417,56 @@ FString UVCamBlueprintFunctionLibrary::GetNextUndoDescription()
 #endif
 
 	return "";
+}
+
+bool UVCamBlueprintFunctionLibrary::CopyToCineCameraActor(UCineCameraComponent* SourceCameraComponent, ACineCameraActor* TargetCameraActor)
+{
+	if (!(IsValid(SourceCameraComponent) && IsValid(TargetCameraActor) && IsValid(TargetCameraActor->GetCineCameraComponent())))
+	{
+		return false;
+	}
+
+	// Ensure the root actor transforms match
+	if (const USceneComponent* SourceAttachment = SourceCameraComponent->GetAttachParent())
+	{
+		TargetCameraActor->SetActorTransform(SourceAttachment->GetComponentTransform());
+	}
+
+	// Copy the properties from one CineCameraComponent to the other
+	UCineCameraComponent* TargetCameraComponent = TargetCameraActor->GetCineCameraComponent();
+	UEngine::CopyPropertiesForUnrelatedObjects(SourceCameraComponent, TargetCameraComponent);
+	
+	TargetCameraActor->UpdateComponentTransforms();
+
+	return true;
+}
+
+void UVCamBlueprintFunctionLibrary::SetActorLabel(AActor* Actor, const FString& NewActorLabel)
+{
+#if WITH_EDITOR
+	if (Actor)
+	{
+		Actor->SetActorLabel(NewActorLabel);
+	}
+#endif
+}
+
+bool UVCamBlueprintFunctionLibrary::IsTakeRecorderPanelOpen()
+{
+#if WITH_EDITOR
+	return IsValid(UTakeRecorderBlueprintLibrary::GetTakeRecorderPanel());
+#else
+	return false;
+#endif
+}
+
+bool UVCamBlueprintFunctionLibrary::TryOpenTakeRecorderPanel()
+{
+#if WITH_EDITOR
+	return IsValid(UTakeRecorderBlueprintLibrary::OpenTakeRecorderPanel());
+#else
+	return false;
+#endif
 }
 
 bool UVCamBlueprintFunctionLibrary::DeprojectScreenToWorld(const FVector2D& InScreenPosition, FVector& OutWorldPosition, FVector& OutWorldDirection)

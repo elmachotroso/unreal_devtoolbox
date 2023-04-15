@@ -2,11 +2,15 @@
 
 #include "AnimGraphCommands.h"
 
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+
 #define LOCTEXT_NAMESPACE "AnimGraphCommands"
 
 void FAnimGraphCommands::RegisterCommands()
 {
 	UI_COMMAND(TogglePoseWatch, "Toggle Pose Watch", "Toggle pose watching on this node", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(HideUnboundPropertyPins, "Hide Unbound/Unset Property Pins", "Unexpose all unbound/unset property pins from this node", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND( SelectBone, "Select Bone", "Assign or change the bone for skeletal controls", EUserInterfaceActionType::Button, FInputChord() )
 	UI_COMMAND( AddBlendListPin, "Add Blend Pin", "Add blend pin to blend list", EUserInterfaceActionType::Button, FInputChord() )

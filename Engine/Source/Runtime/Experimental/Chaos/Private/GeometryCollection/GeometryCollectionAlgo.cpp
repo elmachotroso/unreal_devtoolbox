@@ -282,8 +282,8 @@ namespace GeometryCollectionAlgo
 
 					if (0 < ChildIndex && ChildIndex < NumTransforms)
 					{
-						TManagedArray<int32>& Parent = Collection->GetAttribute<int32>(FTransformCollection::ParentAttribute, FTransformCollection::TransformGroup);
-						TManagedArray< TArray<int32> >& Children = Collection->GetAttribute< TArray<int32> >(FTransformCollection::ChildrenAttribute, FTransformCollection::TransformGroup);
+						TManagedArray<int32>& Parent = Collection->ModifyAttribute<int32>(FTransformCollection::ParentAttribute, FTransformCollection::TransformGroup);
+						TManagedArray< TArray<int32> >& Children = Collection->ModifyAttribute< TArray<int32> >(FTransformCollection::ChildrenAttribute, FTransformCollection::TransformGroup);
 
 						int32 ParentIndex = Parent[ChildIndex];
 						if (0 <= ParentIndex && ParentIndex < NumTransforms)
@@ -512,6 +512,10 @@ namespace GeometryCollectionAlgo
 		if (Level > 0)
 		{
 			const TManagedArray<int32>& Parents = GeometryCollection->Parent;
+			if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+			{
+				return;
+			}
 			const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 			TArray<FTransform> Transforms;
@@ -1440,7 +1444,7 @@ namespace GeometryCollectionAlgo
 		//enqueue all roots
 		for (int32 TransformGroupIndex = 0; TransformGroupIndex < NumTransforms; TransformGroupIndex++)
 		{
-			if (Parent[TransformGroupIndex] == FGeometryCollection::Invalid && Children[TransformGroupIndex].Num() > 0)
+			if (Parent[TransformGroupIndex] == FGeometryCollection::Invalid)
 			{
 				ClustersToProcess.Emplace(TransformGroupIndex);
 			}

@@ -267,6 +267,16 @@ struct ENGINE_API FNetViewer
 	FNetViewer(AController* InController);
 };
 
+UENUM()
+enum class EHierarchicalSimplificationMethod : uint8
+{
+	None = 0			UMETA(hidden),
+	Merge = 1,
+	Simplify = 2,
+	Approximate = 3
+};
+
+
 USTRUCT()
 struct ENGINE_API FHierarchicalSimplification
 {
@@ -285,14 +295,6 @@ struct ENGINE_API FHierarchicalSimplification
 	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere, AdvancedDisplay)
 	uint8 bAllowSpecificExclusion : 1;
 
-	/** If this is true, it will simplify mesh but it is slower.
-	* If false, it will just merge actors but not simplify using the lower LOD if exists.
-	* For example if you build LOD 1, it will use LOD 1 of the mesh to merge actors if exists.
-	* If you merge material, it will reduce drawcalls.
-	*/
-	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere)
-	uint8 bSimplifyMesh:1;
-
 	/** Only generate clusters for HLOD volumes */
 	UPROPERTY(EditAnywhere, Category = FHierarchicalSimplification, AdvancedDisplay, meta = (editcondition = "!bReusePreviousLevelClusters", DisplayAfter="MinNumberOfActorsToBuild"))
 	uint8 bOnlyGenerateClustersForVolumes:1;
@@ -301,13 +303,20 @@ struct ENGINE_API FHierarchicalSimplification
 	UPROPERTY(EditAnywhere, Category = FHierarchicalSimplification, AdvancedDisplay, meta=(DisplayAfter="bOnlyGenerateClustersForVolumes"))
 	uint8 bReusePreviousLevelClusters:1;
 
-	/** Simplification Setting if bSimplifyMesh is true */
+	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere)
+	EHierarchicalSimplificationMethod SimplificationMethod;
+
+	/** Simplification settings, used if SimplificationMethod is Simplify */
 	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere, AdvancedDisplay)
 	FMeshProxySettings ProxySetting;
 
-	/** Merge Mesh Setting if bSimplifyMesh is false */
+	/** Merge settings, used if SimplificationMethod is Merge */
 	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere, AdvancedDisplay)
 	FMeshMergingSettings MergeSetting;
+
+	/** Approximate settings, used if SimplificationMethod is Approximate */
+	UPROPERTY(Category = FHierarchicalSimplification, EditAnywhere, AdvancedDisplay)
+	FMeshApproximationSettings ApproximateSettings;
 
 	/** Desired Bounding Radius for clustering - this is not guaranteed but used to calculate filling factor for auto clustering */
 	UPROPERTY(EditAnywhere, Category=FHierarchicalSimplification, AdvancedDisplay, meta=(UIMin=10.f, ClampMin=10.f, editcondition = "!bReusePreviousLevelClusters"))
@@ -319,16 +328,21 @@ struct ENGINE_API FHierarchicalSimplification
 
 	/** Min number of actors to build LODActor */
 	UPROPERTY(EditAnywhere, Category=FHierarchicalSimplification, AdvancedDisplay, meta=(ClampMin = "1", UIMin = "1", editcondition = "!bReusePreviousLevelClusters"))
-	int32 MinNumberOfActorsToBuild;	
+	int32 MinNumberOfActorsToBuild;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(meta = (DeprecatedProperty))
+	uint8 bSimplifyMesh_DEPRECATED:1;
+#endif
 
 	FHierarchicalSimplification()
 		: TransitionScreenSize(0.315f)
 		, OverrideDrawDistance(10000)
 		, bUseOverrideDrawDistance(false)
 		, bAllowSpecificExclusion(false)
-		, bSimplifyMesh(false)
 		, bOnlyGenerateClustersForVolumes(false)
 		, bReusePreviousLevelClusters(false)
+		, SimplificationMethod(EHierarchicalSimplificationMethod::Merge)
 		, DesiredBoundRadius(2000)
 		, DesiredFillingPercentage(50)
 		, MinNumberOfActorsToBuild(2)
@@ -338,6 +352,28 @@ struct ENGINE_API FHierarchicalSimplification
 		ProxySetting.MaterialSettings.MaterialMergeType = EMaterialMergeType::MaterialMergeType_Simplygon;
 		ProxySetting.bCreateCollision = false;
 	}
+
+#if WITH_EDITORONLY_DATA
+	bool Serialize(FArchive& Ar);
+
+	/** Handles deprecated properties */
+	void PostSerialize(const FArchive& Ar);
+#endif
+
+	/** Retrieve the correct material proxy settings based on the simplification method. */
+	FMaterialProxySettings* GetSimplificationMethodMaterialSettings();
+};
+
+template<>
+struct TStructOpsTypeTraits<FHierarchicalSimplification> : public TStructOpsTypeTraitsBase2<FHierarchicalSimplification>
+{
+#if WITH_EDITORONLY_DATA
+	enum
+	{
+		WithSerializer = true,
+		WithPostSerialize = true,
+	};
+#endif
 };
 
 UCLASS(Blueprintable)
@@ -445,13 +481,8 @@ class ENGINE_API AWorldSettings : public AInfo, public IInterface_AssetUserData
 
 	/** DEFAULT BASIC PHYSICS SETTINGS **/
 
-	/** If true, configures engine for large world testing. Disables CheckStillInWorld checks and octree visibility testing.
-	 *	See UE_USE_UE4_WORLD_MAX for a more correct alternative. This setting will be removed once UE_LARGE_WORLD_MAX is considered stable. */
+	/** If true, enables CheckStillInWorld checks */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay)
-	uint8 bEnableLargeWorlds:1;
-
-	/** If true, enables CheckStillInWorld checks. Note: Do not set this manually if experimenting with large worlds. @see bEnableLargeWorlds */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(EditCondition = "!bEnableLargeWorlds"))
 	uint8 bEnableWorldBoundsChecks:1;
 
 protected:
@@ -541,7 +572,7 @@ public:
 	uint8 bIncludeGridSizeInNameForPartitionedActors : 1;
 #endif
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AI, meta=(MetaClass="AISystemBase", editcondition="bEnableAISystem"), AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AI, meta=(MetaClass="/Script/Engine.AISystemBase", editcondition="bEnableAISystem"), AdvancedDisplay)
 	TSoftClassPtr<UAISystemBase> AISystemClass;
 
 	/** Additional transform applied when applying LevelStreaming Transform to LevelInstance */
@@ -568,15 +599,19 @@ public:
 	UPROPERTY(EditAnywhere, Category = Foliage)
 	uint32 InstancedFoliageGridSize;
 
+	UPROPERTY(EditAnywhere, Category = Landscape)
+	uint32 LandscapeSplineMeshesGridSize;
+
 	/** Size of the grid for navigation data chunk actors */
 	UPROPERTY(EditAnywhere, Category = Navigation)
 	uint32 NavigationDataChunkGridSize;
-
+	
 	/**
 	 * Loading cell size used when building navigation data iteratively.
 	 * The actual cell size used will be rounded using the NavigationDataChunkGridSize.
+	 * It's recommended to use a value as high as the hardware memory allows to load. 
 	 */
-	UPROPERTY(EditAnywhere, Category = Navigation)
+	UPROPERTY(EditAnywhere, Category = Navigation, meta = (ClampMin = "5000"))
 	uint32 NavigationDataBuilderLoadingCellSize;
 	
 	/** Default size of the grid for placed elements from the editor */
@@ -584,16 +619,23 @@ public:
 	uint32 DefaultPlacementGridSize;
 #endif
 
+	/**
+	 * A list of runtime data layers that should be included in the base navmesh.
+	 * Editor data layers and actors outside data layers will be included.
+	 */
+	UPROPERTY(EditAnywhere, Category = Navigation)
+	TArray<TObjectPtr<UDataLayerAsset>> BaseNavmeshDataLayers;
+	
 	/** scale of 1uu to 1m in real world measurements, for HMD and other physically tracked devices (e.g. 1uu = 1cm would be 100.0) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=VR)
 	float WorldToMeters;
 
 	// any actor falling below this level gets destroyed
-	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category=World, meta=(editcondition = "bEnableWorldBoundsChecks && !bEnableLargeWorlds"))
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category=World, meta=(editcondition = "bEnableWorldBoundsChecks"))
 	float KillZ;
 
 	// The type of damage inflicted when a actor falls below KillZ
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(editcondition = "bEnableWorldBoundsChecks && !bEnableLargeWorlds"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(editcondition = "bEnableWorldBoundsChecks"))
 	TSubclassOf<UDamageType> KillZDamageType;
 
 	// current gravity actually being used
@@ -668,7 +710,7 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Audio)
 	FReverbSettings DefaultReverbSettings;
 
-	/** Default interior settings used by audio volumes.												*/
+	/** Default interior settings applied to sounds that have "apply ambient volumes" set to true on their SoundClass. */
 	UPROPERTY(EditAnywhere, config, Category=Audio)
 	FInteriorSettings DefaultAmbientZoneSettings;
 
@@ -716,10 +758,10 @@ public:
 	UPROPERTY(transient, replicated)
 	float TimeDilation;
 
-	// Additional time dilation used by Matinee (or Sequencer) slomo track.  Transient because this is often 
+	// Additional time dilation used by Sequencer slomo track.  Transient because this is often 
 	// temporarily modified by the editor when previewing slow motion effects, yet we don't want it saved or loaded from level packages.
 	UPROPERTY(transient, replicated)
-	float MatineeTimeDilation;
+	float CinematicTimeDilation;
 
 	// Additional TimeDilation used to control demo playback speed
 	UPROPERTY(transient)
@@ -770,6 +812,10 @@ protected:
 public:
 	//~ Begin UObject Interface.
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 #if WITH_EDITOR
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -794,6 +840,12 @@ public:
 	void SetWorldPartition(UWorldPartition* InWorldPartition);
 	void ApplyWorldPartitionForcedSettings();
 
+	virtual bool SupportsWorldPartitionStreaming() const { return true; }
+
+#if WITH_EDITOR
+	void SupportsWorldPartitionStreamingChanged();
+#endif
+
 	/**
 	 * Returns the Z component of the current world gravity and initializes it to the default
 	 * gravity if called for the first time.
@@ -804,7 +856,7 @@ public:
 
 	virtual float GetEffectiveTimeDilation() const
 	{
-		return TimeDilation * MatineeTimeDilation * DemoPlayTimeDilation;
+		return TimeDilation * CinematicTimeDilation * DemoPlayTimeDilation;
 	}
 
 	/**
@@ -835,7 +887,7 @@ public:
 	bool IsAISystemEnabled() const { return bEnableAISystem; }
 
 	/** @return whether given world is restricting actors to +-HALF_WORLD_MAX bounds, destroying actors that move below KillZ */
-	bool AreWorldBoundsChecksEnabled() const { return bEnableWorldBoundsChecks && !bEnableLargeWorlds; }
+	bool AreWorldBoundsChecksEnabled() const { return bEnableWorldBoundsChecks; }
 	
 	/**
 	 * Called from GameStateBase, calls BeginPlay on all actors
@@ -887,8 +939,6 @@ private:
 	void SanitizeBookmarkClasses();
 	void UpdateBookmarkClass();
 
-	void UpdateEnableLargeWorldsCVars(bool bEnable) const;
-
 	/**
 	 * Maximum number of bookmarks allowed.
 	 * Changing this will change the allocation of the bookmarks array, and when shrinking
@@ -901,7 +951,7 @@ private:
 	 * Class that will be used when creating new bookmarks.
 	 * Old bookmarks may be recreated with the new class where possible.
 	 */
-	UPROPERTY(Config, Meta=(AllowAbstract="false", ExactClass="false", AllowedClasses="BookmarkBase"))
+	UPROPERTY(Config, Meta=(AllowAbstract="false", ExactClass="false", AllowedClasses="/Script/Engine.BookmarkBase"))
 	TSubclassOf<class UBookmarkBase> DefaultBookmarkClass;
 
 	UPROPERTY()
@@ -995,6 +1045,9 @@ public:
 private: //DEPRECATED
 	UPROPERTY()
 	bool bEnableHierarchicalLODSystem_DEPRECATED;
+
+	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage="As of UE 5.1 all worlds are large. Set UE_USE_UE4_WORLD_MAX in EngineDefines.h to alter this."))
+	uint8 bEnableLargeWorlds_DEPRECATED:1;
 #endif
 };
 

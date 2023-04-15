@@ -14,6 +14,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CrowdFollowingComponent)
+
 
 DEFINE_LOG_CATEGORY(LogCrowdFollowing);
 
@@ -413,6 +415,8 @@ void UCrowdFollowingComponent::ApplyCrowdAgentPosition(const FVector& NewPositio
 
 void UCrowdFollowingComponent::SetCrowdSimulationState(ECrowdSimulationState NewState)
 {
+	static FString CrowdSimulationDesc[] = { TEXT("Enabled"), TEXT("ObstacleOnly"), TEXT("Disabled") };
+
 	if (NewState == SimulationState)
 	{
 		return;
@@ -425,13 +429,13 @@ void UCrowdFollowingComponent::SetCrowdSimulationState(ECrowdSimulationState New
 	}
 
 	UCrowdManager* Manager = UCrowdManager::GetCurrent(GetWorld());
-	if (Manager == NULL && NewState != ECrowdSimulationState::Disabled)
+	if (Manager == NULL)
 	{
-		UE_VLOG(GetOwner(), LogCrowdFollowing, Log, TEXT("Crowd manager can't be found, disabling simulation"));
-		NewState = ECrowdSimulationState::Disabled;
+		UE_VLOG(GetOwner(), LogCrowdFollowing, Log, TEXT("SetCrowdSimulation: NewState %s: Crowd manager can't be found, disabling simulation."), *CrowdSimulationDesc[static_cast<uint8>(NewState)]);
+		SimulationState = ECrowdSimulationState::Disabled;
+		return;
 	}
 
-	static FString CrowdSimulationDesc[] = { TEXT("Enabled"), TEXT("ObstacleOnly"), TEXT("Disabled") };
 	UE_VLOG(GetOwner(), LogCrowdFollowing, Log, TEXT("SetCrowdSimulation: %s"), *CrowdSimulationDesc[static_cast<uint8>(NewState)]);
 
 	const bool bNeedRegistration = (NewState != ECrowdSimulationState::Disabled);
@@ -1245,3 +1249,4 @@ void UCrowdFollowingComponent::DescribeSelfToVisLog(FVisualLogEntry* Snapshot) c
 }
 
 #endif // ENABLE_VISUAL_LOG
+

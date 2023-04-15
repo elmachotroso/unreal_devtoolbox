@@ -2,9 +2,12 @@
 
 #pragma once
 
+#include "CoreGlobals.h"
 #include "CoreTypes.h"
-#include "Misc/Optional.h"
 #include "Internationalization/Text.h"
+#include "Misc/Optional.h"
+
+class FFeedbackContext;
 
 /** Enum to specify a particular slow task section should be shown */
 enum class ESlowTaskVisibility
@@ -63,11 +66,20 @@ private:
 	/** Specify whether the delayed dialog is allowed in PIE */
 	bool bDelayedDialogAllowInPIE : 1;
 
+	/** Avoid calling hierarchical dialog creation if not required */
+	bool bSkipRecursiveDialogCreation : 1;
+
 	/** Prevent copying */
 	FSlowTask(const FSlowTask&);
 
 	/** Whenever we encounter edge condition requiring to force a UI refresh */
 	static void ForceRefresh(FFeedbackContext& Context);
+
+	/** Handle dialog and delayed dialog creation logic */
+	bool MakeDialogIfNeeded();
+
+	/** Call MakeDialogIfNeeded on all scopes recursively to give them a chance to create a delayed dialog in the hierarchy */
+	void MakeRecursiveDialogIfNeeded();
 
 public:
 
@@ -112,6 +124,11 @@ public:
 	 * @param		Text					Optional text to describe this frame's purpose.
 	 */
 	void EnterProgressFrame(float ExpectedWorkThisFrame = 1.f, const FText& Text = FText());
+
+	/**
+	 * Let the UI refresh but doesn't advance progress. This should be called at regular intervals even when no progress is being made to keep the UI responsive.
+	 */
+	void TickProgress();
 
 	/**
 	 * Get the frame message or default message if empty

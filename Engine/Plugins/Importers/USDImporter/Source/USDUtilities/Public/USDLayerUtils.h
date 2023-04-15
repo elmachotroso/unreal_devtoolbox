@@ -36,24 +36,56 @@ namespace UsdUtils
 {
 	enum class EBrowseFileMode
 	{
+		/** Browse for a file for the purpose of opening a stage with that file as the stage's root layer. */
 		Open,
+
+		/** Browse for a file for the purpose of using that file as the target of a composition arc (e.g. a sublayer, reference, payload, etc.). */
+		Composition,
+
+		/** Browse for a file for the purpose of saving or exporting a layer to that file. */
 		Save
 	};
+
+	enum class ECanInsertSublayerResult
+	{
+		Success,
+		ErrorSubLayerNotFound,
+		ErrorSubLayerInvalid,
+		ErrorSubLayerIsParentLayer,
+		ErrorCycleDetected,
+	};
+	USDUTILITIES_API FText ToText( ECanInsertSublayerResult Result );
+
+	/**
+	 * Checks whether we can add SubLayerIdentifier as a sublayer to ParentLayer.
+	 * The index is actually not relevant.
+	 */
+	USDUTILITIES_API ECanInsertSublayerResult CanInsertSubLayer(
+		const pxr::SdfLayerRefPtr& ParentLayer,
+		const TCHAR* SubLayerIdentifier
+	);
 
 	/**
 	 * Inserts the SubLayerFile path into ParentLayer as a sublayer
 	 * @param ParentLayer - Layer to receive the new sublayer entry
 	 * @param SubLayerFile - Absolute path to a usd file to use as sublayer
-	 * @param Index - Zero-based index on the list of ParentLayer's sublayers list to insert the new sublayer. -1 means "at the end" (the default)
+	 * @param Index - Zero-based index on the list of ParentLayer's sublayers list to insert the new sublayer.
+					  -1 means "at the end" (the default)
 	 * @param OffsetTimeCodes - Offset in USD time codes to use for the sublayer reference
 	 * @param TimeCodesScale - Scale to use for the sublayer reference
 	 * @return Whether the sublayer reference was added successfully or not
 	 */
-	USDUTILITIES_API bool InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index = -1, double OffsetTimeCodes = 0.0, double TimeCodesScale = 1.0 );
+	USDUTILITIES_API bool InsertSubLayer(
+		const pxr::SdfLayerRefPtr& ParentLayer,
+		const TCHAR* SubLayerFile,
+		int32 Index = -1,
+		double OffsetTimeCodes = 0.0,
+		double TimeCodesScale = 1.0
+	);
 
 #if WITH_EDITOR
 	/** Opens a file dialog to open or save a USD file. The returned file path will always be absolute */
-	USDUTILITIES_API TOptional< FString > BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< const SWidget > OriginatingWidget );
+	USDUTILITIES_API TOptional< FString > BrowseUsdFile( EBrowseFileMode Mode );
 #endif // #if WITH_EDITOR
 
 	/**
@@ -103,6 +135,14 @@ namespace UsdUtils
 
 	/** Returns true if Layer is a session layer within Stage's layer stack */
 	USDUTILITIES_API bool IsSessionLayerWithinStage( const pxr::SdfLayerRefPtr& Layer, const pxr::UsdStageRefPtr& Stage );
+
+	/**
+	 * Finds all fields that have asset paths as values (e.g. texture references) in LayerToConvert and (if they're relative paths)
+	 * updates them to be absolute with respect to AnchorLayer. LayerToConvert and AnchorLayer can be the same layer, but they don't have to
+	 */
+	USDUTILITIES_API void ConvertAssetRelativePathsToAbsolute( UE::FSdfLayer& LayerToConvert, const UE::FSdfLayer& AnchorLayer );
+
+	USDUTILITIES_API int32 GetSdfLayerNumFrames( const pxr::SdfLayerRefPtr& Layer );
 }
 
 #endif // #if USE_USD_SDK

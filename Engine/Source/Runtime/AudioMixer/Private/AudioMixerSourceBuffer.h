@@ -51,6 +51,7 @@ namespace Audio
 		FDeviceId AudioDeviceID = 0;
 		uint32 InstanceID = 0;
 		int32 SampleRate = 0;
+		int32 AudioMixerNumOutputFrames = 0;
 		FMixerBuffer* Buffer = nullptr;
 		USoundWave* SoundWave = nullptr;
 		ELoopingMode LoopingMode = ELoopingMode::LOOP_Never;
@@ -63,7 +64,7 @@ namespace Audio
 	class FMixerSourceBuffer : public ISoundWaveClient
 	{
 	public:
-		static FMixerSourceBufferPtr Create(FMixerSourceBufferInitArgs& InArgs);
+		static FMixerSourceBufferPtr Create(FMixerSourceBufferInitArgs& InArgs, TArray<FAudioParameter>&& InDefaultParams=TArray<FAudioParameter>());
 
 		~FMixerSourceBuffer();
 
@@ -114,7 +115,7 @@ namespace Audio
 		bool IsGeneratorFinished() const;
 
 	private:
-		FMixerSourceBuffer(FMixerSourceBufferInitArgs& InArgs);
+		FMixerSourceBuffer(FMixerSourceBufferInitArgs& InArgs, TArray<FAudioParameter>&& InDefaultParams);
 
 		void SubmitInitialPCMBuffers();
 		void SubmitInitialRealtimeBuffers();
@@ -139,6 +140,7 @@ namespace Audio
 		int32 NumChannels;
 		Audio::EBufferType::Type BufferType;
 		int32 NumPrecacheFrames;
+		Audio::FDeviceId AuioDeviceID;
 		TArray<uint8> CachedRealtimeFirstBuffer;
 
 		mutable FCriticalSection SoundWaveCritSec;

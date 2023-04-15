@@ -1,21 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ISequencerSection.h"
-#include "MovieSceneSection.h"
-#include "ISectionLayoutBuilder.h"
-#include "SequencerSectionPainter.h"
-#include "IKeyArea.h"
+
+#include "Channels/MovieSceneChannelEditorData.h"
+#include "Channels/MovieSceneChannelHandle.h"
 #include "Channels/MovieSceneChannelProxy.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "HAL/PlatformCrt.h"
+#include "IKeyArea.h"
+#include "ISectionLayoutBuilder.h"
+#include "Math/NumericLimits.h"
+#include "Math/Range.h"
+#include "Math/RangeBound.h"
+#include "Math/UnrealMathSSE.h"
+#include "MovieSceneSection.h"
+#include "SequencerSectionPainter.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "ISequencerChannelInterface.h"
+#include "ISequencerModule.h"
+#include "Modules/ModuleManager.h"
 
-/** Structure used during key area creation to group channels by their group name */
-struct FChannelData
-{
-	/** Handle to the channel */
-	FMovieSceneChannelHandle Channel;
-
-	/** The channel's editor meta data */
-	const FMovieSceneChannelMetaData& MetaData;
-};
+struct FMovieSceneChannel;
 
 /** Data pertaining to a group of channels */
 struct FGroupData
@@ -25,7 +34,7 @@ struct FGroupData
 		, SortOrder(-1)
 	{}
 
-	void AddChannel(FChannelData&& InChannel)
+	void AddChannel(ISequencerSection::FChannelData&& InChannel)
 	{
 		if (InChannel.MetaData.SortOrder < SortOrder)
 		{
@@ -42,11 +51,13 @@ struct FGroupData
 	uint32 SortOrder;
 
 	/** Array of channels within this group */
-	TArray<FChannelData, TInlineAllocator<4>> Channels;
+	TArray<ISequencerSection::FChannelData, TInlineAllocator<4>> Channels;
 };
 
 void ISequencerSection::GenerateSectionLayout( ISectionLayoutBuilder& LayoutBuilder )
 {
+	using namespace UE::Sequencer;
+
 	UMovieSceneSection* Section = GetSectionObject();
 	if (!Section)
 	{
@@ -90,20 +101,38 @@ void ISequencerSection::GenerateSectionLayout( ISectionLayoutBuilder& LayoutBuil
 		return;
 	}
 
+
+	ISequencerModule* SequencerModule = &FModuleManager::LoadModuleChecked<ISequencerModule>("Sequencer");
+
+	auto ChannelFactory = [this, SequencerModule](FName InChannelName, const FMovieSceneChannelHandle& InChannel)
+	{
+		TSharedPtr<FChannelModel> ChannelModel = this->ConstructChannelModel(InChannelName, InChannel);
+		if (!ChannelModel)
+		{
+			ISequencerChannelInterface* EditorInterface = SequencerModule->FindChannelEditorInterface(InChannel.GetChannelTypeName());
+			if (EditorInterface)
+			{
+				ChannelModel = EditorInterface->CreateChannelModel_Raw(InChannel, InChannelName);
+			}
+		}
+
+		return ChannelModel;
+	};
+
 	// Collapse single channels to the top level track node if allowed
 	if (GroupToChannelsMap.Num() == 1)
 	{
 		const TTuple<FName, FGroupData>& Pair = *GroupToChannelsMap.CreateIterator();
 		if (Pair.Value.Channels.Num() == 1 && Pair.Value.Channels[0].MetaData.bCanCollapseToTrack)
 		{
-			LayoutBuilder.SetTopLevelChannel(Pair.Value.Channels[0].Channel);
+			LayoutBuilder.SetTopLevelChannel(Pair.Value.Channels[0].Channel, ChannelFactory);
 			return;
 		}
 	}
 
 	// Sort the channels in each group by its sort order and name
 	TArray<FName, TInlineAllocator<6>> SortedGroupNames;
-	for (auto& Pair : GroupToChannelsMap)
+	for (TPair<FName, FGroupData>& Pair : GroupToChannelsMap)
 	{
 		SortedGroupNames.Add(Pair.Key);
 
@@ -138,16 +167,21 @@ void ISequencerSection::GenerateSectionLayout( ISectionLayoutBuilder& LayoutBuil
 	// Create key areas for each group name
 	for (FName GroupName : SortedGroupNames)
 	{
-		auto& ChannelData = GroupToChannelsMap.FindChecked(GroupName);
+		FGroupData& ChannelData = GroupToChannelsMap.FindChecked(GroupName);
 
 		if (!GroupName.IsNone())
 		{
-			LayoutBuilder.PushCategory(GroupName, ChannelData.GroupText);
+			auto Factory = [this, &ChannelData](FName InCategoryName, const FText& InDisplayText)
+			{
+				return this->ConstructCategoryModel(InCategoryName, InDisplayText, ChannelData.Channels);
+			};
+
+			LayoutBuilder.PushCategory(GroupName, ChannelData.GroupText, Factory);
 		}
 
 		for (const FChannelData& ChannelAndData : ChannelData.Channels)
 		{
-			LayoutBuilder.AddChannel(ChannelAndData.Channel);
+			LayoutBuilder.AddChannel(ChannelAndData.Channel, ChannelFactory);
 		}
 
 		if (!GroupName.IsNone())

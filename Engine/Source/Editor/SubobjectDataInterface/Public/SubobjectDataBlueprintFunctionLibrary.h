@@ -3,12 +3,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Internationalization/Text.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "SubobjectData.h"
+#include "SubobjectDataHandle.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "SubobjectDataBlueprintFunctionLibrary.generated.h"
 
 class UBlueprint;
+class UObject;
+struct FFrame;
 
 /**
  * A function library with wrappers around the getter/setter functions for FSubobjectData
@@ -79,6 +86,9 @@ public:
 	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Subobject Data")
 	static const UObject* GetObject(const FSubobjectData& Data, bool bEvenIfPendingKill = false) { return Data.GetObject(bEvenIfPendingKill); }
+
+	UFUNCTION(BlueprintCallable, Category="Subobject Data")
+	static const UObject* GetObjectForBlueprint(const FSubobjectData& Data, UBlueprint* Blueprint) { return Data.GetObjectForBlueprint(Blueprint); }
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Subobject Data")
 	UBlueprint* GetBlueprint(const FSubobjectData& Data) { return Data.GetBlueprint(); }

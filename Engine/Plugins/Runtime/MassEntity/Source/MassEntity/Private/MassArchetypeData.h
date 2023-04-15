@@ -2,15 +2,15 @@
 
 #pragma once
 
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassArchetypeTypes.h"
 
 struct FMassEntityQuery;
 struct FMassExecutionContext;
 class FOutputDevice;
-struct FMassArchetypeSubChunks;
+struct FMassArchetypeEntityCollection;
 
-namespace UE::MassEntity
+namespace UE::Mass
 {
 	constexpr int32 ChunkSize = 128*1024;
 }
@@ -24,11 +24,13 @@ private:
 	int32 NumInstances = 0;
 	int32 SerialModificationNumber = 0;
 	TArray<FInstancedStruct> ChunkFragmentData;
+	FMassArchetypeSharedFragmentValues SharedFragmentValues;
 
 public:
-	explicit FMassArchetypeChunk(int32 InAllocSize, TConstArrayView<FInstancedStruct> InChunkFragmentTemplates)
+	explicit FMassArchetypeChunk(int32 InAllocSize, TConstArrayView<FInstancedStruct> InChunkFragmentTemplates, FMassArchetypeSharedFragmentValues InSharedFragmentValues)
 		: AllocSize(InAllocSize)
 		, ChunkFragmentData(InChunkFragmentTemplates)
+		, SharedFragmentValues(InSharedFragmentValues)
 	{
 		RawMemory = (uint8*)FMemory::Malloc(AllocSize);
 	}
@@ -105,11 +107,12 @@ public:
 			});
 	}
 
-	void Recycle(TConstArrayView<FInstancedStruct> InChunkFragmentsTemplate)
+	void Recycle(TConstArrayView<FInstancedStruct> InChunkFragmentsTemplate, const FMassArchetypeSharedFragmentValues& InSharedFragmentValues)
 	{
 		checkf(NumInstances == 0, TEXT("Recycling a chunk that is not empty."));
 		SerialModificationNumber++;
 		ChunkFragmentData = InChunkFragmentsTemplate;
+		SharedFragmentValues = InSharedFragmentValues;
 		
 		// If this chunk previously had entity and it does not anymore, we might have to reallocate the memory as it was freed to save memory
 		if (RawMemory == nullptr)
@@ -118,9 +121,16 @@ public:
 		}
 	}
 
+	bool IsValidSubChunk(const int32 StartIndex, const int32 Length) const
+	{
+		return StartIndex >= 0 && StartIndex < NumInstances && (StartIndex + Length) <= NumInstances;
+	}
+
 #if WITH_MASSENTITY_DEBUG
 	int32 DebugGetChunkFragmentCount() const { return ChunkFragmentData.Num(); }
 #endif // WITH_MASSENTITY_DEBUG
+
+	const FMassArchetypeSharedFragmentValues& GetSharedFragmentValues() const { return SharedFragmentValues; }
 };
 
 // Information for a single fragment type in an archetype
@@ -142,7 +152,6 @@ struct FMassArchetypeData
 private:
 	// One-stop-shop variable describing the archetype's fragment and tag composition 
 	FMassArchetypeCompositionDescriptor CompositionDescriptor;
-	FMassArchetypeSharedFragmentValues SharedFragmentValues;
 
 	// Pre-created default chunk fragment templates
 	TArray<FInstancedStruct> ChunkFragmentsTemplate;
@@ -162,8 +171,15 @@ private:
 	int32 TotalBytesPerEntity;
 	int32 EntityListOffsetWithinChunk;
 
+	// Archetype version at which this archetype was created, useful for query to do incremental archetype matching
+	uint32 CreatedArchetypeDataVersion;
+
+	// Arrays of names the archetype is referred as.
+	TArray<FName> DebugNames;
+	
 	friend FMassEntityQuery;
-	friend FMassArchetypeSubChunks;
+	friend FMassArchetypeEntityCollection;
+	friend FMassDebugger;
 
 public:
 	TConstArrayView<FMassArchetypeFragmentConfig> GetFragmentConfigs() const { return FragmentConfigs; }
@@ -173,29 +189,38 @@ public:
 	const FMassSharedFragmentBitSet& GetSharedFragmentBitSet() const { return CompositionDescriptor.SharedFragments; }
 
 	const FMassArchetypeCompositionDescriptor& GetCompositionDescriptor() const { return CompositionDescriptor; }
-	const FMassArchetypeSharedFragmentValues& GetSharedFragmentValues() const { return SharedFragmentValues; }
+	FORCEINLINE const FMassArchetypeSharedFragmentValues& GetSharedFragmentValues(int32 EntityIndex) const
+	{ 
+		const int32 AbsoluteIndex = EntityMap.FindChecked(EntityIndex);
+		const int32 ChunkIndex = AbsoluteIndex / NumEntitiesPerChunk;
+
+		return Chunks[ChunkIndex].GetSharedFragmentValues();
+	}
+	FORCEINLINE const FMassArchetypeSharedFragmentValues& GetSharedFragmentValues(FMassEntityHandle Entity) const
+	{
+		return GetSharedFragmentValues(Entity.Index);
+	}
 
 	/** Method to iterate on all the fragment types */
 	void ForEachFragmentType(TFunction< void(const UScriptStruct* /*FragmentType*/)> Function) const;
 	bool HasFragmentType(const UScriptStruct* FragmentType) const;
 	bool HasTagType(const UScriptStruct* FragmentType) const { check(FragmentType); return CompositionDescriptor.Tags.Contains(*FragmentType); }
 
-	bool IsEquivalent(const FMassArchetypeCompositionDescriptor& OtherCompositionDescriptor, const FMassArchetypeSharedFragmentValues& OtherSharedFragmentValues) const
+	bool IsEquivalent(const FMassArchetypeCompositionDescriptor& OtherCompositionDescriptor) const
 	{
-		return CompositionDescriptor.IsEquivalent(OtherCompositionDescriptor) && SharedFragmentValues.IsEquivalent(OtherSharedFragmentValues);
+		return CompositionDescriptor.IsEquivalent(OtherCompositionDescriptor);
 	}
 
-	void Initialize(const FMassArchetypeCompositionDescriptor& InCompositionDescriptor, const FMassArchetypeSharedFragmentValues& InSharedFragmentValues);
+	void Initialize(const FMassArchetypeCompositionDescriptor& InCompositionDescriptor, const uint32 ArchetypeDataVersion);
 
 	/** 
 	 * A special way of initializing an archetype resulting in a copy of SiblingArchetype's setup with OverrideTags
 	 * replacing original tags of SiblingArchetype
 	 */
-	void InitializeWithSibling(const FMassArchetypeData& SiblingArchetype, const FMassTagBitSet& OverrideTags);
+	void InitializeWithSimilar(const FMassArchetypeData& BaseArchetype, FMassArchetypeCompositionDescriptor&& NewComposition, const uint32 ArchetypeDataVersion);
 
-	void AddEntity(FMassEntityHandle Entity);
+	void AddEntity(FMassEntityHandle Entity, const FMassArchetypeSharedFragmentValues& InSharedFragmentValues);
 	void RemoveEntity(FMassEntityHandle Entity);
-	void BatchDestroyEntityChunks(FMassArchetypeSubChunks::FConstSubChunkArrayView SubChunkContainer, TArray<FMassEntityHandle>& OutEntitiesRemoved);
 
 	bool HasFragmentDataForEntity(const UScriptStruct* FragmentType, int32 EntityIndex) const;
 	void* GetFragmentDataForEntityChecked(const UScriptStruct* FragmentType, int32 EntityIndex) const;
@@ -206,14 +231,16 @@ public:
 
 	int32 GetNumEntities() const { return EntityMap.Num(); }
 
-	int32 GetChunkAllocSize() const { return UE::MassEntity::ChunkSize; }
+	int32 GetChunkAllocSize() const { return UE::Mass::ChunkSize; }
 
 	int32 GetChunkCount() const { return Chunks.Num(); }
 
-	void ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, FMassArchetypeSubChunks::FConstSubChunkArrayView SubChunkContainer);
-	void ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, const FMassArchetypeConditionFunction& ArchetypeCondition, const FMassChunkConditionFunction& ChunkCondition);
+	uint32 GetCreatedArchetypeDataVersion() const { return CreatedArchetypeDataVersion; }
 
-	void ExecutionFunctionForChunk(FMassExecutionContext RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, const FMassArchetypeSubChunks::FSubChunkInfo& ChunkInfo, const FMassChunkConditionFunction& ChunkCondition = FMassChunkConditionFunction());
+	void ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, FMassArchetypeEntityCollection::FConstEntityRangeArrayView EntityRangeContainer);
+	void ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, const FMassChunkConditionFunction& ChunkCondition);
+
+	void ExecutionFunctionForChunk(FMassExecutionContext RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, const FMassArchetypeEntityCollection::FArchetypeEntityRange& EntityRange, const FMassChunkConditionFunction& ChunkCondition = FMassChunkConditionFunction());
 
 	/**
 	 * Compacts entities to fill up chunks as much as possible
@@ -234,26 +261,38 @@ public:
 	 */
 	void SetFragmentsData(const FMassEntityHandle Entity, TArrayView<const FInstancedStruct> FragmentSources);
 
-	/** For all entities indicated by ChunkCollection the function sets the value of fragment of type
+	/** For all entities indicated by EntityCollection the function sets the value of fragment of type
 	 *  FragmentSource.GetScriptStruct to the value represented by FragmentSource.GetMemory */
-	void SetFragmentData(FMassArchetypeSubChunks::FConstSubChunkArrayView SubChunkContainer, const FInstancedStruct& FragmentSource);
+	void SetFragmentData(FMassArchetypeEntityCollection::FConstEntityRangeArrayView EntityRangeContainer, const FInstancedStruct& FragmentSource);
 
 	/** Returns conversion from given Requirements to archetype's fragment indices */
-	void GetRequirementsFragmentMapping(TConstArrayView<FMassFragmentRequirement> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices);
+	void GetRequirementsFragmentMapping(TConstArrayView<FMassFragmentRequirementDescription> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices) const;
 
 	/** Returns conversion from given ChunkRequirements to archetype's chunk fragment indices */
-	void GetRequirementsChunkFragmentMapping(TConstArrayView<FMassFragmentRequirement> ChunkRequirements, FMassFragmentIndicesMapping& OutFragmentIndices);
+	void GetRequirementsChunkFragmentMapping(TConstArrayView<FMassFragmentRequirementDescription> ChunkRequirements, FMassFragmentIndicesMapping& OutFragmentIndices) const;
 
 	/** Returns conversion from given const shared requirements to archetype's const shared fragment indices */
-	void GetRequirementsConstSharedFragmentMapping(TConstArrayView<FMassFragmentRequirement> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices);
+	void GetRequirementsConstSharedFragmentMapping(TConstArrayView<FMassFragmentRequirementDescription> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices) const;
 
 	/** Returns conversion from given shared requirements to archetype's shared fragment indices */
-	void GetRequirementsSharedFragmentMapping(TConstArrayView<FMassFragmentRequirement> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices);
+	void GetRequirementsSharedFragmentMapping(TConstArrayView<FMassFragmentRequirementDescription> Requirements, FMassFragmentIndicesMapping& OutFragmentIndices) const;
 
 	SIZE_T GetAllocatedSize() const;
 
 	// Converts the list of fragments into a user-readable debug string
 	FString DebugGetDescription() const;
+
+	/** Adds new debug name associated with the archetype. */
+	void AddUniqueDebugName(const FName& Name) { DebugNames.AddUnique(Name); }
+	
+	/** @return array of debug names associated with this archetype. */
+	const TConstArrayView<FName> GetDebugNames() const { return DebugNames; }
+	
+	/** Copies debug names from another archetype data. */
+	void CopyDebugNamesFrom(const FMassArchetypeData& Other) { DebugNames = Other.DebugNames; }
+	
+	/** @return string of all debug names combined */
+	FString GetCombinedDebugNamesAsString() const;
 
 #if WITH_MASSENTITY_DEBUG
 	/**
@@ -297,7 +336,26 @@ public:
 
 	bool IsInitialized() const { return TotalBytesPerEntity > 0 && FragmentConfigs.IsEmpty() == false; }
 
+	//////////////////////////////////////////////////////////////////////
+	// batched api
+	void BatchDestroyEntityChunks(FMassArchetypeEntityCollection::FConstEntityRangeArrayView EntityRangeContainer, TArray<FMassEntityHandle>& OutEntitiesRemoved);
+	void BatchAddEntities(TConstArrayView<FMassEntityHandle> Entities, const FMassArchetypeSharedFragmentValues& SharedFragmentValues, TArray<FMassArchetypeEntityCollection::FArchetypeEntityRange>& OutNewRanges);
+	void BatchMoveEntitiesToAnotherArchetype(const FMassArchetypeEntityCollection& EntityCollection, FMassArchetypeData& NewArchetype, TArray<FMassEntityHandle>& OutEntitesBeingMoved, TArray<FMassArchetypeEntityCollection::FArchetypeEntityRange>* OutNewChunks = nullptr);
+	void BatchSetFragmentValues(TConstArrayView<FMassArchetypeEntityCollection::FArchetypeEntityRange> EntityCollection, const FMassGenericPayloadViewSlice& Payload);
+
 protected:
+	FMassArchetypeEntityCollection::FArchetypeEntityRange PrepareNextEntitiesSpanInternal(TConstArrayView<FMassEntityHandle> Entities, const FMassArchetypeSharedFragmentValues& InSharedFragmentValues, const int32 StartingChunk = 0);
+	void BatchRemoveEntitiesInternal(const int32 ChunkIndex, const int32 StartIndexWithinChunk, const int32 NumberToRemove);
+
+	struct FTransientChunkLocation
+	{
+		uint8* RawChunkMemory;
+		int32 IndexWithinChunk;
+	};
+	void MoveFragmentsToAnotherArchetypeInternal(FMassArchetypeData& TargetArchetype, FTransientChunkLocation Target, const FTransientChunkLocation Source, const int32 ElementsNum);
+	void MoveFragmentsToNewLocationInternal(FTransientChunkLocation Target, const FTransientChunkLocation Source, const int32 NumberToMove);
+	void ConfigureFragments();
+
 	FORCEINLINE void* GetFragmentData(const int32 FragmentIndex, uint8* ChunkRawMemory, const int32 IndexWithinChunk) const
 	{
 		return FragmentConfigs[FragmentIndex].GetFragmentData(ChunkRawMemory, IndexWithinChunk);
@@ -305,10 +363,25 @@ protected:
 
 	void BindEntityRequirements(FMassExecutionContext& RunContext, const FMassFragmentIndicesMapping& EntityFragmentsMapping, FMassArchetypeChunk& Chunk, const int32 SubchunkStart, const int32 SubchunkLength);
 	void BindChunkFragmentRequirements(FMassExecutionContext& RunContext, const FMassFragmentIndicesMapping& ChunkFragmentsMapping, FMassArchetypeChunk& Chunk);
-	void BindConstSharedFragmentRequirements(FMassExecutionContext& RunContext, const FMassFragmentIndicesMapping& ChunkFragmentsMapping);
-	void BindSharedFragmentRequirements(FMassExecutionContext& RunContext, const FMassFragmentIndicesMapping& ChunkFragmentsMapping);
+	void BindConstSharedFragmentRequirements(FMassExecutionContext& RunContext, const FMassArchetypeSharedFragmentValues& SharedFragmentValues, const FMassFragmentIndicesMapping& ChunkFragmentsMapping);
+	void BindSharedFragmentRequirements(FMassExecutionContext& RunContext, const FMassArchetypeSharedFragmentValues& SharedFragmentValues, const FMassFragmentIndicesMapping& ChunkFragmentsMapping);
 
 private:
-	int32 AddEntityInternal(FMassEntityHandle Entity, const bool bInitializeFragments);
-	void RemoveEntityInternal(const int32 AbsoluteIndex, const bool bDestroyFragments);
+	int32 AddEntityInternal(FMassEntityHandle Entity, const FMassArchetypeSharedFragmentValues& InSharedFragmentValues);
+	void RemoveEntityInternal(const int32 AbsoluteIndex);
+};
+
+
+struct FMassArchetypeHelper
+{
+	FORCEINLINE static FMassArchetypeData* ArchetypeDataFromHandle(const FMassArchetypeHandle& ArchetypeHandle) { return ArchetypeHandle.DataPtr.Get(); }
+	FORCEINLINE static FMassArchetypeData& ArchetypeDataFromHandleChecked(const FMassArchetypeHandle& ArchetypeHandle)
+	{
+		check(ArchetypeHandle.IsValid());
+		return *ArchetypeHandle.DataPtr.Get();
+	}
+	FORCEINLINE static FMassArchetypeHandle ArchetypeHandleFromData(const TSharedPtr<FMassArchetypeData>& Archetype)
+	{
+		return FMassArchetypeHandle(Archetype);
+	}
 };

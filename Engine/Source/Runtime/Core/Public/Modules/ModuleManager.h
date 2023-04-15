@@ -2,21 +2,33 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "Templates/UnrealTemplate.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/Map.h"
-#include "UObject/NameTypes.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "Modules/Boilerplate/ModuleBoilerplate.h"
+#include "Modules/ModuleInterface.h"
+#include "Serialization/Archive.h"
+#include "Templates/Atomic.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
-#include "Delegates/Delegate.h"
-#include "Misc/Optional.h"
-#include "Misc/CoreMisc.h"
-#include "Modules/ModuleInterface.h"
-#include "Modules/Boilerplate/ModuleBoilerplate.h"
-#include "Misc/EnumClassFlags.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+
+class FArchive;
+class FOutputDevice;
+class UClass;
+class UWorld;
 
 #if WITH_HOT_RELOAD
 	/** If true, we are reloading a class for HotReload */
@@ -828,7 +840,7 @@ class FDefaultGameModuleImpl
 	{ \
 		FSigningKeyRegistration() \
 		{ \
-			extern void RegisterSigningKeyCallback(void (*)(TArray<uint8>&, TArray<uint8>&)); \
+			extern CORE_API void RegisterSigningKeyCallback(void (*)(TArray<uint8>&, TArray<uint8>&)); \
 			RegisterSigningKeyCallback(&Callback); \
 		} \
 		static void Callback(TArray<uint8>& OutExponent, TArray<uint8>& OutModulus) \
@@ -856,7 +868,7 @@ class FDefaultGameModuleImpl
 	{ \
 		FEncryptionKeyRegistration() \
 		{ \
-			extern void RegisterEncryptionKeyCallback(void (*)(unsigned char OutKey[32])); \
+			extern CORE_API void RegisterEncryptionKeyCallback(void (*)(unsigned char OutKey[32])); \
 			RegisterEncryptionKeyCallback(&Callback); \
 		} \
 		static void Callback(unsigned char OutKey[32]) \
@@ -955,6 +967,8 @@ class FDefaultGameModuleImpl
 
 	#define IMPLEMENT_PRIMARY_GAME_MODULE( ModuleImplClass, ModuleName, GameName ) \
 		/* Nothing special to do for modular builds.  The game name will be set via the command-line */ \
+		IMPLEMENT_SIGNING_KEY_REGISTRATION() \
+		IMPLEMENT_ENCRYPTION_KEY_REGISTRATION() \
 		IMPLEMENT_TARGET_NAME_REGISTRATION() \
 		IMPLEMENT_GAME_MODULE( ModuleImplClass, ModuleName )
 #endif	//IS_MONOLITHIC

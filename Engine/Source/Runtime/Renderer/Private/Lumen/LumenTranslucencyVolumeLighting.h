@@ -10,6 +10,7 @@
 #include "RendererInterface.h"
 #include "ShaderParameterMacros.h"
 #include "LumenRadianceCacheInterpolation.h"
+#include "LumenFrontLayerTranslucency.h"
 
 class FLumenCardTracingInputs;
 class FSceneTextureParameters;
@@ -30,6 +31,7 @@ public:
 // Used by translucent BasePass
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenTranslucencyLightingParameters, )
 	SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheInterpolationParameters)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FLumenFrontLayerTranslucencyReflectionParameters, FrontLayerTranslucencyReflectionParameters)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyGIVolume0)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyGIVolume1)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, TranslucencyGIVolumeHistory0)
@@ -40,7 +42,16 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenTranslucencyLightingParameters, )
 	SHADER_PARAMETER(FIntVector, TranslucencyGIGridSize)
 END_SHADER_PARAMETER_STRUCT()
 
-extern FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(FRDGBuilder& GraphBuilder, const FLumenTranslucencyGIVolume& LumenTranslucencyGIVolume);
+// Used by VolumetricFog and HeterogeneousVolumes
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLumenTranslucencyLightingUniforms, )
+	SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingParameters, Parameters)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+extern FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(
+	FRDGBuilder& GraphBuilder, 
+	const FLumenTranslucencyGIVolume& LumenTranslucencyGIVolume,
+	const FLumenFrontLayerTranslucency& LumenFrontLayerTranslucency
+);
 
 // Used by Translucency Lighting pipeline shaders
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenTranslucencyLightingVolumeParameters, )
@@ -59,21 +70,20 @@ END_SHADER_PARAMETER_STRUCT()
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenTranslucencyLightingVolumeTraceSetupParameters, )
 	SHADER_PARAMETER(float, StepFactor)
 	SHADER_PARAMETER(float, MaxTraceDistance)
-	SHADER_PARAMETER(float, VoxelStepFactor)
 	SHADER_PARAMETER(float, VoxelTraceStartDistanceScale)
 	SHADER_PARAMETER(float, MaxRayIntensity)
 END_SHADER_PARAMETER_STRUCT()
 
 namespace Lumen
 {
-	extern bool UseHardwareRayTracedTranslucencyVolume();
-	extern bool UseLumenTranslucencyReflections(const FViewInfo& View);
+	extern bool UseHardwareRayTracedTranslucencyVolume(const FSceneViewFamily& ViewFamily);
+	extern bool UseLumenTranslucencyRadianceCacheReflections(const FViewInfo& View);
 }
 
 extern void HardwareRayTraceTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
-	FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingInputs& TracingInputs,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
 	FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters,

@@ -2,40 +2,78 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "Input/Reply.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateColor.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
-#include "AssetData.h"
-#include "ARFilter.h"
-#include "AssetThumbnail.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserDataFilter.h"
-#include "SourcesData.h"
 #include "Animation/CurveSequence.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetThumbnail.h"
 #include "AssetViewSortManager.h"
 #include "AssetViewTypes.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDataFilter.h"
+#include "ContentBrowserDataLegacyBridge.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserItem.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/Platform.h"
 #include "HistoryManager.h"
+#include "IContentBrowserSingleton.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
 #include "Misc/NamePermissionList.h"
+#include "Misc/Optional.h"
+#include "SourcesData.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UniquePtr.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/SHeaderRow.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
 
+class FAssetViewItem;
+class FContentBrowserItemDataTemporaryContext;
+class FContentBrowserItemDataUpdate;
+class FDragDropEvent;
 class FMenuBuilder;
 class FPathPermissionList;
+class FSlateRect;
 class FWeakWidgetPath;
 class FWidgetPath;
+class ITableRow;
 class SAssetColumnView;
 class SAssetListView;
 class SAssetTileView;
+class SBox;
 class SComboButton;
+class SContentBrowser;
+class SFilterList;
+class STableViewBase;
+class SWidget;
+class UClass;
 class UFactory;
+struct FCharacterEvent;
+struct FCollectionNameType;
+struct FFocusEvent;
+struct FGeometry;
+struct FKeyEvent;
+struct FPointerEvent;
 struct FPropertyChangedEvent;
 struct FToolMenuContext;
-class SContentBrowser;
 
 /** Fires whenever the asset view is asked to start to create a temporary item */
 DECLARE_DELEGATE_OneParam(FOnAssetViewNewItemRequested, const FContentBrowserItem& /*NewItem*/);
@@ -70,7 +108,6 @@ public:
 		, _CanShowDevelopersFolder(false)
 		, _CanShowFavorites(false)
 		, _CanDockCollections(false)
-		, _PreloadAssetsForContextMenu(true)
 		, _SelectionMode( ESelectionMode::Multi )
 		, _AllowDragging(true)
 		, _AllowFocusOnSync(true)
@@ -85,6 +122,9 @@ public:
 
 		/** Called to check if an asset should be filtered out by external code */
 		SLATE_EVENT( FOnShouldFilterAsset, OnShouldFilterAsset )
+
+		/** Called to check if an item should be filtered out by external code */
+		SLATE_EVENT(FOnShouldFilterItem, OnShouldFilterItem)
 
 		/** Called when the asset view is asked to start to create a temporary item */
 		SLATE_EVENT( FOnAssetViewNewItemRequested, OnNewItemRequested )
@@ -187,9 +227,6 @@ public:
 
 		/** Indicates if the 'Dock Collections' option should be enabled or disabled */
 		SLATE_ARGUMENT(bool, CanDockCollections)
-
-		/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
-		SLATE_ARGUMENT( bool, PreloadAssetsForContextMenu )
 
 		/** The selection mode the asset view should use */
 		SLATE_ARGUMENT( ESelectionMode::Type, SelectionMode )
@@ -376,6 +413,9 @@ public:
 	/** Gets text name for given thumbnail */
 	static FText ThumbnailSizeToDisplayName(EThumbnailSize InSize);
 
+	/** Set the filter list attached to this asset view - allows toggling of the the filter bar layout from the view options */
+	void SetFilterBar(TSharedPtr<SFilterList> InFilterBar);
+
 private:
 
 	/** Sets the pending selection to the current selection (used when changing views or refreshing the view). */
@@ -421,10 +461,10 @@ private:
 	void SetMajorityAssetType(FName NewMajorityAssetType);
 
 	/** Handler for when an asset is added to a collection */
-	void OnAssetsAddedToCollection( const FCollectionNameType& Collection, const TArray< FName >& ObjectPaths );
+	void OnAssetsAddedToCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> ObjectPaths );
 
 	/** Handler for when an asset is removed from a collection */
-	void OnAssetsRemovedFromCollection( const FCollectionNameType& Collection, const TArray< FName >& ObjectPaths );
+	void OnAssetsRemovedFromCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> ObjectPaths );
 
 	/** Handler for when a collection is renamed */
 	void OnCollectionRenamed( const FCollectionNameType& OriginalCollection, const FCollectionNameType& NewCollection );
@@ -778,28 +818,14 @@ private:
 	 */
 	bool PerformQuickJump(const bool bWasJumping);
 	
-	/** Generates the column filtering menu */
-	void FillToggleColumnsMenu(FMenuBuilder& MenuBuilder);
-
 	/** Resets the column filtering state to make them all visible */
 	void ResetColumns();
 
 	/** Export columns to CSV */
 	void ExportColumns();
 
-	/** Toggle the column at ColumnIndex */
-	void ToggleColumn(const FString ColumnName);
-	/** Sets the column visibility by removing/inserting the column*/
-	void SetColumnVisibility(const FString ColumnName, const bool bShow);
-
-	/** Whether or not a column can be toggled, has to be valid column and mandatory minimum number of columns = 1*/
-	bool CanToggleColumn(const FString ColumnName) const;
-
-	/** Whether or not a column is visible to show it's state in the filtering menu */
-	bool IsColumnVisible(const FString ColumnName) const;
-
-	/** Creates the row header context menu allowing for hiding individually clicked columns*/
-	TSharedRef<SWidget> CreateRowHeaderMenuContent(const FString ColumnName);
+	/** Called when a column is shown/hidden in the column view */
+	void OnHiddenColumnsChanged();
 
 	/** Will compute the max row size from all its children for the specified column id*/
 	FVector2D GetMaxRowSizeForColumn(const FName& ColumnId);
@@ -849,10 +875,13 @@ private:
 	/** The content browser that created this asset view if any */
 	TWeakPtr<SContentBrowser> OwningContentBrowser;
 
+	/** The Filter Bar attached to this asset view if any */
+	TWeakPtr<SFilterList> FilterBar;
+
 	/** The current base source filter for the view */
 	FSourcesData SourcesData;
 	FARFilter BackendFilter;
-	TSharedPtr<FNamePermissionList> AssetClassPermissionList;
+	TSharedPtr<FPathPermissionList> AssetClassPermissionList;
 	TSharedPtr<FPathPermissionList> FolderPermissionList;
 	TSharedPtr<FPathPermissionList> WritableFolderPermissionList;
 	TSharedPtr<FAssetFilterCollectionType> FrontendFilters;
@@ -877,6 +906,9 @@ private:
 
 	/** Called to check if an asset should be filtered out by external code */
 	FOnShouldFilterAsset OnShouldFilterAsset;
+
+	/** Called to check if an item should be filtered out by external code */
+	FOnShouldFilterItem OnShouldFilterItem;
 
 	/** Called when the asset view is asked to start to create a temporary item */
 	FOnAssetViewNewItemRequested OnNewItemRequested;
@@ -1011,9 +1043,6 @@ private:
 	/** Indicates if the 'Dock Collections' option should be enabled or disabled */
 	bool bCanDockCollections;
 
-	/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
-	bool bPreloadAssetsForContextMenu;
-
 	/** If true, it will show path column in the asset view */
 	bool bShowPathInColumnView;
 
@@ -1124,7 +1153,6 @@ private:
 	/** Column filtering state */
 	TArray<FString> DefaultHiddenColumnNames;
 	TArray<FString> HiddenColumnNames;
-	int32 NumVisibleColumns;
 
 	TArray<FAssetViewCustomColumn> CustomColumns;
 public:

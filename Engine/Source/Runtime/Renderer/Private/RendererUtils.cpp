@@ -76,7 +76,6 @@ void FRenderTargetWriteMask::Decode(
 	ETextureCreateFlags RTWriteMaskFastVRamConfig,
 	const TCHAR* RTWriteMaskDebugName)
 {
-	FMemMark MemMark(FMemStack::Get());
 	FRDGBuilder GraphBuilder(RHICmdList);
 
 	TArray<FRDGTextureRef, SceneRenderingAllocator> InputTextures;
@@ -155,7 +154,7 @@ void FRenderTargetWriteMask::Decode(
 			Texture0RHI->GetWriteMaskProperties(PlatformDataPtr, PlatformDataSize);
 		}
 
-		RHICmdList.SetComputeShader(DecodeCS.GetComputeShader());
+		SetComputePipelineState(RHICmdList, DecodeCS.GetComputeShader());
 		SetShaderParameters(RHICmdList, DecodeCS, DecodeCS.GetComputeShader(), *PassParameters);
 		DecodeCS->SetPlatformData(RHICmdList, PlatformDataPtr, PlatformDataSize);
 

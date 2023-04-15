@@ -3,12 +3,14 @@
 #include "DMXEditor.h"
 #include "DMXEditorLog.h"
 #include "DMXEditorModule.h"
+#include "DMXEditorSettings.h"
 #include "DMXEditorTabNames.h"
 #include "DMXEditorUtils.h"
 #include "DMXFixtureTypeSharedData.h"
 #include "DMXFixturePatchSharedData.h"
 #include "DMXRuntimeLog.h"
 #include "DMXRuntimeUtils.h"
+#include "Exporters/DMXMVRExporter.h"
 #include "Library/DMXLibrary.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXEntityFixturePatch.h"
@@ -26,8 +28,15 @@
 #include "Widgets/LibrarySettings/SDMXLibraryEditorTab.h"
 #include "Widgets/OutputConsole/SDMXOutputConsole.h"
 
-#include "Modules/ModuleManager.h"
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
 #include "ScopedTransaction.h"
+#include "Utils.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 
 #define LOCTEXT_NAMESPACE "FDMXEditor"
@@ -113,11 +122,119 @@ void FDMXEditor::RegisterApplicationModes(UDMXLibrary* DMXLibrary, bool bShouldO
 	FWorkflowCentricApplication::SetCurrentMode(FDMXEditorApplicationMode::DefaultsMode);
 }
 
-UDMXLibrary * FDMXEditor::GetDMXLibrary() const
+UDMXLibrary* FDMXEditor::GetDMXLibrary() const
 {
-	return GetEditableDMXLibrary();
+	return Cast<UDMXLibrary>(GetEditingObject());
 }
 
+void FDMXEditor::ImportDMXLibrary() const
+{
+	UDMXLibrary* DMXLibrary = GetDMXLibrary();
+	if (!DMXLibrary)
+	{
+		return;
+	}
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		return;
+	}
+
+	UDMXEditorSettings* DMXEditorSettings = GetMutableDefault<UDMXEditorSettings>();
+	if (!DMXEditorSettings)
+	{
+		return;
+	}
+
+	const FString LastMVRImportPath = DMXEditorSettings->LastMVRImportPath;
+	const FString DefaultPath = FPaths::DirectoryExists(LastMVRImportPath) ? LastMVRImportPath : FPaths::ProjectSavedDir();
+	
+	if (!DMXLibrary->GetEntities().IsEmpty())
+	{
+		const FText MessageText = LOCTEXT("MVRImportDialog", "DMX Library already contains data. Importing the MVR will clear existing data. Do you want to proceed?");
+		if (FMessageDialog::Open(EAppMsgType::YesNo, MessageText) == EAppReturnType::No)
+		{
+			return;
+		}
+	}
+
+	TArray<FString> OpenFilenames;
+	DesktopPlatform->OpenFileDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		LOCTEXT("ImportMVR", "Import MVR").ToString(),
+		DefaultPath,
+		TEXT(""),
+		TEXT("My Virtual Rig (*.mvr)|*.mvr"),
+		EFileDialogFlags::None,
+		OpenFilenames);
+
+	if (OpenFilenames.IsEmpty())
+	{
+		return;
+	}
+
+	if (ImportObject<UDMXLibrary>(DMXLibrary->GetOuter(), DMXLibrary->GetFName(), RF_Public | RF_Standalone, *OpenFilenames[0], nullptr))
+	{
+		DMXEditorSettings->LastMVRImportPath = FPaths::GetPath(OpenFilenames[0]);
+		DMXEditorSettings->SaveConfig();
+	}
+}
+
+void FDMXEditor::ExportDMXLibrary() const
+{
+	UDMXLibrary* DMXLibrary = GetDMXLibrary();
+	if (!DMXLibrary)
+	{
+		return;
+	}
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		UDMXEditorSettings* DMXEditorSettings = GetMutableDefault<UDMXEditorSettings>();
+		check(DMXEditorSettings);
+
+		const FString LastMVRExportPath = DMXEditorSettings->LastMVRExportPath;
+		const FString DefaultPath = FPaths::DirectoryExists(LastMVRExportPath) ? LastMVRExportPath : FPaths::ProjectSavedDir();
+
+		TArray<FString> SaveFilenames;
+		const bool bSaveFile = DesktopPlatform->SaveFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			LOCTEXT("ExportMVR", "Export MVR").ToString(),
+			DefaultPath,
+			DMXLibrary->GetName() + TEXT(".mvr"),
+			TEXT("My Virtual Rig (*.mvr)|*.mvr"),
+			EFileDialogFlags::None,
+			SaveFilenames);
+
+		if (!bSaveFile || SaveFilenames.IsEmpty())
+		{
+			return;
+		}
+
+		FText ErrorReason;
+		FDMXMVRExporter::Export(DMXLibrary, SaveFilenames[0], ErrorReason);
+		if (ErrorReason.IsEmpty())
+		{
+			DMXEditorSettings->LastMVRExportPath = FPaths::GetPath(SaveFilenames[0]);
+			DMXEditorSettings->SaveConfig();
+
+			FNotificationInfo NotificationInfo(FText::Format(LOCTEXT("ExportDMXLibraryAsMVRSuccessNotification", "Successfully exported MVR to {0}."), FText::FromString(SaveFilenames[0])));
+			NotificationInfo.ExpireDuration = 5.f;
+
+			FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		}
+		else
+		{
+			FNotificationInfo NotificationInfo(ErrorReason);
+			NotificationInfo.ExpireDuration = 10.f;
+			NotificationInfo.Image = FAppStyle::GetBrush("Icons.Warning");
+
+			FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		}
+	}
+}
 
 void FDMXEditor::RegisterToolbarTab(const TSharedRef<class FTabManager>& InTabManager)
 {
@@ -135,6 +252,14 @@ void FDMXEditor::CreateDefaultCommands()
 {
 	FDMXEditorCommands::Register();
 
+	ToolkitCommands->MapAction(
+		FDMXEditorCommands::Get().ImportDMXLibrary,
+		FExecuteAction::CreateSP(this, &FDMXEditor::ImportDMXLibrary)
+	);
+	ToolkitCommands->MapAction(
+		FDMXEditorCommands::Get().ExportDMXLibrary,
+		FExecuteAction::CreateSP(this, &FDMXEditor::ExportDMXLibrary)
+	);
 	ToolkitCommands->MapAction(
 		FDMXEditorCommands::Get().AddNewEntityFixtureType,
 		FExecuteAction::CreateLambda([this]() { OnAddNewEntity(UDMXEntityFixtureType::StaticClass()); })
@@ -319,14 +444,9 @@ TArray<UDMXEntity*> FDMXEditor::GetSelectedEntitiesFromTypeTab(TSubclassOf<UDMXE
 	return TArray<UDMXEntity*>();
 }
 
-UDMXLibrary* FDMXEditor::GetEditableDMXLibrary() const
-{
-	return Cast<UDMXLibrary>(GetEditingObject());
-}
-
 TSharedRef<SDMXLibraryEditorTab> FDMXEditor::CreateDMXLibraryEditorTab()
 {
-	UDMXLibrary* DMXLibrary = GetEditableDMXLibrary();
+	UDMXLibrary* DMXLibrary = GetDMXLibrary();
 	check(DMXLibrary);
 
 	return SNew(SDMXLibraryEditorTab)

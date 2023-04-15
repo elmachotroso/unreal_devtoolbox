@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothingSystemEditorInterfaceModule.h"
-#include "SimulationEditorExtender.h"
+
 #include "ClothingAssetFactoryInterface.h"
+#include "Containers/Array.h"
 #include "Features/IModularFeatures.h"
+#include "HAL/Platform.h"
 #include "Modules/ModuleManager.h"
+#include "SimulationEditorExtender.h"
 #include "UObject/Class.h"
 
 IMPLEMENT_MODULE(FClothingSystemEditorInterfaceModule, ClothingSystemEditorInterface);

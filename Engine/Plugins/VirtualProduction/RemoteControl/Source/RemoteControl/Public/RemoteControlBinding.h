@@ -12,6 +12,22 @@
 #include "UObject/UnrealType.h"
 #include "RemoteControlBinding.generated.h"
 
+namespace UE::RemoteControlBinding
+{
+	/**
+	 * @return whether an object is a valid rebinding target.
+	 */
+	bool REMOTECONTROL_API IsValidObjectForRebinding(UObject* InObject, UWorld* PresetWorld);
+	/**
+	 * @return whether an actor is a valid rebinding target.
+	 */
+	bool REMOTECONTROL_API IsValidActorForRebinding(AActor* InActor, UWorld* PresetWorld);
+	/**
+	 * @return whether a subobject is a valid rebinding target.
+	 */
+	bool REMOTECONTROL_API IsValidSubObjectForRebinding(UObject* InComponent, UWorld* PresetWorld);
+}
+
 /**
  * Acts as a bridge between an exposed property/function and an object to act on.
  */
@@ -100,6 +116,12 @@ struct FRemoteControlInitialBindingContext
 	FName ComponentName;
 
 	/**
+	 * Path to the subobject if any.
+	 */
+	UPROPERTY()
+	FString SubObjectPath;
+
+	/**
 	 * The class of the actor that's targeted by this binding or the class of the actor that owns the component that is targeted.
 	 */
 	UPROPERTY()
@@ -124,12 +146,23 @@ struct FRemoteControlInitialBindingContext
 		return LHS.SupportedClass == RHS.SupportedClass
 			&& LHS.ComponentName == RHS.ComponentName
 			&& LHS.OwnerActorClass == RHS.OwnerActorClass
-			&& LHS.OwnerActorName == RHS.OwnerActorName;
+			&& LHS.OwnerActorName == RHS.OwnerActorName
+			&& LHS.SubObjectPath == RHS.SubObjectPath;
 	}
 
 	friend bool operator!=(const FRemoteControlInitialBindingContext& LHS, const FRemoteControlInitialBindingContext& RHS)
 	{
 		return !(LHS == RHS);
+	}
+
+	bool HasValidComponentName() const
+	{
+		return !ComponentName.IsNone();
+	}
+
+	bool HasValidSubObjectPath() const
+	{
+		return !SubObjectPath.IsEmpty();
 	}
 };
 
@@ -147,6 +180,8 @@ public:
 	virtual bool IsBound(const TSoftObjectPtr<UObject>& Object) const override;
 	virtual bool PruneDeletedObjects() override;
 	//~ Begin URemoteControlBinding Interface
+
+	virtual void PostLoad() override;
 
 	/**
 	 *	Set the bound object by specifying the level it resides in.
@@ -170,27 +205,38 @@ public:
 	 */
 	UClass* GetSupportedOwnerClass() const;
 
-	/** Get the current world. */
-	static UWorld* GetCurrentWorld();
+	/** Get the current world associated with the preset or the editor world as a fallback. */
+	UWorld* GetCurrentWorld() const;
+
 private:
 	TSoftObjectPtr<UObject> ResolveForCurrentWorld() const;
 
 	void InitializeBindingContext(UObject* InObject) const;
 
+	TSoftObjectPtr<UObject> GetLastBoundObject() const;
+
 private:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "BoundObjectMap is deprecated, please use BoundObjectMapByPath instead."))
+	TMap<TSoftObjectPtr<ULevel>, TSoftObjectPtr<UObject>> BoundObjectMap_DEPRECATED;
+
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "SubLevelSelectionMap is deprecated, please use SubLevelSelectionMapByPath instead."))
+	mutable TMap<TSoftObjectPtr<UWorld>, TSoftObjectPtr<ULevel>> SubLevelSelectionMap_DEPRECATED;
+#endif
+
 	/**
 	 *	The map bound objects with their level as key.
 	 */
 	UPROPERTY()
-	TMap<TSoftObjectPtr<ULevel>, TSoftObjectPtr<UObject>> BoundObjectMap;
+	TMap<FSoftObjectPath, TSoftObjectPtr<UObject>> BoundObjectMapByPath;
 
 	/**
 	 * Keeps track of which sublevel was last used when binding in a particular world.
-	 * Used in the case where a binding points to objects that end up in the same world but in different sublevels, 
-	 * this ensures that we know which object was last 
+	 * Used in the case where a binding points to objects that end up in the same world but in different sublevels,
+	 * this ensures that we know which object was last
 	 */
 	UPROPERTY()
-	mutable TMap<TSoftObjectPtr<UWorld>, TSoftObjectPtr<ULevel>> SubLevelSelectionMap;
+	mutable TMap<FSoftObjectPath, TSoftObjectPtr<ULevel>> SubLevelSelectionMapByPath;
 
 	/**
 	 * Caches the last level that had a successful resolve.

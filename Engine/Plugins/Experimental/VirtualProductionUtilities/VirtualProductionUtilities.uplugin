@@ -26,7 +26,7 @@
 		},
 		{
 			"Name": "VPBookmark",
-			"Type": "Runtime",
+			"Type": "UncookedOnly",
 			"LoadingPhase": "PostDefault"
 		},
 		{
@@ -38,6 +38,16 @@
 			"Name": "VPMaterialsEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostDefault"
+		},
+		{
+			"Name": "VPRoles",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "VPRolesEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
@@ -66,8 +76,13 @@
 			"Enabled": true
 		},
 		{
-			"Name": "ColorCorrectRegions",
+			"Name": "GameplayTagsEditor",
 			"Enabled": true
+		},
+		{
+			"Name": "ConsoleVariables",
+			"Enabled": true			
 		}
+
 	]
 }

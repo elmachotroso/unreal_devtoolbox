@@ -3,13 +3,13 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "GenericPlatform/GenericPlatformStackWalk.h"
+#include "Microsoft/MicrosoftPlatformStackWalk.h"
 
 /**
  * Windows implementation of the stack walking.
  **/
 struct CORE_API FWindowsPlatformStackWalk
-	: public FGenericPlatformStackWalk
+	: public FMicrosoftPlatformStackWalk
 {
 	static bool InitStackWalking();
 	static bool InitStackWalkingForProcess(const FProcHandle& Process);
@@ -18,9 +18,9 @@ struct CORE_API FWindowsPlatformStackWalk
 
 	static void ProgramCounterToSymbolInfo( uint64 ProgramCounter, FProgramCounterSymbolInfo& out_SymbolInfo );
 	static void ProgramCounterToSymbolInfoEx( uint64 ProgramCounter, FProgramCounterSymbolInfoEx& out_SymbolInfo );
-	static uint32 CaptureStackBackTrace( uint64* BackTrace, uint32 MaxDepth, void* Context = nullptr );
+	FORCENOINLINE static uint32 CaptureStackBackTrace( uint64* BackTrace, uint32 MaxDepth, void* Context = nullptr );  // FORCENOINLINE so it can be counted during StackTrace
 	static uint32 CaptureThreadStackBackTrace( uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth, void* Context = nullptr);
-	static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, void* Context = nullptr );
+	FORCENOINLINE static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, void* Context = nullptr );  // FORCENOINLINE so it can be counted during StackTrace
 	static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, void* Context = nullptr );
 	static void ThreadStackWalkAndDump(ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, uint32 ThreadId);
 

@@ -9,6 +9,8 @@
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "ScopedTransaction.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolClustering)
+
 #define LOCTEXT_NAMESPACE "FractureToolClusteringOps"
 
 FText UFractureToolFlattenAll::GetDisplayText() const
@@ -46,6 +48,10 @@ void UFractureToolFlattenAll::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 		{
 			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
 
+			if (!Context.GetGeometryCollection()->HasAttribute("Level", FGeometryCollection::TransformGroup))
+			{
+				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(Edit.GetRestCollection()->GetGeometryCollection().Get(), -1);
+			}
 			const TManagedArray<int32>& Levels = Context.GetGeometryCollection()->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 			Context.ConvertSelectionToClusterNodes();
@@ -188,6 +194,10 @@ void UFractureToolUncluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTool
 			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
 
 			const TManagedArray<TSet<int32>>& Children = Context.GetGeometryCollection()->GetAttribute<TSet<int32>>("Children", FGeometryCollection::TransformGroup);
+			if (!Context.GetGeometryCollection()->HasAttribute("Level", FGeometryCollection::TransformGroup))
+			{
+				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(Edit.GetRestCollection()->GetGeometryCollection().Get(), -1);
+			}
 			const TManagedArray<int32>& Levels = Context.GetGeometryCollection()->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 			Context.ConvertSelectionToClusterNodes();
@@ -315,3 +325,4 @@ void UFractureToolClusterMerge::Execute(TWeakPtr<FFractureEditorModeToolkit> InT
 }
 
 #undef LOCTEXT_NAMESPACE
+

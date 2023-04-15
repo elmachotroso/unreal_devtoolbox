@@ -25,6 +25,11 @@ struct FTestEditConditionContext : IEditConditionContext
 	FTestEditConditionContext(){}
 	virtual ~FTestEditConditionContext() {}
 
+	virtual FName GetContextName() const
+	{
+		return "TestEditConditionContext";
+	}
+
 	virtual TOptional<bool> GetBoolValue(const FString& PropertyName) const override
 	{
 		if (const bool* Value = BoolValues.Find(PropertyName))
@@ -164,6 +169,10 @@ bool FEditConditionParser_Parse::RunTest(const FString& Parameters)
 	FEditConditionParser Parser;
 	bool bResult = true;
 
+	bResult &= CanParse(Parser, TEXT("false"), 1, 0);
+	bResult &= CanParse(Parser, TEXT("TRUE"), 1, 0);
+	bResult &= CanParse(Parser, TEXT("fAlsE"), 1, 0);
+	bResult &= CanParse(Parser, TEXT("true == false"), 3, 0);
 	bResult &= CanParse(Parser, TEXT("BoolProperty"), 1, 1);
 	bResult &= CanParse(Parser, TEXT("!BoolProperty"), 2, 1);
 	bResult &= CanParse(Parser, TEXT("BoolProperty == true"), 3, 1);
@@ -205,16 +214,17 @@ static bool CanEvaluate(const FEditConditionParser& Parser, const IEditCondition
 		return false;
 	}
 
-	TOptional<bool> Result = Parser.Evaluate(*Parsed.Get(), Context);
-	if (!Result.IsSet())
+	TValueOrError<bool, FText> Result = Parser.Evaluate(*Parsed.Get(), Context);
+	if (!Result.IsValid())
 	{
-		ensureMsgf(false, TEXT("Expression failed to evaluate: %s"), *Expression);
+		ensureMsgf(false, TEXT("Expression failed to evaluate: %s, Error: %s"), *Expression, *Result.GetError().ToString());
 		return false;
 	}
 
 	if (Result.GetValue() != Expected)
 	{
-		ensureMsgf(false, TEXT("Expression evaluated to unexpected value."), *Expression);
+		auto BoolToString = [](bool Value) { return Value ? TEXT("true") : TEXT("false"); };
+		ensureMsgf(false, TEXT("Expression evaluated to unexpected value: %s, Expected: %s, Actual: %s"), *Expression, BoolToString(Expected), BoolToString(Result.GetValue()));
 		return false;
 	}
 
@@ -227,7 +237,10 @@ static bool RunBoolTests(const IEditConditionContext& Context)
 	bool bResult = true;
 
 	bResult &= CanEvaluate(Parser, Context, TEXT("true"), true);
+	bResult &= CanEvaluate(Parser, Context, TEXT("TRUE"), true);
 	bResult &= CanEvaluate(Parser, Context, TEXT("false"), false);
+	bResult &= CanEvaluate(Parser, Context, TEXT("False"), false);
+	bResult &= CanEvaluate(Parser, Context, TEXT("fAlSe"), false);
 	bResult &= CanEvaluate(Parser, Context, TEXT("!true"), false);
 	bResult &= CanEvaluate(Parser, Context, TEXT("!false"), true);
 	bResult &= CanEvaluate(Parser, Context, TEXT("BoolProperty"), true);
@@ -585,6 +598,67 @@ bool FEditConditionParser_EvaluatePointers::RunTest(const FString& Parameters)
 		bAllResults &= CanEvaluate(Parser, Context, TEXT("UObjectPtr != SoftClassPtr"), true);
 		bAllResults &= CanEvaluate(Parser, Context, TEXT("WeakObjectPtr != UObjectPtr"), true);
 		bAllResults &= CanEvaluate(Parser, Context, TEXT("WeakObjectPtr == UObjectPtr"), false);
+	}
+
+	TestObject->RemoveFromRoot();
+
+	return bAllResults;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditConditionParser_Grouping, "EditConditionParser.Grouping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FEditConditionParser_Grouping::RunTest(const FString& Parameters)
+{
+	UEditConditionTestObject* TestObject = NewObject<UEditConditionTestObject>();
+	TestObject->AddToRoot();
+
+	TSharedPtr<FObjectPropertyNode> ObjectNode(new FObjectPropertyNode);
+	ObjectNode->AddObject(TestObject);
+
+	FPropertyNodeInitParams InitParams;
+	ObjectNode->InitNode(InitParams);
+
+	static const FName BoolPropertyName(TEXT("BoolProperty"));
+	TSharedPtr<FPropertyNode> PropertyNode = ObjectNode->FindChildPropertyNode(BoolPropertyName, true);
+	FEditConditionContext Context(*PropertyNode.Get());
+
+	bool bAllResults = true;
+
+	FEditConditionParser Parser;
+
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(true)"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(true) == true"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(true) == false"), false);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(true) == (true)"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("((true == false) == false) == true"), true);
+
+	TestObject->DoubleProperty = 5.0;
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(DoubleProperty == 5.0)"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(DoubleProperty == 5.0) == false"), false);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(DoubleProperty == 5.0) == (true == true)"), true);
+
+	TestObject->EnumProperty = EditConditionTestEnum::First;
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(EnumProperty == EditConditionTestEnum::First) == true"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(EnumProperty == EditConditionTestEnum::First) && (DoubleProperty == 5.0)"), true);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(EnumProperty == EditConditionTestEnum::Second) && (DoubleProperty == 5.0)"), false);
+	bAllResults &= CanEvaluate(Parser, Context, TEXT("(EnumProperty == EditConditionTestEnum::Second) || (DoubleProperty == 5.0)"), true);
+
+	{
+		FTestEditConditionContext TestContext;
+
+		const FString EnumType = TEXT("TestEnum");
+		TestContext.SetupEnumType(EnumType);
+		TestContext.SetupEnumTypeValue(TEXT("Nil"), 0);
+		TestContext.SetupEnumTypeValue(TEXT("One"), 1 << 0);
+
+		TestContext.SetupInteger("FlagsProperty", 1);
+		TestContext.SetupDouble("DoubleProperty", 5.0);
+
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("(FlagsProperty & TestEnum::Nil)"), false); 
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("(FlagsProperty & TestEnum::One)"), true);
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("(FlagsProperty & TestEnum::One) && (DoubleProperty == 5.0)"), true);
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("(FlagsProperty & TestEnum::One) == false"), false);
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("!(FlagsProperty & TestEnum::One)"), false);
+		bAllResults &= CanEvaluate(Parser, TestContext, TEXT("!(FlagsProperty & TestEnum::Nil)"), true);
 	}
 
 	TestObject->RemoveFromRoot();

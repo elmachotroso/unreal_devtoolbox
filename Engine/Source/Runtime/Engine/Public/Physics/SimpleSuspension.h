@@ -67,11 +67,11 @@ const FSimpleSuspensionRaycast SimpleSuspensionRaycastGroundPlane = [](const FVe
 	// Do an intersection with the z-plane at 0,0,0.
 	const FVector Norm = FVector::UpVector;
 	const FVector Diff = RayEnd - RayBegin;
-	const float ProjA = FVector::DotProduct(RayBegin, Norm);
-	const float ProjDiff = FVector::DotProduct(Diff, Norm);
-	if (FMath::Abs(ProjDiff) > SMALL_NUMBER)
+	const FVector::FReal ProjA = FVector::DotProduct(RayBegin, Norm);
+	const FVector::FReal ProjDiff = FVector::DotProduct(Diff, Norm);
+	if (FMath::Abs(ProjDiff) > UE_SMALL_NUMBER)
 	{
-		const float Lambda = -ProjA / ProjDiff;
+		const FVector::FReal Lambda = -ProjA / ProjDiff;
 		if (Lambda > 0.f && Lambda <= 1.f)
 		{
 			OutRayHitLocation = RayBegin + (Lambda * Diff);
@@ -131,12 +131,15 @@ struct FSimpleSuspensionHelpers
 		configuration may not result in a stable suspension system -
 		a bicycle or pogostick, for example, which is not perfectly centered
 		may have a valid sprung mass configuration without being stable. */
-	ENGINE_API static bool ComputeSprungMasses(const TArray<FVector>& MassSpringPositions, const float TotalMass, TArray<float>& OutSprungMasses);
+	ENGINE_API static bool ComputeSprungMasses(const TArray<FVector>& MassSpringPositions, const float TotalMass, TArray<float>& OutSprungMasses, FString* ErrMsg = nullptr);
 
 	/** Same as above, but allows the caller to specify spring locations
 		in a local space which is not necessarily originated at the center
 		of mass. */
-	ENGINE_API static bool ComputeSprungMasses(const TArray<FVector>& LocalSpringPositions, const FVector& LocalCenterOfMass, const float TotalMass, TArray<float>& OutSprungMasses);
+	ENGINE_API static bool ComputeSprungMasses(const TArray<FVector>& LocalSpringPositions, const FVector& LocalCenterOfMass, const float TotalMass, TArray<float>& OutSprungMasses, FString* ErrMsg = nullptr);
+
+	/** Calculates the Lambdas in the single axis case*/
+	static bool ComputeSingleAxisLambda(const FVector::FReal AxisDot, const FVector::FReal SumAxis, const uint32 Count, TArray<FVector::FReal, TFixedAllocator<2>>& Lambdas, FString* ErrMsg = nullptr);
 
 	/** Given a sprung mass and a spring stiffness, compute the natural
 		frequency of the spring */
@@ -197,4 +200,8 @@ struct FSimpleSuspensionHelpers
 	/** Performs a fully implicit damped spring integration to compute next
 		positions and velocities. */
 	static void IntegrateSprings(const float DeltaTime, const TArray<float>& SpringDisplacements, const TArray<float>& SpringVelocities, const TArray<FSimpleSuspensionSpringParams>& SuspensionParams, const TArray<float>& SprungMasses, TArray<float>& OutNewSpringDisplacements, TArray<float>& OutNewSpringVelocities);
+
+private:
+
+	static bool ErrCheck(const bool bCondition, const FString& Message, FString* ErrMsg);
 };

@@ -20,6 +20,8 @@
 #include "Editor.h"
 #include "NiagaraNodeFunctionCall.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeStaticSwitch)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeStaticSwitch"
 
 namespace NiagaraStaticSwitchCVars
@@ -112,9 +114,7 @@ TArray<int32> UNiagaraNodeStaticSwitch::GetOptionValues() const
 
 		for (int32 EnumIndex = 0; EnumIndex < Enum->NumEnums() - 1; ++EnumIndex)
 		{
-			bool const bShouldBeHidden = ShouldHideEnumEntry(Enum, EnumIndex);
-
-			if (!bShouldBeHidden)
+			if (FNiagaraEditorUtilities::IsEnumIndexVisible(Enum, EnumIndex))
 			{
 				OptionValues.Add(Enum->GetValueByIndex(EnumIndex));
 			}
@@ -594,16 +594,16 @@ ENiagaraNumericOutputTypeSelectionMode UNiagaraNodeStaticSwitch::GetNumericOutpu
 
 void UNiagaraNodeStaticSwitch::ResolveNumerics(const UEdGraphSchema_Niagara* Schema, bool bSetInline, TMap<TPair<FGuid, UEdGraphNode*>, FNiagaraTypeDefinition>* PinCache)
 {	
-	FPinCollectorArray MasterInputPins;
-	GetInputPins(MasterInputPins);
-	FPinCollectorArray MasterOutputPins;
-	GetOutputPins(MasterOutputPins);
+	FPinCollectorArray MainInputPins;
+	GetInputPins(MainInputPins);
+	FPinCollectorArray MainOutputPins;
+	GetOutputPins(MainOutputPins);
 
 	TArray<int32> OptionValues = GetOptionValues();
 	int32 VarIdx = 0;
-	for (int i = 0; i < MasterOutputPins.Num(); i++)
+	for (int i = 0; i < MainOutputPins.Num(); i++)
 	{
-		UEdGraphPin* OutPin = MasterOutputPins[i];
+		UEdGraphPin* OutPin = MainOutputPins[i];
 		if (IsAddPin(OutPin))
 		{
 			continue;
@@ -616,14 +616,14 @@ void UNiagaraNodeStaticSwitch::ResolveNumerics(const UEdGraphSchema_Niagara* Sch
 		for (int32 j = 0; j < OptionValues.Num(); j++)
 		{
 			const int TargetIdx = OutputVars.Num() * j + VarIdx;
-			if (MasterInputPins.IsValidIndex(TargetIdx))
+			if (MainInputPins.IsValidIndex(TargetIdx))
 			{
-				UEdGraphPin* InputPin = MasterInputPins[TargetIdx];
+				UEdGraphPin* InputPin = MainInputPins[TargetIdx];
 				InputPins.Add(InputPin);
 			}
 			else
 			{
-				UE_LOG(LogNiagaraEditor, Warning, TEXT("Invalid index on UNiagaraNodeStaticSwitch::ResolveNumerics %s, OptionIdx: %d VarIdx: %d MaxIndex: %d"), *GetPathName(), j, VarIdx, MasterInputPins.Num())
+				UE_LOG(LogNiagaraEditor, Warning, TEXT("Invalid index on UNiagaraNodeStaticSwitch::ResolveNumerics %s, OptionIdx: %d VarIdx: %d MaxIndex: %d"), *GetPathName(), j, VarIdx, MainInputPins.Num())
 			}
 		}
 
@@ -728,12 +728,23 @@ void UNiagaraNodeStaticSwitch::PostLoad()
 	// Make sure that we are added to the static switch list.
 	if (GetInputType().IsValid() && InputParameterName.IsValid())
 	{
-		UNiagaraScriptVariable* Var = GetNiagaraGraph()->GetScriptVariable(InputParameterName);
-		if (Var != nullptr && Var->Variable.GetType() == GetInputType() && Var->GetIsStaticSwitch() == false)
+		if (InputParameterName.ToString() == TEXT("Enable Flattened Endcaps"))
 		{
-			UE_LOG(LogNiagaraEditor, Log, TEXT("Static switch constant \"%s\" in \"%s\" didn't have static switch meta-data conversion set properly. Fixing now."), *InputParameterName.ToString(), *GetPathName())
-			Var->SetIsStaticSwitch(true);
-			MarkNodeRequiresSynchronization(TEXT("Static switch metadata updated"), true);
+			int asdf = 0;
+			++asdf;
+		}
+
+		if (UNiagaraGraph* NiagaraGraph = GetNiagaraGraph())
+		{
+			const FNiagaraVariable Variable(GetInputType(), InputParameterName);
+			TOptional<bool> IsStaticSwitch = NiagaraGraph->IsStaticSwitch(Variable);
+
+			if (IsStaticSwitch.IsSet() && *IsStaticSwitch == false)
+			{
+				UE_LOG(LogNiagaraEditor, Log, TEXT("Static switch constant \"%s\" in \"%s\" didn't have static switch meta-data conversion set properly. Fixing now."), *InputParameterName.ToString(), *GetPathName())
+				NiagaraGraph->SetIsStaticSwitch(Variable, true);
+				MarkNodeRequiresSynchronization(TEXT("Static switch metadata updated"), true);
+			}
 		}
 	}
 
@@ -792,13 +803,13 @@ UEdGraphPin* UNiagaraNodeStaticSwitch::GetTracedOutputPin(UEdGraphPin* LocallyOw
 	return LocallyOwnedOutputPin;
 }
 
-UEdGraphPin* UNiagaraNodeStaticSwitch::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin,	ENiagaraScriptUsage MasterUsage) const
+UEdGraphPin* UNiagaraNodeStaticSwitch::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin,	ENiagaraScriptUsage InUsage) const
 {
 	if (IsValueSet)
 	{
 		return GetTracedOutputPin(const_cast<UEdGraphPin*>(LocallyOwnedOutputPin), true);
 	}
-	return Super::GetPassThroughPin(LocallyOwnedOutputPin, MasterUsage);
+	return Super::GetPassThroughPin(LocallyOwnedOutputPin, InUsage);
 }
 
 void UNiagaraNodeStaticSwitch::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive /*= true*/, bool bFilterForCompilation /*= true*/) const
@@ -891,7 +902,7 @@ void UNiagaraNodeStaticSwitch::AddWidgetsToOutputBox(TSharedPtr<SVerticalBox> Ou
 		[
 			SNew(SButton)
 			.Visibility(RemoveVisibilityAttribute)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(GetIntegerRemoveButtonTooltipText())
 			.OnPressed(FSimpleDelegate::CreateUObject(this, &UNiagaraNodeStaticSwitch::RemoveIntegerInputPin))
 			[
@@ -904,7 +915,7 @@ void UNiagaraNodeStaticSwitch::AddWidgetsToOutputBox(TSharedPtr<SVerticalBox> Ou
 		[
 			SNew(SButton)
 			.Visibility(AddVisibilityAttribute)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(GetIntegerAddButtonTooltipText())
 			.OnPressed(FSimpleDelegate::CreateUObject(this, &UNiagaraNodeStaticSwitch::AddIntegerInputPin))
 			[
@@ -986,3 +997,4 @@ FLinearColor UNiagaraNodeStaticSwitch::GetNodeTitleColor() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

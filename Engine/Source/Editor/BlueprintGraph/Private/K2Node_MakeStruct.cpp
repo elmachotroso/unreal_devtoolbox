@@ -1,22 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_MakeStruct.h"
-#include "UObject/StructOnScope.h"
-#include "UObject/TextProperty.h"
-#include "Engine/UserDefinedStruct.h"
+
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
+#include "Engine/Blueprint.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompilerMisc.h"
 #include "MakeStructHandler.h"
-#include "BlueprintNodeBinder.h"
-#include "BlueprintActionFilter.h"
-#include "BlueprintFieldNodeSpawner.h"
-#include "EditorCategoryUtils.h"
-#include "Internationalization/TextPackageNamespaceUtil.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
 #include "PropertyCustomizationHelpers.h"
-#include "Kismet/KismetMathLibrary.h"
+#include "Serialization/Archive.h"
+#include "Styling/AppStyle.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
 #include "UObject/ObjectSaveContext.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/TextProperty.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class FKismetCompilerContext;
 
 #define LOCTEXT_NAMESPACE "K2Node_MakeStruct"
 
@@ -91,6 +107,18 @@ static bool CanBeExposed(const FProperty* Property, UBlueprint* BP)
 	{
 		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 		check(Schema);
+
+		// Treat all inline edit condition properties as override flags; that is, don't allow
+		// these to be exposed as part of the optional input pin set. Their value will be set
+		// implicitly at runtime based on whether or not any bound members are exposed, rather
+		// than explicitly via an exposed input pin. This emulates how the Property Editor
+		// handles setting these values at edit time (they appear as an inline checkbox that
+		// the user ticks on to set the flag and enable/override a bound property's value).
+		static const FName MD_InlineEditConditionToggle(TEXT("InlineEditConditionToggle"));
+		if (Property->HasMetaData(MD_InlineEditConditionToggle))
+		{
+			return false;
+		}
 
 		const bool bIsEditorBP = IsEditorOnlyObject(BP);
 		const bool bIsEditAnywhereProperty = Property->HasAllPropertyFlags(CPF_Edit) &&
@@ -240,7 +268,7 @@ FText UK2Node_MakeStruct::GetTooltipText() const
 
 FSlateIcon UK2Node_MakeStruct::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.MakeStruct_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.MakeStruct_16x");
 	return Icon;
 }
 

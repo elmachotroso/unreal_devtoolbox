@@ -44,12 +44,6 @@ void FJsonArchiveOutputFormatter::EnterRecord()
 	TextStartPosStack.Push(Inner.Tell());
 }
 
-void FJsonArchiveOutputFormatter::EnterRecord_TextOnly(TArray<FString>& OutFieldNames)
-{
-	EnterRecord();
-	OutFieldNames.Reset();
-}
-
 void FJsonArchiveOutputFormatter::LeaveRecord()
 {
 	Newline.Pop(false);
@@ -68,12 +62,6 @@ void FJsonArchiveOutputFormatter::EnterField(FArchiveFieldName Name)
 	WriteOptionalComma();
 	WriteOptionalNewline();
 	WriteFieldName(Name.Name);
-}
-
-void FJsonArchiveOutputFormatter::EnterField_TextOnly(FArchiveFieldName Name, EArchiveValueType& OutType)
-{
-	EnterField(Name);
-	OutType = EArchiveValueType::None;
 }
 
 void FJsonArchiveOutputFormatter::LeaveField()
@@ -106,12 +94,6 @@ void FJsonArchiveOutputFormatter::EnterArrayElement()
 	EnterStreamElement();
 }
 
-void FJsonArchiveOutputFormatter::EnterArrayElement_TextOnly(EArchiveValueType& OutType)
-{
-	EnterArrayElement();
-	OutType = EArchiveValueType::None;
-}
-
 void FJsonArchiveOutputFormatter::LeaveArrayElement()
 {
 	LeaveStreamElement();
@@ -125,12 +107,6 @@ void FJsonArchiveOutputFormatter::EnterStream()
 	Newline.Add('\t');
 	bNeedsNewline = true;
 	TextStartPosStack.Push(Inner.Tell());
-}
-
-void FJsonArchiveOutputFormatter::EnterStream_TextOnly(int32& OutNumElements)
-{
-	EnterStream();
-	OutNumElements = 0;
 }
 
 void FJsonArchiveOutputFormatter::LeaveStream()
@@ -152,12 +128,6 @@ void FJsonArchiveOutputFormatter::EnterStreamElement()
 	WriteOptionalNewline();
 }
 
-void FJsonArchiveOutputFormatter::EnterStreamElement_TextOnly(EArchiveValueType& OutType)
-{
-	EnterStreamElement();
-	OutType = EArchiveValueType::None;
-}
-
 void FJsonArchiveOutputFormatter::LeaveStreamElement()
 {
 	bNeedsComma = true;
@@ -177,12 +147,6 @@ void FJsonArchiveOutputFormatter::LeaveMap()
 void FJsonArchiveOutputFormatter::EnterMapElement(FString& Name)
 {
 	EnterField(FArchiveFieldName(*Name));
-}
-
-void FJsonArchiveOutputFormatter::EnterMapElement_TextOnly(FString& Name, EArchiveValueType& OutType)
-{
-	EnterMapElement(Name);
-	OutType = EArchiveValueType::None;
 }
 
 void FJsonArchiveOutputFormatter::LeaveMapElement()
@@ -345,8 +309,8 @@ void FJsonArchiveOutputFormatter::Serialize(UObject*& Value)
 {
 	if (Value != nullptr && IsObjectAllowed(Value))
 	{
-		FString FullObjectName = Value->GetFullName(nullptr, EObjectFullNameFlags::IncludeClassPackage);
-		SerializeStringInternal(FString::Printf(TEXT("Object:%s"), *FullObjectName));
+		FPackageIndex ObjectIndex = ObjectIndicesMap->FindChecked(Value);
+		SerializeStringInternal(LexToString(ObjectIndex));
 	}
 	else
 	{
@@ -363,14 +327,8 @@ void FJsonArchiveOutputFormatter::Serialize(FText& Value)
 
 void FJsonArchiveOutputFormatter::Serialize(FWeakObjectPtr& Value)
 {
-	if (Value.IsValid() && IsObjectAllowed(Value.Get()))
-	{
-		SerializeStringInternal(FString::Printf(TEXT("Object:%s"), *Value.Get()->GetFullName(nullptr, EObjectFullNameFlags::IncludeClassPackage)));
-	}
-	else
-	{
-		WriteValue(TEXT("null"));
-	}
+	UObject* Ptr = Value.IsValid() ? Value.Get() : nullptr;
+	Serialize(Ptr);
 }
 
 void FJsonArchiveOutputFormatter::Serialize(FSoftObjectPtr& Value)
@@ -405,15 +363,8 @@ void FJsonArchiveOutputFormatter::Serialize(FLazyObjectPtr& Value)
 
 void FJsonArchiveOutputFormatter::Serialize(FObjectPtr& Value)
 {
-	if (!Value.IsNull() && IsObjectAllowed(Value.Get()))
-	{
-		FString FullObjectName = Value->GetFullName(nullptr, EObjectFullNameFlags::IncludeClassPackage);
-		SerializeStringInternal(FString::Printf(TEXT("Object:%s"), *FullObjectName));
-	}
-	else
-	{
-		WriteValue(TEXT("null"));
-	}
+	UObject* Object = Value.Get();
+	Serialize(Object);
 }
 
 void FJsonArchiveOutputFormatter::Serialize(TArray<uint8>& Data)
@@ -615,7 +566,7 @@ void FJsonArchiveOutputFormatter::SerializeStringInternal(const FString& String)
 
 bool FJsonArchiveOutputFormatter::IsObjectAllowed(UObject* InObject) const
 {
-	return ObjectIndicesMap == nullptr || ObjectIndicesMap->Contains(InObject);
+	return ObjectIndicesMap && ObjectIndicesMap->Contains(InObject);
 }
 
 #endif

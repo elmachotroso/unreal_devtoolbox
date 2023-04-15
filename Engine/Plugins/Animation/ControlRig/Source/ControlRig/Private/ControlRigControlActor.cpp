@@ -5,6 +5,8 @@
 #include "IControlRigObjectBinding.h"
 #include "Sequencer/MovieSceneControlRigParameterTrack.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigControlActor)
+
 #define LOCTEXT_NAMESPACE "ControlRigControlActor"
 
 AControlRigControlActor::AControlRigControlActor(const FObjectInitializer& ObjectInitializer)
@@ -15,17 +17,15 @@ AControlRigControlActor::AControlRigControlActor(const FObjectInitializer& Objec
 	, bCastShadows(false)
 {
 	ActorRootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SceneComponent0"));
+	SetRootComponent(ActorRootComponent);
 
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bTickEvenWhenPaused = true;
 	PrimaryActorTick.TickGroup = TG_PostUpdateWork;
 
-	if (WITH_EDITOR)
-	{
-		PrimaryActorTick.bStartWithTickEnabled = true;
-		bAllowTickBeforeBeginPlay = true;
-	}
-
+	PrimaryActorTick.bStartWithTickEnabled = true;
+	bAllowTickBeforeBeginPlay = true;
+	
 	SetActorEnableCollision(false);
 	
 
@@ -37,19 +37,21 @@ AControlRigControlActor::~AControlRigControlActor()
 	RemoveUnbindDelegate();
 }
 
-void AControlRigControlActor::RemoveUnbindDelegate()
+void AControlRigControlActor::RemoveUnbindDelegate() const
 {
 	if (ControlRig)
 	{
 		if (TSharedPtr<IControlRigObjectBinding> Binding = ControlRig->GetObjectBinding())
 		{
-			if (OnUnbindDelegate.IsValid())
-			{
-				Binding->OnControlRigUnbind().Remove(OnUnbindDelegate);
-				OnUnbindDelegate.Reset();
-			}
+			Binding->OnControlRigUnbind().RemoveAll(this);
 		}
 	}
+}
+
+void AControlRigControlActor::HandleControlRigUnbind()
+{
+	Clear();
+	Refresh();
 }
 
 #if WITH_EDITOR
@@ -65,9 +67,7 @@ void AControlRigControlActor::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AControlRigControlActor, ColorParameter) ||
 			PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AControlRigControlActor, bCastShadows)))
 	{
-		RemoveUnbindDelegate();
-		ControlRig = nullptr;
-		Clear();
+		ResetControlActor();
 		Refresh();
 	}
 }
@@ -86,23 +86,29 @@ void AControlRigControlActor::Tick(float DeltaSeconds)
 
 void AControlRigControlActor::Clear()
 {
-	TArray<USceneComponent*> ChildComponents;
 	if (ActorRootComponent)
 	{
+		TArray<USceneComponent*> ChildComponents;
 		ActorRootComponent->GetChildrenComponents(true, ChildComponents);
 		for (USceneComponent* Child : ChildComponents)
 		{
 			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Child))
 			{
-				Components.AddUnique(StaticMeshComponent);
+				if (IsValid(StaticMeshComponent))
+				{
+					Components.AddUnique(StaticMeshComponent);	
+				}
 			}
 		}
 
 		for (UStaticMeshComponent* Component : Components)
 		{
-			Component->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
-			Component->UnregisterComponent();
-			Component->DestroyComponent();
+			if (IsValid(Component))
+			{
+				Component->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+				Component->UnregisterComponent();
+				Component->DestroyComponent();	
+			}
 		}
 	}
 
@@ -112,10 +118,16 @@ void AControlRigControlActor::Clear()
 	Materials.Reset();
 }
 
-void AControlRigControlActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+void AControlRigControlActor::ResetControlActor()
 {
 	RemoveUnbindDelegate();
 	ControlRig = nullptr;
+	Clear();
+}
+
+void AControlRigControlActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ResetControlActor();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -123,8 +135,7 @@ void AControlRigControlActor::BeginDestroy()
 {
 	// since end play is not always called, we have to clear the delegate here
 	// clearing it at destructor might be too late as in some cases, the control rig was already GCed
-	RemoveUnbindDelegate();
-	ControlRig = nullptr;
+	ResetControlActor();
 	Super::BeginDestroy();
 }
 
@@ -133,6 +144,12 @@ void AControlRigControlActor::Refresh()
 	if (ActorToTrack == nullptr)
 	{
 		return;
+	}
+
+	// workaround to make sure we get a clean reset when the object was initialized from an existing template instance but some arrays didn't get populated somehow...
+	if (ControlNames.IsEmpty() || ControlNames.Num() != Components.Num() || ControlNames.Num() != Materials.Num() || ControlNames.Num() != ShapeTransforms.Num())
+	{
+		ResetControlActor();
 	}
 
 	if (ControlRig == nullptr)
@@ -149,9 +166,9 @@ void AControlRigControlActor::Refresh()
 		}
 
 		RemoveUnbindDelegate();
-		if (TSharedPtr<IControlRigObjectBinding> Binding = ControlRig->GetObjectBinding())
+		if (const TSharedPtr<IControlRigObjectBinding> Binding = ControlRig->GetObjectBinding())
 		{
-			OnUnbindDelegate = Binding->OnControlRigUnbind().AddLambda([ this ]( ) { this->Clear(); this->Refresh(); });
+			Binding->OnControlRigUnbind().AddUObject(this, &AControlRigControlActor::HandleControlRigUnbind);
 		}
 
 		const TArray<TSoftObjectPtr<UControlRigShapeLibrary>>& ShapeLibraries = ControlRig->GetShapeLibraries();
@@ -171,7 +188,7 @@ void AControlRigControlActor::Refresh()
 		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
 		Hierarchy->ForEach<FRigControlElement>([this, ShapeLibraries, Hierarchy](FRigControlElement* ControlElement) -> bool
         {
-			if (!ControlElement->Settings.bShapeEnabled)
+			if (!ControlElement->Settings.SupportsShape())
 			{
 				return true;
 			}
@@ -246,7 +263,7 @@ void AControlRigControlActor::Refresh()
 		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
 
 		const FRigElementKey ControlKey(ControlNames[GizmoIndex], ERigElementType::Control);
-		FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(ControlKey);
+		const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(ControlKey);
 		if(ControlElement == nullptr)
 		{
 			Components[GizmoIndex]->SetVisibility(false);
@@ -261,3 +278,4 @@ void AControlRigControlActor::Refresh()
 
 
 #undef LOCTEXT_NAMESPACE
+

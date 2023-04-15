@@ -19,7 +19,6 @@
 #include "LumenTranslucencyVolumeLightingShared.ush"
 
 #if LUMEN_HARDWARE_RAYTRACING
-#define ENABLE_TRANSLUCENT_SKIP_COUNT 0
 #include "LumenHardwareRayTracingCommon.ush"
 
 #ifndef DIM_LIGHTING_MODE
@@ -27,15 +26,21 @@
 #endif
 
 RaytracingAccelerationStructure TLAS;
+
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
 RWTexture3D<float3> RWVolumeTraceRadiance;
 RWTexture3D<float> RWVolumeTraceHitDistance;
 uint MaxTraversalIterations;
 
-RAY_TRACING_ENTRY_RAYGEN(LumenTranslucencyVolumeHardwareRayTracingRGS) 
+LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenTranslucencyVolumeHardwareRayTracing)
 {
 	uint OctahedralAtlasSizeX = TranslucencyGIGridSize.x * TranslucencyVolumeTracingOctahedronResolution;
 	// DispatchThreadId to match compute version
-	uint3 DispatchThreadId = uint3(DispatchRaysIndex().x % OctahedralAtlasSizeX, DispatchRaysIndex().y, DispatchRaysIndex().x / OctahedralAtlasSizeX);
+	uint3 DispatchThreadId = uint3(DispatchThreadIndex.x % OctahedralAtlasSizeX, DispatchThreadIndex.y, DispatchThreadIndex.x / OctahedralAtlasSizeX);
 
 #define DEINTERLEAVED_VOLUME_TRACING 0
 #if DEINTERLEAVED_VOLUME_TRACING
@@ -76,8 +81,8 @@ RAY_TRACING_ENTRY_RAYGEN(LumenTranslucencyVolumeHardwareRayTracingRGS)
 				}
 			#endif
 
-			RayDesc Ray;
-			Ray.Origin = WorldPosition;
+			FRayDesc Ray;
+			Ray.Origin = WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation); // LUMEN_LWC_TODO
 			Ray.Direction = WorldConeDirection;
 			Ray.TMin = 0;
 			Ray.TMax = TraceDistance;
@@ -92,6 +97,10 @@ RAY_TRACING_ENTRY_RAYGEN(LumenTranslucencyVolumeHardwareRayTracingRGS)
 
 			#if DIM_LIGHTING_MODE == LIGHTING_FROM_SURFACE_CACHE
 				{
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+					Context.HitGroupData = HitGroupData;
+					Context.RayTracingSceneMetadata = RayTracingSceneMetadata;
+#endif
 					TraceLightingResult = TraceAndCalculateRayTracedLightingFromSurfaceCache(Ray, Context);
 				}
 			#else
@@ -115,7 +124,7 @@ RAY_TRACING_ENTRY_RAYGEN(LumenTranslucencyVolumeHardwareRayTracingRGS)
 					FConeTraceResult TraceResult;
 					TraceResult.Lighting = TraceLightingResult.Radiance;
 					TraceResult.Transparency = Transparency;
-					EvaluateSkyRadianceForCone(WorldConeDirection, tan(ConeHalfAngle), TraceResult);
+					ApplySkylightToTraceResult(WorldConeDirection, TraceResult);
 					TraceLightingResult.Radiance = TraceResult.Lighting;
 				}
 			}

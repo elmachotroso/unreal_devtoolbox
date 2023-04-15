@@ -16,7 +16,10 @@
 #include "Sections/MovieSceneNiagaraEmitterSection.h"
 
 #include "ISequencerSection.h"
+#include "NiagaraEditorUtilities.h"
 #include "SequencerSectionPainter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraEmitterTrack)
 
 #define LOCTEXT_NAMESPACE "MovieSceneNiagaraEmitterTrack"
 
@@ -70,7 +73,7 @@ TSharedRef<ISequencerSection> UMovieSceneNiagaraEmitterSectionBase::MakeInvalidS
 }
 
 UMovieSceneNiagaraEmitterTrack::UMovieSceneNiagaraEmitterTrack(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
+	: Super(ObjectInitializer), SystemViewModel(nullptr)
 {
 	bSectionsWereModified = false;
 }
@@ -85,6 +88,14 @@ void UMovieSceneNiagaraEmitterTrack::Initialize(FNiagaraSystemViewModel& InSyste
 	SystemPath = SystemViewModel->GetSystem().GetPathName();
 	SetColorTint(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.NiagaraSequence.DefaultTrackColor").ToFColor(true));
 	CreateSections(InFrameResolution);
+
+	// since we are updating the color on tick when scalability mode is active, we reset the color when it is deactivated
+	SystemViewModel->GetScalabilityViewModel()->OnScalabilityModeChanged().AddUObject(this, &UMovieSceneNiagaraEmitterTrack::RestoreDefaultTrackColor);
+}
+
+UMovieSceneNiagaraEmitterTrack::~UMovieSceneNiagaraEmitterTrack()
+{
+	//SystemViewModel->GetScalabilityViewModel()->OnScalabilityModeChanged().RemoveAll(this);
 }
 
 bool UMovieSceneNiagaraEmitterTrack::CanRename() const
@@ -166,6 +177,33 @@ bool UMovieSceneNiagaraEmitterTrack::GetSectionsWereModified() const
 	return bSectionsWereModified;
 }
 
+void UMovieSceneNiagaraEmitterTrack::Tick(float DeltaTime)
+{
+	if(!HasAnyFlags(RF_ClassDefaultObject) && bScalabilityModeActive)
+	{
+		FVersionedNiagaraEmitterData* EmitterData = nullptr;
+		// the emitter instance might no longer be valid if we deleted the emitter but the track still lives until garbage collection
+		if(EmitterHandleViewModel.IsValid() && EmitterHandleViewModel.Pin()->GetEmitterHandle() != nullptr)
+		{
+			EmitterData = EmitterHandleViewModel.Pin()->GetEmitterHandle()->GetEmitterData();
+		}
+		
+		if(EmitterData && !EmitterData->IsAllowedByScalability())
+		{
+			SetColorTint(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.SystemOverview.ExcludedFromScalability").ToFColor(true));
+		}
+		else
+		{
+			SetColorTint(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.NiagaraSequence.DefaultTrackColor").ToFColor(true));
+		}
+	}
+}
+
+TStatId UMovieSceneNiagaraEmitterTrack::GetStatId() const
+{
+	return TStatId();
+}
+
 bool UMovieSceneNiagaraEmitterTrack::HasSection(const UMovieSceneSection& Section) const
 {
 	return Sections.Contains(&Section);
@@ -233,7 +271,7 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 {
 	SectionInitializationErrors.Empty();
 
-	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
+	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
 	UNiagaraScriptSource* ScriptSource = CastChecked<UNiagaraScriptSource>(EmitterUpdateScript->GetLatestSource());
 	UNiagaraNodeOutput* OutputNode = ScriptSource->NodeGraph->FindOutputNode(ENiagaraScriptUsage::EmitterUpdateScript);
 
@@ -244,11 +282,9 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(StackGroup.EndNode);
 		if (FunctionNode != nullptr && FunctionNode->FunctionScript != nullptr)
 		{
-			FString* SectionClassName = FunctionNode->GetScriptData()->ScriptMetaData.Find("NiagaraTimelineSectionClass");
-			if (SectionClassName != nullptr)
+			if (FString* SectionClassName = FunctionNode->GetScriptData()->ScriptMetaData.Find("NiagaraTimelineSectionClass"))
 			{
-				UClass* SectionClass = FindObject<UClass>(ANY_PACKAGE, **SectionClassName);
-				if (SectionClass != nullptr)
+				if (UClass* SectionClass = FindFirstObject<UClass>(**SectionClassName, EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous))
 				{
 					UMovieSceneNiagaraEmitterSectionBase* EmitterSection = nullptr;
 					bool bSectionCreated = false;
@@ -297,5 +333,16 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 	bSectionsWereModified = false;
 }
 
+void UMovieSceneNiagaraEmitterTrack::RestoreDefaultTrackColor(bool bScalabilityModeActivated)
+{
+	bScalabilityModeActive = bScalabilityModeActivated;
+	
+	if(bScalabilityModeActive == false)
+	{
+		SetColorTint(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.NiagaraSequence.DefaultTrackColor").ToFColor(true));
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
+
 

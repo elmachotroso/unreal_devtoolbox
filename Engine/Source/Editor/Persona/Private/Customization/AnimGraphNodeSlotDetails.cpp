@@ -5,7 +5,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/SBoxPanel.h"
 #include "Animation/Skeleton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
@@ -116,7 +116,7 @@ void FAnimGraphNodeSlotDetails::CustomizeDetails(class IDetailLayoutBuilder& Det
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("MeshPaint.FindInCB"))
+					.Image(FAppStyle::GetBrush("MeshPaint.FindInCB"))
 				]
 			]
 		];

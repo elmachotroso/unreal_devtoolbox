@@ -5,8 +5,8 @@
 #include "DisplayClusterConfiguratorStyle.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "Views/Viewport/DisplayClusterConfiguratorSCSEditorViewport.h"
-#include "Interfaces/Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
+#include "Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 
 #include "BlueprintEditorTabs.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -61,7 +61,7 @@ TSharedRef<SWidget> FDisplayClusterViewClusterSummoner::CreateTabBody(const FWor
 FDisplayClusterSCSSummoner::FDisplayClusterSCSSummoner(TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> InHostingApp) : FDisplayClusterViewSummoner(FDisplayClusterConfiguratorEditorConfigurationMode::TabID_Scene, InHostingApp)
 {
 	TabLabel = LOCTEXT("ComponentsTabLabel", "Components");
-	TabIcon = FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Kismet.Tabs.Components");
+	TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.Tabs.Components");
 
 	bIsSingleton = true;
 

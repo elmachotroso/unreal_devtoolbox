@@ -1,11 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_CallParentFunction.h"
-#include "UObject/UObjectHash.h"
-#include "GraphEditorSettings.h"
+
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
-#include "Classes/EditorStyleSettings.h"
 #include "Editor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
+#include "Misc/Guid.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Script.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 

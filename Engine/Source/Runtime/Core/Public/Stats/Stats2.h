@@ -2,31 +2,50 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Templates/UnrealTemplate.h"
-#include "HAL/ThreadSafeCounter.h"
-#include "Math/NumericLimits.h"
-#include "HAL/ThreadSingleton.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
-#include "HAL/PlatformTime.h"
-#include "UObject/NameTypes.h"
-#include "Containers/LockFreeList.h"
 #include "Containers/ChunkedArray.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/LockFreeList.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
-#include "Templates/Atomic.h"
+#include "Delegates/DelegateBase.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMemory.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformTLS.h"
+#include "HAL/PlatformTime.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "HAL/ThreadSingleton.h"
+#include "HAL/UnrealMemory.h"
 #include "Math/Color.h"
-#include "StatsCommon.h"
-#include "Templates/UniquePtr.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include "Misc/CString.h"
+#include "Misc/EnumClassFlags.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ProfilingDebugging/MiscTrace.h"
+#include "StatsCommon.h"
 #include "StatsTrace.h"
-#include "Misc/EnumClassFlags.h"
+#include "Templates/Atomic.h"
+#include "Templates/TypeCompatibleBytes.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "Trace/Detail/Channel.inl"
+#include "Trace/Trace.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
+class FOutputDevice;
 class FScopeCycleCounter;
 class FThreadStats;
 struct TStatId;
+template <typename T> struct TIsPODType;
 
 /**
 * This is thread-private information about the thread idle stats, which we always collect, even in final builds
@@ -37,12 +56,55 @@ class CORE_API FThreadIdleStats : public TThreadSingleton<FThreadIdleStats>
 
 	FThreadIdleStats()
 		: Waits(0)
+		, WaitsCriticalPath(0)
+		, IsCriticalPathCounter(1)
 	{}
 
 public:
 
 	/** Total cycles we waited for sleep or event. **/
 	uint32 Waits;
+
+	/** Total cycles we waited for sleep or event on the critical path. **/
+	uint32 WaitsCriticalPath;
+
+	int IsCriticalPathCounter;
+
+	static void BeginCriticalPath()
+	{
+		FThreadIdleStats::Get().IsCriticalPathCounter++;
+	}
+
+	static void EndCriticalPath()
+	{
+		FThreadIdleStats::Get().IsCriticalPathCounter--;
+	}
+
+	struct FScopeNonCriticalPath
+	{
+		FScopeNonCriticalPath()
+		{
+			FThreadIdleStats::Get().IsCriticalPathCounter--;
+		}
+		~FScopeNonCriticalPath()
+		{
+			FThreadIdleStats::Get().IsCriticalPathCounter++;
+		}
+	};
+
+	bool IsCriticalPath() const 
+	{
+		return IsCriticalPathCounter > 0;
+	}
+
+	void Reset()
+	{
+		Waits = 0;
+		WaitsCriticalPath = 0;
+		IsCriticalPathCounter = 1;
+	}
+
+
 
 	struct FScopeIdle
 	{
@@ -69,7 +131,14 @@ public:
 		{
 			if( !bIgnore )
 			{
-				FThreadIdleStats::Get().Waits += FPlatformTime::Cycles() - Start;
+				FThreadIdleStats& IdleStats = FThreadIdleStats::Get();
+				uint32 CyclesElapsed = FPlatformTime::Cycles() - Start;
+				IdleStats.Waits += CyclesElapsed;
+
+				if (IdleStats.IsCriticalPath())
+				{
+					IdleStats.WaitsCriticalPath += CyclesElapsed;
+				}
 			}
 		}
 #endif
@@ -83,7 +152,7 @@ CORE_API bool DirectStatsCommand(const TCHAR* Cmd, bool bBlockForCompletion = fa
 struct CORE_API FStats
 {
 	/** Delegate to fire every time we need to advance the stats for the rendering thread. */
-	DECLARE_DELEGATE_ThreeParams( FOnAdvanceRenderingThreadStats, bool /*bDiscardCallstack*/, int64 /*StatsFrame*/, int32 /*MasterDisableChangeTagStartFrame*/ );
+	DECLARE_DELEGATE_ThreeParams( FOnAdvanceRenderingThreadStats, bool /*bDiscardCallstack*/, int64 /*StatsFrame*/, int32 /*PrimaryDisableChangeTagStartFrame*/ );
 
 	/** Advances stats for the current frame. */
 	static void AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThreadStats& AdvanceRenderingThreadStatsDelegate = FOnAdvanceRenderingThreadStats() );
@@ -413,9 +482,11 @@ FORCEINLINE uint32 FromPackedCallCountDuration_Duration(int64 Both)
 class FStatNameAndInfo
 {
 	/**
-	 * An FName, but the high bits of the Number are used for other fields.
+	 * Store name and number separately in case UE_FNAME_OUTLINE_NUMBER is set, so the high bits of the Number are used for other fields.
 	 */
-	FMinimalName NameAndInfo;
+	FNameEntryId Index;
+	int32 Number;
+
 public:
 	FORCEINLINE_STATS FStatNameAndInfo()
 	{
@@ -425,15 +496,14 @@ public:
 	 * Build from a raw FName
 	 */
 	FORCEINLINE_STATS FStatNameAndInfo(FName Other, bool bAlreadyHasMeta)
-		: NameAndInfo(NameToMinimalName(Other))
+		: Index(Other.GetComparisonIndex())
+		, Number(Other.GetNumber())
 	{
 		if (!bAlreadyHasMeta)
 		{
-			int32 Number = NameAndInfo.Number;
 			// ok, you can't have numbered stat FNames too large
 			checkStats(!(Number >> EStatAllFields::StartShift));
 			Number |= EStatMetaFlags::DummyAlwaysOne << (EStatMetaFlags::Shift + EStatAllFields::StartShift);
-			NameAndInfo.Number = Number;
 		}
 		CheckInvariants();
 	}
@@ -442,13 +512,14 @@ public:
 	 * Build with stat metadata
 	 */
 	FORCEINLINE_STATS FStatNameAndInfo(FName InStatName, char const* InGroup, char const* InCategory, TCHAR const* InDescription, EStatDataType::Type InStatType, bool bShouldClearEveryFrame, bool bCycleStat, bool bSortByName, FPlatformMemory::EMemoryCounterRegion MemoryRegion = FPlatformMemory::MCR_Invalid)
-		: NameAndInfo(NameToMinimalName(ToLongName(InStatName, InGroup, InCategory, InDescription, bSortByName)))
 	{
-		int32 Number = NameAndInfo.Number;
+		FName LongName = ToLongName(InStatName, InGroup, InCategory, InDescription, bSortByName);
+		Index = LongName.GetComparisonIndex();
+		Number = LongName.GetNumber();
+
 		// ok, you can't have numbered stat FNames too large
 		checkStats(!(Number >> EStatAllFields::StartShift));
 		Number |= (EStatMetaFlags::DummyAlwaysOne | EStatMetaFlags::HasLongNameAndMetaInfo) << (EStatMetaFlags::Shift + EStatAllFields::StartShift);
-		NameAndInfo.Number = Number;
 
 		SetField<EStatDataType>(InStatType);
 		SetFlag(EStatMetaFlags::ShouldClearEveryFrame, bShouldClearEveryFrame);
@@ -465,9 +536,9 @@ public:
 	/**
 	 * Internal use, used by the deserializer
 	 */
-	FORCEINLINE_STATS void SetNumberDirect(int32 Number)
+	FORCEINLINE_STATS void SetNumberDirect(int32 InNumber)
 	{
-		NameAndInfo.Number = Number;
+		Number = InNumber;
 	}
 
 	/**
@@ -476,7 +547,7 @@ public:
 	FORCEINLINE_STATS int32 GetRawNumber() const
 	{
 		CheckInvariants();
-		return NameAndInfo.Number;
+		return Number;
 	}
 
 	/**
@@ -487,10 +558,10 @@ public:
 		// ok, you can't have numbered stat FNames too large
 		checkStats(!(RawName.GetNumber() >> EStatAllFields::StartShift));
 		CheckInvariants();
-		int32 Number = NameAndInfo.Number;
-		Number &= ~((1 << EStatAllFields::StartShift) - 1);
-		NameAndInfo = NameToMinimalName(RawName);
-		NameAndInfo.Number = (Number | RawName.GetNumber());
+		int32 LocalNumber = Number;
+		LocalNumber &= ~((1 << EStatAllFields::StartShift) - 1);
+		Index = RawName.GetComparisonIndex();
+		Number = (LocalNumber | RawName.GetNumber());
 	}
 
 	/**
@@ -500,11 +571,7 @@ public:
 	FORCEINLINE_STATS FName GetRawName() const
 	{
 		CheckInvariants();
-		FMinimalName Result(NameAndInfo);
-		int32 Number = NameAndInfo.Number;
-		Number &= ((1 << EStatAllFields::StartShift) - 1);
-		Result.Number = Number;
-		return MinimalNameToName(Result);
+		return FName(Index, Index, Number & ((1 << EStatAllFields::StartShift) - 1));
 	}
 
 	/**
@@ -514,7 +581,7 @@ public:
 	FORCEINLINE_STATS FName GetEncodedName() const
 	{
 		CheckInvariants();
-		return MinimalNameToName(NameAndInfo);
+		return FName(Index, Index, Number);
 	}
 
 	/**
@@ -567,8 +634,8 @@ public:
 	 */
 	FORCEINLINE_STATS void CheckInvariants() const
 	{
-		checkStats((NameAndInfo.Number & (EStatMetaFlags::DummyAlwaysOne << (EStatAllFields::StartShift + EStatMetaFlags::Shift)))
-			&& NameAndInfo.Index);
+		checkStats((Number & (EStatMetaFlags::DummyAlwaysOne << (EStatAllFields::StartShift + EStatMetaFlags::Shift)))
+			&& Index);
 	}
 
 	/**
@@ -579,10 +646,10 @@ public:
 	typename TField::Type GetField() const
 	{
 		CheckInvariants();
-		int32 Number = NameAndInfo.Number;
-		Number = (Number >> (EStatAllFields::StartShift + TField::Shift)) & TField::Mask;
-		checkStats(Number != TField::Invalid && Number < TField::Num);
-		return typename TField::Type(Number);
+		int32 LocalNumber = Number;
+		LocalNumber = (LocalNumber >> (EStatAllFields::StartShift + TField::Shift)) & TField::Mask;
+		checkStats(LocalNumber != TField::Invalid && LocalNumber < TField::Num);
+		return typename TField::Type(LocalNumber);
 	}
 
 	/**
@@ -592,12 +659,12 @@ public:
 	template<typename TField>
 	void SetField(typename TField::Type Value)
 	{
-		int32 Number = NameAndInfo.Number;
+		int32 LocalNumber = Number;
 		CheckInvariants();
 		checkStats(Value < TField::Num && Value != TField::Invalid);
-		Number &= ~(TField::Mask << (EStatAllFields::StartShift + TField::Shift));
-		Number |= Value << (EStatAllFields::StartShift + TField::Shift);
-		NameAndInfo.Number = Number;
+		LocalNumber &= ~(TField::Mask << (EStatAllFields::StartShift + TField::Shift));
+		LocalNumber |= Value << (EStatAllFields::StartShift + TField::Shift);
+		Number = LocalNumber;
 		CheckInvariants();
 	}
 
@@ -607,10 +674,10 @@ public:
 	 */
 	bool GetFlag(EStatMetaFlags::Type Bit) const
 	{
-		int32 Number = NameAndInfo.Number;
+		int32 LocalNumber = Number;
 		CheckInvariants();
 		checkStats(Bit < EStatMetaFlags::Num && Bit != EStatMetaFlags::Invalid);
-		return !!((Number >> (EStatAllFields::StartShift + EStatMetaFlags::Shift)) & Bit);
+		return !!((LocalNumber >> (EStatAllFields::StartShift + EStatMetaFlags::Shift)) & Bit);
 	}
 
 	/**
@@ -620,18 +687,18 @@ public:
 	 */
 	void SetFlag(EStatMetaFlags::Type Bit, bool Value)
 	{
-		int32 Number = NameAndInfo.Number;
+		int32 LocalNumber = Number;
 		CheckInvariants();
 		checkStats(Bit < EStatMetaFlags::Num && Bit != EStatMetaFlags::Invalid);
 		if (Value)
 		{
-			Number |= (Bit << (EStatAllFields::StartShift + EStatMetaFlags::Shift));
+			LocalNumber |= (Bit << (EStatAllFields::StartShift + EStatMetaFlags::Shift));
 		}
 		else
 		{
-			Number &= ~(Bit << (EStatAllFields::StartShift + EStatMetaFlags::Shift));
+			LocalNumber &= ~(Bit << (EStatAllFields::StartShift + EStatMetaFlags::Shift));
 		}
-		NameAndInfo.Number = Number;
+		Number = LocalNumber;
 		CheckInvariants();
 	}
 
@@ -1206,11 +1273,7 @@ public:
 	CORE_API FThreadStatsPool();
 
 	/** Singleton accessor. */
-	CORE_API static FThreadStatsPool& Get()
-	{
-		static FThreadStatsPool Singleton;
-		return Singleton;
-	}
+	CORE_API static FThreadStatsPool& Get();
 
 	/** Gets an instance from the pool and call the default constructor on it. */
 	CORE_API FThreadStats* GetFromPool();
@@ -1236,17 +1299,17 @@ class FThreadStats : FNoncopyable
 	friend struct FThreadStatsPool;
 
 	/** Used to control when we are collecting stats. User of the stats system increment and decrement this counter as they need data. **/
-	CORE_API static FThreadSafeCounter MasterEnableCounter;
-	/** Every time bMasterEnable changes, we update this. This is used to determine frames that have complete data. **/
-	CORE_API static FThreadSafeCounter MasterEnableUpdateNumber;
-	/** while bMasterEnable (or other things affecting stat collection) is chaning, we lock this. This is used to determine frames that have complete data. **/
-	CORE_API static FThreadSafeCounter MasterDisableChangeTagLock;
+	CORE_API static FThreadSafeCounter PrimaryEnableCounter;
+	/** Every time bPrimaryEnable changes, we update this. This is used to determine frames that have complete data. **/
+	CORE_API static FThreadSafeCounter PrimaryEnableUpdateNumber;
+	/** while bPrimaryEnable (or other things affecting stat collection) is chaning, we lock this. This is used to determine frames that have complete data. **/
+	CORE_API static FThreadSafeCounter PrimaryDisableChangeTagLock;
 	/** TLS slot that holds a FThreadStats. **/
 	CORE_API static uint32 TlsSlot;
-	/** Computed by CheckEnable, the current "master control" for stats collection, based on MasterEnableCounter and a few other things. **/
-	CORE_API static bool bMasterEnable;
+	/** Computed by CheckEnable, the current "primary control" for stats collection, based on PrimaryEnableCounter and a few other things. **/
+	CORE_API static bool bPrimaryEnable;
 	/** Set to permanently disable the stats system. **/
-	CORE_API static bool bMasterDisableForever;
+	CORE_API static bool bPrimaryDisableForever;
 	/** True if we running in the raw stats mode, all stats processing is disabled, captured stats messages are written in timely manner, memory overhead is minimal. */
 	CORE_API static bool bIsRawStatsActive;
 
@@ -1440,7 +1503,7 @@ public:
 	/** Return true if we are currently collecting data **/
 	static FORCEINLINE_STATS bool IsCollectingData()
 	{
-		return bMasterEnable;
+		return bPrimaryEnable;
 	}
 	static FORCEINLINE_STATS bool IsCollectingData(TStatId StatId)
 	{
@@ -1451,7 +1514,7 @@ public:
 	/** Return true if we are currently collecting data **/
 	static FORCEINLINE_STATS bool WillEverCollectData()
 	{
-		return !bMasterDisableForever;
+		return !bPrimaryDisableForever;
 	}
 
 	/** Return true if the threading is ready **/
@@ -1461,59 +1524,94 @@ public:
 	}
 
 	/** Indicate that you would like the system to begin collecting data, if it isn't already collecting data. Think reference count. **/
-	static FORCEINLINE_STATS void MasterEnableAdd(int32 Value = 1)
+	static FORCEINLINE_STATS void PrimaryEnableAdd(int32 Value = 1)
 	{
-		MasterEnableCounter.Add(Value);
+		PrimaryEnableCounter.Add(Value);
 		CheckEnable();
 	}
 
 	/** Indicate that you no longer need stat data, if nobody else needs stat data, then no stat data will be collected. Think reference count. **/
-	static FORCEINLINE_STATS void MasterEnableSubtract(int32 Value = 1)
+	static FORCEINLINE_STATS void PrimaryEnableSubtract(int32 Value = 1)
 	{
-		MasterEnableCounter.Subtract(Value);
+		PrimaryEnableCounter.Subtract(Value);
 		CheckEnable();
 	}
 
 	/** Indicate that you no longer need stat data, forever. **/
-	static FORCEINLINE_STATS void MasterDisableForever()
+	static FORCEINLINE_STATS void PrimaryDisableForever()
 	{
-		bMasterDisableForever = true;
+		bPrimaryDisableForever = true;
 		CheckEnable();
 	}
 
 	/** This is called before we start to change something that will invalidate. **/
-	static FORCEINLINE_STATS void MasterDisableChangeTagLockAdd(int32 Value = 1)
+	static FORCEINLINE_STATS void PrimaryDisableChangeTagLockAdd(int32 Value = 1)
 	{
-		MasterDisableChangeTagLock.Add(Value);
+		PrimaryDisableChangeTagLock.Add(Value);
 		FPlatformMisc::MemoryBarrier();
-		MasterEnableUpdateNumber.Increment();
+		PrimaryEnableUpdateNumber.Increment();
 	}
 
 	/** Indicate that you no longer need stat data, if nobody else needs stat data, then no stat data will be collected. Think reference count. **/
-	static FORCEINLINE_STATS void MasterDisableChangeTagLockSubtract(int32 Value = 1)
+	static FORCEINLINE_STATS void PrimaryDisableChangeTagLockSubtract(int32 Value = 1)
 	{
 		FPlatformMisc::MemoryBarrier();
-		MasterEnableUpdateNumber.Increment();
+		PrimaryEnableUpdateNumber.Increment();
 		FPlatformMisc::MemoryBarrier();
-		MasterDisableChangeTagLock.Subtract(Value);
+		PrimaryDisableChangeTagLock.Subtract(Value);
 	}
 
-	/** Everytime master enable changes, this number increases. This is used to determine full frames. **/
-	static FORCEINLINE_STATS int32 MasterDisableChangeTag()
+	/** Everytime primary enable changes, this number increases. This is used to determine full frames. **/
+	static FORCEINLINE_STATS int32 PrimaryDisableChangeTag()
 	{
-		if (MasterDisableChangeTagLock.GetValue())
+		if (PrimaryDisableChangeTagLock.GetValue())
 		{
 			// while locked we are continually invalid, so we will just keep giving unique numbers
-			return MasterEnableUpdateNumber.Increment();
+			return PrimaryEnableUpdateNumber.Increment();
 		}
-		return MasterEnableUpdateNumber.GetValue();
+		return PrimaryEnableUpdateNumber.GetValue();
+	}
+
+	/** Indicate that you would like the system to begin collecting data, if it isn't already collecting data. Think reference count. **/
+	UE_DEPRECATED(5.1, "Use PrimaryEnableAdd instead")
+	static FORCEINLINE_STATS void MasterEnableAdd(int32 Value = 1)
+	{
+		PrimaryEnableAdd(Value);
+	}
+
+	/** Indicate that you no longer need stat data, if nobody else needs stat data, then no stat data will be collected. Think reference count. **/
+	UE_DEPRECATED(5.1, "Use PrimaryEnableSubtract instead")
+	static FORCEINLINE_STATS void MasterEnableSubtract(int32 Value = 1)
+	{
+		PrimaryEnableSubtract(Value);
+	}
+
+	/** Indicate that you no longer need stat data, forever. **/
+	UE_DEPRECATED(5.1, "Use PrimaryDisableForever instead")
+	static FORCEINLINE_STATS void MasterDisableForever()
+	{
+		PrimaryDisableForever();
+	}
+
+	/** This is called before we start to change something that will invalidate. **/
+	UE_DEPRECATED(5.1, "Use PrimaryDisableChangeTagLockAdd instead")
+	static FORCEINLINE_STATS void MasterDisableChangeTagLockAdd(int32 Value = 1)
+	{
+		PrimaryDisableChangeTagLockAdd(Value);
+	}
+
+	/** Indicate that you no longer need stat data, if nobody else needs stat data, then no stat data will be collected. Think reference count. **/
+	UE_DEPRECATED(5.1, "Use PrimaryDisableChangeTagLockSubtract instead")
+	static FORCEINLINE_STATS void MasterDisableChangeTagLockSubtract(int32 Value = 1)
+	{
+		PrimaryDisableChangeTagLockSubtract(Value);
 	}
 
 	/** Call this if something disrupts data gathering. For example when the render thread is killed, data is abandoned.**/
 	static FORCEINLINE_STATS void FrameDataIsIncomplete()
 	{
 		FPlatformMisc::MemoryBarrier();
-		MasterEnableUpdateNumber.Increment();
+		PrimaryEnableUpdateNumber.Increment();
 		FPlatformMisc::MemoryBarrier();
 	}
 
@@ -1564,13 +1662,7 @@ public:
 	 * Pushes the specified stat onto the hierarchy for this thread. Starts
 	 * the timing of the cycles used
 	 */
-	FORCEINLINE_STATS void Start(TStatId InStatId, EStatFlags InStatFlags, bool bAlways = false
-#if CPUPROFILERTRACE_ENABLED
-		// Optional verbose description added for CPU profiler, without affecting the stat name.  Should be invariant
-		// across frames, to avoid bloating memory in the name map used in the CPU profiler.
-		, const TCHAR* OptionalVerboseDescription = nullptr
-#endif
-		)
+	FORCEINLINE_STATS void Start(TStatId InStatId, EStatFlags InStatFlags, bool bAlways = false)
 	{
 		FMinimalName StatMinimalName = InStatId.GetMinimalName(EMemoryOrder::Relaxed);
 		if (StatMinimalName.IsNone())
@@ -1579,7 +1671,7 @@ public:
 		}
 
 		// Emit named event for active cycle stat.
-		if (GCycleStatsShouldEmitNamedEvents > 0
+		if (GCycleStatsShouldEmitNamedEvents
 			&& (GShouldEmitVerboseNamedEvents || !EnumHasAnyFlags(InStatFlags, EStatFlags::Verbose)))
 		{
 #if PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING
@@ -1592,37 +1684,7 @@ public:
 #if CPUPROFILERTRACE_ENABLED
 			if (UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel))
 			{
-				// We only support ANSI strings, since the CPU profiler internally uses that in its event type.  We could
-				// in the future add a separate wide string profiler event, but it involves duplicating a fair amount of
-				// code, so this works for now.
-				if (OptionalVerboseDescription && FCString::IsPureAnsi(OptionalVerboseDescription))
-				{
-					TArray<ANSICHAR, TNonRelocatableInlineAllocator<256>> VerboseNameANSI;
-
-					const char* StatDescriptionANSI = InStatId.GetStatDescriptionANSI();
-					int32 StatLen = FCStringAnsi::Strlen(StatDescriptionANSI);
-					int32 DescriptionLen = FCString::Strlen(OptionalVerboseDescription);
-
-					VerboseNameANSI.AddUninitialized(StatLen + DescriptionLen + 4);		// 3 character separator plus null terminator
-					char* Buffer = VerboseNameANSI.GetData();
-					char* BufferEnd = Buffer + VerboseNameANSI.Num();
-
-					FMemory::Memcpy(Buffer, StatDescriptionANSI, StatLen*sizeof(ANSICHAR));	Buffer += StatLen;
-					FMemory::Memcpy(Buffer, " - ", 3*sizeof(ANSICHAR));						Buffer += 3;
-					for (const TCHAR* DescriptionLetter = OptionalVerboseDescription; *DescriptionLetter; DescriptionLetter++, Buffer++)
-					{
-						*Buffer = (ANSICHAR)*DescriptionLetter;
-					}
-					check(Buffer + 1 == BufferEnd);
-
-					*Buffer = 0;		// null terminate
-
-					FCpuProfilerTrace::OutputBeginDynamicEvent(VerboseNameANSI.GetData());
-				}
-				else
-				{
-					FCpuProfilerTrace::OutputBeginDynamicEvent(InStatId.GetStatDescriptionANSI()); //todo: Could we use FName index as event id?
-				}
+				FCpuProfilerTrace::OutputBeginDynamicEvent(InStatId.GetStatDescriptionANSI()); //todo: Could we use FName index as event id?
 				EmittedEvent |= TraceEvent;
 			}
 #endif
@@ -1749,6 +1811,7 @@ public:
 	/**
 	 * Returns a pointer to a bool (valid forever) that determines if this group is active
 	 * This should be CACHED. We will get a few calls from different stats and different threads and stuff, but once things are "warmed up", this should NEVER be called.
+	 * This function will also register any stats with the StatsTrace system 
 	 * @param InGroup, group to look up
 	 * @param InCategory, the category the group belongs to
 	 * @param bDefaultEnable, If this is the first time this group has been set up, this sets the default enable value for this group.
@@ -2039,14 +2102,6 @@ struct FStat_##StatName\
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition) \
 	FScopeCycleCounter CycleCount_##Stat(bCondition ? GET_STATID(Stat) : TStatId(), GET_STATFLAGS(Stat));
 
-#if CPUPROFILERTRACE_ENABLED
-#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription) \
-	FScopeCycleCounter CycleCount_##Stat(GET_STATID(Stat), GET_STATFLAGS(Stat), false, VerboseDescription);
-#else
-#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription) \
-	FScopeCycleCounter CycleCount_##Stat(GET_STATID(Stat), GET_STATFLAGS(Stat));
-#endif
-
 #define SCOPE_SECONDS_ACCUMULATOR(Stat) \
 	FSimpleScopeSecondsStat SecondsAccum_##Stat(GET_STATID(Stat));
 
@@ -2063,8 +2118,9 @@ struct FStat_##StatName\
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 	{ \
-		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, int64(1));\
-		TRACE_STAT_INCREMENT(GET_STATFNAME(Stat)); \
+		const FName StatName = GET_STATFNAME(Stat); \
+		FThreadStats::AddMessage(StatName, EStatOperation::Add, int64(1));\
+		TRACE_STAT_INCREMENT(StatName); \
 	} \
 }
 #define INC_FLOAT_STAT_BY(Stat, Amount) \
@@ -2074,8 +2130,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, AddAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), AddAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Add, AddAmount); \
+			TRACE_STAT_ADD(StatName, AddAmount); \
 		} \
 	} \
 }
@@ -2086,8 +2143,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, AddAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), AddAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Add, AddAmount); \
+			TRACE_STAT_ADD(StatName, AddAmount); \
 		} \
 	} \
 }
@@ -2098,8 +2156,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, AddAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), AddAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Add, AddAmount); \
+			TRACE_STAT_ADD(StatName, AddAmount); \
 		} \
 	} \
 }
@@ -2107,8 +2166,9 @@ struct FStat_##StatName\
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 	{ \
-		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, int64(1));\
-		TRACE_STAT_DECREMENT(GET_STATFNAME(Stat)); \
+		const FName StatName = GET_STATFNAME(Stat); \
+		FThreadStats::AddMessage(StatName, EStatOperation::Subtract, int64(1));\
+		TRACE_STAT_DECREMENT(StatName); \
 	} \
 }
 #define DEC_FLOAT_STAT_BY(Stat,Amount) \
@@ -2118,8 +2178,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, SubtractAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), -SubtractAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Subtract, SubtractAmount); \
+			TRACE_STAT_ADD(StatName, -SubtractAmount); \
 		} \
 	} \
 }
@@ -2130,8 +2191,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, SubtractAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), -SubtractAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Subtract, SubtractAmount); \
+			TRACE_STAT_ADD(StatName, -SubtractAmount); \
 		} \
 	} \
 }
@@ -2142,8 +2204,9 @@ struct FStat_##StatName\
 	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 		{ \
-			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, SubtractAmount); \
-			TRACE_STAT_ADD(GET_STATFNAME(Stat), -SubtractAmount); \
+			const FName StatName = GET_STATFNAME(Stat); \
+			FThreadStats::AddMessage(StatName, EStatOperation::Subtract, SubtractAmount); \
+			TRACE_STAT_ADD(StatName, -SubtractAmount); \
 		} \
 	} \
 }
@@ -2151,27 +2214,30 @@ struct FStat_##StatName\
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 	{ \
+		const FName StatName = GET_STATFNAME(Stat); \
 		int64 SetValue = int64(Value); \
-		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, SetValue); \
-		TRACE_STAT_SET(GET_STATFNAME(Stat), SetValue); \
+		FThreadStats::AddMessage(StatName, EStatOperation::Set, SetValue); \
+		TRACE_STAT_SET(StatName, SetValue); \
 	} \
 }
 #define SET_DWORD_STAT(Stat,Value) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 	{ \
+		const FName StatName = GET_STATFNAME(Stat); \
 		int64 SetValue = int64(Value); \
-		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, SetValue); \
-		TRACE_STAT_SET(GET_STATFNAME(Stat), SetValue); \
+		FThreadStats::AddMessage(StatName, EStatOperation::Set, SetValue); \
+		TRACE_STAT_SET(StatName, SetValue); \
 	} \
 }
 #define SET_FLOAT_STAT(Stat,Value) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
 	{ \
+		const FName StatName = GET_STATFNAME(Stat); \
 		double SetValue = double(Value); \
-		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, SetValue); \
-		TRACE_STAT_SET(GET_STATFNAME(Stat), SetValue); \
+		FThreadStats::AddMessage(StatName, EStatOperation::Set, SetValue); \
+		TRACE_STAT_SET(StatName, SetValue); \
 	} \
 }
 
@@ -2370,12 +2436,13 @@ DECLARE_FLOAT_COUNTER_STAT_EXTERN(TEXT("Seconds Per Cycle"),STAT_SecondsPerCycle
 #if STATS || ENABLE_STATNAMEDEVENTS
 namespace Stats
 {
+	UE_DEPRECATED(5.1, "No replacement. Engine usage was redundant")
 	FORCEINLINE bool IsThreadCollectingData()
 	{
 #if STATS && CPUPROFILERTRACE_ENABLED
 		return UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel) || FThreadStats::IsCollectingData();
 #else
-		return GCycleStatsShouldEmitNamedEvents > 0;
+		return GCycleStatsShouldEmitNamedEvents != 0;
 #endif
 	}
 }

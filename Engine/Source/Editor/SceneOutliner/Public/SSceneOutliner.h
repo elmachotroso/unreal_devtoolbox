@@ -30,12 +30,18 @@
 #include "ISceneOutlinerHierarchy.h"
 #include "SceneOutlinerDragDrop.h"
 
+#include "SceneOutlinerSCCHandler.h"
+#include "SceneOutlinerTreeItemSCC.h"
+
 class FMenuBuilder;
 class UToolMenu;
 class ISceneOutlinerColumn;
 class SComboButton;
-
+class ULevel;
+struct FToolMenuSection;
+template<typename FilterType> class SFilterBar;
 template<typename ItemType> class STreeView;
+class SFilterSearchBox;
 
 /**
  * Scene Outliner definition
@@ -402,14 +408,14 @@ public:
 	virtual FSceneOutlinerItemSelection GetSelection() const { return FSceneOutlinerItemSelection(*OutlinerTreeView); }
 
 	/**
-	 * Pins an item in the outliner.
+	 * Pins an item list in the outliner.
 	 */
-	virtual void PinItem(const FSceneOutlinerTreeItemPtr& InItem) override;
+	virtual void PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
 
 	/**
-	 * Unpins an item in the outliner.
+	 * Unpins an item list in the outliner.
 	 */
-	virtual void UnpinItem(const FSceneOutlinerTreeItemPtr& InItem) override;
+	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
 
 	/**
 	 * Pin selected items
@@ -451,7 +457,7 @@ public:
 	TSharedPtr<FSceneOutlinerFilters>& GetFilters() { return Filters; }
 
 	/** Create a drag drop operation */
-	TSharedPtr<FDragDropOperation> CreateDragDropOperation(const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const;
+	TSharedPtr<FDragDropOperation> CreateDragDropOperation(const FPointerEvent& MouseEvent, const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const;
 
 	/** Parse a drag drop operation into a payload */
 	bool ParseDragDrop(FSceneOutlinerDragDropPayload& OutPayload, const FDragDropOperation& Operation) const;
@@ -467,6 +473,9 @@ public:
 
 	/** Used to test if Outliner related selection changes have already been handled */
 	bool GetIsReentrant() const { return bIsReentrant; }
+
+	/** Get the unique identifier associated with this outliner */
+	FName GetOutlinerIdentifier() const { return OutlinerIdentifier; }
 
 private:
 	/** Methods that implement structural modification logic for the tree */
@@ -511,13 +520,19 @@ private:
 		{
 			const TreeItemType Temporary(Data);
 			bool bPassesFilters = Filters->PassesAllFilters(Temporary);
+
+			if(FilterCollection)
+			{
+				bPassesFilters &= FilterCollection->PassesAllFilters(Temporary);
+			}
+			
 			if (bPassesFilters)
 			{
 				OnItemPassesFilters(Temporary);
 			}
 
 		bPassesFilters &= SearchBoxFilter->PassesFilter(Temporary);
-
+			
 		if (bForce || bPassesFilters)
 		{
 			FSceneOutlinerTreeItemPtr Result = MakeShareable(new TreeItemType(Data));
@@ -538,6 +553,8 @@ private:
 		return Columns;
 	}
 
+	void GetSortedColumnIDs(TArray<FName>& OutColumnIDs) const;
+
 	bool PassesFilters(const ISceneOutlinerTreeItem& Item) const
 	{
 		return Filters->PassesAllFilters(Item);
@@ -548,7 +565,20 @@ private:
 
 	bool PassesTextFilter(const FSceneOutlinerTreeItemPtr& Item) const
 	{
-		return SearchBoxFilter->PassesFilter(*Item);
+		return PassesAllFilters(Item);
+	}
+
+	bool PassesAllFilters(const FSceneOutlinerTreeItemPtr& Item) const
+	{
+		bool bPassesFilters = SearchBoxFilter->PassesFilter(*Item);
+
+		if(FilterCollection)
+		{
+			bPassesFilters &= FilterCollection->PassesAllFilters(*Item);
+		}
+
+		return bPassesFilters;
+		
 	}
 
 	bool HasSelectorFocus(FSceneOutlinerTreeItemPtr Item) const
@@ -574,7 +604,19 @@ private:
 	/** Populates OutSearchStrings with the strings associated with TreeItem that should be used in searching */
 	void PopulateSearchStrings( const ISceneOutlinerTreeItem& TreeItem, OUT TArray< FString >& OutSearchStrings ) const;
 
+	/** Filter Bar related private functionality */
+	
+	/** Creates a TextFilter for ISceneOutlinerTreeItem used to save searches as Text Filters */
+	TSharedPtr< SceneOutliner::TreeItemTextFilter > CreateTextFilter() const;
 
+	bool CompareItemWithClassName(SceneOutliner::FilterBarType InItem, const TSet<FTopLevelAssetPath>&) const;
+
+	/** Delegate for when a filter in the filter bar is changed */
+	void OnFilterBarFilterChanged();
+
+	/** Create the filter bar for this outliner using the specified init options */
+	void CreateFilterBar(const FSceneOutlinerFilterBarOptions& FilterBarOptions);
+	
 public:
 	/** Miscellaneous helper functions */
 
@@ -596,13 +638,14 @@ private:
 	/** Get an array of selected folders */
 	void GetSelectedFolders(TArray<FFolderTreeItem*>& OutFolders) const;
 
-	/** Get an array of selected folder names */
-	TArray<FName> GetSelectedFolderNames() const;
 private:
 	/** Tree view event bindings */
 
 	/** Called by STreeView to generate a table row for the specified item */
 	TSharedRef< ITableRow > OnGenerateRowForOutlinerTree( FSceneOutlinerTreeItemPtr Item, const TSharedRef< STableViewBase >& OwnerTable );
+
+	/** Called by STreeView to generate a table row for the specified item is pinned*/
+	TSharedRef< ITableRow > OnGeneratePinnedRowForOutlinerTree(FSceneOutlinerTreeItemPtr Item, const TSharedRef< STableViewBase >& OwnerTable);
 
 	/** Called by STreeView to get child items for the specified parent item */
 	void OnGetChildrenForOutlinerTree( FSceneOutlinerTreeItemPtr InParent, TArray< FSceneOutlinerTreeItemPtr >& OutChildren );
@@ -668,6 +711,12 @@ private:
 
 	/** Cache folders for cut/copy/paste/duplicate */
 	TArray<FName> CacheFoldersEdit;
+
+	/** CacheFoldersEdit target root object */
+	FFolder::FRootObject CacheFoldersEditRootObject;
+
+	/** Cache folders mapping (old to new) for cut/copy/paste/duplicate */
+	TMap<FName, FName> CacheFolderMap;
 
 	/** Cache clipboard contents for cut/copy */
 	FString CacheClipboardContents;
@@ -769,6 +818,9 @@ private:
 
 private:
 
+	/** Called when SceneOutlinerModule column permission list changes. */
+	void OnColumnPermissionListChanged();
+
 	/** Structure containing information relating to the expansion state of parent items in the tree */
 	typedef TMap<FSceneOutlinerTreeItemID, bool> FParentsExpansionState;
 	
@@ -780,6 +832,7 @@ private:
 
 	/** Updates the expansion state of parent items after a repopulate, according to the previous state */
 	void SetParentsExpansionState(const FParentsExpansionState& ExpansionStateInfo) const;
+
 private:
 
 	/** True if the outliner needs to be repopulated at the next appropriate opportunity, usually because our
@@ -804,7 +857,7 @@ private:
 	bool bIsReentrant;
 
 	/* Widget containing the filtering text box */
-	TSharedPtr< SSearchBox > FilterTextBoxWidget;
+	TSharedPtr< SFilterSearchBox > FilterTextBoxWidget;
 
 	/** The header row of the scene outliner */
 	TSharedPtr< SHeaderRow > HeaderRowWidget;
@@ -817,6 +870,12 @@ private:
 
 	/** The TextFilter attached to the SearchBox widget of the Scene Outliner */
 	TSharedPtr< SceneOutliner::TreeItemTextFilter > SearchBoxFilter;
+
+	/** The FilterBar attached to this outliner to filter down assets further */
+	TSharedPtr< SFilterBar< SceneOutliner::FilterBarType > > FilterBar;
+
+	/** The FilterCollection belonging to the Filter Bar */
+	TSharedPtr< TFilterCollection< SceneOutliner::FilterBarType > > FilterCollection;
 
 	/** True if the search box will take keyboard focus next frame */
 	bool bPendingFocusNextFrame;
@@ -854,8 +913,15 @@ private:
 	/** Currently selected sorting mode */
 	EColumnSortMode::Type SortMode;
 
-	/** Identifier for this outliner (Set through FSceneOutlinerInitializationOptions)*/
+	/** Identifier for this outliner (Set through FSceneOutlinerInitializationOptions) */
 	FName OutlinerIdentifier;
+
+	/** true if the hierarchy of items is pinned at the top of the outliner */
+	bool bShouldStackHierarchyHeaders;
+
+	void ToggleStackHierarchyHeaders();
+
+	bool ShouldStackHierarchyHeaders() const;
 
 	/** Handles column sorting mode change */
 	void OnColumnSortModeChanged( const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type InSortMode );
@@ -871,16 +937,29 @@ private:
 	/**
 	 * Get a mutable version of the outliner config for setting values.
 	 * @returns		The outliner config for this outliner.
-	 * @note		If FSceneOutlinerInitializationOptions.ViewIdentifier is not set, it is not possible to store settings for this outliner.
+	 * @note		If FSceneOutlinerInitializationOptions.OutlinerIdentifier is not set, it is not possible to store settings for this outliner.
 	 */
 	struct FSceneOutlinerConfig* GetMutableConfig();
 
 	/**
 	 * Get a const version of the outliner config for getting values.
 	 * @returns		The outliner config for this outliner.
-	 * @note		If FSceneOutlinerInitializationOptions.ViewIdentifier is not set, it is not possible to retrieve settings for this outliner.
+	 * @note		If FSceneOutlinerInitializationOptions.OutlinerIdentifier is not set, it is not possible to retrieve settings for this outliner.
 	 */
 	const FSceneOutlinerConfig* GetConstConfig() const;
 
 	void SaveConfig();
+
+	TSharedPtr<FSceneOutlinerSCCHandler> SourceControlHandler;
+
+public:
+	virtual TSharedPtr<FSceneOutlinerTreeItemSCC> GetItemSourceControl(const FSceneOutlinerTreeItemPtr& InItem) override;
+
+	void AddSourceControlMenuOptions(UToolMenu* Menu);
+};
+
+struct SCENEOUTLINER_API FSceneOutlinerMenuHelper
+{
+	static void AddMenuEntryCreateFolder(FToolMenuSection& InSection, SSceneOutliner& InOutliner);
+	static void AddMenuEntryCleanupFolders(FToolMenuSection& InSection, ULevel* InLevel);
 };

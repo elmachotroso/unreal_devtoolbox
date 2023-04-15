@@ -58,17 +58,11 @@ void FViewportSurfaceReader::Resize(uint32 Width, uint32 Height)
 	ENQUEUE_RENDER_COMMAND(CreateCaptureFrameTexture)(
 		[Width, Height, This](FRHICommandListImmediate& RHICmdList)
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FViewportSurfaceReader_ReadbackTexture"));
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("FViewportSurfaceReader_ReadbackTexture"), Width, Height, This->PixelFormat)
+				.SetFlags(ETextureCreateFlags::CPUReadback);
 
-			This->ReadbackTexture = RHICreateTexture2D(
-				Width,
-				Height,
-				This->PixelFormat,
-				1,
-				1,
-				TexCreate_CPUReadback,
-				CreateInfo
-				);
+			This->ReadbackTexture = RHICreateTexture(Desc);
 		});
 }
 
@@ -124,9 +118,9 @@ void FViewportSurfaceReader::ResolveRenderTarget(FViewportSurfaceReader* RenderT
 		GRenderTargetPool.FindFreeElement(RHICmdList, OutputDesc, ResampleTexturePooledRenderTarget, TEXT("ResampleTexture"));
 		check(ResampleTexturePooledRenderTarget);
 
-		const FSceneRenderTargetItem& DestRenderTarget = ResampleTexturePooledRenderTarget->GetRenderTargetItem();
+		FRHITexture* DestRenderTarget = ResampleTexturePooledRenderTarget->GetRHI();
 
-		FRHIRenderPassInfo RPInfo(DestRenderTarget.TargetableTexture, ERenderTargetActions::Load_Store, ReadbackTexture);
+		FRHIRenderPassInfo RPInfo(DestRenderTarget, ERenderTargetActions::Load_Store);
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("FrameGrabberResolveRenderTarget"));
 		{
 			RHICmdList.SetViewport(0, 0, 0.0f, TargetSize.X, TargetSize.Y, 1.0f);
@@ -180,6 +174,7 @@ void FViewportSurfaceReader::ResolveRenderTarget(FViewportSurfaceReader* RenderT
 				EDRF_Default);
 		}
 		RHICmdList.EndRenderPass();
+		TransitionAndCopyTexture(RHICmdList, DestRenderTarget, ReadbackTexture, {});
 
 		if (RenderToReadback)
 		{

@@ -2,9 +2,11 @@
 
 #include "MovieSceneMediaTemplate.h"
 
+#include "IMediaAssetsModule.h"
 #include "Math/UnrealMathUtility.h"
 #include "MediaPlayer.h"
 #include "MediaPlayerFacade.h"
+#include "MediaPlayerProxyInterface.h"
 #include "MediaSoundComponent.h"
 #include "MediaSource.h"
 #include "MediaTexture.h"
@@ -14,6 +16,8 @@
 #include "MovieSceneMediaData.h"
 #include "MovieSceneMediaSection.h"
 #include "MovieSceneMediaTrack.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneMediaTemplate)
 
 
 #define MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION 0
@@ -36,15 +40,28 @@ struct FMediaSectionPreRollExecutionToken
 
 		FMovieSceneMediaData& SectionData = PersistentData.GetSectionData<FMovieSceneMediaData>();
 		UMediaPlayer* MediaPlayer = SectionData.GetMediaPlayer();
+		UObject* PlayerProxy = SectionData.GetPlayerProxy();
 
 		if (MediaPlayer == nullptr || MediaSource == nullptr)
 		{
 			return;
 		}
 
+		// Do we have a player proxy?
+		IMediaPlayerProxyInterface* PlayerProxyInterface = nullptr;
+		if (PlayerProxy != nullptr)
+		{
+			PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>
+				(PlayerProxy);
+		}
+
 		// open the media source if necessary
 		if (MediaPlayer->GetUrl().IsEmpty())
 		{
+			if (PlayerProxyInterface != nullptr)
+			{
+				MediaSource->SetCacheSettings(PlayerProxyInterface->GetCacheSettings());
+			}
 			SectionData.SeekOnOpen(StartTime);
 			MediaPlayer->OpenSource(MediaSource);
 		}
@@ -71,15 +88,36 @@ struct FMediaSectionExecutionToken
 	{
 		FMovieSceneMediaData& SectionData = PersistentData.GetSectionData<FMovieSceneMediaData>();
 		UMediaPlayer* MediaPlayer = SectionData.GetMediaPlayer();
+		UObject* PlayerProxy = SectionData.GetPlayerProxy();
 
 		if (MediaPlayer == nullptr || MediaSource == nullptr)
 		{
 			return;
 		}
 
+		// Do we have a player proxy?
+		IMediaPlayerProxyInterface* PlayerProxyInterface = nullptr;
+		if (PlayerProxy != nullptr)
+		{
+			PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>
+				(PlayerProxy);
+			if (PlayerProxyInterface != nullptr)
+			{
+				// Can we control the player?
+				if (PlayerProxyInterface->IsExternalControlAllowed() == false)
+				{
+					return;
+				}
+			}
+		}
+
 		// open the media source if necessary
 		if (MediaPlayer->GetUrl().IsEmpty())
 		{
+			if (PlayerProxyInterface != nullptr)
+			{
+				MediaSource->SetCacheSettings(PlayerProxyInterface->GetCacheSettings());
+			}
 			SectionData.SeekOnOpen(CurrentTime);
 			// Setup an initial blocking range - MediaFramework will block (even through the opening process) in its next tick...
 			MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>(CurrentTime, CurrentTime + FrameDuration));
@@ -134,7 +172,8 @@ struct FMediaSectionExecutionToken
 				// Set rate
 				// (note that the DIRECTION is important, but the magnitude is not - as we use blocked playback, the range setup to block on will serve as external clock to the player,
 				//  the direction is taken into account as hint for internal operation of the player)
-				if (!MediaPlayer->SetRate((Context.GetDirection() == EPlayDirection::Forwards) ? 1.0f : -1.0f))
+				if (!SetRate(MediaPlayer, PlayerProxyInterface,
+					(Context.GetDirection() == EPlayDirection::Forwards) ? 1.0f : -1.0f))
 				{
 					// Failed to set needed rate: better switch off blocking and bail...
 					MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
@@ -151,7 +190,7 @@ struct FMediaSectionExecutionToken
 				float CurrentPlayerRate = MediaPlayer->GetRate();
 				if (Context.GetDirection() == EPlayDirection::Forwards && CurrentPlayerRate < 0.0f)
 				{
-					if (!MediaPlayer->SetRate(1.0f))
+					if (!SetRate(MediaPlayer, PlayerProxyInterface, 1.0f))
 					{
 						// Failed to set needed rate: better switch off blocking and bail...
 						MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
@@ -160,7 +199,7 @@ struct FMediaSectionExecutionToken
 				}
 				else if (Context.GetDirection() == EPlayDirection::Backwards && CurrentPlayerRate > 0.0f)
 				{
-					if (!MediaPlayer->SetRate(-1.0f))
+					if (!SetRate(MediaPlayer, PlayerProxyInterface, -1.0f))
 					{
 						// Failed to set needed rate: better switch off blocking and bail...
 						MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
@@ -173,7 +212,7 @@ struct FMediaSectionExecutionToken
 		{
 			if (MediaPlayer->IsPlaying())
 			{
-				MediaPlayer->SetRate(0.0f);
+				SetRate(MediaPlayer, PlayerProxyInterface, 0.0f);
 			}
 
 			MediaPlayer->Seek(MediaTime);
@@ -185,6 +224,22 @@ struct FMediaSectionExecutionToken
 	}
 
 private:
+
+	/**
+	 * Call this to set the rate.
+	 * It will use the proxy if available, otherwise it will use the player.
+	 */
+	bool SetRate(UMediaPlayer* Player, IMediaPlayerProxyInterface* Proxy, float Rate)
+	{
+		if (Proxy != nullptr)
+		{
+			return Proxy->SetProxyRate(Rate);
+		}
+		else
+		{
+			return Player->SetRate(Rate);
+		}
+	}
 
 	FTimespan CurrentTime;
 	FTimespan FrameDuration;
@@ -202,6 +257,10 @@ FMovieSceneMediaSectionTemplate::FMovieSceneMediaSectionTemplate(const UMovieSce
 	Params.MediaSoundComponent = InSection.MediaSoundComponent;
 	Params.bLooping = InSection.bLooping;
 	Params.StartFrameOffset = InSection.StartFrameOffset;
+	if (Params.MediaSource != nullptr)
+	{
+		Params.MediaSource->SetCacheSettings(InSection.CacheSettings);
+	}
 
 	// If using an external media player link it here so we don't automatically create it later.
 	Params.MediaPlayer = InSection.bUseExternalMediaPlayer ? InSection.ExternalMediaPlayer : nullptr;
@@ -248,11 +307,12 @@ void FMovieSceneMediaSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 		const double FrameTimeInSeconds = FrameRate.AsSeconds(FrameTime);
 		const int64 FrameTicks = FrameTimeInSeconds * ETimespan::TicksPerSecond;
 
-		const double FrameDurationInSeconds = FrameRate.AsSeconds(FFrameTime(1));
+		// With zero-length frames (which can occur occasionally), we use the fixed frame time, matching previous behavior.
+		const double FrameDurationInSeconds = FMath::Max(FrameRate.AsSeconds(FFrameTime(1)), (Context.GetRange().Size<FFrameTime>()) / Context.GetFrameRate());
 		const int64 FrameDurationTicks = FrameDurationInSeconds * ETimespan::TicksPerSecond;
 
 		#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
-			GLog->Logf(ELogVerbosity::Log, TEXT("Evaluating frame %i+%f, FrameRate %i/%i, FrameTicks %d, FrameDurationTicks"),
+			GLog->Logf(ELogVerbosity::Log, TEXT("Evaluating frame %i+%f, FrameRate %i/%i, FrameTicks %d, FrameDurationTicks %d"),
 				Context.GetTime().GetFrame().Value,
 				Context.GetTime().GetSubFrame(),
 				FrameRate.Numerator,
@@ -276,6 +336,37 @@ UScriptStruct& FMovieSceneMediaSectionTemplate::GetScriptStructImpl() const
 void FMovieSceneMediaSectionTemplate::Initialize(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
 {
 	FMovieSceneMediaData* SectionData = PersistentData.FindSectionData<FMovieSceneMediaData>();
+	if (SectionData == nullptr)
+	{
+		// Are we overriding the media player?
+		UMediaPlayer* MediaPlayer = Params.MediaPlayer;
+		UObject* PlayerProxy = nullptr;
+		if (MediaPlayer == nullptr)
+		{
+			// Nope... do we have an object binding?
+			if (Operand.ObjectBindingID.IsValid())
+			{
+				// Yes. Get the media player from the object.
+				IMediaAssetsModule* MediaAssetsModule = FModuleManager::LoadModulePtr<IMediaAssetsModule>("MediaAssets");
+				if (MediaAssetsModule != nullptr)
+				{
+					for (TWeakObjectPtr<> WeakObject : Player.FindBoundObjects(Operand))
+					{
+						UObject* BoundObject = WeakObject.Get();
+						if (BoundObject != nullptr)
+						{
+							MediaPlayer = MediaAssetsModule->GetPlayerFromObject(BoundObject, PlayerProxy);
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		// Add section data.
+		SectionData = &PersistentData.AddSectionData<FMovieSceneMediaData>();
+		SectionData->Setup(MediaPlayer, PlayerProxy);
+	}
 
 	if (!ensure(SectionData != nullptr))
 	{
@@ -335,15 +426,9 @@ void FMovieSceneMediaSectionTemplate::Initialize(const FMovieSceneEvaluationOper
 }
 
 
-void FMovieSceneMediaSectionTemplate::Setup(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
-{
-	PersistentData.AddSectionData<FMovieSceneMediaData>().Setup(Params.MediaPlayer);
-}
-
-
 void FMovieSceneMediaSectionTemplate::SetupOverrides()
 {
-	EnableOverrides(RequiresInitializeFlag | RequiresSetupFlag | RequiresTearDownFlag);
+	EnableOverrides(RequiresInitializeFlag | RequiresTearDownFlag);
 }
 
 
@@ -373,3 +458,4 @@ void FMovieSceneMediaSectionTemplate::TearDown(FPersistentEvaluationData& Persis
 		Params.MediaTexture->SetMediaPlayer(nullptr);
 	}
 }
+

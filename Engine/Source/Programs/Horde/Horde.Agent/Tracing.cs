@@ -1,30 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using OpenTracing;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
-namespace HordeAgent
+namespace Horde.Agent
 {
 	static class Tracing
 	{
-		public static ISpanBuilder WithResourceName(this ISpanBuilder Builder, string? ResourceName)
+		public static ISpanBuilder WithResourceName(this ISpanBuilder builder, string? resourceName)
 		{
-			if (ResourceName != null)
+			if (resourceName != null)
 			{
-				Builder = Builder.WithTag(Datadog.Trace.OpenTracing.DatadogTags.ResourceName, ResourceName);
+				builder = builder.WithTag(Datadog.Trace.OpenTracing.DatadogTags.ResourceName, resourceName);
 			}
-			return Builder;
+			return builder;
 		}
 
-		public static ISpanBuilder WithServiceName(this ISpanBuilder Builder, string? ServiceName)
+		public static ISpanBuilder WithServiceName(this ISpanBuilder builder, string? serviceName)
 		{
-			if(ServiceName != null)
+			if(serviceName != null)
 			{
-				Builder = Builder.WithTag(Datadog.Trace.OpenTracing.DatadogTags.ServiceName, ServiceName);
+				builder = builder.WithTag(Datadog.Trace.OpenTracing.DatadogTags.ServiceName, serviceName);
 			}
-			return Builder;
+			return builder;
 		}
 }
 }

@@ -41,7 +41,7 @@ bool FDMXFixtureTypeFunctionsEditorFunctionItem::HasValidAttribute() const
 	if (FixtureType.IsValid() && FixtureType->Modes.IsValidIndex(ModeIndex) && FixtureType->Modes[ModeIndex].Functions.IsValidIndex(FunctionIndex))
 	{
 		const FDMXFixtureFunction& Function = FixtureType->Modes[ModeIndex].Functions[FunctionIndex];
-		return Function.Attribute != FDMXNameListItem::None;
+		return !Function.Attribute.IsValid();
 	}
 
 	return false;
@@ -107,7 +107,7 @@ FDMXAttributeName FDMXFixtureTypeFunctionsEditorFunctionItem::GetAttributeName()
 		return Function.Attribute;
 	}
 
-	return FDMXAttributeName::None;
+	return FDMXAttributeName(NAME_None);
 }
 
 void FDMXFixtureTypeFunctionsEditorFunctionItem::SetAttributeName(const FDMXAttributeName& AttributeName) const

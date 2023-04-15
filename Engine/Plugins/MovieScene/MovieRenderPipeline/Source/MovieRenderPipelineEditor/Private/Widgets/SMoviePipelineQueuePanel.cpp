@@ -19,7 +19,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/SWindow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -28,6 +28,7 @@
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "SPrimaryButton.h"
 
 // ContentBrowser Includes
 #include "IContentBrowserSingleton.h"
@@ -41,8 +42,8 @@
 
 // UnrealEd Includes
 #include "ScopedTransaction.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FileHelpers.h"
 #include "AssetToolsModule.h"
 #include "Misc/FileHelper.h"
@@ -68,8 +69,22 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 		.OnPresetChosen(this, &SMoviePipelineQueuePanel::OnJobPresetChosen)
 		.OnJobSelectionChanged(this, &SMoviePipelineQueuePanel::OnSelectionChanged);
 
-	// Reset us to no selection.
-	OnSelectionChanged(TArray<UMoviePipelineExecutorJob*>());
+
+	{
+		// Automatically select the first job in the queue
+		UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+		check(Subsystem);
+
+		TArray<UMoviePipelineExecutorJob*> Jobs;
+		if (Subsystem->GetQueue()->GetJobs().Num() > 0)
+		{
+			Jobs.Add(Subsystem->GetQueue()->GetJobs()[0]);
+		}
+
+		// Go through the UI so it updates the UI selection too and then this will loop back
+		// around to OnSelectionChanged to update ourself.
+		PipelineQueueEditorWidget->SetSelectedJobs(Jobs);
+	}
 
 	ChildSlot
 	[
@@ -81,7 +96,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 			[
 				SNew(SHorizontalBox)
@@ -134,7 +149,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 						.AutoWidth()
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("AssetEditor.SaveAsset"))
+							.Image(FAppStyle::Get().GetBrush("AssetEditor.SaveAsset"))
 						]
 
 						+ SHorizontalBox::Slot()
@@ -164,7 +179,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 			.Value(1)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.Padding(FMargin(1.f, 1.0f))
 				.Content()
 				[
@@ -195,7 +210,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 			.Padding(FMargin(0, 2, 0, 2))
 			[
@@ -216,19 +231,11 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 				.HAlign(HAlign_Right)
 				.AutoWidth()
 				[
-					SNew(SButton)
-					.ContentPadding(MoviePipeline::ButtonPadding)
-					.ButtonStyle(FMovieRenderPipelineStyle::Get(), "FlatButton.Success")
+					SNew(SPrimaryButton)
+					.Text(LOCTEXT("RenderQueueLocal_Text", "Render (Local)"))
+					.ToolTipText(LOCTEXT("RenderQueueLocal_Tooltip", "Renders the current queue in the current process using Play in Editor."))
 					.IsEnabled(this, &SMoviePipelineQueuePanel::IsRenderLocalEnabled)
 					.OnClicked(this, &SMoviePipelineQueuePanel::OnRenderLocalRequested)
-					.Content()
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Text(LOCTEXT("RenderQueueLocal_Text", "Render (Local)"))
-						.ToolTipText(LOCTEXT("RenderQueueLocal_Tooltip", "Renders the current queue in the current process using Play in Editor."))
-						.Margin(FMargin(4, 0, 4, 0))
-					]
 				]
 
 				// Render Remotely (Separate Process or Farm)
@@ -238,19 +245,11 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 				.HAlign(HAlign_Right)
 				.AutoWidth()
 				[
-					SNew(SButton)
-					.ContentPadding(MoviePipeline::ButtonPadding)
-					.ButtonStyle(FMovieRenderPipelineStyle::Get(), "FlatButton.Success")
+					SNew(SPrimaryButton)
+					.Text(LOCTEXT("RenderQueueRemote_Text", "Render (Remote)"))
+					.ToolTipText(LOCTEXT("RenderQueueRemote_Tooltip", "Renders the current queue in a separate process."))
 					.IsEnabled(this, &SMoviePipelineQueuePanel::IsRenderRemoteEnabled)
 					.OnClicked(this, &SMoviePipelineQueuePanel::OnRenderRemoteRequested)
-					.Content()
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Text(LOCTEXT("RenderQueueRemote_Text", "Render (Remote)"))
-						.ToolTipText(LOCTEXT("RenderQueueRemote_Tooltip", "Renders the current queue in a separate process."))
-						.Margin(FMargin(4, 0, 4, 0))
-					]
 				]
 			]
 		]
@@ -265,9 +264,11 @@ FReply SMoviePipelineQueuePanel::OnRenderLocalRequested()
 	check(Subsystem);
 
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	check(ProjectSettings->DefaultLocalExecutor != nullptr);
+	TSubclassOf<UMoviePipelineExecutorBase> ExecutorClass = ProjectSettings->DefaultLocalExecutor.TryLoadClass<UMoviePipelineExecutorBase>();
 
-	Subsystem->RenderQueueWithExecutor(ProjectSettings->DefaultLocalExecutor);
+	// OnRenderLocalRequested should only get called if IsRenderLocalEnabled() returns true, meaning there's a valid class.
+	check(ExecutorClass != nullptr);
+	Subsystem->RenderQueueWithExecutor(ExecutorClass);
 	return FReply::Handled();
 }
 
@@ -277,14 +278,14 @@ bool SMoviePipelineQueuePanel::IsRenderLocalEnabled() const
 	check(Subsystem);
 
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	const bool bHasExecutor = ProjectSettings->DefaultLocalExecutor != nullptr;
+	const bool bHasExecutor = ProjectSettings->DefaultLocalExecutor.TryLoadClass<UMoviePipelineExecutorBase>() != nullptr;
 	const bool bNotRendering = !Subsystem->IsRendering();
 	const bool bConfigWindowIsOpen = WeakEditorWindow.IsValid();
 
 	bool bAtLeastOneJobAvailable = false;
 	for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
 	{
-		if (!Job->IsConsumed())
+		if (!Job->IsConsumed() && Job->IsEnabled())
 		{
 			bAtLeastOneJobAvailable = true;
 			break;
@@ -301,9 +302,12 @@ FReply SMoviePipelineQueuePanel::OnRenderRemoteRequested()
 	check(Subsystem);
 
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	check(ProjectSettings->DefaultRemoteExecutor != nullptr);
+	TSubclassOf<UMoviePipelineExecutorBase> ExecutorClass = ProjectSettings->DefaultRemoteExecutor.TryLoadClass<UMoviePipelineExecutorBase>();
 
-	Subsystem->RenderQueueWithExecutor(ProjectSettings->DefaultRemoteExecutor);
+	// OnRenderRemoteRequested should only get called if IsRenderRemoteEnabled() returns true, meaning there's a valid class.
+	check(ExecutorClass != nullptr);
+
+	Subsystem->RenderQueueWithExecutor(ExecutorClass);
 	return FReply::Handled();
 }
 
@@ -313,14 +317,14 @@ bool SMoviePipelineQueuePanel::IsRenderRemoteEnabled() const
 	check(Subsystem);
 
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	const bool bHasExecutor = ProjectSettings->DefaultRemoteExecutor != nullptr;
+	const bool bHasExecutor = ProjectSettings->DefaultRemoteExecutor.TryLoadClass<UMoviePipelineExecutorBase>() != nullptr;
 	const bool bNotRendering = !Subsystem->IsRendering();
 	const bool bConfigWindowIsOpen = WeakEditorWindow.IsValid();
 
 	bool bAtLeastOneJobAvailable = false;
 	for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
 	{
-		if (!Job->IsConsumed())
+		if (!Job->IsConsumed() && Job->IsEnabled())
 		{
 			bAtLeastOneJobAvailable = true;
 			break;
@@ -498,7 +502,7 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsQueue_Text", "Save As Asset"),
 		LOCTEXT("SaveAsQueue_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(FExecuteAction::CreateSP(this, &SMoviePipelineQueuePanel::OnSaveAsAsset))
 	);
 
@@ -517,7 +521,7 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 		AssetPickerConfig.bSortByPathInColumnView = false;
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoQueueAssets_Warning", "No Queues Found");
-		AssetPickerConfig.Filter.ClassNames.Add(UMoviePipelineQueue::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UMoviePipelineQueue::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SMoviePipelineQueuePanel::OnImportSavedQueueAssest);
 	}
@@ -544,7 +548,7 @@ bool SMoviePipelineQueuePanel::OpenSaveDialog(const FString& InDefaultPath, cons
 	{
 		SaveAssetDialogConfig.DefaultPath = InDefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = InNewNameSuggestion;
-		SaveAssetDialogConfig.AssetClassNames.Add(UMoviePipelineQueue::StaticClass()->GetFName());
+		SaveAssetDialogConfig.AssetClassNames.Add(UMoviePipelineQueue::StaticClass()->GetClassPathName());
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveQueueAssetDialogTitle", "Save Queue Asset");
 	}
@@ -669,6 +673,17 @@ void SMoviePipelineQueuePanel::OnImportSavedQueueAssest(const FAssetData& InPres
 				}
 			}
 		}
+
+		// Automatically select the first job in the queue
+		TArray<UMoviePipelineExecutorJob*> Jobs;
+		if (Subsystem->GetQueue()->GetJobs().Num() > 0)
+		{
+			Jobs.Add(Subsystem->GetQueue()->GetJobs()[0]);
+		}
+
+		// Go through the UI so it updates the UI selection too and then this will loop back
+		// around to OnSelectionChanged to update ourself.
+		PipelineQueueEditorWidget->SetSelectedJobs(Jobs);
 	}
 }
 

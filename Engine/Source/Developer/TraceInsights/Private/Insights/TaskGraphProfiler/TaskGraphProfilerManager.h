@@ -42,7 +42,9 @@ enum class ETaskEventType : uint32
 	Scheduled,
 	Started,
 	Finished,
+	Completed,
 	PrerequisiteStarted,
+	ParentStarted,
 	NestedStarted,
 	NestedCompleted,
 	SubsequentStarted,
@@ -106,6 +108,9 @@ public:
 
 	TSharedPtr<Insights::FTaskTimingSharedState> GetTaskTimingSharedState() { return TaskTimingSharedState;	}
 
+	bool GetShowCriticalPath() const { return bShowCriticalPath; }
+	void SetShowCriticalPath(bool bInValue) { bShowCriticalPath = bInValue; }
+
 	bool GetShowTransitions() const { return bShowTransitions; }
 	void SetShowTransitions(bool bInValue) { bShowTransitions = bInValue; }
 
@@ -118,15 +123,17 @@ public:
 	bool GetShowSubsequents() const { return bShowSubsequents; }
 	void SetShowSubsequents(bool bInValue) { bShowSubsequents = bInValue; }
 
+	bool GetShowParentTasks() const { return bShowParentTasks; }
+	void SetShowParentTasks(bool bInValue) { bShowParentTasks = bInValue; }
+
 	bool GetShowNestedTasks() const { return bShowNestedTasks; }
 	void SetShowNestedTasks(bool bInValue) { bShowNestedTasks = bInValue; }
 	
-	bool GetShowCriticalPath() const { return bShowCriticalPath; }
-	void SetShowCriticalPath(bool bInValue) { bShowCriticalPath = bInValue; }
-
-	bool GetShowAnyRelations() const { return GetShowTransitions() || GetShowConnections() || GetShowPrerequisites() || GetShowSubsequents() || GetShowNestedTasks() || GetShowCriticalPath(); }
+	bool GetShowAnyRelations() const { return GetShowCriticalPath() || GetShowTransitions() || GetShowConnections() || GetShowPrerequisites() || GetShowSubsequents() || GetShowParentTasks() || GetShowNestedTasks(); }
 
 	int32 GetDepthOfTaskExecution(double TaskStartedTime, double TaskFinishedTime, uint32 ThreadId);
+
+	void SelectTaskInTaskTable(TaskTrace::FId);
 
 private:
 	/** Updates this manager, done through FCoreTicker. */
@@ -166,12 +173,13 @@ private:
 
 	TSharedPtr<Insights::STaskTableTreeView> TaskTableTreeView;
 	FLinearColor ColorCode[static_cast<uint32>(ETaskEventType::NumTaskEventTypes)];
+	bool bShowCriticalPath = false;
 	bool bShowTransitions = true;
 	bool bShowConnections = true;
 	bool bShowPrerequisites = false;
 	bool bShowSubsequents = false;
+	bool bShowParentTasks = false;
 	bool bShowNestedTasks = false;
-	bool bShowCriticalPath = false;
 };
 
 } // namespace Insights

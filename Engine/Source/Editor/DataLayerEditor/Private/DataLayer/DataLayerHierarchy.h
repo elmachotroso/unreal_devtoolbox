@@ -2,15 +2,24 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "SceneOutlinerFwd.h"
-#include "ISceneOutlinerHierarchy.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "DataLayer/DataLayerAction.h"
+#include "ISceneOutlinerHierarchy.h"
+#include "ISceneOutlinerTreeItem.h"
+#include "SceneOutlinerFwd.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
+class AActor;
 class FDataLayerMode;
-class UDataLayer;
-class UWorld;
 class FWorldPartitionActorDesc;
+class UDataLayerInstance;
+class ULevel;
+class UWorld;
+class UWorldPartition;
+struct FSceneOutlinerTreeItemID;
 
 class FDataLayerHierarchy : public ISceneOutlinerHierarchy
 {
@@ -26,8 +35,10 @@ public:
 	void SetShowUnloadedActors(bool bInShowUnloadedActors) { bShowUnloadedActors = bInShowUnloadedActors; }
 	void SetShowOnlySelectedActors(bool bInbShowOnlySelectedActors) { bShowOnlySelectedActors = bInbShowOnlySelectedActors; }
 	void SetHighlightSelectedDataLayers(bool bInHighlightSelectedDataLayers) { bHighlightSelectedDataLayers = bInHighlightSelectedDataLayers; }
+	void SetShowLevelInstanceContent(bool bInShowLevelInstanceContent) { bShowLevelInstanceContent = bInShowLevelInstanceContent; }
 
 private:
+	UWorld* GetOwningWorld() const;
 	FDataLayerHierarchy(FDataLayerMode* Mode, const TWeakObjectPtr<UWorld>& Worlds);
 	FDataLayerHierarchy(const FDataLayerHierarchy&) = delete;
 	FDataLayerHierarchy& operator=(const FDataLayerHierarchy&) = delete;
@@ -38,6 +49,8 @@ private:
 	void OnLevelActorAdded(AActor* InActor);
 	void OnLevelActorDeleted(AActor* InActor);
 	void OnLevelActorListChanged();
+	void OnWorldPartitionInitialized(UWorldPartition* InWorldPartition);
+	void OnWorldPartitionUninitialized(UWorldPartition* InWorldPartition);
 	void OnLevelAdded(ULevel* InLevel, UWorld* InWorld);
 	void OnLevelRemoved(ULevel* InLevel, UWorld* InWorld);
 	void OnLoadedActorAdded(AActor& InActor);
@@ -45,10 +58,10 @@ private:
 	void OnActorDescAdded(FWorldPartitionActorDesc* InActorDesc);
 	void OnActorDescRemoved(FWorldPartitionActorDesc* InActorDesc);
 	void OnActorDataLayersChanged(const TWeakObjectPtr<AActor>& InActor);
-	void OnDataLayerChanged(const EDataLayerAction Action, const TWeakObjectPtr<const UDataLayer>& ChangedDataLayer, const FName& ChangedProperty);
+	void OnDataLayerChanged(const EDataLayerAction Action, const TWeakObjectPtr<const UDataLayerInstance>& ChangedDataLayer, const FName& ChangedProperty);
 	void FullRefreshEvent();
-	FSceneOutlinerTreeItemPtr CreateDataLayerTreeItem(UDataLayer* InDataLayer, bool bInForce = false) const;
-	bool IsDataLayerPartOfSelection(const UDataLayer* DataLayer) const;
+	FSceneOutlinerTreeItemPtr CreateDataLayerTreeItem(UDataLayerInstance* InDataLayer, bool bInForce = false) const;
+	bool IsDataLayerPartOfSelection(const UDataLayerInstance* DataLayer) const;
 
 	TWeakObjectPtr<UWorld> RepresentingWorld;
 	bool bShowEditorDataLayers;
@@ -57,4 +70,5 @@ private:
 	bool bShowUnloadedActors;
 	bool bShowOnlySelectedActors;
 	bool bHighlightSelectedDataLayers;
+	bool bShowLevelInstanceContent;
 };

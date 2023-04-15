@@ -2,30 +2,49 @@
 
 #pragma once
 
-#include "CoreFwd.h"
-#include "CoreTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectMacros.h"
-#include "MeshTypes.h"
-#include "MeshElementArray.h"
-#include "MeshElementContainer.h"
-#include "MeshElementIndexer.h"
 #include "Algo/Accumulate.h"
 #include "Algo/Copy.h"
 #include "Algo/Find.h"
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/BitArray.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainersFwd.h"
 #include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StaticArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreFwd.h"
+#include "CoreTypes.h"
 #include "HAL/CriticalSection.h"
-#include "Misc/CoreMiscDefines.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Box.h"
+#include "Math/MathFwd.h"
+#include "Math/Plane.h"
+#include "Math/Vector.h"
+#include "MeshAttributeArray.h"
+#include "MeshElementArray.h"
+#include "MeshElementContainer.h"
+#include "MeshElementIndexer.h"
+#include "MeshTypes.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/Guid.h"
-#include "UObject/EditorObjectVersion.h"
-#include "UObject/ReleaseObjectVersion.h"
 #include "Serialization/CustomVersion.h"
 #include "Serialization/EditorBulkData.h"
-#include "Containers/StaticArray.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/EditorObjectVersion.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ReleaseObjectVersion.h"
+
 #include "MeshDescription.generated.h"
+
+class FArchive;
+class UObject;
+struct FElementIDRemappings;
 
 enum
 {
@@ -148,6 +167,9 @@ public:
 
 	TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() { return PolygonGroups().GetAttributes(); }
 	const TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() const { return PolygonGroups().GetAttributes(); }
+
+	TMap<FName, FMeshElementTypeWrapper>& GetElements() { return Elements; }
+	const TMap<FName, FMeshElementTypeWrapper>& GetElements() const { return Elements; }
 
 	void SuspendVertexIndexing() { VertexToVertexInstances.Suspend(); VertexToEdges.Suspend(); }
 	void SuspendVertexInstanceIndexing() { VertexInstanceToTriangles.Suspend(); }
@@ -1245,6 +1267,7 @@ private:
 		Container.Add(Item);
 	}
 
+public:
 	static FName VerticesName;
 	static FName VertexInstancesName;
 	static FName UVsName;
@@ -1253,6 +1276,7 @@ private:
 	static FName PolygonsName;
 	static FName PolygonGroupsName;
 
+private:
 	TMap<FName, FMeshElementTypeWrapper> Elements;
 
 	FMeshElementChannels* VertexElements;
@@ -1297,14 +1321,6 @@ public:
 		: bBulkDataUpdated(false)
 		, bGuidIsHash(false)
 	{
-#if UE_ENABLE_VIRTUALIZATION_TOGGLE
-		// Currently FMeshDescriptionBulkData will cause a hard crash if the virtualized data cannot be found.
-		// Calling ::SetVirtualizationOptOut allows us to prevent the bulkdata from virtualizing if a project
-		// has that option enabled. This is not intended to be a shipping feature.
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS	
-		BulkData.SetVirtualizationOptOut(true);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#endif //UE_ENABLE_VIRTUALIZATION_TOGGLE
 	}
 
 	/** Serialization */
@@ -1352,6 +1368,9 @@ private:
 
 	/** Take a copy of the bulk data versioning so it can be propagated to the bulk data reader when deserializing MeshDescription */
 	FCustomVersionContainer CustomVersions;
+	FPackageFileVersion UEVersion;
+	int32 LicenseeUEVersion;
+
 
 	/** Whether the bulk data has been written via SaveMeshDescription */
 	bool bBulkDataUpdated;

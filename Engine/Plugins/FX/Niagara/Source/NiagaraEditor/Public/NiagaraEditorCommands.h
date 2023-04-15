@@ -2,7 +2,7 @@
 
 #pragma once
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 /**
 * Defines commands for the niagara editor.
@@ -16,7 +16,7 @@ public:
 			TEXT("NiagaraEditor"),
 			NSLOCTEXT("Contexts", "NiagaraEditor", "Niagara Editor"),
 			NAME_None,
-			FEditorStyle::GetStyleSetName()
+			FAppStyle::GetAppStyleSetName()
 		)
 	{ }
 
@@ -28,6 +28,7 @@ public:
 	TSharedPtr<FUICommandInfo> Compile;
 	TSharedPtr<FUICommandInfo> RefreshNodes;
 	TSharedPtr<FUICommandInfo> ModuleVersioning;
+	TSharedPtr<FUICommandInfo> EmitterVersioning;
 	TSharedPtr<FUICommandInfo> ResetSimulation;
 	TSharedPtr<FUICommandInfo> SelectNextUsage;
 	TSharedPtr<FUICommandInfo> CreateAssetFromSelection;
@@ -39,6 +40,7 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleInstructionCounts;
 	TSharedPtr<FUICommandInfo> ToggleParticleCounts;
 	TSharedPtr<FUICommandInfo> ToggleEmitterExecutionOrder;
+	TSharedPtr<FUICommandInfo> ToggleGpuTickInformation;
 
 	/** Toggles the preview pane's background */
 	TSharedPtr< FUICommandInfo > TogglePreviewBackground;
@@ -71,6 +73,7 @@ public:
 
 	TSharedPtr<FUICommandInfo> IsolateSelectedEmitters;
 	TSharedPtr<FUICommandInfo> DisableSelectedEmitters;
+	TSharedPtr<FUICommandInfo> HideDisabledModules;
 
 	TSharedPtr<FUICommandInfo> CollapseStackToHeaders;
 

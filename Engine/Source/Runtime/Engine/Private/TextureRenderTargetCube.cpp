@@ -12,6 +12,12 @@
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/TextureCube.h"
 #include "ClearQuad.h"
+#if WITH_EDITOR
+#include "Components/SceneCaptureComponentCube.h"
+#include "UObject/UObjectIterator.h"
+#endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTargetCube)
 
 /*-----------------------------------------------------------------------------
 	UTextureRenderTargetCube
@@ -99,15 +105,32 @@ EMaterialValueType UTextureRenderTargetCube::GetMaterialType() const
 #if WITH_EDITOR
 void UTextureRenderTargetCube::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	// Allow for high resolution captures when ODS is enabled
-	static const auto CVarODSCapture = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.ODSCapture"));
-	const bool bIsODSCapture = CVarODSCapture && (CVarODSCapture->GetValueOnGameThread() != 0);
-	const int32 MaxSize = (bIsODSCapture) ? 4096 : 2048;
+	constexpr int32 MaxSize = 2048;
 
 	EPixelFormat Format = GetFormat();
 	SizeX = FMath::Clamp<int32>(SizeX - (SizeX % GPixelFormats[Format].BlockSizeX),1,MaxSize);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Notify any scene capture components that point to this texture that they may need to refresh
+	static const FName SizeXName = GET_MEMBER_NAME_CHECKED(UTextureRenderTargetCube, SizeX);
+
+	if (PropertyChangedEvent.GetPropertyName() == SizeXName)
+	{
+		for (TObjectIterator<USceneCaptureComponentCube> It; It; ++It)
+		{
+			USceneCaptureComponentCube* SceneCaptureComponent = *It;
+			if (SceneCaptureComponent->TextureTarget == this)
+			{
+				// During interactive edits, time is paused, so the Tick function which normally handles capturing isn't called, and we
+				// need a manual refresh.  We also need a refresh if the capture doesn't happen automatically every frame.
+				if ((PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) || !SceneCaptureComponent->bCaptureEveryFrame)
+				{
+					SceneCaptureComponent->CaptureSceneDeferred();
+				}
+			}
+		}
+	}
 }
 #endif // WITH_EDITOR
 
@@ -150,6 +173,8 @@ UTextureCube* UTextureRenderTargetCube::ConstructTextureCube(
 			case PF_B8G8R8A8:
 				TextureFormat = TSF_BGRA8;
 				break;
+			default:
+				return nullptr;
 		}
 
 		// The r2t resource will be needed to read its surface contents
@@ -161,7 +186,7 @@ UTextureCube* UTextureRenderTargetCube::ConstructTextureCube(
 
 			bool bSRGB = true;
 			// if render target gamma used was 1.0 then disable SRGB for the static texture
-			if (FMath::Abs(CubeResource->GetDisplayGamma() - 1.0f) < KINDA_SMALL_NUMBER)
+			if (FMath::Abs(CubeResource->GetDisplayGamma() - 1.0f) < UE_KINDA_SMALL_NUMBER)
 			{
 				bSRGB = false;
 			}
@@ -227,57 +252,53 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 	{
 		bool bIsSRGB = true;
 		// if render target gamma used was 1.0 then disable SRGB for the static texture
-		if(FMath::Abs(GetDisplayGamma() - 1.0f) < KINDA_SMALL_NUMBER)
+		if(FMath::Abs(GetDisplayGamma() - 1.0f) < UE_KINDA_SMALL_NUMBER)
 		{
 			bIsSRGB = false;
 		}
 
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
-		ETextureCreateFlags TexCreateFlags = bIsSRGB ? TexCreate_SRGB : TexCreate_None;
+		ETextureCreateFlags TexCreateFlags = bIsSRGB ? ETextureCreateFlags::SRGB : ETextureCreateFlags::None;
 		if (Owner->bCanCreateUAV)
 		{
-			TexCreateFlags |= TexCreate_UAV;
+			TexCreateFlags |= ETextureCreateFlags::UAV;
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTargetCubeResource"), FClearValueBinding(Owner->ClearColor));
-			RHICreateTargetableShaderResourceCube(
-				Owner->SizeX,
-				Owner->GetFormat(), 
-				Owner->GetNumMips(),
-				TexCreateFlags, 
-				TexCreate_RenderTargetable,
-				false,
-				CreateInfo,
-				RenderTargetCubeRHI,
-				TextureCubeRHI );
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::CreateCube(TEXT("FTextureRenderTargetCubeResource"))
+				.SetExtent(Owner->SizeX)
+				.SetFormat(Owner->GetFormat())
+				.SetNumMips(Owner->GetNumMips())
+				.SetFlags(TexCreateFlags | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetClearValue(FClearValueBinding(Owner->ClearColor))
+				.SetInitialState(ERHIAccess::SRVMask);
+
+			TextureRHI = RHICreateTexture(Desc);
 		}
 
-		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
+		SetGPUMask(FRHIGPUMask::All());
+
+		if (EnumHasAnyFlags(TexCreateFlags, ETextureCreateFlags::UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTargetCubeRHI);
+			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI);
 		}
 
-		TextureRHI = TextureCubeRHI;
-		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI,TextureRHI);
+		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, TextureRHI);
 
 		// Create the RHI target surface used for rendering to
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTargetCubeResource"), FClearValueBinding(Owner->ClearColor));
-			CubeFaceSurfaceRHI = RHICreateTexture2D(
-				Owner->SizeX, 
-				Owner->SizeX, 
-				Owner->GetFormat(),
-				Owner->GetNumMips(), 
-				/* NumSamples =*/ 1,
-				TexCreate_RenderTargetable|TexCreateFlags,
-				CreateInfo
-				);
-			SetGPUMask(CreateInfo.GPUMask);
-		}
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("FTextureRenderTargetCubeResource"))
+				.SetExtent(Owner->SizeX, Owner->SizeX)
+				.SetFormat(Owner->GetFormat())
+				.SetNumMips(Owner->GetNumMips())
+				.SetFlags(TexCreateFlags | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetClearValue(FClearValueBinding(Owner->ClearColor))
+				.SetInitialState(ERHIAccess::SRVMask);
 
-		// Set render target to 2D surface.
-		RenderTargetTextureRHI = CubeFaceSurfaceRHI;
+			RenderTargetTextureRHI = RHICreateTexture(Desc);
+		}
 
 		AddToDeferredUpdateList(true);
 	}
@@ -304,9 +325,7 @@ void FTextureRenderTargetCubeResource::ReleaseDynamicRHI()
 	ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
-	CubeFaceSurfaceRHI.SafeRelease();
-	RenderTargetCubeRHI.SafeRelease();
-	RenderTargetTextureRHI.SafeRelease();	
+	RenderTargetTextureRHI.SafeRelease();
 
 	// remove from global list of deferred clears
 	RemoveFromDeferredUpdateList();
@@ -319,32 +338,32 @@ void FTextureRenderTargetCubeResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTargetCubeResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/)
 {
-	const FIntPoint Dims = GetSizeXY();
+	if (!bClearRenderTarget)
+	{
+		return;
+	}
+
+	RHICmdList.Transition(FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV));
+
+	ClearRenderTarget(RHICmdList, RenderTargetTextureRHI);
+
+	RHICmdList.Transition({
+		FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::RTV, ERHIAccess::CopySrc),
+		FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::CopyDest)
+	});
+
+	FRHICopyTextureInfo CopyInfo;
+
 	for(int32 FaceIdx = CubeFace_PosX; FaceIdx < CubeFace_MAX; FaceIdx++)
 	{
-		ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::ELoad;
-		// clear each face of the cube target texture to ClearColor
-		if (bClearRenderTarget)
-		{
-			LoadAction = ERenderTargetLoadAction::EClear;
-		}
-		
-		FRHIRenderPassInfo RPInfo(RenderTargetTextureRHI, MakeRenderTargetActions(LoadAction, ERenderTargetStoreAction::EStore));
-		TransitionRenderPassTargets(RHICmdList, RPInfo);
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("UpdateTargetCube"));
-		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)Dims.X, (float)Dims.Y, 1.0f);
-		RHICmdList.EndRenderPass();
-		// copy surface to the texture for use
-		FResolveParams ResolveParams;
-		ResolveParams.CubeFace = (ECubeFace)FaceIdx;
-
-		FRHITransitionInfo TransitionsBefore[] = {
-			FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::RTV, ERHIAccess::ResolveSrc),
-			FRHITransitionInfo(TextureCubeRHI, ERHIAccess::Unknown, ERHIAccess::ResolveDst)
-		};
-		RHICmdList.Transition(MakeArrayView(TransitionsBefore, UE_ARRAY_COUNT(TransitionsBefore)));
-		RHICmdList.CopyToResolveTarget(RenderTargetTextureRHI, TextureCubeRHI, ResolveParams);
+		CopyInfo.DestSliceIndex = FaceIdx;
+		RHICmdList.CopyTexture(RenderTargetTextureRHI, TextureRHI, CopyInfo);
 	}
+
+	RHICmdList.Transition({
+		FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::CopySrc, ERHIAccess::SRVMask),
+		FRHITransitionInfo(TextureRHI, ERHIAccess::CopyDest, ERHIAccess::SRVMask)
+	});
 }
 
 /** 
@@ -373,7 +392,7 @@ FIntPoint FTextureRenderTargetCubeResource::GetSizeXY() const
 
 float FTextureRenderTargetCubeResource::GetDisplayGamma() const
 {
-	if(Owner->TargetGamma > KINDA_SMALL_NUMBER * 10.0f)
+	if(Owner->TargetGamma > UE_KINDA_SMALL_NUMBER * 10.0f)
 	{
 		return Owner->TargetGamma;
 	}
@@ -422,7 +441,7 @@ bool FTextureRenderTargetCubeResource::ReadPixels(TArray< FColor >& OutImageData
 		[Context](FRHICommandListImmediate& RHICmdList)
 		{
 			RHICmdList.ReadSurfaceData(
-				Context.SrcRenderTarget->TextureCubeRHI,
+				Context.SrcRenderTarget->TextureRHI,
 				Context.Rect,
 				*Context.OutData,
 				Context.Flags
@@ -467,7 +486,7 @@ bool FTextureRenderTargetCubeResource::ReadPixels(TArray<FFloat16Color>& OutImag
 		[Context](FRHICommandListImmediate& RHICmdList)
 		{
 			RHICmdList.ReadSurfaceFloatData(
-				Context.SrcRenderTarget->TextureCubeRHI,
+				Context.SrcRenderTarget->TextureRHI,
 				Context.Rect,
 				*Context.OutData,
 				Context.CubeFace,
@@ -480,3 +499,4 @@ bool FTextureRenderTargetCubeResource::ReadPixels(TArray<FFloat16Color>& OutImag
 
 	return true;
 }
+

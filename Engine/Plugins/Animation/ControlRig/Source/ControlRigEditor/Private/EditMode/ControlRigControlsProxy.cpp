@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigControlsProxy.h"
+#include "EditMode/ControlRigControlsProxy.h"
 #include "EditorModeManager.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "Sequencer/ControlRigSequence.h"
 #include "Rigs/RigHierarchy.h"
 
@@ -10,6 +10,8 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "MovieSceneCommonHelpers.h"
 #include "PropertyHandle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigControlsProxy)
 
 #if WITH_EDITOR
 
@@ -61,7 +63,7 @@ void FControlRigEnumControlProxyValueDetails::CustomizeHeader(TSharedRef<IProper
 		SNew(SEnumComboBox, ProxyBeingCustomized->Enum.EnumType)
 		.OnEnumSelectionChanged(SEnumComboBox::FOnEnumSelectionChanged::CreateSP(this, &FControlRigEnumControlProxyValueDetails::OnEnumValueChanged, InStructPropertyHandle))
 		.CurrentValue(this, &FControlRigEnumControlProxyValueDetails::GetEnumValue)
-		.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+		.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
 	];
 }
 
@@ -100,20 +102,6 @@ void UControlRigControlsProxy::SelectionChanged(bool bInSelected)
 	}
 }
 
-void UControlRigControlsProxy::CheckEditModeOnSelectionChange(UControlRig *InControlRig)
-{
-#if WITH_EDITOR
-	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-	if (ControlRigEditMode)
-	{
-		if (ControlRigEditMode->GetControlRig(false) != InControlRig)
-		{
-			ControlRigEditMode->SetObjects(InControlRig, nullptr, nullptr);
-		}
-	}
-#endif
-}
-
 void UControlRigControlsProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -122,11 +110,7 @@ void UControlRigControlsProxy::PostEditChangeProperty(struct FPropertyChangedEve
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
-			if (bSelected)
-			{
-				CheckEditModeOnSelectionChange(ControlRig.Get());
-			}
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SelectControl(ControlName, bSelected);
 			ControlRig->Evaluate_AnyThread();
 		}
@@ -139,10 +123,6 @@ void UControlRigControlsProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 	}
 }
@@ -167,9 +147,10 @@ void UControlRigTransformControlProxy::PostEditChangeProperty(struct FPropertyCh
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
-			FTransform RealTransform = Transform; //Transform is FEulerTransform
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
+			const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
 			ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, EControlRigSetKey::DoNotCare,false);
+			ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
 			ControlRig->Evaluate_AnyThread();
 
 		}
@@ -185,7 +166,8 @@ void UControlRigTransformControlProxy::ValueChanged()
 		const FName PropertyName("Transform");
 		FTrackInstancePropertyBindings Binding(PropertyName, PropertyName.ToString());
 		const FTransform NewTransform = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FTransform_Float>().ToTransform();
-		const FEulerTransform EulerTransform = NewTransform;
+		FEulerTransform EulerTransform(NewTransform);
+		EulerTransform.Rotation = ControlRig->GetHierarchy()->GetControlPreferredRotator(ControlElement);
 		Binding.CallFunction<FEulerTransform>(*this, EulerTransform);
 	}
 }
@@ -196,13 +178,10 @@ void UControlRigTransformControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
-		FTransform RealTransform = Transform; //Transform is FEulerTransform
+		const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
 		ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, EControlRigSetKey::Never,false);
+		ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
 	}
 }
 #endif
@@ -212,8 +191,23 @@ void UControlRigTransformControlProxy::SetKey(const IPropertyHandle& KeyedProper
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement)
 	{
-		FTransform RealTransform = Transform; //Transform is FEulerTransform
-		ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, EControlRigSetKey::Always,false);
+		FRigControlModifiedContext Context;
+		Context.SetKey = EControlRigSetKey::Always;
+		if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Location))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Translation;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Rotation))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Rotation;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Scale))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Scale;
+		}
+		const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
+		ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, Context, false);
+		ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
 	}
 }
 
@@ -227,7 +221,7 @@ void UControlRigTransformNoScaleControlProxy::PostEditChangeProperty(struct FPro
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<FRigControlValue::FTransformNoScale_Float>(ControlName, Transform, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -254,10 +248,6 @@ void UControlRigTransformNoScaleControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<FRigControlValue::FTransformNoScale_Float>(ControlName, Transform, true, EControlRigSetKey::Never,false);
 	}
@@ -269,7 +259,17 @@ void UControlRigTransformNoScaleControlProxy::SetKey(const IPropertyHandle& Keye
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement)
 	{
-		ControlRig->SetControlValue<FRigControlValue::FTransformNoScale_Float>(ControlName, Transform, true, EControlRigSetKey::Always,false);
+		FRigControlModifiedContext Context;
+		Context.SetKey = EControlRigSetKey::Always;
+		if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FTransformNoScale, Location))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Translation;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FTransformNoScale, Rotation))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Rotation;
+		}
+		ControlRig->SetControlValue<FRigControlValue::FTransformNoScale_Float>(ControlName, Transform, true, Context, false);
 	}
 }
 
@@ -284,7 +284,7 @@ void UControlRigEulerTransformControlProxy::PostEditChangeProperty(struct FPrope
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -313,10 +313,6 @@ void UControlRigEulerTransformControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, EControlRigSetKey::Never,false);
 	}
@@ -328,7 +324,21 @@ void UControlRigEulerTransformControlProxy::SetKey(const IPropertyHandle& KeyedP
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement)
 	{
-		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, EControlRigSetKey::Always,false);
+		FRigControlModifiedContext Context;
+		Context.SetKey = EControlRigSetKey::Always;
+		if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Location))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Translation;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Rotation))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Rotation;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Scale))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Scale;
+		}
+		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, Context,false);
 	}
 }
 
@@ -341,7 +351,7 @@ void UControlRigFloatControlProxy::PostEditChangeProperty(struct FPropertyChange
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<float>(ControlName, Float, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -368,10 +378,6 @@ void UControlRigFloatControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<float>(ControlName, Float, true, EControlRigSetKey::Never,false);
 	}
@@ -397,7 +403,7 @@ void UControlRigIntegerControlProxy::PostEditChangeProperty(struct FPropertyChan
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<int32>(ControlName, Integer, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 		}
@@ -423,10 +429,6 @@ void UControlRigIntegerControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<int32>(ControlName, Integer, true, EControlRigSetKey::Never,false);
 	}
@@ -451,7 +453,7 @@ void UControlRigEnumControlProxy::PostEditChangeProperty(struct FPropertyChanged
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<int32>(ControlName, Enum.EnumIndex, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -482,10 +484,6 @@ void UControlRigEnumControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<int32>(ControlName, Enum.EnumIndex, true, EControlRigSetKey::Never,false);
 	}
@@ -511,8 +509,8 @@ void UControlRigVectorControlProxy::PostEditChangeProperty(struct FPropertyChang
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
-			ControlRig->SetControlValue<FVector>(ControlName, Vector, true, EControlRigSetKey::DoNotCare,false);
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
+			ControlRig->SetControlValue<FVector3f>(ControlName, Vector, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
 		}
@@ -527,8 +525,8 @@ void UControlRigVectorControlProxy::ValueChanged()
 		Modify();
 		const FName PropertyName("Vector");
 		FTrackInstancePropertyBindings Binding(PropertyName, PropertyName.ToString());
-		const FVector Val = (FVector)ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
-		Binding.CallFunction<FVector>(*this, Val);
+		const FVector3f Val = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
+		Binding.CallFunction<FVector3f>(*this, Val);
 	}
 }
 
@@ -538,10 +536,6 @@ void UControlRigVectorControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<FVector3f>(ControlName, (FVector3f)Vector, true, EControlRigSetKey::Never,false);
 	}
@@ -554,7 +548,54 @@ void UControlRigVectorControlProxy::SetKey(const IPropertyHandle& KeyedPropertyH
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement)
 	{
-		ControlRig->SetControlValue<FVector3f>(ControlName, (FVector3f)Vector, true, EControlRigSetKey::Always,false);
+		FRigControlModifiedContext Context;
+		Context.SetKey = EControlRigSetKey::Always;
+		if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FVector3f, X))
+		{
+			switch (ControlElement->Settings.ControlType)
+			{
+			case ERigControlType::Position:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::TranslationX;
+				break;
+			case ERigControlType::Rotator:	
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::RotationX;
+				break;
+			case ERigControlType::Scale:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::ScaleX;
+				break;
+			}
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FVector3f, Y))
+		{
+			switch (ControlElement->Settings.ControlType)
+			{
+			case ERigControlType::Position:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::TranslationY;
+				break;
+			case ERigControlType::Rotator:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::RotationY;
+				break;
+			case ERigControlType::Scale:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::ScaleY;
+				break;
+			}
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FVector3f, Z))
+		{
+			switch (ControlElement->Settings.ControlType)
+			{
+			case ERigControlType::Position:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::TranslationZ;
+				break;
+			case ERigControlType::Rotator:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::RotationZ;
+				break;
+			case ERigControlType::Scale:
+				Context.KeyMask = (uint32)EControlRigContextChannelToKey::ScaleZ;
+				break;
+			}
+		}
+		ControlRig->SetControlValue<FVector3f>(ControlName, (FVector3f)Vector, true, Context,false);
 	}
 }
 
@@ -568,7 +609,7 @@ void UControlRigVector2DControlProxy::PostEditChangeProperty(struct FPropertyCha
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<FVector3f>(ControlName, FVector3f(Vector2D.X, Vector2D.Y, 0.f), true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -596,10 +637,6 @@ void UControlRigVector2DControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<FVector3f>(ControlName, FVector3f(Vector2D.X, Vector2D.Y, 0.f), true, EControlRigSetKey::Never,false);
 	}
@@ -612,7 +649,17 @@ void UControlRigVector2DControlProxy::SetKey(const IPropertyHandle& KeyedPropert
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement)
 	{
-		ControlRig->SetControlValue<FVector3f>(ControlName, FVector3f(Vector2D.X, Vector2D.Y, 0.f), true, EControlRigSetKey::Always,false);
+		FRigControlModifiedContext Context;
+		Context.SetKey = EControlRigSetKey::Always;
+		if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FVector2D, X))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::TranslationX;
+		}
+		else if (KeyedPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FVector2D, Y))
+		{
+			Context.KeyMask = (uint32)EControlRigContextChannelToKey::TranslationY;
+		}
+		ControlRig->SetControlValue<FVector3f>(ControlName, FVector3f(Vector2D.X, Vector2D.Y, 0.f), true, Context,false);
 	}
 }
 
@@ -626,7 +673,7 @@ void UControlRigBoolControlProxy::PostEditChangeProperty(struct FPropertyChanged
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get());
+			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<bool>(ControlName, Bool, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 		}
@@ -652,10 +699,6 @@ void UControlRigBoolControlProxy::PostEditUndo()
 	FRigControlElement* ControlElement = GetControlElement();
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
-		if (bSelected)
-		{
-			CheckEditModeOnSelectionChange(ControlRig.Get());
-		}
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<bool>(ControlName, Bool, true, EControlRigSetKey::Never,false);
 	}
@@ -675,19 +718,23 @@ void UControlRigBoolControlProxy::SetKey(const IPropertyHandle& KeyedPropertyHan
 
 //////UControlDetailPanelControlProxies////////
 
-UControlRigControlsProxy* UControlRigDetailPanelControlProxies::FindProxy(const FName& Name) const
+UControlRigControlsProxy* UControlRigDetailPanelControlProxies::FindProxy(UControlRig* ControlRig, const FName& Name) const
 {
-	TObjectPtr<UControlRigControlsProxy> const* Proxy = AllProxies.Find(Name);
-	if (Proxy &&  Proxy[0])
+	const FControlToProxyMap* ControlRigProxies = AllProxies.Find(ControlRig);
+	if (ControlRigProxies)
 	{
-		return Proxy[0];
+		TObjectPtr<UControlRigControlsProxy> const* Proxy = ControlRigProxies->ControlToProxy.Find(Name);
+		if (Proxy && Proxy[0])
+		{
+			return Proxy[0];
+		}
 	}
 	return nullptr;
 }
 
-void UControlRigDetailPanelControlProxies::AddProxy(const FName& Name, UControlRig* ControlRig, FRigControlElement* ControlElement)
+void UControlRigDetailPanelControlProxies::AddProxy(UControlRig* ControlRig, const FName& Name,  FRigControlElement* ControlElement)
 {
-	UControlRigControlsProxy* Proxy = FindProxy(Name);
+	UControlRigControlsProxy* Proxy = FindProxy(ControlRig,Name);
 	if (!Proxy && ControlElement != nullptr)
 	{
 		switch(ControlElement->Settings.ControlType)
@@ -755,68 +802,114 @@ void UControlRigDetailPanelControlProxies::AddProxy(const FName& Name, UControlR
 		}
 		if (Proxy)
 		{
+			Proxy->bIsIndividual =
+				(ControlElement->IsAnimationChannel()) ||
+				(ControlElement->Settings.AnimationType == ERigControlAnimationType::ProxyControl) ;
 			Proxy->SetFlags(RF_Transactional);
 			Proxy->SetName(Name);
 			Proxy->ControlRig = ControlRig;
 			Proxy->ValueChanged();
-			AllProxies.Add(Name, Proxy);
-		}
 
+			FControlToProxyMap* ControlRigProxies = AllProxies.Find(ControlRig);
+			if (ControlRigProxies)
+			{
+				ControlRigProxies->ControlToProxy.Add(Name, Proxy);
+			}
+			else
+			{
+				FControlToProxyMap NewControlRigProxies;
+				NewControlRigProxies.ControlToProxy.Add(Name, Proxy);
+				AllProxies.Add(ControlRig, NewControlRigProxies);
+			}
+		}
 	}
 }
 
-void UControlRigDetailPanelControlProxies::RemoveProxy(const FName& Name)
+void UControlRigDetailPanelControlProxies::RemoveProxy(UControlRig* ControlRig, const FName& Name)
 {
-	UControlRigControlsProxy* ExistingProxy = FindProxy(Name);
+	UControlRigControlsProxy* ExistingProxy = FindProxy(ControlRig,Name);
 	if (ExistingProxy)
 	{
 		ExistingProxy->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders);
 		ExistingProxy->MarkAsGarbage();
 	}
-	AllProxies.Remove(Name);
+	FControlToProxyMap* ControlRigProxies = AllProxies.Find(ControlRig);
+	if (ControlRigProxies)
+	{
+		ControlRigProxies->ControlToProxy.Remove(Name);
+	}
 }
 
-void UControlRigDetailPanelControlProxies::RemoveAllProxies()
+void UControlRigDetailPanelControlProxies::RemoveAllProxies(UControlRig* ControlRig)
 {
-	for (TPair<FName, TObjectPtr<UControlRigControlsProxy> >Pair : AllProxies)
+	//no control rig remove all
+	if (ControlRig == nullptr)
 	{
-		UControlRigControlsProxy* ExistingProxy = Pair.Value;
-		if (ExistingProxy)
+		for (TPair<TObjectPtr<UControlRig>, FControlToProxyMap>& ControlRigProxies : AllProxies)
 		{
-			ExistingProxy->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders);
-			ExistingProxy->MarkAsGarbage();
+			for (TPair<FName, TObjectPtr<UControlRigControlsProxy> >& Pair : ControlRigProxies.Value.ControlToProxy)
+			{
+				UControlRigControlsProxy* ExistingProxy = Pair.Value;
+				if (ExistingProxy)
+				{
+					ExistingProxy->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders);
+					ExistingProxy->MarkAsGarbage();
+				}
+			}
+		}
+		AllProxies.Empty();
+		SelectedProxies.SetNum(0);
+	}
+	else
+	{
+		FControlToProxyMap* ControlRigProxies = AllProxies.Find(ControlRig);
+		if (ControlRigProxies)
+		{
+			for (TPair<FName, TObjectPtr<UControlRigControlsProxy>>& Pair : ControlRigProxies->ControlToProxy)
+			{
+				UControlRigControlsProxy* ExistingProxy = Pair.Value;
+				if (ExistingProxy)
+				{
+					SelectedProxies.Remove(ExistingProxy);
+					ExistingProxy->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders);
+					ExistingProxy->MarkAsGarbage();
+				}
+			}
+
+			AllProxies.Remove(ControlRig);
 		}
 	}
-	AllProxies.Empty();
-	SelectedProxies.SetNum(0);
 }
 
-void UControlRigDetailPanelControlProxies::RecreateAllProxies(UControlRig* InControlRig)
+void UControlRigDetailPanelControlProxies::RecreateAllProxies(UControlRig* ControlRig)
 {
-	RemoveAllProxies();
-	TArray<FRigControlElement*> Controls = InControlRig->AvailableControls();
+	RemoveAllProxies(ControlRig);
+	TArray<FRigControlElement*> Controls = ControlRig->AvailableControls();
 	for (FRigControlElement* ControlElement : Controls)
 	{
-		if(ControlElement->Settings.bShapeEnabled && ControlElement->Settings.bAnimatable)
+		if(ControlElement->Settings.AnimationType != ERigControlAnimationType::VisualCue)
 		{
-			AddProxy(ControlElement->GetName(), InControlRig, ControlElement);
+			AddProxy(ControlRig,ControlElement->GetName(), ControlElement);
 		}
 	}
 }
 
-void UControlRigDetailPanelControlProxies::ProxyChanged(const FName& Name)
+void UControlRigDetailPanelControlProxies::ProxyChanged(UControlRig* ControlRig, const FName& Name)
 {
-	UControlRigControlsProxy* Proxy = FindProxy(Name);
-	if (Proxy)
+	if (IsInGameThread())
 	{
-		Modify();
-		Proxy->ValueChanged();
+		UControlRigControlsProxy* Proxy = FindProxy(ControlRig,Name);
+		if (Proxy)
+		{
+			Modify();
+			Proxy->ValueChanged();
+		}
 	}
 }
 
-void UControlRigDetailPanelControlProxies::SelectProxy(const FName& Name, bool bSelected)
+void UControlRigDetailPanelControlProxies::SelectProxy(UControlRig* ControlRig,const FName& Name, bool bSelected)
 {
-	UControlRigControlsProxy* Proxy = FindProxy(Name);
+	UControlRigControlsProxy* Proxy = FindProxy(ControlRig,Name);
 	if (Proxy)
 	{
 		Modify();
@@ -824,11 +917,7 @@ void UControlRigDetailPanelControlProxies::SelectProxy(const FName& Name, bool b
 		{
 			if (!SelectedProxies.Contains(Proxy))
 			{
-				//don't show more than 5 for performance
-				if (SelectedProxies.Num() < 5)
-				{
-					SelectedProxies.Add(Proxy);
-				}
+				SelectedProxies.Add(Proxy);
 			}
 		}
 		else
@@ -838,4 +927,14 @@ void UControlRigDetailPanelControlProxies::SelectProxy(const FName& Name, bool b
 		Proxy->SelectionChanged(bSelected);
 	}
 }
+
+bool UControlRigDetailPanelControlProxies::IsSelected(UControlRig* InControlRig, const FName& Name) const
+{
+	if (UControlRigControlsProxy* Proxy = FindProxy(InControlRig, Name))
+	{
+		return SelectedProxies.Contains(Proxy);
+	}
+	return false;
+}
+
 

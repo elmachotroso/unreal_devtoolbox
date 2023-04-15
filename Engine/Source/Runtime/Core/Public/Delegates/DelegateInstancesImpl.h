@@ -7,20 +7,23 @@
 ================================================================================*/
 
 #pragma once
+
 #include "CoreTypes.h"
+#include "Delegates/DelegateInstanceInterface.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/AreTypesEqual.h"
-#include "Templates/UnrealTypeTraits.h"
 #include "Templates/RemoveReference.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/Tuple.h"
-#include "Delegates/DelegateInstanceInterface.h"
+#include "Templates/UnrealTypeTraits.h"
 #include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class FDelegateBase;
 class FDelegateHandle;
 enum class ESPMode : uint8;
 
-namespace UE4Delegates_Private
+namespace UE::Delegates::Private
 {
 	constexpr bool IsUObjectPtr(const volatile UObjectBase*) { return true; }
 	constexpr bool IsUObjectPtr(...)                         { return false; }
@@ -70,8 +73,9 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseUFunctionDelegateInstance<UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
-	static_assert(UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UFunction delegates with non UObject classes.");
+	static_assert(UE::Delegates::Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UFunction delegates with non UObject classes.");
 
 public:
 	TBaseUFunctionDelegateInstance(UserClass* InUserObject, const FName& InFunctionName, VarTypes... Vars)
@@ -133,7 +137,7 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -174,7 +178,7 @@ public:
 	 * @param InFunctionName The name of the function call.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InUserObject, const FName& InFunctionName, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InUserObject, const FName& InFunctionName, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InUserObject, InFunctionName, Vars...);
 	}
@@ -208,6 +212,7 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseSPMethodDelegateInstance<bConst, UserClass, SPMode, RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
 public:
 	using FMethodPtr = typename TMemFunPtrType<bConst, UserClass, RetValType(ParamTypes..., VarTypes...)>::Type;
@@ -267,7 +272,7 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -321,7 +326,7 @@ public:
 	 * @param InFunc Member function pointer to your class method.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, const TSharedPtr<UserClass, SPMode>& InUserObjectRef, FMethodPtr InFunc, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, const TSharedPtr<UserClass, SPMode>& InUserObjectRef, FMethodPtr InFunc, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InUserObjectRef, InFunc, Vars...);
 	}
@@ -335,7 +340,7 @@ public:
 	 * @param InFunc  Member function pointer to your class method.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
 	{
 		// We expect the incoming InUserObject to derived from TSharedFromThis.
 		TSharedRef<UserClass, SPMode> UserObjectRef = StaticCastSharedRef<UserClass>(InUserObject->AsShared());
@@ -362,11 +367,12 @@ template <bool bConst, class UserClass, typename WrappedRetValType, typename... 
 class TBaseRawMethodDelegateInstance<bConst, UserClass, WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>
 {
 private:
-	static_assert(!UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use raw method delegates with UObjects.");
+	static_assert(!UE::Delegates::Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use raw method delegates with UObjects.");
 
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseRawMethodDelegateInstance<bConst, UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
 public:
 	using FMethodPtr = typename TMemFunPtrType<bConst, UserClass, RetValType(ParamTypes..., VarTypes...)>::Type;
@@ -433,7 +439,7 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -478,7 +484,7 @@ public:
 	 * @param InFunc Member function pointer to your class method.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InUserObject, InFunc, Vars...);
 	}
@@ -505,8 +511,9 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseUObjectMethodDelegateInstance<bConst, UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
-	static_assert(UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UObject method delegates with raw pointers.");
+	static_assert(UE::Delegates::Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UObject method delegates with raw pointers.");
 
 public:
 	using FMethodPtr = typename TMemFunPtrType<bConst, UserClass, RetValType(ParamTypes..., VarTypes...)>::Type;
@@ -571,7 +578,7 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -622,7 +629,7 @@ public:
 	 * @param InFunc Member function pointer to your class method.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InUserObject, FMethodPtr InFunc, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InUserObject, InFunc, Vars...);
 	}
@@ -650,6 +657,7 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseStaticDelegateInstance<RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
 public:
 	using FFuncPtr = RetValType(*)(ParamTypes..., VarTypes...);
@@ -708,7 +716,7 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -739,7 +747,7 @@ public:
 	 * @param InFunc Static function pointer.
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, FFuncPtr InFunc, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, FFuncPtr InFunc, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InFunc, Vars...);
 	}
@@ -765,6 +773,7 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TBaseFunctorDelegateInstance<RetValType(ParamTypes...), UserPolicy, FunctorType, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
 public:
 	TBaseFunctorDelegateInstance(const FunctorType& InFunctor, VarTypes... Vars)
@@ -820,7 +829,7 @@ public:
 
 public:
 	// IBaseDelegateInstance interface
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -845,11 +854,11 @@ public:
 	 * @param InFunctor C++ functor
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, const FunctorType& InFunctor, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, const FunctorType& InFunctor, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InFunctor, Vars...);
 	}
-	FORCEINLINE static void Create(FDelegateBase& Base, FunctorType&& InFunctor, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, FunctorType&& InFunctor, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(MoveTemp(InFunctor), Vars...);
 	}
@@ -877,6 +886,7 @@ private:
 	using Super             = TCommonDelegateInstanceState<WrappedRetValType(ParamTypes...), UserPolicy, VarTypes...>;
 	using RetValType        = typename Super::RetValType;
 	using UnwrappedThisType = TWeakBaseFunctorDelegateInstance<UserClass, RetValType(ParamTypes...), UserPolicy, FunctorType, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
 
 public:
 	TWeakBaseFunctorDelegateInstance(UserClass* InContextObject, const FunctorType& InFunctor, VarTypes... Vars)
@@ -906,7 +916,7 @@ public:
 
 	UObject* GetUObject() const final
 	{
-		return ContextObject.Get();
+		return (UObject*)ContextObject.Get();
 	}
 
 	const void* GetObjectForTimerManager() const final
@@ -937,7 +947,7 @@ public:
 
 public:
 	// IBaseDelegateInstance interface
-	void CreateCopy(FDelegateBase& Base) final
+	void CreateCopy(DelegateBaseType& Base) final
 	{
 		new (Base) UnwrappedThisType(*(UnwrappedThisType*)this);
 	}
@@ -965,11 +975,11 @@ public:
 	 * @param InFunctor C++ functor
 	 * @return The new delegate.
 	 */
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InContextObject, const FunctorType& InFunctor, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InContextObject, const FunctorType& InFunctor, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InContextObject, InFunctor, Vars...);
 	}
-	FORCEINLINE static void Create(FDelegateBase& Base, UserClass* InContextObject, FunctorType&& InFunctor, VarTypes... Vars)
+	FORCEINLINE static void Create(DelegateBaseType& Base, UserClass* InContextObject, FunctorType&& InFunctor, VarTypes... Vars)
 	{
 		new (Base) UnwrappedThisType(InContextObject, MoveTemp(InFunctor), Vars...);
 	}

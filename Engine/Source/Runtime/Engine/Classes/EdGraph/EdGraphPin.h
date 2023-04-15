@@ -207,7 +207,9 @@ public:
 
 	ENGINE_API bool Serialize(FArchive& Ar);
 	ENGINE_API void PostSerialize(const FArchive& Ar);
+#if WITH_EDITORONLY_DATA
 	ENGINE_API static void DeclareCustomVersions(FArchive& Ar);
+#endif
 
 	static ENGINE_API FEdGraphPinType GetPinTypeForTerminalType( const FEdGraphTerminalType& TerminalType );
 	static ENGINE_API FEdGraphPinType GetTerminalTypeForContainer( const FEdGraphPinType& ContainerType );
@@ -271,10 +273,7 @@ struct ENGINE_API FEdGraphPinReference
 
 	friend uint32 GetTypeHash(const FEdGraphPinReference& EdGraphPinReference)
 	{
-		UEdGraphNode* ResolvedOwningNode = EdGraphPinReference.OwningNode.Get();
-		ensureMsgf(ResolvedOwningNode || !EdGraphPinReference.PinId.IsValid(), TEXT("Trying to reference an unowned pin: %s"), *EdGraphPinReference.PinId.ToString());
-		uint32 NodeHash = ResolvedOwningNode ? FCrc::StrCrc32(*ResolvedOwningNode->GetName()) : 0;
-		return FCrc::StrCrc32(*EdGraphPinReference.PinId.ToString(), 0 );
+		return GetTypeHash(EdGraphPinReference.PinId);
 	}
 
 	bool operator==(const FEdGraphPinReference& Other) const
@@ -332,9 +331,9 @@ public:
 	/** If true, the default value on this pin is ignored and should not be set. */
 	uint8 bDefaultValueIsIgnored:1;
 
-	/** If true, this pin is the focus of a diff. This is transient. */
-	uint8 bIsDiffing:1;
-
+	UE_DEPRECATED(5.0, "bIsDiffing is deprecated. Please use SGraphPanel::DiffResults and SGraphPanel::FocusedDiffResult instead")
+	uint32 bIsDiffing:1;
+	
 	/** If true, the pin may be hidden by user. */
 	uint8 bAdvancedView:1;
 
@@ -470,6 +469,11 @@ public:
 	 */
 	ENGINE_API FString GetDefaultAsString() const;
 
+	/**
+	 * Returns true if GetDefaultAsString will return an empty string.
+	 */
+	ENGINE_API bool IsDefaultAsStringEmpty() const;
+
 	/** Returns a human readable FText representation of the string/object/text default value */
 	ENGINE_API FText GetDefaultAsText() const;
 
@@ -529,7 +533,9 @@ public:
 
 	/** Serializes an array of pins as the owner. Only the OwningNode should call this function. */
 	static void SerializeAsOwningNode(FArchive& Ar, TArray<UEdGraphPin*>& ArrayRef);
-	static void DeclareCustomVersions(FArchive& Ar);
+#if WITH_EDITORONLY_DATA
+	static void DeclarePinCustomVersions(FArchive& Ar);
+#endif
 
 	/** Marks the owning node as modified. */
 	ENGINE_API bool Modify(bool bAlwaysMarkDirty = true);
@@ -668,10 +674,6 @@ class UEdGraphPin_Deprecated : public UObject
 	/** If true, the default value on this pin is ignored and should not be set */
 	UPROPERTY()
 	uint32 bDefaultValueIsIgnored:1;
-
-	/** If true, this pin is the focus of a diff */
-	UPROPERTY(transient)
-	uint32 bIsDiffing:1;
 
 	/** If true, the pin may be hidden by user */
 	UPROPERTY()

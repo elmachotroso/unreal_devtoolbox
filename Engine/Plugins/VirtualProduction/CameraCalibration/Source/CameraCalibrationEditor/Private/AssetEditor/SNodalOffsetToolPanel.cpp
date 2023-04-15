@@ -3,11 +3,12 @@
 #include "SNodalOffsetToolPanel.h"
 
 #include "AssetRegistry/AssetData.h"
+#include "CameraCalibrationSettings.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CameraNodalOffsetAlgo.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Selection.h"
 #include "LensFile.h"
 #include "NodalOffsetTool.h"
@@ -49,6 +50,52 @@ void SNodalOffsetToolPanel::Construct(const FArguments& InArgs, UNodalOffsetTool
 			.AutoHeight()
 			[ BuildNodalOffsetUIWrapper() ]
 
+			+ SVerticalBox::Slot() // Import dataset
+			.AutoHeight()
+			.HAlign(HAlign_Center)
+			.Padding(0, 20)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SButton).Text(LOCTEXT("ImportCalibrationDataset", "Import Nodal Offset Dataset"))
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						if (UNodalOffsetTool* Tool = NodalOffsetTool.Get())
+						{
+							Tool->ImportCalibrationDataset();
+
+							// After importing, the tool may have switched the active algo, so redraw the UI accordingly
+							UCameraNodalOffsetAlgo* Algo = Tool->GetNodalOffsetAlgo();
+							NodalOffsetUI->ClearChildren();
+							NodalOffsetUI->AddSlot()[Algo->BuildUI()];
+
+							for (const TSharedPtr<FString>& AlgoString : CurrentAlgos)
+							{
+								if (AlgoString->Equals(Algo->FriendlyName().ToString()))
+								{
+									AlgosComboBox->SetSelectedItem(AlgoString);
+									break;
+								}
+							}
+						}
+						return FReply::Handled();
+					})
+					.Visibility_Lambda([]() -> EVisibility
+					{
+						if (GetDefault<UCameraCalibrationSettings>()->IsCalibrationDatasetImportExportEnabled())
+						{
+							return EVisibility::Visible;
+						}
+						return EVisibility::Collapsed;
+					})
+				]
+			]
+
 			+ SVerticalBox::Slot() // Save Offset
 			.AutoHeight()
 			.Padding(0, 20)
@@ -56,11 +103,11 @@ void SNodalOffsetToolPanel::Construct(const FArguments& InArgs, UNodalOffsetTool
 				SNew(SButton).Text(LOCTEXT("AddToNodalOffsetLUT", "Add To Nodal Offset Calibration"))
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
-				.OnClicked_Lambda([&]() -> FReply
+				.OnClicked_Lambda([WeakTool = NodalOffsetTool]() -> FReply
 				{
-					if (NodalOffsetTool.IsValid())
+					if (UNodalOffsetTool* Tool = WeakTool.Get())
 					{
-						NodalOffsetTool->OnSaveCurrentNodalOffset();
+						Tool->OnSaveCurrentNodalOffset();
 					}
 					return FReply::Handled();
 				})
@@ -187,7 +234,7 @@ TSharedRef<SWidget> SNodalOffsetToolPanel::BuildNodalOffsetAlgoPickerWidget()
 			.ToolTipText(LOCTEXT("ShowHelp_Tip", "Help about this algo"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				if (!NodalOffsetTool.IsValid())
@@ -205,7 +252,10 @@ TSharedRef<SWidget> SNodalOffsetToolPanel::BuildNodalOffsetAlgoPickerWidget()
 				TSharedRef<SCustomDialog> AlgoHelpWindow =
 					SNew(SCustomDialog)
 					.Title(FText::FromName(NodalOffsetTool->FriendlyName()))
-					.DialogContent(Algo->BuildHelpWidget())
+					.Content()
+					[
+						Algo->BuildHelpWidget()
+					]
 					.Buttons({ SCustomDialog::FButton(LOCTEXT("Ok", "Ok")) });
 
 				AlgoHelpWindow->Show();
@@ -214,7 +264,7 @@ TSharedRef<SWidget> SNodalOffsetToolPanel::BuildNodalOffsetAlgoPickerWidget()
 			})
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.12"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
 				.Text(FEditorFontGlyphs::Info_Circle)
 				.ColorAndOpacity(FLinearColor::White)
 			]

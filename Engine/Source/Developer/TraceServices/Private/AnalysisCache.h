@@ -5,7 +5,7 @@
 #include "IO/IoHash.h"
 #include "Memory/SharedBuffer.h"
 #include "Templates/UniquePtr.h"
-#include "TraceServices/AnalysisService.h"
+#include "Containers/Map.h"
 #include "TraceServices/Model/AnalysisCache.h"
 
 class IMappedFileRegion;

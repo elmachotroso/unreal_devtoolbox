@@ -17,7 +17,7 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -34,13 +34,13 @@ TSharedPtr<SWidget> FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase::CreateDat
 	if (CurveDataInterface != nullptr)
 	{
 		return SNew(SComboButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.OnGetMenuContent_Raw(const_cast<FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase*>(this), &FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase::GetImportMenuContent, MakeWeakObjectPtr(CurveDataInterface), DataInterfaceChangedHandler)
 			.ButtonContent()
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "SmallText")
+				.TextStyle(FAppStyle::Get(), "SmallText")
 				.Text(LOCTEXT("Import", "Import"))
 			];
 	}
@@ -54,7 +54,7 @@ TSharedRef<SWidget> FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase::GetImport
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(this, &FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase::CurveAssetSelected, CurveDataInterface, DataInterfaceChangedHandler);
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-		AssetPickerConfig.Filter.ClassNames.Add(GetSupportedAssetClassName());
+		AssetPickerConfig.Filter.ClassPaths.Add(GetSupportedAssetClassName());
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -82,9 +82,9 @@ void FNiagaraDataInterfaceCurveTypeEditorUtilitiesBase::CurveAssetSelected(const
 	}
 }
 
-FName FNiagaraDataInterfaceCurveTypeEditorUtilities::GetSupportedAssetClassName() const
+FTopLevelAssetPath FNiagaraDataInterfaceCurveTypeEditorUtilities::GetSupportedAssetClassName() const
 {
-	return UCurveFloat::StaticClass()->GetFName();
+	return UCurveFloat::StaticClass()->GetClassPathName();
 }
 
 void FNiagaraDataInterfaceCurveTypeEditorUtilities::ImportSelectedAsset(UObject* SelectedAsset, UNiagaraDataInterfaceCurveBase* CurveDataInterface) const
@@ -99,9 +99,9 @@ void FNiagaraDataInterfaceCurveTypeEditorUtilities::ImportSelectedAsset(UObject*
 	}
 }
 
-FName FNiagaraDataInterfaceVectorCurveTypeEditorUtilities::GetSupportedAssetClassName() const
+FTopLevelAssetPath FNiagaraDataInterfaceVectorCurveTypeEditorUtilities::GetSupportedAssetClassName() const
 {
-	return UCurveVector::StaticClass()->GetFName();
+	return UCurveVector::StaticClass()->GetClassPathName();
 }
 
 void FNiagaraDataInterfaceVectorCurveTypeEditorUtilities::ImportSelectedAsset(UObject* SelectedAsset, UNiagaraDataInterfaceCurveBase* CurveDataInterface) const
@@ -118,9 +118,9 @@ void FNiagaraDataInterfaceVectorCurveTypeEditorUtilities::ImportSelectedAsset(UO
 	}
 }
 
-FName FNiagaraDataInterfaceColorCurveTypeEditorUtilities::GetSupportedAssetClassName() const
+FTopLevelAssetPath FNiagaraDataInterfaceColorCurveTypeEditorUtilities::GetSupportedAssetClassName() const
 {
-	return UCurveLinearColor::StaticClass()->GetFName();
+	return UCurveLinearColor::StaticClass()->GetClassPathName();
 }
 
 void FNiagaraDataInterfaceColorCurveTypeEditorUtilities::ImportSelectedAsset(UObject* SelectedAsset, UNiagaraDataInterfaceCurveBase* CurveDataInterface) const

@@ -36,6 +36,9 @@
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
 #include "EngineModule.h"
 #include "UObject/ObjectSaveContext.h"
+#include "Engine/OverlapInfo.h"
+#include "Engine/DamageEvents.h"
+#include "Engine/ScopedMovementUpdate.h"
 
 #if WITH_EDITOR
 #include "Engine/LODActor.h"
@@ -114,6 +117,13 @@ DECLARE_CYCLE_STAT(TEXT("BeginComponentOverlap"), STAT_BeginComponentOverlap, ST
 DECLARE_CYCLE_STAT(TEXT("EndComponentOverlap"), STAT_EndComponentOverlap, STATGROUP_Game);
 DECLARE_CYCLE_STAT(TEXT("PrimComp DispatchBlockingHit"), STAT_DispatchBlockingHit, STATGROUP_Game);
 
+FOverlapInfo::FOverlapInfo(UPrimitiveComponent* InComponent, int32 InBodyIndex)
+	: bFromSweep(false)
+{
+	OverlapInfo.HitObjectHandle = FActorInstanceHandle(InComponent ? InComponent->GetOwner() : nullptr);
+	OverlapInfo.Component = InComponent;
+	OverlapInfo.Item = InBodyIndex;
+}
 
 // Predicate to determine if an overlap is with a certain AActor.
 struct FPredicateOverlapHasSameActor
@@ -284,11 +294,16 @@ FORCEINLINE_DEBUGGABLE static void GetPointersToArrayDataByPredicate(TArray<cons
 
 uint32 UPrimitiveComponent::GlobalOverlapEventsCounter = 0;
 
+FName UPrimitiveComponent::RVTActorDescProperty(TEXT("RVT"));
+
 // 0 is reserved to mean invalid
 FThreadSafeCounter UPrimitiveComponent::NextRegistrationSerialNumber;
 
 // 0 is reserved to mean invalid
 FThreadSafeCounter UPrimitiveComponent::NextComponentId;
+
+UPrimitiveComponent::UPrimitiveComponent(FVTableHelper& Helper) : Super(Helper) { }
+UPrimitiveComponent::~UPrimitiveComponent() = default;
 
 UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitializer /*= FObjectInitializer::Get()*/)
 	: Super(ObjectInitializer)
@@ -558,20 +573,6 @@ void UPrimitiveComponent::GetUsedTextures(TArray<UTexture*>& OutTextures, EMater
 //////////////////////////////////////////////////////////////////////////
 // Render
 
-// Helper to access the level bStaticComponentsRegisteredInStreamingManager flag.
-FORCEINLINE_DEBUGGABLE bool OwnerLevelHasRegisteredStaticComponentsInStreamingManager(const AActor* Owner)
-{
-	if (Owner)
-	{
-		const ULevel* Level = Owner->GetLevel();
-		if (Level)
-		{
-			return Level->bStaticComponentsRegisteredInStreamingManager;
-		}
-	}
-	return false;
-}
-
 void UPrimitiveComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
 	// Make sure cached cull distance is up-to-date if its zero and we have an LD cull distance
@@ -622,7 +623,7 @@ void UPrimitiveComponent::SendRenderTransform_Concurrent()
 
 	// If the primitive isn't hidden update its transform.
 	const bool bDetailModeAllowsRendering	= DetailMode <= GetCachedScalabilityCVars().DetailMode;
-	if( bDetailModeAllowsRendering && (ShouldRender() || bCastHiddenShadow || bRayTracingFarField))
+	if( bDetailModeAllowsRendering && (ShouldRender() || bCastHiddenShadow || bAffectIndirectLightingWhileHidden || bRayTracingFarField))
 	{
 		// Update the scene info's transform for this primitive.
 		GetWorld()->Scene->UpdatePrimitiveTransform(this);
@@ -816,12 +817,19 @@ void UPrimitiveComponent::OnCreatePhysicsState()
 			const FVector BodyScale = BodyTransform.GetScale3D();
 			if(BodyScale.IsNearlyZero())
 			{
-				BodyTransform.SetScale3D(FVector(KINDA_SMALL_NUMBER));
+				BodyTransform.SetScale3D(FVector(UE_KINDA_SMALL_NUMBER));
 			}
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			if ((BodyInstance.GetCollisionEnabled() != ECollisionEnabled::NoCollision) && (FMath::IsNearlyZero(BodyScale.X) || FMath::IsNearlyZero(BodyScale.Y) || FMath::IsNearlyZero(BodyScale.Z)))
 			{
 				UE_LOG(LogPhysics, Warning, TEXT("Scale for %s has a component set to zero, which will result in a bad body instance. Scale:%s"), *GetPathNameSafe(this), *BodyScale.ToString());
+				
+				// User warning has been output - fix up the scale to be valid for physics
+				BodyTransform.SetScale3D(FVector(
+					FMath::IsNearlyZero(BodyScale.X) ? UE_KINDA_SMALL_NUMBER : BodyScale.X,
+					FMath::IsNearlyZero(BodyScale.Y) ? UE_KINDA_SMALL_NUMBER : BodyScale.Y,
+					FMath::IsNearlyZero(BodyScale.Z) ? UE_KINDA_SMALL_NUMBER : BodyScale.Z
+				));
 			}
 #endif
 
@@ -849,6 +857,8 @@ void UPrimitiveComponent::OnCreatePhysicsState()
 #endif // WITH_EDITOR
 		}
 	}
+
+	OnComponentPhysicsStateChanged.Broadcast(this, EComponentPhysicsStateChange::Created);
 }	
 
 void UPrimitiveComponent::EnsurePhysicsStateCreated()
@@ -932,6 +942,8 @@ void UPrimitiveComponent::OnDestroyPhysicsState()
 #endif
 
 	Super::OnDestroyPhysicsState();
+
+	OnComponentPhysicsStateChanged.Broadcast(this, EComponentPhysicsStateChange::Destroyed);
 }
 
 #if UE_ENABLE_DEBUG_DRAWING
@@ -982,6 +994,10 @@ void UPrimitiveComponent::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5PrivateFrostyStreamObjectVersion::GUID);
 
+	// This causes other issues with blueprint components (FORT-506503)
+	// See UStaticMeshComponent::Serialize for a workaround.
+	// CollisionProfile serialization needs some cleanup (UE-163199)
+	// 
 	// as temporary fix for the bug TTP 299926
 	// permanent fix is coming
 	if (Ar.IsLoading() && IsTemplate())
@@ -1205,6 +1221,29 @@ void UPrimitiveComponent::CheckForErrors()
 			->AddToken(FTextToken::Create(LOCTEXT( "MapCheck_Message_InvalidLightmapSettings", "Component is a static type but has invalid lightmap settings!  Indirect lighting will be black.  Common causes are lightmap resolution of 0, LightmapCoordinateIndex out of bounds." )))
 			->AddToken(FMapErrorToken::Create(FMapErrors::StaticComponentHasInvalidLightmapSettings));
 	}
+
+	static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.TranslucentPerObject.ProjectEnabled"));
+	if (bCastVolumetricTranslucentShadow && CastShadow && bCastDynamicShadow && CVar && CVar->GetInt() == 0)
+	{
+		FMessageLog("MapCheck").Warning()
+			->AddToken(FUObjectToken::Create(Owner))
+			->AddToken(FTextToken::Create(LOCTEXT( "MapCheck_Message_NoTranslucentShadowSupport", "Component is a using CastVolumetricTranslucentShadow but this feature is disabled for the project! Turn on r.Shadow.TranslucentPerObject.ProjectEnabled in a project ini if required." )))
+			->AddToken(FMapErrorToken::Create(FMapErrors::PrimitiveComponentHasInvalidTranslucentShadowSetting));
+	}
+}
+
+void UPrimitiveComponent::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const
+{
+	Super::GetActorDescProperties(PropertyPairsMap);
+
+	for (URuntimeVirtualTexture* RuntimeVirtualTexture : RuntimeVirtualTextures)
+	{
+		if (RuntimeVirtualTexture)
+		{
+			PropertyPairsMap.AddProperty(UPrimitiveComponent::RVTActorDescProperty);
+			return;
+		}
+	}
 }
 
 void UPrimitiveComponent::UpdateCollisionProfile()
@@ -1386,7 +1425,7 @@ void UPrimitiveComponent::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		bool bHasStreamableTextures = false;
 		for (const UTexture* Texture : Textures)
 		{
-			if (Texture && Texture->IsCandidateForTextureStreaming(ObjectSaveContext.GetTargetPlatform()))
+			if (Texture && Texture->IsCandidateForTextureStreamingOnPlatformDuringCook(ObjectSaveContext.GetTargetPlatform()))
 			{
 				bHasStreamableTextures = true;
 				break;
@@ -1410,11 +1449,16 @@ void UPrimitiveComponent::BeginDestroy()
 
 	// Use a fence to keep track of when the rendering thread executes this scene detachment.
 	DetachFence.BeginFence();
+	
+#if !UE_STRIP_DEPRECATED_PROPERTIES
 	AActor* Owner = GetOwner();
 	if(Owner)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Owner->DetachFence.BeginFence();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
+#endif
 }
 
 void UPrimitiveComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
@@ -1492,7 +1536,15 @@ void UPrimitiveComponent::SetOnlyOwnerSee(bool bNewOnlyOwnerSee)
 bool UPrimitiveComponent::ShouldComponentAddToScene() const
 {
 	bool bSceneAdd = USceneComponent::ShouldComponentAddToScene();
-	return bSceneAdd && (ShouldRender() || bCastHiddenShadow || bRayTracingFarField);
+
+#if WITH_EDITOR
+	AActor* Owner = GetOwner();
+	const bool bIsHiddenInEditor = GIsEditor && Owner && Owner->IsHiddenEd();
+#else
+	const bool bIsHiddenInEditor = false;
+#endif
+
+	return bSceneAdd && (ShouldRender() || (bCastHiddenShadow && !bIsHiddenInEditor) || bAffectIndirectLightingWhileHidden || bRayTracingFarField);
 }
 
 bool UPrimitiveComponent::ShouldCreatePhysicsState() const
@@ -2253,7 +2305,7 @@ static bool ShouldIgnoreHitResult(const UWorld* InWorld, FHitResult const& TestH
 				{
 					UE_LOG(LogTemp, Log, TEXT("Overlapping %s Dir %s Dot %f Normal %s Depth %f"), *GetNameSafe(TestHit.Component.Get()), *MovementDir.ToString(), MoveDot, *TestHit.ImpactNormal.ToString(), TestHit.PenetrationDepth);
 					DrawDebugDirectionalArrow(InWorld, TestHit.TraceStart, TestHit.TraceStart + 30.f * TestHit.ImpactNormal, 5.f, bMovingOut ? FColor(64,128,255) : FColor(255,64,64), false, 4.f);
-					if (TestHit.PenetrationDepth > KINDA_SMALL_NUMBER)
+					if (TestHit.PenetrationDepth > UE_KINDA_SMALL_NUMBER)
 					{
 						DrawDebugDirectionalArrow(InWorld, TestHit.TraceStart, TestHit.TraceStart + TestHit.PenetrationDepth * TestHit.Normal, 5.f, FColor(64,255,64), false, 4.f);
 					}
@@ -2382,7 +2434,7 @@ bool UPrimitiveComponent::MoveComponentImpl( const FVector& Delta, const FQuat& 
 	const FQuat InitialRotationQuat = GetComponentTransform().GetRotation();
 
 	// ComponentSweepMulti does nothing if moving < KINDA_SMALL_NUMBER in distance, so it's important to not try to sweep distances smaller than that. 
-	const float MinMovementDistSq = (bSweep ? FMath::Square(4.f*KINDA_SMALL_NUMBER) : 0.f);
+	const float MinMovementDistSq = (bSweep ? FMath::Square(4.f* UE_KINDA_SMALL_NUMBER) : 0.f);
 	if (DeltaSizeSq <= MinMovementDistSq)
 	{
 		// Skip if no vector or rotation.
@@ -2469,7 +2521,7 @@ bool UPrimitiveComponent::MoveComponentImpl( const FVector& Delta, const FQuat& 
 			if (bHadBlockingHit || (GetGenerateOverlapEvents() || bForceGatherOverlaps))
 			{
 				int32 BlockingHitIndex = INDEX_NONE;
-				float BlockingHitNormalDotDelta = BIG_NUMBER;
+				float BlockingHitNormalDotDelta = UE_BIG_NUMBER;
 				for( int32 HitIdx = 0; HitIdx < Hits.Num(); HitIdx++ )
 				{
 					const FHitResult& TestHit = Hits[HitIdx];
@@ -2899,8 +2951,18 @@ bool UPrimitiveComponent::GetOverlapsWithActor(const AActor* Actor, TArray<FOver
 	return GetOverlapsWithActor_Template(Actor, OutOverlaps);
 }
 
+bool UPrimitiveComponent::IsShown(const FEngineShowFlags& ShowFlags) const
+{
+	return true;
+}
+
 #if WITH_EDITOR
 bool UPrimitiveComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+{
+	return IsShown(ShowFlags) && ComponentIsTouchingSelectionBox(InSelBBox, bConsiderOnlyBSP, bMustEncompassEntireComponent);
+}
+
+bool UPrimitiveComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	if (!bConsiderOnlyBSP)
 	{
@@ -2920,6 +2982,11 @@ bool UPrimitiveComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox,
 }
 
 bool UPrimitiveComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+{
+	return IsShown(ShowFlags) && ComponentIsTouchingSelectionFrustum(InFrustum, bConsiderOnlyBSP, bMustEncompassEntireComponent);
+}
+
+bool UPrimitiveComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	if (!bConsiderOnlyBSP)
 	{
@@ -3624,8 +3691,14 @@ void UPrimitiveComponent::SetGenerateOverlapEvents(bool bInGenerateOverlapEvents
 	if (bGenerateOverlapEvents != bInGenerateOverlapEvents)
 	{
 		bGenerateOverlapEvents = bInGenerateOverlapEvents;
-		ClearSkipUpdateOverlaps();
+
+		OnGenerateOverlapEventsChanged();
 	}
+}
+
+void UPrimitiveComponent::OnGenerateOverlapEventsChanged()
+{
+	ClearSkipUpdateOverlaps();
 }
 
 void UPrimitiveComponent::SetLightingChannels(bool bChannel0, bool bChannel1, bool bChannel2)
@@ -3643,6 +3716,11 @@ void UPrimitiveComponent::SetLightingChannels(bool bChannel0, bool bChannel1, bo
 		}
 		MarkRenderStateDirty();
 	}
+}
+
+void UPrimitiveComponent::InvalidateLumenSurfaceCache()
+{
+	GetScene()->InvalidateLumenSurfaceCache_GameThread(this);
 }
 
 void UPrimitiveComponent::ClearComponentOverlaps(bool bDoNotifies, bool bSkipNotifySelf)
@@ -4153,7 +4231,7 @@ bool UPrimitiveComponent::WasRecentlyRendered(float Tolerance /*= 0.2*/) const
 	if (const UWorld* const World = GetWorld())
 	{
 		// Adjust tolerance, so visibility is not affected by bad frame rate / hitches.
-		const float RenderTimeThreshold = FMath::Max(Tolerance, World->DeltaTimeSeconds + KINDA_SMALL_NUMBER);
+		const float RenderTimeThreshold = FMath::Max(Tolerance, World->DeltaTimeSeconds + UE_KINDA_SMALL_NUMBER);
 
 		// If the current cached value is less than the tolerance then we don't need to go look at the components
 		return World->TimeSince(GetLastRenderTime()) <= RenderTimeThreshold;
@@ -4171,6 +4249,19 @@ void UPrimitiveComponent::SetLastRenderTime(float InLastRenderTime)
 			FActorLastRenderTime::Set(Owner, LastRenderTime);
 		}
 	}
+}
+
+void UPrimitiveComponent::SetupPrecachePSOParams(FPSOPrecacheParams& Params)
+{
+	Params.bRenderInMainPass = bRenderInMainPass;
+	Params.bRenderInDepthPass = bRenderInDepthPass;
+	Params.bStaticLighting = HasStaticLighting();
+	Params.bAffectDynamicIndirectLighting = bAffectDynamicIndirectLighting;
+	Params.bCastShadow = CastShadow;
+	Params.bRenderCustomDepth = bRenderCustomDepth;
+	Params.bCastShadowAsTwoSided = bCastShadowAsTwoSided;
+	Params.SetMobility(Mobility);	
+	Params.SetStencilWriteMask(FRendererStencilMaskEvaluation::ToStencilMask(CustomDepthStencilWriteMask));
 }
 
 #if WITH_EDITOR

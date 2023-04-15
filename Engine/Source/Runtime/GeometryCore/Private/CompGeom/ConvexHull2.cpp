@@ -7,11 +7,111 @@
 
 #include "CompGeom/ExactPredicates.h"
 #include "Algo/Unique.h"
+#include "Algo/Reverse.h"
 
 namespace UE
 {
 namespace Geometry
 {
+
+namespace
+{
+	inline int32 IncModM(int32 Idx, int32 Mod)
+	{
+		int32 Inc = Idx + 1;
+		return Inc < Mod ? Inc : 0;
+	}
+}
+
+template<typename RealType>
+bool TConvexHull2<RealType>::SolveSimplePolygon(int32 N, TFunctionRef<TVector2<RealType>(int32)> GetPointFunc, bool bIsKnownCCW)
+{
+	Dimension = 0;
+	NumUniquePoints = 0;
+
+	if (N == 0)
+	{
+		Hull.Empty();
+		return false;
+	}
+	Hull.Reset(N);
+
+
+	// Find the (lowest) leftmost point (guaranteed to be on the hull)
+	int32 LeftmostPtIdx = 0;
+	TVector2<RealType> Leftmost = GetPointFunc(0);
+	// If orientation is not already known to be CCW, we use area sign to decide orientation
+	RealType OrientSign = 1;
+
+	{
+		auto AddEdgeArea2 = [&GetPointFunc](TVector2<RealType> V1, TVector2<RealType> V2)
+		{
+			return V1.X * V2.Y - V1.Y * V2.X;
+		};
+		RealType AreaSum2 = bIsKnownCCW ? 0 : AddEdgeArea2(GetPointFunc(N - 1), Leftmost);
+		TVector2<RealType> LastPt = Leftmost; // LastPt only for computing AreaSum to check winding direction
+		for (int32 Idx = 1; Idx < N; ++Idx)
+		{
+			TVector2<RealType> Pt = GetPointFunc(Idx);
+			if (Pt.X < Leftmost.X || (Pt.X == Leftmost.X && Pt.Y < Leftmost.Y))
+			{
+				Leftmost = Pt;
+				LeftmostPtIdx = Idx;
+			}
+			if (!bIsKnownCCW)
+			{
+				AreaSum2 += AddEdgeArea2(LastPt, Pt);
+				LastPt = Pt;
+			}
+		}
+		if (!bIsKnownCCW && AreaSum2 < 0)
+		{
+			OrientSign = -1;
+		}
+	}
+
+	Hull.Add(LeftmostPtIdx);
+	TVector2<RealType> PrevPt = Leftmost;
+	int32 CurIdx = IncModM(LeftmostPtIdx, N);
+	int32 EndIdx = LeftmostPtIdx;
+	TVector2<RealType> CurPt = GetPointFunc(CurIdx);
+	for (int32 NextIdx = IncModM(CurIdx, N); CurIdx != EndIdx; NextIdx = IncModM(NextIdx, N))
+	{
+		TVector2<RealType> NextPt = GetPointFunc(NextIdx);
+		if (ExactPredicates::Orient2<RealType>(PrevPt, CurPt, NextPt)*OrientSign <= 0)
+		{
+			// Go backwards until we're out of points or we find a locally-convex point
+			while (Hull.Num() > 1)
+			{
+				CurPt = PrevPt;
+				CurIdx = Hull.Pop(false);
+				int32 PrevIdx = Hull.Last();
+				PrevPt = GetPointFunc(PrevIdx);
+				
+				if (ExactPredicates::Orient2<RealType>(PrevPt, CurPt, NextPt)*OrientSign > 0)
+				{
+					Hull.Push(CurIdx);
+					PrevPt = CurPt;
+					break;
+				}
+			}
+		}
+		else // CurPt is locally convex with Prev,Next; go ahead and add it
+		{
+			Hull.Push(CurIdx);
+			PrevPt = CurPt;
+		}
+		CurIdx = NextIdx;
+		CurPt = NextPt;
+	}
+	if (OrientSign < 0)
+	{
+		Algo::Reverse(Hull);
+	}
+	bool bFoundValid = Hull.Num() >= 3;
+	Dimension = bFoundValid ? 2 : 0;
+	return bFoundValid;
+}
 
 
 template<class RealType>
@@ -50,12 +150,12 @@ bool TConvexHull2<RealType>::Solve(int32 NumPoints, TFunctionRef<TVector2<RealTy
 	}
 	else
 	{
-		FVector2d FirstTwoPts[2]{ (FVector2d)GetPointFunc(Hull[0]), (FVector2d)GetPointFunc(Hull[1]) };
+		TVector2<RealType> FirstTwoPts[2]{ GetPointFunc(Hull[0]), GetPointFunc(Hull[1]) };
 		bool bFoundSecondDim = false;
 		for (int32 Idx = 2; Idx < Hull.Num(); Idx++)
 		{
-			FVector2d Pt = (FVector2d)GetPointFunc(Hull[Idx]);
-			if (ExactPredicates::Orient2D(FirstTwoPts[0], FirstTwoPts[1], Pt) != 0)
+			TVector2<RealType> Pt = GetPointFunc(Hull[Idx]);
+			if (ExactPredicates::Orient2<RealType>(FirstTwoPts[0], FirstTwoPts[1], Pt) != 0)
 			{
 				bFoundSecondDim = true;
 				break;
@@ -113,14 +213,14 @@ void TConvexHull2<RealType>::Merge(TFunctionRef<TVector2<RealType>(int32)> GetPo
 	int32 size1 = j3 - j2 + 1;
 
 	int32 i;
-	FVector2d p;
+	TVector2<RealType> p;
 
 	// Find the right-most point of the left subhull.
-	FVector2d pmax0 = (FVector2d)GetPointFunc(Hull[j0]);
+	TVector2<RealType> pmax0 = GetPointFunc(Hull[j0]);
 	int32 imax0 = j0;
 	for (i = j0 + 1; i <= j1; ++i)
 	{
-		p = (FVector2d)GetPointFunc(Hull[i]);
+		p = GetPointFunc(Hull[i]);
 		if (pmax0.X < p.X || (pmax0.X == p.X && pmax0.Y < p.Y)) // lexicographic pmax0 < p
 		{
 			pmax0 = p;
@@ -129,11 +229,11 @@ void TConvexHull2<RealType>::Merge(TFunctionRef<TVector2<RealType>(int32)> GetPo
 	}
 
 	// Find the left-most point of the right subhull.
-	FVector2d pmin1 = (FVector2d)GetPointFunc(Hull[j2]);
+	TVector2<RealType> pmin1 = GetPointFunc(Hull[j2]);
 	int32 imin1 = j2;
 	for (i = j2 + 1; i <= j3; ++i)
 	{
-		p = (FVector2d)GetPointFunc(Hull[i]);
+		p = GetPointFunc(Hull[i]);
 		if (p.X < pmin1.X || (p.X == pmin1.X && p.Y < pmin1.Y)) // lexicographic p < pmin1
 		{
 			pmin1 = p;
@@ -198,10 +298,10 @@ enum class EPointOrdering
 	CollinearContain
 };
 
-
-EPointOrdering PointOnLine(FVector2d P, FVector2d L0, FVector2d L1)
+template<typename RealType>
+EPointOrdering PointOnLine(const TVector2<RealType>& P, const TVector2<RealType>& L0, const TVector2<RealType>& L1)
 {
-	double OnLine = ExactPredicates::Orient2D(P, L0, L1);
+	RealType OnLine = ExactPredicates::Orient2(P, L0, L1);
 	if (OnLine > 0)
 	{
 		return EPointOrdering::Positive;
@@ -247,20 +347,20 @@ void TConvexHull2<RealType>::GetTangent(TFunctionRef<TVector2<RealType>(int32)> 
 	int32 size1 = j3 - j2 + 1;
 	int32 const imax = size0 + size1;
 	int32 i, iLm1, iRp1;
-	FVector2d L0, L1, R0, R1;
+	TVector2<RealType> L0, L1, R0, R1;
 
 	for (i = 0; i < imax; i++)
 	{
 		// Get the endpoints of the potential tangent.
-		L1 = (FVector2d)GetPointFunc(Hull[i0]);
-		R0 = (FVector2d)GetPointFunc(Hull[i1]);
+		L1 = GetPointFunc(Hull[i0]);
+		R0 = GetPointFunc(Hull[i1]);
 
 		// Walk along the left hull to find the point of tangency.
 		if (size0 > 1)
 		{
 			iLm1 = (i0 > j0 ? i0 - 1 : j1);
-			L0 = (FVector2d)GetPointFunc(Hull[iLm1]);
-			EPointOrdering Order = PointOnLine(R0, L0, L1);
+			L0 = GetPointFunc(Hull[iLm1]);
+			EPointOrdering Order = PointOnLine<RealType>(R0, L0, L1);
 			if (Order == EPointOrdering::Negative
 				|| Order == EPointOrdering::CollinearRight)
 			{
@@ -273,8 +373,8 @@ void TConvexHull2<RealType>::GetTangent(TFunctionRef<TVector2<RealType>(int32)> 
 		if (size1 > 1)
 		{
 			iRp1 = (i1 < j3 ? i1 + 1 : j2);
-			R1 = (FVector2d)GetPointFunc(Hull[iRp1]);
-			EPointOrdering Order = PointOnLine(L1, R0, R1);
+			R1 = GetPointFunc(Hull[iRp1]);
+			EPointOrdering Order = PointOnLine<RealType>(L1, R0, R1);
 			if (Order == EPointOrdering::Negative
 				|| Order == EPointOrdering::CollinearLeft)
 			{

@@ -13,7 +13,7 @@ public class TakeRecorderSources : ModuleRules
 				"CoreUObject",
 				"EditorFramework",
 				"Engine",
-				"EditorStyle",
+				
 				"InputCore",
 				"LevelEditor",
 				"LevelSequence",
@@ -38,11 +38,5 @@ public class TakeRecorderSources : ModuleRules
                 "TakeTrackRecorders",
             }
         );
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"TakeRecorderSources/Private",
-			}
-		);
 	}
 }

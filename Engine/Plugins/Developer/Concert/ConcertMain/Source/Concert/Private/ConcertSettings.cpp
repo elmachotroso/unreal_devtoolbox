@@ -3,6 +3,8 @@
 #include "ConcertSettings.h"
 #include "Misc/Paths.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ConcertSettings)
+
 #define LOCTEXT_NAMESPACE "ConcertSettingsUtils"
 
 namespace ConcertSettingsUtils
@@ -59,7 +61,7 @@ UConcertServerConfig::UConcertServerConfig()
 	: bCleanWorkingDir(false)
 	, NumSessionsToKeep(-1)
 {
-	DefaultVersionInfo.Initialize();
+	DefaultVersionInfo.Initialize(false /* bSupportMixedBuildTypes */);
 }
 
 UConcertClientConfig::UConcertClientConfig()
@@ -67,3 +69,4 @@ UConcertClientConfig::UConcertClientConfig()
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -2,23 +2,26 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "ISourceControlChangelist.h"
 #include "Misc/Guid.h"
+#include "Templates/SharedPointer.h"
 
-class FUncontrolledChangelist : public TSharedFromThis<FUncontrolledChangelist, ESPMode::ThreadSafe>
+class FText;
+
+class UNCONTROLLEDCHANGELISTS_API FUncontrolledChangelist : public TSharedFromThis<FUncontrolledChangelist, ESPMode::ThreadSafe>
 {
 public:
 	static constexpr const TCHAR* GUID_NAME = TEXT("guid");
-	static constexpr const TCHAR* NAME_NAME = TEXT("name");
 	static const FGuid DEFAULT_UNCONTROLLED_CHANGELIST_GUID;
-	static const FText DEFAULT_UNCONTROLLED_CHANGELIST_NAME;
 
 public:
 	FUncontrolledChangelist();
 	
-	FUncontrolledChangelist(const FGuid& InGuid, const FString& InName);
-
+	FUncontrolledChangelist(const FGuid& InGuid);
+	
 	bool operator==(const FUncontrolledChangelist& InOther) const
 	{
 		return Guid == InOther.Guid;
@@ -41,7 +44,7 @@ public:
 
 	FString ToString() const
 	{
-		return Name.IsEmpty() ? Guid.ToString() : Name;
+		return Guid.ToString();
 	}
 
 	/**
@@ -59,7 +62,7 @@ public:
 
 private:
 	FGuid		Guid;
-	FString		Name;
 };
 
+typedef TSharedPtr<FUncontrolledChangelist, ESPMode::ThreadSafe> FUncontrolledChangelistPtr;
 typedef TSharedRef<FUncontrolledChangelist, ESPMode::ThreadSafe> FUncontrolledChangelistRef;

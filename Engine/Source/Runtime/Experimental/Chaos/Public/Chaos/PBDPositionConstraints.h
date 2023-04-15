@@ -2,17 +2,14 @@
 #pragma once
 
 #include "Chaos/Array.h"
-#include "Chaos/ConstraintHandle.h"
-#include "Chaos/Evolution/SolverDatas.h"
+#include "Chaos/Evolution/IndexedConstraintContainer.h"
 #include "Chaos/ParticleHandle.h"
-#include "Chaos/PBDConstraintContainer.h"
 
 namespace Chaos
 {
 	class FPBDPositionConstraints;
-	class FPBDIslandSolverData;
 
-	class FPBDPositionConstraintHandle : public TIndexedContainerConstraintHandle<FPBDPositionConstraints>
+	class FPBDPositionConstraintHandle final : public TIndexedContainerConstraintHandle<FPBDPositionConstraints>
 	{
 	public:
 		using Base = TIndexedContainerConstraintHandle<FPBDPositionConstraints>;
@@ -22,10 +19,8 @@ namespace Chaos
 		FPBDPositionConstraintHandle() {}
 		FPBDPositionConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex) 
 			: TIndexedContainerConstraintHandle<FPBDPositionConstraints>(InConstraintContainer, InConstraintIndex) {}
-		TVector<FGeometryParticleHandle*, 2> GetConstrainedParticles() const;
-
-		void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
-		void GatherInput(const FReal Dt, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+		
+		virtual FParticlePair GetConstrainedParticles() const override;
 
 		static const FConstraintHandleTypeID& StaticType()
 		{
@@ -39,24 +34,21 @@ namespace Chaos
 	};
 
 	//! Constraint a single particle to a world-space position
-	class FPBDPositionConstraints : public FPBDIndexedConstraintContainer
+	class FPBDPositionConstraints : public TPBDIndexedConstraintContainer<FPBDPositionConstraints>
 	{
 	public:
-		using Base = FPBDIndexedConstraintContainer;
-		//using FReal = T;
-		//static const int Dimensions = 3;
+		using Base = TPBDIndexedConstraintContainer<FPBDPositionConstraints>;
 		using FConstraintContainerHandle = FPBDPositionConstraintHandle;
 		using FConstraintHandleAllocator = TConstraintHandleAllocator<FPBDPositionConstraints>;
 		using FHandles = TArray<FConstraintContainerHandle*>;
-		using FConstraintSolverContainerType = FConstraintSolverContainer;	// @todo(chaos): Add island solver for this constraint type
 
 		FPBDPositionConstraints(const FReal InStiffness = (FReal)1.)
-			: FPBDIndexedConstraintContainer(FConstraintContainerHandle::StaticType())
+			: TPBDIndexedConstraintContainer<FPBDPositionConstraints>(FConstraintContainerHandle::StaticType())
 			, Stiffness(InStiffness)
 		{}
 
 		FPBDPositionConstraints(TArray<FVec3>&& Locations, TArray<FPBDRigidParticleHandle*>&& InConstrainedParticles, const FReal InStiffness = (FReal)1.)
-			: FPBDIndexedConstraintContainer(FConstraintContainerHandle::StaticType())
+			: TPBDIndexedConstraintContainer<FPBDPositionConstraints>(FConstraintContainerHandle::StaticType())
 			, Targets(MoveTemp(Locations)), ConstrainedParticles(MoveTemp(InConstrainedParticles)), Stiffness(InStiffness)
 		{
 			if (ConstrainedParticles.Num() > 0)
@@ -178,27 +170,44 @@ namespace Chaos
 			Targets[ConstraintIndex] = Position;
 		}
 
-		//
-		// Island Rule API
-		//
-
-		void PrepareTick() {}
-		void UnprepareTick() {}
 		void UpdatePositionBasedState(const FReal Dt) {}
 
-		void SetNumIslandConstraints(const int32 NumIslandConstraints, FPBDIslandSolverData& SolverData);
-		void PreGatherInput(const FReal Dt, const int32 ConstraintIndex, FPBDIslandSolverData& SolverData);
-		void GatherInput(const FReal Dt, const int32 ConstraintIndex, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
-		void ScatterOutput(FReal Dt, FPBDIslandSolverData& SolverData);
+		//
+		// FConstraintContainer Implementation
+		//
+		virtual int32 GetNumConstraints() const override final { return NumConstraints(); }
+		virtual void ResetConstraints() override final {}
+		virtual void AddConstraintsToGraph(FPBDIslandManager& IslandManager) override final;
+		virtual void PrepareTick() override final {}
+		virtual void UnprepareTick() override final {}
 
-		bool ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
-		bool ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData) { return false; }
+		//
+		// TSimpleConstraintContainerSolver API - used by RBAN solvers
+		//
+		void AddBodies(FSolverBodyContainer& SolverBodyContainer);
+		void GatherInput(const FReal Dt) {}
+		void ScatterOutput(const FReal Dt);
+		void ApplyPositionConstraints(const FReal Dt, const int32 It, const int32 NumIts);
+		void ApplyVelocityConstraints(const FReal Dt, const int32 It, const int32 NumIts) {}
+		void ApplyProjectionConstraints(const FReal Dt, const int32 It, const int32 NumIts) {}
+
+		//
+		// TIndexedConstraintContainerSolver API - used by World solvers
+		//
+		void AddBodies(const TArrayView<int32>& ConstraintIndices, FSolverBodyContainer& SolverBodyContainer);
+		void GatherInput(const TArrayView<int32>& ConstraintIndices, const FReal Dt) {}
+		void ScatterOutput(const TArrayView<int32>& ConstraintIndices, const FReal Dt);
+		void ApplyPositionConstraints(const TArrayView<int32>& ConstraintIndices, const FReal Dt, const int32 It, const int32 NumIts);
+		void ApplyVelocityConstraints(const TArrayView<int32>& ConstraintIndices, const FReal Dt, const int32 It, const int32 NumIts) {}
+		void ApplyProjectionConstraints(const TArrayView<int32>& ConstraintIndices, const FReal Dt, const int32 It, const int32 NumIts) {}
 
 	protected:
 		using Base::GetConstraintIndex;
 		using Base::SetConstraintIndex;
 
 	private:
+		void AddBodies(const int32 ConstraintIndex, FSolverBodyContainer& SolverBodyContainer);
+
 		void ApplySingle(const FReal Dt, int32 ConstraintIndex) const
 		{
 			FSolverBody* Body = ConstraintSolverBodies[ConstraintIndex];

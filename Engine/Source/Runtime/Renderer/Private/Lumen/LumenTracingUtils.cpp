@@ -1,77 +1,50 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenSceneLighting.cpp
-=============================================================================*/
-
 #include "LumenTracingUtils.h"
 #include "LumenSceneRendering.h"
 
-FLumenCardTracingInputs::FLumenCardTracingInputs(FRDGBuilder& GraphBuilder, const FScene* Scene, const FViewInfo& View, FLumenSceneFrameTemporaries& FrameTemporaries, bool bSurfaceCacheFeedback)
+float GLumenSkylightLeakingRoughness = 0.3f;
+FAutoConsoleVariableRef CVarLumenSkylightLeakingRoughness(
+	TEXT("r.Lumen.SkylightLeaking.Roughness"),
+	GLumenSkylightLeakingRoughness,
+	TEXT("Roughness used to sample the skylight leaking cubemap.  A value of 0 gives no prefiltering of the skylight leaking, while larger values can be useful to hide sky features in the leaking."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+FLumenCardTracingInputs::FLumenCardTracingInputs(FRDGBuilder& GraphBuilder, FLumenSceneData& LumenSceneData, const FLumenSceneFrameTemporaries& FrameTemporaries, bool bSurfaceCacheFeedback)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
-	FLumenSceneData& LumenSceneData = *Scene->LumenSceneData;
+	LumenCardSceneUniformBuffer = FrameTemporaries.LumenCardSceneUniformBuffer;
 
+	check(FrameTemporaries.FinalLightingAtlas);
+
+	AlbedoAtlas = FrameTemporaries.AlbedoAtlas;
+	OpacityAtlas = FrameTemporaries.OpacityAtlas;
+	NormalAtlas = FrameTemporaries.NormalAtlas;
+	EmissiveAtlas = FrameTemporaries.EmissiveAtlas;
+	DepthAtlas = FrameTemporaries.DepthAtlas;
+
+	DirectLightingAtlas = FrameTemporaries.DirectLightingAtlas;
+	IndirectLightingAtlas = FrameTemporaries.IndirectLightingAtlas;
+	RadiosityNumFramesAccumulatedAtlas = FrameTemporaries.RadiosityNumFramesAccumulatedAtlas;
+	FinalLightingAtlas = FrameTemporaries.FinalLightingAtlas;
+
+	if (FrameTemporaries.CardPageLastUsedBufferUAV && FrameTemporaries.CardPageHighResLastUsedBufferUAV)
 	{
-		FLumenCardScene* LumenCardSceneParameters = GraphBuilder.AllocParameters<FLumenCardScene>();
-		SetupLumenCardSceneParameters(GraphBuilder, Scene, *LumenCardSceneParameters);
-		LumenCardSceneUniformBuffer = GraphBuilder.CreateUniformBuffer(LumenCardSceneParameters);
-	}
-
-	check(LumenSceneData.FinalLightingAtlas);
-
-	AlbedoAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.AlbedoAtlas);
-	OpacityAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.OpacityAtlas);
-	NormalAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.NormalAtlas);
-	EmissiveAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.EmissiveAtlas);
-	DepthAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.DepthAtlas);
-
-	DirectLightingAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.DirectLightingAtlas);
-	IndirectLightingAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.IndirectLightingAtlas);
-	RadiosityNumFramesAccumulatedAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.RadiosityNumFramesAccumulatedAtlas);
-	FinalLightingAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.FinalLightingAtlas);
-
-	if (View.ViewState && View.ViewState->Lumen.VoxelLighting)
-	{
-		VoxelLighting = GraphBuilder.RegisterExternalTexture(View.ViewState->Lumen.VoxelLighting);
-		VoxelGridResolution = View.ViewState->Lumen.VoxelGridResolution;
-		NumClipmapLevels = View.ViewState->Lumen.NumClipmapLevels;
-
-		for (int32 ClipmapIndex = 0; ClipmapIndex < NumClipmapLevels; ++ClipmapIndex)
-		{
-			const FLumenVoxelLightingClipmapState& Clipmap = View.ViewState->Lumen.VoxelLightingClipmapState[ClipmapIndex];
-
-			ClipmapWorldToUVScale[ClipmapIndex] = FVector(1.0f) / (2.0f * Clipmap.Extent);
-			ClipmapWorldToUVBias[ClipmapIndex] = -(Clipmap.Center - Clipmap.Extent) * ClipmapWorldToUVScale[ClipmapIndex];
-			ClipmapVoxelSizeAndRadius[ClipmapIndex] = FVector4f((FVector3f)Clipmap.VoxelSize, Clipmap.VoxelRadius);
-			ClipmapWorldCenter[ClipmapIndex] = Clipmap.Center;
-			ClipmapWorldExtent[ClipmapIndex] = Clipmap.Extent;
-			ClipmapWorldSamplingExtent[ClipmapIndex] = Clipmap.Extent - 0.5f * Clipmap.VoxelSize;
-		}
+		CardPageLastUsedBufferUAV = FrameTemporaries.CardPageLastUsedBufferUAV;
+		CardPageHighResLastUsedBufferUAV = FrameTemporaries.CardPageHighResLastUsedBufferUAV;
 	}
 	else
 	{
-		VoxelLighting = GraphBuilder.RegisterExternalTexture(GSystemTextures.VolumetricBlackDummy);
-		VoxelGridResolution = FIntVector(1);
-		NumClipmapLevels = 0;
+		CardPageLastUsedBufferUAV = GraphBuilder.CreateUAV(GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 1), TEXT("Lumen.DummyCardPageLastUsedBuffer")));
+		CardPageHighResLastUsedBufferUAV = GraphBuilder.CreateUAV(GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 1), TEXT("Lumen.DummyCardPageHighResLastUsedBuffer")));
 	}
 
-	if (FrameTemporaries.CardPageLastUsedBuffer && FrameTemporaries.CardPageHighResLastUsedBuffer)
+	if (FrameTemporaries.SurfaceCacheFeedbackResources.BufferUAV && bSurfaceCacheFeedback)
 	{
-		CardPageLastUsedBufferUAV = GraphBuilder.CreateUAV(FrameTemporaries.CardPageLastUsedBuffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
-		CardPageHighResLastUsedBufferUAV = GraphBuilder.CreateUAV(FrameTemporaries.CardPageHighResLastUsedBuffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
-	}
-	else
-	{
-		CardPageLastUsedBufferUAV = GraphBuilder.CreateUAV(GraphBuilder.RegisterExternalBuffer(GWhiteVertexBufferWithRDG->Buffer), PF_R32_UINT);
-		CardPageHighResLastUsedBufferUAV = GraphBuilder.CreateUAV(GraphBuilder.RegisterExternalBuffer(GWhiteVertexBufferWithRDG->Buffer), PF_R32_UINT);
-	}
-
-	if (FrameTemporaries.SurfaceCacheFeedbackResources.Buffer && bSurfaceCacheFeedback)
-	{
-		SurfaceCacheFeedbackBufferAllocatorUAV = GraphBuilder.CreateUAV(FrameTemporaries.SurfaceCacheFeedbackResources.BufferAllocator, ERDGUnorderedAccessViewFlags::SkipBarrier);
-		SurfaceCacheFeedbackBufferUAV = GraphBuilder.CreateUAV(FrameTemporaries.SurfaceCacheFeedbackResources.Buffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
+		SurfaceCacheFeedbackBufferAllocatorUAV = FrameTemporaries.SurfaceCacheFeedbackResources.BufferAllocatorUAV;
+		SurfaceCacheFeedbackBufferUAV = FrameTemporaries.SurfaceCacheFeedbackResources.BufferUAV;
 		SurfaceCacheFeedbackBufferSize = FrameTemporaries.SurfaceCacheFeedbackResources.BufferSize;
 		SurfaceCacheFeedbackBufferTileJitter = LumenSceneData.SurfaceCacheFeedback.GetFeedbackBufferTileJitter();
 		SurfaceCacheFeedbackBufferTileWrapMask = Lumen::GetFeedbackBufferTileWrapMask();
@@ -86,39 +59,12 @@ FLumenCardTracingInputs::FLumenCardTracingInputs(FRDGBuilder& GraphBuilder, cons
 	}
 }
 
-typedef TUniformBufferRef<FLumenVoxelTracingParameters> FLumenVoxelTracingParametersBufferRef;
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLumenVoxelTracingParameters, "LumenVoxelTracingParameters");
-
-void GetLumenVoxelParametersForClipmapLevel(const FLumenCardTracingInputs& TracingInputs, FLumenVoxelTracingParameters& LumenVoxelTracingParameters,
-	int SrcClipmapLevel, int DstClipmapLevel)
-{
-	// LWC_TODO: precision loss
-	LumenVoxelTracingParameters.ClipmapWorldToUVScale[DstClipmapLevel] = (FVector3f)TracingInputs.ClipmapWorldToUVScale[SrcClipmapLevel];
-	LumenVoxelTracingParameters.ClipmapWorldToUVBias[DstClipmapLevel] = (FVector3f)TracingInputs.ClipmapWorldToUVBias[SrcClipmapLevel];
-	LumenVoxelTracingParameters.ClipmapVoxelSizeAndRadius[DstClipmapLevel] = TracingInputs.ClipmapVoxelSizeAndRadius[SrcClipmapLevel];
-	LumenVoxelTracingParameters.ClipmapWorldCenter[DstClipmapLevel] = (FVector3f)TracingInputs.ClipmapWorldCenter[SrcClipmapLevel];
-	LumenVoxelTracingParameters.ClipmapWorldExtent[DstClipmapLevel] = (FVector3f)TracingInputs.ClipmapWorldExtent[SrcClipmapLevel];
-	LumenVoxelTracingParameters.ClipmapWorldSamplingExtent[DstClipmapLevel] = (FVector3f)TracingInputs.ClipmapWorldSamplingExtent[SrcClipmapLevel];
-}
-
-//@todo Create the uniform buffer as less as possible.
-void GetLumenVoxelTracingParameters(const FLumenCardTracingInputs& TracingInputs, FLumenCardTracingParameters& TracingParameters, bool bShaderWillTraceCardsOnly)
-{
-	FLumenVoxelTracingParameters LumenVoxelTracingParameters;
-
-	LumenVoxelTracingParameters.NumClipmapLevels = TracingInputs.NumClipmapLevels;
-
-	ensureMsgf(bShaderWillTraceCardsOnly || TracingInputs.NumClipmapLevels > 0, TEXT("Higher level code should have prevented GetLumenCardTracingParameters in a scene with no voxel clipmaps"));
-
-	for (int32 i = 0; i < TracingInputs.NumClipmapLevels; i++)
-	{
-		GetLumenVoxelParametersForClipmapLevel(TracingInputs, LumenVoxelTracingParameters, i, i);
-	}
-
-	TracingParameters.LumenVoxelTracingParameters = CreateUniformBufferImmediate(LumenVoxelTracingParameters, UniformBuffer_SingleFrame);
-}
-
-void GetLumenCardTracingParameters(const FViewInfo& View, const FLumenCardTracingInputs& TracingInputs, FLumenCardTracingParameters& TracingParameters, bool bShaderWillTraceCardsOnly)
+void GetLumenCardTracingParameters(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View, 
+	const FLumenCardTracingInputs& TracingInputs,
+	FLumenCardTracingParameters& TracingParameters, 
+	bool bShaderWillTraceCardsOnly)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
@@ -126,12 +72,18 @@ void GetLumenCardTracingParameters(const FViewInfo& View, const FLumenCardTracin
 	TracingParameters.LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
 	TracingParameters.ReflectionStruct = CreateReflectionUniformBuffer(View, UniformBuffer_MultiFrame);
 	
+	TracingParameters.DiffuseColorBoost = 1.0f / FMath::Max(View.FinalPostProcessSettings.LumenDiffuseColorBoost, 1.0f);
+	TracingParameters.SkylightLeaking = View.FinalPostProcessSettings.LumenSkylightLeaking;
+	TracingParameters.SkylightLeakingRoughness = GLumenSkylightLeakingRoughness;
+	TracingParameters.InvFullSkylightLeakingDistance = 1.0f / FMath::Clamp<float>(View.FinalPostProcessSettings.LumenFullSkylightLeakingDistance, .1f, Lumen::GetMaxTraceDistance(View));
+
 	// GPUScene
 	const FScene* Scene = ((const FScene*)View.Family->Scene);
-	const FGPUScene& GPUScene = Scene->GPUScene;
-	TracingParameters.GPUSceneInstanceSceneData = GPUScene.InstanceSceneDataBuffer.SRV;
-	TracingParameters.GPUSceneInstancePayloadData = GPUScene.InstancePayloadDataBuffer.SRV;
-	TracingParameters.GPUScenePrimitiveSceneData = GPUScene.PrimitiveBuffer.SRV;
+	const FGPUSceneResourceParameters GPUSceneParameters = Scene->GPUScene.GetShaderParameters();
+
+	TracingParameters.GPUSceneInstanceSceneData = GPUSceneParameters.GPUSceneInstanceSceneData;
+	TracingParameters.GPUSceneInstancePayloadData = GPUSceneParameters.GPUSceneInstancePayloadData;
+	TracingParameters.GPUScenePrimitiveSceneData = GPUSceneParameters.GPUScenePrimitiveSceneData;
 
 	// Feedback
 	extern float GLumenSurfaceCacheFeedbackResLevelBias;
@@ -143,7 +95,7 @@ void GetLumenCardTracingParameters(const FViewInfo& View, const FLumenCardTracin
 	TracingParameters.SurfaceCacheFeedbackBufferTileJitter = TracingInputs.SurfaceCacheFeedbackBufferTileJitter;
 	TracingParameters.SurfaceCacheFeedbackBufferTileWrapMask = TracingInputs.SurfaceCacheFeedbackBufferTileWrapMask;
 	TracingParameters.SurfaceCacheFeedbackResLevelBias = GLumenSurfaceCacheFeedbackResLevelBias + 0.5f; // +0.5f required for uint to float rounding in shader
-	TracingParameters.SurfaceCacheUpdateFrameIndex = Scene->LumenSceneData->GetSurfaceCacheUpdateFrameIndex();
+	TracingParameters.SurfaceCacheUpdateFrameIndex = Scene->GetLumenSceneData(View)->GetSurfaceCacheUpdateFrameIndex();
 
 	// Lumen surface cache atlas
 	TracingParameters.DirectLightingAtlas = TracingInputs.DirectLightingAtlas;
@@ -154,11 +106,14 @@ void GetLumenCardTracingParameters(const FViewInfo& View, const FLumenCardTracin
 	TracingParameters.NormalAtlas = TracingInputs.NormalAtlas;
 	TracingParameters.EmissiveAtlas = TracingInputs.EmissiveAtlas;
 	TracingParameters.DepthAtlas = TracingInputs.DepthAtlas;
-	TracingParameters.VoxelLighting = TracingInputs.VoxelLighting;
 
-	if (TracingInputs.NumClipmapLevels > 0)
+	if (View.GlobalDistanceFieldInfo.PageObjectGridBuffer)
 	{
-		GetLumenVoxelTracingParameters(TracingInputs, TracingParameters, bShaderWillTraceCardsOnly);
+		TracingParameters.GlobalDistanceFieldPageObjectGridBuffer = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(View.GlobalDistanceFieldInfo.PageObjectGridBuffer));
+	}
+	else
+	{
+		TracingParameters.GlobalDistanceFieldPageObjectGridBuffer = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer(GraphBuilder, sizeof(FVector4f)));
 	}
 
 	TracingParameters.NumGlobalSDFClipmaps = View.GlobalDistanceFieldInfo.Clipmaps.Num();

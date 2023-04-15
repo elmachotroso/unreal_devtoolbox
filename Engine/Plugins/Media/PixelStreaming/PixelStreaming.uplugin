@@ -21,9 +21,41 @@
 			"LoadingPhase": "PreDefault",
 			"PlatformAllowList": [ "Win64", "Linux" ],
 			"TargetDenyList": [ "Server" ]
+		},
+		{
+			"Name": "PixelStreamingServers",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [ "Win64", "Linux" ],
+			"TargetDenyList": [ ]
+		},
+		{
+            "Name": "PixelStreamingEditor",
+            "Type": "Editor",
+            "LoadingPhase": "PreDefault",
+            "PlatformAllowList": [ "Win64", "Linux" ],
+            "TargetDenyList": [ "Server" ]
+		},
+		{
+			"Name": "PixelStreamingBlueprint",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [ "Win64", "Linux" ],
+			"TargetDenyList": [ "Server" ]
+		},
+		{
+			"Name": "PixelStreamingBlueprintEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [ "Win64", "Linux" ],
+			"TargetDenyList": [ "Server" ]
 		}
 	],
 	"Plugins": [
+		{
+			"Name": "PixelCapture",
+			"Enabled": true
+		},
 		{
 			"Name": "WmfMedia",
 			"Enabled": true,
@@ -31,6 +63,10 @@
 		},
 		{
 			"Name": "HardwareEncoders",
+			"Enabled": true
+		},
+		{
+			"Name": "WebSocketNetworking",
 			"Enabled": true
 		}
 	]

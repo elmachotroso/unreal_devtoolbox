@@ -73,29 +73,33 @@ public:
 		ComputeHash = 0x04,
 		SaveForDiff = 0x08,
 	};
+	enum class ECommitStatus
+	{
+		Success,
+		Canceled,
+		Error
+	};
 	struct FCommitPackageInfo
 	{
 		FName PackageName;
 		FGuid PackageGuid;
 		TArray<FCommitAttachmentInfo> Attachments;
-		bool bSucceeded = false;
+		ECommitStatus Status;
 		EWriteOptions WriteOptions;
 	};
 
 	/** Finalize a package started with BeginPackage()
 	  */
-	virtual TFuture<FMD5Hash> CommitPackage(FCommitPackageInfo&& Info) = 0;
+	virtual void CommitPackage(FCommitPackageInfo&& Info) = 0;
 
 	struct FPackageInfo
 	{
 		/** Associated Package Name Entry from BeginPackage */
-		FName		InputPackageName;
-		/** Output Package Name (Input Package can produce multiple output) */
-		FName		OutputPackageName;
+		FName		PackageName;
 		FString		LooseFilePath;
 		uint64		HeaderSize = 0;
 		FIoChunkId	ChunkId = FIoChunkId::InvalidChunkId;
-		uint32		MultiOutputIndex = 0;
+		uint16		MultiOutputIndex = 0;
 	};
 
 	/** Write package data (exports and serialized header)
@@ -117,13 +121,11 @@ public:
 		};
 
 		/** Associated Package Name Entry */
-		FName		InputPackageName;
-		/** Output Package Name (Input Package can produce multiple output) */
-		FName		OutputPackageName;
+		FName		PackageName;
 		EType		BulkDataType = BulkSegment;
 		FString		LooseFilePath;
 		FIoChunkId	ChunkId = FIoChunkId::InvalidChunkId;
-		uint32		MultiOutputIndex = 0;
+		uint16		MultiOutputIndex = 0;
 	};
 
 	/** Write bulk data for the current package
@@ -133,12 +135,10 @@ public:
 	struct FAdditionalFileInfo
 	{
 		/** Associated Package Name Entry */
-		FName		InputPackageName;
-		/** Output Package Name (Input Package can produce multiple output) */
-		FName		OutputPackageName;
+		FName		PackageName;
 		FString		Filename;
-		FIoChunkId	ChunkId;
-		uint32		MultiOutputIndex = 0;
+		FIoChunkId	ChunkId = FIoChunkId::InvalidChunkId;
+		uint16		MultiOutputIndex = 0;
 	};
 
 	/** Write separate files written by UObjects during cooking via UObject::CookAdditionalFiles. */
@@ -147,10 +147,8 @@ public:
 	struct FLinkerAdditionalDataInfo
 	{
 		/** Associated Package Name Entry */
-		FName	InputPackageName;
-		/** Output Package Name (Input Package can produce multiple output) */
-		FName	OutputPackageName;
-		uint32	MultiOutputIndex = 0;
+		FName	PackageName;
+		uint16	MultiOutputIndex = 0;
 	};
 	/** Write separate data written by UObjects via FLinkerSave::AdditionalDataToAppend. */
 	virtual void WriteLinkerAdditionalData(const FLinkerAdditionalDataInfo& Info, const FIoBuffer& Data, const TArray<FFileRegion>& FileRegions) = 0;
@@ -179,6 +177,17 @@ public:
 };
 
 ENUM_CLASS_FLAGS(IPackageWriter::EWriteOptions);
+
+/** Struct containing hashes computed during cooked package writing. */
+struct FPackageHashes : FRefCountBase
+{
+	// Hashes for each chunk saved by the package.
+	TMap<FIoChunkId, FIoHash> ChunkHashes;
+
+	// This is a hash representing the entire package. Note this is
+	// not consistently computed across PackageWriters!
+	FMD5Hash PackageHash;
+};
 
 /** Interface for cooking that writes cooked packages to storage usable by the runtime game. */
 class ICookedPackageWriter : public IPackageWriter
@@ -221,6 +230,7 @@ public:
 		ECookMode CookMode = CookByTheBookMode;
 		bool bFullBuild = true;
 		bool bIterateSharedBuild = false;
+		bool bWorkerOnSharedSandbox = false;
 	};
 
 	/** Delete outdated cooked data, etc.
@@ -238,11 +248,6 @@ public:
 	  */
 	virtual void EndCook() = 0;
 
-	/**
-	 * Flush any outstanding writes.
-	 */
-	virtual void Flush() = 0;
-
 	struct FCookedPackageInfo
 	{
 		FName PackageName;
@@ -252,7 +257,9 @@ public:
 	};
 
 	/**
-	 * Returns an AssetRegistry describing the previous cook results.
+	 * Returns an AssetRegistry describing the previous cook results. This doesn't mean a cook saved off
+	 * to another directory - it means the AssetRegistry that's living in the directory we are about
+	 * to cook in to.
 	 */
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() = 0;
 
@@ -311,6 +318,13 @@ public:
 	{
 		return nullptr;
 	}
+
+	/** 
+	*	Cooked package writers asynchronously hash the chunks for each package after CommitPackage. Once cooking has completed,
+	*	use this to acquire the results. This is synced using void UPackage::WaitForAsyncFileWrites() - do not access
+	*	the results before that completes. Non-const so that the cooking process can Move the map of hashes.
+	*/
+	virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() = 0;
 };
 
 static inline const ANSICHAR* LexToString(IPackageWriter::FBulkDataInfo::EType Value)

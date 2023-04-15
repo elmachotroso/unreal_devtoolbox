@@ -21,10 +21,10 @@
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Types/SlateEnums.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Engine/Level.h"
 #include "Components/ActorComponent.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "ISourceControlModule.h"
 #include "Editor.h"
@@ -32,7 +32,7 @@
 #include "FileHelpers.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
@@ -41,8 +41,8 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ImaginaryBlueprintData.h"
 #include "FiBSearchInstance.h"
 #include "Misc/ConfigCacheIni.h"
@@ -724,7 +724,8 @@ namespace BlueprintSearchMetaDataHelpers
 
 		if(InPinType.PinSubCategoryObject.IsValid())
 		{
-			InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_ObjectClass, FText::FromString(InPinType.PinSubCategoryObject->GetName()));
+			// Write the full path because this can be an ambiguous blueprint class name
+			InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_ObjectClass, FText::FromString(InPinType.PinSubCategoryObject->GetPathName()));
 		}
 		InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_IsArray, InPinType.IsArray());
 		InWriter->WriteValue(FFindInBlueprintSearchTags::FiB_IsReference, InPinType.bIsReference);
@@ -1296,7 +1297,7 @@ public:
 	virtual bool IsWorkPending() const = 0;
 
 	/** Return the next batch of asset paths for indexing. */
-	virtual void GetAssetPathsToIndex(TArray<FName>& OutAssetPaths) = 0;
+	virtual void GetAssetPathsToIndex(TArray<FSoftObjectPath>& OutAssetPaths) = 0;
 
 	/** Return true if assets should be fully indexed. */
 	virtual bool ShouldFullyIndexAssets() const = 0;
@@ -1305,10 +1306,10 @@ public:
 	virtual bool ShouldEnableMultiprocessing() const = 0;
 
 	/** Add the given asset path to the queue for gathering search data from a Blueprint. */
-	virtual void AddAssetPathToGatherQueue(FName InAssetPath) = 0;
+	virtual void AddAssetPathToGatherQueue(const FSoftObjectPath& InAssetPath) = 0;
 
 	/** Called when indexing has been completed for the given asset path. */
-	virtual void IndexCompletedForAssetPath(FName InAssetPath) = 0;
+	virtual void IndexCompletedForAssetPath(const FSoftObjectPath& InAssetPath) = 0;
 };
 
 /** Asynchronous indexing thread. Can spawn additional worker threads to index multiple assets in parallel. */
@@ -1326,7 +1327,7 @@ public:
 		while (Controller->IsWorkPending())
 		{
 			// Get the next batch of asset paths to be indexed.
-			TArray<FName> AssetPathsToIndex;
+			TArray<FSoftObjectPath> AssetPathsToIndex;
 			Controller->GetAssetPathsToIndex(AssetPathsToIndex);
 
 			// Determine whether this is a full or partial indexing operation.
@@ -1344,7 +1345,7 @@ public:
 			{
 				CSV_CUSTOM_STAT(FindInBlueprint, IndexedAssetCountThisFrame, 1, ECsvCustomStatOp::Accumulate);
 
-				FName AssetPath = AssetPathsToIndex[ArrayIdx];
+				FSoftObjectPath AssetPath = AssetPathsToIndex[ArrayIdx];
 				FSearchData SearchData = FFindInBlueprintSearchManager::Get().GetSearchDataForAssetPath(AssetPath);
 				if (SearchData.IsValid() && !SearchData.IsMarkedForDeletion() && !SearchData.IsIndexingCompleted())
 				{
@@ -1422,7 +1423,7 @@ private:
 class FCacheAllBlueprintsTickableObject : public IAsyncSearchIndexTaskController
 {
 public:
-	DECLARE_DELEGATE_OneParam(FOnAssetCached, FName);
+	DECLARE_DELEGATE_OneParam(FOnAssetCached, FSoftObjectPath);
 
 	struct FCacheParams
 	{
@@ -1448,7 +1449,7 @@ public:
 		}
 	};
 
-	FCacheAllBlueprintsTickableObject(const TSet<FName>& InAssets, const FCacheParams& InParams)
+	FCacheAllBlueprintsTickableObject(const TSet<FSoftObjectPath>& InAssets, const FCacheParams& InParams)
 		: UncachedAssets(InAssets.Array())
 		, CacheParams(InParams)
 		, TickCacheIndex(0)
@@ -1506,14 +1507,14 @@ public:
 		return CacheParams.OpFlags;
 	}
 
-	/** Returns the name of the current Blueprint being cached */
-	FName GetCurrentCacheBlueprintName() const
+	/** Returns the path of the current Blueprint being cached */
+	FSoftObjectPath GetCurrentCacheBlueprintPath() const
 	{
 		if(UncachedAssets.Num() && TickCacheIndex >= 0)
 		{
 			return UncachedAssets[TickCacheIndex];
 		}
-		return NAME_None;
+		return {};
 	}
 
 	/** Returns the progress as a percent */
@@ -1529,7 +1530,7 @@ public:
 	}
 
 	/** Returns the entire list of uncached assets that this object will attempt to cache */
-	const TArray<FName>& GetUncachedAssetList() const
+	const TArray<FSoftObjectPath>& GetUncachedAssetList() const
 	{
 		return UncachedAssets;
 	}
@@ -1601,7 +1602,7 @@ public:
 		return false;
 	}
 
-	virtual void GetAssetPathsToIndex(TArray<FName>& OutAssetPaths) override
+	virtual void GetAssetPathsToIndex(TArray<FSoftObjectPath>& OutAssetPaths) override
 	{
 		OutAssetPaths.Empty();
 
@@ -1618,7 +1619,7 @@ public:
 		}
 		else
 		{
-			FName AssetPath;
+			FSoftObjectPath AssetPath;
 			int32 Count = 0;
 			while (Count < AsyncTaskBatchSize && AssetsPendingAsyncIndexing.Dequeue(AssetPath))
 			{
@@ -1628,12 +1629,12 @@ public:
 		}
 	}
 
-	virtual void AddAssetPathToGatherQueue(FName InAssetPath) override
+	virtual void AddAssetPathToGatherQueue(const FSoftObjectPath& InAssetPath) override
 	{
 		AssetsPendingGatherQueue.Enqueue(InAssetPath);
 	}
 
-	virtual void IndexCompletedForAssetPath(FName InAssetPath) override
+	virtual void IndexCompletedForAssetPath(const FSoftObjectPath& InAssetPath) override
 	{
 		FScopeLock Lock(&AsyncTaskCompletionMutex);
 
@@ -1687,7 +1688,7 @@ public:
 						// Since we may empty the queue below, this flag is used to indicate that work is still pending.
 						bIsGatheringSearchMetadata = true;
 
-						FName AssetPath;
+						FSoftObjectPath AssetPath;
 						if (AssetsPendingGatherQueue.Dequeue(AssetPath))
 						{
 							bool bEnqueueForAsyncIndexing = false;
@@ -1734,7 +1735,7 @@ public:
 					FScopeLock Lock(&AsyncTaskCompletionMutex);
 
 					// Process each completed asset path.
-					for (const FName& AssetPath : CompletedAsyncTaskAssets)
+					for (const FSoftObjectPath& AssetPath : CompletedAsyncTaskAssets)
 					{
 						// Execute the completion callback, if bound.
 						CacheParams.OnCached.ExecuteIfBound(AssetPath);
@@ -1749,7 +1750,7 @@ public:
 				else
 				{
 					// Generate the metadata tag value if it was not previously cached or loaded.
-					FName AssetPath = UncachedAssets[TickCacheIndex];
+					FSoftObjectPath AssetPath = UncachedAssets[TickCacheIndex];
 					FSearchData SearchData = FFindInBlueprintSearchManager::Get().GetSearchDataForAssetPath(AssetPath);
 					if (SearchData.IsValid() && !SearchData.IsMarkedForDeletion() && SearchData.Value.Len() == 0)
 					{
@@ -1780,7 +1781,7 @@ public:
 				FAssetData AssetData = AssetRegistryModule->Get().GetAssetByObjectPath(UncachedAssets[TickCacheIndex], bIncludeOnlyOnDiskAssets);
 				if (AssetData.IsValid())
 				{
-					const bool bIsWorldAsset = AssetData.AssetClass == UWorld::StaticClass()->GetFName();
+					const bool bIsWorldAsset = AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName();
 
 					// Construct a full package filename with path so we can query the read only status and save to disk
 					FString FinalPackageFilename = FPackageName::LongPackageNameToFilename(AssetData.PackageName.ToString());
@@ -1911,13 +1912,13 @@ protected:
 
 private:
 	/** The list of assets that are in the process of being cached */
-	TArray<FName> UncachedAssets;
+	TArray<FSoftObjectPath> UncachedAssets;
 
 	/** Notification that appears and details progress */
 	TWeakPtr<SNotificationItem> ProgressNotification;
 
 	/** Set of Blueprints that failed to be saved */
-	TSet<FName> FailedToCacheList;
+	TSet<FSoftObjectPath> FailedToCacheList;
 
 	/** Parameters for task configuration */
 	FCacheParams CacheParams;
@@ -1932,16 +1933,16 @@ private:
 	TAtomic<int32> AsyncTaskBatchIndex;
 
 	/** Tracks completed async index builder tasks since the previous tick */
-	TSet<FName> CompletedAsyncTaskAssets;
+	TSet<FSoftObjectPath> CompletedAsyncTaskAssets;
 
 	/** Synchronize between async index builder task worker threads and completion logic */
 	FCriticalSection AsyncTaskCompletionMutex;
 
 	/** Thread-safe queue for tracking asset paths that need to gather search metadata from a loaded object. This must be done on the main thread */
-	TQueue<FName, EQueueMode::Mpsc> AssetsPendingGatherQueue;
+	TQueue<FSoftObjectPath, EQueueMode::Mpsc> AssetsPendingGatherQueue;
 
 	/** Thread-safe queue for tracking asset paths that have exited the gather queue on the main thread and have now been re-queued for async indexing */
-	TQueue<FName, EQueueMode::Spsc> AssetsPendingAsyncIndexing;
+	TQueue<FSoftObjectPath, EQueueMode::Spsc> AssetsPendingAsyncIndexing;
 
 	/** TRUE if we're busy gathering search metadata from a loaded object on the main thread */
 	TAtomic<bool> bIsGatheringSearchMetadata;
@@ -1987,10 +1988,14 @@ FFindInBlueprintSearchManager::~FFindInBlueprintSearchManager()
 {
 	if (AssetRegistryModule)
 	{
-		AssetRegistryModule->Get().OnAssetAdded().RemoveAll(this);
-		AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
-		AssetRegistryModule->Get().OnAssetRenamed().RemoveAll(this);
-		AssetRegistryModule->Get().OnFilesLoaded().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+			AssetRegistry->OnAssetRenamed().RemoveAll(this);
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+		}
 	}
 	FKismetEditorUtilities::OnBlueprintUnloaded.RemoveAll(this);
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
@@ -2029,10 +2034,14 @@ void FFindInBlueprintSearchManager::Initialize()
 	if (!GIsSavingPackage || (GIsSavingPackage && FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry"))))
 	{
 		AssetRegistryModule = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule->Get().OnAssetAdded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetAdded);
-		AssetRegistryModule->Get().OnAssetRemoved().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRemoved);
-		AssetRegistryModule->Get().OnAssetRenamed().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRenamed);
-		AssetRegistryModule->Get().OnFilesLoaded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRegistryFilesLoaded);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetAdded);
+			AssetRegistry->OnAssetRemoved().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRemoved);
+			AssetRegistry->OnAssetRenamed().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRenamed);
+			AssetRegistry->OnFilesLoaded().AddRaw(this, &FFindInBlueprintSearchManager::OnAssetRegistryFilesLoaded);
+		}
 	}
 	else
 	{
@@ -2068,7 +2077,7 @@ void FFindInBlueprintSearchManager::OnAssetAdded(const FAssetData& InAssetData)
 {
 	const UClass* AssetClass = nullptr;
 	{
-		TWeakObjectPtr<const UClass> FoundClass = CachedAssetClasses.FindRef(InAssetData.AssetClass);
+		TWeakObjectPtr<const UClass> FoundClass = CachedAssetClasses.FindRef(InAssetData.AssetClassPath);
 		if (FoundClass.IsValid())
 		{
 			AssetClass = FoundClass.Get();
@@ -2078,7 +2087,7 @@ void FFindInBlueprintSearchManager::OnAssetAdded(const FAssetData& InAssetData)
 			AssetClass = InAssetData.GetClass();
 			if (AssetClass)
 			{
-				CachedAssetClasses.Add(InAssetData.AssetClass, TWeakObjectPtr<const UClass>(AssetClass));
+				CachedAssetClasses.Add(InAssetData.AssetClassPath, TWeakObjectPtr<const UClass>(AssetClass));
 			}
 		}
 	}
@@ -2120,7 +2129,7 @@ void FFindInBlueprintSearchManager::AddUnloadedBlueprintSearchMetadata(const FAs
 		const FString& FiBVersionedSearchData = Result.GetValue();
 		if (FiBVersionedSearchData.Len() == 0)
 		{
-			UnindexedAssets.Add(InAssetData.ObjectPath);
+			UnindexedAssets.Add(InAssetData.GetSoftObjectPath());
 		}
 		else
 		{
@@ -2138,7 +2147,7 @@ void FFindInBlueprintSearchManager::AddUnloadedBlueprintSearchMetadata(const FAs
 		// The asset has no FiB data, keep track of it so we can inform the user
 		else
 		{
-			UnindexedAssets.Add(InAssetData.ObjectPath);
+			UnindexedAssets.Add(InAssetData.GetSoftObjectPath());
 		}
 
 	}
@@ -2150,14 +2159,14 @@ void FFindInBlueprintSearchManager::ExtractUnloadedFiBData(const FAssetData& InA
 	CSV_CUSTOM_STAT(FindInBlueprint, ExtractUnloadedCountThisFrame, 1, ECsvCustomStatOp::Accumulate);
 
 	// Check whether this asset has already had its search data cached. If marked for deletion, we will replace it with a new entry.
-	FSearchData SearchData = GetSearchDataForAssetPath(InAssetData.ObjectPath);
+	FSearchData SearchData = GetSearchDataForAssetPath(InAssetData.GetSoftObjectPath());
 	if (SearchData.IsValid() && !SearchData.IsMarkedForDeletion())
 	{
 		return;
 	}
 
 	FSearchData NewSearchData;
-	NewSearchData.AssetPath = InAssetData.ObjectPath;
+	NewSearchData.AssetPath = InAssetData.GetSoftObjectPath();
 	InAssetData.GetTagValue(FBlueprintTags::ParentClassPath, NewSearchData.ParentClass);
 
 	const FString ImplementedInterfaces = InAssetData.GetTagValueRef<FString>(FBlueprintTags::ImplementedInterfaces);
@@ -2241,7 +2250,7 @@ FSearchData FFindInBlueprintSearchManager::GetSearchDataForIndex(int32 CacheInde
 	return FSearchData();
 }
 
-FSearchData FFindInBlueprintSearchManager::GetSearchDataForAssetPath(FName InAssetPath)
+FSearchData FFindInBlueprintSearchManager::GetSearchDataForAssetPath(const FSoftObjectPath& InAssetPath)
 {
 	FScopeLock ScopeLock(&SafeModifyCacheCriticalSection);
 
@@ -2275,7 +2284,7 @@ void FFindInBlueprintSearchManager::ApplySearchDataToDatabase(FSearchData InSear
 	}
 	else if (bAllowNewEntry)
 	{
-		FName AssetPath = InSearchData.AssetPath; // Copy before we move the data into the array
+		FSoftObjectPath AssetPath = InSearchData.AssetPath; // Copy before we move the data into the array
 
 		int32 ArrayIndex = SearchArray.Add(MoveTemp(InSearchData));
 
@@ -2284,7 +2293,7 @@ void FFindInBlueprintSearchManager::ApplySearchDataToDatabase(FSearchData InSear
 	}
 }
 
-void FFindInBlueprintSearchManager::RemoveBlueprintByPath(FName InPath)
+void FFindInBlueprintSearchManager::RemoveBlueprintByPath(const FSoftObjectPath& InPath)
 {
 	FScopeLock ScopeLock(&SafeModifyCacheCriticalSection);
 
@@ -2300,7 +2309,7 @@ void FFindInBlueprintSearchManager::OnAssetRemoved(const struct FAssetData& InAs
 {
 	if(InAssetData.IsAssetLoaded())
 	{
-		RemoveBlueprintByPath(InAssetData.ObjectPath);
+		RemoveBlueprintByPath(InAssetData.GetSoftObjectPath());
 	}
 }
 
@@ -2309,7 +2318,7 @@ void FFindInBlueprintSearchManager::OnAssetRenamed(const struct FAssetData& InAs
 	// Renaming removes the item from the manager, it will be re-added in the OnAssetAdded event under the new name.
 	if(InAssetData.IsAssetLoaded())
 	{
-		RemoveBlueprintByPath(FName(*InOldName));
+		RemoveBlueprintByPath(FSoftObjectPath(InOldName));
 	}
 }
 
@@ -2337,7 +2346,7 @@ void FFindInBlueprintSearchManager::OnAssetLoaded(UObject* InAsset)
 
 	if (BlueprintObject)
 	{
-		FName AssetPath = *InAsset->GetPathName();
+		FSoftObjectPath AssetPath(InAsset);
 
 		// Find and update the item in the search array. Searches may currently be active, this will do no harm to them
 
@@ -2396,7 +2405,7 @@ void FFindInBlueprintSearchManager::OnBlueprintUnloaded(UBlueprint* InBlueprint)
 		if(const UObject* AssetObject = GetAssetObject(InBlueprint))
 		{
 			// Mark any existing entry for deletion. This will allow the entry to be updated below.
-			const FName AssetPath = *AssetObject->GetPathName();
+			const FSoftObjectPath AssetPath{AssetObject};
 			RemoveBlueprintByPath(AssetPath);
 
 			// Add or update an existing entry to one that represents the data for the asset on disk, and re-index it.
@@ -2474,7 +2483,7 @@ void FFindInBlueprintSearchManager::AddOrUpdateBlueprintSearchMetadata(UBlueprin
 
 	check(AssetObject);
 
-	FName AssetPath = *AssetObject->GetPathName();
+	FSoftObjectPath AssetPath(AssetObject);
 	FSearchData SearchData = GetSearchDataForAssetPath(AssetPath);
 
 	if (SearchData.IsValid())
@@ -2492,7 +2501,7 @@ void FFindInBlueprintSearchManager::AddOrUpdateBlueprintSearchMetadata(UBlueprin
 	// Build the search data
 	if (FProperty* ParentClassProp = InBlueprint->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UBlueprint, ParentClass)))
 	{
-		ParentClassProp->ExportTextItem(SearchData.ParentClass, ParentClassProp->ContainerPtrToValuePtr<uint8>(InBlueprint), nullptr, InBlueprint, 0);
+		ParentClassProp->ExportTextItem_Direct(SearchData.ParentClass, ParentClassProp->ContainerPtrToValuePtr<uint8>(InBlueprint), nullptr, InBlueprint, 0);
 	}
 
 	if (SearchData.IsValid())
@@ -2591,11 +2600,11 @@ FSearchData FFindInBlueprintSearchManager::GetNextSearchDataForQuery(const FStre
 	// If we don't have valid search data, try the deferred list from above.
 	if (!SearchData.IsValid() && bCheckDeferredList)
 	{
-		FName AssetPath, FirstAssetPath = NAME_None;
+		FSoftObjectPath AssetPath, FirstAssetPath;
 		while (SearchQuery->DeferredAssetPaths.Dequeue(AssetPath))
 		{
 			// Skip invalid paths (shouldn't happen, but just in case).
-			if (AssetPath == NAME_None)
+			if (AssetPath.IsNull())
 			{
 				continue;
 			}
@@ -2644,7 +2653,7 @@ FSearchData FFindInBlueprintSearchManager::GetNextSearchDataForQuery(const FStre
 					}
 
 					// Keep track of the first dequeued asset path. If we wrap back around, we'll yield to give the indexing thread more time to work.
-					if (FirstAssetPath == NAME_None)
+					if (FirstAssetPath.IsNull())
 					{
 						FirstAssetPath = AssetPath;
 					}
@@ -2805,7 +2814,7 @@ FSearchData FFindInBlueprintSearchManager::QuerySingleBlueprint(UBlueprint* InBl
 		UObject* AssetObject = GetAssetObject(InBlueprint);
 		check(AssetObject);
 
-		FName Key = *AssetObject->GetPathName();
+		FSoftObjectPath Key(AssetObject);
 		FSearchData SearchData = GetSearchDataForAssetPath(Key);
 		if (SearchData.IsValid())
 		{
@@ -2854,7 +2863,7 @@ void FFindInBlueprintSearchManager::UnpauseFindInBlueprintSearch()
 void FFindInBlueprintSearchManager::CleanCache()
 {
 	// We need to cache where the active queries are so that we can put them back in a safe and expected position
-	TMap< const FStreamSearch*, FName > CacheQueries;
+	TMap<const FStreamSearch*, FSoftObjectPath> CacheQueries;
 	for( auto It = ActiveSearchQueries.CreateIterator() ; It ; ++It )
 	{
 	 	const FStreamSearch* ActiveSearch = It.Key();
@@ -2869,20 +2878,20 @@ void FFindInBlueprintSearchManager::CleanCache()
 				FSearchData SearchData = GetNextSearchDataForQuery(ActiveSearch, SearchQuery, bCheckDeferredList);
 				if (SearchData.IsValid())
 				{
-					FName CachePath = SearchData.AssetPath;
+					FSoftObjectPath CachePath = SearchData.AssetPath;
 					CacheQueries.Add(ActiveSearch, CachePath);
 				}
 			}
 	 	}
 	}
 
-	TMap<FName, int32> NewSearchMap;
+	TMap<FSoftObjectPath, int32> NewSearchMap;
 	TArray<FSearchData> NewSearchArray;
 
 	// Don't allow background indexing tasks to access the search database while we fix it up.
 	FScopeLock Lock(&SafeModifyCacheCriticalSection);
 
-	for(auto& SearchValuePair : SearchMap)
+	for(const TPair<FSoftObjectPath, int32>& SearchValuePair : SearchMap)
 	{
 		// Here it builds the new map/array, clean of deleted content.
 
@@ -2913,7 +2922,7 @@ void FFindInBlueprintSearchManager::CleanCache()
 	{
 	 	int32 NewMappedIndex = 0;
 	 	// Is the CachePath is valid? Otherwise we are at the end and there are no more search results, leave the query there so it can handle shutdown on it's own
-	 	if(!CacheQuery.Value.IsNone())
+	 	if(!CacheQuery.Value.IsNull())
 	 	{
 	 		int32* NewMappedIndexPtr = SearchMap.Find(CacheQuery.Value);
 	 		check(NewMappedIndexPtr);
@@ -2938,9 +2947,9 @@ void FFindInBlueprintSearchManager::BuildCache()
 	FARFilter ClassFilter;
 	ClassFilter.bRecursiveClasses = true;
 
-	for (FName ClassName : FBlueprintAssetHandler::Get().GetRegisteredClassNames())
+	for (FTopLevelAssetPath ClassPathName : FBlueprintAssetHandler::Get().GetRegisteredClassNames())
 	{
-		ClassFilter.ClassNames.Add(ClassName);
+		ClassFilter.ClassPaths.Add(ClassPathName);
 	}
 
 	AssetRegistryModule->Get().GetAssets(ClassFilter, BlueprintAssets);
@@ -3005,10 +3014,10 @@ void FFindInBlueprintSearchManager::OnCacheAllUnindexedAssets(bool bInSourceCont
 		if(bInSourceControlActive && bInCheckoutAndSave)
 		{
 			TArray<FString> UncachedAssetStrings;
-			const TArray<FName>& TotalUncachedAssets = CachingObject->GetUncachedAssetList();
+			const TArray<FSoftObjectPath>& TotalUncachedAssets = CachingObject->GetUncachedAssetList();
 		
 			UncachedAssetStrings.Reserve(TotalUncachedAssets.Num());
-			for (const FName& UncachedAsset : TotalUncachedAssets)
+			for (const FSoftObjectPath& UncachedAsset : TotalUncachedAssets)
 			{
 				UncachedAssetStrings.Add(UncachedAsset.ToString());
 			}
@@ -3088,8 +3097,8 @@ void FFindInBlueprintSearchManager::CacheAllAssets(TWeakPtr< SFindInBlueprints >
 			else
 			{
 				// Find all pending assets for which we can gather and cache search metadata
-				TSet<FName> AssetsToPartiallyCache;
-				for (const FName& AssetPath : PendingAssets)
+				TSet<FSoftObjectPath> AssetsToPartiallyCache;
+				for (const FSoftObjectPath& AssetPath : PendingAssets)
 				{
 					if (const int32* IndexPtr = SearchMap.Find(AssetPath))
 					{
@@ -3126,7 +3135,7 @@ void FFindInBlueprintSearchManager::CacheAllAssets(TWeakPtr< SFindInBlueprints >
 		}
 		else
 		{
-			TArray<FName> BlueprintsToUpdate;
+			TArray<FSoftObjectPath> BlueprintsToUpdate;
 			// Add any out-of-date Blueprints to the list
 			for (FSearchData SearchData : SearchArray)
 			{
@@ -3165,7 +3174,7 @@ void FFindInBlueprintSearchManager::CacheAllAssets(TWeakPtr< SFindInBlueprints >
 			{
 				FailedToCachePaths.Empty();
 
-				TSet<FName> TempUncachedAssets;
+				TSet<FSoftObjectPath> TempUncachedAssets;
 				TempUncachedAssets.Append(UnindexedAssets);
 				TempUncachedAssets.Append(BlueprintsToUpdate);
 
@@ -3215,15 +3224,15 @@ int32 FFindInBlueprintSearchManager::GetCurrentCacheIndex() const
 	return CachingIndex;
 }
 
-FName FFindInBlueprintSearchManager::GetCurrentCacheBlueprintName() const
+FSoftObjectPath FFindInBlueprintSearchManager::GetCurrentCacheBlueprintPath() const
 {
-	FName CachingBPName;
+	FSoftObjectPath CachingBPPath;
 	if(CachingObject.IsValid())
 	{
-		CachingBPName = CachingObject->GetCurrentCacheBlueprintName();
+		CachingBPPath = CachingObject->GetCurrentCacheBlueprintPath();
 	}
 
-	return CachingBPName;
+	return CachingBPPath;
 }
 
 float FFindInBlueprintSearchManager::GetCacheProgress() const
@@ -3265,7 +3274,7 @@ void FFindInBlueprintSearchManager::StartedCachingBlueprints(EFiBCacheOpType InC
 	}
 }
 
-void FFindInBlueprintSearchManager::FinishedCachingBlueprints(EFiBCacheOpType InCacheOpType, EFiBCacheOpFlags InCacheOpFlags, int32 InNumberCached, TSet<FName>& InFailedToCacheList)
+void FFindInBlueprintSearchManager::FinishedCachingBlueprints(EFiBCacheOpType InCacheOpType, EFiBCacheOpFlags InCacheOpFlags, int32 InNumberCached, TSet<FSoftObjectPath>& InFailedToCacheList)
 {
 	// Update the list of cache failures
 	FailedToCachePaths = InFailedToCacheList;
@@ -3527,7 +3536,7 @@ void FFindInBlueprintSearchManager::EnableGlobalFindResults(bool bEnable)
 	if (bEnable)
 	{
 		// Register the spawners for all global Find Results tabs
-		const FSlateIcon GlobalFindResultsIcon(FEditorStyle::GetStyleSetName(), "BlueprintEditor.FindInBlueprints.MenuIcon");
+		const FSlateIcon GlobalFindResultsIcon(FAppStyle::GetAppStyleSetName(), "BlueprintEditor.FindInBlueprints.MenuIcon");
 		GlobalFindResultsMenuItem = WorkspaceMenu::GetMenuStructure().GetToolsCategory()->AddGroup(
 			LOCTEXT("WorkspaceMenu_GlobalFindResultsCategory", "Find in Blueprints"),
 			LOCTEXT("GlobalFindResultsMenuTooltipText", "Find references to functions, events and variables in all Blueprints."),

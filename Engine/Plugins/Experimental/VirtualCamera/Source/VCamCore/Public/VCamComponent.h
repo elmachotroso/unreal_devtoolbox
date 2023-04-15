@@ -3,7 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "EnhancedActionKeyMapping.h"
+#include "EnhancedInputSubsystemInterface.h"
 #include "VCamTypes.h"
+#include "VCamInputSettings.h"
 #include "Roles/LiveLinkCameraTypes.h"
 #include "VCamOutputProviderBase.h"
 #include "GameplayTagContainer.h"
@@ -21,6 +24,7 @@ class UCineCameraComponent;
 class UVCamModifierContext;
 class SWindow;
 class FSceneViewport;
+class UEnhancedInputComponent;
 
 #if WITH_EDITOR
 class FLevelEditorViewportClient;
@@ -44,7 +48,6 @@ class VCAMCORE_API UVCamComponent : public USceneComponent
 	GENERATED_BODY()
 
 	friend class UVCamModifier;
-	friend struct FVCamPrivate;
 
 public:
 	UVCamComponent();
@@ -52,6 +55,8 @@ public:
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 
 	virtual void OnAttachmentChanged() override;
+
+	virtual void PostLoad() override;
 
 	TSharedPtr<FSceneViewport> GetTargetSceneViewport() const;
 	TWeakPtr<SWindow> GetTargetInputWindow() const;
@@ -62,6 +67,7 @@ public:
 
 	virtual void CheckForErrors() override;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
+	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
@@ -78,8 +84,46 @@ public:
 	void HandleObjectReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
 
 	bool CanUpdate() const;
-
+	
 	void Update();
+
+	// Adds the Input Mapping Context from a modifier, if it exists, to the input system 
+	void AddInputMappingContext(const UVCamModifier* Modifier);
+
+	// Removes the Input Mapping Context from a modifier, if it exists, from the input system
+	void RemoveInputMappingContext(const UVCamModifier* Modifier);
+
+	// Adds an explicitly provided Input Mapping Context to the input system
+	void AddInputMappingContext(UInputMappingContext* Context, int32 Priority);
+
+	// Removes an explicitly provided Input Mapping Context to the input system
+	void RemoveInputMappingContext(UInputMappingContext* Context);
+
+	// Attempts to apply key mapping settings from an input profile defined in VCam Input Settings
+	// Returns whether the profile was found and able to be applied
+	UFUNCTION(BlueprintCallable, Category = "VCam Input")
+	bool SetInputProfileFromName(const FName ProfileName);
+
+	// Tries to add a new Input Profile to the VCam Input Settings and populates it with any currently active player mappable keys
+	// Note: The set of currently active player mappable keys may be larger than the set of mappings in this component's Input Profile
+	//
+	// Optionally this function can update an existing profile, this will only add any mappable keys that don't currently exist in the profile but will not remove any existing mappings
+	// Returns whether the profile was successfully added or updated
+	UFUNCTION(BlueprintCallable, Category="VCam Input", meta=(ReturnDisplayName = "Success"))
+	bool AddInputProfileWithCurrentlyActiveMappings(const FName ProfileName, bool bUpdateIfProfileAlreadyExists = true);
+
+	// Saves the current input profile settings to the VCam Input Settings using the provided Profile Name
+	UFUNCTION(BlueprintCallable, Category="VCam Input", meta=(ReturnDisplayName = "Success"))
+	bool SaveCurrentInputProfileToSettings(const FName ProfileName) const;
+	
+	// Searches the currently active input system for all registered key mappings that are marked as Player Mappable.
+	UFUNCTION(BlueprintCallable, Category="VCam Input", meta=(ReturnDisplayName = "PlayerMappableActionKeyMappings"))
+	TArray<FEnhancedActionKeyMapping> GetAllPlayerMappableActionKeyMappings() const;
+
+	// Searches the currently active input system for the current key mapped to a given input mapping
+	// If there is not a player mapped key, then this will return EKeys::Invalid.
+	UFUNCTION(BlueprintCallable, Category="VCam Input", meta=(ReturnDisplayName = "Key"))
+	FKey GetPlayerMappedKey(const FName MappingName) const;
 
 	// Sets if the VCamComponent will update every frame or not
 	UFUNCTION(BlueprintSetter)
@@ -233,22 +277,71 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "VirtualCamera")
 	bool bDisableOutputOnMultiUserReceiver = true;
 
-	/** Indicates the frequency which camera updates are sent when in Multi-user mode. This has a minimum value of 30ms. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category="VirtualCamera", meta=(ForceUnits=ms, ClampMin = "30.0"), DisplayName="Update Frequencey")
+	/**
+	 * Indicates the frequency which camera updates are sent when in Multi-user mode. This has a minimum value of
+	 * 11ms. Using values below 30ms is discouraged. When higher refresh rates are needed consider using LiveLink
+	 * rebroadcast to stream camera data.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category="VirtualCamera", meta=(ForceUnits=ms, ClampMin = "11.0"), DisplayName="Update Frequencey")
 	float UpdateFrequencyMs = 66.6f;
 
 	// Which viewport to use for this VCam
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VirtualCamera")
 	EVCamTargetViewportID TargetViewport = EVCamTargetViewportID::CurrentlySelected;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetInputProfile, Category = "VirtualCamera")
+	FVCamInputProfile InputProfile;
+
+	// Call this after modifying the InputProfile in code to update the player mapped keys
+	void ApplyInputProfile();
+	
+	UFUNCTION(BlueprintCallable, BlueprintInternalUseOnly, Category="VirtualCamera")
+	void SetInputProfile(const FVCamInputProfile& NewInputProfile);
+
 	// List of Output Providers (executed in order)
 	UPROPERTY(EditAnywhere, Instanced, Category="VirtualCamera")
-	TArray<UVCamOutputProviderBase*> OutputProviders;
+	TArray<TObjectPtr<UVCamOutputProviderBase>> OutputProviders;
 
 	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
 	void GetLiveLinkDataForCurrentFrame(FLiveLinkCameraBlueprintData& LiveLinkData);
 
-private:
+	/* Registers the given object with the VCamComponent's Input Component
+	 * This allows dynamic input bindings such as input events in blueprints to work correctly
+	 * Note: Ensure you call UnregisterObjectForInput when you are finished with the object
+	 * otherwise input events will still fire until GC actually destroys the object
+	 *
+	 * @param Object The object to register
+	 */
+	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
+	void RegisterObjectForInput(UObject* Object);
+
+	/* Unregisters the given object with the VCamComponent's Input Component
+	 *
+	 * @param Object The object to unregister
+	 */
+	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
+	void UnregisterObjectForInput(UObject* Object) const;
+
+	/**
+	 * Returns a list of all player mappable keys that have been registered
+	 */
+	UFUNCTION(BlueprintCallable, Category="VirtualCamera")
+	TArray<FEnhancedActionKeyMapping> GetPlayerMappableKeys() const;
+
+	/**
+	* Injects an input action. 
+	*/
+	UFUNCTION(BlueprintCallable, Category = "VirtualCamera", meta = (AutoCreateRefTerm = "Modifiers,Triggers"))
+	virtual void InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+
+
+	/**
+	* Injects an input vector for action.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "VirtualCamera", meta = (AutoCreateRefTerm = "Modifiers,Triggers"))
+	virtual void InjectInputVectorForAction(const UInputAction* Action, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+
+private:	
 	static void CopyLiveLinkDataToCamera(const FLiveLinkCameraBlueprintData& LiveLinkData, UCineCameraComponent* CameraComponent);
 
 	float GetDeltaTime();
@@ -259,7 +352,7 @@ private:
 
 	// Use the Saved Modifier Stack from PreEditChange to find the modified entry and then ensure the modified entry's name is unique
 	// If a new modifier has been created then its name will be defaulted to BaseName
-	void EnforceModifierStackNameUniqueness(const FString BaseName = "NewModifier");
+	void ValidateModifierStack(const FString BaseName = "NewModifier");
 	bool DoesNameExistInSavedStack(const FName InName) const;
 	void FindModifiedStackEntry(int32& ModifiedStackIndex, bool& bIsNewEntry) const;
 
@@ -305,8 +398,17 @@ private:
 	/** Can the modifier stack be evaluated. */
 	bool CanEvaluateModifierStack() const;
 
+	/** Output Providers should only update outside of MU or if we have the correct VP Role */
+	bool ShouldUpdateOutputProviders() const;
+
 	// When another component replaces us, get a notification so we can clean up
 	void NotifyComponentWasReplaced(UVCamComponent* ReplacementComponent);
+
+	/*
+	 * Gets the input interface for the currently active input method.
+	 * Will switch between editor and player based input as needed
+	 */
+	IEnhancedInputSubsystemInterface* GetEnhancedInputSubsystemInterface() const;
 
 	double LastEvaluationTime;
 
@@ -318,7 +420,7 @@ private:
 
 	// Modifier Context object that can be accessed by the Modifier Stack
 	UPROPERTY(EditAnywhere, Instanced, Category = "VirtualCamera")
-	UVCamModifierContext* ModifierContext;
+	TObjectPtr<UVCamModifierContext> ModifierContext;
 
 	// List of Modifiers (executed in order)
 	UPROPERTY(EditAnywhere, Category = "VirtualCamera")
@@ -329,4 +431,19 @@ private:
 
 	UPROPERTY(Transient)
 	bool bIsLockedToViewport = false;
+
+	// From Ben H: Mark this as Transient/DuplicateTransient so that it is saved on the BP CDO and nowhere else and
+	// handled correctly during duplication operations (copy/paste etc)
+	UPROPERTY(Transient, DuplicateTransient)
+	TObjectPtr<UInputComponent> InputComponent;
+
+	// Utility functions for registering and unregistering our input component with the correct input system
+	void RegisterInputComponent();
+	void UnregisterInputComponent();
+
+	// Store the Input Mapping Contexts that have been added via this component
+	UPROPERTY(Transient, DuplicateTransient)
+	TArray<TObjectPtr<const UInputMappingContext>> AppliedInputContexts;
+
+	bool bIsInputRegistered = false;
 };

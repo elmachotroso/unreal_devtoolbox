@@ -15,7 +15,6 @@ namespace UnrealBuildTool.Rules
 
             PrivateIncludePaths.AddRange(
                 new string[] {
-                    "Runtime/AIModule/Private",
                     "Runtime/Engine/Private",
                 }
                 );
@@ -66,15 +65,7 @@ namespace UnrealBuildTool.Rules
                 PublicDefinitions.Add("WITH_RECAST=0");
             }
 
-            if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
-            {
-                PrivateDependencyModuleNames.Add("GameplayDebugger");
-                PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
-            }
-            else
-            {
-                PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
-            }
+            SetupGameplayDebuggerSupport(Target);
         }
     }
 }

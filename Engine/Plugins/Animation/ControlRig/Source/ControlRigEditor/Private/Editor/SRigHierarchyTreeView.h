@@ -6,6 +6,7 @@
 #include "Widgets/Views/STreeView.h"
 #include "Rigs/RigHierarchy.h"
 
+class SSearchBox;
 class SRigHierarchyTreeView;
 class SRigHierarchyItem;
 class FRigTreeElement;
@@ -24,7 +25,6 @@ struct CONTROLRIGEDITOR_API FRigTreeDisplaySettings
 		bShowNulls = true;
 		bShowRigidBodies = true;
 		bShowReferences = true;
-		bShowDynamicHierarchy = false;
 		bShowIconColors = true;
 	}
 	
@@ -53,9 +53,6 @@ struct CONTROLRIGEDITOR_API FRigTreeDisplaySettings
 
 	/** Whether or not to show references in the hierarchy */
 	bool bShowReferences;
-
-	/** Whether or not to show the static or dynamic hierarchy */
-	bool bShowDynamicHierarchy;
 
 	/** Whether to tint the icons with the element color */
 	bool bShowIconColors;
@@ -170,11 +167,14 @@ public:
 public:
 	/** Element Data to display */
 	FRigElementKey Key;
+	FName ChannelName;
 	bool bIsTransient;
+	bool bIsAnimationChannel;
+	bool bIsProcedural;
 	bool bSupportsRename;
 	TArray<TSharedPtr<FRigTreeElement>> Children;
 
-	TSharedRef<ITableRow> MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings);
+	TSharedRef<ITableRow> MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings, bool bPinned);
 
 	void RequestRename();
 
@@ -201,10 +201,11 @@ class SRigHierarchyItem : public STableRow<TSharedPtr<FRigTreeElement>>
 {
 public:
 	
-	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings);
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings, bool bPinned);
  	void OnNameCommitted(const FText& InText, ETextCommit::Type InCommitType) const;
 	bool OnVerifyNameChanged(const FText& InText, FText& OutErrorMessage);
 	static TPair<const FSlateBrush*, FSlateColor> GetBrushForElementType(const URigHierarchy* InHierarchy, const FRigElementKey& InKey);
+	static FLinearColor GetColorForControlType(ERigControlType InControlType, UEnum* InControlEnum);
 
 private:
 	TWeakPtr<FRigTreeElement> WeakRigTreeElement;
@@ -268,7 +269,7 @@ public:
 	bool RemoveElement(FRigElementKey InKey);
 	void RefreshTreeView(bool bRebuildContent = true);
 	void SetExpansionRecursive(TSharedPtr<FRigTreeElement> InElement, bool bTowardsParent, bool bShouldBeExpanded);
-	TSharedRef<ITableRow> MakeTableRowWidget(TSharedPtr<FRigTreeElement> InItem, const TSharedRef<STableViewBase>& OwnerTable);
+	TSharedRef<ITableRow> MakeTableRowWidget(TSharedPtr<FRigTreeElement> InItem, const TSharedRef<STableViewBase>& OwnerTable, bool bPinned);
 	void HandleGetChildrenForTree(TSharedPtr<FRigTreeElement> InItem, TArray<TSharedPtr<FRigTreeElement>>& OutChildren);
 
 	TArray<FRigElementKey> GetSelectedKeys() const;
@@ -307,6 +308,7 @@ public:
 
 	void Construct(const FArguments& InArgs);
 	virtual ~SSearchableRigHierarchyTreeView() {}
+	TSharedRef<SSearchBox> GetSearchBox() const { return SearchBox.ToSharedRef(); }
 	TSharedRef<SRigHierarchyTreeView> GetTreeView() const { return TreeView.ToSharedRef(); }
 	const FRigTreeDisplaySettings& GetDisplaySettings();
 
@@ -317,5 +319,6 @@ private:
 	FOnGetRigTreeDisplaySettings SuperGetRigTreeDisplaySettings;
 	FText FilterText;
 	FRigTreeDisplaySettings Settings;
+	TSharedPtr<SSearchBox> SearchBox;
 	TSharedPtr<SRigHierarchyTreeView> TreeView;
 };

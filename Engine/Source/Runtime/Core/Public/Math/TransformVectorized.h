@@ -2,23 +2,33 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "Math/UnrealMathUtility.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Logging/LogMacros.h"
-#include "Math/Vector.h"
-#include "Math/VectorRegister.h"
-#include "Math/Rotator.h"
-#include "Math/Vector4.h"
+#include "Math/Axis.h"
+#include "Math/MathFwd.h"
 #include "Math/Matrix.h"
 #include "Math/Quat.h"
+#include "Math/Rotator.h"
 #include "Math/ScalarRegister.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/UnrealMathUtility.h"
+#include "Math/UnrealMathVectorConstants.h"
+#include "Math/Vector.h"
+#include "Math/Vector4.h"
+#include "Math/VectorRegister.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
+#include "Serialization/Archive.h"
+#include "Serialization/StructuredArchiveAdapters.h"
+#include "Templates/IsFloatingPoint.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "UObject/NameTypes.h"
 
 #if ENABLE_VECTORIZED_TRANSFORM
 
-struct Z_Construct_UScriptStruct_FTransform3f_Statics;
 struct Z_Construct_UScriptStruct_FTransform3d_Statics;
+struct Z_Construct_UScriptStruct_FTransform3f_Statics;
 struct Z_Construct_UScriptStruct_FTransform_Statics;
 
 namespace UE
@@ -294,18 +304,6 @@ public:
 	/** Acceptable form: "%f,%f,%f|%f,%f,%f|%f,%f,%f" */
 	CORE_API bool InitFromString( const FString& InSourceString );
 
-	/**
-	* Copy another Transform into this one
-	*/
-	FORCEINLINE TTransform& operator=(const TTransform& Other)
-	{
-		this->Rotation = Other.Rotation;
-		this->Translation = Other.Translation;
-		this->Scale3D = Other.Scale3D;
-
-		return *this;
-	}
-
 
 	FORCEINLINE TMatrix<T> ToMatrixWithScale() const
 	{
@@ -544,7 +542,7 @@ public:
 	FORCEINLINE static bool AnyHasNegativeScale(const TVector<T>& InScale3D, const TVector<T>& InOtherScale3D);
 	FORCEINLINE void ScaleTranslation(const TVector<T>& InScale3D);
 	FORCEINLINE void ScaleTranslation(const T& Scale);
-	FORCEINLINE void RemoveScaling(T Tolerance=SMALL_NUMBER);
+	FORCEINLINE void RemoveScaling(T Tolerance=UE_SMALL_NUMBER);
 	FORCEINLINE float GetMaximumAxisScale() const;
 	FORCEINLINE float GetMinimumAxisScale() const;
 	// Inverse does not work well with VQS format(in particular non-uniform), so removing it, but made two below functions to be used instead. 
@@ -600,7 +598,7 @@ public:
 	FORCEINLINE TVector<T>		GetScaledAxis(EAxis::Type InAxis) const;
 	FORCEINLINE TVector<T>		GetUnitAxis(EAxis::Type InAxis) const;
 	FORCEINLINE void		Mirror(EAxis::Type MirrorAxis, EAxis::Type FlipAxis);
-	FORCEINLINE static TVector<T>	GetSafeScaleReciprocal(const TVector<T>& InScale, T Tolerance=SMALL_NUMBER);
+	FORCEINLINE static TVector<T>	GetSafeScaleReciprocal(const TVector<T>& InScale, T Tolerance=UE_SMALL_NUMBER);
 
 
 	FORCEINLINE TVector<T> GetLocation() const
@@ -710,7 +708,7 @@ private:
 		return !!VectorAnyLesserThan(VectorMin(InScale3D, InOtherScale3D), (TransformVectorRegister)GlobalVectorConstants::FloatZero);
 	}
 
-	FORCEINLINE bool Private_RotationEquals( const TransformVectorRegister& InRotation, const FReal ToleranceScalar = KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Private_RotationEquals( const TransformVectorRegister& InRotation, const FReal ToleranceScalar = UE_KINDA_SMALL_NUMBER) const
 	{			
 		const TransformVectorRegister MyRotation = Rotation; // Load from persistent value, to avoid repeated loads.
 		const TransformVectorRegister Tolerance = VectorLoadFloat1(&ToleranceScalar);
@@ -721,7 +719,7 @@ private:
 		return !VectorAnyGreaterThan(RotationSub, Tolerance) || !VectorAnyGreaterThan(RotationAdd, Tolerance);
 	}
 
-	FORCEINLINE bool Private_TranslationEquals( const TransformVectorRegister& InTranslation, const FReal ToleranceScalar = KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Private_TranslationEquals( const TransformVectorRegister& InTranslation, const FReal ToleranceScalar = UE_KINDA_SMALL_NUMBER) const
 	{			
 		const TransformVectorRegister Tolerance = VectorLoadFloat1(&ToleranceScalar);
 		// !( (FMath::Abs(X-V.X) > Tolerance) || (FMath::Abs(Y-V.Y) > Tolerance) || (FMath::Abs(Z-V.Z) > Tolerance) )
@@ -729,7 +727,7 @@ private:
 		return !VectorAnyGreaterThan(TranslationDiff, Tolerance);
 	}
 
-	FORCEINLINE bool Private_Scale3DEquals( const TransformVectorRegister& InScale3D, const FReal ToleranceScalar = KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Private_Scale3DEquals( const TransformVectorRegister& InScale3D, const FReal ToleranceScalar = UE_KINDA_SMALL_NUMBER) const
 	{
 		const TransformVectorRegister Tolerance = VectorLoadFloat1(&ToleranceScalar);
 		// !( (FMath::Abs(X-V.X) > Tolerance) || (FMath::Abs(Y-V.Y) > Tolerance) || (FMath::Abs(Z-V.Z) > Tolerance) )
@@ -740,44 +738,44 @@ private:
 public:
 
 	// Test if A's rotation equals B's rotation, within a tolerance. Preferred over "A.GetRotation().Equals(B.GetRotation())" because it is faster on some platforms.
-	FORCEINLINE static bool AreRotationsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=KINDA_SMALL_NUMBER)
+	FORCEINLINE static bool AreRotationsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=UE_KINDA_SMALL_NUMBER)
 	{
 		return A.Private_RotationEquals(B.Rotation, Tolerance);
 	}
 
 	// Test if A's translation equals B's translation, within a tolerance. Preferred over "A.GetTranslation().Equals(B.GetTranslation())" because it avoids TransformVectorRegister->TVector<T> conversion.
-	FORCEINLINE static bool AreTranslationsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=KINDA_SMALL_NUMBER)
+	FORCEINLINE static bool AreTranslationsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=UE_KINDA_SMALL_NUMBER)
 	{
 		return A.Private_TranslationEquals(B.Translation, Tolerance);
 	}
 
 	// Test if A's scale equals B's scale, within a tolerance. Preferred over "A.GetScale3D().Equals(B.GetScale3D())" because it avoids TransformVectorRegister->TVector<T> conversion.
-	FORCEINLINE static bool AreScale3DsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=KINDA_SMALL_NUMBER)
+	FORCEINLINE static bool AreScale3DsEqual(const TTransform<T>& A, const TTransform<T>& B, FReal Tolerance=UE_KINDA_SMALL_NUMBER)
 	{
 		return A.Private_Scale3DEquals(B.Scale3D, Tolerance);
 	}
 
 
 	// Test if this Transform's rotation equals another's rotation, within a tolerance. Preferred over "GetRotation().Equals(Other.GetRotation())" because it is faster on some platforms.
-	FORCEINLINE bool RotationEquals(const TTransform<T>& Other, FReal Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool RotationEquals(const TTransform<T>& Other, FReal Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return AreRotationsEqual(*this, Other, Tolerance);
 	}
 
 	// Test if this Transform's translation equals another's translation, within a tolerance. Preferred over "GetTranslation().Equals(Other.GetTranslation())" because it avoids TransformVectorRegister->TVector<T> conversion.
-	FORCEINLINE bool TranslationEquals(const TTransform<T>& Other, FReal Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool TranslationEquals(const TTransform<T>& Other, FReal Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return AreTranslationsEqual(*this, Other, Tolerance);
 	}
 
 	// Test if this Transform's scale equals another's scale, within a tolerance. Preferred over "GetScale3D().Equals(Other.GetScale3D())" because it avoids TransformVectorRegister->TVector<T> conversion.
-	FORCEINLINE bool Scale3DEquals(const TTransform<T>& Other, FReal Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Scale3DEquals(const TTransform<T>& Other, FReal Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return AreScale3DsEqual(*this, Other, Tolerance);
 	}
 
 	// Test if all components of the transforms are equal, within a tolerance.
-	FORCEINLINE bool Equals(const TTransform<T>& Other, FReal Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Equals(const TTransform<T>& Other, FReal Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return Private_TranslationEquals(Other.Translation, Tolerance) && Private_RotationEquals(Other.Rotation, Tolerance) && Private_Scale3DEquals(Other.Scale3D, Tolerance);
 	}
@@ -789,7 +787,7 @@ public:
 	}
 
 	// Test if rotation and translation components of the transforms are equal, within a tolerance.
-	FORCEINLINE bool EqualsNoScale(const TTransform<T>& Other, FReal Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool EqualsNoScale(const TTransform<T>& Other, FReal Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return Private_TranslationEquals(Other.Translation, Tolerance) && Private_RotationEquals(Other.Rotation, Tolerance);
 	}
@@ -956,6 +954,12 @@ public:
 		DiagnosticCheckNaN_Scale3D();
 	}
 	
+	// For low-level VectorRegister programming
+	const TPersistentVectorRegisterType<T>& GetTranslationRegister() const { return Translation; }
+	const TPersistentVectorRegisterType<T>& GetRotationRegister() const { return Rotation; }
+	void SetTranslationRegister(TransformVectorRegister InTranslation) { Translation = InTranslation; }
+	void SetRotationRegister(TransformVectorRegister InRotation) { Rotation = InRotation; }
+
 	/** @note : Added template type function for Accumulate
 	  * The template type isn't much useful yet, but it is with the plan to move forward
 	  * to unify blending features with just type of additive or full pose
@@ -1512,7 +1516,7 @@ FORCEINLINE void TTransform<T>::ScaleTranslation(const T& InScale)
 
 // this function is from matrix, and all it does is to normalize rotation portion
 template<typename T>
-FORCEINLINE void TTransform<T>::RemoveScaling(T Tolerance/*=SMALL_NUMBER*/)
+FORCEINLINE void TTransform<T>::RemoveScaling(T Tolerance/*=UE_SMALL_NUMBER*/)
 {
 	Scale3D = GlobalVectorConstants::Float1110;
 	NormalizeRotation();	
@@ -1787,7 +1791,7 @@ FORCEINLINE TVector<T> TTransform<T>::InverseTransformPosition(const TVector<T> 
 	const TransformVectorRegister VR = VectorQuaternionInverseRotateVector(Rotation, TranslatedVec);
 
 	// GetSafeScaleReciprocal(Scale3D);
-	const TransformVectorRegister SafeReciprocal = GetSafeScaleReciprocal(Scale3D);	
+	const TransformVectorRegister SafeReciprocal = GetSafeScaleReciprocal(VectorSet_W1(Scale3D));	
 
 	// ( Rotation.Inverse() * (V-Translation) ) * GetSafeScaleReciprocal(Scale3D);
 	const TransformVectorRegister VResult = VectorMultiply(VR, SafeReciprocal);
@@ -1829,7 +1833,7 @@ FORCEINLINE TVector<T> TTransform<T>::InverseTransformVector(const TVector<T> &V
 	const TransformVectorRegister VR = VectorQuaternionInverseRotateVector(Rotation, InputVector);
 
 	// GetSafeScaleReciprocal(Scale3D);
-	const TransformVectorRegister SafeReciprocal = GetSafeScaleReciprocal(Scale3D);
+	const TransformVectorRegister SafeReciprocal = GetSafeScaleReciprocal(VectorSet_W1(Scale3D));
 
 	// ( Rotation.Inverse() * V) * GetSafeScaleReciprocal(Scale3D);
 	const TransformVectorRegister VResult = VectorMultiply(VR, SafeReciprocal);

@@ -2,14 +2,18 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
-#include "Misc/FrameNumber.h"
-#include "Misc/FrameTime.h"
+#include "Math/NumericLimits.h"
 #include "Math/Range.h"
 #include "Math/RangeBound.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameTime.h"
 
-struct FFrameRate;
 class UMovieScene;
+struct FFrameRate;
 
 namespace UE
 {
@@ -24,7 +28,7 @@ public:
  * Migrate the frame times of the movie scene from the source frame rate to the destination frame rate
  */
 
-static void MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate, UMovieScene* MovieScene);
+static void MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate, UMovieScene* MovieScene, bool bApplyRecursively = false);
 
 };
 

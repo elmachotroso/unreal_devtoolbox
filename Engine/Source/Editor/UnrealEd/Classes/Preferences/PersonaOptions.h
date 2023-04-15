@@ -13,6 +13,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Misc/NamePermissionList.h"
 #include "PersonaOptions.generated.h"
 
 enum class EFrameNumberDisplayFormats : uint8;
@@ -29,6 +30,9 @@ enum class EAnimationViewportCameraFollowMode : uint8
 
 	/** Follow a bone or socket */
 	Bone,
+
+	/** Follow the root bone while keeping the mesh vertically centered */
+	Root
 };
 
 /** Persistent per-viewport options */
@@ -142,6 +146,24 @@ class UNREALED_API UPersonaOptions : public UObject
 	UPROPERTY(EditAnywhere, config, Category = "Viewport")
 	uint32 DefaultBoneDrawSelection;
 
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor DefaultBoneColor;
+
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor SelectedBoneColor;
+
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor AffectedBoneColor;
+
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor DisabledBoneColor;
+
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor ParentOfSelectedBoneColor;
+
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	FLinearColor VirtualBoneColor;
+
 	UPROPERTY(EditAnywhere, config, Category = "Composites and Montages")
 	FLinearColor SectionTimingNodeColor;
 
@@ -150,6 +172,10 @@ class UNREALED_API UPersonaOptions : public UObject
 
 	UPROPERTY(EditAnywhere, config, Category = "Composites and Montages")
 	FLinearColor BranchingPointTimingNodeColor;
+
+	/** Pause the preview animation if playing when moving the camera and resume when finished */
+	UPROPERTY(EditAnywhere, config, Category = "Viewport")
+	bool bPauseAnimationOnCameraMove;
 
 	/** Whether to use a socket editor that is created in-line inside the skeleton tree, or whether to use the separate details panel */
 	UPROPERTY(EditAnywhere, config, Category = "Skeleton Tree")
@@ -245,7 +271,12 @@ public:
 		OnSettingsChange.Remove(Object);
 	}
 
+	FNamePermissionList& GetAllowedAnimationEditorTracks() { return AllowedAnimationEditorTracks; }
+
 protected:
 	// UObject interface
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+
+private:
+	FNamePermissionList AllowedAnimationEditorTracks;
 };

@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/TemplateSequenceTrackEditor.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/CameraComponent.h"
-#include "Camera/CameraAnim.h"
 #include "CameraAnimationSequence.h"
 #include "CollectionManagerModule.h"
 #include "CommonMovieSceneTools.h"
@@ -19,12 +18,9 @@
 #include "Misc/ConfigCacheIni.h"
 #include "MovieSceneCommonHelpers.h"
 #include "MovieSceneTimeHelpers.h"
-#include "Sections/MovieSceneCameraAnimSection.h"
 #include "SequencerSectionPainter.h"
 #include "SequencerUtilities.h"
 #include "TemplateSequence.h"
-#include "TrackEditors/CameraAnimTrackEditorHelper.h"
-#include "Tracks/MovieSceneCameraAnimTrack.h"
 #include "Tracks/MovieSceneFloatTrack.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Tracks/TemplateSequenceTrack.h"
@@ -53,33 +49,22 @@ bool FTemplateSequenceTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Ty
 
 bool FTemplateSequenceTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
+	if (InSequence && InSequence->IsTrackSupported(UTemplateSequenceTrack::StaticClass()) == ETrackSupport::NotSupported)
+	{
+		return false;
+	}
+
 	return InSequence && (InSequence->IsA(ULevelSequence::StaticClass()) || InSequence->IsA(UTemplateSequence::StaticClass()));
 }
 
 void FTemplateSequenceTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
 {
-	bool bIsCameraAnimMenu = true;
-	for (FGuid ObjectBinding : ObjectBindings)
-	{
-		const UCameraComponent* CameraComponent = AcquireCameraComponentFromObjectGuid(ObjectBinding);
-		if (CameraComponent == nullptr)
-		{
-			bIsCameraAnimMenu = false;
-			break;
-		}
-	}
-
-	FText SubMenuEntryText = LOCTEXT("AddTemplateSequence", "Template Sequence");
-	FText SubMenuEntryTooltip = LOCTEXT("AddTemplateSequenceTooltip", "Adds a track that can play a template sequence asset using the parent binding.");
-	if (bIsCameraAnimMenu)
-	{
-		SubMenuEntryText = LOCTEXT("AddCameraAnimationSequence", "Camera Animation");
-		SubMenuEntryTooltip = LOCTEXT("AddCameraAnimationSequenceTooltip", "Adds a camera animation template sequence on the parent binding.");
-	}
+	const FText SubMenuEntryText = LOCTEXT("AddTemplateSequence", "Template Sequence");
+	const FText SubMenuEntryTooltip = LOCTEXT("AddTemplateSequenceTooltip", "Adds a track that can play a template sequence asset using the parent binding.");
 	
 	MenuBuilder.AddSubMenu(
 		SubMenuEntryText, SubMenuEntryTooltip,
-		FNewMenuDelegate::CreateRaw(this, &FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu, ObjectBindings, ObjectClass, bIsCameraAnimMenu)
+		FNewMenuDelegate::CreateRaw(this, &FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu, ObjectBindings, ObjectClass)
 	);
 }
 
@@ -89,9 +74,6 @@ TSharedPtr<SWidget> FTemplateSequenceTrackEditor::BuildOutlinerEditWidget(const 
 
 	if (ObjectClass != nullptr)
 	{
-		const UCameraComponent* CameraComponent = AcquireCameraComponentFromObjectGuid(ObjectBinding);
-		const bool bIsCameraAnimMenu = (CameraComponent != nullptr);
-
 		return SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -99,7 +81,7 @@ TSharedPtr<SWidget> FTemplateSequenceTrackEditor::BuildOutlinerEditWidget(const 
 			[
 				FSequencerUtilities::MakeAddButton(
 					LOCTEXT("TemplateSequenceAddButton", "Template Sequence"),
-					FOnGetContent::CreateSP(this, &FTemplateSequenceTrackEditor::BuildTemplateSequenceAssetSubMenu, ObjectBinding, ObjectClass, bIsCameraAnimMenu),
+					FOnGetContent::CreateSP(this, &FTemplateSequenceTrackEditor::BuildTemplateSequenceAssetSubMenu, ObjectBinding, ObjectClass),
 					Params.NodeIsHovered, GetSequencer())
 			];
 	}
@@ -123,11 +105,10 @@ public:
 	{}
 	SLATE_END_ARGS();
 
-	void Construct(const FArguments& Args, TSharedPtr<FTemplateSequenceTrackEditor> InTrackEditor, TArray<FGuid> ObjectBindings, const UClass* InBaseClass, const UClass* InLegacyBaseClass)
+	void Construct(const FArguments& Args, TSharedPtr<FTemplateSequenceTrackEditor> InTrackEditor, TArray<FGuid> ObjectBindings, const UClass* InBaseClass)
 	{
 		check(InBaseClass != nullptr);
 		BaseClass = InBaseClass;
-		LegacyBaseClass = InLegacyBaseClass;
 
 		TrackEditor = InTrackEditor;
 
@@ -135,17 +116,18 @@ public:
 
 		// We will be looking for any template sequence whose root bound object is compatible with the current object binding.
 		// That means any template sequence bound to something of the same class, or a parent class.
-		TSet<FName> BaseClassNames;
+		TSet<FString> BaseClassNames;
 		const UClass* CurBaseClass = InBaseClass;
 		while (CurBaseClass)
 		{
-			BaseClassNames.Add(CurBaseClass->GetFName());
+			BaseClassNames.Add(CurBaseClass->GetPathName());
 			CurBaseClass = CurBaseClass->GetSuperClass();
 		}
 
 		FAssetPickerConfig AssetPickerConfig;
 		{
 			TSharedRef<FTemplateSequenceTrackEditor> TrackEditorRef = TrackEditor.ToSharedRef();
+			UMovieSceneSequence* Sequence = TrackEditorRef->GetSequencer() ? TrackEditorRef->GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
 
 			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(TrackEditorRef, &FTemplateSequenceTrackEditor::OnTemplateSequenceAssetSelected, ObjectBindings);
 			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateSP(TrackEditorRef, &FTemplateSequenceTrackEditor::OnTemplateSequenceAssetEnterPressed, ObjectBindings);
@@ -153,37 +135,42 @@ public:
 			AssetPickerConfig.bAllowNullSelection = false;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
-			AssetPickerConfig.Filter.ClassNames.Add(UTemplateSequence::StaticClass()->GetFName());
+			AssetPickerConfig.Filter.ClassPaths.Add(UTemplateSequence::StaticClass()->GetClassPathName());
 			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
-			if (LegacyBaseClass != nullptr)
-			{
-				AssetPickerConfig.Filter.ClassNames.Add(LegacyBaseClass->GetFName());
-			}
+			AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 
 			AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda(
 				[this, BaseClassNames](const FAssetData& AssetData) -> bool
 				{
-					if (LegacyBaseClass == nullptr || AssetData.AssetClass != LegacyBaseClass->GetFName())
+					FString FoundBoundActorClass;
+					const FAssetDataTagMapSharedView::FFindTagResult FoundBoundActorClassTag = AssetData.TagsAndValues.FindTag("BoundActorClass");
+					if (FoundBoundActorClassTag.IsSet())
 					{
-						const FAssetDataTagMapSharedView::FFindTagResult FoundBoundActorClass = AssetData.TagsAndValues.FindTag("BoundActorClass");
-						if (FoundBoundActorClass.IsSet())
+						FString TagValue = FoundBoundActorClassTag.GetValue();
+						if (FPackageName::IsShortPackageName(TagValue))
 						{
-							// Filter this out if it's got an incompatible bound actor class.
-							const FName FoundBoundActorClassName(*FoundBoundActorClass.GetValue());
-							return !BaseClassNames.Contains(FoundBoundActorClassName);
+							// Replace the short name with the full path name if possible.
+							FTopLevelAssetPath BoundActorClassPath = UClass::TryConvertShortTypeNameToPathName<UStruct>(TagValue, ELogVerbosity::Warning, TEXT("STemplateSequenceAssetSubMenu"));
+							if (!BoundActorClassPath.IsNull())
+							{
+								FoundBoundActorClass = BoundActorClassPath.ToString();
+							}
 						}
 						else
 						{
-							// Old asset, hasn't been saved since we added the bound actor class in the tags.
-							++NumAssetsRequiringSave;
-							// Don't filter if we're showing old assets, do filter if we only want compatible assets.
-							return bShowingHiddenAssets ? false : true;
+							FoundBoundActorClass = TagValue;
 						}
+					}
+					if (!FoundBoundActorClass.IsEmpty())
+					{
+						// Filter this out if it's got an incompatible bound actor class.
+						return !BaseClassNames.Contains(FoundBoundActorClass);
 					}
 					else
 					{
-						// Legacy asset (e.g. UCameraAnim asset that has yet to be upgraded to a template sequence).
-						++NumLegacyAssets;
+						// Old asset, hasn't been saved since we added the bound actor class in the tags.
+						++NumAssetsRequiringSave;
+						// Don't filter if we're showing old assets, do filter if we only want compatible assets.
 						return bShowingHiddenAssets ? false : true;
 					}
 				});
@@ -213,12 +200,12 @@ public:
 					[
 						SNew(STextBlock)
 						.Margin(FMargin(5.f))
-						.TextStyle(FEditorStyle::Get(), "SmallText.Subdued")
+						.TextStyle(FAppStyle::Get(), "SmallText.Subdued")
 						.Visibility(this, &STemplateSequenceAssetSubMenu::GetBottomRowVisibility)
 						.Text_Lambda([this]()
 							{
 								return !bShowingHiddenAssets ? 
-									FText::Format(LOCTEXT("OutdatedAssetsWarning", "Hiding {0} outdated assets"), FText::AsNumber(NumAssetsRequiringSave + NumLegacyAssets)) :
+									FText::Format(LOCTEXT("OutdatedAssetsWarning", "Hiding {0} outdated assets"), FText::AsNumber(NumAssetsRequiringSave)) :
 									LOCTEXT("OutdatedAssetsMessage", "Showing outdated assets");
 							})
 					]
@@ -229,7 +216,7 @@ public:
 						SNew(SButton)
 						.HAlign(EHorizontalAlignment::HAlign_Center)
 						.VAlign(EVerticalAlignment::VAlign_Center)
-						.TextStyle(FEditorStyle::Get(), "SmallText")
+						.TextStyle(FAppStyle::Get(), "SmallText")
 						.Visibility(this, &STemplateSequenceAssetSubMenu::GetBottomRowVisibility)
 						.Text_Lambda([this]() { return !bShowingHiddenAssets ? 
 								LOCTEXT("ShowOutdatedAssetsButton", "Show Outdated Assets") : 
@@ -246,7 +233,7 @@ public:
 
 	EVisibility GetBottomRowVisibility() const
 	{
-		return (NumAssetsRequiringSave + NumLegacyAssets) > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+		return (NumAssetsRequiringSave) > 0 ? EVisibility::Visible : EVisibility::Collapsed;
 	}
 
 	FReply OnShowHiddenAssets()
@@ -254,7 +241,6 @@ public:
 		bShowingHiddenAssets = !bShowingHiddenAssets;
 		GConfig->SetBool(TEXT("TemplateSequence"), TEXT("ShowOutdatedAssetsInCameraAnimationTrackEditor"), bShowingHiddenAssets, GEditorPerProjectIni);
 
-		NumLegacyAssets = 0;
 		NumAssetsRequiringSave = 0;
 		RefreshAssetViewDelegate.ExecuteIfBound(true);
 		return FReply::Handled();
@@ -266,30 +252,27 @@ private:
 	const UClass* LegacyBaseClass;
 
 	TSharedPtr<SWidget> AssetPicker;
-	uint32 NumLegacyAssets = 0;
 	uint32 NumAssetsRequiringSave = 0;
 	bool bShowingHiddenAssets = false;
 	FRefreshAssetViewDelegate RefreshAssetViewDelegate;
 };
 
-void FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings, const UClass* RootBindingClass, bool bIsCameraAnimMenu)
+void FTemplateSequenceTrackEditor::AddTemplateSequenceAssetSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings, const UClass* RootBindingClass)
 {
 	if (ObjectBindings.Num() > 0 && RootBindingClass != nullptr)
 	{
-		const UClass* LegacyAssetClass = bIsCameraAnimMenu ? UCameraAnim::StaticClass() : nullptr;
-		TSharedPtr<STemplateSequenceAssetSubMenu> MenuEntry = SNew(STemplateSequenceAssetSubMenu, SharedThis(this), ObjectBindings, RootBindingClass, LegacyAssetClass);
+		TSharedPtr<STemplateSequenceAssetSubMenu> MenuEntry = SNew(STemplateSequenceAssetSubMenu, SharedThis(this), ObjectBindings, RootBindingClass);
 		MenuBuilder.AddWidget(MenuEntry.ToSharedRef(), FText::GetEmpty(), true);
 	}
 }
 
-TSharedRef<SWidget> FTemplateSequenceTrackEditor::BuildTemplateSequenceAssetSubMenu(FGuid ObjectBinding, const UClass* RootBindingClass, bool bIsCameraAnimMenu)
+TSharedRef<SWidget> FTemplateSequenceTrackEditor::BuildTemplateSequenceAssetSubMenu(FGuid ObjectBinding, const UClass* RootBindingClass)
 {
 	check(RootBindingClass != nullptr);
 	
 	TArray<FGuid> ObjectBindings;
 	ObjectBindings.Add(ObjectBinding);
-	const UClass* LegacyAssetClass = bIsCameraAnimMenu ? UCameraAnim::StaticClass() : nullptr;
-	return SNew(STemplateSequenceAssetSubMenu, SharedThis(this), ObjectBindings, RootBindingClass, LegacyAssetClass);
+	return SNew(STemplateSequenceAssetSubMenu, SharedThis(this), ObjectBindings, RootBindingClass);
 }
 
 void FTemplateSequenceTrackEditor::OnTemplateSequenceAssetSelected(const FAssetData& AssetData, TArray<FGuid> ObjectBindings)
@@ -307,21 +290,6 @@ void FTemplateSequenceTrackEditor::OnTemplateSequenceAssetSelected(const FAssetD
 		const FScopedTransaction Transaction(LOCTEXT("AddTemplateSequence_Transaction", "Add Template Animation"));
 
 		AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FTemplateSequenceTrackEditor::AddKeyInternal, ObjectBindings, SelectedSequence));
-	}
-	else if (UCameraAnim* SelectedCameraAnim = Cast<UCameraAnim>(AssetData.GetAsset()))
-	{
-		TArray<TWeakObjectPtr<>> OutObjects;
-		for (FGuid ObjectBinding : ObjectBindings)
-		{
-			for (TWeakObjectPtr<> Object : GetSequencer()->FindObjectsInCurrentSequence(ObjectBinding))
-			{
-				OutObjects.Add(Object);
-			}
-		}
-		
-		const FScopedTransaction Transaction(LOCTEXT("AddCameraAnim_Transaction", "Add Camera Anim"));
-
-		AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FTemplateSequenceTrackEditor::AddLegacyCameraAnimKeyInternal, OutObjects, SelectedCameraAnim));
 	}
 }
 
@@ -405,11 +373,6 @@ FKeyPropertyResult FTemplateSequenceTrackEditor::AddKeyInternal(FFrameNumber Key
 	}
 
 	return KeyPropertyResult;
-}
-
-FKeyPropertyResult FTemplateSequenceTrackEditor::AddLegacyCameraAnimKeyInternal(FFrameNumber KeyTime, const TArray<TWeakObjectPtr<UObject>> Objects, UCameraAnim* CameraAnim)
-{
-	return FCameraAnimTrackEditorHelper::AddCameraAnimKey(*this, KeyTime, Objects, CameraAnim);
 }
 
 bool FTemplateSequenceTrackEditor::CanAddSubSequence(const UMovieSceneSequence& Sequence) const
@@ -612,7 +575,17 @@ TArray<FTemplateSequenceSection::FScalablePropertyInfo> FTemplateSequenceSection
 
 	const UTemplateSequenceSection& TemplateSequenceSection = GetSectionObjectAs<UTemplateSequenceSection>();
 	UMovieSceneSequence* SubSequence = TemplateSequenceSection.GetSequence();
+	if (!SubSequence)
+	{
+		return AllAnimatedProperties;
+	}
+
 	UMovieScene* SubMovieScene = SubSequence->GetMovieScene();
+	if (!SubMovieScene)
+	{
+		return AllAnimatedProperties;
+	}
+
 	for (const FMovieSceneBinding& Binding : SubMovieScene->GetBindings())
 	{
 		for (const UMovieSceneTrack* BindingTrack : Binding.GetTracks())

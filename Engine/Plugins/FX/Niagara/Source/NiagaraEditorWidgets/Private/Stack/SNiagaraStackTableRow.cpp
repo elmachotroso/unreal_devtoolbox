@@ -2,7 +2,7 @@
 
 #include "Stack/SNiagaraStackTableRow.h"
 #include "NiagaraEditorWidgetsStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
 #include "ViewModels/Stack/NiagaraStackItem.h"
 #include "ViewModels/Stack/NiagaraStackItemGroup.h"
@@ -253,7 +253,7 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		.HAlign(HAlign_Left)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(AccentColor.GetValue())
 			.Padding(0)
 			[
@@ -269,7 +269,7 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		.HAlign(HAlign_Right)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(IndicatorColor.GetValue())
 			.Padding(0)
 			[
@@ -522,11 +522,10 @@ void SNiagaraStackTableRow::ToggleShowInSummaryView()
 		{
 			// TODO: Move this parent handling to the UNiagaraStackFunctionInput and merge manager.
 			bool bHasParentSummaryData = false;;
-			UNiagaraEmitter* ParentEmitter = FunctionInput->GetEmitterViewModel()->GetEmitter()->GetParent();
-			if (ParentEmitter != nullptr)
+			FVersionedNiagaraEmitter ParentEmitter = FunctionInput->GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetParent();
+			if (ParentEmitter.GetEmitterData())
 			{
-				UNiagaraEmitterEditorData* ParentEmitterEditorData = Cast<UNiagaraEmitterEditorData>(ParentEmitter->GetEditorData());
-				if (ParentEmitterEditorData != nullptr)
+				if (UNiagaraEmitterEditorData* ParentEmitterEditorData = Cast<UNiagaraEmitterEditorData>(ParentEmitter.GetEmitterData()->GetEditorData()))
 				{
 					bHasParentSummaryData = ParentEmitterEditorData->GetSummaryViewMetaData(Key.GetValue()).IsSet();
 				}

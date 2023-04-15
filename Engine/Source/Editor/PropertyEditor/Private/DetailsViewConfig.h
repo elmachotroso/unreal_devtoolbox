@@ -2,9 +2,16 @@
 
 #pragma once
 
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "EditorConfigBase.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "DetailsViewConfig.generated.h"
+
+class UObject;
+template <typename T> struct TObjectPtr;
 
 USTRUCT()
 struct FDetailsSectionSelection
@@ -74,4 +81,11 @@ public:
 
 	UPROPERTY(meta=(EditorConfig))
 	TMap<FName, FDetailsViewConfig> Views;
+
+	static void Initialize();
+	static UDetailsConfig* Get();
+
+private:
+
+	static TObjectPtr<UDetailsConfig> Instance;
 };

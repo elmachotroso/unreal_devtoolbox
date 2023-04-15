@@ -47,9 +47,27 @@ public:
 	/** @return the bake result image for a given baker index. */
 	const TArrayView<TUniquePtr<TImageBuilder<FVector4f>>> GetBakeResults(int32 EvalIdx);
 
-	/** if this function returns true, we should abort calculation */
+	/** @return true if we should abort calculation */
 	TFunction<bool(void)> CancelF = []() { return false; };
 
+	/** Function to call after evaluator data is written to the final image, but before any gutter processing occurs */
+	TFunction<void(TArray<TUniquePtr<TImageBuilder<FVector4f>>>&)> PostWriteToImageCallback
+		= [](TArray<TUniquePtr<TImageBuilder<FVector4f>>>& PostWriteToImageBakeResults) {};
+
+	/* Function to call for each interior sample */
+	TFunction<void(bool, const FMeshMapEvaluator::FCorrespondenceSample&, const FVector2d&, const FVector2i&)> InteriorSampleCallback
+		= [](bool bSampleValid, const FMeshMapEvaluator::FCorrespondenceSample& Sample, const FVector2d& UVPosition, const FVector2i& ImageCoords) {};
+
+	/**
+	 * @param ImageCoords the output image coordinates to be evaluated
+	 * @param UV the target mesh UV coordinates to be evaluated
+	 * @param TriID the target mesh triangle ID to be evaluated
+	 * @return a weight (clamped by the baker to the range [0,1]) used to combine evaluator sample values with evaluator
+	 *  defaults. For evaluators using EAccumulateMode::Overwrite the default is used when weight == 0, and the value is
+	 *  used otherwise. For evaluators using EAccumulateMode::Add the sample's value and default are blended using the
+	 *  expression: `weight * value + (1 - weight) * default`
+	 */
+	TFunction<float(const FVector2i&, const FVector2d&, int32)> SampleFilterF = nullptr;
 
 	//
 	// Parameters
@@ -151,9 +169,15 @@ protected:
 	const bool bParallel = true;
 
 	FDynamicMesh3 FlatMesh;
-	TMeshSurfaceUVSampler<FMeshMapEvaluator::FCorrespondenceSample> DetailCorrespondenceSampler;
+	FMeshSurfaceUVSampler MeshUVSampler;
 
 	FImageDimensions Dimensions = FImageDimensions(128, 128);
+
+	/** @return evaluator ids with the corresponding mode */
+	const TArray<int32>& EvaluatorIdsForMode(FMeshMapEvaluator::EAccumulateMode Mode) const
+	{
+		return BakeAccumulateLists[static_cast<int32>(Mode)];
+	}
 
 	/**
 	 * If true, the baker will pad the baked content past the UV borders by GutterSize.

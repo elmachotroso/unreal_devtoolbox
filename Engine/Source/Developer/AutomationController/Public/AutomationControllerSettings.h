@@ -3,9 +3,15 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "AutomationControllerSettings.generated.h"
 
 /*
@@ -82,7 +88,15 @@ public:
 	/** Whether to treat log warnings as log errors (default=true) */
 	UPROPERTY(Config)
 	bool bElevateLogWarningsToErrors;
-	
+
+	/** Log categories where warnings/errors will not affect the result of tests. A finer-grained way of preventing rogue systems from leading to test warnings/errors */
+	UPROPERTY(Config)
+	TArray<FString> SuppressedLogCategories;
+
+	/** Whether to keep the PIE Open in the editor at the end of a test pass (default=false) */
+	UPROPERTY(Config)
+	bool bKeepPIEOpen;
+
 private:
 	/** Whether to treat log warnings as test errors (default=true) */
 	UPROPERTY(Config, Meta = (DeprecatedProperty, DeprecationMessage = "Use bElevateLogWarningsToErrors instead."))

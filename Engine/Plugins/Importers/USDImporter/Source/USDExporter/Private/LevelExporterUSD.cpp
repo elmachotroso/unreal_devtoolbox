@@ -23,7 +23,7 @@
 ULevelExporterUSD::ULevelExporterUSD()
 {
 #if USE_USD_SDK
-	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
+	for ( const FString& Extension : UnrealUSDWrapper::GetNativeFileFormats() )
 	{
 		// USDZ is not supported for writing for now
 		if ( Extension.Equals( TEXT( "usdz" ) ) )
@@ -80,8 +80,7 @@ bool ULevelExporterUSD::ExportBinary( UObject* Object, const TCHAR* Type, FArchi
 	{
 		Options->Inner.AssetFolder.Path = FPaths::Combine( FPaths::GetPath( UExporter::CurrentFilename ), TEXT( "Assets" ) );
 
-		const bool bIsImport = false;
-		const bool bContinue = SUsdOptionsWindow::ShowOptions( *Options, bIsImport );
+		const bool bContinue = SUsdOptionsWindow::ShowExportOptions( *Options );
 		if ( !bContinue )
 		{
 			return false;

@@ -10,6 +10,8 @@
 #include "Evaluation/MovieSceneEvaluation.h"
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSlomoTemplate)
+
 
 DECLARE_CYCLE_STAT(TEXT("Slomo Track Token Execute"), MovieSceneEval_SlomoTrack_TokenExecute, STATGROUP_MovieSceneEval);
 
@@ -36,7 +38,7 @@ struct FSlomoTrackToken
 
 		if (WorldSettings)
 		{
-			WorldSettings->MatineeTimeDilation = SlomoValue;
+			WorldSettings->CinematicTimeDilation = SlomoValue;
 			WorldSettings->ForceNetUpdate();
 		}
 	}
@@ -75,7 +77,7 @@ struct FSlomoPreAnimatedGlobalTokenProducer : IMovieScenePreAnimatedGlobalTokenP
 	{
 		if (AWorldSettings* WorldSettings = Player.GetPlaybackContext()->GetWorld()->GetWorldSettings())
 		{
-			return FSlomoPreAnimatedGlobalToken(WorldSettings->MatineeTimeDilation);
+			return FSlomoPreAnimatedGlobalToken(WorldSettings->CinematicTimeDilation);
 		}
 		return IMovieScenePreAnimatedGlobalTokenPtr();
 	}
@@ -119,3 +121,4 @@ void FMovieSceneSlomoSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 		ExecutionTokens.Add(FSlomoExecutionToken(SlomoValue));
 	}
 }
+

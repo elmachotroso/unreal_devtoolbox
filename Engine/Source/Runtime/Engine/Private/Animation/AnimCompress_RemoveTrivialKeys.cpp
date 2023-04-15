@@ -8,6 +8,8 @@
 #include "AnimationCompression.h"
 #include "AnimEncoding.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCompress_RemoveTrivialKeys)
+
 UAnimCompress_RemoveTrivialKeys::UAnimCompress_RemoveTrivialKeys(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -53,12 +55,13 @@ bool UAnimCompress_RemoveTrivialKeys::DoReduction(const FCompressibleAnimData& C
 	return true;
 }
 
-void UAnimCompress_RemoveTrivialKeys::PopulateDDCKey(FArchive& Ar)
+void UAnimCompress_RemoveTrivialKeys::PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar)
 {
-	Super::PopulateDDCKey(Ar);
+	Super::PopulateDDCKey(KeyArgs, Ar);
 	Ar << MaxPosDiff;
 	Ar << MaxAngleDiff;
 	Ar << MaxScaleDiff;
 }
 
 #endif // WITH_EDITOR
+

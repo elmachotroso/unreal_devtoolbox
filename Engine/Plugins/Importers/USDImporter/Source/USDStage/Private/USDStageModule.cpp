@@ -2,7 +2,9 @@
 
 #include "USDStageModule.h"
 
+#include "USDMemory.h"
 #include "USDStageActor.h"
+#include "USDStageActorCustomization.h"
 
 #include "Modules/ModuleManager.h"
 #include "EngineUtils.h"
@@ -19,6 +21,8 @@ public:
 	virtual void StartupModule() override
 	{
 #if WITH_EDITOR
+		LLM_SCOPE_BYTAG(Usd);
+
 		// If don't have any active references to our materials they won't be packaged into monolithic builds, and we wouldn't
 		// be able to create dynamic material instances at runtime.
 		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin( TEXT( "USDImporter" ) );
@@ -50,6 +54,9 @@ public:
 				}
 			}
 		}
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>( TEXT( "PropertyEditor" ) );
+		PropertyModule.RegisterCustomClassLayout( TEXT( "UsdStageActor" ), FOnGetDetailCustomizationInstance::CreateStatic( &FUsdStageActorCustomization::MakeInstance ) );
 #endif // WITH_EDITOR
 	}
 
@@ -74,6 +81,9 @@ public:
 				}
 			}
 		}
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked< FPropertyEditorModule >( TEXT( "PropertyEditor" ) );
+		PropertyModule.UnregisterCustomClassLayout( TEXT( "UsdStageActor" ) );
 #endif // WITH_EDITOR
 	}
 

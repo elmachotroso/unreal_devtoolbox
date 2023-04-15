@@ -21,6 +21,8 @@ struct FPanoPane : public UMoviePipelineImagePassBase::IViewCalcPayload
 	FRotator OriginalCameraRotation;
 	// The camera rotation last frame, used to ensure camera motion vectors are right.
 	FRotator PrevOriginalCameraRotation;
+	// The near clip plane distance from the camera.
+	float NearClippingPlane;
 
 	// How far apart are the eyes (total) for stereo?
 	float EyeSeparation;
@@ -117,12 +119,13 @@ protected:
 	virtual void GatherOutputPassesImpl(TArray<FMoviePipelinePassIdentifier>& ExpectedRenderPasses) override;
 	virtual bool IsAntiAliasingSupported() const { return true; }
 	virtual int32 GetOutputFileSortingOrder() const override { return 1; }
-	virtual bool IsAlphaInTonemapperRequiredImpl() const override { return true; }
+	virtual bool IsAlphaInTonemapperRequiredImpl() const override { return false; }
 	virtual FSceneViewStateInterface* GetSceneViewStateInterface(IViewCalcPayload* OptPayload) override;
-	virtual UTextureRenderTarget2D* GetViewRenderTarget(IViewCalcPayload* OptPayload) const override;
 	virtual void AddViewExtensions(FSceneViewFamilyContext& InContext, FMoviePipelineRenderPassMetrics& InOutSampleState) override;
 	virtual bool IsAutoExposureAllowed(const FMoviePipelineRenderPassMetrics& InSampleState) const override { return false; }
 	virtual FSceneView* GetSceneViewForSampleState(FSceneViewFamily* ViewFamily, FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload = nullptr) override;
+	virtual TWeakObjectPtr<UTextureRenderTarget2D> GetOrCreateViewRenderTarget(const FIntPoint& InSize, IViewCalcPayload* OptPayload = nullptr) override;
+	virtual TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> GetOrCreateSurfaceQueue(const FIntPoint& InSize, IViewCalcPayload* OptPayload = nullptr) override;
 	// ~UMoviePipelineRenderPass
 
 	// FGCObject Interface
@@ -130,7 +133,9 @@ protected:
 	// ~FGCObject Interface
 
 	void ScheduleReadbackAndAccumulation(const FMoviePipelineRenderPassMetrics& InSampleState, const FPanoPane& InPane, FCanvas& InCanvas);
-	void GetFieldOfView(float& OutHorizontal, float& OutVertical, const bool bInStereo);
+	void GetFieldOfView(float& OutHorizontal, float& OutVertical, const bool bInStereo) const;
+	FIntPoint GetPaneResolution(const FIntPoint& InSize) const;
+	FIntPoint GetPayloadPaneResolution(const FIntPoint& InSize, IViewCalcPayload* OptPayload) const;
 public:
 
 	/**
@@ -179,16 +184,12 @@ public:
 
 protected:
 	TSharedPtr<FAccumulatorPool, ESPMode::ThreadSafe> AccumulatorPool;
-	FIntPoint PaneResolution;
 
 	// ToDo: One per high-res tile per pano-pane?
 	TArray<FSceneViewStateReference> OptionalPaneViewStates;
 
 	/** The lifetime of this SceneViewExtension is only during the rendering process. It is destroyed as part of TearDown. */
 	TSharedPtr<FOpenColorIODisplayExtension, ESPMode::ThreadSafe> OCIOSceneViewExtension;
-
-	UPROPERTY(Transient, DuplicateTransient)
-	UTextureRenderTarget2D* CanvasReadbackTexture;
 
 	TSharedPtr<MoviePipeline::IMoviePipelineOutputMerger> PanoramicOutputBlender;
 	bool bHasWarnedSettings;

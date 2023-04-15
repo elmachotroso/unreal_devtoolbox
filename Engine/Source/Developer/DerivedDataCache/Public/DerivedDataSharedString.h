@@ -2,11 +2,19 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/StringView.h"
+#include "CoreTypes.h"
 #include "DerivedDataSharedStringFwd.h"
+#include "HAL/MemoryBase.h"
 #include "HAL/UnrealMemory.h"
+#include "Misc/CString.h"
+
 #include <atomic>
+
+#define UE_API DERIVEDDATACACHE_API
+
+class FCbFieldView;
+class FCbWriter;
 
 namespace UE::DerivedData
 {
@@ -42,6 +50,8 @@ public:
 	[[nodiscard]] inline int32 Len() const { return Chars ? reinterpret_cast<const int32*>(Chars)[-1] : 0; }
 	[[nodiscard]] inline const CharType* operator*() const { return Chars ? Chars : &NullChar; }
 
+	static const TSharedString Empty;
+
 private:
 	static inline void AddRef(CharType* Chars);
 	static inline void Release(CharType* Chars);
@@ -50,6 +60,9 @@ private:
 
 	static constexpr inline CharType NullChar{};
 };
+
+template <typename CharType>
+inline const TSharedString<CharType> TSharedString<CharType>::Empty;
 
 template <typename CharType>
 constexpr inline const CharType* GetData(const TSharedString<CharType> String)
@@ -132,7 +145,7 @@ void TSharedString<CharType>::AddRef(CharType* const MaybeNullChars)
 		static_assert(sizeof(int32) == sizeof(std::atomic<int32>));
 		int32* const Header = reinterpret_cast<int32*>(MaybeNullChars) - 2;
 		std::atomic<int32>& RefCount = reinterpret_cast<std::atomic<int32>&>(Header[0]);
-		RefCount.fetch_add(1, std::memory_order_relaxed);
+		RefCount.fetch_add(1, std::memory_order_acquire);
 	}
 }
 
@@ -144,7 +157,7 @@ void TSharedString<CharType>::Release(CharType* const MaybeNullChars)
 		static_assert(sizeof(int32) == sizeof(std::atomic<int32>));
 		int32* const Header = reinterpret_cast<int32*>(MaybeNullChars) - 2;
 		std::atomic<int32>& RefCount = reinterpret_cast<std::atomic<int32>&>(Header[0]);
-		if (RefCount.fetch_sub(1, std::memory_order_relaxed) == 1)
+		if (RefCount.fetch_sub(1, std::memory_order_release) == 1)
 		{
 			FMemory::Free(Header);
 		}
@@ -169,4 +182,9 @@ inline bool operator<(const TSharedString<CharType>& Lhs, const TSharedString<Ch
 	return MakeStringView(Lhs).Compare(MakeStringView(Rhs), ESearchCase::IgnoreCase) < 0;
 }
 
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FUtf8SharedString& OutString);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FWideSharedString& OutString);
+
 } // UE::DerivedData
+
+#undef UE_API

@@ -12,13 +12,6 @@ public class DeviceProfileEditor : ModuleRules
 			}
 		);
 
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/DeviceProfileEditor/Private",
-				"Editor/DeviceProfileEditor/Private/DetailsPanel"
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -27,7 +20,6 @@ public class DeviceProfileEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"LevelEditor",
 				"EditorFramework",
 				"UnrealEd",

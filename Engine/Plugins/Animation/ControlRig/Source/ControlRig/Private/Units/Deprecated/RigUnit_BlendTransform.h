@@ -5,7 +5,7 @@
 #include "Units/RigUnit.h"
 #include "RigUnit_BlendTransform.generated.h"
 
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FBlendTarget
 {
 	GENERATED_BODY()
@@ -37,4 +37,7 @@ struct CONTROLRIG_API FRigUnit_BlendTransform : public FRigUnit
 
 	RIGVM_METHOD()
 	virtual void Execute(const FRigUnitContext& Context) override;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };

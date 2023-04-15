@@ -2,8 +2,6 @@
 
 using StackExchange.Redis;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace EpicGames.Redis
@@ -14,7 +12,8 @@ namespace EpicGames.Redis
 	/// <typeparam name="TElement">The type of element stored in the list</typeparam>
 	public readonly struct RedisString<TElement>
 	{
-		internal readonly IDatabaseAsync Database;
+		internal readonly RedisConnectionPool? ConnectionPool = null;
+		internal readonly IDatabaseAsync? Database = null;
 
 		/// <summary>
 		/// The key for the list
@@ -24,31 +23,47 @@ namespace EpicGames.Redis
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Database"></param>
-		/// <param name="Key"></param>
-		public RedisString(IDatabaseAsync Database, RedisKey Key)
+		/// <param name="database"></param>
+		/// <param name="key"></param>
+		public RedisString(IDatabaseAsync database, RedisKey key)
 		{
-			this.Database = Database;
-			this.Key = Key;
+			Database = database;
+			Key = key;
+		}
+		
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="connectionPool"></param>
+		/// <param name="key"></param>
+		public RedisString(RedisConnectionPool connectionPool, RedisKey key)
+		{
+			ConnectionPool = connectionPool;
+			Key = key;
 		}
 
-		/// <inheritdoc cref="IDatabaseAsync.StringGetAsync(RedisKey, CommandFlags)"/>
-		public async Task<TElement> GetAsync(CommandFlags Flags = CommandFlags.None)
+		/// <summary>
+		/// Get the Redis database in use
+		/// </summary>
+		/// <returns>A connection pool or explicitly set Redis database</returns>
+		/// <exception cref="InvalidOperationException">If neither are set</exception>
+		public IDatabaseAsync GetDatabase()
 		{
-			RedisValue Value = await Database.StringGetAsync(Key, Flags);
-			return RedisSerializer.Deserialize<TElement>(Value);
+			if (Database != null) return Database;
+			if (ConnectionPool != null) return ConnectionPool.GetDatabase();
+			throw new InvalidOperationException($"Neither {nameof(Database)} or {nameof(ConnectionPool)} has been set!");
 		}
 
 		/// <inheritdoc cref="IDatabaseAsync.StringLengthAsync(RedisKey, CommandFlags)"/>
-		public Task<long> LengthAsync(CommandFlags Flags = CommandFlags.None)
+		public Task<long> LengthAsync(CommandFlags flags = CommandFlags.None)
 		{
-			return Database.StringLengthAsync(Key, Flags);
+			return GetDatabase().StringLengthAsync(Key, flags);
 		}
 
 		/// <inheritdoc cref="IDatabaseAsync.StringSetAsync(RedisKey, RedisValue, TimeSpan?, When, CommandFlags)"/>
-		public Task SetAsync(TElement Value, TimeSpan? Expiry = null, When When = When.Always, CommandFlags Flags = CommandFlags.None)
+		public Task<bool> SetAsync(TElement value, TimeSpan? expiry = null, When when = When.Always, CommandFlags flags = CommandFlags.None)
 		{
-			return Database.StringSetAsync(Key, RedisSerializer.Serialize(Value), Expiry, When, Flags);
+			return GetDatabase().StringSetAsync(Key, RedisSerializer.Serialize(value), expiry, when, flags);
 		}
 	}
 
@@ -57,36 +72,64 @@ namespace EpicGames.Redis
 	/// </summary>
 	public static class RedisStringExtensions
 	{
-		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, long, CommandFlags)"/>
-		public static Task<long> DecrementAsync(this RedisString<long> String, long Value = 1L, CommandFlags Flags = CommandFlags.None)
+		/// <inheritdoc cref="IDatabaseAsync.KeyDeleteAsync(RedisKey, CommandFlags)"/>
+		public static Task<bool> DeleteAsync<TElement>(this RedisString<TElement> str, CommandFlags flags = CommandFlags.None)
 		{
-			return String.Database.StringDecrementAsync(String.Key, Value, Flags);
+			return str.GetDatabase().KeyDeleteAsync(str.Key, flags);
 		}
 
-		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, double, CommandFlags)"/>
-		public static Task<double> DecrementAsync(this RedisString<double> String, double Value = 1.0, CommandFlags Flags = CommandFlags.None)
+		/// <inheritdoc cref="IDatabaseAsync.StringGetAsync(RedisKey, CommandFlags)"/>
+		public static async Task<TElement?> GetAsync<TElement>(this RedisString<TElement> str, CommandFlags flags = CommandFlags.None) where TElement : class
 		{
-			return String.Database.StringDecrementAsync(String.Key, Value, Flags);
+			RedisValue value = await str.GetDatabase().StringGetAsync(str.Key, flags);
+			if (value.IsNullOrEmpty)
+			{
+				return null;
+			}
+			return RedisSerializer.Deserialize<TElement>(value);
 		}
 
-		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, double, CommandFlags)"/>
-		public static Task<long> IncrementAsync(this RedisString<long> String, long Value = 1L, CommandFlags Flags = CommandFlags.None)
+		/// <inheritdoc cref="IDatabaseAsync.StringGetAsync(RedisKey, CommandFlags)"/>
+		public static async Task<TElement?> GetValueAsync<TElement>(this RedisString<TElement> str, CommandFlags flags = CommandFlags.None) where TElement : struct
 		{
-			return String.Database.StringIncrementAsync(String.Key, Value, Flags);
+			RedisValue value = await str.GetDatabase().StringGetAsync(str.Key, flags);
+			if (value.IsNullOrEmpty)
+			{
+				return default(TElement);
+			}
+			return RedisSerializer.Deserialize<TElement>(value);
 		}
 
-		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, double, CommandFlags)"/>
-		public static Task<double> IncrementAsync(this RedisString<double> String, double Value = 1.0, CommandFlags Flags = CommandFlags.None)
+		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, Int64, CommandFlags)"/>
+		public static Task<long> DecrementAsync(this RedisString<long> str, long value = 1L, CommandFlags flags = CommandFlags.None)
 		{
-			return String.Database.StringIncrementAsync(String.Key, Value, Flags);
+			return str.GetDatabase().StringDecrementAsync(str.Key, value, flags);
+		}
+
+		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, Double, CommandFlags)"/>
+		public static Task<double> DecrementAsync(this RedisString<double> str, double value = 1.0, CommandFlags flags = CommandFlags.None)
+		{
+			return str.GetDatabase().StringDecrementAsync(str.Key, value, flags);
+		}
+
+		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, Double, CommandFlags)"/>
+		public static Task<long> IncrementAsync(this RedisString<long> str, long value = 1L, CommandFlags flags = CommandFlags.None)
+		{
+			return str.GetDatabase().StringIncrementAsync(str.Key, value, flags);
+		}
+
+		/// <inheritdoc cref="IDatabaseAsync.StringDecrementAsync(RedisKey, Double, CommandFlags)"/>
+		public static Task<double> IncrementAsync(this RedisString<double> str, double value = 1.0, CommandFlags flags = CommandFlags.None)
+		{
+			return str.GetDatabase().StringIncrementAsync(str.Key, value, flags);
 		}
 
 		/// <summary>
 		/// Creates a version of this string which modifies a transaction rather than the direct DB
 		/// </summary>
-		public static RedisString<TElement> With<TElement>(this ITransaction Transaction, RedisString<TElement> Set)
+		public static RedisString<TElement> With<TElement>(this ITransaction transaction, RedisString<TElement> str)
 		{
-			return new RedisString<TElement>(Transaction, Set.Key);
+			return new RedisString<TElement>(transaction, str.Key);
 		}
 	}
 }

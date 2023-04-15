@@ -13,6 +13,7 @@
 #include "MoviePipelineQueue.h"
 #include "LegacyScreenPercentageDriver.h"
 #include "MoviePipelineMasterConfig.h"
+#include "MoviePipelineGameOverrideSetting.h"
 #include "EngineModule.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/RendererSettings.h"
@@ -22,6 +23,10 @@
 // For Cine Camera Variables in Metadata
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
+#include "MoviePipelineUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineImagePassBase)
+
 
 DECLARE_CYCLE_STAT(TEXT("STAT_MoviePipeline_AccumulateSample_TT"), STAT_AccumulateSample_TaskThread, STATGROUP_MoviePipeline);
 
@@ -39,8 +44,37 @@ void UMoviePipelineImagePassBase::SetupImpl(const MoviePipeline::FMoviePipelineR
 	ViewState.Allocate(InPassInitSettings.FeatureLevel);
 }
 
+void UMoviePipelineImagePassBase::WaitUntilTasksComplete()
+{
+	GetPipeline()->SetPreviewTexture(nullptr);
+
+	// This may call FlushRenderingCommands if there are outstanding readbacks that need to happen.
+	for (TPair<FIntPoint, TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe>> SurfaceQueueIt : SurfaceQueues)
+	{
+		if (SurfaceQueueIt.Value.IsValid())
+		{
+			SurfaceQueueIt.Value->Shutdown();
+		}
+	}
+
+	// Stall until the task graph has completed any pending accumulations.
+	FTaskGraphInterface::Get().WaitUntilTasksComplete(OutstandingTasks, ENamedThreads::GameThread);
+	OutstandingTasks.Reset();
+};
+
 void UMoviePipelineImagePassBase::TeardownImpl()
 {
+	for (TPair<FIntPoint, TWeakObjectPtr<UTextureRenderTarget2D>>& TileRenderTargetIt : TileRenderTargets)
+	{
+		if (!TileRenderTargetIt.Value.IsValid())
+		{
+			TileRenderTargetIt.Value->RemoveFromRoot();
+		}
+	}
+
+	SurfaceQueues.Empty();
+	TileRenderTargets.Empty();
+
 	FSceneViewStateInterface* Ref = ViewState.GetReference();
 	if (Ref)
 	{
@@ -63,6 +97,76 @@ void UMoviePipelineImagePassBase::AddReferencedObjects(UObject* InThis, FReferen
 	}
 }
 
+void UMoviePipelineImagePassBase::RenderSample_GameThreadImpl(const FMoviePipelineRenderPassMetrics& InSampleState)
+{
+	Super::RenderSample_GameThreadImpl(InSampleState);
+
+	// Wait for a all surfaces to be available to write to. This will stall the game thread while the RHI/Render Thread catch up.
+	SCOPE_CYCLE_COUNTER(STAT_MoviePipeline_WaitForAvailableSurface);
+	for(TPair<FIntPoint, TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe>> SurfaceQueueIt : SurfaceQueues)
+	{
+		if (SurfaceQueueIt.Value.IsValid())
+		{
+			SurfaceQueueIt.Value->BlockUntilAnyAvailable();
+		}
+	}
+}
+
+TWeakObjectPtr<UTextureRenderTarget2D> UMoviePipelineImagePassBase::GetOrCreateViewRenderTarget(const FIntPoint& InSize, IViewCalcPayload* OptPayload)
+{
+	if (const TWeakObjectPtr<UTextureRenderTarget2D>* ExistViewRenderTarget = TileRenderTargets.Find(InSize))
+	{
+		return *ExistViewRenderTarget;
+	}
+
+	const TWeakObjectPtr<UTextureRenderTarget2D> NewViewRenderTarget = CreateViewRenderTargetImpl(InSize, OptPayload);
+	TileRenderTargets.Emplace(InSize, NewViewRenderTarget);
+
+	return NewViewRenderTarget;
+}
+
+TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> UMoviePipelineImagePassBase::GetOrCreateSurfaceQueue(const FIntPoint& InSize, IViewCalcPayload* OptPayload)
+{
+	if (const TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe>* ExistSurfaceQueue = SurfaceQueues.Find(InSize))
+	{
+		return *ExistSurfaceQueue;
+	}
+
+	const TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> NewSurfaceQueue = CreateSurfaceQueueImpl(InSize, OptPayload);
+	SurfaceQueues.Emplace(InSize, NewSurfaceQueue);
+
+	return NewSurfaceQueue;
+}
+
+TWeakObjectPtr<UTextureRenderTarget2D> UMoviePipelineImagePassBase::CreateViewRenderTargetImpl(const FIntPoint& InSize, IViewCalcPayload* OptPayload) const
+{
+	TWeakObjectPtr<UTextureRenderTarget2D> NewTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
+	NewTarget->ClearColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+	// OCIO: Since this is a manually created Render target we don't need Gamma to be applied.
+	// We use this render target to render to via a display extension that utilizes Display Gamma
+	// which has a default value of 2.2 (DefaultDisplayGamma), therefore we need to set Gamma on this render target to 2.2 to cancel out any unwanted effects.
+	NewTarget->TargetGamma = FOpenColorIODisplayExtension::DefaultDisplayGamma;
+
+	// Initialize to the tile size (not final size) and use a 16 bit back buffer to avoid precision issues when accumulating later
+	NewTarget->InitCustomFormat(InSize.X, InSize.Y, EPixelFormat::PF_FloatRGBA, false);
+	NewTarget->AddToRoot();
+
+	if (GetPipeline()->GetPreviewTexture() == nullptr)
+	{
+		GetPipeline()->SetPreviewTexture(NewTarget.Get());
+	}
+
+	return NewTarget;
+}
+
+TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> UMoviePipelineImagePassBase::CreateSurfaceQueueImpl(const FIntPoint& InSize, IViewCalcPayload* OptPayload) const
+{
+	TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> SurfaceQueue = MakeShared<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe>(InSize, EPixelFormat::PF_FloatRGBA, 3, true);
+
+	return SurfaceQueue;
+}
+
 TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFamily(FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload)
 {
 	const FMoviePipelineFrameOutputState::FTimeData& TimeData = InOutSampleState.OutputState.TimeData;
@@ -71,7 +175,10 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 	EViewModeIndex  ViewModeIndex;
 	GetViewShowFlags(ShowFlags, ViewModeIndex);
 	MoviePipelineRenderShowFlagOverride(ShowFlags);
-	FRenderTarget* RenderTarget = GetViewRenderTarget(OptPayload)->GameThread_GetRenderTargetResource();
+	TWeakObjectPtr<UTextureRenderTarget2D> ViewRenderTarget = GetOrCreateViewRenderTarget(InOutSampleState.BackbufferSize, OptPayload);
+	check(ViewRenderTarget.IsValid());
+
+	FRenderTarget* RenderTarget = ViewRenderTarget->GameThread_GetRenderTargetResource();
 
 	TSharedPtr<FSceneViewFamilyContext> OutViewFamily = MakeShared<FSceneViewFamilyContext>(FSceneViewFamily::ConstructionValues(
 		RenderTarget,
@@ -83,10 +190,23 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 	OutViewFamily->SceneCaptureSource = InOutSampleState.SceneCaptureSource;
 	OutViewFamily->bWorldIsPaused = InOutSampleState.bWorldIsPaused;
 	OutViewFamily->ViewMode = ViewModeIndex;
+	OutViewFamily->bOverrideVirtualTextureThrottle = true;
+
+	const bool bIsPerspective = true;
+	ApplyViewMode(OutViewFamily->ViewMode, bIsPerspective, OutViewFamily->EngineShowFlags);
+
 	EngineShowFlagOverride(ESFIM_Game, OutViewFamily->ViewMode, OutViewFamily->EngineShowFlags, false);
 	
 	const UMoviePipelineExecutorShot* Shot = GetPipeline()->GetActiveShotList()[InOutSampleState.OutputState.ShotIndex];
-	
+
+	for (UMoviePipelineGameOverrideSetting* OverrideSetting : GetPipeline()->FindSettingsForShot<UMoviePipelineGameOverrideSetting>(Shot))
+	{
+		if (OverrideSetting->bOverrideVirtualTextureFeedbackFactor)
+		{
+			OutViewFamily->VirtualTextureFeedbackFactor = OverrideSetting->VirtualTextureFeedbackFactor;
+		}
+	}
+
 	// No need to do anything if screen percentage is not supported. 
 	if (IsScreenPercentageSupported())
 	{
@@ -152,7 +272,20 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 		}
 	}
 
-	OutViewFamily->ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(GetWorld()->Scene));
+	// Orthographic cameras don't support anti-aliasing outside the path tracer (other than FXAA)
+	const bool bIsOrthographicCamera = !View->IsPerspectiveProjection();
+	if (bIsOrthographicCamera)
+	{
+		bool bIsSupportedAAMethod = View->AntiAliasingMethod == EAntiAliasingMethod::AAM_FXAA;
+		bool bIsPathTracer = OutViewFamily->EngineShowFlags.PathTracing;
+		bool bWarnJitters = InOutSampleState.ProjectionMatrixJitterAmount.SquaredLength() > SMALL_NUMBER;
+		if ((!bIsPathTracer && !bIsSupportedAAMethod) || bWarnJitters)
+		{
+			UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Orthographic Cameras are only supported with PathTracer or Deferred with FXAA Anti-Aliasing"));
+		}
+	}
+
+	OutViewFamily->ViewExtensions.Append(GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(GetWorld()->Scene)));
 
 	AddViewExtensions(*OutViewFamily, InOutSampleState);
 
@@ -166,11 +299,36 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 		OutViewFamily->ViewExtensions[ViewExt]->SetupView(*OutViewFamily.Get(), *View);
 	}
 
+	// The requested configuration may not be supported, warn user and fall back. We can't call
+	// FSceneView::SetupAntiAliasingMethod because it reads the value from the cvar which would
+	// cause the value set by the MoviePipeline UI to be ignored.
+	{
+		bool bMethodWasUnsupported = false;
+		if (View->AntiAliasingMethod == AAM_TemporalAA && !SupportsGen4TAA(View->GetShaderPlatform()))
+		{
+			UE_LOG(LogMovieRenderPipeline, Error, TEXT("TAA was requested but this hardware does not support it."));
+			bMethodWasUnsupported = true;
+		}
+		else if (View->AntiAliasingMethod == AAM_TSR && !SupportsTSR(View->GetShaderPlatform()))
+		{
+			UE_LOG(LogMovieRenderPipeline, Error, TEXT("TSR was requested but this hardware does not support it."));
+			bMethodWasUnsupported = true;
+		}
+
+		if (bMethodWasUnsupported)
+		{
+			View->AntiAliasingMethod = AAM_None;
+		}
+	}
+
 	// Anti Aliasing
 	{
 		// If we're not using Temporal Anti-Aliasing or Path Tracing we will apply the View Matrix projection jitter. Normally TAA sets this
 		// inside FSceneRenderer::PreVisibilityFrameSetup. Path Tracing does its own anti-aliasing internally.
-		if (!IsTemporalAccumulationBasedMethod(View->AntiAliasingMethod) && !OutViewFamily->EngineShowFlags.PathTracing)
+		bool bApplyProjectionJitter = !bIsOrthographicCamera
+									&& !OutViewFamily->EngineShowFlags.PathTracing 
+									&& !IsTemporalAccumulationBasedMethod(View->AntiAliasingMethod);
+		if (bApplyProjectionJitter)
 		{
 			View->ViewMatrices.HackAddTemporalAAProjectionJitter(InOutSampleState.ProjectionMatrixJitterAmount);
 		}
@@ -180,20 +338,32 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 	if (OutViewFamily->EngineShowFlags.PathTracing)
 	{
 		// override whatever settings came from PostProcessVolume or Camera
-		int32 SampleCount = InOutSampleState.TemporalSampleCount * InOutSampleState.SpatialSampleCount;
-		int32 SampleIndex = InOutSampleState.TemporalSampleIndex * InOutSampleState.SpatialSampleCount + InOutSampleState.SpatialSampleIndex;
+
+		// If motion blur is enabled:
+		//    blend all spatial samples together while leaving the handling of temporal samples up to MRQ
+		//    each temporal sample will include denoising and post-process effects
+		// If motion blur is NOT enabled:
+		//    blend all temporal+spatial samples within the path tracer and only apply denoising on the last temporal sample
+		//    this way we minimize denoising cost and also allow a much higher number of temporal samples to be used which
+		//    can help reduce strobing
+
+		// NOTE: Tiling is not compatible with the reference motion blur mode because it changes the order of the loops over the image.
+		const bool bAccumulateSpatialSamplesOnly = OutViewFamily->EngineShowFlags.MotionBlur || InOutSampleState.GetTileCount() > 1;
+
+		const int32 SampleCount = bAccumulateSpatialSamplesOnly ? InOutSampleState.SpatialSampleCount : InOutSampleState.TemporalSampleCount * InOutSampleState.SpatialSampleCount;
+		const int32 SampleIndex = bAccumulateSpatialSamplesOnly ? InOutSampleState.SpatialSampleIndex : InOutSampleState.TemporalSampleIndex * InOutSampleState.SpatialSampleCount + InOutSampleState.SpatialSampleIndex;
 
 		// TODO: pass along FrameIndex (which includes SampleIndex) to make sure sampling is fully deterministic
 
 		// Overwrite whatever sampling count came from the PostProcessVolume
 		View->FinalPostProcessSettings.bOverride_PathTracingSamplesPerPixel = true;
-		View->FinalPostProcessSettings.PathTracingSamplesPerPixel = InOutSampleState.SpatialSampleCount;
+		View->FinalPostProcessSettings.PathTracingSamplesPerPixel = SampleCount;
 
-		// reset path tracer's accumulation at the start of each spatial sample
-		View->bForcePathTracerReset = InOutSampleState.SpatialSampleIndex == 0;
+		// reset path tracer's accumulation at the start of each sample
+		View->bForcePathTracerReset = SampleIndex == 0;
 
-		// discard the result, unless its the last spatial sample
-		InOutSampleState.bDiscardResult |= !(InOutSampleState.SpatialSampleIndex == InOutSampleState.SpatialSampleCount - 1);
+		// discard the result, unless its the last sample
+		InOutSampleState.bDiscardResult |= !(SampleIndex == SampleCount - 1);
 	}
 
 	// Object Occlusion/Histories
@@ -272,12 +442,17 @@ FSceneView* UMoviePipelineImagePassBase::GetSceneViewForSampleState(FSceneViewFa
 	int32 TileSizeX = InOutSampleState.BackbufferSize.X;
 	int32 TileSizeY = InOutSampleState.BackbufferSize.Y;
 
+	UE::MoviePipeline::FImagePassCameraViewData CameraInfo = GetCameraInfo(InOutSampleState, OptPayload);
+
+	const float DestAspectRatio = InOutSampleState.BackbufferSize.X / (float)InOutSampleState.BackbufferSize.Y;
+	const float CameraAspectRatio = bAllowCameraAspectRatio ? CameraInfo.ViewInfo.AspectRatio : DestAspectRatio;
+
 	FSceneViewInitOptions ViewInitOptions;
 	ViewInitOptions.ViewFamily = ViewFamily;
-	ViewInitOptions.ViewOrigin = InOutSampleState.FrameInfo.CurrViewLocation;
+	ViewInitOptions.ViewOrigin = CameraInfo.ViewInfo.Location;
 	ViewInitOptions.SetViewRectangle(FIntRect(FIntPoint(0, 0), FIntPoint(TileSizeX, TileSizeY)));
-	ViewInitOptions.ViewRotationMatrix = FInverseRotationMatrix(InOutSampleState.FrameInfo.CurrViewRotation);
-	ViewInitOptions.ViewActor = LocalPlayerController ? LocalPlayerController->GetViewTarget() : nullptr;
+	ViewInitOptions.ViewRotationMatrix = FInverseRotationMatrix(CameraInfo.ViewInfo.Rotation);
+	ViewInitOptions.ViewActor = CameraInfo.ViewActor;
 
 	// Rotate the view 90 degrees (reason: unknown)
 	ViewInitOptions.ViewRotationMatrix = ViewInitOptions.ViewRotationMatrix * FMatrix(
@@ -285,115 +460,148 @@ FSceneView* UMoviePipelineImagePassBase::GetSceneViewForSampleState(FSceneViewFa
 		FPlane(1, 0, 0, 0),
 		FPlane(0, 1, 0, 0),
 		FPlane(0, 0, 0, 1));
-	float ViewFOV = 90.f;
-	if (GetPipeline()->GetWorld()->GetFirstPlayerController()->PlayerCameraManager)
-	{
-		ViewFOV = GetPipeline()->GetWorld()->GetFirstPlayerController()->PlayerCameraManager->GetFOVAngle();
-	}
+	float ViewFOV = CameraInfo.ViewInfo.FOV;
 
 	// Inflate our FOV to support the overscan 
 	ViewFOV = 2.0f * FMath::RadiansToDegrees(FMath::Atan((1.0f + InOutSampleState.OverscanPercentage) * FMath::Tan(FMath::DegreesToRadians( ViewFOV * 0.5f ))));
 
 	float DofSensorScale = 1.0f;
 
-	// Calculate a Projection Matrix
+	// Calculate a Projection Matrix. This code unfortunately ends up similar to, but not quite the same as FMinimalViewInfo::CalculateProjectionMatrixGivenView
+	FMatrix BaseProjMatrix;
+
+	if (CameraInfo.bUseCustomProjectionMatrix)
 	{
-		float XAxisMultiplier;
-		float YAxisMultiplier;
+		BaseProjMatrix = CameraInfo.CustomProjectionMatrix;
 
-		check(GetPipeline()->GetWorld());
-		check(GetPipeline()->GetWorld()->GetFirstPlayerController());
-		APlayerCameraManager* PlayerCameraManager = GetPipeline()->GetWorld()->GetFirstPlayerController()->PlayerCameraManager;
-		
-		// Stretch the fovs if the view is constrained to the camera's aspect ratio
-		if (PlayerCameraManager && PlayerCameraManager->GetCameraCachePOV().bConstrainAspectRatio)
-		{
-			const FMinimalViewInfo CameraCache = PlayerCameraManager->GetCameraCachePOV();
-			const float DestAspectRatio = ViewInitOptions.GetViewRect().Width() / (float)ViewInitOptions.GetViewRect().Height();
-
-			// If the camera's aspect ratio has a thinner width, then stretch the horizontal fov more than usual to 
-			// account for the extra with of (before constraining - after constraining)
-			if (CameraCache.AspectRatio < DestAspectRatio)
-			{
-				const float ConstrainedWidth = ViewInitOptions.GetViewRect().Height() * CameraCache.AspectRatio;
-				XAxisMultiplier = ConstrainedWidth / (float)ViewInitOptions.GetViewRect().Width();
-				YAxisMultiplier = CameraCache.AspectRatio;
-			}
-			// Simplified some math here but effectively functions similarly to the above, the unsimplified code would look like:
-			// const float ConstrainedHeight = ViewInitOptions.GetViewRect().Width() / CameraCache.AspectRatio;
-			// YAxisMultiplier = (ConstrainedHeight / ViewInitOptions.GetViewRect.Height()) * CameraCache.AspectRatio;
-			else
-			{
-				XAxisMultiplier = 1.0f;
-				YAxisMultiplier = ViewInitOptions.GetViewRect().Width() / (float)ViewInitOptions.GetViewRect().Height();
-			}
-		}
-		else
-		{
-			const int32 DestSizeX = ViewInitOptions.GetViewRect().Width();
-			const int32 DestSizeY = ViewInitOptions.GetViewRect().Height();
-			const EAspectRatioAxisConstraint AspectRatioAxisConstraint = GetDefault<ULocalPlayer>()->AspectRatioAxisConstraint;
-			if (((DestSizeX > DestSizeY) && (AspectRatioAxisConstraint == AspectRatio_MajorAxisFOV)) || (AspectRatioAxisConstraint == AspectRatio_MaintainXFOV))
-			{
-				//if the viewport is wider than it is tall
-				XAxisMultiplier = 1.0f;
-				YAxisMultiplier = ViewInitOptions.GetViewRect().Width() / (float)ViewInitOptions.GetViewRect().Height();
-			}
-			else
-			{
-				//if the viewport is taller than it is wide
-				XAxisMultiplier = ViewInitOptions.GetViewRect().Height() / (float)ViewInitOptions.GetViewRect().Width();
-				YAxisMultiplier = 1.0f;
-			}
-		}
-
-		const float MinZ = GNearClippingPlane;
-		const float MaxZ = MinZ;
-		// Avoid zero ViewFOV's which cause divide by zero's in projection matrix
-		const float MatrixFOV = FMath::Max(0.001f, ViewFOV) * (float)PI / 360.0f;
-
-		FMatrix BaseProjMatrix;
-
-		if ((bool)ERHIZBuffer::IsInverted)
-		{
-			BaseProjMatrix = FReversedZPerspectiveMatrix(
-				MatrixFOV,
-				MatrixFOV,
-				XAxisMultiplier,
-				YAxisMultiplier,
-				MinZ,
-				MaxZ
-			);
-		}
-		else
-		{
-			BaseProjMatrix = FPerspectiveMatrix(
-				MatrixFOV,
-				MatrixFOV,
-				XAxisMultiplier,
-				YAxisMultiplier,
-				MinZ,
-				MaxZ
-			);
-		}
-
-		// Modify the perspective matrix to do an off center projection, with overlap for high-res tiling
-		ModifyProjectionMatrixForTiling(InOutSampleState, /*InOut*/ BaseProjMatrix, DofSensorScale);
-		ViewInitOptions.ProjectionMatrix = BaseProjMatrix;
+		// Modify the custom matrix to do an off center projection, with overlap for high-res tiling
+		const bool bOrthographic = false;
+		ModifyProjectionMatrixForTiling(InOutSampleState, bOrthographic, /*InOut*/ BaseProjMatrix, DofSensorScale);
 	}
+	else
+	{
+		if (CameraInfo.ViewInfo.ProjectionMode == ECameraProjectionMode::Orthographic)
+		{
+			const float YScale = 1.0f / CameraAspectRatio;
+			const float OverscanScale = 1.0f + InOutSampleState.OverscanPercentage;
+
+			const float HalfOrthoWidth = (CameraInfo.ViewInfo.OrthoWidth / 2.0f) * OverscanScale;
+			const float ScaledOrthoHeight = (CameraInfo.ViewInfo.OrthoWidth / 2.0f) * OverscanScale * YScale;
+
+			const float NearPlane = CameraInfo.ViewInfo.OrthoNearClipPlane;
+			const float FarPlane = CameraInfo.ViewInfo.OrthoFarClipPlane;
+
+			const float ZScale = 1.0f / (FarPlane - NearPlane);
+			const float ZOffset = -NearPlane;
+
+			BaseProjMatrix = FReversedZOrthoMatrix(
+				HalfOrthoWidth,
+				ScaledOrthoHeight,
+				ZScale,
+				ZOffset
+			);
+			ViewInitOptions.bUseFauxOrthoViewPos = true;
+			
+			// Modify the projection matrix to do an off center projection, with overlap for high-res tiling
+			const bool bOrthographic = true;
+			ModifyProjectionMatrixForTiling(InOutSampleState, bOrthographic, /*InOut*/ BaseProjMatrix, DofSensorScale);
+		}
+		else
+		{
+			float XAxisMultiplier;
+			float YAxisMultiplier;
+
+			if (CameraInfo.ViewInfo.bConstrainAspectRatio)
+			{
+				// If the camera's aspect ratio has a thinner width, then stretch the horizontal fov more than usual to 
+				// account for the extra with of (before constraining - after constraining)
+				if (CameraAspectRatio < DestAspectRatio)
+				{
+					const float ConstrainedWidth = ViewInitOptions.GetViewRect().Height() * CameraAspectRatio;
+					XAxisMultiplier = ConstrainedWidth / (float)ViewInitOptions.GetViewRect().Width();
+					YAxisMultiplier = CameraAspectRatio;
+				}
+				// Simplified some math here but effectively functions similarly to the above, the unsimplified code would look like:
+				// const float ConstrainedHeight = ViewInitOptions.GetViewRect().Width() / CameraCache.AspectRatio;
+				// YAxisMultiplier = (ConstrainedHeight / ViewInitOptions.GetViewRect.Height()) * CameraCache.AspectRatio;
+				else
+				{
+					XAxisMultiplier = 1.0f;
+					YAxisMultiplier = ViewInitOptions.GetViewRect().Width() / (float)ViewInitOptions.GetViewRect().Height();
+				}
+			}
+			else
+			{
+				const int32 DestSizeX = ViewInitOptions.GetViewRect().Width();
+				const int32 DestSizeY = ViewInitOptions.GetViewRect().Height();
+				const EAspectRatioAxisConstraint AspectRatioAxisConstraint = GetDefault<ULocalPlayer>()->AspectRatioAxisConstraint;
+				if (((DestSizeX > DestSizeY) && (AspectRatioAxisConstraint == AspectRatio_MajorAxisFOV)) || (AspectRatioAxisConstraint == AspectRatio_MaintainXFOV))
+				{
+					//if the viewport is wider than it is tall
+					XAxisMultiplier = 1.0f;
+					YAxisMultiplier = ViewInitOptions.GetViewRect().Width() / (float)ViewInitOptions.GetViewRect().Height();
+				}
+				else
+				{
+					//if the viewport is taller than it is wide
+					XAxisMultiplier = ViewInitOptions.GetViewRect().Height() / (float)ViewInitOptions.GetViewRect().Width();
+					YAxisMultiplier = 1.0f;
+				}
+			}
+
+			const float MinZ = CameraInfo.ViewInfo.GetFinalPerspectiveNearClipPlane();
+			const float MaxZ = MinZ;
+			// Avoid zero ViewFOV's which cause divide by zero's in projection matrix
+			const float MatrixFOV = FMath::Max(0.001f, ViewFOV) * (float)PI / 360.0f;
+
+
+			if ((bool)ERHIZBuffer::IsInverted)
+			{
+				BaseProjMatrix = FReversedZPerspectiveMatrix(
+					MatrixFOV,
+					MatrixFOV,
+					XAxisMultiplier,
+					YAxisMultiplier,
+					MinZ,
+					MaxZ
+				);
+			}
+			else
+			{
+				BaseProjMatrix = FPerspectiveMatrix(
+					MatrixFOV,
+					MatrixFOV,
+					XAxisMultiplier,
+					YAxisMultiplier,
+					MinZ,
+					MaxZ
+				);
+			}
+
+			// Modify the perspective matrix to do an off center projection, with overlap for high-res tiling
+			const bool bOrthographic = false;
+			ModifyProjectionMatrixForTiling(InOutSampleState, bOrthographic, /*InOut*/ BaseProjMatrix, DofSensorScale);
+			// ToDo: Does orthographic support tiling in the same way or do I need to modify the values before creating the ortho view.
+		}
+	}
+		// BaseProjMatrix may be perspective or orthographic.
+		ViewInitOptions.ProjectionMatrix = BaseProjMatrix;
 
 	ViewInitOptions.SceneViewStateInterface = GetSceneViewStateInterface(OptPayload);
 	ViewInitOptions.FOV = ViewFOV;
+	ViewInitOptions.DesiredFOV = ViewFOV;
 
 	FSceneView* View = new FSceneView(ViewInitOptions);
 	ViewFamily->Views.Add(View);
-	View->ViewLocation = InOutSampleState.FrameInfo.CurrViewLocation;
-	View->ViewRotation = InOutSampleState.FrameInfo.CurrViewRotation;
+
+	
+	View->ViewLocation = CameraInfo.ViewInfo.Location;
+	View->ViewRotation = CameraInfo.ViewInfo.Rotation;
 	// Override previous/current view transforms so that tiled renders don't use the wrong occlusion/motion blur information.
-	View->PreviousViewTransform = FTransform(InOutSampleState.FrameInfo.PrevViewRotation, InOutSampleState.FrameInfo.PrevViewLocation);
+	View->PreviousViewTransform = CameraInfo.ViewInfo.PreviousViewTransform;
 
 	View->StartFinalPostprocessSettings(View->ViewLocation);
-	BlendPostProcessSettings(View);
+	BlendPostProcessSettings(View, InOutSampleState, OptPayload);
 
 	// Scaling sensor size inversely with the the projection matrix [0][0] should physically
 	// cause the circle of confusion to be unchanged.
@@ -404,39 +612,17 @@ FSceneView* UMoviePipelineImagePassBase::GetSceneViewForSampleState(FSceneViewFa
 
 	// This metadata is per-file and not per-view, but we need the blended result from the view to actually match what we rendered.
 	// To solve this, we'll insert metadata per renderpass, separated by render pass name.
-	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/fstop"), *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldFstop));
-	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/fov"), *PassIdentifier.Name), FString::SanitizeFloat(ViewInitOptions.FOV));
-	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/focalDistance"), *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldFocalDistance));
-	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/sensorWidth"), *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldSensorWidth));
-	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/overscanPercent"), *PassIdentifier.Name), FString::SanitizeFloat(InOutSampleState.OverscanPercentage));
+	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/%s/%s/fstop"), *PassIdentifier.CameraName, *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldFstop));
+	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/%s/%s/fov"), *PassIdentifier.CameraName, *PassIdentifier.Name), FString::SanitizeFloat(ViewInitOptions.FOV));
+	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/%s/%s/focalDistance"), *PassIdentifier.CameraName, *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldFocalDistance));
+	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/%s/%s/sensorWidth"), *PassIdentifier.CameraName, *PassIdentifier.Name), FString::SanitizeFloat(View->FinalPostProcessSettings.DepthOfFieldSensorWidth));
+	InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/%s/%s/overscanPercent"), *PassIdentifier.CameraName, *PassIdentifier.Name), FString::SanitizeFloat(InOutSampleState.OverscanPercentage));
 
-	if (GetWorld()->GetFirstPlayerController()->PlayerCameraManager)
-	{
-		// This only works if you use a Cine Camera (which is almost guranteed with Sequencer) and it's easier (and less human error prone) than re-deriving the information
-		ACineCameraActor* CineCameraActor = Cast<ACineCameraActor>(GetWorld()->GetFirstPlayerController()->PlayerCameraManager->GetViewTarget());
-		if (CineCameraActor)
-		{
-			UCineCameraComponent* CineCameraComponent = CineCameraActor->GetCineCameraComponent();
-			if (CineCameraComponent)
-			{
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/sensorWidth"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->Filmback.SensorWidth));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/sensorHeight"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->Filmback.SensorHeight));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/sensorAspectRatio"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->Filmback.SensorAspectRatio));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/minFocalLength"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->LensSettings.MinFocalLength));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/maxFocalLength"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->LensSettings.MaxFocalLength));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/minFStop"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->LensSettings.MinFStop));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/maxFStop"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->LensSettings.MaxFStop));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/dofDiaphragmBladeCount"), *PassIdentifier.Name), FString::FromInt(CineCameraComponent->LensSettings.DiaphragmBladeCount));
-				InOutSampleState.OutputState.FileMetadata.Add(FString::Printf(TEXT("unreal/camera/%s/focalLength"), *PassIdentifier.Name), FString::SanitizeFloat(CineCameraComponent->CurrentFocalLength));
-			}
-		}
-	}
-
-
+	InOutSampleState.OutputState.FileMetadata.Append(CameraInfo.FileMetadata);
 	return View;
 }
 
-void UMoviePipelineImagePassBase::BlendPostProcessSettings(FSceneView* InView)
+void UMoviePipelineImagePassBase::BlendPostProcessSettings(FSceneView* InView, FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload)
 {
 	check(InView);
 
@@ -460,7 +646,7 @@ void UMoviePipelineImagePassBase::BlendPostProcessSettings(FSceneView* InView)
 			InView->ColorScale = FLinearColor(ColorScale.X, ColorScale.Y, ColorScale.Z);
 		}
 
-		FMinimalViewInfo ViewInfo = LocalPlayerController->PlayerCameraManager->GetCameraCachePOV();
+		FMinimalViewInfo ViewInfo = LocalPlayerController->PlayerCameraManager->GetCameraCacheView();
 		for (int32 PPIdx = 0; PPIdx < CameraAnimPPBlendWeights->Num(); ++PPIdx)
 		{
 			InView->OverridePostProcessSettings((*CameraAnimPPSettings)[PPIdx], (*CameraAnimPPBlendWeights)[PPIdx]);
@@ -497,7 +683,7 @@ FVector4 UMoviePipelineImagePassBase::CalculatePrinciplePointOffsetForTiling(con
 	return FVector4(TilePrincipalPointOffset.X, -TilePrincipalPointOffset.Y, TilePrincipalPointScale.X, TilePrincipalPointScale.Y);
 }
 
-void UMoviePipelineImagePassBase::ModifyProjectionMatrixForTiling(const FMoviePipelineRenderPassMetrics& InSampleState, FMatrix& InOutProjectionMatrix, float& OutDoFSensorScale) const
+void UMoviePipelineImagePassBase::ModifyProjectionMatrixForTiling(const FMoviePipelineRenderPassMetrics& InSampleState, const bool bInOrthographic, FMatrix& InOutProjectionMatrix, float& OutDoFSensorScale) const
 {
 	float PadRatioX = 1.0f;
 	float PadRatioY = 1.0f;
@@ -519,9 +705,51 @@ void UMoviePipelineImagePassBase::ModifyProjectionMatrixForTiling(const FMoviePi
 	float OffsetX = -((float(InSampleState.TileIndexes.X) + 0.5f - float(InSampleState.TileCounts.X) / 2.0f) * 2.0f);
 	float OffsetY = ((float(InSampleState.TileIndexes.Y) + 0.5f - float(InSampleState.TileCounts.Y) / 2.0f) * 2.0f);
 
+	if (bInOrthographic)
+	{
+		InOutProjectionMatrix.M[3][0] += OffsetX / PadRatioX;
+		InOutProjectionMatrix.M[3][1] += OffsetY / PadRatioY;
+	}
+	else
+	{
 	InOutProjectionMatrix.M[2][0] += OffsetX / PadRatioX;
-	InOutProjectionMatrix.M[2][1] += OffsetY / PadRatioX;
+		InOutProjectionMatrix.M[2][1] += OffsetY / PadRatioY;
+	}
 }
+
+UE::MoviePipeline::FImagePassCameraViewData UMoviePipelineImagePassBase::GetCameraInfo(FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload) const
+{
+	UE::MoviePipeline::FImagePassCameraViewData OutCameraData;
+
+	// Default implementation doesn't support multi-camera and always provides the information from the current PlayerCameraManager
+	if (GetPipeline()->GetWorld()->GetFirstPlayerController()->PlayerCameraManager)
+	{
+		OutCameraData.ViewInfo = GetPipeline()->GetWorld()->GetFirstPlayerController()->PlayerCameraManager->GetCameraCacheView();
+
+		// Now override some of the properties with things that come from MRQ
+		OutCameraData.ViewInfo.Location = InOutSampleState.FrameInfo.CurrViewLocation;
+		OutCameraData.ViewInfo.Rotation = InOutSampleState.FrameInfo.CurrViewRotation;
+		OutCameraData.ViewInfo.PreviousViewTransform = FTransform(InOutSampleState.FrameInfo.PrevViewRotation, InOutSampleState.FrameInfo.PrevViewLocation);
+
+		// And some fields that aren't in FMinimalViewInfo
+		OutCameraData.ViewActor = GetPipeline()->GetWorld()->GetFirstPlayerController()->GetViewTarget();
+
+		// This only works if you use a Cine Camera (which is almost guranteed with Sequencer) and it's easier (and less human error prone) than re-deriving the information
+		ACineCameraActor* CineCameraActor = Cast<ACineCameraActor>(GetWorld()->GetFirstPlayerController()->PlayerCameraManager->GetViewTarget());
+		if (CineCameraActor)
+		{
+			UCineCameraComponent* CineCameraComponent = CineCameraActor->GetCineCameraComponent();
+			if (CineCameraComponent)
+			{
+				// Add camera-specific metadata
+				UE::MoviePipeline::GetMetadataFromCineCamera(CineCameraComponent, PassIdentifier.CameraName, PassIdentifier.Name, OutCameraData.FileMetadata);
+			}
+		}
+	}
+
+	return OutCameraData;
+}
+
 
 TSharedPtr<FAccumulatorPool::FAccumulatorInstance, ESPMode::ThreadSafe> FAccumulatorPool::BlockAndGetAccumulator_GameThread(int32 InFrameNumber, const FMoviePipelinePassIdentifier& InPassIdentifier)
 {
@@ -775,4 +1003,5 @@ namespace MoviePipeline
 		}
 	}
 }
+
 

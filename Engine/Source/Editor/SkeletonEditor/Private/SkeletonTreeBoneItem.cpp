@@ -6,7 +6,7 @@
 #include "IDocumentation.h"
 #include "Animation/BlendProfile.h"
 #include "IEditableSkeleton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "BoneDragDropOp.h"
 #include "Animation/DebugSkelMeshComponent.h"
@@ -19,6 +19,8 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "UObject/Package.h"
+#include "Editor.h"
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "FSkeletonTreeBoneItem"
 
@@ -27,6 +29,7 @@ FSkeletonTreeBoneItem::FSkeletonTreeBoneItem(const FName& InBoneName, const TSha
 	, BoneName(InBoneName)
 	, bWeightedBone(false)
 	, bRequiredBone(false)
+	, bBlendSliderStartedTransaction(false)
 {
 	static const FString BoneProxyPrefix(TEXT("BONEPROXY_"));
 
@@ -58,7 +61,7 @@ const FSlateBrush* FSkeletonTreeBoneItem::GetLODIcon() const
 
 void FSkeletonTreeBoneItem::GenerateWidgetForNameColumn( TSharedPtr< SHorizontalBox > Box, const TAttribute<FText>& FilterText, FIsSelected InIsSelected )
 {
-	const FSlateBrush* LODIcon = FEditorStyle::GetBrush("SkeletonTree.Bone");
+	const FSlateBrush* LODIcon = FAppStyle::GetBrush("SkeletonTree.Bone");
 
 	Box->AddSlot()
 		.AutoWidth()
@@ -138,7 +141,10 @@ TSharedRef< SWidget > FSkeletonTreeBoneItem::GenerateWidgetForDataColumn(const F
 				.MaxSliderValue(this, &FSkeletonTreeBoneItem::GetBlendProfileMaxSliderValue)
 				.Value(this, &FSkeletonTreeBoneItem::GetBoneBlendProfileScale)
 				.OnValueCommitted(this, &FSkeletonTreeBoneItem::OnBlendSliderCommitted)
-				.OnValueChanged(this, &FSkeletonTreeBoneItem::OnBlendSliderCommitted, ETextCommit::OnEnter)
+				.OnValueChanged(this, &FSkeletonTreeBoneItem::OnBlendSliderChanged)
+				.OnBeginSliderMovement(this, &FSkeletonTreeBoneItem::OnBeginBlendSliderMovement)
+				.OnEndSliderMovement(this, &FSkeletonTreeBoneItem::OnEndBlendSliderMovement)
+				.ClearKeyboardFocusOnCommit(true)
 			];
 	}
 
@@ -187,7 +193,7 @@ FSlateColor FSkeletonTreeBoneItem::GetRetargetingComboButtonForegroundColor() co
 
 	if (RetargetingComboButton.IsValid())
 	{
-		return RetargetingComboButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
+		return RetargetingComboButton->IsHovered() ? FAppStyle::GetSlateColor(InvertedForegroundName) : FAppStyle::GetSlateColor(DefaultForegroundName);
 	}
 	return FSlateColor::UseForeground();
 }
@@ -245,21 +251,15 @@ void FSkeletonTreeBoneItem::SetBoneTranslationRetargetingMode(EBoneTranslationRe
 	GetEditableSkeleton()->SetBoneTranslationRetargetingMode(BoneName, NewRetargetingMode);
 }
 
-void FSkeletonTreeBoneItem::SetBoneBlendProfileScale(float NewScale, bool bRecurse)
-{
-	FName BlendProfileName = GetSkeletonTree()->GetSelectedBlendProfile()->GetFName();
-	GetEditableSkeleton()->SetBlendProfileScale(BlendProfileName, BoneName, NewScale, bRecurse);
-}
-
 FSlateFontInfo FSkeletonTreeBoneItem::GetBoneTextFont() const
 {
 	if (!bRequiredBone)
 	{
-		return FEditorStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.ItalicFont").Font;
+		return FAppStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.ItalicFont").Font;
 	}
 	else
 	{
-		return FEditorStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.NormalFont").Font;
+		return FAppStyle::GetWidgetStyle<FTextBlockStyle>("SkeletonTree.NormalFont").Font;
 	}
 }
 
@@ -376,9 +376,56 @@ FText FSkeletonTreeBoneItem::GetBoneToolTip()
 	return ToolTip;
 }
 
+void FSkeletonTreeBoneItem::OnBeginBlendSliderMovement()
+{
+	if (bBlendSliderStartedTransaction == false)
+	{
+		bBlendSliderStartedTransaction = true;
+		GEditor->BeginTransaction(LOCTEXT("BlendSliderTransation", "Modify Blend Profile Value"));
+
+		const FName& BlendProfileName = GetSkeletonTree()->GetSelectedBlendProfile()->GetFName();
+		UBlendProfile* BlendProfile = GetEditableSkeleton()->GetBlendProfile(BlendProfileName);
+
+		if (BlendProfile)
+		{
+			BlendProfile->SetFlags(RF_Transactional);
+			BlendProfile->Modify();
+		}
+	}
+}
+void FSkeletonTreeBoneItem::OnEndBlendSliderMovement(float NewValue)
+{
+	if (bBlendSliderStartedTransaction)
+	{
+		GEditor->EndTransaction();
+		bBlendSliderStartedTransaction = false;
+	}
+}
+
 void FSkeletonTreeBoneItem::OnBlendSliderCommitted(float NewValue, ETextCommit::Type CommitType)
 {
-	SetBoneBlendProfileScale(NewValue, false);
+	FName BlendProfileName = GetSkeletonTree()->GetSelectedBlendProfile()->GetFName();
+	UBlendProfile* BlendProfile = GetEditableSkeleton()->GetBlendProfile(BlendProfileName);
+
+	if (BlendProfile)
+	{
+		FScopedTransaction(LOCTEXT("SetBlendProfileValue", "Set Blend Profile Value"));
+		BlendProfile->SetFlags(RF_Transactional);
+		BlendProfile->Modify();
+
+		BlendProfile->SetBoneBlendScale(BoneName, NewValue, false, true);
+	}
+}
+
+void FSkeletonTreeBoneItem::OnBlendSliderChanged(float NewValue)
+{
+	const FName& BlendProfileName = GetSkeletonTree()->GetSelectedBlendProfile()->GetFName();
+	UBlendProfile* BlendProfile = GetEditableSkeleton()->GetBlendProfile(BlendProfileName);
+	
+	if (BlendProfile)
+	{
+		BlendProfile->SetBoneBlendScale(BoneName, NewValue, false, true);
+	}
 }
 
 void FSkeletonTreeBoneItem::HandleDragEnter(const FDragDropEvent& DragDropEvent)
@@ -391,12 +438,12 @@ void FSkeletonTreeBoneItem::HandleDragEnter(const FDragDropEvent& DragDropEvent)
 		if (BoneName != DragConnectionOp->GetSocketInfo().Socket->BoneName)
 		{
 			// The socket can be dropped here if we're a bone and NOT the socket's existing parent
-			DragConnectionOp->SetIcon( FEditorStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Ok" ) ) );
+			DragConnectionOp->SetIcon( FAppStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Ok" ) ) );
 		}
 		else if (DragConnectionOp->IsAltDrag())
 		{
 			// For Alt-Drag, dropping onto the existing parent is fine, as we're going to copy, not move the socket
-			DragConnectionOp->SetIcon( FEditorStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Ok" ) ) );
+			DragConnectionOp->SetIcon( FAppStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Ok" ) ) );
 		}
 	}
 }
@@ -407,7 +454,7 @@ void FSkeletonTreeBoneItem::HandleDragLeave(const FDragDropEvent& DragDropEvent)
 	if (DragConnectionOp.IsValid())
 	{
 		// Reset the drag/drop icon when leaving this row
-		DragConnectionOp->SetIcon( FEditorStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Error" ) ) );
+		DragConnectionOp->SetIcon( FAppStyle::GetBrush( TEXT( "Graph.ConnectorFeedback.Error" ) ) );
 	}
 }
 
@@ -427,7 +474,7 @@ FReply FSkeletonTreeBoneItem::HandleDrop(const FDragDropEvent& DragDropEvent)
 		else if (BoneName != SocketInfo.Socket->BoneName)
 		{
 			// The socket can be dropped here if we're a bone and NOT the socket's existing parent
-			USkeletalMesh* SkeletalMesh = GetSkeletonTree()->GetPreviewScene().IsValid() ? ToRawPtr(GetSkeletonTree()->GetPreviewScene()->GetPreviewMeshComponent()->SkeletalMesh) : nullptr;
+			USkeletalMesh* SkeletalMesh = GetSkeletonTree()->GetPreviewScene().IsValid() ? ToRawPtr(GetSkeletonTree()->GetPreviewScene()->GetPreviewMeshComponent()->GetSkeletalMeshAsset()) : nullptr;
 			GetEditableSkeleton()->SetSocketParent(SocketInfo.Socket->SocketName, BoneName, SkeletalMesh);
 
 			return FReply::Handled();
@@ -454,15 +501,15 @@ bool FSkeletonTreeBoneItem::IsBoneWeighted(int32 MeshBoneIndex, UDebugSkelMeshCo
 {
 	// MeshBoneIndex must be an index into the mesh's skeleton, *not* the source skeleton!!!
 
-	if (!PreviewComponent || !PreviewComponent->SkeletalMesh || !PreviewComponent->SkeletalMesh->GetResourceForRendering() || !PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData.Num())
+	if (!PreviewComponent || !PreviewComponent->GetSkeletalMeshAsset() || !PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering() || !PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num())
 	{
 		// If there's no mesh, then this bone can't possibly be weighted!
 		return false;
 	}
 
 	//Get current LOD
-	const int32 LODIndex = FMath::Clamp(PreviewComponent->GetPredictedLODLevel(), 0, PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() - 1);
-	FSkeletalMeshLODRenderData& LODData = PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex];
+	const int32 LODIndex = FMath::Clamp(PreviewComponent->GetPredictedLODLevel(), 0, PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num() - 1);
+	FSkeletalMeshLODRenderData& LODData = PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData[LODIndex];
 
 	//Check whether the bone is vertex weighted
 	int32 Index = LODData.ActiveBoneIndices.Find(MeshBoneIndex);
@@ -474,15 +521,15 @@ bool FSkeletonTreeBoneItem::IsBoneRequired(int32 MeshBoneIndex, UDebugSkelMeshCo
 {
 	// MeshBoneIndex must be an index into the mesh's skeleton, *not* the source skeleton!!!
 
-	if (!PreviewComponent || !PreviewComponent->SkeletalMesh || !PreviewComponent->SkeletalMesh->GetResourceForRendering() || !PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData.Num())
+	if (!PreviewComponent || !PreviewComponent->GetSkeletalMeshAsset() || !PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering() || !PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num())
 	{
 		// If there's no mesh, then this bone can't possibly be weighted!
 		return false;
 	}
 
 	//Get current LOD
-	const int32 LODIndex = FMath::Clamp(PreviewComponent->GetPredictedLODLevel(), 0, PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData.Num() - 1);
-	FSkeletalMeshLODRenderData& LODData = PreviewComponent->SkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex];
+	const int32 LODIndex = FMath::Clamp(PreviewComponent->GetPredictedLODLevel(), 0, PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData.Num() - 1);
+	FSkeletalMeshLODRenderData& LODData = PreviewComponent->GetSkeletalMeshAsset()->GetResourceForRendering()->LODRenderData[LODIndex];
 
 	//Check whether the bone is vertex weighted
 	int32 Index = LODData.RequiredBones.Find(MeshBoneIndex);

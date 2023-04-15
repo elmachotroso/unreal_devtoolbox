@@ -9,17 +9,17 @@
 #include "HeadMountedDisplayTypes.h"
 #include "IVREditorModule.h"
 
+
 class UVREditorMode;
 enum class EMapChangeType : uint8;
+
 
 /**
  * Manages starting and closing the VREditor mode
  */
 class FVREditorModeManager : public FGCObject, public FTickableEditorObject
 {
-
 public:
-
 	/** Default constructor */
 	FVREditorModeManager();
 
@@ -58,18 +58,44 @@ public:
 	// End FGCObject
 
 	/** Return a multicast delegate which is executed when VR mode starts. */
-	FOnVREditingModeEnter& OnVREditingModeEnter() { return OnVREditingModeEnterHandle;  }
+	FOnVREditingModeEnter& OnVREditingModeEnter() { return OnVREditingModeEnterHandle; }
 
 	/** Return a multicast delegate which is executed when VR mode stops. */
 	FOnVREditingModeExit& OnVREditingModeExit() { return OnVREditingModeExitHandle; }
 
+	/**
+	 * Loads each cached UVREditorMode-derived class path, checking and appending only
+	 * those which are suitable for use (not abstract, etc.) to the provided array. */
+	void GetConcreteModeClasses(TArray<UClass*>& OutModeClasses) const;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FModeClassAdded, const FTopLevelAssetPath&);
+	FModeClassAdded OnModeClassAdded;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FModeClassRemoved, const FTopLevelAssetPath&);
+	FModeClassRemoved OnModeClassRemoved;
+
 private:
+	UClass* TryGetConcreteModeClass(const FTopLevelAssetPath& ClassPath) const;
+
+	/** Queries the asset registry for asset paths of all classes derived from UVREditorMode. */
+	void GetModeClassPaths(TSet<FTopLevelAssetPath>& OutModeClassPaths) const;
+
+	/** Stores the results of GetModeClassPaths() into CachedModeClassPaths. */
+	void UpdateCachedModeClassPaths();
+
+	/** Cached UVREditorMode-derived assets, updated in response to asset registry events. */
+	TSet<FTopLevelAssetPath> CachedModeClassPaths;
+
+	void HandleAssetFilesLoaded();
+	void HandleAssetAddedOrRemoved(const FAssetData& NewAssetData);
 
 	/** Broadcasts when VR mode is started */
 	FOnVREditingModeEnter OnVREditingModeEnterHandle;
 
 	/** Broadcasts when VR mode is stopped */
 	FOnVREditingModeExit OnVREditingModeExitHandle;
+
+	void HandleModeEntryComplete();
 
 	/** Saves the WorldToMeters and enters the mode belonging to GWorld */
 	void StartVREditorMode( const bool bForceWithoutHMD );

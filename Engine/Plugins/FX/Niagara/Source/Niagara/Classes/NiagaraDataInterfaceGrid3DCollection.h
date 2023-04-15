@@ -5,6 +5,7 @@
 #include "NiagaraDataInterfaceRW.h"
 #include "ClearQuad.h"
 #include "NiagaraComponent.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "Niagara/Private/NiagaraStats.h"
 
 #include "NiagaraDataInterfaceGrid3DCollection.generated.h"
@@ -13,23 +14,7 @@ class FNiagaraSystemInstance;
 class UTextureRenderTarget;
 class UTextureRenderTargetVolume;
 
-class FGrid3DBuffer
-{
-public:
-	FGrid3DBuffer(int NumX, int NumY, int NumZ, EPixelFormat PixelFormat)
-	{
-		GridBuffer.Initialize(TEXT("FGrid3DBuffer"), GPixelFormats[PixelFormat].BlockBytes, NumX, NumY, NumZ, PixelFormat);
-		INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GridBuffer.NumBytes);
-	}
-
-	~FGrid3DBuffer()
-	{
-		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GridBuffer.NumBytes);
-		GridBuffer.Release();
-	}
-
-	FTextureRWBuffer3D GridBuffer;	
-};
+using FGrid3DBuffer = FNiagaraPooledRWTexture;
 
 struct FGrid3DCollectionRWInstanceData_GameThread
 {
@@ -66,8 +51,10 @@ struct FGrid3DCollectionRWInstanceData_GameThread
 
 struct FGrid3DCollectionRWInstanceData_RenderThread
 {
-	FIntVector NumCells = FIntVector::ZeroValue;
-	FIntVector NumTiles = FIntVector::ZeroValue;
+	FName SourceDIName;
+
+	FIntVector NumCells = FIntVector(1, 1, 1);
+	FIntVector NumTiles = FIntVector(1, 1, 1);
 	int32 TotalNumAttributes = 0;
 	int32 TotalNumNamedAttributes = 0;
 	FVector CellSize = FVector::ZeroVector;
@@ -83,7 +70,7 @@ struct FGrid3DCollectionRWInstanceData_RenderThread
 	FIntVector4 PreviewAttribute = FIntVector4(INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE);
 #endif
 
-	TArray<TUniquePtr<FGrid3DBuffer>> Buffers;
+	TArray<TUniquePtr<FGrid3DBuffer>, TInlineAllocator<2>> Buffers;
 	FGrid3DBuffer* CurrentData = nullptr;
 	FGrid3DBuffer* DestinationData = nullptr;
 
@@ -98,18 +85,18 @@ struct FGrid3DCollectionRWInstanceData_RenderThread
 	// overrides the render thread data, which in this case is for a grid reader
 	FNiagaraDataInterfaceProxy* OtherProxy = nullptr;
 
-	void BeginSimulate(FRHICommandList& RHICmdList);
-	void EndSimulate(FRHICommandList& RHICmdList);
+	void BeginSimulate(FRDGBuilder& GraphBuilder, bool RequiresBuffering);
+	void EndSimulate();
 };
 
 struct FNiagaraDataInterfaceProxyGrid3DCollectionProxy : public FNiagaraDataInterfaceProxyRW
 {
 	FNiagaraDataInterfaceProxyGrid3DCollectionProxy() {}
 
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
-	virtual void ResetData(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
+	virtual void ResetData(const FNDIGpuComputeResetContext& Context) override;
+	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override;
+	virtual void PostStage(const FNDIGpuComputePostStageContext& Context) override;
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
 
 	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override;
 
@@ -121,30 +108,8 @@ struct FNiagaraDataInterfaceProxyGrid3DCollectionProxy : public FNiagaraDataInte
 struct FNiagaraDataInterfaceParametersCS_Grid3DCollection : public FNiagaraDataInterfaceParametersCS
 {
 	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Grid3DCollection, NonVirtual);
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap);
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
-	void Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
 
-private:
-	LAYOUT_FIELD(FShaderParameter, NumAttributesParam);
-	LAYOUT_FIELD(FShaderParameter, NumNamedAttributesParam);
-	LAYOUT_FIELD(FShaderParameter, UnitToUVParam);
-	LAYOUT_FIELD(FShaderParameter, NumCellsParam);
-	LAYOUT_FIELD(FShaderParameter, NumTilesParam);
-	LAYOUT_FIELD(FShaderParameter, OneOverNumTilesParam);
-	LAYOUT_FIELD(FShaderParameter, UnitClampMinParam);
-	LAYOUT_FIELD(FShaderParameter, UnitClampMaxParam);
-	LAYOUT_FIELD(FShaderParameter, CellSizeParam);
-	LAYOUT_FIELD(FShaderParameter, WorldBBoxSizeParam);
-
-	LAYOUT_FIELD(FShaderResourceParameter, GridParam);
-	LAYOUT_FIELD(FRWShaderParameter, OutputGridParam);
-	LAYOUT_FIELD(FShaderParameter, AttributeIndicesParam);
-	LAYOUT_FIELD(FShaderResourceParameter, PerAttributeDataParam);
-
-	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
-	LAYOUT_FIELD(TMemoryImageArray<FName>, AttributeNames);
+	LAYOUT_FIELD(TMemoryImageArray<FMemoryImageName>, AttributeNames);
 	LAYOUT_FIELD(TMemoryImageArray<uint32>, AttributeChannelCount);
 };
 
@@ -154,8 +119,6 @@ class NIAGARA_API UNiagaraDataInterfaceGrid3DCollection : public UNiagaraDataInt
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	// Number of attributes stored on the grid
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	int32 NumAttributes;
@@ -203,6 +166,12 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const  override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
+	virtual FNiagaraDataInterfaceParametersCS* CreateShaderStorage(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const FShaderParameterMap& ParameterMap) const override;
+	virtual const FTypeLayoutDesc* GetShaderStorageType() const override;
+
 #if WITH_EDITOR
 	virtual ENiagaraGpuDispatchType GetGpuDispatchType() const override { return ENiagaraGpuDispatchType::ThreeD; }
 #endif
@@ -244,14 +213,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	virtual void GetTextureSize(const UNiagaraComponent *Component, int &SizeX, int &SizeY, int &SizeZ);	
 
-	void GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
-	void GetCellSize(FVectorVMExternalFunctionContext& Context);
+	void VMGetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
+	void VMGetCellSize(FVectorVMExternalFunctionContext& Context);
 
-	void GetNumCells(FVectorVMExternalFunctionContext& Context);
-	void SetNumCells(FVectorVMExternalFunctionContext& Context);
-	void UnitToFloatIndex(FVectorVMExternalFunctionContext& Context);
+	void VMGetNumCells(FVectorVMExternalFunctionContext& Context);
+	void VMSetNumCells(FVectorVMExternalFunctionContext& Context);
+	void VMUnitToFloatIndex(FVectorVMExternalFunctionContext& Context);
 
-	void GetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels);
+	void VMGetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels);
 
 	static const FString NumTilesName;
 	static const FString OneOverNumTilesName;
@@ -269,10 +238,12 @@ public:
 	static const FName SetValueFunctionName;
 	static const FName GetValueFunctionName;
 	static const FName SampleGridFunctionName;
+	static const FName CubicSampleGridFunctionName;
 
 	static const FName SetFullGridValueFunctionName;
 	static const FName GetFullGridPreviousValueFunctionName;
 	static const FName SamplePreviousFullGridFunctionName;
+	static const FName CubicSamplePreviousFullGridFunctionName;
 
 	static const FName SetVector4ValueFunctionName;
 	static const FName SetVector3ValueFunctionName;
@@ -281,17 +252,22 @@ public:
 	static const FName SetFloatValueFunctionName;
 	static const FName GetPreviousValueAtIndexFunctionName;
 	static const FName SamplePreviousGridAtIndexFunctionName;
+	static const FName CubicSamplePreviousGridAtIndexFunctionName;
 
 	static const FName GetPreviousVector4ValueFunctionName;
 	static const FName SamplePreviousGridVector4FunctionName;
+	static const FName CubicSamplePreviousGridVector4FunctionName;
 	static const FName SetVectorValueFunctionName;
 	static const FName GetPreviousVectorValueFunctionName;
 	static const FName SamplePreviousGridVectorFunctionName;
+	static const FName CubicSamplePreviousGridVectorFunctionName;
 	static const FName SetVector2DValueFunctionName;
 	static const FName GetPreviousVector2DValueFunctionName;
 	static const FName SamplePreviousGridVector2DFunctionName;
+	static const FName CubicSamplePreviousGridVector2DFunctionName;
 	static const FName GetPreviousFloatValueFunctionName;
 	static const FName SamplePreviousGridFloatFunctionName;
+	static const FName CubicSamplePreviousGridFloatFunctionName;
 	static const FString AttributeIndicesBaseName;
 	static const FString PerAttributeDataName;
 	static const TCHAR* VectorComponentNames[];
@@ -304,6 +280,8 @@ public:
 	static const FName GetFloatAttributeIndexFunctionName;
 
 	static const FString AnonymousAttributeString;
+
+	static const TCHAR* TemplateShaderFilePath;
 
 #if WITH_EDITOR
 	virtual bool SupportsSetupAndTeardownHLSL() const { return true; }
@@ -323,7 +301,7 @@ protected:
 #if WITH_EDITORONLY_DATA
 	void WriteSetHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL);
 	void WriteGetHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL);
-	void WriteSampleHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL);
+	void WriteSampleHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString SampleFunction, FString& OutHLSL);
 	void WriteAttributeGetIndexHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL);
 
 	const TCHAR* TypeDefinitionToHLSLTypeString(const FNiagaraTypeDefinition& InDef) const;

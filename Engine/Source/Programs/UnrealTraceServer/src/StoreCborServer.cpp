@@ -133,7 +133,7 @@ void FStoreCborPeer::OnStatus()
 	TPayloadBuilder<> Builder(EStatusCode::Success);
 	Builder.AddInteger("recorder_port", Recorder.GetPort());
 	Builder.AddInteger("change_serial", Store.GetChangeSerial());
-	Builder.AddString("store_dir", Store.GetStoreDir());
+	Builder.AddString("store_dir", *Store.GetStoreDir());
 	SendResponse(Builder.Done());
 }
 
@@ -177,19 +177,13 @@ void FStoreCborPeer::OnTraceInfo()
 		return SendError(EStatusCode::BadRequest);
 	}
 
-	char OutName[256];
-	const FStringView& Name = Trace->GetName();
-	uint32 NameLength = std::min(uint32(sizeof(OutName)), uint32(Name.Len()));
-	for (uint32 i = 0; i < NameLength; ++i)
-	{
-		OutName[i] = char(Name[i]);
-	}
+	auto Name = Trace->GetName();
 
 	TPayloadBuilder<> Builder(EStatusCode::Success);
 	Builder.AddInteger("id", Trace->GetId());
 	Builder.AddInteger("size", Trace->GetSize());
 	Builder.AddInteger("timestamp", Trace->GetTimestamp());
-	Builder.AddString("name", OutName, NameLength);
+	Builder.AddString("name", *Name);
 	SendResponse(Builder.Done());
 }
 

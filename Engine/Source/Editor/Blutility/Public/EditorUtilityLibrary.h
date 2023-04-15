@@ -2,17 +2,28 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "AssetData.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/ScriptMacros.h"
-#include "Kismet/BlueprintFunctionLibrary.h"
+#include "Delegates/Delegate.h"
 #include "Kismet/BlueprintAsyncActionBase.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "Math/UnrealMathSSE.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ScriptMacros.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "EditorUtilityLibrary.generated.h"
 
 class AActor;
+class UClass;
 class UEditorPerProjectUserSettings;
+class UWorld;
+struct FAssetData;
+struct FFrame;
 
 UCLASS()
 class BLUTILITY_API UEditorUtilityBlueprintAsyncActionBase : public UBlueprintAsyncActionBase
@@ -20,7 +31,7 @@ class BLUTILITY_API UEditorUtilityBlueprintAsyncActionBase : public UBlueprintAs
 	GENERATED_UCLASS_BODY()
 
 public:
-	virtual void RegisterWithGameInstance(UObject* WorldContextObject) override;
+	virtual void RegisterWithGameInstance(const UObject* WorldContextObject) override;
 	virtual void SetReadyToDestroy() override;
 };
 
@@ -165,5 +176,16 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Development|Editor")
 	static bool GetCurrentContentBrowserPath(FString& OutPath);
+
+	// Gets the path to the currently selected folder in the content browser
+	UFUNCTION(BlueprintPure, Category = "Development|Editor")
+	static TArray<FString> GetSelectedFolderPaths();
+
+	/**
+	 * Sync the Content Browser to the given folder(s)
+	 * @param	FolderList	The list of folders to sync to in the Content Browser
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Content Browser")
+	static void SyncBrowserToFolders(const TArray<FString>& FolderList);
 #endif
 };

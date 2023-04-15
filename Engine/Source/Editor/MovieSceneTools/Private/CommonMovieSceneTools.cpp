@@ -1,11 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonMovieSceneTools.h"
+
+#include "Containers/UnrealString.h"
+#include "Fonts/FontMeasure.h"
+#include "Fonts/SlateFontInfo.h"
 #include "FrameNumberNumericInterface.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
-#include "Fonts/FontMeasure.h"
+#include "Layout/Geometry.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/FrameNumber.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateRenderer.h"
 #include "SequencerSectionPainter.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/WidgetStyle.h"
+#include "Templates/SharedPointer.h"
+#include "TimeToPixel.h"
 
 void DrawFrameTimeHint(FSequencerSectionPainter& InPainter, const FFrameTime& CurrentTime, const FFrameTime& FrameTime, const FFrameNumberInterface* FrameNumberInterface)
 {
@@ -33,7 +48,7 @@ void DrawFrameTimeHint(FSequencerSectionPainter& InPainter, const FFrameTime& Cu
 	const float MajorTickHeight = 9.0f;
 	FVector2D TextOffset(TextPosition, InPainter.SectionGeometry.Size.Y - (MajorTickHeight + TextSize.Y));
 
-	const FLinearColor DrawColor = FEditorStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle()).CopyWithNewOpacity(InPainter.GhostAlpha);
+	const FLinearColor DrawColor = FAppStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle()).CopyWithNewOpacity(InPainter.GhostAlpha);
 	const FVector2D BoxPadding = FVector2D(4.0f, 2.0f);
 	// draw time string
 
@@ -41,7 +56,7 @@ void DrawFrameTimeHint(FSequencerSectionPainter& InPainter, const FFrameTime& Cu
 		InPainter.DrawElements,
 		InPainter.LayerId + 5,
 		InPainter.SectionGeometry.ToPaintGeometry(TextOffset - BoxPadding, TextSize + 2.0f * BoxPadding),
-		FEditorStyle::GetBrush("WhiteBrush"),
+		FAppStyle::GetBrush("WhiteBrush"),
 		ESlateDrawEffect::None,
 		FLinearColor::Black.CopyWithNewOpacity(0.5f * InPainter.GhostAlpha)
 	);

@@ -10,6 +10,8 @@
 
 #include "Misc/RuntimeErrors.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(KismetMathLibrary)
+
 #define LOCTEXT_NAMESPACE "UKismetMathLibrary"
 
 /** Interpolate a linear alpha value using an ease mode and function. */
@@ -76,7 +78,7 @@ void UKismetMathLibrary::ReportError_Divide_ByteByte()
 
 void UKismetMathLibrary::ReportError_Percent_ByteByte()
 {
-	FFrame::KismetExecutionMessage(TEXT("Modulo by zero"), ELogVerbosity::Warning, DivideByZeroWarning);
+	FFrame::KismetExecutionMessage(TEXT("Modulo by zero: Percent_ByteByte"), ELogVerbosity::Warning, DivideByZeroWarning);
 }
 
 void UKismetMathLibrary::ReportError_Divide_IntInt()
@@ -101,7 +103,12 @@ void UKismetMathLibrary::ReportError_Divide_Int64Int64()
 
 void UKismetMathLibrary::ReportError_Percent_IntInt()
 {
-	FFrame::KismetExecutionMessage(TEXT("Modulo by zero"), ELogVerbosity::Warning, DivideByZeroWarning);
+	FFrame::KismetExecutionMessage(TEXT("Modulo by zero: Percent_IntInt"), ELogVerbosity::Warning, DivideByZeroWarning);
+}
+
+void UKismetMathLibrary::ReportError_Percent_Int64Int64()
+{
+	FFrame::KismetExecutionMessage(TEXT("Modulo by zero: Percent_Int64Int64"), ELogVerbosity::Warning, DivideByZeroWarning);
 }
 
 void UKismetMathLibrary::ReportError_Sqrt()
@@ -244,7 +251,7 @@ int32 UKismetMathLibrary::FMod(float Dividend, float Divisor, float& Remainder)
 	if (Divisor != 0.f)
 	{
 		const float Quotient = Dividend / Divisor;
-		Result = (Quotient < 0.f ? -1 : 1) * FMath::FloorToInt(FMath::Abs(Quotient));
+		Result = (Quotient < 0.f ? -1 : 1) * FMath::FloorToInt32(FMath::Abs(Quotient));
 		Remainder = FMath::Fmod(Dividend, Divisor);
 	}
 	else
@@ -264,7 +271,7 @@ int32 UKismetMathLibrary::FMod(double Dividend, double Divisor, double& Remainde
 	if (Divisor != 0.f)
 	{
 		const double Quotient = Dividend / Divisor;
-		Result = (Quotient < 0.f ? -1 : 1) * FMath::FloorToInt(FMath::Abs(Quotient));
+		Result = (Quotient < 0.f ? -1 : 1) * FMath::FloorToInt32(FMath::Abs(Quotient));
 		Remainder = FMath::Fmod(Dividend, Divisor);
 	}
 	else
@@ -354,6 +361,39 @@ void UKismetMathLibrary::MinOfIntArray(const TArray<int32>& IntArray, int32& Ind
 	MinValue = FMath::Min<int32>(IntArray, &IndexOfMinValue);
 }
 
+void UKismetMathLibrary::MedianOfIntArray(TArray<int32> IntArray, float& MedianValue)
+{
+	if (IntArray.IsEmpty())
+	{
+		MedianValue = 0;
+		return;
+	}
+
+	IntArray.Sort();
+	
+	if (IntArray.Num() % 2 == 1)
+	{
+		MedianValue = IntArray[(IntArray.Num() - 1) / 2];
+	}
+	else
+	{
+		MedianValue = IntArray[IntArray.Num() / 2] + IntArray[(IntArray.Num() / 2) - 1];
+		MedianValue /= 2;
+	}
+}
+
+void UKismetMathLibrary::AverageOfIntArray(const TArray<int32>& IntArray, float& AverageValue)
+{
+	AverageValue = 0;
+
+	for (int32 Index = 0; Index < IntArray.Num(); ++Index)
+	{
+		AverageValue += IntArray[Index];
+	}
+
+	AverageValue /= IntArray.Num();
+}
+
 void UKismetMathLibrary::MaxOfFloatArray(const TArray<float>& FloatArray, int32& IndexOfMaxValue, float& MaxValue)
 {
 	MaxValue = FMath::Max(FloatArray, &IndexOfMaxValue);
@@ -393,14 +433,14 @@ void GenericSpringInterp(T& Current, const T Target, T& PrevTarget, bool& bPrevT
 	{
 		Current = Target;
 	}
-	if (DeltaTime > SMALL_NUMBER)
+	if (DeltaTime > UE_SMALL_NUMBER)
 	{
 		if (!FMath::IsNearlyZero(Mass))
 		{
 			// Note that old target was stored in PrevTarget
 			T TargetVel = bPrevTargetValid ? (Target - PrevTarget) * (TargetVelocityAmount / DeltaTime) : T(0.f);
 			const float Omega = FMath::Sqrt(Stiffness / Mass); // angular frequency
-			const float Frequency = Omega / (2.0f * PI);
+			const float Frequency = Omega / (2.0f * UE_PI);
 			T NewValue = Current;
 			FMath::SpringDamper(Current, Velocity, Target, TargetVel, DeltaTime, Frequency, CriticalDamping);
 			PrevTarget = Target;
@@ -1059,6 +1099,11 @@ FVector UKismetMathLibrary::RandomPointInBoundingBoxFromStream(const FVector Cen
 	return Stream.RandPointInBox(FBox(BoxMin, BoxMax));
 }
 
+FVector UKismetMathLibrary::RandomPointInBoundingBoxFromStream_Box(const FBox Box, const FRandomStream& Stream)
+{
+	return Stream.RandPointInBox(Box);
+}
+
 FRotator UKismetMathLibrary::RandomRotatorFromStream(bool bRoll, const FRandomStream& Stream)
 {
 	FRotator RRot;
@@ -1323,12 +1368,26 @@ bool UKismetMathLibrary::IsPointInBox(FVector Point, FVector BoxOrigin, FVector 
 	return Box.IsInsideOrOn(Point);
 }
 
+bool UKismetMathLibrary::IsPointInBox_Box(FVector Point, FBox Box)
+{
+	return Box.IsInsideOrOn(Point);
+}
+
 bool UKismetMathLibrary::IsPointInBoxWithTransform(FVector Point, const FTransform& BoxWorldTransform, FVector BoxExtent)
 {
 	// Put point in component space
 	const FVector PointInComponentSpace = BoxWorldTransform.InverseTransformPosition(Point);
 	// Now it's just a normal point-in-box test, with a box at the origin.
 	const FBox Box(-BoxExtent, BoxExtent);
+	return Box.IsInsideOrOn(PointInComponentSpace);
+}
+
+bool UKismetMathLibrary::IsPointInBoxWithTransform_Box(FVector Point, const FTransform& BoxWorldTransform, FBox Box)
+{
+	// Put point in component space
+	const FVector PointInComponentSpace = BoxWorldTransform.InverseTransformPosition(Point);
+	// Now it's just a normal point-in-box test, with a box at the origin.
+	Box = Box.MoveTo(PointInComponentSpace);
 	return Box.IsInsideOrOn(PointInComponentSpace);
 }
 
@@ -1469,3 +1528,4 @@ FRotator UKismetMathLibrary::DynamicWeightedMovingAverage_FRotator(FRotator Curr
 
 
 #undef LOCTEXT_NAMESPACE
+

@@ -71,6 +71,7 @@ struct FMeshBatchDynamicPrimitiveData
 {
 	TConstArrayView<FPrimitiveInstance> InstanceSceneData;
 	TConstArrayView<FPrimitiveInstanceDynamicData> InstanceDynamicData;
+	TConstArrayView<FRenderBounds> InstanceLocalBounds;
 	TConstArrayView<float> InstanceCustomData;
 	FGPUSceneWriteDelegate DataWriterGPU;		
 	EGPUSceneGPUWritePass DataWriterGPUPass = EGPUSceneGPUWritePass::None;
@@ -90,23 +91,47 @@ struct FMeshBatchDynamicPrimitiveData
 	}
 	
 	FORCEINLINE void EnableInstanceDynamicData(bool bEnable) { SetPayloadDataFlags(INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA, bEnable); }
+	FORCEINLINE void EnableInstanceLocalBounds(bool bEnable) { SetPayloadDataFlags(INSTANCE_SCENE_DATA_FLAG_HAS_LOCAL_BOUNDS, bEnable); }
 	FORCEINLINE void SetNumInstanceCustomDataFloats(uint32 NumFloats)
 	{
 		SetPayloadDataFlags(INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA, NumFloats > 0);
 		NumInstanceCustomDataFloats = NumFloats;
 	}
 
+	/**
+	 * Computes the full float4 stride of the instance's payload data.
+	 * NOTE: Needs to align with GetInstancePayloadDataOffsets in SceneData.ush
+	 **/
 	FORCEINLINE uint32 GetPayloadFloat4Stride() const
 	{
 		uint32 Total = 0;
+		
+		if (PayloadDataFlags & INSTANCE_SCENE_DATA_FLAG_HAS_LOCAL_BOUNDS)
+		{
+			Total += 2;
+		}
+		else if (PayloadDataFlags & (INSTANCE_SCENE_DATA_FLAG_HAS_HIERARCHY_OFFSET | INSTANCE_SCENE_DATA_FLAG_HAS_EDITOR_DATA))
+		{
+			Total += 1;
+		}
+
 		if (PayloadDataFlags & INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA)
 		{
-#if INSTANCE_SCENE_DATA_COMPRESSED_TRANSFORMS
-			Total += 2;
-#else
-			Total += 3;
-#endif
+			if (FDataDrivenShaderPlatformInfo::GetSupportSceneDataCompressedTransforms(GMaxRHIShaderPlatform))
+			{
+				Total += 2;
+			}
+			else
+			{
+				Total += 3;
+			}
 		}
+
+		if (PayloadDataFlags & INSTANCE_SCENE_DATA_FLAG_HAS_LIGHTSHADOW_UV_BIAS)
+		{
+			Total += 1;
+		}
+		
 		if (PayloadDataFlags & INSTANCE_SCENE_DATA_FLAG_HAS_CUSTOM_DATA)
 		{
 			Total += FMath::DivideAndRoundUp(NumInstanceCustomDataFloats, 4u);
@@ -208,6 +233,8 @@ struct FMeshBatchElement
 #if UE_ENABLE_DEBUG_DRAWING
 	/** Conceptual element index used for debug viewmodes. */
 	int32 VisualizeElementIndex : 8;
+	/** Skin Cache debug visualization color. */
+	FColor SkinCacheDebugColor = FColor::White;
 #endif
 
 	/**
@@ -344,6 +371,9 @@ struct FMeshBatch
 	uint32 bRenderToVirtualTexture : 1;
 	/** What virtual texture material type this mesh batch should be rendered with. */
 	uint32 RuntimeVirtualTextureMaterialType : RuntimeVirtualTexture::MaterialType_NumBits;
+	
+	/** Whether mesh is rendered with overlay material. */
+	uint32 bOverlayMaterial	: 1;
 
 #if RHI_RAYTRACING
 	uint32 CastRayTracedShadow : 1;	// Whether it casts ray traced shadow.
@@ -454,6 +484,7 @@ struct FMeshBatch
 	,	bDitheredLODTransition(false)
 	,	bRenderToVirtualTexture(false)
 	,	RuntimeVirtualTextureMaterialType(0)
+	,	bOverlayMaterial(false)
 #if RHI_RAYTRACING
 	,	CastRayTracedShadow(true)
 #endif

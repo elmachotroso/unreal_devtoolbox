@@ -9,7 +9,7 @@
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "SourceCodeNavigation.h"
-#include "Developer/HotReload/Public/IHotReload.h"
+#include "IHotReload.h"
 #include "EngineLogs.h"
 #include "Engine/Blueprint.h"
 #include "IMessageLogListing.h"
@@ -91,7 +91,7 @@ UEdGraphPin* FBacktrackMap::FindSourcePin(UEdGraphPin* PossiblyDuplicatedPin)
 	}
 	else
 	{
-		// Not in the map, maybe its owning node was duplicated - and then maybe he GUID matches
+		// Not in the map, maybe its owning node was duplicated - and then maybe the GUID matches
 		// some node on the original node:
 		if (PossiblyDuplicatedPin)
 		{
@@ -439,7 +439,7 @@ void FCompilerResultsLog::InternalLogMessage(FName MessageID, const TSharedRef<F
 
 	if (!bSilentMode && (!bLogInfoOnly || (Severity == EMessageSeverity::Info)))
 	{
-		if (Severity == EMessageSeverity::CriticalError || Severity == EMessageSeverity::Error)
+		if (Severity == EMessageSeverity::Error)
 		{
 			if (IsRunningCommandlet())
 			{

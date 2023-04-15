@@ -20,6 +20,7 @@
 #include "Android/AndroidJava.h"
 #include "Containers/Map.h"
 #include <limits>
+#include "Misc/ScopeLock.h"
 
 #if PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER
 #include "HAL/IPlatformFileManagedStorageWrapper.h"
@@ -417,6 +418,7 @@ private:
 	bool bInitialized;
 	FString ManifestFileName;
 	TMap<FString, FDateTime> ManifestEntries;
+	FCriticalSection ManifestEntriesCS;
 public:
 
 	FAndroidFileManifestReader( const FString& InManifestFileName ) : ManifestFileName(InManifestFileName), bInitialized(false)
@@ -425,6 +427,8 @@ public:
 
 	bool GetFileTimeStamp( const FString& FileName, FDateTime& DateTime ) 
 	{
+		FScopeLock Lock(&ManifestEntriesCS);
+
 		if ( bInitialized == false )
 		{
 			Read();
@@ -449,6 +453,8 @@ public:
 
 	bool SetFileTimeStamp( const FString& FileName, const FDateTime& DateTime )
 	{
+		FScopeLock Lock(&ManifestEntriesCS);
+
 		if (bInitialized == false)
 		{
 			Read();
@@ -472,6 +478,8 @@ public:
 
 	bool DeleteFileTimeStamp(const FString& FileName)
 	{
+		FScopeLock Lock(&ManifestEntriesCS);
+
 		if (bInitialized == false)
 		{
 			Read();
@@ -496,6 +504,8 @@ public:
 	// read manifest from disk
 	void Read()
 	{
+		FScopeLock Lock(&ManifestEntriesCS);
+
 		// Local filepaths are directly in the deployment directory.
 		static const FString &BasePath = GetFileBasePath();
 		const FString ManifestPath = BasePath + ManifestFileName;
@@ -571,7 +581,8 @@ public:
 
 	void Write()
 	{
-		
+		FScopeLock Lock(&ManifestEntriesCS);
+
 		// Local filepaths are directly in the deployment directory.
 		static const FString &BasePath = GetFileBasePath();
 		const FString ManifestPath = BasePath + ManifestFileName;
@@ -870,7 +881,8 @@ public:
 
 	int64 GetEntryLength(const FString & Path)
 	{
-		return Entries[Path]->File->Size();
+		TSharedPtr<FFileHandleAndroid> File = Entries[Path]->File;
+		return File != nullptr ? File->Size() : 0;
 	}
 
 	int64 GetEntryModTime(const FString & Path)

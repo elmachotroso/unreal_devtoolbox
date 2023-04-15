@@ -6,53 +6,54 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Mime;
 using System.Threading.Tasks;
-using Datadog.Trace;
+using EpicGames.AspNet;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Implementation;
 using Jupiter;
+using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace Horde.Storage.Controllers
 {
+    using BlobNotFoundException = Horde.Storage.Implementation.BlobNotFoundException;
+
     [ApiController]
     [Route("api/v1/s", Order = 1)]
     [Route("api/v1/blobs", Order = 0)]
+    [Authorize]
     public class StorageController : ControllerBase
     {
-        private readonly IBlobStore _storage;
+        private readonly IBlobService _storage;
         private readonly IDiagnosticContext _diagnosticContext;
-        private readonly IAuthorizationService _authorizationService;
-        private readonly HordeStorageSettings _settings;
+        private readonly RequestHelper _requestHelper;
+        private readonly BufferedPayloadFactory _bufferedPayloadFactory;
 
-        private readonly ILogger _logger = Log.ForContext<StorageController>();
-
-        public StorageController(IBlobStore storage, IOptions<HordeStorageSettings> settings, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService)
+        public StorageController(IBlobService storage, IDiagnosticContext diagnosticContext, RequestHelper requestHelper, BufferedPayloadFactory bufferedPayloadFactory)
         {
             _storage = storage;
             _diagnosticContext = diagnosticContext;
-            _authorizationService = authorizationService;
-            _settings = settings.Value;
+            _requestHelper = requestHelper;
+            _bufferedPayloadFactory = bufferedPayloadFactory;
         }
 
-
         [HttpGet("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Get(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
@@ -68,17 +69,15 @@ namespace Horde.Storage.Controllers
         }
         
         [HttpHead("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Head(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
             bool exists = await _storage.Exists(ns, id);
 
@@ -91,17 +90,15 @@ namespace Horde.Storage.Controllers
         }
 
         [HttpPost("{ns}/exists")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> ExistsMultiple(
             [Required] NamespaceId ns,
              [Required] [FromQuery] List<BlobIdentifier> id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             ConcurrentBag<BlobIdentifier> missingBlobs = new ConcurrentBag<BlobIdentifier>();
@@ -109,7 +106,9 @@ namespace Horde.Storage.Controllers
             IEnumerable<Task> tasks = id.Select(async blob =>
             {
                 if (!await _storage.Exists(ns, blob))
+                {
                     missingBlobs.Add(blob);
+                }
             });
             await Task.WhenAll(tasks);
 
@@ -117,17 +116,15 @@ namespace Horde.Storage.Controllers
         }
 
         [HttpPost("{ns}/exist")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> ExistsBody(
             [Required] NamespaceId ns,
             [FromBody] BlobIdentifier[] bodyIds)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             ConcurrentBag<BlobIdentifier> missingBlobs = new ConcurrentBag<BlobIdentifier>();
@@ -135,7 +132,9 @@ namespace Horde.Storage.Controllers
             IEnumerable<Task> tasks = bodyIds.Select(async blob =>
             {
                 if (!await _storage.Exists(ns, blob))
+                {
                     missingBlobs.Add(blob);
+                }
             });
             await Task.WhenAll(tasks);
 
@@ -144,131 +143,98 @@ namespace Horde.Storage.Controllers
 
         private async Task<BlobContents> GetImpl(NamespaceId ns, BlobIdentifier blob)
         {
-            return await _storage.GetObject(ns, blob);
+            try
+            {
+                return await _storage.GetObject(ns, blob);
+            }
+            catch (BlobNotFoundException)
+            {
+                if (!_storage.ShouldFetchBlobOnDemand(ns))
+                {
+                    throw;
+                }
+
+                return await _storage.ReplicateObject(ns, blob);
+            }
         }
 
         [HttpPut("{ns}/{id}")]
-        [Authorize("Storage.write")]
         [RequiredContentType(MediaTypeNames.Application.Octet)]
         [DisableRequestSizeLimit]
         public async Task<IActionResult> Put(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
-            BlobIdentifier identifier;
-            // blob is small enough to fit into memory so we just stream it into memory
-            if (Request.ContentLength is < Int32.MaxValue)
-            {
-                byte[] blob;
-                try
-                {
-                    blob = await RequestUtil.ReadRawBody(Request);
-                }
-                catch (BadHttpRequestException e)
-                {
-                    const string msg = "Partial content transfer when reading request body.";
-                    _logger.Warning(e, msg);
-                    return BadRequest(msg);
-                }
-
-                identifier = await PutImpl(ns, id, blob);
-            }
-            else
-            {
-                FileInfo? tempFile = null;
-
-                Stream s = Request.Body;
-                try
-                {
-                    // stream to a temporary file on disk if the stream is not seekable
-                    if (!Request.Body.CanSeek)
-                    {
-                        tempFile = new FileInfo(Path.GetTempFileName());
-
-                        {
-                            await using FileStream fs = tempFile.OpenWrite();
-                            await Request.Body.CopyToAsync(fs);
-                        }
-
-                        s = tempFile.OpenRead();
-                    }
-                    identifier = await PutImpl(ns, id, s);
-                }
-                finally
-                {
-                    s.Close();
-                    if (tempFile != null && tempFile.Exists)
-                        tempFile.Delete();
-                }
-            }
             _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
 
-            return Ok(new
+            try
             {
-                Identifier = identifier.ToString()
-            });
+                using IBufferedPayload payload = await _bufferedPayloadFactory.CreateFromRequest(Request);
+
+                BlobIdentifier identifier = await _storage.PutObject(ns, payload, id);
+                return Ok(new
+                {
+                    Identifier = identifier.ToString()
+                });
+            }
+            catch (ResourceHasToManyRequestsException)
+            {
+                return StatusCode(StatusCodes.Status429TooManyRequests);
+            }
+            catch (ClientSendSlowException e)
+            {
+                return Problem(e.Message, null, (int)HttpStatusCode.RequestTimeout);
+            }
         }
 
-        private async Task<BlobIdentifier> PutImpl(NamespaceId ns, BlobIdentifier id, byte[] content)
+        [HttpPost("{ns}")]
+        [RequiredContentType(MediaTypeNames.Application.Octet)]
+        [DisableRequestSizeLimit]
+        public async Task<IActionResult> Post(
+            [Required] NamespaceId ns)
         {
-            BlobIdentifier identifier;
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                using Scope _ = Tracer.Instance.StartActive("web.hash");
-                identifier = BlobIdentifier.FromBlob(content);
+                return result;
             }
 
-            if (!id.Equals(identifier))
+            _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
+            try
             {
-                _logger.Debug("ID {@Id} was not the same as identifier {@Identifier} {Content}", id, identifier,
-                    content);
+                using IBufferedPayload payload = await _bufferedPayloadFactory.CreateFromRequest(Request);
 
-                throw new ArgumentException("ID was not a hash of the content uploaded.", paramName: nameof(id));
+                await using Stream stream = payload.GetStream();
+
+                BlobIdentifier id = await BlobIdentifier.FromStream(stream);
+                await _storage.PutObjectKnownHash(ns, payload, id);
+                
+                return Ok(new
+                {
+                    Identifier = id.ToString()
+                });
             }
-
-            await _storage.PutObject(ns, content, identifier);
-            return identifier;
-        }
-
-        private async Task<BlobIdentifier> PutImpl(NamespaceId ns, BlobIdentifier id, Stream content)
-        {
-            BlobIdentifier identifier;
+            catch (ClientSendSlowException e)
             {
-                using Scope _ = Tracer.Instance.StartActive("web.hash");
-                identifier = await BlobIdentifier.FromStream(content);
+                return Problem(e.Message, null, (int)HttpStatusCode.RequestTimeout);
             }
-
-            if (!id.Equals(identifier))
-            {
-                _logger.Debug("ID {@Id} was not the same as identifier {@Identifier} {Content}", id, identifier,
-                    content);
-
-                throw new ArgumentException("ID was not a hash of the content uploaded.", paramName: nameof(id));
-            }
-
-            // seek back to the beginning
-            content.Position = 0;
-            await _storage.PutObject(ns, content, identifier);
-            return identifier;
         }
 
         [HttpDelete("{ns}/{id}")]
-        [Authorize("Storage.delete")]
         public async Task<IActionResult> Delete(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             await DeleteImpl(ns, id);
@@ -278,22 +244,19 @@ namespace Horde.Storage.Controllers
 
         
         [HttpDelete("{ns}")]
-        [Authorize("Admin")]
         public async Task<IActionResult> DeleteNamespace(
             [Required] NamespaceId ns)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteNamespace });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             await  _storage.DeleteNamespace(ns);
 
             return NoContent();
         }
-
 
         private async Task DeleteImpl(NamespaceId ns, BlobIdentifier id)
         {
@@ -302,6 +265,7 @@ namespace Horde.Storage.Controllers
 
         // ReSharper disable UnusedAutoPropertyAccessor.Global
         // ReSharper disable once ClassNeverInstantiated.Global
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Used by serialization")]
         public class BatchOp
         {
             // ReSharper disable once InconsistentNaming
@@ -323,6 +287,7 @@ namespace Horde.Storage.Controllers
             public byte[]? Content { get; set; }
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Used by serialization")]
         public class BatchCall
         {
             public BatchOp[]? Operations { get; set; }
@@ -332,17 +297,17 @@ namespace Horde.Storage.Controllers
         [HttpPost("")]
         public async Task<IActionResult> Post([FromBody] BatchCall batch)
         {
-            string OpToPolicy(BatchOp.Operation op)
+            AclAction MapToAclAction(BatchOp.Operation op)
             {
                 switch (op)
                 {
                     case BatchOp.Operation.GET:
                     case BatchOp.Operation.HEAD:
-                        return "Storage.read";
+                        return AclAction.ReadObject;
                     case BatchOp.Operation.PUT:
-                        return "Storage.write";
+                        return AclAction.WriteObject;
                     case BatchOp.Operation.DELETE:
-                        return "Storage.delete";
+                        return AclAction.DeleteObject;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(op), op, null);
                 }
@@ -350,7 +315,7 @@ namespace Horde.Storage.Controllers
 
             if (batch?.Operations == null)
             {
-                throw new ArgumentNullException();
+                throw new ();
             }
 
             Task<object?>[] tasks = new Task<object?>[batch.Operations.Length];
@@ -359,28 +324,27 @@ namespace Horde.Storage.Controllers
                 BatchOp op = batch.Operations[index];
                 if (op.Namespace == null)
                 {
-                    throw new ArgumentNullException("namespace");
+                    throw new Exception(nameof(op.Namespace));
                 }
 
-                AuthorizationResult authorizationResultNamespace = await _authorizationService.AuthorizeAsync(User, op.Namespace, NamespaceAccessRequirement.Name);
-                AuthorizationResult authorizationResultOp = await _authorizationService.AuthorizeAsync(User, OpToPolicy(op.Op));
+                ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, op.Namespace!.Value, new[] { MapToAclAction(op.Op) });
 
-                if (!authorizationResultNamespace.Succeeded || !authorizationResultOp.Succeeded)
+                if (result != null)
                 {
-                    return Forbid();
+                    return result;
                 }
 
                 switch (op.Op)
                 {
                     case BatchOp.Operation.INVALID:
-                        throw new ArgumentOutOfRangeException();
+                        throw new InvalidOperationException($"Op type {BatchOp.Operation.INVALID} is not a valid op type for operation id {op.Id}");
                     case BatchOp.Operation.GET:
                         if (op.Id == null)
                         {
-                            throw new ArgumentNullException("id");
+                            return BadRequest();
                         }
 
-                        tasks[index] = GetImpl(op.Namespace.Value, op.Id).ContinueWith(t =>
+                        tasks[index] = GetImpl(op.Namespace.Value, op.Id).ContinueWith((t, _) =>
                         {
                             // TODO: This is very allocation heavy but given that the end result is a json object we can not really stream this anyway
                             using BlobContents blobContents = t.Result;
@@ -390,16 +354,16 @@ namespace Horde.Storage.Controllers
                             ms.Seek(0, SeekOrigin.Begin);
                             string str = Convert.ToBase64String(ms.ToArray());
                             return (object?) str;
-                        });
+                        }, null, TaskScheduler.Current);
                         break;
                     case BatchOp.Operation.HEAD:
                         if (op.Id == null)
                         {
-                            throw new ArgumentNullException("id");
+                            return BadRequest();
                         }
 
                         tasks[index] = _storage.Exists(op.Namespace.Value, op.Id)
-                            .ContinueWith(t => t.Result ? (object?) null : op.Id);
+                            .ContinueWith((t,_) => t.Result ? (object?) null : op.Id, null, TaskScheduler.Current);
                         break;
                     case BatchOp.Operation.PUT:
                     {
@@ -413,19 +377,20 @@ namespace Horde.Storage.Controllers
                             return BadRequest();
                         }
 
-                        tasks[index] = PutImpl(op.Namespace.Value, op.Id, op.Content).ContinueWith(t => (object?) t.Result);
+                        using MemoryBufferedPayload payload = new MemoryBufferedPayload(op.Content);
+                        tasks[index] = _storage.PutObject(op.Namespace.Value, payload, op.Id).ContinueWith((t, _) => (object?) t.Result, null, TaskScheduler.Current);
                         break;
                     }
                     case BatchOp.Operation.DELETE:
                         if (op.Id == null)
                         {
-                            throw new ArgumentNullException("id");
+                            return BadRequest();
                         }
 
-                        tasks[index] = DeleteImpl(op.Namespace.Value, op.Id).ContinueWith(t => (object?) null);
+                        tasks[index] = DeleteImpl(op.Namespace.Value, op.Id).ContinueWith((t, _) => (object?) null, null, TaskScheduler.Current);
                         break;
                     default:
-                        throw new ArgumentOutOfRangeException();
+                        throw new NotImplementedException($"{op.Op} is not a support op type");
                 }
             }
 
@@ -435,11 +400,11 @@ namespace Horde.Storage.Controllers
 
             return Ok(results);
         }
-
     }
 
     public class HeadMultipleResponse
     {
+        [CbField("needs")]
         public BlobIdentifier[] Needs { get; set; } = null!;
     }
 }

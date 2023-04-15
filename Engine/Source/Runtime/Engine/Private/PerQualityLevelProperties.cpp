@@ -4,6 +4,8 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PerQualityLevelProperties)
+
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
 #include "PlatformInfo.h"
@@ -15,9 +17,33 @@ namespace QualityLevelProperty
 	static TArray<FName> QualityLevelNames = { FName("Low"), FName("Medium"), FName("High"), FName("Epic"), FName("Cinematic") };
 	static FString QualityLevelMappingStr = TEXT("QualityLevelMapping");
 
+	TMap<int32, int32> ConvertQualtiyLevelData(const TMap<EPerQualityLevels, int32>& Data)
+	{
+		TMap<int32, int32> ConvertedData;
+
+		for (const TPair<EPerQualityLevels, int32>& Pair : Data)
+		{
+			ConvertedData.Add((int32)Pair.Key,Pair.Value);
+		}
+
+		return ConvertedData;
+	}
+
+	TMap<EPerQualityLevels, int32> ConvertQualtiyLevelData(const TMap<int32, int32>& Data)
+	{
+		TMap<EPerQualityLevels, int32> ConvertedData;
+
+		for (const TPair<int32, int32>& Pair : Data)
+		{
+			ConvertedData.Add((EPerQualityLevels)Pair.Key, Pair.Value);
+		}
+
+		return ConvertedData;
+	}
+
 	FName QualityLevelToFName(int32 QL)
 	{
-		if (QL >= 0 && QL < static_cast<int32>(EQualityLevels::Num))
+		if (QL >= 0 && QL < static_cast<int32>(EPerQualityLevels::Num))
 		{
 			return QualityLevelNames[QL];
 		}
@@ -57,13 +83,12 @@ namespace QualityLevelProperty
 		if (bIsPlatformGroup)
 		{
 			// get all the platforms from that group
-			for (const FName& DataDrivenPlatformName : FDataDrivenPlatformInfoRegistry::GetSortedPlatformNames())
+			for (const FDataDrivenPlatformInfo* DataDrivenPlatformInfo : FDataDrivenPlatformInfoRegistry::GetSortedPlatformInfos(EPlatformInfoType::TruePlatformsOnly))
 			{
 				// gather all platform related to the platform group
-				const FDataDrivenPlatformInfo& DataDrivenPlatformInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(DataDrivenPlatformName);
-				if (DataDrivenPlatformInfo.PlatformGroupName == FName(*InPlatformName))
+				if (DataDrivenPlatformInfo->PlatformGroupName == FName(*InPlatformName))
 				{
-					EnginePlatforms.AddUnique(DataDrivenPlatformName);
+					EnginePlatforms.AddUnique(DataDrivenPlatformInfo->IniPlatformName);
 				}
 			}
 		}
@@ -107,9 +132,8 @@ namespace QualityLevelProperty
 		{
 			FScopeLock ScopeLock(&MappingCriticalSection);
 			CachedMappingQualitLevelInfo = &CachedPerPlatformToQualityLevels.Add(InPlatformName, QualityLevels);
+			return *CachedMappingQualitLevelInfo;
 		}
-
-		return *CachedMappingQualitLevelInfo;
 	}
 #endif
 }
@@ -118,6 +142,32 @@ namespace QualityLevelProperty
 static TMap<FString, FSupportedQualityLevelArray> GSupportedQualityLevels;
 static FCriticalSection GCookCriticalSection;
 
+
+template<typename _StructType, typename _ValueType, EName _BasePropertyName>
+int32 FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>::GetValueForPlatform(const ITargetPlatform* TargetPlatform) const
+{
+	const _StructType* This = StaticCast<const _StructType*>(this);
+	// get all supported quality level from scalability + engine ini files
+	FSupportedQualityLevelArray SupportedQualityLevels = GetSupportedQualityLevels(*TargetPlatform->GetPlatformInfo().IniPlatformName.ToString());
+
+	// loop through all the supported quality level to find the min lod index
+	int32 MinLodIdx = MAX_int32;
+	for (int32& QL : SupportedQualityLevels)
+	{
+		// check if have data for the supported quality level
+		if (IsQualityLevelValid(QL))
+		{
+			MinLodIdx = FMath::Min(GetValueForQualityLevel(QL), MinLodIdx);
+		}
+	}
+
+	if (MinLodIdx == MAX_int32)
+	{
+		MinLodIdx = This->Default;
+	}
+
+	return MinLodIdx;
+}
 
 template<typename _StructType, typename _ValueType, EName _BasePropertyName>
 FSupportedQualityLevelArray FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>::GetSupportedQualityLevels(const TCHAR* InPlatformName) const
@@ -153,9 +203,9 @@ FSupportedQualityLevelArray FPerQualityLevelProperty<_StructType, _ValueType, _B
 	FConfigCacheIni::LoadLocalIniFile(ScalabilitySettings, TEXT("Scalability"), true, InPlatformName);
 
 	//check all possible quality levels specify in the scalability ini 
-	for (int32 QualityLevel = 0; QualityLevel < (int32)QualityLevelProperty::EQualityLevels::Num; ++QualityLevel)
+	for (int32 QualityLevel = 0; QualityLevel < (int32)EPerQualityLevels::Num; ++QualityLevel)
 	{
-		FString QualitLevelSectionName = Scalability::GetScalabilitySectionString(*ScalabilitySection, QualityLevel, (int32)QualityLevelProperty::EQualityLevels::Num);
+		FString QualitLevelSectionName = Scalability::GetScalabilitySectionString(*ScalabilitySection, QualityLevel, (int32)EPerQualityLevels::Num);
 		PropertyQualityLevel = -1;
 		ScalabilitySettings.GetInt(*QualitLevelSectionName, *CVarName, PropertyQualityLevel);
 
@@ -170,9 +220,8 @@ FSupportedQualityLevelArray FPerQualityLevelProperty<_StructType, _ValueType, _B
 	{
 		FScopeLock ScopeLock(&GCookCriticalSection);
 		CachedCookingQualitLevelInfo = &GSupportedQualityLevels.Add(FString(InPlatformName), CookingQualitLevelInfo);
+		return *CachedCookingQualitLevelInfo;
 	}
-
-	return *CachedCookingQualitLevelInfo;
 }
 
 template<typename _StructType, typename _ValueType, EName _BasePropertyName>
@@ -182,26 +231,37 @@ void FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>::Strip
 	if (This->PerQuality.Num() > 0)
 	{
 		FSupportedQualityLevelArray CookQualityLevelInfo = This->GetSupportedQualityLevels(InPlatformName);
-
-		int32 LowestQualityLevel = (int32)QualityLevelProperty::EQualityLevels::Num;
+		CookQualityLevelInfo.Sort([&](const int32& A, const int32& B) { return (A > B); });
 
 		// remove unsupported quality levels 
 		for (TMap<int32, int32>::TIterator It(This->PerQuality); It; ++It)
 		{
-			if(!CookQualityLevelInfo.Contains(It.Key()))
+			if (!CookQualityLevelInfo.Contains(It.Key()))
 			{
 				It.RemoveCurrent();
 			}
-			else
-			{
-				LowestQualityLevel = (It.Key() < LowestQualityLevel) ? It.Key() : LowestQualityLevel;
-			}
 		}
 
-		//if found supported platforms, put the lowest quality level in Default
-		if (LowestQualityLevel != (int32)QualityLevelProperty::EQualityLevels::Num)
+		if (This->PerQuality.Num() > 0)
 		{
-			This->Default = This->GetValue(LowestQualityLevel);
+			int32 PreviousQualityLevel = This->Default;
+
+			for (TSet<int32>::TIterator It(CookQualityLevelInfo); It; ++It)
+			{
+				int32* QualityLevelMinLod = This->PerQuality.Find(*It);
+			
+				// add quality level supported by the platform
+				if (!QualityLevelMinLod)
+				{
+					This->PerQuality.Add(*It, PreviousQualityLevel);
+				}
+				else
+				{
+					PreviousQualityLevel = *QualityLevelMinLod;
+				}
+			}
+
+			This->Default = PreviousQualityLevel;
 		}
 	}
 }
@@ -222,6 +282,22 @@ bool FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>::IsQua
 	}
 }
 #endif
+
+template<typename _StructType, typename _ValueType, EName _BasePropertyName>
+_ValueType FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>::GetLowestValue() const
+{
+	const _StructType* This = StaticCast<const _StructType*>(this);
+	_ValueType Value = This->Default;
+
+	for (const TPair<int32, int32>& Pair : This->PerQuality)
+	{
+		if (Pair.Value < Value)
+		{
+			Value = Pair.Value;
+		}
+	}
+	return Value;
+}
 
 /** Serializer to cook out the most appropriate platform override */
 template<typename _StructType, typename _ValueType, EName _BasePropertyName>
@@ -274,7 +350,28 @@ template ENGINE_API FArchive& operator<<(FArchive&, FPerQualityLevelProperty<FPe
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>&);
 
 #if WITH_EDITOR
+template int32 FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>::GetValueForPlatform(const ITargetPlatform* TargetPlatform) const;
 template FSupportedQualityLevelArray FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>::GetSupportedQualityLevels(const TCHAR* InPlatformName) const;
 template void FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>::StripQualtiyLevelForCooking(const TCHAR* InPlatformName);
 template bool FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>::IsQualityLevelValid(int32 QualityLevel) const;
 #endif
+template int32 FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>::GetLowestValue() const;
+
+FString FPerQualityLevelInt::ToString() const
+{
+	FString Result = FString::FromInt(Default);
+
+#if WITH_EDITORONLY_DATA
+	TArray<int32> QualityLevels;
+	PerQuality.GetKeys(QualityLevels);
+	QualityLevels.Sort();
+
+	for (int32 QL : QualityLevels)
+	{
+		Result = FString::Printf(TEXT("%s, %s=%d"), *Result, *QualityLevelProperty::QualityLevelToFName(QL).ToString(), PerQuality.FindChecked(QL));
+	}
+#endif
+
+	return Result;
+}
+

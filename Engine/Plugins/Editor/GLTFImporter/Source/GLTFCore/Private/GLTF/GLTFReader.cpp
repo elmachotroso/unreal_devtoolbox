@@ -276,6 +276,8 @@ namespace GLTF
 			{
 				const int32 NodeIndex = Value->AsNumber();
 				Scene.Nodes.Add(NodeIndex);
+
+				BuildParentIndices(INDEX_NONE, NodeIndex);
 			}
 		}
 
@@ -443,6 +445,26 @@ namespace GLTF
 		}
 
 		Skin.Skeleton = GetIndex(Object, TEXT("skeleton"));
+		if (Skin.Skeleton != INDEX_NONE)
+		{
+			//From gltf specification:
+			//If Skeleton is present:
+			//	"The index of the node used as a skeleton root."
+			//If it is not part of the Joints list yet, add it:
+			bool bSkeletonIsAlreadyJoint = false;
+			for (const int32& JointIndex : Skin.Joints)
+			{
+				if (JointIndex == Skin.Skeleton)
+				{
+					bSkeletonIsAlreadyJoint = true;
+					break;
+				}
+			}
+			if (!bSkeletonIsAlreadyJoint)
+			{
+				Skin.Joints.Add(Skin.Skeleton);
+			}
+		}
 
 		ExtensionsHandler->SetupSkinExtensions(Object, Skin);
 	}
@@ -459,7 +481,7 @@ namespace GLTF
 			// Unreal *is* responsible for decoding Data based on Format.
 
 			Image.URI = Object.GetStringField(TEXT("uri"));
-			if (Image.URI.StartsWith(TEXT("data:)")))
+			if (Image.URI.StartsWith(TEXT("data:")))
 			{
 				uint32  ImageSize = 0;
 				FString MimeType;
@@ -569,20 +591,20 @@ namespace GLTF
 		Asset->Materials.Emplace(GetString(Object, TEXT("name")));
 		FMaterial& Material = Asset->Materials.Last();
 
-		GLTF::SetTextureMap(Object, TEXT("emissiveTexture"), nullptr, Asset->Textures, Material.Emissive);
+		GLTF::SetTextureMap(Object, TEXT("emissiveTexture"), nullptr, Asset->Textures, Material.Emissive, ExtensionsHandler->GetMessages());
 		Material.EmissiveFactor = (FVector3f)GetVec3(Object, TEXT("emissiveFactor"));
 
-		Material.NormalScale       = GLTF::SetTextureMap(Object, TEXT("normalTexture"), TEXT("scale"), Asset->Textures, Material.Normal);
-		Material.OcclusionStrength = GLTF::SetTextureMap(Object, TEXT("occlusionTexture"), TEXT("strength"), Asset->Textures, Material.Occlusion);
+		Material.NormalScale       = GLTF::SetTextureMap(Object, TEXT("normalTexture"), TEXT("scale"), Asset->Textures, Material.Normal, ExtensionsHandler->GetMessages());
+		Material.OcclusionStrength = GLTF::SetTextureMap(Object, TEXT("occlusionTexture"), TEXT("strength"), Asset->Textures, Material.Occlusion, ExtensionsHandler->GetMessages());
 
 		if (Object.HasTypedField<EJson::Object>(TEXT("pbrMetallicRoughness")))
 		{
 			const FJsonObject& PBR = *Object.GetObjectField(TEXT("pbrMetallicRoughness"));
 
-			GLTF::SetTextureMap(PBR, TEXT("baseColorTexture"), nullptr, Asset->Textures, Material.BaseColor);
+			GLTF::SetTextureMap(PBR, TEXT("baseColorTexture"), nullptr, Asset->Textures, Material.BaseColor, ExtensionsHandler->GetMessages());
 			Material.BaseColorFactor = (FVector4f)GetVec4(PBR, TEXT("baseColorFactor"), FVector4(1.0f, 1.0f, 1.0f, 1.0f));
 
-			GLTF::SetTextureMap(PBR, TEXT("metallicRoughnessTexture"), nullptr, Asset->Textures, Material.MetallicRoughness.Map);
+			GLTF::SetTextureMap(PBR, TEXT("metallicRoughnessTexture"), nullptr, Asset->Textures, Material.MetallicRoughness.Map, ExtensionsHandler->GetMessages());
 			Material.MetallicRoughness.MetallicFactor  = GetScalar(PBR, TEXT("metallicFactor"), 1.0f);
 			Material.MetallicRoughness.RoughnessFactor = GetScalar(PBR, TEXT("roughnessFactor"), 1.0f);
 		}
@@ -763,7 +785,7 @@ namespace GLTF
 					continue;
 
 				const FString& URI = Object.GetStringField(TEXT("uri"));
-				if (URI.StartsWith(TEXT("data:)")))
+				if (URI.StartsWith(TEXT("data:")))
 				{
 					FString         MimeType;
 					const uint32    DataSize = GetDecodedDataSize(URI, MimeType);
@@ -809,6 +831,8 @@ namespace GLTF
 		const uint32 TextureCount  = ArraySize(*JsonRoot, TEXT("textures"));
 		const uint32 MaterialCount = ArraySize(*JsonRoot, TEXT("materials"));
 
+		const uint32 ExtensionsRequiredCount = ArraySize(*JsonRoot, TEXT("extensionsRequired"));
+
 		{
 			// cleanup and reserve
 			OutAsset.Buffers.Empty(BufferCount);
@@ -826,6 +850,7 @@ namespace GLTF
 			OutAsset.Textures.Empty(TextureCount);
 			OutAsset.Materials.Empty(MaterialCount);
 			OutAsset.ExtensionsUsed.Empty((int)EExtension::Count);
+			OutAsset.RequiredExtensions.Empty();
 		}
 
 		// allocate asset mapped data for images and buffers
@@ -839,8 +864,8 @@ namespace GLTF
 		SetupObjects(AccessorCount, TEXT("accessors"), [this](const FJsonObject& Object) { SetupAccessor(Object); });
 
 		SetupObjects(MeshCount, TEXT("meshes"), [this](const FJsonObject& Object) { SetupMesh(Object); });
-		SetupObjects(SceneCount, TEXT("scenes"), [this](const FJsonObject& Object) { SetupScene(Object); });
 		SetupObjects(NodeCount, TEXT("nodes"), [this](const FJsonObject& Object) { SetupNode(Object); });
+		SetupObjects(SceneCount, TEXT("scenes"), [this](const FJsonObject& Object) { SetupScene(Object); });
 		SetupObjects(CameraCount, TEXT("cameras"), [this](const FJsonObject& Object) { SetupCamera(Object); });
 		SetupObjects(SkinCount, TEXT("skins"), [this](const FJsonObject& Object) { SetupSkin(Object); });
 		SetupObjects(AnimationsCount, TEXT("animations"), [this](const FJsonObject& Object) { SetupAnimation(Object); });
@@ -852,8 +877,26 @@ namespace GLTF
 		SetupObjects(TextureCount, TEXT("textures"), [this](const FJsonObject& Object) { SetupTexture(Object); });
 		SetupObjects(MaterialCount, TEXT("materials"), [this](const FJsonObject& Object) { SetupMaterial(Object); });
 
+		/**
+		 * Returns true if all required extensions are supported.
+		 * According to gltf specification checking only the top-level extensionsRequired property in order to decide
+		 * if the model import is supported should be sufficient as the documentation states:
+		 * "All glTF extensions required to load and/or render an asset MUST be listed in the top-level extensionsRequired array"
+		 */
+		const TArray<TSharedPtr<FJsonValue>>* ExtensionsRequired;
+		if (JsonRoot->TryGetArrayField(TEXT("extensionsRequired"), ExtensionsRequired))
+		{
+			check(ExtensionsRequired);
+			OutAsset.RequiredExtensions.Reserve(OutAsset.RequiredExtensions.Num() + ExtensionsRequired->Num());
+			for (const TSharedPtr<FJsonValue>& Extension : *ExtensionsRequired)
+			{
+				OutAsset.RequiredExtensions.Add(Extension->AsString());
+			}
+		}
+
 		SetupNodesType();
 		ExtensionsHandler->SetupAssetExtensions(*JsonRoot);
+		BuildRootJoints();
 	}
 
 	template <typename SetupFunc>
@@ -904,6 +947,44 @@ namespace GLTF
 					|| Asset->Nodes[JointIndex].Type == FNode::EType::Transform
 					|| Asset->Nodes[JointIndex].Type == FNode::EType::Joint);
 				Asset->Nodes[JointIndex].Type = FNode::EType::Joint;
+			}
+		}
+	}
+
+	void FFileReader::BuildParentIndices(int32 ParentNodeIndex, int32 CurrentNodeIndex) const
+	{
+		if (!Asset->Nodes.IsValidIndex(CurrentNodeIndex))
+		{
+			return;
+		}
+		GLTF::FNode& Node = Asset->Nodes[CurrentNodeIndex];
+		Node.ParentIndex = ParentNodeIndex;
+
+		for (const int32 ChildNodeIndex : Node.Children)
+		{
+			BuildParentIndices(CurrentNodeIndex, ChildNodeIndex);
+		}
+	}
+
+	int32 FFileReader::FindRootJointIndex(int32 CurrentIndex) const
+	{
+		if (!ensure(Asset->Nodes.IsValidIndex(CurrentIndex)))
+		{
+			return INDEX_NONE;
+		}
+		while (Asset->Nodes.IsValidIndex(Asset->Nodes[CurrentIndex].ParentIndex) && Asset->Nodes[Asset->Nodes[CurrentIndex].ParentIndex].Type == GLTF::FNode::EType::Joint)
+		{
+			CurrentIndex = Asset->Nodes[CurrentIndex].ParentIndex;
+		}
+		return CurrentIndex;
+	}
+	void FFileReader::BuildRootJoints() const
+	{
+		for (size_t Index = 0; Index < Asset->Nodes.Num(); Index++)
+		{
+			if (Asset->Nodes[Index].Type == GLTF::FNode::EType::Joint)
+			{
+				Asset->Nodes[Index].RootJointIndex = FindRootJointIndex(Index);
 			}
 		}
 	}

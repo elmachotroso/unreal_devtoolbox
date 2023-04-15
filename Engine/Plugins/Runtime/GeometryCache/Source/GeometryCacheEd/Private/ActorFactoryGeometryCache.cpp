@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorFactoryGeometryCache.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "GeometryCache.h"
 #include "GeometryCacheComponent.h"
 #include "GeometryCacheActor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorFactoryGeometryCache)
 
 UActorFactoryGeometryCache::UActorFactoryGeometryCache(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -16,7 +18,7 @@ UActorFactoryGeometryCache::UActorFactoryGeometryCache(const FObjectInitializer&
 
 bool UActorFactoryGeometryCache::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (!AssetData.IsValid() || !AssetData.GetClass()->IsChildOf(UGeometryCache::StaticClass()))
+	if (!AssetData.IsValid() || !AssetData.IsInstanceOf(UGeometryCache::StaticClass()))
 	{
 		OutErrorMsg = FText::FromString("A valid GeometryCache must be specified.");
 		return false;
@@ -57,3 +59,4 @@ void UActorFactoryGeometryCache::PostCreateBlueprint(UObject* Asset, AActor* CDO
 		GeometryCacheComponent->GeometryCache = GeometryCache;
 	}
 }
+

@@ -19,7 +19,7 @@ namespace Chaos
 {
 
 FJointConstraintPhysicsProxy::FJointConstraintPhysicsProxy(FJointConstraint* InConstraint, FPBDJointConstraintHandle* InHandle, UObject* InOwner)
-	: Base(EPhysicsProxyType::JointConstraintType, InOwner)
+	: Base(EPhysicsProxyType::JointConstraintType, InOwner, MakeShared<FProxyTimestampBase>())
 	, Constraint_GT(InConstraint) // This proxy assumes ownership of the Constraint, and will free it during DestroyOnPhysicsThread
 	, Constraint_PT(InHandle)
 {
@@ -67,9 +67,9 @@ bool FJointConstraintPhysicsProxy::PullFromPhysicsState(const FDirtyJointConstra
 			Constraint_GT->GetOutputData().bIsBreaking = Buffer.OutputData.bIsBreaking;
 			Constraint_GT->GetOutputData().bIsBroken = Buffer.OutputData.bIsBroken;
 			Constraint_GT->GetOutputData().bDriveTargetChanged = Buffer.OutputData.bDriveTargetChanged;
-			Constraint_GT->GetOutputData().Force = Buffer.OutputData.Force;
-			Constraint_GT->GetOutputData().Torque = Buffer.OutputData.Torque;
 		}
+		Constraint_GT->GetOutputData().Force = Buffer.OutputData.Force;
+		Constraint_GT->GetOutputData().Torque = Buffer.OutputData.Torque;
 	}
 
 	return true;
@@ -81,10 +81,10 @@ void FJointConstraintPhysicsProxy::InitializeOnPhysicsThread(FPBDRigidsSolver* I
 	if (Handles.Size())
 	{
 		auto& JointConstraints = InSolver->GetJointConstraints();
-		if(const FProxyBasePair* BasePairs = RemoteData.FindJointParticleProxies(Manager, DataIdx))
+		if(const FProxyBasePairProperty* BasePairs = RemoteData.FindJointParticleProxies(Manager, DataIdx))
 		{
-			FGeometryParticleHandle* Handle0 = GetParticleHandleFromProxy((*BasePairs)[0]);
-			FGeometryParticleHandle* Handle1 = GetParticleHandleFromProxy((*BasePairs)[1]);
+			FGeometryParticleHandle* Handle0 = GetParticleHandleFromProxy(BasePairs->ParticleProxies[0]);
+			FGeometryParticleHandle* Handle1 = GetParticleHandleFromProxy(BasePairs->ParticleProxies[1]);
 			if (Handle0 && Handle1)
 			{
 				if (const FPBDJointSettings* JointSettings = RemoteData.FindJointSettings(Manager, DataIdx))
@@ -93,6 +93,10 @@ void FJointConstraintPhysicsProxy::InitializeOnPhysicsThread(FPBDRigidsSolver* I
 
 					Handle0->AddConstraintHandle(Constraint_PT);
 					Handle1->AddConstraintHandle(Constraint_PT);
+
+					// We added a joint to the particles, so we need to modify the inertia (See FPBDRigidsEvolutionGBF::UpdateInertiaConditioning)
+					FGenericParticleHandle(Handle0)->SetInertiaConditioningDirty();
+					FGenericParticleHandle(Handle1)->SetInertiaConditioningDirty();
 				}
 			}
 		}
@@ -101,12 +105,67 @@ void FJointConstraintPhysicsProxy::InitializeOnPhysicsThread(FPBDRigidsSolver* I
 
 void FJointConstraintPhysicsProxy::DestroyOnPhysicsThread(FPBDRigidsSolver* InSolver)
 {
-	if (Constraint_PT && Constraint_PT->IsValid())
+	if (Constraint_PT)
 	{
+		TVec2<FGeometryParticleHandle*> Particles = Constraint_PT->GetConstrainedParticles();
+		
+		const FPBDJointSettings Settings = Constraint_PT->GetSettings();
+		const bool bValidPair = InSolver && Particles[0] && Particles[1];
+
+		// If this constraint disables collisions - need to restore the collisions after we destroy the constraint
+		if(bValidPair && !Settings.bCollisionEnabled)
+		{
+			FPBDRigidParticleHandle* Rigid0 = Particles[0]->CastToRigidParticle();
+			FPBDRigidParticleHandle* Rigid1 = Particles[1]->CastToRigidParticle();
+
+			if(Rigid0 || Rigid1)
+			{
+				// At least one rigid so collisions are possible
+				const FUniqueIdx Id0 = Particles[0]->UniqueIdx();
+				const FUniqueIdx Id1 = Particles[1]->UniqueIdx();
+
+				FIgnoreCollisionManager& IgnoreManager = InSolver->GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager();
+
+				// Remove the ignore flags for rigid particles. If we end up with no more ignore entries for this particle
+				// then remove the broadphase flag to no longer check the ignore manager for this particles.
+				if(Rigid0)
+				{
+					if(IgnoreManager.RemoveIgnoreCollisionsFor(Id0, Id1) == 0)
+					{
+						Rigid0->RemoveCollisionConstraintFlag(ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+					}
+				}
+
+				if(Rigid1)
+				{
+					if(IgnoreManager.RemoveIgnoreCollisionsFor(Id1, Id0) == 0)
+					{
+						Rigid1->RemoveCollisionConstraintFlag(ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+					}
+				}
+			}
+		}
+
+		// Ensure that our connected particles are aware that this constraint no longer exists
+		if(Particles[0])
+		{
+			Particles[0]->RemoveConstraintHandle(Constraint_PT);
+		}
+
+		if(Particles[1])
+		{
+			Particles[1]->RemoveConstraintHandle(Constraint_PT);
+		}
+
 		// @todo(chaos): clean up constraint management
-		InSolver->GetEvolution()->RemoveConstraintFromConstraintGraph(Constraint_PT);
-		auto& JointConstraints = InSolver->GetJointConstraints();
+		if(Constraint_PT->IsInConstraintGraph())
+		{
+			InSolver->GetEvolution()->RemoveConstraintFromConstraintGraph(Constraint_PT);
+		}
+
+		FPBDRigidsSolver::FJointConstraints& JointConstraints = InSolver->GetJointConstraints();
 		JointConstraints.RemoveConstraint(Constraint_PT->GetConstraintIndex());
+		Constraint_PT = nullptr;
 	}
 }
 
@@ -162,8 +221,10 @@ void FJointConstraintPhysicsProxy::PushStateOnPhysicsThread(FPBDRigidsSolver* In
 						{
 							if(JointSettingsBuffer.bCollisionEnabled)
 							{
-								//can't remove collision constraint flag because we may still be ignoring collision for others
-								IgnoreCollisionManager.RemoveIgnoreCollisionsFor(ID0, ID1);
+								if(IgnoreCollisionManager.RemoveIgnoreCollisionsFor(ID0, ID1) == 0)
+								{
+									RigidHandle0->RemoveCollisionConstraintFlag(ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+								}
 							}
 							else
 							{
@@ -176,8 +237,10 @@ void FJointConstraintPhysicsProxy::PushStateOnPhysicsThread(FPBDRigidsSolver* In
 						{
 							if (JointSettingsBuffer.bCollisionEnabled)
 							{
-								//can't remove collision constraint flag because we may still be ignoring collision for others
-								IgnoreCollisionManager.RemoveIgnoreCollisionsFor(ID1, ID0);
+								if(IgnoreCollisionManager.RemoveIgnoreCollisionsFor(ID1, ID0) == 0)
+								{
+									RigidHandle1->RemoveCollisionConstraintFlag(ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+								}
 							}
 							else
 							{

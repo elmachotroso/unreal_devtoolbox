@@ -2,16 +2,32 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/TokenizedMessage.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
 #include "RigVMDefines.h"
-#include "RigVMArray.h"
 #include "RigVMExternalVariable.h"
 #include "RigVMModule.h"
-#include "Logging/TokenizedMessage.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+
 #include "RigVMExecuteContext.generated.h"
 
-struct FRigVMExecuteContext;
 class URigVM;
+struct FRigVMDispatchFactory;
+struct FRigVMExecuteContext;
+struct FRigVMExtendedExecuteContext;
 
 USTRUCT()
 struct RIGVM_API FRigVMSlice
@@ -177,14 +193,28 @@ struct RIGVM_API FRigVMRuntimeSettings
 	/*
 	 * The function to use for logging anything from the VM to the host
 	 */
-	TFunction<void(EMessageSeverity::Type,const FRigVMExecuteContext*,const FString&)> LogFunction = nullptr;
+	using LogFunctionType = TFunction<void(EMessageSeverity::Type,const FRigVMExecuteContext*,const FString&)>;
+	TSharedPtr<LogFunctionType> LogFunction = nullptr;
+
+	void SetLogFunction(LogFunctionType InLogFunction)
+	{
+		LogFunction = MakeShared<LogFunctionType>(InLogFunction);
+	}
+
+	/*
+	 * Validate the settings
+	 */
+	void Validate()
+	{
+		MaximumArraySize = FMath::Clamp(MaximumArraySize, 1, INT32_MAX);
+	}
 };
 
 /**
  * The execute context is used for mutable nodes to
  * indicate execution order.
  */
-USTRUCT()
+USTRUCT(BlueprintType, meta=(DisplayName="Execute Context"))
 struct RIGVM_API FRigVMExecuteContext
 {
 	GENERATED_BODY()
@@ -193,31 +223,116 @@ struct RIGVM_API FRigVMExecuteContext
 		: EventName(NAME_None)
 		, FunctionName(NAME_None)
 		, InstructionIndex(0)
-		, VM(nullptr)
 		, RuntimeSettings()
-		, LastExecutionMicroSeconds() 
+	{
+		Reset();
+	}
+
+	FORCEINLINE void Log(EMessageSeverity::Type InSeverity, const FString& InMessage) const
+	{
+		if(RuntimeSettings.LogFunction.IsValid())
+		{
+			(*RuntimeSettings.LogFunction)(InSeverity, this, InMessage);
+		}
+		else
+		{
+			if(InSeverity == EMessageSeverity::Error)
+			{
+				UE_LOG(LogRigVM, Error, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
+			}
+			else if(InSeverity == EMessageSeverity::Warning)
+			{
+				UE_LOG(LogRigVM, Warning, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
+			}
+			else
+			{
+				UE_LOG(LogRigVM, Display, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
+			}
+		}
+	}
+
+	template <typename FmtType, typename... Types>
+	FORCEINLINE void Logf(EMessageSeverity::Type InSeverity, const FmtType& Fmt, Types... Args) const
+	{
+		Log(InSeverity, FString::Printf(Fmt, Args...));
+	}
+
+	FORCEINLINE uint16 GetInstructionIndex() const { return InstructionIndex; }
+
+	FORCEINLINE FName GetFunctionName() const { return FunctionName; }
+	
+	FORCEINLINE FName GetEventName() const { return EventName; }
+
+
+protected:
+	FORCEINLINE void CopyFrom(const FRigVMExecuteContext& Other)
+	{
+		EventName = Other.EventName;
+		FunctionName = Other.FunctionName;
+		InstructionIndex = Other.InstructionIndex;
+		RuntimeSettings = Other.RuntimeSettings;
+	}
+
+private:
+
+	FORCEINLINE void Reset()
+	{
+		InstructionIndex = 0;
+	}
+	
+	FName EventName;
+	
+	FName FunctionName;
+	
+	uint16 InstructionIndex;
+
+	FRigVMRuntimeSettings RuntimeSettings;
+
+	friend struct FRigVMExtendedExecuteContext;
+	friend class URigVM;
+	friend class URigVMNativized;
+	friend class UControlRig;
+	friend class UAdditiveControlRig;
+	friend struct FRigUnit_BeginExecution;
+	friend struct FRigUnit_InverseExecution;
+	friend struct FRigUnit_PrepareForExecution;
+	friend struct FRigUnit_InteractionExecution;
+	friend struct FRigUnit_UserDefinedEvent;
+	friend struct FEngineTestRigVM_Begin;
+	friend struct FEngineTestRigVM_Setup; 
+};
+
+/**
+ * The execute context is used for mutable nodes to
+ * indicate execution order.
+ */
+USTRUCT()
+struct RIGVM_API FRigVMExtendedExecuteContext
+{
+	GENERATED_BODY()
+
+	FORCEINLINE FRigVMExtendedExecuteContext()
+		: VM(nullptr)
+		, LastExecutionMicroSeconds()
+		, Factory(nullptr)
 	{
 		Reset();
 	}
 
 	FORCEINLINE void Reset()
 	{
+		PublicData.Reset();
+		VM = nullptr;
 		Slices.Reset();
 		Slices.Add(FRigVMSlice());
 		SliceOffsets.Reset();
-		InstructionIndex = 0;
-		VM = nullptr;
-		ExternalVariables.Reset();
+		Factory = nullptr;
 	}
 
-	FORCEINLINE void CopyFrom(const FRigVMExecuteContext& Other)
+	FORCEINLINE void CopyFrom(const FRigVMExtendedExecuteContext& Other)
 	{
-		EventName = Other.EventName;
-		FunctionName = Other.FunctionName;
-		InstructionIndex = Other.InstructionIndex;
+		PublicData = Other.PublicData;
 		VM = Other.VM;
-		RuntimeSettings = Other.RuntimeSettings;
-		ExternalVariables = Other.ExternalVariables;
 		OpaqueArguments = Other.OpaqueArguments;
 		Slices = Other.Slices;
 		SliceOffsets = Other.SliceOffsets;
@@ -225,7 +340,7 @@ struct RIGVM_API FRigVMExecuteContext
 
 	FORCEINLINE const FRigVMSlice& GetSlice() const
 	{
-		const int32 SliceOffset = (int32)SliceOffsets[InstructionIndex];
+		const int32 SliceOffset = (int32)SliceOffsets[PublicData.InstructionIndex];
 		if (SliceOffset == 0)
 		{
 			return Slices.Last();
@@ -258,65 +373,25 @@ struct RIGVM_API FRigVMExecuteContext
 		return GetSlice().IsComplete();
 	}
 
-	FORCEINLINE const FRigVMExternalVariable* FindExternalVariable(const FName& InExternalVariableName) const
+	FORCEINLINE bool IsValidArrayIndex(int32& InOutIndex, const FScriptArrayHelper& InArrayHelper) const
 	{
-		for (const FRigVMExternalVariable& ExternalVariable : ExternalVariables)
-		{
-			if (ExternalVariable.Name == InExternalVariableName)
-			{
-				return &ExternalVariable;
-			}
-		}
-		return nullptr;
+		return IsValidArrayIndex(InOutIndex, InArrayHelper.Num());
 	}
 
-	FORCEINLINE FRigVMExternalVariable* FindExternalVariable(const FName& InExternalVariableName)
+	FORCEINLINE bool IsValidArrayIndex(int32& InOutIndex, int32 InArraySize) const
 	{
-		for (FRigVMExternalVariable& ExternalVariable : ExternalVariables)
-		{
-			if (ExternalVariable.Name == InExternalVariableName)
-			{
-				return &ExternalVariable;
-			}
-		}
-		return nullptr;
-	}
+		const int32 InOriginalIndex = InOutIndex;
 
-	FORCEINLINE void Log(EMessageSeverity::Type InSeverity, const FString& InMessage) const
-	{
-		if(RuntimeSettings.LogFunction)
+		// we support wrapping the index around similar to python
+		if(InOutIndex < 0)
 		{
-			RuntimeSettings.LogFunction(InSeverity, this, InMessage);
+			InOutIndex = InArraySize + InOutIndex;
 		}
-		else
-		{
-			if(InSeverity == EMessageSeverity::Error)
-			{
-				UE_LOG(LogRigVM, Error, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
-			}
-			else if(InSeverity == EMessageSeverity::Warning)
-			{
-				UE_LOG(LogRigVM, Warning, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
-			}
-			else
-			{
-				UE_LOG(LogRigVM, Display, TEXT("Instruction %d: %s"), InstructionIndex, *InMessage);
-			}
-		}
-	}
 
-	template <typename FmtType, typename... Types>
-	FORCEINLINE void Logf(EMessageSeverity::Type InSeverity, const FmtType& Fmt, Types... Args) const
-	{
-		Log(InSeverity, FString::Printf(Fmt, Args...));
-	}
-
-	FORCEINLINE bool IsValidArrayIndex(int32 InIndex, int32 InArraySize)
-	{
-		if(InIndex < 0 || InIndex >= InArraySize)
+		if(InOutIndex < 0 || InOutIndex >= InArraySize)
 		{
 			static const TCHAR OutOfBoundsFormat[] = TEXT("Array Index (%d) out of bounds (count %d).");
-			Logf(EMessageSeverity::Error, OutOfBoundsFormat, InIndex, InArraySize);
+			PublicData.Logf(EMessageSeverity::Error, OutOfBoundsFormat, InOriginalIndex, InArraySize);
 			return false;
 		}
 		return true;
@@ -324,10 +399,10 @@ struct RIGVM_API FRigVMExecuteContext
 
 	FORCEINLINE bool IsValidArraySize(int32 InSize) const
 	{
-		if(InSize < 0 || InSize > RuntimeSettings.MaximumArraySize)
+		if(InSize < 0 || InSize > PublicData.RuntimeSettings.MaximumArraySize)
 		{
 			static const TCHAR OutOfBoundsFormat[] = TEXT("Array Size (%d) larger than allowed maximum (%d).\nCheck VMRuntimeSettings in class settings.");
-			Logf(EMessageSeverity::Error, OutOfBoundsFormat, InSize, RuntimeSettings.MaximumArraySize);
+			PublicData.Logf(EMessageSeverity::Error, OutOfBoundsFormat, InSize, PublicData.RuntimeSettings.MaximumArraySize);
 			return false;
 		}
 		return true;
@@ -335,22 +410,15 @@ struct RIGVM_API FRigVMExecuteContext
 
 	FORCEINLINE void SetRuntimeSettings(FRigVMRuntimeSettings InRuntimeSettings)
 	{
-		RuntimeSettings = InRuntimeSettings;
-		check(RuntimeSettings.MaximumArraySize > 0);
+		PublicData.RuntimeSettings = InRuntimeSettings;
+		check(PublicData.RuntimeSettings.MaximumArraySize > 0);
 	}
 
-	FName EventName;
-	FName FunctionName;
-	uint16 InstructionIndex;
+	FRigVMExecuteContext PublicData;
 	URigVM* VM;
-	FRigVMRuntimeSettings RuntimeSettings;
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	FRigVMFixedArray<void*> OpaqueArguments;
-#else
 	TArrayView<void*> OpaqueArguments;
-#endif
-	TArray<FRigVMExternalVariable> ExternalVariables;
 	TArray<FRigVMSlice> Slices;
 	TArray<uint16> SliceOffsets;
 	double LastExecutionMicroSeconds;
+	const FRigVMDispatchFactory* Factory;
 };

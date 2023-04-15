@@ -1,27 +1,41 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "K2Node_CreateDelegate.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/UnrealString.h"
+#include "DelegateNodeHandlers.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
 #include "Engine/Blueprint.h"
 #include "Engine/MemberReference.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node_Event.h"
-#include "K2Node_BaseMCDelegate.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-
-#include "Kismet2/CompilerResultsLog.h"
-#include "DelegateNodeHandlers.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
-#include "BlueprintActionDatabaseRegistrar.h"
 #include "FindInBlueprintManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_BaseMCDelegate.h"
+#include "K2Node_Event.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Script.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-struct FK2Node_CreateDelegate_Helper
+class FKismetCompilerContext;
+
+namespace UE::BlueprintGraph::Private
 {
-	static FName DelegateOutputName;
-	static FName InputObjectName; // Deprecated, for fixup
-};
-FName FK2Node_CreateDelegate_Helper::DelegateOutputName(TEXT("OutputDelegate"));
-FName FK2Node_CreateDelegate_Helper::InputObjectName(TEXT("InputObject"));
+	static const FName DelegateOutputName = TEXT("OutputDelegate");
+	static const FName InputObjectName = TEXT("InputObject");
+}
 
 UK2Node_CreateDelegate::UK2Node_CreateDelegate(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -35,7 +49,7 @@ void UK2Node_CreateDelegate::AllocateDefaultPins()
 		ObjPin->PinFriendlyName = NSLOCTEXT("K2Node", "CreateDelegate_ObjectInputName", "Object");
 	}
 
-	if(UEdGraphPin* DelegatePin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Delegate, FK2Node_CreateDelegate_Helper::DelegateOutputName))
+	if(UEdGraphPin* DelegatePin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Delegate, UE::BlueprintGraph::Private::DelegateOutputName))
 	{
 		DelegatePin->PinFriendlyName = NSLOCTEXT("K2Node", "CreateDelegate_DelegateOutName", "Event");
 	}
@@ -46,7 +60,7 @@ void UK2Node_CreateDelegate::AllocateDefaultPins()
 UK2Node::ERedirectType UK2Node_CreateDelegate::DoPinsMatchForReconstruction(const UEdGraphPin* NewPin, int32 NewPinIndex, const UEdGraphPin* OldPin, int32 OldPinIndex) const
 {
 	// Handles remap of InputObject to Self, from 4.10 time frame
-	if (OldPin->PinName == FK2Node_CreateDelegate_Helper::InputObjectName && NewPin->PinName == UEdGraphSchema_K2::PN_Self)
+	if (OldPin->PinName == UE::BlueprintGraph::Private::InputObjectName && NewPin->PinName == UEdGraphSchema_K2::PN_Self)
 	{
 		return ERedirectType_Name;
 	}
@@ -230,7 +244,7 @@ void UK2Node_CreateDelegate::HandleAnyChangeWithoutNotifying()
 	}
 }
 
-void UK2Node_CreateDelegate::HandleAnyChange(UEdGraph* & OutGraph, UBlueprint* & OutBlueprint)
+void UK2Node_CreateDelegate::HandleAnyChange(UEdGraph*& OutGraph, UBlueprint*& OutBlueprint)
 {
 	const FName OldSelectedFunctionName = GetFunctionName();
 	HandleAnyChangeWithoutNotifying();
@@ -318,17 +332,26 @@ UFunction* UK2Node_CreateDelegate::GetDelegateSignature() const
 {
 	UEdGraphPin* Pin = GetDelegateOutPin();
 	check(Pin);
-	if(Pin->LinkedTo.Num())
+	UFunction* Result = nullptr;
+
+	if (Pin->LinkedTo.Num())
 	{
-		if(UEdGraphPin* ResultPin = Pin->LinkedTo[0])
+		if (UEdGraphPin* ResultPin = Pin->LinkedTo[0])
 		{
-			if (UEdGraphSchema_K2::PC_Delegate == ResultPin->PinType.PinCategory)
+			// The knot nodes may not necessarily have the correct info for PinSubCategoryMemberReference.
+			// The safer approach is to traverse the knots to find the endpoint node, and then use its 
+			// PinSubCategoryMemberReference during resolution of the member reference.
+
+			UEdGraphPin* LinkedPin = FBlueprintEditorUtils::FindFirstCompilerRelevantLinkedPin(ResultPin);
+
+			if (LinkedPin && (UEdGraphSchema_K2::PC_Delegate == LinkedPin->PinType.PinCategory))
 			{
-				return FMemberReference::ResolveSimpleMemberReference<UFunction>(ResultPin->PinType.PinSubCategoryMemberReference);
+				Result = FMemberReference::ResolveSimpleMemberReference<UFunction>(LinkedPin->PinType.PinSubCategoryMemberReference);
 			}
 		}
 	}
-	return nullptr;
+
+	return Result;
 }
 
 UClass* UK2Node_CreateDelegate::GetScopeClass(bool bDontUseSkeletalClassForSelf/* = false*/) const
@@ -388,7 +411,7 @@ FName UK2Node_CreateDelegate::GetFunctionName() const
 
 UEdGraphPin* UK2Node_CreateDelegate::GetDelegateOutPin() const
 {
-	return FindPin(FK2Node_CreateDelegate_Helper::DelegateOutputName);
+	return FindPin(UE::BlueprintGraph::Private::DelegateOutputName);
 }
 
 UEdGraphPin* UK2Node_CreateDelegate::GetObjectInPin() const

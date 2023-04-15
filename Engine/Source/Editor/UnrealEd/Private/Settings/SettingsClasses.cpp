@@ -6,7 +6,7 @@
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "InputCoreTypes.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "AI/NavigationSystemBase.h"
 #include "Model.h"
 #include "ISourceControlModule.h"
@@ -43,6 +43,8 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SettingsClasses"
+
+DEFINE_LOG_CATEGORY_STATIC(LogSettingsClasses, Log, All);
 
 /* UContentBrowserSettings interface
  *****************************************************************************/
@@ -90,12 +92,49 @@ void UClassViewerSettings::PostEditChangeProperty(struct FPropertyChangedEvent& 
 		? PropertyChangedEvent.Property->GetFName()
 		: NAME_None;
 
+	if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UClassViewerSettings, AllowedClasses))
+	{
+		FixupShortNames();
+	}
+
 	if (!FUnrealEdMisc::Get().IsDeletePreferences())
 	{
 		SaveConfig();
 	}
 
 	SettingChangedEvent.Broadcast(Name);
+}
+
+void UClassViewerSettings::PostInitProperties()
+{
+	Super::PostInitProperties();
+	FixupShortNames();
+}
+
+void UClassViewerSettings::PostLoad()
+{
+	Super::PostLoad();
+	FixupShortNames();
+}
+
+void UClassViewerSettings::FixupShortNames()
+{
+	for (FString& ClassName : AllowedClasses)
+	{
+		// Empty string may represent a new entry that's just been added in the editor
+		if (ClassName.Len() && FPackageName::IsShortPackageName(ClassName))
+		{
+			FTopLevelAssetPath ClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(ClassName, ELogVerbosity::Warning, TEXT("ClassViewerSettings"));
+			if (!ClassPathName.IsNull())
+			{
+				ClassName = ClassPathName.ToString();
+			}
+			else
+			{
+				UE_LOG(LogSettingsClasses, Warning, TEXT("Unable to convert short class name \"%s\" to path names for %s.AllowedClasses. Please update it manually"), *ClassName, *GetPathName());
+			}
+		}
+	}
 }
 
 /* UStructViewerSettings interface
@@ -152,7 +191,9 @@ UEditorExperimentalSettings::UEditorExperimentalSettings( const FObjectInitializ
 	: Super(ObjectInitializer)
 	, bEnableAsyncTextureCompilation(false)
 	, bEnableAsyncStaticMeshCompilation(false)
-	, bEnableAsyncSkeletalMeshCompilation(false)
+	, bEnableAsyncSkeletalMeshCompilation(true)	// This was false and set to True in /Engine/Config/BaseEditorPerProjectUserSettings.ini. The setting is removed from .ini so change it to default True.
+	, bEnableAsyncSkinnedAssetCompilation(false)
+	, bEnableAsyncSoundWaveCompilation(false)
 	, bHDREditor(false)
 	, HDREditorNITLevel(160.0f)
 	, bUseOpenCLForConvexHullDecomp(false)
@@ -164,6 +205,16 @@ UEditorExperimentalSettings::UEditorExperimentalSettings( const FObjectInitializ
 
 void UEditorExperimentalSettings::PostInitProperties()
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// bEnableAsyncSkeletalMeshCompilation's default to True (see comment in constructor above).
+	// To be backwards compatible, if a user project overrides it to False, pass on the value to bEnableAsyncSkinnedAssetCompilation.
+	if (!bEnableAsyncSkeletalMeshCompilation)
+	{
+		UE_LOG(LogSettingsClasses, Warning, TEXT("bEnableAsyncSkeletalMeshCompilation is deprecated and replaced with bEnableAsyncSkinnedAssetCompilation. Please update the config. Setting bEnableAsyncSkinnedAssetCompilation to False."));
+		bEnableAsyncSkinnedAssetCompilation = false;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	CVarEditorHDRSupport->Set(bHDREditor ? 1 : 0, ECVF_SetByProjectSetting);
 	CVarEditorHDRNITLevel->Set(HDREditorNITLevel, ECVF_SetByProjectSetting);
 	Super::PostInitProperties();
@@ -186,20 +237,6 @@ void UEditorExperimentalSettings::PostEditChangeProperty( struct FPropertyChange
 	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, HDREditorNITLevel))
 	{
 		CVarEditorHDRNITLevel->Set(HDREditorNITLevel, ECVF_SetByProjectSetting);
-	}
-	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, bEnableInterchangeFramework))
-	{
-		if (bEnableInterchangeFramework)
-		{
-			bEnableInterchangeFrameworkForTextureOnly = false;
-		}
-	}
-	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, bEnableInterchangeFrameworkForTextureOnly))
-	{
-		if (bEnableInterchangeFrameworkForTextureOnly)
-		{
-			bEnableInterchangeFramework = false;
-		}
 	}
 
 	if (!FUnrealEdMisc::Get().IsDeletePreferences())
@@ -605,8 +642,8 @@ void ULevelEditorPlaySettings::UpdateCustomSafeZones()
 
 FMargin ULevelEditorPlaySettings::CalculateCustomUnsafeZones(TArray<FVector2D>& CustomSafeZoneStarts, TArray<FVector2D>& CustomSafeZoneDimensions, FString& DeviceType, FVector2D PreviewSize)
 {
-	int32 PreviewHeight = PreviewSize.Y;
-	int32 PreviewWidth = PreviewSize.X;
+	double PreviewHeight = PreviewSize.Y;
+	double PreviewWidth = PreviewSize.X;
 	bool bPreviewIsPortrait = PreviewHeight > PreviewWidth;
 	FMargin CustomSafeZoneOverride = FMargin();
 	CustomSafeZoneStarts.Empty();
@@ -666,7 +703,7 @@ FMargin ULevelEditorPlaySettings::CalculateCustomUnsafeZones(TArray<FVector2D>& 
 				if (!bAdjustsToDeviceRotation && ((Orientation.Contains(TEXT("L")) && bPreviewIsPortrait) ||
 					(Orientation.Contains(TEXT("P")) && !bPreviewIsPortrait)))
 				{
-					float Placeholder = Start.X;
+					double Placeholder = Start.X;
 					Start.X = Start.Y;
 					Start.Y = Placeholder;
 
@@ -883,6 +920,7 @@ ULevelEditorViewportSettings::ULevelEditorViewportSettings( const FObjectInitial
 	MeasuringToolUnits = MeasureUnits_Centimeters;
 	bAllowArcballRotate = false;
 	bAllowScreenRotate = false;
+	bShowActorEditorContext = true;
 	MouseSensitivty = .2f;
 	// Set a default preview mesh
 	PreviewMeshes.Add(FSoftObjectPath("/Engine/EditorMeshes/ColorCalibrator/SM_ColorCalibrator.SM_ColorCalibrator"));

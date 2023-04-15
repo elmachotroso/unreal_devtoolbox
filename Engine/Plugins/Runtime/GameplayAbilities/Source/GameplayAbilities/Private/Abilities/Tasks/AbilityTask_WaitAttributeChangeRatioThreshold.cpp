@@ -5,7 +5,9 @@
 
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitAttributeChangeRatioThreshold)
 
 UAbilityTask_WaitAttributeChangeRatioThreshold::UAbilityTask_WaitAttributeChangeRatioThreshold(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -50,7 +52,7 @@ void UAbilityTask_WaitAttributeChangeRatioThreshold::Activate()
 
 UAbilitySystemComponent* UAbilityTask_WaitAttributeChangeRatioThreshold::GetFocusedASC()
 {
-	return ExternalOwner ? ExternalOwner : AbilitySystemComponent;
+	return ExternalOwner ? ToRawPtr(ExternalOwner) : AbilitySystemComponent.Get();
 }
 
 void UAbilityTask_WaitAttributeChangeRatioThreshold::OnAttributeChange()
@@ -140,3 +142,4 @@ void UAbilityTask_WaitAttributeChangeRatioThreshold::OnDestroy(bool AbilityEnded
 
 	Super::OnDestroy(AbilityEnded);
 }
+

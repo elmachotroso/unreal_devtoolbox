@@ -4,6 +4,8 @@
 
 #include "MediaIOCorePlayerBase.h"
 
+#include "BlackmagicMediaSource.h"
+#include "HAL/CriticalSection.h"
 #include "MediaIOCoreAudioSampleBase.h"
 #include "MediaIOCoreTextureSampleBase.h"
 #include "MediaObjectPool.h"
@@ -21,6 +23,7 @@ namespace BlackmagicMediaPlayerHelpers
 
 class FBlackmagicMediaTextureSample : public FMediaIOCoreTextureSampleBase
 {
+public:
 	virtual const FMatrix& GetYUVToRGBMatrix() const override { return MediaShaders::YuvToRgbRec709Scaled; }
 };
 
@@ -87,14 +90,26 @@ protected:
 	/** Setup our different channels with the current set of settings */
 	virtual void SetupSampleChannels() override;
 
+	virtual uint32 GetNumVideoFrameBuffers() const override 
+	{
+		return MaxNumVideoFrameBuffer;
+	}
+
+	virtual EMediaIOCoreColorFormat GetColorFormat() const override
+	{
+		return BlackmagicColorFormat == EBlackmagicMediaSourceColorFormat::YUV8 ? EMediaIOCoreColorFormat::YUV8 : EMediaIOCoreColorFormat::YUV10;
+	}
+
+	virtual void AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample) override;
+
 private:
 
 	friend BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback;
 	BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback* EventCallback;
 
 	/** Audio, MetaData, Texture  sample object pool. */
-	FBlackmagicMediaAudioSamplePool* AudioSamplePool;
-	FBlackmagicMediaTextureSamplePool* TextureSamplePool;
+	TUniquePtr<FBlackmagicMediaAudioSamplePool> AudioSamplePool;
+	TUniquePtr<FBlackmagicMediaTextureSamplePool> TextureSamplePool;
 
 	/** Log warning about the amount of audio/video frame can't could not be cached . */
 	bool bVerifyFrameDropCount;
@@ -105,4 +120,6 @@ private:
 
 	/** Used to flag which sample types we advertise as supported for timed data monitoring */
 	EMediaIOSampleType SupportedSampleTypes;
+
+	EBlackmagicMediaSourceColorFormat BlackmagicColorFormat = EBlackmagicMediaSourceColorFormat::YUV8;
 };

@@ -6,10 +6,19 @@
 #include "Engine/GameInstance.h"
 #include "TimerManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CancellableAsyncAction)
+
 void UCancellableAsyncAction::Cancel()
 {
 	// Child classes should override this
 	SetReadyToDestroy();
+}
+
+void UCancellableAsyncAction::BeginDestroy()
+{
+	Cancel();
+
+	Super::BeginDestroy();
 }
 
 bool UCancellableAsyncAction::IsActive() const
@@ -36,3 +45,4 @@ class FTimerManager* UCancellableAsyncAction::GetTimerManager() const
 
 	return nullptr;
 }
+

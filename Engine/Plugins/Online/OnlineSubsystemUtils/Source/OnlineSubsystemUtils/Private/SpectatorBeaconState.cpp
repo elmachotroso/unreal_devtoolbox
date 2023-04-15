@@ -4,6 +4,8 @@
 #include "OnlineBeacon.h"
 #include "OnlineSubsystemTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SpectatorBeaconState)
+
 DEFINE_LOG_CATEGORY(LogSpectatorBeacon);
 
 bool FSpectatorReservation::IsValid() const
@@ -98,7 +100,7 @@ int32 USpectatorBeaconState::GetReservationPlatformCount(const FString& InPlatfo
 
 bool USpectatorBeaconState::CrossPlayAllowed(const FSpectatorReservation& ReservationRequest) const
 {
-	// Since this player is a spectator, he won't be playing, so allow crossplay.
+	// Since this player is a spectator, it won't be playing, so allow crossplay.
 	return true;
 }
 
@@ -339,3 +341,4 @@ void USpectatorBeaconState::SanityCheckReservations(const bool bIgnoreEmptyReser
 	}
 #endif // !UE_BUILD_SHIPPING
 }
+

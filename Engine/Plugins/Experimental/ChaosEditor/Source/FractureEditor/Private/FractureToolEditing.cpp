@@ -10,6 +10,10 @@
 #include "FractureToolContext.h"
 #include "ScopedTransaction.h"
 
+#include "PlanarCut.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolEditing)
+
 #define LOCTEXT_NAMESPACE "FractureToolEditing"
 
 
@@ -102,6 +106,119 @@ void UFractureToolDeleteBranch::Execute(TWeakPtr<FFractureEditorModeToolkit> InT
 
 
 
+FText UFractureToolMergeSelected::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("FractureToolEditingOps", "FractureToolMergeSelected", "Merge"));
+}
+
+FText UFractureToolMergeSelected::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("FractureToolEditingOps", "FractureToolMergeSelectedTooltip", "Merge all selected nodes into one node."));
+}
+
+FSlateIcon UFractureToolMergeSelected::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.MergeSelected");
+}
+
+void UFractureToolMergeSelected::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "MergeSelected", "GeoMrg", "Merge all selected nodes into one node.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->MergeSelected = UICommandInfo;
+}
+
+void UFractureToolMergeSelected::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		FScopedTransaction Transaction(LOCTEXT("MergeSelected", "Merge Selected"));
+
+		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
+
+		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
+
+		for (FFractureToolContext& Context : Contexts)
+		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+			FGeometryCollection* GeometryCollection = Context.GetGeometryCollection().Get();
+
+			Context.Sanitize();
+
+			const TArray<int32>& NodesForMerge = Context.GetSelection();
+
+			constexpr bool bBooleanUnion = false;
+			MergeAllSelectedBones(*GeometryCollection, NodesForMerge, bBooleanUnion);
+
+			// Proximity is invalidated.
+			ClearProximity(Context.GetGeometryCollection().Get());
+
+			Refresh(Context, Toolkit, true);
+		}
+
+		SetOutlinerComponents(Contexts, Toolkit);
+	}
+}
+
+
+FText UFractureToolSplitSelected::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("FractureToolEditingOps", "FractureToolSplitSelected", "Split"));
+}
+
+FText UFractureToolSplitSelected::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("FractureToolEditingOps", "FractureToolSplitSelectedTooltip", "Split all selected nodes into their connected component parts."));
+}
+
+FSlateIcon UFractureToolSplitSelected::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.SplitSelected");
+}
+
+void UFractureToolSplitSelected::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "SplitSelected", "Split", "Split all selected nodes into their connected component parts.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->SplitSelected = UICommandInfo;
+}
+
+void UFractureToolSplitSelected::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		FScopedTransaction Transaction(LOCTEXT("SplitSelected", "Split Selected"));
+
+		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
+
+		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
+
+		for (FFractureToolContext& Context : Contexts)
+		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+			FGeometryCollection* GeometryCollection = Context.GetGeometryCollection().Get();
+
+			Context.Sanitize();
+
+			TArray<int32> NodesForSplit;
+
+			for (int32 Select : Context.GetSelection())
+			{
+				FGeometryCollectionClusteringUtility::GetLeafBones(GeometryCollection, Select, true, NodesForSplit);
+			}
+
+			SplitIslands(*GeometryCollection, NodesForSplit, 0, nullptr);
+
+			// Proximity is invalidated.
+			ClearProximity(Context.GetGeometryCollection().Get());
+
+			Refresh(Context, Toolkit, true);
+		}
+
+		SetOutlinerComponents(Contexts, Toolkit);
+	}
+}
+
+
+
 FText UFractureToolHide::GetDisplayText() const
 {
 	return FText(NSLOCTEXT("FractureToolEditingOps", "FractureToolHide", "Hide"));
@@ -129,11 +246,14 @@ void UFractureToolHide::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 	{
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
+		FScopedTransaction Transaction(LOCTEXT("FractureHideTransaction", "Hide"));
+		
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& Context : Contexts)
 		{
-			FGeometryCollection* GeometryCollection = Context.GetGeometryCollection().Get();
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+			FGeometryCollection* GeometryCollection = Edit.GetRestCollection()->GetGeometryCollection().Get();
 			UGeometryCollection* FracturedGeometryCollection = Context.GetFracturedGeometryCollection();
 
 			Context.ConvertSelectionToRigidNodes();
@@ -196,11 +316,14 @@ void UFractureToolUnhide::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit
 	{
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
+		FScopedTransaction Transaction(LOCTEXT("FractureUnhideTransaction", "Unhide"));
+		
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& Context : Contexts)
 		{
-			FGeometryCollection* GeometryCollection = Context.GetGeometryCollection().Get();
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+			FGeometryCollection* GeometryCollection = Edit.GetRestCollection()->GetGeometryCollection().Get();
 			UGeometryCollection* FracturedGeometryCollection = Context.GetFracturedGeometryCollection();
 
 			Context.ConvertSelectionToRigidNodes();
@@ -234,6 +357,12 @@ void UFractureToolUnhide::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit
 	}
 }
 
+UFractureToolValidate::UFractureToolValidate(const FObjectInitializer& ObjInit) : Super(ObjInit)
+{
+	ValidationSettings = NewObject<UFractureValidateSettings>(GetTransientPackage(), UFractureValidateSettings::StaticClass());
+	ValidationSettings->OwnerTool = this;
+}
+
 
 FText UFractureToolValidate::GetDisplayText() const
 {
@@ -256,24 +385,33 @@ void UFractureToolValidate::RegisterUICommand(FFractureEditorCommands* BindingCo
 	BindingContext->Validate = UICommandInfo;
 }
 
+TArray<UObject*> UFractureToolValidate::GetSettingsObjects() const
+{
+	TArray<UObject*> Settings;
+	Settings.Add(ValidationSettings);
+	return Settings;
+}
+
 void UFractureToolValidate::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 {
 	if (InToolkit.IsValid())
 	{
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
+		bool bUpdatedCollections = false;
+
 		TSet<UGeometryCollectionComponent*> GeomCompSelection;
 		GetSelectedGeometryCollectionComponents(GeomCompSelection);
 		for (UGeometryCollectionComponent* GeometryCollectionComponent : GeomCompSelection)
 		{
+			bool bDirty = false;
+
 			FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent->EditRestCollection();
 			if (UGeometryCollection* GeometryCollectionObject = GeometryCollectionEdit.GetRestCollection())
 			{
 				TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollectionObject->GetGeometryCollection();
 				if (FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get())
 				{
-					bool bDirty = false;
-
 					TManagedArray<int32>& TransformToGeometry = GeometryCollection->TransformToGeometryIndex;
 					constexpr bool bClustersCanHaveGeometry = true;
 					if (!bClustersCanHaveGeometry)
@@ -292,30 +430,49 @@ void UFractureToolValidate::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolk
 					}
 
 					// Remove any unreferenced geometry
-					TManagedArray<int32>& TransformIndex = GeometryCollection->TransformIndex;
-					const int32 GeometryCount = TransformIndex.Num();
-
-					TArray<int32> RemoveGeometry;
-					RemoveGeometry.Reserve(GeometryCount);
-
-					for (int32 Idx = 0; Idx < GeometryCount; ++Idx)
+					if (ValidationSettings->bRemoveUnreferencedGeometry)
 					{
-						if ((TransformIndex[Idx] == INDEX_NONE) || (TransformToGeometry[TransformIndex[Idx]] != Idx))
+						TManagedArray<int32>& TransformIndex = GeometryCollection->TransformIndex;
+						const int32 GeometryCount = TransformIndex.Num();
+
+						TArray<int32> RemoveGeometry;
+						RemoveGeometry.Reserve(GeometryCount);
+
+						for (int32 Idx = 0; Idx < GeometryCount; ++Idx)
 						{
-							RemoveGeometry.Add(Idx);
-							UE_LOG(LogFractureTool, Warning, TEXT("Removed dangling geometry at index %d."), Idx);
+							if ((TransformIndex[Idx] == INDEX_NONE) || (TransformToGeometry[TransformIndex[Idx]] != Idx))
+							{
+								RemoveGeometry.Add(Idx);
+								UE_LOG(LogFractureTool, Warning, TEXT("Removed dangling geometry at index %d."), Idx);
+								bDirty = true;
+							}
+						}
+
+						if (RemoveGeometry.Num() > 0)
+						{
+							FManagedArrayCollection::FProcessingParameters Params;
+							Params.bDoValidation = false; // for perf reasons
+							GeometryCollection->RemoveElements(FGeometryCollection::GeometryGroup, RemoveGeometry);
+						}
+					}
+
+					if (ValidationSettings->bRemoveClustersOfOne)
+					{
+						if (FGeometryCollectionClusteringUtility::RemoveClustersOfOnlyOneChild(GeometryCollection))
+						{
+							UE_LOG(LogFractureTool, Warning, TEXT("Removed one or more clusters of only one child."));
 							bDirty = true;
 						}
 					}
 
-					if (RemoveGeometry.Num() > 0)
+					if (ValidationSettings->bRemoveDanglingClusters)
 					{
-						GeometryCollection->RemoveElements(FGeometryCollection::GeometryGroup, RemoveGeometry);
+						if (FGeometryCollectionClusteringUtility::RemoveDanglingClusters(GeometryCollection))
+						{
+							UE_LOG(LogFractureTool, Warning, TEXT("Removed one or more dangling clusters."));
+							bDirty = true;
+						}
 					}
-
-					// remove dangling clusters
-					// #todo leaving this out for the moment because we don't want to invalidate existing caches.
-					// FGeometryCollectionClusteringUtility::RemoveDanglingClusters(GeometryCollection);
 
 					if (bDirty)
 					{
@@ -346,9 +503,22 @@ void UFractureToolValidate::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolk
 
 			GeometryCollectionComponent->InitializeEmbeddedGeometry();
 
-			FScopedColorEdit EditBoneColor = GeometryCollectionComponent->EditBoneSelection();
-			EditBoneColor.ResetBoneSelection();
-			EditBoneColor.ResetHighlightedBones();
+			if (bDirty)
+			{
+				// reset bone selection because bones may have been deleted
+				FScopedColorEdit EditBoneColor = GeometryCollectionComponent->EditBoneSelection();
+				EditBoneColor.ResetBoneSelection();
+				EditBoneColor.ResetHighlightedBones();
+
+				// flag that at least one geometry collection has changed
+				bUpdatedCollections = true;
+			}
+		}
+
+		if (bUpdatedCollections)
+		{
+			Toolkit->RegenerateHistogram();
+			Toolkit->RegenerateOutliner();
 		}
 
 		Toolkit->OnSetLevelViewValue(-1);
@@ -357,4 +527,5 @@ void UFractureToolValidate::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolk
 }
 
 #undef LOCTEXT_NAMESPACE
+
 

@@ -2,6 +2,9 @@
 
 #include "Animation/AnimationSettings.h"
 #include "Animation/AnimCompress_BitwiseCompressOnly.h"
+#include "Animation/AttributeTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimationSettings)
 
 UAnimationSettings::UAnimationSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -30,6 +33,10 @@ UAnimationSettings::UAnimationSettings(const FObjectInitializer& ObjectInitializ
 		FMirrorFindReplaceExpression("_R", "_L", EMirrorFindReplaceMethod::Suffix), FMirrorFindReplaceExpression("_L", "_R", EMirrorFindReplaceMethod::Suffix),
 		FMirrorFindReplaceExpression("right", "left", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("left", "right",  EMirrorFindReplaceMethod::Prefix),
 		FMirrorFindReplaceExpression("Right", "Left", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("Left", "Right",  EMirrorFindReplaceMethod::Prefix),
+		FMirrorFindReplaceExpression("([^}]*)_l_([^}]*)", "$1_r_$2", EMirrorFindReplaceMethod::RegularExpression), FMirrorFindReplaceExpression("([^}]*)_r_([^}]*)", "$1_l_$2", EMirrorFindReplaceMethod::RegularExpression),
+		FMirrorFindReplaceExpression("([^}]*)_L_([^}]*)", "$1_R_$2", EMirrorFindReplaceMethod::RegularExpression), FMirrorFindReplaceExpression("([^}]*)_R_([^}]*)", "$1_L_$2", EMirrorFindReplaceMethod::RegularExpression),
+		FMirrorFindReplaceExpression("([^}]*)_left_([^}]*)", "$1_right_$2", EMirrorFindReplaceMethod::RegularExpression), FMirrorFindReplaceExpression("([^}]*)_right_([^}]*)", "$1_left_$2", EMirrorFindReplaceMethod::RegularExpression),
+		FMirrorFindReplaceExpression("([^}]*)_Left_([^}]*)", "$1_Right_$2", EMirrorFindReplaceMethod::RegularExpression), FMirrorFindReplaceExpression("([^}]*)_Right_([^}]*)", "$1_Left_$2", EMirrorFindReplaceMethod::RegularExpression),
 		FMirrorFindReplaceExpression("((?:^[sS]pine|^[rR]oot|^[pP]elvis|^[nN]eck|^[hH]ead|^ik_hand_gun).*)", "$1", EMirrorFindReplaceMethod::RegularExpression)
 	};
 }
@@ -60,16 +67,34 @@ void UAnimationSettings::PostEditChangeProperty(struct FPropertyChangedEvent& Pr
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-// 	const FName PropertyName = PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : NAME_None;
-// 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UAnimationSettings, FrictionCombineMode))
-// 	{
-// 		UPhysicalMaterial::RebuildPhysicalMaterials();
-// 	}
-// 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UAnimationSettings, LockedAxis))
-// 	{
-// 		UMovementComponent::PhysicsLockedAxisSettingChanged();
-// 	}
+ 	const FName PropertyName = PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UAnimationSettings, UserDefinedStructAttributes))
+	{
+		TArray<UScriptStruct*> NewListOfStructs;
+		for (const TSoftObjectPtr<UUserDefinedStruct>& UserDefinedStruct : UAnimationSettings::Get()->UserDefinedStructAttributes)
+		{
+			if (UserDefinedStruct.IsValid())
+			{
+				NewListOfStructs.Add(UserDefinedStruct.Get());
+				UE::Anim::AttributeTypes::RegisterNonBlendableType(UserDefinedStruct.Get());
+			}
+		}
+
+		TArray<TWeakObjectPtr<const UScriptStruct>> RegisteredTypes = UE::Anim::AttributeTypes::GetRegisteredTypes();
+		for (const TWeakObjectPtr<const UScriptStruct>& RegisteredStruct : RegisteredTypes)
+		{
+			if (RegisteredStruct.IsValid() && RegisteredStruct->IsA<UUserDefinedStruct>())
+			{
+				if (!NewListOfStructs.Contains(RegisteredStruct.Get()))
+				{
+					UE::Anim::AttributeTypes::UnregisterType(RegisteredStruct.Get());
+				}
+			}
+		}
+	}
 }
 
 
 #endif	// WITH_EDITOR
+

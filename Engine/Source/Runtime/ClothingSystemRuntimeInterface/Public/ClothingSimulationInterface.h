@@ -2,11 +2,15 @@
 #pragma once
 
 #include "ClothingSystemRuntimeTypes.h"
+#include "Containers/Map.h"
+#include "CoreTypes.h"
+#include "Math/MathFwd.h"
 
 class UClothingAssetBase;
 class USkeletalMeshComponent;
 class USkinnedMeshComponent;
 struct FClothCollisionData;
+struct FClothSimulData;
 
 /** Empty interface, derived simulation modules define the contents of the context. */
 class CLOTHINGSYSTEMRUNTIMEINTERFACE_API IClothingSimulationContext
@@ -105,7 +109,7 @@ protected:
 	 * Fill FClothSimulData map for the clothing simulation. Should fill a map pair per-actor 
 	 * @param OutData - The simulation data to write to
 	 * @param InOwnerComponent - the component that owns the simulation
-	 * @param InOverrideComponent - An override component if bound to a master pose component
+	 * @param InOverrideComponent - An override component if bound to a leader pose component
 	 */
 	virtual void GetSimulationData(TMap<int32, FClothSimulData>& OutData, USkeletalMeshComponent* InOwnerComponent, USkinnedMeshComponent* InOverrideComponent) const = 0;
 

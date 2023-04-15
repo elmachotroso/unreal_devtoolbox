@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 
 namespace Horde.Storage.Implementation
@@ -20,8 +21,6 @@ namespace Horde.Storage.Implementation
             LastAccessTime = lastAccessTime;
             ContentHash = contentHash;
         }
-
-
         public NamespaceId Namespace { get; }
 
         public BucketId Bucket { get; }
@@ -29,7 +28,7 @@ namespace Horde.Storage.Implementation
 
         public BlobIdentifier[] Blobs { get; }
         public Dictionary<string, object>? Metadata { get; }
-        public DateTime? LastAccessTime { get; }
+        public DateTime? LastAccessTime { get; internal set; }
         public ContentHash ContentHash { get; }
 
         public TransactionEvent ToAddTransactionEvent()
@@ -47,14 +46,11 @@ namespace Horde.Storage.Implementation
             RefName = refName;
         }
 
-
         public NamespaceId Namespace { get; }
 
         public BucketId Bucket { get; }
         public KeyId RefName { get; }
-
     }
-
 
     public interface IRefsStore
     {

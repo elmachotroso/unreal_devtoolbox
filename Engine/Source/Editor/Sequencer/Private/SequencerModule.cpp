@@ -19,6 +19,17 @@
 #include "IDetailsView.h"
 #include "Tree/CurveEditorTreeFilter.h"
 #include "AnimatedPropertyKey.h"
+#include "MovieSceneSignedObject.h"
+
+#include "MVVM/CurveEditorExtension.h"
+#include "MVVM/CurveEditorIntegrationExtension.h"
+#include "MVVM/FolderModelStorageExtension.h"
+#include "MVVM/ObjectBindingModelStorageExtension.h"
+#include "MVVM/SectionModelStorageExtension.h"
+#include "MVVM/TrackModelStorageExtension.h"
+#include "MVVM/TrackRowModelStorageExtension.h"
+#include "MVVM/ViewModels/SequenceModel.h"
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
 
 #include "ToolMenus.h"
 #include "ContentBrowserMenuContexts.h"
@@ -27,6 +38,11 @@
 #include "LevelSequence.h"
 
 
+#include "Misc/CoreDelegates.h"
+#include "UnrealEdGlobals.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Editor/TransBuffer.h"
+
 #if !IS_MONOLITHIC
 	UE::MovieScene::FEntityManager*& GEntityManagerForDebugging = UE::MovieScene::GEntityManagerForDebuggingVisualizers;
 #endif
@@ -34,6 +50,118 @@
 
 
 #define LOCTEXT_NAMESPACE "SequencerEditor"
+
+
+namespace UE
+{
+namespace Sequencer
+{
+
+struct FDeferredSignedObjectChangeHandler : UE::MovieScene::IDeferredSignedObjectChangeHandler, FGCObject
+{
+	FDeferredSignedObjectChangeHandler()
+	{
+		Init();
+	}
+
+	~FDeferredSignedObjectChangeHandler()
+	{
+		if (UTransBuffer* TransBuffer = WeakBuffer.Get())
+		{
+			TransBuffer->OnTransactionStateChanged().RemoveAll(this);
+		}
+	}
+
+	void Init()
+	{
+		UTransBuffer* TransBuffer = GUnrealEd ? Cast<UTransBuffer>(GUnrealEd->Trans) : nullptr;
+		if (TransBuffer)
+		{
+			WeakBuffer = TransBuffer;
+			TransBuffer->OnTransactionStateChanged().AddRaw(this, &FDeferredSignedObjectChangeHandler::OnTransactionStateChanged);
+			if (TransBuffer->IsActive())
+			{
+				DeferTransactionChanges.Emplace();
+			}
+		}
+		else
+		{
+			FCoreDelegates::OnPostEngineInit.AddLambda([this]{ this->Init(); });
+		}
+	}
+
+	void OnTransactionStateChanged(const FTransactionContext& TransactionContext, ETransactionStateEventType TransactionState)
+	{
+		/** A transaction has been started. This will be followed by a TransactionCanceled or TransactionFinalized event. */
+		switch (TransactionState)
+		{
+		case ETransactionStateEventType::TransactionStarted:
+		case ETransactionStateEventType::UndoRedoStarted:
+			DeferTransactionChanges.Emplace();
+			break;
+
+		case ETransactionStateEventType::TransactionCanceled:
+		case ETransactionStateEventType::PreTransactionFinalized:
+		case ETransactionStateEventType::UndoRedoFinalized:
+			DeferTransactionChanges.Reset();
+			break;
+		}
+	}
+
+	void Flush() override
+	{
+		for (TWeakObjectPtr<UMovieSceneSignedObject> WeakObject : SignedObjects)
+		{
+			if (UMovieSceneSignedObject* Object = WeakObject.Get())
+			{
+				Object->BroadcastChanged();
+			}
+		}
+		SignedObjects.Empty();
+	}
+
+	void DeferMarkAsChanged(UMovieSceneSignedObject* SignedObject) override
+	{
+		SignedObjects.Add(SignedObject);
+	}
+
+	void AddReferencedObjects( FReferenceCollector& Collector ) override
+	{
+		for (TWeakObjectPtr<UMovieSceneSignedObject> WeakObject : SignedObjects)
+		{
+			if (UMovieSceneSignedObject* Object = WeakObject.Get())
+			{
+				Collector.AddReferencedObject(Object);
+			}
+		}
+	}
+
+	bool CreateImplicitScopedModifyDefer() override
+	{
+		ensure(!DeferImplicitChanges.IsSet());
+		DeferImplicitChanges.Emplace();
+		return true;
+	}
+
+	void ResetImplicitScopedModifyDefer() override
+	{
+		DeferImplicitChanges.Reset();
+	}
+
+	FString GetReferencerName() const override
+	{
+		return TEXT("FDeferredSignedObjectChangeHandler");
+	}
+
+	TSet<TWeakObjectPtr<UMovieSceneSignedObject>> SignedObjects;
+	TWeakObjectPtr<UTransBuffer>   WeakBuffer;
+	TOptional<UE::MovieScene::FScopedSignedObjectModifyDefer> DeferTransactionChanges;
+	TOptional<UE::MovieScene::FScopedSignedObjectModifyDefer> DeferImplicitChanges;
+};
+
+} // namespace Sequencer
+} // namespace UE
+
 
 // Destructor defined in CPP to avoid having to #include SequencerChannelInterface.h in the main module definition
 ISequencerModule::~ISequencerModule()
@@ -187,6 +315,17 @@ public:
 		}
 	}
 
+	virtual FDelegateHandle RegisterTrackModel(FOnCreateTrackModel InCreator) override
+	{
+		TrackModelDelegates.Add(InCreator);
+		return TrackModelDelegates.Last().GetHandle();
+	}
+
+	virtual void UnregisterTrackModel(FDelegateHandle InHandle) override
+	{
+		TrackModelDelegates.RemoveAll([=](const FOnCreateTrackModel& Delegate) { return Delegate.GetHandle() == InHandle; });
+	}
+
 	virtual FDelegateHandle RegisterOnSequencerCreated(FOnSequencerCreated::FDelegate InOnSequencerCreated) override
 	{
 		return OnSequencerCreated.Add(InOnSequencerCreated);
@@ -236,40 +375,42 @@ public:
 				return;
 			}
 
-			ULevelSequence* LevelSequence = Context->SelectedObjects.Num() == 1 ? Cast<ULevelSequence>(Context->SelectedObjects[0]) : nullptr;
-			if (LevelSequence)
+			if (Context->SelectedAssets.Num() == 1 && Context->SelectedAssets[0].IsInstanceOf(ULevelSequence::StaticClass()))
 			{
-				// if this LevelSequence has associated maps, offer to load them
-				TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedMapPackages(LevelSequence);
-
-				if(AssociatedMaps.Num()>0)
+				if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(Context->SelectedAssets[0].GetAsset()))
 				{
-					InSection.AddSubMenu(
-						"SequencerOpenMap_Label",
-						LOCTEXT("SequencerOpenMap_Label", "Open Map"),
-						LOCTEXT("SequencerOpenMap_Tooltip", "Open a map associated with this Level Sequence Asset"),
-						FNewMenuDelegate::CreateLambda(
-							[AssociatedMaps](FMenuBuilder& SubMenuBuilder)
-							{
-								for (const FString& AssociatedMap : AssociatedMaps)
+					// if this LevelSequence has associated maps, offer to load them
+					TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedMapPackages(LevelSequence);
+
+					if(AssociatedMaps.Num()>0)
+					{
+						InSection.AddSubMenu(
+							"SequencerOpenMap_Label",
+							LOCTEXT("SequencerOpenMap_Label", "Open Map"),
+							LOCTEXT("SequencerOpenMap_Tooltip", "Open a map associated with this Level Sequence Asset"),
+							FNewMenuDelegate::CreateLambda(
+								[AssociatedMaps](FMenuBuilder& SubMenuBuilder)
 								{
-									SubMenuBuilder.AddMenuEntry(
-										FText::FromString(FPaths::GetBaseFilename(AssociatedMap)),
-										FText(),
-										FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Levels"),
-										FExecuteAction::CreateLambda(
-											[AssociatedMap]
-											{
-												FEditorFileUtils::LoadMap(AssociatedMap);
-											}
-										)
-									);
+									for (const FString& AssociatedMap : AssociatedMaps)
+									{
+										SubMenuBuilder.AddMenuEntry(
+											FText::FromString(FPaths::GetBaseFilename(AssociatedMap)),
+											FText(),
+											FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Levels"),
+											FExecuteAction::CreateLambda(
+												[AssociatedMap]
+												{
+													FEditorFileUtils::LoadMap(AssociatedMap);
+												}
+											)
+										);
+									}
 								}
-							}
-						),
-						false,
-						FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Levels")
-					);
+							),
+							false,
+							FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Levels")
+						);
+					}
 				}
 			}
 		}));
@@ -277,12 +418,11 @@ public:
 
 	virtual void StartupModule() override
 	{
+		using namespace UE::Sequencer;
+		using namespace UE::MovieScene;
+
 		if (GIsEditor)
 		{
-			// EditorStyle must be initialized by now
-			FModuleManager::Get().LoadModule("EditorStyle");
-			FSequencerCommands::Register();
-
 			FEditorModeRegistry::Get().RegisterMode<FSequencerEdMode>(
 				FSequencerEdMode::EM_SequencerMode,
 				NSLOCTEXT("Sequencer", "SequencerEditMode", "Sequencer Mode"),
@@ -291,16 +431,43 @@ public:
 
 			if (UToolMenus::TryGet())
 			{
+				FSequencerCommands::Register();
 				RegisterMenus();
 			}
 			else
 			{
+				FCoreDelegates::OnPostEngineInit.AddStatic(&FSequencerCommands::Register);
 				FCoreDelegates::OnPostEngineInit.AddRaw(this, &FSequencerModule::RegisterMenus);
+			}
+
+			// Set the deferred handler for use by Sequence editors. It is not necessary in commandlets.
+			// TODO: Create/Delete the handler when Sequence editors are opened/closed.
+			if (!IsRunningCommandlet())
+			{
+				UMovieSceneSignedObject::SetDeferredHandler(MakeUnique<FDeferredSignedObjectChangeHandler>());
 			}
 
 			FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 			OnGetGlobalRowExtensionHandle = EditModule.GetGlobalRowExtensionDelegate().AddStatic(&RegisterKeyframeExtensionHandler);
 		}
+
+		FSequenceModel::CreateExtensionsEvent.AddLambda(
+			[&](TSharedPtr<FEditorViewModel> InEditor, TSharedPtr<FSequenceModel> InModel)
+			{
+				InModel->AddDynamicExtension(FFolderModelStorageExtension::ID);
+				InModel->AddDynamicExtension(FObjectBindingModelStorageExtension::ID);
+				InModel->AddDynamicExtension(FTrackModelStorageExtension::ID, TrackModelDelegates);
+				InModel->AddDynamicExtension(FTrackRowModelStorageExtension::ID);
+				InModel->AddDynamicExtension(FSectionModelStorageExtension::ID);
+
+				// If the editor supports a curve editor, add an integration extension to
+				// sync view-model hierarchies between the outliner and curve editor.
+				if (InEditor->CastDynamic<FCurveEditorExtension>())
+				{
+					InModel->AddDynamicExtension(FCurveEditorIntegrationExtension::ID);
+				}
+			}
+		);
 
 		ObjectBindingContextMenuExtensibilityManager = MakeShareable( new FExtensibilityManager );
 		AddTrackMenuExtensibilityManager = MakeShareable( new FExtensibilityManager );
@@ -314,6 +481,8 @@ public:
 	{
 		if (GIsEditor)
 		{
+			UMovieSceneSignedObject::SetDeferredHandler(nullptr);
+
 			FSequencerCommands::Unregister();
 
 			if (FPropertyEditorModule* EditModulePtr = FModuleManager::Get().GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
@@ -427,6 +596,9 @@ private:
 
 	/** List of object binding handler delegates sequencers will execute when they are created */
 	TArray< FOnCreateEditorObjectBinding > EditorObjectBindingDelegates;
+
+	/** List of track model creators */
+	TArray<FOnCreateTrackModel> TrackModelDelegates;
 
 	/** Global details row extension delegate; */
 	FDelegateHandle OnGetGlobalRowExtensionHandle;

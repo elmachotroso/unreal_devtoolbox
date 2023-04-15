@@ -1,11 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ExrImageWrapper.h"
+#include "Formats/ExrImageWrapper.h"
 #include "ImageWrapperPrivate.h"
 
 #include "Containers/StringConv.h"
 #include "HAL/PlatformTime.h"
 #include "Math/Float16.h"
+
+/**
+
+@todo Oodle : this is a flawed EXR importer
+it crashes on many images in the OpenEXR test set
+Blobbies.exr and spirals.exr among others
+
+**/
 
 #if WITH_UNREALEXR
 
@@ -150,7 +158,8 @@ private:
 
 const char* cChannelNamesRGBA[] = { "R", "G", "B", "A" };
 const char* cChannelNamesBGRA[] = { "B", "G", "R", "A" };
-const char* cChannelNamesGray[] = { "G" };
+//const char* cChannelNamesGray[] = { "G" }; // is that green or gray ?
+const char* cChannelNamesGray[] = { "Y" }; // pretty sure "Y" is more standard for gray
 
 int32 GetChannelNames(ERGBFormat InRGBFormat, const char* const*& OutChannelNames)
 {
@@ -183,6 +192,35 @@ int32 GetChannelNames(ERGBFormat InRGBFormat, const char* const*& OutChannelName
 	return ChannelCount;
 }
 
+
+bool FExrImageWrapper::CanSetRawFormat(const ERGBFormat InFormat, const int32 InBitDepth) const
+{
+	return (InFormat == ERGBFormat::RGBAF || InFormat == ERGBFormat::GrayF) && (InBitDepth == 16 || InBitDepth == 32);
+}
+
+ERawImageFormat::Type FExrImageWrapper::GetSupportedRawFormat(const ERawImageFormat::Type InFormat) const
+{
+	switch(InFormat)
+	{
+	case ERawImageFormat::RGBA16F:
+	case ERawImageFormat::RGBA32F:
+	case ERawImageFormat::R16F:
+	case ERawImageFormat::R32F:
+		return InFormat; // directly supported
+	case ERawImageFormat::G8:
+		return ERawImageFormat::R16F; // needs conversion
+	case ERawImageFormat::BGRA8:
+	case ERawImageFormat::BGRE8:
+		return ERawImageFormat::RGBA16F; // needs conversion
+	case ERawImageFormat::G16:
+	case ERawImageFormat::RGBA16:
+		return ERawImageFormat::RGBA32F; // needs conversion
+	default:
+		check(0);
+		return ERawImageFormat::BGRA8;
+	}
+}
+
 bool FExrImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow)
 {
 	check(InRawData);
@@ -190,6 +228,11 @@ bool FExrImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int3
 	check(InWidth > 0);
 	check(InHeight > 0);
 	check(InBytesPerRow >= 0);
+
+	// FExrImageWrapper used to take RGBA 8-bit input
+	//	 and write it linearly
+	// the new image path now requires you to convert to float before coming in here
+	// so U8 will be converted to float *with* gamma correction
 
 	switch (InBitDepth)
 	{
@@ -248,13 +291,25 @@ bool FExrImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompr
 		Height = ImfDataWindow.max.y - ImfDataWindow.min.y + 1;
 
 		bool bHasOnlyHALFChannels = true;
-		bool bMatchesGrayOrder = true;
+		bool bHasAlphaChannel = false;
 		int32 ChannelCount = 0;
 
-		for (Imf::ChannelList::Iterator Iter = ImfChannels.begin(); Iter != ImfChannels.end(); ++Iter, ++ChannelCount)
+		for (Imf::ChannelList::Iterator Iter = ImfChannels.begin(); Iter != ImfChannels.end(); ++Iter)
 		{
+			++ChannelCount;
+
 			bHasOnlyHALFChannels = bHasOnlyHALFChannels && Iter.channel().type == Imf::HALF;
-			bMatchesGrayOrder = bMatchesGrayOrder && ChannelCount < UE_ARRAY_COUNT(cChannelNamesGray) && !strcmp(Iter.name(), cChannelNamesGray[ChannelCount]);
+
+			// check for bMatchesGrayOrder disabled
+			// treat any 1-channel import as gray
+			// don't try to match the channel names, which are not standardized
+			//  (we incorrectly used "G" before, we now use "Y", TinyEXR uses "A" for 1-channel EXR)
+			//bMatchesGrayOrder = bMatchesGrayOrder && ChannelCount < UE_ARRAY_COUNT(cChannelNamesGray) && !strcmp(Iter.name(), cChannelNamesGray[ChannelCount]);
+
+			if ( strcmp(Iter.name(),"A") == 0 )
+			{
+				bHasAlphaChannel = true;
+			}
 		}
 
 		BitDepth = (ChannelCount && bHasOnlyHALFChannels) ? 16 : 32;
@@ -262,7 +317,19 @@ bool FExrImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompr
 		// EXR uint32 channels are currently not supported, therefore input channels are always treated as float channels.
 		// Channel combinations which don't match the ERGBFormat::GrayF pattern are qualified as ERGBFormat::RGBAF.
 		// Note that channels inside the EXR file are indexed by name, therefore can be decoded in any RGB order.
-		Format = (ChannelCount == UE_ARRAY_COUNT(cChannelNamesGray) && bMatchesGrayOrder) ? ERGBFormat::GrayF : ERGBFormat::RGBAF;
+
+		// NOTE: TinyEXR writes 1-channel EXR as an "A" named channel
+		//  this cannot be loaded as a 1-channel image (you would just get all zeros)
+		// it must be loaded as RGBA here
+		// @todo Oodle : load that as RGBA then move A to R and convert back to 1 channel ?
+		if (ChannelCount == 1 && !bHasAlphaChannel)
+		{
+			Format = ERGBFormat::GrayF;
+		}
+		else
+		{
+			Format = ERGBFormat::RGBAF;
+		}
 	}
 	catch (const std::exception& Exception)
 	{
@@ -291,9 +358,10 @@ void FExrImageWrapper::Compress(int32 Quality)
 	TArray64<uint8> ConvertedRawData;
 	bool bNeedsConversion = false;
 
-	if (RawBitDepth == 8)
+	if (BitDepth == 8)
 	{
 		// uint8 channels are linearly converted into FFloat16 channels.
+		// note: NO GAMMA CORRECTION
 		ConvertedRawData.SetNumUninitialized(sizeof(FFloat16) * RawData.Num());
 		FFloat16* Output = reinterpret_cast<FFloat16*>(ConvertedRawData.GetData());
 		for (int64 i = 0; i < RawData.Num(); ++i)
@@ -305,14 +373,14 @@ void FExrImageWrapper::Compress(int32 Quality)
 	}
 	else
 	{
-		ImfPixelType = (RawBitDepth == 16) ? Imf::HALF : Imf::FLOAT;
+		ImfPixelType = (BitDepth == 16) ? Imf::HALF : Imf::FLOAT;
 	}
 
 	const TArray64<uint8>& PixelData = bNeedsConversion ? ConvertedRawData : RawData;
 
 	const char* const* ChannelNames;
-	int32 ChannelCount = GetChannelNames(RawFormat, ChannelNames);
-	check((int64)ChannelCount * Width * Height * RawBitDepth == RawData.Num() * 8);
+	int32 ChannelCount = GetChannelNames(Format, ChannelNames);
+	check((int64)ChannelCount * Width * Height * BitDepth == RawData.Num() * 8);
 
 	int32 BytesPerChannelPixel = (ImfPixelType == Imf::HALF) ? 2 : 4;
 	TArray<TArray64<uint8>> ChannelData;
@@ -371,7 +439,7 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 	check(CompressedData.Num());
 
 	// Ensure we haven't already uncompressed the file.
-	if (RawData.Num() && InFormat == RawFormat && InBitDepth == RawBitDepth)
+	if (RawData.Num() && InFormat == Format && InBitDepth == BitDepth)
 	{
 		return;
 	}
@@ -404,7 +472,7 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 
 	const char* const* ChannelNames;
 	int32 ChannelCount = GetChannelNames(InFormat, ChannelNames);
-	check(ChannelCount);
+	check(ChannelCount == 1 || ChannelCount == 4);
 
 	TArray<TArray64<uint8>> ChannelData;
 	ChannelData.SetNum(ChannelCount);
@@ -451,8 +519,8 @@ void FExrImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDe
 		}
 	}
 
-	RawFormat = InFormat;
-	RawBitDepth = InBitDepth;
+	Format = InFormat;
+	BitDepth = InBitDepth;
 }
 
 

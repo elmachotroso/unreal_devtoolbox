@@ -65,7 +65,7 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 	for (FDisplayClusterViewport* const ViewportIt : Viewports)
 	{
 		// update only current cluster node
-		if (ViewportIt->GetClusterNodeId() == ClusterNodeId)
+		if ((ClusterNodeId.IsEmpty() || ViewportIt->GetClusterNodeId() == ClusterNodeId))
 		{
 			if (ViewportIt->RenderSettings.bEnable && ViewportIt->RenderSettings.bVisible)
 			{
@@ -110,11 +110,15 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 		return false;
 	}
 
+	const ADisplayClusterRootActor* RootActor = GetRootActor();
+	if (RootActor && !RootActor->IsEditorRenderEnabled())
+	{
+		bOutFrameRendered = true;
+		return true;
+	}
+	
 	FSceneInterface* PreviewScene = CurrentWorld->Scene;
 	FEngineShowFlags EngineShowFlags = FEngineShowFlags(EShowFlagInitMode::ESFIM_Game);
-
-	//Experimental code from render team, now always disabled
-	const bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
 
 	int32 ViewportIndex = 0;
 	bool bViewportsRenderPassDone = false;
@@ -153,6 +157,18 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 
 				ConfigureViewFamily(RenderTargetIt, ViewFamiliesIt, ViewFamily);
 
+				if (RenderTargetIt.CaptureMode == EDisplayClusterViewportCaptureMode::Default
+					&& RootActor
+					&& !RootActor->bPreviewEnablePostProcess
+					&& RootActor->DoObserversNeedPostProcessRenderTarget())
+				{
+					if (ViewFamily.EngineShowFlags.TemporalAA)
+					{
+						ViewFamily.EngineShowFlags.SetTemporalAA(false);
+						ViewFamily.EngineShowFlags.SetAntiAliasing(true);
+					}
+				}
+				
 				for (FDisplayClusterRenderFrame::FFrameView& ViewIt : ViewFamiliesIt.Views)
 				{
 					bool bViewportAlreadyRendered = ViewportIndex < (int32)InFirstViewportNum;
@@ -169,7 +185,7 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 						FRotator ViewRotation;
 						FSceneView* View = ViewportPtr->ImplCalcScenePreview(ViewFamily, ViewIt.ContextNum);
 
-						if (View != nullptr && ViewIt.IsShouldRenderView() == false)
+						if (View != nullptr && ViewIt.ShouldRenderSceneView() == false)
 						{
 							ViewFamily.Views.Remove(View);
 
@@ -200,8 +216,6 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 					// Screen percentage is still not supported in scene capture.
 					ViewFamily.EngineShowFlags.ScreenPercentage = false;
 					ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(ViewFamily, 1.0f));
-
-					ViewFamily.bIsRenderedImmediatelyAfterAnotherViewFamily = bIsRenderedImmediatelyAfterAnotherViewFamily;
 
 					FCanvas Canvas(RenderTargetIt.RenderTargetPtr, nullptr, PreviewScene->GetWorld(), ERHIFeatureLevel::SM5, FCanvas::CDM_DeferDrawing /*FCanvas::CDM_ImmediateDrawing*/, 1.0f);
 					Canvas.Clear(FLinearColor::Black);

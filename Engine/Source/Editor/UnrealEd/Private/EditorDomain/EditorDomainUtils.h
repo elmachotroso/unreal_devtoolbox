@@ -13,9 +13,11 @@
 #include "Memory/MemoryFwd.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/EnumClassFlags.h"
+#include "ProfilingDebugging/CookStats.h"
 #include "Serialization/CustomVersion.h"
 #include "Templates/Function.h"
 #include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogEditorDomainSave, Log, All);
 
@@ -34,13 +36,14 @@ namespace UE::EditorDomain
 struct FClassDigestData
 {
 public:
-	FBlake3Hash SchemaHash;
-	/** CustomVersions used by the class */
+	/** Inclusive schemahash for the class and all of its transitively constructible classes */
+	FBlake3Hash InclusiveSchemaHash;
+	/** CustomVersions used by the class or its constructed classes*/
 	TArray<int32> CustomVersionHandles;
-	/** Classes that can be created by the class during PostLoad/PreSave (parsed from ini) */
-	TArray<FName> ConstructClasses;
+	/** Classes that can be created by the class during PostLoad/PreSave (reported by DeclareConstructClasses) */
+	TArray<FTopLevelAssetPath> ConstructClasses;
 	/** The closest native parent of (the possibly CoreRedirected target of) the class */
-	FName ResolvedClosestNative;
+	FTopLevelAssetPath ClosestNative;
 	/** EditorDomainEnabled allows everything and uses only a blocklist, so DomainUse by default is enabled. */
 	EDomainUse EditorDomainUse = EDomainUse::LoadEnabled | EDomainUse::SaveEnabled;
 
@@ -55,9 +58,26 @@ public:
 /** Threadsafe cache of ClassName -> Digest data for calculating EditorDomain Digests */
 struct FClassDigestMap
 {
-	TMap<FName, FClassDigestData> Map;
+	TMap<FTopLevelAssetPath, FClassDigestData> Map;
 	FRWLock Lock;
 };
+
+/**
+ * A result code indicating whether a EditorDomain package could be saved into the editor domain, and if not why not
+ * EditorDomain records in DDC have a Valid flag in their metadata. If the Valid flag is invalid, the record does not
+ * store a EditorDomain package and it instead has a StorageResult in the metadata explaining why it failed.
+ */
+enum class ESaveStorageResult
+{
+	Valid,
+	UnexpectedClass,
+	UnexpectedCustomVersion,
+	BulkDataTooLarge,
+	InvalidCode,
+	// When adding values, add them to SaveStoreResultToText as well
+};
+FUtf8StringView LexToUtf8(UE::EditorDomain::ESaveStorageResult Result);
+ESaveStorageResult SaveStorageResultFromString(FUtf8StringView Text);
 
 /**
  * Calculate the PackageDigest for the given packagePath.
@@ -66,7 +86,7 @@ struct FClassDigestMap
 FPackageDigest CalculatePackageDigest(IAssetRegistry& AssetRegistry, FName PackageName);
 
 /** For any ClassNames not already in ClassDigests, look up their UStruct and add them. */
-void PrecacheClassDigests(TConstArrayView<FName> ClassNames);
+void PrecacheClassDigests(TConstArrayView<FTopLevelAssetPath> ClassNames);
 
 /** Get the CacheRequest for the given package from the EditorDomain cache bucket. */
 void RequestEditorDomainPackage(const FPackagePath& PackagePath,
@@ -94,5 +114,12 @@ FClassDigestMap& GetClassDigests();
 
 /** Initializes some global config-driven values used by the EditorDomain and TargetDomain. */
 void UtilsInitialize();
+
+#if ENABLE_COOK_STATS
+namespace CookStats
+{
+	extern FCookStats::FDDCResourceUsageStats Usage;
+}
+#endif
 
 }

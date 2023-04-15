@@ -7,7 +7,7 @@
 #include "UObject/Object.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "UObject/ObjectKey.h"
 #include "Input/Reply.h"
 #if WITH_EDITOR
@@ -16,6 +16,7 @@
 #include "EdGraphSchema.generated.h"
 
 class FSlateRect;
+struct FSlateBrush;
 class UEdGraph;
 struct FBPVariableDescription;
 
@@ -189,6 +190,9 @@ public:
 		return NewNode;
 	}
 
+	/** Performs a double click on the action */
+	virtual FReply OnDoubleClick(UBlueprint* InBlueprint) { return FReply::Unhandled(); }
+
 	// Updates the category of the *action* and refreshes the search text; does not change the persistent backing item
 	// (e.g., it will not actually move a user added variable or function to a new category)
 	void CosmeticUpdateCategory(FText NewCategory);
@@ -292,7 +296,7 @@ public:
 	// (e.g., both are variables in the same Blueprint)
 	virtual FEdGraphSchemaActionDefiningObject GetPersistentItemDefiningObject() const { return FEdGraphSchemaActionDefiningObject(nullptr); }
 
-	// Returns true if the action refers to a external or local variable
+	// Returns true if the action is of the given type.
 	virtual bool IsA(const FName& InType) const
 	{
 		return InType == GetTypeId();
@@ -300,6 +304,18 @@ public:
 
 	// Returns true if the action refers to a member or local variable
 	virtual bool IsAVariable() const { return false; }
+
+	// Returns true if the action can be renamed
+	virtual bool CanBeRenamed() const { return true; }
+
+	// Returns true if the action can be deleted
+	virtual bool CanBeDeleted() const { return false; }
+
+	// Can be used to override the icon of the action in the palette
+	virtual FSlateBrush const* GetPaletteIcon() const { return nullptr; }
+
+	// Can be used to override the tooltip shown in the palette
+	virtual FText GetPaletteToolTip() const { return FText(); }
 
 private:
 	void UpdateSearchText();
@@ -622,6 +638,50 @@ public:
 	ENGINE_API FString GetNotesAsString() const;
 };
 
+#if WITH_EDITORONLY_DATA
+struct FGraphSchemaSearchWeightModifiers
+{
+	float NodeTitleWeight = 0.0f;
+	float KeywordWeight = 0.0f;
+	float DescriptionWeight = 0.0f;
+	float CategoryWeight = 0.0f;
+	float WholeMatchLocalizedWeightMultiplier = 0.0f;
+	float WholeMatchWeightMultiplier = 0.0f;
+	float StartsWithBonusWeightMultiplier = 0.0f;
+	float PercentageMatchWeightMultiplier = 0.0f;
+	float ShorterMatchWeight = 0.0f;
+};
+
+// Helper struct storing the search text array with its weight info
+struct FGraphSchemaSearchTextWeightInfo
+{
+	FGraphSchemaSearchTextWeightInfo(const TArray< FString >* InArray, float InWeightModifier, float* OutDebugWeight)
+		: Array(InArray), WeightModifier(InWeightModifier), DebugWeight(OutDebugWeight)
+	{}
+
+	const TArray< FString >* Array = nullptr;
+	float WeightModifier = 0.0f;
+	float* DebugWeight = nullptr;
+};
+
+// Helper struct storing the breakdown of the weights assigned to the search text
+struct FGraphSchemaSearchTextDebugInfo
+{
+	float TotalWeight = 0.0f;			// Overall weight
+
+	float NodeTitleWeight = 0.0f;		// Weight for the node's title
+	float KeywordWeight = 0.0f;			// Weight for the node's keywords
+	float DescriptionWeight = 0.0f;		// Weight for the node's description
+	float CategoryWeight = 0.0f;		// Weight for the category
+
+	float PercentMatch = 0.0f;			// The calculated whole match percentage
+	float PercentMatchWeight = 0.0f;	// Weight for the whole match percentage
+	float ShorterMatchWeight = 0.0f;	// Weight for the shorter matched words
+
+	/** Print out the debug info about this weight info to the console */
+	ENGINE_API virtual void Print(const TArray<FString>& SearchForKeywords, const FGraphActionListBuilderBase::ActionGroup& Action) const;
+};
+#endif // WITH_EDITORONLY_DATA
 
 UCLASS(abstract)
 class ENGINE_API UEdGraphSchema : public UObject
@@ -844,6 +904,9 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 * @param DraggedFromPins				Any pins that this action was dragged off of
 	 */
 	virtual float GetActionFilteredWeight(const FGraphActionListBuilderBase::ActionGroup& InCurrentAction, const TArray<FString>& InFilterTerms, const TArray<FString>& InSanitizedFilterTerms, const TArray<UEdGraphPin*>& DraggedFromPins) const;
+
+	/** Get the weight modifiers from the console variable settings */
+	virtual FGraphSchemaSearchWeightModifiers GetSearchWeightModifiers() const;
 #endif // WITH_EDITORONLY_DATA
 
 	/**
@@ -984,6 +1047,11 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 */
 	virtual bool TryRenameGraph(UEdGraph* GraphToRename, const FName& InNewName) const { return false; }
 
+	/*
+	 * Try to retrieve the event child actions for a given graph
+	 */
+	virtual bool TryToGetChildEvents(const UEdGraph* Graph, const int32 SectionId, TArray<TSharedPtr<FEdGraphSchemaAction>>& Actions, const FText& ParentCategory) const { return false; }
+
 	/**
 	 * Can TestNode be encapsulated into a child graph?
 	 */
@@ -993,6 +1061,11 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 * Can the function graph be dropped into another graph
 	 */
 	virtual bool CanGraphBeDropped(TSharedPtr<FEdGraphSchemaAction> InAction) const { return false; }
+
+	/*
+	 * Returns a custom reference string for searching within the blueprint based on a given action
+	 */
+	virtual FString GetFindReferenceSearchTerm(const FEdGraphSchemaAction* InGraphAction) const { return FString(); }
 
 	/*
 	 * Begins a drag and drop action to drag a graph action into another graph
@@ -1250,4 +1323,12 @@ class ENGINE_API UEdGraphSchema : public UObject
 	}
 #endif
 	
+#if WITH_EDITORONLY_DATA
+protected:
+	/** Build an array containing all search types, return the index of the first non-localized entry. */
+	int32 CollectSearchTextWeightInfo(const FGraphActionListBuilderBase::ActionGroup& InCurrentAction, const FGraphSchemaSearchWeightModifiers& InWeightModifiers,
+		TArray<FGraphSchemaSearchTextWeightInfo>& OutWeightedArrayList, FGraphSchemaSearchTextDebugInfo* InDebugInfo) const;
+
+	void PrintSearchTextDebugInfo(const TArray<FString>& InFilterTerms, const FGraphActionListBuilderBase::ActionGroup& InCurrentAction, const FGraphSchemaSearchTextDebugInfo* InDebugInfo) const;
+#endif // WITH_EDITORONLY_DATA
 };

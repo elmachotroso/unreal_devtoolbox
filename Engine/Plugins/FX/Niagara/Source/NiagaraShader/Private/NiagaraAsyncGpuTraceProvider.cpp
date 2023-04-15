@@ -7,7 +7,7 @@
 #include "NiagaraAsyncGpuTraceProviderHwrt.h"
 #include "NiagaraSettings.h"
 #include "NiagaraShaderParticleID.h"
-#include "Renderer/Private/ScenePrivate.h"
+#include "ScenePrivate.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -53,11 +53,6 @@ class FNiagaraUpdateCollisionGroupMapCS : public FGlobalShader
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
@@ -260,9 +255,9 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 	RHICmdList.Transition(FRHITransitionInfo(Result.HashToCollisionGroups.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	//First we have to clear the buffers. Can probably do this better.
-	NiagaraFillGPUIntBuffer(RHICmdList, FeatureLevel, Result.PrimIdHashTable, 0);
+	NiagaraFillGPUIntBuffer(RHICmdList, FeatureLevel, Result.PrimIdHashTable.UAV, Result.PrimIdHashTable.NumBytes / sizeof(uint32), 0);
 	RHICmdList.Transition(FRHITransitionInfo(Result.PrimIdHashTable.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-	NiagaraFillGPUIntBuffer(RHICmdList, FeatureLevel, Result.HashToCollisionGroups, INDEX_NONE);
+	NiagaraFillGPUIntBuffer(RHICmdList, FeatureLevel, Result.HashToCollisionGroups.UAV, Result.HashToCollisionGroups.NumBytes / sizeof(uint32), INDEX_NONE);
 	RHICmdList.Transition(FRHITransitionInfo(Result.HashToCollisionGroups.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 	TShaderMapRef<FNiagaraUpdateCollisionGroupMapCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
@@ -278,7 +273,7 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 	// To simplify the shader code, the size of the table must be a multiple of the thread count.
 	check(Result.HashTableSize % FNiagaraUpdateCollisionGroupMapCS::THREAD_COUNT == 0);
 
-	RHICmdList.SetComputeShader(ShaderRHI);
+	SetComputePipelineState(RHICmdList, ShaderRHI);
 	SetShaderParameters(RHICmdList, ComputeShader, ShaderRHI, Params);
 	RHICmdList.DispatchComputeShader(FMath::DivideAndRoundUp(CollisionGroupMap.Num(), (int32)FNiagaraUpdateCollisionGroupMapCS::THREAD_COUNT), 1, 1);
 	UnsetShaderUAVs(RHICmdList, ComputeShader, ShaderRHI);

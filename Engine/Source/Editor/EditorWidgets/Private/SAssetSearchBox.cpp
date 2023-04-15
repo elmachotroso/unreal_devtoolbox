@@ -1,13 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAssetSearchBox.h"
-#include "Layout/WidgetPath.h"
+
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "CoreTypes.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/LocKeyFuncs.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Tuple.h"
+#include "Types/SlateStructs.h"
 #include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FGeometry;
 
 /** Case sensitive hashing function for TMap */
 template <typename ValueType>
@@ -59,19 +83,23 @@ void SAssetSearchBox::Construct( const FArguments& InArgs )
 			SAssignNew(SuggestionBox, SMenuAnchor)
 			.Placement( InArgs._SuggestionListPlacement )
 			[
-				SAssignNew(InputText, SSearchBox)
+				/* Use an SFilterSearchBox internally to add the ability to show search history and potentially
+				 * save searches as filters if used with a Filter Bar widget (@see SBasicFilterBar etc)
+				 */
+				SAssignNew(InputText, SFilterSearchBox)
 				.InitialText(InArgs._InitialText)
 				.HintText(InArgs._HintText)
 				.OnTextChanged(this, &SAssetSearchBox::HandleTextChanged)
 				.OnTextCommitted(this, &SAssetSearchBox::HandleTextCommitted)
-				.SelectAllTextWhenFocused( false )
 				.DelayChangeNotificationsWhileTyping( InArgs._DelayChangeNotificationsWhileTyping )
 				.OnKeyDownHandler(this, &SAssetSearchBox::HandleKeyDown)
+				.ShowSearchHistory(InArgs._ShowSearchHistory)
+				.OnSaveSearchClicked(InArgs._OnSaveSearchClicked)
 			]
 			.MenuContent
 				(
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+				.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 				.Padding( FMargin(2) )
 				[
 					SNew(SBox)
@@ -184,7 +212,7 @@ bool SAssetSearchBox::HasKeyboardFocus() const
 FReply SAssetSearchBox::OnFocusReceived( const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent )
 {
 	// Forward keyboard focus to our editable text widget
-	return FReply::Handled().SetUserFocus(InputText.ToSharedRef(), InFocusEvent.GetCause());
+	return InputText->OnFocusReceived(MyGeometry, InFocusEvent);
 }
 
 void SAssetSearchBox::HandleTextChanged(const FText& NewText)
@@ -272,8 +300,8 @@ TSharedRef<ITableRow> SAssetSearchBox::MakeSuggestionListItemWidget(TSharedPtr<F
 			.Padding(0.0f, 4.0f, 0.0f, 2.0f) // Add some empty space before the line, and a tiny bit after it
 			[
 				SNew(SBorder)
-				.Padding(FEditorStyle::GetMargin("Menu.Separator.Padding")) // We'll use the border's padding to actually create the horizontal line
-				.BorderImage(FEditorStyle::GetBrush("Menu.Separator"))
+				.Padding(FAppStyle::GetMargin("Menu.Separator.Padding")) // We'll use the border's padding to actually create the horizontal line
+				.BorderImage(FAppStyle::GetBrush("Menu.Separator"))
 			];
 		}
 
@@ -282,7 +310,7 @@ TSharedRef<ITableRow> SAssetSearchBox::MakeSuggestionListItemWidget(TSharedPtr<F
 		[
 			SNew(STextBlock)
 			.Text(Suggestion->DisplayName.ToUpper())
-			.TextStyle(FEditorStyle::Get(), "Menu.Heading")
+			.TextStyle(FAppStyle::Get(), "Menu.Heading")
 		];
 
 		RowWidget = HeaderVBox;
@@ -291,7 +319,7 @@ TSharedRef<ITableRow> SAssetSearchBox::MakeSuggestionListItemWidget(TSharedPtr<F
 	{
 		RowWidget =
 			SNew(SBox)
-			.Padding(FEditorStyle::GetMargin(bIdentItems ? "Menu.Block.IndentedPadding" : "Menu.Block.Padding"))
+			.Padding(FAppStyle::GetMargin(bIdentItems ? "Menu.Block.IndentedPadding" : "Menu.Block.Padding"))
 			[
 				SNew(STextBlock)
 				.Text(Suggestion->DisplayName)
@@ -400,4 +428,9 @@ FText SAssetSearchBox::DefaultSuggestionChosenImpl(const FText& SearchText, cons
 {
 	// Default implementation just uses the suggestion as the search text
 	return FText::FromString(Suggestion);
+}
+
+void SAssetSearchBox::SetOnSaveSearchHandler(SFilterSearchBox::FOnSaveSearchClicked InOnSaveSearchHandler)
+{
+	InputText->SetOnSaveSearchHandler(InOnSaveSearchHandler);
 }

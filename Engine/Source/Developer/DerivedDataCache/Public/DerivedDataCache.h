@@ -2,20 +2,26 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/ContainersFwd.h"
 #include "Containers/StringFwd.h"
+#include "CoreTypes.h"
 #include "DerivedDataCacheKey.h"
 #include "DerivedDataCachePolicy.h"
 #include "DerivedDataCacheRecord.h"
 #include "DerivedDataRequestTypes.h"
 #include "DerivedDataSharedString.h"
+#include "DerivedDataSharedStringFwd.h"
 #include "DerivedDataValue.h"
 #include "DerivedDataValueId.h"
+#include "IO/IoHash.h"
 #include "Math/NumericLimits.h"
 #include "Memory/SharedBuffer.h"
 #include "Templates/Function.h"
 
 #define UE_API DERIVEDDATACACHE_API
+
+class FCbFieldView;
+class FCbWriter;
 
 namespace UE::DerivedData { class ICacheStoreMaintainer; }
 namespace UE::DerivedData { class IRequestOwner; }
@@ -354,8 +360,21 @@ struct FCacheGetChunkResponse
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheGetRequest& Request);
+UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheGetValueRequest& Request);
+UE_API FCbWriter& operator<<(FCbWriter& Writer, const FCacheGetChunkRequest& Request);
+
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheGetRequest& OutRequest);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheGetValueRequest& OutRequest);
+UE_API bool LoadFromCompactBinary(FCbFieldView Field, FCacheGetChunkRequest& OutRequest);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /** Returns a reference to the cache. Asserts if not available. */
 UE_API ICache& GetCache();
+
+/** Returns a pointer to the cache. Null if not available or not created. */
+UE_API ICache* TryGetCache();
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

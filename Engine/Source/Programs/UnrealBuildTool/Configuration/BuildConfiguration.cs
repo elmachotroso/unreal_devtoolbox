@@ -43,6 +43,13 @@ namespace UnrealBuildTool
 		public bool bAllowHybridExecutor = false;
 
 		/// <summary>
+		/// Whether Horde remote compute may be used. Highly experimental, disabled by default.
+		/// </summary>
+		[XmlConfigFile]
+		[CommandLine("-HordeCompute", Value = "true")]
+		public bool bAllowHordeCompute = false;
+
+		/// <summary>
 		/// Whether XGE may be used.
 		/// </summary>
 		[XmlConfigFile]
@@ -62,12 +69,6 @@ namespace UnrealBuildTool
 		[XmlConfigFile]
 		[CommandLine("-NoSNDBS", Value = "false")]
 		public bool bAllowSNDBS = true;
-
-		/// <summary>
-		/// Whether the experimental async TaskExecutor may be used.
-		/// </summary>
-		[XmlConfigFile]
-		public bool bAllowTaskExecutor = false;
 
 		/// <summary>
 		/// Enables support for very fast iterative builds by caching target data. Turning this on causes Unreal Build Tool to emit
@@ -101,6 +102,13 @@ namespace UnrealBuildTool
 		[XmlConfigFile]
 		[CommandLine("-MaxParallelActions")]
 		public int MaxParallelActions = 0;
+
+		/// <summary>
+		/// Consider logical cores when determining how many total cpu cores are available.
+		/// </summary>
+		[XmlConfigFile(Name = "bAllCores")]
+		[CommandLine("-AllCores")]
+		public bool bAllCores = false;
 
 		/// <summary>
 		/// If true, force header regeneration. Intended for the build machine.
@@ -137,6 +145,18 @@ namespace UnrealBuildTool
 		public bool bForceDebugUnrealHeaderTool = false;
 
 		/// <summary>
+		/// If true, use C# UHT internal to UBT
+		/// </summary>
+		[XmlConfigFile(Category = "UEBuildConfiguration")]
+		public bool bUseBuiltInUnrealHeaderTool = true;
+
+		/// <summary>
+		/// If true, generate warnings when C++ UHT is used
+		/// </summary>
+		[XmlConfigFile(Category = "UEBuildConfiguration")]
+		public bool bWarnOnCppUnrealHeaderTool = false;
+
+		/// <summary>
 		/// Whether to skip compiling rules assemblies and just assume they are valid
 		/// </summary>
 		[CommandLine("-SkipRulesCompile")]
@@ -159,5 +179,28 @@ namespace UnrealBuildTool
 		/// </summary>
 		[XmlConfigFile(Category = "WindowsPlatform")]
 		public int MaxNestedPathLength = 200;
+
+		/// <summary>
+		/// When single file targets are specified, via -File=, -SingleFile=, or -FileList=
+		/// If this option is set, no error will be produced if the source file is not included in the target.
+		/// Additionally, if any file or file list is specified, the target will not be built if none of the specified files are part of that target,
+		/// including the case where a file specified via -FileList= is empty.
+		/// </summary>
+		[CommandLine("-IgnoreInvalidFiles")]
+		public bool bIgnoreInvalidFiles;
+
+		/// <summary>
+		/// Instruct the executor to write compact output e.g. only errors, if supported by the executor.
+		/// This field is used to hold the value when specified from the command line or XML
+		/// </summary>
+		[XmlConfigFile(Name = "bCompactOutput")]
+		[CommandLine("-CompactOutput")]
+		private bool bCompactOutputCommandLine = false;
+
+		/// <summary>
+		/// Instruct the executor to write compact output e.g. only errors, if supported by the executor,
+		/// and only if output is not being redirected e.g. during a build from within Visual Studio
+		/// </summary>
+		public bool bCompactOutput => bCompactOutputCommandLine && !Console.IsOutputRedirected;
 	}
 }

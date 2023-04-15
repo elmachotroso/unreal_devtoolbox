@@ -25,7 +25,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Exporters/Exporter.h"
 #include "Animation/AnimInstance.h"
 #include "Editor/EditorEngine.h"
@@ -44,7 +44,6 @@
 #include "EdMode.h"
 #include "Dialogs/Dialogs.h"
 #include "UnrealEdGlobals.h"
-#include "Matinee/MatineeActor.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "Kismet2/CompilerResultsLog.h"
@@ -74,7 +73,6 @@
 #include "K2Node_Literal.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_MathExpression.h"
-#include "K2Node_MatineeController.h"
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_StructOperation.h"
 #include "K2Node_TemporaryVariable.h"
@@ -112,7 +110,7 @@
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Editor/Blutility/Public/IBlutilityModule.h"
+#include "IBlutilityModule.h"
 
 #include "Engine/InheritableComponentHandler.h"
 #include "LevelEditor.h"
@@ -125,11 +123,15 @@
 #include "AnimGraphNode_LinkedInputPose.h"
 #include "AnimGraphNode_Root.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/FeedbackContext.h"
 
-#include "AssetRegistryModule.h"
+#include "UObject/FastReferenceCollector.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Interfaces/TypedElementHierarchyInterface.h"
+#include "Elements/Interfaces/TypedElementObjectInterface.h"
 #include "Misc/MessageDialog.h"
+#include "UObject/FastReferenceCollector.h"
 
 #define LOCTEXT_NAMESPACE "Blueprint"
 
@@ -139,9 +141,14 @@ DEFINE_STAT(EKismetCompilerStats_NotifyBlueprintChanged);
 DECLARE_CYCLE_STAT(TEXT("Mark Blueprint as Structurally Modified"), EKismetCompilerStats_MarkBlueprintasStructurallyModified, STATGROUP_KismetCompiler);
 DECLARE_CYCLE_STAT(TEXT("Refresh External DependencyNodes"), EKismetCompilerStats_RefreshExternalDependencyNodes, STATGROUP_KismetCompiler);
 
-struct FCompareNodePriority
+static void SortNodes(TArray<UK2Node*>& AllNodes, bool bSortByPriorityOnly = false)
 {
-	FORCEINLINE bool operator()( const UK2Node& A, const UK2Node& B ) const
+	auto SortNodesInternalByPriorityOnly = [](const UK2Node& A, const UK2Node& B)
+	{
+		return A.GetNodeRefreshPriority() > B.GetNodeRefreshPriority();
+	};
+
+	auto SortNodesInternal = [SortNodesInternalByPriorityOnly](const UK2Node& A, const UK2Node& B)
 	{
 		const bool NodeAChangesStructure = A.NodeCausesStructuralBlueprintChange();
 		const bool NodeBChangesStructure = B.NodeCausesStructuralBlueprintChange();
@@ -150,10 +157,22 @@ struct FCompareNodePriority
 		{
 			return NodeAChangesStructure;
 		}
-		
-		return A.GetNodeRefreshPriority() > B.GetNodeRefreshPriority();
+
+		return SortNodesInternalByPriorityOnly(A, B);
+	};
+
+	if (AllNodes.Num() > 1)
+	{
+		if (bSortByPriorityOnly)
+		{
+			AllNodes.Sort(SortNodesInternalByPriorityOnly);
+		}
+		else
+		{
+			AllNodes.Sort(SortNodesInternal);
+		}
 	}
-};
+}
 
 /**
  * This helper does a depth first search, looking for the highest parent class that
@@ -391,7 +410,7 @@ void FBasePinChangeHelper::Broadcast(UBlueprint* InBlueprint, UK2Node_EditablePi
 						const bool bClassMatchesEasy = (MemberParentClass != nullptr)
 							&& ((SignatureClass != nullptr && MemberParentClass->IsChildOf(SignatureClass)) || MemberParentClass->IsChildOf(InBlueprint->GeneratedClass));
 						const bool bClassMatchesHard = !bClassMatchesEasy && CallSite->FunctionReference.IsSelfContext() && (SignatureClass == nullptr)
-							&& (CallSiteBlueprint == InBlueprint || CallSiteBlueprint->SkeletonGeneratedClass->IsChildOf(InBlueprint->SkeletonGeneratedClass));
+							&& (CallSiteBlueprint == InBlueprint || (CallSiteBlueprint->SkeletonGeneratedClass && CallSiteBlueprint->SkeletonGeneratedClass->IsChildOf(InBlueprint->SkeletonGeneratedClass)));
 
 						if (bClassMatchesEasy || bClassMatchesHard)
 						{
@@ -525,10 +544,7 @@ void FBlueprintEditorUtils::RefreshAllNodes(UBlueprint* Blueprint)
 	FBlueprintEditorUtils::GetAllNodesOfClass(Blueprint, AllNodes);
 
 	const bool bIsMacro = (Blueprint->BlueprintType == BPTYPE_MacroLibrary);
-	if( AllNodes.Num() > 1 )
-	{
-		AllNodes.Sort(FCompareNodePriority());
-	}
+	SortNodes(AllNodes);
 
 	bool bLastChangesStructure = (AllNodes.Num() > 0) ? AllNodes[0]->NodeCausesStructuralBlueprintChange() : true;
 	for( TArray<UK2Node*>::TIterator NodeIt(AllNodes); NodeIt; ++NodeIt )
@@ -580,10 +596,7 @@ void FBlueprintEditorUtils::ReconstructAllNodes(UBlueprint* Blueprint)
 	TArray<UK2Node*> AllNodes;
 	FBlueprintEditorUtils::GetAllNodesOfClass(Blueprint, AllNodes);
 
-	if (AllNodes.Num() > 1)
-	{
-		AllNodes.Sort(FCompareNodePriority());
-	}
+	SortNodes(AllNodes, true);
 
 	for (TArray<UK2Node*>::TIterator NodeIt(AllNodes); NodeIt; ++NodeIt)
 	{
@@ -1262,7 +1275,7 @@ void FBlueprintEditorUtils::RemoveStaleFunctions(UBlueprintGeneratedClass* Class
 		FString OrphanedClassString = FString::Printf(TEXT("ORPHANED_DATA_ONLY_%s"), *Class->GetName());
 		FName OrphanedClassName = MakeUniqueObjectName(GetTransientPackage(), UBlueprintGeneratedClass::StaticClass(), FName(*OrphanedClassString));
 		UClass* OrphanedClass = NewObject<UBlueprintGeneratedClass>(GetTransientPackage(), OrphanedClassName, RF_Public | RF_Transient);
-		OrphanedClass->ClassAddReferencedObjects = Class->AddReferencedObjects;
+		OrphanedClass->CppClassStaticFunctions = Class->CppClassStaticFunctions;
 		OrphanedClass->ClassFlags |= CLASS_CompiledFromBlueprint;
 		OrphanedClass->ClassGeneratedBy = Class->ClassGeneratedBy;
 
@@ -2016,12 +2029,12 @@ void FBlueprintEditorUtils::PostDuplicateBlueprint(UBlueprint* Blueprint, bool b
 			UObject* NewCDO = Blueprint->GeneratedClass->GetDefaultObject();
 			check(NewCDO != nullptr);
 			UEditorEngine::CopyPropertiesForUnrelatedObjects(OldCDO, NewCDO);
-		}
 
-		if (!FBlueprintDuplicationScopeFlags::HasAnyFlag(FBlueprintDuplicationScopeFlags::NoExtraCompilation))
-		{
-			// And compile again to make sure they go into the generated class, get cleaned up, etc...
-			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection);
+			if (!FBlueprintDuplicationScopeFlags::HasAnyFlag(FBlueprintDuplicationScopeFlags::NoExtraCompilation))
+			{
+				// And compile again to make sure they go into the generated class, get cleaned up, etc...
+				FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipGarbageCollection);
+			}
 		}
 
 		// it can still keeps references to some external objects
@@ -2358,9 +2371,11 @@ UEdGraph* FBlueprintEditorUtils::CreateNewGraph(UObject* ParentScope, const FNam
 	{
 		if (UObject* ExistingObject = FindObject<UObject>(ParentScope, *(GraphName.ToString())))
 		{
-			if (!ensureMsgf(!ExistingObject->IsA<UEdGraph>(), TEXT("Graph %s already exists: %s"), *GraphName.ToString(), *ExistingObject->GetFullName()))
+			if (ExistingObject->IsA<UEdGraph>())
 			{
-				// Rename the old graph out of the way; but we have already failed at this point
+				// Rename the old graph out of the way - this may confuse the user somewhat - and even
+				// break their logic. But name collisions are not avoidable e.g. someone can add
+				// a function to an interface that conflicts with something in a class hierarchy
 				ExistingObject->Rename(nullptr, ExistingObject->GetOuter(), REN_DoNotDirty | REN_ForceNoResetLoaders);
 			}
 			else if (ExistingObject->IsA<UObjectRedirector>())
@@ -2987,10 +3002,13 @@ UK2Node_Event* FBlueprintEditorUtils::FindOverrideForFunction(const UBlueprint* 
 		UK2Node_Event* EventNode = AllEvents[i];
 		check(EventNode);
 		if(	EventNode->bOverrideFunction == true &&
-			EventNode->EventReference.GetMemberParentClass(EventNode->GetBlueprintClassFromNode())->IsChildOf(SignatureClass) &&
 			EventNode->EventReference.GetMemberName() == SignatureName )
 		{
-			return EventNode;
+			const UClass* MemberParentClass = EventNode->EventReference.GetMemberParentClass(EventNode->GetBlueprintClassFromNode());
+			if(MemberParentClass && MemberParentClass->IsChildOf(SignatureClass))
+			{
+				return EventNode;
+			}
 		}
 	}
 
@@ -3742,7 +3760,7 @@ int32 FBlueprintEditorUtils::FindTimelineIndex(const UBlueprint* Blueprint, cons
 	const FName TimelineTemplateName = *UTimelineTemplate::TimelineVariableNameToTemplateName(InName);
 	for(int32 i=0; i<Blueprint->Timelines.Num(); i++)
 	{
-		if(Blueprint->Timelines[i]->GetFName() == TimelineTemplateName)
+		if(Blueprint->Timelines[i] && Blueprint->Timelines[i]->GetFName() == TimelineTemplateName)
 		{
 			return i;
 		}
@@ -4666,7 +4684,11 @@ void FBlueprintEditorUtils::ValidateEditorOnlyNodes(const UK2Node* Node, FCompil
 		const bool bIsEditorOnlyPackage = NodeCDOPackage->HasAllPackagesFlags(PKG_EditorOnly);
 		const bool bIsUncookedOrDev = NodeCDOPackage->HasAnyPackageFlags(PKG_UncookedOnly | PKG_Developer);		
 
-		if (!bIsUncookedOrDev && bIsEditorOnlyPackage && !BP->IsEditorOnly())
+		const UClass* BlueprintClass = BP ? BP->ParentClass : nullptr;
+		const bool bIsEditorOnlyBlueprintBaseClass = BlueprintClass ? IsEditorOnlyObject(BlueprintClass) : false;
+
+		// Check whether the blueprint itself, or its class is marked as editor-only
+		if (!bIsUncookedOrDev && bIsEditorOnlyPackage && !(IsEditorOnlyObject(BP) || bIsEditorOnlyBlueprintBaseClass))
 		{
 			MessageLog.Warning(*LOCTEXT("EditorOnlyConflict_ErrorFmt", "The node '@@' is from an Editor Only module, but is placed in a runtime blueprint! K2 Nodes should only be defined in a Developer or UncookedOnly module.").ToString(), Node);
 		}
@@ -4810,7 +4832,10 @@ bool FBlueprintEditorUtils::AddMemberVariable(UBlueprint* Blueprint, const FName
 	NewVar.VarType.bIsReference   = false;
 
 	// Text variables, etc. should default to multiline
-	NewVar.SetMetaData(TEXT("MultiLine"), TEXT("true"));
+	if (NewVarType.PinCategory == UEdGraphSchema_K2::PC_String || NewVarType.PinCategory == UEdGraphSchema_K2::PC_Text)
+	{
+		NewVar.SetMetaData(TEXT("MultiLine"), TEXT("true"));
+	}
 
 	Blueprint->NewVariables.Add(NewVar);
 
@@ -5387,7 +5412,7 @@ FName FBlueprintEditorUtils::DuplicateMemberVariable(UBlueprint* InFromBlueprint
 				{
 					// if there is a property for variable, it means the original default value was already copied, so it can be safely overridden
 					NewVar.DefaultValue.Empty();
-					TargetProperty->ExportTextItem(NewVar.DefaultValue, OldPropertyAddr, OldPropertyAddr, nullptr, PPF_SerializedAsImportText);
+					TargetProperty->ExportTextItem_Direct(NewVar.DefaultValue, OldPropertyAddr, OldPropertyAddr, nullptr, PPF_SerializedAsImportText);
 				}
 			}
 
@@ -5943,7 +5968,7 @@ namespace UE::Blueprint::Private
 						else if (const UWorld* WorldReferencer = Cast<const UWorld>(AssetReferencer))
 						{
 							const auto& PersistentLevel = WorldReferencer->PersistentLevel;
-							if (!PersistentLevel.IsNull() && PersistentLevel->OwningWorld && Func(PersistentLevel->GetLevelScriptBlueprint()))
+							if (PersistentLevel && PersistentLevel->OwningWorld && Func(PersistentLevel->GetLevelScriptBlueprint()))
 							{
 								GWarn->EndSlowTask();
 								return true;
@@ -6201,11 +6226,24 @@ void FBlueprintEditorUtils::FixupVariableDescription(UBlueprint* Blueprint, FBPV
 	// Remove bitflag enum type metadata if the enum type name is missing or if the enum type is no longer a bitflags type.
 	if (VarDesc.HasMetaData(FBlueprintMetadata::MD_BitmaskEnum))
 	{
-		FString BitmaskEnumTypeName = VarDesc.GetMetaData(FBlueprintMetadata::MD_BitmaskEnum);
-		if (!BitmaskEnumTypeName.IsEmpty())
+		FString BitmaskEnumTypePath = VarDesc.GetMetaData(FBlueprintMetadata::MD_BitmaskEnum);
+		if (!BitmaskEnumTypePath.IsEmpty())
 		{
-			UEnum* BitflagsEnum = FindObject<UEnum>(ANY_PACKAGE, *BitmaskEnumTypeName);
-			if (BitflagsEnum == nullptr || !BitflagsEnum->HasMetaData(*FBlueprintMetadata::MD_Bitflags.ToString()))
+			const UEnum* BitflagsEnum = nullptr;
+			
+			// if the enum is saved by name (deprecated), find the associated enum and reserialize it as a long asset path
+			if (FPackageName::IsShortPackageName(BitmaskEnumTypePath))
+			{
+				BitflagsEnum = FindFirstObject<UEnum>(GetData(BitmaskEnumTypePath));
+				BitmaskEnumTypePath = FTopLevelAssetPath(BitflagsEnum->GetPackage()->GetFName(), BitflagsEnum->GetFName()).ToString();
+				VarDesc.SetMetaData(FBlueprintMetadata::MD_BitmaskEnum, BitmaskEnumTypePath);
+			}
+			else
+			{
+				BitflagsEnum = FindObject<UEnum>(nullptr, GetData(BitmaskEnumTypePath));
+			}
+			
+			if (BitflagsEnum == nullptr || !BitflagsEnum->HasMetaData(*FBlueprintMetadata::MD_Bitflags.ToString()) || !UEdGraphSchema_K2::IsAllowableBlueprintVariableType(BitflagsEnum))
 			{
 				VarDesc.RemoveMetaData(FBlueprintMetadata::MD_BitmaskEnum);
 			}
@@ -6346,7 +6384,6 @@ static void ShowNotification(const FText& Message, EMessageSeverity::Type Severi
 	{
 		switch(Severity)
 		{
-		case EMessageSeverity::CriticalError:
 		case EMessageSeverity::Error:
 			UE_LOG(LogBlueprint, Error, TEXT("%s"), *Message.ToString());
 			break;
@@ -6366,7 +6403,6 @@ static void ShowNotification(const FText& Message, EMessageSeverity::Type Severi
 		Warning.bFireAndForget = true;
 		switch(Severity)
 		{
-		case EMessageSeverity::CriticalError:
 		case EMessageSeverity::Error:
 			Warning.Image = FCoreStyle::Get().GetBrush(TEXT("MessageLog.Error"));
 			break;
@@ -6416,12 +6452,12 @@ FGuid FBlueprintEditorUtils::FindInterfaceFunctionGuid(const UFunction* Function
 }
 
 // Add a new interface, and member function graphs to the blueprint
-bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const FName& InterfaceClassName)
+bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName)
 {
-	check(InterfaceClassName != NAME_None);
+	check(!InterfaceClassPathName.IsNull());
 
 	// Attempt to find the class we want to implement
-	UClass* InterfaceClass = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *InterfaceClassName.ToString());
+	UClass* InterfaceClass = FindObject<UClass>(InterfaceClassPathName);
 
 	// Make sure the class is found, and isn't native (since Blueprints don't necessarily generate native classes.
 	check(InterfaceClass);
@@ -6435,7 +6471,7 @@ bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const F
 				FText::Format(
 					LOCTEXT("InterfaceAlreadyImplementedFmt", "Blueprint '{0}' already implements the interface '{1}'"),
 					FText::FromString(Blueprint->GetName()),
-					FText::FromString(InterfaceClassName.ToString())
+					FText::FromString(InterfaceClassPathName.ToString())
 				),
 				EMessageSeverity::Warning
 			);
@@ -6468,7 +6504,7 @@ bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const F
 						LOCTEXT("InterfaceFunctionConflictsFmt", "Blueprint '{0}' has a function or graph which conflicts with function '{1}' in interface '{2}'"),
 						FText::FromString(Blueprint->GetName()),
 						FText::FromName(FunctionName),
-						FText::FromName(InterfaceClassName)
+						FText::FromString(InterfaceClassPathName.ToString())
 					),
 					EMessageSeverity::Error
 				);
@@ -6501,12 +6537,18 @@ bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const F
 	return bAllFunctionsAdded;
 }
 
+bool FBlueprintEditorUtils::ImplementNewInterface(UBlueprint* Blueprint, const FName& InterfaceClassName)
+{
+	FTopLevelAssetPath InterfaceClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(InterfaceClassName.ToString(), ELogVerbosity::Warning, TEXT("FBlueprintEditorUtils::ImplementNewInterface"));
+	return ImplementNewInterface(Blueprint, InterfaceClassPathName);
+}
+
 // Gets the graphs currently in the blueprint associated with the specified interface
-void FBlueprintEditorUtils::GetInterfaceGraphs(UBlueprint* Blueprint, const FName& InterfaceClassName, TArray<UEdGraph*>& ChildGraphs)
+void FBlueprintEditorUtils::GetInterfaceGraphs(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName, TArray<UEdGraph*>& ChildGraphs)
 {
 	ChildGraphs.Empty();
 
-	if( InterfaceClassName == NAME_None )
+	if (InterfaceClassPathName.IsNull())
 	{
 		return;
 	}
@@ -6514,12 +6556,18 @@ void FBlueprintEditorUtils::GetInterfaceGraphs(UBlueprint* Blueprint, const FNam
 	// Find the implemented interface
 	for( int32 i = 0; i < Blueprint->ImplementedInterfaces.Num(); i++ )
 	{
-		if( Blueprint->ImplementedInterfaces[i].Interface->GetFName() == InterfaceClassName )
+		if( Blueprint->ImplementedInterfaces[i].Interface->GetClassPathName() == InterfaceClassPathName)
 		{
 			ChildGraphs = Blueprint->ImplementedInterfaces[i].Graphs;
 			return;			
 		}
 	}
+}
+
+void FBlueprintEditorUtils::GetInterfaceGraphs(UBlueprint* Blueprint, const FName& InterfaceClassName, TArray<UEdGraph*>& ChildGraphs)
+{
+	FTopLevelAssetPath InterfaceClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(InterfaceClassName.ToString(), ELogVerbosity::Warning, TEXT("FBlueprintEditorUtils::GetInterfaceGraphs"));
+	GetInterfaceGraphs(Blueprint, InterfaceClassPathName, ChildGraphs);
 }
 
 UFunction* FBlueprintEditorUtils::GetInterfaceFunction(UBlueprint* Blueprint, const FName FuncName)
@@ -6571,9 +6619,9 @@ bool FBlueprintEditorUtils::IsInterfaceFunction(UBlueprint* Blueprint, UFunction
 }
 
 // Remove an implemented interface, and its associated member function graphs
-void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, const FName& InterfaceClassName, bool bPreserveFunctions /*= false*/)
+void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName, bool bPreserveFunctions /*= false*/)
 {
-	if( InterfaceClassName == NAME_None )
+	if (InterfaceClassPathName.IsNull())
 	{
 		return;
 	}
@@ -6582,7 +6630,7 @@ void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, const FName& 
 	int32 Idx = INDEX_NONE;
 	for( int32 i = 0; i < Blueprint->ImplementedInterfaces.Num(); i++ )
 	{
-		if( Blueprint->ImplementedInterfaces[i].Interface->GetFName() == InterfaceClassName )
+		if( Blueprint->ImplementedInterfaces[i].Interface->GetClassPathName() == InterfaceClassPathName)
 		{
 			Idx = i;
 			break;
@@ -6656,6 +6704,12 @@ void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, const FName& 
 		// Mark Child Blueprints as modified to fixup references to the Interface
 		MarkBlueprintChildrenAsModified(Blueprint);
 	}
+}
+
+void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, const FName& InterfaceClassName, bool bPreserveFunctions /*= false*/)
+{
+	FTopLevelAssetPath InterfaceClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(InterfaceClassName.ToString(), ELogVerbosity::Warning, TEXT("FBlueprintEditorUtils::RemoveInterface"));
+	return RemoveInterface(Blueprint, InterfaceClassPathName, bPreserveFunctions);
 }
 
 bool FBlueprintEditorUtils::RemoveInterfaceFunction(UBlueprint* Blueprint, FBPInterfaceDescription& Interface, UFunction* Function, bool bPreserveFunction)
@@ -7372,10 +7426,30 @@ static void ConformInterfaceByName(UBlueprint* Blueprint, FBPInterfaceDescriptio
 		for (int32 GraphIndex = 0; GraphIndex < CurrentInterfaceDesc.Graphs.Num(); GraphIndex++)
 		{
 			// If we can't find the function associated with the graph, delete it
-			const UEdGraph* CurrentGraph = CurrentInterfaceDesc.Graphs[GraphIndex];
+			UEdGraph* CurrentGraph = CurrentInterfaceDesc.Graphs[GraphIndex];
 
 			if (!CurrentGraph || !FindUField<UFunction>(CurrentInterfaceDesc.Interface, CurrentGraph->GetFName()))
 			{
+				if(CurrentGraph)
+				{
+					CurrentGraph->GetSchema()->HandleGraphBeingDeleted(*CurrentGraph);
+
+					// rename to free up the graph's name.. which may be needed by an inherited function
+					// alternatively we could move this into the functions list?
+					CurrentGraph->Rename(
+						nullptr,
+						CurrentGraph->GetOuter(),
+						(Blueprint->bIsRegeneratingOnLoad ? REN_ForceNoResetLoaders : 0) | REN_DoNotDirty | REN_DontCreateRedirectors);
+					// removing from root, standalone, and public is defensive to make sure it is not saved:
+					CurrentGraph->ClearFlags(RF_Standalone | RF_Public);
+					CurrentGraph->RemoveFromRoot();
+					// MarkAsGarbage could be used here, which would nicely trigger tab manager cleanup, but atm
+					// use of MarkAsGarbage is causing SGraphPanel to have reference's nulled out (treated as weak)
+					// by the GC. For now, I'm just going to flag this as no longer editable. This isn't a bad
+					// out come as if the user has anything in the graph they might be able to copy it out
+					CurrentGraph->bEditable = false;
+				}
+				
 				CurrentInterfaceDesc.Graphs.RemoveAt(GraphIndex, 1);
 				GraphIndex--;
 			}
@@ -7824,14 +7898,16 @@ FBlueprintMacroCosmeticInfo FBlueprintEditorUtils::GetCosmeticInfoForMacro(UEdGr
 FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint, const FString& InBaseName, UStruct* InScope/* = nullptr*/)
 {
 	int32 Count = 0;
-	FString KismetName;
 	// If an empty string is given then we need to give a valid backup
 	static const FString BackupKismetName = TEXT("K2Name");
 	FString BaseName = InBaseName.IsEmpty() ? BackupKismetName : InBaseName;
+	FString KismetName = InBaseName;
 	TSharedPtr<FKismetNameValidator> NameValidator = MakeShareable(new FKismetNameValidator(InBlueprint, NAME_None, InScope));
 
+	EValidatorResult Result = NameValidator->IsValid(KismetName);
+
 	// Clean up BaseName to not contain any invalid characters, which will mean we can never find a legal name no matter how many numbers we add
-	if (NameValidator->IsValid(BaseName) == EValidatorResult::ContainsInvalidCharacters)
+	if (Result == EValidatorResult::ContainsInvalidCharacters)
 	{
 		for (TCHAR& TestChar : BaseName)
 		{
@@ -7844,9 +7920,11 @@ FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint,
 				}
 			}
 		}
+		KismetName = BaseName;
+		Result = NameValidator->IsValid(KismetName);
 	}
 
-	while(NameValidator->IsValid(KismetName) != EValidatorResult::Ok)
+	while(Result != EValidatorResult::Ok)
 	{
 		// Calculate the number of digits in the number, adding 2 (1 extra to correctly count digits, another to account for the '_' that will be added to the name
 		int32 CountLength = Count > 0? (int32)log((double)Count) + 2 : 2;
@@ -7858,6 +7936,7 @@ FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint,
 		}
 		KismetName = FString::Printf(TEXT("%s_%d"), *BaseName, Count);
 		Count++;
+		Result = NameValidator->IsValid(KismetName);
 	}
 
 	return FName(*KismetName);
@@ -7866,32 +7945,6 @@ FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint,
 FName FBlueprintEditorUtils::FindUniqueCustomEventName(const UBlueprint* Blueprint)
 {
 	return FindUniqueKismetName(Blueprint, LOCTEXT("DefaultCustomEventName", "CustomEvent").ToString());
-}
-
-//////////////////////////////////////////////////////////////////////////
-// Scoping
-
-bool FBlueprintEditorUtils::AddNamespaceToImportList(UBlueprint* Blueprint, const FString& Namespace)
-{
-	check(!Namespace.IsEmpty());
-
-	if (Blueprint->ImportedNamespaces.Contains(Namespace))
-	{
-		ShowNotification(
-			FText::Format(
-				LOCTEXT("NamespaceAlreadyImportedFmt", "Blueprint '{0}' already imports the namespace '{1}'"),
-				FText::FromString(Blueprint->GetName()),
-				FText::FromString(Namespace)
-			),
-			EMessageSeverity::Warning
-		);
-		return false;
-	}
-
-	Blueprint->ImportedNamespaces.Add(Namespace);
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-
-	return true;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -8173,45 +8226,108 @@ void FBlueprintEditorUtils::FindActorsThatReferenceActor( AActor* InActor, TArra
 			}
 		}
 	}
-}
+};
 
-void FBlueprintEditorUtils::GetActorReferenceMap(UWorld* InWorld, TArray<UClass*>& InClassesToIgnore, TMap<AActor*, TArray<AActor*> >& OutReferencingActors)
+class FActorMapReferenceProcessor : public FSimpleReferenceProcessorBase
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintEditorUtils::GetActorReferenceMap);
-	// Iterate all actors in the same world as InActor
-	for (FActorIterator ActorIt(InWorld); ActorIt; ++ActorIt)
+	TArray<UObject*> PotentiallyReferencedActors;
+	TMap<AActor*, TArray<AActor*>>& ReferencingActors;
+public:
+	FActorMapReferenceProcessor(UWorld* InWorld, TArray<UObject*>& OutPotentialReferencerObjects, const TArray<UClass*>& ClassesToIgnore, TMap<AActor*, TArray<AActor*>>& ReferencingActors)
+		: ReferencingActors(ReferencingActors)
 	{
-		AActor* CurrentActor = *ActorIt;
-		if (CurrentActor)
+		// Collect all actors in the world
+		for (FActorIterator ActorIt(InWorld); ActorIt; ++ActorIt)
 		{
-			bool bShouldIgnore = false;
-
-			// Ignore Actors if they are of a type we were instructed to ignore.
-			for (int32 IgnoreIndex = 0; IgnoreIndex < InClassesToIgnore.Num() && !bShouldIgnore; IgnoreIndex++)
+			if (AActor* CurrentActor = *ActorIt)
 			{
-				if (CurrentActor->IsA(InClassesToIgnore[IgnoreIndex]))
+				bool bShouldIgnore = false;
+				// Ignore actors if they belong to a class that's being ignored
+				for (UClass* ClassToIgnore : ClassesToIgnore)
 				{
-					bShouldIgnore = true;
-				}
-			}
-
-			if (!bShouldIgnore)
-			{
-				// Get all references from CurrentActor and see if any Actors
-				TArray<UObject*> References;
-				FReferenceFinder Finder(References);
-				Finder.FindReferences(CurrentActor);
-
-				for (int32 RefIdx = 0; RefIdx < References.Num(); RefIdx++)
-				{
-					if (References[RefIdx] && References[RefIdx]->IsA(AActor::StaticClass()))
+					if (CurrentActor->IsA(ClassToIgnore))
 					{
-						OutReferencingActors.FindOrAdd(Cast<AActor>(References[RefIdx])).Add(CurrentActor);
+						bShouldIgnore = true;
+						break;
 					}
 				}
+				OutPotentialReferencerObjects.Add(Cast<UObject>(CurrentActor));
+
+				// Collect all child elements of the actor and add them as potential referencer objects
+				TArray<FTypedElementHandle> ChildElementHandles;
+				UTypedElementRegistry* Registry = UTypedElementRegistry::GetInstance();
+				TTypedElement<ITypedElementHierarchyInterface> ElementHierarchyHandle = Registry->GetElement<ITypedElementHierarchyInterface>(UEngineElementsLibrary::AcquireEditorActorElementHandle(CurrentActor));
+				ElementHierarchyHandle.GetChildElements(ChildElementHandles, true);
+				// This is intentionally constructed in a way that will recursively get all child elements, by adding
+				// to the array of handles while iterating it. Don't try to change to a range-based loop
+				for (int i = 0; i < ChildElementHandles.Num(); ++i)
+				{
+					FTypedElementHandle ChildElementHandle = ChildElementHandles[i];
+					if (ITypedElementHierarchyInterface* ChildElementHierarchyInterface = Registry->GetElementInterface<ITypedElementHierarchyInterface>(ChildElementHandle))
+					{
+						ChildElementHierarchyInterface->GetChildElements(ChildElementHandle, ChildElementHandles, true);
+					}
+					if (ITypedElementObjectInterface* ChildElementObjectInterface = Registry->GetElementInterface<ITypedElementObjectInterface>(ChildElementHandle))
+					{
+						if (UObject* ChildObject = ChildElementObjectInterface->GetObject(ChildElementHandle))
+						{
+							OutPotentialReferencerObjects.Add(ChildObject);
+						}
+					}
+				}
+				if (bShouldIgnore)
+				{
+					continue;
+				}
+				PotentiallyReferencedActors.Add(CurrentActor);
 			}
 		}
 	}
+	FORCEINLINE_DEBUGGABLE void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination)
+	{
+		if (!ReferencingObject)
+		{
+			ReferencingObject = ObjectsToSerializeStruct.GetReferencingObject();
+		}
+		if (!Object || !ReferencingObject || Object == ReferencingObject || !Object->IsA<AActor>())
+		{
+			return;
+		}
+
+		AActor* Actor = CastChecked<AActor>(Object);
+		if (!PotentiallyReferencedActors.Contains(Actor))
+		{
+			return;
+		}
+		// Ignore references from child objects
+		if (ReferencingObject->IsInOuter(Object))
+		{
+			return;
+		}
+		// The object itself if it's an actor, or the actor that contains it (if that exists)
+		if (AActor* ReferencingActor = ReferencingObject->IsA<AActor>() ? CastChecked<AActor>(ReferencingObject) : ReferencingObject->GetTypedOuter<AActor>())
+		{
+			// Don't record more than one reference from the same actor
+			ReferencingActors.FindOrAdd(Actor).AddUnique(ReferencingActor);
+		}
+	}
+};
+
+void FBlueprintEditorUtils::GetActorReferenceMap(UWorld* InWorld, TArray<UClass*>& InClassesToIgnore, TMap<AActor*, TArray<AActor*>>& OutReferencingActors)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintEditorUtils::GetActorReferenceMap);
+	
+	FGCArrayStruct ArrayStruct;
+	
+	FActorMapReferenceProcessor Processor(InWorld, ArrayStruct.ObjectsToSerialize, InClassesToIgnore, OutReferencingActors);
+	TFastReferenceCollector<
+		FActorMapReferenceProcessor, 
+		TDefaultReferenceCollector<FActorMapReferenceProcessor>, 
+		FGCArrayPool, 
+		EFastReferenceCollectorOptions::AutogenerateTokenStream | EFastReferenceCollectorOptions::ProcessNoOpTokens
+	> ReferenceCollector(Processor, FGCArrayPool::Get());
+	
+	ReferenceCollector.CollectReferences(ArrayStruct);
 }
 
 void FBlueprintEditorUtils::FixLevelScriptActorBindings(ALevelScriptActor* LevelScriptActor, const ULevelScriptBlueprint* ScriptBlueprint)
@@ -8265,20 +8381,6 @@ void FBlueprintEditorUtils::FixLevelScriptActorBindings(ALevelScriptActor* Level
 						TargetDelegate->AddDelegate(MoveTemp(Delegate), EventNode->EventOwner);
 					}
 				}
-			}
-		}
-
-		// Find matinee controller nodes and update node name
-		TArray<UK2Node_MatineeController*> MatineeControllers;
-		(*GraphIt)->GetNodesOfClass(MatineeControllers);
-
-		for( TArray<UK2Node_MatineeController*>::TConstIterator NodeIt(MatineeControllers); NodeIt; ++NodeIt )
-		{
-			const UK2Node_MatineeController* MatController = *NodeIt;
-
-			if(MatController->MatineeActor != nullptr)
-			{
-				MatController->MatineeActor->MatineeControllerName = MatController->GetFName();
 			}
 		}
 	}
@@ -8440,7 +8542,7 @@ bool FBlueprintEditorUtils::KismetDiagnosticExec(const TCHAR* InStream, FOutputD
 	}
 	else if (FParse::Command(&Str, TEXT("RepairBlueprint")))
 	{
-		if (UBlueprint* Blueprint = FindObject<UBlueprint>(ANY_PACKAGE, Str))
+		if (UBlueprint* Blueprint = FindFirstObject<UBlueprint>(Str, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("RepairBlueprint")))
 		{
 			IKismetCompilerInterface& Compiler = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>(KISMET_COMPILER_MODULENAME);
 			Compiler.RecoverCorruptedBlueprint(Blueprint);
@@ -8554,10 +8656,10 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 	for( auto BlueprintIter = Blueprints.CreateConstIterator(); (!bIsActor && !bIsAnimBlueprint) && BlueprintIter; ++BlueprintIter )
 	{
 		const UBlueprint* Blueprint = *BlueprintIter;
-		bIsActor |= Blueprint->ParentClass->IsChildOf( AActor::StaticClass() );
+		bIsActor |= Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf( AActor::StaticClass() );
 		bIsAnimBlueprint |= Blueprint->IsA(UAnimBlueprint::StaticClass());
-		bIsLevelScriptActor |= Blueprint->ParentClass->IsChildOf( ALevelScriptActor::StaticClass() );
-		bIsComponentBlueprint |= Blueprint->ParentClass->IsChildOf( UActorComponent::StaticClass() );
+		bIsLevelScriptActor |= Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf( ALevelScriptActor::StaticClass() );
+		bIsComponentBlueprint |= Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf( UActorComponent::StaticClass() );
 		bIsEditorOnlyBlueprint |= IsEditorUtilityBlueprint(Blueprint);
 		bIsWidgetBlueprint = Blueprint->IsA(UBaseWidgetBlueprint::StaticClass());
 		if(Blueprint->GeneratedClass)
@@ -8669,7 +8771,7 @@ void FBlueprintEditorUtils::OpenReparentBlueprintMenu( const TArray< UBlueprint*
 		.HeightOverride(400)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 			[
 				ClassPicker
 			]
@@ -8768,7 +8870,7 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintInterfaceClassPicke
 			{
 				ProhibitedInterfaceNames[ExclusionIndex].TrimStartInline();
 				FString const& ProhibitedInterfaceName = ProhibitedInterfaceNames[ExclusionIndex].RightChop(1);
-				UClass* ProhibitedInterface = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *ProhibitedInterfaceName);
+				UClass* ProhibitedInterface = UClass::TryFindTypeSlow<UClass>(ProhibitedInterfaceName);
 				if(ProhibitedInterface)
 				{
 					Filter->DisallowedClasses.Add(ProhibitedInterface);
@@ -8778,10 +8880,11 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintInterfaceClassPicke
 		}
 
 		// Do not allow adding interfaces that are already added to the Blueprint
-		for(TArray<FBPInterfaceDescription>::TConstIterator it(Blueprint->ImplementedInterfaces); it; ++it)
+		TArray<UClass*> InterfaceClasses;
+		FindImplementedInterfaces(Blueprint, true, InterfaceClasses);
+		for(UClass* InterfaceClass : InterfaceClasses)
 		{
-			const FBPInterfaceDescription& CurrentInterface = *it;
-			Filter->DisallowedClasses.Add(CurrentInterface.Interface);
+			Filter->DisallowedClasses.Add(InterfaceClass);
 		}
 
 		// Include a class viewer filter for imported namespaces if the class picker is being hosted in an editor context
@@ -8932,7 +9035,7 @@ void FBlueprintEditorUtils::FindAndSetDebuggableBlueprintInstances()
 			UBlueprint* EachBlueprint = ObjIt.Key();
 			bool bFoundItemToDebug = false;
 
-			if( Selected->Num() != 0 )
+			if( Selected )
 			{
 				for (int32 iSelected = 0; iSelected < Selected->Num() ; iSelected++)
 				{
@@ -9103,7 +9206,7 @@ bool FBlueprintEditorUtils::PropertyValueFromString_Direct(const FProperty* Prop
 		else if (Property->IsA(FTextProperty::StaticClass()))
 		{
 			FStringOutputDevice ImportError;
-			const TCHAR* EndOfParsedBuff = Property->ImportText(*StrValue, DirectValue, PPF_SerializedAsImportText, OwningObject, &ImportError);
+			const TCHAR* EndOfParsedBuff = Property->ImportText_Direct(*StrValue, DirectValue, OwningObject, PPF_SerializedAsImportText, &ImportError);
 			bParseSucceeded = EndOfParsedBuff && ImportError.IsEmpty();
 		}
 		else
@@ -9114,7 +9217,7 @@ bool FBlueprintEditorUtils::PropertyValueFromString_Direct(const FProperty* Prop
 				: *StrValue;
 
 			FStringOutputDevice ImportError;
-			const TCHAR* EndOfParsedBuff = Property->ImportText(*StrValue, DirectValue, PPF_SerializedAsImportText, OwningObject, &ImportError);
+			const TCHAR* EndOfParsedBuff = Property->ImportText_Direct(*StrValue, DirectValue, OwningObject, PPF_SerializedAsImportText, &ImportError);
 			bParseSucceeded = EndOfParsedBuff && ImportError.IsEmpty();
 		}
 	}
@@ -9161,7 +9264,7 @@ bool FBlueprintEditorUtils::PropertyValueFromString_Direct(const FProperty* Prop
 			ensure(1 == StructProperty->ArrayDim);
 
 			FStringOutputDevice ImportError;
-			const TCHAR* EndOfParsedBuff = StructProperty->ImportText(StrValue.IsEmpty() ? TEXT("()") : *StrValue, DirectValue, PPF_SerializedAsImportText, OwningObject, &ImportError);
+			const TCHAR* EndOfParsedBuff = StructProperty->ImportText_Direct(StrValue.IsEmpty() ? TEXT("()") : *StrValue, DirectValue, OwningObject, PPF_SerializedAsImportText, &ImportError);
 			bParseSucceeded &= EndOfParsedBuff && ImportError.IsEmpty();
 		}
 	}
@@ -9786,34 +9889,34 @@ void FBlueprintEditorUtils::PostSetupObjectPinType(UBlueprint* InBlueprint, FBPV
 
 const FSlateBrush* FBlueprintEditorUtils::GetIconFromPin( const FEdGraphPinType& PinType, bool bIsLarge )
 {
-	const FSlateBrush* IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.VariableList.TypeIcon"));
+	const FSlateBrush* IconBrush = FAppStyle::GetBrush(TEXT("Kismet.VariableList.TypeIcon"));
 	const UObject* PinSubObject = PinType.PinSubCategoryObject.Get();
 	if( PinType.IsArray() && PinType.PinCategory != UEdGraphSchema_K2::PC_Exec )
 	{
-		IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.VariableList.ArrayTypeIcon"));
+		IconBrush = FAppStyle::GetBrush(TEXT("Kismet.VariableList.ArrayTypeIcon"));
 	}
 	else if (PinType.IsMap() && PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
 	{
-		IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.VariableList.MapKeyTypeIcon"));
+		IconBrush = FAppStyle::GetBrush(TEXT("Kismet.VariableList.MapKeyTypeIcon"));
 	}
 	else if (PinType.IsSet() && PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
 	{
 		if( bIsLarge )
 		{
-			IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.VariableList.SetTypeIconLarge"));
+			IconBrush = FAppStyle::GetBrush(TEXT("Kismet.VariableList.SetTypeIconLarge"));
 		}
 		else
 		{
-			IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.VariableList.SetTypeIcon"));
+			IconBrush = FAppStyle::GetBrush(TEXT("Kismet.VariableList.SetTypeIcon"));
 		}
 	}
 	else if (PinType.PinCategory == UEdGraphSchema_K2::PC_MCDelegate)
 	{
-		IconBrush = FEditorStyle::GetBrush(TEXT("GraphEditor.Delegate_16x"));
+		IconBrush = FAppStyle::GetBrush(TEXT("GraphEditor.Delegate_16x"));
 	}
 	else if( PinSubObject )
 	{
-		UClass* VarClass = FindObject<UClass>(ANY_PACKAGE, *PinSubObject->GetName());
+		UClass* VarClass = FindObject<UClass>(nullptr, *PinSubObject->GetFullName());
 		if( VarClass )
 		{
 			IconBrush = FSlateIconFinder::FindIconBrushForClass( VarClass );
@@ -9826,7 +9929,7 @@ const FSlateBrush* FBlueprintEditorUtils::GetSecondaryIconFromPin(const FEdGraph
 {
 	if (PinType.IsMap() && PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
 	{
-		return FEditorStyle::GetBrush(TEXT("Kismet.VariableList.MapValueTypeIcon"));
+		return FAppStyle::GetBrush(TEXT("Kismet.VariableList.MapValueTypeIcon"));
 	}
 	return nullptr;
 }
@@ -10349,6 +10452,98 @@ void FBlueprintEditorUtils::RecombineNestedSubPins(UK2Node* Node)
 	}
 }
 
+static FAutoConsoleCommand AuditThreadSafeFunctions(
+	TEXT("bp.AuditThreadSafeFunctions"),
+	TEXT("Audit currently loaded thread safe functions. Writes results to the log."),
+	FConsoleCommandDelegate::CreateLambda([]()
+		{
+			UE_LOG(LogBlueprint, Display, TEXT("--- BEGIN audit all BlueprintThreadSafe functions ---"));
+			UE_LOG(LogBlueprint, Display, TEXT("Name, Path, Type, BPCallType"));
+
+			for (TObjectIterator<UFunction> It; It; ++It)
+			{
+				UFunction* Function = *It;
+				if (FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(Function))
+				{
+					const TCHAR* Native = Function->HasAnyFunctionFlags(FUNC_Native) ? TEXT("Native") : TEXT("Script");
+					const TCHAR* Purity = [Function]()
+					{
+						if (Function->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+						{
+							return Function->HasAllFunctionFlags(FUNC_BlueprintPure | FUNC_BlueprintCallable) ? TEXT("Pure") : TEXT("Callable");
+						}
+
+						return TEXT("NotCallable");
+					}();
+					UE_LOG(LogBlueprint, Display, TEXT("%s, %s, %s, %s"), *Function->GetName(), *Function->GetPathName(), Native, Purity);
+				}
+			}
+
+			UE_LOG(LogBlueprint, Display, TEXT("--- END audit all BlueprintThreadSafe functions ---"));
+		}));
+
+static FAutoConsoleCommand AuditFunctionCallsForBlueprint(
+	TEXT("bp.AuditFunctionCallsForBlueprint"),
+	TEXT("Audit all functions called by a specified blueprint. Single argument supplies the asset to audit. Writes results to the log."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& InArgs)
+		{
+			if (InArgs.Num() != 1)
+			{
+				return;
+			}
+
+			// Find our Blueprint & load it
+			UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *InArgs[0]);
+			if (Blueprint == nullptr)
+			{
+				UE_LOG(LogBlueprint, Warning, TEXT("--- Could not load Blueprint %s ---"), *InArgs[0]);
+				return;
+			}
+
+			if (Blueprint->GeneratedClass == nullptr)
+			{
+				UE_LOG(LogBlueprint, Warning, TEXT("--- Blueprint %s as a null GeneratedClass ---"), *InArgs[0]);
+				return;
+			}
+
+			UE_LOG(LogBlueprint, Display, TEXT("--- BEGIN audit function calls for Blueprint %s ---"), *InArgs[0]);
+			UE_LOG(LogBlueprint, Display, TEXT("Name, Path, Type, BPCallType"));
+
+			struct FFunctionReferenceProcessor : public FSimpleReferenceProcessorBase
+			{
+				FORCEINLINE void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination)
+				{
+					if (UFunction* Function = Cast<UFunction>(Object))
+					{
+						const TCHAR* Native = Function->HasAnyFunctionFlags(FUNC_Native) ? TEXT("Native") : TEXT("Script");
+						const TCHAR* Purity = [Function]()
+						{
+							if (Function->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+							{
+								return Function->HasAllFunctionFlags(FUNC_BlueprintPure | FUNC_BlueprintCallable) ? TEXT("Pure") : TEXT("Callable");
+							}
+
+							return TEXT("NotCallable");
+						}();
+						UE_LOG(LogBlueprint, Display, TEXT("%s, %s, %s, %s"), *Function->GetName(), *Function->GetOuterUClass()->GetPathName(), Native, Purity);
+					}
+				}
+			} Processor;
+
+			TFastReferenceCollector<
+				FFunctionReferenceProcessor,
+				TDefaultReferenceCollector<FFunctionReferenceProcessor>,
+				FGCArrayPool,
+				EFastReferenceCollectorOptions::AutogenerateTokenStream | EFastReferenceCollectorOptions::ProcessNoOpTokens
+			> ReferenceCollector(Processor, FGCArrayPool::Get());
+			FGCArrayStruct ArrayStruct;
+			ArrayStruct.ObjectsToSerialize.Add(Blueprint->GeneratedClass);
+			ReferenceCollector.CollectReferences(ArrayStruct);
+
+			UE_LOG(LogBlueprint, Display, TEXT("--- END audit all BlueprintThreadSafe functions ---"));
+		}));
+
+
 bool FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(const UFunction* InFunction)
 {
 	if(InFunction)
@@ -10357,8 +10552,8 @@ bool FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(const UFuncti
 		const bool bHasNotThreadSafeMetaData = InFunction->HasMetaData(FBlueprintMetadata::MD_NotThreadSafe);
 		const bool bClassHasThreadSafeMetaData = InFunction->GetOwnerClass() && InFunction->GetOwnerClass()->HasMetaData(FBlueprintMetadata::MD_ThreadSafe);
 
-		// Native (or BP event) functions need to just have the correct class/function metadata
-		const bool bThreadSafeNative = InFunction->HasAnyFunctionFlags(FUNC_Native | FUNC_BlueprintEvent) && (bHasThreadSafeMetaData || (bClassHasThreadSafeMetaData && !bHasNotThreadSafeMetaData));
+		// Native functions need to just have the correct class/function metadata
+		const bool bThreadSafeNative = InFunction->HasAnyFunctionFlags(FUNC_Native) && (bHasThreadSafeMetaData || (bClassHasThreadSafeMetaData && !bHasNotThreadSafeMetaData));
 
 		// Script functions get their flag propagated from their entry point, and dont pay heed to class metadata
 		const bool bThreadSafeScript = !InFunction->HasAnyFunctionFlags(FUNC_Native) && bHasThreadSafeMetaData;

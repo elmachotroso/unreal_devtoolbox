@@ -193,10 +193,15 @@ struct FAxisConstraintDatas
 		
 		FPBDJointCachedSolver();
 
+		void SetSolverBodies(FSolverBody* SolverBody0, FSolverBody* SolverBody1)
+		{
+			SolverBodies[0] = *SolverBody0;
+			SolverBodies[1] = *SolverBody1;
+		}
+
 		// Called once per frame to initialize the joint solver from the joint settings
 		void Init(
 			const FReal Dt,
-			const FSolverBodyPtrPair& SolverBodyPair,
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings,
 			const FRigidTransform3& XL0,
@@ -233,7 +238,6 @@ struct FAxisConstraintDatas
 		// @todo(chaos): this can be build into the Apply phase when the whole solver is PBD
 		void ApplyProjections(
 			const FReal Dt,
-			const FReal InSolverStiffness,
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings,
 			const bool bLastIteration);
@@ -248,9 +252,22 @@ struct FAxisConstraintDatas
 			const FPBDJointSolverSettings& SolverSettings,
 			const FPBDJointSettings& JointSettings);
 
-		void EnableProjection();
+		void ApplyTeleports(
+			const FReal Dt,
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings);
 
-		void SetInvMassScales(
+		void ApplyPositionTeleport(
+			const FReal Dt,
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings);
+
+		void ApplyRotationTeleport(
+			const FReal Dt,
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings);
+
+		void SetShockPropagationScales(
 			const FReal InvMScale0,
 			const FReal InvMScale1,
 			const FReal Dt);
@@ -264,8 +281,8 @@ struct FAxisConstraintDatas
 		void UpdateDerivedState(const int32 BodyIndex);
 		void UpdateDerivedState();
 
-		void UpdateMass0();
-		void UpdateMass1();
+		void UpdateMass0(const FReal& InInvM, const FVec3& InInvIL);
+		void UpdateMass1(const FReal& InInvM, const FVec3& InInvIL);
 
 		// Check to see if this constraint still needs further solved
 		// @todo(chaos): the term "active" is used inconsistently with the meaning elsewhere. Active should
@@ -293,6 +310,36 @@ struct FAxisConstraintDatas
 			FAxisConstraintDatas& PositionDatas,
 			const int32 ConstraintIndex,
 			const FReal Dt);
+		
+		void InitPositionConstraintDatas(
+			const int32 ConstraintIndex,
+			const FVec3& ConstraintAxis,
+			const FReal& ConstraintDelta,
+			const FReal ConstraintRestitution,
+			const FReal Dt,
+			const FReal ConstraintLimit,
+			const EJointMotionType JointType,
+			const FVec3& ConstraintArm0,
+			const FVec3& ConstraintArm1);
+
+		void InitLockedPositionConstraint(
+			const FPBDJointSettings& JointSettings,
+			const FReal Dt,
+			const TVec3<EJointMotionType>& LinearMotion);
+
+		void InitSphericalPositionConstraint(
+			const FPBDJointSettings& JointSettings,
+			const FReal Dt);
+		
+		void InitCylindricalPositionConstraint(
+			const FPBDJointSettings& JointSettings,
+			const FReal Dt,
+			const int32 AxisIndex);
+
+		void InitPlanarPositionConstraint(
+			const FPBDJointSettings& JointSettings,
+			const FReal Dt,
+			const int32 AxisIndex);
 		
 		/** Apply Position constraints */
 
@@ -489,48 +536,6 @@ struct FAxisConstraintDatas
     		const int32 ConstraintIndex,
     		const FReal Dt);
 		
-		/** Linear / Angular padding */
-		
-		void CalculateLinearConstraintPadding(
-			const int32 ConstraintIndex,
-			const FReal Dt,
-			const FReal Restitution,
-			FReal& InOutPos);
-
-		void CalculateAngularConstraintPadding(
-			const int32 ConstraintIndex,
-			const FReal Restitution,
-			FReal& InOutAngle);
-
-		inline bool HasLinearConstraintPadding(const int32 AxisIndex) const
-		{
-			return LinearConstraintPadding[AxisIndex] >= 0.0f;
-		}
-
-		inline FReal GetLinearConstraintPadding(const int32 AxisIndex) const
-		{
-			return FMath::Max(LinearConstraintPadding[AxisIndex], 0.0f);
-		}
-
-		inline void SetLinearConstraintPadding(const int32 AxisIndex, FReal Padding)
-		{
-			LinearConstraintPadding[AxisIndex] = Padding;
-		}
-		
-		inline bool HasAngularConstraintPadding(const int32 ConstraintIndex) const
-		{
-			return AngularConstraintPadding[ConstraintIndex] >= 0.0f;
-		}
-
-		inline FReal GetAngularConstraintPadding(const int32 ConstraintIndex) const
-		{
-			return FMath::Max(AngularConstraintPadding[ConstraintIndex], 0.0f);
-		}
-
-		inline void SetAngularConstraintPadding(const int32 ConstraintIndex, FReal Padding)
-		{
-			AngularConstraintPadding[ConstraintIndex] = Padding;
-		}
 		
 		// The cached body state on which the joint operates
 		FConstraintSolverBody SolverBodies[MaxConstrainedBodies];
@@ -547,10 +552,7 @@ struct FAxisConstraintDatas
 		FVec3 InitConnectorXs[MaxConstrainedBodies];		// World-space joint connector positions
 		FRotation3 InitConnectorRs[MaxConstrainedBodies];	// World-space joint connector rotations
 
-		// Conditioned InvM and InvI
-		FReal InvMScales[MaxConstrainedBodies];
-		FReal ConditionedInvMs[MaxConstrainedBodies];
-		FVec3 ConditionedInvILs[MaxConstrainedBodies];		// Local-space
+		// Inverse Mass and Inertia
 		FReal InvMs[MaxConstrainedBodies];
 		FMatrix33 InvIs[MaxConstrainedBodies];				// World-space
 
@@ -561,10 +563,6 @@ struct FAxisConstraintDatas
 		// Solver stiffness - increased over iterations for stability
 		// \todo(chaos): remove Stiffness from SolverSettings (because it is not a solver constant)
 		FReal SolverStiffness;
-
-		// Constraint padding which can act something like a velocity constraint (for reslockfreetitution)
-		FVec3 LinearConstraintPadding;
-		FVec3 AngularConstraintPadding;
 
 		// Tolerances below which we stop solving
 		FReal PositionTolerance;					// Distance error below which we consider a constraint or drive solved

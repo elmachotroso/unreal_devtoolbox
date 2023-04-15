@@ -12,6 +12,7 @@
 #include "DatasmithMaxHelper.h"
 
 #include "Misc/Paths.h"
+#include "DatasmithExportOptions.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
 MAX_INCLUDES_START
@@ -701,7 +702,7 @@ IDatasmithMaterialExpression* FDatasmithMaxTexmapToUEPbrUtils::MapOrValue( FData
 				MapWeightLerp->SetExpressionName( TEXT("LinearInterpolate") );
 
 				IDatasmithMaterialExpressionScalar* MapWeight = MaxMaterialToUEPbr->ConvertState.MaterialElement->AddMaterialExpression< IDatasmithMaterialExpressionScalar >();
-				MapWeight->SetName( TEXT("Map Weight") );
+				MapWeight->SetName( *(FString(ParameterName) + TEXT("Map Weight")) );
 				MapWeight->GetScalar() = MapParameter.Weight;
 
 				if ( ValueExpression )
@@ -846,6 +847,70 @@ bool FDatasmithMaxBitmapToUEPbr::IsSupported( const FDatasmithMaxMaterialsToUEPb
 	return false;
 }
 
+class FBitmapToTextureElementConverter: public DatasmithMaxDirectLink::ITexmapToTextureElementConverter
+{
+public:
+	virtual TSharedPtr<IDatasmithTextureElement> Convert(DatasmithMaxDirectLink::FMaterialsCollectionTracker& MaterialsTracker, const FString& TextureName) override
+	{
+		// Bitmap name is build using all bitmap settings used for the texmap - gamma and cropping
+		// Don't convert same bitmap with same settings twice
+		if (TSharedPtr<IDatasmithTextureElement>* Found =  MaterialsTracker.BitmapTextureElements.Find(ActualBitmapName))
+		{
+			return *Found;
+		}
+
+		FString Path = FDatasmithMaxMatWriter::GetActualBitmapPath(Tex);
+
+		TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*TextureName);
+		MaterialsTracker.BitmapTextureElements.Add(ActualBitmapName, TextureElement);
+
+		if (gammaMgr.IsEnabled())
+		{
+			const float Gamma = FDatasmithMaxMatHelper::GetBitmapGamma(Tex);
+
+			if (FDatasmithMaxMatHelper::IsSRGB(*Tex))
+			{
+				TextureElement->SetRGBCurve(Gamma / 2.2f);
+			}
+			else
+			{
+				TextureElement->SetRGBCurve(Gamma);
+			}
+		}
+
+		// todo: ideally TextureMode should be set for Texture element
+		// But Unreal Datasmith Importer currently has some legacy decisions that contradict with the plain logic of Texture Mode
+		// e.g. setting to Bump makes heightmap to convert to normals on import. Which is not desired when that texture is used as heightmap in material graph
+		//TextureElement->SetTextureMode(TextureMode);
+
+		EDatasmithColorSpace ColorSpace = EDatasmithColorSpace::sRGB;
+		switch (TextureMode)
+		{
+		case EDatasmithTextureMode::Normal: 
+		case EDatasmithTextureMode::NormalGreenInv: 
+		case EDatasmithTextureMode::Bump: 
+		case EDatasmithTextureMode::Ies:
+			ColorSpace = EDatasmithColorSpace::Linear;
+			break;
+		default: ;
+		}
+		TextureElement->SetSRGB(ColorSpace);
+		
+		if (!FPaths::FileExists(*Path))
+		{
+			DatasmithMaxDirectLink::LogWarning(FString::Printf(TEXT("Bitmap texture '%s' has missing external file '%s'"), Tex->GetName().data(), *Path));
+		}
+
+		TextureElement->SetFile(*Path);
+		return TextureElement;
+	}
+	BitmapTex* Tex;
+
+	bool bIsSRGB;
+	FString ActualBitmapName;
+	EDatasmithTextureMode TextureMode;
+};
+
 IDatasmithMaterialExpression* FDatasmithMaxBitmapToUEPbr::Convert( FDatasmithMaxMaterialsToUEPbr* MaxMaterialToUEPbr, Texmap* InTexmap )
 {
 	BitmapTex* InBitmapTex = (BitmapTex*)InTexmap;
@@ -853,6 +918,14 @@ IDatasmithMaterialExpression* FDatasmithMaxBitmapToUEPbr::Convert( FDatasmithMax
 	FString ActualBitmapName = FDatasmithMaxMatWriter::GetActualBitmapName( InBitmapTex );
 	bool bUseAlphaAsMono = InBitmapTex->GetAlphaAsMono(true);
 	bool bIsSRGB = FDatasmithMaxMatHelper::IsSRGB(*InBitmapTex);
+
+	TSharedRef<FBitmapToTextureElementConverter> Converter = MakeShared<FBitmapToTextureElementConverter>();
+	Converter->Tex = InBitmapTex;
+	Converter->bIsSRGB = bIsSRGB;
+	Converter->ActualBitmapName = ActualBitmapName;
+	Converter->TextureMode = MaxMaterialToUEPbr->ConvertState.DefaultTextureMode;
+
+	MaxMaterialToUEPbr->AddTexmap(InTexmap, ActualBitmapName, Converter);
 
 	return FDatasmithMaxTexmapToUEPbrUtils::ConvertBitMap(MaxMaterialToUEPbr, InTexmap, ActualBitmapName, bUseAlphaAsMono, bIsSRGB);
 }
@@ -873,15 +946,74 @@ bool FDatasmithMaxAutodeskBitmapToUEPbr::IsSupported(const FDatasmithMaxMaterial
 	return false;
 }
 
+
+class FAutodeskBitmapToTextureElementConverter: public DatasmithMaxDirectLink::ITexmapToTextureElementConverter
+{
+public:
+	virtual TSharedPtr<IDatasmithTextureElement> Convert(DatasmithMaxDirectLink::FMaterialsCollectionTracker& MaterialsTracker, const FString& ActualBitmapName) override
+	{
+		if (PBBitmap* BitmapSourceFile = DatasmithMaxTexmapParser::ParseAutodeskBitmap(Tex).SourceFile)
+		{
+			FScopedBitMapPtr ActualBitmap(BitmapSourceFile->bi, BitmapSourceFile->bm);
+			if (!ActualBitmap.Map)
+			{
+				return {};
+			}
+
+			TSharedRef<IDatasmithScene> DatasmithScene = MaterialsTracker.SceneTracker.GetDatasmithSceneRef();
+			for (int i = 0; i < DatasmithScene->GetTexturesCount(); i++)
+			{
+				if (DatasmithScene->GetTexture(i)->GetFile() == Path && DatasmithScene->GetTexture(i)->GetName() == ActualBitmapName)
+				{
+					return {};
+				}
+			}
+
+			TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*ActualBitmapName);
+			if (gammaMgr.IsEnabled())
+			{
+				const float Gamma = FDatasmithMaxMatHelper::GetBitmapGamma(&ActualBitmap.MapInfo);
+
+				if (FDatasmithMaxMatHelper::IsSRGB(*ActualBitmap.Map))
+				{
+					TextureElement->SetRGBCurve(Gamma / 2.2f);
+				}
+				else
+				{
+					TextureElement->SetRGBCurve(Gamma);
+				}
+			}
+
+			TextureElement->SetFile(*Path);
+			return TextureElement;
+		}
+		return {};
+	}
+	Texmap* Tex;
+
+	bool bIsSRGB;
+	FString Path;
+};
+
+
 IDatasmithMaterialExpression* FDatasmithMaxAutodeskBitmapToUEPbr::Convert(FDatasmithMaxMaterialsToUEPbr* MaxMaterialToUEPbr, Texmap* InTexmap)
 {
 	DatasmithMaxTexmapParser::FAutodeskBitmapParameters AutodeskBitmapParameters = DatasmithMaxTexmapParser::ParseAutodeskBitmap(InTexmap);
 	if (AutodeskBitmapParameters.SourceFile)
 	{
 		FScopedBitMapPtr ActualBitmap(AutodeskBitmapParameters.SourceFile->bi, AutodeskBitmapParameters.SourceFile->bm);
+		FString Path = FDatasmithMaxMatWriter::GetActualBitmapPath(&ActualBitmap.MapInfo);
 		FString ActualBitmapName = FDatasmithMaxMatWriter::GetActualBitmapName(&ActualBitmap.MapInfo);
 		bool bUseAlphaAsMono = (ActualBitmap.Map->HasAlpha() != 0);
 		bool bIsSRGB = FDatasmithMaxMatHelper::IsSRGB(*ActualBitmap.Map);
+
+
+		TSharedRef<FAutodeskBitmapToTextureElementConverter> Converter = MakeShared<FAutodeskBitmapToTextureElementConverter>();
+		Converter->Tex = InTexmap;
+		Converter->bIsSRGB = bIsSRGB;
+		Converter->Path = Path;
+
+		MaxMaterialToUEPbr->AddTexmap(InTexmap, ActualBitmapName, Converter);
 
 		return FDatasmithMaxTexmapToUEPbrUtils::ConvertBitMap(MaxMaterialToUEPbr, InTexmap, ActualBitmapName, bUseAlphaAsMono, bIsSRGB);
 	}
@@ -1694,26 +1826,157 @@ bool FDatasmithMaxBakeableToUEPbr::IsSupported( const FDatasmithMaxMaterialsToUE
 	return false;
 }
 
+class FBakeableToTextureElementConverter: public DatasmithMaxDirectLink::ITexmapToTextureElementConverter
+{
+public:
+	virtual TSharedPtr<IDatasmithTextureElement> Convert(DatasmithMaxDirectLink::FMaterialsCollectionTracker& MaterialsTracker, const FString& ActualBitmapName) override
+	{
+		if ( !Tex )
+		{
+			return {};
+		}
+
+		FString TexmapName = FString(Tex->GetName().data());
+		FString Path = FPaths::Combine(MaterialsTracker.SceneTracker.GetAssetsOutputPath(), FileName + FDatasmithMaxMatWriter::TextureBakeFormat);
+		
+		int BakeWidth = FDatasmithExportOptions::MaxTextureSize;
+		int BakeHeight = FDatasmithExportOptions::MaxTextureSize;
+		GetBakeableMaximumSize(Tex, BakeWidth, BakeHeight);
+
+		DatasmithMaxDirectLink::FSceneUpdateStats& Stats = MaterialsTracker.Stats;
+		SCENE_UPDATE_STAT_INC(UpdateTextures, Baked);
+
+		SCENE_UPDATE_STAT_SET(UpdateTextures, BakedPixels, SCENE_UPDATE_STAT_GET(UpdateTextures, BakedPixels) + BakeWidth*BakeHeight);
+
+		DatasmithMaxDirectLink::LogInfo(FString::Printf(TEXT("Rendering Texmap '%s' to %dx%d image, path '%s'..."), *TexmapName, BakeWidth, BakeHeight, *Path));
+		FDateTime TimeStart = FDateTime::UtcNow();
+
+		BitmapInfo BitmapInformation;
+		BitmapInformation.SetType(BMM_TRUE_32);
+
+		BitmapInformation.SetWidth(BakeWidth);
+		BitmapInformation.SetHeight(BakeHeight);
+		BitmapInformation.SetGamma(2.2f);
+
+		BitmapInformation.SetName(*Path);
+
+		Bitmap* NewBitmap = TheManager->Create(&BitmapInformation);
+		Tex->RenderBitmap(GetCOREInterface()->GetTime(), NewBitmap, 1.0f, 1);
+		
+		NewBitmap->OpenOutput(&BitmapInformation);
+		NewBitmap->Write(&BitmapInformation);
+		NewBitmap->Close(&BitmapInformation);
+		NewBitmap->DeleteThis();
+
+		TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*ActualBitmapName);
+		TextureElement->SetRGBCurve(1.0f);
+		TextureElement->SetFile(*Path);
+
+		FDateTime TimeFinish = FDateTime::UtcNow();
+		
+		DatasmithMaxDirectLink::LogInfo(FString::Printf(TEXT("done in %s"), *(TimeFinish-TimeStart).ToString()));
+
+		return TextureElement;
+	}
+
+	static void GetBakeableMaximumSize(Texmap* InTexmap, int &Width, int &Height)
+	{
+		TArray<Texmap*> Texmaps;
+		Texmaps.Add(InTexmap);
+
+		// Limit baked texture size by subbitmap with largest area(number of pixels)
+		int32 BiggestSubBitmapArea = 0;  // Biggest pixel count
+		int32 BiggestSubBitmapWidth = 0;
+		int32 BiggestSubBitmapHeight = 0;
+
+		while (!Texmaps.IsEmpty())
+		{
+			Texmap* Texmap = Texmaps.Pop(false);
+
+			if (!Texmap)
+			{
+				continue;;
+			}
+
+			if (Texmap->ClassID() == RBITMAPCLASS)
+			{
+				BitmapTex* BitmapTexture = (BitmapTex*)Texmap;
+				Bitmap* ActualBitmap = ((BitmapTex*)Texmap)->GetBitmap(GetCOREInterface()->GetTime());
+				if (ActualBitmap != NULL)
+				{
+					int32 BitmapWidth = ActualBitmap->Width();
+					int32 BitmapHeight = ActualBitmap->Height();
+
+					int32 Area = BitmapWidth*BitmapHeight;
+					if (Area > BiggestSubBitmapArea)
+					{
+						BiggestSubBitmapArea = Area;
+						BiggestSubBitmapWidth = BitmapWidth;
+						BiggestSubBitmapHeight = BitmapHeight;
+					}
+
+				}
+			}
+
+			for (int SubTexmap = 0; SubTexmap < Texmap->NumSubTexmaps(); SubTexmap++)
+			{
+				Texmaps.Add(Texmap->GetSubTexmap(SubTexmap));
+			}
+		}
+
+		if (BiggestSubBitmapArea > 0)
+		{
+			int32 AreaLimit = Width*Height;
+
+			Width = BiggestSubBitmapWidth;
+			Height = BiggestSubBitmapHeight;
+			int32 Area = BiggestSubBitmapArea;
+			while (Area > AreaLimit)
+			{
+				Width = Width / 2;
+				Height = Height / 2;
+				Area = Width * Height;
+			}
+		}
+	}
+
+	Texmap* Tex;
+	FString FileName;
+};
+
 IDatasmithMaterialExpression* FDatasmithMaxBakeableToUEPbr::Convert( FDatasmithMaxMaterialsToUEPbr* MaxMaterialToUEPbr, Texmap* InTexmap )
 {
+	if ( !InTexmap )
+	{
+		return false;
+	}
+
+	MSTR ClassName;
+	InTexmap->GetClassName(ClassName);
+	FString TexmapName = FString(InTexmap->GetName().data());
+	FString FileName = TexmapName + FString(ClassName.data()) + FString::FromInt(InTexmap->GetHandleByAnim(InTexmap));
+	FileName = FDatasmithUtils::SanitizeFileName(FileName);
+
+	FString Name = FDatasmithUtils::SanitizeObjectName(FileName + FDatasmithMaxMatWriter::TextureSuffix);
+
+	TSharedRef<FBakeableToTextureElementConverter> Converter = MakeShared<FBakeableToTextureElementConverter>();
+	Converter->Tex = InTexmap;
+	Converter->FileName = FileName;
+
+	MaxMaterialToUEPbr->AddTexmap(InTexmap, Name, Converter);
+
 	IDatasmithMaterialExpression* BakedExpression = nullptr;
 
-	TSharedPtr< IDatasmithTextureElement > BakedTextureElement = FDatasmithMaxMatWriter::AddBakeable( MaxMaterialToUEPbr->ConvertState.DatasmithScene.ToSharedRef(),
-		InTexmap, *MaxMaterialToUEPbr->ConvertState.AssetsPath );
+	IDatasmithMaterialExpression* MaterialExpression = MaxMaterialToUEPbr->ConvertState.MaterialElement->AddMaterialExpression( EDatasmithMaterialExpressionType::Texture );
 
-	if ( BakedTextureElement )
+	if ( MaterialExpression )
 	{
-		IDatasmithMaterialExpression* MaterialExpression = MaxMaterialToUEPbr->ConvertState.MaterialElement->AddMaterialExpression( EDatasmithMaterialExpressionType::Texture );
+		IDatasmithMaterialExpressionTexture* MaterialExpressionTexture = static_cast< IDatasmithMaterialExpressionTexture* >( MaterialExpression );
+		MaterialExpressionTexture->SetTexturePathName( *Name );
 
-		if ( MaterialExpression )
-		{
-			IDatasmithMaterialExpressionTexture* MaterialExpressionTexture = static_cast< IDatasmithMaterialExpressionTexture* >( MaterialExpression );
-			MaterialExpressionTexture->SetTexturePathName( BakedTextureElement->GetName() );
+		FDatasmithMaxTexmapToUEPbrUtils::SetupTextureCoordinates( MaxMaterialToUEPbr, MaterialExpressionTexture->GetInputCoordinate(), InTexmap );
 
-			FDatasmithMaxTexmapToUEPbrUtils::SetupTextureCoordinates( MaxMaterialToUEPbr, MaterialExpressionTexture->GetInputCoordinate(), InTexmap );
-
-			BakedExpression = MaterialExpressionTexture;
-		}
+		BakedExpression = MaterialExpressionTexture;
 	}
 
 	return BakedExpression;
@@ -1736,14 +1999,26 @@ bool FDatasmithMaxPassthroughToUEPbr::IsSupported( const FDatasmithMaxMaterialsT
 		{
 			return true;
 		}
+		else if ( InTexmap->ClassID() == COLORMAPCLASS )
+		{
+			return true;
+		}
+		else if ( InTexmap->ClassID() == FORESTCOLORCLASS )
+		{
+			return true;
+		}
 	}
 
 	return false;
 }
 
-const TCHAR* FDatasmithMaxPassthroughToUEPbr::GetColorParameterName() const
+const TCHAR* FDatasmithMaxPassthroughToUEPbr::GetColorParameterName(Texmap* InTexmap) const
 {
-	return TEXT("Color1");
+	if ( InTexmap->ClassID() == FORESTCOLORCLASS )
+	{
+		return TEXT("colorbase");
+	}
+	return TEXT("color1");
 }
 
 IDatasmithMaterialExpression* FDatasmithMaxPassthroughToUEPbr::Convert( FDatasmithMaxMaterialsToUEPbr* MaxMaterialToUEPbr, Texmap* InTexmap )
@@ -1755,7 +2030,7 @@ IDatasmithMaterialExpression* FDatasmithMaxPassthroughToUEPbr::Convert( FDatasmi
 	MapParameter.Weight = 1.f;
 	MapParameter.bEnabled = ( InTexmap->SubTexmapOn(0) != 0 );
 
-	FLinearColor PassthroughColor = GetColorParameter( InTexmap, GetColorParameterName() );
+	FLinearColor PassthroughColor = GetColorParameter( InTexmap, GetColorParameterName(InTexmap) );
 	IDatasmithMaterialExpression* Map1 = FDatasmithMaxTexmapToUEPbrUtils::MapOrValue( MaxMaterialToUEPbr, MapParameter, TEXT("Submap"), PassthroughColor, TOptional< float >() );
 
 	return Map1;
@@ -1797,7 +2072,7 @@ FLinearColor FDatasmithMaxPassthroughToUEPbr::GetColorParameter( Texmap* InTexma
 	return FLinearColor::Black;
 }
 
-const TCHAR* FDatasmithMaxCellularToUEPbr::GetColorParameterName() const
+const TCHAR* FDatasmithMaxCellularToUEPbr::GetColorParameterName(Texmap* InTexmap) const
 {
 	return TEXT("cellcolor");
 }
@@ -1816,7 +2091,7 @@ bool FDatasmithMaxCellularToUEPbr::IsSupported( const FDatasmithMaxMaterialsToUE
 	return false;
 }
 
-const TCHAR* FDatasmithMaxThirdPartyMultiTexmapToUEPbr::GetColorParameterName() const
+const TCHAR* FDatasmithMaxThirdPartyMultiTexmapToUEPbr::GetColorParameterName(Texmap* InTexmap) const
 {
 	return TEXT("sub_color");
 }

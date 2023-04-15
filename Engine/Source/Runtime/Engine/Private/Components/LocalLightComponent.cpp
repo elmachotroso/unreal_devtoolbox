@@ -11,12 +11,15 @@
 #include "SceneManagement.h"
 #include "PointLightSceneProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LocalLightComponent)
+
 ULocalLightComponent::ULocalLightComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	Intensity = 5000;
 	Radius_DEPRECATED = 1024.0f;
 	AttenuationRadius = 1000;
+	InverseExposureBlend = 0;
 }
 
 void ULocalLightComponent::SetAttenuationRadius(float NewRadius)
@@ -166,7 +169,7 @@ void ULocalLightComponent::PushRadiusToRenderThread()
 
 float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELightUnits TargetUnits, float CosHalfConeAngle)
 {
-	CosHalfConeAngle = FMath::Clamp<float>(CosHalfConeAngle, -1, 1 - KINDA_SMALL_NUMBER);
+	CosHalfConeAngle = FMath::Clamp<float>(CosHalfConeAngle, -1, 1 - UE_KINDA_SMALL_NUMBER);
 
 	if (SrcUnits == TargetUnits)
 	{
@@ -182,7 +185,7 @@ float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELigh
 		}
 		else if (SrcUnits == ELightUnits::Lumens)
 		{
-			CnvFactor = 100.f * 100.f / 2.f / PI / (1.f - CosHalfConeAngle);
+			CnvFactor = 100.f * 100.f / 2.f / UE_PI / (1.f - CosHalfConeAngle);
 		}
 		else
 		{
@@ -195,7 +198,7 @@ float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELigh
 		}
 		else if (TargetUnits == ELightUnits::Lumens)
 		{
-			CnvFactor *= 2.f  * PI * (1.f - CosHalfConeAngle) / 100.f / 100.f;
+			CnvFactor *= 2.f  * UE_PI * (1.f - CosHalfConeAngle) / 100.f / 100.f;
 		}
 		else
 		{
@@ -205,3 +208,4 @@ float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELigh
 		return CnvFactor;
 	}
 }
+

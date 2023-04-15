@@ -8,7 +8,7 @@
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelEditor.h"
 #include "LevelEditorActions.h"
 #include "LevelEditorContextMenu.h"
@@ -21,8 +21,8 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Settings/EditorExperimentalSettings.h"
-#include "TranslationEditor/Public/ITranslationEditor.h"
-#include "LocalizationDashboard/Public/ILocalizationDashboardModule.h"
+#include "ITranslationEditor.h"
+#include "ILocalizationDashboardModule.h"
 #include "AssetSelection.h"
 #include "EditorViewportCommands.h"
 
@@ -141,7 +141,7 @@ void FLevelEditorMenu::RegisterLevelEditorMenus()
 							LOCTEXT("RecentLevelsSubMenu_ToolTip", "Select a level to load"),
 							FNewToolMenuDelegate::CreateStatic(&FFavoriteLevelMenu::MakeFavoriteLevelMenu),
 							false,
-							FSlateIcon(FEditorStyle::GetStyleSetName(), "MainFrame.FavoriteLevels")
+							FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.FavoriteLevels")
 						);
 					}
 				}));
@@ -160,6 +160,11 @@ void FLevelEditorMenu::RegisterLevelEditorMenus()
 						for ( int32 CurRecentIndex = 0; CurRecentIndex < AllowedRecents; ++CurRecentIndex )
 						{
 							TSharedPtr< FUICommandInfo > OpenRecentFile = FLevelEditorCommands::Get().OpenRecentFileCommands[ CurRecentIndex ];
+
+							if (!MRUFavorites.MRUItemPassesCurrentFilter(CurRecentIndex))
+							{
+								continue;
+							}
 
 							const FString CurRecent = MRUFavorites.GetMRUItem( CurRecentIndex );
 
@@ -184,7 +189,7 @@ void FLevelEditorMenu::RegisterLevelEditorMenus()
 							LOCTEXT("RecentLevelsSubMenu_ToolTip", "Select a level to load"),
 							FNewToolMenuDelegate::CreateStatic(&FRecentLevelMenu::MakeRecentLevelMenu),
 							false,
-							FSlateIcon(FEditorStyle::GetStyleSetName(), "MainFrame.RecentLevels")
+							FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.RecentLevels")
 						);
 					}
 				}));
@@ -278,48 +283,13 @@ void FLevelEditorMenu::RegisterLevelEditorMenus()
 			ActionsEntry.InsertPosition = FToolMenuInsert("Help", EToolMenuInsertType::Before);
 		}
 
-
-		static void ExtendToolsMenu()
-		{
-			UToolMenu* Menu = UToolMenus::Get()->RegisterMenu("LevelEditor.MainMenu.Tools", "MainFrame.MainMenu.Tools");
-
-			// Experimental section
-			{
-				// This is a temporary home for the spawners of experimental features that must be explicitly enabled.
-				// When the feature becomes permanent and need not check a flag, register a nomad spawner for it in the proper WorkspaceMenu category
-				const bool bTranslationPicker = GetDefault<UEditorExperimentalSettings>()->bEnableTranslationPicker;
-
-				// Make sure at least one is enabled before creating the section
-				if (bTranslationPicker)
-				{
-					FToolMenuSection& Section = Menu->AddSection("ExperimentalTabSpawners", LOCTEXT("ExperimentalTabSpawnersHeading", "Experimental"));
-					{
-						// Translation Picker
-						if (bTranslationPicker)
-						{
-							Section.AddMenuEntry(
-								"TranslationPicker",
-								LOCTEXT("TranslationPickerMenuItem", "Translation Picker"),
-								LOCTEXT("TranslationPickerMenuItemToolTip", "Launch the Translation Picker to Modify Editor Translations"),
-								FSlateIcon(),
-								FUIAction(FExecuteAction::CreateLambda(
-									[]()
-									{
-										FModuleManager::Get().LoadModuleChecked("TranslationEditor");
-										ITranslationEditor::OpenTranslationPicker();
-									}))
-							);
-						}
-					}
-				}
-			}
-		}
 	};
 
 	UToolMenus* ToolMenus = UToolMenus::Get();
 	ToolMenus->RegisterMenu("LevelEditor.MainMenu", "MainFrame.MainMenu", EMultiBoxType::MenuBar);
 	ToolMenus->RegisterMenu("LevelEditor.MainMenu.File", "MainFrame.MainTabMenu.File");
 	ToolMenus->RegisterMenu("LevelEditor.MainMenu.Window", "MainFrame.MainMenu.Window");
+	ToolMenus->RegisterMenu("LevelEditor.MainMenu.Tools", "MainFrame.MainMenu.Tools");
 
 	// Add other top level menus
 	Local::ExtendMenuBar();
@@ -335,9 +305,6 @@ void FLevelEditorMenu::RegisterLevelEditorMenus()
 
 	// Extend the Help menu
 	Local::ExtendHelpMenu();
-
-	// Extend the Tools menu
-	Local::ExtendToolsMenu();
 
 	// Extend the Build menu
 	RegisterBuildMenu();
@@ -467,7 +434,7 @@ void FLevelEditorMenu::RegisterBuildMenu()
 					.AutoWidth()
 					[
 						SNew(SCheckBox)
-						.Style(FEditorStyle::Get(), "Menu.CheckBox")
+						.Style(FAppStyle::Get(), "Menu.CheckBox")
 						.ToolTipText(LOCTEXT("StaticMeshesToolTip", "Static Meshes will be adjusted if checked."))
 						.IsChecked_Static(&FLevelEditorActionCallbacks::IsLightingResolutionStaticMeshesChecked)
 						.OnCheckStateChanged_Static(&FLevelEditorActionCallbacks::SetLightingResolutionStaticMeshes)
@@ -505,7 +472,7 @@ void FLevelEditorMenu::RegisterBuildMenu()
 				.AutoWidth()
 				[
 					SNew(SCheckBox)
-					.Style(FEditorStyle::Get(), "Menu.CheckBox")
+					.Style(FAppStyle::Get(), "Menu.CheckBox")
 					.ToolTipText(LOCTEXT("BSPSurfacesToolTip", "BSP Surfaces will be adjusted if checked."))
 					.IsChecked_Static(&FLevelEditorActionCallbacks::IsLightingResolutionBSPSurfacesChecked)
 					.OnCheckStateChanged_Static(&FLevelEditorActionCallbacks::SetLightingResolutionBSPSurfaces)
@@ -637,9 +604,28 @@ void FLevelEditorMenu::RegisterBuildMenu()
 	}
 
 	{
-		FToolMenuSection& Section = Menu->AddSection("LevelEditorWorldPartition", LOCTEXT("WorldPartitionHeading", "World Partition"));
-		Section.AddMenuEntry(FLevelEditorCommands::Get().BuildHLODs);
-		Section.AddMenuEntry(FLevelEditorCommands::Get().BuildMinimap);
+		Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+		{
+			if (GWorld != nullptr && GWorld->GetWorldPartition() != nullptr)
+			{
+				FToolMenuSection& Section = InMenu->AddSection("LevelEditorWorldPartition", LOCTEXT("WorldPartitionHeading", "World Partition"));
+				Section.AddMenuEntry(FLevelEditorCommands::Get().BuildHLODs);
+				Section.AddMenuEntry(FLevelEditorCommands::Get().BuildMinimap);
+				Section.AddMenuEntry(FLevelEditorCommands::Get().BuildLandscapeSplineMeshes);
+			}
+		}));
+	}
+
+	{
+		// The day we only support World Partitioned worlds, we can remove this section.
+		Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+		{
+			if (GWorld != nullptr && GWorld->GetWorldPartition() == nullptr)
+			{
+				FToolMenuSection& Section = InMenu->AddSection("LevelEditorLOD", LOCTEXT("LODHeading", "Hierarchical LOD"));
+				Section.AddMenuEntry(FLevelEditorCommands::Get().BuildHLODs);
+			}
+		}));
 	}
 
 	{
@@ -665,7 +651,7 @@ void FLevelEditorMenu::RegisterBuildMenu()
 			FLevelEditorCommands::Get().BuildAndSubmitToSourceControl,
 			TAttribute<FText>(),
 			TAttribute<FText>(),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.BuildAndSubmit")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.BuildAndSubmit")
 		);
 	}
 

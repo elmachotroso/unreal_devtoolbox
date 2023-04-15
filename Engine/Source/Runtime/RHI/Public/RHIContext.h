@@ -17,6 +17,7 @@
 #include "Math/Float16Color.h"
 #include "Modules/ModuleInterface.h"
 #include "RHIBreadcrumbs.h"
+#include "RHIResources.h"
 
 class FRHIDepthRenderTargetView;
 class FRHIRenderTargetView;
@@ -29,6 +30,7 @@ struct FRayTracingGeometrySegment;
 struct FRayTracingGeometryBuildParams;
 struct FRayTracingSceneBuildParams;
 struct FRayTracingLocalShaderBindings;
+enum class ERayTracingBindingType : uint8;
 enum class EAsyncComputeBudget;
 
 #define VALIDATE_UNIFORM_BUFFER_STATIC_BINDINGS (!UE_BUILD_SHIPPING && !UE_BUILD_TEST)
@@ -58,7 +60,10 @@ public:
 		checkf(IsUniformBufferStaticSlotValid(Slot), TEXT("Attempted to set a global uniform buffer %s with an invalid slot."), *Layout.GetDebugName());
 
 #if VALIDATE_UNIFORM_BUFFER_STATIC_BINDINGS
-		ensureMsgf(INDEX_NONE == Slots.Find(Slot), TEXT("Uniform Buffer %s was added twice to the binding array."), *Layout.GetDebugName());
+		if (int32 SlotIndex = Slots.Find(Slot); SlotIndex != INDEX_NONE)
+		{
+			checkf(UniformBuffers[SlotIndex] == UniformBuffer, TEXT("Uniform Buffer %s was added multiple times to the binding array but with different values."), *Layout.GetDebugName());
+		}
 #endif
 
 		Slots.Add(Slot);
@@ -115,6 +120,25 @@ private:
 UE_DEPRECATED(5.0, "Please rename to FUniformBufferStaticBindings")
 typedef FUniformBufferStaticBindings FUniformBufferGlobalBindings;
 
+struct FTransferResourceFenceData
+{
+	TStaticArray<void*, MAX_NUM_GPUS> SyncPoints;
+	FRHIGPUMask Mask;
+
+	FTransferResourceFenceData()
+		: SyncPoints(InPlace, nullptr)
+	{}
+};
+
+FORCEINLINE FTransferResourceFenceData* RHICreateTransferResourceFenceData()
+{
+#if WITH_MGPU
+	return new FTransferResourceFenceData;
+#else
+	return nullptr;
+#endif
+}
+
 /** Parameters for RHITransferResources, used to copy memory between GPUs */
 struct FTransferResourceParams
 {
@@ -155,6 +179,41 @@ struct FTransferResourceParams
 	// Whether the GPUs must handshake before and after the transfer. Required if the texture rect is being written to in several render passes.
 	// Otherwise, minimal synchronization will be used.
 	bool bLockStepGPUs = true;
+	/**
+	  * Optional pointer where fence data can be written if you want to delay waiting on the GPU fence for a resource transfer.
+	  * Should be created via "RHICreateTransferResourceFenceData", and must later be consumed via "TransferResourceWait" command.
+	  * Note that it is valid to consume the fence data, even if you don't end up implementing a transfer that uses it -- it will
+	  * behave as a nop in that case.  That can simplify cases where the transfer may be conditional, and you don't want to worry
+	  * about whether it occurred or not, but need to reserve the possibility.
+	  */
+	FTransferResourceFenceData* DelayedFence = nullptr;
+	/**
+	 * Optional pointer to a fence to wait on before starting the transfer.  Useful if a resource may be in use on the destination
+	 * GPU, and you need to wait until it's no longer in use before copying to it from the current GPU.  Fences are created via
+	 * "RHICreateTransferResourceFenceData", then signaled via "TransferResourceSignal" command, before being added to one of the
+	 * transfers in a batch that's dependent on the signal.
+	 */
+	FTransferResourceFenceData* PreTransferFence = nullptr;
+};
+
+//
+// Opaque type representing a finalized platform GPU command list, which can be submitted to the GPU via RHISubmitCommandLists().
+// This type is intended only for use by RHI command list management. Platform RHIs provide the implementation.
+//
+class IRHIPlatformCommandList
+{
+	// Prevent copying
+	IRHIPlatformCommandList(IRHIPlatformCommandList const&) = delete;
+	IRHIPlatformCommandList& operator = (IRHIPlatformCommandList const&) = delete;
+
+protected:
+	// Allow moving
+	IRHIPlatformCommandList(IRHIPlatformCommandList&&) = default;
+	IRHIPlatformCommandList& operator = (IRHIPlatformCommandList&&) = default;
+
+	// This type is only usable by derived types (platform RHI implementations)
+	IRHIPlatformCommandList() = default;
+	~IRHIPlatformCommandList() = default;
 };
 
 /** Context that is capable of doing Compute work.  Can be async or compute on the gfx pipe. */
@@ -165,19 +224,19 @@ public:
 	{
 	}
 
-	/**
-	*Sets the current compute shader.
-	*/
-	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) = 0;
-
-	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState)
+	virtual ERHIPipeline GetPipeline() const
 	{
-		if (ComputePipelineState)
-		{
-			FRHIComputePipelineStateFallback* FallbackState = static_cast<FRHIComputePipelineStateFallback*>(ComputePipelineState);
-			RHISetComputeShader(FallbackState->GetComputeShader());
-		}
+		return ERHIPipeline::AsyncCompute;
 	}
+
+	UE_DEPRECATED(5.1, "ComputePipelineStates should be used instead of direct ComputeShaders.")
+	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader)
+	{
+		RHI_API void RHISetComputeShaderBackwardsCompatible(IRHIComputeContext*, FRHIComputeShader*);
+		RHISetComputeShaderBackwardsCompatible(this, ComputeShader);
+	}
+
+	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) = 0;
 
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) = 0;
 
@@ -331,6 +390,34 @@ public:
 		/* empty default implementation */
 	}
 
+	/*
+	 * Signal where a cross GPU resource transfer can start.  Useful when the destination resource of a copy may still be in use, and
+	 * the copy from the source GPUs needs to wait until the destination is finished with it.  SrcGPUMask must not overlap the current
+	 * GPU mask of the context (which specifies the destination GPUs), and the number of items in the "FenceDatas" array MUST match the
+	 * number of bits set in SrcGPUMask.
+	 */
+	virtual void RHITransferResourceSignal(const TArrayView<FTransferResourceFenceData* const> FenceDatas, FRHIGPUMask SrcGPUMask)
+	{
+		/* default noop implementation */
+#if WITH_MGPU
+		for (FTransferResourceFenceData* FenceData : FenceDatas)
+		{
+			delete FenceData;
+		}
+#endif
+	}
+
+	virtual void RHITransferResourceWait(const TArrayView<FTransferResourceFenceData* const> FenceDatas)
+	{
+		/* default noop implementation */
+#if WITH_MGPU
+		for (FTransferResourceFenceData* FenceData : FenceDatas)
+		{
+			delete FenceData;
+		}
+#endif
+	}
+
 	virtual void RHIBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange)
 	{
 		checkNoEntry();
@@ -346,28 +433,6 @@ public:
 		checkNoEntry();
 	}
 
-#if RHI_WANT_BREADCRUMB_EVENTS
-	inline void RHISetBreadcrumbStackTop(const FRHIBreadcrumb* InBreadcrumbStackTop)
-	{
-		if (ensure(BreadcrumbStackIndex >= 0))
-		{
-			BreadcrumbStackTop[BreadcrumbStackIndex] = InBreadcrumbStackTop;
-		}
-	}
-	
-	const FRHIBreadcrumb* GetBreadcrumbStackTop() const
-	{
-		return BreadcrumbStackIndex >= 0 ? BreadcrumbStackTop[BreadcrumbStackIndex] : nullptr;
-	}
-
-	enum { MaxBreadcrumbStacks = 4 };
-
-	// Top of the breadcrumb stack on the RHI thread.
-	const FRHIBreadcrumb* BreadcrumbStackTop[MaxBreadcrumbStacks]{};
-	// Index into the breadcrumbs, incremented for each command list submit and decremented when complete.
-	int32 BreadcrumbStackIndex{ 0 };
-#endif
-
 #if ENABLE_RHI_VALIDATION
 
 	RHIValidation::FTracker* Tracker = nullptr;
@@ -382,17 +447,30 @@ public:
 		return WrappingContext ? *WrappingContext : *this;
 	}
 
-#elif WITH_MGPU
-	// Needs to be virtual, because it's required for multi GPU resource uploads (FD3D12RHICommandInitializeBuffer, etc)
-	virtual IRHIComputeContext& GetLowestLevelContext() { return *this; }
-	inline IRHIComputeContext& GetHighestLevelContext() { return *this; }
 #else
 
 	// Fast implementations when the RHI validation layer is disabled.
-	inline IRHIComputeContext& GetLowestLevelContext() { return *this; }
+	inline IRHIComputeContext& GetLowestLevelContext () { return *this; }
 	inline IRHIComputeContext& GetHighestLevelContext() { return *this; }
 
 #endif
+
+#if ENABLE_RHI_VALIDATION
+	virtual void SetTrackedAccess(const FRHITrackedAccessInfo& Info)
+#else
+	inline  void SetTrackedAccess(const FRHITrackedAccessInfo& Info)
+#endif
+	{
+		check(Info.Resource != nullptr);
+		check(Info.Access != ERHIAccess::Unknown);
+		Info.Resource->TrackedAccess = Info.Access;
+	}
+
+	inline ERHIAccess GetTrackedAccess(const FRHIViewableResource* Resource) const
+	{
+		check(Resource);
+		return Resource->TrackedAccess;
+	}
 
 	virtual void* RHIGetNativeCommandBuffer() { return nullptr; }
 	virtual void RHIPostExternalCommandsReset() { }
@@ -452,6 +530,11 @@ class IRHICommandContext : public IRHIComputeContext
 public:
 	virtual ~IRHICommandContext()
 	{
+	}
+
+	virtual ERHIPipeline GetPipeline() const override
+	{
+		return ERHIPipeline::Graphics;
 	}
 
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) = 0;
@@ -689,46 +772,12 @@ public:
 	{
 	}
 
-	virtual void RHICopyTexture(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FRHICopyTextureInfo& CopyInfo)
-	{
-		const bool bIsCube = SourceTexture->GetTextureCube() != nullptr;
-		const bool bAllCubeFaces = bIsCube && (CopyInfo.NumSlices % 6) == 0;
-		const int32 NumArraySlices = bAllCubeFaces ? CopyInfo.NumSlices / 6 : CopyInfo.NumSlices;
-		const int32 NumFaces = bAllCubeFaces ? 6 : 1;
-		for (int32 ArrayIndex = 0; ArrayIndex < NumArraySlices; ++ArrayIndex)
-		{
-			int32 SourceArrayIndex = CopyInfo.SourceSliceIndex + ArrayIndex;
-			int32 DestArrayIndex = CopyInfo.DestSliceIndex + ArrayIndex;
-			for (int32 FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
-			{
-				FResolveParams ResolveParams(FResolveRect(0, 0, 0, 0),
-					bIsCube ? (ECubeFace)FaceIndex : CubeFace_PosX,
-					CopyInfo.SourceMipIndex,
-					SourceArrayIndex,
-					DestArrayIndex,
-					FResolveRect(0, 0, 0, 0)
-				);
-				if (CopyInfo.Size != FIntVector::ZeroValue)
-				{
-					ResolveParams.Rect = FResolveRect(CopyInfo.SourcePosition.X, CopyInfo.SourcePosition.Y, CopyInfo.SourcePosition.X + CopyInfo.Size.X, CopyInfo.SourcePosition.Y + CopyInfo.Size.Y);
-					ResolveParams.DestRect = FResolveRect(CopyInfo.DestPosition.X, CopyInfo.DestPosition.Y, CopyInfo.DestPosition.X + CopyInfo.Size.X, CopyInfo.DestPosition.Y + CopyInfo.Size.Y);
-				}
-				RHICopyToResolveTarget(SourceTexture, DestTexture, ResolveParams);
-			}
-		}
-	}
+	virtual void RHICopyTexture(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FRHICopyTextureInfo& CopyInfo) = 0;
 
 	virtual void RHICopyBufferRegion(FRHIBuffer* DestBuffer, uint64 DstOffset, FRHIBuffer* SourceBuffer, uint64 SrcOffset, uint64 NumBytes)
 	{
 		checkNoEntry();
 	}
-
-#if RHI_RAYTRACING
-	virtual void RHICopyBufferRegions(const TArrayView<const FCopyBufferRegionParams> Params)
-	{
-		checkNoEntry();
-	}
-#endif
 
 	virtual void RHIClearRayTracingBindings(FRHIRayTracingScene* Scene)
 	{
@@ -755,6 +804,7 @@ public:
 		checkNoEntry();
 	}
 
+	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RHIRayTraceDispatch() instead.")
 	virtual void RHIRayTraceOcclusion(FRHIRayTracingScene* Scene,
 		FRHIShaderResourceView* Rays,
 		FRHIUnorderedAccessView* Output,
@@ -763,6 +813,7 @@ public:
 		checkNoEntry();
 	}
 
+	UE_DEPRECATED(5.1, "Please use an explicit ray generation shader and RHIRayTraceDispatch() instead.")
 	virtual void RHIRayTraceIntersection(FRHIRayTracingScene* Scene,
 		FRHIShaderResourceView* Rays,
 		FRHIUnorderedAccessView* Output,
@@ -787,7 +838,7 @@ public:
 		checkNoEntry();
 	}
 
-	virtual void RHISetRayTracingHitGroups(FRHIRayTracingScene* Scene, FRHIRayTracingPipelineState* Pipeline, uint32 NumBindings, const FRayTracingLocalShaderBindings* Bindings)
+	virtual void RHISetRayTracingBindings(FRHIRayTracingScene* Scene, FRHIRayTracingPipelineState* Pipeline, uint32 NumBindings, const FRayTracingLocalShaderBindings* Bindings, ERayTracingBindingType BindingType)
 	{
 		checkNoEntry();
 	}
@@ -820,20 +871,6 @@ public:
 		checkNoEntry();
 	}
 
-#if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-	virtual void RHIBackBufferWaitTrackingBeginFrame(uint64 FrameToken, bool bDeferred)
-	{
-		checkNoEntry();
-	}
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-
-#if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
-	virtual void RHIFlushTextureCacheBOP(FRHITexture* Texture)
-	{
-		checkNoEntry();
-	}
-#endif // #if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
-
 	protected:
 		FRHIRenderPassInfo RenderPassInfo;
 };
@@ -848,23 +885,17 @@ FORCEINLINE FBoundShaderStateRHIRef RHICreateBoundShaderState(
 );
 
 
-// Command Context for RHIs that do not support real Graphics Pipelines.
+// Command Context for RHIs that do not support real Graphics/Compute Pipelines.
 class IRHICommandContextPSOFallback : public IRHICommandContext
 {
 public:
-	/**
-	* Set bound shader state. This will set the vertex decl/shader, and pixel shader
-	* @param BoundShaderState - state resource
-	*/
 	virtual void RHISetBoundShaderState(FRHIBoundShaderState* BoundShaderState) = 0;
-
 	virtual void RHISetDepthStencilState(FRHIDepthStencilState* NewState, uint32 StencilRef) = 0;
-
 	virtual void RHISetRasterizerState(FRHIRasterizerState* NewState) = 0;
-
 	virtual void RHISetBlendState(FRHIBlendState* NewState, const FLinearColor& BlendFactor) = 0;
-
 	virtual void RHIEnableDepthBoundsTest(bool bEnable) = 0;
+	// TODO: uncomment when removed from IRHIComputeContext
+	//virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) = 0;
 
 	/**
 	* This will set most relevant pipeline state. Legacy APIs are expected to set corresponding disjoint state as well.
@@ -882,6 +913,16 @@ public:
 		SetGraphicsPipelineStateFromInitializer(PsoInit, StencilRef, bApplyAdditionalState);
 	}
 #endif
+
+	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState)
+	{
+		if (FRHIComputePipelineStateFallback* FallbackState = static_cast<FRHIComputePipelineStateFallback*>(ComputePipelineState))
+		{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			RHISetComputeShader(FallbackState->GetComputeShader());
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		}
+	}
 
 private:
 	void SetGraphicsPipelineStateFromInitializer(const FGraphicsPipelineStateInitializer& PsoInit, uint32 StencilRef, bool bApplyAdditionalState)

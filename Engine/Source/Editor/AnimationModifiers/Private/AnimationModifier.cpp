@@ -1,20 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationModifier.h"
-#include "AssetViewUtils.h"
+
+#include "Algo/Transform.h"
+#include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
-#include "ModifierOutputFilter.h"
-#include "ScopedTransaction.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetViewUtils.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
 #include "Editor/Transactor.h"
-#include "UObject/UObjectIterator.h"
-
-#include "UObject/ReleaseObjectVersion.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "Misc/MessageDialog.h"
-#include "Editor/Transactor.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "ModifierOutputFilter.h"
+#include "Modules/ModuleManager.h"
+#include "ScopedTransaction.h"
+#include "Serialization/Archive.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectKey.h"
+#include "UObject/Package.h"
+#include "UObject/ReleaseObjectVersion.h"
+#include "UObject/Script.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/AnimObjectVersion.h"
 
 #define LOCTEXT_NAMESPACE "AnimationModifier"
 
@@ -88,7 +103,7 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 
 	GLog->RemoveOutputDevice(&OutputLog);
 
-	// Check if warnings or errors have occurred and show dialog to user to inform her about this
+	// Check if warnings or errors have occurred and show dialog to user to inform them about this
 	const bool bWarnings = OutputLog.ContainsWarnings();
 	const bool bErrors = OutputLog.ContainsErrors();
 	bool bShouldRevert = bErrors;

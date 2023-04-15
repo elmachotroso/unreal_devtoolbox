@@ -140,13 +140,23 @@ namespace Chaos
 
 		static bool RaycastFast(FReal MRadius, FReal MHeight, const FVec3& MVector, const FVec3& X1, const FVec3& X2, const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const FReal Thickness, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex)
 		{
-			ensure(FMath::IsNearlyEqual(MVector.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
-			ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
+			ensure(FMath::IsNearlyEqual(MVector.SizeSquared(), (FReal)1, (FReal)UE_KINDA_SMALL_NUMBER));
+			ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)UE_KINDA_SMALL_NUMBER));
 			ensure(Length > 0);
 
 			const FReal R = MRadius + Thickness;
 			const FReal R2 = R * R;
 			OutFaceIndex = INDEX_NONE;
+
+			// first test, segment to segment distance
+			const FVec3 RayEndPoint = StartPoint + Dir * Length;
+			FVec3 OutP1, OutP2;
+			FMath::SegmentDistToSegmentSafe(X1, X2, StartPoint, RayEndPoint, OutP1, OutP2);
+			const FReal DistanceSquared = (OutP2 - OutP1).SizeSquared();
+			if (DistanceSquared > R2 + DBL_EPSILON)
+			{
+				return false;
+			}
 
 			// Raycast against capsule bounds.
 			// We will use the intersection point as our ray start, this prevents precision issues if start is far away.
@@ -217,7 +227,7 @@ namespace Chaos
 				}
 			}
 
-			if(FMath::IsNearlyEqual(LocalLength, 0., KINDA_SMALL_NUMBER))
+			if(FMath::IsNearlyEqual(LocalLength, 0., UE_KINDA_SMALL_NUMBER))
 			{
 				// If LocalLength is 0, this means the ray's endpoint is on the bounding AABB of thickened capsule.
 				// At this point we have determined this point is not on surface of capsule, so the ray has missed.
@@ -285,15 +295,8 @@ namespace Chaos
 					const FReal PositionLengthOnCoreCylinder = FVec3::DotProduct(CylinderToSpherePosition, MVector);
 					if (PositionLengthOnCoreCylinder >= 0 && PositionLengthOnCoreCylinder < MHeight)
 					{
-						const FVec3 SegmentToPosition = (CylinderToSpherePosition - MVector * PositionLengthOnCoreCylinder);
-						if (SegmentToPosition.SquaredLength() > ( R2 + KINDA_SMALL_NUMBER))
-						{
-							// the contact point is actually outside of the cylinder
-							// this can happen if the ray starts within the cylinder bounds but do not intersect with the cylinder
-							return false;
-						}
 						OutTime = Time + RemovedLength; // Account for ray clipped against bounds
-						OutNormal = SegmentToPosition / R;
+						OutNormal = (CylinderToSpherePosition - MVector * PositionLengthOnCoreCylinder) / R;
 						OutPosition = SpherePosition - OutNormal * Thickness;
 						return true;
 					}
@@ -418,6 +421,11 @@ namespace Chaos
 			}
 		}
 
+		virtual FString ToString() const override
+		{
+			return FString::Printf(TEXT("Capsule: Height: %f Radius: %f"), GetHeight(), GetRadius());
+		}
+
 		virtual TUniquePtr<FImplicitObject> Copy() const override
 		{
 			return TUniquePtr<FImplicitObject>(new FCapsule(*this));
@@ -444,12 +452,12 @@ namespace Chaos
 		FReal GetArea() const { return GetArea(GetHeight(), GetRadius()); }
 		static FReal GetArea(const FReal Height, const FReal Radius)
 		{
-			static const FReal PI2 = 2.f * PI;
+			static const FReal PI2 = 2.f * UE_PI;
 			return PI2 * Radius * (Height + 2.f * Radius); 
 		}
 
 		FReal GetVolume() const { return GetVolume(GetHeight(), GetRadius()); }
-		static FReal GetVolume(const FReal Height, const FReal Radius) { static const FReal FourThirds = 4.0f / 3.0f; return PI * Radius * Radius * (Height + FourThirds * Radius); }
+		static FReal GetVolume(const FReal Height, const FReal Radius) { static const FReal FourThirds = 4.0f / 3.0f; return UE_PI * Radius * Radius * (Height + FourThirds * Radius); }
 
 		FMatrix33 GetInertiaTensor(const FReal Mass) const { return GetInertiaTensor(Mass, GetHeight(), GetRadius()); }
 		static FMatrix33 GetInertiaTensor(const FReal Mass, const FReal Height, const FReal Radius)
@@ -595,10 +603,10 @@ namespace Chaos
 	{
 		static FORCEINLINE void ComputeSamplePoints(TArray<FVec3>& Points, const FCapsule& Capsule, const int32 NumPoints)
 		{
-			if (NumPoints <= 1 || Capsule.GetRadius() <= SMALL_NUMBER)
+			if (NumPoints <= 1 || Capsule.GetRadius() <= UE_SMALL_NUMBER)
 			{
 				const int32 Offset = Points.Num();
-				if (Capsule.GetHeight() <= SMALL_NUMBER)
+				if (Capsule.GetHeight() <= UE_SMALL_NUMBER)
 				{
 					Points.SetNumUninitialized(Offset + 1);
 					Points[Offset] = Capsule.GetCenter();
@@ -627,14 +635,14 @@ namespace Chaos
 		    const int32 NumPoints)
 		{
 			// Axis should be normalized.
-			checkSlow(FMath::Abs(Axis.Size() - 1.0) < KINDA_SMALL_NUMBER);
+			checkSlow(FMath::Abs(Axis.Size() - 1.0) < UE_KINDA_SMALL_NUMBER);
 
 			// Evenly distribute points between the capsule body and the end caps.
 			int32 NumPointsEndCap;
 			int32 NumPointsCylinder;
-			const FReal CapArea = 4 * PI * Radius * Radius;
-			const FReal CylArea = static_cast<FReal>(2.0 * PI * Radius * Height);
-			if (CylArea > KINDA_SMALL_NUMBER)
+			const FReal CapArea = 4 * UE_PI * Radius * Radius;
+			const FReal CylArea = static_cast<FReal>(2.0 * UE_PI * Radius * Height);
+			if (CylArea > UE_KINDA_SMALL_NUMBER)
 			{
 				const FReal AllArea = CylArea + CapArea;
 				NumPointsCylinder = static_cast<int32>(round(CylArea / AllArea * static_cast<FReal>(NumPoints)));
@@ -711,12 +719,12 @@ namespace Chaos
 			}
 
 			const FRotation3 Rotation = FRotation3::FromRotatedVector(FVec3(0, 0, 1), Axis);
-			checkSlow(((Origin + Axis * (Height + Radius * 2)) - (Rotation.RotateVector(FVec3(0, 0, Height + Radius * 2)) + Origin)).Size() < KINDA_SMALL_NUMBER);
+			checkSlow(((Origin + Axis * (Height + Radius * 2)) - (Rotation.RotateVector(FVec3(0, 0, Height + Radius * 2)) + Origin)).Size() < UE_KINDA_SMALL_NUMBER);
 			for (int32 i = Offset; i < Points.Num(); i++)
 			{
 				FVec3& Point = Points[i];
 				const FVec3 PointNew = Rotation.RotateVector(Point + FVec3(0, 0, HalfHeight + Radius)) + Origin;
-				checkSlow(FMath::Abs(FCapsule::NewFromOriginAndAxis(Origin, Axis, Height, Radius).SignedDistance(PointNew)) < KINDA_SMALL_NUMBER);
+				checkSlow(FMath::Abs(FCapsule::NewFromOriginAndAxis(Origin, Axis, Height, Radius).SignedDistance(PointNew)) < UE_KINDA_SMALL_NUMBER);
 				Point = PointNew;
 			}
 		}

@@ -6,8 +6,13 @@
 #include "MeshTypes.h"
 #include "MeshDescription.h"
 
-
 namespace MeshOperator
 {
-	bool OrientMesh(FMeshDescription& MeshDescription);
+
+bool OrientMesh(FMeshDescription& MeshDescription);
+
+void RecomputeNullNormal(FMeshDescription& MeshDescription);
+
+void ResolveTJunctions(FMeshDescription& MeshDescription, double Tolerance);
+
 }

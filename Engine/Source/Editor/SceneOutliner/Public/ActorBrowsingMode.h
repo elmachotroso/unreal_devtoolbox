@@ -14,9 +14,9 @@ public:
 
 	/* Begin ISceneOutlinerMode Interface */
 	virtual void Rebuild() override;
-	virtual FCreateSceneOutlinerMode CreateFolderPickerMode(const FFolder::FRootObject& InRootObject = FFolder::GetDefaultRootObject()) const override;
+	virtual FCreateSceneOutlinerMode CreateFolderPickerMode(const FFolder::FRootObject& InRootObject = FFolder::GetInvalidRootObject()) const override;
 	virtual void CreateViewContent(FMenuBuilder& MenuBuilder) override;
-	virtual TSharedPtr<FDragDropOperation> CreateDragDropOperation(const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const override;
+	virtual TSharedPtr<FDragDropOperation> CreateDragDropOperation(const FPointerEvent& MouseEvent, const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const override;
 	virtual bool ParseDragDrop(FSceneOutlinerDragDropPayload& OutPayload, const FDragDropOperation& Operation) const override;
 	virtual FSceneOutlinerDragValidationInfo ValidateDrop(const ISceneOutlinerTreeItem& DropTarget, const FSceneOutlinerDragDropPayload& Payload) const override;
 	virtual TSharedPtr<SWidget> CreateContextMenu() override;
@@ -45,12 +45,16 @@ public:
 	virtual bool CanCopy() const override;
 	virtual bool CanPaste() const override;
 	virtual bool CanSupportDragAndDrop() const { return true; }
+	virtual bool HasErrors() const;
+	virtual FText GetErrorsText() const;
+	virtual void RepairErrors() const;	
 	virtual FFolder CreateNewFolder() override;
-	virtual FFolder CreateFolder(const FFolder& ParentPath, const FName& LeafName) override;
+	virtual FFolder GetFolder(const FFolder& ParentPath, const FName& LeafName) override;
+	virtual bool CreateFolder(const FFolder& NewFolder) override;
 	virtual bool ReparentItemToFolder(const FFolder& FolderPath, const FSceneOutlinerTreeItemPtr& Item) override;
 	virtual void SelectFoldersDescendants(const TArray<FFolderTreeItem*>& FolderItems, bool bSelectImmediateChildrenOnly) override;
-	virtual void PinItem(const FSceneOutlinerTreeItemPtr& InItem) override;
-	virtual void UnpinItem(const FSceneOutlinerTreeItemPtr& InItem) override;
+	virtual void PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
+	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
 	virtual void PinSelectedItems() override;
 	virtual void UnpinSelectedItems() override;
 	/* End ISceneOutlinerMode Interface */
@@ -97,15 +101,18 @@ public:
 
 	/** Called by engine when edit delete actors ends */
 	void OnDeleteActorsEnd();
+	
+	/** Function called by the Outliner Filter Bar to compare an item with Type Filters*/
+	virtual bool CompareItemWithClassName(SceneOutliner::FilterBarType InItem, const TSet<FTopLevelAssetPath>&) const override;
 private:
 	/** Build and up the context menu */
 	TSharedPtr<SWidget> BuildContextMenu();
 	/** Register the context menu with the engine */
-	void RegisterContextMenu();
+	static void RegisterContextMenu();
 	bool CanPasteFoldersOnlyFromClipboard() const;
 
-	bool GetFolderNamesFromFolders(const TArray<FFolder>& InFolders, TArray<FName>& OutFolders, FFolder::FRootObject& OutCommonRootObject) const;
 	bool GetFolderNamesFromPayload(const FSceneOutlinerDragDropPayload& InPayload, TArray<FName>& OutFolders, FFolder::FRootObject& OutCommonRootObject) const;
+	FFolder GetWorldDefaultRootFolder() const;
 
 	/** Filter factories */
 	static TSharedRef<FSceneOutlinerFilter> CreateShowOnlySelectedActorsFilter();
@@ -114,6 +121,28 @@ private:
 	static TSharedRef<FSceneOutlinerFilter> CreateHideComponentsFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideLevelInstancesFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideUnloadedActorsFilter();
+	static TSharedRef<FSceneOutlinerFilter> CreateHideEmptyFoldersFilter();
+
+	/** Functions to expose selection framing to the UI */
+	void OnToggleAlwaysFrameSelection();
+	bool ShouldAlwaysFrameSelection();
+
+	/**
+	 * Get a mutable version of the ActorBrowser config for setting values.
+	 * @returns		The config for this ActorBrowser.
+	 * @note		If OutlinerIdentifier is not set for this outliner, it is not possible to store settings.
+	 */
+	struct FActorBrowsingModeConfig* GetMutableConfig();
+
+	/**
+	 * Get a const version of the ActorBrowser config for getting values.
+	 * @returns		The config for this ActorBrowser.
+	 * @note		If OutlinerIdentifier is not set for this outliner, it is not possible to store settings.
+	 */
+	const FActorBrowsingModeConfig* GetConstConfig() const;
+
+	/** Save the config for this ActorBrowser */
+	void SaveConfig();
 	
 private:
 	/** Number of actors (including unloaded) which have passed through the filters */
@@ -125,5 +154,6 @@ private:
 	/** List of actors which passed the regular filters and may or may not have passed the search filter */
 	TSet<TWeakObjectPtr<AActor>> ApplicableActors;
 
+	bool bRepresentingWorldGameWorld = false;
 	bool bRepresentingWorldPartitionedWorld = false;
 };

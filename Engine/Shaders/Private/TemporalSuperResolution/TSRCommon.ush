@@ -11,7 +11,7 @@
 
 
 //------------------------------------------------------- RECOMPILE HASH
-// BE1AEDD9-8FB8-4039-8E36-8C888D492EC7
+// 2A42D2EF-728A-4AC9-825F-2DC009BE04B0
 
 
 //------------------------------------------------------- COMPILER CONFIG
@@ -39,12 +39,12 @@
 #define CONFIG_SCENE_COLOR_OVERFLOW 1
 
 #if POST_PROCESS_ALPHA
-	#define CONFIG_SCENE_COLOR_APLHA 1
+	#define CONFIG_SCENE_COLOR_ALPHA 1
 #else
-	#define CONFIG_SCENE_COLOR_APLHA 0
+	#define CONFIG_SCENE_COLOR_ALPHA 0
 #endif
 
-#define CONFIG_ENABLE_STOCASTIC_QUANTIZATION (!CONFIG_SCENE_COLOR_APLHA)
+#define CONFIG_ENABLE_STOCASTIC_QUANTIZATION (!CONFIG_SCENE_COLOR_ALPHA)
 
 //------------------------------------------------------- CONSTANTS
 
@@ -79,6 +79,13 @@
 #define SUB_PIXEL_PARALLAX_FACTOR_BIT_COUNT 4
 #define SUB_PIXEL_PARALLAX_FACTOR_BIT_OFFSET 0
 #define SUB_PIXEL_PARALLAX_FACTOR_BIT_MASK ((1 << SUB_PIXEL_PARALLAX_FACTOR_BIT_COUNT) - 1)
+
+// Minimum number of sample of each texel when reprojecting the high frequency history.
+// Value too low causes area of low sample count to have pixel dominating too much in reprojection causing input res aliasing on texture details
+#define MIN_REPROJECTION_SAMPLE_COUNT 2.0
+
+// Minimum weight of a pixel in history.
+#define MIN_IMPLICIT_HISTORY_WEIGHT ceil(tsr_half(255.0) * rcp(tsr_half(MAX_SAMPLE_COUNT)) * tsr_half(MIN_REPROJECTION_SAMPLE_COUNT)) * rcp(tsr_half(255.0))
 
 
 // K = Center of the nearest input pixel.
@@ -198,13 +205,15 @@ static const uint kPlusIndexes3x3[5] = { 4, 1, 3, 7, 5 };
 
 #endif
 
-#if CONFIG_SCENE_COLOR_APLHA
+#if CONFIG_SCENE_COLOR_ALPHA
 	#define tsr_halfC tsr_half4
 	#define tsr_halfCx2 tsr_half4x2
+	#define CONFIG_CHANNEL_COUNT 4
 
 #else
 	#define tsr_halfC tsr_half3
 	#define tsr_halfCx2 tsr_half3x2
+	#define CONFIG_CHANNEL_COUNT 3
 
 #endif
 
@@ -248,24 +257,6 @@ FScreenTransform InputPixelPosToScreenPos;
 float2 ScreenVelocityToInputPixelVelocity;
 float2 InputPixelVelocityToScreenVelocity;
 
-float2 LowFrequencyInfo_Extent;
-float2 LowFrequencyInfo_ExtentInverse;
-uint2  LowFrequencyInfo_ViewportMin;
-uint2  LowFrequencyInfo_ViewportMax;
-float2 LowFrequencyInfo_ViewportSize;
-float2 LowFrequencyInfo_ViewportSizeInverse;
-float2 LowFrequencyInfo_UVViewportBilinearMin;
-float2 LowFrequencyInfo_UVViewportBilinearMax;
-
-float2 RejectionInfo_Extent;
-float2 RejectionInfo_ExtentInverse;
-uint2  RejectionInfo_ViewportMin;
-uint2  RejectionInfo_ViewportMax;
-float2 RejectionInfo_ViewportSize;
-float2 RejectionInfo_ViewportSizeInverse;
-float2 RejectionInfo_UVViewportBilinearMin;
-float2 RejectionInfo_UVViewportBilinearMax;
-
 float2 HistoryInfo_Extent;
 float2 HistoryInfo_ExtentInverse;
 uint2  HistoryInfo_ViewportMin;
@@ -291,12 +282,14 @@ float2 PrevHistoryInfo_UVViewportSizeInverse;
 float2 PrevHistoryInfo_UVViewportBilinearMin;
 float2 PrevHistoryInfo_UVViewportBilinearMax;
 FScreenTransform ScreenPosToPrevHistoryBufferUV;
+FScreenTransform ScreenPosToPrevSubpixelDetails;
+float2 PrevSubpixelDetailsExtent;
 float HistoryPreExposureCorrection;
 
 uint bCameraCut;
 
 #if DEBUG_OUTPUT
-	RWTexture2D<float4> DebugOutput;
+	RWTexture2DArray<float4> DebugOutput;
 #endif
 
 
@@ -827,14 +820,14 @@ bool TakeOnlyOneSamplePair(float2 Offset)
 	return Offset.y > 0.0 || (Offset.x > 0.0 && Offset.y == 0.0);
 }
 
-float2 ComputeStaticVelocity(float2 ScreenPos, float DeviceZ)
+float3 ComputeStaticVelocity(float2 ScreenPos, float DeviceZ)
 {
 	float3 PosN = float3(ScreenPos, DeviceZ);
 
 	float4 ThisClip = float4(PosN, 1);
 	float4 PrevClip = mul( ThisClip, View.ClipToPrevClip );
-	float2 PrevScreen = PrevClip.xy / PrevClip.w;
-	return PosN.xy - PrevScreen;
+	float3 PrevScreen = PrevClip.xyz / PrevClip.w;
+	return PosN - PrevScreen;
 }
 
 tsr_half ComputePredictionCompleteness(tsr_half SampleHistoryValidity)
@@ -850,6 +843,17 @@ bool IsOffScreen(uint bCameraCut, float2 ScreenPos, tsr_half ParallaxRejectionMa
 	bool bIsParallaxRejected = ParallaxRejectionMask < tsr_half(PARALLAX_REJECTION_MASK_THRESHOLD);
 
 	return (bIsCameraCut || bIsOutOfBounds || bIsParallaxRejected);
+}
+
+CALL_SITE_DEBUGLOC
+void IsOffScreenOrDisoccluded(uint bCameraCut, float2x2 ScreenPos, tsr_half2 ParallaxRejectionMask, out bool2 bIsOffScreen, out bool2 bIsDisoccluded)
+{
+	bool bIsCameraCut = bCameraCut != 0;
+	bool2 bIsOutOfBounds = max(abs(ScreenPos[0]), abs(ScreenPos[1])) >= 1.0;
+	bool2 bIsParallaxRejected = ParallaxRejectionMask < tsr_half(PARALLAX_REJECTION_MASK_THRESHOLD);
+
+	bIsOffScreen = or(bIsCameraCut, bIsOutOfBounds);
+	bIsDisoccluded = and(!bIsOffScreen, bIsParallaxRejected);
 }
 
 tsr_half MeasureBackbufferLDRQuantizationError()
@@ -880,7 +884,7 @@ tsr_half2 MeasureRejectionFactor(
 {
 	const tsr_halfC Null = tsr_half(0.0);
 	
-	#if CONFIG_SCENE_COLOR_APLHA
+	#if CONFIG_SCENE_COLOR_ALPHA
 		tsr_halfCx2 BackbufferQuantizationErrorVector = tsr_half4x2(BackbufferQuantizationError, BackbufferQuantizationError, BackbufferQuantizationError, BackbufferQuantizationError);
 	#else
 		tsr_halfCx2 BackbufferQuantizationErrorVector = tsr_half3x2(BackbufferQuantizationError, BackbufferQuantizationError, BackbufferQuantizationError);
@@ -899,7 +903,7 @@ tsr_half2 MeasureRejectionFactor(
 
 	tsr_half2 Rejection = min3(Factor[0], Factor[1], Factor[2]);
 	
-	#if CONFIG_SCENE_COLOR_APLHA
+	#if CONFIG_SCENE_COLOR_ALPHA
 		Rejection = min(Rejection, Factor[3]);
 	#endif
 
@@ -934,9 +938,9 @@ struct FSubpixelNeighborhood
 	bool2 ClosestSubpixelOffset;
 };
 
-FSubpixelNeighborhood GatherPrevSubpixelNeighborhood(Texture2D<uint> PrevSubPixelDetailTexture, float2 PrevHistoryBufferUV)
+FSubpixelNeighborhood GatherPrevSubpixelNeighborhood(Texture2D<tsr_subpixel_details> PrevSubPixelDetailTexture, float2 PrevHistoryBufferUV)
 {
-	float2 PixelCoord = PrevHistoryBufferUV * PrevHistoryInfo_Extent;
+	float2 PixelCoord = PrevHistoryBufferUV * PrevSubpixelDetailsExtent;
 	float2 TopLeftPixelCoord = floor(PixelCoord - 0.5) + 0.5;
 	
 	FSubpixelNeighborhood Neighborhood;
@@ -1016,6 +1020,18 @@ tsr_half UncompressParallaxFactor(tsr_subpixel_payload CompressedParallaxFactor)
 		tsr_half(CompressedParallaxFactor & SUB_PIXEL_PARALLAX_FACTOR_BIT_MASK) *
 		tsr_half(MAX_PARALLAX_FACTOR / float(SUB_PIXEL_PARALLAX_FACTOR_BIT_MASK)) +
 		tsr_half(1.0);
+}
+
+CALL_SITE_DEBUGLOC
+tsr_half3x2 QuantizeForUNormRenderTarget(tsr_half3x2 Color, tsr_half E, const float3 QuantizationError)
+{
+	return Color + dpv_interleave_mono_registers(tsr_half3(QuantizationError)) * (E - tsr_half(0.5));
+}
+
+CALL_SITE_DEBUGLOC
+tsr_half3 QuantizeForUNormRenderTarget(tsr_half3 Color, tsr_half E, const float3 QuantizationError)
+{
+	return dpv_lo(QuantizeForUNormRenderTarget(dpv_interleave_mono_registers(Color), E, QuantizationError));
 }
 
 CALL_SITE_DEBUGLOC

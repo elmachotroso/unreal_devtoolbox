@@ -12,6 +12,7 @@
 #include "IElectraPlayerInterface.h"
 
 #include "Player/AdaptiveStreamingPlayer.h"
+#include "PlayerRuntimeGlobal.h"
 
 class FVideoDecoderOutput;
 using FVideoDecoderOutputPtr = TSharedPtr<FVideoDecoderOutput, ESPMode::ThreadSafe>;
@@ -86,7 +87,7 @@ public:
 
 	// -------- PlayerAdapter (Plugin/Native) API
 
-	bool OpenInternal(const FString& Url, const FParamDict & PlayerOptions, const FPlaystartOptions & InPlaystartOptions) override;
+	bool OpenInternal(const FString& Url, const FParamDict& PlayerOptions, const FPlaystartOptions& InPlaystartOptions) override;
 	void CloseInternal(bool bKillAfterClose) override;
 
 	void Tick(FTimespan DeltaTime, FTimespan Timecode) override;
@@ -113,7 +114,10 @@ public:
 	bool SetRate(float Rate) override;
 
 	bool Seek(const FTimespan& Time) override;
+	bool Seek(const FTimespan& Time, const FSeekParam& Param) override;
 	void SetFrameAccurateSeekMode(bool bEnableFrameAccuracy) override;
+
+	void ModifyOptions(const FParamDict& InOptionsToSetOrChange, const FParamDict& InOptionsToClear) override;
 
 	bool GetAudioTrackFormat(int32 TrackIndex, int32 FormatIndex, FAudioTrackFormat& OutFormat) const override;
 	bool GetVideoTrackFormat(int32 TrackIndex, int32 FormatIndex, FVideoTrackFormat& OutFormat) const override;
@@ -179,6 +183,7 @@ private:
 			ReceivedPlaylists,
 			TracksChanged,
 			PlaylistDownload,
+			CleanStart,
 			BufferingStart,
 			BufferingEnd,
 			Bandwidth,
@@ -313,6 +318,10 @@ private:
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::TracksChanged)); }
 	virtual void ReportPlaylistDownload(const Metrics::FPlaylistDownloadStats& PlaylistDownloadStats) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_PlaylistDownload>(PlaylistDownloadStats)); }
+	virtual void ReportCleanStart() override
+	{ /*DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::CleanStart));*/ 
+		bDiscardOutputUntilCleanStart = false;
+	}
 	virtual void ReportBufferingStart(Metrics::EBufferingReason BufferingReason) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_BufferingStart>(BufferingReason)); }
 	virtual void ReportBufferingEnd(Metrics::EBufferingReason BufferingReason) override
@@ -379,13 +388,15 @@ private:
 	int32											NumTracksVideo;
 	int32											NumTracksSubtitle;
 	int32											SelectedQuality;
-	int32											SelectedVideoTrackIndex;
+	mutable int32									SelectedVideoTrackIndex;
 	mutable int32									SelectedAudioTrackIndex;
 	mutable int32									SelectedSubtitleTrackIndex;
+	mutable bool									bVideoTrackIndexDirty;
 	mutable bool									bAudioTrackIndexDirty;
 	mutable bool									bSubtitleTrackIndexDirty;
 
 	bool											bInitialSeekPerformed;
+	bool											bDiscardOutputUntilCleanStart;
 
 	FPlaybackRange									CurrentPlaybackRange;
 	TOptional<bool>									bFrameAccurateSeeking;
@@ -468,6 +479,7 @@ private:
 	mutable FCriticalSection										PlayerLock;
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe>			CurrentPlayer;
 	FEvent*															WaitForPlayerDestroyedEvent;
+	TSharedPtr<Electra::FApplicationTerminationHandler, ESPMode::ThreadSafe> AppTerminationHandler;
 
 	TSharedPtr<IAsyncResourceReleaseNotifyContainer, ESPMode::ThreadSafe> AsyncResourceReleaseNotification;
 
@@ -663,6 +675,15 @@ private:
 			MediaTimelineAtStart.Reset();
 			MediaTimelineAtEnd.Reset();
 			MediaDuration = 0.0;
+			MessageHistoryBuffer.Empty();
+		}
+		void AddMessageToHistory(FString InMessage)
+		{
+			if (MessageHistoryBuffer.Num() >= 20)
+			{
+				MessageHistoryBuffer.RemoveAt(0);
+			}
+			MessageHistoryBuffer.Emplace(MoveTemp(InMessage));
 		}
 
 		FString					InitialURL;
@@ -705,6 +726,7 @@ private:
 		FTimeRange				MediaTimelineAtStart;
 		FTimeRange				MediaTimelineAtEnd;
 		double					MediaDuration;
+		TArray<FString>			MessageHistoryBuffer;
 	};
 
 	struct FAnalyticsEvent

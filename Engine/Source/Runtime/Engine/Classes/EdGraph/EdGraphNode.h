@@ -323,6 +323,7 @@ public:
 
 private:
 	/** Whether the node was created as part of an expansion step */
+	UPROPERTY()
 	uint8 bIsIntermediateNode : 1;
 
 #if WITH_EDITORONLY_DATA
@@ -442,7 +443,9 @@ public:
 
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void DeclareCustomVersions(FArchive& Ar) override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareCustomVersions(FArchive& Ar, const UClass* SpecificSubclass);
+#endif
 	// End of UObject interface
 
 #if WITH_EDITOR
@@ -657,7 +660,7 @@ public:
 	void BreakAllNodeLinks();
 
 	/** Snap this node to a specified grid size */
-	void SnapToGrid(float GridSnapSize);
+	void SnapToGrid(uint32 GridSnapSize);
 
 	/** Clear error flag */
 	void ClearCompilerMessage()
@@ -827,6 +830,12 @@ public:
 	/** Update node size to new value */
 	virtual void ResizeNode(const FVector2D& NewSize) {}
 
+	/**
+	 * Returns whether or not this node has dependencies on an external structure
+	 * If OptionalOutput isn't null, it should be filled with the known dependencies objects (Classes, Structures, Functions, etc).
+	 */
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput = nullptr) const { return false; }
+
 	// Returns true if this node is deprecated
 	virtual bool IsDeprecated() const;
 
@@ -835,14 +844,6 @@ public:
 
 	// Returns the response to use when reporting a deprecation
 	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const;
-
-	// Returns true if this node should produce a compiler warning on deprecation
-	UE_DEPRECATED(4.23, "Use GetDeprecationResponse instead.")
-	virtual bool ShouldWarnOnDeprecation() const;
-
-	// Returns the string to use when reporting the deprecation
-	UE_DEPRECATED(4.23, "Use GetDeprecationResponse instead.")
-	virtual FString GetDeprecationMessage() const;
 
 	// Returns the object that should be focused when double-clicking on this node
 	// (the object can be an actor, which selects it in the world, or a node/graph/pin)

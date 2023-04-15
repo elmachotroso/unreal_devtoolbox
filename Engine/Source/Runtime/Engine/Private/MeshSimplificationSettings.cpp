@@ -5,8 +5,10 @@
 #include "UObject/UnrealType.h"
 #include "Modules/ModuleManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshSimplificationSettings)
+
 #if WITH_EDITOR
-#include "Developer/MeshReductionInterface/Public/IMeshReductionManagerModule.h"
+#include "IMeshReductionManagerModule.h"
 #endif
 
 UMeshSimplificationSettings::UMeshSimplificationSettings(const FObjectInitializer& ObjectInitializer)
@@ -56,3 +58,4 @@ void UMeshSimplificationSettings::PostEditChangeProperty(struct FPropertyChanged
 
 
 #endif
+

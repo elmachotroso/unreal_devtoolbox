@@ -317,7 +317,7 @@ float3 GetLightDiskLuminance(float3 PlanetCenterToCamera, float3 WorldDir, uint 
 		float3 LightDiskLuminance = GetLightDiskLuminance(
 			PlanetCenterToCamera, WorldDir, Atmosphere.BottomRadiusKm, Atmosphere.TopRadiusKm,
 			TransmittanceLutTexture, TransmittanceLutTextureSampler,
-			View.AtmosphereLightDirection[LightIndex].xyz, View.AtmosphereLightDiscCosHalfApexAngle[LightIndex].x, View.AtmosphereLightDiscLuminance[LightIndex].xyz);
+			View.AtmosphereLightDirection[LightIndex].xyz, View.AtmosphereLightDiscCosHalfApexAngle_PPTrans[LightIndex].x, View.AtmosphereLightDiscLuminance[LightIndex].xyz);
 
 		// Clamp to avoid crazy high values (and exposed 64000.0f luminance is already crazy high, solar system sun is 1.6x10^9). Also this removes +inf float and helps TAA.
 		const float3 MaxLightLuminance = 64000.0f;
@@ -490,11 +490,11 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 	const float3 wi = Light0Dir;
 	const float3 wo = WorldDir;
 	float cosTheta = dot(wi, wo);
-	float MiePhaseValueLight0 = HgPhase(Atmosphere.MiePhaseG, -cosTheta);	// negate cosTheta because due to WorldDir being a "in" direction. 
+	float MiePhaseValueLight0 = HenyeyGreensteinPhase(Atmosphere.MiePhaseG, -cosTheta);	// negate cosTheta because due to WorldDir being a "in" direction. 
 	float RayleighPhaseValueLight0 = RayleighPhase(cosTheta);
 #if SECOND_ATMOSPHERE_LIGHT_ENABLED
 	cosTheta = dot(Light1Dir, wo);
-	float MiePhaseValueLight1 = HgPhase(Atmosphere.MiePhaseG, -cosTheta);	// negate cosTheta because due to WorldDir being a "in" direction. 
+	float MiePhaseValueLight1 = HenyeyGreensteinPhase(Atmosphere.MiePhaseG, -cosTheta);	// negate cosTheta because due to WorldDir being a "in" direction. 
 	float RayleighPhaseValueLight1 = RayleighPhase(cosTheta);
 #endif
 
@@ -551,7 +551,7 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 		float PHeight = length(P);
 
 		// Sample the medium
-		MediumSampleRGB Medium = SampleMediumRGB(P);
+		MediumSampleRGB Medium = SampleAtmosphereMediumRGB(P);
 		const float3 SampleOpticalDepth = Medium.Extinction * dt * AerialPespectiveViewDistanceScale;
 		const float3 SampleTransmittance = exp(-SampleOpticalDepth);
 		OpticalDepth += SampleOpticalDepth;
@@ -606,7 +606,7 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 		#if VIRTUAL_SHADOW_MAP
 			if (VirtualShadowMapId0 != INDEX_NONE)
 			{
-				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapLWCHack(VirtualShadowMapId0, ShadowSampleWorldPosition0);
+				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapTranslatedWorld(VirtualShadowMapId0, ShadowSampleWorldPosition0);
 				PlanetShadow0 *= VirtualShadowMapSample.ShadowFactor;
 			}
 		#endif // VIRTUALSHADOW_MAP
@@ -640,7 +640,7 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 		#if VIRTUAL_SHADOW_MAP
 			if (VirtualShadowMapId1 != INDEX_NONE)
 			{
-				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapLWCHack(VirtualShadowMapId1, ShadowSampleWorldPosition1);
+				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapTranslatedWorld(VirtualShadowMapId1, ShadowSampleWorldPosition1);
 				PlanetShadow1 *= VirtualShadowMapSample.ShadowFactor;
 			}
 		#endif // VIRTUALSHADOW_MAP
@@ -871,7 +871,7 @@ void RenderSkyAtmosphereRayMarchingPS(
 
 	float4 AP = GetAerialPerspectiveLuminanceTransmittance(
 		ResolvedView.RealTimeReflectionCapture, ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
-		NDCPosition, DepthBufferTranslatedWorldPos *CM_TO_SKY_UNIT, GetCameraTranslatedWorldPos()*CM_TO_SKY_UNIT,
+		NDCPosition, (DepthBufferTranslatedWorldPos - GetCameraTranslatedWorldPos()) * CM_TO_SKY_UNIT,
 		CameraAerialPerspectiveVolumeTexture, CameraAerialPerspectiveVolumeTextureSampler,
 		SkyAtmosphere.CameraAerialPerspectiveVolumeDepthResolutionInv,
 		SkyAtmosphere.CameraAerialPerspectiveVolumeDepthResolution,
@@ -1554,7 +1554,7 @@ void RenderSkyAtmosphereDebugPS(
 
 
 		float3 SampleWorldPos = float3(0.0f, 0.0f, Atmosphere.BottomRadiusKm + UV.x * (Atmosphere.TopRadiusKm - Atmosphere.BottomRadiusKm));
-		MediumSampleRGB Sample = SampleMediumRGB(SampleWorldPos);
+		MediumSampleRGB Sample = SampleAtmosphereMediumRGB(SampleWorldPos);
 
 		// Curves represent the maximum contribution as extinction (no differenciation between scattering or absorption)
 		float3 Curves = float3(

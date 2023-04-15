@@ -45,6 +45,7 @@
 #include "LevelEditor.h"
 #include "InstancedStaticMeshDelegates.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "Settings/BlueprintEditorSettingsCustomization.h"
 #include "Settings/BlueprintEditorProjectSettingsCustomization.h"
 #include "Settings/EditorLoadingSavingSettingsCustomization.h"
 #include "Settings/GameMapsSettingsCustomization.h"
@@ -70,10 +71,15 @@
 #include "Logging/MessageLog.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "ProfilingDebugging/StallDetector.h"
+#include "Settings/EditorStyleSettings.h"
+#include "ISettingsModule.h"
+#include "Settings/EditorStyleSettingsCustomization.h"
 #include "GameMapsSettings.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ObjectTools.h"
+#include "Cooker/ExternalCookOnTheFlyServer.h"
+#include "ISettingsSection.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealEdEngine, Log, All);
 
@@ -167,6 +173,8 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 
 	if (FPaths::IsProjectFilePathSet() && GIsEditor && !FApp::IsUnattended())
 	{
+
+		UE_SCOPED_ENGINE_ACTIVITY(TEXT("Initializing AutoReimportManager"));
 		AutoReimportManager = NewObject<UAutoReimportManager>();
 		AutoReimportManager->Initialize();
 	}
@@ -176,6 +184,7 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
+		PropertyModule.RegisterCustomClassLayout("BlueprintEditorSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintEditorSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("BlueprintEditorProjectSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintEditorProjectSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("EditorLoadingSavingSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FEditorLoadingSavingSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("GameMapsSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FGameMapsSettingsCustomization::MakeInstance));
@@ -183,7 +192,29 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 		PropertyModule.RegisterCustomClassLayout("ProjectPackagingSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FProjectPackagingSettingsCustomization::MakeInstance));
 
 		PropertyModule.RegisterCustomPropertyTypeLayout("LevelEditorPlayNetworkEmulationSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FLevelEditorPlayNetworkEmulationSettingsDetail::MakeInstance));
-		
+
+
+		UEditorStyleSettings* Settings = GetMutableDefault<UEditorStyleSettings>();
+		ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"); 
+	
+
+		if (SettingsModule != nullptr)
+		{
+			ISettingsSectionPtr StyleSettingsPtr = SettingsModule->RegisterSettings("Editor", "General", "Appearance",
+				NSLOCTEXT("UnrealEd", "Appearance_UserSettingsName", "Appearance"),
+				NSLOCTEXT("UnrealEd", "Appearance_UserSettingsDescription", "Customize the look of the editor."),
+				Settings
+			);
+
+			StyleSettingsPtr->OnImport().BindUObject(Settings, &UEditorStyleSettings::OnImportBegin);
+			StyleSettingsPtr->OnExport().BindUObject(Settings, &UEditorStyleSettings::OnExportBegin);
+		} 
+
+
+		FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyEditorModule.RegisterCustomClassLayout("EditorStyleSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FEditorStyleSettingsCustomization::MakeInstance));
+		PropertyEditorModule.RegisterCustomPropertyTypeLayout("StyleColorList", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStyleColorListCustomization::MakeInstance));
+
 	}
 
 	if (!IsRunningCommandlet())
@@ -210,7 +241,7 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 			CookServer = NewObject<UCookOnTheFlyServer>();
 			CookServer->Initialize(ECookMode::CookOnTheFlyFromTheEditor, BaseCookingFlags);
 
-			UCookOnTheFlyServer::FCookOnTheFlyOptions CookOnTheFlyStartupOptions;
+			UCookOnTheFlyServer::FCookOnTheFlyStartupOptions CookOnTheFlyStartupOptions;
 			CookOnTheFlyStartupOptions.bBindAnyPort = false;
 			CookOnTheFlyStartupOptions.bZenStore = GetDefault<UProjectPackagingSettings>()->bUseZenStore;
 			CookServer->StartCookOnTheFly(CookOnTheFlyStartupOptions);
@@ -220,6 +251,10 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 			CookServer = NewObject<UCookOnTheFlyServer>();
 			CookServer->Initialize(ECookMode::CookByTheBookFromTheEditor, BaseCookingFlags);
 		}
+
+#if WITH_COTF
+		ExternalCookOnTheFlyServer = new FExternalCookOnTheFlyServer();
+#endif
 	}
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("nomcp")))
@@ -247,12 +282,6 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 			}
 		});
 #endif
-
-	// Delay this until after the source control module has loaded
-	FDelayedAutoRegisterHelper(EDelayedRegisterRunPhase::EarliestPossiblePluginsLoaded, [this]()
-	{
-		SourceControlFilesDeletedHandle = ISourceControlModule::Get().RegisterFilesDeleted(FSourceControlFilesDeletedDelegate::FDelegate::CreateUObject(this, &UUnrealEdEngine::OnSourceControlFilesDeleted));
-	});
 }
 
 bool CanCookForPlatformInThisProcess( const FString& PlatformName )
@@ -418,6 +447,14 @@ void UUnrealEdEngine::PreExit()
 {
 	FAssetSourceFilenameCache::Get().Shutdown();
 
+	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
+
+	if (SettingsModule != nullptr)
+	{
+		SettingsModule->UnregisterSettings("Editor", "General", "Appearance");
+	}
+
+
 	Super::PreExit();
 }
 
@@ -438,6 +475,12 @@ void UUnrealEdEngine::FinishDestroy()
 	{
 		FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(CookServer);
 		FCoreUObjectDelegates::OnObjectModified.RemoveAll(CookServer);
+	}
+
+	if (ExternalCookOnTheFlyServer)
+	{
+		delete ExternalCookOnTheFlyServer;
+		ExternalCookOnTheFlyServer = nullptr;
 	}
 
 	if(PackageAutoSaver.Get())
@@ -527,7 +570,8 @@ void UUnrealEdEngine::OnPackageDirtyStateUpdated( UPackage* Pkg)
 
 		if( !bIsAutoSaving && 
 			!GIsEditorLoadingPackage && // Don't ask if the package was modified as a result of a load
-			!GIsCookerLoadingPackage)   // don't ask if the package was modified as a result of a cooker load
+			!GIsCookerLoadingPackage && // don't ask if the package was modified as a result of a cooker load
+			!(Package->GetPackageFlags() & PKG_CompiledIn)) // don't ask if the package is a script package (changes are saved elsewhere via config files)
 		{
 			PackagesDirtiedThisTick.Add(Package);
 
@@ -549,6 +593,8 @@ void UUnrealEdEngine::OnPackageDirtyStateUpdated( UPackage* Pkg)
 
 void UUnrealEdEngine::AttemptModifiedPackageNotification()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UUnrealEdEngine::AttemptModifiedPackageNotification);
+
 	bool bIsCooking = CookServer && CookServer->IsCookingInEditor() && CookServer->IsCookByTheBookRunning();
 
 	if (bShowPackageNotification && !bIsCooking)
@@ -917,43 +963,6 @@ const TArray<FTemplateMapInfo>& UUnrealEdEngine::GetTemplateMapInfos() const
 const TArray<FTemplateMapInfo>& UUnrealEdEngine::GetProjectDefaultMapTemplates() const
 {
 	return TemplateMapInfoCache;
-}
-
-void UUnrealEdEngine::OnSourceControlFilesDeleted(const TArray<FString>& InDeletedFiles)
-{
-	TArray<UObject*> ObjectsToDelete;
-
-	if (InDeletedFiles.IsEmpty())
-	{
-		return;
-	}
-
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-	for (const FString& File : InDeletedFiles)
-	{
-		TArray<FAssetData> Assets;
-		FString PackageName;
-
-		if (!FPackageName::TryConvertFilenameToLongPackageName(File, PackageName))
-		{
-			continue;
-		}
-
-		AssetRegistryModule.Get().GetAssetsByPackageName(*PackageName, Assets);
-
-		for (const FAssetData& Asset : Assets)
-		{
-			UObject* ObjectToDelete = Asset.GetAsset();
-
-			if (ObjectToDelete != nullptr)
-			{
-				ObjectsToDelete.Add(ObjectToDelete);
-			}
-		}
-	}
-
-	ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete);
 }
 
 void UUnrealEdEngine::OnHISMTreeBuilt(UHierarchicalInstancedStaticMeshComponent* Component, bool bWasAsyncBuild)
@@ -1601,9 +1610,9 @@ bool IsBelowFreeDiskSpaceLimit(const TCHAR* TestDir, FText& OutAppendMessage, co
 		const uint64 HardDriveFreeMB = FreeDiskSpace / (1024 * 1024);
 		if (HardDriveFreeMB < MinMB)
 		{
-			static const FText AppendWarning = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceFormatMsg", "{0}\n  {1} MB Free \t\t {2}\n \t\t\t\t {3} \n");
+			static const FText AppendWarning = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceFormatMsg", "{0}\n\n{1}\n\t\t{2}\n\t\tRecommended: {4} MB\n\t\tFree: {3} MB");
 
-			OutAppendMessage = FText::Format(AppendWarning, OutAppendMessage, HardDriveFreeMB, FText::FromString(FPaths::ConvertRelativePathToFull(TestDir)), LocationDescriptor);
+			OutAppendMessage = FText::Format(AppendWarning, OutAppendMessage, LocationDescriptor, FText::FromString(FPaths::ConvertRelativePathToFull(TestDir)), HardDriveFreeMB, MinMB);
 
 			return true;
 		}
@@ -1613,18 +1622,18 @@ bool IsBelowFreeDiskSpaceLimit(const TCHAR* TestDir, FText& OutAppendMessage, co
 
 void UUnrealEdEngine::ValidateFreeDiskSpace() const
 {
-	FText Message = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgHeader", "The following drive locations have limited free space.\nIt is recommended that you free some space to avoid issues such as crashed and data loss due to files not being able to be written and saved.\n");
+	FText Message = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgHeader", "The following locations have limited free space. To avoid potential problems, please consider freeing up at least the amounts recommended below.");
 	
 	bool bShowWarning = false;
-	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformProcess::BaseDir(), Message, NSLOCTEXT("DriveSpaceDialog", "BaseDirDescriptor", "The base engine directory."));
-	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformMisc::ProjectDir(), Message, NSLOCTEXT("DriveSpaceDialog", "ProjectDirDescriptor", "The project directory."));
-	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformProcess::UserDir(), Message, NSLOCTEXT("DriveSpaceDialog", "UserDirDescriptor", "User directory where user specific settings are stored."), 1024);
+	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformProcess::BaseDir(), Message, NSLOCTEXT("DriveSpaceDialog", "BaseDirDescriptor", "The base engine directory:"));
+	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformMisc::ProjectDir(), Message, NSLOCTEXT("DriveSpaceDialog", "ProjectDirDescriptor", "The project directory:"));
+	bShowWarning |= IsBelowFreeDiskSpaceLimit(FPlatformProcess::UserDir(), Message, NSLOCTEXT("DriveSpaceDialog", "UserDirDescriptor", "The current user directory, for saving user-specific settings:"), 1024);
 
 	if (bShowWarning)
 	{
 		FEngineAnalytics::LowDriveSpaceDetected();
 
-		const FText Title = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgTitle", "Low drive space warning");
+		const FText Title = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgTitle", "Warning: Low Drive Space");
 
 		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
 	}

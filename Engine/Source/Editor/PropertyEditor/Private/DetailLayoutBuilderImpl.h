@@ -47,12 +47,14 @@ public:
 	virtual bool IsPropertyVisible(TSharedRef<IPropertyHandle> PropertyHandle) const override;
 	virtual bool IsPropertyVisible(const struct FPropertyAndParent& PropertyAndParent) const override;
 	virtual void HideCategory(FName CategoryName) override;
-	virtual const TSharedRef<IPropertyUtilities> GetPropertyUtilities() const override;
+	virtual TSharedRef<IPropertyUtilities> GetPropertyUtilities() const override;
 	virtual UClass* GetBaseClass() const override;
 	virtual const TArray<TWeakObjectPtr<UObject>>& GetSelectedObjects() const override;
 	virtual bool HasClassDefaultObject() const override;
 	virtual void RegisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
 	virtual void SortCategories(const FOnCategorySortOrderFunction& SortFunction) override;
+	virtual void SetPropertyGenerationAllowListPaths(const TSet<FString>& InPropertyGenerationAllowListPaths) override;
+	virtual bool IsPropertyPathAllowed(const FString& InPath) const override;
 	/**
 	 * Creates a default category. The SDetails view will generate widgets in default categories
 	 *
@@ -120,6 +122,9 @@ public:
 	 */
 	FDetailNodeList& GetFilteredRootTreeNodes() { return FilteredRootTreeNodes; }
 
+	/**
+	 * @return All root tree nodes, regardless of visibility.
+	 */
 	FDetailNodeList& GetAllRootTreeNodes() { return AllRootTreeNodes; }
 
 	/**
@@ -244,6 +249,8 @@ private:
 	FClassToPropertyMap& PropertyMap;
 	/** Force hidden categories set by the user */
 	TSet<FName> ForceHiddenCategories;
+	/** If not empty only nodes for property specified paths will be generated */
+	TSet<FString> PropertyGenerationAllowListPaths;
 	/** Nodes that require ticking */
 	TSet<FDetailTreeNode*> TickableNodes;
 	/** Current filter applied to the view */

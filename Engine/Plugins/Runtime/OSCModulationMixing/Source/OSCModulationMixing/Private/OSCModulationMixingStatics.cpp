@@ -7,6 +7,7 @@
 #include "OSCModulationMixing.h"
 #include "OSCServer.h"
 
+#include "AudioAnalytics.h"
 #include "HAL/IConsoleManager.h"
 #include "SoundControlBus.h"
 #include "SoundControlBusMix.h"
@@ -75,6 +76,7 @@ FOSCAddress UOSCModulationMixingStatics::GetProfileLoadPath()
 
 FOSCAddress UOSCModulationMixingStatics::GetProfileSavePath()
 {
+	Audio::Analytics::RecordEvent_Usage(TEXT("OSCModulationMixing.GetProfileSavePath"));
 	return OSCModulation::Addresses::ProfileSave;
 }
 

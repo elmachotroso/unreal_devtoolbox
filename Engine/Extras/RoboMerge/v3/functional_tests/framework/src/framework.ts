@@ -50,7 +50,8 @@ process.on('unhandledRejection', async (err) => {
 })
 
 export class P4Client {
-	constructor(private p4: Perforce, public user: string, public workspace: string, public root: string, public stream: string, public name: string) {
+	constructor(private p4: Perforce, public user: string, public workspace: string,
+		public root: string, public stream: string, public name: string) {
 	}
 
 	async create(spec: string) {
@@ -193,6 +194,14 @@ type EdgeOptionFields = {
 	invertIntegrationWindow: boolean
 
 	implicitCommands: string[]
+
+	ignoreInCycleDetection: boolean
+
+	approval: {
+		description: string,
+		channelName: string
+		channelId: string
+	}
 }
 
 export type EdgeProperties = Partial<EdgeOptionFields> & {
@@ -200,7 +209,7 @@ export type EdgeProperties = Partial<EdgeOptionFields> & {
 	to: string
 }
 
-const NUM_WAIT_INTERVALS = 20
+const NUM_WAIT_INTERVALS = 30
 export async function retryWithBackoff<T extends {}>(desc: string, f: (last: boolean) => Promise<T | null>): Promise<T> {
 	let sleepTime = .5
 	for (let safety = 0; safety < NUM_WAIT_INTERVALS; ++safety) {
@@ -304,11 +313,17 @@ export abstract class FunctionalTest {
 			name, aliases: [name + '_alias'],
 			streamName: stream,
 			flowsTo: to.map(str => this.fullBranchName(str)),
+			forceFlowTo: [],
 			forceAll: !!forceAll
 		}
 	}
 
-	protected makeForceAllBranchDef(stream: string, to: string[]/*, additionalProps?: {[prop: string]: string}[]*/): RobomergeBranchSpec {
+	protected makeEdgeProperties(from: string, to: string, props: Partial<EdgeProperties>): EdgeProperties {
+		return {from: this.fullBranchName(from), to: this.fullBranchName(to), ...props}
+	}
+
+
+	protected makeForceAllBranchDef(stream: string, to: string[]): RobomergeBranchSpec {
 		return this.makeBranchDef(stream, to, true)
 	}
 
@@ -566,7 +581,7 @@ export abstract class FunctionalTest {
 			throw new Error('edge must be blocked to stomp!')
 		}
 
-		const conflictCl = edgeState.conflictCl
+		const conflictCl = edgeState.conflict && edgeState.conflict.change
 		const sourceBranchName = this.fullBranchName(source)
 		const targetBranchName = this.fullBranchName(target)
 
@@ -593,7 +608,7 @@ export abstract class FunctionalTest {
 	}
 
 	async performStompRequest(source: string, target: string, edgeState: EdgeState) {
-		const conflictCl = edgeState.conflictCl
+		const conflictCl = edgeState.conflict && edgeState.conflict.change
 		const sourceBranchName = this.fullBranchName(source)
 		const targetBranchName = this.fullBranchName(target)
 
@@ -643,32 +658,78 @@ export abstract class FunctionalTest {
 		}
 	}
 
-	wasMessagePostedToSlack(channel: string, cl: number) {
+	wasMessagePostedToSlack(channel: string, cl: number, target: string) {
+		const targetName = this.fullBranchName(target)
 		return getJson(DUMMY_SLACK_DOMAIN + '/posted/' + channel)
-			.then((cls: number[]) => cls.indexOf(cl) >= 0)
+			.then((perTargetCls: [string, number[]][]) => {
+				for (const [target, cls] of perTargetCls) {
+					if (target === targetName) {
+						return cls.indexOf(cl) >= 0
+					}
+				}
+				return false
+			})
+	}
+
+	async wasConflictMessagePostedToSlack(sourceStream: string, targetStream: string, optChannel?: string)
+		: Promise<[boolean, number]>
+	{
+		const edgeState = await this.getEdgeState(sourceStream, targetStream)
+
+		const conflictCl = edgeState.conflict && edgeState.conflict.change
+		if (!conflictCl) {
+			throw new Error('no conflict cl in edge state')
+		}
+
+		return [await this.wasMessagePostedToSlack(optChannel || this.botName.toLowerCase(), conflictCl, targetStream), conflictCl]
+	}
+
+	async ensureConflictMessagePostedToSlack(sourceStream: string, targetStream: string, optChannel?: string) {
+		const edgeDisplayName = `${sourceStream} -> ${targetStream}`
+		const channelMessage = optChannel ? `to '${optChannel}' ` : ''
+		this.info(`Ensuring conflict message sent ${channelMessage}for ${edgeDisplayName}`)
+
+		const [messageSent, conflictCl] = await this.wasConflictMessagePostedToSlack(sourceStream, targetStream, optChannel)
+		if (!messageSent) {
+			throw new Error(`no message sent ${channelMessage}for CL#${conflictCl} (${edgeDisplayName})`)
+		}
+	}
+
+	async ensureNoConflictMessagePostedToSlack(sourceStream: string, targetStream: string, optChannel?: string) {
+		const edgeDisplayName = `${sourceStream} -> ${targetStream}`
+		const channelMessage = optChannel ? `to '${optChannel}' ` : ''
+		this.info(`Ensuring no conflict message sent ${channelMessage}for ${edgeDisplayName}`)
+
+		const [messageSent, conflictCl] = await this.wasConflictMessagePostedToSlack(sourceStream, targetStream, optChannel)
+		if (messageSent) {
+			throw new Error(`unexpected message sent ${channelMessage}for CL#${conflictCl} (${edgeDisplayName})`)
+		}
 	}
 
 	async verifyAndPerformStomp(source: string, target: string, additionalSlackChannel?: string) {
 		const edgeState: EdgeState = await this.getEdgeState(source, target)
 
+		const conflictCl: number | undefined = edgeState.conflict && edgeState.conflict.change
+		if (!conflictCl) {
+			throw new Error('no conflict cl in edge state')
+		}
+
 		const checkSlack = async () => {
 			const slackChannel = this.botName.toLowerCase()
 			const channelsStr = slackChannel + (additionalSlackChannel ? ' and ' + additionalSlackChannel : '')
-			this.info(`Ensuring Slack message sent to ${channelsStr} for CL#${edgeState.conflictCl}`)
+
+			this.info(`Ensuring Slack message sent to ${channelsStr} for CL#${conflictCl}`)
 
 			const channels = [slackChannel]
 			if (additionalSlackChannel) {
 				channels.push(additionalSlackChannel)
 			}
 
-			for (const channel of channels) {
-				if (!await this.wasMessagePostedToSlack(channel, edgeState.conflictCl)) {
-					throw new Error(`No Slack message sent to ${channel} for CL#${edgeState.conflictCl}`)	
-				}
-			}
+			await Promise.all(channels.map(channel =>
+				this.ensureConflictMessagePostedToSlack(source, target, channel)))
 		}
 
-		this.info(`Stomp ${source} -> ${target} @ CL#${edgeState.conflictCl}`)
+		this.info(`Stomp ${source} -> ${target} @ CL#${conflictCl}`)
 		const [verifyResult] = await Promise.all([
 			this.verifyStompRequest(source, target, edgeState),
 			checkSlack()
@@ -679,7 +740,8 @@ export abstract class FunctionalTest {
 			this.warn(verifyResult.message)
 			// this.warn("nonBinaryFilesResolved=" + verifyResult.nonBinaryFilesResolved)
 			// this.warn("remainingAllBinary=" + verifyResult.remainingAllBinary)
-			// this.warn("files=" + (Array.isArray(verifyResult.files) ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`))
+			// this.warn("files=" + (Array.isArray(verifyResult.files)
+				// ? verifyResult.files[0].targetFileName : `no files (${verifyResult.files})`))
 			throw new Error('Stomp verify returned unexpected values')
 		}
 
@@ -698,7 +760,7 @@ export abstract class FunctionalTest {
 			throw new Error('edge must be blocked to create shelf!')
 		}
 
-		const conflictCl = edgeState.conflictCl
+		const conflictCl = edgeState.conflict && edgeState.conflict.change
 
 		this.info(`Create shelf for ${source} -> ${target} @${conflictCl}`)
 
@@ -710,7 +772,8 @@ export abstract class FunctionalTest {
 			.replace('<bot>', this.botName)
 			.replace('<node>', sourceBranchName)
 			.replace('<op>', 'create_shelf')
-		const response = await bent('POST', 'string')(`${endpoint}?cl=${conflictCl}&target=${targetBranchName}&workspace=${targetClient.workspace}`)
+		const response = await bent('POST', 'string')
+			(`${endpoint}?cl=${conflictCl}&target=${targetBranchName}&workspace=${targetClient.workspace}`)
 
 		if (response !== 'ok') {
 			throw new Error('unexpected response from create_shelf: ' + response)
@@ -940,5 +1003,4 @@ export class P4Util {
 	static escapeBranchName(stream: string) {
 		return stream.replace(/[^A-Za-z0-9]/g, '_')
 	}
-	
 }

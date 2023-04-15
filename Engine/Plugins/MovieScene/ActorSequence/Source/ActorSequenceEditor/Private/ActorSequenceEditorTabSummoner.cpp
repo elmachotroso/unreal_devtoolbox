@@ -9,7 +9,7 @@
 #include "SSCSEditor.h"
 #include "Styling/SlateIconFinder.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorUndoClient.h"
 #include "Widgets/Images/SImage.h"
 #include "Editor.h"
@@ -19,6 +19,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ActorSequenceEditorStyle.h"
+#include "EventHandlers/ISignedObjectEventHandler.h"
 #include "UObject/ObjectSaveContext.h"
 #include "SSubobjectEditor.h"
 
@@ -101,7 +102,7 @@ private:
 
 	TSharedRef<ITableRow> GenerateRow(TSharedPtr<FSCSEditorTreeNode> InNodePtr, const TSharedRef<STableViewBase>& OwnerTable)
 	{
-		const FSlateBrush* ComponentIcon = FEditorStyle::GetBrush("SCS.NativeComponent");
+		const FSlateBrush* ComponentIcon = FAppStyle::GetBrush("SCS.NativeComponent");
 		if (InNodePtr->GetComponentTemplate() != NULL)
 		{
 			ComponentIcon = FSlateIconFinder::FindIconBrushForClass( InNodePtr->GetComponentTemplate()->GetClass(), TEXT("SCS.Component") );
@@ -189,7 +190,7 @@ private:
 	TArray<TSharedPtr<FSCSEditorTreeNode>> RootNodes;
 };
 
-class SActorSequenceEditorWidgetImpl : public SCompoundWidget, public FEditorUndoClient
+class SActorSequenceEditorWidgetImpl : public SCompoundWidget, public FEditorUndoClient, UE::MovieScene::TIntrusiveEventHandler<UE::MovieScene::ISignedObjectEventHandler>
 {
 public:
 
@@ -252,7 +253,7 @@ public:
 
 		{
 			const FName CurveEditorTabName = FName(TEXT("SequencerGraphEditor"));
-			const FSlateIcon SequencerGraphIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.TabIcon");
+			const FSlateIcon SequencerGraphIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.TabIcon");
 			if (WeakBlueprintEditor.IsValid() && !WeakBlueprintEditor.Pin()->GetTabManager()->HasTabSpawner(CurveEditorTabName))
 			{
 				// Register an empty tab to spawn the Curve Editor in so that layouts restore properly.
@@ -325,19 +326,13 @@ public:
 
 	void SetActorSequence(UActorSequence* NewSequence)
 	{
-		if (UActorSequence* OldSequence = WeakSequence.Get())
-		{
-			if (OnSequenceChangedHandle.IsValid())
-			{
-				OldSequence->OnSignatureChanged().Remove(OnSequenceChangedHandle);
-			}
-		}
+		Unlink();
 
 		WeakSequence = NewSequence;
 
 		if (NewSequence)
 		{
-			OnSequenceChangedHandle = NewSequence->OnSignatureChanged().AddSP(this, &SActorSequenceEditorWidgetImpl::OnSequenceChanged);
+			NewSequence->EventHandlers.Link(this);
 		}
 
 		// If we already have a sequencer open, just assign the sequence
@@ -610,7 +605,7 @@ public:
 		return Actor ? FindObject<UActorComponent>(Actor, *ActorSequence->GetOuter()->GetName()) : nullptr;
 	}
 
-	void OnSequenceChanged()
+	void OnModifiedIndirectly(UMovieSceneSignedObject*) override
 	{
 		UActorSequence* ActorSequence = WeakSequence.Get();
 		UBlueprint* Blueprint = ActorSequence ? ActorSequence->GetParentBlueprint() : nullptr;
@@ -619,6 +614,10 @@ public:
 		{
 			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 		}
+	}
+	void OnModifiedDirectly(UMovieSceneSignedObject* Object) override
+	{
+		OnModifiedIndirectly(Object);
 	}
 
 private:
@@ -631,8 +630,6 @@ private:
 
 	FDelegateHandle OnBlueprintPreCompileHandle;
 	FDelegateHandle OnObjectSavedHandle;
-
-	FDelegateHandle OnSequenceChangedHandle;
 
 	FDelegateHandle OnSelectionChangedHandle;
 	FDelegateHandle OnGlobalTimeChangedHandle;

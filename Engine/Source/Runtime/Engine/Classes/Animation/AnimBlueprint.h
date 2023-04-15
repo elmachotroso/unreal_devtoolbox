@@ -176,7 +176,12 @@ class ENGINE_API UAnimBlueprint : public UBlueprint, public IInterface_PreviewMe
 	virtual void PostLoad() override;
 	virtual bool FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const override;
 	virtual void SetObjectBeingDebugged(UObject* NewObject) override;
-	
+	virtual bool SupportsAnimLayers() const override;
+	virtual bool SupportsEventGraphs() const override;
+	virtual bool SupportsDelegates() const override;
+	virtual bool SupportsMacros() const override;
+	virtual bool AllowFunctionOverride(const UFunction* const InFunction) const override;
+
 protected:
 	// Broadcast when an override is changed, allowing derived blueprints to be updated
 	FOnOverrideChangedMulticaster OnOverrideChanged;
@@ -230,8 +235,8 @@ public:
 	UPROPERTY()
 	TArray<FAnimParentNodeAssetOverride> ParentAssetOverrides;
 
-	// Array of active pose watches (pose watch allows us to see the bone pose at a 
-	// particular point of the anim graph) 
+	// Array of active pose watches (pose watches allows us to see the bone pose at a 
+	// particular point of the anim graph and control debug draw for unselected anim nodes).
 	UPROPERTY()
 	TArray<TObjectPtr<UPoseWatchFolder>> PoseWatchFolders;
 	

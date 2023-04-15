@@ -76,7 +76,11 @@
 	],
 	"Plugins": [
 		{
-			"Name": "GeometryCache",
+			"Name": "AnalyticsBlueprintLibrary",
+			"Enabled": true
+		},
+		{
+			"Name": "ControlRig",
 			"Enabled": true
 		},
 		{
@@ -84,7 +88,15 @@
 			"Enabled": true
 		},
 		{
+			"Name": "GeometryCache",
+			"Enabled": true
+		},
+		{
 			"Name": "LevelSequenceEditor",
+			"Enabled": true
+		},
+		{
+			"Name": "LiveLink",
 			"Enabled": true
 		},
 		{
@@ -100,7 +112,7 @@
 			"Enabled": true
 		},
 		{
-			"Name": "AnalyticsBlueprintLibrary",
+			"Name": "HairStrands",
 			"Enabled": true
 		}
 	]

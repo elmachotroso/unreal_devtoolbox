@@ -7,6 +7,8 @@
 #include "DetailLayoutBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailChildrenBuilder.h"
+#include "IPropertyTypeCustomization.h"
+#include "IPropertyUtilities.h"
 #include "Widgets/Text/STextBlock.h"
 
 const FName FDisplayClusterEditorPropertyReferenceTypeCustomization::PropertyPathMetadataKey = TEXT("PropertyPath");
@@ -19,6 +21,8 @@ TSharedRef<IPropertyTypeCustomization> FDisplayClusterEditorPropertyReferenceTyp
 
 void FDisplayClusterEditorPropertyReferenceTypeCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InPropertyHandle, FDetailWidgetRow& InHeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
+	PropertyUtilities = CustomizationUtils.GetPropertyUtilities();
+
 	check(InPropertyHandle->IsValidHandle());
 	if (InPropertyHandle->HasMetaData(EditConditionPathMetadataKey))
 	{
@@ -137,18 +141,45 @@ void FDisplayClusterEditorPropertyReferenceTypeCustomization::CustomizeChildren(
 					ReferencedPropertyHandle->SetToolTipText(InPropertyHandle->GetToolTipText());
 				}
 
-				IDetailPropertyRow& PropertyRow = InChildBuilder.AddProperty(ReferencedPropertyHandle.ToSharedRef());
+				ReferencedPropertyHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FDisplayClusterEditorPropertyReferenceTypeCustomization::OnReferencedPropertyValueChanged));
+				
+				const bool bHasShowOnlyInners = InPropertyHandle->HasMetaData(TEXT("ShowOnlyInnerProperties")) || InPropertyHandle->GetInstanceMetaData(TEXT("ShowOnlyInnerProperties"));
+				if (bHasShowOnlyInners)
+				{
+					// If the property referencer has the ShowOnlyInnerProperties metadata, expand the reference property and display the child properties directly
+					uint32 NumChildren;
+					ReferencedPropertyHandle->GetNumChildren(NumChildren);
+
+					for (uint32 Index = 0; Index < NumChildren; ++Index)
+					{
+						TSharedPtr<IPropertyHandle> ChildHandle = ReferencedPropertyHandle->GetChildHandle(Index);
+						InChildBuilder.AddProperty(ChildHandle.ToSharedRef());
+					}
+				}
+				else
+				{
+					IDetailPropertyRow& PropertyRow = InChildBuilder.AddProperty(ReferencedPropertyHandle.ToSharedRef());
+
+					if (EditConditionPropertyHandles.Num())
+					{
+						PropertyRow.EditCondition(CreateEditConditional(), nullptr);
+					}
+				}
 
 				// Mark the property with the "IsCustomized" flag so that any subsequent layout builders can account for the property
 				// being moved and placed here.
 				ReferencedPropertyHandle->MarkHiddenByCustomization();
-
-				if (EditConditionPropertyHandles.Num())
-				{
-					PropertyRow.EditCondition(CreateEditConditional(), nullptr);
-				}
 			}
 		}
+	}
+}
+
+void FDisplayClusterEditorPropertyReferenceTypeCustomization::OnReferencedPropertyValueChanged()
+{
+	// When a referenced property is changed, we have to trigger layout refresh
+	if (PropertyUtilities.IsValid())
+	{
+		PropertyUtilities.Pin()->ForceRefresh();
 	}
 }
 

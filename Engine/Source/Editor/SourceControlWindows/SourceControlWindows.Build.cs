@@ -6,10 +6,6 @@ public class SourceControlWindows : ModuleRules
 {
 	public SourceControlWindows(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Editor/SourceControlWindows/Public");
-
-		PrivateIncludePaths.Add("Editor/SourceControlWindows/Private");
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core", 
@@ -18,13 +14,13 @@ public class SourceControlWindows : ModuleRules
 				"Engine", 
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"SourceControl", 
 				"UncontrolledChangelists",
 				"AssetTools",
+				"ToolWidgets",
 				"EditorFramework",
 				"WorkspaceMenuStructure",
-				"UnrealEd"			// We need this dependency here because we use PackageTools.
+				"UnrealEd",		// We need this dependency here because we use PackageTools.
 			}
 		);
 

@@ -2,13 +2,24 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "HAL/FileManager.h"
-#include "Containers/ArrayView.h"
-#include "Misc/EnumClassFlags.h"
+#include "HAL/PlatformCrt.h"
 #include "Math/Color.h"
+#include "Math/MathFwd.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/UnrealTemplate.h"
+
+class FArchive;
+class FText;
+class IPlatformFile;
+template <typename FuncType> class TFunctionRef;
 
 /*-----------------------------------------------------------------------------
 	FFileHelper
@@ -148,7 +159,13 @@ struct CORE_API FFileHelper
 	static bool SaveStringArrayToFile( const TArray<FString>& Lines, const TCHAR* Filename, EEncodingOptions EncodingOptions = EEncodingOptions::AutoDetect, IFileManager* FileManager = &IFileManager::Get(), uint32 WriteFlags = 0 );
 
 	/**
-	 * Saves a 24/32Bit BMP file to disk
+	 * Saves a 24/32Bit BMP file to disk for debug image dump purposes
+	 * 
+	 * for general image saving (to BMP or any other format); use FImageUtils::SaveImage instead
+	 * CreateBitmap is mainly for debug dump images
+	 * 
+	 * note this also calls SendDataToPCViaUnrealConsole
+	 *   and uses GenerateNextBitmapFilename if Pattern does not have ".bmp" on it
 	 * 
 	 * @param Pattern filename with path, must not be 0, if with "bmp" extension (e.g. "out.bmp") the filename stays like this, if without (e.g. "out") automatic index numbers are addended (e.g. "out00002.bmp")
 	 * @param DataWidth - Width of the bitmap supplied in Data >0
@@ -162,7 +179,7 @@ struct CORE_API FFileHelper
 	 *
 	 * @return true if success
 	 */
-	static bool CreateBitmap( const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, struct FIntRect* SubRectangle = NULL, IFileManager* FileManager = &IFileManager::Get(), FString* OutFilename = NULL, bool bInWriteAlpha = false, EColorChannel ColorChannel = EColorChannel::All);
+	static bool CreateBitmap( const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, FIntRect* SubRectangle = NULL, IFileManager* FileManager = &IFileManager::Get(), FString* OutFilename = NULL, bool bInWriteAlpha = false, EColorChannel ColorChannel = EColorChannel::All);
 
 	/**
 	 * Generates the next unique bitmap filename with a specified extension
@@ -219,7 +236,7 @@ struct CORE_API FFileHelper
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UE_DEPRECATED(5.0, "EChannelMask has been deprecated in favor of EColorChannel, please use the other CreateBitmap() method.")
-	static bool CreateBitmap(const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, struct FIntRect* SubRectangle, IFileManager* FileManager, FString* OutFilename, bool bInWriteAlpha, EChannelMask ChannelMask);
+	static bool CreateBitmap(const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, FIntRect* SubRectangle, IFileManager* FileManager, FString* OutFilename, bool bInWriteAlpha, EChannelMask ChannelMask);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
 

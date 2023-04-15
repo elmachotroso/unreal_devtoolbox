@@ -20,19 +20,18 @@ class NIAGARA_API UNiagaraDataInterfaceGrid2DCollectionReader : public UNiagaraD
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();
 
 	// Name of the emitter to read from
 	UPROPERTY(EditAnywhere, Category = "Reader")
-		FString EmitterName;
+	FString EmitterName;
 
 	// Name of the Grid2DCollection Data Interface on the emitter
 	UPROPERTY(EditAnywhere, Category = "Reader")
-		FString DIName;
+	FString DIName;
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
-	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const override;
+	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const override;
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual bool PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) override;
 

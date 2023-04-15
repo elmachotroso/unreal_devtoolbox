@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Interfaces/Views/OutputMapping/IDisplayClusterConfiguratorOutputMappingItem.h"
+#include "Views/OutputMapping/IDisplayClusterConfiguratorOutputMappingItem.h"
 #include "EdGraph/EdGraphNode.h"
 
 #include "Views/OutputMapping/Alignment/DisplayClusterConfiguratorNodeAlignmentHelper.h"
@@ -178,7 +178,7 @@ protected:
 	TWeakObjectPtr<UDisplayClusterConfiguratorBaseNode> Parent;
 
 	UPROPERTY(Transient, NonTransactional)
-	TArray<UDisplayClusterConfiguratorBaseNode*> Children;
+	TArray<TObjectPtr<UDisplayClusterConfiguratorBaseNode>> Children;
 
 	FString NodeName;
 	int32 NodeZIndex;

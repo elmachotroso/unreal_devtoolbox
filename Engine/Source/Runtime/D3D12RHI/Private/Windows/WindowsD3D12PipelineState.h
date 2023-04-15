@@ -78,7 +78,7 @@ struct FD3D12_COMPUTE_PIPELINE_STATE_STREAM
 struct ComputePipelineCreationArgs_POD;
 struct GraphicsPipelineCreationArgs_POD;
 
-#include "../D3D12PipelineState.h"
+#include "D3D12PipelineState.h"
 
 void SaveByteCode(D3D12_SHADER_BYTECODE& ByteCode);
 
@@ -207,7 +207,7 @@ public:
 	using FD3D12PipelineStateCacheBase::FindInLoadedCache;
 	using FD3D12PipelineStateCacheBase::CreateAndAdd;
 #endif
-	void RebuildFromDiskCache(ID3D12RootSignature* GraphicsRootSignature, ID3D12RootSignature* ComputeRootSignature);
+	void RebuildFromDiskCache();
 
 	void Close();
 

@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #if !defined(SYMS_DWARF_EXPR_C)
 #define SYMS_DWARF_EXPR_C
 
@@ -381,6 +382,7 @@ syms_dw_expr__analyze_details(void *in_base, SYMS_U64Range in_range, SYMS_DwExpr
             result.flags |= SYMS_DwExprFlag_UsesObjectAddress;
           }break;
           
+          case SYMS_DwOp_GNU_PUSH_TLS_ADDRESS:
           case SYMS_DwOp_FORM_TLS_ADDRESS:
           {
             result.flags |= SYMS_DwExprFlag_UsesTLSAddress;
@@ -675,15 +677,29 @@ syms_dw_expr__eval(SYMS_Arena *arena_optional, void *expr_base, SYMS_U64Range ex
         {
           SYMS_U64 offset = 0;
           step_cursor += syms_based_range_read(base, range, step_cursor, 8, &offset);
-          if (config->text_section_base != 0){
-            SYMS_U64 x = *config->text_section_base + offset;
-            syms_dw_expr__stack_push(scratch.arena, &stack, x);
+
+          // NOTE(nick): Earlier versions of GCC emit TLS offset with SYMS_DwOp_ADDR.
+          SYMS_B32 is_text_relative;
+          {
+            SYMS_U8 next_op = 0;
+            syms_based_range_read_struct(base, range, step_cursor, &next_op);
+            is_text_relative = (next_op != SYMS_DwOp_GNU_PUSH_TLS_ADDRESS);
           }
-          else{
-            stashed_loc.kind = SYMS_DwSimpleLocKind_Fail;
-            stashed_loc.fail_kind = SYMS_DwLocFailKind_MissingTextBase;
-            goto finish;
+
+          SYMS_U64 addr = offset;
+
+          if (is_text_relative){
+            if (config->text_section_base != 0){
+              addr += *config->text_section_base;
+            }
+            else{
+              stashed_loc.kind = SYMS_DwSimpleLocKind_Fail;
+              stashed_loc.fail_kind = SYMS_DwLocFailKind_MissingTextBase;
+              goto finish;
+            }
           }
+
+          syms_dw_expr__stack_push(scratch.arena, &stack, addr);
         }break;
         
         case SYMS_DwOp_CONSTU:
@@ -847,9 +863,9 @@ syms_dw_expr__eval(SYMS_Arena *arena_optional, void *expr_base, SYMS_U64Range ex
         
         case SYMS_DwOp_DEREF_SIZE:
         {
-          SYMS_U64 size = 0;
-          step_cursor += syms_based_range_read(base, range, step_cursor, 1, &size);
-          size = SYMS_ClampTop(size, 8);
+          SYMS_U64 raw_size = 0;
+          step_cursor += syms_based_range_read(base, range, step_cursor, 1, &raw_size);
+          SYMS_U64 size = SYMS_ClampTop(raw_size, 8);
           SYMS_U64 addr = syms_dw_expr__stack_pop(&stack);
           SYMS_B32 read_success = syms_false;
           SYMS_MemoryView *memview = config->memview;
@@ -889,13 +905,13 @@ syms_dw_expr__eval(SYMS_Arena *arena_optional, void *expr_base, SYMS_U64Range ex
           }
         }break;
         
+        // NOTE: pop offset from stack, convert it to TLS address, then push it back.
+        case SYMS_DwOp_GNU_PUSH_TLS_ADDRESS:
         case SYMS_DwOp_FORM_TLS_ADDRESS:
         {
           SYMS_S64 s = (SYMS_S64)syms_dw_expr__stack_pop(&stack);
-          
+
           if (config->tls_address != 0){
-            // TODO(allen): Is this what the spec means??
-            // Or do we need to interpret the value from the stack in some other way?
             SYMS_U64 x = *config->tls_address + s;
             syms_dw_expr__stack_push(scratch.arena, &stack, x);
           }

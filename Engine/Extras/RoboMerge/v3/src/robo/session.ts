@@ -88,15 +88,25 @@ export class Session {
 	static login(creds: Credentials, logger: ContextualLogger) {
 		return new Promise<string | null>((done, fail) => {
 			// LdapAuth modifies the config, so copy to be clean (probably doesn't matter)
+			logger.info(`checking LDAP groups for user "${creds.user}"`)
+
 			const config: any = {}
 			Object.assign(config, Session.LDAP_CONFIG)
 			const auth = new LdapAuth(config)
 
+			logger.info(`LDAP: auth helper created (${creds.user} log-in)`)
+
+			const startTime = Date.now()
 			auth.on('error', fail)
 			auth.authenticate(creds.user, creds.password, (err: any | null, userData: any) => {
+				const duration = Math.round((Date.now() - startTime) / 1000)
+				logger.info(`LDAP for "${creds.user}" took ${duration}s`)
+
 				if (err) {
 					if (err.name === 'InvalidCredentialsError' ||
 						(typeof(err) === 'string' && err.startsWith('no such user'))) {
+
+						logger.info(`Log-in failed: ${err.name}, ${err} (${creds.user})`)
 						if (Session.onLoginAttempt) {
 							Session.onLoginAttempt('fail')
 						}

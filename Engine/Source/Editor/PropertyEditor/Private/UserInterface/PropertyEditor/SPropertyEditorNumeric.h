@@ -10,7 +10,7 @@
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
 #include "Layout/Margin.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
@@ -41,7 +41,7 @@ class SPropertyEditorNumeric : public SCompoundWidget
 public:
 
 	SLATE_BEGIN_ARGS( SPropertyEditorNumeric<NumericType> )
-		: _Font( FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
+		: _Font( FAppStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
 		{}
 		SLATE_ATTRIBUTE( FSlateFontInfo, Font )
 	SLATE_END_ARGS()
@@ -54,10 +54,11 @@ public:
 
 		const TSharedRef< FPropertyNode > PropertyNode = InPropertyEditor->GetPropertyNode();
 		const FProperty* Property = InPropertyEditor->GetProperty();
+		TSharedPtr<IPropertyHandle> PropertyHandle = InPropertyEditor->GetPropertyHandle();
 
 		if(!Property->IsA(FFloatProperty::StaticClass()) && !Property->IsA(FDoubleProperty::StaticClass()) && Property->HasMetaData(PropertyEditorConstants::MD_Bitmask))
 		{
-			auto CreateBitmaskFlagsArray = [](const FProperty* Prop)
+			auto CreateBitmaskFlagsArray = [PropertyHandle]()
 			{
 				const int32 BitmaskBitCount = sizeof(NumericType) << 3;
 
@@ -65,11 +66,11 @@ public:
 				Result.Empty(BitmaskBitCount);
 
 				const UEnum* BitmaskEnum = nullptr;
-				const FString& BitmaskEnumName = Prop->GetMetaData(PropertyEditorConstants::MD_BitmaskEnum);
+				const FString& BitmaskEnumName = PropertyHandle->GetMetaData(PropertyEditorConstants::MD_BitmaskEnum);
 				if (!BitmaskEnumName.IsEmpty())
 				{
 					// @TODO: Potentially replace this with a parameter passed in from a member variable on the FProperty (e.g. FByteProperty::Enum)
-					BitmaskEnum = FindObject<UEnum>(ANY_PACKAGE, *BitmaskEnumName);
+					BitmaskEnum = UClass::TryFindTypeSlow<UEnum>(BitmaskEnumName);
 				}
 
 				if (BitmaskEnum)
@@ -89,15 +90,24 @@ public:
 						}
 					};
 
-					const TArray<FName> AllowedPropertyEnums = PropertyEditorHelpers::GetValidEnumsFromPropertyOverride(Prop, BitmaskEnum);
+					const TArray<FName> AllowedPropertyEnums = PropertyEditorHelpers::GetValidEnumsFromPropertyOverride(PropertyHandle->GetProperty(), BitmaskEnum);
+					const TArray<FName> DisallowedPropertyEnums = PropertyEditorHelpers::GetInvalidEnumsFromPropertyOverride(PropertyHandle->GetProperty(), BitmaskEnum);
 					// Note: This loop doesn't include (BitflagsEnum->NumEnums() - 1) in order to skip the implicit "MAX" value that gets added to the enum type at compile time.
 					for (int32 BitmaskEnumIndex = 0; BitmaskEnumIndex < BitmaskEnum->NumEnums() - 1; ++BitmaskEnumIndex)
 					{
 						const int64 EnumValue = BitmaskEnum->GetValueByIndex(BitmaskEnumIndex);
 						bool bShouldBeHidden = BitmaskEnum->HasMetaData(TEXT("Hidden"), BitmaskEnumIndex);
-						if (!bShouldBeHidden && AllowedPropertyEnums.Num() > 0)
+						if (!bShouldBeHidden)
 						{
-							bShouldBeHidden = AllowedPropertyEnums.Find(BitmaskEnum->GetNameByIndex(BitmaskEnumIndex)) == INDEX_NONE;
+							if(AllowedPropertyEnums.Num() > 0)
+							{
+								bShouldBeHidden = AllowedPropertyEnums.Find(BitmaskEnum->GetNameByIndex(BitmaskEnumIndex)) == INDEX_NONE;
+							}
+							// If both are specified, InvalidEnumValues takes precedence
+							else if(DisallowedPropertyEnums.Num() > 0)
+							{
+								bShouldBeHidden = DisallowedPropertyEnums.Find(BitmaskEnum->GetNameByIndex(BitmaskEnumIndex)) != INDEX_NONE;
+							}
 						}
 						if (EnumValue >= 0 && !bShouldBeHidden)
 						{
@@ -133,7 +143,7 @@ public:
 
 			const FComboBoxStyle& ComboBoxStyle = FCoreStyle::Get().GetWidgetStyle< FComboBoxStyle >("ComboBox");
 
-			const auto& GetComboButtonText = [this, CreateBitmaskFlagsArray, Property]() -> FText
+			const auto& GetComboButtonText = [this, CreateBitmaskFlagsArray]() -> FText
 			{
 				TOptional<NumericType> Value = OnGetValue();
 				if (Value.IsSet())
@@ -141,7 +151,7 @@ public:
 					NumericType BitmaskValue = Value.GetValue();
 					if (BitmaskValue != 0)
 					{
-						TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray(Property);
+						TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray();
 
 						TArray<FText> SetFlags;
 						SetFlags.Reserve(BitmaskFlags.Num());
@@ -173,12 +183,12 @@ public:
 			// Constructs the UI for bitmask property editing.
 			SAssignNew(PrimaryWidget, SComboButton)
 			.ComboButtonStyle(&ComboBoxStyle.ComboButtonStyle)
-			.ToolTipText_Lambda([this, CreateBitmaskFlagsArray, Property]
+			.ToolTipText_Lambda([this, CreateBitmaskFlagsArray]
 			{
 				TOptional<NumericType> Value = OnGetValue();
 				if (Value.IsSet())
 				{
-					TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray(Property);
+					TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray();
 
 					TArray<FText> SetFlags;
 					SetFlags.Reserve(BitmaskFlags.Num());
@@ -202,11 +212,11 @@ public:
 				.Font(InArgs._Font)
 				.Text_Lambda(GetComboButtonText)
 			]
-			.OnGetMenuContent_Lambda([this, CreateBitmaskFlagsArray, Property]()
+			.OnGetMenuContent_Lambda([this, CreateBitmaskFlagsArray]()
 			{
 				FMenuBuilder MenuBuilder(false, nullptr);
 
-				TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray(Property);
+				TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray();
 				for (int i = 0; i < BitmaskFlags.Num(); ++i)
 				{
 					MenuBuilder.AddMenuEntry(
@@ -247,10 +257,10 @@ public:
 		else
 		{
 			// Instance metadata overrides per-class metadata.
-			auto GetMetaDataFromKey = [&PropertyNode, &Property](const FName& Key) -> const FString&
+			auto GetMetaDataFromKey = [PropertyHandle](const FName& Key) -> const FString&
 			{
-				const FString* InstanceValue = PropertyNode->GetInstanceMetaData(Key);
-				return (InstanceValue != nullptr) ? *InstanceValue : Property->GetMetaData(Key);
+				const FString* InstanceValue = PropertyHandle->GetInstanceMetaData(Key);
+				return (InstanceValue != nullptr) ? *InstanceValue : PropertyHandle->GetMetaData(Key);
 			};
 
 			const FString& MetaUIMinString = GetMetaDataFromKey("UIMin");
@@ -321,14 +331,24 @@ public:
 				UE_LOG(LogPropertyNode, Warning, TEXT("UI Min (%s) >= UI Max (%s) for Ranged Numeric property %s"), *UIMinString, *UIMaxString, *Property->GetPathName());
 			}
 
+			const FString& WheelStepString = GetMetaDataFromKey("WheelStep");
+			NumericType WheelStepValue = NumericType(0);
+
+			if (!WheelStepString.IsEmpty())
+			{
+				TTypeFromString<NumericType>::FromString(WheelStepValue, *WheelStepString);
+			}
+
+			TOptional<NumericType> WheelStep = WheelStepString.Len() ? WheelStepValue : TOptional<NumericType>();
+
 			FObjectPropertyNode* ObjectPropertyNode = PropertyNode->FindObjectItemParent();
 			const bool bAllowSpin = (!ObjectPropertyNode || (1 == ObjectPropertyNode->GetNumObjects()))
-				&& !PropertyNode->GetProperty()->GetBoolMetaData("NoSpinbox");
+				&& !PropertyHandle->GetBoolMetaData("NoSpinbox");
 
 			// Set up the correct type interface if we want to display units on the property editor
 
 			// First off, check for ForceUnits= meta data. This meta tag tells us to interpret, and always display the value in these units. FUnitConversion::Settings().ShouldDisplayUnits does not apply to such properties
-			const FString& ForcedUnits = InPropertyEditor->GetProperty()->GetMetaData(TEXT("ForceUnits"));
+			const FString& ForcedUnits = PropertyHandle->GetMetaData(TEXT("ForceUnits"));
 			auto PropertyUnits = FUnitConversion::UnitFromString(*ForcedUnits);
 			if (PropertyUnits.IsSet())
 			{
@@ -341,7 +361,7 @@ public:
 			{
 				if (FUnitConversion::Settings().ShouldDisplayUnits())
 				{
-					const FString& DynamicUnits = InPropertyEditor->GetProperty()->GetMetaData(TEXT("Units"));
+					const FString& DynamicUnits = PropertyHandle->GetMetaData(TEXT("Units"));
 					if (!DynamicUnits.IsEmpty())
 					{
 						PropertyUnits = FUnitConversion::UnitFromString(*DynamicUnits);
@@ -382,6 +402,8 @@ public:
 				.Delta(Delta)
 				// LinearDeltaSensitivity needs to be left unset if not provided, rather than being set to some default
 				.LinearDeltaSensitivity(LinearDeltaSensitivity != 0 ? LinearDeltaSensitivity : TAttribute<int32>())
+				.AllowWheel(bAllowSpin)
+				.WheelStep(WheelStep)
 				.UndeterminedString(LOCTEXT("MultipleValues", "Multiple Values"))
 				.OnValueChanged(this, &SPropertyEditorNumeric<NumericType>::OnValueChanged)
 				.OnValueCommitted(this, &SPropertyEditorNumeric<NumericType>::OnValueCommitted)

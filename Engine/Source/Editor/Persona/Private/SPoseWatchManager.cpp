@@ -6,7 +6,7 @@
 #include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EditorModeManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Selection.h"
 #include "EngineUtils.h"
@@ -37,9 +37,8 @@
 #include "AnimationEditorUtils.h"
 #include "PoseWatchManagerDefaultHierarchy.h"
 #include "PoseWatchManagerDefaultMode.h"
-
+#include "PoseWatchManagerElementTreeItem.h"
 #include "PoseWatchManagerPoseWatchTreeItem.h"
-
 #include "PoseWatchManagerColumnVisibility.h"
 #include "PoseWatchManagerColumnColor.h"
 #include "PoseWatchManagerColumnLabel.h"
@@ -47,6 +46,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "SKismetInspector.h"
 
 #define LOCTEXT_NAMESPACE "SPoseWatchManager"
 
@@ -390,7 +390,12 @@ void SPoseWatchManager::RepopulateEntireTree()
 		if (Item && Item->IsValid())
 		{
 			AddPendingItem(Item);
-			if (FPoseWatchManagerFolderTreeItem* FolderItem = Item->CastTo<FPoseWatchManagerFolderTreeItem>())
+
+			if (FPoseWatchManagerPoseWatchTreeItem* PoseWatchItem = Item->CastTo<FPoseWatchManagerPoseWatchTreeItem>())
+			{
+				PoseWatchManagerTreeView->SetItemExpansion(Item, PoseWatchItem->PoseWatch->GetIsExpanded());
+			}
+			else if (FPoseWatchManagerFolderTreeItem* FolderItem = Item->CastTo<FPoseWatchManagerFolderTreeItem>())
 			{
 				PoseWatchManagerTreeView->SetItemExpansion(Item, FolderItem->PoseWatchFolder->GetIsExpanded());
 			}
@@ -419,7 +424,7 @@ FPoseWatchManagerTreeItemPtr SPoseWatchManager::EnsureParentForItem(FPoseWatchMa
 	{
 		return Parent;
 	}
-		
+
 	// Try to find the parent in the pending items
 	Parent = Mode->Hierarchy->FindParent(*Item, PendingTreeItemMap);
 	if (Parent.IsValid())
@@ -504,7 +509,7 @@ TSharedPtr<SWidget> SPoseWatchManager::OnOpenContextMenu()
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("CreateFolder", "Create Folder"),
 			LOCTEXT("CreateFolderDescription", "Create a new folder"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "SceneOutliner.NewFolderIcon"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SceneOutliner.NewFolderIcon"),
 			FUIAction(FExecuteAction::CreateSP(this, &SPoseWatchManager::CreateFolder))
 		);
 	}
@@ -694,8 +699,15 @@ void SPoseWatchManager::OnManagerTreeSelectionChanged(FPoseWatchManagerTreeItemP
 	if (!bIsReentrant)
 	{
 		TGuardValue<bool> ReentrantGuard(bIsReentrant, true);
-		//Mode->OnItemSelectionChanged(TreeItem, SelectInfo, FPoseWatchManagerItemSelection(*PoseWatchManagerTreeView));
 
+		BlueprintEditor->GetInspector()->ShowDetailsForSingleObject(nullptr);
+		if (TreeItem.IsValid())
+		{
+			if (const FPoseWatchManagerElementTreeItem* ElementItem = TreeItem->CastTo<FPoseWatchManagerElementTreeItem>())
+			{
+				BlueprintEditor->GetInspector()->ShowDetailsForSingleObject(ElementItem->PoseWatchElement.Get());
+			}
+		}
 		OnItemSelectionChanged.Broadcast(TreeItem, SelectInfo);
 	}
 }
@@ -711,9 +723,8 @@ void SPoseWatchManager::OnManagerTreeItemScrolledIntoView(FPoseWatchManagerTreeI
 
 void SPoseWatchManager::OnItemExpansionChanged(FPoseWatchManagerTreeItemPtr TreeItem, bool bIsExpanded) const
 {
-	check(TreeItem.Get()->IsA<FPoseWatchManagerFolderTreeItem>());
-	FPoseWatchManagerFolderTreeItem* FolderTreeItem = TreeItem.Get()->CastTo<FPoseWatchManagerFolderTreeItem>();
-	FolderTreeItem->PoseWatchFolder->SetIsExpanded(bIsExpanded);
+	check(TreeItem.Get()->IsA<FPoseWatchManagerFolderTreeItem>() || TreeItem.Get()->IsA<FPoseWatchManagerPoseWatchTreeItem>());
+	TreeItem->SetIsExpanded(bIsExpanded);
 }
 
 void SPoseWatchManager::OnHierarchyChangedEvent(FPoseWatchManagerHierarchyChangedData Event)
@@ -764,11 +775,11 @@ const FSlateBrush* SPoseWatchManager::GetFilterButtonGlyph() const
 {
 	if (IsTextFilterActive())
 	{
-		return FEditorStyle::GetBrush(TEXT("SceneOutliner.FilterCancel"));
+		return FAppStyle::GetBrush(TEXT("SceneOutliner.FilterCancel"));
 	}
 	else
 	{
-		return FEditorStyle::GetBrush(TEXT("SceneOutliner.FilterSearch"));
+		return FAppStyle::GetBrush(TEXT("SceneOutliner.FilterSearch"));
 	}
 }
 
@@ -947,9 +958,19 @@ uint32 SPoseWatchManager::GetTypeSortPriority(const IPoseWatchManagerTreeItem& I
 
 void SPoseWatchManager::OnManagerTreeDoubleClick(FPoseWatchManagerTreeItemPtr TreeItem)
 {
+	UPoseWatch* PoseWatch = nullptr;
+
 	if (FPoseWatchManagerPoseWatchTreeItem* PoseWatchTreeItem = TreeItem->CastTo<FPoseWatchManagerPoseWatchTreeItem>())
 	{
-		UPoseWatch* PoseWatch = PoseWatchTreeItem->PoseWatch.Get();
+		PoseWatch = PoseWatchTreeItem->PoseWatch.Get();
+	}
+	else if (FPoseWatchManagerElementTreeItem* ElementTreeItem = TreeItem->CastTo<FPoseWatchManagerElementTreeItem>())
+	{
+		PoseWatch = ElementTreeItem->PoseWatchElement->GetParent();
+	}
+
+	if (PoseWatch)
+	{
 		BlueprintEditor->JumpToHyperlink(PoseWatch->Node.Get(), false);
 	}
 }

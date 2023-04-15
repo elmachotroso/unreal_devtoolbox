@@ -49,6 +49,25 @@ namespace Metasound
 			return Invalid::GetInvalidName();
 		}
 
+		EMetasoundFrontendVertexAccessType FBaseOutputController::GetVertexAccessType() const
+		{
+			FConstOutputHandle ReroutedOutput = Frontend::FindReroutedOutput(AsShared());
+			if (ReroutedOutput->IsValid())
+			{
+				if (ReroutedOutput->GetOwningNodeID() != GetOwningNodeID() || ReroutedOutput->GetID() != GetID())
+				{
+					return ReroutedOutput->GetVertexAccessType();
+				}
+			}
+
+			if (const FMetasoundFrontendClassVertex* ClassOutput = ClassOutputPtr.Get())
+			{
+				return ClassOutput->AccessType;
+			}
+
+			return EMetasoundFrontendVertexAccessType::Unset;
+		}
+
 		FGuid FBaseOutputController::GetOwningNodeID() const
 		{
 			return OwningNode->GetID();
@@ -284,6 +303,11 @@ namespace Metasound
 				Vertex->Name = InName;
 			}
 		}
+		
+		EMetasoundFrontendVertexAccessType FInputNodeOutputController::GetVertexAccessType() const
+		{
+			return OwningGraphClassInputPtr.Get()->AccessType;
+		}
 
 		FDocumentAccess FInputNodeOutputController::ShareAccess() 
 		{
@@ -355,6 +379,11 @@ namespace Metasound
 			{
 				Vertex->Name = InName;
 			}
+		}
+
+		EMetasoundFrontendVertexAccessType FOutputNodeOutputController::GetVertexAccessType() const
+		{
+			return OwningGraphClassOutputPtr.Get()->AccessType;
 		}
 
 		bool FOutputNodeOutputController::IsConnectionUserModifiable() const 

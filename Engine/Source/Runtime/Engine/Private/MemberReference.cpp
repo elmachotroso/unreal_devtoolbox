@@ -4,6 +4,8 @@
 #include "Misc/ConfigCacheIni.h"
 #include "UObject/CoreRedirects.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MemberReference)
+
 #if WITH_EDITOR
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "BlueprintCompilationManager.h"
@@ -258,7 +260,7 @@ void FMemberReference::InitFieldRedirectMap()
 				}			
 			}
 
-			FCoreRedirects::AddRedirectList(NewRedirects, GEngineIni);
+			FCoreRedirects::AddRedirectList(NewRedirects, TEXT("InitFieldRedirectMap"));
 			bFieldRedirectMapInitialized = true;
 		}
 	}
@@ -276,16 +278,19 @@ UClass* FMemberReference::GetClassToUse(UClass* InClass, bool bUseUpToDateClass)
 	}
 }
 
+#endif
+
 template <typename TFieldType>
 TFieldType* FindRemappedFieldImpl(FName FieldClassOutermostName, FName FieldClassName, UClass* InitialScope, FName InitialName, bool bInitialScopeMustBeOwnerOfField)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FMemberReference::FindRemappedField"), STAT_LinkerLoad_FindRemappedField, STATGROUP_LoadTimeVerbose);
 
+#if WITH_EDITOR
 	FMemberReference::InitFieldRedirectMap();
+#endif
 
 	// In the case of a bifurcation of a variable (e.g. moved from a parent into certain children), verify that we don't also define the variable in the current scope first
-	FFieldVariant ExistingField = FindUFieldOrFProperty(InitialScope, InitialName);
-	if (ExistingField.Get<TFieldType>())
+	if (FindUFieldOrFProperty<TFieldType>(InitialScope, InitialName))
 	{
 		return nullptr;
 	}
@@ -314,9 +319,12 @@ TFieldType* FindRemappedFieldImpl(FName FieldClassOutermostName, FName FieldClas
 				{
 					// Use package if it's there
 					ClassName = FString::Printf(TEXT("%s.%s"), *NewRedirectName.PackageName.ToString(), *NewRedirectName.OuterName.ToString());
+					SearchClass = (UClass*)StaticFindObject(UClass::StaticClass(), nullptr, *ClassName);
 				}
-
-				SearchClass = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *ClassName);
+				else
+				{
+					SearchClass = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Fatal, TEXT("FindRemappedFieldImpl"));
+				}				
 
 				if (!SearchClass)
 				{
@@ -329,7 +337,7 @@ TFieldType* FindRemappedFieldImpl(FName FieldClassOutermostName, FName FieldClas
 		if (NewFieldName != NAME_None)
 		{
 			// Find the actual field specified by the redirector, so we can return it and update the node that uses it
-			TFieldType* NewField = FindUFieldOrFProperty(SearchClass, NewFieldName).Get<TFieldType>();
+			TFieldType* NewField = FindUFieldOrFProperty<TFieldType>(SearchClass, NewFieldName);
 			if (NewField != nullptr)
 			{
 				if (bInitialScopeMustBeOwnerOfField && !InitialScope->IsChildOf(SearchClass))
@@ -366,4 +374,3 @@ FField* FMemberReference::FindRemappedField(FFieldClass* FieldClass, UClass* Ini
 	return FindRemappedFieldImpl<FField>(GLongCoreUObjectPackageName, FieldClass->GetFName(), InitialScope, InitialName, bInitialScopeMustBeOwnerOfField);
 }
 
-#endif

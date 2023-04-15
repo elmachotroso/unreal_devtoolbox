@@ -9,9 +9,6 @@
 #include "CoreMinimal.h"
 #include "UnrealType.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #define USE_UPROPERTY_LOAD_DEFERRING (USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING && WITH_EDITORONLY_DATA)
 
 class COREUOBJECT_API UProperty : public UField
@@ -38,7 +35,7 @@ public:
 	UProperty*	PropertyLinkNext;
 	/** In memory only: Linked list of object reference properties from most-derived to base **/
 	UProperty*  NextRef;
-	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed byt he native destructor **/
+	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed by the native destructor **/
 	UProperty*	DestructorLinkNext;
 	/** In memory only: Linked list of properties requiring post constructor initialization.**/
 	UProperty*	PostConstructLinkNext;
@@ -863,6 +860,3 @@ public:
 	{
 	}
 };
-
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/DefineUPropertyMacros.h"

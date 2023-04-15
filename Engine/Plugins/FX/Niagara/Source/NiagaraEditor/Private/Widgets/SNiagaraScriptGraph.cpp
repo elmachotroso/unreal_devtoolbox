@@ -11,7 +11,7 @@
 #include "NiagaraNodeReroute.h"
 
 #include "GraphEditor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/Text/TextLayout.h"
@@ -20,29 +20,30 @@
 #include "NiagaraEditorSettings.h"
 #include "EdGraphSchema_Niagara.h"
 #include "ScopedTransaction.h"
-#include "NiagaraEditorUtilities.h"
 #include "NiagaraNodeFactory.h"
 #include "NiagaraEditorCommands.h"
 #include "NiagaraNodeOutput.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Images/SImage.h"
 #include "Layout/WidgetPath.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GraphEditorActions.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "Editor.h"
 #include "EditorFontGlyphs.h"
+#include "NiagaraEditorSettings.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Widgets/SNiagaraGraphActionMenu.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraScriptGraph"
 
-void SNiagaraScriptGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagaraScriptGraphViewModel> InViewModel)
+void SNiagaraScriptGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagaraScriptGraphViewModel> InViewModel, const FAssetData& InEditedAsset)
 {
+	EditedAsset = InEditedAsset;
+	
 	UpdateViewModel(InViewModel);
 	bUpdatingGraphSelectionFromViewModel = false;
 
 	GraphTitle = InArgs._GraphTitle;
 	SetForegroundColor(InArgs._ForegroundColor);
+	bShowHeader = InArgs._ShowHeader;
 
 	GraphEditor = ConstructGraphEditor();
 	if (InArgs._ZoomToFitOnLoad)
@@ -56,16 +57,35 @@ void SNiagaraScriptGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagar
 	];
 
 	CurrentFocusedSearchMatchIndex = 0;
+
+	AddAssetListeners();
+}
+
+SNiagaraScriptGraph::~SNiagaraScriptGraph()
+{
+	ClearListeners();
 }
 
 void SNiagaraScriptGraph::UpdateViewModel(TSharedRef<FNiagaraScriptGraphViewModel> InNewModel)
 {
+	bool bKeepOldGraphView = false;
+	FVector2D Location;
+	float ZoomAmount =1.0f;
+	FGuid BookmarkId = FGuid();
+
 	// remove old listeners
 	if (ViewModel)
 	{
 		ViewModel->GetNodeSelection()->OnSelectedObjectsChanged().RemoveAll(this);
 		ViewModel->OnNodesPasted().RemoveAll(this);
 		ViewModel->OnGraphChanged().RemoveAll(this);
+
+		if (GraphEditor.IsValid())
+		{
+			bKeepOldGraphView = true;
+			GraphEditor->GetViewLocation(Location, ZoomAmount);
+			GraphEditor->GetViewBookmark(BookmarkId);
+		}
 	}
 
 	// set model and listeners
@@ -73,6 +93,13 @@ void SNiagaraScriptGraph::UpdateViewModel(TSharedRef<FNiagaraScriptGraphViewMode
 	ViewModel->GetNodeSelection()->OnSelectedObjectsChanged().AddSP(this, &SNiagaraScriptGraph::ViewModelSelectedNodesChanged);
 	ViewModel->OnNodesPasted().AddSP(this, &SNiagaraScriptGraph::NodesPasted);
 	ViewModel->OnGraphChanged().AddSP(this, &SNiagaraScriptGraph::GraphChanged);
+
+	RecreateGraphWidget();
+
+	if (bKeepOldGraphView && GraphEditor.IsValid())
+	{
+		GraphEditor->SetViewLocation(Location, ZoomAmount, BookmarkId);
+	}
 }
 
 void SNiagaraScriptGraph::RecreateGraphWidget()
@@ -91,31 +118,53 @@ TSharedRef<SGraphEditor> SNiagaraScriptGraph::ConstructGraphEditor()
 
 	TSharedRef<SWidget> TitleBarWidget =
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush(TEXT("Graph.TitleBackground")))
+		.BorderImage(FAppStyle::GetBrush(TEXT("Graph.TitleBackground")))
 		.HAlign(HAlign_Fill)
 		[
 			// Error Indicator and Title
 			SNew(SOverlay)
 			+SOverlay::Slot()
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(0.0f, 0.0f, 3.0f, 0.0f)
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.HAlign(HAlign_Fill)
+				.AutoHeight()
 				[
-					SNew(SErrorText)
-					.Visibility(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorTextVisible)
-					.BackgroundColor(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorColor)
-					.ToolTipText(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorMsgToolTip)
-					.ErrorText(ViewModel->GetGraphErrorText())
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 3.0f, 0.0f)
+					[
+						SNew(SErrorText)
+						.Visibility(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorTextVisible)
+						.BackgroundColor(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorColor)
+						.ToolTipText(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetGraphErrorMsgToolTip)
+						.ErrorText(ViewModel->GetGraphErrorText())
+					]
+					+SHorizontalBox::Slot()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetDisplayName)
+						.TextStyle(FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText"))
+						.Justification(ETextJustify::Center)
+						.Visibility(bShowHeader ? EVisibility::Visible : EVisibility::Collapsed)
+					]
 				]
-				+SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
+				// optional info for downstream assets
+				+ SVerticalBox::Slot()
 				[
-					SNew(STextBlock)
-					.Text(ViewModel.ToSharedRef(), &FNiagaraScriptGraphViewModel::GetDisplayName)
-					.TextStyle(FEditorStyle::Get(), TEXT("GraphBreadcrumbButtonText"))
-					.Justification(ETextJustify::Center)
+					SNew(SBorder)
+					.BorderImage(FAppStyle::GetBrush(TEXT("Graph.TitleBackground")))
+					.ColorAndOpacity(this, &SNiagaraScriptGraph::GetScriptSubheaderColor)
+					.Visibility(this, &SNiagaraScriptGraph::GetScriptSubheaderVisibility)
+					.HAlign(HAlign_Fill)
+					[
+						SNew(STextBlock)
+						.Text(this, &SNiagaraScriptGraph::GetScriptSubheaderText)
+						.TextStyle(FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText"))
+						.Justification(ETextJustify::Center)
+					]
 				]
 			]
 			// Search Box
@@ -124,7 +173,7 @@ TSharedRef<SGraphEditor> SNiagaraScriptGraph::ConstructGraphEditor()
 			.VAlign(VAlign_Fill)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+				.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 				.BorderBackgroundColor(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.ScriptGraph.SearchBorderColor"))
 				.Visibility(this, &SNiagaraScriptGraph::GetGraphSearchBoxVisibility)
 				.Padding(5)
@@ -155,7 +204,7 @@ TSharedRef<SGraphEditor> SNiagaraScriptGraph::ConstructGraphEditor()
 					.Padding(2.0f, 0.0f, 0.0f, 0.0f)
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.IsFocusable(false)
 						.ForegroundColor(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
 						.ToolTipText(LOCTEXT("CloseGraphSearchBox", "Close Graph search box"))
@@ -164,7 +213,7 @@ TSharedRef<SGraphEditor> SNiagaraScriptGraph::ConstructGraphEditor()
 						.Content()
 						[
 							SNew(STextBlock)
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 							.Text(FEditorFontGlyphs::Times)
 						]
 					]
@@ -241,6 +290,7 @@ TSharedRef<SGraphEditor> SNiagaraScriptGraph::ConstructGraphEditor()
 	return CreatedGraphEditor;
 }
 
+
 void SNiagaraScriptGraph::ViewModelSelectedNodesChanged()
 {
 	if (FNiagaraEditorUtilities::SetsMatch(GraphEditor->GetSelectedNodes(), ViewModel->GetNodeSelection()->GetSelectedObjects()) == false)
@@ -279,11 +329,7 @@ void SNiagaraScriptGraph::OnNodeDoubleClicked(UEdGraphNode* ClickedNode)
 	UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(ClickedNode);
 	if (NiagaraNode != nullptr)
 	{
-		UObject* ReferencedAsset = NiagaraNode->GetReferencedAsset();
-		if (ReferencedAsset != nullptr)
-		{
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ReferencedAsset);
-		}
+		NiagaraNode->OpenReferencedAsset();
 	}
 }
 
@@ -650,6 +696,98 @@ TOptional<SSearchBox::FSearchResultData> SNiagaraScriptGraph::GetSearchResultDat
 		return TOptional<SSearchBox::FSearchResultData>();
 	}
 	return TOptional<SSearchBox::FSearchResultData>({ CurrentSearchResults.Num(), CurrentFocusedSearchMatchIndex + 1 });
+}
+
+FText SNiagaraScriptGraph::GetScriptSubheaderText() const
+{
+	int32 SearchLimit = GetDefault<UNiagaraEditorSettings>()->GetAssetStatsSearchLimit();
+	int32 AffectedAssets = GetScriptAffectedAssets();
+	bool bVersioned = false;
+	if (UNiagaraScriptSource* ScriptSource = ViewModel->GetScriptSource())
+	{
+		if (UNiagaraScript* Script = ScriptSource->GetTypedOuter<UNiagaraScript>())
+		{
+			bVersioned = Script->IsVersioningEnabled();
+		}
+	}
+	FText VersionText = bVersioned ? LOCTEXT("ScriptSubheaderVersionInfoText", "(across all versions)") : FText();
+	FText LimitReachedText = AffectedAssets >= SearchLimit ? LOCTEXT("ScriptSubheaderLimitReachedText", "more than ") : FText();
+	return FText::Format(LOCTEXT("ScriptSubheaderText", "Note: editing this script will affect {0}{1} dependent {1}|plural(one=asset,other=assets)! {2}"), LimitReachedText, FText::AsNumber(AffectedAssets), VersionText);
+}
+
+EVisibility SNiagaraScriptGraph::GetScriptSubheaderVisibility() const
+{
+	return bShowHeader && (GetScriptAffectedAssets() > 0) ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+FLinearColor SNiagaraScriptGraph::GetScriptSubheaderColor() const
+{
+	return GetScriptAffectedAssets() >= 5 ? FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.ScriptGraph.AffectedAssetsWarningColor") : FLinearColor::White;
+}
+
+int32 SNiagaraScriptGraph::GetScriptAffectedAssets() const
+{
+	if (!EditedAsset.IsValid())
+	{
+		return 0;
+	}
+	const UNiagaraEditorSettings* EditorSettings = GetDefault<UNiagaraEditorSettings>();
+	if (EditorSettings->GetDisplayAffectedAssetStats() == false)
+	{
+		return 0;
+	}
+	
+	if (!ScriptAffectedAssets.IsSet())
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+		if (AssetRegistry.IsLoadingAssets())
+		{
+			// We are still discovering assets, wait a bit
+			return 0;
+		}
+
+		ScriptAffectedAssets = FNiagaraEditorUtilities::GetReferencedAssetCount(EditedAsset, [](const FAssetData& AssetToCheck)
+		{
+			if (AssetToCheck.GetClass() == UNiagaraSystem::StaticClass())
+			{
+				return FNiagaraEditorUtilities::ETrackAssetResult::Count;
+			}
+			if (AssetToCheck.GetClass() == UNiagaraEmitter::StaticClass() || AssetToCheck.GetClass() == UNiagaraScript::StaticClass())
+			{
+				return FNiagaraEditorUtilities::ETrackAssetResult::CountRecursive;
+			}
+			return FNiagaraEditorUtilities::ETrackAssetResult::Ignore;
+		});
+	}
+	return ScriptAffectedAssets.Get(0);
+}
+
+void SNiagaraScriptGraph::ResetAssetCount(const FAssetData&)
+{
+	ScriptAffectedAssets.Reset();
+}
+
+void SNiagaraScriptGraph::AddAssetListeners()
+{
+	if (EditedAsset.IsValid())
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		AssetRegistry.OnAssetUpdated().AddRaw(this, &SNiagaraScriptGraph::ResetAssetCount);
+		AssetRegistry.OnAssetAdded().AddRaw(this, &SNiagaraScriptGraph::ResetAssetCount);
+		AssetRegistry.OnAssetRemoved().AddRaw(this, &SNiagaraScriptGraph::ResetAssetCount);
+	}
+}
+
+void SNiagaraScriptGraph::ClearListeners()
+{
+	if (EditedAsset.IsValid())
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		AssetRegistry.OnAssetUpdated().RemoveAll(this);
+		AssetRegistry.OnAssetAdded().RemoveAll(this);
+		AssetRegistry.OnAssetRemoved().RemoveAll(this);
+	}
 }
 
 FReply SNiagaraScriptGraph::CloseGraphSearchBoxPressed()

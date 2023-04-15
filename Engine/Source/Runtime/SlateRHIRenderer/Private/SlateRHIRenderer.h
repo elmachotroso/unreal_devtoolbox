@@ -63,12 +63,9 @@ struct FViewportInfo : public FRenderResource
 	/** sRGB UI render target */
 	TRefCountPtr<IPooledRenderTarget> UITargetRT;
 	TRefCountPtr<IPooledRenderTarget> UITargetRTMask;
-	/** Copy of the HDR backbuffer */
-	TRefCountPtr<IPooledRenderTarget> HDRSourceRT;
 
 	/** Color-space LUT for HDR UI composition. */
-	FTexture3DRHIRef ColorSpaceLUTRT;
-	FTexture3DRHIRef ColorSpaceLUTSRV;
+	FTextureRHIRef ColorSpaceLUT;
 	int32 ColorSpaceLUTOutputDevice;
 	int32 ColorSpaceLUTOutputGamut;
 		
@@ -92,9 +89,9 @@ struct FViewportInfo : public FRenderResource
 	/** The desired SDR pixel format for this viewport */
 	EPixelFormat SDRPixelFormat;
 	/** Color gamut for output to HDR display */
-	int32 HDRColorGamut;
+	EDisplayColorGamut HDRDisplayColorGamut;
 	/** Device format for output to HDR display */
-	int32 HDROutputDevice;
+	EDisplayOutputFormat HDRDisplayOutputFormat;
 
 	IViewportRenderTargetProvider* RTProvider;
 	
@@ -121,6 +118,8 @@ struct FViewportInfo : public FRenderResource
 			bFullscreen(false),
 			PixelFormat(EPixelFormat::PF_Unknown),
 			SDRPixelFormat(EPixelFormat::PF_Unknown),
+			HDRDisplayColorGamut(EDisplayColorGamut::sRGB_D65),
+			HDRDisplayOutputFormat(EDisplayOutputFormat::SDR_sRGB),
 			RTProvider(nullptr),
 			bHDREnabled(false),
 			bSceneHDREnabled(false)
@@ -130,8 +129,7 @@ struct FViewportInfo : public FRenderResource
 	~FViewportInfo()
 	{
 		DepthStencil.SafeRelease();
-		ColorSpaceLUTRT.SafeRelease();
-		ColorSpaceLUTSRV.SafeRelease();
+		ColorSpaceLUT.SafeRelease();
 	}
 
 	void ConditionallyUpdateDepthBuffer(bool bInRequiresStencilTest, uint32 Width, uint32 Height);
@@ -181,7 +179,8 @@ public:
 	/** FSlateRenderer interface */
 	virtual bool Initialize() override;
 	virtual void Destroy() override;
-	virtual FSlateDrawBuffer& GetDrawBuffer() override;
+	virtual FSlateDrawBuffer& AcquireDrawBuffer() override;
+	virtual void ReleaseDrawBuffer(FSlateDrawBuffer& InWindowDrawBuffer) override;
 	virtual void OnWindowDestroyed( const TSharedRef<SWindow>& InWindow ) override;
 	virtual void OnWindowFinishReshaped(const TSharedPtr<SWindow>& InWindow) override;
 	virtual void RequestResize( const TSharedPtr<SWindow>& Window, uint32 NewWidth, uint32 NewHeight ) override;
@@ -197,7 +196,7 @@ public:
 	virtual FIntPoint GenerateDynamicImageResource(const FName InTextureName) override;
 	virtual bool GenerateDynamicImageResource( FName ResourceName, uint32 Width, uint32 Height, const TArray< uint8 >& Bytes ) override;
 	virtual bool GenerateDynamicImageResource( FName ResourceName, FSlateTextureDataRef TextureData ) override;
-	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale) override;
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2f LocalSize, float DrawScale) override;
 	virtual bool CanRenderResource(UObject& InResourceObject) const override;
 	virtual void* GetViewportResource( const SWindow& Window ) override;
 	virtual void SetColorVisionDeficiencyType(EColorVisionDeficiency Type, int32 Severity, bool bCorrectDeficiency, bool bShowCorrectionWithDeficiency) override;
@@ -218,7 +217,7 @@ public:
 	virtual void AddWidgetRendererUpdate(const struct FRenderThreadUpdateContext& Context, bool bDeferredRenderTargetUpdate) override;
 
 	/** Draws windows from a FSlateDrawBuffer on the render thread */
-	void DrawWindow_RenderThread(FRHICommandListImmediate& RHICmdList, FViewportInfo& ViewportInfo, FSlateWindowElementList& WindowElementList, const struct FSlateDrawWindowCommandParams& DrawParams);
+	void DrawWindow_RenderThread(FRHICommandListImmediate& RHICmdList, FViewportInfo& ViewportInfo, FSlateWindowElementList& WindowElementList, const struct FSlateDrawWindowCommandParams& DrawCommandParams);
 
 	/**
 	 * Reloads texture resources from disk                   
@@ -254,7 +253,7 @@ private:
 	 * @param Height		The height that we shoudl size to
 	 * @param bFullscreen	If we should be in fullscreen
 	 */
-	void ConditionalResizeViewport( FViewportInfo* ViewportInfo, uint32 Width, uint32 Height, bool bFullscreen );
+	void ConditionalResizeViewport( FViewportInfo* ViewportInfo, uint32 Width, uint32 Height, bool bFullscreen, SWindow* Window);
 	
 	/** 
 	 * Creates necessary resources to render a window and sends draw commands to the rendering thread
@@ -328,4 +327,19 @@ struct FSlateEndDrawingWindowsCommand final : public FRHICommand < FSlateEndDraw
 	void Execute(FRHICommandListBase& CmdList);
 
 	static void EndDrawingWindows(FRHICommandListImmediate& RHICmdList, FSlateDrawBuffer* DrawBuffer, FSlateRHIRenderingPolicy& Policy);
+};
+
+struct FSlateReleaseDrawBufferCommandString
+{
+	static const TCHAR* TStr() { return TEXT("FSlateReleaseDrawBufferCommand"); }
+};
+struct FSlateReleaseDrawBufferCommand final : public FRHICommand < FSlateReleaseDrawBufferCommand, FSlateReleaseDrawBufferCommandString >
+{
+	FSlateDrawBuffer* DrawBuffer;
+
+	FSlateReleaseDrawBufferCommand(FSlateDrawBuffer* InDrawBuffer);
+
+	void Execute(FRHICommandListBase& CmdList);
+
+	static void ReleaseDrawBuffer(FRHICommandListImmediate& RHICmdList, FSlateDrawBuffer* DrawBuffer);
 };

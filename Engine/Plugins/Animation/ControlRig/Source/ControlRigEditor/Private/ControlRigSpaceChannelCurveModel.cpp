@@ -10,16 +10,19 @@
 #include "CurveEditor.h"
 #include "CurveEditorScreenSpace.h"
 #include "CurveEditorSnapMetrics.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SequencerChannelTraits.h"
 #include "SequencerSectionPainter.h"
 #include "ISequencer.h"
 #include "ControlRigSpaceChannelEditors.h"
+#include "MVVM/Views/STrackAreaView.h"
 
 ECurveEditorViewID FControlRigSpaceChannelCurveModel::ViewID = ECurveEditorViewID::Invalid;
 
 FControlRigSpaceChannelCurveModel::FControlRigSpaceChannelCurveModel(TMovieSceneChannelHandle<FMovieSceneControlRigSpaceChannel> InChannel, UMovieSceneSection* OwningSection, TWeakPtr<ISequencer> InWeakSequencer)
 {
+	using namespace UE::Sequencer;
+	
 	FMovieSceneChannelProxy* NewChannelProxy = &OwningSection->GetChannelProxy();
 	ChannelHandle = NewChannelProxy->MakeHandle<FMovieSceneControlRigSpaceChannel>(InChannel.GetChannelIndex());
 	if (FMovieSceneChannelProxy* ChannelProxy = InChannel.GetChannelProxy())
@@ -31,7 +34,7 @@ FControlRigSpaceChannelCurveModel::FControlRigSpaceChannelCurveModel(TMovieScene
 	WeakSequencer = InWeakSequencer;
 	SupportedViews = ViewID;
 
-	Color = FSequencerSectionPainter::BlendColor(OwningSection->GetTypedOuter<UMovieSceneTrack>()->GetColorTint());
+	Color = STrackAreaView::BlendDefaultTrackColor(OwningSection->GetTypedOuter<UMovieSceneTrack>()->GetColorTint());
 }
 
 FControlRigSpaceChannelCurveModel::~FControlRigSpaceChannelCurveModel()
@@ -167,8 +170,9 @@ void FControlRigSpaceChannelCurveModel::GetKeys(const FCurveEditor& CurveEditor,
 //we actually still draw the 'key' as a the border which you can move and right click, context menu with.
 void FControlRigSpaceChannelCurveModel::GetKeyDrawInfo(ECurvePointType PointType, const FKeyHandle InKeyHandle, FKeyDrawInfo& OutDrawInfo) const
 {
-	OutDrawInfo.Brush = FEditorStyle::Get().GetBrush("FilledBorder");
-	OutDrawInfo.ScreenSize = FVector2D(10, 100);
+	OutDrawInfo.Brush = FAppStyle::Get().GetBrush("FilledBorder");
+	// NOTE Y is set to SCurveEditorKeyBarView::TrackHeight
+	OutDrawInfo.ScreenSize = FVector2D(10, 24);
 }
 
 void FControlRigSpaceChannelCurveModel::GetKeyPositions(TArrayView<const FKeyHandle> InKeys, TArrayView<FKeyPosition> OutKeyPositions) const

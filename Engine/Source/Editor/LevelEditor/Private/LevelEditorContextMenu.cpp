@@ -26,7 +26,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/GroupActor.h"
 #include "LevelEditorViewport.h"
 #include "EditorModes.h"
@@ -50,6 +50,8 @@
 #include "ActorGroupingUtils.h"
 #include "IMergeActorsModule.h"
 #include "IMergeActorsTool.h"
+#include "SLevelEditor.h"
+#include "SLevelViewport.h"
 
 #define LOCTEXT_NAMESPACE "LevelViewportContextMenu"
 
@@ -277,11 +279,14 @@ void FLevelEditorContextMenu::RegisterActorContextMenu()
 			TArray< UObject* > ReferencedAssets;
 			GEditor->GetReferencedAssetsForEditorSelection(ReferencedAssets);
 
+			TArray< FSoftObjectPath> SoftReferencedAssets;
+			GEditor->GetSoftReferencedAssetsForEditorSelection(SoftReferencedAssets);
+
 			// Asset type icon is used in multiple places below
 			FSlateIcon AssetIcon = ReferencedAssets.Num() == 1 ? FSlateIconFinder::FindIconForClass(ReferencedAssets[0]->GetClass()) : FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Default");
 
 			// Edit and Find entries (a) always appear in main menu, and (b) appear in right-click menu if referenced asset is available
-			if (LevelEditorContext->ContextType == ELevelEditorMenuContext::MainMenu || ReferencedAssets.Num() > 0)
+			if (LevelEditorContext->ContextType == ELevelEditorMenuContext::MainMenu || ReferencedAssets.Num() > 0 || SoftReferencedAssets.Num() > 0)
 			{
 				Section.AddMenuEntry(FGlobalEditorCommonCommands::Get().FindInContentBrowser);
 
@@ -296,11 +301,12 @@ void FLevelEditorContextMenu::RegisterActorContextMenu()
 				}
 				else if (ReferencedAssets.Num() == 1)
 				{
-					auto Asset = ReferencedAssets[0];
+					UObject*  Asset = ReferencedAssets[0];
+					const FString AssetLabel = Cast<AActor>(Asset) ? Cast<AActor>(Asset)->GetActorNameOrLabel() : Asset->GetName();
 
 					Section.AddMenuEntry(
 						FLevelEditorCommands::Get().EditAsset,
-						FText::Format(LOCTEXT("EditAssociatedAsset", "Edit {0}"), FText::FromString(Asset->GetName())),
+						FText::Format(LOCTEXT("EditAssociatedAsset", "Edit {0}"), FText::FromString(AssetLabel)),
 						TAttribute<FText>(), // use command's tooltip
 						AssetIcon
 					);
@@ -337,6 +343,13 @@ void FLevelEditorContextMenu::RegisterActorContextMenu()
 				TAttribute<FText>(), // use command's label
 				TAttribute<FText>(), // use command's tooltip
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Copy")
+			);
+
+			Section.AddMenuEntry(
+				FLevelEditorCommands::Get().SaveActor,
+				TAttribute<FText>(), // use command's label
+				TAttribute<FText>(), // use command's tooltip
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Save")
 			);
 
 			LevelEditorCreateActorMenu::FillAddReplaceContextMenuSections(Section, LevelEditorContext);
@@ -588,7 +601,7 @@ void FLevelEditorContextMenu::RegisterSceneOutlinerContextMenu()
 	{
 		if (ULevelEditorContextMenuContext* LevelEditorContext = InMenu->FindContext<ULevelEditorContextMenuContext>())
 		{
-			TWeakPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditorContext->LevelEditor.Pin()->GetSceneOutliner();
+			TWeakPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditorContext->LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				FToolMenuSection& Section = InMenu->AddSection("SelectVisibilityLevels");
@@ -985,7 +998,7 @@ FSlateColor InvertOnHover( const TWeakPtr< SWidget > WidgetPtr )
 	if ( Widget.IsValid() && Widget->IsHovered() )
 	{
 		static const FName InvertedForegroundName("InvertedForeground");
-		return FEditorStyle::GetSlateColor(InvertedForegroundName);
+		return FAppStyle::GetSlateColor(InvertedForegroundName);
 	}
 
 	return FSlateColor::UseForeground();
@@ -1198,14 +1211,14 @@ void FLevelEditorContextMenuImpl::FillActorMenu(UToolMenu* Menu)
 			[
 				SNew(SButton)
 				.ToolTipText( LOCTEXT( "PickButtonLabel", "Pick a parent actor to attach to") )
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(FOnClicked::CreateStatic(&Local::OnInteractiveActorPickerClicked))
 				.ContentPadding(4.0f)
 				.ForegroundColor(FSlateColor::UseForeground())
 				.IsFocusable(false)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.EyeDropper"))
+					.Image(FAppStyle::GetBrush("Icons.EyeDropper"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]

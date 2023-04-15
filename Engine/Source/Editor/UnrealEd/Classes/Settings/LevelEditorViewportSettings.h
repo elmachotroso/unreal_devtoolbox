@@ -71,6 +71,16 @@ enum class EScrollGestureDirection : uint8
 	Natural				UMETA(DisplayName = "Natural"),
 };
 
+UENUM()
+enum class EMaterialKind : uint8
+{
+	Unknown,
+	Base,
+	Normal,
+	Specular,
+	Emissive,
+};
+
 /**
  * Implements the Level Editor's per-instance view port settings.
  */
@@ -89,6 +99,7 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 		, NaniteVisualizationMode()
 		, LumenVisualizationMode()
 		, VirtualShadowMapVisualizationMode()
+		, GPUSkinCacheVisualizationMode()
 		, ExposureSettings()
 		, FOVAngle(EditorViewportDefs::DefaultPerspectiveFOVAngle)
 		, FarViewPlane(0)
@@ -144,6 +155,10 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 	/** The buffer visualization mode for the viewport. */
 	UPROPERTY(config)
 	FName RayTracingDebugVisualizationMode;
+
+	/** The GPU Skin Cache visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName GPUSkinCacheVisualizationMode;
 
 	/** Setting to allow designers to override the automatic expose. */
 	UPROPERTY(config)
@@ -276,6 +291,10 @@ class UNREALED_API ULevelEditorViewportSettings
 	/** If true, Clicking a BSP selects the brush and ctrl+shift+click selects the surface. If false, vice versa */
 	UPROPERTY(EditAnywhere, config, Category=LookAndFeel, meta=( DisplayName = "Clicking BSP Enables Brush" ), AdvancedDisplay)
 	uint32 bClickBSPSelectsBrush:1;
+
+	/** If true, viewport will show actor editor context (current level, current data layer(s), current folder) */
+	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, meta=(AdvancedDisplay))
+	uint32 bShowActorEditorContext : 1;
 
 	/** How fast the perspective camera moves when flying through the world. */
 	UPROPERTY(config, meta=(UIMin = "1", UIMax = "8", ClampMin="1", ClampMax="8"))
@@ -496,7 +515,7 @@ public:
 	float BackgroundDropDistance;
 
 	/** A list of meshes that can be used as preview mesh in the editor view port by holding down the backslash key */
-	UPROPERTY(EditAnywhere, config, Category=Preview, meta=(AllowedClasses = "StaticMesh"))
+	UPROPERTY(EditAnywhere, config, Category=Preview, meta=(AllowedClasses = "/Script/Engine.StaticMesh"))
 	TArray<FSoftObjectPath> PreviewMeshes;
 
 	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=LookAndFeel, meta=(ClampMin = "0.01", UIMin = "0.01", UIMax = "5"))
@@ -529,9 +548,17 @@ public:
 	/** The scale to apply to spline tangent lengths */
 	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, AdvancedDisplay, meta = (ClampMin = "0.00"))
 	float SplineTangentScale = 0.5f;
-	
+
 	UPROPERTY(config)
 	FVector2D LastInViewportMenuLocation;
+
+	/** When dropping a texture in the viewport, create an instance of this material instead of creating a new material. Populate MaterialParamsForDroppedTextures to specify the parameter names. */
+	UPROPERTY(EditAnywhere, config, Category = Behavior)
+	TSoftObjectPtr<class UMaterialInterface> MaterialForDroppedTextures;
+
+	/** When dropping a texture in the viewport, determines which material parameter to assign for each found texture type. Only relevant if MaterialForDroppedTextures is assigned. */
+	UPROPERTY(EditAnywhere, config, Category = Behavior)
+	TMap<EMaterialKind, FName> MaterialParamsForDroppedTextures;
 
 private:
 

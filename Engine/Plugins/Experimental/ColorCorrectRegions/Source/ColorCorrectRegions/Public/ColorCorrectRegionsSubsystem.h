@@ -71,7 +71,13 @@ public:
 
 	/** Called when level is added or removed. */
 	void OnLevelsChanged() { RefreshRegions(); };
-	
+
+	/** Called when duplication process is started in the level. */
+	void OnDuplicateActorsBegin() { bDuplicationStarted = true; };
+
+	/** Called when duplication process is ended in the level. */
+	void OnDuplicateActorsEnd();
+
 #if WITH_EDITOR
 	/** A callback for when the level is loaded. */
 	void OnLevelActorListChanged() { RefreshRegions(); };
@@ -80,6 +86,22 @@ public:
 	/** Sorts regions based on priority. */
 	void SortRegionsByPriority();
 
+	/** Sorts regions based on distance from the camera. */
+	void SortRegionsByDistance(const FVector& ViewLocation);
+
+	/** Handles Stencil Ids for the selected CCR and corresponding actor. */
+	void AssignStencilIdsToPerActorCC(AColorCorrectRegion* Region, bool bIgnoreUserNotificaion = false, bool bSoftAssign = false);
+	
+	/** Handles removal of Stencil Ids for the selected CCR. */
+	void ClearStencilIdsToPerActorCC(AColorCorrectRegion* Region);	
+	
+	/** Handles cases when stencil Id has been changed from outside by the user manually. */
+	void CheckAssignedActorsValidity(AColorCorrectRegion* Region);
+
+	/** Resets all stencils and re-assigns for each CCR in the scene. */
+	UFUNCTION(BlueprintCallable, meta = (Category = "Color Correct Regions"))
+	void RefreshStenciIdAssignmentForAllCCR();
+
 private:
 
 	/** Repopulates array of region actors. */
@@ -87,17 +109,20 @@ private:
 
 public:
 
-	/** Stores pointers to all ColorCorrectRegion Actors. */
-	TArray<AColorCorrectRegion*> Regions;
+	/** Stores pointers to ColorCorrectRegion Actors that use priority for sorting. */
+	TArray<AColorCorrectRegion*> RegionsPriorityBased;
+
+	/** Stores pointers to ColorCorrectRegion Actors that are based on distance from camera. */
+	TArray<AColorCorrectRegion*> RegionsDistanceBased;
 
 private:
-
-	/** Region class. Used for getting all region actors in level. */
-	TSubclassOf<AColorCorrectRegion> RegionClass;
-
 	TSharedPtr< class FColorCorrectRegionsSceneViewExtension, ESPMode::ThreadSafe > PostProcessSceneViewExtension;
 
 	FCriticalSection RegionAccessCriticalSection;
+
+	/** This is to handle actor duplication for Per Actor CC. */
+	bool bDuplicationStarted = false;
+	TArray<AActor*> DuplicatedActors;
 
 public:
 	friend class FColorCorrectRegionsSceneViewExtension;

@@ -21,6 +21,8 @@ class CONTEXTUALANIMATION_API UContextualAnimManager : public UObject, public FT
 
 public:
 
+	friend class FContextualAnimViewModel;
+
 	UContextualAnimManager(const FObjectInitializer& ObjectInitializer);
 
 	virtual UWorld* GetWorld() const override;
@@ -30,7 +32,7 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual ETickableTickType GetTickableTickType() const override;
 	virtual TStatId GetStatId() const override;
-	virtual bool IsTickableInEditor() const { return true; }
+	virtual bool IsTickableInEditor() const override;
 	// FTickableGameObject end
 
 	static UContextualAnimManager* Get(const UWorld* World);
@@ -39,15 +41,12 @@ public:
 
 	void UnregisterSceneActorComponent(UContextualAnimSceneActorComponent* SceneActorComp);
 
-	/** Attempt to start an scene instance with the supplied bindings for each role */
-	bool TryStartScene(const UContextualAnimSceneAsset* SceneAsset, const FContextualAnimSceneBindings& Bindings);
-
-	/** Attempt to start an scene instance with PrimaryActor bound to the primary role and the first component valid for each of the other roles */
-	bool TryStartScene(const UContextualAnimSceneAsset* SceneAsset, AActor* PrimaryActor, const TSet<UContextualAnimSceneActorComponent*>& SceneActorComps);
-
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Manager")
-	UContextualAnimSceneActorComponent* FindClosestSceneActorCompToActor(const AActor* Actor) const;
+	/** Starts an scene instance with the supplied actors for each role ignoring selection criteria */
+	UContextualAnimSceneInstance* ForceStartScene(const UContextualAnimSceneAsset& SceneAsset, const FContextualAnimStartSceneParams& Params);
 	
+	/** Attempts to start an scene instance with the supplied actors using the first valid set based on selection criteria */
+	UContextualAnimSceneInstance* TryStartScene(const UContextualAnimSceneAsset& SceneAsset, const FContextualAnimStartSceneParams& Params);
+
 	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Manager")
 	bool TryStopSceneWithActor(AActor* Actor);
 
@@ -60,19 +59,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Manager", meta = (WorldContext = "WorldContextObject"))
 	static UContextualAnimManager* GetContextualAnimManager(UObject* WorldContextObject);
 
-	FORCEINLINE const TSet<UContextualAnimSceneActorComponent*>& GetSceneActorCompContainer() const { return SceneActorCompContainer; };
+	FORCEINLINE const TSet<TObjectPtr<UContextualAnimSceneActorComponent>>& GetSceneActorCompContainer() const { return SceneActorCompContainer; };
 
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Manager", meta = (DisplayName = "TryStartSceneWithBindings"))
-	bool BP_TryStartSceneWithBindings(const UContextualAnimSceneAsset* SceneAsset, const FContextualAnimSceneBindings& Bindings) { return TryStartScene(SceneAsset, Bindings); }
+	/** Attempts to start an scene instance with the supplied actors using the first valid set based on selection criteria */
+	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Manager", meta = (DisplayName = "Try Start Scene"))
+	UContextualAnimSceneInstance* BP_TryStartScene(const UContextualAnimSceneAsset* SceneAsset, const FContextualAnimStartSceneParams& Params);
 
 protected:
 
 	/** Container for all SceneActorComps in the world */
 	UPROPERTY()
-	TSet<UContextualAnimSceneActorComponent*> SceneActorCompContainer;
+	TSet<TObjectPtr<UContextualAnimSceneActorComponent>> SceneActorCompContainer;
 
 	UPROPERTY()
-	TArray<UContextualAnimSceneInstance*> Instances;
+	TArray<TObjectPtr<UContextualAnimSceneInstance>> Instances;
 
+	UFUNCTION()
 	void OnSceneInstanceEnded(UContextualAnimSceneInstance* SceneInstance);
 };

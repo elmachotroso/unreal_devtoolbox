@@ -10,12 +10,61 @@
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanelNode"
 
+TSet<FName> SRCPanelTreeNode::DefaultColumns = {
+	RemoteControlPresetColumns::DragDropHandle,
+	RemoteControlPresetColumns::Description,
+	RemoteControlPresetColumns::Value,
+	RemoteControlPresetColumns::Reset
+};
+
+TSharedRef<SWidget> SRCPanelTreeNode::GetProtocolWidget(const FName ForColumnName, const FName InProtocolName)
+{
+	return SNullWidget::NullWidget;
+}
+
+const bool SRCPanelTreeNode::HasProtocolExtension() const
+{
+	return false;
+}
+
+const bool SRCPanelTreeNode::GetProtocolBindingsNum() const
+{
+	return false;
+}
+
+const bool SRCPanelTreeNode::SupportsProtocol(const FName& InProtocolName) const
+{
+	return false;
+}
+
+TSharedRef<SWidget> SRCPanelTreeNode::GetWidget(const FName ForColumnName, const FName InActiveProtocol)
+{
+	if (ForColumnName == RemoteControlPresetColumns::DragDropHandle)
+	{
+		return DragHandleWidget.ToSharedRef();
+	}
+	else if (ForColumnName == RemoteControlPresetColumns::Description)
+	{
+		return NodeNameWidget.ToSharedRef();
+	}
+	else if (ForColumnName == RemoteControlPresetColumns::Reset)
+	{
+		return ResetValueWidget.ToSharedRef();
+	}
+	else if (ForColumnName == RemoteControlPresetColumns::Value)
+	{
+		return NodeValueWidget.ToSharedRef();
+	}
+
+	return SNullWidget::NullWidget;
+}
+
 TSharedRef<SWidget> SRCPanelTreeNode::MakeSplitRow(TSharedRef<SWidget> LeftColumn, TSharedRef<SWidget> RightColumn)
 {
 	TAttribute<float> LeftColumnAttribute;
-	LeftColumnAttribute.BindRaw(this, &SRCPanelTreeNode::GetLeftColumnWidth);
+	LeftColumnAttribute.Bind(this, &SRCPanelTreeNode::GetLeftColumnWidth);
 	TAttribute<float> RightColumnAttribute;
-	RightColumnAttribute.BindRaw(this, &SRCPanelTreeNode::GetRightColumnWidth);
+	RightColumnAttribute.Bind(this, &SRCPanelTreeNode::GetRightColumnWidth);
 	
 	return SNew(SSplitter)
 		.Style(FAppStyle::Get(), "DetailsView.Splitter")
@@ -23,13 +72,13 @@ TSharedRef<SWidget> SRCPanelTreeNode::MakeSplitRow(TSharedRef<SWidget> LeftColum
 		.HitDetectionSplitterHandleSize(5.0f)
 		+ SSplitter::Slot()
 		.Value(MoveTemp(LeftColumnAttribute))
-		.OnSlotResized(SSplitter::FOnSlotResized::CreateRaw(this, &SRCPanelTreeNode::OnLeftColumnResized))
+		.OnSlotResized(SSplitter::FOnSlotResized::CreateSP(this, &SRCPanelTreeNode::OnLeftColumnResized))
 		[
 			LeftColumn
 		]
 		+ SSplitter::Slot()
 		.Value(MoveTemp(RightColumnAttribute))
-		.OnSlotResized(SSplitter::FOnSlotResized::CreateRaw(this, &SRCPanelTreeNode::SetColumnWidth))
+		.OnSlotResized(SSplitter::FOnSlotResized::CreateSP(this, &SRCPanelTreeNode::SetColumnWidth))
 		[
 			RightColumn
 		];
@@ -37,10 +86,9 @@ TSharedRef<SWidget> SRCPanelTreeNode::MakeSplitRow(TSharedRef<SWidget> LeftColum
 
 TSharedRef<SWidget> SRCPanelTreeNode::MakeNodeWidget(const FMakeNodeWidgetArgs& Args)
 {
-	auto WidgetOrNull = [](const TSharedPtr<SWidget>& Widget) {return Widget ? Widget.ToSharedRef() : SNullWidget::NullWidget; };
+	MakeNodeWidgets(Args);
 
-	TSharedRef<SWidget> LeftColumn = 
-		SNew(SHorizontalBox)
+	TSharedRef<SWidget> LeftColumn = SNew(SHorizontalBox)
 		.Clipping(EWidgetClipping::OnDemand)
 		// Drag and drop handle
 		+ SHorizontalBox::Slot()
@@ -48,50 +96,51 @@ TSharedRef<SWidget> SRCPanelTreeNode::MakeNodeWidget(const FMakeNodeWidgetArgs& 
 		.VAlign(VAlign_Center)
 		.AutoWidth()
 		[
-			WidgetOrNull(Args.DragHandle)
+			DragHandleWidget.ToSharedRef()
 		]
 		// Field name
 		+ SHorizontalBox::Slot()
 		.VAlign(VAlign_Center)
 		.AutoWidth()
 		[
-			WidgetOrNull(Args.NameWidget)
-		]
-		// Rename button
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		[
-			WidgetOrNull(Args.RenameButton)
+			NodeNameWidget.ToSharedRef()
 		];
 
-	TSharedRef<SWidget> RightColumn =
-		SNew(SOverlay)
-		+ SOverlay::Slot()
-
+	TSharedRef<SWidget> RightColumn = SNew(SHorizontalBox)
+		.Clipping(EWidgetClipping::OnDemand)
+		// Node Value
+		+ SHorizontalBox::Slot()
 		.HAlign(HAlign_Fill)
 		[
 			SNew(SBox)
 			.HAlign(HAlign_Left)
 			.VAlign(VAlign_Center)
 			[
-				WidgetOrNull(Args.ValueWidget)			
+				NodeValueWidget.ToSharedRef()
 			]
 		]
-
-		+ SOverlay::Slot()
-		.HAlign(HAlign_Right)
+		// Reset button
+		+ SHorizontalBox::Slot()
 		.VAlign(VAlign_Center)
+		.AutoWidth()
 		[
-			SNew(SBorder)
-			.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.GroupBorder"))
-			.Padding(0.f)
-			[
-				WidgetOrNull(Args.UnexposeButton)
-			]
+			ResetValueWidget.ToSharedRef()
 		];
-		
+
 	return MakeSplitRow(LeftColumn, RightColumn);
+}
+
+void SRCPanelTreeNode::MakeNodeWidgets(const FMakeNodeWidgetArgs& Args)
+{
+	auto WidgetOrNull = [](const TSharedPtr<SWidget>& Widget) {return Widget ? Widget.ToSharedRef() : SNullWidget::NullWidget; };
+
+	DragHandleWidget = WidgetOrNull(Args.DragHandle);
+
+	NodeNameWidget = WidgetOrNull(Args.NameWidget);
+
+	NodeValueWidget = WidgetOrNull(Args.ValueWidget);
+
+	ResetValueWidget = WidgetOrNull(Args.ResetButton);
 }
 
 void SRCPanelTreeNode::OnLeftColumnResized(float) const

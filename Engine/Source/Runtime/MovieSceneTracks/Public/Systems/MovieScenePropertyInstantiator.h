@@ -131,7 +131,9 @@ private:
 		uint16 BlendChannel;
 		/** The index of this property within FPropertyRegistry::GetProperties. */
 		int32 PropertyDefinitionIndex;
-		/** true if any of the contributors to this property need restore state.. */
+		/** Index of a float-based property if this property has been set for float-to-double conversion */
+		TOptional<int32> ConvertedFromPropertyDefinitionIndex;
+		/** true if any of the contributors to this property need restore state. */
 		bool bWantsRestoreState;
 	};
 
@@ -148,6 +150,7 @@ private:
 		int32 PropertyInfoIndex;
 	};
 	void DiscoverInvalidatedProperties(TBitArray<>& OutInvalidatedProperties);
+	void UpgradeFloatToDoubleProperties(const TBitArray<>& InvalidatedProperties);
 	void ProcessInvalidatedProperties(const TBitArray<>& InvalidatedProperties);
 	void UpdatePropertyInfo(const FPropertyParameters& Params);
 	bool PropertySupportsFastPath(const FPropertyParameters& Params) const;

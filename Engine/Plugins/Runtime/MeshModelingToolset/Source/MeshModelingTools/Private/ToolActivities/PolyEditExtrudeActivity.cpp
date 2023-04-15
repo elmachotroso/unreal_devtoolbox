@@ -18,6 +18,8 @@
 #include "ToolActivities/PolyEditActivityUtil.h"
 #include "ToolSceneQueriesUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PolyEditExtrudeActivity)
+
 #define LOCTEXT_NAMESPACE "UPolyEditExtrudeActivity"
 
 using namespace UE::Geometry;
@@ -36,6 +38,44 @@ namespace PolyEditExtrudeActivityLocals
 	FExtrudeOp::EDirectionMode ToOpDirectionMode(EnumType Value)
 	{
 		return static_cast<FExtrudeOp::EDirectionMode>(static_cast<int>(Value));
+	}
+
+	EPolyEditExtrudeDistanceMode GetDistanceMode(UPolyEditExtrudeActivity& Activity, UPolyEditExtrudeActivity::EPropertySetToUse PropertySetToUse)
+	{
+		switch (PropertySetToUse)
+		{
+		case UPolyEditExtrudeActivity::EPropertySetToUse::Extrude:
+			return Activity.ExtrudeProperties->DistanceMode;
+			break;
+		case UPolyEditExtrudeActivity::EPropertySetToUse::Offset:
+			return Activity.OffsetProperties->DistanceMode;
+			break;
+		case UPolyEditExtrudeActivity::EPropertySetToUse::PushPull:
+			return Activity.PushPullProperties->DistanceMode;
+			break;
+		}
+
+		ensure(false);
+		return Activity.ExtrudeProperties->DistanceMode;
+	}
+
+	double GetFixedDistance(UPolyEditExtrudeActivity& Activity, UPolyEditExtrudeActivity::EPropertySetToUse PropertySetToUse)
+	{
+		switch (PropertySetToUse)
+		{
+		case UPolyEditExtrudeActivity::EPropertySetToUse::Extrude:
+			return Activity.ExtrudeProperties->Distance;
+			break;
+		case UPolyEditExtrudeActivity::EPropertySetToUse::Offset:
+			return Activity.OffsetProperties->Distance;
+			break;
+		case UPolyEditExtrudeActivity::EPropertySetToUse::PushPull:
+			return Activity.PushPullProperties->Distance;
+			break;
+		}
+
+		ensure(false);
+		return Activity.ExtrudeProperties->Distance;
 	}
 }
 
@@ -70,8 +110,9 @@ TUniquePtr<FDynamicMeshOperator> UPolyEditExtrudeActivity::MakeNewOperator()
 	}
 
 	ActivityContext->CurrentTopology->GetSelectedTriangles(ActiveSelection, Op->TriangleSelection);
-
-	Op->ExtrudeDistance = ExtrudeHeightMechanic->CurrentHeight;
+	
+	Op->ExtrudeDistance = GetDistanceMode(*this, PropertySetToUse) == EPolyEditExtrudeDistanceMode::Fixed ?
+		GetFixedDistance(*this, PropertySetToUse) : ExtrudeHeightMechanic->CurrentHeight;
 	Op->UVScaleFactor = UVScaleFactor;
 
 	FTransform3d WorldTransform(ActivityContext->Preview->PreviewMesh->GetTransform());
@@ -114,6 +155,21 @@ void UPolyEditExtrudeActivity::Setup(UInteractiveTool* ParentToolIn)
 			ActivityContext->Preview->InvalidateResult();
 		}
 	});
+	ExtrudeProperties->WatchProperty(ExtrudeProperties->DistanceMode,
+	[this](EPolyEditExtrudeDistanceMode) {
+		if (bIsRunning)
+		{
+			ReinitializeExtrudeHeightMechanic();
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
+	ExtrudeProperties->WatchProperty(ExtrudeProperties->Distance,
+	[this](double) {
+		if (bIsRunning)
+		{
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
 
 	OffsetProperties = NewObject<UPolyEditOffsetProperties>();
 	OffsetProperties->RestoreProperties(ParentTool.Get());
@@ -135,6 +191,21 @@ void UPolyEditExtrudeActivity::Setup(UInteractiveTool* ParentToolIn)
 			ActivityContext->Preview->InvalidateResult();
 		}
 	});
+	OffsetProperties->WatchProperty(OffsetProperties->DistanceMode,
+	[this](EPolyEditExtrudeDistanceMode) {
+		if (bIsRunning)
+		{
+			ReinitializeExtrudeHeightMechanic();
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
+	OffsetProperties->WatchProperty(OffsetProperties->Distance,
+	[this](double) {
+		if (bIsRunning)
+		{
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
 
 	PushPullProperties = NewObject<UPolyEditPushPullProperties>();
 	PushPullProperties->RestoreProperties(ParentTool.Get());
@@ -153,6 +224,21 @@ void UPolyEditExtrudeActivity::Setup(UInteractiveTool* ParentToolIn)
 		if (bIsRunning)
 		{
 			ReinitializeExtrudeHeightMechanic();
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
+	PushPullProperties->WatchProperty(PushPullProperties->DistanceMode,
+	[this](EPolyEditExtrudeDistanceMode) {
+		if (bIsRunning)
+		{
+			ReinitializeExtrudeHeightMechanic();
+			ActivityContext->Preview->InvalidateResult();
+		}
+	});
+	PushPullProperties->WatchProperty(PushPullProperties->Distance,
+	[this](double) {
+		if (bIsRunning)
+		{
 			ActivityContext->Preview->InvalidateResult();
 		}
 	});
@@ -198,6 +284,8 @@ bool UPolyEditExtrudeActivity::CanStart() const
 
 EToolActivityStartResult UPolyEditExtrudeActivity::Start()
 {
+	using namespace PolyEditExtrudeActivityLocals;
+
 	if (!CanStart())
 	{
 		ParentTool->GetToolManager()->DisplayMessage(
@@ -239,7 +327,7 @@ EToolActivityStartResult UPolyEditExtrudeActivity::Start()
 	{
 		return ToolSceneQueriesUtil::FindWorldGridSnapPoint(ParentTool.Get(), WorldPos, SnapPos);
 	};
-	ExtrudeHeightMechanic->CurrentHeight = 1.0f; // Arbitrary intialization
+	ExtrudeHeightMechanic->CurrentHeight = GetFixedDistance(*this, PropertySetToUse);
 	
 	BeginExtrude();
 
@@ -278,6 +366,7 @@ void UPolyEditExtrudeActivity::BeginExtrude()
 	ActiveSelectionFrameWorld.Transform(WorldTransform);
 
 	ReinitializeExtrudeHeightMechanic();
+	ActivityContext->Preview->InvalidateResult();
 
 	float BoundsMaxDim = ActivityContext->CurrentMesh->GetBounds().MaxDim();
 	if (BoundsMaxDim > 0)
@@ -289,7 +378,14 @@ void UPolyEditExtrudeActivity::BeginExtrude()
 // The height mechanics has to get reinitialized whenever extrude direction changes
 void UPolyEditExtrudeActivity::ReinitializeExtrudeHeightMechanic()
 {
-	ExtrusionFrameWorld = ActiveSelectionFrameWorld;
+	using namespace PolyEditExtrudeActivityLocals;
+
+	if (GetDistanceMode(*this, PropertySetToUse) != EPolyEditExtrudeDistanceMode::ClickInViewport)
+	{
+		return;
+	}
+
+	FFrame3d ExtrusionFrameWorld = ActiveSelectionFrameWorld;
 	ExtrusionFrameWorld.AlignAxis(2, GetExtrudeDirection());
 
 	FDynamicMesh3 ExtrudeHitTargetMesh;	
@@ -300,7 +396,7 @@ void UPolyEditExtrudeActivity::ReinitializeExtrudeHeightMechanic()
 	// the extrude measurement line.
 	ExtrudeHitTargetMesh = *PatchMesh;
 	MeshTransforms::ApplyTransform(ExtrudeHitTargetMesh, 
-		(FTransform3d)ActivityContext->Preview->PreviewMesh->GetTransform());
+		(FTransform3d)ActivityContext->Preview->PreviewMesh->GetTransform(), true);
 
 	double Length = 99999.0;
 	FVector3d ExtrudeDirection = GetExtrudeDirection();
@@ -497,7 +593,11 @@ FVector3d UPolyEditExtrudeActivity::GetExtrudeDirection() const
 
 void UPolyEditExtrudeActivity::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	if (ensure(bIsRunning) && ExtrudeHeightMechanic != nullptr)
+	using namespace PolyEditExtrudeActivityLocals;
+
+	if (ensure(bIsRunning) 
+		&& ExtrudeHeightMechanic != nullptr
+		&& GetDistanceMode(*this, PropertySetToUse) == EPolyEditExtrudeDistanceMode::ClickInViewport)
 	{
 		ExtrudeHeightMechanic->Render(RenderAPI);
 	}
@@ -524,8 +624,11 @@ void UPolyEditExtrudeActivity::Tick(float DeltaTime)
 
 FInputRayHit UPolyEditExtrudeActivity::IsHitByClick(const FInputDeviceRay& ClickPos)
 {
+	using namespace PolyEditExtrudeActivityLocals;
+
 	FInputRayHit OutHit;
-	OutHit.bHit = bIsRunning;
+	OutHit.bHit = bIsRunning 
+		&& GetDistanceMode(*this, PropertySetToUse) == EPolyEditExtrudeDistanceMode::ClickInViewport;
 	return OutHit;
 }
 
@@ -539,14 +642,16 @@ void UPolyEditExtrudeActivity::OnClicked(const FInputDeviceRay& ClickPos)
 
 FInputRayHit UPolyEditExtrudeActivity::BeginHoverSequenceHitTest(const FInputDeviceRay& PressPos)
 {
+	using namespace PolyEditExtrudeActivityLocals;
+
 	FInputRayHit OutHit;
-	OutHit.bHit = bIsRunning;
+	OutHit.bHit = bIsRunning && GetDistanceMode(*this, PropertySetToUse) == EPolyEditExtrudeDistanceMode::ClickInViewport;
 	return OutHit;
 }
 
 bool UPolyEditExtrudeActivity::OnUpdateHover(const FInputDeviceRay& DevicePos)
 {
-	if (!bRequestedApply)
+	if (bIsRunning && !bRequestedApply)
 	{
 		ExtrudeHeightMechanic->UpdateCurrentDistance(DevicePos.WorldRay);
 		ActivityContext->Preview->InvalidateResult();
@@ -555,3 +660,4 @@ bool UPolyEditExtrudeActivity::OnUpdateHover(const FInputDeviceRay& DevicePos)
 }
 
 #undef LOCTEXT_NAMESPACE
+

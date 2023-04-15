@@ -4,32 +4,44 @@
 
 #include "UnrealUSDWrapper.h"
 #include "USDAssetImportData.h"
+#include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
 #include "USDLayerUtils.h"
 #include "USDLog.h"
 #include "USDMemory.h"
+#include "USDPrimConversion.h"
 #include "USDTypesConversion.h"
 
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/SdfPath.h"
+#include "UsdWrappers/UsdAttribute.h"
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationRuntime.h"
 #include "AnimEncoding.h"
+#include "ControlRig.h"
+#include "Evaluation/MovieSceneSequenceTransform.h"
+#include "IMovieScenePlayer.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "LevelSequencePlayer.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/MemStack.h"
 #include "Modules/ModuleManager.h"
+#include "MovieScene.h"
+#include "MovieSceneTimeHelpers.h"
+#include "MovieSceneTrack.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rigs/RigHierarchyElements.h"
+#include "Sequencer/MovieSceneControlRigParameterSection.h"
 
 #if WITH_EDITOR
 #include "Animation/DebugSkelMeshComponent.h"
@@ -47,6 +59,7 @@
 	#include "pxr/usd/usdGeom/primvarsAPI.h"
 	#include "pxr/usd/usdGeom/subset.h"
 	#include "pxr/usd/usdGeom/tokens.h"
+	#include "pxr/usd/usdGeom/xformable.h"
 	#include "pxr/usd/usdGeom/xformCache.h"
 	#include "pxr/usd/usdShade/tokens.h"
 	#include "pxr/usd/usdSkel/animation.h"
@@ -257,7 +270,7 @@ namespace SkelDataConversionImpl
 	}
 
 	/** Converts the given offsets into UnrealEditor space and fills in an FUsdBlendShape object with all the data that will become a morph target */
-	bool CreateUsdBlendShape( const FString& Name, const pxr::VtArray< pxr::GfVec3f >& PointOffsets, const pxr::VtArray< pxr::GfVec3f >& NormalOffsets, const pxr::VtArray< int >& PointIndices, const FUsdStageInfo& StageInfo, const FTransform& AdditionalTransform, uint32 PointIndexOffset, int32 LODIndex, UsdUtils::FUsdBlendShape& OutBlendShape )
+	bool CreateUsdBlendShape( const FString& Name, const pxr::VtArray< pxr::GfVec3f >& PointOffsets, const pxr::VtArray< pxr::GfVec3f >& NormalOffsets, const pxr::VtArray< int >& PointIndices, const FUsdStageInfo& StageInfo, uint32 PointIndexOffset, int32 LODIndex, UsdUtils::FUsdBlendShape& OutBlendShape )
 	{
 		uint32 NumOffsets = PointOffsets.size();
 		uint32 NumIndices = PointIndices.size();
@@ -672,16 +685,45 @@ namespace UnrealToUsdImpl
 
 		const FUsdStageInfo StageInfo( Stage );
 
+		// FSkelMeshSection can be "disabled", at which point they don't show up in the engine. We'll skip those
+		// sections, and will use this array to help remap from a source vertex index to the vertex's corresponding
+		// index in a "packed" array of vertices that we'll push to USD
+		TArray<int32> SourceToPackedVertexIndex;
+		int32 PackedVertexIndex = 0;
+
 		// Vertices
 		{
-			const int32 VertexCount = LODModel.NumVertices;
-			if ( VertexCount == 0 )
+			if ( LODModel.NumVertices == 0 )
 			{
 				return;
 			}
 
+			// We manually collect vertices here instead of calling LODModel.GetVertices as we need to skip
+			// vertices from disabled sections, which that function won't do
 			TArray<FSoftSkinVertex> Vertices;
-			LODModel.GetVertices( Vertices );
+			Vertices.Reserve( LODModel.NumVertices );
+			SourceToPackedVertexIndex.SetNum( LODModel.NumVertices );
+			for ( int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); ++SectionIndex )
+			{
+				const FSkelMeshSection& Section = LODModel.Sections[ SectionIndex ];
+				if ( Section.bDisabled )
+				{
+					// Mark that these indices are skipped
+					for ( int32 Index = 0; Index < Section.NumVertices; ++Index )
+					{
+						SourceToPackedVertexIndex[ Section.BaseVertexIndex + Index ] = INDEX_NONE;
+					}
+					continue;
+				}
+
+				for ( int32 Index = 0; Index < Section.NumVertices; ++Index )
+				{
+					SourceToPackedVertexIndex[ Section.BaseVertexIndex + Index ] = PackedVertexIndex++;
+				}
+
+				Vertices.Append( Section.SoftVertices );
+			}
+			const int32 VertexCount = Vertices.Num();
 
 			// Points
 			{
@@ -702,6 +744,15 @@ namespace UnrealToUsdImpl
 
 			// Normals
 			{
+				// We need to emit this if we're writing normals (which we always are) because any DCC that can
+				// actually subdivide (like usdview) will just discard authored normals and fully recompute them
+				// on-demand in case they have a valid subdivision scheme (which is the default state).
+				// Reference: https://graphics.pixar.com/usd/release/api/class_usd_geom_mesh.html#UsdGeom_Mesh_Normals
+				if ( pxr::UsdAttribute SubdivisionAttr = UsdLODPrimGeomMesh.CreateSubdivisionSchemeAttr() )
+				{
+					ensure( SubdivisionAttr.Set( pxr::UsdGeomTokens->none ) );
+				}
+
 				pxr::UsdAttribute NormalsAttribute = UsdLODPrimGeomMesh.CreateNormalsAttr();
 				if ( NormalsAttribute )
 				{
@@ -723,7 +774,7 @@ namespace UnrealToUsdImpl
 				{
 					pxr::TfToken UsdUVSetName = UsdUtils::GetUVSetName( TexCoordSourceIndex ).Get();
 
-					pxr::UsdGeomPrimvar PrimvarST = UsdLODPrimGeomMesh.CreatePrimvar( UsdUVSetName, pxr::SdfValueTypeNames->TexCoord2fArray, pxr::UsdGeomTokens->vertex );
+					pxr::UsdGeomPrimvar PrimvarST = pxr::UsdGeomPrimvarsAPI(MeshPrim).CreatePrimvar( UsdUVSetName, pxr::SdfValueTypeNames->TexCoord2fArray, pxr::UsdGeomTokens->vertex );
 
 					if ( PrimvarST )
 					{
@@ -786,9 +837,13 @@ namespace UnrealToUsdImpl
 					pxr::VtArray< float > JointWeights;
 					JointWeights.reserve( VertexCount * NumInfluencesPerVertex );
 
-					const int32 SectionCount = LODModel.Sections.Num();
 					for ( const FSkelMeshSection& Section : LODModel.Sections )
 					{
+						if ( Section.bDisabled )
+						{
+							continue;
+						}
+
 						for ( const FSoftSkinVertex& Vertex : Section.SoftVertices )
 						{
 							for ( int32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerVertex; ++InfluenceIndex )
@@ -815,6 +870,11 @@ namespace UnrealToUsdImpl
 			{
 				for ( const FSkelMeshSection& Section : LODModel.Sections )
 				{
+					if ( Section.bDisabled )
+					{
+						continue;
+					}
+
 					TotalNumTriangles += Section.NumTriangles;
 				}
 
@@ -844,15 +904,24 @@ namespace UnrealToUsdImpl
 
 					for ( const FSkelMeshSection& Section : LODModel.Sections )
 					{
+						if ( Section.bDisabled )
+						{
+							continue;
+						}
+
 						int32 TriangleCount = Section.NumTriangles;
 						for ( uint32 TriangleIndex = 0; TriangleIndex < Section.NumTriangles; ++TriangleIndex )
 						{
 							for ( uint32 PointIndex = 0; PointIndex < 3; PointIndex++ )
 							{
-								int32 VertexPositionIndex = LODModel.IndexBuffer[ Section.BaseIndex + ( ( TriangleIndex * 3 ) + PointIndex ) ];
-								check( VertexPositionIndex >= 0 );
+								const int32 SourceVertexIndex =
+									LODModel.IndexBuffer[ Section.BaseIndex + ( ( TriangleIndex * 3 ) + PointIndex ) ];
 
-								FaceVertexIndices.push_back(VertexPositionIndex);
+								int32 PackedVertexPositionIndex = SourceToPackedVertexIndex[ SourceVertexIndex ];
+
+								check( PackedVertexPositionIndex >= 0 && PackedVertexPositionIndex != INDEX_NONE );
+
+								FaceVertexIndices.push_back( PackedVertexPositionIndex );
 							}
 						}
 					}
@@ -869,7 +938,17 @@ namespace UnrealToUsdImpl
 			pxr::VtArray< std::string > UnrealMaterialsForLOD;
 			for ( const FSkelMeshSection& Section : LODModel.Sections )
 			{
-				int32 SkeletalMaterialIndex = LODMaterialMap.IsValidIndex( Section.MaterialIndex ) ? LODMaterialMap[ Section.MaterialIndex ] : Section.MaterialIndex;
+				int32 SkeletalMaterialIndex = INDEX_NONE;
+				if ( LODMaterialMap.IsValidIndex( Section.MaterialIndex ) )
+				{
+					SkeletalMaterialIndex = LODMaterialMap[ Section.MaterialIndex ];
+				}
+				// Note that the LODMaterialMap can contain INDEX_NONE to signify no remapping
+				if ( SkeletalMaterialIndex == INDEX_NONE )
+				{
+					SkeletalMaterialIndex = Section.MaterialIndex;
+				}
+
 				if ( SkeletalMaterialIndex >= 0 && SkeletalMaterialIndex < MaterialAssignments.size() )
 				{
 					UnrealMaterialsForLOD.push_back( MaterialAssignments[ SkeletalMaterialIndex ] );
@@ -897,6 +976,10 @@ namespace UnrealToUsdImpl
 				for ( int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); ++SectionIndex )
 				{
 					const FSkelMeshSection& Section = LODModel.Sections[ SectionIndex ];
+					if ( Section.bDisabled )
+					{
+						continue;
+					}
 
 					// Note that we will continue on even if we have no material assignment, so as to satisfy the "partition" family condition
 					std::string SectionMaterial = UnrealMaterialsForLOD[ SectionIndex ];
@@ -921,18 +1004,34 @@ namespace UnrealToUsdImpl
 					ElementTypeAttr.Set( pxr::UsdGeomTokens->face, TimeCode );
 
 					// Indices attribute
-					const uint32 TriangleCount = Section.NumTriangles;
-					const uint32 FirstTriangleIndex = Section.BaseIndex / 3; // BaseIndex is the first *vertex* instance index
-					pxr::VtArray<int> IndicesAttrValue;
-					for ( uint32 TriangleIndex = FirstTriangleIndex; TriangleIndex - FirstTriangleIndex < TriangleCount; ++TriangleIndex )
 					{
-						// Note that we add VertexInstances in sequence to the usda file for the faceVertexInstances attribute, which
-						// also constitutes our triangle order
-						IndicesAttrValue.push_back( static_cast< int >( TriangleIndex ));
-					}
+						const uint32 TriangleCount = Section.NumTriangles;
+						uint32 FirstTriangleIndex = Section.BaseIndex / 3; // BaseIndex is the first *vertex* instance index
+						pxr::VtArray<int> IndicesAttrValue;
 
-					pxr::UsdAttribute IndicesAttr = GeomSubsetSchema.CreateIndicesAttr();
-					IndicesAttr.Set( IndicesAttrValue, TimeCode );
+						// We may have some disabled sections (that wouldn't have emitted triangles). If so, we need to
+						// adjust our FirstTriangleIndex.
+						// This could be optimized in case vertex instances show up in LODModel.IndexBuffer according
+						// to the section order, but so far we haven't found such guarantee, so just check them all.
+						for ( int32 OtherSectionIndex = 0; OtherSectionIndex < LODModel.Sections.Num(); ++OtherSectionIndex )
+						{
+							const FSkelMeshSection& OtherSection = LODModel.Sections[ OtherSectionIndex ];
+							if ( OtherSection.bDisabled && OtherSection.BaseIndex < Section.BaseIndex )
+							{
+								FirstTriangleIndex -= OtherSection.NumTriangles;
+							}
+						}
+
+						for ( uint32 TriangleIndex = FirstTriangleIndex; TriangleIndex - FirstTriangleIndex < TriangleCount; ++TriangleIndex )
+						{
+							// Note that we add VertexInstances in sequence to the usda file for the faceVertexInstances attribute, which
+							// also constitutes our triangle order
+							IndicesAttrValue.push_back( static_cast< int >( TriangleIndex ));
+						}
+
+						pxr::UsdAttribute IndicesAttr = GeomSubsetSchema.CreateIndicesAttr();
+						IndicesAttr.Set( IndicesAttrValue, TimeCode );
+					}
 
 					// Family name attribute
 					pxr::UsdAttribute FamilyNameAttr = GeomSubsetSchema.CreateFamilyNameAttr();
@@ -1125,84 +1224,25 @@ bool UsdToUnreal::ConvertSkeleton(const pxr::UsdSkelSkeletonQuery& SkeletonQuery
 	return true;
 }
 
-bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext )
+bool UsdToUnreal::ConvertSkinnedMesh(
+	const pxr::UsdSkelSkinningQuery& SkinningQuery,
+	const pxr::UsdSkelSkeletonQuery& SkeletonQuery,
+	FSkeletalMeshImportData& SkelMeshImportData,
+	TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments,
+	const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
+	const pxr::TfToken& RenderContext,
+	const pxr::TfToken& MaterialPurpose
+)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE( UsdToUnreal::ConvertSkinnedMesh );
 
 	using namespace pxr;
 
-	FScopedUsdAllocs UEAllocs;
-
-	// We must use a SkeletonQuery to properly convert the skinned mesh to the target pose. If we weren't provided one,
-	// we must fetch it manually
-
-	pxr::UsdPrim SkinnedPrim = UsdSkinningQuery.GetPrim();
-	if ( !SkinnedPrim )
-	{
-		return false;
-	}
-
-	bool bFoundSkelRoot = false;
-	pxr::UsdPrim ParentPrim = SkinnedPrim.GetParent();
-	while ( ParentPrim && !ParentPrim.IsPseudoRoot() )
-	{
-		if ( ParentPrim.IsA<pxr::UsdSkelRoot>() )
-		{
-			bFoundSkelRoot = true;
-			break;
-		}
-
-		ParentPrim = ParentPrim.GetParent();
-	}
-	if ( !bFoundSkelRoot )
-	{
-		return false;
-	}
-
-	pxr::UsdSkelRoot SkelRoot{ ParentPrim };
-
-	pxr::UsdSkelCache SkelCache;
-	if ( !SkelCache.Populate( SkelRoot, pxr::UsdTraverseInstanceProxies() ) )
-	{
-		return false;
-	}
-
-	std::vector< pxr::UsdSkelBinding > SkeletonBindings;
-	if ( !SkelCache.ComputeSkelBindings( SkelRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() ) )
-	{
-		return false;
-	}
-
-	pxr::UsdSkelSkeletonQuery MatchingSkelQuery;
-	for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
-	{
-		const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
-		pxr::UsdSkelSkeletonQuery SkelQuery = SkelCache.GetSkelQuery( Skeleton );
-
-		// Double-check that we're talking about the same mesh, at least. Each mesh can only be bound to one
-		// skeleton so this is probably guaranteed to be the same SkelBinding
-		for ( const pxr::UsdSkelSkinningQuery& SomeSkinningQuery : Binding.GetSkinningTargets() )
-		{
-			if ( SomeSkinningQuery.GetPrim() == SkinnedPrim )
-			{
-				MatchingSkelQuery = SkelQuery;
-				break;
-			}
-		}
-
-		// We really only ever deal with the first binding
-		break;
-	}
-	if ( !MatchingSkelQuery )
-	{
-		return false;
-	}
-
-	const UsdPrim& SkinningPrim = UsdSkinningQuery.GetPrim();
-	UsdSkelBindingAPI SkelBindingAPI( SkinningPrim );
+	const UsdPrim& SkinningPrim = SkinningQuery.GetPrim();
+	UsdSkelBindingAPI SkelBindingAPI(SkinningPrim);
 
 	// Ref. FFbxImporter::FillSkelMeshImporterFromFbx
-	UsdGeomMesh UsdMesh = UsdGeomMesh( SkinningPrim );
+	UsdGeomMesh UsdMesh = UsdGeomMesh(SkinningPrim);
 	if ( !UsdMesh )
 	{
 		return false;
@@ -1259,13 +1299,13 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 		{
 			VtArray<GfMatrix4d> JointLocalRestTransforms;
 			const bool bAtRest = true;
-			bSuccess &= MatchingSkelQuery.ComputeJointLocalTransforms( &JointLocalRestTransforms, UsdTimeCode::EarliestTime(), bAtRest );
-			bSuccess &= UsdSkelConcatJointTransforms( MatchingSkelQuery.GetTopology(), JointLocalRestTransforms, &WorldSpaceRestTransforms );
+			bSuccess &= SkeletonQuery.ComputeJointLocalTransforms( &JointLocalRestTransforms, UsdTimeCode::EarliestTime(), bAtRest );
+			bSuccess &= UsdSkelConcatJointTransforms( SkeletonQuery.GetTopology(), JointLocalRestTransforms, &WorldSpaceRestTransforms );
 		}
 
 		// Get world-space bindTransforms
 		VtArray<GfMatrix4d> WorldSpaceBindTransforms;
-		bSuccess &= MatchingSkelQuery.GetJointWorldBindTransforms( &WorldSpaceBindTransforms );
+		bSuccess &= SkeletonQuery.GetJointWorldBindTransforms( &WorldSpaceBindTransforms );
 
 		if ( !bSuccess )
 		{
@@ -1280,24 +1320,24 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	}
 
 	UsdAttribute PointsAttr = UsdMesh.GetPointsAttr();
-	if ( PointsAttr )
+	if (PointsAttr)
 	{
 		VtArray<GfVec3f> UsdPoints;
-		PointsAttr.Get( &UsdPoints, UsdTimeCode::Default() );
+		PointsAttr.Get(&UsdPoints, UsdTimeCode::Default());
 
-		UsdSkinningQuery.ComputeSkinnedPoints( MeshToSkeletonRestPose, &UsdPoints, UsdTimeCode::EarliestTime() );
+		SkinningQuery.ComputeSkinnedPoints( MeshToSkeletonRestPose, &UsdPoints, UsdTimeCode::EarliestTime() );
 
 		NumPoints = UsdPoints.size();
-		SkelMeshImportData.Points.AddUninitialized( NumPoints );
+		SkelMeshImportData.Points.AddUninitialized(NumPoints);
 
-		for ( uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex )
+		for (uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
 		{
-			const GfVec3f& Point = UsdPoints[ PointIndex ];
+			const GfVec3f& Point = UsdPoints[PointIndex];
 			SkelMeshImportData.Points[ PointIndex + NumExistingPoints ] = ( FVector3f ) UsdToUnreal::ConvertVector( StageInfo, Point );
 		}
 	}
 
-	if ( NumPoints == 0 )
+	if (NumPoints == 0)
 	{
 		return false;
 	}
@@ -1307,30 +1347,30 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	// Face counts
 	VtArray<int> FaceCounts;
 	UsdAttribute FaceCountsAttribute = UsdMesh.GetFaceVertexCountsAttr();
-	if ( FaceCountsAttribute )
+	if (FaceCountsAttribute)
 	{
-		FaceCountsAttribute.Get( &FaceCounts, UsdTimeCode::Default() );
+		FaceCountsAttribute.Get(&FaceCounts, UsdTimeCode::Default());
 	}
 
 	// Face indices
 	VtArray<int> OriginalFaceIndices;
 	UsdAttribute FaceIndicesAttribute = UsdMesh.GetFaceVertexIndicesAttr();
-	if ( FaceIndicesAttribute )
+	if (FaceIndicesAttribute)
 	{
-		FaceIndicesAttribute.Get( &OriginalFaceIndices, UsdTimeCode::Default() );
+		FaceIndicesAttribute.Get(&OriginalFaceIndices, UsdTimeCode::Default());
 	}
 
-	uint32 NumVertexInstances = static_cast< uint32 >( OriginalFaceIndices.size() );
+	uint32 NumVertexInstances = static_cast<uint32>(OriginalFaceIndices.size());
 
 	// Normals
 	VtArray<GfVec3f> Normals;
 	UsdAttribute NormalsAttribute = UsdMesh.GetNormalsAttr();
-	if ( NormalsAttribute )
+	if (NormalsAttribute)
 	{
 		if ( NormalsAttribute.Get( &Normals, UsdTimeCode::Default() ) && Normals.size() > 0 )
 		{
 			// Like for points, we need to ensure these normals are in the same coordinate space of the skeleton
-			UsdSkinningQuery.ComputeSkinnedNormals( MeshToSkeletonRestPose, &Normals, UsdTimeCode::EarliestTime() );
+			SkinningQuery.ComputeSkinnedNormals( MeshToSkeletonRestPose, &Normals, UsdTimeCode::EarliestTime() );
 		}
 	}
 
@@ -1342,7 +1382,13 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 
 	// Material assignments
 	const bool bProvideMaterialIndices = true;
-	UsdUtils::FUsdPrimMaterialAssignmentInfo LocalInfo = UsdUtils::GetPrimMaterialAssignments( SkinningPrim, pxr::UsdTimeCode::EarliestTime(), bProvideMaterialIndices, RenderContext );
+	UsdUtils::FUsdPrimMaterialAssignmentInfo LocalInfo = UsdUtils::GetPrimMaterialAssignments(
+		SkinningPrim,
+		pxr::UsdTimeCode::EarliestTime(),
+		bProvideMaterialIndices,
+		RenderContext,
+		MaterialPurpose
+	);
 	TArray< UsdUtils::FUsdPrimMaterialSlot >& LocalMaterialSlots = LocalInfo.Slots;
 	TArray< int32 >& FaceMaterialIndices = LocalInfo.MaterialIndices;
 
@@ -1350,13 +1396,13 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	// Note: This is a different index remapping to the one that happens for LODs, using LODMaterialMap! Here we're combining meshes of the same LOD
 	TMap<UsdUtils::FUsdPrimMaterialSlot, int32> SlotToCombinedMaterialIndex;
 	TMap<int32, int32> LocalToCombinedMaterialIndex;
-	for ( int32 Index = 0; Index < MaterialAssignments.Num(); ++Index )
+	for (int32 Index = 0; Index < MaterialAssignments.Num(); ++Index)
 	{
 		SlotToCombinedMaterialIndex.Add( MaterialAssignments[ Index ], Index );
 	}
-	for ( int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex )
+	for (int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex)
 	{
-		UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[ LocalIndex ];
+		UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[LocalIndex];
 
 		int32 CombinedMaterialIndex = INDEX_NONE;
 		if ( int32* FoundCombinedMaterialIndex = SlotToCombinedMaterialIndex.Find( LocalSlot ) )
@@ -1376,7 +1422,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	UsdGeomPrimvar ColorPrimvar = UsdMesh.GetDisplayColorPrimvar();
 	TArray<FColor> Colors;
 	EUsdInterpolationMethod DisplayColorInterp = EUsdInterpolationMethod::Constant;
-	if ( ColorPrimvar )
+	if (ColorPrimvar)
 	{
 		pxr::VtArray<pxr::GfVec3f> UsdColors;
 		if ( ColorPrimvar.ComputeFlattened( &UsdColors ) )
@@ -1495,7 +1541,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 
 	SkelMeshImportData.NumTexCoords = 0;
 
-	bool bReverseOrder = IUsdPrim::GetGeometryOrientation( UsdMesh ) == EUsdGeomOrientation::LeftHanded;
+	bool bReverseOrder = IUsdPrim::GetGeometryOrientation(UsdMesh) == EUsdGeomOrientation::LeftHanded;
 
 	struct FUVSet
 	{
@@ -1507,7 +1553,12 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 
 	TArray< FUVSet > UVSets;
 
-	TArray< TUsdStore< UsdGeomPrimvar > > PrimvarsByUVIndex = UsdUtils::GetUVSetPrimvars( UsdMesh, MaterialToPrimvarsUVSetNames, RenderContext );
+	TArray< TUsdStore< UsdGeomPrimvar > > PrimvarsByUVIndex = UsdUtils::GetUVSetPrimvars(
+		UsdMesh,
+		MaterialToPrimvarsUVSetNames,
+		RenderContext,
+		MaterialPurpose
+	);
 
 	int32 UVChannelIndex = 0;
 	while ( true )
@@ -1535,7 +1586,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 			{
 				UVSet.InterpolationMethod = EUsdInterpolationMethod::FaceVarying;
 			}
-			else if ( PrimvarST.GetInterpolation() == UsdGeomTokens->uniform )
+			else if (  PrimvarST.GetInterpolation() == UsdGeomTokens->uniform )
 			{
 				UVSet.InterpolationMethod = EUsdInterpolationMethod::Uniform;
 			}
@@ -1578,16 +1629,16 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	SkelMeshImportData.Wedges.Reserve( ( NumExistingFaces + NumFaces ) * 6 );
 
 	uint32 NumProcessedFaceVertexIndices = 0;
-	for ( uint32 PolygonIndex = NumExistingFaces, LocalIndex = 0; PolygonIndex < NumExistingFaces + NumFaces; ++PolygonIndex, ++LocalIndex )
+	for (uint32 PolygonIndex = NumExistingFaces, LocalIndex = 0; PolygonIndex < NumExistingFaces + NumFaces; ++PolygonIndex, ++LocalIndex)
 	{
-		const uint32 NumOriginalFaceVertices = FaceCounts[ LocalIndex ];
+		const uint32 NumOriginalFaceVertices = FaceCounts[LocalIndex];
 		const uint32 NumFinalFaceVertices = 3;
 
 		// Manage materials
 		int32 LocalMaterialIndex = 0;
-		if ( FaceMaterialIndices.IsValidIndex( PolygonIndex ) )
+		if ( FaceMaterialIndices.IsValidIndex( LocalIndex ) )
 		{
-			LocalMaterialIndex = FaceMaterialIndices[ PolygonIndex ];
+			LocalMaterialIndex = FaceMaterialIndices[ LocalIndex ];
 			if ( !LocalMaterialSlots.IsValidIndex( LocalMaterialIndex ) )
 			{
 				LocalMaterialIndex = 0;
@@ -1640,7 +1691,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 					SkelMeshWedge.Color.R = DisplayColor.R;
 					SkelMeshWedge.Color.G = DisplayColor.G;
 					SkelMeshWedge.Color.B = DisplayColor.B;
-					SkelMeshWedge.Color.A = static_cast< uint8 >( FMath::Clamp( Opacities[ DisplayOpacityIndex ], 0.0f, 1.0f ) * 255.0f + 0.5f );
+					SkelMeshWedge.Color.A = static_cast<uint8>(FMath::Clamp(Opacities[ DisplayOpacityIndex ], 0.0f, 1.0f) * 255.0f + 0.5f);
 				}
 
 				SkelMeshWedge.MatIndex = Triangle.MatIndex;
@@ -1684,7 +1735,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 					}
 
 					// Flip V for Unreal uv's which match directx
-					FVector2f FinalUVVector( UV[ 0 ], 1.f - UV[ 1 ] );
+					FVector2f FinalUVVector( UV[0], 1.f - UV[1] );
 					SkelMeshWedge.UVs[ UVLayerIndex ] = FinalUVVector;
 
 					++UVLayerIndex;
@@ -1707,14 +1758,14 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	// ComputeVaryingJointInfluences returns the joint influences for each points, expanding the influences to all points if the mesh is rigidly deformed
 	VtArray<int> JointIndices;
 	VtArray<float> JointWeights;
-	UsdSkinningQuery.ComputeVaryingJointInfluences( NumPoints, &JointIndices, &JointWeights );
+	SkinningQuery.ComputeVaryingJointInfluences(NumPoints, &JointIndices, &JointWeights);
 
 	// Recompute the joint influences if it's above the limit
-	uint32 NumInfluencesPerComponent = UsdSkinningQuery.GetNumInfluencesPerComponent();
-	if ( NumInfluencesPerComponent > MAX_INFLUENCES_PER_STREAM )
+	uint32 NumInfluencesPerComponent = SkinningQuery.GetNumInfluencesPerComponent();
+	if (NumInfluencesPerComponent > MAX_INFLUENCES_PER_STREAM)
 	{
-		UsdSkelResizeInfluences( &JointIndices, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM );
-		UsdSkelResizeInfluences( &JointWeights, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM );
+		UsdSkelResizeInfluences(&JointIndices, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
+		UsdSkelResizeInfluences(&JointWeights, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
 		NumInfluencesPerComponent = MAX_INFLUENCES_PER_STREAM;
 	}
 
@@ -1724,18 +1775,18 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	if ( JointWeights.size() > ( NumPoints - 1 ) * ( NumInfluencesPerComponent - 1 ) )
 	{
 		uint32 JointIndex = 0;
-		SkelMeshImportData.Influences.Reserve( NumPoints );
-		for ( uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex )
+		SkelMeshImportData.Influences.Reserve(NumPoints);
+		for (uint32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
 		{
 			// The JointIndices/JointWeights contain the influences data for NumPoints * NumInfluencesPerComponent
-			for ( uint32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerComponent; ++InfluenceIndex, ++JointIndex )
+			for (uint32 InfluenceIndex = 0; InfluenceIndex < NumInfluencesPerComponent; ++InfluenceIndex, ++JointIndex)
 			{
 				// BoneWeight could be 0 if the actual number of influences were less than NumInfluencesPerComponent for a given point so just ignore it
-				float BoneWeight = JointWeights[ JointIndex ];
-				if ( BoneWeight != 0.f )
+				float BoneWeight = JointWeights[JointIndex];
+				if (BoneWeight != 0.f)
 				{
 					SkelMeshImportData.Influences.AddUninitialized();
-					SkelMeshImportData.Influences.Last().BoneIndex = JointIndices[ JointIndex ];
+					SkelMeshImportData.Influences.Last().BoneIndex = JointIndices[JointIndex];
 					SkelMeshImportData.Influences.Last().Weight = BoneWeight;
 					SkelMeshImportData.Influences.Last().VertexIndex = NumExistingPoints + PointIndex;
 				}
@@ -1745,7 +1796,7 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 	const int32 NumInfluencesAfter = SkelMeshImportData.Influences.Num();
 
 	// If we have a joint mapper this Mesh has an explicit joint ordering, so we need to map joint indices to the skeleton's bone indices
-	if ( pxr::UsdSkelAnimMapperRefPtr AnimMapper = UsdSkinningQuery.GetJointMapper() )
+	if ( pxr::UsdSkelAnimMapperRefPtr AnimMapper = SkinningQuery.GetJointMapper() )
 	{
 		VtArray<int> SkeletonBoneIndices;
 		if ( pxr::UsdSkelSkeleton BoundSkeleton = SkelBindingAPI.GetInheritedSkeleton() )
@@ -1781,12 +1832,109 @@ bool UsdToUnreal::ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinni
 		}
 	}
 
+
 	return true;
+}
+
+bool UsdToUnreal::ConvertSkinnedMesh(
+	const pxr::UsdSkelSkinningQuery& UsdSkinningQuery,
+	const FTransform& AdditionalTransform,
+	FSkeletalMeshImportData& SkelMeshImportData,
+	TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments,
+	const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
+	const pxr::TfToken& RenderContext,
+	const pxr::TfToken& MaterialPurpose
+)
+{
+	FScopedUsdAllocs UEAllocs;
+
+	// We must use a SkeletonQuery to properly convert the skinned mesh to the target pose. If we weren't provided one,
+	// we must fetch it manually
+
+	pxr::UsdPrim SkinnedPrim = UsdSkinningQuery.GetPrim();
+	if ( !SkinnedPrim )
+	{
+		return false;
+	}
+
+	bool bFoundSkelRoot = false;
+	pxr::UsdPrim ParentPrim = SkinnedPrim.GetParent();
+	while ( ParentPrim && !ParentPrim.IsPseudoRoot() )
+	{
+		if ( ParentPrim.IsA<pxr::UsdSkelRoot>() )
+		{
+			bFoundSkelRoot = true;
+			break;
+		}
+
+		ParentPrim = ParentPrim.GetParent();
+	}
+	if ( !bFoundSkelRoot )
+	{
+		return false;
+	}
+
+	pxr::UsdSkelRoot SkelRoot{ ParentPrim };
+
+	pxr::UsdSkelCache SkelCache;
+	if ( !SkelCache.Populate( SkelRoot, pxr::UsdTraverseInstanceProxies() ) )
+	{
+		return false;
+	}
+
+	std::vector< pxr::UsdSkelBinding > SkeletonBindings;
+	if ( !SkelCache.ComputeSkelBindings( SkelRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() ) )
+	{
+		return false;
+	}
+
+	for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
+	{
+		const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
+		pxr::UsdSkelSkeletonQuery SkelQuery = SkelCache.GetSkelQuery( Skeleton );
+
+		// Double-check that we're talking about the same mesh, at least. Each mesh can only be bound to one
+		// skeleton so this is probably guaranteed to be the same SkelBinding
+		bool bFoundSkinningQuery = false;
+		for ( const pxr::UsdSkelSkinningQuery& SomeSkinningQuery : Binding.GetSkinningTargets() )
+		{
+			if ( SomeSkinningQuery.GetPrim() == SkinnedPrim )
+			{
+				bFoundSkinningQuery = true;
+				break;
+			}
+		}
+		if ( !bFoundSkinningQuery )
+		{
+			break;
+		}
+
+		// We really only ever deal with the first binding, so we can return here
+		return ConvertSkinnedMesh(
+			UsdSkinningQuery,
+			SkelQuery,
+			SkelMeshImportData,
+			MaterialAssignments,
+			MaterialToPrimvarsUVSetNames,
+			RenderContext,
+			MaterialPurpose
+		);
+	}
+
+	return false;
 }
 
 // Using UsdSkelSkeletonQuery instead of UsdSkelAnimQuery as it automatically does the joint remapping when we ask it to compute joint transforms.
 // It also initializes the joint transforms with the rest pose, if available, in case the animation doesn't provide data for all joints.
-bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery, const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets, const UsdUtils::FBlendShapeMap* InBlendShapes, bool bInInterpretLODs, UAnimSequence* OutSkeletalAnimationAsset, float* OutStartOffsetSeconds )
+bool UsdToUnreal::ConvertSkelAnim(
+	const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery,
+	const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets,
+	const UsdUtils::FBlendShapeMap* InBlendShapes,
+	bool bInInterpretLODs,
+	const pxr::UsdPrim& RootMotionPrim,
+	UAnimSequence* OutSkeletalAnimationAsset,
+	float* OutStartOffsetSeconds
+)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE( UsdToUnreal::ConvertSkelAnim );
 
@@ -1865,8 +2013,32 @@ bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeleto
 		LastBlendShapeSampleTimeCode = BlendShapeTimeSamples[ BlendShapeTimeSamples.size() - 1 ];
 	}
 
+	TUsdStore<std::vector<double>> UsdRootMotionPrimTimeSamples;
+	TOptional<double> FirstRootMotionTimeCode;
+	TOptional<double> LastRootMotionTimeCode;
+	TUsdStore<pxr::UsdGeomXformable> RootMotionXformable;
+	{
+		FScopedUsdAllocs UsdAllocs;
+
+		// Note how we don't care whether the root motion is animated or not and will use RootMotionXformable
+		// regardless, to have a similar effect in case its just a single non-animated transform
+		RootMotionXformable = pxr::UsdGeomXformable{ RootMotionPrim };
+		if ( RootMotionXformable.Get() )
+		{
+			std::vector< double > UsdTimeSamples;
+			if ( RootMotionXformable.Get().GetTimeSamples(&UsdTimeSamples) )
+			{
+				if ( UsdTimeSamples.size() > 0 )
+				{
+					FirstRootMotionTimeCode = UsdTimeSamples[ 0 ];
+					LastRootMotionTimeCode = UsdTimeSamples[ UsdTimeSamples.size() - 1 ];
+				}
+			}
+		}
+	}
+
 	// Nothing to do: we don't actually have joints or blend shape time samples
-	if ( !FirstJointSampleTimeCode.IsSet() && !FirstBlendShapeSampleTimeCode.IsSet() )
+	if ( !FirstJointSampleTimeCode.IsSet() && !FirstBlendShapeSampleTimeCode.IsSet() && !FirstRootMotionTimeCode.IsSet() )
 	{
 		return true;
 	}
@@ -1881,8 +2053,20 @@ bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeleto
 	// which is important because later our composition of tracks and subsections within a LevelSequence will reapply analogous
 	// offsets and scalings anyway
 
-	const double StageStartTimeCode = FMath::Min( FirstJointSampleTimeCode.Get( TNumericLimits<double>::Max() ), FirstBlendShapeSampleTimeCode.Get( TNumericLimits<double>::Max() ) );
-	const double StageEndTimeCode = FMath::Max( LastJointSampleTimeCode.Get( TNumericLimits<double>::Lowest() ), LastBlendShapeSampleTimeCode.Get( TNumericLimits<double>::Lowest() ) );
+	const double StageStartTimeCode = FMath::Min(
+		FirstJointSampleTimeCode.Get( TNumericLimits<double>::Max() ),
+		FMath::Min(
+			FirstBlendShapeSampleTimeCode.Get( TNumericLimits<double>::Max() ),
+			FirstRootMotionTimeCode.Get( TNumericLimits<double>::Max() )
+		)
+	);
+	const double StageEndTimeCode = FMath::Max(
+		LastJointSampleTimeCode.Get( TNumericLimits<double>::Lowest() ),
+		FMath::Max(
+			LastBlendShapeSampleTimeCode.Get( TNumericLimits<double>::Lowest() ),
+			LastRootMotionTimeCode.Get( TNumericLimits<double>::Lowest() )
+		)
+	);
 	const double StageStartSeconds = StageStartTimeCode / StageTimeCodesPerSecond;
 	const double StageSequenceLengthTimeCodes = StageEndTimeCode - StageStartTimeCode;
 	const double LayerSequenceLengthTimeCodes = StageSequenceLengthTimeCodes / Offset.Scale;
@@ -1923,6 +2107,8 @@ bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeleto
 			JointTrack.ScaleKeys.Reserve(NumBakedFrames);
 		}
 
+		FTransform RootMotionTransform;
+
 		pxr::VtArray<pxr::GfMatrix4d> UsdJointTransforms;
 		for ( int32 FrameIndex = 0; FrameIndex < NumBakedFrames; ++FrameIndex )
 		{
@@ -1933,6 +2119,27 @@ bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeleto
 			{
 				pxr::GfMatrix4d& UsdJointTransform = UsdJointTransforms[ BoneIndex ];
 				FTransform UEJointTransform = UsdToUnreal::ConvertMatrix( StageInfo, UsdJointTransform );
+
+				// Concatenate the root bone transform with the transform track actually present on the skel root as a
+				// whole
+				if ( BoneIndex == 0 )
+				{
+					// We don't care about resetXformStack here: We'll always use the root motion prim's transform as
+					// a local transformation anyway
+					bool* OutResetTransformStack = nullptr;
+					const bool bSuccess = UsdToUnreal::ConvertXformable(
+						Stage.Get(),
+						RootMotionXformable.Get(),
+						RootMotionTransform,
+						StageFrameTimeCodes,
+						OutResetTransformStack
+					);
+
+					if ( bSuccess )
+					{
+						UEJointTransform = UEJointTransform * RootMotionTransform;
+					}
+				}
 
 				FRawAnimSequenceTrack& JointTrack = JointTracks[ BoneIndex ];
 				JointTrack.PosKeys.Add( FVector3f(UEJointTransform.GetTranslation()) );
@@ -2152,12 +2359,12 @@ bool UsdToUnreal::ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeleto
 	return true;
 }
 
-bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
+bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
 {
-	return ConvertBlendShape(UsdBlendShape, StageInfo, 0, AdditionalTransform, PointIndexOffset, UsedMorphTargetNames, OutBlendShapes);
+	return ConvertBlendShape(UsdBlendShape, StageInfo, 0, PointIndexOffset, UsedMorphTargetNames, OutBlendShapes);
 }
 
-bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, int32 LODIndex, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
+bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, int32 LODIndex, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
 {
 	FScopedUsdAllocs Allocs;
 
@@ -2188,7 +2395,7 @@ bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape
 	}
 
 	UsdUtils::FUsdBlendShape PrimaryBlendShape;
-	if ( !SkelDataConversionImpl::CreateUsdBlendShape( PrimaryName, Offsets, Normals, PointIndices, StageInfo, AdditionalTransform, PointIndexOffset, LODIndex, PrimaryBlendShape ) )
+	if ( !SkelDataConversionImpl::CreateUsdBlendShape( PrimaryName, Offsets, Normals, PointIndices, StageInfo, PointIndexOffset, LODIndex, PrimaryBlendShape ) )
 	{
 		return false;
 	}
@@ -2232,7 +2439,7 @@ bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape
 		// Create separate blend shape for the inbetween
 		// Now how the inbetween always shares the same point indices as the parent
 		UsdUtils::FUsdBlendShape InbetweenShape;
-		if ( !SkelDataConversionImpl::CreateUsdBlendShape( InbetweenName, InbetweenPointsOffsets, InbetweenNormalOffsets, PointIndices, StageInfo, AdditionalTransform, PointIndexOffset, LODIndex, InbetweenShape ) )
+		if ( !SkelDataConversionImpl::CreateUsdBlendShape( InbetweenName, InbetweenPointsOffsets, InbetweenNormalOffsets, PointIndices, StageInfo, PointIndexOffset, LODIndex, InbetweenShape ) )
 		{
 			continue;
 		}
@@ -2255,6 +2462,16 @@ bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape
 	OutBlendShapes.Append( MoveTemp(InbetweenBlendShapes) );
 
 	return true;
+}
+
+bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
+{
+	return UsdToUnreal::ConvertBlendShape( UsdBlendShape, StageInfo, 0, PointIndexOffset, UsedMorphTargetNames, OutBlendShapes );
+}
+
+bool UsdToUnreal::ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, int32 LODIndex, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes )
+{
+	return UsdToUnreal::ConvertBlendShape( UsdBlendShape, StageInfo, LODIndex, PointIndexOffset, UsedMorphTargetNames, OutBlendShapes );
 }
 
 USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
@@ -2518,28 +2735,44 @@ void UsdUtils::BindAnimationSource( pxr::UsdPrim& Prim, const pxr::UsdPrim& Anim
 	SkelBindingAPI.CreateAnimationSourceRel().SetTargets( pxr::SdfPathVector( { AnimationSource.GetPath() } ) );
 }
 
-UE::FUsdPrim UsdUtils::FindAnimationSource( const UE::FUsdPrim& SkelRootPrim )
+UE::FUsdPrim UsdUtils::FindAnimationSource( const UE::FUsdPrim& Prim )
 {
-	if ( !SkelRootPrim )
+	if ( !Prim )
 	{
 		return {};
 	}
 
 	FScopedUsdAllocs UsdAllocs;
 
-	const pxr::UsdPrim UsdSkelRootPrim{ SkelRootPrim };
-	if ( !UsdSkelRootPrim.IsA<pxr::UsdSkelRoot>() )
+	pxr::UsdPrim UsdPrim{ Prim };
+	if ( !UsdPrim.HasAPI<pxr::UsdSkelBindingAPI>() )
+	{
+		UE_LOG( LogUsd, Warning, TEXT( "Failed to find animation source for prim '%s' because it doesn't have a UsdSkelBindingAPI!" ), *Prim.GetPrimPath().GetString() );
+		return {};
+	}
+
+	// According to https://graphics.pixar.com/usd/release/api/_usd_skel__schemas.html#UsdSkel_BindingAPI_Skeletons,
+	// "Since a UsdSkelRoot primitive provides encapsulation of skeletal data, bindings defined on any primitives
+	// that do not have a UsdSkelRoot primitive as one of their ancestors have no meaning, and should be ignored."
+	// So here we make sure that Prim has at least one SkelRoot ancestor
+	bool bFoundSkelRoot = false;
+	pxr::UsdPrim Parent = UsdPrim.GetParent();
+	while ( Parent && !Parent.IsPseudoRoot() )
+	{
+		if ( Parent.IsA<pxr::UsdSkelRoot>() )
+		{
+			bFoundSkelRoot = true;
+			break;
+		}
+
+		Parent = Parent.GetParent();
+	}
+	if ( !bFoundSkelRoot )
 	{
 		return {};
 	}
 
-	if ( !UsdSkelRootPrim.HasAPI<pxr::UsdSkelBindingAPI>() )
-	{
-		UE_LOG( LogUsd, Warning, TEXT( "Failed to find animation source for prim '%s' because it is a SkelRoot without a UsdSkelBindingAPI!" ), *SkelRootPrim.GetPrimPath().GetString() );
-		return {};
-	}
-
-	pxr::UsdSkelBindingAPI SkelBindingAPI{ UsdSkelRootPrim };
+	pxr::UsdSkelBindingAPI SkelBindingAPI{ Prim };
 
 	pxr::SdfPathVector AnimationSources;
 	const bool bSuccess = SkelBindingAPI.GetAnimationSourceRel().GetTargets( &AnimationSources );
@@ -2549,9 +2782,48 @@ UE::FUsdPrim UsdUtils::FindAnimationSource( const UE::FUsdPrim& SkelRootPrim )
 	}
 
 	const pxr::SdfPath& FirstSource = AnimationSources[ 0 ];
-	pxr::UsdStageRefPtr UsdStage = UsdSkelRootPrim.GetStage();
+	pxr::UsdStageRefPtr UsdStage = Prim.GetStage();
 
 	return UE::FUsdPrim{ UsdStage->GetPrimAtPath( FirstSource ) };
+}
+
+UE::FUsdPrim UsdUtils::FindFirstAnimationSource( const UE::FUsdPrim& SkelRootPrim )
+{
+	if ( !SkelRootPrim )
+	{
+		return {};
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+
+	// For now we really only parse the first skeletal binding of a SkelRoot (check USDSkelRootTranslator.cpp,
+	// LoadAllSkeletalData) and its SkelAnimation, if any.
+	// Note that we don't check the SkelRoot prim directly for the SkelAnimation binding: If it has a valid one
+	// it will propagate down to child namespaces and affect our first skeletal binding anyway
+
+	if ( pxr::UsdSkelRoot SkeletonRoot{ pxr::UsdPrim{ SkelRootPrim } } )
+	{
+		std::vector< pxr::UsdSkelBinding > SkeletonBindings;
+
+		pxr::UsdSkelCache SkeletonCache;
+		SkeletonCache.Populate( SkeletonRoot, pxr::UsdTraverseInstanceProxies() );
+		SkeletonCache.ComputeSkelBindings( SkeletonRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies() );
+
+		for ( const pxr::UsdSkelBinding& Binding : SkeletonBindings )
+		{
+			const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
+			pxr::UsdSkelSkeletonQuery SkelQuery = SkeletonCache.GetSkelQuery( Skeleton );
+			pxr::UsdSkelAnimQuery AnimQuery = SkelQuery.GetAnimQuery();
+			if ( !AnimQuery )
+			{
+				continue;
+			}
+
+			return UE::FUsdPrim{ AnimQuery.GetPrim() };
+		}
+	}
+
+	return {};
 }
 
 #endif // USE_USD_SDK
@@ -2607,6 +2879,15 @@ bool UnrealToUsd::ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, 
 	{
 		pxr::UsdAttribute BindTransformsAttr = UsdSkeleton.CreateBindTransformsAttr();
 		BindTransformsAttr.Set( WorldSpaceJointTransforms );
+	}
+
+	// Use Guide purpose on skeletons by default, unless it has some specific purpose set already
+	if ( pxr::UsdAttribute PurposeAttr = UsdSkeleton.GetPurposeAttr() )
+	{
+		if ( !PurposeAttr.HasAuthoredValue() )
+		{
+			PurposeAttr.Set( pxr::UsdGeomTokens->guide );
+		}
 	}
 
 	return true;
@@ -3037,6 +3318,391 @@ bool UnrealToUsd::ConvertAnimSequence( UAnimSequence* AnimSequence, pxr::UsdPrim
 	{
 		SkelAnimPrim.GetStage()->SetEndTimeCode( NumTimeCodes - 1 );
 	}
+
+	return true;
+}
+
+bool UnrealToUsd::ConvertControlRigSection(
+	UMovieSceneControlRigParameterSection* InSection,
+	const FMovieSceneSequenceTransform& InTransform,
+	UMovieScene* InMovieScene,
+	IMovieScenePlayer* InPlayer,
+	const FReferenceSkeleton& InRefSkeleton,
+	pxr::UsdPrim& InSkelRoot,
+	pxr::UsdPrim& OutSkelAnimPrim,
+	const UsdUtils::FBlendShapeMap* InBlendShapeMap
+)
+{
+	if ( !InSection || !InPlayer || !OutSkelAnimPrim )
+	{
+		return false;
+	}
+
+	UControlRig* ControlRig = InSection->GetControlRig();
+	if ( !ControlRig )
+	{
+		return false;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdSkelAnimation SkelAnim{ OutSkelAnimPrim };
+	pxr::UsdStageRefPtr UsdStage = OutSkelAnimPrim.GetStage();
+	if ( !UsdStage || !SkelAnim )
+	{
+		return false;
+	}
+
+	FUsdStageInfo StageInfo( UsdStage );
+
+	double StartTime = FPlatformTime::Cycles64();
+
+	// TODO: This does not seem necessary
+	ControlRig->Initialize();
+	ControlRig->RequestInit();
+
+	// Record how the topology looks while we setup our arrays and maps. If this changes during
+	// baking we'll just drop everything and return
+	URigHierarchy* InitialHierarchy = ControlRig->GetHierarchy();
+	if ( !InitialHierarchy )
+	{
+		return false;
+	}
+	uint16 TopologyVersion = InitialHierarchy->GetTopologyVersion();
+
+	// Prepare to remap from Rig joint order to USkeleton/Skeleton prim joint order.
+	// This works because the topology won't change in here, and bone names are unique across the entire skeleton
+	// Its possible we'll be putting INDEX_NONEs into RigIndexToRefSkeletonIndex, but that's alright.
+	TArray<int32> RigJointIndexToRefSkeletonIndex;
+	TArray<FRigBoneElement*> InitialBoneElements = InitialHierarchy->GetBones();
+	for ( FRigBoneElement* RigBone : InitialBoneElements )
+	{
+		RigJointIndexToRefSkeletonIndex.Add( InRefSkeleton.FindBoneIndex( RigBone->GetName() ) );
+	}
+
+	pxr::UsdAttribute JointsAttr = SkelAnim.CreateJointsAttr();
+	UnrealToUsd::ConvertJointsAttribute( InRefSkeleton, JointsAttr );
+
+	TArray<FTransform> GlobalUEJointTransformsForFrame;
+	GlobalUEJointTransformsForFrame.SetNum( InRefSkeleton.GetNum() );
+
+	pxr::UsdAttribute TranslationsAttr = SkelAnim.CreateTranslationsAttr();
+	pxr::UsdAttribute RotationsAttr = SkelAnim.CreateRotationsAttr();
+	pxr::UsdAttribute ScalesAttr = SkelAnim.CreateScalesAttr();
+	pxr::UsdAttribute BlendShapeWeightsAttr = SkelAnim.CreateBlendShapeWeightsAttr();
+	pxr::UsdAttribute BlendShapesAttr = SkelAnim.CreateBlendShapesAttr();
+
+	TranslationsAttr.Clear();
+	RotationsAttr.Clear();
+	ScalesAttr.Clear();
+	pxr::VtVec3fArray Translations;
+	pxr::VtQuatfArray Rotations;
+	pxr::VtVec3hArray Scales;
+	Translations.resize( InRefSkeleton.GetNum() );
+	Rotations.resize( InRefSkeleton.GetNum() );
+	Scales.resize( InRefSkeleton.GetNum() );
+
+	FFrameRate TickResolution = InMovieScene->GetTickResolution();
+	FFrameRate DisplayRate = InMovieScene->GetDisplayRate();
+
+	const double StageTimeCodesPerSecond = UsdStage->GetTimeCodesPerSecond();
+	const FFrameRate StageFrameRate( StageTimeCodesPerSecond, 1 );
+
+	TRange<FFrameNumber> PlaybackRange = InMovieScene->GetPlaybackRange();
+	TRange<FFrameNumber> BakeTickRange = InSection->ComputeEffectiveRange();
+
+	// Try our best to find the section start/end inclusive frames
+	FFrameNumber StartInclTickFrame;
+	FFrameNumber EndInclTickFrame;
+	{
+		TOptional<TRangeBound<FFrameNumber>> LowerBoundToUse;
+		if ( BakeTickRange.HasLowerBound() )
+		{
+			TRangeBound<FFrameNumber> SectionLowerBound = BakeTickRange.GetLowerBound();
+			if ( !SectionLowerBound.IsOpen() )
+			{
+				LowerBoundToUse = SectionLowerBound;
+			}
+		}
+		if ( !LowerBoundToUse.IsSet() && PlaybackRange.HasLowerBound() )
+		{
+			TRangeBound<FFrameNumber> PlaybackLowerBound = PlaybackRange.GetLowerBound();
+			if ( !PlaybackLowerBound.IsOpen() )
+			{
+				LowerBoundToUse = PlaybackLowerBound;
+			}
+		}
+		if ( !LowerBoundToUse.IsSet() )
+		{
+			return false;
+		}
+		StartInclTickFrame = LowerBoundToUse.GetValue().GetValue() + ( LowerBoundToUse.GetValue().IsInclusive() ? 0 : 1 );
+	}
+	{
+		TOptional<TRangeBound<FFrameNumber>> UpperBoundToUse;
+		if ( BakeTickRange.HasUpperBound() )
+		{
+			TRangeBound<FFrameNumber> SectionUpperBound = BakeTickRange.GetUpperBound();
+			if ( !SectionUpperBound.IsOpen() )
+			{
+				UpperBoundToUse = SectionUpperBound;
+			}
+		}
+		if ( !UpperBoundToUse.IsSet() && PlaybackRange.HasUpperBound() )
+		{
+			TRangeBound<FFrameNumber> PlaybackUpperBound = PlaybackRange.GetUpperBound();
+			if ( !PlaybackUpperBound.IsOpen() )
+			{
+				UpperBoundToUse = PlaybackUpperBound;
+			}
+		}
+		if ( !UpperBoundToUse.IsSet() )
+		{
+			return false;
+		}
+		EndInclTickFrame = UpperBoundToUse.GetValue().GetValue() + ( UpperBoundToUse.GetValue().IsInclusive() ? 0 : -1 );
+	}
+
+	UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ BlendShapeWeightsAttr } );
+	UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ TranslationsAttr } );
+	UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ RotationsAttr } );
+	UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ ScalesAttr } );
+
+	pxr::VtArray<pxr::TfToken> CurveNames;
+	pxr::VtArray<float> CurvesValuesForTime;
+
+	// Prepare blend shape baking
+	// So far there doesn't seem to be any good way of handling the baking into blend shapes with inbetweens:
+	//	- We can't just pretend the Mesh prims have the flattened inbetween blend shapes (like we'd get if they were
+	//    exported) because we'd get warnings by having blend shape targets to blend shape prims that don't exist;
+	//  - We could flatten the actual BlendShape on the Mesh prim here, but that may be a bit too bold as the user likely
+	//    wants to keep their Mesh asset more or less intact when just baking out an animation section. If users do want
+	//    this behaviour we can later add it though;
+	//  - An alternative would have been to try to collect all the primary+inbetween weights, combine them back into a
+	//    single weight value, and write them back. That would work, but it would be incredibly hard to tell what is
+	//    going on from the users' perspective because that weight conversion is lossy and imperfect. Not to mention we'd
+	//    have this tricky code to test/maintain that slows down the baking process as a whole, and everything would break
+	//    if e.g. the curves were renamed;
+	//  - A slightly different approach to above would be to have the Mesh prims listen to the flattened inbetween blend
+	//    shape channels, but map them all to the single blend shape: This is not allowed in USD though, and its enough
+	//    to crash usdview. Besides, it wouldn't have added a lot of value as it would be impossible to comprehend what
+	//    was going on.
+	// The best we can do at the moment is to make one channel for each curve on the SkelAnimation prim, but maintain
+	// each Mesh prim connected only to the primary blend shape channel, if it was originally. We'll show a warning
+	// explaining the situation though.
+	if ( InBlendShapeMap && InSkelRoot )
+	{
+		TArray<FRigCurveElement*> CurveElements = InitialHierarchy->GetCurves();
+
+		CurveNames.reserve( CurveElements.Num() );
+		for ( int32 Index = 0; Index < CurveElements.Num(); ++Index )
+		{
+			FRigCurveElement* Element = CurveElements[Index];
+			const FString& CurveNameString = Element->GetNameString();
+
+			CurveNames.push_back( UnrealToUsd::ConvertToken( *CurveNameString ).Get() );
+		}
+
+		// Check if the blend shape channels on skel animation are the same names as morph target curves.
+		// Note that the actual order of the channel names within BlendShapesAttr is not important, as we'll always
+		// write out a new order that matches the rig anyway. We just want to know if all consumers of this SkelAnimation
+		// already have the processed, "one per morph target" channels
+		bool bNeedChannelUpdate = true;
+		pxr::VtArray<pxr::TfToken> SkelAnimBlendShapeChannels;
+		if ( BlendShapesAttr && BlendShapesAttr.Get( &SkelAnimBlendShapeChannels ) )
+		{
+			if ( SkelAnimBlendShapeChannels.size() == CurveNames.size() )
+			{
+				std::unordered_set<pxr::TfToken, pxr::TfToken::HashFunctor> ExistingCurveNames;
+				for ( const pxr::TfToken& Channel : SkelAnimBlendShapeChannels )
+				{
+					ExistingCurveNames.insert( Channel );
+				}
+
+				bool bFoundAllCurves = true;
+				for ( const pxr::TfToken& CurveName : CurveNames )
+				{
+					if ( ExistingCurveNames.count( CurveName ) == 0 )
+					{
+						bFoundAllCurves = false;
+						break;
+					}
+				}
+
+				bNeedChannelUpdate = !bFoundAllCurves;
+			}
+		}
+
+		// We haven't processed this SkelAnimation before, so we need to do it now.
+		// The summary is that since each MorphTarget/BlendShape has an independet curve in UE, but can share curves
+		// arbitrarily in USD, we need to replace the existing SkelAnimation channels with ones that are unique for
+		// each blend shape. This is not ideal, but the alternatives would be to: Not handle blend shape curves via
+		// control rigs; Have some morph target curves unintuitively "mirror each other" in UE, if at all possible;
+		// Try to keep the channels shared on USD's side, which would desync USD/UE and show a different result when
+		// reloading.
+		if ( bNeedChannelUpdate )
+		{
+			// We'll change the blend shape channel names, so we need to update all meshes that were using them too.
+			// For now we'll assume that they're all inside the same skel root. We could upgrade this for the stage
+			// later too, if needed
+			for ( UE::FUsdPrim& MeshPrim : UsdUtils::GetAllPrimsOfType( UE::FUsdPrim{ InSkelRoot }, TEXT( "UsdGeomMesh" ) ) )
+			{
+				pxr::UsdSkelBindingAPI SkelBindingAPI{ MeshPrim };
+				if ( !SkelBindingAPI )
+				{
+					continue;
+				}
+
+				pxr::UsdRelationship TargetsRel = SkelBindingAPI.GetBlendShapeTargetsRel();
+				pxr::UsdAttribute ChannelsAttr = SkelBindingAPI.GetBlendShapesAttr();
+
+				if ( TargetsRel && ChannelsAttr )
+				{
+					pxr::SdfPathVector BlendShapeTargets;
+					if ( TargetsRel.GetTargets( &BlendShapeTargets ) )
+					{
+						pxr::VtArray<pxr::TfToken> BlendShapeChannels;
+						ChannelsAttr.Get( &BlendShapeChannels );
+
+						BlendShapeChannels.resize( BlendShapeTargets.size() );
+
+						pxr::SdfPath MeshPath{ MeshPrim.GetPrimPath() };
+
+						bool bRenamedAChannel = false;
+						for ( int32 BlendShapeIndex = 0; BlendShapeIndex < BlendShapeTargets.size(); ++BlendShapeIndex )
+						{
+							const pxr::SdfPath& BlendShapePath = BlendShapeTargets[ BlendShapeIndex ];
+							FString PrimaryBlendShapePath = UsdToUnreal::ConvertPath( BlendShapePath.MakeAbsolutePath( MeshPath ) );
+
+							// Mesh had <blendshape1> target on channel "C" -> We have a morph target called "blendshape1" already, and
+							// we'll create a new channel on SkelAnimation called "blendshape1" -> Let's replace channel "C" with channel
+							// "blendshape1"
+							if ( const UsdUtils::FUsdBlendShape* FoundBlendShape = InBlendShapeMap->Find( PrimaryBlendShapePath ) )
+							{
+								bRenamedAChannel = true;
+								BlendShapeChannels[ BlendShapeIndex ] = UnrealToUsd::ConvertToken( *FoundBlendShape->Name ).Get();
+								UE_LOG( LogUsd, Log, TEXT( "Updating Mesh '%s' to bind BlendShape target '%s' to SkelAnimation curve '%s'" ),
+									*MeshPrim.GetPrimPath().GetString(),
+									*PrimaryBlendShapePath,
+									*FoundBlendShape->Name
+								);
+
+								if ( FoundBlendShape->Inbetweens.Num() > 0 )
+								{
+									UE_LOG( LogUsd, Warning, TEXT( "Baking Control Rig parameter sections for BlendShapes with inbetweens (like '%s') is not currently supported, so animation for mesh '%s' may look incorrect! Please flatten the inbetweens into separate BlendShapes beforehand (importing and exporting will do that)." ),
+										*FoundBlendShape->Name,
+										*MeshPrim.GetPrimPath().GetString()
+									);
+								}
+							}
+						}
+
+						if ( bRenamedAChannel )
+						{
+							ChannelsAttr.Set( BlendShapeChannels );
+							UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ ChannelsAttr } );
+						}
+					}
+				}
+			}
+		}
+
+		// Now that we updated the channel names we need to make sure we clear the previous weights as they'll
+		// make no sense
+		BlendShapeWeightsAttr.Clear();
+		BlendShapesAttr.Set( CurveNames );
+		CurvesValuesForTime.resize( CurveNames.size() );
+
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ BlendShapesAttr } );
+	}
+
+	FFrameTime TickIncr = FFrameRate::TransformTime( 1, DisplayRate, TickResolution );
+	for ( FFrameTime FrameTickTime = StartInclTickFrame; FrameTickTime <= EndInclTickFrame; FrameTickTime += TickIncr )
+	{
+		FFrameTime TransformedFrameTickTime = FrameTickTime * InTransform;
+
+		double UsdTimeCode = FFrameRate::TransformTime( TransformedFrameTickTime, TickResolution, StageFrameRate ).AsDecimal();
+
+		FMovieSceneContext Context = FMovieSceneContext(
+			FMovieSceneEvaluationRange(
+				TransformedFrameTickTime,
+				TickResolution
+			),
+			InPlayer->GetPlaybackStatus()
+		).SetHasJumped( true );
+
+		InPlayer->GetEvaluationTemplate().EvaluateSynchronousBlocking( Context, *InPlayer );
+		ControlRig->Evaluate_AnyThread();
+
+		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+		if ( !Hierarchy || Hierarchy->GetTopologyVersion() != TopologyVersion )
+		{
+			UE_LOG( LogUsd, Error, TEXT( "Baking Control Rig tracks for rig '%s' failed because the rig changed topology during baking process" ), *ControlRig->GetPathName() );
+			return false;
+		}
+
+		// Sadly we have to fetch these each frame as these are regenerated on each evaluation of the Sequencer
+		// (c.f. FControlRigBindingHelper::BindToSequencerInstance, URigHierarchy::CopyHierarchy)
+		TArray<FRigBoneElement*> BoneElements = Hierarchy->GetBones();
+
+		if ( CurvesValuesForTime.size() > 0 )
+		{
+			TArray<FRigCurveElement*> CurveElements = Hierarchy->GetCurves();
+			for ( int32 ElementIndex = 0; ElementIndex < CurveElements.Num(); ++ElementIndex )
+			{
+				FRigCurveElement* Element = CurveElements[ ElementIndex ];
+				CurvesValuesForTime[ ElementIndex ] = Hierarchy->GetCurveValue( Element );
+			}
+
+			BlendShapeWeightsAttr.Set( CurvesValuesForTime, pxr::UsdTimeCode( UsdTimeCode ) );
+		}
+
+		for ( int32 RigBoneIndex = 0; RigBoneIndex < BoneElements.Num(); ++RigBoneIndex )
+		{
+			FRigBoneElement* El = BoneElements[ RigBoneIndex ];
+
+			// Our skeleton doesn't have this rig bone
+			int32 RefSkeletonBoneIndex = RigJointIndexToRefSkeletonIndex[ RigBoneIndex ];
+			if ( RefSkeletonBoneIndex == INDEX_NONE )
+			{
+				continue;
+			}
+
+			GlobalUEJointTransformsForFrame[ RefSkeletonBoneIndex ] = Hierarchy->GetTransform( El, ERigTransformType::CurrentGlobal );
+
+			FTransform UsdTransform;
+
+			// We have to calculate the local transforms ourselves since the parent element could be a control
+			int32 RefSkeletonParentBoneIndex = InRefSkeleton.GetParentIndex( RefSkeletonBoneIndex );
+			if ( RefSkeletonParentBoneIndex == INDEX_NONE )
+			{
+				UsdTransform = UsdUtils::ConvertTransformToUsdSpace( StageInfo, GlobalUEJointTransformsForFrame[ RefSkeletonBoneIndex ] );
+			}
+			else
+			{
+				const FTransform& ChildGlobal = GlobalUEJointTransformsForFrame[ RefSkeletonBoneIndex ];
+				const FTransform& ParentGlobal = GlobalUEJointTransformsForFrame[ RefSkeletonParentBoneIndex ];
+				UsdTransform = UsdUtils::ConvertTransformToUsdSpace( StageInfo, ChildGlobal.GetRelativeTransform( ParentGlobal ) );
+			}
+
+			Translations[ RefSkeletonBoneIndex ] = UnrealToUsd::ConvertVector( UsdTransform.GetTranslation() );
+			Rotations[ RefSkeletonBoneIndex ] = UnrealToUsd::ConvertQuat( UsdTransform.GetRotation() ).GetNormalized();
+			Scales[ RefSkeletonBoneIndex ] = pxr::GfVec3h( UnrealToUsd::ConvertVector( UsdTransform.GetScale3D() ) );
+		}
+
+		TranslationsAttr.Set( Translations, pxr::UsdTimeCode( UsdTimeCode ) );
+		RotationsAttr.Set( Rotations, pxr::UsdTimeCode( UsdTimeCode ) );
+		ScalesAttr.Set( Scales, pxr::UsdTimeCode( UsdTimeCode ) );
+	}
+
+	double ElapsedSeconds = FPlatformTime::ToSeconds64( FPlatformTime::Cycles64() - StartTime );
+	int ElapsedMin = int( ElapsedSeconds / 60.0 );
+	ElapsedSeconds -= 60.0 * ( double ) ElapsedMin;
+	UE_LOG( LogUsd, Log, TEXT( "Baked new animation for prim '%s' in [%d min %.3f s]" ),
+		*UsdToUnreal::ConvertPath( OutSkelAnimPrim.GetPrimPath() ),
+		ElapsedMin,
+		ElapsedSeconds
+	);
 
 	return true;
 }

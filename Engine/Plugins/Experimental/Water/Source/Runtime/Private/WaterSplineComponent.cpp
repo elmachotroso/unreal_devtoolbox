@@ -4,6 +4,8 @@
 #include "WaterSplineMetadata.h"
 #include "WaterBodyActor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterSplineComponent)
+
 UWaterSplineComponent::UWaterSplineComponent(const FObjectInitializer& ObjectInitializer)
 	: USplineComponent(ObjectInitializer)
 {
@@ -42,7 +44,7 @@ void UWaterSplineComponent::PostLoad()
 /*
 	if (bAnythingChanged)
 	{
-		SplineDataChangedEvent.Broadcast();
+		WaterSplineDataChangedEvent.Broadcast();
 	}*/
 #endif
 }
@@ -56,7 +58,7 @@ void UWaterSplineComponent::PostDuplicate(bool bDuplicateForPie)
 	{
 		SynchronizeWaterProperties();
 
-		SplineDataChangedEvent.Broadcast();
+		WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams());
 	}
 #endif // WITH_EDITOR
 }
@@ -142,7 +144,7 @@ void UWaterSplineComponent::PostEditUndo()
 {
 	Super::PostEditUndo();
 
-	SplineDataChangedEvent.Broadcast();
+	WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams());
 }
 
 void UWaterSplineComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -151,7 +153,7 @@ void UWaterSplineComponent::PostEditChangeProperty(FPropertyChangedEvent& Proper
 
 	SynchronizeWaterProperties();
 
-	SplineDataChangedEvent.Broadcast();
+	WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams(PropertyChangedEvent));
 }
 
 void UWaterSplineComponent::PostEditImport()
@@ -160,7 +162,7 @@ void UWaterSplineComponent::PostEditImport()
 
 	SynchronizeWaterProperties();
 
-	SplineDataChangedEvent.Broadcast();
+	WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams());
 }
 
 void UWaterSplineComponent::ResetSpline(const TArray<FVector>& Points)
@@ -175,7 +177,7 @@ void UWaterSplineComponent::ResetSpline(const TArray<FVector>& Points)
 
 	UpdateSpline();
 	SynchronizeWaterProperties();
-	SplineDataChangedEvent.Broadcast();
+	WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams());
 }
 
 bool UWaterSplineComponent::SynchronizeWaterProperties()
@@ -229,6 +231,21 @@ bool UWaterSplineComponent::SynchronizeWaterProperties()
 				// Set the splines local scale.x to the depth and ensure it has some small positive value. (non-zero scale required for collision to work)
 				Scale.Y = DepthAtPoint = FMath::Max(DepthAtPoint, KINDA_SMALL_NUMBER);
 			}
+
+			// #hack: temporarily clamp the tangents to a sensible range to prevent multiplicatively scaling until they hit infinity and cause a crash
+			auto ClampVec3 = [](const FVector& Vec3, double Min, double Max) {
+				FVector Result;
+				Result.X = FMath::Clamp(Vec3.X, Min, Max);
+				Result.Y = FMath::Clamp(Vec3.Y, Min, Max);
+				Result.Z = FMath::Clamp(Vec3.Z, Min, Max);
+				return Result;
+			};
+			FVector& ArriveTangent = SplineCurves.Position.Points[Point].ArriveTangent;
+			FVector& LeaveTangent = SplineCurves.Position.Points[Point].LeaveTangent;
+			
+			constexpr double MaxTangentValue = 1.e10L;
+			ArriveTangent = ClampVec3(ArriveTangent, -MaxTangentValue, MaxTangentValue);
+			LeaveTangent = ClampVec3(LeaveTangent, -MaxTangentValue, MaxTangentValue);
 		}
 	}
 
@@ -243,3 +260,4 @@ bool UWaterSplineComponent::SynchronizeWaterProperties()
 }
 
 #endif
+

@@ -7,8 +7,8 @@
 
 #include "Kismet2/CompilerResultsLog.h"
 #include "AnimGraphCommands.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BlueprintActionFilter.h"
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintNodeSpawner.h"
@@ -65,7 +65,7 @@ FLinearColor UAnimGraphNode_SequencePlayer::GetNodeTitleColor() const
 
 FSlateIcon UAnimGraphNode_SequencePlayer::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", "ClassIcon.AnimSequence");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.AnimSequence");
 }
 
 FText UAnimGraphNode_SequencePlayer::GetNodeTitle(ENodeTitleType::Type TitleType) const
@@ -82,7 +82,7 @@ FText UAnimGraphNode_SequencePlayer::GetNodeTitle(ENodeTitleType::Type TitleType
 
 FText UAnimGraphNode_SequencePlayer::GetMenuCategory() const
 {
-	return FEditorCategoryUtils::GetCommonCategory(FCommonEditorCategory::Animation);
+	return LOCTEXT("MenuCategory", "Animation|Sequences");
 }
 
 void UAnimGraphNode_SequencePlayer::GetMenuActions(FBlueprintActionDatabaseRegistrar& InActionRegistrar) const
@@ -118,11 +118,11 @@ void UAnimGraphNode_SequencePlayer::GetMenuActions(FBlueprintActionDatabaseRegis
 				const FString TagValue = InAssetData.GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UAnimSequence, AdditiveAnimType));
 				if(const bool bKnownToBeAdditive = (!TagValue.IsEmpty() && !TagValue.Equals(TEXT("AAT_None"))))
 				{
-					return FText::Format(LOCTEXT("MenuDescTooltipFormat_PlayAdded", "Play (additive)\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+					return FText::Format(LOCTEXT("MenuDescTooltipFormat_PlayAdded", "Play (additive)\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 				}
 				else
 				{
-					return FText::Format(LOCTEXT("MenuDescTooltipFormat_Play", "Play\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+					return FText::Format(LOCTEXT("MenuDescTooltipFormat_Play", "Play\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 				}
 			}
 			else
@@ -183,6 +183,14 @@ void UAnimGraphNode_SequencePlayer::SetAnimationAsset(UAnimationAsset* Asset)
 	if (UAnimSequenceBase* Seq = Cast<UAnimSequenceBase>(Asset))
 	{
 		Node.SetSequence(Seq);
+	}
+}
+
+void UAnimGraphNode_SequencePlayer::CopySettingsFromAnimationAsset(UAnimationAsset* Asset)
+{
+	if (UAnimSequenceBase* Seq = Cast<UAnimSequenceBase>(Asset))
+	{
+		Node.SetLoopAnimation(Seq->bLoop);
 	}
 }
 

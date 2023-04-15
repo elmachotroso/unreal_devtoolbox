@@ -4,9 +4,12 @@
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/Package.h"
 #include "Engine/Blueprint.h"
+#include "EngineLogs.h"
 #include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveVector.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TimelineTemplate)
 
 namespace
 {
@@ -521,4 +524,5 @@ bool FTTLinearColorTrack::operator==( const FTTLinearColorTrack& T2 ) const
 	}
 	return bColorCurvesEqual && FTTTrackBase::operator==(T2);
 }
+
 

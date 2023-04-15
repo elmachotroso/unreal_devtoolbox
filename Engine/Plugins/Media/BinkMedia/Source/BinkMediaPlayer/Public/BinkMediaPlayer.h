@@ -211,7 +211,7 @@ public:
 	bool OpenUrl( const FString& NewUrl );
 
 	/**
-	 * Opens the specified media URL.
+	 * Closes the specified media URL.
 	 *
 	 * @param NewUrl The URL to open.
 	 * @return true on success, false otherwise.
@@ -444,6 +444,7 @@ public:
 	FString CurrentUrl;
 	EBinkMediaPlayerBinkDrawStyle CurrentDrawStyle;
 	int32 CurrentLayerDepth;
+	int32 CurrentHasSubtitles;
 
 	/** Holds a delegate that is executed when media has been opened or closed. */
 	FOnMediaChanged MediaChangedEvent;

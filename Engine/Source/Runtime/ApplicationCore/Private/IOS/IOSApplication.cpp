@@ -3,6 +3,7 @@
 #include "IOS/IOSApplication.h"
 #include "IOS/IOSInputInterface.h"
 #include "IOS/IOSCursor.h"
+#include "IOS/IOSView.h"
 #include "IOSWindow.h"
 #include "Misc/CoreDelegates.h"
 #include "IOS/IOSAppDelegate.h"
@@ -71,6 +72,10 @@ void FIOSApplication::SetMessageHandler( const TSharedRef< FGenericApplicationMe
 void FIOSApplication::SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler)
 {
 	GenericApplication::SetAccessibleMessageHandler(InAccessibleMessageHandler);
+	// This user is what IOS Voiceover will interact with
+	FGenericAccessibleUserRegistry& UserRegistry = InAccessibleMessageHandler->GetAccessibleUserRegistry();
+	// We failed to register the primary user, this should only happen if another user with the 0th index has already been registered.
+	ensure(UserRegistry.RegisterUser(MakeShared<FGenericAccessibleUser>(FGenericAccessibleUserRegistry::GetPrimaryUserIndex())));
 	InAccessibleMessageHandler->SetAccessibleEventDelegate(FGenericAccessibleMessageHandler::FAccessibleEvent::CreateRaw(this, &FIOSApplication::OnAccessibleEventRaised));
 	InAccessibleMessageHandler->SetActive(UIAccessibilityIsVoiceOverRunning());
 }
@@ -137,6 +142,10 @@ UIEdgeInsets CachedInsets;
 
 void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 {
+	const FPlatformRect& Rect = FIOSWindow::GetUIWindowRect();
+	const FIOSView *View = [[IOSAppDelegate GetDelegate] IOSView];
+	[View CalculateContentScaleFactor:Rect.Right ScreenHeight:Rect.Bottom];
+	
 	// Get screen rect
 	OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FIOSWindow::GetScreenRect();
 	OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
@@ -145,11 +154,8 @@ void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
     OutDisplayMetrics.PrimaryDisplayWidth = OutDisplayMetrics.PrimaryDisplayWorkAreaRect.Right - OutDisplayMetrics.PrimaryDisplayWorkAreaRect.Left;
     OutDisplayMetrics.PrimaryDisplayHeight = OutDisplayMetrics.PrimaryDisplayWorkAreaRect.Bottom - OutDisplayMetrics.PrimaryDisplayWorkAreaRect.Top;
     
-    // Get ui window rect
-    OutDisplayMetrics.IosUiWindowAreaRect = FIOSWindow::GetUIWindowRect();
-    
 #if !PLATFORM_TVOS
-    const float RequestedContentScaleFactor = [[IOSAppDelegate GetDelegate].IOSView contentScaleFactor];
+    const double RequestedContentScaleFactor = View.contentScaleFactor;
     
     //we need to set these according to the orientation
     TAutoConsoleVariable<float>* CVar_Left = nullptr;
@@ -174,10 +180,10 @@ void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
     }
     
     // of the CVars are set, use their values. If not, use what comes from iOS
-    const float Inset_Left = (!CVar_Left || CVar_Left->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.left : CVar_Left->AsVariable()->GetFloat();
-    const float Inset_Top = (!CVar_Top || CVar_Top->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.top : CVar_Top->AsVariable()->GetFloat();
-    const float Inset_Right = (!CVar_Right || CVar_Right->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.right : CVar_Right->AsVariable()->GetFloat();
-    const float Inset_Bottom = (!CVar_Bottom || CVar_Bottom->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.bottom : CVar_Bottom->AsVariable()->GetFloat();
+    const double Inset_Left = (!CVar_Left || CVar_Left->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.left : CVar_Left->AsVariable()->GetFloat();
+    const double Inset_Top = (!CVar_Top || CVar_Top->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.top : CVar_Top->AsVariable()->GetFloat();
+    const double Inset_Right = (!CVar_Right || CVar_Right->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.right : CVar_Right->AsVariable()->GetFloat();
+    const double Inset_Bottom = (!CVar_Bottom || CVar_Bottom->AsVariable()->GetFloat() < 0.0f) ? CachedInsets.bottom : CVar_Bottom->AsVariable()->GetFloat();
     
     //setup the asymmetrical padding
     OutDisplayMetrics.TitleSafePaddingSize.X = Inset_Left;
@@ -267,18 +273,20 @@ FAutoConsoleVariableRef IOSAccessibleAnnouncementDealyRef(
 	TEXT("We need to introduce a small delay to avoid iOS system accessibility announcements from stomping on our requested user announcement. Delays <= 0.05f are too short and result in the announcement being dropped. Dellays ~0.075f result in unstable delivery")
 );
 
-void FIOSApplication::OnAccessibleEventRaised(TSharedRef<IAccessibleWidget> Widget, EAccessibleEvent Event, FVariant OldValue, FVariant NewValue)
+
+void FIOSApplication::OnAccessibleEventRaised(const FAccessibleEventArgs& Args)
 {
 	// This should only be triggered by the accessible message handler which initiates from the Slate thread.
 	check(IsInGameThread());
 
-	const AccessibleWidgetId Id = Widget->GetId();
-	switch (Event)
+	const AccessibleWidgetId Id = Args.Widget->GetId();
+	switch (Args.Event)
 	{
 	case EAccessibleEvent::ParentChanged:
 	{
+		const AccessibleWidgetId NewParentId = Args.NewValue.GetValue<AccessibleWidgetId>();
 		dispatch_async(dispatch_get_main_queue(), ^{
-			[[[FIOSAccessibilityCache AccessibilityElementCache] GetAccessibilityElement:Id] SetParent:NewValue.GetValue<AccessibleWidgetId>()];
+			[[[FIOSAccessibilityCache AccessibilityElementCache] GetAccessibilityElement:Id] SetParent:NewParentId];
 		});
 		// LayoutChanged is to indicate things like "a widget became visible or hidden" while
 		// ScreenChanged is for large-scale UI changes. It can potentially take an NSString to read
@@ -299,7 +307,7 @@ void FIOSApplication::OnAccessibleEventRaised(TSharedRef<IAccessibleWidget> Widg
 		break;
 	case EAccessibleEvent::Notification:
 		{
-			NSString* Announcement = [NSString stringWithFString: NewValue.GetValue<FString>()];
+			NSString* Announcement = [NSString stringWithFString: Args.NewValue.GetValue<FString>()];
 			dispatch_async(dispatch_get_main_queue(), ^{
 				// If we don't sleep for a small period of time, system accessibility
 				// announcements can stomp on this announcement and so it's never made
@@ -313,3 +321,4 @@ void FIOSApplication::OnAccessibleEventRaised(TSharedRef<IAccessibleWidget> Widg
 	}
 }
 #endif
+

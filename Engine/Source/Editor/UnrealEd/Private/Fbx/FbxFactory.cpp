@@ -4,7 +4,7 @@
 
 #include "Animation/AnimSequence.h"
 #include "AssetImportTask.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
@@ -889,7 +889,7 @@ void UFbxFactory::CancelObjectCreation(UnFbx::FFbxImporter* FbxImporter) const
 		const TWeakObjectPtr<UObject>& CurrentObject = CreatedObjects[CreatedObjectIndex];
 		if (CurrentObject.IsValid())
 		{
-			AssetsToDelete.Emplace(AssetRegistryModule.Get().GetAssetByObjectPath(FName(*CurrentObject->GetPathName())));
+			AssetsToDelete.Emplace(AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(CurrentObject.Get())));
 			PotentialPackageToDeleteReferences.Add(CurrentObject->GetOutermost());
 			CurrentObject->ClearFlags(RF_Standalone | RF_Public);
 			CurrentObject->RemoveFromRoot();
@@ -1147,6 +1147,45 @@ bool UFbxFactory::CanImportBeCanceled() const
 IImportSettingsParser* UFbxFactory::GetImportSettingsParser()
 {
 	return ImportUI;
+}
+
+TArray<FString> UFbxFactory::GetFormats() const
+{
+	return GetFbxFormats(this);
+}
+
+TArray<FString> UFbxFactory::GetFbxFormats(const UFactory* Factory)
+{
+	TArray<FString> FormatArray;
+	const IConsoleVariable* CVarFbx = IConsoleManager::Get().FindConsoleVariable(TEXT("Interchange.FeatureFlags.Import.FBX"));
+	const bool bUseLegacyFbx = (!CVarFbx || !CVarFbx->GetBool());
+	const IConsoleVariable* CVarObj = IConsoleManager::Get().FindConsoleVariable(TEXT("Interchange.FeatureFlags.Import.OBJ"));
+	const bool bUseLegacyObj = (!CVarObj || !CVarObj->GetBool());
+
+	for (const FString& Format : Factory->Formats)
+	{
+		if (Format.StartsWith(TEXT("fbx")))
+		{
+			//Skip if interchange fbx is enabled
+			if (bUseLegacyFbx)
+			{
+				FormatArray.Add(Format);
+			}
+		}
+		else if (Format.StartsWith(TEXT("obj")))
+		{
+			//Skip if interchange obj is enabled
+			if (bUseLegacyObj)
+			{
+				FormatArray.Add(Format);
+			}
+		}
+		else
+		{
+			FormatArray.Add(Format);
+		}
+	}
+	return FormatArray;
 }
 
 UFbxImportUI::UFbxImportUI(const FObjectInitializer& ObjectInitializer)
@@ -1838,7 +1877,7 @@ void UFbxImportUI::LoadOptions(UObject* ObjectToLoadOptions)
 					ArrayHelper.EmptyAndAddValues(List.Num());
 					for (int32 i = List.Num() - 1, c = 0; i >= 0; i--, c++)
 					{
-						Array->Inner->ImportText(*List[i].GetValue(), ArrayHelper.GetRawPtr(c), PortFlags, ObjectToLoadOptions);
+						Array->Inner->ImportText_Direct(*List[i].GetValue(), ArrayHelper.GetRawPtr(c), ObjectToLoadOptions, PortFlags);
 					}
 				}
 				else
@@ -1863,7 +1902,7 @@ void UFbxImportUI::LoadOptions(UObject* ObjectToLoadOptions)
 						{
 							// expand the array if necessary so that Index is a valid element
 							ArrayHelper.ExpandForIndex(Index);
-							Array->Inner->ImportText(*ElementValue->GetValue(), ArrayHelper.GetRawPtr(Index), PortFlags, ObjectToLoadOptions);
+							Array->Inner->ImportText_Direct(*ElementValue->GetValue(), ArrayHelper.GetRawPtr(Index), ObjectToLoadOptions, PortFlags);
 						}
 
 						Index++;
@@ -1885,7 +1924,7 @@ void UFbxImportUI::LoadOptions(UObject* ObjectToLoadOptions)
 
 				if (bFoundValue)
 				{
-					if (Property->ImportText(*Value, Property->ContainerPtrToValuePtr<uint8>(ObjectToLoadOptions, i), PortFlags, ObjectToLoadOptions) == NULL)
+					if (Property->ImportText_Direct(*Value, Property->ContainerPtrToValuePtr<uint8>(ObjectToLoadOptions, i), ObjectToLoadOptions, PortFlags) == NULL)
 					{
 						// this should be an error as the properties from the .ini / .int file are not correctly being read in and probably are affecting things in subtle ways
 						UE_LOG(LogFbx, Error, TEXT("FBX Options LoadOptions (%s): import failed for %s in: %s"), *ObjectToLoadOptions->GetPathName(), *Property->GetName(), *Value);
@@ -1925,7 +1964,7 @@ void UFbxImportUI::SaveOptions(UObject* ObjectToSaveOptions)
 			for (int32 i = 0; i < ArrayHelper.Num(); i++)
 			{
 				FString	Buffer;
-				Array->Inner->ExportTextItem(Buffer, ArrayHelper.GetRawPtr(i), ArrayHelper.GetRawPtr(i), ObjectToSaveOptions, PortFlags);
+				Array->Inner->ExportTextItem_Direct(Buffer, ArrayHelper.GetRawPtr(i), ArrayHelper.GetRawPtr(i), ObjectToSaveOptions, PortFlags);
 				Sec->Add(*Key, *Buffer);
 			}
 		}

@@ -92,12 +92,25 @@ FRCPanelWidgetRegistry::FRCPanelWidgetRegistry()
 	SpecialTreeNodeHandlers.Add(MoveTemp(NewHandler));
 }
 
+FRCPanelWidgetRegistry::~FRCPanelWidgetRegistry()
+{
+	for (const TPair <TWeakObjectPtr<UObject>, TSharedPtr<IPropertyRowGenerator>>& Pair : ObjectToRowGenerator)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->OnRowsRefreshed().Clear();
+		}
+	}
+
+	ObjectToRowGenerator.Reset();
+}
+
 TSharedPtr<IDetailTreeNode> FRCPanelWidgetRegistry::GetObjectTreeNode(UObject* InObject, const FString& InField, ERCFindNodeMethod InFindMethod)
 {
 	const TPair<TWeakObjectPtr<UObject>, FString> CacheKey{InObject, InField};
 	if (TWeakPtr<IDetailTreeNode>* Node = TreeNodeCache.Find(CacheKey))
 	{
-		if (Node->IsValid())
+		if (Node->IsValid() && Node->Pin()->CreatePropertyHandle() && Node->Pin()->CreatePropertyHandle()->GetNumOuterObjects() != 0)
 		{
 			return Node->Pin();
 		}
@@ -127,13 +140,7 @@ TSharedPtr<IDetailTreeNode> FRCPanelWidgetRegistry::GetObjectTreeNode(UObject* I
 	}
 	else
 	{
-		// Since we must keep many PRG objects alive in order to access the handle data, validating the nodes each tick is very taxing.
-		// We can override the validation with a lambda since the validation function in PRG is not necessary for our implementation
-		auto ValidationLambda = ([](const FRootPropertyNodeList& PropertyNodeList) { return true; });
-		FPropertyRowGeneratorArgs Args;
-		Generator = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreatePropertyRowGenerator(Args);
-		Generator->SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes::CreateLambda(MoveTemp(ValidationLambda)));
-		Generator->SetObjects({InObject});
+		Generator = CreateGenerator(InObject);
 		ObjectToRowGenerator.Add(WeakObject, Generator);
 	}
 	
@@ -170,7 +177,11 @@ void FRCPanelWidgetRegistry::Refresh(UObject* InObject)
 {
 	if (TSharedPtr<IPropertyRowGenerator>* Generator = ObjectToRowGenerator.Find({InObject}))
 	{
-		(*Generator)->SetObjects({InObject});
+		const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = (*Generator)->GetSelectedObjects();
+		if (SelectedObjects.Num() != 1 || SelectedObjects[0] != InObject)
+		{
+			(*Generator)->SetObjects({InObject});
+		}
 	}
 }
 
@@ -184,6 +195,14 @@ void FRCPanelWidgetRegistry::Refresh(const TSharedPtr<FStructOnScope>& InStruct)
 
 void FRCPanelWidgetRegistry::Clear()
 {
+	for (const TPair <TWeakObjectPtr<UObject>, TSharedPtr<IPropertyRowGenerator>>& Pair : ObjectToRowGenerator)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->OnRowsRefreshed().Clear();
+		}
+	}
+
 	ObjectToRowGenerator.Empty();
 	StructToRowGenerator.Empty();
 	TreeNodeCache.Empty();
@@ -236,17 +255,52 @@ TSharedPtr<IDetailTreeNode> FRCPanelWidgetRegistry::FindNDisplayTreeNode(UObject
 	}
 	else
 	{
-		// Since we must keep many PRG objects alive in order to access the handle data, validating the nodes each tick is very taxing.
-		// We can override the validation with a lambda since the validation function in PRG is not necessary for our implementation
-		auto ValidationLambda = ([](const FRootPropertyNodeList& PropertyNodeList) { return true; });
-		FPropertyRowGeneratorArgs Args;
-		Args.bShouldShowHiddenProperties = false;
-		Generator = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreatePropertyRowGenerator(Args);
-		Generator->SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes::CreateLambda(MoveTemp(ValidationLambda)));
-
-		Generator->SetObjects({ InObject });
+		Generator = CreateGenerator(InObject);
 		ObjectToRowGenerator.Add(WeakObject, Generator);
 	}
 
 	return WidgetRegistryUtils::FindNode(Generator->GetRootTreeNodes(), InField, InFindMethod);
 }
+
+void FRCPanelWidgetRegistry::OnRowsRefreshed(TSharedPtr<IPropertyRowGenerator> Generator)
+{
+	if (Generator)
+	{
+		const TArray<TWeakObjectPtr<UObject>> WeakSelectedObjects = Generator->GetSelectedObjects();
+		TArray<UObject*> SelectedObjects;
+		SelectedObjects.Reserve(WeakSelectedObjects.Num());
+		for (const TWeakObjectPtr<UObject>& WeakObject : WeakSelectedObjects)
+		{
+			SelectedObjects.Add(WeakObject.Get());
+		}
+		OnObjectRefreshedDelegate.Broadcast(SelectedObjects);
+	}
+}
+
+TSharedPtr<IPropertyRowGenerator> FRCPanelWidgetRegistry::CreateGenerator(UObject* InObject)
+{
+	// Since we must keep many PRG objects alive in order to access the handle data, validating the nodes each tick is very taxing.
+	// We can override the validation with a lambda since the validation function in PRG is not necessary for our implementation
+	auto ValidationLambda = ([](const FRootPropertyNodeList& PropertyNodeList) { return true; });
+	FPropertyRowGeneratorArgs Args;
+	TSharedPtr<IPropertyRowGenerator> Generator = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreatePropertyRowGenerator(Args);
+	Generator->SetObjects({ InObject });
+	Generator->SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes::CreateLambda(MoveTemp(ValidationLambda)));
+
+	Generator->OnRowsRefreshed().AddLambda([WeakGenerator = TWeakPtr<IPropertyRowGenerator>(Generator), WeakThis = TWeakPtr<FRCPanelWidgetRegistry>(AsShared())]
+		{
+			// This was crashing on an invalid widget registry ptr, maybe because Clear() getting called and the generator being kept alive by the shared ptr 
+			// passed to the AddRaw delegate was keeping the Genrator and its invocation list alive.
+			// This should be revisited and retested thoroughly after returning to AddRaw or AddSP and passing in a weak generator ptr.
+			if (TSharedPtr<FRCPanelWidgetRegistry> WidgetRegistry = WeakThis.Pin())
+			{
+				if (TSharedPtr<IPropertyRowGenerator> Generator = WeakGenerator.Pin())
+				{
+					WidgetRegistry->OnRowsRefreshed(Generator);
+				}
+			}
+		});
+
+	return Generator;
+}
+

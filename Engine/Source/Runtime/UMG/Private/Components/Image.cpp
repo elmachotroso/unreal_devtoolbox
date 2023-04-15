@@ -11,6 +11,8 @@
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Image)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -21,19 +23,6 @@ UImage::UImage(const FObjectInitializer& ObjectInitializer)
 	, ColorAndOpacity(FLinearColor::White)
 {
 }
-
-#if WITH_EDITORONLY_DATA
-void UImage::PostLoad()
-{
-	Super::PostLoad();
-
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS && Image_DEPRECATED != nullptr )
-	{
-		Brush = Image_DEPRECATED->Brush;
-		Image_DEPRECATED = nullptr;
-	}
-}
-#endif
 
 void UImage::ReleaseSlateResources(bool bReleaseChildren)
 {
@@ -406,3 +395,4 @@ const FText UImage::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

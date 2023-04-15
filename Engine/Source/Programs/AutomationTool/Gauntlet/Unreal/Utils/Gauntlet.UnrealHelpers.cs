@@ -3,14 +3,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Text.RegularExpressions;
 using System.Net;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Gauntlet
 {
@@ -27,6 +27,7 @@ namespace Gauntlet
 		EditorServer,
 		Client,
 		Server,
+		CookedEditor,
 	};
 
     /// <summary>
@@ -62,6 +63,10 @@ namespace Gauntlet
 	{
 		public static bool UsesEditor(this UnrealTargetRole Type)
 		{
+			if (Globals.Params.ParseParam("cookededitor"))
+			{
+				return Type == UnrealTargetRole.EditorGame || Type == UnrealTargetRole.EditorServer;
+			}
 			return Type == UnrealTargetRole.Editor || Type == UnrealTargetRole.EditorGame || Type == UnrealTargetRole.EditorServer;
 		}
 
@@ -77,12 +82,16 @@ namespace Gauntlet
 
 		public static bool IsEditor(this UnrealTargetRole Type)
 		{
-			return Type == UnrealTargetRole.Editor;
+			return Type == UnrealTargetRole.Editor || Type == UnrealTargetRole.CookedEditor;
+		}
+		public static bool IsCookedEditor(this UnrealTargetRole Type)
+		{
+			return Type == UnrealTargetRole.CookedEditor;
 		}
 
 		public static bool RunsLocally(this UnrealTargetRole Type)
 		{
-			return UsesEditor(Type) || IsServer(Type);
+			return UsesEditor(Type) || IsServer(Type) || Type == UnrealTargetRole.CookedEditor;
 		}
 	}
 
@@ -185,7 +194,6 @@ namespace Gauntlet
 		/// <summary>
 		/// Gets the filehost IP to provide to devkits by examining our local adapters and
 		/// returning the one that's active and on the local LAN (based on DNS assignment)
-		/// AG-TODO: PreferredDomain should be in the master config
 		/// </summary>
 		/// <returns></returns>
 		public static string GetHostIpAddress(string PreferredDomain="epicgames.net")
@@ -205,7 +213,7 @@ namespace Gauntlet
 				//
 				// When the above fails, attempt to extract the eth IP manually.
 				//
-				// TODO: Fallback to the wireless adapter if/when no eth device is
+				// TODO: Fallback to the wireless adapter if/when no device is
 				//       available/active.
 				//
 				LocalAddress = GetAllLocalIPv4(NetworkInterfaceType.Ethernet)
@@ -291,6 +299,21 @@ namespace Gauntlet
 			}
 		}
 
+		public static Dictionary<string, UnrealTargetRole> CustomModuleToRoles = new Dictionary<string, UnrealTargetRole>();
+
+		/// <summary>
+		/// Adds an additional module name to search for when determining if an application path has a guantlet usable role.
+		/// Traditionally all application paths must be in the form ProjectName(Game|Server).exe
+		/// This method allows for applications with nontraditional names to have the role of Game, Server, Editor etc.
+		/// 
+		/// </summary>
+		/// <param name="InModuleName"> The ModuleName to look for in the application path</param>
+		/// <param name="InRole"> When applications are discovered applications with matching module name will have this role</param>
+		public static void AddCustomModuleName(string InModuleName, UnrealTargetRole InRole)
+		{
+			CustomModuleToRoles.Add(InModuleName, InRole);
+		}
+		
 		static ConfigInfo GetUnrealConfigFromFileName(string InProjectName, string InName)
 		{
 			ConfigInfo Config = new ConfigInfo();
@@ -312,7 +335,12 @@ namespace Gauntlet
 			// So we need to search for the project name minus 'Game', with the form, build-type, and platform all optional :(
 			// FortniteClient and EngineTest should match
 			// FortniteCustomName should not match.
-			string RegExMatch = string.Format(@"(({0}(Game|Client|Server))|{1})(?:-(.+?)-(Debug|Test|Shipping))?", ShortName, InProjectName);
+			string ProjectNameRegEx = string.Format("|{0}", InProjectName);
+			foreach (KeyValuePair<string, UnrealTargetRole> ModuleAndRole in CustomModuleToRoles)
+			{
+				ProjectNameRegEx += string.Format("|{0}", ModuleAndRole.Key);
+			}
+			string RegExMatch = string.Format(@"^(?:.+[_-])?(({0}(Game|Client|Server|CookedEditor)){1})(?:-(.+?)-(Debug|Test|Shipping))?(?:[_-].+)?$", ShortName, ProjectNameRegEx);
 
 			// Format should be something like
 			// FortniteClient
@@ -322,11 +350,19 @@ namespace Gauntlet
 
 			if (NameMatch.Success)
 			{
+				string ModuleName = NameMatch.Groups[1].ToString();
 				string ModuleType = NameMatch.Groups[3].ToString().ToLower();
 				string PlatformName = NameMatch.Groups[4].ToString();
 				string ConfigType = NameMatch.Groups[5].ToString();
-
-				if (ModuleType.Length == 0 || ModuleType == "game")
+				if (CustomModuleToRoles.ContainsKey(ModuleName))
+				{
+					Config.RoleType = CustomModuleToRoles[ModuleName];
+				}
+				else if (ModuleType == "cookededitor" || (ModuleType.Length == 0 && Globals.Params.ParseParam("cookededitor")))
+				{
+					Config.RoleType = UnrealTargetRole.CookedEditor;
+				}
+				else if (ModuleType.Length == 0 || ModuleType == "game")
 				{
 					// how to express client&server?
 					Config.RoleType = UnrealTargetRole.Client;
@@ -414,29 +450,33 @@ namespace Gauntlet
 	/// <summary>
 	///  Converts between json and UnrealTargetPlatform
 	/// </summary>
-	public class UnrealTargetPlatformConvertor : JsonConverter
+	public class UnrealTargetPlatformConvertor : JsonConverter<UnrealTargetPlatform>
 	{
 		public override bool CanConvert(Type ObjectType)
 		{
-			return ObjectType == typeof(string) || ObjectType == typeof(UnrealTargetPlatform);
+			return ObjectType == typeof(UnrealTargetPlatform);
 		}
 
-		public override object ReadJson(JsonReader Reader, Type ObjectType, object ExistingValue, JsonSerializer Serializer)
+		public override UnrealTargetPlatform Read(ref Utf8JsonReader Reader, Type TypeToConvert, JsonSerializerOptions Options)
 		{
-			UnrealTargetPlatform Platform;
-			if (!UnrealTargetPlatform.TryParse((string)Reader.Value, out Platform))
+			if(Reader.TokenType == JsonTokenType.Null)
 			{
-				return null;
+				return BuildHostPlatform.Current.Platform;
 			}
-			return Platform;
+
+			UnrealTargetPlatform StructValue;
+			if (UnrealTargetPlatform.TryParse(Reader.GetString(), out StructValue))
+			{
+				return StructValue;
+			}
+			throw new JsonException();
 		}
 
-		public override void WriteJson(JsonWriter Writer, object Value, JsonSerializer Serializer)
+		public override void Write(Utf8JsonWriter Writer, UnrealTargetPlatform StructValue, JsonSerializerOptions Options)
 		{
-			UnrealTargetPlatform? Platform = (UnrealTargetPlatform)Value;
-			Writer.WriteValue(Platform);
+			var Value = StructValue.ToString();
+			Writer.WriteStringValue(Options.PropertyNamingPolicy?.ConvertName(Value) ?? Value);
 		}
-
 	}
 
 

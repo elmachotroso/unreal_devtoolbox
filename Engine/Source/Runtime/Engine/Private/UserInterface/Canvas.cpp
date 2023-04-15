@@ -28,6 +28,9 @@
 #include "Fonts/FontMeasure.h"
 #include "EngineModule.h"
 #include "CanvasRender.h"
+#include "RenderGraphUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Canvas)
 
 DEFINE_LOG_CATEGORY_STATIC(LogCanvas, Log, All);
 
@@ -298,7 +301,6 @@ FCanvas::FCanvas(FRenderTarget* InRenderTarget,FHitProxyConsumer* InHitProxyCons
 ,	AllowedModes(0xFFFFFFFF)
 ,	bRenderTargetDirty(false)
 ,	Time(InTime)
-,	bAllowsToSwitchVerticalAxis(false)
 ,	FeatureLevel(InFeatureLevel)
 ,	bUseInternalTexture(false)
 ,	DrawMode(CDM_DeferDrawing)
@@ -311,7 +313,6 @@ void FCanvas::Construct()
 {
 	bStereoRendering = false;
 	bScaledToRenderTarget = false;
-	bAllowsToSwitchVerticalAxis = false;
 
 	const FIntPoint RenderTargetSizeXY = RenderTarget ? RenderTarget->GetSizeXY() : FIntPoint(1, 1);
 
@@ -371,7 +372,7 @@ FMatrix FCanvas::CalcBaseTransform3D(uint32 ViewSizeX, uint32 ViewSizeY, float f
 FMatrix FCanvas::CalcViewMatrix(uint32 ViewSizeX, uint32 ViewSizeY, float fFOV)
 {
 	// convert FOV to randians
-	float FOVRad = fFOV * (float)PI / 360.0f;
+	float FOVRad = fFOV * (float)UE_PI / 360.0f;
 	// move camera back enough so that the canvas items being rendered are at the same screen extents as regular canvas 2d rendering	
 	FTranslationMatrix CamOffsetMat(-FVector(0,0,-FMath::Tan(FOVRad)*ViewSizeX/2));
 	// adjust so that canvas items render as if they start at [0,0] upper left corner of screen 
@@ -393,7 +394,7 @@ FMatrix FCanvas::CalcViewMatrix(uint32 ViewSizeX, uint32 ViewSizeY, float fFOV)
 FMatrix FCanvas::CalcProjectionMatrix(uint32 ViewSizeX, uint32 ViewSizeY, float fFOV, float NearPlane)
 {
 	// convert FOV to randians
-	float FOVRad = fFOV * (float)PI / 360.0f;
+	float FOVRad = fFOV * (float)UE_PI / 360.0f;
 	// project based on the FOV and near plane given
 	if ((bool)ERHIZBuffer::IsInverted)
 	{
@@ -440,14 +441,11 @@ bool FCanvasBatchedElementRenderItem::Render_RenderThread(FCanvasRenderContext& 
 				Gamma = 1.0f;
 			}
 
-			bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && Canvas->GetAllowSwitchVerticalAxis();
-
 			// draw batched items
 			LocalData->BatchedElements.Draw(
 				RHICmdList,
 				DrawRenderState,
 				Canvas->GetFeatureLevel(),
-				bNeedsToSwitchVerticalAxis,
 				FBatchedElements::CreateProxySceneView(LocalData->Transform.GetMatrix(), FIntRect(0, 0, CanvasRenderTarget->GetSizeXY().X, CanvasRenderTarget->GetSizeXY().Y)),
 				Canvas->IsHitTesting(),
 				Gamma
@@ -481,14 +479,11 @@ bool FCanvasBatchedElementRenderItem::Render_GameThread(const FCanvas* Canvas, F
 			Gamma = 1.0f;
 		}
 
-		bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && Canvas->GetAllowSwitchVerticalAxis();
-
 		// Render the batched elements.
 		struct FBatchedDrawParameters
 		{
 			FRenderData* RenderData;
 			uint32 bHitTesting : 1;
-			uint32 bNeedsToSwitchVerticalAxis : 1;
 			uint32 ViewportSizeX;
 			uint32 ViewportSizeY;
 			float DisplayGamma;
@@ -501,7 +496,6 @@ bool FCanvasBatchedElementRenderItem::Render_GameThread(const FCanvas* Canvas, F
 		{
 			Data,
 			(uint32)(Canvas->IsHitTesting() ? 1 : 0),
-			(uint32)(bNeedsToSwitchVerticalAxis ? 1 : 0),
 			(uint32)CanvasRenderTarget->GetSizeXY().X,
 			(uint32)CanvasRenderTarget->GetSizeXY().Y,
 			Gamma,
@@ -526,7 +520,6 @@ bool FCanvasBatchedElementRenderItem::Render_GameThread(const FCanvas* Canvas, F
 				RHICmdList,
 				DrawRenderState,
 				DrawParameters.FeatureLevel,
-				DrawParameters.bNeedsToSwitchVerticalAxis,
 				SceneView,
 				DrawParameters.bHitTesting,
 				DrawParameters.DisplayGamma);
@@ -544,24 +537,17 @@ bool FCanvasBatchedElementRenderItem::Render_GameThread(const FCanvas* Canvas, F
 	return bDirty;
 }
 
-FCanvasRenderContext::FCanvasRenderContext(FRDGBuilder& InGraphBuilder, const FCanvas& Canvas)
+FCanvasRenderContext::FCanvasRenderContext(FRDGBuilder& InGraphBuilder, const FRenderTarget* InRenderTarget, FIntRect InViewportRect, FIntRect InScissorRect, bool bScaledToRenderTarget)
 	: GraphBuilder(InGraphBuilder)
-	, RenderTarget(Canvas.RenderTarget->GetRenderTargetTexture(InGraphBuilder))
-	, ViewportRect(Canvas.ViewRect)
-	, ScissorRect(Canvas.ScissorRect)
+	, RenderTarget(InRenderTarget->GetRenderTargetTexture(InGraphBuilder))
+	, ViewportRect(InViewportRect)
+	, ScissorRect(InScissorRect)
 {
-	if (ViewportRect.Area() <= 0 || Canvas.bScaledToRenderTarget)
+	if (ViewportRect.Area() <= 0 || bScaledToRenderTarget)
 	{
 		ViewportRect = FIntRect(FIntPoint::ZeroValue, RenderTarget->Desc.Extent);
 	}
 }
-
-FCanvasRenderContext::FCanvasRenderContext(FRDGBuilder& InGraphBuilder, FRDGTextureRef InRenderTarget, FIntRect InViewportRect, FIntRect InScissorRect)
-	: GraphBuilder(InGraphBuilder)
-	, RenderTarget(InRenderTarget)
-	, ViewportRect(InViewportRect)
-	, ScissorRect(InScissorRect)
-{}
 
 FCanvasRenderThreadScope::FCanvasRenderThreadScope(const FCanvas& InCanvas)
 	: Canvas(InCanvas)
@@ -574,12 +560,11 @@ FCanvasRenderThreadScope::~FCanvasRenderThreadScope()
 	RenderCommandFunctionArray* RenderCommandArray = RenderCommands;
 
 	ENQUEUE_RENDER_COMMAND(DispatchCanvasRenderCommands)(
-		[RenderCommandArray, LocalCanvas = Canvas](FRHICommandListImmediate& RHICmdList)
+		[RenderCommandArray, RenderTarget = Canvas.RenderTarget, ViewRect = Canvas.ViewRect, ScissorRect = Canvas.ScissorRect, bScaledToRenderTarget = Canvas.bScaledToRenderTarget](FRHICommandListImmediate& RHICmdList) mutable
 	{
 		GetRendererModule().InitializeSystemTextures(RHICmdList);
-		FMemMark MemMark(FMemStack::Get());
 		FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("CanvasRenderThreadScope"));
-		FCanvasRenderContext RenderContext(GraphBuilder, LocalCanvas);
+		FCanvasRenderContext RenderContext(GraphBuilder, RenderTarget, ViewRect, ScissorRect, bScaledToRenderTarget);
 
 		for (uint32 Index = 0, Count = RenderCommandArray->Num(); Index < Count; ++Index)
 		{
@@ -740,7 +725,6 @@ void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bFor
 		return;
 	}
 
-	FMemMark MemMark(FMemStack::Get());
 	FRDGBuilder GraphBuilder(RHICmdList);
 	Flush_RenderThread(GraphBuilder, bForce);
 	GraphBuilder.Execute();
@@ -782,7 +766,7 @@ void FCanvas::Flush_RenderThread(FRDGBuilder& GraphBuilder, bool bForce)
 
 	GetRendererModule().InitializeSystemTextures(GraphBuilder.RHICmdList);
 
-	FCanvasRenderContext RenderContext(GraphBuilder, *this);
+	FCanvasRenderContext RenderContext(GraphBuilder, RenderTarget, ViewRect, ScissorRect, bScaledToRenderTarget);
 
 	// Set the RHI render target.
 	if (IsUsingInternalTexture())
@@ -1042,14 +1026,14 @@ void FCanvas::Clear(const FLinearColor& ClearColor)
 				{
 					// do fast clear
 					FRHIRenderPassInfo RPInfo(CanvasRenderTarget->GetRenderTargetTexture(), ERenderTargetActions::Clear_Store);
-					TransitionRenderPassTargets(RHICmdList, RPInfo);
+					RHICmdList.Transition(FRHITransitionInfo(CanvasRenderTarget->GetRenderTargetTexture(), ERHIAccess::Unknown, ERHIAccess::RTV));
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearCanvas"));
 					RHICmdList.EndRenderPass();					
 				}
 				else if(CanvasRenderTarget->GetRenderTargetTexture())
 				{
 					FRHIRenderPassInfo RPInfo(CanvasRenderTarget->GetRenderTargetTexture(), ERenderTargetActions::DontLoad_Store);
-					TransitionRenderPassTargets(RHICmdList, RPInfo);
+					RHICmdList.Transition(FRHITransitionInfo(CanvasRenderTarget->GetRenderTargetTexture(), ERHIAccess::Unknown, ERHIAccess::RTV));
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearCanvas"));
 					RHICmdList.SetViewport(0, 0, 0.0f, CanvasRenderTarget->GetSizeXY().X, CanvasRenderTarget->GetSizeXY().Y, 1.0f);
 					DrawClearQuad(RHICmdList, ClearColor);
@@ -2077,6 +2061,9 @@ void UCanvas::K2_DrawMaterial(UMaterialInterface* RenderMaterial, FVector2D Scre
 		// Canvas can be NULL if the user tried to draw after EndDrawCanvasToRenderTarget
 		&& Canvas)
 	{
+		// This is a user-facing function, so we'd rather make sure that shaders are ready by the time we render, in order to ensure we don't draw with a fallback material :
+		RenderMaterial->EnsureIsComplete();
+
 		FCanvasTileItem TileItem(ScreenPosition, RenderMaterial->GetRenderProxy(), ScreenSize, CoordinatePosition, CoordinatePosition + CoordinateSize);
 		TileItem.Rotation = FRotator(0, Rotation, 0);
 		TileItem.PivotPoint = PivotPoint;
@@ -2144,6 +2131,9 @@ void UCanvas::K2_DrawMaterialTriangle(UMaterialInterface* RenderMaterial, TArray
 {
 	if (RenderMaterial && Triangles.Num() > 0 && Canvas)
 	{
+		// This is a user-facing function, so we'd rather make sure that shaders are ready by the time we render, in order to ensure we don't draw with a fallback material :
+		RenderMaterial->EnsureIsComplete();
+
 		FCanvasTriangleItem TriangleItem(FVector2D::ZeroVector, FVector2D::ZeroVector, FVector2D::ZeroVector, NULL);
 		TriangleItem.MaterialRenderProxy = RenderMaterial->GetRenderProxy();
 		TriangleItem.TriangleList = MoveTemp(Triangles);

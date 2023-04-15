@@ -19,6 +19,8 @@
 #include "MessageLogModule.h"
 #include "Logging/MessageLog.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelinePIEExecutor)
+
 #define LOCTEXT_NAMESPACE "MoviePipelinePIEExecutor"
 
 
@@ -58,6 +60,22 @@ void UMoviePipelinePIEExecutor::FValidationMessageGatherer::Serialize(const TCHA
 	}
 }
 
+UMoviePipelinePIEExecutor::UMoviePipelinePIEExecutor()
+	: UMoviePipelineLinearExecutorBase()
+	, bRenderOffscreen(false)
+	, RemainingInitializationFrames(-1)
+	, bPreviousUseFixedTimeStep(false)
+	, PreviousFixedTimeStepDelta(1 / 30.0)
+{
+	if (!IsTemplate() && FSlateApplication::IsInitialized())
+	{
+		if (!FApp::CanEverRender() || FSlateApplication::Get().IsRenderingOffScreen())
+		{
+			SetIsRenderingOffscreen(true);
+		}
+	}
+}
+
 void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 {
 	Super::Start(InJob);
@@ -66,8 +84,11 @@ void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 	ULevelSequence* LevelSequence = Cast<ULevelSequence>(InJob->Sequence.TryLoad());
 	if (!LevelSequence)
 	{
-		FText FailureReason = LOCTEXT("InvalidSequenceFailureDialog", "One or more jobs in the queue has an invalid/null sequence.");
-		FMessageDialog::Open(EAppMsgType::Ok, FailureReason);
+		if(!IsRenderingOffscreen())
+		{
+			FText FailureReason = LOCTEXT("InvalidSequenceFailureDialog", "One or more jobs in the queue has an invalid/null sequence.");
+			FMessageDialog::Open(EAppMsgType::Ok, FailureReason);
+		}
 
 		OnExecutorFinishedImpl();
 		return;
@@ -79,8 +100,11 @@ void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 	const bool bAllMapsValid = UMoviePipelineEditorBlueprintLibrary::IsMapValidForRemoteRender(Queue->GetJobs());
 	if (!bAllMapsValid)
 	{
-		FText FailureReason = LOCTEXT("UnsavedMapFailureDialog", "One or more jobs in the queue have an unsaved map as their target map. Maps must be saved at least once before rendering.");
-		FMessageDialog::Open(EAppMsgType::Ok, FailureReason);
+		if(!IsRenderingOffscreen())
+		{
+			FText FailureReason = LOCTEXT("UnsavedMapFailureDialog", "One or more jobs in the queue have an unsaved map as their target map. Maps must be saved at least once before rendering, and then the job must be manually updated to point to the newly saved map.");
+			FMessageDialog::Open(EAppMsgType::Ok, FailureReason);
+		}
 
 		OnExecutorFinishedImpl();
 		return;
@@ -102,7 +126,7 @@ void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 		.SizingRule(ESizingRule::UserSized);
 
 	WeakCustomWindow = CustomWindow;
-	FSlateApplication::Get().AddWindow(CustomWindow);
+	FSlateApplication::Get().AddWindow(CustomWindow, !IsRenderingOffscreen());
 
 	// Initialize our own copy of the Editor Play settings which we will adjust defaults on.
 	ULevelEditorPlaySettings* PlayInEditorSettings = NewObject<ULevelEditorPlaySettings>();
@@ -117,6 +141,8 @@ void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 	Params.EditorPlaySettings = PlayInEditorSettings;
 	Params.CustomPIEWindow = CustomWindow;
 	Params.GlobalMapOverride = InJob->Map.GetAssetPathString();
+	// Don't allow the online subsystem to try and authenticate as it will delay PIE startup and no PIE world will exist when PostPIEStarted is called.
+	Params.bAllowOnlineSubsystem = false;
 
 	// Initialize the transient settings so that they will exist in time for the GameOverrides check.
 	InJob->GetConfiguration()->InitializeTransientSettings();
@@ -167,6 +193,7 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 	if(!ExecutingWorld)
 	{
 		// This only happens if PIE startup fails and they've usually gotten a pop-up dialog already.
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Failed to find a PIE UWorld after OnPIEStartupFinished!"));
 		OnExecutorFinishedImpl();
 		return;
 	}
@@ -178,11 +205,16 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 	// Allow the user to have overridden which Pipeline is actually run. This is an unlikely scenario but allows
 	// the user to create their own implementation while still re-using the rest of our UI and infrastructure.
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	TSubclassOf<UMoviePipeline> PipelineClass = ProjectSettings->DefaultPipeline;
+	TSubclassOf<UMoviePipeline> PipelineClass = ProjectSettings->DefaultPipeline.TryLoadClass<UMoviePipeline>();
+	if (!PipelineClass)
+	{
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Failed to load project specified MoviePipeline class type!"));
+		OnExecutorFinishedImpl();
+		return;
+	}
 
 	// This Pipeline belongs to the world being created so that they have context for things they execute.
 	ActiveMoviePipeline = NewObject<UMoviePipeline>(ExecutingWorld, PipelineClass);
-	ActiveMoviePipeline->DebugWidgetClass = DebugWidgetClass;
 	
 	// We allow users to set a multi-frame delay before we actually run the Initialization function and start thinking.
 	// This solves cases where there are engine systems that need to finish loading before we do anything.
@@ -194,9 +226,11 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 	// Listen for when the pipeline thinks it has finished.
 	ActiveMoviePipeline->OnMoviePipelineWorkFinished().AddUObject(this, &UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished);
 	ActiveMoviePipeline->OnMoviePipelineShotWorkFinished().AddUObject(this, &UMoviePipelinePIEExecutor::OnJobShotFinished);
+	ActiveMoviePipeline->SetViewportInitArgs(ViewportInitArgs);
 	
 	if (ExecutorSettings->InitialDelayFrameCount == 0)
 	{
+		OnIndividualJobStartedImpl(Queue->GetJobs()[CurrentPipelineIndex]);
 		ActiveMoviePipeline->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
 		RemainingInitializationFrames = -1;
 	}
@@ -220,6 +254,7 @@ void UMoviePipelinePIEExecutor::OnTick()
 				ActiveMoviePipeline->SetInitializationTime(CustomInitializationTime.GetValue());
 			}
 
+			OnIndividualJobStartedImpl(Queue->GetJobs()[CurrentPipelineIndex]);
 			ActiveMoviePipeline->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
 		}
 
@@ -315,6 +350,12 @@ void UMoviePipelinePIEExecutor::DelayedFinishNotification()
 	// Now that another frame has passed and we should be OK to start another PIE session, notify our owner.
 	OnIndividualPipelineFinished(nullptr);
 }
+void UMoviePipelinePIEExecutor::OnIndividualJobStartedImpl(UMoviePipelineExecutorJob* InJob)
+{
+	// Broadcast to both Native and Python/BP
+	OnIndividualJobStartedDelegateNative.Broadcast(InJob);
+	OnIndividualJobStartedDelegate.Broadcast(InJob);
+}
 
 void UMoviePipelinePIEExecutor::OnIndividualJobFinishedImpl(FMoviePipelineOutputData InOutputData)
 {
@@ -329,3 +370,4 @@ void UMoviePipelinePIEExecutor::OnIndividualJobFinishedImpl(FMoviePipelineOutput
 }
 
 #undef LOCTEXT_NAMESPACE // "MoviePipelinePIEExecutor"
+

@@ -4,34 +4,61 @@
 #include "BlueprintEditorModule.h"
 
 #include "BlueprintDebugger.h"
-#include "Editor.h"
-#include "Modules/ModuleManager.h"
-#include "EditorUndoClient.h"
-#include "Logging/TokenizedMessage.h"
-#include "Misc/ConfigCacheIni.h"
-#include "UObject/UObjectHash.h"
-#include "Serialization/ArchiveReplaceObjectRef.h"
 #include "BlueprintEditor.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "Kismet2/KismetDebugUtilities.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "Editor/LevelEditor/Public/LevelEditor.h"
-#include "UserDefinedEnumEditor.h"
-#include "MessageLogInitializationOptions.h"
-#include "IMessageLogListing.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
-#include "Misc/UObjectToken.h"
-#include "InstancedStaticMeshSCSEditorCustomization.h"
-#include "InstancedReferenceSubobjectHelper.h"
-#include "ISettingsModule.h"
-#include "UserDefinedStructureEditor.h"
-#include "EdGraphUtilities.h"
 #include "BlueprintGraphPanelPinFactory.h"
-#include "WatchPointViewer.h"
-#include "KismetCompiler.h"
-#include "KismetWidgets.h"
 #include "BlueprintNamespaceRegistry.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "CoreGlobals.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphUtilities.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/Transactor.h"
+#include "EditorUndoClient.h"
+#include "Framework/Commands/UICommandList.h"
+#include "HAL/PlatformCrt.h"
+#include "IMessageLogListing.h"
+#include "ISettingsModule.h"
+#include "InstancedReferenceSubobjectHelper.h"
+#include "InstancedStaticMeshSCSEditorCustomization.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "KismetWidgets.h"
+#include "LevelEditor.h"
+#include "Logging/LogVerbosity.h"
+#include "Logging/TokenizedMessage.h"
+#include "MessageLogInitializationOptions.h"
+#include "MessageLogModule.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Parse.h"
+#include "Misc/UObjectToken.h"
+#include "Modules/ModuleManager.h"
 #include "SPinValueInspector.h"
+#include "Serialization/ArchiveReplaceObjectRef.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/TypeHash.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UserDefinedEnumEditor.h"
+#include "UserDefinedStructureEditor.h"
+
+class AActor;
+class FDetailsViewObjectFilter;
+class FExtender;
+class IDetailRootObjectCustomization;
+class IToolkitHost;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "BlueprintEditor"
 
@@ -367,9 +394,11 @@ void FBlueprintEditorModule::UnregisterSCSEditorCustomization(const FName& InCom
 	SCSEditorCustomizations.Remove(InComponentName);
 }
 
-void FBlueprintEditorModule::RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization)
+FDelegateHandle FBlueprintEditorModule::RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization)
 {
+	FDelegateHandle Result = InOnGetVariableCustomization.GetHandle();
 	VariableCustomizations.Add(InFieldClass, InOnGetVariableCustomization);
+	return Result;
 }
 
 void FBlueprintEditorModule::UnregisterVariableCustomization(FFieldClass* InFieldClass)
@@ -377,14 +406,38 @@ void FBlueprintEditorModule::UnregisterVariableCustomization(FFieldClass* InFiel
 	VariableCustomizations.Remove(InFieldClass);
 }
 
-void FBlueprintEditorModule::RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization)
+void FBlueprintEditorModule::UnregisterVariableCustomization(FFieldClass* InFieldClass, FDelegateHandle InHandle)
 {
+	for (TMultiMap<FFieldClass*, FOnGetVariableCustomizationInstance>::TKeyIterator It = VariableCustomizations.CreateKeyIterator(InFieldClass); It; ++It)
+	{
+		if (It.Value().GetHandle() == InHandle)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+FDelegateHandle FBlueprintEditorModule::RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization)
+{
+	FDelegateHandle Result = InOnGetLocalVariableCustomization.GetHandle();
 	LocalVariableCustomizations.Add(InFieldClass, InOnGetLocalVariableCustomization);
+	return Result;
 }
 
 void FBlueprintEditorModule::UnregisterLocalVariableCustomization(FFieldClass* InFieldClass)
 {
 	LocalVariableCustomizations.Remove(InFieldClass);
+}
+
+void FBlueprintEditorModule::UnregisterLocalVariableCustomization(FFieldClass* InFieldClass, FDelegateHandle InHandle)
+{
+	for (TMultiMap<FFieldClass*, FOnGetVariableCustomizationInstance>::TKeyIterator It = LocalVariableCustomizations.CreateKeyIterator(InFieldClass); It; ++It)
+	{
+		if (It.Value().GetHandle() == InHandle)
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 void FBlueprintEditorModule::RegisterGraphCustomization(const UEdGraphSchema* InGraphSchema, FOnGetGraphCustomizationInstance InOnGetGraphCustomization)
@@ -395,6 +448,24 @@ void FBlueprintEditorModule::RegisterGraphCustomization(const UEdGraphSchema* In
 void FBlueprintEditorModule::UnregisterGraphCustomization(const UEdGraphSchema* InGraphSchema)
 {
 	GraphCustomizations.Remove(InGraphSchema);
+}
+
+FDelegateHandle FBlueprintEditorModule::RegisterFunctionCustomization(TSubclassOf<UK2Node_EditablePinBase> InFieldClass, FOnGetFunctionCustomizationInstance InOnGetFunctionCustomization)
+{
+	FDelegateHandle Result = InOnGetFunctionCustomization.GetHandle();
+	FunctionCustomizations.Add(InFieldClass, InOnGetFunctionCustomization);
+	return Result;
+}
+
+void FBlueprintEditorModule::UnregisterFunctionCustomization(TSubclassOf<UK2Node_EditablePinBase> InFieldClass, FDelegateHandle InHandle)
+{
+	for (TMultiMap<TSubclassOf<UK2Node_EditablePinBase>, FOnGetFunctionCustomizationInstance>::TKeyIterator It = FunctionCustomizations.CreateKeyIterator(InFieldClass); It; ++It)
+	{
+		if (It.Value().GetHandle() == InHandle)
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeVariable(FFieldClass* InFieldClass, TSharedPtr<IBlueprintEditor> InBlueprintEditor)
@@ -414,13 +485,17 @@ TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeVariab
 
 		for (FFieldClass* ClassToQuery : ParentClassesToQuery)
 		{
-			FOnGetVariableCustomizationInstance* CustomizationDelegate = VariableCustomizations.Find(ClassToQuery);
-			if (CustomizationDelegate && CustomizationDelegate->IsBound())
+			TArray<FOnGetVariableCustomizationInstance*, TInlineAllocator<4>> CustomizationDelegates;
+			VariableCustomizations.MultiFindPointer(ClassToQuery, CustomizationDelegates, false);
+			for (FOnGetVariableCustomizationInstance* CustomizationDelegate : CustomizationDelegates)
 			{
-				TSharedPtr<IDetailCustomization> Customization = CustomizationDelegate->Execute(InBlueprintEditor);
-				if(Customization.IsValid())
-				{ 
-					DetailsCustomizations.Add(Customization);
+				if (CustomizationDelegate && CustomizationDelegate->IsBound())
+				{
+					TSharedPtr<IDetailCustomization> Customization = CustomizationDelegate->Execute(InBlueprintEditor);
+					if (Customization.IsValid())
+					{
+						DetailsCustomizations.Add(Customization);
+					}
 				}
 			}
 		}
@@ -463,6 +538,43 @@ TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeGraph(
 	return DetailsCustomizations;
 }
 
+TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeFunction(const TSubclassOf<UK2Node_EditablePinBase> InFunctionClass, TSharedPtr<IBlueprintEditor> InBlueprintEditor)
+{
+	TArray<TSharedPtr<IDetailCustomization>> DetailsCustomizations;
+	TArray<UClass*> ParentPinClassesToQuery;
+	if (InFunctionClass)
+	{
+		UClass* FunctionClass = InFunctionClass.Get();
+		ParentPinClassesToQuery.Add(FunctionClass);
+
+		UClass* ParentSchemaClass = FunctionClass->GetSuperClass();
+		while (ParentSchemaClass && ParentSchemaClass->IsChildOf(UK2Node_EditablePinBase::StaticClass()))
+		{
+			ParentPinClassesToQuery.Add(ParentSchemaClass);
+			ParentSchemaClass = ParentSchemaClass->GetSuperClass();
+		}
+
+		for (UClass* ClassToQuery : ParentPinClassesToQuery)
+		{
+			TArray<FOnGetFunctionCustomizationInstance*, TInlineAllocator<4>> CustomizationDelegates;
+			FunctionCustomizations.MultiFindPointer(ClassToQuery, CustomizationDelegates, false);
+			for (FOnGetFunctionCustomizationInstance* CustomizationDelegate : CustomizationDelegates)
+			{
+				if (CustomizationDelegate && CustomizationDelegate->IsBound())
+				{
+					TSharedPtr<IDetailCustomization> Customization = CustomizationDelegate->Execute(InBlueprintEditor);
+					if (Customization.IsValid())
+					{
+						DetailsCustomizations.Add(Customization);
+					}
+				}
+			}
+		}
+	}
+
+	return DetailsCustomizations;
+}
+
 void FBlueprintEditorModule::PrepareAutoGeneratedDefaultEvents()
 {
 	// Load up all default events that should be spawned for Blueprints that are children of specific classes
@@ -480,7 +592,7 @@ void FBlueprintEditorModule::PrepareAutoGeneratedDefaultEvents()
 			continue;
 		}
 
-		UClass* FoundTargetClass = FindObject<UClass>(ANY_PACKAGE, *TargetClassName, true);
+		UClass* FoundTargetClass = FindFirstObject<UClass>(*TargetClassName, EFindFirstObjectOptions::None, ELogVerbosity::Fatal, TEXT("looking for DefaultEventNodes"));
 		if(FoundTargetClass)
 		{
 			FString TargetEventFunction;

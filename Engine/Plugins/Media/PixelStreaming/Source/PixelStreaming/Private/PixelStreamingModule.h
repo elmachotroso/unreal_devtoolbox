@@ -5,87 +5,79 @@
 #include "IPixelStreamingModule.h"
 #include "RHI.h"
 #include "Tickable.h"
-#include "InputDevice.h"
+#include "PixelStreamingProtocol.h"
 
-class AController;
-class AGameModeBase;
-class APlayerController;
-class FSceneViewport;
 class UPixelStreamingInput;
 class SWindow;
 
-namespace UE
+namespace UE::PixelStreaming
 {
-	namespace PixelStreaming
+	class FStreamer;
+	class FVideoInputBackBuffer;
+	class FVideoSourceGroup;
+
+	/*
+	 * This plugin allows the back buffer to be sent as a compressed video across a network.
+	 */
+	class FPixelStreamingModule : public IPixelStreamingModule
 	{
-		class FStreamer;
+	public:
+		static IPixelStreamingModule* GetModule();
 
-		/**
-		 * This plugin allows the back buffer to be sent as a compressed video across
-		 * a network.
-		 */
-		class FPixelStreamingModule : public IPixelStreamingModule, public FTickableGameObject
-		{
-		public:
-			static IPixelStreamingModule* GetModule();
+		/** IPixelStreamingModule implementation */
+		virtual void SetCodec(EPixelStreamingCodec Codec) override;
+		virtual EPixelStreamingCodec GetCodec() const override;
+		virtual FReadyEvent& OnReady() override;
+		virtual bool IsReady() override;
+		virtual bool StartStreaming() override;
+		virtual void StopStreaming() override;
+		virtual TSharedPtr<IPixelStreamingStreamer> CreateStreamer(const FString& StreamerId) override;
+		virtual TArray<FString> GetStreamerIds() override;
+		virtual TSharedPtr<IPixelStreamingStreamer> GetStreamer(const FString& StreamerId) override;
+		virtual TSharedPtr<IPixelStreamingStreamer> DeleteStreamer(const FString& StreamerId) override;
+		virtual FString GetDefaultStreamerID() override;
+		virtual FString GetDefaultSignallingURL() override;
+		virtual const Protocol::FPixelStreamingProtocol& GetProtocol() override;
+		
+		virtual void RegisterMessage(Protocol::EPixelStreamingMessageDirection MessageDirection, const FString& MessageType, Protocol::FPixelStreamingInputMessage Message, const TFunction<void(FMemoryReader)>& Handler) override;
+		virtual TFunction<void(FMemoryReader)> FindMessageHandler(const FString& MessageType) override;
+		// These are staying on the module at the moment as theres no way of the BPs knowing which streamer they are relevant to
+		virtual void AddInputComponent(UPixelStreamingInput* InInputComponent) override;
+		virtual void RemoveInputComponent(UPixelStreamingInput* InInputComponent) override;
+		virtual const TArray<UPixelStreamingInput*> GetInputComponents() override;
+		// Don't delete, is used externally to PS
+		virtual void SetExternalVideoSourceFPS(uint32 InFPS) override;
+		virtual rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> CreateExternalVideoSource() override;
+		virtual void ReleaseExternalVideoSource(const webrtc::VideoTrackSourceInterface* InVideoSource) override;
+		virtual TUniquePtr<webrtc::VideoEncoderFactory> CreateVideoEncoderFactory() override;
+		virtual void ForEachStreamer(const TFunction<void(TSharedPtr<IPixelStreamingStreamer>)>& Func) override;
+		/** End IPixelStreamingModule implementation */
 
-		private:
-			/** IModuleInterface implementation */
-			void StartupModule() override;
-			void ShutdownModule() override;
+	private:
+		/** IModuleInterface implementation */
+		void StartupModule() override;
+		void ShutdownModule() override;
+		/** End IModuleInterface implementation */
 
-			TSharedPtr<class IInputDevice> CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
+		/** IInputDeviceModule implementation */
+		virtual TSharedPtr<IInputDevice> CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
+		/** End IInputDeviceModule implementation */
 
-			/** IPixelStreamingModule implementation */
-			IPixelStreamingModule::FReadyEvent& OnReady() override;
-			bool IsReady() override;
-			IInputDevice& GetInputDevice() override;
-			void AddPlayerConfig(TSharedRef<FJsonObject>& JsonObject) override;
-			void SendResponse(const FString& Descriptor) override;
-			void SendCommand(const FString& Descriptor) override;
+		// Own methods
+		void InitDefaultStreamer();
+		bool IsPlatformCompatible() const;
+		void PopulateProtocol();
 
-			/**
-			 * Returns a shared pointer to the device which handles pixel streaming
-			 * input.
-			 * @return The shared pointer to the input device.
-			 */
-			TSharedPtr<FInputDevice> GetInputDevicePtr();
-			void AddInputComponent(UPixelStreamingInput* InInputComponent) override;
-			void RemoveInputComponent(UPixelStreamingInput* InInputComponent) override;
-			const TArray<UPixelStreamingInput*> GetInputComponents() override;
+	private:
+		bool bModuleReady = false;
+		bool bStartupCompleted = false;
+		static IPixelStreamingModule* PixelStreamingModule;
 
-			void FreezeFrame(UTexture2D* Texture) override;
-			void UnfreezeFrame() override;
-			void KickPlayer(FPixelStreamingPlayerId PlayerId);
-			IPixelStreamingAudioSink* GetPeerAudioSink(FPixelStreamingPlayerId PlayerId) override;
-			IPixelStreamingAudioSink* GetUnlistenedAudioSink() override;
-			/** End IPixelStreamingModule implementation */
-
-			// FTickableGameObject
-			bool IsTickableWhenPaused() const override;
-			bool IsTickableInEditor() const override;
-			void Tick(float DeltaTime) override;
-			TStatId GetStatId() const override;
-
-			bool IsPlatformCompatible() const;
-			void UpdateViewport(FSceneViewport* Viewport);
-			void OnBackBufferReady_RenderThread(SWindow& SlateWindow, const FTexture2DRHIRef& BackBuffer);
-			void OnGameModePostLogin(AGameModeBase* GameMode, APlayerController* NewPlayer);
-			void OnGameModeLogout(AGameModeBase* GameMode, AController* Exiting);
-			void SendJpeg(TArray<FColor> RawData, const FIntRect& Rect);
-			void SendFileData(TArray<uint8>& ByteData, FString& MimeType, FString& FileExtension);
-
-			void InitStreamer();
-
-		private:
-			IPixelStreamingModule::FReadyEvent ReadyEvent;
-			TUniquePtr<FStreamer> Streamer;
-			TSharedPtr<FInputDevice> InputDevice;
-			TArray<UPixelStreamingInput*> InputComponents;
-			bool bFrozen = false;
-			bool bCaptureNextBackBufferAndStream = false;
-			double LastVideoEncoderQPReportTime = 0;
-			static IPixelStreamingModule* PixelStreamingModule;
-		};
-	} // namespace PixelStreaming
-} // namespace UE
+		FReadyEvent ReadyEvent;
+		TArray<UPixelStreamingInput*> InputComponents;
+		TSharedPtr<FVideoSourceGroup> ExternalVideoSourceGroup;
+		mutable FCriticalSection StreamersCS;
+		TMap<FString, TSharedPtr<IPixelStreamingStreamer>> Streamers;
+		Protocol::FPixelStreamingProtocol MessageProtocol;
+	};
+} // namespace UE::PixelStreaming

@@ -1,30 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stack/SNiagaraStackFunctionInputValue.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorFontGlyphs.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "INiagaraEditorTypeUtilities.h"
 #include "IStructureDetailsView.h"
-#include "NiagaraConstants.h"
+#include "Modules/ModuleManager.h"
 #include "NiagaraActions.h"
+#include "NiagaraCommon.h"
+#include "NiagaraConstants.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorSettings.h"
 #include "NiagaraEditorStyle.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEditorWidgetsUtilities.h"
+#include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeCustomHlsl.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraParameterCollection.h"
+#include "NiagaraScriptVariable.h"
+#include "NiagaraScriptVariable.h"
+#include "NiagaraSettings.h"
 #include "NiagaraSystem.h"
-#include "ScopedTransaction.h"
+#include "PropertyEditorModule.h"
 #include "SDropTarget.h"
 #include "SNiagaraGraphActionWidget.h"
+#include "SNiagaraParameterDropTarget.h"
 #include "SNiagaraParameterEditor.h"
-#include "Editor/PropertyEditor/Public/PropertyEditorModule.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Modules/ModuleManager.h"
+#include "ScopedTransaction.h"
+#include "Stack/SNiagaraStackIndent.h"
+#include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "ViewModels/NiagaraScratchPadScriptViewModel.h"
@@ -35,24 +43,19 @@
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/Stack/NiagaraStackInputCategory.h"
 #include "ViewModels/Stack/NiagaraStackSummaryViewInputCollection.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Text/SRichTextBlock.h"
-#include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/NiagaraHLSLSyntaxHighlighter.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
-#include "Widgets/Input/SSpinBox.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "NiagaraNodeAssignment.h"
-#include "NiagaraCommon.h"
-#include "NiagaraSettings.h"
-#include "SNiagaraParameterDropTarget.h"
-#include "Stack/SNiagaraStackIndent.h"
+#include "Widgets/Text/SRichTextBlock.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackFunctionInputValue"
 
@@ -106,7 +109,7 @@ void SNiagaraStackFunctionInputValue::Construct(const FArguments& InArgs, UNiaga
 					.Visibility(this, &SNiagaraStackFunctionInputValue::GetInputIconVisibility)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(this, &SNiagaraStackFunctionInputValue::GetInputIconText)
 						.ToolTipText(this, &SNiagaraStackFunctionInputValue::GetInputIconToolTip)
 						.ColorAndOpacity(this, &SNiagaraStackFunctionInputValue::GetInputIconColor)
@@ -146,7 +149,7 @@ void SNiagaraStackFunctionInputValue::Construct(const FArguments& InArgs, UNiaga
 				.Padding(3, 0, 0, 0)
 				[
 					SAssignNew(SetFunctionInputButton, SComboButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.IsFocusable(false)
 					.ForegroundColor(FSlateColor::UseForeground())
 					.OnGetMenuContent(this, &SNiagaraStackFunctionInputValue::OnGetAvailableHandleMenu)
@@ -166,14 +169,14 @@ void SNiagaraStackFunctionInputValue::Construct(const FArguments& InArgs, UNiaga
 					SNew(SButton)
 					.IsFocusable(false)
 					.ToolTipText(LOCTEXT("ResetToolTip", "Reset to the default value"))
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 					.ContentPadding(0)
 					.Visibility(this, &SNiagaraStackFunctionInputValue::GetResetButtonVisibility)
 					.OnClicked(this, &SNiagaraStackFunctionInputValue::ResetButtonPressed)
 					.Content()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+						.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 					]
 				]
 
@@ -186,14 +189,14 @@ void SNiagaraStackFunctionInputValue::Construct(const FArguments& InArgs, UNiaga
 					SNew(SButton)
 					.IsFocusable(false)
 					.ToolTipText(LOCTEXT("ResetToBaseToolTip", "Reset this input to the value defined by the parent emitter"))
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 					.ContentPadding(0)
 					.Visibility(this, &SNiagaraStackFunctionInputValue::GetResetToBaseButtonVisibility)
 					.OnClicked(this, &SNiagaraStackFunctionInputValue::ResetToBaseButtonPressed)
 					.Content()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+						.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 						.ColorAndOpacity(FSlateColor(FLinearColor::Green))
 					]
 				]			
@@ -217,7 +220,7 @@ void SNiagaraStackFunctionInputValue::Construct(const FArguments& InArgs, UNiaga
 			.ButtonContent()
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 				.Text(FText::FromString(FString(TEXT("\xf0ca")/* fa-list-ul */)))
 				.ColorAndOpacity(FStyleColors::AccentYellow)
 			]
@@ -250,10 +253,32 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::ConstructValueWidgets()
 	}
 	case UNiagaraStackFunctionInput::EValueMode::Linked:
 	{
-		return SNew(SNiagaraParameterName)
+		TSharedRef<SWidget> ParameterWidget = SNew(SNiagaraParameterName)
 			.ReadOnlyTextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
 			.ParameterName(this, &SNiagaraStackFunctionInputValue::GetLinkedValueHandleName)
 			.OnDoubleClicked(this, &SNiagaraStackFunctionInputValue::OnLinkedInputDoubleClicked);
+
+		if(FunctionInput->GetLinkedValueHandle().IsUserHandle())
+		{
+			FNiagaraParameterHandle ParameterHandle = FunctionInput->GetLinkedValueHandle();
+			TArray<FNiagaraVariable> UserParameters;
+			FunctionInput->GetSystemViewModel()->GetSystem().GetExposedParameters().GetUserParameters(UserParameters);
+			FNiagaraVariable* MatchingVariable = UserParameters.FindByPredicate([ParameterHandle](const FNiagaraVariable& Variable)
+			{
+				return Variable.GetName().ToString() == ParameterHandle.GetName().ToString();
+			});
+
+			if(MatchingVariable)
+			{
+				FText Tooltip = FNiagaraEditorUtilities::GetScriptVariableForUserParameter(*MatchingVariable, FunctionInput->GetSystemViewModel())->Metadata.Description;
+				if(!Tooltip.IsEmpty())
+				{
+					ParameterWidget->SetToolTipText(Tooltip);
+				}
+			}
+		}
+			
+		return ParameterWidget; 
 	}
 	case UNiagaraStackFunctionInput::EValueMode::Data:
 	{
@@ -279,7 +304,7 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::ConstructValueWidgets()
 				.AutoWidth()
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "RoundButton")
+					.ButtonStyle(FAppStyle::Get(), "RoundButton")
 					.OnClicked(this, &SNiagaraStackFunctionInputValue::ScratchButtonPressed)
 					.ToolTipText(LOCTEXT("OpenInScratchToolTip", "Open this dynamic input in the scratch pad."))
 					.ContentPadding(FMargin(1.0f, 0.0f))
@@ -304,7 +329,7 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::ConstructValueWidgets()
                 [
 	                SNew(SComboButton)
 				    .HasDownArrow(false)
-				    .ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				    .ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				    .ForegroundColor(FSlateColor::UseForeground())
 				    .OnGetMenuContent(this, &SNiagaraStackFunctionInputValue::GetVersionSelectorDropdownMenu)
 				    .ContentPadding(FMargin(2))
@@ -314,7 +339,7 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::ConstructValueWidgets()
 				    .ButtonContent()
 				    [
 				        SNew(STextBlock)
-				        .Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				        .Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 				        .ColorAndOpacity(this, &SNiagaraStackFunctionInputValue::GetVersionSelectorColor)
 				        .Text(FEditorFontGlyphs::Random)
 				    ]
@@ -613,25 +638,11 @@ void SNiagaraStackFunctionInputValue::OnExpressionTextCommitted(const FText& Nam
 
 FReply SNiagaraStackFunctionInputValue::DynamicInputTextDoubleClicked(const FGeometry& MyGeometry, const FPointerEvent& PointerEvent)
 {
-	UNiagaraNodeFunctionCall* DynamicInputNode = FunctionInput->GetDynamicInputNode();
-	if (DynamicInputNode->FunctionScript != nullptr)
+	if (FunctionInput->OpenSourceAsset())
 	{
-		if (DynamicInputNode->FunctionScript->IsAsset())
-		{
-			DynamicInputNode->FunctionScript->VersionToOpenInEditor = DynamicInputNode->SelectedScriptVersion;
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(DynamicInputNode->FunctionScript);
-			return FReply::Handled();
-		}
-		else
-		{
-			TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchPadScriptViewModel = FunctionInput->GetSystemViewModel()->GetScriptScratchPadViewModel()->GetViewModelForScript(DynamicInputNode->FunctionScript);
-			if(ScratchPadScriptViewModel.IsValid())
-			{
-				FunctionInput->GetSystemViewModel()->GetScriptScratchPadViewModel()->FocusScratchPadScriptViewModel(ScratchPadScriptViewModel.ToSharedRef());
-				return FReply::Handled();
-			}
-		}
+		return FReply::Handled();
 	}
+	
 	return FReply::Unhandled();
 }
 
@@ -643,7 +654,7 @@ FReply SNiagaraStackFunctionInputValue::OnLinkedInputDoubleClicked(const FGeomet
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> CollectionAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetFName(), CollectionAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetClassPathName(), CollectionAssets);
 
 	for (FAssetData& CollectionAsset : CollectionAssets)
 	{
@@ -684,7 +695,7 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::OnGetAvailableHandleMenu()
     .OnSourceFiltersChanged(this, &SNiagaraStackFunctionInputValue::TriggerRefresh);
 	
 	TSharedRef<SBorder> MenuWidget = SNew(SBorder)
-	.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+	.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 	.Padding(5)
 	[
 		SNew(SVerticalBox)
@@ -779,7 +790,7 @@ FReply SNiagaraStackFunctionInputValue::ResetButtonPressed() const
 
 EVisibility SNiagaraStackFunctionInputValue::GetResetToBaseButtonVisibility() const
 {
-	if (FunctionInput->HasBaseEmitter())
+	if (FunctionInput->HasBaseEmitter() && FunctionInput->GetEmitterViewModel().IsValid())
 	{
 		return FunctionInput->CanResetToBase() ? EVisibility::Visible : EVisibility::Hidden;
 	}
@@ -918,7 +929,7 @@ TArray<TSharedPtr<FNiagaraMenuAction_Generic>> SNiagaraStackFunctionInputValue::
 		FVersionedNiagaraScriptData* ScriptData = DynamicInputScript->GetLatestScriptData();
 		bool bIsInLibrary = ScriptData->LibraryVisibility == ENiagaraScriptLibraryVisibility::Library;
 		const FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(DynamicInputScript->GetFName(), bIsInLibrary);
-		const FText Tooltip = FNiagaraEditorUtilities::FormatScriptDescription(ScriptData->Description, *DynamicInputScript->GetPathName(), bIsInLibrary);
+		const FText Tooltip = FNiagaraEditorUtilities::FormatScriptDescription(ScriptData->Description, FSoftObjectPath(DynamicInputScript), bIsInLibrary);
 		TTuple<EScriptSource, FText> Source = FNiagaraEditorUtilities::GetScriptSource(FAssetData(DynamicInputScript));
 
 		// scratch pad dynamic inputs are always considered to be in the library and will have Niagara as the source
@@ -953,7 +964,7 @@ void SNiagaraStackFunctionInputValue::ShowReassignDynamicInputScriptMenu()
 	.OnSourceFiltersChanged(this, &SNiagaraStackFunctionInputValue::TriggerRefresh);
 	
 	TSharedRef<SBorder> MenuWidget = SNew(SBorder)
-	.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+	.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 	.Padding(5)
 	[
 		SNew(SVerticalBox)		
@@ -1071,7 +1082,7 @@ TArray<TSharedPtr<FNiagaraMenuAction_Generic>> SNiagaraStackFunctionInputValue::
 			FVersionedNiagaraScriptData* ScriptData = DynamicInputScript->GetLatestScriptData();
 			bool bIsInLibrary = ScriptData->LibraryVisibility == ENiagaraScriptLibraryVisibility::Library;
 			const FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(DynamicInputScript->GetFName(), bIsInLibrary);
-			const FText Tooltip = FNiagaraEditorUtilities::FormatScriptDescription(ScriptData->Description, *DynamicInputScript->GetPathName(), bIsInLibrary);
+			const FText Tooltip = FNiagaraEditorUtilities::FormatScriptDescription(ScriptData->Description, FSoftObjectPath(DynamicInputScript), bIsInLibrary);
 
 			// scratch pad dynamic inputs are always considered to be in the library and will have Niagara as the source
 			if(ScratchPadDynamicInputs.Contains(DynamicInputScript))
@@ -1206,7 +1217,7 @@ TArray<TSharedPtr<FNiagaraMenuAction_Generic>> SNiagaraStackFunctionInputValue::
 		}
 	}
 
-	if (bIsDataInterfaceOrObject == false)
+	if (bIsDataInterfaceOrObject == false && FunctionInput->SupportsCustomExpressions())
 	{
 		// Leaving the internal usage of bIsDataInterfaceObject that the tooltip and disabling will work properly when they're moved out of a graph action menu.
 		const FText DisplayName = LOCTEXT("ExpressionLabel", "New Expression");
@@ -1324,7 +1335,7 @@ TSharedRef<SWidget> SNiagaraStackFunctionInputValue::OnGenerateWidgetForCategory
 
 	return SNew(SRichTextBlock)
         .Text(TextContent)
-        .DecoratorStyleSet(&FEditorStyle::Get())
+        .DecoratorStyleSet(&FAppStyle::Get())
         .TextStyle(FNiagaraEditorStyle::Get(), "ActionMenu.HeadingTextBlock");
 }
 
@@ -1377,7 +1388,7 @@ void SNiagaraStackFunctionInputValue::TriggerRefresh(const TMap<EScriptSource, b
 
 const FSlateBrush* SNiagaraStackFunctionInputValue::GetFilteredViewIcon() const
 {
-	return FEditorStyle::GetBrush(TEXT("TextureEditor.GreenChannel.Small"));
+	return FAppStyle::GetBrush(TEXT("TextureEditor.GreenChannel.Small"));
 }
 
 EVisibility SNiagaraStackFunctionInputValue::GetFilteredViewContextButtonVisibility() const

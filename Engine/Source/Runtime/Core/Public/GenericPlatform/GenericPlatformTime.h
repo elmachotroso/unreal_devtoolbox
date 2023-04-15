@@ -2,11 +2,12 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
 
 #if PLATFORM_HAS_BSD_TIME 
-	#include <sys/time.h>
+	#include <sys/time.h> // IWYU pragma: export
 #endif
 
 

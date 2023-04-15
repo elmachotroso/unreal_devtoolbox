@@ -28,6 +28,8 @@
 #include "Animation/AnimData/AnimDataModel.h"
 #include "Animation/AnimSequenceHelpers.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimStreamable)
+
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Animation);
 
 DECLARE_CYCLE_STAT(TEXT("AnimStreamable GetAnimationPose"), STAT_AnimStreamable_GetAnimationPose, STATGROUP_Anim);
@@ -159,6 +161,13 @@ void UAnimStreamable::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 	
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.IsLoading() && 
+	    Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AnimationDataModelInterface_BackedOut &&
+		Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::BackoutAnimationDataModelInterface)
+	{
+		UE_LOG(LogAnimation, Fatal, TEXT("This package was saved with a version that had to be backed out and is no longer able to be loaded."));
+	}
 
 	bool bCooked = Ar.IsCooking();
 	Ar << bCooked;
@@ -566,7 +575,7 @@ void UAnimStreamable::RequestCompressedData(const ITargetPlatform* Platform)
 
 	PlatformData.Chunks.AddDefaulted(NumChunks);
 
-	const FString BaseDDCKey = GetBaseDDCKey(NumChunks);
+	const FString BaseDDCKey = GetBaseDDCKey(NumChunks, Platform);
 
 	const bool bInAllowAlternateCompressor = false;
 	const bool bInOutput				   = false;
@@ -581,7 +590,7 @@ void UAnimStreamable::RequestCompressedData(const ITargetPlatform* Platform)
 		const uint32 FrameStart = ChunkIndex * FramesPerChunk;
 		const uint32 FrameEnd = bLastChunk ? NumFramesToChunk : (ChunkIndex + 1) * FramesPerChunk;
 
-		RequestCompressedDataForChunk(ChunkDDCKey, PlatformData.Chunks[ChunkIndex], ChunkIndex, FrameStart, FrameEnd, CompressContext);
+		RequestCompressedDataForChunk(ChunkDDCKey, PlatformData.Chunks[ChunkIndex], ChunkIndex, FrameStart, FrameEnd, CompressContext, Platform);
 	}
 
 	if (bIsRunningPlatform)
@@ -626,7 +635,7 @@ void MakeKeyChunk(const TArray<KeyType>& SrcKeys, TArray<KeyType>& DestKeys, int
 	}
 }
 
-void UAnimStreamable::RequestCompressedDataForChunk(const FString& ChunkDDCKey, FAnimStreamableChunk& Chunk, const int32 ChunkIndex, const uint32 FrameStart, const uint32 FrameEnd, TSharedRef<FAnimCompressContext> CompressContext)
+void UAnimStreamable::RequestCompressedDataForChunk(const FString& ChunkDDCKey, FAnimStreamableChunk& Chunk, const int32 ChunkIndex, const uint32 FrameStart, const uint32 FrameEnd, TSharedRef<FAnimCompressContext> CompressContext, const ITargetPlatform* Platform)
 {
 	// Need to unify with Anim Sequence!
 
@@ -654,7 +663,7 @@ void UAnimStreamable::RequestCompressedDataForChunk(const FString& ChunkDDCKey, 
 		}
 		else
 		{
-			FCompressibleAnimRef CompressibleData = MakeShared<FCompressibleAnimData, ESPMode::ThreadSafe>(BoneCompressionSettings, CurveCompressionSettings, GetSkeleton(), Interpolation, Chunk.SequenceLength, ChunkNumFrames+1);
+			FCompressibleAnimRef CompressibleData = MakeShared<FCompressibleAnimData, ESPMode::ThreadSafe>(BoneCompressionSettings, CurveCompressionSettings, GetSkeleton(), Interpolation, Chunk.SequenceLength, ChunkNumFrames+1, Platform);
 
 			const TArray<FBoneAnimationTrack>& BoneAnimationTracks = DataModel->GetBoneAnimationTracks();
 			CompressibleData->TrackToSkeletonMapTable.Empty();
@@ -741,7 +750,7 @@ void UAnimStreamable::UpdateRawData()
 	}
 }
 
-FString UAnimStreamable::GetBaseDDCKey(uint32 NumChunks) const
+FString UAnimStreamable::GetBaseDDCKey(uint32 NumChunks, const ITargetPlatform* TargetPlatform) const
 {
 	//Make up our content key consisting of:
 	//  * Streaming Anim Chunk logic version
@@ -754,7 +763,7 @@ FString UAnimStreamable::GetBaseDDCKey(uint32 NumChunks) const
 	FArcToHexString ArcToHexString;
 
 	ArcToHexString.Ar << NumChunks;
-	BoneCompressionSettings->PopulateDDCKey(ArcToHexString.Ar);
+	BoneCompressionSettings->PopulateDDCKey(UE::Anim::Compression::FAnimDDCKeyArgs(*this, TargetPlatform), ArcToHexString.Ar);
 	CurveCompressionSettings->PopulateDDCKey(ArcToHexString.Ar);
 
 	FString Ret = FString::Printf(TEXT("%s%s%s%s_%s"),
@@ -809,3 +818,4 @@ bool UAnimComposite::HasRootMotion() const
 	return AnimationTrack.GetAdditiveBasePose();
 }*/
 #endif 
+

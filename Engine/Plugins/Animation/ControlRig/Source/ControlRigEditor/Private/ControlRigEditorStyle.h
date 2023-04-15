@@ -97,18 +97,18 @@ public:
 			
 			// icons for control units
 			Set("ControlRig.RigUnit", new IMAGE_BRUSH("Slate/ControlRigUnit_16x", Icon16x16));
+			Set("ControlRig.Template", new IMAGE_BRUSH("Slate/Template_16x", Icon16x16));
 
 			Set("ControlRig.AutoCompileGraph", new IMAGE_BRUSH("Slate/AutoCompile", Icon20x20));
 			Set("ControlRig.AutoCompileGraph.Small", new IMAGE_BRUSH("Slate/AutoCompile", Icon20x20));
 
 			{
 				FContentRootBracket Bracket(this, EngineEditorSlateDir);
-				Set("ControlRig.SetupMode", new IMAGE_BRUSH_SVG("Starship/Common/Adjust", Icon40x40));
-				Set("ControlRig.SetupMode.Small", new IMAGE_BRUSH_SVG("Starship/Common/Adjust", Icon20x20));
-				Set("ControlRig.UpdateEvent", new IMAGE_BRUSH("Icons/diff_next_40x", Icon40x40));
-				Set("ControlRig.InverseEvent", new IMAGE_BRUSH("Icons/diff_prev_40x", Icon40x40));
-				Set("ControlRig.UpdateAndInverse", new IMAGE_BRUSH("Icons/Loop_40x", Icon40x40));
-				Set("ControlRig.InverseAndUpdate", new IMAGE_BRUSH("Icons/Loop_40x", Icon40x40));
+				Set("ControlRig.ConstructionMode", new IMAGE_BRUSH_SVG("Starship/Common/Adjust", Icon40x40));
+				Set("ControlRig.ConstructionMode.Small", new IMAGE_BRUSH_SVG("Starship/Common/Adjust", Icon20x20));
+				Set("ControlRig.ForwardsSolveEvent", new IMAGE_BRUSH("Icons/diff_next_40x", Icon40x40));
+				Set("ControlRig.BackwardsSolveEvent", new IMAGE_BRUSH("Icons/diff_prev_40x", Icon40x40));
+				Set("ControlRig.BackwardsAndForwardsSolveEvent", new IMAGE_BRUSH("Icons/Loop_40x", Icon40x40));
 			}
 
 			Set("ControlRig.Bug.Dot", new IMAGE_BRUSH("Slate/ControlRig_BugDot_32x", Icon16x16));
@@ -149,6 +149,7 @@ public:
 			Set("ControlRig.Tree.BoneUser", new IMAGE_BRUSH("Slate/BoneNonWeighted_16x", Icon16x16));
 			Set("ControlRig.Tree.BoneImported", new IMAGE_BRUSH("Slate/Bone_16x", Icon16x16));
 			Set("ControlRig.Tree.Control", new IMAGE_BRUSH("Slate/RigControlCircle_16x", Icon16x16));
+			Set("ControlRig.Tree.ProxyControl", new IMAGE_BRUSH("Slate/ProxyControl1_16x", Icon16x16));
 			Set("ControlRig.Tree.Null", new IMAGE_BRUSH("Slate/Null_16x", Icon16x16));
 			Set("ControlRig.Tree.RigidBody", new IMAGE_BRUSH("Slate/RigidBody_16x", Icon16x16));
 			Set("ControlRig.Tree.Socket", new IMAGE_BRUSH("Slate/Socket_16x", Icon16x16));

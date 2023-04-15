@@ -17,12 +17,15 @@ class UNREALED_API UBlueprintEditorProjectSettings : public UDeveloperSettings
 
 public:
 	/**
-	 * Flag to disable faster compiles for individual blueprints if they have no function signature
-	 * changes. This flag is deprecated! In 4.21 there will be no way to force all dependencies to 
-	 * compile when no changes are detected. Report any issues immediately.
+	 * [DEPRECATED] Flag to disable faster compiles for individual blueprints if they have no function signature
+	 * changes.
+	 * 
+	 * If you still require this functionality for debugging purposes, it has moved to a console variable that can be
+	 * temporarily enabled during an editor session to bypass the fast path: 'BP.bForceAllDependenciesToRecompile 1'.
 	 */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints, DisplayName = "Force All Dependencies To Recompile (DEPRECATED)")
-	uint8 bForceAllDependenciesToRecompile:1;
+	UE_DEPRECATED(5.1, "Fast path dependency compilation is now the standard behavior. As a result, this setting is no longer in use, and will eventually be removed.")
+	UPROPERTY(config)
+	uint8 bForceAllDependenciesToRecompile : 1;
 
 	/** If enabled, the editor will load packages to look for soft references to actors when deleting/renaming them. This can be slow in large projects so disable this to improve performance but increase the chance of breaking blueprints/sequences that use soft actor references */
 	UPROPERTY(EditAnywhere, config, Category=Actors)
@@ -40,8 +43,8 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Experimental, meta = (EditCondition = "bEnableChildActorExpansionInTreeView"))
 	EChildActorComponentTreeViewVisualizationMode DefaultChildActorTreeViewMode;
 
-	// The list of namespaces to always expose in any Blueprint (for all users of the game/project). Requires Blueprint namespace features to be enabled in editor preferences.
-	UPROPERTY(EditAnywhere, config, Category = Experimental)
+	// A list of namespace identifiers that all Blueprint assets in the project should import by default. Requires Blueprint namespace features to be enabled in editor preferences. Editing this list will also cause any visible Blueprint editor windows to be closed.
+	UPROPERTY(EditAnywhere, config, Category = Blueprints, DisplayName = "Global Namespace Imports (Shared)")
 	TArray<FString> NamespacesToAlwaysInclude;
 
 	/** 
@@ -59,6 +62,14 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, config, Category= Blueprints, DisplayName = "Compiler Messages Disabled Entirely")
 	TArray<FName> DisabledCompilerMessages;
+
+	/**
+	 * List of deprecated UProperties/UFunctions to supress warning messages for - useful for source changes
+	 * that would otherwise cause content warnings
+	 * The easiest way to populate this list is using the context menu on nodes with deprecated references
+	 */
+	UPROPERTY(EditAnywhere, config, Category = Blueprints, DisplayName = "Deprecated Symbols to Supress")
+	TArray<FString> SuppressedDeprecationMessages;
 
 	/**
 	 * Any blueprint deriving from one of these base classes will be allowed to recompile during Play-in-Editor

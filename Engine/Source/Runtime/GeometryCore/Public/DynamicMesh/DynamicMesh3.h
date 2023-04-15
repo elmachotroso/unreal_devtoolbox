@@ -5,13 +5,25 @@
 #pragma once
 
 #include "BoxTypes.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
 #include "FrameTypes.h"
 #include "GeometryTypes.h"
 #include "HAL/Platform.h"
 #include "IndexTypes.h"
 #include "InfoTypes.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
 #include "MathUtil.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
 #include "Quaternion.h"
+#include "Serialization/Archive.h"
+#include "Templates/Function.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 #include "Util/CompactMaps.h"
 #include "Util/DynamicVector.h"
 #include "Util/IndexUtil.h"
@@ -21,13 +33,17 @@
 #include "VectorTypes.h"
 #include "VectorUtil.h"
 
+#include <atomic>
+#include <initializer_list>
+
 namespace UE
 {
 namespace Geometry
 {
 
-class FMeshShapeGenerator;
+class FCompactMaps;
 class FDynamicMeshAttributeSet;
+class FMeshShapeGenerator;
 
 enum class EMeshComponents : uint8
 {
@@ -56,12 +72,21 @@ enum class EMeshComponents : uint8
 * if necessary, as the internal data structure is not exposed
 *
 * Per-vertex Vertex Normals, Colors, and UVs are optional and stored as floats.
+* Note that in practice, these are generally only used as scratch space, in limited 
+* circumstances, usually when needed for performance reasons. Most of our geometry
+* code instead prefers to read attributes from the per-triangle AttributeSet accessed 
+* via Attributes() (see TDynamicMeshOverlay for a description of the structure). For
+* instance, an empty (but existing) attribute set will take precedence over non-empty
+* vertex normals in much of our processing code.
 *
 * For each vertex, VertexEdgeLists[i] is the unordered list of connected edges. The
 * elements of the list are indices into the edges list.
 * This list is unsorted but can be traversed in-order (ie cw/ccw) at some additional cost.
 *
-* Triangles are stored as 3 ints, with optionally a per-triangle integer group id.
+* Triangles are stored as 3 ints, with optionally a per-triangle integer group id. 
+* The group IDs stored here DO get widely used and preserved in our geometry code 
+* (unlike the per-vertex attributes described earlier), even though the AttributeSet
+* can store group IDs as well (potentially in multiple layers).
 *
 * The edges of a triangle are similarly stored as 3 ints, in triangle_edes. If the
 * triangle is [v1,v2,v3], then the triangle edges [e1,e2,e3] are
@@ -167,7 +192,10 @@ protected:
 	/** Extended Attributes for the Mesh (UV layers, Hard Normals, additional Polygroup Layers, etc) */
 	TUniquePtr<FDynamicMeshAttributeSet> AttributeSet{};
 
-	/** Enable/Disable updating of ShapeChangeStamp. This can be problematic in multi-threaded contexts so it is disabled by default. */
+	/** 
+	 * Enable/Disable updating of ShapeChangeStamp. This can be problematic in multi-threaded contexts so it is disabled by default. 
+	 * In fact, it is not suggested that these be used at all (see commment for SetShapeChangeStampEnabled).
+	 */
 	bool bEnableShapeChangeStamp = false;
 	/** If bEnableShapeChangeStamp=true, The shape change stamp is incremented any time a function that modifies the mesh shape or topology is called */
 	std::atomic<uint32> ShapeChangeStamp = 1;
@@ -229,6 +257,13 @@ public:
 
 	/** Discard all data */
 	void Clear();
+
+	/**
+	 * Ensure that all the same extended attributes available in ToMatch are also enabled.
+	 * By default, clears existing attributes, so that there will be an exact match
+	 * If bClearExisting is passed as false, existing attributes are not removed/cleared.
+	 */
+	void EnableMatchingAttributes(const FDynamicMesh3& ToMatch, bool bClearExisting = true);
 
 	/**
 	 * Serialization operator for FDynamicMesh3.
@@ -343,11 +378,18 @@ public:
 	//
 	// Change Tracking support
 	// 
-	// 
+	// Note: May someday be removed (see comment for SetShapeChangeStampEnabled) 
 	// 
 public:
 
-	/** Enable/Disable incrementing of the ShapeChangeStamp */
+	/** 
+	 * Enable/Disable incrementing of the ShapeChangeStamp.
+	 * 
+	 * NOTE: Both change stamps are unreliable in many contexts, and may someday get removed.
+	 * Specifically, they get reset on Clear(), copied to the destination rather than incremented
+	 * in copies and moves, and do not track any changes via access to the buffers directly (through
+	 * GetVerticesBuffer(), etc).
+	 */
 	void SetShapeChangeStampEnabled(bool bEnabled)
 	{
 		bEnableShapeChangeStamp = bEnabled;
@@ -499,6 +541,10 @@ public:
 	/** Call ApplyFunc for each one-ring triangle of a vertex. Currently this is significantly more efficient than VtxTrianglesItr() in many use cases. */
 	void EnumerateVertexTriangles(int32 VertexID, TFunctionRef<void(int32)> ApplyFunc) const;
 
+	/** Call ApplyFunc for each triangle connected to an Edge (1 or 2 triangles) */
+	void EnumerateEdgeTriangles(int32 EdgeID, TFunctionRef<void(int32)> ApplyFunc) const;
+
+
 	//
 	// Mesh Construction
 	//
@@ -515,8 +561,10 @@ public:
 	/** Copy vertex SourceVertexID from existing SourceMesh, returns new vertex id */
 	int AppendVertex(const FDynamicMesh3& SourceMesh, int SourceVertexID);
 
+	/** TriVertices must be distinct and refer to existing, valid vertices */
 	int AppendTriangle(const FIndex3i& TriVertices, int GroupID = 0);
 
+	/** Vertex0, Vertex1, and Vertex2 must be distinct and refer to existing, valid vertices */
 	inline int AppendTriangle(int Vertex0, int Vertex1, int Vertex2, int GroupID = 0)
 	{
 		return AppendTriangle(FIndex3i(Vertex0, Vertex1, Vertex2), GroupID);
@@ -717,6 +765,21 @@ public:
 
 	/** Return edge vertex indices, but oriented based on attached triangle (rather than min-sorted) */
 	FIndex2i GetOrientedBoundaryEdgeV(int EdgeID) const;
+
+	/** Return (triangle, edge_index) representation for given Edge ID */
+	inline FMeshTriEdgeID GetTriEdgeIDFromEdgeID(int EdgeID) const
+	{
+		checkSlow(IsEdge(EdgeID));
+		int32 TriIndex = Edges[EdgeID].Tri.A;
+		FIndex3i TriEdges = TriangleEdges[TriIndex];
+		if (TriEdges.A == EdgeID)
+		{
+			return FMeshTriEdgeID(TriIndex, 0);
+		}
+		{ 
+			return FMeshTriEdgeID(TriIndex, ( TriEdges.B == EdgeID ) ? 1 : 2 );
+		}
+	}
 
 	//
 	// Vertex and Triangle attribute arrays
@@ -1257,7 +1320,7 @@ public:
 	/**
 	 * Returns a debug string that contains mesh statistics and other information
 	 */
-	virtual FString MeshInfoString();
+	virtual FString MeshInfoString() const;
 
 	/**
 	 * Options for the IsSameAs check

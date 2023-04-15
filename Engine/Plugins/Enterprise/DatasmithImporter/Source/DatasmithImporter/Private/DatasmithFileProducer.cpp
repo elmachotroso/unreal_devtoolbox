@@ -22,7 +22,7 @@
 
 #include "Async/ParallelFor.h"
 #include "Algo/Count.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "Containers/UnrealString.h"
 #include "DesktopPlatformModule.h"
@@ -46,6 +46,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstance.h"
+#include "MaterialCachedData.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "ObjectTools.h"
@@ -266,9 +267,9 @@ bool UDatasmithFileProducer::InitTranslator()
 	return true;
 }
 
-TArray<TStrongObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTranslatorImportOptions()
+TArray<TObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTranslatorImportOptions()
 {
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> Result;
+	TArray<TObjectPtr<UDatasmithOptionsBase>> Result;
 
 	if (!ExternalSourcePtr.IsValid() && !InitTranslator())
 	{
@@ -283,19 +284,19 @@ TArray<TStrongObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTrans
 
 		if (IDatasmithTranslator* Translator = TranslatorPtr.Get())
 		{
-			TArray< TStrongObjectPtr<UDatasmithOptionsBase> > Options;
+			TArray< TObjectPtr<UDatasmithOptionsBase> > Options;
 			Translator->GetSceneImportOptions(Options);
 
-			for (TStrongObjectPtr<UDatasmithOptionsBase> Option : Options)
+			for (TObjectPtr<UDatasmithOptionsBase> Option : Options)
 			{
-				UDatasmithOptionsBase* MyOption = DuplicateObject<UDatasmithOptionsBase>(Option.Get(), this);
+				UDatasmithOptionsBase* MyOption = DuplicateObject<UDatasmithOptionsBase>(Option, this);
 				if (UDatasmithCommonTessellationOptions* TesselationOption = Cast<UDatasmithCommonTessellationOptions>(MyOption))
 				{
 					TesselationOption->Options = DefaultTessellationOptions;
 					TranslatorImportOptions.Add(MyOption);
 					continue;
 				}
-				else if (UDatasmithImportOptions* DatasmithOptions = Cast<UDatasmithImportOptions>(Option.Get()))
+				else if (UDatasmithImportOptions* DatasmithOptions = Cast<UDatasmithImportOptions>(Option))
 				{
 					continue;
 				}
@@ -317,7 +318,7 @@ TArray<TStrongObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTrans
 
 	for (UDatasmithOptionsBase* Option : TranslatorImportOptions)
 	{
-		Result.Add(TStrongObjectPtr<UDatasmithOptionsBase>(Option));
+		Result.Add(Option);
 	}
 
 	return MoveTemp(Result);
@@ -508,8 +509,8 @@ void UDatasmithFileProducer::PreventNameCollision()
 	UPackage* MaterialsImportPackage = NewObject< UPackage >( nullptr, *FPaths::Combine( TransientFolderPath, TEXT("Materials") ), RF_Transient );
 	MaterialsImportPackage->FullyLoad();
 
-	UPackage* MasterMaterialsImportPackage = NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/Master")), RF_Transient);
-	MasterMaterialsImportPackage->FullyLoad();
+	UPackage* ReferenceMaterialsImportPackage = NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/Reference")), RF_Transient);
+	ReferenceMaterialsImportPackage->FullyLoad();
 
 	UPackage* LevelSequencesImportPackage = NewObject< UPackage >( nullptr, *FPaths::Combine( TransientFolderPath, TEXT("Animations") ), RF_Transient );
 	LevelSequencesImportPackage->FullyLoad();
@@ -613,7 +614,7 @@ void UDatasmithFileProducer::PreventNameCollision()
 
 						if ( ParentPath.StartsWith( MaterialInstancePath ) )
 						{
-							MoveAsset( MaterialParent, MasterMaterialsImportPackage, true );
+							MoveAsset( MaterialParent, ReferenceMaterialsImportPackage, true );
 							ParentMaterials.Add( MaterialParent );
 						}
 					}
@@ -804,7 +805,7 @@ void UDatasmithFileProducer::OnChangeImportSettings()
 		.Title(FText::Format(LOCTEXT("ImportSettingsTitle", "{0} Import Settings"), FText::FromName(TranslatorPtr->GetFName())))
 		.SizingRule(ESizingRule::Autosized);
 
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> Options = GetTranslatorImportOptions();
+	TArray<TObjectPtr<UDatasmithOptionsBase>> Options = GetTranslatorImportOptions();
 
 	if (Options.Num() == 0)
 	{
@@ -813,7 +814,7 @@ void UDatasmithFileProducer::OnChangeImportSettings()
 	}
 
 	TArray<UObject*> OptionsRaw;
-	for(TStrongObjectPtr<UDatasmithOptionsBase>& ObjectPtr : Options)
+	for(TObjectPtr<UDatasmithOptionsBase>& ObjectPtr : Options)
 	{
 		OptionsRaw.Add(ObjectPtr.Get());
 	}
@@ -1040,10 +1041,10 @@ void UDatasmithDirProducer::OnChangeImportSettings()
 void UDatasmithDirProducer::SetFileProducerSettings()
 {
 	// Set translator options
-	TArray< TStrongObjectPtr<UDatasmithOptionsBase> > Options = FileProducer->GetTranslatorImportOptions();
+	TArray< TObjectPtr<UDatasmithOptionsBase> > Options = FileProducer->GetTranslatorImportOptions();
 
 	bool bHasTesselationOptions = false;
-	for (TStrongObjectPtr<UDatasmithOptionsBase> Option : Options)
+	for (TObjectPtr<UDatasmithOptionsBase> Option : Options)
 	{
 		if (UDatasmithCommonTessellationOptions* TesselationOption = Cast<UDatasmithCommonTessellationOptions>(Option.Get()))
 		{
@@ -1550,7 +1551,7 @@ void FDataprepContentProducerDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 
 FSlateColor FDataprepContentProducerDetails::GetStatusColorAndOpacity() const
 {
-	return  IsProducerSuperseded() ? FLinearColor::Red : FEditorStyle::Get().GetSlateColor("DefaultForeground");
+	return  IsProducerSuperseded() ? FLinearColor::Red : FAppStyle::Get().GetSlateColor("DefaultForeground");
 }
 
 bool FDataprepContentProducerDetails::IsProducerSuperseded() const
@@ -1582,7 +1583,7 @@ void FDatasmithFileProducerDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 
 	TSharedPtr<STextBlock> IconText;
 
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> Options = FileProducer->GetTranslatorImportOptions();
+	TArray<TObjectPtr<UDatasmithOptionsBase>> Options = FileProducer->GetTranslatorImportOptions();
 
 	CustomAssetImportRow.NameContent()
 	[
@@ -1593,7 +1594,7 @@ void FDatasmithFileProducerDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 		.Padding(0, 0, 3, 0)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.IsFocusable(false)
 			.IsEnabled(Options.Num() > 0)
 			.OnClicked_Lambda( [FileProducer]() -> FReply 
@@ -1604,7 +1605,7 @@ void FDatasmithFileProducerDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 			.ToolTipText(LOCTEXT("ChangeImportSettings_Tooltip", "Import Settings"))
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.ColorAndOpacity(FLinearColor::White)
 				.Text(FEditorFontGlyphs::Cog)
 			]
@@ -1615,7 +1616,7 @@ void FDatasmithFileProducerDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 		.AutoWidth()
 		[
 			SAssignNew(IconText, STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(MakeAttributeLambda([=]
 				{
 					return IsProducerSuperseded() ? FEditorFontGlyphs::Exclamation_Triangle : FEditorFontGlyphs::File;
@@ -1817,7 +1818,7 @@ void FDatasmithDirProducerDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 		.Padding(0, 0, 3, 0)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.IsFocusable(false)
 			.OnClicked_Lambda([DirProducer]() -> FReply
 			{
@@ -1827,7 +1828,7 @@ void FDatasmithDirProducerDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 			.ToolTipText(LOCTEXT("ChangeImportSettings_Tooltip", "Import Settings"))
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.ColorAndOpacity(FLinearColor::White)
 				.Text(FEditorFontGlyphs::Cog)
 			]
@@ -1838,7 +1839,7 @@ void FDatasmithDirProducerDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 		.Padding(0, 3, 3, 0)
 		[
 			SAssignNew(IconText, STextBlock)
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+			.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 			.Text(MakeAttributeLambda([=]
 			{
 				return IsProducerSuperseded() ? FEditorFontGlyphs::Exclamation_Triangle : FEditorFontGlyphs::Folder;
@@ -1930,7 +1931,7 @@ void FDatasmithFileProducerUtils::DeletePackagePath( const FString& PathToDelete
 void UDatasmithFileProducer::LoadDefaultSettings()
 {
 	// Read default settings, tessellation and import, for Datasmith file producer
-	const FString DatasmithImporterIni = FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DatasmithImporter") );
+	const FString DatasmithImporterIni = FConfigCacheIni::NormalizeConfigIniPath(FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DatasmithImporter")));
 
 	const TCHAR* TessellationSectionName = TEXT("FileProducerTessellationOptions");
 	if(GConfig->DoesSectionExist( TessellationSectionName, DatasmithImporterIni ))

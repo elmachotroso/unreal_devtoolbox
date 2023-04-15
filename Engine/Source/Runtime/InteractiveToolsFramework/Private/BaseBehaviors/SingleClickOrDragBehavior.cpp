@@ -2,6 +2,8 @@
 
 #include "BaseBehaviors/SingleClickOrDragBehavior.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SingleClickOrDragBehavior)
+
 
 
 void USingleClickOrDragInputBehavior::Initialize(IClickBehaviorTarget* ClickTargetIn, IClickDragBehaviorTarget* DragTargetIn)
@@ -66,7 +68,7 @@ FInputCaptureUpdate USingleClickOrDragInputBehavior::UpdateCapture(const FInputD
 	// check if mouse has moved far enough that we want to swap to drag behavior
 	if (bInDrag == false)
 	{
-		float MouseMovement = FVector2D::Distance(Input.Mouse.Position2D, MouseDownPosition2D);
+		float MouseMovement = static_cast<float>(FVector2D::Distance(Input.Mouse.Position2D, MouseDownPosition2D));
 		if (MouseMovement > ClickDistanceThreshold)
 		{
 			FInputDeviceState StartInput = Input;
@@ -142,3 +144,4 @@ void USingleClickOrDragInputBehavior::OnClickDragReleaseInternal(const FInputDev
 {
 	DragTarget->OnClickRelease(GetDeviceRay(Input));
 }
+

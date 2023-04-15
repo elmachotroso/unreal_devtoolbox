@@ -32,7 +32,7 @@ struct alignas(16) FCacheBuffer
 	};
 	uint32				Size;
 	uint32				Remaining;
-	uint32				_Unused;
+	uint32				_Unused[3];
 	uint32				Underflow; // For packet header
 	uint8				Data[];
 };
@@ -40,7 +40,7 @@ struct alignas(16) FCacheBuffer
 
 
 ////////////////////////////////////////////////////////////////////////////////
-static const uint32		GCacheBufferSize	= 4 << 10;
+static const uint32		GCacheBufferSize	= 64 << 10;
 static const uint32		GCacheCollectorSize	= 1 << 10;
 static FCacheBuffer*	GCacheCollector;	// = nullptr;
 static FCacheBuffer*	GCacheActiveBuffer;	// = nullptr;
@@ -50,6 +50,10 @@ extern FStatistics		GTraceStatistics;
 ////////////////////////////////////////////////////////////////////////////////
 static FCacheBuffer* Writer_CacheCreateBuffer(uint32 Size)
 {
+#if TRACE_PRIVATE_STATISTICS
+	GTraceStatistics.CacheAllocated += Size;
+#endif
+
 	void* Block = Writer_MemoryAllocate(sizeof(FCacheBuffer) + Size, alignof(FCacheBuffer));
 	auto* Buffer = (FCacheBuffer*)Block;
 	Buffer->Size = Size;
@@ -66,6 +70,10 @@ static void Writer_CacheCommit(const FCacheBuffer* Collector)
 	uint32 EncodeMaxSize = GetEncodeMaxSize(InputSize);
 	if (EncodeMaxSize + sizeof(FTidPacketEncoded) > GCacheActiveBuffer->Remaining)
 	{
+#if TRACE_PRIVATE_STATISTICS
+		GTraceStatistics.CacheWaste += GCacheActiveBuffer->Remaining;
+#endif
+
 		// Retire active buffer
 		*(GCacheActiveBuffer->TailNext) = GCacheActiveBuffer;
 		GCacheActiveBuffer->TailNext = nullptr;
@@ -74,17 +82,13 @@ static void Writer_CacheCommit(const FCacheBuffer* Collector)
 		FCacheBuffer* NewBuffer = Writer_CacheCreateBuffer(GCacheBufferSize);
 		NewBuffer->TailNext = &(GCacheActiveBuffer->Next);
 		GCacheActiveBuffer = NewBuffer;
-
-#if TRACE_PRIVATE_STATISTICS
-		GTraceStatistics.CacheWaste += GCacheActiveBuffer->Remaining;
-#endif
 	}
 
 	uint32 Used = GCacheActiveBuffer->Size - GCacheActiveBuffer->Remaining;
 	auto* Packet = (FTidPacketEncoded*)(GCacheActiveBuffer->Data + Used);
 	uint32 OutputSize = Encode(Collector->Data, InputSize, Packet->Data, EncodeMaxSize);
 
-	Packet->PacketSize = OutputSize + sizeof(FTidPacketEncoded);
+	Packet->PacketSize = uint16(OutputSize + sizeof(FTidPacketEncoded));
 	Packet->ThreadId = FTidPacketBase::EncodedMarker | uint16(ETransportTid::Importants);
 	Packet->DecodedSize = uint16(InputSize);
 
@@ -100,6 +104,11 @@ static void Writer_CacheCommit(const FCacheBuffer* Collector)
 void Writer_CacheData(uint8* Data, uint32 Size)
 {
 	Writer_SendData(ETransportTid::Importants, Data, Size);
+
+	if (GCacheCollector == nullptr)
+	{
+		return;
+	}
 
 	while (true)
 	{
@@ -128,6 +137,11 @@ void Writer_CacheData(uint8* Data, uint32 Size)
 ////////////////////////////////////////////////////////////////////////////////
 void Writer_CacheOnConnect()
 {
+	if (GCacheCollector == nullptr)
+	{
+		return;
+	}
+
 	for (FCacheBuffer* Buffer = GCacheHeadBuffer; Buffer != nullptr; Buffer = Buffer->Next)
 	{
 		uint32 Used = Buffer->Size - Buffer->Remaining;

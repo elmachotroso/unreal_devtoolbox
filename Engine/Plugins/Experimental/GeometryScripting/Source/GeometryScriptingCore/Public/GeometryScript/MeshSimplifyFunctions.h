@@ -15,8 +15,12 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPlanarSimplifyOptions
 	GENERATED_BODY()
 public:
 	/** */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float AngleThreshold = 0.001;
+
+	/** If enabled, the simplified mesh is automatically compacted to remove gaps in the index space. This is expensive and can be disabled by advanced users. */
+	UPROPERTY(BlueprintReadWrite, Category = Options)
+	bool bAutoCompact = true;
 };
 
 USTRUCT(BlueprintType)
@@ -25,8 +29,12 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPolygroupSimplifyOptions
 	GENERATED_BODY()
 public:
 	/** */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float AngleThreshold = 0.001;
+
+	/** If enabled, the simplified mesh is automatically compacted to remove gaps in the index space. This is expensive and can be disabled by advanced users. */
+	UPROPERTY(BlueprintReadWrite, Category = Options)
+	bool bAutoCompact = true;
 };
 
 
@@ -45,23 +53,27 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptSimplifyMeshOptions
 	GENERATED_BODY()
 public:
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptRemoveMeshSimplificationType Method = EGeometryScriptRemoveMeshSimplificationType::AttributeAware;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bAllowSeamCollapse = true;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bAllowSeamSmoothing = true;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bAllowSeamSplits = true;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bPreserveVertexPositions = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bRetainQuadricMemory = false;
+
+	/** If enabled, the simplified mesh is automatically compacted to remove gaps in the index space. This is expensive and can be disabled by advanced users. */
+	UPROPERTY(BlueprintReadWrite, Category = Options)
+	bool bAutoCompact = true;
 };
 
 

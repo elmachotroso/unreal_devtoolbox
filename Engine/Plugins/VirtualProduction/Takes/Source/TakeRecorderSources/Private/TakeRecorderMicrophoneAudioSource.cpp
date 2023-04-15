@@ -18,10 +18,12 @@
 #include "MovieSceneFolder.h"
 
 #include "Misc/PackageName.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/UObjectBaseUtility.h"
 #include "ObjectTools.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderMicrophoneAudioSource)
 
 UTakeRecorderMicrophoneAudioSourceSettings::UTakeRecorderMicrophoneAudioSourceSettings(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -78,7 +80,7 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	AssetPath += Dot + AssetName;
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	// if object with same name exists, try a different name until we don't find one
 	int32 ExtensionIndex = 0;
@@ -86,7 +88,7 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	{
 		AssetName = FString::Printf(TEXT("%s_%d"), *BaseAssetName, ExtensionIndex);
 		AssetPath = (BaseAssetPath / AssetName) + Dot + AssetName;
-		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 		ExtensionIndex++;
 	}
@@ -276,3 +278,4 @@ bool UTakeRecorderMicrophoneAudioSource::CanAddSource(UTakeRecorderSources* InSo
 	}
 	return true;
 }
+

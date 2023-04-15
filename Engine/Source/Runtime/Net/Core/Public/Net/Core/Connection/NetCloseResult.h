@@ -2,10 +2,13 @@
 
 #pragma once
 
-// Includes
+#include "HAL/Platform.h"
 #include "Net/Core/Connection/NetEnums.h"
 #include "Net/Core/Connection/NetResult.h"
 #include "Templates/PimplPtr.h"
+#include "UObject/ObjectMacros.h"
+
+#include "NetCloseResult.generated.h"
 
 
 /**
@@ -79,6 +82,30 @@ enum class ENetCloseResult : uint32
 	Extended,
 
 
+	/** NetDriver Error result types */
+
+	/** Host closed the connection */
+	HostClosedConnection,
+
+	/** Disconnected remotely */
+	Disconnect,
+
+	/** Client needs to upgrade */
+	Upgrade,
+
+	/** PreLogin failed */
+	PreLoginFailure,
+
+	/** Join failed */
+	JoinFailure,
+
+	/** JoinSplit failed */
+	JoinSplitFailure,
+
+	/** Address Rssolution Failed */
+	AddressResolutionFailed,
+
+
 	/** NetConnection Error result types */
 
 	/** RPC DoS Detection kicked the player */
@@ -123,6 +150,9 @@ enum class ENetCloseResult : uint32
 	/** Bunch data serialization overflowed */
 	BunchDataOverflow,
 
+	/** Server received bHasPackageMapExports packet */
+	BunchServerPackageMapExports,
+
 	/** Received control channel bunch before control channel was created */
 	BunchPrematureControlChannel,
 
@@ -152,6 +182,12 @@ enum class ENetCloseResult : uint32
 
 	/** Log limiting repeated threshold hits kicked the player */
 	LogLimitSustained,
+
+	/** Encryption failure */
+	EncryptionFailure,
+
+	/** EncryptionToken is missing */
+	EncryptionTokenMissing,
 
 
 	/** Channel Error result types */
@@ -195,6 +231,9 @@ enum class ENetCloseResult : uint32
 	/** Reliable buffer overflowed when attempting to send */
 	ReliableBufferOverflow,
 
+	/** Reliable buffer overflowed when attempting to send RPC */
+	RPCReliableBufferOverflow,
+
 
 	/** Control Channel result types */
 
@@ -227,6 +266,9 @@ enum class ENetCloseResult : uint32
 
 	/** Client tried to set bHasMustBeMappedGUIDs */
 	ClientHasMustBeMappedGUIDs,
+
+	/** Client tried to send a destruction info */
+	ClientSentDestructionInfo,
 
 	/** Received MustBeMappedGUID that isn't registered */
 	UnregisteredMustBeMappedGUID,
@@ -289,6 +331,45 @@ enum class ENetCloseResult : uint32
 	FieldPayloadFail,
 
 
+	/** Beacon Error result types */
+
+	/** Control flow error */
+	BeaconControlFlowError,
+
+	/** Unable to parse expected packet structure */
+	BeaconUnableToParsePacket,
+
+	/** Failed to verify user authentication */
+	BeaconAuthenticationFailure,
+
+	/** Login Failure, invalid ID */
+	BeaconLoginInvalidIdError,
+
+	/** Login Failure, unable to process authentication */
+	BeaconLoginInvalidAuthHandlerError,
+
+	/** Unable to authenticate for beacon, wrong PlayerId */
+	BeaconAuthError,
+
+	/** Join failure, existing ClientWorldPackageName */
+	BeaconSpawnClientWorldPackageNameError,
+
+	/** Join failure, existing beacon actor */
+	BeaconSpawnExistingActorError,
+
+	/** Join failure, couldn't spawn client beacon actor */
+	BeaconSpawnFailureError,
+
+	/** Join failure, no actor at NetGUIDAck */
+	BeaconSpawnNetGUIDAckNoActor,
+
+	/** Join failure, no host object at NetGUIDAck */
+	BeaconSpawnNetGUIDAckNoHost,
+
+	/** Join failure, unexpected control message */
+	BeaconSpawnUnexpectedError,
+
+
 	/** Fault Handler Error result types */
 
 	/** Net Fault Recovery failed to recover from a fault, and is triggering a disconnect */
@@ -304,7 +385,7 @@ enum class ENetCloseResult : uint32
 DECLARE_NETRESULT_ENUM(ENetCloseResult);
 
 
-NETCORE_API const TCHAR* LexToString(ENetCloseResult InResult);
+NETCORE_API const TCHAR* LexToString(ENetCloseResult Enum);
 
 /** Converts from ENetworkFailure to ENetCloseResult */
 NETCORE_API ENetCloseResult FromNetworkFailure(ENetworkFailure::Type Val);

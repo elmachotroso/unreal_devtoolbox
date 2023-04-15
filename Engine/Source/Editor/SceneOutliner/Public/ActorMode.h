@@ -23,12 +23,13 @@ struct SCENEOUTLINER_API FActorModeParams
 {
 	FActorModeParams() {}
 
-	FActorModeParams(SSceneOutliner* InSceneOutliner, const TWeakObjectPtr<UWorld>& InSpecifiedWorldToDisplay = nullptr, bool bInHideComponents = true, bool bInHideLevelInstanceHierarchy = true, bool bInHideUnloadedActors = true)
+	FActorModeParams(SSceneOutliner* InSceneOutliner, const TWeakObjectPtr<UWorld>& InSpecifiedWorldToDisplay = nullptr, bool bInHideComponents = true, bool bInHideLevelInstanceHierarchy = true, bool bInHideUnloadedActors = true, bool bInHideEmptyFolders = true)
 		: SpecifiedWorldToDisplay(InSpecifiedWorldToDisplay)
 		, SceneOutliner(InSceneOutliner)
 		, bHideComponents(bInHideComponents)
 		, bHideLevelInstanceHierarchy(bInHideLevelInstanceHierarchy)
 		, bHideUnloadedActors(bInHideUnloadedActors)
+		, bHideEmptyFolders(bInHideEmptyFolders)
 	{}
 
 	TWeakObjectPtr<UWorld> SpecifiedWorldToDisplay = nullptr;
@@ -37,6 +38,7 @@ struct SCENEOUTLINER_API FActorModeParams
 	bool bHideActorWithNoComponent = false;
 	bool bHideLevelInstanceHierarchy = true;
 	bool bHideUnloadedActors = true;
+	bool bHideEmptyFolders = true;
 };
 
 class SCENEOUTLINER_API FActorMode : public ISceneOutlinerMode
@@ -61,6 +63,11 @@ public:
 	virtual int32 GetTypeSortPriority(const ISceneOutlinerTreeItem& Item) const override;
 
 	static bool IsActorDisplayable(const SSceneOutliner* SceneOutliner, const AActor* Actor);
+	static bool IsActorLevelDisplayable(ULevel* InLevel);
+
+	virtual FFolder::FRootObject GetRootObject() const override;
+	virtual FFolder::FRootObject GetPasteTargetRootObject() const override;
+
 private:
 	/** Called when the user selects a world in the world picker menu */
 	void OnSelectWorld(TWeakObjectPtr<UWorld> World);
@@ -72,6 +79,9 @@ private:
 protected:
 	void SynchronizeActorSelection();
 	bool IsActorDisplayable(const AActor* InActor) const;
+
+	/** Set the Scene Outliner attached to this mode as the most recently used outliner in the Level Editor */
+	void SetAsMostRecentOutliner() const;
 
 	virtual TUniquePtr<ISceneOutlinerHierarchy> CreateHierarchy() override;
 protected:
@@ -91,4 +101,8 @@ protected:
 	bool bHideLevelInstanceHierarchy;
 	/** Should unloaded actors be hidden */
 	bool bHideUnloadedActors;
+	/** Should empty folders be hidden */
+	bool bHideEmptyFolders;
+	/** Should the outliner scroll to the item on selection */
+	bool bAlwaysFrameSelection;
 };

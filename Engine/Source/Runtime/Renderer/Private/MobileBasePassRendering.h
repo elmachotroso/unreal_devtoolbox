@@ -38,6 +38,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileBasePassUniformParameters, )
 	SHADER_PARAMETER_STRUCT(FPlanarReflectionUniformParameters, PlanarReflection) // Single global planar reflection for the forward pass.
 	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
 	SHADER_PARAMETER_STRUCT(FDebugViewModeUniformParameters, DebugViewMode)
+	SHADER_PARAMETER_STRUCT(FReflectionUniformParameters, ReflectionsParameters)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, EyeAdaptationBuffer)
@@ -90,18 +91,6 @@ enum EOutputFormat
 	HDR_LINEAR_64,
 };
 
-#define MAX_BASEPASS_DYNAMIC_POINT_LIGHTS 4
-
-/* Info for dynamic point or spot lights rendered in base pass */
-class FMobileBasePassMovableLightInfo
-{
-public:
-	FMobileBasePassMovableLightInfo(const FPrimitiveSceneProxy* InSceneProxy);
-
-	int32 NumMovablePointLights;
-	FRHIUniformBuffer* MovablePointLightUniformBuffer[MAX_BASEPASS_DYNAMIC_POINT_LIGHTS];
-};
-
 bool ShouldCacheShaderByPlatformAndOutputFormat(EShaderPlatform Platform, EOutputFormat OutputFormat);
 
 template<typename LightMapPolicyType>
@@ -143,6 +132,11 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		
+		if (IsMobileDeferredShadingEnabled(Parameters.Platform))
+		{
+			OutEnvironment.SetDefine(TEXT("ENABLE_SHADINGMODEL_SUPPORT_MOBILE_DEFERRED"), MobileUsesGBufferCustomData(Parameters.Platform));
+		}
 	}
 
 	void GetShaderBindings(
@@ -244,6 +238,11 @@ public:
 		// This define simply lets the compilation environment know that we are using a Base Pass PixelShader.
 		OutEnvironment.SetDefine(TEXT("IS_BASE_PASS"), 1);
 		OutEnvironment.SetDefine(TEXT("IS_MOBILE_BASE_PASS"), 1);
+		
+		if (IsMobileDeferredShadingEnabled(Parameters.Platform))
+		{
+			OutEnvironment.SetDefine(TEXT("ENABLE_SHADINGMODEL_SUPPORT_MOBILE_DEFERRED"), MobileUsesGBufferCustomData(Parameters.Platform));
+		}
 
 		// Modify compilation environment depending upon material shader quality level settings.
 		ModifyCompilationEnvironmentForQualityLevel(Parameters.Platform, Parameters.MaterialParameters.QualityLevel, OutEnvironment);
@@ -258,23 +257,7 @@ public:
 		
 		MobileDirectionLightBufferParam.Bind(Initializer.ParameterMap, FMobileDirectionalLightShaderParameters::StaticStructMetadata.GetShaderVariableName());
 		ReflectionParameter.Bind(Initializer.ParameterMap, FMobileReflectionCaptureShaderParameters::StaticStructMetadata.GetShaderVariableName());
-
-		HQReflectionCubemaps[0].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap0"));
-		HQReflectionSamplers[0].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler0"));
-		HQReflectionCubemaps[1].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap1"));
-		HQReflectionSamplers[1].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler1"));
-		HQReflectionCubemaps[2].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemap2"));
-		HQReflectionSamplers[2].Bind(Initializer.ParameterMap, TEXT("ReflectionCubemapSampler2"));
-		HQReflectionInvAverageBrigtnessParams.Bind(Initializer.ParameterMap, TEXT("ReflectionAverageBrigtness"));
-		HQReflectanceMaxValueRGBMParams.Bind(Initializer.ParameterMap, TEXT("ReflectanceMaxValueRGBM"));
-		HQReflectionPositionsAndRadii.Bind(Initializer.ParameterMap, TEXT("ReflectionPositionsAndRadii"));
-		HQReflectionTilePositions.Bind(Initializer.ParameterMap, TEXT("ReflectionTilePositions"));
-		HQReflectionCaptureBoxTransformArray.Bind(Initializer.ParameterMap, TEXT("CaptureBoxTransformArray"));
-		HQReflectionCaptureBoxScalesArray.Bind(Initializer.ParameterMap, TEXT("CaptureBoxScalesArray"));
-
-		NumDynamicPointLightsParameter.Bind(Initializer.ParameterMap, TEXT("NumDynamicPointLights"));
-						
-		CSMDebugHintParams.Bind(Initializer.ParameterMap, TEXT("CSMDebugHint"));
+				
 		UseCSMParameter.Bind(Initializer.ParameterMap, TEXT("UseCSM"));
 	}
 
@@ -283,20 +266,6 @@ public:
 private:
 	LAYOUT_FIELD(FShaderUniformBufferParameter, MobileDirectionLightBufferParam);
 	LAYOUT_FIELD(FShaderUniformBufferParameter, ReflectionParameter);
-
-	// HQ reflection bound as loose params
-	LAYOUT_ARRAY(FShaderResourceParameter, HQReflectionCubemaps, 3);
-	LAYOUT_ARRAY(FShaderResourceParameter, HQReflectionSamplers, 3);
-	LAYOUT_FIELD(FShaderParameter, HQReflectionInvAverageBrigtnessParams);
-	LAYOUT_FIELD(FShaderParameter, HQReflectanceMaxValueRGBMParams);
-	LAYOUT_FIELD(FShaderParameter, HQReflectionPositionsAndRadii);
-	LAYOUT_FIELD(FShaderParameter, HQReflectionTilePositions);
-	LAYOUT_FIELD(FShaderParameter, HQReflectionCaptureBoxTransformArray);
-	LAYOUT_FIELD(FShaderParameter, HQReflectionCaptureBoxScalesArray);
-
-	LAYOUT_FIELD(FShaderParameter, NumDynamicPointLightsParameter);
-
-	LAYOUT_FIELD(FShaderParameter, CSMDebugHintParams);
 	LAYOUT_FIELD(FShaderParameter, UseCSMParameter);
 	
 public:
@@ -353,7 +322,7 @@ namespace MobileBasePass
 
 	bool GetShaders(
 		ELightMapPolicyType LightMapPolicyType,
-		int32 NumMovablePointLights, 
+		bool bEnableLocalLights,
 		const FMaterial& MaterialResource,
 		FVertexFactoryType* VertexFactoryType,
 		bool bEnableSkyLight, 
@@ -361,16 +330,11 @@ namespace MobileBasePass
 		TShaderRef<TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>>& PixelShader);
 
 	const FLightSceneInfo* GetDirectionalLightInfo(const FScene* Scene, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
-	int32 CalcNumMovablePointLights(const FMaterial& InMaterial, const FPrimitiveSceneProxy* InPrimitiveSceneProxy);
 
 	bool StaticCanReceiveCSM(const FLightSceneInfo* LightSceneInfo, const FPrimitiveSceneProxy* PrimitiveSceneProxy);
 
-	void SetOpaqueRenderState(FMeshPassProcessorRenderState& DrawRenderState, const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial& Material, bool bEnableReceiveDecalOutput, bool bUsesDeferredShading);
-	void SetTranslucentRenderState(FMeshPassProcessorRenderState& DrawRenderState, const FMaterial& Material);
-
-	bool StationarySkyLightHasBeenApplied(const FScene* Scene, ELightMapPolicyType LightMapPolicyType);
-
-	extern FShaderPlatformCachedIniValue<int32> MobileNumDynamicPointLightsIniValue;
+	void SetOpaqueRenderState(FMeshPassProcessorRenderState& DrawRenderState, const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMaterial& Material, FMaterialShadingModelField ShadingModels, bool bEnableReceiveDecalOutput, bool bUsesDeferredShading);
+	void SetTranslucentRenderState(FMeshPassProcessorRenderState& DrawRenderState, const FMaterial& Material, FMaterialShadingModelField ShadingModels);
 };
 
 
@@ -386,7 +350,7 @@ inline bool UseSkylightPermutation(bool bEnableSkyLight, int32 MobileSkyLightPer
 	}
 }
 
-template< typename LightMapPolicyType, EOutputFormat OutputFormat, bool bEnableSkyLight, int32 NumMovablePointLights>
+template< typename LightMapPolicyType, EOutputFormat OutputFormat, bool bEnableSkyLight, bool bEnableLocalLights>
 class TMobileBasePassPS : public TMobileBasePassPSBaseType<LightMapPolicyType>
 {
 	DECLARE_SHADER_TYPE(TMobileBasePassPS,MeshMaterial);
@@ -397,7 +361,6 @@ public:
 		// We compile the point light shader combinations based on the project settings
 		static auto* MobileSkyLightPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SkyLightPermutation"));
 
-		const int32 MobileNumDynamicPointLights = MobileBasePass::MobileNumDynamicPointLightsIniValue.Get(Parameters.Platform);
 		const int32 MobileSkyLightPermutationOptions = MobileSkyLightPermutationCVar->GetValueOnAnyThread();
 		const bool bDeferredShading = IsMobileDeferredShadingEnabled(Parameters.Platform);
 		
@@ -405,6 +368,8 @@ public:
 		const bool bMaterialUsesForwardShading = bIsLit && 
 			(IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) || Parameters.MaterialParameters.ShadingModels.HasShadingModel(MSM_SingleLayerWater));
 
+		// Translucent materials always support clustered shading on mobile deferred
+		const bool bSupportsLocalLights = (!bDeferredShading && MobileForwardEnableLocalLights(Parameters.Platform)) || (bDeferredShading && bMaterialUsesForwardShading);
 		// Only compile skylight version for lit materials
 		const bool bShouldCacheBySkylight = !bEnableSkyLight || bIsLit;
 
@@ -414,18 +379,16 @@ public:
 			return false;
 		}
 
-		// Deferred shading does not need SkyLight and PointLight permutations
+		// Deferred shading does not need SkyLight and LocalLight permutations
 		// TODO: skip skylight permutations for deferred
-		const bool bShouldCacheByShading = (!bDeferredShading || bMaterialUsesForwardShading) || (NumMovablePointLights == 0);
-
-		const bool bShouldCacheByNumDynamicPointLights =
-			(NumMovablePointLights == 0 ||
-			(bIsLit && NumMovablePointLights == INT32_MAX && MobileNumDynamicPointLights > 0));		// single shader for variable number of point lights
+		const bool bForwardShading = !bDeferredShading || bMaterialUsesForwardShading;
+		const bool bShouldCacheByShading = (bForwardShading || !bEnableLocalLights);
+		const bool bShouldCacheByLocalLights = !bEnableLocalLights || (bIsLit && bEnableLocalLights == bSupportsLocalLights);
 
 		return TMobileBasePassPSBaseType<LightMapPolicyType>::ShouldCompilePermutation(Parameters) && 
 				ShouldCacheShaderByPlatformAndOutputFormat(Parameters.Platform, OutputFormat) && 
 				bShouldCacheBySkylight && 
-				bShouldCacheByNumDynamicPointLights &&
+				bShouldCacheByLocalLights &&
 				bShouldCacheByShading;
 	}
 	
@@ -434,27 +397,21 @@ public:
 		static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.UseHWsRGBEncoding"));
 		const bool bMobileUseHWsRGBEncoding = (MobileUseHWsRGBEncodingCVAR && MobileUseHWsRGBEncodingCVAR->GetValueOnAnyThread() == 1);
 
+		const bool bMobileUsesShadowMaskTexture = MobileUsesShadowMaskTexture(Parameters.Platform);
+		const bool bEnableClusteredReflections = MobileForwardEnableClusteredReflections(Parameters.Platform);
+		const bool bTranslucentMaterial = IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) || Parameters.MaterialParameters.ShadingModels.HasShadingModel(MSM_SingleLayerWater);
+
 		TMobileBasePassPSBaseType<LightMapPolicyType>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("ENABLE_SKY_LIGHT"), bEnableSkyLight);
 		OutEnvironment.SetDefine(TEXT("OUTPUT_GAMMA_SPACE"), OutputFormat == LDR_GAMMA_32 && !bMobileUseHWsRGBEncoding);
 		OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_HDR"), OutputFormat == HDR_LINEAR_64 ? 1u : 0u);
-		if (NumMovablePointLights == INT32_MAX)
-		{
-			const int32 MaxDynamicPointLights = FMath::Clamp(MobileBasePass::MobileNumDynamicPointLightsIniValue.Get(Parameters.Platform), 0, MAX_BASEPASS_DYNAMIC_POINT_LIGHTS);
-			
-			OutEnvironment.SetDefine(TEXT("MAX_DYNAMIC_POINT_LIGHTS"), (uint32)MaxDynamicPointLights);
-			OutEnvironment.SetDefine(TEXT("VARIABLE_NUM_DYNAMIC_POINT_LIGHTS"), (uint32)1);
-		}
-		else
-		{
-			OutEnvironment.SetDefine(TEXT("MAX_DYNAMIC_POINT_LIGHTS"), (uint32)NumMovablePointLights);
-			OutEnvironment.SetDefine(TEXT("VARIABLE_NUM_DYNAMIC_POINT_LIGHTS"), (uint32)0);
-			OutEnvironment.SetDefine(TEXT("NUM_DYNAMIC_POINT_LIGHTS"), (uint32)NumMovablePointLights);
-		}
 
 		OutEnvironment.SetDefine(TEXT("ENABLE_AMBIENT_OCCLUSION"), IsMobileAmbientOcclusionEnabled(Parameters.Platform) ? 1u : 0u);
 
-		OutEnvironment.SetDefine(TEXT("ENABLE_DISTANCE_FIELD"), IsMobileDistanceFieldEnabled(Parameters.Platform));
+		FForwardLightingParameters::ModifyCompilationEnvironment(Parameters.Platform, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("ENABLE_CLUSTERED_LIGHTS"), bEnableLocalLights ? 1u : 0u);
+		OutEnvironment.SetDefine(TEXT("ENABLE_CLUSTERED_REFLECTION"), bEnableClusteredReflections ? 1u : 0u);
+		OutEnvironment.SetDefine(TEXT("USE_SHADOWMASKTEXTURE"), bMobileUsesShadowMaskTexture && !bTranslucentMaterial ? 1u : 0u);
 	}
 	
 	/** Initialization constructor. */
@@ -466,7 +423,7 @@ public:
 	TMobileBasePassPS() {}
 };
 
-class FMobileBasePassMeshProcessor : public FMeshPassProcessor
+class FMobileBasePassMeshProcessor : public FSceneRenderingAllocatorObject<FMobileBasePassMeshProcessor>, public FMeshPassProcessor
 {
 public:
 	enum class EFlags
@@ -480,10 +437,14 @@ public:
 		CanReceiveCSM = (1 << 1),
 
 		// Informs the processor to use PassDrawRenderState for all mesh commands
-		ForcePassDrawRenderState = (1 << 2)
+		ForcePassDrawRenderState = (1 << 2),
+
+		// Informs the processor to not cache any mesh commands
+		DoNotCache = (1 << 3)
 	};
 
 	FMobileBasePassMeshProcessor(
+		EMeshPass::Type InMeshPassType,
 		const FScene* InScene,
 		ERHIFeatureLevel::Type InFeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand,
@@ -497,6 +458,8 @@ public:
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
 private:
+	FMaterialShadingModelField FilterShadingModelsMask(const FMaterialShadingModelField& ShadingModels) const;
+
 	bool TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy& MaterialRenderProxy, const FMaterial& Material);
 
 	bool Process(

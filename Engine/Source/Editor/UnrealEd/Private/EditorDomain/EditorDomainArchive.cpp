@@ -2,21 +2,31 @@
 
 #include "EditorDomain/EditorDomainArchive.h"
 
-#include "Algo/Sort.h"
-#include "AssetRegistry/AssetData.h"
-#include "Async/AsyncFileHandleNull.h"
+#include "Algo/BinarySearch.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringView.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataCacheKey.h"
+#include "DerivedDataCachePolicy.h"
 #include "DerivedDataCacheRecord.h"
 #include "DerivedDataValue.h"
-#include "EditorDomain/EditorDomainSave.h"
 #include "EditorDomain/EditorDomainUtils.h"
+#include "HAL/PlatformString.h"
 #include "HAL/UnrealMemory.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathUtility.h"
 #include "Memory/SharedBuffer.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/PackageSegment.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/StringBuilder.h"
+#include "ProfilingDebugging/CookStats.h"
 #include "Serialization/CompactBinary.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
 
 FEditorDomainPackageSegments::FEditorDomainPackageSegments(const TRefCountPtr<FEditorDomain::FLocks>& InLocks,
 	const FPackagePath& InPackagePath, const TRefCountPtr<FEditorDomain::FPackageSource>& InPackageSource, UE::DerivedData::EPriority Priority)
@@ -49,6 +59,8 @@ void FEditorDomainPackageSegments::WaitForReady() const
 	{
 		return;
 	}
+	COOK_STAT(auto Timer = UE::EditorDomain::CookStats::Usage.TimeAsyncWait());
+	COOK_STAT(Timer.TrackCyclesOnly());
 	const_cast<UE::DerivedData::FRequestOwner&>(RequestOwner).Wait();
 	Source = AsyncSource;
 }
@@ -278,7 +290,18 @@ void FEditorDomainPackageSegments::OnRecordRequestComplete(UE::DerivedData::FCac
 
 	ESource NewAsyncSource = ESource::Uninitialized;
 	int32 InitialRequestIndex = -1;
+	bool bExistsInEditorDomain = false;
+	bool bStorageValid = false;
+
 	if (Response.Status == EStatus::Ok)
+	{
+		const FCbObject& MetaData = Response.Record.GetMeta();
+		bExistsInEditorDomain = true;
+		bStorageValid = MetaData["Valid"].AsBool(false);
+		COOK_STAT(UE::EditorDomain::CookStats::Usage.TimeSyncWork().AddHit(Response.Record.GetMeta().GetSize()));
+	}
+
+	if (bStorageValid)
 	{
 		const FCacheRecord& Record = Response.Record;
 		const uint64 FileSize = Record.GetMeta()["FileSize"].AsUInt64();
@@ -317,7 +340,7 @@ void FEditorDomainPackageSegments::OnRecordRequestComplete(UE::DerivedData::FCac
 					bEditorDomainAvailable = true;
 					if (PackageSource->Source == FEditorDomain::EPackageSource::Undecided || PackageSource->Source == FEditorDomain::EPackageSource::Editor)
 					{
-						PackageSource->Source = FEditorDomain::EPackageSource::Editor;
+						EditorDomainLocks->Owner->MarkLoadedFromEditorDomain(PackagePath, PackageSource);
 						bRegisterSuccessful = true;
 					}
 				}
@@ -353,13 +376,16 @@ void FEditorDomainPackageSegments::OnRecordRequestComplete(UE::DerivedData::FCac
 		FScopeLock DomainScopeLock(&EditorDomainLocks->Lock);
 		if (EditorDomainLocks->Owner)
 		{
-			checkf(PackageSource->Source == FEditorDomain::EPackageSource::Undecided || PackageSource->Source == FEditorDomain::EPackageSource::Workspace,
-				TEXT("%s was previously loaded from the EditorDomain but now is unavailable."), *PackagePath.GetDebugName());
+			if (PackageSource->Source == FEditorDomain::EPackageSource::Editor)
+			{
+				UE_LOG(LogEditorDomain, Error, TEXT("%s was previously loaded from the EditorDomain but now is unavailable. This may cause failures during serialization due to changed FileSize and Format."),
+					*PackagePath.GetDebugName());
+			}
 			FEditorDomain& EditorDomain(*EditorDomainLocks->Owner);
 			bool bSucceeded = TryCreateFallbackData(EditorDomain);
 			if (bSucceeded)
 			{
-				EditorDomain.MarkNeedsLoadFromWorkspace(PackagePath, PackageSource);
+				EditorDomain.MarkLoadedFromWorkspaceDomain(PackagePath, PackageSource, bExistsInEditorDomain);
 				NewAsyncSource = ESource::Fallback;
 			}
 			else
@@ -422,6 +448,9 @@ void FEditorDomainPackageSegments::SendSegmentRequest(FSegment& Segment)
 					UE_LOG(LogEditorDomain, Error, TEXT("Package %s has corrupted cache data in segment %d."), *PackagePath.GetDebugName(), (int32)(&Segment - &Segments[0]));
 					Segment.Data.Reset();
 				}
+				COOK_STAT(auto Timer = UE::EditorDomain::CookStats::Usage.TimeSyncWork());
+				COOK_STAT(Timer.AddHit(SegmentSize));
+				COOK_STAT(Timer.TrackCyclesOnly()); // We're using TrackCyclesOnly to track the size without counting another hit. We actually don't care about the cycles
 			}
 			Segment.bAsyncComplete = true;
 		});

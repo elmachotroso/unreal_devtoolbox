@@ -17,7 +17,6 @@ public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_SkeletalMesh", "Skeletal Mesh"); }
 	virtual FColor GetTypeColor() const override { return FColor(241,163,241); }
 	virtual UClass* GetSupportedClass() const override { return USkeletalMesh::StaticClass(); }
-	virtual bool HasActions ( const TArray<UObject*>& InObjects ) const override { return true; }
 	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) override;
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override;
 	virtual uint32 GetCategories() override { return EAssetTypeCategories::Basic | EAssetTypeCategories::Animation; }
@@ -54,11 +53,6 @@ private:
 
 	/** Handler for skeletal mesh import */
 	static void ExecuteImportMeshLOD(class UObject* Mesh, int32 LOD);
-
-#if WITH_APEX_CLOTHING
-	/** Handler to import clothing to a mesh */
-	void ExecuteImportClothing(TArray<TWeakObjectPtr<USkeletalMesh>> Objects);
-#endif
 
 	// Helper functions
 private:

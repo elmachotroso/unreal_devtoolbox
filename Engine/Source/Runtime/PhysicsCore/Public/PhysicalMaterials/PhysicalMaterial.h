@@ -2,21 +2,22 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "PhysicsSettingsEnums.h"
 #include "Chaos/ChaosEngineInterface.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "PhysicsInterfaceDeclaresCore.h"
+#include "PhysicsInterfaceTypesCore.h"
+#include "PhysicsSettingsEnums.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "PhysicalMaterial.generated.h"
 
 struct FPropertyChangedEvent;
-
-#if PHYSICS_INTERFACE_PHYSX
-namespace physx
-{
-	class PxMaterial;
-}
-#endif
 
 /**
  * Physical materials are used to define the response of a physical object when interacting dynamically with the world.

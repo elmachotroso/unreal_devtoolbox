@@ -13,11 +13,9 @@
 #include "RenderGraphUtils.h"
 #include "CanvasTypes.h"
 #include "RenderGraphUtils.h"
-#include "GpuDebugRendering.h" 
 #include "SceneTextureParameters.h"
 #include "DynamicPrimitiveDrawing.h"
 #include "RenderTargetTemp.h"
-#include "ShaderPrintParameters.h"
 #include "ShaderPrint.h"
 
 // Console variables
@@ -59,7 +57,6 @@ class FPhysicsFieldRayMarchingCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_SRV(Buffer<float4>, BoundsMin)
@@ -77,7 +74,10 @@ class FPhysicsFieldRayMarchingCS : public FGlobalShader
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::SM5; }
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
+	{
+		return ShaderPrint::IsSupported(Parameters.Platform) && GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::SM5;
+	}
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		// Skip optimization for avoiding long compilation time due to large UAV writes
@@ -95,7 +95,7 @@ static FPhysicsFieldRayMarchingCS::FParameters* CreateShaderParameters(FRDGBuild
 	FRDGTextureRef& OutputTexture, const int32 TargetIndex)
 {
 	const FIntPoint OutputResolution(OutputTexture->Desc.Extent);
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
 
 	FPhysicsFieldRayMarchingCS::FParameters* Parameters = GraphBuilder.AllocParameters<FPhysicsFieldRayMarchingCS::FParameters>();
 	Parameters->OutputTexture = GraphBuilder.CreateUAV(OutputTexture);
@@ -103,8 +103,7 @@ static FPhysicsFieldRayMarchingCS::FParameters* CreateShaderParameters(FRDGBuild
 	Parameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	Parameters->SceneTextures = SceneTextures;
 
-	ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, Parameters->ShaderDrawParameters);
-	ShaderPrint::SetParameters(GraphBuilder, View, Parameters->ShaderPrintParameters);
+	ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, Parameters->ShaderPrintParameters);
 
 	Parameters->BoundsMin = PhysicsFieldResource->BoundsMin.SRV;
 	Parameters->BoundsMax = PhysicsFieldResource->BoundsMax.SRV;
@@ -128,7 +127,7 @@ static void AddPhysicsFieldRayMarchingPass(
 	const FPhysicsFieldResource* PhysicsFieldResource,
 	FRDGTextureRef& OutputTexture)
 {
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
 
 	const FIntPoint OutputResolution(OutputTexture->Desc.Extent);
 	if(GPhysicsFieldTargetType < EFieldPhysicsType::Field_PhysicsType_Max)
@@ -183,7 +182,7 @@ void RenderPhysicsField(
 	{
 		FPhysicsFieldResource* PhysicsFieldResource = (GPhysicsFieldSystemType == 0) ? PhysicsFieldProxy->DebugResource : PhysicsFieldProxy->FieldResource;
 
-		if (Views.Num() > 0 && PhysicsFieldResource && ShaderDrawDebug::IsEnabled() && ShaderPrint::IsEnabled(Views[0]) && RHIIsTypedUAVLoadSupported(PF_FloatRGBA))
+		if (Views.Num() > 0 && PhysicsFieldResource && ShaderPrint::IsEnabled(Views[0].ShaderPrintData) && RHIIsTypedUAVLoadSupported(PF_FloatRGBA))
 		{
 			AddPhysicsFieldRayMarchingPass(GraphBuilder, Views[0], PhysicsFieldResource, SceneColorTexture);
 		}

@@ -3,7 +3,7 @@
 #include "MaterialStats.h"
 #include "MaterialStatsGrid.h"
 #include "SMaterialEditorStatsWidget.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
@@ -15,9 +15,10 @@
 #include "IMaterialEditor.h"
 #include "Preferences/MaterialStatsOptions.h"
 #include "MaterialEditorSettings.h"
+#include "ShaderCompiler.h"
 
 #include "Modules/ModuleManager.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
+#include "MessageLogModule.h"
 
 #define LOCTEXT_NAMESPACE "MaterialStats"
 
@@ -202,7 +203,39 @@ bool FShaderPlatformSettings::CheckShaders()
 				}
 
 				Data.LastTimeCompilationRequested = CurrentTime;
-				Data.MaterialResourcesStats->CacheShaders(PlatformShaderID);
+
+				TMap<FName, TArray<FMaterialStatsUtils::FRepresentativeShaderInfo>> ShaderTypeNamesAndDescriptions;
+				FMaterialStatsUtils::GetRepresentativeShaderTypesAndDescriptions(ShaderTypeNamesAndDescriptions, Data.MaterialResourcesStats);
+
+				TArray<const FVertexFactoryType*> VFTypes;
+				TArray<const FShaderPipelineType*> PipelineTypes;
+				TArray<const FShaderType*> ShaderTypes;
+				for (auto& DescriptionPair : ShaderTypeNamesAndDescriptions)
+				{
+					const FVertexFactoryType* VFType = FindVertexFactoryType(DescriptionPair.Key);
+					check(VFType);
+
+					auto& DescriptionArray = DescriptionPair.Value;
+					for (const FMaterialStatsUtils::FRepresentativeShaderInfo& ShaderInfo : DescriptionArray)
+					{
+						const FShaderType* ShaderType = FindShaderTypeByName(ShaderInfo.ShaderName);
+						if (ShaderType && VFType)
+						{
+							VFTypes.Add(VFType);
+							ShaderTypes.Add(ShaderType);
+							PipelineTypes.Add(nullptr);
+						}
+					}
+				}
+
+				// Prepare the resource for compilation, but don't compile the completed shader map.
+				const bool bSuccess = Data.MaterialResourcesStats->CacheShaders(PlatformShaderID, EMaterialShaderPrecompileMode::None);
+
+				if (bSuccess)
+				{
+					// Compile just the types we want.
+					Data.MaterialResourcesStats->CacheGivenTypes(PlatformShaderID, VFTypes, PipelineTypes, ShaderTypes);
+				}
 
 				Data.bCompilingShaders = true;
 				Data.bUpdateShaderCode = true;
@@ -263,7 +296,7 @@ bool FShaderPlatformSettings::Update()
 					}
 				}
 
-				FMaterialStatsUtils::ExtractMatertialStatsInfo(QualityItem.ShaderStatsInfo, Resource);
+				FMaterialStatsUtils::ExtractMatertialStatsInfo(PlatformShaderID, QualityItem.ShaderStatsInfo, Resource);
 
 				bRetValue = true;
 			}
@@ -487,6 +520,11 @@ void FMaterialStats::BuildShaderPlatformDB()
 TSharedPtr<FShaderPlatformSettings> FMaterialStats::AddShaderPlatform(const EPlatformCategoryType PlatformType, const EShaderPlatform PlatformID, const FName PlatformName,
 	const bool bAllowPresenceInGrid, const bool bAllowCodeView, const FString& Description)
 {
+	if (!FDataDrivenShaderPlatformInfo::IsValid(PlatformID))
+	{
+		return TSharedPtr<FShaderPlatformSettings>();
+	}
+
 	TSharedPtr<FShaderPlatformSettings> PlatformPtr = MakeShareable(new FShaderPlatformSettings(PlatformType, PlatformID, PlatformName, bAllowPresenceInGrid, bAllowCodeView, Description));
 	ShaderPlatformStatsDB.Add(PlatformID, PlatformPtr);
 
@@ -818,20 +856,20 @@ void FMaterialStats::BuildViewShaderCodeMenus()
 	auto ParentCategoryRef = MaterialEditor->GetWorkspaceMenuCategory();
 
 	TSharedPtr<FWorkspaceItem> PlatformGroupMenuItem = ParentCategoryRef->AddGroup(LOCTEXT("ViewShaderCodePlatformsGroupMenu", "Shader Code"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
 
 	// add hlsl code viewer tab
 	TabManager->RegisterTabSpawner( HLSLCodeTabId, FOnSpawnTab::CreateSP(this, &FMaterialStats::SpawnTab_HLSLCode))
 		.SetDisplayName( LOCTEXT("HLSLCodeTab", "HLSL Code") )
 		.SetGroup( PlatformGroupMenuItem.ToSharedRef() )
-		.SetIcon( FSlateIcon(FEditorStyle::GetStyleSetName(), "MaterialEditor.Tabs.HLSLCode") );
+		.SetIcon( FSlateIcon(FAppStyle::GetAppStyleSetName(), "MaterialEditor.Tabs.HLSLCode") );
 
 	for (auto MapEntry : PlatformTypeDB)
 	{
 		const EPlatformCategoryType PlatformType = MapEntry.Key;
 
 		const FString PlatformName = FMaterialStatsUtils::GetPlatformTypeName(PlatformType);
-		TSharedPtr<FWorkspaceItem> PlatformMenuItem = PlatformGroupMenuItem->AddGroup(FText::FromString(PlatformName), FSlateIcon(FEditorStyle::GetStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
+		TSharedPtr<FWorkspaceItem> PlatformMenuItem = PlatformGroupMenuItem->AddGroup(FText::FromString(PlatformName), FSlateIcon(FAppStyle::GetAppStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
 
 		TArray<TSharedPtr<FShaderPlatformSettings>>& ArrShaderPlatforms = MapEntry.Value;
 
@@ -852,7 +890,7 @@ void FMaterialStats::BuildViewShaderCodeMenus()
 			}
 
 			const FString ShaderPlatformName = PlatformPtr->GetPlatformName().ToString();
-			TSharedPtr<FWorkspaceItem> ShaderPlatformMenuItem = PlatformMenuItem->AddGroup(FText::FromString(ShaderPlatformName), FSlateIcon(FEditorStyle::GetStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
+			TSharedPtr<FWorkspaceItem> ShaderPlatformMenuItem = PlatformMenuItem->AddGroup(FText::FromString(ShaderPlatformName), FSlateIcon(FAppStyle::GetAppStyleSetName(), "MaterialEditor.Tabs.HLSLCode"));
 
 			for (int32 q = 0; q < EMaterialQualityLevel::Num; ++q)
 			{

@@ -7,8 +7,6 @@
 #include "MassZoneGraphNavigationProcessors.generated.h"
 
 class UMassSignalSubsystem;
-class UZoneGraphSubsystem;
-
 
 
 /**
@@ -23,17 +21,10 @@ public:
 	UMassZoneGraphLocationInitializer();
 
 protected:
-	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
-
-	UPROPERTY(Transient)
-	UZoneGraphSubsystem* ZoneGraphSubsystem = nullptr;
-
-	UPROPERTY(Transient)
-	UMassSignalSubsystem* SignalSubsystem = nullptr;
 };
 
 /** 
@@ -49,15 +40,12 @@ protected:
 	
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery_Conditional;
 
 	UPROPERTY(Transient)
-	UZoneGraphSubsystem* ZoneGraphSubsystem = nullptr;
-
-	UPROPERTY(Transient)
-	UMassSignalSubsystem* SignalSubsystem = nullptr;
+	TObjectPtr<UMassSignalSubsystem> SignalSubsystem = nullptr;
 };
 
 /** ZoneGraph lane cache boundary processor */
@@ -73,7 +61,7 @@ public:
 protected:
 	virtual void ConfigureQueries() override;
 	virtual void Initialize(UObject& Owner) override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 private:
 	TWeakObjectPtr<UWorld> WeakWorld;

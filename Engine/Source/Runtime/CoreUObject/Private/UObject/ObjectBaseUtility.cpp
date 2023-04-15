@@ -2,12 +2,14 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
+#include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Serialization/CustomVersion.h"
 #include "UObject/UObjectBaseUtility.h"
 #include "UObject/Package.h"
 #include "UObject/LinkerLoad.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CommandLine.h"
 
 /**
  * Returns the UE version of the linker for this object.
@@ -124,6 +126,39 @@ int32 UObjectBaseUtility::GetLinkerLicenseeUEVersion() const
 	}
 }
 
+#if CPUPROFILERTRACE_ENABLED
+COREUOBJECT_API FName GetClassTraceScope(const UObjectBaseUtility* Object)
+{
+	UClass* Class = Object->GetClass();
+	if (Class->IsNative())
+	{
+		return Class->GetFName();
+	}
+	else
+	{
+		static const FName NAME_Blueprint(TEXT("Blueprint"));
+		return NAME_Blueprint;
+	}
+}
+#endif
+
+#if STATS && CPUPROFILERTRACE_ENABLED
+void FScopeCycleCounterUObject::StartObjectTrace(const UObjectBaseUtility* Object)
+{
+#if LOADTIMEPROFILERTRACE_ENABLED
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(AssetLoadTimeChannel))
+	{
+		StartTrace(Object->GetFName());
+	}
+	else
+#endif
+	{
+		StartTrace(GetClassTraceScope(Object));
+	}
+}
+#endif
+
+
 // Console variable so that GarbageCollectorSettings work in the editor but we don't want to use it in runtime as we can't support changing its value from console
 int32 GPendingKillEnabled = 1;
 static FAutoConsoleVariableRef CVarPendingKillEnabled(
@@ -160,6 +195,15 @@ void InitNoPendingKill()
 	check(GConfig);
 	bool bPendingKillEnabled = false;
 	GConfig->GetBool(TEXT("/Script/Engine.GarbageCollectionSettings"), TEXT("gc.PendingKillEnabled"), bPendingKillEnabled, GEngineIni);
+	// Allow command-line overrides for easy testing without unique builds.
+	if (FParse::Param(FCommandLine::Get(), TEXT("DisablePendingKill")))
+	{
+		bPendingKillEnabled = false;
+	}
+	else if (FParse::Param(FCommandLine::Get(), TEXT("EnablePendingKill")))
+	{
+		bPendingKillEnabled = true;
+	}
 	// Try to sync even though we're not gonna use the console var
 	UObjectBaseUtility::bPendingKillDisabled = !bPendingKillEnabled;
 	GPendingKillEnabled = bPendingKillEnabled;

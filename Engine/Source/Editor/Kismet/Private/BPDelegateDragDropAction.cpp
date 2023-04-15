@@ -1,19 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BPDelegateDragDropAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Layout/WidgetPath.h"
+
+#include "BlueprintEditor.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EdGraphSchema_K2.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node_AddDelegate.h"
 #include "K2Node_CallDelegate.h"
 #include "K2Node_ClearDelegate.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_RemoveDelegate.h"
-
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/WidgetPath.h"
 #include "ScopedTransaction.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealNames.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "DelegateDragDropAction"
 
@@ -65,7 +84,8 @@ FReply FKismetDelegateDragDropAction::DroppedOnPanel(const TSharedRef< SWidget >
 		const UBlueprint* DropOnBlueprint = FBlueprintEditorUtils::FindBlueprintForGraph(&Graph);
 		NewNodeParams.Graph = &Graph;
 		NewNodeParams.GraphPosition = GraphPosition;
-		NewNodeParams.bSelfContext = VariableSourceClass == NULL || DropOnBlueprint->SkeletonGeneratedClass->IsChildOf(VariableSourceClass);;
+		NewNodeParams.bSelfContext = VariableSourceClass == NULL ||
+			(DropOnBlueprint->SkeletonGeneratedClass && DropOnBlueprint->SkeletonGeneratedClass->IsChildOf(VariableSourceClass));
 		NewNodeParams.AnalyticCallback = AnalyticCallback;
 
 		FMenuBuilder MenuBuilder(true, NULL);

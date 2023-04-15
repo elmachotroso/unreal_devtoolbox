@@ -139,15 +139,15 @@ namespace UnrealBuildTool
 		/// <param name="ProjectDirectory">The project directory to search</param>
 		static void ScanProjectDirectory(DirectoryItem ProjectDirectory)
 		{
-			foreach (DirectoryReference ExtensionDir in Unreal.GetExtensionDirs(Unreal.EngineDirectory))
+			foreach (DirectoryReference ExtensionDir in Unreal.GetExtensionDirs(ProjectDirectory.Location))
 			{
 				DirectoryItem BaseDirectory = DirectoryItem.GetItemByDirectoryReference(ExtensionDir);
 				BaseDirectory.CacheDirectories();
 
-				DirectoryItem BasePluginsDirectory = DirectoryItem.Combine(ProjectDirectory, "Plugins");
+				DirectoryItem BasePluginsDirectory = DirectoryItem.Combine(BaseDirectory, "Plugins");
 				Enqueue(() => ScanPluginFolder(BasePluginsDirectory));
 
-				DirectoryItem BaseSourceDirectory = DirectoryItem.Combine(ProjectDirectory, "Source");
+				DirectoryItem BaseSourceDirectory = DirectoryItem.Combine(BaseDirectory, "Source");
 				Enqueue(() => ScanDirectoryTree(BaseSourceDirectory));
 			}
 		}
@@ -160,11 +160,11 @@ namespace UnrealBuildTool
 		{
 			foreach(DirectoryItem SubDirectory in Directory.EnumerateDirectories())
 			{
-				if(SubDirectory.EnumerateFiles().Any(x => x.HasExtension(".uplugin")))
+				if (SubDirectory.EnumerateFiles().Any((fi) => fi.HasExtension(".uplugin")))
 				{
 					Enqueue(() => ScanDirectoryTree(DirectoryItem.Combine(SubDirectory, "Source")));
 				}
-				else
+				else if (!SubDirectory.TryGetFile(".ubtignore", out FileItem? OutFile))
 				{
 					Enqueue(() => ScanPluginFolder(SubDirectory));
 				}
@@ -177,11 +177,15 @@ namespace UnrealBuildTool
 		/// <param name="Directory">Root of the directory tree</param>
 		static void ScanDirectoryTree(DirectoryItem Directory)
 		{
-			foreach(DirectoryItem SubDirectory in Directory.EnumerateDirectories())
+			if (Directory.TryGetFile(".ubtignore", out FileItem? OutFile))
+			{
+				return;
+			}
+
+			foreach (DirectoryItem SubDirectory in Directory.EnumerateDirectories())
 			{
 				Enqueue(() => ScanDirectoryTree(SubDirectory));
 			}
-			Directory.CacheFiles();
 		}
 	}
 }

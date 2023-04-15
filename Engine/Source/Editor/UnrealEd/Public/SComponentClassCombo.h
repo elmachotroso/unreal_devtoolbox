@@ -81,7 +81,7 @@ public:
 		, CustomizationArgs(InCustomizationArgs)
 	{}
 
-	FComponentClassComboEntry(const FString& InHeadingText, const FString& InComponentName, FName InComponentPath, const UClass* InIconClass, bool InIncludedInFilter)
+	FComponentClassComboEntry(const FString& InHeadingText, const FString& InComponentName, FTopLevelAssetPath InComponentPath, const UClass* InIconClass, bool InIncludedInFilter)
 		: ComponentClass(nullptr)
 		, IconClass(InIconClass)
 		, ComponentName(InComponentName)
@@ -146,6 +146,7 @@ public:
     	return CustomizationArgs.OnSubobjectCreated;
     }
 	
+	FString GetClassDisplayName() const;
 	FString GetClassName() const;
 	FString GetComponentPath() const { return ComponentPath.ToString(); }
 
@@ -176,7 +177,7 @@ private:
 	// loading occurs when the blueprint is spawned, which should also trigger a refresh
 	// of the component list:
 	FString ComponentName;
-	FName ComponentPath;
+	FTopLevelAssetPath ComponentPath;
 	FString HeadingText;
 	bool bIncludedInFilter;
 	EComponentCreateAction::Type ComponentCreateAction;
@@ -283,7 +284,7 @@ private:
 	TSharedPtr< SListView<FComponentClassComboEntryPtr> > ComponentClassListView;
 
 	/** Internal data that facilitates custom class filtering */
-	TUniquePtr<FComponentClassFilterData> ComponentClassFilterData;
+	FComponentClassFilterData ComponentClassFilterData;
 
 	/** Cached selection index used to skip over unselectable items */
 	int32 PrevSelectedIndex;

@@ -12,7 +12,7 @@
  * Fast single-producer/single-consumer unbounded concurrent queue. Doesn't free memory until destruction but recycles consumed items.
  * Based on http://www.1024cores.net/home/lock-free-algorithms/queues/unbounded-spsc-queue
  */
-template<typename T>
+template<typename T, typename AllocatorType = FMemory>
 class TSpscQueue final
 {
 public:
@@ -22,7 +22,7 @@ public:
 
 	TSpscQueue()
 	{
-		FNode* Node = new FNode;
+		FNode* Node = new(AllocatorType::Malloc(sizeof(FNode), alignof(FNode))) FNode;
 		Tail.store(Node, std::memory_order_relaxed);
 		Head = First = TailCopy = Node;
 	}
@@ -38,7 +38,7 @@ public:
 		{
 			FNode* Next = Node->Next.load(std::memory_order_relaxed);
 			bContinue = Node != LocalTail;
-			delete Node;
+			AllocatorType::Free(Node);
 			Node = Next;
 		} while (bContinue);
 
@@ -47,7 +47,7 @@ public:
 		{
 			FNode* Next = Node->Next.load(std::memory_order_relaxed);
 			DestructItem((ElementType*)&Node->Value);
-			delete Node;
+			AllocatorType::Free(Node);
 			Node = Next;
 		}
 	}
@@ -56,7 +56,7 @@ public:
 	void Enqueue(ArgTypes&&... Args)
 	{
 		FNode* Node = AllocNode();
-		new (&Node->Value) ElementType(Forward<ArgTypes>(Args)...);
+		new(&Node->Value) ElementType(Forward<ArgTypes>(Args)...);
 
 		Head->Next.store(Node, std::memory_order_release);
 		Head = Node;
@@ -78,6 +78,41 @@ public:
 
 		Tail.store(LocalTailNext, std::memory_order_release);
 		return Value;
+	}
+
+	bool Dequeue(ElementType& OutElem)
+	{
+		TOptional<ElementType> LocalElement = Dequeue();
+		if (LocalElement.IsSet())
+		{
+			OutElem = LocalElement.GetValue();
+			return true;
+		}
+		
+		return false;
+	}
+
+	bool IsEmpty() const
+	{
+		FNode* LocalTail = Tail.load(std::memory_order_relaxed);
+		FNode* LocalTailNext = LocalTail->Next.load(std::memory_order_acquire);
+		return LocalTailNext == nullptr;
+	}
+
+	// as there can be only one consumer, a consumer can safely "peek" the tail of the queue.
+	// returns a pointer to the tail if the queue is not empty, nullptr otherwise
+	// there's no overload with TOptional as it doesn't support references
+	ElementType* Peek() const
+	{
+		FNode* LocalTail = Tail.load(std::memory_order_relaxed);
+		FNode* LocalTailNext = LocalTail->Next.load(std::memory_order_acquire);
+
+		if (LocalTailNext == nullptr)
+		{
+			return nullptr;
+		}
+
+		return (ElementType*)&LocalTailNext->Value;
 	}
 
 private:
@@ -112,7 +147,7 @@ private:
 			return AllocFromCache();
 		}
 
-		return new FNode();
+		return new(AllocatorType::Malloc(sizeof(FNode), alignof(FNode))) FNode();
 	}
 
 private:

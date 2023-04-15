@@ -53,7 +53,7 @@ public:
 	 */
 	virtual uint64 GetWasteApproximation()
 	{
-		double Waste = ((double)TotalWaste / (double)TotalAllocs) * CurrentAllocs;
+		double Waste = (static_cast<double>(TotalWaste) / static_cast<double>(TotalAllocs)) * static_cast<double>(CurrentAllocs);
 		return (uint64)Waste;
 	}
 
@@ -121,6 +121,10 @@ public:
 	 */
 	virtual bool DoesChunkContainAllocation(const FGrowableAllocationBase* Allocation) = 0;
 
+	/**
+	 * Queries the implementation if the given address came from this chunk
+	 */
+	virtual bool DoesChunkContainAddress(const void* Address) = 0;
 
 
 	/**
@@ -709,6 +713,23 @@ public:
 		}
 	}
 
+	bool DoesAllocatorContainAddress(const void* Address)
+	{
+		// multi-thread protection
+		FScopeLock ScopeLock(&CriticalSection);
+
+		// loop through the chunks, query each one to see if they contain the address
+		for (int32 ChunkIndex = 0; ChunkIndex < AllocChunks.Num(); ChunkIndex++)
+		{
+			ChunkAllocatorType* Chunk = AllocChunks[ChunkIndex];
+			if (Chunk && Chunk->DoesChunkContainAddress(Address))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void ShowAllocationInfo()
 	{
  		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("   Allocator has %d chunks\n"), AllocChunks.Num());
@@ -834,8 +855,8 @@ private:
 	 void OutOfMemory(uint32 Size)
 	 {
 #if !UE_BUILD_SHIPPING
-		 FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FGrowableAllocator: OOM allocating %dbytes %fMB"), Size, Size / 1024.0f / 1024.0f);
-		 UE_LOG(LogCore, Fatal, TEXT("FGrowableAllocator: OOM allocating %dbytes %fMB"), Size, Size / 1024.0f / 1024.0f);
+		 FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FGrowableAllocator: OOM allocating %dbytes %fMB"), Size, static_cast<float>(Size) / 1024.0f / 1024.0f);
+		 UE_LOG(LogCore, Fatal, TEXT("FGrowableAllocator: OOM allocating %dbytes %fMB"), Size, static_cast<float>(Size) / 1024.0f / 1024.0f);
 #endif
 	 }
 

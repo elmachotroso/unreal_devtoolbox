@@ -5,14 +5,18 @@
 
 #include "Algo/Find.h"
 #include "Algo/Transform.h"
+#include "Async/ParallelFor.h"
 #include "Common/CachedPagedArray.h"
 #include "Common/CachedStringStore.h"
 #include "Common/Utils.h"
 #include "Containers/Map.h"
+#include "Containers/StringView.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformFileManager.h"
+#include "Internationalization/Regex.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
+#include "Misc/ScopeRWLock.h"
 #include "TraceServices/Model/AnalysisCache.h"
 #include "TraceServices/Model/AnalysisSession.h"
 
@@ -30,6 +34,20 @@
 #endif
 
 namespace TraceServices {
+
+/////////////////////////////////////////////////////////////////////
+class FResolvedSymbolFilter : public IResolvedSymbolFilter
+{
+public:
+	FResolvedSymbolFilter();
+	virtual ~FResolvedSymbolFilter();
+
+	virtual void Update(FResolvedSymbol& InSymbol) const override;
+
+private:
+	TArray<FString> IgnoreSymbolsByFunctionName;
+	TArray<FRegexPattern> IgnoreSymbolsByFilePath;
+};
 
 /////////////////////////////////////////////////////////////////////
 template<typename SymbolResolverType>
@@ -65,7 +83,7 @@ private:
 		uint32 FileOffset;
 		uint32 Line;
 	};
-	
+
 	mutable FRWLock				ModulesLock;
 	TPagedArray<FModule>		Modules;
 
@@ -80,12 +98,14 @@ private:
 	uint32 NumCachedSymbols;
 	// Number of discovered symbols
 	std::atomic<uint32> SymbolsDiscovered;
-	
+
 	IAnalysisSession&			Session;
 	FString						Platform;
 	TUniquePtr<SymbolResolverType>	Resolver;
 	FGraphEventRef				LoadSymbolsTask;
 	bool						LoadSymbolsAbort = false;
+
+	FResolvedSymbolFilter		SymbolFilter;
 };
 
 /////////////////////////////////////////////////////////////////////
@@ -97,7 +117,7 @@ TModuleProvider<SymbolResolverType>::TModuleProvider(IAnalysisSession& Session)
 	, NumCachedSymbols(0)
 	, Session(Session)
 {
-	Resolver = TUniquePtr<SymbolResolverType>(new SymbolResolverType(Session));
+	Resolver = TUniquePtr<SymbolResolverType>(new SymbolResolverType(Session, SymbolFilter));
 	LoadSymbolsFromCache(Session.GetCache());
 }
 
@@ -128,21 +148,25 @@ const FResolvedSymbol* TModuleProvider<SymbolResolverType>::GetSymbol(uint64 Add
 		}
 	}
 
-	FResolvedSymbol* ResolvedSymbol;
+	FResolvedSymbol* ResolvedSymbol = nullptr;
 	{
-		// Add a pending entry to our cache
 		FWriteScopeLock _(SymbolsLock);
-		if (SymbolCacheLookup.Contains(Address))
+
+		// Attempt again to read from the cached symbols.
+		const FResolvedSymbol* CachedResolvedSymbol = SymbolCacheLookup.FindRef(Address);
+		if (CachedResolvedSymbol)
 		{
-			return SymbolCacheLookup[Address];
+			return CachedResolvedSymbol;
 		}
-		ResolvedSymbol = &SymbolCache.EmplaceBack(ESymbolQueryResult::Pending, nullptr, nullptr, nullptr, 0);
+
+		// Add a pending entry to our cache.
+		ResolvedSymbol = &SymbolCache.EmplaceBack(ESymbolQueryResult::Pending, nullptr, nullptr, nullptr, (uint16)0, EResolvedSymbolFilterStatus::Unknown);
 		SymbolCacheLookup.Add(Address, ResolvedSymbol);
 		++SymbolsDiscovered;
 	}
-
-	// If not in cache yet, queue it up in the resolver
 	check(ResolvedSymbol);
+
+	// If not in cache yet, queue it up in the resolver.
 	Resolver->QueueSymbolResolve(Address, ResolvedSymbol);
 
 	return ResolvedSymbol;
@@ -153,12 +177,12 @@ template <typename SymbolResolverType>
 uint32 TModuleProvider<SymbolResolverType>::GetNumModules() const
 {
 	FReadScopeLock _(ModulesLock);
-	return Modules.Num();
+	return static_cast<uint32>(Modules.Num());
 }
 
 /////////////////////////////////////////////////////////////////////
 template <typename SymbolResolverType>
-void TModuleProvider<SymbolResolverType>::EnumerateModules(uint32 Start, TFunctionRef<void(const FModule& Module)> Callback) const 
+void TModuleProvider<SymbolResolverType>::EnumerateModules(uint32 Start, TFunctionRef<void(const FModule& Module)> Callback) const
 {
 	FReadScopeLock _(ModulesLock);
 	for (uint32 i = Start; i < Modules.Num(); ++i)
@@ -179,7 +203,7 @@ FGraphEventRef TModuleProvider<SymbolResolverType>::LoadSymbolsForModuleUsingPat
 		if (Resolver && !FullPath.IsEmpty() && Module->Status.load() != EModuleStatus::Loaded)
 		{
 			// Setup a task to queue and watch the queued module. If it succeeds in resolving with the new path
-			// re-resolve any cached symbols 
+			// re-resolve any cached symbols
 			LoadSymbolsTask = FFunctionGraphTask::CreateAndDispatchWhenReady([this, Module, FullPath]()
 			{
 				auto ReloadModuleFn = [this] (const FModule* InModule, const TCHAR* InPath)
@@ -191,7 +215,7 @@ FGraphEventRef TModuleProvider<SymbolResolverType>::LoadSymbolsForModuleUsingPat
 					auto ReresolveOnSuccess = [this, DiscoveredSymbols, ModuleBegin, ModuleEnd] (TArray<TTuple<uint64,FResolvedSymbol*>>& OutSymbols)
 					{
 						OutSymbols.Reserve(DiscoveredSymbols);
-					
+
 						FReadScopeLock _(SymbolsLock);
 						for (auto Pair : SymbolCacheLookup)
 						{
@@ -205,15 +229,16 @@ FGraphEventRef TModuleProvider<SymbolResolverType>::LoadSymbolsForModuleUsingPat
 					};
 
 					Resolver->QueueModuleReload(InModule, InPath, ReresolveOnSuccess);
+
 					// Wait for the resolver to do it's work
 					while (InModule->Status.load() == EModuleStatus::Pending)
 					{
-						FPlatformProcess::Sleep(.1);
+						FPlatformProcess::Sleep(0.1f);
 					}
 
 					return InModule->Status.load();
 				};
-			
+
 				UE_LOG(LogTraceServices, Display, TEXT("Queing symbol loading using path %s."), *FullPath);
 
 				// Load the requested module
@@ -231,7 +256,7 @@ FGraphEventRef TModuleProvider<SymbolResolverType>::LoadSymbolsForModuleUsingPat
 							return;
 						}
 						const EModuleStatus ModuleStatus = OtherModule.Status.load();
-						if (&OtherModule != Module && ModuleStatus != EModuleStatus::Loaded && ModuleStatus != EModuleStatus::Pending)
+						if (&OtherModule != Module && ModuleStatus >= EModuleStatus::FailedStatusStart)
 						{
 							ReloadModuleFn(&OtherModule, *Directory);
 						}
@@ -278,12 +303,12 @@ void TModuleProvider<SymbolResolverType>::OnModuleLoad(const FStringView& Module
 	const TCHAR* FullName = Session.StoreString(Module);
 
 	FWriteScopeLock _(ModulesLock);
-	FModule& NewModule = Modules.EmplaceBack(Name, FullName, Base, Size, EModuleStatus::Pending);
+	FModule& NewModule = Modules.EmplaceBack(Name, FullName, Base, Size, EModuleStatus::Discovered);
 
 	// The number of cached symbols for this module is equal to the number
 	// of matching addresses in the cache.
 	NewModule.Stats.Cached = GetNumCachedSymbolsFromModule(Base, Size);
-	
+
 	Resolver->QueueModuleLoad(ImageId, ImageIdSize, &NewModule);
 }
 
@@ -308,15 +333,16 @@ void TModuleProvider<SymbolResolverType>::SaveSymbolsToCache(IAnalysisCache& Cac
 	// Create a temporary reverse lookup for symbol -> address
 	TMap<const FResolvedSymbol*, uint64> SymbolReverseLookup;
 	SymbolReverseLookup.Reserve(SymbolCacheLookup.Num());
-	Algo::Transform(SymbolCacheLookup, SymbolReverseLookup, [](const TTuple<uint64, const FResolvedSymbol*>& Pair) { 
+	Algo::Transform(SymbolCacheLookup, SymbolReverseLookup, [](const TTuple<uint64, const FResolvedSymbol*>& Pair) {
 		return TTuple<const FResolvedSymbol*, uint64>(Pair.Value, Pair.Key);
 	});
 
 	// Save new symbols
 	TCachedPagedArray<FSavedSymbol, 1024> SavedSymbols(TEXT("ModuleProvider.Symbols"), Cache);
-	const uint32 NumPreviouslySavedSymbols = SavedSymbols.Num();
+	const uint32 NumPreviouslySavedSymbols = static_cast<uint32>(SavedSymbols.Num());
+	const uint32 NumSymbols = static_cast<uint32>(SymbolCache.Num());
 	uint32 NumSavedSymbols = 0;
-	for (uint32 SymbolIndex = SavedSymbols.Num(); SymbolIndex < SymbolCache.Num(); ++SymbolIndex)
+	for (uint32 SymbolIndex = NumPreviouslySavedSymbols; SymbolIndex < NumSymbols; ++SymbolIndex)
 	{
 		const FResolvedSymbol& Symbol = SymbolCache[SymbolIndex];
 		if (Symbol.GetResult() != ESymbolQueryResult::OK)
@@ -324,9 +350,9 @@ void TModuleProvider<SymbolResolverType>::SaveSymbolsToCache(IAnalysisCache& Cac
 			continue;
 		}
 		const uint64* Address = SymbolReverseLookup.Find(&Symbol);
-		const uint32 ModuleOffset = Strings.Store_GetOffset(Symbol.Module);
-		const uint32 NameOffset = Strings.Store_GetOffset(Symbol.Name);
-		const uint32 FileOffset = Strings.Store_GetOffset(Symbol.File);
+		const uint32 ModuleOffset = static_cast<uint32>(Strings.Store_GetOffset(Symbol.Module));
+		const uint32 NameOffset = static_cast<uint32>(Strings.Store_GetOffset(Symbol.Name));
+		const uint32 FileOffset = static_cast<uint32>(Strings.Store_GetOffset(Symbol.File));
 		SavedSymbols.EmplaceBack(FSavedSymbol{*Address, ModuleOffset, NameOffset, FileOffset, Symbol.Line});
 		++NumSavedSymbols;
 	}
@@ -350,10 +376,18 @@ void TModuleProvider<SymbolResolverType>::LoadSymbolsFromCache(IAnalysisCache& C
 			UE_LOG(LogTraceServices, Warning, TEXT("Found cached symbol (adress %llx) which referenced unknown string."), Symbol.Address);
 			continue;
 		}
-		FResolvedSymbol& Resolved = SymbolCache.EmplaceBack(ESymbolQueryResult::OK, Module, Name, File, Symbol.Line);
+		FResolvedSymbol& Resolved = SymbolCache.EmplaceBack(ESymbolQueryResult::OK, Module, Name, File, static_cast<uint16>(Symbol.Line), EResolvedSymbolFilterStatus::Unknown);
 		SymbolCacheLookup.Add(Symbol.Address, &Resolved);
 	}
 	NumCachedSymbols = SymbolCacheLookup.Num();
+
+	// Update filter for all cached symbols.
+	ParallelFor(static_cast<int32>(SymbolCache.Num()), [this](int32 Index)
+		{
+			SymbolFilter.Update(SymbolCache[Index]);
+		},
+		EParallelForFlags::BackgroundPriority);
+
 	UE_LOG(LogTraceServices, Display, TEXT("Loaded %d symbols from cache."), SymbolCacheLookup.Num());
 }
 
@@ -377,19 +411,84 @@ uint32 TModuleProvider<SymbolResolverType>::GetNumCachedSymbolsFromModule(uint64
 }
 
 /////////////////////////////////////////////////////////////////////
-IModuleAnalysisProvider* CreateModuleProvider(IAnalysisSession& InSession, const FAnsiStringView& InSymbolFormat)
+FResolvedSymbolFilter::FResolvedSymbolFilter()
 {
-	IModuleAnalysisProvider* Provider(nullptr);
+	IgnoreSymbolsByFunctionName.Add(TEXT("FMemory::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FMallocWrapper::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FMallocPoisonProxy::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FMallocLeakDetectionProxy::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FVirtualWinApiHooks::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("Malloc"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("Realloc"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("MemoryTrace_"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("operator new"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("std::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FWindowsPlatformMemory::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FCachedOSPageAllocator::"));
+	IgnoreSymbolsByFunctionName.Add(TEXT("FMallocBinned"));
+
+	IgnoreSymbolsByFilePath.Add(FRegexPattern(FString(TEXT(".*/Containers/.*"))));
+	IgnoreSymbolsByFilePath.Add(FRegexPattern(FString(TEXT(".*/ConcurrentLinearAllocator.*"))));
+}
+
+/////////////////////////////////////////////////////////////////////
+FResolvedSymbolFilter::~FResolvedSymbolFilter()
+{
+}
+
+/////////////////////////////////////////////////////////////////////
+void FResolvedSymbolFilter::Update(FResolvedSymbol& InSymbol) const
+{
+	bool bIsFiltered = false;
+
+	if (!bIsFiltered && InSymbol.Name)
+	{
+		// Ignore symbols by function name prefix.
+		for (const FString& Prefix : IgnoreSymbolsByFunctionName)
+		{
+			if (FCString::Strnicmp(InSymbol.Name, *Prefix, Prefix.Len()) == 0)
+			{
+				bIsFiltered = true;
+				break;
+			}
+		}
+	}
+
+	if (!bIsFiltered && InSymbol.File)
+	{
+		// Ignore symbols by file path, specified as RegexPattern strings.
+		for (const FRegexPattern& RegexPattern : IgnoreSymbolsByFilePath)
+		{
+			FString File(InSymbol.File);
+			File.ReplaceCharInline(TEXT('\\'), TEXT('/'), ESearchCase::CaseSensitive);
+			FRegexMatcher RegexMatcher(RegexPattern, File);
+			if (RegexMatcher.FindNext())
+			{
+				bIsFiltered = true;
+				break;
+			}
+		}
+	}
+
+	EResolvedSymbolFilterStatus FilterStatus = bIsFiltered ? TraceServices::EResolvedSymbolFilterStatus::Filtered : TraceServices::EResolvedSymbolFilterStatus::NotFiltered;
+	InSymbol.FilterStatus.store(FilterStatus, std::memory_order_release);
+}
+
+/////////////////////////////////////////////////////////////////////
+TSharedPtr<IModuleAnalysisProvider> CreateModuleProvider(IAnalysisSession& InSession, const FAnsiStringView& InSymbolFormat)
+{
+	TSharedPtr<IModuleAnalysisProvider> Provider;
+
 #if PLATFORM_WINDOWS && USE_SYMSLIB
 	if (!Provider && (InSymbolFormat.Equals("pdb") || InSymbolFormat.Equals("dwarf")))
 	{
-		Provider = new TModuleProvider<FSymslibResolver>(InSession);
+		Provider = MakeShared<TModuleProvider<FSymslibResolver>>(InSession);
 	}
 #endif // PLATFORM_WINDOWS && USE_SYMSLIB
 #if PLATFORM_WINDOWS && USE_DBGHELP
 	if (!Provider && InSymbolFormat.Equals("pdb"))
 	{
-		Provider = new TModuleProvider<FDbgHelpResolver>(InSession);
+		Provider = MakeShared<TModuleProvider<FDbgHelpResolver>>(InSession);
 	}
 #endif // PLATFORM_WINDOWS && USE_DBGHELP
 	return Provider;

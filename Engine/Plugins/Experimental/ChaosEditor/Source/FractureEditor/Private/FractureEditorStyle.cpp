@@ -4,7 +4,7 @@
 
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateStyleMacros.h"
 
 FName FFractureEditorStyle::StyleName("FractureEditorStyle");
@@ -40,6 +40,8 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.SelectAllInLevel",     new IMAGE_BRUSH_SVG("FractureSelectLevel", IconSize));
 	Set("FractureEditor.SelectInvert",         new IMAGE_BRUSH_SVG("FractureSelectInvert", IconSize));
 	Set("FractureEditor.SelectCustom",         new IMAGE_BRUSH_SVG("FractureSelectInteractive", IconSize));
+	Set("FractureEditor.SelectLeaf",           new IMAGE_BRUSH_SVG("FractureSelectLeafNodes", IconSize));
+	Set("FractureEditor.SelectCluster",        new IMAGE_BRUSH_SVG("FractureSelectClusters", IconSize));
 
 	Set("FractureEditor.AutoCluster",          new IMAGE_BRUSH_SVG("FractureAutoCluster", IconSize));
 	Set("FractureEditor.ClusterMagnet",        new IMAGE_BRUSH_SVG("FractureMagnet", IconSize));
@@ -59,6 +61,7 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.DeleteBranch",         new IMAGE_BRUSH_SVG("FracturePrune", IconSize));
 	Set("FractureEditor.Hide",				   new IMAGE_BRUSH_SVG("FractureHide", IconSize));
 	Set("FractureEditor.Unhide",               new IMAGE_BRUSH_SVG("FractureUnhide", IconSize));
+	Set("FractureEditor.MergeSelected",       new IMAGE_BRUSH_SVG("FractureGlue", IconSize));
 
 	Set("FractureEditor.RecomputeNormals",     new IMAGE_BRUSH_SVG("FractureNormals", IconSize));
 	Set("FractureEditor.Resample",             new IMAGE_BRUSH_SVG("FractureResample", IconSize));
@@ -69,6 +72,7 @@ FFractureEditorStyle::FFractureEditorStyle()
 	Set("FractureEditor.Convex",        	   new IMAGE_BRUSH_SVG("FractureConvex", IconSize));
 	Set("FractureEditor.CustomVoronoi",        new IMAGE_BRUSH_SVG("FractureCustom", IconSize));
 	Set("FractureEditor.FixTinyGeo",	       new IMAGE_BRUSH_SVG("FractureGeoMerge", IconSize));
+	Set("FractureEditor.SetRemoveOnBreak",     new IMAGE_BRUSH_SVG("FractureSetRemoval", IconSize));
 
 	// View Settings
 	Set("FractureEditor.Exploded",             new IMAGE_BRUSH_SVG("FractureMiniExploded", LabelIconSize));
@@ -80,7 +84,7 @@ FFractureEditorStyle::FFractureEditorStyle()
 
 	Set("FractureEditor.SetInitialDynamicState", new IMAGE_BRUSH_SVG("FractureState", IconSize));
 
-	Set("FractureEditor.SpinBox", FSpinBoxStyle(FEditorStyle::GetWidgetStyle<FSpinBoxStyle>("SpinBox"))
+	Set("FractureEditor.SpinBox", FSpinBoxStyle(FAppStyle::GetWidgetStyle<FSpinBoxStyle>("SpinBox"))
 		.SetTextPadding(FMargin(0))
 		.SetBackgroundBrush(FSlateNoResource())
 		.SetHoveredBackgroundBrush(FSlateNoResource())

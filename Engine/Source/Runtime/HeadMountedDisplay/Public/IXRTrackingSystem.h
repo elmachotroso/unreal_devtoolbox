@@ -422,6 +422,7 @@ public:
 	 * Platform Agnostic Query about MotionControllers details
 	 */
 	virtual void GetMotionControllerData(UObject* WorldContext, const EControllerHand Hand, FXRMotionControllerData& MotionControllerData) = 0;
+	virtual bool GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile) = 0;
 
 	virtual bool ConfigureGestures(const FXRGestureConfig& GestureConfig) = 0;
 
@@ -435,4 +436,14 @@ public:
 	 * Get the bounds of the area where the user can freely move while remaining tracked centered around the specified origin
 	 */
 	virtual FVector2D GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const { return FVector2D::ZeroVector; }
+
+	/**
+	 * Get the transform of the specified tracking origin, if available.
+	 */
+	virtual bool GetTrackingOriginTransform(TEnumAsByte<EHMDTrackingOrigin::Type> Origin, FTransform& OutTransform) const { return false; }
+
+	/**
+	 * Get the transform and dimensions of the area where the user can freely move while remaining tracked centered around the specified origin transform
+	 */
+	virtual bool GetPlayAreaRect(FTransform& OutTransform, FVector2D& OutRect) const { return false; }
 };

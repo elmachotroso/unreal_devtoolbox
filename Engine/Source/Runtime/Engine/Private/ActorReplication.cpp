@@ -20,6 +20,18 @@
 #include "DrawDebugHelpers.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "Interfaces/Interface_ActorSubobject.h"
+#if UE_WITH_IRIS
+#include "Engine/NetConnection.h"
+#include "Iris/IrisConfig.h"
+#include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
+#include "Iris/ReplicationSystem/ReplicationSystem.h"
+#include "Iris/ReplicationSystem/Conditionals/ReplicationCondition.h"
+#include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
+#include "Net/Iris/ReplicationSystem/ActorReplicationBridge.h"
+#endif // UE_WITH_IRIS
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "PBDRigidsSolver.h"
+#include "ChaosSolversModule.h"
 
 /*-----------------------------------------------------------------------------
 	AActor networking implementation.
@@ -35,6 +47,8 @@ namespace ActorReplication
 	static bool		SavedbRepPhysics;
 	static ENetRole SavedRole;
 }
+
+using namespace UE::Net;
 
 float AActor::GetNetPriority(const FVector& ViewPos, const FVector& ViewDir, AActor* Viewer, AActor* ViewTarget, UActorChannel* InChannel, float Time, bool bLowBandwidth)
 {
@@ -259,11 +273,10 @@ void AActor::PostNetReceivePhysicState()
 	UPrimitiveComponent* RootPrimComp = Cast<UPrimitiveComponent>(RootComponent);
 	if (RootPrimComp)
 	{
+		const FRepMovement& ThisReplicatedMovement = GetReplicatedMovement();
 		FRigidBodyState NewState;
-		GetReplicatedMovement().CopyTo(NewState, this);
-
-		FVector DeltaPos(FVector::ZeroVector);
-		RootPrimComp->SetRigidBodyReplicatedTarget(NewState);
+		ThisReplicatedMovement.CopyTo(NewState, this);
+		RootPrimComp->SetRigidBodyReplicatedTarget(NewState, NAME_None, ThisReplicatedMovement.ServerFrame, ThisReplicatedMovement.ServerPhysicsHandle);
 	}
 }
 
@@ -354,16 +367,44 @@ void AActor::GatherCurrentMovement()
 		UPrimitiveComponent* RootPrimComp = Cast<UPrimitiveComponent>(GetRootComponent());
 		if (RootPrimComp && RootPrimComp->IsSimulatingPhysics())
 		{
-			FRigidBodyState RBState;
-			RootPrimComp->GetRigidBodyState(RBState);
+#if UE_WITH_IRIS
+			const bool bPrevRepPhysics = ReplicatedMovement.bRepPhysics;
+#endif // UE_WITH_IRIS
 
-			ReplicatedMovement.FillFrom(RBState, this);
+			bool bFoundInCache = false;
+
+			UWorld* World = GetWorld();
+			if (FPhysScene_Chaos* Scene = static_cast<FPhysScene_Chaos*>(World->GetPhysicsScene()))
+			{
+				if (FRigidBodyState* FoundState = Scene->ReplicationCache.Map.Find(FObjectKey(RootPrimComp)))
+				{
+					ReplicatedMovement.FillFrom(*FoundState, this, Scene->ReplicationCache.ServerFrame);
+					bFoundInCache = true;
+				}
+			}
+
+			if (!bFoundInCache)
+			{
+				// fallback to GT data
+				FRigidBodyState RBState;
+				RootPrimComp->GetRigidBodyState(RBState);
+				ReplicatedMovement.FillFrom(RBState, this, 0);
+			}
+
 			// Don't replicate movement if we're welded to another parent actor.
 			// Their replication will affect our position indirectly since we are attached.
 			ReplicatedMovement.bRepPhysics = !RootPrimComp->IsWelded();
 			
 			// Technically, the values might have stayed the same, but we'll just assume they've changed.
 			bWasRepMovementModified = true;
+
+#if UE_WITH_IRIS
+			// If RepPhysics has changed value then notify the ReplicationSystem
+			if (bPrevRepPhysics != ReplicatedMovement.bRepPhysics)
+			{
+				UpdateReplicatePhysicsCondition();
+			}
+#endif // UE_WITH_IRIS
 		}
 		else if (RootComponent != nullptr)
 		{
@@ -372,7 +413,7 @@ void AActor::GatherCurrentMovement()
 			{
 				// Networking for attachments assumes the RootComponent of the AttachParent actor. 
 				// If that's not the case, we can't update this, as the client wouldn't be able to resolve the Component and would detach as a result.
-				AttachmentReplication.AttachParent = RootComponent->GetAttachParent()->GetAttachmentRootActor();
+				AttachmentReplication.AttachParent = RootComponent->GetAttachParentActor();
 				if (AttachmentReplication.AttachParent != nullptr)
 				{
 					AttachmentReplication.LocationOffset = RootComponent->GetRelativeLocation();
@@ -433,12 +474,22 @@ void AActor::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifeti
 	DOREPLIFETIME_WITH_PARAMS_FAST(AActor, bTearOff, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(AActor, bCanBeDamaged, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(AActor, Instigator, SharedParams);
+
+	constexpr bool bUsePushModel = true;
 	
-	FDoRepLifetimeParams AttachmentReplicationParams{COND_Custom, REPNOTIFY_Always, /*bIsPushBased=*/true};
+	FDoRepLifetimeParams AttachmentReplicationParams{COND_Custom, REPNOTIFY_Always, bUsePushModel};
 	DOREPLIFETIME_WITH_PARAMS_FAST(AActor, AttachmentReplication, AttachmentReplicationParams);
 
-	FDoRepLifetimeParams ReplicatedMovementParams{COND_SimulatedOrPhysics, REPNOTIFY_Always, /*bIsPushBased=*/true};
+	FDoRepLifetimeParams ReplicatedMovementParams{COND_SimulatedOrPhysics, REPNOTIFY_Always, bUsePushModel};
 	DOREPLIFETIME_WITH_PARAMS_FAST(AActor, ReplicatedMovement, ReplicatedMovementParams);
+}
+
+void AActor::GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const
+{
+	Super::GetReplicatedCustomConditionState(OutActiveState);
+
+	DOREPCUSTOMCONDITION_ACTIVE_FAST(AActor, AttachmentReplication, IsReplicatingMovement());
+	DOREPCUSTOMCONDITION_ACTIVE_FAST(AActor, ReplicatedMovement, RootComponent && !RootComponent->GetIsReplicated());
 }
 
 bool AActor::ReplicateSubobjects(UActorChannel *Channel, FOutBunch *Bunch, FReplicationFlags *RepFlags)
@@ -451,13 +502,227 @@ bool AActor::ReplicateSubobjects(UActorChannel *Channel, FOutBunch *Bunch, FRepl
 
 	for (UActorComponent* ActorComp : ReplicatedComponents)
 	{
-		if (ActorComp && ActorComp->GetIsReplicated())
+		if (ActorComp && ActorComp->GetReplicationCondition() != COND_Never)
 		{
+			UActorChannel::SetCurrentSubObjectOwner(ActorComp);
 			WroteSomething |= ActorComp->ReplicateSubobjects(Channel, Bunch, RepFlags);		// Lets the component add subobjects before replicating its own properties.
+			UActorChannel::SetCurrentSubObjectOwner(this);
 			WroteSomething |= Channel->ReplicateSubobject(ActorComp, *Bunch, *RepFlags);	// (this makes those subobjects 'supported', and from here on those objects may have reference replicated)		
 		}
 	}
 	return WroteSomething;
+}
+
+ELifetimeCondition AActor::AllowActorComponentToReplicate(const UActorComponent* ComponentToReplicate) const
+{
+	return ComponentToReplicate->GetReplicationCondition();
+}
+
+void AActor::SetReplicatedComponentNetCondition(const UActorComponent* ReplicatedComponent, ELifetimeCondition NetCondition)
+{
+	checkf(HasActorBegunPlay(), TEXT("Can only set a netcondition after BeginPlay. %s setting for %s"), *GetName(), *ReplicatedComponent->GetName());
+
+	if (FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(ReplicatedComponent))
+	{
+		if (NetCondition != ComponentInfo->NetCondition)
+		{
+#if UE_WITH_IRIS
+			UE::Net::FReplicationSystemUtil::SetActorComponentNetCondition(ReplicatedComponent, NetCondition);
+#endif
+			ComponentInfo->NetCondition = NetCondition;
+		}
+	}
+	else
+	{
+		ensureMsgf(false, TEXT("Tried to set a netcondition on a replicated component not part of the list yet, netcondition will be ignored. %s setting for %s"), *GetName(), *ReplicatedComponent->GetName());
+	}
+}
+
+void AActor::AddComponentForReplication(UActorComponent* Component)
+{
+	constexpr EObjectFlags CDOFlags = RF_ClassDefaultObject | RF_ArchetypeObject;
+	if (ActorHasBegunPlay == EActorBeginPlayState::HasNotBegunPlay || HasAnyFlags(CDOFlags))
+	{
+		return;
+	}
+
+	if (Component->bWantsInitializeComponent && !Component->HasBeenInitialized())
+	{
+		return;
+	}
+
+	const ELifetimeCondition NetCondition = AllowActorComponentToReplicate(Component);
+
+	FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(Component);
+	if (!ComponentInfo)
+	{
+		ReplicatedComponentsInfo.Emplace(FReplicatedComponentInfo(Component, NetCondition));
+	}
+	else
+	{
+		// Always set the condition because this component could be registering SubObjects ahead of time and already in the list with COND_Never
+		ComponentInfo->NetCondition = NetCondition;
+	}
+
+	if (!Component->IsReadyForReplication())
+	{
+		Component->ReadyForReplication();
+	}
+
+#if UE_WITH_IRIS
+    if (NetCondition != COND_Never)
+    {
+		Component->BeginReplication();
+    }
+#endif
+}
+
+void AActor::RemoveReplicatedComponent(UActorComponent* Component)
+{
+	int32 Index = ReplicatedComponentsInfo.IndexOfByKey(Component);
+	if (Index != INDEX_NONE)
+	{
+		ReplicatedComponentsInfo.RemoveAtSwap(Index);
+#if UE_WITH_IRIS
+		Component->EndReplication();
+#endif
+	}
+}
+
+void AActor::AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition)
+{
+	check(IsValid(SubObject));
+
+	ensureMsgf(IsUsingRegisteredSubObjectList(), TEXT("%s is registering subobjects but bReplicateUsingRegisteredSubObjectList is false. Without the flag set to true the registered subobjects will not be replicated."), *GetName());
+
+	FSubObjectRegistry::EResult Result = ReplicatedSubObjects.AddSubObjectUnique(SubObject, NetCondition);
+
+	UE_CLOG(Result == FSubObjectRegistry::EResult::NewEntry, LogNetSubObject, Verbose, TEXT("%s (0x%p) added replicated subobject %s (0x%p) [%s]"), 
+		*GetName(), this, *SubObject->GetName(), SubObject, *StaticEnum<ELifetimeCondition>()->GetValueAsString(NetCondition));
+
+	// Warn if the subobject was registered with a different net condition.
+	ensureMsgf(Result != FSubObjectRegistry::EResult::NetConditionConflict, TEXT("%s(0x%p) Registered subobject %s (0x%p) again with a different net condition. Active [%s] New [%s]. New condition will be ignored"),
+		*GetName(), this, *SubObject->GetName(), SubObject, *StaticEnum<ELifetimeCondition>()->GetValueAsString(ReplicatedSubObjects.GetNetCondition(SubObject)), *StaticEnum<ELifetimeCondition>()->GetValueAsString(NetCondition));
+
+#if UE_WITH_IRIS
+	if (GetIsReplicated() && HasActorBegunPlay())
+	{
+		UE::Net::FReplicationSystemUtil::BeginReplicationForActorSubObject(this, SubObject, NetCondition);
+	}
+#endif
+}
+
+void AActor::RemoveReplicatedSubObject(UObject* SubObject)
+{
+	check(SubObject);
+	const bool bWasRemoved = ReplicatedSubObjects.RemoveSubObject(SubObject);
+
+	UE_CLOG(bWasRemoved, LogNetSubObject, Verbose, TEXT("%s (0x%p) removed replicated subobject %s (0x%p)"), *GetName(), this, *SubObject->GetName(), SubObject);
+
+#if UE_WITH_IRIS
+	if (bWasRemoved)
+	{
+		UE::Net::FReplicationSystemUtil::EndReplicationForActorSubObject(this, SubObject);
+	}
+#endif // UE_WITH_IRIS
+}
+
+void AActor::AddActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject, ELifetimeCondition NetCondition)
+{
+	check(IsValid(OwnerComponent));
+	check(IsValid(SubObject));
+	ensureMsgf(OwnerComponent->GetIsReplicated(), TEXT("Only components with replication enabled can register subobjects. %s::%s has replication disabled."), *GetName(), *SubObject->GetName());
+	ensureMsgf(NetCondition != COND_Custom, TEXT("Custom netconditions do not work with SubObjects. %s::%s will not be replicated."), *GetName(), *SubObject->GetName());
+
+	FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(OwnerComponent);
+	if (ComponentInfo)
+	{
+		// Add the subobject to the component's list
+		FSubObjectRegistry::EResult Result = ComponentInfo->SubObjects.AddSubObjectUnique(SubObject, NetCondition);
+
+		UE_CLOG(Result == FSubObjectRegistry::EResult::NewEntry, LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) added replicated subobject %s (0x%p) [%s]"),
+			*GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject, *StaticEnum<ELifetimeCondition>()->GetValueAsString(NetCondition));
+
+		// Warn if the subobject was registered with a different net condition.
+		ensureMsgf(Result != FSubObjectRegistry::EResult::NetConditionConflict, TEXT("%s::%s (0x%p) Registered subobject %s (0x%p) again with a different net condition. Active [%s] New [%s]. New condition will be ignored"),
+			*GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject, *StaticEnum<ELifetimeCondition>()->GetValueAsString(ComponentInfo->SubObjects.GetNetCondition(SubObject)), *StaticEnum<ELifetimeCondition>()->GetValueAsString(NetCondition));
+
+#if UE_WITH_IRIS
+		if (OwnerComponent->GetIsReplicated() && OwnerComponent->HasBegunPlay())
+		{
+			UE::Net::FReplicationSystemUtil::BeginReplicationForActorComponentSubObject(OwnerComponent, SubObject, NetCondition);
+		}
+#endif
+	}
+	else
+	{
+		// If we have to create an entry it means the component is registering subobjects while not replicating or before it's registered in the actor.
+		// Let's allow it to register subobjects but set a condition that prevents it from getting replicated until we call IsAllowed.
+		constexpr ELifetimeCondition NeverReplicate = COND_Never;
+
+		const int32 Index = ReplicatedComponentsInfo.Emplace(FReplicatedComponentInfo(OwnerComponent, NeverReplicate));
+		ReplicatedComponentsInfo[Index].SubObjects.AddSubObjectUnique(SubObject, NetCondition);
+
+		UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) added replicated subobject %s (0x%p) [%s]"),
+			*GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject, *StaticEnum<ELifetimeCondition>()->GetValueAsString(NetCondition));
+	}
+}
+
+void AActor::RemoveActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject)
+{
+	check(OwnerComponent);
+	check(SubObject);
+
+	if (FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(OwnerComponent))
+	{
+		bool bWasRemoved = ComponentInfo->SubObjects.RemoveSubObject(SubObject);
+
+		UE_CLOG(bWasRemoved, LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) removed replicated subobject %s (0x%p)"), *GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject);
+
+#if UE_WITH_IRIS
+		UE::Net::FReplicationSystemUtil::EndReplicationForActorComponentSubObject(OwnerComponent, SubObject);
+#endif // UE_WITH_IRIS
+	}
+}
+
+bool AActor::IsReplicatedSubObjectRegistered(const UObject* SubObject) const
+{
+	return ReplicatedSubObjects.IsSubObjectInRegistry(SubObject);
+}
+
+bool AActor::IsReplicatedActorComponentRegistered(const UActorComponent* ReplicatedComponent) const
+{
+	return ReplicatedComponentsInfo.FindByKey(ReplicatedComponent) != nullptr;
+}
+
+bool AActor::IsActorComponentReplicatedSubObjectRegistered(const UActorComponent* OwnerComponent, const UObject* SubObject) const
+{
+	check(OwnerComponent);
+
+	if (const FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(OwnerComponent))
+	{
+		return ComponentInfo->SubObjects.IsSubObjectInRegistry(SubObject);
+	}
+	return false;
+}
+
+void AActor::BuildReplicatedComponentsInfo()
+{
+	checkf(HasActorBegunPlay() == false, TEXT("BuildReplicatedComponentsInfo can only be called before BeginPlay."));
+
+	for (UActorComponent* ReplicatedComponent : ReplicatedComponents)
+	{
+		// Ask the actor if they want to override the replicated component
+		const ELifetimeCondition NetCondition = AllowActorComponentToReplicate(ReplicatedComponent);
+
+		const int32 Index = ReplicatedComponentsInfo.AddUnique(UE::Net::FReplicatedComponentInfo(ReplicatedComponent));
+		ReplicatedComponentsInfo[Index].NetCondition = NetCondition;
+
+		if (!ReplicatedComponent->IsReadyForReplication())
+		{
+			ReplicatedComponent->ReadyForReplication();
+		}
+	}
 }
 
 void AActor::GetSubobjectsWithStableNamesForNetworking(TArray<UObject*> &ObjList)
@@ -532,3 +797,141 @@ void AActor::OnRep_Owner()
 {
 
 }
+
+#if UE_WITH_IRIS
+void AActor::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
+	using namespace UE::Net;
+
+	Super::RegisterReplicationFragments(Context, RegistrationFlags);
+
+	// Build descriptors and allocate PropertyReplicationFragments for this object
+	FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
+
+	// $IRIS: $TODO: Consider splitting instance protocol / protocol creation, potentially protocol could be created from archetype/CDO or built as part of cook process.
+	for (UActorComponent* ActorComp : OwnedComponents)
+	{
+		if (!IsValid(ActorComp))
+		{
+			continue;
+		}
+
+		if (ActorComp->HasAnyFlags(RF_DefaultSubObject) || ActorComp->IsDefaultSubobject())
+		{
+			if (!ActorComp->GetIsReplicated())
+			{
+				// Register RPC functions for not replicated default subobjects
+				ActorComp->RegisterReplicationFragments(Context, EFragmentRegistrationFlags::RegisterRPCsOnly);
+			}
+		}
+	}
+}
+
+void AActor::BeginReplication(const FActorBeginReplicationParams& Params)
+{
+	// If we do not have a handle we create one
+	UE::Net::FNetHandle ActorHandle = UE::Net::FReplicationSystemUtil::BeginReplication(this, Params);
+	if (ActorHandle.IsValid())
+	{
+		UpdateOwningNetConnection();
+	}
+}
+
+void AActor::BeginReplication()
+{
+	const FActorBeginReplicationParams BeginReplicationParams;
+
+	BeginReplication(BeginReplicationParams);
+}
+
+void AActor::EndReplication(EEndPlayReason::Type EndPlayReason)
+{
+	if (GetIsReplicated())
+	{
+		UE::Net::FReplicationSystemUtil::EndReplication(this, EndPlayReason);
+	}
+}
+
+void AActor::UpdateOwningNetConnection() const
+{
+	using namespace UE::Net;
+
+	UReplicationSystem* ReplicationSystem = FReplicationSystemUtil::GetReplicationSystem(GetNetOwner());
+	if (ReplicationSystem == nullptr)
+	{
+		return;
+	}
+
+	uint32 NewOwningNetConnectionId = 0U;
+	if (const UNetConnection* NetConnection = GetNetConnection())
+	{
+		NewOwningNetConnectionId = NetConnection->GetParentConnectionId();
+	}
+
+	// If this actor isn't replicated there's no way for us to tell whether we need to update our children.
+	bool bUpdateChildren = !GetIsReplicated();
+	if (!bUpdateChildren)
+	{
+#if DO_CHECK
+		// Sanity check
+		{
+			const UReplicationSystem* MyReplicationSystem = FReplicationSystemUtil::GetReplicationSystem(this);
+			check(MyReplicationSystem == ReplicationSystem || MyReplicationSystem == nullptr);
+		}
+#endif
+
+		FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(this);
+		const uint32 CurrentOwningNetConnectionId = NetHandle.IsValid() ? ReplicationSystem->GetOwningNetConnection(NetHandle) : 0U;
+		bUpdateChildren = (NewOwningNetConnectionId != CurrentOwningNetConnectionId);
+	}
+
+	if (!bUpdateChildren)
+	{
+		return;
+	}
+
+	constexpr SIZE_T MaxActorCount = 512;
+	const AActor* Actors[MaxActorCount];
+	SIZE_T ActorCount = 1;
+	Actors[0] = this;
+	for (; ActorCount > 0; )
+	{
+		const AActor* Actor = Actors[--ActorCount];
+		check(ActorCount + Actor->Children.Num() <= UE_ARRAY_COUNT(Actors));
+		for (const AActor* Child : MakeArrayView(Actor->Children))
+		{
+			Actors[ActorCount++] = Child;
+		}
+
+		if (Actor->GetIsReplicated())
+		{
+			const FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(Actor);
+			if (NetHandle.IsValid())
+			{
+				ReplicationSystem->SetOwningNetConnection(NetHandle, NewOwningNetConnectionId);
+				// Update autonomous proxy condition
+				if (Actor->GetRemoteRole() == ROLE_AutonomousProxy)
+				{
+					const bool bEnableAutonomousCondition = true;
+					ReplicationSystem->SetReplicationConditionConnectionFilter(NetHandle, EReplicationCondition::RoleAutonomous, NewOwningNetConnectionId, bEnableAutonomousCondition);
+				}
+			}
+		}
+	}
+}
+#endif // UE_WITH_IRIS
+
+void AActor::UpdateReplicatePhysicsCondition()
+{
+#if UE_WITH_IRIS
+	using namespace UE::Net;
+
+	const FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(this);
+	if (NetHandle.IsValid())
+	{
+		UReplicationSystem* ReplicationSystem = FReplicationSystemUtil::GetReplicationSystem(this);
+		ReplicationSystem->SetReplicationCondition(NetHandle, EReplicationCondition::ReplicatePhysics, GetReplicatedMovement().bRepPhysics);
+	}
+#endif // UE_WITH_IRIS
+}
+

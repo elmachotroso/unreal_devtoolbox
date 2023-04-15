@@ -2,53 +2,106 @@
 
 #include "Chaos/Framework/ChaosResultsManager.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
+#include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
 #include "Chaos/ChaosMarshallingManager.h"
 
 namespace Chaos
 {	
-	void FChaosInterpolationResults::Reset()
-	{
-		for (FChaosRigidInterpolationData& Data : RigidInterpolations)
-		{
-			if (FSingleParticlePhysicsProxy* Proxy = Data.Prev.GetProxy())
-			{
-				Proxy->SetPullDataInterpIdx_External(INDEX_NONE);
-			}
-		}
-		RigidInterpolations.Reset();
-
-		//purposely leave Prev and Next alone as we use those for rebuild
-	}
-
 	enum class ESetPrevNextDataMode
 	{
 		Prev,
 		Next,
 	};
 
-	template <FChaosResultsManager::ESetPrevNextDataMode Mode>
-	void FChaosResultsManager::SetPrevNextDataHelper(const FPullPhysicsData& PullData)
+	/** Helper class used to interpolate results per channel */
+	struct FChaosResultsChannel
+	{
+		FChaosResultsChannel(FChaosResultsManager& InResultsManager, int32 InChannelIdx)
+		: ResultsManager(InResultsManager)
+		, ChannelIdx(InChannelIdx)
+		{
+		}
+
+		~FChaosResultsChannel();
+		FChaosResultsChannel(const FChaosResultsChannel&) = delete;
+		FChaosResultsChannel(FChaosResultsChannel&& Other) = default;
+
+		const FChaosInterpolationResults& UpdateInterpAlpha_External(const FReal ResultsTime, const FReal GlobalAlpha);
+		void ProcessResimResult_External();
+		bool AdvanceResult();
+		void CollapseResultsToLatest();
+		const FChaosInterpolationResults& PullSyncPhysicsResults_External();
+		const FChaosInterpolationResults& PullAsyncPhysicsResults_External(const FReal ResultsTime);
+
+		template <ESetPrevNextDataMode Mode>
+		void SetPrevNextDataHelper(const FPullPhysicsData& PullData);
+		
+		template <ESetPrevNextDataMode Mode, typename DirtyProxyDataType, typename InterpolationsType>
+		void SetPrevNextDataHelperTyped(const TArray<DirtyProxyDataType>& DirtyProxies, TArray<InterpolationsType>& Interpolations);
+
+		void RemoveProxy_External(FSingleParticlePhysicsProxy* Proxy)
+		{
+			ParticleToResimTarget.Remove(Proxy);
+		}
+
+		FChaosInterpolationResults Results;
+		FReal LatestTimeSeen = 0;	//we use this to know when resim results are being pushed
+		TMap<FSingleParticlePhysicsProxy*, FDirtyRigidParticleData> ParticleToResimTarget;
+		FChaosResultsManager& ResultsManager;
+		int32 ChannelIdx;
+	};
+
+	template <typename TProxyType, typename TInterpolationType>
+	static void ResetInterpolations(TArray<TInterpolationType>& Interpolations)
+	{
+		for (TInterpolationType& Data : Interpolations)
+		{
+			if (TProxyType* Proxy = Data.Prev.GetProxy())
+			{
+				Proxy->GetInterpolationData().SetPullDataInterpIdx_External(INDEX_NONE);
+			}
+		}
+		Interpolations.Reset();
+	}
+	
+	void FChaosInterpolationResults::Reset()
+	{
+		ResetInterpolations<FSingleParticlePhysicsProxy>(RigidInterpolations);
+		ResetInterpolations<FGeometryCollectionPhysicsProxy>(GeometryCollectionInterpolations);
+
+		//purposely leave Prev and Next alone as we use those for rebuild
+	}
+
+	template <ESetPrevNextDataMode Mode, typename DirtyProxyDataType, typename InterpolationsType>
+	void FChaosResultsChannel::SetPrevNextDataHelperTyped(const TArray<DirtyProxyDataType>& DirtyProxies, TArray<InterpolationsType>& Interpolations)
 	{
 		//clear results
-		const int32 Timestamp = PullData.SolverTimestamp;
-		for (const FDirtyRigidParticleData& Data : PullData.DirtyRigids)
+		for (const DirtyProxyDataType& Data : DirtyProxies)
 		{
-			if (FSingleParticlePhysicsProxy* Proxy = Data.GetProxy())
+			if (auto Proxy = Data.GetProxy())
 			{
-				int32 DataIdx = Proxy->GetPullDataInterpIdx_External();
+				FProxyInterpolationData& InterpolationData = Proxy->GetInterpolationData(); 
+				
+				//If proxy is not associated with this channel, do nothing
+				if (InterpolationData.GetInterpChannel_External() != ChannelIdx)
+				{
+					continue;
+				}
+
+				int32 DataIdx = InterpolationData.GetPullDataInterpIdx_External();
 				if(DataIdx == INDEX_NONE)
 				{
-					DataIdx = Results.RigidInterpolations.AddDefaulted(1);
-					Proxy->SetPullDataInterpIdx_External(DataIdx);
+					DataIdx = Interpolations.AddDefaulted(1);
+					InterpolationData.SetPullDataInterpIdx_External(DataIdx);
 
 					if(Mode == ESetPrevNextDataMode::Next)
 					{
 						//no prev so use GT data
-						Proxy->BufferPhysicsResults_External(Results.RigidInterpolations[DataIdx].Prev);
+						Proxy->BufferPhysicsResults_External(Interpolations[DataIdx].Prev);
 					}
 				}
 
-				FChaosRigidInterpolationData& OutData = Results.RigidInterpolations[DataIdx];
+				InterpolationsType& OutData = Interpolations[DataIdx];
 
 				if(Mode == ESetPrevNextDataMode::Prev)
 				{
@@ -60,11 +113,33 @@ namespace Chaos
 				{
 					OutData.Next = Data;
 				}
+			}
+		}
+	}
+	
+	template <ESetPrevNextDataMode Mode>
+	void FChaosResultsChannel::SetPrevNextDataHelper(const FPullPhysicsData& PullData)
+	{
+		//clear results
+		const int32 Timestamp = PullData.SolverTimestamp;
 
-				//update leash target
-				if(FResimParticleInfo* ResimInfo = ParticleToResimInfo.Find(Proxy))
+		SetPrevNextDataHelperTyped<Mode>(PullData.DirtyRigids, Results.RigidInterpolations);
+
+		SetPrevNextDataHelperTyped<Mode>(PullData.DirtyGeometryCollections, Results.GeometryCollectionInterpolations);
+
+		// update resim target for rigids
+		for (const FDirtyRigidParticleData& Data : PullData.DirtyRigids)
+		{
+			if (FSingleParticlePhysicsProxy* Proxy = Data.GetProxy())
+			{
+				// only if the proxy is associated with this channel 
+				if (Proxy->GetInterpolationData().GetInterpChannel_External() == ChannelIdx)
 				{
-					ResimInfo->Next = Data;
+					//update leash target
+					if(FDirtyRigidParticleData* ResimTarget = ParticleToResimTarget.Find(Proxy))
+					{
+						*ResimTarget = Data;
+					}
 				}
 			}
 		}
@@ -77,14 +152,14 @@ namespace Chaos
 	 @param Results Results to update with advanced state
 	 @return whether an advance occurred
 	*/
-	bool FChaosResultsManager::AdvanceResult()
+	bool FChaosResultsChannel::AdvanceResult()
 	{
-		if(FPullPhysicsData* PotentialNext = MarshallingManager.PopPullData_External())
+		if(FPullPhysicsData* PotentialNext = ResultsManager.PopPullData_External(ChannelIdx))
 		{
 			//newer result exists so prev is overwritten
 			if(Results.Prev)
 			{
-				FreeToHistory_External(Results.Prev);
+				ResultsManager.FreePullData_External(Results.Prev, ChannelIdx);
 			}
 
 			Results.Prev = Results.Next;
@@ -113,12 +188,12 @@ namespace Chaos
 	 @param MarshallingManager Manger to advance
 	 @param Results Results to update with advanced state
 	*/
-	void FChaosResultsManager::CollapseResultsToLatest()
+	void FChaosResultsChannel::CollapseResultsToLatest()
 	{
 		if(Results.Next == nullptr)
 		{
 			//nothing in Next (first time), so get latest if possible
-			Results.Next = MarshallingManager.PopPullData_External();
+			Results.Next = ResultsManager.PopPullData_External(ChannelIdx);
 		}
 
 		while(AdvanceResult())
@@ -127,10 +202,15 @@ namespace Chaos
 
 	const FChaosInterpolationResults& FChaosResultsManager::PullSyncPhysicsResults_External()
 	{
+		return Channels[0]->PullSyncPhysicsResults_External();
+	}
+
+	const FChaosInterpolationResults& FChaosResultsChannel::PullSyncPhysicsResults_External()
+	{
 		//sync mode doesn't use prev results, but if we were async previously we need to clean it up
 		if (Results.Prev)
 		{
-			FreeToHistory_External(Results.Prev);
+			ResultsManager.FreePullData_External(Results.Prev, ChannelIdx);
 			Results.Prev = nullptr;
 		}
 
@@ -164,112 +244,76 @@ namespace Chaos
 		return 1;	//if 0 dt just use 1 as alpha
 	}
 
-	FRealSingle DefaultResimInterpTime = 1.f;
-	FAutoConsoleVariableRef CVarResimInterpTime(TEXT("p.ResimInterpTime"), DefaultResimInterpTime, TEXT("How long to interpolate between original sim and resim results. 0 means no interpolation, the larget the value the smoother and longer interpolation takes. Restart game to see affect"));
+	FRealSingle SecondChannelDelay = 0.05f;
+	FAutoConsoleVariableRef CVarSecondChannelDelay(TEXT("p.SecondChannelDelay"), SecondChannelDelay, TEXT(""));
 
-	FRealSingle DefaultResimInterpStrength = 0.2f;
-	FAutoConsoleVariableRef CVarResimInterpStrength(TEXT("p.ResimInterpStrength"), DefaultResimInterpStrength, TEXT("How strong the resim interp leash is. 1 means immediately snap to new target, 0 means do not interpolate at all"));
+	int32 DefaultNumActiveChannels = 1;
+	FAutoConsoleVariableRef CVarNumActiveChannels(TEXT("p.NumActiveChannels"), DefaultNumActiveChannels, TEXT(""));
 
 	FChaosResultsManager::FChaosResultsManager(FChaosMarshallingManager& InMarshallingManager)
 		: MarshallingManager(InMarshallingManager)
+		, NumActiveChannels(DefaultNumActiveChannels)
 	{
-		SetResimInterpTime(DefaultResimInterpTime);
-		SetResimInterpStrength(DefaultResimInterpStrength);
+		for(int32 Channel = 0; Channel < NumActiveChannels; ++Channel)
+		{
+			Channels.Emplace(new FChaosResultsChannel(*this, Channel));
+		}
+
+		PerChannelTimeDelay.Add(0);
+		PerChannelTimeDelay.Add(SecondChannelDelay);
 	}
 
-	void FChaosResultsManager::SetResimInterpTime(const FReal InterpTime)
+	const FChaosInterpolationResults& FChaosResultsChannel::UpdateInterpAlpha_External(FReal ResultsTime, const FReal GlobalAlpha)
 	{
-		if(InterpTime <= 0)
-		{
-			InvResimInterpTime = FLT_MAX;
-		}
-		else
-		{
-			InvResimInterpTime = 1 / InterpTime;
-		}
-	}
-
-	const FChaosInterpolationResults& FChaosResultsManager::UpdateInterpAlpha_External(const FReal ResultsTime, const FReal GlobalAlpha)
-	{
-		auto ComputeLeashAlphaHelper = [this, ResultsTime](const FReal LatestDivergeTime)
-		{
-			
-			return FMath::Min((FReal)1, (ResultsTime - LatestDivergeTime) * InvResimInterpTime);
-		};
-
 		Results.Alpha = (float)GlobalAlpha;	 // LWC_TODO: Precision loss
 
-		if(ParticleToResimInfo.Num() == 0)	//no resim interpolation so just exit
-		{
-			return Results;
-		}
-
-		//first update all interpolations that were dirtied by sim results
-		for(FChaosRigidInterpolationData& RigidData : Results.RigidInterpolations)
-		{
-			if(FSingleParticlePhysicsProxy* Proxy = RigidData.Prev.GetProxy())	//don't care about pending deleted proxies
-			{
-				RigidData.LeashAlpha = 1;	//if no resim interp just use global alpha
-				if (FResimParticleInfo* LeashInfo = ParticleToResimInfo.Find(RigidData.Prev.GetProxy()))
-				{
-					const FReal LeashAlpha = ComputeLeashAlphaHelper(LeashInfo->LeashStartTime);
-					if (LeashAlpha >= 1)
-					{
-						ParticleToResimInfo.Remove(Proxy);	//no longer interpolating
-					}
-					else
-					{
-						//still in leash mode so let interpolator know
-						if(LeashInfo->bDiverged)
-						{
-							//RigidData.LeashAlpha = LeashAlpha;
-							RigidData.LeashAlpha = (float)ResimInterpStrength;		 // LWC_TODO: Precision loss
-						}
-					}
-				}
-			}
-		}
-		
 		//make sure any resim interpolated bodies are still in the results array.
 		//It's possible the body stopped moving after the resim and is not dirty, but we still want to interpolate to final place
-		TArray<FSingleParticlePhysicsProxy*> NoLongerInterpolating;
-		for (const auto& Itr : ParticleToResimInfo)
+		TArray<FSingleParticlePhysicsProxy*> FinishedSmoothing;
+		for (const auto& Itr : ParticleToResimTarget)
 		{
 			FSingleParticlePhysicsProxy* Proxy = Itr.Key;
-			if (Proxy->GetPullDataInterpIdx_External() == INDEX_NONE)	//not in results array
-			{
-				const FReal LeashAlpha = ComputeLeashAlphaHelper(Itr.Value.LeashStartTime);
 
-				if(Itr.Value.bDiverged)
+			FProxyInterpolationData& InterpolationData = Proxy->GetInterpolationData(); 
+			if(InterpolationData.IsResimSmoothing())
+			{
+				if (InterpolationData.GetPullDataInterpIdx_External() == INDEX_NONE)	//not in results array
 				{
 					//still need to interpolate, so add to results array
-					//even if alpha > 1 we want to snap to end of interpolation (i.e. the leash target)
 					const int32 DataIdx = Results.RigidInterpolations.AddDefaulted(1);
-					Proxy->SetPullDataInterpIdx_External(DataIdx);
+					InterpolationData.SetPullDataInterpIdx_External(DataIdx);
 					FChaosRigidInterpolationData& RigidData = Results.RigidInterpolations[DataIdx];
 
-					RigidData.Next = Itr.Value.Next;	//not dirty from sim, so just use whatever last next was
+					RigidData.Next = Itr.Value;			//not dirty from sim, so just use whatever last next was
 					RigidData.Prev = RigidData.Next;	//prev same as next since we're just using leash
-					RigidData.LeashAlpha = LeashAlpha < 1 ? (float)ResimInterpStrength : 1;	//if last step with leash just snap to end		 // LWC_TODO: Precision loss
-				}
-				
-				if (LeashAlpha >= 1)	//leash will snap to end so not needed after this
-				{
-					NoLongerInterpolating.Add(Proxy);
 				}
 			}
-		}
-		
-		for(FSingleParticlePhysicsProxy* Proxy : NoLongerInterpolating)
-		{
-			ParticleToResimInfo.Remove(Proxy);
+			else
+			{
+				FinishedSmoothing.Add(Proxy);
+			}
 		}
 
+		for(FSingleParticlePhysicsProxy* Proxy : FinishedSmoothing)
+		{
+			RemoveProxy_External(Proxy);
+		}
 
 		return Results;
 	}
 
-	const FChaosInterpolationResults& FChaosResultsManager::PullAsyncPhysicsResults_External(const FReal ResultsTime)
+	TArray<const FChaosInterpolationResults*> FChaosResultsManager::PullAsyncPhysicsResults_External(const FReal ResultsTime)
+	{
+		TArray<const FChaosInterpolationResults*> InterpResults;
+		for(int32 ChannelIdx = 0; ChannelIdx < NumActiveChannels; ++ChannelIdx)
+		{
+			InterpResults.Add(&Channels[ChannelIdx]->PullAsyncPhysicsResults_External(ResultsTime - PerChannelTimeDelay[ChannelIdx]));
+		}
+
+		return InterpResults;
+	}
+
+	const FChaosInterpolationResults& FChaosResultsChannel::PullAsyncPhysicsResults_External(const FReal ResultsTime)
 	{
 		//in async mode we must interpolate between Start and End of a particular sim step, where ResultsTime is in the inclusive interval [Start, End]
 		//to do this we need to keep the results of the previous sim step, which ends exactly when the next one starts
@@ -295,7 +339,7 @@ namespace Chaos
 		if (Results.Next == nullptr)
 		{
 			//nothing in Next (first time), so get latest if possible
-			Results.Next = MarshallingManager.PopPullData_External();
+			Results.Next = ResultsManager.PopPullData_External(ChannelIdx);
 		}
 
 		if(Results.Next)
@@ -329,95 +373,128 @@ namespace Chaos
 		return A.X != B.X || A.R != B.R || A.V != B.V || A.W != B.W || A.ObjectState != B.ObjectState;
 	}
 
-	void FChaosResultsManager::ProcessResimResult_External()
+	void FChaosResultsChannel::ProcessResimResult_External()
 	{
-		//find original pull data to compare to
-		FPullPhysicsData* OriginalData = nullptr;
-		if(Results.Next->ExternalEndTime == Results.Prev->ExternalEndTime)
+		//make sure any proxy in the resim data is marked as resimming
+		for(const FDirtyRigidParticleData& ResimDirty : Results.Next->DirtyRigids)
 		{
-			OriginalData = Results.Prev;
-		}
-		else
-		{
-			for (int32 Idx = 0; Idx < ResultsHistory.Num(); ++Idx)
+			if (FSingleParticlePhysicsProxy* ResimProxy = ResimDirty.GetProxy())
 			{
-				if(Results.Next->ExternalEndTime == ResultsHistory[Idx]->ExternalEndTime)
+				FProxyInterpolationData& InterpolationData = ResimProxy->GetInterpolationData(); 
+				//Mark as resim only if proxy is owned by this channel
+				if(InterpolationData.GetInterpChannel_External() == ChannelIdx)
 				{
-					OriginalData = ResultsHistory[Idx];
-					break;
-				}
-			}
-		}
-		ensure(OriginalData != nullptr);	//rewind happened, but our history buffer doesn't contain the original result
-
-		if(OriginalData)
-		{
-			//First record the potential target for anything that is dirty from resim
-			//During the first frame of the rewind, everything that changed must be dirty
-			for (const FDirtyRigidParticleData& ResimDirty : Results.Next->DirtyRigids)
-			{
-				if (FSingleParticlePhysicsProxy* ResimProxy = ResimDirty.GetProxy())
-				{
-					FResimParticleInfo& ResimInfo = ParticleToResimInfo.FindOrAdd(ResimProxy);
-					ResimInfo.bDiverged = true;	//If not in original data then diverged, otherwise will be reset below
-					ResimInfo.LeashStartTime = LatestTimeSeen;
-					ResimInfo.EntryTime = Results.Next->ExternalEndTime;
-					ResimInfo.Next = ResimDirty;
-				}
-			}
-			
-			//Then check if anything diverged from original data
-			//If so, turn leash mode on (i.e. mark it as diverged)
-			for (const FDirtyRigidParticleData& OriginalDirty : OriginalData->DirtyRigids)
-			{
-				if (FSingleParticlePhysicsProxy* OriginalProxy = OriginalDirty.GetProxy())
-				{
-					//During rewind we have to update game thread of original rewind
-					//Because of that, anything in the original data must also be in the first frame
-					//of the resim dirty data
-					//Without this we don't have the target data which means we don't know what to interpolate to
-					FResimParticleInfo* ResimInfo = ParticleToResimInfo.Find(OriginalProxy);
-					if(ensure(ResimInfo))
-					{
-						ResimInfo->bDiverged = (ResimInfo->EntryTime == OriginalData->ExternalEndTime) ? StateDiverged(ResimInfo->Next, OriginalDirty) : true;
-						if(ResimInfo->bDiverged)
-						{
-							//We still use resim's latest target (i.e. maybe it stopped moving a few frames ago)
-							//But the time is updated since we want the leash to be turned on for x seconds
-							//(We want to record latest moment of divergence, not moment when resim data was recorded)
-							ResimInfo->EntryTime = Results.Next->ExternalEndTime;
-							ResimInfo->LeashStartTime = LatestTimeSeen;
-						
-						}
-					}
+					ParticleToResimTarget.FindOrAdd(ResimProxy) = ResimDirty;
+					InterpolationData.SetResimSmoothing(true);
 				}
 			}
 		}
 	}
 
-	void FChaosResultsManager::FreeToHistory_External(FPullPhysicsData* PullData)
+	FChaosResultsChannel::~FChaosResultsChannel()
 	{
-		ResultsHistory.Insert(PullData, 0);	//store in reverse order (most recent data first)
-		SetHistoryLength_External(HistoryLength);
-	}
-
-	void FChaosResultsManager::SetHistoryLength_External(int32 InLength)
-	{
-		while(ResultsHistory.Num() > InLength)
+		if(Results.Prev)
 		{
-			MarshallingManager.FreePullData_External(ResultsHistory.Pop());	//oldest data is last so can just pop it
+			ResultsManager.FreePullData_External(Results.Prev, ChannelIdx);
 		}
 
-		HistoryLength = InLength;
-	}
-
-	FChaosResultsManager::~FChaosResultsManager()
-	{
-		SetHistoryLength_External(0);
+		if(Results.Next)
+		{
+			ResultsManager.FreePullData_External(Results.Next, ChannelIdx);
+		}
 	}
 
 	void FChaosResultsManager::RemoveProxy_External(FSingleParticlePhysicsProxy* Proxy)
 	{
-		ParticleToResimInfo.Remove(Proxy);
+		for(FChaosResultsChannel* Channel : Channels)
+		{
+			Channel->RemoveProxy_External(Proxy);
+		}
+	}
+
+	FPullPhysicsData* FChaosResultsManager::PopPullData_External(int32 ChannelIdx)
+	{
+		int32 FoundToPop = INDEX_NONE;
+		for(int32 Idx = InternalQueue.Num() - 1; Idx >= 0; --Idx)
+		{
+			FPullDataQueueInfo& Info = InternalQueue[Idx];
+			if(!Info.bHasPopped[ChannelIdx])
+			{
+				FoundToPop = Idx;
+			}
+			else
+			{
+				//Found an entry that was popped so stop searching
+				break;
+			}
+		}
+
+		if(FoundToPop == INDEX_NONE)
+		{
+			//Need to pop from main queue
+			if(FPullPhysicsData* PullData = MarshallingManager.PopPullData_External())
+			{
+				FoundToPop = InternalQueue.Add(FPullDataQueueInfo(PullData, NumActiveChannels));
+			}
+			else
+			{
+				//Need to pop but nothing at head so return null
+				return nullptr;
+			}
+		}
+
+		FPullDataQueueInfo& Info = InternalQueue[FoundToPop];
+		Info.bHasPopped[ChannelIdx] = true;
+		return Info.PullData;
+	}
+
+	void FChaosResultsManager::FreePullData_External(FPullPhysicsData* PullData, int32 GivenChannelIdx)
+	{
+		for(int32 Idx = 0; Idx < InternalQueue.Num(); ++Idx)
+		{
+			FPullDataQueueInfo& Info = InternalQueue[Idx];
+			if(Info.PullData == PullData)
+			{
+				ensure(Info.bHasPopped[GivenChannelIdx]);	//free before popped?
+				ensure(Info.bPendingFree[GivenChannelIdx] == false);	//double free?
+
+				Info.bPendingFree[GivenChannelIdx] = true;
+
+				bool bFree = true;
+				for(int32 ChannelIdx = 0; ChannelIdx < MaxNumChannels; ++ChannelIdx)
+				{
+					if(!Info.bPendingFree[ChannelIdx])
+					{
+						bFree = false;
+						break;
+					}
+				}
+
+				if(bFree)
+				{
+					MarshallingManager.FreePullData_External(Info.PullData);
+					InternalQueue.RemoveAt(Idx);
+				}
+
+				return;
+			}
+		}
+
+		ensure(false);	//didn't find queue entry, double free?
+	}
+
+	FChaosResultsManager::~FChaosResultsManager()
+	{
+		//first clean up channels
+		for(FChaosResultsChannel* Channel : Channels)
+		{
+			delete Channel;
+		}
+
+		//if anything is left in the internal queue (for example channel was falling behind and never popped or freed) clear it
+		for(FPullDataQueueInfo& Info : InternalQueue)
+		{
+			MarshallingManager.FreePullData_External(Info.PullData);
+		}
 	}
 }

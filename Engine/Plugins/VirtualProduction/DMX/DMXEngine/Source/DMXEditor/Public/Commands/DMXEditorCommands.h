@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 class DMXEDITOR_API FDMXEditorCommands
 	: public TCommands<FDMXEditorCommands>
@@ -19,7 +19,10 @@ public:
 	// Documentation related
 	TSharedPtr<FUICommandInfo> GoToDocumentation;
 
-	// Entity Editor related
+	// DMX Library related
+	TSharedPtr<FUICommandInfo> ImportDMXLibrary;
+	TSharedPtr<FUICommandInfo> ExportDMXLibrary;
+
 	TSharedPtr<FUICommandInfo> AddNewEntityFixtureType;
 	TSharedPtr<FUICommandInfo> AddNewEntityFixturePatch;
 	

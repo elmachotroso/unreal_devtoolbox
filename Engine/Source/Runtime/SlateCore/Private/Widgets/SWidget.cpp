@@ -15,6 +15,7 @@
 #include "Application/ActiveTimerHandle.h"
 #include "Input/HittestGrid.h"
 #include "Debugging/SlateDebugging.h"
+#include "Debugging/SlateCrashReporterHandler.h"
 #include "Debugging/WidgetList.h"
 #include "Widgets/SWindow.h"
 #include "Trace/SlateTrace.h"
@@ -176,8 +177,8 @@ void SWidget::PrivateRegisterAttributes(FSlateAttributeInitializer& AttributeIni
 	//The order in which SlateAttribute are declared in the .h dictates of the order.
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "Visibility", VisibilityAttribute, EInvalidateWidgetReason::Visibility)
 		.AffectVisibility();
-	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "EnabledState", EnabledStateAttribute, EInvalidateWidgetReason::Paint);
-	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "Hovered", HoveredAttribute, EInvalidateWidgetReason::Paint);
+	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "EnabledState", EnabledStateAttribute, EInvalidateWidgetReason::None);
+	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "Hovered", HoveredAttribute, EInvalidateWidgetReason::None);
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "RenderTransform", RenderTransformAttribute, EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::RenderTransform);
 	SLATE_ADD_MEMBER_ATTRIBUTE_DEFINITION_WITH_NAME(AttributeInitializer, "RenderTransformPivot", RenderTransformPivotAttribute, EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::RenderTransform);
 }
@@ -679,6 +680,7 @@ void SWidget::SlatePrepass()
 
 void SWidget::SlatePrepass(float InLayoutScaleMultiplier)
 {
+	UE_SLATE_CRASH_REPORTER_PREPASS_SCOPE(*this);
 	SCOPE_CYCLE_COUNTER(STAT_SlatePrepass);
 
 	if (!GSlateIsOnFastUpdatePath || bNeedsPrepass)
@@ -916,6 +918,7 @@ void SWidget::UpdateFastPathVolatility(bool bParentVolatile)
 	}
 	else
 	{
+		AddUpdateFlags(EWidgetUpdateFlags::NeedsRepaint);
 		RemoveUpdateFlags(EWidgetUpdateFlags::NeedsVolatilePaint);
 	}
 
@@ -1602,19 +1605,19 @@ int32 SWidget::Paint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, 
 	{
 		FSlateClippingZone ClippingZone(AllottedGeometry);
 
-		TArray<FVector2D> Points;
-		Points.Add(FVector2D(ClippingZone.TopLeft));
-		Points.Add(FVector2D(ClippingZone.TopRight));
-		Points.Add(FVector2D(ClippingZone.BottomRight));
-		Points.Add(FVector2D(ClippingZone.BottomLeft));
-		Points.Add(FVector2D(ClippingZone.TopLeft));
+		TArray<FVector2f> Points;
+		Points.Add(FVector2f(ClippingZone.TopLeft));
+		Points.Add(FVector2f(ClippingZone.TopRight));
+		Points.Add(FVector2f(ClippingZone.BottomRight));
+		Points.Add(FVector2f(ClippingZone.BottomLeft));
+		Points.Add(FVector2f(ClippingZone.TopLeft));
 
 		const bool bAntiAlias = true;
 		FSlateDrawElement::MakeLines(
 			OutDrawElements,
 			NewLayerId,
 			FPaintGeometry(),
-			Points,
+			MoveTemp(Points),
 			ESlateDrawEffect::None,
 			ClippingZone.IsAxisAligned() ? FLinearColor::Yellow : FLinearColor::Red,
 			bAntiAlias,
@@ -1718,50 +1721,53 @@ void SWidget::Prepass_Internal(float InLayoutScaleMultiplier)
 void SWidget::Prepass_ChildLoop(float InLayoutScaleMultiplier, FChildren* MyChildren)
 {
 	int32 ChildIndex = 0;
-	MyChildren->ForEachWidget([this, &ChildIndex, InLayoutScaleMultiplier](SWidget& Child)
+	SWidget* Self = this;
+	auto ForEachPred = [Self, &ChildIndex, InLayoutScaleMultiplier](SWidget& Child)
+	{
+		const bool bUpdateAttributes = Child.HasRegisteredSlateAttribute() && Child.IsAttributesUpdatesEnabled() && !GSlateIsOnFastProcessInvalidation;
+		if (bUpdateAttributes)
 		{
-			const bool bUpdateAttributes = Child.HasRegisteredSlateAttribute() && Child.IsAttributesUpdatesEnabled() && !GSlateIsOnFastProcessInvalidation;
+			FSlateAttributeMetaData::UpdateOnlyVisibilityAttributes(Child, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
+		}
+
+		if (Child.GetVisibility() != EVisibility::Collapsed)
+		{
 			if (bUpdateAttributes)
 			{
-				FSlateAttributeMetaData::UpdateOnlyVisibilityAttributes(Child, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
-			}
-
-			if (Child.GetVisibility() != EVisibility::Collapsed)
-			{
-				if (bUpdateAttributes)
-				{
 #if WITH_SLATE_DEBUGGING
-					EVisibility PreviousVisibility = GetVisibility();
-					int32 PreviousAllChildrenNum = Child.GetAllChildren()->Num();
+				EVisibility PreviousVisibility = Self->GetVisibility();
+				int32 PreviousAllChildrenNum = Child.GetAllChildren()->Num();
 #endif
 
-					FSlateAttributeMetaData::UpdateExceptVisibilityAttributes(Child, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
+				FSlateAttributeMetaData::UpdateExceptVisibilityAttributes(Child, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
 
 #if WITH_SLATE_DEBUGGING
-					ensureMsgf(PreviousVisibility == GetVisibility(), TEXT("The visibility of widget '%s' doens't match the previous visibility after the attribute update."), *FReflectionMetaData::GetWidgetDebugInfo(this));
-					ensureMsgf(PreviousAllChildrenNum == Child.GetAllChildren()->Num(), TEXT("The number of child of widget '%s' doens't match the previous count after the attribute update."), *FReflectionMetaData::GetWidgetDebugInfo(this));
+				ensureMsgf(PreviousVisibility == Self->GetVisibility(), TEXT("The visibility of widget '%s' doesn't match the previous visibility after the attribute update."), *FReflectionMetaData::GetWidgetDebugInfo(Self));
+				ensureMsgf(PreviousAllChildrenNum == Child.GetAllChildren()->Num(), TEXT("The number of child of widget '%s' doesn't match the previous count after the attribute update."), *FReflectionMetaData::GetWidgetDebugInfo(Self));
 #endif
-				}
-
-				const float ChildLayoutScaleMultiplier = bHasRelativeLayoutScale
-					? InLayoutScaleMultiplier * GetRelativeLayoutScale(ChildIndex, InLayoutScaleMultiplier)
-					: InLayoutScaleMultiplier;
-
-				// Recur: Descend down the widget tree.
-				Child.Prepass_Internal(ChildLayoutScaleMultiplier);
 			}
-			else
-			{
-				// If the child widget is collapsed, we need to store the new layout scale it will have when 
-				// it is finally visible and invalidate it's prepass so that it gets that when its visibility
-				// is finally invalidated.
-				Child.MarkPrepassAsDirty();
-				Child.PrepassLayoutScaleMultiplier = bHasRelativeLayoutScale
-					? InLayoutScaleMultiplier * GetRelativeLayoutScale(ChildIndex, InLayoutScaleMultiplier)
-					: InLayoutScaleMultiplier;
-			}
-			++ChildIndex;
-		});
+
+			const float ChildLayoutScaleMultiplier = Self->bHasRelativeLayoutScale
+				? InLayoutScaleMultiplier * Self->GetRelativeLayoutScale(ChildIndex, InLayoutScaleMultiplier)
+				: InLayoutScaleMultiplier;
+
+			// Recur: Descend down the widget tree.
+			Child.Prepass_Internal(ChildLayoutScaleMultiplier);
+		}
+		else
+		{
+			// If the child widget is collapsed, we need to store the new layout scale it will have when 
+			// it is finally visible and invalidate it's prepass so that it gets that when its visibility
+			// is finally invalidated.
+			Child.MarkPrepassAsDirty();
+			Child.PrepassLayoutScaleMultiplier = Self->bHasRelativeLayoutScale
+				? InLayoutScaleMultiplier * Self->GetRelativeLayoutScale(ChildIndex, InLayoutScaleMultiplier)
+				: InLayoutScaleMultiplier;
+		}
+		++ChildIndex;
+	};
+
+	MyChildren->ForEachWidget(ForEachPred);
 }
 
 TSharedRef<FActiveTimerHandle> SWidget::RegisterActiveTimer(float TickPeriod, FWidgetActiveTimerDelegate TickFunction)

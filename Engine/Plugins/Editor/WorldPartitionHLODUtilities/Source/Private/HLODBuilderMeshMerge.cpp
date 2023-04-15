@@ -18,6 +18,8 @@
 #include "Engine/HLODProxy.h"
 #include "Serialization/ArchiveCrc32.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilderMeshMerge)
+
 
 UHLODBuilderMeshMerge::UHLODBuilderMeshMerge(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -75,8 +77,14 @@ TArray<UActorComponent*> UHLODBuilderMeshMerge::Build(const FHLODBuildContext& I
 	FVector MergedActorLocation;
 
 	const UHLODBuilderMeshMergeSettings* MeshMergeSettings = CastChecked<UHLODBuilderMeshMergeSettings>(HLODBuilderSettings);
-	const FMeshMergingSettings& UseSettings = MeshMergeSettings->MeshMergeSettings;
-	UMaterial* HLODMaterial = MeshMergeSettings->HLODMaterial.LoadSynchronous();
+	FMeshMergingSettings UseSettings = MeshMergeSettings->MeshMergeSettings; // Make a copy as we may tweak some values
+	UMaterialInterface* HLODMaterial = MeshMergeSettings->HLODMaterial.LoadSynchronous();
+
+	// When using automatic textuse sizing based on draw distance, use the MinVisibleDistance for this HLOD.
+	if (UseSettings.MaterialSettings.TextureSizingType == TextureSizingType_AutomaticFromMeshDrawDistance)
+	{
+		UseSettings.MaterialSettings.MeshMinDrawDistance = InHLODBuildContext.MinVisibleDistance;
+	}
 
 	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
 	MeshMergeUtilities.MergeComponentsToStaticMesh(SourcePrimitiveComponents, InHLODBuildContext.World, UseSettings, HLODMaterial, InHLODBuildContext.AssetsOuter->GetPackage(), InHLODBuildContext.AssetsBaseName, Assets, MergedActorLocation, 0.25f, false);
@@ -94,5 +102,6 @@ TArray<UActorComponent*> UHLODBuilderMeshMerge::Build(const FHLODBuildContext& I
 		}
 	});
 
-	return TArray<UActorComponent*>({ Component });
+	return { Component };
 }
+

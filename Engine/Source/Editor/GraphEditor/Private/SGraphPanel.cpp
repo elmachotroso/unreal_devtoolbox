@@ -2,38 +2,85 @@
 
 
 #include "SGraphPanel.h"
-#include "Rendering/DrawElements.h"
-#include "EdGraph/EdGraph.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Types/SlateAttributeMetaData.h"
-#include "EdGraphNode_Comment.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "Editor.h"
-#include "GraphEditorSettings.h"
-#include "GraphEditorDragDropAction.h"
-#include "NodeFactory.h"
-#include "Classes/EditorStyleSettings.h"
 
-#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetSelection.h"
+#include "ConnectionDrawingPolicy.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/SparseArray.h"
+#include "DiffResults.h"
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
 #include "DragAndDrop/AssetDragDropOp.h"
-#include "DragAndDrop/LevelDragDropOp.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 #include "DragAndDrop/GraphNodeDragDropOp.h"
-
+#include "DragAndDrop/LevelDragDropOp.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphNode_Comment.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/World.h"
+#include "Framework/Application/IMenu.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GraphEditAction.h"
 #include "GraphEditorActions.h"
-
-#include "ConnectionDrawingPolicy.h"
-
-#include "AssetSelection.h"
-
+#include "GraphEditorDragDropAction.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/DragAndDrop.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "KismetNodes/KismetNodeInfoContext.h"
-#include "GraphDiffControl.h"
-
-#include "Editor/UnrealEdEngine.h"
-#include "UnrealEdGlobals.h"
+#include "Layout/ArrangedChildren.h"
+#include "Layout/ArrangedWidget.h"
+#include "Layout/Children.h"
+#include "Layout/PaintGeometry.h"
+#include "Layout/SlateRect.h"
+#include "Layout/Visibility.h"
+#include "Layout/WidgetPath.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "MarqueeOperation.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "NodeFactory.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateLayoutTransform.h"
+#include "SGraphNode.h"
 #include "ScopedTransaction.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/WidgetStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/PaintArgs.h"
+#include "Types/SlateAttributeMetaData.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/InvalidateWidgetReason.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGraphPanel, Log, All);
 
@@ -46,7 +93,8 @@ void SGraphPanel::Construct( const SGraphPanel::FArguments& InArgs )
 
 	this->OnGetContextMenuFor = InArgs._OnGetContextMenuFor;
 	this->GraphObj = InArgs._GraphObj;
-	this->GraphObjToDiff = InArgs._GraphObjToDiff;
+	this->DiffResults = InArgs._DiffResults;
+	this->FocusedDiffResult = InArgs._FocusedDiffResult;
 	this->SelectionManager.OnSelectionChanged = InArgs._OnSelectionChanged;
 	this->IsEditable = InArgs._IsEditable;
 	this->DisplayAsReadOnly = InArgs._DisplayAsReadOnly;
@@ -103,12 +151,12 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 	//Style used for objects that are the same between revisions
 	FWidgetStyle FadedStyle = InWidgetStyle;
-	FadedStyle.BlendColorAndOpacityTint(FLinearColor(0.45f,0.45f,0.45f,0.45f));
+	FadedStyle.BlendColorAndOpacityTint(FLinearColor(0.45f,0.45f,0.45f,0.30f));
 
 	// First paint the background
 	const UEditorExperimentalSettings& Options = *GetDefault<UEditorExperimentalSettings>();
 
-	const FSlateBrush* DefaultBackground = FEditorStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
+	const FSlateBrush* DefaultBackground = FAppStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
 	const FSlateBrush* CustomBackground = &GetDefault<UEditorStyleSettings>()->GraphBackgroundBrush;
 	const FSlateBrush* BackgroundImage = CustomBackground->HasUObject() ? CustomBackground : DefaultBackground;
 	PaintBackgroundAsLines(BackgroundImage, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId);
@@ -128,6 +176,8 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 	const int32 CommentNodeShadowLayerId = LayerId++;
 	const int32 CommentNodeLayerId = LayerId++;
 
+	const int32 NodeDiffHighlightLayerID = LayerId++;
+
 	// Save a LayerId for wires, which appear below nodes but above comments
 	// We will draw them later, along with the arrows which appear above nodes.
 	const int32 WireLayerId = LayerId++;
@@ -140,6 +190,51 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 	const FVector2D NodeShadowSize = GetDefault<UGraphEditorSettings>()->GetShadowDeltaSize();
 	const UEdGraphSchema* Schema = GraphObj->GetSchema();
+
+	
+	// If we were provided diff results, organize those by owner
+	TMap<UEdGraphNode*, FDiffSingleResult> NodeDiffResults;
+	TMap<UEdGraphPin*, FDiffSingleResult> PinDiffResults;
+	if (DiffResults.IsValid())
+	{
+		// diffs with Node1/Pin1 get precedence so set those first
+		for (const FDiffSingleResult& Result : *DiffResults)
+		{
+			if (Result.Pin1)
+			{
+				PinDiffResults.FindOrAdd(Result.Pin1, Result);
+
+				// when zoomed out, make it easier to see diffed pins by also highlighting the node
+				if(ZoomLevel <= 6)
+				{
+					NodeDiffResults.FindOrAdd(Result.Pin1->GetOwningNode(), Result);
+				}
+			}
+			else if (Result.Node1)
+			{
+				NodeDiffResults.FindOrAdd(Result.Node1, Result);
+			}
+		}
+
+		// only diffs with Node2/Pin2 if those nodes don't already have a diff result
+		for (const FDiffSingleResult& Result : *DiffResults)
+		{
+			if (Result.Pin2)
+			{
+				PinDiffResults.FindOrAdd(Result.Pin2, Result);
+
+				// when zoomed out, make it easier to see diffed pins by also highlighting the node
+				if(ZoomLevel <= 6)
+				{
+					NodeDiffResults.FindOrAdd(Result.Pin2->GetOwningNode(), Result);
+				}
+			}
+			else if (!Result.Pin1 && Result.Node2)
+			{
+				NodeDiffResults.FindOrAdd(Result.Node2, Result);
+			}
+		}
+	}
 
 	// Draw the child nodes
 	{
@@ -155,7 +250,6 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 		// Context for rendering node infos
 		FKismetNodeInfoContext Context(GraphObj);
 
-		TArray<FGraphDiffControl::FNodeMatch> NodeMatches;
 		for (int32 ChildIndex = 0; ChildIndex < ArrangedChildren.Num(); ++ChildIndex)
 		{
 			FArrangedWidget& CurWidget = ArrangedChildren[ChildIndex];
@@ -196,6 +290,61 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 					}
 				}
 
+				/** if this graph is being diffed, highlight the changes in the graph */
+				if(DiffResults.IsValid())
+				{
+					/** When diffing nodes, color code shadow based on diff result */
+					if (NodeDiffResults.Contains(NodeObj))
+					{
+						const FDiffSingleResult& DiffResult = NodeDiffResults[NodeObj];
+						for (const SNode::DiffHighlightInfo& Highlight : ChildNode->GetDiffHighlights(DiffResult))
+						{
+							FSlateDrawElement::MakeBox(
+								OutDrawElements,
+								NodeDiffHighlightLayerID,
+								CurWidget.Geometry.ToInflatedPaintGeometry(NodeShadowSize),
+								Highlight.Brush,
+								ESlateDrawEffect::None,
+								Highlight.Tint
+								);
+						}
+					}
+				}
+				
+				/** When diffing, set the backround of the differing pins to their diff colors */
+				for (UEdGraphPin* Pin : NodeObj->Pins)
+				{
+					if (TSharedPtr<SGraphPin> PinWidget = ChildNode->FindWidgetForPin(Pin))
+					{
+						if (FDiffSingleResult* DiffResult = PinDiffResults.Find(Pin))
+						{
+							// if the diff result associated with this pin is focused, highlight the pin
+							if (DiffResults.IsValid() && FocusedDiffResult.IsSet())
+							{
+								const int32 Index = FocusedDiffResult.Get();
+								if (DiffResults->IsValidIndex(Index))
+								{
+									const FDiffSingleResult& Focused = (*DiffResults)[Index];
+									PinWidget->SetDiffHighlighted(*DiffResult == Focused);
+								}
+							}
+						
+							FLinearColor PinDiffColor = DiffResult->GetDisplayColor();
+							PinDiffColor.A = 0.7f;
+							PinWidget->SetPinDiffColor(PinDiffColor);
+							PinWidget->SetFadeConnections(false);
+						}
+						else
+						{
+							PinWidget->SetDiffHighlighted(false);
+							PinWidget->SetPinDiffColor(TOptional<FLinearColor>());
+
+							// when zoomed out, fade out pin connections that aren't involved in a diff
+							PinWidget->SetFadeConnections(ZoomLevel <= 6 && (!NodeDiffResults.Contains(NodeObj) || NodeDiffResults[NodeObj].Pin1));
+						}
+					}
+				}
+
 				// Draw the node's shadow.
 				if (bDrawShadowsThisFrame || bSelected)
 				{
@@ -230,23 +379,24 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 				int32 CurWidgetsMaxLayerId;
 				{
-					/** When diffing nodes, nodes that are different between revisions are opaque, nodes that have not changed are faded */
-					FGraphDiffControl::FNodeMatch NodeMatch = FGraphDiffControl::FindNodeMatch(GraphObjToDiff, NodeObj, NodeMatches);
-					if (NodeMatch.IsValid())
-					{
-						NodeMatches.Add(NodeMatch);
-					}
-					const bool bNodeIsDifferent = (!GraphObjToDiff || NodeMatch.Diff(FGraphDiffControl::FNodeDiffContext()));
-
 					/* When dragging off a pin, we want to duck the alpha of some nodes */
 					TSharedPtr< SGraphPin > OnlyStartPin = (1 == PreviewConnectorFromPins.Num()) ? PreviewConnectorFromPins[0].FindInGraphPanel(*this) : TSharedPtr< SGraphPin >();
 					const bool bNodeIsNotUsableInCurrentContext = Schema->FadeNodeWhenDraggingOffPin(NodeObj, OnlyStartPin.IsValid() ? OnlyStartPin.Get()->GetPinObj() : nullptr);
 					
-					const FWidgetStyle& NodeStyle = (bNodeIsDifferent && !bNodeIsNotUsableInCurrentContext)? InWidgetStyle : FadedStyle;
-					FWidgetStyle NodeStyleToUse = NodeStyle;
+					const bool bCleanDiff = DiffResults.IsValid() && !NodeDiffResults.Contains(NodeObj);
+					
+					FWidgetStyle NodeStyleToUse = InWidgetStyle;
+					if (bNodeIsNotUsableInCurrentContext)
+					{
+						NodeStyleToUse = FadedStyle;
+					}
+					else if (ZoomLevel <= 6 && bCleanDiff)
+					{
+						NodeStyleToUse = FadedStyle;
+					}
 					NodeStyleToUse.BlendColorAndOpacityTint(FLinearColor(1.0f, 1.0f, 1.0f, Alpha));
 
-					// Draw the node.O
+					// Draw the node.
 					CurWidgetsMaxLayerId = CurWidget.Widget->Paint(NewArgs, CurWidget.Geometry, MyCullingRect, OutDrawElements, ChildLayerId, NodeStyleToUse, !DisplayAsReadOnly.Get() && ShouldBeEnabled( bParentEnabled ) );
 				}
 
@@ -465,7 +615,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 	// Draw a shadow overlay around the edges of the graph
 	++MaxLayerId;
-	PaintSurroundSunkenShadow(FEditorStyle::GetBrush(TEXT("Graph.Shadow")), AllottedGeometry, MyCullingRect, OutDrawElements, MaxLayerId);
+	PaintSurroundSunkenShadow(FAppStyle::GetBrush(TEXT("Graph.Shadow")), AllottedGeometry, MyCullingRect, OutDrawElements, MaxLayerId);
 
 	if (ShowGraphStateOverlay.Get())
 	{
@@ -473,12 +623,12 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 		if ((GEditor->bIsSimulatingInEditor || GEditor->PlayWorld != nullptr))
 		{
 			// Draw a surrounding indicator when PIE is active, to make it clear that the graph is read-only, etc...
-			BorderBrush = FEditorStyle::GetBrush(TEXT("Graph.PlayInEditor"));
+			BorderBrush = FAppStyle::GetBrush(TEXT("Graph.PlayInEditor"));
 		}
 		else if (!IsEditable.Get())
 		{
 			// Draw a different border when we're not simulating but the graph is read-only
-			BorderBrush = FEditorStyle::GetBrush(TEXT("Graph.ReadOnlyBorder"));
+			BorderBrush = FAppStyle::GetBrush(TEXT("Graph.ReadOnlyBorder"));
 		}
 
 		if (BorderBrush != nullptr)
@@ -505,28 +655,48 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 void SGraphPanel::OnSplineHoverStateChanged(const FGraphSplineOverlapResult& NewSplineHoverState)
 {
-	TSharedPtr<SGraphPin> OldPinWidget = PreviousFrameSplineOverlap.GetBestPinWidget(*this);
+	TSharedPtr<SGraphPin> OldPin1Widget;
+	TSharedPtr<SGraphPin> OldPin2Widget;
+	PreviousFrameSplineOverlap.GetPinWidgets(*this, OldPin1Widget, OldPin2Widget);
+
 	PreviousFrameSplineOverlap = NewSplineHoverState;
-	TSharedPtr<SGraphPin> NewPinWidget = PreviousFrameSplineOverlap.GetBestPinWidget(*this);
+
+	TSharedPtr<SGraphPin> NewPin1Widget;
+	TSharedPtr<SGraphPin> NewPin2Widget;
+	PreviousFrameSplineOverlap.GetPinWidgets(*this, NewPin1Widget, NewPin2Widget);
 
 	PreviousFrameSavedMousePosForSplineOverlap = SavedMousePosForOnPaintEventLocalSpace;
 
-	// Handle mouse enter/leaves on the associated pin
-	if (OldPinWidget != NewPinWidget)
+	// Handle exiting hovering on the pins
+	if (OldPin1Widget.IsValid() && OldPin1Widget != NewPin1Widget && OldPin1Widget != NewPin2Widget)
 	{
-		if (OldPinWidget.IsValid())
-		{
-			OldPinWidget->OnMouseLeave(LastPointerEvent);
-		}
+		OldPin1Widget->OnMouseLeave(LastPointerEvent);
+	}
 
-		if (NewPinWidget.IsValid())
-		{
-			NewPinWidget->OnMouseEnter(LastPointerGeometry, LastPointerEvent);
+	if (OldPin2Widget.IsValid() && OldPin2Widget != NewPin1Widget && OldPin2Widget != NewPin2Widget)
+	{
+		OldPin2Widget->OnMouseLeave(LastPointerEvent);
+	}
 
-			// Get the pin/wire glowing quicker, since it's a direct selection (this time was already set to 'now' as part of entering the pin)
-			//@TODO: Source this parameter from the graph rendering settings once it is there (see code in ApplyHoverDeemphasis)
-			TimeWhenMouseEnteredPin -= 0.75f;
-		}
+	// Handle enter hovering on the pins
+	bool bChangedHover = false;
+	if (NewPin1Widget.IsValid() && NewPin1Widget != OldPin1Widget && NewPin1Widget != OldPin2Widget)
+	{
+		NewPin1Widget->OnMouseEnter(LastPointerGeometry, LastPointerEvent);
+		bChangedHover = true;
+	}
+
+	if (NewPin2Widget.IsValid() && NewPin2Widget != OldPin1Widget && NewPin2Widget != OldPin2Widget)
+	{
+		NewPin2Widget->OnMouseEnter(LastPointerGeometry, LastPointerEvent);
+		bChangedHover = true;
+	}
+
+	if (bChangedHover)
+	{
+		// Get the pin/wire glowing quicker, since it's a direct selection (this time was already set to 'now' as part of entering the pin)
+		//@TODO: Source this parameter from the graph rendering settings once it is there (see code in ApplyHoverDeemphasis)
+		TimeWhenMouseEnteredPin -= 0.75f;
 	}
 }
 
@@ -590,24 +760,24 @@ FReply SGraphPanel::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InK
 		const bool bIsModifierActive = InKeyEvent.IsCommandDown() || InKeyEvent.IsAltDown() || InKeyEvent.IsShiftDown() || InKeyEvent.IsControlDown();
 		if (!bIsModifierActive)
 		{
-			if( InKeyEvent.GetKey() == EKeys::Up  ||InKeyEvent.GetKey() ==  EKeys::NumPadEight )
+			if( InKeyEvent.GetKey() == EKeys::Up || InKeyEvent.GetKey() == EKeys::NumPadEight )
 			{
-				UpdateSelectedNodesPositions(FVector2D(0.0f,-GetSnapGridSize()));
+				UpdateSelectedNodesPositions(FVector2D(0.0f,-1.0f * GetSnapGridSize()));
 				return FReply::Handled();
 			}
-			if( InKeyEvent.GetKey() ==  EKeys::Down || InKeyEvent.GetKey() ==  EKeys::NumPadTwo )
+			if( InKeyEvent.GetKey() == EKeys::Down || InKeyEvent.GetKey() == EKeys::NumPadTwo )
 			{
 				UpdateSelectedNodesPositions(FVector2D(0.0f,GetSnapGridSize()));
 				return FReply::Handled();
 			}
-			if( InKeyEvent.GetKey() ==  EKeys::Right || InKeyEvent.GetKey() ==  EKeys::NumPadSix )
+			if( InKeyEvent.GetKey() == EKeys::Right || InKeyEvent.GetKey() == EKeys::NumPadSix )
 			{
 				UpdateSelectedNodesPositions(FVector2D(GetSnapGridSize(),0.0f));
 				return FReply::Handled();
 			}
-			if( InKeyEvent.GetKey() ==  EKeys::Left || InKeyEvent.GetKey() ==  EKeys::NumPadFour )
+			if( InKeyEvent.GetKey() == EKeys::Left || InKeyEvent.GetKey() == EKeys::NumPadFour )
 			{
-				UpdateSelectedNodesPositions(FVector2D(-GetSnapGridSize(),0.0f));
+				UpdateSelectedNodesPositions(FVector2D(-1.0f * GetSnapGridSize(),0.0f));
 				return FReply::Handled();
 			}
 		}
@@ -642,7 +812,15 @@ FReply SGraphPanel::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointe
 {
 	if ((MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton) && (MouseEvent.IsAltDown() || MouseEvent.IsControlDown()))
 	{
-		if (SGraphPin* BestPinFromHoveredSpline = GetBestPinFromHoveredSpline())
+		// Intercept alt-left clicking on the hovered spline for targeted break link
+		UEdGraphPin* Pin1;
+		UEdGraphPin* Pin2;
+		if (MouseEvent.IsAltDown() && PreviousFrameSplineOverlap.GetPins(*this, Pin1, Pin2))
+		{
+			const UEdGraphSchema* Schema = GraphObj->GetSchema();
+			Schema->BreakSinglePinLink(Pin1, Pin2);
+		}
+		else if (SGraphPin* BestPinFromHoveredSpline = GetBestPinFromHoveredSpline())
 		{
 			return BestPinFromHoveredSpline->OnPinMouseDown(MyGeometry, MouseEvent);
 		}
@@ -884,7 +1062,7 @@ FReply SGraphPanel::OnDragOver( const FGeometry& MyGeometry, const FDragDropEven
 				{
 					Tooltip = NSLOCTEXT( "GraphPanel", "DragDropOperation", "Graph is Read-Only" );
 				}
-				AssetOp->SetToolTip(Tooltip, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+				AssetOp->SetToolTip(Tooltip, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 			}
 		}
 		return FReply::Handled();
@@ -922,7 +1100,7 @@ FReply SGraphPanel::OnDragOver( const FGeometry& MyGeometry, const FDragDropEven
 					bOkIcon = false;
 				}
 			}
-			const FSlateBrush* TooltipIcon = bOkIcon ? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			const FSlateBrush* TooltipIcon = bOkIcon ? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 			AssetOp->SetToolTip(TooltipText, TooltipIcon);
 		}
 		return FReply::Handled();
@@ -1121,6 +1299,8 @@ void SGraphPanel::RemoveAllNodes()
 
 TSharedPtr<SWidget> SGraphPanel::SummonContextMenu(const FVector2D& WhereToSummon, const FVector2D& WhereToAddNode, UEdGraphNode* ForNode, UEdGraphPin* ForPin, const TArray<UEdGraphPin*>& DragFromPins)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SGraphPanel::SummonContextMenu);
+
 	if (OnGetContextMenuFor.IsBound())
 	{
 		FGraphContextMenuArguments SpawnInfo;
@@ -1684,7 +1864,8 @@ bool SGraphPanel::IsNodeTitleVisible(const class UEdGraphNode* Node, bool bReque
 
 bool SGraphPanel::IsRectVisible(const FVector2D &TopLeft, const FVector2D &BottomRight)
 {
-	return TopLeft >= PanelCoordToGraphCoord( FVector2D::ZeroVector ) && BottomRight <= PanelCoordToGraphCoord( CachedAllottedGeometryScaledSize );
+	return TopLeft.ComponentwiseAllGreaterOrEqual( PanelCoordToGraphCoord( FVector2D::ZeroVector )) && 
+		BottomRight.ComponentwiseAllLessOrEqual( PanelCoordToGraphCoord( CachedAllottedGeometryScaledSize ) );
 }
 
 bool SGraphPanel::JumpToRect(const FVector2D &TopLeft, const FVector2D &BottomRight)
@@ -1801,8 +1982,11 @@ void SGraphPanel::OnGraphChanged(const FEdGraphEditAction& EditAction)
 				if (NodePtr.IsValid())
 				{
 					UEdGraphNode* Node = NodePtr.Get();
-					Parent->RemoveNode(Node);
-					Parent->AddNode(Node, bForceUserAdded ? WasUserAdded : NotUserAdded);
+					if(IsValid(Node))
+					{
+						Parent->RemoveNode(Node);
+						Parent->AddNode(Node, bForceUserAdded ? WasUserAdded : NotUserAdded);
+					}
 				}
 				return EActiveTimerReturnType::Stop;
 			};
@@ -1850,7 +2034,6 @@ void SGraphPanel::NotifyGraphChanged(const FEdGraphEditAction& EditAction)
 void SGraphPanel::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject( GraphObj );
-	Collector.AddReferencedObject( GraphObjToDiff );
 }
 
 FString SGraphPanel::GetReferencerName() const

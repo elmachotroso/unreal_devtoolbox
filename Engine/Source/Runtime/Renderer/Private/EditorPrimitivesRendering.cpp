@@ -10,8 +10,11 @@
 #include "MobileBasePassRendering.h"
 #include "MeshPassProcessor.inl"
 
+
+DEFINE_GPU_STAT(EditorPrimitives);
+
 FEditorPrimitivesBasePassMeshProcessor::FEditorPrimitivesBasePassMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type InFeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InDrawRenderState, bool bInTranslucentBasePass, FMeshPassDrawListContext* InDrawListContext) 
-	: FMeshPassProcessor(Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::Num, Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InDrawRenderState)
 	, bTranslucentBasePass(bInTranslucentBasePass)
 {}
@@ -78,6 +81,7 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessDeferredShadingPath(const FM
 		FeatureLevel,
 		bRenderSkylight,
 		false,
+		GBL_Default,
 		&BasePassShaders.VertexShader,
 		&BasePassShaders.PixelShader
 		))
@@ -94,8 +98,8 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessDeferredShadingPath(const FM
 	}
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 	
 	TBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr);
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
@@ -125,7 +129,7 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 	typedef FUniformLightMapPolicy LightMapPolicyType;
 
 	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
-	const int32 NumMovablePointLights = 0;
+	const bool bEnableLocalLights = false;
 	const bool bEnableSkyLight = false;
 
 	TMeshProcessorShaders<
@@ -133,7 +137,7 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 		TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> BasePassShaders;
 	if (!MobileBasePass::GetShaders(
 		NoLightmapPolicy.GetIndirectPolicy(),
-		NumMovablePointLights,
+		bEnableLocalLights,
 		Material,
 		VertexFactory->GetType(),
 		bEnableSkyLight,
@@ -147,12 +151,12 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 
 	if (bTranslucentBasePass)
 	{
-		MobileBasePass::SetTranslucentRenderState(DrawRenderState, Material);
+		MobileBasePass::SetTranslucentRenderState(DrawRenderState, Material, Material.GetShadingModels());
 	}
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 	
 	TMobileBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr, false);
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);

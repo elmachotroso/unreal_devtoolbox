@@ -6,8 +6,6 @@ public class LevelInstanceEditor : ModuleRules
 {
     public LevelInstanceEditor(ReadOnlyTargetRules Target) : base(Target)
     {
-        PrivateIncludePaths.Add("Editor/LevelInstanceEditor/Private");	// For PCH includes (because they don't work with relative paths, yet)
-
         PrivateIncludePathModuleNames.AddRange(
             new string[] {
             }
@@ -17,7 +15,6 @@ public class LevelInstanceEditor : ModuleRules
             new string[] {
 				"Core",
 				"CoreUObject",
-				"EditorStyle",
 				"Engine",
 				"InputCore",
 				"Slate",
@@ -33,7 +30,8 @@ public class LevelInstanceEditor : ModuleRules
 				"AssetTools",
 				"ClassViewer",
 				"MessageLog",
-				"EditorWidgets"
+				"EditorWidgets",
+				"DeveloperSettings"
 			}
 		);
 

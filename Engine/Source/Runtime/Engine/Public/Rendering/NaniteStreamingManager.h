@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "NaniteResources.h"
 #include "UnifiedBuffer.h"
-#include "RenderGraphResources.h"
+#include "RenderGraphBuilder.h"
 #include "RHIGPUReadback.h"
 
 namespace UE
@@ -13,6 +13,7 @@ namespace UE
 	namespace DerivedData
 	{
 		class FRequestOwner; // Can't include DDC headers from here, so we have to forward declare
+		struct FCacheGetChunkRequest;
 	}
 }
 
@@ -89,15 +90,16 @@ struct FPendingPage
 {
 #if WITH_EDITOR
 	FSharedBuffer			SharedBuffer;
-	bool					bReady = false;
+	enum class EState
+	{
+		Pending,
+		Ready,
+		Failed,
+	} State = EState::Pending;
+	uint32					RetryCount = 0;
 #else
-	uint8*					MemoryPtr = nullptr;
-	FIoRequest				Request;
-
-	// Legacy compatibility
-	// Delete when we can rely on IoStore
-	IAsyncReadFileHandle*	AsyncHandle = nullptr;
-	IAsyncReadRequest*		AsyncRequest = nullptr;
+	FIoBuffer				RequestBuffer;
+	FBulkDataBatchReadRequest Request;
 #endif
 
 	uint32					GPUPageIndex = INDEX_NONE;
@@ -138,17 +140,38 @@ public:
 	ENGINE_API bool IsAsyncUpdateInProgress();
 	ENGINE_API void	SubmitFrameStreamingRequests(FRDGBuilder& GraphBuilder);		// Called once per frame after the last request has been added.
 
-	const TRefCountPtr< FRDGPooledBuffer >&	GetStreamingRequestsBuffer()		{ return StreamingRequestsBuffer; }
-	uint32									GetStreamingRequestsBufferVersion() { return StreamingRequestsBufferVersion; }
+	FRDGBuffer* GetStreamingRequestsBuffer(FRDGBuilder& GraphBuilder) const
+	{
+		return GraphBuilder.RegisterExternalBuffer(StreamingRequestsBuffer);
+	}
 
-	FRHIShaderResourceView*				GetClusterPageDataSRV() const			{ return ClusterPageData.DataBuffer.SRV; }
-	FRHIShaderResourceView*				GetHierarchySRV() const					{ return Hierarchy.DataBuffer.SRV; }
-	FRHIShaderResourceView*				GetImposterDataSRV() const				{ return ImposterData.DataBuffer.SRV; }
-	uint32								GetMaxStreamingPages() const			{ return MaxStreamingPages; }
+	uint32		GetStreamingRequestsBufferVersion() { return StreamingRequestsBufferVersion; }
+
+	FRDGBufferSRV* GetHierarchySRV(FRDGBuilder& GraphBuilder) const
+	{
+		return GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(Hierarchy.DataBuffer));
+	}
+
+	FRDGBufferSRV* GetClusterPageDataSRV(FRDGBuilder& GraphBuilder) const
+	{
+		return GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(ClusterPageData.DataBuffer));
+	}
+
+	FRDGBufferSRV* GetImposterDataSRV(FRDGBuilder& GraphBuilder) const
+	{
+		return GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(ImposterData.DataBuffer));
+	}
+
+	uint32		GetMaxStreamingPages() const			{ return MaxStreamingPages; }
 
 	inline bool HasResourceEntries() const
 	{
 		return !RuntimeResourceMap.IsEmpty();
+	}
+
+	TSet<uint32> GetAndClearModifiedResources()
+	{
+		return MoveTemp(ModifiedResources);
 	}
 
 	ENGINE_API void		PrefetchResource(const FResources* Resource, uint32 NumFramesUntilRender);
@@ -167,13 +190,13 @@ private:
 
 		FGrowOnlySpanAllocator	Allocator;
 
-		FScatterUploadBuffer	UploadBuffer;
-		FRWByteAddressBuffer	DataBuffer;
+		FRDGScatterUploadBuffer	UploadBuffer;
+		TRefCountPtr<FRDGPooledBuffer>			DataBuffer;
 
-		void	Release()
+		void Release()
 		{
-			UploadBuffer.Release();
-			DataBuffer.Release();
+			UploadBuffer = {};
+			DataBuffer = {};
 		}
 	};
 
@@ -184,7 +207,7 @@ private:
 	};
 
 	FHeapBuffer				ClusterPageData;	// FPackedCluster*, GeometryData { Index, Position, TexCoord, TangentX, TangentZ }*
-	FScatterUploadBuffer	ClusterFixupUploadBuffer;
+	FRDGScatterUploadBuffer ClusterFixupUploadBuffer;
 	FHeapBuffer				Hierarchy;
 	FHeapBuffer				ImposterData;
 	TRefCountPtr< FRDGPooledBuffer > StreamingRequestsBuffer;
@@ -223,6 +246,8 @@ private:
 	TMap< FPageKey, FStreamingPageInfo* >	CommittedStreamingPageMap;			// This update is deferred to the point where the page has been loaded and committed to memory.
 	TArray< FStreamingRequest >				PrioritizedRequestsHeap;
 	FStreamingPageInfo						StreamingPageLRU;
+
+	TSet<uint32>							ModifiedResources;
 
 	FStreamingPageInfo*						StreamingPageInfoFreeList;
 	TArray< FStreamingPageInfo >			StreamingPageInfos;
@@ -265,8 +290,7 @@ private:
 
 	uint32 GPUPageIndexToGPUOffset(uint32 PageIndex) const;
 
-	// Returns whether any work was done and page/hierarchy buffers were transitioned to compute writable state
-	bool ProcessNewResources( FRDGBuilder& GraphBuilder);
+	void ProcessNewResources( FRDGBuilder& GraphBuilder);
 	
 	uint32 DetermineReadyPages();
 	void InstallReadyPages( uint32 NumReadyPages );
@@ -284,6 +308,8 @@ private:
 
 #if WITH_EDITOR
 	void RecordGPURequests();
+	UE::DerivedData::FCacheGetChunkRequest BuildDDCRequest(const FResources& Resources, const FPageStreamingState& PageStreamingState, const uint32 PendingPageIndex);
+	void RequestDDCData(TConstArrayView<UE::DerivedData::FCacheGetChunkRequest> DDCRequests);
 #endif
 };
 

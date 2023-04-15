@@ -40,9 +40,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Style", meta=( DisplayName="Style" ))
 	FSpinBoxStyle WidgetStyle;
 
-	UPROPERTY()
-	TObjectPtr<USlateWidgetStyleAsset> Style_DEPRECATED;
-
 	/** The minimum required fractional digits - default 1 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetMinFractionalDigits, BlueprintGetter = GetMinFractionalDigits, Category = "Slider", meta = (ClampMin = 0, UIMin = 0))
 	int32 MinFractionalDigits;
@@ -54,6 +51,10 @@ public:
 	/** Whether this spin box should use the delta snapping logic for typed values - default false */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetAlwaysUsesDeltaSnap, BlueprintGetter = GetAlwaysUsesDeltaSnap, Category = "Slider")
 	bool bAlwaysUsesDeltaSnap;
+
+	/** Whether this spin box should have slider feature enabled */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slider")
+	bool bEnableSlider = true;
 
 	/** The amount by which to change the spin box value as the slider moves. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetDelta, BlueprintGetter = GetDelta, Category = "Slider")
@@ -74,6 +75,10 @@ public:
 	/** The minimum width of the spin box */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Display", AdvancedDisplay, DisplayName = "Minimum Desired Width")
 	float MinDesiredWidth;
+	
+	/** If we're on a platform that requires a virtual keyboard, what kind of keyboard should this widget use? */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", AdvancedDisplay)
+	TEnumAsByte<EVirtualKeyboardType::Type> KeyboardType;
 
 	/** Whether to remove the keyboard focus from the spin box when the value is committed */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Input", AdvancedDisplay)
@@ -208,10 +213,6 @@ public:
 	//~ Begin UVisual Interface
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 	//~ End UVisual Interface
-
-	//~ Begin UObject Interface
-	virtual void PostLoad() override;
-	//~ End UObject Interface
 
 #if WITH_EDITOR
 	virtual const FText GetPaletteCategory() override;

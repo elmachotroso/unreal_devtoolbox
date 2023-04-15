@@ -1,50 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ColorCorrectRegionsSceneViewExtension.h"
-#include "RHI.h"
-#include "SceneView.h"
-#include "PostProcess/PostProcessing.h"
 #include "ColorCorrectRegionsModule.h"
 #include "ColorCorrectRegionsSubsystem.h"
 #include "ColorCorrectRegionsPostProcessMaterial.h"
-#include "ScreenPass.h"
 #include "CommonRenderResources.h"
 #include "Containers/DynamicRHIResourceArray.h"
+#include "DynamicResolutionState.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "PostProcess/PostProcessing.h"
+#include "RHI.h"
 #include "SceneRendering.h"
+#include "ScreenPass.h"
+#include "SceneView.h"
+
 // Set this to 1 to clip pixels outside of bounding box.
 #define CLIP_PIXELS_OUTSIDE_AABB 1
 
 //Set this to 1 to see the clipping region.
 #define ColorCorrectRegions_SHADER_DISPLAY_BOUNDING_RECT 0
 
+DECLARE_GPU_STAT_NAMED(ColorCorrectRegion, TEXT("ColorCorrectRegion"));
 
 namespace
 {
-	FRHIDepthStencilState* GetMaterialStencilState(const FMaterial* Material)
-	{
-		static FRHIDepthStencilState* StencilStates[] =
-		{
-			TStaticDepthStencilState<false, CF_Always, true, CF_Less>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_LessEqual>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_Greater>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_GreaterEqual>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_Equal>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_NotEqual>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_Never>::GetRHI(),
-			TStaticDepthStencilState<false, CF_Always, true, CF_Always>::GetRHI(),
-		};
-		static_assert(EMaterialStencilCompare::MSC_Count == UE_ARRAY_COUNT(StencilStates), "Ensure that all EMaterialStencilCompare values are accounted for.");
-
-		check(Material);
-
-		return StencilStates[Material->GetStencilCompare()];
-	}
-
 	FScreenPassTextureViewportParameters GetTextureViewportParameters(const FScreenPassTextureViewport& InViewport)
 	{
-		const FVector2f Extent(InViewport.Extent);	// LWC_TODO: Precision loss
+		const FVector2f Extent(InViewport.Extent);
 		const FVector2f ViewportMin(InViewport.Rect.Min.X, InViewport.Rect.Min.Y);
 		const FVector2f ViewportMax(InViewport.Rect.Max.X, InViewport.Rect.Max.Y);
 		const FVector2f ViewportSize = ViewportMax - ViewportMin;
@@ -219,63 +202,28 @@ namespace
 				View.Family->EngineShowFlags.PostProcessMaterial;
 	}
 
-	template<typename TSetupFunction>
-	void DrawScreenPass(
-		FRHICommandList& RHICmdList,
-		const FSceneView& View,
-		const FScreenPassTextureViewport& OutputViewport,
-		const FScreenPassTextureViewport& InputViewport,
-		const FScreenPassPipelineState& PipelineState,
-		TSetupFunction SetupFunction)
-	{
-		PipelineState.Validate();
-
-		const FIntRect InputRect = InputViewport.Rect;
-		const FIntPoint InputSize = InputViewport.Extent;
-		const FIntRect OutputRect = OutputViewport.Rect;
-		const FIntPoint OutputSize = OutputRect.Size();
-
-		RHICmdList.SetViewport(OutputRect.Min.X, OutputRect.Min.Y, 0.0f, OutputRect.Max.X, OutputRect.Max.Y, 1.0f);
-
-		SetScreenPassPipelineState(RHICmdList, PipelineState);
-
-		// Setting up buffers.
-		SetupFunction(RHICmdList);
-
-		FIntPoint LocalOutputPos(FIntPoint::ZeroValue);
-		FIntPoint LocalOutputSize(OutputSize);
-		EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
-
-		DrawPostProcessPass(
-			RHICmdList,
-			LocalOutputPos.X, LocalOutputPos.Y, LocalOutputSize.X, LocalOutputSize.Y,
-			InputRect.Min.X, InputRect.Min.Y, InputRect.Width(), InputRect.Height(),
-			OutputSize,
-			InputSize,
-			PipelineState.VertexShader,
-			View.StereoViewIndex,
-			false,
-			DrawRectangleFlags);
-	}
-
-	// A helper function for getting the right shader.
-	TShaderMapRef<FColorCorrectRegionMaterialPS> GetRegionShader(const FGlobalShaderMap* GlobalShaderMap, EColorCorrectRegionsType RegionType, FColorCorrectRegionMaterialPS::ETemperatureType TemperatureType, bool bIsAdvanced, bool bSampleOpacityFromGbuffer)
+	// A helper function for getting the right shader for SDF based CCRs.
+	TShaderMapRef<FColorCorrectRegionMaterialPS> GetRegionShader(const FGlobalShaderMap* GlobalShaderMap, EColorCorrectRegionsType RegionType, FColorCorrectGenericPS::ETemperatureType TemperatureType, bool bIsAdvanced, bool bUseStencil)
 	{
 		FColorCorrectRegionMaterialPS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FAdvancedShader>(bIsAdvanced);
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FShaderType>(RegionType);
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FTemperatureType>(TemperatureType);
+		PermutationVector.Set<FColorCorrectGenericPS::FAdvancedShader>(bIsAdvanced);
+		PermutationVector.Set<FColorCorrectGenericPS::FStencilEnabled>(bUseStencil);
+		PermutationVector.Set<FColorCorrectGenericPS::FTemperatureType>(TemperatureType);
+		PermutationVector.Set<FColorCorrectRegionMaterialPS::FShaderType>(static_cast<EColorCorrectRegionsType>(FMath::Min(static_cast<int32>(RegionType), static_cast<int32>(EColorCorrectRegionsType::MAX) - 1)));
 
-#if ColorCorrectRegions_SHADER_DISPLAY_BOUNDING_RECT
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FDisplayBoundingRect>(true);
-#endif
-#if CLIP_PIXELS_OUTSIDE_AABB
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FClipPixelsOutsideAABB>(true);
-#endif
-		PermutationVector.Set<FColorCorrectRegionMaterialPS::FSampleOpacityFromGbuffer>(bSampleOpacityFromGbuffer);
-		
 		return TShaderMapRef<FColorCorrectRegionMaterialPS>(GlobalShaderMap, PermutationVector);
-		;
+	}
+
+	// A helper function for getting the right shader for distance based CCRs.
+	TShaderMapRef<FColorCorrectWindowMaterialPS> GetWindowShader(const FGlobalShaderMap* GlobalShaderMap, EColorCorrectWindowType RegionType, FColorCorrectGenericPS::ETemperatureType TemperatureType, bool bIsAdvanced, bool bUseStencil)
+	{
+		FColorCorrectWindowMaterialPS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<FColorCorrectGenericPS::FAdvancedShader>(bIsAdvanced);
+		PermutationVector.Set<FColorCorrectGenericPS::FStencilEnabled>(bUseStencil);
+		PermutationVector.Set<FColorCorrectGenericPS::FTemperatureType>(TemperatureType);
+		PermutationVector.Set<FColorCorrectWindowMaterialPS::FShaderType>(static_cast<EColorCorrectWindowType>(FMath::Min(static_cast<int32>(RegionType), static_cast<int32>(EColorCorrectWindowType::MAX) - 1)));
+
+		return TShaderMapRef<FColorCorrectWindowMaterialPS>(GlobalShaderMap, PermutationVector);
 	}
 
 	FVector4 Clamp(const FVector4 & VectorToClamp, float Min, float Max)
@@ -285,6 +233,428 @@ namespace
 						FMath::Clamp(VectorToClamp.Z, Min, Max),
 						FMath::Clamp(VectorToClamp.W, Min, Max));
 	}
+
+
+	void StencilMerger
+		( FRDGBuilder& GraphBuilder
+		, const FGlobalShaderMap* GlobalShaderMap
+		, const FScreenPassRenderTarget& SceneColorRenderTarget
+		, const FSceneView& View
+		, const FScreenPassTextureViewportParameters& SceneTextureViewportParams
+		, const FScreenPassTextureViewport& RegionViewport
+		, const FSceneTextureShaderParameters& SceneTextures
+		, const TArray<uint32>& StencilIds
+		, FScreenPassRenderTarget& OutMergedStencilRenderTarget)
+	{
+		static bool bNotifiedAboutCustomDepth = false;
+		static const auto CVarCustomDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.CustomDepth"));
+		const int32 EnabledWithStencil = 3;
+
+		if (CVarCustomDepth->GetValueOnAnyThread() != EnabledWithStencil && !bNotifiedAboutCustomDepth)
+		{
+			UE_LOG(ColorCorrectRegions, Error, TEXT("Per Actor Color Correction requires Custom Depth Mode to be set to \"Enabled With Stencil\""));
+			bNotifiedAboutCustomDepth = true;
+			return;
+		}
+		else if (CVarCustomDepth->GetValueOnAnyThread() == EnabledWithStencil)
+		{
+			bNotifiedAboutCustomDepth = false;
+		}
+
+		if (StencilIds.Num() == 0)
+		{
+			return;
+		}
+		FRDGTextureDesc DepthBufferOutputDesc = SceneColorRenderTarget.Texture->Desc;
+		DepthBufferOutputDesc.Format = EPixelFormat::PF_DepthStencil;
+		DepthBufferOutputDesc.ClearValue = FClearValueBinding(0);
+		DepthBufferOutputDesc.Flags = TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable;
+		DepthBufferOutputDesc.ClearValue = FClearValueBinding(0, 0);
+
+		FRDGTextureDesc Desc = SceneColorRenderTarget.Texture->Desc;
+		Desc.Format = EPixelFormat::PF_R8_UINT;
+		FRDGTexture* MergedStencilTexture = GraphBuilder.CreateTexture(Desc, TEXT("CCR_MergedStencil"));
+		OutMergedStencilRenderTarget = FScreenPassRenderTarget(MergedStencilTexture, SceneColorRenderTarget.ViewRect, ERenderTargetLoadAction::EClear);
+		{
+			TShaderMapRef<FCCRStencilMergerPS> StencilMergerPS(GlobalShaderMap);
+			TShaderMapRef<FColorCorrectScreenPassVS> StencilMergerVS(GlobalShaderMap);
+			FCCRStencilMergerPS::FParameters* Parameters = GraphBuilder.AllocParameters<FCCRStencilMergerPS::FParameters>();
+			Parameters->SceneTextures = SceneTextures;
+			Parameters->RenderTargets[0] = OutMergedStencilRenderTarget.GetRenderTargetBinding();
+			Parameters->PostProcessOutput = SceneTextureViewportParams;
+			Parameters->View = View.ViewUniformBuffer;
+
+			FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
+				
+			FRHIResourceCreateInfo CreateInfo(TEXT("CCR_StencilIdBuffer"));
+
+			Parameters->StencilIds = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CreateStructuredBuffer(GraphBuilder, TEXT("CCR.StencilIdBuffer"), sizeof(uint32), StencilIds.Num(), &StencilIds[0], sizeof(uint32) * StencilIds.Num())));
+			Parameters->StencilIdCount = StencilIds.Num();
+
+			{
+				GraphBuilder.AddPass(
+					RDG_EVENT_NAME("ColorCorrectRegions_StencilMerger"),
+					Parameters,
+					ERDGPassFlags::Raster,
+						[&View,
+						StencilMergerVS,
+						StencilMergerPS,
+						Parameters,
+						RegionViewport,
+						DefaultBlendState](FRHICommandList& RHICmdList)
+					{
+						check(true);
+						DrawScreenPass(
+							RHICmdList,
+							static_cast<const FViewInfo&>(View),
+							RegionViewport,
+							RegionViewport,
+							FScreenPassPipelineState(StencilMergerVS, StencilMergerPS, DefaultBlendState, FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI()),
+							EScreenPassDrawFlags::None,
+							[&](FRHICommandList& RHICmdList)
+							{
+								SetShaderParameters(RHICmdList, StencilMergerPS, StencilMergerPS.GetPixelShader(), *Parameters);
+							});
+					}
+				);
+			}
+		}
+	}
+
+	bool RenderRegion
+		( FRDGBuilder& GraphBuilder
+		, const FSceneView& View
+		, const FPostProcessingInputs& Inputs
+		, const FSceneViewFamily& ViewFamily
+		, AColorCorrectRegion* Region
+		, const FIntRect& PrimaryViewRect
+		, const FScreenPassRenderTarget& SceneColorRenderTarget
+		, const float ScreenPercentage
+		, FScreenPassRenderTarget& BackBufferRenderTarget
+		, const FScreenPassTextureViewportParameters& SceneTextureViewportParams
+		, const FScreenPassTextureInput& SceneTextureInput
+		, const FSceneTextureShaderParameters& SceneTextures
+		, FGlobalShaderMap* GlobalShaderMap
+		, FRHIBlendState* DefaultBlendState)
+	{
+		SCOPED_GPU_STAT(GraphBuilder.RHICmdList, ColorCorrectRegion);
+		FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
+
+		FColorCorrectRenderProxyPtr RegionState = Region->GetCCProxy_RenderThread();
+
+		/* If Region is pending for kill, invisible or disabled we don't need to render it.
+		*	If Region's Primitive is not visible in the current view's scene then we don't need to render it either.
+		*	We are checking if the region belongs to the same world as the view.
+		*/
+		if (!RegionState->bIsActiveThisFrame ||
+			Region->IsActorBeingDestroyed() ||
+			RegionState->World != ViewFamily.Scene->GetWorld())
+		{
+			return false;
+		}
+
+		// If bounding box is zero, then we don't need to do anything.
+		if (RegionState->BoxExtent.IsNearlyZero())
+		{
+			return false;
+		}
+
+		FIntRect Viewport;
+
+		float MaxDepth = -BIG_NUMBER;
+		float MinDepth = BIG_NUMBER;
+
+		if (RegionState->Invert)
+		{
+			// In case of Region inversion we would to render the entire screen
+			Viewport = PrimaryViewRect;
+		}
+		else
+		{
+			GetPixelSpaceBoundingRect(View, RegionState->BoxOrigin, RegionState->BoxExtent, Viewport, MaxDepth, MinDepth);
+
+			// Check if CCR is too small to be rendered (less than one pixel on the screen).
+			if (Viewport.Width() == 0 || Viewport.Height() == 0)
+			{
+				return false;
+			}
+
+			// This is to handle corner cases when user has a very long disproportionate region and gets either
+			// within bounds or close to the center.
+			float MaxBoxExtent = FMath::Abs(RegionState->BoxExtent.GetMax());
+			if (MaxDepth >= 0 && MinDepth < 0)
+			{
+				UpdateMinMaxWithFrustrumAABBIntersection(View, RegionState->BoxOrigin, RegionState->BoxExtent, Viewport, MaxDepth);
+			}
+
+			FIntRect ConstrainedViewRect = View.UnscaledViewRect;
+
+			// We need to make sure that Bounding Rectangle is offset by the position of the View's Viewport.
+			Viewport.Min -= ConstrainedViewRect.Min;
+
+			Viewport = Viewport.Scale(ScreenPercentage);
+
+			// Culling all regions that are not within the screen bounds.
+			if ((Viewport.Min.X >= PrimaryViewRect.Width() ||
+				Viewport.Min.Y >= PrimaryViewRect.Height() ||
+				Viewport.Max.X <= 0.0f ||
+				Viewport.Max.Y <= 0.0f ||
+				MaxDepth < 0.0f))
+			{
+				return false;
+			}
+			// Clipping is required because as we get closer to the bounding box the bounds
+			// May extend beyond Allowed render target size.
+			Viewport.Clip(PrimaryViewRect);
+		}
+
+
+		bool bIsAdvanced = false;
+
+		const FVector4 One(1., 1., 1., 1.);
+		const FVector4 Zero(0., 0., 0., 0.);
+		TArray<const FColorGradePerRangeSettings*> AdvancedSettings{ &RegionState->ColorGradingSettings.Shadows,
+																&RegionState->ColorGradingSettings.Midtones,
+																&RegionState->ColorGradingSettings.Highlights };
+
+		// Check if any of the regions are advanced.
+		for (auto SettingsIt = AdvancedSettings.CreateConstIterator(); SettingsIt; ++SettingsIt)
+		{
+			const FColorGradePerRangeSettings* ColorGradingSettings = *SettingsIt;
+			if (!ColorGradingSettings->Saturation.Equals(One, SMALL_NUMBER) ||
+				!ColorGradingSettings->Contrast.Equals(One, SMALL_NUMBER) ||
+				!ColorGradingSettings->Gamma.Equals(One, SMALL_NUMBER) ||
+				!ColorGradingSettings->Gain.Equals(One, SMALL_NUMBER) ||
+				!ColorGradingSettings->Offset.Equals(Zero, SMALL_NUMBER))
+			{
+				bIsAdvanced = true;
+				break;
+			}
+		}
+
+		const FScreenPassTextureViewport RegionViewport(SceneColorRenderTarget.Texture, Viewport);
+
+		FCCRShaderInputParameters* PostProcessMaterialParameters = GraphBuilder.AllocParameters<FCCRShaderInputParameters>();
+		PostProcessMaterialParameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
+
+		PostProcessMaterialParameters->WorkingColorSpace = GDefaultWorkingColorSpaceUniformBuffer.GetUniformBufferRef();
+		PostProcessMaterialParameters->PostProcessOutput = SceneTextureViewportParams;
+		PostProcessMaterialParameters->PostProcessInput[0] = SceneTextureInput;
+		PostProcessMaterialParameters->SceneTextures = SceneTextures;
+		PostProcessMaterialParameters->View = View.ViewUniformBuffer;
+
+		TShaderMapRef<FColorCorrectRegionMaterialVS> VertexShader(GlobalShaderMap);
+		const float DefaultTemperature = 6500;
+		const float DefaultTint = 0;
+
+		// If temperature is default we don't want to do the calculations.
+		FColorCorrectRegionMaterialPS::ETemperatureType TemperatureType = FMath::IsNearlyEqual(RegionState->Temperature, DefaultTemperature) && FMath::IsNearlyEqual(RegionState->Tint, DefaultTint)
+			? FColorCorrectRegionMaterialPS::ETemperatureType::Disabled
+			: static_cast<FColorCorrectRegionMaterialPS::ETemperatureType>(RegionState->TemperatureType);
+
+		FScreenPassRenderTarget MergedStencilRenderTarget;
+		if (RegionState->bEnablePerActorCC)
+		{
+			TArray<uint32> StencilIds = RegionState->StencilIds;
+			StencilMerger(GraphBuilder, GlobalShaderMap, SceneColorRenderTarget, View, SceneTextureViewportParams, RegionViewport, SceneTextures, StencilIds, MergedStencilRenderTarget);
+		}
+
+		TShaderRef<FColorCorrectGenericPS> PixelShader;
+		if (AColorCorrectionWindow* CCWindow = Cast<AColorCorrectionWindow>(Region))
+		{
+			PixelShader = GetWindowShader(GlobalShaderMap, RegionState->WindowType, TemperatureType, bIsAdvanced, MergedStencilRenderTarget.IsValid());
+		}
+		else
+		{
+			PixelShader = GetRegionShader(GlobalShaderMap, RegionState->Type, TemperatureType, bIsAdvanced, MergedStencilRenderTarget.IsValid());
+		}
+
+		if (MergedStencilRenderTarget.IsValid())
+		{
+			PostProcessMaterialParameters->MergedStencilTexture = MergedStencilRenderTarget.Texture;
+		}
+
+		ClearUnusedGraphResources(VertexShader, PixelShader, PostProcessMaterialParameters);
+
+		FCCRRegionDataInputParameter RegionData;
+		FCCRColorCorrectParameter CCBase;
+		FCCRColorCorrectShadowsParameter CCShadows;
+		FCCRColorCorrectMidtonesParameter CCMidtones;
+		FCCRColorCorrectHighlightsParameter CCHighlights;
+		
+		// Setting constant buffer data to be passed to the shader.
+		{
+			RegionData.Rotate = FMath::DegreesToRadians<FVector3f>(RegionState->ActorRotation);
+			RegionData.Translate = RegionState->ActorLocation;
+
+			const float ScaleMultiplier = View.WorldToMetersScale / 2.;
+			// Pre multiplied scale. 
+			RegionData.Scale = (FVector3f)RegionState->ActorScale * ScaleMultiplier;
+
+			RegionData.WhiteTemp = RegionState->Temperature;
+			RegionData.Tint = RegionState->Tint;
+
+			RegionData.Inner = RegionState->Inner;
+			RegionData.Outer = RegionState->Outer;
+
+			RegionData.Falloff = RegionState->Falloff;
+			RegionData.Intensity = RegionState->Intensity;
+			RegionData.Invert = RegionState->Invert;
+			RegionData.ExcludeStencil = static_cast<uint32>(RegionState->PerActorColorCorrection);
+
+			CCBase.ColorSaturation = (FVector4f)RegionState->ColorGradingSettings.Global.Saturation;
+			CCBase.ColorContrast = (FVector4f)RegionState->ColorGradingSettings.Global.Contrast;
+			CCBase.ColorGamma = (FVector4f)RegionState->ColorGradingSettings.Global.Gamma;
+			CCBase.ColorGain = (FVector4f)RegionState->ColorGradingSettings.Global.Gain;
+			CCBase.ColorOffset = (FVector4f)RegionState->ColorGradingSettings.Global.Offset;
+
+			// Set advanced 
+			if (bIsAdvanced)
+			{
+				const float GammaMin = 0.02;
+				const float GammaMax = 10.;
+				//clamp(ExternalExpressions.ColorGammaHighlights, 0.02, 10.)
+				CCShadows.ColorSaturation = (FVector4f)RegionState->ColorGradingSettings.Shadows.Saturation;
+				CCShadows.ColorContrast = (FVector4f)RegionState->ColorGradingSettings.Shadows.Contrast;
+				CCShadows.ColorGamma = (FVector4f)Clamp(RegionState->ColorGradingSettings.Shadows.Gamma, GammaMin, GammaMax);
+				CCShadows.ColorGain = (FVector4f)RegionState->ColorGradingSettings.Shadows.Gain;
+				CCShadows.ColorOffset = (FVector4f)RegionState->ColorGradingSettings.Shadows.Offset;
+				CCShadows.ShadowMax = RegionState->ColorGradingSettings.ShadowsMax;
+
+				CCMidtones.ColorSaturation = (FVector4f)RegionState->ColorGradingSettings.Midtones.Saturation;
+				CCMidtones.ColorContrast = (FVector4f)RegionState->ColorGradingSettings.Midtones.Contrast;
+				CCMidtones.ColorGamma = (FVector4f)Clamp(RegionState->ColorGradingSettings.Midtones.Gamma, GammaMin, GammaMax);
+				CCMidtones.ColorGain = (FVector4f)RegionState->ColorGradingSettings.Midtones.Gain;
+				CCMidtones.ColorOffset = (FVector4f)RegionState->ColorGradingSettings.Midtones.Offset;
+
+				CCHighlights.ColorSaturation = (FVector4f)RegionState->ColorGradingSettings.Highlights.Saturation;
+				CCHighlights.ColorContrast = (FVector4f)RegionState->ColorGradingSettings.Highlights.Contrast;
+				CCHighlights.ColorGamma = (FVector4f)Clamp(RegionState->ColorGradingSettings.Highlights.Gamma, GammaMin, GammaMax);
+				CCHighlights.ColorGain = (FVector4f)RegionState->ColorGradingSettings.Highlights.Gain;
+				CCHighlights.ColorOffset = (FVector4f)RegionState->ColorGradingSettings.Highlights.Offset;
+				CCHighlights.HighlightsMin = RegionState->ColorGradingSettings.HighlightsMin;
+			}
+
+		}
+
+#if CLIP_PIXELS_OUTSIDE_AABB
+		// In case this is a second pass we need to clear the viewport in the backbuffer texture.
+		// We don't need to clear the entire texture, just the render viewport.
+		if (BackBufferRenderTarget.LoadAction == ERenderTargetLoadAction::ELoad)
+		{
+			FClearRectPS::FParameters* Parameters = GraphBuilder.AllocParameters<FClearRectPS::FParameters>();
+			TShaderMapRef<FClearRectPS> CopyPixelShader(GlobalShaderMap);
+			TShaderMapRef<FColorCorrectScreenPassVS> ScreenPassVS(GlobalShaderMap);
+			Parameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
+
+			GraphBuilder.AddPass(
+				RDG_EVENT_NAME("ColorCorrectRegions_ClearViewport"),
+				Parameters,
+				ERDGPassFlags::Raster,
+				[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, DefaultBlendState](FRHICommandList& RHICmdList)
+				{
+					DrawScreenPass(
+						RHICmdList,
+						static_cast<const FViewInfo&>(View),
+						RegionViewport,
+						RegionViewport,
+						FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
+						EScreenPassDrawFlags::None,
+						[&](FRHICommandList&)
+						{
+							SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
+						});
+				});
+		}
+#endif
+		// Main region rendering.
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("ColorCorrectRegions"),
+			PostProcessMaterialParameters,
+			ERDGPassFlags::Raster,
+			[&View,
+			RegionViewport,
+			VertexShader,
+			PixelShader,
+			DefaultBlendState,
+			DepthStencilState,
+			PostProcessMaterialParameters,
+			RegionData,
+			CCBase,
+			CCShadows,
+			CCMidtones,
+			CCHighlights,
+			bIsAdvanced,
+			MergedStencilRenderTarget](FRHICommandList& RHICmdList)
+			{
+				DrawScreenPass(
+					RHICmdList,
+					static_cast<const FViewInfo&>(View),
+					RegionViewport, // Output Viewport
+					RegionViewport, // Input Viewport
+					FScreenPassPipelineState(VertexShader, PixelShader, DefaultBlendState, DepthStencilState),
+					EScreenPassDrawFlags::None,
+					[&](FRHICommandList& RHICmdList)
+					{
+						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRRegionDataInputParameter>(), RegionData);
+						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectParameter>(), CCBase);
+						if (bIsAdvanced)
+						{
+							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectShadowsParameter>(), CCShadows);
+							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectMidtonesParameter>(), CCMidtones);
+							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectHighlightsParameter>(), CCHighlights);
+						}
+
+						VertexShader->SetParameters(RHICmdList, View);
+						SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), *PostProcessMaterialParameters);
+
+						PixelShader->SetParameters(RHICmdList, View);
+						SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PostProcessMaterialParameters);
+					});
+
+			});
+
+		// Since we've rendered into the backbuffer already we have to use load flag instead.
+		BackBufferRenderTarget.LoadAction = ERenderTargetLoadAction::ELoad;
+
+		FCopyRectPS::FParameters* Parameters = GraphBuilder.AllocParameters<FCopyRectPS::FParameters>();
+		Parameters->InputTexture = BackBufferRenderTarget.Texture;
+		Parameters->InputSampler = TStaticSamplerState<>::GetRHI();
+		Parameters->RenderTargets[0] = SceneColorRenderTarget.GetRenderTargetBinding();
+
+		TShaderMapRef<FCopyRectPS> CopyPixelShader(GlobalShaderMap);
+		TShaderMapRef<FColorCorrectScreenPassVS> ScreenPassVS(GlobalShaderMap);
+
+#if CLIP_PIXELS_OUTSIDE_AABB
+		// Blending the output from the main step with scene color.
+		// src.rgb*src.a + dest.rgb*(1.-src.a); alpha = src.a*0. + dst.a*1.0
+		FRHIBlendState* CopyBlendState = TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
+#else	
+		FRHIBlendState* CopyBlendState = DefaultBlendState;
+#endif
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("ColorCorrectRegions_CopyViewport"),
+			Parameters,
+			ERDGPassFlags::Raster,
+			[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, CopyBlendState](FRHICommandList& RHICmdList)
+			{
+				DrawScreenPass(
+					RHICmdList,
+					static_cast<const FViewInfo&>(View),
+					RegionViewport,
+					RegionViewport,
+					FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, CopyBlendState),
+					EScreenPassDrawFlags::None,
+					[&](FRHICommandList&)
+					{
+						SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
+					});
+			});
+
+		return true;
+
+	}
+
 }
 
 FColorCorrectRegionsSceneViewExtension::FColorCorrectRegionsSceneViewExtension(const FAutoRegister& AutoRegister, UColorCorrectRegionsSubsystem* InWorldSubsystem) :
@@ -295,19 +665,22 @@ FColorCorrectRegionsSceneViewExtension::FColorCorrectRegionsSceneViewExtension(c
 void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessingInputs& Inputs)
 {
 	// Necessary for when an actor is added or removed from the scene. Also when priority is changed.
-	FScopeLock RegionScopeLock(&WorldSubsystem->RegionAccessCriticalSection);
-
-	if (WorldSubsystem->Regions.Num() == 0 || !ViewSupportsRegions(View))
 	{
-		return;
+		FScopeLock RegionScopeLock(&WorldSubsystem->RegionAccessCriticalSection);
+
+		if ((WorldSubsystem->RegionsPriorityBased.Num() == 0 && WorldSubsystem->RegionsDistanceBased.Num() == 0) || !ViewSupportsRegions(View))
+		{
+			return;
+		}
 	}
 
 	Inputs.Validate();
 
 	const FSceneViewFamily& ViewFamily = *View.Family;
 
+	DynamicRenderScaling::TMap<float> UpperBounds = ViewFamily.GetScreenPercentageInterface()->GetResolutionFractionsUpperBound();
 	const auto FeatureLevel = View.GetFeatureLevel();
-	const float ScreenPercentage = ViewFamily.GetPrimaryResolutionFractionUpperBound() * ViewFamily.SecondaryViewFraction;
+	const float ScreenPercentage = UpperBounds[GDynamicPrimaryResolutionFraction] * ViewFamily.SecondaryViewFraction;
 	
 	// We need to make sure to take Windows and Scene scale into account.
 
@@ -328,11 +701,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 
 		// Reusing the same output description for our back buffer as SceneColor
 		FRDGTextureDesc ColorCorrectRegionsOutputDesc = SceneColor.Texture->Desc;
-		bool bSampleOpacityFromGbuffer = false;
-		if (ColorCorrectRegionsOutputDesc.Format != PF_FloatRGBA)
-		{
-			bSampleOpacityFromGbuffer = true;
-		}
+
 		ColorCorrectRegionsOutputDesc.Format = PF_FloatRGBA;
 		FLinearColor ClearColor(0., 0., 0., 0.);
 		ColorCorrectRegionsOutputDesc.ClearValue = FClearValueBinding(ClearColor);
@@ -343,7 +712,6 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 		const FScreenPassTextureViewport SceneColorTextureViewport(SceneColor);
 
 		FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
-		FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
 
 		RDG_EVENT_SCOPE(GraphBuilder, "Color Correct Regions %dx%d", SceneColorTextureViewport.Rect.Width(), SceneColorTextureViewport.Rect.Height());
 
@@ -358,304 +726,48 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 
 		// Because we are not using proxy material, but plain global shader, we need to setup Scene textures ourselves.
 		// We don't need to do this per region.
-		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, View.GetFeatureLevel(), ESceneTextureSetupMode::All);
+		check(View.bIsViewInfo);
+		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, ((const FViewInfo&)View).GetSceneTexturesChecked(), View.GetFeatureLevel(), ESceneTextureSetupMode::All);
 
-		for (auto It = WorldSubsystem->Regions.CreateConstIterator(); It; ++It)
+		WorldSubsystem->SortRegionsByDistance(View.ViewLocation);
 		{
-			AColorCorrectRegion* Region = *It;
-
-			/* If Region is pending for kill, invisible or disabled we don't need to render it.
-			*	If Region's Primitive is not visible in the current view's scene then we don't need to render it either.
-			*	We are checking if the region belongs to the same world as the view. 
-			* Alternative is to get all component ids from ViewFamily.Scene and compare with actor's 
-			*	Region->ActiveMeshComponent->ComponentId ComponentIdSearchTable.Contains(RegionPrimitiveComponentId)
-			*/
-			if (!IsValid(Region) || 
-				Region->IsActorBeingDestroyed() ||
-				!Region->Enabled || 
-				Region->IsHidden() ||
-#if WITH_EDITOR
-				Region->IsHiddenEd() ||
-#endif
-				Region->GetWorld() != ViewFamily.Scene->GetWorld())
+			FScopeLock RegionScopeLock(&WorldSubsystem->RegionAccessCriticalSection);
+			for (auto It = WorldSubsystem->RegionsPriorityBased.CreateConstIterator(); It; ++It)
 			{
-				continue;
+				AColorCorrectRegion* Region = *It;
+				RenderRegion(GraphBuilder
+					, View
+					, Inputs
+					, ViewFamily
+					, Region
+					, PrimaryViewRect
+					, SceneColorRenderTarget
+					, ScreenPercentage
+					, BackBufferRenderTarget
+					, SceneTextureViewportParams
+					, SceneTextureInput
+					, SceneTextures
+					, GlobalShaderMap
+					, DefaultBlendState);
 			}
-
-			FVector BoxCenter, BoxExtents;
-			Region->GetBounds(BoxCenter, BoxExtents);
-
-			// If bounding box is zero, then we don't need to do anything.
-			if (BoxExtents.IsNearlyZero())
+			for (auto It = WorldSubsystem->RegionsDistanceBased.CreateConstIterator(); It; ++It)
 			{
-				continue;
+				AColorCorrectRegion* Region = *It;
+				RenderRegion(GraphBuilder
+					, View
+					, Inputs
+					, ViewFamily
+					, Region
+					, PrimaryViewRect
+					, SceneColorRenderTarget
+					, ScreenPercentage
+					, BackBufferRenderTarget
+					, SceneTextureViewportParams
+					, SceneTextureInput
+					, SceneTextures
+					, GlobalShaderMap
+					, DefaultBlendState);
 			}
-
-			FIntRect Viewport;
-
-			float MaxDepth = -BIG_NUMBER;
-			float MinDepth = BIG_NUMBER;
-
-			if (Region->Invert)
-			{
-				// In case of Region inversion we would to render the entire screen
-				Viewport = PrimaryViewRect;
-			}
-			else
-			{
-				GetPixelSpaceBoundingRect(View, BoxCenter, BoxExtents, Viewport, MaxDepth, MinDepth);
-
-				// Check if CCR is too small to be rendered (less than one pixel on the screen).
-				if (Viewport.Width() == 0 || Viewport.Height() == 0)
-				{
-					continue;
-				}
-
-				// This is to handle corner cases when user has a very long disproportionate region and gets either
-				// within bounds or close to the center.
-				float MaxBoxExtent = FMath::Abs(BoxExtents.GetMax());
-				if (MaxDepth >= 0 && MinDepth < 0)
-				{
-					UpdateMinMaxWithFrustrumAABBIntersection(View, BoxCenter, BoxExtents, Viewport, MaxDepth);
-				}
-
-				FIntRect ConstrainedViewRect = View.UnscaledViewRect;
-
-				// We need to make sure that Bounding Rectangle is offset by the position of the View's Viewport.
-				Viewport.Min -= ConstrainedViewRect.Min;
-
-				Viewport = Viewport.Scale(ScreenPercentage);
-
-				// Culling all regions that are not within the screen bounds.
-				if ((Viewport.Min.X >= PrimaryViewRect.Width() ||
-					Viewport.Min.Y >= PrimaryViewRect.Height() ||
-					Viewport.Max.X <= 0.0f ||
-					Viewport.Max.Y <= 0.0f ||
-					MaxDepth < 0.0f))
-				{
-					continue;
-				}
-				// Clipping is required because as we get closer to the bounding box the bounds
-				// May extend beyond Allowed render target size.
-				Viewport.Clip(PrimaryViewRect);
-			}
-			
-
-			bool bIsAdvanced = false;
-
-			const FVector4 One(1., 1., 1., 1.);
-			const FVector4 Zero(0., 0., 0., 0.);
-			TArray<FColorGradePerRangeSettings*> AdvancedSettings{ &Region->ColorGradingSettings.Shadows,
-																	&Region->ColorGradingSettings.Midtones,
-																	&Region->ColorGradingSettings.Highlights };
-
-			// Check if any of the regions are advanced.
-			for (auto SettingsIt = AdvancedSettings.CreateConstIterator(); SettingsIt; ++SettingsIt)
-			{
-				const FColorGradePerRangeSettings* ColorGradingSettings = *SettingsIt;
-				if (!ColorGradingSettings->Saturation.Equals(One, SMALL_NUMBER) ||
-					!ColorGradingSettings->Contrast.Equals(One, SMALL_NUMBER) ||
-					!ColorGradingSettings->Gamma.Equals(One, SMALL_NUMBER) ||
-					!ColorGradingSettings->Gain.Equals(One, SMALL_NUMBER) ||
-					!ColorGradingSettings->Offset.Equals(Zero, SMALL_NUMBER))
-				{
-					bIsAdvanced = true;
-					break;
-				}
-			}
-
-			const FScreenPassTextureViewport RegionViewport(SceneColorRenderTarget.Texture, Viewport);
-
-			FCCRShaderInputParameters* PostProcessMaterialParameters = GraphBuilder.AllocParameters<FCCRShaderInputParameters>();
-			PostProcessMaterialParameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
-
-			PostProcessMaterialParameters->PostProcessOutput = SceneTextureViewportParams;
-			PostProcessMaterialParameters->PostProcessInput[0] = SceneTextureInput;
-			PostProcessMaterialParameters->SceneTextures = SceneTextures;
-			PostProcessMaterialParameters->View = View.ViewUniformBuffer;
-
-			TShaderMapRef<FColorCorrectRegionMaterialVS> VertexShader(GlobalShaderMap);
-			const float DefaultTemperature = 6500;
-
-			// If temperature is default we don't want to do the calculations.
-			FColorCorrectRegionMaterialPS::ETemperatureType TemperatureType = FMath::IsNearlyEqual(Region->Temperature, DefaultTemperature) 
-				? FColorCorrectRegionMaterialPS::ETemperatureType::Disabled 
-				: static_cast<FColorCorrectRegionMaterialPS::ETemperatureType>(Region->TemperatureType);
-			TShaderMapRef<FColorCorrectRegionMaterialPS> PixelShader = GetRegionShader(GlobalShaderMap, Region->Type, TemperatureType, bIsAdvanced, bSampleOpacityFromGbuffer);
-
-			ClearUnusedGraphResources(VertexShader, PixelShader, PostProcessMaterialParameters);
-
-			FCCRRegionDataInputParameter RegionData;
-			FCCRColorCorrectParameter CCBase;
-			FCCRColorCorrectShadowsParameter CCShadows;
-			FCCRColorCorrectMidtonesParameter CCMidtones;
-			FCCRColorCorrectHighlightsParameter CCHighlights;
-
-
-			// Setting constant buffer data to be passed to the shader.
-			{
-				RegionData.Rotate = FMath::DegreesToRadians<FVector3f>((FVector3f)Region->GetActorRotation().Euler());	// LWC_TODO: Precision Loss
-				RegionData.Translate = (FVector3f)Region->GetActorLocation();	// LWC_TODO: Precision Loss
-
-				const float ScaleMultiplier = 50.;
-				// Pre multiplied scale. 
-				RegionData.Scale = (FVector3f)Region->GetActorScale() * ScaleMultiplier;
-
-				RegionData.WhiteTemp = Region->Temperature;
-				// Inner could be larger than outer, in which case we need to make sure these are swapped.
-				RegionData.Inner = FMath::Min<float>(Region->Outer, Region->Inner);
-				RegionData.Outer = FMath::Max<float>(Region->Outer, Region->Inner);
-				RegionData.Falloff = Region->Falloff;
-				RegionData.Intensity = Region->Intensity;
-				RegionData.ExcludeStencil = Region->ExcludeStencil;
-				RegionData.Invert = Region->Invert;
-
-				CCBase.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Global.Saturation;
-				CCBase.ColorContrast = (FVector4f)Region->ColorGradingSettings.Global.Contrast;
-				CCBase.ColorGamma = (FVector4f)Region->ColorGradingSettings.Global.Gamma;
-				CCBase.ColorGain = (FVector4f)Region->ColorGradingSettings.Global.Gain;
-				CCBase.ColorOffset = (FVector4f)Region->ColorGradingSettings.Global.Offset;
-
-				// Set advanced 
-				if (bIsAdvanced)
-				{
-					const float GammaMin = 0.02;
-					const float GammaMax = 10.;
-					//clamp(ExternalExpressions.ColorGammaHighlights, 0.02, 10.)
-					CCShadows.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Shadows.Saturation;
-					CCShadows.ColorContrast = (FVector4f)Region->ColorGradingSettings.Shadows.Contrast;
-					CCShadows.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Shadows.Gamma, GammaMin, GammaMax);
-					CCShadows.ColorGain = (FVector4f)Region->ColorGradingSettings.Shadows.Gain;
-					CCShadows.ColorOffset = (FVector4f)Region->ColorGradingSettings.Shadows.Offset;
-					CCShadows.ShadowMax = Region->ColorGradingSettings.ShadowsMax;
-
-					CCMidtones.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Midtones.Saturation;
-					CCMidtones.ColorContrast = (FVector4f)Region->ColorGradingSettings.Midtones.Contrast;
-					CCMidtones.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Midtones.Gamma, GammaMin, GammaMax);
-					CCMidtones.ColorGain = (FVector4f)Region->ColorGradingSettings.Midtones.Gain;
-					CCMidtones.ColorOffset = (FVector4f)Region->ColorGradingSettings.Midtones.Offset;
-
-					CCHighlights.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Highlights.Saturation;
-					CCHighlights.ColorContrast = (FVector4f)Region->ColorGradingSettings.Highlights.Contrast;
-					CCHighlights.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Highlights.Gamma, GammaMin, GammaMax);
-					CCHighlights.ColorGain = (FVector4f)Region->ColorGradingSettings.Highlights.Gain;
-					CCHighlights.ColorOffset = (FVector4f)Region->ColorGradingSettings.Highlights.Offset;
-					CCHighlights.HighlightsMin = Region->ColorGradingSettings.HighlightsMin;
-				}
-			}
-
-#if CLIP_PIXELS_OUTSIDE_AABB
-			// In case this is a second pass we need to clear the viewport in the backbuffer texture.
-			// We don't need to clear the entire texture, just the render viewport.
-			if (BackBufferRenderTarget.LoadAction == ERenderTargetLoadAction::ELoad)
-			{
-				FClearRectPS::FParameters* Parameters = GraphBuilder.AllocParameters<FClearRectPS::FParameters>();
-				TShaderMapRef<FClearRectPS> CopyPixelShader(GlobalShaderMap);
-				TShaderMapRef<FColorCorrectScreenPassVS> ScreenPassVS(GlobalShaderMap);
-				Parameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
-
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("ColorCorrectRegions_ClearViewport"),
-					Parameters,
-					ERDGPassFlags::Raster,
-					[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, DefaultBlendState](FRHICommandList& RHICmdList)
-				{
-					DrawScreenPass(
-						RHICmdList,
-						View,
-						RegionViewport,
-						RegionViewport,
-						FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
-						[&](FRHICommandList&)
-					{
-						SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
-					});
-				});
-			}
-#endif
-			// Main region rendering.
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("ColorCorrectRegions"),
-				PostProcessMaterialParameters,
-				ERDGPassFlags::Raster,
-				[&View,
-				RegionViewport,
-				VertexShader,
-				PixelShader,
-				DefaultBlendState,
-				DepthStencilState,
-				PostProcessMaterialParameters,
-				RegionData,
-				CCBase,
-				CCShadows,
-				CCMidtones,
-				CCHighlights,
-				bIsAdvanced](FRHICommandList& RHICmdList)
-			{
-				
-				DrawScreenPass(
-					RHICmdList,
-					View,
-					RegionViewport, // Output Viewport
-					RegionViewport, // Input Viewport
-					FScreenPassPipelineState(VertexShader, PixelShader, DefaultBlendState, DepthStencilState),
-					[&](FRHICommandList& RHICmdList)
-				{
-					SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRRegionDataInputParameter>(), RegionData);
-					SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectParameter>(), CCBase);
-					if (bIsAdvanced)
-					{
-						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectShadowsParameter>(), CCShadows);
-						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectMidtonesParameter>(), CCMidtones);
-						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectHighlightsParameter>(), CCHighlights);
-					}
-					VertexShader->SetParameters(RHICmdList,  View);
-					SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), *PostProcessMaterialParameters);
-
-					PixelShader->SetParameters(RHICmdList, View);
-					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PostProcessMaterialParameters);
-				});
-
-			});
-
-			// Since we've rendered into the backbuffer already we have to use load flag instead.
-			BackBufferRenderTarget.LoadAction = ERenderTargetLoadAction::ELoad;
-
-			FCopyRectPS::FParameters* Parameters = GraphBuilder.AllocParameters<FCopyRectPS::FParameters>();
-			Parameters->InputTexture = BackBufferRenderTarget.Texture;
-			Parameters->InputSampler = TStaticSamplerState<>::GetRHI();
-			Parameters->RenderTargets[0] = SceneColorRenderTarget.GetRenderTargetBinding();
-
-			TShaderMapRef<FCopyRectPS> CopyPixelShader(GlobalShaderMap);
-			TShaderMapRef<FColorCorrectScreenPassVS> ScreenPassVS(GlobalShaderMap);
-
-#if CLIP_PIXELS_OUTSIDE_AABB
-			// Blending the output from the main step with scene color.
-			// src.rgb*src.a + dest.rgb*(1.-src.a); alpha = src.a*0. + dst.a*1.0
-			FRHIBlendState* CopyBlendState = TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
-#else	
-			FRHIBlendState* CopyBlendState = DefaultBlendState;
-#endif
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("ColorCorrectRegions_CopyViewport"),
-				Parameters,
-				ERDGPassFlags::Raster,
-				[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, CopyBlendState](FRHICommandList& RHICmdList)
-			{
-				DrawScreenPass(
-					RHICmdList,
-					View,
-					RegionViewport,
-					RegionViewport,
-					FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, CopyBlendState),
-					[&](FRHICommandList&)
-				{
-					SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
-				});
-			});
-
 		}
-
 	}
 }
-

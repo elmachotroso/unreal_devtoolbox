@@ -2,6 +2,8 @@
 
 #include "ControlRigBlueprintEditorLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigBlueprintEditorLibrary)
+
 void UControlRigBlueprintEditorLibrary::CastToControlRigBlueprint(
 	UObject* Object,
 	ECastToControlRigBlueprintCases& Branches,
@@ -73,7 +75,7 @@ URigVMGraph* UControlRigBlueprintEditorLibrary::GetModel(UControlRigBlueprint* I
 	{
 		return nullptr;
 	}
-	return InRigBlueprint->GetModel();
+	return InRigBlueprint->GetDefaultModel();
 }
 
 URigVMController* UControlRigBlueprintEditorLibrary::GetController(UControlRigBlueprint* InRigBlueprint)
@@ -112,3 +114,4 @@ URigHierarchyController* UControlRigBlueprintEditorLibrary::GetHierarchyControll
 	}
 	return InRigBlueprint->GetHierarchyController();
 }
+

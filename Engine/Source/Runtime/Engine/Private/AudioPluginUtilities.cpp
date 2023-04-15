@@ -46,11 +46,24 @@ FORCEINLINE const TCHAR* GetPluginConfigName(EAudioPlugin PluginType)
 /************************************************************************/
 /* Plugin Utilities                                                     */
 /************************************************************************/
+FName AudioPluginUtilities::GetDesiredSpatializationPluginName()
+{
+	return FName(GetDesiredPluginName(EAudioPlugin::SPATIALIZATION));
+}
+
+TArray<IAudioSpatializationFactory*> AudioPluginUtilities::GetSpatialPluginArray()
+{
+	IModularFeatures::FScopedLockModularFeatureList ScopedLockModularFeatureList;
+	return IModularFeatures::Get().GetModularFeatureImplementations<IAudioSpatializationFactory>(IAudioSpatializationFactory::GetModularFeatureName());
+}
+
 IAudioSpatializationFactory* AudioPluginUtilities::GetDesiredSpatializationPlugin()
 {
 	FString DesiredSpatializationPlugin = GetDesiredPluginName(EAudioPlugin::SPATIALIZATION);
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<IAudioSpatializationFactory *> SpatializationPluginFactories = IModularFeatures::Get().GetModularFeatureImplementations<IAudioSpatializationFactory>(IAudioSpatializationFactory::GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	//Iterate through all of the plugins we've discovered:
 	for (IAudioSpatializationFactory* PluginFactory : SpatializationPluginFactories)
@@ -68,7 +81,10 @@ IAudioSpatializationFactory* AudioPluginUtilities::GetDesiredSpatializationPlugi
 IAudioSourceDataOverrideFactory* AudioPluginUtilities::GetDesiredSourceDataOverridePlugin()
 {
 	FString DesiredSourceDataOverridePlugin = GetDesiredPluginName(EAudioPlugin::SOURCEDATAOVERRIDE);
+
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<IAudioSourceDataOverrideFactory*> SourceDataOverridePluginFactories = IModularFeatures::Get().GetModularFeatureImplementations<IAudioSourceDataOverrideFactory>(IAudioSourceDataOverrideFactory::GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	//Iterate through all of the plugins we've discovered:
 	for (IAudioSourceDataOverrideFactory* PluginFactory : SourceDataOverridePluginFactories)
@@ -89,7 +105,9 @@ IAudioReverbFactory* AudioPluginUtilities::GetDesiredReverbPlugin()
 	//Get the name of the desired Reverb plugin:
 	FString DesiredReverbPlugin = GetDesiredPluginName(EAudioPlugin::REVERB);
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<IAudioReverbFactory *> ReverbPluginFactories = IModularFeatures::Get().GetModularFeatureImplementations<IAudioReverbFactory>(IAudioReverbFactory::GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	//Iterate through all of the plugins we've discovered:
 	for (IAudioReverbFactory* PluginFactory : ReverbPluginFactories)
@@ -108,7 +126,9 @@ IAudioOcclusionFactory* AudioPluginUtilities::GetDesiredOcclusionPlugin()
 {
 	FString DesiredOcclusionPlugin = GetDesiredPluginName(EAudioPlugin::OCCLUSION);
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<IAudioOcclusionFactory *> OcclusionPluginFactories = IModularFeatures::Get().GetModularFeatureImplementations<IAudioOcclusionFactory>(IAudioOcclusionFactory::GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	//Iterate through all of the plugins we've discovered:
 	for (IAudioOcclusionFactory* PluginFactory : OcclusionPluginFactories)
@@ -129,7 +149,10 @@ IAudioModulationFactory* AudioPluginUtilities::GetDesiredModulationPlugin()
 	const FName& PluginName = (PlatformPluginName == NAME_None) ? GetDefaultModulationPluginName() : PlatformPluginName;
 	const FName& FeatureName = IAudioModulationFactory::GetModularFeatureName();
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<IAudioModulationFactory*> Factories = IModularFeatures::Get().GetModularFeatureImplementations<IAudioModulationFactory>(FeatureName);
+	IModularFeatures::Get().UnlockModularFeatureList();
+
 	for (IAudioModulationFactory* Factory : Factories)
 	{
 		//if this plugin's name matches the name found in the platform settings, use it:

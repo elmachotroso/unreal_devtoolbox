@@ -92,11 +92,6 @@ class FCopyUIntBufferCS : public FGlobalShader
 
 public:
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
@@ -208,7 +203,7 @@ void CopyUIntBufferToTargets(FRHICommandListImmediate& RHICmdList, ERHIFeatureLe
 	// No that resource transition must be made outside this call as we don't know how the content of those have been generated, and will be used.
 
 	TShaderMapRef<FCopyUIntBufferCS> CopyBufferCS(GetGlobalShaderMap(FeatureLevel));
-	RHICmdList.SetComputeShader(CopyBufferCS.GetComputeShader());
+	SetComputePipelineState(RHICmdList, CopyBufferCS.GetComputeShader());
 	
 	CopyBufferCS->Begin(RHICmdList);
 
@@ -291,7 +286,8 @@ void FGPUSortManager::FValueBuffer::Allocate(FAllocationInfo& OutInfo, int32 Val
 	check(UsedCount <= AllocatedCount);
 	if (EnumHasAnyFlags(Flags, EGPUSortFlags::ValuesAsInt32))
 	{
-		OutInfo.BufferSRV = Int32SRV;
+		// Note that the sorting shader reads the indices as UInt32 (see FParticleSortBuffers::InitRHI()).
+		OutInfo.BufferSRV = UInt32SRV;
 	}
 	else
 	{
@@ -727,6 +723,9 @@ void FGPUSortManager::UpdateSortBuffersPool()
 
 void FGPUSortManager::OnPreRender(FRDGBuilder& GraphBuilder)
 {
+	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, GPUSort);
+	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
+
 	AddPass(
 		GraphBuilder,
 		RDG_EVENT_NAME("FGPUSortManager::OnPreRender"),
@@ -782,6 +781,8 @@ void FGPUSortManager::OnPreRender(FRDGBuilder& GraphBuilder)
 void FGPUSortManager::OnPostRenderOpaque(FRDGBuilder& GraphBuilder)
 {
 	LLM_SCOPE(ELLMTag::GPUSort);
+	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, GPUSort);
+	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
 	AddPass(
 		GraphBuilder,

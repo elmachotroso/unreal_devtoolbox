@@ -3,10 +3,13 @@
 #include "EOSSettings.h"
 #include "OnlineSubsystemEOS.h"
 #include "OnlineSubsystemEOSModule.h"
+#include "OnlineSubsystemEOSPrivate.h"
 
 #include "Algo/Transform.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EOSSettings)
 
 #if WITH_EDITOR
 	#include "Misc/MessageDialog.h"
@@ -150,6 +153,7 @@ const FEOSSettings& UEOSSettings::ManualGetSettings()
 		GConfig->GetInt(INI_SECTION, TEXT("TitleStorageReadChunkLength"), CachedSettings->TitleStorageReadChunkLength, GEngineIni);
 		GConfig->GetBool(INI_SECTION, TEXT("bEnableOverlay"), CachedSettings->bEnableOverlay, GEngineIni);
 		GConfig->GetBool(INI_SECTION, TEXT("bEnableSocialOverlay"), CachedSettings->bEnableSocialOverlay, GEngineIni);
+		GConfig->GetBool(INI_SECTION, TEXT("bEnableEditorOverlay"), CachedSettings->bEnableEditorOverlay, GEngineIni);
 		GConfig->GetBool(INI_SECTION, TEXT("bShouldEnforceBeingLaunchedByEGS"), CachedSettings->bShouldEnforceBeingLaunchedByEGS, GEngineIni);
 		GConfig->GetBool(INI_SECTION, TEXT("bUseEAS"), CachedSettings->bUseEAS, GEngineIni);
 		GConfig->GetBool(INI_SECTION, TEXT("bUseEOSConnect"), CachedSettings->bUseEOSConnect, GEngineIni);
@@ -174,6 +178,7 @@ FEOSSettings UEOSSettings::ToNative() const
 	Native.TitleStorageReadChunkLength = TitleStorageReadChunkLength;
 	Native.bEnableOverlay = bEnableOverlay;
 	Native.bEnableSocialOverlay = bEnableSocialOverlay;
+	Native.bEnableEditorOverlay = bEnableEditorOverlay;
 	Native.bShouldEnforceBeingLaunchedByEGS = bShouldEnforceBeingLaunchedByEGS;
 	Native.bUseEAS = bUseEAS;
 	Native.bUseEOSConnect = bUseEOSConnect;
@@ -297,6 +302,7 @@ void UEOSSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		if (!bEnableOverlay)
 		{
 			bEnableSocialOverlay = false;
+			bEnableEditorOverlay = false;
 		}
 	}
 
@@ -399,3 +405,4 @@ void UEOSSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

@@ -6,6 +6,7 @@
 #include "Spatial/FastWinding.h"
 #include "Spatial/PointHashGrid3.h"
 #include "Spatial/MeshSpatialSort.h"
+#include "Spatial/SparseDynamicOctree3.h"
 #include "Util/IndexUtil.h"
 #include "Arrangement2d.h"
 #include "MeshAdapter.h"
@@ -33,7 +34,7 @@
 #include "DynamicMesh/MeshNormals.h"
 #include "DynamicMesh/MeshTangents.h"
 #include "ConstrainedDelaunay2.h"
-
+#include "Util/ProgressCancel.h"
 
 #include "StaticMeshOperations.h"
 #include "MeshDescriptionToDynamicMesh.h"
@@ -43,14 +44,22 @@
 
 #include "GeometryMeshConversion.h"
 
-#if WITH_EDITOR
-#include "Misc/ScopedSlowTask.h"
-#endif
-
 using namespace UE::Geometry;
 
 
 using namespace UE::PlanarCut;
+
+#define LOCTEXT_NAMESPACE "PlanarCut"
+
+namespace PlanarCut_Locals
+{
+	FVector SeparateTranslation(const FTransform& Transform, FTransform& OutCenteredTransform)
+	{
+		FVector Translation = Transform.GetTranslation();
+		OutCenteredTransform = FTransform(Transform.GetRotation(), FVector::ZeroVector, Transform.GetScale3D());
+		return Translation;
+	}
+}
 
 // logic from FMeshUtility::GenerateGeometryCollectionFromBlastChunk, sets material IDs based on construction pattern that external materials have even IDs and are matched to internal materials at InternalID = ExternalID+1
 int32 FInternalSurfaceMaterials::GetDefaultMaterialIDForGeometry(const FGeometryCollection& Collection, int32 GeometryIdx) const
@@ -95,26 +104,32 @@ int32 FInternalSurfaceMaterials::GetDefaultMaterialIDForGeometry(const FGeometry
 	return InternalMaterialID;
 }
 
-void FInternalSurfaceMaterials::SetUVScaleFromCollection(const FGeometryCollection& Collection, int32 GeometryIdx)
+void FInternalSurfaceMaterials::SetUVScaleFromCollection(const FGeometryCollectionMeshFacade& CollectionMesh, int32 GeometryIdx)
 {
+	const auto& VertexArray = CollectionMesh.Vertex.Get();
+	const auto& UVsArray = CollectionMesh.UVs.Get();
+	const auto& IndicesArray = CollectionMesh.Indices.Get();
+	const auto& FaceStartArray = CollectionMesh.FaceStart.Get();
+	const auto& FaceCountArray = CollectionMesh.FaceCount.Get();
+	
 	int32 FaceStart = 0;
-	int32 FaceEnd = Collection.Indices.Num();
+	int32 FaceEnd = IndicesArray.Num();
 	if (GeometryIdx > -1)
 	{
-		FaceStart = Collection.FaceStart[GeometryIdx];
-		FaceEnd = Collection.FaceCount[GeometryIdx] + Collection.FaceStart[GeometryIdx];
+		FaceStart = FaceStartArray[GeometryIdx];
+		FaceEnd = FaceCountArray[GeometryIdx] + FaceStartArray[GeometryIdx];
 	}
 	float UVDistance = 0;
 	float WorldDistance = 0;
 	for (int32 FaceIdx = FaceStart; FaceIdx < FaceEnd; FaceIdx++)
 	{
-		const FIntVector& Tri = Collection.Indices[FaceIdx];
-		WorldDistance += FVector3f::Distance(Collection.Vertex[Tri.X], Collection.Vertex[Tri.Y]);
-		UVDistance += FVector2D::Distance(FVector2D(Collection.UVs[Tri.X][0]), FVector2D(Collection.UVs[Tri.Y][0]));
-		WorldDistance += FVector3f::Distance(Collection.Vertex[Tri.Z], Collection.Vertex[Tri.Y]);
-		UVDistance += FVector2D::Distance(FVector2D(Collection.UVs[Tri.Z][0]), FVector2D(Collection.UVs[Tri.Y][0]));
-		WorldDistance += FVector3f::Distance(Collection.Vertex[Tri.X], Collection.Vertex[Tri.Z]);
-		UVDistance += FVector2D::Distance(FVector2D(Collection.UVs[Tri.X][0]), FVector2D(Collection.UVs[Tri.Z][0]));
+		const FIntVector& Tri = IndicesArray[FaceIdx];
+		WorldDistance += FVector3f::Distance(VertexArray[Tri.X], VertexArray[Tri.Y]);
+		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.X][0]), FVector2D(UVsArray[Tri.Y][0]));
+		WorldDistance += FVector3f::Distance(VertexArray[Tri.Z], VertexArray[Tri.Y]);
+		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.Z][0]), FVector2D(UVsArray[Tri.Y][0]));
+		WorldDistance += FVector3f::Distance(VertexArray[Tri.X], VertexArray[Tri.Z]);
+		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.X][0]), FVector2D(UVsArray[Tri.Z][0]));
 	}
 
 	if (WorldDistance > 0)
@@ -190,36 +205,206 @@ FPlanarCells::FPlanarCells(const TArrayView<const FVector> Sites, FVoronoiDiagra
 	}
 }
 
-FPlanarCells::FPlanarCells(const TArrayView<const FBox> Boxes)
+FPlanarCells::FPlanarCells(const TArrayView<const FBox> Boxes, bool bResolveAdjacencies)
 {
 	AssumeConvexCells = true;
 	NumCells = Boxes.Num();
 	TArray<FBox> BoxesCopy(Boxes);
 	
+	if (!bResolveAdjacencies) // if the boxes aren't touching, we can just make a completely independent cell per box
+	{
+		for (int32 BoxIdx = 0; BoxIdx < NumCells; BoxIdx++)
+		{
+			const FBox& Box = Boxes[BoxIdx];
+			const FVector& Min = Box.Min;
+			const FVector& Max = Box.Max;
+
+			int32 VIdx = PlaneBoundaryVertices.Num();
+			PlaneBoundaryVertices.Add(Min);
+			PlaneBoundaryVertices.Add(FVector(Max.X, Min.Y, Min.Z));
+			PlaneBoundaryVertices.Add(FVector(Max.X, Max.Y, Min.Z));
+			PlaneBoundaryVertices.Add(FVector(Min.X, Max.Y, Min.Z));
+
+			PlaneBoundaryVertices.Add(FVector(Min.X, Min.Y, Max.Z));
+			PlaneBoundaryVertices.Add(FVector(Max.X, Min.Y, Max.Z));
+			PlaneBoundaryVertices.Add(Max);
+			PlaneBoundaryVertices.Add(FVector(Min.X, Max.Y, Max.Z));
+
+			AddPlane(FPlane(FVector(0, 0, -1), -Min.Z), BoxIdx, -1, { VIdx + 0, VIdx + 1, VIdx + 2, VIdx + 3 });
+			AddPlane(FPlane(FVector(0, 0, 1), Max.Z), BoxIdx, -1, { VIdx + 4, VIdx + 7, VIdx + 6, VIdx + 5 });
+			AddPlane(FPlane(FVector(0, -1, 0), -Min.Y), BoxIdx, -1, { VIdx + 0, VIdx + 4, VIdx + 5, VIdx + 1 });
+			AddPlane(FPlane(FVector(0, 1, 0), Max.Y), BoxIdx, -1, { VIdx + 3, VIdx + 2, VIdx + 6, VIdx + 7 });
+			AddPlane(FPlane(FVector(-1, 0, 0), -Min.X), BoxIdx, -1, { VIdx + 0, VIdx + 3, VIdx + 7, VIdx + 4 });
+			AddPlane(FPlane(FVector(1, 0, 0), Max.X), BoxIdx, -1, { VIdx + 1, VIdx + 5, VIdx + 6, VIdx + 2 });
+		}
+
+		return;
+	}
+
+	// If boxes might be touching, we need to subdivide each box along each overlap,
+	// and make sure to only construct one copy any vertex/face that is shared between multiple boxes
+
+	// Build an octree of boxes to allow us to quickly find neighbors, and determine how to subdivide the boxes
+	FSparseDynamicOctree3 BoxTree;
+	double BoxMaxDim = 0;
+	for (const FBox& Box : Boxes)
+	{
+		BoxMaxDim = FMath::Max(BoxMaxDim, Box.GetSize().GetMax());
+	}
+	BoxTree.RootDimension = BoxMaxDim * 4;
 	for (int32 BoxIdx = 0; BoxIdx < NumCells; BoxIdx++)
 	{
-		const FBox &Box = Boxes[BoxIdx];
-		const FVector &Min = Box.Min;
-		const FVector &Max = Box.Max;
-
-		int32 VIdx = PlaneBoundaryVertices.Num();
-		PlaneBoundaryVertices.Add(Min);
-		PlaneBoundaryVertices.Add(FVector(Max.X, Min.Y, Min.Z));
-		PlaneBoundaryVertices.Add(FVector(Max.X, Max.Y, Min.Z));
-		PlaneBoundaryVertices.Add(FVector(Min.X, Max.Y, Min.Z));
-
-		PlaneBoundaryVertices.Add(FVector(Min.X, Min.Y, Max.Z));
-		PlaneBoundaryVertices.Add(FVector(Max.X, Min.Y, Max.Z));
-		PlaneBoundaryVertices.Add(Max);
-		PlaneBoundaryVertices.Add(FVector(Min.X, Max.Y, Max.Z));
-
-		AddPlane(FPlane(FVector(0, 0, -1), -Min.Z), BoxIdx, -1, { VIdx + 0, VIdx + 1, VIdx + 2, VIdx + 3 });
-		AddPlane(FPlane(FVector(0, 0, 1),	Max.Z), BoxIdx, -1, { VIdx + 4, VIdx + 7, VIdx + 6, VIdx + 5 });
-		AddPlane(FPlane(FVector(0, -1, 0), -Min.Y), BoxIdx, -1, { VIdx + 0, VIdx + 4, VIdx + 5, VIdx + 1 });
-		AddPlane(FPlane(FVector(0, 1, 0),	Max.Y), BoxIdx, -1, { VIdx + 3, VIdx + 2, VIdx + 6, VIdx + 7 });
-		AddPlane(FPlane(FVector(-1, 0, 0), -Min.X), BoxIdx, -1, { VIdx + 0, VIdx + 3, VIdx + 7, VIdx + 4 });
-		AddPlane(FPlane(FVector(1, 0, 0),	Max.X), BoxIdx, -1, { VIdx + 1, VIdx + 5, VIdx + 6, VIdx + 2 });
+		BoxTree.InsertObject(BoxIdx, Boxes[BoxIdx]);
 	}
+
+	// Build a hash grid for vertices, to share vertices across boxes
+	constexpr double AddVertTolerance = UE_DOUBLE_KINDA_SMALL_NUMBER;
+	TPointHashGrid3d<int32> PosToVert(AddVertTolerance * 10, INDEX_NONE);
+	TMap<FIntVector4, int32> VertsToPlane;
+
+	// Track overlaps between neighboring boxes in each dimension separately; each overlap is a new subdivision on that axis
+	TArray<int32> OverlapIndices;
+	TArray<double> Overlaps[3];
+	for (int32 BoxIdx = 0; BoxIdx < NumCells; BoxIdx++)
+	{
+		const FBox& Box = Boxes[BoxIdx];
+		const FVector& Min = Box.Min;
+		const FVector& Max = Box.Max;
+
+		Overlaps[0].Reset();
+		Overlaps[1].Reset();
+		Overlaps[2].Reset();
+		OverlapIndices.Reset();
+		
+		constexpr double QueryExpandTolerance = AddVertTolerance;
+		
+		FBox ExpandedBox = Box.ExpandBy(QueryExpandTolerance);
+		BoxTree.RangeQuery(ExpandedBox, OverlapIndices);
+		for (int32 OverlapIdx : OverlapIndices)
+		{
+			// skip if same box or not an actual overlap
+			const FBox& OtherBox = Boxes[OverlapIdx];
+			if (BoxIdx == OverlapIdx || !ExpandedBox.Intersect(OtherBox))
+			{
+				continue;
+			}
+
+			auto AddIfInRange = [AddVertTolerance](double Val, double RangeMin, double RangeMax, TArray<double>& AddTo)
+			{
+				if (Val > RangeMin + AddVertTolerance && Val < RangeMax - AddVertTolerance)
+				{
+					AddTo.Add(Val);
+				}
+			};
+
+			for (int32 Dim = 0; Dim < 3; ++Dim)
+			{
+				AddIfInRange(OtherBox.Min[Dim], Box.Min[Dim], Box.Max[Dim], Overlaps[Dim]);
+				AddIfInRange(OtherBox.Max[Dim], Box.Min[Dim], Box.Max[Dim], Overlaps[Dim]);
+			}
+		}
+
+		for (int32 Dim = 0; Dim < 3; ++Dim)
+		{
+			Overlaps[Dim].Add(Box.Min[Dim]);
+			Overlaps[Dim].Add(Box.Max[Dim]);
+			Overlaps[Dim].Sort();
+
+			double Last = Overlaps[Dim][0];
+			int32 FillIdx = 1;
+			for (int32 Idx = 1; Idx < Overlaps[Dim].Num(); ++Idx)
+			{
+				if (Overlaps[Dim][Idx] - Last >= AddVertTolerance)
+				{
+					Overlaps[Dim][FillIdx] = Overlaps[Dim][Idx];
+					Last = Overlaps[Dim][Idx];
+					++FillIdx;
+				}
+				// else overlap was too close to 'last', so we skip it
+			}
+			Overlaps[Dim].SetNum(FillIdx, false);
+			if (Overlaps[Dim].Num() == 1)
+			{
+				Overlaps[Dim].Add(Box.Max[Dim]);
+			}
+			else
+			{
+				// make sure to always end at the exact max
+				Overlaps[Dim].Last() = Box.Max[Dim];
+			}
+		}
+
+		// Helper to get a shared vertex, first by looking if we've already made it locally, then by checking the global hash grid
+		TMap<FIndex3i, int32> GridToVert; // A local map for all the vertices we've already found on the box
+		auto GetVertex = [this, &Overlaps, &GridToVert, &PosToVert, AddVertTolerance](int32 FaceDim, int32 UDim, int32 VDim, int32 FaceCoord, int32 U, int32 V)
+		{
+			FIndex3i Coord;
+			Coord[FaceDim] = FaceCoord;
+			Coord[UDim] = U;
+			Coord[VDim] = V;
+			int32* FoundV = GridToVert.Find(Coord);
+			if (FoundV)
+			{
+				return *FoundV;
+			}
+			FVector Pos(Overlaps[0][Coord.A], Overlaps[1][Coord.B], Overlaps[2][Coord.C]);
+			TPair<int32, double> Found = PosToVert.FindNearestInRadius(Pos, AddVertTolerance, [&](const int32& Idx) {return FVector::DistSquared(Pos, PlaneBoundaryVertices[Idx]);});
+			if (Found.Key != INDEX_NONE)
+			{
+				return Found.Key;
+			}
+
+			int32 NewV = PlaneBoundaryVertices.Add(Pos);
+			GridToVert.Add(Coord, NewV);
+			PosToVert.InsertPointUnsafe(NewV, Pos);
+			return NewV;
+		};
+
+		// Now that we have decided how to subdivide each dimension (w/ the Overlaps arrays), we need to construct each face (or link to the face, if it already exists)
+		for (int32 FaceDim = 0; FaceDim < 3; ++FaceDim)
+		{
+			for (int32 Side = 0; Side < 2; ++Side)
+			{
+				int32 UDim = (FaceDim + 1) % 3;
+				int32 VDim = (FaceDim + 2) % 3;
+				int32 FaceCoord = (Side == 1) ? (Overlaps[FaceDim].Num() - 1) : 0;
+				double FaceSign = double(Side * 2 - 1);
+				FVector Normal(0, 0, 0);
+				Normal[FaceDim] = FaceSign;
+				double PlaneW = FaceSign * (Side == 0 ? Min[FaceDim] : Max[FaceDim]);
+				for (int32 U = 0; U + 1 < Overlaps[UDim].Num(); ++U)
+				{
+					for (int32 V = 0; V + 1 < Overlaps[VDim].Num(); ++V)
+					{
+						int32 V00 = GetVertex(FaceDim, UDim, VDim, FaceCoord, U, V);
+						int32 V10 = GetVertex(FaceDim, UDim, VDim, FaceCoord, U + 1, V);
+						int32 V11 = GetVertex(FaceDim, UDim, VDim, FaceCoord, U + 1, V + 1);
+						int32 V01 = GetVertex(FaceDim, UDim, VDim, FaceCoord, U, V + 1);
+
+						FIntVector4 FaceKey(V00, V10, V11, V01);
+						int32* FoundPlane = VertsToPlane.Find(FaceKey);
+						if (FoundPlane)
+						{
+							PlaneCells[*FoundPlane].Value = BoxIdx;
+							continue;
+						}
+
+						TArray<int32> BoundaryVerts;
+						if (Side == 0)
+						{
+							BoundaryVerts = { V00, V10, V11, V01 };
+						}
+						else // reverse winding for the 'far' face
+						{
+							BoundaryVerts = { V10, V00, V01, V11 };
+						}
+						VertsToPlane.Add(FaceKey, AddPlane(FPlane(Normal, PlaneW), BoxIdx, -1, BoundaryVerts));
+					}
+				}
+			}
+		}
+	}
+
 }
 
 FPlanarCells::FPlanarCells(const FBox& Region, const FIntVector& CubesPerAxis)
@@ -544,12 +729,13 @@ int32 CutWithPlanarCells(
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection,
 	bool bIncludeOutsideCellInOutput,
-	float CheckDistanceAcrossOutsideCellForProximity,
-	bool bSetDefaultInternalMaterialsFromCollection
+	bool bSetDefaultInternalMaterialsFromCollection,
+	FProgressCancel* Progress,
+	FVector CellsOrigin
 )
 {
 	TArray<int32> TransformIndices { TransformIdx };
-	return CutMultipleWithPlanarCells(Cells, Source, TransformIndices, Grout, CollisionSampleSpacing, RandomSeed, TransformCollection, bIncludeOutsideCellInOutput, CheckDistanceAcrossOutsideCellForProximity, bSetDefaultInternalMaterialsFromCollection);
+	return CutMultipleWithPlanarCells(Cells, Source, TransformIndices, Grout, CollisionSampleSpacing, RandomSeed, TransformCollection, bIncludeOutsideCellInOutput, bSetDefaultInternalMaterialsFromCollection, Progress, CellsOrigin);
 }
 
 
@@ -562,31 +748,61 @@ int32 CutMultipleWithMultiplePlanes(
 	double CollisionSampleSpacing,
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection,
-	bool bSetDefaultInternalMaterialsFromCollection
+	bool bSetDefaultInternalMaterialsFromCollection,
+	FProgressCancel* Progress
 )
 {
+	FProgressCancel::FProgressScope PrepareScope = FProgressCancel::CreateScopeTo(Progress, .1, LOCTEXT("CutWithMultiplePlanesInit", "Preparing to cut with planes"));
 	int32 OrigNumGeom = Collection.FaceCount.Num();
 	int32 CurNumGeom = OrigNumGeom;
 
+	FGeometryCollectionMeshFacade CollectionMesh(Collection);
+	if (!CollectionMesh.IsValid())
+	{
+		return -1;
+	}
+
 	if (bSetDefaultInternalMaterialsFromCollection)
 	{
-		InternalSurfaceMaterials.SetUVScaleFromCollection(Collection);
+		InternalSurfaceMaterials.SetUVScaleFromCollection(CollectionMesh);
 	}
 
-	if (!Collection.HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
-	{
-		const FManagedArrayCollection::FConstructionParameters GeometryDependency(FGeometryCollection::GeometryGroup);
-		Collection.AddAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup, GeometryDependency);
-	}
-
+	// Compute cuts in a local space where the collection has been translated to the origin, for more consistent noise + better LWC accuracy
 	FTransform CollectionToWorld = TransformCollection.Get(FTransform::Identity);
+	FTransform CollectionToWorldCentered;
+	FVector Origin = PlanarCut_Locals::SeparateTranslation(CollectionToWorld, CollectionToWorldCentered);
 
-	FDynamicMeshCollection MeshCollection(&Collection, TransformIndices, CollectionToWorld);
+	// Move planes to the same local space
+	TArray<FPlane> CenteredPlanes;
+	CenteredPlanes.Reserve(Planes.Num());
+	for (const FPlane& Plane : Planes)
+	{
+		CenteredPlanes.Add(Plane.TranslateBy(-Origin));
+	}
+
+	FDynamicMeshCollection MeshCollection(&Collection, TransformIndices, CollectionToWorldCentered);
+
+	PrepareScope.Done();
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+	FProgressCancel::FProgressScope CutScope = FProgressCancel::CreateScopeTo(Progress, .99, LOCTEXT("CutWithMultiplePlanesBody", "Cutting with planes"));
 
 	int32 NewGeomStartIdx = -1;
-	NewGeomStartIdx = MeshCollection.CutWithMultiplePlanes(Planes, Grout, CollisionSampleSpacing, RandomSeed, &Collection, InternalSurfaceMaterials, bSetDefaultInternalMaterialsFromCollection);
+	NewGeomStartIdx = MeshCollection.CutWithMultiplePlanes(CenteredPlanes, Grout, CollisionSampleSpacing, RandomSeed, &Collection, InternalSurfaceMaterials, bSetDefaultInternalMaterialsFromCollection, Progress);
+
+	CutScope.Done();
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+	FProgressCancel::FProgressScope ReindexScope = FProgressCancel::CreateScopeTo(Progress, 1);
 
 	Collection.ReindexMaterials();
+
+	ReindexScope.Done();
+
 	return NewGeomStartIdx;
 }
 
@@ -600,49 +816,93 @@ int32 CutMultipleWithPlanarCells(
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection,
 	bool bIncludeOutsideCellInOutput,
-	float CheckDistanceAcrossOutsideCellForProximity,
-	bool bSetDefaultInternalMaterialsFromCollection
+	bool bSetDefaultInternalMaterialsFromCollection,
+	FProgressCancel* Progress,
+	FVector CellsOrigin
 )
 {
-	if (!Source.HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
-	{
-		const FManagedArrayCollection::FConstructionParameters GeometryDependency(FGeometryCollection::GeometryGroup);
-		Source.AddAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup, GeometryDependency);
-	}
-
+	FProgressCancel::FProgressScope CreateMeshCollectionScope = FProgressCancel::CreateScopeTo(Progress, .1);
 	if (bSetDefaultInternalMaterialsFromCollection)
 	{
 		Cells.InternalSurfaceMaterials.SetUVScaleFromCollection(Source);
 	}
 
 	FTransform CollectionToWorld = TransformCollection.Get(FTransform::Identity);
+	// Put Collection in the same local space as the Cells
+	FTransform CollectionToWorldCentered = CollectionToWorld * FTransform(-CellsOrigin);
 
-	FDynamicMeshCollection MeshCollection(&Source, TransformIndices, CollectionToWorld);
+	FDynamicMeshCollection MeshCollection(&Source, TransformIndices, CollectionToWorldCentered);
+	CreateMeshCollectionScope.Done();
+
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FProgressCancel::FProgressScope CellMeshScope = FProgressCancel::CreateScopeTo(Progress, .1);
 	double OnePercentExtend = MeshCollection.Bounds.MaxDim() * .01;
 	FRandomStream RandomStream(RandomSeed);
 	FCellMeshes CellMeshes(Source.NumUVLayers(), RandomStream, Cells, MeshCollection.Bounds, Grout, OnePercentExtend, bIncludeOutsideCellInOutput);
+	CellMeshScope.Done();
 
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FProgressCancel::FProgressScope CutScope = FProgressCancel::CreateScopeTo(Progress, .99);
 	int32 NewGeomStartIdx = -1;
-
 	NewGeomStartIdx = MeshCollection.CutWithCellMeshes(Cells.InternalSurfaceMaterials, Cells.PlaneCells, CellMeshes, &Source, bSetDefaultInternalMaterialsFromCollection, CollisionSampleSpacing);
+	CutScope.Done();
 
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FProgressCancel::FProgressScope ReindexScope = FProgressCancel::CreateScopeTo(Progress, 1);
 	Source.ReindexMaterials();
+	ReindexScope.Done();
 	return NewGeomStartIdx;
 }
 
-int32 CutWithMesh(
-	FMeshDescription* CuttingMesh,
-	FTransform CuttingMeshTransform,
-	FInternalSurfaceMaterials& InternalSurfaceMaterials,
+int32 SplitIslands(
 	FGeometryCollection& Collection,
 	const TArrayView<const int32>& TransformIndices,
 	double CollisionSampleSpacing,
-	const TOptional<FTransform>& TransformCollection,
-	bool bSetDefaultInternalMaterialsFromCollection
+	FProgressCancel* Progress
 )
 {
-	int32 NewGeomStartIdx = -1;
+	FProgressCancel::FProgressScope CreateMeshCollectionScope = FProgressCancel::CreateScopeTo(Progress, .1);
 
+	FTransform CollectionToWorld = FTransform::Identity;
+
+	FDynamicMeshCollection MeshCollection(&Collection, TransformIndices, CollectionToWorld);
+	CreateMeshCollectionScope.Done();
+
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FProgressCancel::FProgressScope SplitScope = FProgressCancel::CreateScopeTo(Progress, .99);
+	int32 NewGeomStartIdx = -1;
+	NewGeomStartIdx = MeshCollection.SplitAllIslands(&Collection, CollisionSampleSpacing);
+	SplitScope.Done();
+
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FProgressCancel::FProgressScope ReindexScope = FProgressCancel::CreateScopeTo(Progress, 1);
+	Collection.ReindexMaterials();
+	ReindexScope.Done();
+	return NewGeomStartIdx;
+}
+
+FDynamicMesh3 ConvertMeshDescriptionToCuttingDynamicMesh(const FMeshDescription* CuttingMesh, int32 NumUVLayers, FProgressCancel* Progress)
+{
 	// populate the BaseMesh with a conversion of the input mesh.
 	FMeshDescriptionToDynamicMesh Converter;
 	FDynamicMesh3 FullMesh; // full-featured conversion of the source mesh
@@ -662,9 +922,18 @@ int32 CutWithMesh(
 		Tangents.CopyToOverlays(FullMesh);
 	}
 
+	if (Progress && Progress->Cancelled())
+	{
+		return FDynamicMesh3(); // return empty mesh on cancel
+	}
+
 	FDynamicMesh3 DynamicCuttingMesh; // version of mesh that is split apart at seams to be compatible w/ geometry collection, with corresponding attributes set
-	int32 NumUVLayers = Collection.NumUVLayers();
 	SetGeometryCollectionAttributes(DynamicCuttingMesh, NumUVLayers);
+
+	if (Progress && Progress->Cancelled())
+	{
+		return FDynamicMesh3(); // return empty mesh on cancel
+	}
 
 	// Note: This conversion will likely go away, b/c I plan to switch over to doing the boolean operations on the fuller rep, but the code can be adapted
 	//		 to the dynamic mesh -> geometry collection conversion phase, as this same splitting will then need to happen there.
@@ -734,12 +1003,24 @@ int32 CutWithMesh(
 			}
 		}
 	}
+	return DynamicCuttingMesh;
+}
 
-	if (!Collection.HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
-	{
-		const FManagedArrayCollection::FConstructionParameters GeometryDependency(FGeometryCollection::GeometryGroup);
-		Collection.AddAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup, GeometryDependency);
-	}
+int32 CutWithMesh(
+	const FDynamicMesh3& DynamicCuttingMesh,
+	FTransform CuttingMeshTransform,
+	FInternalSurfaceMaterials& InternalSurfaceMaterials,
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	double CollisionSampleSpacing,
+	const TOptional<FTransform>& TransformCollection,
+	bool bSetDefaultInternalMaterialsFromCollection,
+	FProgressCancel* Progress
+)
+{
+	FProgressCancel::FProgressScope PrepareScope = FProgressCancel::CreateScopeTo(Progress, .1);
+
+	int32 NewGeomStartIdx = -1;
 
 	if (bSetDefaultInternalMaterialsFromCollection)
 	{
@@ -749,16 +1030,43 @@ int32 CutWithMesh(
 	ensureMsgf(!InternalSurfaceMaterials.NoiseSettings.IsSet(), TEXT("Noise settings not yet supported for mesh-based fracture"));
 
 	FTransform CollectionToWorld = TransformCollection.Get(FTransform::Identity);
+	FTransform CollectionToWorldCentered;
+	FVector Origin = PlanarCut_Locals::SeparateTranslation(CollectionToWorld, CollectionToWorldCentered);
 
-	FDynamicMeshCollection MeshCollection(&Collection, TransformIndices, CollectionToWorld);
-	FCellMeshes CellMeshes(NumUVLayers, DynamicCuttingMesh, InternalSurfaceMaterials, CuttingMeshTransform);
+	FTransform CuttingMeshTransformCentered = CuttingMeshTransform;
+	CuttingMeshTransformCentered.SetTranslation(CuttingMeshTransform.GetTranslation() - Origin);
+
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+
+	FDynamicMeshCollection MeshCollection(&Collection, TransformIndices, CollectionToWorldCentered);
+	int32 NumUVLayers = Collection.NumUVLayers();
+	FCellMeshes CellMeshes(NumUVLayers, DynamicCuttingMesh, InternalSurfaceMaterials, CuttingMeshTransformCentered);
 
 	TArray<TPair<int32, int32>> CellConnectivity;
 	CellConnectivity.Add(TPair<int32, int32>(0, -1)); // there's only one 'inside' cell (0), so all cut surfaces are connecting the 'inside' cell (0) to the 'outside' cell (-1)
 
+	PrepareScope.Done();
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+	FProgressCancel::FProgressScope CutScope = FProgressCancel::CreateScopeTo(Progress, .99);
+
 	NewGeomStartIdx = MeshCollection.CutWithCellMeshes(InternalSurfaceMaterials, CellConnectivity, CellMeshes, &Collection, bSetDefaultInternalMaterialsFromCollection, CollisionSampleSpacing);
 
+	CutScope.Done();
+	if (Progress && Progress->Cancelled())
+	{
+		return -1;
+	}
+	FProgressCancel::FProgressScope ReindexScope = FProgressCancel::CreateScopeTo(Progress, 1);
+
 	Collection.ReindexMaterials();
+	ReindexScope.Done();
+
 	return NewGeomStartIdx;
 }
 
@@ -824,7 +1132,7 @@ void FindBoneVolumes(
 		{
 			int32 TransformIdx = TransformIndicesArray[Idx];
 			int32 GeomIdx = Collection.TransformToGeometryIndex[TransformIdx];
-			if (GeomIdx == -1)
+			if (GeomIdx == -1 || !Collection.IsRigid(TransformIdx))
 			{
 				OutVolumes[Idx] = 0.0;
 			}
@@ -846,9 +1154,9 @@ void FilterBonesByVolume(
 {
 	OutSmallBones.Reset();
 
-	auto AddIdx = [&Collection, &Volumes, &Filter, &OutSmallBones](int32 TransformIdx)
+	auto AddIdx = [&Collection, &Volumes, &Filter, &OutSmallBones](int32 TransformIdx, double Volume)
 	{
-		if (Collection.TransformToGeometryIndex[TransformIdx] > -1 && Filter(Volumes[TransformIdx], TransformIdx))
+		if (Collection.IsRigid(TransformIdx) && Collection.TransformToGeometryIndex[TransformIdx] > -1 && Filter(Volume, TransformIdx))
 		{
 			OutSmallBones.Add(TransformIdx);
 		}
@@ -864,7 +1172,7 @@ void FilterBonesByVolume(
 		}
 		for (int32 TransformIdx = 0; TransformIdx < NumTransforms; TransformIdx++)
 		{
-			AddIdx(TransformIdx);
+			AddIdx(TransformIdx, Volumes[TransformIdx]);
 		}
 	}
 	else
@@ -873,9 +1181,10 @@ void FilterBonesByVolume(
 		{
 			return;
 		}
-		for (int32 TransformIdx : TransformIndices)
+		for (int32 Idx = 0; Idx < TransformIndices.Num(); ++Idx)
 		{
-			AddIdx(TransformIdx);
+			int32 TransformIdx = TransformIndices[Idx];
+			AddIdx(TransformIdx, Volumes[Idx]);
 		}
 	}
 }
@@ -912,7 +1221,7 @@ int32 MergeBones(
 
 	FGeometryCollectionProximityUtility ProximityUtility(&Collection);
 	ProximityUtility.UpdateProximity();
-	TManagedArray<TSet<int32>>& Proximity = Collection.GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
+	const TManagedArray<TSet<int32>>& Proximity = Collection.GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
 
 	// local array so we can populate it with all transforms if input was empty
 	TArray<int32> TransformIndices(TransformIndicesView);
@@ -1041,22 +1350,22 @@ int32 MergeBones(
 		return Center;
 	};
 
-	for (int32 TransformIdx : TransformIndices)
+	for (int32 Idx = 0; Idx < TransformIndices.Num(); ++Idx)
 	{
+		int32 TransformIdx = TransformIndices[Idx];
 		int32 GeomIdx = Collection.TransformToGeometryIndex[TransformIdx];
 		if (GeomIdx > -1 && Collection.IsRigid(TransformIdx))
 		{
 			CanMerge.Add(GeomIdx);
-			GeomToVol.Add(GeomIdx, Volumes[TransformIdx]);
+			GeomToVol.Add(GeomIdx, Volumes[Idx]);
 		}
 	}
 	for (int32 TransformIdx : SmallTransformIndices)
 	{
 		int32 GeomIdx = Collection.TransformToGeometryIndex[TransformIdx];
-		if (GeomIdx > -1 && Collection.IsRigid(TransformIdx))
+		if (GeomIdx > -1 && Collection.IsRigid(TransformIdx) && GeomToVol.Contains(GeomIdx))
 		{
 			TooSmalls.Add(GeomIdx);
-			GeomToVol.Add(GeomIdx, Volumes[TransformIdx]);
 		}
 		else
 		{
@@ -1186,7 +1495,6 @@ int32 MergeBones(
 	for (int32 UpMeshIdx = 0; UpMeshIdx < UpdateCollection.Meshes.Num(); UpMeshIdx++)
 	{
 		FMeshData& UpMeshData = UpdateCollection.Meshes[UpMeshIdx];
-		FTransformSRT3d UpMeshXF = (FTransformSRT3d)UpMeshData.FromCollection;
 		int32 UpGeoIdx = Collection.TransformToGeometryIndex[UpMeshData.TransformIndex];
 		FRemoveGroup& Group = RemoveGroups[GeomIdxToRemoveGroupIdx[UpGeoIdx]];
 		if (!ensure(Group.IsValid()))
@@ -1197,7 +1505,6 @@ int32 MergeBones(
 		for (int32 RmGeoIdx : Group.ToRemove)
 		{
 			FMeshData& RmMeshData = RemoveCollection.Meshes[GeoIdxToRmMeshIdx[RmGeoIdx]];
-			FTransformSRT3d RmMeshXF = (FTransformSRT3d)RmMeshData.FromCollection;
 			if (bUnionJoinedPieces)
 			{
 				FMeshBoolean Boolean(&UpMeshData.AugMesh, &RmMeshData.AugMesh, &UpMeshData.AugMesh, FMeshBoolean::EBooleanOp::Union);
@@ -1208,15 +1515,7 @@ int32 MergeBones(
 			else
 			{
 				FMeshIndexMappings IndexMaps_Unused;
-				MeshEditor.AppendMesh(&RmMeshData.AugMesh, IndexMaps_Unused,
-					[&UpMeshXF, &RmMeshXF](int32 Unused, const FVector3d& Pos)
-					{
-						return UpMeshXF.TransformPosition(RmMeshXF.InverseTransformPosition(Pos));
-					},
-					[&UpMeshXF, &RmMeshXF](int32 Unused, const FVector3d& Normal)
-					{
-						return UpMeshXF.TransformNormal(RmMeshXF.InverseTransformNormal(Normal));
-					});
+				MeshEditor.AppendMesh(&RmMeshData.AugMesh, IndexMaps_Unused);
 			}
 		}
 	}
@@ -1253,6 +1552,150 @@ int32 MergeBones(
 	Collection.RemoveElements(FGeometryCollection::TransformGroup, AllRemoveIndices, ProcessingParams);
 
 	return INDEX_NONE; // TODO: consider tracking smallest index of updated groups?  but no reason to do so currently
+}
+
+namespace
+{
+	void AddAllChildrenExceptEmbedded(FGeometryCollection& Collection, TSet<int32>& NodesSet, int32 Node)
+	{
+		if (Collection.SimulationType[Node] != FGeometryCollection::ESimulationTypes::FST_None)
+		{
+			NodesSet.Add(Node);
+			for (int32 Child : Collection.Children[Node])
+			{
+				AddAllChildrenExceptEmbedded(Collection, NodesSet, Child);
+			}
+		}
+	}
+}
+
+void MergeAllSelectedBones(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	bool bUnionJoinedPieces
+)
+{
+	if (TransformIndices.IsEmpty())
+	{
+		return;
+	}
+
+	if (!Collection.HasAttribute("Level", FGeometryCollection::TransformGroup))
+	{
+		FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(&Collection, -1);
+	}
+	const TManagedArray<int32>& Level = Collection.GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+	int32 TopLevelNode = TransformIndices[0];
+	int32 TopLevel = Level[TopLevelNode];
+
+	TSet<int32> AllNodesSet;
+	for (int32 Node : TransformIndices)
+	{
+		if (Level[Node] < TopLevel)
+		{
+			TopLevel = Level[Node];
+			TopLevelNode = Node;
+		}
+		AddAllChildrenExceptEmbedded(Collection, AllNodesSet, Node);
+	}
+	TArray<int32> AllNodes = AllNodesSet.Array();
+
+	if (AllNodes.Num() < 2)
+	{
+		return; // not enough pieces to need any merging
+	}
+
+	TArray<int32> AllUpdateIndices, AllRemoveIndices;
+	AllUpdateIndices.Add(TopLevelNode);
+	AllRemoveIndices.Reserve(AllNodes.Num() - 1);
+	for (int32 Node : AllNodes)
+	{
+		if (Node != TopLevelNode)
+		{
+			AllRemoveIndices.Add(Node);
+		}
+	}
+
+
+	AllRemoveIndices.Sort();
+	AllUpdateIndices.Sort();
+
+	FTransform CellsToWorld = FTransform::Identity;
+
+	FDynamicMeshCollection RemoveCollection(&Collection, AllRemoveIndices, CellsToWorld, true);
+	FDynamicMeshCollection UpdateCollection(&Collection, AllUpdateIndices, CellsToWorld, true);
+
+	using FMeshData = UE::PlanarCut::FDynamicMeshCollection::FMeshData;
+	bool bNeedAddGeometry = false;
+	if (UpdateCollection.Meshes.IsEmpty())
+	{
+		int32 NumUVLayers = Collection.NumUVLayers();
+		FMeshData* MeshData = new FMeshData(NumUVLayers);
+		MeshData->FromCollection = GeometryCollectionAlgo::GlobalMatrix(Collection.Transform, Collection.Parent, TopLevelNode);
+		MeshData->TransformIndex = TopLevelNode;
+		UpdateCollection.Meshes.Add(MeshData);
+
+		bNeedAddGeometry = true;
+	}
+	check(UpdateCollection.Meshes.Num() == 1);
+	FMeshData& UpMeshData = UpdateCollection.Meshes[0];
+	FDynamicMeshEditor MeshEditor(&UpMeshData.AugMesh);
+	for (int32 RmMeshIdx = 0; RmMeshIdx < RemoveCollection.Meshes.Num(); RmMeshIdx++)
+	{
+		FMeshData& RmMeshData = RemoveCollection.Meshes[RmMeshIdx];
+		if (bUnionJoinedPieces)
+		{
+			FMeshBoolean Boolean(&UpMeshData.AugMesh, &RmMeshData.AugMesh, &UpMeshData.AugMesh, FMeshBoolean::EBooleanOp::Union);
+			Boolean.bWeldSharedEdges = false;
+			Boolean.bSimplifyAlongNewEdges = true;
+			Boolean.Compute();
+		}
+		else
+		{
+			FMeshIndexMappings IndexMaps_Unused;
+			MeshEditor.AppendMesh(&RmMeshData.AugMesh, IndexMaps_Unused);
+		}
+	}
+
+	if (UpMeshData.AugMesh.TriangleCount() > 0)
+	{
+		if (bNeedAddGeometry)
+		{
+			if (Collection.TransformToGeometryIndex[TopLevelNode] == -1)
+			{
+				// Create a new geometry element to fill w/ the merged geometry
+				int32 GeometryIdx = Collection.AddElements(1, FGeometryCollection::GeometryGroup);
+				Collection.TransformToGeometryIndex[TopLevelNode] = GeometryIdx;
+				Collection.TransformIndex[GeometryIdx] = TopLevelNode;
+				Collection.FaceCount[GeometryIdx] = 0;
+				Collection.FaceStart[GeometryIdx] = Collection.Indices.Num();
+				Collection.VertexCount[GeometryIdx] = 0;
+				Collection.VertexStart[GeometryIdx] = Collection.Vertex.Num();
+			}
+		}
+		Collection.SimulationType[TopLevelNode] = FGeometryCollection::ESimulationTypes::FST_Rigid;
+		UpdateCollection.UpdateAllCollections(Collection);
+	}
+
+	TArray<int32> Children;
+	for (int32 RmTransformIdx : AllRemoveIndices)
+	{
+		for (int32 ChildIdx : Collection.Children[RmTransformIdx])
+		{
+			Children.Add(ChildIdx);
+		}
+	}
+	if (Children.Num())
+	{
+		GeometryCollectionAlgo::ParentTransforms(&Collection, TopLevelNode, Children);
+	}
+
+	// remove transforms for all geometry that was merged in
+	FManagedArrayCollection::FProcessingParameters ProcessingParams;
+#if !UE_BUILD_DEBUG
+	ProcessingParams.bDoValidation = false;
+#endif
+	Collection.RemoveElements(FGeometryCollection::TransformGroup, AllRemoveIndices, ProcessingParams);
 }
 
 
@@ -1347,3 +1790,5 @@ void ConvertToMeshDescription(
 	FDynamicMeshToMeshDescription Converter;
 	Converter.Convert(&CombinedMesh, MeshOut, true);
 }
+
+#undef LOCTEXT_NAMESPACE

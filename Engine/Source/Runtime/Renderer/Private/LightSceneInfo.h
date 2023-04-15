@@ -7,12 +7,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "RenderResource.h"
 #include "Math/GenericOctreePublic.h"
 #include "SceneManagement.h"
 #include "Math/GenericOctree.h"
 #include "PrimitiveSceneProxy.h"
 #include "Templates/UniquePtr.h"
+#include "SceneRendering.h"
 
 class FLightPrimitiveInteraction;
 class FLightSceneInfo;
@@ -72,7 +72,7 @@ struct FSortedLightSceneInfo
 		struct
 		{
 			// Note: the order of these members controls the light sort order!
-			// Currently bClusteredDeferredNotSupported is the MSB and LightType is LSB
+			// Currently bHandledByLumen is the MSB and LightType is LSB
 			/** The type of light. */
 			uint32 LightType : LightType_NumBits;
 			/** Whether the light has a texture profile. */
@@ -92,6 +92,8 @@ struct FSortedLightSceneInfo
 			 * Super-set of lights supporting tiled, so the tiled lights will end up in the first part of this range.
 			 */
 			uint32 bClusteredDeferredNotSupported : 1;
+			/** Whether the light should be handled by Lumen's Final Gather, these will be sorted to the end so they can be skipped */
+			uint32 bHandledByLumen : 1;
 		} Fields;
 		/** Sort key bits packed into an integer. */
 		int32 Packed;
@@ -121,16 +123,18 @@ struct FSortedLightSceneInfo
 /** 
  * Stores info about sorted lights and ranges. 
  * The sort-key in FSortedLightSceneInfo gives rise to the following order:
- *  [SimpleLights,Clustered,UnbatchedLights]
+ *  [SimpleLights,Clustered,UnbatchedLights,LumenLights]
  * Note that some shadowed lights can be included in the clustered pass when virtual shadow maps and one pass projection are used.
  */
 struct FSortedLightSetSceneInfo
 {
-	int SimpleLightsEnd;
-	int ClusteredSupportedEnd;
+	int32 SimpleLightsEnd;
+	int32 ClusteredSupportedEnd;
 
 	/** First light with shadow map or */
-	int UnbatchedLightStart;
+	int32 UnbatchedLightStart;
+
+	int32 LumenLightStart;
 
 	FSimpleLightArray SimpleLights;
 	TArray<FSortedLightSceneInfo, SceneRenderingAllocator> SortedLights;
@@ -175,7 +179,7 @@ public:
  * The information used to render a light.  This is the rendering thread's mirror of the game thread's ULightComponent.
  * FLightSceneInfo is internal to the renderer module and contains internal scene state.
  */
-class FLightSceneInfo : public FRenderResource
+class FLightSceneInfo
 {
 	friend class FLightPrimitiveInteraction;
 
@@ -250,7 +254,6 @@ public:
 
 	/** Initialization constructor. */
 	FLightSceneInfo(FLightSceneProxy* InProxy, bool InbVisible);
-	virtual ~FLightSceneInfo();
 
 	/** Adds the light to the scene. */
 	void AddToScene();
@@ -340,8 +343,7 @@ public:
 		return (uint32)LightSceneInfo->Id;
 	}
 
-	// Update the mobile movable point light uniform buffer before it is used for mobile base pass rendering.
-	void ConditionalUpdateMobileMovablePointLightUniformBuffer(const class FSceneRenderer* SceneRenderer);
+	bool SetupMobileMovableLocalLightShadowParameters(const FViewInfo& View, const TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos, FMobileMovableLocalLightShadowParameters& MobileMovableLocalLightShadowParameters) const;
 
 	bool ShouldRecordShadowSubjectsForMobile() const;
 };

@@ -3,6 +3,8 @@
 #include "Units/Debug/RigUnit_DebugLineStrip.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DebugLineStrip)
+
 FRigUnit_DebugLineStrip_Execute()
 {
 	FRigUnit_DebugLineStripItemSpace::StaticExecute(
@@ -15,6 +17,21 @@ FRigUnit_DebugLineStrip_Execute()
 		bEnabled,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DebugLineStrip::GetUpgradeInfo() const
+{
+	FRigUnit_DebugLineStripItemSpace NewNode;
+	NewNode.Points = Points;
+	NewNode.Color = Color;
+	NewNode.Thickness = Thickness;
+	NewNode.Space = FRigElementKey(Space, ERigElementType::Bone);
+	NewNode.WorldOffset = WorldOffset;
+	NewNode.bEnabled = bEnabled;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Space"), TEXT("Space.Name"));
+	return Info;
 }
 
 FRigUnit_DebugLineStripItemSpace_Execute()
@@ -46,3 +63,4 @@ FRigUnit_DebugLineStripItemSpace_Execute()
 		Context.DrawInterface->DrawLineStrip(WorldOffset, TArrayView<const FVector>(Points.GetData(), Points.Num()), Color, Thickness);
 	}
 }
+

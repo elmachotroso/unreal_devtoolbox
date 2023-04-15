@@ -16,6 +16,8 @@
 #include "Features/IPluginsEditorFeature.h"
 #include "PluginBrowserModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PluginMetadataObject)
+
 void FPluginReferenceMetadata::PopulateFromDescriptor(const FPluginReferenceDescriptor& InDescriptor)
 {
 	Name = InDescriptor.Name;
@@ -51,6 +53,8 @@ void UPluginMetadataObject::PopulateFromPlugin(TSharedPtr<IPlugin> InPlugin)
 	SupportURL = InDescriptor.SupportURL;
 	bCanContainContent = InDescriptor.bCanContainContent;
 	bIsBetaVersion = InDescriptor.bIsBetaVersion;
+	bIsEnabledByDefault = (InDescriptor.EnabledByDefault == EPluginEnabledByDefault::Enabled);
+	bExplicitlyLoaded = InDescriptor.bExplicitlyLoaded;
 
 	Plugins.Reset(InDescriptor.Plugins.Num());
 	for (const FPluginReferenceDescriptor& PluginRefDesc : InDescriptor.Plugins)
@@ -212,3 +216,4 @@ void FPluginMetadataCustomization::CustomizeDetails(IDetailLayoutBuilder& Detail
 		}
 	}
 }
+

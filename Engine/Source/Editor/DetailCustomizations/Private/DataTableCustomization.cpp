@@ -1,13 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataTableCustomization.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "Containers/Map.h"
 #include "DataTableEditorUtils.h"
+#include "Delegates/Delegate.h"
+#include "DetailWidgetRow.h"
 #include "Editor.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Engine/DataTable.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/UIAction.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
 #include "PropertyCustomizationHelpers.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SToolTip;
 
 #define LOCTEXT_NAMESPACE "FDataTableCustomizationLayout"
 
@@ -19,7 +38,7 @@ void FDataTableCustomizationLayout::CustomizeHeader(TSharedRef<class IPropertyHa
 	{
 		const FString& RowType = StructPropertyHandle->GetMetaData(TEXT("RowType"));
 		RowTypeFilter = FName(*RowType);
-		RowFilterStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *RowTypeFilter.ToString());
+		RowFilterStruct = UClass::TryFindTypeSlow<UScriptStruct>(RowType);
 	}
 
 	FSimpleDelegate OnDataTableChangedDelegate = FSimpleDelegate::CreateSP(this, &FDataTableCustomizationLayout::OnDataTableChanged);
@@ -28,7 +47,7 @@ void FDataTableCustomizationLayout::CustomizeHeader(TSharedRef<class IPropertyHa
 	HeaderRow
 	.NameContent()
 	[
-		InStructPropertyHandle->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+		InStructPropertyHandle->CreatePropertyNameWidget()
 	];
 
 	FDataTableEditorUtils::AddSearchForReferencesContextMenu(HeaderRow, FExecuteAction::CreateSP(this, &FDataTableCustomizationLayout::OnSearchForReferences));
@@ -191,16 +210,16 @@ bool FDataTableCustomizationLayout::ShouldFilterAsset(const struct FAssetData& A
 	if (!RowTypeFilter.IsNone())
 	{
 		static const FName RowStructureTagName("RowStructure");
-		FName RowStructure;
-		if (AssetData.GetTagValue<FName>(RowStructureTagName, RowStructure))
+		FString RowStructure;
+		if (AssetData.GetTagValue<FString>(RowStructureTagName, RowStructure))
 		{
-			if (RowStructure == RowTypeFilter)
+			if (RowStructure == RowTypeFilter.ToString())
 			{
 				return false;
 			}
 
 			// This is slow, but at the moment we don't have an alternative to the short struct name search
-			UScriptStruct* RowStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *RowStructure.ToString());
+			UScriptStruct* RowStruct = UClass::TryFindTypeSlow<UScriptStruct>(RowStructure);
 			if (RowStruct && RowFilterStruct && RowStruct->IsChildOf(RowFilterStruct))
 			{
 				return false;

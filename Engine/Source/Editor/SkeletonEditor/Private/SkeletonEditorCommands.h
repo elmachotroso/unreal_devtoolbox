@@ -2,15 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 class FSkeletonEditorCommands : public TCommands<FSkeletonEditorCommands>
 {
 public:
 	FSkeletonEditorCommands()
-		: TCommands<FSkeletonEditorCommands>(TEXT("SkeletonEditor"), NSLOCTEXT("Contexts", "SkeletonEditor", "Skeleton Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FSkeletonEditorCommands>(TEXT("SkeletonEditor"), NSLOCTEXT("Contexts", "SkeletonEditor", "Skeleton Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 

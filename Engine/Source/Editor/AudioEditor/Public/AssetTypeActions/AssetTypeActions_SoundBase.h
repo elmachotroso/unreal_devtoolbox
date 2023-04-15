@@ -2,11 +2,23 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "AssetTypeActions_Base.h"
+#include "AssetTypeCategories.h"
+#include "Containers/Array.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "IAssetTypeActions.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-struct FAssetData;
+class SWidget;
+class UClass;
+class UObject;
 class USoundBase;
+struct FAssetData;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class AUDIOEDITOR_API FAssetTypeActions_SoundBase : public FAssetTypeActions_Base
@@ -16,7 +28,6 @@ public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_SoundBase", "Sound Base"); }
 	virtual FColor GetTypeColor() const override { return FColor(97, 85, 212); }
 	virtual UClass* GetSupportedClass() const override;
-	virtual bool HasActions ( const TArray<UObject*>& InObjects ) const override { return true; }
 	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) override;
 	virtual bool AssetsActivatedOverride(const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType) override;
 	virtual uint32 GetCategories() override { return EAssetTypeCategories::Sounds; }

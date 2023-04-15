@@ -101,9 +101,11 @@ bool FSequencerPlaylistItemPlayer_Sequence::Play(USequencerPlaylistItem* Item)
 
 	const FQualifiedFrameTime GlobalTime = Sequencer->GetGlobalTime();
 	const FFrameNumber StartFrame = GlobalTime.Time.FloorToFrame();
+	const int32 MinDuration = 1;
 	const int32 MaxDuration = TNumericLimits<int32>::Max() - StartFrame.Value - 1;
-	const int32 Duration = FMath::Min(MaxDuration,
-		(SingleLoopDuration * FMath::Max(1, SequenceItem->NumLoops + 1)).FloorToFrame().Value);
+	const int32 Duration = FMath::Clamp(
+		(SingleLoopDuration * FMath::Max(1, SequenceItem->NumLoops + 1)).FloorToFrame().Value,
+		MinDuration, MaxDuration);
 
 	ItemState.PlayingUntil_RootTicks = FMath::Max(StartFrame.Value + Duration, ItemState.PlayingUntil_RootTicks);
 
@@ -134,10 +136,12 @@ bool FSequencerPlaylistItemPlayer_Sequence::Play(USequencerPlaylistItem* Item)
 
 bool FSequencerPlaylistItemPlayer_Sequence::Stop(USequencerPlaylistItem* Item)
 {
+	bool bSequenceWasModified = false;
+
 	USequencerPlaylistItem_Sequence* SequenceItem = CastChecked<USequencerPlaylistItem_Sequence>(Item);
 	if (!SequenceItem || !SequenceItem->Sequence)
 	{
-		return false;
+		return bSequenceWasModified;
 	}
 
 	FItemState& ItemState = ItemStates.FindOrAdd(Item);
@@ -145,12 +149,12 @@ bool FSequencerPlaylistItemPlayer_Sequence::Stop(USequencerPlaylistItem* Item)
 
 	if (ItemState.WeakPlaySections.Num() == 0 && HoldSection == nullptr)
 	{
-		return false;
+		return bSequenceWasModified;
 	}
 
 	if (HoldSection)
 	{
-		EndSection(HoldSection);
+		bSequenceWasModified |= EndSection(HoldSection);
 		ItemState.WeakHoldSection.Reset();
 	}
 
@@ -158,7 +162,7 @@ bool FSequencerPlaylistItemPlayer_Sequence::Stop(USequencerPlaylistItem* Item)
 	{
 		if (UMovieSceneSubSection* PlaySection = WeakPlaySection.Get())
 		{
-			EndSection(PlaySection);
+			bSequenceWasModified |= EndSection(PlaySection);
 		}
 	}
 
@@ -170,7 +174,7 @@ bool FSequencerPlaylistItemPlayer_Sequence::Stop(USequencerPlaylistItem* Item)
 		ItemState.PlayingUntil_RootTicks = FMath::Min(Now.Value, ItemState.PlayingUntil_RootTicks);
 	}
 
-	return true;
+	return bSequenceWasModified;
 }
 
 
@@ -332,7 +336,7 @@ UMovieSceneSubTrack* FSequencerPlaylistItemPlayer_Sequence::GetOrCreateWorkingTr
 	{
 		FolderToUse = NewObject<UMovieSceneFolder>(RootScene, NAME_None, RF_Transactional);
 		FolderToUse->SetFolderName(PlaylistFolderName);
-		RootScene->GetRootFolders().Add(FolderToUse);
+		//RootScene->GetRootFolders().Add(FolderToUse);
 	}
 
 	FolderToUse->AddChildMasterTrack(NewWorkingTrack);
@@ -342,22 +346,22 @@ UMovieSceneSubTrack* FSequencerPlaylistItemPlayer_Sequence::GetOrCreateWorkingTr
 }
 
 
-void FSequencerPlaylistItemPlayer_Sequence::EndSection(UMovieSceneSection* Section)
+bool FSequencerPlaylistItemPlayer_Sequence::EndSection(UMovieSceneSection* Section)
 {
+	bool bSequenceWasModified = false;
+
 	if (!ensure(Section))
 	{
-		return;
+		return bSequenceWasModified;
 	}
 
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (!ensure(Sequencer))
 	{
-		return;
+		return bSequenceWasModified;
 	}
 
 	ULevelSequence* RootSequence = Cast<ULevelSequence>(Sequencer->GetRootMovieSceneSequence());
-
-	RootSequence->Modify();
 
 	UMovieScene* SectionScene = Section->GetTypedOuter<UMovieScene>();
 	check(SectionScene);
@@ -366,6 +370,9 @@ void FSequencerPlaylistItemPlayer_Sequence::EndSection(UMovieSceneSection* Secti
 	const FFrameTime SectionNow = GlobalTime.ConvertTo(SectionScene->GetTickResolution());
 	if (Section->IsTimeWithinSection(SectionNow.FloorToFrame()))
 	{
+		RootSequence->Modify();
+		bSequenceWasModified = true;
+
 		Section->SetEndFrame(TRangeBound<FFrameNumber>::Exclusive(SectionNow.FloorToFrame()));
 
 		// Remove degenerate sections. This can happen if we reset then stop a held item while paused.
@@ -375,7 +382,7 @@ void FSequencerPlaylistItemPlayer_Sequence::EndSection(UMovieSceneSection* Secti
 			{
 				SectionTrack->Modify();
 				SectionTrack->RemoveSection(*Section);
-				return;
+				return bSequenceWasModified;
 			}
 		}
 
@@ -396,6 +403,8 @@ void FSequencerPlaylistItemPlayer_Sequence::EndSection(UMovieSceneSection* Secti
 			}
 		}
 	}
+
+	return bSequenceWasModified;
 }
 
 

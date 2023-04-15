@@ -3,10 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "PropertyBag.h"
 #include "StructUtilsTestTypes.generated.h"
 
 USTRUCT()
-struct FTestStructSimple
+struct FTestStructSimpleBase
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FTestStructSimple : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -32,9 +39,8 @@ struct FTestStructComplex
 	TArray<FString> StringArray;
 };
 
-
 USTRUCT()
-struct FTestStructSimple1
+struct FTestStructSimple1 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -45,7 +51,7 @@ struct FTestStructSimple1
 };
 
 USTRUCT()
-struct FTestStructSimple2
+struct FTestStructSimple2 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -56,7 +62,7 @@ struct FTestStructSimple2
 };
 
 USTRUCT()
-struct FTestStructSimple3
+struct FTestStructSimple3 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -67,7 +73,7 @@ struct FTestStructSimple3
 };
 
 USTRUCT()
-struct FTestStructSimple4
+struct FTestStructSimple4 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -78,7 +84,7 @@ struct FTestStructSimple4
 };
 
 USTRUCT()
-struct FTestStructSimple5
+struct FTestStructSimple5 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -89,7 +95,7 @@ struct FTestStructSimple5
 };
 
 USTRUCT()
-struct FTestStructSimple6
+struct FTestStructSimple6 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -100,7 +106,7 @@ struct FTestStructSimple6
 };
 
 USTRUCT()
-struct FTestStructSimple7
+struct FTestStructSimple7 : public FTestStructSimpleBase
 {
 	GENERATED_BODY()
 	
@@ -108,4 +114,46 @@ struct FTestStructSimple7
 	
 	UPROPERTY()
 	float Float = 0.0f;
+};
+
+UCLASS()
+class UBagTestObject1 : public UObject
+{
+	GENERATED_BODY()
+};
+
+UCLASS()
+class UBagTestObject2 : public UObject
+{
+	GENERATED_BODY()
+};
+
+UCLASS()
+class UBagTestObject1Derived : public UBagTestObject1
+{
+	GENERATED_BODY()
+};
+
+UENUM()
+enum class EPropertyBagTest1 : uint8
+{
+	Foo,
+	Bar,
+};
+
+UENUM()
+enum class EPropertyBagTest2 : uint8
+{
+	Bingo,
+	Bongo,
+};
+
+UCLASS()
+class UTestObjectWithPropertyBag : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	FInstancedPropertyBag Bag;
 };

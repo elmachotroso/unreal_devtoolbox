@@ -19,7 +19,7 @@ enum EChaosAsyncVehicleDataType : int8
 	AsyncDefault,
 };
 
-struct FWheelsOutput
+struct CHAOSVEHICLES_API FWheelsOutput
 {
 	FWheelsOutput()
 		: InContact(false)
@@ -38,6 +38,9 @@ struct FWheelsOutput
 		, SuspensionOffset(0.f)
 		, SpringForce(0.f)
 		, NormalizedSuspensionLength(0.f)
+		, bBlockingHit(false)
+		, ImpactPoint(FVector::ZeroVector)
+		, PhysMaterial(nullptr)
 	{
 	}
 
@@ -63,12 +66,15 @@ struct FWheelsOutput
 	float SpringForce;
 	float NormalizedSuspensionLength;
 
+	bool bBlockingHit;
+	FVector ImpactPoint;
+	TWeakObjectPtr<UPhysicalMaterial> PhysMaterial;
 };
 
 /**
  * Per Vehicle Output State from Physics Thread to Game Thread                            
  */
-struct FPhysicsVehicleOutput
+struct CHAOSVEHICLES_API FPhysicsVehicleOutput
 {
 	FPhysicsVehicleOutput()
 		: CurrentGear(0)
@@ -92,12 +98,12 @@ struct FPhysicsVehicleOutput
 /**
  * Per Vehicle Input State from Game Thread to Physics Thread
  */                             
-struct FChaosVehicleAsyncInput
+struct CHAOSVEHICLES_API FChaosVehicleAsyncInput
 {
 	const EChaosAsyncVehicleDataType Type;
 	UChaosVehicleMovementComponent* Vehicle;
 	
-	FSingleParticlePhysicsProxy* Proxy;
+	Chaos::FSingleParticlePhysicsProxy* Proxy;
 
 	/** 
 	* Vehicle simulation running on the Physics Thread
@@ -133,7 +139,7 @@ struct FChaosVehicleManagerAsyncInput : public Chaos::FSimCallbackInput
 /**
  * Async Output Data
  */
-struct FChaosVehicleAsyncOutput
+struct CHAOSVEHICLES_API FChaosVehicleAsyncOutput
 {
 	const EChaosAsyncVehicleDataType Type;
 	bool bValid;	// indicates no work was done
@@ -165,7 +171,7 @@ struct FChaosVehicleManagerAsyncOutput : public Chaos::FSimCallbackOutput
 /**
  * Async callback from the Physics Engine where we can perform our vehicle simulation
  */
-class FChaosVehicleManagerAsyncCallback : public Chaos::TSimCallbackObject<FChaosVehicleManagerAsyncInput, FChaosVehicleManagerAsyncOutput>
+class CHAOSVEHICLES_API FChaosVehicleManagerAsyncCallback : public Chaos::TSimCallbackObject<FChaosVehicleManagerAsyncInput, FChaosVehicleManagerAsyncOutput, Chaos::ESimCallbackOptions::Presimulate | Chaos::ESimCallbackOptions::ContactModification>
 {
 private:
 	virtual void OnPreSimulate_Internal() override;

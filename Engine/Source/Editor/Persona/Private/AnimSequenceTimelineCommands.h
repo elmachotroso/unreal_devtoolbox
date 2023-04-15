@@ -3,8 +3,14 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "EditorStyleSet.h"
 #include "Framework/Commands/Commands.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /**
  * Defines commands for the anim sequence timeline editor
@@ -18,16 +24,16 @@ public:
 			TEXT("AnimSequenceCurveEditor"),
 			NSLOCTEXT("Contexts", "AnimSequenceTimelineEditor", "Anim Sequence Timeline Editor"),
 			NAME_None,
-			FEditorStyle::GetStyleSetName()
+			FAppStyle::GetAppStyleSetName()
 		)
 	{
 	}
 
 	TSharedPtr<FUICommandInfo> EditSelectedCurves;
-
-	TSharedPtr<FUICommandInfo> RemoveSelectedCurves;
-
+	
 	TSharedPtr<FUICommandInfo> AddNotifyTrack;
+	
+	TSharedPtr<FUICommandInfo> PasteDataIntoCurve;
 
 	TSharedPtr<FUICommandInfo> InsertNotifyTrack;
 
@@ -49,6 +55,8 @@ public:
 
 	TSharedPtr<FUICommandInfo> RemoveAllCurves;
 
+	TSharedPtr<FUICommandInfo> CopySelectedCurveNames;
+	
 	TSharedPtr<FUICommandInfo> DisplaySeconds;
 
 	TSharedPtr<FUICommandInfo> DisplayFrames;
@@ -64,7 +72,6 @@ public:
 	TSharedPtr<FUICommandInfo> SnapToMontageSections;
 
 	TSharedPtr<FUICommandInfo> SnapToCompositeSegments;
-
 public:
 	virtual void RegisterCommands() override;
 };

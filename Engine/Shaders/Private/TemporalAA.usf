@@ -102,7 +102,13 @@
 			#define AA_SAMPLE_CACHE_METHOD (AA_SAMPLE_CACHE_METHOD_LDS)
 		#endif
 	#endif
-
+#elif TAA_PASS_CONFIG == 7 // Used for Hair
+	#define AA_HISTORY_PAYLOAD (HISTORY_PAYLOAD_RGB_OPACITY)
+	#define AA_DYNAMIC 1
+	#define AA_FILTERED 0
+	#define AA_LERP 3
+	#define AA_MANUALLY_CLAMP_HISTORY_UV 1
+	#define AA_YCOCG 0
 #elif TAA_PASS_CONFIG == 3 // Used for SSR
 	#define AA_HISTORY_PAYLOAD (HISTORY_PAYLOAD_RGB_OPACITY)
 	#define AA_DYNAMIC 1
@@ -492,8 +498,12 @@ SamplerState InputSceneMetadataSampler;
 Texture2D SceneDepthTexture;
 SamplerState SceneDepthTextureSampler;
 
+#if COMPILER_GLSL_ES3_1
+Texture2D<uint4> GBufferVelocityTextureSRV;
+#else
 Texture2D GBufferVelocityTexture;
 SamplerState GBufferVelocityTextureSampler;
+#endif
 
 Texture2D<uint2> StencilTexture;
 
@@ -539,6 +549,26 @@ float UpscaleFactor; // = 1 / ScreenPercentage
 
 
 //------------------------------------------------------- FUNCTIONS
+
+#if COMPILER_SUPPORTS_HLSL2021
+
+template<typename T>
+void CorrectExposure(inout T X)
+{
+	X *= HistoryPreExposureCorrection;
+}
+
+#endif
+
+ENCODED_VELOCITY_TYPE SampleVelocityTexture(float2 BufferUV, int2 PixelOffset = int2(0, 0))
+{
+#if COMPILER_GLSL_ES3_1
+	int2 Coord = int2(BufferUV * InputSceneColorSize.xy) + PixelOffset;
+	return GBufferVelocityTextureSRV.Load(int3(Coord, 0));
+#else
+	return GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, BufferUV, 0, PixelOffset);
+#endif
+}
 
 float3 RGBToYCoCg( float3 RGB )
 {
@@ -617,7 +647,7 @@ float HistoryClip(float3 History, float3 Filtered, float3 NeighborMin, float3 Ne
 
 	float3 RayOrigin = History;
 	float3 RayDir = Filtered - History;
-	RayDir = abs( RayDir ) < (1.0/65536.0) ? (1.0/65536.0) : RayDir;
+	RayDir = select(abs( RayDir ) < (1.0/65536.0), (1.0/65536.0), RayDir);
 	float3 InvRayDir = rcp( RayDir );
 
 	float3 MinIntersect = (BoxMin - RayOrigin) * InvRayDir;
@@ -765,7 +795,7 @@ struct FTAAInputParameters
 
 // Intermediary results for major function to conveniently share values between them.
 //
-// it is allowed to passdown this guy to major function with still unitialized variables.
+// it is allowed to passdown this to major function with still unitialized variables.
 struct FTAAIntermediaryResult
 {
 	// The filtered input.
@@ -1858,7 +1888,11 @@ FTAAHistoryPayload SampleHistory(in float2 HistoryScreenPosition)
 		HistoryPayload.CocRadius = RawHistory0.a;
 	#endif
 
-	HistoryPayload.Color.rgb *= HistoryPreExposureCorrection;
+	#if COMPILER_SUPPORTS_HLSL2021
+		CorrectExposure(HistoryPayload.Color.rgb);
+	#else
+		HistoryPayload.Color.rgb *= HistoryPreExposureCorrection;
+	#endif
 
 	HistoryPayload.Color = TransformSceneColor(HistoryPayload.Color);
 
@@ -2032,7 +2066,7 @@ FTAAHistoryPayload TemporalAASample(uint2 GroupId, uint2 GroupThreadId, uint Gro
 
 		#if AA_DYNAMIC
 		{
-			float4 EncodedVelocity = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV + VelocityOffset, 0);
+			ENCODED_VELOCITY_TYPE EncodedVelocity = SampleVelocityTexture(InputParams.NearestBufferUV + VelocityOffset);
 			bool DynamicN = EncodedVelocity.x > 0.0;
 			if(DynamicN)
 			{
@@ -2092,11 +2126,11 @@ FTAAHistoryPayload TemporalAASample(uint2 GroupId, uint2 GroupThreadId, uint Gro
 			#error AA_DYNAMIC_ANTIGHOST requires AA_DYNAMIC
 		#endif
 		// TODO: try a 2x2 for AA_UPSAMPLE
-		bool Dynamic1 = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV, 0, int2( 0, -1)).x > 0;
-		bool Dynamic3 = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV, 0, int2(-1,  0)).x > 0;
-		Dynamic4 = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV, 0).x > 0;
-		bool Dynamic5 = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV, 0, int2( 1,  0)).x > 0;
-		bool Dynamic7 = GBufferVelocityTexture.SampleLevel(GBufferVelocityTextureSampler, InputParams.NearestBufferUV, 0, int2( 0,  1)).x > 0;
+		bool Dynamic1 = SampleVelocityTexture(InputParams.NearestBufferUV, int2( 0, -1)).x > 0;
+		bool Dynamic3 = SampleVelocityTexture(InputParams.NearestBufferUV, int2(-1,  0)).x > 0;
+		Dynamic4 = SampleVelocityTexture(InputParams.NearestBufferUV).x > 0;
+		bool Dynamic5 = SampleVelocityTexture(InputParams.NearestBufferUV, int2( 1,  0)).x > 0;
+		bool Dynamic7 = SampleVelocityTexture(InputParams.NearestBufferUV, int2( 0,  1)).x > 0;
 
 		bool Dynamic = Dynamic1 || Dynamic3 || Dynamic4 || Dynamic5 || Dynamic7;
 		IgnoreHistory = IgnoreHistory || (!Dynamic && History.Color.a > 0);

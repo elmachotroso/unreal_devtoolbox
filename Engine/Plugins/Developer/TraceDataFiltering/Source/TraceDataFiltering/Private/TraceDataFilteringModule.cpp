@@ -2,6 +2,7 @@
 
 #include "TraceDataFilteringModule.h"
 
+#include "HAL/LowLevelMemTracker.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "Features/IModularFeatures.h"
@@ -10,12 +11,12 @@
 #include "Templates/SharedPointer.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "WorkspaceMenuStructure.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 
 #include "TraceServices/ModuleService.h"
-#include "TraceServices/AnalysisService.h"
 #include "TraceServices/ITraceServicesModule.h"
 #include "Insights/IUnrealInsightsModule.h"
 
@@ -30,15 +31,19 @@ FString FTraceFilteringModule::TraceFiltersIni;
 
 void FTraceFilteringModule::StartupModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
+
 	FEventFilterStyle::Initialize();
 
-	FConfigCacheIni::LoadGlobalIniFile(TraceFiltersIni, TEXT("TraceDataFilters"));
+	FConfigContext::ReadIntoGConfig().Load(TEXT("TraceDataFilters"), TraceFiltersIni);
 
 #if WITH_EDITOR
 	const FSlateIcon TabIcon(FEventFilterStyle::GetStyleSetName(), "EventFilter.TabIcon");
 	FTabSpawnerEntry& FilterTabSpawnerEntry = FGlobalTabmanager::Get()->RegisterNomadTabSpawner(FTraceFilteringModule::InsightsFilterTabName,
 		FOnSpawnTab::CreateLambda([](const FSpawnTabArgs& Args)
 		{
+			LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
+
 			const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 				.TabRole(ETabRole::NomadTab);
 
@@ -62,7 +67,10 @@ void FTraceFilteringModule::StartupModule()
 
 void FTraceFilteringModule::ShutdownModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
+
 	FEventFilterStyle::Shutdown();
+
 #if WITH_EDITOR
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(FTraceFilteringModule::InsightsFilterTabName);
 #else
@@ -84,6 +92,8 @@ void FTraceFilteringModule::RegisterTimingProfilerLayoutExtensions(FInsightsMajo
 	MinorTabConfig.WorkspaceGroup = Category;
 	MinorTabConfig.OnSpawnTab = FOnSpawnTab::CreateLambda([](const FSpawnTabArgs& Args)
 	{
+		LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
+
 		const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 			.TabRole(ETabRole::NomadTab);
 

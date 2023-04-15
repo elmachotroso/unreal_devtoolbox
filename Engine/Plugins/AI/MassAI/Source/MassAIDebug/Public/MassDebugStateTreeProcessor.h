@@ -5,8 +5,7 @@
 #include "MassProcessor.h"
 #include "MassDebugStateTreeProcessor.generated.h"
 
-class UMassEntitySubsystem;
-struct FMassStateTreeFragment;
+struct FMassEntityManager;
 struct FMassEntityQuery;
 struct FMassExecutionContext;
 
@@ -19,7 +18,7 @@ protected:
 	UMassDebugStateTreeProcessor();
 
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 };

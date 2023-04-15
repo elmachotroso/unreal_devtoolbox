@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/AsyncTaskNotification.h"
+
+#include "Misc/AssertionMacros.h"
 #include "Misc/CoreAsyncTaskNotificationImpl.h"
 
 FAsyncTaskNotification::FAsyncTaskNotification(const FAsyncTaskNotificationConfig& InConfig)
@@ -12,22 +14,21 @@ FAsyncTaskNotification::FAsyncTaskNotification(const FAsyncTaskNotificationConfi
 
 FAsyncTaskNotification::~FAsyncTaskNotification()
 {
-	delete NotificationImpl;
 }
 
 FAsyncTaskNotification::FAsyncTaskNotification(FAsyncTaskNotification&& InOther)
 	: NotificationImpl(InOther.NotificationImpl)
 {
-	InOther.NotificationImpl = nullptr;
+	InOther.NotificationImpl.Reset();
 }
 
 FAsyncTaskNotification& FAsyncTaskNotification::operator=(FAsyncTaskNotification&& InOther)
 {
 	if (this != &InOther)
 	{
-		delete NotificationImpl;
+		NotificationImpl.Reset();
 		NotificationImpl = InOther.NotificationImpl;
-		InOther.NotificationImpl = nullptr;
+		InOther.NotificationImpl.Reset();
 	}
 	return *this;
 }

@@ -6,6 +6,8 @@ using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
 using async_enumerable_dotnet;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Implementation;
 using Horde.Storage.Implementation.TransactionLog;
 using Jupiter;
@@ -20,35 +22,34 @@ namespace Horde.Storage.Controllers
 {
     [ApiController]
     [Route("api/v1/replication-log")]
+    [InternalApiFilter]
+    [Authorize]
     public class ReplicationLogController : ControllerBase
     {
         private readonly IServiceProvider _provider;
-        private readonly IAuthorizationService _authorizationService;
+        private readonly RequestHelper _requestHelper;
         private readonly IReplicationLog _replicationLog;
         private readonly IOptionsMonitor<SnapshotSettings> _snapshotSettings;
 
-        public ReplicationLogController(IServiceProvider provider, IAuthorizationService authorizationService, IReplicationLog replicationLog, IOptionsMonitor<SnapshotSettings> snapshotSettings)
+        public ReplicationLogController(IServiceProvider provider, RequestHelper requestHelper, IReplicationLog replicationLog, IOptionsMonitor<SnapshotSettings> snapshotSettings)
         {
             _provider = provider;
-            _authorizationService = authorizationService;
+            _requestHelper = requestHelper;
             _replicationLog = replicationLog;
             _snapshotSettings = snapshotSettings;
         }
 
-
         [HttpGet("snapshots/{ns}")]
         [ProducesDefaultResponseType]
         [ProducesResponseType(type: typeof(ProblemDetails), 400)]
-        [Authorize("replication-log.read")]
         public async Task<IActionResult> GetSnapshots(
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             return Ok(new ReplicationLogSnapshots(await _replicationLog.GetSnapshots(ns).ToListAsync()));
@@ -58,27 +59,24 @@ namespace Horde.Storage.Controllers
         [HttpPost("snapshots/{ns}/create")]
         [ProducesDefaultResponseType]
         [ProducesResponseType(type: typeof(ProblemDetails), 400)]
-        [Authorize("Admin")]
         public async Task<IActionResult> CreateSnapshot(
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             ReplicationLogSnapshotBuilder builder = ActivatorUtilities.CreateInstance<ReplicationLogSnapshotBuilder>(_provider);
             BlobIdentifier snapshotBlob = await builder.BuildSnapshot(ns, _snapshotSettings.CurrentValue.SnapshotStorageNamespace, CancellationToken.None);
-            return Ok(new { SnapshotBlobId = snapshotBlob });
+            return Ok(new SnapshotCreatedResponse(snapshotBlob));
         }
 
         [HttpGet("incremental/{ns}")]
         [ProducesDefaultResponseType]
         [ProducesResponseType(type: typeof(ProblemDetails), 400)]
-        [Authorize("replication-log.read")]
         public async Task<IActionResult> GetIncrementalEvents(
             [Required] NamespaceId ns,
             [FromQuery] string? lastBucket,
@@ -86,14 +84,13 @@ namespace Horde.Storage.Controllers
             [FromQuery] int count = 100
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
-            if ((lastBucket == null && lastEvent.HasValue) || (lastBucket != null && !lastEvent.HasValue))
+            if (((lastBucket == null && lastEvent.HasValue) || (lastBucket != null && !lastEvent.HasValue)) && lastBucket != "now")
             {
                 return BadRequest(new ProblemDetails
                 {
@@ -137,8 +134,23 @@ namespace Horde.Storage.Controllers
                     Title = $"Namespace {ns} was not found",
                 });
             }
-
         }
+    }
+
+    public class SnapshotCreatedResponse
+    {
+        public SnapshotCreatedResponse()
+        {
+            SnapshotBlobId = null!;
+        }
+
+        public SnapshotCreatedResponse(BlobIdentifier snapshotBlob)
+        {
+            SnapshotBlobId = snapshotBlob;
+        }
+
+        [CbField("snapshotBlobId")]
+        public BlobIdentifier SnapshotBlobId { get; set; }
     }
 
     public class ReplicationLogSnapshots
@@ -154,6 +166,7 @@ namespace Horde.Storage.Controllers
             Snapshots = snapshots;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by serialization")]
         public List<SnapshotInfo> Snapshots { get; set; }
     }
 
@@ -170,6 +183,7 @@ namespace Horde.Storage.Controllers
             Events = events;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by serialization")]
         public List<ReplicationLogEvent> Events { get; set; }
     }
 }

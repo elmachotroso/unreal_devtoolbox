@@ -3,19 +3,15 @@
 #include "DMXFixtureActor.h"
 
 #include "DMXStats.h"
+#include "Game/DMXComponent.h"
 
 #include "Components/StaticMeshComponent.h"
+
 
 DECLARE_CYCLE_STAT(TEXT("FixtureActor Push Normalized Values"), STAT_FixtureActorPushNormalizedValuesPerAttribute, STATGROUP_DMX);
 
 ADMXFixtureActor::ADMXFixtureActor()
 {
-	PrimaryActorTick.bCanEverTick = true;
-
-#if WITH_EDITORONLY_DATA
-	bRunConstructionScriptOnDrag = 0;
-#endif
-
 	Base = CreateDefaultSubobject<USceneComponent>(TEXT("Base"));
 	RootComponent = Base;
 
@@ -38,8 +34,6 @@ ADMXFixtureActor::ADMXFixtureActor()
 	OcclusionDirection = CreateDefaultSubobject<UArrowComponent>(TEXT("Occlusion"));
 	OcclusionDirection->SetupAttachment(Head);
 
-	DMX = CreateDefaultSubobject<UDMXComponent>(TEXT("DMX"));
-
 	// set default values
 	LightIntensityMax = 2000;
 	LightDistanceMax = 1000;
@@ -50,9 +44,32 @@ ADMXFixtureActor::ADMXFixtureActor()
 	UseDynamicOcclusion = false;
 	LensRadius = 10.0f;
 	QualityLevel = EDMXFixtureQualityLevel::HighQuality;
-	MinQuality = 1.0f;
-	MaxQuality = 1.0f;
+	ZoomQuality = 1.0f;
+	BeamQuality = 1.0f;
+	DisableLights = false;
 	HasBeenInitialized = false;
+}
+
+void ADMXFixtureActor::PostLoad()
+{
+	Super::PostLoad();
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Upgrade from deprecated MinQuality and MaxQuality to ZoomQuality and BeamQuality
+	ZoomQuality = MaxQuality;
+	BeamQuality = MinQuality;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void ADMXFixtureActor::OnMVRGetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames, TArray<FName>& OutMatrixAttributeNames) const
+{
+	for (UDMXFixtureComponent* DMXFixtureComponent : TInlineComponentArray<UDMXFixtureComponent*>(this))
+	{
+		TArray<FName> SupportedAttributeNamesOfComponent;
+		DMXFixtureComponent->GetSupportedDMXAttributes(SupportedAttributeNamesOfComponent);
+
+		OutAttributeNames.Append(SupportedAttributeNamesOfComponent);
+	}
 }
 
 #if WITH_EDITOR
@@ -65,13 +82,13 @@ void ADMXFixtureActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 
 void ADMXFixtureActor::InitializeFixture(UStaticMeshComponent* StaticMeshLens, UStaticMeshComponent* StaticMeshBeam)
 {
-	GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+	GetComponents(StaticMeshComponents);
 
 	// Create dynamic materials
-	DynamicMaterialLens = UMaterialInstanceDynamic::Create(LensMaterialInstance, NULL);
-	DynamicMaterialBeam = UMaterialInstanceDynamic::Create(BeamMaterialInstance, NULL);
-	DynamicMaterialSpotLight = UMaterialInstanceDynamic::Create(SpotLightMaterialInstance, NULL);
-	DynamicMaterialPointLight = UMaterialInstanceDynamic::Create(PointLightMaterialInstance, NULL);
+	DynamicMaterialLens = UMaterialInstanceDynamic::Create(LensMaterialInstance, nullptr);
+	DynamicMaterialBeam = UMaterialInstanceDynamic::Create(BeamMaterialInstance, nullptr);
+	DynamicMaterialSpotLight = UMaterialInstanceDynamic::Create(SpotLightMaterialInstance, nullptr);
+	DynamicMaterialPointLight = UMaterialInstanceDynamic::Create(PointLightMaterialInstance, nullptr);
 
 	// Get lens width (support scaling)
 	if (StaticMeshLens)
@@ -115,35 +132,38 @@ void ADMXFixtureActor::InitializeFixture(UStaticMeshComponent* StaticMeshLens, U
 
 void ADMXFixtureActor::FeedFixtureData()
 {
-	// Note: MinQuality and MaxQuality are used in conjonction with the zoom angle when zoom component is used
+	// BeamQuality and ZoomQuality modulate the "stepSize" for the raymarch beam shader
+	// lower value is visually better
 	switch (QualityLevel)
 	{
-		case(EDMXFixtureQualityLevel::LowQuality): MinQuality = 4.0f; MaxQuality = 4.0f; break;
-		case(EDMXFixtureQualityLevel::MediumQuality): MinQuality = 2.0f; MaxQuality = 2.0f; break;
-		case(EDMXFixtureQualityLevel::HighQuality): MinQuality = 1.0f; MaxQuality = 1.0f; break;
-		case(EDMXFixtureQualityLevel::UltraQuality): MinQuality = 0.33f; MaxQuality = 0.33f; break;
-	}
-
-	// Note:fallback when fixture doesnt use zoom component
-	float QualityFallback = 1.0f;
-	switch (QualityLevel)
-	{
-		case(EDMXFixtureQualityLevel::LowQuality): QualityFallback = 4.0f; break;
-		case(EDMXFixtureQualityLevel::MediumQuality): QualityFallback = 2.0f; break;
-		case(EDMXFixtureQualityLevel::HighQuality): QualityFallback = 1.0f; break;
-		case(EDMXFixtureQualityLevel::UltraQuality): QualityFallback = 0.33f; break;
+		case(EDMXFixtureQualityLevel::LowQuality): 
+			ZoomQuality = 1.0f;
+			BeamQuality = 4.0f;
+			break;
+		case(EDMXFixtureQualityLevel::MediumQuality): 
+			ZoomQuality = 1.0f;
+			BeamQuality = 2.0f;
+			break;
+		case(EDMXFixtureQualityLevel::HighQuality): 
+			ZoomQuality = 1.0f;
+			BeamQuality = 1.0f;
+			break;
+		case(EDMXFixtureQualityLevel::UltraQuality): 
+			ZoomQuality = 2.0f;
+			BeamQuality = 0.33f;
+			break;
 	}
 	
+	// Clamp values, also clamps UI
 	if (QualityLevel == EDMXFixtureQualityLevel::Custom)
 	{
-		MinQuality = FMath::Clamp(MinQuality, 0.2f, 4.0f);
-		MaxQuality = FMath::Clamp(MaxQuality, 0.2f, 4.0f);
-		QualityFallback = MaxQuality;
+		ZoomQuality = FMath::Clamp(ZoomQuality, 1.0f, 4.0f);
+		BeamQuality = FMath::Clamp(BeamQuality, 0.2f, 4.0f);
 	}
 
 	if (DynamicMaterialBeam)
 	{
-		DynamicMaterialBeam->SetScalarParameterValue("DMX Quality Level", QualityFallback);
+		DynamicMaterialBeam->SetScalarParameterValue("DMX Quality Level", BeamQuality);
 		DynamicMaterialBeam->SetScalarParameterValue("DMX Max Light Distance", LightDistanceMax);
 		DynamicMaterialBeam->SetScalarParameterValue("DMX Max Light Intensity", LightIntensityMax * SpotlightIntensityScale);
 	}
@@ -164,41 +184,6 @@ void ADMXFixtureActor::FeedFixtureData()
 	PointLight->SetTemperature(LightColorTemp);
 	PointLight->SetCastShadows(LightCastShadow);
 	PointLight->SetAttenuationRadius(LightDistanceMax);
-}
-
-void ADMXFixtureActor::InterpolateDMXComponents(float DeltaSeconds)
-{
-	// Get current components (supports PIE)
-	TInlineComponentArray<UDMXFixtureComponent*> DMXComponents;
-	GetComponents<UDMXFixtureComponent>(DMXComponents);
-
-	for (auto& DMXComponent : DMXComponents)
-	{
-		if (DMXComponent->bIsEnabled && DMXComponent->bUseInterpolation && DMXComponent->IsRegistered())
-		{
-			for (auto& Cell : DMXComponent->Cells)
-			{
-				DMXComponent->CurrentCell = &Cell;
-				for (auto& ChannelInterp : Cell.ChannelInterpolation)
-				{
-					if (ChannelInterp.IsUpdating)
-					{
-						// Update
-						ChannelInterp.Travel(DeltaSeconds);
-
-						// Run BP event
-						DMXComponent->InterpolateComponent(DeltaSeconds);
-
-						// Is done?
-						if (ChannelInterp.IsInterpolationDone())
-						{
-							ChannelInterp.EndInterpolation();
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 void ADMXFixtureActor::SetLightIntensityMax(float NewLightIntensityMax)
@@ -278,66 +263,6 @@ void ADMXFixtureActor::PushNormalizedValuesPerAttribute(const FDMXNormalizedAttr
 
 	if (HasBeenInitialized)
 	{
-		for (UDMXFixtureComponent* DMXComponent : TInlineComponentArray<UDMXFixtureComponent*>(this))
-		{
-			// Components without matrix data
-			if (DMXComponent->bIsEnabled)
-			{
-				if (UDMXFixtureComponentSingle* SingleComponent = Cast<UDMXFixtureComponentSingle>(DMXComponent))
-				{
-					// SingleChannel Component
-					const float* TargetValuePtr = ValuePerAttribute.Map.Find(SingleComponent->DMXChannel.Name);
-					if (TargetValuePtr)
-					{
-						const float RemappedValue = SingleComponent->NormalizedToAbsoluteValue(*TargetValuePtr);
-						SingleComponent->SetTargetValue(RemappedValue);
-					}
-				}
-				else if (UDMXFixtureComponentDouble* DoubleComponent = Cast<UDMXFixtureComponentDouble>(DMXComponent))
-				{	
-					// DoubleChannel Component
-					const float* FirstTargetValuePtr = ValuePerAttribute.Map.Find(DoubleComponent->DMXChannel1.Name);
-					if (FirstTargetValuePtr)
-					{
-						float Channel1RemappedValue = DoubleComponent->NormalizedToAbsoluteValue(0, *FirstTargetValuePtr);
-
-						constexpr int32 FirstChannelIndex = 0;
-						DoubleComponent->SetTargetValue(FirstChannelIndex, *FirstTargetValuePtr);
-					}
-
-					const float* SecondTargetValuePtr = ValuePerAttribute.Map.Find(DoubleComponent->DMXChannel2.Name);
-					if (SecondTargetValuePtr)
-					{
-						float Channel2RemappedValue = DoubleComponent->NormalizedToAbsoluteValue(1, *SecondTargetValuePtr);
-
-						constexpr int32 SecondChannelIndex = 1;
-						DoubleComponent->SetTargetValue(SecondChannelIndex, *SecondTargetValuePtr);
-					}
-				}
-				else if(UDMXFixtureComponentColor* ColorComponent = Cast<UDMXFixtureComponentColor>(DMXComponent))
-				{
-					// Color Component
-					if (FLinearColor* CurrentTargetColorPtr = ColorComponent->CurrentTargetColorRef)
-					{
-						const float* FirstTargetValuePtr = ValuePerAttribute.Map.Find(ColorComponent->DMXChannel1);
-						const float* SecondTargetValuePtr = ValuePerAttribute.Map.Find(ColorComponent->DMXChannel2);
-						const float* ThirdTargetValuePtr = ValuePerAttribute.Map.Find(ColorComponent->DMXChannel3);
-						const float* FourthTargetValuePtr = ValuePerAttribute.Map.Find(ColorComponent->DMXChannel4);
-
-						// Current color if channel not found
-						const float r = (FirstTargetValuePtr) ? *FirstTargetValuePtr : CurrentTargetColorPtr->R;
-						const float g = (SecondTargetValuePtr) ? *SecondTargetValuePtr : CurrentTargetColorPtr->G;
-						const float b = (ThirdTargetValuePtr) ? *ThirdTargetValuePtr : CurrentTargetColorPtr->B;
-						const float a = (FourthTargetValuePtr) ? *FourthTargetValuePtr : CurrentTargetColorPtr->A;
-
-						FLinearColor NewTargetColor(r, g, b, a);
-						if (ColorComponent->IsColorValid(NewTargetColor))
-						{
-							ColorComponent->SetTargetColor(NewTargetColor);
-						}
-					}
-				}
-			}
-		}
+		Super::PushNormalizedValuesPerAttribute(ValuePerAttribute);
 	}
 }

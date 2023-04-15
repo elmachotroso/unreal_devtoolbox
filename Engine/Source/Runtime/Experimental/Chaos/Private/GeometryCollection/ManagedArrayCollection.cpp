@@ -4,6 +4,7 @@
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "Templates/UnrealTemplate.h"
 #include "Chaos/ChaosArchive.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 DEFINE_LOG_CATEGORY_STATIC(FManagedArrayCollectionLogging, NoLogging, All);
 
@@ -14,6 +15,7 @@ FManagedArrayCollection::FManagedArrayCollection()
 {
 	Version = 9;
 }
+
 
 void FManagedArrayCollection::AddGroup(FName Group)
 {
@@ -36,6 +38,7 @@ void FManagedArrayCollection::RemoveElements(const FName& Group, const TArray<in
 		TArray<int32> Offsets;
 		GeometryCollectionAlgo::BuildIncrementMask(SortedDeletionList, GroupSize, Offsets);
 
+		TSet<int32> DeletionSet(SortedDeletionList);
 		for (const TTuple<FKeyType, FValueType>& Entry : Map)
 		{
 			//
@@ -43,7 +46,7 @@ void FManagedArrayCollection::RemoveElements(const FName& Group, const TArray<in
 			//
 			if (Entry.Value.GroupIndexDependency == Group && Params.bReindexDependentAttibutes)
 			{
-				Entry.Value.Value->Reindex(Offsets, GroupSize - DelListNum, SortedDeletionList);
+				Entry.Value.Value->Reindex(Offsets, GroupSize - DelListNum, SortedDeletionList, DeletionSet);
 			}
 
 			//
@@ -59,6 +62,16 @@ void FManagedArrayCollection::RemoveElements(const FName& Group, const TArray<in
 	}
 }
 
+void FManagedArrayCollection::RemoveElements(const FName& Group, int32 NumberElements, int32 Position)
+{
+	TArray<int32> SortedDeletionList;
+	SortedDeletionList.SetNumUninitialized(NumberElements);
+	for (int32 Idx = 0; Idx < NumberElements; ++Idx)
+	{
+		SortedDeletionList[Idx] = Position + Idx;
+	}
+	RemoveElements(Group, SortedDeletionList);
+}
 
 TArray<FName> FManagedArrayCollection::GroupNames() const
 {
@@ -74,6 +87,45 @@ bool FManagedArrayCollection::HasAttribute(FName Name, FName Group) const
 {
 	FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
 	return Map.Contains(Key);
+}
+
+bool FManagedArrayCollection::HasAttributes(const TArray<FManagedArrayCollection::FManagedType>& Types) const
+{
+	for (const FManagedType& ManagedType : Types)
+	{
+		FKeyType Key = FManagedArrayCollection::MakeMapKey(ManagedType.Name, ManagedType.Group);
+		if(Map.Contains(Key))
+		{
+			const FValueType& FoundValue = Map[Key];
+
+			if (FoundValue.ArrayType != ManagedType.Type)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+
+bool FManagedArrayCollection::IsAttributeDirty(FName Name, FName Group) const
+{
+	const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	if (const FValueType* Attribute = Map.Find(Key))
+	{
+		return (Attribute->Value)? Attribute->Value->IsDirty(): false;
+	}
+	return false;
+}
+
+bool FManagedArrayCollection::IsAttributePersistent(FName Name, FName Group) const
+{
+	const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	if (const FValueType* Attribute = Map.Find(Key))
+	{
+		return Attribute->Saved;
+	}
+	return false;
 }
 
 TArray<FName> FManagedArrayCollection::AttributeNames(FName Group) const
@@ -120,6 +172,35 @@ int32 FManagedArrayCollection::AddElements(int32 NumberElements, FName Group)
 	SetDefaults(Group, StartSize, NumberElements);
 
 	return StartSize;
+}
+
+int32 FManagedArrayCollection::InsertElements(int32 NumberElements, int32 Position, FName Group)
+{
+	const int32 OldGroupSize = AddElements(NumberElements, Group);
+	const int32 NewGroupSize = OldGroupSize + NumberElements;
+	check(Position <= OldGroupSize);
+	const int32 NumberElementsToMove = OldGroupSize - Position;
+	const int32 MoveToPosition = Position + NumberElements;
+
+	TArray<int32> NewOrder;
+	NewOrder.SetNumUninitialized(NewGroupSize);
+
+	for (int32 Idx = 0; Idx < Position; ++Idx)
+	{
+		NewOrder[Idx] = Idx;
+	}
+	for (int32 Idx = Position; Idx < MoveToPosition; ++Idx)
+	{
+		NewOrder[Idx] = Idx + NumberElementsToMove;
+	}
+	for (int32 Idx = MoveToPosition; Idx < NewGroupSize; ++Idx)
+	{
+		NewOrder[Idx] = Idx - NumberElements;
+	}
+
+	ReorderElements(Group, NewOrder);
+
+	return Position;
 }
 
 void FManagedArrayCollection::RemoveAttribute(FName Name, FName Group)
@@ -301,11 +382,29 @@ void FManagedArrayCollection::CopyMatchingAttributesFrom(
 
 void FManagedArrayCollection::CopyAttribute(const FManagedArrayCollection& InCollection, FName Name, FName Group)
 {
-	SyncGroupSizeFrom(InCollection, Group);
-	FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	CopyAttribute(InCollection, /*SrcName=*/Name, /*DestName=*/Name, Group);
+}
 
-	const FValueType& OriginalValue = InCollection.Map[Key];
-	const FValueType& DestValue = Map[Key];	//todo(ocohen): API assumes an AddAttribute is called before copy is done. It'd be nice to handle the case where AddAttribute was not done first
+void FManagedArrayCollection::CopyAttribute(const FManagedArrayCollection& InCollection, FName SrcName, FName DestName, FName Group)
+{
+	SyncGroupSizeFrom(InCollection, Group);
+	FKeyType SrcKey = FManagedArrayCollection::MakeMapKey(SrcName, Group);
+	FKeyType DestKey = FManagedArrayCollection::MakeMapKey(DestName, Group);
+
+	if (!HasAttribute(DestName, Group))
+	{
+		const FValueType& V = InCollection.Map[SrcKey];
+		EArrayType Type = V.ArrayType;
+		FValueType Value(Type, *NewManagedTypedArray(Type));
+		Value.Value->Resize(NumElements(Group));
+		Value.GroupIndexDependency = V.GroupIndexDependency;
+		Value.Saved = V.Saved;
+		Value.bExternalValue = V.bExternalValue;
+		Map.Add(DestKey, MoveTemp(Value));
+	}
+
+	const FValueType& OriginalValue = InCollection.Map[SrcKey];
+	const FValueType& DestValue = Map[DestKey];
 	check(OriginalValue.ArrayType == DestValue.ArrayType);
 	DestValue.Value->Init(*OriginalValue.Value);
 }
@@ -372,8 +471,31 @@ FString FManagedArrayCollection::ToString() const
 
 static const FName GuidName("GUID");
 
+// this is a reference wrapper to avoid copying attributes as some may not support copy (unique ptr ones) 
+// this is used during serialization to build a transient filtered map of attributes that can be saved
+struct FManagedArrayCollectionValueTypeWrapper
+{
+	FManagedArrayCollectionValueTypeWrapper()
+		: ValueRef(nullptr)
+	{}
+
+	FManagedArrayCollectionValueTypeWrapper(FManagedArrayCollection::FValueType* ValueRefIn)
+		: ValueRef(ValueRefIn)
+	{}
+
+	FManagedArrayCollection::FValueType* ValueRef;
+};
+FArchive& operator<<(FArchive& Ar, FManagedArrayCollectionValueTypeWrapper& ValueIn)
+{
+	// simple forwarding to the original object 
+	Ar << (*ValueIn.ValueRef);
+	return Ar;
+}
+
 void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 {
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
 	if (Ar.IsSaving()) Version = 9;
 	Ar << Version;
 
@@ -411,7 +533,19 @@ void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 			}
 		}
 
-#if WITH_EDITOR
+		TArray<FKeyType> ToRemoveKeys;
+		for (const TTuple<FKeyType, FValueType>& Pair : Map)
+		{
+			if (!Pair.Value.bExternalValue && !TmpMap.Find(Pair.Key))
+			{
+				ToRemoveKeys.Add(Pair.Key);
+			}
+		}
+		for (const FKeyType& Key : ToRemoveKeys)
+		{
+			Map.Remove(Key);
+		}
+
 		//it's possible new entries have been added but are not in old content. Resize these.
 		for (TTuple<FKeyType, FValueType>& Pair : Map)
 		{
@@ -421,8 +555,6 @@ void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 				Pair.Value.Value->Resize(GroupSize);
 			}
 		}
-
-#endif
 
 		// strip out GUID Attributes
 		for (auto& GroupName : GroupNames())
@@ -434,10 +566,27 @@ void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 		}
 
 	}
-	else
+	else // Ar.IsSaving()
 	{
 		Ar << GroupInfo;
-		Ar << Map;
+		// Unless it's an undo/redo transaction, strip out the keys that we don't want to save
+		if (!Ar.IsTransacting())
+		{
+			// we do create a wrapper around ValueType, to avoid copies and save memory 
+			TMap<FKeyType, FManagedArrayCollectionValueTypeWrapper> ToSaveMap;
+			for (TTuple<FKeyType, FValueType>& Pair : Map)
+			{
+				if (Pair.Value.Saved)
+				{
+					ToSaveMap.Emplace(Pair.Key, FManagedArrayCollectionValueTypeWrapper(&Pair.Value));
+				}
+			}
+			Ar << ToSaveMap;
+		}
+		else
+		{
+			Ar << Map;
+		}
 	}
 }
 
@@ -467,17 +616,19 @@ FArchive& operator<<(FArchive& Ar, FManagedArrayCollection::FValueType& ValueIn)
 	if (Version >= 2)
 	{
 		Ar << ValueIn.GroupIndexDependency;
-		Ar << ValueIn.Saved;	//question: should we be saving if Saved is false?
+		Ar << ValueIn.Saved;
 	}
 
 	if (ValueIn.Value == nullptr)
 	{
 		ValueIn.Value = NewManagedTypedArray(ValueIn.ArrayType);
 	}
-
-	if (ValueIn.Saved)
+	
+	// Note: We switched to always saving the value here, and use the Saved flag
+	// to remove the property from the overall Map (see FManagedArrayCollection::Serialize above)
+	bool bNewSavedBehavior = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::ManagedArrayCollectionAlwaysSerializeValue;
+	if (bNewSavedBehavior || ValueIn.Saved)
 	{
-		//todo(ocohen): need a better way to enforce this
 		ValueIn.Value->Serialize(static_cast<Chaos::FChaosArchive&>(Ar));
 	}
 

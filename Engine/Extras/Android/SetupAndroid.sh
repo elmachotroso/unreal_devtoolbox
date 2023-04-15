@@ -27,7 +27,7 @@ fi
 
 # hardcoded versions for compatibility with non-Turnkey manual running
 if [[ -z "${PLATFORMS_VERSION}" ]]; then
-    PLATFORMS_VERSION="android-30"
+    PLATFORMS_VERSION="android-32"
 fi
 if [[ -z "${BUILDTOOLS_VERSION}" ]]; then
     BUILDTOOLS_VERSION="30.0.3"
@@ -36,7 +36,7 @@ if [[ -z "${CMAKE_VERSION}" ]]; then
     CMAKE_VERSION="3.10.2.4988404"
 fi
 if [[ -z "${NDK_VERSION}" ]]; then
-    NDK_VERSION="21.4.7075529"
+    NDK_VERSION="25.1.8937393"
 fi
 
 
@@ -67,6 +67,12 @@ then
 	echo "export ANDROID_HOME=\"$STUDIO_SDK_PATH\"" >>$HOME/.bashrc
 fi
 
+if ! grep -q "export ANDROID_SDK_HOME=\"$STUDIO_SDK_PATH\"" $HOME/.bashrc
+then
+	echo >>$HOME/.bashrc
+	echo "export ANDROID_SDK_HOME=\"$STUDIO_SDK_PATH\"" >>$HOME/.bashrc
+fi
+
 export JAVA_HOME="$STUDIO_PATH/jre"
 if ! grep -q "export JAVA_HOME=\"$JAVA_HOME\"" $HOME/.bashrc
 then
@@ -83,9 +89,9 @@ if [ "$retVal" == "" ]; then
 	echo Added $PLATFORMTOOLS to path
 fi
 
-SDKMANAGERPATH="$STUDIO_SDK_PATH/tools/bin"
+SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bin"
 if [ ! -d "$SDKMANAGERPATH" ]; then
-	SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bin"
+	SDKMANAGERPATH="$STUDIO_SDK_PATH/tools/bin"
 	if [ ! -d "$SDKMANAGERPATH" ]; then
 		echo Unable to locate sdkmanager. Did you run Android Studio and install cmdline-tools after installing?
 		${PAUSE}

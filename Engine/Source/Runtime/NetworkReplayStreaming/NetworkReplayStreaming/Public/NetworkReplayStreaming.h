@@ -4,18 +4,35 @@
 
 // Dependencies.
 
+#include "AnalyticsEventAttribute.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/DateTime.h"
 #include "Misc/NetworkVersion.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "Net/Core/Connection/NetResult.h"
+#include "Net/Core/Connection/NetResultManager.h"
 #include "Serialization/JsonSerializerMacros.h"
+#include "Templates/PimplPtr.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
+class FArchive;
+class FOutputDevice;
 class IAnalyticsProvider;
+class UWorld;
+struct FAnalyticsEventAttribute;
 
 class FReplayEventListItem : public FJsonSerializable
 {
 public:
-	FReplayEventListItem() {}
+	FReplayEventListItem() : Time1(0), Time2(0) {}
 	virtual ~FReplayEventListItem() {}
 
 	FString		ID;
@@ -52,7 +69,7 @@ public:
 /** Struct to store information about a stream, returned from search results. */
 struct FNetworkReplayStreamInfo
 {
-	FNetworkReplayStreamInfo() : Timestamp( 0 ), SizeInBytes( 0 ), LengthInMS( 0 ), NumViewers( 0 ), bIsLive( false ), Changelist( 0 ), bShouldKeep( false ) {}
+	FNetworkReplayStreamInfo() : Timestamp( 0 ), SizeInBytes( 0 ), LengthInMS( 0 ), NumViewers( 0 ), Changelist( 0 ), bIsLive(false), bShouldKeep( false ) {}
 
 	/** The name of the stream (generally this is auto generated, refer to friendly name for UI) */
 	FString Name;
@@ -72,11 +89,11 @@ struct FNetworkReplayStreamInfo
 	/** Number of viewers viewing this stream */
 	int32 NumViewers;
 
-	/** True if the stream is live and the game hasn't completed yet */
-	bool bIsLive;
-
 	/** The changelist of the replay */
 	int32 Changelist;
+
+	/** True if the stream is live and the game hasn't completed yet */
+	bool bIsLive;
 
 	/** Debug feature that allows us to mark replays to not be deleted. True if this replay has been marked as such */
 	bool bShouldKeep;
@@ -84,7 +101,7 @@ struct FNetworkReplayStreamInfo
 
 namespace ENetworkReplayError
 {
-	enum Type
+	enum UE_DEPRECATED(5.1, "No longer used") Type
 	{
 		/** There are currently no issues */
 		None,
@@ -93,6 +110,7 @@ namespace ENetworkReplayError
 		ServiceUnavailable,
 	};
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	inline const TCHAR* ToString( const ENetworkReplayError::Type FailureType )
 	{
 		switch ( FailureType )
@@ -104,6 +122,7 @@ namespace ENetworkReplayError
 		}
 		return TEXT( "Unknown ENetworkReplayError error" );
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /**
@@ -184,6 +203,8 @@ enum class EStreamingOperationResult
 	NotEnoughSlots,	//! The operation failed due to reaching a predefined replay limit.
 	Unspecified,	//! The operation failed for unspecified reasons.
 	UnfinishedTask, //! The operation failed due to an outstanding task.
+	EventNotFound,	//! The operation failed because the event could not be found.
+	DecryptFailure,	//! The operation failed because decryption failed.
 };
 
 /**
@@ -473,6 +494,17 @@ struct FStartStreamingParameters
 	bool bRecord;
 };
 
+enum class EReplayStreamerState : uint8
+{
+	Idle,					// The streamer is idle. Either we haven't started activity yet, or we are done
+	Recording,				// We are in the process of recording a replay
+	Playback,				// We are in the process of playing a replay
+};
+
+FString NETWORKREPLAYSTREAMING_API LexToString(const EReplayStreamerState State);
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnReplayGetAnalyticsAttributes, const class INetworkReplayStreamer* /*Streamer*/, TArray<FAnalyticsEventAttribute>& /*Attributes*/);
+
 /**
  * Generic interface for network replay streaming
  *
@@ -502,7 +534,9 @@ public:
 	virtual void UpdateTotalDemoTime(uint32 TimeInMS) = 0;
 	virtual void UpdatePlaybackTime(uint32 TimeInMS) = 0;
 
+	/** Time in milliseconds */
 	virtual uint32 GetTotalDemoTime() const = 0;
+
 	virtual bool IsDataAvailable() const = 0;
 	virtual void SetHighPriorityTimeRange(const uint32 StartTimeInMS, const uint32 EndTimeInMS) = 0;
 	virtual bool IsDataAvailableForTimeRange(const uint32 StartTimeInMS, const uint32 EndTimeInMS) = 0;
@@ -563,6 +597,9 @@ public:
 	/** Returns the active replay name */
 	virtual FString	GetReplayID() const = 0;
 
+	/** Return current recording/playback state */
+	virtual EReplayStreamerState GetReplayStreamerState() const { return EReplayStreamerState::Idle; };
+
 	/**
 	 * Attempts to delete the stream with the specified name. May execute asynchronously.
 	 *
@@ -585,13 +622,22 @@ public:
 	 */
 	virtual void EnumerateRecentStreams(const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate) = 0;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Returns the last error that occurred while streaming replays */
-	virtual ENetworkReplayError::Type GetLastError() const = 0;
+	UE_DEPRECATED(5.1, "Deprecated in favor of HasError and HandleLastError")
+	virtual ENetworkReplayError::Type GetLastError() const;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	virtual bool HasError() const;
+
+	virtual UE::Net::EHandleNetResult HandleLastError(UE::Net::FNetResultManager& ResultManager);
+
+	virtual void SetExtendedError(UE::Net::FNetResult&& Result);
 
 	/**
 	 * Adds a join-in-progress user to the set of users associated with the currently recording replay (if any)
 	 *
-	 * @param UserString a string that uniquely identifies the user, usually his or her FUniqueNetId
+	 * @param UserString a string that uniquely identifies the user, usually their FUniqueNetId
 	 */
 	virtual void AddUserToReplay( const FString& UserString ) = 0;
 
@@ -621,7 +667,15 @@ public:
 
 	virtual void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider>& InProvider) {}
 
+	virtual TArray<FAnalyticsEventAttribute> AppendCommonReplayAttributes(TArray<FAnalyticsEventAttribute>&& Attrs) const;
+
 	virtual void Exec(const TCHAR* Cmd, FOutputDevice& Ar) {}
+
+	/** Called from base streamer interface AppendCommonReplayAttributes to set common attributes */
+	static FOnReplayGetAnalyticsAttributes OnReplayGetAnalyticsAttributes;
+
+private:
+	TPimplPtr<UE::Net::FNetResult, EPimplPtrMode::DeepCopy> ExtendedError;
 };
 
 /** Replay streamer factory */

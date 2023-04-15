@@ -2,14 +2,7 @@
 
 using EpicGames.Core;
 using System;
-using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Linq.Expressions;
-using System.Reflection;
-using System.Reflection.Emit;
 
 namespace EpicGames.Serialization.Converters
 {
@@ -17,41 +10,59 @@ namespace EpicGames.Serialization.Converters
 	/// Converter for list types
 	/// </summary>
 	/// <typeparam name="T"></typeparam>
-	class CbListConverter<T> : CbConverter<List<T>>
+	class CbListConverter<T> : CbConverterBase<List<T>>
 	{
 		/// <inheritdoc/>
-		public override List<T> Read(CbField Field)
+		public override List<T> Read(CbField field)
 		{
-			List<T> List = new List<T>();
-			foreach (CbField ElementField in Field)
+			if (field.IsNull())
 			{
-				List.Add(CbSerializer.Deserialize<T>(ElementField));
+				return null!;
 			}
-			return List;
-		}
-
-		/// <inheritdoc/>
-		public override void Write(CbWriter Writer, List<T> List)
-		{
-			Writer.BeginArray();
-			foreach (T Element in List)
+			else
 			{
-				CbSerializer.Serialize<T>(Writer, Element);
-			}
-			Writer.EndArray();
-		}
-
-		/// <inheritdoc/>
-		public override void WriteNamed(CbWriter Writer, Utf8String Name, List<T> List)
-		{
-			if (List.Count > 0)
-			{
-				Writer.BeginArray(Name);
-				foreach (T Element in List)
+				List<T> list = new List<T>();
+				foreach (CbField elementField in field)
 				{
-					CbSerializer.Serialize<T>(Writer, Element);
+					list.Add(CbSerializer.Deserialize<T>(elementField));
 				}
-				Writer.EndArray();
+				return list;
+			}
+		}
+
+		/// <inheritdoc/>
+		public override void Write(CbWriter writer, List<T> list)
+		{
+			if (list == null)
+			{
+				writer.WriteNullValue();
+			}
+			else
+			{
+				writer.BeginArray();
+				foreach (T element in list)
+				{
+					CbSerializer.Serialize<T>(writer, element);
+				}
+				writer.EndArray();
+			}
+		}
+
+		/// <inheritdoc/>
+		public override void WriteNamed(CbWriter writer, Utf8String name, List<T> list)
+		{
+			if (list == null)
+			{
+				writer.WriteNull(name);
+			}
+			else
+			{
+				writer.BeginArray(name);
+				foreach (T element in list)
+				{
+					CbSerializer.Serialize<T>(writer, element);
+				}
+				writer.EndArray();
 			}
 		}
 	}
@@ -59,41 +70,41 @@ namespace EpicGames.Serialization.Converters
 	/// <summary>
 	/// Specialization for serializing string lists
 	/// </summary>
-	sealed class CbStringListConverter : CbConverter<List<Utf8String>>
+	sealed class CbStringListConverter : CbConverterBase<List<Utf8String>>
 	{
 		/// <inheritdoc/>
-		public override List<Utf8String> Read(CbField Field)
+		public override List<Utf8String> Read(CbField field)
 		{
-			List<Utf8String> List = new List<Utf8String>();
-			foreach (CbField ElementField in Field)
+			List<Utf8String> list = new List<Utf8String>();
+			foreach (CbField elementField in field)
 			{
-				List.Add(ElementField.AsString());
+				list.Add(elementField.AsUtf8String());
 			}
-			return List;
+			return list;
 		}
 
 		/// <inheritdoc/>
-		public override void Write(CbWriter Writer, List<Utf8String> List)
+		public override void Write(CbWriter writer, List<Utf8String> list)
 		{
-			Writer.BeginUniformArray(CbFieldType.String);
-			foreach (Utf8String String in List)
+			writer.BeginUniformArray(CbFieldType.String);
+			foreach (Utf8String str in list)
 			{
-				Writer.WriteStringValue(String);
+				writer.WriteUtf8StringValue(str);
 			}
-			Writer.EndUniformArray();
+			writer.EndUniformArray();
 		}
 
 		/// <inheritdoc/>
-		public override void WriteNamed(CbWriter Writer, Utf8String Name, List<Utf8String> List)
+		public override void WriteNamed(CbWriter writer, Utf8String name, List<Utf8String> list)
 		{
-			if (List.Count > 0)
+			if (list.Count > 0)
 			{
-				Writer.BeginUniformArray(Name, CbFieldType.String);
-				foreach (Utf8String String in List)
+				writer.BeginUniformArray(name, CbFieldType.String);
+				foreach (Utf8String str in list)
 				{
-					Writer.WriteStringValue(String);
+					writer.WriteUtf8StringValue(str);
 				}
-				Writer.EndUniformArray();
+				writer.EndUniformArray();
 			}
 		}
 	}
@@ -104,18 +115,18 @@ namespace EpicGames.Serialization.Converters
 	class CbListConverterFactory : CbConverterFactory
 	{
 		/// <inheritdoc/>
-		public override CbConverter? CreateConverter(Type Type)
+		public override ICbConverter? CreateConverter(Type type)
 		{
-			if (Type.IsGenericType && Type.GetGenericTypeDefinition() == typeof(List<>))
+			if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
 			{
-				if (Type.GenericTypeArguments[0] == typeof(Utf8String))
+				if (type.GenericTypeArguments[0] == typeof(Utf8String))
 				{
 					return new CbStringListConverter();
 				}
 				else
 				{
-					Type ConverterType = typeof(CbListConverter<>).MakeGenericType(Type.GenericTypeArguments);
-					return (CbConverter)Activator.CreateInstance(ConverterType)!;
+					Type converterType = typeof(CbListConverter<>).MakeGenericType(type.GenericTypeArguments);
+					return (ICbConverter)Activator.CreateInstance(converterType)!;
 				}
 			}
 			return null;

@@ -10,6 +10,7 @@
 #include "SceneUtils.h"
 #include "MeshPassProcessor.h"
 #include "InstanceCulling/InstanceCullingContext.h"
+#include "RenderGraphBuilder.h"
 
 class FGPUScene;
 class FInstanceCullingDrawParams;
@@ -52,6 +53,8 @@ private:
 	bool bSupportsScenePrimitives = false;
 
 	bool bUsingStereo = false;
+	bool bWasDrawCommandsSetup = false;
+
 	uint32 InstanceFactor = 1;
 
 	// GPUCULL_TODO: Only for legacy path

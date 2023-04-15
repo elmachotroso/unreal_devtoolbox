@@ -105,8 +105,16 @@ void FMovieSceneTransformTrail::CalculateEditedTimes(const FTrailHierarchy* Trai
 		}
 	}
 }
+
+void FMovieSceneTransformTrail::ForceEvaluateNextTick()
+{
+	FTrail::ForceEvaluateNextTick();
+	KeyTool->DirtyKeyTransforms();
+}
+
 void FMovieSceneTransformTrail::UpdateKeysInRange(const TRange<double>& ViewRange)
 {
+	KeyTool->DirtyKeyTransforms();
 	KeyTool->UpdateKeysInRange(ViewRange);
 }
 
@@ -151,14 +159,14 @@ ETrailCacheState FMovieSceneTransformTrail::UpdateTrail(const FSceneContext& InS
 	return CacheState;
 }
 
-void FMovieSceneTransformTrail::DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
+void FMovieSceneTransformTrail::DrawHUD(const FSceneView* View, FCanvas* Canvas)
 {
-	KeyTool->DrawHUD(ViewportClient, Viewport, View, Canvas);
+	KeyTool->DrawHUD(View, Canvas);
 }
 
-void FMovieSceneTransformTrail::Render(const FGuid& Guid, const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
+void FMovieSceneTransformTrail::Render(const FGuid& Guid, const FSceneView* View, FPrimitiveDrawInterface* PDI)
 {
-	KeyTool->Render(Guid, View, Viewport, PDI);
+	KeyTool->Render(Guid, View, PDI);
 }
 
 bool FMovieSceneTransformTrail::HandleAltClick(FEditorViewportClient* InViewportClient, HMotionTrailProxy* Proxy, FInputClick Click)
@@ -713,9 +721,9 @@ int32 FMovieSceneControlRigTransformTrail::GetChannelOffset() const
 	if (CRParamSection)
 	{
 		FChannelMapInfo* pChannelIndex = CRParamSection->ControlChannelMap.Find(ControlName);
-		return pChannelIndex->ChannelIndex;;
+		return pChannelIndex ? pChannelIndex->ChannelIndex : INDEX_NONE;
 	}
-	return 0;
+	return INDEX_NONE;
 }
 
 bool FMovieSceneControlRigTransformTrail::ApplyDelta(const FVector& Pos, const FRotator& Rot, const FVector& WidgetLocation)
@@ -760,7 +768,7 @@ bool FMovieSceneControlRigTransformTrail::ApplyDelta(const FVector& Pos, const F
 				NewTransform.SetLocation(NewTransform.GetLocation() + Pos);
 				KeyInfo->Transform = NewTransform;
 				NewTransform = NewTransform.GetRelativeTransform(KeyInfo->ParentTransform);
-				GetSequencer()->GetEvaluationTemplate().Evaluate(MovieSceneContext, *Player);
+				GetSequencer()->GetEvaluationTemplate().EvaluateSynchronousBlocking(MovieSceneContext, *Player);
 				ControlRig->Evaluate_AnyThread();
 				ControlRig->SetControlGlobalTransform(ControlName, NewTransform, true, Context, false);
 			}
@@ -815,7 +823,7 @@ bool FMovieSceneControlRigTransformTrail::EndTracking()
 
 		FMovieSceneContext MovieSceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(StartTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
 		
-		Player->GetEvaluationTemplate().Evaluate(MovieSceneContext, *Player);
+		Player->GetEvaluationTemplate().EvaluateSynchronousBlocking(MovieSceneContext, *Player);
 		ControlRig->Evaluate_AnyThread();
 		return true;
 	}
@@ -855,7 +863,7 @@ bool FMovieSceneControlRigTransformTrail::HandleAltClick(FEditorViewportClient* 
 	Context.LocalTime = TickResolution.AsSeconds(GlobalTime);
 	Context.KeyMask = (uint32)EControlRigContextChannelToKey::Translation;
 	FMovieSceneContext MovieSceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
-	GetSequencer()->GetEvaluationTemplate().Evaluate(MovieSceneContext, *Player);
+	GetSequencer()->GetEvaluationTemplate().EvaluateSynchronousBlocking(MovieSceneContext, *Player);
 	ControlRig->Evaluate_AnyThread();
 	FTransform NewTransform(ControlRig->GetControlGlobalTransform(ControlName));
 	ControlRig->SetControlGlobalTransform(ControlName, NewTransform, true, Context, false);
@@ -865,7 +873,7 @@ bool FMovieSceneControlRigTransformTrail::HandleAltClick(FEditorViewportClient* 
 	StartTime = StartTime * RootToLocalTransform.InverseLinearOnly(); //player evals in root time so need to go back to it.
 
 	MovieSceneContext = FMovieSceneContext(FMovieSceneEvaluationRange(StartTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
-	Player->GetEvaluationTemplate().Evaluate(MovieSceneContext, *Player);
+	Player->GetEvaluationTemplate().EvaluateSynchronousBlocking(MovieSceneContext, *Player);
 	ControlRig->Evaluate_AnyThread();
 
 	//create new keys

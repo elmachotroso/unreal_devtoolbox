@@ -30,10 +30,6 @@ public:
 	void AddShape(EMassEntityDebugShape Shape, FVector Location, float Size) { Shapes[uint8(Shape)].Add(FShapeDesc(Location, Size)); }
 	const TArray<FShapeDesc>* GetShapes() const { return Shapes; }
 
-	void AddEntityLocation(FMassEntityHandle Entity, const FVector& Location);
-	TConstArrayView<FMassEntityHandle> GetEntities() const { return Entities; }
-	TConstArrayView<FVector> GetLocations() const { return Locations; }
-
 	FMassEntityHandle GetSelectedEntity() const { return SelectedEntity; }
 	void SetSelectedEntity(const FMassEntityHandle InSelectedEntity);
 
@@ -50,10 +46,12 @@ public:
 protected:
 	// USubsystem BEGIN
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
 	// USubsystem END
 	
 	void OnProcessingPhaseStarted(const float DeltaSeconds);
 	void PreTickProcessors();
+	void OnEntitySelected(const FMassEntityManager& EntityManager, const FMassEntityHandle EntityHandle);
 
 protected:
 	bool bCollectingData = false;
@@ -65,9 +63,20 @@ protected:
 	FString SelectedEntityDetails;
 
 	UPROPERTY(Transient)
-	UMassDebugVisualizationComponent* VisualizationComponent;
+	TObjectPtr<UMassDebugVisualizationComponent> VisualizationComponent;
 
 	UPROPERTY(Transient)
-	AMassDebugVisualizer* DebugVisualizer;
+	TObjectPtr<AMassDebugVisualizer> DebugVisualizer;
+
+	FDelegateHandle OnEntitySelectedHandle;
 };
 
+
+template<>
+struct TMassExternalSubsystemTraits<UMassDebuggerSubsystem> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
+};

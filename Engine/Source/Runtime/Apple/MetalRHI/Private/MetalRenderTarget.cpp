@@ -41,22 +41,25 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 		// nothing to do if one of the textures is null!
 		return;
 	}
-	if(SourceTextureRHI != DestTextureRHI)
+	if (SourceTextureRHI != DestTextureRHI)
 	{
 		FMetalSurface* Source = GetMetalSurfaceFromRHITexture(SourceTextureRHI);
 		FMetalSurface* Destination = GetMetalSurfaceFromRHITexture(DestTextureRHI);
 		
+		const FRHITextureDesc& SourceDesc = Source->GetDesc();
+		const FRHITextureDesc& DestinationDesc = Destination->GetDesc();
+
 		// Only valid to have nil Metal textures when they are TexCreate_Presentable
-		if(!Source->Texture)
+		if (!Source->Texture)
 		{
 			// Source RHI texture is valid with no Presentable Metal texture - there is nothing to copy from
-			check(EnumHasAnyFlags(Source->Flags, TexCreate_Presentable));
+			check(EnumHasAnyFlags(SourceDesc.Flags, TexCreate_Presentable));
 			return;
 		}
-		if(!Destination->Texture)
+		if (!Destination->Texture)
 		{
 			// Destination RHI texture is valid with no Presentable Metal texture - force fetch it now so we can complete the copy
-			check(EnumHasAnyFlags(Destination->Flags, TexCreate_Presentable));
+			check(EnumHasAnyFlags(DestinationDesc.Flags, TexCreate_Presentable));
 			Destination->GetDrawableTexture();
 			if(!Destination->Texture)
 			{
@@ -65,29 +68,6 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 			}
 		}
 
-		switch (Source->Type)
-		{
-			case RRT_Texture2D:
-				break;
-			case RRT_TextureCube:
-				check(Source->SizeZ == 6); // Arrays might not work yet.
-				break;
-			default:
-				check(false); // Only Tex2D & Cube are tested to work so far!
-				break;
-		}
-		switch (Destination->Type)
-		{
-			case RRT_Texture2D:
-				break;
-			case RRT_TextureCube:
-				check(Destination->SizeZ == 6); // Arrays might not work yet.
-				break;
-			default:
-				check(false); // Only Tex2D & Cube are tested to work so far!
-				break;
-		}
-		
 		mtlpp::Origin Origin(0, 0, 0);
 		mtlpp::Size Size(0, 0, 1);
 		if (ResolveParams.Rect.IsValid())
@@ -104,15 +84,15 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 			Origin.x = 0;
 			Origin.y = 0;
 			
-			Size.width = FMath::Max<uint32>(1, Source->SizeX >> ResolveParams.MipIndex);
-			Size.height = FMath::Max<uint32>(1, Source->SizeY >> ResolveParams.MipIndex);
+			Size.width = FMath::Max<uint32>(1, SourceDesc.Extent.X >> ResolveParams.MipIndex);
+			Size.height = FMath::Max<uint32>(1, SourceDesc.Extent.Y >> ResolveParams.MipIndex);
 			// clamp to a destination size
-			Size.width = FMath::Min<uint32>(Size.width, Destination->SizeX >> ResolveParams.MipIndex);
-			Size.height = FMath::Min<uint32>(Size.height, Destination->SizeY >> ResolveParams.MipIndex);
+			Size.width = FMath::Min<uint32>(Size.width, DestinationDesc.Extent.X >> ResolveParams.MipIndex);
+			Size.height = FMath::Min<uint32>(Size.height, DestinationDesc.Extent.Y >> ResolveParams.MipIndex);
 		}
 		
-		const bool bSrcCubemap  = Source->bIsCubemap;
-		const bool bDestCubemap = Destination->bIsCubemap;
+		const bool bSrcCubemap  = SourceDesc.IsTextureCube();
+		const bool bDestCubemap = DestinationDesc.IsTextureCube();
 		
 		uint32 DestIndex = ResolveParams.DestArrayIndex * (bDestCubemap ? 6 : 1) + (bDestCubemap ? uint32(ResolveParams.CubeFace) : 0);
 		uint32 SrcIndex  = ResolveParams.SourceArrayIndex * (bSrcCubemap ? 6 : 1) + (bSrcCubemap ? uint32(ResolveParams.CubeFace) : 0);
@@ -124,7 +104,7 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 
 		const bool bMSAASource = Source->MSAATexture;
         const bool bMSAADest = Destination->MSAATexture;
-        const bool bDepthStencil = Source->PixelFormat == PF_DepthStencil;
+        const bool bDepthStencil = SourceDesc.Format == PF_DepthStencil;
 		if (bMSAASource && !bMSAADest)
 		{
 			// Resolve required - Device must support this - Using Shader for resolve not supported amd NumSamples should be 1
@@ -141,8 +121,8 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 		}
 		else
 		{
-			const FPixelFormatInfo& SourceFormatInfo = GPixelFormats[Source->PixelFormat];
-			const FPixelFormatInfo& DestFormatInfo = GPixelFormats[Destination->PixelFormat];
+			const FPixelFormatInfo& SourceFormatInfo = GPixelFormats[SourceDesc.Format];
+			const FPixelFormatInfo& DestFormatInfo = GPixelFormats[DestinationDesc.Format];
 			bool bUsingPixelFormatView = (Source->Texture.GetUsage() & mtlpp::TextureUsage::PixelFormatView) != 0;
 			
 			// Attempt to Resolve with a texture view - source Texture doesn't have to be created with MTLTextureUsagePixelFormatView for these cases e.g:
@@ -159,14 +139,6 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 				}
 			}
 		}
-
-#if PLATFORM_MAC
-		if((Destination->GPUReadback & FMetalSurface::EMetalGPUReadbackFlags::ReadbackRequested) != 0)
-		{
-			Context->GetCurrentRenderPass().SynchronizeTexture(Destination->Texture, DestIndex, ResolveParams.MipIndex);
-		}
-#endif
-		
 	}
 	}
 }
@@ -283,7 +255,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 	mtlpp::Region Region(Rect.Min.X, Rect.Min.Y, SizeX, SizeY);
     
 	FMetalTexture Texture = Surface->Texture;
-    if(!Texture && EnumHasAnyFlags(Surface->Flags, TexCreate_Presentable))
+    if(!Texture && EnumHasAnyFlags(Surface->GetDesc().Flags, TexCreate_Presentable))
     {
         Texture = Surface->GetCurrentTexture();
     }
@@ -293,7 +265,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
         return;
     }
 
-	if (GMetalUseTexGetBytes && Surface->PixelFormat != PF_DepthStencil && Surface->PixelFormat != PF_ShadowDepth)
+	if (GMetalUseTexGetBytes && Surface->GetDesc().Format != PF_DepthStencil && Surface->GetDesc().Format != PF_ShadowDepth)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_MetalTexturePageOffTime);
 		
@@ -305,7 +277,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 #else
 			mtlpp::StorageMode StorageMode = mtlpp::StorageMode::Shared;
 #endif
-			mtlpp::PixelFormat MetalFormat = (mtlpp::PixelFormat)GPixelFormats[Surface->PixelFormat].PlatformFormat;
+			mtlpp::PixelFormat MetalFormat = (mtlpp::PixelFormat)GPixelFormats[Surface->GetDesc().Format].PlatformFormat;
 			mtlpp::TextureDescriptor Desc;
 			Desc.SetTextureType(Texture.GetTextureType());
 			Desc.SetPixelFormat(Texture.GetPixelFormat());
@@ -341,7 +313,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 		//kick the current command buffer.
 		ImmediateContext.Context->SubmitCommandBufferAndWait();
 		
-		const uint32 Stride = GPixelFormats[Surface->PixelFormat].BlockBytes * SizeX;
+		const uint32 Stride = GPixelFormats[Surface->GetDesc().Format].BlockBytes * SizeX;
 		const uint32 BytesPerImage = Stride * SizeY;
 
 		TArray<uint8> Data;
@@ -349,7 +321,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 		
 		Texture.GetBytes(Data.GetData(), Stride, BytesPerImage, Region, 0, 0);
 		
-		ConvertSurfaceDataToFColor(Surface->PixelFormat, SizeX, SizeY, (uint8*)Data.GetData(), Stride, OutDataPtr, InFlags);
+		ConvertSurfaceDataToFColor(Surface->GetDesc().Format, SizeX, SizeY, (uint8*)Data.GetData(), Stride, OutDataPtr, InFlags);
 		
 		if (TempTexture)
 		{
@@ -358,7 +330,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 	}
 	else
 	{
-		uint32 BytesPerPixel = (Surface->PixelFormat != PF_DepthStencil || !InFlags.GetOutputStencil()) ? GPixelFormats[Surface->PixelFormat].BlockBytes : 1;
+		uint32 BytesPerPixel = (Surface->GetDesc().Format != PF_DepthStencil || !InFlags.GetOutputStencil()) ? GPixelFormats[Surface->GetDesc().Format].BlockBytes : 1;
 		const uint32 Stride = BytesPerPixel * SizeX;
 		const uint32 Alignment = PLATFORM_MAC ? 1u : 64u; // Mac permits natural row alignment (tightly-packed) but iOS does not.
 		const uint32 AlignedStride = ((Stride - 1) & ~(Alignment - 1)) + Alignment;
@@ -368,7 +340,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 			// Synchronise the texture with the CPU
 			SCOPE_CYCLE_COUNTER(STAT_MetalTexturePageOffTime);
 			
-			if (Surface->PixelFormat != PF_DepthStencil)
+			if (Surface->GetDesc().Format != PF_DepthStencil)
 			{
 				ImmediateContext.Context->CopyFromTextureToBuffer(Texture, 0, InFlags.GetMip(), Region.origin, Region.size, Buffer, 0, AlignedStride, BytesPerImage, mtlpp::BlitOption::None);
 			}
@@ -387,7 +359,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 			//kick the current command buffer.
 			ImmediateContext.Context->SubmitCommandBufferAndWait();
 			
-			ConvertSurfaceDataToFColor(Surface->PixelFormat, SizeX, SizeY, (uint8*)Buffer.GetContents(), AlignedStride, OutDataPtr, InFlags);
+			ConvertSurfaceDataToFColor(Surface->GetDesc().Format, SizeX, SizeY, (uint8*)Buffer.GetContents(), AlignedStride, OutDataPtr, InFlags);
 		}
 		((FMetalDeviceContext*)ImmediateContext.Context)->ReleaseBuffer(Buffer);
 	}
@@ -397,22 +369,13 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 void FMetalDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFence* FenceRHI, void*& OutData, int32& OutWidth, int32& OutHeight, uint32 GPUIndex)
 {
 	@autoreleasepool {
-    FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(TextureRHI);
-    FMetalTexture2D* Texture = (FMetalTexture2D*)TextureRHI->GetTexture2D();
+		FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(TextureRHI);
     
-#if PLATFORM_MAC
-	uint16 FencePoll = FenceRHI && FenceRHI->Poll() ? 1 : 0;
-    Surface->GPUReadback |= FencePoll << FMetalSurface::EMetalGPUReadbackFlags::ReadbackFenceCompleteShift;
-#endif
-    
-    uint32 Stride = 0;
-    OutWidth = Texture->GetSizeX();
-    OutHeight = Texture->GetSizeY();
-    OutData = Surface->Lock(0, 0, RLM_ReadOnly, Stride);
-    
-#if PLATFORM_MAC
-	Surface->GPUReadback = (Surface->Texture.GetPtr() && Surface->Texture.GetStorageMode() == mtlpp::StorageMode::Managed) ? FMetalSurface::EMetalGPUReadbackFlags::ReadbackRequested : 0;
-#endif
+		uint32 Stride = 0;
+		OutWidth = Surface->GetSizeX();
+		OutHeight = Surface->GetSizeY();
+		
+		OutData = Surface->Lock(0, 0, RLM_ReadOnly, Stride);
 	}
 }
 
@@ -431,7 +394,7 @@ void FMetalDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(TextureRHI);
 	
     FMetalTexture Texture = Surface->Texture;
-    if(!Texture && EnumHasAnyFlags(Surface->Flags, TexCreate_Presentable))
+    if(!Texture && EnumHasAnyFlags(Surface->GetDesc().Flags, TexCreate_Presentable))
     {
 		Texture = Surface->GetCurrentTexture();
     }
@@ -442,7 +405,7 @@ void FMetalDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
     }
     
 	// verify the input image format (but don't crash)
-	if (Surface->PixelFormat != PF_FloatRGBA)
+	if (Surface->GetDesc().Format != PF_FloatRGBA)
 	{
 		UE_LOG(LogRHI, Log, TEXT("Trying to read non-FloatRGBA surface."));
 	}
@@ -463,7 +426,7 @@ void FMetalDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	mtlpp::Region Region = mtlpp::Region(Rect.Min.X, Rect.Min.Y, SizeX, SizeY);
 	
 	// function wants details about the destination, not the source
-	const uint32 Stride = GPixelFormats[Surface->PixelFormat].BlockBytes * SizeX;
+	const uint32 Stride = GPixelFormats[Surface->GetDesc().Format].BlockBytes * SizeX;
 	const uint32 Alignment = PLATFORM_MAC ? 1u : 64u; // Mac permits natural row alignment (tightly-packed) but iOS does not.
 	const uint32 AlignedStride = ((Stride - 1) & ~(Alignment - 1)) + Alignment;
 	const uint32 BytesPerImage = AlignedStride  * SizeY;
@@ -514,7 +477,7 @@ void FMetalDynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI,FIntRec
 	}
 	
 	// verify the input image format (but don't crash)
-	if (Surface->PixelFormat != PF_FloatRGBA)
+	if (Surface->GetDesc().Format != PF_FloatRGBA)
 	{
 		UE_LOG(LogRHI, Log, TEXT("Trying to read non-FloatRGBA surface."));
 	}
@@ -529,7 +492,7 @@ void FMetalDynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI,FIntRec
 	mtlpp::Region Region = mtlpp::Region(InRect.Min.X, InRect.Min.Y, ZMinMax.X, SizeX, SizeY, SizeZ);
 	
 	// function wants details about the destination, not the source
-	const uint32 Stride = GPixelFormats[Surface->PixelFormat].BlockBytes * SizeX;
+	const uint32 Stride = GPixelFormats[Surface->GetDesc().Format].BlockBytes * SizeX;
 	const uint32 Alignment = PLATFORM_MAC ? 1u : 64u; // Mac permits natural row alignment (tightly-packed) but iOS does not.
 	const uint32 AlignedStride = ((Stride - 1) & ~(Alignment - 1)) + Alignment;
 	const uint32 BytesPerImage = AlignedStride  * SizeY;

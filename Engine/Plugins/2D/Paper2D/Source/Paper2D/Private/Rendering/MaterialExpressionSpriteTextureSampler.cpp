@@ -2,6 +2,8 @@
 
 #include "MaterialExpressionSpriteTextureSampler.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialExpressionSpriteTextureSampler)
+
 #define LOCTEXT_NAMESPACE "Paper2D"
 
 //////////////////////////////////////////////////////////////////////////
@@ -49,7 +51,7 @@ FText UMaterialExpressionSpriteTextureSampler::GetKeywords() const
 
 bool UMaterialExpressionSpriteTextureSampler::CanRenameNode() const
 {
-	// The parameter name is read only on this guy
+	// The parameter name is read only
 	return false;
 }
 
@@ -80,3 +82,4 @@ void UMaterialExpressionSpriteTextureSampler::PostEditChangeProperty(FPropertyCh
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

@@ -2,13 +2,43 @@
 
 #pragma once
 
-#include "AssetDataTagMap.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetDataTagMap.h"
 #include "Async/Async.h"
 
 struct FAssetRegistrySerializationOptions;
 
 namespace FixedTagPrivate
 {
+	// Legacy version of FAssetRegistryExportPath (before FAssetRegistryVersion::ClassPaths)
+	struct FLegacyAssetRegistryExportPath
+	{
+		FName Class;
+		FName Package;
+		FName Object;
+	};
+
+	/**
+	 * The AssetRegistry's representation of an FText AssetData Tag value.
+	 * It can be stored and copied without being interpreted as an FText.
+	 */
+	class COREUOBJECT_API FMarshalledText
+	{
+	public:
+		FMarshalledText() = default;
+		explicit FMarshalledText(const FString& InString);
+		explicit FMarshalledText(FString&& InString);
+		explicit FMarshalledText(const FText& InText);
+		explicit FMarshalledText(FText&& InText);
+
+		const FString& GetAsComplexString() const;
+		FText GetAsText() const;
+		int32 CompareToCaseIgnored(const FMarshalledText& Other) const;
+
+	private:
+		FString String;
+	};
+
 	/// Stores a fixed set of values and all the key-values maps used for lookup
 	struct FStore
 	{
@@ -21,11 +51,11 @@ namespace FixedTagPrivate
 		TArrayView<ANSICHAR> AnsiStrings;
 		TArrayView<uint32> WideStringOffsets;
 		TArrayView<WIDECHAR> WideStrings;
-		TArrayView<FNameEntryId> NumberlessNames;
+		TArrayView<FDisplayNameEntryId> NumberlessNames;
 		TArrayView<FName> Names;
 		TArrayView<FNumberlessExportPath> NumberlessExportPaths;
 		TArrayView<FAssetRegistryExportPath> ExportPaths;
-		TArrayView<FText> Texts;
+		TArrayView<FMarshalledText> Texts;
 
 		const uint32 Index;
 		void* Data = nullptr;
@@ -73,11 +103,11 @@ namespace FixedTagPrivate
 		TArray<ANSICHAR> AnsiStrings;
 		TArray<uint32> WideStringOffsets;
 		TArray<WIDECHAR> WideStrings;
-		TArray<FNameEntryId> NumberlessNames;
+		TArray<FDisplayNameEntryId> NumberlessNames;
 		TArray<FName> Names;
 		TArray<FNumberlessExportPath> NumberlessExportPaths;
 		TArray<FAssetRegistryExportPath> ExportPaths;
-		TArray<FText> Texts;
+		TArray<FMarshalledText> Texts;
 	};
 
 	uint32 HashCaseSensitive(const TCHAR* Str, int32 Len);
@@ -134,16 +164,32 @@ namespace FixedTagPrivate
 				return HashCombineQuick(GetTypeHash(Key.GetDisplayIndex()), Key.GetNumber());
 			}
 
-			template<class ExportPathType>
-			static bool Matches(const ExportPathType& A, const ExportPathType& B)
+			static bool Matches(const FNumberlessExportPath& A, const FNumberlessExportPath& B)
 			{
-				return Matches(A.Class, B.Class) & Matches(A.Package, B.Package) & Matches(A.Object, B.Object); //-V792
+				return Matches(A.ClassPackage, B.ClassPackage) & Matches(A.ClassObject, B.ClassObject) & Matches(A.Package, B.Package) & Matches(A.Object, B.Object); //-V792
+			}
+			static bool Matches(const FAssetRegistryExportPath& A, const FAssetRegistryExportPath& B)
+			{
+				return Matches(A.ClassPath.GetPackageName(), B.ClassPath.GetPackageName()) &  Matches(A.ClassPath.GetAssetName(), B.ClassPath.GetAssetName()) & Matches(A.Package, B.Package) & Matches(A.Object, B.Object); //-V792
 			}
 
-			template<class ExportPathType>
-			static uint32 GetKeyHash(const ExportPathType& Key)
+			static uint32 GetKeyHash(const FNumberlessExportPath& Key)
 			{
-				return HashCombineQuick(GetKeyHash(Key.Class), GetKeyHash(Key.Package), GetKeyHash(Key.Object));
+				return HashCombineQuick(HashCombineQuick(GetKeyHash(Key.ClassPackage), GetKeyHash(Key.ClassObject)), GetKeyHash(Key.Package), GetKeyHash(Key.Object));
+			}
+			static uint32 GetKeyHash(const FAssetRegistryExportPath& Key)
+			{
+				return HashCombineQuick(HashCombineQuick(GetKeyHash(Key.ClassPath.GetPackageName()), GetKeyHash(Key.ClassPath.GetAssetName())), GetKeyHash(Key.Package), GetKeyHash(Key.Object));
+			}
+
+			static bool Matches(const FMarshalledText& A, const FMarshalledText& B)
+			{
+				return Matches(A.GetAsComplexString(), B.GetAsComplexString());
+			}
+
+			static uint32 GetKeyHash(const FMarshalledText& Key)
+			{
+				return GetKeyHash(Key.GetAsComplexString());
 			}
 		};
 
@@ -162,11 +208,11 @@ namespace FixedTagPrivate
 		const FOptions Options;
 		FStringIndexer AnsiStrings;
 		FStringIndexer WideStrings;
-		TMap<FNameEntryId, uint32> NumberlessNameIndices;
+		TMap<FDisplayNameEntryId, uint32> NumberlessNameIndices;
 		TMap<FName, uint32, FDefaultSetAllocator, FCaseSensitiveFuncs<uint32>> NameIndices;
 		TMap<FNumberlessExportPath, uint32, FDefaultSetAllocator, FCaseSensitiveFuncs<uint32>> NumberlessExportPathIndices;
 		TMap<FAssetRegistryExportPath, uint32, FDefaultSetAllocator, FCaseSensitiveFuncs<uint32>> ExportPathIndices;
-		TMap<FString, uint32, FDefaultSetAllocator, FCaseSensitiveFuncs<uint32>> TextIndices;
+		TMap<FMarshalledText, uint32, FDefaultSetAllocator, FCaseSensitiveFuncs<uint32>> TextIndices;
 
 		TArray<FNumberedPair> NumberedPairs;
 		TArray<FNumberedPair> NumberlessPairs; // Stored as numbered for convenience
@@ -179,7 +225,7 @@ namespace FixedTagPrivate
 	enum class ELoadOrder { Member, TextFirst };
 
 	COREUOBJECT_API void SaveStore(const FStoreData& Store, FArchive& Ar);
-	COREUOBJECT_API TRefCountPtr<const FStore> LoadStore(FArchive& Ar);
+	COREUOBJECT_API TRefCountPtr<const FStore> LoadStore(FArchive& Ar, FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion);
 
 	/// Loads tag store with async creation of expensive tag values
 	///

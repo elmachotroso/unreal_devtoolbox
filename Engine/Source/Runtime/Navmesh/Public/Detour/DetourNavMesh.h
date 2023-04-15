@@ -26,6 +26,7 @@
 #include "Detour/DetourAlloc.h"
 #include "Detour/DetourStatus.h"
 #include "DetourLargeWorldCoordinates.h"
+#include "Logging/LogMacros.h"
 
 NAVMESH_API DECLARE_LOG_CATEGORY_EXTERN(LogDetour, Log, All);
 
@@ -265,6 +266,7 @@ struct dtBVNode
 };
 
 //@UE BEGIN
+// This is an unsupported feature and has not been finished to production quality.
 #if WITH_NAVMESH_SEGMENT_LINKS
 struct dtOffMeshSegmentConnection
 {
@@ -275,9 +277,6 @@ struct dtOffMeshSegmentConnection
 
 	/// The radius of the endpoints. [Limit: >= 0]
 	dtReal rad;
-
-	/// The snap height of endpoints (less than 0 = use step height)
-	dtReal height;
 
 	/// The id of the offmesh connection. (User assigned when the navigation mesh is built.)
 	unsigned int userId;	
@@ -532,6 +531,12 @@ public:
 	///  @param[out]	tx		The tile's x-location. (x, y)
 	///  @param[out]	ty		The tile's y-location. (x, y)
 	void calcTileLoc(const dtReal* pos, int* tx, int* ty) const;
+
+
+	/// Calculates whether the tile grid location for the specified world position
+	/// can fit in the tile indices type (currently an int)
+	///  @param[in]	pos			The world position for the query. [(x, y, z)]
+	bool isTileLocInValidRange(const dtReal* pos) const;
 
 	/// Gets the tile at the specified grid location.
 	///  @param[in]	x		The tile's x-location. (x, y, layer)
@@ -920,7 +925,15 @@ private:
 	/// Returns closest point on polygon.
 	void closestPointOnPolyInTile(const dtMeshTile* tile, unsigned int ip,
 								  const dtReal* pos, dtReal* closest) const;
-	
+
+private:
+	/// Calculates whether the tile grid location can fit in the tile indices type (currently an int)
+	///  @param[in]	tx			Tile X coord
+	///  @param[in]	ty			Tile Y coord
+	bool isTileLocInValidRange(const dtReal tx, const dtReal ty) const;
+	void calcTileLoc(const dtReal* pos, dtReal* tx, dtReal* ty) const;
+
+public:
 	dtNavMeshParams m_params;			///< Current initialization params. TODO: do not store this info twice.
 	dtReal m_orig[3];					///< Origin of the tile (0,0)
 	dtReal m_tileWidth, m_tileHeight;	///< Dimensions of each tile.

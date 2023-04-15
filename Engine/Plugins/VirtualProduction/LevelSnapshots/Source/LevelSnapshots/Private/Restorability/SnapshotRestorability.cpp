@@ -2,13 +2,17 @@
 
 #include "Restorability/SnapshotRestorability.h"
 
+#include "Interfaces/IActorSnapshotFilter.h"
 #include "Landscape.h"
 #include "LandscapeGizmoActor.h"
+#include "LevelSnapshot.h"
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
+#include "SnapshotCustomVersion.h"
+#include "WorldSnapshotData.h"
+
 #include "AI/NavigationSystemConfig.h"
 #include "Algo/AllOf.h"
-
 #include "Components/ActorComponent.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/BrushBuilder.h"
@@ -17,6 +21,7 @@
 #include "GameFramework/DefaultPhysicsVolume.h"
 #include "GameFramework/WorldSettings.h"
 #include "UObject/UnrealType.h"
+#include "Util/WorldData/WorldDataUtil.h"
 #if WITH_EDITOR
 #include "ActorEditorUtils.h"
 #include "Kismet2/ComponentEditorUtils.h"
@@ -24,7 +29,7 @@
 
 namespace UE::LevelSnapshots::Restorability::Private::Internal
 {
-	static bool DoesActorHaveSupportedClass(const AActor* Actor)
+	static bool DoesActorHaveSupportedClass(const UClass* ActorClass)
 	{
 		const TSet<UClass*> UnsupportedClasses = 
 		{
@@ -36,7 +41,7 @@ namespace UE::LevelSnapshots::Restorability::Private::Internal
 			ALandscapeGizmoActor::StaticClass()
         };
 
-		return Algo::AllOf(UnsupportedClasses, [Actor](UClass *Class) { return !Actor->IsA(Class); });
+		return Algo::AllOf(UnsupportedClasses, [ActorClass](UClass* Class) { return !ActorClass->IsChildOf(Class); });
 	}
 
 	static bool DoesActorHaveSupportedClassForRemoving(const AActor* Actor)
@@ -92,7 +97,7 @@ bool UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(const AActor*
 {
 	SCOPED_SNAPSHOT_CORE_TRACE(IsActorDesirableForCapture);
 
-	if (!IsValid(Actor))
+	if (!IsValid(Actor) || !Private::Internal::DoesActorHaveSupportedClass(Actor->GetClass()))
 	{
 		return false;
 	}
@@ -102,7 +107,7 @@ bool UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(const AActor*
 	for (const TSharedRef<ISnapshotRestorabilityOverrider>& Override : Overrides)
 	{
 		const ISnapshotRestorabilityOverrider::ERestorabilityOverride Result = Override->IsActorDesirableForCapture(Actor);
-		bSomebodyAllowed = Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Allow;
+		bSomebodyAllowed |= Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Allow;
 		if (Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Disallow)
 		{
 			return false;
@@ -113,11 +118,10 @@ bool UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(const AActor*
 	{
 		return true;
 	}
-
 	
-	return Private::Internal::DoesActorHaveSupportedClass(Actor)
-            && !Actor->IsTemplate()								// Should never happen, but we never want CDOs
-			&& !Actor->HasAnyFlags(RF_Transient)				// Don't add transient actors in non-play worlds	
+	return !Actor->IsTemplate()								// Should never happen, but we never want CDOs
+			&& !Actor->HasAnyFlags(RF_Transient)				// Don't add transient actors in non-play worlds
+			&& Actor->HasAnyFlags(RF_Transactional)				// Non transactional actors are usually modified by some other system, e.g. UChildActorComponent's child actor is not transactional
 #if WITH_EDITOR
             && Actor->IsEditable()
             && Actor->IsListedInSceneOutliner() 				// Only add actors that are allowed to be selected and drawn in editor
@@ -146,7 +150,7 @@ bool UE::LevelSnapshots::Restorability::IsComponentDesirableForCapture(const UAc
 	for (const TSharedRef<ISnapshotRestorabilityOverrider>& Override : Overrides)
 	{
 		const ISnapshotRestorabilityOverrider::ERestorabilityOverride Result = Override->IsComponentDesirableForCapture(Component);
-		bSomebodyAllowed = Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Allow;
+		bSomebodyAllowed |= Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Allow;
 		if (Result == ISnapshotRestorabilityOverrider::ERestorabilityOverride::Disallow)
 		{
 			return false;
@@ -160,7 +164,10 @@ bool UE::LevelSnapshots::Restorability::IsComponentDesirableForCapture(const UAc
 			&& Private::Internal::DoesComponentHaveSupportedClassForCapture(Component)
 			&& !Component->HasAnyFlags(RF_Transient)
 #if WITH_EDITORONLY_DATA
-			&& FComponentEditorUtils::CanEditComponentInstance(Component, Private::Internal::GetParentComponent(Component), bAllowUserContructionScriptComps)
+			// Generally, snapshots should only restore snapshots that are editable. However, even if the root component is not editable, we still want to be able to restore the actor's transform.
+			// Ideally, we may not want to capture all component data in that case but for now that is exactly what we will do.
+			// For any future developer: we could add a IPropertyComparer implementation that marks all non-transform properties as unchanged.
+			&& (Component == Component->GetOwner()->GetRootComponent() || FComponentEditorUtils::CanEditComponentInstance(Component, Private::Internal::GetParentComponent(Component), bAllowUserContructionScriptComps))
 #endif
 	;
 	return bSomebodyAllowed || bIsAllowed;
@@ -174,7 +181,7 @@ bool UE::LevelSnapshots::Restorability::IsSubobjectClassDesirableForCapture(cons
 
 bool UE::LevelSnapshots::Restorability::IsSubobjectDesirableForCapture(const UObject* Subobject)
 {
-	checkf(!Subobject->IsA<UClass>(), TEXT("Do you have a typo on your code?"));
+	checkf(!Subobject->IsA<UClass>(), TEXT("Do you have a typo in your code?"));
 	
 	if (const UActorComponent* Component = Cast<UActorComponent>(Subobject))
 	{
@@ -216,9 +223,25 @@ bool UE::LevelSnapshots::Restorability::IsPropertyExplicitlySupportedForCapture(
 	return UE::LevelSnapshots::Private::FLevelSnapshotsModule::GetInternalModuleInstance().IsPropertyExplicitlySupported(Property);
 }
 
+bool UE::LevelSnapshots::Restorability::ShouldConsiderRemovedActorForRecreation(const FCanRecreateActorParams& Params)
+{
+	// Two reasons RF_Transactional is required:
+	// 1. It will not show up in Multiuser otherwise
+	// 2. If an actor is no RF_Transactional, it is usually because some system intentionally removed that flag, e.g. UChildActorComponent
+	const bool bTransacts = (Params.ObjectFlags& RF_Transactional) != 0;
+	const bool bWereFlagsSaved = Params.ObjectFlags != 0 // Objects usually have at least one flag so if it's 0 then it is very likely the flags were not saved...
+		// ... support for saving flags was added some time before ClassArchetypeRefactor. We check against ClassArchetypeRefactor for the unlikely case that in the future an object really has no flags.
+		|| Params.WorldData.SnapshotVersionInfo.GetSnapshotCustomVersion() >= FSnapshotCustomVersion::ClassArchetypeRefactor;
+	
+	return (bTransacts || !bWereFlagsSaved)
+		&& LevelSnapshots::Private::FLevelSnapshotsModule::GetInternalModuleInstance().CanRecreateActor(Params);
+}
+
 bool UE::LevelSnapshots::Restorability::ShouldConsiderNewActorForRemoval(const AActor* Actor)
 {
-	return Private::Internal::DoesActorHaveSupportedClassForRemoving(Actor) && IsActorDesirableForCapture(Actor);
+	return Private::Internal::DoesActorHaveSupportedClassForRemoving(Actor)
+		&& IsActorDesirableForCapture(Actor)
+		&& LevelSnapshots::Private::FLevelSnapshotsModule::GetInternalModuleInstance().CanDeleteActor(Actor);
 }
 
 bool UE::LevelSnapshots::Restorability::IsRestorableProperty(const FProperty* LeafProperty)

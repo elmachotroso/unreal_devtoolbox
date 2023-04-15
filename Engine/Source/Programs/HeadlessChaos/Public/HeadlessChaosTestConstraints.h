@@ -32,7 +32,9 @@ namespace ChaosTest
 			PhysicalMaterial->DisabledLinearThreshold = 0;
 			PhysicalMaterial->DisabledAngularThreshold = 0;
 
-			Evolution.SetNumIterations(NumIterations);
+			Evolution.SetNumPositionIterations(NumIterations);
+			Evolution.SetNumVelocityIterations(1);
+			Evolution.SetNumProjectionIterations(1);
 			Evolution.GetGravityForces().SetAcceleration(Gravity * FVec3(0, 0, -1));
 		}
 
@@ -56,6 +58,8 @@ namespace ChaosTest
 				PBDParticle.InvI() = PBDParticle.InvI() * ((FReal)1 / Mass);
 			}
 			Evolution.SetPhysicsMaterial(&Particle, MakeSerializable(PhysicalMaterial));
+
+			Evolution.EnableParticle(&Particle);
 
 			return &Particle;
 		}

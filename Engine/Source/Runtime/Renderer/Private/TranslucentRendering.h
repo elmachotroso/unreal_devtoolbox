@@ -9,6 +9,7 @@
 #include "VolumeRendering.h"
 #include "ScreenPass.h"
 #include "SystemTextures.h"
+#include "RenderGraphDefinitions.h"
 
 struct FSeparateTranslucencyDimensions
 {
@@ -17,7 +18,7 @@ struct FSeparateTranslucencyDimensions
 		return FScreenPassTextureViewport(Extent, GetScaledRect(ViewRect, Scale));
 	}
 
-	FScreenPassTextureViewport GetInstancedStereoViewport(const FViewInfo& View, float InstancedStereoWidth) const;
+	FScreenPassTextureViewport GetInstancedStereoViewport(const FViewInfo& View) const;
 
 	// Extent of the separate translucency targets, if downsampled.
 	FIntPoint Extent = FIntPoint::ZeroValue;
@@ -134,11 +135,20 @@ ETranslucencyView GetTranslucencyView(const FViewInfo& View);
 /** Returns the union of all translucency views to render. */
 ETranslucencyView GetTranslucencyViews(TArrayView<const FViewInfo> Views);
 
-/** Call once per frame to update GPU timers for stats and dynamic resolution scaling. */
-FSeparateTranslucencyDimensions UpdateTranslucencyTimers(FRHICommandListImmediate& RHICmdList, TArrayView<const FViewInfo> Views);
+/** Computes the translucency dimensions. */
+FSeparateTranslucencyDimensions UpdateSeparateTranslucencyDimensions(const FSceneRenderer& SceneRenderer);
 
 /** Returns whether the view family is requesting to render translucency. */
 bool ShouldRenderTranslucency(const FSceneViewFamily& ViewFamily);
+
+/** Check if separate translucency pass is needed for given pass and downsample scale */
+bool IsSeparateTranslucencyEnabled(ETranslucencyPass::Type TranslucencyPass, float DownsampleScale);
+
+/** Shared function to get the post DOF texture pixel format and creation flags */
+const FRDGTextureDesc GetPostDOFTranslucentTextureDesc(ETranslucencyPass::Type TranslucencyPass, FSeparateTranslucencyDimensions& SeparateTranslucencyDimensions, bool bIsModulate, EShaderPlatform ShaderPlatform);
+
+/** Shared function used to create Post DOF translucent textures */
+FRDGTextureMSAA CreatePostDOFTranslucentTexture(FRDGBuilder& GraphBuilder, ETranslucencyPass::Type TranslucencyPass, FSeparateTranslucencyDimensions& SeparateTranslucencyDimensions, bool bIsModulate, EShaderPlatform ShaderPlatform);
 
 
 /** Add a pass to compose separate translucency. */

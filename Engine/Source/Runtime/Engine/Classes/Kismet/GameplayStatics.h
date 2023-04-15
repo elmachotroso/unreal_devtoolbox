@@ -19,6 +19,7 @@
 #include "Particles/WorldPSCPool.h"
 #include "GameplayStatics.generated.h"
 
+class ASceneCapture2D;
 class UAudioComponent;
 class UInitialActiveSoundParams;
 class UBlueprint;
@@ -33,7 +34,7 @@ class USoundBase;
 class USoundConcurrency;
 class UStaticMesh;
 class FMemoryReader;
-
+class APlayerController;
 struct FDialogueContext;
 
 
@@ -225,6 +226,14 @@ class ENGINE_API UGameplayStatics : public UBlueprintFunctionLibrary
 	static class APlayerController* GetPlayerControllerFromID(const UObject* WorldContextObject, int32 ControllerID);
 
 	/** 
+	 * Returns the player controller with the specified physical controller ID. This only works for local players.
+	 *
+	 * @param ControllerID	Physical controller ID, the same value returned from Get Player Controller ID
+	 */
+	UFUNCTION(BlueprintPure, Category="Game", meta=(DisplayName="Get Local Player Controller From Platform User", WorldContext="WorldContextObject", UnsafeDuringActorConstruction="true"))
+	static APlayerController* GetPlayerControllerFromPlatformUser(const UObject* WorldContextObject, FPlatformUserId UserId);
+
+	/** 
 	 * Create a new local player for this game, for cases like local multiplayer.
 	 *
 	 * @param ControllerId             The ID of the physical controller that the should control the newly created player. A value of -1 specifies to use the next available ID
@@ -233,6 +242,16 @@ class ENGINE_API UGameplayStatics : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Game", meta = (DisplayName="Create Local Player", WorldContext = "WorldContextObject", AdvancedDisplay = "2", UnsafeDuringActorConstruction = "true"))
 	static class APlayerController* CreatePlayer(const UObject* WorldContextObject, int32 ControllerId = -1, bool bSpawnPlayerController = true);
+	
+	/** 
+	 * Create a new local player for this game, for cases like local multiplayer.
+	 *
+	 * @param UserId             	   The platform user id that should control the newly created player. A valude of PLATFRMUSERID_NONE specifies to use the next available ID	
+	 * @param bSpawnPlayerController   Whether a player controller should be spawned immediately for this player. If false a player controller will not be created automatically until transition to the next map.
+	 * @return                         The created player controller if one is created.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Game", meta = (AutoCreateRefTerm="UserId", DisplayName="Create Local Player For Platform User", WorldContext = "WorldContextObject", AdvancedDisplay = "2", UnsafeDuringActorConstruction = "true"))
+	static class APlayerController* CreatePlayerFromPlatformUser(const UObject* WorldContextObject, FPlatformUserId UserId, bool bSpawnPlayerController = true);
 
 	/** 
 	 * Removes a local player from this game.
@@ -260,6 +279,15 @@ class ENGINE_API UGameplayStatics : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category="Game", meta=(DisplayName="Set Local Player Controller ID",UnsafeDuringActorConstruction="true"))
 	static void SetPlayerControllerID(APlayerController* Player, int32 ControllerId);
+	
+	/**
+	 * Sets what platform user id a player should be using. This only works for local player controllers.
+	 *
+	 * @param Player			The player controller of the player to change the platform user of
+	 * @param PlatformUserId	The platform user id to assign this player
+	 */
+	UFUNCTION(BlueprintCallable, Category="Game", meta=(DisplayName="Set Local Player Controller Platform User Id",UnsafeDuringActorConstruction="true"))
+	static void SetPlayerPlatformUserId(APlayerController* PlayerController, FPlatformUserId UserId);
 
 	// --- Level Streaming functions ------------------------
 	
@@ -333,6 +361,13 @@ class ENGINE_API UGameplayStatics : public UBlueprintFunctionLibrary
 	/** Returns the class of a passed in Object, will always be valid if Object is not NULL */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Get Class", DeterminesOutputType = "Object"), Category="Utilities")
 	static class UClass *GetObjectClass(const UObject *Object);
+
+	/**
+	 * Returns whether or not the object passed in is of (or inherits from) the class type.
+	 * @return True if the object is of (or inherits from) the class type.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IsA"), Category = "Utilities")
+	static bool ObjectIsA(const UObject* Object, TSubclassOf<UObject> ObjectClass);
 
 	/**
 	 * Gets the current global time dilation.
@@ -664,9 +699,9 @@ public:
 	 *						to do a concurrency limit per owner.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Audio", meta=(WorldContext="WorldContextObject", AdvancedDisplay = "3", UnsafeDuringActorConstruction = "true", Keywords = "play"))
-	static void PlaySoundAtLocation(const UObject* WorldContextObject, USoundBase* Sound, FVector Location, FRotator Rotation, float VolumeMultiplier = 1.f, float PitchMultiplier = 1.f, float StartTime = 0.f, class USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, const AActor* OwningActor = nullptr, UInitialActiveSoundParams* InitialParams = nullptr);
+	static void PlaySoundAtLocation(const UObject* WorldContextObject, USoundBase* Sound, FVector Location, FRotator Rotation, float VolumeMultiplier = 1.f, float PitchMultiplier = 1.f, float StartTime = 0.f, class USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, const AActor* OwningActor = nullptr, const UInitialActiveSoundParams* InitialParams = nullptr);
 
-	static void PlaySoundAtLocation(const UObject* WorldContextObject, USoundBase* Sound, FVector Location, float VolumeMultiplier = 1.f, float PitchMultiplier = 1.f, float StartTime = 0.f, class USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, UInitialActiveSoundParams* InitialParams = nullptr)
+	static void PlaySoundAtLocation(const UObject* WorldContextObject, USoundBase* Sound, FVector Location, float VolumeMultiplier = 1.f, float PitchMultiplier = 1.f, float StartTime = 0.f, class USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, const UInitialActiveSoundParams* InitialParams = nullptr)
 	{
 		PlaySoundAtLocation(WorldContextObject, Sound, Location, FRotator::ZeroRotator, VolumeMultiplier, PitchMultiplier, StartTime, AttenuationSettings, ConcurrencySettings, nullptr, InitialParams);
 	}
@@ -870,6 +905,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Audio")
 	static void PrimeSound(USoundBase* InSound);
 
+	/** Get list of available Audio Spatialization Plugin names */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static TArray<FName> GetAvailableSpatialPluginNames(const UObject* WorldContextObject);
+
+	/** Get currently active Audio Spatialization Plugin name */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static FName GetActiveSpatialPluginName(const UObject* WorldContextObject);
+
+	/** Get list of available Audio Spatialization Plugins */
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static bool SetActiveSpatialPluginByName(const UObject* WorldContextObject, FName InPluginName);
+
 	/** Primes the sound waves in the given USoundClass, caching the first chunk of streamed audio. */
 	UFUNCTION(BlueprintCallable, Category = "Audio")
 	static void PrimeAllSoundsInSoundClass(class USoundClass* InSoundClass);
@@ -1060,7 +1107,7 @@ public:
 	 * Save the contents of the buffer to a platform-specific save slot/file 
 	 * @param InSaveData		Data to save
 	 * @param SlotName			Name of save game slot to save to.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the saving.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @return					Whether we successfully saved this information
 	 */
 	static bool SaveDataToSlot(const TArray<uint8>& InSaveData, const FString& SlotName, const int32 UserIndex);
@@ -1072,7 +1119,7 @@ public:
 	 *
 	 * @param SaveGameObject	Object that contains data about the save game that we want to write out.
 	 * @param SlotName			Name of the save game slot to load from.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the loading.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @param SavedDelegate		Delegate that will be called on game thread when save succeeds or fails.
 	 */
 	static void AsyncSaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex, FAsyncSaveGameToSlotDelegate SavedDelegate = FAsyncSaveGameToSlotDelegate());
@@ -1083,7 +1130,7 @@ public:
 	 *
 	 * @param SaveGameObject	Object that contains data about the save game that we want to write out
 	 * @param SlotName			Name of save game slot to save to.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the saving.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @return					Whether we successfully saved this information
 	 */
 	UFUNCTION(BlueprintCallable, Category="SaveGame")
@@ -1092,7 +1139,7 @@ public:
 	/**
 	 * See if a save game exists with the specified name.
 	 * @param SlotName			Name of save game slot.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the saving.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 */
 	UFUNCTION(BlueprintCallable, Category="SaveGame")
 	static bool DoesSaveGameExist(const FString& SlotName, const int32 UserIndex);
@@ -1108,7 +1155,7 @@ public:
 	 * Load contents from a slot/file into a buffer of save data.
 	 * @param OutSaveData		Data buffer to load into
 	 * @param SlotName			Name of save game slot to save to.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the saving.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @return					Whether valid save data was found and loaded.
 	 */
 	static bool LoadDataFromSlot(TArray<uint8>& OutSaveData, const FString& SlotName, const int32 UserIndex);
@@ -1119,7 +1166,7 @@ public:
 	 * The passed in delegate will be copied to a worker thread so make sure any payload is thread safe to copy by value
 	 *
 	 * @param SlotName			Name of the save game slot to load from.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the loading.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @param LoadedDelegate	Delegate that will be called on game thread when load succeeds or fails.
 	 */
 	static void AsyncLoadGameFromSlot(const FString& SlotName, const int32 UserIndex, FAsyncLoadGameFromSlotDelegate LoadedDelegate);
@@ -1127,7 +1174,7 @@ public:
 	/** 
 	 * Load the contents from a given slot.
 	 * @param SlotName			Name of the save game slot to load from.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the loading.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @return					Object containing loaded game state (nullptr if load fails)
 	 */
 	UFUNCTION(BlueprintCallable, Category="SaveGame")
@@ -1147,7 +1194,7 @@ public:
 	/**
 	 * Delete a save game in a particular slot.
 	 * @param SlotName			Name of save game slot to delete.
-	 * @param UserIndex			For some platforms, master user index to identify the user doing the deletion.
+	 * @param UserIndex			The platform user index that identifies the user doing the saving, ignored on some platforms.
 	 * @return					True if a file was actually able to be deleted. use DoesSaveGameExist to distinguish between delete failures and failure due to file not existing.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "SaveGame")
@@ -1155,27 +1202,30 @@ public:
 
 	/** Returns the frame delta time in seconds, adjusted by time dilation. */
 	UFUNCTION(BlueprintPure, Category = "Utilities|Time", meta = (WorldContext="WorldContextObject"))
-	static float GetWorldDeltaSeconds(const UObject* WorldContextObject);
+	static double GetWorldDeltaSeconds(const UObject* WorldContextObject);
 
 	/** Returns time in seconds since world was brought up for play, adjusted by time dilation and IS stopped when game pauses */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject"))
-	static float GetTimeSeconds(const UObject* WorldContextObject);
+	static double GetTimeSeconds(const UObject* WorldContextObject);
 
 	/** Returns time in seconds since world was brought up for play, adjusted by time dilation and IS NOT stopped when game pauses */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject"))
-	static float GetUnpausedTimeSeconds(const UObject* WorldContextObject);
+	static double GetUnpausedTimeSeconds(const UObject* WorldContextObject);
 
 	/** Returns time in seconds since world was brought up for play, does NOT stop when game pauses, NOT dilated/clamped */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject"))
-	static float GetRealTimeSeconds(const UObject* WorldContextObject);
+	static double GetRealTimeSeconds(const UObject* WorldContextObject);
 	
 	/** Returns time in seconds since world was brought up for play, IS stopped when game pauses, NOT dilated/clamped. */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject"))
-	static float GetAudioTimeSeconds(const UObject* WorldContextObject);
+	static double GetAudioTimeSeconds(const UObject* WorldContextObject);
+
+	UE_DEPRECATED(5.1, "This method has been deprecated and will be removed. Use the double version instead.")
+	static void GetAccurateRealTime(int32& Seconds, float& PartialSeconds);
 
 	/** Returns time in seconds since the application was started. Unlike the other time functions this is accurate to the exact time this function is called instead of set once per frame. */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time")
-	static void GetAccurateRealTime(int32& Seconds, float& PartialSeconds);
+	static void GetAccurateRealTime(int32& Seconds, double& PartialSeconds);
 
 	/*~ DVRStreaming API */
 	
@@ -1188,7 +1238,7 @@ public:
 
 	/**
 	 * Returns the string name of the current platform, to perform different behavior based on platform. 
-	 * (Platform names include Windows, Mac, IOS, Android, PS4, XboxOne, Linux) */
+	 * (Platform names include Windows, Mac, Linux, IOS, Android, consoles, etc.). */
 	UFUNCTION(BlueprintPure, Category="Game")
 	static FString GetPlatformName();
 
@@ -1331,6 +1381,16 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Camera", meta = (Keywords = "unproject"))
 	static bool DeprojectScreenToWorld(APlayerController const* Player, const FVector2D& ScreenPosition, FVector& WorldPosition, FVector& WorldDirection);
+
+	/** 
+	 * Transforms the given 2D UV coordinate into a 3D world-space point and direction.
+	 * @param SceneCapture2D	Deproject using this scene capture's view.
+	 * @param ScreenPosition	UV in scene capture render target to deproject.
+	 * @param WorldPosition		(out) Corresponding 3D position on camera near plane, in world space.
+	 * @param WorldDirection	(out) World space direction vector away from the camera at the given 2d point.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Camera", meta = (Keywords = "unproject"))
+	static bool DeprojectSceneCaptureToWorld(ASceneCapture2D const* SceneCapture2D, const FVector2D& TargetUV, FVector& WorldPosition, FVector& WorldDirection);
 
 	/** 
 	 * Transforms the given 3D world-space point into a its 2D screen space coordinate. 

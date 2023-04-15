@@ -6,15 +6,26 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Styling/StyleColors.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Sections/MovieSceneDataLayerSection.h"
 #include "Tracks/MovieSceneDataLayerTrack.h"
 #include "SequencerUtilities.h"
 #include "LevelUtils.h"
 #include "MovieSceneTimeHelpers.h"
+#include "MovieSceneToolHelpers.h"
+#include "ISequencer.h"
 #include "ISequencerSection.h"
 #include "SequencerSectionPainter.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
+
+#include "WorldPartition/DataLayer/DataLayerAsset.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
+
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "Input/DragAndDrop.h"
+#include "DataLayer/DataLayerDragDropOp.h"
+#include "SDropTarget.h"
 
 #define LOCTEXT_NAMESPACE "DataLayerTrackEditor"
 
@@ -22,8 +33,9 @@ struct FDataLayerSection
 	: public ISequencerSection
 	, public TSharedFromThis<FDataLayerSection>
 {
-	FDataLayerSection(UMovieSceneDataLayerSection* InSection)
-		: WeakSection(InSection)
+	FDataLayerSection(TSharedPtr<ISequencer> InSequencer, UMovieSceneDataLayerSection* InSection)
+		: SequencerPtr(InSequencer)
+		, WeakSection(InSection)
 	{}
 
 	/*~ ISequencerSection */
@@ -41,40 +53,47 @@ struct FDataLayerSection
 	}
 	virtual TSharedRef<SWidget> GenerateSectionWidget() override
 	{
-		return SNew(SBox)
-		.Padding(FMargin(4.f))
-		[
-			SNew(SVerticalBox)
-
-			+ SVerticalBox::Slot()
-			.AutoHeight()
+		return 
+			SNew(SDropTarget)
+			.OnAllowDrop(this, &FDataLayerSection::OnAllowDrop)
+			.OnDropped(this, &FDataLayerSection::OnDrop)
+			.Content()
 			[
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
+				SNew(SBox)
+				.Padding(FMargin(4.f))
 				[
-					SNew(STextBlock)
-					.Text(this, &FDataLayerSection::GetVisibilityText)
-					.ColorAndOpacity(this, &FDataLayerSection::GetTextColor)
-					.TextStyle(FAppStyle::Get(), "NormalText.Important")
-				]
+					SNew(SVerticalBox)
 
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Text(this, &FDataLayerSection::GetPrerollText)
-				]
-			]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
 
-			+ SVerticalBox::Slot()
-			[
-				SNew(STextBlock)
-				.Text(this, &FDataLayerSection::GetLayerBarText)
-				.AutoWrapText(true)
-			]
-		];
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(this, &FDataLayerSection::GetVisibilityText)
+							.ColorAndOpacity(this, &FDataLayerSection::GetTextColor)
+							.TextStyle(FAppStyle::Get(), "NormalText.Important")
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(this, &FDataLayerSection::GetPrerollText)
+						]
+					]
+
+					+ SVerticalBox::Slot()
+					[
+						SNew(STextBlock)
+						.Text(this, &FDataLayerSection::GetLayerBarText)
+						.AutoWrapText(true)
+					]
+				]
+			];
 	}
 
 	FText GetVisibilityText() const
@@ -118,20 +137,20 @@ struct FDataLayerSection
 		{
 			FString LayerName;
 
-			const TArray<FActorDataLayer>& DataLayers = Section->GetDataLayers();
-			for (int32 Index = 0; Index < DataLayers.Num(); ++Index)
+			const TArray<UDataLayerAsset*>& DataLayerAssets = Section->GetDataLayerAssets();
+			for (int32 Index = 0; Index < DataLayerAssets.Num(); ++Index)
 			{
-				UDataLayer* DataLayer = SubSystem->GetDataLayer(DataLayers[Index]);
-				if (DataLayer)
+				UDataLayerInstance* DataLayerInstance = SubSystem->GetDataLayerInstance(DataLayerAssets[Index]);
+				if (DataLayerInstance)
 				{
-					LayerName += DataLayer->GetDataLayerLabel().ToString();
+					LayerName += DataLayerInstance->GetDataLayerFullName();
 				}
 				else
 				{
-					LayerName += FText::Format(LOCTEXT("UnknownDataLayer", "**invalid: {0}**"), FText::FromString(DataLayers[Index].Name.ToString())).ToString();
+					LayerName += FText::Format(LOCTEXT("UnknownDataLayer", "**invalid: {0}**"), FText::FromString(DataLayerAssets[Index]->GetFullName())).ToString();
 				}
 
-				if (Index < DataLayers.Num()-1)
+				if (Index < DataLayerAssets.Num()-1)
 				{
 					LayerName += TEXT(", ");
 				}
@@ -157,8 +176,84 @@ struct FDataLayerSection
 		}
 		return FStyleColors::Foreground;
 	}
+
+	bool OnAllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation)
+	{
+		if (DragDropOperation->IsOfType<FDataLayerDragDropOp>() && StaticCastSharedPtr<FDataLayerDragDropOp>(DragDropOperation)->DataLayerDragDropInfos.Num() > 0)
+		{
+			return true;
+		}
+		else if (DragDropOperation->IsOfType<FAssetDragDropOp>())
+		{
+			return true;
+		}
+		return false;
+	}
+
+	FReply OnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent)
+	{
+		UMovieSceneDataLayerSection* Section = WeakSection.Get();
+		if (!Section)
+		{
+			return FReply::Handled();
+		}
+
+		UDataLayerEditorSubsystem* SubSystem = UDataLayerEditorSubsystem::Get();
+		if (!SubSystem)
+		{
+			return FReply::Handled();
+		}
+
+		TArray<UDataLayerAsset*> DataLayerAssets = Section->GetDataLayerAssets();
+		if (TSharedPtr<FDataLayerDragDropOp> DataLayerDragDropOp = InDragDropEvent.GetOperationAs<FDataLayerDragDropOp>())
+		{
+			if (DataLayerDragDropOp->DataLayerDragDropInfos.Num() > 0)
+			{
+				for (const FDataLayerDragDropOp::FDragDropInfo& DragDropInfo : DataLayerDragDropOp->DataLayerDragDropInfos)
+				{
+					if (UDataLayerInstance* DataLayerInstance = SubSystem->GetDataLayerInstance(DragDropInfo.DataLayerInstanceName))
+					{
+						UDataLayerInstanceWithAsset* DataLayerWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance);
+						UDataLayerAsset* DataLayerAsset = DataLayerWithAsset ? const_cast<UDataLayerAsset*>(DataLayerWithAsset->GetAsset()) : nullptr;
+
+						if (DataLayerAsset)
+						{
+							DataLayerAssets.AddUnique(DataLayerAsset);
+						}
+					}
+				}
+			}
+		}
+		else if (TSharedPtr<FAssetDragDropOp> AssetDragDropOp = InDragDropEvent.GetOperationAs<FAssetDragDropOp>())
+		{
+			UMovieSceneSequence* FocusedSequence = SequencerPtr.IsValid() ? SequencerPtr.Pin()->GetFocusedMovieSceneSequence() : nullptr;
+
+			for (const FAssetData& AssetData : AssetDragDropOp->GetAssets())
+			{
+				if (UDataLayerAsset* DataLayerAsset = Cast<UDataLayerAsset>(AssetData.GetAsset()))
+				{	
+					if (MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+					{
+						DataLayerAssets.AddUnique(DataLayerAsset);
+					}
+				}
+			}
+		}
+		else
+		{	
+			return FReply::Handled();
+		}
+
+		FScopedTransaction Transaction(LOCTEXT("TransactionText", "Add Data Layer(s) to Data Layer Section"));
+		Section->Modify();
+		Section->SetDataLayerAssets(DataLayerAssets);
+
+		return FReply::Handled();
+	}
+
 private:
 
+	TWeakPtr<ISequencer> SequencerPtr;
 	TWeakObjectPtr<UMovieSceneDataLayerSection> WeakSection;
 };
 
@@ -192,7 +287,7 @@ TSharedRef<ISequencerSection> FDataLayerTrackEditor::MakeSectionInterface(UMovie
 	UMovieSceneDataLayerSection* DataLayerSection = Cast<UMovieSceneDataLayerSection>(&SectionObject);
 	check(SupportsType(SectionObject.GetOuter()->GetClass()) && DataLayerSection != nullptr);
 
-	return MakeShared<FDataLayerSection>(DataLayerSection);
+	return MakeShared<FDataLayerSection>(GetSequencer(), DataLayerSection);
 }
 
 void FDataLayerTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)

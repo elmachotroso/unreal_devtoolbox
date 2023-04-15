@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -14,7 +15,7 @@ using Serilog.Context;
 
 namespace Horde.Storage.Implementation
 {
-    public class CachedRefStore : IRefsStore
+    public class CachedRefStore : IRefsStore, IDisposable
     {
         private readonly IRefsStore _backingStore;
         private readonly IOptionsMonitor<MemoryCacheRefSettings> _memoryOptions;
@@ -25,7 +26,7 @@ namespace Horde.Storage.Implementation
         private readonly ILogger _logger = Log.ForContext<CachedRefStore>();
 
         // ReSharper disable once NotAccessedField.Local
-        private Timer _cacheInfoTimer;
+        private readonly Timer _cacheInfoTimer;
 
         public CachedRefStore(IRefsStore backingStore, IOptionsMonitor<MemoryCacheRefSettings> memoryOptions)
         {
@@ -38,10 +39,7 @@ namespace Horde.Storage.Implementation
             _cacheInfoTimer = new Timer(LogCacheInfo, null, TimeSpan.Zero, TimeSpan.FromSeconds(60));
         }
 
-        public IRefsStore BackingStore
-        {
-            get { return _backingStore; }
-        }
+        public IRefsStore BackingStore => _backingStore;
 
         private void LogCacheInfo(object? state)
         {
@@ -74,7 +72,9 @@ namespace Horde.Storage.Implementation
             
             // do not refs a miss as it could get added at any time
             if (backendRecord == null)
+            {
                 return null;
+            }
 
             CreateMemoryCacheEntry(cacheKey, backendRecord, ns, bucket);
 
@@ -158,6 +158,21 @@ namespace Horde.Storage.Implementation
 
             return _backingStore.DropNamespace(ns);
         }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _memoryCache.Dispose();
+                _cacheInfoTimer.Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
     }
 
     class BoolChangeToken : IChangeToken
@@ -169,10 +184,6 @@ namespace Horde.Storage.Implementation
 
         public bool HasChanged { get; set; }
 
-        public bool ActiveChangeCallbacks
-        {
-            get { return false; }
-        }
+        public bool ActiveChangeCallbacks => false;
     }
-
 }

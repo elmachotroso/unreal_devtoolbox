@@ -2,11 +2,23 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "HAL/IConsoleManager.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Templates/IsFloatingPoint.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Templates/Function.h"
+#include "Misc/EnumClassFlags.h"
 
-UE_DECLARE_LWC_TYPE(Vector2,,FVector2D);
+class FAutoConsoleVariableRef;
+class FFeedbackContext;
+class FOutputDeviceConsole;
+class FOutputDeviceError;
+class IPlatformInputDeviceMapper;
 
 /**
  * The accuracy when dealing with physical characteristics of the monitor/screen of the device we're running on.
@@ -17,6 +29,42 @@ enum class EScreenPhysicalAccuracy
 	Approximation,
 	Truth
 };
+
+/**
+ * Callback for when FindInputDeviceForUserWithUI has completed
+ */
+struct FShowInputDeviceSelectorParams
+{
+	FInputDeviceId InputDeviceId;
+	FPlatformUserId PlatformUserId;
+};
+typedef TFunction<void(const FShowInputDeviceSelectorParams&)> FShowInputDeviceSelectorComplete;
+
+/**
+ * Callback for when ShowPlatformUserSelector has completed.
+ */
+struct FPlatformUserSelectionCompleteParams
+{
+	FPlatformUserId SelectedUserId;
+	bool bSuccess;
+};
+typedef TFunction<void(const FPlatformUserSelectionCompleteParams& Params)> FPlatformUserSelectionComplete;
+
+/*
+ * Options for ShowPlatformUserSelector. Not all platforms will support all flags
+ */
+enum class EPlatformUserSelectorFlags : uint8
+{
+	None                         = 0,
+	RequiresOnlineEnabledProfile = (1 << 1), // whether to only show profiles that have an online account
+	ShowSkipButton               = (1 << 2), // display a 'skip' button UI to be closed & return the initiating user
+	AllowGuests                  = (1 << 3), // temporary guest accounts, throwaways etc.
+	ShowNewUsersOnly             = (1 << 4), // do not show profiles that are already in-use by the title
+
+	Default                      = ShowSkipButton, // most commonly used options
+};
+ENUM_CLASS_FLAGS(EPlatformUserSelectorFlags);
+
 
 struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 {
@@ -56,6 +104,11 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 	 * Gets a pointer to the default platform feedback context implementation.
 	 */
 	static FFeedbackContext* GetFeedbackContext();
+
+	/**
+	 * Gets a pointer to the default platform input device manager.
+	 */
+	static IPlatformInputDeviceMapper* CreatePlatformInputDeviceManager();
 
 	/**
 	 * Creates an application instance.
@@ -301,6 +354,36 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 		return Accuracy;		
 	}
 	
+	/**
+	 * Asyncronously display the platform-specific input device selection UI, if supported.
+	 * 
+	 * @param InitiatingUserId The platform user to find an input device for.
+	 * @param OnShowInputDeviceSelectorComplete Callback for when the input device selection operation has completed
+	 * @return true if the UI will be shown and the callback will be called
+	 * @return false if the platform does not support an input device selection API, or it is not currently available (the callback will not be called)
+	 */
+	static bool ShowInputDeviceSelector( FPlatformUserId InitiatingUserId, FShowInputDeviceSelectorComplete OnShowInputDeviceSelectorComplete )
+	{
+		// no default implementation
+		return false;
+	}
+
+	/**
+	 * Asyncronously display the platform-specific user selection UI, if supported.
+	 * 
+	 * @param InitiatingInputDeviceId The input device that prompted showing the UI, if applicable. The input device may be re-paired with the newly-selected user, depending on the platform
+	 * @param Flags customization options for the user selection UI.
+	 * @param OnUserSelectionComplete callback for when the user selection operation has completed
+	 * @return true if the UI will be shown and the callback will be called
+	 * @return false if the platform does not support a user-selection API, or it is not currently available (the callback will not be called)
+	 */
+	static bool ShowPlatformUserSelector(FInputDeviceId InitiatingInputDeviceId, EPlatformUserSelectorFlags Flags, FPlatformUserSelectionComplete OnUserSelectionComplete)
+	{
+		// no default implementation
+		return false;
+	}
+
+
 protected:
 	static bool CachedPhysicalScreenData;
 	static EScreenPhysicalAccuracy CachedPhysicalScreenAccuracy;

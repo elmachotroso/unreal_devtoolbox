@@ -9,7 +9,7 @@
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 
 #include "AssetToolsModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 // for content-browser things
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -28,6 +28,8 @@
 #include "PlanarCut.h"
 
 #include "Misc/ScopedSlowTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolConvert)
 
 #define LOCTEXT_NAMESPACE "FractureToolConvert"
 
@@ -345,7 +347,7 @@ int32 UFractureToolConvert::ExecuteFracture(const FFractureToolContext& Fracture
 		Materials.Reserve(MainMaterials.Num());
 		for (int32 MatIdx = 0; MatIdx + SkipLastMaterialOffset < MainMaterials.Num(); MatIdx++)
 		{
-			if (MatIdx < OverrideMaterials.Num() && !OverrideMaterials[MatIdx].IsNull())
+			if (MatIdx < OverrideMaterials.Num() && OverrideMaterials[MatIdx])
 			{
 				Materials.Add(OverrideMaterials[MatIdx].Get());
 			}
@@ -367,3 +369,4 @@ int32 UFractureToolConvert::ExecuteFracture(const FFractureToolContext& Fracture
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -1,29 +1,69 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphEditorImpl.h"
-#include "GraphEditAction.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "EdGraph/EdGraph.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ToolMenus.h"
-#include "EditorStyleSet.h"
 #include "Editor.h"
-#include "GraphEditorModule.h"
-#include "SGraphPanel.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "GraphEditAction.h"
 #include "GraphEditorActions.h"
-#include "ScopedTransaction.h"
-#include "SGraphEditorActionMenu.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "GraphEditorModule.h"
 #include "GraphEditorSettings.h"
-#include "Toolkits/AssetEditorToolkitMenuContext.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Modules/ModuleManager.h"
+#include "SGraphEditorActionMenu.h"
+#include "SGraphPanel.h"
+#include "SNodePanel.h"
+#include "ScopedTransaction.h"
+#include "SlateGlobals.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuContext.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuMisc.h"
+#include "ToolMenuSection.h"
+#include "ToolMenus.h"
 #include "Toolkits/AssetEditorToolkit.h"
-#include "EdGraphSchema_K2.h"
+#include "Toolkits/AssetEditorToolkitMenuContext.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FActiveTimerHandle;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "GraphEditorModule"
 
@@ -269,8 +309,8 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 				UGraphNodeContextMenuContext* NodeContext = InToolMenu->FindContext<UGraphNodeContextMenuContext>();
 				if (NodeContext && NodeContext->Pin)
 				{
-					FText SingleDescFormat = LOCTEXT("BreakDesc", "Break link to {NodeTitle}");
-					FText MultiDescFormat = LOCTEXT("BreakDescMulti", "Break link to {NodeTitle} ({NumberOfNodes})");
+					FText SingleDescFormat = LOCTEXT("BreakDesc", "Break Link to {NodeTitle}");
+					FText MultiDescFormat = LOCTEXT("BreakDescMulti", "Break Link to {NodeTitle} ({NumberOfNodes})");
 
 					TMap< FString, uint32 > LinkTitleCount;
 					for (UEdGraphPin* TargetPin : NodeContext->Pin->LinkedTo)
@@ -289,6 +329,22 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 			}),
 			BreakLinksMenuVisibility,
 			EUserInterfaceActionType::Button);
+
+		// Break This Link
+		{
+			FToolUIAction BreakThisLinkAction;
+			BreakThisLinkAction.ExecuteAction = FToolMenuExecuteAction::CreateSP(this, &SGraphEditorImpl::ExecuteBreakPinLinks);
+			BreakThisLinkAction.IsActionVisibleDelegate = FToolMenuIsActionButtonVisible::CreateSP(this, &SGraphEditorImpl::IsBreakThisLinkVisible);
+
+			TSharedPtr<FUICommandInfo> BreakThisLinkCommand = FGraphEditorCommands::Get().BreakThisLink;
+			Section.AddMenuEntry(
+				BreakThisLinkCommand->GetCommandName(),
+				BreakThisLinkCommand->GetLabel(),
+				BreakThisLinkCommand->GetDescription(),
+				BreakThisLinkCommand->GetIcon(),
+				BreakThisLinkAction
+			);
+		}
 	}
 
 	FToolUIAction PinActionSubMenuVisibiliity;
@@ -297,7 +353,7 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 	// Jump to specific connections
 	{
 		Section.AddSubMenu("JumpToConnection",
-			LOCTEXT("JumpToConnection", "Jump To Connection..."),
+			LOCTEXT("JumpToConnection", "Jump to Connection..."),
 			LOCTEXT("JumpToSpecificConnection", "Jump to specific connection..."),
 			FNewToolMenuDelegate::CreateLambda([this, GetMenuEntryForPin](UToolMenu* InToolMenu)
 			{
@@ -356,7 +412,7 @@ void SGraphEditorImpl::GetPinContextMenuActionsForSchema(UToolMenu* InMenu) cons
 
 				// Add individual pin connections
 				FText SingleDescFormat = LOCTEXT("StraightenDesc", "Straighten Connection to {NodeTitle}");
-				FText MultiDescFormat = LOCTEXT("StraightenDescMulti", "Straigten Connection to {NodeTitle} ({NumberOfNodes})");
+				FText MultiDescFormat = LOCTEXT("StraightenDescMulti", "Straighten Connection to {NodeTitle} ({NumberOfNodes})");
 				TMap< FString, uint32 > LinkTitleCount;
 				for (UEdGraphPin* TargetPin : NodeContext->Pin->LinkedTo)
 				{
@@ -400,7 +456,18 @@ bool SGraphEditorImpl::IsBreakPinLinksVisible(const FToolMenuContext& InContext)
 	UGraphNodeContextMenuContext* NodeContext = InContext.FindContext<UGraphNodeContextMenuContext>();
 	if (NodeContext && NodeContext->Pin)
 	{
-		return !NodeContext->bIsDebugging && (NodeContext->Pin->LinkedTo.Num() > 0);
+		return !NodeContext->bIsDebugging && (NodeContext->Pin->LinkedTo.Num() > 1);
+	}
+
+	return false;
+}
+
+bool SGraphEditorImpl::IsBreakThisLinkVisible(const FToolMenuContext& InContext) const
+{
+	UGraphNodeContextMenuContext* NodeContext = InContext.FindContext<UGraphNodeContextMenuContext>();
+	if (NodeContext && NodeContext->Pin)
+	{
+		return !NodeContext->bIsDebugging && (NodeContext->Pin->LinkedTo.Num() == 1);
 	}
 
 	return false;
@@ -667,7 +734,8 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 		[
 			SAssignNew(GraphPanel, SGraphPanel)
 			.GraphObj( EdGraphObj )
-			.GraphObjToDiff( InArgs._GraphToDiff)
+			.DiffResults( InArgs._DiffResults)
+			.FocusedDiffResult( InArgs._FocusedDiffResult)
 			.OnGetContextMenuFor( this, &SGraphEditorImpl::GraphEd_OnGetContextMenuFor )
 			.OnSelectionChanged( InArgs._GraphEvents.OnSelectionChanged )
 			.OnNodeDoubleClicked( InArgs._GraphEvents.OnNodeDoubleClicked )
@@ -691,7 +759,7 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 		.HAlign(HAlign_Right)
 		[
 			SNew(STextBlock)
-			.TextStyle( FEditorStyle::Get(), "Graph.ZoomText" )
+			.TextStyle( FAppStyle::Get(), "Graph.ZoomText" )
 			.Text( this, &SGraphEditorImpl::GetZoomText )
 			.ColorAndOpacity( this, &SGraphEditorImpl::GetZoomTextColorAndOpacity )
 		]
@@ -713,14 +781,14 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 			[
 				SNew(SBorder)
 				.Padding(FMargin(10.f, 4.f))
-				.BorderImage(FEditorStyle::GetBrush(TEXT("Graph.InstructionBackground")))
+				.BorderImage(FAppStyle::GetBrush(TEXT("Graph.InstructionBackground")))
 				.BorderBackgroundColor(this, &SGraphEditorImpl::InstructionBorderColor)
 				.HAlign(HAlign_Center)
 				.ColorAndOpacity(this, &SGraphEditorImpl::InstructionTextTint)
 				.Visibility(this, &SGraphEditorImpl::InstructionTextVisibility)
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "Graph.InstructionText")
+					.TextStyle(FAppStyle::Get(), "Graph.InstructionText")
 					.Text(this, &SGraphEditorImpl::GetInstructionText)
 				]
 			]			
@@ -734,7 +802,7 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 		[
 			SNew(STextBlock)
 			.Visibility( EVisibility::HitTestInvisible )
-			.TextStyle( FEditorStyle::Get(), "Graph.CornerText" )
+			.TextStyle( FAppStyle::Get(), "Graph.CornerText" )
 			.Text(Appearance.Get().CornerText)
 		]
 
@@ -746,7 +814,7 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 		[
 			SNew(STextBlock)
 			.Visibility(this, &SGraphEditorImpl::PIENotification)
-			.TextStyle( FEditorStyle::Get(), "Graph.SimulatingText" )
+			.TextStyle( FAppStyle::Get(), "Graph.SimulatingText" )
 			.Text( PIENotifyText )
 		]
 
@@ -758,7 +826,7 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 		[
 			SNew(STextBlock)
 			.Visibility(this, &SGraphEditorImpl::ReadOnlyVisibility)
-			.TextStyle(FEditorStyle::Get(), "Graph.CornerText")
+			.TextStyle(FAppStyle::Get(), "Graph.CornerText")
 			.Text(ReadOnlyText)
 		]
 
@@ -789,6 +857,10 @@ EVisibility SGraphEditorImpl::PIENotification( ) const
 	
 SGraphEditorImpl::~SGraphEditorImpl()
 {
+	if (FocusEditorTimer.IsValid())
+	{
+		UnRegisterActiveTimer(FocusEditorTimer.Pin().ToSharedRef());
+	}
 }
 
 void SGraphEditorImpl::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
@@ -1390,20 +1462,63 @@ void SGraphEditorImpl::AddNotification( FNotificationInfo& Info, bool bSuccess )
 	}
 }
 
-void SGraphEditorImpl::FocusLockedEditorHere()
+EActiveTimerReturnType SGraphEditorImpl::HandleFocusEditorDeferred(double InCurrentTime, float InDeltaTime)
 {
+	
+	// If GraphPanel is going to pan to a target but hasn't yet, wait until it does so we don't miss it
+	if (GraphPanel->HasDeferredZoomDestination())
+	{
+		return EActiveTimerReturnType::Continue;
+	}
+	
 	for( int i = 0; i < LockedGraphs.Num(); ++i )
 	{
 		TSharedPtr<SGraphEditor> LockedGraph = LockedGraphs[i].Pin();
 		if (LockedGraph != TSharedPtr<SGraphEditor>())
 		{
-			LockedGraph->SetViewLocation(GraphPanel->GetViewOffset(), GraphPanel->GetZoomAmount());
+			// If the locked graph is going to pan to a target but hasn't yet, wait until it does so we don't miss it
+			if (LockedGraph->GetGraphPanel()->HasDeferredZoomDestination())
+			{
+				return EActiveTimerReturnType::Continue;
+			}
+
+			FVector2D TopLeft, BottomRight;
+
+			// If the locked graph was instructed to pan to a destination, let it ignore the lock to reach that destination.
+			// this way we can support diffs of moved nodes.
+			if (LockedGraph->GetGraphPanel()->GetZoomTargetRect(TopLeft, BottomRight))
+			{
+				continue;
+			}
+			
+			// Send the locked graph to the same place as this graph
+			if (GraphPanel->GetZoomTargetRect(TopLeft, BottomRight))
+			{
+				LockedGraph->GetGraphPanel()->JumpToRect(TopLeft, BottomRight);
+			}
+			else
+			{
+				LockedGraph->SetViewLocation(GraphPanel->GetViewOffset(), GraphPanel->GetZoomAmount());
+			}
 		}
 		else
 		{
 			LockedGraphs.RemoveAtSwap(i--);
 		}
 	}
+	return EActiveTimerReturnType::Stop;
+}
+
+void SGraphEditorImpl::FocusLockedEditorHere()
+{
+	if (!FocusEditorTimer.IsValid())
+	{
+		FocusEditorTimer = RegisterActiveTimer(
+		0.f,
+		FWidgetActiveTimerDelegate::CreateSP(this, &SGraphEditorImpl::HandleFocusEditorDeferred)
+		);
+	}
+	
 }
 
 void SGraphEditorImpl::SetPinVisibility( SGraphEditor::EPinVisibility InVisibility ) 

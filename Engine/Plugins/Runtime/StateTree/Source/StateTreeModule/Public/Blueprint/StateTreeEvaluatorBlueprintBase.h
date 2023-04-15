@@ -6,8 +6,8 @@
 #include "Templates/SubclassOf.h"
 #include "StateTreeTypes.h"
 #include "StateTreeEvaluatorBase.h"
-#include "StateTreePropertyBindings.h"
-#include "StateTreeItemBlueprintBase.h"
+#include "StateTreeEvents.h"
+#include "StateTreeNodeBlueprintBase.h"
 #include "StateTreeEvaluatorBlueprintBase.generated.h"
 
 struct FStateTreeExecutionContext;
@@ -16,31 +16,31 @@ struct FStateTreeExecutionContext;
  * Base class for Blueprint based evaluators. 
  */
 UCLASS(Abstract, Blueprintable)
-class STATETREEMODULE_API UStateTreeEvaluatorBlueprintBase : public UStateTreeItemBlueprintBase
+class STATETREEMODULE_API UStateTreeEvaluatorBlueprintBase : public UStateTreeNodeBlueprintBase
 {
 	GENERATED_BODY()
 public:
+	UStateTreeEvaluatorBlueprintBase(const FObjectInitializer& ObjectInitializer);
 
-	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "EnterState"))
-	void ReceiveEnterState(AActor* OwnerActor, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition);
+	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "TreeStart"))
+	void ReceiveTreeStart();
 
-	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "ExitState"))
-	void ReceiveExitState(AActor* OwnerActor, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition);
+	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "TreeStop"))
+	void ReceiveTreeStop();
 
-	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "StateCompleted"))
-	void ReceiveStateCompleted(AActor* OwnerActor, const EStateTreeRunStatus CompletionStatus, const FStateTreeHandle CompletedState);
+	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "Tick"))
+	void ReceiveTick(const float DeltaTime);
 
-	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "Evaluate"))
-	void ReceiveEvaluate(AActor* OwnerActor, const EStateTreeEvaluationType EvalType, const float DeltaTime);
+protected:
+	virtual void TreeStart(FStateTreeExecutionContext& Context);
+	virtual void TreeStop(FStateTreeExecutionContext& Context);
+	virtual void Tick(FStateTreeExecutionContext& Context, const float DeltaTime);
 
-	
-	virtual void EnterState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition);
+	uint8 bHasTreeStart : 1;
+	uint8 bHasTreeStop : 1;
+	uint8 bHasTick : 1;
 
-	virtual void ExitState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition);
-
-	virtual void StateCompleted(FStateTreeExecutionContext& Context, const EStateTreeRunStatus CompletionStatus, const FStateTreeHandle CompletedState);
-
-	virtual void Evaluate(FStateTreeExecutionContext& Context, const EStateTreeEvaluationType EvalType, const float DeltaTime);
+	friend struct FStateTreeBlueprintEvaluatorWrapper;
 };
 
 /**
@@ -52,14 +52,11 @@ struct STATETREEMODULE_API FStateTreeBlueprintEvaluatorWrapper : public FStateTr
 	GENERATED_BODY()
 
 	virtual const UStruct* GetInstanceDataType() const override { return EvaluatorClass; };
-	virtual bool Link(FStateTreeLinker& Linker) override;
-	virtual void EnterState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const override;
-	virtual void ExitState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const override;
-	virtual void StateCompleted(FStateTreeExecutionContext& Context, const EStateTreeRunStatus CompletionStatus, const FStateTreeHandle CompletedState) const override;
-	virtual void Evaluate(FStateTreeExecutionContext& Context, const EStateTreeEvaluationType EvalType, const float DeltaTime) const override;
+	
+	virtual void TreeStart(FStateTreeExecutionContext& Context) const override;
+	virtual void TreeStop(FStateTreeExecutionContext& Context) const override;
+	virtual void Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const override;
 
 	UPROPERTY()
 	TSubclassOf<UStateTreeEvaluatorBlueprintBase> EvaluatorClass = nullptr;
-
-	TArray<FStateTreeBlueprintExternalDataHandle> ExternalDataHandles;
 };

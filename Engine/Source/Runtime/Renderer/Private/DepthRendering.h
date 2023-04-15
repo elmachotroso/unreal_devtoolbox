@@ -57,16 +57,7 @@ extern FDepthPassInfo GetDepthPassInfo(const FScene* Scene);
 
 void AddDitheredStencilFillPass(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, FRDGTextureRef DepthTexture, const FDepthPassInfo& DepthPass);
 
-class FDepthOnlyShaderElementData : public FMeshMaterialShaderElementData
-{
-public:
-	FDepthOnlyShaderElementData(float InMobileColorValue)
-		: MobileColorValue(InMobileColorValue)
-	{
-	}
-
-	float MobileColorValue;
-};
+FMeshDrawCommandSortKey CalculateDepthPassMeshStaticSortKey(EBlendMode BlendMode, const FMeshMaterialShader* VertexShader, const FMeshMaterialShader* PixelShader);
 
 /**
  * A vertex shader for rendering the depth of a mesh.
@@ -112,7 +103,7 @@ public:
 		const FMaterialRenderProxy& MaterialRenderProxy,
 		const FMaterial& Material,
 		const FMeshPassProcessorRenderState& DrawRenderState,
-		const FDepthOnlyShaderElementData& ShaderElementData,
+		const FMeshMaterialShaderElementData& ShaderElementData,
 		FMeshDrawSingleShaderBindings& ShaderBindings) const
 	{
 		FMeshMaterialShader::GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, ShaderBindings);
@@ -122,7 +113,6 @@ public:
 /**
 * A pixel shader for rendering the depth of a mesh.
 */
-template <bool bUsesMobileColorValue>
 class FDepthOnlyPS : public FMeshMaterialShader
 {
 	DECLARE_SHADER_TYPE(FDepthOnlyPS,MeshMaterial);
@@ -135,16 +125,13 @@ public:
 		}
 		
 		return
-			// Compile for materials that are masked, avoid generating permutation for other platforms if bUsesMobileColorValue is true
-			((!Parameters.MaterialParameters.bWritesEveryPixel || Parameters.MaterialParameters.bHasPixelDepthOffsetConnected) && (!bUsesMobileColorValue || IsMobilePlatform(Parameters.Platform)))
-			// Mobile uses material pixel shader to write custom stencil to color target
-			|| (IsMobilePlatform(Parameters.Platform) && (Parameters.MaterialParameters.bIsDefaultMaterial || Parameters.MaterialParameters.bMaterialMayModifyMeshPosition));
+			// Compile for materials that are masked
+			(!Parameters.MaterialParameters.bWritesEveryPixel || Parameters.MaterialParameters.bHasPixelDepthOffsetConnected);
 	}
 
 	FDepthOnlyPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 		FMeshMaterialShader(Initializer)
 	{
-		MobileColorValue.Bind(Initializer.ParameterMap, TEXT("MobileColorValue"));
 	}
 
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -152,14 +139,6 @@ public:
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		
 		OutEnvironment.SetDefine(TEXT("ALLOW_DEBUG_VIEW_MODES"), AllowDebugViewmodes(Parameters.Platform));
-		if (IsMobilePlatform(Parameters.Platform))
-		{
-			OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_COLOR_VALUE"), bUsesMobileColorValue ? 1u : 0u);
-		}
-		else
-		{
-			OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_COLOR_VALUE"), 0u);
-		}
 		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1u);
 	}
 
@@ -172,31 +151,31 @@ public:
 		const FMaterialRenderProxy& MaterialRenderProxy,
 		const FMaterial& Material,
 		const FMeshPassProcessorRenderState& DrawRenderState,
-		const FDepthOnlyShaderElementData& ShaderElementData,
+		const FMeshMaterialShaderElementData& ShaderElementData,
 		FMeshDrawSingleShaderBindings& ShaderBindings) const
 	{
 		FMeshMaterialShader::GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, ShaderBindings);
-
-		ShaderBindings.Add(MobileColorValue, ShaderElementData.MobileColorValue);
 	}
-
-	LAYOUT_FIELD(FShaderParameter, MobileColorValue);
 };
 
-template <bool bPositionOnly, bool bUsesMobileColorValue>
+template <bool bPositionOnly>
 bool GetDepthPassShaders(
 	const FMaterial& Material,
-	FVertexFactoryType* VertexFactoryType,
+	const FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
+	bool bMaterialUsesPixelDepthOffset,
 	TShaderRef<TDepthOnlyVS<bPositionOnly>>& VertexShader,
-	TShaderRef<FDepthOnlyPS<bUsesMobileColorValue>>& PixelShader,
+	TShaderRef<FDepthOnlyPS>& PixelShader,
 	FShaderPipelineRef& ShaderPipeline);
 
-class FDepthPassMeshProcessor : public FMeshPassProcessor
+class FDepthPassMeshProcessor : public FSceneRenderingAllocatorObject<FDepthPassMeshProcessor>, public FMeshPassProcessor
 {
 public:
 
-	FDepthPassMeshProcessor(const FScene* Scene, 
+	FDepthPassMeshProcessor(
+		EMeshPass::Type InMeshPassType,
+		const FScene* Scene, 
+		ERHIFeatureLevel::Type FeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand, 
 		const FMeshPassProcessorRenderState& InPassDrawRenderState, 
 		const bool InbRespectUseAsOccluderFlag,
@@ -208,6 +187,7 @@ public:
 		const bool bShadowProjection = false);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 private:
 
@@ -224,6 +204,25 @@ private:
 		const FMaterial& RESTRICT MaterialResource,
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
+
+	bool UseDefaultMaterial(const FMaterial& Material, bool bMaterialModifiesMeshPosition, bool bSupportPositionOnlyStream, bool& bPositionOnly);
+
+	void CollectDefaultMaterialPSOInitializers(
+		const FSceneTexturesConfig& SceneTexturesConfig, 
+		const FMaterial& Material, 
+		const FVertexFactoryType* VertexFactoryType, 
+		TArray<FPSOPrecacheData>& PSOInitializers);
+
+	template<bool bPositionOnly>
+	void CollectPSOInitializersInternal(
+		const FSceneTexturesConfig& SceneTexturesConfig,
+		const FVertexFactoryType* VertexFactoryType,
+		const FMaterial& RESTRICT MaterialResource,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		bool bDitheredLODTransition, 
+		EPrimitiveType PrimitiveType,
+		TArray<FPSOPrecacheData>& PSOInitializers);
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 

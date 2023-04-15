@@ -11,7 +11,7 @@
 #include "RendererInterface.h"
 #include "ShaderParameters.h"
 #include "Shader.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "ShaderParameterUtils.h"
 
 /** Uniform buffer for computing the vertex positional and UV adjustments in the vertex shader. */
@@ -132,7 +132,7 @@ public:
 	}
 
 	/** Set the material shader parameter values. */
-	void Set(FRHICommandList& RHICmdList, FRHIPixelShader* RHIShader, float DisplayGamma, FLinearColor const& ColorScale, FLinearColor const& ColorOverlay)
+	void Set(FRHICommandList& RHICmdList, FRHIPixelShader* RHIShader, const FViewInfo& View, float DisplayGamma, FLinearColor const& ColorScale, FLinearColor const& ColorOverlay)
 	{
 		// GammaColorScaleAndInverse
 
@@ -169,7 +169,7 @@ public:
 			OverlayColor
 			);
 
-		FIntPoint BufferSize = GetSceneTextureExtent();
+		FIntPoint BufferSize = GetSceneTextureExtentFromView(View);
 		float BufferSizeX = (float)BufferSize.X;
 		float BufferSizeY = (float)BufferSize.Y;
 		float InvBufferSizeX = 1.0f / BufferSizeX;

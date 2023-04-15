@@ -12,13 +12,14 @@ namespace DatasmithSolidworks
 	{
 		public PartDoc SwPartDoc { get; private set; } = null;
 		private FAssemblyDocument AsmDoc = null;
-		private string ComponentName = null;
+		private FComponentName ComponentName;
+		private string MeshName = null;
 
 		public FObjectMaterials ExportedPartMaterials { get; set; }
 
 		public string PathName { get; private set; }
 
-		public FPartDocument(int InDocId, PartDoc InPartDoc, FDatasmithExporter InExporter, FAssemblyDocument InAsmDoc, string InComponentName) 
+		public FPartDocument(int InDocId, PartDoc InPartDoc, FDatasmithExporter InExporter, FAssemblyDocument InAsmDoc, FComponentName InComponentName) 
 			: base(InDocId, InPartDoc as ModelDoc2, InExporter)
 		{
 			SwPartDoc = InPartDoc;
@@ -71,53 +72,129 @@ namespace DatasmithSolidworks
 		{
 			base.SetDirty(bInDirty);
 
-			if (bInDirty && AsmDoc != null && !string.IsNullOrEmpty(ComponentName))
+			if (bInDirty && AsmDoc != null && ComponentName.IsValid())
 			{
 				// Notify owner assembly that a component needs re-export
 				AsmDoc.SetComponentDirty(ComponentName, FAssemblyDocument.EComponentDirtyState.Geometry);
 			}
 		}
 
-		public override void ExportToDatasmithScene()
+		public override void PreExport(FMeshes Meshes, bool bConfigurations)
 		{
-			string ActorName = Path.GetFileNameWithoutExtension(PathName);
-
-			SetExportStatus($"{ActorName} Materials");
-
-			ExportedPartMaterials = FObjectMaterials.LoadPartMaterials(this, SwPartDoc, swDisplayStateOpts_e.swThisDisplayState, null);
-
-			Exporter.ExportMaterials(ExportedMaterialsMap);
-
-			SetExportStatus($"{ActorName} Meshes");
-
-			ConcurrentBag<FBody> Bodies = FBody.FetchBodies(SwPartDoc);
-			FMeshData MeshData = FStripGeometry.CreateMeshData(Bodies, ExportedPartMaterials);
-
-			string MeshName = null;
-
-			if (MeshData != null)
+			if (!bConfigurations)
 			{
-				Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> NewMesh = null;
-				MeshName = Exporter.ExportMesh($"{ActorName}_Mesh", MeshData, ActorName, out NewMesh);
+				// Not exporting configurations - just load materials here
+				ExportedPartMaterials = FObjectMaterials.LoadPartMaterials(this, SwPartDoc, swDisplayStateOpts_e.swThisDisplayState, null);
+				return;
+			}
 
-				if (NewMesh != null)
+			// Load mesh data for each configuration - need to have information about meshes to understand what to export for configurations.
+			// (Also load materials - mesh processing later needs them)
+			ConfigurationManager ConfigManager = (SwPartDoc as ModelDoc2).ConfigurationManager;
+			IConfiguration OriginalConfiguration = ConfigManager.ActiveConfiguration;
+
+			foreach (string ConfigurationName in SwDoc.GetConfigurationNames())
+			{
+				SwDoc.ShowConfiguration2(ConfigurationName);
+
+				// Load materials for each configuration
+				ExportedPartMaterials = FObjectMaterials.LoadPartMaterials(this, SwPartDoc, swDisplayStateOpts_e.swThisDisplayState, null);
+
+				// todo: Solidworks api docs says that GetRootComponent3 is null for Part but our current 
+				//   parsing code relies on it's existence(and it exists in all cases). Probably better to refactor this without Component use for parts
+				//   This is possible, we don't need Component, just code would be be less 'generic'   
+				Component2 Component = ConfigManager.ActiveConfiguration.GetRootComponent3(true);
+
+				ConcurrentBag<FBody> Bodies = FBody.FetchBodies(SwPartDoc);
+				FMeshData MeshData = FStripGeometry.CreateMeshData(Bodies, ExportedPartMaterials);
+
+				if (MeshData != null)
 				{
-					DatasmithScene.AddMesh(NewMesh.Item1);
-				}
-				else
-				{
-					MeshName = null;
+					Meshes.GetMeshesConfiguration(ConfigManager.ActiveConfiguration.Name).AddMesh(Component, MeshData);
 				}
 			}
 
-			FDatasmithActorExportInfo ExportInfo = new FDatasmithActorExportInfo();
-			ExportInfo.Name = ActorName;
-			ExportInfo.bVisible = true;
-			ExportInfo.Label = ActorName;
-			ExportInfo.MeshName = MeshName;
-			ExportInfo.Type = MeshName != null ? EActorType.MeshActor : EActorType.SimpleActor;
+			if (OriginalConfiguration != null)
+			{
+				SwDoc.ShowConfiguration2(OriginalConfiguration.Name);
+			}
+		}
 
-			Exporter.ExportOrUpdateActor(ExportInfo);
+		public override void ExportToDatasmithScene(FMeshes Meshes)
+		{
+			string PartName = Path.GetFileNameWithoutExtension(PathName);
+
+			SetExportStatus($"{PartName} Materials");
+
+			Exporter.ExportMaterials(ExportedMaterialsMap);
+
+			SetExportStatus($"{PartName} Meshes");
+
+			if (bHasConfigurations)
+			{
+				ConfigurationManager ConfigManager = (SwPartDoc as ModelDoc2).ConfigurationManager;
+				string ActiveConfigurationName = ConfigManager.ActiveConfiguration.Name;
+
+				foreach (string ConfigurationName in SwDoc.GetConfigurationNames())
+				{
+
+					// todo: might want to not use GetRootComponent3 for Part - docs says that it's null for Part
+					FComponentName RootComponentName = new FComponentName(ConfigManager.ActiveConfiguration.GetRootComponent3(true));
+					FMeshData MeshData = Meshes.GetMeshData(ConfigurationName, RootComponentName);
+					if (MeshData == null)
+					{
+						continue;
+					}
+					// todo: not make extra copy - use existing(i.e. instead of bHasConfigurations) 
+					FActorName ActorName = new FConfigurationExporter(Meshes).GetMeshActorName(RootComponentName, ConfigurationName);
+
+					bool bHasMesh = Exporter.ExportMesh($"{ActorName}_Mesh", MeshData, ActorName,
+						out Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> NewMesh);
+
+					string MeshNameForConfiguration = null; // todo: Sync not supported for variants, 
+					if (bHasMesh)
+					{
+						MeshNameForConfiguration = Exporter.AddMesh(NewMesh);
+					}
+
+					FDatasmithActorExportInfo ExportInfo = new FDatasmithActorExportInfo();
+					ExportInfo.Name = ActorName;
+					ExportInfo.bVisible = ConfigurationName == ActiveConfigurationName;
+					ExportInfo.Label = ActorName.GetString();
+					ExportInfo.MeshName = MeshNameForConfiguration;
+					ExportInfo.Type = bHasMesh ? EActorType.MeshActor : EActorType.SimpleActor;
+					Exporter.ExportOrUpdateActor(ExportInfo);
+				}
+			}
+			else
+			{
+				FActorName ActorName = FActorName.FromString(PartName);
+				ConcurrentBag<FBody> Bodies = FBody.FetchBodies(SwPartDoc);
+				FMeshData MeshData = FStripGeometry.CreateMeshData(Bodies, ExportedPartMaterials);
+
+				Exporter.RemoveMesh(MeshName);
+				MeshName = null;
+				bool bHasMesh = false;
+
+				if (MeshData != null)
+				{
+					bHasMesh = Exporter.ExportMesh($"{ActorName}_Mesh", MeshData, ActorName,
+						out Tuple<FDatasmithFacadeMeshElement, FDatasmithFacadeMesh> NewMesh);
+
+					if (bHasMesh)
+					{
+						MeshName = Exporter.AddMesh(NewMesh);
+					}
+				}
+
+				FDatasmithActorExportInfo ExportInfo = new FDatasmithActorExportInfo();
+				ExportInfo.Name = ActorName;
+				ExportInfo.bVisible = true;
+				ExportInfo.Label = ActorName.GetString();
+				ExportInfo.MeshName = MeshName;
+				ExportInfo.Type = bHasMesh ? EActorType.MeshActor : EActorType.SimpleActor;
+				Exporter.ExportOrUpdateActor(ExportInfo);
+			}
 		}
 
 		public override bool HasMaterialUpdates()

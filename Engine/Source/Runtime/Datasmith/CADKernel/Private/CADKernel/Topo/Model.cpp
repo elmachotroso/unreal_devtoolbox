@@ -6,9 +6,12 @@
 #include "CADKernel/Topo/TopologicalEdge.h"
 #include "CADKernel/Topo/TopologicalFace.h"
 #include "CADKernel/Topo/TopologicalVertex.h"
-#include "CADKernel/Topo/TopologyReport.h"
 
-namespace CADKernel
+#ifdef CADKERNEL_DEV
+#include "CADKernel/Topo/TopologyReport.h"
+#endif
+
+namespace UE::CADKernel
 {
 
 void FModel::AddEntity(TSharedRef<FTopologicalEntity> Entity)
@@ -17,9 +20,6 @@ void FModel::AddEntity(TSharedRef<FTopologicalEntity> Entity)
 	{
 	case EEntity::Body:
 		Add(StaticCastSharedRef<FBody>(Entity));
-		break;
-	case EEntity::TopologicalFace:
-		Add(StaticCastSharedRef<FTopologicalFace>(Entity));
 		break;
 	default:
 		break;
@@ -32,8 +32,6 @@ bool FModel::Contains(TSharedPtr<FTopologicalEntity> Entity)
 	{
 	case EEntity::Body:
 		return Bodies.Find(StaticCastSharedPtr<FBody>(Entity)) != INDEX_NONE;
-	case EEntity::TopologicalFace:
-		return Faces.Find(StaticCastSharedPtr<FTopologicalFace>(Entity)) != INDEX_NONE;
 	default:
 		return false;
 	}
@@ -46,9 +44,6 @@ void FModel::RemoveEntity(TSharedPtr<FTopologicalEntity> Entity)
 	{
 	case EEntity::Body:
 		RemoveBody(StaticCastSharedPtr<FBody>(Entity));
-		break;
-	case EEntity::TopologicalFace:
-		RemoveFace(StaticCastSharedPtr<FTopologicalFace>(Entity));
 		break;
 	default:
 		break;
@@ -76,7 +71,6 @@ int32 FModel::FaceCount() const
 	{
 		FaceCount += Body->FaceCount();
 	}
-	FaceCount += Faces.Num();
 	return FaceCount;
 }
 
@@ -85,15 +79,6 @@ void FModel::GetFaces(TArray<FTopologicalFace*>& OutFaces)
 	for (const TSharedPtr<FBody>& Body : Bodies)
 	{
 		Body->GetFaces(OutFaces);
-	}
-
-	for (TSharedPtr<FTopologicalFace>& Face : Faces)
-	{
-		if (!Face->HasMarker1())
-		{
-			OutFaces.Add(Face.Get());
-			Face->SetMarker1();
-		}
 	}
 }
 
@@ -109,18 +94,9 @@ void FModel::SpreadBodyOrientation()
 FInfoEntity& FModel::GetInfo(FInfoEntity& Info) const
 {
 	return FTopologicalShapeEntity::GetInfo(Info)
-		.Add(TEXT("Bodies"), Bodies)
-		.Add(TEXT("Faces"), Faces);
+		.Add(TEXT("Bodies"), Bodies);
 }
 #endif
-
-
-// Topo functions
-void FModel::MergeInto(TSharedPtr<FBody> Body, TArray<TSharedPtr<FTopologicalEntity>>& InEntities)
-{
-
-}
-
 
 struct FBodyShell
 {
@@ -193,18 +169,15 @@ for (const FFaceSubset& Subset : SubShells)
 	}
 }
 
+#ifdef CADKERNEL_DEV
 void FModel::FillTopologyReport(FTopologyReport& Report) const
 {
 	for (TSharedPtr<FBody> Body : Bodies)
 	{
 		Body->FillTopologyReport(Report);
 	}
-
-	for (TSharedPtr<FTopologicalFace> Face : Faces)
-	{
-		Face->FillTopologyReport(Report);
-	}
 }
+#endif
 
 void FModel::Orient()
 {
@@ -212,71 +185,6 @@ void FModel::Orient()
 	{
 		Body->Orient();
 	}
-}
-
-/**
- * Fore each shell of each body, try to stitch topological gap
- */
-void FModel::HealModelTopology(double JoiningTolerance)
-{
-
-}
-
-
-
-//void FModel::FixModelTopology()
-void FModel::FixModelTopology(double JoiningTolerance)
-{
-	//HealModelTopology(JoiningTolerance);
-
-	//// Find Isolated Shell
-	//TArray<TSharedPtr<FShell>> IsolatedShell;
-
-	//for (TSharedPtr<FBody> Body : Bodies)
-	//{
-	//	for (TSharedPtr<FShell> Shell : Body->GetShells())
-	//	{
-	//		if (Shell->IsOpenShell())
-	//		{
-	//			IsolatedShell.Add(Shell);
-	//		}
-	//	}
-	//}
-
-	//FJoiner Joiner(IsolatedShell, JoiningTolerance);
-	//Joiner.JoinFaces();
-
-	/*
-	Body->GetFaces(Surfaces);
-	TSharedRef<FBody> MergedBody = FEntity::MakeShared<FBody>();
-	TSharedRef<FShell> MergedShell = FEntity::MakeShared<FShell>();
-
-	MergedBody->AddShell(MergedShell);
-	TArray<TSharedPtr<FBody>> NewBodies;
-	NewBodies.Reserve(Bodies.Num());
-
-	for (TSharedPtr<FBody>& Body : Bodies)
-	{
-		if (Body->GetShells().Num() == 1)
-		{
-			TSharedPtr<FShell> Shell = Body->GetShells()[0];
-			if (Shell->FaceCount() < 3)
-			{
-				MergedShell->Merge(Shell);
-				Body->Empty();
-			}
-		}
-		else
-		{
-			NewBodies.Emplace(Body);
-			Body.Reset();
-		}
-	}
-
-	NewBodies.Emplace(MergedBody);
-
-	Swap(NewBodies, Bodies);
-	*/
 }
 
 }

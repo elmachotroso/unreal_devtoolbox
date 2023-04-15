@@ -3,6 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "Engine/EngineTypes.h"
+#endif
+#include "Engine/HitResult.h"
 #include "InteractionMechanic.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
@@ -54,6 +58,12 @@ public:
 	 * Otherwise we assume it is in local coords of PlaneFrameWorld
 	 */
 	virtual void Initialize(UE::Geometry::FDynamicMesh3&& HitTargetMesh, const FFrame3d& PlaneFrameWorld, bool bMeshInWorldCoords);
+
+	/**
+	 * Set the hit target mesh and the plane frame. Distance is measured along Z axis.
+	 * Applies MeshToPlaneFrame to transform the HitTargetMesh to the local space of PlaneFrameWorld
+	 */
+	virtual void Initialize(UE::Geometry::FDynamicMesh3&& HitTargetMesh, const FFrame3d& PlaneFrameWorld, const FTransform& MeshToPlaneFrame);
 
 	/**
 	 * Update the current distance/height based on the input world ray

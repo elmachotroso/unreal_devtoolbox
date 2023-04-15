@@ -3,6 +3,8 @@
 #include "PerPlatformProperties.h"
 #include "Serialization/Archive.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PerPlatformProperties)
+
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
 #include "PlatformInfo.h"
@@ -34,7 +36,9 @@ ENGINE_API FArchive& operator<<(FArchive& Ar, TPerPlatformProperty<StructType, V
 #if WITH_EDITORONLY_DATA
 		if (!bCooked)
 		{
-			Ar << This->PerPlatform;
+			using MapType = decltype(This->PerPlatform);
+			using KeyFuncs = typename PerPlatformProperty::Private::KeyFuncs<MapType>;
+			KeyFuncs::SerializePerPlatformMap(Ar, This->PerPlatform);
 		}
 #endif
 	}
@@ -67,7 +71,9 @@ ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<
 #if WITH_EDITORONLY_DATA
 		if (!bCooked)
 		{
-			Record << SA_VALUE(TEXT("PerPlatform"), This->PerPlatform);
+			using MapType = decltype(This->PerPlatform);
+			using KeyFuncs = typename PerPlatformProperty::Private::KeyFuncs<MapType>;
+			KeyFuncs::SerializePerPlatformMap(UnderlyingArchive, Record, This->PerPlatform);
 		}
 #endif
 	}
@@ -104,3 +110,4 @@ FString FFreezablePerPlatformInt::ToString() const
 {
 	return FPerPlatformInt(*this).ToString();
 }
+

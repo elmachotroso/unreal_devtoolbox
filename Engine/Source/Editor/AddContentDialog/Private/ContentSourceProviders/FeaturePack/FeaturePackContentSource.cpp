@@ -1,26 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FeaturePackContentSource.h"
-#include "HAL/PlatformFileManager.h"
+
+#include "AssetCompilingManager.h"
+#include "AssetToolsModule.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "ContentBrowserModule.h"
+#include "ContentSourceProviderManager.h"
+#include "CoreGlobals.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "FileHelpers.h"
+#include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
+#include "IAddContentDialogModule.h"
+#include "IAssetTools.h"
+#include "IContentBrowserSingleton.h"
+#include "IContentSource.h"
+#include "IContentSourceProvider.h"
+#include "IPlatformFilePak.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Internationalization/Culture.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
-#include "Serialization/JsonTypes.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "IAddContentDialogModule.h"
-#include "ContentSourceProviderManager.h"
+#include "Serialization/JsonTypes.h"
+#include "Templates/Tuple.h"
+#include "Templates/UniquePtr.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
 
-#include "IAssetTools.h"
-#include "AssetToolsModule.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "IPlatformFilePak.h"
-#include "FileHelpers.h"
-#include "Editor/MainFrame/Public/Interfaces/IMainFrameModule.h"
+class UPackage;
 
 #define LOCTEXT_NAMESPACE "ContentFeaturePacks"
 
@@ -158,7 +176,7 @@ FFeaturePackContentSource::FFeaturePackContentSource(FString InFeaturePackPath)
 	if( InFeaturePackPath.EndsWith(TEXT(".upack") ) == true )
 	{
 		bContentsInPakFile = true;
-		MountPoint = "root:/";
+		MountPoint = FPaths::GameFeatureRootPrefix();
 		// Create a pak platform file and mount the feature pack file.
 		FPakPlatformFile PakPlatformFile;
 		PakPlatformFile.Initialize(&FPlatformFileManager::Get().GetPlatformFile(), TEXT(""));
@@ -420,7 +438,7 @@ bool FFeaturePackContentSource::GetAdditionalFilesForPack(TArray<FString>& FileL
 bool FFeaturePackContentSource::ExtractListOfAdditionalFiles(const FString& InConfigFileAsString,TArray<FString>& InFileList, bool& bContainsSource)
 {
 	FConfigFile PackConfig;
-	PackConfig.ProcessInputFileContents(InConfigFileAsString);
+	PackConfig.ProcessInputFileContents(InConfigFileAsString, TEXT("Uknown, see FFeaturePackContentSource::ExtractListOfAdditionalFiles"));
 	FConfigSection* AdditionalFilesSection = PackConfig.Find("AdditionalFilesToAdd");
 	
 	bContainsSource = false;
@@ -549,6 +567,10 @@ void FFeaturePackContentSource::ParseAndImportPacks()
 				{
 					ToSave.AddUnique(ImportedObject->GetOutermost());
 				}
+
+				// Make sure any async compilation kicked off during ImportAssets is completed before we save.
+				FAssetCompilingManager::Get().FinishAllCompilation();
+
 				FEditorFileUtils::PromptForCheckoutAndSave(ToSave, /*bCheckDirty=*/ false, /*bPromptToSave=*/ false);
 				PacksInserted++;
 			}
@@ -771,7 +793,7 @@ bool FFeaturePackContentSource::ParseManifestString(const FString& ManifestStrin
 		}
 	}
 
-	UEnum* Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EContentSourceCategory"));
+	UEnum* Enum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/AddContentDialog.EContentSourceCategory"));
 	for (const FString& CategoryString : CategoryStrings)
 	{
 		int32 EnumValue = Enum->GetValueByName(FName(*CategoryString));
@@ -808,7 +830,7 @@ bool FFeaturePackContentSource::ParseManifestString(const FString& ManifestStrin
 	// Parse additional packs data
 	if (ManifestObject->HasTypedField<EJson::Array>("AdditionalFeaturePacks") == true)
 	{
-		UEnum* DetailEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EFeaturePackDetailLevel"));
+		UEnum* DetailEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/AddContentDialog.EFeaturePackDetailLevel"));
 		for (TSharedPtr<FJsonValue> AdditionalFeaturePackValue : ManifestObject->GetArrayField("AdditionalFeaturePacks"))
 		{
 			TSharedPtr<FJsonObject> EachAdditionalPack = AdditionalFeaturePackValue->AsObject();

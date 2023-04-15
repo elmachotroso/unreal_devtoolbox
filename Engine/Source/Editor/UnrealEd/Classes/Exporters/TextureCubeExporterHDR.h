@@ -21,5 +21,13 @@ class UNREALED_API UTextureCubeExporterHDR : public UExporter
 	//~ End UExporter Interface
 };
 
+UCLASS()
+class UNREALED_API URenderTargetCubeExporterHDR : public UTextureCubeExporterHDR
+{
+	GENERATED_UCLASS_BODY()
+};
+
+
+
 
 

@@ -19,12 +19,12 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Materials/MaterialInterface.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "ISourceControlModule.h"
 #include "Engine/Texture.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "FileHelpers.h"
 #include "AssetSelection.h"
 #include "ObjectTools.h"
@@ -366,7 +366,7 @@ void SConsolidateToolWidget::Construct( const FArguments& InArgs )
 	SelectedListItem = NULL;
 	bSavePackagesChecked = ISourceControlModule::Get().IsEnabled();
 
-	SetBorderImage(FEditorStyle::GetBrush("NoBorder"));
+	SetBorderImage(FAppStyle::GetBrush("NoBorder"));
 
 	ChildSlot
 	[
@@ -412,7 +412,7 @@ void SConsolidateToolWidget::Construct( const FArguments& InArgs )
 			.HAlign(HAlign_Right)
 			[
 				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "Window.Buttons.Close" )
+				.ButtonStyle( FAppStyle::Get(), "Window.Buttons.Close" )
 				.OnClicked(this, &SConsolidateToolWidget::OnDismissErrorPanelButtonClicked)
 			]
 		]
@@ -463,7 +463,7 @@ TSharedRef<ITableRow> SConsolidateToolWidget::OnGenerateRowForList( TSharedPtr<F
 		SNew(STableRow< TSharedPtr<FName> >, OwnerTable)
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "Menu.RadioButton")
+			.Style(FAppStyle::Get(), "Menu.RadioButton")
 			.IsChecked(ListItemPtr.ToSharedRef(), &FListItem::IsAssetSelected)
 			.OnCheckStateChanged( ListItemPtr.ToSharedRef(), &FListItem::OnAssetSelected )
 			[
@@ -913,7 +913,11 @@ FReply SConsolidateToolWidget::OnDragOver( const FGeometry& MyGeometry, const FD
 
 		if ( Object == NULL )
 		{
-			Object = ExtractedDroppedAsset[Index].GetClass()->GetDefaultObject();
+			UClass* ObjectClass = ExtractedDroppedAsset[Index].GetClass();
+			if (ObjectClass)
+			{
+				Object = ObjectClass->GetDefaultObject();
+			}
 		}
 
 		if ( Object != NULL )

@@ -10,6 +10,8 @@
 #include "Net/UnrealNetwork.h"
 #include "VisualLogger/VisualLogger.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayDebuggerCategoryReplicator)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Engine/Selection.h"
@@ -234,6 +236,9 @@ bool FGameplayDebuggerNetPack::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaPa
 			uint8 ShouldUpdateShapes = bMissingOldState || (OldState->CategoryStates[Idx].ShapesRepCounter != NewState->CategoryStates[Idx].ShapesRepCounter);
 			uint8 NumDataPacks = SavedCategory.DataPacks.Num();
 
+			FName CategoryName = CategoryOb.GetCategoryName();
+			Writer << CategoryName;
+
 			Writer.WriteBit(BaseFlags);
 			Writer.WriteBit(ShouldUpdateTextLines);
 			Writer.WriteBit(ShouldUpdateShapes);
@@ -296,18 +301,25 @@ bool FGameplayDebuggerNetPack::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaPa
 		int32 CategoryCount = 0;
 		Reader << CategoryCount;
 
-		if (CategoryCount != Owner->Categories.Num())
-		{
-			UE_LOG(LogGameplayDebugReplication, Error, TEXT("Category count mismtach! received:%d expected:%d"), CategoryCount, Owner->Categories.Num());
-			Reader.SetError();
-			return false;
-		}
+		// Replicated categories still have to be serialized even if they don't exist on the client.
+		// Create a dummy category for these cases
+		FGameplayDebuggerCategory DummyCategory;
 
 		bool bHasCategoryStateChanges = false;
 		for (int32 Idx = 0; Idx < CategoryCount; Idx++)
 		{
-			FGameplayDebuggerCategory& CategoryOb = Owner->Categories[Idx].Get();
-			UE_LOG(LogGameplayDebugReplication, Verbose, TEXT("  CATEGORY[%d]:%s"), Idx, *CategoryOb.GetCategoryName().ToString());
+			FName CategoryName;
+			Reader << CategoryName;
+
+			// Does the category exist on the client?
+			// using FindLastByPredicate since that's the only Predicate-based find that returns index.
+			const int32 FoundIndex = Owner->Categories.FindLastByPredicate([CategoryName](const TSharedRef<FGameplayDebuggerCategory>& Item)
+				{
+					return (Item->GetCategoryName() == CategoryName);
+				});
+
+			FGameplayDebuggerCategory& CategoryOb = (Owner->Categories.IsValidIndex(FoundIndex)) ? Owner->Categories[FoundIndex].Get() : DummyCategory;
+			UE_LOG(LogGameplayDebugReplication, Verbose, TEXT("  CATEGORY[%d]:%s"), FoundIndex, *CategoryOb.GetCategoryName().ToString());
 
 			uint8 BaseFlags = Reader.ReadBit();
 			uint8 ShouldUpdateTextLines = Reader.ReadBit();
@@ -316,7 +328,7 @@ bool FGameplayDebuggerNetPack::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaPa
 			uint8 NumDataPacks = 0;
 			Reader << NumDataPacks;
 
-			if ((int32)NumDataPacks != CategoryOb.ReplicatedDataPacks.Num())
+			if (FoundIndex != INDEX_NONE && (int32)NumDataPacks != CategoryOb.ReplicatedDataPacks.Num())
 			{
 				UE_LOG(LogGameplayDebugReplication, Error, TEXT("Data pack count mismtach! received:%d expected:%d"), NumDataPacks, CategoryOb.ReplicatedDataPacks.Num());
 				Reader.SetError();
@@ -363,7 +375,7 @@ bool FGameplayDebuggerNetPack::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaPa
 						Reader.Serialize(DataPacket.Data.GetData(), PacketSize);
 					}
 
-					Owner->OnReceivedDataPackPacket(Idx, DataIdx, DataPacket);
+					Owner->OnReceivedDataPackPacket(FoundIndex, DataIdx, DataPacket);
 					UE_LOG(LogGameplayDebugReplication, Verbose, TEXT("  >> replicate data pack[%d] progress:%.0f%%"), DataIdx, CategoryOb.ReplicatedDataPacks[DataIdx].GetProgress() * 100.0f);
 				}
 			}
@@ -472,6 +484,8 @@ void AGameplayDebuggerCategoryReplicator::EndPlay(const EEndPlayReason::Type End
 {
 	Super::EndPlay(EndPlayReason);
 
+	SetReplicatorOwner(nullptr);
+
 	// Disable extensions to clear UI state
 	NotifyCategoriesToolState(false);
 	NotifyExtensionsToolState(false);
@@ -528,6 +542,9 @@ void AGameplayDebuggerCategoryReplicator::GetLifetimeReplicatedProps(TArray<FLif
 	DOREPLIFETIME(AGameplayDebuggerCategoryReplicator, VisLogSync);
 	DOREPLIFETIME(AGameplayDebuggerCategoryReplicator, bIsEnabled);
 	DOREPLIFETIME(AGameplayDebuggerCategoryReplicator, ReplicatedData);
+
+	// The visibility of the replicator actor is code driven (hidden on dedicated server, visible otherwise) and should not be replicated
+	DISABLE_REPLICATED_PRIVATE_PROPERTY(AActor, bHidden);
 }
 
 bool AGameplayDebuggerCategoryReplicator::ServerSetEnabled_Validate(bool bEnable)
@@ -558,6 +575,16 @@ bool AGameplayDebuggerCategoryReplicator::ServerSetViewPoint_Validate(const FVec
 void AGameplayDebuggerCategoryReplicator::ServerSetViewPoint_Implementation(const FVector& InViewLocation, const FVector& InViewDirection)
 {
 	SetViewPoint(InViewLocation, InViewDirection);
+}
+
+bool AGameplayDebuggerCategoryReplicator::ServerResetViewPoint_Validate()
+{
+	return true;
+}
+
+void AGameplayDebuggerCategoryReplicator::ServerResetViewPoint_Implementation()
+{
+	ResetViewPoint();
 }
 
 bool AGameplayDebuggerCategoryReplicator::ServerSetCategoryEnabled_Validate(int32 CategoryId, bool bEnable)
@@ -750,7 +777,7 @@ void AGameplayDebuggerCategoryReplicator::CollectCategoryData(bool bForce)
 
 bool AGameplayDebuggerCategoryReplicator::GetViewPoint(FVector& OutViewLocation, FVector& OutViewDirection) const
 {
-	if (ViewLocation.IsSet() && ViewDirection.IsSet())
+	if (IsViewPointSet())
 	{
 		OutViewLocation = ViewLocation.GetValue();
 		OutViewDirection = ViewDirection.GetValue();
@@ -834,14 +861,23 @@ void AGameplayDebuggerCategoryReplicator::SetDebugActor(AActor* Actor, bool bSel
 
 void AGameplayDebuggerCategoryReplicator::SetViewPoint(const FVector& InViewLocation, const FVector& InViewDirection)
 {
-	if (bHasAuthority)
-	{
-		ViewLocation = InViewLocation;
-		ViewDirection = InViewDirection;
-	}
-	else
+	ViewLocation = InViewLocation;
+	ViewDirection = InViewDirection;
+
+	if (!bHasAuthority)
 	{
 		ServerSetViewPoint(InViewLocation, InViewDirection);
+	}
+}
+
+void AGameplayDebuggerCategoryReplicator::ResetViewPoint()
+{
+	ViewLocation.Reset();
+	ViewDirection.Reset();
+
+	if (!bHasAuthority)
+	{
+		ServerResetViewPoint();
 	}
 }
 
@@ -937,3 +973,4 @@ bool AGameplayDebuggerCategoryReplicator::IsCategoryEnabled(int32 CategoryId) co
 {
 	return Categories.IsValidIndex(CategoryId) && Categories[CategoryId]->IsCategoryEnabled(); 
 }
+

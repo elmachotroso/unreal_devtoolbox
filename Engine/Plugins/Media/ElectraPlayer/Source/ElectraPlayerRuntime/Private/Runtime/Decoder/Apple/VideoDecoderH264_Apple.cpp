@@ -533,7 +533,7 @@ void FVideoDecoderH264::StartThread()
 	ThreadSetPriority(Config.ThreadConfig.Decoder.Priority);
 	ThreadSetCoreAffinity(Config.ThreadConfig.Decoder.CoreAffinity);
 	ThreadSetStackSize(Config.ThreadConfig.Decoder.StackSize);
-	ThreadStart(Electra::MakeDelegate(this, &FVideoDecoderH264::WorkerThread));
+	ThreadStart(FMediaRunnable::FStartDelegate::CreateRaw(this, &FVideoDecoderH264::WorkerThread));
 	bThreadStarted = true;
 }
 
@@ -663,6 +663,7 @@ void FVideoDecoderH264::AUdataPushEOD()
  */
 void FVideoDecoderH264::AUdataClearEOD()
 {
+	NextAccessUnits.ClearEOD();
 }
 
 
@@ -1704,7 +1705,7 @@ void FVideoDecoderH264::ProcessOutput(bool bFlush)
 					long ax = NextImage.SourceInfo->AspectX;
 					long ay = NextImage.SourceInfo->AspectY;
 					// If there is aspect ratio information on the image itself and it's valid, use that instead.
-					NSDictionary* Dict = (NSDictionary*)CVBufferGetAttachments(ImageBufferRef, kCVAttachmentMode_ShouldPropagate);
+					NSDictionary* Dict = (NSDictionary*)CVBufferCopyAttachments(ImageBufferRef, kCVAttachmentMode_ShouldPropagate);
 					if (Dict)
 					{
 						NSDictionary* AspectDict = (NSDictionary*)Dict[(__bridge NSString*)kCVImageBufferPixelAspectRatioKey];

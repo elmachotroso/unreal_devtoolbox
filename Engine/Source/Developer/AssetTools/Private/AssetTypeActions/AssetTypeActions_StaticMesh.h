@@ -17,7 +17,6 @@ public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_StaticMesh", "Static Mesh"); }
 	virtual FColor GetTypeColor() const override { return FColor(0, 255, 255); }
 	virtual UClass* GetSupportedClass() const override { return UStaticMesh::StaticClass(); }
-	virtual bool HasActions( const TArray<UObject*>& InObjects ) const override { return true; }
 	virtual void GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section) override;
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override;
 	virtual uint32 GetCategories() override { return EAssetTypeCategories::Basic; }
@@ -59,13 +58,26 @@ private:
 	void GetNaniteMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes);
 
 	/** Handler to provide the list of LODs that can be imported or reimported */
-	void GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects);
+	void GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects, const bool bWithNewFile);
 
 	/** Handler to provide the LOD sub-menu. Hides away LOD actions - includes Import LOD sub menu */
 	void GetLODMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes);
 
 	/** Handler for calling import methods */
-	static void ExecuteImportMeshLOD(UObject* Mesh, int32 LOD);
+	static void ExecuteImportMeshLOD(UObject* Mesh, int32 LOD, bool bReimportWithNewFile);
+
+	/** Builds the High Res mesh sub-menu as part of the LOD menu */
+	void GetImportHiResMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Objects);
+
+	/** Handles import and reimport of the high res source model */
+	static void ExecuteImportHiResMesh(UStaticMesh* Mesh);
+
+	/** Handles reimport of the high res source model with a new specified file. */
+	static void ExecuteReimportHiResMeshWithNewFile(UStaticMesh* StaticMesh);
+
+	/** Handles removing the high res source model from the mesh */
+	static void ExecuteRemoveHiResMesh(UStaticMesh* Mesh);
+
 private:
 
 	TWeakObjectPtr<UStaticMesh> LODCopyMesh;	

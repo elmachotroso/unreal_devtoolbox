@@ -31,7 +31,7 @@
 #include "Utility/DatasmithImporterImpl.h"
 
 #include "Algo/Count.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
@@ -43,6 +43,7 @@
 #include "Engine/Level.h"
 #include "Engine/LevelStreamingAlwaysLoaded.h"
 #include "Engine/Light.h"
+#include "Engine/RectLight.h"
 #include "Engine/Selection.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
@@ -770,7 +771,7 @@ bool UDatasmithConsumer::BuildContexts()
 	ImportContextPtr->AssetsContext.StaticMeshesImportPackage.Reset();
 	ImportContextPtr->AssetsContext.TexturesImportPackage.Reset();
 	ImportContextPtr->AssetsContext.MaterialsImportPackage.Reset();
-	ImportContextPtr->AssetsContext.MasterMaterialsImportPackage.Reset();
+	ImportContextPtr->AssetsContext.ReferenceMaterialsImportPackage.Reset();
 	ImportContextPtr->AssetsContext.MaterialFunctionsImportPackage.Reset();
 	ImportContextPtr->AssetsContext.LevelSequencesImportPackage.Reset();
 	ImportContextPtr->AssetsContext.LevelVariantSetsImportPackage.Reset();
@@ -1567,8 +1568,12 @@ namespace DatasmithConsumerUtils
 		auto IsUnregisteredActor = [&](AActor* Actor)
 		{
 			// Skip non-imported actors
-			if( Actor == RootSceneActor || Actor == nullptr || Actor->GetRootComponent() == nullptr || Actor->IsA<AWorldSettings>() || Actor->IsA<APhysicsVolume>() || Actor->IsA<ABrush>() )
+			if( Actor == RootSceneActor || Actor == nullptr || Actor->GetRootComponent() == nullptr || Actor->IsA<AWorldSettings>() || Actor->IsA<APhysicsVolume>() || Actor->IsA<ABrush>() || Actor->IsA<ARectLight>())
 			{
+				if (Actor != nullptr && Actor->IsA<ARectLight>())
+				{
+					UE_LOG(LogDatasmithImport, Warning, TEXT("Import of RectLight is not yet supported"));
+				}
 				return false;
 			}
 

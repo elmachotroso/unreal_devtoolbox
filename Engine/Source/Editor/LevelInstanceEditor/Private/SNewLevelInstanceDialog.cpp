@@ -1,16 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "SNewLevelInstanceDialog.h"
-#include "IStructureDetailsView.h"
-#include "IDetailPropertyRow.h"
+
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Delegates/Delegate.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Input/SButton.h"
-#include "PropertyEditorDelegates.h"
-#include "LevelInstance/LevelInstanceSubsystem.h"
-#include "Modules/ModuleManager.h"
+#include "DetailsViewArgs.h"
+#include "Fonts/SlateFontInfo.h"
 #include "GameFramework/Actor.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailPropertyRow.h"
+#include "IDetailsView.h"
+#include "IStructureDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/StructOnScope.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IPropertyHandle;
 
 #define LOCTEXT_NAMESPACE "LevelInstanceEditor"
 
@@ -55,7 +91,7 @@ void SNewLevelInstanceDialog::Construct(const FArguments& InArgs)
 	this->ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
@@ -84,7 +120,7 @@ void SNewLevelInstanceDialog::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.HAlign(HAlign_Center)
 					.IsEnabled(this, &SNewLevelInstanceDialog::IsOkEnabled)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SNewLevelInstanceDialog::OnOkClicked)
 					.Text(LOCTEXT("OkButton", "Ok"))
 				]
@@ -94,9 +130,33 @@ void SNewLevelInstanceDialog::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SNewLevelInstanceDialog::OnCancelClicked)
 					.Text(LOCTEXT("CancelButton", "Cancel"))
+				]
+			]
+			+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				[
+					SNew(SCheckBox)
+					.IsChecked_Lambda([this]() -> ECheckBoxState
+					{
+						return CreationParams.bAlwaysShowDialog ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+					})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+					{
+						CreationParams.bAlwaysShowDialog = State == ECheckBoxState::Checked;
+					})
+					[
+						SNew(STextBlock)
+						.Font(FCoreStyle::Get().GetFontStyle("SmallFont"))
+						.Text(LOCTEXT("AlwaysShowDialog", "Always show dialog"))
+						.ToolTipText(LOCTEXT("AlwaysShowDialogToolTip", "Show this dialog everytime a level instance is created. Can be changed in editor preferences (Content Editors > Level Instance)."))
+					]
 				]
 			]
 		]

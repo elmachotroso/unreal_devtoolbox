@@ -11,6 +11,7 @@
 #include "Widgets/Text/ISlateEditableTextWidget.h"
 #include "MultiLineEditableText.generated.h"
 
+class UMaterialInterface;
 class SMultiLineEditableText;
 
 /**
@@ -28,11 +29,13 @@ public:
 
 public:
 	/** The text content for this editable text box widget */
-	UPROPERTY(EditAnywhere, Category=Content, meta=(MultiLine="true"))
+	UE_DEPRECATED(5.1, "Direct access to Text is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter = "GetText", BlueprintSetter = "SetText", FieldNotify, Category = Content, meta = (MultiLine = "true"))
 	FText Text;
 
 	/** Hint text that appears when there is no text in the text box */
-	UPROPERTY(EditAnywhere, Category=Content, meta=(MultiLine="true"))
+	UE_DEPRECATED(5.1, "Direct access to HintText is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter = "GetHintText", BlueprintSetter = "SetHintText", Category = Content, meta = (MultiLine = "true"))
 	FText HintText;
 
 	/** A bindable delegate to allow logic to drive the hint text of the widget */
@@ -44,28 +47,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetWidgetStyle, Category="Style", meta=(ShowOnlyInnerProperties))
 	FTextBlockStyle WidgetStyle;
 
-	/** Sets whether this text block can be modified interactively by the user */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Appearance")
+	/** Sets the Text as Readonly to prevent it from being modified interactively by the user */
+	UE_DEPRECATED(5.1, "Direct access to IsReadOnly is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = GetIsReadOnly, Setter = SetIsReadOnly, BlueprintSetter = "SetIsReadOnly", Category = Appearance)
 	bool bIsReadOnly;
 
-	/** Font color and opacity (overrides Style) */
-	UPROPERTY()
-	FSlateFontInfo Font_DEPRECATED;
-
 	/** Whether to select all text when the user clicks to give focus on the widget */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to SelectAllTextWhenFocused is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool SelectAllTextWhenFocused;
 
 	/** Whether to clear text selection when focus is lost */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to ClearTextSelectionOnFocusLoss is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, Category = Behavior, AdvancedDisplay)
 	bool ClearTextSelectionOnFocusLoss;
 
 	/** Whether to allow the user to back out of changes when they press the escape key */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to RevertTextOnEscape is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool RevertTextOnEscape;
 
 	/** Whether to clear keyboard focus when pressing enter to commit changes */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to ClearKeyboardFocusOnCommit is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool ClearKeyboardFocusOnCommit;
 
 	/** Whether the context menu can be opened */
@@ -90,27 +94,76 @@ public:
 
 public:
 
-	/**  */
+	/**
+	* Gets the widget text
+	* @return The widget text
+	*/
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="GetText (Multi-Line Editable Text)"))
 	FText GetText() const;
 
-	/**  */
+	/**
+	* Directly sets the widget text.
+	* @param InText The text to assign to the widget
+	*/
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="SetText (Multi-Line Editable Text)"))
 	void SetText(FText InText);
 
-	/**  */
+	/** Returns the Hint text that appears when there is no text in the text box */
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="GetHintText (Multi-Line Editable Text)"))
 	FText GetHintText() const;
 
-	/**  */
+	/** 
+	* Sets the Hint text that appears when there is no text in the text box 
+	* @param InHintText The text that appears when there is no text in the text box 
+	*/
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="SetHintText (Multi-Line Editable Text)"))
 	void SetHintText(FText InHintText);
 
+	/** Set to true to select all text when the user clicks to give focus on the widget */
+	void SetSelectAllTextWhenFocused(bool bSelectAllTextWhenFocused);
+
+	/** Whether to select all text when the user clicks to give focus on the widget */
+	bool GetSelectAllTextWhenFocused() const;
+
+	/** Set to true to clear text selection when focus is lost */
+	void SetClearTextSelectionOnFocusLoss(bool bClearTextSelectionOnFocusLoss);
+
+	/** Whether to clear text selection when focus is lost */
+	bool GetClearTextSelectionOnFocusLoss() const;
+
+	/** Set to true to allow the user to back out of changes when they press the escape key */
+	void SetRevertTextOnEscape(bool bRevertTextOnEscape);
+
+	/** Whether to allow the user to back out of changes when they press the escape key  */
+	bool GetRevertTextOnEscape() const;
+
+	/** Set to true to clear keyboard focus when pressing enter to commit changes */
+	void SetClearKeyboardFocusOnCommit(bool bClearKeyboardFocusOnCommit);
+
+	/** Whether to clear keyboard focus when pressing enter to commit changes */
+	bool GetClearKeyboardFocusOnCommit() const;	
+
+	/** Return true when this text cannot be modified interactively by the user */
+	bool GetIsReadOnly() const;
+
+	/** Sets the Text as Readonly to prevent it from being modified interactively by the user */
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="SetIsReadOnly (Multi-Line Editable Text"))
 	void SetIsReadOnly(bool bReadOnly);
 
 	UFUNCTION(BlueprintSetter)
 	void SetWidgetStyle(const FTextBlockStyle& InWidgetStyle);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	const FSlateFontInfo& GetFont() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFont(FSlateFontInfo InFontInfo);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFontMaterial(UMaterialInterface* InMaterial);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFontOutlineMaterial(UMaterialInterface* InMaterial);
 
 	//~ Begin UTextLayoutWidget Interface
 	virtual void SetJustification(ETextJustify::Type InJustification) override;
@@ -123,10 +176,6 @@ public:
 	//~ Begin UVisual Interface
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 	//~ End UVisual Interface
-
-	//~ Begin UObject Interface
-	virtual void PostLoad() override;
-	//~ End UObject Interface
 
 #if WITH_EDITOR
 	virtual const FText GetPaletteCategory() override;

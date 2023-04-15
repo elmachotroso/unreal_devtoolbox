@@ -4,6 +4,8 @@
 #include "SlateFwd.h"
 #include "Components/WidgetSwitcherSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WidgetSwitcher)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -13,7 +15,7 @@ UWidgetSwitcher::UWidgetSwitcher(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = true;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UWidgetSwitcher::ReleaseSlateResources(bool bReleaseChildren)
@@ -169,3 +171,4 @@ void UWidgetSwitcher::PostEditChangeProperty(struct FPropertyChangedEvent& Prope
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

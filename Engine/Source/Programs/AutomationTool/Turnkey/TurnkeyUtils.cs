@@ -12,6 +12,7 @@ using EpicGames.Core;
 using AutomationTool;
 using UnrealBuildTool;
 using UnrealBuildBase;
+using System.Diagnostics;
 
 namespace Turnkey
 {
@@ -32,7 +33,7 @@ namespace Turnkey
 			SetVariable("AllPlatforms", string.Join(",", UnrealTargetPlatform.GetValidPlatformNames()));
 
 			// walk over all the SDKs and get their AutoSDK string
-			IEnumerable<string> AutoSDKPlatforms = UEBuildPlatformSDK.AllSDKs.Select(x => x.GetAutoSDKPlatformName()).Distinct();
+			IEnumerable<string> AutoSDKPlatforms = UEBuildPlatformSDK.AllPlatformSDKObjects.Select(x => x.GetAutoSDKPlatformName()).Distinct();
 			SetVariable("AutoSDKPlatforms", string.Join(",", AutoSDKPlatforms));
 
 			// 			TurnkeyUtils.Log("AllPlatforms = {0}", GetVariableValue("AllPlatforms"));
@@ -96,7 +97,7 @@ namespace Turnkey
 		public static string ParseParamValue(string Param, string Default, string[] ExtraOptions)
 		{
 			// our internal extraoptions still have - in front, but CommandUtilHelper won't have the dashes
-			string Value = CommandUtils.ParseParamValue(ExtraOptions, "-" + Param, Default);
+			string Value = CommandUtils.ParseParamValue(ExtraOptions, "-" + Param, null);
 			if (Value == null)
 			{
 				Value = CommandUtilHelper.ParseParamValue(Param, Default);
@@ -226,7 +227,7 @@ namespace Turnkey
 			}
 
 			// sort the discovered projects
-			foreach (FileReference NativeProject in NativeProjects.EnumerateProjectFiles())
+			foreach (FileReference NativeProject in NativeProjects.EnumerateProjectFiles(EpicGames.Core.Log.Logger))
 			{
 				DirectoryReference ProjectDir = NativeProject.Directory;
 				ProjectMode Mode = ProjectMode.Normal;
@@ -313,11 +314,12 @@ namespace Turnkey
 				// look for manual entry option
 				if (Choice == ProjectNames.Count - 1)
 				{
-					if (RuntimePlatform.IsWindows)
+					if (OperatingSystem.IsWindows())
 					{
 						string ChosenFile = null;
 						System.Threading.Thread t = new System.Threading.Thread(x =>
 						{
+							Debug.Assert(OperatingSystem.IsWindowsVersionAtLeast(7));
 							ChosenFile = UnrealWindowsForms.Utils.ShowOpenFileDialogAndReturnFilename("Project Files (*.uproject)|*.uproject");
 						});
 

@@ -2,10 +2,12 @@
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 import threading
+
 from typing import Dict, List, NamedTuple, Optional
 
 import pythonosc.dispatcher
@@ -14,7 +16,6 @@ import pythonosc.osc_server
 from .config import CONFIG, SETTINGS
 from .switchboard_logging import LOGGER
 from . import switchboard_utils as sb_utils
-
 
 class OscServer:
     def __init__(self):
@@ -28,30 +29,30 @@ class OscServer:
         self.internal_client = None
         self.server_port = None
 
-    def ip_address(self):
+    def address(self):
         if not self.server:
             return None
 
         return self.server.server_address
 
-    def launch(self, ip_address, port):
-        # TODO: Allow relaunch of OSC server when ip_address variable changes
+    def launch(self, address, port):
+        # TODO: Allow relaunch of OSC server when address variable changes
         try:
             self.server = pythonosc.osc_server.ThreadingOSCUDPServer(
-                (ip_address, port), self.dispatcher)
+                (address, port), self.dispatcher)
         except OSError as e:
             if e.errno == 10048:
                 LOGGER.error(
                     'OSC Server: Another OSC server is currently using '
-                    f'{ip_address}:{port}. Please kill and relaunch')
+                    f'{address}:{port}. Please kill and relaunch')
             elif e.errno == 10049:
-                LOGGER.error(f"OSC Server: Couldn't bind {ip_address}:{port}. "
+                LOGGER.error(f"OSC Server: Couldn't bind {address}:{port}. "
                              'Please check address and relaunch')
 
             self.server = None
             return False
 
-        # Set the server ip and port
+        # Set the server address and port
         self.server_port = port
 
         LOGGER.success(
@@ -83,15 +84,14 @@ class OscServer:
         LOGGER.warning(f'Received unhandled OSC message: {command} {args}.')
 
 
-MultiUserServerInstance = None
-
 class MultiUserApplication:
     def __init__(self):
         self.lock = threading.Lock()
-        self.process: Optional[subprocess.Popen] = None
+        self._process: Optional[subprocess.Popen] = None
 
         # Application Options
         self.concert_ignore_cl = False
+        self.clear_process_info()
 
     def exe_path(self):
         return CONFIG.multiuser_server_path()
@@ -106,12 +106,17 @@ class MultiUserApplication:
         return ''
 
     def get_mu_server_endpoint_arg(self):
-        setting_val = CONFIG.MUSERVER_ENDPOINT.get_value().strip()
-        if setting_val:
-            converted_ip = sb_utils.expand_endpoint(setting_val,
-                                                    SETTINGS.IP_ADDRESS.get_value().strip())
-            return f'-UDPMESSAGING_TRANSPORT_UNICAST="{converted_ip}"'
+        endpoint = self.endpoint_address()
+        if endpoint:
+            return f'-UDPMESSAGING_TRANSPORT_UNICAST="{endpoint}"'
         return ''
+
+    @property
+    def process(self):
+        if self._process and (self._process.poll() is None):
+            return self._process
+        else:
+            return self.poll_process()
 
     def poll_process(self):
         # Aside from this task_name, PollProcess is stateless,
@@ -133,9 +138,12 @@ class MultiUserApplication:
 
             cmdline = ''
             if sys.platform.startswith('win'):
-                cmdline = f'start "Multi User Server" "{self.exe_path()}"'
+                if CONFIG.MUSERVER_SLATE_MODE.get_value():
+                    cmdline = f'"{self.exe_path()}"'
+                else:
+                    cmdline = f'start "Multi User Server" "{self.exe_path()}"'
             else:
-                cmdline = f'{self.exe_path()}'
+                cmdline = f'"{self.exe_path()}"'
 
             cmdline += f' -CONCERTSERVER="{CONFIG.MUSERVER_SERVER_NAME.get_value()}"'
             cmdline += f' {CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS.get_value()}'
@@ -145,6 +153,12 @@ class MultiUserApplication:
             if self.concert_ignore_cl:
                 cmdline += " -ConcertIgnore"
 
+            if CONFIG.MUSERVER_WORKING_DIR.get_value():
+                cmdline += f' -ConcertWorkingDir="{CONFIG.MUSERVER_WORKING_DIR.get_value()}"'
+
+            if CONFIG.MUSERVER_ARCHIVE_DIR.get_value():
+                cmdline += f' -ConcertSavedDir="{CONFIG.MUSERVER_ARCHIVE_DIR.get_value()}"'
+
             if CONFIG.MUSERVER_CLEAN_HISTORY.get_value():
                 cmdline += " -ConcertClean"
 
@@ -152,31 +166,94 @@ class MultiUserApplication:
                 cmdline += f' {" ".join(args)}'
 
             LOGGER.debug(cmdline)
-            self.process = subprocess.Popen(
+            self._process = subprocess.Popen(
                 cmdline, shell=True,
                 startupinfo=sb_utils.get_hidden_sp_startupinfo())
 
             return True
 
     def terminate(self, bypolling=False):
-        if not bypolling and self.process:
-            self.process.terminate()
+        if not bypolling and self._process:
+            self._process.terminate()
         else:
             self.poll_process().kill()
 
-    def is_running(self):
-        if self.process and (self.process.poll() is None):
-            return True
-        elif self.poll_process().poll() is None:
+    FIND_IP_RE = re.compile(
+        r'-UDPMESSAGING_TRANSPORT_UNICAST="(\d+.\d+.\d+.\d+:\d+)"',
+        re.IGNORECASE)
+    FIND_NAME_RE = re.compile(
+        r'-CONCERTSERVER="([A-Za-z0-9_]+)"', re.IGNORECASE)
+
+    def extract_process_info(self):
+        pid = self.process.pid
+        command_line = str(self.process.args)
+
+        if command_line == '' or pid == self._running_pid:
+            return
+
+        self.clear_process_info()
+        self._running_pid = pid
+        try:
+            ip_match = self.FIND_IP_RE.search(command_line)
+            name_match = self.FIND_NAME_RE.search(command_line)
+            if ip_match:
+                self._running_endpoint = ip_match.group(1)
+            if name_match:
+                self._running_name = name_match.group(1)
+        except:
+            pass
+
+    def validate_process(self):
+        if self._running_pid is None:
+            return False
+
+        endpoint = self.endpoint_address()
+        server_name = CONFIG.MUSERVER_SERVER_NAME.get_value()
+        if endpoint == self._running_endpoint and server_name == self._running_name:
             return True
 
         return False
+
+    def running_server_name(self):
+        return self._running_name
+
+    def running_endpoint(self):
+        return self._running_endpoint
+
+    def endpoint_address(self):
+        endpoint_setting = CONFIG.MUSERVER_ENDPOINT.get_value().strip()
+        endpoint = ""
+        if endpoint_setting:
+            addr_setting = SETTINGS.ADDRESS.get_value().strip()
+            endpoint = sb_utils.expand_endpoint(endpoint_setting, addr_setting)
+        return endpoint
+
+    def server_name(self):
+        return CONFIG.MUSERVER_SERVER_NAME.get_value()
+
+    def clear_process_info(self):
+        self._running_endpoint = ""
+        self._running_name = ""
+        self._running_pid = None
+
+    def is_running(self):
+        if self.process.poll() is None:
+            self.extract_process_info()
+            return True
+
+        self.clear_process_info()
+        return False
+
+
+MultiUserServerInstance: Optional[MultiUserApplication] = None
+
 
 def get_multi_user_server_instance():
     global MultiUserServerInstance
     if not MultiUserServerInstance:
         MultiUserServerInstance = MultiUserApplication()
     return MultiUserServerInstance
+
 
 class RsyncServer:
     DEFAULT_PORT = 8730
@@ -273,7 +350,7 @@ hosts allow = {allowed_addrs}
             client.address for client in self.allowed_clients.values()}
 
         allowed_addrs.add(self.address)
-        allowed_addrs.add(SETTINGS.IP_ADDRESS.get_value())
+        allowed_addrs.add(SETTINGS.ADDRESS.get_value())
         allowed_addrs.discard('0.0.0.0')
 
         config = self.CONFIG_TEMPLATE.format(

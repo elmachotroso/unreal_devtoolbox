@@ -6,17 +6,27 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/StringFwd.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectResource.h"
+#include "CoreTypes.h"
 #include "IO/PackageId.h"
+#include "Misc/AssertionMacros.h"
 #include "Serialization/Archive.h"
-#include "Serialization/MappedName.h"
 #include "Serialization/CustomVersion.h"
+#include "Serialization/MappedName.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectResource.h"
+#include "UObject/ObjectVersion.h"
 
 class FArchive;
-class IAsyncPackageLoader;
 class FIoDispatcher;
+class IAsyncPackageLoader;
 class IEDLBootNotificationManager;
+class UPackage;
 
 class FPackageImportReference
 {
@@ -179,6 +189,12 @@ public:
 			GetPackageId() == Other.GetPackageId();
 	}
 
+	inline bool operator!=(const FPublicExportKey& Other) const
+	{
+		return GetExportHash() != Other.GetExportHash() ||
+			GetPackageId() != Other.GetPackageId();
+	}
+
 	inline friend uint32 GetTypeHash(const FPublicExportKey& In)
 	{
 		return HashCombine(GetTypeHash(In.GetPackageId()), GetTypeHash(In.GetExportHash()));
@@ -292,13 +308,21 @@ struct FExportBundleHeader
 
 struct FScriptObjectEntry
 {
-	FMinimalName ObjectName;
+	union 
+	{
+		FMappedName Mapped;
+		FMinimalName ObjectName;
+	};
 	FPackageObjectIndex GlobalIndex;
 	FPackageObjectIndex OuterIndex;
 	FPackageObjectIndex CDOClassIndex;
 
+	FScriptObjectEntry() {}
+
 	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FScriptObjectEntry& ScriptObjectEntry);
 };
+// The sizeof FMinimalName may be variable but FMappedName should always be larger, so FScriptObjectEntry has a fixed size.
+static_assert(sizeof(FMappedName) >= sizeof(FMinimalName));
 
 /**
  * Export map entry.
@@ -322,12 +346,6 @@ struct FExportMapEntry
 
 COREUOBJECT_API void FindAllRuntimeScriptPackages(TArray<UPackage*>& OutPackages);
 
-#ifndef WITH_ASYNCLOADING2
-#define WITH_ASYNCLOADING2 (WITH_IOSTORE_IN_EDITOR || !WITH_EDITORONLY_DATA)
-#endif
-
-#if WITH_ASYNCLOADING2
-
 /**
  * Creates a new instance of the AsyncPackageLoader #2.
  *
@@ -336,5 +354,3 @@ COREUOBJECT_API void FindAllRuntimeScriptPackages(TArray<UPackage*>& OutPackages
  * @return The async package loader.
  */
 IAsyncPackageLoader* MakeAsyncPackageLoader2(FIoDispatcher& InIoDispatcher, IAsyncPackageLoader* UncookedPackageLoader = nullptr);
-
-#endif

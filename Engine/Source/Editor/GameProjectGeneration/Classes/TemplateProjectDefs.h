@@ -2,11 +2,19 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
 #include "FeaturePackContentSource.h"
 #include "Internationalization/PolyglotTextData.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CoreMiscDefines.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "TemplateProjectDefs.generated.h"
 
 // does not require reflection exposure
@@ -203,7 +211,7 @@ struct FTemplateCategoryDef
 
 	/** Is this a major top-level category? Major categories are displayed as full rows, eg. the Game category.*/
 	UPROPERTY()
-		bool IsMajorCategory{ false };
+	bool IsMajorCategory=false;
 };
 
 UCLASS(config=TemplateCategories)

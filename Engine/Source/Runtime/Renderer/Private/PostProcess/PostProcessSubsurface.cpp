@@ -19,7 +19,7 @@
 #include "GenerateMips.h"
 #include "ClearQuad.h"
 #include "Strata/Strata.h"
-#include "TemporalAA.h"
+#include "PostProcess/TemporalAA.h"
 #include "SubsurfaceTiles.h"
 
 namespace
@@ -95,6 +95,15 @@ namespace
 		TEXT(" 2: Automatic. Non-checkerboard lighting will be applied if we have a suitable rendertarget format\n"),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarSSSCheckerboardNeighborSSSValidation(
+		TEXT("r.SSS.Checkerboard.NeighborSSSValidation"),
+		0,
+		TEXT("Enable or disable checkerboard neighbor subsurface scattering validation.\n")
+		TEXT("This validation can remove border light leakage into subsurface scattering, creating a sharpe border with correct color")
+		TEXT(" 0: Disabled (default)")
+		TEXT(" 1: Enabled. Add 1 subsurface profile id query/pixel (low quality), 4 id query/pixel (high quality) at recombine pass"),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarSSSBurleyQuality(
 		TEXT("r.SSS.Burley.Quality"),
 		1,
@@ -129,7 +138,12 @@ namespace
 		TEXT("4000. (default) The minimal number of tiles to trigger subsurface radiance mip generation. Set to zero to always generate mips (Experimental value)"),
 		ECVF_RenderThreadSafe);
 
-	
+	TAutoConsoleVariable<float> CVarSubSurfaceColorAsTannsmittanceAtDistance(
+		TEXT("r.SSS.SubSurfaceColorAsTansmittanceAtDistance"),
+		0.15f,
+		TEXT("Normalized distance (0..1) at which the surface color is interpreted as transmittance color to compute extinction coefficients."),
+		ECVF_RenderThreadSafe);
+
 	DECLARE_GPU_STAT(SubsurfaceScattering)
 }
 
@@ -275,7 +289,7 @@ bool IsSubsurfaceEnabled()
 
 bool IsSubsurfaceRequiredForView(const FViewInfo& View)
 {
-	const bool bSimpleDynamicLighting = IsAnyForwardShadingEnabled(View.GetShaderPlatform());
+	const bool bSimpleDynamicLighting = IsForwardShadingEnabled(View.GetShaderPlatform());
 	const bool bSubsurfaceEnabled = IsSubsurfaceEnabled();
 	const bool bViewHasSubsurfaceMaterials = ((View.ShadingModelMaskInView & GetUseSubsurfaceProfileShadingModelMask()) != 0);
 	return (bSubsurfaceEnabled && bViewHasSubsurfaceMaterials && !bSimpleDynamicLighting);
@@ -309,6 +323,11 @@ uint32 GetSubsurfaceRequiredViewMask(TArrayView<const FViewInfo> Views)
 
 bool IsSubsurfaceCheckerboardFormat(EPixelFormat SceneColorFormat)
 {
+	if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+	{
+		// With this mode, specular and subsurface colors are correctly separated so checkboard is not required.
+		return false;
+	}
 	int CVarValue = CVarSSSCheckerboard.GetValueOnRenderThread();
 	if (CVarValue == 0)
 	{
@@ -427,7 +446,6 @@ public:
 	{
 		FSubsurfaceShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_BURLEY_COMPUTE"), 1);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0); 
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -452,7 +470,6 @@ public:
 	{
 		FSubsurfaceShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_BURLEY_COMPUTE"), 1);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -480,7 +497,6 @@ public:
 	{
 		FSubsurfaceShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_BURLEY_COMPUTE"), 1);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -508,7 +524,6 @@ public:
 	{
 		FSubsurfaceShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_BURLEY_COMPUTE"), 1);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -547,7 +562,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_BURLEY_COMPUTE"), 1);
 		OutEnvironment.SetDefine(TEXT("ENABLE_VELOCITY"), 1);
 		OutEnvironment.SetDefine(TEXT("SUBSURFACE_GROUP_SIZE"), FSubsurfaceTiles::TileSize);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -818,6 +832,7 @@ class FSubsurfaceRecombinePS : public FSubsurfaceShader
 		SHADER_PARAMETER_STRUCT(FSubsurfaceInput, SubsurfaceInput1)
 		SHADER_PARAMETER_SAMPLER(SamplerState, SubsurfaceSampler0)
 		SHADER_PARAMETER_SAMPLER(SamplerState, SubsurfaceSampler1)
+		SHADER_PARAMETER(uint32, CheckerboardNeighborSSSValidation)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT();
 
@@ -854,7 +869,7 @@ class FSubsurfaceRecombinePS : public FSubsurfaceShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FSubsurfaceShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1 : 0);
+		OutEnvironment.SetDefine(TEXT("SUBSURFACE_RECOMBINE"), 1);
 	}
 
 	// Returns the Recombine quality level requested by the SSS Quality CVar setting.
@@ -894,6 +909,12 @@ class FSubsurfaceRecombinePS : public FSubsurfaceShader
 		{
 			return EQuality::Low;
 		}
+	}
+
+	static uint32 GetCheckerBoardNeighborSSSValidation(bool bCheckerBoard)
+	{
+		bool bValidation = CVarSSSCheckerboardNeighborSSSValidation.GetValueOnRenderThread() > 0 ? true : false;
+		return (bCheckerBoard && bValidation) ? 1u : 0u;
 	}
 };
 
@@ -992,6 +1013,11 @@ void AddSubsurfaceViewPass(
 	const FScreenPassTextureViewportParameters SubsurfaceViewportParameters = GetScreenPassTextureViewportParameters(SubsurfaceViewport);
 	const FScreenPassTextureViewportParameters SceneViewportParameters = GetScreenPassTextureViewportParameters(SceneViewport);
 
+	const bool bReadSeparatedSubSurfaceSceneColor = Strata::IsStrataOpaqueMaterialRoughRefractionEnabled();
+	const bool bWriteSeparatedOpaqueRoughRefractionSceneColor = Strata::IsStrataOpaqueMaterialRoughRefractionEnabled();
+	FRDGTextureRef SeparatedSubSurfaceSceneColor = View.StrataViewData.SceneData->SeparatedSubSurfaceSceneColor;
+	FRDGTextureRef SeparatedOpaqueRoughRefractionSceneColor = View.StrataViewData.SceneData->SeparatedOpaqueRoughRefractionSceneColor;
+
 	FRDGTextureRef SetupTexture = SceneColorTexture;
 	FRDGTextureRef SubsurfaceSubpassOneTex = nullptr;
 	FRDGTextureRef SubsurfaceSubpassTwoTex = nullptr;
@@ -1077,14 +1103,13 @@ void AddSubsurfaceViewPass(
 
 		// Call the indirect setup (with tile classification)
 		{
-			FRDGTextureSRVDesc SceneColorTextureSRVDesc = FRDGTextureSRVDesc::Create(SceneColorTexture);
 			FRDGTextureUAVDesc SetupTextureOutDesc(SetupTexture, 0);
 
 			typedef FSubsurfaceIndirectDispatchSetupCS SHADER;
 			SHADER::FParameters* PassParameters = GraphBuilder.AllocParameters<SHADER::FParameters>();
 			PassParameters->Subsurface = SubsurfaceCommonParameters;
 			PassParameters->Output = SubsurfaceViewportParameters;
-			PassParameters->SubsurfaceInput0 = GetSubsurfaceInput(SceneColorTexture, SceneViewportParameters);
+			PassParameters->SubsurfaceInput0 = GetSubsurfaceInput(bReadSeparatedSubSurfaceSceneColor ? SeparatedSubSurfaceSceneColor : SceneColorTexture, SceneViewportParameters);
 			PassParameters->SubsurfaceSampler0 = PointClampSampler;
 			PassParameters->SetupTexture = GraphBuilder.CreateUAV(SetupTextureOutDesc);
 			if (bUseProfileIdCache)
@@ -1097,7 +1122,7 @@ void AddSubsurfaceViewPass(
 			PassParameters->RWTileTypeCountBuffer = GraphBuilder.CreateUAV(Tiles.TileTypeCountBuffer, EPixelFormat::PF_R32_UINT);
 
 			PassParameters->SubsurfaceUniformParameters = UniformBuffer;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 			SHADER::FPermutationDomain ComputeShaderPermutationVector;
 			ComputeShaderPermutationVector.Set<SHADER::FDimensionHalfRes>(bHalfRes);
@@ -1151,7 +1176,7 @@ void AddSubsurfaceViewPass(
 			}
 
 			// Generate mipmap for the diffuse scene color and depth, use bilinear filter conditionally
-			FGenerateMips::ExecuteCompute(GraphBuilder, SetupTexture, BilinearBorderSampler, MipsConditionBuffer, Offset);
+			FGenerateMips::ExecuteCompute(GraphBuilder, View.FeatureLevel, SetupTexture, BilinearBorderSampler, MipsConditionBuffer, Offset);
 		}
 
 		// Allocate auxiliary buffers
@@ -1244,7 +1269,7 @@ void AddSubsurfaceViewPass(
 				PassParameters->GroupBuffer = SubsurfaceBufferUsage[SubsurfaceTypeIndex];
 				PassParameters->TileTypeCountBuffer = GraphBuilder.CreateSRV(Tiles.TileTypeCountBuffer,EPixelFormat::PF_R32_UINT);
 				PassParameters->IndirectDispatchArgsBuffer = Tiles.TileIndirectDispatchBuffer;
-				PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+				PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 				if (SubsurfacePassFunction == SHADER::ESubsurfacePass::PassOne && SubsurfaceType == SHADER::ESubsurfaceType::BURLEY)
 				{
@@ -1316,14 +1341,17 @@ void AddSubsurfaceViewPass(
 
 			FSubsurfaceRecombinePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSubsurfaceRecombinePS::FParameters>();
 			PassParameters->Subsurface = SubsurfaceCommonParameters;
+			// Add dynamic branch parameters for recombine pass only.
+			PassParameters->CheckerboardNeighborSSSValidation = FSubsurfaceRecombinePS::GetCheckerBoardNeighborSSSValidation(bCheckerboard);
+			
 			if (SubsurfaceMode != ESubsurfaceMode::Bypass)
 			{
 				PassParameters->TileParameters = GetSubsurfaceTileParameters(SubsurfaceViewport, Tiles, TileType);
 			}
 			PassParameters->RenderTargets[0] = FRenderTargetBinding(SubsurfaceIntermediateTexture, SceneColorTextureLoadAction);
-			PassParameters->SubsurfaceInput0 = GetSubsurfaceInput(SceneColorTexture, SceneViewportParameters);
+			PassParameters->SubsurfaceInput0 = GetSubsurfaceInput(bReadSeparatedSubSurfaceSceneColor ? SeparatedSubSurfaceSceneColor : SceneColorTexture, SceneViewportParameters);
 			PassParameters->SubsurfaceSampler0 = BilinearBorderSampler;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 			// Scattering output target is only used when scattering is enabled.
 			if (SubsurfaceMode != ESubsurfaceMode::Bypass)
@@ -1351,10 +1379,11 @@ void AddSubsurfaceViewPass(
 				*/
 			AddSubsurfaceTiledScreenPass(
 				GraphBuilder,
-				RDG_EVENT_NAME("SSS::Recombine(%s %s%s%s%s%s) %dx%d",
+				RDG_EVENT_NAME("SSS::Recombine(%s %s%s%s%s%s%s) %dx%d",
 					GetEventName(PixelShaderPermutationVector.Get<FSubsurfaceRecombinePS::FDimensionMode>()),
 					FSubsurfaceRecombinePS::GetEventName(PixelShaderPermutationVector.Get<FSubsurfaceRecombinePS::FDimensionQuality>()),
 					PixelShaderPermutationVector.Get<FSubsurfaceRecombinePS::FDimensionCheckerboard>() ? TEXT(" Checkerboard") : TEXT(""),
+					FSubsurfaceRecombinePS::GetCheckerBoardNeighborSSSValidation(bCheckerboard) ? TEXT("-Validation") : TEXT(""),
 					PixelShaderPermutationVector.Get<FSubsurfaceRecombinePS::FDimensionHalfRes>() ? TEXT(" HalfRes") : TEXT(""),
 					PixelShaderPermutationVector.Get<FSubsurfaceRecombinePS::FRunningInSeparable>() ? TEXT(" RunningInSeparable") : TEXT(""),
 					!bShouldFallbackToFullScreenPass ? TEXT(" Tiled") : TEXT(""),
@@ -1381,15 +1410,21 @@ void AddSubsurfaceViewPass(
 			{
 				PassParameters->TileParameters = GetSubsurfaceTileParameters(SubsurfaceViewport, Tiles, TileType);
 			}
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, SceneColorTextureLoadAction);
+			PassParameters->RenderTargets[0] = bWriteSeparatedOpaqueRoughRefractionSceneColor ? 
+				FRenderTargetBinding(SeparatedOpaqueRoughRefractionSceneColor, ERenderTargetLoadAction::ELoad) :
+				FRenderTargetBinding(SceneColorTexture, SceneColorTextureLoadAction);
 			PassParameters->SubsurfaceInput0 = GetSubsurfaceInput(SubsurfaceIntermediateTexture, SceneViewportParameters);
 			PassParameters->SubsurfaceSampler0 = PointClampSampler;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 			TShaderMapRef<FSubsurfaceRecombineCopyPS> PixelShader(View.ShaderMap);			
 			TShaderMapRef<FSubsurfaceTilePassVS> VertexShader(View.ShaderMap);
-			
+
 			FRHIBlendState* BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero>::GetRHI();
+			if (bWriteSeparatedOpaqueRoughRefractionSceneColor)
+			{
+				BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI();
+			}
 			
 			AddSubsurfaceTiledScreenPass(
 				GraphBuilder,
@@ -1468,7 +1503,7 @@ FScreenPassTexture AddVisualizeSubsurfacePass(FRDGBuilder& GraphBuilder, const F
 	PassParameters->SubsurfaceInput0.Viewport = GetScreenPassTextureViewportParameters(InputViewport);
 	PassParameters->SubsurfaceSampler0 = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	PassParameters->MiniFontTexture = GetMiniFontTexture();
-	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 	TShaderMapRef<FSubsurfaceVisualizePS> PixelShader(View.ShaderMap);
 

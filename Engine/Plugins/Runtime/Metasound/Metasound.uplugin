@@ -10,7 +10,7 @@
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
-	"EnabledByDefault": false,
+	"EnabledByDefault": true,
 	"CanContainContent": true,
 	"IsBetaVersion": true,
 	"Installed": false,
@@ -58,6 +58,10 @@
 		},
 		{
 			"Name": "AudioSynesthesia",
+			"Enabled": true
+		},
+		{
+			"Name": "WaveTable",
 			"Enabled": true
 		}
 	]

@@ -19,19 +19,22 @@ struct FPathTracingLight {
 	FVector3f dPdu;
 	FVector3f dPdv;
 	FVector3f Color;
-	FVector3f Dimensions; // Radius,SoftRadius,Length or RectWidth,RectHeight or Sin(Angle/2),Sin(SoftAngle/2) depending on light type
+	FVector2f Dimensions; // Radius,Length or RectWidth,RectHeight or Sin(Angle/2),0 depending on light type
 	FVector2f Shaping;  // Barndoor controls for RectLights, Cone angles for spots lights
 	float   Attenuation;
 	float   FalloffExponent; // for non-inverse square decay lights only
+	float   VolumetricScatteringIntensity;  // scale for volume contributions
 	int32   IESTextureSlice;
 	uint32  Flags; // see defines PATHTRACER_FLAG_*
-	int32   RectLightTextureIndex;
+	uint32  MissShaderIndex;  // used to implement light functions
 	FVector3f TranslatedBoundMin;
 	FVector3f TranslatedBoundMax;
-	float Padding; // keep structure aligned
+	uint32 RectLightAtlasUVScale;  // Rect. light atlas UV transformation, encoded as f16x2
+	uint32 RectLightAtlasUVOffset; // Rect. light atlas UV transformation, encoded as f16x2
+	// keep structure aligned
 };
 
-static_assert(sizeof(FPathTracingLight) == 128, "Path tracing light structure should be aligned to 128 bytes for optimal access on the GPU");
+static_assert(sizeof(FPathTracingLight) == 132, "Path tracing light structure should be kept as small as possible");
 
 struct FPathTracingPackedPathState {
 	uint32    PixelIndex;
@@ -43,13 +46,24 @@ struct FPathTracingPackedPathState {
 	uint16    Normal[3];
 	FVector3f RayOrigin;
 	FVector3f RayDirection;
-	uint32    RayCone;
 	FVector3f PathThroughput;
 	uint16    PathRoughness;
 	uint16    SigmaT[3];
 };
 
-static_assert(sizeof(FPathTracingPackedPathState) == 88, "Packed Path State size should be minimized");
+static_assert(sizeof(FPathTracingPackedPathState) == 84, "Packed Path State size should be minimized");
+
+// C++ representation of a decal for ray tracing
+struct FRayTracingDecal
+{
+	FVector3f TranslatedBoundMin;
+	uint32 Pad0;
+	FVector3f TranslatedBoundMax;
+	uint32 CallableSlotIndex;
+	// keep structure aligned
+};
+
+static_assert(sizeof(FRayTracingDecal) == 32, "Ray tracing decal structure should be aligned to 32 bytes for optimal access on the GPU");
 
 #else
 
@@ -63,16 +77,18 @@ struct FPathTracingLight {
 	float3  dPdu;
 	float3  dPdv;
 	float3  Color;
-	float3  Dimensions;
+	float2  Dimensions;
 	float2  Shaping;
 	float   Attenuation;
 	float   FalloffExponent;
+	float   VolumetricScatteringIntensity;  // scale for volume contributions
 	int     IESTextureSlice;
 	uint    Flags;
-	int	    RectLightTextureIndex;
+	uint    MissShaderIndex;
 	float3  TranslatedBoundMin;
 	float3  TranslatedBoundMax;
-	float Padding;
+	uint	RectLightAtlasUVScale;
+	uint	RectLightAtlasUVOffset;
 };
 
 struct FPathTracingPackedPathState {
@@ -84,9 +100,16 @@ struct FPathTracingPackedPathState {
 	uint3     PackedAlbedoNormal;
 	float3    RayOrigin;
 	float3    RayDirection;
-	uint      PackedRayCone;
 	float3    PathThroughput;
 	uint2     PackedRoughnessSigma;
+};
+
+struct FRayTracingDecal
+{
+	float3 TranslatedBoundMin;
+	uint Pad0;
+	float3 TranslatedBoundMax;
+	uint CallableSlotIndex;
 };
 
 #endif

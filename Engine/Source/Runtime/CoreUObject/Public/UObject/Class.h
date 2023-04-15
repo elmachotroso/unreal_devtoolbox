@@ -6,11 +6,35 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
 #include "Concepts/GetTypeHashable.h"
-#include "Math/RandomStream.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/UnrealMemory.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/LogVerbosity.h"
+#include "Math/Box2D.h"
 #include "Math/InterpCurvePoint.h"
+#include "Math/MathFwd.h"
+#include "Math/Matrix.h"
+#include "Math/Plane.h"
+#include "Math/Quat.h"
+#include "Math/RandomStream.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/Vector2D.h"
+#include "Math/Vector4.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/FallbackStruct.h"
 #include "Misc/Guid.h"
@@ -18,28 +42,67 @@
 #include "Misc/PackageAccessTracking.h"
 #include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/ScopeRWLock.h"
+#include "Serialization/StructuredArchive.h"
+#include "Serialization/StructuredArchiveAdapters.h"
+#include "Templates/AlignmentTemplates.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/EnableIf.h"
 #include "Templates/IsAbstract.h"
 #include "Templates/IsEnum.h"
+#include "Templates/IsPODType.h"
+#include "Templates/IsTriviallyDestructible.h"
 #include "Templates/IsUECoreType.h"
 #include "Templates/Models.h"
+#include "Templates/Tuple.h"
+#include "Templates/TypeCompatibleBytes.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Trace/Detail/Channel.h"
 #include "UObject/CoreNative.h"
+#include "UObject/Field.h"
+#include "UObject/FieldPath.h"
 #include "UObject/GarbageCollection.h"
+#include "UObject/NameTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/PropertyTag.h"
 #include "UObject/ReflectedTypeAccessors.h"
 #include "UObject/Script.h"
+#include "UObject/TopLevelAssetPath.h"
 #include "UObject/UObjectGlobals.h"
-#include "UObject/FieldPath.h"
-#include "UObject/PropertyTag.h"
+#include "UObject/UnrealNames.h"
 
+class FArchive;
+class FEditPropertyChain;
+class FField;
+class FOutputDevice;
+class FProperty;
+class FStructProperty;
+class UPropertyWrapper;
+struct CGetTypeHashable;
+struct FAssetData;
 struct FBlake3Hash;
+struct FColor;
 struct FCustomPropertyListNode;
+struct FDoubleInterval;
+struct FDoubleRange;
+struct FDoubleRangeBound;
+struct FFallbackStruct;
+struct FFloatInterval;
+struct FFloatRange;
+struct FFloatRangeBound;
 struct FFrame;
+struct FInt32Interval;
+struct FInt32Range;
+struct FInt32RangeBound;
+struct FLinearColor;
 struct FNetDeltaSerializeInfo;
 struct FObjectInstancingGraph;
 struct FPropertyTag;
-class FField;
-class UPropertyWrapper;
+struct FRandomStream;
+struct FUObjectSerializeContext;
+template <typename FuncType> class TFunctionRef;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogClass, Log, All);
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogScriptSerialization, Log, All);
@@ -327,7 +390,7 @@ public:
 	FProperty* PropertyLink;
 	/** In memory only: Linked list of object reference properties from most-derived to base */
 	FProperty* RefLink;
-	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed byt he native destructor */
+	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed by the native destructor */
 	FProperty* DestructorLink;
 	/** In memory only: Linked list of properties requiring post constructor initialization */
 	FProperty* PostConstructLink;
@@ -354,6 +417,10 @@ public:
 
 	/** Get the Schema Hash for this struct - the hash of its property names and types. */
 	const FBlake3Hash& GetSchemaHash(bool bSkipEditorOnly) const;
+
+protected:
+	/** True if this struct has Asset Registry searchable properties */
+	bool bHasAssetRegistrySearchableProperties;
 #endif
 
 public:
@@ -375,6 +442,16 @@ public:
 
 	// UField interface.
 	virtual void AddCppProperty(FProperty* Property) override;
+
+	/**
+	 * Returns struct path name as a package + struct FName pair
+	 */
+	FORCEINLINE FTopLevelAssetPath GetStructPathName() const
+	{
+		// Some day this check may actually be relevant
+		checkf(GetOuter() == GetOutermost(), TEXT("Only top level objects are supported by FTopLevelAssetPath. This object is a subobject: \"%s\""), *GetPathName());
+		return FTopLevelAssetPath(GetOuter()->GetFName(), GetFName());
+	}
 
 	/** Searches property link chain for a property with the specified name */
 	FProperty* FindPropertyByName(FName InName) const;
@@ -443,7 +520,7 @@ public:
 	virtual void InitializeStruct(void* Dest, int32 ArrayDim = 1) const;
 	
 	/**
-	 * Destroy a struct in memory. This may be done by calling the native destructor and then the constructor or individually reinitializing properties
+	 * Destroy a struct in memory. This may be done by calling the native destructor or individually destroying properties
 	 *
 	 * @param	Dest		Pointer to memory to destory
 	 * @param	ArrayDim	Number of elements in the array
@@ -549,6 +626,12 @@ public:
 	 * @return pointer to the UStruct that has associated metadata, nullptr if Key is not associated with any UStruct in the hierarchy
 	 */
 	const UStruct* HasMetaDataHierarchical(const FName& Key) const;
+
+	/* Returns true if this struct has Asset Registry searchable properties */
+	FORCEINLINE bool HasAssetRegistrySearchableProperties() const
+	{
+		return bHasAssetRegistrySearchableProperties;
+	}
 #endif // WITH_EDITORONLY_DATA
 
 #if HACK_HEADER_GENERATOR
@@ -630,6 +713,12 @@ private:
 	void SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const;
 };
 
+/**
+ * Flags describing a struct
+ * 
+ * This MUST be kept in sync with EStructFlags defined in
+ * Engine\Source\Programs\Shared\EpicGames.Core\UnrealEngineTypes.cs
+ */
 enum EStructFlags
 {
 	// State flags.
@@ -700,6 +789,9 @@ enum EStructFlags
 	/** If set, this structure has been replaced via reinstancing */
 	STRUCT_NewerVersionExists = 0x01000000,
 
+	/** If set, this struct will have CanEditChange on it in the editor to determine if a child property can be edited */
+	STRUCT_CanEditChange = 0x02000000,
+	
 	/** Struct flags that are automatically inherited */
 	STRUCT_Inherit				= STRUCT_HasInstancedReference|STRUCT_Atomic,
 
@@ -734,6 +826,7 @@ struct TStructOpsTypeTraitsBase2
 		WithNetSharedSerialization     = false,                         // struct has a NetSerialize function that does not require the package map to serialize its state.
 		WithGetPreloadDependencies     = false,                         // struct has a GetPreloadDependencies function to return all objects that will be Preload()ed when the struct is serialized at load time.
 		WithPureVirtual                = false,                         // struct has PURE_VIRTUAL functions and cannot be constructed when CHECK_PUREVIRTUALS is true
+		WithCanEditChange			   = false,							// struct has an editor-only CanEditChange function that can conditionally make child properties read-only in the details panel (same idea as UObject::CanEditChange)
 	};
 };
 
@@ -749,297 +842,6 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 #endif
 
 
-#if !PLATFORM_COMPILER_HAS_IF_CONSTEXPR
-
-	/**
-	 * Selection of constructor behavior.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && !TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void* Data)
-	{
-		new (Data) CPPSTRUCT();
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructWithNoInitOrNot(void* Data)
-	{
-		new (Data) CPPSTRUCT(ForceInit);
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type ConstructWithNoInitOrNot(void* Data)
-	{
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && !TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructForTestsWithNoInitOrNot(void* Data)
-	{
-		new (Data) CPPSTRUCT;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT && TStructOpsTypeTraits<CPPSTRUCT>::WithNoInitConstructor>::Type ConstructForTestsWithNoInitOrNot(void* Data)
-	{
-		new (Data) CPPSTRUCT(ForceInit);
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type ConstructForTestsWithNoInitOrNot(void* Data)
-	{
-	}
-
-	/**
-	 * Selection of Serialize call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithSerializer, bool>::Type SerializeOrNot(FArchive& Ar, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializer, bool>::Type SerializeOrNot(FArchive& Ar, CPPSTRUCT *Data)
-	{
-		return Data->Serialize(Ar);
-	}
-
-	/**
-	* Selection of structured Serialize call.
-	*/
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializer, bool>::Type SerializeOrNot(FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializer, bool>::Type SerializeOrNot(FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
-	{
-		return Data->Serialize(Slot);
-	}
-
-
-	/**
-	 * Selection of PostSerialize call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithPostSerialize>::Type PostSerializeOrNot(const FArchive& Ar, CPPSTRUCT *Data)
-	{
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithPostSerialize>::Type PostSerializeOrNot(const FArchive& Ar, CPPSTRUCT *Data)
-	{
-		Data->PostSerialize(Ar);
-	}
-
-
-	/**
-	 * Selection of NetSerialize call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithNetSerializer, bool>::Type NetSerializeOrNot(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithNetSerializer, bool>::Type NetSerializeOrNot(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess, CPPSTRUCT *Data)
-	{
-		return Data->NetSerialize(Ar, Map, bOutSuccess);
-	}
-
-
-	/**
-	 * Selection of NetDeltaSerialize call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithNetDeltaSerializer, bool>::Type NetDeltaSerializeOrNot(FNetDeltaSerializeInfo & DeltaParms, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithNetDeltaSerializer, bool>::Type NetDeltaSerializeOrNot(FNetDeltaSerializeInfo & DeltaParms, CPPSTRUCT *Data)
-	{
-		return Data->NetDeltaSerialize(DeltaParms);
-	}
-
-
-	/**
-	 * Selection of PostScriptConstruct call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithPostScriptConstruct>::Type PostScriptConstructOrNot(CPPSTRUCT *Data)
-	{
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithPostScriptConstruct>::Type PostScriptConstructOrNot(CPPSTRUCT *Data)
-	{
-		Data->PostScriptConstruct();
-	}
-
-
-	/**
-	 * Selection of GetPreloadDependencies call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies>::Type GetPreloadDependenciesOrNot(CPPSTRUCT* Data, TArray<UObject*>& OutDeps)
-	{
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies>::Type GetPreloadDependenciesOrNot(CPPSTRUCT* Data, TArray<UObject*>& OutDeps)
-	{
-		Data->GetPreloadDependencies(OutDeps);
-	}
-
-
-	/**
-	 * Selection of Copy behavior.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithCopy, bool>::Type CopyOrNot(CPPSTRUCT* Dest, CPPSTRUCT const* Src, int32 ArrayDim)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithCopy, bool>::Type CopyOrNot(CPPSTRUCT* Dest, CPPSTRUCT const* Src, int32 ArrayDim)
-	{
-		static_assert((!TIsPODType<CPPSTRUCT>::Value), "You probably don't want custom copy for a POD type.");
-		for (; ArrayDim; --ArrayDim)
-		{
-			*Dest++ = *Src++;
-		}
-		return true;
-	}
-
-
-	/**
-	 * Selection of Identical check.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithIdentical && TStructOpsTypeTraits<CPPSTRUCT>::WithIdenticalViaEquality, bool>::Type IdenticalOrNot(const CPPSTRUCT* A, const CPPSTRUCT* B, uint32 PortFlags, bool& bOutResult)
-	{
-		static_assert(sizeof(CPPSTRUCT) == 0, "Should not have both WithIdenticalViaEquality and WithIdentical.");
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithIdentical && !TStructOpsTypeTraits<CPPSTRUCT>::WithIdenticalViaEquality, bool>::Type IdenticalOrNot(const CPPSTRUCT* A, const CPPSTRUCT* B, uint32 PortFlags, bool& bOutResult)
-	{
-		bOutResult = false;
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithIdentical && !TStructOpsTypeTraits<CPPSTRUCT>::WithIdenticalViaEquality, bool>::Type IdenticalOrNot(const CPPSTRUCT* A, const CPPSTRUCT* B, uint32 PortFlags, bool& bOutResult)
-	{
-		bOutResult = A->Identical(B, PortFlags);
-		return true;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithIdentical && TStructOpsTypeTraits<CPPSTRUCT>::WithIdenticalViaEquality, bool>::Type IdenticalOrNot(const CPPSTRUCT* A, const CPPSTRUCT* B, uint32 PortFlags, bool& bOutResult)
-	{
-		bOutResult = (*A == *B);
-		return true;
-	}
-
-
-	/**
-	 * Selection of ExportTextItem call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithExportTextItem, bool>::Type ExportTextItemOrNot(FString& ValueStr, const CPPSTRUCT* PropertyValue, const CPPSTRUCT* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithExportTextItem, bool>::Type ExportTextItemOrNot(FString& ValueStr, const CPPSTRUCT* PropertyValue, const CPPSTRUCT* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope)
-	{
-		return PropertyValue->ExportTextItem(ValueStr, *DefaultValue, Parent, PortFlags, ExportRootScope);
-	}
-
-
-	/**
-	 * Selection of ImportTextItem call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithImportTextItem, bool>::Type ImportTextItemOrNot(const TCHAR*& Buffer, CPPSTRUCT* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithImportTextItem, bool>::Type ImportTextItemOrNot(const TCHAR*& Buffer, CPPSTRUCT* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText)
-	{
-		return Data->ImportTextItem(Buffer, PortFlags, OwnerObject, ErrorText);
-	}
-
-
-	/**
-	 * Selection of SerializeFromMismatchedTag call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag && !TIsUECoreType<CPPSTRUCT>::Value, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
-	{
-		return Data->SerializeFromMismatchedTag(Tag, Ar);
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag && TIsUECoreType<CPPSTRUCT>::Value, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
-	{
-		return Data->SerializeFromMismatchedTag(Tag.StructName, Ar);
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
-	{
-		return false;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag && !TIsUECoreType<CPPSTRUCT>::Value, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
-	{
-		return Data->SerializeFromMismatchedTag(Tag, Slot);
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag && TIsUECoreType<CPPSTRUCT>::Value, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
-	{
-		return Data->SerializeFromMismatchedTag(Tag.StructName, Slot);
-	}
-
-
-
-	/**
-	 * Selection of GetTypeHash call.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TModels<CGetTypeHashable, CPPSTRUCT>::Value, uint32>::Type GetTypeHashOrNot(const CPPSTRUCT *Data)
-	{
-		return 0;
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TModels<CGetTypeHashable, CPPSTRUCT>::Value, uint32>::Type GetTypeHashOrNot(const CPPSTRUCT *Data)
-	{
-		return GetTypeHash(*Data);
-	}
-
-#endif
-
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
-
 	/**
 	 * Selection of AddStructReferencedObjects check.
 	 */
@@ -1052,24 +854,6 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 		}
 	}
 
-#else
-
-	/**
-	 * Selection of AddStructReferencedObjects check.
-	 */
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithAddStructReferencedObjects>::Type AddStructReferencedObjectsOrNot(void* A, FReferenceCollector& Collector)
-	{
-	}
-
-	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithAddStructReferencedObjects>::Type AddStructReferencedObjectsOrNot(void* A, FReferenceCollector& Collector)
-	{
-		((CPPSTRUCT*)A)->AddStructReferencedObjects(Collector);
-	}
-
-#endif
-
 /**
  * Reflection data for a standalone structure declared in a header or as a user defined struct
  */
@@ -1079,6 +863,37 @@ public:
 	/** Interface to template to manage dynamic access to C++ struct construction and destruction **/
 	struct COREUOBJECT_API ICppStructOps
 	{
+		/** Filled by implementation classes to report their capabilities */
+		struct FCapabilities
+		{
+			EPropertyFlags ComputedPropertyFlags;
+			bool HasNoopConstructor : 1;
+			bool HasZeroConstructor : 1;
+			bool HasDestructor : 1;
+			bool HasSerializer : 1;
+			bool HasStructuredSerializer : 1;
+			bool HasPostSerialize : 1;
+			bool HasNetSerializer : 1;
+			bool HasNetSharedSerialization : 1;
+			bool HasNetDeltaSerializer : 1;
+			bool HasPostScriptConstruct : 1;
+			bool IsPlainOldData : 1;
+			bool IsUECoreType : 1;
+			bool IsUECoreVariant : 1;
+			bool HasCopy : 1;
+			bool HasIdentical : 1;
+			bool HasExportTextItem : 1;
+			bool HasImportTextItem : 1;
+			bool HasAddStructReferencedObjects : 1;
+			bool HasSerializeFromMismatchedTag : 1;
+			bool HasStructuredSerializeFromMismatchedTag : 1;
+			bool HasGetTypeHash : 1;
+			bool IsAbstract : 1;
+#if WITH_EDITOR
+			bool HasCanEditChange : 1;
+#endif
+		};
+
 		/**
 		 * Constructor
 		 * @param InSize: sizeof() of the structure
@@ -1089,33 +904,52 @@ public:
 		{
 		}
 		virtual ~ICppStructOps() {}
+
+		/** returns struct capabilities */
+		virtual FCapabilities GetCapabilities() const = 0;
+
 		/** return true if this class has a no-op constructor and takes EForceInit to init **/
-		virtual bool HasNoopConstructor() = 0;
+		bool HasNoopConstructor() const
+		{
+			return GetCapabilities().HasNoopConstructor;
+		}
 		/** return true if memset can be used instead of the constructor **/
-		virtual bool HasZeroConstructor() = 0;
+		bool HasZeroConstructor() const
+		{
+			return GetCapabilities().HasZeroConstructor;
+		}
 		/** Call the C++ constructor **/
 		virtual void Construct(void *Dest) = 0;
 		/** Call the C++ constructor without value-init (new T instead of new T()) **/
 		virtual void ConstructForTests(void* Dest) = 0;
 		/** return false if this destructor can be skipped **/
-		virtual bool HasDestructor() = 0;
+		bool HasDestructor() const
+		{
+			return GetCapabilities().HasDestructor;
+		}
 		/** Call the C++ destructor **/
 		virtual void Destruct(void *Dest) = 0;
 		/** return the sizeof() of this structure **/
-		FORCEINLINE int32 GetSize()
+		FORCEINLINE int32 GetSize() const
 		{
 			return Size;
 		}
 		/** return the alignof() of this structure **/
-		FORCEINLINE int32 GetAlignment()
+		FORCEINLINE int32 GetAlignment() const
 		{
 			return Alignment;
 		}
 
 		/** return true if this class can serialize **/
-		virtual bool HasSerializer() = 0;
+		bool HasSerializer() const
+		{
+			return GetCapabilities().HasSerializer;
+		}
 		/** return true if this class can serialize to a structured archive**/
-		virtual bool HasStructuredSerializer() = 0;
+		bool HasStructuredSerializer() const
+		{
+			return GetCapabilities().HasStructuredSerializer;
+		}
 		/** 
 		 * Serialize this structure 
 		 * @return true if the package is new enough to support this, if false, it will fall back to ordinary script struct serialization
@@ -1124,15 +958,24 @@ public:
 		virtual bool Serialize(FStructuredArchive::FSlot Slot, void *Data) = 0;
 
 		/** return true if this class implements a post serialize call **/
-		virtual bool HasPostSerialize() = 0;
+		bool HasPostSerialize() const
+		{
+			return GetCapabilities().HasPostSerialize;
+		}
 		/** Call PostSerialize on this structure */
 		virtual void PostSerialize(const FArchive& Ar, void *Data) = 0;
 
 		/** return true if this struct can net serialize **/
-		virtual bool HasNetSerializer() = 0;
+		bool HasNetSerializer() const
+		{
+			return GetCapabilities().HasNetSerializer;
+		}
 		
 		/** return true if this can share net serialization across connections */
-		virtual bool HasNetSharedSerialization() = 0;
+		bool HasNetSharedSerialization() const
+		{
+			return GetCapabilities().HasNetSharedSerialization;
+		}
 		/** 
 		 * Net serialize this structure 
 		 * @return true if the struct was serialized, otherwise it will fall back to ordinary script struct net serialization
@@ -1140,7 +983,10 @@ public:
 		virtual bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, void *Data) = 0;
 
 		/** return true if this struct can net delta serialize delta (serialize a network delta from a base state) **/
-		virtual bool HasNetDeltaSerializer() = 0;
+		bool HasNetDeltaSerializer() const
+		{
+			return GetCapabilities().HasNetDeltaSerializer;
+		}
 		/** 
 		 * Net serialize delta this structure. Serialize a network delta from a base state
 		 * @return true if the struct was serialized, otherwise it will fall back to ordinary script struct net delta serialization
@@ -1148,7 +994,10 @@ public:
 		virtual bool NetDeltaSerialize(FNetDeltaSerializeInfo & DeltaParms, void *Data) = 0;
 
 		/** return true if this class implements a post script construct call **/
-		virtual bool HasPostScriptConstruct() = 0;
+		bool HasPostScriptConstruct() const
+		{
+			return GetCapabilities().HasPostScriptConstruct;
+		}
 		/** Call PostScriptConstruct on this structure */
 		virtual void PostScriptConstruct(void *Data) = 0;
 
@@ -1156,16 +1005,28 @@ public:
 		virtual void GetPreloadDependencies(void* Data, TArray<UObject*>& OutDeps) = 0;
 
 		/** return true if this struct should be memcopied **/
-		virtual bool IsPlainOldData() = 0;
+		bool IsPlainOldData() const
+		{
+			return GetCapabilities().IsPlainOldData;
+		}
 
 		/** return true if this struct is one of the UE Core types (and is include in CoreMinimal.h) **/
-		virtual bool IsUECoreType() = 0;
+		bool IsUECoreType() const
+		{
+			return GetCapabilities().IsUECoreType;
+		}
 
 		/** return true if this struct is one of the UE Core types (and is include in CoreMinimal.h) **/
-		virtual bool IsUECoreVariant() = 0;		
+		bool IsUECoreVariant() const
+		{
+			return GetCapabilities().IsUECoreVariant;
+		}
 
 		/** return true if this struct can copy **/
-		virtual bool HasCopy() = 0;
+		bool HasCopy() const
+		{
+			return GetCapabilities().HasCopy;
+		}
 		/** 
 		 * Copy this structure 
 		 * @return true if the copy was handled, otherwise it will fall back to CopySingleValue
@@ -1173,7 +1034,10 @@ public:
 		virtual bool Copy(void* Dest, void const* Src, int32 ArrayDim) = 0;
 
 		/** return true if this struct can compare **/
-		virtual bool HasIdentical() = 0;
+		bool HasIdentical() const
+		{
+			return GetCapabilities().HasIdentical;
+		}
 		/** 
 		 * Compare this structure 
 		 * @return true if the copy was handled, otherwise it will fall back to FStructProperty::Identical
@@ -1181,7 +1045,10 @@ public:
 		virtual bool Identical(const void* A, const void* B, uint32 PortFlags, bool& bOutResult) = 0;
 
 		/** return true if this struct can export **/
-		virtual bool HasExportTextItem() = 0;
+		bool HasExportTextItem() const
+		{
+			return GetCapabilities().HasExportTextItem;
+		}
 		/** 
 		 * export this structure 
 		 * @return true if the copy was exported, otherwise it will fall back to FStructProperty::ExportTextItem
@@ -1189,7 +1056,10 @@ public:
 		virtual bool ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, class UObject* Parent, int32 PortFlags, class UObject* ExportRootScope) = 0;
 
 		/** return true if this struct can import **/
-		virtual bool HasImportTextItem() = 0;
+		bool HasImportTextItem() const
+		{
+			return GetCapabilities().HasImportTextItem;
+		}
 		/** 
 		 * import this structure 
 		 * @return true if the copy was imported, otherwise it will fall back to FStructProperty::ImportText
@@ -1197,7 +1067,10 @@ public:
 		virtual bool ImportTextItem(const TCHAR*& Buffer, void* Data, int32 PortFlags, class UObject* OwnerObject, FOutputDevice* ErrorText) = 0;
 
 		/** return true if this struct has custom GC code **/
-		virtual bool HasAddStructReferencedObjects() = 0;
+		bool HasAddStructReferencedObjects() const
+		{
+			return GetCapabilities().HasAddStructReferencedObjects;
+		}
 		/** 
 		 * return a pointer to a function that can add referenced objects
 		 * @return true if the copy was imported, otherwise it will fall back to FStructProperty::ImportText
@@ -1206,8 +1079,14 @@ public:
 		virtual TPointerToAddStructReferencedObjects AddStructReferencedObjects() = 0;
 
 		/** return true if this class wants to serialize from some other tag (usually for conversion purposes) **/
-		virtual bool HasSerializeFromMismatchedTag() = 0;
-		virtual bool HasStructuredSerializeFromMismatchedTag() = 0;
+		bool HasSerializeFromMismatchedTag() const
+		{
+			return GetCapabilities().HasSerializeFromMismatchedTag;
+		}
+		bool HasStructuredSerializeFromMismatchedTag() const
+		{
+			return GetCapabilities().HasStructuredSerializeFromMismatchedTag;
+		}
 
 		/** 
 		 * Serialize this structure, from some other tag
@@ -1217,16 +1096,36 @@ public:
 		virtual bool StructuredSerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, void *Data) = 0;
 
 		/** return true if this struct has a GetTypeHash */
-		virtual bool HasGetTypeHash() = 0;
+		bool HasGetTypeHash() const
+		{
+			return GetCapabilities().HasGetTypeHash;
+		}
 
 		/** Calls GetTypeHash if enabled */
 		virtual uint32 GetStructTypeHash(const void* Src) = 0;
 
 		/** Returns property flag values that can be computed at compile time */
-		virtual EPropertyFlags GetComputedPropertyFlags() const = 0;
+		EPropertyFlags GetComputedPropertyFlags() const
+		{
+			return GetCapabilities().ComputedPropertyFlags;
+		}
 
 		/** return true if this struct is abstract **/
-		virtual bool IsAbstract() const = 0;
+		bool IsAbstract() const
+		{
+			return GetCapabilities().IsAbstract;
+		}
+
+#if WITH_EDITOR
+		/** Returns true if this struct wants to indicate whether a property can be edited in the details panel */
+		bool HasCanEditChange() const
+		{
+			return GetCapabilities().HasCanEditChange;
+		}
+		/** Returns true if this struct would allow the given property to be edited in the details panel. */
+		virtual bool CanEditChange(const FEditPropertyChain& PropertyChain, const void* Data) const = 0;
+#endif
+		
 	private:
 		/** sizeof() of the structure **/
 		const int32 Size;
@@ -1237,27 +1136,54 @@ public:
 
 	/** Template to manage dynamic access to C++ struct construction and destruction **/
 	template<class CPPSTRUCT>
-	struct TCppStructOps : public ICppStructOps
+	struct TCppStructOps final : public ICppStructOps
 	{
 		typedef TStructOpsTypeTraits<CPPSTRUCT> TTraits;
 		TCppStructOps()
 			: ICppStructOps(sizeof(CPPSTRUCT), alignof(CPPSTRUCT))
 		{
 		}
-		virtual bool HasNoopConstructor() override
+
+		virtual FCapabilities GetCapabilities() const override
 		{
-			return TTraits::WithNoInitConstructor;
-		}		
-		virtual bool HasZeroConstructor() override
-		{
-			return TTraits::WithZeroConstructor;
+			constexpr FCapabilities Capabilities {
+				(TIsPODType<CPPSTRUCT>::Value ? CPF_IsPlainOldData : CPF_None)
+				| (TIsTriviallyDestructible<CPPSTRUCT>::Value ? CPF_NoDestructor : CPF_None)
+				| (TIsZeroConstructType<CPPSTRUCT>::Value ? CPF_ZeroConstructor : CPF_None)
+				| (TModels<CGetTypeHashable, CPPSTRUCT>::Value ? CPF_HasGetValueTypeHash : CPF_None),
+				TTraits::WithNoInitConstructor,
+				TTraits::WithZeroConstructor,
+				!(TTraits::WithNoDestructor || TIsPODType<CPPSTRUCT>::Value),
+				TTraits::WithSerializer,
+				TTraits::WithStructuredSerializer,
+				TTraits::WithPostSerialize,
+				TTraits::WithNetSerializer,
+				TTraits::WithNetSharedSerialization,
+				TTraits::WithNetDeltaSerializer,
+				TTraits::WithPostScriptConstruct,
+				TIsPODType<CPPSTRUCT>::Value,
+				TIsUECoreType<CPPSTRUCT>::Value,
+				TIsUECoreVariant<CPPSTRUCT>::Value,
+				TTraits::WithCopy,
+				TTraits::WithIdentical || TTraits::WithIdenticalViaEquality,
+				TTraits::WithExportTextItem,
+				TTraits::WithImportTextItem,
+				TTraits::WithAddStructReferencedObjects,
+				TTraits::WithSerializeFromMismatchedTag,
+				TTraits::WithStructuredSerializeFromMismatchedTag,
+				TModels<CGetTypeHashable, CPPSTRUCT>::Value,
+				TIsAbstract<CPPSTRUCT>::Value,
+#if WITH_EDITOR
+				TTraits::WithCanEditChange,
+#endif
+			};
+			return Capabilities;
 		}
 		virtual void Construct(void* Dest) override
 		{
 			check(!TTraits::WithZeroConstructor); // don't call this if we have indicated it is not necessary
 			// that could have been an if statement, but we might as well force optimization above the virtual call
 			// could also not attempt to call the constructor for types where this is not possible, but I didn't do that here
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 #if CHECK_PUREVIRTUALS
 			if constexpr (!TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual)
 #endif
@@ -1271,16 +1197,12 @@ public:
 					new (Dest) CPPSTRUCT();
 				}
 			}
-#else
-			ConstructWithNoInitOrNot<CPPSTRUCT>(Dest);
-#endif
 		}
 		virtual void ConstructForTests(void* Dest) override
 		{
 			check(!TTraits::WithZeroConstructor); // don't call this if we have indicated it is not necessary
 			// that could have been an if statement, but we might as well force optimization above the virtual call
 			// could also not attempt to call the constructor for types where this is not possible, but I didn't do that here
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 #if CHECK_PUREVIRTUALS
 			if constexpr (!TStructOpsTypeTraits<CPPSTRUCT>::WithPureVirtual)
 #endif
@@ -1294,13 +1216,6 @@ public:
 					new (Dest) CPPSTRUCT;
 				}
 			}
-#else
-			ConstructForTestsWithNoInitOrNot<CPPSTRUCT>(Dest);
-#endif
-		}
-		virtual bool HasDestructor() override
-		{
-			return !(TTraits::WithNoDestructor || TIsPODType<CPPSTRUCT>::Value);
 		}
 		virtual void Destruct(void *Dest) override
 		{
@@ -1309,18 +1224,9 @@ public:
 			// could also not attempt to call the destructor for types where this is not possible, but I didn't do that here
 			((CPPSTRUCT*)Dest)->~CPPSTRUCT();
 		}
-		virtual bool HasSerializer() override
-		{
-			return TTraits::WithSerializer;
-		}
-		virtual bool HasStructuredSerializer() override
-		{
-			return TTraits::WithStructuredSerializer;
-		}
 		virtual bool Serialize(FArchive& Ar, void *Data) override
 		{
 			check(TTraits::WithSerializer); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithSerializer)
 			{
 				return ((CPPSTRUCT*)Data)->Serialize(Ar);
@@ -1329,14 +1235,10 @@ public:
 			{
 				return false;
 			}
-#else
-			return SerializeOrNot(Ar, (CPPSTRUCT*)Data);
-#endif
 		}
 		virtual bool Serialize(FStructuredArchive::FSlot Slot, void *Data) override
 		{
 			check(TTraits::WithStructuredSerializer); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializer)
 			{
 				return ((CPPSTRUCT*)Data)->Serialize(Slot);
@@ -1345,41 +1247,17 @@ public:
 			{
 				return false;
 			}
-#else
-			return SerializeOrNot(Slot, (CPPSTRUCT*)Data);
-#endif
-			}
-		virtual bool HasPostSerialize() override
-		{
-			return TTraits::WithPostSerialize;
 		}
 		virtual void PostSerialize(const FArchive& Ar, void *Data) override
 		{
 			check(TTraits::WithPostSerialize); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithPostSerialize)
 			{
 				((CPPSTRUCT*)Data)->PostSerialize(Ar);
 			}
-#else
-			PostSerializeOrNot(Ar, (CPPSTRUCT*)Data);
-#endif
-		}
-		virtual bool HasNetSerializer() override
-		{
-			return TTraits::WithNetSerializer;
-		}
-		virtual bool HasNetSharedSerialization() override
-		{
-			return TTraits::WithNetSharedSerialization;
-		}
-		virtual bool HasNetDeltaSerializer() override
-		{
-			return TTraits::WithNetDeltaSerializer;
 		}
 		virtual bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, void *Data) override
 		{
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithNetSerializer)
 			{
 				return ((CPPSTRUCT*)Data)->NetSerialize(Ar, Map, bOutSuccess);
@@ -1388,13 +1266,9 @@ public:
 			{
 				return false;
 			}
-#else
-			return NetSerializeOrNot(Ar, Map, bOutSuccess, (CPPSTRUCT*)Data);
-#endif
 		}
 		virtual bool NetDeltaSerialize(FNetDeltaSerializeInfo & DeltaParms, void *Data) override
 		{
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithNetDeltaSerializer)
 			{
 				return ((CPPSTRUCT*)Data)->NetDeltaSerialize(DeltaParms);
@@ -1403,56 +1277,24 @@ public:
 			{
 				return false;
 			}
-#else
-			return NetDeltaSerializeOrNot(DeltaParms, (CPPSTRUCT*)Data);
-#endif
-		}
-		virtual bool HasPostScriptConstruct() override
-		{
-			return TTraits::WithPostScriptConstruct;
 		}
 		virtual void PostScriptConstruct(void *Data) override
 		{
 			check(TTraits::WithPostScriptConstruct); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithPostScriptConstruct)
 			{
 				((CPPSTRUCT*)Data)->PostScriptConstruct();
 			}
-#else
-			PostScriptConstructOrNot((CPPSTRUCT*)Data);
-#endif
 		}
 		virtual void GetPreloadDependencies(void* Data, TArray<UObject*>& OutDeps) override
 		{
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies)
 			{
 				((CPPSTRUCT*)Data)->GetPreloadDependencies(OutDeps);
 			}
-#else
-			GetPreloadDependenciesOrNot((CPPSTRUCT*)Data, OutDeps);
-#endif
-		}
-		virtual bool IsPlainOldData() override
-		{
-			return TIsPODType<CPPSTRUCT>::Value;
-		}
-		virtual bool IsUECoreType() override
-		{
-			return TIsUECoreType<CPPSTRUCT>::Value;
-		}
-		virtual bool IsUECoreVariant() override
-		{
-			return TIsUECoreVariant<CPPSTRUCT>::Value;
-		}		
-		virtual bool HasCopy() override
-		{
-			return TTraits::WithCopy;
 		}
 		virtual bool Copy(void* Dest, void const* Src, int32 ArrayDim) override
 		{
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithCopy)
 			{
 				static_assert((!TIsPODType<CPPSTRUCT>::Value), "You probably don't want custom copy for a POD type.");
@@ -1470,18 +1312,10 @@ public:
 			{
 				return false;
 			}
-#else
-			return CopyOrNot((CPPSTRUCT*)Dest, (CPPSTRUCT const*)Src, ArrayDim);
-#endif
-		}
-		virtual bool HasIdentical() override
-		{
-			return TTraits::WithIdentical || TTraits::WithIdenticalViaEquality;
 		}
 		virtual bool Identical(const void* A, const void* B, uint32 PortFlags, bool& bOutResult) override
 		{
 			check((TTraits::WithIdentical || TTraits::WithIdenticalViaEquality)); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithIdentical)
 			{
 				static_assert(!TStructOpsTypeTraits<CPPSTRUCT>::WithIdenticalViaEquality, "Should not have both WithIdenticalViaEquality and WithIdentical.");
@@ -1499,38 +1333,43 @@ public:
 				bOutResult = false;
 				return false;
 			}
-#else
-			return IdenticalOrNot((const CPPSTRUCT*)A, (const CPPSTRUCT*)B, PortFlags, bOutResult);
-#endif
-		}
-		virtual bool HasExportTextItem() override
-		{
-			return TTraits::WithExportTextItem;
 		}
 		virtual bool ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, class UObject* Parent, int32 PortFlags, class UObject* ExportRootScope) override
 		{
 			check(TTraits::WithExportTextItem); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithExportTextItem)
 			{
-				return ((const CPPSTRUCT*)PropertyValue)->ExportTextItem(ValueStr, *(const CPPSTRUCT*)DefaultValue, Parent, PortFlags, ExportRootScope);
+				if (DefaultValue)
+				{
+					return ((const CPPSTRUCT*)PropertyValue)->ExportTextItem(ValueStr, *(const CPPSTRUCT*)DefaultValue, Parent, PortFlags, ExportRootScope);
+				}
+				else
+				{
+					TTypeCompatibleBytes<CPPSTRUCT> TmpDefaultValue;
+					FMemory::Memzero(TmpDefaultValue.GetTypedPtr(), sizeof(CPPSTRUCT));
+					if (!HasZeroConstructor())
+					{
+						Construct(TmpDefaultValue.GetTypedPtr());
+					}
+
+					const bool bResult = ((const CPPSTRUCT*)PropertyValue)->ExportTextItem(ValueStr, *(const CPPSTRUCT*)TmpDefaultValue.GetTypedPtr(), Parent, PortFlags, ExportRootScope);
+
+					if (HasDestructor())
+					{
+						Destruct(TmpDefaultValue.GetTypedPtr());
+					}
+
+					return bResult;
+				}
 			}
 			else
 			{
 				return false;
 			}
-#else
-			return ExportTextItemOrNot(ValueStr, (const CPPSTRUCT*)PropertyValue, (const CPPSTRUCT*)DefaultValue, Parent, PortFlags, ExportRootScope);
-#endif
-		}
-		virtual bool HasImportTextItem() override
-		{
-			return TTraits::WithImportTextItem;
 		}
 		virtual bool ImportTextItem(const TCHAR*& Buffer, void* Data, int32 PortFlags, class UObject* OwnerObject, FOutputDevice* ErrorText) override
 		{
 			check(TTraits::WithImportTextItem); // don't call this if we have indicated it is not necessary
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithImportTextItem)
 			{
 				return ((CPPSTRUCT*)Data)->ImportTextItem(Buffer, PortFlags, OwnerObject, ErrorText);
@@ -1539,27 +1378,15 @@ public:
 			{
 				return false;
 			}
-#else
-			return ImportTextItemOrNot(Buffer, (CPPSTRUCT*)Data, PortFlags, OwnerObject, ErrorText);
-#endif
-		}
-		virtual bool HasAddStructReferencedObjects() override
-		{
-			return TTraits::WithAddStructReferencedObjects;
 		}
 		virtual TPointerToAddStructReferencedObjects AddStructReferencedObjects() override
 		{
 			check(TTraits::WithAddStructReferencedObjects); // don't call this if we have indicated it is not necessary
 			return &AddStructReferencedObjectsOrNot<CPPSTRUCT>;
 		}
-		virtual bool HasSerializeFromMismatchedTag() override
-		{
-			return TTraits::WithSerializeFromMismatchedTag;
-		}
 		virtual bool SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FArchive& Ar, void *Data) override
 		{
 			check(TTraits::WithSerializeFromMismatchedTag); // don't call this if we have indicated it is not allowed
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag)
 			{
 				if constexpr (TIsUECoreType<CPPSTRUCT>::Value)
@@ -1576,18 +1403,10 @@ public:
 			{
 				return false;
 			}
-#else
-			return SerializeFromMismatchedTagOrNot(Tag, Ar, (CPPSTRUCT*)Data);
-#endif
-		}
-		virtual bool HasStructuredSerializeFromMismatchedTag() override
-		{
-			return TTraits::WithStructuredSerializeFromMismatchedTag;
 		}
 		virtual bool StructuredSerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, void *Data) override
 		{
 			check(TTraits::WithStructuredSerializeFromMismatchedTag); // don't call this if we have indicated it is not allowed
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag)
 			{
 				if constexpr (TIsUECoreType<CPPSTRUCT>::Value)
@@ -1604,22 +1423,14 @@ public:
 			{
 				return false;
 			}
-#else
-			return StructuredSerializeFromMismatchedTagOrNot(Tag, Slot, (CPPSTRUCT*)Data);
-#endif
 		}
 
 		static_assert(!(TTraits::WithSerializeFromMismatchedTag && TTraits::WithStructuredSerializeFromMismatchedTag), "Structs cannot have both WithSerializeFromMismatchedTag and WithStructuredSerializeFromMismatchedTag set");
 
-		virtual bool HasGetTypeHash() override
-		{
-			return TModels<CGetTypeHashable, CPPSTRUCT>::Value;
-		}
 		uint32 GetStructTypeHash(const void* Src) override
 		{
 			ensure(HasGetTypeHash());
 
-#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TModels<CGetTypeHashable, CPPSTRUCT>::Value)
 			{
 				return GetTypeHash(*(const CPPSTRUCT*)Src);
@@ -1628,35 +1439,38 @@ public:
 			{
 				return 0;
 			}
-#else
-			return GetTypeHashOrNot((const CPPSTRUCT*)Src);
-#endif
 		}
-		virtual EPropertyFlags GetComputedPropertyFlags() const override
+
+#if WITH_EDITOR
+
+		virtual bool CanEditChange(const FEditPropertyChain& PropertyChain, const void* Data) const override
 		{
-			return 
-				  (TIsPODType<CPPSTRUCT>::Value ? CPF_IsPlainOldData : CPF_None)
-				| (TIsTriviallyDestructible<CPPSTRUCT>::Value ? CPF_NoDestructor : CPF_None)
-				| (TIsZeroConstructType<CPPSTRUCT>::Value ? CPF_ZeroConstructor : CPF_None)
-				| (TModels<CGetTypeHashable, CPPSTRUCT>::Value ? CPF_HasGetValueTypeHash : CPF_None);
+			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithCanEditChange)
+			{
+				return ((const CPPSTRUCT*)Data)->CanEditChange(PropertyChain);
+			}
+			else
+			{
+				return false;
+			}
 		}
-		bool IsAbstract() const override
-		{
-			return TIsAbstract<CPPSTRUCT>::Value;
-		}
+#endif // WITH_EDITOR
 	};
 
 	/** Template for noexport classes to autoregister before main starts **/
 	template<class CPPSTRUCT>
 	struct TAutoCppStructOps
 	{
-		TAutoCppStructOps(FName InName)
+		TAutoCppStructOps(FTopLevelAssetPath InName)
 		{
 			DeferCppStructOps(InName,new TCppStructOps<CPPSTRUCT>);
 		}
 	};
 	#define IMPLEMENT_STRUCT(BaseName) \
-		static UScriptStruct::TAutoCppStructOps<F##BaseName> BaseName##_Ops(TEXT(#BaseName)); 
+		UE_DEPRECATED_MACRO(5.1, "IMPLEMENT_STRUCT has been deprecated. Use UE_IMPLEMENT_STRUCT and provide struct package name as well as struct name") static UScriptStruct::TAutoCppStructOps<F##BaseName> BaseName##_Ops(FTopLevelAssetPath(TEXT("/Script/CoreUObject"), TEXT(#BaseName))); 
+
+	#define UE_IMPLEMENT_STRUCT(PackageNameText, BaseName) \
+		static UScriptStruct::TAutoCppStructOps<F##BaseName> BaseName##_Ops(FTopLevelAssetPath(TEXT(PackageNameText), TEXT(#BaseName))); 
 
 	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UScriptStruct, UStruct, CLASS_MatchedSerializers, TEXT("/Script/CoreUObject"), CASTCLASS_UScriptStruct, COREUOBJECT_API)
 
@@ -1674,7 +1488,7 @@ public:
 	// Required by UHT makefiles for internal data serialization.
 	friend struct FScriptStructArchiveProxy;
 
-	static COREUOBJECT_API ICppStructOps* FindDeferredCppStructOps(FName StructName);
+	static COREUOBJECT_API ICppStructOps* FindDeferredCppStructOps(FTopLevelAssetPath StructName);
 #endif
 
 protected:
@@ -1682,6 +1496,17 @@ protected:
 	bool bPrepareCppStructOpsCompleted;
 	/** Holds the Cpp ctors and dtors, sizeof, etc. Is not owned by this and is not released. **/
 	ICppStructOps* CppStructOps;
+
+	/** 
+	* Similar to GetStructPathName() but works with nested structs by using just the package name and struct name
+	* so a struct path name /Package/Name.Object:Struct will be flattened to /Package/Name.Struct.
+	* This function is used only for generating keys for DeferredCppStructOps
+	*/
+	FTopLevelAssetPath GetFlattenedStructPathName() const
+	{
+		return FTopLevelAssetPath(GetOutermost()->GetFName(), GetFName());
+	}
+
 public:
 
 	// UObject Interface
@@ -1703,15 +1528,15 @@ public:
 	 * @param Target Name of the struct 
 	 * @param InCppStructOps Cpp ops for this struct
 	 */
-	static COREUOBJECT_API void DeferCppStructOps(FName Target, ICppStructOps* InCppStructOps);
+	static COREUOBJECT_API void DeferCppStructOps(FTopLevelAssetPath Target, ICppStructOps* InCppStructOps);
 
 	template<class CPPSTRUCT>
-	static typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FName Target)
+	static typename TEnableIf<!DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FTopLevelAssetPath Target)
 	{
 		DeferCppStructOps(Target, new UScriptStruct::TCppStructOps<CPPSTRUCT>);
 	}
 	template<class CPPSTRUCT>
-	static typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FName Target)
+	static typename TEnableIf<DISABLE_ABSTRACT_CONSTRUCT>::Type DeferCppStructOps(FTopLevelAssetPath Target)
 	{
 		DeferCppStructOps(Target, nullptr);
 	}
@@ -1870,7 +1695,7 @@ public:
 	virtual COREUOBJECT_API FGuid GetCustomGuid() const;
 	
 	/** Returns the (native, c++) name of the struct */
-	virtual COREUOBJECT_API FString GetStructCPPName() const;
+	virtual COREUOBJECT_API FString GetStructCPPName(uint32 CPPExportFlags = 0) const;
 
 	/**
 	 * Initializes this structure to its default values
@@ -2216,8 +2041,15 @@ public:
 	/** Checks if enum has entry with given name. Includes autogenerated _MAX entry. */
 	bool IsValidEnumName(FName InName) const;
 
-	/** Removes the Names in this enum from the master AllEnumNames list */
-	void RemoveNamesFromMasterList();
+	/** Removes the Names in this enum from the primary AllEnumNames list */
+	UE_DEPRECATED(5.1, "RemoveNamesFromMasterList is deprecated, please use RemoveNamesFromPrimaryList instead.")
+	void RemoveNamesFromMasterList()
+	{
+		RemoveNamesFromPrimaryList();
+	}
+
+	/** Removes the Names in this enum from the primary AllEnumNames list */
+	void RemoveNamesFromPrimaryList();
 
 	/** Try to update an out-of-date enum index after an enum changes at runtime */
 	virtual int64 ResolveEnumerator(FArchive& Ar, int64 EnumeratorIndex) const;
@@ -2267,43 +2099,42 @@ public:
 	 */
 	virtual FString GenerateFullEnumName(const TCHAR* InEnumName) const;
 
-	/** searches the list of all enum value names for the specified name
-	 * @return the value the specified name represents if found, otherwise INDEX_NONE
+	/**
+	 * Searches the list of all enum value names for the specified name
+	 * @param PackageName Package where the enum was defined (/Script/ModuleName or uasset package name in case of script defined enums). If an empty (None) name is specified the function will look through all enums to find a match
+	 * @param TestName Fully qualified enum value name (EEnumName::ValueName)
+	 * @Param Options Optional options that may limit search results or define ambiguous search result behavior
+	 * @param OutFoundEnum Optional address of a variable where the resulting UEnum object should be stored
+	 * @return The value the specified name represents if found, otherwise INDEX_NONE
 	 */
-	static int64 LookupEnumName(FName TestName, UEnum** FoundEnum = nullptr)
-	{
-		UEnum* TheEnum = AllEnumNames.FindRef(TestName);
-		if (FoundEnum != nullptr)
-		{
-			*FoundEnum = TheEnum;
-		}
-		return (TheEnum != nullptr) ? TheEnum->GetValueByName(TestName) : INDEX_NONE;
-	}
+	static int64 LookupEnumName(FName PackageName, FName TestName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
 
 	/** searches the list of all enum value names for the specified name
 	 * @return the value the specified name represents if found, otherwise INDEX_NONE
 	 */
+	UE_DEPRECATED(5.1, "LookupEnumName that takes only enum name is deprecated. Please use the version of this function that also takes enum package name.")
+	static int64 LookupEnumName(FName TestName, UEnum** FoundEnum = nullptr)
+	{
+		return LookupEnumName(FName(), TestName, EFindFirstObjectOptions::None, FoundEnum);
+	}
+
+	/** 
+	 * Searches the list of all enum value names for the specified name
+	 * @param PackageName Package where the enum was defined (/Script/ModuleName or uasset package name in case of script defined enums). If an empty (None) name is specified the function will look through all native enums to find a match
+	 * @param InTestShortName Fully qualified or short enum value name (EEnumName::ValueName or ValueName)
+	 * @Param Options Optional Options that may limit search results or define ambiguous search result behavior
+	 * @param OutFoundEnum Optional address of a variable where the resulting UEnum object should be stored
+	 * @return The value the specified name represents if found, otherwise INDEX_NONE
+	 */
+	static int64 LookupEnumNameSlow(FName PackageName, const TCHAR* InTestShortName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
+
+	/** searches the list of all enum value names for the specified name
+	 * @return the value the specified name represents if found, otherwise INDEX_NONE
+	 */
+	UE_DEPRECATED(5.1, "LookupEnumNameSlow that takes only enum name is deprecated. Please use the version of this function that also takes enum package name.")
 	static int64 LookupEnumNameSlow(const TCHAR* InTestShortName, UEnum** FoundEnum = nullptr)
 	{
-		int64 Result = LookupEnumName(InTestShortName, FoundEnum);
-		if (Result == INDEX_NONE)
-		{
-			FString TestShortName = FString(TEXT("::")) + InTestShortName;
-			UEnum* TheEnum = nullptr;
-			for (TMap<FName, UEnum*>::TIterator It(AllEnumNames); It; ++It)
-			{
-				if (It.Key().ToString().Contains(TestShortName) )
-				{
-					TheEnum = It.Value();
-				}
-			}
-			if (FoundEnum != nullptr)
-			{
-				*FoundEnum = TheEnum;
-			}
-			Result = (TheEnum != nullptr) ? TheEnum->GetValueByName(InTestShortName) : INDEX_NONE;
-		}
-		return Result;
+		return LookupEnumNameSlow(FName(), InTestShortName, EFindFirstObjectOptions::None, FoundEnum);
 	}
 
 	/** parses the passed in string for a name, then searches for that name in any Enum (in any package)
@@ -2548,13 +2379,36 @@ protected:
 	/** pointer to function used to look up the enum's display name. Currently only assigned for UEnums generated for nativized blueprints */
 	FEnumDisplayNameFn EnumDisplayNameFn;
 
-	/** global list of all value names used by all enums in memory, used for property text import */
-	static TMap<FName, UEnum*> AllEnumNames;
+	/** Package name this enum was in when its names were being added to the primary list */
+	FName EnumPackage;
 
-	/** adds the Names in this enum to the master AllEnumNames list */
-	void AddNamesToMasterList();
+	/** lock to be taken when accessing AllEnumNames */
+	static FRWLock AllEnumNamesLock;
+
+	/** global list of all value names used by all enums in memory, used for property text import */
+	static TMap<FName, TMap<FName, UEnum*> > AllEnumNames;
+
+	/** adds the Names in this enum to the primary AllEnumNames list */
+	UE_DEPRECATED(5.1, "AddNamesToMasterList is deprecated, please use AddNamesToPrimaryList instead.")
+	void AddNamesToMasterList()
+	{
+		AddNamesToPrimaryList();
+	}
+
+	/** adds the Names in this enum to the primary AllEnumNames list */
+	void AddNamesToPrimaryList();
 
 private:
+
+	/**
+	 * Searches the list of all enum value names and returns a UEnum object that contains an enum value name matching the provided comparison function criteria
+	 * @param PackageName Package where the enum was defined (/Script/ModuleName or uasset package name in case of script defined enums). If an empty (None) name is specified the function will look through all native enums to find a match
+	 * @Param Options Options that may limit search results or define ambiguous search result behavior
+	 * @param CompareNameFunction Functions used to compare the existing enum value names with the one that should be found
+	 * @return UEnum object if a matching enum value name was found otherwise nullptr
+	 */
+	static UEnum* LookupAllEnumNamesWithOptions(FName PackageName, EFindFirstObjectOptions Options, TFunctionRef<bool(FName)> CompareNameFunction);
+
 	FORCEINLINE static FString GetValueAsString_Internal( const TCHAR* EnumPath, const int64 EnumeratorValue)
 	{
 		UEnum* EnumClass = FindObject<UEnum>( nullptr, EnumPath );
@@ -2727,13 +2581,11 @@ public:
 
 	typedef void		(*ClassConstructorType)				(const FObjectInitializer&);
 	typedef UObject*	(*ClassVTableHelperCtorCallerType)	(FVTableHelper& Helper);
-	typedef void		(*ClassAddReferencedObjectsType)	(UObject*, class FReferenceCollector&);
 	typedef UClass* (*StaticClassFunctionType)();
 
 	ClassConstructorType ClassConstructor;
 	ClassVTableHelperCtorCallerType ClassVTableHelperCtorCaller;
-	/** Pointer to a static AddReferencedObjects method. */
-	ClassAddReferencedObjectsType ClassAddReferencedObjects;
+	FUObjectCppClassStaticFunctions CppClassStaticFunctions;
 
 	/** Class pseudo-unique counter; used to accelerate unique instance name generation */
 	mutable int32 ClassUnique;
@@ -2808,10 +2660,33 @@ public:
 	{
 		// The object must of this class type.
 		check(This->IsA(this)); 
-		// This is should always be set to something, at the very least to UObject::ARO
-		check(ClassAddReferencedObjects != nullptr);
-		ClassAddReferencedObjects(This, Collector);
+		// This should always be set to something, at the very least to UObject::ARO
+		check(CppClassStaticFunctions.GetAddReferencedObjects() != nullptr);
+		CppClassStaticFunctions.GetAddReferencedObjects()(This, Collector);
 	}
+
+#if WITH_EDITORONLY_DATA
+	/** Calls the c++ class's DeclareCustomVersions static function (from the nearest native parent if this is not native) */
+	void CallDeclareCustomVersions(FArchive& Ar) const
+	{
+		check(CppClassStaticFunctions.GetDeclareCustomVersions());
+		CppClassStaticFunctions.GetDeclareCustomVersions()(Ar, this);
+	}
+
+	/** Calls the c++ class's AppendToClassSchema static function */
+	void CallAppendToClassSchema(FAppendToClassSchemaContext& Context) const
+	{
+		check(CppClassStaticFunctions.GetAppendToClassSchema());
+		CppClassStaticFunctions.GetAppendToClassSchema()(Context);
+	}
+
+	/** Calls the c++ class's DeclareConstructClasses static function (from the nearest native parent if this is not native) */
+	void CallDeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses) const
+	{
+		check(CppClassStaticFunctions.GetDeclareConstructClasses());
+		CppClassStaticFunctions.GetDeclareConstructClasses()(OutConstructClasses, this);
+	}
+#endif
 
 	/** The class default object; used for delta serialization and object initialization */
 	UObject* ClassDefaultObject;
@@ -2900,7 +2775,7 @@ public:
 	UClass( EStaticConstructor, FName InName, uint32 InSize, uint32 InAlignment, EClassFlags InClassFlags, EClassCastFlags InClassCastFlags,
 		const TCHAR* InClassConfigName, EObjectFlags InFlags, ClassConstructorType InClassConstructor,
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-		ClassAddReferencedObjectsType InClassAddReferencedObjects);
+		FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions);
 
 #if WITH_RELOAD
 	/**
@@ -2920,7 +2795,7 @@ public:
 		const TCHAR*    InConfigName,
 		ClassConstructorType InClassConstructor,
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-		ClassAddReferencedObjectsType InClassAddReferencedObjects,
+		FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions,
 		class UClass* TClass_Super_StaticClass,
 		class UClass* TClass_WithinClass_StaticClass
 		);
@@ -2993,6 +2868,9 @@ public:
 	virtual FRestoreForUObjectOverwrite* GetRestoreForUObjectOverwrite() override;
 	virtual FString GetDesc() override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+#if WITH_EDITOR
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+#endif // WITH_EDITOR
 	virtual bool IsAsset() const override { return false; }	
 	virtual bool IsNameStableForNetworking() const override { return true; } // For now, assume all classes have stable net names
 	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
@@ -3008,6 +2886,116 @@ public:
 	virtual void SetSuperStruct(UStruct* NewSuperStruct) override;
 	virtual bool IsStructTrashed() const override;
 	// End of UStruct interface.
+
+	/**
+	 * Returns class path name as a package + class FName pair
+	 */
+	FORCEINLINE FTopLevelAssetPath GetClassPathName() const
+	{
+		return GetStructPathName();
+	}
+
+	/**
+	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
+	 * Useful for tracking down and fixing remaining places that use short class names.
+	 * This function is slow and should not be used in performance critical situations
+	 * @param TypeClass Class of the expected type. Must be a subclass of UField
+	 * @param InShortNameOrPathName Class name
+	 * @return Pointer to a type object if successful, nullptr otherwise
+	 */
+	static UField* TryFindTypeSlow(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
+
+	/**
+	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
+	 * Useful for tracking down and fixing remaining places that use short class names.
+	 * This function is slow and should not be used in performance critical situations
+	 * @param InShortNameOrPathName Class name
+	 * @return Pointer to a type object if successful, false otherwise
+	 */
+	template <typename T>
+	static T* TryFindTypeSlow(const FString& InShortNameOrPathName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None)
+	{
+		return (T*)TryFindTypeSlow(T::StaticClass(), InShortNameOrPathName, InOptions);
+	}
+
+	/**
+	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
+	 * Useful for tracking down and fixing remaining places that use short class names.
+	 * This function is slow and should not be used in performance critical situations
+	 * This version of TryFindType will not assert when saving package or when collecting garbage
+	 * @param TypeClass Class of the expected type. Must be a subclass of UField
+	 * @param InShortNameOrPathName Class name
+	 * @return Pointer to a type object if successful, nullptr otherwise
+	 */
+	static UField* TryFindTypeSlowSafe(UClass* TypeClass, const FString& InPathNameOrShortName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None);
+
+	/**
+	 * Utility function that tries to find a type (class/struct/enum) given a path name or a short name however it will throw a warning (with a callstack) if it's the latter.
+	 * Useful for tracking down and fixing remaining places that use short class names.
+	 * This function is slow and should not be used in performance critical situations
+	 * This version of TryFindType will not assert when saving package or when collecting garbage
+	 * @param InShortNameOrPathName Class name
+	 * @return Pointer to a type object if successful, nullptr otherwise
+	 */
+	template <typename T>
+	static T* TryFindTypeSlowSafe(const FString& InShortNameOrPathName, EFindFirstObjectOptions InOptions = EFindFirstObjectOptions::None)
+	{
+		return (T*)TryFindTypeSlowSafe(T::StaticClass(), InShortNameOrPathName, InOptions);
+	}
+
+	/**
+	 * Tries to convert short class name to class path name. This will only work if the class exists in memory
+	 * This function is slow and should not be used in performance critical situations
+	 * @param TypeClass Expected Class of the type that needs to be converted (UEnum / UStruct / UClass)
+	 * @param InShortClassName Short class name. If this parameter is already a path name then it's going to be returned as FTopLevelAssetPath
+	 * @param AmbiguousMessageVerbosity Verbosity with which to log a message if class name is ambiguous 
+	 * @param AmbiguousClassMessage Additional message to log when class name is ambiguous (e.g. current operation) 
+	 * @return Class path name if successful. Empty FTopLevelAssetPath otherwise.
+	 */
+	static FTopLevelAssetPath TryConvertShortTypeNameToPathName(UClass* TypeClass, const FString& InShortTypeName, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr);
+
+	/**
+	 * Tries to convert short class name to class path name. This will only work if the class exists in memory
+	 * @param InShortClassName Short class name. If this parameter is already a path name then it's going to be returned as FTopLevelAssetPath
+	 * @param AmbiguousMessageVerbosity Verbosity with which to log a message if class name is ambiguous
+	 * @param AmbiguousClassMessage Additional message to log when class name is ambiguous (e.g. current operation)
+	 * @return Class path name if successful. Empty FTopLevelAssetPath otherwise.
+	 */
+	template <typename T>
+	static FTopLevelAssetPath TryConvertShortTypeNameToPathName(const FString& InShortTypeName, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr)
+	{
+		return TryConvertShortTypeNameToPathName(T::StaticClass(), InShortTypeName, AmbiguousMessageVerbosity, AmbiguousClassMessage);
+	}
+
+	/**
+	 * Tries to fix an export path containing short class name. Will not modify the input InOutExportPathToFix if a fixup
+	 * was not necessary or unsuccessful
+	 * @param InOutExportPathToFix Export path (Class'/Path/To.Object')
+	 * @param AmbiguousMessageVerbosity Verbosity with which to log a message if class name is ambiguous
+	 * @param AmbiguousClassMessage Additional message to log when class name is ambiguous (e.g. current operation)
+	 * @return True if the short path was successfully fixed. False if the provided export path did not contain short class name or the short path could not be fixed.
+	 */
+	static bool TryFixShortClassNameExportPath(FString& InOutExportPathToFix, ELogVerbosity::Type AmbiguousMessageVerbosity = ELogVerbosity::NoLogging, const TCHAR* AmbiguousClassMessage = nullptr);
+
+	/**
+	 * Returns the ObjectName portion of a ClassPath name: "/Path/To.Object" is converted to "Object". 
+	 * Returns the full string if it is already a ShortTypeName.
+	 */
+	static FString ConvertPathNameToShortTypeName(FStringView InClassPathOrShortTypeName);
+
+	/**
+	 * Takes a FullName (from e.g. AssetData.GetFullName or UObject.GetFullName) in either ShortTypeFullName or PathFullName form
+	 * ShortTypeFullName: "ClassObjectName /PackagePath/PackageShortName.ObjectName:SubObjectName"
+	 * PathFullName: "/ClassPath/ClassPackage.ClassObjectName /PackagePath/PackageShortName.ObjectName:SubObjectName"
+	 * Converts it to ShortTypeFullName if not already in that format and returns it
+	 */
+	static FString ConvertFullNameToShortTypeFullName(FStringView InFullName);
+
+	/**
+	 * Returns whether the given stringview is in ShortTypeName form: No directory separators "/" or object separators ".", SUBOBJECT_DELIMITER
+	 * Returns true for empty string.
+	 */
+	static bool IsShortTypeName(FStringView ClassPathOrShortTypeName);
 
 #if WITH_EDITOR
 	/** Provides access to C++ type info. */
@@ -3060,7 +3048,7 @@ public:
 	{
 		if (ClassDefaultObject == nullptr && bCreateIfNeeded)
 		{
-			UE_TRACK_REFERENCING_PACKAGE_SCOPED((GetOutermost()), PackageAccessTrackingOps::NAME_CreateDefaultObject);
+			UE_TRACK_REFERENCING_PACKAGE_SCOPED(this, PackageAccessTrackingOps::NAME_CreateDefaultObject);
 			const_cast<UClass*>(this)->CreateDefaultObject();
 		}
 
@@ -3070,7 +3058,12 @@ public:
 	/**
 	 * Called after PostInitProperties during object construction to allow class specific initialization of an object instance.
 	 */
-	virtual void PostInitInstance(UObject* InObj) {}
+	virtual void PostInitInstance(UObject* InObj, FObjectInstancingGraph* InstanceGraph) {}
+
+	/**
+	 * Called during PostLoad of an object to allow class specific PostLoad operations of an object instance.
+	 */
+	virtual void PostLoadInstance(UObject* InObj) {}
 
 	/**
 	 * Helper method to assist with initializing object properties from an explicit list.
@@ -3085,6 +3078,14 @@ public:
 	 * Allows class to provide data to the object initializer that can affect how native class subobjects are created.
 	 */
 	virtual void SetupObjectInitializer(FObjectInitializer& ObjectInitializer) const {}
+
+	/**
+	 * Some classes may not support creating assets of their type
+	 */
+	virtual bool CanCreateAssetOfClass() const
+	{
+		return true;
+	}
 
 	/**
 	 * Get the name of the CDO for the this class
@@ -3388,7 +3389,17 @@ private:
 		return UObject::IsA(Parent);
 	}
 
-	/** 
+	/**
+	 * This signature intentionally hides the method declared in UObject to make it private.
+	 * Call ImplementsInterface instead; Hidden because calling Implements on a class almost always indicates an error where the caller should use ImplementsInterface
+	 */
+	template <typename T>
+	bool Implements() const
+	{
+		return UObject::Implements<T>();
+	}
+
+	/**
 	 * This signature intentionally hides the method declared in UObject to make it private.
 	 * Call FindFunctionByName instead; This method will search for a function declared in UClass instead of the class it was called on
 	 */
@@ -3442,7 +3453,7 @@ public:
 	UDynamicClass(EStaticConstructor, FName InName, uint32 InSize, uint32 InAlignment, EClassFlags InClassFlags, EClassCastFlags InClassCastFlags,
 		const TCHAR* InClassConfigName, EObjectFlags InFlags, ClassConstructorType InClassConstructor,
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-		ClassAddReferencedObjectsType InClassAddReferencedObjects,
+		FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions,
 		DynamicClassInitializerType InDynamicClassInitializer)
 	{}
 
@@ -3516,7 +3527,7 @@ COREUOBJECT_API void InitializePrivateStaticClass(
  * @param InConfigName Class config name
  * @param InClassConstructor Class constructor function pointer
  * @param InClassVTableHelperCtorCaller Class constructor function for vtable pointer
- * @param InClassAddReferencedObjects Class AddReferencedObjects function pointer
+ * @param InCppClassStaticFunctions Function pointers for the class's version of Unreal's reflected static functions
  * @param InSuperClassFn Super class function pointer
  * @param WithinClass Within class
  */
@@ -3532,7 +3543,7 @@ COREUOBJECT_API void GetPrivateStaticClassBody(
 	const TCHAR* InConfigName,
 	UClass::ClassConstructorType InClassConstructor,
 	UClass::ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	UClass::ClassAddReferencedObjectsType InClassAddReferencedObjects,
+	FUObjectCppClassStaticFunctions&& InCppClassStaticFunctions,
 	UClass::StaticClassFunctionType InSuperClassFn,
 	UClass::StaticClassFunctionType InWithinClassFn);
 
@@ -3556,6 +3567,22 @@ public:
 	 * @param	DestinationSubobjectRoot	the top-level object that is being created
 	 */
 	FObjectInstancingGraph( class UObject* DestinationSubobjectRoot );
+
+	/**
+	 * Returns whether this instancing graph has a valid destination root.
+	 */
+	bool HasDestinationRoot() const
+	{
+		return GetDestinationRoot() != nullptr;
+	}
+
+	/**
+	 * Returns the DestinationRoot for this instancing graph.
+	 */
+	const UObject* GetDestinationRoot() const
+	{
+		return DestinationRoot;
+	}
 
 	/**
 	 * Sets the DestinationRoot for this instancing graph.
@@ -3652,15 +3679,23 @@ public:
 		bLoadingObject = bIsLoading;
 	}
 
-private:
 	/**
-	 * Returns whether this instancing graph has a valid destination root.
+	 * Adds a member variable property that should not instantiate subobjects
 	 */
-	bool HasDestinationRoot() const
+	void AddPropertyToSubobjectExclusionList(const FProperty* Property)
 	{
-		return DestinationRoot != nullptr;
+		SubobjectInstantiationExclusionList.Add(Property);
 	}
 
+	/**
+	 * Checks if a member variable property is in subobject instantiation exclusion list
+	 */
+	bool IsPropertyInSubobjectExclusionList(const FProperty* Property) const
+	{
+		return SubobjectInstantiationExclusionList.Contains(Property);
+	}
+
+private:
 	/**
 	 * Returns whether DestinationRoot corresponds to an archetype object.
 	 *
@@ -3739,7 +3774,14 @@ private:
 	 * Maps the source (think archetype) to the destination (think instance)
 	 */
 	TMap<class UObject*,class UObject*>			SourceToDestinationMap;
+
+	/** List of member variable properties that should not instantiate subobjects */
+	TSet<const FProperty*>						SubobjectInstantiationExclusionList;
 };
+
+Expose_TNameOf(FObjectInstancingGraph);
+
+Expose_TNameOf(FObjectInstancingGraph*);
 
 // UFunction interface.
 
@@ -3802,7 +3844,7 @@ inline T* GetMutableDefault(UClass *Class)
 
 struct FStructUtils
 {
-	static bool ArePropertiesTheSame(const FProperty* A, const FProperty* B, bool bCheckPropertiesNames);
+	COREUOBJECT_API static bool ArePropertiesTheSame(const FProperty* A, const FProperty* B, bool bCheckPropertiesNames);
 
 	/** Do structures have exactly the same memory layout */
 	COREUOBJECT_API static bool TheSameLayout(const UStruct* StructA, const UStruct* StructB, bool bCheckPropertiesNames = false);
@@ -3813,7 +3855,12 @@ struct FStructUtils
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 	/** Looks for uninitialized script struct pointers. Returns the number found */
 	COREUOBJECT_API static int32 AttemptToFindUninitializedScriptStructMembers();
-#endif
+
+#if WITH_EDITORONLY_DATA
+	/** Looks for short type names within struct metadata. Returns the number found */
+	COREUOBJECT_API static int32 AttemptToFindShortTypeNamesInMetaData();
+#endif // WITH_EDITORONLY_DATA
+#endif // !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
 };
 
 // Helper struct to test if member initialization tests work properly
@@ -3836,6 +3883,21 @@ template< class T > struct TBaseStructure
 	{
 		return T::StaticStruct();
 	}
+};
+
+template<> struct TBaseStructure<FIntPoint> 
+{
+	COREUOBJECT_API static UScriptStruct* Get(); 
+};
+
+template<> struct TBaseStructure<FIntVector> 
+{ 
+	COREUOBJECT_API static UScriptStruct* Get(); 
+};
+
+template<> struct TBaseStructure<FIntVector4>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FLinearColor>
@@ -3903,6 +3965,16 @@ template<> struct TBaseStructure<FFloatRange>
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
+template<> struct TBaseStructure<FDoubleRangeBound>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FDoubleRange>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
 template<> struct TBaseStructure<FInt32RangeBound>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
@@ -3918,60 +3990,74 @@ template<> struct TBaseStructure<FFloatInterval>
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
+template<> struct TBaseStructure<FDoubleInterval>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
 template<> struct TBaseStructure<FInt32Interval>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FFrameNumber;
+
 template<> struct TBaseStructure<FFrameNumber>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FFrameTime;
+
 template<> struct TBaseStructure<FFrameTime>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FSoftObjectPath;
+
 template<> struct TBaseStructure<FSoftObjectPath>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FSoftClassPath;
+
 template<> struct TBaseStructure<FSoftClassPath>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FPrimaryAssetType;
+
 template<> struct TBaseStructure<FPrimaryAssetType>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FPrimaryAssetId;
+
 template<> struct TBaseStructure<FPrimaryAssetId>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FDateTime;
+
 template<> struct TBaseStructure<FDateTime>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FPolyglotTextData;
+
 template<> struct TBaseStructure<FPolyglotTextData>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 struct FAssetBundleData;
+
 template<> struct TBaseStructure<FAssetBundleData>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
@@ -3982,7 +4068,12 @@ template<> struct TBaseStructure<FTestUninitializedScriptStructMembersTest>
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
+struct FTopLevelAssetPath;
 
+template<> struct TBaseStructure<FTopLevelAssetPath>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
 
 // TBaseStructure for explicit core variant types only. e.g. FVector3d returns "Vector3d" struct. 
 template< class T > struct TVariantStructure

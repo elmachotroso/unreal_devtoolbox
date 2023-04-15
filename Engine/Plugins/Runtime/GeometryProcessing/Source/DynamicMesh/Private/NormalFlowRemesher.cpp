@@ -54,7 +54,8 @@ void FNormalFlowRemesher::RemeshWithFaceProjection()
 			break;
 		}
 
-		RemeshIteration();
+		// currently disabling converge check
+		RemeshIteration( []() {return false; } );
 
 		if (Iterations > MaxRemeshIterations / 2)
 		{
@@ -365,8 +366,10 @@ void FNormalFlowRemesher::TrackedFaceProjectionPass(double& MaxDistanceMoved, bo
 
 
 	// Return the maximum distance moved by a vertex
-	MaxDistanceMoved = ParallelTransformReduce(Mesh->MaxVertexID(), 0.0, [&](int32 VID) -> double
+	MaxDistanceMoved = ParallelTransformReduce(Mesh->MaxVertexID(), 0.0, [&](int64 InVertexIndex) -> double
 	{
+		check(InVertexIndex < Mesh->MaxVertexID());
+		int VID = (int)InVertexIndex;
 		if (TempFlagBuffer[VID] && Mesh->IsVertex(VID))
 		{
 			const FVector3d& CurrentPosition = Mesh->GetVertex(VID);

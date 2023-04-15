@@ -16,36 +16,11 @@ using Ionic.Zlib;
 using EpicGames.Core;
 using System.Security.Cryptography.X509Certificates;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+using System.Text.RegularExpressions;
 
 namespace UnrealBuildTool
 {
-	/// <summary>
-	/// Option flags for the iOS toolchain
-	/// </summary>
-	[Flags]
-	enum IOSToolChainOptions
-	{
-		/// <summary>
-		/// No custom options
-		/// </summary>
-		None = 0,
-
-		/// <summary>
-		/// Enable address sanitizer
-		/// </summary>
-		EnableAddressSanitizer = 0x1,
-
-		/// <summary>
-		/// Enable thread sanitizer
-		/// </summary>
-		EnableThreadSanitizer = 0x2,
-
-		/// <summary>
-		/// Enable undefined behavior sanitizer
-		/// </summary>
-		EnableUndefinedBehaviorSanitizer = 0x4,
-	}
-
 	class IOSToolChainSettings : AppleToolChainSettings
 	{
 		/// <summary>
@@ -59,7 +34,7 @@ namespace UnrealBuildTool
 		/// The version of the iOS to allow at build time.
 		/// </summary>
 		[XmlConfigFile(Category = "IOSToolChain")]
-		public string BuildIOSVersion = "13.0";
+		public string BuildIOSVersion = "15.0";
 
 		/// <summary>
 		/// Directory for the developer binaries
@@ -75,11 +50,11 @@ namespace UnrealBuildTool
 		public readonly string DevicePlatformName;
 		public readonly string SimulatorPlatformName;
 
-		public IOSToolChainSettings() : this("iPhoneOS", "iPhoneSimulator")
+		public IOSToolChainSettings(ILogger Logger) : this("iPhoneOS", "iPhoneSimulator", Logger)
 		{
 		}
 
-		protected IOSToolChainSettings(string DevicePlatformName, string SimulatorPlatformName) : base(true)
+		protected IOSToolChainSettings(string DevicePlatformName, string SimulatorPlatformName, ILogger Logger) : base(true, Logger)
 		{
 			XmlConfig.ApplyTo(this);
 
@@ -92,7 +67,7 @@ namespace UnrealBuildTool
 			ToolchainDir = XcodeDeveloperDir + "Toolchains/XcodeDefault.xctoolchain/usr/bin/";
 
 			// make sure SDK is selected
-			SelectSDK(BaseSDKDir, DevicePlatformName, ref IOSSDKVersion, true);
+			SelectSDK(BaseSDKDir, DevicePlatformName, ref IOSSDKVersion, true, Logger);
 
 			// convert to float for easy comparison
 			IOSSDKVersionFloat = float.Parse(IOSSDKVersion, System.Globalization.CultureInfo.InvariantCulture);
@@ -115,16 +90,14 @@ namespace UnrealBuildTool
 
 		public readonly ReadOnlyTargetRules? Target;
 		protected IOSProjectSettings ProjectSettings;
-		private IOSToolChainOptions Options;
 
-		public IOSToolChain(ReadOnlyTargetRules? Target, IOSProjectSettings InProjectSettings, IOSToolChainOptions ToolchainOptions)
-			: this(Target, InProjectSettings, () => new IOSToolChainSettings())
+		public IOSToolChain(ReadOnlyTargetRules? Target, IOSProjectSettings InProjectSettings, ClangToolChainOptions ToolchainOptions, ILogger InLogger)
+			: this(Target, InProjectSettings, () => new IOSToolChainSettings(InLogger), ToolchainOptions, InLogger)
 		{
-			Options = ToolchainOptions;
 		}
 
-		protected IOSToolChain(ReadOnlyTargetRules? Target, IOSProjectSettings InProjectSettings, Func<IOSToolChainSettings> InCreateSettings)
-			: base((Target == null) ? null : Target.ProjectFile)
+		protected IOSToolChain(ReadOnlyTargetRules? Target, IOSProjectSettings InProjectSettings, Func<IOSToolChainSettings> InCreateSettings, ClangToolChainOptions ToolchainOptions, ILogger InLogger)
+			: base((Target == null) ? null : Target.ProjectFile, ToolchainOptions, InLogger)
 		{
 			this.Target = Target;
 			ProjectSettings = InProjectSettings;
@@ -152,19 +125,21 @@ namespace UnrealBuildTool
 		private Lazy<IOSToolChainSettings> Settings;
 
 		/// <summary>
-		/// Which compiler frontend to use
+		/// Which compiler\linker frontend to use
 		/// </summary>
 		private const string IOSCompiler = "clang++";
-
-		/// <summary>
-		/// Which linker frontend to use
-		/// </summary>
-		private const string IOSLinker = "clang++";
 
 		/// <summary>
 		/// Which library archiver to use
 		/// </summary>
 		private const string IOSArchiver = "libtool";
+
+		protected override ClangToolChainInfo GetToolChainInfo()
+		{
+			FileReference CompilerPath = new FileReference(Settings.Value.ToolchainDir + IOSCompiler);
+			FileReference ArchiverPath = new FileReference(Settings.Value.ToolchainDir + IOSArchiver);
+			return new AppleToolChainInfo(CompilerPath, ArchiverPath, Logger);
+		}
 
 		public override string GetSDKVersion()
 		{
@@ -225,136 +200,89 @@ namespace UnrealBuildTool
 			return OutputFile.ChangeExtension(DebugExtension);
 		}
 
-
-		string GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment)
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_WarningsAndErrors(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
-			string Result = "";
-
-			Result += " -fmessage-length=0";
-			Result += " -pipe";
-			Result += " -fpascal-strings";
-
-			if (RuntimePlatform.IsWindows)
-			{
-				Result += " -fdiagnostics-format=msvc";
-			}
-
-			// Optionally enable exception handling (off by default since it generates extra code needed to propagate exceptions)
-			if (CompileEnvironment.bEnableExceptions)
-			{
-				Result += " -fexceptions";
-				Result += " -DPLATFORM_EXCEPTIONS_DISABLED=0";
-			}
-			else
-			{
-				Result += " -fno-exceptions";
-				Result += " -DPLATFORM_EXCEPTIONS_DISABLED=1";
-			}
-
-			string? SanitizerMode = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
-			if ((SanitizerMode != null && SanitizerMode == "YES") || (Options.HasFlag(IOSToolChainOptions.EnableAddressSanitizer)))
-			{
-				Result += " -fsanitize=address -fno-omit-frame-pointer -DFORCE_ANSI_ALLOCATOR=1";
-			}
-
-			string? UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
-			if ((UndefSanitizerMode != null && UndefSanitizerMode == "YES") || (Options.HasFlag(IOSToolChainOptions.EnableUndefinedBehaviorSanitizer)))
-			{
-				Result += " -fsanitize=undefined -fno-sanitize=bounds,enum,return,float-divide-by-zero";
-			}
-
-			if (Options.HasFlag(IOSToolChainOptions.EnableThreadSanitizer))
-			{
-				Result += " -fsanitize=thread";
-			}
-
-			Result += GetRTTIFlag(CompileEnvironment);
-			Result += " -fvisibility=hidden"; // hides the linker warnings with PhysX
-
-			// use LTO if desired (like VCToolchain does)
-			if (CompileEnvironment.bAllowLTCG)
-			{
-				Result += " -flto";
-			}
-
-			Result += " -Wall -Werror";
-			Result += " -Wdelete-non-virtual-dtor";
-
-			// clang 12.00 has a new warning for copies in ranged loops. Instances have all been fixed up (2020/6/26) but
-			// are likely to be reintroduced due to no equivalent on other platforms at this time so disable the warning
-			// See also MacToolChain.cs
-			if (GetClangVersion().Major >= 12)
-			{
-				Result += " -Wno-range-loop-analysis";
-
-				// We have 'this' vs nullptr comparisons that get optimized away for newer versions of Clang, which is undesirable until we refactor these checks.
-				Result += " -fno-delete-null-pointer-checks";
-			}
-
-			if (CompileEnvironment.ShadowVariableWarningLevel != WarningLevel.Off)
-			{
-				Result += " -Wshadow" + ((CompileEnvironment.ShadowVariableWarningLevel == WarningLevel.Error) ? "" : " -Wno-error=shadow");
-			}
-
-			if (CompileEnvironment.bEnableUndefinedIdentifierWarnings)
-			{
-				Result += " -Wundef" + (CompileEnvironment.bUndefinedIdentifierWarningsAsErrors ? "" : " -Wno-error=undef");
-			}
+			base.GetCompileArguments_WarningsAndErrors(CompileEnvironment, Arguments);
 
 			// fix for Xcode 8.3 enabling nonportable include checks, but p4 has some invalid cases in it
 			if (Settings.Value.IOSSDKVersionFloat >= 10.3)
 			{
-				Result += " -Wno-nonportable-include-path";
+				Arguments.Add("-Wno-nonportable-include-path");
 			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Optimizations(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Optimizations(CompileEnvironment, Arguments);
+
+			if (CompilerVersionGreaterOrEqual(12, 0, 0))
+			{
+				// We have 'this' vs nullptr comparisons that get optimized away for newer versions of Clang, which is undesirable until we refactor these checks.
+				Arguments.Add("-fno-delete-null-pointer-checks");
+			}
+
+			// use LTO if desired (like VCToolchain does)
+			if (CompileEnvironment.bAllowLTCG)
+			{
+				Arguments.Add("-flto");
+			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Debugging(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Debugging(CompileEnvironment, Arguments);
+
+			Arguments.Add("-fvisibility=hidden"); // hides the linker warnings with PhysX
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompilerArguments_Sanitizers(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			// TODO: Reconcile with base
+			//base.GetCompilerArguments_Sanitizers(CompileEnvironment, Arguments);
+
+			string? SanitizerMode = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
+			if ((SanitizerMode != null && SanitizerMode == "YES") || (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer)))
+			{
+				Arguments.Add("-fsanitize=address -fno-omit-frame-pointer -DFORCE_ANSI_ALLOCATOR=1");
+			}
+
+			string? UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
+			if ((UndefSanitizerMode != null && UndefSanitizerMode == "YES") || (Options.HasFlag(ClangToolChainOptions.EnableUndefinedBehaviorSanitizer)))
+			{
+				Arguments.Add("-fsanitize=undefined -fno-sanitize=bounds,enum,return,float-divide-by-zero");
+			}
+
+			if (Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer))
+			{
+				Arguments.Add("-fsanitize=thread");
+			}
+
+			if (Options.HasFlag(ClangToolChainOptions.EnableMemorySanitizer))
+			{
+				Arguments.Add("-fsanitize=memory");
+			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Global(CompileEnvironment, Arguments);
 
 			if (IsBitcodeCompilingEnabled(CompileEnvironment.Configuration))
 			{
-				Result += " -fembed-bitcode";
+				Arguments.Add("-fembed-bitcode");
 			}
-
-			Result += " -c";
 
 			// What architecture(s) to build for
-			Result += GetArchitectureArgument(CompileEnvironment.Configuration, CompileEnvironment.Architecture);
+			Arguments.Add(GetArchitectureArgument(CompileEnvironment.Configuration, CompileEnvironment.Architecture));
 
-			Result += string.Format(" -isysroot \"{0}\"", Settings.Value.GetSDKPath(CompileEnvironment.Architecture));
+			Arguments.Add($"-isysroot \"{Settings.Value.GetSDKPath(CompileEnvironment.Architecture)}\"");
 
-			Result += " -m" + GetXcodeMinVersionParam() + "=" + ProjectSettings.RuntimeVersion;
-
-			bool bStaticAnalysis = false;
-			string? StaticAnalysisMode = Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE");
-			if (StaticAnalysisMode != null && StaticAnalysisMode != "")
-			{
-				bStaticAnalysis = true;
-			}
-
-			// Optimize non- debug builds.
-			if (CompileEnvironment.bOptimizeCode && !bStaticAnalysis)
-			{
-				if (CompileEnvironment.bOptimizeForSize)
-				{
-					Result += " -Oz";
-				}
-				else
-				{
-					Result += " -O3";
-				}
-			}
-			else
-			{
-				Result += " -O0";
-			}
-
-			if (!CompileEnvironment.bUseInlining)
-			{
-				Result += " -fno-inline-functions";
-			}
-
-			// Create DWARF format debug info if wanted,
-			if (CompileEnvironment.bCreateDebugInfo)
-			{
-				Result += " -gdwarf-2";
-			}
+			Arguments.Add("-m" + GetXcodeMinVersionParam() + "=" + ProjectSettings.RuntimeVersion);
 
 			// Add additional frameworks so that their headers can be found
 			foreach (UEBuildFramework Framework in CompileEnvironment.AdditionalFrameworks)
@@ -368,75 +296,22 @@ namespace UnrealBuildTool
 					{
 						FrameworkDir = Path.GetDirectoryName(FrameworkDir)!;
 					}
-					Result += String.Format(" -F\"{0}\"", FrameworkDir);
+					Arguments.Add($"-F\"{FrameworkDir}\"");
 				}
 			}
-
-			return Result;
 		}
 
-		static string GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment)
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_FileType(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, List<string> Arguments, Action CompileAction, CPPOutput CompileResult)
 		{
-			string Result = "";
-			Result += " -x objective-c++";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
+			base.GetCompileArguments_FileType(CompileEnvironment, SourceFile, OutputDir, Arguments, CompileAction, CompileResult);
 
-			return Result;
-		}
+			string Extension = Path.GetExtension(SourceFile.AbsolutePath).ToUpperInvariant();
 
-		static string GetCompileArguments_MM(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c++";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-			return Result;
-		}
-
-		static string GetCompileArguments_M(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-			return Result;
-		}
-
-		static string GetCompileArguments_C()
-		{
-			string Result = "";
-			Result += " -x c";
-			return Result;
-		}
-
-		static string GetCompileArguments_PCH(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c++-header";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-
-			return Result;
-		}
-
-		// Conditionally enable (default disabled) generation of information about every class with virtual functions for use by the C++ runtime type identification features 
-		// (`dynamic_cast' and `typeid'). If you don't use those parts of the language, you can save some space by using -fno-rtti. 
-		// Note that exception handling uses the same information, but it will generate it as needed. 
-		static string GetRTTIFlag(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-
-			if (CompileEnvironment.bUseRTTI)
+			if (!Extension.Equals(".C"))
 			{
-				Result = " -frtti";
+				Arguments.Add(GetObjCExceptionsFlag(CompileEnvironment));
 			}
-			else
-			{
-				Result = " -fno-rtti";
-			}
-
-			return Result;
 		}
 
 		// Conditionally enable (default disabled) Objective-C exceptions
@@ -446,11 +321,11 @@ namespace UnrealBuildTool
 
 			if (CompileEnvironment.bEnableObjCExceptions)
 			{
-				Result += " -fobjc-exceptions";
+				Result += "-fobjc-exceptions";
 			}
 			else
 			{
-				Result += " -fno-objc-exceptions";
+				Result += "-fno-objc-exceptions";
 			}
 
 			return Result;
@@ -485,7 +360,7 @@ namespace UnrealBuildTool
 		{
 			// get the list of architectures to compile
 			string Archs =
-				UBTArchitecture == "-simulator" ? "i386" :
+				UBTArchitecture == "-simulator" ? "arm64" :
 				String.Join(",", (Configuration == CppConfiguration.Shipping) ? ProjectSettings.ShippingArchitectures : ProjectSettings.NonShippingArchitectures);
 
 			Log.TraceLogOnce("Compiling with these architectures: " + Archs);
@@ -520,72 +395,69 @@ namespace UnrealBuildTool
 			}
 		}
 
-		string GetLinkArguments_Global(LinkEnvironment LinkEnvironment)
+		void GetLinkArguments_Global(LinkEnvironment LinkEnvironment, List<string> Arguments)
 		{
-			string Result = "";
-
-			Result += GetArchitectureArgument(LinkEnvironment.Configuration, LinkEnvironment.Architecture);
+			Arguments.Add(GetArchitectureArgument(LinkEnvironment.Configuration, LinkEnvironment.Architecture));
 
 			bool bIsDevice = (LinkEnvironment.Architecture != "-simulator");
-			Result += String.Format(" -isysroot \\\"{0}Platforms/{1}.platform/Developer/SDKs/{1}{2}.sdk\\\"",
-				Settings.Value.XcodeDeveloperDir, bIsDevice ? Settings.Value.DevicePlatformName : Settings.Value.SimulatorPlatformName, Settings.Value.IOSSDKVersion);
+			Arguments.Add(String.Format(" -isysroot \\\"{0}Platforms/{1}.platform/Developer/SDKs/{1}{2}.sdk\\\"",
+				Settings.Value.XcodeDeveloperDir, bIsDevice ? Settings.Value.DevicePlatformName : Settings.Value.SimulatorPlatformName, Settings.Value.IOSSDKVersion));
 
 			if (IsBitcodeCompilingEnabled(LinkEnvironment.Configuration))
 			{
 				FileItem OutputFile = FileItem.GetItemByFileReference(LinkEnvironment.OutputFilePath);
 
-				Result += " -fembed-bitcode -Xlinker -bitcode_verify -Xlinker -bitcode_hide_symbols -Xlinker -bitcode_symbol_map ";
-				Result += " -Xlinker \\\"" + Path.GetDirectoryName(OutputFile.AbsolutePath) + "\\\"";
+				Arguments.Add("-fembed-bitcode -Xlinker -bitcode_verify -Xlinker -bitcode_hide_symbols -Xlinker -bitcode_symbol_map ");
+				Arguments.Add("-Xlinker \\\"" + Path.GetDirectoryName(OutputFile.AbsolutePath) + "\\\"");
 			}
 
-			Result += " -dead_strip";
-			Result += " -m" + GetXcodeMinVersionParam() + "=" + ProjectSettings.RuntimeVersion;
-			Result += " -Wl";
+			Arguments.Add("-dead_strip");
+			Arguments.Add("-m" + GetXcodeMinVersionParam() + "=" + ProjectSettings.RuntimeVersion);
 			if (!IsBitcodeCompilingEnabled(LinkEnvironment.Configuration))
 			{
-				Result += "-no_pie";
+				Arguments.Add("-Wl-no_pie");
 			}
-			Result += " -stdlib=libc++";
-			Result += " -ObjC";
-			//			Result += " -v";
+			Arguments.Add("-stdlib=libc++");
+			Arguments.Add("-ObjC");
+			// Arguments.Add("-v");
 
 			// use LTO if desired (like VCToolchain does)
 			if (LinkEnvironment.bAllowLTCG)
 			{
-				Result += " -flto";
+				Arguments.Add("-flto");
 			}
 
 			string? SanitizerMode = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
-			if ((SanitizerMode != null && SanitizerMode == "YES") || (Options.HasFlag(IOSToolChainOptions.EnableAddressSanitizer)))
+			if ((SanitizerMode != null && SanitizerMode == "YES") || (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer)))
 			{
-				Result += " -rpath \"@executable_path/Frameworks\"";
-				Result += " -fsanitize=address";
+				Arguments.Add("-rpath \"@executable_path/Frameworks\"");
+				Arguments.Add("-fsanitize=address");
 			}
 
 			string? UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
-			if ((UndefSanitizerMode != null && UndefSanitizerMode == "YES") || (Options.HasFlag(IOSToolChainOptions.EnableUndefinedBehaviorSanitizer)))
+			if ((UndefSanitizerMode != null && UndefSanitizerMode == "YES") || (Options.HasFlag(ClangToolChainOptions.EnableUndefinedBehaviorSanitizer)))
 			{
-				Result += " -rpath \"@executable_path/libclang_rt.ubsan_ios_dynamic.dylib\"";
-				Result += " -fsanitize=undefined";
+				Arguments.Add("-rpath \"@executable_path/libclang_rt.ubsan_ios_dynamic.dylib\"");
+				Arguments.Add("-fsanitize=undefined");
 			}
 
-			if (Options.HasFlag(IOSToolChainOptions.EnableThreadSanitizer))
+			if (Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer))
 			{
-				Result += " -rpath \"@executable_path/libclang_rt.tsan_ios_dynamic.dylib\"";
-				Result += " -fsanitize=thread";
+				Arguments.Add("-rpath \"@executable_path/libclang_rt.tsan_ios_dynamic.dylib\"");
+				Arguments.Add("-fsanitize=thread");
 			}
 
 			// need to tell where to load Framework dylibs
-			Result += " -rpath @executable_path/Frameworks";
+			Arguments.Add("-rpath @executable_path/Frameworks");
 
-			Result += " " + GetAdditionalLinkerFlags(LinkEnvironment.Configuration);
+			Arguments.Add(GetAdditionalLinkerFlags(LinkEnvironment.Configuration));
 
 			// link in the frameworks
 			foreach (string Framework in LinkEnvironment.Frameworks)
 			{
 				if (Framework != "ARKit" || Settings.Value.IOSSDKVersionFloat >= 11.0f)
 				{
-					Result += " -framework " + Framework;
+					Arguments.Add("-framework " + Framework);
 				}
 			}
 			foreach (UEBuildFramework Framework in LinkEnvironment.AdditionalFrameworks)
@@ -601,218 +473,51 @@ namespace UnrealBuildTool
 					{
 						FrameworkDir = Path.GetDirectoryName(FrameworkDir)!;
 					}
-					Result += String.Format(" -F\\\"{0}\\\"", FrameworkDir);
+					Arguments.Add(String.Format("-F\\\"{0}\\\"", FrameworkDir));
 				}
 
-				Result += " -framework " + Framework.Name;
+				Arguments.Add("-framework " + Framework.Name);
 			}
 			foreach (string Framework in LinkEnvironment.WeakFrameworks)
 			{
-				Result += " -weak_framework " + Framework;
+				Arguments.Add("-weak_framework " + Framework);
 			}
-
-			return Result;
 		}
 
-		static string GetArchiveArguments_Global(LinkEnvironment LinkEnvironment)
+		void GetArchiveArguments_Global(LinkEnvironment LinkEnvironment, List<string> Arguments)
 		{
-			string Result = "";
-
-			Result += " -static";
-
-			return Result;
+			Arguments.Add("-static");
 		}
 
 		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
-			string Arguments = GetCompileArguments_Global(CompileEnvironment);
-			string PCHArguments = "";
+			List<string> GlobalArguments = new();
 
-			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
-			{
-				PCHArguments += string.Format(" -include \"{0}\"", CompileEnvironment.PrecompiledHeaderIncludeFilename!.FullName);
-			}
+			GetCompileArguments_Global(CompileEnvironment, GlobalArguments);
 
-			foreach (FileItem ForceIncludeFile in CompileEnvironment.ForceIncludeFiles)
+			List<FileItem> FrameworkTokenFiles = new List<FileItem>();
+			foreach (UEBuildFramework Framework in CompileEnvironment.AdditionalFrameworks)
 			{
-				Arguments += String.Format(" -include \"{0}\"", ForceIncludeFile.Location.FullName);
-			}
-
-			// Add include paths to the argument list.
-			HashSet<DirectoryReference> AllIncludes = new HashSet<DirectoryReference>(CompileEnvironment.UserIncludePaths);
-			AllIncludes.UnionWith(CompileEnvironment.SystemIncludePaths);
-			foreach (DirectoryReference IncludePath in AllIncludes)
-			{
-				Arguments += string.Format(" -I\"{0}\"", IncludePath.FullName);
-			}
-
-			foreach (string Definition in CompileEnvironment.Definitions)
-			{
-				string DefinitionArgument = Definition.Contains("\"") ? Definition.Replace("\"", "\\\"") : Definition;
-				Arguments += string.Format(" -D \"{0}\"", DefinitionArgument);
+				if (Framework.ZipFile != null)
+				{
+					FileItem ExtractedTokenFile = ExtractFramework(Framework, Graph, Logger);
+					FrameworkTokenFiles.Add(ExtractedTokenFile);
+				}
 			}
 
 			CPPOutput Result = new CPPOutput();
 			// Create a compile action for each source file.
 			foreach (FileItem SourceFile in InputFiles)
 			{
-				Action CompileAction = Graph.CreateAction(ActionType.Compile);
-				string FilePCHArguments = "";
-				string FileArguments = "";
-				string Extension = Path.GetExtension(SourceFile.AbsolutePath).ToUpperInvariant();
-
-				if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
-				{
-					// Compile the file as a C++ PCH.
-					FileArguments += GetCompileArguments_PCH(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-					FileArguments += GetObjCExceptionsFlag(CompileEnvironment);
-				}
-				else if (Extension == ".C")
-				{
-					// Compile the file as C code.
-					FileArguments += GetCompileArguments_C();
-				}
-				else if (Extension == ".MM")
-				{
-					// Compile the file as Objective-C++ code.
-					FileArguments += GetCompileArguments_MM(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-					FileArguments += GetObjCExceptionsFlag(CompileEnvironment);
-				}
-				else if (Extension == ".M")
-				{
-					// Compile the file as Objective-C code.
-					FileArguments += GetCompileArguments_M(CompileEnvironment);
-					FileArguments += GetObjCExceptionsFlag(CompileEnvironment);
-				}
-				else
-				{
-					// Compile the file as C++ code.
-					FileArguments += GetCompileArguments_CPP(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-					FileArguments += GetObjCExceptionsFlag(CompileEnvironment);
-
-					// only use PCH for .cpp files
-					FilePCHArguments = PCHArguments;
-				}
-
-				// Add the C++ source file and its included files to the prerequisite item list.
-				CompileAction.PrerequisiteItems.Add(SourceFile);
-
-				// Add the precompiled header
-				if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
-				{
-					CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile!);
-				}
-
-				// Upload the force included files
-				foreach (FileItem ForceIncludeFile in CompileEnvironment.ForceIncludeFiles)
-				{
-					CompileAction.PrerequisiteItems.Add(ForceIncludeFile);
-				}
-
-				string? OutputFilePath = null;
-				if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
-				{
-					// Add the precompiled header file to the produced item list.
-					FileItem PrecompiledHeaderFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".gch"));
-
-					CompileAction.ProducedItems.Add(PrecompiledHeaderFile);
-					Result.PrecompiledHeaderFile = PrecompiledHeaderFile;
-
-					// Add the parameters needed to compile the precompiled header file to the command-line.
-					FileArguments += string.Format(" -o \"{0}\"", PrecompiledHeaderFile.AbsolutePath);
-				}
-				else
-				{
-					if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
-					{
-						CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile!);
-					}
-
-					string ObjectFileExtension;
-					if (CompileEnvironment.AdditionalArguments != null && CompileEnvironment.AdditionalArguments.Contains("-emit-llvm"))
-					{
-						ObjectFileExtension = ".bc";
-					}
-					else
-					{
-						ObjectFileExtension = ".o";
-					}
-
-					// Add the object file to the produced item list.
-					FileItem ObjectFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ObjectFileExtension));
-
-					CompileAction.ProducedItems.Add(ObjectFile);
-					Result.ObjectFiles.Add(ObjectFile);
-					FileArguments += string.Format(" -o \"{0}\"", ObjectFile.AbsolutePath);
-					OutputFilePath = ObjectFile.AbsolutePath;
-				}
-
-				// Add the source file path to the command-line.
-				FileArguments += string.Format(" \"{0}\"", SourceFile.AbsolutePath);
-
-				// Generate the included header dependency list
-				if (CompileEnvironment.bGenerateDependenciesFile)
-				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".d"));
-					FileArguments += string.Format(" -MD -MF\"{0}\"", DependencyListFile.AbsolutePath.Replace('\\', '/'));
-					CompileAction.DependencyListFile = DependencyListFile;
-					CompileAction.ProducedItems.Add(DependencyListFile);
-				}
-
-				string CompilerPath = Settings.Value.ToolchainDir + IOSCompiler;
-
-				string AllArgs = FilePCHArguments + Arguments + FileArguments + CompileEnvironment.AdditionalArguments;
-				/*				string SourceText = System.IO.File.ReadAllText(SourceFile.AbsolutePath);
-								if (CompileEnvironment.bOptimizeForSize && (SourceFile.AbsolutePath.Contains("ElementBatcher.cpp") || SourceText.Contains("ElementBatcher.cpp") || SourceFile.AbsolutePath.Contains("AnimationRuntime.cpp") || SourceText.Contains("AnimationRuntime.cpp")
-									|| SourceFile.AbsolutePath.Contains("AnimEncoding.cpp") || SourceText.Contains("AnimEncoding.cpp") || SourceFile.AbsolutePath.Contains("TextRenderComponent.cpp") || SourceText.Contains("TextRenderComponent.cpp")
-									|| SourceFile.AbsolutePath.Contains("SWidget.cpp") || SourceText.Contains("SWidget.cpp") || SourceFile.AbsolutePath.Contains("SCanvas.cpp") || SourceText.Contains("SCanvas.cpp") || SourceFile.AbsolutePath.Contains("ShaderCore.cpp") || SourceText.Contains("ShaderCore.cpp")
-									|| SourceFile.AbsolutePath.Contains("ParticleSystemRender.cpp") || SourceText.Contains("ParticleSystemRender.cpp")))
-								{
-									Log.TraceInformation("Forcing {0} to --O3!", SourceFile.AbsolutePath);
-
-									AllArgs = AllArgs.Replace("-Oz", "-O3");
-								}*/
-
-				// Analyze and then compile using the shell to perform the indirection
-				string? StaticAnalysisMode = Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE");
-				if (StaticAnalysisMode != null && StaticAnalysisMode != "" && OutputFilePath != null)
-				{
-					string TempArgs = "-c \"" + CompilerPath + " " + AllArgs + " --analyze -Wno-unused-command-line-argument -Xclang -analyzer-output=html -Xclang -analyzer-config -Xclang path-diagnostics-alternate=true -Xclang -analyzer-config -Xclang report-in-main-source-file=true -Xclang -analyzer-disable-checker -Xclang deadcode.DeadStores -o " + OutputFilePath.Replace(".o", ".html") + "; " + CompilerPath + " " + AllArgs + "\"";
-					AllArgs = TempArgs;
-					CompilerPath = "/bin/sh";
-				}
-
-				// RPC utility parameters are in terms of the Mac side
-				CompileAction.WorkingDirectory = GetMacDevSrcRoot();
-				CompileAction.CommandPath = new FileReference(CompilerPath);
-				CompileAction.CommandArguments = AllArgs; // Arguments + FileArguments + CompileEnvironment.AdditionalArguments;
-				CompileAction.CommandDescription = "Compile";
-				CompileAction.StatusDescription = string.Format("{0}", Path.GetFileName(SourceFile.AbsolutePath));
-				CompileAction.bIsGCCCompiler = true;
-				// We're already distributing the command by execution on Mac.
-				CompileAction.bCanExecuteRemotely = true;
-				CompileAction.bShouldOutputStatusDescription = true;
-				CompileAction.CommandVersion = GetFullClangVersion();
-
-				foreach (UEBuildFramework Framework in CompileEnvironment.AdditionalFrameworks)
-				{
-					if (Framework.ZipFile != null)
-					{
-						FileItem ExtractedTokenFile = ExtractFramework(Framework, Graph);
-						CompileAction.PrerequisiteItems.Add(ExtractedTokenFile);
-					}
-				}
+				Action CompileAction = CompileCPPFile(CompileEnvironment, SourceFile, OutputDir, ModuleName, Graph, GlobalArguments, Result);
+				CompileAction.PrerequisiteItems.AddRange(FrameworkTokenFiles);
 			}
 			return Result;
 		}
 
 		public override FileItem LinkFiles(LinkEnvironment LinkEnvironment, bool bBuildImportLibraryOnly, IActionGraphBuilder Graph)
 		{
-			string LinkerPath = Settings.Value.ToolchainDir +
-				(LinkEnvironment.bIsBuildingLibrary ? IOSArchiver : IOSLinker);
+			FileReference LinkerPath = LinkEnvironment.bIsBuildingLibrary ? Info.Archiver : Info.Clang;
 
 			// Create an action that invokes the linker.
 			Action LinkAction = Graph.CreateAction(ActionType.Link);
@@ -821,11 +526,20 @@ namespace UnrealBuildTool
 			LinkAction.WorkingDirectory = GetMacDevSrcRoot();
 
 			// build this up over the rest of the function
-			string LinkCommandArguments = LinkEnvironment.bIsBuildingLibrary ? GetArchiveArguments_Global(LinkEnvironment) : GetLinkArguments_Global(LinkEnvironment);
+			List<string> LinkArguments = new();
+			if (LinkEnvironment.bIsBuildingLibrary)
+			{
+				GetArchiveArguments_Global(LinkEnvironment, LinkArguments);
+			}
+			else
+			{
+				GetLinkArguments_Global(LinkEnvironment, LinkArguments);
+			}
+			string LinkCommandArguments = string.Join(' ', LinkArguments);
 			if (LinkEnvironment.bIsBuildingDLL)
 			{
 				// @todo roll this put into GetLinkArguments_Global
-				LinkerPath = IOSLinker;
+				LinkerPath = Info.Clang;
 				LinkCommandArguments += " -dynamiclib -Xlinker -export_dynamic -Xlinker -no_deduplicate";
 
 				string InstallName = LinkEnvironment.InstallName ?? String.Format("@executable_path/Frameworks/{0}", LinkEnvironment.OutputFilePath.MakeRelativeTo(LinkEnvironment.OutputFilePath.Directory.ParentDirectory!));
@@ -866,7 +580,7 @@ namespace UnrealBuildTool
 			{
 				if (Framework.ZipFile != null)
 				{
-					FileItem ExtractedTokenFile = ExtractFramework(Framework, Graph);
+					FileItem ExtractedTokenFile = ExtractFramework(Framework, Graph, Logger);
 					LinkAction.PrerequisiteItems.Add(ExtractedTokenFile);
 				}
 			}
@@ -939,7 +653,7 @@ namespace UnrealBuildTool
 
 			LinkAction.StatusDescription = string.Format("{0}", OutputFile.AbsolutePath);
 
-			LinkAction.CommandVersion = GetFullClangVersion();
+			LinkAction.CommandVersion = Info.ClangVersionString;
 
 			LinkAction.CommandPath = BuildHostPlatform.Current.Shell;
 			if (LinkEnvironment.Configuration == CppConfiguration.Shipping && Path.GetExtension(OutputFile.AbsolutePath) != ".a")
@@ -963,7 +677,6 @@ namespace UnrealBuildTool
 				// This is not a shipping build so no need to delete the output file since symbols will not have been stripped from it.
 				LinkAction.CommandArguments = string.Format("-c \"\\\"{0}\\\" {1}\"", LinkerPath, LinkCommandArguments);
 			}
-
 			return OutputFile;
 		}
 
@@ -1009,7 +722,7 @@ namespace UnrealBuildTool
 				Arguments.Append(" --launch-image \"Launch Image\"");
 				Arguments.Append(" --filter-for-device-model AppleTV5,3");
 				Arguments.Append(" --target-device tv");
-				Arguments.Append(" --minimum-deployment-target 13.0");
+				Arguments.Append(" --minimum-deployment-target 15.0");
 				Arguments.Append(" --platform appletvos");
 			}
 			else
@@ -1018,7 +731,7 @@ namespace UnrealBuildTool
 				Arguments.Append(" --product-type com.apple.product-type.application");
 				Arguments.Append(" --target-device iphone");
 				Arguments.Append(" --target-device ipad");
-				Arguments.Append(" --minimum-deployment-target 13.0");
+				Arguments.Append(" --minimum-deployment-target 15.0");
 				Arguments.Append(" --platform iphoneos");
 			}
 			Arguments.Append(" --enable-on-demand-resources YES");
@@ -1052,7 +765,8 @@ namespace UnrealBuildTool
 		/// <param name="Executable">FileItem describing the executable to generate debug info for</param>
 		/// <param name="bIsForLTOBuild">Was this build made with LTO enabled?</param>
 		/// <param name="Graph">List of actions to be executed. Additional actions will be added to this list.</param>
-		private List<FileItem> GenerateDebugInfo(FileItem Executable, bool bIsForLTOBuild, IActionGraphBuilder Graph)
+		/// <param name="Logger">Logger for output</param>
+		private List<FileItem> GenerateDebugInfo(FileItem Executable, bool bIsForLTOBuild, IActionGraphBuilder Graph, ILogger Logger)
 		{
 			// Make a file item for the source and destination files
 			string FullDestPathRoot = GetdSYMPath(Executable);
@@ -1066,7 +780,7 @@ namespace UnrealBuildTool
 			GenDebugAction.WorkingDirectory = GetMacDevSrcRoot();
 			GenDebugAction.CommandPath = BuildHostPlatform.Current.Shell;
 			string ExtraOptions;
-			string DsymutilPath = GetDsymutilPath(out ExtraOptions, bIsForLTOBuild: bIsForLTOBuild);
+			string DsymutilPath = GetDsymutilPath(Logger, out ExtraOptions, bIsForLTOBuild: bIsForLTOBuild);
 			if (ProjectSettings.bGeneratedSYMBundle)
 			{
 				GenDebugAction.CommandArguments = string.Format("-c \"rm -rf \\\"{2}\\\"; \\\"{0}\\\" \\\"{1}\\\" {4} -o \\\"{2}\\\"; cd \\\"{2}/..\\\"; zip -r -y -1 {3}.zip {3}\"",
@@ -1076,7 +790,7 @@ namespace UnrealBuildTool
 					Path.GetFileName(FullDestPathRoot),
 					ExtraOptions);
 				GenDebugAction.ProducedItems.Add(ZipOutputFile);
-				Log.TraceInformation("Zip file: " + ZipOutputFile.AbsolutePath);
+				Logger.LogInformation("Zip file: {File}", ZipOutputFile.AbsolutePath);
 			}
 			else
 			{
@@ -1244,7 +958,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		FileItem ExtractFramework(UEBuildFramework Framework, IActionGraphBuilder Graph)
+		FileItem ExtractFramework(UEBuildFramework Framework, IActionGraphBuilder Graph, ILogger Logger)
 		{
 			if (Framework.ZipFile == null)
 			{
@@ -1324,10 +1038,8 @@ namespace UnrealBuildTool
 					new string []{ "Icon_Small_Front-800x480.png", "App Icon & Top Shelf Image.brandassets/App Icon.imagestack/Front.imagestacklayer/Content.imageset" },
 					new string []{ "Icon_Small_Middle-400x240.png", "App Icon & Top Shelf Image.brandassets/App Icon.imagestack/Middle.imagestacklayer/Content.imageset" },
 					new string []{ "Icon_Small_Middle-800x480.png", "App Icon & Top Shelf Image.brandassets/App Icon.imagestack/Middle.imagestacklayer/Content.imageset" },
-					new string []{ "TopShelfWide-1920x720@2x.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image Wide.imageset" },
-					new string []{ "TopShelfWide-1920x720.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image Wide.imageset" },
-					new string []{ "TopShelf.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image.imageset" },
-					new string []{ "TopShelf@2x.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image.imageset" },
+					new string []{ "TopShelfWide-2320x720@2x.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image Wide.imageset" },
+					new string []{ "TopShelfWide-2320x720.png", "App Icon & Top Shelf Image.brandassets/Top Shelf Image Wide.imageset" },
 				};
 				Dir = Path.Combine(IntermediateDir, "Resources", "Assets.xcassets");
 
@@ -1488,7 +1200,7 @@ namespace UnrealBuildTool
 			// For IOS/tvOS, generate the dSYM file if needed or requested
 			if (Target!.IOSPlatform.bGeneratedSYM)
 			{
-				List<FileItem> Files = GenerateDebugInfo(Executable, BinaryLinkEnvironment.bAllowLTCG, Graph);
+				List<FileItem> Files = GenerateDebugInfo(Executable, BinaryLinkEnvironment.bAllowLTCG, Graph, Logger);
 				foreach (FileItem item in Files)
 				{
 					OutputFiles.Add(item);
@@ -1520,7 +1232,14 @@ namespace UnrealBuildTool
 				OutputFiles.Add(StripCompleteFile);
 			}
 
-			if (!BinaryLinkEnvironment.bIsBuildingDLL)
+			bool bUseModernXcode = false;
+			if (OperatingSystem.IsMacOS())
+			{
+				ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(Target.ProjectFile), UnrealTargetPlatform.IOS);
+				Ini.TryGetValue("XcodeConfiguration", "bUseModernXcode", out bUseModernXcode);
+			}
+
+			if (!BinaryLinkEnvironment.bIsBuildingDLL && !bUseModernXcode)
 			{
 				// generate the asset catalog
 				bool bUserImagesExist = false;
@@ -1547,42 +1266,46 @@ namespace UnrealBuildTool
 			// Generate the app bundle
 			if (!Target.bDisableLinking)
 			{
-				Log.TraceInformation("Adding PostBuildSync action");
+				Logger.LogInformation("Adding PostBuildSync action");
 
-				List<string> UPLScripts = UEDeployIOS.CollectPluginDataPaths(BinaryLinkEnvironment.AdditionalProperties);
+				List<string> UPLScripts = UEDeployIOS.CollectPluginDataPaths(BinaryLinkEnvironment.AdditionalProperties, Logger);
 				VersionNumber SdkVersion = VersionNumber.Parse(Settings.Value.IOSSDKVersion);
 
 				Dictionary<string, DirectoryReference> FrameworkNameToSourceDir = new Dictionary<string, DirectoryReference>();
-				FileReference StagedExecutablePath = GetStagedExecutablePath(Executable.Location, Target.Name);
-				DirectoryReference BundleDirectory = Target.bShouldCompileAsDLL ? Executable.Directory.Location : StagedExecutablePath.Directory;
-				foreach (UEBuildFramework Framework in BinaryLinkEnvironment.AdditionalFrameworks)
-				{
-					if (Framework.FrameworkDirectory != null)
-					{
-						if (!String.IsNullOrEmpty(Framework.CopyBundledAssets))
-						{
-							// For now, this is hard coded, but we need to loop over all modules, and copy bundled assets that need it
-							DirectoryReference LocalSource = DirectoryReference.Combine(Framework.FrameworkDirectory, Framework.CopyBundledAssets);
-							string BundleName = Framework.CopyBundledAssets.Substring(Framework.CopyBundledAssets.LastIndexOf('/') + 1);
-							FrameworkNameToSourceDir[BundleName] = LocalSource;
-						}
 
-						if (Framework.bCopyFramework)
+				if (!bUseModernXcode)
+				{
+					FileReference StagedExecutablePath = GetStagedExecutablePath(Executable.Location, Target.Name);
+					DirectoryReference BundleDirectory = Target.bShouldCompileAsDLL ? Executable.Directory.Location : StagedExecutablePath.Directory;
+					foreach (UEBuildFramework Framework in BinaryLinkEnvironment.AdditionalFrameworks)
+					{
+						if (Framework.FrameworkDirectory != null)
 						{
-							string FrameworkDir = Framework.FrameworkDirectory.FullName;
-							if (FrameworkDir.EndsWith(".framework"))
+							if (!String.IsNullOrEmpty(Framework.CopyBundledAssets))
 							{
-								FrameworkDir = Path.GetDirectoryName(FrameworkDir)!;
+								// For now, this is hard coded, but we need to loop over all modules, and copy bundled assets that need it
+								DirectoryReference LocalSource = DirectoryReference.Combine(Framework.FrameworkDirectory, Framework.CopyBundledAssets);
+								string BundleName = Framework.CopyBundledAssets.Substring(Framework.CopyBundledAssets.LastIndexOf('/') + 1);
+								FrameworkNameToSourceDir[BundleName] = LocalSource;
 							}
 
-							OutputFiles.Add(CopyBundleResource(new UEBuildBundleResource(new ModuleRules.BundleResource(Path.Combine(FrameworkDir, Framework.Name + ".framework"), "Frameworks")), Executable, BundleDirectory, Graph));
+							if (Framework.bCopyFramework)
+							{
+								string FrameworkDir = Framework.FrameworkDirectory.FullName;
+								if (FrameworkDir.EndsWith(".framework"))
+								{
+									FrameworkDir = Path.GetDirectoryName(FrameworkDir)!;
+								}
+
+								OutputFiles.Add(CopyBundleResource(new UEBuildBundleResource(new ModuleRules.BundleResource(Path.Combine(FrameworkDir, Framework.Name + ".framework"), "Frameworks")), Executable, BundleDirectory, Graph));
+							}
 						}
 					}
-				}
 
-				foreach (UEBuildBundleResource Resource in BinaryLinkEnvironment.AdditionalBundleResources)
-				{
-					OutputFiles.Add(CopyBundleResource(Resource, Executable, StagedExecutablePath.Directory, Graph));
+					foreach (UEBuildBundleResource Resource in BinaryLinkEnvironment.AdditionalBundleResources)
+					{
+						OutputFiles.Add(CopyBundleResource(Resource, Executable, StagedExecutablePath.Directory, Graph));
+					}
 				}
 
 				IOSPostBuildSyncTarget PostBuildSyncTarget = new IOSPostBuildSyncTarget(Target, Executable.Location, BinaryLinkEnvironment.IntermediateDirectory, UPLScripts, SdkVersion, FrameworkNameToSourceDir);
@@ -1599,7 +1322,7 @@ namespace UnrealBuildTool
 				}
 
 				Action PostBuildSyncAction = Graph.CreateRecursiveAction<IOSPostBuildSyncMode>(ActionType.CreateAppBundle, PostBuildSyncArguments);
-				PostBuildSyncAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
+				PostBuildSyncAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 				PostBuildSyncAction.PrerequisiteItems.Add(Executable);
 				PostBuildSyncAction.PrerequisiteItems.AddRange(OutputFiles);
 				PostBuildSyncAction.ProducedItems.Add(FileItem.GetItemByFileReference(GetStagedExecutablePath(Executable.Location, Target.Name)));
@@ -1647,11 +1370,11 @@ namespace UnrealBuildTool
 			//This chunk looks to be required to pipe output to VS giving information on the status of a remote build.
 			public bool OutputReceivedDataEventHandlerEncounteredError = false;
 			public string OutputReceivedDataEventHandlerEncounteredErrorMessage = "";
-			public void OutputReceivedDataEventHandler(Object Sender, DataReceivedEventArgs Line)
+			public void OutputReceivedDataEventHandler(Object Sender, DataReceivedEventArgs Line, ILogger Logger)
 			{
 				if ((Line != null) && (Line.Data != null))
 				{
-					Log.TraceInformation(Line.Data);
+					Logger.LogInformation("{Message}", Line.Data);
 
 					foreach (string ErrorToken in ErrorMessageTokens)
 					{
@@ -1665,25 +1388,25 @@ namespace UnrealBuildTool
 				}
 			}
 
-			public void OutputReceivedDataEventLogger(Object Sender, DataReceivedEventArgs Line)
+			public void OutputReceivedDataEventLogger(Object Sender, DataReceivedEventArgs Line, ILogger Logger)
 			{
 				if ((Line != null) && (Line.Data != null))
 				{
-					Log.TraceInformation(Line.Data);
+					Logger.LogInformation("{Output}", Line.Data);
 				}
 			}
 		}
 
-		private static void GenerateCrashlyticsData(string DsymZip, string ProjectDir, string ProjectName)
+		private static void GenerateCrashlyticsData(string DsymZip, string ProjectDir, string ProjectName, ILogger Logger)
 		{
-			Log.TraceInformation("Generating and uploading Crashlytics Data");
+			Logger.LogInformation("Generating and uploading Crashlytics Data");
 
 			// Clean this folder as it's used for extraction
 			string TempPath = Path.Combine(Unreal.EngineDirectory.FullName, "Intermediate", "Unzipped");
 
 			if (Directory.Exists(TempPath))
 			{
-				Log.TraceInformation("Deleting temp path {0}", TempPath);
+				Logger.LogInformation("Deleting temp path {TempPath}", TempPath);
 				Directory.Delete(TempPath, true);
 			}
 
@@ -1700,8 +1423,8 @@ namespace UnrealBuildTool
 
 				ProcessOutput Output = new ProcessOutput();
 
-				FabricProcess.OutputDataReceived += new DataReceivedEventHandler(Output.OutputReceivedDataEventHandler);
-				FabricProcess.ErrorDataReceived += new DataReceivedEventHandler(Output.OutputReceivedDataEventHandler);
+				FabricProcess.OutputDataReceived += new DataReceivedEventHandler((s, e) => Output.OutputReceivedDataEventHandler(s, e, Logger));
+				FabricProcess.ErrorDataReceived += new DataReceivedEventHandler((s, e) => Output.OutputReceivedDataEventHandler(s, e, Logger));
 
 				Utils.RunLocalProcess(FabricProcess);
 				if (Output.OutputReceivedDataEventHandlerEncounteredError)
@@ -1711,7 +1434,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		internal static bool GenerateProjectFiles(FileReference? ProjectFile, string[] Arguments)
+		internal static bool GenerateProjectFiles(FileReference? ProjectFile, string[] Arguments, ILogger Logger, out DirectoryReference? XcodeProjectFile)
 		{
 			ProjectFileGenerator.bGenerateProjectFiles = true;
 			try
@@ -1719,16 +1442,24 @@ namespace UnrealBuildTool
 				CommandLineArguments CmdLine = new CommandLineArguments(Arguments);
 
 				PlatformProjectGeneratorCollection PlatformProjectGenerators = new PlatformProjectGeneratorCollection();
-				PlatformProjectGenerators.RegisterPlatformProjectGenerator(UnrealTargetPlatform.IOS, new IOSProjectGenerator(CmdLine));
-				PlatformProjectGenerators.RegisterPlatformProjectGenerator(UnrealTargetPlatform.TVOS, new TVOSProjectGenerator(CmdLine));
+				PlatformProjectGenerators.RegisterPlatformProjectGenerator(UnrealTargetPlatform.IOS, new IOSProjectGenerator(CmdLine, Logger), Logger);
+				PlatformProjectGenerators.RegisterPlatformProjectGenerator(UnrealTargetPlatform.TVOS, new TVOSProjectGenerator(CmdLine, Logger), Logger);
 
 				XcodeProjectFileGenerator Generator = new XcodeProjectFileGenerator(ProjectFile, CmdLine);
-				return Generator.GenerateProjectFiles(PlatformProjectGenerators, Arguments);
+				bool bSucces = Generator.GenerateProjectFiles(PlatformProjectGenerators, Arguments, Logger);
+				XcodeProjectFile = Generator.XCWorkspace;
+				return bSucces;
+			}
+			catch(Exception ex)
+			{
+				XcodeProjectFile = null;
+				Logger.LogError(ex.ToString());
 			}
 			finally
 			{
 				ProjectFileGenerator.bGenerateProjectFiles = false;
 			}
+			return false;
 		}
 
 		public static FileReference GetStagedExecutablePath(FileReference Executable, string TargetName)
@@ -1736,7 +1467,7 @@ namespace UnrealBuildTool
 			return FileReference.Combine(Executable.Directory, "Payload", TargetName + ".app", TargetName);
 		}
 
-		private static void WriteEntitlements(IOSPostBuildSyncTarget Target)
+		private static void WriteEntitlements(IOSPostBuildSyncTarget Target, ILogger Logger)
 		{
 			string AppName = Target.TargetName;
 			FileReference? MobileProvisionFile;
@@ -1792,7 +1523,7 @@ namespace UnrealBuildTool
 			return ProjectDirectory;
 		}
 
-		private static void GenerateFrameworkWrapperIfNonexistent(IOSPostBuildSyncTarget Target)
+		private static void GenerateFrameworkWrapperIfNonexistent(IOSPostBuildSyncTarget Target, ILogger Logger)
 		{
 			DirectoryReference ProjectDirectory = GetActualProjectDirectory(Target.ProjectFile);
 			DirectoryReference WrapperDirectory = DirectoryReference.Combine(ProjectDirectory, "Wrapper");
@@ -1823,13 +1554,20 @@ namespace UnrealBuildTool
 			}
 		}
 
-		public static void PostBuildSync(IOSPostBuildSyncTarget Target)
+		public static void PostBuildSync(IOSPostBuildSyncTarget Target, ILogger Logger)
 		{
+			// if xcode is building this, it will also do the Run stuff anyway, so no need to do it here as well
+			if (Environment.GetEnvironmentVariable("UE_BUILD_FROM_XCODE") == "1")
+			{
+				return;
+			}
+
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, GetActualProjectDirectory(Target.ProjectFile), UnrealTargetPlatform.IOS);
-			string? BundleID;
-			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "BundleIdentifier", out BundleID!);
+			bool bUseModernXcode;
+			Ini.TryGetValue("XcodeConfiguration", "bUseModernXcode", out bUseModernXcode);
 
 			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
+			string? BundleID = ProjectSettings.BundleIdentifier;
 
 			bool bPerformFullAppCreation = true;
 			string PathToDsymZip = Target.OutputPath.FullName + ".dSYM.zip";
@@ -1857,7 +1595,7 @@ namespace UnrealBuildTool
 
 					PathToDsymZip = Path.Combine(Target.OutputPath.Directory.ParentDirectory!.FullName, Target.OutputPath.GetFileName() + ".dSYM.zip");
 
-					GenerateFrameworkWrapperIfNonexistent(Target);
+					GenerateFrameworkWrapperIfNonexistent(Target, Logger);
 
 					// do not perform any of the .app creation below
 					bPerformFullAppCreation = false;
@@ -1868,7 +1606,7 @@ namespace UnrealBuildTool
 
 			if (!Target.bSkipCrashlytics)
 			{
-				GenerateCrashlyticsData(PathToDsymZip, Target.ProjectDirectory.FullName, AppName);
+				GenerateCrashlyticsData(PathToDsymZip, Target.ProjectDirectory.FullName, AppName, Logger);
 			}
 
 			// only make the app if needed
@@ -1882,6 +1620,43 @@ namespace UnrealBuildTool
 			DirectoryReference.CreateDirectory(StagedExecutablePath.Directory);
 			FileReference.Copy(Target.OutputPath, StagedExecutablePath, true);
 			string RemoteShadowDirectoryMac = Target.OutputPath.Directory.FullName;
+
+			if (bUseModernXcode)
+			{
+				// generate a run-only project file for codesigning, etc
+				DirectoryReference? GeneratedProjectFile;
+				IOSExports.GenerateRunOnlyXcodeProject(Target.ProjectFile, Target.Platform, Target.bForDistribution, Logger, out GeneratedProjectFile);
+
+				// @todo - should we move this in to FinalizeAppWithXcode?
+				string ConfigName = Target.Configuration.ToString();
+				if (Target.TargetType != TargetType.Game && Target.TargetType != TargetType.Program)
+				{
+					ConfigName += " " + Target.TargetType.ToString();
+				}
+
+				string SchemeName;
+				if (AppName == "UnrealGame" || AppName == "UnrealClient")
+				{
+					if (Target.bBuildAsFramework)
+					{
+						SchemeName = "UnrealGame";
+					}
+					else
+					{
+						SchemeName = "UE5";
+					}
+				}
+				else
+				{
+					SchemeName = Target.ProjectFile!.GetFileNameWithoutExtension();
+				}
+
+				// run xcodebuild on the generated project to make the .app
+				IOSExports.FinalizeAppWithModernXcode(GeneratedProjectFile!, Target.Platform, SchemeName, ConfigName, Target.bForDistribution, Logger);
+
+				return;
+			}
+
 
 			if (Target.bCreateStubIPA || Target.bBuildAsFramework)
 			{
@@ -2035,7 +1810,7 @@ namespace UnrealBuildTool
 						Writer.WriteLine(String.Format("rm -rf \"{0}\"", FrameworkPayloadDirectory));
 
 						// Build the framework wrapper
-						CmdLine = new IOSToolChainSettings().XcodeDeveloperDir + "usr/bin/xcodebuild" +
+						CmdLine = new IOSToolChainSettings(Logger).XcodeDeveloperDir + "usr/bin/xcodebuild" +
 							" -project \"" + WrapperProject + "\"" +
 								" -configuration \"" + ConfigName + "\"" +
 							" -scheme '" + SchemeName + "'" +
@@ -2048,7 +1823,7 @@ namespace UnrealBuildTool
 					else
 					{
 						// code sign the project
-						CmdLine = new IOSToolChainSettings().XcodeDeveloperDir + "usr/bin/xcodebuild" +
+						CmdLine = new IOSToolChainSettings(Logger).XcodeDeveloperDir + "usr/bin/xcodebuild" +
 							" -workspace \"" + XcodeWorkspaceDir + "\"" +
 								" -configuration \"" + ConfigName + "\"" +
 							" -scheme '" + SchemeName + "'" +
@@ -2068,30 +1843,33 @@ namespace UnrealBuildTool
 
 				if (!Target.bBuildAsFramework)
 				{
+					Logger.LogInformation("Generating project...");
+					DirectoryReference? GeneratedProjectFile;
 				    if (AppName == "UnrealGame" || AppName == "UnrealClient" || Target.ProjectFile == null || Target.ProjectFile.IsUnderDirectory(Unreal.EngineDirectory))
 				    {
-					    GenerateProjectFiles(Target.ProjectFile, new string[] { "-platforms=" + (Target.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"), "-NoIntellIsense", (Target.Platform == UnrealTargetPlatform.IOS ? "-iosdeployonly" : "-tvosdeployonly"), "-ignorejunk", (Target.bForDistribution ? "-distribution" : "-development"), "-bundleID=" + BundleID, "-includetemptargets", "-appname=" + AppName });
+					    GenerateProjectFiles(Target.ProjectFile, new string[] { "-platforms=" + (Target.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"), "-NoIntellIsense", (Target.Platform == UnrealTargetPlatform.IOS ? "-iosdeployonly" : "-tvosdeployonly"), "-ignorejunk", (Target.bForDistribution ? "-distribution" : "-development"), "-bundleID=" + BundleID, "-includetemptargets", "-appname=" + AppName }, Logger, out GeneratedProjectFile);
 				    }
 				    else
 				    {
-					    GenerateProjectFiles(Target.ProjectFile, new string[] { "-platforms=" + (Target.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"), "-NoIntellIsense", (Target.Platform == UnrealTargetPlatform.IOS ? "-iosdeployonly" : "-tvosdeployonly"), "-ignorejunk", (Target.bForDistribution ? "-distribution" : "-development"), String.Format("-project={0}", Target.ProjectFile), "-game", "-bundleID=" + BundleID, "-includetemptargets" });
+					    GenerateProjectFiles(Target.ProjectFile, new string[] { "-platforms=" + (Target.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"), "-NoIntellIsense", (Target.Platform == UnrealTargetPlatform.IOS ? "-iosdeployonly" : "-tvosdeployonly"), "-ignorejunk", (Target.bForDistribution ? "-distribution" : "-development"), String.Format("-project={0}", Target.ProjectFile), "-game", "-bundleID=" + BundleID, "-includetemptargets" }, Logger, out GeneratedProjectFile);
 				    }
-				    // Make sure it exists
-				    if (!DirectoryReference.Exists(XcodeWorkspaceDir!))
+					Logger.LogInformation("Generated {0}!", GeneratedProjectFile?.FullName ?? "NONE");
+					// Make sure it exists
+					if (!DirectoryReference.Exists(XcodeWorkspaceDir!) || (GeneratedProjectFile != null && GeneratedProjectFile != XcodeWorkspaceDir))
 				    {
 					    throw new BuildException("Unable to create stub IPA; Xcode workspace not found at {0}", XcodeWorkspaceDir);
 				    }
 				}
 
 				// ensure the plist, entitlements, and provision files are properly copied
-				UEDeployIOS DeployHandler = (Target.Platform == UnrealTargetPlatform.IOS ? new UEDeployIOS() : new UEDeployTVOS());
+				UEDeployIOS DeployHandler = (Target.Platform == UnrealTargetPlatform.IOS ? new UEDeployIOS(Logger) : new UEDeployTVOS(Logger));
 				DeployHandler.ForDistribution = Target.bForDistribution;
 				DeployHandler.PrepTargetForDeployment(Target.ProjectFile, Target.TargetName, Target.Platform, Target.Configuration, Target.UPLScripts, Target.bCreateStubIPA, BundleID, Target.bBuildAsFramework);
 
-				Log.TraceInformation("Executing {0}", SignProjectScript);
+				Logger.LogInformation("Executing {Script}", SignProjectScript);
 
 				// write the entitlements file (building remotely)
-				WriteEntitlements(Target);
+				WriteEntitlements(Target, Logger);
 
 				Process SignProcess = new Process();
 				SignProcess.StartInfo.WorkingDirectory = RemoteShadowDirectoryMac;
@@ -2101,8 +1879,8 @@ namespace UnrealBuildTool
 
 				ProcessOutput Output = new ProcessOutput();
 
-				SignProcess.OutputDataReceived += new DataReceivedEventHandler(Output.OutputReceivedDataEventHandler);
-				SignProcess.ErrorDataReceived += new DataReceivedEventHandler(Output.OutputReceivedDataEventHandler);
+				SignProcess.OutputDataReceived += new DataReceivedEventHandler((s, e) => Output.OutputReceivedDataEventHandler(s, e, Logger));
+				SignProcess.ErrorDataReceived += new DataReceivedEventHandler((s, e) => Output.OutputReceivedDataEventHandler(s, e, Logger));
 
 				Output.OutputReceivedDataEventHandlerEncounteredError = false;
 				Output.OutputReceivedDataEventHandlerEncounteredErrorMessage = "";
@@ -2119,7 +1897,7 @@ namespace UnrealBuildTool
 						CleanWriter.WriteLine("security list-keychain -s login.keychain");
 					}
 
-					Log.TraceInformation("Executing {0}", CleanProjectScript);
+					Logger.LogInformation("Executing {Script}", CleanProjectScript);
 
 					Process CleanProcess = new Process();
 					CleanProcess.StartInfo.WorkingDirectory = RemoteShadowDirectoryMac;
@@ -2128,8 +1906,8 @@ namespace UnrealBuildTool
 
 					ProcessOutput CleanOutput = new ProcessOutput();
 
-					SignProcess.OutputDataReceived += new DataReceivedEventHandler(CleanOutput.OutputReceivedDataEventLogger);
-					SignProcess.ErrorDataReceived += new DataReceivedEventHandler(CleanOutput.OutputReceivedDataEventLogger);
+					SignProcess.OutputDataReceived += new DataReceivedEventHandler((s, e) => CleanOutput.OutputReceivedDataEventLogger(s, e, Logger));
+					SignProcess.ErrorDataReceived += new DataReceivedEventHandler((s, e) => CleanOutput.OutputReceivedDataEventLogger(s, e, Logger));
 
 					Utils.RunLocalProcess(CleanProcess);
 				}
@@ -2163,12 +1941,12 @@ namespace UnrealBuildTool
 			else
 			{
 				// ensure the plist, entitlements, and provision files are properly copied
-				UEDeployIOS DeployHandler = (Target.Platform == UnrealTargetPlatform.IOS ? new UEDeployIOS() : new UEDeployTVOS());
+				UEDeployIOS DeployHandler = (Target.Platform == UnrealTargetPlatform.IOS ? new UEDeployIOS(Logger) : new UEDeployTVOS(Logger));
 				DeployHandler.ForDistribution = Target.bForDistribution;
 				DeployHandler.PrepTargetForDeployment(Target.ProjectFile, Target.TargetName, Target.Platform, Target.Configuration, Target.UPLScripts, Target.bCreateStubIPA, BundleID, Target.bBuildAsFramework);
 
 				// write the entitlements file (building on Mac)
-				WriteEntitlements(Target);
+				WriteEntitlements(Target, Logger);
 			}
 
 			{
@@ -2185,7 +1963,7 @@ namespace UnrealBuildTool
 					// For now, this is hard coded, but we need to loop over all modules, and copy bundled assets that need it
 					string LocalDest = LocalFrameworkAssets + "/" + Pair.Key;
 
-					Log.TraceInformation("Copying bundled asset... LocalSource: {0}, LocalDest: {1}", Pair.Value, LocalDest);
+					Logger.LogInformation("Copying bundled asset... LocalSource: {Source}, LocalDest: {Target}", Pair.Value, LocalDest);
 
 					string ResultsText;
 					RunExecutableAndWait("cp", String.Format("-R -L \"{0}\" \"{1}\"", Pair.Value, LocalDest), out ResultsText);
@@ -2200,7 +1978,7 @@ namespace UnrealBuildTool
 			PSI.RedirectStandardOutput = true;
 			PSI.UseShellExecute = false;
 			PSI.CreateNoWindow = true;
-			Process NewProcess = Process.Start(PSI);
+			Process NewProcess = Process.Start(PSI)!;
 
 			// Wait for the process to exit and grab it's output
 			StdOutResults = NewProcess.StandardOutput.ReadToEnd();

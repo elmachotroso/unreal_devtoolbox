@@ -1,11 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SLocalizationTargetStatusButton.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "HAL/PlatformProcess.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
-#include "LocalizationTargetTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
 #include "LocalizationConfigurationScript.h"
+#include "LocalizationTargetTypes.h"
+#include "Math/Color.h"
+#include "Misc/Paths.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/SCompoundWidget.h"
+
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "LocalizationTargetStatusButton"
 
@@ -15,7 +26,7 @@ void SLocalizationTargetStatusButton::Construct(const FArguments& InArgs, ULocal
 
 	SButton::Construct(
 		SButton::FArguments()
-		.ButtonStyle( FEditorStyle::Get(), TEXT("HoverHintOnly") )
+		.ButtonStyle( FAppStyle::Get(), TEXT("HoverHintOnly") )
 		.OnClicked(this, &SLocalizationTargetStatusButton::OnClicked)
 		);
 
@@ -36,13 +47,13 @@ const FSlateBrush* SLocalizationTargetStatusButton::GetImageBrush() const
 	{
 	default:
 	case ELocalizationTargetConflictStatus::Unknown:
-		return FEditorStyle::GetBrush("Icons.Warning");
+		return FAppStyle::GetBrush("Icons.Warning");
 		break;
 	case ELocalizationTargetConflictStatus::Clear:
-		return FEditorStyle::GetBrush("Symbols.Check");
+		return FAppStyle::GetBrush("Symbols.Check");
 		break;
 	case ELocalizationTargetConflictStatus::ConflictsPresent:
-		return FEditorStyle::GetBrush("Symbols.X");
+		return FAppStyle::GetBrush("Symbols.X");
 		break;
 	}
 }

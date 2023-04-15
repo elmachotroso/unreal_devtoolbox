@@ -39,7 +39,7 @@ FAnalysisCache::FFileContents::FFileContents(const TCHAR* FilePath)
 	// 1. File does not exist, create on first save
 	// 2. File exist, we can read the contents
 	// 3. File exist but we could not open the file for reading. Multiple processes are competing. Put the cache in transient mode
-	if (PlatformFile.FileExists(*CacheFilePath))
+	if (const int64 FileSize = PlatformFile.FileSize(*CacheFilePath); FileSize > 0)
 	{
 		if (const TUniquePtr<IFileHandle> File(PlatformFile.OpenRead(*CacheFilePath)); File.IsValid())
 		{
@@ -47,6 +47,16 @@ FAnalysisCache::FFileContents::FFileContents(const TCHAR* FilePath)
 			{
 				UE_LOG(LogAnalysisCache, Error, TEXT("Failed to open cache file table of contents."));
 				//todo: Recover by deleting file?
+			}
+
+			// Additional sanity check. A common error scenario is that Insights crashed after writing block but before
+			// committing them to the table of contents. Detect that scenario here.
+			if (FileSize > ReservedSize && Blocks.IsEmpty())
+			{
+				UE_LOG(LogAnalysisCache, Error, TEXT("Cache file has written several blocks but table of contents contains no blocks. This is likely caused by abnormal program termination. Please delete \"%s\". Putting cache in transient mode."), *CacheFilePath);
+				IndexEntries.Empty();
+				bTransientMode = true;
+				return;
 			}
 
 			UE_LOG(LogAnalysisCache, VeryVerbose, TEXT("Cache contains %d blocks:"), Blocks.Num());
@@ -86,7 +96,7 @@ FAnalysisCache::FFileContents::~FFileContents()
 //////////////////////////////////////////////////////////////////////
 FCacheId FAnalysisCache::FFileContents::GetId(const TCHAR* Name, uint16 Flags)
 {
-	FIndexEntry* Entry = Algo::FindByPredicate(IndexEntries, [Name](const FIndexEntry& Entry){ return Entry.Name.Equals(Name); });
+	const FIndexEntry* Entry = Algo::FindByPredicate(IndexEntries, [Name](const FIndexEntry& Entry){ return Entry.Name.Equals(Name); });
 	if (Entry)
 	{
 		return Entry->Id;
@@ -104,7 +114,7 @@ FCacheId FAnalysisCache::FFileContents::GetId(const TCHAR* Name, uint16 Flags)
 //////////////////////////////////////////////////////////////////////
 uint16 FAnalysisCache::FFileContents::GetFlags(FCacheId InId)
 {
-	FIndexEntry* Entry = Algo::FindBy(IndexEntries, InId, [](const FIndexEntry& InEntry){ return InEntry.Id; });
+	const FIndexEntry* Entry = Algo::FindBy(IndexEntries, InId, &FIndexEntry::Id);
 	if (Entry)
 	{
 		return uint16(Entry->Flags & 0xffff);
@@ -115,7 +125,7 @@ uint16 FAnalysisCache::FFileContents::GetFlags(FCacheId InId)
 //////////////////////////////////////////////////////////////////////
 FMutableMemoryView FAnalysisCache::FFileContents::GetUserData(FCacheId InId)
 {
-	FIndexEntry* Entry = Algo::FindBy(IndexEntries, InId, [](const FIndexEntry& InEntry){ return InEntry.Id; });
+	FIndexEntry* Entry = Algo::FindBy(IndexEntries, InId, &FIndexEntry::Id);
 	if (Entry)
 	{
 		return FMutableMemoryView(Entry->UserData, UserDataSize);
@@ -137,18 +147,18 @@ bool FAnalysisCache::FFileContents::Save()
 	FCbWriter Writer;
 	Writer.BeginObject();
 	Writer << "Version" << CurrentVersion;
-	Writer.BeginArray("Index"_ASV);
+	Writer.BeginArray(ANSITEXTVIEW("Index"));
 	for (auto Entry : IndexEntries)
 	{
 		Writer.BeginObject();
-		Writer << "N"_ASV << Entry.Name;
-		Writer << "I"_ASV << Entry.Id;
-		Writer << "F"_ASV << Entry.Flags;
-		Writer.AddBinary("UD"_ASV, &Entry.UserData, UserDataSize);
+		Writer << ANSITEXTVIEW("N") << Entry.Name;
+		Writer << ANSITEXTVIEW("I") << Entry.Id;
+		Writer << ANSITEXTVIEW("F") << Entry.Flags;
+		Writer.AddBinary(ANSITEXTVIEW("UD"), &Entry.UserData, UserDataSize);
 		Writer.EndObject();
 	}
 	Writer.EndArray();
-	Writer.BeginArray("Blocks"_ASV);
+	Writer.BeginArray(ANSITEXTVIEW("Blocks"));
 	for (const FBlockEntry& Entry : Blocks)
 	{
 		Writer.AddBinary(&Entry, sizeof(FBlockEntry));
@@ -179,7 +189,7 @@ bool FAnalysisCache::FFileContents::Load()
 	FUniqueBuffer Buffer = FUniqueBuffer::Alloc(ReservedSize);
 	File->Read((uint8*)Buffer.GetData(), Buffer.GetSize());
 	
-	FMemoryReaderView Ar(MakeArrayView<uint8>((uint8*)Buffer.GetData(), Buffer.GetSize()));
+	FMemoryReaderView Ar(MakeArrayView<uint8>((uint8*)Buffer.GetData(), IntCastChecked<int32>(Buffer.GetSize())));
 	
 	FCbPackage Package;
 	if (!Package.TryLoad(Ar))
@@ -195,15 +205,15 @@ bool FAnalysisCache::FFileContents::Load()
 		return false;
 	}
 
-	FCbArrayView IndexArray = Package.GetObject().Find("Index"_ASV).AsArrayView();
-	IndexEntries.Reserve(IndexArray.Num());
+	FCbArrayView IndexArray = Package.GetObject().Find(ANSITEXTVIEW("Index")).AsArrayView();
+	IndexEntries.Reserve(static_cast<int32>(IndexArray.Num()));
 	for (FCbFieldView IndexEntry : IndexArray)
 	{
 		FCbObjectView IndexEntryObj = IndexEntry.AsObjectView();
-		FUtf8StringView NameView = IndexEntryObj["N"_ASV].AsString();
-		const uint32 Id = IndexEntryObj["I"_ASV].AsUInt32();
-		const uint32 Flags = IndexEntryObj["F"_ASV].AsUInt32();
-		FMemoryView UserData = IndexEntryObj["UD"_ASV].AsBinaryView();
+		FUtf8StringView NameView = IndexEntryObj[ANSITEXTVIEW("N")].AsString();
+		const uint32 Id = IndexEntryObj[ANSITEXTVIEW("I")].AsUInt32();
+		const uint32 Flags = IndexEntryObj[ANSITEXTVIEW("F")].AsUInt32();
+		FMemoryView UserData = IndexEntryObj[ANSITEXTVIEW("UD")].AsBinaryView();
 		FIndexEntry& Entry = IndexEntries.AddZeroed_GetRef();
 		Entry.Name = FString(NameView);
 		Entry.Id = Id;
@@ -213,8 +223,8 @@ bool FAnalysisCache::FFileContents::Load()
 		check(Remainder.GetSize() == 0);
 	}
 
-	FCbArrayView BlockArray = Package.GetObject().Find("Blocks"_ASV).AsArrayView();
-	Blocks.Reserve(BlockArray.Num());
+	FCbArrayView BlockArray = Package.GetObject().Find(ANSITEXTVIEW("Blocks")).AsArrayView();
+	Blocks.Reserve(static_cast<int32>(BlockArray.Num()));
 	
 	for (FCbFieldView BlockEntryView : BlockArray)
 	{
@@ -235,7 +245,7 @@ uint64 FAnalysisCache::FFileContents::UpdateBlock(FMemoryView Block, BlockKeyTyp
 		return 0;
 	}
 
-	const uint64 EntryIndex = Algo::BinarySearchBy(Blocks, BlockKey, [&](const FBlockEntry& InEntry){return InEntry.BlockKey;});
+	const int32 EntryIndex = Algo::BinarySearchBy(Blocks, BlockKey, [&](const FBlockEntry& InEntry) { return InEntry.BlockKey; });
 	const FIoHash CurrentHash = FIoHash::HashBuffer(Block);
 	
 	if (EntryIndex != INDEX_NONE)
@@ -288,14 +298,14 @@ uint64 FAnalysisCache::FFileContents::LoadBlock(FMutableMemoryView Block, BlockK
 		return 0;
 	}
 	
-	const uint64 EntryIndex = Algo::BinarySearchBy(Blocks, BlockKey, [&](const FBlockEntry& InEntry){return InEntry.BlockKey;});
+	const int32 EntryIndex = Algo::BinarySearchBy(Blocks, BlockKey, [&](const FBlockEntry& InEntry) { return InEntry.BlockKey; });
 	if (EntryIndex == INDEX_NONE)
 	{
 		UE_LOG(LogAnalysisCache, Error, TEXT("Trying to load unknown block 0x%x."), BlockKey);
 		return 0;
 	}
-	
-	FBlockEntry& Entry = Blocks[EntryIndex];
+
+	const FBlockEntry& Entry = Blocks[EntryIndex];
 	check(Entry.UncompressedSize <= Block.GetSize());
 	
 	if (!File->Seek(Entry.Offset))
@@ -392,7 +402,7 @@ FAnalysisCache::FAnalysisCache(const TCHAR* Path)
 	Contents = MakeUnique<FFileContents>(*CacheFilePath);
 
 	// Build a dictionary of number of blocks per cache id.
-	for (FFileContents::FBlockEntry& Block : Contents->Blocks)
+	for (const FFileContents::FBlockEntry& Block : Contents->Blocks)
 	{
 		const uint32 CacheId = GetCacheId(Block.BlockKey);
 		IndexBlockCount.FindOrAdd(CacheId)++;
@@ -501,10 +511,10 @@ FSharedBuffer FAnalysisCache::GetBlocks(FCacheId CacheId, uint32 BlockIndexStart
 /////////////////////////////////////////////////////////////////////
 void FAnalysisCache::ReleaseBlocks(uint8* BlockBuffer, FCacheId CacheId, uint32 BlockIndexStart, uint64 Size)
 {
-	const uint32 BlockCount = Size / IAnalysisCache::BlockSizeBytes;
+	const uint32 BlockCount = IntCastChecked<uint32>(Size / IAnalysisCache::BlockSizeBytes);
 	for (uint32 Block = 0; Block < BlockCount; ++Block)
 	{
-		void* BlockStart = BlockBuffer + (Block * IAnalysisCache::BlockSizeBytes);
+		const void* BlockStart = BlockBuffer + (Block * IAnalysisCache::BlockSizeBytes);
 		const FMemoryView BlockView = FMemoryView(BlockStart, IAnalysisCache::BlockSizeBytes);
 		const BlockKeyType BlockKey = CreateBlockKey(CacheId, BlockIndexStart + Block);
 		const uint64 BytesWritten = Contents->UpdateBlock(BlockView, BlockKey);

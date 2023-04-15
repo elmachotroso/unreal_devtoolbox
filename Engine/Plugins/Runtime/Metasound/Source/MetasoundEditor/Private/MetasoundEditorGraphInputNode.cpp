@@ -23,6 +23,8 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPath.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundEditorGraphInputNode)
+
 UMetasoundEditorGraphMember* UMetasoundEditorGraphInputNode::GetMember() const
 {
 	return Input;
@@ -75,13 +77,13 @@ FSlateIcon UMetasoundEditorGraphInputNode::GetNodeTitleIcon() const
 	return FSlateIcon("MetaSoundStyle", NativeIconName);
 }
 
-bool UMetasoundEditorGraphInputNode::Validate(Metasound::Editor::FGraphNodeValidationResult& OutResult)
+void UMetasoundEditorGraphInputNode::Validate(Metasound::Editor::FGraphNodeValidationResult& OutResult)
 {
 #if WITH_EDITOR
 	using namespace Metasound::Editor;
 	using namespace Metasound::Frontend;
 
-	OutResult = CreateNewValidationResult();
+	Super::Validate(OutResult);
 
 	FNodeHandle NodeHandle = GetNodeHandle();
 	const FMetasoundFrontendClassMetadata& Metadata = NodeHandle->GetClassMetadata();
@@ -102,14 +104,12 @@ bool UMetasoundEditorGraphInputNode::Validate(Metasound::Editor::FGraphNodeValid
 				const FConstInputHandle& InputHandle = InputHandles.Last();
 				if (!InputHandle->IsConnected())
 				{
-					GraphNode::SetMessage(*this, EMessageSeverity::Warning, *RequiredText.ToString());
-					return false;
+					OutResult.SetMessage(EMessageSeverity::Warning, *RequiredText.ToString());
 				}
 			}
 		}
 	}
 #endif // #if WITH_EDITOR
-	return true;
 }
 
 void UMetasoundEditorGraphInputNode::SetNodeID(FGuid InNodeID)
@@ -119,3 +119,4 @@ void UMetasoundEditorGraphInputNode::SetNodeID(FGuid InNodeID)
 		Input->NodeID = InNodeID;
 	}
 }
+

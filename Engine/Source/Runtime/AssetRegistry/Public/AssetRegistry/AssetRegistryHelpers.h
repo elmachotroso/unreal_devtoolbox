@@ -2,11 +2,25 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ScriptInterface.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "AssetRegistryHelpers.generated.h"
+
+class IAssetRegistry;
+class UClass;
+struct FFrame;
 
 USTRUCT(BlueprintType)
 struct FTagAndValue
@@ -83,6 +97,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Asset Registry")
 	static FARFilter SetFilterTagsAndValues(const FARFilter& InFilter, const TArray<FTagAndValue>& InTagsAndValues);
 
+	/** Gets asset data for all blueprint assets that match the filter. ClassPaths in the filter specify the blueprint's parent class. */
+	UFUNCTION(BlueprintPure, Category = "Asset Registry", meta=(ScriptMethod))
+	static void GetBlueprintAssets(const FARFilter& InFilter, TArray<FAssetData>& OutAssetData);
+
 	/** Enable/disable asset registry caching mode for the duration of the scope */
 	struct ASSETREGISTRY_API FTemporaryCachingModeScope
 	{
@@ -92,4 +110,8 @@ public:
 	private:
 		bool PreviousCachingMode;
 	};
+
+	/** Checks to see if the given asset data is a blueprint with a base class in the ClassNameSet. This checks the parent asset tag */
+	static bool ASSETREGISTRY_API IsAssetDataBlueprintOfClassSet(const FAssetData& AssetData, const TSet<FTopLevelAssetPath>& ClassNameSet);
+
 };

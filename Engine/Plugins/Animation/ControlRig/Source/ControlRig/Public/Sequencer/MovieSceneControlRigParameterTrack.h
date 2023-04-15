@@ -12,6 +12,8 @@
 #include "MovieSceneControlRigParameterSection.h"
 #include "MovieSceneControlRigParameterTrack.generated.h"
 
+struct FEndLoadPackageContext;
+
 /**
  * Handles animation of skeletal mesh actors using animation ControlRigs
  */
@@ -40,6 +42,9 @@ public:
 	virtual FName GetTrackName() const override { return TrackName; }
 	// UObject
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual void PostEditImport() override;
 #if WITH_EDITORONLY_DATA
 	virtual FText GetDefaultDisplayName() const override;
@@ -50,7 +55,7 @@ public:
 	virtual void GetSelectedNodes(TArray<FName>& OutSelectedNodes) override;
 
 #if WITH_EDITOR
-	void HandlePackageDone(TConstArrayView<UPackage*> InPackages);
+	void HandlePackageDone(const FEndLoadPackageContext& Context);
 	// control Rigs are ready only after its package is fully end-loaded
 	void HandleControlRigPackageDone(UControlRig* InControlRig);
 #endif
@@ -117,6 +122,7 @@ public:
 	CONTROLRIG_API void SetTrackName(FName InName) { TrackName = InName; }
 
 	UMovieSceneControlRigParameterSection::FSpaceChannelAddedEvent& SpaceChannelAdded() { return OnSpaceChannelAdded; }
+	IMovieSceneConstrainedSection::FConstraintChannelAddedEvent& ConstraintChannelAdded() { return OnConstraintChannelAdded; }
 
 private:
 
@@ -126,6 +132,11 @@ private:
 	void HandleOnSpaceNoLongerUsed(FMovieSceneControlRigSpaceChannel* InChannel, const TArray<FRigElementKey>& InSpaces, FName InControlName);
 	//then send this event out to the track editor.
 	UMovieSceneControlRigParameterSection::FSpaceChannelAddedEvent OnSpaceChannelAdded;
+
+	void HandleOnConstraintAdded(
+		IMovieSceneConstrainedSection* InSection,
+		FMovieSceneConstraintChannel* InChannel) const;
+	IMovieSceneConstrainedSection::FConstraintChannelAddedEvent OnConstraintChannelAdded;
 
 
 	void ReconstructControlRig();

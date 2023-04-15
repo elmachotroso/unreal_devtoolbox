@@ -10,6 +10,8 @@
 
 #include "MotionTrajectory.generated.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(LogMotionTrajectory, Log, All);
+
 class APawn;
 
 class FMotionTrajectoryModule : public IModuleInterface
@@ -28,7 +30,7 @@ struct MOTIONTRAJECTORY_API FMotionTrajectorySettings
 
 	// Trajectory mask for specifying a time and/or distance domain
 	// Default: Time Domain of 2.0 seconds
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Settings", meta=(Bitmask, BitmaskEnum=ETrajectorySampleDomain))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Settings", meta=(Bitmask, BitmaskEnum="/Script/Engine.ETrajectorySampleDomain"))
 	int32 Domain = 1; // ETrajectorySampleDomain::Time
 
 	// Sample time horizon
@@ -41,7 +43,7 @@ struct MOTIONTRAJECTORY_API FMotionTrajectorySettings
 };
 
 // Abstract component interface for the minimum Motion Trajectory prediction and history API
-UCLASS(ClassGroup=Movement, abstract, BlueprintType, Category="Motion Trajectory")
+UCLASS(ClassGroup=Movement, abstract, BlueprintType, Category="Motion Trajectory", Experimental)
 class MOTIONTRAJECTORY_API UMotionTrajectoryComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -65,20 +67,24 @@ protected:
 	// Retained trajectory history samples
 	TRingBuffer<FTrajectorySample> SampleHistory = {};
 
-	// Retained instantaneous/present trajectory
-	FTrajectorySample PresentTrajectory = {};
+	// Retained instantaneous/present trajectory in world space
+	FTrajectorySample PresentTrajectorySampleWS = {};
+
+	// Retained instantaneous/present trajectory in actor space
+	FTrajectorySample PresentTrajectorySampleLS = {};
 
 	// Gets the instantaneous/present trajectory sample of the current frame
-	virtual FTrajectorySample GetPresentTrajectory() const;
-	
-	// Gets the instantaneous/present world-space transform of the current frame
-	virtual FTransform GetPresentWorldTransform() const;
+	virtual FTrajectorySample CalcWorldSpacePresentTrajectorySample(float DeltaTime) const;
+
+	// Ticks the trajectory. Call this to tick before ::TickComponent when necessary
+	virtual void TickTrajectory(float DeltaTime);
 
 	// Gets the Pawn from the owning Actor of this component
 	const APawn* TryGetOwnerPawn() const;
 
 	// Combines all trajectory samples in the past, present, and future into a unifed trajectory range
 	FTrajectorySampleRange CombineHistoryPresentPrediction(bool bIncludeHistory, const FTrajectorySampleRange& Prediction) const;
+
 
 	// Forcefully evicts all trajectory history and resets internal history tracking state
 	void FlushHistory();
@@ -89,6 +95,7 @@ public:
 
 	// Begin UActorComponent Interface
 	virtual void OnComponentCreated() override;
+	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime
 		, enum ELevelTick TickType
 		, FActorComponentTickFunction* ThisTickFunction) override;

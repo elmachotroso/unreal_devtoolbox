@@ -27,15 +27,7 @@ namespace UnrealBuildTool.Rules
 					"MoviePlayer",
 					"NavigationSystem",
 					"AIModule",
-					"EditorStyle",
 					"DeveloperToolSettings",
-				}
-			);
-
-			PrivateIncludePaths.AddRange(
-				new string[]
-				{
-					"Editor/ProjectSettingsViewer/Private",
 				}
 			);
 

@@ -7,6 +7,8 @@
 #include "InteractiveTool.h"
 #include "BaseGizmos/BrushStampIndicator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BaseBrushTool)
+
 
 #define LOCTEXT_NAMESPACE "UBaseBrushTool"
 
@@ -31,8 +33,8 @@ void UBaseBrushTool::Setup()
 {
 	UMeshSurfacePointTool::Setup();
 	BrushProperties = NewObject<UBrushBaseProperties>(this, PropertyClass.Get(), TEXT("Brush"));
-	double MaxDimension = EstimateMaximumTargetDimension();
-	BrushRelativeSizeRange = TInterval<float>(MaxDimension*0.01, MaxDimension);
+	float MaxDimension = static_cast<float>( EstimateMaximumTargetDimension());
+	BrushRelativeSizeRange = TInterval<float>(MaxDimension*0.01f, MaxDimension);
 
 	RecalculateBrushRadius();
 
@@ -61,14 +63,29 @@ void UBaseBrushTool::OnPropertyModified(UObject* PropertySet, FProperty* Propert
 
 void UBaseBrushTool::IncreaseBrushSizeAction()
 {
-	BrushProperties->BrushSize = FMath::Clamp(BrushProperties->BrushSize + 0.025f, 0.0f, 1.0f);
+	if (BrushProperties->bSpecifyRadius)
+	{
+		// Hardcoded max of 1000 chosen to match the BrushRadius "UIMax" specified in UBrushBaseProperties
+		BrushProperties->BrushRadius = FMath::Min(BrushProperties->BrushRadius * 1.1f, 1000.f);
+	}
+	else
+	{
+		BrushProperties->BrushSize = FMath::Clamp(BrushProperties->BrushSize + 0.025f, 0.0f, 1.0f);
+	}
 	RecalculateBrushRadius();
 	NotifyOfPropertyChangeByTool(BrushProperties);
 }
 
 void UBaseBrushTool::DecreaseBrushSizeAction()
 {
-	BrushProperties->BrushSize = FMath::Clamp(BrushProperties->BrushSize - 0.025f, 0.0f, 1.0f);
+	if (BrushProperties->bSpecifyRadius)
+	{
+		BrushProperties->BrushRadius = FMath::Max(BrushProperties->BrushRadius / 1.1f, 1.f);
+	}
+	else
+	{
+		BrushProperties->BrushSize = FMath::Clamp(BrushProperties->BrushSize - 0.025f, 0.0f, 1.0f);
+	}
 	RecalculateBrushRadius();
 	NotifyOfPropertyChangeByTool(BrushProperties);
 }
@@ -166,14 +183,16 @@ void UBaseBrushTool::RegisterActions(FInteractiveToolActionSet& ActionSet)
 void UBaseBrushTool::RecalculateBrushRadius()
 {
 	TInterval<float> ScaledBrushSizeRange(BrushRelativeSizeRange.Min/WorldToLocalScale, BrushRelativeSizeRange.Max/WorldToLocalScale);
-	CurrentBrushRadius = 0.5 * ScaledBrushSizeRange.Interpolate(BrushProperties->BrushSize);
+	
 	if (BrushProperties->bSpecifyRadius)
 	{
 		CurrentBrushRadius = BrushProperties->BrushRadius;
+		BrushProperties->BrushSize = static_cast<float>( (2 * CurrentBrushRadius - ScaledBrushSizeRange.Min) / ScaledBrushSizeRange.Size() );
 	}
 	else
 	{
-		BrushProperties->BrushRadius = CurrentBrushRadius;
+		CurrentBrushRadius = 0.5 * ScaledBrushSizeRange.Interpolate(BrushProperties->BrushSize);
+		BrushProperties->BrushRadius = static_cast<float>( CurrentBrushRadius );
 	}
 }
 
@@ -266,3 +285,4 @@ void UBaseBrushTool::ShutdownBrushStampIndicator()
 
 
 #undef LOCTEXT_NAMESPACE
+

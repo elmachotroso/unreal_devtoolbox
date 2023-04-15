@@ -1,23 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothPainter.h"
-#include "MeshPaintSettings.h"
-#include "MeshPaintModule.h"
-#include "MeshPaintAdapterFactory.h"
-#include "MeshPaintHelpers.h"
 
-#include "ClothingAsset.h"
 #include "Animation/DebugSkelMeshComponent.h"
-#include "ClothPaintSettings.h"
+#include "ClothLODData.h"
 #include "ClothMeshAdapter.h"
-#include "SClothPaintWidget.h"
-
-#include "EditorViewportClient.h"
-#include "ComponentReregisterContext.h"
-#include "UObject/Package.h"
+#include "ClothPaintSettings.h"
+#include "ClothPaintToolBase.h"
 #include "ClothPaintTools.h"
-#include "Framework/Commands/UICommandList.h"
+#include "ClothingAsset.h"
+#include "ClothingAssetBase.h"
+#include "CollisionQueryParams.h"
+#include "ComponentReregisterContext.h"
+#include "Delegates/Delegate.h"
+#include "EditorViewportClient.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/NetSerialization.h"
+#include "Engine/SkeletalMesh.h"
+#include "EngineDefines.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UICommandList.h"
+#include "HAL/PlatformCrt.h"
+#include "IMeshPaintGeometryAdapter.h"
+#include "Internationalization/Internationalization.h"
+#include "Math/Color.h"
+#include "Math/Matrix.h"
+#include "Math/NumericLimits.h"
+#include "Math/Transform.h"
+#include "Math/Vector.h"
+#include "MeshPaintHelpers.h"
+#include "MeshPaintSettings.h"
+#include "Misc/Guid.h"
+#include "PointWeightMap.h"
+#include "SClothPaintWidget.h"
+#include "Stats/Stats2.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnrealClient.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+
+class FPrimitiveDrawInterface;
+class FSceneView;
+class UMeshComponent;
 
 #define LOCTEXT_NAMESPACE "ClothPainter"
 
@@ -73,7 +102,7 @@ bool FClothPainter::PaintInternal(const FVector& InCameraOrigin, const TArrayVie
 
 	if(SkeletalMeshComponent->SelectedClothingGuidForPainting.IsValid() && !bShouldSimulate)
 	{
-		USkeletalMesh* SkelMesh = SkeletalMeshComponent->SkeletalMesh;
+		USkeletalMesh* SkelMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 
 		for (const TPair<FVector, FVector>& Ray : Rays)
 		{
@@ -160,7 +189,7 @@ USkeletalMesh* FClothPainter::GetSkeletalMesh() const
 {
 	if(SkeletalMeshComponent)
 	{
-		return SkeletalMeshComponent->SkeletalMesh;
+		return SkeletalMeshComponent->GetSkeletalMeshAsset();
 	}
 
 	return nullptr;
@@ -175,7 +204,7 @@ void FClothPainter::RefreshClothingAssets()
 
 	PaintSettings->ClothingAssets.Reset();
 
-	if(USkeletalMesh* Mesh = SkeletalMeshComponent->SkeletalMesh)
+	if(USkeletalMesh* Mesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
 	{
 		for(UClothingAssetBase* BaseClothingAsset : Mesh->GetMeshClothingAssets())
 		{

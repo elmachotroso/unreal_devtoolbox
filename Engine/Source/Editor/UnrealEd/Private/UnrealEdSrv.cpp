@@ -31,7 +31,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
 #include "RawIndexBuffer.h"
 #include "Model.h"
@@ -40,7 +40,7 @@
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #include "Engine/Brush.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/EditorEngine.h"
 #include "ISourceControlModule.h"
 #include "Editor/UnrealEdEngine.h"
@@ -79,7 +79,7 @@
 #include "AssetToolsModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FbxExporter.h"
 #include "DesktopPlatformModule.h"
 #include "Elements/Framework/TypedElementList.h"
@@ -142,7 +142,7 @@ public:
 		this->ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew( SVerticalBox )
 				+ SVerticalBox::Slot()
@@ -1189,6 +1189,8 @@ bool UUnrealEdEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice&
 	}
 	else if( FParse::Command(&Str, TEXT("HighResShot") ) )
 	{
+		// this is HighResShot from the Editor NOT in PIE
+		// Editor PIE HighResShot is in GameViewportClient
 		if (GetHighResScreenshotConfig().ParseConsoleCommand(Str, Ar))
 		{
 			TakeHighResScreenShots();
@@ -1314,7 +1316,7 @@ bool UUnrealEdEngine::IsTemplateMap( const FString& MapName ) const
 {
 	for (const FTemplateMapInfo& It : GetTemplateMapInfos())
 	{
-		if (It.Map == MapName)
+		if (It.Map.GetLongPackageName() == MapName)
 		{
 			return true;
 		}
@@ -1825,9 +1827,9 @@ FPoly* CreateHugeTrianglePolygonOnPlane( const FPlane* InPlane )
 	FPoly* Triangle = new FPoly();
 
 	FVector Center = FVector( InPlane->X, InPlane->Y, InPlane->Z ) * InPlane->W;
-	FVector V0 = Center + (A * WORLD_MAX);
-	FVector V1 = Center + (B * WORLD_MAX);
-	FVector V2 = Center - (((A + B) / 2.0f) * WORLD_MAX);
+	FVector V0 = Center + (A * UE_OLD_WORLD_MAX);	// LWC_TODO: WORLD_MAX misuse?
+	FVector V1 = Center + (B * UE_OLD_WORLD_MAX);
+	FVector V2 = Center - (((A + B) / 2.0f) * UE_OLD_WORLD_MAX);
 
 	// Create a triangle that lays on InPlane
 
@@ -1860,7 +1862,7 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 	if( FParse::Command(&Str,TEXT("ADD")) )
 	{
 		UClass* Class;
-		if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, ANY_PACKAGE ) )
+		if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, nullptr ) )
 		{
 			int32 bSnap = 1;
 			FParse::Value(Str,TEXT("SNAP="),bSnap);
@@ -2256,7 +2258,7 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 			edactReplaceSelectedBrush( InWorld );
 			return true;
 		}
-		else if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, ANY_PACKAGE ) ) // ACTOR REPLACE CLASS=<class>
+		else if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, nullptr ) ) // ACTOR REPLACE CLASS=<class>
 		{
 			const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "ReplaceSelectedNonBrushActors", "Replace Selected Non-Brush Actors") );
 			edactReplaceSelectedNonBrushWithClass( Class );
@@ -2357,7 +2359,7 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 		else if( FParse::Command(&Str,TEXT("OFCLASS")) ) // ACTOR SELECT OFCLASS CLASS=<class>
 		{
 			UClass* Class;
-			if( ParseObject<UClass>(Str,TEXT("CLASS="),Class,ANY_PACKAGE) )
+			if( ParseObject<UClass>(Str,TEXT("CLASS="),Class,nullptr) )
 			{
 				const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "SelectOfClass", "Select Of Class") );
 				edactSelectOfClass( InWorld, Class );
@@ -2371,7 +2373,7 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 		else if( FParse::Command(&Str,TEXT("OFSUBCLASS")) ) // ACTOR SELECT OFSUBCLASS CLASS=<class>
 		{
 			UClass* Class;
-			if( ParseObject<UClass>(Str,TEXT("CLASS="),Class,ANY_PACKAGE) )
+			if( ParseObject<UClass>(Str,TEXT("CLASS="),Class,nullptr) )
 			{
 				const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "SelectSubclassOfClass", "Select Subclass Of Class") );
 				edactSelectSubclassOf( InWorld, Class );
@@ -2663,11 +2665,16 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 					}
 					else
 					{
-						const TArray<FTypedElementHandle> DuplicatedElements = CommonActions->DuplicateSelectedElements(SelectionSet, InWorld, GEditor->GetGridLocationOffset(/*bUniformOffset*/false));
+						const FVector DuplicateOffset = GEditor->GetGridLocationOffset(/*bUniformOffset*/false);
+						const TArray<FTypedElementHandle> DuplicatedElements = CommonActions->DuplicateSelectedElements(SelectionSet, InWorld, DuplicateOffset);
 						if (DuplicatedElements.Num() > 0)
 						{
 							SelectionSet->SetSelection(DuplicatedElements, FTypedElementSelectionOptions());
 							SelectionSet->NotifyPendingChanges();
+
+							// notify the global mode tools, the selection set should be identical to the new actors at this point
+							TArray<AActor*> SelectedActors = SelectionSet->GetSelectedObjects<AActor>();
+							GLevelEditorModeTools().ActorsDuplicatedNotify(SelectedActors, SelectedActors, DuplicateOffset != FVector::ZeroVector);
 						}
 					}
 				}

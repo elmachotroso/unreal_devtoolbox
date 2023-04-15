@@ -8,7 +8,7 @@
 #include "Widgets/Layout/SSpacer.h"
 
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 #include "Widgets/SToolTip.h"
 #include "IDocumentation.h"
@@ -37,7 +37,7 @@ public:
 	{
 		SBorder::Construct(
 			SBorder::FArguments()
-			.BorderImage(FEditorStyle::GetBrush("BlueprintEditor.PipelineSeparator"))
+			.BorderImage(FAppStyle::GetBrush("BlueprintEditor.PipelineSeparator"))
 			.Padding(0.0f)
 			);
 	}
@@ -97,7 +97,7 @@ void FWidgetBlueprintEditorToolbar::FillWidgetBlueprintEditorModesToolbar(FToolB
 				NULL,
 				TEXT("Shared/Editors/BlueprintEditor"),
 				TEXT("DesignerMode")))
-			.IconImage(FEditorStyle::GetBrush("UMGEditor.SwitchToDesigner"))
+			.IconImage(FAppStyle::GetBrush("UMGEditor.SwitchToDesigner"))
 			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("DesignerMode")))
 		);
 
@@ -114,7 +114,7 @@ void FWidgetBlueprintEditorToolbar::FillWidgetBlueprintEditorModesToolbar(FToolB
 				TEXT("Shared/Editors/BlueprintEditor"),
 				TEXT("GraphMode")))
 			.ToolTipText(LOCTEXT("GraphModeButtonTooltip", "Switch to Graph Editing Mode"))
-			.IconImage(FEditorStyle::GetBrush("FullBlueprintEditor.SwitchToScriptingMode"))
+			.IconImage(FAppStyle::GetBrush("FullBlueprintEditor.SwitchToScriptingMode"))
 			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("GraphMode")))
 		);
 		
@@ -139,6 +139,19 @@ void FWidgetBlueprintEditorToolbar::AddWidgetReflector(UToolMenu* InMenu)
 		, LOCTEXT("OpenWidgetReflectorToolTip", "Opens the Widget Reflector, a handy tool for diagnosing problems with live widgets.")
 		, FSlateIcon(FCoreStyle::Get().GetStyleSetName(), "WidgetReflector.Icon")
 	));
+}
+
+void FWidgetBlueprintEditorToolbar::AddToolPalettes(UToolMenu* InMenu)
+{
+	// @TODO: DarenC - For now we only support one tool palette, switch this to a dropdown when we support multiple tool palettes.
+	for (TSharedPtr<FUICommandInfo>& Command : WidgetEditor.Pin()->ToolPaletteCommands)
+	{
+		FToolMenuSection& Section = InMenu->FindOrAddSection("UMGToolPalette");
+		Section.AddDynamicEntry(Command->GetCommandName(), FNewToolMenuSectionDelegate::CreateLambda([this, Command](FToolMenuSection& InSection)
+			{
+				InSection.AddEntry(FToolMenuEntry::InitToolBarButton(Command));
+			}));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

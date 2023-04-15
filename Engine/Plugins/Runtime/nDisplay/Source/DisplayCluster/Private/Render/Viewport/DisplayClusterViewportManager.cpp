@@ -12,6 +12,7 @@
 #include "Render/Viewport/DisplayClusterViewport.h"
 #include "Render/Viewport/DisplayClusterViewportProxy.h"
 #include "Render/Viewport/DisplayClusterViewport_CustomPostProcessSettings.h"
+#include "Render/Viewport/LightCard/DisplayClusterViewportLightCardManager.h"
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameManager.h"
 #include "Render/Viewport/RenderTarget/DisplayClusterRenderTargetManager.h"
 #include "Render/Viewport/RenderTarget/DisplayClusterRenderTargetResource.h"
@@ -25,12 +26,12 @@
 
 #include "SceneViewExtension.h"
 
-#include "DisplayClusterRootActor.h" 
+#include "DisplayClusterRootActor.h"
 
 #include "Misc/DisplayClusterLog.h"
+#include "LegacyScreenPercentageDriver.h"
 
 #include "Engine/Console.h"
-
 
 int32 GDisplayClusterLightcardsAllowNanite = 0;
 static FAutoConsoleVariableRef CVarDisplayClusterLightcardsAllowNanite(
@@ -48,6 +49,21 @@ static FAutoConsoleVariableRef CVarDisplayClusterChromaKeyAllowNanite(
 	ECVF_RenderThreadSafe
 );
 
+int32 GDisplayClusterLightcardsAllowAA = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterLightcardsAllowAA(
+	TEXT("DC.Lightcards.AllowAA"),
+	GDisplayClusterLightcardsAllowAA,
+	TEXT("0 disables AntiAliasing when rendering lightcards.Otherwise uses default showflag."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterChromaKeyAllowAA = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterChromaKeyAllowAA(
+	TEXT("DC.ChromaKey.AllowAA"),
+	GDisplayClusterChromaKeyAllowAA,
+	TEXT("0 disables AntiAliasing when rendering custom chroma keys. Otherwise uses default showflag."),
+	ECVF_RenderThreadSafe
+);
 
 ///////////////////////////////////////////////////////////////////////////////////////
 //          FDisplayClusterViewportManager
@@ -58,10 +74,14 @@ FDisplayClusterViewportManager::FDisplayClusterViewportManager()
 	Configuration      = MakeUnique<FDisplayClusterViewportConfiguration>(*this);
 	RenderFrameManager = MakeUnique<FDisplayClusterRenderFrameManager>();
 
-	RenderTargetManager = MakeShared<FDisplayClusterRenderTargetManager, ESPMode::ThreadSafe>();
-	PostProcessManager  = MakeShared<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe>(*this);
+	ViewportManagerProxy = MakeShared<FDisplayClusterViewportManagerProxy, ESPMode::ThreadSafe>();
 
-	ViewportManagerProxy = new FDisplayClusterViewportManagerProxy(*this);
+	RenderTargetManager = MakeShared<FDisplayClusterRenderTargetManager, ESPMode::ThreadSafe>(ViewportManagerProxy.Get());
+	PostProcessManager  = MakeShared<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe>(*this);
+	LightCardManager = MakeShared<FDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe>(*this);
+
+	// initialize proxy
+	ViewportManagerProxy->Initialize(*this);
 
 	// Always reset RTT when root actor re-created
 	ResetSceneRenderTargetSize();
@@ -70,30 +90,41 @@ FDisplayClusterViewportManager::FDisplayClusterViewportManager()
 FDisplayClusterViewportManager::~FDisplayClusterViewportManager()
 {
 	// Remove viewports
+	Viewports.Reset();
+	ClusterNodeViewports.Reset();
+
+	RenderTargetManager.Reset();
+	PostProcessManager.Reset();
+
+	if (LightCardManager.IsValid())
 	{
-		TArray<FDisplayClusterViewport*> ExistViewports = Viewports;
-		for (FDisplayClusterViewport* Viewport : ExistViewports)
-		{
-			ImplDeleteViewport(Viewport);
-		}
-		ExistViewports.Empty();
+		LightCardManager->Release();
+		LightCardManager.Reset();
 	}
 
-	if (ViewportManagerProxy)
+	Configuration.Reset();
+
+	if (ViewportManagerProxy.IsValid())
 	{
-		ViewportManagerProxy->ImplSafeRelease();
-		ViewportManagerProxy = nullptr;
+		// Remove viewport manager proxy on render_thread
+		ENQUEUE_RENDER_COMMAND(DeleteDisplayClusterViewportManagerProxy)(
+			[ViewportManagerProxy = ViewportManagerProxy](FRHICommandListImmediate& RHICmdList)
+	{
+				ViewportManagerProxy->Release_RenderThread();
+			});
+
+		ViewportManagerProxy.Reset();
 	}
 }
 
 const IDisplayClusterViewportManagerProxy* FDisplayClusterViewportManager::GetProxy() const
 {
-	return ViewportManagerProxy;
+	return ViewportManagerProxy.Get();
 }
 
 IDisplayClusterViewportManagerProxy* FDisplayClusterViewportManager::GetProxy()
 {
-	return ViewportManagerProxy;
+	return ViewportManagerProxy.Get();
 }
 
 UWorld* FDisplayClusterViewportManager::GetCurrentWorld() const
@@ -138,6 +169,11 @@ void FDisplayClusterViewportManager::StartScene(UWorld* InWorld)
 	{
 		PostProcessManager->HandleStartScene();
 	}
+
+	if (LightCardManager.IsValid())
+	{
+		LightCardManager->HandleStartScene();
+	}
 }
 
 void FDisplayClusterViewportManager::EndScene()
@@ -157,12 +193,23 @@ void FDisplayClusterViewportManager::EndScene()
 		PostProcessManager->HandleEndScene();
 	}
 
+	if (LightCardManager.IsValid())
+	{
+		LightCardManager->HandleEndScene();
+	}
+
 	CurrentWorldRef.Reset();
 }
 
 void FDisplayClusterViewportManager::ResetScene()
 {
 	check(IsInGameThread());
+
+	if (LightCardManager.IsValid())
+	{
+		LightCardManager->HandleEndScene();
+		LightCardManager->HandleStartScene();
+	}
 
 	for (FDisplayClusterViewport* Viewport : Viewports)
 	{
@@ -176,13 +223,14 @@ void FDisplayClusterViewportManager::ResetScene()
 
 void FDisplayClusterViewportManager::SetViewportBufferRatio(FDisplayClusterViewport& DstViewport, float InBufferRatio)
 {
-	if (DstViewport.RenderSettings.BufferRatio > InBufferRatio)
+	const float BufferRatio = FLegacyScreenPercentageDriver::GetCVarResolutionFraction() * InBufferRatio;
+	if (DstViewport.RenderSettings.BufferRatio > BufferRatio)
 	{
 		// Reset scene RTT when buffer ratio changed down
 		ResetSceneRenderTargetSize();
 	}
 
-	DstViewport.RenderSettings.BufferRatio = InBufferRatio;
+	DstViewport.RenderSettings.BufferRatio = BufferRatio;
 }
 
 void FDisplayClusterViewportManager::HandleViewportRTTChanges(const TArray<FDisplayClusterViewport_Context>& PrevContexts, const TArray<FDisplayClusterViewport_Context>& Contexts)
@@ -290,18 +338,43 @@ bool FDisplayClusterViewportManager::ShouldUseAdditionalFrameTargetableResource(
 	return false;
 }
 
+bool FDisplayClusterViewportManager::UpdateCustomConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const TArray<FString>& InViewportNames, class ADisplayClusterRootActor* InRootActorPtr)
+{
+	ImplUpdateClusterNodeViewports(InRenderMode, TEXT(""));
+
+	if (InRootActorPtr)
+	{
+		const bool bIsRootActorChanged = Configuration->SetRootActor(InRootActorPtr);
+
+		// When the root actor changes, we have to ResetScene() to reinitialize the internal references of the projection policy.
+		if (bIsRootActorChanged)
+		{
+			ResetScene();
+		}
+
+		return Configuration->UpdateCustomConfiguration(InRenderMode, InViewportNames);
+	}
+
+	return false;
+}
+
 bool FDisplayClusterViewportManager::UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, ADisplayClusterRootActor* InRootActorPtr, const FDisplayClusterPreviewSettings* InPreviewSettings)
 {
 	ImplUpdateClusterNodeViewports(InRenderMode, InClusterNodeId);
 
 	if (InRootActorPtr)
 	{
-		bool bIsRootActorChanged = Configuration->SetRootActor(InRootActorPtr);
+		const bool bIsRootActorChanged = Configuration->SetRootActor(InRootActorPtr);
 
 		// When the root actor changes, we have to ResetScene() to reinitialize the internal references of the projection policy.
 		if (bIsRootActorChanged)
 		{
 			ResetScene();
+		}
+
+		if (LightCardManager.IsValid())
+		{
+			LightCardManager->UpdateConfiguration();
 		}
 
 		if (InPreviewSettings == nullptr)
@@ -346,7 +419,7 @@ void FDisplayClusterViewportManager::ImplUpdateClusterNodeViewports(const EDispl
 			TArray<FDisplayClusterViewport*> OverriddenViewports;
 			for (FDisplayClusterViewport* Viewport : Viewports)
 			{
-				if (Viewport && Viewport->GetClusterNodeId() == InClusterNodeId)
+				if (Viewport && (InClusterNodeId.IsEmpty() || Viewport->GetClusterNodeId() == InClusterNodeId))
 				{
 					bool bHasParentViewport = Viewport->RenderSettings.GetParentViewportId().IsEmpty() == false;
 					bool bHasViewportOverride = Viewport->RenderSettings.OverrideViewportId.IsEmpty() == false;
@@ -560,52 +633,61 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 
 	bool bResolveScene = true;
 
-	switch (InFrameTarget.CaptureMode)
-	{
-		case EDisplayClusterViewportCaptureMode::Chromakey:
-		case EDisplayClusterViewportCaptureMode::Lightcard:
-		case EDisplayClusterViewportCaptureMode::Lightcard_OCIO:
-
-			if (InFrameTarget.CaptureMode != EDisplayClusterViewportCaptureMode::Lightcard_OCIO)
-			{
-				bResolveScene = false;
-				InEngineShowFlags.PostProcessing = 0;
-			}
-
-			InEngineShowFlags.SetAtmosphere(0);
-			InEngineShowFlags.SetFog(0);
-			InEngineShowFlags.SetMotionBlur(0); // motion blur doesn't work correctly with scene captures.
-			InEngineShowFlags.SetSeparateTranslucency(0);
-			InEngineShowFlags.SetHMDDistortion(0);
-			InEngineShowFlags.SetOnScreenDebug(0);
-
-			InEngineShowFlags.SetLumenReflections(0);
-			InEngineShowFlags.SetLumenGlobalIllumination(0);
-
-			break;
-
-		default:
-			break;
-	}
-
+	// Control AA for ChromaKey and Lightcards:
 	switch (InFrameTarget.CaptureMode)
 	{
 	case EDisplayClusterViewportCaptureMode::Chromakey:
+		if (!GDisplayClusterChromaKeyAllowAA)
+		{
+			InEngineShowFlags.SetAntiAliasing(0);
+			InEngineShowFlags.SetTemporalAA(false);
+		}
 		
 		if (!GDisplayClusterChromaKeyAllowNanite)
 		{
 			InEngineShowFlags.SetNaniteMeshes(0);
 		}
-		break;
 
+		break;
 	case EDisplayClusterViewportCaptureMode::Lightcard:
-	case EDisplayClusterViewportCaptureMode::Lightcard_OCIO:
+		if (!GDisplayClusterLightcardsAllowAA)
+		{
+			InEngineShowFlags.SetAntiAliasing(0);
+			InEngineShowFlags.SetTemporalAA(false);
+		}
 
 		if (!GDisplayClusterLightcardsAllowNanite)
 		{
 			InEngineShowFlags.SetNaniteMeshes(0);
 		}
+		break;
+	default:
+		break;
+	}
 
+	switch (InFrameTarget.CaptureMode)
+	{
+	case EDisplayClusterViewportCaptureMode::Chromakey:
+	case EDisplayClusterViewportCaptureMode::Lightcard:
+		bResolveScene = false;
+		InEngineShowFlags.SetPostProcessing(0);
+		InEngineShowFlags.SetAtmosphere(0);
+		InEngineShowFlags.SetFog(0);
+		InEngineShowFlags.SetVolumetricFog(0);
+		InEngineShowFlags.SetMotionBlur(0); // motion blur doesn't work correctly with scene captures.
+		InEngineShowFlags.SetSeparateTranslucency(0);
+		InEngineShowFlags.SetHMDDistortion(0);
+		InEngineShowFlags.SetOnScreenDebug(0);
+
+		InEngineShowFlags.SetLumenReflections(0);
+		InEngineShowFlags.SetLumenGlobalIllumination(0);
+		InEngineShowFlags.SetGlobalIllumination(0);
+
+		InEngineShowFlags.SetScreenSpaceAO(0);
+		InEngineShowFlags.SetAmbientOcclusion(0);
+		InEngineShowFlags.SetDeferredLighting(0);
+		InEngineShowFlags.SetVirtualTexturePrimitives(0);
+		InEngineShowFlags.SetRectLights(0);
 		break;
 
 	default:
@@ -616,9 +698,6 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 	switch (RenderFrameSettings.RenderMode)
 	{
 	case EDisplayClusterRenderFrameMode::PreviewInScene:
-
-		// Disable eye adaptation for preview
-		InEngineShowFlags.EyeAdaptation = 0;
 
 		if (RenderFrameSettings.bPreviewEnablePostProcess == false)
 		{
@@ -638,32 +717,30 @@ FSceneViewFamily::ConstructionValues FDisplayClusterViewportManager::CreateViewF
 
 void FDisplayClusterViewportManager::ConfigureViewFamily(const FDisplayClusterRenderFrame::FFrameRenderTarget& InFrameTarget, const FDisplayClusterRenderFrame::FFrameViewFamily& InFrameViewFamily, FSceneViewFamilyContext& ViewFamily)
 {
+	ViewFamily.SceneCaptureCompositeMode = ESceneCaptureCompositeMode::SCCM_Overwrite;
+
 	// Note: EngineShowFlags should have already been configured in CreateViewFamilyConstructionValues.
-
-	// Gather Scene View Extensions
-	// Scene View Extension activation with ViewportId granularity only works if you have one ViewFamily per ViewportId
+	switch (InFrameTarget.CaptureMode)
 	{
-		ViewFamily.ViewExtensions = InFrameViewFamily.ViewExtensions;
-		for (FSceneViewExtensionRef& ViewExt : ViewFamily.ViewExtensions)
-		{
-			ViewExt->SetupViewFamily(ViewFamily);
-		}
+		case EDisplayClusterViewportCaptureMode::Chromakey:
+		case EDisplayClusterViewportCaptureMode::Lightcard:
+			ViewFamily.SceneCaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
+
+			//Do not use view extensions for LightCard and Chromakey.
+			ViewFamily.ViewExtensions.Empty();
+			break;
+
+		default:
+
+			// Gather Scene View Extensions
+			ViewFamily.ViewExtensions = InFrameViewFamily.ViewExtensions;
+			break;
 	}
-	
-	// Setup capture mode:
+
+	// Scene View Extension activation with ViewportId granularity only works if you have one ViewFamily per ViewportId
+	for (FSceneViewExtensionRef& ViewExt : ViewFamily.ViewExtensions)
 	{
-		ViewFamily.SceneCaptureCompositeMode = ESceneCaptureCompositeMode::SCCM_Overwrite;
-
-		switch (InFrameTarget.CaptureMode)
-		{
-			case EDisplayClusterViewportCaptureMode::Chromakey:
-			case EDisplayClusterViewportCaptureMode::Lightcard:
-				ViewFamily.SceneCaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
-				break;
-
-			default:
-				break;
-		}
+		ViewExt->SetupViewFamily(ViewFamily);
 	}
 
 #if WITH_EDITOR
@@ -687,6 +764,11 @@ void FDisplayClusterViewportManager::ConfigureViewFamily(const FDisplayClusterRe
 
 void FDisplayClusterViewportManager::RenderFrame(FViewport* InViewport)
 {
+	if (LightCardManager.IsValid())
+	{
+		LightCardManager->RenderFrame();
+	}
+
 	ViewportManagerProxy->ImplRenderFrame(InViewport);
 }
 
@@ -765,6 +847,7 @@ bool FDisplayClusterViewportManager::DeleteViewport(const FString& ViewportId)
 	if (ExistViewport != nullptr)
 	{
 		ImplDeleteViewport(ExistViewport);
+
 		return true;
 	}
 
@@ -779,6 +862,7 @@ FDisplayClusterViewport* FDisplayClusterViewportManager::ImplCreateViewport(cons
 
 	// Create viewport for cluster node used for rendering
 	const FString& ClusterNodeId = GetRenderFrameSettings().ClusterNodeId;
+	check(!ClusterNodeId.IsEmpty());
 
 	// Create viewport
 	FDisplayClusterViewport* NewViewport = new FDisplayClusterViewport(*this, ClusterNodeId, ViewportId, InProjectionPolicy);
@@ -786,9 +870,6 @@ FDisplayClusterViewport* FDisplayClusterViewportManager::ImplCreateViewport(cons
 	// Add viewport on gamethread
 	Viewports.Add(NewViewport);
 	ClusterNodeViewports.Add(NewViewport);
-
-	// Add viewport proxy on renderthread
-	ViewportManagerProxy->ImplCreateViewport(NewViewport->ViewportProxy);
 
 	// Handle start scene for viewport
 	NewViewport->HandleStartScene();
@@ -802,11 +883,8 @@ void FDisplayClusterViewportManager::ImplDeleteViewport(FDisplayClusterViewport*
 	ExistViewport->ProjectionPolicy.Reset();
 	ExistViewport->UninitializedProjectionPolicy.Reset();
 
-	// Delete viewport proxy on render thread
-	ViewportManagerProxy->ImplDeleteViewport(ExistViewport->ViewportProxy);
-
 	{
-		// Remove viewport obj from manager
+		// Remove viewport from the whole viewports list
 		int32 ViewportIndex = Viewports.Find(ExistViewport);
 		if (ViewportIndex != INDEX_NONE)
 		{
@@ -816,7 +894,7 @@ void FDisplayClusterViewportManager::ImplDeleteViewport(FDisplayClusterViewport*
 	}
 
 	{
-		// Remove cluster node viewport
+		// Remove viewport from the cluster viewports list
 		int32 ViewportIndex = ClusterNodeViewports.Find(ExistViewport);
 		if (ViewportIndex != INDEX_NONE)
 		{
@@ -868,8 +946,7 @@ TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> FDisplayCluster
 		}
 		else
 		{
-			FString RHIName = GDynamicRHI->GetName();
-			UE_LOG(LogDisplayClusterViewport, Warning, TEXT("Invalid projection policy: type '%s', RHI '%s', viewport '%s'"), *InConfigurationProjectionPolicy->Type, *RHIName, *ProjectionPolicyId);
+			UE_LOG(LogDisplayClusterViewport, Warning, TEXT("Invalid projection policy: type '%s', RHI '%s', viewport '%s'"), *InConfigurationProjectionPolicy->Type, GDynamicRHI->GetName(), *ProjectionPolicyId);
 		}
 	}
 	else
@@ -878,6 +955,11 @@ TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> FDisplayCluster
 	}
 
 	return nullptr;
+}
+
+TSharedPtr<IDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> FDisplayClusterViewportManager::GetLightCardManager() const
+{
+	return LightCardManager;
 }
 
 void FDisplayClusterViewportManager::MarkComponentGeometryDirty(const FName InComponentName)
@@ -895,7 +977,7 @@ void FDisplayClusterViewportManager::MarkComponentGeometryDirty(const FName InCo
 				TSharedPtr<IDisplayClusterWarpBlend, ESPMode::ThreadSafe> WarpBlendInterface;
 				if (ProjectionPolicy->GetWarpBlendInterface(WarpBlendInterface) && WarpBlendInterface.IsValid())
 				{
-					// Update only interfaces with ProceduralMesh as geometry source 
+					// Update only interfaces with ProceduralMesh as geometry source
 					if (WarpBlendInterface->GetWarpGeometryType() == EDisplayClusterWarpGeometryType::WarpProceduralMesh)
 					{
 						// Set the ProceduralMeshComponent geometry dirty for all valid WarpBlendInterface

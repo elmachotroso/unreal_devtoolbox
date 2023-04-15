@@ -329,30 +329,45 @@ struct ENGINE_API FInputKeyParams
 {
 	FInputKeyParams() = default;
 	
-	FInputKeyParams(FKey InKey, enum EInputEvent InEvent, FVector InDelta, bool bGamepadOverride = false)
+	FInputKeyParams(FKey InKey, enum EInputEvent InEvent, FVector InDelta, bool bGamepadOverride = false, FInputDeviceId InInputDevice = INPUTDEVICEID_NONE)
 		: Key(InKey)
+		, InputDevice(InInputDevice)
 		, Event(InEvent)
 		, Delta(InDelta)
 		, bIsGamepadOverride(bGamepadOverride)
 	{};
 
-	FInputKeyParams(FKey InKey, enum EInputEvent InEvent, double InDelta, bool bGamepadOverride = false)
+	FInputKeyParams(FKey InKey, enum EInputEvent InEvent, double InDelta, bool bGamepadOverride = false, FInputDeviceId InInputDevice = INPUTDEVICEID_NONE)
 		: Key(InKey)
+		, InputDevice(InInputDevice)
 		, Event(InEvent)
 		, Delta(FVector(InDelta, 0.0, 0.0))
 		, bIsGamepadOverride(bGamepadOverride)
 	{};
 	
-	FInputKeyParams(FKey InKey, double InDelta, float InDeltaTime, int32 InNumSamples, bool bGamepadOverride = false)
+	FInputKeyParams(FKey InKey, double InDelta, float InDeltaTime, int32 InNumSamples, bool bGamepadOverride = false, FInputDeviceId InInputDevice = INPUTDEVICEID_NONE)
 		: Key(InKey)
+		, InputDevice(InInputDevice)
 		, NumSamples(InNumSamples)
 		, DeltaTime(InDeltaTime)
 		, Delta(FVector(InDelta, 0.0, 0.0))
 		, bIsGamepadOverride(bGamepadOverride)
 	{};
 
+	FInputKeyParams(FKey InKey, FVector InDelta, float InDeltaTime, int32 InNumSamples, bool bGamepadOverride = false, FInputDeviceId InInputDevice = INPUTDEVICEID_NONE)
+		: Key(InKey)
+		, InputDevice(InInputDevice)
+		, NumSamples(InNumSamples)
+		, DeltaTime(InDeltaTime)
+		, Delta(InDelta)
+		, bIsGamepadOverride(bGamepadOverride)
+	{};
+
 	/** The key that has been pressed */
 	FKey Key = EKeys::Invalid;
+
+	/** The input device that has triggered this input */
+	FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
 
 	/** The event that has caused a Button key to be considered */
 	enum EInputEvent Event = EInputEvent::IE_Pressed;
@@ -388,7 +403,7 @@ struct ENGINE_API FInputKeyParams
  *
  * @see https://docs.unrealengine.com/latest/INT/Gameplay/Input/index.html
  */
-UCLASS(Within=PlayerController, config=Input, transient)
+UCLASS(config=Input, transient)
 class ENGINE_API UPlayerInput : public UObject
 {
 	GENERATED_BODY()
@@ -497,6 +512,10 @@ public:
 
 	/** Clear the current cached key maps and rebuild from the source arrays. */
 	void ForceRebuildingKeyMaps(const bool bRestoreDefaults = false);
+
+	/** Return's this object casted to a player controller. This can be null if there is no player controller. */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Input")
+	APlayerController* GetOuterAPlayerController() const;
 
 private:
 

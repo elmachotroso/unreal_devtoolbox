@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonUserWidget.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 
 #include "Engine/GameInstance.h"
 #include "CommonInputSubsystem.h"
 #include "CommonUISubsystemBase.h"
 #include "Input/CommonUIActionRouterBase.h"
 #include "Input/CommonUIInputTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonUserWidget)
 
 UCommonUserWidget::UCommonUserWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -177,4 +179,5 @@ void UCommonUserWidget::NativeDestruct()
 
 	Super::NativeDestruct();
 }
+
 

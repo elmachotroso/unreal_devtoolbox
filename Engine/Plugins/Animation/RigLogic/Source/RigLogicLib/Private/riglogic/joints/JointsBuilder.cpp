@@ -25,6 +25,8 @@ namespace rl4 {
 JointsBuilder::~JointsBuilder() = default;
 
 JointsBuilder::JointsBuilderPtr JointsBuilder::create(Configuration config, MemoryResource* memRes) {
+    // Work around unused parameter warning when building without SSE and AVX
+    static_cast<void>(config);
     #ifdef RL_BUILD_WITH_SSE
         if (config.calculationType == CalculationType::SSE) {
             return pma::UniqueInstance<bpcm::SSEJointsBuilder, JointsBuilder>::with(memRes).create(memRes);

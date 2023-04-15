@@ -1360,6 +1360,18 @@ void UTextRenderComponent::PostLoad()
 		}
 	}
 
+	if (IsComponentPSOPrecachingEnabled() && TextMaterial)
+	{
+		FPSOPrecacheParams PrecachePSOParams;
+		SetupPrecachePSOParams(PrecachePSOParams);
+
+		// Overwrite the cast shadow flag because MeshBatch setup in DrawStaticElements doesn't set the correct CastShadow flag from the proxy or component
+		// and leaves the default CastShadow value which is true
+		PrecachePSOParams.bCastShadow = true;
+
+		TextMaterial->PrecachePSOs(&FLocalVertexFactory::StaticType, PrecachePSOParams);
+	}
+
 	Super::PostLoad();
 }
 

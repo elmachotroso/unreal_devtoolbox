@@ -1,19 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SControlRigStackView.h"
+#include "Editor/SControlRigStackView.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SScrollBar.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Input/SSearchBox.h"
-#include "ControlRigEditor.h"
+#include "Editor/ControlRigEditor.h"
 #include "ControlRigEditorStyle.h"
 #include "ControlRigStackCommands.h"
 #include "ControlRig.h"
 #include "ControlRigBlueprintGeneratedClass.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "DetailLayoutBuilder.h"
+#include "RigVMModel/Nodes/RigVMAggregateNode.h"
 #include "Widgets/Input/SSearchBox.h"
 
 #define LOCTEXT_NAMESPACE "SControlRigStackView"
@@ -62,17 +63,17 @@ void SRigStackItem::Construct(const FArguments& InArgs, const TSharedRef<STableV
 		}
 		case ERigStackEntry::Info:
 		{
-			Icon = FEditorStyle::GetBrush("Icons.Info");
+			Icon = FAppStyle::GetBrush("Icons.Info");
 			break;
 		}
 		case ERigStackEntry::Warning:
 		{
-			Icon = FEditorStyle::GetBrush("Icons.Warning");
+			Icon = FAppStyle::GetBrush("Icons.Warning");
 			break;
 		}
 		case ERigStackEntry::Error:
 		{
-			Icon = FEditorStyle::GetBrush("Icons.Error");
+			Icon = FAppStyle::GetBrush("Icons.Error");
 			break;
 		}
 		default:
@@ -87,60 +88,76 @@ void SRigStackItem::Construct(const FArguments& InArgs, const TSharedRef<STableV
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
-			.MaxWidth(25.f)
-			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Right)
-			[
-				SAssignNew(NumberWidget, STextBlock)
-				.Text(this, &SRigStackItem::GetIndexText)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-			+ SHorizontalBox::Slot()
-			.MaxWidth(22.f)
-			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Center)
-			[
-				SNew(SImage)
-				.Image(Icon)
-			]
-			
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.f)
-			.MaxWidth(200.f)
+			.AutoWidth()
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Left)
 			[
-				SAssignNew(TextWidget, STextBlock)
-				.Text(this, &SRigStackItem::GetLabelText)
-				.Font(this, &SRigStackItem::GetLabelFont)
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.MaxWidth(35.f)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Right)
+				[
+					SAssignNew(NumberWidget, STextBlock)
+					.Text(this, &SRigStackItem::GetIndexText)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				+ SHorizontalBox::Slot()
+				.MaxWidth(22.f)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(SImage)
+					.Image(Icon)
+				]
+				
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Fill)
+				[
+					SAssignNew(TextWidget, STextBlock)
+					.Text(this, &SRigStackItem::GetLabelText)
+					.Font(this, &SRigStackItem::GetLabelFont)
+					.Justification(ETextJustify::Left)
+				]
 			]
 
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.f)
-			.MaxWidth(40.f)
 			[
 				SNew(SSpacer)
 			]
 
 			+ SHorizontalBox::Slot()
-			.MaxWidth(36.f)
-            .VAlign(VAlign_Center)
-            .HAlign(HAlign_Right)
-            [
-                SNew(STextBlock)
-                .Text(this, &SRigStackItem::GetVisitedCountText)
-                .Font(IDetailLayoutBuilder::GetDetailFont())
-            ]
-
-			+ SHorizontalBox::Slot()
-			.MaxWidth(80.f)
-            .VAlign(VAlign_Center)
-            .HAlign(HAlign_Right)
-            [
-                SNew(STextBlock)
-                .Text(this, &SRigStackItem::GetDurationText)
-                .Font(IDetailLayoutBuilder::GetDetailFont())
-            ]
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Right)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+	            .HAlign(HAlign_Left)
+	            [
+	                SNew(STextBlock)
+	                .Text(this, &SRigStackItem::GetVisitedCountText)
+	                .Font(IDetailLayoutBuilder::GetDetailFont())
+	            ]
+	            
+	            + SHorizontalBox::Slot()
+	            .Padding(20, 0, 0, 0)
+				.AutoWidth()
+	            .VAlign(VAlign_Center)
+	            .HAlign(HAlign_Left)
+	            [
+	                SNew(STextBlock)
+	                .Text(this, &SRigStackItem::GetDurationText)
+	                .Font(IDetailLayoutBuilder::GetDetailFont())
+	            ]
+	        ]
         ], OwnerTable);
 }
 
@@ -266,7 +283,7 @@ void SControlRigStackView::Construct( const FArguments& InArgs, TSharedRef<FCont
 		[
 			SNew(SBorder)
 			.Padding(0.0f)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor(FLinearColor(0.6f, 0.6f, 0.6f, 1.0f))
 			[
 				SNew(SVerticalBox)
@@ -293,7 +310,7 @@ void SControlRigStackView::Construct( const FArguments& InArgs, TSharedRef<FCont
 		[
 			SNew(SBorder)
 			.Padding(2.0f)
-			.BorderImage(FEditorStyle::GetBrush("SCSEditor.TreePanel"))
+			.BorderImage(FAppStyle::GetBrush("SCSEditor.TreePanel"))
 			[
 				SAssignNew(TreeView, STreeView<TSharedPtr<FRigStackEntry>>)
 				.TreeItemsSource(&Operators)
@@ -426,10 +443,12 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 	if (InVM)
 	{
 		UControlRigBlueprint* Blueprint = ControlRigEditor.Pin()->GetControlRigBlueprint();
-		URigVMGraph* RootGraph = Blueprint->GetModel();
 
 		const FRigVMInstructionArray Instructions = InVM->GetInstructions();
 		const FRigVMByteCode& ByteCode = InVM->GetByteCode();
+
+		TArray<URigVMGraph*> RootGraphs;
+		RootGraphs.AddZeroed(Instructions.Num());
 
 		const bool bUseSimpleLabels = !CVarControlRigExecutionStackDetailedLabels.GetValueOnAnyThread();
 		if(bUseSimpleLabels)
@@ -443,6 +462,7 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 				if(Node)
 				{
 					DisplayName = Node->GetName();
+					RootGraphs[InstructionIndex] = Node->GetRootGraph();
 					
 					// only unit nodes among all nodes has StaticExecute() that generates actual instructions
 					if (URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(Node))
@@ -458,6 +478,15 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 						if (!MenuDescSuffixMetadata.IsEmpty())
 						{
 							DisplayName = FString::Printf(TEXT("%s %s"), *UnitNode->GetNodeTitle(), *MenuDescSuffixMetadata);
+						}
+
+						if(UnitNode->IsEvent())
+						{
+							DisplayName = Node->GetEventName().ToString();
+							if(!DisplayName.EndsWith(TEXT("Event")))
+							{
+								DisplayName += TEXT(" Event");
+							}
 						}
 	#endif
 					}
@@ -590,6 +619,12 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 						}
 						break;
 					}
+					case ERigVMOpCode::InvokeEntry:
+					{
+						const FRigVMInvokeEntryOp& Op = ByteCode.GetOpAt<FRigVMInvokeEntryOp>(Instructions[InstructionIndex]);
+						Label = FString::Printf(TEXT("Run %s Event"), *Op.EntryName.ToString());
+						break;
+					}
 					case ERigVMOpCode::Exit:
 					{
 						Label = TEXT("Exit");
@@ -622,7 +657,7 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 		TMap<FString, FString> OperandFormatMap;
 		for (int32 InstructionIndex = 0; InstructionIndex < Instructions.Num(); InstructionIndex++)
 		{
-			const FRigVMASTProxy Proxy = FRigVMASTProxy::MakeFromCallPath(ByteCode.GetCallPathForInstruction(InstructionIndex), RootGraph);
+			const FRigVMASTProxy Proxy = FRigVMASTProxy::MakeFromCallPath(ByteCode.GetCallPathForInstruction(InstructionIndex), RootGraphs[InstructionIndex]);
 			if(URigVMNode* Node = Proxy.GetSubject<URigVMNode>())
 			{
 				FString DisplayName = Node->GetName();
@@ -676,7 +711,7 @@ void SControlRigStackView::PopulateStackView(URigVM* InVM)
 		for (int32 InstructionIndex = 0; InstructionIndex < Labels.Num(); InstructionIndex++)
 		{
 			FString Label = Labels[InstructionIndex];
-			const FRigVMASTProxy Proxy = FRigVMASTProxy::MakeFromCallPath(ByteCode.GetCallPathForInstruction(InstructionIndex), RootGraph);
+			const FRigVMASTProxy Proxy = FRigVMASTProxy::MakeFromCallPath(ByteCode.GetCallPathForInstruction(InstructionIndex), RootGraphs[InstructionIndex]);
 
 			if(URigVMNode* Node = Proxy.GetSubject<URigVMNode>())
 			{
@@ -762,7 +797,6 @@ void SControlRigStackView::RefreshTreeView(URigVM* InVM)
 							break;
 						}
 						case EMessageSeverity::Error:
-						case EMessageSeverity::CriticalError:
 						{
 							Operators[LogEntry.InstructionIndex]->Children.Add(MakeShared<FRigStackEntry>(ChildIndex, ERigStackEntry::Error, LogEntry.InstructionIndex, ERigVMOpCode::Invalid, LogEntry.Message, FRigVMASTProxy()));
 							break;
@@ -820,20 +854,29 @@ void SControlRigStackView::HandleFocusOnSelectedGraphNode()
 		}
 
 		const FRigVMByteCode& ByteCode = ControlRig->GetVM()->GetByteCode();
-		URigVMNode* SelectedNode = Cast<URigVMNode>(ByteCode.GetSubjectForInstruction(SelectedItems[0]->InstructionIndex));
-		if (SelectedNode)
+		UObject* Subject = ByteCode.GetSubjectForInstruction(SelectedItems[0]->InstructionIndex);
+		if (URigVMNode* SelectedNode = Cast<URigVMNode>(Subject))
 		{
-			if (UEdGraph* EdGraph = ControlRigBlueprint->GetEdGraph(SelectedNode->GetGraph()))
+			URigVMGraph* GraphToFocus = SelectedNode->GetGraph();
+			if (GraphToFocus && GraphToFocus->GetTypedOuter<URigVMAggregateNode>())
+			{
+				if(URigVMGraph* ParentGraph = GraphToFocus->GetParentGraph())
+				{
+					GraphToFocus = ParentGraph;
+				} 
+			}
+			
+			if (UEdGraph* EdGraph = ControlRigBlueprint->GetEdGraph(GraphToFocus))
 			{
 				ControlRigEditor.Pin()->OpenGraphAndBringToFront(EdGraph, true);
 				ControlRigEditor.Pin()->ZoomToSelection_Clicked();
-				ControlRigEditor.Pin()->HandleModifiedEvent(ERigVMGraphNotifType::NodeSelected, SelectedNode->GetGraph(), SelectedNode);
+				ControlRigEditor.Pin()->HandleModifiedEvent(ERigVMGraphNotifType::NodeSelected, GraphToFocus, SelectedNode);
 			}
 		}
 	}
 }
 
-void SControlRigStackView::OnVMCompiled(UBlueprint* InCompiledBlueprint, URigVM* InCompiledVM)
+void SControlRigStackView::OnVMCompiled(UObject* InCompiledObject, URigVM* InCompiledVM)
 {
 	RefreshTreeView(InCompiledVM);
 
@@ -957,22 +1000,34 @@ void SControlRigStackView::HandlePreviewControlRigUpdated(FControlRigEditor* InE
 
 void SControlRigStackView::HandleItemMouseDoubleClick(TSharedPtr<FRigStackEntry> InItem)
 {
-	if(ControlRigEditor.IsValid() && ControlRigBlueprint.IsValid())
+	if (!ControlRigEditor.IsValid() || !ControlRigBlueprint.IsValid())
 	{
-		if(UControlRig* ControlRig = Cast<UControlRig>(ControlRigBlueprint->GetObjectBeingDebugged()))
+		return;
+	}
+	
+	UControlRig* ControlRig = Cast<UControlRig>(ControlRigBlueprint->GetObjectBeingDebugged());
+	if (!ControlRig || !ControlRig->GetVM())
+	{
+		return;
+	}
+
+	const FRigVMByteCode& ByteCode = ControlRig->GetVM()->GetByteCode();
+	if (URigVMNode* Subject = Cast<URigVMNode>(ByteCode.GetSubjectForInstruction(InItem->InstructionIndex)))
+	{
+		URigVMGraph* GraphToFocus = Subject->GetGraph();
+		if (GraphToFocus && GraphToFocus->GetTypedOuter<URigVMAggregateNode>())
 		{
-			if(URigVM* VM = ControlRig->GetVM())
+			if(URigVMGraph* ParentGraph = GraphToFocus->GetParentGraph())
 			{
-				if(URigVMNode* Subject = Cast<URigVMNode>(VM->GetByteCode().GetSubjectForInstruction(InItem->InstructionIndex)))
-				{
-					if(UControlRigGraph* EdGraph = Cast<UControlRigGraph>(ControlRigBlueprint->GetEdGraph(Subject->GetGraph())))
-					{
-						if(UEdGraphNode* Node = EdGraph->FindNodeForModelNodeName(Subject->GetFName()))
-						{
-							ControlRigEditor.Pin()->JumpToHyperlink(Node, false);
-						}
-					}
-				}
+				GraphToFocus = ParentGraph;
+			} 
+		}
+		
+		if(UControlRigGraph* EdGraph = Cast<UControlRigGraph>(ControlRigBlueprint->GetEdGraph(GraphToFocus)))
+		{
+			if(const UEdGraphNode* Node = EdGraph->FindNodeForModelNodeName(Subject->GetFName()))
+			{
+				ControlRigEditor.Pin()->JumpToHyperlink(Node, false);
 			}
 		}
 	}

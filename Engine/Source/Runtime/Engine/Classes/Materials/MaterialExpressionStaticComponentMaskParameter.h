@@ -14,21 +14,19 @@ class UMaterialExpressionStaticComponentMaskParameter : public UMaterialExpressi
 {
 	GENERATED_UCLASS_BODY()
 
-#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FExpressionInput Input;
-#endif
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter, meta = (ShowAsInputPin = "Advanced"))
 	uint32 DefaultR:1;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter, meta = (ShowAsInputPin = "Advanced"))
 	uint32 DefaultG:1;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter, meta = (ShowAsInputPin = "Advanced"))
 	uint32 DefaultB:1;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionStaticComponentMaskParameter, meta = (ShowAsInputPin = "Advanced"))
 	uint32 DefaultA:1;
 
 
@@ -65,6 +63,7 @@ public:
 		}
 		return false;
 	}
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 

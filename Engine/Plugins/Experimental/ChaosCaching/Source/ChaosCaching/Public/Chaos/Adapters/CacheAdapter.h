@@ -7,6 +7,7 @@
 #include "Features/IModularFeature.h"
 #include "Templates/SubclassOf.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
 
 class UClass;
 class UChaosCache;
@@ -19,12 +20,8 @@ struct FPendingFrameWrite;
 
 namespace Chaos
 {
-	using FPhysicsSolver = FPBDRigidsSolver;
-}
-
-namespace Chaos
-{
 	class FComponentCacheAdapter;
+	class AChaosCacheManager;
 	struct FAdapterUtil
 	{
 		static CHAOSCACHING_API FComponentCacheAdapter* GetBestAdapterForClass(TSubclassOf<UPrimitiveComponent> InComponentClass, bool bAllowDerived = true);
@@ -49,8 +46,8 @@ namespace Chaos
 
 		/** Registration name for modular features module */
 		static const FName FeatureName;
-		static const uint8 EngineAdapterPriotityBegin;
-		static const uint8 UserAdapterPriotityBegin;
+		static const uint8 EngineAdapterPriorityBegin;
+		static const uint8 UserAdapterPriorityBegin;
 
 		FComponentCacheAdapter()          = default;
 		virtual ~FComponentCacheAdapter() = default;
@@ -98,7 +95,7 @@ namespace Chaos
 		 * Gets the priority for an adapter.
 		 * When two or more adapters give the same support level for a given component class this priority will be
 		 * used to decide which adapter will be used. All base engine level adapters per type will use a priority
-		 * between EngineAdapterPriotityBegin and UserAdapterPriorityBegin defined in this interface.
+		 * between EngineAdapterPriorityBegin and UserAdapterPriorityBegin defined in this interface.
 		 *
 		 * Users implementing adapters intended to override all engine functionality should return priorities
 		 * above UserAdapterPriorityBegin to ensure they will always be selected above engine adapters.
@@ -106,12 +103,19 @@ namespace Chaos
 		virtual uint8 GetPriority() const = 0;
 
 		/**
-		 * Called to retrieve the solver for a specific component. Required until a more generic method
+		 * Called to retrieve the rigid solver for a specific component if it exists. Required until a more generic method
 		 * of solver binding for components is devised.
 		 * #BGTODO Remove when multiple solver concept moved into primitive component
 		 * @param InComponent Component to resolve the solver for
 		 */
 		virtual Chaos::FPhysicsSolver* GetComponentSolver(UPrimitiveComponent* InComponent) const = 0;
+
+		/**
+		 * Called to retrieve the base events solver for a specific component. If the component is
+		 * requiring it the solver could be rebuilt.
+		 * @param InComponent Component to resolve the solver for
+		 */
+		virtual Chaos::FPhysicsSolverEvents* BuildEventsSolver(UPrimitiveComponent* InComponent) const { return nullptr; }
 
 		/**
 		 * Called from the game thread to perform any global setup that the adapter may need to perform.

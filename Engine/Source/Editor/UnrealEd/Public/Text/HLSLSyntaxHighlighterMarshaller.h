@@ -1,11 +1,17 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Styling/SlateTypes.h"
-#include "Framework/Text/SyntaxTokenizer.h"
 #include "Framework/Text/SyntaxHighlighterTextLayoutMarshaller.h"
+#include "Framework/Text/SyntaxTokenizer.h"
 #include "Framework/Text/TextLayout.h"
+#include "HAL/Platform.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+
+
 
 /**
  * Syntax highlighting for hlsl text
@@ -51,13 +57,13 @@ public:
 
 protected:
 
-	static TSharedPtr<FSyntaxTokenizer> CreateTokenizer();
+	static TSharedPtr<ISyntaxTokenizer> CreateTokenizer();
 	
-	virtual void ParseTokens(const FString& SourceString, FTextLayout& TargetTextLayout, TArray<FSyntaxTokenizer::FTokenizedLine> TokenizedLines) override;
+	virtual void ParseTokens(const FString& SourceString, FTextLayout& TargetTextLayout, TArray<ISyntaxTokenizer::FTokenizedLine> TokenizedLines) override;
 
-	virtual FTextLayout::FNewLineData ProcessTokenizedLine(const FSyntaxTokenizer::FTokenizedLine& TokenizedLine, const int32& LineNumber, const FString& SourceString);
+	virtual FTextLayout::FNewLineData ProcessTokenizedLine(const ISyntaxTokenizer::FTokenizedLine& TokenizedLine, const int32& LineNumber, const FString& SourceString);
 
-	FHLSLSyntaxHighlighterMarshaller(TSharedPtr<FSyntaxTokenizer> InTokenizer, const FSyntaxTextStyle& InSyntaxTextStyle);
+	FHLSLSyntaxHighlighterMarshaller(TSharedPtr<ISyntaxTokenizer> InTokenizer, const FSyntaxTextStyle& InSyntaxTextStyle);
 
 	/** Styles used to display the text */
 	FSyntaxTextStyle SyntaxTextStyle;

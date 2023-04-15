@@ -3,12 +3,19 @@
 #include "NiagaraDataInterfaceActorComponent.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraWorldManager.h"
 
 #include "Components/SceneComponent.h"
+#include "Engine/LocalPlayer.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/PlayerController.h"
 #include "ShaderCompilerCore.h"
 #include "ShaderParameterUtils.h"
+#include "Misc/LargeWorldRenderPosition.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceActorComponent)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceActorComponent"
 
@@ -30,6 +37,7 @@ namespace NDIActorComponentLocal
 
 	static const FName	GetMatrixName(TEXT("GetMatrix"));
 	static const FName	GetTransformName(TEXT("GetTransform"));
+	static const FName	GetVelocityName(TEXT("GetVelocity"));
 
 	static const FString ValidString(TEXT("Valid"));
 	static const FString MatrixString(TEXT("Matrix"));
@@ -41,18 +49,26 @@ namespace NDIActorComponentLocal
 		FNiagaraParameterDirectBinding<UObject*>	UserParamBinding;
 		bool										bCachedValid = false;
 		FTransform									CachedTransform = FTransform::Identity;
+		FVector3f									CachedVelocity = FVector3f::ZeroVector;
+
+		// our use of UserParamBinding can occur within CalculateTickGroup which occurs before we tick our parameter stores.  This
+		// can lead to a stale UObject reference being accessed (if the actor we're pointing at is deleted).  For now we cache
+		// the results during PerInstanceTick and re-use the result (if it remains valid) for calculating the tick group.
+		TWeakObjectPtr<UActorComponent>				CachedActorForCalcTickGroup;
 	};
 
 	struct FGameToRenderInstanceData
 	{
 		bool		bCachedValid = false;
 		FTransform	CachedTransform = FTransform::Identity;
+		FVector3f	CachedVelocity = FVector3f::ZeroVector;
 	};
 
 	struct FInstanceData_RenderThread
 	{
 		bool		bCachedValid = false;
 		FTransform	CachedTransform = FTransform::Identity;
+		FVector3f	CachedVelocity = FVector3f::ZeroVector;
 	};
 
 	struct FNDIProxy : public FNiagaraDataInterfaceProxy
@@ -65,6 +81,7 @@ namespace NDIActorComponentLocal
 			FGameToRenderInstanceData* DataForRenderThread = reinterpret_cast<FGameToRenderInstanceData*>(InDataForRenderThread);
 			DataForRenderThread->bCachedValid = InstanceData->bCachedValid;
 			DataForRenderThread->CachedTransform = InstanceData->CachedTransform;
+			DataForRenderThread->CachedVelocity = InstanceData->CachedVelocity;
 		}
 
 		virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& InstanceID) override
@@ -74,57 +91,42 @@ namespace NDIActorComponentLocal
 			FInstanceData_RenderThread& InstanceData = SystemInstancesToInstanceData_RT.FindOrAdd(InstanceID);
 			InstanceData.bCachedValid = InstanceDataFromGT->bCachedValid;
 			InstanceData.CachedTransform = InstanceDataFromGT->CachedTransform;
+			InstanceData.CachedVelocity = InstanceDataFromGT->CachedVelocity;
 		}
 
 		TMap<FNiagaraSystemInstanceID, FInstanceData_RenderThread> SystemInstancesToInstanceData_RT;
 	};
+
+	USceneComponent* FindLocalPlayer(UWorld* World, int LocalPlayerIndex)
+	{
+		if ( World == nullptr )
+		{
+			return nullptr;
+		}
+
+		for (FConstPlayerControllerIterator Iterator=World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+		{
+			APlayerController* PlayerController = Iterator->Get();
+			if ( PlayerController == nullptr || PlayerController->Player == nullptr )
+			{
+				continue;
+			}
+			
+			ULocalPlayer* LocalPlayer = Cast<ULocalPlayer>(PlayerController->Player);
+			if ( LocalPlayer == nullptr )
+			{
+				continue;
+			}
+
+			if (LocalPlayerIndex == LocalPlayer->GetLocalPlayerIndex())
+			{
+				AActor* PlayerPawn = PlayerController->GetPawn();
+				return PlayerPawn ? PlayerPawn->GetRootComponent() : nullptr;
+			}
+		}
+		return nullptr;
+	}
 }
-
-//////////////////////////////////////////////////////////////////////////
-// Compute Shader Binding
-struct FNDIActorComponentCS : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNDIActorComponentCS, NonVirtual);
-
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{
-		using namespace NDIActorComponentLocal;
-
-		ValidParam.Bind(ParameterMap, *(NDIActorComponentLocal::ValidString + TEXT("_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		MatrixParam.Bind(ParameterMap, *(NDIActorComponentLocal::MatrixString + TEXT("_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		RotationParam.Bind(ParameterMap, *(NDIActorComponentLocal::RotationString + TEXT("_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		ScaleParam.Bind(ParameterMap, *(NDIActorComponentLocal::ScaleString + TEXT("_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		using namespace NDIActorComponentLocal;
-
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		FNDIProxy* DataInterfaceProxy = static_cast<FNDIProxy*>(Context.DataInterface);
-		FInstanceData_RenderThread* InstanceData = DataInterfaceProxy->SystemInstancesToInstanceData_RT.Find(Context.SystemInstanceID);
-		check(InstanceData != nullptr);
-
-		const FMatrix44f InstanceMatrix = (FMatrix44f)InstanceData->CachedTransform.ToMatrixWithScale();
-		const FQuat4f InstanceRotation = (FQuat4f)InstanceData->CachedTransform.GetRotation();
-		const FVector3f InstanceScale = (FVector3f)InstanceData->CachedTransform.GetScale3D();
-		SetShaderValue(RHICmdList, ComputeShaderRHI, ValidParam, InstanceData->bCachedValid ? 1 : 0);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, MatrixParam, InstanceMatrix);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, RotationParam, InstanceRotation);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, ScaleParam, InstanceScale);
-	}
-
-private:
-	LAYOUT_FIELD(FShaderParameter, ValidParam);
-	LAYOUT_FIELD(FShaderParameter, MatrixParam);
-	LAYOUT_FIELD(FShaderParameter, RotationParam);
-	LAYOUT_FIELD(FShaderParameter, ScaleParam);
-};
-
-IMPLEMENT_TYPE_LAYOUT(FNDIActorComponentCS);
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceActorComponent, FNDIActorComponentCS);
 
 //////////////////////////////////////////////////////////////////////////
 // Data Interface
@@ -148,9 +150,24 @@ void UNiagaraDataInterfaceActorComponent::PostInitProperties()
 	}
 }
 
-UActorComponent* UNiagaraDataInterfaceActorComponent::ResolveComponent(const void* PerInstanceData) const
+UActorComponent* UNiagaraDataInterfaceActorComponent::ResolveComponent(FNiagaraSystemInstance* SystemInstance, const void* PerInstanceData) const
 {
 	using namespace NDIActorComponentLocal;
+
+	if (SourceMode == ENDIActorComponentSourceMode::AttachParent)
+	{
+		if (USceneComponent* AttachComponent = SystemInstance->GetAttachComponent())
+		{
+			return AttachComponent;
+		}
+	}
+	else if (SourceMode == ENDIActorComponentSourceMode::LocalPlayer)
+	{
+		if (USceneComponent* RootComponent = FindLocalPlayer(SystemInstance->GetWorldManager()->GetWorld(), LocalPlayerIndex))
+		{
+			return RootComponent;
+		}
+	}
 
 	FInstanceData_GameThread* InstanceData = (FInstanceData_GameThread*)PerInstanceData;
 	if (UObject* ObjectBinding = InstanceData->UserParamBinding.GetValue())
@@ -171,31 +188,34 @@ UActorComponent* UNiagaraDataInterfaceActorComponent::ResolveComponent(const voi
 void UNiagaraDataInterfaceActorComponent::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
 {
 	using namespace NDIActorComponentLocal;
+	FNiagaraFunctionSignature DefaultSig;
+	DefaultSig.Inputs.Emplace(FNiagaraTypeDefinition(GetClass()), TEXT("ActorComponent"));
+	DefaultSig.bMemberFunction = true;
+	DefaultSig.bRequiresContext = false;
+	DefaultSig.bSupportsGPU = true;
+	DefaultSig.SetFunctionVersion(FNiagaraActorDIFunctionVersion::LatestVersion);
 	{
-		FNiagaraFunctionSignature& FunctionSignature = OutFunctions.AddDefaulted_GetRef();
+		FNiagaraFunctionSignature& FunctionSignature = OutFunctions.Add_GetRef(DefaultSig);
 		FunctionSignature.Name = GetMatrixName;
-		FunctionSignature.SetDescription(LOCTEXT("GetMatrix", "Returns the current matrix for the component if valid."));
-		FunctionSignature.SetFunctionVersion(FNiagaraActorDIFunctionVersion::LatestVersion);
-		FunctionSignature.bMemberFunction = true;
-		FunctionSignature.bRequiresContext = false;
-		FunctionSignature.bSupportsGPU = true;
-		FunctionSignature.Inputs.Emplace(FNiagaraTypeDefinition(GetClass()), TEXT("ActorComponent"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Matrix"));
+		FunctionSignature.SetDescription(LOCTEXT("GetMatrix", "Returns the current matrix for the component if valid."));
 	}
 	{
-		FNiagaraFunctionSignature& FunctionSignature = OutFunctions.AddDefaulted_GetRef();
+		FNiagaraFunctionSignature& FunctionSignature = OutFunctions.Add_GetRef(DefaultSig);
 		FunctionSignature.Name = GetTransformName;
-		FunctionSignature.SetDescription(LOCTEXT("GetTransform", "Returns the current transform for the component if valid."));
-		FunctionSignature.SetFunctionVersion(FNiagaraActorDIFunctionVersion::LatestVersion);
-		FunctionSignature.bMemberFunction = true;
-		FunctionSignature.bRequiresContext = false;
-		FunctionSignature.bSupportsGPU = true;
-		FunctionSignature.Inputs.Emplace(FNiagaraTypeDefinition(GetClass()), TEXT("ActorComponent"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Position"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetQuatDef(), TEXT("Rotation"));
 		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Scale"));
+		FunctionSignature.SetDescription(LOCTEXT("GetTransform", "Returns the current transform for the component if valid."));
+	}
+	{
+		FNiagaraFunctionSignature& FunctionSignature = OutFunctions.Add_GetRef(DefaultSig);
+		FunctionSignature.Name = GetVelocityName;
+		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid"));
+		FunctionSignature.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Velocity"));
+		FunctionSignature.SetDescription(LOCTEXT("GetVelocityDesc", "Returns the velocity from the component or actor if valid."));
 	}
 }
 
@@ -210,6 +230,10 @@ void UNiagaraDataInterfaceActorComponent::GetVMExternalFunction(const FVMExterna
 	{
 		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->VMGetTransform(Context); });
 	}
+	else if (BindingInfo.Name == GetVelocityName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { this->VMGetPhysicsVelocity(Context); });
+	}
 }
 
 #if WITH_EDITORONLY_DATA
@@ -218,6 +242,7 @@ bool UNiagaraDataInterfaceActorComponent::AppendCompileHash(FNiagaraCompileHashV
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
 	FSHAHash Hash = GetShaderFileHash(NDIActorComponentLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
 	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceActorComponentTemplateHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderParameters<FShaderParameters>();
 	return bSuccess;
 }
 
@@ -236,7 +261,7 @@ void UNiagaraDataInterfaceActorComponent::GetParameterDefinitionHLSL(const FNiag
 bool UNiagaraDataInterfaceActorComponent::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	using namespace NDIActorComponentLocal;
-	return (FunctionInfo.DefinitionName == GetMatrixName) || (FunctionInfo.DefinitionName == GetTransformName);
+	return (FunctionInfo.DefinitionName == GetMatrixName) || (FunctionInfo.DefinitionName == GetTransformName) || (FunctionInfo.DefinitionName == GetVelocityName);
 }
 
 bool UNiagaraDataInterfaceActorComponent::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
@@ -259,12 +284,33 @@ bool UNiagaraDataInterfaceActorComponent::UpgradeFunctionCall(FNiagaraFunctionSi
 }
 #endif
 
+void UNiagaraDataInterfaceActorComponent::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceActorComponent::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	using namespace NDIActorComponentLocal;
+
+	FNDIProxy& DIProxy = Context.GetProxy<FNDIProxy>();
+	FInstanceData_RenderThread& InstanceData = DIProxy.SystemInstancesToInstanceData_RT.FindChecked(Context.GetSystemInstanceID());
+
+	FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<FShaderParameters>();
+	ShaderParameters->Valid		= InstanceData.bCachedValid ? 1 : 0;
+	ShaderParameters->Matrix	= (FMatrix44f)InstanceData.CachedTransform.ToMatrixWithScale();
+	ShaderParameters->Rotation	= (FQuat4f)InstanceData.CachedTransform.GetRotation();
+	ShaderParameters->Scale		= (FVector3f)InstanceData.CachedTransform.GetScale3D();
+	ShaderParameters->Velocity	= InstanceData.CachedVelocity;
+}
+
 bool UNiagaraDataInterfaceActorComponent::InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)
 {
 	using namespace NDIActorComponentLocal;
 
 	FInstanceData_GameThread* InstanceData = new (PerInstanceData) FInstanceData_GameThread;
 	InstanceData->UserParamBinding.Init(SystemInstance->GetInstanceParameters(), ActorOrComponentParameter.Parameter);
+	InstanceData->CachedActorForCalcTickGroup = ResolveComponent(SystemInstance, InstanceData);
 
 	return true;
 }
@@ -303,20 +349,37 @@ bool UNiagaraDataInterfaceActorComponent::PerInstanceTick(void* PerInstanceData,
 
 	InstanceData->bCachedValid = false;
 	InstanceData->CachedTransform = FTransform::Identity;
-	if ( UActorComponent* ActorComponent = ResolveComponent(PerInstanceData) )
+	InstanceData->CachedVelocity = FVector3f::ZeroVector;
+
+	UActorComponent* ActorComponent = ResolveComponent(SystemInstance, PerInstanceData);
+	if (ActorComponent)
 	{
 		if (USceneComponent* SceneComponent = Cast<USceneComponent>(ActorComponent) )
 		{
 			InstanceData->bCachedValid = true;
 			InstanceData->CachedTransform = SceneComponent->GetComponentToWorld();
 			InstanceData->CachedTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
+			if ( AActor* OwnerActor = ActorComponent->GetOwner() )
+			{
+				InstanceData->CachedVelocity = FVector3f(OwnerActor->GetVelocity());
+			}
+			else if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(ActorComponent))
+			{
+				InstanceData->CachedVelocity = FVector3f(PrimitiveComponent->GetPhysicsLinearVelocity());
+			}
 		}
 		else if (AActor* OwnerActor = ActorComponent->GetOwner())
 		{
 			InstanceData->bCachedValid = true;
 			InstanceData->CachedTransform = OwnerActor->GetTransform();
 			InstanceData->CachedTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
+			InstanceData->CachedVelocity = FVector3f(OwnerActor->GetVelocity());
 		}
+	}
+
+	if (bRequireCurrentFrameData)
+	{
+		InstanceData->CachedActorForCalcTickGroup = ActorComponent;
 	}
 
 	return false;
@@ -331,7 +394,9 @@ ETickingGroup UNiagaraDataInterfaceActorComponent::CalculateTickGroup(const void
 {
 	if ( bRequireCurrentFrameData )
 	{
-		if (UActorComponent* ActorComponent = ResolveComponent(PerInstanceData))
+		const NDIActorComponentLocal::FInstanceData_GameThread* InstanceData = (NDIActorComponentLocal::FInstanceData_GameThread*)PerInstanceData;
+		const UActorComponent* ActorComponent = InstanceData ? InstanceData->CachedActorForCalcTickGroup.Get() : nullptr;
+		if (ActorComponent)
 		{
 			ETickingGroup FinalTickGroup = FMath::Max(ActorComponent->PrimaryComponentTick.TickGroup, ActorComponent->PrimaryComponentTick.EndTickGroup);
 			//-TODO: Do we need to do this?
@@ -359,6 +424,8 @@ bool UNiagaraDataInterfaceActorComponent::Equals(const UNiagaraDataInterface* Ot
 	const UNiagaraDataInterfaceActorComponent* OtherTyped = CastChecked<const UNiagaraDataInterfaceActorComponent>(Other);
 	return OtherTyped->SourceActor == SourceActor
 		&& OtherTyped->ActorOrComponentParameter == ActorOrComponentParameter
+		&& OtherTyped->SourceMode == SourceMode
+		&& OtherTyped->LocalPlayerIndex == LocalPlayerIndex
 		&& OtherTyped->bRequireCurrentFrameData == bRequireCurrentFrameData;
 }
 
@@ -370,6 +437,8 @@ bool UNiagaraDataInterfaceActorComponent::CopyToInternal(UNiagaraDataInterface* 
 	}
 
 	UNiagaraDataInterfaceActorComponent* OtherTyped = CastChecked<UNiagaraDataInterfaceActorComponent>(Destination);
+	OtherTyped->SourceMode = SourceMode;
+	OtherTyped->LocalPlayerIndex = LocalPlayerIndex;
 	OtherTyped->SourceActor = SourceActor;
 	OtherTyped->ActorOrComponentParameter = ActorOrComponentParameter;
 	OtherTyped->bRequireCurrentFrameData = bRequireCurrentFrameData;
@@ -411,4 +480,20 @@ void UNiagaraDataInterfaceActorComponent::VMGetTransform(FVectorVMExternalFuncti
 	}
 }
 
+void UNiagaraDataInterfaceActorComponent::VMGetPhysicsVelocity(FVectorVMExternalFunctionContext& Context)
+{
+	using namespace NDIActorComponentLocal;
+
+	VectorVM::FUserPtrHandler<FInstanceData_GameThread> InstanceData(Context);
+	FNDIOutputParam<bool>		OutValid(Context);
+	FNDIOutputParam<FVector3f>	OutVelocity(Context);
+
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		OutValid.SetAndAdvance(InstanceData->bCachedValid);
+		OutVelocity.SetAndAdvance(InstanceData->CachedVelocity);
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
+

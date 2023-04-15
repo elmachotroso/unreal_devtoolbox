@@ -3,6 +3,41 @@
 #include "RigUnit_SetControlVisibility.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SetControlVisibility)
+
+FRigUnit_GetControlVisibility_Execute()
+{
+    DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+
+    bVisible = false;
+
+	const URigHierarchy* Hierarchy = Context.Hierarchy;
+	if (Hierarchy)
+	{
+		switch (Context.State)
+		{
+			case EControlRigState::Init:
+			{
+				CachedControlIndex.Reset();
+			}
+			case EControlRigState::Update:
+			{
+				if (CachedControlIndex.UpdateCache(Item, Hierarchy))
+				{
+					if(const FRigControlElement* ControlElement = Hierarchy->Get<FRigControlElement>(CachedControlIndex))
+					{
+						bVisible = ControlElement->Settings.bShapeVisible;
+					}
+				}
+				break;
+			}
+			default:
+			{
+				break;
+			}
+		}
+	}
+}
 
 FRigUnit_SetControlVisibility_Execute()
 {
@@ -49,7 +84,7 @@ FRigUnit_SetControlVisibility_Execute()
 
 				for (int32 Index = 0; Index < Keys.Num(); Index++)
 				{
-					CachedControlIndices[Index].UpdateCache(Keys[Index], ExecuteContext.Hierarchy);
+					CachedControlIndices[Index].UpdateCache(Keys[Index], Hierarchy);
 				}
 
 				for (const FCachedRigElement& CachedControlIndex : CachedControlIndices)
@@ -68,3 +103,4 @@ FRigUnit_SetControlVisibility_Execute()
 		}
 	}
 }
+

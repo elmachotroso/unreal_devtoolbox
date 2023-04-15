@@ -25,7 +25,9 @@ class COMMONUI_API UCommonUISettings : public UObject
 	GENERATED_BODY()
 
 public:
-	UCommonUISettings(const FObjectInitializer& Initializer);
+	UCommonUISettings(const FObjectInitializer& Initializer = FObjectInitializer::Get());
+	UCommonUISettings(FVTableHelper& Helper);
+	~UCommonUISettings();
 
 	// Called to load CommonUISetting data, if bAutoLoadData if set to false then game code must call LoadData().
 	void LoadData();
@@ -55,7 +57,7 @@ private:
 	bool bAutoLoadData;
 
 	/** The Default Image Resource, newly created CommonImage Widgets will use this style. */
-	UPROPERTY(config, EditAnywhere, Category = "Image", meta = (AllowedClasses = "Texture2D,MaterialInterface"))
+	UPROPERTY(config, EditAnywhere, Category = "Image", meta = (AllowedClasses = "/Script/Engine.Texture2D,/Script/Engine.MaterialInterface"))
 	TSoftObjectPtr<UObject> DefaultImageResourceObject;
 
 	/** The Default Throbber Material, newly created CommonLoadGuard Widget will use this style. */
@@ -82,14 +84,14 @@ private:
 	FGameplayTagContainer PlatformTraitContainer;
 
 	UPROPERTY(Transient)
-	UObject* DefaultImageResourceObjectInstance;
+	TObjectPtr<UObject> DefaultImageResourceObjectInstance;
 
 	UPROPERTY(Transient)
-	UMaterialInterface* DefaultThrobberMaterialInstance;
+	TObjectPtr<UMaterialInterface> DefaultThrobberMaterialInstance;
 
 	UPROPERTY(Transient)
 	FSlateBrush DefaultThrobberBrush;
 
 	UPROPERTY(Transient)
-	UCommonUIRichTextData* RichTextDataInstance;
+	TObjectPtr<UCommonUIRichTextData> RichTextDataInstance;
 };

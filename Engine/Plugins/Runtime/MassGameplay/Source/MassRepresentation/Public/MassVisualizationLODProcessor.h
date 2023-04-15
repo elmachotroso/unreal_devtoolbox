@@ -4,12 +4,13 @@
 
 #include "MassCommonFragments.h"
 #include "MassRepresentationFragments.h"
+#include "MassProcessor.h"
 #include "MassLODCalculator.h"
 
 #include "MassVisualizationLODProcessor.generated.h"
 
 UCLASS()
-class MASSREPRESENTATION_API UMassVisualizationLODProcessor : public UMassLODProcessorBase
+class MASSREPRESENTATION_API UMassVisualizationLODProcessor : public UMassProcessor
 {
 	GENERATED_BODY()
 
@@ -26,7 +27,7 @@ protected:
 	 * @param EntitySubsystem is the system to execute the lambdas on each entity chunk
 	 * @param Context is the execution context to be passed when executing the lambdas
 	 */
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 	
 	/**
 	 * Forces Off LOD on all calculation
@@ -43,5 +44,5 @@ protected:
 	bool bForceOFFLOD = false;
 
 	UPROPERTY(Transient)
-	const UScriptStruct* FilterTag = nullptr;
+	TObjectPtr<const UScriptStruct> FilterTag = nullptr;
 };

@@ -21,7 +21,7 @@ class UTextureCube : public UTexture
 
 public:
 #if WITH_TEXTURE_PLATFORMDATA_DEPRECATIONS
-	UE_DEPRECATED(5.00, "Use GetPlatformData() / SetPlatformData() accessors instead.")
+	UE_DEPRECATED(5.0, "Use GetPlatformData() / SetPlatformData() accessors instead.")
 	TFieldPtrAccessor<FTexturePlatformData> PlatformData;
 #endif
 
@@ -65,6 +65,7 @@ public:
 	ENGINE_API void GetMipData(int32 FirstMipToLoad, void** OutMipData);
 	
 	//~ Begin UTexture Interface
+	virtual ETextureClass GetTextureClass() const override { return ETextureClass::Cube; }
 	virtual float GetSurfaceWidth() const override { return (float)GetSizeX(); }
 	virtual float GetSurfaceHeight() const override { return (float)GetSizeY(); }
 	virtual float GetSurfaceDepth() const override { return 0; }

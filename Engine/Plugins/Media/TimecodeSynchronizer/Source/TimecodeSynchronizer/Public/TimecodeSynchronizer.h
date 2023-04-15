@@ -222,7 +222,7 @@ private:
 
 	/* Associated source pointers */
 	UPROPERTY(VisibleAnywhere, Transient, Category = Debug, Meta=(DisplayName="Input Source"))
-	UTimeSynchronizationSource* InputSource;
+	TObjectPtr<UTimeSynchronizationSource> InputSource;
 
 	FTimecodeSynchronizerActiveTimecodedInputSource(const FTimecodeSynchronizerActiveTimecodedInputSource&) = delete;
 	FTimecodeSynchronizerActiveTimecodedInputSource& operator=(const FTimecodeSynchronizerActiveTimecodedInputSource&) = delete;
@@ -312,8 +312,8 @@ public:
 	/** Returns the list of sources that are not actively being used in synchronization. */
 	const TArray<FTimecodeSynchronizerActiveTimecodedInputSource>& GetNonSynchronizedSources() const { return NonSynchronizedSources; }
 	
-	/** Returns the index of the Master Synchronization Source in the Synchronized Sources list. */
-	int32 GetActiveMasterSynchronizationTimecodedSourceIndex() const { return MasterSynchronizationSourceIndex; }
+	/** Returns the index of the Main Synchronization Source in the Synchronized Sources list. */
+	int32 GetActiveMainSynchronizationTimecodedSourceIndex() const { return MainSynchronizationSourceIndex; }
 
 	/**
 	 * Get an event delegate that is invoked when a Asset synchronization event occurred.
@@ -470,14 +470,14 @@ public:
 
 	/** Custom strategy to tick in a interval. */
 	UPROPERTY(EditAnywhere, Instanced, Category="Timecode Provider", Meta=(DisplayName="Timecode Source"))
-	UTimecodeProvider* TimecodeProvider;
+	TObjectPtr<UTimecodeProvider> TimecodeProvider;
 
 	/**
 	 * Index of the source that drives the synchronized Timecode.
 	 * The source need to be timecoded and flag as bUseForSynchronization
 	 */
 	UPROPERTY(EditAnywhere, Category="Timecode Provider")
-	int32 MasterSynchronizationSourceIndex;
+	int32 MainSynchronizationSourceIndex;
 
 public:
 	/** Enable verification of margin between synchronized time and source time */
@@ -501,12 +501,12 @@ public:
 	//! ONLY MODIFY THESE IN EDITOR
 	//! TODO: Deprecate this and make it private.
 	UPROPERTY(EditAnywhere, Instanced, Category="Input")
-	TArray<UTimeSynchronizationSource*> TimeSynchronizationInputSources;
+	TArray<TObjectPtr<UTimeSynchronizationSource>> TimeSynchronizationInputSources;
 
 private:
 
 	UPROPERTY(Transient)
-	TArray<UTimeSynchronizationSource*> DynamicSources;
+	TArray<TObjectPtr<UTimeSynchronizationSource>> DynamicSources;
 
 	/** What mode will be used for synchronization. */
 	UPROPERTY(EditAnywhere, Category = "Synchronization")
@@ -540,13 +540,13 @@ private:
 	TArray<FTimecodeSynchronizerActiveTimecodedInputSource> NonSynchronizedSources;
 
 	UPROPERTY(Transient)
-	UFixedFrameRateCustomTimeStep* RegisteredCustomTimeStep;
+	TObjectPtr<UFixedFrameRateCustomTimeStep> RegisteredCustomTimeStep;
 
 	UPROPERTY(Transient)
-	UTimecodeProvider* CachedPreviousTimecodeProvider;
+	TObjectPtr<UTimecodeProvider> CachedPreviousTimecodeProvider;
 
 	UPROPERTY(Transient)
-	UTimecodeProvider* CachedProxiedTimecodeProvider;
+	TObjectPtr<UTimecodeProvider> CachedProxiedTimecodeProvider;
 
 	UPROPERTY(Transient, DuplicateTransient, VisibleAnywhere, Category = "Synchronization")
 	int32 ActualFrameOffset;
@@ -575,7 +575,7 @@ private:
 	bool bPreviousUseFixedFrameRate;
 	
 	/** Index of the active source that drives the synchronized Timecode*/
-	int32 ActiveMasterSynchronizationTimecodedSourceIndex;
+	int32 ActiveMainSynchronizationTimecodedSourceIndex;
 
 	/** An event delegate that is invoked when a synchronization event occurred. */
 	FOnTimecodeSynchronizationEvent SynchronizationEvent;

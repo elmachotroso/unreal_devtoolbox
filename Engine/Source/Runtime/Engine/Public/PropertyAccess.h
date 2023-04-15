@@ -345,6 +345,9 @@ enum class EPropertyAccessCopyType : uint8
 
 	PromoteArrayFloatToDouble,
 	DemoteArrayDoubleToFloat,
+
+	PromoteMapValueFloatToDouble,
+	DemoteMapValueDoubleToFloat,
 };
 
 // A property copy, represents a one-to-many copy operation
@@ -398,6 +401,8 @@ struct FPropertyAccessLibrary
 
 	FPropertyAccessLibrary() = default;
 
+	ENGINE_API const FPropertyAccessLibrary& operator =(const FPropertyAccessLibrary& Other);
+
 private:
 	friend struct FPropertyAccessSystem;
 	friend struct FPropertyAccessEditorSystem;
@@ -424,15 +429,12 @@ private:
 	TArray<FPropertyAccessCopyBatch> CopyBatchArray;
 	
 	// All source property accesses
-	UPROPERTY(Transient)
 	TArray<FPropertyAccessIndirectionChain> SrcAccesses;
 
 	// All destination accesses (that are copied to our instances).
-	UPROPERTY(Transient)
 	TArray<FPropertyAccessIndirectionChain> DestAccesses;
 
 	// Indirections
-	UPROPERTY(Transient)
 	TArray<FPropertyAccessIndirection> Indirections;
 	
 	// Whether this library has been post-loaded

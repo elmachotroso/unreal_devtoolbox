@@ -4,28 +4,12 @@
 
 #include "../Common.ush"
 #include "NaniteDataDecode.ush"
+#include "NaniteHierarchyTraversalCommon.ush"
 
 #define CULLING_PASS_NO_OCCLUSION				0
 #define CULLING_PASS_OCCLUSION_MAIN				1
 #define CULLING_PASS_OCCLUSION_POST				2
 #define CULLING_PASS_EXPLICIT_LIST				3
-
-uint MaxCandidateClusters;
-
-struct FQueuePassState
-{
-	uint	ClusterBatchReadOffset;	// Offset in batches
-	uint	ClusterWriteOffset;		// Offset in individual clusters
-	uint	NodeReadOffset;
-	uint	NodeWriteOffset;
-	int		NodeCount;				// Can temporarily be conservatively higher
-};
-
-struct FQueueState
-{
-	uint			TotalClusters;
-	FQueuePassState PassState[2];
-};
 
 
 struct FCandidateNode
@@ -39,7 +23,6 @@ struct FCandidateNode
 
 uint GetCandidateNodeSize(bool bPostPass)		{ return bPostPass ? 12u : 8u; }
 uint GetCandidateClusterSize()					{ return 8u; }
-uint GetMaxClusterBatches()						{ return MaxCandidateClusters / NANITE_PERSISTENT_CLUSTER_CULLING_GROUP_SIZE; }
 
 // NodesAndClusterBatches layout: Main Cluster Batches, Main Candidate Nodes, Post Cluster Batches, Post Candidate Nodes
 uint GetClusterBatchesOffset()					{ return 0u; }
@@ -47,22 +30,15 @@ uint GetCandidateNodesOffset()					{ return GetMaxClusterBatches() * 4u; }
 uint GetNodesAndBatchesOffset(bool bPostPass)	{ return bPostPass ? (GetCandidateNodesOffset() + MaxNodes * GetCandidateNodeSize(false)) : 0u; }
 uint GetCandidateClusterOffset()				{ return 0u; }
 
-FVisibleCluster LoadCandidateClusterCoherent(globallycoherent RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex)
-{
-	checkSlow(ClusterIndex < MaxCandidateClusters);
-	uint4 RawData = uint4(CandidateClusters.Load2(GetCandidateClusterOffset() + ClusterIndex * GetCandidateClusterSize()), 0u, 0u);
-	return UnpackVisibleCluster(RawData, false);
-}
-
 // CandidateClusters must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-void StoreCandidateClusterCoherentNoCheck(globallycoherent RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex, FVisibleCluster VisibleCluster)
+void StoreCandidateClusterCoherentNoCheck(RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex, FVisibleCluster VisibleCluster)
 {
-	uint4 RawData = PackVisibleCluster(ClusterIndex, VisibleCluster, false);
+	uint4 RawData = PackVisibleCluster(VisibleCluster, false);
 	CandidateClusters.Store2(GetCandidateClusterOffset() + ClusterIndex * GetCandidateClusterSize(), RawData.xy);
 }
 
 // CandidateClusters must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-void StoreCandidateClusterCoherent(globallycoherent RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex, FVisibleCluster VisibleCluster)
+void StoreCandidateClusterCoherent(RWCoherentByteAddressBuffer CandidateClusters, uint ClusterIndex, FVisibleCluster VisibleCluster)
 {
 	checkSlow(ClusterIndex < MaxCandidateClusters);
 	StoreCandidateClusterCoherentNoCheck(CandidateClusters, ClusterIndex, VisibleCluster);
@@ -70,7 +46,7 @@ void StoreCandidateClusterCoherent(globallycoherent RWCoherentByteAddressBuffer 
 
 void StoreVisibleCluster(RWByteAddressBuffer VisibleClusters, uint ClusterIdx, FVisibleCluster VisibleCluster, bool bHasPageData = false)
 {
-	uint4 RawData = PackVisibleCluster(ClusterIdx, VisibleCluster, bHasPageData);
+	uint4 RawData = PackVisibleCluster(VisibleCluster, bHasPageData);
 	if (bHasPageData)
 	{
 		VisibleClusters.Store3(ClusterIdx * 12, RawData.xyz);
@@ -83,12 +59,15 @@ void StoreVisibleCluster(RWByteAddressBuffer VisibleClusters, uint ClusterIdx, F
 
 uint4 PackCandidateNode(FCandidateNode Node)
 {
-	// Leave at least one bit unused in each of the fields, so 0xFFFFFFFFu is never a valid value. Checked in C++ code.
+	// Leave at least one bit unused in each of the fields, so 0xFFFFFFFFu is never a valid value.
 	uint4 RawData;
 	RawData.x = (Node.InstanceId << NANITE_NUM_CULLING_FLAG_BITS) | Node.Flags;
 	RawData.y = (Node.ViewId << NANITE_MAX_NODES_PER_PRIMITIVE_BITS) | Node.NodeIndex;
 	RawData.z = Node.EnabledBitmask;
 	RawData.w = 0;
+
+	checkSlow(RawData.x != 0xFFFFFFFFu && RawData.y != 0xFFFFFFFFu && RawData.z != 0xFFFFFFFFu);
+
 	return RawData;
 }
 
@@ -103,13 +82,8 @@ FCandidateNode UnpackCandidateNode(uint4 RawData, bool bHasEnabledMask)
 	return Node;
 }
 
-bool IsNodeDataReady(uint4 RawData, bool bHasEnabledMask)
-{
-	return RawData.x != 0xFFFFFFFFu && RawData.y != 0xFFFFFFFFu && (!bHasEnabledMask || RawData.z != 0xFFFFFFFFu);
-}
-
 // NodesAndClusterBatches must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-uint4 LoadCandidateNodeDataCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, bool bPostPass)
+uint4 LoadCandidateNodeDataCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, bool bPostPass)
 {
 	checkSlow(NodeIndex < MaxNodes);
 	const uint Offset = GetNodesAndBatchesOffset(bPostPass) + GetCandidateNodesOffset();
@@ -128,7 +102,7 @@ void StoreCandidateNodeData(RWByteAddressBuffer NodesAndClusterBatches, uint Nod
 }
 
 // NodesAndClusterBatches must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-void StoreCandidateNodeDataCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, uint4 RawData, bool bPostPass)
+void StoreCandidateNodeDataCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, uint4 RawData, bool bPostPass)
 {
 	checkSlow(NodeIndex < MaxNodes);
 	const uint Offset = GetNodesAndBatchesOffset(bPostPass) + GetCandidateNodesOffset();
@@ -145,7 +119,7 @@ void StoreCandidateNode(RWByteAddressBuffer NodesAndClusterBatches, uint NodeInd
 }
 
 // NodesAndClusterBatches must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-void StoreCandidateNodeCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, FCandidateNode Node, bool bPostPass)
+void StoreCandidateNodeCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, FCandidateNode Node, bool bPostPass)
 {
 	checkSlow(NodeIndex < MaxNodes);
 	StoreCandidateNodeDataCoherent(NodesAndClusterBatches, NodeIndex, PackCandidateNode(Node), bPostPass);
@@ -158,19 +132,19 @@ void ClearCandidateNode(RWByteAddressBuffer NodesAndClusterBatches, uint NodeInd
 }
 
 // NodesAndClusterBatches must be globallycoherent here, otherwise DXC will make buffer access non-globallycoherent when targeting SM6.6.
-void ClearCandidateNodeCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, bool bPostPass)
+void ClearCandidateNodeCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint NodeIndex, bool bPostPass)
 {
 	checkSlow(NodeIndex < MaxNodes);
 	StoreCandidateNodeDataCoherent(NodesAndClusterBatches, NodeIndex, 0xFFFFFFFFu, bPostPass);
 }
 
-uint LoadClusterBatchCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, bool bPostPass)
+uint LoadClusterBatchCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, bool bPostPass)
 {
 	checkSlow(BatchIndex < GetMaxClusterBatches());
 	return NodesAndClusterBatches.Load(GetNodesAndBatchesOffset(bPostPass) + GetClusterBatchesOffset() + BatchIndex * 4);
 }
 
-void AddToClusterBatchCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, uint Add, bool bPostPass)
+void AddToClusterBatchCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, uint Add, bool bPostPass)
 {
 	checkSlow(BatchIndex < GetMaxClusterBatches());
 	NodesAndClusterBatches.InterlockedAdd(GetNodesAndBatchesOffset(bPostPass) + GetClusterBatchesOffset() + BatchIndex * 4, Add);
@@ -182,7 +156,7 @@ void ClearClusterBatch(RWByteAddressBuffer NodesAndClusterBatches, uint BatchInd
 	NodesAndClusterBatches.Store(GetNodesAndBatchesOffset(bPostPass) + GetClusterBatchesOffset() + BatchIndex * 4, 0);
 }
 
-void ClearClusterBatchCoherent(globallycoherent RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, bool bPostPass)
+void ClearClusterBatchCoherent(RWCoherentByteAddressBuffer NodesAndClusterBatches, uint BatchIndex, bool bPostPass)
 {
 	checkSlow(BatchIndex < GetMaxClusterBatches());
 	NodesAndClusterBatches.Store(GetNodesAndBatchesOffset(bPostPass) + GetClusterBatchesOffset() + BatchIndex * 4, 0);

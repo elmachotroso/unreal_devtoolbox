@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/ObjectPtr.h"
 
 class SWidget;
 class FDragDropOperation;
@@ -81,6 +82,13 @@ public:
 	static void SortClusterNodesByHost(const TMap<FString, UDisplayClusterConfigurationClusterNode*>& InClusterNodes, TMap<FString, TMap<FString, UDisplayClusterConfigurationClusterNode*>>& OutSortedNodes);
 
 	/**
+	 * Sorts a list of cluster nodes by their host.
+	 * @param InClusterNodes - The list of nodes to sort
+	 * @param OutSortedNodes - The sorted nodes, indexed by the Host property of the cluster nodes
+	 */
+	static void SortClusterNodesByHost(const TMap<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& InClusterNodes, TMap<FString, TMap<FString, UDisplayClusterConfigurationClusterNode*>>& OutSortedNodes);
+
+	/**
 	 * Attempts to find a preexisting display data object for the specified host, and if one can't be found, creates a new one.
 	 * @param Cluster - The cluster to find the host display data object in
 	 * @param HostIPAddress - The IP address of the host to find the display data for
@@ -155,14 +163,14 @@ public:
 	 * @param NewClusterNodeName - Optional name to add the new cluster node under in the cluster. If not supplied, the cluster node's current name is used, if possible.
 	 * @return An updated pointer to the cluster node added to the cluster.
 	 */
-	static UDisplayClusterConfigurationClusterNode* AddClusterNodeToCluster(UDisplayClusterConfigurationClusterNode* ClusterNode, UDisplayClusterConfigurationCluster* Cluster, FString NewClusterNodeName = "");
+	static DISPLAYCLUSTERCONFIGURATOR_API UDisplayClusterConfigurationClusterNode* AddClusterNodeToCluster(UDisplayClusterConfigurationClusterNode* ClusterNode, UDisplayClusterConfigurationCluster* Cluster, FString NewClusterNodeName = "");
 
 	/**
 	 * Removes a cluster node from the cluster that owns it. The owning cluster is retrieved using the cluster node's Outer.
 	 * @param ClusterNode - The cluster node to remove
 	 * @returns true if the cluster node was successfully removed from its owning cluster
 	 */
-	static bool RemoveClusterNodeFromCluster(UDisplayClusterConfigurationClusterNode* ClusterNode);
+	static DISPLAYCLUSTERCONFIGURATOR_API bool RemoveClusterNodeFromCluster(UDisplayClusterConfigurationClusterNode* ClusterNode);
 
 	/**
 	 * Renames a cluster node, which involves changing the key that the cluster node is stored under in its parent cluster.
@@ -177,7 +185,7 @@ public:
 	 * @param ClusterNode - The cluster node to set as the primary node
 	 * @return true if the cluster node was successfully set as the primary node
 	 */
-	static bool SetClusterNodeAsPrimary(UDisplayClusterConfigurationClusterNode* ClusterNode);
+	static bool DISPLAYCLUSTERCONFIGURATOR_API SetClusterNodeAsPrimary(UDisplayClusterConfigurationClusterNode* ClusterNode);
 
 	/**
 	 * Gets the name that the viewport is stored under in its parent cluster node.
@@ -201,7 +209,7 @@ public:
 	 * @param NewViewportName - Optional name to add the new viewport under in the cluster node. If not supplied, the viewport's current name is used, if possible.
 	 * @return An updated pointer to the viewport added to the cluster.
 	 */
-	static UDisplayClusterConfigurationViewport* AddViewportToClusterNode(UDisplayClusterConfigurationViewport* Viewport, UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewViewportName = "");
+	static DISPLAYCLUSTERCONFIGURATOR_API UDisplayClusterConfigurationViewport* AddViewportToClusterNode(UDisplayClusterConfigurationViewport* Viewport, UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewViewportName = "");
 
 	/**
 	 * Removes a viewport from the cluster node that owns it. The owning cluster node is retrieved using the viewport's Outer.

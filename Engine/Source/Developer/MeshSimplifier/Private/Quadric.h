@@ -67,6 +67,11 @@ struct TVec3
 		: x( v.X ), y( v.Y ), z( v.Z )
 	{}
 
+	TVec3 operator-() const
+	{
+		return TVec3<T>( -x, -y, -z );
+	}
+
 	TVec3 operator*( T Scalar ) const
 	{
 		return TVec3<T>(
@@ -159,6 +164,7 @@ class FEdgeQuadric
 {
 public:
 	FEdgeQuadric() {}
+	FEdgeQuadric( const QVec3 p0, const QVec3 p1, const float Weight );
 	FEdgeQuadric( const QVec3 p0, const QVec3 p1, const QVec3 FaceNormal, const float Weight );
 	
 	void		Zero();
@@ -227,6 +233,11 @@ class FQuadric
 {
 public:
 				FQuadric() {}
+				// Distance from point
+				FQuadric( const QVec3 p );
+				// Distance from line, n must be normalized
+				FQuadric( const QVec3 n, const QVec3 p );
+				// Distance from triangle
 				FQuadric( const QVec3 p0, const QVec3 p1, const QVec3 p2 );
 	
 	void		Zero();
@@ -301,8 +312,11 @@ inline void FQuadric::Add( const FEdgeQuadric& RESTRICT EdgeQuadric, const FVect
 	nyz += EdgeQuadric.nyz;
 
 	QScalar aDist = EdgeQuadric.a * Dist;
-	dn += aDist * EdgeQuadric.n;
-	d2 += aDist * Dist;
+	//dn += aDist * EdgeQuadric.n;
+	//d2 += aDist * Dist;
+
+	dn += EdgeQuadric.a * -p0 - aDist * EdgeQuadric.n;
+	d2 += EdgeQuadric.a * (p0 | p0) - aDist * Dist;
 }
 
 
@@ -516,7 +530,7 @@ inline void FQuadricAttrOptimizer::AddQuadric( const FQuadric& RESTRICT q )
 
 	dn += q.dn;
 	
-	a += q.a;
+	//a += q.a;
 }
 
 inline void FQuadricAttrOptimizer::AddQuadric( const FQuadricAttr& RESTRICT q, uint32 NumAttributes )

@@ -3,6 +3,7 @@
 #include "MotoSynthEngine.h"
 #include "MotoSynthModule.h"
 #include "MotoSynthDataManager.h"
+#include "DSP/FloatArrayMath.h"
 
 static int32 MotosynthDisabledCVar = 0;
 FAutoConsoleVariableRef CVarDisableMotoSynth(
@@ -492,14 +493,16 @@ void FMotoSynthEngine::GenerateGranularEngine(float* OutAudio, int32 NumSamples)
 		CurrentRPM += RPMDelta;
 	}
 
+	TArrayView<float> OutAudioView(OutAudio, NumSamples);
+
 	if (!FMath::IsNearlyEqual(TargetGranularEngineVolume, GranularEngineVolume))
 	{
-		Audio::FadeBufferFast(OutAudio, NumSamples, GranularEngineVolume, TargetGranularEngineVolume);
+		Audio::ArrayFade(OutAudioView, GranularEngineVolume, TargetGranularEngineVolume);
 		GranularEngineVolume = TargetGranularEngineVolume;
 	}
 	else if (!FMath::IsNearlyEqual(GranularEngineVolume, 1.0f))
 	{
-		Audio::MultiplyBufferByConstantInPlace(OutAudio, NumSamples, GranularEngineVolume);
+		Audio::ArrayMultiplyByConstantInPlace(OutAudioView, GranularEngineVolume);
 	}
 
 	// Apply the filter and mix the audio into the output buffer

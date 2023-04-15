@@ -50,9 +50,9 @@ void FLandscapeActorDesc::Serialize(FArchive& Ar)
 
 void FLandscapeActorDesc::Unload()
 {
-	if (ALandscapeStreamingProxy* LandscapeStreamingProxy = Cast<ALandscapeStreamingProxy>(GetActor()))
+	if (ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(GetActor()))
 	{
-		LandscapeStreamingProxy->ActorDescReferences.Empty();
+		LandscapeProxy->ActorDescReferences.Empty();
 	}
 
 	FPartitionActorDesc::Unload();
@@ -71,7 +71,14 @@ bool FLandscapeActorDesc::Equals(const FWorldPartitionActorDesc* Other) const
 
 const FGuid& FLandscapeActorDesc::GetSceneOutlinerParent() const
 {
-	return LandscapeActorGuid;
+	// Landscape can't parent itself
+	if (LandscapeActorGuid != GetGuid())
+	{
+		return LandscapeActorGuid;
+	}
+
+	static FGuid NoParent;
+	return NoParent;
 }
 
 #endif

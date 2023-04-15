@@ -6,6 +6,8 @@
 #include "UObject/EditorObjectVersion.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScrollBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -37,8 +39,8 @@ UScrollBox::UScrollBox(const FObjectInitializer& ObjectInitializer)
 {
 	bIsVariable = false;
 
-	Visibility = ESlateVisibility::Visible;
-	Clipping = EWidgetClipping::ClipToBounds;
+	SetVisibilityInternal(ESlateVisibility::Visible);
+	SetClipping(EWidgetClipping::ClipToBounds);
 
 	if (DefaultScrollBoxStyle == nullptr)
 	{
@@ -115,7 +117,7 @@ void UScrollBox::OnSlotRemoved(UPanelSlot* InSlot)
 	// Remove the widget from the live slot if it exists.
 	if ( MyScrollBox.IsValid() && InSlot->Content)
 	{
-		TSharedPtr<SWidget> Widget = InSlot->Content->GetCachedWidget();
+		const TSharedPtr<SWidget> Widget = InSlot->Content->GetCachedWidget();
 		if ( Widget.IsValid() )
 		{
 			MyScrollBox->RemoveSlot(Widget.ToSharedRef());
@@ -184,6 +186,16 @@ float UScrollBox::GetScrollOffsetOfEnd() const
 	if (MyScrollBox.IsValid())
 	{
 		return MyScrollBox->GetScrollOffsetOfEnd();
+	}
+
+	return 0;
+}
+
+float UScrollBox::GetViewFraction() const
+{
+	if ( MyScrollBox.IsValid() )
+	{
+		return MyScrollBox->GetViewFraction();
 	}
 
 	return 0;
@@ -260,36 +272,6 @@ void UScrollBox::Serialize(FArchive& Ar)
 	{
 		// Implicit padding of 2 was removed, so ScrollbarThickness value must be incremented by 4.
 		ScrollbarThickness += FVector2D(4.0f, 4.0f);
-	}
-}
-
-void UScrollBox::PostLoad()
-{
-	Super::PostLoad();
-
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
-	{
-		if ( Style_DEPRECATED != nullptr )
-		{
-			const FScrollBoxStyle* StylePtr = Style_DEPRECATED->GetStyle<FScrollBoxStyle>();
-			if ( StylePtr != nullptr )
-			{
-				WidgetStyle = *StylePtr;
-			}
-
-			Style_DEPRECATED = nullptr;
-		}
-
-		if ( BarStyle_DEPRECATED != nullptr )
-		{
-			const FScrollBarStyle* StylePtr = BarStyle_DEPRECATED->GetStyle<FScrollBarStyle>();
-			if ( StylePtr != nullptr )
-			{
-				WidgetBarStyle = *StylePtr;
-			}
-
-			BarStyle_DEPRECATED = nullptr;
-		}
 	}
 }
 
@@ -466,3 +448,4 @@ void UScrollBox::OnDescendantDeselectedByDesigner( UWidget* DescendantWidget )
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

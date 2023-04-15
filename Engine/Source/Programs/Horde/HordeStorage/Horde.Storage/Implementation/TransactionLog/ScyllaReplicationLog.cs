@@ -8,6 +8,7 @@ using Cassandra;
 using Cassandra.Mapping;
 using Dasync.Collections;
 using Datadog.Trace;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
 
@@ -51,6 +52,15 @@ namespace Horde.Storage.Implementation
                 PRIMARY KEY ((namespace))
             );"  
             ));
+
+            _session.Execute(new SimpleStatement(@"CREATE TABLE IF NOT EXISTS replication_state (
+                namespace varchar,
+                name varchar,
+                last_bucket varchar,
+                last_event uuid,
+                PRIMARY KEY ((namespace), name)
+            );"  
+            ));
         }
 
         public async IAsyncEnumerable<NamespaceId> GetNamespaces()
@@ -63,11 +73,11 @@ namespace Horde.Storage.Implementation
             }
         }
 
-        public async Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timestamp)
+        public async Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, IoHashKey key, BlobIdentifier objectBlob, DateTime? timestamp)
         {
-            using Scope _ = Tracer.Instance.StartActive("scylla.insert_add_event");
+            using IScope _ = Tracer.Instance.StartActive("scylla.insert_add_event");
             Task addNamespaceTask = PotentiallyAddNamespace(ns);
-            DateTime timeBucket = timestamp.GetValueOrDefault(DateTime.Now);
+            DateTime timeBucket = timestamp.GetValueOrDefault(DateTime.UtcNow);
             ScyllaReplicationLogEvent log = new ScyllaReplicationLogEvent(ns.ToString(), bucket.ToString(), key.ToString(), timeBucket, ScyllaReplicationLogEvent.OpType.Added, objectBlob);
             await _mapper.InsertAsync<ScyllaReplicationLogEvent>(log, insertNulls: false,  ttl: (int)_settings.CurrentValue.ReplicationLogTimeToLive.TotalSeconds);
 
@@ -75,12 +85,12 @@ namespace Horde.Storage.Implementation
             return (log.GetReplicationBucketIdentifier(), log.ReplicationId);
         }
 
-        public async Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timestamp)
+        public async Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, IoHashKey key, DateTime? timestamp)
         {
-            using Scope _ = Tracer.Instance.StartActive("scylla.insert_delete_event");
+            using IScope _ = Tracer.Instance.StartActive("scylla.insert_delete_event");
             Task addNamespaceTask = PotentiallyAddNamespace(ns);
-            DateTime timeBucket = timestamp.GetValueOrDefault(DateTime.Now);
-            ScyllaReplicationLogEvent log = new ScyllaReplicationLogEvent(ns.ToString(), bucket.ToString(), key.ToString(), timeBucket, ScyllaReplicationLogEvent.OpType.Deleted, objectBlob);
+            DateTime timeBucket = timestamp.GetValueOrDefault(DateTime.UtcNow);
+            ScyllaReplicationLogEvent log = new ScyllaReplicationLogEvent(ns.ToString(), bucket.ToString(), key.ToString(), timeBucket, ScyllaReplicationLogEvent.OpType.Deleted, null);
             await _mapper.InsertAsync<ScyllaReplicationLogEvent>(log, insertNulls: false,  ttl: (int)_settings.CurrentValue.ReplicationLogTimeToLive.TotalSeconds);
 
             await addNamespaceTask;
@@ -94,20 +104,29 @@ namespace Horde.Storage.Implementation
 
         public async IAsyncEnumerable<ReplicationLogEvent> Get(NamespaceId ns, string? lastBucket, Guid? lastEvent)
         {
-            using Scope getReplicationLogScope = Tracer.Instance.StartActive("scylla.get_replication_log");
+            using IScope getReplicationLogScope = Tracer.Instance.StartActive("scylla.get_replication_log");
+
+            if (lastBucket == "now")
+            {
+                // for debug purposes we allow you to list the latest bucket
+                lastBucket = DateTime.UtcNow.ToHourlyBucket().ToReplicationBucketIdentifier();
+            }
+
             IAsyncEnumerable<long> buckets = FindReplicationBuckets(ns, lastBucket);
 
             // loop thru the buckets starting with the oldest to try and find were lastBucket refers to
             bool bucketFound = false;
             await foreach (long bucketField in buckets)
             {
-                using Scope readReplicationScope = Tracer.Instance.StartActive("scylla.read_replication_bucket");
+                using IScope readReplicationScope = Tracer.Instance.StartActive("scylla.read_replication_bucket");
                 DateTime t = DateTime.FromFileTimeUtc(bucketField);
                 string bucket = t.ToReplicationBucketIdentifier();
                 readReplicationScope.Span.ResourceName = bucket;
 
                 if (lastBucket != null && bucket != lastBucket)
+                {
                     continue;
+                }
 
                 // at least one bucket was found
                 bucketFound = true;
@@ -127,13 +146,15 @@ namespace Horde.Storage.Implementation
                     }
 
                     if (skipEvents)
+                    {
                         continue;
+                    }
 
                     yield return new ReplicationLogEvent(
                         new NamespaceId(scyllaReplicationLog.Namespace),
-                        new BucketId(scyllaReplicationLog.Bucket!),
-                        new KeyId(scyllaReplicationLog.Key!),
-                        scyllaReplicationLog.ObjectIdentifier!.AsBlobIdentifier(),
+                        new BucketId(scyllaReplicationLog.Bucket),
+                        new IoHashKey(scyllaReplicationLog.Key),
+                        scyllaReplicationLog.ObjectIdentifier?.AsBlobIdentifier(),
                         scyllaReplicationLog.ReplicationId,
                         scyllaReplicationLog.GetReplicationBucketIdentifier(),
                         scyllaReplicationLog.GetReplicationBucketTimestamp(),
@@ -158,45 +179,39 @@ namespace Horde.Storage.Implementation
 
         private async IAsyncEnumerable<long> FindReplicationBuckets(NamespaceId ns, string? lastBucket)
         {
-            using Scope findReplicationBucketScope = Tracer.Instance.StartActive("scylla.find_replication_buckets");
+            using IScope findReplicationBucketScope = Tracer.Instance.StartActive("scylla.find_replication_buckets");
+
+            // ignore any bucket that is older then a cutoff, as that can cause us to end up scanning thru a lot of hours that will never exist (incremental logs are deleted after 7 days)
+            DateTime oldCutoff = DateTime.UtcNow.AddDays(-14);
 
             DateTime startBucketTime;
+
             if (lastBucket != null)
             {
                 long bucket = FromReplicationBucketIdentifier(lastBucket);
                 startBucketTime = DateTime.FromFileTimeUtc(bucket);
+                if (startBucketTime < oldCutoff)
+                {
+                    // attempting to use a old bucket, this will not exist anymore so will break here
+                    yield break;
+                }
+
                 yield return bucket;
             }
             else
             {
-                using Scope _ = Tracer.Instance.StartActive("scylla.determine_first_replication_bucket");
-                SortedSet<long> buckets = new SortedSet<long>();
+                using IScope _ = Tracer.Instance.StartActive("scylla.determine_first_replication_bucket");
 
-                // fetch all the buckets that exists and sort them based on time
-                RowSet replicationBuckets = await _session.ExecuteAsync(new SimpleStatement("SELECT replication_bucket FROM replication_log WHERE namespace = ? PER PARTITION LIMIT 1 ALLOW FILTERING", ns.ToString()));
-                foreach (Row replicationBucket in replicationBuckets)
-                {
-                    long bucketField = (long)replicationBucket["replication_bucket"];
-                    buckets.Add(bucketField);
-                }
-
-                // if there are no buckets we stop here
-                if (buckets.Count == 0)
-                    yield break;
-
-                // pick the first bucket
-                long bucket = buckets.First();
-                startBucketTime = DateTime.FromFileTimeUtc(bucket);
-                yield return bucket;
+                // we should have no data older then the ttl to lets just assume that the bucket to start searching from is now - time to live
+                DateTime oldestTimestamp = DateTime.UtcNow.AddSeconds(-1 * _settings.CurrentValue.ReplicationLogTimeToLive.TotalSeconds);
+                startBucketTime = oldestTimestamp;
             }
 
-            // ignore any bucket that is older then a cutoff, as that can cause us to end up scanning thru a lot of hours that will never exist (incremental logs are deleted after 7 days)
-            DateTime oldCutoff = DateTime.Now.AddDays(-14);
             // we returned the start bucket earlier so now we start with the next one
             DateTime bucketTime = startBucketTime.AddHours(1.0).ToHourlyBucket();
-            while(bucketTime < DateTime.Now && bucketTime > oldCutoff)
+            while(bucketTime < DateTime.UtcNow && bucketTime > oldCutoff)
             {
-                using Scope _ = Tracer.Instance.StartActive("scylla.determine_replication_bucket_exists");
+                using IScope _ = Tracer.Instance.StartActive("scylla.determine_replication_bucket_exists");
                 // fetch all the buckets that exists and sort them based on time
                 IEnumerable<ScyllaReplicationLogEvent> logEvent = await _mapper.FetchAsync<ScyllaReplicationLogEvent>("WHERE namespace = ? AND replication_bucket = ? LIMIT 1", ns.ToString(), bucketTime.ToFileTimeUtc());
                 ScyllaReplicationLogEvent? e = logEvent.FirstOrDefault();
@@ -207,14 +222,16 @@ namespace Horde.Storage.Implementation
 
                 bucketTime = bucketTime.AddHours(1.0);
             }
-
         }
 
-        private long FromReplicationBucketIdentifier(string bucket)
+        private static long FromReplicationBucketIdentifier(string bucket)
         {
-            if (!bucket.StartsWith("rep-"))
+            if (!bucket.StartsWith("rep-", StringComparison.OrdinalIgnoreCase))
+            {
                 throw new ArgumentException($"Invalid bucket identifier: \"{bucket}\"", nameof(bucket));
-            string timestamp = bucket.Substring(bucket.IndexOf("-") + 1);
+            }
+
+            string timestamp = bucket.Substring(bucket.IndexOf("-", StringComparison.OrdinalIgnoreCase) + 1);
             long filetime = long.Parse(timestamp);
             return filetime;
         }
@@ -258,8 +275,20 @@ namespace Horde.Storage.Implementation
 
             foreach (ScyllaSnapshot snapshot in snapshots)
             {
-                yield return new SnapshotInfo(ns, new NamespaceId(snapshot.BlobNamespace), snapshot.BlobSnapshot.AsBlobIdentifier());
+                yield return new SnapshotInfo(ns, new NamespaceId(snapshot.BlobNamespace), snapshot.BlobSnapshot.AsBlobIdentifier(), snapshot.Id.GetDate().DateTime);
             }
+        }
+
+        public async Task UpdateReplicatorState(NamespaceId ns, string replicatorName, ReplicatorState newState)
+        {
+            await _mapper.UpdateAsync<ScyllaReplicationState>(new ScyllaReplicationState(ns, replicatorName, newState.LastBucket, newState.LastEvent));
+        }
+
+        public async Task<ReplicatorState?> GetReplicatorState(NamespaceId ns, string name)
+        {
+            ScyllaReplicationState? replicationState = await _mapper.FirstOrDefaultAsync<ScyllaReplicationState>("WHERE namespace = ? AND name = ?", ns.ToString(), name);
+
+            return replicationState?.ToReplicatorState();
         }
     }
 
@@ -280,15 +309,15 @@ namespace Horde.Storage.Implementation
             Key = null!;
         }
 
-        public ScyllaReplicationLogEvent(string @namespace, string bucket, string key, DateTime lastTimestamp, OpType opType, BlobIdentifier objectIdentifier)
+        public ScyllaReplicationLogEvent(string @namespace, string bucket, string key, DateTime lastTimestamp, OpType opType, BlobIdentifier? objectIdentifier)
         {
             Namespace = @namespace;
             Bucket = bucket;
             Key = key;
-            ReplicationBucket = lastTimestamp.ToHourlyBucket().ToFileTimeUtc();
+            ReplicationBucket = lastTimestamp.ToUniversalTime().ToHourlyBucket().ToFileTimeUtc();
             ReplicationId = TimeUuid.NewId(lastTimestamp);
             Type = (int)opType;
-            ObjectIdentifier = new ScyllaBlobIdentifier(objectIdentifier);
+            ObjectIdentifier = objectIdentifier != null ? new ScyllaBlobIdentifier(objectIdentifier) : null;
         }
 
         [Cassandra.Mapping.Attributes.PartitionKey]
@@ -326,8 +355,6 @@ namespace Horde.Storage.Implementation
         }
     }
 
-
-    
     [Cassandra.Mapping.Attributes.Table("replication_snapshot")]
     class ScyllaSnapshot
     {
@@ -347,8 +374,7 @@ namespace Horde.Storage.Implementation
         }
 
         [Cassandra.Mapping.Attributes.PartitionKey]
-        public string Namespace { get;set; }
-
+        public string Namespace { get; set; }
 
         [Cassandra.Mapping.Attributes.Column("id")]
         [Cassandra.Mapping.Attributes.ClusteringKey]
@@ -359,7 +385,6 @@ namespace Horde.Storage.Implementation
 
         [Cassandra.Mapping.Attributes.Column("blob_namespace")]
         public string BlobNamespace { get; set; }
-
     }
 
     [Cassandra.Mapping.Attributes.Table("replication_namespace")]
@@ -377,5 +402,45 @@ namespace Horde.Storage.Implementation
 
         [Cassandra.Mapping.Attributes.PartitionKey]
         public string Namespace { get;set; }
+    }
+
+    [Cassandra.Mapping.Attributes.Table("replication_state")]
+    class ScyllaReplicationState
+    {
+        public ScyllaReplicationState()
+        {
+            Namespace = null!;
+            Name = null!;
+            LastBucket = null!;
+        }
+
+        public ScyllaReplicationState(NamespaceId ns, string name, string? lastBucket, Guid? lastEvent)
+        {
+            Namespace = ns.ToString();
+            Name = name;
+            LastBucket = lastBucket;
+            LastEvent = lastEvent;
+        }
+
+        [Cassandra.Mapping.Attributes.PartitionKey]
+        public string Namespace { get; set; }
+
+        [Cassandra.Mapping.Attributes.ClusteringKey]
+        public string Name { get; set; }
+
+        [Cassandra.Mapping.Attributes.Column("last_bucket")]
+        public string? LastBucket { get; set; }
+
+        [Cassandra.Mapping.Attributes.Column("last_event")]
+        public Guid? LastEvent { get; set; }
+
+        public ReplicatorState ToReplicatorState()
+        {
+            return new ReplicatorState
+            {
+                LastBucket = LastBucket,
+                LastEvent = LastEvent
+            };
+        }
     }
 }

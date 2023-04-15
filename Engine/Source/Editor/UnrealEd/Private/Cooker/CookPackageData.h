@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <atomic>
 #include "CookTypes.h"
 #include "CookPackageSplitter.h"
 #include "Containers/Array.h"
@@ -16,6 +15,8 @@
 #include "HAL/CriticalSection.h"
 #include "HAL/Platform.h"
 #include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "PackageResultsMessage.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/GCObject.h"
 #include "UObject/NameTypes.h"
@@ -23,12 +24,20 @@
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
+#include <atomic>
+
 class FPreloadableFile;
 class FReferenceCollector;
 class ITargetPlatform;
+class FCbFieldView;
+class FCbWriter;
 class UCookOnTheFlyServer;
 class UObject;
 class UPackage;
+namespace UE::Cook { struct FConstructPackageData; }
+
+FCbWriter& operator<<(FCbWriter& Writer, const UE::Cook::FConstructPackageData& PackageData);
+bool LoadFromCompactBinary(FCbFieldView Field, UE::Cook::FConstructPackageData& PackageData);
 
 namespace UE::Cook
 {
@@ -42,7 +51,7 @@ struct FPendingCookedPlatformDataCancelManager;
 extern const TCHAR* GeneratedPackageSubPath;
 
 /** Flags specifying the behavior of FPackageData::SendToState */
-enum class ESendFlags
+enum class ESendFlags : uint8
 {
 	/**
 	 * PackageData will not be removed from queue for its old state and will not be added to queue for its new state.
@@ -66,6 +75,16 @@ enum class ESendFlags
 	QueueAddAndRemove = QueueAdd | QueueRemove,
 };
 ENUM_CLASS_FLAGS(ESendFlags);
+
+/** Data necessary to create an FPackageData without checking the disk, for e.g. AddExistingPackageDatasForPlatform */
+struct FConstructPackageData
+{
+	friend FCbWriter& ::operator<<(FCbWriter& Writer, const FConstructPackageData& PackageData);
+	friend bool ::LoadFromCompactBinary(FCbFieldView Field, FConstructPackageData& PackageData);
+
+	FName PackageName;
+	FName NormalizedFileName;
+};
 
 /**
  * Contains all the information the cooker uses for a package, during request, load, or save.  Once allocated, this
@@ -127,6 +146,7 @@ public:
 		bool bCookAttempted : 1;
 		bool bCookSucceeded : 1;
 		bool bExplored : 1;
+		bool bSaveTimedOut : 1;
 	};
 
 	FPackageData(FPackageDatas& PackageDatas, const FName& InPackageName, const FName& InFileName);
@@ -229,9 +249,9 @@ public:
 	 * FindOrAdd each TargetPlatform and set its flags: CookAttempted=false.
 	 * In Version that takes no TargetPlatform, CookAttempted is cleared from all existing platforms.
 	 */
-	void SetPlatformsNotCooked(const TConstArrayView<const ITargetPlatform*> TargetPlatforms);
-	void SetPlatformsNotCooked();
-	void SetPlatformNotCooked(const ITargetPlatform* TargetPlatform);
+	void ClearCookProgress(const TConstArrayView<const ITargetPlatform*> TargetPlatforms);
+	void ClearCookProgress();
+	void ClearCookProgress(const ITargetPlatform* TargetPlatform);
 
 	/** Access the information about platforms interacted with by *this. */
 	const TSortedMap<const ITargetPlatform*, FPlatformData>& GetPlatformDatas() const;
@@ -356,6 +376,12 @@ public:
 	void CheckObjectCacheEmpty() const;
 	/** Populate CachedObjectsInOuter if not already populated. Invalid to call except when in the save state. */
 	void CreateObjectCache();
+	/**
+	 * Look for new Objects that were created during BeginCacheForCookedPlatformData calls, and if found add
+	 * them to the ObjectCache and set state so that we call BeginCacheForCookedPlatformData on the new objects.
+	 * ErrorExits if this creation of new objects happens too many times.
+	 */
+	EPollStatus RefreshObjectCache(bool& bOutFoundNewObjects);
 	/** Clear the CachedObjectsInOuter list, when e.g. leaving the save state. */
 	void ClearObjectCache();
 
@@ -363,6 +389,8 @@ public:
 	int32& GetNumPendingCookedPlatformData();
 	const int32& GetCookedPlatformDataNextIndex() const;
 	int32& GetCookedPlatformDataNextIndex();
+	int32& GetNumRetriesBeginCacheOnObjects();
+	static int32 GetMaxNumRetriesBeginCacheOnObjects();
 
 	/** Get/Set the flag for whether CachedObjectsInOuter is populated. Always false except during save state. */
 	bool GetHasSaveCache() const { return static_cast<bool>(bHasSaveCache); }
@@ -385,12 +413,18 @@ public:
 	 */
 	bool GetCookedPlatformDataComplete() const { return static_cast<bool>(bCookedPlatformDataComplete); }
 	void SetCookedPlatformDataComplete(bool bValue) { bCookedPlatformDataComplete = bValue != 0; }
-	/** Check whether savestate contracts on the PackageData were invalidated by by e.g. garbage collection. */
-	bool IsSaveInvalidated() const;
+	/**
+	 * Check whether savestate contracts on the PackageData were invalidated by by e.g. garbage collection.
+	 * Request demotion if so unless we have a contract to keep it, in which case it is fixed up.
+	 */
+	void UpdateSaveAfterGarbageCollect(bool& bOutDemote);
 
-	/** Get/Set the flag for whether BeginPrepareSave has been called and returned an error. */
-	bool GetHasBeginPrepareSaveFailed() const { return static_cast<bool>(bHasBeginPrepareSaveFailed); }
-	void SetHasBeginPrepareSaveFailed(bool bValue) { bHasBeginPrepareSaveFailed = bValue != 0; }
+	/** Get/Set the flag for whether PrepareSave has been called and returned an error. */
+	bool HasPrepareSaveFailed() const { return static_cast<bool>(bPrepareSaveFailed); }
+	void SetHasPrepareSaveFailed(bool bValue) { bPrepareSaveFailed = bValue != 0; }
+
+	bool IsPrepareSaveRequiresGC() const { return bPrepareSaveRequiresGC; }
+	void SetIsPrepareSaveRequiresGC(bool bValue) { bPrepareSaveRequiresGC = bValue != 0; }
 
 	/** Validate that the BeginCacheForCookedPlatformData-dependent fields are empty, when entering save. */
 	void CheckCookedPlatformDataEmpty() const;
@@ -424,11 +458,6 @@ public:
 	bool HasCompletedGeneration() const { return static_cast<bool>(bCompletedGeneration); }
 	/** Set whether the PackageData has done any necessary Generator steps and is ready for BeginCache calls. */
 	void SetCompletedGeneration(bool Value) { bCompletedGeneration = Value != 0; }
-	/** Return whether the package is a Generator package and has started but not completed generation */
-	bool IsGenerating() const
-	{
-		return GetGeneratorPackage() != nullptr && HasInitializedGeneratorSave() && !HasCompletedGeneration();
-	}
 	/** Get whether the PackageData has completed the check for whether it is a Generator. */
 	bool HasInitializedGeneratorSave() const { return static_cast<bool>(bInitializedGeneratorSave); }
 	/** Set whether the PackageData has completed the check for whether it is a Generator. */
@@ -441,11 +470,6 @@ public:
 	void SetGeneratedOwner(FGeneratorPackage* InGeneratedOwner);
 	/** Return the owning generator PackageData. Will be null if not a generated package or if orphaned. */
 	FGeneratorPackage* GetGeneratedOwner() const { return GeneratedOwner; }
-	/** Mark that the package has finished generation+saving, and should generate again if it needs resaving. */
-	void ResetGenerationProgress();
-
-	/** Return whether a GC is required by a generator package as soon as possible. */
-	bool GeneratorPackageRequiresGC() const;
 
 	/**
 	 * Return the instigator for this package. The Instigator is the first code location or
@@ -453,6 +477,25 @@ public:
 	 */
 	const FInstigator& GetInstigator() const { return Instigator; }
 
+	/** Get whether COTFS is keeping this package referenced referenced during GC. */
+	bool IsKeepReferencedDuringGC() const { return static_cast<bool>(bKeepReferencedDuringGC); }
+	/** Set whether COTFS is keeping this package referenced referenced during GC. */
+	void SetKeepReferencedDuringGC(bool Value) { bKeepReferencedDuringGC = Value != 0; }
+
+	/** For MultiProcessCooks, Get the id of the worker this Package is assigned to; InvalidId means owned by local. */
+	FWorkerId GetWorkerAssignment() const { return WorkerAssignment; }
+	/** Set the id of the worker this Package is assigned to. */
+	void SetWorkerAssignment(FWorkerId InWorkerAssignment) { WorkerAssignment = InWorkerAssignment; }
+	/** Get the workerid that is the only worker allowed to cook this package; InvalidId means no constraint. */
+	FWorkerId GetWorkerAssignmentConstraint() const { return WorkerAssignmentConstraint; }
+	/** Set the workerid that is the only worker allowed to cook this package; default is InvalidId; */
+	void SetWorkerAssignmentConstraint(FWorkerId InWorkerAssignment) { WorkerAssignmentConstraint = InWorkerAssignment; }
+
+	/** Marshall this PackageData to a ConstructData that can be used later or on a remote machine to reconstruct it. */
+	FConstructPackageData CreateConstructData();
+
+	FPackageRemoteResult& GetOrAddPackageRemoteResult();
+	TUniquePtr<FPackageRemoteResult>& GetPackageRemoteResult();
 private:
 	friend struct UE::Cook::FPackageDatas;
 
@@ -504,6 +547,8 @@ private:
 	void OnExitIdle();
 	void OnEnterRequest();
 	void OnExitRequest();
+	void OnEnterAssignedToWorker();
+	void OnExitAssignedToWorker();
 	void OnEnterLoadPrepare();
 	void OnExitLoadPrepare();
 	void OnEnterLoadReady();
@@ -518,7 +563,10 @@ private:
 	void OnExitHasPackage();
 	void OnEnterHasPackage();
 
+	void OnPackageDataFirstRequested(FInstigator&& InInstigator);
+
 	TUniquePtr<FGeneratorPackage> GeneratorPackage;
+	TUniquePtr<FPackageRemoteResult> PackageRemoteResult;
 	FGeneratorPackage* GeneratedOwner;
 	/** Data for each platform that has been interacted with by *this. */
 	TSortedMap<const ITargetPlatform*, FPlatformData> PlatformDatas;
@@ -544,16 +592,20 @@ private:
 	FTrackedPreloadableFilePtr PreloadableFile;
 	int32 NumPendingCookedPlatformData = 0;
 	int32 CookedPlatformDataNextIndex = 0;
+	int32 NumRetriesBeginCacheOnObject = 0;
 	FOpenPackageResult PreloadableFileOpenResult;
 	FInstigator Instigator;
 
+	FWorkerId WorkerAssignment = FWorkerId::Invalid();
+	FWorkerId WorkerAssignmentConstraint = FWorkerId::Invalid();
 	uint32 State : int32(EPackageState::BitCount);
 	uint32 bIsUrgent : 1;
 	uint32 bIsVisited : 1;
 	uint32 bIsPreloadAttempted : 1;
 	uint32 bIsPreloaded : 1;
 	uint32 bHasSaveCache : 1;
-	uint32 bHasBeginPrepareSaveFailed : 1;
+	uint32 bPrepareSaveFailed : 1;
+	uint32 bPrepareSaveRequiresGC : 1;
 	uint32 bCookedPlatformDataStarted : 1;
 	uint32 bCookedPlatformDataCalled : 1;
 	uint32 bCookedPlatformDataComplete : 1;
@@ -561,6 +613,117 @@ private:
 	uint32 bInitializedGeneratorSave : 1;
 	uint32 bCompletedGeneration : 1;
 	uint32 bGenerated : 1;
+	uint32 bKeepReferencedDuringGC : 1;
+};
+
+/** A single object in athe save of a package that might have had BeginCacheForCookedPlatformData called already */
+struct FBeginCacheObject
+{
+	FWeakObjectPtr Object;
+	bool bHasFinishedRound = false;
+	bool bIsRootMovedObject = false;
+};
+
+/**
+ * Collection of the known objects in the save of a package that might have had BeginCacheForCookedPlatformData called already
+ * and will have it called on them in the next round of calls if not.
+ */
+struct FBeginCacheObjects
+{
+	TArray<FBeginCacheObject> Objects;
+	TArray<FWeakObjectPtr> ObjectsInRound;
+	int32 NextIndexInRound = 0;
+
+	void Reset();
+
+	void StartRound();
+	void EndRound(int32 NumPlatforms);
+};
+
+/**
+ * Struct uses with ICookPackageSplitter, which contains the state information for the save of either the
+ * Generator package or one of its Generated packages.
+ */
+struct FCookGenerationInfo
+{
+public:
+	/** State variable for reentrant SplitPackage calls */
+	enum class ESaveState : uint8
+	{
+		StartGenerate = 0,
+
+		GenerateList = StartGenerate,
+		ClearOldPackagesFirstAttempt,
+		ClearOldPackagesLastAttempt,
+		QueueGeneratedPackages,
+
+		StartPopulate,
+		FinishCachePreMove = StartPopulate,
+		CallObjectsToMove,
+		BeginCacheObjectsToMove,
+		FinishCacheObjectsToMove,
+		CallPopulate,
+		CallGetPostMoveObjects,
+		BeginCachePostMove,
+		FinishCachePostMove,
+
+		ReadyForSave,
+		Last = ReadyForSave,
+	};
+
+	FCookGenerationInfo(FPackageData& InPackageData, bool bInGenerator);
+
+	ESaveState GetSaveState() const { return GeneratorSaveState; }
+	void SetSaveState(ESaveState InValue) { GeneratorSaveState = InValue; }
+	void SetSaveStateComplete(ESaveState CompletedState);
+
+	bool IsCreateAsMap() const { return bCreateAsMap; }
+	void SetIsCreateAsMap(bool bValue) { bCreateAsMap = bValue; }
+	bool HasCreatedPackage() const { return bHasCreatedPackage; }
+	void SetHasCreatedPackage(bool bValue) { bHasCreatedPackage = bValue; }
+	bool HasSaved() const { return bHasSaved; }
+	void SetHasSaved(bool bValue) { bHasSaved = bValue; }
+	bool HasTakenOverCachedCookedPlatformData() const { return bTakenOverCachedCookedPlatformData; }
+	void SetHasTakenOverCachedCookedPlatformData(bool bValue) { bTakenOverCachedCookedPlatformData = bValue; }
+	bool HasIssuedUndeclaredMovedObjectsWarning() const { return bIssuedUndeclaredMovedObjectsWarning; }
+	void SetHasIssuedUndeclaredMovedObjectsWarning(bool bValue) { bIssuedUndeclaredMovedObjectsWarning = bValue; }
+	bool IsGenerator() const { return bGenerator; }
+	void SetIsGenerator(bool bValue) { bGenerator = bValue; }
+
+	/**
+	 * Steal the list of cached objects to call BeginCacheForCookedPlatformData on from the PackageData,
+	 * and add them to this. Also add the list of NewObjects reported by the splitter that will be moved into the package.
+	 */
+	void TakeOverCachedObjectsAndAddMoved(FGeneratorPackage& Generator, 
+		TArray<FWeakObjectPtr>& CachedObjectsInOuter, TArray<UObject*>& MovedObjects);
+	/**
+	 * Fetch all the objects currently in the package and add them the list of objects that need BeginCacheForCookedPlatformData.
+	 * Reports whether new objects were found. If DemotionState is not ESaveState::Last, will SetState back to DemotionState
+	 * if new objects were found, and will error exit if this demotion has happened too many times.
+	 */
+	EPollStatus RefreshPackageObjects(FGeneratorPackage& Generator, UPackage* Package, bool& bOutFoundNewObjects,
+		ESaveState DemotionState);
+
+	void AddKeepReferencedPackages(TArray<UPackage*>& InKeepReferencedPackages)
+	{
+		KeepReferencedPackages.Append(InKeepReferencedPackages);
+	}
+
+public:
+	FBeginCacheObjects BeginCacheObjects;
+	FString RelativePath;
+	FString GeneratedRootPath;
+	TArray<FName> Dependencies;
+	FPackageData* PackageData = nullptr;
+	TArray<UPackage*> KeepReferencedPackages;
+private:
+	ESaveState GeneratorSaveState = ESaveState::StartGenerate;
+	bool bCreateAsMap : 1;
+	bool bHasCreatedPackage : 1;
+	bool bHasSaved : 1;
+	bool bTakenOverCachedCookedPlatformData : 1;
+	bool bIssuedUndeclaredMovedObjectsWarning : 1;
+	bool bGenerator : 1;
 };
 
 /**
@@ -570,16 +733,6 @@ private:
 struct FGeneratorPackage
 {
 public:
-	struct FGeneratedStruct
-	{
-		FString RelativePath;
-		TArray<FName> Dependencies;
-		FPackageData* PackageData = nullptr;
-		bool bCreateAsMap = false;
-		bool bHasCreatedPackage = false;
-		bool bHasSaved = false;
-	};
-
 	/** Store the provided CookPackageSplitter and prepare the packages to generate. */
 	FGeneratorPackage(UE::Cook::FPackageData& InOwner, const UObject* InSplitDataObject,
 		ICookPackageSplitter* InCookPackageSplitterInstance);
@@ -591,75 +744,64 @@ public:
 	bool TryGenerateList(UObject* OwnerObject, FPackageDatas& PackageDatas);
 
 	/** Accessor for the packages to generate */
-	TArrayView<FGeneratedStruct> GetPackagesToGenerate() { return PackagesToGenerate; }
+	TArrayView<UE::Cook::FCookGenerationInfo> GetPackagesToGenerate() { return PackagesToGenerate; }
+	/** Return the GenerationInfo used to save the Generator's UPackage */
+	UE::Cook::FCookGenerationInfo& GetOwnerInfo() { return OwnerInfo; }
+	/** Return owner FPackageData. */
+	UE::Cook::FPackageData& GetOwner() { return *OwnerInfo.PackageData; }
+	/** Return the GenerationInfo for the given PackageData, or null if not found. */
+	UE::Cook::FCookGenerationInfo* FindInfo(const FPackageData& PackageData);
+	const UE::Cook::FCookGenerationInfo* FindInfo(const FPackageData& PackageData) const;
 
 	/** Return CookPackageSplitter. */
 	ICookPackageSplitter* GetCookPackageSplitterInstance() const { return CookPackageSplitterInstance.Get(); }
-	/** Return owner FPackageData. */
-	const UE::Cook::FPackageData& GetOwner() const { return Owner; }
 	/** Return the SplitDataObject's FullObjectPath. */
 	const FName GetSplitDataObjectName() const { return SplitDataObjectName; }
-	/**
-	 * Return the packagepath and localpath to the owner's mount point used for loading generated packages,
-	 * if we need to save them to disk.
-	 */
-	void GetIntermediateMountPoint(FString& OutPackagePath, FString& OutLocalPath) const;
-	/**
-	 * Return the standard path to the temporary file (including extension) where we store the given
-	 * generated package, if we need to save it to disk for later retrieval in the cook session.
-	 */
-	FString GetIntermediateLocalPath(const FGeneratorPackage::FGeneratedStruct& GeneratedStruct) const;
-
-	/** Return the FGeneratedStruct with the given PackageData, or null if not found. */
-	FGeneratedStruct* FindGeneratedStruct(FPackageData* PackageData);
 	/**
 	 * Find again the split object from its name, or return null if no longer in memory.
 	 * It may have been GC'd and reloaded since the last time we used it.
 	 */
 	UObject* FindSplitDataObject() const;
 
-	/** State variables for reentrant SplitPackage calls */
-	bool HasGeneratedList() const { return bGeneratedList; }
-	void SetGeneratedList() { bGeneratedList = true; }
-	bool HasClearedOldPackages() { return bClearedOldPackages; }
-	void SetClearedOldPackages() { bClearedOldPackages = true; }
-	bool HasClearedOldPackagesWithGC() { return bClearedOldPackagesWithGC; }
-	void SetClearedOldPackagesWithGC() { bClearedOldPackagesWithGC = true; }
-	bool HasQueuedGeneratedPackages() const { return bQueuedGeneratedPackages; }
-	void SetQueuedGeneratedPackages() { bQueuedGeneratedPackages = true; }
+	void ResetSaveState(FCookGenerationInfo& Info, UPackage* Package, UE::Cook::EReleaseSaveReason ReleaseSaveReason);
+
 	int32& GetNextPopulateIndex() { return NextPopulateIndex; }
 
-	/** Callback during garbage collection */
+	/** Callbacks during garbage collection */
+	void PreGarbageCollect(FCookGenerationInfo& Info, TArray<UObject*>& GCKeepObjects,
+		TArray<UPackage*>& GCKeepPackages, TArray<FPackageData*>& GCKeepPackageDatas, bool& bOutShouldDemote);
 	void PostGarbageCollect();
 
-	/** Get/Clear whether the Owner was garbage collected since the previous call to TryPopulatePackage */
-	bool GetWasOwnerReloaded() const { return bWasOwnerReloaded; }
-	void ClearWasOwnerReloaded() { bWasOwnerReloaded = false; }
 	/** Call CreatePackage and set PackageData for deterministic generated packages, and update status. */
-	UPackage* CreateGeneratedUPackage(FGeneratedStruct& GeneratedStruct,
+	UPackage* CreateGeneratedUPackage(FCookGenerationInfo& GenerationInfo,
 		const UPackage* OwnerPackage, const TCHAR* GeneratedPackageName);
-	/** Mark that the generated package has been populated, to keep track of when *this is no longer needed. */
-	void SetGeneratedSaved(FPackageData& PackageData);
+	/** Mark that the generator or a generated package has saved, to keep track of when *this is no longer needed. */
+	void SetPackageSaved(FCookGenerationInfo& Info, FPackageData& PackageData);
 	/** Return whether list has been generated and all generated packages have been populated */
 	bool IsComplete() const;
 
+	void UpdateSaveAfterGarbageCollect(const FPackageData& PackageData, bool& bInOutDemote);
+
+	UPackage* GetOwnerPackage() const { return OwnerPackage.Get(); };
+	void SetOwnerPackage(UPackage* InPackage) { OwnerPackage = InPackage; }
+
 private:
+	void ConditionalNotifyCompletion(ICookPackageSplitter::ETeardown Status);
+
 	/** PackageData for the package that is being split */
-	const UE::Cook::FPackageData& Owner;
+	FCookGenerationInfo OwnerInfo;
 	/** Name of the object that prompted the splitter creation */
 	FName SplitDataObjectName;
 	/** Cached CookPackageSplitter */
 	TUniquePtr<ICookPackageSplitter> CookPackageSplitterInstance;
 	/** Recorded list of packages to generate from the splitter, and data we need about them */
-	TArray<FGeneratedStruct> PackagesToGenerate;
+	TArray<FCookGenerationInfo> PackagesToGenerate;
+	TWeakObjectPtr<UPackage> OwnerPackage;
 
 	int32 NextPopulateIndex = 0;
 	int32 RemainingToPopulate = 0;
-	bool bGeneratedList = false;
-	bool bClearedOldPackages = false;
-	bool bClearedOldPackagesWithGC = false;
-	bool bQueuedGeneratedPackages = false;
-	bool bWasOwnerReloaded = false;
+
+	bool bNotifiedCompletion = false;
 };
 
 
@@ -836,13 +978,6 @@ public:
 	FPackageDataQueue EntryQueue;
 };
 
-/** Data necessary to create an FPackageData without checking the disk, for e.g. AddExistingPackageDatasForPlatform */
-struct FConstructPackageData
-{
-	FName PackageName;
-	FName NormalizedFileName;
-};
-
 /*
  * Class that manages the list of all PackageDatas for a CookOnTheFlyServer. PackageDatas is an associative
  * array for extra data about a package (e.g. the requested platforms) that is needed by the CookOnTheFlyServer.
@@ -859,8 +994,8 @@ public:
 	/** Called when the initial AssetRegistry search is done and it can be used to determine package existence. */
 	static void OnAssetRegistryGenerated(IAssetRegistry& InAssetRegistry);
 
-	/** Called each time BeginCook is called, for deferred intialization steps. */
-	void BeginCook();
+	/** Called each time BeginCook is called, to initialize settings from config */
+	void SetBeginCookConfigSettings(FStringView CookShowInstigator);
 
 	/** FGCObject interface function - return a debug name describing this FGCObject. */
 	virtual FString GetReferencerName() const override;
@@ -879,6 +1014,10 @@ public:
 	 * PackageData that need to be cooked.
 	 */
 	FRequestQueue& GetRequestQueue();
+
+	/** Return the Set that holds unordered all PackageDatas that are in the AssignedToWorker state. */
+	TFastPointerSet<FPackageData*>& GetAssignedToWorkerSet() { return AssignedToWorkerSet; }
+
 	/**
 	 * Return the LoadPrepareQueue used by the CookOnTheFlyServer. The LoadPrepareQueue is the dependency-ordered
 	 * list of FPackageData that need to be preloaded before they can be loaded.
@@ -1042,7 +1181,7 @@ public:
 	 * Iterate over all elements in PendingCookedPlatformDatas and check whether they have completed,
 	 * releasing their resources and pending count if so.
 	 */
-	void PollPendingCookedPlatformDatas();
+	void PollPendingCookedPlatformDatas(bool bForce, double& LastCookableObjectTickTime);
 
 	/** RangedFor methods for iterating over all FPackageData managed by this FPackageDatas */
 	TArray<FPackageData*>::RangedForIteratorType begin();
@@ -1075,6 +1214,7 @@ private:
 	TMap<FName, FPackageData*> FileNameToPackageData;
 	TArray<FPendingCookedPlatformData> PendingCookedPlatformDatas;
 	FRequestQueue RequestQueue;
+	TFastPointerSet<FPackageData*> AssignedToWorkerSet;
 	FLoadPrepareQueue LoadPrepareQueue;
 	FPackageDataQueue LoadReadyQueue;
 	FPackageDataQueue SaveQueue;

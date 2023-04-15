@@ -6,7 +6,7 @@
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Topo/TopologicalEdge.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FMinSizeCriterion::ApplyOnEdgeParameters(FTopologicalEdge& Edge, const TArray<double>& Coordinates, const TArray<FCurvePoint>& Points) const
@@ -60,7 +60,7 @@ void FSizeCriterion::ApplyOnParameters(const TArray<double>& Coordinates, const 
 
 void FMinSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
 {
-	if (ChordLength < KINDA_SMALL_NUMBER)
+	if (ChordLength < DOUBLE_KINDA_SMALL_NUMBER)
 	{
 		return;
 	}
@@ -74,7 +74,7 @@ void FMinSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDia
 
 void FMaxSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDiagonalSag, double InVSag, double ChordLength, double DiagonalLength, double& OutSagDeltaUMax, double& OutSagDeltaUMin, FIsoCurvature& SurfaceCurvature) const
 {
-	if (ChordLength < KINDA_SMALL_NUMBER)
+	if (ChordLength < DOUBLE_KINDA_SMALL_NUMBER)
 	{
 		return;
 	}
@@ -86,4 +86,4 @@ void FMaxSizeCriterion::UpdateDelta(double InDeltaU, double InUSag, double InDia
 	}
 }
 
-} // namespace CADKernel
+} // namespace UE::CADKernel

@@ -27,6 +27,7 @@ EditorLevelUtils.cpp: Editor-specific level management routines
 #include "Engine/LevelStreaming.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "FileHelpers.h"
@@ -42,7 +43,7 @@ EditorLevelUtils.cpp: Editor-specific level management routines
 #include "ContentStreaming.h"
 #include "PackageTools.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/LevelStreamingVolume.h"
 #include "Components/ModelComponent.h"
 #include "Misc/RuntimeErrors.h"
@@ -225,26 +226,30 @@ int32 UEditorLevelUtils::CopyOrMoveActorsToLevel(const TArray<AActor*>& ActorsTo
 					Actor->CopyPasteId = INDEX_NONE;
 				}
 
-				FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-				TArray<FAssetRenameData> RenameData;
-
-				for (TTuple<FSoftObjectPath, FSoftObjectPath>& Pair : ActorPathMapping)
+				// Only do Asset Rename on Move (Copy should not affect existing references)
+				if (bMoveActors)
 				{
-					if (Pair.Value.IsValid())
-					{
-						RenameData.Add(FAssetRenameData(Pair.Key, Pair.Value, true));
-					}
-				}
+					FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
+					TArray<FAssetRenameData> RenameData;
 
-				if (RenameData.Num() > 0)
-				{
-					if (bWarnAboutRenaming)
+					for (TTuple<FSoftObjectPath, FSoftObjectPath>& Pair : ActorPathMapping)
 					{
-						AssetToolsModule.Get().RenameAssetsWithDialog(RenameData);
+						if (Pair.Value.IsValid())
+						{
+							RenameData.Add(FAssetRenameData(Pair.Key, Pair.Value, true));
+						}
 					}
-					else
+
+					if (RenameData.Num() > 0)
 					{
-						AssetToolsModule.Get().RenameAssets(RenameData);
+						if (bWarnAboutRenaming)
+						{
+							AssetToolsModule.Get().RenameAssetsWithDialog(RenameData);
+						}
+						else
+						{
+							AssetToolsModule.Get().RenameAssets(RenameData);
+						}
 					}
 				}
 
@@ -647,7 +652,8 @@ ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevel(TSubclassOf<ULevelSt
 	{
 		if (ensureAsRuntimeWarning(LevelStreamingClass.Get() != nullptr))
 		{
-			return CreateNewStreamingLevelForWorld(*GEditor->GetEditorWorldContext().World(), LevelStreamingClass, Filename, bMoveSelectedActorsIntoNewLevel);
+			bool bUseSaveAs = PackagePath.IsEmpty();
+			return CreateNewStreamingLevelForWorld(*GEditor->GetEditorWorldContext().World(), LevelStreamingClass, Filename, bMoveSelectedActorsIntoNewLevel, nullptr, bUseSaveAs);
 		}
 	}
 
@@ -663,14 +669,13 @@ ULevel* GetPersistentLevelForNewStreamingLevel(UWorld* NewLevelWorld, UWorld* In
 	return NewLevelWorld ? NewLevelWorld->PersistentLevel : InTemplateWorld->PersistentLevel;
 }
 
-UWorld* GetWorldForNewStreamingLevel(UWorld* InTemplateWorld)
+UWorld* GetWorldForNewStreamingLevel(UWorld* InTemplateWorld, bool bIsPartitioned = false)
 {
 	if (!InTemplateWorld)
 	{
 		// Create a new world
 		UWorldFactory* Factory = NewObject<UWorldFactory>();
-		// streaming levels shouldn't be WP
-		Factory->bCreateWorldPartition = false;
+		Factory->bCreateWorldPartition = bIsPartitioned;
 		Factory->WorldType = EWorldType::Inactive;
 		UPackage* Pkg = CreatePackage( NULL);
 		FName WorldName(TEXT("Untitled"));
@@ -686,7 +691,7 @@ UWorld* GetWorldForNewStreamingLevel(UWorld* InTemplateWorld)
 }
 };
 
-ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWorld, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FString& DefaultFilename /* = TEXT( "" ) */, bool bMoveSelectedActorsIntoNewLevel /* = false */, UWorld* InTemplateWorld /* = nullptr */, bool bInUseSaveAs /*= true*/)
+ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWorld, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FString& DefaultFilename /* = TEXT( "" ) */, bool bMoveSelectedActorsIntoNewLevel /* = false */, UWorld* InTemplateWorld /* = nullptr */, bool bInUseSaveAs /*= true*/, TFunction<void(ULevel*)> InPreSaveLevelOperation /* = TFunction<void(ULevel*)>()*/, const FTransform& InTransform /* = FTransform::Identity */)
 {
 	TArray<AActor*> ActorsToMove;
 	if (bMoveSelectedActorsIntoNewLevel)
@@ -701,10 +706,10 @@ ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWo
 		}
 	}
 
-	return CreateNewStreamingLevelForWorld(InWorld, LevelStreamingClass, /*bUseExternalActors=*/false, DefaultFilename, &ActorsToMove, InTemplateWorld, bInUseSaveAs);
+	return CreateNewStreamingLevelForWorld(InWorld, LevelStreamingClass, /*bUseExternalActors=*/false, DefaultFilename, &ActorsToMove, InTemplateWorld, bInUseSaveAs, /*bIsPartitioned=*/false, InPreSaveLevelOperation, InTransform);
 }
 
-ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWorld, TSubclassOf<ULevelStreaming> LevelStreamingClass, bool bUseExternalActors, const FString& DefaultFilename /* = TEXT("") */, const TArray<AActor*>* ActorsToMove /* = nullptr */, UWorld* InTemplateWorld /* = nullptr */, bool bInUseSaveAs /*= true*/)
+ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWorld, TSubclassOf<ULevelStreaming> LevelStreamingClass, bool bUseExternalActors, const FString& DefaultFilename /* = TEXT("") */, const TArray<AActor*>* ActorsToMove /* = nullptr */, UWorld* InTemplateWorld /* = nullptr */, bool bInUseSaveAs /*= true*/, bool bIsPartitioned /*= false*/, TFunction<void(ULevel*)> InPreSaveLevelOperation /* = TFunction<void(ULevel*)>()*/, const FTransform& InTransform /* = FTransform::Identity */)
 {
 	// Editor modes cannot be active when any level saving occurs.
 	if (!IsRunningCommandlet())
@@ -713,16 +718,33 @@ ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWo
 	}
 	using namespace UE::EditorLevelUtils::Private;
 
+	// Make sure we reenable the default mode on exit
+	ON_SCOPE_EXIT
+	{
+		if (!IsRunningCommandlet())
+		{
+			GLevelEditorModeTools().ActivateDefaultMode();
+		}
+	};
+
 	// This is the world we are adding the new level to
 	UWorld* WorldToAddLevelTo = &InWorld;
 
 	// This is the new streaming level's world not the persistent level world
-	UWorld* NewLevelWorld = GetWorldForNewStreamingLevel(InTemplateWorld);
+	UWorld* NewLevelWorld = GetWorldForNewStreamingLevel(InTemplateWorld, bIsPartitioned);
 	ULevel* PersistentLevel = GetPersistentLevelForNewStreamingLevel(NewLevelWorld, InTemplateWorld);
-	if (bUseExternalActors)
+	// No need to convert actors in partitioned worlds as they are already external
+	if (bUseExternalActors && !bIsPartitioned)
 	{
 		PersistentLevel->ConvertAllActorsToPackaging(true);
 		PersistentLevel->bUseExternalActors = true;
+	}
+	check(bIsPartitioned == PersistentLevel->bIsPartitioned);
+
+	if (InPreSaveLevelOperation)
+	{
+		// Call lambda before saving level
+		InPreSaveLevelOperation(PersistentLevel);
 	}
 
 	bool bNewWorldSaved = false;
@@ -755,7 +777,7 @@ ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWo
 	ULevel* NewLevel = nullptr;
 	if (bNewWorldSaved)
 	{
-		NewStreamingLevel = AddLevelToWorld(WorldToAddLevelTo, *NewPackageName, LevelStreamingClass);
+		NewStreamingLevel = AddLevelToWorld(WorldToAddLevelTo, *NewPackageName, LevelStreamingClass, InTransform);
 		if (NewStreamingLevel != nullptr)
 		{
 			NewLevel = NewStreamingLevel->GetLoadedLevel();
@@ -859,7 +881,7 @@ bool UEditorLevelUtils::RemoveLevelsFromWorld(TArray<ULevel*> InLevels, bool bCl
 	// Reset transaction buffer and run GC to clear out the destroyed level
 	GEditor->Cleanse(bClearSelection, false, TransResetText, bResetTransBuffer);
 
-	auto CheckPackage = [](const TArray<FName>& PackageNames, ELogVerbosity::Type Verbosity)
+	auto CheckPackage = [](const TArray<FName>& PackageNames, EPrintStaleReferencesOptions Options)
 	{
 		// Check Package no longer exists
 		for (const FName& LevelPackageName : PackageNames)
@@ -871,7 +893,7 @@ bool UEditorLevelUtils::RemoveLevelsFromWorld(TArray<ULevel*> InLevels, bool bCl
 				UWorld* TheWorld = UWorld::FindWorldInPackage(LevelPackage->GetOutermost());
 				if (TheWorld != nullptr)
 				{
-					UEngine::FindAndPrintStaleReferencesToObject(TheWorld, Verbosity);
+					UEngine::FindAndPrintStaleReferencesToObject(TheWorld, Options);
 					return false;
 				}
 			}
@@ -880,17 +902,17 @@ bool UEditorLevelUtils::RemoveLevelsFromWorld(TArray<ULevel*> InLevels, bool bCl
 	};
 
 	// Check that packages no longer exist
-	ELogVerbosity::Type Verbosity = ELogVerbosity::Log;
+	EPrintStaleReferencesOptions PrintStaleReferencesOptions = EPrintStaleReferencesOptions::Log;
 	if (bResetTransBuffer)
 	{
-		Verbosity = UObjectBaseUtility::IsPendingKillEnabled() ? ELogVerbosity::Fatal : ELogVerbosity::Error;
+		PrintStaleReferencesOptions = UObjectBaseUtility::IsPendingKillEnabled() ? EPrintStaleReferencesOptions::Fatal : (EPrintStaleReferencesOptions::Error | EPrintStaleReferencesOptions::Ensure);
 	}
-	bool bFailed = !CheckPackage(PackageNames, Verbosity);
-	if (bFailed && Verbosity != ELogVerbosity::Fatal)
+	bool bFailed = !CheckPackage(PackageNames, PrintStaleReferencesOptions);
+	if (bFailed && ((PrintStaleReferencesOptions & EPrintStaleReferencesOptions::Fatal) != EPrintStaleReferencesOptions::Fatal))
 	{
 		// We tried avoiding clearing the Transaction buffer but it failed. Plan B.
 		GEditor->Cleanse(bClearSelection, false, TransResetText, true);
-		CheckPackage(PackageNames, Verbosity);
+		CheckPackage(PackageNames, PrintStaleReferencesOptions);
 	}
 
 	return true;

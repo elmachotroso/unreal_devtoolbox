@@ -3,36 +3,21 @@
 <root xmlns:android="http://schemas.android.com/apk/res/android">	
 	<init>
 	  <log text="Subsystem Google Play SDK Android init"/>
-	  
-	  <setBoolFromProperty result="bUseGooglePlayBillingApiV2" ini="Engine" section="OnlineSubsystemGooglePlay.Store" property="bUseGooglePlayBillingApiV2" default="true"/>
 	</init>
 	
 	<prebuildCopies>
-		<if condition="bUseGooglePlayBillingApiV2">
-			<true>
-				<log text="Copying Google Play BillingApiV2 java files"/>
-				<copyDir src="$S(PluginDir)/Java/BillingApiV2"
-						 dst = "$S(BuildDir)/src" />
-			</true>
-			<false>
-				<log text="Copying Google Play AIDL java files"/>
-				<copyDir src="$S(PluginDir)/Java/AIDL"
-						 dst = "$S(BuildDir)/src" />
-			</false>
-		</if>
+		<log text="Copying Google Play BillingApiV2 java files"/>
+		<copyDir src="$S(PluginDir)/Java/BillingApiV2"
+				 dst = "$S(BuildDir)/src" />
 	</prebuildCopies>
 	
 	<!-- gradle dependencies additions -->
 	<buildGradleAdditions>
-		<if condition="bUseGooglePlayBillingApiV2">
-			<true>
-				<insert>
-					dependencies {
-					implementation 'com.android.billingclient:billing:3.0.0'
-					}
-				</insert>
-			</true>
-		</if>
+		<insert>
+			dependencies {
+			implementation 'com.android.billingclient:billing:5.0.0'
+			}
+		</insert>
 	</buildGradleAdditions>
 
 	<gameActivityAndroidThunkJavaIapBeginPurchase>
@@ -76,26 +61,6 @@ public boolean AndroidThunkJava_IapBeginPurchase(String ProductId, String Accoun
 		</insert>
 	</gameActivityAndroidThunkJavaIapBeginPurchase>
 	
-	<gameActivityOnActivityResultIapStoreHelperHandler>
-		<if condition="bUseGooglePlayBillingApiV2">
-			<false>
-				<insert>
-		else if( IapStoreHelper != null )
-		{
-			if(!IapStoreHelper.onActivityResult(requestCode, resultCode, data))
-			{
-				super.onActivityResult(requestCode, resultCode, data);
-			}
-			else
-			{
-				Log.debug("[JAVA] - Store Helper handled onActivityResult");
-			}
-		}
-				</insert>
-			</false>
-		</if>
-	</gameActivityOnActivityResultIapStoreHelperHandler>
-
 	<!-- optional additions to GameActivity imports in GameActivity.java -->
 	<gameActivityImportAdditions>
 		<insert>
@@ -106,24 +71,11 @@ import java.security.NoSuchAlgorithmException;
 		</insert>
 	</gameActivityImportAdditions>
 
-	<!-- optional additions to GameActivity class in GameActivity.java -->
-	<gameActivityClassAdditions>
-		<insert>
-	/** Implement this if app wants to handle IAB activity launch. **/
-	GooglePlayStoreHelper.PurchaseLaunchCallback purchaseLaunchCallback = null;
-
-	public GooglePlayStoreHelper.PurchaseLaunchCallback getPurchaseLaunchCallback()
-	{
-		return purchaseLaunchCallback;
-	}
-		</insert>
-	</gameActivityClassAdditions>
-
 	<gameActivityIapSetupServiceAdditions>
 		<insert>
 		if (getPackageManager().checkPermission("com.android.vending.BILLING", getPackageName()) == getPackageManager().PERMISSION_GRANTED)
 		{
-			IapStoreHelper = new GooglePlayStoreHelper(InProductKey, this, Log);
+			IapStoreHelper = new GooglePlayStoreHelper(this, Log);
 			if (IapStoreHelper != null)
 			{
 				Log.debug("[JAVA] - AndroidThunkJava_IapSetupService - Setup started");
@@ -149,7 +101,6 @@ import java.security.NoSuchAlgorithmException;
 				GoogleApiClient.Builder gbuilder = new GoogleApiClient.Builder(this);
 				gbuilder.addConnectionCallbacks(this);
 				gbuilder.addOnConnectionFailedListener(this);
-				gbuilder.addApiIfAvailable(Games.API, Games.SCOPE_GAMES);
 				googleClient = gbuilder.build();
 			}
 			catch (Exception e)

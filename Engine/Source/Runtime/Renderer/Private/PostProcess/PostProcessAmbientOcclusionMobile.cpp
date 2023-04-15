@@ -9,7 +9,7 @@
 #include "ShaderParameterStruct.h"
 #include "SceneRendering.h"
 #include "RenderTargetPool.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "SystemTextures.h"
 #include "ScreenPass.h"
 #include "ScenePrivate.h"
@@ -73,11 +73,6 @@ DECLARE_GPU_STAT_NAMED(MobileSSAO, TEXT("SSAO"));
 
 
 // --------------------------------------------------------------------------------------------------------------------
-
-bool IsMobileAmbientOcclusionEnabled(EShaderPlatform ShaderPlatform)
-{
-	return UseMobileAmbientOcclusion(ShaderPlatform) && IsMobileHDR();
-}
 
 bool IsUsingMobileAmbientOcclusion(EShaderPlatform ShaderPlatform)
 {
@@ -159,8 +154,8 @@ public:
 
 		if (GSystemTextures.GTAOPreIntegrated.IsValid())
 		{
-			ShaderParameters.GTAOPreIntegrated2D = GSystemTextures.GTAOPreIntegrated->GetRenderTargetItem().ShaderResourceTexture;
-			ShaderParameters.GTAOPreIntegrated3D = GSystemTextures.GTAOPreIntegrated->GetRenderTargetItem().ShaderResourceTexture;
+			ShaderParameters.GTAOPreIntegrated2D = GSystemTextures.GTAOPreIntegrated->GetRHI();
+			ShaderParameters.GTAOPreIntegrated3D = GSystemTextures.GTAOPreIntegrated->GetRHI();
 			ShaderParameters.GTAOPreIntegratedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		}
 	}
@@ -960,7 +955,7 @@ static void AddMobileAmbientOcclusionPass(
 static void RenderSSAO(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneDepthTexture, FRDGTextureRef AmbientOcclusionTexture, const TArray<FViewInfo>& Views)
 {
 	
-	TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> SceneTexturesUniformBufferRDG = CreateMobileSceneTextureUniformBuffer(GraphBuilder, EMobileSceneTextureSetupMode::SceneDepth);
+	TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> SceneTexturesUniformBufferRDG = CreateMobileSceneTextureUniformBuffer(GraphBuilder, GetViewFamilyInfo(Views).GetSceneTexturesChecked(), EMobileSceneTextureSetupMode::SceneDepth);
 	
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{

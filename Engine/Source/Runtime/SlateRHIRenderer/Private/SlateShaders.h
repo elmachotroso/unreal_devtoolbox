@@ -89,11 +89,6 @@ public:
 	 */
 	void SetShaderParameters(FRHICommandList& RHICmdList, const FVector4f& ShaderParams );
 
-	/**
-	 * Sets the vertical axis multiplier to use depending on graphics api
-	 */
-	void SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier);
-
 	/** Serializes the shader data */
 	//virtual bool Serialize( FArchive& Ar ) override;
 
@@ -102,8 +97,6 @@ private:
 	LAYOUT_FIELD(FShaderParameter, ViewProjection)
 	/** Shader parmeters used by the shader */
 	LAYOUT_FIELD(FShaderParameter, VertexShaderParams)
-	/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-	LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
 };
 
 /** 
@@ -192,8 +185,8 @@ public:
 	 */
 	void SetShaderParams(FRHICommandList& RHICmdList, const FShaderParams& InShaderParams)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, (FVector4f)InShaderParams.PixelParams);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams2, (FVector4f)InShaderParams.PixelParams2);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, InShaderParams.PixelParams);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams2, InShaderParams.PixelParams2);
 	}
 
 	/**
@@ -346,9 +339,9 @@ public:
 		UVBounds.Bind(Initializer.ParameterMap, TEXT("UVBounds"));
 	}
 
-	void SetBufferSizeAndDirection(FRHICommandList& RHICmdList, const FVector2D& InBufferSize, const FVector2D& InDir)
+	void SetBufferSizeAndDirection(FRHICommandList& RHICmdList, const FVector2f InBufferSize, const FVector2f InDir)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BufferSizeAndDirection, FVector4f(FVector2f(InBufferSize), FVector2f(InDir)));	// LWC_TODO: Precision loss
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BufferSizeAndDirection, FVector4f(InBufferSize, InDir));
 	}
 
 	void SetWeightsAndOffsets(FRHICommandList& RHICmdList, const TArray<FVector4f>& InWeightsAndOffsets, int32 NumSamples )
@@ -401,7 +394,14 @@ private:
 	LAYOUT_FIELD(FShaderParameter, UVBounds);
 };
 
+enum class ESlatePostProcessUpsamplePSPermutation
+{
+	SDR = 0,
+	HDR_SCRGB,
+	HDR_PQ10,
+};
 
+template<ESlatePostProcessUpsamplePSPermutation SlatePostProcessUpsamplePSPermutation>
 class FSlatePostProcessUpsamplePS : public FSlateElementPS
 {
 	DECLARE_SHADER_TYPE(FSlatePostProcessUpsamplePS, Global);
@@ -420,6 +420,17 @@ public:
 	FSlatePostProcessUpsamplePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FSlateElementPS(Initializer)
 	{
+	}
+
+	/**
+	 * Modifies the compilation of this shader
+	 */
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		// Set defines based on what this shader will be used for
+		OutEnvironment.SetDefine(TEXT("OUTPUT_TO_UI_TARGET"), (uint32)(SlatePostProcessUpsamplePSPermutation != ESlatePostProcessUpsamplePSPermutation::SDR ? 1 : 0));
+		OutEnvironment.SetDefine(TEXT("SCRGB_ENCODING"), SlatePostProcessUpsamplePSPermutation == ESlatePostProcessUpsamplePSPermutation::HDR_SCRGB);
+		FSlateElementPS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
 private:
@@ -495,14 +506,9 @@ public:
 	void SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection);
 
 	/**
-	 * Sets the vertical axis multiplier to use depending on graphics api
-	 */
-	void SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier);
-
-	/**
 	 * Sets the mask rect positions
 	 */
-	void SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& TopLeft, const FVector2D& TopRight, const FVector2D& BotLeft, const FVector2D& BotRight);
+	void SetMaskRect(FRHICommandList& RHICmdList, const FVector2f TopLeft, const FVector2f TopRight, const FVector2f BotLeft, const FVector2f BotRight);
 
 	//virtual bool Serialize(FArchive& Ar) override;
 
@@ -511,8 +517,6 @@ private:
 	LAYOUT_FIELD(FShaderParameter, MaskRect)
 	/** ViewProjection parameter used by the shader */
 	LAYOUT_FIELD(FShaderParameter, ViewProjection)
-	/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-	LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
 };
 
 class FSlateMaskingPS : public FGlobalShader
@@ -560,8 +564,6 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* SceneTextureRHI)
 	{
-		static const auto CVarOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
-
 		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), SceneTexture, SceneSampler, TStaticSamplerState<SF_Point>::GetRHI(), SceneTextureRHI);
 		
 		static auto CVarHDRNITLevel = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.HDRNITLevel"));

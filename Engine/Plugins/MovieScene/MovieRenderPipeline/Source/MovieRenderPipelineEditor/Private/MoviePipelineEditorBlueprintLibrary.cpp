@@ -3,7 +3,7 @@
 #include "MoviePipelineEditorBlueprintLibrary.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FileHelpers.h"
 #include "ObjectTools.h"
 #include "PackageTools.h"
@@ -18,6 +18,10 @@
 #include "Editor.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
 #include "SequencerUtilities.h"
+#include "MoviePipelineBlueprintLibrary.h"
+#include "MoviePipelineOutputSetting.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineEditorBlueprintLibrary)
 
 #define LOCTEXT_NAMESPACE "MoviePipelineEditorBlueprintLibrary"
 
@@ -146,7 +150,7 @@ UMoviePipelineExecutorJob* UMoviePipelineEditorBlueprintLibrary::CreateJobFromSe
 
 	InPipelineQueue->Modify();
 
-	UMoviePipelineExecutorJob* NewJob = InPipelineQueue->AllocateNewJob(ProjectSettings->DefaultExecutorJob);
+	UMoviePipelineExecutorJob* NewJob = InPipelineQueue->AllocateNewJob(ProjectSettings->DefaultExecutorJob.TryLoadClass<UMoviePipelineExecutorJob>());
 	if (!ensureAlwaysMsgf(NewJob, TEXT("Failed to allocate new job! Check the DefaultExecutorJob is not null in Project Settings!")))
 	{
 		return nullptr;
@@ -188,8 +192,9 @@ UMoviePipelineExecutorJob* UMoviePipelineEditorBlueprintLibrary::CreateJobFromSe
 void UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(UMoviePipelineExecutorJob* NewJob)
 {
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	for (TSubclassOf<UMoviePipelineSetting> SettingClass : ProjectSettings->DefaultClasses)
+	for (FSoftClassPath SettingClassPath : ProjectSettings->DefaultClasses)
 	{
+		TSubclassOf<UMoviePipelineSetting> SettingClass = SettingClassPath.TryLoadClass<UMoviePipelineSetting>();
 		if (!SettingClass)
 		{
 			continue;
@@ -200,12 +205,69 @@ void UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(UMoviePip
 			continue;
 		}
 
-		UMoviePipelineSetting* ExistingSetting = NewJob->GetConfiguration()->FindSettingByClass(SettingClass);
+		const bool bIncludeDisabledSettings = true;
+		UMoviePipelineSetting* ExistingSetting = NewJob->GetConfiguration()->FindSettingByClass(SettingClass, bIncludeDisabledSettings);
 		if (!ExistingSetting)
 		{
 			NewJob->GetConfiguration()->FindOrAddSettingByClass(SettingClass);
 		}
 	}
 }
+
+FString UMoviePipelineEditorBlueprintLibrary::ResolveOutputDirectoryFromJob(UMoviePipelineExecutorJob* InJob)
+{
+	UMoviePipelineOutputSetting* OutputSetting = InJob->GetConfiguration()->FindSetting<UMoviePipelineOutputSetting>();
+	check(OutputSetting);
+
+	// Set up as many parameters as we can to try and resolve most of the string.
+	FString FormatString = OutputSetting->OutputDirectory.Path / OutputSetting->FileNameFormat;
+
+	// If they've set up any folders within the filename portion of it, let's be nice and resolve that.
+	FPaths::NormalizeFilename(FormatString);
+	int32 LastSlashIndex;
+	if (FormatString.FindLastChar(TEXT('/'), LastSlashIndex))
+	{
+		FormatString.LeftInline(LastSlashIndex + 1);
+	}
+
+	// By having it swap {camera_name} and {shot_name} with an unresolvable tag, it will
+	// stay in the resolved path and can be removed using the code below.
+	static const FString DummyTag = TEXT("{dontresolvethis}");
+	FMoviePipelineFilenameResolveParams Params;
+	Params.Job = InJob;
+	Params.ShotNameOverride = DummyTag;
+	Params.CameraNameOverride = DummyTag;
+	Params.InitializationTime = FDateTime::UtcNow();
+
+	FString OutResolvedPath;
+	FMoviePipelineFormatArgs Dummy;
+	UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(FormatString, Params, OutResolvedPath, Dummy);
+
+	// Drop the .{ext} resolving always puts on.
+	OutResolvedPath.LeftChopInline(6);
+
+	if (FPaths::IsRelative(OutResolvedPath))
+	{
+		OutResolvedPath = FPaths::ConvertRelativePathToFull(OutResolvedPath);
+	}
+
+	// In the event that they used a {format_string} we couldn't resolve (such as shot name), then
+	// we'll trim off anything after the format string.
+	int32 FormatStringToken;
+	if (OutResolvedPath.FindChar(TEXT('{'), FormatStringToken))
+	{
+		// Just as a last bit of saftey, we'll trim anything between the { and the preceeding /. This is
+		// in case they did something like Render_{Date}, we wouldn't want to make a folder named Render_.
+		// We search backwards from where we found the first { brace, so that will get us the last usable slash.
+		LastSlashIndex = OutResolvedPath.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd, FormatStringToken);
+		if (LastSlashIndex != INDEX_NONE)
+		{
+			OutResolvedPath.LeftInline(LastSlashIndex + 1);
+		}
+	}
+
+	return OutResolvedPath;
+}
+
 
 #undef LOCTEXT_NAMESPACE // "MoviePipelineEditorBlueprintLibrary"

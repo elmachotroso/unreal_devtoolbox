@@ -445,6 +445,7 @@ namespace SaveGameReplay
 					}
 					else
 					{
+						//@todo: make async, but don't forget about post enumerate
 						for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
 						{
 							CopyFile(Context, StreamInfo.Name);
@@ -464,6 +465,8 @@ namespace SaveGameReplay
 		{
 			if (Result.WasSuccessful())
 			{
+				//@todo: make async
+
 				// Currently, the LocalFileStreamer doesn't support EnumerateRecentStreams
 				// and the SaveGameStreamer will just return non-Saved replays.
 				for (const FNetworkReplayStreamInfo& StreamInfo : Result.FoundStreams)
@@ -519,6 +522,7 @@ namespace SaveGameReplay
 			MoveFiles(Streamer, GetTempDemoDirectory(), SourceDirectory, UserIndex);
 		}
 
+		//@todo: make async
 		static void MoveFilesFromTemp(const FString& DestinationDirectory, const int32 UserIndex)
 		{
 			TSharedPtr<FMoveContext> MoveContext(MakeShareable(new FMoveContext(nullptr, GetTempDemoDirectory(), DestinationDirectory, UserIndex)));
@@ -600,6 +604,12 @@ namespace SaveGameReplay
 		TOptional<FExtendedSaveGameInfoDelegate> OldDelegate;
 		FDelegateHandle Handle;
 	};
+
+	int32 MaxEvents = 32 * 1024;
+	static FAutoConsoleVariableRef CVarMaxEvents(TEXT("SaveGameReplay.MaxEvents"), MaxEvents, TEXT("Maximum number of expected events per replay."));
+
+	int32 MaxEventSize = 128 * 1024;
+	static FAutoConsoleVariableRef CVarMaxEventSize(TEXT("SaveGameReplay.MaxEventSize"), MaxEventSize, TEXT("Maximum expected size of a replay event in bytes.."));
 }
 
 struct FConstConsoleVars
@@ -1453,6 +1463,12 @@ void FSaveGameNetworkReplayStreamer::RequestEventData_Internal(const FString& Re
 				break;
 			}
 		}
+
+		// we didn't find the event
+		if (Result.Result != EStreamingOperationResult::Success)
+		{
+			Result.Result = EStreamingOperationResult::EventNotFound;
+		}
 	}
 }
 
@@ -1548,6 +1564,12 @@ void FSaveGameNetworkReplayStreamer::RequestEventGroupData_Internal(const FStrin
 				EventDataResult.ReplayEventListItem = MoveTemp(MetaData.VersionedInfo.EventData[i]);
 			}
 		}
+
+		// we didn't find the event group
+		if (Result.Result != EStreamingOperationResult::Success)
+		{
+			Result.Result = EStreamingOperationResult::EventNotFound;
+		}
 	}
 }
 
@@ -1586,6 +1608,12 @@ bool FSaveGameNetworkReplayStreamer::ReadMetaDataFromLocalStream(FArchive& Strea
 
 		if (LocalEvent.SizeInBytes > 0)
 		{
+			if (LocalEvent.SizeInBytes > SaveGameReplay::MaxEventSize)
+			{
+				UE_LOG(LogSaveGameReplay, Error, TEXT("ReadMetaDataFromLocalStream: Event SizeInBytes > MaxEventSize (%d / %d)"), LocalEvent.SizeInBytes, SaveGameReplay::MaxEventSize);
+				return false;
+			}
+
 			ReplayEventData.SetNumUninitialized(LocalEvent.SizeInBytes);
 			StreamArchive.Seek(LocalEvent.EventDataOffset);
 			StreamArchive.Serialize(ReplayEventData.GetData(), ReplayEventData.Num());
@@ -1716,6 +1744,13 @@ bool FSaveGameNetworkReplayStreamer::SerializeVersionedMetaData(FArchive& Archiv
 		int32 NumEvents = Events.Num();
 		Archive << NumEvents;
 
+		if (NumEvents > SaveGameReplay::MaxEvents)
+		{
+			UE_LOG(LogSaveGameReplay, Error, TEXT("SerializeVersionedMetaData: NumEvents > MaxEvents (%d / %d)"), NumEvents, SaveGameReplay::MaxEvents);
+			Archive.SetError();
+			return false;
+		}
+
 		Events.SetNum(NumEvents);
 		EventData.SetNum(NumEvents);
 
@@ -1735,6 +1770,13 @@ bool FSaveGameNetworkReplayStreamer::SerializeVersionedMetaData(FArchive& Archiv
 
 			if (EventDataSize > 0)
 			{
+				if (EventDataSize > SaveGameReplay::MaxEventSize)
+				{
+					UE_LOG(LogSaveGameReplay, Error, TEXT("SerializeVersionedMetaData: EventDataSize > MaxEventSize (%d / %d)"), EventDataSize, SaveGameReplay::MaxEventSize);
+					Archive.SetError();
+					return false;
+				}
+
 				ReplayEventData.SetNum(EventDataSize);
 				Archive.Serialize(ReplayEventData.GetData(), ReplayEventData.Num());
 			}
@@ -1785,13 +1827,25 @@ FString FSaveGameNetworkReplayStreamer::GetFullPlaybackName() const
 
 FString FSaveGameNetworkReplayStreamer::GetLocalPlaybackName() const
 {
-	return FPaths::Combine(TEXT("Temp/"), PlaybackReplayName);
+	return FPaths::Combine(GetTempDemoRelativeSavePath(), PlaybackReplayName);
+}
+
+TArrayView<const FString> FSaveGameNetworkReplayStreamer::GetAdditionalRelativeDemoPaths() const
+{
+	return MakeArrayView(&GetTempDemoRelativeSavePath(), 1);
 }
 
 const FString& FSaveGameNetworkReplayStreamer::GetDefaultDemoSavePath()
 {
 	static const FString DefaultDemoSavePath = FPaths::Combine(*FPaths::ProjectPersistentDownloadDir(), TEXT("Demos/"));
 	return DefaultDemoSavePath;
+}
+
+const FString& FSaveGameNetworkReplayStreamer::GetTempDemoRelativeSavePath()
+{
+	// Allow for cleanup of the local playback.replay file if needed
+	static const FString TempDemoSavePath(TEXT("Temp/"));
+	return TempDemoSavePath;
 }
 
 const FString& FSaveGameNetworkReplayStreamer::GetDefaultPlaybackName()
@@ -1817,7 +1871,9 @@ IMPLEMENT_MODULE(FSaveGameNetworkReplayStreamingFactory, SaveGameNetworkReplaySt
 
 void FSaveGameNetworkReplayStreamingFactory::StartupModule()
 {
-	FSaveGameNetworkReplayStreamer::CleanUpOldReplays(FSaveGameNetworkReplayStreamer::GetDefaultDemoSavePath());
+	FSaveGameNetworkReplayStreamer::CleanUpOldReplays(
+		FSaveGameNetworkReplayStreamer::GetDefaultDemoSavePath(),
+		MakeArrayView(&FSaveGameNetworkReplayStreamer::GetTempDemoRelativeSavePath(), 1));
 }
 
 TSharedPtr<INetworkReplayStreamer> FSaveGameNetworkReplayStreamingFactory::CreateReplayStreamer()

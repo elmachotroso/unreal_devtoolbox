@@ -2,6 +2,9 @@
 
 #include "RigUnit_GetControlInitialTransform.h"
 #include "Units/RigUnitContext.h"
+#include "Units/Hierarchy/RigUnit_GetTransform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_GetControlInitialTransform)
 
 FRigUnit_GetControlInitialTransform_Execute()
 {
@@ -50,3 +53,16 @@ FRigUnit_GetControlInitialTransform_Execute()
 		}
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_GetControlInitialTransform::GetUpgradeInfo() const
+{
+	FRigUnit_GetTransform NewNode;
+	NewNode.Item = FRigElementKey(Control, ERigElementType::Control);
+	NewNode.Space = Space;
+	NewNode.bInitial = true;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Control"), TEXT("Item.Name"));
+	return Info;
+}
+

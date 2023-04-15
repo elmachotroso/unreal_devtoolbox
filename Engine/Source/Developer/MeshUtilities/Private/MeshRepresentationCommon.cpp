@@ -5,27 +5,55 @@
 #include "MeshUtilitiesPrivate.h"
 #include "DerivedMeshDataTaskUtils.h"
 
+static FVector3f UniformSampleHemisphere(FVector2D Uniforms)
+{
+	Uniforms = Uniforms * 2.0f - 1.0f;
+
+	if(Uniforms == FVector2D::ZeroVector)
+	{
+		return FVector3f::ZeroVector;
+	}
+
+	float R;
+	float Theta;
+
+	if (FMath::Abs(Uniforms.X) > FMath::Abs(Uniforms.Y))
+	{
+		R = Uniforms.X;
+		Theta = (float)PI / 4 * (Uniforms.Y / Uniforms.X);
+	}
+	else
+	{
+		R = Uniforms.Y;
+		Theta = (float)PI / 2 - (float)PI / 4 * (Uniforms.X / Uniforms.Y);
+	}
+
+	// concentric disk sample
+	const float U = R * FMath::Cos(Theta);
+	const float V = R * FMath::Sin(Theta);
+	const float R2 = R * R;
+
+	// map to hemisphere [P. Shirley, Kenneth Chiu; 1997; A Low Distortion Map Between Disk and Square]
+	return FVector3f(U * FMath::Sqrt(2 - R2), V * FMath::Sqrt(2 - R2), 1.0f - R2);
+}
+
 void MeshUtilities::GenerateStratifiedUniformHemisphereSamples(int32 NumSamples, FRandomStream& RandomStream, TArray<FVector3f>& Samples)
 {
-	const int32 NumThetaSteps = FMath::TruncToInt(FMath::Sqrt(NumSamples / (2.0f * (float)PI)));
-	const int32 NumPhiSteps = FMath::TruncToInt(NumThetaSteps * (float)PI);
+	const int32 NumSamplesDim = FMath::TruncToInt(FMath::Sqrt((float)NumSamples));
 
-	Samples.Empty(NumThetaSteps * NumPhiSteps);
-	for (int32 ThetaIndex = 0; ThetaIndex < NumThetaSteps; ThetaIndex++)
+	Samples.Empty(NumSamplesDim * NumSamplesDim);
+
+	for (int32 IndexX = 0; IndexX < NumSamplesDim; IndexX++)
 	{
-		for (int32 PhiIndex = 0; PhiIndex < NumPhiSteps; PhiIndex++)
+		for (int32 IndexY = 0; IndexY < NumSamplesDim; IndexY++)
 		{
 			const float U1 = RandomStream.GetFraction();
 			const float U2 = RandomStream.GetFraction();
 
-			const float Fraction1 = (ThetaIndex + U1) / (float)NumThetaSteps;
-			const float Fraction2 = (PhiIndex + U2) / (float)NumPhiSteps;
+			const float Fraction1 = (IndexX + U1) / (float)NumSamplesDim;
+			const float Fraction2 = (IndexY + U2) / (float)NumSamplesDim;
 
-			const float R = FMath::Sqrt(1.0f - Fraction1 * Fraction1);
-
-			const float Phi = 2.0f * (float)PI * Fraction2;
-			// Convert to Cartesian
-			Samples.Add(FVector3f(FMath::Cos(Phi) * R, FMath::Sin(Phi) * R, Fraction1));
+			Samples.Add(UniformSampleHemisphere(FVector2D(Fraction1, Fraction2)));
 		}
 	}
 }
@@ -65,6 +93,13 @@ void EmbreeFilterFunc(const struct RTCFilterFunctionNArguments* args)
 
 	FEmbreeIntersectionContext& IntersectionContext = *static_cast<FEmbreeIntersectionContext*>(args->context);
 	IntersectionContext.ElementIndex = Desc.ElementIndex;
+
+	const RTCHit& EmbreeHit = *(RTCHit*)args->hit;
+	if (IntersectionContext.SkipPrimId != RTC_INVALID_GEOMETRY_ID && IntersectionContext.SkipPrimId == EmbreeHit.primID)
+	{
+		// Ignore hit in order to continue tracing
+		args->valid[0] = 0;
+	}
 }
 
 void EmbreeErrorFunc(void* userPtr, RTCError code, const char* str)
@@ -176,7 +211,7 @@ void MeshRepresentation::SetupEmbreeScene(
 					{
 						if (MaterialBlendModes.IsValidIndex(Section.MaterialIndex))
 						{
-							bTriangleIsOpaqueOrMasked = !IsTranslucentBlendMode(MaterialBlendModes[Section.MaterialIndex].BlendMode);
+							bTriangleIsOpaqueOrMasked = !IsTranslucentBlendMode(MaterialBlendModes[Section.MaterialIndex].BlendMode) && MaterialBlendModes[Section.MaterialIndex].bAffectDistanceFieldLighting;
 						}
 
 						break;
@@ -304,6 +339,29 @@ void MeshRepresentation::SetupEmbreeScene(
 #endif
 	{
 		EmbreeScene.kDopTree.Build(BuildTriangles);
+	}
+
+	// bMostlyTwoSided
+	{
+		uint32 NumTrianglesTotal = 0;
+		uint32 NumTwoSidedTriangles = 0;
+
+		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+		{
+			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
+
+			if (MaterialBlendModes.IsValidIndex(Section.MaterialIndex))
+			{
+				NumTrianglesTotal += Section.NumTriangles;
+
+				if (MaterialBlendModes[Section.MaterialIndex].bTwoSided)
+				{
+					NumTwoSidedTriangles += Section.NumTriangles;
+				}
+			}
+		}
+
+		EmbreeScene.bMostlyTwoSided = NumTwoSidedTriangles * 4 >= NumTrianglesTotal || bGenerateAsIfTwoSided;
 	}
 }
 

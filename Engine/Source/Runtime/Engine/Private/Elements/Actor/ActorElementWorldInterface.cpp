@@ -6,8 +6,13 @@
 #include "Elements/Component/ComponentElementData.h"
 #include "Elements/Framework/TypedElementRegistry.h"
 
-#include "GameFramework/Actor.h"
+#include "ActorEditorUtils.h"
 #include "Components/PrimitiveComponent.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/Volume.h"
+#include "ShowFlags.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorElementWorldInterface)
 
 bool UActorElementWorldInterface::IsTemplateElement(const FTypedElementHandle& InElementHandle)
 {
@@ -32,8 +37,11 @@ bool UActorElementWorldInterface::GetBounds(const FTypedElementHandle& InElement
 	if (const AActor* Actor = ActorElementDataUtil::GetActorFromHandle(InElementHandle))
 	{
 		// TODO: This was taken from FActorOrComponent, but AActor has a function to calculate bounds too...
-		OutBounds = Actor->GetRootComponent()->Bounds;
-		return true;
+		if (const USceneComponent* RootComponent = Actor->GetRootComponent())
+		{
+			OutBounds = RootComponent->Bounds;
+			return true;
+		}
 	}
 
 	return false;
@@ -181,6 +189,30 @@ bool UActorElementWorldInterface::FindSuitableTransformAlongPath(const FTypedEle
 	return false;
 }
 
+TArray<FTypedElementHandle> UActorElementWorldInterface::GetSelectionElementsFromSelectionFunction(const FTypedElementHandle& InElementHandle, const FWorldSelectionElementArgs& SelectionArgs, const TFunction<bool(const FTypedElementHandle&, const FWorldSelectionElementArgs&)>& SelectionFunction)
+{
+	if (const AActor* Actor = ActorElementDataUtil::GetActorFromHandle(InElementHandle))
+	{
+		if ((SelectionArgs.ShowFlags && !SelectionArgs.ShowFlags->Volumes && Actor->IsA(AVolume::StaticClass())) 
+			|| FActorEditorUtils::IsABuilderBrush(Actor))
+		{
+			return {};
+		}
+
+		if (!GetOwnerWorld(InElementHandle)->IsEditorWorld())
+		{
+			if (Actor->IsHidden())
+			{
+				return {};
+			}
+		}
+
+		return ITypedElementWorldInterface::GetSelectionElementsFromSelectionFunction(InElementHandle, SelectionArgs, SelectionFunction);
+	}
+
+	return {};
+}
+
 bool UActorElementWorldInterface::FindSuitableTransformAlongPath_WorldSweep(const UWorld* InWorld, const FVector& InPathStart, const FVector& InPathEnd, const FCollisionShape& InTestShape, TArrayView<const FTypedElementHandle> InElementsToIgnore, FCollisionQueryParams& InOutParams, FTransform& OutSuitableTransform)
 {
 	for (const FTypedElementHandle& ElementToIgnore : InElementsToIgnore)
@@ -192,7 +224,7 @@ bool UActorElementWorldInterface::FindSuitableTransformAlongPath_WorldSweep(cons
 	if (InWorld->SweepSingleByChannel(Hit, InPathStart, InPathEnd, FQuat::Identity, ECC_WorldStatic, InTestShape, InOutParams))
 	{
 		FVector NewLocation = Hit.Location;
-		NewLocation.Z += KINDA_SMALL_NUMBER; // Move the new desired location up by an error tolerance
+		NewLocation.Z += UE_KINDA_SMALL_NUMBER; // Move the new desired location up by an error tolerance
 
 		//@todo: This doesn't take into account that rotating the actor changes LocationOffset.
 		FRotator NewRotation = Hit.Normal.Rotation();
@@ -224,3 +256,4 @@ void UActorElementWorldInterface::AddIgnoredCollisionQueryElement(const FTypedEl
 		return;
 	}
 }
+

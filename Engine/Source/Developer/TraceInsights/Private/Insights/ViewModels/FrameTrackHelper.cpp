@@ -6,7 +6,7 @@
 #include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Rendering/DrawElements.h"
-#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Model/Frames.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
@@ -41,7 +41,7 @@ void FFrameTrackSeriesBuilder::AddFrame(const TraceServices::FFrame& Frame)
 {
 	NumAddedFrames++;
 
-	const int32 FrameIndex = Frame.Index;
+	const int32 FrameIndex = IntCastChecked<int32>(Frame.Index);
 
 	int32 SampleIndex = (FrameIndex - FirstFrameIndex) / FramesPerSample;
 	if (SampleIndex >= 0 && SampleIndex < NumSamples)

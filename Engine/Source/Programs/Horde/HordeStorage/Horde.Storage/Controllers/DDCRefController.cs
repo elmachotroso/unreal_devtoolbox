@@ -9,6 +9,7 @@ using System.Net.Mime;
 using System.Threading.Tasks;
 using Dasync.Collections;
 using Datadog.Trace;
+using EpicGames.Horde.Storage;
 using Horde.Storage.Implementation;
 using Jupiter;
 using Jupiter.Implementation;
@@ -17,14 +18,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Infrastructure;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Serilog;
 
 namespace Horde.Storage.Controllers
 {
+    using BlobNotFoundException = Horde.Storage.Implementation.BlobNotFoundException;
+
     public class RefRequest
     {
         [JsonConstructor]
@@ -45,23 +46,24 @@ namespace Horde.Storage.Controllers
     [ApiController]
     [FormatFilter]
     [Route("api/v1/c")]
+    [Authorize]
     public class DDCRefController : ControllerBase
     {
         private readonly IRefsStore _refsStore;
         private readonly IDiagnosticContext _diagnosticContext;
-        private readonly IAuthorizationService _authorizationService;
-        private readonly IOptionsMonitor<JupiterSettings> _jupiterSettings;
+		private readonly RequestHelper _requestHelper;
+        private readonly IOptionsMonitor<HordeStorageSettings> _settings;
 
         private readonly ILogger _logger = Log.ForContext<DDCRefController>();
         private readonly IDDCRefService _ddcRefService;
 
-        public DDCRefController(IDDCRefService ddcRefService, IRefsStore refsStore, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService, IOptionsMonitor<JupiterSettings> jupiterSettings)
+        public DDCRefController(IDDCRefService ddcRefService, IRefsStore refsStore, IDiagnosticContext diagnosticContext, RequestHelper requestHelper, IOptionsMonitor<HordeStorageSettings> settings)
         {
             _refsStore = refsStore;
             _ddcRefService = ddcRefService;
             _diagnosticContext = diagnosticContext;
-            _authorizationService = authorizationService;
-            _jupiterSettings = jupiterSettings;
+            _requestHelper = requestHelper;
+            _settings = settings;
         }
 
         /// <summary>
@@ -71,22 +73,22 @@ namespace Horde.Storage.Controllers
         [HttpGet("ddc")]
         [ProducesDefaultResponseType]
         [ProducesResponseType(type: typeof(ProblemDetails), 400)]
-        [Authorize("Cache.read")]
         public async Task<IActionResult> GetNamespaces()
         {
             NamespaceId[] namespaces = await _refsStore.GetNamespaces().ToArrayAsync();
 
-            if (!ShouldDoAuth())
+            // filter namespaces down to only the namespaces the user has access to
+            List<NamespaceId> validNamespaces = new List<NamespaceId>();
+            foreach (NamespaceId ns in namespaces)
             {
-                // filter namespaces down to only the namespaces the user has access to
-                namespaces = namespaces.Where(ns =>
+                ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+                if (result == null)
                 {
-                    Task<AuthorizationResult> authorizationResult = _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-                    return authorizationResult.Result.Succeeded;
-                }).ToArray();
+                    validNamespaces.Add(ns);
+                }
             }
 
-            return Ok(new GetNamespacesResponse(namespaces));
+            return Ok(new GetNamespacesResponse(validNamespaces.ToArray()));
         }
 
         /// <summary>
@@ -103,7 +105,6 @@ namespace Horde.Storage.Controllers
         [ProducesResponseType(type: typeof(RefResponse), 200)]
         [ProducesResponseType(type: typeof(ValidationProblemDetails), 400)]
         [Produces(MediaTypeNames.Application.Json, MediaTypeNames.Application.Octet, CustomMediaTypeNames.UnrealCompactBinary)]
-        [Authorize("Cache.read")]
         public async Task<IActionResult> Get(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket,
@@ -111,22 +112,20 @@ namespace Horde.Storage.Controllers
             [FromQuery] string[] fields,
             [FromRoute] string? format = null)
         {
-            if (!ShouldDoAuth())
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                using (Scope _ = Tracer.Instance.StartActive("authorize"))
-                {
-                    AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+                return result;
+            }
 
-                    if (!authorizationResult.Succeeded)
-                    {
-                        return Forbid();
-                    }
-                }
+            if (_settings.CurrentValue.DisableLegacyApi)
+            {
+                return NotFound("This api has been removed, you will need to update your code.");
             }
 
             try
             {
-                bool isRaw = format?.ToLowerInvariant() == "raw";
+                bool isRaw = format?.ToUpperInvariant() == "RAW";
                 // if the raw format is used only the blob itself will be output so no need to fetch anything else
                 if (isRaw)
                 {
@@ -142,10 +141,10 @@ namespace Horde.Storage.Controllers
    
                     if (isRaw)
                     {
-                        using (Scope _ = Tracer.Instance.StartActive("body.write"))
+                        using (IScope _ = Tracer.Instance.StartActive("body.write"))
                         {
                             const int BufferSize = 64 * 1024;
-                            var outputStream = Response.Body;
+                            Stream outputStream = Response.Body;
                             Response.ContentLength = blob.Length;
                             Response.ContentType = MediaTypeNames.Application.Octet;
                             Response.StatusCode = StatusCodes.Status200OK;
@@ -173,7 +172,6 @@ namespace Horde.Storage.Controllers
                     record.Blob = await blobStream.ToByteArray();
                 }
 
-
                 return Ok(record);
 
             }
@@ -191,201 +189,6 @@ namespace Horde.Storage.Controllers
             }
         }
 
-        private static bool IsServedOnHighPerfHttpPort(HostString host, IEnumerable<int> highPerfPorts)
-        {
-            foreach (int port in highPerfPorts)
-            {
-                if (host.Port.HasValue && host.Port.Value == port)
-                    return true;
-            }
-            
-            return false;
-        }
-
-        [ApiExplorerSettings(IgnoreApi = true)]
-        [NonAction]
-        public async Task FastGet(HttpContext httpContext, Func<Task> next)
-        {
-            bool isHighPerf = IsServedOnHighPerfHttpPort(httpContext.Request.Host, _jupiterSettings.CurrentValue.DisableAuthOnPorts);
-
-            if (isHighPerf && httpContext.Request.Path.StartsWithSegments("/api/v1/c/ddc", out var remaining))
-            {
-                string[] parts = remaining.ToString().Split("/");
-                if (parts.Length == 4)
-                {
-                    NamespaceId ns = new NamespaceId(parts[1]);
-                    BucketId bucket = new BucketId(parts[2]);
-                    string keyAndFormat = parts[3];
-                    if (httpContext.Request.Method == "GET")
-                    {
-                        KeyId key;
-                        // assume raw key if nothing is specified
-                        string format = "raw";
-                        string[] keyParts = keyAndFormat.Split(".");
-                        if (keyParts.Length == 2)
-                        {
-                            key = new KeyId(keyParts[0]);
-                            format = keyParts[1];
-                        }
-                        else
-                        {
-                            key = new KeyId(keyAndFormat);
-                        }
-
-                        if (format != "raw")
-                        {
-                            // if not requesting the raw format we can not be used so continue searching middlewares
-                            await next.Invoke();
-                            return;
-                        }
-
-                        httpContext.Response.Headers["X-Jupiter-ImplUsed"] = "ReqMid";
-                        try
-                        {
-                            (RefResponse refRes, BlobContents? tempBlob) = await _ddcRefService.Get(ns, bucket, key, fields: new[] {"blob"});
-                            BlobContents blob = tempBlob!;
-                            
-                            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-                            httpContext.Response.Headers["Content-Type"] = MediaTypeNames.Application.Octet;
-                            httpContext.Response.Headers["Content-Length"] = Convert.ToString(blob.Length);
-                            httpContext.Response.Headers[CommonHeaders.HashHeaderName] = refRes.ContentHash.ToString();
-
-                            using (Scope _ = Tracer.Instance.StartActive("body.write"))
-                            {
-                                await blob.Stream.CopyToAsync(httpContext.Response.Body);
-                            }
-                        }
-                        catch (NamespaceNotFoundException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync("{\"title\": \"Namespace " + e.Namespace + " did not exist\", \"status\": 400}");
-                        }
-                        catch (RefRecordNotFoundException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync("{\"title\": \"Object " + e.Bucket + " " + e.Key + " did not exist\", \"status\": 400}");
-                        }
-                        catch (BlobNotFoundException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync("{\"title\": \"Object " + e.Blob + " in " + e.Ns + " not found\", \"status\": 400}");
-                        }
-
-                        return;
-                    }
-                    else if (httpContext.Request.Method == "HEAD")
-                    {
-                        KeyId key = new KeyId(keyAndFormat);
-                        httpContext.Response.Headers["X-Jupiter-ImplUsed"] = "ReqMid";
-                        try
-                        {
-                            RefRecord record = await _ddcRefService.Exists(ns, bucket, key);
-                            
-                            httpContext.Response.StatusCode = StatusCodes.Status204NoContent;
-                            httpContext.Response.Headers[CommonHeaders.HashHeaderName] = record.ContentHash.ToString();
-                        }
-                        catch (NamespaceNotFoundException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync($"{{\"title\": \"Namespace {e.Namespace} did not exist\", \"status\": 400}}");
-                        }
-                        catch (RefRecordNotFoundException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync($"{{\"title\": \"Object {e.Bucket} {e.Key} in namespace {e.Namespace} did not exist\", \"status\": 400}}");
-                        }
-                        catch (MissingBlobsException e)
-                        {
-                            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                            httpContext.Response.Headers["Content-Type"] = "application/json";
-                            await httpContext.Response.WriteAsync($"{{\"title\": \"Blobs {e.Blobs} from object {e.Bucket} {e.Key} in namespace {e.Namespace} did not exist\", \"status\": 400}}");
-                        }
-
-                        return;
-                    }
-
-                }
-            }
-            else if (isHighPerf && httpContext.Request.Path.StartsWithSegments("/api/v1/c/ddc-rpc/batchGet", out _))
-            {
-                string requestBody;
-
-                using (StreamReader sr = new StreamReader(httpContext.Request.Body))
-                {
-                    using Scope _ = Tracer.Instance.StartActive("body.read");
-                    requestBody = await sr.ReadToEndAsync();
-                }
-
-                BatchGetOp batch;
-                using (Scope _ = Tracer.Instance.StartActive("json.deserialize"))
-                {
-                    batch = JsonConvert.DeserializeObject<BatchGetOp>(requestBody)!;
-                }
-                
-                BatchWriter writer = new BatchWriter();
-                httpContext.Response.StatusCode = StatusCodes.Status200OK;
-                await writer.WriteToStream(httpContext.Response.Body, batch.Namespace!.Value, batch.Operations.Select(op => new Tuple<BatchWriter.OpVerb, BucketId, KeyId>(op.Verb, op.Bucket!.Value, op.Key!.Value)).ToList(),
-                    async (verb, ns, bucket, key, fields) =>
-                    {
-                        BatchWriter.OpState opState;
-                        RefResponse? refResponse = null;
-                        BlobContents? blob = null;
-                        try
-                        {
-                            switch (verb)
-                            {
-                                case BatchWriter.OpVerb.GET:
-                                    (refResponse, blob) = await _ddcRefService.Get(ns, bucket, key, fields);
-                                    opState = BatchWriter.OpState.OK;
-                                    break;
-                                case BatchWriter.OpVerb.HEAD:
-                                    await _ddcRefService.Exists(ns, bucket, key);
-                                    opState = BatchWriter.OpState.Exists;
-                                    refResponse = null;
-                                    blob = null;
-                                    break;
-                                default:
-                                    throw new ArgumentOutOfRangeException(nameof(verb), verb, null);
-                            }
-                        }
-                        catch (RefRecordNotFoundException)
-                        {
-                            opState = BatchWriter.OpState.NotFound;
-                        }
-                        catch (BlobNotFoundException)
-                        {
-                            opState = BatchWriter.OpState.NotFound;
-                        }
-                        catch (MissingBlobsException)
-                        {
-                            opState = BatchWriter.OpState.NotFound;
-                        }
-                        catch (NamespaceNotFoundException)
-                        {
-                            opState = BatchWriter.OpState.NotFound;
-                        }
-                        catch (Exception e)
-                        {
-                            _logger.Error(e, "Unknown exception when executing batch get");
-
-                            // we want to make sure that we always continue to write the results even when we get errors
-                            opState = BatchWriter.OpState.Failed;
-                        }
-
-                        return new Tuple<ContentHash?, BlobContents?, BatchWriter.OpState>(refResponse?.ContentHash, blob, opState);
-                    });
-
-                return;
-            }
-
-            await next.Invoke();
-        }
-
         /// <summary>
         /// Checks if a refs key exists
         /// </summary>
@@ -396,20 +199,20 @@ namespace Horde.Storage.Controllers
         [HttpHead("ddc/{ns}/{bucket}/{key}", Order = 500)]
         [ProducesResponseType(type: typeof(RefResponse), 200)]
         [ProducesResponseType(type: typeof(ValidationProblemDetails), 400)]
-        [Authorize("Cache.read")]
         public async Task<IActionResult> Head(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket,
             [FromRoute] [Required] KeyId key)
         {
-            if (!ShouldDoAuth())
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+                return result;
+            }
 
-                if (!authorizationResult.Succeeded)
-                {
-                    return Forbid();
-                }
+            if (_settings.CurrentValue.DisableLegacyApi)
+            {
+                return NotFound("This api has been removed, you will need to update your code.");
             }
 
             try
@@ -446,21 +249,21 @@ namespace Horde.Storage.Controllers
         [Consumes(MediaTypeNames.Application.Json)]
         [ProducesResponseType(type: typeof(PutRequestResponse), 200)]
         [ProducesResponseType(type: typeof(ValidationProblemDetails), 400)]
-        [Authorize("Cache.write")]
         public async Task<IActionResult> PutStructured(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket,
             [FromRoute] [Required] KeyId key,
             [FromBody] RefRequest refRequest)
         {
-            if (!ShouldDoAuth())
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+                return result;
+            }
 
-                if (!authorizationResult.Succeeded)
-                {
-                    return Forbid();
-                }
+            if (_settings.CurrentValue.DisableLegacyApi)
+            {
+                return NotFound("This api has been removed, you will need to update your code.");
             }
 
             try
@@ -474,7 +277,7 @@ namespace Horde.Storage.Controllers
             {
                 return BadRequest(new ProblemDetails
                 {
-                    Title = $"Incorrect hash, got hash \"{e.NewHash}\" but hash of content was determined to be \"{e.ExpectedHash}\""
+                    Title = $"Incorrect hash, got hash \"{e.SuppliedHash}\" but hash of content was determined to be \"{e.ContentHash}\""
                 });
             }
             catch (MissingBlobsException e)
@@ -483,27 +286,27 @@ namespace Horde.Storage.Controllers
             }
         }
 
-
         // that structured data will match the route above first
         [RequiredContentType(MediaTypeNames.Application.Octet)]
         [HttpPut("ddc/{ns}/{bucket}/{key}", Order = 500)]
         // TODO: Investigate if we can resolve the conflict between this and the other put endpoint in open api
         [ApiExplorerSettings(IgnoreApi = true)]
         [DisableRequestSizeLimit]
-        [Authorize("Cache.write")]
         public async Task<IActionResult> PutBlob(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket,
             [FromRoute] [Required] KeyId key)
         {
-            if (!ShouldDoAuth())
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
+                return result;
+            }
 
-                if (!authorizationResult.Succeeded)
-                {
-                    return Forbid();
-                }
+            
+            if (_settings.CurrentValue.DisableLegacyApi)
+            {
+                return NotFound("This api has been removed, you will need to update your code.");
             }
 
             byte[] blob;
@@ -560,16 +363,14 @@ namespace Horde.Storage.Controllers
         /// <param name="ns">Namespace. Each namespace is completely separated from each other. Use for different types of data that is never expected to be similar (between two different games for instance)</param>
         [HttpDelete("ddc/{ns}", Order = 500)]
         [ProducesResponseType(204)]
-        [Authorize("admin")]
         public async Task<IActionResult> DeleteNamespace(
             [FromRoute] [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteNamespace });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
@@ -581,7 +382,6 @@ namespace Horde.Storage.Controllers
                 return BadRequest(new ProblemDetails {Title = $"Namespace {e.Namespace} did not exist"});
             }
 
-
             return NoContent();
         }
 
@@ -592,16 +392,14 @@ namespace Horde.Storage.Controllers
         /// <param name="bucket">The category/type of record you are caching. Is a clustered key together with the actual key, but all records in the same bucket can be dropped easily.</param>
         [HttpDelete("ddc/{ns}/{bucket}", Order = 500)]
         [ProducesResponseType(204)]
-        [Authorize("Cache.delete")]
         public async Task<IActionResult> DeleteBucket(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteBucket });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
@@ -612,7 +410,6 @@ namespace Horde.Storage.Controllers
             {
                 return BadRequest(new ProblemDetails {Title = $"Namespace {e.Namespace} did not exist"});
             }
-
 
             return NoContent();
         }
@@ -626,17 +423,15 @@ namespace Horde.Storage.Controllers
         [HttpDelete("ddc/{ns}/{bucket}/{key}", Order = 500)]
         [ProducesResponseType(204)]
         [ProducesResponseType(400)]
-        [Authorize("Cache.delete")]
         public async Task<IActionResult> Delete(
             [FromRoute] [Required] NamespaceId ns,
             [FromRoute] [Required] BucketId bucket,
             [FromRoute] [Required] KeyId key)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
@@ -644,7 +439,9 @@ namespace Horde.Storage.Controllers
                 long deleteCount = await _ddcRefService.Delete(ns, bucket, key);
 
                 if (deleteCount == 0)
+                {
                     return BadRequest("Deleted 0 records, most likely the object did not exist");
+                }
             }
             catch (NamespaceNotFoundException e)
             {
@@ -653,13 +450,13 @@ namespace Horde.Storage.Controllers
             return NoContent();
         }
 
-
         // ReSharper disable UnusedAutoPropertyAccessor.Global
         // ReSharper disable once ClassNeverInstantiated.Global
-        public class BatchOp
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Required by serialization")]
+        public class DdcBatchOp
         {
             // ReSharper disable InconsistentNaming
-            public enum Operation
+            public enum DdcOperation
             {
                 INVALID,
                 GET,
@@ -676,32 +473,34 @@ namespace Horde.Storage.Controllers
 
             [Required] public KeyId? Id { get; set; }
 
-            [Required] public Operation Op { get; set; }
+            [Required] public DdcOperation Op { get; set; }
 
             // used for put ops
             public ContentHash? ContentHash { get; set; }
             public byte[]? Content { get; set; }
         }
 
-        public class BatchCall
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Required by serialization")]
+        public class DdcBatchCall
         {
-            public BatchOp[]? Operations { get; set; }
+            public DdcBatchOp[]? Operations { get; set; }
         }
 
         [HttpPost("ddc-rpc")]
-        public async Task<IActionResult> Post([FromBody] BatchCall batch)
+        public async Task<IActionResult> Post([FromBody] DdcBatchCall batch)
         {
-            string OpToPolicy(BatchOp.Operation op)
+            AclAction MapToAclAction(DdcBatchOp.DdcOperation op)
             {
                 switch (op)
                 {
-                    case BatchOp.Operation.GET:
-                    case BatchOp.Operation.HEAD:
-                        return "Cache.read";
-                    case BatchOp.Operation.PUT:
-                        return "Cache.write";
-                    case BatchOp.Operation.DELETE:
-                        return "Cache.delete";
+                    case DdcBatchOp.DdcOperation.GET:
+                        return AclAction.ReadObject;
+                    case DdcBatchOp.DdcOperation.PUT:
+                        return AclAction.WriteObject;
+                    case DdcBatchOp.DdcOperation.DELETE:
+                        return AclAction.DeleteObject;
+                    case DdcBatchOp.DdcOperation.HEAD:
+                        return AclAction.ReadObject;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(op), op, null);
                 }
@@ -709,26 +508,28 @@ namespace Horde.Storage.Controllers
 
             if (batch.Operations == null)
             {
-                throw new ArgumentNullException();
+                throw new InvalidOperationException("No operations specified, this is a required field");
+            }
+
+            if (_settings.CurrentValue.DisableLegacyApi)
+            {
+                return NotFound("This api has been removed, you will need to update your code.");
             }
 
             Task<object?>[] tasks = new Task<object?>[batch.Operations.Length];
             for (int index = 0; index < batch.Operations.Length; index++)
             {
-                BatchOp op = batch.Operations[index];
+                DdcBatchOp op = batch.Operations[index];
 
-                AuthorizationResult authorizationResultNamespace = await _authorizationService.AuthorizeAsync(User, op.Namespace, NamespaceAccessRequirement.Name);
-                AuthorizationResult authorizationResultOp = await _authorizationService.AuthorizeAsync(User, op, OpToPolicy(op.Op));
+                ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, op.Namespace!.Value, new [] { MapToAclAction(op.Op) });
 
-                bool authorized = authorizationResultNamespace.Succeeded && authorizationResultOp.Succeeded;
-
-                if (!authorized)
+                if (result != null)
                 {
                     tasks[index] = Task.FromResult((object?)new ProblemDetails { Title = "Forbidden" });
                 }
                 else
                 {
-                    tasks[index] = ProcessOp(op).ContinueWith(task => task.IsFaulted ? (object?)new ProblemDetails { Title = "Exception thrown", Detail = task!.Exception!.ToString()} : task.Result);
+                    tasks[index] = ProcessOp(op).ContinueWith((task, _) => task.IsFaulted ? (object?)new ProblemDetails { Title = "Exception thrown", Detail = task!.Exception!.ToString()} : task.Result, null, TaskScheduler.Current);
                 }
             }
 
@@ -739,30 +540,30 @@ namespace Horde.Storage.Controllers
             return Ok(results);
         }
 
-        private Task<object?> ProcessOp(BatchOp op)
+        private Task<object?> ProcessOp(DdcBatchOp op)
         {
             if (op.Namespace == null)
             {
-                throw new ArgumentNullException("namespace");
+                throw new InvalidOperationException("namespace was null, is required");
             }
 
             if (op.Bucket == null)
             {
-                throw new ArgumentNullException("bucket");
+                throw new InvalidOperationException("bucket was null, is required");
             }
 
             if (op.Id == null)
             {
-                throw new ArgumentNullException("id");
+                throw new InvalidOperationException("id was null, is required");
             }
 
             switch (op.Op)
             {
-                case BatchOp.Operation.INVALID:
-                    throw new ArgumentOutOfRangeException();
-                case BatchOp.Operation.GET:
+                case DdcBatchOp.DdcOperation.INVALID:
+                    throw new NotImplementedException($"Unsupported batch op {DdcBatchOp.DdcOperation.INVALID} used in op {op.Id}");
+                case DdcBatchOp.DdcOperation.GET:
                     // TODO: support field filtering
-                    return _ddcRefService.Get(op.Namespace.Value, op.Bucket.Value, op.Id.Value, new string[0]).ContinueWith(t => 
+                    return _ddcRefService.Get(op.Namespace.Value, op.Bucket.Value, op.Id.Value, Array.Empty<string>()).ContinueWith((t,_) => 
                     {
                         // we are serializing this to json, so we just stream the blob into memory to return it.
                         (RefResponse response, BlobContents? blob) = t.Result;
@@ -772,35 +573,36 @@ namespace Horde.Storage.Controllers
                             response.Blob = blobContents.Stream.ToByteArray().Result;
                         }
                         return (object?)response;
-                    });
-                case BatchOp.Operation.HEAD:
-                    return _ddcRefService.Exists(op.Namespace.Value, op.Bucket.Value, op.Id.Value).ContinueWith(t => t.Result == null ? (object?)null : op.Id);
-                case BatchOp.Operation.PUT:
+                    }, null, TaskScheduler.Current);
+                case DdcBatchOp.DdcOperation.HEAD:
+                    return _ddcRefService.Exists(op.Namespace.Value, op.Bucket.Value, op.Id.Value).ContinueWith((t,_) => t.Result == null ? (object?)null : op.Id, null, TaskScheduler.Current);
+                case DdcBatchOp.DdcOperation.PUT:
                 {
                     if (op.ContentHash == null)
                     {
-                        throw new ArgumentNullException("ContentHash");
+                        throw new InvalidOperationException("ContentHash was null, is required");
                     }
 
                     if (op.Content == null)
                     {
-                        throw new ArgumentNullException("Content");
+                        throw new InvalidOperationException("Content was null, is required");
                     }
 
                     ContentHash blobHash = ContentHash.FromBlob(op.Content);
                     if (!blobHash.Equals(op.ContentHash))
                     {
-                        throw new HashMismatchException(blobHash, op.ContentHash);
+                        throw new HashMismatchException(op.ContentHash, blobHash);
                     }
-                    return _ddcRefService.Put(op.Namespace.Value, op.Bucket.Value, op.Id.Value, blobHash, op.Content).ContinueWith(t => (object?)t.Result);
+                    return _ddcRefService.Put(op.Namespace.Value, op.Bucket.Value, op.Id.Value, blobHash, op.Content).ContinueWith((t,_) => (object?)t.Result, null, TaskScheduler.Current);
                 }
-                case BatchOp.Operation.DELETE:
-                    return _ddcRefService.Delete(op.Namespace.Value, op.Bucket.Value, op.Id.Value).ContinueWith(t => (object?)null);
+                case DdcBatchOp.DdcOperation.DELETE:
+                    return _ddcRefService.Delete(op.Namespace.Value, op.Bucket.Value, op.Id.Value).ContinueWith((t,_) => (object?)null, null, TaskScheduler.Current);
                 default:
-                    throw new ArgumentOutOfRangeException();
+                    throw new NotImplementedException($"Unknown op used {op.Op}");
             }
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Used by serialization")]
         public class BatchGetOp
         {
             public class GetOp
@@ -822,22 +624,17 @@ namespace Horde.Storage.Controllers
         /// <param name="batch">Spec for which objects to return</param>
         /// <returns></returns>
         [HttpPost("ddc-rpc/batchGet")]
-        [Authorize("Cache.read")]
         public async Task<IActionResult> BatchGet([FromBody] BatchGetOp batch)
         {
             if (batch.Namespace == null)
             {
-                throw new ArgumentNullException();
+                throw new InvalidOperationException("A valid namespace must be specified");
             }
 
-            if (!ShouldDoAuth())
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, batch.Namespace.Value, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, batch.Namespace, NamespaceAccessRequirement.Name);
-
-                if (!authorizationResult.Succeeded)
-                {
-                    return Forbid();
-                }
+                return result;
             }
 
             BatchWriter writer = new BatchWriter();
@@ -895,28 +692,17 @@ namespace Horde.Storage.Controllers
             // we have already set the result by writing to Response
             return new EmptyResult();
         }
-
-        private bool ShouldDoAuth()
-        {
-            foreach (int port in _jupiterSettings.CurrentValue.DisableAuthOnPorts)
-            {
-                if (port == HttpContext.Connection.LocalPort)
-                    return true;
-            }
-
-            return false;
-        }
     }
 
     public class HashMismatchException : Exception
     {
-        public ContentHash NewHash { get; }
-        public ContentHash ExpectedHash { get; }
+        public ContentHash SuppliedHash { get; }
+        public ContentHash ContentHash { get; }
 
-        public HashMismatchException(ContentHash newHash, ContentHash expectedHash)
+        public HashMismatchException(ContentHash suppliedHash, ContentHash contentHash) : base($"ID was not a hash of the content uploaded. Supplied hash was: {suppliedHash} but hash of content was {contentHash}")
         {
-            NewHash = newHash;
-            ExpectedHash = expectedHash;
+            SuppliedHash = suppliedHash;
+            ContentHash = contentHash;
         }
     }
 

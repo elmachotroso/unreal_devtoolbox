@@ -8,24 +8,88 @@
 #include "Chaos/ImplicitObjectScaled.h"
 #include "Chaos/Simplex.h"
 #include "Chaos/Sphere.h"
-
-#include "ChaosCheck.h"
-#include "ChaosLog.h"
-
-
-// Platform specific vector intrinsics include.
-#if PLATFORM_ENABLE_VECTORINTRINSICS_NEON || PLATFORM_ENABLE_VECTORINTRINSICS
 #include "Math/VectorRegister.h"
 #include "Chaos/VectorUtility.h"
 #include "Chaos/SimplexVectorized.h"
 #include "Chaos/EPAVectorized.h"
-#define GJK_VECTORIZED 1
+
+
+#include "ChaosCheck.h"
+#include "ChaosLog.h"
+
+// Enable some logging or ensures to trap issues in collision detection, usually related to degeneracies in GJK/EPA
+#define CHAOS_COLLISIONERROR_LOG_ENABLED		((!UE_BUILD_TEST && !UE_BUILD_SHIPPING) && 0)
+#define CHAOS_COLLISIONERROR_ENSURE_ENABLED		((!UE_BUILD_TEST && !UE_BUILD_SHIPPING) && 1)
+
+#if CHAOS_COLLISIONERROR_LOG_ENABLED
+#define CHAOS_COLLISIONERROR_CLOG(Condition, Fmt, ...) UE_CLOG((Condition), LogChaos, Error, Fmt, __VA_ARGS__)
 #else
-#define GJK_VECTORIZED 0
+#define CHAOS_COLLISIONERROR_CLOG(Condition, Fmt, ...)
+#endif
+
+#if CHAOS_COLLISIONERROR_ENSURE_ENABLED
+#define CHAOS_COLLISIONERROR_ENSURE(X) ensure(X)
+#else
+#define CHAOS_COLLISIONERROR_ENSURE(X)
 #endif
 
 namespace Chaos
 {
+	/*
+	* To avoid code bloat from ~2k instances of templated GJKRaycast2ImplSimd, it was rewritten to operate on support function pointers and void* object pointers
+	* This saved around 4MB in .text section and provided a noticeable CPU performance increase on a bottom line hardware
+	*/
+	struct FGeomGJKHelperSIMD
+	{
+		typedef VectorRegister4Float(*SupportFunc)(const void* Geom, FRealSingle Margin, const VectorRegister4Float V);
+
+		const void* Geometry;
+		mutable FRealSingle Margin;
+		FRealSingle Radius;
+		SupportFunc Func;
+
+		template<class T>
+		FGeomGJKHelperSIMD(const T& Geom)
+			: Geometry(&Geom), Margin((FRealSingle)Geom.GetMargin()), Radius((FRealSingle)Geom.GetRadius()), Func(&SupportCoreSimd<T>)
+		{}
+
+		FRealSingle GetRadius() const { return Radius; }
+		FRealSingle GetMargin() const { return Margin; }
+
+		VectorRegister4Float operator()(const VectorRegister4Float V) const { return SupportFunction(V); }
+		VectorRegister4Float SupportFunction(const VectorRegister4Float V) const { return Func(Geometry, Margin, V); }
+		VectorRegister4Float SupportFunction(const VectorRegister4Float V, FRealSingle InMargin) const { return Func(Geometry, InMargin, V); }
+
+		VectorRegister4Float operator()(const VectorRegister4Float AToBRotation, const VectorRegister4Float BToARotation, const VectorRegister4Float V) const { return SupportFunction(AToBRotation, BToARotation, V); }
+		VectorRegister4Float SupportFunction(const VectorRegister4Float AToBRotation, const VectorRegister4Float BToARotation, const VectorRegister4Float V) const {
+			const VectorRegister4Float VInB = VectorQuaternionRotateVector(AToBRotation, V);
+			const VectorRegister4Float SupportBLocal = Func(Geometry, Margin, VInB);
+			return VectorQuaternionRotateVector(BToARotation, SupportBLocal);
+		}
+
+	private:
+		template<class T>
+		static VectorRegister4Float SupportCoreSimd(const void* Geom, FRealSingle InMargin, const VectorRegister4Float V)
+		{
+			return ((const T*)Geom)->SupportCoreSimd(V, InMargin);
+		}
+	};
+
+	// Check the GJK iteration count against a limit to prevent infinite loops. We should never really hit the limit but 
+	// we are seeing it happen in some cases and more often on some platforms than others so for now we have a warning when it hits.
+	// @todo(chaos): track this issue down (see UE-156361)
+	template<typename ConvexTypeA, typename ConvexTypeB>
+	inline bool CheckGJKIterationLimit(const int32 NumIterations, const ConvexTypeA& A, const ConvexTypeB& B)
+	{
+		const int32 MaxIterations = 32;
+		const bool bLimitExceeded = (NumIterations >= MaxIterations);
+
+		CHAOS_COLLISIONERROR_CLOG(bLimitExceeded, TEXT("GJK hit iteration limit with shapes:\n    A: %s\n    B: %s"), *A.ToString(), *B.ToString());
+		CHAOS_COLLISIONERROR_ENSURE(!bLimitExceeded);
+
+		return bLimitExceeded;
+	}
+
 
 	// Calculate the margins used for queries based on shape radius, shape margins and shape types
 	template <typename TGeometryA, typename TGeometryB, typename T>
@@ -60,14 +124,18 @@ namespace Chaos
 		@param BToATM The transform of B in A's local space
 		@param ThicknessA The amount of geometry inflation for Geometry A(for example if the surface distance of two geometries with thickness 0 would be 2, a thickness of 0.5 would give a distance of 1.5)
 		@param InitialDir The first direction we use to search the CSO
-		@param ThicknessB The amount of geometry inflation for Geometry B(for example if the surface distance of two geometries with thickness 0 would be 2, a thickness of 0.5 would give a distance of 1.5)
 		@return True if the geometries overlap, False otherwise 
 	 */
-#if GJK_VECTORIZED
 	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKIntersection(const TGeometryA& RESTRICT A, const TGeometryB& RESTRICT B, const TRigidTransform<T, 3>& BToATM, const T InThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T InThicknessB = 0)
+	bool GJKIntersection(const TGeometryA& RESTRICT A, const TGeometryB& RESTRICT B, const TRigidTransform<T, 3>& BToATM, const T InThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0))
 	{
+		const FReal EpsilonScale = FMath::Max<FReal>(A.TGeometryA::BoundingBox().Extents().Max(), B.TGeometryB::BoundingBox().Extents().Max());
+		return GJKIntersection(A, B, EpsilonScale, BToATM, InThicknessA, InitialDir);
+	}
 
+	template <typename T>
+	bool GJKIntersection(const FGeomGJKHelperSIMD& RESTRICT A, const FGeomGJKHelperSIMD& RESTRICT B, FReal EpsilonScale, const TRigidTransform<T, 3>& BToATM, const T InThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0))
+	{
 		const UE::Math::TQuat<T>& RotationDouble = BToATM.GetRotation();
 		VectorRegister4Float RotationSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(RotationDouble.X, RotationDouble.Y, RotationDouble.Z, RotationDouble.W));
 
@@ -78,47 +146,57 @@ namespace Chaos
 
 		const VectorRegister4Float InitialDirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(InitialDir[0], InitialDir[1], InitialDir[2], 0.0));
 		
-		VectorRegister4Float VSimd = VectorNegate(InitialDirSimd);
-		VSimd = VectorNormalizeSafe(VSimd, MakeVectorRegisterFloatConstant(-1.f, 0.f, 0.f, 0.f));
+		return GJKIntersectionSimd(A, B, EpsilonScale, TranslationSimd, RotationSimd, InThicknessA, InitialDirSimd);
+	}
 
-		const VectorRegister4Float AToBRotationSimd = VectorQuaternionInverse(RotationSimd);
+	template <typename TGeometryA, typename TGeometryB>
+	bool GJKIntersectionSimd(const TGeometryA& RESTRICT A, const TGeometryB& RESTRICT B, const VectorRegister4Float& Translation, const VectorRegister4Float& Rotation, FReal InThicknessA, const VectorRegister4Float& InitialDir)
+	{
+		const FReal EpsilonScale = FMath::Max<FReal>(A.TGeometryA::BoundingBox().Extents().Max(), B.TGeometryB::BoundingBox().Extents().Max());
+		return GJKIntersectionSimd(A, B, EpsilonScale, Translation, Rotation, InThicknessA, InitialDir);
+	}
+
+	inline bool GJKIntersectionSimd(const FGeomGJKHelperSIMD& RESTRICT A, const FGeomGJKHelperSIMD& RESTRICT B, FReal EpsilonScale, const VectorRegister4Float& Translation, const VectorRegister4Float& Rotation, FReal InThicknessA, const VectorRegister4Float& InitialDir)
+	{
+		VectorRegister4Float V = VectorNegate(InitialDir);
+		V = VectorNormalizeSafe(V, MakeVectorRegisterFloatConstant(-1.f, 0.f, 0.f, 0.f));
+
+		const VectorRegister4Float AToBRotation = VectorQuaternionInverse(Rotation);
 		bool bTerminate;
 		bool bNearZero = false;
 		int NumIterations = 0;
 		VectorRegister4Float PrevDist2Simd = MakeVectorRegisterFloatConstant(FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX);
 
 		VectorRegister4Float SimplexSimd[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
-		//VectorRegister4Float As[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
-		//VectorRegister4Float Bs[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
 		VectorRegister4Float BarycentricSimd;
 		VectorRegister4Int NumVerts = GlobalVectorConstants::IntZero;
 
-		T ThicknessA;
-		T ThicknessB;
+		FReal ThicknessA;
+		FReal ThicknessB;
 		CalculateQueryMargins(A, B, ThicknessA, ThicknessB);
 		ThicknessA += InThicknessA;
-		ThicknessB += InThicknessB;
 
-
-		const T Inflation = ThicknessA + ThicknessB + static_cast<T>(1e-3);
-		const VectorRegister4Float InflationSimd = MakeVectorRegisterFloat((float)Inflation, (float)Inflation, (float)Inflation, (float)Inflation);
+		EpsilonScale = FMath::Min<FReal>(EpsilonScale, 1e5);
+		
+		const FReal InflationReal = ThicknessA + ThicknessB + 1e-6 * EpsilonScale;
+		const VectorRegister4Float Inflation = VectorSet1(static_cast<FRealSingle>(InflationReal));
+		const VectorRegister4Float Inflation2 = VectorMultiply(Inflation, Inflation);
 
 		int32 VertexIndexA = INDEX_NONE, VertexIndexB = INDEX_NONE;
 		do
 		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
+ 			if (!ensure(NumIterations++ < 32))	//todo: take this out
 			{
 				break;	//if taking too long just stop. This should never happen
 			}
-			const VectorRegister4Float NegVSimd = VectorNegate(VSimd);
-			const VectorRegister4Float SupportASimd = A.SupportCoreSimd(NegVSimd, ThicknessA);
-			const VectorRegister4Float VInBSimd = VectorQuaternionRotateVector(AToBRotationSimd, VSimd);
-			const VectorRegister4Float SupportBLocalSimd = B.SupportCoreSimd(VInBSimd, ThicknessB);
-			//const TVector<T, 3> SupportB = BToATM.TransformPositionNoScale(SupportBLocal);  // Original code
-			const VectorRegister4Float SupportBSimd = VectorAdd(VectorQuaternionRotateVector(RotationSimd, SupportBLocalSimd), TranslationSimd);
+			const VectorRegister4Float NegVSimd = VectorNegate(V);
+			const VectorRegister4Float SupportASimd = A.SupportFunction(NegVSimd, (FRealSingle)ThicknessA);
+			const VectorRegister4Float VInBSimd = VectorQuaternionRotateVector(AToBRotation, V);
+			const VectorRegister4Float SupportBLocalSimd = B.SupportFunction(VInBSimd, (FRealSingle)ThicknessB);
+			const VectorRegister4Float SupportBSimd = VectorAdd(VectorQuaternionRotateVector(Rotation, SupportBLocalSimd), Translation);
 			const VectorRegister4Float WSimd = VectorSubtract(SupportASimd, SupportBSimd);
 
-			if (VectorMaskBits(VectorCompareGT(VectorDot3(VSimd, WSimd), InflationSimd)))
+			if (VectorMaskBits(VectorCompareGT(VectorDot3(V, WSimd), Inflation)))
 			{
 				return false;
 			}
@@ -133,10 +211,10 @@ namespace Chaos
 
 			NumVerts = VectorIntAdd(NumVerts, GlobalVectorConstants::IntOne);
 
-			VSimd = VectorSimplexFindClosestToOrigin<false>(SimplexSimd, NumVerts, BarycentricSimd, nullptr, nullptr);
+			V = VectorSimplexFindClosestToOrigin<false>(SimplexSimd, NumVerts, BarycentricSimd, nullptr, nullptr);
 
-			const VectorRegister4Float NewDist2Simd = VectorDot3(VSimd, VSimd);///
-			bNearZero = VectorMaskBits(VectorCompareLT(NewDist2Simd, VectorMultiply(InflationSimd, InflationSimd))) != 0;
+			const VectorRegister4Float NewDist2Simd = VectorDot3(V, V);///
+			bNearZero = VectorMaskBits(VectorCompareLT(NewDist2Simd, Inflation2)) != 0;
 
 			//as simplices become degenerate we will stop making progress. This is a side-effect of precision, in that case take V as the current best approximation
 			//question: should we take previous v in case it's better?
@@ -146,83 +224,13 @@ namespace Chaos
 
 			if (!bTerminate)
 			{
-				VSimd = VectorDivide(VSimd,VectorSqrt(NewDist2Simd));
+				V = VectorDivide(V, VectorSqrt(NewDist2Simd));
 			}
 
 		} while (!bTerminate);
 
 		return bNearZero;
 	}
-#else
-	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKIntersection(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM, const T InThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T InThicknessB = 0)
-	{
-		TVector<T, 3> V = -InitialDir;
-		if (V.SafeNormalize() == 0)
-		{
-			V = TVec3<T>(-1, 0, 0);
-		}
-
-		FSimplex SimplexIDs;
-		TVector<T, 3> Simplex[4];
-		T Barycentric[4] = { -1,-1,-1,-1 };	//not needed, but compiler warns
-		const TRotation<T, 3> AToBRotation = BToATM.GetRotation().Inverse();
-		bool bTerminate;
-		bool bNearZero = false;
-		int NumIterations = 0;
-		T PrevDist2 = FLT_MAX;
-		T ThicknessA;
-		T ThicknessB;
-		CalculateQueryMargins(A, B, ThicknessA, ThicknessB);
-		ThicknessA += InThicknessA;
-		ThicknessB += InThicknessB;
-		const T Inflation = ThicknessA + ThicknessB + static_cast<T>(1e-3);
-		const T Inflation2 = Inflation * Inflation;
-		int32 VertexIndexA = INDEX_NONE, VertexIndexB = INDEX_NONE;
-		do
-		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
-			{
-				break;	//if taking too long just stop. This should never happen
-			}
-			const TVector<T, 3> NegV = -V;
-			const TVector<T, 3> SupportA = A.SupportCore(NegV, ThicknessA, nullptr, VertexIndexA);
-			const TVector<T, 3> VInB = AToBRotation * V;
-			const TVector<T, 3> SupportBLocal = B.SupportCore(VInB, ThicknessB, nullptr, VertexIndexB);
-			const TVector<T, 3> SupportB = BToATM.TransformPositionNoScale(SupportBLocal);
-			const TVector<T, 3> W = SupportA - SupportB;
-
-			if (TVector<T, 3>::DotProduct(V, W) > Inflation)
-			{
-				return false;
-			}
-
-			SimplexIDs[SimplexIDs.NumVerts] = SimplexIDs.NumVerts;
-			Simplex[SimplexIDs.NumVerts++] = W;
-
-			V = SimplexFindClosestToOrigin(Simplex, SimplexIDs, Barycentric);
-
-			T NewDist2 = V.SizeSquared();
-			bNearZero = NewDist2 < Inflation2;
-
-			//as simplices become degenerate we will stop making progress. This is a side-effect of precision, in that case take V as the current best approximation
-			//question: should we take previous v in case it's better?
-			const bool bMadeProgress = NewDist2 < PrevDist2;
-			bTerminate = bNearZero || !bMadeProgress;
-
-			PrevDist2 = NewDist2;
-
-			if (!bTerminate)
-			{
-				V /= FMath::Sqrt(NewDist2);
-			}
-
-		} while (!bTerminate);
-
-		return bNearZero;
-	}
-
-#endif
 
 	/** 
 		Determines if two convex geometries in the same space overlap
@@ -235,71 +243,78 @@ namespace Chaos
 		@param ThicknessB The amount of geometry inflation for Geometry B(for example if the surface distance of two geometries with thickness 0 would be 2, a thickness of 0.5 would give a distance of 1.5)
 		@return True if the geometries overlap, False otherwise 
 	*/
-	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKIntersectionSameSpace(const TGeometryA& A, const TGeometryB& B, const T InThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T InThicknessB = 0)
+
+	template <typename TGeometryA, typename TGeometryB>
+	bool GJKIntersectionSameSpaceSimd(const TGeometryA& A, const TGeometryB& B, FReal InThicknessA, const VectorRegister4Float& InitialDir)
 	{
-		TVector<T, 3> V = -InitialDir;
-		if (V.SafeNormalize() == 0)
-		{
-			V = TVec3<T>(-1, 0, 0);
-		}
+		VectorRegister4Float V = VectorNegate(InitialDir);
 
 		FSimplex SimplexIDs;
-		TVector<T, 3> Simplex[4];
-		T Barycentric[4] = { -1,-1,-1,-1 };	//not needed, but compiler warns
+		VectorRegister4Float Simplex[4] = { VectorZero(), VectorZero(), VectorZero(), VectorZero() };
+		VectorRegister4Int NumVerts = GlobalVectorConstants::IntZero;
+		alignas(16) int32 NumVertsInts[4];
+		VectorRegister4Float Barycentric = VectorZero();
+
 		bool bTerminate;
 		bool bNearZero = false;
 		int NumIterations = 0;
-		T PrevDist2 = FLT_MAX;
-		T ThicknessA;
-		T ThicknessB;
+		VectorRegister4Float PrevDist2 = GlobalVectorConstants::BigNumber;
+		FReal ThicknessA;
+		FReal ThicknessB;
 		CalculateQueryMargins(A, B, ThicknessA, ThicknessB);
 		ThicknessA += InThicknessA;
-		ThicknessB += InThicknessB;
-		const T Inflation = ThicknessA + ThicknessB + static_cast<T>(1e-3);
-		const T Inflation2 = Inflation * Inflation;
-		int32 VertexIndexA = INDEX_NONE, VertexIndexB = INDEX_NONE;
+
+		const FReal Inflation = ThicknessA + ThicknessB + 1e-3;
+		const FReal Inflation2 = Inflation * Inflation;
+
+		VectorRegister4Float InflationSimd = VectorSet1(static_cast<FRealSingle>(Inflation));
+		VectorRegister4Float Inflation2Simd = VectorMultiply(InflationSimd, InflationSimd);
 		do
 		{
 			if (!ensure(NumIterations++ < 32))	//todo: take this out
 			{
 				break;	//if taking too long just stop. This should never happen
 			}
-			const TVector<T, 3> NegV = -V;
-			const TVector<T, 3> SupportA = A.SupportCore(NegV, ThicknessA, nullptr, VertexIndexA);
-			const TVector<T, 3> VInB = V; // same space
-			const TVector<T, 3> SupportB = B.SupportCore(VInB, ThicknessB, nullptr, VertexIndexB);
-			const TVector<T, 3> W = SupportA - SupportB;
+			const VectorRegister4Float NegV = VectorNegate(V);
+			const VectorRegister4Float SupportA = A.SupportCoreSimd(NegV, ThicknessA);
+			const VectorRegister4Float VInB = V; // same space
+			const VectorRegister4Float SupportB = B.SupportCoreSimd(VInB, ThicknessB);
+			const VectorRegister4Float W = VectorSubtract(SupportA, SupportB);
 
-			if (TVector<T, 3>::DotProduct(V, W) > Inflation)
+			VectorRegister4Float VDotW = VectorDot3(V, W);
+
+			if (VectorMaskBits(VectorCompareGT(VDotW, InflationSimd)))
 			{
 				return false;
 			}
 
-			SimplexIDs[SimplexIDs.NumVerts] = SimplexIDs.NumVerts;
-			Simplex[SimplexIDs.NumVerts++] = W;
+			VectorIntStoreAligned(NumVerts, NumVertsInts);
+			const int32 NumVertsInt = NumVertsInts[0];
+			Simplex[NumVertsInt] = W;
+			NumVerts = VectorIntAdd(NumVerts, GlobalVectorConstants::IntOne);
 
-			V = SimplexFindClosestToOrigin(Simplex, SimplexIDs, Barycentric);
-
-			T NewDist2 = V.SizeSquared();
-			bNearZero = NewDist2 < Inflation2;
+			V = VectorSimplexFindClosestToOrigin<false>(Simplex, NumVerts, Barycentric, nullptr, nullptr);
+			const VectorRegister4Float NewDist2 = VectorDot3(V, V);
+			
+			bNearZero = static_cast<bool>(VectorMaskBits(VectorCompareGT(Inflation2Simd, NewDist2)));
 
 			//as simplices become degenerate we will stop making progress. This is a side-effect of precision, in that case take V as the current best approximation
 			//question: should we take previous v in case it's better?
-			const bool bMadeProgress = NewDist2 < PrevDist2;
+			const bool bMadeProgress = static_cast<bool>(VectorMaskBits(VectorCompareGT(PrevDist2, NewDist2)));
 			bTerminate = bNearZero || !bMadeProgress;
 
 			PrevDist2 = NewDist2;
 
 			if (!bTerminate)
 			{
-				V /= FMath::Sqrt(NewDist2);
+				V = VectorDivide(V, VectorSqrt(NewDist2));
 			}
 
 		} while (!bTerminate);
 
 		return bNearZero;
 	}
+
 
 	/**
 	 * @brief Internal simplex data for GJK that can also be stored for warm-starting subsequent calls
@@ -411,6 +426,51 @@ namespace Chaos
 	// GJK warm-start data at default numeric precision
 	using FGJKSimplexData = TGJKSimplexData<FReal>;
 
+	struct FGeomGJKHelper
+	{
+		typedef FVector(*SupportFunc)(const void* Geom, const FVec3& Direction, FReal* OutSupportDelta, int32& VertexIndex);
+
+		const void* Geometry;
+		SupportFunc Func;
+		FReal Margin;
+
+		template<class T>
+		FGeomGJKHelper(const T& Geom) : Geometry(&Geom), Func(&SupportCore<T>), Margin(Geom.GetMargin()) {}
+
+		FVector SupportFunction(const FVec3& V, int32& VertexIndex) const { return Func(Geometry, V, nullptr, VertexIndex); }
+		FVector SupportFunction(const FVec3& V, FReal* OutSupportDelta, int32& VertexIndex) const { return Func(Geometry, V, OutSupportDelta, VertexIndex); }
+
+		FVector SupportFunction(const FRotation3& AToBRotation, const FVec3& V, FReal* OutSupportDelta, int32& VertexIndex) const
+		{
+			const FVec3 VInB = AToBRotation * V;
+			return Func(Geometry, VInB, OutSupportDelta, VertexIndex);
+		}
+
+		FVector SupportFunction(const FRigidTransform3& BToATM, const FRotation3& AToBRotation, const FVec3& V, int32& VertexIndex) const
+		{
+			const FVector VInB = AToBRotation * V;
+			const FVector SupportBLocal = Func(Geometry, VInB, nullptr, VertexIndex);
+			return BToATM.TransformPositionNoScale(SupportBLocal);
+		}
+
+		FVector SupportFunction(const FRigidTransform3& BToATM, const FRotation3& AToBRotation, const FVec3& V, FReal* OutSupportDelta, int32& VertexIndex) const
+		{
+			const FVector VInB = AToBRotation * V;
+			const FVector SupportBLocal = Func(Geometry, VInB, OutSupportDelta, VertexIndex);
+			return BToATM.TransformPositionNoScale(SupportBLocal);
+		}
+
+		FReal GetMargin() const { return Margin; }
+
+	private:
+		template<class T>
+		static FVector SupportCore(const void* Geom, const FVec3& Direction, FReal* OutSupportDelta, int32& VertexIndex)
+		{
+			const T* Geometry = (const T*)Geom;
+			return Geometry->SupportCore(Direction, Geometry->GetMargin(), OutSupportDelta, VertexIndex);
+		}
+	};
+
 	/**
 	 * @brief Calculate the penetration data for two shapes using GJK and a warm-start buffer.
 	 *
@@ -484,9 +544,11 @@ namespace Chaos
 		const T SeparatedDistance = ThicknessA + ThicknessB + Epsilon;
 		while (!bIsContact && !bIsDegenerate)
 		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
+			// If taking too long just stop
+			++NumIterations;
+			if (CheckGJKIterationLimit(NumIterations, A, B))
 			{
-				break;	//if taking too long just stop. This should never happen
+				break;	
 			}
 
 			const TVec3<T> NegV = -V;
@@ -517,7 +579,7 @@ namespace Chaos
 
 			// If we are not too close, update the separating vector and keep iterating
 			// If we are too close we drop through to EPA, but if EPA determines the shapes are actually separated 
-			// after all, we will end up using the normal from the previous loop
+			// after all, we will wend up using the normal from the previous loop
 			if (!bIsContact)
 			{
 				V /= NewDistance;
@@ -550,7 +612,7 @@ namespace Chaos
 
 			T Penetration;
 			TVec3<T> MTD, ClosestA, ClosestBInA;
-			const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBInAFunc, Penetration, MTD, ClosestA, ClosestBInA, EPAEpsilon);
+			const EEPAResult EPAResult = EPA<T>(VertsA, VertsB, SupportAFunc, SupportBInAFunc, Penetration, MTD, ClosestA, ClosestBInA, EPAEpsilon);
 
 			switch (EPAResult)
 			{
@@ -571,6 +633,7 @@ namespace Chaos
 				// and penetration but we keep the position generated by GJK.
 				Normal = MTD;
 				Distance = -Penetration;
+				//UE_LOG(LogChaos, Warning, TEXT("EPA Touching Case"));
 				break;
 			case EEPAResult::Degenerate:
 				// We hit a degenerate simplex condition and could not reach a solution so use whatever near touching point GJK came up with.
@@ -651,9 +714,11 @@ namespace Chaos
 		const T ThicknessB = B.GetMargin();
 		while (!bIsContact && !bIsResult)
 		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
+			// If taking too long just stop
+			++NumIterations;
+			if (CheckGJKIterationLimit(NumIterations, A, B))
 			{
-				break;	//if taking too long just stop. This should never happen
+				break;
 			}
 
 			const TVec3<T> NegV = -V;
@@ -718,7 +783,7 @@ namespace Chaos
 
 			T Penetration;
 			TVec3<T> MTD, ClosestA, ClosestBInA;
-			const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBInAFunc, Penetration, MTD, ClosestA, ClosestBInA, EPAEpsilon);
+			const EEPAResult EPAResult = EPA<T>(VertsA, VertsB, SupportAFunc, SupportBInAFunc, Penetration, MTD, ClosestA, ClosestBInA, EPAEpsilon);
 
 			switch (EPAResult)
 			{
@@ -797,7 +862,7 @@ namespace Chaos
 	 * @return true always
 	*/
 	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKPenetrationSameSpace(const TGeometryA& A, const TGeometryB& B, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutVertexA, int32& OutVertexB, T& OutMaxSupportDelta, const T Epsilon = T(1.e-3), const T EPAEpsilon = T(1.e-2))
+	bool GJKPenetrationSameSpace(const TGeometryA& A, const TGeometryB& B, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutVertexA, int32& OutVertexB, T& OutMaxSupportDelta, const TVec3<T>& InitialDir, const T Epsilon = T(1.e-3), const T EPAEpsilon = T(1.e-2))
 	{
 		TGJKSimplexData<T> SimplexData;
 		T SupportDeltaA = 0;
@@ -820,7 +885,7 @@ namespace Chaos
 		};
 
 		// V and Simplex are in A-local space
-		TVec3<T> V = TVec3<T>(-1, 0, 0);
+		TVec3<T> V = InitialDir;
 		TVec3<T> Simplex[4];
 		FSimplex SimplexIDs;
 		T Distance = FLT_MAX;
@@ -834,9 +899,11 @@ namespace Chaos
 		const T SeparatedDistance = ThicknessA + ThicknessB + Epsilon;
 		while (!bIsContact && !bIsDegenerate)
 		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
+			// If taking too long just stop
+			++NumIterations;
+			if (CheckGJKIterationLimit(NumIterations, A, B))
 			{
-				break;	//if taking too long just stop. This should never happen
+				break;
 			}
 
 			const TVec3<T> NegV = -V;
@@ -894,7 +961,7 @@ namespace Chaos
 
 			T Penetration;
 			TVec3<T> MTD, ClosestA, ClosestB;
-			const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBFunc, Penetration, MTD, ClosestA, ClosestB, EPAEpsilon);
+			const EEPAResult EPAResult = EPA<T>(VertsA, VertsB, SupportAFunc, SupportBFunc, Penetration, MTD, ClosestA, ClosestB, EPAEpsilon);
 
 			switch (EPAResult)
 			{
@@ -949,7 +1016,7 @@ namespace Chaos
 	}
 
 	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKPenetrationSameSpace2(const TGeometryA& A, const TGeometryB& B, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutVertexA, int32& OutVertexB, T& OutMaxSupportDelta, const T Epsilon = T(1.e-3), const T EPAEpsilon = T(1.e-2))
+	bool GJKPenetrationSameSpace2(const TGeometryA& A, const TGeometryB& B, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutVertexA, int32& OutVertexB, T& OutMaxSupportDelta, const TVec3<T>& InitialDir, const T Epsilon = T(1.e-3), const T EPAEpsilon = T(1.e-2))
 	{
 		TGJKSimplexData<T> SimplexData;
 		T SupportDeltaA = 0;
@@ -972,7 +1039,7 @@ namespace Chaos
 		};
 
 		// V and Simplex are in A-local space
-		TVec3<T> V = TVec3<T>(-1, 0, 0);
+		TVec3<T> V = InitialDir;
 		TVec3<T> Simplex[4];
 		int32 NumVerts = 0;
 		T Distance = FLT_MAX;
@@ -986,9 +1053,11 @@ namespace Chaos
 		const T SeparatedDistance = ThicknessA + ThicknessB + Epsilon;
 		while (!bIsContact && !bIsResult)
 		{
-			if (!ensure(NumIterations++ < 32))	//todo: take this out
+			// If taking too long just stop
+			++NumIterations;
+			if (CheckGJKIterationLimit(NumIterations, A, B))
 			{
-				break;	//if taking too long just stop. This should never happen
+				break;
 			}
 
 			const TVec3<T> NegV = -V;
@@ -1008,6 +1077,11 @@ namespace Chaos
 
 			V = SimplexFindClosestToOrigin2(Simplex, NumVerts, SimplexData.Barycentric, SimplexData.As, SimplexData.Bs);
 			T NewDistance = V.Size();
+
+			// If we hit this error, we probably have a degenerate simplex that is not being detected in SimplexFindClosestToOrigin2
+			CHAOS_COLLISIONERROR_CLOG(V.ContainsNaN(), TEXT("SimplexFindClosestToOrigin2 NaN, NumVerts: %d, Simplex: [[%f, %f, %f], [%f %f %f], [%f %f %f], [%f %f %f]]"), 
+				NumVerts, Simplex[0].X, Simplex[0].Y, Simplex[0].Z, Simplex[1].X, Simplex[1].Y, Simplex[1].Z, Simplex[2].X, Simplex[2].Y, Simplex[2].Z, Simplex[3].X, Simplex[3].Y, Simplex[3].Z);
+			CHAOS_COLLISIONERROR_ENSURE(!V.ContainsNaN());
 
 			// Are we overlapping or too close for GJK to get a good result?
 			bIsContact = (NewDistance < Epsilon);
@@ -1045,7 +1119,7 @@ namespace Chaos
 
 			T Penetration;
 			TVec3<T> MTD, ClosestA, ClosestB;
-			const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBFunc, Penetration, MTD, ClosestA, ClosestB, EPAEpsilon);
+			const EEPAResult EPAResult = EPA<T>(VertsA, VertsB, SupportAFunc, SupportBFunc, Penetration, MTD, ClosestA, ClosestB, EPAEpsilon);
 
 			switch (EPAResult)
 			{
@@ -1099,26 +1173,13 @@ namespace Chaos
 		}
 	}
 
-
-	template <typename TGeometryA, typename TGeometryB, bool bNegativePenetrationAllowed = false, typename T>
-	bool GJKPenetrationImpl(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutClosestVertexIndexA, int32& OutClosestVertexIndexB, const T InThicknessA = 0.0f, const T InThicknessB = 0.0f, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T Epsilon = 1.e-3f)
+	template <bool bNegativePenetrationAllowed = false, typename T>
+	bool GJKPenetrationImpl(const FGeomGJKHelper& A, const FGeomGJKHelper& B, const TRigidTransform<T, 3>& BToATM, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutClosestVertexIndexA, int32& OutClosestVertexIndexB, const T InThicknessA = 0.0f, const T InThicknessB = 0.0f, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T Epsilon = 1.e-3f)
 	{
 		int32 VertexIndexA = INDEX_NONE;
 		int32 VertexIndexB = INDEX_NONE;
 
-		auto SupportAFunc = [&A, &VertexIndexA](const TVec3<T>& V)
-		{
-			return A.SupportCore(V, A.GetMargin(), nullptr, VertexIndexA);
-		};
-
 		const TRotation<T, 3> AToBRotation = BToATM.GetRotation().Inverse();
-
-		auto SupportBFunc = [&B, &BToATM, &AToBRotation, &VertexIndexB](const TVec3<T>& V)
-		{
-			const TVector<T, 3> VInB = AToBRotation * V;
-			const TVector<T, 3> SupportBLocal = B.SupportCore(VInB, B.GetMargin(), nullptr, VertexIndexB);
-			return BToATM.TransformPositionNoScale(SupportBLocal);
-		};
 
 		//todo: refactor all of these similar functions
 		TVector<T, 3> V = -InitialDir;
@@ -1148,8 +1209,8 @@ namespace Chaos
 				break;	//if taking too long just stop. This should never happen
 			}
 			const TVector<T, 3> NegV = -V;
-			const TVector<T, 3> SupportA = SupportAFunc(NegV);
-			const TVector<T, 3> SupportB = SupportBFunc(V);
+			const TVector<T, 3> SupportA = A.SupportFunction(NegV, VertexIndexA);
+			const TVector<T, 3> SupportB = B.SupportFunction(BToATM, AToBRotation, V, VertexIndexB);
 			const TVector<T, 3> W = SupportA - SupportB;
 
 			const T VW = TVector<T, 3>::DotProduct(V, W);
@@ -1203,9 +1264,32 @@ namespace Chaos
 				VertsB.Add(Bs[i]);
 			}
 
+			struct FAHelper
+			{
+				const FGeomGJKHelper& Geom;
+				int32* VertexIndex;
+
+				FAHelper(const FGeomGJKHelper& Geom, int32& VertexIndex) : Geom(Geom), VertexIndex(&VertexIndex) {}
+
+				TVec3<T> operator()(const TVec3<T>& V) const { return Geom.SupportFunction(V, *VertexIndex); }
+			};
+
+			struct FBHelper
+			{
+				const FGeomGJKHelper& Geom;
+				int32* VertexIndex;
+				const FRigidTransform3& BToATM;
+				const FRotation3& AToBRotation;
+
+				TVec3<T> operator()(const TVec3<T>& V) const { return Geom.SupportFunction(BToATM, AToBRotation, V, *VertexIndex); }
+			};
+
+			FAHelper AHelper(A, VertexIndexA);
+			FBHelper BHelper = { B, &VertexIndexB, BToATM, AToBRotation };
+
 			T Penetration;
 			TVec3<T> MTD, ClosestA, ClosestBInA;
-			const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBFunc, Penetration, MTD, ClosestA, ClosestBInA);
+			const EEPAResult EPAResult = EPA<T>(VertsA, VertsB, AHelper, BHelper, Penetration, MTD, ClosestA, ClosestBInA);
 			
 			switch (EPAResult)
 			{
@@ -1289,7 +1373,7 @@ namespace Chaos
 	template <bool bNegativePenetrationAllowed = false, typename T, typename TGeometryA, typename TGeometryB>
 	bool GJKPenetration(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM, T& OutPenetration, TVec3<T>& OutClosestA, TVec3<T>& OutClosestB, TVec3<T>& OutNormal, int32& OutClosestVertexIndexA, int32& OutClosestVertexIndexB, const T InThicknessA = 0.0f, const T InThicknessB = 0.0f, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T Epsilon = 1.e-3f)
 	{
-		return GJKPenetrationImpl<TGeometryA, TGeometryB, bNegativePenetrationAllowed, T>(A, B, BToATM, OutPenetration, OutClosestA, OutClosestB, OutNormal, OutClosestVertexIndexA, OutClosestVertexIndexB, InThicknessA, InThicknessB, InitialDir, Epsilon);
+		return GJKPenetrationImpl<bNegativePenetrationAllowed, T>(A, B, BToATM, OutPenetration, OutClosestA, OutClosestB, OutNormal, OutClosestVertexIndexA, OutClosestVertexIndexB, InThicknessA, InThicknessB, InitialDir, Epsilon);
 	}
 	/** Sweeps one geometry against the other
 	 @A The first geometry
@@ -1311,7 +1395,7 @@ namespace Chaos
 	bool GJKRaycast(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& StartTM, const TVector<T, 3>& RayDir, const T RayLength,
 		T& OutTime, TVector<T, 3>& OutPosition, TVector<T, 3>& OutNormal, const T ThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T ThicknessB = 0)
 	{
-		ensure(FMath::IsNearlyEqual(RayDir.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
+		ensure(FMath::IsNearlyEqual(RayDir.SizeSquared(), (FReal)1, (FReal)UE_KINDA_SMALL_NUMBER));
 		ensure(RayLength > 0);
 		check(A.IsConvex() && B.IsConvex());
 		const TVector<T, 3> StartPoint = StartTM.GetLocation();
@@ -1431,274 +1515,24 @@ namespace Chaos
 		return true;
 	}
 	
-	template <typename TGeometryA, typename TGeometryB, typename T>
-	bool GJKRaycast2Impl(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& StartTM, const TVector<T, 3>& RayDir, const T RayLength,
-		T& OutTime, TVector<T, 3>& OutPosition, TVector<T, 3>& OutNormal, const T GivenThicknessA = 0, bool bComputeMTD = false, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T GivenThicknessB = 0)
-	{
-		ensure(FMath::IsNearlyEqual(RayDir.SizeSquared(), (T)1, (T)KINDA_SMALL_NUMBER));
-		ensure(RayLength > 0);
 
-		T MarginA;
-		T MarginB;
-		CalculateQueryMargins(A,B, MarginA, MarginB);
-
-		const TVector<T, 3> StartPoint = StartTM.GetLocation();
-
-		TVector<T, 3> Simplex[4] = { TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0) };
-		TVector<T, 3> As[4] = { TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0) };
-		TVector<T, 3> Bs[4] = { TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0), TVector<T,3>(0) };
-
-		T Barycentric[4] = { -1,-1,-1,-1 };	//not needed, but compiler warns
-		const T Inflation = MarginA + MarginB;
-		const T Inflation2 = Inflation * Inflation + static_cast<T>(1e-6);
-
-		FSimplex SimplexIDs;
-		const TRotation<T, 3> BToARotation = StartTM.GetRotation();
-		const TRotation<T, 3> AToBRotation = BToARotation.Inverse();
-
-		auto SupportAFunc = [&A, MarginA](const TVec3<T>& V)
-		{
-			int32 VertexIndex = INDEX_NONE;
-			return A.SupportCore(V, MarginA, nullptr, VertexIndex);
-		};
-
-		auto SupportBFunc = [&B, MarginB, &AToBRotation, &BToARotation](const TVec3<T>& V)
-		{
-			int32 VertexIndex = INDEX_NONE;
-			const TVector<T, 3> VInB = AToBRotation * V;
-			const TVector<T, 3> SupportBLocal = B.SupportCore(VInB, MarginB, nullptr, VertexIndex);
-			return BToARotation * SupportBLocal;
-		};
-		
-		auto SupportBAtOriginFunc = [&B, MarginB, &StartTM, &AToBRotation](const TVec3<T>& Dir)
-		{
-			int32 VertexIndex = INDEX_NONE;
-			const TVector<T, 3> DirInB = AToBRotation * Dir;
-			const TVector<T, 3> SupportBLocal = B.SupportCore(DirInB, MarginB, nullptr, VertexIndex);
-			return StartTM.TransformPositionNoScale(SupportBLocal);
-		};
-
-		TVector<T, 3> SupportA = SupportAFunc(InitialDir);
-		As[0] = SupportA;
-
-		TVector<T, 3> SupportB = SupportBFunc(-InitialDir);
-		Bs[0] = SupportB;
-
-		T Lambda = 0;
-		TVector<T, 3> X = StartPoint;
-		TVector<T, 3> V = X - (SupportA - SupportB);
-		TVector<T, 3> Normal(0,0,1);
-
-		const T InitialPreDist2 = V.SizeSquared();
-		constexpr T Eps2 = 1e-6f;
-		//mtd needs to find closest point even in inflation region, so can only skip if we found the closest points
-		bool bCloseEnough = InitialPreDist2 < Inflation2 && (!bComputeMTD || InitialPreDist2 < Eps2);
-		bool bDegenerate = false;
-		bool bTerminate = bCloseEnough;
-		bool bInflatedCloseEnough = bCloseEnough;
-		int NumIterations = 0;
-		T GJKPreDist2 = TNumericLimits<T>::Max();
-		while (!bTerminate)
-		{
-			//if (!ensure(NumIterations++ < 32))	//todo: take this out
-			if (!(NumIterations++ < 32))	//todo: take this out
-			{
-				break;	//if taking too long just stop. This should never happen
-			}
-
-			V = V.GetUnsafeNormal();
-
-			SupportA = SupportAFunc(V);
-			SupportB = SupportBFunc(-V);
-			const TVector<T, 3> P = SupportA - SupportB;
-			const TVector<T, 3> W = X - P;
-			SimplexIDs[SimplexIDs.NumVerts] = SimplexIDs.NumVerts;	//is this needed?
-			As[SimplexIDs.NumVerts] = SupportA;
-			Bs[SimplexIDs.NumVerts] = SupportB;
-
-			const T VDotW = TVector<T, 3>::DotProduct(V, W);
-
-			if (VDotW > Inflation)
-			{
-				const T VDotRayDir = TVector<T, 3>::DotProduct(V, RayDir);
-				if (VDotRayDir >= 0)
-				{
-					return false;
-				}
-
-				const T PreLambda = Lambda;	//use to check for no progress
-				// @todo(ccaulfield): this can still overflow - the comparisons against zero above should be changed (though not sure to what yet)
-				Lambda = Lambda - (VDotW - Inflation) / VDotRayDir;
-				if (Lambda > PreLambda)
-				{
-					if (Lambda > RayLength)
-					{
-						return false;
-					}
-
-					const TVector<T, 3> OldX = X;
-					X = StartPoint + Lambda * RayDir;
-					Normal = V;
-
-					//Update simplex from (OldX - P) to (X - P)
-					const TVector<T, 3> XMinusOldX = X - OldX;
-					Simplex[0] += XMinusOldX;
-					Simplex[1] += XMinusOldX;
-					Simplex[2] += XMinusOldX;
-					Simplex[SimplexIDs.NumVerts++] = X - P;
-
-					GJKPreDist2 = TNumericLimits<T>::Max();	//translated origin so restart gjk search
-					bInflatedCloseEnough = false;
-				}
-			}
-			else
-			{
-				Simplex[SimplexIDs.NumVerts++] = W;	//this is really X - P which is what we need for simplex computation
-			}
-
-			if (bInflatedCloseEnough && VDotW >= 0)
-			{
-				//Inflated shapes are close enough, but we want MTD so we need to find closest point on core shape
-				const T VDotW2 = VDotW * VDotW;
-				bCloseEnough = GJKPreDist2 <= Eps2 + VDotW2;	//todo: relative error
-			}
-
-			if (!bCloseEnough)
-			{
-				V = SimplexFindClosestToOrigin(Simplex, SimplexIDs, Barycentric, As, Bs);
-				T NewDist2 = V.SizeSquared();	//todo: relative error
-				bCloseEnough = NewDist2 < Inflation2;
-				bDegenerate = NewDist2 >= GJKPreDist2;
-				GJKPreDist2 = NewDist2;
-
-
-				if (bComputeMTD && bCloseEnough && Lambda == 0 && GJKPreDist2 > 1e-6 && Inflation2 > 1e-6 && SimplexIDs.NumVerts < 4)
-				{
-					//For mtd of inflated shapes we have to find the closest point, so we have to keep going
-					bCloseEnough = false;
-					bInflatedCloseEnough = true;
-				}
-			}
-			else
-			{
-				//It must be that we want MTD and we can terminate. However, we must make one final call to fixup the simplex
-				V = SimplexFindClosestToOrigin(Simplex, SimplexIDs, Barycentric, As, Bs);
-			}
-			bTerminate = bCloseEnough || bDegenerate;
-		}
-
-		OutTime = Lambda;
-
-		if (Lambda > 0)
-		{
-			OutNormal = Normal;
-			TVector<T, 3> ClosestB(0);
-
-			for (int i = 0; i < SimplexIDs.NumVerts; ++i)
-			{
-				ClosestB += Bs[i] * Barycentric[i];
-			}
-			const TVector<T, 3> ClosestLocal = ClosestB - OutNormal * MarginB;
-
-			OutPosition = StartPoint + RayDir * Lambda + ClosestLocal;
-		}
-		else if (bComputeMTD)
-		{
-			// If Inflation == 0 we would expect GJKPreDist2 to be 0
-			// However, due to precision we can still end up with GJK failing.
-			// When that happens fall back on EPA
-			if (Inflation > 0 && GJKPreDist2 > 1e-6 && GJKPreDist2 < TNumericLimits<T>::Max())
-			{
-				OutNormal = Normal;
-				TVector<T, 3> ClosestA(0);
-				TVector<T, 3> ClosestB(0);
-
-				if (NumIterations)
-				{
-					for (int i = 0; i < SimplexIDs.NumVerts; ++i)
-					{
-						ClosestA += As[i] * Barycentric[i];
-						ClosestB += Bs[i] * Barycentric[i];
-					}
-				}
-				else
-				{
-					//didn't even go into gjk loop
-					ClosestA = As[0];
-					ClosestB = Bs[0];
-				}
-				
-				const TVec3<T> ClosestBInA = StartPoint + ClosestB;
-				const T InGJKPreDist = FMath::Sqrt(GJKPreDist2);
-				OutNormal = V.GetUnsafeNormal();
-
-				const T Penetration = FMath::Clamp<T>(MarginA + MarginB - InGJKPreDist, 0, TNumericLimits<T>::Max());
-				const TVector<T, 3> ClosestLocal = ClosestB - OutNormal * MarginB;
-
-				OutPosition = StartPoint + ClosestLocal + OutNormal * Penetration;
-				OutTime = -Penetration;
-			}
-			else
-			{
-				//use EPA
-				TArray<TVec3<T>> VertsA;
-				TArray<TVec3<T>> VertsB;
-
-				VertsA.Reserve(8);
-				VertsB.Reserve(8);
-
-				if (NumIterations)
-				{
-					for (int i = 0; i < SimplexIDs.NumVerts; ++i)
-					{
-						VertsA.Add(As[i]);
-						const TVec3<T> BAtOrigin = Bs[i] + X;
-						VertsB.Add(BAtOrigin);
-					}
-
-					T Penetration;
-					TVec3<T> MTD, ClosestA, ClosestBInA;
-					const EEPAResult EPAResult = EPA(VertsA, VertsB, SupportAFunc, SupportBAtOriginFunc, Penetration, MTD, ClosestA, ClosestBInA);
-					if (IsEPASuccess(EPAResult))
-					{
-						OutNormal = MTD;
-						OutTime = -Penetration - Inflation;
-						OutPosition = ClosestA;
-					}
-					//else if (IsEPADegenerate(EPAResult))
-					//{
-					//	// @todo(chaos): handle degenerate EPA condition
-					//}
-					else
-					{
-						//assume touching hit
-						OutTime = -Inflation;
-						OutNormal = MTD;
-						OutPosition = As[0] + OutNormal * MarginA;
-					}
-				}
-				else
-				{
-					//didn't even go into gjk loop, touching hit
-					OutTime = -Inflation;
-					OutNormal = { 0,0,1 };
-					OutPosition = As[0] + OutNormal * MarginA;
-				}
-			}
-		}
-		else
-		{
-			// Initial overlap without MTD. These properties are not valid, but assigning them anyway so they don't contain NaNs and cause issues in invoking code.
-			OutNormal = { 0,0,1 };
-			OutPosition = { 0,0,0 };
-		}
-
-		return true;
-	}
-
-	template <typename TGeometryA, typename TGeometryB, typename T>
-	bool GJKRaycast2ImplSimd(const TGeometryA& A, const TGeometryB& B, const VectorRegister4Float& BToARotation, const VectorRegister4Float& StartPoint, const VectorRegister4Float& RayDir, const T RayLength,
-		T& OutTime, VectorRegister4Float& OutPosition, VectorRegister4Float& OutNormal, bool bComputeMTD, const VectorRegister4Float& InitialDir, const TRigidTransform<double, 3>& StartTM)
+	/** Sweeps one geometry against the other
+	 @A The first geometry
+	 @B The second geometry
+	 @BToARotation B's starting rotation in A's local space
+         @StartPoint B's starting position in A's local space
+	 @RayDir The ray's direction (normalized)
+	 @RayLength The ray's length
+	 @OutTime The time along the ray when the objects first overlap
+	 @OutPosition The first point of impact (in A's local space) when the objects first overlap. Invalid if time of impact is 0
+	 @OutNormal The impact normal (in A's local space) when the objects first overlap. Invalid if time of impact is 0
+	 @InitialDir The first direction we use to search the CSO
+	 @return True if the geometries overlap during the sweep, False otherwise
+	 @note If A overlaps B at the start of the ray ("initial overlap" condition) then this function returns true, and sets OutTime = 0, but does not set any other output variables.
+	 */
+	template <typename T>
+	bool GJKRaycast2ImplSimd(const FGeomGJKHelperSIMD& A, const FGeomGJKHelperSIMD& B, const VectorRegister4Float& BToARotation, const VectorRegister4Float& StartPoint, const VectorRegister4Float& RayDir,
+		T RayLength, T& OutTime, VectorRegister4Float& OutPosition, VectorRegister4Float& OutNormal, bool bComputeMTD, const VectorRegister4Float& InitialDir)
 	{
 		ensure(RayLength > 0);
 
@@ -1719,17 +1553,17 @@ namespace Chaos
 		const T SweepMarginB = (bHasRadiusA || bHasRadiusB) ? 0.0f : (bAIsSmallest ? 0.0f : SweepMarginScale * static_cast<T>(B.GetMargin()));
 
 		// Net margin (note: both SweepMargins are zero if either Radius is non-zero, and only one SweepMargin can be non-zero)
-		const T MarginA = RadiusA + SweepMarginA;
-		const T MarginB = RadiusB + SweepMarginB;
+		A.Margin = RadiusA + SweepMarginA;
+		B.Margin = RadiusB + SweepMarginB;
 
-		const VectorRegister4Float MarginASimd = VectorLoadFloat1(&MarginA);
-		const VectorRegister4Float MarginBSimd = VectorLoadFloat1(&MarginB);
+		const VectorRegister4Float MarginASimd = VectorLoadFloat1(&A.Margin);
+		const VectorRegister4Float MarginBSimd = VectorLoadFloat1(&B.Margin);
 
 		VectorRegister4Float Simplex[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
 		VectorRegister4Float As[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
 		VectorRegister4Float Bs[4] = { VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat(), VectorZeroFloat() };
 
-		VectorRegister4Float Barycentric;
+		VectorRegister4Float Barycentric = VectorZeroFloat();
 
 		VectorRegister4Float Inflation = VectorAdd(MarginASimd, MarginBSimd);
 		constexpr VectorRegister4Float Eps2Simd = MakeVectorRegisterFloatConstant(1e-6f, 1e-6f, 1e-6f, 1e-6f);
@@ -1741,24 +1575,10 @@ namespace Chaos
 
 		VectorRegister4Float AToBRotation = VectorQuaternionInverse(BToARotation);
 
-		auto SupportAFunc = [&A, MarginA](const VectorRegister4Float& V)
-		{
-			return A.SupportCoreSimd(V, MarginA);
-		};
-
-		auto SupportBFunc = [&B, MarginB, &AToBRotation, &BToARotation](const VectorRegister4Float& V)
-		{
-			const VectorRegister4Float VInB = VectorQuaternionRotateVector(AToBRotation, V);
-			const VectorRegister4Float SupportBLocal = B.SupportCoreSimd(VInB, MarginB);
-
-			return VectorQuaternionRotateVector(BToARotation, SupportBLocal);
-		};
-
-
-		VectorRegister4Float SupportA = SupportAFunc(InitialDir);
+		VectorRegister4Float SupportA = A.SupportFunction(InitialDir);
 		As[0] = SupportA;
 
-		VectorRegister4Float SupportB = SupportBFunc(VectorNegate(InitialDir));
+		VectorRegister4Float SupportB = B.SupportFunction(AToBRotation, BToARotation, VectorNegate(InitialDir));
 		Bs[0] = SupportB;
 
 		VectorRegister4Float Lambda = VectorZeroFloat();
@@ -1773,7 +1593,7 @@ namespace Chaos
 
 		FRealSingle Inflation2;
 		VectorStoreFloat1(Inflation2Simd, &Inflation2);
-		
+
 		constexpr FRealSingle Eps2 = 1e-6f;
 
 		//mtd needs to find closest point even in inflation region, so can only skip if we found the closest points
@@ -1794,8 +1614,8 @@ namespace Chaos
 
 			V = VectorNormalizeAccurate(V);
 
-			SupportA = SupportAFunc(V);
-			SupportB = SupportBFunc(VectorNegate(V));
+			SupportA = A.SupportFunction(V);
+			SupportB = B.SupportFunction(AToBRotation, BToARotation, VectorNegate(V));
 			const VectorRegister4Float P = VectorSubtract(SupportA, SupportB);
 			const VectorRegister4Float W = VectorSubtract(X, P);
 
@@ -2008,30 +1828,35 @@ namespace Chaos
 						VertsB.Add(VectorAdd(Bs[i], X));
 					}
 
-					auto SupportBAtOriginFunc = [&B, MarginB, &BToARotation, &StartPoint, &AToBRotation](const VectorRegister4Float& Dir)
+					struct SupportBAtOriginHelper
 					{
-						int32 VertexIndex = INDEX_NONE;
-						const VectorRegister4Float DirInB = VectorQuaternionRotateVector(AToBRotation, Dir);
-						const VectorRegister4Float SupportBLocal = B.SupportCoreSimd(DirInB, MarginB);
+						const FGeomGJKHelperSIMD& B;
+						const VectorRegister4Float& AToBRotation;
+						const VectorRegister4Float& BToARotation;
+						const VectorRegister4Float& StartPoint;
 
-						const VectorRegister4Float RotatedVec = VectorQuaternionRotateVector(BToARotation, SupportBLocal);
-						return VectorAdd(RotatedVec, StartPoint);
+						VectorRegister4Float operator()(VectorRegister4Float V) const { return VectorAdd(B.SupportFunction(AToBRotation, BToARotation, V), StartPoint); }
 					};
 
+					SupportBAtOriginHelper SupportBAtOrigin = { B, AToBRotation, BToARotation, StartPoint };
 					VectorRegister4Float Penetration;
 					VectorRegister4Float MTD, ClosestA, ClosestBInA;
-					const EEPAResult EPAResult = VectorEPA(VertsA, VertsB, SupportAFunc, SupportBAtOriginFunc, Penetration, MTD, ClosestA, ClosestBInA);
+					const EEPAResult EPAResult = VectorEPA(VertsA, VertsB, A, SupportBAtOrigin, Penetration, MTD, ClosestA, ClosestBInA);
 					if (IsEPASuccess(EPAResult))
 					{
 						OutNormal = MTD;
 						VectorStoreFloat1(Penetration, &OutTime);
-						OutTime = -OutTime - (MarginA + MarginB);
+						OutTime = -OutTime - (A.Margin + B.Margin);
 						OutPosition = ClosestA;
+					}
+					else if (EPAResult == EEPAResult::NoValidContact)
+					{
+						return false;
 					}
 					else
 					{
 						//assume touching hit
-						OutTime = -(MarginA + MarginB);
+						OutTime = -(A.Margin + B.Margin);
 						OutNormal = MTD;
 						OutPosition = VectorMultiplyAdd(OutNormal, MarginASimd, As[0]);
 					}
@@ -2040,7 +1865,7 @@ namespace Chaos
 				else
 				{
 					//didn't even go into gjk loop, touching hit
-					OutTime = -(MarginA + MarginB);
+					OutTime = -(A.Margin + B.Margin);
 					OutNormal = MakeVectorRegisterFloat(0.0f, 0.0f, 1.0f, 0.0f);
 					OutPosition = VectorMultiplyAdd(OutNormal, MarginASimd, As[0]);
 				}
@@ -2056,10 +1881,9 @@ namespace Chaos
 		return true;
 	}
 
-#if GJK_VECTORIZED
-	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKRaycast2(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& StartTM, const TVector<T, 3>& RayDir, const T RayLength,
-		T& OutTime, TVector<T, 3>& OutPosition, TVector<T, 3>& OutNormal, const T GivenThicknessA = 0, bool bComputeMTD = false, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T GivenThicknessB = 0)
+	template <typename T = FReal>
+	bool GJKRaycast2Impl(const FGeomGJKHelperSIMD& A, const FGeomGJKHelperSIMD& B, const TRigidTransform<T, 3>& StartTM, const TVector<T, 3>& RayDir, const T RayLength, 
+		T& OutTime, TVector<T, 3>& OutPosition, TVector<T, 3>& OutNormal, const T GivenThicknessA, bool bComputeMTD, const TVector<T, 3>& InitialDir, const T GivenThicknessB)
 	{
 		const UE::Math::TQuat<T>& RotationDouble = StartTM.GetRotation();
 		VectorRegister4Float Rotation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(RotationDouble.X, RotationDouble.Y, RotationDouble.Z, RotationDouble.W));
@@ -2069,16 +1893,15 @@ namespace Chaos
 
 		// Normalize rotation
 		Rotation = VectorNormalizeSafe(Rotation, GlobalVectorConstants::Float0001);
-		
+
 		const VectorRegister4Float InitialDirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(InitialDir[0], InitialDir[1], InitialDir[2], 0.0));
 		const VectorRegister4Float RayDirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(RayDir[0], RayDir[1], RayDir[2], 0.0));
 
-		FRealSingle OutTimeFloat;
+		FRealSingle OutTimeFloat = 0.0f;
 		VectorRegister4Float OutPositionSimd, OutNormalSimd;
-		bool result = GJKRaycast2ImplSimd(A, B, Rotation, Translation, RayDirSimd, static_cast<FRealSingle>(RayLength), OutTimeFloat, OutPositionSimd, OutNormalSimd, bComputeMTD, InitialDirSimd, StartTM);
+		const bool Result = GJKRaycast2ImplSimd(A, B, Rotation, Translation, RayDirSimd, static_cast<FRealSingle>(RayLength), OutTimeFloat, OutPositionSimd, OutNormalSimd, bComputeMTD, InitialDirSimd);
 
 		OutTime = static_cast<double>(OutTimeFloat);
-
 
 		alignas(16) FRealSingle OutFloat[4];
 		VectorStoreAligned(OutNormalSimd, OutFloat);
@@ -2091,43 +1914,31 @@ namespace Chaos
 		OutPosition.Y = OutFloat[1];
 		OutPosition.Z = OutFloat[2];
 
-		return result;
+		return Result;
 	}
 
-#else // GJK_VECTORIZED
-
-	/** Sweeps one geometry against the other
-	 @A The first geometry
-	 @B The second geometry
-	 @StartTM B's starting configuration in A's local space
-	 @RayDir The ray's direction (normalized)
-	 @RayLength The ray's length
-	 @OutTime The time along the ray when the objects first overlap
-	 @OutPosition The first point of impact (in A's local space) when the objects first overlap. Invalid if time of impact is 0
-	 @OutNormal The impact normal (in A's local space) when the objects first overlap. Invalid if time of impact is 0
-	 @ThicknessA The amount of geometry inflation for Geometry A (for example a capsule with radius 5 could pass in its core segnment and a thickness of 5)
-	 @InitialDir The first direction we use to search the CSO
-	 @ThicknessB The amount of geometry inflation for Geometry B (for example a sphere with radius 5 could pass in its center point and a thickness of 5)
-	 @return True if the geometries overlap during the sweep, False otherwise
-	 @note If A overlaps B at the start of the ray ("initial overlap" condition) then this function returns true, and sets OutTime = 0, but does not set any other output variables.
-	 */
-
-	template <typename T, typename TGeometryA, typename TGeometryB>
+	template <typename T = FReal, typename TGeometryA, typename TGeometryB>
 	bool GJKRaycast2(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& StartTM, const TVector<T, 3>& RayDir, const T RayLength,
 		T& OutTime, TVector<T, 3>& OutPosition, TVector<T, 3>& OutNormal, const T GivenThicknessA = 0, bool bComputeMTD = false, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T GivenThicknessB = 0)
 	{
 		return GJKRaycast2Impl(A, B, StartTM, RayDir, RayLength, OutTime, OutPosition, OutNormal, GivenThicknessA, bComputeMTD, InitialDir, GivenThicknessB);
 	}
-#endif // GJK_VECTORIZED
+
 
 	/**
-	 * Used by GJKDistance. It must return a vector in the Minkowski sum A - B. In principle this can be the vector of any point
-	 * in A to any point in B, but some choices will cause GJK to minimize faster (e.g., for two spheres, we can easily calculate
-	 * the actual separating vector and GJK will converge immediately).
+	 * Can be used to generate the initial support direction for use with GjkDistance. Returns a point on the Minkowski Sum
+	 * surface opposite to the direction of the supplied transform. This is usually a good guess for the initial direction
+	 * but it calls SupportCore on both shapes, and there are often faster alternatives if you know the type of shapes
+	 * you are dealing with (e.g., return the vectors between the centers of the two convex shapes).
+	 * 
+	 * If you do roll your own function, make sure that the vector returned is in or on the Minkowski sum (and don't just use a unit
+	 * vector along some direction for example) or GJKDistance may early-exit with an inaccurate result.
 	 */
 	template <typename T, typename TGeometryA, typename TGeometryB>
-	TVector<T, 3> GJKDistanceInitialV(const TGeometryA& A, T MarginA, const TGeometryB& B, T MarginB, const TRigidTransform<T, 3>& BToATM)
+	TVector<T, 3> GJKDistanceInitialV(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM)
 	{
+		const T MarginA = A.GetMargin();
+		const T MarginB = B.GetMargin();
 		int32 VertexIndexA = INDEX_NONE, VertexIndexB = INDEX_NONE;
 		const TVec3<T> V = -BToATM.GetTranslation();
 		const TVector<T, 3> SupportA = A.SupportCore(-V, MarginA, nullptr, VertexIndexA);
@@ -2135,16 +1946,6 @@ namespace Chaos
 		const TVector<T, 3> SupportBLocal = B.SupportCore(VInB, MarginB, nullptr, VertexIndexB);
 		const TVector<T, 3> SupportB = BToATM.TransformPositionNoScale(SupportBLocal);
 		return SupportA - SupportB;
-	}
-
-	/**
-	 * Used by GJKDistance. Specialization for sphere-sphere gives correct result immediately.
-	 */
-	template <typename T>
-	TVector<T, 3> GJKDistanceInitialV(const TSphere<T, 3>& A, const TSphere<T, 3>& B, const TRigidTransform<T, 3>& BToATM)
-	{
-		TVector<T, 3> Delta = A.GetCenter() - (B.GetCenter() + BToATM.GetTranslation());
-		return Delta;
 	}
 
 	// Status of a call to GJKDistance
@@ -2156,20 +1957,29 @@ namespace Chaos
 		// The shapes are overlapping by less than the net margin and all outputs have valid values (with a negative separation)
 		Contact,
 
-		// The shapes are overlapping by more than the net margin and all outputs are invalid
+		// The shapes are overlapping by more than the net margin and all outputs are invalid (unchanged from their input values)
 		DeepContact,
 	};
 
 	/**
-	 * Find the distance and nearest points on two convex geometries A and B.
-	 * All calculations are performed in the local-space of object A, and the transform from B-space to A-space must be provided.
+	 * Find the distance and nearest points on two convex geometries A and B, if they do not overlap.
+	 *
+	 * This is intended to be used with TGJKShape, TGJKCoreShape, TGJKShapeTransformed and TGJKCoreShapeTransformed
+	 * and generally you will have a TGJKShape or TGJKCoreShape as A, and a Transformed version for B. The transform in 
+	 * B should transform a vector in B space to a vector in A space as all calculations are performed in the local-
+	 * space of object A.
+	 *
+	 * You can also use this function when you have 2 shapes already in the same space to avoid transforms in the support
+	 * function(s). In this case you would use the non-transform versions of TGJKShape and would need to transform the 
+	 * results from the shared space to the space you desire.
+	 *
 	 * For algorithm see "A Fast and Robust GJK Implementation for Collision Detection of Convex Objects", Gino Van Deb Bergen, 1999.
 	 * @note This algorithm aborts if objects are overlapping and it does not initialize the out parameters.
 	 *
-	 * @param A The first object.
+	 * @param A The first object (usually TGJKShape or TGJKCoreShape)
+	 * @param B The second object (usually TGJKShapeTransformed or TGJKCoreShapeTransformed)
 	 * @param B The second object.
-	 * @param BToATM A transform taking vectors in B-space to A-space
-	 * @param B The second object.
+	 * @param InitialV  Starting support direction that must be in the Minkowski Sum. Use GJKDistanceInitialV() if unsure.
 	 * @param OutDistance if returns true, the minimum distance between A and B, otherwise not modified.
 	 * @param OutNearestA if returns true, the near point on A in local-space, otherwise not modified.
 	 * @param OutNearestB if returns true, the near point on B in local-space, otherwise not modified.
@@ -2177,22 +1987,20 @@ namespace Chaos
 	 * @param MaxIts A limit on the number of iterations. Results may be approximate if this is too low.
 	 * @return EGJKDistanceResult - see comments on the enum
 	 */
-	template <typename T, typename TGeometryA, typename TGeometryB>
-	EGJKDistanceResult GJKDistance(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM, T& OutDistance, TVector<T, 3>& OutNearestA, TVector<T, 3>& OutNearestB, TVector<T, 3>& OutNormalA, const T Epsilon = (T)1e-3, const int32 MaxIts = 16)
+	template <typename T, typename GJKShapeTypeA, typename GJKShapeTypeB>
+	EGJKDistanceResult GJKDistance(const GJKShapeTypeA& A, const GJKShapeTypeB& B, const TVec3<T>& InitialV, T& OutDistance, TVec3<T>& OutNearestA, TVec3<T>& OutNearestB, TVec3<T>& OutNormalA, const T Epsilon = (T)1e-3, const int32 MaxIts = 16)
 	{
-		check(A.IsConvex() && B.IsConvex());
-
 		FSimplex SimplexIDs;
-		TVector<T, 3> Simplex[4], SimplexA[4], SimplexB[4];
+		TVec3<T> Simplex[4], SimplexA[4], SimplexB[4];
 		T Barycentric[4] = { -1, -1, -1, -1 };
 
-		const TRotation<T, 3> AToBRotation = BToATM.GetRotation().Inverse();
 		const T AMargin = A.GetMargin();
 		const T BMargin = B.GetMargin();
 		T Mu = 0;
 
-		// Select an initial vector in Minkowski(A - B)
-		TVector<T, 3> V = GJKDistanceInitialV(A, AMargin, B, BMargin, BToATM);
+		// Initial vector in Minkowski(A - B)
+		// NOTE: If InitialV is not in the Minkowski Sum we may incorrectly early-out in the bCloseEnough chaeck below
+		TVec3<T> V = InitialV;
 		T VLen = V.Size();
 		int32 VertexIndexA = INDEX_NONE, VertexIndexB = INDEX_NONE;
 
@@ -2202,13 +2010,11 @@ namespace Chaos
 			// Find a new point in A-B that is closer to the origin
 			// NOTE: we do not use support thickness here. Thickness is used when separating objects
 			// so that GJK can find a solution, but that can be added in a later step.
-			const TVector<T, 3> SupportA = A.SupportCore(-V, AMargin, nullptr, VertexIndexA);
-			const TVector<T, 3> VInB = AToBRotation * V;
-			const TVector<T, 3> SupportBLocal = B.SupportCore(VInB, BMargin, nullptr, VertexIndexB);
-			const TVector<T, 3> SupportB = BToATM.TransformPositionNoScale(SupportBLocal);
-			const TVector<T, 3> W = SupportA - SupportB;
+			const TVec3<T> SupportA = A.SupportCore(-V, AMargin, nullptr, VertexIndexA);
+			const TVec3<T> SupportB = B.SupportCore(V, BMargin, nullptr, VertexIndexB);
+			const TVec3<T> W = SupportA - SupportB;
 
-			T D = TVector<T, 3>::DotProduct(V, W) / VLen;
+			T D = TVec3<T>::DotProduct(V, W) / VLen;
 			Mu = FMath::Max(Mu, D);
 
 			// See if we are still making progress toward the origin
@@ -2223,13 +2029,13 @@ namespace Chaos
 				{
 					// Our initial guess of V was already the minimum separating vector
 					OutNearestA = SupportA;
-					OutNearestB = SupportBLocal;
+					OutNearestB = SupportB;
 				}
 				else
 				{
 					// The simplex vertices are the nearest point/line/face
-					OutNearestA = TVector<T, 3>(0, 0, 0);
-					OutNearestB = TVector<T, 3>(0, 0, 0);
+					OutNearestA = TVec3<T>(0, 0, 0);
+					OutNearestB = TVec3<T>(0, 0, 0);
 					for (int32 VertIndex = 0; VertIndex < SimplexIDs.NumVerts; ++VertIndex)
 					{
 						int32 WIndex = SimplexIDs[VertIndex];
@@ -2238,12 +2044,14 @@ namespace Chaos
 						OutNearestB += Barycentric[WIndex] * SimplexB[WIndex];
 					}
 				}
-				const TVector<T, 3> NormalA = -V / VLen;
-				const TVector<T, 3> NormalB = VInB / VLen;
+				const TVec3<T> NormalA = -V / VLen;
 				OutDistance = VLen - (AMargin + BMargin);
 				OutNearestA += AMargin * NormalA;
-				OutNearestB += BMargin * NormalB;
+				OutNearestB -= BMargin * NormalA;
 				OutNormalA = NormalA;
+
+				// NearestB should be in B-space but is currently in A-space
+				OutNearestB = B.InverseTransformPositionNoScale(OutNearestB);
 
 				return (OutDistance >= 0.0f) ? EGJKDistanceResult::Separated : EGJKDistanceResult::Contact;
 			}
@@ -2252,7 +2060,7 @@ namespace Chaos
 			SimplexIDs[SimplexIDs.NumVerts] = SimplexIDs.NumVerts;
 			Simplex[SimplexIDs.NumVerts] = W;
 			SimplexA[SimplexIDs.NumVerts] = SupportA;
-			SimplexB[SimplexIDs.NumVerts] = SupportBLocal;
+			SimplexB[SimplexIDs.NumVerts] = SupportB;
 			++SimplexIDs.NumVerts;
 
 			// Find the closest point to the origin on the simplex, and update the simplex to eliminate unnecessary vertices
@@ -2262,72 +2070,6 @@ namespace Chaos
 
 		// Our geometries overlap - we did not set any outputs
 		return EGJKDistanceResult::DeepContact;
-	}
-
-
-
-
-
-	// Assumes objects are already intersecting, computes a minimum translation
-	// distance, deepest penetration positions on each body, and approximates
-	// a penetration normal and minimum translation distance.
-	//
-	// TODO: We want to re-visit how these functions work. Probably should be
-	// embedded in GJKOverlap and GJKRaycast so that secondary queries are unnecessary.
-	template <typename T, typename TGeometryA, typename TGeometryB>
-	bool GJKPenetrationTemp(const TGeometryA& A, const TGeometryB& B, const TRigidTransform<T, 3>& BToATM, TVector<T, 3>& OutPositionA, TVector<T, 3>& OutPositionB, TVector<T, 3>& OutNormal, T& OutDistance, const T ThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T ThicknessB = 0, const T Epsilon = (T)1e-6, const int32 MaxIts = 16)
-	{
-		//
-		// TODO: General case for MTD determination.
-		//
-		ensure(false);
-		OutPositionA = TVector<T, 3>(0.f);
-		OutPositionB = TVector<T, 3>(0.f);
-		OutNormal = TVector<T, 3>(0.f, 0.f, 1.f);
-		OutDistance = 0.f;
-		return GJKIntersection(A, B, BToATM, ThicknessA, InitialDir, ThicknessB);
-	}
-
-	// Specialization for when getting MTD against a capsule.
-	template <typename T, typename TGeometryA>
-	bool GJKPenetrationTemp(const TGeometryA& A, const FCapsule& B, const TRigidTransform<T, 3>& BToATM, TVector<T, 3>& OutPositionA, TVector<T, 3>& OutPositionB, TVector<T, 3>& OutNormal, T& OutDistance, const T ThicknessA = 0, const TVector<T, 3>& InitialDir = TVector<T, 3>(1, 0, 0), const T ThicknessB = 0, const T Epsilon = (T)1e-6, const int32 MaxIts = 16)
-	{
-		T SegmentDistance;
-		const TSegment<T>& Segment = B.GetSegment();
-		const T MarginB = B.GetRadius();
-		TVector<T, 3> PositionBInB;
-		if (GJKDistance(A, Segment, BToATM, SegmentDistance, OutPositionA, PositionBInB, Epsilon, MaxIts))
-		{
-			OutPositionB = BToATM.TransformPosition(PositionBInB);
-			OutNormal
-				= ensure(SegmentDistance > TNumericLimits<T>::Min())
-				? (OutPositionB - OutPositionA) / SegmentDistance
-				: TVector<T, 3>(0.f, 0.f, 1.f);
-			OutPositionB -= OutNormal * MarginB;
-			OutDistance = SegmentDistance - MarginB;
-
-			if (OutDistance > 0.f)
-			{
-				// In this case, our distance calculation says we're not penetrating.
-				//
-				// TODO: check(false)! This shouldn't happen.
-				// It probably won't happen anymore if we warm-start GJKDistance
-				// with a polytope.
-				//
-				OutDistance = 0.f;
-				return false;
-			}
-
-			return true;
-		}
-		else
-		{
-			// TODO: Deep penetration - do EPA
-			ensure(false);
-			return true;
-		}
-
-		return false;
 	}
 
 }

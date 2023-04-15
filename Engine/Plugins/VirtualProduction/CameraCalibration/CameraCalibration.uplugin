@@ -15,11 +15,6 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "CameraCalibration",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		},
-		{
 			"Name": "CameraCalibrationEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
@@ -28,10 +23,6 @@
 	"Plugins": [
 		{
 			"Name": "CameraCalibrationCore",
-			"Enabled": true
-		},
-		{
-			"Name": "LiveLink",
 			"Enabled": true
 		},
 		{
@@ -44,10 +35,6 @@
 		},
 		{
 			"Name": "OpenCVLensDistortion",
-			"Enabled": true
-		},
-		{
-			"Name": "LiveLinkCamera",
 			"Enabled": true
 		}
 	]

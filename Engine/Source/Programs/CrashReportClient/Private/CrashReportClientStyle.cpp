@@ -7,6 +7,7 @@
 #include "Math/Color.h"
 #include "Math/Vector2D.h"
 #include "CrashReportClientApp.h"
+#include "Styling/StyleColors.h"
 
 #if !CRASH_REPORT_UNATTENDED_ONLY
 
@@ -85,7 +86,9 @@ TSharedRef< FSlateStyleSet > FCrashReportClientStyle::Create()
 		.SetHoveredThumbImage(BOX_BRUSH("Common/Scrollbar_Thumb", FMargin(4.f / 16.f)));
 
 	// SEditableTextBox defaults...
+	const FTextBlockStyle& NormalText = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText");
 	const FEditableTextBoxStyle NormalEditableTextBoxStyle = FEditableTextBoxStyle()
+		.SetTextStyle(NormalText)
 		.SetBackgroundImageNormal(*GenericWhiteBox)
 		.SetBackgroundImageHovered(*GenericWhiteBox)
 		.SetBackgroundImageFocused(*GenericWhiteBox)
@@ -115,6 +118,8 @@ TSharedRef< FSlateStyleSet > FCrashReportClientStyle::Create()
 		.SetPadding( FMargin( 0.0f ) );
 
 	Style.Set( "RichText.Hyperlink", DarkHyperlink );
+
+	Style.Set("ToolPanel.GroupBorder", new FSlateColorBrush(FStyleColors::Panel));
 
 	return StyleRef;
 }

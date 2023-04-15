@@ -6,7 +6,7 @@
 #include "Input/DragAndDrop.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/BrushBuilder.h"
 #include "Editor.h"
 #include "Widgets/Layout/SBorder.h"
@@ -34,9 +34,8 @@ public:
 		UWorld* World = GEditor->GetEditorWorldContext().World();
 		if ((World != nullptr) && (World->GetDefaultBrush() != nullptr))
 		{
-			// Deselect & hide the builder brush
+			// Hide the builder brush
 			World->GetDefaultBrush()->SetIsTemporarilyHiddenInEditor(true);
-			GEditor->SelectActor(World->GetDefaultBrush(), false, false);
 		}
 	}
 
@@ -56,9 +55,8 @@ public:
 					GEditor->Exec(World, Command);
 				}
 
-				// Deselect & hide the builder brush
+				// Hide the builder brush
 				World->GetDefaultBrush()->SetIsTemporarilyHiddenInEditor(true);
-				GEditor->SelectActor(World->GetDefaultBrush(), false, false);
 			}
 		}
 
@@ -72,9 +70,8 @@ public:
 		{
 			if(CursorDecoratorWindow->IsVisible() && !World->GetDefaultBrush()->IsTemporarilyHiddenInEditor())
 			{
-				// Deselect & hide the builder brush if the decorator is visible
+				// Hide the builder brush if the decorator is visible
 				World->GetDefaultBrush()->SetIsTemporarilyHiddenInEditor(true);
-				GEditor->SelectActor(World->GetDefaultBrush(), false, false);
 			}
 		}
 
@@ -88,7 +85,7 @@ public:
 			.HeightOverride(100.0f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("AssetThumbnail.ClassBackground"))
+				.BorderImage(FAppStyle::GetBrush("AssetThumbnail.ClassBackground"))
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
 				[
@@ -109,12 +106,11 @@ private:
 		, IconBrush(InIconBrush)
 		, bIsAdditive(bInIsAdditive)
 	{
-		// show & select the builder brush
+		// show the builder brush
 		UWorld* World = GEditor->GetEditorWorldContext().World();
 		if ((World != nullptr) && (World->GetDefaultBrush() != nullptr))
 		{
 			World->GetDefaultBrush()->SetIsTemporarilyHiddenInEditor(false);
-			GEditor->SelectActor(World->GetDefaultBrush(), true, false);
 		}
 	}
 

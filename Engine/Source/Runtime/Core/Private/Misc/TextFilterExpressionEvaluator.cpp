@@ -1,7 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/TextFilterExpressionEvaluator.h"
+
+#include "Containers/SparseArray.h"
 #include "Math/BasicMathExpressionEvaluator.h"
+#include "Misc/CString.h"
+#include "Misc/ExpressionParserTypes.inl"
+#include "Misc/Guid.h"
+#include "Templates/Function.h"
+#include "Templates/ValueOrError.h"
 
 namespace TextFilterExpressionParser
 {
@@ -9,8 +16,8 @@ namespace TextFilterExpressionParser
 	 * This contains all the symbols that can define breaking points between text and an operator
 	 * Note: We don't include + and - in this list as these are valid to use inside text and numbers, and should be consumed as part of the text token
 	 */
-	static const TCHAR BasicTextBreakingCharacters[]	= { '(', ')', '!', '&', '|', ' ' };						// ETextFilterExpressionEvaluatorMode::BasicString
-	static const TCHAR ComplexTextBreakingCharacters[]	= { '(', ')', '=', ':', '<', '>', '!', '&', '|', ' ' };	// ETextFilterExpressionEvaluatorMode::Complex
+	static const TCHAR BasicTextBreakingCharacters[]	= { TEXT('('), TEXT(')'), TEXT('!'), TEXT('&'), TEXT('|'), TEXT(' ') };						// ETextFilterExpressionEvaluatorMode::BasicString
+	static const TCHAR ComplexTextBreakingCharacters[]	= { TEXT('('), TEXT(')'), TEXT('='), TEXT(':'), TEXT('<'), TEXT('>'), TEXT('!'), TEXT('&'), TEXT('|'), TEXT(' ') };	// ETextFilterExpressionEvaluatorMode::Complex
 
 	const TCHAR* FSubExpressionStart::Monikers[]		= { TEXT("(") };
 	const TCHAR* FSubExpressionEnd::Monikers[]			= { TEXT(")") };
@@ -62,8 +69,8 @@ namespace TextFilterExpressionParser
 	/** Transform the given string to remove any escape character sequences found in a quoted string */
 	void UnescapeQuotedString(FString& Str, const TCHAR InQuoteChar)
 	{
-		const TCHAR EscapedQuote[] = { '\\', InQuoteChar, 0 };
-		const TCHAR UnescapedQuote[] = { InQuoteChar, 0 };
+		const TCHAR EscapedQuote[] = { TEXT('\\'), InQuoteChar, TEXT('\0') };
+		const TCHAR UnescapedQuote[] = { InQuoteChar, TEXT('\0') };
 
 		// Unescape any literal quotes within the string
 		Str.ReplaceInline(EscapedQuote, UnescapedQuote);
@@ -127,7 +134,7 @@ namespace TextFilterExpressionParser
 		FString FinalString;
 		FString CurrentQuotedString;
 
-		TCHAR QuoteChar = 0;
+		TCHAR QuoteChar = TEXT('\0');
 		int32 NumConsecutiveSlashes = 0;
 		TOptional<FStringToken> TextToken = Stream.ParseToken([&](TCHAR InC)
 		{
@@ -162,7 +169,7 @@ namespace TextFilterExpressionParser
 					FinalString.Append(CurrentQuotedString);
 
 					CurrentQuotedString.Reset();
-					QuoteChar = 0;
+					QuoteChar = TEXT('\0');
 				}
 
 				if (InC == '\\')

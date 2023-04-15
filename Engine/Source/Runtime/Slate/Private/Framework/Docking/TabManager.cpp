@@ -19,9 +19,10 @@
 #include "Framework/Docking/SDockingTabWell.h"
 #include "Framework/Docking/LayoutExtender.h"
 #include "Misc/NamePermissionList.h"
+#include "Trace/SlateMemoryTags.h"
 #include "HAL/PlatformApplicationMisc.h"
 #if PLATFORM_MAC
-#include "../MultiBox/Mac/MacMenu.h"
+#include "Framework/MultiBox/Mac/MacMenu.h"
 #endif
 
 
@@ -387,7 +388,10 @@ FString FTabManager::FLayout::ToString() const
 
 	FString LayoutAsString;
 	TSharedRef< TJsonWriter<> > Writer = TJsonWriterFactory<>::Create( &LayoutAsString );
-	check( FJsonSerializer::Serialize( LayoutJson, Writer ) );
+	if (!FJsonSerializer::Serialize(LayoutJson, Writer))
+	{
+		UE_LOG(LogSlate, Error, TEXT("Failed save layout as Json string: %s"), *GetLayoutName().ToString());
+	}
 
 	return LayoutAsString;
 }
@@ -955,6 +959,8 @@ FTabSpawnerEntry& FTabManager::RegisterTabSpawner(const FName TabId, const FOnSp
 {
 	ensure(!TabSpawner.Contains(TabId));
 	ensure(!FGlobalTabmanager::Get()->IsLegacyTabType(TabId));
+
+	LLM_SCOPE_BYTAG(UI_Slate);
 
 	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable(new FTabSpawnerEntry(TabId, OnSpawnTab, CanSpawnTab));
 	TabSpawner.Add(TabId, NewSpawnerEntry);
@@ -1871,7 +1877,7 @@ bool FTabManager::IsValidTabForSpawning( const FTab& SomeTab ) const
 
 	// Nomad tabs being restored from layouts should not be spawned if the nomad tab is already spawned.
 	TSharedRef<FTabSpawnerEntry>* NomadSpawner = NomadTabSpawner->Find( SomeTab.TabId.TabType );
-	return ( !NomadSpawner || !NomadSpawner->Get().IsSoleTabInstanceSpawned() );
+	return ( !NomadSpawner || !NomadSpawner->Get().IsSoleTabInstanceSpawned() || NomadSpawner->Get().OnFindTabToReuse.IsBound() );
 }
 
 bool FTabManager::IsAllowedTab(const FTabId& TabId) const
@@ -2475,6 +2481,9 @@ FTabSpawnerEntry& FGlobalTabmanager::RegisterNomadTabSpawner(const FName TabId, 
 {
 	// Sanity check
 	ensure(!IsLegacyTabType(TabId));
+
+	LLM_SCOPE_BYTAG(UI_Slate);
+
 	// Remove TabId if it was previously loaded. This allows re-loading the Editor UI layout without restarting the whole Editor (Window->Load Layout)
 	if (NomadTabSpawner->Contains(TabId))
 	{

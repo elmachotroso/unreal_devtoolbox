@@ -203,6 +203,11 @@ public:
 		return TUniquePtr<FImplicitObject>(CopyHelper(this));
 	}
 
+	virtual FString ToString() const override
+	{
+		return FString::Printf(TEXT("Instanced %s, Margin %f"), *MObject->ToString(), GetMargin());
+	}
+
 	static const TImplicitObjectInstanced<TConcrete>& AsInstancedChecked(const FImplicitObject& Obj)
 	{
 		if(TIsSame<TConcrete,FImplicitObject>::Value)
@@ -231,15 +236,9 @@ public:
 	}
 
 	template <typename QueryGeomType>
-	bool GJKContactPoint(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, FVec3& Location, FVec3& Normal, FReal& Penetration) const
+	bool GJKContactPoint(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, FVec3& Location, FVec3& Normal, FReal& Penetration, int32& FaceIndex) const
 	{
-		return MObject->GJKContactPoint(A, AToBTM, Thickness, Location, Normal, Penetration);
-	}
-
-	template <typename QueryGeomType>
-	bool ContactManifold(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return MObject->ContactManifold(A, AToBTM, Thickness, ContactPoints);
+		return MObject->GJKContactPoint(A, AToBTM, Thickness, Location, Normal, Penetration, FaceIndex);
 	}
 
 	virtual uint16 GetMaterialIndex(uint32 HintIndex) const
@@ -592,7 +591,7 @@ public:
 	virtual bool Raycast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const FReal Thickness, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex) const override
 	{
 		ensure(Length > 0);
-		ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
+		ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)UE_KINDA_SMALL_NUMBER));
 		ensure(Thickness == 0 || (FMath::IsNearlyEqual(MScale[0], MScale[1]) && FMath::IsNearlyEqual(MScale[0], MScale[2])));	//non uniform turns sphere into an ellipsoid so no longer a raycast and requires a more expensive sweep
 
 		const FVec3 UnscaledStart = MInvScale * StartPoint;
@@ -637,7 +636,7 @@ public:
 	bool LowLevelSweepGeom(const QueryGeomType& B, const TRigidTransform<T, d>& BToATM, const TVector<T, d>& LocalDir, const T Length, T& OutTime, TVector<T, d>& LocalPosition, TVector<T, d>& LocalNormal, int32& OutFaceIndex, TVector<T, d>& OutFaceNormal, T Thickness = 0, bool bComputeMTD = false) const
 	{
 		ensure(Length > 0);
-		ensure(FMath::IsNearlyEqual(LocalDir.SizeSquared(), (T)1, (T)KINDA_SMALL_NUMBER));
+		ensure(FMath::IsNearlyEqual(LocalDir.SizeSquared(), (T)1, (T)UE_KINDA_SMALL_NUMBER));
 		ensure(Thickness == 0 || (FMath::IsNearlyEqual(MScale[0], MScale[1]) && FMath::IsNearlyEqual(MScale[0], MScale[2])));
 
 		const TVector<T, d> UnscaledDirDenorm = MInvScale * LocalDir;
@@ -671,22 +670,46 @@ public:
 		return false;
 	}
 
+	/** This is a low level function and assumes the internal object has a SweepGeom function. Should not be called directly. See GeometryQueries.h : SweepQuery */
 	template <typename QueryGeomType>
-	bool GJKContactPoint(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, FVec3& Location, FVec3& Normal, FReal& Penetration) const
+	bool LowLevelSweepGeomCCD(const QueryGeomType& B, const TRigidTransform<T, d>& BToATM, const TVector<T, d>& LocalDir, const T Length, const FReal IgnorePenetration, const FReal TargetPenetration, T& OutTOI, T& OutPhi, TVector<T, d>& LocalPosition, TVector<T, d>& LocalNormal, int32& OutFaceIndex, TVector<T, d>& OutFaceNormal) const
 	{
-		TRigidTransform<T, d> AToBTMNoScale(AToBTM.GetLocation() * MInvScale, AToBTM.GetRotation());
+		ensure(Length > 0);
+		ensure(FMath::IsNearlyEqual(LocalDir.SizeSquared(), (T)1, (T)UE_KINDA_SMALL_NUMBER));
 
-		// Thickness is a culling distance which cannot be non-uniformly scaled. This gets passed into the ImplicitObject API unscaled so that
-		// if can do the right thing internally if possible, but it makes the API a little confusing. (This is only exists used TriMesh and Heightfield.)
-		// See FTriangleMeshImplicitObject::GJKContactPointImp
-		const FReal UnscaledThickness = Thickness;
+		const TVector<T, d> UnscaledDirDenorm = MInvScale * LocalDir;
+		const T LengthScale = UnscaledDirDenorm.Size();
+		if (ensure(LengthScale > TNumericLimits<T>::Min()))
+		{
+			const T LengthScaleInv = 1.f / LengthScale;
+			const T UnscaledLength = Length * LengthScale;
+			const TVector<T, d> UnscaledDir = UnscaledDirDenorm * LengthScaleInv;
 
-		auto ScaledA = MakeScaledHelper(A, MInvScale);
-		return MObject->GJKContactPoint(ScaledA, AToBTMNoScale, UnscaledThickness, Location, Normal, Penetration, MScale);
+			TVector<T, d> UnscaledPosition;
+			TVector<T, d> UnscaledNormal;
+			T TOI;
+			T Phi;
+
+			TRigidTransform<T, d> BToATMNoScale(BToATM.GetLocation() * MInvScale, BToATM.GetRotation());
+
+			if (MObject->SweepGeomCCD(B, BToATMNoScale, UnscaledDir, UnscaledLength, IgnorePenetration, TargetPenetration, TOI, Phi, UnscaledPosition, UnscaledNormal, OutFaceIndex, OutFaceNormal, MScale))
+			{
+				if (TOI < FReal(1))
+				{
+					OutTOI = TOI;
+					OutPhi = Phi;
+					LocalPosition = MScale * UnscaledPosition;
+					LocalNormal = (MInvScale * UnscaledNormal).GetSafeNormal();
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	template <typename QueryGeomType>
-	bool ContactManifold(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
+	bool GJKContactPoint(const QueryGeomType& A, const FRigidTransform3& AToBTM, const FReal Thickness, FVec3& Location, FVec3& Normal, FReal& Penetration, int32& FaceIndex) const
 	{
 		TRigidTransform<T, d> AToBTMNoScale(AToBTM.GetLocation() * MInvScale, AToBTM.GetRotation());
 
@@ -696,7 +719,7 @@ public:
 		const FReal UnscaledThickness = Thickness;
 
 		auto ScaledA = MakeScaledHelper(A, MInvScale);
-		return MObject->ContactManifold(ScaledA, AToBTMNoScale, UnscaledThickness, ContactPoints, MScale);
+		return MObject->GJKContactPoint(ScaledA, AToBTMNoScale, UnscaledThickness, Location, Normal, Penetration, FaceIndex, MScale);
 	}
 
 	/** This is a low level function and assumes the internal object has a OverlapGeom function. Should not be called directly. See GeometryQueries.h : OverlapQuery */
@@ -811,7 +834,6 @@ public:
 
 	virtual int32 FindMostOpposingFace(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist) const override
 	{
-		ensure(FMath::IsNearlyEqual(UnitDir.SizeSquared(), FReal(1), FReal(KINDA_SMALL_NUMBER)));
 		return MObject->FindMostOpposingFaceScaled(Position, UnitDir, HintFaceIndex, SearchDist, MScale);
 	}
 
@@ -819,14 +841,14 @@ public:
 	{
 		// @todo(chaos): we need a virtual FindGeometryOpposingNormal. Some types (Convex, Box) can just return the
 		// normal from the face index without needing calculating the unscaled normals.
-		ensure(FMath::IsNearlyEqual(OriginalNormal.SizeSquared(), FReal(1), FReal(KINDA_SMALL_NUMBER)));
+		ensure(FMath::IsNearlyEqual(OriginalNormal.SizeSquared(), FReal(1), FReal(UE_KINDA_SMALL_NUMBER)));
 
 		// Get unscaled dir and normal
 		const FVec3 LocalDenormDir = DenormDir * MScale;
 		const FVec3 LocalOriginalNormalDenorm = OriginalNormal * MScale;
 		const FReal NormalLengthScale = LocalOriginalNormalDenorm.Size();
 		const FVec3 LocalOriginalNormal
-			= ensure(NormalLengthScale > SMALL_NUMBER)
+			= ensure(NormalLengthScale > UE_SMALL_NUMBER)
 			? LocalOriginalNormalDenorm / NormalLengthScale
 			: FVec3(0, 0, 1);
 
@@ -982,6 +1004,11 @@ public:
 	virtual TUniquePtr<FImplicitObject> Copy() const override
 	{
 		return TUniquePtr<FImplicitObject>(CopyHelper(this));
+	}
+
+	virtual FString ToString() const override
+	{
+		return FString::Printf(TEXT("Scaled %s, Scale: [%f, %f, %f], Margin: %f"), *MObject->ToString(), MScale.X, MScale.Y, MScale.Z, GetMargin());
 	}
 
 private:

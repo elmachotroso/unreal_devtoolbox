@@ -4,6 +4,8 @@
 #include "Animation/AnimSequence.h"
 #include "Serialization/MemoryWriter.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCurveCompressionCodec_UniformIndexable)
+
 FAnimCurveBufferAccess::FAnimCurveBufferAccess(const UAnimSequenceBase* InSequenceBase, USkeleton::AnimCurveUID InUID)
 	: NumSamples(INDEX_NONE)
 	, SampleRate(0.f)
@@ -293,3 +295,4 @@ bool UAnimCurveCompressionCodec_UniformIndexable::GetCurveBufferAndSamples(const
 	}
 	return false;
 }
+

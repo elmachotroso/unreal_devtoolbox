@@ -7,6 +7,8 @@
 #include "SplineIK.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SplineIK)
+
 FAnimNode_SplineIK::FAnimNode_SplineIK() 
 	: BoneAxis(ESplineBoneAxis::X)
 	, bAutoCalculateSpline(true)
@@ -35,9 +37,9 @@ void FAnimNode_SplineIK::GatherDebugData(FNodeDebugData& DebugData)
 
 void FAnimNode_SplineIK::OnInitializeAnimInstance(const FAnimInstanceProxy* InProxy, const UAnimInstance* InAnimInstance)
 {
-	if (InAnimInstance->GetSkelMeshComponent() && InAnimInstance->GetSkelMeshComponent()->SkeletalMesh)
+	if (InAnimInstance->GetSkelMeshComponent() && InAnimInstance->GetSkelMeshComponent()->GetSkeletalMeshAsset())
 	{
-		GatherBoneReferences(InAnimInstance->GetSkelMeshComponent()->SkeletalMesh->GetRefSkeleton());
+		GatherBoneReferences(InAnimInstance->GetSkelMeshComponent()->GetSkeletalMeshAsset()->GetRefSkeleton());
 	}
 }
 
@@ -370,11 +372,12 @@ void FAnimNode_SplineIK::BuildBoneSpline(const FReferenceSkeleton& RefSkeleton)
 			float TotalPointCount = (float)(ClampedPointCount - 1);
 			for (int32 PointIndex = 0; PointIndex < ClampedPointCount; ++PointIndex)
 			{
-				const float CurveAlpha = (float)PointIndex / TotalPointCount;
+				const float TransformedCurveAlpha = (float)PointIndex / TotalPointCount;
+				const float CurveAlpha = (float)PointIndex;
 
-				BoneSpline.Position.Points.Emplace(CurveAlpha, TransformedSpline.Position.Eval(CurveAlpha), FVector::ZeroVector, FVector::ZeroVector, CIM_CurveAuto);
-				BoneSpline.Rotation.Points.Emplace(CurveAlpha, TransformedSpline.Rotation.Eval(CurveAlpha), FQuat::Identity, FQuat::Identity, CIM_Linear);
-				BoneSpline.Scale.Points.Emplace(CurveAlpha, TransformedSpline.Scale.Eval(CurveAlpha), FVector::ZeroVector, FVector::ZeroVector, CIM_CurveAuto);
+				BoneSpline.Position.Points.Emplace(CurveAlpha, TransformedSpline.Position.Eval(TransformedCurveAlpha), FVector::ZeroVector, FVector::ZeroVector, CIM_CurveAuto);
+				BoneSpline.Rotation.Points.Emplace(CurveAlpha, TransformedSpline.Rotation.Eval(TransformedCurveAlpha), FQuat::Identity, FQuat::Identity, CIM_Linear);
+				BoneSpline.Scale.Points.Emplace(CurveAlpha, TransformedSpline.Scale.Eval(TransformedCurveAlpha), FVector::ZeroVector, FVector::ZeroVector, CIM_CurveAuto);
 			}
 
 			// clear the transformed spline so we dont end up using it
@@ -396,3 +399,4 @@ float FAnimNode_SplineIK::GetTwist(float InAlpha, float TotalSplineAlpha)
 	TwistBlend.SetAlpha(InAlpha / TotalSplineAlpha);
 	return TwistBlend.GetBlendedValue();
 }
+

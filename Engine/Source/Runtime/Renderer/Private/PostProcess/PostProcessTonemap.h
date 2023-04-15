@@ -11,28 +11,12 @@
 
 bool SupportsFilmGrain(EShaderPlatform Platform);
 
-// You must update values in PostProcessTonemap.usf when changing this enum.
-enum class ETonemapperOutputDevice
-{
-	sRGB,
-	Rec709,
-	ExplicitGammaMapping,
-	ACES1000nitST2084,
-	ACES2000nitST2084,
-	ACES1000nitScRGB,
-	ACES2000nitScRGB,
-	LinearEXR,
-	LinearNoToneCurve,
-	LinearWithToneCurve,
-
-	MAX
-};
-
 BEGIN_SHADER_PARAMETER_STRUCT(FTonemapperOutputDeviceParameters, )
 	SHADER_PARAMETER(FVector3f, InverseGamma)
 	SHADER_PARAMETER(uint32, OutputDevice)
 	SHADER_PARAMETER(uint32, OutputGamut)
-END_SHADER_PARAMETER_STRUCT()
+	SHADER_PARAMETER(float, OutputMaxLuminance)
+	END_SHADER_PARAMETER_STRUCT()
 
 RENDERER_API FTonemapperOutputDeviceParameters GetTonemapperOutputDeviceParameters(const FSceneViewFamily& Family);
 
@@ -73,9 +57,6 @@ struct FTonemapInputs
 
 	// [Optional, ES31] Eye adaptation buffer used to compute exposure. 
 	FRDGBufferRef EyeAdaptationBuffer = nullptr;
-
-	// [Raster Only, Mobile] Flips the image vertically on output.
-	bool bFlipYAxis = false;
 
 	// [Raster Only] Controls whether the alpha channel of the scene texture should be written to the output texture.
 	bool bWriteAlphaChannel = false;

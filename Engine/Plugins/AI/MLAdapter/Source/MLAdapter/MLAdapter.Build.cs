@@ -19,20 +19,20 @@ namespace UnrealBuildTool.Rules
                 }
             );
 
-            PrivateIncludePaths.Add("MLAdapter/Private");
-
             PublicDependencyModuleNames.AddRange(
                 new string[] {
                     "Core",
                     "CoreUObject",
                     "Engine",
+					"EnhancedInput",
                     "GameplayTags",
                     "AIModule",
                     "InputCore",
                     "Json",
                     "JsonUtilities",
                     "GameplayAbilities",
-                }
+					"NeuralNetworkInference"
+				}
             );
 
             PrivateDependencyModuleNames.AddRange(
@@ -41,15 +41,14 @@ namespace UnrealBuildTool.Rules
                 }
             );
 
-            // RPCLib disabled on other platforms at the moment
-            if (Target.Platform == UnrealTargetPlatform.Win64)
+            // RPCLib disabled on other platforms
+            if (Target.Platform == UnrealTargetPlatform.Win64 ||
+				Target.Platform == UnrealTargetPlatform.Mac ||
+				Target.Platform == UnrealTargetPlatform.Linux)
             {
                 PublicDefinitions.Add("WITH_RPCLIB=1");
-                AddEngineThirdPartyPrivateStaticDependencies(Target, "RPCLib");
-            
-				string RPClibDir = Path.Combine(Target.UEThirdPartySourceDirectory, "rpclib");
-				PublicIncludePaths.Add(Path.Combine(RPClibDir, "Source", "include"));
-            }
+				PrivateDependencyModuleNames.Add("RPCLib");
+			}
             else
             {
                 PublicDefinitions.Add("WITH_RPCLIB=0");
@@ -61,15 +60,7 @@ namespace UnrealBuildTool.Rules
                 PrivateDependencyModuleNames.Add("UnrealEd");
             }
 
-            if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
-            {
-                PrivateDependencyModuleNames.Add("GameplayDebugger");
-                PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
-            }
-            else
-            {
-                PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
-            }
+            SetupGameplayDebuggerSupport(Target);
         }
     }
 }

@@ -2,9 +2,32 @@
 
 
 #include "KismetNodes/SGraphNodeK2Terminator.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
 #include "K2Node.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SGraphNode.h"
+#include "SNodePanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+
+struct FSlateBrush;
 
 
 void SGraphNodeK2Terminator::Construct( const FArguments& InArgs, UK2Node* InNode )
@@ -33,13 +56,13 @@ void SGraphNodeK2Terminator::UpdateGraphNode()
 
 	if(K2Node->DrawNodeAsEntry())
 	{
-		TopBrush = FEditorStyle::GetBrush(TEXT("Graph.Node.NodeEntryTop"));
-		BottomBrush = FEditorStyle::GetBrush(TEXT("Graph.Node.NodeEntryBottom"));
+		TopBrush = FAppStyle::GetBrush(TEXT("Graph.Node.NodeEntryTop"));
+		BottomBrush = FAppStyle::GetBrush(TEXT("Graph.Node.NodeEntryBottom"));
 	}
 	else
 	{
-		TopBrush = FEditorStyle::GetBrush(TEXT("Graph.Node.NodeExitTop"));
-		BottomBrush = FEditorStyle::GetBrush(TEXT("Graph.Node.NodeExitBottom"));
+		TopBrush = FAppStyle::GetBrush(TEXT("Graph.Node.NodeExitTop"));
+		BottomBrush = FAppStyle::GetBrush(TEXT("Graph.Node.NodeExitBottom"));
 	}
 
 
@@ -76,7 +99,7 @@ void SGraphNodeK2Terminator::UpdateGraphNode()
 		[
 			SNew(SBorder)
 			. Padding( 3 )
-			. BorderImage( FEditorStyle::GetBrush(TEXT("WhiteTexture")) )
+			. BorderImage( FAppStyle::GetBrush(TEXT("WhiteTexture")) )
 			. HAlign(HAlign_Center)
 			. BorderBackgroundColor( this, &SGraphNode::GetNodeTitleColor )
 			[
@@ -90,7 +113,7 @@ void SGraphNodeK2Terminator::UpdateGraphNode()
 		[
 			// NODE CONTENT AREA
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush(TEXT("Graph.Node.NodeBackground")) )
+			.BorderImage( FAppStyle::GetBrush(TEXT("Graph.Node.NodeBackground")) )
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			.Padding( FMargin(0,3) )
@@ -110,7 +133,7 @@ void SGraphNodeK2Terminator::UpdateGraphNode()
 				[
 					// MIDDLE
 					SNew(SImage)
-					.Image( FEditorStyle::GetBrush(TEXT("WhiteTexture")) )
+					.Image( FAppStyle::GetBrush(TEXT("WhiteTexture")) )
 					.ColorAndOpacity(FLinearColor(1.f,1.f,1.f,0.f))
 				]
 				+SHorizontalBox::Slot()
@@ -142,10 +165,10 @@ const FSlateBrush* SGraphNodeK2Terminator::GetShadowBrush(bool bSelected) const
 
 	if(K2Node->DrawNodeAsEntry())
 	{
-		return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.Node.NodeEntryShadowSelected")) : FEditorStyle::GetBrush(TEXT("Graph.Node.NodeEntryShadow"));
+		return bSelected ? FAppStyle::GetBrush(TEXT("Graph.Node.NodeEntryShadowSelected")) : FAppStyle::GetBrush(TEXT("Graph.Node.NodeEntryShadow"));
 	}
 	else
 	{
-		return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.Node.NodeExitShadowSelected")) : FEditorStyle::GetBrush(TEXT("Graph.Node.NodeExitShadow"));
+		return bSelected ? FAppStyle::GetBrush(TEXT("Graph.Node.NodeExitShadowSelected")) : FAppStyle::GetBrush(TEXT("Graph.Node.NodeExitShadow"));
 	}
 }

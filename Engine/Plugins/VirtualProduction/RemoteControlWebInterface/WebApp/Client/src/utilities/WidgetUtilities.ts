@@ -153,12 +153,16 @@ export class WidgetUtilities {
 
       case PropertyType.Rotator:
         return [WidgetTypes.Vector, WidgetTypes.Sliders, WidgetTypes.Dials];
+
+      case PropertyType.String:
+        return [WidgetTypes.Text];
     }
 
     if (propertyType && (propertyType.startsWith('TEnum') || propertyType.startsWith('E')))
       return [WidgetTypes.Dropdown];
 
-    return [];
+    // Unknown Property, show as a Asset
+    return [WidgetTypes.Asset];
   }
 
   static colorToRgb(color: ColorProperty | VectorProperty, max: number) {

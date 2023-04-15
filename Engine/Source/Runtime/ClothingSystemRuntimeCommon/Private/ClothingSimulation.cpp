@@ -25,6 +25,7 @@ FClothingSimulationContextCommon::FClothingSimulationContextCommon()
 	, WindVelocity(FVector::ZeroVector)
 	, WindAdaption(0.f)
 	, DeltaSeconds(0.f)
+	, VelocityScale(1.f)
 	, TeleportMode(EClothingTeleportMode::None)
 	, MaxDistanceScale(1.f)
 	, PredictedLod(INDEX_NONE)
@@ -60,18 +61,18 @@ void FClothingSimulationContextCommon::Fill(const USkeletalMeshComponent* InComp
 
 void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshComponent* InComponent)
 {
-	const USkeletalMesh* const SkeletalMesh = InComponent->SkeletalMesh;
+	const USkeletalMesh* const SkeletalMesh = InComponent->GetSkeletalMeshAsset();
 
-	if (USkinnedMeshComponent* const MasterComponent = InComponent->MasterPoseComponent.Get())
+	if (USkinnedMeshComponent* const LeaderComponent = InComponent->LeaderPoseComponent.Get())
 	{
-		const TArray<int32>& MasterBoneMap = InComponent->GetMasterBoneMap();
-		int32 NumBones = MasterBoneMap.Num();
+		const TArray<int32>& LeaderBoneMap = InComponent->GetLeaderBoneMap();
+		int32 NumBones = LeaderBoneMap.Num();
 
 		if (NumBones == 0)
 		{
 			if (SkeletalMesh)
 			{
-				// This case indicates an invalid master pose component (e.g. no skeletal mesh)
+				// This case indicates an invalid leader pose component (e.g. no skeletal mesh)
 				NumBones = SkeletalMesh->GetRefSkeleton().GetNum();
 
 				BoneTransforms.Empty(NumBones);
@@ -83,21 +84,21 @@ void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshCom
 			BoneTransforms.Reset(NumBones);
 			BoneTransforms.AddDefaulted(NumBones);
 
-			const TArray<FTransform>& MasterTransforms = MasterComponent->GetComponentSpaceTransforms();
+			const TArray<FTransform>& LeaderTransforms = LeaderComponent->GetComponentSpaceTransforms();
 			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 			{
-				bool bFoundMaster = false;
-				if (MasterBoneMap.IsValidIndex(BoneIndex))
+				bool bFoundLeader = false;
+				if (LeaderBoneMap.IsValidIndex(BoneIndex))
 				{
-					const int32 MasterIndex = MasterBoneMap[BoneIndex];
-					if (MasterIndex != INDEX_NONE && MasterIndex < MasterTransforms.Num())
+					const int32 LeaderIndex = LeaderBoneMap[BoneIndex];
+					if (LeaderIndex != INDEX_NONE && LeaderIndex < LeaderTransforms.Num())
 					{
-						BoneTransforms[BoneIndex] = MasterTransforms[MasterIndex];
-						bFoundMaster = true;
+						BoneTransforms[BoneIndex] = LeaderTransforms[LeaderIndex];
+						bFoundLeader = true;
 					}
 				}
 
-				if (!bFoundMaster && SkeletalMesh)
+				if (!bFoundLeader && SkeletalMesh)
 				{
 					const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 
@@ -122,7 +123,7 @@ void FClothingSimulationContextCommon::FillRefToLocals(const USkeletalMeshCompon
 	// Constraints are initialized using bone distances upon initialization, so fill out reference pose
 	if (bIsInitialization)
 	{
-		const USkeletalMesh* const SkeletalMesh = InComponent->SkeletalMesh;
+		const USkeletalMesh* const SkeletalMesh = InComponent->GetSkeletalMeshAsset();
 		if (SkeletalMesh)
 		{
 			const int32 NumBones = SkeletalMesh->GetRefSkeleton().GetNum();
@@ -165,6 +166,9 @@ void FClothingSimulationContextCommon::FillTeleportMode(const USkeletalMeshCompo
 	TeleportMode = (InDeltaSeconds > InMaxPhysicsDelta * GClothMaxDeltaTimeTeleportMultiplier.GetValueOnGameThread()) ?
 		EClothingTeleportMode::Teleport :
 		InComponent->ClothTeleportMode;
+
+	VelocityScale = (TeleportMode == EClothingTeleportMode::None) ?
+		FMath::Min(InDeltaSeconds, InMaxPhysicsDelta) / InDeltaSeconds : 1.f;
 }
 
 void FClothingSimulationContextCommon::FillMaxDistanceScale(const USkeletalMeshComponent* InComponent)
@@ -214,8 +218,8 @@ void FClothingSimulationCommon::FillContext(USkeletalMeshComponent* InComponent,
 	if (Context->BoneTransforms.Num() == 0)
 	{
 		const AActor* const CompOwner = InComponent->GetOwner();
-		const USkinnedMeshComponent* const Master = InComponent->MasterPoseComponent.Get();
-		UE_LOG(LogSkeletalMesh, Warning, TEXT("Attempting to fill a clothing simulation context for a skeletal mesh component that has zero bones (Comp: %s, Master: %s, Actor: %s)."), *InComponent->GetName(), Master ? *Master->GetName() : TEXT("None"), CompOwner ? *CompOwner->GetName() : TEXT("None"));
+		const USkinnedMeshComponent* const Leader = InComponent->LeaderPoseComponent.Get();
+		UE_LOG(LogSkeletalMesh, Warning, TEXT("Attempting to fill a clothing simulation context for a skeletal mesh component that has zero bones (Comp: %s, Leader: %s, Actor: %s)."), *InComponent->GetName(), Leader ? *Leader->GetName() : TEXT("None"), CompOwner ? *CompOwner->GetName() : TEXT("None"));
 
 		// Make sure we clear this out to skip any attempted simulations
 		Context->BoneTransforms.Reset();

@@ -8,7 +8,6 @@
 #include "NiagaraScript.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/NiagaraScriptViewModel.h"
 #include "Internationalization/Internationalization.h"
 #include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeOutput.h"
@@ -16,9 +15,7 @@
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraGraph.h"
 #include "ScopedTransaction.h"
-#include "NiagaraEmitter.h"
 #include "NiagaraScriptSource.h"
-#include "ScopedTransaction.h"
 #include "ViewModels/Stack/NiagaraStackErrorItem.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -26,8 +23,12 @@
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraClipboard.h"
 #include "NiagaraEmitterEditorData.h"
+#include "ViewModels/NiagaraParameterPanelViewModel.h"
 
-#include "Styling/SlateIconFinder.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackRendererItem)
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackRendererItem"
 
@@ -54,11 +55,56 @@ void UNiagaraStackRendererItem::FinalizeInternal()
 	Super::FinalizeInternal();
 }
 
-TArray<FNiagaraVariable> UNiagaraStackRendererItem::GetMissingVariables(UNiagaraRendererProperties* RendererProperties, UNiagaraEmitter* Emitter)
+const UNiagaraStackRendererItem::FCollectedUsageData& UNiagaraStackRendererItem::GetCollectedUsageData() const
+{
+
+	if (CachedCollectedUsageData.IsSet() == false)
+	{
+		CachedCollectedUsageData = FCollectedUsageData();
+
+		if (RendererProperties.IsValid())
+		{
+			TArray<FNiagaraVariable> BoundAttribs = RendererProperties->GetBoundAttributes();
+			TSharedRef<FNiagaraSystemViewModel> SystemVM = GetSystemViewModel();
+			INiagaraParameterPanelViewModel* ParamVM = SystemVM->GetParameterPanelViewModel();
+
+			FNiagaraAliasContext ResolveAliasesContext(FNiagaraAliasContext::ERapidIterationParameterMode::EmitterOrParticleScript);
+			
+			if (GetEmitterViewModel().IsValid())
+			{
+				TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleVM = SystemVM->GetEmitterHandleViewModelForEmitter(GetEmitterViewModel().Get()->GetEmitter());
+				if (EmitterHandleVM.IsValid() && EmitterHandleVM->GetEmitterHandle())
+				{
+					ResolveAliasesContext.ChangeEmitterNameToEmitter(EmitterHandleVM->GetEmitterHandle()->GetUniqueInstanceName());
+				}
+			}
+
+			if (ParamVM)
+			{
+				bool bFoundMatch = false;
+				for (FNiagaraVariable Var : BoundAttribs)
+				{			
+					Var = FNiagaraUtilities::ResolveAliases(Var, ResolveAliasesContext);
+					bFoundMatch = ParamVM->IsVariableSelected(Var);
+					if (bFoundMatch)
+					{
+						break;
+					}
+				}
+
+				CachedCollectedUsageData.GetValue().bHasReferencedParameterRead = bFoundMatch;
+			}
+		}
+	}
+
+	return CachedCollectedUsageData.GetValue();
+}
+
+TArray<FNiagaraVariable> UNiagaraStackRendererItem::GetMissingVariables(UNiagaraRendererProperties* RendererProperties, const FVersionedNiagaraEmitterData* EmitterData)
 {
 	TArray<FNiagaraVariable> MissingAttributes;
 	const TArray<FNiagaraVariable>& RequiredAttrs = RendererProperties->GetRequiredAttributes();
-	const UNiagaraScript* Script = Emitter->SpawnScriptProps.Script;
+	const UNiagaraScript* Script = EmitterData->SpawnScriptProps.Script;
 	if (Script != nullptr && Script->IsReadyToRun(ENiagaraSimTarget::CPUSim))
 	{
 		MissingAttributes.Empty();
@@ -82,9 +128,9 @@ TArray<FNiagaraVariable> UNiagaraStackRendererItem::GetMissingVariables(UNiagara
 	return MissingAttributes;
 }
 
-bool UNiagaraStackRendererItem::AddMissingVariable(UNiagaraEmitter* Emitter, const FNiagaraVariable& Variable)
+bool UNiagaraStackRendererItem::AddMissingVariable(const FVersionedNiagaraEmitterData* EmitterData, const FNiagaraVariable& Variable)
 {
-	UNiagaraScript* Script = Emitter->SpawnScriptProps.Script;
+	UNiagaraScript* Script = EmitterData->SpawnScriptProps.Script;
 	if (!Script)
 	{
 		return false;
@@ -129,6 +175,21 @@ bool UNiagaraStackRendererItem::AddMissingVariable(UNiagaraEmitter* Emitter, con
 
 	FNiagaraStackGraphUtilities::RelayoutGraph(*Graph);
 	return true;
+}
+
+bool UNiagaraStackRendererItem::IsExcludedFromScalability() const
+{
+	if(RendererProperties.IsValid()) 
+	{
+		return !RendererProperties.Get()->Platforms.IsActive();
+	}
+
+	return false;
+}
+
+bool UNiagaraStackRendererItem::IsOwningEmitterExcludedFromScalability() const
+{
+	return GetEmitterViewModel().IsValid() ? !GetEmitterViewModel()->GetEmitter().GetEmitterData()->IsAllowedByScalability() : false;
 }
 
 UNiagaraRendererProperties* UNiagaraStackRendererItem::GetRendererProperties()
@@ -244,12 +305,12 @@ FText UNiagaraStackRendererItem::GetDeleteTransactionText() const
 
 void UNiagaraStackRendererItem::Delete()
 {
-	UNiagaraEmitter* Emitter = GetEmitterViewModel()->GetEmitter();
+	FVersionedNiagaraEmitter VersionedEmitter = GetEmitterViewModel()->GetEmitter();
 
 	UNiagaraRendererProperties* Renderer = RendererProperties.Get();
-	Emitter->Modify();
-	Emitter->RemoveRenderer(Renderer);
-	if (UNiagaraEmitterEditorData* Data = Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData()))
+	VersionedEmitter.Emitter->Modify();
+	VersionedEmitter.Emitter->RemoveRenderer(Renderer, VersionedEmitter.Version);
+	if (UNiagaraEmitterEditorData* Data = Cast<UNiagaraEmitterEditorData>(VersionedEmitter.GetEmitterData()->GetEditorData()))
 	{
 		Data->GetStackEditorData().Modify();
 		Data->GetStackEditorData().SetStackEntryDisplayName(GetStackEditorDataKey(), FText());
@@ -277,8 +338,8 @@ bool UNiagaraStackRendererItem::HasBaseRenderer() const
 		if (bHasBaseRendererCache.IsSet() == false)
 		{
 			TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-			const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
-			bHasBaseRendererCache = BaseEmitter != nullptr && MergeManager->HasBaseRenderer(*BaseEmitter, RendererProperties->GetMergeId());
+			FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetParent();
+			bHasBaseRendererCache = BaseEmitter.Emitter != nullptr && MergeManager->HasBaseRenderer(BaseEmitter, RendererProperties->GetMergeId());
 		}
 		return bHasBaseRendererCache.GetValue();
 	}
@@ -292,8 +353,8 @@ bool UNiagaraStackRendererItem::TestCanResetToBaseWithMessage(FText& OutCanReset
 		if (HasBaseRenderer())
 		{
 			TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-			const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
-			bCanResetToBaseCache = BaseEmitter != nullptr && MergeManager->IsRendererDifferentFromBase(*GetEmitterViewModel()->GetEmitter(), *BaseEmitter, RendererProperties->GetMergeId());
+			FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetParent();
+			bCanResetToBaseCache = BaseEmitter.Emitter != nullptr && MergeManager->IsRendererDifferentFromBase(GetEmitterViewModel()->GetEmitter(), BaseEmitter, RendererProperties->GetMergeId());
 		}
 		else
 		{
@@ -318,8 +379,8 @@ void UNiagaraStackRendererItem::ResetToBase()
 	if (TestCanResetToBaseWithMessage(Unused))
 	{
 		TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
-		MergeManager->ResetRendererToBase(*GetEmitterViewModel()->GetEmitter(), *BaseEmitter, RendererProperties->GetMergeId());
+		FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetParent();
+		MergeManager->ResetRendererToBase(GetEmitterViewModel()->GetEmitter(), BaseEmitter, RendererProperties->GetMergeId());
 		ModifiedGroupItemsDelegate.Broadcast();
 	}
 }
@@ -345,6 +406,11 @@ void UNiagaraStackRendererItem::SetIsEnabledInternal(bool bInIsEnabled)
 	ChangedObjects.Add(RendererProperties.Get());
 	OnDataObjectModified().Broadcast(ChangedObjects, ENiagaraDataObjectChange::Changed);
 	RefreshChildren();
+
+	if (GetEmitterViewModel().IsValid())
+	{
+		GetSystemViewModel()->GetEmitterHandleViewModelForEmitter(GetEmitterViewModel()->GetEmitter()).Get()->GetEmitterStackViewModel()->RequestValidationUpdate();
+	}
 }
 
 const FSlateBrush* UNiagaraStackRendererItem::GetIconBrush() const
@@ -369,7 +435,7 @@ void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraSta
 	}
 
 	NewChildren.Add(RendererObject);
-	MissingAttributes = GetMissingVariables(RendererProperties.Get(), GetEmitterViewModel()->GetEmitter());
+	MissingAttributes = GetMissingVariables(RendererProperties.Get(), GetEmitterViewModel()->GetEmitter().GetEmitterData());
 	bHasBaseRendererCache.Reset();
 	bCanResetToBaseCache.Reset();
 	DisplayNameCache.Reset();
@@ -399,6 +465,7 @@ void UNiagaraStackRendererItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 		NewIssues.Empty();
 		return;
 	}
+	FVersionedNiagaraEmitterData* EmitterData = GetEmitterViewModel()->GetEmitter().GetEmitterData();
 	for (FNiagaraVariable Attribute : MissingAttributes)
 	{
 		FText FixDescription = LOCTEXT("AddMissingVariable", "Add missing variable");
@@ -407,7 +474,7 @@ void UNiagaraStackRendererItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 			FStackIssueFixDelegate::CreateLambda([=]()
 		{
 			FScopedTransaction ScopedTransaction(FixDescription);
-			if (AddMissingVariable(GetEmitterViewModel()->GetEmitter(), Attribute))
+			if (AddMissingVariable(EmitterData, Attribute))
 			{
 				FNotificationInfo Info(FText::Format(LOCTEXT("AddedVariableForFix", "Added {0} to the Spawn script to support the renderer."), FText::FromName(Attribute.GetName())));
 				Info.ExpireDuration = 5.0f;
@@ -428,13 +495,13 @@ void UNiagaraStackRendererItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 		NewIssues.Add(MissingAttributeError);
 	}
 
-	if (RendererProperties->GetIsEnabled() && !RendererProperties->IsSimTargetSupported(GetEmitterViewModel()->GetEmitter()->SimTarget))
+	if (RendererProperties->GetIsEnabled() && !RendererProperties->IsSimTargetSupported(EmitterData->SimTarget))
 	{
 		
 		FStackIssue TargetSupportError(
 			EStackIssueSeverity::Error,
 			LOCTEXT("FailedRendererDueToSimTarget", "Renderer incompatible with SimTarget mode."),
-			FText::Format(LOCTEXT("FailedRendererDueToSimTargetLong", "Renderer incompatible with SimTarget mode \"{0}\"."), FText::FromName(UEnum::GetValueAsName(GetEmitterViewModel()->GetEmitter()->SimTarget))),
+			FText::Format(LOCTEXT("FailedRendererDueToSimTargetLong", "Renderer incompatible with SimTarget mode \"{0}\"."), FText::FromName(UEnum::GetValueAsName(EmitterData->SimTarget))),
 			GetStackEditorDataKey(),
 			false);
 
@@ -463,7 +530,22 @@ void UNiagaraStackRendererItem::RendererChanged()
 		// so guard against receiving an event when finalized here.
 		bCanResetToBaseCache.Reset();
 		RefreshChildren();
+
+		if (GetSystemViewModel()->GetSystemStackViewModel())
+		{
+			GetSystemViewModel()->GetSystemStackViewModel()->InvalidateCachedParameterUsage();
+		}
+		if (GetSystemViewModel()->GetParameterPanelViewModel())
+		{
+			GetSystemViewModel()->GetParameterPanelViewModel()->RefreshNextTick();
+		}
+
+		if (GetEmitterViewModel().IsValid())
+		{
+			GetSystemViewModel()->GetEmitterHandleViewModelForEmitter(GetEmitterViewModel()->GetEmitter()).Get()->GetEmitterStackViewModel()->RequestValidationUpdate();
+		}
 	}
 }
 
 #undef LOCTEXT_NAMESPACE
+

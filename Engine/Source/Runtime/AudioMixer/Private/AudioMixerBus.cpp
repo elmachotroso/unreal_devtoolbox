@@ -4,7 +4,8 @@
 
 #include "Algo/ForEach.h"
 #include "AudioMixerSourceManager.h"
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/AlignedBuffer.h"
+#include "DSP/FloatArrayMath.h"
 
 namespace Audio
 {
@@ -18,7 +19,7 @@ namespace Audio
 		SetNumOutputChannels(NumChannels);
 
 		// Make a patch bus input to push mixed audio sent to audio bus from source manager
-		AudioBusInput = PatchMixerSplitter.AddNewInput(4096, 1.0f);
+		AudioBusInput = PatchMixerSplitter.AddNewInput(2*InNumChannels*NumFrames, 1.0f);
 	}
 
 	void FMixerAudioBus::SetNumOutputChannels(int32 InNumOutputChannels)
@@ -137,7 +138,9 @@ namespace Audio
 					}
 					else
 					{
-						MixInBufferFast(SourceBufferPtr, BusDataBufferPtr, NumOutputFrames * NumChannels, AudioBusSend.SendLevel);
+						TArrayView<const float> SourceBufferView(SourceBufferPtr, NumOutputFrames * NumChannels);
+						TArrayView<float> BusDataBufferView(BusDataBufferPtr, NumOutputFrames * NumChannels);
+						ArrayMixIn(SourceBufferView, BusDataBufferView, AudioBusSend.SendLevel);
 					}
 				}
 			}

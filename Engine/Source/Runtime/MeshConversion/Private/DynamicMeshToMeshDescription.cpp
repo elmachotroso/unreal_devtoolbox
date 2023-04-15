@@ -5,6 +5,7 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "DynamicMesh/DynamicMeshOverlay.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
+#include "DynamicMesh/DynamicVertexAttribute.h"
 #include "MeshDescriptionBuilder.h"
 #include "DynamicMesh/MeshTangents.h"
 #include "Util/ColorConstants.h"
@@ -262,20 +263,22 @@ void FDynamicMeshToMeshDescription::UpdateTangents(const FDynamicMesh3* MeshIn, 
 	if (!ensureMsgf(MeshIn->TriangleCount() == MeshOut.Triangles().Num(), TEXT("Trying to update MeshDescription Tangents from Mesh that does not have same triangle count"))) return;
 	if (!ensureMsgf(MeshIn->HasAttributes(), TEXT("Trying to update MeshDescription Tangents from a DynamicMesh that has no attributes, e.g. normals"))) return;
 
-	
 	// src
 	const FDynamicMeshNormalOverlay* NormalOverlay = MeshIn->Attributes()->PrimaryNormals();
 	const FDynamicMeshNormalOverlay* TangentOverlay = MeshIn->Attributes()->PrimaryTangents();
 	const FDynamicMeshNormalOverlay* BiTangentOverlay = MeshIn->Attributes()->PrimaryBiTangents();
 
-	bool bHasValidSrc = (NormalOverlay != nullptr) && (TangentOverlay != nullptr) && (BiTangentOverlay != nullptr);
-
-	if(!ensureMsgf(bHasValidSrc, TEXT("Trying to update MeshDescription Tangents from a DynamicMesh that does not have all three tangent space attributes"))) return;
+	const bool bHasValidSrc = NormalOverlay && TangentOverlay && BiTangentOverlay;
+	ensureMsgf(bHasValidSrc, TEXT("Trying to update MeshDescription Tangents from a DynamicMesh that does not have all three tangent space attributes"));
+	if (!bHasValidSrc)
+	{
+		return;
+	}
 
 	// dst
 	FStaticMeshAttributes Attributes(MeshOut);
-	TVertexInstanceAttributesRef<FVector3f> TangentAttrib = Attributes.GetVertexInstanceTangents();
-	TVertexInstanceAttributesRef<float> BiTangentSignAttrib = Attributes.GetVertexInstanceBinormalSigns();
+	const TVertexInstanceAttributesRef<FVector3f> TangentAttrib = Attributes.GetVertexInstanceTangents();
+	const TVertexInstanceAttributesRef<float> BiTangentSignAttrib = Attributes.GetVertexInstanceBinormalSigns();
 
 	if (!ensureMsgf(TangentAttrib.IsValid(), TEXT("Trying to update Tangents on a MeshDescription that has no Tangent Vertex Instance attribute"))) return;
 	if (!ensureMsgf(BiTangentSignAttrib.IsValid(), TEXT("Trying to update Tangents on a MeshDescription that has no BinormalSign Vertex Instance attribute"))) return;
@@ -336,24 +339,9 @@ void FDynamicMeshToMeshDescription::UpdateVertexColors(const FDynamicMesh3* Mesh
 		FVector4f TriColors[3];
 		ColorOverlay->GetTriElements(t, TriColors[0], TriColors[1], TriColors[2]);
 
-		// There is inconsistency in how vertex colors are intended to be consumed in
-		// our shaders. Some shaders consume it as linear (ex. MeshPaint), others as SRGB which
-		// manually convert to linear in the shader.
-		//
-		// All StaticMeshes store vertex colors as an 8-bit FColor. In order to ensure a good
-		// distribution of float values across the 8-bit range, the StaticMesh build always
-		// encodes FColors as SRGB.
-		//
-		// Until there is some defined gamma space convention for vertex colors in our shaders,
-		// we provide this option to pre-transform our linear float colors with an SRGBToLinear
-		// conversion to counteract the StaticMesh build LinearToSRGB conversion. This is how
-		// MeshPaint ensures linear vertex colors in the shaders.
-		if (ConversionOptions.bTransformVtxColorsSRGBToLinear)
-		{
-			LinearColors::SRGBToLinear(TriColors[0]);
-			LinearColors::SRGBToLinear(TriColors[1]);
-			LinearColors::SRGBToLinear(TriColors[2]);
-		}
+		ApplyVertexColorTransform(TriColors[0]);
+		ApplyVertexColorTransform(TriColors[1]);
+		ApplyVertexColorTransform(TriColors[2]);
 		
 		TArrayView<const FVertexInstanceID> InstanceIDs = MeshOut.GetTriangleVertexInstances(FTriangleID(t));
 		for (int32 i = 0; i < 3; ++i)
@@ -815,7 +803,7 @@ void FDynamicMeshToMeshDescription::Convert_NoSharedInstances(const FDynamicMesh
 	TFunction<void(int TriID, FVertexInstanceID TriVertInstances[3])> ColorInstanceSetter;
 	if (bCopyInstanceColors)
 	{
-		ColorInstanceSetter = [ColorOverlay, &Builder](int TriID, FVertexInstanceID TriVertInstances[3])
+		ColorInstanceSetter = [this, ColorOverlay, &Builder](int TriID, FVertexInstanceID TriVertInstances[3])
 		{
 			FIndex3i ColorTri = ColorOverlay->GetTriangle(TriID);
 			for (int32 j = 0; j < 3; ++j)
@@ -825,6 +813,7 @@ void FDynamicMeshToMeshDescription::Convert_NoSharedInstances(const FDynamicMesh
 				if (ColorOverlay->IsElement(ColorTri[j]))
 				{
 					FVector4f TriVertColor4 = ColorOverlay->GetElement(ColorTri[j]);
+					ApplyVertexColorTransform(TriVertColor4);
 					DstColor = FVector4f(TriVertColor4.X, TriVertColor4.Y, TriVertColor4.Z, TriVertColor4.W);
 				}
 				Builder.SetInstanceColor(CornerInstanceID, DstColor);
@@ -949,6 +938,9 @@ void FDynamicMeshToMeshDescription::Convert_NoSharedInstances(const FDynamicMesh
 	// convert polygroup layers
 	ConvertPolygroupLayers(MeshIn, MeshOut, IndexToTriangleIDMap);
 
+	// convert weight map layers
+	ConvertWeightLayers(MeshIn, MeshOut, MapV);
+
 	// Convert all attached skin weights, if we're converting a mesh description that originated from
 	// a USkeletalMesh.
 	for (const TTuple<FName, TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>>& AttributeInfo: MeshIn->Attributes()->GetSkinWeightsAttributes())
@@ -979,11 +971,19 @@ void FDynamicMeshToMeshDescription::ConvertPolygroupLayers(const FDynamicMesh3* 
 
 	TAttributesSet<FTriangleID>& TriAttribsSet = MeshOut.TriangleAttributes();
 
+	TSet<FName> UniqueNames;
+	int32 UniqueIDGenerator = 0;
 	for (int32 li = 0; li < MeshIn->Attributes()->NumPolygroupLayers(); ++li)
 	{
 		const FDynamicMeshPolygroupAttribute* Polygroups = MeshIn->Attributes()->GetPolygroupLayer(li);
 		FName LayerName = Polygroups->GetName();
-	
+		while (LayerName == NAME_None || UniqueNames.Contains(LayerName))
+		{
+			FString BaseName = (Polygroups->GetName() == NAME_None) ? TEXT("Groups") : LayerName.ToString();
+			LayerName = FName( FString::Printf(TEXT("%s_%d"), *BaseName, UniqueIDGenerator++) );
+		}
+		UniqueNames.Add(LayerName);	
+
 		// Find existing attribute with the same name. If not found, create a new one.
 		TTriangleAttributesRef<int32> Attribute;
 		if (TriAttribsSet.HasAttribute(LayerName))
@@ -1010,3 +1010,72 @@ void FDynamicMeshToMeshDescription::ConvertPolygroupLayers(const FDynamicMesh3* 
 		}
 	}
 }
+
+
+void FDynamicMeshToMeshDescription::ConvertWeightLayers(const FDynamicMesh3* MeshIn, FMeshDescription& MeshOut, const TArray<FVertexID>& IndexToVertexIDMap)
+{
+	if (MeshIn->Attributes() == nullptr) return;
+
+	TAttributesSet<FVertexID>& VertexAttribsSet = MeshOut.VertexAttributes();
+
+	TSet<FName> UniqueNames;
+	int32 UniqueIDGenerator = 0;
+	for (int32 LayerIndex = 0; LayerIndex < MeshIn->Attributes()->NumWeightLayers(); ++LayerIndex)
+	{
+		const FDynamicMeshWeightAttribute* Weights = MeshIn->Attributes()->GetWeightLayer(LayerIndex);
+		FName LayerName = Weights->GetName();
+		while (LayerName == NAME_None || UniqueNames.Contains(LayerName))
+		{
+			FString BaseName = (Weights->GetName() == NAME_None) ? TEXT("Weights") : LayerName.ToString();
+			LayerName = FName( FString::Printf(TEXT("%s_%d"), *BaseName, UniqueIDGenerator++) );
+		}
+		UniqueNames.Add(LayerName);
+
+		// Find existing attribute with the same name. If not found, create a new one.
+		TVertexAttributesRef<float> Attribute;
+		if (VertexAttribsSet.HasAttribute(LayerName))
+		{
+			Attribute = VertexAttribsSet.GetAttributesRef<float>(LayerName);
+		}
+		else
+		{
+			VertexAttribsSet.RegisterAttribute<float>(LayerName, 1, 0, EMeshAttributeFlags::AutoGenerated);
+			Attribute = VertexAttribsSet.GetAttributesRef<float>(LayerName);
+		}
+		if (ensure(Attribute.IsValid()))
+		{
+			for (int32 InVertexID : MeshIn->VertexIndicesItr())
+			{
+				FVertexID OutVertexID = IndexToVertexIDMap[InVertexID];
+				float Value;
+				Weights->GetValue(InVertexID, &Value);
+				Attribute.Set(OutVertexID, Value);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FDynamicMeshToMeshDescription::ConvertWeightLayers - could not create attribute named %s"), *LayerName.ToString());
+		}
+	}
+}
+
+void FDynamicMeshToMeshDescription::ApplyVertexColorTransform(FVector4f& Color) const
+{
+	// There is inconsistency in how vertex colors are intended to be consumed in
+	// our shaders. Some shaders consume it as linear (ex. MeshPaint), others as SRGB which
+	// manually convert to linear in the shader.
+	//
+	// All StaticMeshes store vertex colors as an 8-bit FColor. In order to ensure a good
+	// distribution of float values across the 8-bit range, the StaticMesh build always
+	// encodes FColors as SRGB.
+	//
+	// Until there is some defined gamma space convention for vertex colors in our shaders,
+	// we provide this option to pre-transform our linear float colors with an SRGBToLinear
+	// conversion to counteract the StaticMesh build LinearToSRGB conversion. This is how
+	// MeshPaint ensures linear vertex colors in the shaders.
+	if (ConversionOptions.bTransformVtxColorsSRGBToLinear)
+	{
+		LinearColors::SRGBToLinear(Color);
+	}
+}
+

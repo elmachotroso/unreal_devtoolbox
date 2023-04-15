@@ -17,6 +17,8 @@ typedef void A3DTopoEdge;
 typedef void A3DTopoFace;
 typedef void A3DTopoShell;
 
+class FJsonObject;
+
 namespace CADLibrary
 {
 
@@ -27,17 +29,6 @@ namespace TechSoftInterface
 {
 class FTechSoftInterface;
 }
-
-struct FEntityMetaData
-{
-	TMap<FString, FString> MetaData;
-	bool bRemoved = false;
-	bool bShow = true;
-	bool bUnloaded = false;
-	FCADUUID ColorName = 0;
-	FCADUUID MaterialName = 0;
-	FFileDescriptor ExternalFile;
-};
 
 namespace TechSoftUtils
 {
@@ -57,6 +48,7 @@ CADINTERFACES_API A3DTopoFace* CreateTopoFaceWithNaturalLoop(A3DSurfBase* Carrie
 CADINTERFACES_API A3DCrvNurbs* CreateTrimNurbsCurve(A3DCrvNurbs* CurveNurbsPtr, double UMin, double UMax, bool bIs2D);
 
 CADINTERFACES_API FColor GetColorAt(uint32 ColorIndex);
+CADINTERFACES_API void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
 
 } // NS TechSoftUtils
 

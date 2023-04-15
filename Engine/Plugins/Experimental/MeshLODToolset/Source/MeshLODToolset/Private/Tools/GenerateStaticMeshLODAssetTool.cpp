@@ -14,6 +14,7 @@
 #include "DynamicMeshEditor.h"
 #include "DynamicMesh/MeshTransforms.h"
 #include "DynamicMesh/MeshTangents.h"
+#include "Util/ColorConstants.h"
 
 #include "MeshDescriptionToDynamicMesh.h"
 #include "DynamicMeshToMeshDescription.h"
@@ -54,6 +55,8 @@
 
 static_assert(WITH_EDITOR, "Tool being compiled without editor");
 #include "Misc/ScopedSlowTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GenerateStaticMeshLODAssetTool)
 
 using namespace UE::Geometry;
 
@@ -377,8 +380,14 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 	ToolSetupUtil::ApplyRenderingConfigurationToPreview(PreviewWithBackgroundCompute->PreviewMesh, nullptr);
 	PreviewWithBackgroundCompute->PreviewMesh->SetTangentsMode(EDynamicMeshComponentTangentsMode::ExternallyProvided);
 
-	PreviewWithBackgroundCompute->OnMeshUpdated.AddLambda([this](UMeshOpPreviewWithBackgroundCompute* Compute) {
-		UpdateAcceptWarnings(Compute->HaveEmptyResult() ? EAcceptWarning::EmptyForbidden : EAcceptWarning::NoWarning);
+	PreviewWithBackgroundCompute->OnMeshUpdated.AddLambda([this](UMeshOpPreviewWithBackgroundCompute* Compute) 
+	{
+		if (Compute->HaveEmptyResult())
+		{
+			GetToolManager()->DisplayMessage(LOCTEXT("CannotCreateEmptyMesh", "WARNING: Tool doesn't allow creation of an empty mesh."),
+				EToolMessageLevel::UserWarning);
+		}
+		// Don't clear the message area if we have a non-empty result
 	});
 
 	// For the first computation, display a bounding box with the working material. Otherwise it looks like nothing
@@ -402,7 +411,7 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 		PhysicsData.CopyGeometryToAggregate();
 		UE::PhysicsTools::InitializePreviewGeometryLines(PhysicsData,
 														 CollisionPreview,
-														 CollisionVizSettings->Color, CollisionVizSettings->LineThickness, 0.0f, 16);
+														 CollisionVizSettings->Color, CollisionVizSettings->LineThickness, 0.0f, 16, CollisionVizSettings->bRandomColors);
 
 		// Must happen on main thread, and GenerateProcess might be in use by an Op somewhere else
 		GenerateProcess->GraphEvalCriticalSection.Lock();
@@ -430,13 +439,15 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 	AddToolPropertySource(CollisionVizSettings);
 	CollisionVizSettings->WatchProperty(CollisionVizSettings->LineThickness, [this](float NewValue) { bCollisionVisualizationDirty = true; });
 	CollisionVizSettings->WatchProperty(CollisionVizSettings->Color, [this](FColor NewValue) { bCollisionVisualizationDirty = true; });
+	CollisionVizSettings->WatchProperty(CollisionVizSettings->bRandomColors, [this](bool bNewValue) { bCollisionVisualizationDirty = true; });
 	CollisionVizSettings->WatchProperty(CollisionVizSettings->bShowHidden, [this](bool bNewValue) { bCollisionVisualizationDirty = true; });
 
 	CollisionPreview = NewObject<UPreviewGeometry>(this);
 	CollisionPreview->CreateInWorld(GetTargetWorld(), (FTransform)PreviewTransform);
 
-	// read Preset if we started Tool with one already selected
-	OnPresetSelectionChanged();		
+	// Trigger any automatic Preset-changed behavior if we started Tool with one already selected
+	// Note: Currently this does nothing, as we rely on the user to manually read/write the preset
+	OnPresetSelectionChanged();
 
 	// Pop up notifications for any warnings
 	for ( const FProgressCancel::FMessageInfo& Warning : Progress.Warnings )
@@ -449,8 +460,81 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 	}
 }
 
+
+
+bool UGenerateStaticMeshLODAssetTool::ValidateSettings() const
+{
+	if (!BasicProperties || !GenerateProcess)
+	{
+		return true;
+	}
+
+	const FDynamicMesh3& Mesh = GenerateProcess->GetSourceMesh();
+
+	const FName& GroupName = BasicProperties->Preprocessing.FilterGroupLayer;
+	if (!GroupName.IsNone())
+	{
+		bool bFound = false;
+
+		if (Mesh.HasAttributes())
+		{
+			for (int GroupLayerIndex = 0; GroupLayerIndex < Mesh.Attributes()->NumPolygroupLayers(); ++GroupLayerIndex)
+			{
+				const FDynamicMeshPolygroupAttribute* GroupAttribute = Mesh.Attributes()->GetPolygroupLayer(GroupLayerIndex);
+				if (GroupAttribute->GetName() == GroupName)
+				{
+					bFound = true;
+					break;
+				}
+			}
+		}
+
+		if (!bFound)
+		{
+			const FText Message = FText::Format(LOCTEXT("GroupNotFoundWarning", "Group {0} not found on input mesh"), FText::FromName(GroupName));
+			GetToolManager()->DisplayMessage(Message, EToolMessageLevel::UserWarning);
+			return false;
+		}
+	}
+
+
+	const FName& WeightMapName = BasicProperties->Preprocessing.ThickenWeightMapName;
+	if (!WeightMapName.IsNone())
+	{
+		bool bFound = false;
+
+		if (Mesh.HasAttributes())
+		{
+			for (int WeightMapIndex = 0; WeightMapIndex < Mesh.Attributes()->NumWeightLayers(); ++WeightMapIndex)
+			{
+				const FDynamicMeshWeightAttribute* GroupAttribute = Mesh.Attributes()->GetWeightLayer(WeightMapIndex);
+				if (GroupAttribute->GetName() == WeightMapName)
+				{
+					bFound = true;
+					break;
+				}
+			}
+		}
+
+		if (!bFound)
+		{
+			const FText Message = FText::Format(LOCTEXT("WeightMapNotFoundWarning", "Weight Map {0} not found on input mesh"), FText::FromName(WeightMapName));
+			GetToolManager()->DisplayMessage(Message, EToolMessageLevel::UserWarning);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void UGenerateStaticMeshLODAssetTool::OnSettingsModified()
 {
+	bool bOK = ValidateSettings();
+	if (bOK)
+	{
+		GetToolManager()->DisplayMessage({}, EToolMessageLevel::UserWarning);
+	}
+
 	PreviewWithBackgroundCompute->InvalidateResult();
 }
 
@@ -533,10 +617,11 @@ void UGenerateStaticMeshLODAssetTool::UpdateCollisionVisualization()
 	FColor UseColor = CollisionVizSettings->Color;
 	LineMaterial = ToolSetupUtil::GetDefaultLineComponentMaterial(GetToolManager(), !CollisionVizSettings->bShowHidden);
 
+	int32 ColorIdx = 0;
 	CollisionPreview->UpdateAllLineSets([&](ULineSetComponent* LineSet)
 	{
 		LineSet->SetAllLinesThickness(UseThickness);
-		LineSet->SetAllLinesColor(UseColor);
+		LineSet->SetAllLinesColor(CollisionVizSettings->bRandomColors ? LinearColors::SelectFColor(ColorIdx++) : UseColor);
 	});
 	CollisionPreview->SetAllLineSetsMaterial(LineMaterial);
 }
@@ -594,7 +679,18 @@ void UGenerateStaticMeshLODAssetTool::RequestPresetAction(EGenerateLODAssetToolP
 
 	if (ActionType == EGenerateLODAssetToolPresetAction::ReadFromPreset)
 	{
-		OnPresetSelectionChanged();
+		UStaticMeshLODGenerationSettings* ApplyPreset = PresetProperties->Preset.Get();
+		if (ApplyPreset)
+		{
+			BasicProperties->Preprocessing = ApplyPreset->Preprocessing;
+			BasicProperties->MeshGeneration = ApplyPreset->MeshGeneration;
+			BasicProperties->Simplification = ApplyPreset->Simplification;
+			BasicProperties->Normals = ApplyPreset->Normals;
+			BasicProperties->TextureBaking = ApplyPreset->TextureBaking;
+			BasicProperties->UVGeneration = ApplyPreset->UVGeneration;
+			BasicProperties->SimpleCollision = ApplyPreset->SimpleCollision;
+			OnSettingsModified();
+		}
 	}
 	else if (ActionType == EGenerateLODAssetToolPresetAction::WriteToPreset)
 	{
@@ -620,18 +716,7 @@ void UGenerateStaticMeshLODAssetTool::RequestPresetAction(EGenerateLODAssetToolP
 
 void UGenerateStaticMeshLODAssetTool::OnPresetSelectionChanged()
 {
-	UStaticMeshLODGenerationSettings* ApplyPreset = PresetProperties->Preset.Get();
-	if (ApplyPreset)
-	{
-		BasicProperties->Preprocessing = ApplyPreset->Preprocessing;
-		BasicProperties->MeshGeneration = ApplyPreset->MeshGeneration;
-		BasicProperties->Simplification = ApplyPreset->Simplification;
-		BasicProperties->Normals = ApplyPreset->Normals;
-		BasicProperties->TextureBaking = ApplyPreset->TextureBaking;
-		BasicProperties->UVGeneration = ApplyPreset->UVGeneration;
-		BasicProperties->SimpleCollision = ApplyPreset->SimpleCollision;
-		OnSettingsModified();
-	}
+	// Rely on user to decide when to write/read settings to/from the selected preset
 }
 
 
@@ -639,3 +724,4 @@ void UGenerateStaticMeshLODAssetTool::OnPresetSelectionChanged()
 
 
 #undef LOCTEXT_NAMESPACE
+

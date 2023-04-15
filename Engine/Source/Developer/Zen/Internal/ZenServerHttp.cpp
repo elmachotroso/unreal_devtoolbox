@@ -7,23 +7,27 @@
 #include "ZenBackendUtils.h"
 #include "ZenSerialization.h"
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-#	include "Windows/WindowsHWrapper.h"
-#	include "Windows/AllowWindowsPlatformTypes.h"
+#if PLATFORM_MICROSOFT
+#	include "Microsoft/WindowsHWrapper.h"
+#	include "Microsoft/AllowMicrosoftPlatformTypes.h"
+#endif
+
+#if PLATFORM_WINDOWS
+#	include <mstcpip.h>
 #endif
 
 #if !defined(PLATFORM_CURL_INCLUDE)
-	#include "curl/curl.h"
+#include "curl/curl.h"
 #endif
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-#	include "Windows/HideWindowsPlatformTypes.h"
+#if PLATFORM_MICROSOFT
+#	include "Microsoft/HideMicrosoftPlatformTypes.h"
 #endif
 
 #include "Logging/LogMacros.h"
 #include "Compression/CompressedBuffer.h"
-#include "Compression/OodleDataCompression.h"
 #include "Containers/StringFwd.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Memory/CompositeBuffer.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryPackage.h"
@@ -33,6 +37,9 @@
 #include "Serialization/LargeMemoryWriter.h"
 #include "HAL/PlatformProcess.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "ZenSerialization.h"
+
+LLM_DEFINE_TAG(ZenDDC, NAME_None, TEXT("DDCBackend"));
 
 DEFINE_LOG_CATEGORY_STATIC(LogZenHttp, Log, All);
 
@@ -48,6 +55,9 @@ namespace UE::Zen {
 		static size_t StaticWriteHeaderFn(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes, void* UserData);
 		static size_t StaticWriteBodyFn(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes, void* UserData);
 		static size_t StaticSeekFn(void* UserData, curl_off_t Offset, int Origin);
+#if PLATFORM_WINDOWS
+		static int StaticSockoptFn(void* UserData, curl_socket_t CurlFd, curlsocktype Purpose);
+#endif //PLATFORM_WINDOWS
 	};
 
 	FZenHttpRequest::FZenHttpRequest(FStringView InDomain, bool bInLogErrors)
@@ -94,6 +104,9 @@ namespace UE::Zen {
 		// Rewind method, handle special error case where request need to rewind data stream
 		curl_easy_setopt(Curl, CURLOPT_SEEKDATA, this);
 		curl_easy_setopt(Curl, CURLOPT_SEEKFUNCTION, &FZenHttpRequest::FStatics::StaticSeekFn);
+#if PLATFORM_WINDOWS
+		curl_easy_setopt(Curl, CURLOPT_SOCKOPTFUNCTION, &FZenHttpRequest::FStatics::StaticSockoptFn);
+#endif //PLATFORM_WINDOWS
 		// Debug hooks
 #if UE_ZENDDC_HTTP_DEBUG
 		curl_easy_setopt(Curl, CURLOPT_DEBUGDATA, this);
@@ -110,13 +123,13 @@ namespace UE::Zen {
 	void FZenHttpRequest::AddHeader(FStringView Header, FStringView Value)
 	{
 		TStringBuilder<128> Sb;
-		Sb << Header << TEXT(": "_SV) << Value;
+		Sb << Header << TEXTVIEW(": ") << Value;
 		Headers.Emplace(Sb.ToString());
 	}
 
 	FZenHttpRequest::Result FZenHttpRequest::PerformBlockingPut(const TCHAR* Uri, const FCompositeBuffer& Buffer, EContentType ContentType)
 	{
-		uint32 ContentLength = 0u;
+		uint64 ContentLength = 0u;
 
 		ContentLength = Buffer.GetSize();
 		curl_easy_setopt(Curl, CURLOPT_UPLOAD, 1L);
@@ -124,7 +137,7 @@ namespace UE::Zen {
 		curl_easy_setopt(Curl, CURLOPT_READDATA, this);
 		curl_easy_setopt(Curl, CURLOPT_READFUNCTION, &FZenHttpRequest::FStatics::StaticReadFn);
 
-		AddHeader(TEXT("Content-Type"_SV), GetMimeType(ContentType));
+		AddHeader(TEXTVIEW("Content-Type"), GetMimeType(ContentType));
 
 		ReadDataView = &Buffer;
 
@@ -140,133 +153,20 @@ namespace UE::Zen {
 		return PerformBlockingPost(Uri, Out.GetView(), EContentType::CbObject, AcceptType);
 	}
 
-	struct CbPackageHeader
-	{
-		uint32	HeaderMagic;
-		uint32	AttachmentCount;
-		uint32	Reserved1;
-		uint32	Reserved2;
-	};
-
-	static const uint32 kMagic = 0xaa77aacc;
-
-	struct CbAttachmentEntry
-	{
-		uint64	AttachmentSize;
-		uint32	Flags;
-		FIoHash	AttachmentHash;
-
-		enum
-		{
-			IsCompressed = (1u << 0),	// Is marshaled using compressed buffer storage format
-			IsObject = (1u << 1),		// Is compact binary object
-		};
-
-	};
-
 	FZenHttpRequest::Result FZenHttpRequest::PerformBlockingPostPackage(FStringView Uri, const FCbPackage& Package, EContentType AcceptType)
 	{
-		TConstArrayView<FCbAttachment> Attachments = Package.GetAttachments();
-		const FCbObject& Object = Package.GetObject();
-		FCompressedBuffer ObjectBuffer = FCompressedBuffer::Compress(Object.GetBuffer(), FOodleDataCompression::ECompressor::NotSet, FOodleDataCompression::ECompressionLevel::None);
-
-		CbPackageHeader Hdr;
-		Hdr.HeaderMagic = kMagic;
-		Hdr.AttachmentCount = Attachments.Num();
-		Hdr.Reserved1 = 0;
-		Hdr.Reserved2 = 0;
-
 		FLargeMemoryWriter Out;
-		Out.Serialize(&Hdr, sizeof Hdr);
-
-		// Root object metadata
-
-		{
-			CbAttachmentEntry Entry;
-			Entry.AttachmentHash = ObjectBuffer.GetRawHash();
-			Entry.AttachmentSize = ObjectBuffer.GetCompressedSize();
-			Entry.Flags = CbAttachmentEntry::IsObject | CbAttachmentEntry::IsCompressed;
-
-			Out.Serialize(&Entry, sizeof Entry);
-		}
-
-		// Attachment metadata
-
-		for (const FCbAttachment& Attachment : Attachments)
-		{
-			CbAttachmentEntry Entry;
-			Entry.AttachmentHash = Attachment.GetHash();
-			Entry.Flags = 0;
-
-			if (Attachment.IsCompressedBinary())
-			{
-				Entry.AttachmentSize = Attachment.AsCompressedBinary().GetCompressedSize();
-				Entry.Flags |= CbAttachmentEntry::IsCompressed;
-			}
-			else if (Attachment.IsBinary())
-			{
-				Entry.AttachmentSize = Attachment.AsCompositeBinary().GetSize();
-			}
-			else if (Attachment.IsNull())
-			{
-				checkNoEntry();
-			}
-			else if (Attachment.IsObject())
-			{
-				Entry.AttachmentSize = Attachment.AsObject().GetSize();
-				Entry.Flags |= CbAttachmentEntry::IsObject;
-			}
-			else
-			{
-				checkNoEntry();
-			}
-
-			Out.Serialize(&Entry, sizeof Entry);
-		}
-
-		// Root object
-
-		Out << ObjectBuffer;
-
-		// Payloads back-to-back
-
-		for (const FCbAttachment& Attachment : Attachments)
-		{
-			if (Attachment.IsCompressedBinary())
-			{
-				FCompressedBuffer Payload = Attachment.AsCompressedBinary();
-				Out << Payload;
-			}
-			else if (Attachment.IsBinary())
-			{
-				const FCompositeBuffer& Buffer = Attachment.AsCompositeBinary();
-				FSharedBuffer SharedBuffer = Buffer.ToShared();
-
-				Out.Serialize((void*)SharedBuffer.GetData(), SharedBuffer.GetSize());
-			}
-			else if (Attachment.IsNull())
-			{
-				checkNoEntry();
-			}
-			else if (Attachment.IsObject())
-			{
-				checkNoEntry();
-			}
-			else
-			{
-				checkNoEntry();
-			}
-		}
+		Http::SaveCbPackage(Package, Out);
 
 		return PerformBlockingPost(Uri, Out.GetView(), EContentType::CbPackage, AcceptType);
 	}
 
-	FZenHttpRequest::Result FZenHttpRequest::PerformRpc(FStringView Uri, FCbObjectView Request, FCbPackage& OutResponse)
+	FZenHttpRequest::Result FZenHttpRequest::PerformRpc(FStringView Uri, FCbObjectView Request, FCbPackage &OutResponse)
 	{
 		return ParseRpcResponse(
 			PerformBlockingPost(Uri, Request, EContentType::CbPackage), OutResponse);
 	}
-
+		
 	FZenHttpRequest::Result FZenHttpRequest::PerformRpc(FStringView Uri, const FCbPackage& Request, FCbPackage& OutResponse)
 	{
 		return ParseRpcResponse(
@@ -282,6 +182,13 @@ namespace UE::Zen {
 
 		if (ResponseBuffer.Num())
 		{
+			{
+				FLargeMemoryReader Ar(ResponseBuffer.GetData(), ResponseBuffer.Num());
+				if (Http::TryLoadCbPackage(OutResponse, Ar))
+				{
+					return Result::Success;
+				}
+			}
 			FLargeMemoryReader Ar(ResponseBuffer.GetData(), ResponseBuffer.Num());
 			if (!OutResponse.TryLoad(Ar))
 			{
@@ -298,59 +205,9 @@ namespace UE::Zen {
 		FLargeMemoryReader Reader(Response.GetData(), Response.Num());
 
 		FCbPackage Package;
-
-		CbPackageHeader Hdr;
-		Reader.Serialize(&Hdr, sizeof Hdr);
-
-		if (Hdr.HeaderMagic != kMagic)
+		if (!Http::TryLoadCbPackage(Package, Reader))
 		{
 			return {};
-		}
-
-		TArray<CbAttachmentEntry> AttachmentEntries;
-		AttachmentEntries.SetNum(Hdr.AttachmentCount + 1);
-
-		Reader.Serialize(AttachmentEntries.GetData(), (Hdr.AttachmentCount + 1) * sizeof(CbAttachmentEntry));
-
-		int Index = 0;
-
-		for (const CbAttachmentEntry& Entry : AttachmentEntries)
-		{
-			FUniqueBuffer AttachmentData = FUniqueBuffer::Alloc(Entry.AttachmentSize);
-			Reader.Serialize(AttachmentData.GetData(), AttachmentData.GetSize());
-
-			if (Entry.Flags & CbAttachmentEntry::IsCompressed)
-			{
-				FCompressedBuffer CompBuf(FCompressedBuffer::FromCompressed(AttachmentData.MoveToShared()));
-
-				if (Entry.Flags & CbAttachmentEntry::IsObject)
-				{
-					checkf(Index == 0, TEXT("Object attachments are not currently supported"));
-
-					Package.SetObject(FCbObject(CompBuf.Decompress()));
-				}
-				else
-				{
-					FCbAttachment Attachment(MoveTemp(CompBuf));
-					Package.AddAttachment(Attachment);
-				}
-			}
-			else /* not compressed */
-			{
-				if (Entry.Flags & CbAttachmentEntry::IsObject)
-				{
-					checkf(Index == 0, TEXT("Object attachments are not currently supported"));
-
-					Package.SetObject(FCbObject(AttachmentData.MoveToShared()));
-				}
-				else
-				{
-					FCbAttachment Attachment(AttachmentData.MoveToShared());
-					Package.AddAttachment(Attachment);
-				}
-			}
-
-			++Index;
 		}
 
 		return Package;
@@ -362,15 +219,15 @@ namespace UE::Zen {
 		uint64 ContentLength = 0u;
 
 		curl_easy_setopt(Curl, CURLOPT_POST, 1L);
-		curl_easy_setopt(Curl, CURLOPT_INFILESIZE, Payload.GetSize());
+		curl_easy_setopt(Curl, CURLOPT_POSTFIELDSIZE, Payload.GetSize());
 		curl_easy_setopt(Curl, CURLOPT_READDATA, this);
 		curl_easy_setopt(Curl, CURLOPT_READFUNCTION, &FZenHttpRequest::FStatics::StaticReadFn);
 
-		AddHeader(TEXT("Content-Type"_SV), GetMimeType(ContentType));
+		AddHeader(TEXTVIEW("Content-Type"), GetMimeType(ContentType));
 		if (AcceptType != EContentType::UnknownContentType)
 		{
-			AddHeader(TEXT("Accept"_SV), GetMimeType(EContentType::CbPackage));
-		}
+			AddHeader(TEXTVIEW("Accept"), GetMimeType(EContentType::CbPackage));
+	}
 
 		ContentLength = Payload.GetSize();
 
@@ -385,7 +242,7 @@ namespace UE::Zen {
 		curl_easy_setopt(Curl, CURLOPT_HTTPGET, 1L);
 		WriteDataBufferPtr = Buffer;
 		
-		AddHeader(TEXT("Accept"_SV), GetMimeType(AcceptType));
+		AddHeader(TEXTVIEW("Accept"), GetMimeType(AcceptType));
 
 		return PerformBlocking(Uri, RequestVerb::Get, 0u);
 	}
@@ -395,7 +252,7 @@ namespace UE::Zen {
 		curl_easy_setopt(Curl, CURLOPT_HTTPGET, 1L);
 		OutPackage.Reset();
 
-		AddHeader(TEXT("Accept"_SV), GetMimeType(EContentType::CbPackage));
+		AddHeader(TEXTVIEW("Accept"), GetMimeType(EContentType::CbPackage));
 
 		// TODO: When PackageBytes can be written in segments directly, set the WritePtr to the OutPackage and use that
 		TArray64<uint8> PackageBytes;
@@ -413,7 +270,7 @@ namespace UE::Zen {
 	{
 		curl_easy_setopt(Curl, CURLOPT_NOBODY, 1L);
 		
-		AddHeader(TEXT("Accept"_SV), GetMimeType(AcceptType));
+		AddHeader(TEXTVIEW("Accept"), GetMimeType(AcceptType));
 
 		return PerformBlocking(Uri, RequestVerb::Head, 0u);
 	}
@@ -439,10 +296,11 @@ namespace UE::Zen {
 
 	static std::atomic<int> RequestId{1};
 
-	FZenHttpRequest::Result FZenHttpRequest::PerformBlocking(FStringView Uri, RequestVerb Verb, uint32 ContentLength)
+	FZenHttpRequest::Result FZenHttpRequest::PerformBlocking(FStringView Uri, RequestVerb Verb, uint64 ContentLength)
 	{
+		LLM_SCOPE_BYTAG(ZenDDC);
 		// Strip any leading slashes because we compose the prefix and the suffix with a separating slash below
-		while (Uri.StartsWith('/'))
+		while (Uri.StartsWith(TEXT('/')))
 		{
 			Uri.RightChopInline(1);
 		}
@@ -473,7 +331,7 @@ namespace UE::Zen {
 
 		if ((Verb != RequestVerb::Delete) && (Verb != RequestVerb::Get))
 		{
-			Headers.Add(FString::Printf(TEXT("Content-Length: %d"), ContentLength));
+			Headers.Add(FString::Printf(TEXT("Content-Length: %" UINT64_FMT), ContentLength));
 		}
 
 		// Build headers list
@@ -586,8 +444,8 @@ namespace UE::Zen {
 			{
 				// Print the response body if we got one, otherwise print header.
 				FString Response = GetAnsiBufferAsString(ResponseBuffer.Num() > 0 ? ResponseBuffer : ResponseHeader);
-				Response.ReplaceCharInline('\n', ' ');
-				Response.ReplaceCharInline('\r', ' ');
+				Response.ReplaceCharInline(TEXT('\n'), TEXT(' '));
+				Response.ReplaceCharInline(TEXT('\r'), TEXT(' '));
 				UE_LOG(
 					LogZenHttp,
 					Error,
@@ -614,7 +472,7 @@ namespace UE::Zen {
 	FString FZenHttpRequest::GetAnsiBufferAsString(const TArray64<uint8>& Buffer)
 	{
 		// Content is NOT null-terminated; we need to specify lengths here
-		FUTF8ToTCHAR TCHARData(reinterpret_cast<const ANSICHAR*>(Buffer.GetData()), Buffer.Num());
+		FUTF8ToTCHAR TCHARData(reinterpret_cast<const ANSICHAR*>(Buffer.GetData()), IntCastChecked<int32>(Buffer.Num()));
 		return FString(TCHARData.Length(), TCHARData.Get());
 	}
 
@@ -719,7 +577,7 @@ namespace UE::Zen {
 	size_t FZenHttpRequest::FStatics::StaticWriteBodyFn(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes, void* UserData)
 	{
 		FZenHttpRequest* Request = static_cast<FZenHttpRequest*>(UserData);
-		const size_t WriteSize = SizeInBlocks * BlockSizeInBytes;
+		const int64 WriteSize = IntCastChecked<int64>(SizeInBlocks * BlockSizeInBytes);
 		TArray64<uint8>* WriteDataBufferPtr = Request->WriteDataBufferPtr;
 
 		if (WriteDataBufferPtr && WriteSize > 0)
@@ -733,7 +591,7 @@ namespace UE::Zen {
 
 				if (const ANSICHAR* ContentLengthHeader = FCStringAnsi::Strstr(Header, ContentLengthHeaderStr))
 				{
-					size_t ContentLength = (size_t)FCStringAnsi::Atoi64(ContentLengthHeader + strlen(ContentLengthHeaderStr));
+					int64 ContentLength = FCStringAnsi::Atoi64(ContentLengthHeader + strlen(ContentLengthHeaderStr));
 					if (ContentLength > 0)
 					{
 						WriteDataBufferPtr->Reserve(ContentLength);
@@ -780,12 +638,26 @@ namespace UE::Zen {
 		return CURL_SEEKFUNC_OK;
 	}
 
+#if PLATFORM_WINDOWS
+	int FZenHttpRequest::FStatics::StaticSockoptFn(void* UserData, curl_socket_t CurlFd, curlsocktype Purpose)
+	{
+		// On Windows, loopback connections can take advantage of a faster code path optionally with this flag.
+		// This must be used by both the client and server side, and is only effective in the absence of
+		// Windows Filtering Platform (WFP) callouts which can be installed by security software.
+		// https://docs.microsoft.com/en-us/windows/win32/winsock/sio-loopback-fast-path
+		int LoopbackOptionValue = 1;
+		DWORD OptionNumberOfBytesReturned = 0;
+		WSAIoctl(CurlFd, SIO_LOOPBACK_FAST_PATH, &LoopbackOptionValue, sizeof(LoopbackOptionValue), NULL, 0, &OptionNumberOfBytesReturned, 0, 0);
+		return CURL_SOCKOPT_OK;
+	}
+#endif //PLATFORM_WINDOWS
+
 	//////////////////////////////////////////////////////////////////////////
 
 	FZenHttpRequestPool::FZenHttpRequestPool(FStringView InServiceUrl, uint32 PoolEntryCount)
 	{
 		int32 LastSlash = 0;
-		while (InServiceUrl.FindLastChar('/', /* out */ LastSlash) && (LastSlash == (InServiceUrl.Len() - 1)))
+		while (InServiceUrl.FindLastChar(TEXT('/'), /* out */ LastSlash) && (LastSlash == (InServiceUrl.Len() - 1)))
 		{
 			InServiceUrl.LeftChopInline(1);
 		}

@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigGraphPanelNodeFactory.h"
+#include "Graph/ControlRigGraphPanelNodeFactory.h"
 #include "Graph/ControlRigGraphNode.h"
 #include "Graph/ControlRigGraph.h"
 #include "EdGraphNode_Comment.h"
-#include "SControlRigGraphNode.h"
-#include "SControlRigGraphNodeComment.h"
+#include "Graph/SControlRigGraphNode.h"
+#include "Graph/SControlRigGraphNodeComment.h"
 #include "Graph/ControlRigGraphSchema.h"
-#include "SControlRigGraphNodeKnot.h"
+#include "Graph/SControlRigGraphNodeKnot.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/Nodes/RigVMRerouteNode.h"
 

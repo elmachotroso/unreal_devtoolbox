@@ -7,6 +7,8 @@
 #include "SNiagaraGraphNodeWriteDataSet.h"
 #include "EdGraphSchema_Niagara.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeWriteDataSet)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeWriteDataSet"
 
 UNiagaraNodeWriteDataSet::UNiagaraNodeWriteDataSet(const FObjectInitializer& ObjectInitializer)
@@ -47,7 +49,7 @@ void UNiagaraNodeWriteDataSet::AllocateDefaultPins()
 		UEdGraphPin* NewPin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(Var.GetType()), Var.GetName());
 		if (useFriendlyNames && VariableFriendlyNames[i].IsEmpty() == false)
 		{
-			NewPin->PinFriendlyName = FText::FromString(VariableFriendlyNames[i]);
+			NewPin->PinFriendlyName = FText::AsCultureInvariant(VariableFriendlyNames[i]);
 		}
 	}
 }
@@ -170,6 +172,7 @@ void UNiagaraNodeWriteDataSet::BuildParameterMapHistory(FNiagaraParameterMapHist
 
 
 #undef LOCTEXT_NAMESPACE
+
 
 
 

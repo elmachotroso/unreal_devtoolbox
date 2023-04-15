@@ -2,18 +2,27 @@
 
 #pragma once
 
-#include "Containers/SortedMap.h"
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
 #include "Containers/Set.h"
+#include "Containers/SortedMap.h"
+#include "Containers/SparseArray.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
+#include "EntitySystem/EntityAllocationIterator.h"
 #include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneEntityInstantiatorSystem.h"
 #include "EntitySystem/MovieSceneEntitySystem.h"
-#include "EntitySystem/EntityAllocationIterator.h"
-
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
+#include "HAL/Platform.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "WeightAndEasingEvaluatorSystem.generated.h"
 
+class UMovieSceneEntitySystemLinker;
 class UMovieSceneEvalTimeSystem;
+class UObject;
 struct FMovieSceneSubSequenceData;
 
 namespace UE
@@ -24,13 +33,13 @@ namespace MovieScene
 	struct FHierarchicalEasingChannelContributorData
 	{
 		UE::MovieScene::FInstanceHandle SubSequenceHandle;
-		float EasingResult;
+		double EasingResult;
 	};
 
 	struct FHierarchicalEasingChannelData
 	{
 		TArray<FHierarchicalEasingChannelContributorData, TInlineAllocator<8>> Contributors;
-		float FinalEasingResult;
+		double FinalEasingResult;
 	};
 
 }  // namespace MovieScene
@@ -73,7 +82,7 @@ public:
 	uint16 AllocateEasingChannel(UE::MovieScene::FInstanceHandle SubSequenceHandle);
 	void ReleaseEasingChannel(uint16 EasingChannelID);
 
-	void SetSubSequenceEasing(UE::MovieScene::FInstanceHandle SubSequenceHandle, float EasingResult);
+	void SetSubSequenceEasing(UE::MovieScene::FInstanceHandle SubSequenceHandle, double EasingResult);
 
 private:
 

@@ -18,6 +18,7 @@ class FPrimitiveDrawInterface;
 class FVertexFactory;
 class UMorphTarget;
 struct FSkelMeshRenderSection;
+struct FCachedGeometry;
 class FGPUSkinCacheEntry;
 
 /** data for a single skinned skeletal mesh vertex */
@@ -70,7 +71,7 @@ public:
 	 * @param	InSkeletalMeshComponen - parent prim component doing the updating
 	 * @param	ActiveMorphs - morph targets to blend with during skinning
 	 */
-	virtual void Update(int32 LODIndex,USkinnedMeshComponent* InMeshComponent,const TArray<FActiveMorphTarget>& ActiveMorphTargets, const TArray<float>& MorphTargetWeights, EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode) = 0;
+	virtual void Update(int32 LODIndex,USkinnedMeshComponent* InMeshComponent, const FMorphTargetWeightMap& InActiveMorphTargets, const TArray<float>& MorphTargetWeights, EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode, const FExternalMorphWeightData& InExternalMorphWeightData) = 0;
 
 	/**
 	 * Called by FSkeletalMeshObject prior to GDME. This allows the GPU skin version to update bones etc now that we know we are going to render
@@ -112,6 +113,11 @@ public:
 	 *	Not safe to hold this reference between frames, because it exists in dynamic data passed from main thread.
 	 */
 	virtual const TArray<FMatrix44f>& GetReferenceToLocalMatrices() const = 0;
+
+	/**
+	 * If we are caching geometry deformation through skin-cache/mesh-deformers or other, then this returns the currently cached geoemtry.
+	 */
+	virtual bool GetCachedGeometry(FCachedGeometry& OutCachedGeometry) const { return false; }
 
 	/**
 	*	Will force re-evaluating which Skin Weight buffer should be used for skinning, determined by checking for any override weights or a skin weight profile being set.
@@ -201,6 +207,8 @@ public:
 	/** Get the skeletal mesh resource for which this mesh object was created. */
 	FORCEINLINE FSkeletalMeshRenderData& GetSkeletalMeshRenderData() const { return *SkeletalMeshRenderData; }
 
+	FColor GetSkinCacheVisualizationDebugColor(const FName& GPUSkinCacheVisualizationMode, uint32 SectionIndex) const;
+
 #if RHI_RAYTRACING
 	/** Retrieve ray tracing geometry from the underlying mesh object */
 	virtual FRayTracingGeometry* GetRayTracingGeometry() { return nullptr; }
@@ -251,7 +259,6 @@ public:
 	bool bHasBeenUpdatedAtLeastOnce;
 
 #if RHI_RAYTRACING
-	bool bRequireRecreatingRayTracingGeometry;
 	bool bSupportRayTracing;
 	bool bHiddenMaterialVisibilityDirtyForRayTracing;
 	int32 RayTracingMinLOD;

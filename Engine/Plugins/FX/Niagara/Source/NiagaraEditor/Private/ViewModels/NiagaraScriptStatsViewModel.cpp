@@ -10,12 +10,12 @@
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 
 #include "Async/Async.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Types/SlateEnums.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Views/SListView.h"
@@ -24,6 +24,8 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Images/SImage.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScriptStatsViewModel)
 
 #define LOCTEXT_NAMESPACE "NiagaraScriptStatsViewModel"
 
@@ -108,13 +110,13 @@ namespace NiagaraScriptStatsLocal
 
 	struct FNiagaraScriptStats
 	{
-		FNiagaraScriptStats(const FGuid& InGuid, UNiagaraEmitter* NiagaraEmitter, EShaderPlatform ShaderPlatform)
+		FNiagaraScriptStats(const FGuid& InGuid, FVersionedNiagaraEmitter NiagaraEmitter, EShaderPlatform ShaderPlatform)
 		{
 			EmitterId = InGuid;
-			bIsGPU = NiagaraEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim;
+			bIsGPU = NiagaraEmitter.GetEmitterData()->SimTarget == ENiagaraSimTarget::GPUComputeSim;
 		}
 
-		void UpdateStatus(EShaderPlatform ShaderPlatform, UNiagaraEmitter* NiagaraEmitter)
+		void UpdateStatus(EShaderPlatform ShaderPlatform, FVersionedNiagaraEmitter NiagaraEmitter)
 		{
 			if ( bIsCompiling )
 			{
@@ -126,7 +128,7 @@ namespace NiagaraScriptStatsLocal
 					if ( ShaderScripts.Num() == 0 )
 					{
 						bool bScriptsValid = true;
-						NiagaraEmitter->ForEachScript(
+						NiagaraEmitter.GetEmitterData()->ForEachScript(
 							[&](UNiagaraScript* NiagaraScript)
 							{
 								if ( !NiagaraScript->GetVMExecutableDataCompilationId().CompilerVersionID.IsValid() || !NiagaraScript->GetVMExecutableDataCompilationId().BaseScriptCompileHash.IsValid() )
@@ -141,7 +143,7 @@ namespace NiagaraScriptStatsLocal
 							return;
 						}
 
-						NiagaraEmitter->ForEachScript(
+						NiagaraEmitter.GetEmitterData()->ForEachScript(
 							[&](UNiagaraScript* NiagaraScript)
 							{
 								TArray<FNiagaraShaderScript*> NewResources;
@@ -209,7 +211,7 @@ namespace NiagaraScriptStatsLocal
 				else
 				{
 					TArray<UNiagaraScript*> NiagaraScripts;
-					NiagaraEmitter->GetScripts(NiagaraScripts);
+					NiagaraEmitter.GetEmitterData()->GetScripts(NiagaraScripts);
 					GetVMScriptStatus(MakeArrayView(NiagaraScripts), bIsCompiling, bHasError, ResultsString);
 				}
 			}
@@ -267,7 +269,7 @@ public:
 
 		SMultiColumnTableRow<TSharedPtr<FGuid>>::Construct(
 			FSuperRowType::FArguments()
-			.Style(FEditorStyle::Get(), "DataTableEditor.CellListViewRow"),
+			.Style(FAppStyle::Get(), "DataTableEditor.CellListViewRow"),
 			InOwnerTableView
 		);
 	}
@@ -357,14 +359,14 @@ public:
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
+				.BorderImage(FAppStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
 				[
 					SNew(SHorizontalBox)
 					+SHorizontalBox::Slot()
 					.AutoWidth()
 					[
 						SNew(SComboButton)
-						.ComboButtonStyle(FEditorStyle::Get(), "ToolbarComboButton")
+						.ComboButtonStyle(FAppStyle::Get(), "ToolbarComboButton")
 						.ForegroundColor(FLinearColor::White)
 						.ContentPadding(0)
 						.OnGetMenuContent(this, &SNiagaraScriptStatsWidget::MakePlatformsWidget)
@@ -377,7 +379,7 @@ public:
 							.VAlign(VAlign_Center)
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("LevelEditor.Tabs.StatsViewer"))
+								.Image(FAppStyle::GetBrush("LevelEditor.Tabs.StatsViewer"))
 							]
 							// Text
 							+ SHorizontalBox::Slot()
@@ -386,7 +388,7 @@ public:
 							.Padding(0, 0, 2, 0)
 							[
 								SNew(STextBlock)
-								.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+								.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 								.Text(LOCTEXT("PlatformsButton", "Platforms"))
 							]
 						]
@@ -406,7 +408,7 @@ public:
 			+ SVerticalBox::Slot()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush(TEXT("Graph.TitleBackground")))
+				.BorderImage(FAppStyle::GetBrush(TEXT("Graph.TitleBackground")))
 				.HAlign(HAlign_Fill)
 				[
 					SNew(SHorizontalBox)
@@ -497,7 +499,7 @@ public:
 					.Content()
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "RichTextBlock.Bold")
+						.TextStyle(FAppStyle::Get(), "RichTextBlock.Bold")
 						.Text(FText::FromName(Details.DisplayName))
 						.Margin(FMargin(2.0f, 2.0f, 4.0f, 2.0f))
 					];
@@ -622,7 +624,7 @@ void FNiagaraScriptStatsViewModel::RefreshView()
 		{
 			if (EmitterHandle.IsValid() && EmitterHandle.GetIsEnabled())
 			{
-				if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance())
+				if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance().Emitter)
 				{
 					RowIDs.Emplace(MakeShareable(new FGuid(EmitterHandle.GetId())));
 				}
@@ -761,15 +763,24 @@ EShaderPlatform FNiagaraScriptStatsViewModel::ColumnNameToShaderPlatform(const F
 
 void FNiagaraScriptStatsViewModel::BuildShaderPlatformDetails()
 {
+	TArray<EShaderPlatform, TInlineAllocator<SP_StaticPlatform_Last + 1>> StaticShaderPlatforms;
+	StaticShaderPlatforms.Add(SP_PCD3D_SM5);
+	StaticShaderPlatforms.Add(SP_VULKAN_SM5);
+	StaticShaderPlatforms.Add(SP_OPENGL_ES3_1_ANDROID); 
+	StaticShaderPlatforms.Add(SP_VULKAN_ES3_1_ANDROID);
+	StaticShaderPlatforms.Add(SP_VULKAN_SM5_ANDROID);
+	StaticShaderPlatforms.Add(SP_METAL_SM5);
+	StaticShaderPlatforms.Add(SP_METAL);
+	StaticShaderPlatforms.Add(SP_METAL_MRT);
+
 	TArray<EShaderPlatform, TInlineAllocator<SP_StaticPlatform_Last + 1>> ValidShaderPlatforms;
-	ValidShaderPlatforms.Add(SP_PCD3D_SM5);
-	ValidShaderPlatforms.Add(SP_VULKAN_SM5);
-	ValidShaderPlatforms.Add(SP_OPENGL_ES3_1_ANDROID); 
-	ValidShaderPlatforms.Add(SP_VULKAN_ES3_1_ANDROID);
-	ValidShaderPlatforms.Add(SP_VULKAN_SM5_ANDROID);
-	ValidShaderPlatforms.Add(SP_METAL_SM5);
-	ValidShaderPlatforms.Add(SP_METAL);
-	ValidShaderPlatforms.Add(SP_METAL_MRT);
+	for (EShaderPlatform StaticShaderPlatform : StaticShaderPlatforms)
+	{
+		if (FDataDrivenShaderPlatformInfo::IsValid(StaticShaderPlatform))
+		{
+			ValidShaderPlatforms.Add(StaticShaderPlatform);
+		}
+	}
 
 	for (int32 iPlatform = SP_StaticPlatform_First; iPlatform <= SP_StaticPlatform_Last; ++iPlatform)
 	{
@@ -787,11 +798,6 @@ void FNiagaraScriptStatsViewModel::BuildShaderPlatformDetails()
 	const UNiagaraScripStatsViewModelSettings* Settings = GetDefault<UNiagaraScripStatsViewModelSettings>();
 	for (const EShaderPlatform ShaderPlatform : ValidShaderPlatforms)
 	{
-		if (!FNiagaraUtilities::SupportsComputeShaders(ShaderPlatform))
-		{
-			continue;
-		}
-
 		const FName ShaderFormat = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
 		if (TPM.FindShaderFormat(ShaderFormat) == nullptr)
 		{
@@ -834,3 +840,4 @@ void FNiagaraScriptStatsViewModel::OnForceRecompile()
 }
 
 #undef LOCTEXT_NAMESPACE
+

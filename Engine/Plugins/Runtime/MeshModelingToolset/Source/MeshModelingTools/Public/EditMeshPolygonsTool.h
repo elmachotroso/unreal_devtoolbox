@@ -75,6 +75,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = Options)
 	bool bShowWireframe = false;
 
+	UPROPERTY(EditAnywhere, Category = Options)
+	bool bShowSelectableCorners = true;
+
+	/** When true, allows the transform gizmo to be rendered */
+	UPROPERTY(EditAnywhere, Category = Options)
+	bool bGizmoVisible = true;
+
 	/** Determines whether, on selection changes, the gizmo's rotation is taken from the object transform, or from the geometry
 	 elements selected. Only relevant with a local coordinate system and when rotation is not locked. */
 	UPROPERTY(EditAnywhere, Category = Gizmo, meta = (HideEditConditionToggle, EditCondition = "bLocalCoordSystem && !bLockRotation"))
@@ -122,11 +129,13 @@ enum class EEditMeshPolygonsToolActions
 	WeldEdges,
 	StraightenEdge,
 	FillHole,
+	BridgeEdges,
 	BevelEdges,
 
 	PlanarProjectionUV,
 
 	SimplifyByGroups,
+	RegenerateExtraCorners,
 
 	// triangle-specific edits
 	PokeSingleFace,
@@ -181,6 +190,36 @@ public:
 	void PostAction(EEditMeshPolygonsToolActions Action);
 };
 
+UCLASS()
+class MESHMODELINGTOOLS_API UPolyEditTopologyProperties : public UEditMeshPolygonsToolActionPropertySet
+{
+	GENERATED_BODY()
+
+public:
+	/** 
+	 * When true, adds extra corners at sharp group edge bends (in addition to the normal corners that
+	 * are placed at junctures of three or more group edges). For instance, a single disconnected quad-like group
+	 * would normally have a single group edge with no corners, since it has no neighboring groups, but this
+	 * setting will allow for the generation of corners at the quad corners, which is very useful for editing.
+	 * Note that the setting takes effect only after clicking Regenerate Extra Corners or performing some
+	 * operation that changes the group topology.
+	 */
+	UPROPERTY(EditAnywhere, Category = TopologyOptions)
+	bool bAddExtraCorners = true;
+
+	UFUNCTION(CallInEditor, Category = TopologyOptions)
+	void RegenerateExtraCorners() { PostAction(EEditMeshPolygonsToolActions::RegenerateExtraCorners); }
+
+	/** 
+	 * When generating extra corners, how sharp the angle needs to be to warrant an extra corner placement there. Lower values require
+	 * sharper corners, so are more tolerant of curved group edges. For instance, 180 will place corners at every vertex along a group
+	 * edge even if the edge is perfectly straight, and 135 will place a vertex only once the edge bends 45 degrees off the straight path
+	 * (i.e. 135 degrees to the previous edge). 
+	 * The setting is applied either when Regenerate Extra Corners is clicked, or after any operation that modifies topology.
+	 */
+	UPROPERTY(EditAnywhere, Category = TopologyOptions, meta = (ClampMin = "0", ClampMax = "180", EditCondition = "bAddExtraCorners"))
+	double ExtraCornerAngleThresholdDegrees = 135;
+};
 
 /** PolyEdit Actions */
 UCLASS()
@@ -361,7 +400,9 @@ public:
 
 	UFUNCTION(CallInEditor, Category = EdgeEdits, meta = (DisplayName = "Bevel", DisplayPriority = 4))
 	void Bevel() { PostAction(EEditMeshPolygonsToolActions::BevelEdges); }
-
+	
+	UFUNCTION(CallInEditor, Category = EdgeEdits, meta = (DisplayName = "Bridge", DisplayPriority = 5))
+	void Bridge() { PostAction(EEditMeshPolygonsToolActions::BridgeEdges); }
 };
 
 
@@ -442,6 +483,9 @@ public:
 
 	virtual void SetWorld(UWorld* World) { this->TargetWorld = World; }
 
+	// used by undo/redo
+	void RebuildTopologyWithGivenExtraCorners(const TSet<int32>& Vids);
+
 	virtual void Setup() override;
 	virtual void OnShutdown(EToolShutdownType ShutdownType) override;
 
@@ -451,6 +495,8 @@ public:
 
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
+
+	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;
 
 	// IInteractiveToolCameraFocusAPI implementation
 	virtual FBox GetWorldSpaceFocusBox() override;
@@ -514,6 +560,8 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UEditMeshPolygonsToolAcceptCancelAction> AcceptCancelAction = nullptr;
 
+	UPROPERTY()
+	TObjectPtr<UPolyEditTopologyProperties> TopologyProperties = nullptr;
 
 	/**
 	 * Activity objects that handle multi-interaction operations
@@ -559,6 +607,8 @@ protected:
 
 	FText DefaultMessage;
 
+	void ResetUserMessage();
+
 	bool IsToolInputSelectionUsable(const UPersistentMeshSelection* InputSelection);
 	bool bSelectionStateDirty = false;
 	void OnSelectionModifiedEvent();
@@ -572,7 +622,8 @@ protected:
 	FFrame3d LockedTransfomerFrame;
 	bool bInGizmoDrag = false;
 
-	UE::Geometry::FTransformSRT3d WorldTransform;
+	UE::Geometry::FTransformSRT3d BakedTransform; // We bake the scale part of the Target -> World transform
+	UE::Geometry::FTransformSRT3d WorldTransform; // Transform from Baked to World
 
 	FFrame3d InitialGizmoFrame;
 	FVector3d InitialGizmoScale;
@@ -620,12 +671,16 @@ protected:
 	void ApplyWeldEdges();
 	void ApplyStraightenEdges();
 	void ApplyFillHole();
+	void ApplyBridgeEdges();
 
 	void ApplyFlipSingleEdge();
 	void ApplyCollapseSingleEdge();
 	void ApplySplitSingleEdge();
 
 	void SimplifyByGroups();
+
+	void ApplyRegenerateExtraCorners();
+	double ExtraCornerDotProductThreshold = -1;
 
 	FFrame3d ActiveSelectionFrameLocal;
 	FFrame3d ActiveSelectionFrameWorld;
@@ -664,7 +719,7 @@ protected:
 	bool BeginMeshBoundaryEdgeEditChange(bool bOnlySimple);
 	bool BeginMeshEdgeEditChange(TFunctionRef<bool(int32)> GroupEdgeIDFilterFunc);
 
-	void UpdateFromCurrentMesh(bool bGroupTopologyModified);
+	void UpdateFromCurrentMesh(bool bRebuildTopology);
 	int32 ModifiedTopologyCounter = 0;
 	bool bWasTopologyEdited = false;
 
@@ -681,7 +736,8 @@ protected:
 
 /**
  * Wraps a FDynamicMeshChange so that it can be expired and so that other data
- * structures in the tool can be updated.
+ * structures in the tool can be updated. On apply/revert, the topology is rebuilt
+ * using stored extra corner vids.
  */
 class MESHMODELINGTOOLS_API FEditMeshPolygonsToolMeshChange : public FToolCommandChange
 {
@@ -694,6 +750,8 @@ public:
 	virtual void Revert(UObject* Object) override;
 	virtual FString ToString() const override;
 
+	TSet<int32> ExtraCornerVidsBefore;
+	TSet<int32> ExtraCornerVidsAfter;
 protected:
 	TUniquePtr<UE::Geometry::FDynamicMeshChange> MeshChange;
 };

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioCaptureComponent.h"
+#include "AudioAnalytics.h"
 
 static const unsigned int MaxBufferSize = 2 * 5 * 48000;
 
@@ -22,13 +23,23 @@ bool UAudioCaptureComponent::Init(int32& SampleRate)
 	Audio::FCaptureDeviceInfo DeviceInfo;
 	if (CaptureSynth.GetDefaultCaptureDeviceInfo(DeviceInfo))
 	{
-		SampleRate = DeviceInfo.PreferredSampleRate;
+		if (DeviceInfo.PreferredSampleRate > 0)
+		{
+			SampleRate = DeviceInfo.PreferredSampleRate;
+		}
+		else
+		{
+			UE_LOG(LogAudio, Warning, TEXT("Attempted to open a capture device with the invalid SampleRate value of %i"), DeviceInfo.PreferredSampleRate);
+		}
 		NumChannels = DeviceInfo.InputChannels;
 
 		if (NumChannels > 0 && NumChannels <= 8)
 		{
 			// This may fail if capture synths aren't supported on a given platform or if something went wrong with the capture device
 			bIsStreamOpen = CaptureSynth.OpenDefaultStream();
+
+			Audio::Analytics::RecordEvent_Usage(TEXT("AudioCapture.AudioCaptureComponentInitialized"));
+
 			return true;
 		}
 		else

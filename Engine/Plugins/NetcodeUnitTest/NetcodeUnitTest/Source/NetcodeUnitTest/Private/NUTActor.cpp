@@ -304,7 +304,7 @@ bool ANUTActor::VerifyEventWatcher()
 	bool bVerified = false;
 	TObjectPtr<UNetConnection>& EventWatcher = UNUTGlobals::Get().EventWatcher;
 
-	if (EventWatcher != nullptr)
+	if (EventWatcher)
 	{
 		UWorld* CurWorld = NUTUtil::GetPrimaryWorld();
 		UNetDriver* CurDriver = (CurWorld != nullptr ? NUTUtil::GetActiveNetDriver(CurWorld) : nullptr);
@@ -684,7 +684,7 @@ void ANUTActor::ExecuteOnServer(UObject* InTargetObj, FString InTargetFunc)
 					FDelegateProperty* DelProp = FindFProperty<FDelegateProperty>(GetClass(), TEXT("TempDelegate"));
 
 					FString DelString;
-					DelProp->ExportTextItem(DelString, DelProp->ContainerPtrToValuePtr<uint8>(this), nullptr, this, 0, nullptr);
+					DelProp->ExportTextItem_InContainer(DelString, this, nullptr, this, 0, nullptr);
 
 					ServerExecute(DelString);
 				}
@@ -722,7 +722,7 @@ void ANUTActor::ServerExecute_Implementation(const FString& InDelegate)
 	const TCHAR* InDelText = *InDelegate;
 
 	TempDelegate.Unbind();
-	DelProp->ImportText(InDelText, DelProp->ContainerPtrToValuePtr<uint8>(this), 0, NULL);
+	DelProp->ImportText_InContainer(InDelText, this, NULL, 0);
 
 	if (TempDelegate.IsBound())
 	{

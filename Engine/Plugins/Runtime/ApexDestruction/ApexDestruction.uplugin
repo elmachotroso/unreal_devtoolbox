@@ -19,15 +19,12 @@
 		{
 			"Name": "ApexDestruction",
 			"Type": "Runtime",
-			"LoadingPhase": "PreDefault",
-			"PlatformDenyList": [
-				"HoloLens"
-			]
+			"LoadingPhase": "PreDefault"
 		},
-    {
-			"Name" : "ApexDestructionEditor",
-			"Type" : "UncookedOnly",
-			"LoadingPhase" : "PreDefault"
+		{
+			"Name": "ApexDestructionEditor",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "PreDefault"
 		}
 	]
 }

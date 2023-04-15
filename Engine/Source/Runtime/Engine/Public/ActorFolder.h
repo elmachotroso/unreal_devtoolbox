@@ -22,7 +22,7 @@ public:
 	// Helper that creates a new UActorFolder
 	static UActorFolder* Create(ULevel* InOuter, const FString& InFolderLabel, UActorFolder* InParent);
 
-	static EPackageFlags GetExternalPackageFlags() { return (PKG_EditorOnly | PKG_ContainsMapData); }
+	static EPackageFlags GetExternalPackageFlags() { return (PKG_EditorOnly | PKG_ContainsMapData | PKG_NewlyCreated); }
 	
 	// Returns actor folder info stored in its package
 	static FActorFolderDesc GetAssetRegistryInfoFromPackage(FName PackageName);
@@ -33,10 +33,10 @@ public:
 	//~ End UObject
 
 	void SetParent(UActorFolder* InParent);
-	UActorFolder* GetParent() const;
+	UActorFolder* GetParent(bool bSkipDeleted = true) const;
 
 	void SetLabel(const FString& InFolderLabel);
-	FString GetLabel() const { return FolderLabel; }
+	const FString& GetLabel() const { return FolderLabel; }
 
 	// Control whether the folder is initially expanded or not
 	void SetIsInitiallyExpanded(bool bInFolderInitiallyExpanded);
@@ -65,10 +65,13 @@ public:
 	* @param bShouldDirty should dirty or not the level package
 	*/
 	void SetPackageExternal(bool bExternal, bool bShouldDirty = true);
-#endif
 
 private:
+	FName GetPathInternal(UActorFolder* InSkipFolder) const;
+#endif
+
 #if WITH_EDITORONLY_DATA
+private:
 	UPROPERTY()
 	FGuid ParentFolderGuid;
 

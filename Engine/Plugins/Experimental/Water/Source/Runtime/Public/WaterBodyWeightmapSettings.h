@@ -24,14 +24,14 @@ struct FWaterBodyWeightmapSettings
 		, FinalOpacity(1.0f)
 	{}
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= WaterBodyWeightmapSettings)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= WaterBodyWeightmapSettings, meta = (ClampMin = "0.1"))
 	float FalloffWidth;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WaterBodyWeightmapSettings)
 	float EdgeOffset;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WaterBodyWeightmapSettings)
-	UTexture2D* ModulationTexture;
+	TObjectPtr<UTexture2D> ModulationTexture;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WaterBodyWeightmapSettings)
 	float TextureTiling;

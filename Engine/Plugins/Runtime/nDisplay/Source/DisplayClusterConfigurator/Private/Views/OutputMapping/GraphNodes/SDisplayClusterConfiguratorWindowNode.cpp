@@ -5,8 +5,8 @@
 #include "DisplayClusterConfiguratorStyle.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
-#include "Interfaces/Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
+#include "Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorWindowNode.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorViewportNode.h"
 #include "Views/OutputMapping/GraphNodes/SDisplayClusterConfiguratorViewportNode.h"
@@ -113,7 +113,7 @@ public:
 					SNew(SBorder)
 					.HAlign(HAlign_Left)
 					.VAlign(VAlign_Center)
-					.BorderImage(FAppStyle::Get().GetBrush("WhiteBrush"))
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 					.BorderBackgroundColor(InArgs._ColorAndOpacity)
 					.Padding(FMargin(20, 10, 30, 10))
 					.ForegroundColor(InArgs._ForegroundColor)
@@ -459,7 +459,7 @@ int32 SDisplayClusterConfiguratorWindowNode::GetBorderLayerOffset() const
 
 const FSlateBrush* SDisplayClusterConfiguratorWindowNode::GetNodeShadowBrush() const
 {
-	return FAppStyle::Get().GetBrush(TEXT("Graph.Node.Shadow"));
+	return FAppStyle::GetBrush(TEXT("Graph.Node.Shadow"));
 }
 
 FMargin SDisplayClusterConfiguratorWindowNode::GetBackgroundPosition() const
@@ -525,7 +525,7 @@ bool SDisplayClusterConfiguratorWindowNode::CanShowInfoWidget() const
 	TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> OutputMapping = Toolkit->GetViewOutputMapping();
 	FVector2D NodeSize = GetSize();
 
-	return IsNodeVisible() && OutputMapping->GetOutputMappingSettings().bShowWindowInfo && NodeSize > FVector2D::ZeroVector;
+	return IsNodeVisible() && OutputMapping->GetOutputMappingSettings().bShowWindowInfo && NodeSize.GetMin() > 0;
 }
 
 bool SDisplayClusterConfiguratorWindowNode::CanShowCornerImageWidget() const
@@ -536,7 +536,7 @@ bool SDisplayClusterConfiguratorWindowNode::CanShowCornerImageWidget() const
 	TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> OutputMapping = Toolkit->GetViewOutputMapping();
 	FVector2D NodeSize = GetSize();
 
-	return IsNodeVisible() && OutputMapping->GetOutputMappingSettings().bShowWindowCornerImage && NodeSize > FVector2D::ZeroVector;
+	return IsNodeVisible() && OutputMapping->GetOutputMappingSettings().bShowWindowCornerImage && NodeSize.GetMin() > 0;
 }
 
 bool SDisplayClusterConfiguratorWindowNode::IsClusterNodeLocked() const

@@ -5,6 +5,8 @@
 #include "Components/CapsuleComponent.h"
 #include "AI/Navigation/PathFollowingAgentInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavMovementComponent)
+
 
 //----------------------------------------------------------------------//
 // UMovementComponent
@@ -46,7 +48,7 @@ float UNavMovementComponent::GetPathFollowingBrakingDistance(float MaxSpeed) con
 
 void UNavMovementComponent::SetFixedBrakingDistance(float DistanceToEndOfPath)
 {
-	if (DistanceToEndOfPath > KINDA_SMALL_NUMBER)
+	if (DistanceToEndOfPath > UE_KINDA_SMALL_NUMBER)
 	{
 		bUseFixedBrakingDistanceForPaths = true;
 		FixedPathBrakingDistance = DistanceToEndOfPath;
@@ -108,4 +110,5 @@ void UNavMovementComponent::SetUpdateNavAgentWithOwnersCollisions(bool bUpdateWi
 {
 	bUpdateNavAgentWithOwnersCollision = bUpdateWithOwner;
 }
+
 

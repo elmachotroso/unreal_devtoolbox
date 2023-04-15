@@ -11,12 +11,14 @@
 #include "MassSimulationSettings.h"
 #include "MassAgentComponent.h"
 #include "MassAgentSubsystem.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassRepresentationFragments.h"
 #include "MassRepresentationActorManagement.h"
 #include "MassEntityView.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
+#include "MassEntityUtils.h"
+
 
 int16 UMassRepresentationSubsystem::FindOrAddStaticMeshDesc(const FStaticMeshInstanceVisualizationDesc& Desc)
 {
@@ -302,7 +304,8 @@ void UMassRepresentationSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 
 	if (UWorld* World = GetWorld())
 	{
-		EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(World);
+		EntityManager = UE::Mass::Utils::GetEntityManagerChecked(*World).AsShared();
+
 		ActorSpawnerSubsystem = World->GetSubsystem<UMassActorSpawnerSubsystem>();
 		WorldPartitionSubsystem = World->GetSubsystem<UWorldPartitionSubsystem>();
 
@@ -315,6 +318,10 @@ void UMassRepresentationSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 			Visualizer = World->SpawnActor<AMassVisualizer>(SpawnInfo);
 			check(Visualizer);
 			VisualizationComponent = &Visualizer->GetVisualizationComponent();
+
+#if WITH_EDITOR
+			Visualizer->SetActorLabel(FString::Printf(TEXT("%sVisualizer"), *GetClass()->GetName()), /*bMarkDirty*/false);
+#endif
 		}
 
 		UMassSimulationSubsystem* SimSystem = World->GetSubsystem<UMassSimulationSubsystem>();
@@ -328,8 +335,8 @@ void UMassRepresentationSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 		AgentSystem->GetOnMassAgentComponentEntityDetaching().AddUObject(this, &UMassRepresentationSubsystem::OnMassAgentComponentEntityDetaching);
 	}
 
-	RetryMovedDistanceSq = FMath::Square(GET_MASS_CONFIG_VALUE(DesiredActorFailedSpawningRetryMoveDistance));
-	RetryTimeInterval = GET_MASS_CONFIG_VALUE(DesiredActorFailedSpawningRetryTimeInterval);
+	RetryMovedDistanceSq = FMath::Square(GET_MASSSIMULATION_CONFIG_VALUE(DesiredActorFailedSpawningRetryMoveDistance));
+	RetryTimeInterval = GET_MASSSIMULATION_CONFIG_VALUE(DesiredActorFailedSpawningRetryTimeInterval);
 }
 
 void UMassRepresentationSubsystem::Deinitialize()
@@ -348,7 +355,7 @@ void UMassRepresentationSubsystem::Deinitialize()
 			AgentSystem->GetOnMassAgentComponentEntityDetaching().RemoveAll(this);
 		}
 	}
-
+	EntityManager.Reset();
 }
 
 void UMassRepresentationSubsystem::OnProcessingPhaseStarted(const float DeltaSeconds, const EMassProcessingPhase Phase) const
@@ -370,32 +377,32 @@ void UMassRepresentationSubsystem::OnProcessingPhaseStarted(const float DeltaSec
 
 void UMassRepresentationSubsystem::OnMassAgentComponentEntityAssociated(const UMassAgentComponent& AgentComponent)
 {
-	check(EntitySubsystem);
+	check(EntityManager);
 
 	const FMassEntityHandle MassAgent = AgentComponent.GetEntityHandle();
-	checkf(EntitySubsystem->IsEntityValid(MassAgent), TEXT("Expecting a valid mass entity"));
-	if (EntitySubsystem->IsEntityValid(MassAgent) && AgentComponent.IsNetSimulating())
+	checkf(EntityManager->IsEntityValid(MassAgent), TEXT("Expecting a valid mass entity"));
+	if (EntityManager->IsEntityValid(MassAgent) && AgentComponent.IsNetSimulating())
 	{
 		// Check if this mass agent already handled by this sub system, if yes than release any local spawned actor or cancel any spawn requests
 		if (HandledMassAgents.Find(MassAgent))
 		{
-			UMassRepresentationActorManagement::ReleaseAnyActorOrCancelAnySpawning(*EntitySubsystem, MassAgent);
+			UMassRepresentationActorManagement::ReleaseAnyActorOrCancelAnySpawning(*EntityManager.Get(), MassAgent);
 		}
 	}
 }
 
 void UMassRepresentationSubsystem::OnMassAgentComponentEntityDetaching(const UMassAgentComponent& AgentComponent)
 {
-	check(EntitySubsystem);
+	check(EntityManager);
 
 	AActor* ComponentOwner = AgentComponent.GetOwner();
 	check(ComponentOwner);
 
 	const FMassEntityHandle MassAgent = AgentComponent.GetEntityHandle();
-	checkf(EntitySubsystem->IsEntityValid(MassAgent), TEXT("Expecting a valid mass entity"));
-	if (EntitySubsystem->IsEntityValid(MassAgent) && AgentComponent.IsNetSimulating())
+	checkf(EntityManager->IsEntityValid(MassAgent), TEXT("Expecting a valid mass entity"));
+	if (EntityManager->IsEntityValid(MassAgent) && AgentComponent.IsNetSimulating())
 	{
-		const FMassEntityView EntityView(*EntitySubsystem, MassAgent);
+		const FMassEntityView EntityView(*EntityManager.Get(), MassAgent);
 		if (FMassRepresentationFragment* Representation = EntityView.GetFragmentDataPtr<FMassRepresentationFragment>())
 		{
 			// Force a reevaluate of the current representation

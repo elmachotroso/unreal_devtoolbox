@@ -5,9 +5,12 @@
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CommandLine.h"
 #include "HAL/IConsoleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RuntimeOptionsBase)
 
 DEFINE_LOG_CATEGORY_STATIC(LogRuntimeOptionsBase, Log, All);
 
@@ -38,8 +41,7 @@ void URuntimeOptionsBase::InitializeRuntimeOptions()
 		ensureAlwaysMsgf(NumNonAbstractVersions == 1, TEXT("Error in %s hierarchy; properties should only be introduced in leaf non-abstract subclasses of URuntimeOptionsBase"), *GetClass()->GetName());
 
 		// Load the .ini file if it hasn't already been loaded
-		FString RuntimeOptionsIniName;
-		FConfigCacheIni::LoadGlobalIniFile(/*out*/ RuntimeOptionsIniName, *GetClass()->ClassConfigName.ToString(), nullptr);
+		FConfigContext::ReadIntoGConfig().Load(*GetClass()->ClassConfigName.ToString());
 	
 		// Apply command line overrides and expose properties as console variables
 		ApplyCommandlineOverrides();
@@ -55,12 +57,10 @@ void URuntimeOptionsBase::ApplyCommandlineOverrides()
 	{
 		const FString FullyQualifiedName = FString::Printf(TEXT("%s.%s"), *OptionCommandPrefix, *Property->GetName());
 
-		uint8* DataPtr = Property->ContainerPtrToValuePtr<uint8>(this, 0);
-
 		FString CommandLineOverride;
 		if (FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("%s="), *FullyQualifiedName), /*out*/ CommandLineOverride))
 		{
-			Property->ImportText(*CommandLineOverride, DataPtr, PPF_None, this);
+			Property->ImportText_InContainer(*CommandLineOverride, this, this, PPF_None);
 		}
 	}
 #endif
@@ -149,3 +149,4 @@ void URuntimeOptionsBase::PostReloadConfig(FProperty* PropertyThatWasLoaded)
 		}
 	}
 }
+

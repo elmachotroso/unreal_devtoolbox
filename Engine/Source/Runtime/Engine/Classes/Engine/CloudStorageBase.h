@@ -12,7 +12,7 @@
 UENUM()
 enum ECloudStorageDelegate
 {
-	// @todo: Fill in the result descriptions for these guys (and the other PI subclasses)
+	// @todo: Fill in the result descriptions for these (and the other PI subclasses)
 	CSD_KeyValueReadComplete,
 	CSD_KeyValueWriteComplete,
 	CSD_ValueChanged,
@@ -182,7 +182,7 @@ class UCloudStorageBase
 
 	/**
 	 * If there was a conflict notification, this will tell the cloud interface
-	 * to choose the version with a given Index to be the master version, and to
+	 * to choose the version with a given Index to be the primary version, and to
 	 * toss any others.
 	 *
 	 * @param Index Conflict version index.

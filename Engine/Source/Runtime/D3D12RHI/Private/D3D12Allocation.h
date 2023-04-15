@@ -378,12 +378,13 @@ public:
 private:
 
 	// Buddy allocator used for all 'small' allocation - fast but aligns to power of 2
-	FD3D12MultiBuddyAllocator SmallBlockAllocator;
+	FD3D12MultiBuddyAllocator	SmallBlockAllocator;
 	// Pool allocator for all bigger allocations - less fast but less alignment waste
-	FD3D12PoolAllocator		  BigBlockAllocator;
+	FCriticalSection			BigBlockCS;
+	FD3D12PoolAllocator			BigBlockAllocator;
 	// Seperate buddy allocator used for the fast constant allocator pages which get always freed within the same frame by default
 	// (different allocator to avoid fragmentation with the other pools - always the same size allocations)
-	FD3D12MultiBuddyAllocator FastConstantPageAllocator;
+	FD3D12MultiBuddyAllocator	FastConstantPageAllocator;
 };
 
 //-----------------------------------------------------------------------------
@@ -436,6 +437,7 @@ private:
 	FD3D12BufferPool* CreateBufferPool(D3D12_HEAP_TYPE InHeapType, D3D12_RESOURCE_FLAGS InResourceFlags, EBufferUsageFlags InBufferUsage, ED3D12ResourceStateMode InResourceStateMode, uint32 Alignment);
 
 	TArray<FD3D12BufferPool*> DefaultBufferPools;
+	FCriticalSection CS;
 };
 
 //-----------------------------------------------------------------------------
@@ -521,12 +523,7 @@ class FD3D12FastConstantAllocator : public FD3D12DeviceChild, public FD3D12Multi
 public:
 	FD3D12FastConstantAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask);
 
-#if USE_STATIC_ROOT_SIGNATURE
 	void* Allocate(uint32 Bytes, class FD3D12ResourceLocation& OutLocation, FD3D12ConstantBufferView* OutCBView);
-#else
-	void* Allocate(uint32 Bytes, class FD3D12ResourceLocation& OutLocation);
-#endif
-
 	void ClearResource() { UnderlyingResource.Clear(); }
 
 private:

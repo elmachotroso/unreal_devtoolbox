@@ -5,11 +5,13 @@
 #include "ShaderCore.h"
 #include "MetalShaderResources.h"
 #include "ShaderCompilerCommon.h"
+#include "ShaderParameterParser.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/EngineVersion.h"
 #include "HAL/PlatformFileManager.h"
 
 #include "MetalShaderFormat.h"
@@ -50,7 +52,7 @@ static bool CompileProcessAllowsRuntimeShaderCompiling(const FShaderCompilerInpu
 }
 
 constexpr uint16 GMetalMaxUniformBufferSlots = 32;
-constexpr int32 GMetalDefaultShadingLanguageVersion = 7;
+constexpr int32 GMetalDefaultShadingLanguageVersion = 0;
 
 /*------------------------------------------------------------------------------
 	Shader compiling.
@@ -375,7 +377,8 @@ void BuildMetalShaderOutput(
 			continue;
 		}
 		UsedUniformBufferSlots[UBIndex] = true;
-		ParameterMap.AddParameterAllocation(*UniformBlock.Name, UBIndex, 0, 0, EShaderParameterType::UniformBuffer);
+
+		HandleReflectedUniformBuffer(UniformBlock.Name, UBIndex, ShaderOutput);
 	}
 	
 	if (bOutOfBounds)
@@ -389,12 +392,12 @@ void BuildMetalShaderOutput(
 	TMap<ANSICHAR, uint16> PackedGlobalArraySize;
 	for (auto& PackedGlobal : CCHeader.PackedGlobals)
 	{
-		ParameterMap.AddParameterAllocation(
-			*PackedGlobal.Name,
+		HandleReflectedGlobalConstantBufferMember(
+			PackedGlobal.Name,
 			PackedGlobal.PackedType,
 			PackedGlobal.Offset * BytesPerComponent,
 			PackedGlobal.Count * BytesPerComponent,
-			EShaderParameterType::LooseData
+			ShaderOutput
 		);
 
 		uint16& Size = PackedGlobalArraySize.FindOrAdd(PackedGlobal.PackedType);
@@ -407,12 +410,12 @@ void BuildMetalShaderOutput(
 	{
 		for (auto& Member : PackedUB.Members)
 		{
-			ParameterMap.AddParameterAllocation(
-				*Member.Name,
-				(ANSICHAR)CrossCompiler::EPackedTypeName::HighP,
+			HandleReflectedGlobalConstantBufferMember(
+				Member.Name,
+				(uint32)CrossCompiler::EPackedTypeName::HighP,
 				Member.Offset * BytesPerComponent,
-												Member.Count * BytesPerComponent, 
-				EShaderParameterType::LooseData
+				Member.Count * BytesPerComponent,
+				ShaderOutput
 			);
 			
 			uint16& Size = PackedUniformBuffersSize.FindOrAdd(PackedUB.Attribute.Index).FindOrAdd(CrossCompiler::EPackedTypeName::HighP);
@@ -462,13 +465,7 @@ void BuildMetalShaderOutput(
 	TMap<FString, uint32> SamplerMap;
 	for (auto& Sampler : CCHeader.Samplers)
 	{
-		ParameterMap.AddParameterAllocation(
-			*Sampler.Name,
-			0,
-			Sampler.Offset,
-			Sampler.Count,
-			EShaderParameterType::SRV
-		);
+		HandleReflectedShaderResource(Sampler.Name, Sampler.Offset, Sampler.Count, ShaderOutput);
 
 		NumTextures += Sampler.Count;
 
@@ -483,13 +480,7 @@ void BuildMetalShaderOutput(
 	// Then UAVs (images in Metal)
 	for (auto& UAV : CCHeader.UAVs)
 	{
-		ParameterMap.AddParameterAllocation(
-			*UAV.Name,
-			0,
-			UAV.Offset,
-			UAV.Count,
-			EShaderParameterType::UAV
-		);
+		HandleReflectedShaderUAV(UAV.Name, UAV.Offset, UAV.Count, ShaderOutput);
 
 		Header.Bindings.NumUAVs = FMath::Max<uint8>(
 			Header.Bindings.NumSamplers,
@@ -504,13 +495,7 @@ void BuildMetalShaderOutput(
 			SamplerMap.Add(SamplerState.Name, 1);
 		}
 		
-		ParameterMap.AddParameterAllocation(
-			*SamplerState.Name,
-			0,
-			SamplerState.Index,
-			SamplerMap[SamplerState.Name],
-			EShaderParameterType::Sampler
-		);
+		HandleReflectedShaderSampler(SamplerState.Name, SamplerState.Index, SamplerMap[SamplerState.Name], ShaderOutput);
 	}
 
 	Header.NumThreadsX = CCHeader.NumThreads[0];
@@ -692,6 +677,7 @@ void BuildMetalShaderOutput(
 			Job.OutputObjectFile = AIRFileName;
 			Job.CompilerVersion = CompilerVersionString;
 			Job.MinOSVersion = MinOSVersion;
+			Job.PreserveInvariance = Frequency == SF_Vertex && Version > 5 ? TEXT("-fpreserve-invariance") : TEXT("");
 			Job.DebugInfo = DebugInfo;
 			Job.MathMode = MathMode;
 			Job.Standard = Standard;
@@ -914,10 +900,26 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	EMetalTypeBufferMode TypeMode = EMetalTypeBufferModeRaw;
 	FString MinOSVersion;
 	FString StandardVersion;
+    TypeMode = EMetalTypeBufferModeTB;
 	switch(VersionEnum)
 	{
+    case 8:
+        StandardVersion = TEXT("3.0");
+        if (bAppleTV)
+        {
+            MinOSVersion = TEXT("-mtvos-version-min=16.0");
+        }
+        else if (bIsMobile)
+        {
+            MinOSVersion = TEXT("-mios-version-min=16.0");
+        }
+        else
+        {
+            MinOSVersion = TEXT("-mmacosx-version-min=13");
+        }
+        break;
+
 	case 7:
-		TypeMode = EMetalTypeBufferModeTB;
 		StandardVersion = TEXT("2.4");
 		if (bAppleTV)
 		{
@@ -932,55 +934,72 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 			MinOSVersion = TEXT("-mmacosx-version-min=12");
 		}
 		break;
-
 	case 6:
-		TypeMode = EMetalTypeBufferModeTB;
-		StandardVersion = TEXT("2.3");
+		StandardVersion = TEXT("2.4");
 		if (bAppleTV)
 		{
-			MinOSVersion = TEXT("-mtvos-version-min=14.0");
+			MinOSVersion = TEXT("-mtvos-version-min=15.0");
 		}
 		else if (bIsMobile)
 		{
-			MinOSVersion = TEXT("-mios-version-min=14.0");
+			MinOSVersion = TEXT("-mios-version-min=15.0");
 		}
 		else
 		{
+			// TODO - This is a workaround for an issue with the Apple Shader Compiler
+			// leading to corruption on M1/AMD when > 2.3 versions are used. 
+			// This should be bumped to 2.4 after it's resolved
+			StandardVersion = TEXT("2.3");
 			MinOSVersion = TEXT("-mmacosx-version-min=11");
 		}
 		break;
-
 	case 5:
-    case 0:
-		TypeMode = EMetalTypeBufferModeTB;
-		StandardVersion = TEXT("2.2");
+		// Fall through
+	case 0:
+		StandardVersion = TEXT("2.4");
 		if (bAppleTV)
 		{
-			MinOSVersion = TEXT("-mtvos-version-min=13.0");
+			MinOSVersion = TEXT("-mtvos-version-min=15.0");
 		}
 		else if (bIsMobile)
 		{
-			MinOSVersion = TEXT("-mios-version-min=13.0");
+			MinOSVersion = TEXT("-mios-version-min=15.0");
 		}
 		else
 		{
+			// TODO - This is a workaround for an issue with the Apple Shader Compiler
+			// leading to corruption on M1/AMD when > 2.3 versions are used. 
+			// This should be bumped to 2.4 after it's resolved
+			StandardVersion = TEXT("2.2");
 			MinOSVersion = TEXT("-mmacosx-version-min=10.15");
 		}
+		//EIOSMetalShaderStandard::IOSMetalSLStandard_Minimum
 		break;
-            
-        default:
+	default:
 		Output.bSucceeded = false;
 		{
+            FString EngineIdentifier = FEngineVersion::Current().ToString(EVersionComponent::Minor);
 			FShaderCompilerError* NewError = new(Output.Errors) FShaderCompilerError();
-			NewError->StrippedErrorMessage = FString::Printf(TEXT("Minimum Metal Version is 2.2 in UE5.0"));
+            NewError->StrippedErrorMessage = FString::Printf(TEXT("Minimum Metal Version is 2.4 in UE %s"), *EngineIdentifier);
 			return;
 		}
 		break;
 	}
 	
-	AdditionalDefines.SetDefine(TEXT("FORCE_FLOATS"), (uint32)1);
+    if (Input.Environment.FullPrecisionInPS)
+    {
+        AdditionalDefines.SetDefine(TEXT("FORCE_FLOATS"), (uint32)1);
+    }
 
-	FString Standard = FString::Printf(TEXT("-std=%s-metal%s"), StandardPlatform, *StandardVersion);
+    FString Standard;
+    if (VersionEnum >= 8)
+    {
+        Standard = FString::Printf(TEXT("-std=metal%s"), *StandardVersion);
+    }
+    else
+    {
+        Standard = FString::Printf(TEXT("-std=%s-metal%s"), StandardPlatform, *StandardVersion);
+    }
 	
 	bool const bDirectCompile = FParse::Param(FCommandLine::Get(), TEXT("directcompile"));
 	if (bDirectCompile)
@@ -1008,6 +1027,8 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	}
 
 	AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_DUAL_SOURCE_BLENDING_SLOT_DECORATION"), (uint32)1);
+
+	const double StartPreprocessTime = FPlatformTime::Seconds();
 
 	if (Input.bSkipPreprocessedCache)
 	{
@@ -1045,8 +1066,7 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	}
 
 	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndMoveShaderParametersToRootConstantBuffer(
-		Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -1054,6 +1074,11 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 
 	// This requires removing the HLSLCC_NoPreprocess flag later on!
 	RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShader);
+
+	// Process TEXT macro.
+	TransformStringIntoCharacterArray(PreprocessedShader);
+
+	Output.PreprocessTime = FPlatformTime::Seconds() - StartPreprocessTime;
 	
 	uint32 CCFlags = HLSLCC_NoPreprocess | HLSLCC_PackUniformsIntoUniformBufferWithNames | HLSLCC_FixAtomicReferences | HLSLCC_RetainSizes | HLSLCC_KeepSamplerAndImageNames;
 	if (!bDirectCompile || UE_BUILD_DEBUG)
@@ -1219,13 +1244,11 @@ bool StripShader_Metal(TArray<uint8>& Code, class FString const& DebugPath, bool
 	return bSuccess;
 }
 
-uint64 AppendShader_Metal(FName const& Format, FString const& WorkingDir, const FSHAHash& Hash, TArray<uint8>& InShaderCode)
+uint64 AppendShader_Metal(FString const& WorkingDir, const FSHAHash& Hash, TArray<uint8>& InShaderCode)
 {
 	uint64 Id = 0;
 	
 	const bool bCompilerAvailable = FMetalCompilerToolchain::Get()->IsCompilerAvailable();
-	
-	EShaderPlatform Platform = FMetalCompilerToolchain::MetalShaderFormatToLegacyShaderPlatform(Format);
 	
 	if (bCompilerAvailable)
 	{

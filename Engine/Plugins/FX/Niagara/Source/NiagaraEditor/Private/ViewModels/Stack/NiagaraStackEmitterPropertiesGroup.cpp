@@ -15,6 +15,9 @@
 #include "ViewModels/Stack/NiagaraStackEmitterSettingsGroup.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraSimulationStageBase.h"
+#include "Styling/AppStyle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackEmitterPropertiesGroup)
 
 #define LOCTEXT_NAMESPACE "StackEmitterProperties"
 
@@ -89,17 +92,21 @@ public:
 			LOCTEXT("AddEventActionDescription", "Add an event handler to this emitter."),
 			LOCTEXT("AddEventActionKeywords", "Event")));
 
+		const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
 		TArray<UClass*> SimulationStageClasses;
 		GetDerivedClasses(UNiagaraSimulationStageBase::StaticClass(), SimulationStageClasses);
 		for (UClass* SimulationStageClass : SimulationStageClasses)
 		{
-			OutAddActions.Add(MakeShared<FAddEmitterStageAction>(
-				EEmitterAddMode::SimulationStage,
-				SimulationStageClass,
-				SimulationStageCategories,
-				SimulationStageClass->GetDisplayNameText(),
-				FText::FromString(SimulationStageClass->GetDescription()),
-				FText::FromString(SimulationStageClass->GetName())));
+			if (NiagaraEditorSettings->IsAllowedClass(SimulationStageClass))
+			{
+				OutAddActions.Add(MakeShared<FAddEmitterStageAction>(
+					EEmitterAddMode::SimulationStage,
+					SimulationStageClass,
+					SimulationStageCategories,
+					SimulationStageClass->GetDisplayNameText(),
+					FText::FromString(SimulationStageClass->GetDescription()),
+					FText::FromString(SimulationStageClass->GetName())));
+			}
 		}
 	}
 
@@ -111,7 +118,8 @@ public:
 			return;
 		}
 
-		UNiagaraEmitter* Emitter = EmitterViewModel->GetEmitter();
+		FVersionedNiagaraEmitter VersionedEmitter = EmitterViewModel->GetEmitter();
+		UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
 		UNiagaraScriptSource* Source = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel()->GetScriptSource();
 		UNiagaraGraph* Graph = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel()->GetGraph();
 
@@ -138,7 +146,7 @@ public:
 			EventScriptProperties.Script->SetUsage(ENiagaraScriptUsage::ParticleEventScript);
 			EventScriptProperties.Script->SetUsageId(FGuid::NewGuid());
 			EventScriptProperties.Script->SetLatestSource(Source);
-			Emitter->AddEventHandler(EventScriptProperties);
+			Emitter->AddEventHandler(EventScriptProperties, VersionedEmitter.Version);
 			FNiagaraStackGraphUtilities::ResetGraphForOutput(*Graph, ENiagaraScriptUsage::ParticleEventScript, EventScriptProperties.Script->GetUsageId());
 			AddedEventHandlerId = EventScriptProperties.Script->GetUsageId();
 		}
@@ -152,7 +160,7 @@ public:
 			AddedSimulationStage->Script->SetUsage(ENiagaraScriptUsage::ParticleSimulationStageScript);
 			AddedSimulationStage->Script->SetUsageId(AddedSimulationStage->GetMergeId());
 			AddedSimulationStage->Script->SetLatestSource(Source);
-			Emitter->AddSimulationStage(AddedSimulationStage);
+			Emitter->AddSimulationStage(AddedSimulationStage, VersionedEmitter.Version);
 			FNiagaraStackGraphUtilities::ResetGraphForOutput(*Graph, ENiagaraScriptUsage::ParticleSimulationStageScript, AddedSimulationStage->Script->GetUsageId());
 		}
 
@@ -160,7 +168,7 @@ public:
 		// TODO: Move the logic for managing additional scripts into the emitter view model or script view model.
 		TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> Simulation = EmitterViewModel->GetSimulation();
 		EmitterViewModel->Reset();
-		EmitterViewModel->Initialize(Emitter, Simulation);
+		EmitterViewModel->Initialize(VersionedEmitter, Simulation);
 
 		OnItemAdded.ExecuteIfBound(AddedEventHandlerId, AddedSimulationStage);
 	}
@@ -193,17 +201,17 @@ const FSlateBrush* UNiagaraStackEmitterPropertiesGroup::GetSecondaryIconBrush() 
 {
 	if (IsFinalized() == false && GetEmitterViewModel().IsValid())
 	{
-		UNiagaraEmitter* Emitter = GetEmitterViewModel()->GetEmitter();
-		if (Emitter->SimTarget == ENiagaraSimTarget::CPUSim)
+		FVersionedNiagaraEmitterData* EmitterData = GetEmitterViewModel()->GetEmitter().GetEmitterData();
+		if (EmitterData->SimTarget == ENiagaraSimTarget::CPUSim)
 		{
 			return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.CPUIcon");
 		}
-		if (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+		if (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim)
 		{
 			return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.GPUIcon");
 		}
 	}
-	return FEditorStyle::GetBrush("NoBrush");
+	return FAppStyle::GetBrush("NoBrush");
 }
 
 void UNiagaraStackEmitterPropertiesGroup::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)

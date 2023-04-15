@@ -5,7 +5,7 @@
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "MovieScene.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SequenceRecorderUtils.h"
 #include "SequenceRecorderSettings.h"
 #include "ActorRecording.h"
@@ -26,7 +26,7 @@ bool FMovieSceneAnimationSectionRecorderFactory::CanRecordObject(UObject* InObje
 	if (InObjectToRecord->IsA<USkeletalMeshComponent>())
 	{
 		USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InObjectToRecord);
-		if (SkeletalMeshComponent && SkeletalMeshComponent->SkeletalMesh)
+		if (SkeletalMeshComponent && SkeletalMeshComponent->GetSkeletalMeshAsset())
 		{
 			return true;
 		}
@@ -64,7 +64,7 @@ void FMovieSceneAnimationSectionRecorder::CreateSection(UObject* InObjectToRecor
 
 	if(SkeletalMeshComponent.IsValid())
 	{
-		SkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+		SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 		if (SkeletalMesh != nullptr)
 		{
 			ComponentTransform = SkeletalMeshComponent->GetComponentToWorld().GetRelativeTransform(SkeletalMeshComponent->GetOwner()->GetTransform());
@@ -99,7 +99,7 @@ void FMovieSceneAnimationSectionRecorder::CreateSection(UObject* InObjectToRecor
 					FAssetRegistryModule::AssetCreated(AnimSequence.Get());
 
 					// set skeleton
-					AnimSequence->SetSkeleton(SkeletalMeshComponent->SkeletalMesh->GetSkeleton());
+					AnimSequence->SetSkeleton(SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton());
 				}
 			}
 

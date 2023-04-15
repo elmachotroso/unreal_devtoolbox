@@ -5,11 +5,10 @@
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/PlatformMath.h"
+#include "Math/MathFwd.h"
 #include "Templates/Decay.h"
 #include "Templates/IsFloatingPoint.h"
 #include "Templates/IsIntegral.h"
-
-//#define IMPLEMENT_ASSIGNMENT_OPERATOR_MANUALLY
 
 // Assert on non finite numbers. Used to track NaNs.
 #ifndef ENABLE_NAN_DIAGNOSTIC
@@ -25,18 +24,7 @@
 -----------------------------------------------------------------------------*/
 
 // Forward declarations.
-UE_DECLARE_LWC_TYPE(Vector2,, FVector2D);
-UE_DECLARE_LWC_TYPE(Vector, 3);
-UE_DECLARE_LWC_TYPE(Vector4);
-UE_DECLARE_LWC_TYPE(Plane, 4);
-UE_DECLARE_LWC_TYPE(Box, 3);
-UE_DECLARE_LWC_TYPE(Rotator, 3);
-UE_DECLARE_LWC_TYPE(Matrix, 44);
-UE_DECLARE_LWC_TYPE(Quat, 4);
 struct  FTwoVectors;
-UE_DECLARE_LWC_TYPE(Transform, 3);
-UE_DECLARE_LWC_TYPE(Sphere, 3);
-
 struct FLinearColor;
 template<typename ElementType>
 class TRange;
@@ -45,37 +33,129 @@ class TRange;
 	Floating point constants.
 -----------------------------------------------------------------------------*/
 
-#undef  PI
-#define PI 					(3.1415926535897932f)	/* Extra digits if needed: 3.1415926535897932384626433832795f */
-#define SMALL_NUMBER		(1.e-8f)
-#define KINDA_SMALL_NUMBER	(1.e-4f)
-#define BIG_NUMBER			(3.4e+38f)
-#define EULERS_NUMBER       (2.71828182845904523536f)
-#define UE_GOLDEN_RATIO		(1.6180339887498948482045868343656381f)	/* Also known as divine proportion, golden mean, or golden section - related to the Fibonacci Sequence = (1 + sqrt(5)) / 2 */
-#define FLOAT_NON_FRACTIONAL (8388608.f) /* All single-precision floating point numbers greater than or equal to this have no fractional value. */
+// These macros can have different values across modules inside a single codebase.
+// Tell the IncludeTool static analyzer to ignore that divergence in state:
+#define UE_INCLUDETOOL_IGNORE_INCONSISTENT_STATE
+
+// Define this to 1 in a module's .Build.cs to make legacy names issue deprecation warnings.
+#ifndef UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES
+	#define UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES 0
+#endif
+
+// Define this to 0 in a module's .Build.cs to stop that module recognizing the old identifiers.
+#ifndef UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES
+	#define UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES 1
+#endif
+
+// Process for fixing up a module's use of legacy names:
+//
+// - Define UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES=1 to the module's .Build.cs.
+// - Build and fix all warnings.
+// - Remove UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES=1 from the module's .Build.cs.
+// - Define UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES=0 from the module's .Build.cs to stop new usage of the legacy macros.
+
+#if UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES
+	#if UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES
+		#define UE_PRIVATE_MATH_DEPRECATION(Before, After) UE_DEPRECATED_MACRO(5.1, "The " #Before " macro has been deprecated in favor of " #After ".")
+	#else
+		#define UE_PRIVATE_MATH_DEPRECATION(Before, After)
+	#endif
+
+	#undef  PI
+	#define PI										UE_PRIVATE_MATH_DEPRECATION(PI										, UE_PI										) UE_PI
+	#define SMALL_NUMBER							UE_PRIVATE_MATH_DEPRECATION(SMALL_NUMBER							, UE_SMALL_NUMBER							) UE_SMALL_NUMBER
+	#define KINDA_SMALL_NUMBER						UE_PRIVATE_MATH_DEPRECATION(KINDA_SMALL_NUMBER						, UE_KINDA_SMALL_NUMBER						) UE_KINDA_SMALL_NUMBER
+	#define BIG_NUMBER								UE_PRIVATE_MATH_DEPRECATION(BIG_NUMBER								, UE_BIG_NUMBER								) UE_BIG_NUMBER
+	#define EULERS_NUMBER							UE_PRIVATE_MATH_DEPRECATION(EULERS_NUMBER							, UE_EULERS_NUMBER							) UE_EULERS_NUMBER
+	#define FLOAT_NON_FRACTIONAL					UE_PRIVATE_MATH_DEPRECATION(FLOAT_NON_FRACTIONAL					, UE_FLOAT_NON_FRACTIONAL					) UE_FLOAT_NON_FRACTIONAL
+	#define DOUBLE_PI								UE_PRIVATE_MATH_DEPRECATION(DOUBLE_PI								, UE_DOUBLE_PI								) UE_DOUBLE_PI
+	#define DOUBLE_SMALL_NUMBER						UE_PRIVATE_MATH_DEPRECATION(DOUBLE_SMALL_NUMBER						, UE_DOUBLE_SMALL_NUMBER					) UE_DOUBLE_SMALL_NUMBER
+	#define DOUBLE_KINDA_SMALL_NUMBER				UE_PRIVATE_MATH_DEPRECATION(DOUBLE_KINDA_SMALL_NUMBER				, UE_DOUBLE_KINDA_SMALL_NUMBER				) UE_DOUBLE_KINDA_SMALL_NUMBER
+	#define DOUBLE_BIG_NUMBER						UE_PRIVATE_MATH_DEPRECATION(DOUBLE_BIG_NUMBER						, UE_DOUBLE_BIG_NUMBER						) UE_DOUBLE_BIG_NUMBER
+	#define DOUBLE_EULERS_NUMBER					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_EULERS_NUMBER					, UE_DOUBLE_EULERS_NUMBER					) UE_DOUBLE_EULERS_NUMBER
+	#define DOUBLE_UE_GOLDEN_RATIO					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_GOLDEN_RATIO					, UE_DOUBLE_GOLDEN_RATIO					) UE_DOUBLE_GOLDEN_RATIO
+	#define DOUBLE_NON_FRACTIONAL					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_NON_FRACTIONAL					, UE_DOUBLE_NON_FRACTIONAL					) UE_DOUBLE_NON_FRACTIONAL
+	#define MAX_FLT									UE_PRIVATE_MATH_DEPRECATION(MAX_FLT									, UE_MAX_FLT								) UE_MAX_FLT
+	#define INV_PI									UE_PRIVATE_MATH_DEPRECATION(INV_PI									, UE_INV_PI									) UE_INV_PI
+	#define HALF_PI									UE_PRIVATE_MATH_DEPRECATION(HALF_PI									, UE_HALF_PI								) UE_HALF_PI
+	#define TWO_PI									UE_PRIVATE_MATH_DEPRECATION(TWO_PI									, UE_TWO_PI									) UE_TWO_PI
+	#define PI_SQUARED								UE_PRIVATE_MATH_DEPRECATION(PI_SQUARED								, UE_PI_SQUARED								) UE_PI_SQUARED
+	#define DOUBLE_INV_PI							UE_PRIVATE_MATH_DEPRECATION(DOUBLE_INV_PI							, UE_DOUBLE_INV_PI							) UE_DOUBLE_INV_PI
+	#define DOUBLE_HALF_PI							UE_PRIVATE_MATH_DEPRECATION(DOUBLE_HALF_PI							, UE_DOUBLE_HALF_PI							) UE_DOUBLE_HALF_PI
+	#define DOUBLE_TWO_PI							UE_PRIVATE_MATH_DEPRECATION(DOUBLE_TWO_PI							, UE_DOUBLE_TWO_PI							) UE_DOUBLE_TWO_PI
+	#define DOUBLE_PI_SQUARED						UE_PRIVATE_MATH_DEPRECATION(DOUBLE_PI_SQUARED						, UE_DOUBLE_PI_SQUARED						) UE_DOUBLE_PI_SQUARED
+	#define DOUBLE_UE_SQRT_2						UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_SQRT_2						, UE_DOUBLE_SQRT_2							) UE_DOUBLE_SQRT_2
+	#define DOUBLE_UE_SQRT_3						UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_SQRT_3						, UE_DOUBLE_SQRT_3							) UE_DOUBLE_SQRT_3
+	#define DOUBLE_UE_INV_SQRT_2					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_INV_SQRT_2					, UE_DOUBLE_INV_SQRT_2						) UE_DOUBLE_INV_SQRT_2
+	#define DOUBLE_UE_INV_SQRT_3					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_INV_SQRT_3					, UE_DOUBLE_INV_SQRT_3						) UE_DOUBLE_INV_SQRT_3
+	#define DOUBLE_UE_HALF_SQRT_2					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_HALF_SQRT_2					, UE_DOUBLE_HALF_SQRT_2						) UE_DOUBLE_HALF_SQRT_2
+	#define DOUBLE_UE_HALF_SQRT_3					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_UE_HALF_SQRT_3					, UE_DOUBLE_HALF_SQRT_3						) UE_DOUBLE_HALF_SQRT_3
+	#define DELTA									UE_PRIVATE_MATH_DEPRECATION(DELTA									, UE_DELTA									) UE_DELTA
+	#define DOUBLE_DELTA							UE_PRIVATE_MATH_DEPRECATION(DOUBLE_DELTA							, UE_DOUBLE_DELTA							) UE_DOUBLE_DELTA
+	#define FLOAT_NORMAL_THRESH						UE_PRIVATE_MATH_DEPRECATION(FLOAT_NORMAL_THRESH						, UE_FLOAT_NORMAL_THRESH					) UE_FLOAT_NORMAL_THRESH
+	#define DOUBLE_NORMAL_THRESH					UE_PRIVATE_MATH_DEPRECATION(DOUBLE_NORMAL_THRESH					, UE_DOUBLE_NORMAL_THRESH					) UE_DOUBLE_NORMAL_THRESH
+	#define THRESH_POINT_ON_PLANE					UE_PRIVATE_MATH_DEPRECATION(THRESH_POINT_ON_PLANE					, UE_THRESH_POINT_ON_PLANE					) UE_THRESH_POINT_ON_PLANE
+	#define THRESH_POINT_ON_SIDE					UE_PRIVATE_MATH_DEPRECATION(THRESH_POINT_ON_SIDE					, UE_THRESH_POINT_ON_SIDE					) UE_THRESH_POINT_ON_SIDE
+	#define THRESH_POINTS_ARE_SAME					UE_PRIVATE_MATH_DEPRECATION(THRESH_POINTS_ARE_SAME					, UE_THRESH_POINTS_ARE_SAME					) UE_THRESH_POINTS_ARE_SAME
+	#define THRESH_POINTS_ARE_NEAR					UE_PRIVATE_MATH_DEPRECATION(THRESH_POINTS_ARE_NEAR					, UE_THRESH_POINTS_ARE_NEAR					) UE_THRESH_POINTS_ARE_NEAR
+	#define THRESH_NORMALS_ARE_SAME					UE_PRIVATE_MATH_DEPRECATION(THRESH_NORMALS_ARE_SAME					, UE_THRESH_NORMALS_ARE_SAME				) UE_THRESH_NORMALS_ARE_SAME
+	#define THRESH_UVS_ARE_SAME						UE_PRIVATE_MATH_DEPRECATION(THRESH_UVS_ARE_SAME						, UE_THRESH_UVS_ARE_SAME					) UE_THRESH_UVS_ARE_SAME
+	#define THRESH_VECTORS_ARE_NEAR					UE_PRIVATE_MATH_DEPRECATION(THRESH_VECTORS_ARE_NEAR					, UE_THRESH_VECTORS_ARE_NEAR				) UE_THRESH_VECTORS_ARE_NEAR
+	#define THRESH_SPLIT_POLY_WITH_PLANE			UE_PRIVATE_MATH_DEPRECATION(THRESH_SPLIT_POLY_WITH_PLANE			, UE_THRESH_SPLIT_POLY_WITH_PLANE			) UE_THRESH_SPLIT_POLY_WITH_PLANE
+	#define THRESH_SPLIT_POLY_PRECISELY				UE_PRIVATE_MATH_DEPRECATION(THRESH_SPLIT_POLY_PRECISELY				, UE_THRESH_SPLIT_POLY_PRECISELY			) UE_THRESH_SPLIT_POLY_PRECISELY
+	#define THRESH_ZERO_NORM_SQUARED				UE_PRIVATE_MATH_DEPRECATION(THRESH_ZERO_NORM_SQUARED				, UE_THRESH_ZERO_NORM_SQUARED				) UE_THRESH_ZERO_NORM_SQUARED
+	#define THRESH_NORMALS_ARE_PARALLEL				UE_PRIVATE_MATH_DEPRECATION(THRESH_NORMALS_ARE_PARALLEL				, UE_THRESH_NORMALS_ARE_PARALLEL			) UE_THRESH_NORMALS_ARE_PARALLEL
+	#define THRESH_NORMALS_ARE_ORTHOGONAL			UE_PRIVATE_MATH_DEPRECATION(THRESH_NORMALS_ARE_ORTHOGONAL			, UE_THRESH_NORMALS_ARE_ORTHOGONAL			) UE_THRESH_NORMALS_ARE_ORTHOGONAL
+	#define THRESH_VECTOR_NORMALIZED				UE_PRIVATE_MATH_DEPRECATION(THRESH_VECTOR_NORMALIZED				, UE_THRESH_VECTOR_NORMALIZED				) UE_THRESH_VECTOR_NORMALIZED
+	#define THRESH_QUAT_NORMALIZED					UE_PRIVATE_MATH_DEPRECATION(THRESH_QUAT_NORMALIZED					, UE_THRESH_QUAT_NORMALIZED					) UE_THRESH_QUAT_NORMALIZED
+	#define DOUBLE_THRESH_POINT_ON_PLANE			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_POINT_ON_PLANE			, UE_DOUBLE_THRESH_POINT_ON_PLANE			) UE_DOUBLE_THRESH_POINT_ON_PLANE
+	#define DOUBLE_THRESH_POINT_ON_SIDE				UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_POINT_ON_SIDE				, UE_DOUBLE_THRESH_POINT_ON_SIDE			) UE_DOUBLE_THRESH_POINT_ON_SIDE
+	#define DOUBLE_THRESH_POINTS_ARE_SAME			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_POINTS_ARE_SAME			, UE_DOUBLE_THRESH_POINTS_ARE_SAME			) UE_DOUBLE_THRESH_POINTS_ARE_SAME
+	#define DOUBLE_THRESH_POINTS_ARE_NEAR			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_POINTS_ARE_NEAR			, UE_DOUBLE_THRESH_POINTS_ARE_NEAR			) UE_DOUBLE_THRESH_POINTS_ARE_NEAR
+	#define DOUBLE_THRESH_NORMALS_ARE_SAME			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_NORMALS_ARE_SAME			, UE_DOUBLE_THRESH_NORMALS_ARE_SAME			) UE_DOUBLE_THRESH_NORMALS_ARE_SAME
+	#define DOUBLE_THRESH_UVS_ARE_SAME				UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_UVS_ARE_SAME				, UE_DOUBLE_THRESH_UVS_ARE_SAME				) UE_DOUBLE_THRESH_UVS_ARE_SAME
+	#define DOUBLE_THRESH_VECTORS_ARE_NEAR			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_VECTORS_ARE_NEAR			, UE_DOUBLE_THRESH_VECTORS_ARE_NEAR			) UE_DOUBLE_THRESH_VECTORS_ARE_NEAR
+	#define DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE		UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE		, UE_DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE	) UE_DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE
+	#define DOUBLE_THRESH_SPLIT_POLY_PRECISELY		UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_SPLIT_POLY_PRECISELY		, UE_DOUBLE_THRESH_SPLIT_POLY_PRECISELY		) UE_DOUBLE_THRESH_SPLIT_POLY_PRECISELY
+	#define DOUBLE_THRESH_ZERO_NORM_SQUARED			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_ZERO_NORM_SQUARED			, UE_DOUBLE_THRESH_ZERO_NORM_SQUARED		) UE_DOUBLE_THRESH_ZERO_NORM_SQUARED
+	#define DOUBLE_THRESH_NORMALS_ARE_PARALLEL		UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_NORMALS_ARE_PARALLEL		, UE_DOUBLE_THRESH_NORMALS_ARE_PARALLEL		) UE_DOUBLE_THRESH_NORMALS_ARE_PARALLEL
+	#define DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL	UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL	, UE_DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL	) UE_DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL
+	#define DOUBLE_THRESH_VECTOR_NORMALIZED			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_VECTOR_NORMALIZED			, UE_DOUBLE_THRESH_VECTOR_NORMALIZED		) UE_DOUBLE_THRESH_VECTOR_NORMALIZED
+	#define DOUBLE_THRESH_QUAT_NORMALIZED			UE_PRIVATE_MATH_DEPRECATION(DOUBLE_THRESH_QUAT_NORMALIZED			, UE_DOUBLE_THRESH_QUAT_NORMALIZED			) UE_DOUBLE_THRESH_QUAT_NORMALIZED
+#endif
+
+#undef UE_INCLUDETOOL_IGNORE_INCONSISTENT_STATE
+
+#define UE_PI 					(3.1415926535897932f)	/* Extra digits if needed: 3.1415926535897932384626433832795f */
+#define UE_SMALL_NUMBER			(1.e-8f)
+#define UE_KINDA_SMALL_NUMBER	(1.e-4f)
+#define UE_BIG_NUMBER			(3.4e+38f)
+#define UE_EULERS_NUMBER		(2.71828182845904523536f)
+#define UE_GOLDEN_RATIO			(1.6180339887498948482045868343656381f)	/* Also known as divine proportion, golden mean, or golden section - related to the Fibonacci Sequence = (1 + sqrt(5)) / 2 */
+#define UE_FLOAT_NON_FRACTIONAL (8388608.f) /* All single-precision floating point numbers greater than or equal to this have no fractional value. */
 
 
-#define DOUBLE_PI					(3.141592653589793238462643383279502884197169399)
-#define DOUBLE_SMALL_NUMBER			(1.e-8)
-#define DOUBLE_KINDA_SMALL_NUMBER	(1.e-4)
-#define DOUBLE_BIG_NUMBER			(3.4e+38)
-#define DOUBLE_EULERS_NUMBER		(2.7182818284590452353602874713526624977572)
-#define DOUBLE_UE_GOLDEN_RATIO		(1.6180339887498948482045868343656381)	/* Also known as divine proportion, golden mean, or golden section - related to the Fibonacci Sequence = (1 + sqrt(5)) / 2 */
-#define DOUBLE_NON_FRACTIONAL		(4503599627370496.0) /* All double-precision floating point numbers greater than or equal to this have no fractional value. 2^52 */
+#define UE_DOUBLE_PI					(3.141592653589793238462643383279502884197169399)
+#define UE_DOUBLE_SMALL_NUMBER			(1.e-8)
+#define UE_DOUBLE_KINDA_SMALL_NUMBER	(1.e-4)
+#define UE_DOUBLE_BIG_NUMBER			(3.4e+38)
+#define UE_DOUBLE_EULERS_NUMBER			(2.7182818284590452353602874713526624977572)
+#define UE_DOUBLE_GOLDEN_RATIO			(1.6180339887498948482045868343656381)	/* Also known as divine proportion, golden mean, or golden section - related to the Fibonacci Sequence = (1 + sqrt(5)) / 2 */
+#define UE_DOUBLE_NON_FRACTIONAL		(4503599627370496.0) /* All double-precision floating point numbers greater than or equal to this have no fractional value. 2^52 */
 
 // Copied from float.h
-#define MAX_FLT 3.402823466e+38F
+#define UE_MAX_FLT 3.402823466e+38F
 
 // Aux constants.
-#define INV_PI			(0.31830988618f)
-#define HALF_PI			(1.57079632679f)
-#define TWO_PI			(6.28318530717f)
-#define PI_SQUARED		(9.86960440108f)
+#define UE_INV_PI			(0.31830988618f)
+#define UE_HALF_PI			(1.57079632679f)
+#define UE_TWO_PI			(6.28318530717f)
+#define UE_PI_SQUARED		(9.86960440108f)
 
-#define DOUBLE_INV_PI		(0.31830988618379067154)
-#define DOUBLE_HALF_PI		(1.57079632679489661923)
-#define DOUBLE_TWO_PI		(6.28318530717958647692)
-#define DOUBLE_PI_SQUARED	(9.86960440108935861883)
+#define UE_DOUBLE_INV_PI		(0.31830988618379067154)
+#define UE_DOUBLE_HALF_PI		(1.57079632679489661923)
+#define UE_DOUBLE_TWO_PI		(6.28318530717958647692)
+#define UE_DOUBLE_PI_SQUARED	(9.86960440108935861883)
 
 // Common square roots
 #define UE_SQRT_2		(1.4142135623730950488016887242097f)
@@ -85,64 +165,64 @@ class TRange;
 #define UE_HALF_SQRT_2	(0.70710678118654752440084436210485f)
 #define UE_HALF_SQRT_3	(0.86602540378443864676372317075294f)
 
-#define DOUBLE_UE_SQRT_2		(1.4142135623730950488016887242097)
-#define DOUBLE_UE_SQRT_3		(1.7320508075688772935274463415059)
-#define DOUBLE_UE_INV_SQRT_2	(0.70710678118654752440084436210485)
-#define DOUBLE_UE_INV_SQRT_3	(0.57735026918962576450914878050196)
-#define DOUBLE_UE_HALF_SQRT_2	(0.70710678118654752440084436210485)
-#define DOUBLE_UE_HALF_SQRT_3	(0.86602540378443864676372317075294)
+#define UE_DOUBLE_SQRT_2		(1.4142135623730950488016887242097)
+#define UE_DOUBLE_SQRT_3		(1.7320508075688772935274463415059)
+#define UE_DOUBLE_INV_SQRT_2	(0.70710678118654752440084436210485)
+#define UE_DOUBLE_INV_SQRT_3	(0.57735026918962576450914878050196)
+#define UE_DOUBLE_HALF_SQRT_2	(0.70710678118654752440084436210485)
+#define UE_DOUBLE_HALF_SQRT_3	(0.86602540378443864676372317075294)
 
 
 // Magic numbers for numerical precision.
-#define DELTA			(0.00001f)
-#define DOUBLE_DELTA	(0.00001 )
+#define UE_DELTA		(0.00001f)
+#define UE_DOUBLE_DELTA	(0.00001 )
 
 /**
  * Lengths of normalized vectors (These are half their maximum values
  * to assure that dot products with normalized vectors don't overflow).
  */
-#define FLOAT_NORMAL_THRESH				(0.0001f)
-#define DOUBLE_NORMAL_THRESH			(0.0001)
+#define UE_FLOAT_NORMAL_THRESH			(0.0001f)
+#define UE_DOUBLE_NORMAL_THRESH			(0.0001)
 
 //
 // Magic numbers for numerical precision.
 //
-#define THRESH_POINT_ON_PLANE			(0.10f)		/* Thickness of plane for front/back/inside test */
-#define THRESH_POINT_ON_SIDE			(0.20f)		/* Thickness of polygon side's side-plane for point-inside/outside/on side test */
-#define THRESH_POINTS_ARE_SAME			(0.00002f)	/* Two points are same if within this distance */
-#define THRESH_POINTS_ARE_NEAR			(0.015f)	/* Two points are near if within this distance and can be combined if imprecise math is ok */
-#define THRESH_NORMALS_ARE_SAME			(0.00002f)	/* Two normal points are same if within this distance */
-#define THRESH_UVS_ARE_SAME			    (0.0009765625f)/* Two UV are same if within this threshold (1.0f/1024f) */
-													/* Making this too large results in incorrect CSG classification and disaster */
-#define THRESH_VECTORS_ARE_NEAR			(0.0004f)	/* Two vectors are near if within this distance and can be combined if imprecise math is ok */
-													/* Making this too large results in lighting problems due to inaccurate texture coordinates */
-#define THRESH_SPLIT_POLY_WITH_PLANE	(0.25f)		/* A plane splits a polygon in half */
-#define THRESH_SPLIT_POLY_PRECISELY		(0.01f)		/* A plane exactly splits a polygon */
-#define THRESH_ZERO_NORM_SQUARED		(0.0001f)	/* Size of a unit normal that is considered "zero", squared */
-#define THRESH_NORMALS_ARE_PARALLEL		(0.999845f)	/* Two unit vectors are parallel if abs(A dot B) is greater than or equal to this. This is roughly cosine(1.0 degrees). */
-#define THRESH_NORMALS_ARE_ORTHOGONAL	(0.017455f)	/* Two unit vectors are orthogonal (perpendicular) if abs(A dot B) is less than or equal this. This is roughly cosine(89.0 degrees). */
+#define UE_THRESH_POINT_ON_PLANE				(0.10f)		/* Thickness of plane for front/back/inside test */
+#define UE_THRESH_POINT_ON_SIDE					(0.20f)		/* Thickness of polygon side's side-plane for point-inside/outside/on side test */
+#define UE_THRESH_POINTS_ARE_SAME				(0.00002f)	/* Two points are same if within this distance */
+#define UE_THRESH_POINTS_ARE_NEAR				(0.015f)	/* Two points are near if within this distance and can be combined if imprecise math is ok */
+#define UE_THRESH_NORMALS_ARE_SAME				(0.00002f)	/* Two normal points are same if within this distance */
+#define UE_THRESH_UVS_ARE_SAME					(0.0009765625f)/* Two UV are same if within this threshold (1.0f/1024f) */
+															/* Making this too large results in incorrect CSG classification and disaster */
+#define UE_THRESH_VECTORS_ARE_NEAR				(0.0004f)	/* Two vectors are near if within this distance and can be combined if imprecise math is ok */
+															/* Making this too large results in lighting problems due to inaccurate texture coordinates */
+#define UE_THRESH_SPLIT_POLY_WITH_PLANE			(0.25f)		/* A plane splits a polygon in half */
+#define UE_THRESH_SPLIT_POLY_PRECISELY			(0.01f)		/* A plane exactly splits a polygon */
+#define UE_THRESH_ZERO_NORM_SQUARED				(0.0001f)	/* Size of a unit normal that is considered "zero", squared */
+#define UE_THRESH_NORMALS_ARE_PARALLEL			(0.999845f)	/* Two unit vectors are parallel if abs(A dot B) is greater than or equal to this. This is roughly cosine(1.0 degrees). */
+#define UE_THRESH_NORMALS_ARE_ORTHOGONAL		(0.017455f)	/* Two unit vectors are orthogonal (perpendicular) if abs(A dot B) is less than or equal this. This is roughly cosine(89.0 degrees). */
 
-#define THRESH_VECTOR_NORMALIZED		(0.01f)		/** Allowed error for a normalized vector (against squared magnitude) */
-#define THRESH_QUAT_NORMALIZED			(0.01f)		/** Allowed error for a normalized quaternion (against squared magnitude) */
+#define UE_THRESH_VECTOR_NORMALIZED				(0.01f)		/** Allowed error for a normalized vector (against squared magnitude) */
+#define UE_THRESH_QUAT_NORMALIZED				(0.01f)		/** Allowed error for a normalized quaternion (against squared magnitude) */
 
 // Double precision values
-#define DOUBLE_THRESH_POINT_ON_PLANE			(0.10)		/* Thickness of plane for front/back/inside test */
-#define DOUBLE_THRESH_POINT_ON_SIDE				(0.20)		/* Thickness of polygon side's side-plane for point-inside/outside/on side test */
-#define DOUBLE_THRESH_POINTS_ARE_SAME			(0.00002)	/* Two points are same if within this distance */
-#define DOUBLE_THRESH_POINTS_ARE_NEAR			(0.015)		/* Two points are near if within this distance and can be combined if imprecise math is ok */
-#define DOUBLE_THRESH_NORMALS_ARE_SAME			(0.00002)	/* Two normal points are same if within this distance */
-#define DOUBLE_THRESH_UVS_ARE_SAME			    (0.0009765625)/* Two UV are same if within this threshold (1.0/1024.0) */
+#define UE_DOUBLE_THRESH_POINT_ON_PLANE			(0.10)		/* Thickness of plane for front/back/inside test */
+#define UE_DOUBLE_THRESH_POINT_ON_SIDE			(0.20)		/* Thickness of polygon side's side-plane for point-inside/outside/on side test */
+#define UE_DOUBLE_THRESH_POINTS_ARE_SAME		(0.00002)	/* Two points are same if within this distance */
+#define UE_DOUBLE_THRESH_POINTS_ARE_NEAR		(0.015)		/* Two points are near if within this distance and can be combined if imprecise math is ok */
+#define UE_DOUBLE_THRESH_NORMALS_ARE_SAME		(0.00002)	/* Two normal points are same if within this distance */
+#define UE_DOUBLE_THRESH_UVS_ARE_SAME			(0.0009765625)/* Two UV are same if within this threshold (1.0/1024.0) */
 															/* Making this too large results in incorrect CSG classification and disaster */
-#define DOUBLE_THRESH_VECTORS_ARE_NEAR			(0.0004)	/* Two vectors are near if within this distance and can be combined if imprecise math is ok */
+#define UE_DOUBLE_THRESH_VECTORS_ARE_NEAR		(0.0004)	/* Two vectors are near if within this distance and can be combined if imprecise math is ok */
 															/* Making this too large results in lighting problems due to inaccurate texture coordinates */
-#define DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE		(0.25)		/* A plane splits a polygon in half */
-#define DOUBLE_THRESH_SPLIT_POLY_PRECISELY		(0.01)		/* A plane exactly splits a polygon */
-#define DOUBLE_THRESH_ZERO_NORM_SQUARED			(0.0001)	/* Size of a unit normal that is considered "zero", squared */
-#define DOUBLE_THRESH_NORMALS_ARE_PARALLEL		(0.999845)	/* Two unit vectors are parallel if abs(A dot B) is greater than or equal to this. This is roughly cosine(1.0 degrees). */
-#define DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL	(0.017455)	/* Two unit vectors are orthogonal (perpendicular) if abs(A dot B) is less than or equal this. This is roughly cosine(89.0 degrees). */
+#define UE_DOUBLE_THRESH_SPLIT_POLY_WITH_PLANE	(0.25)		/* A plane splits a polygon in half */
+#define UE_DOUBLE_THRESH_SPLIT_POLY_PRECISELY	(0.01)		/* A plane exactly splits a polygon */
+#define UE_DOUBLE_THRESH_ZERO_NORM_SQUARED		(0.0001)	/* Size of a unit normal that is considered "zero", squared */
+#define UE_DOUBLE_THRESH_NORMALS_ARE_PARALLEL	(0.999845)	/* Two unit vectors are parallel if abs(A dot B) is greater than or equal to this. This is roughly cosine(1.0 degrees). */
+#define UE_DOUBLE_THRESH_NORMALS_ARE_ORTHOGONAL	(0.017455)	/* Two unit vectors are orthogonal (perpendicular) if abs(A dot B) is less than or equal this. This is roughly cosine(89.0 degrees). */
 
-#define DOUBLE_THRESH_VECTOR_NORMALIZED			(0.01)		/** Allowed error for a normalized vector (against squared magnitude) */
-#define DOUBLE_THRESH_QUAT_NORMALIZED			(0.01)		/** Allowed error for a normalized quaternion (against squared magnitude) */
+#define UE_DOUBLE_THRESH_VECTOR_NORMALIZED		(0.01)		/** Allowed error for a normalized vector (against squared magnitude) */
+#define UE_DOUBLE_THRESH_QUAT_NORMALIZED		(0.01)		/** Allowed error for a normalized quaternion (against squared magnitude) */
 
 /*-----------------------------------------------------------------------------
 	Global functions.
@@ -296,12 +376,12 @@ struct FMath : public FPlatformMath
 	 *	@param ErrorTolerance	Maximum allowed difference for considering them as 'nearly equal'
 	 *	@return					true if A and B are nearly equal
 	 */
-	UE_NODISCARD static FORCEINLINE bool IsNearlyEqual(float A, float B, float ErrorTolerance = SMALL_NUMBER)
+	UE_NODISCARD static FORCEINLINE bool IsNearlyEqual(float A, float B, float ErrorTolerance = UE_SMALL_NUMBER)
 	{
 		return Abs<float>( A - B ) <= ErrorTolerance;
 	}
 
-	UE_NODISCARD static FORCEINLINE bool IsNearlyEqual(double A, double B, double ErrorTolerance = DOUBLE_SMALL_NUMBER)
+	UE_NODISCARD static FORCEINLINE bool IsNearlyEqual(double A, double B, double ErrorTolerance = UE_DOUBLE_SMALL_NUMBER)
 	{
 		return Abs<double>(A - B) <= ErrorTolerance;
 	}
@@ -315,7 +395,7 @@ struct FMath : public FPlatformMath
 	 *	@param ErrorTolerance	Maximum allowed difference for considering Value as 'nearly zero'
 	 *	@return					true if Value is nearly zero
 	 */
-	UE_NODISCARD static FORCEINLINE bool IsNearlyZero(float Value, float ErrorTolerance = SMALL_NUMBER)
+	UE_NODISCARD static FORCEINLINE bool IsNearlyZero(float Value, float ErrorTolerance = UE_SMALL_NUMBER)
 	{
 		return Abs<float>( Value ) <= ErrorTolerance;
 	}
@@ -326,7 +406,7 @@ struct FMath : public FPlatformMath
 	 *	@param ErrorTolerance	Maximum allowed difference for considering Value as 'nearly zero'
 	 *	@return					true if Value is nearly zero
 	 */
-	UE_NODISCARD static FORCEINLINE bool IsNearlyZero(double Value, double ErrorTolerance = DOUBLE_SMALL_NUMBER)
+	UE_NODISCARD static FORCEINLINE bool IsNearlyZero(double Value, double ErrorTolerance = UE_DOUBLE_SMALL_NUMBER)
 	{
 		return Abs<double>( Value ) <= ErrorTolerance;
 	}
@@ -475,6 +555,19 @@ public:
 		return Min ( Min( A, B ), C );
 	}
 
+	template< class T > 
+	UE_NODISCARD static constexpr FORCEINLINE int32 Max3Index( const T A, const T B, const T C )
+	{
+		return ( A > B ) ? ( ( A > C ) ? 0 : 2 ) : ( ( B > C ) ? 1 : 2 );
+	}
+
+	/** Returns index of the lowest value */
+	template< class T > 
+	UE_NODISCARD static constexpr FORCEINLINE int32 Min3Index( const T A, const T B, const T C )
+	{
+		return ( A < B ) ? ( ( A < C ) ? 0 : 2 ) : ( ( B < C ) ? 1 : 2 );
+	}
+
 	/** Multiples value by itself */
 	template< class T > 
 	UE_NODISCARD static constexpr FORCEINLINE T Square( const T A )
@@ -497,6 +590,13 @@ public:
 	}
 	/** Allow mixing float/double arguments, promoting to highest precision type. */
 	MIX_FLOATS_3_ARGS(Clamp);
+	
+	/** Clamps X to be between Min and Max, inclusive. Explicitly defined here for floats/doubles because static analysis gets confused between template and int versions. */
+	UE_NODISCARD static constexpr FORCEINLINE float Clamp(const float X, const float Min, const float Max) { return Clamp<float>(X, Min, Max); }
+	UE_NODISCARD static constexpr FORCEINLINE double Clamp(const double X, const double Min, const double Max) { return Clamp<double>(X, Min, Max); }
+
+	/** Clamps X to be between Min and Max, inclusive. Overload to support mixed int64/int32 types. */
+	UE_NODISCARD static constexpr FORCEINLINE int64 Clamp(const int64 X, const int32 Min, const int32 Max) { return Clamp<int64>(X, Min, Max); }
 
 	/** Wraps X to be between Min and Max, inclusive. */
 	/** When X can wrap to both Min and Max, it will wrap to Min if it lies below the range and wrap to Max if it is above the range. */
@@ -596,7 +696,7 @@ public:
 	static constexpr FORCEINLINE void SinCos(typename TDecay<T>::Type* ScalarSin, typename TDecay<T>::Type* ScalarCos, T  Value )
 	{
 		// Map Value to y in [-pi,pi], x = 2*pi*quotient + remainder.
-		T quotient = (INV_PI*0.5f)*Value;
+		T quotient = (UE_INV_PI*0.5f)*Value;
 		if (Value >= 0.0f)
 		{
 			quotient = (T)((int64)(quotient + 0.5f));
@@ -605,18 +705,18 @@ public:
 		{
 			quotient = (T)((int64)(quotient - 0.5f));
 		}
-		T y = Value - TWO_PI * quotient;
+		T y = Value - UE_TWO_PI * quotient;
 
 		// Map y to [-pi/2,pi/2] with sin(y) = sin(Value).
 		T sign;
-		if (y > HALF_PI)
+		if (y > UE_HALF_PI)
 		{
-			y = PI - y;
+			y = UE_PI - y;
 			sign = -1.0f;
 		}
-		else if (y < -HALF_PI)
+		else if (y < -UE_HALF_PI)
 		{
-			y = -PI - y;
+			y = -UE_PI - y;
 			sign = -1.0f;
 		}
 		else
@@ -693,13 +793,13 @@ public:
 	 * @return					Value in degrees.
 	 */
 	template<class T>
-	UE_NODISCARD static constexpr FORCEINLINE auto RadiansToDegrees(T const& RadVal) -> decltype(RadVal * (180.f / PI))
+	UE_NODISCARD static constexpr FORCEINLINE auto RadiansToDegrees(T const& RadVal) -> decltype(RadVal * (180.f / UE_PI))
 	{
-		return RadVal * (180.f / PI);
+		return RadVal * (180.f / UE_PI);
 	}
 
-	static FORCEINLINE float RadiansToDegrees(float const& RadVal) { return RadVal * (180.f / PI); }
-	static FORCEINLINE double RadiansToDegrees(double const& RadVal) { return RadVal * (180.0 / DOUBLE_PI); }
+	static FORCEINLINE float RadiansToDegrees(float const& RadVal) { return RadVal * (180.f / UE_PI); }
+	static FORCEINLINE double RadiansToDegrees(double const& RadVal) { return RadVal * (180.0 / UE_DOUBLE_PI); }
 
 	/** 
 	 * Converts degrees to radians.
@@ -707,13 +807,13 @@ public:
 	 * @return					Value in radians.
 	 */
 	template<class T>
-	UE_NODISCARD static constexpr FORCEINLINE auto DegreesToRadians(T const& DegVal) -> decltype(DegVal * (PI / 180.f))
+	UE_NODISCARD static constexpr FORCEINLINE auto DegreesToRadians(T const& DegVal) -> decltype(DegVal * (UE_PI / 180.f))
 	{
-		return DegVal * (PI / 180.f);
+		return DegVal * (UE_PI / 180.f);
 	}
 
-	static FORCEINLINE float DegreesToRadians(float const& DegVal) { return DegVal * (PI / 180.f); }
-	static FORCEINLINE double DegreesToRadians(double const& DegVal) { return DegVal * (DOUBLE_PI / 180.0); }
+	static FORCEINLINE float DegreesToRadians(float const& DegVal) { return DegVal * (UE_PI / 180.f); }
+	static FORCEINLINE double DegreesToRadians(double const& DegVal) { return DegVal * (UE_DOUBLE_PI / 180.0); }
 
 	/** 
 	 * Clamps an arbitrary angle to be between the given angles.  Will clamp to nearest boundary.
@@ -722,7 +822,10 @@ public:
 	 * @param MaxAngleDegrees	"to" angle that defines the end of the range of valid angles
 	 * @return Returns clamped angle in the range -180..180.
 	 */
-	UE_NODISCARD static CORE_API float ClampAngle(float AngleDegrees, float MinAngleDegrees, float MaxAngleDegrees);
+	template<typename T>
+	UE_NODISCARD static T ClampAngle(T AngleDegrees, T MinAngleDegrees, T MaxAngleDegrees);
+
+	RESOLVE_FLOAT_AMBIGUITY_3_ARGS(ClampAngle);
 
 	/** Find the smallest angle between two headings (in degrees) */
 	template<typename T, typename T2, TEMPLATE_REQUIRES(TOr<TIsFloatingPoint<T>, TIsFloatingPoint<T2>>::Value)>
@@ -756,16 +859,16 @@ public:
 		auto Delta = A2 - A1;
 
 		// If change is larger than PI
-		if (Delta > PI)
+		if (Delta > UE_PI)
 		{
 			// Flip to negative equivalent
-			Delta = Delta - TWO_PI;
+			Delta = Delta - UE_TWO_PI;
 		}
-		else if (Delta < -PI)
+		else if (Delta < -UE_PI)
 		{
 			// Otherwise, if change is smaller than -PI
 			// Flip to positive equivalent
-			Delta = Delta + TWO_PI;
+			Delta = Delta + UE_TWO_PI;
 		}
 
 		// Return delta in [-PI,PI] range
@@ -776,14 +879,14 @@ public:
 	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
 	UE_NODISCARD static constexpr T UnwindRadians(T A)
 	{
-		while(A > PI)
+		while(A > UE_PI)
 		{
-			A -= TWO_PI;
+			A -= UE_TWO_PI;
 		}
 
-		while(A < -PI)
+		while(A < -UE_PI)
 		{
-			A += TWO_PI;
+			A += UE_TWO_PI;
 		}
 
 		return A;
@@ -1144,7 +1247,7 @@ public:
 	template< class T >
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T InterpSinIn(const T& A, const T& B, float Alpha)
 	{
-		float const ModifiedAlpha = -1.f * Cos(Alpha * HALF_PI) + 1.f;
+		float const ModifiedAlpha = -1.f * Cos(Alpha * UE_HALF_PI) + 1.f;
 		return Lerp<T>(A, B, ModifiedAlpha);
 	}
 	
@@ -1152,7 +1255,7 @@ public:
 	template< class T >
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T InterpSinOut(const T& A, const T& B, float Alpha)
 	{
-		float const ModifiedAlpha = Sin(Alpha * HALF_PI);
+		float const ModifiedAlpha = Sin(Alpha * UE_HALF_PI);
 		return Lerp<T>(A, B, ModifiedAlpha);
 	}
 
@@ -1315,7 +1418,7 @@ public:
 		const RetType Dist = Target - Current;
 
 		// If distance is too small, just set the desired location
-		if( FMath::Square(Dist) < SMALL_NUMBER )
+		if( FMath::Square(Dist) < UE_SMALL_NUMBER )
 		{
 			return static_cast<RetType>(Target);
 		}
@@ -1340,7 +1443,7 @@ public:
 		const RetType Dist = Target - Current;
 
 		// If distance is too small, just set the desired location
-		if( FMath::Square(Dist) < SMALL_NUMBER )
+		if( FMath::Square(Dist) < UE_SMALL_NUMBER )
 		{
 			return static_cast<RetType>(Target);
 		}
@@ -1394,7 +1497,7 @@ public:
         const float InDeltaTime,
         const float InSmoothingTime)
 	{
-		if (InSmoothingTime > KINDA_SMALL_NUMBER)
+		if (InSmoothingTime > UE_KINDA_SMALL_NUMBER)
 		{
 			const float A = InDeltaTime / InSmoothingTime;
 			float Exp = InvExpApprox(A);
@@ -1432,7 +1535,7 @@ public:
 		const float InDeltaTime,
 		const float InSmoothingTime)
 	{
-		if (InSmoothingTime > KINDA_SMALL_NUMBER)
+		if (InSmoothingTime > UE_KINDA_SMALL_NUMBER)
 		{
 			// The closed form solution for critically damped motion towards zero is:
 			//
@@ -1502,14 +1605,14 @@ public:
 			return;
 		}
 
-		float W = InUndampedFrequency * TWO_PI;
+		float W = InUndampedFrequency * UE_TWO_PI;
 		// Handle special cases
-		if (W < SMALL_NUMBER) // no strength which means no damping either
+		if (W < UE_SMALL_NUMBER) // no strength which means no damping either
 		{
 			InOutValue += InOutValueRate * InDeltaTime;
 			return;
 		}
-		else if (InDampingRatio < SMALL_NUMBER) // No damping at all
+		else if (InDampingRatio < UE_SMALL_NUMBER) // No damping at all
 		{
 			T Err = InOutValue - InTargetValue;
 			const T B = InOutValueRate / W;
@@ -1596,7 +1699,7 @@ public:
 		const float InSmoothingTime,
 		const float InDampingRatio)
 	{
-		if (InSmoothingTime < SMALL_NUMBER)
+		if (InSmoothingTime < UE_SMALL_NUMBER)
 		{
 			if (InDeltaTime <= 0.0f)
 			{
@@ -1608,7 +1711,7 @@ public:
 		}
 
 		// Undamped frequency
-		float UndampedFrequency = 1.0f / (PI * InSmoothingTime);
+		float UndampedFrequency = 1.0f / (UE_PI * InSmoothingTime);
 		SpringDamper(InOutValue, InOutValueRate, InTargetValue, InTargetValueRate, InDeltaTime, UndampedFrequency, InDampingRatio);
 	}
 
@@ -1623,7 +1726,7 @@ public:
 	 */
 	UE_NODISCARD static float MakePulsatingValue( const double InCurrentTime, const float InPulsesPerSecond, const float InPhase = 0.0f )
 	{
-		return 0.5f + 0.5f * FMath::Sin( ( ( 0.25f + InPhase ) * TWO_PI ) + ( (float)InCurrentTime * TWO_PI ) * InPulsesPerSecond );
+		return 0.5f + 0.5f * FMath::Sin( ( ( 0.25f + InPhase ) * UE_TWO_PI ) + ( (float)InCurrentTime * UE_TWO_PI ) * InPulsesPerSecond );
 	}
 
 	// Geometry intersection 
@@ -1640,6 +1743,19 @@ public:
 	 */
 	template<typename FReal>
 	UE_NODISCARD static UE::Math::TVector<FReal> RayPlaneIntersection(const UE::Math::TVector<FReal>& RayOrigin, const UE::Math::TVector<FReal>& RayDirection, const UE::Math::TPlane<FReal>& Plane);
+
+	/**
+	 * Find the intersection of a ray and a plane.  The ray has a start point with an infinite length.  Assumes that the
+	 * line and plane do indeed intersect; you must make sure they're not parallel before calling.
+	 *
+	 * @param RayOrigin	The start point of the ray
+	 * @param RayDirection	The direction the ray is pointing (normalized vector)
+	 * @param Plane	The plane to intersect with
+	 *
+	 * @return The distance parameter along ray of the point of intersection between the ray and the plane.
+	 */
+	template<typename FReal>
+	UE_NODISCARD static FReal RayPlaneIntersectionParam(const UE::Math::TVector<FReal>& RayOrigin, const UE::Math::TVector<FReal>& RayDirection, const UE::Math::TPlane<FReal>& Plane);
 
 	/**
 	 * Find the intersection of a line and an offset plane. Assumes that the
@@ -1673,7 +1789,7 @@ public:
 
 	// @parma InOutScissorRect should be set to View.ViewRect before the call
 	// @return 0: light is not visible, 1:use scissor rect, 2: no scissor rect needed
-	UE_NODISCARD static CORE_API uint32 ComputeProjectedSphereScissorRect(struct FIntRect& InOutScissorRect, FVector SphereOrigin, float Radius, FVector ViewOrigin, const FMatrix& ViewMatrix, const FMatrix& ProjMatrix);
+	UE_NODISCARD static CORE_API uint32 ComputeProjectedSphereScissorRect(FIntRect& InOutScissorRect, FVector SphereOrigin, float Radius, FVector ViewOrigin, const FMatrix& ViewMatrix, const FMatrix& ProjMatrix);
 
 	// @param ConeOrigin Cone origin
 	// @param ConeDirection Cone direction
@@ -1964,8 +2080,8 @@ public:
 	 * @param Tolerance			Maximum allowed difference to 0.5 in order to truncate
 	 * @return					The truncated value
 	 */
-	UE_NODISCARD static CORE_API float TruncateToHalfIfClose(float F, float Tolerance = SMALL_NUMBER);
-	UE_NODISCARD static CORE_API double TruncateToHalfIfClose(double F, double Tolerance = SMALL_NUMBER);
+	UE_NODISCARD static CORE_API float TruncateToHalfIfClose(float F, float Tolerance = UE_SMALL_NUMBER);
+	UE_NODISCARD static CORE_API double TruncateToHalfIfClose(double F, double Tolerance = UE_SMALL_NUMBER);
 
 	/**
 	* Converts a floating point number to the nearest integer, equidistant ties go to the value which is closest to an even value: 1.5 becomes 2, 0.5 becomes 0
@@ -2329,50 +2445,94 @@ public:
 	UE_NODISCARD static FORCEINLINE float DynamicWeightedMovingAverage(T1&& CurrentSample, T2&& PreviousSample, T3&& MaxDistance, T4&& MinWeight, T5&& MaxWeight) { return DynamicWeightedMovingAverage((float)CurrentSample, (float)PreviousSample, (float)MaxDistance, (float)MinWeight, (float)MaxWeight); }
 };
 
-// LWC Conversion helpers - LWC_TODO: These are temporary and should be removed for UE5.0 final.
+// LWC Conversion helpers
+namespace UE
+{
 namespace LWC
 {
 
-// Convert array to a new type
-template<typename TDest, typename TSrc, typename InAllocatorType>
-TArray<TDest, InAllocatorType> ConvertArrayType(const TArray<TSrc, InAllocatorType>& From)
-{
-	//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
-	if constexpr (std::is_same<TDest, TSrc>::value)
+	// Convert array to a new type
+	template<typename TDest, typename TSrc, typename InAllocatorType>
+	TArray<TDest, InAllocatorType> ConvertArrayType(const TArray<TSrc, InAllocatorType>& From)
 	{
-		return From;
-	}
-	else
-	{
-		TArray<TDest, InAllocatorType> Converted;
-		Converted.Reserve(From.Num());
-		for (const TSrc& Item : From)
+		//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
+		if constexpr (std::is_same<TDest, TSrc>::value)
 		{
-			Converted.Add(static_cast<TDest>(Item));
+			return From;
 		}
-		return Converted;
-	}
-}
-
-// Convert array to a new type and clamps values to the Max of TDest type
-template<typename TDest, typename TSrc, typename InAllocatorType>
-TArray<TDest, InAllocatorType> ConvertArrayTypeClampMax(const TArray<TSrc, InAllocatorType>& From)
-{
-	//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
-	if constexpr (std::is_same<TDest, TSrc>::value)
-	{
-		return From;
-	}
-	else
-	{
-		TArray<TDest, InAllocatorType> Converted;
-		Converted.Reserve(From.Num());
-		for (const TSrc& Item : From)
+		else
 		{
-			Converted.Add(FMath::Min(TNumericLimits<TDest>::Max(), static_cast<TDest>(Item)));
+			TArray<TDest, InAllocatorType> Converted;
+			Converted.Reserve(From.Num());
+			for (const TSrc& Item : From)
+			{
+				Converted.Add(static_cast<TDest>(Item));
+			}
+			return Converted;
 		}
-		return Converted;
 	}
-}
 
-}
+	// Convert array to a new type and clamps values to the Max of TDest type
+	template<typename TDest, typename TSrc, typename InAllocatorType>
+	TArray<TDest, InAllocatorType> ConvertArrayTypeClampMax(const TArray<TSrc, InAllocatorType>& From)
+	{
+		//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
+		if constexpr (std::is_same<TDest, TSrc>::value)
+		{
+			return From;
+		}
+		else
+		{
+			TArray<TDest, InAllocatorType> Converted;
+			Converted.Reserve(From.Num());
+			for (const TSrc& Item : From)
+			{
+				Converted.Add(FMath::Min(TNumericLimits<TDest>::Max(), static_cast<TDest>(Item)));
+			}
+			return Converted;
+		}
+	}
+
+	/*
+	 * Floating point to integer conversions
+	 */
+
+	// Generic float type to int type, to enable specializations below.
+	template<typename OutIntType, typename InFloatType>
+	FORCEINLINE OutIntType FloatToIntCastChecked(InFloatType FloatValue)
+	{
+		static_assert(std::is_floating_point_v<InFloatType>, "Only floating point input type supported!");
+		static_assert(std::is_integral_v<OutIntType>, "Only integral output type supported!");
+		return (OutIntType)(FloatValue);
+	}
+
+	// float->int32
+	template<>
+	FORCEINLINE int32 FloatToIntCastChecked(float FloatValue)
+	{
+		return FMath::TruncToInt32(FloatValue);
+	}
+
+	// float->int64
+	template<>
+	FORCEINLINE int64 FloatToIntCastChecked(float FloatValue)
+	{
+		return FMath::TruncToInt64(FloatValue);
+	}
+
+	// double->int32
+	template<>
+	FORCEINLINE int32 FloatToIntCastChecked(double FloatValue)
+	{
+		return FMath::TruncToInt32(FloatValue);
+	}
+
+	// double->int64
+	template<>
+	FORCEINLINE int64 FloatToIntCastChecked(double FloatValue)
+	{
+		return FMath::TruncToInt64(FloatValue);
+	}
+
+} // namespace LWC
+} // namespace UE

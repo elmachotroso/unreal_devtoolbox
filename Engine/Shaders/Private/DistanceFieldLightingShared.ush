@@ -36,6 +36,10 @@
 #define OFFSET_DATA_STRUCT (0)
 #endif
 
+#ifndef USE_DISTANCE_FIELD_SAMPLER
+#define USE_DISTANCE_FIELD_SAMPLER (0)
+#endif
+
 // Size of SDF brick in voxels, including padding
 float3 DistanceFieldBrickSize;
 
@@ -141,20 +145,22 @@ uint GetCulledNumObjects()
 }
 
 // In float4's.  Must match equivalent C++ variables.
-#define DF_OBJECT_BOUNDS_STRIDE 2
-#define DF_OBJECT_DATA_STRIDE 9
-#define HEIGHTFIELD_OBJECT_BOUNDS_STRIDE 2
-#define HEIGHTFIELD_OBJECT_DATA_STRIDE 6
+#define DF_OBJECT_BOUNDS_STRIDE 3
+#define DF_OBJECT_DATA_STRIDE 10
+#define HEIGHTFIELD_OBJECT_BOUNDS_STRIDE 3
+#define HEIGHTFIELD_OBJECT_DATA_STRIDE 7
 
 struct FDFObjectBounds
 {
-	float3 Center;		// World space bounds center
+	FLWCVector3 Center;	// World space bounds center
 	float SphereRadius;	// World space bounding sphere extent
 	float3 BoxExtent;	// World space AABB extent
 	uint OftenMoving;
+	bool bVisible;
 	uint bCastShadow;
 	bool bIsNaniteMesh;
 	uint bEmissiveLightSource;
+	bool bAffectIndirectLightingWhileHidden;
 };
 
 uint NumSceneObjects;
@@ -170,36 +176,49 @@ FDFObjectBounds LoadDFObjectBounds(uint ObjectIndex)
 	FDFObjectBounds Bounds;
 
 	float4 Vector0 = SceneObjectBounds[ObjectIndex * DF_OBJECT_BOUNDS_STRIDE + 0];
-	Bounds.Center = Vector0.xyz;
-	Bounds.SphereRadius = Vector0.w;
+	float3 TilePosition = Vector0.xyz;
 
 	float4 Vector1 = SceneObjectBounds[ObjectIndex * DF_OBJECT_BOUNDS_STRIDE + 1];
-	Bounds.BoxExtent = Vector1.xyz;
+	float3 RelativeWorldPosition = Vector1.xyz;
 
-	uint Flags = asuint(Vector1.w);
+	Bounds.Center = MakeLWCVector3(TilePosition, RelativeWorldPosition);
+	Bounds.SphereRadius = Vector1.w;
+
+	float4 Vector2 = SceneObjectBounds[ObjectIndex * DF_OBJECT_BOUNDS_STRIDE + 2];
+	Bounds.BoxExtent = Vector2.xyz;
+
+	uint Flags = asuint(Vector2.w);
 	Bounds.OftenMoving = Flags & 1U;
 	Bounds.bCastShadow = (Flags & 2U) != 0U;
 	Bounds.bIsNaniteMesh = (Flags & 4U) != 0U;
 	Bounds.bEmissiveLightSource = (Flags & 8U) != 0U;
+	Bounds.bVisible = (Flags & 16U) != 0U;
+	Bounds.bAffectIndirectLightingWhileHidden = (Flags & 32U) != 0U;
 
 	return Bounds;
 }
 
 struct FHeightfieldObjectBounds
 {
-	float3 BoxOrigin;	// World space AABB center
-	float3 BoxExtent;	// World space AABB extent
+	FLWCVector3 BoxOrigin;	// World space AABB center
+	float3 BoxExtent;		// World space AABB extent
 };
 
+// Must match FLumenHeightfieldData as heightfield culling is reused
 FHeightfieldObjectBounds LoadHeightfieldObjectBounds(uint ObjectIndex)
 {
 	FHeightfieldObjectBounds Bounds;
 
 	float4 Vector0 = SceneHeightfieldObjectBounds[ObjectIndex * HEIGHTFIELD_OBJECT_BOUNDS_STRIDE + 0];
-	Bounds.BoxOrigin = Vector0.xyz;
-
 	float4 Vector1 = SceneHeightfieldObjectBounds[ObjectIndex * HEIGHTFIELD_OBJECT_BOUNDS_STRIDE + 1];
-	Bounds.BoxExtent = Vector1.xyz;
+
+	float3 TilePosition = Vector0.xyz;
+	float3 RelativeWorldPosition = Vector1.xyz;
+
+	Bounds.BoxOrigin = MakeLWCVector3(TilePosition, RelativeWorldPosition);
+
+	float4 Vector2 = SceneHeightfieldObjectBounds[ObjectIndex * HEIGHTFIELD_OBJECT_BOUNDS_STRIDE + 2];
+	Bounds.BoxExtent = Vector2.xyz;
 
 	return Bounds;
 }
@@ -227,8 +246,8 @@ struct FDFObjectData
 	uint GPUSceneInstanceIndex;
 
 	// Transforms between world space and the volume space that tracing happens in
-	float4x4 WorldToVolume;
-	float4x4 VolumeToWorld;
+	FLWCInverseMatrix WorldToVolume;
+	FLWCMatrix VolumeToWorld;
 
 	// Scales along each axis to transform from volume space to world space.  Transform a scaled direction to better handle non-uniform scaling.
 	float3 VolumeToWorldScale;
@@ -239,29 +258,35 @@ struct FDFObjectData
 
 FDFObjectData LoadDFObjectDataFromBuffer(StructuredBuffer<float4> SourceBuffer, uint ObjectIndex)
 {
+	float3 TilePosition = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 0].xyz;
+
 	FDFObjectData Data;
 
-	float4 V0 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 0];
-	float4 V1 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 1];
-	float4 V2 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 2];
-	Data.WorldToVolume = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
+	float4 V0 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 1];
+	float4 V1 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 2];
+	float4 V2 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 3];
+	float4x4 RelativeWorldToVolume = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
 
-	float4 Vector3 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 3];
+	Data.WorldToVolume = MakeLWCInverseMatrix4x3(TilePosition, RelativeWorldToVolume);
+
+	float4 Vector3 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 4];
 	Data.VolumePositionExtent = Vector3.xyz;
 	Data.VolumeSurfaceBias = abs(Vector3.w);
 	Data.bMostlyTwoSided = Vector3.w < 0.0f;
 
-	float4 Vector4 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 4];
+	float4 Vector4 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 5];
 	Data.MinMaxDrawDistance2 = Vector4.xy;
 	Data.SelfShadowBias = Vector4.z;
 	Data.GPUSceneInstanceIndex = asuint(Vector4.w);
 	
-	V0 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 5];
-	V1 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 6];
-	V2 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 7];
-	Data.VolumeToWorld = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
+	V0 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 6];
+	V1 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 7];
+	V2 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 8];
+	float4x4 VolumeToRelativeWorld = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
 
-	float4 Vector8 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 8];
+	Data.VolumeToWorld = MakeLWCMatrix(TilePosition, VolumeToRelativeWorld);
+
+	float4 Vector8 = SourceBuffer[ObjectIndex * DF_OBJECT_DATA_STRIDE + 9];
 	Data.VolumeToWorldScale = Vector8.xyz;
 	Data.VolumeScale = min(Data.VolumeToWorldScale.x, min(Data.VolumeToWorldScale.y, Data.VolumeToWorldScale.z));
 	Data.AssetIndex = asuint(Vector8.w);
@@ -271,7 +296,7 @@ FDFObjectData LoadDFObjectDataFromBuffer(StructuredBuffer<float4> SourceBuffer, 
 
 struct FHeightfieldObjectData
 {
-	float4x4 WorldToLocal;
+	FLWCInverseMatrix WorldToLocal;
 	float4 SizeScale;
 	float4 AtlasUVScaleBias;
 	float4 VisibilityAtlasUVScaleBias;
@@ -281,14 +306,18 @@ FHeightfieldObjectData LoadHeightfieldObjectDataFromBuffer(StructuredBuffer<floa
 {
 	FHeightfieldObjectData Data;
 
-	float4 V0 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 0];
-	float4 V1 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 1];
-	float4 V2 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 2];
-	Data.WorldToLocal = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
+	float3 TilePosition = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 0].xyz;
 
-	Data.SizeScale = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 3];
-	Data.AtlasUVScaleBias = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 4];
-	Data.VisibilityAtlasUVScaleBias = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 5];
+	float4 V0 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 1];
+	float4 V1 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 2];
+	float4 V2 = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 3];
+	float4x4 RelativeWorldToVolume = transpose(float4x4(V0, V1, V2, float4(0.0f, 0.0f, 0.0f, 1.0f)));
+
+	Data.WorldToLocal = MakeLWCInverseMatrix4x3(TilePosition, RelativeWorldToVolume);
+
+	Data.SizeScale = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 4];
+	Data.AtlasUVScaleBias = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 5];
+	Data.VisibilityAtlasUVScaleBias = SourceBuffer[ObjectIndex * HEIGHTFIELD_OBJECT_DATA_STRIDE + 6];
 
 	return Data;
 }
@@ -305,30 +334,6 @@ FHeightfieldObjectData LoadHeightfieldObjectData(uint ObjectIndex)
 {
 	return LoadHeightfieldObjectDataFromBuffer(SceneHeightfieldObjectData, ObjectIndex);
 }
-
-// VPLs generated by raytracing from the light
-#define VPL_DATA_STRIDE 3
-
-#define FINAL_GATHER_THREADGROUP_SIZE 64
-
-// Must match C++
-#define NUM_VISIBILITY_STEPS 10
-
-// Must match C++
-#define RECORD_CONE_DATA_STRIDE NUM_VISIBILITY_STEPS
-
-// Must match C++
-#define BENT_NORMAL_STRIDE 1
-
-Buffer<float4> IrradianceCachePositionRadius;
-Buffer<float> IrradianceCacheOccluderRadius;
-Buffer<uint2> IrradianceCacheTileCoordinate;
-Buffer<float4> IrradianceCacheNormal;
-Buffer<float4> IrradianceCacheBentNormal;
-Buffer<float4> IrradianceCacheIrradiance;
-
-Buffer<uint> ScatterDrawParameters;
-Buffer<uint> SavedStartIndex;
 
 uint NumConvexHullPlanes;
 float4 ViewFrustumConvexHull[6];
@@ -367,34 +372,9 @@ bool ViewFrustumIntersectAABB(float3 BoxCenter, float3 BoxExtent)
 	return true;
 }
 
-float ApproximateConeConeIntersection(float ArcLength0, float ArcLength1, float AngleBetweenCones)
-{
-	float AngleDifference = abs(ArcLength0 - ArcLength1);
-
-	float Intersection = smoothstep(
-		0,
-		1.0,
-		1.0 - saturate((AngleBetweenCones - AngleDifference) / (ArcLength0 + ArcLength1 - AngleDifference)));
-
-	return Intersection;
-}
-
-float GetVPLOcclusion(float3 BentNormalAO, float3 NormalizedVectorToVPL, float VPLConeAngle, float VPLOcclusionStrength)
-{
-	float BentNormalLength = length(BentNormalAO);
-	float UnoccludedAngle = BentNormalLength * PI / VPLOcclusionStrength;
-	float AngleBetween = acos(dot(BentNormalAO, NormalizedVectorToVPL) / max(BentNormalLength, .0001f));
-	float Visibility = ApproximateConeConeIntersection(VPLConeAngle, UnoccludedAngle, AngleBetween);
-
-	// Can't rely on the direction of the bent normal when close to fully occluded, lerp to shadowed
-	Visibility = lerp(0, Visibility, saturate((UnoccludedAngle - .1f) / .2f));
-
-	return Visibility;
-}
-
 float SampleDistanceFieldBrickTexture(float3 UV)
 {
-#if SUPPORTS_INDEPENDENT_SAMPLERS
+#if SUPPORTS_INDEPENDENT_SAMPLERS && !USE_DISTANCE_FIELD_SAMPLER
 	return Texture3DSampleLevel(DistanceFieldBrickTexture, GlobalBilinearWrappedSampler, UV, 0).x;
 #else
 	return Texture3DSampleLevel(DistanceFieldBrickTexture, DistanceFieldSampler, UV, 0).x;
@@ -510,7 +490,7 @@ Texture2D HFVisibilityTexture;
 
 float SampleHeightFieldAtlas(float2 UV)
 {
-#if SUPPORTS_INDEPENDENT_SAMPLERS
+#if SUPPORTS_INDEPENDENT_SAMPLERS && !USE_DISTANCE_FIELD_SAMPLER
 	float4 SampleValue = Texture2DSampleLevel(HeightFieldTexture, GlobalBilinearWrappedSampler, UV, 0);
 #else
 	float4 SampleValue = Texture2DSampleLevel(HeightFieldTexture, DistanceFieldSampler, UV, 0);
@@ -520,7 +500,7 @@ float SampleHeightFieldAtlas(float2 UV)
 
 float SampleHFVisibilityTexture(float2 UV)
 {
-#if SUPPORTS_INDEPENDENT_SAMPLERS
+#if SUPPORTS_INDEPENDENT_SAMPLERS && !USE_DISTANCE_FIELD_SAMPLER
 	return Texture2DSampleLevel(HFVisibilityTexture, GlobalBilinearWrappedSampler, UV, 0).r;
 #else
 	return Texture2DSampleLevel(HFVisibilityTexture, DistanceFieldSampler, UV, 0).r;

@@ -25,6 +25,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenReflectionTracingParameters, )
 	SHADER_PARAMETER(FIntPoint, ReflectionTracingBufferSize)
 	SHADER_PARAMETER(float, MaxRayIntensity)
 	SHADER_PARAMETER(float, ReflectionSmoothBias)
+	SHADER_PARAMETER(uint32, ReflectionPass)
+	SHADER_PARAMETER(uint32, UseJitter)
 
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, RayBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, RayTraceDistance)
@@ -65,6 +67,7 @@ extern void TraceReflections(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
 	const FSceneTextures& SceneTextures,
 	const FLumenCardTracingInputs& TracingInputs,
@@ -72,7 +75,8 @@ extern void TraceReflections(
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
 	bool bUseRadianceCache,
-	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters);
+	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
+	ERDGPassFlags ComputePassFlags);
 
 class FLumenReflectionTracingParameters;
 class FLumenReflectionTileParameters;

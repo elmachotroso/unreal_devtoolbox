@@ -1,17 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "CsvProfilerTraceAnalysis.h"
+
 #include "AnalysisServicePrivate.h"
 #include "Common/Utils.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "TraceServices/Model/Counters.h"
 #include "TraceServices/Model/Frames.h"
+#include "TraceServices/Model/Threads.h"
 
 namespace TraceServices
 {
 
-FCsvProfilerAnalyzer::FCsvProfilerAnalyzer(IAnalysisSession& InSession, FCsvProfilerProvider& InCsvProfilerProvider, ICounterProvider& InCounterProvider, const IFrameProvider& InFrameProvider, const IThreadProvider& InThreadProvider)
+FCsvProfilerAnalyzer::FCsvProfilerAnalyzer(IAnalysisSession& InSession, FCsvProfilerProvider& InCsvProfilerProvider, IEditableCounterProvider& InEditableCounterProvider, const IFrameProvider& InFrameProvider, const IThreadProvider& InThreadProvider)
 	: Session(InSession)
 	, CsvProfilerProvider(InCsvProfilerProvider)
-	, CounterProvider(InCounterProvider)
+	, EditableCounterProvider(InEditableCounterProvider)
 	, FrameProvider(InFrameProvider)
 	, ThreadProvider(InThreadProvider)
 {
@@ -65,6 +69,8 @@ void FCsvProfilerAnalyzer::OnAnalysisEnd()
 
 bool FCsvProfilerAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FCsvProfilerAnalyzer"));
+
 	FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
@@ -241,6 +247,12 @@ const TCHAR* FCsvProfilerAnalyzer::GetStatSeriesName(const FStatSeriesDefinition
 		Name = TEXT("COUNTS/") + Name;
 	}
 
+	if (Name.IsEmpty())
+	{
+		UE_LOG(LogTraceServices, Warning, TEXT("Invalid counter name for CSV column %d."), Definition->ColumnIndex);
+		Name = FString::Printf(TEXT("<noname CSV column %d>"), Definition->ColumnIndex);
+	}
+
 	return Session.StoreString(*Name);
 }
 
@@ -274,7 +286,7 @@ FCsvProfilerAnalyzer::FStatSeriesInstance& FCsvProfilerAnalyzer::GetStatSeries(u
 	const TCHAR* StatSeriesName = GetStatSeriesName(Definition, Type, ThreadState, false);
 	Instance->ProviderHandle = CsvProfilerProvider.AddSeries(StatSeriesName, Type);
 	Instance->ProviderCountHandle = CsvProfilerProvider.AddSeries(GetStatSeriesName(Definition, Type, ThreadState, true), CsvStatSeriesType_CustomStatInt);
-	Instance->Counter = CounterProvider.CreateCounter();
+	Instance->Counter = EditableCounterProvider.CreateEditableCounter();
 	Instance->Counter->SetName(StatSeriesName);
 	Instance->Counter->SetIsFloatingPoint(Type != CsvStatSeriesType_CustomStatInt);
 	Instance->Type = Type;

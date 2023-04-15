@@ -1,15 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RetargetEditor/IKRetargetFactory.h"
-#include "IKRig/Public/Retargeter/IKRetargeter.h"
+#include "Retargeter/IKRetargeter.h"
+#include "IKRigEditor.h"
 #include "AssetTypeCategories.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "RetargetEditor/IKRetargeterController.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Engine/SkeletalMesh.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRetargetFactory)
 
 #define LOCTEXT_NAMESPACE "IKRetargeterFactory"
 
@@ -31,13 +35,13 @@ UObject* UIKRetargetFactory::FactoryCreateNew(
 {
 	if (!SourceIKRig.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Unable to create IK Retargter. No source IK Rig asset supplied."));
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Unable to create IK Retargter. No source IK Rig asset supplied."));
 		return nullptr;
 	}
-
-	if (!SourceIKRig->GetPreviewMesh())
+	
+	if (!IsValid(SourceIKRig->GetPreviewMesh()))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Unable to create IK Retargter. Source IK Rig does not have an associated skeletal mesh."));
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Unable to create IK Retargter. Source IK Rig does not have an associated skeletal mesh."));
 		return nullptr;
 	}
 	
@@ -69,7 +73,7 @@ bool UIKRetargetFactory::ConfigureProperties()
 	FAssetPickerConfig AssetPickerConfig;
 
 	/** The asset picker will only show skeletal meshes */
-	AssetPickerConfig.Filter.ClassNames.Add(UIKRigDefinition::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UIKRigDefinition::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 
 	/** The delegate that fires when an asset was selected */
@@ -84,7 +88,7 @@ bool UIKRetargetFactory::ConfigureProperties()
 	.SupportsMinimize(false) .SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]
@@ -115,4 +119,6 @@ FString UIKRetargetFactory::GetDefaultNewAssetName() const
 {
 	return FString(TEXT("NewIKRetargeter"));
 }
+
 #undef LOCTEXT_NAMESPACE
+

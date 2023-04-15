@@ -5,11 +5,26 @@ ActorFactory.cpp:
 =============================================================================*/
 
 #include "ActorFactoryProceduralFoliage.h"
-#include "Settings/EditorExperimentalSettings.h"
+
+#include "ActorFactories/ActorFactory.h"
+#include "AssetRegistry/AssetData.h"
+#include "Containers/UnrealString.h"
+#include "GameFramework/Actor.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "ProceduralFoliageComponent.h"
 #include "ProceduralFoliageSpawner.h"
 #include "ProceduralFoliageVolume.h"
-#include "ProceduralFoliageComponent.h"
-#include "AssetData.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "ActorFactoryProceduralFoliage"
 
@@ -31,7 +46,7 @@ bool UActorFactoryProceduralFoliage::PreSpawnActor(UObject* Asset, FTransform& I
 
 bool UActorFactoryProceduralFoliage::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (!AssetData.IsValid() || !AssetData.GetClass()->IsChildOf(UProceduralFoliageSpawner::StaticClass()))
+	if (!AssetData.IsValid() || !AssetData.IsInstanceOf(UProceduralFoliageSpawner::StaticClass()))
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoProceduralFoliageSpawner", "A valid ProceduralFoliageSpawner must be specified.");
 		return false;

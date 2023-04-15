@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieScenePropertyTrack.h"
+#include "Channels/MovieSceneSectionChannelOverrideRegistry.h"
 #include "Algo/Sort.h"
+#include "MovieScene.h"
 #include "MovieSceneCommonHelpers.h"
 #include "MovieSceneTracksComponentTypes.h"
 #include "PropertyPathHelpers.h"
 #include "Systems/MovieScenePiecewiseBoolBlenderSystem.h"
 #include "UObject/Field.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScenePropertyTrack)
 
 UMovieScenePropertyTrack::UMovieScenePropertyTrack(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -144,14 +148,13 @@ bool UMovieScenePropertyTrack::IsEmpty() const
 	return Sections.Num() == 0;
 }
 
-
 TArray<UMovieSceneSection*, TInlineAllocator<4>> UMovieScenePropertyTrack::FindAllSections(FFrameNumber Time)
 {
 	TArray<UMovieSceneSection*, TInlineAllocator<4>> OverlappingSections;
 
 	for (UMovieSceneSection* Section : Sections)
 	{
-		if (Section->GetRange().Contains(Time))
+		if (MovieSceneHelpers::IsSectionKeyable(Section) && Section->GetRange().Contains(Time))
 		{
 			OverlappingSections.Add(Section);
 		}
@@ -187,10 +190,10 @@ UMovieSceneSection* UMovieScenePropertyTrack::FindOrExtendSection(FFrameNumber T
 {
 	Weight = 1.0f;
 	TArray<UMovieSceneSection*, TInlineAllocator<4>> OverlappingSections = FindAllSections(Time);
-	if (SectionToKey)
+	if (SectionToKey && MovieSceneHelpers::IsSectionKeyable(SectionToKey))
 	{
 		bool bCalculateWeight = false;
-		if (SectionToKey && !OverlappingSections.Contains(SectionToKey))
+		if (!OverlappingSections.Contains(SectionToKey))
 		{
 			if (SectionToKey->HasEndFrame() && SectionToKey->GetExclusiveEndFrame() <= Time)
 			{
@@ -334,10 +337,25 @@ void FMovieScenePropertyTrackEntityImportHelper::PopulateEvaluationField(UMovieS
 {
 	using namespace UE::MovieScene;
 
-	// Add the default entity for this section.
-	const int32 EntityIndex   = OutFieldBuilder->FindOrAddEntity(&Section, SectionPropertyValueImportingID);
-	const int32 MetaDataIndex = OutFieldBuilder->AddMetaData(InMetaData);
-	OutFieldBuilder->AddPersistentEntity(EffectiveRange, EntityIndex, MetaDataIndex);
+	int32 NumOverridenChannels = 0;
+	IMovieSceneChannelOverrideProvider* RegistryProvider = Cast<IMovieSceneChannelOverrideProvider>(&Section);
+	if (RegistryProvider)
+	{
+		if (UMovieSceneSectionChannelOverrideRegistry* OverrideRegistry = RegistryProvider->GetChannelOverrideRegistry(false))
+		{
+			NumOverridenChannels = OverrideRegistry->NumChannels();
+			OverrideRegistry->PopulateEvaluationFieldImpl(EffectiveRange, InMetaData, OutFieldBuilder, Section);
+		}
+	}
+
+	const int32 NumChannels = Section.GetChannelProxy().NumChannels();
+	if (NumChannels > NumOverridenChannels)
+	{
+		// Add the default entity for this section.
+		const int32 EntityIndex = OutFieldBuilder->FindOrAddEntity(&Section, SectionPropertyValueImportingID);
+		const int32 MetaDataIndex = OutFieldBuilder->AddMetaData(InMetaData);
+		OutFieldBuilder->AddPersistentEntity(EffectiveRange, EntityIndex, MetaDataIndex);
+	}
 
 	// Check if this section is animating a property with an edit-condition. If so, we need to also animate a boolean toggle
 	// that will be set to true while the main property is animated.
@@ -489,3 +507,4 @@ FName FMovieScenePropertyTrackEntityImportHelper::SanitizeBoolPropertyName(FName
 	PropertyVarName.RemoveFromStart("b", ESearchCase::CaseSensitive);
 	return FName(*PropertyVarName);
 }
+

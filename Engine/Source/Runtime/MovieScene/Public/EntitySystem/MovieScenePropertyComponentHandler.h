@@ -24,9 +24,6 @@ namespace UE
 namespace MovieScene
 {
 
-DECLARE_CYCLE_STAT(TEXT("Apply properties"), MovieSceneEval_ApplyProperties,  STATGROUP_MovieSceneECS);
-
-
 
 template<typename PropertyTraits, typename MetaDatatype, typename MetaDataIndices, typename CompositeIndices, typename ...CompositeTypes>
 struct TPropertyComponentHandlerImpl;
@@ -346,7 +343,7 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 		.ReadAllOf(Definition.GetMetaDataComponent<MetaDataTypes>(MetaDataIndices)...)
 		.ReadAllOf(Composites[CompositeIndices].ComponentTypeID.ReinterpretCast<CompositeTypes>()...)
 		.FilterAll({ Definition.PropertyType })
-		.SetStat(GET_STATID(MovieSceneEval_ApplyProperties))
+		.SetStat(Definition.StatID)
 		.SetDesiredThread(Linker->EntityManager.GetGatherThread())
 		.template Dispatch_PerAllocation<CompleteSetterTask>(&Linker->EntityManager, InPrerequisites, &Subsequents, Definition.CustomPropertyRegistration);
 
@@ -366,7 +363,7 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 			.FilterAny({ CompletePropertyMask })
 			.FilterAll({ Definition.PropertyType })
 			.FilterOut(CompletePropertyMask)
-			.SetStat(GET_STATID(MovieSceneEval_ApplyProperties))
+			.SetStat(Definition.StatID)
 			.SetDesiredThread(Linker->EntityManager.GetGatherThread())
 			.template Dispatch_PerAllocation<PartialSetterTask>(&Linker->EntityManager, InPrerequisites, &Subsequents, Definition.CustomPropertyRegistration, Composites);
 		}
@@ -406,7 +403,7 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 		FGraphEventArray Tasks;
 		for (int32 Index = 0; Index < NumComposites; ++Index)
 		{
-			if ((PropertyDefinition.FloatCompositeMask & (1 << Index)) == 0 && (PropertyDefinition.DoubleCompositeMask & (1 << Index)) == 0)
+			if ((PropertyDefinition.DoubleCompositeMask & (1 << Index)) == 0)
 			{
 				continue;
 			}
@@ -440,22 +437,7 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 
 			for (int32 CompositeIndex = 0; CompositeIndex < NumComposites; ++CompositeIndex)
 			{
-				if ((PropertyDefinition.FloatCompositeMask & (1 << CompositeIndex)) != 0)
-				{
-					const float* InitialValueComposite = nullptr;
-					FAlignedDecomposedValue& AlignedOutput = AlignedOutputs[CompositeIndex];
-					if (InitialValueComponent)
-					{
-						const StorageType& InitialValue = (*InitialValueComponent);
-						InitialValueComposite = reinterpret_cast<const float*>(reinterpret_cast<const uint8*>(&InitialValue) + Composites[CompositeIndex].CompositeOffset);
-					}
-
-					const float NewComposite = *reinterpret_cast<const float*>(reinterpret_cast<const uint8*>(&InCurrentValue) + Composites[CompositeIndex].CompositeOffset);
-
-					float* RecomposedComposite = reinterpret_cast<float*>(Result + Composites[CompositeIndex].CompositeOffset);
-					*RecomposedComposite = AlignedOutput.Value.Recompose(EntityID, NewComposite, InitialValueComposite);
-				}
-				else if ((PropertyDefinition.DoubleCompositeMask & ( 1 << Index)) != 0)
+				if ((PropertyDefinition.DoubleCompositeMask & ( 1 << CompositeIndex)) != 0)
 				{
 					const double* InitialValueComposite = nullptr;
 					FAlignedDecomposedValue& AlignedOutput = AlignedOutputs[CompositeIndex];
@@ -516,19 +498,7 @@ struct TPropertyComponentHandlerImpl<PropertyTraits, TPropertyMetaData<MetaDataT
 		{
 			FMovieSceneEntityID EntityID = LocalParams.Query.Entities[Index];
 
-			if ((PropertyDefinition.FloatCompositeMask & (1 << CompositeIndex)) != 0)
-			{
-				const float* InitialValueComposite = nullptr;
-				if (InitialValueComponent)
-				{
-					const StorageType& InitialValue = (*InitialValueComponent);
-					InitialValueComposite = reinterpret_cast<const float*>(reinterpret_cast<const uint8*>(&InitialValue) + Composite.CompositeOffset);
-				}
-
-				const float RecomposedComposite = AlignedOutput.Value.Recompose(EntityID, InCurrentValue, InitialValueComposite);
-				OutResults[Index] = (double)RecomposedComposite;
-			}
-			else if ((PropertyDefinition.DoubleCompositeMask & (1 << CompositeIndex)) != 0)
+			if ((PropertyDefinition.DoubleCompositeMask & (1 << CompositeIndex)) != 0)
 			{
 				const double* InitialValueComposite = nullptr;
 				if (InitialValueComponent)
@@ -588,11 +558,10 @@ struct TPropertyDefinitionBuilder
 		Registry->CompositeDefinitions.Add(NewChannel);
 
 		Definition->CompositeSize = 1;
-		if (TIsSame<typename PropertyTraits::StorageType, float>::Value)
-		{
-			Definition->FloatCompositeMask = 1;
-		}
-		else if (TIsSame<typename PropertyTraits::StorageType, double>::Value)
+
+		static_assert(!TIsSame<typename PropertyTraits::StorageType, float>::Value, "Please use double-precision composites");
+
+		if (TIsSame<typename PropertyTraits::StorageType, double>::Value)
 		{
 			Definition->DoubleCompositeMask = 1;
 		}
@@ -605,6 +574,11 @@ struct TPropertyDefinitionBuilder
 	{
 		Definition->CustomPropertyRegistration = InCustomAccessors;
 		return *this;
+	}
+
+	TPropertyDefinitionBuilder<PropertyTraits>& SetStat(TStatId InStatID)
+	{
+		Definition->StatID = InStatID;
 	}
 
 	template<typename BlenderSystemType>
@@ -665,32 +639,15 @@ struct TCompositePropertyDefinitionBuilder
 		FPropertyCompositeDefinition NewChannel = { InComponent, static_cast<uint16>(CompositeOffset) };
 		Registry->CompositeDefinitions.Add(NewChannel);
 
-		if (TIsSame<T, float>::Value)
-		{
-			Definition->FloatCompositeMask |= 1 << Definition->CompositeSize;
-		}
-		else if (TIsSame<T, double>::Value)
+		static_assert(!TIsSame<T, float>::Value, "Please use double-precision composites");
+
+		if (TIsSame<T, double>::Value)
 		{
 			Definition->DoubleCompositeMask |= 1 << Definition->CompositeSize;
 		}
 
 		++Definition->CompositeSize;
 		return TCompositePropertyDefinitionBuilder<PropertyTraits, Composites..., T>(Definition, Registry);
-	}
-
-	TCompositePropertyDefinitionBuilder<PropertyTraits, Composites..., float> AddComposite(TComponentTypeID<float> InComponent, float StorageType::*DataPtr)
-	{
-		checkf(Definition == &Registry->GetProperties().Last(), TEXT("Cannot re-define a property type after another has been added."));
-
-		const PTRINT CompositeOffset = (PTRINT)&(((StorageType*)0)->*DataPtr);
-
-		FPropertyCompositeDefinition NewChannel = { InComponent, static_cast<uint16>(CompositeOffset) };
-		Registry->CompositeDefinitions.Add(NewChannel);
-
-		Definition->FloatCompositeMask |= 1 << Definition->CompositeSize;
-
-		++Definition->CompositeSize;
-		return TCompositePropertyDefinitionBuilder<PropertyTraits, Composites..., float>(Definition, Registry);
 	}
 
 	TCompositePropertyDefinitionBuilder<PropertyTraits, Composites..., double> AddComposite(TComponentTypeID<double> InComponent, double StorageType::*DataPtr)

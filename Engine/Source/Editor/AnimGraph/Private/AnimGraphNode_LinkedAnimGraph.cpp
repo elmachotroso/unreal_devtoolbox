@@ -17,6 +17,8 @@
 
 void UAnimGraphNode_LinkedAnimGraph::PostPasteNode()
 {
+	Super::PostPasteNode();
+
 	// Clear incompatible target class
 	if(UClass* InstanceClass = GetTargetClass())
 	{
@@ -74,8 +76,11 @@ void UAnimGraphNode_LinkedAnimGraph::SetupFromAsset(const FAssetData& InAssetDat
 		{
 			UAnimBlueprint* AnimBlueprint = CastChecked<UAnimBlueprint>(InAssetData.GetAsset());
 			Node.InstanceClass = AnimBlueprint->GeneratedClass.Get();
-		}	
+		}
 	}
+
+	// Set up function reference
+	FunctionReference.SetExternalMember(UEdGraphSchema_K2::GN_AnimGraph, GetTargetClass());
 }
 
 void UAnimGraphNode_LinkedAnimGraph::GetMenuActions(FBlueprintActionDatabaseRegistrar& InActionRegistrar) const
@@ -115,7 +120,7 @@ void UAnimGraphNode_LinkedAnimGraph::GetMenuActions(FBlueprintActionDatabaseRegi
 				}
 				else
 				{
-					return FText::Format(LOCTEXT("MenuDescTooltipFormat", "Linked Anim Graph - Runs a linked anim graph in another instance to process animation\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+					return FText::Format(LOCTEXT("MenuDescTooltipFormat", "Linked Anim Graph - Runs a linked anim graph in another instance to process animation\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 				}
 			}
 			else
@@ -188,6 +193,30 @@ void UAnimGraphNode_LinkedAnimGraph::Serialize(FArchive& Ar)
 		// Transfer old tag to new system
 		SetTagInternal(Node.Tag_DEPRECATED);
 	}
+}
+
+FAnimNode_CustomProperty* UAnimGraphNode_LinkedAnimGraph::GetCustomPropertyNode()
+{
+	FAnimNode_CustomProperty* const RuntimeCustomPropertyNode = GetDebuggedAnimNode<FAnimNode_CustomProperty>();
+	return RuntimeCustomPropertyNode ? RuntimeCustomPropertyNode : &Node;
+}
+
+const FAnimNode_CustomProperty* UAnimGraphNode_LinkedAnimGraph::GetCustomPropertyNode() const
+{
+	const FAnimNode_CustomProperty* const RuntimeCustomPropertyNode = GetDebuggedAnimNode<FAnimNode_CustomProperty>();
+	return RuntimeCustomPropertyNode ? RuntimeCustomPropertyNode : &Node;
+}
+
+FAnimNode_LinkedAnimGraph* UAnimGraphNode_LinkedAnimGraph::GetLinkedAnimGraphNode()
+{
+	FAnimNode_LinkedAnimGraph* const RuntimeLinkedAnimGraphNode = GetDebuggedAnimNode<FAnimNode_LinkedAnimGraph>();
+	return RuntimeLinkedAnimGraphNode ? RuntimeLinkedAnimGraphNode : &Node;
+}
+
+const FAnimNode_LinkedAnimGraph* UAnimGraphNode_LinkedAnimGraph::GetLinkedAnimGraphNode() const
+{
+	const FAnimNode_LinkedAnimGraph* const RuntimeLinkedAnimGraphNode = GetDebuggedAnimNode<FAnimNode_LinkedAnimGraph>();
+	return RuntimeLinkedAnimGraphNode ? RuntimeLinkedAnimGraphNode : &Node;
 }
 
 #undef LOCTEXT_NAMESPACE

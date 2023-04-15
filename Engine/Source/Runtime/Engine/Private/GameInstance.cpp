@@ -15,6 +15,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Engine/Console.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Engine/GameEngine.h"
 #include "GameFramework/GameModeBase.h"
 #include "Engine/DemoNetDriver.h"
@@ -29,6 +30,10 @@
 #include "Misc/PackageName.h"
 #include "Net/ReplayPlaylistTracker.h"
 #include "ReplaySubsystem.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameInstance)
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -62,6 +67,15 @@ void UGameInstance::FinishDestroy()
 	Super::FinishDestroy();
 }
 
+void UGameInstance::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	UGameInstance* This = CastChecked<UGameInstance>(InThis);
+		
+	This->SubsystemCollection.AddReferencedObjects(This, Collector);
+
+	UObject::AddReferencedObjects(This, Collector);
+}
+
 UWorld* UGameInstance::GetWorld() const
 {
 	return WorldContext ? WorldContext->World() : NULL;
@@ -74,6 +88,7 @@ UEngine* UGameInstance::GetEngine() const
 
 void UGameInstance::Init()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UGameInstance::Init);
 	ReceiveInit();
 
 	if (!IsRunningCommandlet())
@@ -96,6 +111,11 @@ void UGameInstance::Init()
 
 		FNetDelegates::OnReceivedNetworkEncryptionToken.BindUObject(this, &ThisClass::ReceivedNetworkEncryptionToken);
 		FNetDelegates::OnReceivedNetworkEncryptionAck.BindUObject(this, &ThisClass::ReceivedNetworkEncryptionAck);
+		FNetDelegates::OnReceivedNetworkEncryptionFailure.BindUObject(this, &ThisClass::ReceivedNetworkEncryptionFailure);
+
+		IPlatformInputDeviceMapper& PlatformInputMapper = IPlatformInputDeviceMapper::Get();
+		PlatformInputMapper.GetOnInputDeviceConnectionChange().AddUObject(this, &UGameInstance::HandleInputDeviceConnectionChange);
+		PlatformInputMapper.GetOnInputDevicePairingChange().AddUObject(this, &UGameInstance::HandleInputDevicePairingChange);
 	}
 
 	SubsystemCollection.Initialize(this);
@@ -141,8 +161,22 @@ void UGameInstance::Shutdown()
 	FNetDelegates::OnReceivedNetworkEncryptionToken.Unbind();
 	FNetDelegates::OnReceivedNetworkEncryptionAck.Unbind();
 
+	IPlatformInputDeviceMapper& PlatformInputMapper = IPlatformInputDeviceMapper::Get();
+	PlatformInputMapper.GetOnInputDeviceConnectionChange().RemoveAll(this);
+	PlatformInputMapper.GetOnInputDevicePairingChange().RemoveAll(this);
+
 	// Clear the world context pointer to prevent further access.
 	WorldContext = nullptr;
+}
+
+void UGameInstance::HandleInputDeviceConnectionChange(EInputDeviceConnectionState NewConnectionState, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId)
+{
+	OnInputDeviceConnectionChange.Broadcast(NewConnectionState, PlatformUserId, InputDeviceId);
+}
+
+void UGameInstance::HandleInputDevicePairingChange(FInputDeviceId InputDeviceId, FPlatformUserId NewUserPlatformId, FPlatformUserId OldUserPlatformId)
+{
+	OnUserInputDevicePairingChange.Broadcast(InputDeviceId, NewUserPlatformId, OldUserPlatformId);
 }
 
 void UGameInstance::InitializeStandalone(const FName InPackageName, UPackage* InWorldPackage)
@@ -254,6 +288,8 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 
 	WorldContext->RunAsDedicated = Params.bRunAsDedicated;
 
+	WorldContext->bIsPrimaryPIEInstance = Params.bIsPrimaryPIEClient;
+
 	WorldContext->OwningGameInstance = this;
 	
 	const FString WorldPackageName = EditorEngine->EditorWorld->GetOutermost()->GetName();
@@ -282,6 +318,7 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 			UWorld* WorldToDuplicate = Cast<UWorld>(TargetWorld.TryLoad());
 			if (WorldToDuplicate)
 			{
+				WorldToDuplicate->ChangeFeatureLevel(EditorEngine->EditorWorld->FeatureLevel, false);
 				NewWorld = EditorEngine->CreatePIEWorldByDuplication(*WorldContext, WorldToDuplicate, PIEMapName);
 			}
 		}
@@ -396,6 +433,12 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 	}
 	else
 	{
+		FScopedSlowTask SlowTask(100, NSLOCTEXT("UnrealEd", "StartPlayInEditor", "Starting PIE..."));
+		// Disabled for now in PIE until a proper fix is found to give the focus to the blueprint debugger
+		// during beginplay if a breakpoint is hit. The focus is currently held by the slowtask and prevents the debugger from working.
+		// Related JIRA UE-159973
+		SlowTask.MakeDialogDelayed(1.0f, false, false);
+
 		// we're going to be playing in the current world, get it ready for play
 		UWorld* const PlayWorld = GetWorld();
 
@@ -454,11 +497,14 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 			return PostCreateGameModeResult;
 		}
 
+		SlowTask.EnterProgressFrame(10, NSLOCTEXT("UnrealEd", "PIEFlushingLevelStreaming", "Starting PIE (Loading always loaded objects)..."));
 		// Make sure "always loaded" sub-levels are fully loaded
 		PlayWorld->FlushLevelStreaming(EFlushLevelStreamingType::Visibility);
 
+		SlowTask.EnterProgressFrame(10, NSLOCTEXT("UnrealEd", "PIECreatingAISystem", "Starting PIE (Creating AI System)..."));
 		PlayWorld->CreateAISystem();
 
+		SlowTask.EnterProgressFrame(10, NSLOCTEXT("UnrealEd", "PIEInitializingActors", "Starting PIE (Initializing Actors)..."));
 		PlayWorld->InitializeActorsForPlay(URL);
 		// calling it after InitializeActorsForPlay has been called to have all potential bounding boxed initialized
 		FNavigationSystem::AddNavigationSystemToWorld(*PlayWorld, LocalPlayers.Num() > 0 ? FNavigationSystemRunMode::PIEMode : FNavigationSystemRunMode::SimulationMode);
@@ -476,6 +522,7 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 		UGameViewportClient* const GameViewport = GetGameViewportClient();
 		if (GameViewport != NULL && GameViewport->Viewport != NULL)
 		{
+			SlowTask.EnterProgressFrame(50, NSLOCTEXT("UnrealEd", "PIEWaitingForLevelStreaming", "Starting PIE (Waiting for level streaming)..."));
 			// Stream any levels now that need to be loaded before the game starts
 			GEngine->BlockTillLevelStreamingCompleted(PlayWorld);
 		}
@@ -494,8 +541,10 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 			ensureMsgf(EnableListenServer(true, ListenPort), TEXT("Starting Listen Server for Play in Editor failed!"));
 		}
 
+		SlowTask.EnterProgressFrame(10, NSLOCTEXT("UnrealEd", "PIEBeginPlay", "Starting PIE (Begin play)..."));
 		PlayWorld->BeginPlay();
 
+		SlowTask.EnterProgressFrame(10);
 #if WITH_EDITOR
 		if (PlayWorld->WorldType == EWorldType::PIE)
 		{
@@ -528,6 +577,7 @@ UGameViewportClient* UGameInstance::GetGameViewportClient() const
 
 void UGameInstance::StartGameInstance()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UGameInstance::StartGameInstance);
 	UEngine* const Engine = GetEngine();
 
 	// Create default URL.
@@ -695,10 +745,19 @@ bool UGameInstance::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 
 ULocalPlayer* UGameInstance::CreateInitialPlayer(FString& OutError)
 {
-	return CreateLocalPlayer( 0, OutError, false );
+	return CreateLocalPlayer(IPlatformInputDeviceMapper::Get().GetPrimaryPlatformUser(), OutError, false);
 }
 
 ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutError, bool bSpawnPlayerController)
+{
+	// A compatibility call that will map the old int32 ControllerId to the new platform user
+	FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId DummyInputDevice = INPUTDEVICEID_NONE;
+	IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DummyInputDevice);
+	return CreateLocalPlayer(UserId, OutError, bSpawnPlayerController);
+}
+
+ULocalPlayer* UGameInstance::CreateLocalPlayer(FPlatformUserId UserId, FString& OutError, bool bSpawnPlayerController)
 {
 	check(GetEngine()->LocalPlayerClass != NULL);
 
@@ -707,31 +766,31 @@ ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutE
 
 	const int32 MaxSplitscreenPlayers = (GetGameViewportClient() != NULL) ? GetGameViewportClient()->MaxSplitscreenPlayers : 1;
 
-	if (FindLocalPlayerFromControllerId( ControllerId ) != NULL)
+	if (FindLocalPlayerFromPlatformUserId(UserId) != NULL)
 	{
-		OutError = FString::Printf(TEXT("A local player already exists for controller ID %d,"), ControllerId);
+		OutError = FString::Printf(TEXT("A local player already exists for PlatformUserId %d,"), UserId.GetInternalId());
 	}
 	else if (LocalPlayers.Num() < MaxSplitscreenPlayers)
 	{
 		// If the controller ID is not specified then find the first available
-		if (ControllerId < 0)
+		if (!UserId.IsValid())
 		{
-			for (ControllerId = 0; ControllerId < MaxSplitscreenPlayers; ++ControllerId)
+			for (int32 Id = 0; Id < MaxSplitscreenPlayers; ++Id)
 			{
-				if (FindLocalPlayerFromControllerId( ControllerId ) == NULL)
+				if (FindLocalPlayerFromControllerId(Id) == nullptr)
 				{
 					break;
 				}
 			}
-			check(ControllerId < MaxSplitscreenPlayers);
+			check(UserId.GetInternalId() < MaxSplitscreenPlayers);
 		}
-		else if (ControllerId >= MaxSplitscreenPlayers)
+		else if (UserId.GetInternalId() >= MaxSplitscreenPlayers)
 		{
-			UE_LOG(LogPlayerManagement, Warning, TEXT("Controller ID (%d) is unlikely to map to any physical device, so this player will not receive input"), ControllerId);
+			UE_LOG(LogPlayerManagement, Warning, TEXT("Controller ID (%d) is unlikely to map to any physical device, so this player will not receive input"), UserId.GetInternalId());
 		}
 
 		NewPlayer = NewObject<ULocalPlayer>(GetEngine(), GetEngine()->LocalPlayerClass);
-		InsertIndex = AddLocalPlayer(NewPlayer, ControllerId);
+		InsertIndex = AddLocalPlayer(NewPlayer, UserId);
 		UWorld* CurrentWorld = GetWorld();
 		if (bSpawnPlayerController && InsertIndex != INDEX_NONE && CurrentWorld != nullptr)
 		{
@@ -779,18 +838,24 @@ ULocalPlayer* UGameInstance::CreateLocalPlayer(int32 ControllerId, FString& OutE
 
 int32 UGameInstance::AddLocalPlayer(ULocalPlayer* NewLocalPlayer, int32 ControllerId)
 {
+	FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId DummyInputDevice = INPUTDEVICEID_NONE;
+	IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DummyInputDevice);
+	return AddLocalPlayer(NewLocalPlayer, UserId);
+}
+
+int32 UGameInstance::AddLocalPlayer(ULocalPlayer* NewLocalPlayer, FPlatformUserId UserId)
+{
 	if (NewLocalPlayer == nullptr)
 	{
 		return INDEX_NONE;
 	}
 
-	const int32 InsertIndex = LocalPlayers.Num();
-
 	// Add to list
-	LocalPlayers.AddUnique(NewLocalPlayer);
+	const int32 InsertIndex = LocalPlayers.AddUnique(NewLocalPlayer);
 
-	// Notify the player he/she was added
-	NewLocalPlayer->PlayerAdded(GetGameViewportClient(), ControllerId);
+	// Notify the player they were added
+	NewLocalPlayer->PlayerAdded(GetGameViewportClient(), UserId);
 
 	// Notify the viewport that we added a player (so it can update splitscreen settings, etc)
 	if ( GetGameViewportClient() != nullptr)
@@ -798,7 +863,7 @@ int32 UGameInstance::AddLocalPlayer(ULocalPlayer* NewLocalPlayer, int32 Controll
 		GetGameViewportClient()->NotifyPlayerAdded(InsertIndex, NewLocalPlayer);
 	}
 
-	UE_LOG(LogPlayerManagement, Log, TEXT("UGameInstance::AddLocalPlayer: Added player %s with ControllerId %d at index %d (%d remaining players)"), *NewLocalPlayer->GetName(), NewLocalPlayer->GetControllerId(), InsertIndex, LocalPlayers.Num());
+	UE_LOG(LogPlayerManagement, Log, TEXT("UGameInstance::AddLocalPlayer: Added player %s with PlatformUserId %d at index %d (%d remaining players)"), *NewLocalPlayer->GetName(), NewLocalPlayer->GetPlatformUserId(), InsertIndex, LocalPlayers.Num());
 
 	OnLocalPlayerAddedEvent.Broadcast(NewLocalPlayer);
 
@@ -861,6 +926,12 @@ bool UGameInstance::RemoveLocalPlayer(ULocalPlayer* ExistingPlayer)
 
 	OnLocalPlayerRemovedEvent.Broadcast(ExistingPlayer);
 
+	// Marked as garbage here to detect outstanding references
+	if (!UObjectBaseUtility::IsPendingKillEnabled())
+	{
+		ExistingPlayer->MarkAsGarbage();
+	}
+
 	return true;
 }
 
@@ -872,6 +943,19 @@ void UGameInstance::DebugCreatePlayer(int32 ControllerId)
 	if (Error.Len() > 0)
 	{
 		UE_LOG(LogPlayerManagement, Error, TEXT("Failed to DebugCreatePlayer: %s"), *Error);
+	}
+	else
+	{
+		FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+		FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+		DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, InputDevice);
+	
+		// If the input device that was created hasn't been mapped yet, we shuold map a dummy input device to it
+		if (!DeviceMapper.GetUserForInputDevice(InputDevice).IsValid())
+		{
+			DeviceMapper.Internal_MapInputDeviceToUser(InputDevice, UserId, EInputDeviceConnectionState::Connected);
+		}
 	}
 #endif
 }
@@ -938,16 +1022,18 @@ APlayerController* UGameInstance::GetFirstLocalPlayerController(const UWorld* Wo
 APlayerController* UGameInstance::GetPrimaryPlayerController(bool bRequiresValidUniqueId) const
 {
 	UWorld* World = GetWorld();
-	check(World);
 
 	APlayerController* PrimaryController = nullptr;
-	for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+	if (ensure(World))
 	{
-		APlayerController* NextPlayer = Iterator->Get();
-		if (NextPlayer && NextPlayer->PlayerState && NextPlayer->IsPrimaryPlayer() && (!bRequiresValidUniqueId || NextPlayer->PlayerState->GetUniqueId().IsValid()))
+		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
 		{
-			PrimaryController = NextPlayer;
-			break;
+			APlayerController* NextPlayer = Iterator->Get();
+			if (NextPlayer && NextPlayer->PlayerState && NextPlayer->IsPrimaryPlayer() && (!bRequiresValidUniqueId || NextPlayer->PlayerState->GetUniqueId().IsValid()))
+			{
+				PrimaryController = NextPlayer;
+				break;
+			}
 		}
 	}
 
@@ -988,6 +1074,19 @@ ULocalPlayer* UGameInstance::FindLocalPlayerFromControllerId(const int32 Control
 	for (ULocalPlayer * LP : LocalPlayers)
 	{
 		if (LP && (LP->GetControllerId() == ControllerId))
+		{
+			return LP;
+		}
+	}
+
+	return nullptr;
+}
+
+ULocalPlayer* UGameInstance::FindLocalPlayerFromPlatformUserId(const FPlatformUserId UserId) const
+{
+	for (ULocalPlayer* LP : LocalPlayers)
+	{
+		if (LP && (LP->GetPlatformUserId() == UserId))
 		{
 			return LP;
 		}
@@ -1109,7 +1208,7 @@ private:
 
 bool UGameInstance::PlayReplayPlaylist(const FReplayPlaylistParams& PlaylistParams)
 {
-	LLM_SCOPE(ELLMTag::Networking);
+	LLM_SCOPE(ELLMTag::Replays);
 
 	return FGameInstanceReplayPlaylistHelper::StartReplay(PlaylistParams, this);
 }
@@ -1197,6 +1296,11 @@ void UGameInstance::ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResponse&
 {
 	FEncryptionKeyResponse Response(EEncryptionResponse::Failure, TEXT("ReceivedNetworkEncryptionAck not implemented"));
 	Delegate.ExecuteIfBound(Response);
+}
+
+EEncryptionFailureAction UGameInstance::ReceivedNetworkEncryptionFailure(UNetConnection* Connection)
+{
+	return EEncryptionFailureAction::Default;
 }
 
 TSubclassOf<UOnlineSession> UGameInstance::GetOnlineSessionClass()
@@ -1396,3 +1500,4 @@ void UGameInstance::UnregisterReferencedObject(UObject* ObjectToReference)
 {
 	ReferencedObjects.RemoveSingleSwap(ObjectToReference);
 }
+

@@ -2,8 +2,6 @@
 
 #include "SCameraShakePreviewer.h"
 #include "Camera/CameraActor.h"
-#include "Camera/CameraAnim.h"
-#include "Camera/CameraAnimInst.h"
 #include "Camera/CameraModifier_CameraShake.h"
 #include "Camera/CameraShakeBase.h"
 #include "Camera/CameraShakeSourceActor.h"
@@ -11,10 +9,10 @@
 #include "Camera/PlayerCameraManager.h"
 #include "CameraShakePreviewerModule.h"
 #include "EditorDirectories.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelEditor.h"
 #include "LevelEditorViewport.h"
-#include "MatineeCameraShake.h"
+#include "LegacyCameraShake.h"
 #include "Modules/ModuleManager.h"
 #include "Slate/SceneViewport.h"
 #include "Widgets/Input/SButton.h"
@@ -22,6 +20,8 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SWrapBox.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SCameraShakePreviewer)
 
 #define LOCTEXT_NAMESPACE "CameraShakePreviewer"
 
@@ -77,6 +77,30 @@ FCameraShakePreviewUpdater::FCameraShakePreviewUpdater()
 {
 	PreviewCameraShake = CastChecked<UCameraModifier_CameraShake>(
 			PreviewCamera->AddNewCameraModifier(UCameraModifier_CameraShake::StaticClass()));
+
+	// Handle camera shakes being recompiled.
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FCameraShakePreviewUpdater::OnObjectsReplaced);
+}
+
+FCameraShakePreviewUpdater::~FCameraShakePreviewUpdater()
+{
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
+}
+
+void FCameraShakePreviewUpdater::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
+{
+	// If a camera shake gets recompiled, we just stop and discard it.
+	TArray<FActiveCameraShakeInfo> ActiveCameraShakes;
+	PreviewCameraShake->GetActiveCameraShakes(ActiveCameraShakes);
+
+	for (const FActiveCameraShakeInfo& ActiveCameraShake : ActiveCameraShakes)
+	{
+		UObject* NewShakeInstance = ReplacementMap.FindRef(ActiveCameraShake.ShakeInstance);
+		if (NewShakeInstance)
+		{
+			PreviewCameraShake->RemoveCameraShake(ActiveCameraShake.ShakeInstance, true);
+		}
+	}
 }
 
 void FCameraShakePreviewUpdater::Tick(float DeltaTime)
@@ -101,11 +125,6 @@ void FCameraShakePreviewUpdater::ModifyCamera(FEditorViewportViewModifierParams&
 
 		PreviewCamera->MergePostProcessSettings(LastPostProcessSettings, LastPostProcessBlendWeights);
 
-		for (UCameraAnimInst* ActiveAnim : ActiveAnims)
-		{
-			UpdateCameraAnimInstance(*ActiveAnim, DeltaTime, Params.ViewInfo);
-		}
-
 		LastLocationModifier = Params.ViewInfo.Location - OriginalPOV.Location;
 		LastRotationModifier = Params.ViewInfo.Rotation - OriginalPOV.Rotation;
 		LastFOVModifier = Params.ViewInfo.FOV - OriginalPOV.FOV;
@@ -123,16 +142,6 @@ void FCameraShakePreviewUpdater::ModifyCamera(FEditorViewportViewModifierParams&
 	{
 		Params.AddPostProcessBlend(LastPostProcessSettings[PPIndex], LastPostProcessBlendWeights[PPIndex]);
 	}
-
-	// Clean-up finished camera anims.
-	for (int32 Index = ActiveAnims.Num() - 1; Index >= 0; --Index)
-	{
-		UCameraAnimInst* ActiveAnim(ActiveAnims[Index]);
-		if (ActiveAnim->bFinished)
-		{
-			ActiveAnims.RemoveAt(Index);
-		}
-	}
 }
 
 
@@ -140,38 +149,20 @@ void FCameraShakePreviewUpdater::ModifyCamera(FEditorViewportViewModifierParams&
 void FCameraShakePreviewUpdater::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(PreviewCamera);
-	Collector.AddReferencedObjects(ActiveAnims);
 }
 
 UCameraShakeBase* FCameraShakePreviewUpdater::AddCameraShake(TSubclassOf<UCameraShakeBase> ShakeClass, const FAddCameraShakeParams& Params)
 {
 	FAddCameraShakeParams ActualParams(Params);
-	if (ShakeClass.Get()->IsChildOf<UMatineeCameraShake>())
-	{
-		ActualParams.Initializer = FOnInitializeCameraShake::CreateLambda([this](UCameraShakeBase* ShakeInstance)
-			{
-				UMatineeCameraShake* MatineeShakeInstance = CastChecked<UMatineeCameraShake>(ShakeInstance);
-				MatineeShakeInstance->SetTempCameraAnimActor(GetTempCameraActor());
-			});
-	}
 
 	UCameraShakeBase* ShakeInstance = PreviewCameraShake->AddCameraShake(ShakeClass, ActualParams);
 
-	if (UMatineeCameraShake* MatineeShakeInstance = Cast<UMatineeCameraShake>(ShakeInstance))
-	{
-		if (UCameraAnimInst* CameraAnimInstance = MatineeShakeInstance->AnimInst)
-		{
-			ActiveAnims.Add(CameraAnimInstance);
-		}
-	}
 	return ShakeInstance;
 }
 
 void FCameraShakePreviewUpdater::RemoveAllCameraShakesFromSource(const UCameraShakeSourceComponent* SourceComponent)
 {
 	PreviewCameraShake->RemoveAllCameraShakesFromSource(SourceComponent);
-
-	CleanUpCameraAnimInstances();
 }
 
 void FCameraShakePreviewUpdater::GetActiveCameraShakes(TArray<FActiveCameraShakeInfo>& ActiveCameraShakes) const
@@ -182,89 +173,11 @@ void FCameraShakePreviewUpdater::GetActiveCameraShakes(TArray<FActiveCameraShake
 void FCameraShakePreviewUpdater::RemoveCameraShake(UCameraShakeBase* ShakeInstance)
 {
 	PreviewCameraShake->RemoveCameraShake(ShakeInstance);
-
-	CleanUpCameraAnimInstances();
 }
 
 void FCameraShakePreviewUpdater::RemoveAllCameraShakes()
 {
 	PreviewCameraShake->RemoveAllCameraShakes();
-}
-
-ACameraActor* FCameraShakePreviewUpdater::GetTempCameraActor()
-{
-	if (!TempCameraActor.IsValid())
-	{
-		UWorld* World = UE::MovieScene::FindCameraShakePreviewerWorld();
-		if (!ensure(World))
-		{
-			return nullptr;
-		}
-
-		FActorSpawnParameters SpawnInfo;
-		SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-		// Don't save this actor into a map.
-		SpawnInfo.ObjectFlags |= RF_Transient;
-		TempCameraActor = World->SpawnActor<ACameraActor>(SpawnInfo);
-		if (TempCameraActor.IsValid())
-		{
-			TempCameraActor.Get()->SetIsTemporarilyHiddenInEditor(true);
-		}
-	}
-
-	check(TempCameraActor.IsValid());
-	return TempCameraActor.Get();
-}
-
-void FCameraShakePreviewUpdater::UpdateCameraAnimInstance(UCameraAnimInst& CameraAnimInstance, float DeltaTime, FMinimalViewInfo& InOutPOV)
-{
-	ACameraActor* Actor = TempCameraActor.Get();
-	if (!ensure(Actor != nullptr))
-	{
-		return;
-	}
-	if (CameraAnimInstance.bFinished)
-	{
-		return;
-	}
-
-	Actor->SetActorLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
-
-	const ACameraActor* DefaultActor = GetDefault<ACameraActor>();
-	if (DefaultActor)
-	{
-		Actor->GetCameraComponent()->AspectRatio = DefaultActor->GetCameraComponent()->AspectRatio;
-		Actor->GetCameraComponent()->FieldOfView = CameraAnimInstance.CamAnim->BaseFOV;
-		Actor->GetCameraComponent()->PostProcessSettings = CameraAnimInstance.CamAnim->BasePostProcessSettings;
-		Actor->GetCameraComponent()->PostProcessBlendWeight = CameraAnimInstance.CamAnim->BasePostProcessBlendWeight;
-	}
-
-	CameraAnimInstance.AdvanceAnim(DeltaTime, false);
-
-	if (CameraAnimInstance.CurrentBlendWeight > 0.f)
-	{
-		CameraAnimInstance.ApplyToView(InOutPOV);
-
-		if (Actor->GetCameraComponent()->PostProcessBlendWeight > 0.f)
-		{
-			AddPostProcessBlend(
-					Actor->GetCameraComponent()->PostProcessSettings, 
-					Actor->GetCameraComponent()->PostProcessBlendWeight * CameraAnimInstance.CurrentBlendWeight);
-		}
-	}
-}
-
-void FCameraShakePreviewUpdater::CleanUpCameraAnimInstances()
-{
-	for (int32 Index = ActiveAnims.Num() - 1; Index >= 0; --Index)
-	{
-		UCameraAnimInst* ActiveAnim(ActiveAnims[Index]);
-		if (!ActiveAnim || ActiveAnim->bFinished)
-		{
-			ActiveAnims.RemoveAt(Index);
-		}
-	}
 }
 
 void FCameraShakePreviewUpdater::AddPostProcessBlend(const FPostProcessSettings& Settings, float Weight)
@@ -408,7 +321,7 @@ void SCameraShakePreviewer::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.OnClicked(this, &SCameraShakePreviewer::OnPlayStopAllShakes)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+					.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 					.HAlign(HAlign_Center)
 					.Text(LOCTEXT("PlayStopAllShakes", "Play/Stop All"))
 					.ToolTipText(LOCTEXT("PlayStopAllShakesTooltip", "Play/stop all shakes in the list"))
@@ -441,7 +354,7 @@ void SCameraShakePreviewer::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), TEXT("Log.Warning"))
+					.TextStyle(FAppStyle::Get(), TEXT("Log.Warning"))
 					.Text(this, &SCameraShakePreviewer::GetActiveViewportWarnings)
 				]
 			]
@@ -913,3 +826,4 @@ void SCameraShakePreviewer::OnModifyView(FEditorViewportViewModifierParams& Para
 }
 
 #undef LOCTEXT_NAMESPACE
+

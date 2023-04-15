@@ -2,24 +2,25 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-
-#include "Containers/UnrealString.h"
+#include "Containers/Array.h"
 #include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PreprocessorHelpers.h"
 #include "Logging/LogMacros.h"
+#include "Misc/Build.h"
 #include "Misc/ScopeLock.h"
 #include "ProfilingDebugging/CountersTrace.h"
 
 #include <atomic>
 
 #ifndef STALL_DETECTOR
- #if WITH_EDITOR && PLATFORM_WINDOWS && !UE_BUILD_SHIPPING
+ #if WITH_EDITOR && ( PLATFORM_WINDOWS || PLATFORM_UNIX ) && !UE_BUILD_SHIPPING && COUNTERSTRACE_ENABLED
   #define STALL_DETECTOR 1
- #else // WITH_EDITOR && PLATFORM_WINDOWS && !UE_BUILD_SHIPPING
+ #else
   #define STALL_DETECTOR 0
- #endif // WITH_EDITOR && PLATFORM_WINDOWS && !UE_BUILD_SHIPPING
+ #endif
 #endif // STALL_DETECTOR
 
 #if STALL_DETECTOR

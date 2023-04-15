@@ -2,11 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "BaseBehaviors/AnyButtonInputBehavior.h"
 #include "BehaviorTargetInterfaces.h"
+#include "CoreMinimal.h"
+#include "InputBehavior.h"
 #include "InputBehaviorModifierStates.h"
+#include "InputState.h"
+#include "Templates/Function.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "SingleClickBehavior.generated.h"
+
+class UObject;
 
 
 /**
@@ -96,6 +104,9 @@ public:
 	/** lambda implementation of OnClicked */
 	TUniqueFunction<void(const FInputDeviceRay&)> OnClickedFunc = [](const FInputDeviceRay& ClickPos) {};
 
+	/** lambda implementation of OnUpdateModifierState */
+	TUniqueFunction< void(int, bool) > OnUpdateModifierStateFunc = [](int ModifierID, bool bIsOn) {};
+
 public:
 	// IClickBehaviorTarget implementation
 
@@ -107,5 +118,11 @@ public:
 	virtual void OnClicked(const FInputDeviceRay& ClickPos) override
 	{
 		return OnClickedFunc(ClickPos);
+	}
+
+	// IModifierToggleBehaviorTarget implementation
+	virtual void OnUpdateModifierState(int ModifierID, bool bIsOn)
+	{
+		return OnUpdateModifierStateFunc(ModifierID,bIsOn);
 	}
 };

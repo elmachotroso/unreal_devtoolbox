@@ -3,6 +3,8 @@
 
 #include "AutomationControllerSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AutomationControllerSettings)
+
 DEFINE_LOG_CATEGORY_STATIC(LogAutomationControllerSettings, Log, All)
 
 UAutomationControllerSettings::UAutomationControllerSettings(const FObjectInitializer& ObjectInitializer)
@@ -10,6 +12,7 @@ UAutomationControllerSettings::UAutomationControllerSettings(const FObjectInitia
 	, bSuppressLogErrors(false)
 	, bSuppressLogWarnings(false)
 	, bElevateLogWarningsToErrors(true)
+	, bKeepPIEOpen(false)
 	, bTreatLogWarningsAsTestErrors(true)
 	, GameInstanceLostTimerSeconds(300.0f)
 	, bResetTelemetryStorageOnNewSession(false)

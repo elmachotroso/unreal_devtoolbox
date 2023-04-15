@@ -93,10 +93,10 @@ struct FLandscapeTargetListInfo
 		: TargetName(InTargetName)
 		, TargetType(InTargetType)
 		, LandscapeInfo(InLandscapeInfo)
-		, LayerInfoObj(NULL)
+		, LayerInfoObj(nullptr)
 		, LayerName(NAME_None)
-		, Owner(NULL)
-		, ThumbnailMIC(NULL)
+		, Owner(nullptr)
+		, ThumbnailMIC(nullptr)
 		, bValid(true)
 		, LayerIndex(InLayerIndex)
 	{
@@ -130,7 +130,7 @@ struct FLandscapeTargetListInfo
 			return &LandscapeInfo->Layers[Index];
 		}
 
-		return NULL;
+		return nullptr;
 	}
 
 	FLandscapeEditorLayerSettings* GetEditorLayerSettings() const
@@ -150,7 +150,7 @@ struct FLandscapeTargetListInfo
 				return &Proxy->EditorLayerSettings[Index];
 			}
 		}
-		return NULL;
+		return nullptr;
 	}
 
 	FName GetLayerName() const;
@@ -303,6 +303,8 @@ public:
 	bool HasSelectedSplineSegments() const;
 	void FlipSelectedSplineSegments();
 	void GetSelectedSplineOwners(TSet<AActor*>& SelectedSplineOwners) const;
+	virtual void SelectAllSplineControlPoints();
+	virtual void SelectAllSplineSegments();
 	virtual void SelectAllConnectedSplineControlPoints();
 	virtual void SelectAllConnectedSplineSegments();
 	virtual void SplineMoveToCurrentLevel();
@@ -402,7 +404,7 @@ public:
 	virtual bool HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy, const FViewportClick& Click) override;
 
 	/** True if we are interactively changing the brush size, falloff, or strength */
-	bool IsAdjustingBrush(FViewport* InViewport) const;
+	bool IsAdjustingBrush(FEditorViewportClient* InViewportClient) const;
 	void ChangeBrushSize(bool bIncrease);
 	void ChangeBrushFalloff(bool bIncrease);
 	void ChangeBrushStrength(bool bIncrease);
@@ -486,7 +488,12 @@ public:
 	bool LandscapePlaneTrace(FEditorViewportClient* ViewportClient, int32 MouseX, int32 MouseY, const FPlane& Plane, FVector& OutHitLocation);
 
 	/** Trace under the specified laser start and direction and return the landscape hit and the hit location (in landscape quad space) */
-	bool LandscapeTrace(const FVector& InRayOrigin, const FVector& InRayEnd, FVector& OutHitLocation);
+	bool LandscapeTrace(const FVector& InRayOrigin, const FVector& InRayEnd, const FVector& InDirection, FVector& OutHitLocation);
+
+	struct FProcessLandscapeTraceHitsResult;
+	
+	/** Check if we've collided with the currently edited landscape, OutHitLocation is in the space of the Landscape Actor */   
+	bool ProcessLandscapeTraceHits(const TArray<FHitResult>& InResults, FProcessLandscapeTraceHitsResult& OutLandscapeTraceHitsResult);
 
 	void SetCurrentToolMode(FName ToolModeName, bool bRestoreCurrentTool = true);
 
@@ -610,6 +617,21 @@ public:
 	}
 
 	void SetLandscapeInfo(ULandscapeInfo* InLandscapeInfo);
+
+	/** Returns the sum of all landscape actors resolution. */
+	int32 GetAccumulatedAllLandscapesResolution() const;
+
+	/** Returns true if landscape resolution combined to the current tool action is still compliant to the currently applied limitations. */
+	bool IsLandscapeResolutionCompliant() const;
+
+	/** Returns true if the current landscape tool handles edit layers. */
+	bool DoesCurrentToolAffectEditLayers() const;
+
+	/** Returns the default Error Text when modifying or creating landscape would break the resolution limit. */
+	FText GetLandscapeResolutionErrorText() const;
+
+	int32 GetNewLandscapeResolutionX() const;
+	int32 GetNewLandscapeResolutionY() const;
 	
 private:
 	TArray<TSharedRef<FLandscapeTargetListInfo>> LandscapeTargetList;

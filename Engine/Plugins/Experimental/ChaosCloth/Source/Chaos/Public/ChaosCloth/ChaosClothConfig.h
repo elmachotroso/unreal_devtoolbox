@@ -139,6 +139,23 @@ public:
 	bool bUseBendingElements = false;
 
 	/**
+	* Once the element has bent such that it's folded more than this ratio from its rest angle ("buckled"), switch to using Buckling Stiffness instead of Bending Stiffness.
+	* When Buckling Ratio = 0, the Buckling Stiffness will never be used. When BucklingRatio = 1, the Buckling Stiffness will be used as soon as its bent past its rest configuration.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Material Properties", DisplayName = "Buckling Ratio", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1", EditCondition = "bUseBendingElements"))
+	float BucklingRatio = 0.f;
+
+	/**
+	* Bending will use this stiffness instead of Bending Stiffness once the cloth has buckled, i.e., bent beyond a certain angle.
+	* Typically, Buckling Stiffness is set to be less than Bending Stiffness. Buckling Ratio determines the switch point between using Bending Stiffness and Buckling Stiffness.
+	* If an enabled Weight Map (Mask with values in the range [0;1]) targeting the "Buckling Stiffness" is added to the cloth, 
+	* then both the Low and High values will be used in conjunction with the per particle Weight stored in the Weight Map to interpolate the final value from them.
+	* Otherwise only the Low value is meaningful and sufficient to enable this constraint.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Material Properties", DisplayName = "Buckling Stiffness", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1", EditCondition = "bUseBendingElements"))
+	FChaosClothWeightedValue BucklingStiffnessWeighted = { 1.f, 1.f };
+
+	/**
 	 * The stiffness of the surface area preservation constraints. Increase the iteration count for stiffer materials.
 	 * If an enabled Weight Map (Mask with values in the range [0;1]) targeting the "Bend Stiffness" is added to the cloth, 
 	 * then both the Low and High values will be used in conjunction with the per particle Weight stored in the Weight Map to interpolate the final value from them.
@@ -202,13 +219,21 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Collision Properties")
 	bool bUseCCD = false;
 
-	/** Enable self collision. */
-	UPROPERTY(EditAnywhere, Category = "Collision Properties", meta = (InlineEditConditionToggle))
+	/** Enable self collision repulsion forces (point-face). */
+	UPROPERTY(EditAnywhere, Category = "Collision Properties")
 	bool bUseSelfCollisions = false;
 
-	/** The radius of the spheres used in self collision. */
+	/** The radius of the spheres used in self collision. (i.e., offset per side. total thickness of cloth is 2x this value) */
 	UPROPERTY(EditAnywhere, Category = "Collision Properties", meta = (UIMin = "0", UIMax = "100", ClampMin = "0", ClampMax = "1000", EditCondition = "bUseSelfCollisions"))
 	float SelfCollisionThickness = 2.0f;
+
+	/**Friction coefficient for cloth - cloth interaction. */
+	UPROPERTY(EditAnywhere, Category = "Collision Properties", meta = (UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "10", EditCondition = "bUseSelfCollisions"))
+	float SelfCollisionFriction = 0.0f;
+
+	/** Enable self intersection resolution. This will try to fix any cloth intersections that are not handled by collision repulsions. */
+	UPROPERTY(EditAnywhere, Category = "Collision Properties", meta = (EditCondition = "bUseSelfCollisions"))
+	bool bUseSelfIntersections = false;
 
 	/**
 	 * This parameter is automatically set by the migration code. It can be overridden here to use the old way of authoring the backstop distances.
@@ -274,6 +299,16 @@ public:
 	// The gravitational acceleration vector [cm/s^2]
 	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (EditCondition = "bUseGravityOverride"))
 	FVector Gravity = { 0.f, 0.f, -980.665f };
+
+	/** 
+	 * Pressure force strength applied in the normal direction(use negative value to push toward backface)
+	 * If an enabled Weight Map (Mask with values in the range [0;1]) targeting the "Pressure" is added to the cloth, 
+	 * then both the Low and High values will be used in conjunction with the per particle Weight stored
+	 * in the Weight Map to interpolate the final value from them.
+	 * Otherwise only the Low value is meaningful and sufficient to set the pressure.	 
+	 */
+	UPROPERTY(EditAnywhere, Category = "Environmental Properties", meta = (UIMin = "-10", UIMax = "10", ClampMin = "-100", ClampMax = "100"))
+	FChaosClothWeightedValue Pressure = { 0.0f, 1.f };
 
 	/**
 	 * The strength of the constraint driving the cloth towards the animated goal mesh.

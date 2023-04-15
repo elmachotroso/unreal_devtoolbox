@@ -1,9 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphNodeSoundResult.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
+
+#include "GenericPlatform/ICursor.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlotBase.h"
 #include "SoundCueGraph/SoundCueGraphNode_Base.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
 
 void SGraphNodeSoundResult::Construct(const FArguments& InArgs, USoundCueGraphNode_Base* InNode)
 {
@@ -17,7 +28,7 @@ void SGraphNodeSoundResult::Construct(const FArguments& InArgs, USoundCueGraphNo
 TSharedRef<SWidget> SGraphNodeSoundResult::CreateNodeContentArea()
 {
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		.Padding(FMargin(0, 3))
@@ -36,7 +47,7 @@ TSharedRef<SWidget> SGraphNodeSoundResult::CreateNodeContentArea()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Graph.SoundResultNode.Body"))
+				.Image(FAppStyle::GetBrush("Graph.SoundResultNode.Body"))
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()

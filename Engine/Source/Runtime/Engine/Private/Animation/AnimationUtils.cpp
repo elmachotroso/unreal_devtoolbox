@@ -279,9 +279,15 @@ void FAnimationUtils::ComputeCompressionError(const FCompressibleAnimData& Compr
 		const FTransform EndEffectorDummyBoneSocket(FQuat::Identity, FVector(END_EFFECTOR_DUMMY_BONE_LENGTH_SOCKET));
 		const FTransform EndEffectorDummyBone(FQuat::Identity, FVector(END_EFFECTOR_DUMMY_BONE_LENGTH));
 		const FAnimKeyHelper Helper(CompressibleAnimData.SequenceLength, CompressedData.AnimData->CompressedNumberOfKeys);
-		const float KeyLength = Helper.TimePerKey() + SMALL_NUMBER;
+		const float KeyLength = Helper.TimePerKey() + UE_SMALL_NUMBER;
 
-		FAnimSequenceDecompressionContext DecompContext(CompressibleAnimData.SequenceLength, CompressibleAnimData.Interpolation, CompressibleAnimData.AnimFName, *CompressedData.AnimData);
+		FAnimSequenceDecompressionContext DecompContext(
+			CompressibleAnimData.SequenceLength,
+			CompressibleAnimData.Interpolation,
+			CompressibleAnimData.AnimFName,
+			*CompressedData.AnimData,
+			RefPose,
+			CompressibleAnimData.TrackToSkeletonMapTable);
 
 		const TArray<FBoneData>& BoneData = CompressibleAnimData.BoneData;
 
@@ -573,7 +579,7 @@ bool FAnimationUtils::HasUniformKeySpacing(int32 NumFrames, const TArray<float>&
 	{
 		float DeltaTime = Times[i] - Times[i-1];
 
-		if (fabs(DeltaTime - FirstDelta) > KINDA_SMALL_NUMBER)
+		if (fabs(DeltaTime - FirstDelta) > UE_KINDA_SMALL_NUMBER)
 		{
 			return false;
 		}
@@ -874,6 +880,8 @@ static void EnsureDependenciesAreLoaded(UObject* Object)
 	}
 }
 
+
+
 UObject* GetDefaultAnimationCompressionSettings(const TCHAR* IniValueName)
 {
 	FConfigSection* AnimDefaultObjectSettingsSection = GConfig->GetSectionPrivate(TEXT("Animation.DefaultObjectSettings"), false, true, GEngineIni);
@@ -900,6 +908,17 @@ UObject* GetDefaultAnimationCompressionSettings(const TCHAR* IniValueName)
 
 	return DefaultCompressionSettings;
 }
+
+#if WITH_EDITOR
+
+void FAnimationUtils::PreloadCompressionSettings()
+{
+	GetDefaultAnimationBoneCompressionSettings();
+	GetDefaultAnimationRecorderBoneCompressionSettings();
+	GetDefaultAnimationCurveCompressionSettings();
+}
+
+#endif
 
 UAnimBoneCompressionSettings* FAnimationUtils::GetDefaultAnimationBoneCompressionSettings()
 {
@@ -1046,7 +1065,14 @@ void FAnimationUtils::ExtractTransformFromCompressionData(const FCompressibleAni
 		// Build our read-only version from the mutable source
 		FUECompressedAnimData AnimData(AnimDataMutable);
 
-		FAnimSequenceDecompressionContext DecompContext(CompressibleAnimData.SequenceLength, CompressibleAnimData.Interpolation, CompressibleAnimData.AnimFName, AnimData);
+		FAnimSequenceDecompressionContext DecompContext(
+			CompressibleAnimData.SequenceLength,
+			CompressibleAnimData.Interpolation,
+			CompressibleAnimData.AnimFName,
+			AnimData,
+			CompressibleAnimData.RefLocalPoses,
+			CompressibleAnimData.TrackToSkeletonMapTable);
+
 		DecompContext.Seek(Time);
 		CompressedAnimData.Codec->DecompressBone(DecompContext, TrackIndex, OutBoneTransform);
 		return;

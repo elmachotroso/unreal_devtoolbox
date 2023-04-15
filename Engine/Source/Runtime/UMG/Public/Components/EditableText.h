@@ -14,6 +14,7 @@
 #include "EditableText.generated.h"
 
 class SEditableText;
+class UMaterialInterface;
 class USlateBrushAsset;
 class USlateWidgetStyleAsset;
 
@@ -32,7 +33,8 @@ public:
 
 public:
 	/** The text content for this editable text box widget */
-	UPROPERTY(EditAnywhere, Category=Content)
+	UE_DEPRECATED(5.1, "Direct access to Text is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter = "GetText", BlueprintSetter = "SetText", FieldNotify, Category = "Content")
 	FText Text;
 
 	/** A bindable delegate to allow logic to drive the text of the widget */
@@ -42,7 +44,8 @@ public:
 public:
 
 	/** Hint text that appears when there is no text in the text box */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Content)
+	UE_DEPRECATED(5.1, "Direct access to Hint Text is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter = "GetHintText", BlueprintSetter = "SetHintText", Category = Content, meta = (MultiLine = "true"))
 	FText HintText;
 
 	/** A bindable delegate to allow logic to drive the hint text of the widget */
@@ -53,60 +56,44 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance, meta=(DisplayName="Style", ShowOnlyInnerProperties))
 	FEditableTextStyle WidgetStyle;
 
-	/** Text style */
-	UPROPERTY()
-	TObjectPtr<USlateWidgetStyleAsset> Style_DEPRECATED;
-
-	/** Background image for the selected text (overrides Style) */
-	UPROPERTY()
-	TObjectPtr<USlateBrushAsset> BackgroundImageSelected_DEPRECATED;
-
-	/** Background image for the composing text (overrides Style) */
-	UPROPERTY()
-	TObjectPtr<USlateBrushAsset> BackgroundImageComposing_DEPRECATED;
-
-	/** Image brush used for the caret (overrides Style) */
-	UPROPERTY()
-	TObjectPtr<USlateBrushAsset> CaretImage_DEPRECATED;
-
-	/** Font color and opacity (overrides Style) */
-	UPROPERTY()
-	FSlateFontInfo Font_DEPRECATED;
-
-	/** Text color and opacity (overrides Style) */
-	UPROPERTY()
-	FSlateColor ColorAndOpacity_DEPRECATED;
-
 	/** Sets whether this text box can actually be modified interactively by the user */
-	UPROPERTY(EditAnywhere, Category=Appearance)
+	UE_DEPRECATED(5.1, "Direct access to IsReadOnly is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Appearance)
 	bool IsReadOnly;
 
 	/** Sets whether this text box is for storing a password */
-	UPROPERTY(EditAnywhere, Category=Appearance)
+	UE_DEPRECATED(5.1, "Direct access to IsPassword is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter = "SetIsPassword", Category = Appearance)
 	bool IsPassword;
 
-	/** Minimum width that a text block should be */
-	UPROPERTY(EditAnywhere, Category=Appearance)
+	/** The minimum desired Width for the text */
+	UE_DEPRECATED(5.1, "Direct access to MinimumDesiredWidth is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter = "SetMinimumDesiredWidth", Category = "Appearance")
 	float MinimumDesiredWidth;
 
-	/** Workaround as we lose focus when the auto completion closes. */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	/** When set to true the caret is moved when gaining focus */
+	UE_DEPRECATED(5.1, "Direct access to IsCaretMovedWhenGainFocus is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool IsCaretMovedWhenGainFocus;
 
 	/** Whether to select all text when the user clicks to give focus on the widget */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to SelectAllTextWhenFocused is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool SelectAllTextWhenFocused;
 
 	/** Whether to allow the user to back out of changes when they press the escape key */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to RevertTextOnEscape is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool RevertTextOnEscape;
 
 	/** Whether to clear keyboard focus when pressing enter to commit changes */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to ClearKeyboardFocusOnCommit is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool ClearKeyboardFocusOnCommit;
 
 	/** Whether to select all text when pressing enter to commit changes */
-	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to SelectAllTextOnCommit is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = Behavior, AdvancedDisplay)
 	bool SelectAllTextOnCommit;
 
 	/** Whether the context menu can be opened */
@@ -129,11 +116,13 @@ public:
 	EVirtualKeyboardDismissAction VirtualKeyboardDismissAction;
 	
 	/** How the text should be aligned with the margin. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetJustification, Category=Appearance)
+	UE_DEPRECATED(5.1, "Direct access to Justification is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Blueprintgetter = GetJustification, BlueprintSetter = SetJustification, Category = Appearance)
 	TEnumAsByte<ETextJustify::Type> Justification;
 
-	/** Sets what should happen when text is clipped because the block does not have enough space */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetTextOverflowPolicy, Category=Appearance)
+	/** Sets what happens to text that is clipped and doesn't fit within the clip rect for this widget */
+	UE_DEPRECATED(5.1, "Direct access to OverflowPolicy is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "GetTextOverflowPolicy", Setter = "SetTextOverflowPolicy", BlueprintSetter = "SetTextOverflowPolicy", Category = "Clipping", AdvancedDisplay, meta = (DisplayName = "Overflow Policy"))
 	ETextOverflowPolicy OverflowPolicy;
 
 	/** Controls how the text within this widget should be shaped. */
@@ -165,24 +154,89 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget", meta=(DisplayName="SetText (Editable Text)"))
 	void SetText(FText InText);
 
+	bool GetIsPassword() const;
+
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	void SetIsPassword(UPARAM(DisplayName="IsPassword") bool InbIsPassword);
+
+	/** Gets the Hint text that appears when there is no text in the text box */
+	UFUNCTION(BlueprintCallable, Category = "Widget", meta = (DisplayName = "GetHintText (Editable Text)"))
+	FText GetHintText() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	void SetHintText(FText InHintText);
 
+	/** @return the minimum desired width for this text box */
+	float GetMinimumDesiredWidth() const;
+
+	/**
+	 *  Set the minimum desired width for this text box
+	 *
+	 *  @param InMinDesiredWidth new minimum desired width
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetMinimumDesiredWidth(float InMinDesiredWidth);
+
+	/** When set to true the caret is moved when gaining focus */
+	void SetIsCaretMovedWhenGainFocus(bool bIsCaretMovedWhenGainFocus);
+
+	/** Return true when the caret is moved when gaining focus */
+	bool GetIsCaretMovedWhenGainFocus() const;
+
+	/** Set to true to select all text when the user clicks to give focus on the widget */
+	void SetSelectAllTextWhenFocused(bool bSelectAllTextWhenFocused);
+
+	/** Whether to select all text when the user clicks to give focus on the widget */
+	bool GetSelectAllTextWhenFocused() const;
+
+	/** Set to true to allow the user to back out of changes when they press the escape key */
+	void SetRevertTextOnEscape(bool bRevertTextOnEscape);
+
+	/** Whether to allow the user to back out of changes when they press the escape key  */
+	bool GetRevertTextOnEscape() const;
+
+	/** Whether to clear keyboard focus when pressing enter to commit changes */
+	bool GetClearKeyboardFocusOnCommit() const;
+
+	/** Set to true to select all text when pressing enter to commit changes */
+	void SetSelectAllTextOnCommit(bool bSelectAllTextOnCommit);
+
+	/** Whether to select all text when pressing enter to commit changes */
+	bool GetSelectAllTextOnCommit() const;
+
+	bool GetIsReadOnly() const;
+
 	UFUNCTION(BlueprintCallable, Category = "Widget", meta=(DisplayName="SetIsReadOnly (Editable Text)"))
 	void SetIsReadOnly(UPARAM(DisplayName="ReadyOnly") bool InbIsReadyOnly);
+
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	ETextJustify::Type GetJustification() const;
 
 	UFUNCTION(BlueprintSetter)
 	void SetJustification(ETextJustify::Type InJustification);
 
+	/** @return the text overflow policy for this text block. */
+	ETextOverflowPolicy GetTextOverflowPolicy() const;
+
 	UFUNCTION(BlueprintSetter)
 	void SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy);
 
+	/** Set to true to clear keyboard focus when pressing enter to commit changes */
 	void SetClearKeyboardFocusOnCommit(bool bInClearKeyboardFocusOnCommit);
 
 	void SetKeyboardType(EVirtualKeyboardType::Type Type);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	const FSlateFontInfo& GetFont() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFont(FSlateFontInfo InFontInfo);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFontMaterial(UMaterialInterface* InMaterial);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetFontOutlineMaterial(UMaterialInterface* InMaterial);
 
 public:
 	
@@ -193,10 +247,6 @@ public:
 	//~ Begin UVisual Interface
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 	//~ End UVisual Interface
-
-	//~ Begin UObject Interface
-	virtual void PostLoad() override;
-	//~ End UObject Interface
 
 #if WITH_EDITOR
 	virtual const FText GetPaletteCategory() override;

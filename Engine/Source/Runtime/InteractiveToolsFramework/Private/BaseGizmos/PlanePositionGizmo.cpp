@@ -6,6 +6,8 @@
 #include "BaseBehaviors/MouseHoverBehavior.h"
 #include "BaseGizmos/GizmoMath.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlanePositionGizmo)
+
 
 
 UInteractiveGizmo* UPlanePositionGizmoBuilder::BuildGizmo(const FToolBuilderState& SceneState) const
@@ -71,18 +73,23 @@ void UPlanePositionGizmo::OnClickPress(const FInputDeviceRay& PressPos)
 		InteractionOrigin, InteractionNormal,
 		PressPos.WorldRay.Origin, PressPos.WorldRay.Direction,
 		bIntersects, IntersectionPoint);
-	check(bIntersects);  // need to handle this case...
+	if (!bIntersects)
+	{
+		// Generally should not happen since the user clicked the plane to start the interaction, but could happen in a floating point error edge case
+		bInInteraction = false;
+		return;
+	}
 
 	InteractionStartPoint = InteractionCurPoint = IntersectionPoint;
 
 	FVector AxisOrigin = AxisSource->GetOrigin();
 
-	float DirectionSignX = FVector::DotProduct(InteractionStartPoint - AxisOrigin, InteractionAxisX);
-	ParameterSigns.X = (bEnableSignedAxis && DirectionSignX < 0) ? -1.0f : 1.0f;
-	ParameterSigns.X *= (bFlipX) ? -1.0f : 1.0f;
-	float DirectionSignY = FVector::DotProduct(InteractionStartPoint - AxisOrigin, InteractionAxisY);
-	ParameterSigns.Y = (bEnableSignedAxis && DirectionSignY < 0) ? -1.0f : 1.0f;
-	ParameterSigns.Y *= (bFlipY) ? -1.0f : 1.0f;
+	double DirectionSignX = FVector::DotProduct(InteractionStartPoint - AxisOrigin, InteractionAxisX);
+	ParameterSigns.X = (bEnableSignedAxis && DirectionSignX < 0) ? -1.0 : 1.0;
+	ParameterSigns.X *= (bFlipX) ? -1.0 : 1.0;
+	double DirectionSignY = FVector::DotProduct(InteractionStartPoint - AxisOrigin, InteractionAxisY);
+	ParameterSigns.Y = (bEnableSignedAxis && DirectionSignY < 0) ? -1.0 : 1.0;
+	ParameterSigns.Y *= (bFlipY) ? -1.0 : 1.0;
 
 	InteractionStartParameter = GizmoMath::ComputeCoordinatesInPlane(IntersectionPoint,
 			InteractionOrigin, InteractionNormal, InteractionAxisX, InteractionAxisY);
@@ -110,6 +117,11 @@ void UPlanePositionGizmo::OnClickPress(const FInputDeviceRay& PressPos)
 
 void UPlanePositionGizmo::OnClickDrag(const FInputDeviceRay& DragPos)
 {
+	if (!bInInteraction)
+	{
+		return;
+	}
+
 	FVector HitPoint;
 	FVector2D NewParamValue;
 
@@ -152,7 +164,10 @@ void UPlanePositionGizmo::OnClickDrag(const FInputDeviceRay& DragPos)
 
 void UPlanePositionGizmo::OnClickRelease(const FInputDeviceRay& ReleasePos)
 {
-	check(bInInteraction);
+	if (!bInInteraction)
+	{
+		return;
+	}
 
 	ParameterSource->EndModify();
 	if (StateTarget)
@@ -165,7 +180,10 @@ void UPlanePositionGizmo::OnClickRelease(const FInputDeviceRay& ReleasePos)
 
 void UPlanePositionGizmo::OnTerminateDragSequence()
 {
-	check(bInInteraction);
+	if (!bInInteraction)
+	{
+		return;
+	}
 
 	ParameterSource->EndModify();
 	if (StateTarget)
@@ -205,3 +223,4 @@ void UPlanePositionGizmo::OnEndHover()
 {
 	HitTarget->UpdateHoverState(false);
 }
+

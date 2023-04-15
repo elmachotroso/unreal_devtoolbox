@@ -6,26 +6,48 @@
 #include "Async/Future.h"
 #include "Compression/CompressedBuffer.h"
 #include "Compression/OodleDataCompression.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "Containers/Map.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Platform.h"
+#include "IO/IoContainerId.h"
 #include "IO/IoDispatcher.h"
 #include "IO/PackageStore.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
 #include "PackageStoreManifest.h"
 #include "PackageStoreWriter.h"
 #include "Serialization/AsyncLoading2.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/PackageWriter.h"
+#include "Templates/RefCounting.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+
+class FAssetRegistryState;
+class FCompressedBuffer;
+class FIoBuffer;
+class FLargeMemoryWriter;
+class FSharedBuffer;
+class ITargetPlatform;
+struct FFileRegion;
+template <typename FuncType> class TFunction;
 
 namespace UE {
 	class FZenStoreHttpClient;
 }
 
+class FCbAttachment;
+class FCbPackage;
+class FCbWriter;
 class FPackageStoreOptimizer;
 class FZenFileSystemManifest;
-class FCbPackage;
-class FCbAttachment;
-class FCbWriter;
 
 /** 
  * A PackageStoreWriter that saves cooked packages for use by IoStore, and stores them in the Zen storage service.
@@ -41,7 +63,7 @@ public:
 	IOSTOREUTILITIES_API ~FZenStoreWriter();
 
 	IOSTOREUTILITIES_API virtual void BeginPackage(const FBeginPackageInfo& Info) override;
-	IOSTOREUTILITIES_API virtual TFuture<FMD5Hash> CommitPackage(FCommitPackageInfo&& Info) override;
+	IOSTOREUTILITIES_API virtual void CommitPackage(FCommitPackageInfo&& Info) override;
 
 	IOSTOREUTILITIES_API virtual void WritePackageData(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive, const TArray<FFileRegion>& FileRegions) override;
 	IOSTOREUTILITIES_API virtual void WriteAdditionalFile(const FAdditionalFileInfo& Info, const FIoBuffer& FileData) override;
@@ -54,6 +76,11 @@ public:
 
 	IOSTOREUTILITIES_API virtual void GetEntries(TFunction<void(TArrayView<const FPackageStoreEntryResource>, TArrayView<const FOplogCookInfo>)>&& Callback) override;
 
+	DECLARE_DERIVED_EVENT(FZenStoreWriter, IPackageStoreWriter::FEntryCreatedEvent, FEntryCreatedEvent);
+	IOSTOREUTILITIES_API virtual FEntryCreatedEvent& OnEntryCreated() override
+	{
+		return EntryCreatedEvent;
+	}
 	DECLARE_DERIVED_EVENT(FZenStoreWriter, IPackageStoreWriter::FCommitEvent, FCommitEvent);
 	IOSTOREUTILITIES_API virtual FCommitEvent& OnCommit() override
 	{
@@ -65,9 +92,6 @@ public:
 		return MarkUpToDateEvent;
 	}
 
-
-	virtual void Flush() override;
-
 	IOSTOREUTILITIES_API void WriteIoStorePackageData(const FPackageInfo& Info, const FIoBuffer& PackageData, const FPackageStoreEntryResource& PackageStoreEntry, const TArray<FFileRegion>& FileRegions);
 
 	IOSTOREUTILITIES_API TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override;
@@ -75,6 +99,10 @@ public:
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove) override;
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages() override;
 	IOSTOREUTILITIES_API virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override;
+	IOSTOREUTILITIES_API virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
+	{
+		return AllPackageHashes;
+	}
 
 private:
 	struct FBulkDataEntry
@@ -108,7 +136,7 @@ private:
 		FPackageDataEntry PackageData;
 		TArray<FBulkDataEntry> BulkData;
 		TArray<FFileDataEntry> FileData;
-		TPromise<FMD5Hash> HashPromise;
+		TRefCountPtr<FPackageHashes> PackageHashes;
 	};
 
 	FPendingPackageState& GetPendingPackage(const FName& PackageName)
@@ -137,18 +165,25 @@ private:
 	void CreateProjectMetaData(FCbPackage& Pkg, FCbWriter& PackageObj, bool bGenerateContainerHeader);
 	void BroadcastCommit(IPackageStoreWriter::FCommitEventArgs& EventArgs);
 	void BroadcastMarkUpToDate(IPackageStoreWriter::FMarkUpToDateEventArgs& EventArgs);
-	void CommitPackageInternal(FCommitPackageInfo&& CommitInfo);
+	struct FZenCommitInfo;
+
+	void CommitPackageInternal(FZenCommitInfo&& CommitInfo);
 	FCbAttachment CreateAttachment(FSharedBuffer Buffer);
 	FCbAttachment CreateAttachment(FIoBuffer Buffer);
 
 	FCriticalSection								PackagesCriticalSection;
 	TMap<FName, TUniquePtr<FPendingPackageState>>	PendingPackages;
 	TUniquePtr<UE::FZenStoreHttpClient>	HttpClient;
+	bool IsLocalConnection = true;
 
 	const ITargetPlatform&				TargetPlatform;
+	const FName							TargetPlatformFName;
+	FString								ProjectId;
+	FString								OplogId;
 	FString								OutputPath;
 	FString								MetadataDirectoryPath;
 	FIoContainerId						ContainerId = FIoContainerId::FromName(TEXT("global"));
+	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
 
 	FPackageStoreManifest				PackageStoreManifest;
 	TUniquePtr<FPackageStoreOptimizer>	PackageStoreOptimizer;
@@ -160,6 +195,7 @@ private:
 
 	TUniquePtr<FZenFileSystemManifest>	ZenFileSystemManifest;
 	
+	FEntryCreatedEvent					EntryCreatedEvent;
 	FCriticalSection					CommitEventCriticalSection;
 	FCommitEvent						CommitEvent;
 	FMarkUpToDateEvent					MarkUpToDateEvent;
@@ -170,6 +206,7 @@ private:
 	FOodleDataCompression::ECompressionLevel	CompressionLevel;	
 	
 	class FCommitQueue;
+
 	TUniquePtr<FCommitQueue>			CommitQueue;
 	TFuture<void>						CommitThread;
 

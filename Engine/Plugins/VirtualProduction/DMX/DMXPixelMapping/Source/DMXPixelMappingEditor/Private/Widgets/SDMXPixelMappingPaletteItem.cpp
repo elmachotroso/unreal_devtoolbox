@@ -6,11 +6,11 @@
 #include "Templates/DMXPixelMappingComponentTemplate.h"
 #include "ViewModels/DMXPixelMappingPaletteViewModel.h"
 
-#include "EditorStyleSet.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
+#include "Styling/AppStyle.h"
 
 
 namespace UE::DMX::Private::SDMXPixelMappingPaletteItem
@@ -24,7 +24,7 @@ void SDMXPixelMappingHierarchyItemHeader::Construct(const FArguments& InArgs, co
 	STableRow<FDMXPixelMappingPreviewWidgetViewModelPtr>::Construct(
 		STableRow<FDMXPixelMappingPreviewWidgetViewModelPtr>::FArguments()
 		.Padding(1.0f)
-		.Style(FEditorStyle::Get(), "UMGEditor.PaletteHeader")
+		.Style(FAppStyle::Get(), "UMGEditor.PaletteHeader")
 		.Content()
 		[
 			SNew(STextBlock)
@@ -42,13 +42,13 @@ void SDMXPixelMappingHierarchyItemTemplate::Construct(const FArguments& InArgs, 
 	STableRow<FDMXPixelMappingPreviewWidgetViewModelPtr>::Construct(
 		STableRow<FDMXPixelMappingPreviewWidgetViewModelPtr>::FArguments()
 		.Padding(1.0f)
-		.Style(FEditorStyle::Get(), "UMGEditor.PaletteHeader")
+		.Style(FAppStyle::Get(), "UMGEditor.PaletteHeader")
 		.ShowSelection(false)
 		.OnDragDetected(this, &SDMXPixelMappingHierarchyItemTemplate::OnDraggingWidget)
 		.Content()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor_Lambda([this]()
 				{
 					return IsHovered() ? HoveredBGColor : NormalBGColor;

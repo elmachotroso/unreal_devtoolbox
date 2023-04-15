@@ -15,6 +15,7 @@
 #include "SceneView.h"
 #include "CommonRenderResources.h"
 #include "IXRLoadingScreen.h"
+#include "RenderGraphUtils.h"
 
 namespace 
 {
@@ -55,7 +56,9 @@ FDefaultStereoLayers::FDefaultStereoLayers(const FAutoRegister& AutoRegister, FH
 }
 
 //=============================================================================
-void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<uint32> & LayersToRender, const FLayerRenderParams& RenderParams) const
+
+// static
+void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<FLayerDesc>& LayersToRender, const FLayerRenderParams& RenderParams)
 {
 	check(IsInRenderingThread());
 	if (!LayersToRender.Num())
@@ -88,13 +91,12 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 	// Force initialization of pipeline state on first iteration:
-	bool bLastWasOpaque = (RenderThreadLayers[LayersToRender[0]].Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) == 0;
-	bool bLastWasExternal = (RenderThreadLayers[LayersToRender[0]].Flags & LAYER_FLAG_TEX_EXTERNAL) == 0;
+	bool bLastWasOpaque = (LayersToRender[0].Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) == 0;
+	bool bLastWasExternal = (LayersToRender[0].Flags & LAYER_FLAG_TEX_EXTERNAL) == 0;
 
 	// For each layer
-	for (uint32 LayerIndex : LayersToRender)
+	for (const FLayerDesc& Layer : LayersToRender)
 	{
-		const FLayerDesc& Layer = RenderThreadLayers[LayerIndex];
 		check(Layer.IsVisible());
 		const bool bIsOpaque = (Layer.Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) != 0;
 		const bool bIsExternal = (Layer.Flags & LAYER_FLAG_TEX_EXTERNAL) != 0;
@@ -166,7 +168,7 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 	}
 }
 
-void FDefaultStereoLayers::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+void FDefaultStereoLayers::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 {
 	check(IsInRenderingThread());
 
@@ -174,122 +176,122 @@ void FDefaultStereoLayers::PreRenderViewFamily_RenderThread(FRHICommandListImmed
 	{
 		return;
 	}
-
-	CopyLayers(RenderThreadLayers);
-
+	
 	// Sort layers
 	SortedSceneLayers.Reset();
 	SortedOverlayLayers.Reset();
-	uint32 LayerCount = RenderThreadLayers.Num();
-	for (uint32 LayerIndex = 0; LayerIndex < LayerCount; ++LayerIndex)
+
+	ForEachLayer([&](uint32 /* unused */, const FLayerDesc& Layer)
 	{
-		const auto& Layer = RenderThreadLayers[LayerIndex];
 		if (!Layer.IsVisible())
 		{
-			continue;
+			return;
 		}
 		if (Layer.PositionType == ELayerType::FaceLocked)
 		{
-			SortedOverlayLayers.Add(LayerIndex);
+			SortedOverlayLayers.Add(Layer);
 		}
 		else
 		{
-			SortedSceneLayers.Add(LayerIndex);
+			SortedSceneLayers.Add(Layer);
 		}
-	}
+	});
 
-	auto SortLayersPredicate = [&](const uint32& A, const uint32& B)
+	auto SortLayersPredicate = [&](const FLayerDesc& A, const FLayerDesc& B)
 	{
-		return RenderThreadLayers[A].Priority < RenderThreadLayers[B].Priority;
+		return A.Priority < B.Priority;
 	};
 	SortedSceneLayers.Sort(SortLayersPredicate);
 	SortedOverlayLayers.Sort(SortLayersPredicate);
 }
 
 
-void FDefaultStereoLayers::PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+void FDefaultStereoLayers::PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
 	if (!IStereoRendering::IsStereoEyeView(InView))
 	{
 		return;
 	}
 
-	FViewMatrices ModifiedViewMatrices = InView.ViewMatrices;
-	ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
-	const FMatrix& ProjectionMatrix = ModifiedViewMatrices.GetProjectionMatrix();
-	const FMatrix& ViewProjectionMatrix = ModifiedViewMatrices.GetViewProjectionMatrix();
+	AddPass(GraphBuilder, RDG_EVENT_NAME("StereoLayerRender"), [this, &InView](FRHICommandListImmediate& RHICmdList)
+	{
+		FViewMatrices ModifiedViewMatrices = InView.ViewMatrices;
+		ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
+		const FMatrix& ProjectionMatrix = ModifiedViewMatrices.GetProjectionMatrix();
+		const FMatrix& ViewProjectionMatrix = ModifiedViewMatrices.GetViewProjectionMatrix();
 
-	// Calculate a view matrix that only adjusts for eye position, ignoring head position, orientation and world position.
-	FVector EyeShift;
-	FQuat EyeOrientation;
-	HMDDevice->GetRelativeEyePose(IXRTrackingSystem::HMDDeviceId, InView.StereoViewIndex, EyeOrientation, EyeShift);
+		// Calculate a view matrix that only adjusts for eye position, ignoring head position, orientation and world position.
+		FVector EyeShift;
+		FQuat EyeOrientation;
+		HMDDevice->GetRelativeEyePose(IXRTrackingSystem::HMDDeviceId, InView.StereoViewIndex, EyeOrientation, EyeShift);
 
-	FMatrix EyeMatrix = FTranslationMatrix(-EyeShift) * FInverseRotationMatrix(EyeOrientation.Rotator()) * FMatrix(
-		FPlane(0, 0, 1, 0),
-		FPlane(1, 0, 0, 0),
-		FPlane(0, 1, 0, 0),
-		FPlane(0, 0, 0, 1));
+		FMatrix EyeMatrix = FTranslationMatrix(-EyeShift) * FInverseRotationMatrix(EyeOrientation.Rotator()) * FMatrix(
+			FPlane(0, 0, 1, 0),
+			FPlane(1, 0, 0, 0),
+			FPlane(0, 1, 0, 0),
+			FPlane(0, 0, 0, 1));
 
-	FQuat HmdOrientation = HmdTransform.GetRotation();
-	FVector HmdLocation = HmdTransform.GetTranslation();
-	FMatrix TrackerMatrix = FTranslationMatrix(-HmdLocation) * FInverseRotationMatrix(HmdOrientation.Rotator()) * EyeMatrix;
+		FQuat HmdOrientation = HmdTransform.GetRotation();
+		FVector HmdLocation = HmdTransform.GetTranslation();
+		FMatrix TrackerMatrix = FTranslationMatrix(-HmdLocation) * FInverseRotationMatrix(HmdOrientation.Rotator()) * EyeMatrix;
 
-	FLayerRenderParams RenderParams{
-		InView.UnscaledViewRect, // Viewport
+		FLayerRenderParams RenderParams{
+			InView.UnscaledViewRect, // Viewport
+			{
+				ViewProjectionMatrix,				// WorldLocked,
+				TrackerMatrix * ProjectionMatrix,	// TrackerLocked,
+				EyeMatrix * ProjectionMatrix		// FaceLocked
+			}
+		};
+
+		TArray<FRHITransitionInfo, TInlineAllocator<16>> Infos;
+		for (const FLayerDesc& SceneLayer : SortedSceneLayers)
 		{
-			ViewProjectionMatrix,				// WorldLocked,
-			TrackerMatrix * ProjectionMatrix,	// TrackerLocked,
-			EyeMatrix * ProjectionMatrix		// FaceLocked
+			Infos.Add(FRHITransitionInfo(SceneLayer.Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
 		}
-	};
-	
-	TArray<FRHITransitionInfo, TInlineAllocator<16>> Infos;
-	for (uint32 LayerIndex : SortedSceneLayers)
-	{
-		Infos.Add(FRHITransitionInfo(RenderThreadLayers[LayerIndex].Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
-	}
-	for (uint32 LayerIndex : SortedOverlayLayers)
-	{
-		Infos.Add(FRHITransitionInfo(RenderThreadLayers[LayerIndex].Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
-	}
-	if (Infos.Num())
-	{
-		RHICmdList.Transition(Infos);
-	}
+		for (const FLayerDesc& OverlayLayer : SortedOverlayLayers)
+		{
+			Infos.Add(FRHITransitionInfo(OverlayLayer.Texture, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
+		}
+		if (Infos.Num())
+		{
+			RHICmdList.Transition(Infos);
+		}
 
-	FTexture2DRHIRef RenderTarget = HMDDevice->GetSceneLayerTarget_RenderThread(InView.StereoViewIndex, RenderParams.Viewport);
-	if (!RenderTarget.IsValid())
-	{
-		RenderTarget = InView.Family->RenderTarget->GetRenderTargetTexture();
-	}
+		FTexture2DRHIRef RenderTarget = HMDDevice->GetSceneLayerTarget_RenderThread(InView.StereoViewIndex, RenderParams.Viewport);
+		if (!RenderTarget.IsValid())
+		{
+			RenderTarget = InView.Family->RenderTarget->GetRenderTargetTexture();
+		}
 
-	FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("StereoLayerRender"));
-	RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
-
-	if (bSplashIsShown || !IsBackgroundLayerVisible())
-	{
-		DrawClearQuad(RHICmdList, FLinearColor::Black);
-	}
-
-	StereoLayerRender(RHICmdList, SortedSceneLayers, RenderParams);
-	
-	// Optionally render face-locked layers into a non-reprojected target if supported by the HMD platform
-	FTexture2DRHIRef OverlayRenderTarget = HMDDevice->GetOverlayLayerTarget_RenderThread(InView.StereoViewIndex, RenderParams.Viewport);
-	if (OverlayRenderTarget.IsValid())
-	{
-		RHICmdList.EndRenderPass();
-
-		FRHIRenderPassInfo RPInfoOverlayRenderTarget(OverlayRenderTarget, ERenderTargetActions::Load_Store);
-		RHICmdList.BeginRenderPass(RPInfoOverlayRenderTarget, TEXT("StereoLayerRenderIntoOverlay"));
-
-		DrawClearQuad(RHICmdList, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+		FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("StereoLayerRender"));
 		RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
-	}
 
-	StereoLayerRender(RHICmdList, SortedOverlayLayers, RenderParams);
+		if (bSplashIsShown || !IsBackgroundLayerVisible())
+		{
+			DrawClearQuad(RHICmdList, FLinearColor::Black);
+		}
 
-	RHICmdList.EndRenderPass();
+		StereoLayerRender(RHICmdList, SortedSceneLayers, RenderParams);
+
+		// Optionally render face-locked layers into a non-reprojected target if supported by the HMD platform
+		FTexture2DRHIRef OverlayRenderTarget = HMDDevice->GetOverlayLayerTarget_RenderThread(InView.StereoViewIndex, RenderParams.Viewport);
+		if (OverlayRenderTarget.IsValid())
+		{
+			RHICmdList.EndRenderPass();
+
+			FRHIRenderPassInfo RPInfoOverlayRenderTarget(OverlayRenderTarget, ERenderTargetActions::Load_Store);
+			RHICmdList.BeginRenderPass(RPInfoOverlayRenderTarget, TEXT("StereoLayerRenderIntoOverlay"));
+
+			DrawClearQuad(RHICmdList, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+			RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
+		}
+
+		StereoLayerRender(RHICmdList, SortedOverlayLayers, RenderParams);
+
+		RHICmdList.EndRenderPass();
+	});
 }
 
 

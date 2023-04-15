@@ -1,26 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "SControlRigBaseListWidget.h"
+#include "EditMode/SControlRigBaseListWidget.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "AssetData.h"
-#include "EditorStyleSet.h"
+#include "AssetRegistry/AssetData.h"
+#include "Styling/AppStyle.h"
 
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 
 #include "ScopedTransaction.h"
 
 #include "ControlRig.h"
 #include "UnrealEdGlobals.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "Tools/ControlRigPose.h"
+#include "EditorDirectories.h"
 #include "EditorModeManager.h"
 
 #include "IContentBrowserSingleton.h"
@@ -31,17 +32,19 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Commands/UICommandList.h"
-#include "ControlRigEditModeCommands.h"
+#include "EditMode/ControlRigEditModeCommands.h"
 #include "Tools/CreateControlAssetRigSettings.h"
 #include "FileHelpers.h"
 #include "Tools/ControlRigPoseMirrorSettings.h"
 #include "ObjectTools.h"
-#include "SControlRigUpdatePose.h"
-#include "SControlRigRenamePoseControls.h"
+#include "EditMode/SControlRigUpdatePose.h"
+#include "EditMode/SControlRigRenamePoseControls.h"
 #include "Dialogs/Dialogs.h"
 #include "ControlRigSequencerEditorLibrary.h"
 #include "LevelSequence.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
+#include "Misc/PackageName.h"
+#include "AssetToolsModule.h"
 
 
 #define LOCTEXT_NAMESPACE "ControlRigBaseListWidget"
@@ -386,7 +389,7 @@ void SControlRigPoseAnimSelectionToolbar::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(0)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
 		[
 			ToolbarBuilder.MakeWidget()
@@ -401,7 +404,7 @@ void SControlRigPoseAnimSelectionToolbar::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Padding(0)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
 			[
 				RightToolbarBuilder.MakeWidget()
@@ -417,15 +420,16 @@ void SControlRigPoseAnimSelectionToolbar::MakeControlRigAssetDialog(FControlRigA
 	{
 		return;
 	}
+
+	TMap<UControlRig*, TArray<FRigElementKey>> AllSelectedControls;
+	ControlRigEditMode->GetAllSelectedControls(AllSelectedControls);
 	
-	UControlRig* ControlRig = ControlRigEditMode->GetControlRig(true);
-	if (!ControlRig)
+	if (AllSelectedControls.Num() > 1)
 	{
 		return;
 	}
 
-	TArray<FName> SelectedControls = ControlRig->CurrentControlSelection();
-	if (SelectedControls.Num() <= 0)
+	if (AllSelectedControls.Num() <= 0)
 	{
 		FText ConfirmDelete = LOCTEXT("ConfirmNoSelectedControls", "You are saving a Pose with no selected Controls - are you sure?");
 
@@ -447,26 +451,34 @@ void SControlRigPoseAnimSelectionToolbar::MakeControlRigAssetDialog(FControlRigA
 			FString Path = OwningControlRigWidget->GetCurrentlySelectedPath();
 
 			FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-			if (ControlRigEditMode && ControlRigEditMode->GetControlRig(true))
-			{	
-				UObject* NewAsset = nullptr;
-				switch (Type)
+			if (ControlRigEditMode )
+			{
+				TMap<UControlRig*, TArray<FRigElementKey>> AllSelectedControls;
+				ControlRigEditMode->GetAllSelectedControls(AllSelectedControls);
+				if (AllSelectedControls.Num() == 1)
 				{
-				case FControlRigAssetType::ControlRigPose:
-					NewAsset = FControlRigToolAsset::SaveAsset<UControlRigPoseAsset>(ControlRigEditMode->GetControlRig(true), Path, AssetName, bSelectAll);
+					TArray<UControlRig*> ControlRigs;
+					AllSelectedControls.GenerateKeyArray(ControlRigs);
+					UControlRig* ControlRig =ControlRigs[0];
+					UObject* NewAsset = nullptr;
+					switch (Type)
+					{
+					case FControlRigAssetType::ControlRigPose:
+						NewAsset = FControlRigToolAsset::SaveAsset<UControlRigPoseAsset>(ControlRig, Path, AssetName, bSelectAll);
 
-					break;
-				case FControlRigAssetType::ControlRigAnimation:
-					break;
-				case FControlRigAssetType::ControlRigSelectionSet:
-					break;
-				default:
-					break;
-				};
-				if (NewAsset)
-				{
-					FControlRigView::CaptureThumbnail(NewAsset);
-					OwningControlRigWidget->SelectThisAsset(NewAsset);
+						break;
+					case FControlRigAssetType::ControlRigAnimation:
+						break;
+					case FControlRigAssetType::ControlRigSelectionSet:
+						break;
+					default:
+						break;
+					};
+					if (NewAsset)
+					{
+						FControlRigView::CaptureThumbnail(NewAsset);
+						OwningControlRigWidget->SelectThisAsset(NewAsset);
+					}
 				}
 			}
 		}
@@ -483,8 +495,10 @@ bool SControlRigPoseAnimSelectionToolbar::CanExecuteMakeControlRigAsset()
 		return false;
 	}
 	
-	UControlRig* ControlRig = ControlRigEditMode->GetControlRig(true);
-	if (!ControlRig)
+	TMap<UControlRig*, TArray<FRigElementKey>> AllSelectedControls;
+	ControlRigEditMode->GetAllSelectedControls(AllSelectedControls);
+
+	if (AllSelectedControls.Num() != 1)
 	{
 		return false;
 	}
@@ -597,7 +611,7 @@ void SPathDialogWithAllowList::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -624,14 +638,14 @@ void SPathDialogWithAllowList::Construct(const FArguments& InArgs)
 			.Padding(5)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0, 0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("OK", "OK"))
 					.OnClicked(this, &SPathDialogWithAllowList::OnButtonClick, EAppReturnType::Ok)
 					.IsEnabled(this, &SPathDialogWithAllowList::IsOkButtonEnabled)
@@ -640,7 +654,7 @@ void SPathDialogWithAllowList::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.OnClicked(this, &SPathDialogWithAllowList::OnButtonClick, EAppReturnType::Cancel)
 				]
@@ -682,19 +696,39 @@ FString SPathDialogWithAllowList::GetAssetPath()
 
 void SControlRigBaseListWidget::Construct(const FArguments& InArgs)
 {
-
 	FControlRigEditMode* EditMode = GetEditMode();
 	BindCommands();
 
-
 	const UControlRigPoseProjectSettings* PoseSettings = GetDefault<UControlRigPoseProjectSettings>();
 
-	TArray<FString> PosesDirectories = PoseSettings->GetAssetPaths();
-	if (PosesDirectories.Num() > 0)
+	// Find the asset root of the current map to append relative pose folder paths to
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	FString RootPath = TEXT("/Game");
+	if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
 	{
+		const FString EditorWorldPackageName = EditorWorld->GetPackage()->GetName();
+		if (!EditorWorldPackageName.StartsWith(TEXT("/Temp/")))
+		{
+			FString NewPackageFolder = FPackageName::GetLongPackagePath(EditorWorldPackageName);
+			if (AssetTools.GetWritableFolderPermissionList()->PassesStartsWithFilter(NewPackageFolder))
+			{
+				RootPath = NewPackageFolder;
+			}
+		}
+	}
+
+	TArray<FString> PosesDirectories = PoseSettings->GetAssetPaths();
+	for (FString& PoseDirectory : PosesDirectories)
+	{
+		// If relative, make it absolute to the root of the current map
+		if (FPaths::IsRelative(PoseDirectory))
+		{
+			PoseDirectory = RootPath / PoseDirectory;
+		}
+
 		if (CurrentlySelectedInternalPath.IsEmpty())
 		{
-			CurrentlySelectedInternalPath = PosesDirectories[0];
+			CurrentlySelectedInternalPath = PoseDirectory;
 		}
 	}
 
@@ -707,7 +741,7 @@ void SControlRigBaseListWidget::Construct(const FArguments& InArgs)
 	FAssetPickerConfig AssetPickerConfig;
 
 	//AssetPickerConfig.Filter.bRecursiveClasses = true;
-	AssetPickerConfig.Filter.ClassNames.Add(UControlRigPoseAsset::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UControlRigPoseAsset::StaticClass()->GetClassPathName());
 
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::Tile;
 	AssetPickerConfig.bAllowDragging = false;
@@ -778,7 +812,7 @@ void SControlRigBaseListWidget::Construct(const FArguments& InArgs)
 				.Value(0.33f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					PathPicker.ToSharedRef()
 				]
@@ -788,7 +822,7 @@ void SControlRigBaseListWidget::Construct(const FArguments& InArgs)
 				.Value(0.66f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						AssetPicker.ToSharedRef()
 					]
@@ -798,7 +832,7 @@ void SControlRigBaseListWidget::Construct(const FArguments& InArgs)
 		.Value(0.4f)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(ViewContainer, SBox)
 				.Padding(FMargin(5.0f, 0, 0, 0))
@@ -828,14 +862,6 @@ void SControlRigBaseListWidget::NotifyUser(FNotificationInfo& NotificationInfo)
 	}
 }
 
-UControlRig* SControlRigBaseListWidget::GetControlRig()
-{
-	if (FControlRigEditMode* EditMode = GetEditMode())
-	{
-		return EditMode->GetControlRig(true);
-	}
-	return nullptr;
-}
 FControlRigEditMode* SControlRigBaseListWidget::GetEditMode()
 {
 	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
@@ -892,7 +918,7 @@ void SControlRigBaseListWidget::UpdateInputValidity()
 	const bool bAllowExistingAsset = true;
 
 	FName AssetClassName = AssetClassNames.Num() == 1 ? AssetClassNames[0] : NAME_None;
-	UClass* AssetClass = AssetClassName != NAME_None ? FindObject<UClass>(ANY_PACKAGE, *AssetClassName.ToString(), true) : nullptr;
+	UClass* AssetClass = AssetClassName != NAME_None ? FindObject<UClass>(nullptr, *AssetClassName.ToString(), true) : nullptr;
 
 	if (!ContentBrowserUtils::IsValidObjectPathForCreate(ObjectPath, AssetClass, ErrorMessage, bAllowExistingAsset))
 	{
@@ -958,10 +984,19 @@ void SControlRigBaseListWidget::OnAssetsActivated(const TArray<FAssetData>& Sele
 				// If alt is down, select controls
 				if (FSlateApplication::Get().GetModifierKeys().IsAltDown())
 				{
-					UControlRig* ControlRig = SControlRigPoseView::GetFirstControlRigInLevelSequence(GetControlRig());
-					if (ControlRig)
+					FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
+					if (ControlRigEditMode)
 					{
-						PoseAsset->SelectControls(ControlRig, SControlRigPoseView::IsMirror());
+						TArray<UControlRig*> ControlRigs = ControlRigEditMode->GetControlRigsArray(true /*bIsVisible*/);
+						if (ControlRigs.Num() > 0)
+						{
+							const FScopedTransaction Transaction(LOCTEXT("SelectControls", "Select Controls"));
+							for (UControlRig* ControlRig : ControlRigs)
+							{
+								ControlRig->Modify();
+								PoseAsset->SelectControls(ControlRig, SControlRigPoseView::IsMirror());
+							}
+						}
 					}
 				}
 			}
@@ -977,7 +1012,7 @@ void SControlRigBaseListWidget::FilterChanged()
 
 	FARFilter NewFilter;
 	NewFilter.PackagePaths.Add(CurrentlySelectedVirtualPath);
-	NewFilter.ClassNames.Add(UControlRigPoseAsset::StaticClass()->GetFName());
+	NewFilter.ClassPaths.Add(UControlRigPoseAsset::StaticClass()->GetClassPathName());
 	SetFilterDelegate.ExecuteIfBound(NewFilter);
 }
 
@@ -1328,11 +1363,18 @@ void SControlRigBaseListWidget::ExecutePastePose(UControlRigPoseAsset* PoseAsset
 	if (PoseAsset)
 	{
 		FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-		if (ControlRigEditMode && ControlRigEditMode->GetControlRig(true))
+		if (ControlRigEditMode)
 		{
-			const FScopedTransaction Transaction(LOCTEXT("PastePose", "Paste Pose"));
-			ControlRigEditMode->GetControlRig(true)->Modify();
-			PoseAsset->PastePose(ControlRigEditMode->GetControlRig(true));
+			TArray<UControlRig*> ControlRigs = ControlRigEditMode->GetControlRigsArray(true /*bIsVisible*/);
+			if (ControlRigs.Num() > 0)
+			{
+				const FScopedTransaction Transaction(LOCTEXT("PastePose", "Paste Pose"));
+				for (UControlRig* ControlRig : ControlRigs)
+				{
+					ControlRig->Modify();
+					PoseAsset->PastePose(ControlRig);
+				}
+			}
 		}
 	}
 }
@@ -1350,24 +1392,32 @@ void SControlRigBaseListWidget::ExecuteUpdatePose(UControlRigPoseAsset* PoseAsse
 void SControlRigBaseListWidget::ExecuteSelectControls(UControlRigPoseAsset* PoseAsset)
 {
 	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-	if (ControlRigEditMode && ControlRigEditMode->GetControlRig(true))
+	if (ControlRigEditMode)
 	{
-		const FScopedTransaction Transaction(LOCTEXT("SelectControls", "Select Controls"));
-		ControlRigEditMode->GetControlRig(true)->Modify();
-		PoseAsset->SelectControls(ControlRigEditMode->GetControlRig(true));
+		TArray<UControlRig*> ControlRigs = ControlRigEditMode->GetControlRigsArray(true /*bIsVisible*/);
+		if (ControlRigs.Num() > 0)
+		{
+			const FScopedTransaction Transaction(LOCTEXT("SelectControls", "Select Controls"));
+			for (UControlRig* ControlRig : ControlRigs)
+			{
+				ControlRig->Modify();
+				PoseAsset->SelectControls(ControlRig);
+			}
+		}
 	}
 	else
 	{
 		ULevelSequence *LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence();
 		if (LevelSequence)
 		{
+			const FScopedTransaction Transaction(LOCTEXT("SelectControls", "Select Controls"));
 			TArray<FControlRigSequencerBindingProxy> Proxies = UControlRigSequencerEditorLibrary::GetControlRigs(LevelSequence);
-			if (Proxies.Num() > 0)
+			for (FControlRigSequencerBindingProxy& Proxy: Proxies)
 			{
-				//MZ TODO when we have Mutliple Control Rig's active select more than one.
-				if (Proxies[0].ControlRig)
+				if (Proxy.ControlRig)
 				{
-					PoseAsset->SelectControls(Proxies[0].ControlRig);
+					Proxy.ControlRig->Modify();
+					PoseAsset->SelectControls(Proxy.ControlRig);
 				}
 			}
 		}
@@ -1379,11 +1429,18 @@ void SControlRigBaseListWidget::ExecutePasteMirrorPose(UControlRigPoseAsset* Pos
 	if (PoseAsset)
 	{
 		FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-		if (ControlRigEditMode && ControlRigEditMode->GetControlRig(true))
+		if (ControlRigEditMode)
 		{
-			const FScopedTransaction Transaction(LOCTEXT("PasteMirrorPose", "Paste Mirror Pose"));
-			ControlRigEditMode->GetControlRig(true)->Modify();
-			PoseAsset->PastePose(ControlRigEditMode->GetControlRig(true), false, true);
+			TArray<UControlRig*> ControlRigs = ControlRigEditMode->GetControlRigsArray(true /*bIsVisible*/);
+			if (ControlRigs.Num() > 0)
+			{
+				const FScopedTransaction Transaction(LOCTEXT("PasteMirrorPose", "Paste Mirror Pose"));
+				for (UControlRig* ControlRig : ControlRigs)
+				{
+					ControlRig->Modify();
+					PoseAsset->PastePose(ControlRig, false, true);
+				}
+			}
 		}
 	}
 }

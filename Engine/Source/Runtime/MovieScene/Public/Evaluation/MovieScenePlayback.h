@@ -2,10 +2,23 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "MovieSceneFwd.h"
-#include "Misc/FrameTime.h"
 #include "Evaluation/MovieSceneSequenceTransform.h"
+#include "Evaluation/MovieSceneTimeTransform.h"
+#include "Evaluation/MovieSceneTimeWarping.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/NumericLimits.h"
+#include "Math/Range.h"
+#include "Math/RangeBound.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
+#include "Misc/FrameTime.h"
+#include "Misc/Optional.h"
+#include "MovieSceneFwd.h"
+#include "MovieSceneTimeHelpers.h"
 
 
 /** Enumeration specifying whether we're playing forwards or backwards */
@@ -84,6 +97,24 @@ struct MOVIESCENE_API FMovieSceneEvaluationRange
 		}
 
 		return Direction == EPlayDirection::Forwards ? EvaluationRange.GetUpperBoundValue() : EvaluationRange.GetLowerBoundValue();
+	}
+
+	/**
+	 * Get the current time to use for looking up within an evaluation field.
+	 * Subtly different from GetTime in that it returns the previous tick for exclusive boundaries
+	 */
+	FORCEINLINE FFrameNumber GetEvaluationFieldTime() const
+	{
+		TRange<FFrameNumber> Range = GetFrameNumberRange();
+
+		if (Direction == EPlayDirection::Forwards)
+		{
+			return UE::MovieScene::DiscreteExclusiveUpper(Range)-1;
+		}
+		else
+		{
+			return UE::MovieScene::DiscreteInclusiveLower(Range);
+		}
 	}
 
 	/**

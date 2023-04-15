@@ -9,6 +9,7 @@
 #include "Spatial/FastWinding.h"
 #include "Spatial/PointHashGrid3.h"
 #include "Spatial/MeshSpatialSort.h"
+#include "VertexConnectedComponents.h"
 #include "Util/IndexUtil.h"
 #include "Arrangement2d.h"
 #include "MeshAdapter.h"
@@ -36,7 +37,7 @@
 #include "DynamicMesh/MeshNormals.h"
 #include "DynamicMesh/MeshTangents.h"
 #include "ConstrainedDelaunay2.h"
-
+#include "Util/ProgressCancel.h"
 
 #include "StaticMeshOperations.h"
 #include "MeshDescriptionToDynamicMesh.h"
@@ -44,9 +45,26 @@
 
 #include "Algo/Rotate.h"
 
-#if WITH_EDITOR
-#include "Misc/ScopedSlowTask.h"
+#if defined(_MSC_VER) && USING_CODE_ANALYSIS
+#pragma warning(push)
+#pragma warning(disable : 6011)
+#pragma warning(disable : 6387)
+#pragma warning(disable : 6313)
+#pragma warning(disable : 6294)
 #endif
+PRAGMA_DEFAULT_VISIBILITY_START
+THIRD_PARTY_INCLUDES_START
+#include <Eigen/Sparse>
+#include <Eigen/Core>
+#include <Eigen/SparseLU>
+#include <Eigen/OrderingMethods>
+#include <Eigen/Dense>
+THIRD_PARTY_INCLUDES_END
+PRAGMA_DEFAULT_VISIBILITY_END
+#if defined(_MSC_VER) && USING_CODE_ANALYSIS
+#pragma warning(pop)
+#endif
+#include <vector> // for Eigen sparse matrix construction
 
 using namespace UE::Geometry;
 
@@ -59,6 +77,11 @@ namespace PlanarCut
 // functions to setup geometry collection attributes on dynamic meshes
 namespace AugmentedDynamicMesh
 {
+	// An invalid color, to be replaced by neighboring valid colors (or DefaultVertexColor, if neighboring colors were not found)
+	// Use a large negative value as a clear unset / invalid value, but do not go all the way to -MaxReal (or overflow will break things)
+	const static FVector3f UnsetVertexColor = FVector3f(-FMathf::MaxReal * .25f, -FMathf::MaxReal * .25f, -FMathf::MaxReal * .25f);
+	const static FVector3f DefaultVertexColor = FVector3f::ZeroVector;
+
 	FName TangentUAttribName = "TangentUAttrib";
 	FName TangentVAttribName = "TangentVAttrib";
 	FName VisibleAttribName = "VisibleAttrib";
@@ -119,7 +142,7 @@ namespace AugmentedDynamicMesh
 
 	void Augment(FDynamicMesh3& Mesh, int32 NumUVChannels)
 	{
-		Mesh.EnableVertexColors(FVector3f(1, 1, 1));
+		Mesh.EnableVertexColors(UnsetVertexColor);
 		Mesh.EnableVertexNormals(FVector3f::UnitZ());
 		Mesh.EnableAttributes();
 		Mesh.Attributes()->EnableMaterialID();
@@ -681,7 +704,7 @@ namespace AugmentedDynamicMesh
 							if (VIDDist.Key == -1)
 							{
 								// no point within radius; can add a sample here
-								FVertexInfo Info(SamplePos, Normal);
+								FVertexInfo Info(SamplePos, Normal, AugmentedDynamicMesh::DefaultVertexColor);
 
 								int AddedVID = Mesh.AppendVertex(Info);
 								KnownSamples[ComponentIdx].InsertPointUnsafe(AddedVID, SamplePos);
@@ -1170,6 +1193,345 @@ namespace
 		Frame.ConstrainedAlignAxis(0, Target, Normal);
 		return Frame;
 	}
+
+
+	// Replace any unset vertex colors with colors from coincident or neighboring vertices (if bPropagateFromNeighbors) or DefaultVertexColor
+	void SetUnsetColors(FGeometryCollection* Collection, int32 FirstGeometryIndex, bool bPropagateFromNeighbors = true)
+	{
+		if (FirstGeometryIndex == INDEX_NONE)
+		{
+			return;
+		}
+
+		auto IsUnset = [](const FLinearColor& Color) -> bool
+		{
+			return Color.R < 0 || Color.G < 0 || Color.B < 0;
+		};
+		constexpr float CopyColorDistance = 1e-03;
+
+		int32 NumGeo = Collection->NumElements(FGeometryCollection::GeometryGroup);
+		
+		if (bPropagateFromNeighbors)
+		{
+			// Get vertex range for the geometry in and after FirstGeometryIndex
+			// Note: I think this will always just be the contiguous block of all vertices after the first geometry's start vertex,
+			//       but explicitly find the range to be safe (and to make the code easier to adapt)
+			int32 StartV = Collection->VertexStart[FirstGeometryIndex];
+			int32 EndV = Collection->VertexCount[FirstGeometryIndex] + StartV;
+			for (int32 GeoIdx = FirstGeometryIndex + 1; GeoIdx < NumGeo; ++GeoIdx)
+			{
+				int32 GeoStart = Collection->VertexStart[GeoIdx];
+				if (GeoStart < StartV)
+				{
+					StartV = GeoStart;
+				}
+				else
+				{
+					int32 GeoEnd = GeoStart + Collection->VertexCount[GeoIdx];
+					EndV = FMath::Max(GeoEnd, EndV);
+				}
+			}
+			int32 NumV = EndV - StartV;
+
+			// A generic representation of the full vertex graph
+			// (To be split into connected components and solved as a linear system per component)
+			struct FLink
+			{
+				int32 V[2]{ -1, -1 };
+				float Wt = 1;
+
+				FLink()
+				{}
+
+				FLink(int32 A, int32 B, float Wt) : V{ A, B }, Wt(Wt)
+				{}
+
+				static FLink Edge(int32 A, int32 B)
+				{
+					// Note: Currently just using constant weight (per half-edge)
+					constexpr float EdgeWt = .5;
+					return FLink(A, B, EdgeWt);
+				}
+			};
+			TArray<FLink> Links; // connections between vertices -- note: always symmetric, duplicates are allowed
+			Links.Reserve(NumV * 3);
+
+			TArray<FVector3f> FixedColors; // Note: FLinearColor has an alpha but FDynamicMesh3 currently only tracks rgb per vertex, so we only solve for rgb
+			TArray<float> FixedColorWts;
+			FixedColors.SetNumZeroed(NumV);
+			FixedColorWts.SetNumZeroed(NumV);
+
+			FVertexConnectedComponents Components(NumV); // Overall connected components (1 solve per component)
+			FVertexConnectedComponents VtxComps(NumV); // Vertex components (1 group of overlapping vertices per component)
+
+			for (int32 GeoIdx = FirstGeometryIndex; GeoIdx < NumGeo; ++GeoIdx)
+			{
+				int32 FStart = Collection->FaceStart[GeoIdx];
+				int32 FEnd = FStart + Collection->FaceCount[GeoIdx];
+				for (int32 FIdx = FStart; FIdx < FEnd; ++FIdx)
+				{
+					const FIntVector& Tri = Collection->Indices[FIdx];
+					// Note: This assumes triangles always have either fully set or fully unset vertices, so we only need to check one vertex
+					if (IsUnset(Collection->Color[Tri[0]]))
+					{
+						Components.ConnectVertices(Tri.X - StartV, Tri.Y - StartV);
+						Components.ConnectVertices(Tri.Y - StartV, Tri.Z - StartV);
+						Links.Add(FLink::Edge(Tri.X - StartV, Tri.Y - StartV));
+						Links.Add(FLink::Edge(Tri.Y - StartV, Tri.Z - StartV));
+						Links.Add(FLink::Edge(Tri.Z - StartV, Tri.X - StartV));
+					}
+				}
+			}
+
+			// put geometry in a shared coordinate space to spread color across geometry
+			TArray<FTransform> GlobalTransformArray;
+			GeometryCollectionAlgo::GlobalMatrices(Collection->Transform, Collection->Parent, GlobalTransformArray);
+			TArray<FVector3f> GlobalVertices;
+			GlobalVertices.SetNum(NumV);
+			for (int32 Idx = StartV; Idx < EndV; Idx++)
+			{
+				GlobalVertices[Idx - StartV] = (FVector3f)GlobalTransformArray[Collection->BoneMap[Idx]].TransformPosition(FVector(Collection->Vertex[Idx]));
+			}
+
+			// Create a hash grid of vertices with unset colors, and connect components for overlapping unset vertices
+			TPointHashGrid3f<int32> VertexHash(CopyColorDistance * 4.0f, INDEX_NONE);
+			TArray<int32> Neighbors;
+
+			for (int32 GeoIdx = FirstGeometryIndex; GeoIdx < NumGeo; ++GeoIdx)
+			{
+				int32 GeoStart = Collection->VertexStart[GeoIdx];
+				int32 GeoEnd = GeoStart + Collection->VertexCount[GeoIdx];
+				for (int32 Idx = GeoStart; Idx < GeoEnd; ++Idx)
+				{
+					FLinearColor Color = Collection->Color[Idx];
+					if (IsUnset(Color))
+					{
+						if (Components.GetComponentSize(Idx - StartV) == 1) // isolated vertex (not in any triangle), just leave as default color
+						{
+							Collection->Color[Idx] = FLinearColor(AugmentedDynamicMesh::DefaultVertexColor);
+							continue;
+						}
+						FVector3f Pt = GlobalVertices[Idx - StartV];
+
+						int32 SetID = Components.GetComponent(Idx - StartV);
+
+						Neighbors.Reset();
+						VertexHash.FindPointsInBall(Pt, CopyColorDistance, [&GlobalVertices, &Pt, StartV](int32 OtherIdx)
+							{
+								return DistanceSquared(Pt, GlobalVertices[OtherIdx - StartV]);
+							}, Neighbors);
+						for (int32 NbrIdx : Neighbors)
+						{
+							VtxComps.ConnectVertices(Idx - StartV, NbrIdx - StartV);
+							Components.ConnectVertices(SetID, NbrIdx - StartV);
+						}
+						VertexHash.InsertPointUnsafe(Idx, Pt);
+					}
+				}
+			}
+
+			TSet<int32> CanSolveComponents;
+
+			// Fix colors on vertices that are coincident to set colors
+			for (int32 GeoIdx = FirstGeometryIndex; GeoIdx < NumGeo; ++GeoIdx)
+			{
+				int32 GeoStart = Collection->VertexStart[GeoIdx];
+				int32 GeoEnd = GeoStart + Collection->VertexCount[GeoIdx];
+				for (int32 Idx = GeoStart; Idx < GeoEnd; ++Idx)
+				{
+					FLinearColor Color = Collection->Color[Idx];
+					if (!IsUnset(Color))
+					{
+						FVector3f Pt = GlobalVertices[Idx - StartV];
+						Neighbors.Reset();
+						VertexHash.FindPointsInBall(Pt, CopyColorDistance, [&GlobalVertices, &Pt, StartV](int32 OtherIdx)
+							{
+								return DistanceSquared(Pt, GlobalVertices[OtherIdx - StartV]);
+							}, Neighbors);
+						for (int32 NbrIdx : Neighbors)
+						{
+							int32 Component = Components.GetComponent(NbrIdx - StartV);
+							int32 ComponentSize = Components.GetComponentSize(NbrIdx - StartV);
+							if (ComponentSize == 1)
+							{
+								Collection->Color[NbrIdx] = Color; // Isolated vertex, no solve needed
+							}
+							CanSolveComponents.Add(Component);
+							int32 SharedVtx = VtxComps.GetComponent(NbrIdx - StartV);
+							FixedColors[SharedVtx] += FVector3f(Color.R, Color.G, Color.B);
+							FixedColorWts[SharedVtx] += 1.0f;
+						}
+					}
+				}
+			}
+
+			// Average color at any vertex w/ a fixed color
+			for (int32 ColorIdx = 0; ColorIdx < FixedColors.Num(); ++ColorIdx)
+			{
+				float& Wt = FixedColorWts[ColorIdx];
+				if (Wt > 0.0f)
+				{
+					FixedColors[ColorIdx] /= Wt;
+					Wt = 1.0f;
+				}
+			}
+
+			TArray<int32> ToComponentMap;
+			ToComponentMap.Reserve(NumV);
+			TArray<float> DiagonalWts;
+
+			TArray<int32> ContigComponentVertices = Components.MakeContiguousComponentsArray(NumV);
+
+			// Solve for vertex colors per component
+			for (int32 ContigStart = 0, NextStart = -1; ContigStart < NumV; ContigStart = NextStart)
+			{
+				int32 ComponentID = Components.GetComponent(ContigComponentVertices[ContigStart]);
+				int32 ComponentSize = Components.GetComponentSize(ComponentID);
+				NextStart = ContigStart + ComponentSize;
+
+				if (ComponentSize == 1)
+				{
+					continue;
+				}
+				if (!CanSolveComponents.Contains(ComponentID))
+				{
+					continue;
+				}
+
+				using FSparseMatf = Eigen::SparseMatrix<float, Eigen::ColMajor>;
+				using FMatrixTripletf = Eigen::Triplet<float>;
+				std::vector<FMatrixTripletf> EntryTriplets;
+
+				// Make an index map for this component's vertices
+				ToComponentMap.Init(-1, NumV);
+				int32 NumToSolve = 0;
+				for (int32 ContigIdx = ContigStart; ContigIdx < NextStart; ++ContigIdx)
+				{
+					int32 LocalIdx = ContigComponentVertices[ContigIdx];
+					int32 GlobalIdx = LocalIdx + StartV;
+					int32 SharedIdx = VtxComps.GetComponent(LocalIdx);
+					if (FixedColorWts[SharedIdx] > 0)
+					{
+						FLinearColor Color(FixedColors[SharedIdx]);
+						Collection->Color[GlobalIdx] = Color; // copy fixed color out
+						continue; // has fixed color, do not include in solve
+					}
+					if (ToComponentMap[SharedIdx] != -1)
+					{
+						continue; // already mapped
+					}
+
+					ToComponentMap[SharedIdx] = NumToSolve;
+
+					++NumToSolve;
+				}
+
+				if (NumToSolve == 0)
+				{
+					continue;
+				}
+
+				FSparseMatf SparseMatrix(NumToSolve, NumToSolve);
+				Eigen::VectorXf X[3]{ Eigen::VectorXf(NumToSolve), Eigen::VectorXf(NumToSolve), Eigen::VectorXf(NumToSolve) };
+				Eigen::VectorXf B[3]{ Eigen::VectorXf(NumToSolve), Eigen::VectorXf(NumToSolve), Eigen::VectorXf(NumToSolve) };
+				for (int32 SubIdx = 0; SubIdx < 3; ++SubIdx)
+				{
+					B[SubIdx].setZero();
+				}
+				DiagonalWts.Reset(NumToSolve);
+				DiagonalWts.SetNumZeroed(NumToSolve, false);
+
+				// Build the sparse matrix and rhs for the component
+				for (const FLink& Link : Links)
+				{
+					int32 SharedA = VtxComps.GetComponent(Link.V[0]);
+					int32 SharedB = VtxComps.GetComponent(Link.V[1]);
+					int32 LocalA = ToComponentMap[SharedA];
+					int32 LocalB = ToComponentMap[SharedB];
+					if (LocalA == INDEX_NONE)
+					{
+						if (LocalB == INDEX_NONE)
+						{
+							continue;
+						}
+						Swap(SharedA, SharedB);
+						Swap(LocalA, LocalB);
+					}
+					if (LocalB == INDEX_NONE)
+					{
+						if (FixedColorWts[SharedB] > 0)
+						{
+							FVector3f BVal = FixedColors[SharedB] * Link.Wt;
+							for (int32 SubIdx = 0; SubIdx < 3; ++SubIdx)
+							{
+								B[SubIdx][LocalA] += BVal[SubIdx];
+							}
+							DiagonalWts[LocalA] += Link.Wt;
+						}
+					}
+					else
+					{
+						EntryTriplets.push_back(FMatrixTripletf(LocalA, LocalB, -Link.Wt));
+						EntryTriplets.push_back(FMatrixTripletf(LocalB, LocalA, -Link.Wt));
+						DiagonalWts[LocalA] += Link.Wt;
+						DiagonalWts[LocalB] += Link.Wt;
+					}
+				}
+				for (int32 Idx = 0; Idx < NumToSolve; ++Idx)
+				{
+					EntryTriplets.push_back(FMatrixTripletf(Idx, Idx, DiagonalWts[Idx]));
+				}
+
+				// Solve linear system for internal colors
+				SparseMatrix.setFromTriplets(EntryTriplets.begin(), EntryTriplets.end());
+				SparseMatrix.makeCompressed();
+				
+				Eigen::SparseLU<FSparseMatf, Eigen::COLAMDOrdering<int>> MatrixSolver;
+				MatrixSolver.isSymmetric(true);
+				MatrixSolver.analyzePattern(SparseMatrix);
+				MatrixSolver.factorize(SparseMatrix);
+
+				ParallelFor(3, [&](int32 Idx)
+					{
+						X[Idx] = MatrixSolver.solve(B[Idx]);
+					});
+
+				// Copy solved colors out
+				for (int32 ContigIdx = ContigStart; ContigIdx < NextStart; ++ContigIdx)
+				{
+					int32 LocalIdx = ContigComponentVertices[ContigIdx];
+					int32 GlobalIdx = LocalIdx + StartV;
+					int32 SharedIdx = VtxComps.GetComponent(LocalIdx);
+					int32 CompIdx = ToComponentMap[SharedIdx];
+					if (CompIdx != INDEX_NONE)
+					{
+						FVector3f SolvedColor;
+						for (int32 SubIdx = 0; SubIdx < 3; ++SubIdx)
+						{
+							// Note: make sure the solved color is non-negative, so solver error cannot make the color 'unset'
+							SolvedColor[SubIdx] = FMath::Max(X[SubIdx][CompIdx], 0.f);
+						}
+
+						Collection->Color[GlobalIdx] = FLinearColor(SolvedColor);
+					}
+				}
+			}
+		}
+
+		// Replace unset color with default color
+		for (int32 GeoIdx = FirstGeometryIndex; GeoIdx < NumGeo; ++GeoIdx)
+		{
+			int32 VStart = Collection->VertexStart[GeoIdx];
+			int32 VEnd = VStart + Collection->VertexCount[GeoIdx];
+			for (int32 Idx = VStart; Idx < VEnd; ++Idx)
+			{
+				if (IsUnset(Collection->Color[Idx]))
+				{
+					Collection->Color[Idx] = FLinearColor(AugmentedDynamicMesh::DefaultVertexColor);
+				}
+			}
+		}
+	}
 }
 
 
@@ -1185,23 +1547,29 @@ FCellMeshes::FCellMeshes(int32 NumUVLayersIn, FRandomStream& RandomStream, const
 }
 
 
-FCellMeshes::FCellMeshes(int32 NumUVLayersIn, FDynamicMesh3& SingleCutter, const FInternalSurfaceMaterials& Materials, TOptional<FTransform> Transform)
+FCellMeshes::FCellMeshes(int32 NumUVLayersIn, const FDynamicMesh3& SingleCutter, const FInternalSurfaceMaterials& Materials, TOptional<FTransform> Transform)
 {
 	NumUVLayers = NumUVLayersIn;
 	SetNumCells(2);
 
+	CellMeshes[0].AugMesh = SingleCutter;
+
 	if (Transform.IsSet())
 	{
-		MeshTransforms::ApplyTransform(SingleCutter, FTransformSRT3d(Transform.GetValue()));
+		MeshTransforms::ApplyTransform(CellMeshes[0].AugMesh, FTransformSRT3d(Transform.GetValue()), true);
 	}
 
 	// Mesh should already be augmented
-	if (!ensure(AugmentedDynamicMesh::IsAugmented(SingleCutter)))
+	if (!ensure(AugmentedDynamicMesh::IsAugmented(CellMeshes[0].AugMesh)))
 	{
-		AugmentedDynamicMesh::Augment(SingleCutter, NumUVLayers);
+		AugmentedDynamicMesh::Augment(CellMeshes[0].AugMesh, NumUVLayers);
 	}
 
-	CellMeshes[0].AugMesh = SingleCutter;
+	// Make sure color is unset
+	for (int VID : CellMeshes[0].AugMesh.VertexIndicesItr())
+	{
+		CellMeshes[0].AugMesh.SetVertexColor(VID, AugmentedDynamicMesh::UnsetVertexColor);
+	}
 
 	// first mesh is the same as the second mesh, but will be subtracted b/c it's the "outside cell"
 	// TODO: special case this logic so we don't have to hold two copies of the exact same mesh!
@@ -1500,7 +1868,7 @@ void FCellMeshes::CreateMeshesForBoundedPlanesWithoutNoise(int NumCells, const F
 		PlaneVertInfo.bHaveC = true;
 		PlaneVertInfo.bHaveUV = false;
 		PlaneVertInfo.bHaveN = true;
-		PlaneVertInfo.Color = FVector3f(1, 1, 1);
+		PlaneVertInfo.Color = AugmentedDynamicMesh::UnsetVertexColor;
 		int VertStart[2]{ -1, -1 };
 		for (int MeshIdx = 0; MeshIdx < NumMeshes; MeshIdx++)
 		{
@@ -1613,7 +1981,7 @@ void FCellMeshes::CreateMeshesForBoundedPlanesWithNoise(int NumCells, const FPla
 	{
 		AugmentedDynamicMesh::EnableUVChannels(PlaneMesh, NumUVLayers);
 		PlaneMesh.EnableVertexNormals(FVector3f::UnitZ());
-		PlaneMesh.EnableVertexColors(FVector3f(1, 1, 1));
+		PlaneMesh.EnableVertexColors(AugmentedDynamicMesh::UnsetVertexColor);
 		PlaneMesh.EnableAttributes();
 		PlaneMesh.Attributes()->EnableMaterialID();
 		PlaneMesh.Attributes()->AttachAttribute(OriginalPositionAttribute, new TDynamicMeshVertexAttribute<double, 3>(&PlaneMesh));
@@ -1670,7 +2038,7 @@ void FCellMeshes::CreateMeshesForBoundedPlanesWithNoise(int NumCells, const FPla
 			PlaneVertInfo.bHaveN = true;
 			PlaneVertInfo.Normal = Normal;
 			// UVs will be set below, after noise is added
-			PlaneVertInfo.Color = FVector3f(1, 1, 1);
+			PlaneVertInfo.Color = AugmentedDynamicMesh::UnsetVertexColor;
 
 			FPolygon2f Polygon;
 			for (int BoundaryVertex : PlaneBoundary)
@@ -1982,7 +2350,7 @@ void FCellMeshes::CreateMeshesForSinglePlane(const FPlanarCells& Cells, const FA
 	FVertexInfo PlaneVertInfo;
 	PlaneVertInfo.bHaveC = true;
 	PlaneVertInfo.bHaveN = true;
-	PlaneVertInfo.Color = FVector3f(1, 1, 1);
+	PlaneVertInfo.Color = AugmentedDynamicMesh::UnsetVertexColor;
 	PlaneVertInfo.Normal = -FVector3f(Plane.GetNormal());
 
 	for (int CornerIdx = 0; CornerIdx < 4; CornerIdx++)
@@ -2243,30 +2611,17 @@ int32 FDynamicMeshCollection::CutWithMultiplePlanes(
 	int32 RandomSeed,
 	FGeometryCollection* Collection,
 	FInternalSurfaceMaterials& InternalSurfaceMaterials,
-	bool bSetDefaultInternalMaterialsFromCollection
+	bool bSetDefaultInternalMaterialsFromCollection,
+	FProgressCancel* Progress
 )
 {
-#if WITH_EDITOR
-	// Create progress indicator dialog
-	static const FText SlowTaskText = NSLOCTEXT("CutMultipleWithMultiplePlanes", "CutMultipleWithMultiplePlanesText", "Cutting geometry collection with plane(s)...");
-
-	FScopedSlowTask SlowTask(Planes.Num(), SlowTaskText);
-	SlowTask.MakeDialog();
-
-	// Declare progress shortcut lambdas
-	auto EnterProgressFrame = [&SlowTask](float Progress)
-	{
-		SlowTask.EnterProgressFrame(Progress);
-	};
-#else
-	auto EnterProgressFrame = [](float Progress) {};
-#endif
-
 	bool bHasGrout = Grout > 0;
 
 	int32 NumUVLayers = Collection->NumUVLayers();
 
 	FRandomStream RandomStream(RandomSeed);
+
+	const float PerPlaneWorkFrac = 1.0f / Planes.Num();
 
 	if (bHasGrout)
 	{
@@ -2283,118 +2638,59 @@ int32 FDynamicMeshCollection::CutWithMultiplePlanes(
 		FMeshIndexMappings IndexMaps;
 		for (int32 PlaneIdx = 0; PlaneIdx < Planes.Num(); PlaneIdx++)
 		{
-			EnterProgressFrame(.5);
+			FProgressCancel::FProgressScope MakeMeshScope(Progress, .1 * PerPlaneWorkFrac);
 			FPlanarCells PlaneCells(Planes[PlaneIdx]);
 			PlaneCells.InternalSurfaceMaterials = InternalSurfaceMaterials;
 			FCellMeshes PlaneGroutMesh(NumUVLayers, RandomStream);
 			PlaneGroutMesh.MakeOnlyPlanarGroutCell(PlaneCells, Bounds, Grout);
 			GroutAppender.AppendMesh(&PlaneGroutMesh.CellMeshes[0].AugMesh, IndexMaps);
+			if (Progress && Progress->Cancelled())
+			{
+				return INDEX_NONE;
+			}
 		}
 
-		EnterProgressFrame(Planes.Num() * .2);
+		FProgressCancel::FProgressScope GroutUnionScope(Progress, .3);
 		FMeshSelfUnion GroutUnion(&GroutMesh);
 		GroutUnion.bSimplifyAlongNewEdges = true;
 		GroutUnion.bWeldSharedEdges = false;
 		GroutUnion.Compute();
-
-		EnterProgressFrame(Planes.Num() * .1);
+		GroutUnionScope.Done();
+		if (Progress && Progress->Cancelled())
+		{
+			return INDEX_NONE;
+		}
+		
+		FProgressCancel::FProgressScope GroutCutScope = FProgressCancel::CreateScopeTo(Progress, 1);
 		// first mesh is the same as the second mesh, but will be subtracted b/c it's the "outside cell"
 		GroutCells.CellMeshes[1].AugMesh = GroutMesh;
 		GroutCells.OutsideCellIndex = 1;
 
-		EnterProgressFrame(Planes.Num() * .2);
 		TArray<TPair<int32, int32>> CellConnectivity;
 		CellConnectivity.Add(TPair<int32, int32>(0, -1));
 
 		return CutWithCellMeshes(InternalSurfaceMaterials, CellConnectivity, GroutCells, Collection, bSetDefaultInternalMaterialsFromCollection, CollisionSampleSpacing);
 	}
 
-	bool bHasProximity = Collection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup);
 	TArray<TUniquePtr<FMeshData>> ToCut;
-	TArray<TUniquePtr<TPointHashGrid3d<int>>> VerticesHashes;
-	auto HashMeshVertices = [&VerticesHashes, &ToCut](int32 HashIdx)
-	{
-		FDynamicMesh3& Mesh = ToCut[HashIdx]->AugMesh;
-		if (HashIdx >= VerticesHashes.Num())
-		{
-			VerticesHashes.SetNum(HashIdx + 1);
-		}
-		if (VerticesHashes[HashIdx].IsValid())
-		{
-			return;
-		}
-		VerticesHashes[HashIdx] = MakeUnique<TPointHashGrid3d<int>>(FMathd::ZeroTolerance * 1000, -1);
-		TPointHashGrid3d<int>& Grid = *VerticesHashes[HashIdx].Get();
-		for (int VID : Mesh.VertexIndicesItr())
-		{
-			Grid.InsertPointUnsafe(VID, Mesh.GetVertex(VID));
-		}
-	};
-	auto ClearHash = [&VerticesHashes](int32 HashIdx)
-	{
-		if (HashIdx < VerticesHashes.Num())
-		{
-			VerticesHashes[HashIdx].Release();
-		}
-	};
-	auto IsNeighbor = [&ToCut, &VerticesHashes](int32 A, int32 B)
-	{
-		if (!ensure(A < ToCut.Num() && B < ToCut.Num() && A < VerticesHashes.Num() && B < VerticesHashes.Num()))
-		{
-			return false;
-		}
-		if (!ensure(VerticesHashes[A].IsValid() && VerticesHashes[B].IsValid()))
-		{
-			return false;
-		}
-		if (!ToCut[A]->GetCachedBounds().Intersects(ToCut[B]->GetCachedBounds()))
-		{
-			return false;
-		}
-		if (ToCut[A]->AugMesh.VertexCount() > ToCut[B]->AugMesh.VertexCount())
-		{
-			Swap(A, B);
-		}
-		FDynamicMesh3& RefMesh = ToCut[B]->AugMesh;
-		for (const FVector3d& V : ToCut[A]->AugMesh.VerticesItr())
-		{
-			TPair<int, double> Nearest = VerticesHashes[B]->FindNearestInRadius(V, FMathd::ZeroTolerance * 10, [&RefMesh, &V](int VID)
-				{
-					return DistanceSquared(RefMesh.GetVertex(VID), V);
-				});
-			if (Nearest.Key != -1)
-			{
-				return true;
-			}
-		}
-		return false;
-	};
 	// copy initial surfaces
 	for (FMeshData& MeshData : Meshes)
 	{
 		ToCut.Add(MakeUnique<FMeshData>(MeshData));
 	}
-	// track connections between meshes via their indices in the ToCut array
-	TMultiMap<int32, int32> Proximity;
-	auto ProxLink = [&Proximity](int32 A, int32 B)
-	{
-		Proximity.Add(A, B);
-		Proximity.Add(B, A);
-	};
-	auto ProxUnlink = [&Proximity](int32 A, int32 B)
-	{
-		Proximity.RemoveSingle(A, B);
-		Proximity.RemoveSingle(B, A);
-	};
 	for (int32 PlaneIdx = 0; PlaneIdx < Planes.Num(); PlaneIdx++)
 	{
-		EnterProgressFrame(1);
+		if (Progress && Progress->Cancelled())
+		{
+			return INDEX_NONE;
+		}
+		FProgressCancel::FProgressScope OnePlaneScope(Progress, PerPlaneWorkFrac);
 		FPlanarCells PlaneCells(Planes[PlaneIdx]);
 		PlaneCells.InternalSurfaceMaterials = InternalSurfaceMaterials;
 		double OnePercentExtend = Bounds.MaxDim() * .01;
 		FCellMeshes CellMeshes(NumUVLayers, RandomStream, PlaneCells, Bounds, 0, OnePercentExtend, false);
 
-		// TODO: we could do these cuts in parallel (will takes some rework of the proximity and how results are added to the ToCut array)
+		// TODO: we could do these cuts in parallel (will takes some rework of how results are added to the ToCut array)
 		for (int32 ToCutIdx = 0, ToCutNum = ToCut.Num(); ToCutIdx < ToCutNum; ToCutIdx++)
 		{
 			FMeshData& Surface = *ToCut[ToCutIdx];
@@ -2475,68 +2771,6 @@ int32 FDynamicMeshCollection::CutWithMultiplePlanes(
 					}
 				}
 
-				// update proximity for neighbors of the original piece
-				if (bHasProximity)
-				{
-					ClearHash(ToCutIdx);
-					TArray<int32> Nbrs;
-					Proximity.MultiFind(ToCutIdx, Nbrs);
-					if (Nbrs.Num() > 0)
-					{
-						for (int32 ChangedMeshIdx : ResultIndices)
-						{
-							HashMeshVertices(ChangedMeshIdx);
-						}
-
-						for (int32 Nbr : Nbrs)
-						{
-							ProxUnlink(ToCutIdx, Nbr);
-							HashMeshVertices(Nbr);
-							for (int32 Idx = 0; Idx < ResultIndices.Num(); Idx++)
-							{
-								int32 ResultIdx = ResultIndices[Idx];
-								int32 OldIdx = Nbr;
-								if (IsNeighbor(ResultIdx, OldIdx))
-								{
-									ProxLink(ResultIdx, OldIdx);
-								}
-							}
-						}
-					}
-
-					if (ResultIndices.Num() == 2)
-					{
-						// add the connection between the two new pieces
-						ProxLink(ResultIndices[0], ResultIndices[1]);
-					}
-					else
-					{
-						if (Nbrs.Num() == 0)
-						{
-							for (int32 ChangedMeshIdx : ResultIndices)
-							{
-								HashMeshVertices(ChangedMeshIdx);
-							}
-						}
-						// check for connections between all pieces
-						for (int FirstIdx = 0; FirstIdx + 1 < ResultIndices.Num(); FirstIdx++)
-						{
-							int32 FirstParent = ParentIndices[FirstIdx];
-							for (int SecondIdx = FirstIdx + 1; SecondIdx < ResultIndices.Num(); SecondIdx++)
-							{
-								if (FirstParent == ParentIndices[SecondIdx])
-								{
-									// these pieces split from the same mesh *because* they were disconnected, so the pieces cannot be neighbors
-									continue;
-								}
-								if (IsNeighbor(ResultIndices[FirstIdx], ResultIndices[SecondIdx]))
-								{
-									ProxLink(ResultIndices[FirstIdx], ResultIndices[SecondIdx]);
-								}
-							}
-						}
-					}
-				}
 			} // iteration over meshes to cut
 		} // iteration over cutting planes
 	}
@@ -2583,15 +2817,12 @@ int32 FDynamicMeshCollection::CutWithMultiplePlanes(
 		}
 	}
 
-	// create proximity sets on geometry collection and populate using ToCut's Proximity multimap and the array ToCutIdxToGeometryIdx
-	if (bHasProximity)
+	if (Progress && Progress->Cancelled())
 	{
-		TManagedArray<TSet<int32>>& GCProximity = Collection->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
-		for (TPair<int32, int32> Link : Proximity)
-		{
-			GCProximity[ToCutIdxToGeometryIdx[Link.Key]].Add(ToCutIdxToGeometryIdx[Link.Value]);
-		}
+		return INDEX_NONE;
 	}
+
+	SetUnsetColors(Collection, FirstCreatedIndex);
 
 	int32 NewFirstIndex = FirstCreatedIndex;
 
@@ -2618,12 +2849,69 @@ int32 FDynamicMeshCollection::CutWithMultiplePlanes(
 }
 
 
+int32 FDynamicMeshCollection::SplitAllIslands(FGeometryCollection* Collection, double CollisionSampleSpacing)
+{
+	int32 FirstIdx = -1;
+	TArray<int32> GeometryForRemoval;
+
+	for (FMeshData& Surface : Meshes)
+	{
+		int32 SrcGeometryIdx = Collection->TransformToGeometryIndex[Surface.TransformIndex];
+		
+		int32 CreatedGeometryIdx = -1;
+		TArray<FDynamicMesh3> Islands;
+		if (SplitIslands(Surface.AugMesh, Islands))
+		{
+			for (int32 i = 0; i < Islands.Num(); i++)
+			{
+				FDynamicMesh3& Island = Islands[i];
+				FString BoneName = GetBoneName(*Collection, Surface.TransformIndex, i);
+				constexpr int32 InternalMaterialID = 0; // Note: there won't be new internal faces (to assign materials) from a split, so this value won't affect the output here
+				CreatedGeometryIdx = AppendToCollection(Surface.FromCollection, Island, CollisionSampleSpacing, Surface.TransformIndex, BoneName, *Collection, InternalMaterialID);
+
+				if (FirstIdx == -1)
+				{
+					FirstIdx = CreatedGeometryIdx;
+				}
+			}
+
+			GeometryForRemoval.Add(SrcGeometryIdx);
+		}
+	}
+
+	int32 NewFirstIdx = FirstIdx;
+
+	// remove or hide superfluous geometry
+	constexpr bool bRemoveOldGeometry = false; // if false, we just hide the geometry that we've replaced by fractured child geometry, rather than remove it
+	if (GeometryForRemoval.Num() > 0)
+	{
+		if (bRemoveOldGeometry)
+		{
+			GeometryForRemoval.Sort();
+			FManagedArrayCollection::FProcessingParameters ProcessingParams;
+#if !UE_BUILD_DEBUG
+			ProcessingParams.bDoValidation = false;
+#endif
+			Collection->RemoveElements(FGeometryCollection::GeometryGroup, GeometryForRemoval, ProcessingParams);
+			NewFirstIdx -= GeometryForRemoval.Num();
+		}
+		else
+		{
+			SetGeometryVisibility(Collection, GeometryForRemoval, false);
+		}
+	}
+
+
+	return NewFirstIdx;
+}
+
+
+
 int32 FDynamicMeshCollection::CutWithCellMeshes(const FInternalSurfaceMaterials& InternalSurfaceMaterials, const TArray<TPair<int32, int32>>& CellConnectivity, FCellMeshes& CellMeshes, FGeometryCollection* Collection, bool bSetDefaultInternalMaterialsFromCollection, double CollisionSampleSpacing)
 {
 	// TODO: should we do these cuts in parallel, and the appends sequentially below?
 	int32 FirstIdx = -1;
 	int BadCount = 0;
-	bool bHasProximity = Collection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup);
 	TArray<int32> GeometryForRemoval;
 	TArray<FAxisAlignedBox3d> CellBounds; CellBounds.Reserve(CellMeshes.CellMeshes.Num());
 	for (int CellIdx = 0; CellIdx < CellMeshes.CellMeshes.Num(); CellIdx++)
@@ -2738,65 +3026,13 @@ int32 FDynamicMeshCollection::CutWithCellMeshes(const FInternalSurfaceMaterials&
 					}
 				}
 			}
-			if (bHasProximity)
-			{
-				TManagedArray<TSet<int32>>& Proximity = Collection->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
-				TArray<TUniquePtr<TPointHashGrid3d<int>>> VertexHashes;
-				TArray<FAxisAlignedBox3d> MeshBounds;
-				auto MakeHash = [this, &VertexHashes, &MeshBounds, &BooleanResults](int GID)
-				{
-					if (GID >= VertexHashes.Num())
-					{
-						VertexHashes.SetNum(GID + 1);
-						MeshBounds.SetNum(GID + 1);
-					}
-					if (!VertexHashes[GID].IsValid())
-					{
-						VertexHashes[GID] = MakeUnique<TPointHashGrid3d<int>>(FMathd::ZeroTolerance * 1000, -1);
-						FillVertexHash(*BooleanResults[GID], *VertexHashes[GID]);
-						MeshBounds[GID] = BooleanResults[GID]->GetBounds(true);
-					}
-				};
-				for (int32 PlaneIdx : PlanesInOutput)
-				{
-					TPair<int32, int32> Cells = CellConnectivity[PlaneIdx];
-					int32 SecondCell = Cells.Value < 0 ? CellMeshes.OutsideCellIndex : Cells.Value;
-					if (SecondCell != -1)
-					{
-						TArray<int32, TInlineAllocator<4>> GeomA, GeomB;
-						CellToGeometry.MultiFind(Cells.Key, GeomA, false);
-						CellToGeometry.MultiFind(SecondCell, GeomB, false);
-						if (GeomA.Num() == 1 && GeomB.Num() == 1)
-						{
-							Proximity[GeomA[0]].Add(GeomB[0]);
-							Proximity[GeomB[0]].Add(GeomA[0]);
-						}
-						else if (GeomA.Num() >= 1 && GeomB.Num() >= 1) // at least one was split; need to re-check proximities
-						{
-							for (int GIDA : GeomA)
-							{
-								int MeshA = GeometryToResultMesh[GIDA];
-								MakeHash(MeshA);
-								for (int GIDB : GeomB)
-								{
-									int MeshB = GeometryToResultMesh[GIDB];
-									MakeHash(MeshB);
-									if (IsNeighboring(*BooleanResults[MeshA], *VertexHashes[MeshA], MeshBounds[MeshA], *BooleanResults[MeshB], *VertexHashes[MeshB], MeshBounds[MeshB]))
-									{
-										Proximity[GIDA].Add(GIDB);
-										Proximity[GIDB].Add(GIDA);
-									}
-								}
-							}
-						}
-					}
-				}
-			}
 			
 			// remove old geom
 			GeometryForRemoval.Add(GeometryIdx);
 		}
 	}
+
+	SetUnsetColors(Collection, FirstIdx);
 
 	int32 NewFirstIdx = FirstIdx;
 
@@ -2977,6 +3213,8 @@ bool FDynamicMeshCollection::UpdateAllCollections(FGeometryCollection& Collectio
 		bool bSucceeded = UpdateCollection(MeshData.FromCollection, Mesh, GeometryIdx, Collection, -1);
 		bAllSucceeded &= bSucceeded;
 	}
+
+	SetUnsetColors(&Collection, 0, false);
 
 	return bAllSucceeded;
 }

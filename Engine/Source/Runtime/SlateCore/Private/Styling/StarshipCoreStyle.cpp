@@ -16,6 +16,7 @@
 #include "Styling/SegmentedControlStyle.h"
 #include "Styling/StyleColors.h"
 #include "Styling/CoreStyle.h"
+#include "Misc/DataDrivenPlatformInfoRegistry.h"
 
 // This is to fix the issue that SlateStyleMacros like IMAGE_BRUSH look for RootToContentDir but Style->RootToContentDir is how the core style is set up
 #define RootToContentDir Style->RootToContentDir
@@ -33,7 +34,9 @@ TUniquePtr<FStyleFonts> FStyleFonts::Instance = nullptr;
 
 FStyleFonts::FStyleFonts()
 	: Normal(FONT(10, "Regular"))
+	, NormalItalic(FONT(10, "Italic"))
 	, NormalBold(FONT(10, "Bold"))
+	, NormalBoldItalic(FONT(10, "BoldItalic"))
 	, Small(FONT(8,  "Regular"))
 	, SmallBold(FONT(8,  "Bold"))
 	, Large(FONT(14, "Regular"))
@@ -318,6 +321,9 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 		Style->Set("Icons.Warning.Large", new IMAGE_BRUSH_SVG("Starship/Common/alert-triangle-large", Icon32x32));
 		Style->Set("Icons.WarningWithColor.Large", new IMAGE_BRUSH_SVG("Starship/Common/alert-triangle-large", Icon32x32, FStyleColors::Warning));
 
+		Style->Set("Icons.AlertCircle", new IMAGE_BRUSH_SVG("Starship/Common/alert-circle", Icon16x16));
+		Style->Set("Icons.AlertCircleWithColor", new IMAGE_BRUSH_SVG("Starship/Common/alert-circle", Icon16x16, FStyleColors::Warning));
+		
 		Style->Set("Icons.Success.Large", new IMAGE_BRUSH_SVG("Starship/Common/check-circle-large", Icon32x32));
 		Style->Set("Icons.SuccessWithColor.Large", new IMAGE_BRUSH_SVG("Starship/Common/check-circle-large", Icon32x32, FStyleColors::Success));
 
@@ -339,6 +345,7 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 
 		Style->Set("Icons.Import", new IMAGE_BRUSH_SVG("Starship/Common/import", Icon16x16));
 		Style->Set("Icons.Filter", new IMAGE_BRUSH_SVG("Starship/Common/filter", Icon16x16));
+		Style->Set("Icons.AutoFilter", new IMAGE_BRUSH_SVG("Starship/Common/FilterAuto", Icon16x16));
 
 		Style->Set("Icons.Lock", new IMAGE_BRUSH_SVG("Starship/Common/lock", Icon16x16));
 		Style->Set("Icons.Unlock", new IMAGE_BRUSH_SVG("Starship/Common/lock-unlocked", Icon16x16));
@@ -391,14 +398,25 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 		Style->Set("Icons.EyeDropper", new IMAGE_BRUSH_SVG("Starship/Common/EyeDropper", Icon16x16));
 		Style->Set("Icons.C++", new IMAGE_BRUSH_SVG("Starship/Common/CPP", Icon16x16));
 
+		Style->Set("Icons.Advanced", new IMAGE_BRUSH_SVG("Starship/Common/Advanced", Icon16x16));
+		Style->Set("Icons.Launch", new IMAGE_BRUSH_SVG("Starship/Common/ProjectLauncher", Icon16x16));
 		Style->Set("Icons.Rotate90Clockwise", new IMAGE_BRUSH_SVG("Starship/Common/Rotate90Clockwise", Icon16x16));
 		Style->Set("Icons.Rotate90CounterClockwise", new IMAGE_BRUSH_SVG("Starship/Common/Rotate90CounterClockwise", Icon16x16));
 		Style->Set("Icons.Rotate180", new IMAGE_BRUSH_SVG("Starship/Common/Rotate180", Icon16x16));
 		Style->Set("Icons.FlipHorizontal", new IMAGE_BRUSH_SVG("Starship/Common/FlipHorizontal", Icon16x16));
 		Style->Set("Icons.FlipVertical", new IMAGE_BRUSH_SVG("Starship/Common/FlipVertical", Icon16x16));
+		Style->Set("Icons.Layout", new IMAGE_BRUSH_SVG("Starship/Common/Layout", Icon16x16));
 
+		Style->Set("Icons.BadgeModified", new IMAGE_BRUSH_SVG("Starship/Common/badge-modified", Icon16x16));
+		
 		// Toolbar Size Icons
 		Style->Set("Icons.Toolbar.Settings", new IMAGE_BRUSH_SVG("Starship/Common/settings", Icon20x20));
+
+		// Constraint Manager Icons
+		Style->Set("Icons.ConstraintManager.LookAt", new IMAGE_BRUSH_SVG("Starship/Common/LookAt", Icon16x16));
+		Style->Set("Icons.ConstraintManager.ParentHierarchy", new IMAGE_BRUSH_SVG("Starship/Common/ParentHierarchy", Icon16x16));
+
+		Style->Set("Icons.Role", new IMAGE_BRUSH_SVG("Starship/Common/Role", Icon16x16));
 	}
 
 	// Tool panels
@@ -409,6 +427,7 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 		Style->Set("ToolPanel.LightGroupBorder", new BOX_BRUSH("Common/LightGroupBorder", FMargin(4.0f / 16.0f)));
 
 		Style->Set("Debug.Border", new BOX_BRUSH("Common/DebugBorder", 4.0f / 16.0f));
+		Style->Set("PlainBorder", new BORDER_BRUSH("Common/PlainBorder", 2.f / 8.f));
 	}
 
 	// Popup text
@@ -800,6 +819,166 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 		Style->Set("SyntaxHighlight.NodeAttributeValue", FTextBlockStyle(SmallMonospacedText).SetColorAndOpacity(FLinearColor(FColor(0xffb46100)))); // orange
 	}
 
+	// Logging defaults
+	{
+		Style->Set("Log.TabIcon", new IMAGE_BRUSH_SVG("Starship/Common/OutputLog", Icon16x16));
+
+		const FTextBlockStyle NormalLogText = FTextBlockStyle(NormalText)
+			.SetFont(DEFAULT_FONT("Mono", 9))
+			.SetColorAndOpacity(FStyleColors::Foreground)
+			.SetSelectedBackgroundColor(FStyleColors::Highlight)
+			.SetHighlightColor(FStyleColors::Black);
+
+		Style->Set("Log.Normal", NormalLogText);
+
+		Style->Set("Log.Warning", FTextBlockStyle(NormalLogText)
+			.SetColorAndOpacity(FStyleColors::Warning)
+		);
+
+		Style->Set("Log.Error", FTextBlockStyle(NormalLogText)
+			.SetColorAndOpacity(FStyleColors::Error)
+		);
+
+		Style->Set("Log.TextBox", FEditableTextBoxStyle(NormalEditableTextBoxStyle)
+			.SetTextStyle(NormalLogText)
+			.SetBackgroundImageNormal(BOX_BRUSH("Common/WhiteGroupBorder", FMargin(4.0f / 16.0f)))
+			.SetBackgroundImageHovered(BOX_BRUSH("Common/WhiteGroupBorder", FMargin(4.0f / 16.0f)))
+			.SetBackgroundImageFocused(BOX_BRUSH("Common/WhiteGroupBorder", FMargin(4.0f / 16.0f)))
+			.SetBackgroundImageReadOnly(BOX_BRUSH("Common/WhiteGroupBorder", FMargin(4.0f / 16.0f)))
+			.SetBackgroundColor(FStyleColors::Recessed)
+		);
+	}
+
+	// Filter Widgets
+	{
+		FSearchBoxStyle FilterSearchBoxStyle = Style->GetWidgetStyle<FSearchBoxStyle>("SearchBox");
+		FEditableTextBoxStyle FilterTextBoxStyle = FilterSearchBoxStyle.TextBoxStyle;
+
+		// Extra padding on the right to account for the Save Search button
+		FilterTextBoxStyle.SetPadding(FMargin(8.0f, 3.0f, 30.0f, 4.0f));
+		FilterSearchBoxStyle.SetTextBoxStyle(FilterTextBoxStyle);
+
+		Style->Set("FilterBar.SearchBox", FilterSearchBoxStyle);
+		
+		const FCheckBoxStyle FilterButtonCheckBoxStyle = FCheckBoxStyle()
+			.SetUncheckedImage(FSlateNoResource())
+			.SetUncheckedHoveredImage(FSlateNoResource())
+			.SetUncheckedPressedImage(FSlateNoResource())
+			.SetCheckedImage(FSlateNoResource())
+			.SetCheckedHoveredImage(FSlateNoResource())
+			.SetCheckedPressedImage(FSlateNoResource())
+			.SetForegroundColor(FStyleColors::Foreground)
+			.SetHoveredForegroundColor(FStyleColors::ForegroundHover)
+			.SetCheckedForegroundColor(FStyleColors::Foreground)
+			.SetCheckedHoveredForegroundColor(FStyleColors::ForegroundHover)
+			.SetCheckedPressedForegroundColor(FStyleColors::ForegroundHover)
+			.SetPressedForegroundColor(FStyleColors::ForegroundHover);
+
+		Style->Set("FilterBar.FilterImage", new IMAGE_BRUSH_SVG("Starship/CoreWidgets/FilterBar/FilterColorSegment", FVector2D(8, 22)));
+		Style->Set("FilterBar.FilterBackground", new FSlateRoundedBoxBrush(FStyleColors::Secondary, 3.0f));
+
+		/* ... and add the new style */
+		Style->Set("FilterBar.FilterButton", FilterButtonCheckBoxStyle );
+		
+		Style->Set( "FilterBar.BasicFilterButton", FCheckBoxStyle( Style->GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckbox"))
+			.SetUncheckedImage(FSlateRoundedBoxBrush(FStyleColors::Header, 4.0f, FStyleColors::Input, 1.0f))
+			.SetUncheckedHoveredImage(FSlateRoundedBoxBrush(FStyleColors::Hover, 4.0f, FStyleColors::Input, 1.0f))
+			.SetUncheckedPressedImage(FSlateRoundedBoxBrush(FStyleColors::Hover, 4.0f, FStyleColors::Input, 1.0f))
+			.SetCheckedImage(FSlateRoundedBoxBrush(FStyleColors::Primary, 4.0f, FStyleColors::Input, 1.0f))
+			.SetCheckedHoveredImage(FSlateRoundedBoxBrush(FStyleColors::PrimaryHover, 4.0f, FStyleColors::Input, 1.0f))
+			.SetCheckedPressedImage(FSlateRoundedBoxBrush(FStyleColors::PrimaryHover, 4.0f, FStyleColors::Input, 1.0f))
+			.SetPadding(FMargin(16, 4))
+		);
+
+		// FilteBar implemented as toolbar
+		FToolBarStyle FilterToolBar = FToolBarStyle(Style->GetWidgetStyle<FToolBarStyle>("SlimToolBar"))
+			.SetIconSize(Icon16x16)
+			.SetBackground(FSlateNoResource())
+			.SetLabelPadding(FMargin(0))
+			.SetComboButtonPadding(FMargin(0))
+			.SetBlockPadding(FMargin(3, 0))
+			.SetIndentedBlockPadding(FMargin(0))
+			.SetBackgroundPadding(FMargin(0))
+			.SetButtonPadding(FMargin(0))
+			.SetCheckBoxPadding(FMargin(0))
+			.SetSeparatorBrush(FSlateNoResource())
+			.SetSeparatorPadding(FMargin(0));
+
+		Style->Set("FilterBar.FilterToolBar", FilterToolBar);
+	}
+	
+	// Project Launcher
+	{
+		Style->Set("Launcher.TabIcon", new IMAGE_BRUSH_SVG("Starship/Common/ProjectLauncher", Icon16x16));
+		Style->Set("Launcher.Tabs.Tools", new IMAGE_BRUSH("/Icons/icon_tab_Tools_16x", Icon16x16));
+		
+
+		Style->Set("Launcher.Run", new IMAGE_BRUSH("Launcher/Launcher_Run", Icon40x40));
+		Style->Set("Launcher.EditSettings", new IMAGE_BRUSH("Launcher/Launcher_EditSettings", Icon40x40));
+		Style->Set("Launcher.Back", new IMAGE_BRUSH("Launcher/Launcher_Back", Icon32x32));
+		Style->Set("Launcher.Back.Small", new IMAGE_BRUSH("Launcher/Launcher_Back", Icon32x32));
+		Style->Set("Launcher.Delete", new IMAGE_BRUSH("Launcher/Launcher_Delete", Icon32x32));
+
+		Style->Set("Launcher.Instance_Commandlet", new IMAGE_BRUSH("Launcher/Instance_Commandlet", Icon25x25));
+		Style->Set("Launcher.Instance_Editor", new IMAGE_BRUSH("Launcher/Instance_Editor", Icon25x25));
+		Style->Set("Launcher.Instance_Game", new IMAGE_BRUSH("Launcher/Instance_Game", Icon25x25));
+		Style->Set("Launcher.Instance_Other", new IMAGE_BRUSH("Launcher/Instance_Other", Icon25x25));
+		Style->Set("Launcher.Instance_Server", new IMAGE_BRUSH("Launcher/Instance_Server", Icon25x25));
+		Style->Set("Launcher.Instance_Unknown", new IMAGE_BRUSH("Launcher/Instance_Unknown", Icon25x25));
+		Style->Set("LauncherCommand.DeployBuild", new IMAGE_BRUSH("Launcher/Launcher_Deploy", Icon40x40));
+		Style->Set("LauncherCommand.QuickLaunch", new IMAGE_BRUSH_SVG("Starship/Launcher/PaperAirplane", Icon20x20));
+		Style->Set("LauncherCommand.CreateBuild", new IMAGE_BRUSH("Launcher/Launcher_Build", Icon40x40));
+		Style->Set("LauncherCommand.AdvancedBuild", new IMAGE_BRUSH("Launcher/Launcher_Advanced", Icon40x40));
+		Style->Set("LauncherCommand.AdvancedBuild.Medium", new IMAGE_BRUSH("Launcher/Launcher_Advanced", Icon25x25));
+		Style->Set("LauncherCommand.AdvancedBuild.Small", new IMAGE_BRUSH("Launcher/Launcher_Advanced", Icon20x20));
+
+#if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA && (WITH_EDITOR || WITH_UNREAL_DEVELOPER_TOOLS)
+
+		Style->Set("Launcher.Platform.AllPlatforms", new IMAGE_BRUSH("Launcher/All_Platforms_24x", Icon24x24));
+		Style->Set("Launcher.Platform.AllPlatforms.Large", new IMAGE_BRUSH("Launcher/All_Platforms_128x", Icon64x64));
+		Style->Set("Launcher.Platform.AllPlatforms.XLarge", new IMAGE_BRUSH("Launcher/All_Platforms_128x", Icon128x128));
+		for (auto Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
+		{
+			const FDataDrivenPlatformInfo& PlatformInfo = Pair.Value;
+
+			// some platforms may specify a "rooted" path in the platform extensions directory, so look for that case here, and use a different path for the brush
+			FString NormalIconPath = PlatformInfo.GetIconPath(EPlatformIconSize::Normal);
+			if (!NormalIconPath.IsEmpty())
+			{
+				if (NormalIconPath.StartsWith(TEXT("/Platforms/")))
+				{
+#define PLATFORM_IMAGE_BRUSH( PlatformPath, ... ) FSlateImageBrush( PlatformPath.Replace(TEXT("/Platforms/"), *FPaths::EnginePlatformExtensionsDir()) + TEXT(".png") , __VA_ARGS__ )
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal), new PLATFORM_IMAGE_BRUSH(NormalIconPath, Icon24x24));
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Large), new PLATFORM_IMAGE_BRUSH(PlatformInfo.GetIconPath(EPlatformIconSize::Large), Icon64x64));
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::XLarge), new PLATFORM_IMAGE_BRUSH(PlatformInfo.GetIconPath(EPlatformIconSize::XLarge), Icon128x128));
+				}
+				else
+				{
+					const FString PathPrefix = FPaths::EngineContentDir() / TEXT("Editor/Slate");
+#define DEVELOPER_IMAGE_BRUSH( RelativePath, ... ) FSlateImageBrush(PathPrefix / RelativePath + TEXT(".png"), __VA_ARGS__ )
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal), new DEVELOPER_IMAGE_BRUSH(*NormalIconPath, Icon24x24));
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Large), new DEVELOPER_IMAGE_BRUSH(*PlatformInfo.GetIconPath(EPlatformIconSize::Large), Icon64x64));
+					Style->Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::XLarge), new DEVELOPER_IMAGE_BRUSH(*PlatformInfo.GetIconPath(EPlatformIconSize::XLarge), Icon128x128));
+#undef DEVELOPER_IMAGE_BRUSH
+				}
+			}
+		}
+
+		for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
+		{
+			if (!Item.ActiveIconPath.IsEmpty())
+			{
+				Style->Set(Item.ActiveIconName, new PLATFORM_IMAGE_BRUSH(Item.ActiveIconPath, Icon40x40));
+			}
+			if (!Item.InactiveIconPath.IsEmpty())
+			{
+				Style->Set(Item.InactiveIconName, new PLATFORM_IMAGE_BRUSH(Item.InactiveIconPath, Icon40x40));
+			}
+		}
+#endif
+
+	}
+
 	return Style;
 }
 
@@ -962,7 +1141,9 @@ void FStarshipCoreStyle::SetupTextStyles(TSharedRef<FStyle>& Style)
 	Style->Set("Font.Large", StyleFonts.Large);
 	Style->Set("NormalFontBold", StyleFonts.NormalBold);
 	Style->Set("SmallFontBold", StyleFonts.SmallBold);
-	Style->Set("Font.Large.Bold", StyleFonts.Small);
+	Style->Set("Font.Large.Bold", StyleFonts.LargeBold);
+	Style->Set("NormalFontItalic", StyleFonts.NormalItalic);
+	Style->Set("NormalFontBoldItalic", StyleFonts.NormalBoldItalic);
 
 	Style->Set("HeadingMedium", StyleFonts.HeadingMedium);
 	Style->Set("HeadingSmall", StyleFonts.HeadingSmall);
@@ -1014,6 +1195,7 @@ void FStarshipCoreStyle::SetupTextStyles(TSharedRef<FStyle>& Style)
 	);
 
 	const FEditableTextBoxStyle DarkEditableTextBoxStyle = FEditableTextBoxStyle()
+		.SetTextStyle(NormalText)
 		.SetBackgroundImageNormal(BOX_BRUSH("Common/TextBox_Dark", FMargin(4.0f / 16.0f)))
 		.SetBackgroundImageHovered(BOX_BRUSH("Common/TextBox_Hovered_Dark", FMargin(4.0f / 16.0f)))
 		.SetBackgroundImageFocused(BOX_BRUSH("Common/TextBox_Hovered_Dark", FMargin(4.0f / 16.0f)))
@@ -1059,6 +1241,7 @@ void FStarshipCoreStyle::SetupTextStyles(TSharedRef<FStyle>& Style)
 
 	// SEditableTextBox defaults...
 	const FEditableTextBoxStyle NormalEditableTextBoxStyle = FEditableTextBoxStyle()
+		.SetTextStyle(NormalText)
 		.SetBackgroundImageNormal(FSlateRoundedBoxBrush(FStyleColors::Input, InputFocusRadius, FStyleColors::InputOutline, InputFocusThickness))
 		.SetBackgroundImageHovered(FSlateRoundedBoxBrush(FStyleColors::Input, InputFocusRadius, FStyleColors::Hover, InputFocusThickness))
 		.SetBackgroundImageFocused(FSlateRoundedBoxBrush(FStyleColors::Input, InputFocusRadius, FStyleColors::Primary, InputFocusThickness))
@@ -1091,7 +1274,8 @@ void FStarshipCoreStyle::SetupTextStyles(TSharedRef<FStyle>& Style)
 			.SetGlassImage(IMAGE_BRUSH_SVG("Starship/Common/search", Icon16x16))
 			.SetClearImage(IMAGE_BRUSH_SVG("Starship/Common/close", Icon16x16))
 			.SetImagePadding(FMargin(3.f, 0.f, 0.f, 0.f))
-			.SetLeftAlignButtons(true)
+			.SetLeftAlignSearchResultButtons(true)
+			.SetLeftAlignGlassImageAndClearButton(true)
 		);
 	}
 
@@ -1305,7 +1489,7 @@ void FStarshipCoreStyle::SetupComboButtonStyles(TSharedRef<FStyle>& Style)
 		.SetOddRowBackgroundBrush(FSlateNoResource())
 		.SetOddRowBackgroundHoveredBrush(FSlateColorBrush(FStyleColors::Primary))
 
-		.SetSelectorFocusedBrush(FSlateNoResource())
+		.SetSelectorFocusedBrush(FSlateRoundedBoxBrush(FStyleColors::Transparent, InputFocusRadius, FStyleColors::Select, InputFocusThickness))
 
 		.SetActiveBrush(FSlateNoResource())
 		.SetActiveHoveredBrush(FSlateColorBrush(FStyleColors::Primary))
@@ -1633,6 +1817,44 @@ void FStarshipCoreStyle::SetupDockingStyles(TSharedRef<FStyle>& Style)
 	Style->Set("Docking.Sidebar.DrawerBackground", new FSlateColorBrush(FStyleColors::Panel));
 	Style->Set("Docking.Sidebar.Background", new FSlateColorBrush(FStyleColors::Background));
 
+	const FButtonStyle StatusBarButton = FButtonStyle(NoBorder)
+		.SetNormalForeground(FStyleColors::Foreground)
+		.SetNormalPadding(FMargin(2, 2, 2, 2))
+		.SetPressedPadding(FMargin(2, 3, 2, 1));
+
+	const FComboButtonStyle StatusBarComboButton = FComboButtonStyle(Style->GetWidgetStyle<FComboButtonStyle>("ComboButton"))
+		.SetDownArrowImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/ComboBox/corner-dropdown", FVector2D(7.0f, 7.0f)))
+		.SetButtonStyle(StatusBarButton)
+		.SetDownArrowPadding(FMargin(0.0f))
+		.SetDownArrowAlignment(EVerticalAlignment::VAlign_Bottom);
+
+	Style->Set("StatusBar.StatusBarButton", StatusBarButton);
+	Style->Set("StatusBar.StatusBarComboButton", StatusBarComboButton);
+	Style->Set("StatusBar.Height", 32.0f);
+	Style->Set("StatusBar.DrawerShadow", new BOX_BRUSH("Starship/StatusBar/drawer-shadow-bottom", FMargin(10 / 64.0f, 20 / 64.f, 10 / 64.f, 0), FLinearColor(0, 0, 0, 1)));
+	Style->Set("StatusBar.DrawerBackground", new FSlateRoundedBoxBrush(FStyleColors::Panel, 5.0f));
+
+	Style->Set("StatusBar.Background", new FSlateColorBrush(FStyleColors::Panel));
+	Style->Set("StatusBar.ProgressOverlay", new FSlateRoundedBoxBrush(FStyleColors::Transparent, 2.0f, FStyleColors::Panel, 1.0f, FVector2D(20, 8)));
+
+	Style->Set("StatusBar.HelpIcon", new IMAGE_BRUSH_SVG("Starship/Common/help", Icon16x16, FStyleColors::Foreground));
+
+	FToolBarStyle StatusBarToolBarStyle = Style->GetWidgetStyle<FToolBarStyle>("SlimToolBar");
+
+	StatusBarToolBarStyle.SetBackground(FSlateNoResource());
+	StatusBarToolBarStyle.SetLabelPadding(FMargin(5, 5, 0, 5));
+	StatusBarToolBarStyle.SetIconSize(Icon16x16);
+	StatusBarToolBarStyle.SetBackgroundPadding(FMargin(4.f, 4.f, 0.f, 4.f));
+
+	Style->Set("StatusBarToolBar", StatusBarToolBarStyle);
+
+	Style->Set("StatusBar.Message.MessageText",
+		FTextBlockStyle(Style->GetWidgetStyle<FTextBlockStyle>("NormalText"))
+		.SetColorAndOpacity(FStyleColors::Foreground));
+
+	Style->Set("StatusBar.Message.HintText",
+		FTextBlockStyle(Style->GetWidgetStyle<FTextBlockStyle>("NormalText"))
+		.SetColorAndOpacity(FStyleColors::Primary));
 	// Create the regular border brush with all corners rounded and variants with certain corners squared.
 	{
 		const float CornerRadius = 5.0f;
@@ -1920,9 +2142,11 @@ void FStarshipCoreStyle::SetupMultiboxStyles(TSharedRef<FStyle>& Style)
 		FComboButtonStyle SlimToolBarComboButton = FComboButtonStyle(Style->GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
 			.SetDownArrowPadding(FMargin(1.f, 0.f, 2.f, 0.f));
 
+		FSlateBrush* SlimToolbarBackground = new FSlateColorBrush(FStyleColors::Panel);
+		
 		FToolBarStyle SlimToolbarStyle =
 			FToolBarStyle()
-			.SetBackground(FSlateColorBrush(FStyleColors::Panel))
+			.SetBackground(*SlimToolbarBackground)
 			.SetBackgroundPadding(FMargin(4.f, 6.f, 0.f, 6.f))
 			.SetExpandBrush(IMAGE_BRUSH("Icons/toolbar_expand_16x", Icon16x16))
 			.SetComboButtonPadding(FMargin(0.0f, 0.0f))
@@ -1987,6 +2211,9 @@ void FStarshipCoreStyle::SetupMultiboxStyles(TSharedRef<FStyle>& Style)
 		
 		Style->Set("AssetEditorToolbar", SlimToolbarStyle);
 
+		// Used by empty toolbars and misc widgets to have the same background color
+		Style->Set("AssetEditorToolbar.Background", SlimToolbarBackground);
+
 		// Callout Toolbar - Used to "call out" the toolbar button with text
 		{
 			SlimToolbarStyle.SetShowLabels(true);
@@ -2047,10 +2274,13 @@ void FStarshipCoreStyle::SetupMultiboxStyles(TSharedRef<FStyle>& Style)
 		/* Set images for various SCheckBox states associated with menu check box items... */
 		FLinearColor Transparent20 = FLinearColor(1.0, 1.0, 1.0, 0.2);
 		FLinearColor Transparent01 = FLinearColor(1.0, 1.0, 1.0, 0.01);
-		const FCheckBoxStyle BasicMenuCheckBoxStyle = FCheckBoxStyle()
-			.SetUncheckedImage(           IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16, Transparent01))
-			.SetUncheckedHoveredImage(    IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16, Transparent20))
-			.SetUncheckedPressedImage(    IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16, Transparent20))
+
+
+
+		const FCheckBoxStyle MenuCheckIndicator = FCheckBoxStyle()
+			.SetUncheckedImage(           FSlateNoResource())
+			.SetUncheckedHoveredImage(    FSlateNoResource())
+			.SetUncheckedPressedImage(    FSlateNoResource())
 
 			.SetCheckedImage(             IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16))
 			.SetCheckedHoveredImage(      IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16))
@@ -2060,9 +2290,37 @@ void FStarshipCoreStyle::SetupMultiboxStyles(TSharedRef<FStyle>& Style)
 			.SetUndeterminedHoveredImage( IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16, Transparent20))
 			.SetUndeterminedPressedImage( IMAGE_BRUSH_SVG("Starship/Common/check", Icon16x16, Transparent20));
 
+		// SCheckBox defaults...
+		const float CheckboxCornerRadius = 3.f;
+		const float CheckboxOutlineThickness = 1.0f;
+
+		const FCheckBoxStyle MenuCheckBox = FCheckBoxStyle()
+			.SetCheckBoxType(ESlateCheckBoxType::CheckBox)
+
+			.SetForegroundColor(FStyleColors::White)
+			.SetHoveredForegroundColor(FStyleColors::White)
+			.SetPressedForegroundColor(FStyleColors::White)
+			.SetCheckedForegroundColor(FStyleColors::White)
+			.SetCheckedHoveredForegroundColor(FStyleColors::White)
+			.SetCheckedPressedForegroundColor(FStyleColors::White)
+			.SetUndeterminedForegroundColor(FStyleColors::White)
+
+			.SetUncheckedImage(FSlateNoResource())
+			.SetUncheckedHoveredImage(FSlateNoResource())
+			.SetUncheckedPressedImage(FSlateNoResource())
+			.SetCheckedImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/check", Icon16x16, FStyleColors::White))
+			.SetCheckedHoveredImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/check", Icon16x16, FStyleColors::White))
+			.SetCheckedPressedImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/check", Icon16x16, FStyleColors::White))
+			.SetUndeterminedImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/indeterminate", Icon16x16, FStyleColors::White))
+			.SetUndeterminedHoveredImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/indeterminate", Icon16x16, FStyleColors::White))
+			.SetUndeterminedPressedImage(IMAGE_BRUSH_SVG("Starship/CoreWidgets/CheckBox/indeterminate", Icon16x16, FStyleColors::White))
+			.SetBackgroundImage(FSlateRoundedBoxBrush(FStyleColors::Panel, CheckboxCornerRadius, FStyleColors::Hover, CheckboxOutlineThickness, Icon18x18))
+			.SetBackgroundHoveredImage(FSlateRoundedBoxBrush(FStyleColors::Panel, CheckboxCornerRadius, FStyleColors::Hover, CheckboxOutlineThickness, Icon18x18))
+			.SetBackgroundPressedImage(FSlateRoundedBoxBrush(FStyleColors::Panel, CheckboxCornerRadius, FStyleColors::Hover, CheckboxOutlineThickness, Icon18x18));
+
 		/* ...and add the new style */
-		Style->Set("Menu.CheckBox", BasicMenuCheckBoxStyle);
-		Style->Set("Menu.Check", BasicMenuCheckBoxStyle);
+		Style->Set("Menu.CheckBox", MenuCheckBox);
+		Style->Set("Menu.Check", MenuCheckIndicator);
 
 		/* This radio button is actually just a check box with different images */
 		/* Set images for various Menu radio button (SCheckBox) states... */

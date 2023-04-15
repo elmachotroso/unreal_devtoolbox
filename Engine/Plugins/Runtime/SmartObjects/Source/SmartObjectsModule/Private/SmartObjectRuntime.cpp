@@ -3,7 +3,9 @@
 #include "SmartObjectRuntime.h"
 
 #include "SmartObjectSubsystem.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectRuntime)
 
 const FSmartObjectClaimHandle FSmartObjectClaimHandle::InvalidHandle = {};
 
@@ -12,7 +14,6 @@ const FSmartObjectClaimHandle FSmartObjectClaimHandle::InvalidHandle = {};
 //----------------------------------------------------------------------//
 FSmartObjectRuntime::FSmartObjectRuntime(const USmartObjectDefinition& InDefinition)
 	: Definition(&InDefinition)
-	, SharedOctreeID(MakeShareable(new FSmartObjectOctreeID()))
 {
 	const int32 NumSlotDefinitions = InDefinition.GetSlots().Num();
 	SlotHandles.SetNum(NumSlotDefinitions);
@@ -32,7 +33,7 @@ bool FSmartObjectSlotClaimState::Claim(const FSmartObjectUserHandle& InUser)
 	return false;
 }
 
-bool FSmartObjectSlotClaimState::Release(const FSmartObjectClaimHandle& ClaimHandle, const bool bAborted)
+bool FSmartObjectSlotClaimState::Release(const FSmartObjectClaimHandle& ClaimHandle, const ESmartObjectSlotState NewState, const bool bAborted)
 {
 	if (!ensureMsgf(ClaimHandle.IsValid(), TEXT("Attempting to release a slot using an invalid handle: %s"), *LexToString(ClaimHandle)))
 	{
@@ -59,10 +60,11 @@ bool FSmartObjectSlotClaimState::Release(const FSmartObjectClaimHandle& ClaimHan
 			UE_LOG(LogSmartObject, Verbose, TEXT("Slot invalidated callback was%scalled for %s"), bFunctionWasExecuted ? TEXT(" ") : TEXT(" not "), *LexToString(ClaimHandle));
 		}
 
-		State = ESmartObjectSlotState::Free;
-		User.Reset();
+		State = NewState;
+		User.Invalidate();
 		bReleased = true;
 	}
 
 	return bReleased;
 }
+

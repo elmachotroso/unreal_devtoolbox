@@ -2,8 +2,9 @@
 
 #include "MassEntityTemplate.h"
 #include "VisualLogger/VisualLoggerTypes.h"
+#include "MassDebugger.h"
 
-DEFINE_ENUM_TO_STRING(EMassEntityTemplateIDType);
+DEFINE_ENUM_TO_STRING(EMassEntityTemplateIDType, "/Script/MassSpawner");
 
 //----------------------------------------------------------------------//
 //  FMassEntityTemplateID
@@ -22,16 +23,16 @@ void FMassEntityTemplate::SetArchetype(const FMassArchetypeHandle& InArchetype)
 	Archetype = InArchetype;
 }
 
-FString FMassEntityTemplate::DebugGetDescription(UMassEntitySubsystem* EntitySubsystem) const
+FString FMassEntityTemplate::DebugGetDescription(FMassEntityManager* EntityManager) const
 { 
 	FStringOutputDevice Ar;
 #if WITH_MASSGAMEPLAY_DEBUG
 	Ar.SetAutoEmitLineTerminator(true);
 
-	if (EntitySubsystem)
+	if (EntityManager)
 	{
 		Ar += TEXT("Archetype details:\n");
-		Ar += DebugGetArchetypeDescription(*EntitySubsystem);
+		Ar += DebugGetArchetypeDescription(*EntityManager);
 	}
 	else
 	{
@@ -43,11 +44,11 @@ FString FMassEntityTemplate::DebugGetDescription(UMassEntitySubsystem* EntitySub
 	return MoveTemp(Ar);
 }
 
-FString FMassEntityTemplate::DebugGetArchetypeDescription(UMassEntitySubsystem& EntitySubsystem) const
+FString FMassEntityTemplate::DebugGetArchetypeDescription(FMassEntityManager& EntityManager) const
 {
 	FStringOutputDevice OutDescription;
 #if WITH_MASSGAMEPLAY_DEBUG
-	EntitySubsystem.DebugGetStringDesc(Archetype, OutDescription);
+	FMassDebugger::OutputArchetypeDescription(OutDescription, Archetype);
 #endif // WITH_MASSGAMEPLAY_DEBUG
 	return MoveTemp(OutDescription);
 }

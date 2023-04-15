@@ -4,6 +4,7 @@
 #include "Windows/WindowsApplication.h"
 #include "Windows/WindowsApplicationErrorOutputDevice.h"
 #include "Windows/WindowsConsoleOutputDevice.h"
+#include "Windows/WindowsConsoleOutputDevice2.h"
 #include "Windows/WindowsFeedbackContext.h"
 #include "HAL/FeedbackContextAnsi.h"
 #include "Misc/App.h"
@@ -51,7 +52,10 @@ void FWindowsPlatformApplicationMisc::LoadStartupModules()
 class FOutputDeviceConsole* FWindowsPlatformApplicationMisc::CreateConsoleOutputDevice()
 {
 	// this is a slightly different kind of singleton that gives ownership to the caller and should not be called more than once
-	return new FWindowsConsoleOutputDevice();
+	if (FParse::Param(FCommandLine::Get(), TEXT("NewConsole")))
+		return new FWindowsConsoleOutputDevice2();
+	else
+		return new FWindowsConsoleOutputDevice();
 }
 
 class FOutputDeviceError* FWindowsPlatformApplicationMisc::GetErrorOutputDevice()
@@ -141,20 +145,6 @@ void FWindowsPlatformApplicationMisc::PumpMessages(bool bFromMainLoop)
 	bool bHasFocus = FApp::HasFocus();
 	static bool bHadFocus = false;
 
-#if WITH_EDITOR
-	// If editor thread doesn't have the focus, don't suck up too much CPU time.
-	if( GIsEditor )
-	{
-		if( !bHasFocus )
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(EditorIsInBackgroundSleep);
-			// Sleep for a bit to not eat up all CPU time.
-			FPlatformProcess::Sleep(0.005f);
-		}
-		bHadFocus = bHasFocus;
-	}
-#endif
-
 #if !UE_SERVER
 	// For non-editor clients, record if the active window is in focus
 	if( bHadFocus != bHasFocus )
@@ -185,14 +175,14 @@ void FWindowsPlatformApplicationMisc::PreventScreenSaver()
 FLinearColor FWindowsPlatformApplicationMisc::GetScreenPixelColor(const FVector2D& InScreenPos, float /*InGamma*/)
 {
 	HDC TempDC = GetDC(HWND_DESKTOP);
-	COLORREF PixelColorRef = GetPixel(TempDC, InScreenPos.X, InScreenPos.Y);
+	COLORREF PixelColorRef = GetPixel(TempDC, (int)InScreenPos.X, (int)InScreenPos.Y);
 
 	ReleaseDC(HWND_DESKTOP, TempDC);
 
 	FColor sRGBScreenColor(
-		(PixelColorRef & 0xFF),
-		((PixelColorRef & 0xFF00) >> 8),
-		((PixelColorRef & 0xFF0000) >> 16),
+		(uint8)(PixelColorRef & 0xFF),
+		(uint8)((PixelColorRef & 0xFF00) >> 8),
+		(uint8)((PixelColorRef & 0xFF0000) >> 16),
 		255);
 
 	// Assume the screen color is coming in as sRGB space
@@ -325,15 +315,16 @@ int32 FWindowsPlatformApplicationMisc::GetMonitorDPI(const FMonitorInfo& Monitor
 	return DisplayDPI;
 }
 
-// Looks for an adapter with >= 512 MB of dedicated video memory and assumes we use it.
-bool FWindowsPlatformApplicationMisc::ProbablyHasIntegratedGPU()
+// Looks for an adapter with the most dedicated video memory
+FWindowsPlatformApplicationMisc::FGPUInfo FWindowsPlatformApplicationMisc::GetBestGPUInfo()
 { 
 	TRefCountPtr<IDXGIFactory1> DXGIFactory1;
 	if (CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&DXGIFactory1) != S_OK || !DXGIFactory1)
 	{
-		return false;
+		return {};
 	}
 
+	DXGI_ADAPTER_DESC BestDesc = {};
 	TRefCountPtr<IDXGIAdapter> TempAdapter;
 	for (uint32 AdapterIndex = 0; DXGIFactory1->EnumAdapters(AdapterIndex, TempAdapter.GetInitReference()) != DXGI_ERROR_NOT_FOUND; ++AdapterIndex)
 	{
@@ -342,15 +333,14 @@ bool FWindowsPlatformApplicationMisc::ProbablyHasIntegratedGPU()
 			DXGI_ADAPTER_DESC Desc;
 			TempAdapter->GetDesc(&Desc);
 
-			const int MIN_GPU_MEMORY = 512 * 1024 * 1024;
-			if (Desc.DedicatedVideoMemory >= MIN_GPU_MEMORY)
+			if (Desc.DedicatedVideoMemory > BestDesc.DedicatedVideoMemory || AdapterIndex == 0)
 			{
-				return false;
+				BestDesc = Desc;
 			}
 		}
 	}
 
-	return true;
+	return FGPUInfo{ BestDesc.VendorId, BestDesc.DeviceId, BestDesc.DedicatedVideoMemory };
 }
 
 float FWindowsPlatformApplicationMisc::GetDPIScaleFactorAtPoint(float X, float Y)

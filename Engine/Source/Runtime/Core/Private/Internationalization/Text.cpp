@@ -7,6 +7,7 @@
 #include "UObject/DebugSerializationFlags.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/Internationalization.h"
+#include "Internationalization/ITextGenerator.h"
 #include "Internationalization/StringTableRegistry.h"
 
 #include "Internationalization/TextHistory.h"
@@ -841,10 +842,10 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 		if (UnderlyingArchive.UEVer() >= VER_UE4_ADDED_NAMESPACE_AND_KEY_DATA_TO_FTEXT)
 		{
 			FTextKey Namespace;
-			Namespace.SerializeAsString(Record.EnterField(SA_FIELD_NAME(TEXT("Namespace"))));
+			Namespace.SerializeAsString(Record.EnterField(TEXT("Namespace")));
 
 			FTextKey Key;
-			Key.SerializeAsString(Record.EnterField(SA_FIELD_NAME(TEXT("Key"))));
+			Key.SerializeAsString(Record.EnterField(TEXT("Key")));
 
 			// Get the DisplayString using the namespace, key, and source string.
 			TextId = FTextId(Namespace, Key);
@@ -1760,15 +1761,13 @@ bool FTextStringHelper::ReadFromString(const TCHAR* Buffer, FText& OutValue, con
 
 void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const bool bRequiresQuotes, const bool bStripPackageNamespace)
 {
-	const FString& StringValue = FTextInspector::GetDisplayString(Value);
-
 	// Culture invariant text?
 	if (Value.IsCultureInvariant())
 	{
 #define LOC_DEFINE_REGION
 		// Produces INVTEXT("...")
 		Buffer += TEXT("INVTEXT(\"");
-		Buffer += StringValue.ReplaceCharWithEscapedChar();
+		Buffer += Value.ToString().ReplaceCharWithEscapedChar();
 		Buffer += TEXT("\")");
 #undef LOC_DEFINE_REGION
 	}
@@ -1780,12 +1779,12 @@ void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const
 	else if (bRequiresQuotes)
 	{
 		Buffer += TEXT("\"");
-		Buffer += StringValue.ReplaceCharWithEscapedChar();
+		Buffer += Value.ToString().ReplaceCharWithEscapedChar();
 		Buffer += TEXT("\"");
 	}
 	else
 	{
-		Buffer += StringValue;
+		Buffer += Value.ToString();
 	}
 }
 

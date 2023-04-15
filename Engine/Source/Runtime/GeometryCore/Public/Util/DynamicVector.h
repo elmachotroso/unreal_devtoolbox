@@ -10,6 +10,7 @@
 #include <UObject/UE5MainStreamObjectVersion.h>
 #include "VectorTypes.h"
 #include "IndexTypes.h"
+#include "Math/NumericLimits.h"
 
 namespace UE
 {
@@ -27,6 +28,8 @@ template <class Type>
 class TDynamicVector
 {
 public:
+	static constexpr uint32 MaxSize = MAX_uint32;
+
 	TDynamicVector()
 	{
 		Blocks.Add(new BlockType());
@@ -56,32 +59,32 @@ public:
 
 	TDynamicVector(const TArray<Type>& Array)
 	{
-		SetNum(Array.Num());
-		for (int Idx = 0; Idx < Array.Num(); Idx++)
+		SetNum((unsigned int) Array.Num());
+		for (int32 Idx = 0; Idx < Array.Num(); Idx++)
 		{
-			(*this)[Idx] = Array[Idx];
+			(*this)[(unsigned int) Idx] = Array[Idx];
 		}
 	}
 	TDynamicVector(TArrayView<const Type> Array)
 	{
-		SetNum(Array.Num());
-		for (int Idx = 0; Idx < Array.Num(); Idx++)
+		SetNum((unsigned int) Array.Num());
+		for (int32 Idx = 0; Idx < Array.Num(); Idx++)
 		{
-			(*this)[Idx] = Array[Idx];
+			(*this)[(unsigned int) Idx] = Array[Idx];
 		}
 	}
 
 	inline void Clear();
 	inline void Fill(const Type& Value);
-	inline void Resize(size_t Count);
-	inline void Resize(size_t Count, const Type& InitValue);
+	inline void Resize(unsigned int Count);
+	inline void Resize(unsigned int Count, const Type& InitValue);
 	/// Resize if Num() is less than Count; returns true if resize occurred
-	inline bool SetMinimumSize(size_t Count, const Type& InitValue);
-	inline void SetNum(size_t Count) { Resize(Count); }
+	inline bool SetMinimumSize(unsigned int Count, const Type& InitValue);
+	inline void SetNum(unsigned int Count) { Resize(Count); }
 
 	inline bool IsEmpty() const { return CurBlock == 0 && CurBlockUsed == 0; }
 	inline size_t GetLength() const { return CurBlock * BlockSize + CurBlockUsed; }
-	inline size_t Num() const { return CurBlock * BlockSize + CurBlockUsed; }
+	inline size_t Num() const { return GetLength(); }
 	static int GetBlockSize() { return BlockSize; }
 	inline size_t GetByteCount() const { return Blocks.Num() * BlockSize * sizeof(Type); }
 
@@ -105,24 +108,34 @@ public:
 		return Blocks[CurBlock][CurBlockUsed - 1];
 	}
 
+
+#if USING_ADDRESS_SANITISER
+	FORCENOINLINE Type& operator[](unsigned int Index)
+	{
+		checkSlow(Index < Num());
+
+		return Blocks[Index >> nShiftBits][Index & BlockIndexBitmask];
+	}
+	FORCENOINLINE const Type& operator[](unsigned int Index) const
+	{
+		checkSlow(Index < Num());
+
+		return Blocks[Index >> nShiftBits][Index & BlockIndexBitmask];
+	}
+#else
 	inline Type& operator[](unsigned int Index)
 	{
 		checkSlow(Index < Num());
 
-		int ArrayIndex, BlockIndex;
-		GetIndices( Index, ArrayIndex, BlockIndex );
-	
-		return Blocks[ArrayIndex][BlockIndex];
+		return Blocks[Index >> nShiftBits][Index & BlockIndexBitmask];
 	}
 	inline const Type& operator[](unsigned int Index) const
 	{
 		checkSlow(Index < Num());
 
-		int ArrayIndex, BlockIndex;
-		GetIndices( Index, ArrayIndex, BlockIndex );
-	
-		return Blocks[ArrayIndex][BlockIndex];
+		return Blocks[Index >> nShiftBits][Index & BlockIndexBitmask];
 	}
+#endif
 
 	// apply f() to each member sequentially
 	template <typename Func>
@@ -171,7 +184,7 @@ public:
 				SetCurBlock(Count);
 
 				// Remove empty block.
-				Blocks.Truncate(Count / BlockSize, false);
+				Blocks.Truncate(int32(Count / BlockSize), false);
 			}
 		}
 		else
@@ -229,10 +242,10 @@ public:
 
 	private:
 		friend class TDynamicVector;
-		FIterator(TDynamicVector* DVectorIn, int IdxIn)
+		FIterator(TDynamicVector* DVectorIn, unsigned int IdxIn)
 			: DVector(DVectorIn), Idx(IdxIn){}
 		TDynamicVector* DVector{};
-		int Idx{0};
+		unsigned int Idx{0};
 	};
 
 	/** @return iterator at beginning of vector */
@@ -243,7 +256,7 @@ public:
 	/** @return iterator at end of vector */
 	FIterator end()
 	{
-		return FIterator{this, (int)GetLength()};
+		return FIterator{this,  (unsigned int)GetLength()};
 	}
 
 	/*
@@ -278,10 +291,10 @@ public:
 
 	private:
 		friend class TDynamicVector;
-		FConstIterator(const TDynamicVector* DVectorIn, int IdxIn)
+		FConstIterator(const TDynamicVector* DVectorIn, unsigned int IdxIn)
 			: DVector(DVectorIn), Idx(IdxIn){}
 		const TDynamicVector* DVector{};
-		int Idx{0};
+		unsigned int Idx{0};
 	};
 
 	/** @return iterator at beginning of vector */
@@ -292,7 +305,7 @@ public:
 	/** @return iterator at end of vector */
 	FConstIterator end() const
 	{
-		return FConstIterator{this, (int)GetLength()};
+		return FConstIterator{this,  (unsigned int)GetLength()};
 	}
 
 private:
@@ -300,6 +313,7 @@ private:
 	static constexpr int BlockSize = 1 << nShiftBits;
 	static constexpr int BlockIndexBitmask = BlockSize - 1; // low 9 bits
 	static_assert( BlockSize && ((BlockSize & (BlockSize - 1)) == 0), "DynamicVector: BlockSize must be a power of two");
+	static constexpr unsigned int MaxBlockCount = MaxSize / BlockSize + 1;
 
 	unsigned int CurBlock{0};  //< Current block index; always points to the block with the last item in the vector or it is set to zero if the vector is empty. 
 	unsigned int CurBlockUsed{0};  //< Number of used items in the current block.
@@ -317,7 +331,7 @@ private:
 	protected:
 		TArray<ArrayType*> Elements;
 
-	public:
+	public: 
 		TBlockVector() = default;
 		TBlockVector(TBlockVector&& Moved) = default;
 
@@ -466,7 +480,7 @@ private:
 				{					
 					for (uint32 Index = 0; Index < NumBlocks; ++Index)
 					{
-						const SIZE_T NumCopy = FMath::template Min<uint32>(NumCopyRemaining, BlockSize);
+						const SIZE_T NumCopy = FMath::template Min<SIZE_T>(NumCopyRemaining, (SIZE_T)BlockSize);
 						FMemory::Memcpy(BufferPtr, Elements[Index]->GetData(), NumCopy * sizeof(Type));
 						BufferPtr += NumCopy;
 						NumCopyRemaining -= BlockSize;
@@ -481,7 +495,7 @@ private:
 					for (uint32 Index = 0; Index < NumBlocks; ++Index)
 					{
 						ArrayType *const NewElement = new ArrayType;
-						const SIZE_T NumCopy = FMath::template Min<uint32>(NumCopyRemaining, BlockSize);
+						const SIZE_T NumCopy = FMath::template Min<SIZE_T>(NumCopyRemaining, (SIZE_T)BlockSize);
 						FMemory::Memcpy(NewElement->GetData(), BufferPtr, NumCopy * sizeof(Type));
 						Add(NewElement);
 						BufferPtr += NumCopy;
@@ -557,19 +571,12 @@ private:
 		return !(Lhs == Rhs);
 	}
 
-	// helper function - avoids MSVC+ASan internal compiler error in [] operators
-	inline void GetIndices( unsigned int Index, int& ArrayIndex, int& BlockIndex ) const
-	{
-		ArrayIndex = (Index >> nShiftBits);
-		BlockIndex = (Index & BlockIndexBitmask);
-	}
-
 	void SetCurBlock(SIZE_T Count)
 	{
 		// Reset block index for the last item and used item count within the last block.
 		// This is similar to what happens when computing the indices in operator[], but we additionally account for (1) the vector being empty and (2) that the
 		// used item count within the last block needs to be one more than the index of the last item. 
-		const int32 LastItemIndex = Count - 1;
+		const int32 LastItemIndex = int32(Count - 1);
 		CurBlock = Count != 0 ? LastItemIndex >> nShiftBits : 0;
 		CurBlockUsed = Count != 0 ? (LastItemIndex & BlockIndexBitmask) + 1 : 0;
 	}
@@ -596,11 +603,11 @@ public:
 	{
 		Data.Fill(Value);
 	}
-	inline void Resize(size_t Count)
+	inline void Resize(unsigned int Count)
 	{
 		Data.Resize(Count * N);
 	}
-	inline void Resize(size_t Count, const Type& InitValue)
+	inline void Resize(unsigned int Count, const Type& InitValue)
 	{
 		Data.Resize(Count * N, InitValue);
 	}
@@ -694,25 +701,25 @@ public:
 	{
 		check(N >= 2);
 		return FIndex2i(
-			Data[TopIndex * N + 0],
-			Data[TopIndex * N + 1]);
+			(int)Data[TopIndex * N + 0],
+			(int)Data[TopIndex * N + 1]);
 	}
 	inline FIndex3i AsIndex3(unsigned int TopIndex) const
 	{
 		check(N >= 3);
 		return FIndex3i(
-			Data[TopIndex * N + 0],
-			Data[TopIndex * N + 1],
-			Data[TopIndex * N + 2]);
+			(int)Data[TopIndex * N + 0],
+			(int)Data[TopIndex * N + 1],
+			(int)Data[TopIndex * N + 2]);
 	}
 	inline FIndex4i AsIndex4(unsigned int TopIndex) const
 	{
 		check(N >= 4);
 		return FIndex4i(
-			Data[TopIndex * N + 0],
-			Data[TopIndex * N + 1],
-			Data[TopIndex * N + 2],
-			Data[TopIndex * N + 3]);
+			(int)Data[TopIndex * N + 0],
+			(int)Data[TopIndex * N + 1],
+			(int)Data[TopIndex * N + 2],
+			(int)Data[TopIndex * N + 3]);
 	}
 
 private:
@@ -756,7 +763,7 @@ void TDynamicVector<Type>::Fill(const Type& Value)
 }
 
 template <class Type>
-void TDynamicVector<Type>::Resize(size_t Count)
+void TDynamicVector<Type>::Resize(unsigned int Count)
 {
 	if (GetLength() == Count)
 	{
@@ -788,18 +795,18 @@ void TDynamicVector<Type>::Resize(size_t Count)
 }
 
 template <class Type>
-void TDynamicVector<Type>::Resize(size_t Count, const Type& InitValue)
+void TDynamicVector<Type>::Resize(unsigned int Count, const Type& InitValue)
 {
 	size_t nCurSize = GetLength();
 	Resize(Count);
-	for (size_t Index = nCurSize; Index < Count; ++Index)
+	for (unsigned int Index = (unsigned int)nCurSize; Index < Count; ++Index)
 	{
 		this->operator[](Index) = InitValue;
 	}
 }
 
 template <class Type>
-bool TDynamicVector<Type>::SetMinimumSize(size_t Count, const Type& InitValue)
+bool TDynamicVector<Type>::SetMinimumSize(unsigned int Count, const Type& InitValue)
 {
 	size_t nCurSize = GetLength();
 	if (Count <= nCurSize)
@@ -807,7 +814,7 @@ bool TDynamicVector<Type>::SetMinimumSize(size_t Count, const Type& InitValue)
 		return false;
 	}
 	Resize(Count);
-	for (size_t Index = nCurSize; Index < Count; ++Index)
+	for (unsigned int Index = (unsigned int)nCurSize; Index < Count; ++Index)
 	{
 		this->operator[](Index) = InitValue;
 	}
@@ -817,6 +824,7 @@ bool TDynamicVector<Type>::SetMinimumSize(size_t Count, const Type& InitValue)
 template <class Type>
 void TDynamicVector<Type>::Add(const Type& Value)
 {
+	checkSlow(size_t(MaxSize) >= GetLength() + 1)
 	if (CurBlockUsed == BlockSize)
 	{
 		if (CurBlock == Blocks.Num() - 1)
@@ -836,7 +844,7 @@ void TDynamicVector<Type>::Add(const TDynamicVector<Type>& AddData)
 {
 	// @todo it could be more efficient to use memcopies here...
 	size_t nSize = AddData.Num();
-	for (unsigned int k = 0; k < nSize; ++k)
+	for (unsigned int k = 0; k < (unsigned int) nSize; ++k)
 	{
 		Add(AddData[k]);
 	}
@@ -898,7 +906,7 @@ void TDynamicVector<Type>::InsertAt(const Type& AddData, unsigned int Index, con
 	size_t nCurSize = GetLength();
 	InsertAt(AddData, Index);
 	// initialize all new values up to (but not including) the inserted index
-	for (size_t i = nCurSize; i < (size_t)Index; ++i)
+	for (unsigned int i = (unsigned int)nCurSize; i < Index; ++i)
 	{
 		this->operator[](i) = InitValue;
 	}

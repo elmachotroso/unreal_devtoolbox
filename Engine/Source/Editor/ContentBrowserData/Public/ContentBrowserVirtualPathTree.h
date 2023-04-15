@@ -2,9 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/StringBuilder.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
 #include "ContentBrowserDataSubsystem.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/StringBuilder.h"
+#include "UObject/NameTypes.h"
+
+class FString;
+template <typename FuncType> class TFunctionRef;
 
 /**
  * Tree of virtual paths ending where internal paths start. Used for conversion of paths and during enumerate.
@@ -12,8 +20,6 @@
 class CONTENTBROWSERDATA_API FContentBrowserVirtualPathTree
 {
 public:
-	FContentBrowserVirtualPathTree();
-
 	/** Adds the specified path to the tree, creating nodes as needed and calling OnPathAdded for any new paths added. Returns true if the specified path was actually added (as opposed to already existed) */
 	bool CachePath(FName Path, FName InternalPath, TFunctionRef<void(FName)> OnPathAdded);
 
@@ -69,7 +75,8 @@ public:
 		return VirtualToInternalMounts;
 	}
 	
-	/** 
+	/**
+	 * @note Use FPathViews::GetMountPointNameFromPath instead
 	 * Returns name of the first folder in a path
 	 * Removes starting forward slash and Classes_ prefix 
 	 * Example: "/Classes_A/Textures" returns "A" and sets bOutHadClassesPrefix=true
@@ -93,9 +100,6 @@ private:
 
 	/** Get the string to use when show all folder is enabled */
 	const FString& GetAllFolderPrefix() const;
-
-	/** String of the classes prefix, by default it is "Classes_" */
-	FString ClassesPrefix;
 
 	/** A one-to-one mapping between a virtual path and internal path */
 	TMap<FName, FName> VirtualToInternalMounts;

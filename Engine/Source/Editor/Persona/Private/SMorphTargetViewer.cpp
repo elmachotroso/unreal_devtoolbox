@@ -15,6 +15,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "GPUSkinCache.h"
 #include "Engine/RendererSettings.h"
+#include "IPersonaPreviewScene.h"
 
 #define LOCTEXT_NAMESPACE "SMorphTargetViewer"
 
@@ -328,7 +329,7 @@ void SMorphTargetViewer::Construct(const FArguments& InArgs, const TSharedRef<IP
 {
 	PreviewScenePtr = InPreviewScene;
 
-	SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
+	SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset();
 	InPreviewScene->RegisterOnPreviewMeshChanged( FOnPreviewMeshChanged::CreateSP( this, &SMorphTargetViewer::OnPreviewMeshChanged ) );
 	InPreviewScene->RegisterOnMorphTargetsChanged(FSimpleDelegate::CreateSP(this, &SMorphTargetViewer::OnMorphTargetsChanged));
 	OnPostUndo.Add(FSimpleDelegate::CreateSP(this, &SMorphTargetViewer::OnPostUndo));

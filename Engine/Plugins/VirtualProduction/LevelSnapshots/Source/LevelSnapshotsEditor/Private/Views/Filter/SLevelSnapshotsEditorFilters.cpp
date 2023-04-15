@@ -12,11 +12,12 @@
 #include "Widgets/Filter/SSaveAndLoadFilters.h"
 
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "IDetailsView.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
+#include "SPositiveActionButton.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -78,41 +79,13 @@ SLevelSnapshotsEditorFilters::~SLevelSnapshotsEditorFilters()
 	if (ULevelSnapshotsEditorData* Data = GetEditorData())
 	{
 		Data->OnUserDefinedFiltersChanged.Remove(OnUserDefinedFiltersChangedHandle);
-		Data->OnEditedFiterChanged.Remove(OnEditedFilterChangedHandle);
+		Data->OnEditedFilterChanged.Remove(OnEditedFilterChangedHandle);
 		Data->GetUserDefinedFilters()->OnFilterModified.Remove(OnFilterModifiedHandle);
 	}
 }
 
 void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, ULevelSnapshotsEditorData* EditorData)
-{
-	struct Local
-	{
-		static TSharedRef<SWidget> CreatePlusText(const FText& Text)
-		{
-			return SNew(SHorizontalBox)
-                    + SHorizontalBox::Slot()
-                    .HAlign(HAlign_Center)
-                    .AutoWidth()
-                    .Padding(FMargin(0.f, 1.f))
-                    [
-	                    SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-	                    .TextStyle(FEditorStyle::Get(), "NormalText.Important")
-	                    .Text(FEditorFontGlyphs::Plus)
-                    ]
-
-                    + SHorizontalBox::Slot()
-                    .HAlign(HAlign_Left)
-                    .AutoWidth()
-                    .Padding(2.f, 1.f)
-                    [
-                        SNew(STextBlock)
-                        .Justification(ETextJustify::Center)
-                        .TextStyle(FEditorStyle::Get(), "NormalText.Important")
-                        .Text(Text)
-                    ];
-		}
-	};
+{	
 	
 	EditorDataPtr = EditorData;
 
@@ -140,7 +113,7 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, ULevelSna
 	ChildSlot
 	[
 		SAssignNew(DetailsSplitter, SCustomSplitter)
-		.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+		.Style(FAppStyle::Get(), "DetailsView.Splitter")
 		.PhysicalSplitterHandleSize(1.0f)
 		.HitDetectionSplitterHandleSize(5.0f)
 		.Orientation(Orient_Vertical)
@@ -218,13 +191,9 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, ULevelSna
                     .AutoHeight()
                     [
                         SNew(SButton)
-                            .ButtonStyle(FEditorStyle::Get(), "RoundButton")
-                            .ContentPadding(FMargin(4.0, 10.0))
-                            .OnClicked(this, &SLevelSnapshotsEditorFilters::AddFilterClick)
-                            .HAlign(HAlign_Center)
-                            [
-								Local::CreatePlusText(LOCTEXT("AddFilterGroup", "Filter Group"))
-                            ]
+                        .Text(LOCTEXT("AddFilterGroup", "Filter Group"))
+                        .OnClicked(this, &SLevelSnapshotsEditorFilters::AddFilterClick)
+						.HAlign(HAlign_Center)
                     ]
                 ]
             ]
@@ -254,11 +223,11 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, ULevelSna
 		}
 		OnFilterModifiedHandle = NewFilter->OnFilterModified.AddRaw(this, &SLevelSnapshotsEditorFilters::OnFilterModified);
 		
-		GetEditorData()->SetEditedFilter(TOptional<UNegatableFilter*>());
+		GetEditorData()->SetEditedFilter(nullptr);
 		RefreshGroups();
 	});
 
-	OnEditedFilterChangedHandle = GetEditorData()->OnEditedFiterChanged.AddLambda([this](const TOptional<UNegatableFilter*>& ActiveFilter)
+	OnEditedFilterChangedHandle = GetEditorData()->OnEditedFilterChanged.AddLambda([this](const TOptional<UNegatableFilter*>& ActiveFilter)
 	{
 		FilterDetailsView->SetObject(ActiveFilter.IsSet() ? ActiveFilter.GetValue() : nullptr);
 	});

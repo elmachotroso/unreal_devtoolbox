@@ -30,6 +30,8 @@
 #include "Interfaces/IShaderFormat.h"
 #endif
 
+DECLARE_LOG_CATEGORY_CLASS(LogShaderWarnings, Log, Log);
+
 int32 GShaderCompressionFormatChoice = 2;
 static FAutoConsoleVariableRef CVarShaderCompressionFormatChoice(
 	TEXT("r.Shaders.CompressionFormat"),
@@ -72,6 +74,14 @@ static FAutoConsoleVariableRef CVarShaderCompressionOodleAlgoChoice(
 	TEXT("  7 : Optimal3\n")
 	TEXT("  8 : Optimal4\n"),
 	ECVF_ReadOnly);
+
+static int32 GShaderCompilerEmitWarningsOnLoad = 0;
+static FAutoConsoleVariableRef CVarShaderCompilerEmitWarningsOnLoad(
+	TEXT("r.ShaderCompiler.EmitWarningsOnLoad"),
+	GShaderCompilerEmitWarningsOnLoad,
+	TEXT("When 1, shader compiler warnings are emitted to the log for all shaders as they are loaded."),
+	ECVF_Default
+);
 
 FName GetShaderCompressionFormat(const FName& ShaderFormat)
 {
@@ -150,47 +160,71 @@ bool FShaderMapResource::ArePlatformsCompatible(EShaderPlatform CurrentPlatform,
 }
 
 #if RHI_RAYTRACING
-static TArray<uint32> GlobalUnusedIndicies;
-static TArray<FRHIRayTracingShader*> GlobalRayTracingMaterialLibrary;
-static FCriticalSection GlobalRayTracingMaterialLibraryCS;
-
-void FShaderMapResource::GetRayTracingMaterialLibrary(TArray<FRHIRayTracingShader*>& RayTracingMaterials, FRHIRayTracingShader* DefaultShader)
+class FRayTracingShaderLibrary
 {
-	FScopeLock Lock(&GlobalRayTracingMaterialLibraryCS);
-	RayTracingMaterials = GlobalRayTracingMaterialLibrary;
-
-	for (uint32 Index : GlobalUnusedIndicies)
+public:
+	uint32 AddShader(FRHIRayTracingShader* Shader)
 	{
-		RayTracingMaterials[Index] = DefaultShader;
+		FScopeLock Lock(&CS);
+
+		if (UnusedIndicies.Num() != 0)
+		{
+			uint32 Index = UnusedIndicies.Pop(false);
+			checkSlow(Shaders[Index] == nullptr);
+			Shaders[Index] = Shader;
+			return Index;
+		}
+		else
+		{
+			Shaders.Add(Shader);
+			return Shaders.Num() - 1;
+		}
 	}
+
+	void RemoveShader(uint32 Index)
+	{
+		if (Index != ~0u)
+		{
+			FScopeLock Lock(&CS);
+			UnusedIndicies.Push(Index);
+			Shaders[Index] = nullptr;
+		}
+	}
+
+	void GetShaders(TArray<FRHIRayTracingShader*>& OutShaders, FRHIRayTracingShader* DefaultShader)
+	{
+		FScopeLock Lock(&CS);
+		OutShaders = Shaders;
+
+		for (uint32 Index : UnusedIndicies)
+		{
+			OutShaders[Index] = DefaultShader;
+		}
+	}
+
+private:
+	TArray<uint32> UnusedIndicies;
+	TArray<FRHIRayTracingShader*> Shaders;
+	FCriticalSection CS;
+};
+
+static FRayTracingShaderLibrary GlobalRayTracingHitGroupLibrary;
+static FRayTracingShaderLibrary GlobalRayTracingCallableShaderLibrary;
+static FRayTracingShaderLibrary GlobalRayTracingMissShaderLibrary;
+
+void FShaderMapResource::GetRayTracingHitGroupLibrary(TArray<FRHIRayTracingShader*>& RayTracingShaders, FRHIRayTracingShader* DefaultShader)
+{
+	GlobalRayTracingHitGroupLibrary.GetShaders(RayTracingShaders, DefaultShader);
 }
 
-static uint32 AddToRayTracingLibrary(FRHIRayTracingShader* Shader)
+void FShaderMapResource::GetRayTracingCallableShaderLibrary(TArray<FRHIRayTracingShader*>& RayTracingCallableShaders, FRHIRayTracingShader* DefaultShader)
 {
-	FScopeLock Lock(&GlobalRayTracingMaterialLibraryCS);
-
-	if (GlobalUnusedIndicies.Num() != 0)
-	{
-		uint32 Index = GlobalUnusedIndicies.Pop(false);
-		checkSlow(GlobalRayTracingMaterialLibrary[Index] == nullptr);
-		GlobalRayTracingMaterialLibrary[Index] = Shader;
-		return Index;
-	}
-	else
-	{
-		GlobalRayTracingMaterialLibrary.Add(Shader);
-		return GlobalRayTracingMaterialLibrary.Num() - 1;
-	}
+	GlobalRayTracingCallableShaderLibrary.GetShaders(RayTracingCallableShaders, DefaultShader);
 }
 
-static void RemoveFromRayTracingLibrary(uint32 Index)
+void FShaderMapResource::GetRayTracingMissShaderLibrary(TArray<FRHIRayTracingShader*>& RayTracingMissShaders, FRHIRayTracingShader* DefaultShader)
 {
-	if (Index != ~0u)
-	{
-		FScopeLock Lock(&GlobalRayTracingMaterialLibraryCS);
-		GlobalUnusedIndicies.Push(Index);
-		GlobalRayTracingMaterialLibrary[Index] = nullptr;
-	}
+	GlobalRayTracingMissShaderLibrary.GetShaders(RayTracingMissShaders, DefaultShader);
 }
 #endif // RHI_RAYTRACING
 
@@ -240,6 +274,10 @@ void FShaderMapResourceCode::Finalize()
 	Hasher.Final();
 	Hasher.GetHash(ResourceHash.Hash);
 	ApplyResourceStats(*this);
+
+#if WITH_EDITORONLY_DATA
+	LogShaderCompilerWarnings();
+#endif
 }
 
 uint32 FShaderMapResourceCode::GetSizeBytes() const
@@ -262,6 +300,11 @@ void FShaderMapResourceCode::AddShaderCompilerOutput(const FShaderCompilerOutput
 {
 #if WITH_EDITORONLY_DATA
 	AddPlatformDebugData(Output.PlatformDebugData);
+
+	for (const FShaderCompilerError& Error : Output.Errors)
+	{
+		CompilerWarnings.Add(Error.GetErrorString());
+	}
 #endif
 	AddShaderCode(Output.Target.GetFrequency(), Output.OutputHash, Output.ShaderCode);
 }
@@ -361,6 +404,20 @@ void FShaderMapResourceCode::AddPlatformDebugData(TConstArrayView<uint8> InPlatf
 		PlatformDebugData.EmplaceAt(Index, InPlatformDebugData.GetData(), InPlatformDebugData.Num());
 	}
 }
+
+void FShaderMapResourceCode::LogShaderCompilerWarnings()
+{
+	if (CompilerWarnings.Num() > 0 && GShaderCompilerEmitWarningsOnLoad != 0)
+	{
+		// Emit all the compiler warnings seen whilst serializing/loading this shader to the log.
+		// Since successfully compiled shaders are stored in the DDC, we'll get the compiler warnings
+		// even if we didn't compile the shader this run.
+		for (const FString& CompilerWarning : CompilerWarnings)
+		{
+			UE_LOG(LogShaderWarnings, Warning, TEXT("%s"), *CompilerWarning);
+		}
+	}
+}
 #endif // WITH_EDITORONLY_DATA
 
 void FShaderMapResourceCode::ToString(FStringBuilderBase& OutString) const
@@ -381,14 +438,22 @@ void FShaderMapResourceCode::Serialize(FArchive& Ar, bool bLoadedByCookedMateria
 	Ar << ShaderEntries;
 	check(ShaderEntries.Num() == ShaderHashes.Num());
 #if WITH_EDITORONLY_DATA
-	const bool bSerializePlatformData = !bLoadedByCookedMaterial && (!Ar.IsCooking() || Ar.CookingTarget()->HasEditorOnlyData());
-	if (bSerializePlatformData)
+	const bool bSerializeEditorOnlyData = !bLoadedByCookedMaterial && (!Ar.IsCooking() || Ar.CookingTarget()->HasEditorOnlyData());
+	if (bSerializeEditorOnlyData)
 	{
 		Ar << PlatformDebugDataHashes;
 		Ar << PlatformDebugData;
+		Ar << CompilerWarnings;
 	}
 #endif // WITH_EDITORONLY_DATA
 	ApplyResourceStats(*this);
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading())
+	{
+		LogShaderCompilerWarnings();
+	}
+#endif
 }
 
 #if WITH_EDITORONLY_DATA
@@ -432,8 +497,8 @@ FShaderMapResource::FShaderMapResource(EShaderPlatform InPlatform, int32 NumShad
 #if RHI_RAYTRACING
 	if (GRHISupportsRayTracing && GRHISupportsRayTracingShaders)
 	{
-		RayTracingMaterialLibraryIndices.AddUninitialized(NumShaders);
-		FMemory::Memset(RayTracingMaterialLibraryIndices.GetData(), 0xff, NumShaders * RayTracingMaterialLibraryIndices.GetTypeSize());
+		RayTracingLibraryIndices.AddUninitialized(NumShaders);
+		FMemory::Memset(RayTracingLibraryIndices.GetData(), 0xff, NumShaders * RayTracingLibraryIndices.GetTypeSize());
 	}
 #endif // RHI_RAYTRACING
 }
@@ -441,19 +506,21 @@ FShaderMapResource::FShaderMapResource(EShaderPlatform InPlatform, int32 NumShad
 FShaderMapResource::~FShaderMapResource()
 {
 	ReleaseShaders();
-	check(NumRefs == 0);
+	check(NumRefs.load(std::memory_order_relaxed) == 0);
 }
 
 void FShaderMapResource::AddRef()
 {
-	FPlatformAtomics::InterlockedIncrement((volatile int32*)&NumRefs);
+	NumRefs.fetch_add(1, std::memory_order_relaxed);
 }
 
 void FShaderMapResource::Release()
 {
-	check(NumRefs > 0);
-	if (FPlatformAtomics::InterlockedDecrement((volatile int32*)&NumRefs) == 0 && TryRelease())
+	check(NumRefs.load(std::memory_order_relaxed) > 0);
+	if (NumRefs.fetch_sub(1, std::memory_order_release) - 1 == 0 && TryRelease())
 	{
+		//check https://www.boost.org/doc/libs/1_55_0/doc/html/atomic/usage_examples.html for explanation
+		std::atomic_thread_fence(std::memory_order_acquire);
 		// Send a release message to the rendering thread when the shader loses its last reference.
 		BeginReleaseResource(this);
 		BeginCleanup(this);
@@ -483,11 +550,33 @@ void FShaderMapResource::ReleaseShaders()
 void FShaderMapResource::ReleaseRHI()
 {
 #if RHI_RAYTRACING
-	for (int32 Index : RayTracingMaterialLibraryIndices)
+	if (GRHISupportsRayTracing && GRHISupportsRayTracingShaders)
 	{
-		RemoveFromRayTracingLibrary(Index);
+		check(NumRHIShaders == RayTracingLibraryIndices.Num());
+
+		for (int32 Idx = 0; Idx < NumRHIShaders; ++Idx)
+		{
+			if (FRHIShader* Shader = RHIShaders[Idx].load(std::memory_order_acquire))
+			{
+				int32 IndexInLibrary = RayTracingLibraryIndices[Idx];
+				switch (Shader->GetFrequency())
+				{
+				case SF_RayHitGroup:
+					GlobalRayTracingHitGroupLibrary.RemoveShader(IndexInLibrary);
+					break;
+				case SF_RayCallable:
+					GlobalRayTracingCallableShaderLibrary.RemoveShader(IndexInLibrary);
+					break;
+				case SF_RayMiss:
+					GlobalRayTracingMissShaderLibrary.RemoveShader(IndexInLibrary);
+					break;
+				default:
+					break;
+				}
+			}
+		}
 	}
-	RayTracingMaterialLibraryIndices.Empty();
+	RayTracingLibraryIndices.Empty();
 #endif // RHI_RAYTRACING
 
 	ReleaseShaders();
@@ -507,15 +596,27 @@ void FShaderMapResource::BeginCreateAllShaders()
 }
 
 FRHIShader* FShaderMapResource::CreateShader(int32 ShaderIndex)
-{
-	check(IsInParallelRenderingThread());
+{	
 	check(!RHIShaders[ShaderIndex].load(std::memory_order_acquire));
 
 	TRefCountPtr<FRHIShader> RHIShader = CreateRHIShader(ShaderIndex);
 #if RHI_RAYTRACING
-	if (GRHISupportsRayTracing && GRHISupportsRayTracingShaders && RHIShader.IsValid() && RHIShader->GetFrequency() == SF_RayHitGroup)
+	if (GRHISupportsRayTracing && GRHISupportsRayTracingShaders && RHIShader.IsValid())
 	{
-		RayTracingMaterialLibraryIndices[ShaderIndex] = AddToRayTracingLibrary(static_cast<FRHIRayTracingShader*>(RHIShader.GetReference()));
+		switch (RHIShader->GetFrequency())
+		{
+		case SF_RayHitGroup:
+			RayTracingLibraryIndices[ShaderIndex] = GlobalRayTracingHitGroupLibrary.AddShader(static_cast<FRHIRayTracingShader*>(RHIShader.GetReference()));
+			break;
+		case SF_RayCallable:
+			RayTracingLibraryIndices[ShaderIndex] = GlobalRayTracingCallableShaderLibrary.AddShader(static_cast<FRHIRayTracingShader*>(RHIShader.GetReference()));
+			break;
+		case SF_RayMiss:
+			RayTracingLibraryIndices[ShaderIndex] = GlobalRayTracingMissShaderLibrary.AddShader(static_cast<FRHIRayTracingShader*>(RHIShader.GetReference()));
+			break;
+		default:
+			break;
+		}
 	}
 #endif // RHI_RAYTRACING
 

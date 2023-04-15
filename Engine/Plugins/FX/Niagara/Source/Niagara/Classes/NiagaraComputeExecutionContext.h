@@ -3,8 +3,8 @@
 #pragma once
 
 #include "NiagaraCommon.h"
-#include "NiagaraSimStageData.h"
 #include "NiagaraScriptExecutionContext.h"
+#include "NiagaraSimStageData.h"
 #include "RHIGPUReadback.h"
 
 class FNiagaraGPUInstanceCountManager;
@@ -20,43 +20,6 @@ public:
 		: FRHIUniformBufferLayout(FRHIUniformBufferLayoutInitializer(LayoutName, ConstantBufferSize))
 	{
 	}
-};
-
-struct FNiagaraGpuDispatchInstance
-{
-	FNiagaraGpuDispatchInstance(const FNiagaraGPUSystemTick& InTick, const FNiagaraComputeInstanceData& InInstanceData)
-		: Tick(InTick)
-		, InstanceData(InInstanceData)
-	{
-	}
-
-	const FNiagaraGPUSystemTick& Tick;
-	const FNiagaraComputeInstanceData& InstanceData;
-	FNiagaraSimStageData SimStageData;
-};
-
-struct FNiagaraGpuDispatchGroup
-{
-	TArray<FNiagaraGPUSystemTick*>				TicksWithPerInstanceData;
-	TArray<FNiagaraGpuDispatchInstance>			DispatchInstances;
-	TArray<FNiagaraComputeExecutionContext*>	FreeIDUpdates;
-};
-
-struct FNiagaraGpuDispatchList
-{
-	void PreAllocateGroups(int32 LastGroup)
-	{
-		const int32 GroupsToAllocate = LastGroup - DispatchGroups.Num();
-		if (GroupsToAllocate > 0)
-		{
-			DispatchGroups.AddDefaulted(GroupsToAllocate);
-		}
-	}
-
-	bool HasWork() const { return DispatchGroups.Num() > 0; }
-
-	TArray<uint32>						CountsToRelease;
-	TArray<FNiagaraGpuDispatchGroup>	DispatchGroups;
 };
 
 struct FNiagaraGpuSpawnInfoParams
@@ -145,7 +108,7 @@ public:
 	FString DebugSimName;
 #endif
 	TWeakObjectPtr<class USceneComponent>	ProfilingComponentPtr;
-	TWeakObjectPtr<UNiagaraEmitter>			ProfilingEmitterPtr;
+	FVersionedNiagaraEmitterWeakPtr			ProfilingEmitterPtr;
 
 	const TArray<UNiagaraDataInterface*>& GetDataInterfaces()const { return CombinedParamStore.GetDataInterfaces(); }
 
@@ -213,6 +176,7 @@ public:
 	TArray<FSimulationStageMetaData> SimStageInfo;
 
 	bool IsOutputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const;
+	bool IsInputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const;
 	bool IsIterationStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const;
 	FNiagaraDataInterfaceProxyRW* FindIterationInterface(const TArray<FNiagaraDataInterfaceProxyRW*>& InProxies, uint32 SimulationStageIndex) const;
 };

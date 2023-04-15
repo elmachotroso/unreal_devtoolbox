@@ -109,6 +109,14 @@ public:
 		return Rotation; 
 	}
 
+	/**
+	* @return Rotation portion of Transform, as FRotator
+	*/
+	FRotator GetRotator() const 
+	{ 
+		return (FRotator)Rotation; 
+	}
+
 	/** 
 	 * Set Rotation portion of Transform 
 	 */
@@ -168,9 +176,20 @@ public:
 	}
 
 	/**
-	 * @return inverse of this transform
+	 * Attempts to return an inverse, but will give an incorrect result if the transform has both non-uniform scaling and rotation,
+	 * because TTransformSRT3<RealType> cannot represent the true inverse in that case.
 	 */
+	UE_DEPRECATED(5.1, "Use the InverseTransformPosition/Vector/Normal functions instead; TransformSRT3 cannot represent its own inverse.  If the exact previous behavior is needed, use InverseUnsafe.")
 	TTransformSRT3<RealType> Inverse() const
+	{
+		return InverseUnsafe();
+	}
+
+	/**
+	 * Attempts to return an inverse, but will give an incorrect result if the transform has both non-uniform scaling and rotation,
+	 * because TTransformSRT3<RealType> cannot represent the true inverse in that case.
+	 */
+	TTransformSRT3<RealType> InverseUnsafe() const
 	{
 		TQuaternion<RealType> InvRotation = Rotation.Inverse();
 		TVector<RealType> InvScale3D = GetSafeScaleReciprocal(Scale3D);
@@ -252,7 +271,7 @@ public:
 	 */
 	TVector<RealType> InverseTransformNormal(const UE::Math::TVector<RealType>& Normal) const
 	{
-		return InverseTransformVectorNoScale( Normalized(Scale3D*Normal) );
+		return Normalized( Scale3D * InverseTransformVectorNoScale(Normal) );
 	}
 
 

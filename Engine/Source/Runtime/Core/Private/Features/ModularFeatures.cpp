@@ -2,6 +2,9 @@
 
 #include "Features/ModularFeatures.h"
 
+#include "CoreTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ScopeLock.h"
 
 IModularFeatures& IModularFeatures::Get()
 {
@@ -10,15 +13,27 @@ IModularFeatures& IModularFeatures::Get()
 	return ModularFeatures;
 }
 
+void FModularFeatures::LockModularFeatureList()
+{
+	ModularFeaturesMapCriticalSection.Lock();
+}
+
+void FModularFeatures::UnlockModularFeatureList()
+{
+	ModularFeaturesMapCriticalSection.Unlock();
+}
 
 int32 FModularFeatures::GetModularFeatureImplementationCount( const FName Type )
 {
+	// IModularFeature counting is not thread-safe unless wrapped with LockModularFeatureList/UnlockModularFeatureList if you are crashing here
+
 	return ModularFeaturesMap.Num( Type );
 }
 
-
 IModularFeature* FModularFeatures::GetModularFeatureImplementation( const FName Type, const int32 Index )
 {
+	// IModularFeature fetching is not thread-safe unless wrapped with LockModularFeatureList/UnlockModularFeatureList if you are crashing here
+
 	IModularFeature* ModularFeature = nullptr;
 
 	int32 CurrentIndex = 0;
@@ -33,13 +48,15 @@ IModularFeature* FModularFeatures::GetModularFeatureImplementation( const FName 
 		++CurrentIndex;
 	}
 
-	check( ModularFeature != nullptr );
+	checkf( ModularFeature != nullptr, TEXT("ModularFeature not found: '%s', Index: %d"), *Type.ToString(), Index);
 	return ModularFeature;
 }
 
 
 void FModularFeatures::RegisterModularFeature( const FName Type, IModularFeature* ModularFeature )
 {
+	FScopeLock ScopeLock(&ModularFeaturesMapCriticalSection);
+
 	ModularFeaturesMap.AddUnique( Type, ModularFeature );
 	ModularFeatureRegisteredEvent.Broadcast( Type, ModularFeature );
 }
@@ -47,6 +64,8 @@ void FModularFeatures::RegisterModularFeature( const FName Type, IModularFeature
 
 void FModularFeatures::UnregisterModularFeature( const FName Type, IModularFeature* ModularFeature )
 {
+	FScopeLock ScopeLock(&ModularFeaturesMapCriticalSection);
+
 	ModularFeaturesMap.RemoveSingle( Type, ModularFeature );
 	ModularFeatureUnregisteredEvent.Broadcast( Type, ModularFeature );
 }

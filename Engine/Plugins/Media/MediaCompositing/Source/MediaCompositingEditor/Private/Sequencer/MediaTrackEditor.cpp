@@ -3,10 +3,11 @@
 #include "Sequencer/MediaTrackEditor.h"
 
 #include "ContentBrowserModule.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IContentBrowserSingleton.h"
+#include "IMediaAssetsModule.h"
 #include "ISequencer.h"
 #include "ISequencerObjectChangeListener.h"
 #include "MediaSource.h"
@@ -22,11 +23,12 @@
 #include "Misc/QualifiedFrameTime.h"
 #include "LevelSequence.h"
 
-#include "MediaThumbnailSection.h"
+#include "Sequencer/MediaThumbnailSection.h"
 
 
 #define LOCTEXT_NAMESPACE "FMediaTrackEditor"
 
+FOnBuildOutlinerEditWidget FMediaTrackEditor::OnBuildOutlinerEditWidget;
 
 /* FMediaTrackEditor static functions
  *****************************************************************************/
@@ -44,11 +46,17 @@ FMediaTrackEditor::FMediaTrackEditor(TSharedRef<ISequencer> InSequencer)
 	: FMovieSceneTrackEditor(InSequencer)
 {
 	ThumbnailPool = MakeShared<FTrackEditorThumbnailPool>(InSequencer);
+	InSequencer->OnMovieSceneDataChanged().AddRaw(this, &FMediaTrackEditor::OnSequencerDataChanged);
 }
 
 
 FMediaTrackEditor::~FMediaTrackEditor()
 {
+	const TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (SequencerPtr.IsValid())
+	{
+		SequencerPtr->OnMovieSceneDataChanged().RemoveAll(this);
+	}
 }
 
 
@@ -69,7 +77,7 @@ void FMediaTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddTrack", "Media Track"),
 		LOCTEXT("AddTooltip", "Adds a new master media track that can play media sources."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Media"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Media"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FMediaTrackEditor::HandleAddMediaTrackMenuEntryExecute)
 		)
@@ -88,6 +96,8 @@ TSharedPtr<SWidget> FMediaTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 
 	auto CreatePicker = [this, MediaTrack]
 	{
+		UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 		FAssetPickerConfig AssetPickerConfig;
 		{
 			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(this, &FMediaTrackEditor::AddNewSection, MediaTrack);
@@ -95,8 +105,9 @@ TSharedPtr<SWidget> FMediaTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 			AssetPickerConfig.bAllowNullSelection = false;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
-			AssetPickerConfig.Filter.ClassNames.Add(UMediaSource::StaticClass()->GetFName());
+			AssetPickerConfig.Filter.ClassPaths.Add(UMediaSource::StaticClass()->GetClassPathName());
 			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+			AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 		}
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -108,7 +119,20 @@ TSharedPtr<SWidget> FMediaTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 			];
 
-		return Picker;
+		// Create menu.
+		FMenuBuilder MenuBuilder(true, NULL);
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("MediaSourceLabel", "Media Source"),
+			LOCTEXT("MediaSourceTooltip", "Add media from a media source."),
+			FNewMenuDelegate::CreateLambda([Picker](FMenuBuilder& InMenuBuilder)
+		{
+			InMenuBuilder.AddWidget(Picker, FText::GetEmpty(), true);
+		}));
+
+		// Allow customizations from other sources.
+		OnBuildOutlinerEditWidget.Broadcast(MenuBuilder);
+
+		return MenuBuilder.MakeWidget();
 	};
 
 	return SNew(SHorizontalBox)
@@ -160,9 +184,13 @@ TSharedRef<ISequencerSection> FMediaTrackEditor::MakeSectionInterface(UMovieScen
 }
 
 bool FMediaTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const 
-{    
-	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneMediaTrack::StaticClass()) : ETrackSupport::NotSupported;    
-	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported; 
+{
+	if (InSequence && InSequence->IsTrackSupported(UMovieSceneMediaTrack::StaticClass()) == ETrackSupport::NotSupported)
+	{
+		return false;
+	}
+
+	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
 }
 
 bool FMediaTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> TrackClass) const
@@ -179,9 +207,17 @@ void FMediaTrackEditor::Tick(float DeltaTime)
 
 const FSlateBrush* FMediaTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Media");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Media");
 }
 
+void FMediaTrackEditor::OnRelease()
+{
+	const TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (SequencerPtr.IsValid())
+	{
+		SequencerPtr->OnMovieSceneDataChanged().RemoveAll(this);
+	}
+}
 
 /* FMediaTrackEditor implementation
  *****************************************************************************/
@@ -311,6 +347,62 @@ void FMediaTrackEditor::HandleAddMediaTrackMenuEntryExecute()
 	}
 }
 
+void FMediaTrackEditor::OnSequencerDataChanged(EMovieSceneDataChangeType DataChangeType)
+{
+	// Get the scene.
+	const TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	
+	if (SequencerPtr.IsValid())
+	{
+		UMovieSceneSequence* MovieSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+		if (MovieSequence != nullptr)
+		{
+			UMovieScene* MovieScene = MovieSequence->GetMovieScene();
 
+			// Loop through all bindings.
+			const TArray<FMovieSceneBinding>& Bindings = MovieScene->GetBindings();
+			for (const FMovieSceneBinding& Binding : Bindings)
+			{
+				UMovieSceneMediaTrack* Track = Cast<UMovieSceneMediaTrack>(MovieScene->FindTrack(UMovieSceneMediaTrack::StaticClass(), Binding.GetObjectGuid(), NAME_None));
+				if (Track != nullptr)
+				{
+					UpdateMediaTrackBinding(Track, Binding);
+				}
+			}
+		}
+	}
+}
+
+void FMediaTrackEditor::UpdateMediaTrackBinding(UMovieSceneMediaTrack* MediaTrack, const FMovieSceneBinding& Binding)
+{
+	// Get object from the binding.
+	FGuid ObjectHandle = Binding.GetObjectGuid();
+	const TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	UObject* BoundObject = SequencerPtr.IsValid() ?
+		SequencerPtr->FindSpawnedObjectOrTemplate(ObjectHandle) : nullptr;
+
+	// Get the player proxy if available.
+	UObject* PlayerProxy = nullptr;
+	if (BoundObject != nullptr)
+	{
+		IMediaAssetsModule* MediaAssetsModule = FModuleManager::LoadModulePtr<IMediaAssetsModule>("MediaAssets");
+		if (MediaAssetsModule != nullptr)
+		{
+			MediaAssetsModule->GetPlayerFromObject(BoundObject, PlayerProxy);
+		}
+	}
+	bool bHasPlayerProxy = PlayerProxy != nullptr;
+
+	// Update all sections.
+	const TArray<UMovieSceneSection*> Sections = MediaTrack->GetAllSections();
+	for (UMovieSceneSection* Section : Sections)
+	{
+		UMovieSceneMediaSection* MediaSection = Cast<UMovieSceneMediaSection>(Section);
+		if (MediaSection != nullptr)
+		{
+			MediaSection->bHasMediaPlayerProxy = bHasPlayerProxy;
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

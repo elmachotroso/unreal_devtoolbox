@@ -5,6 +5,7 @@
 #include "Framework/Text/TextLayout.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/OutputDeviceHelper.h"
+#include "Misc/ScopeLock.h"
 #include "SlateOptMacros.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
@@ -17,8 +18,6 @@
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Images/SImage.h"
@@ -31,6 +30,9 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "OutputLogModule.h"
 #include "Widgets/Text/SlateEditableTextTypes.h"
+#include "OutputLogSettings.h"
+#include "OutputLogStyle.h"
+
 
 #define LOCTEXT_NAMESPACE "SOutputLog"
 
@@ -178,7 +180,7 @@ void SConsoleInputBox::Construct(const FArguments& InArgs)
 			[
 				SNew(SComboButton)
 				.IsEnabled(this, &SConsoleInputBox::IsCommandExecutorMenuEnabled)
-				.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+				.ComboButtonStyle(FOutputLogStyle::Get(), "SimpleComboButton")
 				.ContentPadding(0)
 				.OnGetMenuContent(this, &SConsoleInputBox::GetCommandExecutorMenuContent)
 				.ButtonContent()
@@ -192,7 +194,7 @@ void SConsoleInputBox::Construct(const FArguments& InArgs)
 					[
 						SNew(SImage)
 						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FAppStyle::Get().GetBrush("DebugConsole.Icon"))
+						.Image(FOutputLogStyle::Get().GetBrush("DebugConsole.Icon"))
 					]
 					+ SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
@@ -207,7 +209,7 @@ void SConsoleInputBox::Construct(const FArguments& InArgs)
 			+SHorizontalBox::Slot()
 			[
 				SAssignNew(InputText, SMultiLineEditableTextBox)
-				.Font(FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("Log.Normal").Font)
+				.Font(FOutputLogStyle::Get().GetWidgetStyle<FTextBlockStyle>("Log.Normal").Font)
 				.HintText(this, &SConsoleInputBox::GetActiveCommandExecutorHintText)
 				.AllowMultiLine(this, &SConsoleInputBox::GetActiveCommandExecutorAllowMultiLine)
 				.OnTextCommitted(this, &SConsoleInputBox::OnTextCommitted)
@@ -222,7 +224,7 @@ void SConsoleInputBox::Construct(const FArguments& InArgs)
 		.MenuContent
 		(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FOutputLogStyle::Get().GetBrush("Menu.Background"))
 			.Padding( FMargin(2) )
 			[
 				SNew(SBox)
@@ -312,7 +314,7 @@ TSharedRef<ITableRow> SConsoleInputBox::MakeSuggestionListItemWidget(TSharedPtr<
 		[
 			SNew(STextBlock)
 			.Text(FText::FromString(SanitizedText))
-			.TextStyle(FEditorStyle::Get(), "Log.Normal")
+			.TextStyle(FOutputLogStyle::Get(), "Log.Normal")
 			.HighlightText(Suggestions.SuggestionsHighlight)
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		];
@@ -458,6 +460,8 @@ FReply SConsoleInputBox::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKe
 	}
 	else
 	{
+		const FInputChord KeyEventAsInputChord = FInputChord(KeyEvent.GetKey(), EModifierKey::FromBools(KeyEvent.IsControlDown(), KeyEvent.IsAltDown(), KeyEvent.IsShiftDown(), KeyEvent.IsCommandDown()));
+
 		if(KeyEvent.GetKey() == EKeys::Up)
 		{
 			// If the command field isn't empty we need you to have pressed Control+Up to summon the history (to make sure you're not just using caret navigation)
@@ -505,6 +509,11 @@ FReply SConsoleInputBox::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKe
 				ClearSuggestions();
 			}
 
+			return FReply::Handled();
+		}
+		else if (ActiveCommandExecutor && ActiveCommandExecutor->GetIterateExecutorHotKey() == KeyEventAsInputChord)
+		{
+			MakeNextCommandExecutorActive();
 			return FReply::Handled();
 		}
 	}
@@ -659,6 +668,28 @@ bool SConsoleInputBox::IsCommandExecutorMenuEnabled() const
 	return !ConsoleCommandCustomExec.IsBound(); // custom execs always show the default executor in the UI (which has the selector disabled)
 }
 
+void SConsoleInputBox::MakeNextCommandExecutorActive()
+{
+	// Sorted so the iteration order matches the displayed order.
+	TArray<IConsoleCommandExecutor*> CommandExecutors = IModularFeatures::Get().GetModularFeatureImplementations<IConsoleCommandExecutor>(IConsoleCommandExecutor::ModularFeatureName());
+	CommandExecutors.Sort([](IConsoleCommandExecutor& LHS, IConsoleCommandExecutor& RHS)
+		{
+			return LHS.GetDisplayName().CompareTo(RHS.GetDisplayName()) < 0;
+		});
+
+	int32 CurrentIndex = CommandExecutors.IndexOfByKey(ActiveCommandExecutor);
+	if (CurrentIndex >= 0)
+	{
+		CurrentIndex++;
+		if (CurrentIndex >= CommandExecutors.Num())
+		{
+			CurrentIndex = 0;
+		}
+
+		SetActiveCommandExecutor(CommandExecutors[CurrentIndex]->GetName());
+	}
+}
+
 TSharedRef<SWidget> SConsoleInputBox::GetCommandExecutorMenuContent()
 {
 	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
@@ -785,18 +816,34 @@ void FOutputLogTextLayoutMarshaller::GetText(FString& TargetString, const FTextL
 
 bool FOutputLogTextLayoutMarshaller::AppendPendingMessage(const TCHAR* InText, const ELogVerbosity::Type InVerbosity, const FName& InCategory)
 {
-	return SOutputLog::CreateLogMessages(InText, InVerbosity, InCategory, Messages);
+	// We don't want to skip adding messages, so just try to acquire the lock
+	FScopeLock PendingMessagesAccess(&PendingMessagesCriticalSection);
+	return SOutputLog::CreateLogMessages(InText, InVerbosity, InCategory, PendingMessages);
 }
 
 bool FOutputLogTextLayoutMarshaller::SubmitPendingMessages()
 {
+	// We can always submit messages next tick. So only try to lock, if not possible return.
+	if (PendingMessagesCriticalSection.TryLock())
+	{
+		Messages.Append(MoveTemp(PendingMessages));
+		PendingMessages.Reset();
+		PendingMessagesCriticalSection.Unlock();
+	}
+	else
+	{
+		return false;
+	}
+
 	if (Messages.IsValidIndex(NextPendingMessageIndex))
 	{
 		const int32 CurrentMessagesCount = Messages.Num();
+
 		AppendPendingMessagesToTextLayout();
 		NextPendingMessageIndex = CurrentMessagesCount;
 		return true;
 	}
+
 	return false;
 }
 
@@ -841,7 +888,7 @@ void FOutputLogTextLayoutMarshaller::AppendPendingMessagesToTextLayout()
 		MakeDirty();
 	}
 
-	const ELogCategoryColorizationMode CategoryColorizationMode = GetDefault<UEditorStyleSettings>()->CategoryColorizationMode;
+	const ELogCategoryColorizationMode CategoryColorizationMode = GetDefault<UOutputLogSettings>()->CategoryColorizationMode;
 
 	TArray<FTextLayout::FNewLineData> LinesToAdd;
 	LinesToAdd.Reserve(NumPendingMessages);
@@ -865,6 +912,11 @@ void FOutputLogTextLayoutMarshaller::AppendPendingMessagesToTextLayout()
 		const TSharedPtr<FOutputLogMessage> Message = Messages[MessageIndex];
 		const int32 LineIndex = TextLayout->GetLineModels().Num() + NumAddedMessages;
 
+		if (!Message)
+		{
+			continue;
+		}
+
 		Filter->AddAvailableLogCategory(Message->Category);
 		if (!Filter->IsMessageAllowed(Message))
 		{
@@ -873,11 +925,12 @@ void FOutputLogTextLayoutMarshaller::AppendPendingMessagesToTextLayout()
 
 		++NumAddedMessages;
 
-		const FTextBlockStyle& MessageTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>(Message->Style);
+		const FTextBlockStyle& MessageTextStyle = FOutputLogStyle::Get().GetWidgetStyle<FTextBlockStyle>(Message->Style);
 
 		TSharedRef<FString> LineText = Message->Message;
 
 		TArray<TSharedRef<IRun>> Runs;
+
 
 		switch (CategoryColorizationMode)
 		{
@@ -1040,21 +1093,15 @@ FOutputLogTextLayoutMarshaller::FOutputLogTextLayoutMarshaller(TArray< TSharedPt
 }
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
+void SOutputLog::Construct( const FArguments& InArgs, bool bCreateDrawerDockButton)
 {
-	bIsInDrawer = bIsDrawerOutputLog;
-
-	// Build list of available log categories from historical logs
-	for (const auto& Message : InArgs._Messages)
-	{
-		Filter.AddAvailableLogCategory(Message->Category);
-	}
+	bShouldCreateDrawerDockButton = bCreateDrawerDockButton;
+	BuildInitialLogCategoryFilter(InArgs);
 
 	MessagesTextMarshaller = FOutputLogTextLayoutMarshaller::Create(InArgs._Messages, &Filter);
 
 	MessagesTextBox = SNew(SMultiLineEditableTextBox)
-		.Style(FEditorStyle::Get(), "Log.TextBox")
-		.TextStyle(FEditorStyle::Get(), "Log.Normal")
+		.Style(FOutputLogStyle::Get(), "Log.TextBox")
 		.Marshaller(MessagesTextMarshaller)
 		.IsReadOnly(true)
 		.AlwaysShowScrollbars(true)
@@ -1088,7 +1135,7 @@ void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
 			.HAlign(HAlign_Left)
 			[
 				SNew(SComboButton)
-				.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+				.ComboButtonStyle(FOutputLogStyle::Get(), "SimpleComboButton")
 				.ToolTipText(LOCTEXT("AddFilterToolTip", "Add an output log filter."))
 				.OnGetMenuContent(this, &SOutputLog::MakeAddFilterMenu)
 				.ButtonContent()
@@ -1098,7 +1145,7 @@ void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
 					.AutoWidth()
 					[
 						SNew(SImage)
-						.Image(FAppStyle::Get().GetBrush("Icons.Filter"))
+						.Image(FOutputLogStyle::Get().GetBrush("Icons.Filter"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 					+SHorizontalBox::Slot()
@@ -1123,8 +1170,8 @@ void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
 			.AutoWidth()
 			[
 				SNew(SComboButton)
-				.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
-				.OnGetMenuContent(this, &SOutputLog::GetViewButtonContent)
+				.ComboButtonStyle(FOutputLogStyle::Get(), "SimpleComboButton")
+				.OnGetMenuContent(this, &SOutputLog::GetViewButtonContent, InArgs._SettingsMenuFlags)
 				.ButtonContent()
 				[
 					SNew(SHorizontalBox)
@@ -1133,7 +1180,7 @@ void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
 					.VAlign(VAlign_Center)
 					[
 						SNew(SImage)
-						.Image(FAppStyle::Get().GetBrush("Icons.Settings"))
+						.Image(FOutputLogStyle::Get().GetBrush("Icons.Settings"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 					+ SHorizontalBox::Slot()
@@ -1169,13 +1216,13 @@ void SOutputLog::Construct( const FArguments& InArgs, bool bIsDrawerOutputLog)
 	];
 
 	GLog->AddOutputDevice(this);
-	// Remove itself on crash (crashmalloc has limited memory and echoing logs here at that point is useless).
-	FCoreDelegates::OnHandleSystemError.AddRaw(this, &SOutputLog::OnCrash);
 
+#if WITH_EDITOR
 	// Listen for style changes
-	UEditorStyleSettings* Settings = GetMutableDefault<UEditorStyleSettings>();
+	UOutputLogSettings* Settings = GetMutableDefault<UOutputLogSettings>();
 	SettingsWatchHandle = Settings->OnSettingChanged().AddRaw(this, &SOutputLog::HandleSettingChanged);
-	
+#endif
+
 	bIsUserScrolled = false;
 	RequestForceScroll();
 }
@@ -1189,11 +1236,14 @@ SOutputLog::~SOutputLog()
 	}
 	FCoreDelegates::OnHandleSystemError.RemoveAll(this);
 
+#if WITH_EDITOR
 	if (UObjectInitialized() && !GExitPurge)
 	{
-		UEditorStyleSettings* Settings = GetMutableDefault<UEditorStyleSettings>();
+		UOutputLogSettings* Settings = GetMutableDefault<UOutputLogSettings>();
 		Settings->OnSettingChanged().Remove(SettingsWatchHandle);
 	}
+#endif
+
 }
 
 void SOutputLog::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
@@ -1201,21 +1251,10 @@ void SOutputLog::Tick(const FGeometry& AllottedGeometry, const double InCurrentT
 	if (MessagesTextMarshaller->SubmitPendingMessages())
 	{
 		// Don't scroll to the bottom automatically when the user is scrolling the view or has scrolled it away from the bottom.
-		if (!bIsUserScrolled)
-		{
-			RequestForceScroll();
-		}
+		RequestForceScroll(true);
 	}
 
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
-}
-
-void SOutputLog::OnCrash()
-{
-	if (GLog != nullptr)
-	{
-		GLog->RemoveOutputDevice(this);
-	}
 }
 
 static const FName NAME_StyleLogCommand(TEXT("Log.Command"));
@@ -1257,7 +1296,7 @@ bool SOutputLog::CreateLogMessages( const TCHAR* V, ELogVerbosity::Type Verbosit
 		if (UObjectInitialized() && !GExitPurge)
 		{
 			// Logging can happen very late during shutdown, even after the UObject system has been torn down, hence the init check above
-			LogTimestampMode = GetDefault<UEditorStyleSettings>()->LogTimestampMode;
+			LogTimestampMode = GetDefault<UOutputLogSettings>()->LogTimestampMode;
 		}
 
 		const int32 OldNumMessages = OutMessages.Num();
@@ -1430,9 +1469,10 @@ void SOutputLog::OnConsoleCommandExecuted()
 	RequestForceScroll();
 }
 
-void SOutputLog::RequestForceScroll()
+void SOutputLog::RequestForceScroll(bool bIfUserHasNotScrolledUp)
 {
-	if (MessagesTextMarshaller->GetNumFilteredMessages() > 0)
+	if (MessagesTextMarshaller->GetNumFilteredMessages() > 0
+		&& (!bIfUserHasNotScrolledUp || !bIsUserScrolled))
 	{
 		MessagesTextBox->ScrollTo(ETextLocation::EndOfDocument);
 		bIsUserScrolled = false;
@@ -1452,33 +1492,123 @@ void SOutputLog::Refresh()
 
 bool SOutputLog::IsWordWrapEnabled() const
 {
-	bool WordWrapEnabled = false;
-	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogWordWrap"), WordWrapEnabled, GEditorPerProjectIni);
-	return WordWrapEnabled;
+	const UOutputLogSettings* Settings = GetDefault<UOutputLogSettings>();
+	return Settings ? Settings->bEnableOutputLogWordWrap : false;
 }
 
 void SOutputLog::SetWordWrapEnabled(ECheckBoxState InValue)
 {
-	const bool WordWrapEnabled = (InValue == ECheckBoxState::Checked);
-	GConfig->SetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogWordWrap"), WordWrapEnabled, GEditorPerProjectIni);
-
-	if (!bIsUserScrolled)
+	const bool bWordWrapEnabled = (InValue == ECheckBoxState::Checked);
+	UOutputLogSettings* Settings = GetMutableDefault<UOutputLogSettings>();
+	if (Settings)
 	{
-		RequestForceScroll();
+		Settings->bEnableOutputLogWordWrap = bWordWrapEnabled;
+		Settings->SaveConfig();
 	}
+
+	RequestForceScroll(true);
 }
 
+ELogTimes::Type SOutputLog::GetSelectedTimestampMode() 
+{
+	const UOutputLogSettings* Settings = GetDefault<UOutputLogSettings>();
+	return Settings->LogTimestampMode;
+}
+
+bool SOutputLog::IsSelectedTimestampMode(ELogTimes::Type NewType)
+{
+	return GetSelectedTimestampMode() == NewType;
+}
+
+void SOutputLog::AddTimestampMenuSection(FMenuBuilder& Menu)
+{
+
+	Menu.BeginSection("LoggingTimestampSection");
+	{
+		const UEnum* Enum = StaticEnum<ELogTimes::Type>();
+
+		for (int CurrentTimeStampType = 0; CurrentTimeStampType < Enum->NumEnums() - 1; CurrentTimeStampType++)
+		{
+			
+			ELogTimes::Type TimeStampType = static_cast<ELogTimes::Type>(CurrentTimeStampType);
+			FText Tooltip;
+
+			#if WITH_EDITOR
+				Tooltip = Enum->GetToolTipTextByIndex(CurrentTimeStampType);
+			#endif // WITH_EDITOR
+			
+			Menu.AddMenuEntry(Enum->GetDisplayNameTextByIndex(CurrentTimeStampType),
+				Tooltip,
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this, TimeStampType] {
+						SetTimestampMode(TimeStampType);
+						}),
+					FCanExecuteAction::CreateLambda([] { return true; }),
+					FIsActionChecked::CreateLambda([this, TimeStampType] { return IsSelectedTimestampMode(TimeStampType); })
+							),
+				NAME_None,
+				EUserInterfaceActionType::RadioButton);
+
+		}
+	}
+	Menu.EndSection();
+}
+
+void SOutputLog::SetTimestampMode(ELogTimes::Type InValue)
+{
+	 UOutputLogSettings* Settings = GetMutableDefault<UOutputLogSettings>();
+	if (Settings)
+	{
+		Settings->LogTimestampMode = InValue;
+		Settings->SaveConfig();
+	}
+	RequestForceScroll(true);
+}
+
+#if WITH_EDITOR
 bool SOutputLog::IsClearOnPIEEnabled() const
 {
-	bool ClearOnPIEEnabled = false;
-	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogClearOnPIE"), ClearOnPIEEnabled, GEditorPerProjectIni);
-	return ClearOnPIEEnabled;
+	const UOutputLogSettings* Settings = GetDefault<UOutputLogSettings>();
+	return Settings ? Settings->bEnableOutputLogClearOnPIE : false;
 }
 
 void SOutputLog::SetClearOnPIE(ECheckBoxState InValue)
 {
-	const bool ClearOnPIEEnabled = (InValue == ECheckBoxState::Checked);
-	GConfig->SetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogClearOnPIE"), ClearOnPIEEnabled, GEditorPerProjectIni);
+	const bool bClearOnPIEEnabled = (InValue == ECheckBoxState::Checked);
+	UOutputLogSettings* Settings = GetMutableDefault<UOutputLogSettings>();
+	if (Settings)
+	{
+		Settings->bEnableOutputLogClearOnPIE = bClearOnPIEEnabled;
+		Settings->SaveConfig();
+	}
+}
+#endif
+
+void SOutputLog::BuildInitialLogCategoryFilter(const FArguments& InArgs)
+{
+	for (const auto& Message : InArgs._Messages)
+	{
+		Filter.AddAvailableLogCategory(Message->Category);
+		const bool bIsDeselectedByDefault = InArgs._AllowInitialLogCategory.IsBound() && !InArgs._AllowInitialLogCategory.Execute(Message->Category);
+		if (bIsDeselectedByDefault && Filter.IsLogCategoryEnabled(Message->Category))
+		{
+			Filter.bShowAllCategories = false;
+			Filter.ToggleLogCategory(Message->Category);
+		}
+	}
+
+	for (auto DefaultCategorySelectionIt = InArgs._DefaultCategorySelection.CreateConstIterator(); DefaultCategorySelectionIt; ++DefaultCategorySelectionIt)
+	{
+		const FName Category = DefaultCategorySelectionIt->Key;
+		Filter.AddAvailableLogCategory(Category);
+
+		Filter.bShowAllCategories &= DefaultCategorySelectionIt->Value;
+		if (Filter.IsLogCategoryEnabled(Category) != DefaultCategorySelectionIt->Value)
+		{
+			Filter.ToggleLogCategory(Category);
+		}
+	}
 }
 
 void SOutputLog::OnFilterTextChanged(const FText& InFilterText)
@@ -1679,73 +1809,143 @@ void SOutputLog::CategoriesSingle_Execute(FName InName)
 	Refresh();
 }
 
-TSharedRef<SWidget> SOutputLog::GetViewButtonContent()
+void SOutputLog::UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, TOptional<bool> bShowErrors, TOptional<bool> bShowWarnings, TOptional<bool> bShowLogs)
+{
+	if (bShowErrors.IsSet())
+	{
+		Filter.bShowErrors = bShowErrors.GetValue();
+	}
+	if (bShowWarnings.IsSet())
+	{
+		Filter.bShowWarnings = bShowWarnings.GetValue();
+	}
+	if (bShowLogs.IsSet())
+	{
+		Filter.bShowLogs = bShowLogs.GetValue();
+	}
+
+	// Show all categories if empty list is passed in. This means there's no way to change the Show* bools
+	// and also leave the categories as-is, but that use case is probably minimal. It can be added if needed.
+	Filter.bShowAllCategories = CategoriesToShow.Num() == 0;
+	Filter.ClearSelectedLogCategories();
+	const TArray<FName> ActualCategoriesToShow = Filter.bShowAllCategories ? Filter.GetAvailableLogCategories() : CategoriesToShow;
+	for (const auto& AvailableCategory : ActualCategoriesToShow)
+	{
+		Filter.ToggleLogCategory(AvailableCategory);
+	}
+
+	MessagesTextMarshaller->MarkMessagesCacheAsDirty();
+	Refresh();
+}
+
+TSharedRef<SWidget> SOutputLog::GetViewButtonContent(EOutputLogSettingsMenuFlags Flags)
 {
 	TSharedPtr<FExtender> Extender;
 	FMenuBuilder MenuBuilder(true, nullptr, Extender, true);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("WordWrapEnabledOption", "Enable Word Wrapping"),
-		LOCTEXT("WordWrapEnabledOptionToolTip", "Enable word wrapping in the Output Log."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([this] {
-				// This is a toggle, hence that it is inverted
-				SetWordWrapEnabled(IsWordWrapEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
-			}),
-			FCanExecuteAction::CreateLambda([] { return true; }),
-			FIsActionChecked::CreateSP(this, &SOutputLog::IsWordWrapEnabled)
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("ClearOnPIE", "Clear on PIE"),
-		LOCTEXT("ClearOnPIEToolTip", "Enable clearing of the Output Log on PIE startup."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([this] {
-				// This is a toggle, hence that it is inverted
-				SetClearOnPIE(IsClearOnPIEEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
-			}),
-			FCanExecuteAction::CreateLambda([] { return true; }),
-			FIsActionChecked::CreateSP(this, &SOutputLog::IsClearOnPIEEnabled)
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-	MenuBuilder.AddMenuSeparator();
 
-	//Show Source In Explorer
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("FindSourceFile", "Open Source Location"),
-		LOCTEXT("FindSourceFileTooltip", "Opens the folder containing the source of the Output Log."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "OutputLog.OpenSourceLocation"),
-		FUIAction(
-			FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExplorer)
-		)
-	);
+	const bool bSupportWordWrapping = (Flags & EOutputLogSettingsMenuFlags::SkipEnableWordWrapping) == EOutputLogSettingsMenuFlags::None;
+	if (bSupportWordWrapping)
+	{
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("WordWrapEnabledOption", "Enable Word Wrapping"),
+			LOCTEXT("WordWrapEnabledOptionToolTip", "Enable word wrapping in the Output Log."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this] {
+					// This is a toggle, hence that it is inverted
+					SetWordWrapEnabled(IsWordWrapEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
+				}),
+				FCanExecuteAction::CreateLambda([] { return true; }),
+				FIsActionChecked::CreateSP(this, &SOutputLog::IsWordWrapEnabled)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+	FText Tooltip;
+
+	#if WITH_EDITORONLY_DATA
+		Tooltip = UOutputLogSettings::StaticClass()->FindPropertyByName(
+			GET_MEMBER_NAME_CHECKED(UOutputLogSettings, LogTimestampMode))->GetToolTipText();
+	#endif // WITH_EDITORONLY_DATA
+	MenuBuilder.AddSubMenu(
+		TAttribute<FText>::CreateLambda([this]()
+			{
+				const UEnum* Enum = StaticEnum<ELogTimes::Type>();
+				return FText::Format(LOCTEXT("TimestampsSubmenu", "Timestamp Mode: {0}"),
+					Enum->GetDisplayNameTextByIndex(this->GetSelectedTimestampMode()));
+			}),
+		Tooltip,
+		FNewMenuDelegate::CreateSP(this, &SOutputLog::AddTimestampMenuSection));
+
+
+#if WITH_EDITOR
+	const bool bSupportClearOnPie = (Flags & EOutputLogSettingsMenuFlags::SkipClearOnPie) == EOutputLogSettingsMenuFlags::None;
+	if (bSupportClearOnPie)
+	{
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("ClearOnPIE", "Clear on PIE"),
+			LOCTEXT("ClearOnPIEToolTip", "Enable clearing of the Output Log on PIE startup."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this] {
+					// This is a toggle, hence that it is inverted
+					SetClearOnPIE(IsClearOnPIEEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
+				}),
+				FCanExecuteAction::CreateLambda([] { return true; }),
+				FIsActionChecked::CreateSP(this, &SOutputLog::IsClearOnPIEEnabled)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+#else
+	constexpr bool bSupportClearOnPie = false;
+#endif
+
+	const bool bSupportSourceLocation = (Flags & EOutputLogSettingsMenuFlags::SkipOpenSourceButton) == EOutputLogSettingsMenuFlags::None;
+	const bool bSupportExternalEditor = (Flags & EOutputLogSettingsMenuFlags::SkipOpenInExternalEditorButton) == EOutputLogSettingsMenuFlags::None;
+	const bool bNeedsSeparator = (bSupportWordWrapping || bSupportClearOnPie) && (bSupportSourceLocation || bSupportExternalEditor);
+	if (bNeedsSeparator)
+	{
+		MenuBuilder.AddMenuSeparator();
+	}
+
+	if (bSupportSourceLocation)
+	{
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("FindSourceFile", "Open Source Location"),
+			LOCTEXT("FindSourceFileTooltip", "Opens the folder containing the source of the Output Log."),
+			FSlateIcon(FOutputLogStyle::Get().GetStyleSetName(), "OutputLog.OpenSourceLocation"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExplorer)
+			)
+		);
+	}
 	
-	// Open In External Editor
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("OpenInExternalEditor", "Open In External Editor"),
-		LOCTEXT("OpenInExternalEditorTooltip", "Opens the Output Log in the default external editor."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "OutputLog.OpenInExternalEditor"),
-		FUIAction(
-			FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExternalEditor)
-		)
-	);
-
+	if (bSupportExternalEditor)
+	{
+		// Open In External Editor
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("OpenInExternalEditor", "Open In External Editor"),
+			LOCTEXT("OpenInExternalEditorTooltip", "Opens the Output Log in the default external editor."),
+			FSlateIcon(FOutputLogStyle::Get().GetStyleSetName(), "OutputLog.OpenInExternalEditor"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExternalEditor)
+			)
+		);
+	}
 
 	return MenuBuilder.MakeWidget();
 }
 
 TSharedRef<SWidget> SOutputLog::CreateDrawerDockButton()
 {
-	if (bIsInDrawer)
+	if (bShouldCreateDrawerDockButton)
 	{
 		return
 			SNew(SButton)
-			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ButtonStyle(FOutputLogStyle::Get(), "SimpleButton")
 			.ToolTipText(LOCTEXT("DockInLayout_Tooltip", "Docks this output log in the current layout.\nThe drawer will still be usable as a temporary log."))
 			.ContentPadding(FMargin(1, 0))
 			.Visibility_Lambda(
@@ -1763,7 +1963,7 @@ TSharedRef<SWidget> SOutputLog::CreateDrawerDockButton()
 				[
 					SNew(SImage)
 					.ColorAndOpacity(FSlateColor::UseForeground())
-					.Image(FAppStyle::Get().GetBrush("EditorViewport.SubMenu.Layouts"))
+					.Image(FOutputLogStyle::Get().GetBrush("Icons.Layout"))
 				]
 				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
@@ -1862,7 +2062,7 @@ bool FOutputLogFilter::IsMessageAllowed(const TSharedPtr<FOutputLogMessage>& Mes
 	return true;
 }
 
-void FOutputLogFilter::AddAvailableLogCategory(FName& LogCategory)
+void FOutputLogFilter::AddAvailableLogCategory(const FName& LogCategory)
 {
 	// Use an insert-sort to keep AvailableLogCategories alphabetically sorted
 	int32 InsertIndex = 0;

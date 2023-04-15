@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Datadog.Trace;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Controllers;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
@@ -15,6 +17,15 @@ namespace Horde.Storage.Implementation
 {
     public class RefResponse
     {
+        public RefResponse()
+        {
+            Name = null!;
+            LastAccessTime = null!;
+            Metadata = null!;
+            ContentHash = null!;
+            BlobIdentifiers = null!;
+        }
+
         public RefResponse(string name, DateTime? lastAccessTime, ContentHash contentHash, BlobIdentifier[] blobIdentifiers, Dictionary<string, object>? metadata)
         {
             Name = name;
@@ -24,13 +35,22 @@ namespace Horde.Storage.Implementation
             BlobIdentifiers = blobIdentifiers;
         }
 
-        public string Name { get; }
-        public DateTime? LastAccessTime { get; }
-        public Dictionary<string, object>? Metadata { get; }
+        [CbField("name")]
+        public string Name { get; set; }
 
-        public ContentHash ContentHash { get; }
-        public BlobIdentifier[] BlobIdentifiers { get; }
+        [CbField("lastAccessTime")]
+        public DateTime? LastAccessTime { get; set; }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required by serialization")]
+        public Dictionary<string, object>? Metadata { get; set; }
+
+        [CbField("contentHash")]
+        public ContentHash ContentHash { get; set; }
+
+        [CbField("blobIdentifiers")]
+        public BlobIdentifier[] BlobIdentifiers { get; set; }
+
+        [CbField("blob")]
         public byte[]? Blob { get; set; }
     }
 
@@ -57,7 +77,7 @@ namespace Horde.Storage.Implementation
 
     public class DDCRefService : IDDCRefService
     {
-        private readonly IBlobStore _blobStore;
+        private readonly IBlobService _blobStore;
         private readonly IRefsStore _refsStore;
         private readonly ITransactionLogWriter _transactionLog;
         private readonly ILastAccessTracker<RefRecord> _lastAccessTracker;
@@ -65,7 +85,7 @@ namespace Horde.Storage.Implementation
         private readonly HordeStorageSettings _settings;
         private readonly ILogger _logger = Log.ForContext<DDCRefService>();
 
-        public DDCRefService(IBlobStore blobStore, IRefsStore refsStore, ITransactionLogWriter transactionLog, ILastAccessTracker<RefRecord> lastAccessTracker,
+        public DDCRefService(IBlobService blobStore, IRefsStore refsStore, ITransactionLogWriter transactionLog, ILastAccessTracker<RefRecord> lastAccessTracker,
             IDiagnosticContext diagnosticContext, IOptionsMonitor<HordeStorageSettings> settings)
         {
             _blobStore = blobStore;
@@ -88,13 +108,18 @@ namespace Horde.Storage.Implementation
 
             IRefsStore.ExtraFieldsFlag flags = IRefsStore.ExtraFieldsFlag.None;
             if (needsLastAccess)
+            {
                 flags |= IRefsStore.ExtraFieldsFlag.LastAccess;
+            }
+
             if (needsMetadata)
+            {
                 flags |= IRefsStore.ExtraFieldsFlag.Metadata;
+            }
 
             string resource = $"{ns}.{bucket}.{key}";
             RefRecord? record;
-            using (Scope scope = Tracer.Instance.StartActive("ref.get"))
+            using (IScope scope = Tracer.Instance.StartActive("ref.get"))
             {
                 scope.Span.ResourceName = resource;
                 record = await _refsStore.Get(ns, bucket, key, flags);
@@ -106,20 +131,20 @@ namespace Horde.Storage.Implementation
 
             // its not critical that this finishes, so we just log errors in case it fails but never await
             {
-                Task _ = _lastAccessTracker.TrackUsed(record).ContinueWith(task =>
+                Task _ = _lastAccessTracker.TrackUsed(record).ContinueWith((task, _) =>
                 {
                     if (task.Exception != null)
                     {
                         _logger.Error(task.Exception, "Exception when tracking last access record");
                     }
-                });
+                }, null, TaskScheduler.Current);
             }
 
             BlobContents? maybeBlob = null;
 
             if (needsBlob)
             {
-                using Scope scope = Tracer.Instance.StartActive("blob.get");
+                using IScope scope = Tracer.Instance.StartActive("blob.get");
                 scope.Span.ResourceName = resource;
                 scope.Span.SetTag("BlobCount", record.Blobs.Length.ToString());
 
@@ -170,7 +195,6 @@ namespace Horde.Storage.Implementation
             return record;
         }
 
-
         public async Task<PutRequestResponse> Put(
             NamespaceId ns,
             BucketId bucket,
@@ -213,7 +237,9 @@ namespace Horde.Storage.Implementation
             }
             int countOfBlobs = blobReferences.Length;
             if (countOfBlobs == 0)
+            {
                 throw new ArgumentException("No blobs found when determining partitioning");
+            }
 
             // as the body is just a binary blob we are unable to receive metadata for this route
             // TODO: We could accept metadata from query parameters
@@ -232,12 +258,14 @@ namespace Horde.Storage.Implementation
             else
             {
                 if (slices == null)
+                {
                     throw new Exception("Slices was never set when uploading partitioned blob.");
+                }
 
                 Task[] insertTasks = new Task[countOfBlobs];
                 for (int i = 0; i < countOfBlobs; i++)
                 {
-                    insertTasks[i] = _blobStore.PutObject(ns, slices[i], blobReferences[i]);
+                    insertTasks[i] = _blobStore.PutObject(ns, slices[i].ToArray(), blobReferences[i]);
                 }
 
                 blobInsertTask = Task.WhenAll(insertTasks);
@@ -299,7 +327,10 @@ namespace Horde.Storage.Implementation
         {
             long deleteCount = await _refsStore.Delete(ns, bucket, key);
             if (deleteCount != 0)
+            {
                 await _transactionLog.Delete(ns, bucket, key);
+            }
+
             return deleteCount;
         }
     }

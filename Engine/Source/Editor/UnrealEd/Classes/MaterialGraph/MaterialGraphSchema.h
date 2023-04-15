@@ -183,6 +183,8 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	UNREALED_API static const FName PC_Optional;
 	UNREALED_API static const FName PC_MaterialInput;
 	UNREALED_API static const FName PC_Exec;
+	UNREALED_API static const FName PC_Void;
+	UNREALED_API static const FName PC_ValueType;
 
 	// Common PinType.PinSubCategory values
 	UNREALED_API static const FName PSC_Red;
@@ -190,6 +192,13 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	UNREALED_API static const FName PSC_Blue;
 	UNREALED_API static const FName PSC_Alpha;
 	UNREALED_API static const FName PSC_RGBA;
+	UNREALED_API static const FName PSC_RGB;
+	UNREALED_API static const FName PSC_RG;
+	UNREALED_API static const FName PSC_Int;
+	UNREALED_API static const FName PSC_Byte;
+	UNREALED_API static const FName PSC_Bool;
+	UNREALED_API static const FName PSC_Float;
+	UNREALED_API static const FName PSC_Vector4;
 
 	UNREALED_API static const FName PN_Execute; // Category=PC_Exec, singleton, input
 
@@ -240,6 +249,12 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	/** Check whether the types of pins are compatible */
 	bool ArePinsCompatible_Internal(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin, FText& ResponseMessage) const;
 
+	/** update material when the default value of a material node's pin has changed */
+	UNREALED_API void UpdateMaterialOnDefaultValueChanged(const UEdGraph* Graph) const;
+
+	/** Update the detail view */
+	UNREALED_API void UpdateDetailView(const UEdGraph* Graph) const;
+
 	/** Gets the type of this pin (must be part of a UMaterialGraphNode_Base) */
 	UNREALED_API static uint32 GetMaterialValueType(const UEdGraphPin* MaterialPin);
 
@@ -248,7 +263,6 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	virtual void GetContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
 	virtual const FPinConnectionResponse CanCreateConnection(const UEdGraphPin* A, const UEdGraphPin* B) const override;
 	virtual bool TryCreateConnection(UEdGraphPin* A, UEdGraphPin* B) const override;
-	virtual bool ShouldHidePinDefaultValue(UEdGraphPin* Pin) const override { return true; }
 	virtual FLinearColor GetPinTypeColor(const FEdGraphPinType& PinType) const override;
 	virtual void BreakNodeLinks(UEdGraphNode& TargetNode) const override;
 	virtual void BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotifcation) const override;
@@ -263,6 +277,10 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	virtual void OnPinConnectionDoubleCicked(UEdGraphPin* PinA, UEdGraphPin* PinB, const FVector2D& GraphPosition) const override;
 	virtual bool SafeDeleteNodeFromGraph(UEdGraph* Graph, UEdGraphNode* NodeToDelete) const override;
 	virtual void GetAssetsGraphHoverMessage(const TArray<FAssetData>& Assets, const UEdGraph* HoverGraph, FString& OutTooltipText, bool& OutOkIcon) const;
+#if WITH_EDITORONLY_DATA
+	virtual float GetActionFilteredWeight(const FGraphActionListBuilderBase::ActionGroup& InCurrentAction, const TArray<FString>& InFilterTerms, const TArray<FString>& InSanitizedFilterTerms, const TArray<UEdGraphPin*>& DraggedFromPins) const override;
+	virtual FGraphSchemaSearchWeightModifiers GetSearchWeightModifiers() const override;
+#endif // WITH_EDITORONLY_DATA	
 	//~ End UEdGraphSchema Interface
 
 private:

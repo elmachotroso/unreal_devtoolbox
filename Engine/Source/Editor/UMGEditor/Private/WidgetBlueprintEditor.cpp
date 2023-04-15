@@ -15,9 +15,10 @@
 #include "WidgetBlueprint.h"
 #include "StatusBarSubsystem.h"
 #include "Editor.h"
+#include "WidgetBlueprintToolMenuContext.h"
 
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 
 #include "Algo/AllOf.h"
@@ -39,6 +40,7 @@
 #include "WorkflowOrientedApp/ApplicationMode.h"
 #include "BlueprintModes/WidgetDesignerApplicationMode.h"
 #include "BlueprintModes/WidgetGraphApplicationMode.h"
+#include "WidgetModeManager.h"
 
 #include "WidgetBlueprintEditorToolbar.h"
 #include "Components/CanvasPanel.h"
@@ -53,16 +55,19 @@
 
 #include "ScopedTransaction.h"
 
+#include "Designer/SDesignerView.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "UMGEditorActions.h"
 #include "UMGEditorModule.h"
 #include "GameProjectGenerationModule.h"
+#include "Tools/ToolCompatible.h"
 
-#include "SPaletteViewModel.h"
-#include "SLibraryViewModel.h"
+#include "Palette/SPaletteViewModel.h"
+#include "Library/SLibraryViewModel.h"
 
 #include "DesktopPlatformModule.h"
+#include "Engine/MemberReference.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "IDesktopPlatform.h"
 #include "IImageWrapper.h"
@@ -71,7 +76,14 @@
 #include "Serialization/BufferArchive.h"
 #include "Widgets/SVirtualWindow.h"
 #include "TabFactory/AnimationTabSummoner.h"
-#include "Kismet/Public/BlueprintEditorTabs.h"
+#include "TabFactory/DesignerTabSummoner.h"
+#include "ToolPalette/WidgetEditorModeUILayer.h"
+#include "BlueprintEditorTabs.h"
+
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
+#include "GraphEditorActions.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -185,16 +197,33 @@ void FWidgetBlueprintEditor::InitWidgetBlueprintEditor(const EToolkitMode::Type 
 		FExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::DuplicateSelectedWidgets),
 		FCanExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::CanDuplicateSelectedWidgets)
 		);
+
+	DesignerCommandList->MapAction(FGraphEditorCommands::Get().FindReferences,
+		FExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::OnFindWidgetReferences),
+		FCanExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::CanFindWidgetReferences));
+
+	TSharedPtr<class IToolkitHost> PinnedToolkitHost = ToolkitHost.Pin();
+	check(PinnedToolkitHost.IsValid());
+	ModeUILayer = MakeShared<FWidgetEditorModeUILayer>(PinnedToolkitHost.Get());
 }
 
 void FWidgetBlueprintEditor::InitalizeExtenders()
 {
-	FBlueprintEditor::InitalizeExtenders();
+	Super::InitalizeExtenders();
 
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 	AddMenuExtender(UMGEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 
 	AddMenuExtender(CreateMenuExtender());
+
+	TArrayView<IUMGEditorModule::FWidgetEditorToolbarExtender> ToolbarExtenderDelegates = UMGEditorModule.GetAllWidgetEditorToolbarExtenders();
+	for (auto& ToolbarExtenderDelegate : ToolbarExtenderDelegates)
+	{
+		if (ToolbarExtenderDelegate.IsBound())
+		{
+			AddToolbarExtender(ToolbarExtenderDelegate.Execute(GetToolkitCommands(), SharedThis(this)));
+		}
+	}
 }
 
 TSharedPtr<FExtender> FWidgetBlueprintEditor::CreateMenuExtender()
@@ -280,7 +309,9 @@ void FWidgetBlueprintEditor::BindToolkitCommands()
 	GetToolkitCommands()->MapAction(FUMGEditorCommands::Get().CreateNativeBaseClass,
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::OpenCreateNativeBaseClassDialog),
-			FCanExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::IsParentClassNative)
+			FCanExecuteAction::CreateSP(this, &FWidgetBlueprintEditor::CanCreateNativeBaseClass),
+			FGetActionCheckState(),
+			FIsActionButtonVisible::CreateSP(this, &FWidgetBlueprintEditor::IsCreateNativeBaseClassVisible)
 		)
 	);
 
@@ -380,8 +411,6 @@ void FWidgetBlueprintEditor::TakeSnapshot()
 			}
 		}
 	}
-
-
 }
 
 void FWidgetBlueprintEditor::CaptureThumbnail()
@@ -402,14 +431,13 @@ void FWidgetBlueprintEditor::CaptureThumbnail()
 		return;
 	}
 
-	TArray64<uint8> RawData;
-	FImageUtils::GetRawData(RenderTarget2D, RawData);
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-	TSharedPtr<IImageWrapper> PNGImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-	PNGImageWrapper->SetRaw(RawData.GetData(), RawData.GetAllocatedSize(), RenderTarget2D->SizeX, RenderTarget2D->SizeY, ERGBFormat::BGRA, 8);
-	const TArray64<uint8> PNGData = PNGImageWrapper->GetCompressed(100);
+	FImage Image;
+	if ( !FImageUtils::GetRenderTargetImage(RenderTarget2D,Image) )
+	{
+		return;
+	}
 
-	UTexture2D* ThumbnailTexture = FImageUtils::ImportBufferAsTexture2D(PNGData);
+	UTexture2D* ThumbnailTexture = FImageUtils::CreateTexture2DFromImage(Image);
 	FWidgetBlueprintEditorUtils::SetTextureAsAssetThumbnail(GetWidgetBlueprintObj(), ThumbnailTexture);
 }
 
@@ -426,6 +454,40 @@ bool FWidgetBlueprintEditor::IsImageUsedAsThumbnail()
 bool FWidgetBlueprintEditor::IsPreviewWidgetInitialized()
 {
 	return GetPreview() != nullptr;
+}
+
+FName FWidgetBlueprintEditor::GetToolkitContextFName() const
+{
+	return GetToolkitFName();
+}
+
+FName FWidgetBlueprintEditor::GetToolkitFName() const
+{
+	return FName("WidgetBlueprintEditor");
+}
+
+FText FWidgetBlueprintEditor::GetBaseToolkitName() const
+{
+	return LOCTEXT("AppLabel", "Widget Editor");
+}
+
+FString FWidgetBlueprintEditor::GetWorldCentricTabPrefix() const
+{
+	return LOCTEXT("WorldCentricTabPrefix", "Widget Editor ").ToString();
+}
+
+FLinearColor FWidgetBlueprintEditor::GetWorldCentricTabColorScale() const
+{
+	return FLinearColor(0.3f, 0.25f, 0.35f, 0.5f);
+}
+
+void FWidgetBlueprintEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
+{
+	Super::InitToolMenuContext(MenuContext);
+
+	UWidgetBlueprintToolMenuContext* Context = NewObject<UWidgetBlueprintToolMenuContext>();
+	Context->WidgetBlueprintEditor = SharedThis(this);
+	MenuContext.AddObject(Context);
 }
 
 void FWidgetBlueprintEditor::SetCreateOnCompileSetting(EDisplayOnCompile InCreateOnCompile)
@@ -468,7 +530,7 @@ void FWidgetBlueprintEditor::OpenCreateNativeBaseClassDialog()
 
 void FWidgetBlueprintEditor::OnCreateNativeBaseClassSuccessfully(const FString& InClassName, const FString& InClassPath, const FString& InModuleName)
 {
-	UClass* NewNativeClass = FindObject<UClass>(ANY_PACKAGE, *InClassName);
+	UClass* NewNativeClass = FindObject<UClass>(FTopLevelAssetPath(*InClassPath, *InClassName));
 	if (NewNativeClass)
 	{
 		ReparentBlueprint_NewParentChosen(NewNativeClass);
@@ -477,7 +539,7 @@ void FWidgetBlueprintEditor::OnCreateNativeBaseClassSuccessfully(const FString& 
 
 void FWidgetBlueprintEditor::RegisterApplicationModes(const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode, bool bNewlyCreated/* = false*/)
 {
-	//FBlueprintEditor::RegisterApplicationModes(InBlueprints, bShouldOpenInDefaultsMode);
+	//Super::RegisterApplicationModes(InBlueprints, bShouldOpenInDefaultsMode);
 
 	if ( InBlueprints.Num() == 1 )
 	{
@@ -597,7 +659,10 @@ void FWidgetBlueprintEditor::SetSelectedNamedSlot(TOptional<FNamedSlotSelection>
 	SelectedNamedSlot = InSelectedNamedSlot;
 	if (InSelectedNamedSlot.IsSet())
 	{
-		SelectedWidgets.Add(InSelectedNamedSlot->NamedSlotHostWidget);
+		if (InSelectedNamedSlot->NamedSlotHostWidget.IsValid())
+		{
+			SelectedWidgets.Add(InSelectedNamedSlot->NamedSlotHostWidget);
+		}
 	}
 
 	OnSelectedWidgetsChanged.Broadcast();
@@ -659,7 +724,7 @@ void FWidgetBlueprintEditor::OnBlueprintChangedImpl(UBlueprint* InBlueprint, boo
 {
 	DestroyPreview();
 
-	FBlueprintEditor::OnBlueprintChangedImpl(InBlueprint, bIsJustBeingCompiled);
+	Super::OnBlueprintChangedImpl(InBlueprint, bIsJustBeingCompiled);
 
 	if ( InBlueprint )
 	{
@@ -818,9 +883,38 @@ void FWidgetBlueprintEditor::DuplicateSelectedWidgets()
 	SelectWidgets(DuplicatedWidgetRefs, false);
 }
 
+void FWidgetBlueprintEditor::OnFindWidgetReferences()
+{
+	FWidgetReference WidgetReference = *GetSelectedWidgets().CreateConstIterator();
+	const FString VariableName = WidgetReference.GetTemplate()->GetName();
+
+	FMemberReference MemberReference;
+	MemberReference.SetSelfMember(*VariableName);
+	const FString SearchTerm = MemberReference.GetReferenceSearchString(GetBlueprintObj()->SkeletonGeneratedClass);
+
+	SetCurrentMode(FWidgetBlueprintApplicationModes::GraphMode);
+	SummonSearchUI(true, SearchTerm);
+}
+
+bool FWidgetBlueprintEditor::CanFindWidgetReferences() const
+{
+	return GetSelectedWidgets().Num() == 1 && GetSelectedWidgets().CreateConstIterator()->GetTemplate()->bIsVariable;
+}
+
+bool FWidgetBlueprintEditor::CanCreateNativeBaseClass() const
+{
+	return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed() && IsParentClassNative();
+}
+
+
+bool FWidgetBlueprintEditor::IsCreateNativeBaseClassVisible() const
+{
+	return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
+}
+
 void FWidgetBlueprintEditor::Tick(float DeltaTime)
 {
-	FBlueprintEditor::Tick(DeltaTime);
+	Super::Tick(DeltaTime);
 
 	// Tick the preview scene world.
 	if ( !GIntraFrameDebuggingGameThread )
@@ -936,7 +1030,7 @@ static bool MigratePropertyValue(UObject* SourceObject, UObject* DestinationObje
 
 void FWidgetBlueprintEditor::AddReferencedObjects( FReferenceCollector& Collector )
 {
-	FBlueprintEditor::AddReferencedObjects( Collector );
+	Super::AddReferencedObjects( Collector );
 
 	UUserWidget* Preview = GetPreview();
 	Collector.AddReferencedObject( Preview );
@@ -978,14 +1072,14 @@ void FWidgetBlueprintEditor::MigrateFromChain(FEditPropertyChain* PropertyThatCh
 
 void FWidgetBlueprintEditor::PostUndo(bool bSuccessful)
 {
-	FBlueprintEditor::PostUndo(bSuccessful);
+	Super::PostUndo(bSuccessful);
 
 	OnWidgetBlueprintTransaction.Broadcast();
 }
 
 void FWidgetBlueprintEditor::PostRedo(bool bSuccessful)
 {
-	FBlueprintEditor::PostRedo(bSuccessful);
+	Super::PostRedo(bSuccessful);
 
 	OnWidgetBlueprintTransaction.Broadcast();
 }
@@ -1002,7 +1096,7 @@ TSharedRef<SWidget> FWidgetBlueprintEditor::CreateSequencerTabWidget()
 	{
 		NoAnimationTextBlockPtr =
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "UMGEditor.NoAnimationFont")
+			.TextStyle(FAppStyle::Get(), "UMGEditor.NoAnimationFont")
 			.Text(LOCTEXT("NoAnimationSelected", "No Animation Selected"));
 		NoAnimationTextBlockTab = NoAnimationTextBlockPtr;
 	}
@@ -1034,7 +1128,7 @@ TSharedRef<SWidget> FWidgetBlueprintEditor::CreateSequencerDrawerWidget()
 	{
 		NoAnimationTextBlockPtr =
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "UMGEditor.NoAnimationFont")
+			.TextStyle(FAppStyle::Get(), "UMGEditor.NoAnimationFont")
 			.Text(LOCTEXT("NoAnimationSelected", "No Animation Selected"));
 		NoAnimationTextBlockDrawer = NoAnimationTextBlockPtr;
 	}
@@ -1064,6 +1158,31 @@ TSharedRef<SWidget> FWidgetBlueprintEditor::OnGetWidgetAnimSequencer()
 	}
 
 	return AnimDrawerWidget.ToSharedRef();
+}
+
+void FWidgetBlueprintEditor::AddExternalEditorWidget(FName ID, TSharedRef<SWidget> InExternalWidget)
+{
+	if (!ExternalEditorWidgets.Contains(ID))
+	{
+		ExternalEditorWidgets.Add(ID, InExternalWidget);
+	}
+}
+
+int32 FWidgetBlueprintEditor::RemoveExternalEditorWidget(FName ID)
+{
+	return ExternalEditorWidgets.Remove(ID);
+}
+
+TSharedPtr<SWidget> FWidgetBlueprintEditor::GetExternalEditorWidget(FName ID)
+{
+	TSharedPtr<SWidget>* ExternalWidget = ExternalEditorWidgets.Find(ID);
+
+	if (ExternalWidget)
+	{
+		return *ExternalWidget;
+	}
+
+	return nullptr;
 }
 
 void FWidgetBlueprintEditor::ToggleAnimDrawer()
@@ -1410,6 +1529,31 @@ void FWidgetBlueprintEditor::Compile()
 	}
 }
 
+bool FWidgetBlueprintEditor::OnRequestClose()
+{
+	bool bAllowClose = Super::OnRequestClose();
+
+	// Give any active modes a chance to shutdown while the toolkit host is still alive
+	// Note: This along side with the default tool palette extension tab being closed 
+	// is what prevents an unrecognized tab from spawning on layout restore
+	if (bAllowClose)
+	{
+		GetEditorModeManager().ActivateDefaultMode();
+	}
+
+	return bAllowClose;
+}
+
+void FWidgetBlueprintEditor::OnToolkitHostingStarted(const TSharedRef<IToolkit>& Toolkit)
+{
+	ModeUILayer->OnToolkitHostingStarted(Toolkit);
+}
+
+void FWidgetBlueprintEditor::OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit)
+{
+	ModeUILayer->OnToolkitHostingFinished(Toolkit);
+}
+
 void FWidgetBlueprintEditor::DestroyPreview()
 {
 	UUserWidget* PreviewUserWidget = GetPreview();
@@ -1490,9 +1634,27 @@ void FWidgetBlueprintEditor::UpdatePreview(UBlueprint* InBlueprint, bool bInForc
 				}
 			}
 
+			TMap<FName, UWidget*> NamedSlotContentToMerge;
+			UWidgetBlueprint* WidgetBPIt = PreviewBlueprint;
+			while (WidgetBPIt)
+			{
+				TArray<FName> SlotNames;
+				WidgetBPIt->WidgetTree->GetSlotNames(SlotNames);
+
+				for(const FName SlotName : SlotNames)
+				{
+					if(UWidget* Content = WidgetBPIt->WidgetTree->GetContentForSlot(SlotName))
+					{
+						NamedSlotContentToMerge.Add(SlotName, Content);
+					}
+				}
+
+				WidgetBPIt = Cast<UWidgetBlueprint>(WidgetBPIt->GeneratedClass->GetSuperClass()->ClassGeneratedBy);
+			}
+
 			// Update the widget tree directly to match the blueprint tree.  That way the preview can update
 			// without needing to do a full recompile.
-			PreviewUserWidget->DuplicateAndInitializeFromWidgetTree(LatestWidgetTree);
+			PreviewUserWidget->DuplicateAndInitializeFromWidgetTree(LatestWidgetTree, NamedSlotContentToMerge);
 
 			// Establish the widget as being in design time before initializing (so that IsDesignTime is reliable within Initialize)
             // We have to call it to make sure that all the WidgetTree had the DesignerFlags set correctly
@@ -1518,7 +1680,7 @@ void FWidgetBlueprintEditor::UpdatePreview(UBlueprint* InBlueprint, bool bInForc
 
 FGraphAppearanceInfo FWidgetBlueprintEditor::GetGraphAppearance(UEdGraph* InGraph) const
 {
-	FGraphAppearanceInfo AppearanceInfo = FBlueprintEditor::GetGraphAppearance(InGraph);
+	FGraphAppearanceInfo AppearanceInfo = Super::GetGraphAppearance(InGraph);
 
 	if ( GetBlueprintObj()->IsA(UWidgetBlueprint::StaticClass()) )
 	{
@@ -1606,6 +1768,14 @@ bool FWidgetBlueprintEditor::GetIsRespectingLocks() const
 void FWidgetBlueprintEditor::SetIsRespectingLocks(bool Value)
 {
 	bRespectLocks = Value;
+}
+
+void FWidgetBlueprintEditor::CreateEditorModeManager()
+{
+	TSharedPtr<FWidgetModeManager> WidgetModeManager = MakeShared<FWidgetModeManager>();
+	WidgetModeManager->OwningToolkit = SharedThis(this);
+	EditorModeManager = WidgetModeManager;
+
 }
 
 class FObjectAndDisplayName
@@ -2074,10 +2244,18 @@ void FWidgetBlueprintEditor::ReplaceTrackWithWidgets(TArray<FWidgetReference> Wi
 
 	// Remove everything from the track
 	RemoveAllWidgetsFromTrack(ObjectId);
+	
+	// Create a new guid for the first object
+	FGuid NewGuid = ActiveSequencer->GetHandleToObject(Widgets[0].GetPreview());
 
-	AddWidgetsToTrack(Widgets, ObjectId);
+	// Move binding contents and remove possessable
+	MovieScene->MoveBindingContents(ObjectId, NewGuid);
+	MovieScene->RemovePossessable(ObjectId);
 
-	UpdateTrackName(ObjectId);
+	// Add all the remaining widgets to the new binding
+	AddWidgetsToTrack(Widgets, NewGuid);
+
+	UpdateTrackName(NewGuid);
 	SyncSequencersMovieSceneData();
 }
 

@@ -9,6 +9,8 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SOverlay.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonAnimatedSwitcher)
+
 UCommonAnimatedSwitcher::UCommonAnimatedSwitcher(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, TransitionType(ECommonSwitcherTransition::FadeOnly)
@@ -141,6 +143,8 @@ void UCommonAnimatedSwitcher::HandleSlateIsTransitioningChanged(bool bIsTransiti
 {
 	// While the switcher is transitioning, put up the guard to intercept all input
 	MyInputGuard->SetVisibility(bIsTransitioning ? EVisibility::Visible : EVisibility::Collapsed);
+
+	OnTransitioningChanged.Broadcast(bIsTransitioning);
 }
 
 void UCommonAnimatedSwitcher::SetActiveWidgetIndex_Internal(int32 Index)
@@ -177,3 +181,16 @@ void UCommonAnimatedSwitcher::SetActiveWidgetIndex_Internal(int32 Index)
 		bSetOnce = true;
 	}
 }
+
+bool UCommonAnimatedSwitcher::IsTransitionPlaying() const
+{
+	if (MyAnimatedSwitcher.IsValid())
+	{
+		return MyAnimatedSwitcher->IsTransitionPlaying();
+	}
+	else
+	{
+		return false;
+	}
+}
+

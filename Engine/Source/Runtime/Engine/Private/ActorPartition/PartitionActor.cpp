@@ -2,6 +2,8 @@
 
 #include "ActorPartition/PartitionActor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PartitionActor)
+
 #if WITH_EDITOR
 #include "Components/BoxComponent.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
@@ -45,7 +47,7 @@ bool APartitionActor::IsUserManaged() const
 	return true;
 }
 
-bool APartitionActor::ShouldIncludeGridSizeInName(UWorld* InWorld) const
+bool APartitionActor::ShouldIncludeGridSizeInName(UWorld* InWorld, const FActorPartitionIdentifier& InIdentifier) const
 {
 	return InWorld->GetWorldSettings()->bIncludeGridSizeInNameForPartitionedActors;
 }

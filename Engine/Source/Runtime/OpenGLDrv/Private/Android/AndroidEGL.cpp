@@ -15,6 +15,7 @@
 #include "Misc/ScopeLock.h"
 #include "UObject/GarbageCollection.h"
 #include "Android/AndroidPlatformFramePacer.h"
+#include <dlfcn.h>
 
 
 AndroidEGL* AndroidEGL::Singleton = NULL;
@@ -26,6 +27,18 @@ DEFINE_LOG_CATEGORY(LogEGL);
 #define EGL_CONTEXT_OPENGL_NO_ERROR_KHR   0x31B3
 #endif // EGL_KHR_create_context_no_error
 #endif // USE_ANDROID_EGL_NO_ERROR_CONTEXT
+
+typedef int32(*PFN_ANativeWindow_setBuffersTransform)(struct ANativeWindow* window, int32 transform);
+static PFN_ANativeWindow_setBuffersTransform ANativeWindow_setBuffersTransform_API = nullptr;
+
+// Use blit by default as setBuffersTransform is broken on random devices
+static TAutoConsoleVariable<int32> CVarAndroidGLESFlipYMethod(
+	TEXT("r.Android.GLESFlipYMethod"),
+	2,
+	TEXT(" 0: Flip Y method detected automatically by GPU vendor.\n"
+		 " 1: Force flip Y by native window setBuffersTransform.\n"
+		 " 2: Force flip Y by BlitFrameBuffer."),
+	ECVF_RenderThreadSafe);
 
 
 const  int EGLMinRedBits		= 5;
@@ -86,8 +99,8 @@ struct AndroidESPImpl
 	ANativeWindow* Window;
 	bool Initalized ;
 	EOpenGLCurrentContext CurrentContextType;
-	GLuint OnScreenColorRenderBuffer;
 	GLuint ResolveFrameBuffer;
+	GLuint DummyFrameBuffer;
 	FPlatformRect CachedWindowRect;
 
 	AndroidESPImpl();
@@ -150,6 +163,13 @@ AndroidEGL::AndroidEGL()
 ,	ContextAttributes(nullptr)
 {
 	PImplData = new AndroidESPImpl();
+
+	void* const LibNativeWindow = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
+	if (LibNativeWindow != nullptr)
+	{
+		ANativeWindow_setBuffersTransform_API = reinterpret_cast<PFN_ANativeWindow_setBuffersTransform>(dlsym(LibNativeWindow, "ANativeWindow_setBuffersTransform"));
+	}
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("ANativeWindow_setBuffersTransform is %s on this device"), ANativeWindow_setBuffersTransform_API == nullptr ? TEXT("not supported") : TEXT("supported"));
 }
 
 void AndroidEGL::ResetDisplay()
@@ -525,8 +545,8 @@ eglDisplay(EGL_NO_DISPLAY)
 	,DepthSize(0)
 	,Window(NULL)
 	,Initalized(false)
-	,OnScreenColorRenderBuffer(0)
 	,ResolveFrameBuffer(0)
+	,DummyFrameBuffer(0)
 	,NativeVisualID(0)
 	,CurrentContextType(CONTEXT_Invalid)
 	,CachedWindowRect(FPlatformRect(0,0,0,0))
@@ -614,29 +634,16 @@ void AndroidEGL::DestroyBackBuffer()
 		glDeleteFramebuffers(1, &PImplData->ResolveFrameBuffer);
 		PImplData->ResolveFrameBuffer = 0 ;
 	}
-	if(PImplData->OnScreenColorRenderBuffer)
+
+	if(PImplData->DummyFrameBuffer)
 	{
-		glDeleteRenderbuffers(1, &(PImplData->OnScreenColorRenderBuffer));
-		PImplData->OnScreenColorRenderBuffer = 0;
+		glDeleteFramebuffers(1, &PImplData->DummyFrameBuffer);
+		PImplData->DummyFrameBuffer = 0;
 	}
 }
 
 void AndroidEGL::InitBackBuffer()
 {
-	//add check to see if any context was made current. 
-	GLint OnScreenWidth, OnScreenHeight;
-	if (FPlatformMisc::SupportsBackbufferSampling())
-	{
-		glGenFramebuffers(1, &PImplData->ResolveFrameBuffer);
-	}
-	else
-	{
-		PImplData->ResolveFrameBuffer = 0;
-	}
-	PImplData->OnScreenColorRenderBuffer = 0;
-	OnScreenWidth = PImplData->eglWidth;
-	OnScreenHeight = PImplData->eglHeight;
-
 	PImplData->RenderingContext.ViewportFramebuffer = GetResolveFrameBuffer();
 	PImplData->SharedContext.ViewportFramebuffer = GetResolveFrameBuffer();
 	PImplData->SingleThreadedContext.ViewportFramebuffer = GetResolveFrameBuffer();
@@ -832,11 +839,6 @@ bool AndroidEGL::IsInitialized()
 	return PImplData->Initalized;
 }
 
-GLuint AndroidEGL::GetOnScreenColorRenderBuffer()
-{
-	return PImplData->OnScreenColorRenderBuffer;
-}
-
 GLuint AndroidEGL::GetResolveFrameBuffer()
 {
 	return PImplData->ResolveFrameBuffer;
@@ -911,6 +913,29 @@ void AndroidEGL::SetCurrentSharedContext()
 void AndroidEGL::AcquireCurrentRenderingContext()
 {
 	SetCurrentRenderingContext();
+
+	if (!PImplData->DummyFrameBuffer)
+	{
+		// Dummy FBO we bind right after SwapBuffers to tell driver that backbuffer is no longer in use by the App
+		glGenFramebuffers(1, &PImplData->DummyFrameBuffer);
+		PImplData->RenderingContext.DummyFrameBuffer = PImplData->DummyFrameBuffer;
+		PImplData->SharedContext.DummyFrameBuffer = PImplData->DummyFrameBuffer;
+		PImplData->SingleThreadedContext.DummyFrameBuffer = PImplData->DummyFrameBuffer;
+	}
+
+	if (IsOfflineSurfaceRequired())
+	{
+		// Needs to be generated on rendering context
+		if (!PImplData->ResolveFrameBuffer)
+		{
+			glGenFramebuffers(1, &PImplData->ResolveFrameBuffer);
+		}
+	}
+	else
+	{
+		PImplData->ResolveFrameBuffer = 0;
+	}
+
 }
 
 void AndroidEGL::SetCurrentRenderingContext()
@@ -1118,6 +1143,58 @@ void AndroidEGL::LogConfigInfo(EGLConfig  EGLConfigInfo)
 	eglGetConfigAttrib(PImplData->eglDisplay,EGLConfigInfo, EGL_TRANSPARENT_BLUE_VALUE, &ResultValue);  FPlatformMisc::LowLevelOutputDebugStringf( TEXT("EGLConfigInfo :EGL_TRANSPARENT_BLUE_VALUE :	%u" ), ResultValue );
 }
 
+void AndroidEGL::UpdateBuffersTransform()
+{
+	if (ANativeWindow_setBuffersTransform_API != nullptr && !IsOfflineSurfaceRequired())
+	{
+		int32 BufferTransform = ANATIVEWINDOW_TRANSFORM_IDENTITY;
+
+		EDeviceScreenOrientation ScreenOrientation = FPlatformMisc::GetDeviceOrientation();
+		
+		// Update the device orientation in case it hasn't been updated yet.
+		if (ScreenOrientation == EDeviceScreenOrientation::Unknown)
+		{
+			FAndroidMisc::UpdateDeviceOrientation();
+			ScreenOrientation = FPlatformMisc::GetDeviceOrientation();
+		}
+
+		switch (ScreenOrientation)
+		{
+		case EDeviceScreenOrientation::Portrait:
+			BufferTransform = ANATIVEWINDOW_TRANSFORM_MIRROR_VERTICAL;
+			break;
+
+		case EDeviceScreenOrientation::PortraitUpsideDown:
+			BufferTransform = ANATIVEWINDOW_TRANSFORM_MIRROR_HORIZONTAL;
+			break;
+
+		case EDeviceScreenOrientation::LandscapeLeft:
+			BufferTransform = ANATIVEWINDOW_TRANSFORM_ROTATE_90 | ANATIVEWINDOW_TRANSFORM_MIRROR_VERTICAL;
+			break;
+
+		case EDeviceScreenOrientation::LandscapeRight:
+			BufferTransform = ANATIVEWINDOW_TRANSFORM_ROTATE_90 | ANATIVEWINDOW_TRANSFORM_MIRROR_HORIZONTAL;
+			break;
+
+		default:
+			ensureMsgf(false, TEXT("BufferTransform %d should be handled with no exception, otherwise wrong orientation could be displayed on device"), BufferTransform);
+			break;
+		}
+
+		ANativeWindow_setBuffersTransform_API(GetNativeWindow(), BufferTransform);
+	}
+}
+
+bool AndroidEGL::IsOfflineSurfaceRequired()
+{
+	return FAndroidMisc::SupportsBackbufferSampling()
+		// force to use BlitFrameBuffer
+		|| CVarAndroidGLESFlipYMethod.GetValueOnAnyThread() == 2
+		// setBuffersTransform doesn't work on android 9 and below devices
+		|| !(CVarAndroidGLESFlipYMethod.GetValueOnAnyThread() == 1 || FAndroidMisc::GetAndroidMajorVersion() >= 10)
+		// setBuffersTransform doesn't work on arm and powerVR GPU devices
+		|| (CVarAndroidGLESFlipYMethod.GetValueOnAnyThread() == 0 && (GRHIVendorId == 0x13B5 || GRHIVendorId == 0x1010));
+}
 
 ///
 extern FCriticalSection GAndroidWindowLock;
@@ -1198,6 +1275,15 @@ void BlockRendering()
 		FPlatformProcess::ReturnSynchEventToPool(EventToDelete);
 	});
 
+	// Flush GT first in case it has any dependency on RT work to complete
+	FGraphEventRef GTBlockTask = FFunctionGraphTask::CreateAndDispatchWhenReady([BlockedTrigger]()
+		{
+			SetSharedContextGameCommand(BlockedTrigger);
+		}, TStatId(), NULL, ENamedThreads::GameThread);
+
+	UE_LOG(LogAndroid, Log, TEXT("Waiting for game thread to release EGL context/surface."));
+	BlockedTrigger->Wait();
+
 	FGraphEventRef RTBlockTask = FFunctionGraphTask::CreateAndDispatchWhenReady([BlockedTrigger]()
 	{
 		BlockOnLostWindowRenderCommand(BlockedTrigger);
@@ -1205,14 +1291,6 @@ void BlockRendering()
 
 	// wait for the render thread to process.
 	UE_LOG(LogAndroid, Log, TEXT("Waiting for renderer to encounter blocking command."));
-	BlockedTrigger->Wait();
-
-	FGraphEventRef GTBlockTask = FFunctionGraphTask::CreateAndDispatchWhenReady([BlockedTrigger]()
-	{
-		SetSharedContextGameCommand(BlockedTrigger);
-	}, TStatId(), NULL, ENamedThreads::GameThread);
-
-	UE_LOG(LogAndroid, Log, TEXT("Waiting for game thread to encounter blocking command."));
 	BlockedTrigger->Wait();
 }
 

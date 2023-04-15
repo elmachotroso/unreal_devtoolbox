@@ -6,7 +6,7 @@
 #include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EditorModeManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Selection.h"
 #include "EngineUtils.h"
@@ -38,9 +38,11 @@
 #include "EditorFolderUtils.h"
 #include "SceneOutlinerConfig.h"
 #include "Algo/ForEach.h"
-
+#include "SceneOutlinerFilterBar.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "DetailLayoutBuilder.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSceneOutliner, Log, All);
 
@@ -67,6 +69,8 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 	// The interactive filter collection
 	InteractiveFilters = MakeShareable(new FSceneOutlinerFilters);
 
+	OutlinerIdentifier = InInitOptions.OutlinerIdentifier;
+	
 	check(InInitOptions.ModeFactory.IsBound());
 	Mode = InInitOptions.ModeFactory.Execute(this);
 	check(Mode);
@@ -80,22 +84,40 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 	bSelectionDirty = true;
 	SortOutlinerTimer = 0.0f;
 	bPendingFocusNextFrame = InInitOptions.bFocusSearchBoxWhenOpened;
-	OutlinerIdentifier = InInitOptions.OutlinerIdentifier;
 	
 	SortByColumn = FSceneOutlinerBuiltInColumnTypes::Label();
 	SortMode = EColumnSortMode::Ascending;
 
-	UOutlinerConfig* OutlinerConfig = GetMutableDefault<UOutlinerConfig>();
-	OutlinerConfig->LoadEditorConfig();
+	UOutlinerConfig::Initialize();
+	UOutlinerConfig::Get()->LoadEditorConfig();
+
+	const FSceneOutlinerConfig* SceneOutlinerConfig = GetConstConfig();
+
+	// Load the pinned items visibility from the config file
+	if (SceneOutlinerConfig)
+	{
+		bShouldStackHierarchyHeaders = SceneOutlinerConfig->bShouldStackHierarchyHeaders;
+	}
 
 	// @todo outliner: Should probably save this in layout!
 	// @todo outliner: Should save spacing for list view in layout
 
-	//Setup the SearchBox filter
+	// Setup the SearchBox
 	{
-		auto Delegate = SceneOutliner::TreeItemTextFilter::FItemToStringArray::CreateSP( this, &SSceneOutliner::PopulateSearchStrings );
-		SearchBoxFilter = MakeShareable( new SceneOutliner::TreeItemTextFilter( Delegate ) );
+		SearchBoxFilter = CreateTextFilter();
+		
+		FilterTextBoxWidget = SNew(SFilterSearchBox)
+		.Visibility( InInitOptions.bShowSearchBox ? EVisibility::Visible : EVisibility::Collapsed )
+		.HintText( LOCTEXT( "FilterSearch", "Search..." ) )
+		.ToolTipText( LOCTEXT("FilterSearchHint", "Type here to search (pressing enter selects the results)") )
+		.OnTextChanged( this, &SSceneOutliner::OnFilterTextChanged )
+		.OnTextCommitted( this, &SSceneOutliner::OnFilterTextCommitted );
 	}
+	
+	CreateFilterBar(InInitOptions.FilterBarOptions);
+
+	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
+	SceneOutlinerModule.OnColumnPermissionListChanged().AddSP(this, &SSceneOutliner::OnColumnPermissionListChanged);
 
 	TSharedRef<SVerticalBox> VerticalBox = SNew(SVerticalBox);
 
@@ -121,20 +143,44 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 		VerticalBox
 	];
 
+	VerticalBox->AddSlot()
+	.AutoHeight()
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SMultiLineEditableTextBox)
+			.IsReadOnly(true)
+			.Visibility_Lambda([this]() { return Mode->HasErrors() ? EVisibility::Visible : EVisibility::Collapsed; })
+			.Font(IDetailLayoutBuilder::GetDetailFontBold())
+			.BackgroundColor(FAppStyle::GetColor("ErrorReporting.WarningBackgroundColor"))
+			.Text(Mode->GetErrorsText())
+			.AutoWrapText(true)			
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SButton)
+			.OnClicked_Lambda([this] { Mode->RepairErrors(); return FReply::Handled(); })
+			.Visibility_Lambda([this]() { return Mode->HasErrors() ? EVisibility::Visible : EVisibility::Collapsed; })
+			.HAlign(HAlign_Center)
+			.Text(LOCTEXT("SceneOutlinerRepairErrors", "Repair Errors"))
+		]
+	];
+
 	auto Toolbar = SNew(SHorizontalBox);
 
 	Toolbar->AddSlot()
 	.VAlign(VAlign_Center)
 	[
-		SAssignNew( FilterTextBoxWidget, SSearchBox )
-		.Visibility( InInitOptions.bShowSearchBox ? EVisibility::Visible : EVisibility::Collapsed )
-		.HintText( LOCTEXT( "FilterSearch", "Search..." ) )
-		.ToolTipText( LOCTEXT("FilterSearchHint", "Type here to search (pressing enter selects the results)") )
-		.OnTextChanged( this, &SSceneOutliner::OnFilterTextChanged )
-		.OnTextCommitted( this, &SSceneOutliner::OnFilterTextCommitted )
+		FilterTextBoxWidget.ToSharedRef()
 	];
 
-	CustomAddToToolbar(Toolbar);
+	if (Mode->CanCustomizeToolbar())
+	{
+		CustomAddToToolbar(Toolbar);
+	}
 		
 	if (Mode->SupportsCreateNewFolder() && InInitOptions.bShowCreateNewFolder)
 	{
@@ -149,7 +195,7 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 				.OnClicked(this, &SSceneOutliner::OnCreateFolderClicked)
 				[
 					SNew(SImage)
-	                .ColorAndOpacity(FSlateColor::UseForeground())
+					.ColorAndOpacity(FSlateColor::UseForeground())
 					.Image(FAppStyle::Get().GetBrush("SceneOutliner.NewFolderIcon"))
 				]
 			];
@@ -170,7 +216,7 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 			.ButtonContent()
 			[
 				SNew(SImage)
-	            .ColorAndOpacity(FSlateColor::UseForeground())
+				.ColorAndOpacity(FSlateColor::UseForeground())
 				.Image( FAppStyle::Get().GetBrush("Icons.Settings") )
 			]
 		];
@@ -182,6 +228,26 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 	[
 		Toolbar
 	];
+
+	// Add the FilterBar and the Add Filter button if it exists
+	if(FilterBar)
+	{
+		// Add Filter Menu
+		Toolbar->InsertSlot(0)
+		.VAlign(VAlign_Center)
+		.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+		.AutoWidth()
+		[
+			SSceneOutlinerFilterBar::MakeAddFilterButton(FilterBar.ToSharedRef())
+		];
+
+		VerticalBox->AddSlot()
+		.AutoHeight()
+		.Padding( 0.0f, 0.0f, 0.0f, 4.0f )
+		[
+			FilterBar.ToSharedRef()
+		];
+	}
 
 	VerticalBox->AddSlot()
 	.FillHeight(1.0)
@@ -229,6 +295,9 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 			// Generates the actual widget for a tree item
 			.OnGenerateRow( this, &SSceneOutliner::OnGenerateRowForOutlinerTree ) 
 
+			// Generates the actual widget for a pinned tree item
+			.OnGeneratePinnedRow(this, &SSceneOutliner::OnGeneratePinnedRowForOutlinerTree)
+
 			// Use the level viewport context menu as the right click menu for tree items
 			.OnContextMenuOpening(this, &SSceneOutliner::OnOpenContextMenu)
 
@@ -240,6 +309,12 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 
 			// Make it easier to see hierarchies when there are a lot of items
 			.HighlightParentNodesForSelection(true)
+
+			// Show the Hierarchy of actors pinned at the top of the tree view
+			.ShouldStackHierarchyHeaders(this, &SSceneOutliner::ShouldStackHierarchyHeaders)
+
+			// Preserve the selection when the selected item is hidden due to a parent collapsing
+			.AllowInvisibleItemSelection(true)
 		]
 	];
 
@@ -274,6 +349,8 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 
 	// Register to be notified when properties are edited
 	FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &SSceneOutliner::OnAssetReloaded);
+
+	SourceControlHandler = TSharedPtr<FSceneOutlinerSCCHandler>(new FSceneOutlinerSCCHandler());
 }
 
 void SSceneOutliner::HandleHiddenColumnsChanged()
@@ -296,6 +373,30 @@ void SSceneOutliner::HandleHiddenColumnsChanged()
 	}
 }
 
+void SSceneOutliner::GetSortedColumnIDs(TArray<FName>& OutColumnIDs) const
+{
+	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
+
+	TMap<FName, FSceneOutlinerColumnInfo> FilteredColumnMap;
+	for(auto It(SharedData->ColumnMap.CreateIterator()); It; ++It)
+	{
+		if (SceneOutlinerModule.GetColumnPermissionList()->PassesFilter(It.Key()))
+		{
+			FilteredColumnMap.Add(It.Key(), It.Value());
+		}
+	}
+
+	// Get a list of sorted columns IDs to create
+	OutColumnIDs.Empty();
+
+	OutColumnIDs.Reserve(FilteredColumnMap.Num());
+	FilteredColumnMap.GenerateKeyArray(OutColumnIDs);
+
+	OutColumnIDs.Sort([&](const FName& A, const FName& B) {
+		return FilteredColumnMap[A].PriorityIndex < FilteredColumnMap[B].PriorityIndex;
+		});
+}
+
 void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 {
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
@@ -305,17 +406,20 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 		SharedData->UseDefaultColumns();
 	}
 
-	Columns.Empty(SharedData->ColumnMap.Num());
+	TMap<FName, FSceneOutlinerColumnInfo> FilteredColumnMap;
+	for (auto It(SharedData->ColumnMap.CreateIterator()); It; ++It)
+	{
+		if (SceneOutlinerModule.GetColumnPermissionList()->PassesFilter(It.Key()))
+		{
+			FilteredColumnMap.Add(It.Key(), It.Value());
+		}
+	}
+
+	Columns.Empty(FilteredColumnMap.Num());
 	HeaderRow.ClearColumns();
 
-	// Get a list of sorted columns IDs to create
 	TArray<FName> SortedIDs;
-	SortedIDs.Reserve(SharedData->ColumnMap.Num());
-	SharedData->ColumnMap.GenerateKeyArray(SortedIDs);
-
-	SortedIDs.Sort([&](const FName& A, const FName& B){
-		return SharedData->ColumnMap[A].PriorityIndex < SharedData->ColumnMap[B].PriorityIndex;
-	});
+	GetSortedColumnIDs(SortedIDs);
 
 	TMap<FName, bool> ColumnVisibilities;
 	const FSceneOutlinerConfig* OutlinerConfig = GetConstConfig();
@@ -326,7 +430,6 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 		ColumnVisibilities = OutlinerConfig->ColumnVisibilities;
 	}
 
-
 	for (const FName& ID : SortedIDs)
 	{
 		bool bIsVisible = true;
@@ -336,16 +439,16 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 		{
 			bIsVisible = *ColumnVisibility;
 		}
-		else if (SharedData->ColumnMap[ID].Visibility == ESceneOutlinerColumnVisibility::Invisible)
+		else if (FilteredColumnMap[ID].Visibility == ESceneOutlinerColumnVisibility::Invisible)
 		{
 			bIsVisible = false;
 		}
 
 		TSharedPtr<ISceneOutlinerColumn> Column;
 
-		if (SharedData->ColumnMap[ID].Factory.IsBound())
+		if (FilteredColumnMap[ID].Factory.IsBound())
 		{
-			Column = SharedData->ColumnMap[ID].Factory.Execute(*this);
+			Column = FilteredColumnMap[ID].Factory.Execute(*this);
 		}
 		else
 		{
@@ -365,9 +468,9 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 					.OnSort(this, &SSceneOutliner::OnColumnSortModeChanged);
 			}
 
-			if (SharedData->ColumnMap[ID].ColumnLabel.IsSet())
+			if (FilteredColumnMap[ID].ColumnLabel.IsSet())
 			{
-				ColumnArgs.DefaultLabel(SharedData->ColumnMap[ID].ColumnLabel);
+				ColumnArgs.DefaultLabel(FilteredColumnMap[ID].ColumnLabel);
 			}
 			else
 			{
@@ -379,7 +482,7 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 				ColumnArgs.DefaultLabel(FText::FromName(ID));
 			}
 			
-			if (!SharedData->ColumnMap[ID].bCanBeHidden)
+			if (!FilteredColumnMap[ID].bCanBeHidden)
 			{
 				ColumnArgs.ShouldGenerateWidget(true);
 			}
@@ -402,8 +505,19 @@ void SSceneOutliner::RefreshColums()
 	bNeedsColumRefresh = true;
 }
 
+void SSceneOutliner::OnColumnPermissionListChanged()
+{
+	RefreshColums();
+	FullRefresh();
+}
+
 SSceneOutliner::~SSceneOutliner()
 {
+	if (FSceneOutlinerModule* SceneOutlinerModule = FModuleManager::GetModulePtr<FSceneOutlinerModule>("SceneOutliner"))
+	{
+		SceneOutlinerModule->OnColumnPermissionListChanged().RemoveAll(this);
+	}
+
 	Mode->GetHierarchy()->OnHierarchyChanged().RemoveAll(this);
 	delete Mode;
 
@@ -428,13 +542,42 @@ FSlateColor SSceneOutliner::GetViewButtonForegroundColor() const
 	static const FName InvertedForegroundName("InvertedForeground");
 	static const FName DefaultForegroundName("DefaultForeground");
 
-	return ViewOptionsComboButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
+	return ViewOptionsComboButton->IsHovered() ? FAppStyle::GetSlateColor(InvertedForegroundName) : FAppStyle::GetSlateColor(DefaultForegroundName);
 }
 	 
 TSharedRef<SWidget> SSceneOutliner::GetViewButtonContent(bool bShowFilters)
 {
 	// Menu should stay open on selection if filters are not being shown
 	FMenuBuilder MenuBuilder(bShowFilters, NULL);
+
+	MenuBuilder.BeginSection("OutlinerSettings", LOCTEXT("HierarchyHeading", "Hierarchy"));
+	{
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("ExpandAll", "Expand All"),
+			LOCTEXT("ExpandAllToolTip", "Expand All Items in the Hierarchy"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateSP(this, &SSceneOutliner::ExpandAll)));
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("CollapseAll", "Collapse All"),
+			LOCTEXT("CollapseAllToolTip", "Collapse All Items in the Hierarchy"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateSP(this, &SSceneOutliner::CollapseAll)));
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("ShowHierarchy", "Stack Hierarchy Headers"),
+			LOCTEXT("ShowHierarchyToolTip", "Toggle pinning of the hierarchy of items at the top of the outliner"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateRaw(this, &SSceneOutliner::ToggleStackHierarchyHeaders),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateRaw(this, &SSceneOutliner::ShouldStackHierarchyHeaders)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+	MenuBuilder.EndSection();
 
 	if (bShowFilters)
 	{
@@ -674,7 +817,7 @@ void SSceneOutliner::OnChildRemovedFromParent(ISceneOutlinerTreeItem& Parent)
 void SSceneOutliner::OnItemMoved(const FSceneOutlinerTreeItemRef& ReferenceItem)
 {
 	// Just remove the item if it no longer matches the filters
-	if (!ReferenceItem->Flags.bIsFilteredOut && !SearchBoxFilter->PassesFilter(*ReferenceItem))
+	if (!ReferenceItem->Flags.bIsFilteredOut && !PassesAllFilters(ReferenceItem))
 	{
 		// This will potentially remove any non-matching, empty parents as well
 		RemoveItemFromTree(ReferenceItem);
@@ -723,6 +866,12 @@ void SSceneOutliner::RemoveItemFromTree(FSceneOutlinerTreeItemRef ReferenceItem)
 	if (const FSceneOutlinerTreeItemPtr* ItemInTree = TreeItemMap.Find(ReferenceItem->GetID()))
 	{
 		FSceneOutlinerTreeItemRef Item = ItemInTree->ToSharedRef();
+
+		// If the item we are removing is selected, refresh the selection to remove it from there as well
+		if(OutlinerTreeView->GetSelectedItems().Contains(Item))
+		{
+			RefreshSelection();
+		}
 
 		auto Parent = Item->GetParent();
 
@@ -780,7 +929,7 @@ bool SSceneOutliner::AddItemToTree(FSceneOutlinerTreeItemRef Item)
 	}
 
 	// Set the filtered out flag
-	Item->Flags.bIsFilteredOut = !SearchBoxFilter->PassesFilter(*Item);
+	Item->Flags.bIsFilteredOut = !PassesAllFilters(Item);
 
 	if (!Item->Flags.bIsFilteredOut)
 	{
@@ -887,17 +1036,17 @@ void SSceneOutliner::PopulateSearchStrings(const ISceneOutlinerTreeItem& Item, T
 	}
 }
 
+/** Creates a TextFilter for ISceneOutlinerTreeItem */
+TSharedPtr< SceneOutliner::TreeItemTextFilter > SSceneOutliner::CreateTextFilter() const
+{
+	auto Delegate = SceneOutliner::TreeItemTextFilter::FItemToStringArray::CreateSP( this, &SSceneOutliner::PopulateSearchStrings );
+
+	return MakeShareable( new SceneOutliner::TreeItemTextFilter( Delegate ) );
+}
+
 void SSceneOutliner::GetSelectedFolders(TArray<FFolderTreeItem*>& OutFolders) const
 {
 	return FSceneOutlinerItemSelection(*OutlinerTreeView).Get<FFolderTreeItem>(OutFolders);
-}
-
-TArray<FName> SSceneOutliner::GetSelectedFolderNames() const
-{
-	TArray<FFolder> Folders = GetSelection().GetData<FFolder>(SceneOutliner::FFolderPathSelector());
-	TArray<FName> FolderPaths;
-	Algo::ForEach(Folders, [&FolderPaths](const FFolder& Folder) { FolderPaths.Add(Folder.GetPath()); });
-	return FolderPaths;
 }
 
 TSharedPtr<SWidget> SSceneOutliner::OnOpenContextMenu()
@@ -1061,17 +1210,27 @@ void SSceneOutliner::RemoveFromSelection(const TArray<FSceneOutlinerTreeItemPtr>
 
 void SSceneOutliner::AddFolderToSelection(const FName& FolderName)
 {
-	if (FSceneOutlinerTreeItemPtr* ItemPtr = TreeItemMap.Find(FFolder(FolderName)))
+	// Not used (but public) : For backward compatibility, we use Mode->GetRootObject()
+	FFolder::FRootObject RootObject = Mode->GetRootObject();
+	if (FFolder::IsRootObjectValid(RootObject))
 	{
-		OutlinerTreeView->SetItemSelection(*ItemPtr, true);
+		if (FSceneOutlinerTreeItemPtr* ItemPtr = TreeItemMap.Find(FFolder(RootObject, FolderName)))
+		{
+			OutlinerTreeView->SetItemSelection(*ItemPtr, true);
+		}
 	}
 }
 
 void SSceneOutliner::RemoveFolderFromSelection(const FName& FolderName)
 {
-	if (FSceneOutlinerTreeItemPtr* ItemPtr = TreeItemMap.Find(FFolder(FolderName)))
+	// Not used (but public) : For backward compatibility, we use Mode->GetRootObject()
+	FFolder::FRootObject RootObject = Mode->GetRootObject();
+	if (FFolder::IsRootObjectValid(RootObject))
 	{
-		OutlinerTreeView->SetItemSelection(*ItemPtr, false);
+		if (FSceneOutlinerTreeItemPtr* ItemPtr = TreeItemMap.Find(FFolder(RootObject, FolderName)))
+		{
+			OutlinerTreeView->SetItemSelection(*ItemPtr, false);
+		}
 	}
 }
 
@@ -1093,7 +1252,7 @@ void SSceneOutliner::FillFoldersSubMenu(UToolMenu* Menu) const
 
 	FToolMenuSection& Section = Menu->AddSection("Section");
 	Section.AddMenuEntry("CreateNew", LOCTEXT( "CreateNew", "Create New Folder" ), LOCTEXT( "CreateNew_ToolTip", "Move to a new folder" ),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SceneOutliner.NewFolderIcon"), FExecuteAction::CreateSP(const_cast<SSceneOutliner*>(this), &SSceneOutliner::CreateFolder));
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SceneOutliner.NewFolderIcon"), FExecuteAction::CreateSP(const_cast<SSceneOutliner*>(this), &SSceneOutliner::CreateFolder));
 
 	AddMoveToFolderOutliner(Menu);
 }
@@ -1205,7 +1364,7 @@ void SSceneOutliner::AddMoveToFolderOutliner(UToolMenu* Menu) const
 
 		// Filter in/out root items according to whether it is valid to move to/from the root
 		FSceneOutlinerDragDropPayload DraggedObjects(OutlinerTreeView->GetSelectedItems());
-		const bool bMoveToRootValid = Mode->ValidateDrop(FFolderTreeItem(FFolder(FFolder::GetEmptyPath(), TargetRootObject)), DraggedObjects).IsValid();
+		const bool bMoveToRootValid = Mode->ValidateDrop(FFolderTreeItem(FFolder(TargetRootObject, FFolder::GetEmptyPath())), DraggedObjects).IsValid();
 		if (!bMoveToRootValid)
 		{
 			MiniSceneOutlinerInitOptions.Filters->Add(MakeShared<FFilterRoot>(*this));
@@ -1323,7 +1482,12 @@ void SSceneOutliner::CreateFolder()
 
 void SSceneOutliner::CopyFoldersBegin()
 {
-	CacheFoldersEdit = GetSelectedFolderNames();
+	CacheFoldersEdit.Reset();
+	CacheFoldersEditRootObject = FFolder::GetInvalidRootObject();
+
+	TArray<FFolder> SelectedFolders = GetSelection().GetData<FFolder>(SceneOutliner::FFolderPathSelector());
+	FFolder::GetFolderPathsAndCommonRootObject(SelectedFolders, CacheFoldersEdit, CacheFoldersEditRootObject);
+
 	FPlatformApplicationMisc::ClipboardPaste(CacheClipboardContents);
 }
 
@@ -1333,6 +1497,7 @@ void SSceneOutliner::CopyFoldersEnd()
 	{
 		CopyFoldersToClipboard(CacheFoldersEdit, CacheClipboardContents);
 		CacheFoldersEdit.Reset();
+		CacheFoldersEditRootObject = FFolder::GetInvalidRootObject();
 	}
 }
 
@@ -1377,13 +1542,13 @@ bool SSceneOutliner::GetCommonRootObjectFromSelection(FFolder::FRootObject& OutC
 			}
 			else if (CommonRootObject.GetValue() != TreeItem->GetRootObject())
 			{
-				OutCommonRootObject = FFolder::GetDefaultRootObject();
-				return false;
+				OutCommonRootObject = FFolder::GetInvalidRootObject();
+				break;
 			}
 		}
 	}
-	OutCommonRootObject = CommonRootObject.Get(FFolder::GetDefaultRootObject());
-	return true;
+	OutCommonRootObject = CommonRootObject.Get(FFolder::GetInvalidRootObject());
+	return FFolder::IsRootObjectValid(OutCommonRootObject);
 }
 
 void SSceneOutliner::PasteFoldersBegin(TArray<FName> InFolders)
@@ -1406,8 +1571,8 @@ void SSceneOutliner::PasteFoldersBegin(TArray<FName> InFolders)
 		}
 	};
 
-
 	CacheFoldersEdit.Reset();
+	CacheFoldersEditRootObject = Mode->GetPasteTargetRootObject();
 	CachePasteFolderExistingChildrenMap.Reset();
 	PendingFoldersSelect.Reset();
 
@@ -1416,16 +1581,30 @@ void SSceneOutliner::PasteFoldersBegin(TArray<FName> InFolders)
 	// Sort folder names so parents appear before children
 	CacheFoldersEdit.Sort(FNameLexicalLess());
 
-	// Find common root object from selection
-	FFolder::FRootObject TargetRootObject;
-	GetCommonRootObjectFromSelection(TargetRootObject);
-
 	// Cache existing children
 	for (FName Folder : CacheFoldersEdit)
 	{
-		if (FSceneOutlinerTreeItemPtr* TreeItem = TreeItemMap.Find(FFolder(Folder, TargetRootObject)))
+		if (FSceneOutlinerTreeItemPtr* TreeItem = TreeItemMap.Find(FFolder(CacheFoldersEditRootObject, Folder)))
 		{
-			CacheExistingChildrenAction(*TreeItem, TargetRootObject);
+			CacheExistingChildrenAction(*TreeItem, CacheFoldersEditRootObject);
+		}
+	}
+
+	// Prepare CacheFolderMap which maps old to new/duplicate folder names
+	CacheFolderMap.Reset();
+	for (FName Folder : CacheFoldersEdit)
+	{
+		FName ParentPath = FEditorFolderUtils::GetParentPath(Folder);
+		FName LeafName = FEditorFolderUtils::GetLeafName(Folder);
+		if (LeafName != TEXT(""))
+		{
+			if (FName* NewParentPath = CacheFolderMap.Find(ParentPath))
+			{
+				ParentPath = *NewParentPath;
+			}
+
+			FFolder NewFolderPath = Mode->GetFolder(FFolder(CacheFoldersEditRootObject, ParentPath), LeafName);
+			CacheFolderMap.Add(Folder, NewFolderPath.GetPath());
 		}
 	}
 }
@@ -1434,25 +1613,17 @@ void SSceneOutliner::PasteFoldersEnd()
 {
 	const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "PasteItems", "Paste Items"));
 
-	// Find common root object from selection
-	FFolder::FRootObject TargetRootObject;
-	GetCommonRootObjectFromSelection(TargetRootObject);
-
 	// Create new folder
-	TMap<FName, FName> FolderMap;
+	TMap<FName, FName> CreatedFolders;
 	for (FName Folder : CacheFoldersEdit)
 	{
-		FName ParentPath = FEditorFolderUtils::GetParentPath(Folder);
-		FName LeafName = FEditorFolderUtils::GetLeafName(Folder);
-		if (LeafName != TEXT(""))
+		if (FName* NewFolder = CacheFolderMap.Find(Folder))
 		{
-			if (FName* NewParentPath = FolderMap.Find(ParentPath))
+			// When using Actor Folder, duplicated actors might already have created the actor folder (when destination rootobject is different)
+			if (Mode->CreateFolder(FFolder(CacheFoldersEditRootObject, *NewFolder)))
 			{
-				ParentPath = *NewParentPath;
+				CreatedFolders.Add(Folder, *NewFolder);
 			}
-
-			FFolder NewFolderPath = Mode->CreateFolder(FFolder(ParentPath, TargetRootObject), LeafName);
-			FolderMap.Add(Folder, NewFolderPath.GetPath());
 		}
 	}
 
@@ -1463,10 +1634,10 @@ void SSceneOutliner::PasteFoldersEnd()
 	for (FName OldFolderName : CacheFoldersEdit)
 	{
 		// Get the new folder that was created from this name
-		if (const FName* NewFolderName = FolderMap.Find(OldFolderName))
+		if (const FName* NewFolderName = CreatedFolders.Find(OldFolderName))
 		{
-			FFolder NewFolder(*NewFolderName, TargetRootObject);
-			FFolder OldFolder(OldFolderName, TargetRootObject);
+			FFolder NewFolder(CacheFoldersEditRootObject, *NewFolderName);
+			FFolder OldFolder(CacheFoldersEditRootObject, OldFolderName);
 
 			if (FSceneOutlinerTreeItemPtr* OldFolderItem = TreeItemMap.Find(OldFolder))
 			{
@@ -1486,6 +1657,8 @@ void SSceneOutliner::PasteFoldersEnd()
 	}
 
 	CacheFoldersEdit.Reset();
+	CacheFoldersEditRootObject = FFolder::GetInvalidRootObject();
+	CacheFolderMap.Reset();
 	CachePasteFolderExistingChildrenMap.Reset();
 	FullRefresh();
 }
@@ -1652,6 +1825,11 @@ bool SSceneOutliner::IsItemExpanded(const FSceneOutlinerTreeItemPtr& Item) const
 TSharedRef< ITableRow > SSceneOutliner::OnGenerateRowForOutlinerTree( FSceneOutlinerTreeItemPtr Item, const TSharedRef< STableViewBase >& OwnerTable )
 {
 	return SNew( SSceneOutlinerTreeRow, OutlinerTreeView.ToSharedRef(), SharedThis(this) ).Item( Item );
+}
+
+TSharedRef< ITableRow > SSceneOutliner::OnGeneratePinnedRowForOutlinerTree(FSceneOutlinerTreeItemPtr Item, const TSharedRef< STableViewBase >& OwnerTable)
+{
+	return SNew(SSceneOutlinerPinnedTreeRow, OutlinerTreeView.ToSharedRef(), SharedThis(this)).Item(Item);
 }
 
 void SSceneOutliner::OnGetChildrenForOutlinerTree( FSceneOutlinerTreeItemPtr InParent, TArray< FSceneOutlinerTreeItemPtr >& OutChildren )
@@ -1901,7 +2079,7 @@ void SSceneOutliner::OnFilterTextCommitted( const FText& InFilterText, ETextComm
 			// Gather all of the items that match the filter text
 			for (auto& Pair : TreeItemMap)
 			{
-				Pair.Value->Flags.bIsFilteredOut = !SearchBoxFilter->PassesFilter(*Pair.Value);
+				Pair.Value->Flags.bIsFilteredOut = !PassesAllFilters(Pair.Value);
 				if (!Pair.Value->Flags.bIsFilteredOut)
 				{
 					Selection.Add(Pair.Value);
@@ -1946,11 +2124,11 @@ const FSlateBrush* SSceneOutliner::GetFilterButtonGlyph() const
 {
 	if( IsTextFilterActive() )
 	{
-		return FEditorStyle::GetBrush(TEXT("SceneOutliner.FilterCancel"));
+		return FAppStyle::GetBrush(TEXT("SceneOutliner.FilterCancel"));
 	}
 	else
 	{
-		return FEditorStyle::GetBrush(TEXT("SceneOutliner.FilterSearch"));
+		return FAppStyle::GetBrush(TEXT("SceneOutliner.FilterSearch"));
 	}
 }
 
@@ -2139,9 +2317,9 @@ void SSceneOutliner::SetItemExpansionRecursive(FSceneOutlinerTreeItemPtr Model, 
 	}
 }
 
-TSharedPtr<FDragDropOperation> SSceneOutliner::CreateDragDropOperation(const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const 
+TSharedPtr<FDragDropOperation> SSceneOutliner::CreateDragDropOperation(const FPointerEvent& MouseEvent, const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const
 { 
-	return Mode->CreateDragDropOperation(InTreeItems); 
+	return Mode->CreateDragDropOperation(MouseEvent, InTreeItems); 
 }
 
 /** Parse a drag drop operation into a payload */
@@ -2168,14 +2346,14 @@ FReply SSceneOutliner::OnDragOverItem(const FDragDropEvent& Event, const ISceneO
 	return Mode->OnDragOverItem(Event, Item); 
 }
 
-void SSceneOutliner::PinItem(const FSceneOutlinerTreeItemPtr& InItem)
+void SSceneOutliner::PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems)
 {
-	Mode->PinItem(InItem);
+	Mode->PinItems(InItems);
 }
 
-void SSceneOutliner::UnpinItem(const FSceneOutlinerTreeItemPtr& InItem)
+void SSceneOutliner::UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems)
 {
-	Mode->UnpinItem(InItem);
+	Mode->UnpinItems(InItems);
 }
 
 void SSceneOutliner::PinSelectedItems()
@@ -2198,6 +2376,25 @@ FSceneOutlinerTreeItemPtr SSceneOutliner::FindParent(const ISceneOutlinerTreeIte
 	return Parent;
 }
 
+void SSceneOutliner::ToggleStackHierarchyHeaders()
+{
+	bShouldStackHierarchyHeaders = !bShouldStackHierarchyHeaders;
+
+	FSceneOutlinerConfig* OutlinerConfig = GetMutableConfig();
+
+	if (OutlinerConfig != nullptr)
+	{
+		OutlinerConfig->bShouldStackHierarchyHeaders = bShouldStackHierarchyHeaders;
+		SaveConfig();
+	}
+
+	FullRefresh();
+}
+
+bool SSceneOutliner::ShouldStackHierarchyHeaders() const
+{
+	return bShouldStackHierarchyHeaders;
+}
 
 struct FSceneOutlinerConfig* SSceneOutliner::GetMutableConfig()
 {
@@ -2206,8 +2403,7 @@ struct FSceneOutlinerConfig* SSceneOutliner::GetMutableConfig()
 		return nullptr;
 	}
 
-	UOutlinerConfig* OutlinerConfig = GetMutableDefault<UOutlinerConfig>();
-	return &OutlinerConfig->Outliners.FindOrAdd(OutlinerIdentifier);
+	return &UOutlinerConfig::Get()->Outliners.FindOrAdd(OutlinerIdentifier);
 }
 
 
@@ -2218,13 +2414,83 @@ const FSceneOutlinerConfig* SSceneOutliner::GetConstConfig() const
 		return nullptr;
 	}
 
-	const UOutlinerConfig* OutlinerConfig = GetDefault<UOutlinerConfig>();
-	return OutlinerConfig->Outliners.Find(OutlinerIdentifier);
+	return UOutlinerConfig::Get()->Outliners.Find(OutlinerIdentifier);
 }
 
 void SSceneOutliner::SaveConfig()
 {
-	GetMutableDefault<UOutlinerConfig>()->SaveEditorConfig();
+	UOutlinerConfig::Get()->SaveEditorConfig();
+}
+
+void FSceneOutlinerMenuHelper::AddMenuEntryCreateFolder(FToolMenuSection& InSection, SSceneOutliner& InOutliner)
+{
+	const FSlateIcon NewFolderIcon(FAppStyle::GetAppStyleSetName(), "SceneOutliner.NewFolderIcon");
+	InSection.AddMenuEntry("CreateFolder", LOCTEXT("CreateFolder", "Create Folder"), LOCTEXT("CreateFolderTooltip", "Create Folder"), NewFolderIcon, FUIAction(FExecuteAction::CreateSP(&InOutliner, &SSceneOutliner::CreateFolder)));
+}
+
+void FSceneOutlinerMenuHelper::AddMenuEntryCleanupFolders(FToolMenuSection& InSection, ULevel* InLevel)
+{
+	if (InLevel && InLevel->IsUsingActorFolders())
+	{
+		const FSlateIcon CleanupFoldersIcon(FAppStyle::GetAppStyleSetName(), "SceneOutliner.CleanupActorFoldersIcon");
+		InSection.AddMenuEntry("CleanupFolders", LOCTEXT("CleanupFolders", "Cleanup Folders"), LOCTEXT("CleanupFoldersTooltip", "Cleanup unreferenced and deleted actor folders"), CleanupFoldersIcon, FExecuteAction::CreateLambda([InLevel]()
+		{
+			const FScopedTransaction Transaction(LOCTEXT("CleanupFolders", "Cleanup Folders"));
+			InLevel->CleanupDeletedAndUnreferencedActorFolders();
+		}));
+	}
+}
+
+TSharedPtr<FSceneOutlinerTreeItemSCC> SSceneOutliner::GetItemSourceControl(const FSceneOutlinerTreeItemPtr& InItem)
+{
+	return SourceControlHandler->GetItemSourceControl(InItem);
+}
+
+void SSceneOutliner::AddSourceControlMenuOptions(UToolMenu* Menu)
+{
+	TArray<FSceneOutlinerTreeItemPtr> SelectedItems = GetTree().GetSelectedItems();
+	SourceControlHandler->AddSourceControlMenuOptions(Menu, SelectedItems);
+}
+
+void SSceneOutliner::OnFilterBarFilterChanged()
+{
+	FilterCollection = FilterBar->GetAllActiveFilters();
+	FilterBar->SaveSettings();
+	
+	FullRefresh();
+}
+
+bool SSceneOutliner::CompareItemWithClassName(SceneOutliner::FilterBarType InItem, const TSet<FTopLevelAssetPath>& AssetClassPaths) const
+{
+	return Mode->CompareItemWithClassName(InItem, AssetClassPaths);
+}
+
+void SSceneOutliner::CreateFilterBar(const FSceneOutlinerFilterBarOptions& FilterBarOptions)
+{
+	if(!FilterBarOptions.bHasFilterBar)
+	{
+		return;
+	}
+
+	FName FilterBarIdentifier = OutlinerIdentifier;
+
+	SAssignNew(FilterBar, SSceneOutlinerFilterBar)
+	.OnCompareItemWithClassNames(this, &SSceneOutliner::CompareItemWithClassName)
+	.OnFilterChanged(this, &SSceneOutliner::OnFilterBarFilterChanged)
+	.CustomClassFilters(FilterBarOptions.CustomClassFilters)
+	.CustomFilters(FilterBarOptions.CustomFilters)
+	.FilterSearchBox(FilterTextBoxWidget)
+	.FilterBarIdentifier(FilterBarIdentifier)
+	.UseSharedSettings(FilterBarOptions.bUseSharedSettings)
+	.CategoryToExpand(FilterBarOptions.CategoryToExpand)
+	.CreateTextFilter(SSceneOutlinerFilterBar::FCreateTextFilter::CreateLambda([this]()
+	{
+		TSharedPtr< SceneOutliner::TreeItemTextFilter > Filter = this->CreateTextFilter();
+
+		return MakeShareable(new FCustomTextFilter<SceneOutliner::FilterBarType>(Filter));
+	}));
+
+	FilterBar->LoadSettings();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -13,6 +13,10 @@
 #include "Elements/Interfaces/TypedElementAssetDataInterface.h"
 #include "Instances/InstancedPlacementClientInfo.h"
 
+#include "AssetToolsModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AssetPlacementSettings)
+
 bool UAssetPlacementSettings::CanEditChange(const FProperty* InProperty) const
 {
 	if (!Super::CanEditChange(InProperty))
@@ -93,6 +97,11 @@ UPlacementPaletteClient* UAssetPlacementSettings::AddClientToActivePalette(const
 	return NewPaletteItem;
 }
 
+int32 UAssetPlacementSettings::RemoveClientFromActivePalette(const FAssetData& InAssetData)
+{
+	return GetMutableActivePalette()->PaletteItems.RemoveAll([InAssetData](const UPlacementPaletteClient* ItemIter) { return ItemIter ? (ItemIter->AssetPath == InAssetData.ToSoftObjectPath()) : false; });
+}
+
 TArrayView<const TObjectPtr<UPlacementPaletteClient>> UAssetPlacementSettings::GetActivePaletteItems() const
 {
 	return MakeArrayView(GetActivePalette()->PaletteItems);
@@ -143,6 +152,13 @@ void UAssetPlacementSettings::SaveActivePalette()
 	if (ActivePalette)
 	{
 		UPackageTools::SavePackagesForObjects(TArray<UObject*>({ ActivePalette }));
+	}
+	else if (UserPalette)
+	{
+		FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
+		UObject* NewPaletteAsset = AssetToolsModule.Get().DuplicateAssetWithDialogAndTitle(FString(), FString(), UserPalette, NSLOCTEXT("AssetPlacementEdMode", "SavePaletteAsDialogTitle", "Save Asset Palette As..."));
+		ActivePalette = CastChecked<UPlacementPaletteAsset>(NewPaletteAsset);
+		LastActivePalettePath = FSoftObjectPath(ActivePalette);
 	}
 }
 
@@ -198,3 +214,4 @@ UPlacementPaletteAsset* UAssetPlacementSettings::GetMutableActivePalette()
 	}
 	return UserPalette;
 }
+

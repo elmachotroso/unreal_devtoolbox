@@ -4,15 +4,44 @@
 #include "AudioDevice.h"
 #include "AudioDeviceManager.h"
 #include "AudioEditorModule.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "Delegates/Delegate.h"
-#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "EditorStyleSet.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/PlatformCrt.h"
+#include "IAudioExtensionPlugin.h"
 #include "IAudioModulation.h"
+#include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Logging/LogCategory.h"
 #include "Logging/LogMacros.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
 #include "Sound/SoundModulationDestination.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -59,16 +88,34 @@ namespace ModDestinationLayoutUtils
 		return FName();
 	}
 
-	bool IsParamMismatched(TSharedRef<IPropertyHandle> ModulatorHandle, TSharedRef<IPropertyHandle> StructPropertyHandle, FName* OutModParamName = nullptr, FName* OutDestParamName = nullptr)
+	FName GetParameterClassFromMetaData(const TSharedRef<IPropertyHandle>& InHandle)
 	{
-		if (OutModParamName)
+		static const FName AudioParamClassFieldName("AudioParamClass");
+
+		if (InHandle->HasMetaData(AudioParamClassFieldName))
 		{
-			*OutModParamName = FName();
+			const FName Param = *(InHandle->GetMetaData(AudioParamClassFieldName));
+			return Param;
 		}
 
-		if (OutDestParamName)
+		return FName();
+	}
+
+	bool IsParamMismatched(TSharedRef<IPropertyHandle> ModulatorHandle, TSharedRef<IPropertyHandle> StructPropertyHandle, FName* OutModParamClassName = nullptr, FName* OutDestParamClassName = nullptr, FName* OutModName = nullptr)
+	{
+		if (OutModParamClassName)
 		{
-			*OutDestParamName = FName();
+			*OutModParamClassName = FName();
+		}
+
+		if (OutDestParamClassName)
+		{
+			*OutDestParamClassName = FName();
+		}
+
+		if (OutModName)
+		{
+			*OutModName = FName();
 		}
 
 		UObject* ModObject = nullptr;
@@ -80,19 +127,25 @@ namespace ModDestinationLayoutUtils
 			return false;
 		}
 
-		const FName ModParamName = ModBase->GetOutputParameter().ParameterName;
-		const FName DestParamName = ModDestinationLayoutUtils::GetParameterNameFromMetaData(StructPropertyHandle);
-		if (ModParamName != FName() && DestParamName != FName() && ModParamName != DestParamName)
+		const FName ModParamClassName = ModBase->GetOutputParameter().ClassName;
+		const FName DestParamClassName = ModDestinationLayoutUtils::GetParameterClassFromMetaData(StructPropertyHandle);
+		if (!ModParamClassName.IsNone() && !DestParamClassName.IsNone() && ModParamClassName != DestParamClassName)
 		{
-			if (OutModParamName)
+			if (OutModParamClassName)
 			{
-				*OutModParamName = ModParamName;
+				*OutModParamClassName = ModParamClassName;
 			}
 
-			if (OutDestParamName)
+			if (OutDestParamClassName)
 			{
-				*OutDestParamName = DestParamName;
+				*OutDestParamClassName = DestParamClassName;
 			}
+
+			if (OutModName)
+			{
+				*OutModName = ModBase->GetFName();
+			}
+
 			return true;
 		}
 
@@ -170,7 +223,7 @@ namespace ModDestinationLayoutUtils
 		IDetailChildrenBuilder& ChildBuilder,
 		TSharedRef<IPropertyHandle> StructPropertyHandle,
 		TSharedRef<IPropertyHandle> ValueHandle,
-		TSharedRef<IPropertyHandle> ModulatorHandle,
+		TSharedRef<IPropertyHandle> ModulatorsHandle,
 		TSharedRef<IPropertyHandle> EnablementHandle)
 	{
 		FText UnitDisplayText = FText::GetEmpty();
@@ -180,12 +233,12 @@ namespace ModDestinationLayoutUtils
 		const FText DisplayName = StructPropertyHandle->GetPropertyDisplayName();
 		ChildBuilder.AddCustomRow(DisplayName)
 		.NameContent()
-			[
-				SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text(DisplayName)
-				.ToolTipText(StructPropertyHandle->GetToolTipText())
-			]
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(DisplayName)
+			.ToolTipText(StructPropertyHandle->GetToolTipText())
+		]
 		.ValueContent()
 		.MinDesiredWidth(250.0f)
 		[
@@ -228,7 +281,7 @@ namespace ModDestinationLayoutUtils
 				[
 					SNew(SButton)
 					.ToolTipText(LOCTEXT("ResetToParameterDefaultToolTip", "Reset to parameter's default"))
-					.ButtonStyle(FEditorStyle::Get(), TEXT("NoBorder"))
+					.ButtonStyle(FAppStyle::Get(), TEXT("NoBorder"))
 					.ContentPadding(0.0f)
 					.Visibility(TAttribute<EVisibility>::Create([ParamName, ValueHandle]
 					{
@@ -250,12 +303,12 @@ namespace ModDestinationLayoutUtils
 					.Content()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+						.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 					]
 				]
 		];
 
-		EnablementHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([EnablementHandle, ValueHandle, StructPropertyHandle, ModulatorHandle]()
+		EnablementHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([EnablementHandle, ValueHandle, StructPropertyHandle, ModulatorsHandle]()
 		{
 			bool bEnabled = false;
 			EnablementHandle->GetValue(bEnabled);
@@ -267,8 +320,7 @@ namespace ModDestinationLayoutUtils
 			}
 			else
 			{
-				UObject* NullObj = nullptr;
-				ModulatorHandle->SetValue(NullObj);
+				ModulatorsHandle->AsSet()->Empty();
 			}
 		}));
 	}
@@ -302,76 +354,93 @@ namespace ModDestinationLayoutUtils
 		];
 	}
 
-	void CustomizeChildren_AddModulatorRow(IDetailChildrenBuilder& ChildBuilder, TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedRef<IPropertyHandle> ModulatorHandle, TSharedRef<IPropertyHandle> EnablementHandle)
+	void CustomizeChildren_AddModulatorRow(IDetailChildrenBuilder& ChildBuilder, TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedRef<IPropertyHandle> ModulatorsHandle, TSharedRef<IPropertyHandle> EnablementHandle)
 	{
 		const FText DisplayName = StructPropertyHandle->GetPropertyDisplayName();
-		ChildBuilder.AddCustomRow(DisplayName)
+
+		auto ModEnabled = [EnablementHandle]()
+		{
+			bool bModulationEnabled = false;
+			EnablementHandle->GetValue(bModulationEnabled);
+			return bModulationEnabled
+				? EVisibility::Visible
+				: EVisibility::Collapsed;
+		};
+
+		const TAttribute<EVisibility> ModulatorVisibility = TAttribute<EVisibility>::Create(ModEnabled);
+
+		ChildBuilder.AddProperty(ModulatorsHandle)
+			.DisplayName(FText::Format(LOCTEXT("SoundModulationParameter_ModulatorsFormat", "{0} Modulators"), DisplayName))
+			.Visibility(ModulatorVisibility);
+
+		ChildBuilder.AddCustomRow(LOCTEXT("SoundModulationDestinationLayout_UnitMismatchHeadingWarning", "Unit Mismatch Warning"))
 			.NameContent()
 			[
 				SNew(STextBlock)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text(FText::Format(LOCTEXT("SoundModulationParameter_ModulatorFormat", "{0} Modulator"), DisplayName))
-				.ToolTipText(ModulatorHandle->GetToolTipText())
+				.Text(FText::Format(LOCTEXT("ModulationDestinationLayout_UnitMismatchHeader", "{0} Mismatched Parameters"), DisplayName))
+				.ToolTipText(StructPropertyHandle->GetToolTipText())
 			]
-			.ValueContent()
-			.MinDesiredWidth(200.0f)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
-				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
-				.VAlign(VAlign_Center)
-				[
-					ModulatorHandle->CreatePropertyValueWidget()
-				]
-			]
-			.Visibility(TAttribute<EVisibility>::Create([EnablementHandle]()
-			{
-				bool bModulationEnabled = false;
-				EnablementHandle->GetValue(bModulationEnabled);
-				return bModulationEnabled 
-					? EVisibility::Visible
-					: EVisibility::Hidden;
-			}));
-
-		ChildBuilder.AddCustomRow(LOCTEXT("SoundModulationDestinationLayout_UnitMismatchHeadingWarning", "Unit Mismatch Warning"))
 			.ValueContent()
 			.MinDesiredWidth(150.0f)
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 					.FillWidth(1.0f)
-					.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+					.Padding(0.0f, 3.0f, 0.0f, 3.0f)
 					.VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
 						.Font(IDetailLayoutBuilder::GetDetailFontBold())
-						.Text(TAttribute<FText>::Create([ModulatorHandle, StructPropertyHandle]()
+						.Text(TAttribute<FText>::Create([ModSet = ModulatorsHandle->AsSet(), StructPropertyHandle]()
 						{
-							UObject* ModObject = nullptr;
-							ModulatorHandle->GetValue(ModObject);
+							uint32 NumElements = 0;
+							ModSet->GetNumElements(NumElements);
 
-							UObject* DestObject = nullptr;
-							
-							FName ModName;
-							FName DestName;
-							if (ModDestinationLayoutUtils::IsParamMismatched(ModulatorHandle, StructPropertyHandle, &ModName, &DestName))
+							FString MismatchedText("");
+							for (int32 i = 0; i < (int32)NumElements; ++i)
 							{
-								return FText::Format(LOCTEXT("ModulationDestinationLayout_UnitMismatchFormat", "Parameter Mismatch: Modulator Output = {0}, Destination Input = {1}"),
-									FText::FromName(ModName),
-									FText::FromName(DestName));
+								TSharedRef<IPropertyHandle> SetMemberHandle = ModSet->GetElement(i);
+								FName ModParamClassName;
+								FName DestClassName;
+								FName ModName;
+								if (ModDestinationLayoutUtils::IsParamMismatched(SetMemberHandle, StructPropertyHandle, &ModParamClassName, &DestClassName, &ModName))
+								{
+									MismatchedText += FText::Format(
+										LOCTEXT("ModulationDestinationLayout_UnitMismatchesFormat", "{0} ({1}), Expected: {2}\n"),
+										FText::FromName(ModName),
+										FText::FromName(ModParamClassName),
+										FText::FromName(DestClassName)
+									).ToString();
+								}
 							}
 
-							return FText::GetEmpty();
-
+							return FText::FromString(MismatchedText);
 						}))
 					]
 			]
-			.Visibility(TAttribute<EVisibility>::Create([ModulatorHandle, StructPropertyHandle]()
+			.Visibility(TAttribute<EVisibility>::Create([ModSet = ModulatorsHandle->AsSet(), ModEnabled, StructPropertyHandle]()
 			{
-				return ModDestinationLayoutUtils::IsParamMismatched(ModulatorHandle, StructPropertyHandle)
-					? EVisibility::Visible
-					: EVisibility::Hidden;
+				EVisibility Visibility = ModEnabled();
+				if (Visibility == EVisibility::Collapsed)
+				{
+					return Visibility;
+				}
+
+				uint32 NumElements = 0;
+				ModSet->GetNumElements(NumElements);
+
+				bool bIsMismatched = false;
+				for (int32 i = 0; i < (int32)NumElements; ++i)
+				{
+					TSharedRef<IPropertyHandle> SetMemberHandle = ModSet->GetElement(i);
+					if (ModDestinationLayoutUtils::IsParamMismatched(SetMemberHandle, StructPropertyHandle))
+					{
+						bIsMismatched = true;
+					}
+				}
+
+				return bIsMismatched ? EVisibility::Visible : EVisibility::Hidden;
 			}));
 	}
 
@@ -407,13 +476,13 @@ void FSoundModulationDestinationLayoutCustomization::CustomizeChildren(TSharedRe
 	}
 
 	TSharedRef<IPropertyHandle>EnablementHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDestinationSettings, bEnableModulation)).ToSharedRef();
-	TSharedRef<IPropertyHandle>ModulatorHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDestinationSettings, Modulator)).ToSharedRef();
+	TSharedRef<IPropertyHandle>ModulatorsHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDestinationSettings, Modulators)).ToSharedRef();
 	TSharedRef<IPropertyHandle>ValueHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundModulationDestinationSettings, Value)).ToSharedRef();
 
 	if (ModDestinationLayoutUtils::IsModulationEnabled())
 	{
-		ModDestinationLayoutUtils::CustomizeChildren_AddValueRow(ChildBuilder, StructPropertyHandle, ValueHandle, ModulatorHandle, EnablementHandle);
-		ModDestinationLayoutUtils::CustomizeChildren_AddModulatorRow(ChildBuilder, StructPropertyHandle, ModulatorHandle, EnablementHandle);
+		ModDestinationLayoutUtils::CustomizeChildren_AddValueRow(ChildBuilder, StructPropertyHandle, ValueHandle, ModulatorsHandle, EnablementHandle);
+		ModDestinationLayoutUtils::CustomizeChildren_AddModulatorRow(ChildBuilder, StructPropertyHandle, ModulatorsHandle, EnablementHandle);
 	}
 	else
 	{
@@ -490,15 +559,25 @@ void FSoundModulationDefaultRoutingSettingsLayoutCustomization::CustomizeChildre
 				uint8 RoutingValue = 0;
 				if (RoutingHandle->GetValue(RoutingValue) != FPropertyAccess::Success)
 				{
-					return EVisibility::Hidden;
+					return EVisibility::Collapsed;
 				}
 
-				if (static_cast<EModulationRouting>(RoutingValue) != EModulationRouting::Override)
+				switch (static_cast<EModulationRouting>(RoutingValue))
 				{
-					return EVisibility::Hidden;
-				}
+					case EModulationRouting::Disable:
+					case EModulationRouting::Inherit:
+					{
+						return EVisibility::Collapsed;
+					}
 
-				return EVisibility::Visible;
+					case EModulationRouting::Override:
+					case EModulationRouting::Union:
+					default:
+					{
+						return EVisibility::Visible;
+					}
+					break;
+				}
 			});
 		};
 

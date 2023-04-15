@@ -1,25 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using Castle.Core.Internal;
-using HordeServer;
-using HordeServer.Models;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using HordeServer.Services;
-using HordeServer.Services.Impl;
-using HordeServer.Utilities;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
-using MongoDB.Bson;
-
 #if false
-using PoolId = HordeServer.Utilities.StringId<HordeServer.Models.IPool>;
+using PoolId = Horde.Build.Utilities.StringId<Horde.Build.Models.IPool>;
 using Microsoft.Extensions.Options;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
 	using JobId = ObjectId<IJob>;
 

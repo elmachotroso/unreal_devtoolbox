@@ -30,21 +30,26 @@ namespace UnrealBuildTool.Rules
                     "RigLogicLib",
                     "RigVM",
                     "Projects"
-                }
+				}
             );
+
 
             if (Target.Type == TargetType.Editor)
             {
                 PublicDependencyModuleNames.Add("UnrealEd");
                 PublicDependencyModuleNames.Add("EditorFramework");
                 PublicDependencyModuleNames.Add("MessageLog");
-            }
+
+				PrivateDependencyModuleNames.Add("SkeletalMeshUtilitiesCommon");
+				PrivateDependencyModuleNames.Add("RHI");
+				PrivateDependencyModuleNames.Add("RenderCore");
+			}
 
             PrivateDependencyModuleNames.AddRange(
                 new string[]
-                {
-                    "AnimationCore"
-                }
+				{
+					"AnimationCore"
+				}
             );
         }
     }

@@ -1,19 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Input/Reply.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
 #include "GraphEditor.h"
+#include "HAL/Platform.h"
 #include "IAssetTypeActions.h"
-#include "IDetailsView.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
 
+class FUICommandList;
+class ITableRow;
+class SBorder;
+class STableViewBase;
+class SWidget;
 class UEdGraph;
-struct FTreeDiffResultItem;
+class UEdGraphPin;
+struct FDiffSingleResult;
 template <typename ItemType> class SListView;
 
 class SBehaviorTreeDiff: public SCompoundWidget
@@ -43,11 +51,11 @@ private:
 		FBehaviorTreeDiffPanel();
 
 		/** 
-		 * Generates the slate for this panel
-		 * @param Graph        The Left side graph.
-		 * @param GraphToDiff  The right side graph to diff against
+		 * Generate a panel that displays the Graph and reflects the items in the DiffResults
+		 * @param Graph        Graph Being Displayed
+		 * @param DiffResults  Attribute for obtaining the list of differences
 		 */
-		void GeneratePanel(UEdGraph* Graph, UEdGraph* GraphToDiff);
+		void GeneratePanel(UEdGraph* Graph, TSharedPtr<TArray<FDiffSingleResult>> DiffResults);
 
 		/**
 		 * Returns title for this panel
@@ -181,6 +189,9 @@ private:
 
 	// Source for list view 
 	TArray<FSharedDiffOnGraph> DiffListSource;
+
+	// result from FGraphDiffControl::DiffGraphs
+	TSharedPtr<TArray<FDiffSingleResult>> FoundDiffs;
 
 	// Key commands processed by this widget
 	TSharedPtr<FUICommandList> KeyCommands;

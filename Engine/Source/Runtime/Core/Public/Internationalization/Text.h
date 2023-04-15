@@ -8,7 +8,7 @@
 #include "Templates/UnrealTypeTraits.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
-#include "Containers/Map.h"
+#include "Containers/SortedMap.h"
 #include "Containers/EnumAsByte.h"
 #include "Templates/SharedPointer.h"
 #include "Internationalization/TextKey.h"
@@ -146,7 +146,7 @@ namespace EFormatArgumentType
 	};
 }
 
-typedef TMap<FString, FFormatArgumentValue, FDefaultSetAllocator, FLocKeyMapFuncs<FFormatArgumentValue>> FFormatNamedArguments;
+typedef TSortedMap<FString, FFormatArgumentValue, FDefaultAllocator, FLocKeySortedMapLess> FFormatNamedArguments;
 typedef TArray<FFormatArgumentValue> FFormatOrderedArguments;
 
 typedef TSharedRef<FTextFormatPatternDefinition, ESPMode::ThreadSafe> FTextFormatPatternDefinitionRef;
@@ -212,10 +212,10 @@ struct CORE_API FNumberFormattingOptions
 	int32 MaximumFractionalDigits;
 	FNumberFormattingOptions& SetMaximumFractionalDigits( int32 InValue ){ MaximumFractionalDigits = InValue; return *this; }
 
-	friend void operator<<(FStructuredArchive::FSlot Slot, FNumberFormattingOptions& Value);
+	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FNumberFormattingOptions& Value);
 
 	/** Get the hash code to use for the given formatting options */
-	friend uint32 GetTypeHash( const FNumberFormattingOptions& Key );
+	friend CORE_API uint32 GetTypeHash( const FNumberFormattingOptions& Key );
 
 	/** Check to see if our formatting options match the other formatting options */
 	bool IsIdentical( const FNumberFormattingOptions& Other ) const;
@@ -242,10 +242,10 @@ struct CORE_API FNumberParsingOptions
 	bool UseClamping;
 	FNumberParsingOptions& SetUseClamping(bool InValue) { UseClamping = InValue; return *this; }
 
-	friend void operator<<(FStructuredArchive::FSlot Slot, FNumberParsingOptions& Value);
+	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FNumberParsingOptions& Value);
 
 	/** Get the hash code to use for the given parsing options */
-	friend uint32 GetTypeHash( const FNumberParsingOptions& Key );
+	friend CORE_API uint32 GetTypeHash( const FNumberParsingOptions& Key );
 
 	/** Check to see if our parsing options match the other parsing options */
 	bool IsIdentical( const FNumberParsingOptions& Other ) const;

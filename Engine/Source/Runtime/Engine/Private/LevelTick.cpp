@@ -15,6 +15,7 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectBaseUtility.h"
+#include "UObject/UObjectStats.h"
 #include "UObject/GarbageCollection.h"
 #include "EngineStats.h"
 #include "EngineGlobals.h"
@@ -78,6 +79,9 @@ CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, Ticks, true);
 CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, ActorCount, true);
 
+#if CSV_PROFILER && CSV_TRACK_UOBJECT_COUNT
+CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, ObjectCount, true);
+#endif
 
 // this will log out all of the objects that were ticked in the FDetailedTickStats struct so you can isolate what is expensive
 #define LOG_DETAILED_DUMPSTATS 0
@@ -376,9 +380,9 @@ void FDetailedTickStats::DumpStats()
  * Constructor, keeping track of object's class and start time.
  */
 FScopedDetailTickStats::FScopedDetailTickStats( FDetailedTickStats& InDetailedTickStats, UObject* InObject )
-:	Object( InObject )
+:	DetailedTickStats( InDetailedTickStats )
+,	Object( InObject )
 ,	StartCycles( FPlatformTime::Cycles() )
-,	DetailedTickStats( InDetailedTickStats )
 {
 	bShouldTrackObjectClass = DetailedTickStats.BeginObject( Object->GetClass() );
 	bShouldTrackObject = DetailedTickStats.BeginObject( Object );
@@ -1021,10 +1025,6 @@ void EndSendEndOfFrameUpdatesDrawEvent(FSendAllEndOfFrameUpdates& SendAllEndOfFr
 				// Once all the individual components have received their DoDeferredRenderUpdates_Concurrent()
 				// allow the GPU Skin Cache system to update.
 				GPUSkinCache->EndBatchDispatch(RHICmdList);
-
-				// Flush any remaining pending resource barriers.
-				GPUSkinCache->TransitionAllToReadable(RHICmdList);
-
 			}
 
 			if (ComputeTaskWorkers.Num() > 0)
@@ -1288,6 +1288,11 @@ static void RecordWorldCountsToCSV(UWorld* World, bool bDoingActorTicks)
 			static FName TotalActorCountStatName(TEXT("TotalActorCount"));
 			FCsvProfiler::Get()->RecordCustomStat(TotalActorCountStatName, CSV_CATEGORY_INDEX(ActorCount), CSVActorTotalCount, ECsvCustomStatOp::Set);
 		}
+
+#if CSV_TRACK_UOBJECT_COUNT
+		static const FName TotalObjectCountStatName(TEXT("Total"));
+		FCsvProfiler::Get()->RecordCustomStat(TotalObjectCountStatName, CSV_CATEGORY_INDEX(ObjectCount), UObjectStats::GetUObjectCount(), ECsvCustomStatOp::Set);
+#endif
 	}
 }
 #endif // (CSV_PROFILER && !UE_BUILD_SHIPPING)
@@ -1515,7 +1520,8 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 		FScopedLevelCollectionContextSwitch LevelContext(i, this);
 
 		// If caller wants time update only, or we are paused, skip the rest.
-		if (bDoingActorTicks)
+		const bool bShouldSkipTick = (LevelsToTick.Num() == 0);
+		if (bDoingActorTicks && !bShouldSkipTick)
 		{
 			// Actually tick actors now that context is set up
 			SetupPhysicsTickFunctions(DeltaSeconds);
@@ -1629,7 +1635,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 			}
 		}
 
-		if (bDoingActorTicks)
+		if (bDoingActorTicks && !bShouldSkipTick)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_TickTime);
 			{
@@ -1665,14 +1671,6 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 
 		FWorldDelegates::OnWorldPostActorTick.Broadcast(this, TickType, DeltaSeconds);
 
-#if PHYSICS_INTERFACE_PHYSX
-		if ( PhysicsScene != nullptr )
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(GPhysCommandHandler);
-			GPhysCommandHandler->Flush();
-		}
-#endif // WITH_PHYSX
-		
 		// All tick is done, execute async trace
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(FinishAsyncTrace);
@@ -1692,6 +1690,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 		TRACE_CPUPROFILER_EVENT_SCOPE(NetBroadcastTickTime);
 		SCOPE_CYCLE_COUNTER(STAT_NetBroadcastTickTime);
 		LLM_SCOPE(ELLMTag::Networking);
+		BroadcastPreTickFlush(RealDeltaSeconds);
 		BroadcastTickFlush(RealDeltaSeconds); // note: undilated time is being used here
 	}
 	
@@ -1794,6 +1793,7 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 
 	// Dump the viewpoints with which we were rendered last frame. They will be updated when the world is next rendered.
 	ViewLocationsRenderedLastFrame.Reset();
+	CachedViewInfoRenderedLastFrame.Reset();
 
 	if (GEngine->XRSystem.IsValid())
 	{
@@ -1810,6 +1810,8 @@ void UWorld::Tick( ELevelTick TickType, float DeltaSeconds )
 				WorldParam->PerfTrackers->GetInGamePerformanceTracker((EInGamePerfTrackers)Tracker, EInGamePerfTrackerThreads::RenderThread).Tick();
 			}
 		});
+
+	FWorldDelegates::OnWorldTickEnd.Broadcast(this, TickType, DeltaSeconds);
 }
 
 void UWorld::CleanupActors()

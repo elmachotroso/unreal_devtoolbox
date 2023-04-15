@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonDateTimeTextBlock.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "TimerManager.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonDateTimeTextBlock)
 
 DECLARE_CYCLE_STAT(TEXT("CommonDateTimeTextBlock UpdateUnderlyingText"), STAT_CommonDateTimeTextBlock_UpdateUnderlyingText, STATGROUP_UI);
 
@@ -94,10 +96,14 @@ void UCommonDateTimeTextBlock::UpdateUnderlyingText()
 			}
 		}
 
-		if (Remaining.GetTotalSeconds() < 1.0 && bUseCountdownCompletionText)
+		if (Remaining.GetTotalSeconds() < 1.0)
 		{
-			TextToSet = CountdownCompletionText;
 			OnTimeCountDownCompletion().Broadcast();
+			
+			if(bUseCountdownCompletionText)
+			{
+				TextToSet = CountdownCompletionText;
+			}
 		}
 		else
 		{

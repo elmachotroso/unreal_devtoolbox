@@ -10,7 +10,7 @@
 UENUM(BlueprintType, Category="Motion Trajectory", meta=(Bitflags, UseEnumValuesAsMaskValuesInEditor="true"))
 enum class ETrajectorySampleDomain : uint8
 {
-	None = 0 UMETA(Hidden),
+	None = 0,
 	Time = 1 << 0, // Seconds
 	Distance = 1 << 1 // Centimeters (Unreal units)
 };
@@ -34,24 +34,26 @@ struct ENGINE_API FTrajectorySample
 
 	// Position relative to the sampled in-motion object
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion Trajectory")
-	FVector Position = FVector::ZeroVector;
+	FTransform Transform = FTransform::Identity;
 
 	// Linear velocity relative to the sampled in-motion object
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion Trajectory")
-	FVector LocalLinearVelocity = FVector::ZeroVector;
+	FVector LinearVelocity = FVector::ZeroVector;
 
-	// Linear acceleration relative to the sampled in-motion object
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion Trajectory")
-	FVector LocalLinearAcceleration = FVector::ZeroVector;
-	
 	// Linear interpolation of all parameters of two trajectory samples
 	FTrajectorySample Lerp(const FTrajectorySample& Sample, float Alpha) const;
 
 	// Centripetal Catmull–Rom spline interpolation of all parameters of two trajectory samples
-	FTrajectorySample CubicCRSplineInterp(const FTrajectorySample& PrevSample
+	FTrajectorySample SmoothInterp(const FTrajectorySample& PrevSample
 		, const FTrajectorySample& Sample
 		, const FTrajectorySample& NextSample
 		, float Alpha) const;
+
+	// Concatenates DeltaTransform before the current transform is applied and shifts the accumulated time by 
+	// DeltaSeconds
+	void PrependOffset(const FTransform DeltaTransform, float DeltaSeconds);
+
+	void TransformReferenceFrame(const FTransform DeltaTransform);
 
 	// Determines if all sample properties are zeroed
 	bool IsZeroSample() const;
@@ -66,6 +68,8 @@ struct ENGINE_API FTrajectorySampleRange
 	// Debug rendering contants
 	static constexpr FLinearColor DebugDefaultPredictionColor{ 0.f, 1.f, 0.f };
 	static constexpr FLinearColor DebugDefaultHistoryColor{ 0.f, 0.f, 1.f };
+	static constexpr float DebugDefaultTransformScale = 10.f;
+	static constexpr float DebugDefaultTransformThickness = 2.f;
 	static constexpr float DebugDefaultArrowScale = 0.025f;
 	static constexpr float DebugDefaultArrowSize = 40.f;
 	static constexpr float DebugDefaultArrowThickness = 2.f;
@@ -86,6 +90,15 @@ struct ENGINE_API FTrajectorySampleRange
 	// Removes history samples from trajectory (retains present and future)
 	void RemoveHistory();
 
+	// Rotates all samples in the trajectory
+	void Rotate(const FQuat& Rotation);
+
+	// Interpolates transform over time
+	void TransformOverTime(const FTransform& Transform, float StartTime, float DeltaTime);
+
+	// Rotates all samples in the trajectory
+	void TransformReferenceFrame(const FTransform& Transform);
+
 	// Determine if any trajectory samples are present
 	bool HasSamples() const;
 
@@ -98,9 +111,11 @@ struct ENGINE_API FTrajectorySampleRange
 		, const FTransform& WorldTransform
 		, const FLinearColor PredictionColor = DebugDefaultPredictionColor
 		, const FLinearColor HistoryColor = DebugDefaultHistoryColor
-		, float ArrowScale = DebugDefaultArrowScale
-		, float ArrowSize = DebugDefaultArrowSize
-		, float ArrowThickness = DebugDefaultArrowThickness) const;
+		, float TransformScale = DebugDefaultTransformScale
+		, float TransformThickness = DebugDefaultTransformThickness
+		, float VelArrowScale = DebugDefaultArrowScale
+		, float VelArrowSize = DebugDefaultArrowSize
+		, float VelArrowThickness = DebugDefaultArrowThickness) const;
 
 	// Iterator for precise subsampling of the trajectory
 	template <typename Container> static FTrajectorySample IterSampleTrajectory(const Container& Samples, ETrajectorySampleDomain DomainType, float DomainValue, int32& InitialIdx, bool bSmoothInterp = false)
@@ -146,7 +161,7 @@ struct ENGINE_API FTrajectorySampleRange
 
 					if (PrevIdx != InitialIdx && InitialIdx != Idx && Idx != NextIdx)
 					{
-						InterpSample = InitialSample.CubicCRSplineInterp(Samples[PrevIdx], NextSample, Samples[NextIdx], Alpha);
+						InterpSample = InitialSample.SmoothInterp(Samples[PrevIdx], NextSample, Samples[NextIdx], Alpha);
 						return InterpSample;
 					}
 				}

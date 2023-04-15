@@ -20,6 +20,7 @@
 #if WITH_CEF3
 #include "Misc/ScopeLock.h"
 #include "Async/Async.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "CEF/CEFBrowserApp.h"
 #include "CEF/CEFBrowserHandler.h"
 #include "CEF/CEFWebBrowserWindow.h"
@@ -57,8 +58,8 @@ THIRD_PARTY_INCLUDES_END
 #elif PLATFORM_IOS
 #	include <IOS/IOSPlatformWebBrowser.h>
 #	include <IOS/IOSCookieManager.h>
-#elif PLATFORM_PS4
-#	include "PS4PlatformWebBrowser.h"
+#elif PLATFORM_SPECIFIC_WEB_BROWSER
+#	include COMPILED_PLATFORM_HEADER(PlatformWebBrowser.h)
 #endif
 
 // Define some platform-dependent file locations
@@ -71,7 +72,11 @@ THIRD_PARTY_INCLUDES_END
 #		define CEF3_RESOURCES_DIR CEF3_BIN_DIR TEXT("/Win32/Resources")
 #		define CEF3_SUBPROCES_EXE TEXT("Binaries/Win32/EpicWebHelper.exe")
 #	elif PLATFORM_MAC
-#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework.framework")
+#     if PLATFORM_MAC_ARM64
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework arm64.framework")
+#     else
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework x86.framework")
+#     endif
 #		define CEF3_RESOURCES_DIR CEF3_FRAMEWORK_DIR TEXT("/Resources")
 #		define CEF3_SUBPROCES_EXE TEXT("Binaries/Mac/EpicWebHelper.app/Contents/MacOS/EpicWebHelper")
 #	elif PLATFORM_LINUX // @todo Linux
@@ -83,49 +88,6 @@ THIRD_PARTY_INCLUDES_END
 #		define CEF3_DEFAULT_CACHE 1
 #	endif
 #endif
-
-namespace {
-
-	/**
-	 * Helper function to set the current thread name, visible by the debugger.
-	 * @param ThreadName	Name to set
-	 */
-	void SetCurrentThreadName(char* ThreadName)
-	{
-#if PLATFORM_MAC
-		pthread_setname_np(ThreadName);
-#elif PLATFORM_LINUX
-		pthread_setname_np(pthread_self(), ThreadName);
-#elif PLATFORM_WINDOWS && !PLATFORM_SEH_EXCEPTIONS_DISABLED
-		/**
-		 * Code setting the thread name for use in the debugger.
-		 * Copied implementation from WindowsRunnableThread as it is private.
-		 *
-		 * http://msdn.microsoft.com/en-us/library/xcb2z8hs.aspx
-		 */
-		const uint32 MS_VC_EXCEPTION=0x406D1388;
-
-		struct THREADNAME_INFO
-		{
-			uint32 dwType;		// Must be 0x1000.
-			LPCSTR szName;		// Pointer to name (in user addr space).
-			uint32 dwThreadID;	// Thread ID (-1=caller thread).
-			uint32 dwFlags;		// Reserved for future use, must be zero.
-		};
-
-		THREADNAME_INFO ThreadNameInfo = {0x1000, ThreadName, (uint32)-1, 0};
-
-		__try
-		{
-			RaiseException( MS_VC_EXCEPTION, 0, sizeof(ThreadNameInfo)/sizeof(ULONG_PTR), (ULONG_PTR*)&ThreadNameInfo );
-		}
-		__except( EXCEPTION_EXECUTE_HANDLER )
-		CA_SUPPRESS(6322)
-		{
-		}
-#endif
-	}
-}
 
 FString FWebBrowserSingleton::ApplicationCacheDir() const
 {
@@ -176,6 +138,7 @@ public:
 		FString InitialURL,
 		bool bUseTransparency,
 		bool bThumbMouseButtonNavigation,
+		bool bInterceptLoadRequests = true,
 		TOptional<FString> ContentsToLoad = TOptional<FString>(),
 		bool ShowErrorMessage = true,
 		FColor BackgroundColor = FColor(255, 255, 255, 255)) override
@@ -188,6 +151,7 @@ public:
 		Settings.ContentsToLoad = MoveTemp(ContentsToLoad);
 		Settings.bShowErrorMessage = ShowErrorMessage;
 		Settings.BackgroundColor = BackgroundColor;
+		Settings.bInterceptLoadRequests = bInterceptLoadRequests;
 
 		return IWebBrowserModule::Get().GetSingleton()->CreateBrowserWindow(Settings);
 	}
@@ -213,6 +177,7 @@ public:
 		FString InitialURL,
 		bool bUseTransparency,
 		bool bThumbMouseButtonNavigation,
+		bool bInterceptLoadRequests = true,
 		TOptional<FString> ContentsToLoad = TOptional<FString>(),
 		bool ShowErrorMessage = true,
 		FColor BackgroundColor = FColor(255, 255, 255, 255)) override
@@ -263,7 +228,6 @@ private:
 #endif // PLATFORM_MAC || PLATFORM_LINUX
 #endif // WITH_CEF3
 
-
 FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBrowserInitSettings)
 #if WITH_CEF3
 	: WebBrowserWindowFactory(MakeShareable(new FWebBrowserWindowFactory()))
@@ -272,13 +236,19 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 #endif
 	, bDevToolsShortcutEnabled(UE_BUILD_DEBUG)
 	, bJSBindingsToLoweringEnabled(true)
+	, bAppIsFocused(false)
+#if WITH_CEF3
+	, bCEFInitialized(false)
+#endif
 	, DefaultMaterial(nullptr)
 	, DefaultTranslucentMaterial(nullptr)
 {
 #if WITH_CEF3
 	
 	// Only enable CEF if we have CEF3, we are not running a commandlet without rendering (e.g. cooking assets) and it has not been explicitly disabled
-	bAllowCEF = (!IsRunningCommandlet() || (IsAllowCommandletRendering() && FParse::Param(FCommandLine::Get(), TEXT("AllowCommandletCEF")))) && !FParse::Param(FCommandLine::Get(), TEXT("nocef"));
+	// Disallow CEF if we never plan on rendering, ie, with CanEverRender. This includes servers
+	bAllowCEF = (!IsRunningCommandlet() || (IsAllowCommandletRendering() && FParse::Param(FCommandLine::Get(), TEXT("AllowCommandletCEF")))) &&
+				FApp::CanEverRender() && !FParse::Param(FCommandLine::Get(), TEXT("nocef"));
 	if (bAllowCEF)
 	{
 		// The FWebBrowserSingleton must be initialized on the game thread
@@ -298,7 +268,6 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 		bool bVerboseLogging = FParse::Param(FCommandLine::Get(), TEXT("cefverbose")) || FParse::Param(FCommandLine::Get(), TEXT("debuglog"));
 		// CEFBrowserApp implements application-level callbacks.
 		CEFBrowserApp = new FCEFBrowserApp;
-		CEFBrowserApp->OnRenderProcessThreadCreated().BindRaw(this, &FWebBrowserSingleton::HandleRenderProcessCreated);
 
 		// Specify CEF global settings here.
 		CefSettings Settings;
@@ -310,7 +279,10 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 		//Set the default background for browsers to be opaque black, this is used for windowed (not OSR) browsers
 		//  setting it black here prevents the white flash on load
 		Settings.background_color = CefColorSetARGB(255, 0, 0, 0);
-	
+
+#if PLATFORM_LINUX
+		Settings.windowless_rendering_enabled = true;
+#endif
 
 		FString CefLogFile(FPaths::Combine(*FPaths::ProjectLogDir(), TEXT("cef3.log")));
 		CefLogFile = FPaths::ConvertRelativePathToFull(CefLogFile);
@@ -328,7 +300,7 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 		CefString(&Settings.locale) = TCHAR_TO_WCHAR(*LocaleCode);
 
 		// Append engine version to the user agent string.
-		CefString(&Settings.product_version) = TCHAR_TO_WCHAR(*WebBrowserInitSettings.ProductVersion);
+		CefString(&Settings.user_agent_product) = TCHAR_TO_WCHAR(*WebBrowserInitSettings.ProductVersion);
 
 #if CEF3_DEFAULT_CACHE
 		// Enable on disk cache
@@ -393,11 +365,11 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 #endif
 
 		// Initialize CEF.
-		bool bSuccess = CefInitialize(MainArgs, Settings, CEFBrowserApp.get(), nullptr);
-		check(bSuccess);
+		bCEFInitialized = CefInitialize(MainArgs, Settings, CEFBrowserApp.get(), nullptr);
+		check(bCEFInitialized);
 
 		// Set the thread name back to GameThread.
-		SetCurrentThreadName(TCHAR_TO_ANSI( *(FName( NAME_GameThread ).GetPlainNameString()) ));
+		FPlatformProcess::SetThreadName(*FName(NAME_GameThread).GetPlainNameString());
 
 		DefaultCookieManager = FCefWebBrowserCookieManagerFactory::Create(CefCookieManager::GetGlobalManager(nullptr));
 	}
@@ -406,30 +378,46 @@ FWebBrowserSingleton::FWebBrowserSingleton(const FWebBrowserInitSettings& WebBro
 #elif PLATFORM_ANDROID
 	DefaultCookieManager = MakeShareable(new FAndroidCookieManager());
 #endif
+
 }
 
+
 #if WITH_CEF3
-void FWebBrowserSingleton::HandleRenderProcessCreated(CefRefPtr<CefListValue> ExtraInfo)
+void FWebBrowserSingleton::WaitForTaskQueueFlush()
 {
-	FScopeLock Lock(&WindowInterfacesCS);
-	for (int32 Index = WindowInterfaces.Num() - 1; Index >= 0; --Index)
-	{
-		TSharedPtr<FCEFWebBrowserWindow> BrowserWindow = WindowInterfaces[Index].Pin();
-		if (BrowserWindow.IsValid())
+	// Keep pumping messages until we see the one below clear the queue
+	bTaskFinished = false;
+	CefPostTask(TID_UI, new FCEFBrowserClosureTask(nullptr, [=]()
 		{
-			CefRefPtr<CefDictionaryValue> Bindings = BrowserWindow->GetProcessInfo();
-			if (Bindings.get())
-			{
-				ExtraInfo->SetDictionary(ExtraInfo->GetSize(), Bindings);
-			}
+			bTaskFinished = true;
+		}));
+
+	const double StartWaitAppTime = FPlatformTime::Seconds();
+	while (!bTaskFinished)
+	{
+		FPlatformProcess::Sleep(0.01);
+		// CEF needs the windows message pump run to be able to finish closing a browser, so run it manually here
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().PumpMessages();
+		}
+		CefDoMessageLoopWork();
+		// Wait at most 1 second for tasks to clear, in case CEF crashes/hangs during process lifetime
+		if (FPlatformTime::Seconds() - StartWaitAppTime > 1.0f)
+		{
+			break; // don't spin forever
 		}
 	}
 }
 #endif
 
+
 FWebBrowserSingleton::~FWebBrowserSingleton()
 {
 #if WITH_CEF3
+	if (!bCEFInitialized)
+		return; // CEF failed to init so don't crash trying to shut it down
+
 	if (bAllowCEF)
 	{
 		{
@@ -464,34 +452,16 @@ FWebBrowserSingleton::~FWebBrowserSingleton()
 		}
 		// Clear this before CefShutdown() below
 		RequestResourceHandlers.Reset();
-		// Just in case, although we deallocate CEFBrowserApp right after this.
-		CEFBrowserApp->OnRenderProcessThreadCreated().Unbind();
 		// CefRefPtr takes care of delete
 		CEFBrowserApp = nullptr;
-		// Ensure we run the message pump
-		CefDoMessageLoopWork();
 
-		// Keep pumping messages until we see the one below clear the queue
-		bTaskFinished = false;
-		CefPostTask(TID_UI, new FCEFBrowserClosureTask(nullptr, [=]()
-			{
-				bTaskFinished = true;
-			}));
+		WaitForTaskQueueFlush();
 
-		const double StartWaitAppTime = FPlatformTime::Seconds();
-		while (!bTaskFinished)
-		{
-			CefDoMessageLoopWork();
-			// Wait at most 1 second for tasks to clear, in case CEF crashes/hangs during process lifetime
-			if (FPlatformTime::Seconds() - StartWaitAppTime > 1.0f)
-			{
-				break; // don't spin forever
-			}
-		}
 		// Shut down CEF.
 		CefShutdown();
 	}
-#elif PLATFORM_IOS || PLATFORM_PS4 || (PLATFORM_ANDROID && USE_ANDROID_JNI)
+	bCEFInitialized = false;
+#elif PLATFORM_IOS || PLATFORM_SPECIFIC_WEB_BROWSER || (PLATFORM_ANDROID && USE_ANDROID_JNI)
 	{
 		FScopeLock Lock(&WindowInterfacesCS);
 		// Clear this before CefShutdown() below
@@ -587,9 +557,11 @@ TSharedPtr<IWebBrowserWindow> FWebBrowserSingleton::CreateBrowserWindow(const FC
 			BrowserSettings.windowless_frame_rate = BrowserFrameRate;
 		}
 
+		TArray<FString> AuthorizationHeaderAllowListURLS;
+		GConfig->GetArray(TEXT("Browser"), TEXT("AuthorizationHeaderAllowListURLS"), AuthorizationHeaderAllowListURLS, GEngineIni);
 
 		// WebBrowserHandler implements browser-level callbacks.
-		CefRefPtr<FCEFBrowserHandler> NewHandler(new FCEFBrowserHandler(WindowSettings.bUseTransparency, WindowSettings.AltRetryDomains));
+		CefRefPtr<FCEFBrowserHandler> NewHandler(new FCEFBrowserHandler(WindowSettings.bUseTransparency, WindowSettings.bInterceptLoadRequests ,WindowSettings.AltRetryDomains, AuthorizationHeaderAllowListURLS));
 
 		CefRefPtr<CefRequestContext> RequestContext = nullptr;
 		if (WindowSettings.Context.IsSet())
@@ -605,7 +577,7 @@ TSharedPtr<IWebBrowserWindow> FWebBrowserSingleton::CreateBrowserWindow(const FC
 				RequestContextSettings.persist_session_cookies = Context.bPersistSessionCookies;
 				RequestContextSettings.ignore_certificate_errors = Context.bIgnoreCertificateErrors;
 
-				CefRefPtr<FCEFResourceContextHandler> ResourceContextHandler = new FCEFResourceContextHandler();
+				CefRefPtr<FCEFResourceContextHandler> ResourceContextHandler = new FCEFResourceContextHandler(this);
 				ResourceContextHandler->OnBeforeLoad() = Context.OnBeforeContextResourceLoad;
 				RequestResourceHandlers.Add(Context.Id, ResourceContextHandler);
 
@@ -618,6 +590,12 @@ TSharedPtr<IWebBrowserWindow> FWebBrowserSingleton::CreateBrowserWindow(const FC
 				RequestContext = *ExistingRequestContext;
 			}
 			SchemeHandlerFactories.RegisterFactoriesWith(RequestContext);
+			UE_LOG(LogWebBrowser, Log, TEXT("Creating browser for ContextId=%s."), *WindowSettings.Context.GetValue().Id);
+		}
+		if (RequestContext == nullptr)
+		{
+			// As of CEF drop 4430 the CreateBrowserSync call requires a non-null request context, so fall back to the default one if needed
+			RequestContext = CefRequestContext::GetGlobalContext();
 		}
 
 		// Create the CEF browser window.
@@ -674,7 +652,7 @@ TSharedPtr<IWebBrowserWindow> FWebBrowserSingleton::CreateBrowserWindow(const FC
 		WindowInterfaces.Add(NewBrowserWindow);
 	}
 	return NewBrowserWindow;
-#elif PLATFORM_PS4
+#elif PLATFORM_SPECIFIC_WEB_BROWSER
 	// Create new window
 	TSharedPtr<FWebBrowserWindow> NewBrowserWindow = MakeShareable(new FWebBrowserWindow(
 		WindowSettings.InitialURL,
@@ -738,6 +716,7 @@ bool FWebBrowserSingleton::Tick(float DeltaTime)
 		GConfig->GetBool(TEXT("Browser"), TEXT("bForceMessageLoop"), bForceMessageLoop, GEngineIni);
 
 		// Get the configured minimum hertz and make sure the value is within a reasonable range
+		static const int MaxFrameRateClamp = 60;
 		int32 MinMessageLoopHz = 1;
 		GConfig->GetInt(TEXT("Browser"), TEXT("MinMessageLoopHertz"), MinMessageLoopHz, GEngineIni);
 		MinMessageLoopHz = FMath::Clamp(MinMessageLoopHz, 1, 60);
@@ -756,16 +735,46 @@ bool FWebBrowserSingleton::Tick(float DeltaTime)
 		float MaxForcedMessageLoopSeconds = 1.0f / MaxForcedMessageLoopHz;
 
 		static float SecondsSinceLastPump = 0;
+		static float SecondsSinceLastAppFocusCheck = MaxForcedMessageLoopSeconds;
 		static float SecondsToNextForcedPump = MaxForcedMessageLoopSeconds;
 
 		// Accumulate time since last pump by adding DeltaTime which gives us the amount of time that has passed since last tick in seconds
 		SecondsSinceLastPump += DeltaTime;
+		SecondsSinceLastAppFocusCheck += DeltaTime;
 		// Time left till next pump
 		SecondsToNextForcedPump -= DeltaTime;
 
-		bool bWantForce = bForceMessageLoop || WindowInterfaces.Num() > 0;    // True if we wish to force message pump
+		bool bWantForce = bForceMessageLoop;								  // True if we wish to force message pump
 		bool bCanForce = SecondsToNextForcedPump <= 0;                        // But can we?
 		bool bMustForce = SecondsSinceLastPump >= MinMessageLoopSeconds;      // Absolutely must force (Min frequency rate hit)
+		if (SecondsSinceLastAppFocusCheck > MinMessageLoopSeconds && WindowInterfaces.Num() > 0)
+		{
+			SecondsSinceLastAppFocusCheck = 0;
+			// only check app being foreground at the min message loop rate (1hz) and if we have a browser window to save CPU
+			bAppIsFocused = FPlatformApplicationMisc::IsThisApplicationForeground(); 
+		}
+		// NOTE - bAppIsFocused could be stale if WindowInterfaces.Num() == 0
+		bool bAppIsFocusedAndWebWindows = WindowInterfaces.Num() > 0 && bAppIsFocused;
+
+		// if we won't force AND are the foreground OS app AND we have windows created see if any are visible (not minimized) right now
+		if (bWantForce == false && bMustForce  == false && bAppIsFocusedAndWebWindows == true )
+		{
+			for (int32 Index = 0; Index < WindowInterfaces.Num(); Index++)
+			{
+				if (WindowInterfaces[Index].IsValid())
+				{
+					TSharedPtr<FCEFWebBrowserWindow> BrowserWindow = WindowInterfaces[Index].Pin();
+					if (BrowserWindow->GetParentWindow().IsValid())
+					{
+						TSharedPtr<SWindow> BrowserParentWindow = BrowserWindow->GetParentWindow();
+						if (!BrowserParentWindow->IsWindowMinimized())
+						{
+							bWantForce = true;
+						}
+					}
+				}
+			}
+		}
 
 		// tick the CEF app to determine when to run CefDoMessageLoopWork
 		if (CEFBrowserApp->TickMessagePump(DeltaTime, (bWantForce && bCanForce) || bMustForce))
@@ -789,7 +798,7 @@ bool FWebBrowserSingleton::Tick(float DeltaTime)
 		}
 	}
 
-#elif PLATFORM_IOS || PLATFORM_PS4 || (PLATFORM_ANDROID && USE_ANDROID_JNI)
+#elif PLATFORM_IOS || PLATFORM_SPECIFIC_WEB_BROWSER || (PLATFORM_ANDROID && USE_ANDROID_JNI)
 	FScopeLock Lock(&WindowInterfacesCS);
 	bool bIsSlateAwake = FSlateApplication::IsInitialized() && !FSlateApplication::Get().IsSlateAsleep();
 	// Remove any windows that have been deleted and check whether it's currently visible
@@ -852,6 +861,23 @@ TSharedPtr<IWebBrowserCookieManager> FWebBrowserSingleton::GetCookieManager(TOpt
 }
 
 #if WITH_CEF3
+bool FWebBrowserSingleton::URLRequestAllowsCredentials(const FString& URL)
+{
+	FScopeLock Lock(&WindowInterfacesCS);
+	// The FCEFResourceContextHandler::OnBeforeResourceLoad call doesn't get the browser/frame associated with the load
+	// (because bugs) so just look at each browser and see if it thinks it knows about this URL
+	for (int32 Index = WindowInterfaces.Num() - 1; Index >= 0; --Index)
+	{
+		TSharedPtr<FCEFWebBrowserWindow> BrowserWindow = WindowInterfaces[Index].Pin();
+		if (BrowserWindow.IsValid() && BrowserWindow->URLRequestAllowsCredentials(URL))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 FString FWebBrowserSingleton::GenerateWebCacheFolderName(const FString& InputPath)
 {
 	if (InputPath.IsEmpty())
@@ -930,11 +956,13 @@ bool FWebBrowserSingleton::RegisterContext(const FBrowserContextSettings& Settin
 		RequestContextSettings.ignore_certificate_errors = Settings.bIgnoreCertificateErrors;
 
 		//Create a new one
-		CefRefPtr<FCEFResourceContextHandler> ResourceContextHandler = new FCEFResourceContextHandler();
+		CefRefPtr<FCEFResourceContextHandler> ResourceContextHandler = new FCEFResourceContextHandler(this);
 		ResourceContextHandler->OnBeforeLoad() = Settings.OnBeforeContextResourceLoad;
 		RequestResourceHandlers.Add(Settings.Id, ResourceContextHandler);
 		CefRefPtr<CefRequestContext> RequestContext = CefRequestContext::CreateContext(RequestContextSettings, ResourceContextHandler);
 		RequestContexts.Add(Settings.Id, RequestContext);
+		SchemeHandlerFactories.RegisterFactoriesWith(RequestContext);
+		UE_LOG(LogWebBrowser, Log, TEXT("Registering ContextId=%s."), *Settings.Id);
 		return true;
 	}
 #endif
@@ -943,10 +971,14 @@ bool FWebBrowserSingleton::RegisterContext(const FBrowserContextSettings& Settin
 
 bool FWebBrowserSingleton::UnregisterContext(const FString& ContextId)
 {
-	bool bFoundContext = false;
 #if WITH_CEF3
+	bool bFoundContext = false;
 	if (bAllowCEF)
 	{
+		UE_LOG(LogWebBrowser, Log, TEXT("Unregistering ContextId=%s."), *ContextId);
+
+		WaitForTaskQueueFlush();
+	
 		CefRefPtr<CefRequestContext> Context;
 		if (RequestContexts.RemoveAndCopyValue(ContextId, Context))
 		{
@@ -960,8 +992,10 @@ bool FWebBrowserSingleton::UnregisterContext(const FString& ContextId)
 			ResourceHandler->OnBeforeLoad().Unbind();
 		}
 	}
-#endif
 	return bFoundContext;
+#else
+	return false;
+#endif
 }
 
 bool FWebBrowserSingleton::RegisterSchemeHandlerFactory(FString Scheme, FString Domain, IWebBrowserSchemeHandlerFactory* WebBrowserSchemeHandlerFactory)

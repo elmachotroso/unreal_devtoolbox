@@ -8,6 +8,7 @@
 #include "UObject/SoftObjectPath.h"
 #include "ScopedTransaction.h"
 #include "Editor.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "Factories/BlueprintFactory.h"
 
 #include "TraceSourceFiltering.h"
@@ -25,7 +26,7 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Misc/FileHelper.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorDirectories.h"
 #include "AssetToolsModule.h"
 #include "TraceWorldFiltering.h"
@@ -278,7 +279,7 @@ static bool GetSavePresetPackageName(FString& OutPackageName)
 	{
 		SaveAssetDialogConfig.DefaultPath = DefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = FPaths::GetCleanFilename(UniqueAssetName);
-		SaveAssetDialogConfig.AssetClassNames.Add(USourceFilterCollection::StaticClass()->GetFName());
+		SaveAssetDialogConfig.AssetClassNames.Add(USourceFilterCollection::StaticClass()->GetClassPathName());
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveSourceFilterPresetDialogTitle", "Save Filter Preset");
 	}
@@ -376,7 +377,7 @@ TSharedPtr<FExtender> FEditorSessionSourceFilterService::GetExtender()
 								AssetPickerConfig.bSortByPathInColumnView = false;
 
 								AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoPresets_Warning", "No Presets Found");
-								AssetPickerConfig.Filter.ClassNames.Add(USourceFilterCollection::StaticClass()->GetFName());
+								AssetPickerConfig.Filter.ClassPaths.Add(USourceFilterCollection::StaticClass()->GetClassPathName());
 								AssetPickerConfig.OnAssetDoubleClicked = FOnAssetDoubleClicked::CreateLambda([this](const FAssetData& InAssetData)
 								{
 									if (UObject* Asset = InAssetData.GetAsset())

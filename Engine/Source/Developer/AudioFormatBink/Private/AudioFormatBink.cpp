@@ -3,11 +3,14 @@
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IAudioFormat.h"
 #include "Interfaces/IAudioFormatModule.h"
+#include "HAL/Platform.h"
 
 #include "binka_ue_file_header.h"
 #include "binka_ue_encode.h"
 
 static const FName NAME_BINKA(TEXT("BINKA"));
+
+DEFINE_LOG_CATEGORY_STATIC(LogAudioFormatBink, Display, All);
 
 namespace AudioFormatBinkPrivate
 {
@@ -33,10 +36,14 @@ class FAudioFormatBink : public IAudioFormat
 	enum
 	{
 		/** Version for Bink Audio format, this becomes part of the DDC key. */
-		UE_AUDIO_BINK_VER = 3,
+		UE_AUDIO_BINK_VER = 4,
 	};
 
 public:
+	virtual bool AllowParallelBuild() const override
+	{
+		return true;
+	}
 
 	virtual uint16 GetVersion(FName Format) const override
 	{
@@ -60,6 +67,7 @@ public:
 
 	virtual bool Cook(FName InFormat, const TArray<uint8>& InSrcBuffer, FSoundQualityInfo& InQualityInfo, TArray<uint8>& OutCompressedDataStore) const override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAudioFormatBink::Cook);
 		check(InFormat == NAME_BINKA);
 
 		uint8 CompressionLevel = AudioFormatBinkPrivate::GetCompressionLevelFromQualityIndex(InQualityInfo.Quality);
@@ -77,6 +85,7 @@ public:
 
 	virtual bool CookSurround(FName InFormat, const TArray<TArray<uint8> >& InSrcBuffers, FSoundQualityInfo& InQualityInfo, TArray<uint8>& OutCompressedDataStore) const override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAudioFormatBink::CookSurround);
 		check(InFormat == NAME_BINKA);
 
 		//

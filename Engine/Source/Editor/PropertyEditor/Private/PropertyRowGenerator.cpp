@@ -4,10 +4,9 @@
 #include "PropertyNode.h"
 #include "ObjectPropertyNode.h"
 #include "StructurePropertyNode.h"
-#include "Classes/EditorStyleSettings.h"
 #include "DetailLayoutBuilderImpl.h"
 #include "CategoryPropertyNode.h"
-#include "SPropertyEditorEditInline.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorEditInline.h"
 #include "DetailCategoryBuilderImpl.h"
 #include "Modules/ModuleManager.h"
 #include "DetailLayoutHelpers.h"
@@ -59,7 +58,13 @@ public:
 			Generator->ForceRefresh();
 		}
 	}
-	virtual void RequestRefresh() override {}
+	virtual void RequestRefresh() override 
+	{ 
+		if (Generator != nullptr)
+		{
+			Generator->RequestRefresh();
+		}
+	}
 
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const override
 	{
@@ -370,6 +375,13 @@ void FPropertyRowGenerator::Tick(float DeltaTime)
 		DeferredActions.Empty();
 	}
 
+	if (bRefreshPending)
+	{
+		bRefreshPending = false;
+		
+		ForceRefresh();
+	}
+
 	bool bFullRefresh = ValidatePropertyNodes(RootPropertyNodes);
 
 	for (FDetailLayoutData& LayoutData : DetailLayouts)
@@ -383,7 +395,6 @@ void FPropertyRowGenerator::Tick(float DeltaTime)
 			LayoutData.DetailLayout->Tick(DeltaTime);
 		}
 	}
-
 }
 
 TStatId FPropertyRowGenerator::GetStatId() const 
@@ -451,6 +462,11 @@ const TArray<TSharedRef<class IClassViewerFilter>>& FPropertyRowGenerator::GetCl
 	// not implemented
 	static TArray<TSharedRef<class IClassViewerFilter>> NotImplemented;
 	return NotImplemented;
+}
+
+void FPropertyRowGenerator::SetPropertyGenerationAllowListPaths(const TSet<FString>& InPropertyPathsToGeneratePropertyNodes)
+{
+	PropertyGenerationAllowListPaths = InPropertyPathsToGeneratePropertyNodes;
 }
 
 void FPropertyRowGenerator::PreSetObject(int32 NumNewObjects, bool bHasStructRoots)
@@ -610,7 +626,6 @@ void FPropertyRowGenerator::UpdatePropertyMaps()
 {
 	RootTreeNodes.Empty();
 
-
 	for (FDetailLayoutData& LayoutData : DetailLayouts)
 	{
 		// Check uniqueness.  It is critical that detail layouts can be destroyed
@@ -653,6 +668,7 @@ void FPropertyRowGenerator::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyN
 	TSharedPtr<FDetailLayoutBuilderImpl> DetailLayout = MakeShareable(new FDetailLayoutBuilderImpl(InRootPropertyNode, LayoutData.ClassToPropertyMap, PropertyUtilities, PropertyGenerationUtilities, nullptr, false));
 	DetailLayout->AddNodeVisibilityChangedHandler(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FPropertyRowGenerator::LayoutNodeVisibilityChanged));
 	LayoutData.DetailLayout = DetailLayout;
+	LayoutData.DetailLayout->SetPropertyGenerationAllowListPaths(PropertyGenerationAllowListPaths);
 
 	TSharedPtr<FComplexPropertyNode> RootPropertyNode = InRootPropertyNode;
 	check(RootPropertyNode.IsValid());
@@ -661,8 +677,6 @@ void FPropertyRowGenerator::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyN
 
 	LayoutArgs.LayoutData = &LayoutData;
 	LayoutArgs.InstancedPropertyTypeToDetailLayoutMap = &InstancedTypeToLayoutMap;
-	LayoutArgs.IsPropertyReadOnly = [this](const FPropertyAndParent& PropertyAndParent) { return false; };
-	LayoutArgs.IsPropertyVisible = [this](const FPropertyAndParent& PropertyAndParent) { return true; };
 	LayoutArgs.bEnableFavoriteSystem = false;
 	LayoutArgs.bUpdateFavoriteSystemOnly = false;
 

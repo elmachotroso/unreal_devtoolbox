@@ -315,17 +315,19 @@ class SyncProject : SyncProjectBase
 				}
 
 				BuildEditor BuildCmd = new BuildEditor();
-				BuildCmd.Clean = ParseParam("clean");
-				BuildCmd.ProjectName = ProjectArgForEditor;
+				BuildCmd.Params = this.Params;
 				ExitStatus = BuildCmd.Execute();
 			}
-
-			if (OpenProject && ExitStatus == ExitCode.Success)
+			
+			// If both -build and -open are specified
+			// on the commandline, then we will rely on the successful build to call
+			// it's open of the editor. Otherwise just open the editor
+			if (!BuildProject && OpenProject && ExitStatus == ExitCode.Success)
 			{
 				Log.TraceVerbose("Opening Editor for {0}", ProjectArgForEditor);
 
 				OpenEditor OpenCmd = new OpenEditor();
-				OpenCmd.ProjectName = ProjectArgForEditor;
+				OpenCmd.Params = this.Params;
 				ExitStatus = OpenCmd.Execute();
 			}
 

@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Input/Reply.h"
+#include "Containers/UnrealString.h"
 #include "IPropertyTypeCustomization.h"
-#include "PropertyHandle.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Templates/SharedPointer.h"
 
-class SButton;
-class SComboButton;
 class IMenu;
+class IPropertyHandle;
+class SButton;
 
 class FDirectoryPathStructCustomization : public IPropertyTypeCustomization
 {
@@ -23,9 +24,6 @@ public:
 
 private:
 
-	/** Delegate for displaying text value of path */
-	FText GetDisplayedText(TSharedRef<IPropertyHandle> PropertyHandle) const;
-
 	/** Delegate used to display a directory picker */
 	FReply OnPickContent(TSharedRef<IPropertyHandle> PropertyHandle) ;
 
@@ -37,6 +35,11 @@ private:
 
 	/** Called when a path is picked from the path picker */
 	void OnPathPicked(const FString& Path, TSharedRef<IPropertyHandle> PropertyHandle);
+
+	/** Delegate to determine whether the browse button should be enabled */
+	bool IsBrowseEnabled(TSharedRef<IPropertyHandle> PropertyHandle) const;
+
+private:
 
 	/** The browse button widget */
 	TSharedPtr<SButton> BrowseButton;

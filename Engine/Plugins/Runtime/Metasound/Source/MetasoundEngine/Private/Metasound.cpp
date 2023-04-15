@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Metasound.h"
 
-#include "AssetRegistryModule.h"
-#include "CoreMinimal.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Internationalization/Text.h"
+#include "Logging/TokenizedMessage.h"
 #include "MetasoundAssetBase.h"
 #include "MetasoundAudioFormats.h"
 #include "MetasoundEngineArchetypes.h"
+#include "MetasoundEngineAsset.h"
 #include "MetasoundEngineEnvironment.h"
 #include "MetasoundEnvironment.h"
 #include "MetasoundFrontendController.h"
@@ -24,6 +25,8 @@
 #include "MetasoundUObjectRegistry.h"
 #include "UObject/ObjectSaveContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Metasound)
+
 #if WITH_EDITORONLY_DATA
 #include "EdGraph/EdGraph.h"
 #endif // WITH_EDITORONLY_DATA
@@ -31,14 +34,31 @@
 #define LOCTEXT_NAMESPACE "MetaSound"
 
 
-UMetaSound::UMetaSound(const FObjectInitializer& ObjectInitializer)
+int32 UMetasoundEditorGraphBase::GetHighestMessageSeverity() const
+{
+	int32 HighestMessageSeverity = EMessageSeverity::Info;
+
+	for (const UEdGraphNode* Node : Nodes)
+	{
+		// Lower integer value is "higher severity"
+		if (Node->ErrorType < HighestMessageSeverity)
+		{
+			HighestMessageSeverity = Node->ErrorType;
+		}
+	}
+
+	return HighestMessageSeverity;
+}
+
+
+UMetaSoundPatch::UMetaSoundPatch(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, FMetasoundAssetBase()
 {
 }
 
 #if WITH_EDITOR
-void UMetaSound::PostDuplicate(EDuplicateMode::Type InDuplicateMode)
+void UMetaSoundPatch::PostDuplicate(EDuplicateMode::Type InDuplicateMode)
 {
 	Super::PostDuplicate(InDuplicateMode);
 
@@ -51,83 +71,99 @@ void UMetaSound::PostDuplicate(EDuplicateMode::Type InDuplicateMode)
 	}
 }
 
-void UMetaSound::PostEditUndo()
+void UMetaSoundPatch::PostEditUndo()
 {
 	Super::PostEditUndo();
-	Metasound::PostEditUndo(*this);
+	Metasound::FMetaSoundEngineAssetHelper::PostEditUndo(*this);
 }
 #endif // WITHEDITOR
 
-void UMetaSound::BeginDestroy()
+void UMetaSoundPatch::BeginDestroy()
 {
 	UnregisterGraphWithFrontend();
 	Super::BeginDestroy();
 }
 
-void UMetaSound::PreSave(FObjectPreSaveContext InSaveContext)
+void UMetaSoundPatch::PreSave(FObjectPreSaveContext InSaveContext)
 {
 	Super::PreSave(InSaveContext);
-	Metasound::PreSaveAsset(*this, InSaveContext);
+	Metasound::FMetaSoundEngineAssetHelper::PreSaveAsset(*this, InSaveContext);
 }
 
-void UMetaSound::Serialize(FArchive& InArchive)
+void UMetaSoundPatch::Serialize(FArchive& InArchive)
 {
 	Super::Serialize(InArchive);
-	Metasound::SerializeToArchive(*this, InArchive);
+	Metasound::FMetaSoundEngineAssetHelper::SerializeToArchive(*this, InArchive);
 }
 
 #if WITH_EDITORONLY_DATA
-UEdGraph* UMetaSound::GetGraph()
+UEdGraph* UMetaSoundPatch::GetGraph()
 {
 	return Graph;
 }
 
-const UEdGraph* UMetaSound::GetGraph() const
+const UEdGraph* UMetaSoundPatch::GetGraph() const
 {
 	return Graph;
 }
 
-UEdGraph& UMetaSound::GetGraphChecked()
+UEdGraph& UMetaSoundPatch::GetGraphChecked()
 {
 	check(Graph);
 	return *Graph;
 }
 
-const UEdGraph& UMetaSound::GetGraphChecked() const
+const UEdGraph& UMetaSoundPatch::GetGraphChecked() const
 {
 	check(Graph);
 	return *Graph;
 }
 
-FText UMetaSound::GetDisplayName() const
+FText UMetaSoundPatch::GetDisplayName() const
 {
-	FString TypeName = UMetaSound::StaticClass()->GetName();
+	FString TypeName = UMetaSoundPatch::StaticClass()->GetName();
 	return FMetasoundAssetBase::GetDisplayName(MoveTemp(TypeName));
 }
 
-void UMetaSound::SetRegistryAssetClassInfo(const Metasound::Frontend::FNodeClassInfo& InNodeInfo)
+
+void UMetaSoundPatch::SetRegistryAssetClassInfo(const Metasound::Frontend::FNodeClassInfo& InNodeInfo)
 {
-	Metasound::SetMetaSoundRegistryAssetClassInfo(*this, InNodeInfo);
+	Metasound::FMetaSoundEngineAssetHelper::SetMetaSoundRegistryAssetClassInfo(*this, InNodeInfo);
 }
 #endif // WITH_EDITORONLY_DATA
 
-Metasound::Frontend::FNodeClassInfo UMetaSound::GetAssetClassInfo() const
+void UMetaSoundPatch::PostLoad() 
 {
-	return { GetDocumentChecked().RootGraph, *GetPathName() };
+	Super::PostLoad();
+	Metasound::FMetaSoundEngineAssetHelper::PostLoad(*this);
 }
 
-void UMetaSound::SetReferencedAssetClassKeys(TSet<Metasound::Frontend::FNodeRegistryKey>&& InKeys)
+Metasound::Frontend::FNodeClassInfo UMetaSoundPatch::GetAssetClassInfo() const
 {
-	ReferencedAssetClassKeys = MoveTemp(InKeys);
+	return { GetDocumentChecked().RootGraph, FSoftObjectPath(this) };
 }
 
-TSet<FSoftObjectPath>& UMetaSound::GetReferencedAssetClassCache()
+#if WITH_EDITOR
+void UMetaSoundPatch::SetReferencedAssetClasses(TSet<Metasound::Frontend::IMetaSoundAssetManager::FAssetInfo>&& InAssetClasses)
+{
+	Metasound::FMetaSoundEngineAssetHelper::SetReferencedAssetClasses(*this, MoveTemp(InAssetClasses));
+}
+#endif
+
+TArray<FMetasoundAssetBase*> UMetaSoundPatch::GetReferencedAssets()
+{
+	return Metasound::FMetaSoundEngineAssetHelper::GetReferencedAssets(*this);
+}
+
+const TSet<FSoftObjectPath>& UMetaSoundPatch::GetAsyncReferencedAssetClassPaths() const 
 {
 	return ReferenceAssetClassCache;
 }
 
-const TSet<FSoftObjectPath>& UMetaSound::GetReferencedAssetClassCache() const
+void UMetaSoundPatch::OnAsyncReferencedAssetsLoaded(const TArray<FMetasoundAssetBase*>& InAsyncReferences)
 {
-	return ReferenceAssetClassCache;
+	Metasound::FMetaSoundEngineAssetHelper::OnAsyncReferencedAssetsLoaded(*this, InAsyncReferences);
 }
+
 #undef LOCTEXT_NAMESPACE // MetaSound
+

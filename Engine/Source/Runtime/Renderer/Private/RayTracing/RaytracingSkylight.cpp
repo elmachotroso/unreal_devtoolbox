@@ -24,7 +24,7 @@ static FAutoConsoleVariableRef CVarRayTracingSkyLight(
 #include "DistanceFieldAmbientOcclusion.h"
 #include "SceneRendering.h"
 #include "ScenePrivate.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RenderGraphBuilder.h"
 #include "RenderTargetPool.h"
 #include "VisualizeTexture.h"
@@ -417,7 +417,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingSkyLight(
 	FRDGTextureUAV* RayDistanceUAV = GraphBuilder.CreateUAV(OutHitDistanceTexture);
 
 	// Fill Scene Texture parameters
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder, Views[0]);
 
 	int32 ViewIndex = 0;
 	for (FViewInfo& View : Views)
@@ -439,7 +439,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingSkyLight(
 		PassParameters->SceneTextures = SceneTextures;
 		PassParameters->UpscaleFactor = UpscaleFactor;
 
-		PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+		PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 
 		const bool bUseHairLighting = 
@@ -470,6 +470,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingSkyLight(
 			SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
 
 			FRayTracingPipelineState* Pipeline = View.RayTracingMaterialPipeline;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 			if (CVarRayTracingSkyLightEnableMaterials.GetValueOnRenderThread() == 0)
 			{
 				// Declare default pipeline
@@ -482,10 +483,11 @@ void FDeferredShadingSceneRenderer::RenderRayTracingSkyLight(
 				Initializer.SetHitGroupTable(HitGroupTable);
 				Initializer.bAllowHitGroupIndexing = false; // Use the same hit shader for all geometry in the scene by disabling SBT indexing.
 
+				// TODO(UE-157946): This pipeline does not bind any miss shader and relies on the pipeline to do this automatically. This should be made explicit.
 				Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
+				RHICmdList.SetRayTracingMissShader(RayTracingSceneRHI, 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 			}
 
-			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 			RHICmdList.RayTraceDispatch(Pipeline, RayGenerationShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, RayTracingResolution.X, RayTracingResolution.Y);
 		});
 
@@ -730,8 +732,8 @@ void FDeferredShadingSceneRenderer::VisualizeSkyLightMipTree(
 	TShaderMapRef<FVisualizeSkyLightMipTreePS> PixelShader(ShaderMap);
 	FRHITexture* RenderTargets[2] =
 	{
-		SceneColor->GetRenderTargetItem().TargetableTexture,
-		SkyLightMipTreeRT->GetRenderTargetItem().TargetableTexture
+		SceneColor->GetRHI(),
+		SkyLightMipTreeRT->GetRHI()
 	};
 	FRHIRenderPassInfo RenderPassInfo(2, RenderTargets, ERenderTargetActions::Load_Store);
 	RHICmdList.BeginRenderPass(RenderPassInfo, TEXT("SkyLight Visualization"));
@@ -768,15 +770,14 @@ void FDeferredShadingSceneRenderer::VisualizeSkyLightMipTree(
 		View.ViewRect.Min.X, View.ViewRect.Min.Y,
 		View.ViewRect.Width(), View.ViewRect.Height(),
 		FIntPoint(View.ViewRect.Width(), View.ViewRect.Height()),
-		GetSceneTextureExtent(),
+		View.GetSceneTexturesConfig().Extent,
 		VertexShader);
 	RHICmdList.EndRenderPass();
 	GVisualizeTexture.SetCheckPoint(RHICmdList, SkyLightMipTreeRT);
 
-	RHICmdList.CopyToResolveTarget(SceneColor->GetRenderTargetItem().TargetableTexture, SceneColor->GetRenderTargetItem().ShaderResourceTexture, FResolveParams());
-
 	// Transition to compute
 	RHICmdList.Transition({
+		FRHITransitionInfo(SceneColor->GetRHI(), ERHIAccess::RTV, ERHIAccess::SRVMask),
 		FRHITransitionInfo(SkyLightMipTreePosX.UAV, ERHIAccess::SRVGraphics, ERHIAccess::UAVCompute),
 		FRHITransitionInfo(SkyLightMipTreeNegX.UAV, ERHIAccess::SRVGraphics, ERHIAccess::UAVCompute),
 		FRHITransitionInfo(SkyLightMipTreePosY.UAV, ERHIAccess::SRVGraphics, ERHIAccess::UAVCompute),

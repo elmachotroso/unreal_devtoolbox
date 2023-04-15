@@ -12,7 +12,7 @@
 	"SupportURL": "",
 	"EnabledByDefault": false,
 	"CanContainContent": true,
-	"IsBetaVersion": true,
+	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
@@ -32,5 +32,9 @@
 			"Name": "MetaSound",
 			"Enabled": true
 		},
+		{
+			"Name": "WaveTable",
+			"Enabled": true
+		}
 	]	
 }

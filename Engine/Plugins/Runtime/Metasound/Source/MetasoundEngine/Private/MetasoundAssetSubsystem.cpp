@@ -17,6 +17,8 @@
 #include "MetasoundUObjectRegistry.h"
 #include "UObject/NoExportTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundAssetSubsystem)
+
 
 namespace Metasound
 {
@@ -30,12 +32,15 @@ namespace Metasound
 			bool bSuccess = true;
 
 			OutInfo.Type = EMetasoundFrontendClassType::External;
-			OutInfo.AssetPath = InAssetData.ObjectPath;
-
+			OutInfo.AssetPath = InAssetData.GetSoftObjectPath();
 			FString AssetClassID;
 			bSuccess &= InAssetData.GetTagValue(AssetTags::AssetClassID, AssetClassID);
 			OutInfo.AssetClassID = FGuid(AssetClassID);
 			OutInfo.ClassName = FMetasoundFrontendClassName(FName(), *AssetClassID, FName());
+
+#if WITH_EDITORONLY_DATA
+			InAssetData.GetTagValue(AssetTags::IsPreset, OutInfo.bIsPreset);
+#endif // WITH_EDITORONLY_DATA
 
 			int32 RegistryVersionMajor = 0;
 			bSuccess &= InAssetData.GetTagValue(AssetTags::RegistryVersionMajor, RegistryVersionMajor);
@@ -71,6 +76,27 @@ namespace Metasound
 #endif // WITH_EDITORONLY_DATA
 
 			return bSuccess;
+		}
+
+		// Remove the Map entry only if the key and value are equal.
+		//
+		// This protects against scenarios where a metasound is renamed or moved 
+		// and the new entry was being erroneously removed from the PathMap
+		bool RemoveIfExactMatch(TMap<Frontend::FNodeRegistryKey, FSoftObjectPath>& InMap, const Frontend::FNodeRegistryKey& InKeyToRemove, const FSoftObjectPath& InPathToRemove)
+		{
+			if (const FSoftObjectPath* Path = InMap.Find(InKeyToRemove))
+			{
+				if (*Path == InPathToRemove)
+				{
+					InMap.Remove(InKeyToRemove);
+					return true;
+				}
+				else
+				{
+					UE_LOG(LogMetaSound, VeryVerbose, TEXT("Object paths do not match. Skipping removal of %s:%s from the asset subsystem."), *InKeyToRemove, *InPathToRemove.ToString());
+				}
+			}
+			return false;
 		}
 	}
 }
@@ -108,8 +134,11 @@ void UMetaSoundAssetSubsystem::PostInitAssetScan()
 			AddOrUpdateAsset(AssetData);
 		});
 	}
+
+	bIsInitialAssetScanComplete = true;
 }
 
+#if WITH_EDITORONLY_DATA
 void UMetaSoundAssetSubsystem::AddAssetReferences(FMetasoundAssetBase& InAssetBase)
 {
 	using namespace Metasound;
@@ -124,52 +153,53 @@ void UMetaSoundAssetSubsystem::AddAssetReferences(FMetasoundAssetBase& InAssetBa
 		UE_LOG(LogMetaSound, Verbose, TEXT("Adding asset '%s' to MetaSoundAsset registry."), *InAssetBase.GetOwningAssetName());
 	}
 
-	bool bLoadFromPathCache = false;
+	bool bAddFromReferencedAssets = false;
 	const TSet<FString>& ReferencedAssetClassKeys = InAssetBase.GetReferencedAssetClassKeys();
 	for (const FString& ReferencedAssetClassKey : ReferencedAssetClassKeys)
 	{
 		if (!ContainsKey(ReferencedAssetClassKey))
 		{
 			UE_LOG(LogMetaSound, Verbose, TEXT("Missing referenced class '%s' asset entry."), *ReferencedAssetClassKey);
-			bLoadFromPathCache = true;
+			bAddFromReferencedAssets = true;
 		}
 	}
 
 	// All keys are loaded
-	if (!bLoadFromPathCache)
+	if (!bAddFromReferencedAssets)
 	{
 		return;
 	}
 
 	UE_LOG(LogMetaSound, Verbose, TEXT("Attempting preemptive reference load..."));
 
-	// If keys are not loaded, iterate class cache paths to prime asset manager with
-	// hint paths as the registration is getting called before asset manager has 
-	// completed initial scan.
-	const TSet<FSoftObjectPath>& AssetClassCache = InAssetBase.GetReferencedAssetClassCache();
-	for (const FSoftObjectPath& AssetClassPath : AssetClassCache)
+	TArray<FMetasoundAssetBase*> ReferencedAssets = InAssetBase.GetReferencedAssets();
+	for (FMetasoundAssetBase* Asset : ReferencedAssets)
 	{
-		if (FMetasoundAssetBase* MetaSoundAsset = TryLoadAsset(AssetClassPath))
+		if (Asset)
 		{
-			FNodeClassInfo ClassInfo = MetaSoundAsset->GetAssetClassInfo();
+			FNodeClassInfo ClassInfo = Asset->GetAssetClassInfo();
 			const FNodeRegistryKey ClassKey = NodeRegistryKey::CreateKey(ClassInfo);
 			if (!ContainsKey(ClassKey))
 			{
 				UE_LOG(LogMetaSound, Verbose,
-					TEXT("Preemptive load of class '%s' from hint path '%s' due to early "
+					TEXT("Preemptive load of class '%s' due to early "
 						"registration request (asset scan likely not complete)."),
-					*ClassKey,
-					*AssetClassPath.ToString());
+					*ClassKey);
 
-				UObject* MetaSoundObject = MetaSoundAsset->GetOwningAsset();
+				UObject* MetaSoundObject = Asset->GetOwningAsset();
 				if (ensureAlways(MetaSoundObject))
 				{
 					AddOrUpdateAsset(*MetaSoundObject);
 				}
 			}
 		}
+		else
+		{
+			UE_LOG(LogMetaSound, Warning, TEXT("Null referenced dependent asset in %s. Resaving asset in editor may fix the issue"), *InAssetBase.GetOwningAssetName());
+		}
 	}
 }
+#endif
 
 Metasound::Frontend::FNodeRegistryKey UMetaSoundAssetSubsystem::AddOrUpdateAsset(const UObject& InObject)
 {
@@ -207,16 +237,19 @@ Metasound::Frontend::FNodeRegistryKey UMetaSoundAssetSubsystem::AddOrUpdateAsset
 	{
 		UObject* Object = nullptr;
 
-		FSoftObjectPath Path(InAssetData.ObjectPath);
-		if (InAssetData.IsAssetLoaded())
+		FSoftObjectPath Path = InAssetData.ToSoftObjectPath();
+		if (!FPackageName::GetPackageMountPoint(InAssetData.GetObjectPathString()).IsNone())
 		{
-			Object = Path.ResolveObject();
-			UE_LOG(LogMetaSound, Verbose, TEXT("Adding loaded asset '%s' to MetaSoundAsset registry."), *Object->GetName());
-		}
-		else
-		{
-			Object = Path.TryLoad();
-			UE_LOG(LogMetaSound, Verbose, TEXT("Loaded asset '%s' and adding to MetaSoundAsset registry."), *Object->GetName());
+			if (InAssetData.IsAssetLoaded())
+			{
+				Object = Path.ResolveObject();
+				UE_LOG(LogMetaSound, Verbose, TEXT("Adding loaded asset '%s' to MetaSoundAsset registry."), *Object->GetName());
+			}
+			else
+			{
+				Object = Path.TryLoad();
+				UE_LOG(LogMetaSound, Verbose, TEXT("Loaded asset '%s' and adding to MetaSoundAsset registry."), *Object->GetName());
+			}
 		}
 
 		if (Object)
@@ -230,7 +263,7 @@ Metasound::Frontend::FNodeRegistryKey UMetaSoundAssetSubsystem::AddOrUpdateAsset
 		const FNodeRegistryKey RegistryKey = NodeRegistryKey::CreateKey(ClassInfo);
 		if (NodeRegistryKey::IsValid(RegistryKey))
 		{
-			PathMap.FindOrAdd(RegistryKey) = InAssetData.ObjectPath;
+			PathMap.FindOrAdd(RegistryKey) = InAssetData.GetSoftObjectPath();
 		}
 
 		return RegistryKey;
@@ -294,23 +327,30 @@ void UMetaSoundAssetSubsystem::RebuildDenyListCache(const UAssetManager& InAsset
 	AutoUpdateDenyListChangeID = Settings->DenyListCacheChangeID;
 }
 
-TSet<Metasound::Frontend::FNodeRegistryKey> UMetaSoundAssetSubsystem::GetReferencedKeys(const FMetasoundAssetBase& InAssetBase) const
+#if WITH_EDITOR
+TSet<UMetaSoundAssetSubsystem::FAssetInfo> UMetaSoundAssetSubsystem::GetReferencedAssetClasses(const FMetasoundAssetBase& InAssetBase) const
 {
-	METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(UMetaSoundAssetSubsystem::GetReferencedKeys);
+	METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(UMetaSoundAssetSubsystem::GetReferencedAssetClasses);
 	using namespace Metasound::Frontend;
 
-	TSet<FNodeRegistryKey> OutKeys;
+	if (!bIsInitialAssetScanComplete)
+	{
+		UE_LOG(LogMetaSound, Warning, TEXT("Attempt to get registered dependent assets for %s before asset scan is complete may result in missed dependencies"), *InAssetBase.GetOwningAssetName());
+	}
+
+	TSet<FAssetInfo> OutAssetInfos;
 	const FMetasoundFrontendDocument& Document = InAssetBase.GetDocumentChecked();
 	for (const FMetasoundFrontendClass& Class : Document.Dependencies)
 	{
 		const FNodeRegistryKey Key = NodeRegistryKey::CreateKey(Class.Metadata);
-		if (ContainsKey(Key))
+		if (const FSoftObjectPath* ObjectPath = PathMap.Find(Key))
 		{
-			OutKeys.Add(Key);
+			OutAssetInfos.Add(FAssetInfo{Key, *ObjectPath});
 		}
 	}
-	return OutKeys;
+	return MoveTemp(OutAssetInfos);
 }
+#endif
 
 void UMetaSoundAssetSubsystem::RescanAutoUpdateDenyList()
 {
@@ -355,6 +395,152 @@ bool UMetaSoundAssetSubsystem::TryLoadReferencedAssets(const FMetasoundAssetBase
 	return bSucceeded;
 }
 
+void UMetaSoundAssetSubsystem::RequestAsyncLoadReferencedAssets(FMetasoundAssetBase& InAssetBase)
+{
+	const TSet<FSoftObjectPath>& AsyncReferences = InAssetBase.GetAsyncReferencedAssetClassPaths();
+	if (AsyncReferences.Num() > 0)
+	{
+		if (UObject* OwningAsset = InAssetBase.GetOwningAsset())
+		{
+			TArray<FSoftObjectPath> PathsToLoad = AsyncReferences.Array();
+
+			// Protect against duplicate calls to async load assets. 
+			if (FMetaSoundAsyncAssetDependencies* ExistingAsyncLoad = FindLoadingDependencies(OwningAsset))
+			{
+				if (ExistingAsyncLoad->Dependencies == PathsToLoad)
+				{
+					// early out since these are already actively being loaded.
+					return;
+				}
+			}
+
+			int32 AsyncLoadID = AsyncLoadIDCounter++;
+
+			auto AssetsLoadedDelegate = [this, AsyncLoadID]()
+			{
+				this->OnAssetsLoaded(AsyncLoadID);
+			};
+
+			// Store async loading data for use when async load is complete. 
+			FMetaSoundAsyncAssetDependencies& AsyncDependencies = LoadingDependencies.AddDefaulted_GetRef();
+
+			AsyncDependencies.LoadID = AsyncLoadID;
+			AsyncDependencies.MetaSound = OwningAsset;
+			AsyncDependencies.Dependencies = PathsToLoad;
+			AsyncDependencies.StreamableHandle = StreamableManager.RequestAsyncLoad(PathsToLoad, AssetsLoadedDelegate);
+		}
+		else
+		{
+			UE_LOG(LogMetaSound, Error, TEXT("Cannot load async asset as FMetasoundAssetBase null owning UObject"), *InAssetBase.GetOwningAssetName());
+		}
+	}
+
+}
+
+void UMetaSoundAssetSubsystem::WaitUntilAsyncLoadReferencedAssetsComplete(FMetasoundAssetBase& InAssetBase)
+{
+	UObject* OwningAsset = InAssetBase.GetOwningAsset();
+	if (OwningAsset)
+	{
+		while (FMetaSoundAsyncAssetDependencies* LoadingDependency = FindLoadingDependencies(OwningAsset))
+		{
+			// Grab shared ptr to handle as LoadingDependencies may be deleted and have it's shared pointer removed. 
+			TSharedPtr<FStreamableHandle> StreamableHandle = LoadingDependency->StreamableHandle;
+			if (StreamableHandle.IsValid())
+			{
+				UE_LOG(LogMetaSound, Verbose, TEXT("Waiting on async load (id: %d) from asset %s"), LoadingDependency->LoadID, *InAssetBase.GetOwningAssetName());
+
+				EAsyncPackageState::Type LoadState = StreamableHandle->WaitUntilComplete();
+				if (EAsyncPackageState::Complete != LoadState)
+				{
+					UE_LOG(LogMetaSound, Error, TEXT("Failed to complete loading of async dependent assets from parent asset %s"), *InAssetBase.GetOwningAssetName());
+					RemoveLoadingDependencies(LoadingDependency->LoadID);
+				}
+				else
+				{
+					// This will remove the loading dependencies from internal storage
+					OnAssetsLoaded(LoadingDependency->LoadID);
+				}
+
+				// This will prevent OnAssetsLoaded from being called via the streamables
+				// internal delegate complete callback.
+				StreamableHandle->CancelHandle();
+			}
+		}
+	}
+}
+
+FMetaSoundAsyncAssetDependencies* UMetaSoundAssetSubsystem::FindLoadingDependencies(const UObject* InParentAsset)
+{
+	auto IsEqualMetaSoundUObject = [InParentAsset](const FMetaSoundAsyncAssetDependencies& InDependencies) -> bool
+	{
+		return (InDependencies.MetaSound == InParentAsset);
+	}; 
+
+	return LoadingDependencies.FindByPredicate(IsEqualMetaSoundUObject);
+}
+
+FMetaSoundAsyncAssetDependencies* UMetaSoundAssetSubsystem::FindLoadingDependencies(int32 InLoadID)
+{
+	auto IsEqualID = [InLoadID](const FMetaSoundAsyncAssetDependencies& InDependencies) -> bool
+	{
+		return (InDependencies.LoadID == InLoadID);
+	};
+	
+	return LoadingDependencies.FindByPredicate(IsEqualID);
+}
+
+void UMetaSoundAssetSubsystem::RemoveLoadingDependencies(int32 InLoadID)
+{
+	auto IsEqualID = [InLoadID](const FMetaSoundAsyncAssetDependencies& InDependencies) -> bool
+	{
+		return (InDependencies.LoadID == InLoadID);
+	};
+	LoadingDependencies.RemoveAllSwap(IsEqualID);
+}
+
+void UMetaSoundAssetSubsystem::OnAssetsLoaded(int32 InLoadID)
+{
+	FMetaSoundAsyncAssetDependencies* LoadedDependencies = FindLoadingDependencies(InLoadID);
+	if (ensureMsgf(LoadedDependencies, TEXT("Call to async asset load complete with invalid IDs %d"), InLoadID))
+	{
+		if (LoadedDependencies->StreamableHandle.IsValid())
+		{
+			if (LoadedDependencies->MetaSound)
+			{
+				Metasound::IMetasoundUObjectRegistry& UObjectRegistry = Metasound::IMetasoundUObjectRegistry::Get();
+				FMetasoundAssetBase* ParentAssetBase = UObjectRegistry.GetObjectAsAssetBase(LoadedDependencies->MetaSound);
+				if (ensureMsgf(ParentAssetBase, TEXT("UClass of Parent MetaSound asset %s is not registered in metasound UObject Registery"), *LoadedDependencies->MetaSound->GetPathName()))
+				{
+					// Get all async loaded assets
+					TArray<UObject*> LoadedAssets;
+					LoadedDependencies->StreamableHandle->GetLoadedAssets(LoadedAssets);
+
+					// Cast UObjects to FMetaSoundAssetBase
+					TArray<FMetasoundAssetBase*> LoadedAssetBases;
+					for (UObject* AssetDependency : LoadedAssets)
+					{
+						if (AssetDependency)
+						{
+							FMetasoundAssetBase* AssetDependencyBase = UObjectRegistry.GetObjectAsAssetBase(AssetDependency);
+							if (ensure(AssetDependencyBase))
+							{
+								LoadedAssetBases.Add(AssetDependencyBase);
+							}
+						}
+					}
+
+					// Update parent asset with loaded assets. 
+					ParentAssetBase->OnAsyncReferencedAssetsLoaded(LoadedAssetBases);
+				}
+			}
+		}
+
+		// Remove from active array of loading dependencies.
+		RemoveLoadingDependencies(InLoadID);
+	}
+}
+
 const FSoftObjectPath* UMetaSoundAssetSubsystem::FindObjectPathFromKey(const Metasound::Frontend::FNodeRegistryKey& InRegistryKey) const
 {
 	return PathMap.Find(InRegistryKey);
@@ -374,7 +560,7 @@ void UMetaSoundAssetSubsystem::RemoveAsset(const UObject& InObject)
 	{
 		const FNodeClassInfo ClassInfo = MetaSoundAsset->GetAssetClassInfo();
 		FNodeRegistryKey RegistryKey = FMetasoundFrontendRegistryContainer::Get()->GetRegistryKey(ClassInfo);
-		PathMap.Remove(RegistryKey);
+		AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, FSoftObjectPath(&InObject));
 	}
 }
 
@@ -387,7 +573,7 @@ void UMetaSoundAssetSubsystem::RemoveAsset(const FAssetData& InAssetData)
 	if (ensureAlways(AssetSubsystemPrivate::GetAssetClassInfo(InAssetData, ClassInfo)))
 	{
 		FNodeRegistryKey RegistryKey = FMetasoundFrontendRegistryContainer::Get()->GetRegistryKey(ClassInfo);
-		PathMap.Remove(RegistryKey);
+		AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, InAssetData.GetSoftObjectPath());
 	}
 }
 
@@ -418,7 +604,7 @@ void UMetaSoundAssetSubsystem::RenameAsset(const FAssetData& InAssetData, bool b
 void UMetaSoundAssetSubsystem::ResetAssetClassDisplayName(const FAssetData& InAssetData)
 {
 	UObject* Object = nullptr;
-	FSoftObjectPath Path(InAssetData.ObjectPath);
+	FSoftObjectPath Path = InAssetData.GetSoftObjectPath();
 	if (InAssetData.IsAssetLoaded())
 	{
 		Object = Path.ResolveObject();
@@ -512,9 +698,10 @@ void UMetaSoundAssetSubsystem::UnregisterAssetClassesInDirectories(const TArray<
 				if (bIsRegistered)
 				{
 					FMetasoundFrontendRegistryContainer::Get()->UnregisterNode(RegistryKey);
-					PathMap.Remove(RegistryKey);
+					AssetSubsystemPrivate::RemoveIfExactMatch(PathMap, RegistryKey, AssetData.GetSoftObjectPath());
 				}
 			}
 		}
 	});
 }
+

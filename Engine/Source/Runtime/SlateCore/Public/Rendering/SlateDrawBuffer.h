@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "UObject/GCObject.h"
+#include "HAL/CriticalSection.h"
+
+#include <atomic>
 
 class FSlateWindowElementList;
 class SWindow;
@@ -14,15 +17,8 @@ class SWindow;
 class SLATECORE_API FSlateDrawBuffer : public FGCObject
 {
 public:
-
 	/** Default constructor. */
-	explicit FSlateDrawBuffer()
-		: Locked(0)
-		, ResourceVersion(0)
-	{ }
-
-public:
-	~FSlateDrawBuffer();
+	FSlateDrawBuffer();
 
 	/** Removes all data from the buffer. */
 	void ClearBuffer();
@@ -51,7 +47,7 @@ public:
 	/** 
 	 * Locks the draw buffer.  Indicates that the viewport is in use.
 	 *
-	 * @return true if the viewport could be locked.  False otherwise.
+	 * @return true if the buffer could be locked.  False otherwise.
 	 * @see Unlock
 	 */
 	bool Lock();
@@ -63,6 +59,12 @@ public:
 	 */
 	void Unlock();
 
+	/** @return true if the buffer is locked. */
+	bool IsLocked() const
+	{
+		return bIsLocked;
+	}
+
 	/** FGCObject Interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const
@@ -70,16 +72,17 @@ public:
 		return TEXT("FSlateDrawBuffer for Uncached Elements");
 	}
 
-protected:
-	// List of window element lists.
+private:
+	// List of window element lists
 	TArray< TSharedRef<FSlateWindowElementList> > WindowElementLists;
 
 	// List of window element lists that we store from the previous frame 
 	// that we restore if they're requested again.
 	TArray< TSharedRef<FSlateWindowElementList> > WindowElementListsPool;
 
-	// 1 if this buffer is locked, 0 otherwise.
-	volatile int32 Locked;
+	FCriticalSection GCLock;
+	std::atomic<bool> bIsLocked;
+	bool bIsLockedBySlateThread;
 
 	// Last recorded version from the render. The WindowElementListsPool is emptied when this changes.
 	uint32 ResourceVersion;

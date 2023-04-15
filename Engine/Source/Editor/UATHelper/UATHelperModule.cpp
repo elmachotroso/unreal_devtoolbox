@@ -19,23 +19,24 @@
 #include "Editor.h"
 #include "EditorAnalytics.h"
 #include "IUATHelperModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
-#include "Editor/MainFrame/Public/Interfaces/IMainFrameModule.h"
+#include "Interfaces/IMainFrameModule.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
-#include "Developer/MessageLog/Public/IMessageLogListing.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
+#include "IMessageLogListing.h"
+#include "MessageLogModule.h"
 #include "Misc/UObjectToken.h"
 
 #include "GameProjectGenerationModule.h"
 #include "AnalyticsEventAttribute.h"
 
 #include "ShaderCompiler.h"
+#include "OutputLogModule.h"
 
 #define LOCTEXT_NAMESPACE "UATHelper"
 
@@ -91,7 +92,7 @@ public:
 	{
 		if ( NotificationItemPtr.IsValid() )
 		{
-			if ( CompletionState == SNotificationItem::CS_Fail )
+			if (CompletionState == SNotificationItem::CS_Fail)
 			{
 				GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
 			}
@@ -99,7 +100,7 @@ public:
 			{
 				GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileSuccess_Cue.CompileSuccess_Cue"));
 			}
-
+			
 			TSharedPtr<SNotificationItem> NotificationItem = NotificationItemPtr.Pin();
 			NotificationItem->SetText(Text);			
 
@@ -203,12 +204,12 @@ private:
 				{
 					// Generate qualified asset path and query the registry
 					AssetPath = LongPackageName + TEXT(".") + FPackageName::GetShortName(LongPackageName);
-					FName AssetPathName(*AssetPath, FNAME_Find);
-					if (!AssetPathName.IsNone())
+					FSoftObjectPath SoftAssetPath(AssetPath);
+					if (!SoftAssetPath.IsNull())
 					{
 						static const FName AssetRegistryModuleName(TEXT("AssetRegistry"));
 						FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryModuleName);
-						AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(AssetPathName, true);
+						AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(SoftAssetPath, true);
 					}
 				}
 			}
@@ -222,8 +223,8 @@ private:
 					bHasAssetErrors = true;
 				}
 
-				TSharedRef<FTokenizedMessage> PackagingMsg = MessageType == EMessageSeverity::Error ? FMessageLog("PackagingResults").Error()
-					: FMessageLog("PackagingResults").Warning();
+				FMessageLog Message("PackagingResults");
+				TSharedRef<FTokenizedMessage> PackagingMsg = MessageType == EMessageSeverity::Error ? Message.Error() : Message.Warning();
 
 				PackagingMsg->AddToken(FTextToken::Create(FText::FromString(MessageArray.Num() > 1 ? MessageArray[1] : MessageString)));
 
@@ -382,7 +383,7 @@ public:
 	{
 	}
 
-	virtual void CreateUatTask( const FString& CommandLine, const FText& PlatformDisplayName, const FText& TaskName, const FText &TaskShortName, const FSlateBrush* TaskIcon, UatTaskResultCallack ResultCallback, const FString& ResultLocation)
+	virtual void CreateUatTask( const FString& CommandLine, const FText& PlatformDisplayName, const FText& TaskName, const FText &TaskShortName, const FSlateBrush* TaskIcon, const TArray<FAnalyticsEventAttribute>* OptionalAnalyticsParamArray, UatTaskResultCallack ResultCallback, const FString& ResultLocation)
 	{
 		// If this is a packaging or cooking task, clear the PackagingResults log
 		if (!TaskShortName.CompareToCaseIgnored(FText::FromString(TEXT("Packaging"))) || 
@@ -461,7 +462,14 @@ public:
 		}
 
 		FString EventName = (CommandLine.Contains(TEXT("-package")) ? TEXT("Editor.Package") : TEXT("Editor.Cook"));
-		FEditorAnalytics::ReportEvent(EventName + TEXT(".Start"), PlatformDisplayName.ToString(), bHasCode);
+		if (OptionalAnalyticsParamArray != nullptr)
+		{
+			FEditorAnalytics::ReportEvent(EventName + TEXT(".Start"), PlatformDisplayName.ToString(), bHasCode, *OptionalAnalyticsParamArray);
+		}
+		else
+		{
+			FEditorAnalytics::ReportEvent(EventName + TEXT(".Start"), PlatformDisplayName.ToString(), bHasCode);
+		}
 
 		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
 
@@ -487,7 +495,8 @@ public:
 
 	static void HandleUatHyperlinkNavigate()
 	{
-		FGlobalTabmanager::Get()->TryInvokeTab(FName("OutputLog"));
+		FOutputLogModule& OutputLogModule = FOutputLogModule::Get();
+		OutputLogModule.FocusOutputLog();
 	}
 
 	static void HandleUatResultHyperlinkNavigate(FString ResultLocation)

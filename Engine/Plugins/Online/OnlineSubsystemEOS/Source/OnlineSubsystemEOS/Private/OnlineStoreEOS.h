@@ -6,7 +6,6 @@
 #include "Online/CoreOnline.h"
 #include "Interfaces/OnlineStoreInterfaceV2.h"
 #include "Interfaces/OnlinePurchaseInterface.h"
-#include "OnlineSubsystemEOSPackage.h"
 #include "OnlineSubsystemEOSTypes.h"
 
 #if WITH_EOS_SDK
@@ -37,6 +36,7 @@ public:
 // Begin IOnlinePurchase
 	virtual bool IsAllowedToPurchase(const FUniqueNetId& UserId) override { return true; }
 	virtual void Checkout(const FUniqueNetId& UserId, const FPurchaseCheckoutRequest& CheckoutRequest, const FOnPurchaseCheckoutComplete& Delegate) override;
+	virtual void Checkout(const FUniqueNetId& UserId, const FPurchaseCheckoutRequest& CheckoutRequest, const FOnPurchaseReceiptlessCheckoutComplete& Delegate) override;
 	virtual void FinalizePurchase(const FUniqueNetId& UserId, const FString& ReceiptId) override;
 	virtual void RedeemCode(const FUniqueNetId& UserId, const FRedeemCodeRequest& RedeemCodeRequest, const FOnPurchaseRedeemCodeComplete& Delegate) override;
 	virtual void QueryReceipts(const FUniqueNetId& UserId, bool bRestoreReceipts, const FOnQueryReceiptsComplete& Delegate) override;
@@ -44,7 +44,6 @@ public:
 	virtual void FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, FString& InReceiptValidationInfo, const FOnFinalizeReceiptValidationInfoComplete& Delegate) override;
 // End IOnlinePurchase
 
-PACKAGE_SCOPE:
 	FOnlineStoreEOS(FOnlineSubsystemEOS* InSubsystem);
 
 	bool HandleEcomExec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
@@ -69,5 +68,6 @@ private:
 };
 
 typedef TSharedPtr<FOnlineStoreEOS, ESPMode::ThreadSafe> FOnlineStoreEOSPtr;
+typedef TWeakPtr<FOnlineStoreEOS, ESPMode::ThreadSafe> FOnlineStoreEOSWeakPtr;
 
 #endif

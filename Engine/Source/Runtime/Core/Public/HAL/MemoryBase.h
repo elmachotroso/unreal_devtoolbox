@@ -3,10 +3,14 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/OutputDevice.h"
 #include "HAL/PlatformAtomics.h"
+#include "HAL/PlatformCrt.h"
 #include "Misc/Exec.h"
+#include "Misc/OutputDevice.h"
 #include "Templates/Atomic.h"
+
+class UWorld;
+template <typename T> class TAtomic;
 
 #ifndef UPDATE_MALLOC_STATS
 	#define UPDATE_MALLOC_STATS 1
@@ -204,6 +208,21 @@ public:
 	{
 		return TEXT("Unspecified allocator");
 	}
+
+	/**
+	 * Notifies the malloc implementation that initialization of all allocators in GMalloc is complete, so it's safe to initialize any extra features that require "regular" allocations
+	 */
+	virtual void OnMallocInitialized() {}
+
+	/**
+	 * Notifies the malloc implementation that the process is about to fork. May be used to trim caches etc.
+	 */
+	virtual void OnPreFork() {}
+
+	/**
+	 * Notifies the malloc implementation that the process has forked so we can try and avoid dirtying pre-fork pages.
+	 */
+	virtual void OnPostFork() {}
 
 protected:
 	friend struct FCurrentFrameCalls;

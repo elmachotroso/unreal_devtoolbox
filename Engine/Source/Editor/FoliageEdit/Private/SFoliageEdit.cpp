@@ -1,41 +1,49 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SFoliageEdit.h"
-#include "EditorFontGlyphs.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
-#include "Styling/SlateTypes.h"
-#include "SlateOptMacros.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SWrapBox.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+
+#include "Delegates/Delegate.h"
+#include "Editor.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
-#include "Classes/EditorStyleSettings.h"
-
-#include "FoliageEditActions.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "SFoliagePalette.h"
-#include "Widgets/Layout/SHeader.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Notifications/SErrorText.h"
 #include "Engine/World.h"
+#include "FoliageEdMode.h"
+#include "FoliageEditActions.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SFoliagePalette.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Function.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SHeader.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
 
-#include "Widgets/Input/SSpinBox.h"
-#include "Editor/PropertyEditor/Public/VariablePrecisionNumericInterface.h"
-#include "DataLayer/DataLayerEditorSubsystem.h"
-#include "DataLayer/DataLayerPropertyTypeCustomizationHelper.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
+class SWidget;
+class ULevel;
 
 #define LOCTEXT_NAMESPACE "FoliageEd_Mode"
 
@@ -49,7 +57,7 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 	FMargin StandardLeftPadding(6.f, 3.f, 3.f, 3.f);
 	FMargin StandardRightPadding(3.f, 3.f, 6.f, 3.f);
 
-	FSlateFontInfo StandardFont = FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont"));
+	FSlateFontInfo StandardFont = FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont"));
 
 	const FText BlankText = FText::GetEmpty();
 
@@ -72,7 +80,7 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.Padding(StandardPadding)
 				[
 					SNew(SVerticalBox)
@@ -89,7 +97,7 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 						[
 							SNew(STextBlock)
 							.Text(this, &SFoliageEdit::GetActiveToolName)
-							.TextStyle(FEditorStyle::Get(), "FoliageEditMode.ActiveToolName.Text")
+							.TextStyle(FAppStyle::Get(), "FoliageEditMode.ActiveToolName.Text")
 						]
 					]
 
@@ -232,31 +240,6 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 							.Text(LOCTEXT("DataLayer_Text", "Data Layer"))
 							.Font(StandardFont)
 						]
-						+ SHorizontalBox::Slot()
-						.Padding(StandardRightPadding)
-						.FillWidth(2.0f)
-						.MaxWidth(100.f)
-						.VAlign(VAlign_Center)
-						[
-							SNew(SComboButton)
-							.OnGetMenuContent_Lambda([this]()
-								{ 
-									return FDataLayerPropertyTypeCustomizationHelper::CreateDataLayerMenu([this](const UDataLayer* DataLayer)
-									{ 
-										FoliageEditMode->SetDataLayerEditorContext(FActorDataLayer(DataLayer ? DataLayer->GetFName() : NAME_None)); 
-									});
-								})
-							.ContentPadding(2)
-							.ButtonContent()
-							[
-								SNew(STextBlock)
-								.Text_Lambda([this]()
-								{
-									const UDataLayer* DataLayer = UDataLayerEditorSubsystem::Get()->GetDataLayerFromName(FoliageEditMode->UISettings.GetDataLayer().Name);
-									return UDataLayer::GetDataLayerText(DataLayer);
-								})
-							]
-						]						
 					]
 					
 					+ SVerticalBox::Slot()
@@ -499,7 +482,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageSelectAll", "All"),
 		LOCTEXT("FoliageSelectAllTooltip", "Select All Foliage"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.SelectAll")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.SelectAll")
 		);
 
 	// Deselect All
@@ -508,7 +491,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageDeselectAll", "Deselect"),
 		LOCTEXT("FoliageDeselectAllTooltip", "Deselect All Foliage Instances"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.DeselectAll")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.DeselectAll")
 		);
 
 	// Select Invalid
@@ -517,7 +500,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageSelectInvalid", "Invalid"),
 		LOCTEXT("FoliageSelectInvalidTooltip", "Select Invalid Foliage Instances"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.SelectInvalid")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.SelectInvalid")
 		);
 
 	//  Lasso
@@ -540,7 +523,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliagePaint", "Paint"),
 		LOCTEXT("FoliagePaintTooltip", "Paint the Selected Foliage"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.SetPaint"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.SetPaint"),
 		EUserInterfaceActionType::ToggleButton
 
 	);
@@ -560,7 +543,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageReapply", "Reapply"),
 		LOCTEXT("FoliageReapplyTooltip", "Reapply current settings to foliage instances"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.SetReapplySettings"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.SetReapplySettings"),
 		EUserInterfaceActionType::ToggleButton
 	);
 
@@ -574,7 +557,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliagePlace", "Single"),
 		LOCTEXT("FoliagePlaceTooltip", "Place a Single Instance of the Selected Foliage"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.Foliage"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.Foliage"),
 		EUserInterfaceActionType::ToggleButton
 	);
 
@@ -591,7 +574,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageFill", "Fill"),
 		LOCTEXT("FoliageFillTooltip", "Fill the selected target with foliage."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.SetPaintBucket"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.SetPaintBucket"),
 		EUserInterfaceActionType::ToggleButton
 	);
 
@@ -605,7 +588,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageErase", "Erase"),
 		LOCTEXT("FoliageEraseTooltip", "Erase the selected foliage"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.Erase"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.Erase"),
 		EUserInterfaceActionType::ToggleButton
 	);
 
@@ -617,7 +600,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageRemove", "Remove"),
 		LOCTEXT("FoliageRemoveTooltip", "Remove the selected foliage"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.Remove"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.Remove"),
 		EUserInterfaceActionType::Button
 	);
 
@@ -627,7 +610,7 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		NAME_None,
 		LOCTEXT("FoliageMoveToCurrentLevel", "Move"),
 		LOCTEXT("FoliageMoveToCurrentLevelTooltip", "Move the Selected Foliage to the Current Level"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.MoveToCurrentLevel")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "FoliageEditMode.MoveToCurrentLevel")
 	);
 
 }
@@ -773,7 +756,7 @@ TSharedRef<SWidget> SFoliageEdit::BuildToolBar()
 {
 	FVerticalToolBarBuilder Toolbar(FoliageEditMode->UICommandList, FMultiBoxCustomization::None);
 	Toolbar.SetLabelVisibility(EVisibility::Collapsed);
-	Toolbar.SetStyle(&FEditorStyle::Get(), "FoliageEditToolbar");
+	Toolbar.SetStyle(&FAppStyle::Get(), "FoliageEditToolbar");
 	{
 		Toolbar.AddToolBarButton(FFoliageEditCommands::Get().SetPaint);
 		Toolbar.AddToolBarButton(FFoliageEditCommands::Get().SetReapplySettings);
@@ -793,7 +776,7 @@ TSharedRef<SWidget> SFoliageEdit::BuildToolBar()
 				SNew(SBorder)
 				.HAlign(HAlign_Center)
 				.Padding(0)
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
 				.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
 				[
 					Toolbar.MakeWidget()
@@ -908,7 +891,7 @@ FText SFoliageEdit::GetActiveToolMessage() const
 
 EVisibility SFoliageEdit::GetVisibility_DataLayer() const
 {
-	if (UWorld::HasSubsystem<UWorldPartitionSubsystem>(FoliageEditMode->GetWorld()) && (IsPaintTool() || IsPlaceTool() || IsReapplySettingsTool() || IsPaintFillTool()))
+	if (UWorld::IsPartitionedWorld(FoliageEditMode->GetWorld()) && (IsPaintTool() || IsPlaceTool() || IsReapplySettingsTool() || IsPaintFillTool()))
 	{
 		return EVisibility::Visible;
 	}

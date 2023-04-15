@@ -4,14 +4,19 @@
 
 #include "CoreMinimal.h"
 #include "Containers/SortedMap.h"
+#include "HAL/CriticalSection.h"
 #include "Misc/StringBuilder.h"
 #include "Templates/RefCounting.h"
 #include "Templates/TypeCompatibleBytes.h"
+#include "UObject/TopLevelAssetPath.h"
 
-
+class FAssetRegistryState;
 class FAssetTagValueRef;
 class FAssetDataTagMapSharedView;
 struct FAssetRegistrySerializationOptions;
+
+namespace FixedTagPrivate { class FMarshalledText; }
+namespace FixedTagPrivate { class FStoreBuilder; }
 
 /**
  * Helper class for condensing strings of these types into  1 - 3 FNames
@@ -21,10 +26,19 @@ struct FAssetRegistrySerializationOptions;
  */
 struct COREUOBJECT_API FAssetRegistryExportPath
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Compilers can complain about deprecated members in compiler generated code
 	FAssetRegistryExportPath() = default;
+	FAssetRegistryExportPath(FAssetRegistryExportPath&&) = default;
+	FAssetRegistryExportPath(const FAssetRegistryExportPath&) = default;
+	FAssetRegistryExportPath& operator=(FAssetRegistryExportPath&&) = default;
+	FAssetRegistryExportPath& operator=(const FAssetRegistryExportPath&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	explicit FAssetRegistryExportPath(FWideStringView String);
 	explicit FAssetRegistryExportPath(FAnsiStringView String);
 
+	FTopLevelAssetPath ClassPath;
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use ClassPath member")
 	FName Class;
 	FName Package;
 	FName Object;
@@ -32,8 +46,13 @@ struct COREUOBJECT_API FAssetRegistryExportPath
 	FString ToString() const;
 	FName ToName() const;
 	void ToString(FStringBuilderBase& Out) const;
-
-	bool IsEmpty() const { return Class.IsNone() & Package.IsNone() & Object.IsNone(); } //-V792
+	FString ToPath() const;
+	void ToPath(FStringBuilderBase& Out) const;
+	FTopLevelAssetPath ToTopLevelAssetPath() const
+	{
+		return FTopLevelAssetPath(Package, Object);
+	}
+	bool IsEmpty() const { return ClassPath.IsNull() & Package.IsNone() & Object.IsNone(); } //-V792
 	explicit operator bool() const { return !IsEmpty(); }
 };
 
@@ -45,7 +64,8 @@ namespace FixedTagPrivate
 	// Compact FAssetRegistryExportPath equivalent for when all FNames are numberless
 	struct FNumberlessExportPath
 	{
-		FNameEntryId Class;
+		FNameEntryId ClassPackage;
+		FNameEntryId ClassObject;
 		FNameEntryId Package;
 		FNameEntryId Object;
 
@@ -86,7 +106,7 @@ namespace FixedTagPrivate
 
 	struct FNumberlessPair
 	{
-		FNameEntryId Key;
+		FDisplayNameEntryId Key;
 		FValueId Value;
 	};
 
@@ -96,12 +116,18 @@ namespace FixedTagPrivate
 		uint32 StoreIndex;
 		FValueId Id;
 
-		FString						AsString() const;
+		FString						AsDisplayString() const;
+		FString						AsStorageString() const;
 		FName						AsName() const;
 		FAssetRegistryExportPath	AsExportPath() const;
 		bool						AsText(FText& Out) const;
+		bool						AsMarshalledText(FMarshalledText& Out) const;
 		bool						Equals(FStringView Str) const;
 		bool						Contains(const TCHAR* Str) const;
+
+	private:
+		template <bool bForStorage>
+		FString						AsString() const;
 	};
 
 	// Handle to a tag map owned by a managed FStore
@@ -132,7 +158,7 @@ namespace FixedTagPrivate
 			{
 				for (FNumberlessPair Pair : GetNumberlessView())
 				{
-					Fn(FNumberedPair{FName::CreateFromDisplayId(Pair.Key, 0), Pair.Value});
+					Fn(FNumberedPair{Pair.Key.ToName(NAME_NO_NUMBER_INTERNAL), Pair.Value});
 				}
 			}
 			else
@@ -221,14 +247,25 @@ public:
 	bool						TryGetAsText(FText& Out) const; // @return false if value isn't a localized string
 
 	FString						GetValue() const { return AsString(); }
-
-	// Get FTexts as unlocalized complex strings. For internal use only, to make new FAssetDataTagMapSharedView.
-	FString						ToLoose() const;
+	/** Coerce the type to a Complex String capable of representing the type */
+	FString						GetStorageString() const { return ToLoose(); }
 
 	bool						Equals(FStringView Str) const;
 
 	UE_DEPRECATED(4.27, "Use AsString(), AsName(), AsExportPath() or AsText() instead. ")
 	operator FString () const { return AsString(); }
+
+private:
+	/** Return whether this's value is a MarshalledFText, and copy it into out parameter if so */
+	bool						TryGetAsMarshalledText(FixedTagPrivate::FMarshalledText& Out) const;
+	/**
+	 * Copy this's value (whether loose or fixed) into the loose format.
+	 * The returned loose value is in StorageFormat (e.g. complex strings) rather than display format.
+	 */
+	FString						ToLoose() const;
+
+	friend class FixedTagPrivate::FStoreBuilder;
+	friend FAssetRegistryState;
 };
 
 inline bool operator==(FAssetTagValueRef A, FStringView B) { return  A.Equals(B); }

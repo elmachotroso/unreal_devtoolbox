@@ -7,29 +7,10 @@
 #include "IndexedHandle.h"
 #include "MassLODTypes.h"
 #include "Subsystems/WorldSubsystem.h"
-
+#include "MassExternalSubsystemTraits.h"
 #include "MassLODSubsystem.generated.h"
 
 class UMassLODSubsystem;
-
-/*
- * Base mass LOD processor to store common information for all LOD processors
- */
-UCLASS(abstract)
-class MASSLOD_API UMassLODProcessorBase : public UMassProcessor
-{
-	GENERATED_BODY()
-
-public:
-	virtual void Initialize(UObject& Owner) override;
-
-protected:
-	UPROPERTY()
-	UWorld* World = nullptr;
-
-	UPROPERTY()
-	UMassLODSubsystem* LODSubsystem = nullptr;
-};
 
 /*
  * Handle that lets you reference the concept of a viewer
@@ -48,7 +29,7 @@ struct FViewerInfo
 	GENERATED_BODY()
 
 	UPROPERTY(transient)
-	APlayerController* PlayerController = nullptr;
+	TObjectPtr<APlayerController> PlayerController = nullptr;
 	
 	FName StreamingSourceName;
 
@@ -156,3 +137,11 @@ private:
 
 };
 
+template<>
+struct TMassExternalSubsystemTraits<UMassLODSubsystem> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
+};

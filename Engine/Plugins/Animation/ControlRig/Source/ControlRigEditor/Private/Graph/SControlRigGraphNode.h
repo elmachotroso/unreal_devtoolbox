@@ -53,6 +53,11 @@ public:
 	virtual bool IsHidingPinWidgets() const override { return UseLowDetailNodeContent(); }
 	virtual bool UseLowDetailPinNames() const override;
 
+	void CreateAggregateAddPinButton();
+
+	/** Callback function executed when Add pin button is clicked */
+	virtual FReply OnAddPin() override;
+
 private:
 
 	bool UseLowDetailNodeContent() const;

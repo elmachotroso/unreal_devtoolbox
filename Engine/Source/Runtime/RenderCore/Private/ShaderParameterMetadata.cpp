@@ -7,7 +7,6 @@
 #include "ShaderParameterMetadata.h"
 #include "RenderCore.h"
 #include "ShaderCore.h"
-#include "ShaderParameterMetadataBuilder.h"
 
 FUniformBufferStaticSlotRegistrar::FUniformBufferStaticSlotRegistrar(const TCHAR* InName)
 {
@@ -168,7 +167,8 @@ const TCHAR* GetShaderParameterMacroName(EUniformBufferBaseType ShaderParameterB
 
 EShaderCodeResourceBindingType ParseShaderResourceBindingType(const TCHAR* ShaderType)
 {
-	bool bIsRWResource = FCString::Strncmp(ShaderType, TEXT("RW"), 2) == 0;
+	const bool bIsRasterizerOrderedResource = FCString::Strncmp(ShaderType, TEXT("RasterizerOrdered"), 17) == 0;
+	const bool bIsRWResource = FCString::Strncmp(ShaderType, TEXT("RW"), 2) == 0 || bIsRasterizerOrderedResource;
 	const TCHAR* ComparedShaderType = ShaderType + (bIsRWResource ? 2 : 0);
 
 	int32 ShaderTypeLength = 0;
@@ -236,6 +236,10 @@ EShaderCodeResourceBindingType ParseShaderResourceBindingType(const TCHAR* Shade
 	{
 		BindingType = EShaderCodeResourceBindingType::RaytracingAccelerationStructure;
 	}
+	else if (bIsRasterizerOrderedResource)
+	{
+		BindingType = EShaderCodeResourceBindingType::RasterizerOrderedTexture2D;
+	}
 	return BindingType;
 }
 
@@ -261,6 +265,7 @@ const TCHAR* const kShaderCodeResourceBindingTypeNames[] = {
 	TEXT("RWBuffer"),
 	TEXT("RWStructuredBuffer"),
 	TEXT("RWByteAddressBuffer"),
+	TEXT("RasterizerOrderedTexture2D"),
 };
 
 static_assert(UE_ARRAY_COUNT(kShaderCodeResourceBindingTypeNames) == int32(EShaderCodeResourceBindingType::MAX), "TODO.");
@@ -298,7 +303,8 @@ FShaderParametersMetadata::FShaderParametersMetadata(
 	uint32 InSize,
 	const TArray<FMember>& InMembers,
 	bool bForceCompleteInitialization,
-	FRHIUniformBufferLayoutInitializer* OutLayoutInitializer)
+	FRHIUniformBufferLayoutInitializer* OutLayoutInitializer,
+	uint32 InUsageFlags)
 	: LayoutName(InLayoutName)
 	, StructTypeName(InStructTypeName)
 	, ShaderVariableName(InShaderVariableName)
@@ -311,6 +317,7 @@ FShaderParametersMetadata::FShaderParametersMetadata(
 	, BindingFlags(InBindingFlags)
 	, Members(InMembers)
 	, GlobalListLink(this)
+	, UsageFlags(InUsageFlags)
 {
 	checkf(UseCase == EUseCase::UniformBuffer || !EnumHasAnyFlags(BindingFlags, EUniformBufferBindingFlags::Static), TEXT("Only uniform buffers can utilize the global binding flag."));
 
@@ -417,6 +424,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 	FRHIUniformBufferLayoutInitializer LocalLayoutInitializer(LayoutName);
 	FRHIUniformBufferLayoutInitializer& LayoutInitializer = OutLayoutInitializer ? *OutLayoutInitializer : LocalLayoutInitializer;
 	LayoutInitializer.ConstantBufferSize = Size;
+	LayoutInitializer.bNoEmulatedUniformBuffer = UsageFlags & (uint32)EUsageFlags::NoEmulatedUniformBuffer;
 
 	if (StaticSlotName)
 	{
@@ -593,7 +601,8 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 					BindingType == EShaderCodeResourceBindingType::RWTexture2DArray ||
 					BindingType == EShaderCodeResourceBindingType::RWTexture3D ||
 					BindingType == EShaderCodeResourceBindingType::RWTextureCube ||
-					BindingType == EShaderCodeResourceBindingType::RWTextureMetadata)
+					BindingType == EShaderCodeResourceBindingType::RWTextureMetadata ||
+					BindingType == EShaderCodeResourceBindingType::RasterizerOrderedTexture2D)
 				{
 					bIsValidBindingType = (
 						BaseType == UBMT_UAV ||
@@ -760,7 +769,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 		GetLayoutHashStructMap().Emplace(LayoutInitializer.GetHash(), this);
 	}
 
-	Layout = new FRHIUniformBufferLayout(LayoutInitializer);
+	Layout = RHICreateUniformBufferLayout(LayoutInitializer);
 }
 
 void FShaderParametersMetadata::GetNestedStructs(TArray<const FShaderParametersMetadata*>& OutNestedStructs) const
@@ -787,8 +796,9 @@ void FShaderParametersMetadata::AddResourceTableEntries(TMap<FString, FResourceT
 	
 	FUniformBufferEntry UniformBufferEntry;
 	UniformBufferEntry.StaticSlotName = StaticSlotName;
-	UniformBufferEntry.LayoutHash = GetLayout().GetHash();
+	UniformBufferEntry.LayoutHash = IsLayoutInitialized() ? GetLayout().GetHash() : 0;
 	UniformBufferEntry.BindingFlags = BindingFlags;
+	UniformBufferEntry.bNoEmulatedUniformBuffer = UsageFlags & (uint32)EUsageFlags::NoEmulatedUniformBuffer;
 	UniformBufferMap.Add(ShaderVariableName, UniformBufferEntry);
 }
 
@@ -924,123 +934,4 @@ FString FShaderParametersMetadata::GetFullMemberCodeName(uint16 MemberOffset) co
 	}
 
 	return MemberName;
-}
-
-void FShaderParametersMetadataBuilder::AddBufferSRV(
-	const TCHAR* Name,
-	const TCHAR* ShaderType,
-	EShaderPrecisionModifier::Type Precision /* = EShaderPrecisionModifier::Float */
-)
-{
-	NextMemberOffset = Align(NextMemberOffset, SHADER_PARAMETER_POINTER_ALIGNMENT);
-
-	new(Members) FShaderParametersMetadata::FMember(
-		Name,
-		ShaderType,
-		__LINE__,
-		NextMemberOffset,
-		UBMT_SRV,
-		Precision,
-		TShaderResourceParameterTypeInfo<FRHIShaderResourceView*>::NumRows,
-		TShaderResourceParameterTypeInfo<FRHIShaderResourceView*>::NumColumns,
-		TShaderResourceParameterTypeInfo<FRHIShaderResourceView*>::NumElements,
-		TShaderResourceParameterTypeInfo<FRHIShaderResourceView*>::GetStructMetadata()
-	);
-
-	NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
-}
-
-void FShaderParametersMetadataBuilder::AddBufferUAV(
-	const TCHAR* Name,
-	const TCHAR* ShaderType,
-	EShaderPrecisionModifier::Type Precision /* = EShaderPrecisionModifier::Float */
-)
-{
-	NextMemberOffset = Align(NextMemberOffset, SHADER_PARAMETER_POINTER_ALIGNMENT);
-
-	new(Members) FShaderParametersMetadata::FMember(
-		Name,
-		ShaderType,
-		__LINE__,
-		NextMemberOffset,
-		UBMT_UAV,
-		Precision,
-		TShaderResourceParameterTypeInfo<FRHIUnorderedAccessView*>::NumRows,
-		TShaderResourceParameterTypeInfo<FRHIUnorderedAccessView*>::NumColumns,
-		TShaderResourceParameterTypeInfo<FRHIUnorderedAccessView*>::NumElements,
-		TShaderResourceParameterTypeInfo<FRHIUnorderedAccessView*>::GetStructMetadata()
-	);
-
-	NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
-}
-
-void FShaderParametersMetadataBuilder::AddRDGBufferSRV(
-	const TCHAR* Name,
-	const TCHAR* ShaderType,
-	EShaderPrecisionModifier::Type Precision /* = EShaderPrecisionModifier::Float */
-	)
-{
-	NextMemberOffset = Align(NextMemberOffset, SHADER_PARAMETER_POINTER_ALIGNMENT);
-
-	new(Members) FShaderParametersMetadata::FMember(
-		Name,
-		ShaderType,
-		__LINE__,
-		NextMemberOffset,
-		UBMT_RDG_BUFFER_SRV,
-		Precision,
- 		TShaderResourceParameterTypeInfo<FRDGBufferSRV*>::NumRows,
- 		TShaderResourceParameterTypeInfo<FRDGBufferSRV*>::NumColumns,
- 		TShaderResourceParameterTypeInfo<FRDGBufferSRV*>::NumElements,
- 		TShaderResourceParameterTypeInfo<FRDGBufferSRV*>::GetStructMetadata()
-	);
-
-	NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
-}
-
-void FShaderParametersMetadataBuilder::AddRDGBufferUAV(
-	const TCHAR* Name,
-	const TCHAR* ShaderType,
-	EShaderPrecisionModifier::Type Precision /* = EShaderPrecisionModifier::Float */
-	)
-{
-	NextMemberOffset = Align(NextMemberOffset, SHADER_PARAMETER_POINTER_ALIGNMENT);
-
-	new(Members) FShaderParametersMetadata::FMember(
-		Name,
-		ShaderType,
-		__LINE__,
-		NextMemberOffset,
-		UBMT_RDG_BUFFER_UAV,
-		Precision,
- 		TShaderResourceParameterTypeInfo<FRDGBufferUAV*>::NumRows,
- 		TShaderResourceParameterTypeInfo<FRDGBufferUAV*>::NumColumns,
- 		TShaderResourceParameterTypeInfo<FRDGBufferUAV*>::NumElements,
- 		TShaderResourceParameterTypeInfo<FRDGBufferUAV*>::GetStructMetadata()
-		);
-
-	NextMemberOffset += SHADER_PARAMETER_POINTER_ALIGNMENT;
-}
-
-FShaderParametersMetadata* FShaderParametersMetadataBuilder::Build(
-	FShaderParametersMetadata::EUseCase UseCase,
-	const TCHAR* ShaderParameterName
-	)
-{
-	const uint32 StructSize = Align(NextMemberOffset, SHADER_PARAMETER_STRUCT_ALIGNMENT);
-
-	FShaderParametersMetadata* ShaderParameterMetadata = new FShaderParametersMetadata(
-		UseCase,
-		EUniformBufferBindingFlags::Shader,
-		ShaderParameterName,
-		ShaderParameterName,
-		nullptr,
-		nullptr,
-		__FILE__,
-		__LINE__,
-		StructSize,
-		Members
-		);
-
-	return ShaderParameterMetadata;
 }

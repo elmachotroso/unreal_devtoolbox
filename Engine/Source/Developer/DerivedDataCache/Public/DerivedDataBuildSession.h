@@ -7,6 +7,7 @@
 #include "DerivedDataSharedStringFwd.h"
 #include "Templates/Function.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 
 namespace UE::DerivedData { class FBuildAction; }
 namespace UE::DerivedData { class FBuildDefinition; }

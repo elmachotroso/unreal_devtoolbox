@@ -546,7 +546,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 			if (LightSceneInfo.bEnableLightShaftBloom)
 			{
 				bool bWillRenderLightShafts = false;
-
+				
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
 					const FViewInfo& View    = Views[ViewIndex];
@@ -573,18 +573,8 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 						{
 							OutputLoadAction = ERenderTargetLoadAction::EClear;
 
-							const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
-								SeparateTranslucencyDimensions.Extent,
-								PF_FloatRGBA,
-								FClearValueBinding::Black,
-								TexCreate_RenderTargetable | TexCreate_ShaderResource,
-								1,
-								SeparateTranslucencyDimensions.NumSamples);
-
-							OutputTexture = CreateTextureMSAA(
-								GraphBuilder, Desc,
-								TEXT("Translucency.LightShaftBloom"),
-								GFastVRamConfig.SeparateTranslucency);
+							const bool bIsModulate = false;
+							OutputTexture = CreatePostDOFTranslucentTexture(GraphBuilder, ETranslucencyPass::TPT_TranslucencyAfterDOF, SeparateTranslucencyDimensions, bIsModulate, ShaderPlatform);
 
 							// We will need to update views separate transluceny buffers if we have just created them.
 							bUpdateViewsSeparateTranslucency = true;
@@ -661,13 +651,14 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(
 	}
 }
 
-void FSceneViewState::TrimHistoryRenderTargets(const FScene* Scene)
+// InScene is passed in, as the Scene pointer in the class itself may be null, if it was allocated without a scene.
+void FSceneViewState::TrimHistoryRenderTargets(const FScene* InScene)
 {
 	for (TMap<const ULightComponent*, TUniquePtr<FTemporalAAHistory>>::TIterator It(LightShaftBloomHistoryRTs); It; ++It)
 	{
 		bool bLightIsUsed = false;
 
-		for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
+		for (auto LightIt = InScene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 		{
 			const FLightSceneInfo* const LightSceneInfo = LightIt->LightSceneInfo;
 

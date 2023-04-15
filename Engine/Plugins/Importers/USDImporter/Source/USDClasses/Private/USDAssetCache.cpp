@@ -77,7 +77,7 @@ void UUsdAssetCache::DiscardAsset( const FString& Hash )
 {
 	FScopeLock Lock( &CriticalSection );
 
-	UObject** FoundObject = TransientStorage.Find( Hash );
+	TObjectPtr<UObject>* FoundObject = TransientStorage.Find( Hash );
 
 	if ( !FoundObject )
 	{
@@ -91,9 +91,9 @@ void UUsdAssetCache::DiscardAsset( const FString& Hash )
 
 	if ( FoundObject )
 	{
-		for ( TMap< FString, UObject* >::TIterator PrimPathToAssetIt = PrimPathToAssets.CreateIterator(); PrimPathToAssetIt; ++PrimPathToAssetIt )
+		for ( TMap< FString, TWeakObjectPtr<UObject> >::TIterator PrimPathToAssetIt = PrimPathToAssets.CreateIterator(); PrimPathToAssetIt; ++PrimPathToAssetIt )
 		{
-			if ( *FoundObject == PrimPathToAssetIt.Value() )
+			if ( *FoundObject == PrimPathToAssetIt.Value().Get() )
 			{
 				PrimPathToAssetIt.RemoveCurrent();
 			}
@@ -110,7 +110,7 @@ UObject* UUsdAssetCache::GetCachedAsset( const FString& Hash ) const
 {
 	FScopeLock Lock( &CriticalSection );
 
-	UObject* const* FoundObject = TransientStorage.Find( Hash );
+	TObjectPtr<UObject> const* FoundObject = TransientStorage.Find( Hash );
 
 	if ( !FoundObject )
 	{
@@ -124,14 +124,6 @@ UObject* UUsdAssetCache::GetCachedAsset( const FString& Hash ) const
 	}
 
 	return nullptr;
-}
-
-TMap< FString, UObject* > UUsdAssetCache::GetCachedAssets() const
-{
-	TMap< FString, UObject* > CachedAssets( TransientStorage );
-	CachedAssets.Append( PersistentStorage );
-
-	return CachedAssets;
 }
 
 void UUsdAssetCache::LinkAssetToPrim( const FString& PrimPath, UObject* Asset )
@@ -163,10 +155,13 @@ UObject* UUsdAssetCache::GetAssetForPrim( const FString& PrimPath ) const
 {
 	FScopeLock Lock( &CriticalSection );
 
-	if ( UObject* const* FoundObject = PrimPathToAssets.Find( PrimPath ) )
+	if ( TWeakObjectPtr<UObject> const* FoundObjectPtr = PrimPathToAssets.Find( PrimPath ) )
 	{
-		ActiveAssets.Add( *FoundObject );
-		return *FoundObject;
+		if ( UObject* FoundObject = FoundObjectPtr->Get() )
+		{
+			ActiveAssets.Add( FoundObject );
+			return FoundObject;
+		}
 	}
 
 	return nullptr;
@@ -186,6 +181,28 @@ FString UUsdAssetCache::GetPrimForAsset( UObject* Asset ) const
 	}
 
 	return PrimForAsset;
+}
+
+FString UUsdAssetCache::GetHashForAsset( UObject* Asset ) const
+{
+	if ( !Asset || !OwnedAssets.Contains( Asset ) )
+	{
+		return {};
+	}
+
+	FScopeLock Lock( &CriticalSection );
+
+	if ( const FString* KeyPtr = TransientStorage.FindKey( Asset ) )
+	{
+		return *KeyPtr;
+	}
+
+	if ( const FString* KeyPtr = PersistentStorage.FindKey( Asset ) )
+	{
+		return *KeyPtr;
+	}
+
+	return {};
 }
 
 void UUsdAssetCache::Reset()

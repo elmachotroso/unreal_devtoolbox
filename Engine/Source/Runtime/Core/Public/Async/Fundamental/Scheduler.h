@@ -2,13 +2,24 @@
 
 #pragma once 
 #include "Async/Fundamental/Task.h"
-#include "HAL/Thread.h"
-#include "HAL/Event.h"
-#include "HAL/PlatformProcess.h"
-#include "LocalQueue.h"
+#include "Async/Fundamental/TaskDelegate.h"
 #include "Containers/Array.h"
-#include "Templates/UniquePtr.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Event.h"
+#include "HAL/PlatformAffinity.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/Thread.h"
+#include "LocalQueue.h"
+#include "Misc/AssertionMacros.h"
 #include "Templates/Function.h"
+#include "Templates/IsInvocable.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+
+#include <atomic>
 
 namespace LowLevelTasks
 {
@@ -174,11 +185,17 @@ namespace LowLevelTasks
 		//get the Queue registry to register additonal WorkerQueues for this Scheduler
 		inline FSchedulerTls::FQueueRegistry& GetQueueRegistry();
 
+		//get the worker priority set when workers were started
+		inline EThreadPriority GetWorkerPriority() const { return WorkerPriority; }
+
+		//get the background priority set when workers were started
+		inline EThreadPriority GetBackgroundPriority() const { return BackgroundPriority; }
 	public:
 		FScheduler() = default;
 		~FScheduler();
 
 	private: 
+		void ExecuteTask(FTask*& InOutTask);
 		TUniquePtr<FThread> CreateWorker(bool bPermitBackgroundWork = false, FThread::EForkable IsForkable = FThread::NonForkable, FSleepEvent* ExternalWorkerEvent = nullptr, FSchedulerTls::FLocalQueueType* ExternalWorkerLocalQueue = nullptr, EThreadPriority Priority = EThreadPriority::TPri_Normal, uint64 InAffinity = 0);
 		void WorkerMain(struct FSleepEvent* WorkerEvent, FSchedulerTls::FLocalQueueType* ExternalWorkerLocalQueue, uint32 WaitCycles, bool bPermitBackgroundWork);
 		CORE_API void LaunchInternal(FTask& Task, EQueuePreference QueuePreference, bool bWakeUpWorker);

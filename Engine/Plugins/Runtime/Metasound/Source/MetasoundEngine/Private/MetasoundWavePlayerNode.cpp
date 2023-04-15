@@ -7,10 +7,12 @@
 #include "DSP/MultichannelLinearResampler.h"
 #include "IAudioCodec.h"
 #include "MetasoundBuildError.h"
+#include "MetasoundBuilderInterface.h"
 #include "MetasoundEngineNodesNames.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundLog.h"
 #include "MetasoundNodeRegistrationMacro.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundTrace.h"
 #include "MetasoundTrigger.h"
@@ -24,73 +26,36 @@ namespace Metasound
 {
 	namespace WavePlayerVertexNames
 	{
-		static const TCHAR* InputTriggerPlayName = TEXT("Play");
-		static const TCHAR* InputTriggerStopName = TEXT("Stop");
-		static const TCHAR* InputWaveAssetName = TEXT("Wave Asset");
-		static const TCHAR* InputStartTimeName = TEXT("Start Time");
-		static const TCHAR* InputPitchShiftName = TEXT("Pitch Shift");
-		static const TCHAR* InputLoopName = TEXT("Loop");
-		static const TCHAR* InputLoopStartName = TEXT("Loop Start");
-		static const TCHAR* InputLoopDurationName = TEXT("Loop Duration");
-
-		static const TCHAR* OutputTriggerOnPlayName = TEXT("On Play");
-		static const TCHAR* OutputTriggerOnDoneName = TEXT("On Finished");
-		static const TCHAR* OutputTriggerOnNearlyDoneName = TEXT("On Nearly Finished");
-		static const TCHAR* OutputTriggerOnLoopedName = TEXT("On Looped");
-		static const TCHAR* OutputTriggerOnCuePointName = TEXT("On Cue Point");
-		static const TCHAR* OutputCuePointIDName = TEXT("Cue Point ID");
-		static const TCHAR* OutputCuePointLabelName = TEXT("Cue Point Label");
-		static const TCHAR* OutputLoopPercentName = TEXT("Loop Percent");
-		static const TCHAR* OutputPlaybackLocationName = TEXT("Playback Location");
-		static const TCHAR* OutputAudioLeftName = TEXT("Out Left");
-		static const TCHAR* OutputAudioRightName = TEXT("Out Right");
-
-		static FText InputTriggerPlayTT = METASOUND_LOCTEXT("PlayTT", "Play the wave player.");
-		static FText InputTriggerStopTT = METASOUND_LOCTEXT("StopTT", "Stop the wave player.");
-		static FText InputWaveAssetTT = METASOUND_LOCTEXT("WaveTT", "The wave asset to be real-time decoded.");
-		static FText InputStartTimeTT = METASOUND_LOCTEXT("StartTimeTT", "Time into the wave asset to start (seek) the wave asset. For real-time decoding, the wave asset must be set to seekable!)");
-		static FText InputPitchShiftTT = METASOUND_LOCTEXT("PitchShiftTT", "The pitch shift to use for the wave asset in semitones.");
-		static FText InputLoopTT = METASOUND_LOCTEXT("LoopTT", "Whether or not to loop between the start and specified end times.");
-		static FText InputLoopStartTT = METASOUND_LOCTEXT("LoopStartTT", "When to start the loop.");
-		static FText InputLoopDurationTT = METASOUND_LOCTEXT("LoopDurationTT", "The duration of the loop when wave player is enabled for looping. A negative value will loop the whole wave asset.");
-
-		static FText OutputTriggerOnPlayTT = METASOUND_LOCTEXT("OnPlayTT", "Triggers when Play is triggered.");
-		static FText OutputTriggerOnDoneTT = METASOUND_LOCTEXT("OnDoneTT", "Triggers when the wave played has finished playing.");
-		static FText OutputTriggerOnNearlyDoneTT = METASOUND_LOCTEXT("OnNearlyDoneTT", "Triggers when the wave played has almost finished playing (the block before it finishes). Allows time for logic to trigger different variations to play seamlessly.");
-		static FText OutputTriggerOnLoopedTT = METASOUND_LOCTEXT("OnLoopedTT", "Triggers when the wave player has looped.");
-		static FText OutputTriggerOnCuePointTT = METASOUND_LOCTEXT("OnCuePointTT", "Triggers when a wave cue point was hit during playback.");
-		static FText OutputCuePointIDTT = METASOUND_LOCTEXT("CuePointIDTT", "The cue point ID that was triggered.");
-		static FText OutputCuePointLabelTT = METASOUND_LOCTEXT("CuePointLabelTT", "The cue point label that was triggered (if there was a label parsed in the imported .wav file).");
-		static FText OutputLoopPercentTT = METASOUND_LOCTEXT("LoopPercentTT", "Returns the current loop percent if looping is enabled.");
-		static FText OutputPlaybackLocationTT = METASOUND_LOCTEXT("PlaybackLocationTT", "Returns the absolute position of the wave playback as a precentage of wave duration.");
-		static FText OutputAudioLeftNameTT = METASOUND_LOCTEXT("AudioLeftTT", "The left channel audio output. Mono wave assets will be upmixed to dual stereo.");
-		static FText OutputAudioRightNameTT = METASOUND_LOCTEXT("AudioRightTT", "The right channel audio output. Mono wave assets will be upmixed to dual stereo.");
+		METASOUND_PARAM(InputTriggerPlay, "Play", "Play the wave player.")
+		METASOUND_PARAM(InputTriggerStop, "Stop", "Stop the wave player.")
+		METASOUND_PARAM(InputWaveAsset, "Wave Asset", "The wave asset to be real-time decoded.")
+		METASOUND_PARAM(InputStartTime, "Start Time", "Time into the wave asset to start (seek) the wave asset.")
+		METASOUND_PARAM(InputPitchShift, "Pitch Shift", "The pitch shift to use for the wave asset in semitones.")
+		METASOUND_PARAM(InputLoop, "Loop", "Whether or not to loop between the start and specified end times.")
+		METASOUND_PARAM(InputLoopStart, "Loop Start", "When to start the loop.")
+		METASOUND_PARAM(InputLoopDuration, "Loop Duration", "The duration of the loop when wave player is enabled for looping. A negative value will loop the whole wave asset.")
+		
+		METASOUND_PARAM(OutputTriggerOnPlay, "On Play", "Triggers when Play is triggered.")
+		METASOUND_PARAM(OutputTriggerOnDone, "On Finished", "Triggers when the wave played has finished playing or Stop is triggered.")
+		METASOUND_PARAM(OutputTriggerOnNearlyDone, "On Nearly Finished", "Triggers when the wave played has almost finished playing (the block before it finishes). Allows time for logic to trigger different variations to play seamlessly.")
+		METASOUND_PARAM(OutputTriggerOnLooped, "On Looped", "Triggers when the wave player has looped.")
+		METASOUND_PARAM(OutputTriggerOnCuePoint, "On Cue Point", "Triggers when a wave cue point was hit during playback.")
+		METASOUND_PARAM(OutputCuePointID, "Cue Point ID", "The cue point ID that was triggered.")
+		METASOUND_PARAM(OutputCuePointLabel, "Cue Point Label", "The cue point label that was triggered (if there was a label parsed in the imported .wav file).")
+		METASOUND_PARAM(OutputLoopRatio, "Loop Percent", "Returns the current playback location as a ratio of the loop (0-1) if looping is enabled.")
+		METASOUND_PARAM(OutputPlaybackLocation, "Playback Location", "Returns the absolute position of the wave playback as a ratio of wave duration (0-1).")
+		METASOUND_PARAM(OutputAudioMono, "Out Mono", "The mono channel audio output.")
+		METASOUND_PARAM(OutputAudioLeft, "Out Left", "The left channel audio output.")
+		METASOUND_PARAM(OutputAudioRight, "Out Right", "The right channel audio output.")
+		METASOUND_PARAM(OutputAudioFrontRight, "Out Front Right", "The front right channel audio output.")
+		METASOUND_PARAM(OutputAudioFrontLeft, "Out Front Left", "The front right channel audio output.")
+		METASOUND_PARAM(OutputAudioFrontCenter, "Out Front Center", "The front center channel audio output.")
+		METASOUND_PARAM(OutputAudioLowFrequency, "Out Low Frequency", "The low frequency channel audio output.")
+		METASOUND_PARAM(OutputAudioSideRight, "Out Side Right", "The side right channel audio output.")
+		METASOUND_PARAM(OutputAudioSideLeft, "Out Side Left", "The side right channel audio output.")
+		METASOUND_PARAM(OutputAudioBackRight, "Out Back Right", "The back right channel audio output.")
+		METASOUND_PARAM(OutputAudioBackLeft, "Out Back Left", "The back right channel audio output.")
 	}
-
-	class FWavePlayerNode : public FNode
-	{
-		class FOperatorFactory : public IOperatorFactory
-		{
-			virtual TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override;
-		};
-
-	public:
-		static FVertexInterface DeclareVertexInterface();
-		static const FNodeClassMetadata& GetNodeInfo();
-
-		FWavePlayerNode(const FVertexName& InName, const FGuid& InInstanceID);
-		FWavePlayerNode(const FNodeInitData& InInitData);
-		virtual ~FWavePlayerNode() = default;
-
-		virtual FOperatorFactorySharedRef GetDefaultOperatorFactory() const override;
-		virtual const FVertexInterface& GetVertexInterface() const override;
-		virtual bool SetVertexInterface(const FVertexInterface& InInterface) override;
-		virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override;
-
-	private:
-		FOperatorFactorySharedRef Factory;
-		FVertexInterface Interface;
-	};
 
 	namespace WavePlayerNodePrivate
 	{
@@ -332,6 +297,7 @@ namespace Metasound
 	struct FWavePlayerOpArgs
 	{
 		FOperatorSettings Settings;
+		TArray<FOutputDataVertex> OutputAudioVertices;
 		FTriggerReadRef PlayTrigger;
 		FTriggerReadRef StopTrigger;
 		FWaveAssetReadRef WaveAsset;
@@ -351,8 +317,6 @@ namespace Metasound
 		static constexpr float MaxAbsPitchShiftInOctaves = 6.0f;
 		// Maximum decode size in frames. 
 		static constexpr int32 MaxDecodeSizeInFrames = 8192;
-		// Number of output audio channels. 
-		static constexpr int32 NumOutputChannels = 2;
 		// Block size for deinterleaving audio. 
 		static constexpr int32 DeinterleaveBlockSizeInFrames = 512;
 
@@ -374,15 +338,20 @@ namespace Metasound
 			, CuePointLabel(FStringWriteRef::CreateNew(TEXT("")))
 			, LoopPercent(FFloatWriteRef::CreateNew(0.0f))
 			, PlaybackLocation(FFloatWriteRef::CreateNew(0.0f))
-			, AudioBufferL(FAudioBufferWriteRef::CreateNew(InArgs.Settings))
-			, AudioBufferR(FAudioBufferWriteRef::CreateNew(InArgs.Settings))
 		{
-			// Hold on to a view of the output audio. Audio buffers are only writable
-			// by this object and will not be reallocated. 
-			OutputAudioView.Emplace(AudioBufferL->GetData(), AudioBufferL->Num());
-			OutputAudioView.Emplace(AudioBufferR->GetData(), AudioBufferR->Num());
+			NumOutputChannels = InArgs.OutputAudioVertices.Num();
 
-			check(OutputAudioView.Num() == NumOutputChannels);
+			for (const FOutputDataVertex& OutputAudioVertex : InArgs.OutputAudioVertices)
+			{
+				OutputAudioBufferVertexNames.Add(OutputAudioVertex.VertexName);
+
+				FAudioBufferWriteRef AudioBuffer = FAudioBufferWriteRef::CreateNew(InArgs.Settings);
+				OutputAudioBuffers.Add(AudioBuffer);
+
+				// Hold on to a view of the output audio. Audio buffers are only writable
+				// by this object and will not be reallocated. 
+				OutputAudioView.Emplace(AudioBuffer->GetData(), AudioBuffer->Num());
+			}
 		}
 
 		virtual FDataReferenceCollection GetInputs() const override
@@ -390,14 +359,14 @@ namespace Metasound
 			using namespace WavePlayerVertexNames;
 
 			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(InputTriggerPlayName, PlayTrigger);
-			InputDataReferences.AddDataReadReference(InputTriggerStopName, StopTrigger);
-			InputDataReferences.AddDataReadReference(InputWaveAssetName, WaveAsset);
-			InputDataReferences.AddDataReadReference(InputStartTimeName, StartTime);
-			InputDataReferences.AddDataReadReference(InputPitchShiftName, PitchShift);
-			InputDataReferences.AddDataReadReference(InputLoopName, bLoop);
-			InputDataReferences.AddDataReadReference(InputLoopStartName, LoopStartTime);
-			InputDataReferences.AddDataReadReference(InputLoopDurationName, LoopDuration);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerPlay), PlayTrigger);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerStop), StopTrigger);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputWaveAsset), WaveAsset);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStartTime), StartTime);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPitchShift), PitchShift);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLoop), bLoop);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLoopStart), LoopStartTime);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLoopDuration), LoopDuration);
 			return InputDataReferences;
 		}
 
@@ -406,24 +375,30 @@ namespace Metasound
 			using namespace WavePlayerVertexNames;
 
 			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(OutputTriggerOnPlayName, PlayTrigger);
-			OutputDataReferences.AddDataReadReference(OutputTriggerOnDoneName, TriggerOnDone);
-			OutputDataReferences.AddDataReadReference(OutputTriggerOnNearlyDoneName, TriggerOnNearlyDone);
-			OutputDataReferences.AddDataReadReference(OutputTriggerOnLoopedName, TriggerOnLooped);
-			OutputDataReferences.AddDataReadReference(OutputTriggerOnCuePointName, TriggerOnCuePoint);
-			OutputDataReferences.AddDataReadReference(OutputCuePointIDName, CuePointID);
-			OutputDataReferences.AddDataReadReference(OutputCuePointLabelName, CuePointLabel);
-			OutputDataReferences.AddDataReadReference(OutputLoopPercentName, LoopPercent);
-			OutputDataReferences.AddDataReadReference(OutputPlaybackLocationName, PlaybackLocation);
-			OutputDataReferences.AddDataReadReference(OutputAudioLeftName, AudioBufferL);
-			OutputDataReferences.AddDataReadReference(OutputAudioRightName, AudioBufferR);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnPlay), PlayTrigger);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnDone), TriggerOnDone);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnNearlyDone), TriggerOnNearlyDone);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnLooped), TriggerOnLooped);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnCuePoint), TriggerOnCuePoint);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputCuePointID), CuePointID);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputCuePointLabel), CuePointLabel);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputLoopRatio), LoopPercent);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputPlaybackLocation), PlaybackLocation);
+
+			check(OutputAudioBuffers.Num() == OutputAudioBufferVertexNames.Num());
+
+			for (int32 i = 0; i < OutputAudioBuffers.Num(); i++)
+			{
+				OutputDataReferences.AddDataReadReference(OutputAudioBufferVertexNames[i], OutputAudioBuffers[i]);
+			}
+			
 			return OutputDataReferences;
 		}
 
 
 		void Execute()
 		{
-			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerNode::Execute);
+			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerOperator::Execute);
 
 			// Advance all triggers owned by this operator. 
 			TriggerOnDone->AdvanceBlock();
@@ -447,8 +422,10 @@ namespace Metasound
 			}
 
 			// zero output buffers
-			FMemory::Memzero(AudioBufferL->GetData(), OperatorSettings.GetNumFramesPerBlock() * sizeof(float));
-			FMemory::Memzero(AudioBufferR->GetData(), OperatorSettings.GetNumFramesPerBlock() * sizeof(float));
+			for (const FAudioBufferWriteRef& OutputBuffer : OutputAudioBuffers)
+			{
+				FMemory::Memzero(OutputBuffer->GetData(), OperatorSettings.GetNumFramesPerBlock() * sizeof(float));
+			}
 
 			// Performs execution per sub block based on triggers.
 			ExecuteSubblocks();
@@ -537,7 +514,7 @@ namespace Metasound
 		{
 			using namespace Audio;
 
-			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerNode::RenderFrameRange);
+			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerOperator::RenderFrameRange);
 
 			// Assume this is set to true and checked by outside callers
 			check(bIsPlaying);
@@ -629,7 +606,7 @@ namespace Metasound
 		void StartPlaying()
 		{
 			using namespace WavePlayerNodePrivate;
-			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerNode::StartPlaying);
+			METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FWavePlayerOperator::StartPlaying);
 
 			// MetasoundWavePlayerNode DSP Stack
 			//
@@ -980,8 +957,8 @@ namespace Metasound
 		FStringWriteRef CuePointLabel;
 		FFloatWriteRef LoopPercent;
 		FFloatWriteRef PlaybackLocation;
-		FAudioBufferWriteRef AudioBufferL;
-		FAudioBufferWriteRef AudioBufferR;
+		TArray<FAudioBufferWriteRef> OutputAudioBuffers;
+		TArray<FName> OutputAudioBufferVertexNames;
 
 		TUniquePtr<FWaveProxyReader> WaveProxyReader;
 		TUniquePtr<Audio::IConvertDeinterleave> ConvertDeinterleave;
@@ -996,125 +973,257 @@ namespace Metasound
 
 		WavePlayerNodePrivate::FSourceBufferState SourceState;
 		float SampleRateFrameRatio = 1.f;
+		int32 NumOutputChannels;
 		int32 NumDeinterleaveChannels;
 		bool bOnNearlyDoneTriggeredForWave = false;
 		bool bIsPlaying = false;
 		
 	};
 
-	TUniquePtr<IOperator> FWavePlayerNode::FOperatorFactory::CreateOperator(
-		const FCreateOperatorParams& InParams, 
-		FBuildErrorArray& OutErrors) 
+	class FWavePlayerOperatorFactory : public IOperatorFactory
 	{
-		using namespace Audio;
-		using namespace WavePlayerVertexNames;
-
-		const FWavePlayerNode& WaveNode = static_cast<const FWavePlayerNode&>(InParams.Node);
-
-		const FDataReferenceCollection& Inputs = InParams.InputDataReferences;
-
-		FWavePlayerOpArgs Args =
+	public:
+		FWavePlayerOperatorFactory(const TArray<FOutputDataVertex>& InOutputAudioVertices)
+		: OutputAudioVertices(InOutputAudioVertices)
 		{
-			InParams.OperatorSettings,
-			Inputs.GetDataReadReferenceOrConstruct<FTrigger>(InputTriggerPlayName, InParams.OperatorSettings),
-			Inputs.GetDataReadReferenceOrConstruct<FTrigger>(InputTriggerStopName, InParams.OperatorSettings),
-			Inputs.GetDataReadReferenceOrConstruct<FWaveAsset>(InputWaveAssetName),
-			Inputs.GetDataReadReferenceOrConstruct<FTime>(InputStartTimeName),
-			Inputs.GetDataReadReferenceOrConstruct<float>(InputPitchShiftName),
-			Inputs.GetDataReadReferenceOrConstruct<bool>(InputLoopName),
-			Inputs.GetDataReadReferenceOrConstruct<FTime>(InputLoopStartName),
-			Inputs.GetDataReadReferenceOrConstruct<FTime>(InputLoopDurationName)
-		};
+		}
 
-		return MakeUnique<FWavePlayerOperator>(Args);
-	}
-
-	FVertexInterface FWavePlayerNode::DeclareVertexInterface()
-	{
-		using namespace WavePlayerVertexNames;
-
-		return FVertexInterface(
-			FInputVertexInterface(
-				TInputDataVertexModel<FTrigger>(InputTriggerPlayName, InputTriggerPlayTT),
-				TInputDataVertexModel<FTrigger>(InputTriggerStopName, InputTriggerStopTT),
-				TInputDataVertexModel<FWaveAsset>(InputWaveAssetName, InputWaveAssetTT),
-				TInputDataVertexModel<FTime>(InputStartTimeName, InputStartTimeTT, 0.0f),
-				TInputDataVertexModel<float>(InputPitchShiftName, InputPitchShiftTT, 0.0f),
-				TInputDataVertexModel<bool>(InputLoopName, InputLoopTT, false),
-				TInputDataVertexModel<FTime>(InputLoopStartName, InputLoopStartTT, 0.0f),
-				TInputDataVertexModel<FTime>(InputLoopDurationName, InputLoopDurationTT, -1.0f)
-				),
-			FOutputVertexInterface(
-				TOutputDataVertexModel<FTrigger>(OutputTriggerOnPlayName, OutputTriggerOnPlayTT),
-				TOutputDataVertexModel<FTrigger>(OutputTriggerOnDoneName, OutputTriggerOnDoneTT),
-				TOutputDataVertexModel<FTrigger>(OutputTriggerOnNearlyDoneName, OutputTriggerOnNearlyDoneTT),
-				TOutputDataVertexModel<FTrigger>(OutputTriggerOnLoopedName, OutputTriggerOnLoopedTT),
-				TOutputDataVertexModel<FTrigger>(OutputTriggerOnCuePointName, OutputTriggerOnCuePointTT),
-				TOutputDataVertexModel<int32>(OutputCuePointIDName, OutputCuePointIDTT),
-				TOutputDataVertexModel<FString>(OutputCuePointLabelName, OutputCuePointLabelTT),
-				TOutputDataVertexModel<float>(OutputLoopPercentName, OutputLoopPercentTT),
-				TOutputDataVertexModel<float>(OutputPlaybackLocationName, OutputPlaybackLocationTT),
-				TOutputDataVertexModel<FAudioBuffer>(OutputAudioLeftName, OutputAudioLeftNameTT),
-				TOutputDataVertexModel<FAudioBuffer>(OutputAudioRightName, OutputAudioRightNameTT)
-			)
-		);
-	}
-
-	const FNodeClassMetadata& FWavePlayerNode::GetNodeInfo()
-	{
-		auto InitNodeInfo = []() -> FNodeClassMetadata
+		virtual TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 		{
-			FNodeClassMetadata Info;
-			Info.ClassName = { Metasound::EngineNodes::Namespace, TEXT("Wave Player"), Metasound::EngineNodes::StereoVariant };
-			Info.MajorVersion = 1;
-			Info.MinorVersion = 0;
-			Info.DisplayName = METASOUND_LOCTEXT("Metasound_WavePlayerNodeDisplayName", "Wave Player");
-			Info.Description = METASOUND_LOCTEXT("Metasound_WavePlayerNodeDescription", "Plays a wave asset.");
-			Info.Author = PluginAuthor;
-			Info.PromptIfMissing = PluginNodeMissingPrompt;
-			Info.DefaultInterface = DeclareVertexInterface();
+			using namespace Audio;
+			using namespace WavePlayerVertexNames;
+
+			const FInputVertexInterfaceData& Inputs = InParams.InputData;
+
+			FWavePlayerOpArgs Args =
+			{
+				InParams.OperatorSettings,
+				OutputAudioVertices,
+				Inputs.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(InputTriggerPlay), InParams.OperatorSettings),
+				Inputs.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(InputTriggerStop), InParams.OperatorSettings),
+				Inputs.GetOrConstructDataReadReference<FWaveAsset>(METASOUND_GET_PARAM_NAME(InputWaveAsset)),
+				Inputs.GetOrCreateDefaultDataReadReference<FTime>(METASOUND_GET_PARAM_NAME(InputStartTime), InParams.OperatorSettings),
+				Inputs.GetOrCreateDefaultDataReadReference<float>(METASOUND_GET_PARAM_NAME(InputPitchShift), InParams.OperatorSettings),
+				Inputs.GetOrCreateDefaultDataReadReference<bool>(METASOUND_GET_PARAM_NAME(InputLoop), InParams.OperatorSettings),
+				Inputs.GetOrCreateDefaultDataReadReference<FTime>(METASOUND_GET_PARAM_NAME(InputLoopStart), InParams.OperatorSettings),
+				Inputs.GetOrCreateDefaultDataReadReference<FTime>(METASOUND_GET_PARAM_NAME(InputLoopDuration), InParams.OperatorSettings)
+			};
+
+			return MakeUnique<FWavePlayerOperator>(Args);
+		}
+	private:
+		TArray<FOutputDataVertex> OutputAudioVertices;
+	};
+
+	
+	template<typename AudioChannelConfigurationInfoType>
+	class TWavePlayerNode : public FNode
+	{
+
+	public:
+		static FVertexInterface DeclareVertexInterface()
+		{
+			using namespace WavePlayerVertexNames;
+
+			// Workaround to override display name of OutputLoopRatio
+			static const FDataVertexMetadata OutputLoopRatioMetadata
+			{ 
+				METASOUND_GET_PARAM_TT(OutputLoopRatio), // description 
+				METASOUND_LOCTEXT("OutputLoopRatioNotPercentDisplayName", "Loop Ratio") // display name  
+			};
+
+			FVertexInterface VertexInterface(
+				FInputVertexInterface(
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerPlay)),
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerStop)),
+					TInputDataVertex<FWaveAsset>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputWaveAsset)),
+					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputStartTime), 0.0f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPitchShift), 0.0f),
+					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputLoop), false),
+					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputLoopStart), 0.0f),
+					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputLoopDuration), -1.0f)
+					),
+				FOutputVertexInterface(
+					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTriggerOnPlay)),
+					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTriggerOnDone)),
+					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTriggerOnNearlyDone)),
+					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTriggerOnLooped)),
+					TOutputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTriggerOnCuePoint)),
+					TOutputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputCuePointID)),
+					TOutputDataVertex<FString>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputCuePointLabel)),
+					TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME(OutputLoopRatio), OutputLoopRatioMetadata),
+					TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputPlaybackLocation))
+				)
+			);
+
+			// Add audio outputs dependent upon source info.
+			for (const FOutputDataVertex& OutputDataVertex : AudioChannelConfigurationInfoType::GetAudioOutputs())
+			{
+				VertexInterface.GetOutputInterface().Add(OutputDataVertex);
+			}
+
+			return VertexInterface;
+		}
+
+		static const FNodeClassMetadata& GetNodeInfo()
+		{
+			auto InitNodeInfo = []() -> FNodeClassMetadata
+			{
+				FNodeClassMetadata Info;
+				Info.ClassName = { Metasound::EngineNodes::Namespace, TEXT("Wave Player"), AudioChannelConfigurationInfoType::GetVariantName() };
+				Info.MajorVersion = 1;
+				Info.MinorVersion = 0;
+				Info.DisplayName = AudioChannelConfigurationInfoType::GetNodeDisplayName();
+				Info.Description = METASOUND_LOCTEXT("Metasound_WavePlayerNodeDescription", "Plays a wave asset. The wave's channel configurations will be up or down mixed to match the wave players audio channel format.");
+				Info.Author = PluginAuthor;
+				Info.PromptIfMissing = PluginNodeMissingPrompt;
+				Info.DefaultInterface = DeclareVertexInterface();
+				Info.Keywords = { METASOUND_LOCTEXT("WavePlayerSoundKeyword", "Sound"),
+				                  METASOUND_LOCTEXT("WavePlayerCueKeyword", "Cue")
+				};
+
+				return Info;
+			};
+
+			static const FNodeClassMetadata Info = InitNodeInfo();
 
 			return Info;
-		};
+		}
 
-		static const FNodeClassMetadata Info = InitNodeInfo();
+		TWavePlayerNode(const FVertexName& InName, const FGuid& InInstanceID)
+			:	FNode(InName, InInstanceID, GetNodeInfo())
+			,	Factory(MakeOperatorFactoryRef<FWavePlayerOperatorFactory>(AudioChannelConfigurationInfoType::GetAudioOutputs()))
+			,	Interface(DeclareVertexInterface())
+		{
+		}
 
-		return Info;
-	}
+		TWavePlayerNode(const FNodeInitData& InInitData)
+			: TWavePlayerNode(InInitData.InstanceName, InInitData.InstanceID)
+		{
+		}
 
-	FWavePlayerNode::FWavePlayerNode(const FVertexName& InName, const FGuid& InInstanceID)
-		:	FNode(InName, InInstanceID, GetNodeInfo())
-		,	Factory(MakeOperatorFactoryRef<FWavePlayerNode::FOperatorFactory>())
-		,	Interface(DeclareVertexInterface())
+		virtual ~TWavePlayerNode() = default;
+
+		virtual FOperatorFactorySharedRef GetDefaultOperatorFactory() const override
+		{
+			return Factory;
+		}
+
+		virtual const FVertexInterface& GetVertexInterface() const override
+		{
+			return Interface;
+		}
+
+		virtual bool SetVertexInterface(const FVertexInterface& InInterface) override
+		{
+			return InInterface == Interface;
+		}
+
+		virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override
+		{
+			return InInterface == Interface;
+		}
+
+	private:
+		FOperatorFactorySharedRef Factory;
+		FVertexInterface Interface;
+	};
+
+	struct FMonoAudioChannelConfigurationInfo
 	{
-	}
+		static FText GetNodeDisplayName() { return METASOUND_LOCTEXT("Metasound_WavePlayerMonoNodeDisplayName", "Wave Player (Mono)"); }
+		static FName GetVariantName() { return Metasound::EngineNodes::MonoVariant; }
 
-	FWavePlayerNode::FWavePlayerNode(const FNodeInitData& InInitData)
-		: FWavePlayerNode(InInitData.InstanceName, InInitData.InstanceID)
+		static TArray<FOutputDataVertex> GetAudioOutputs()
+		{
+			using namespace WavePlayerVertexNames;
+			return {
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioMono))
+			};
+		}
+	};
+	using FMonoWavePlayerNode = TWavePlayerNode<FMonoAudioChannelConfigurationInfo>;
+	METASOUND_REGISTER_NODE(FMonoWavePlayerNode);
+
+	struct FStereoAudioChannelConfigurationInfo
 	{
-	}
+		static FText GetNodeDisplayName() { return METASOUND_LOCTEXT("Metasound_WavePlayerStereoNodeDisplayName", "Wave Player (Stereo)"); }
+		static FName GetVariantName() { return Metasound::EngineNodes::StereoVariant; }
 
-	FOperatorFactorySharedRef FWavePlayerNode::GetDefaultOperatorFactory() const 
+		static TArray<FOutputDataVertex> GetAudioOutputs()
+		{
+			using namespace WavePlayerVertexNames;
+			return {
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioRight))
+			};
+		}
+	};
+	using FStereoWavePlayerNode = TWavePlayerNode<FStereoAudioChannelConfigurationInfo>;
+	METASOUND_REGISTER_NODE(FStereoWavePlayerNode);
+
+	struct FQuadAudioChannelConfigurationInfo
 	{
-		return Factory;
-	}
+		static FText GetNodeDisplayName() { return METASOUND_LOCTEXT("Metasound_WavePlayerQuadNodeDisplayName", "Wave Player (Quad)"); }
+		static FName GetVariantName() { return Metasound::EngineNodes::QuadVariant; }
 
-	const FVertexInterface& FWavePlayerNode::GetVertexInterface() const
+		static TArray<FOutputDataVertex> GetAudioOutputs()
+		{
+			using namespace WavePlayerVertexNames;
+			return {
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontRight)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideRight))
+			};
+		}
+	};
+	using FQuadWavePlayerNode = TWavePlayerNode<FQuadAudioChannelConfigurationInfo>;
+	METASOUND_REGISTER_NODE(FQuadWavePlayerNode);
+
+	struct FFiveDotOneAudioChannelConfigurationInfo
 	{
-		return Interface;
-	}
+		static FText GetNodeDisplayName() { return METASOUND_LOCTEXT("Metasound_WavePlayerFiveDotOneNodeDisplayName", "Wave Player (5.1)"); }
+		static FName GetVariantName() { return Metasound::EngineNodes::FiveDotOneVariant; }
 
-	bool FWavePlayerNode::SetVertexInterface(const FVertexInterface& InInterface)
+		static TArray<FOutputDataVertex> GetAudioOutputs()
+		{
+			using namespace WavePlayerVertexNames;
+			return {
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontRight)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontCenter)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioLowFrequency)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideRight))
+			};
+		}
+	};
+	using FFiveDotOneWavePlayerNode = TWavePlayerNode<FFiveDotOneAudioChannelConfigurationInfo>;
+	METASOUND_REGISTER_NODE(FFiveDotOneWavePlayerNode);
+
+	struct FSevenDotOneAudioChannelConfigurationInfo
 	{
-		return InInterface == Interface;
-	}
+		static FText GetNodeDisplayName() { return METASOUND_LOCTEXT("Metasound_WavePlayerSevenDotOneNodeDisplayName", "Wave Player (7.1)"); }
+		static FName GetVariantName() { return Metasound::EngineNodes::SevenDotOneVariant; }
 
-	bool FWavePlayerNode::IsVertexInterfaceSupported(const FVertexInterface& InInterface) const
-	{
-		return InInterface == Interface;
-	}
-
-	METASOUND_REGISTER_NODE(FWavePlayerNode)
+		static TArray<FOutputDataVertex> GetAudioOutputs()
+		{
+			using namespace WavePlayerVertexNames;
+			return {
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontRight)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioFrontCenter)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioLowFrequency)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioSideRight)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioBackLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioBackRight))
+			};
+		}
+	};
+	using FSevenDotOneWavePlayerNode = TWavePlayerNode<FSevenDotOneAudioChannelConfigurationInfo>;
+	METASOUND_REGISTER_NODE(FSevenDotOneWavePlayerNode);
 } // namespace Metasound
 
 #undef LOCTEXT_NAMESPACE // MetasoundWaveNode

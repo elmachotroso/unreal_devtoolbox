@@ -38,27 +38,27 @@ class UMaterialExpressionMaterialAttributeLayers : public UMaterialExpression
 #if WITH_EDITOR
 	const TArray<FText>& GetLayerNames() const
 	{
-		return ParamLayers ? ParamLayers->LayerNames : DefaultLayers.LayerNames;
+		return ParamLayers ? ParamLayers->EditorOnly.LayerNames : DefaultLayers.EditorOnly.LayerNames;
 	}
 
 	const TArray<bool>& GetShouldFilterLayers() const
 	{
-		return ParamLayers ? ParamLayers->RestrictToLayerRelatives : DefaultLayers.RestrictToLayerRelatives;
+		return ParamLayers ? ParamLayers->EditorOnly.RestrictToLayerRelatives : DefaultLayers.EditorOnly.RestrictToLayerRelatives;
 	}
 
 	const TArray<bool>& GetShouldFilterBlends() const
 	{
-		return ParamLayers ? ParamLayers->RestrictToBlendRelatives : DefaultLayers.RestrictToBlendRelatives;
+		return ParamLayers ? ParamLayers->EditorOnly.RestrictToBlendRelatives : DefaultLayers.EditorOnly.RestrictToBlendRelatives;
 	}
 
 	const TArray<FGuid>& GetLayerGuids() const
 	{
-		return ParamLayers ? ParamLayers->LayerGuids : DefaultLayers.LayerGuids;
+		return ParamLayers ? ParamLayers->EditorOnly.LayerGuids : DefaultLayers.EditorOnly.LayerGuids;
 	}
 
 	const TArray<bool>& GetLayerStates() const
 	{
-		return ParamLayers ? ParamLayers->LayerStates : DefaultLayers.LayerStates;
+		return ParamLayers ? ParamLayers->EditorOnly.LayerStates : DefaultLayers.EditorOnly.LayerStates;
 	}
 #endif // WITH_EDITOR
 
@@ -111,6 +111,7 @@ class UMaterialExpressionMaterialAttributeLayers : public UMaterialExpression
 	virtual bool IsInputConnectionRequired(int32 InputIndex) const override {return false;}
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultMaterialAttributes(int32 OutputIndex) override {return true;}
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 

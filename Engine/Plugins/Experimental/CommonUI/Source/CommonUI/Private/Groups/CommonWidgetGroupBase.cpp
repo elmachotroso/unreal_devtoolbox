@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Groups/CommonWidgetGroupBase.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonWidgetGroupBase)
 
 UCommonWidgetGroupBase::UCommonWidgetGroupBase()
 {
@@ -27,3 +29,4 @@ void UCommonWidgetGroupBase::RemoveAll()
 {
 	OnRemoveAll();
 }
+

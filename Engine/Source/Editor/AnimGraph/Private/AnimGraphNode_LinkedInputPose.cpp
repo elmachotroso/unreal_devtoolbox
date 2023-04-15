@@ -8,7 +8,7 @@
 #include "DetailCategoryBuilder.h"
 #include "IDetailPropertyRow.h"
 #include "DetailWidgetRow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "DetailLayoutBuilder.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
@@ -28,6 +28,7 @@
 #include "K2Node_VariableGet.h"
 #include "AnimBlueprintCompiler.h"
 #include "AnimGraphAttributes.h"
+#include "AnimGraphNode_LinkedAnimLayer.h"
 #include "IAnimBlueprintCopyTermDefaultsContext.h"
 
 #define LOCTEXT_NAMESPACE "LinkedInputPose"
@@ -106,6 +107,24 @@ void UAnimGraphNode_LinkedInputPose::ExpandNode(class FKismetCompilerContext& In
 	});
 }
 
+void UAnimGraphNode_LinkedInputPose::ReconstructLayerNodes(UBlueprint* InBlueprint)
+{
+	if(InBlueprint)
+	{
+		TArray<UAnimGraphNode_LinkedAnimLayer*> LinkedAnimLayers;
+		FBlueprintEditorUtils::GetAllNodesOfClass<UAnimGraphNode_LinkedAnimLayer>(InBlueprint, LinkedAnimLayers);
+
+		for(UAnimGraphNode_LinkedAnimLayer* LinkedAnimLayer : LinkedAnimLayers)
+		{
+			// Only reconstruct 'self' nodes in this manner - external layers will be rebuilt via the compilation machinery
+			if(LinkedAnimLayer->Node.Interface.Get() == nullptr)
+			{
+				LinkedAnimLayer->ReconstructNode();
+			}
+		}
+	}
+}
+
 void UAnimGraphNode_LinkedInputPose::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -121,6 +140,7 @@ void UAnimGraphNode_LinkedInputPose::PostEditChangeProperty(FPropertyChangedEven
 			ReconstructNode();
 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(GetAnimBlueprint());
 			ReconstructNode();
+			ReconstructLayerNodes(GetAnimBlueprint());
 		}
 	}
 }
@@ -157,6 +177,11 @@ FText UAnimGraphNode_LinkedInputPose::GetNodeTitle(ENodeTitleType::Type TitleTyp
 			return DefaultTitle;
 		}
 	}
+}
+
+FText UAnimGraphNode_LinkedInputPose::GetMenuCategory() const
+{
+	return LOCTEXT("LinkedAnimGraphCategory", "Animation|Linked Anim Graphs");
 }
 
 bool UAnimGraphNode_LinkedInputPose::CanUserDeleteNode() const
@@ -501,8 +526,17 @@ void UAnimGraphNode_LinkedInputPose::CustomizeDetails(IDetailLayoutBuilder& Deta
 		MakeNameWidget(DetailBuilder)
 	];
 
-	InputsCategoryBuilder.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimGraphNode_LinkedInputPose, Inputs), GetClass())
-		.ShouldAutoExpand(true);
+	UEdGraph* Graph = GetGraph();
+	if(Graph && Graph->GetFName() != UEdGraphSchema_K2::GN_AnimGraph)
+	{
+		InputsCategoryBuilder.AddProperty(GET_MEMBER_NAME_CHECKED(UAnimGraphNode_LinkedInputPose, Inputs), GetClass())
+			.ShouldAutoExpand(true);
+	}
+	else
+	{
+		TSharedPtr<IPropertyHandle> InputsPropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UAnimGraphNode_LinkedInputPose, Inputs), GetClass());
+		InputsPropertyHandle->MarkHiddenByCustomization();
+	}
 }
 
 void UAnimGraphNode_LinkedInputPose::OnCopyTermDefaultsToDefaultObject(IAnimBlueprintCopyTermDefaultsContext& InCompilationContext, IAnimBlueprintNodeCopyTermDefaultsContext& InPerNodeContext, IAnimBlueprintGeneratedClassCompiledData& OutCompiledData)

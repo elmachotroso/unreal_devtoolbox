@@ -2,6 +2,7 @@
 
 #pragma once
 
+#if WITH_EDITOR
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/GCObject.h"
@@ -11,42 +12,40 @@
 
 class ULevelInstanceSubsystem;
 class UActorDescContainer;
+class IStreamingGenerationErrorHandler;
 enum class ELevelInstanceRuntimeBehavior : uint8;
 
 /**
  * ActorDesc for Actors that are part of a LevelInstanceActor Level.
  */
-class ENGINE_API FLevelInstanceActorDesc : public FWorldPartitionActorDesc, public FGCObject
+class ENGINE_API FLevelInstanceActorDesc : public FWorldPartitionActorDesc
 {
-#if WITH_EDITOR
-	friend class ALevelInstance;
-
 public:
+	FLevelInstanceActorDesc();
 	virtual ~FLevelInstanceActorDesc() override;
 
-	inline FName GetLevelPackage() const { return LevelPackage; }
-
+	virtual bool IsContainerInstance() const override;
+	virtual FName GetLevelPackage() const override { return LevelPackage; }
 	virtual bool GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const override;
+	virtual void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const override;
 
 protected:
-	FLevelInstanceActorDesc();
 	virtual void Init(const AActor* InActor) override;
 	virtual void Init(const FWorldPartitionActorDescInitData& DescData) override;
 	virtual bool Equals(const FWorldPartitionActorDesc* Other) const override;
 	virtual void TransferFrom(const FWorldPartitionActorDesc* From) override;
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void AddReferencedObjects(FReferenceCollector& Collector);
-	virtual FString GetReferencerName() const override { return TEXT("FLevelInstanceActorDesc"); }
 	virtual void SetContainer(UActorDescContainer* InContainer) override;
 
 	FName LevelPackage;
 	FTransform LevelInstanceTransform;
 	ELevelInstanceRuntimeBehavior DesiredRuntimeBehavior;
 
-	TObjectPtr<UActorDescContainer> LevelInstanceContainer;
+	TWeakObjectPtr<UActorDescContainer> LevelInstanceContainer;
 
 private:
-	static UActorDescContainer* RegisterActorDescContainer(FName PackageName, UWorld* InWorld);
-	static void UnregisterActorDescContainer(UActorDescContainer* Container);
-#endif
+	void RegisterContainerInstance(UWorld* InWorld);
+	void UnregisterContainerInstance();
+	void UpdateBounds();
 };
+#endif

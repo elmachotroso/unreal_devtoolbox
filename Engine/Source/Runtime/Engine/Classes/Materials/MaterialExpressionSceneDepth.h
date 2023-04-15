@@ -19,7 +19,7 @@ class UMaterialExpressionSceneDepth : public UMaterialExpression
 	* Coordinates - UV coordinates to apply to the scene depth lookup.
 	* OffsetFraction - An offset to apply to the scene depth lookup in a 2d fraction of the screen.
 	*/ 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionSceneDepth)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionSceneDepth, meta = (ShowAsInputPin = "Advanced"))
 	TEnumAsByte<enum EMaterialSceneAttributeInputMode::Type> InputMode;
 
 	/**
@@ -34,7 +34,7 @@ class UMaterialExpressionSceneDepth : public UMaterialExpression
 	FExpressionInput Coordinates_DEPRECATED;
 
 	/** only used if Input is not hooked up */
-	UPROPERTY(EditAnywhere, Category = MaterialExpressionSceneDepth)
+	UPROPERTY(EditAnywhere, Category = MaterialExpressionSceneDepth, meta = (OverridingInputProperty = "Input"))
 	FVector2D ConstInput;
 
 	//~ Begin UObject Interface.
@@ -46,6 +46,7 @@ class UMaterialExpressionSceneDepth : public UMaterialExpression
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual FName GetInputName(int32 InputIndex) const override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 };

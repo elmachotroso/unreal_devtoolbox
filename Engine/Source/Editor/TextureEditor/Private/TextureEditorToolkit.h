@@ -61,13 +61,17 @@ public:
 	virtual void UnregisterTabSpawners( const TSharedRef<class FTabManager>& TabManager ) override;
 
 	// ITextureEditorToolkit interface
-	virtual void CalculateTextureDimensions( uint32& Width, uint32& Height, uint32& Depth, uint32& ArraySize ) const override;
+	virtual void CalculateTextureDimensions(int32& OutWidth, int32& OutHeight, int32& OutDepth, int32& OutArraySize, bool bInIncludeBorderSize) const override;
 	virtual ESimpleElementBlendMode GetColourChannelBlendMode( ) const override;
 	virtual int32 GetMipLevel( ) const override;
 	virtual int32 GetLayer() const override;
+	virtual int32 GetSlice() const override;
+	virtual int32 GetFace() const override;
 	virtual UTexture* GetTexture( ) const override;
 	virtual bool HasValidTextureResource( ) const override;
 	virtual bool GetUseSpecifiedMip( ) const override;
+	virtual bool GetUseSpecifiedSlice() const override;
+	virtual bool GetUseSpecifiedFace() const override;
 	virtual double GetCustomZoomLevel( ) const override;
 	virtual void SetCustomZoomLevel(double ZoomValue) override;
 	virtual void PopulateQuickInfo( ) override;
@@ -79,8 +83,14 @@ public:
 	virtual void ZoomOut( ) override;
 	virtual float GetVolumeOpacity( ) const override;
 	virtual void SetVolumeOpacity( float VolumeOpacity ) override;
-	virtual const FRotator& GetVolumeOrientation( ) const override;
-	virtual void SetVolumeOrientation( const FRotator& InOrientation ) override;
+	virtual ETextureEditorVolumeViewMode GetVolumeViewMode() const override;
+	virtual void SetVolumeViewMode(const ETextureEditorVolumeViewMode VolumeViewMode) override;
+	virtual ETextureEditorCubemapViewMode GetCubemapViewMode() const override;
+	virtual void SetCubemapViewMode(const ETextureEditorCubemapViewMode CubemapViewMode) override;
+	virtual bool IsUsingOrientation() const override;
+	virtual const FRotator& GetOrientation() const override;
+	virtual void SetOrientation(const FRotator& InOrientation) override;
+	virtual void ResetOrientation() override;
 	virtual int32 GetExposureBias() const override
 	{
 		return ExposureBias;
@@ -145,7 +155,15 @@ protected:
 	 */
 	EPixelFormat GetPixelFormat() const;
 
+	/**
+	 * Gets the highest layer index for this texture.
+	 */
 	TOptional<int32> GetMaxLayer() const;
+
+	/**
+	 * Gets the highest slice index for this texture.
+	 */
+	TOptional<int32> GetMaxSlice() const;
 
 	/**
 	 * Checks whether the texture being edited is a cube map texture.
@@ -182,11 +200,17 @@ private:
 	// Callback for getting the checked state of the Checkered Background action.
 	bool HandleCheckeredBackgroundActionIsChecked( ETextureEditorBackgrounds Background );
 
-	// Callback for toggling the volume display action.
+	// Callback for toggling the volume view action.
 	void HandleVolumeViewModeActionExecute( ETextureEditorVolumeViewMode InViewMode );
 
-	// Callback for getting the checked state of the volume display action.
+	// Callback for getting the checked state of the volume view action.
 	bool HandleVolumeViewModeActionIsChecked( ETextureEditorVolumeViewMode InViewMode );
+
+	// Callback for toggling the cubemap view action.
+	void HandleCubemapViewModeActionExecute(ETextureEditorCubemapViewMode InViewMode);
+
+	// Callback for getting the checked state of the cubemap view action.
+	bool HandleCubemapViewModeActionIsChecked(ETextureEditorCubemapViewMode InViewMode);
 
 	// Callback for toggling the Compress Now action.
 	void HandleCompressNowActionExecute( );
@@ -229,6 +253,45 @@ private:
 	TOptional<int32> HandleLayerEntryBoxValue() const;
 
 	bool HasLayers() const;
+
+	// Returns true if the current texture supports slice selection.
+	bool HasSlices() const;
+
+	// Gets the number of slices that can be selected for this texture.
+	int32 GetNumSlices() const;
+
+	// Callback for determining whether the slice check box is enabled.
+	bool HandleSliceCheckBoxIsEnabled() const;
+
+	// Callback for getting the checked state of the slice check box.
+	ECheckBoxState HandleSliceCheckBoxIsChecked() const;
+
+	// Callback for changing the checked state of the slice check box.
+	void HandleSliceCheckBoxCheckedStateChanged(ECheckBoxState InNewState);
+
+	// Callback for getting the value of the slice index entry box.
+	TOptional<int32> HandleSliceEntryBoxValue() const;
+
+	// Callback for changing the value of the slice index entry box.
+	void HandleSliceEntryBoxChanged(int32 Slice);
+
+	// Callback for getting the checked state of the face check box.
+	ECheckBoxState HandleFaceCheckBoxIsChecked() const;
+
+	// Callback for changing the checked state of the face check box.
+	void HandleFaceCheckBoxCheckedStateChanged(ECheckBoxState InNewState);
+
+	// Callback for getting the value of the face index entry box.
+	TOptional<int32> HandleFaceEntryBoxValue() const;
+
+	// Callback for changing the value of the face index entry box.
+	void HandleFaceEntryBoxChanged(int32 Face);
+
+	// Callback for getting the checked state of the 3D View check box.
+	ECheckBoxState HandleView3DCheckBoxIsChecked() const;
+
+	// Callback for changing the checked state of the 3D View check box.
+	void HandleView3DCheckBoxCheckedStateChanged(ECheckBoxState InNewState);
 
 	// Callback for determining whether the Reimport action can execute.
 	bool HandleReimportActionCanExecute( ) const;
@@ -310,9 +373,12 @@ private:
 	TSharedRef<SWidget> MakeChannelControlWidget();
 	TSharedRef<SWidget> MakeLODControlWidget();
 	TSharedRef<SWidget> MakeLayerControlWidget();
+	TSharedRef<SWidget> MakeSliceControlWidget();
+	TSharedRef<SWidget> MakeFaceControlWidget();
 	TSharedRef<SWidget> MakeExposureContolWidget();
 	TSharedRef<SWidget> MakeOpacityControlWidget();
 	TSharedRef<SWidget> MakeZoomControlWidget();
+	TSharedRef<SWidget> MakeView3DControlWidget();
 private:
 
 	/** The Texture asset being inspected */
@@ -342,6 +408,8 @@ private:
 	TSharedPtr<STextBlock> NumMipsText;
 	TSharedPtr<STextBlock> MipLevelTextBlock;
 	TSharedPtr<STextBlock> EncodeSpeedText;
+	TSharedPtr<STextBlock> SceneCaptureSizeText;
+	TSharedPtr<STextBlock> SceneCaptureNameText;
 
 	// oodle details text blocks.
 	TSharedPtr<STextBlock> OodleRDOText;
@@ -376,15 +444,29 @@ private:
 	bool bIsDesaturation;
 
 	/** The maximum width/height at which the texture will render in the preview window */
-	uint32 PreviewEffectiveTextureWidth;
-	uint32 PreviewEffectiveTextureHeight;
+	int32 PreviewEffectiveTextureWidth;
+	int32 PreviewEffectiveTextureHeight;
 
 	/** Which mip level should be shown */
 	int32 SpecifiedMipLevel;
-	/* When true, the specified mip value is used. Top mip is used when false.*/
+
+	/** When true, the specified mip value is used. Top mip is used when false.*/
 	bool bUseSpecifiedMipLevel;
 
+	/** Which layer should be shown */
 	int32 SpecifiedLayer;
+
+	/** Which slice should be shown */
+	int32 SpecifiedSlice;
+
+	/** When true, the specified slice index value is used, otherwise the value of -1 is used.*/
+	bool bUseSpecifiedSlice;
+
+	/** Which cubemap face should be shown */
+	int32 SpecifiedFace;
+
+	/** When true, the specified cubemap face index value is used, otherwise the value of -1 is used.*/
+	bool bUseSpecifiedFace;
 
 	/** During re-import, cache this setting so it can be restored if necessary */
 	bool SavedCompressionSetting;
@@ -401,8 +483,14 @@ private:
 	// For volume texture, defines an opacity to see through the volume when tracing.
 	float VolumeOpacity;
 
-	// For volume texture, the orientation when tracing.
-	FRotator VolumeOrientation;
+	/** This toolkit's current volume view mode **/
+	ETextureEditorVolumeViewMode VolumeViewMode;
+
+	/** This toolkit's current cubemap view mode **/
+	ETextureEditorCubemapViewMode CubemapViewMode;
+
+	// Orientation of the texture in 3d when using "3D View" mode
+	FRotator Orientation;
 
 	bool bIsVolumeTexture;
 

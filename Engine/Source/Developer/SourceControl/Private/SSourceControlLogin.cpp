@@ -21,7 +21,6 @@
 #include "Logging/MessageLog.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
-#include "EditorStyleSet.h"
 
 #if WITH_UNREAL_DEVELOPER_TOOLS
 	#include "MessageLogModule.h"
@@ -48,7 +47,7 @@ void SSourceControlLogin::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBox)
-		.WidthOverride(480.f)
+		.MinDesiredWidth(480.f)
 		[
 			SNew(SBorder)
 			.Padding(0)
@@ -93,7 +92,7 @@ void SSourceControlLogin::Construct(const FArguments& InArgs)
 				.Padding(0.0f)
 				[
 					SNew(SExpandableArea)
-					.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+					.BorderImage(FAppStyle::Get().GetBrush("NoBorder"))
 					.Visibility(this, &SSourceControlLogin::GetSettingsVisibility)
 					.IsEnabled(this, &SSourceControlLogin::AreControlsEnabled)
 					.InitiallyCollapsed(true)

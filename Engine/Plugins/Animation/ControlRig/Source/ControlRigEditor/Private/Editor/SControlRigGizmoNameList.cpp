@@ -45,6 +45,14 @@ void SControlRigShapeNameList::Construct(const FArguments& InArgs, TArray<FRigCo
 	ConstructCommon();
 }
 
+void SControlRigShapeNameList::BeginDestroy()
+{
+	if(NameListComboBox.IsValid())
+	{
+		NameListComboBox->SetOptionsSource(&GetEmptyList());
+	}
+}
+
 void SControlRigShapeNameList::ConstructCommon()
 {
 	SBox::Construct(SBox::FArguments());
@@ -84,7 +92,7 @@ const TArray<TSharedPtr<FString>>& SControlRigShapeNameList::GetNameList() const
 	{
 		return OnGetNameListContent.Execute();
 	}
-	return EmptyList;
+	return GetEmptyList();
 }
 
 FText SControlRigShapeNameList::GetNameListText() const
@@ -140,7 +148,7 @@ void SControlRigShapeNameList::SetNameListText(const FText& NewTypeInValue, ETex
 
 TSharedRef<SWidget> SControlRigShapeNameList::MakeNameListItemWidget(TSharedPtr<FString> InItem)
 {
-	return 	SNew(STextBlock).Text(FText::FromString(*InItem));// .Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
+	return 	SNew(STextBlock).Text(FText::FromString(*InItem));// .Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
 }
 
 void SControlRigShapeNameList::OnNameListChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo)

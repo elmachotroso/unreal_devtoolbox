@@ -12,13 +12,14 @@
 #include "Misc/SecureHash.h"
 #include "Misc/Paths.h"
 #include "Misc/CoreStats.h"
+#include "ShaderCore.h"
 
 class Error;
 
 // this is for the protocol, not the data, bump if FShaderCompilerInput or ProcessInputFromArchive changes.
-const int32 ShaderCompileWorkerInputVersion = 16;
+const int32 ShaderCompileWorkerInputVersion = 17;
 // this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
-const int32 ShaderCompileWorkerOutputVersion = 7;
+const int32 ShaderCompileWorkerOutputVersion = 8;
 // this is for the protocol, not the data.
 const int32 ShaderCompileWorkerSingleJobHeader = 'S';
 // this is for the protocol, not the data.
@@ -110,13 +111,20 @@ enum ECompilerFlags
 	CFLAG_InlineRayTracing,
 	// Force using the SC rewrite functionality before calling DXC on D3D12
 	CFLAG_D3D12ForceShaderConductorRewrite,
-	// Enable support of C-style data types for platforms that can. Check for PLATFORM_SUPPORTS_REAL_TYPES.
+	// Enable support of C-style data types for platforms that can. Check for PLATFORM_SUPPORTS_REAL_TYPES and FDataDrivenShaderPlatformInfo::GetSupportsRealTypes()
 	CFLAG_AllowRealTypes,
 	// Precompile HLSL to optimized HLSL, then forward to FXC. Speeds up some shaders that take longer with FXC and works around crashes in FXC.
 	CFLAG_PrecompileWithDXC,
-
+	// Enable HLSL 2021 version. Enables templates, operator overloaing, C++ style function overloading. Contains breaking change with short-circuiting evaluation.
+	CFLAG_HLSL2021,
 	// Allow warnings to be treated as errors
 	CFLAG_WarningsAsErrors,
+	// Enabled if bindless resources are enabled for the platform
+	CFLAG_BindlessResources,
+	// Enabled if bindless samplers are enabled for the platform
+	CFLAG_BindlessSamplers,
+	// EXPERIMENTAL: Run the shader re-writer that removes any unused functions/resources/types from source code before compilation.
+	CFLAG_RemoveDeadCode,
 
 	CFLAG_Max,
 };
@@ -175,8 +183,11 @@ namespace FOodleDataCompression
 struct FShaderCompilerInput
 {
 	FShaderTarget Target;
+	
 	FName ShaderFormat;
 	FName CompressionFormat;
+	FName ShaderPlatformName;
+	
 	FString SourceFilePrefix;
 	FString VirtualSourceFilePath;
 	FString EntryPointName;
@@ -434,6 +445,7 @@ struct FShaderCompilerOutput
 	:	NumInstructions(0)
 	,	NumTextureSamplers(0)
 	,	CompileTime(0.0)
+	,	PreprocessTime(0.0)
 	,	bSucceeded(false)
 	,	bFailedRemovingUnused(false)
 	,	bSupportsQueryingUsedAttributes(false)
@@ -450,6 +462,7 @@ struct FShaderCompilerOutput
 	uint32 NumInstructions;
 	uint32 NumTextureSamplers;
 	double CompileTime;
+	double PreprocessTime;
 	bool bSucceeded;
 	bool bFailedRemovingUnused;
 	bool bSupportsQueryingUsedAttributes;
@@ -473,6 +486,7 @@ struct FShaderCompilerOutput
 		Ar << Output.ParameterMap << Output.Errors << Output.Target << Output.ShaderCode << Output.OutputHash << Output.NumInstructions << Output.NumTextureSamplers << Output.bSucceeded;
 		Ar << Output.bFailedRemovingUnused << Output.bSupportsQueryingUsedAttributes << Output.UsedAttributes;
 		Ar << Output.CompileTime;
+		Ar << Output.PreprocessTime;
 		Ar << Output.OptionalPreprocessedShaderSource;
 		Ar << Output.OptionalFinalShaderSource;
 		Ar << Output.PlatformDebugData;
@@ -525,4 +539,44 @@ extern RENDERCORE_API bool CheckVirtualShaderFilePath(FStringView VirtualPath, T
  * @param OutFileContents - If true is returned, will contain the contents of the shader file. Can be null.
  * @return True if the file was successfully loaded.
  */
-extern RENDERCORE_API bool LoadShaderSourceFile(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors);
+extern RENDERCORE_API bool LoadShaderSourceFile(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors, const FName* ShaderPlatformName = nullptr);
+
+enum class EShaderCompilerWorkerType : uint8
+{
+	None,
+	LocalThread,
+	Distributed,
+};
+
+enum class EShaderCompileJobType : uint8
+{
+	Single,
+	Pipeline,
+	Num,
+};
+static const int32 NumShaderCompileJobTypes = (int32)EShaderCompileJobType::Num;
+
+enum class EShaderCompileJobPriority : uint8
+{
+	None = 0xff,
+
+	Low = 0u,
+	Normal,
+	High,
+	ForceLocal, // Force shader to skip XGE and compile on local machine
+	Num,
+};
+static const int32 NumShaderCompileJobPriorities = (int32)EShaderCompileJobPriority::Num;
+
+inline const TCHAR* ShaderCompileJobPriorityToString(EShaderCompileJobPriority v)
+{
+	switch (v)
+	{
+	case EShaderCompileJobPriority::None: return TEXT("None");
+	case EShaderCompileJobPriority::Low: return TEXT("Low");
+	case EShaderCompileJobPriority::Normal: return TEXT("Normal");
+	case EShaderCompileJobPriority::High: return TEXT("High");
+	case EShaderCompileJobPriority::ForceLocal: return TEXT("ForceLocal");
+	default: checkNoEntry(); return TEXT("");
+	}
+}

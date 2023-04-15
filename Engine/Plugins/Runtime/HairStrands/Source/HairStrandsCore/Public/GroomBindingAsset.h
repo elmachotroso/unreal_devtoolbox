@@ -47,14 +47,6 @@ enum class EGroomBindingMeshType : uint8
 	GeometryCache
 };
 
-/** Binding data */
-struct FHairRootGroupData
-{
-	FHairStrandsRootData			SimRootData;
-	FHairStrandsRootData			RenRootData;
-	TArray<FHairStrandsRootData>	CardsRootData;
-};
-
 /** Binding bulk data */
 struct FHairGroupBulkData
 {
@@ -82,7 +74,7 @@ public:
 	EGroomBindingMeshType GroomBindingType = EGroomBindingMeshType::SkeletalMesh;
 
 	/** Groom to bind. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BuildSettings")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BuildSettings", AssetRegistrySearchable)
 	TObjectPtr<UGroomAsset> Groom;
 
 	/** Skeletal mesh on which the groom has been authored. This is optional, and used only if the hair
@@ -198,4 +190,13 @@ public:
 	FString CachedDerivedDataKey;
 #endif
 	bool bIsValid = false;
+};
+
+UCLASS(BlueprintType, hidecategories = (Object))
+class HAIRSTRANDSCORE_API UGroomBindingAssetList : public UObject
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(EditAnywhere, Transient, EditFixedSize, Category = "Bindings")
+	TArray<TObjectPtr<UGroomBindingAsset>> Bindings;
 };

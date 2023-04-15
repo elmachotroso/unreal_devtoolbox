@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassEntitySettings.h"
-#include "MassProcessingPhase.h"
+#include "MassProcessingPhaseManager.h"
 #include "VisualLogger/VisualLogger.h"
 #include "UObject/UObjectHash.h"
-#include "MassEntityDebug.h"
 #include "Misc/CoreDelegates.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MassEntitySettings)
+
 #if WITH_EDITOR
 #include "ObjectEditorUtils.h"
 #endif // WITH_EDITOR
@@ -18,7 +20,7 @@ UMassEntitySettings::UMassEntitySettings(const FObjectInitializer& ObjectInitial
 {
 	for (int i = 0; i < (int)EMassProcessingPhase::MAX; ++i)
 	{
-		ProcessingPhasesConfig[i].PhaseName = *EnumToString(EMassProcessingPhase(i));
+		ProcessingPhasesConfig[i].PhaseName = *UEnum::GetDisplayValueAsText(EMassProcessingPhase(i)).ToString();
 	}
 
 	FCoreDelegates::OnPostEngineInit.AddUObject(this, &UMassEntitySettings::BuildProcessorListAndPhases);
@@ -183,3 +185,4 @@ void UMassEntitySettings::PostEditChangeChainProperty(struct FPropertyChangedCha
 	}
 }
 #endif // WITH_EDITOR
+

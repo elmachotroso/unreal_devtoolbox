@@ -21,6 +21,7 @@
 #include "PlatformInfo.h"
 #include "TargetReceipt.h"
 #include "DesktopPlatformModule.h"
+#include "GameProjectHelper.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogLauncherProfile, Log, All);
 
@@ -49,7 +50,10 @@ enum ELauncherVersion
 	LAUNCHERSERVICES_ADDEDBUILDMODE = 28,
 	LAUNCHERSERVICES_ADDEDUSEIOSTORE = 29,
 	LAUNCHERSERVICES_ADDEDMAKEBINARYCONFIG = 30,
-
+	LAUNCHERSERVICES_ADDEDREFERENCECONTAINERS = 31,
+	LAUNCHERSERVICES_REMOVEDNUMCOOKERSTOSPAWN = 32,
+	LAUNCHERSERVICES_ADDEDORIGINALRELEASEVERSION = 33,
+	LAUNCHERSERVICES_ADDBUILDTARGETNAME = 34,
 	//ADD NEW STUFF HERE
 
 
@@ -245,6 +249,7 @@ public:
 		, DefaultLaunchRole(MakeShareable(new FLauncherProfileLaunchRole()))
 	{ 
 		SetDefaults();
+		ProjectChangedDelegate.AddRaw(this, &FLauncherProfile::OnSelectedProjectChanged);
 	}
 
 	/**
@@ -259,6 +264,7 @@ public:
 		, Name(InProfileName)
 	{
 		SetDefaults();
+		ProjectChangedDelegate.AddRaw(this, &FLauncherProfile::OnSelectedProjectChanged);
 	}
 
 	/**
@@ -307,6 +313,7 @@ public:
 	{
 		CookedPlatforms.AddUnique(PlatformName);
 
+		RefreshValidBuildTargets();
 		Validate();
 	}
 
@@ -375,6 +382,7 @@ public:
 		{
 			CookedPlatforms.Reset();
 
+			RefreshValidBuildTargets();
 			Validate();
 		}
 	}
@@ -395,9 +403,21 @@ public:
 		return BuildConfiguration;
 	}
 
-	virtual const FString& GetBuildTarget() const override
+	virtual bool HasBuildTargetSpecified() const override
 	{
-		return BuildTargetName;
+		return BuildTargetSpecified;
+	}
+
+	virtual FString GetBuildTarget() const override
+	{
+		if (BuildTargetSpecified)
+		{
+			return BuildTargetName;
+		}
+		else
+		{
+			return LauncherProfileManager->GetBuildTarget();
+		}
 	}
 
 	virtual EBuildConfiguration GetCookConfiguration( ) const override
@@ -418,11 +438,6 @@ public:
 	virtual const TArray<FString>& GetCookedCultures( ) const override
 	{
 		return CookedCultures;
-	}
-
-	virtual const int32 GetNumCookersToSpawn() const override
-	{
-		return NumCookersToSpawn;
 	}
 
 	virtual const bool GetSkipCookingEditorContent() const override
@@ -536,7 +551,32 @@ public:
 		BasedOnReleaseVersionName = InBasedOnReleaseVersionName;
 	}
 
+	virtual FString GetOriginalReleaseVersionName() const override
+	{
+		return OriginalReleaseVersionName; 
+	}
 
+	virtual void SetOriginalReleaseVersionName(const FString& InOriginalReleaseVersionName) override
+	{
+		OriginalReleaseVersionName = InOriginalReleaseVersionName;
+	}
+
+	virtual FString GetReferenceContainerGlobalFileName() const override
+	{
+		return ReferenceContainerGlobalFileName;
+	}
+	virtual void SetReferenceContainerGlobalFileName(const FString& InReferenceContainerGlobalFileName) override
+	{
+		ReferenceContainerGlobalFileName = InReferenceContainerGlobalFileName;
+	}
+	virtual FString GetReferenceContainerCryptoKeysFileName() const override
+	{
+		return ReferenceContainerCryptoKeysFileName;
+	}
+	virtual void SetReferenceContainerCryptoKeysFileName(const FString& InReferenceContainerCryptoKeysFileName) override
+	{
+		ReferenceContainerCryptoKeysFileName = InReferenceContainerCryptoKeysFileName;
+	}
 
 	virtual ELauncherProfileDeploymentModes::Type GetDeploymentMode( ) const override
 	{
@@ -869,6 +909,7 @@ public:
 	{
 		CookedPlatforms.Remove(PlatformName);
 
+		RefreshValidBuildTargets();
 		Validate();
 	}
 
@@ -954,9 +995,10 @@ public:
 		{
 			Archive << DeployPlatformString;
 		}		
-		if (Version >= LAUNCHERSERVICES_ADDEDNUMCOOKERSTOSPAWN)
+		if (Version >= LAUNCHERSERVICES_ADDEDNUMCOOKERSTOSPAWN && Version < LAUNCHERSERVICES_REMOVEDNUMCOOKERSTOSPAWN)
 		{
-			Archive << NumCookersToSpawn;
+			int32 OldNumCookersToSpawn;
+			Archive << OldNumCookersToSpawn;
 		}
 		if (Version >= LAUNCHERSERVICES_ADDEDSKIPCOOKINGEDITORCONTENT)
 		{
@@ -1031,6 +1073,22 @@ public:
 			Archive << bMakeBinaryConfig;
 		}
 
+		if (Version >= LAUNCHERSERVICES_ADDEDREFERENCECONTAINERS)
+		{
+			Archive << ReferenceContainerGlobalFileName;
+			Archive << ReferenceContainerCryptoKeysFileName;
+		}
+		if (Version >= LAUNCHERSERVICES_ADDEDORIGINALRELEASEVERSION)
+		{
+			Archive << OriginalReleaseVersionName;
+		}
+
+		if (Version >= LAUNCHERSERVICES_ADDBUILDTARGETNAME)
+		{
+			Archive << BuildTargetSpecified;
+			Archive << BuildTargetName;
+		}
+
 		else if(Archive.IsLoading())
 		{
 			BuildMode = BuildGame ? ELauncherProfileBuildModes::Build : ELauncherProfileBuildModes::DoNotBuild;
@@ -1071,6 +1129,10 @@ public:
 			SetDefaultDeployPlatform(DefaultDeployPlatform);
 		}
 
+		if (Archive.IsLoading())
+		{
+			RefreshValidBuildTargets();
+		}
 		Validate();
 
 		return true;
@@ -1151,7 +1213,6 @@ public:
 		Writer.WriteValue("EncryptIniFiles", EncryptIniFiles);
 		Writer.WriteValue("ForDistribution", ForDistribution);
 		Writer.WriteValue("DeployPlatform", DefaultDeployPlatform.ToString());
-		Writer.WriteValue("NumCookersToSpawn", NumCookersToSpawn);
 		Writer.WriteValue("SkipCookingEditorContent", bSkipCookingEditorContent);
 		Writer.WriteValue("DeployIncremental", DeployIncremental);
 		Writer.WriteValue("GeneratePatch", GeneratePatch);
@@ -1161,6 +1222,9 @@ public:
 		Writer.WriteValue("CreateReleaseVersion", CreateReleaseVersion);
 		Writer.WriteValue("CreateReleaseVersionName", CreateReleaseVersionName);
 		Writer.WriteValue("BasedOnReleaseVersionName", BasedOnReleaseVersionName);
+		Writer.WriteValue("ReferenceContainerGlobalFileName", ReferenceContainerGlobalFileName);
+		Writer.WriteValue("ReferenceContainerCryptoKeysFileName", ReferenceContainerCryptoKeysFileName);
+		Writer.WriteValue("OriginalReleaseVersionName", OriginalReleaseVersionName);
 		Writer.WriteValue("CreateDLC", CreateDLC);
 		Writer.WriteValue("DLCName", DLCName);
 		Writer.WriteValue("GenerateChunks", bGenerateChunks);
@@ -1173,6 +1237,8 @@ public:
 		Writer.WriteValue("IncludePrerequisites", IncludePrerequisites);
 		Writer.WriteValue("UseIoStore", bUseIoStore);
 		Writer.WriteValue("MakeBinaryConfig", bMakeBinaryConfig);
+		Writer.WriteValue("BuildTargetSpecified", BuildTargetSpecified);
+		Writer.WriteValue("BuildTargetName", BuildTargetName);
 
 		// serialize the default launch role
 		DefaultLaunchRole->Save(Writer, TEXT("DefaultRole"));
@@ -1379,6 +1445,11 @@ public:
 						Writer.WriteValue("basedonreleaseversion", GetBasedOnReleaseVersionName());
 						Writer.WriteValue("stagebasereleasepaks", ShouldStageBaseReleasePaks());
 					}
+
+					if (GetOriginalReleaseVersionName().IsEmpty() == false)
+					{
+						Writer.WriteValue("originalreleaseversion", GetOriginalReleaseVersionName());
+					}
 				}
 
 				if (IsGeneratingPatch())
@@ -1399,11 +1470,6 @@ public:
 				{
 					Writer.WriteValue("archive", true);
 					Writer.WriteValue("archivedirectory", GetArchiveDirectory());
-				}
-
-				if (GetNumCookersToSpawn() > 0)
-				{
-					Writer.WriteValue("numcookerstospawn", GetNumCookersToSpawn());
 				}
 
 				TMap<FString, FString> CookCommands = ParseCommands(GetCookOptions());
@@ -1446,6 +1512,7 @@ public:
 		Writer.WriteValue("ForDistribution", IsForDistribution());
 
 		// stage/package/deploy
+		bool bIsStaging = false;
 		if (GetDeploymentMode() != ELauncherProfileDeploymentModes::DoNotDeploy)
 		{
 			switch (GetDeploymentMode())
@@ -1464,6 +1531,7 @@ public:
 			case ELauncherProfileDeploymentModes::FileServer:
 				{
 					Writer.WriteValue("stage", true);
+					bIsStaging = true;
 					Writer.WriteValue("deploy", true);
 				}
 				break;
@@ -1480,7 +1548,19 @@ public:
 			if (GetPackagingMode() == ELauncherProfilePackagingModes::Locally)
 			{
 				Writer.WriteValue("stage", true);
+				bIsStaging = true;
 				Writer.WriteValue("package", true);
+			}
+		}
+
+		if (bIsStaging &&
+			GetReferenceContainerGlobalFileName().Len())
+		{
+			// (only iostore uses this) - pass reference block database
+			Writer.WriteValue("ReferenceContainerGlobalFileName", GetReferenceContainerGlobalFileName());
+			if (GetReferenceContainerCryptoKeysFileName().Len())
+			{
+				Writer.WriteValue("ReferenceContainerCryptoKeys", GetReferenceContainerCryptoKeysFileName());
 			}
 		}
 
@@ -1515,7 +1595,6 @@ public:
 		"cookontheflystreaming", "true/false"
 		"unversionedcookcontent", "true/false"
 		"skipcookingeditorcontent", "true/false"
-		"numcookerstospawn", "8"
 		"compressed", "true/false"
 		"iterativecooking", "true/false"
 		"skipcookonthefly", "true/false"
@@ -1775,7 +1854,6 @@ public:
 		}
 
 		DefaultDeployPlatform = *(Object.GetStringField("DeployPlatform"));
-		NumCookersToSpawn = (int32)Object.GetNumberField("NumCookersToSpawn");
 		bSkipCookingEditorContent = Object.GetBoolField("SkipCookingEditorContent");
 		DeployIncremental = Object.GetBoolField("DeployIncremental");
 		GeneratePatch = Object.GetBoolField("GeneratePatch");
@@ -1795,6 +1873,28 @@ public:
 		CreateReleaseVersion = Object.GetBoolField("CreateReleaseVersion");
 		CreateReleaseVersionName = Object.GetStringField("CreateReleaseVersionName");
 		BasedOnReleaseVersionName = Object.GetStringField("BasedOnReleaseVersionName");
+
+		if (Version >= LAUNCHERSERVICES_ADDEDREFERENCECONTAINERS)
+		{
+			ReferenceContainerCryptoKeysFileName = Object.GetStringField("ReferenceContainerCryptoKeysFileName");
+			ReferenceContainerGlobalFileName = Object.GetStringField("ReferenceContainerGlobalFileName");
+		}
+		else
+		{
+			ReferenceContainerCryptoKeysFileName.Empty();
+			ReferenceContainerGlobalFileName.Empty();
+		}
+
+		if (Version >= LAUNCHERSERVICES_ADDEDORIGINALRELEASEVERSION)
+		{
+			OriginalReleaseVersionName = Object.GetStringField("OriginalReleaseVersionName");
+		}
+		else
+		{
+			OriginalReleaseVersionName.Empty();
+		}
+
+
 		CreateDLC = Object.GetBoolField("CreateDLC");
 		DLCName = Object.GetStringField("DLCName");
 		bGenerateChunks = Object.GetBoolField("GenerateChunks");
@@ -1837,6 +1937,12 @@ public:
 			bMakeBinaryConfig = Object.GetBoolField("MakeBinaryConfig");
 		}
 
+		if (Version >= LAUNCHERSERVICES_ADDBUILDTARGETNAME)
+		{
+			BuildTargetSpecified = Object.GetBoolField("BuildTargetSpecified");
+			BuildTargetName = Object.GetStringField("BuildTargetName");
+		}
+
 		// load the default launch role
 		TSharedPtr<FJsonObject> Role = Object.GetObjectField("DefaultRole");
 		DefaultLaunchRole->Load(*(Role.Get()));
@@ -1863,6 +1969,7 @@ public:
 			SetDefaultDeployPlatform(DefaultDeployPlatform);
 		}
 
+		RefreshValidBuildTargets();
 		Validate();
 
 		return true;
@@ -1912,6 +2019,7 @@ public:
 		// default build settings
 		BuildMode = ELauncherProfileBuildModes::Auto;
 		BuildUAT = !FApp::GetEngineIsPromotedBuild() && !FApp::IsEngineInstalled();
+		BuildTargetSpecified = true;
 
 		// default cook settings
 		CookConfiguration = FApp::GetBuildConfiguration();
@@ -1930,7 +2038,6 @@ public:
 		bSkipCookingEditorContent = false;
         ForceClose = true;
         Timeout = 60;
-		NumCookersToSpawn = 0;
 
 /*		if (GetTargetPlatformManager()->GetRunningTargetPlatform() != NULL)
 		{
@@ -1986,6 +2093,7 @@ public:
 		bShouldUpdateFlash = false;
 		bMakeBinaryConfig = false;
 
+		RefreshValidBuildTargets();
 		Validate();
 	}
 
@@ -2029,6 +2137,24 @@ public:
 		}
 	}
 
+	virtual void SetBuildTargetSpecified(bool Specified) override
+	{
+		if (BuildTargetSpecified != Specified)
+		{
+			BuildTargetSpecified = Specified;
+			Validate();
+		}
+	}
+
+	virtual void FallbackBuildTargetUpdated() override
+	{
+		if (!HasBuildTargetSpecified())
+		{
+			Validate();
+		}
+	}
+
+
 	virtual void SetBuildTarget( const FString& TargetName ) override
 	{
 		if (BuildTargetName != TargetName)
@@ -2065,15 +2191,6 @@ public:
 		{
 			CookOptions = Options;
 
-			Validate();
-		}
-	}
-
-	virtual void SetNumCookersToSpawn(const int32 InNumCookersToSpawn) override
-	{
-		if (NumCookersToSpawn != InNumCookersToSpawn)
-		{
-			NumCookersToSpawn = InNumCookersToSpawn;
 			Validate();
 		}
 	}
@@ -2335,6 +2452,7 @@ public:
 		{
 			ProjectSpecified = Specified;
 
+			RefreshValidBuildTargets();
 			Validate();
 
 			ProjectChangedDelegate.Broadcast();
@@ -2345,6 +2463,7 @@ public:
 	{
 		if (!HasProjectSpecified())
 		{
+			RefreshValidBuildTargets();
 			Validate();
 
 			ProjectChangedDelegate.Broadcast();
@@ -2378,6 +2497,7 @@ public:
 			}
 			CookedMaps.Reset();
 
+			RefreshValidBuildTargets();
 			Validate();
 
 			ProjectChangedDelegate.Broadcast();
@@ -2449,6 +2569,11 @@ public:
 		return ProjectChangedDelegate;
 	}
 
+	virtual FOnProfileBuildTargetOptionsChanged& OnBuildTargetOptionsChanged() override
+	{
+		return BuildTargetOptionsChangedDelegate;
+	}
+
 	virtual void SetEditorExe( const FString& InEditorExe ) override
 	{
 		EditorExe = InEditorExe;
@@ -2506,6 +2631,17 @@ public:
 	{
 		return bMakeBinaryConfig;
 	}
+
+	virtual TArray<FString> GetExplicitBuildTargetNames() const override
+	{
+		return ExplictBuildTargetNames;
+	}
+
+	virtual bool RequiresExplicitBuildTargetName() const override
+	{
+		return ExplictBuildTargetNames.Num() > 0;
+	}
+
 
 	//~ End ILauncherProfile Interface
 
@@ -2665,6 +2801,7 @@ protected:
 			ValidationErrors.Add(ELauncherProfileValidationErrors::IoStoreRequiresPakFiles);
 		}
 
+		ValidateBuildTarget();
 		ValidatePlatformSDKs();
 		ValidateDeviceStatus();
 	}
@@ -2757,6 +2894,135 @@ protected:
 		}
 	}
 
+	void ValidateBuildTarget()
+	{
+		bool bBuildTargetIsRequired = false;
+		bool bBuildTargetCookVariantMismatch = false;
+
+		FString BuildTarget = GetBuildTarget();
+		TSet<EBuildTargetType> CookTargetTypes = GetCookTargetTypes();
+
+		if (HasProjectSpecified())
+		{
+			if (RequiresExplicitBuildTargetName())
+			{
+				if (CookTargetTypes.Num() > 1 || (!BuildTarget.IsEmpty() && !ExplictBuildTargetNames.Contains(BuildTarget) ) )
+				{
+					// can only build the same Variant (Game, Client, etc) as the selected build target
+					bBuildTargetCookVariantMismatch = true;
+				}
+				else if (BuildTarget.IsEmpty())
+				{
+					// multiple .target.cs files defined of the same Variant - need to specify one
+					bBuildTargetIsRequired = true;
+				}
+			}
+		}		
+		else
+		{
+			// this profile is using the fallback project. Need to check all build targets instead
+			bool bBuildTargetIsCookable = false;
+			bool bVariantRequiresBuildTarget = false;
+
+			const TArray<FTargetInfo>& Targets = FDesktopPlatformModule::Get()->GetTargetsForProject(GetProjectPath());
+			for (const FTargetInfo& Target : Targets)
+			{
+				if (CookTargetTypes.IsEmpty() || CookTargetTypes.Contains(Target.Type))
+				{
+					if (BuildTarget.IsEmpty())
+					{
+						if (LauncherProfileManager->GetAllExplicitBuildTargetNames().Contains(Target.Name))
+						{
+							// a currently selected Variant has multiple .target.cs files - need to specify one
+							bBuildTargetIsRequired = true;
+							break;
+						}
+					}
+					else
+					{
+						if (Target.Name == BuildTarget)
+						{
+							bBuildTargetIsCookable = true;
+							break;
+						}
+					}				
+				}
+			}
+
+			if (!BuildTarget.IsEmpty() && !bBuildTargetIsCookable)
+			{
+				// currently build target does not reference a Variant with multiple .target.cs files
+				bBuildTargetCookVariantMismatch = true;
+			}
+		}
+
+		if (bBuildTargetIsRequired)
+		{
+			if (BuildTargetSpecified)
+			{
+				ValidationErrors.Add(ELauncherProfileValidationErrors::BuildTargetIsRequired);
+			}
+			else
+			{
+				ValidationErrors.Add(ELauncherProfileValidationErrors::FallbackBuildTargetIsRequired);
+			}
+		}
+
+		if (bBuildTargetCookVariantMismatch)
+		{
+			ValidationErrors.Add(ELauncherProfileValidationErrors::BuildTargetCookVariantMismatch);
+		}
+
+	}
+
+
+	void RefreshValidBuildTargets()
+	{
+		TArray<FString> LatestExplicitBuildTargetNames;
+
+		// collect the build targets for the current project, filtered to what we are currently wanting to cook. Do not show fallback project's build targets
+		if (HasProjectSpecified())
+		{
+			TSet<EBuildTargetType> CookTargetTypes = GetCookTargetTypes();
+			LatestExplicitBuildTargetNames = FGameProjectHelper::GetExplicitBuildTargetsForProject( GetProjectPath(), &CookTargetTypes );
+		}
+
+		// notify listeners if the explicitly-required build targets have changed
+		if (ExplictBuildTargetNames != LatestExplicitBuildTargetNames)
+		{
+			ExplictBuildTargetNames = LatestExplicitBuildTargetNames;
+			BuildTargetOptionsChangedDelegate.Broadcast();
+		}
+	}
+
+
+	TSet<EBuildTargetType> GetCookTargetTypes() const
+	{
+		TSet<EBuildTargetType> CookTargetTypes;
+		for ( const FString& Variant : GetCookedPlatforms() )
+		{
+			if (Variant.EndsWith(TEXT("Client")))
+			{
+				CookTargetTypes.Add(EBuildTargetType::Client);
+			}
+			else if (Variant.EndsWith(TEXT("Server")))
+			{
+				CookTargetTypes.Add(EBuildTargetType::Server);
+			}
+			else if (Variant.EndsWith(TEXT("Editor")))
+			{
+				CookTargetTypes.Add(EBuildTargetType::Editor);
+			}
+			else
+			{
+				CookTargetTypes.Add(EBuildTargetType::Game);
+			}
+		}
+
+		return MoveTemp(CookTargetTypes);
+	}
+
+
 	void OnLauncherDeviceGroupDeviceAdded(const ILauncherDeviceGroupRef& DeviceGroup, const FString& DeviceId)
 	{
 		if( DeviceGroup == DeployedDeviceGroup )
@@ -2773,6 +3039,14 @@ protected:
 		}
 	}
 
+	void OnSelectedProjectChanged()
+	{
+		RefreshValidBuildTargets();
+
+		BuildTargetName.Empty();
+		BuildTargetSpecified = ProjectSpecified; // if this is for 'Any Project' then it should use the fallback build target
+	}
+
 private:
 
 	//  Holds a reference to the launcher profile manager.
@@ -2780,6 +3054,9 @@ private:
 
 	// Holds the desired build configuration (only used if creating new builds).
 	EBuildConfiguration BuildConfiguration;
+
+	// Holds a flag indicating whether the build target is specified by this profile.
+	bool BuildTargetSpecified;
 
 	// Holds the name of the target (matching a .cs file) to build. Needed when multiple targets of a type exist
 	FString BuildTargetName;
@@ -2815,9 +3092,6 @@ private:
 
 	// Holds a flag indicating whether packages should be saved without a version.
 	bool CookUnversioned;
-
-	// num cookers we want to spawn during cooking
-	int32 NumCookersToSpawn;
 
 	bool bSkipCookingEditorContent;
 
@@ -2857,6 +3131,15 @@ private:
 	// Version name of the HTTPChunkInstall data
 	FString HttpChunkDataReleaseName;
 
+	// if present, iostore container creation will try to use existing compressed blocks
+	// instead of compressing new ones, to avoid patches from compressor version changes,
+	// and to speed up iostore container creation time. See IoStoreUtilities.cpp ReferenceContainerGlobalFileName.
+	FString ReferenceContainerGlobalFileName;
+
+	// If ReferenceContainerGlobalFileName refers to encrypted containers, this is the filename of
+	// the json file containing the keys.
+	FString ReferenceContainerCryptoKeysFileName;
+
 	// create a release version of the content (this can be used to base dlc / patches from)
 	bool CreateReleaseVersion;
 
@@ -2865,6 +3148,9 @@ private:
 
 	// name of the release version to base this dlc / patch on
 	FString BasedOnReleaseVersionName;
+
+	// name of the original release version
+	FString OriginalReleaseVersionName;
 
 	// This build generate a patch based on some source content seealso PatchSourceContentPath
 	bool GeneratePatch;
@@ -2984,4 +3270,10 @@ private:
 
 	// Holds a delegate to be invoked when the project has changed
 	FOnProfileProjectChanged ProjectChangedDelegate;
+
+	// Holds a delegate to be invoked when the project build target options have changed
+	FOnProfileBuildTargetOptionsChanged BuildTargetOptionsChangedDelegate;
+
+	// Cached build target options (not serialized)
+	TArray<FString> ExplictBuildTargetNames;
 };

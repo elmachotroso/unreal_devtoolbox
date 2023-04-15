@@ -17,12 +17,15 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "EditorStyleSet.h"
+#include "SSimpleButton.h"
+#include "SSimpleComboButton.h"
+
+#include "Styling/AppStyle.h"
+#include "ReferenceViewerStyle.h"
 #include "Engine/Selection.h"
-#include "ReferenceViewer/EdGraph_ReferenceViewer.h"
 #include "ReferenceViewer/EdGraphNode_Reference.h"
 #include "ReferenceViewer/ReferenceViewerSchema.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
 #include "Editor.h"
@@ -34,38 +37,18 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "AssetManagerEditorModule.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #include "ObjectTools.h"
 
 #define LOCTEXT_NAMESPACE "ReferenceViewer"
 
-bool IsPackageNamePassingFilter(FName InPackageName, const TArray<FString>& InSearchWords)
+bool IsAssetIdentifierPassingSearchTextFilter(const FAssetIdentifier& InNode, const TArray<FString>& InSearchWords)
 {
-	// package name must match all words
+	FString NodeString = InNode.ToString();
 	for (const FString& Word : InSearchWords)
 	{
-		if (!InPackageName.ToString().Contains(Word))
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-bool IsReferenceNodePassingFilter(const UEdGraphNode_Reference& InNode, const TArray<FString>& InSearchWords)
-{
-	if (InSearchWords.Num() == 0)
-	{
-		return true;
-	}
-
-	TArray<FName> NodePackageNames;
-	InNode.GetAllPackageNames(NodePackageNames);
-
-	for (const FName& PackageName : NodePackageNames)
-	{
-		if (!IsPackageNamePassingFilter(PackageName, InSearchWords))
+		if (!NodeString.Contains(Word))
 		{
 			return false;
 		}
@@ -87,6 +70,10 @@ SReferenceViewer::~SReferenceViewer()
 
 void SReferenceViewer::Construct(const FArguments& InArgs)
 {
+	bRebuildingFilters = false;
+	bNeedsGraphRebuild = false;
+	Settings = GetMutableDefault<UReferenceViewerSettings>();
+
 	// Create an action list and register commands
 	RegisterActions();
 
@@ -99,6 +86,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	GraphObj->Schema = UReferenceViewerSchema::StaticClass();
 	GraphObj->AddToRoot();
 	GraphObj->SetReferenceViewer(StaticCastSharedRef<SReferenceViewer>(AsShared()));
+	GraphObj->OnAssetsChanged().AddSP(this, &SReferenceViewer::OnUpdateFilterBar);
 
 	SGraphEditor::FGraphEditorEvents GraphEvents;
 	GraphEvents.OnNodeDoubleClicked = FSingleNodeEvent::CreateSP(this, &SReferenceViewer::OnNodeDoubleClicked);
@@ -116,6 +104,8 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	FEditorWidgetsModule& EditorWidgetsModule = FModuleManager::LoadModuleChecked<FEditorWidgetsModule>("EditorWidgets");
 	TSharedRef<SWidget> AssetDiscoveryIndicator = EditorWidgetsModule.CreateAssetDiscoveryIndicator(EAssetDiscoveryIndicatorScaleMode::Scale_None, FMargin(16, 8), false);
 
+	const FAssetManagerEditorCommands& UICommands	= FAssetManagerEditorCommands::Get();
+
 	static const FName DefaultForegroundName("DefaultForeground");
 
 	// Visual options visibility
@@ -124,90 +114,69 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	bShowCollectionFilter = true;
 	bShowShowReferencesOptions = true;
 	bShowShowSearchableNames = true;
-	bShowShowNativePackages = true;
+	bShowShowCodePackages = true;
 	bShowShowFilteredPackagesOnly = true;
 	bShowCompactMode = true;
 	bDirtyResults = false;
 
+	SAssignNew(FilterWidget, SReferenceViewerFilterBar)
+		.Visibility_Lambda([this]() { return !Settings->GetFiltersEnabled() ? EVisibility::Collapsed : EVisibility::Visible; })
+		.OnConvertItemToAssetData_Lambda([this] (FReferenceNodeInfo& InNodeInfo, FAssetData& OutAssetData) -> bool { 
+			OutAssetData = InNodeInfo.AssetData; 
+			return true; 
+		})
+		.UseDefaultAssetFilters(true)
+		.OnFilterChanged_Lambda([this] { 
+			if (!bRebuildingFilters && GraphObj)
+			{
+				GraphObj->SetCurrentFilterCollection(FilterWidget->GetAllActiveFilters());
+				GraphObj->RefilterGraph();
+				FilterWidget->SaveSettings();
+			}
+		})
+	;
+
+	TSharedPtr<SWidget> FilterCombo = FilterWidget->MakeAddFilterButton(FilterWidget.ToSharedRef());
+	FilterCombo->SetVisibility(TAttribute<EVisibility>::CreateLambda([this]() { return !Settings->GetFiltersEnabled() ? EVisibility::Collapsed : EVisibility::Visible; }));
+
 	ChildSlot
 	[
+
 		SNew(SVerticalBox)
 
 		// Path and history
 		+SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding( 0, 0, 0, 4 )
 		[
-			SNew(SHorizontalBox)
-
-			// History Back Button
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(1,0)
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
 			[
-				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
-				.ToolTipText( this, &SReferenceViewer::GetHistoryBackTooltip )
-				.ContentPadding( 0 )
-				.OnClicked(this, &SReferenceViewer::BackClicked)
-				.IsEnabled(this, &SReferenceViewer::IsBackEnabled)
+				SNew(SHorizontalBox)
+
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(4, 0)
 				[
-					SNew(SImage) .Image(FEditorStyle::GetBrush("Icons.CircleArrowLeft"))
+					MakeToolBar()
 				]
-			]
 
-			// History Forward Button
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(1,0,3,0)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
-				.ToolTipText( this, &SReferenceViewer::GetHistoryForwardTooltip )
-				.ContentPadding( 0 )
-				.OnClicked(this, &SReferenceViewer::ForwardClicked)
-				.IsEnabled(this, &SReferenceViewer::IsForwardEnabled)
+				// Path
+				+SHorizontalBox::Slot()
+				.Padding(0, 0)
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
 				[
-					SNew(SImage) .Image(FEditorStyle::GetBrush("Icons.CircleArrowRight"))
-				]
-			]
-
-			// Refresh Button
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(1,0,3,0)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
-				.ToolTipText(LOCTEXT("RefreshTooltip", "Refresh current view"))
-				.ContentPadding( 0 )
-				.OnClicked(this, &SReferenceViewer::RefreshClicked)
-				[
-					SNew(SImage) .Image(FEditorStyle::GetBrush("Icons.Refresh"))
-				]
-			]
-
-			// Path
-			+SHorizontalBox::Slot()
-			.VAlign(VAlign_Fill)
-			.FillWidth(1.f)
-			[
-				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
-				[
-					SNew(SEditableTextBox)
-					.Text(this, &SReferenceViewer::GetAddressBarText)
-					.OnTextCommitted(this, &SReferenceViewer::OnAddressBarTextCommitted)
-					.OnTextChanged(this, &SReferenceViewer::OnAddressBarTextChanged)
-					.SelectAllTextWhenFocused(true)
-					.SelectAllTextOnCommit(true)
-					.Style(FEditorStyle::Get(), "ReferenceViewer.PathText")
+					SNew(SBorder)
+					.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
+					[
+						SNew(SEditableTextBox)
+						.Text(this, &SReferenceViewer::GetAddressBarText)
+						.OnTextCommitted(this, &SReferenceViewer::OnAddressBarTextCommitted)
+						.OnTextChanged(this, &SReferenceViewer::OnAddressBarTextChanged)
+						.SelectAllTextWhenFocused(true)
+						.SelectAllTextOnCommit(true)
+						.Style(FAppStyle::Get(), "ReferenceViewer.PathText")
+					]
 				]
 			]
 		]
@@ -215,6 +184,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 		// Graph
 		+SVerticalBox::Slot()
 		.FillHeight(1.f)
+		.HAlign(HAlign_Fill)
 		[
 			SNew(SOverlay)
 
@@ -224,12 +194,27 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 			]
 
 			+SOverlay::Slot()
-			.HAlign(HAlign_Left)
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			[
+				SNew(SImage)
+				.Image(FAppStyle::GetBrush("Brushes.Recessed"))
+				.ColorAndOpacity_Lambda( [this] () { return bNeedsGraphRebuild ? FLinearColor(1.0, 1.0, 1.0, 0.25) : FLinearColor::Transparent; } )
+				.Visibility(EVisibility::HitTestInvisible)
+			]
+
+			+SOverlay::Slot()
 			.VAlign(VAlign_Top)
+			.HAlign(HAlign_Fill)
 			.Padding(8)
 			[
+				SNew(SHorizontalBox)
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+
 				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+				.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 				[
 					SNew(SVerticalBox)
 					+SVerticalBox::Slot()
@@ -245,18 +230,23 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 						.OnTextCommitted(this, &SReferenceViewer::HandleOnSearchTextCommitted)
 					]
 
-					+ SVerticalBox::Slot()
+					+SVerticalBox::Slot()
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowFilteredPackagesOnly ? EVisibility::Visible : EVisibility::Collapsed); })
+						.Visibility_Lambda([this]() { return (FixAndHideSearchDepthLimit > 0 ? EVisibility::Collapsed : EVisibility::Visible); })
 
-						+ SHorizontalBox::Slot()
+						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
 						.Padding(2.f)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideFilteredPackagesOnly", "Show Filtered Packages Only"))
+							.Text(LOCTEXT("SearchDepthReferencersLabelText", "Search Referencers Depth"))
+							.ToolTipText(FText::Format( LOCTEXT("ReferenceDepthToolTip", "Adjust Referencer Search Depth (+/-):  {0} / {1}\nSet Referencer Search Depth:                        {2}"),
+															UICommands.IncreaseReferencerSearchDepth->GetInputText().ToUpper(),
+															UICommands.DecreaseReferencerSearchDepth->GetInputText().ToUpper(),
+															UICommands.SetReferencerSearchDepth->GetInputText().ToUpper()))
+
 						]
 
 						+SHorizontalBox::Slot()
@@ -264,9 +254,41 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 						.VAlign(VAlign_Center)
 						.Padding(2.f)
 						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowFilteredPackagesOnlyChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowFilteredPackagesOnlyChecked)
+							SNew(SBox)
+							.WidthOverride(100)
+							[
+								SAssignNew(ReferencerCountBox, SSpinBox<int32>)
+								.Value(this, &SReferenceViewer::GetSearchReferencerDepthCount)
+								.OnValueChanged_Lambda([this] (int32 NewValue)
+									{
+										if (NewValue != Settings->GetSearchReferencerDepthLimit())
+										{
+											Settings->SetSearchReferencerDepthLimit(NewValue, false);
+											bNeedsGraphRebuild = true;
+
+											SliderDelayLastMovedTime = FSlateApplication::Get().GetCurrentTime();
+										}
+									}
+								)
+								.OnValueCommitted_Lambda([this] (int32 NewValue, ETextCommit::Type CommitType) 
+									{ 
+										FSlateApplication::Get().SetKeyboardFocus(GraphEditorPtr, EFocusCause::SetDirectly); 
+
+										if (NewValue != Settings->GetSearchReferencerDepthLimit() || bNeedsGraphRebuild)
+										{
+											Settings->SetSearchReferencerDepthLimit(NewValue, false); 
+											bNeedsGraphRebuild = false;
+											RebuildGraph();
+										}
+
+										// Always save the config since we explicitly did not save during slider movement to preserve interactivity
+										Settings->SaveConfig();
+									} 
+								)
+								.MinValue(0)
+								.MaxValue(50)
+								.MaxSliderValue(10)
+							]
 						]
 					]
 
@@ -281,19 +303,13 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 						.Padding(2.f)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("SearchDepthLabelText", "Search Depth Limit"))
+							.Text(LOCTEXT("SearchDepthDependenciesLabelText", "Search Dependencies Depth"))
+							.ToolTipText(FText::Format( LOCTEXT("DependencyDepthToolTip", "Adjust Dependency Search Depth (+/-):  {0} / {1}\nSet Dependency Search Depth:                        {2}"),
+															UICommands.IncreaseDependencySearchDepth->GetInputText().ToUpper(),
+															UICommands.DecreaseDependencySearchDepth->GetInputText().ToUpper(),
+															UICommands.SetDependencySearchDepth->GetInputText().ToUpper()))
 						]
 
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged( this, &SReferenceViewer::OnSearchDepthEnabledChanged )
-							.IsChecked( this, &SReferenceViewer::IsSearchDepthEnabledChecked )
-						]
-					
 						+SHorizontalBox::Slot()
 						.AutoWidth()
 						.VAlign(VAlign_Center)
@@ -302,12 +318,37 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 							SNew(SBox)
 							.WidthOverride(100)
 							[
-								SNew(SSpinBox<int32>)
-								.Value(this, &SReferenceViewer::GetSearchDepthCount)
-								.OnValueChanged(this, &SReferenceViewer::OnSearchDepthCommitted)
-								.MinValue(1)
+								SAssignNew(DependencyCountBox, SSpinBox<int32>)
+								.Value(this, &SReferenceViewer::GetSearchDependencyDepthCount)
+								.OnValueChanged_Lambda([this] (int32 NewValue)
+									{	
+										if (NewValue != Settings->GetSearchDependencyDepthLimit())
+										{
+											Settings->SetSearchDependencyDepthLimit(NewValue, false);
+											bNeedsGraphRebuild = true;
+
+											SliderDelayLastMovedTime = FSlateApplication::Get().GetCurrentTime();
+										}
+									}
+								)
+								.OnValueCommitted_Lambda([this] (int32 NewValue, ETextCommit::Type CommitType) 
+									{ 
+										FSlateApplication::Get().SetKeyboardFocus(GraphEditorPtr, EFocusCause::SetDirectly); 
+
+										if (NewValue != Settings->GetSearchDependencyDepthLimit() || bNeedsGraphRebuild)
+										{
+											Settings->SetSearchDependencyDepthLimit(NewValue, false);
+											bNeedsGraphRebuild = false;
+											RebuildGraph();
+										}
+
+										// Always save the config since we explicitly did not save during slider movement to preserve interactivity
+										Settings->SaveConfig();
+									}
+								)
+								.MinValue(0)
 								.MaxValue(50)
-								.MaxSliderValue(12)
+								.MaxSliderValue(10)
 							]
 						]
 					]
@@ -320,10 +361,27 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
+						.AutoWidth()
 						.Padding(2.f)
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("SearchBreadthLabelText", "Search Breadth Limit"))
+							.ToolTipText(FText::Format( LOCTEXT("BreadthLimitToolTip", "Adjust Breadth Limit (+/-):  {0} / {1}\nSet Breadth Limit:                        {2}"),
+															UICommands.IncreaseBreadth->GetInputText().ToUpper(),
+															UICommands.DecreaseBreadth->GetInputText().ToUpper(),
+															UICommands.SetBreadth->GetInputText().ToUpper()))
+						]
+
+						+SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Left)
+						.FillWidth(1.0)
+						.Padding(2.f, 0.f, 8.f, 0.f)
+						[
+							SNew(SImage)
+							.ToolTipText(LOCTEXT("BreadthLimitReachedToolTip", "The Breadth Limit was reached."))
+							.Image(FAppStyle::GetBrush("Icons.WarningWithColor"))
+							.Visibility_Lambda([this] { return GraphObj && GraphObj->BreadthLimitExceeded() ? EVisibility::Visible : EVisibility::Hidden; })
 						]
 
 						+SHorizontalBox::Slot()
@@ -344,9 +402,10 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 							SNew(SBox)
 							.WidthOverride(100)
 							[
-								SNew(SSpinBox<int32>)
+								SAssignNew(BreadthLimitBox, SSpinBox<int32>)
 								.Value(this, &SReferenceViewer::GetSearchBreadthCount)
 								.OnValueChanged(this, &SReferenceViewer::OnSearchBreadthCommitted)
+								.OnValueCommitted_Lambda([this] (int32 NewValue, ETextCommit::Type CommitType) { FSlateApplication::Get().SetKeyboardFocus(GraphEditorPtr, EFocusCause::SetDirectly); } )
 								.MinValue(1)
 								.MaxValue(1000)
 								.MaxSliderValue(50)
@@ -362,6 +421,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
+						.FillWidth(1.0)
 						.Padding(2.f)
 						[
 							SNew(STextBlock)
@@ -400,181 +460,21 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 						]
 					]
 
-					+SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
+				]
+				] // SHorizontalBox::Slot()
 
-						+SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideSoftReferences", "Show Soft References"))
-						]
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Top)
+				[
+					FilterCombo.ToSharedRef()
+				]
 
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged( this, &SReferenceViewer::OnShowSoftReferencesChanged )
-							.IsChecked( this, &SReferenceViewer::IsShowSoftReferencesChecked )
-						]
-					]
-
-				
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideHardReferences", "Show Hard References"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowHardReferencesChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowHardReferencesChecked)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideEditorOnlyReferences", "Show EditorOnly References"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowEditorOnlyReferencesChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowEditorOnlyReferencesChecked)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility(this, &SReferenceViewer::GetManagementReferencesVisibility)
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideManagementReferences", "Show Management References"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowManagementReferencesChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowManagementReferencesChecked)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowSearchableNames ? EVisibility::Visible : EVisibility::Collapsed); })
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideSearchableNames", "Show Searchable Names"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowSearchableNamesChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowSearchableNamesChecked)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowShowNativePackages ? EVisibility::Visible : EVisibility::Collapsed); })
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ShowHideNativePackages", "Show Native Packages"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnShowNativePackagesChanged)
-							.IsChecked(this, &SReferenceViewer::IsShowNativePackagesChecked)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						.Visibility_Lambda([this]() { return (bShowCompactMode ? EVisibility::Visible : EVisibility::Collapsed); })
-
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("CompactMode", "Compact Mode"))
-						]
-
-						+SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.f)
-						[
-							SNew(SCheckBox)
-							.OnCheckStateChanged(this, &SReferenceViewer::OnCompactModeChanged)
-							.IsChecked(this, &SReferenceViewer::IsCompactModeChecked)
-						]
-					]
+				+SHorizontalBox::Slot()
+				.FillWidth(1.0)
+				.VAlign(VAlign_Top)
+				[
+					FilterWidget.ToSharedRef()
 				]
 			]
 
@@ -598,46 +498,70 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	];
 
 	UpdateCollectionsComboList();
+
+	SetCanTick(true);
+}
+
+void SReferenceViewer::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
+{
+	if (bNeedsGraphRebuild && (InCurrentTime - SliderDelayLastMovedTime > GraphRebuildSliderDelay))
+	{
+		bNeedsGraphRebuild = false;
+		RebuildGraph();
+	}
+}
+
+FReply SReferenceViewer::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	return ReferenceViewerActions->ProcessCommandBindings(InKeyEvent) ? FReply::Handled() : FReply::Unhandled();
 }
 
 void SReferenceViewer::SetGraphRootIdentifiers(const TArray<FAssetIdentifier>& NewGraphRootIdentifiers, const FReferenceViewerParams& ReferenceViewerParams)
 {
 	GraphObj->SetGraphRoot(NewGraphRootIdentifiers);
 	// Set properties
-	GraphObj->SetShowReferencers(ReferenceViewerParams.bShowReferencers);
-	GraphObj->SetShowDependencies(ReferenceViewerParams.bShowDependencies);
+	Settings->SetShowReferencers(ReferenceViewerParams.bShowReferencers);
+	Settings->SetShowDependencies(ReferenceViewerParams.bShowDependencies);
 	// Set user-interactive properties
 	FixAndHideSearchDepthLimit = ReferenceViewerParams.FixAndHideSearchDepthLimit;
 	if (FixAndHideSearchDepthLimit > 0)
 	{
-		GraphObj->SetSearchDepthLimit(FixAndHideSearchDepthLimit);
-		GraphObj->SetSearchDepthLimitEnabled(true);
+		Settings->SetSearchDependencyDepthLimit(FixAndHideSearchDepthLimit);
+		Settings->SetSearchReferencerDepthLimit(FixAndHideSearchDepthLimit);
+		Settings->SetSearchDepthLimitEnabled(true);
 	}
 	FixAndHideSearchBreadthLimit = ReferenceViewerParams.FixAndHideSearchBreadthLimit;
 	if (FixAndHideSearchBreadthLimit > 0)
 	{
-		GraphObj->SetSearchBreadthLimit(FixAndHideSearchBreadthLimit);
-		GraphObj->SetSearchBreadthLimitEnabled(true);
+		Settings->SetSearchBreadthLimit(FixAndHideSearchBreadthLimit);
+		Settings->SetSearchBreadthLimitEnabled(true);
 	}
 	bShowCollectionFilter = ReferenceViewerParams.bShowCollectionFilter;
 	bShowShowReferencesOptions = ReferenceViewerParams.bShowShowReferencesOptions;
 	bShowShowSearchableNames = ReferenceViewerParams.bShowShowSearchableNames;
-	bShowShowNativePackages = ReferenceViewerParams.bShowShowNativePackages;
+	bShowShowCodePackages = ReferenceViewerParams.bShowShowCodePackages;
 
 	bShowShowFilteredPackagesOnly = ReferenceViewerParams.bShowShowFilteredPackagesOnly;
 	if (ReferenceViewerParams.bShowFilteredPackagesOnly.IsSet())
 	{
-		GraphObj->SetShowFilteredPackagesOnlyEnabled(ReferenceViewerParams.bShowFilteredPackagesOnly.GetValue());
+		Settings->SetShowFilteredPackagesOnlyEnabled(ReferenceViewerParams.bShowFilteredPackagesOnly.GetValue());
 	}
-	UpdateIsPassingFilterPackageCallback();
+	
 
 	bShowCompactMode = ReferenceViewerParams.bShowCompactMode;
 	if (ReferenceViewerParams.bCompactMode.IsSet())
 	{
-		GraphObj->SetCompactModeEnabled(ReferenceViewerParams.bCompactMode.GetValue());
+		Settings->SetCompactModeEnabled(ReferenceViewerParams.bCompactMode.GetValue());
+	}
+
+	if (Settings->IsShowManagementReferences())
+	{
+		UAssetManager::Get().UpdateManagementDatabase();
 	}
 
 	RebuildGraph();
+
+	UpdateIsPassingSearchFilterCallback();
 
 	// Zoom once this frame to make sure widgets are visible, then zoom again so size is correct
 	TriggerZoomToFit(0, 0);
@@ -663,9 +587,46 @@ void SReferenceViewer::SetCurrentRegistrySource(const FAssetManagerEditorRegistr
 
 void SReferenceViewer::OnNodeDoubleClicked(UEdGraphNode* Node)
 {
-	TSet<UObject*> Nodes;
-	Nodes.Add(Node);
-	ReCenterGraphOnNodes( Nodes );
+
+	bool bFoundOverflow = false;
+	if (UEdGraphNode_Reference* ReferenceNode = Cast<UEdGraphNode_Reference>(Node))
+	{
+		// Overflow nodes have no identifiers
+		if (ReferenceNode->IsOverflow())
+		{
+			if (ReferenceNode->GetReferencerPin()->LinkedTo.Num() > 0)
+			{
+				if (UEdGraphNode* ParentNode = ReferenceNode->GetReferencerPin()->LinkedTo[0]->GetOwningNode())
+				{
+					if (UEdGraphNode_Reference* ParentReferenceNode = Cast<UEdGraphNode_Reference>(ParentNode))
+					{
+						FAssetIdentifier ParentID = ParentReferenceNode->GetIdentifier();
+						GraphObj->ExpandNode(false, ParentID);
+						bFoundOverflow = true;
+					}
+				}
+			}
+			else if (ReferenceNode->GetDependencyPin()->LinkedTo.Num() > 0)
+			{
+				if (UEdGraphNode* ParentNode = ReferenceNode->GetDependencyPin()->LinkedTo[0]->GetOwningNode())
+				{
+					if (UEdGraphNode_Reference* ParentReferenceNode = Cast<UEdGraphNode_Reference>(ParentNode))
+					{
+						FAssetIdentifier ParentID = ParentReferenceNode->GetIdentifier();
+						GraphObj->ExpandNode(true, ParentID);
+						bFoundOverflow = true;
+					}
+				}
+			}
+		}
+	}
+
+	if (!bFoundOverflow)
+	{
+		TSet<UObject*> Nodes;
+		Nodes.Add(Node);
+		ReCenterGraphOnNodes( Nodes );
+	}
 }
 
 void SReferenceViewer::RebuildGraph()
@@ -714,27 +675,21 @@ bool SReferenceViewer::IsForwardEnabled() const
 	return HistoryManager.CanGoForward();
 }
 
-FReply SReferenceViewer::BackClicked()
+void SReferenceViewer::BackClicked()
 {
 	HistoryManager.GoBack();
-
-	return FReply::Handled();
 }
 
-FReply SReferenceViewer::ForwardClicked()
+void SReferenceViewer::ForwardClicked()
 {
 	HistoryManager.GoForward();
-
-	return FReply::Handled();
 }
 
-FReply SReferenceViewer::RefreshClicked()
+void SReferenceViewer::RefreshClicked()
 {
 	RebuildGraph();
 	TriggerZoomToFit(0, 0);
 	RegisterActiveTimer(0.1f, FWidgetActiveTimerDelegate::CreateSP(this, &SReferenceViewer::TriggerZoomToFit));
-
-	return FReply::Handled();
 }
 
 void SReferenceViewer::GraphNavigateHistoryBack()
@@ -874,67 +829,105 @@ void SReferenceViewer::OnUpdateHistoryData(FReferenceViewerHistoryData& HistoryD
 	}
 }
 
+void SReferenceViewer::OnUpdateFilterBar()
+{
+	bRebuildingFilters = true; 
+
+	if (GraphObj)
+	{
+		const TSet<FTopLevelAssetPath> AllClasses = GraphObj->GetAssetTypes();
+		if (Settings->AutoUpdateFilters())
+		{
+			FilterWidget->RemoveAllFilters();
+			for (const FTopLevelAssetPath& AssetClassPath : AllClasses)
+			{
+				if (FilterWidget->DoesAssetTypeFilterExist(AssetClassPath))
+				{
+					FilterWidget->SetAssetTypeFilterCheckState(AssetClassPath, ECheckBoxState::Checked);
+				}
+				// If the current AssetClassPath does not have a filter in the filter bar, we walk through its ancestor classes to see if any of those have a filter
+				else
+				{
+					TArray<FTopLevelAssetPath> AncestorClassNames;
+					
+					FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked< FAssetRegistryModule >( TEXT("AssetRegistry") );
+					AssetRegistryModule.Get().GetAncestorClassNames(AssetClassPath, AncestorClassNames);
+					
+					for (const FTopLevelAssetPath& AssetClassAncestor : AncestorClassNames)
+					{
+						if (FilterWidget->DoesAssetTypeFilterExist(AssetClassAncestor))
+						{
+							FilterWidget->SetAssetTypeFilterCheckState(AssetClassAncestor, ECheckBoxState::Checked);
+							break;
+						}
+					}
+				}
+			}
+
+			GraphObj->SetCurrentFilterCollection(FilterWidget->GetAllActiveFilters());
+		}
+
+		else
+		{
+			FilterWidget->LoadSettings();
+			GraphObj->SetCurrentFilterCollection(FilterWidget->GetAllActiveFilters());
+		}
+	}
+
+	bRebuildingFilters = false;
+}
+
 void SReferenceViewer::OnSearchDepthEnabledChanged( ECheckBoxState NewState )
 {
-	if ( GraphObj )
-	{
-		GraphObj->SetSearchDepthLimitEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetSearchDepthLimitEnabled(NewState == ECheckBoxState::Checked);
+	RebuildGraph();
 }
 
 ECheckBoxState SReferenceViewer::IsSearchDepthEnabledChecked() const
 {
-	if ( GraphObj )
+	return Settings->IsSearchDepthLimited() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+int32 SReferenceViewer::GetSearchDependencyDepthCount() const
+{
+	return Settings->GetSearchDependencyDepthLimit();
+}
+
+int32 SReferenceViewer::GetSearchReferencerDepthCount() const
+{
+	return Settings->GetSearchReferencerDepthLimit();
+}
+
+void SReferenceViewer::OnSearchDependencyDepthCommitted(int32 NewValue)
+{
+	if (NewValue != Settings->GetSearchDependencyDepthLimit())
 	{
-		return GraphObj->IsSearchDepthLimited() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
+		Settings->SetSearchDependencyDepthLimit(NewValue);
+		RebuildGraph();
 	}
 }
 
-int32 SReferenceViewer::GetSearchDepthCount() const
+void SReferenceViewer::OnSearchReferencerDepthCommitted(int32 NewValue)
 {
-	if ( GraphObj )
+	if (NewValue != Settings->GetSearchReferencerDepthLimit())
 	{
-		return GraphObj->GetSearchDepthLimit();
-	}
-	else
-	{
-		return 0;
-	}
-}
-
-void SReferenceViewer::OnSearchDepthCommitted(int32 NewValue)
-{
-	if ( GraphObj )
-	{
-		GraphObj->SetSearchDepthLimit(NewValue);
+		Settings->SetSearchReferencerDepthLimit(NewValue);
 		RebuildGraph();
 	}
 }
 
 void SReferenceViewer::OnSearchBreadthEnabledChanged( ECheckBoxState NewState )
 {
-	if ( GraphObj )
+	Settings->SetSearchBreadthLimitEnabled(NewState == ECheckBoxState::Checked);
+	if (GraphObj)
 	{
-		GraphObj->SetSearchBreadthLimitEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
+		GraphObj->RefilterGraph();
 	}
 }
 
 ECheckBoxState SReferenceViewer::IsSearchBreadthEnabledChecked() const
 {
-	if ( GraphObj )
-	{
-		return GraphObj->IsSearchBreadthLimited() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsSearchBreadthLimited() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 TSharedRef<SWidget> SReferenceViewer::GenerateCollectionFilterItem(TSharedPtr<FName> InItem)
@@ -952,28 +945,18 @@ TSharedRef<SWidget> SReferenceViewer::GenerateCollectionFilterItem(TSharedPtr<FN
 
 void SReferenceViewer::OnEnableCollectionFilterChanged(ECheckBoxState NewState)
 {
-	if (GraphObj)
+	const bool bNewValue = NewState == ECheckBoxState::Checked;
+	const bool bCurrentValue = Settings->GetEnableCollectionFilter();
+	if (bCurrentValue != bNewValue)
 	{
-		const bool bNewValue = NewState == ECheckBoxState::Checked;
-		const bool bCurrentValue = GraphObj->GetEnableCollectionFilter();
-		if (bCurrentValue != bNewValue)
-		{
-			GraphObj->SetEnableCollectionFilter(NewState == ECheckBoxState::Checked);
-			RebuildGraph();
-		}
+		Settings->SetEnableCollectionFilter(NewState == ECheckBoxState::Checked);
+		RebuildGraph();
 	}
 }
 
 ECheckBoxState SReferenceViewer::IsEnableCollectionFilterChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->GetEnableCollectionFilter() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->GetEnableCollectionFilter() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 void SReferenceViewer::UpdateCollectionsComboList()
@@ -1038,7 +1021,7 @@ void SReferenceViewer::HandleCollectionFilterChanged(TSharedPtr<FName> Item, ESe
 			if (CurrentFilter == NAME_None)
 			{
 				// Automatically check the box to enable the filter if the previous filter was None
-				GraphObj->SetEnableCollectionFilter(true);
+				Settings->SetEnableCollectionFilter(true);
 			}
 
 			GraphObj->SetCurrentCollectionFilter(NewFilter);
@@ -1052,235 +1035,155 @@ FText SReferenceViewer::GetCollectionFilterText() const
 	return FText::FromName(GraphObj->GetCurrentCollectionFilter());
 }
 
-void SReferenceViewer::OnShowSoftReferencesChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowSoftReferencesChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetShowSoftReferencesEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetShowSoftReferencesEnabled( !Settings->IsShowSoftReferences() );
+	RebuildGraph();
 }
 
-ECheckBoxState SReferenceViewer::IsShowSoftReferencesChecked() const
+bool SReferenceViewer::IsShowSoftReferencesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowSoftReferences()? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowSoftReferences();
 }
 
-void SReferenceViewer::OnShowHardReferencesChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowHardReferencesChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetShowHardReferencesEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetShowHardReferencesEnabled(!Settings->IsShowHardReferences());
+	RebuildGraph();
 }
 
-
-ECheckBoxState SReferenceViewer::IsShowHardReferencesChecked() const
+bool SReferenceViewer::IsShowHardReferencesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowHardReferences() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowHardReferences();
 }
 
-void SReferenceViewer::OnShowFilteredPackagesOnlyChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowFilteredPackagesOnlyChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetShowFilteredPackagesOnlyEnabled(NewState == ECheckBoxState::Checked);
-	}
-	UpdateIsPassingFilterPackageCallback();
+	Settings->SetShowFilteredPackagesOnlyEnabled(!Settings->IsShowFilteredPackagesOnly());
+	UpdateIsPassingSearchFilterCallback();
 }
 
 
-ECheckBoxState SReferenceViewer::IsShowFilteredPackagesOnlyChecked() const
+bool SReferenceViewer::IsShowFilteredPackagesOnlyChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowFilteredPackagesOnly() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowFilteredPackagesOnly();
 }
 
-
-void SReferenceViewer::UpdateIsPassingFilterPackageCallback()
+void SReferenceViewer::UpdateIsPassingSearchFilterCallback()
 {
 	if (GraphObj)
 	{
-		TOptional<UEdGraph_ReferenceViewer::FIsPackageNamePassingFilterCallback> IsAssetPassingFilterCallback;
+		TOptional<UEdGraph_ReferenceViewer::FIsAssetIdentifierPassingSearchFilterCallback> IsAssetIdentifierPassingSearchFilterCallback;
 		FString SearchString = SearchBox->GetText().ToString();
 		TArray<FString> SearchWords;
 		SearchString.ParseIntoArrayWS(SearchWords);
 		{
-			if (GraphObj->IsShowFilteredPackagesOnly())
+			if (Settings->IsShowFilteredPackagesOnly())
 			{
 				if (SearchWords.Num() > 0)
 				{
-					IsAssetPassingFilterCallback = [=](FName InName) { return IsPackageNamePassingFilter(InName, SearchWords); };
+					IsAssetIdentifierPassingSearchFilterCallback = [=](const FAssetIdentifier& InAssetIdentifier) { return IsAssetIdentifierPassingSearchTextFilter(InAssetIdentifier, SearchWords); };
 				}
 			}
 
-			GraphObj->SetIsPackageNamePassingFilterCallback(IsAssetPassingFilterCallback);
+			GraphObj->SetIsAssetIdentifierPassingSearchFilterCallback(IsAssetIdentifierPassingSearchFilterCallback);
 		}
-		RebuildGraph();
+		GraphObj->RefilterGraph();
 	}
 }
 
-
-void SReferenceViewer::OnCompactModeChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnCompactModeChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetCompactModeEnabled(NewState == ECheckBoxState::Checked);
-	}
-	
+	Settings->SetCompactModeEnabled(!Settings->IsCompactMode());
 	RebuildGraph();
 }
 
-
-ECheckBoxState SReferenceViewer::IsCompactModeChecked() const
+bool SReferenceViewer::IsCompactModeChecked() const
 {
+	return Settings->IsCompactMode();
+}
+
+void SReferenceViewer::OnShowDuplicatesChanged()
+{
+	Settings->SetShowDuplicatesEnabled(!Settings->IsShowDuplicates());
 	if (GraphObj)
 	{
-		return GraphObj->IsCompactMode() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
+		GraphObj->RefilterGraph();
 	}
 }
 
-void SReferenceViewer::OnShowEditorOnlyReferencesChanged(ECheckBoxState NewState)
+bool SReferenceViewer::IsShowDuplicatesChecked() const
 {
+	return Settings->IsShowDuplicates();
+}
+
+void SReferenceViewer::OnShowEditorOnlyReferencesChanged()
+{
+	Settings->SetShowEditorOnlyReferencesEnabled(!Settings->IsShowEditorOnlyReferences());
 	if (GraphObj)
 	{
-		GraphObj->SetShowEditorOnlyReferencesEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
+		GraphObj->RebuildGraph();
 	}
 }
 
-
-ECheckBoxState SReferenceViewer::IsShowEditorOnlyReferencesChecked() const
+bool SReferenceViewer::IsShowEditorOnlyReferencesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowEditorOnlyReferences() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowEditorOnlyReferences();
 }
 
 
-EVisibility SReferenceViewer::GetManagementReferencesVisibility() const
+bool SReferenceViewer::GetManagementReferencesVisibility() const
 {
-	if (bShowShowReferencesOptions && UAssetManager::IsValid())
-	{
-		return EVisibility::SelfHitTestInvisible;
-	}
-	return EVisibility::Collapsed;
+	return bShowShowReferencesOptions && UAssetManager::IsValid();
 }
 
-void SReferenceViewer::OnShowManagementReferencesChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowManagementReferencesChanged()
 {
-	if (GraphObj)
-	{
-		// This can take a few seconds if it isn't ready
-		UAssetManager::Get().UpdateManagementDatabase();
+	// This can take a few seconds if it isn't ready
+	UAssetManager::Get().UpdateManagementDatabase();
 
-		GraphObj->SetShowManagementReferencesEnabled(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetShowManagementReferencesEnabled(!Settings->IsShowManagementReferences());
+	RebuildGraph();
 }
 
-ECheckBoxState SReferenceViewer::IsShowManagementReferencesChecked() const
+bool SReferenceViewer::IsShowManagementReferencesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowManagementReferences() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowManagementReferences();
 }
 
-void SReferenceViewer::OnShowSearchableNamesChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowSearchableNamesChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetShowSearchableNames(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetShowSearchableNames(!Settings->IsShowSearchableNames());
+	RebuildGraph();
 }
 
-ECheckBoxState SReferenceViewer::IsShowSearchableNamesChecked() const
+bool SReferenceViewer::IsShowSearchableNamesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowSearchableNames() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowSearchableNames();
 }
 
-void SReferenceViewer::OnShowNativePackagesChanged(ECheckBoxState NewState)
+void SReferenceViewer::OnShowCodePackagesChanged()
 {
-	if (GraphObj)
-	{
-		GraphObj->SetShowNativePackages(NewState == ECheckBoxState::Checked);
-		RebuildGraph();
-	}
+	Settings->SetShowCodePackages(!Settings->IsShowCodePackages());
+	RebuildGraph();
 }
 
-ECheckBoxState SReferenceViewer::IsShowNativePackagesChecked() const
+bool SReferenceViewer::IsShowCodePackagesChecked() const
 {
-	if (GraphObj)
-	{
-		return GraphObj->IsShowNativePackages() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-	}
-	else
-	{
-		return ECheckBoxState::Unchecked;
-	}
+	return Settings->IsShowCodePackages();
 }
 
 int32 SReferenceViewer::GetSearchBreadthCount() const
 {
-	if ( GraphObj )
-	{
-		return GraphObj->GetSearchBreadthLimit();
-	}
-	else
-	{
-		return 0;
-	}
+	return Settings->GetSearchBreadthLimit();
 }
 
 void SReferenceViewer::OnSearchBreadthCommitted(int32 NewValue)
 {
-	if ( GraphObj )
+	Settings->SetSearchBreadthLimit(NewValue);
+	if (GraphObj)
 	{
-		GraphObj->SetSearchBreadthLimit(NewValue);
-		RebuildGraph();
+		GraphObj->RefilterGraph();
 	}
 }
 
@@ -1312,6 +1215,115 @@ void SReferenceViewer::RegisterActions()
 		FAssetManagerEditorCommands::Get().ReCenterGraph,
 		FExecuteAction::CreateSP(this, &SReferenceViewer::ReCenterGraph),
 		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().IncreaseReferencerSearchDepth,
+		FExecuteAction::CreateLambda( [this] { OnSearchReferencerDepthCommitted( GetSearchReferencerDepthCount() + 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().DecreaseReferencerSearchDepth,
+		FExecuteAction::CreateLambda( [this] { OnSearchReferencerDepthCommitted( GetSearchReferencerDepthCount() - 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().SetReferencerSearchDepth,
+		FExecuteAction::CreateLambda( [this] { FSlateApplication::Get().SetKeyboardFocus(ReferencerCountBox, EFocusCause::SetDirectly); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().IncreaseDependencySearchDepth,
+		FExecuteAction::CreateLambda( [this] { OnSearchDependencyDepthCommitted( GetSearchDependencyDepthCount() + 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().DecreaseDependencySearchDepth,
+		FExecuteAction::CreateLambda( [this] { OnSearchDependencyDepthCommitted( GetSearchDependencyDepthCount() - 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().SetDependencySearchDepth,
+		FExecuteAction::CreateLambda( [this] { FSlateApplication::Get().SetKeyboardFocus(DependencyCountBox, EFocusCause::SetDirectly); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().IncreaseBreadth,
+		FExecuteAction::CreateLambda( [this] { OnSearchBreadthCommitted( GetSearchBreadthCount() + 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().DecreaseBreadth,
+		FExecuteAction::CreateLambda( [this] { OnSearchBreadthCommitted( GetSearchBreadthCount() - 1); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().SetBreadth,
+		FExecuteAction::CreateLambda( [this] { FSlateApplication::Get().SetKeyboardFocus(BreadthLimitBox, EFocusCause::SetDirectly); } ),
+		FCanExecuteAction());
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowSoftReferences,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowSoftReferencesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowSoftReferencesChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowReferencesOptions; }));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowHardReferences,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowHardReferencesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowHardReferencesChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowReferencesOptions; }));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowEditorOnlyReferences,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowEditorOnlyReferencesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowEditorOnlyReferencesChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowReferencesOptions; }));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowManagementReferences,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowManagementReferencesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowManagementReferencesChecked),
+		FIsActionButtonVisible::CreateSP(this, &SReferenceViewer::GetManagementReferencesVisibility));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowNameReferences,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowSearchableNamesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowSearchableNamesChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowSearchableNames; }));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowCodePackages,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowCodePackagesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowCodePackagesChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowCodePackages; }));
+
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowDuplicates,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowDuplicatesChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowDuplicatesChecked));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().CompactMode,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnCompactModeChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsCompactModeChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowCompactMode; }));
+
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().FilterSearch,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnShowFilteredPackagesOnlyChanged),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateSP(this, &SReferenceViewer::IsShowFilteredPackagesOnlyChecked),
+		FIsActionButtonVisible::CreateLambda([this] { return bShowShowFilteredPackagesOnly; }) );
 
 	ReferenceViewerActions->MapAction(
 		FAssetManagerEditorCommands::Get().CopyReferencedObjects,
@@ -1376,6 +1388,68 @@ void SReferenceViewer::RegisterActions()
 	ReferenceViewerActions->MapAction(
 		FAssetManagerEditorCommands::Get().ViewAssetAudit,
 		FExecuteAction::CreateSP(this, &SReferenceViewer::ViewAssetAudit),
+		FCanExecuteAction::CreateSP(this, &SReferenceViewer::HasAtLeastOneRealNodeSelected));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ShowCommentPath,
+		FExecuteAction::CreateLambda([this] { 
+			Settings->SetShowPathEnabled(!Settings->IsShowPath());
+			if (GraphObj)
+			{
+				GraphObj->RefilterGraph();
+			}
+		}),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateLambda([this] {return Settings->IsShowPath();}));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().Filters,
+		FExecuteAction::CreateLambda([this] { 
+			Settings->SetFiltersEnabled(!Settings->GetFiltersEnabled());
+			if (GraphObj)
+			{
+				GraphObj->RefilterGraph();
+			}
+		}),
+		FCanExecuteAction(),	
+		FIsActionChecked::CreateLambda([this] {return Settings->GetFiltersEnabled();}));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().AutoFilters,
+		FExecuteAction::CreateLambda([this] { 
+			Settings->SetAutoUpdateFilters(!Settings->AutoUpdateFilters());
+			if (GraphObj)
+			{
+				OnUpdateFilterBar();
+				GraphObj->RefilterGraph();
+			}
+		}),
+		FCanExecuteAction::CreateLambda([this] {return Settings->GetFiltersEnabled();}),
+		FIsActionChecked::CreateLambda([this] {return Settings->AutoUpdateFilters();}));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().CopyPaths,
+		FExecuteAction::CreateLambda([this] {
+				FString Result;
+				// Build up a list of selected assets from the graph selection set
+				TSet<UObject*> SelectedNodes = GraphEditorPtr->GetSelectedNodes();
+				for (FGraphPanelSelectionSet::TConstIterator It(SelectedNodes); It; ++It)
+				{
+					if (UEdGraphNode_Reference* ReferenceNode = Cast<UEdGraphNode_Reference>(*It))
+					{
+						if (ReferenceNode->GetAssetData().IsValid())
+						{
+							Result += ReferenceNode->GetAssetData().PackageName.ToString();
+							Result += TEXT("\n");
+						}
+					}
+				}
+
+				if (Result.Len())
+				{
+					FPlatformApplicationMisc::ClipboardCopy(*Result);
+				}
+		}),
 		FCanExecuteAction::CreateSP(this, &SReferenceViewer::HasAtLeastOneRealNodeSelected));
 }
 
@@ -1864,7 +1938,7 @@ void SReferenceViewer::HandleOnSearchTextChanged(const FText& SearchText)
 
 	GraphEditorPtr->ClearSelectionSet();
 
-	UpdateIsPassingFilterPackageCallback();
+	UpdateIsPassingSearchFilterCallback();
 
 	if (SearchText.IsEmpty())
 	{
@@ -1880,7 +1954,7 @@ void SReferenceViewer::HandleOnSearchTextChanged(const FText& SearchText)
 
 	for (UEdGraphNode_Reference* Node : AllNodes)
 	{
-		if (IsReferenceNodePassingFilter(*Node, SearchWords))
+		if (IsAssetIdentifierPassingSearchTextFilter(Node->GetIdentifier(), SearchWords))
 		{
 			GraphEditorPtr->SetNodeSelection(Node, true);
 		}
@@ -1904,6 +1978,104 @@ void SReferenceViewer::HandleOnSearchTextCommitted(const FText& SearchText, ETex
 	}
 	
 	GraphEditorPtr->ZoomToFit(true);
+	FSlateApplication::Get().SetKeyboardFocus(GraphEditorPtr, EFocusCause::SetDirectly);
+}
+
+TSharedRef<SWidget> SReferenceViewer::GetShowMenuContent()
+{
+ 	FMenuBuilder MenuBuilder(true, ReferenceViewerActions);
+
+	MenuBuilder.BeginSection("ReferenceTypes", LOCTEXT("ReferenceTypes", "Reference Types"));
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowSoftReferences);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowHardReferences);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowEditorOnlyReferences);
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("Assets", LOCTEXT("Assets", "Assets"));
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowManagementReferences);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowNameReferences);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowCodePackages);
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection("ViewOptions", LOCTEXT("ViewOptions", "View Options"));
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowDuplicates);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().FilterSearch);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().CompactMode);
+	MenuBuilder.AddMenuEntry(FAssetManagerEditorCommands::Get().ShowCommentPath);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+TSharedRef<SWidget> SReferenceViewer::MakeToolBar()
+{
+
+	FToolBarBuilder ToolBarBuilder(ReferenceViewerActions, FMultiBoxCustomization::None, TSharedPtr<FExtender>(), true);
+	ToolBarBuilder.SetStyle(&FReferenceViewerStyle::Get(), "AssetEditorToolbar");
+	ToolBarBuilder.BeginSection("Test");
+
+	ToolBarBuilder.AddToolBarButton(
+		FUIAction(FExecuteAction::CreateSP(this, &SReferenceViewer::RefreshClicked)),
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.Refresh"));
+
+	ToolBarBuilder.AddToolBarButton(
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SReferenceViewer::BackClicked),
+			FCanExecuteAction::CreateSP(this, &SReferenceViewer::IsBackEnabled)
+		),
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>::CreateSP(this, &SReferenceViewer::GetHistoryBackTooltip),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.ArrowLeft"));
+
+
+	ToolBarBuilder.AddToolBarButton(
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SReferenceViewer::ForwardClicked),
+			FCanExecuteAction::CreateSP(this, &SReferenceViewer::IsForwardEnabled)
+		),
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>::CreateSP(this, &SReferenceViewer::GetHistoryForwardTooltip),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.ArrowRight"));
+
+	ToolBarBuilder.AddSeparator();
+
+	ToolBarBuilder.AddComboButton( 
+		FUIAction(),
+		FOnGetContent::CreateSP(this, &SReferenceViewer::GetShowMenuContent),
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.Visibility"),
+		/*bInSimpleComboBox*/ false);
+
+	ToolBarBuilder.AddToolBarButton(FAssetManagerEditorCommands::Get().ShowDuplicates,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.Duplicate"));
+
+	ToolBarBuilder.AddSeparator();
+
+	ToolBarBuilder.AddToolBarButton(FAssetManagerEditorCommands::Get().Filters,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.Filters"));
+
+	ToolBarBuilder.AddToolBarButton(FAssetManagerEditorCommands::Get().AutoFilters,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FReferenceViewerStyle::Get().GetStyleSetName(), "Icons.AutoFilters"));
+
+	ToolBarBuilder.EndSection();
+
+
+	return ToolBarBuilder.MakeWidget();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -7,6 +7,7 @@
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
+#include "SceneView.h"
 #include "Slate/SGameLayerManager.h"
 
 static int32 GSlateWorldWidgetZOrder = 1;
@@ -17,6 +18,13 @@ static FAutoConsoleVariableRef CVarSlateWorldWidgetZOrder(
 	TEXT(" 0: Disable re-ordering\n")
 	TEXT(" 1: Re-order by distance (default, less batching, less artifacts when widgets overlap)"),
 	ECVF_Default
+	);
+
+static bool GSlateWorldWidgetIgnoreNotVisibleWidgets = false;
+static FAutoConsoleVariableRef CVarSlateWorldWidgetIgnoreNotVisibleWidgets(
+	TEXT("Slate.WorldWidgetIgnoreNotVisibleWidgets"),
+	GSlateWorldWidgetIgnoreNotVisibleWidgets,
+	TEXT("Whether to not update the position of world widgets if they are not visible - to prevent invalidating the whole layer unnecessarily")
 	);
 
 SWorldWidgetScreenLayer::FComponentEntry::FComponentEntry()
@@ -123,7 +131,23 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 					FVector WorldLocation = SceneComponent->GetComponentLocation();
 
 					FVector2D ScreenPosition2D;
-					const bool bProjected = bHasProjectionData ? FSceneView::ProjectWorldToScreen(WorldLocation, ProjectionData.GetConstrainedViewRect(), ViewProjectionMatrix, ScreenPosition2D) : false;
+					const bool bProjected = [&Entry, bHasProjectionData, &WorldLocation, &ScreenPosition2D, &ProjectionData, &ViewProjectionMatrix]()
+					{
+						if (!bHasProjectionData)
+						{
+							return false;
+						}
+
+						if (GSlateWorldWidgetIgnoreNotVisibleWidgets && 
+							Entry.WidgetComponent && 
+							!Entry.WidgetComponent->IsWidgetVisible())
+						{
+							return false;
+						}
+
+						return FSceneView::ProjectWorldToScreen(WorldLocation, ProjectionData.GetConstrainedViewRect(), ViewProjectionMatrix, ScreenPosition2D);
+					}();
+
 					if (bProjected)
 					{
 						const float ViewportDist = FVector::Dist(ProjectionData.ViewOrigin, WorldLocation);

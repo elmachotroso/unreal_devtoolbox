@@ -382,7 +382,6 @@ namespace AutomationTool
 					}
 
 					// Generate new data
-					using (RNGCryptoServiceProvider Crypto = new RNGCryptoServiceProvider())
 					{
 						// Flag for whether to update the manifest
 						bool bUpdateManifest = false;
@@ -429,7 +428,7 @@ namespace AutomationTool
 								string NewBundleName = String.Format("Bundle-{0:yyyy.MM.dd-HH.mm}{1}.ddb", NewBundleTime.ToLocalTime(), NewBundleSuffix);
 
 								// Create a random number for the object key
-								string NewBundleObjectKey = KeyPrefix + "bulk/" + CreateObjectName(Crypto);
+								string NewBundleObjectKey = KeyPrefix + "bulk/" + CreateObjectName();
 
 								// Create the bundle header
 								byte[] Header;
@@ -507,7 +506,7 @@ namespace AutomationTool
 							{
 								RootManifest.Entry NewEntry = new RootManifest.Entry();
 								NewEntry.CreateTime = UtcNow;
-								NewEntry.Key = KeyPrefix + CreateObjectName(Crypto);
+								NewEntry.Key = KeyPrefix + CreateObjectName();
 								NewRootManifest.Entries.Add(NewEntry);
 							}
 
@@ -538,7 +537,7 @@ namespace AutomationTool
 								List<string> ExistingFiles = P4.Files(CommandUtils.MakePathSafeToUseWithCommandLine(RootManifestFile.FullName));
 
 								// Create a changelist containing the new manifest
-								ChangeNumber = P4.CreateChange(Description: "Updating DDC bundle manifest");
+								ChangeNumber = P4.CreateChange(Description: "Updating DDC bundle manifest\n#skipci");
 								if (ExistingFiles.Count > 0)
 								{
 									P4.Edit(ChangeNumber, CommandUtils.MakePathSafeToUseWithCommandLine(RootManifestFile.FullName));
@@ -607,10 +606,9 @@ namespace AutomationTool
 			}
 		}
 
-		private string CreateObjectName(RNGCryptoServiceProvider Crypto)
+		private string CreateObjectName()
 		{
-			byte[] NameBytes = new byte[40];
-			Crypto.GetBytes(NameBytes);
+			byte[] NameBytes = RandomNumberGenerator.GetBytes(40);
 			return StringUtils.FormatHexString(NameBytes);
 		}
 

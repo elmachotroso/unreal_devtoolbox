@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "Textures/SlateIcon.h"
 #include "EdGraph/EdGraph.h"
+#include "EngineLogs.h"
 #if WITH_EDITOR
 #include "CookerSettings.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -20,6 +21,7 @@
 #include "FindInBlueprintManager.h"
 #include "DiffResults.h"
 #endif
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "EdGraph"
 
@@ -240,11 +242,13 @@ void UEdGraphNode::Serialize(FArchive& Ar)
 #endif
 }
 
-void UEdGraphNode::DeclareCustomVersions(FArchive& Ar)
+#if WITH_EDITORONLY_DATA
+void UEdGraphNode::DeclareCustomVersions(FArchive& Ar, const UClass* SpecificSubclass)
 {
-	Super::DeclareCustomVersions(Ar);
-	UEdGraphPin::DeclareCustomVersions(Ar);
+	Super::DeclareCustomVersions(Ar, SpecificSubclass);
+	UEdGraphPin::DeclarePinCustomVersions(Ar);
 }
+#endif
 
 
 bool UEdGraphNode::GetCanRenameNode() const
@@ -269,7 +273,7 @@ FString UEdGraphNode::GetPropertyNameAndValueForDiff(const FProperty* Prop, cons
 	}
 	else
 	{
-		Prop->ExportTextItem(ExportedStringValue, PropertyAddr, NULL, NULL, PPF_PropertyWindow, NULL);
+		Prop->ExportTextItem_Direct(ExportedStringValue, PropertyAddr, NULL, NULL, PPF_PropertyWindow, NULL);
 	}
 
 	const bool bIsBool = Prop->IsA(FBoolProperty::StaticClass());
@@ -484,10 +488,10 @@ void UEdGraphNode::GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut
 	HoverTextOut = Pin.PinToolTip;
 }
 
-void UEdGraphNode::SnapToGrid(float GridSnapSize)
+void UEdGraphNode::SnapToGrid(uint32 GridSnapSize)
 {
-	NodePosX = GridSnapSize * FMath::RoundToInt(NodePosX/GridSnapSize);
-	NodePosY = GridSnapSize * FMath::RoundToInt(NodePosY/GridSnapSize);
+	NodePosX = GridSnapSize * (NodePosX / GridSnapSize);
+	NodePosY = GridSnapSize * (NodePosY / GridSnapSize);
 }
 
 class UEdGraph* UEdGraphNode::GetGraph() const
@@ -563,7 +567,7 @@ FString UEdGraphNode::GetDocumentationExcerptName() const
 
 FSlateIcon UEdGraphNode::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static const FSlateIcon Icon = FSlateIcon("EditorStyle", "GraphEditor.Default_16x");
+	static const FSlateIcon Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Default_16x");
 	return Icon;
 }
 
@@ -593,38 +597,6 @@ FEdGraphNodeDeprecationResponse UEdGraphNode::GetDeprecationResponse(EEdGraphNod
 	}
 
 	return Response;
-}
-
-// Deprecated; implemented for backwards-compatibility.
-bool UEdGraphNode::ShouldWarnOnDeprecation() const
-{
-	if (IsDeprecated())
-	{
-		return GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeTypeIsDeprecated).MessageType == EEdGraphNodeDeprecationMessageType::Warning;
-	}
-	else if (HasDeprecatedReference())
-	{
-		return GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeHasDeprecatedReference).MessageType == EEdGraphNodeDeprecationMessageType::Warning;
-	}
-
-	return false;
-}
-
-// Deprecated; implemented for backwards-compatibility.
-FString UEdGraphNode::GetDeprecationMessage() const
-{
-	FText MessageText;
-
-	if (IsDeprecated())
-	{
-		MessageText = GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeTypeIsDeprecated).MessageText;
-	}
-	else if (HasDeprecatedReference())
-	{
-		MessageText = GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeHasDeprecatedReference).MessageText;
-	}
-
-	return MessageText.ToString();
 }
 
 void UEdGraphNode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
@@ -777,7 +749,7 @@ void UEdGraphNode::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResults& Resul
 		Diff.Node1 = this;
 		Diff.Node2 = OtherNode;
 		Diff.ToolTip = LOCTEXT("DIF_NodePropertyToolTip", "A Property of the node has changed");
-		Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
+		Diff.Category = EDiffType::MODIFICATION;
 
 		// Diff the properties between the nodes
 		DiffProperties(GetClass(), OtherNode->GetClass(), this, OtherNode, Results, Diff);

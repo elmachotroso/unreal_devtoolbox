@@ -2,10 +2,10 @@
 
 #pragma once
 
+#include "BodySetupEnums.h"
 #include "CoreMinimal.h"
 #include "InteractiveTool.h"
-#include "Engine/Classes/PhysicsEngine/AggregateGeom.h"
-#include "BodySetupEnums.h"
+#include "PhysicsEngine/AggregateGeom.h"
 #include "CollisionPropertySets.generated.h"
 
 
@@ -37,6 +37,7 @@ struct MESHMODELINGTOOLSEXP_API FPhysicsSphereData
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FTransform Transform;
 
+	/** Shape Element storing standard collision and physics properties for a shape */
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FKShapeElem Element;
 };
@@ -52,6 +53,7 @@ struct MESHMODELINGTOOLSEXP_API FPhysicsBoxData
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FTransform Transform;
 
+	/** Shape Element storing standard collision and physics properties for a shape */
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FKShapeElem Element;
 };
@@ -70,6 +72,7 @@ struct MESHMODELINGTOOLSEXP_API FPhysicsCapsuleData
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FTransform Transform;
 
+	/** Shape Element storing standard collision and physics properties for a shape */
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FKShapeElem Element;
 };
@@ -85,19 +88,32 @@ struct MESHMODELINGTOOLSEXP_API FPhysicsConvexData
 	UPROPERTY(VisibleAnywhere, Category = Convex)
 	int32 NumFaces = 0;
 
+	/** Shape Element storing standard collision and physics properties for a shape */
 	UPROPERTY(VisibleAnywhere, Category = Sphere)
 	FKShapeElem Element;
 };
 
+USTRUCT()
+struct MESHMODELINGTOOLSEXP_API FPhysicsLevelSetData
+{
+	GENERATED_BODY()
+
+	/** Shape Element storing standard collision and physics properties for a shape */
+	UPROPERTY(VisibleAnywhere, Category = LevelSet)
+	FKShapeElem Element;
+};
 
 UCLASS()
 class MESHMODELINGTOOLSEXP_API UPhysicsObjectToolPropertySet : public UInteractiveToolPropertySet
 {
 	GENERATED_BODY()
 public:
+
+	/** Source Object Name */
 	UPROPERTY(VisibleAnywhere, Category = PhysicsData)
 	FString ObjectName;
 
+	/** Collision Flags controlling how simple and complex collision shapes are used */
 	UPROPERTY(VisibleAnywhere, Category = PhysicsData)
 	ECollisionGeometryMode CollisionType;
 
@@ -113,6 +129,9 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = PhysicsData)
 	TArray<FPhysicsConvexData> Convexes;
 
+	UPROPERTY(VisibleAnywhere, Category = PhysicsData)
+	TArray<FPhysicsLevelSetData> LevelSets;
+
 	void Reset();
 };
 
@@ -125,13 +144,20 @@ class MESHMODELINGTOOLSEXP_API UCollisionGeometryVisualizationProperties : publi
 	GENERATED_BODY()
 public:
 
+	/** Thickness of lines used to visualize collision shapes */
 	UPROPERTY(EditAnywhere, Category = "Collision Visualization")
 	float LineThickness = 3.0f;
 
+	/** Show occluded parts of the collision geometry, rendered with dashed lines */
 	UPROPERTY(EditAnywhere, Category = "Collision Visualization")
 	bool bShowHidden = false;
 
+	/** Render each collision geometry with a randomly-chosen color */
 	UPROPERTY(EditAnywhere, Category = "Collision Visualization")
+	bool bRandomColors = true;
+
+	/** The color to use for all collision visualizations, if random colors are not used */
+	UPROPERTY(EditAnywhere, Category = "Collision Visualization", meta = (EditCondition = "!bRandomColors"))
 	FColor Color = FColor::Red;
 };
 

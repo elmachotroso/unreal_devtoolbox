@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "PixelFormat.h"
 #include "RHIDefinitions.h"
 
@@ -36,6 +38,7 @@ enum EGBufferSlot
 	GBS_Cloth, // R8
 	GBS_SubsurfaceProfileX, // R8
 	GBS_IrisNormal, // RG8
+	GBS_SeparatedMainDirLight, // RGB 11.11.10
 	GBS_Num
 };
 
@@ -79,11 +82,13 @@ enum EGBufferCompression
 enum EGBufferType
 {
 	GBT_Invalid,
+	GBT_Unorm_16_16,
 	GBT_Unorm_8_8_8_8,
 	GBT_Unorm_11_11_10,
 	GBT_Unorm_10_10_10_2,
+	GBT_Unorm_16_16_16_16,
 	GBT_Float_16_16,
-	GBT_Float_16_16_16_16,
+	GBT_Float_16_16_16_16,	
 	GBT_Num
 };
 
@@ -94,6 +99,14 @@ enum EGBufferChecker
 	GBCH_Odd,
 	GBCH_Both,
 	GBCH_Num
+};
+
+enum EGBufferLayout
+{
+	GBL_Default, // Default GBuffer Layout
+	GBL_ForceVelocity, // Force the inclusion of the velocity target (if it's not included in GBL_Default)
+
+	GBL_Num
 };
 
 
@@ -253,6 +266,17 @@ struct FGBufferBinding
 	ETextureCreateFlags Flags = TexCreate_None;
 };
 
+// Describes the bindings of the GBuffer for a given layout
+struct FGBufferBindings
+{
+	FGBufferBinding GBufferA;
+	FGBufferBinding GBufferB;
+	FGBufferBinding GBufferC;
+	FGBufferBinding GBufferD;
+	FGBufferBinding GBufferE;
+	FGBufferBinding GBufferVelocity;
+};
+
 struct FGBufferInfo
 {
 	static const int MaxTargets = 8;
@@ -266,20 +290,24 @@ struct FGBufferInfo
 
 struct FGBufferParams
 {
+	EShaderPlatform ShaderPlatform = SP_NumPlatforms;
 	int32 LegacyFormatIndex = 0;
 	bool bHasVelocity = false;
 	bool bHasTangent = false;
 	bool bHasPrecShadowFactor = false;
 	bool bUsesVelocityDepth = false;
+	bool bHasSingleLayerWaterSeparatedMainLight = false;
 
 	bool operator == (const FGBufferParams& RHS) const
 	{
 		return
+			ShaderPlatform == RHS.ShaderPlatform &&
 			LegacyFormatIndex == RHS.LegacyFormatIndex &&
 			bHasVelocity == RHS.bHasVelocity &&
 			bHasTangent == RHS.bHasTangent &&
 			bHasPrecShadowFactor == RHS.bHasPrecShadowFactor &&
-			bUsesVelocityDepth == RHS.bUsesVelocityDepth;
+			bUsesVelocityDepth == RHS.bUsesVelocityDepth &&
+			bHasSingleLayerWaterSeparatedMainLight == RHS.bHasSingleLayerWaterSeparatedMainLight;
 	}
 
 	bool operator != (const FGBufferParams& RHS) const
@@ -293,9 +321,6 @@ int32 RENDERCORE_API FindGBufferTargetByName(const FGBufferInfo& GBufferInfo, co
 
 FGBufferBinding RENDERCORE_API FindGBufferBindingByName(const FGBufferInfo& GBufferInfo, const FString& Name);
 
-//FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(bool bHasVelocity, bool bHasTangent, bool bHasPrecShadowFactor, int LegacyFormatIndex, bool bUsesVelocityDepth);
-//FGBufferInfo RENDERCORE_API FetchFullGBufferInfo(bool bHasVelocity, bool bHasTangent, bool bHasPrecShadowFactor, int LegacyFormatIndex, bool bUsesVelocityDepth);
-FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params);
 FGBufferInfo RENDERCORE_API FetchFullGBufferInfo(const FGBufferParams& Params);
 
 bool RENDERCORE_API IsGBufferInfoEqual(const FGBufferInfo& Lhs, const FGBufferInfo& Rhs);

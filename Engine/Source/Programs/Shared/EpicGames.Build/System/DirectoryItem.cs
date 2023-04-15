@@ -5,9 +5,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
 
 namespace UnrealBuildBase
@@ -25,7 +22,7 @@ namespace UnrealBuildBase
 		/// <summary>
 		/// Cached value for whether the directory exists
 		/// </summary>
-		DirectoryInfo Info;
+		Lazy<DirectoryInfo> Info;
 
 		/// <summary>
 		/// Cached map of name to subdirectory item
@@ -50,53 +47,53 @@ namespace UnrealBuildBase
 		private DirectoryItem(DirectoryReference Location, DirectoryInfo Info)
 		{
 			this.Location = Location;
-			this.Info = Info;
+			if (RuntimePlatform.IsWindows)
+			{
+				this.Info = new Lazy<DirectoryInfo>(Info);
+			}
+			else
+			{
+				// For some reason we need to call an extra Refresh on linux/mac to not get wrong results from "Exists"
+				this.Info = new Lazy<DirectoryInfo>(() =>
+				{
+					Info.Refresh();
+					return Info;
+				});
+			}
 		}
 
 		/// <summary>
 		/// The name of this directory
 		/// </summary>
-		public string Name
-		{
-			get { return Info.Name; }
-		}
+		public string Name => Info.Value.Name;
 
 		/// <summary>
 		/// The full name of this directory
 		/// </summary>
-		public string FullName
-		{
-			get { return Location.FullName; }
-		}
+		public string FullName => Location.FullName;
 
 		/// <summary>
 		/// Whether the directory exists or not
 		/// </summary>
-		public bool Exists
-		{
-			get { return Info.Exists; }
-		}
+		public bool Exists => Info.Value.Exists;
 
 		/// <summary>
 		/// The last write time of the file.
 		/// </summary>
-		public DateTime LastWriteTimeUtc
-		{
-			get { return Info.LastWriteTimeUtc; }
-		}
+		public DateTime LastWriteTimeUtc => Info.Value.LastWriteTimeUtc;
 
 		/// <summary>
 		/// Gets the parent directory item
 		/// </summary>
 		public DirectoryItem? GetParentDirectoryItem()
 		{
-			if(Info.Parent == null)
+			if (Info.Value.Parent == null)
 			{
 				return null;
 			}
 			else
 			{
-				return GetItemByDirectoryInfo(Info.Parent);
+				return GetItemByDirectoryInfo(Info.Value.Parent);
 			}
 		}
 
@@ -128,20 +125,11 @@ namespace UnrealBuildBase
 		/// <returns>The directory item for this location</returns>
 		public static DirectoryItem GetItemByDirectoryReference(DirectoryReference Location)
 		{
-			DirectoryItem? Result;
-			if(!LocationToItem.TryGetValue(Location, out Result))
+			if (LocationToItem.TryGetValue(Location, out DirectoryItem? Result))
 			{
-				DirectoryItem NewItem = new DirectoryItem(Location, new DirectoryInfo(Location.FullName));
-				if(LocationToItem.TryAdd(Location, NewItem))
-				{
-					Result = NewItem;
-				}
-				else
-				{
-					Result = LocationToItem[Location];
-				}
+				return Result;
 			}
-			return Result;
+			return LocationToItem.GetOrAdd(Location, new DirectoryItem(Location, new DirectoryInfo(Location.FullName)));
 		}
 
 		/// <summary>
@@ -152,21 +140,11 @@ namespace UnrealBuildBase
 		public static DirectoryItem GetItemByDirectoryInfo(DirectoryInfo Info)
 		{
 			DirectoryReference Location = new DirectoryReference(Info);
-
-			DirectoryItem? Result;
-			if(!LocationToItem.TryGetValue(Location, out Result))
+			if (LocationToItem.TryGetValue(Location, out DirectoryItem? Result))
 			{
-				DirectoryItem NewItem = new DirectoryItem(Location, Info);
-				if(LocationToItem.TryAdd(Location, NewItem))
-				{
-					Result = NewItem;
-				}
-				else
-				{
-					Result = LocationToItem[Location];
-				}
+				return Result;
 			}
-			return Result;
+			return LocationToItem.GetOrAdd(Location, new DirectoryItem(Location, Info));
 		}
 
 		/// <summary>
@@ -174,12 +152,17 @@ namespace UnrealBuildBase
 		/// </summary>
 		public void ResetCachedInfo()
 		{
-			Info = new DirectoryInfo(Info.FullName);
+			Info = new Lazy<DirectoryInfo>(() =>
+			{
+				DirectoryInfo Info = Location.ToDirectoryInfo();
+				Info.Refresh();
+				return Info;
+			});
 
 			Dictionary<string, DirectoryItem>? PrevDirectories = Directories;
-			if(PrevDirectories != null)
+			if (PrevDirectories != null)
 			{
-				foreach(DirectoryItem SubDirectory in PrevDirectories.Values)
+				foreach (DirectoryItem SubDirectory in PrevDirectories.Values)
 				{
 					SubDirectory.ResetCachedInfo();
 				}
@@ -187,9 +170,9 @@ namespace UnrealBuildBase
 			}
 
 			Dictionary<string, FileItem>? PrevFiles = Files;
-			if(PrevFiles != null)
+			if (PrevFiles != null)
 			{
-				foreach(FileItem File in PrevFiles.Values)
+				foreach (FileItem File in PrevFiles.Values)
 				{
 					File.ResetCachedInfo();
 				}
@@ -202,9 +185,14 @@ namespace UnrealBuildBase
 		/// </summary>
 		public static void ResetAllCachedInfo_SLOW()
 		{
-			foreach(DirectoryItem Item in LocationToItem.Values)
+			foreach (DirectoryItem Item in LocationToItem.Values)
 			{
-				Item.Info = new DirectoryInfo(Item.Info.FullName);
+				Item.Info = new Lazy<DirectoryInfo>(() =>
+				{
+					DirectoryInfo Info = Item.Location.ToDirectoryInfo();
+					Info.Refresh();
+					return Info;
+				});
 				Item.Directories = null;
 				Item.Files = null;
 			}
@@ -216,26 +204,21 @@ namespace UnrealBuildBase
 		/// </summary>
 		public void CacheDirectories()
 		{
-			if(Directories == null)
+			if (Directories == null)
 			{
-				Dictionary<string, DirectoryItem> NewDirectories = new Dictionary<string, DirectoryItem>(DirectoryReference.Comparer);
-				if(Info.Exists)
+				Dictionary<string, DirectoryItem> NewDirectories;
+				if (Info.Value.Exists)
 				{
-					foreach(DirectoryInfo SubDirectoryInfo in Info.EnumerateDirectories())
+					DirectoryInfo[] Directories = Info.Value.GetDirectories();
+					NewDirectories = new Dictionary<string, DirectoryItem>(Directories.Length, DirectoryReference.Comparer);
+					foreach (DirectoryInfo SubDirectoryInfo in Directories)
 					{
-						if(SubDirectoryInfo.Name.Length == 1 && SubDirectoryInfo.Name[0] == '.')
-						{
-							continue;
-						}
-						else if(SubDirectoryInfo.Name.Length == 2 && SubDirectoryInfo.Name[0] == '.' && SubDirectoryInfo.Name[1] == '.')
-						{
-							continue;
-						}
-						else
-						{
-							NewDirectories[SubDirectoryInfo.Name] = DirectoryItem.GetItemByDirectoryInfo(SubDirectoryInfo);
-						}
+						NewDirectories.Add(SubDirectoryInfo.Name, DirectoryItem.GetItemByDirectoryInfo(SubDirectoryInfo));
 					}
+				}
+				else
+				{
+					NewDirectories = new Dictionary<string, DirectoryItem>(DirectoryReference.Comparer);
 				}
 				Directories = NewDirectories;
 			}
@@ -259,14 +242,14 @@ namespace UnrealBuildBase
 		/// <returns>True if the file exists, false otherwise</returns>
 		public bool TryGetDirectory(string Name, [NotNullWhen(true)] out DirectoryItem? OutDirectory)
 		{
-			if(Name.Length > 0 && Name[0] == '.')
+			if (Name.Length > 0 && Name[0] == '.')
 			{
-				if(Name.Length == 1)
+				if (Name.Length == 1)
 				{
 					OutDirectory = this;
 					return true;
 				}
-				else if(Name.Length == 2 && Name[1] == '.')
+				else if (Name.Length == 2 && Name[1] == '.')
 				{
 					OutDirectory = GetParentDirectoryItem();
 					return OutDirectory != null;
@@ -282,17 +265,23 @@ namespace UnrealBuildBase
 		/// </summary>
 		public void CacheFiles()
 		{
-			if(Files == null)
+			if (Files == null)
 			{
-				Dictionary<string, FileItem> NewFiles = new Dictionary<string, FileItem>(FileReference.Comparer);
-				if(Info.Exists)
+				Dictionary<string, FileItem> NewFiles;
+				if (Info.Value.Exists)
 				{
-					foreach(FileInfo FileInfo in Info.EnumerateFiles())
+					FileInfo[] FileInfos = Info.Value.GetFiles();
+					NewFiles = new Dictionary<string, FileItem>(FileInfos.Length, FileReference.Comparer);
+					foreach (FileInfo FileInfo in FileInfos)
 					{
 						FileItem FileItem = FileItem.GetItemByFileInfo(FileInfo);
 						FileItem.UpdateCachedDirectory(this);
 						NewFiles[FileInfo.Name] = FileItem;
 					}
+				}
+				else
+				{
+					NewFiles = new Dictionary<string, FileItem>(FileReference.Comparer);
 				}
 				Files = NewFiles;
 			}
@@ -329,6 +318,25 @@ namespace UnrealBuildBase
 		{
 			return Location.FullName;
 		}
+
+		/// <summary>
+		/// Writes out all the enumerated files full names sorted to OutFile
+		/// </summary>
+		public static void WriteDebugFileWithAllEnumeratedFiles(string OutFile)
+		{
+			SortedSet<string> AllFiles = new SortedSet<string>();
+			foreach (DirectoryItem Item in DirectoryItem.LocationToItem.Values)
+			{
+				if (Item.Files != null)
+				{
+					foreach (FileItem File in Item.EnumerateFiles())
+					{
+						AllFiles.Add(File.FullName);
+					}
+				}
+			}
+			File.WriteAllLines(OutFile, AllFiles);
+		}
 	}
 
 	/// <summary>
@@ -343,7 +351,8 @@ namespace UnrealBuildBase
 		/// <returns>Instance of the serialized directory item</returns>
 		public static DirectoryItem? ReadDirectoryItem(this BinaryArchiveReader Reader)
 		{
-			return Reader.ReadObjectReference<DirectoryItem>(() => DirectoryItem.GetItemByDirectoryReference(Reader.ReadDirectoryReferenceNotNull()));
+			// Use lambda that doesn't require anything to be captured thus eliminating an allocation.
+			return Reader.ReadObjectReference<DirectoryItem>((BinaryArchiveReader Reader) => DirectoryItem.GetItemByDirectoryReference(Reader.ReadDirectoryReferenceNotNull()));
 		}
 
 		/// <summary>
@@ -353,7 +362,8 @@ namespace UnrealBuildBase
 		/// <param name="DirectoryItem">Directory item to write</param>
 		public static void WriteDirectoryItem(this BinaryArchiveWriter Writer, DirectoryItem DirectoryItem)
 		{
-			Writer.WriteObjectReference<DirectoryItem>(DirectoryItem, () => Writer.WriteDirectoryReference(DirectoryItem.Location));
+			// Use lambda that doesn't require anything to be captured thus eliminating an allocation.
+			Writer.WriteObjectReference<DirectoryItem>(DirectoryItem, (BinaryArchiveWriter Writer, DirectoryItem DirectoryItem) => Writer.WriteDirectoryReference(DirectoryItem.Location));
 		}
 	}
 }

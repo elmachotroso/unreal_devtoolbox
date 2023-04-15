@@ -6,6 +6,8 @@
 #include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceColorCurve)
+
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/ITargetPlatform.h"
 #endif
@@ -46,21 +48,26 @@ void UNiagaraDataInterfaceColorCurve::Serialize(FArchive& Ar)
 	{
 		UpdateLUT(true);
 
-		FRichCurve TempRCurve;
-		FRichCurve TempGCurve;
-		FRichCurve TempBCurve;
-		FRichCurve TempACurve;
-		Exchange(RedCurve, TempRCurve);
-		Exchange(GreenCurve, TempGCurve);
-		Exchange(BlueCurve, TempBCurve);
-		Exchange(AlphaCurve, TempACurve);
+		Exchange(RedCurve, RedCurveCookedEditorCache);
+		Exchange(GreenCurve, GreenCurveCookedEditorCache);
+		Exchange(BlueCurve, BlueCurveCookedEditorCache);
+		Exchange(AlphaCurve, AlphaCurveCookedEditorCache);
 
 		Super::Serialize(Ar);
 
-		Exchange(RedCurve, TempRCurve);
-		Exchange(GreenCurve, TempGCurve);
-		Exchange(BlueCurve, TempBCurve);
-		Exchange(AlphaCurve, TempACurve);
+		Exchange(RedCurve, RedCurveCookedEditorCache);
+		Exchange(GreenCurve, GreenCurveCookedEditorCache);
+		Exchange(BlueCurve, BlueCurveCookedEditorCache);
+		Exchange(AlphaCurve, AlphaCurveCookedEditorCache);
+	}
+	else if (bUseLUT && Ar.IsLoading() && GetOutermost()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		Super::Serialize(Ar);
+
+		Exchange(RedCurve, RedCurveCookedEditorCache);
+		Exchange(GreenCurve, GreenCurveCookedEditorCache);
+		Exchange(BlueCurve, BlueCurveCookedEditorCache);
+		Exchange(AlphaCurve, AlphaCurveCookedEditorCache);
 	}
 	else
 #endif
@@ -69,7 +76,6 @@ void UNiagaraDataInterfaceColorCurve::Serialize(FArchive& Ar)
 	}
 }
 
-#if WITH_EDITORONLY_DATA
 void UNiagaraDataInterfaceColorCurve::UpdateTimeRanges()
 {
 	if ((RedCurve.GetNumKeys() > 0 || GreenCurve.GetNumKeys() > 0 || BlueCurve.GetNumKeys() > 0 || AlphaCurve.GetNumKeys() > 0))
@@ -112,7 +118,6 @@ TArray<float> UNiagaraDataInterfaceColorCurve::BuildLUT(int32 NumEntries) const
 	}
 	return OutputLUT;
 }
-#endif
 
 bool UNiagaraDataInterfaceColorCurve::CopyToInternal(UNiagaraDataInterface* Destination) const 
 {
@@ -151,10 +156,10 @@ bool UNiagaraDataInterfaceColorCurve::Equals(const UNiagaraDataInterface* Other)
 
 void UNiagaraDataInterfaceColorCurve::GetCurveData(TArray<FCurveData>& OutCurveData)
 {
-	OutCurveData.Add(FCurveData(&RedCurve, TEXT("Red"), FLinearColor::Red));
-	OutCurveData.Add(FCurveData(&GreenCurve, TEXT("Green"), FLinearColor::Green));
-	OutCurveData.Add(FCurveData(&BlueCurve, TEXT("Blue"), FLinearColor::Blue));
-	OutCurveData.Add(FCurveData(&AlphaCurve, TEXT("Alpha"), FLinearColor::White));
+	OutCurveData.Add(FCurveData(&RedCurve, TEXT("Red"), FLinearColor(1.0f, 0.05f, 0.05f)));
+	OutCurveData.Add(FCurveData(&GreenCurve, TEXT("Green"), FLinearColor(0.05f, 1.0f, 0.05f)));
+	OutCurveData.Add(FCurveData(&BlueCurve, TEXT("Blue"), FLinearColor(0.1f, 0.2f, 1.0f)));
+	OutCurveData.Add(FCurveData(&AlphaCurve, TEXT("Alpha"), FLinearColor(0.2f, 0.2f, 0.2f)));
 }
 
 void UNiagaraDataInterfaceColorCurve::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
@@ -178,26 +183,11 @@ void UNiagaraDataInterfaceColorCurve::GetFunctions(TArray<FNiagaraFunctionSignat
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceColorCurve::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
-	FString TimeToLUTFrac = TEXT("TimeToLUTFraction_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString Sample = TEXT("SampleCurve_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString NumSamples = TEXT("CurveLUTNumMinusOne_") + ParamInfo.DataInterfaceHLSLSymbol;
-	OutHLSL += FString::Printf(TEXT("\
-void %s(in float In_X, out float4 Out_Value) \n\
-{ \n\
-	float RemappedX = %s(In_X) * %s; \n\
-	float Prev = floor(RemappedX); \n\
-	float Next = Prev < %s ? Prev + 1.0 : Prev; \n\
-	float Interp = RemappedX - Prev; \n\
-	Prev *= %u; \n\
-	Next *= %u; \n\
-	float4 A = float4(%s(Prev), %s(Prev + 1), %s(Prev + 2), %s(Prev + 3)); \n\
-	float4 B = float4(%s(Next), %s(Next + 1), %s(Next + 2), %s(Next + 3)); \n\
-	Out_Value = lerp(A, B, Interp); \n\
-}\n")
-, *FunctionInfo.InstanceName, *TimeToLUTFrac, *NumSamples, *NumSamples, CurveLUTNumElems, CurveLUTNumElems
-, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample);
-
-	return true;
+	if (FunctionInfo.DefinitionName == SampleCurveName)
+	{
+		return true;
+	}
+	return false;
 }
 #endif
 
@@ -224,8 +214,8 @@ FORCEINLINE_DEBUGGABLE FLinearColor UNiagaraDataInterfaceColorCurve::SampleCurve
 	float NextEntry = PrevEntry < LUTNumSamplesMinusOne ? PrevEntry + 1.0f : PrevEntry;
 	float Interp = RemappedX - PrevEntry;
 	
-	int32 AIndex = PrevEntry * CurveLUTNumElems;
-	int32 BIndex = NextEntry * CurveLUTNumElems;
+	int32 AIndex = (int32)(PrevEntry * (float)CurveLUTNumElems);
+	int32 BIndex = (int32)(NextEntry * (float)CurveLUTNumElems);
 	FLinearColor A = FLinearColor(ShaderLUT[AIndex], ShaderLUT[AIndex + 1], ShaderLUT[AIndex + 2], ShaderLUT[AIndex + 3]);
 	FLinearColor B = FLinearColor(ShaderLUT[BIndex], ShaderLUT[BIndex + 1], ShaderLUT[BIndex + 2], ShaderLUT[BIndex + 3]);
 	return FMath::Lerp(A, B, Interp);
@@ -237,10 +227,92 @@ FORCEINLINE_DEBUGGABLE FLinearColor UNiagaraDataInterfaceColorCurve::SampleCurve
 	return FLinearColor(RedCurve.Eval(X), GreenCurve.Eval(X), BlueCurve.Eval(X), AlphaCurve.Eval(X));
 }
 
+
+//#if VECTORVM_SUPPORTS_EXPERIMENTAL && !VECTORVM_SUPPORTS_LEGACY && PLATFORM_ENABLE_VECTORINTRINSICS && !PLATFORM_ENABLE_VECTORINTRINSICS_NEON
+#if 0 //there's a bug in some cases and it's not properly optimized, just a naive implementation... @TODO: fix this properly
+template<>
+void UNiagaraDataInterfaceColorCurve::SampleCurve<TIntegralConstant<bool, true>>(FVectorVMExternalFunctionContext& Context)
+{
+	const int32 NumInstances = Context.GetNumInstances();
+
+	if (NumInstances == 1) //could be a per-instance function call, in which can we can't write 4-wide so just use the old method
+	{ 
+		VectorVM::FExternalFuncInputHandler<float> XParam(Context);
+		VectorVM::FExternalFuncRegisterHandler<float> SamplePtrR(Context);
+		VectorVM::FExternalFuncRegisterHandler<float> SamplePtrG(Context);
+		VectorVM::FExternalFuncRegisterHandler<float> SamplePtrB(Context);
+		VectorVM::FExternalFuncRegisterHandler<float> SamplePtrA(Context);
+
+		for (int32 i = 0; i < NumInstances; ++i)
+		{
+			float X = XParam.GetAndAdvance();
+			FLinearColor C = SampleCurveInternal<TIntegralConstant<bool, true>>(X);
+			*SamplePtrR.GetDestAndAdvance() = C.R;
+			*SamplePtrG.GetDestAndAdvance() = C.G;
+			*SamplePtrB.GetDestAndAdvance() = C.B;
+			*SamplePtrA.GetDestAndAdvance() = C.A;
+		}
+	}
+	else
+	{
+		const int32 NumLoops = Context.GetNumLoops<4>();
+
+		float *LUT = ShaderLUT.GetData();
+		VectorRegister4f LutNumSamplesMinusOne4 = VectorSetFloat1(LUTNumSamplesMinusOne);
+		VectorRegister4f LutMinTime4            = VectorSetFloat1(LUTMinTime);
+		VectorRegister4f LutInvTimeRange4       = VectorSetFloat1(LUTInvTimeRange);
+
+		VectorRegister4f *XParam = (VectorRegister4f *)Context.RegisterData[0];
+		VectorRegister4f *RReg   = (VectorRegister4f *)Context.RegisterData[1];
+		VectorRegister4f *GReg   = (VectorRegister4f *)Context.RegisterData[2];
+		VectorRegister4f *BReg   = (VectorRegister4f *)Context.RegisterData[3];
+		VectorRegister4f *AReg   = (VectorRegister4f *)Context.RegisterData[4];
+
+		int IdxA[4];
+		int IdxB[4];
+
+		for (int i = 0; i < NumLoops; ++i)
+		{
+			VectorRegister4f NormalizedX = VectorMultiply(VectorSubtract(XParam[i & Context.RegInc[0]], LutMinTime4), LutInvTimeRange4);
+			VectorRegister4f RemappedX   = VectorClamp(VectorMultiply(NormalizedX, LutNumSamplesMinusOne4), VectorZeroFloat(), LutNumSamplesMinusOne4);
+			VectorRegister4f PrevEntry   = VectorTruncate(RemappedX);
+			VectorRegister4f NextEntry   = VectorAdd(PrevEntry, VectorBitwiseAnd(VectorOneFloat(), VectorCompareLT(PrevEntry, LutNumSamplesMinusOne4))); //this could be made faster by duplicating the last entry in the LUT so you can read one past it
+			VectorRegister4f Interp      = VectorSubtract(RemappedX, PrevEntry);
+			VectorRegister4i IdxA4       = VectorShiftLeftImm(VectorFloatToInt(PrevEntry), 2);
+			VectorRegister4i IdxB4       = VectorShiftLeftImm(VectorFloatToInt(NextEntry), 2);
+
+			VectorIntStore(IdxA4, IdxA);
+			VectorIntStore(IdxB4, IdxB);
+
+			VectorRegister4f A0 = VectorLoad(LUT + IdxA[0]);
+			VectorRegister4f A1 = VectorLoad(LUT + IdxA[1]);
+			VectorRegister4f A2 = VectorLoad(LUT + IdxA[2]);
+			VectorRegister4f A3 = VectorLoad(LUT + IdxA[3]);
+
+			VectorRegister4f B0 = VectorLoad(LUT + IdxB[0]);
+			VectorRegister4f B1 = VectorLoad(LUT + IdxB[1]);
+			VectorRegister4f B2 = VectorLoad(LUT + IdxB[2]);
+			VectorRegister4f B3 = VectorLoad(LUT + IdxB[3]);
+
+			VectorRegister4f I0 = VectorCastIntToFloat(VectorShuffleImmediate(VectorCastFloatToInt(Interp), 0, 0, 0, 0));
+			VectorRegister4f I1 = VectorCastIntToFloat(VectorShuffleImmediate(VectorCastFloatToInt(Interp), 1, 1, 1, 1));
+			VectorRegister4f I2 = VectorCastIntToFloat(VectorShuffleImmediate(VectorCastFloatToInt(Interp), 2, 2, 2, 2));
+			VectorRegister4f I3 = VectorCastIntToFloat(VectorShuffleImmediate(VectorCastFloatToInt(Interp), 3, 3, 3, 3));
+
+			RReg[i] = VectorMultiplyAdd(B0, I0, VectorMultiply(A0, VectorSubtract(VectorOneFloat(), I0)));
+			GReg[i] = VectorMultiplyAdd(B1, I1, VectorMultiply(A1, VectorSubtract(VectorOneFloat(), I1)));
+			BReg[i] = VectorMultiplyAdd(B2, I2, VectorMultiply(A2, VectorSubtract(VectorOneFloat(), I2)));
+			AReg[i] = VectorMultiplyAdd(B3, I3, VectorMultiply(A3, VectorSubtract(VectorOneFloat(), I3)));
+
+			_MM_TRANSPOSE4_PS(RReg[i], GReg[i], BReg[i], AReg[i]);
+		}
+	}
+}
+#endif // VECTORVM_SUPPORTS_EXPERIMENTAL
+
 template<typename UseLUT>
 void UNiagaraDataInterfaceColorCurve::SampleCurve(FVectorVMExternalFunctionContext& Context)
 {
-	//TODO: Create some SIMDable optimized representation of the curve to do this faster.
 	VectorVM::FExternalFuncInputHandler<float> XParam(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> SamplePtrR(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> SamplePtrG(Context);
@@ -257,3 +329,4 @@ void UNiagaraDataInterfaceColorCurve::SampleCurve(FVectorVMExternalFunctionConte
 		*SamplePtrA.GetDestAndAdvance() = C.A;
 	}
 }
+

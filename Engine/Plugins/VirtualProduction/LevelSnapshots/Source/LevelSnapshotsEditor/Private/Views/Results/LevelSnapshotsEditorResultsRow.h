@@ -128,8 +128,13 @@ struct FLevelSnapshotsEditorResultsRow final : TSharedFromThis<FLevelSnapshotsEd
 
 	void FlushReferences();
 	
-	FLevelSnapshotsEditorResultsRow(const FText InDisplayName, const ELevelSnapshotsEditorResultsRowType InRowType, const ECheckBoxState StartingWidgetCheckboxState, 
-		const TWeakPtr<SLevelSnapshotsEditorResults>& InResultsView, const TWeakPtr<FLevelSnapshotsEditorResultsRow>& InDirectParentRow = nullptr);
+	FLevelSnapshotsEditorResultsRow(
+		const FText InDisplayName,
+		const ELevelSnapshotsEditorResultsRowType InRowType,
+		const ECheckBoxState StartingWidgetCheckboxState, 
+		const TWeakPtr<SLevelSnapshotsEditorResults>& InResultsView,
+		const TWeakPtr<FLevelSnapshotsEditorResultsRow>& InDirectParentRow = nullptr
+		);
 
 	void InitHeaderRow(
 		const ELevelSnapshotsEditorResultsTreeViewHeaderType InHeaderType, const TArray<FText>& InColumns);
@@ -173,15 +178,12 @@ struct FLevelSnapshotsEditorResultsRow final : TSharedFromThis<FLevelSnapshotsEd
 	const TArray<FText>& GetHeaderColumns() const;
 
 	FText GetDisplayName() const;
-	void SetDisplayName(const FText InDisplayName);
+	FText GetTooltip() const { return Tooltip; }
 
 	const FSlateBrush* GetIconBrush() const;
 	
 	/* bHasGeneratedChildren must be true to get actual children. */
 	const TArray<FLevelSnapshotsEditorResultsRowPtr>& GetChildRows() const;
-	/* bHasGeneratedChildren must be true to get an accurate value. */
-	int32 GetChildCount() const;
-	void SetChildRows(const TArray<FLevelSnapshotsEditorResultsRowPtr>& InChildRows);
 	void AddToChildRows(const FLevelSnapshotsEditorResultsRowPtr& InRow);
 	void InsertChildRowAtIndex(const FLevelSnapshotsEditorResultsRowPtr& InRow, const int32 AtIndex = 0);
 
@@ -235,7 +237,7 @@ struct FLevelSnapshotsEditorResultsRow final : TSharedFromThis<FLevelSnapshotsEd
 	TSharedPtr<SWidget> GetSnapshotPropertyCustomWidget() const;
 	TSharedPtr<SWidget> GetWorldPropertyCustomWidget() const;
 
-	/* Returns true if a specified type of custom widget is valid for his row. Use ObjectType_None to return true only if both snapshot and world custom widgets are valid. */
+	/* Returns true if a specified type of custom widget is valid for its row. Use ObjectType_None to return true only if both snapshot and world custom widgets are valid. */
 	bool HasCustomWidget(ELevelSnapshotsObjectType InQueryType) const;
 
 	bool GetIsCounterpartValueSame() const;
@@ -272,6 +274,7 @@ private:
 	/* Generic properties */
 	ELevelSnapshotsEditorResultsRowType RowType = SingleProperty;
 	FText DisplayName;
+	FText Tooltip;
 	TArray<FLevelSnapshotsEditorResultsRowPtr> ChildRows;
 	bool bIsTreeViewItemExpanded = false;
 
@@ -299,13 +302,6 @@ private:
 	/* This is a breadcrumb trail of display names used to find or store the state of the row. */
 	FString RowPath;
 
-	/* Returns a string of searchable keywords such as object names, property names, paths or anything else associated with the row that might be useful to search for. */
-	const FString& GetOrCacheSearchTerms();
-
-	/* Use MatchSearchTerms() first to match Search Terms against tokens, then call this method*/
-	bool GetDoesRowMatchSearchTerms() const;
-	void SetDoesRowMatchSearchTerms(const bool bNewMatch);
-
 	/* For removed actor type rows */
 	FSoftObjectPath RemovedActorPath;
 
@@ -331,13 +327,21 @@ private:
 	/* Whether the snapshot and world object properties have the same value */
 	bool bIsCounterpartValueSame = false;
 
-	void EvaluateAndSetAllParentGroupCheckedStates() const;
-
-	/* Evaluates all factors which should make a row visible or invisible but does not set visibility. */
-	bool ShouldRowBeVisible() const;
-
 	bool bShouldCheckboxBeHidden;
 
 	/* Checkbox in widget is bound to this property */
 	ECheckBoxState WidgetCheckedState = ECheckBoxState::Checked;
+
+	/* Returns a string of searchable keywords such as object names, property names, paths or anything else associated with the row that might be useful to search for. */
+	const FString& GetOrCacheSearchTerms();
+
+	/* Use MatchSearchTerms() first to match Search Terms against tokens, then call this method*/
+	void SetDoesRowMatchSearchTerms(const bool bNewMatch);
+	
+	void EvaluateAndSetAllParentGroupCheckedStates() const;
+
+	/* Evaluates all factors which should make a row visible or invisible but does not set visibility. */
+	bool ShouldRowBeVisible() const;
+	
+	void InitTooltipWithObject(const FSoftObjectPath& RowObject);
 };

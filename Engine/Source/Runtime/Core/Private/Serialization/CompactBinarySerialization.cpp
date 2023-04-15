@@ -2,19 +2,30 @@
 
 #include "Serialization/CompactBinarySerialization.h"
 
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/StringConv.h"
-#include "HAL/Platform.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "HAL/PlatformString.h"
+#include "Memory/MemoryView.h"
 #include "Misc/AsciiSet.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Base64.h"
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
 #include "Misc/StringBuilder.h"
 #include "Misc/Timespan.h"
+#include "Serialization/Archive.h"
 #include "Serialization/CompactBinaryValidation.h"
 #include "Serialization/CompactBinaryValue.h"
 #include "Serialization/VarInt.h"
+#include "Templates/Function.h"
 #include "Templates/IdentityFunctor.h"
 #include "Templates/Invoke.h"
+#include "Templates/RemoveReference.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -173,39 +184,39 @@ FCbField LoadCompactBinary(FArchive& Ar, FCbBufferAllocator Allocator)
 	ECbFieldType FieldType;
 	uint64 FieldSize = 1;
 
-	// Read in small increments until the total field size is known, to avoid reading too far.
-	for (;;)
+	for (const int64 StartPos = Ar.Tell(); !Ar.IsError() && FieldSize > 0;)
 	{
+		// Read in small increments until the total field size is known, to avoid reading too far.
 		const int32 ReadSize = int32(FieldSize - HeaderBytes.Num());
 		const int32 ReadOffset = HeaderBytes.AddUninitialized(ReadSize);
 		Ar.Serialize(HeaderBytes.GetData() + ReadOffset, ReadSize);
-		if (TryMeasureCompactBinary(MakeMemoryView(HeaderBytes), FieldType, FieldSize))
+
+		if (!Ar.IsError() && TryMeasureCompactBinary(MakeMemoryView(HeaderBytes), FieldType, FieldSize))
 		{
+			if (FieldSize <= uint64(Ar.TotalSize() - StartPos))
+			{
+				FUniqueBuffer Buffer = Allocator(FieldSize);
+				checkf(Buffer.GetSize() == FieldSize, TEXT("Allocator returned a buffer of size %" UINT64_FMT " bytes "
+					"when %" UINT64_FMT " bytes were requested."), Buffer.GetSize(), FieldSize);
+
+				FMutableMemoryView View = Buffer.GetView().CopyFrom(MakeMemoryView(HeaderBytes));
+				if (!View.IsEmpty())
+				{
+					// Read the remainder of the field.
+					Ar.Serialize(View.GetData(), static_cast<int64>(View.GetSize()));
+				}
+
+				if (!Ar.IsError() && ValidateCompactBinary(Buffer, ECbValidateMode::Default) == ECbValidateError::None)
+				{
+					return FCbField(Buffer.MoveToShared());
+				}
+			}
 			break;
-		}
-		if (FieldSize == 0)
-		{
-			Ar.SetError();
-			return FCbField();
 		}
 	}
 
-	// Allocate the buffer, copy the header, and read the remainder of the field.
-	FUniqueBuffer Buffer = Allocator(FieldSize);
-	checkf(Buffer.GetSize() == FieldSize,
-		TEXT("Allocator returned a buffer of size %" UINT64_FMT " bytes when %" UINT64_FMT " bytes were requested."),
-		Buffer.GetSize(), FieldSize);
-	FMutableMemoryView View = Buffer.GetView().CopyFrom(MakeMemoryView(HeaderBytes));
-	if (!View.IsEmpty())
-	{
-		Ar.Serialize(View.GetData(), static_cast<int64>(View.GetSize()));
-	}
-	if (ValidateCompactBinary(Buffer, ECbValidateMode::Default) != ECbValidateError::None)
-	{
-		Ar.SetError();
-		return FCbField();
-	}
-	return FCbField(Buffer.MoveToShared());
+	Ar.SetError();
+	return FCbField();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -265,13 +276,57 @@ FArchive& operator<<(FArchive& Ar, FCbObject& Object)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+bool LoadFromCompactBinary(FCbFieldView Field, FUtf8StringBuilderBase& OutValue)
+{
+	OutValue << Field.AsString();
+	return !Field.HasError();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FWideStringBuilderBase& OutValue)
+{
+	OutValue << Field.AsString();
+	return !Field.HasError();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FString& OutValue)
+{
+	OutValue = FString(Field.AsString());
+	return !Field.HasError();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FName& OutValue)
+{
+	OutValue = FName(Field.AsString());
+	return !Field.HasError();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FGuid& OutValue)
+{
+	OutValue = Field.AsUuid();
+	return !Field.HasError();
+}
+
+bool LoadFromCompactBinary(FCbFieldView Field, FGuid& OutValue, const FGuid& Default)
+{
+	OutValue = Field.AsUuid(Default);
+	return !Field.HasError();
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 class FCbJsonWriter
 {
 public:
-	explicit FCbJsonWriter(FUtf8StringBuilderBase& InBuilder)
+	explicit FCbJsonWriter(
+		FUtf8StringBuilderBase& InBuilder,
+		FUtf8StringView InLineTerminator = LINE_TERMINATOR_ANSI,
+		FUtf8StringView InIndent = "\t",
+		FUtf8StringView InSpace = " ")
 		: Builder(InBuilder)
+		, Indent(InIndent)
+		, Space(InSpace)
 	{
-		NewLineAndIndent << LINE_TERMINATOR_ANSI;
+		NewLineAndIndent << InLineTerminator;
 	}
 
 	void WriteField(FCbFieldView Field)
@@ -282,24 +337,24 @@ public:
 		if (FUtf8StringView Name = Field.GetName(); !Name.IsEmpty())
 		{
 			AppendQuotedString(Name);
-			Builder << ": "_ASV;
+			Builder << ANSITEXTVIEW(":") << Space;
 		}
 
 		switch (FCbValue Accessor = Field.GetValue(); Accessor.GetType())
 		{
 		case ECbFieldType::Null:
-			Builder << "null"_ASV;
+			Builder << ANSITEXTVIEW("null");
 			break;
 		case ECbFieldType::Object:
 		case ECbFieldType::UniformObject:
 			Builder << '{';
-			NewLineAndIndent << '\t';
+			NewLineAndIndent << Indent;
 			bNeedsNewLine = true;
 			for (FCbFieldView It : Field)
 			{
 				WriteField(It);
 			}
-			NewLineAndIndent.RemoveSuffix(1);
+			NewLineAndIndent.RemoveSuffix(Indent.Len());
 			if (bNeedsComma)
 			{
 				WriteOptionalNewLine();
@@ -309,13 +364,13 @@ public:
 		case ECbFieldType::Array:
 		case ECbFieldType::UniformArray:
 			Builder << '[';
-			NewLineAndIndent << '\t';
+			NewLineAndIndent << Indent;
 			bNeedsNewLine = true;
 			for (FCbFieldView It : Field)
 			{
 				WriteField(It);
 			}
-			NewLineAndIndent.RemoveSuffix(1);
+			NewLineAndIndent.RemoveSuffix(Indent.Len());
 			if (bNeedsComma)
 			{
 				WriteOptionalNewLine();
@@ -341,10 +396,10 @@ public:
 			Builder.Appendf(UTF8TEXT("%.17g"), Accessor.AsFloat64());
 			break;
 		case ECbFieldType::BoolFalse:
-			Builder << "false"_ASV;
+			Builder << ANSITEXTVIEW("false");
 			break;
 		case ECbFieldType::BoolTrue:
-			Builder << "true"_ASV;
+			Builder << ANSITEXTVIEW("true");
 			break;
 		case ECbFieldType::ObjectAttachment:
 		case ECbFieldType::BinaryAttachment:
@@ -378,21 +433,21 @@ public:
 		case ECbFieldType::CustomById:
 		{
 			FCbCustomById Custom = Accessor.AsCustomById();
-			Builder << "{ \"Id\": ";
+			Builder << "{" << Space << "\"Id\":" << Space;
 			Builder << Custom.Id;
-			Builder << ", \"Data\": ";
+			Builder << "," << Space << "\"Data\":" << Space;
 			AppendBase64String(Custom.Data);
-			Builder << " }";
+			Builder << Space << "}";
 			break;
 		}
 		case ECbFieldType::CustomByName:
 		{
 			FCbCustomByName Custom = Accessor.AsCustomByName();
-			Builder << "{ \"Name\": ";
+			Builder << "{" << Space << "\"Name\":" << Space;
 			AppendQuotedString(Custom.Name);
-			Builder << ", \"Data\": ";
+			Builder << "," << Space << "\"Data\":" << Space;
 			AppendBase64String(Custom.Data);
-			Builder << " }";
+			Builder << Space << "}";
 			break;
 		}
 		default:
@@ -439,13 +494,13 @@ private:
 			{
 				switch (Char)
 				{
-				case '\\': Builder << "\\\\"_ASV; break;
-				case '\"': Builder << "\\\""_ASV; break;
-				case '\b': Builder << "\\b"_ASV; break;
-				case '\f': Builder << "\\f"_ASV; break;
-				case '\n': Builder << "\\n"_ASV; break;
-				case '\r': Builder << "\\r"_ASV; break;
-				case '\t': Builder << "\\t"_ASV; break;
+				case '\\': Builder << ANSITEXTVIEW("\\\\"); break;
+				case '\"': Builder << ANSITEXTVIEW("\\\""); break;
+				case '\b': Builder << ANSITEXTVIEW("\\b"); break;
+				case '\f': Builder << ANSITEXTVIEW("\\f"); break;
+				case '\n': Builder << ANSITEXTVIEW("\\n"); break;
+				case '\r': Builder << ANSITEXTVIEW("\\r"); break;
+				case '\t': Builder << ANSITEXTVIEW("\\t"); break;
 				default:
 					Builder.Appendf(UTF8TEXT("\\u%04x"), uint32(Char));
 					break;
@@ -459,8 +514,8 @@ private:
 	void AppendBase64String(FMemoryView Value)
 	{
 		Builder << '"';
-		checkf(Value.GetSize() <= 512 * 1024 * 1024, TEXT("Encoding 512 MiB or larger is not supported. ")
-			TEXT("Size: " UINT64_FMT), Value.GetSize());
+		checkf(Value.GetSize() <= 512 * 1024 * 1024,
+			TEXT("Encoding 512 MiB or larger is not supported. Size: " UINT64_FMT), Value.GetSize());
 		const uint32 EncodedSize = FBase64::GetEncodedDataSize(uint32(Value.GetSize()));
 		const int32 EncodedIndex = Builder.AddUninitialized(int32(EncodedSize));
 		FBase64::Encode(static_cast<const uint8*>(Value.GetData()), uint32(Value.GetSize()),
@@ -471,6 +526,8 @@ private:
 private:
 	FUtf8StringBuilderBase& Builder;
 	TUtf8StringBuilder<32> NewLineAndIndent;
+	FUtf8StringView Indent;
+	FUtf8StringView Space;
 	bool bNeedsComma{false};
 	bool bNeedsNewLine{false};
 };
@@ -478,6 +535,12 @@ private:
 void CompactBinaryToJson(const FCbObjectView& Object, FUtf8StringBuilderBase& Builder)
 {
 	FCbJsonWriter Writer(Builder);
+	Writer.WriteField(Object.AsFieldView());
+}
+
+void CompactBinaryToCompactJson(const FCbObjectView& Object, FUtf8StringBuilderBase& Builder)
+{
+	FCbJsonWriter Writer(Builder, "", "", "");
 	Writer.WriteField(Object.AsFieldView());
 }
 

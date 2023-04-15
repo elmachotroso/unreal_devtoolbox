@@ -75,7 +75,6 @@ void FRuntimeVirtualTextureFinalizer::Finalize(FRDGBuilder& GraphBuilder)
 	for (int LayerIndex = 0; LayerIndex < RuntimeVirtualTexture::MaxTextureLayers; ++LayerIndex)
 	{
 		RenderPageBatchDesc.Targets[LayerIndex].Texture = Tiles[0].Targets[LayerIndex].TextureRHI != nullptr ? Tiles[0].Targets[LayerIndex].TextureRHI->GetTexture2D() : nullptr;
-		RenderPageBatchDesc.Targets[LayerIndex].UAV = Tiles[0].Targets[LayerIndex].UnorderedAccessViewRHI;
 		RenderPageBatchDesc.Targets[LayerIndex].PooledRenderTarget = Tiles[0].Targets[LayerIndex].PooledRenderTarget;
 	}
 
@@ -123,7 +122,6 @@ void FRuntimeVirtualTextureFinalizer::Finalize(FRDGBuilder& GraphBuilder)
 			for (int LayerIndex = 0; LayerIndex < RuntimeVirtualTexture::MaxTextureLayers; ++LayerIndex)
 			{
 				RenderPageBatchDesc.Targets[LayerIndex].Texture = Tiles[0].Targets[LayerIndex].TextureRHI != nullptr ? Tiles[0].Targets[LayerIndex].TextureRHI->GetTexture2D() : nullptr;
-				RenderPageBatchDesc.Targets[LayerIndex].UAV = Tiles[0].Targets[LayerIndex].UnorderedAccessViewRHI;
 				RenderPageBatchDesc.Targets[LayerIndex].PooledRenderTarget = Tiles[0].Targets[LayerIndex].PooledRenderTarget;
 			}
 		}
@@ -162,9 +160,7 @@ FVTRequestPageResult FRuntimeVirtualTextureProducer::RequestPageData(
 
 	FVTRequestPageResult result;
 	result.Handle = 0;
-	//todo[vt]:
-	// Returning Saturated instead of Pending here because higher level ignores Pending for locked pages. Need to fix that...
-	result.Status = Finalizer.IsReady() ? EVTRequestPageStatus::Available : EVTRequestPageStatus::Saturated;
+	result.Status = Finalizer.IsReady() ? EVTRequestPageStatus::Available : EVTRequestPageStatus::Pending;
 	return result;
 }
 

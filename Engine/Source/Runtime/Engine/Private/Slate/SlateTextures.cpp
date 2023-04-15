@@ -49,8 +49,12 @@ void FSlateTexture2DRHIRef::InitDynamicRHI()
 		if( TextureData.IsValid() || bCreateEmptyTexture )
 		{
 			check( !IsValidRef( ShaderResource) );
-			FRHIResourceCreateInfo CreateInfo(TEXT("FSlateTexture2DRHIRef"));
-			ShaderResource = RHICreateTexture2D( Width, Height, PixelFormat, 1, 1, TexCreateFlags, CreateInfo );
+
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("FSlateTexture2DRHIRef"), Width, Height, PixelFormat)
+				.SetFlags(TexCreateFlags);
+
+			ShaderResource = RHICreateTexture(Desc);
 			check( IsValidRef( ShaderResource ) );
 
 			INC_MEMORY_STAT_BY(STAT_SlateTextureGPUMemory, Width*Height*GPixelFormats[PixelFormat].BlockBytes);
@@ -65,9 +69,11 @@ void FSlateTexture2DRHIRef::InitDynamicRHI()
 			uint8* DestTextureData = (uint8*)RHILockTexture2D(ShaderResource, 0, RLM_WriteOnly, Stride, false);
 			const uint8* SourceTextureData = TextureData->GetRawBytes().GetData();
 
-			const uint32 BlocksX = CalcTextureMipWidthInBlocks(Width, PixelFormat, 0);
-			const uint32 BlocksY = CalcTextureMipWidthInBlocks(Height, PixelFormat, 0);
+			const uint32 BlocksX = GPixelFormats[PixelFormat].GetBlockCountForWidth(Width);
+			const uint32 BlocksY = GPixelFormats[PixelFormat].GetBlockCountForHeight(Height);
 			const uint32 DataStride = BlocksX * GPixelFormats[PixelFormat].BlockBytes;
+
+			checkf((uint32)TextureData->GetRawBytes().Num() >= DataStride * BlocksY, TEXT("Not enough bytes in source TextureData to complete copy operation"));
 
 			if (Stride == DataStride)
 			{
@@ -316,20 +322,15 @@ void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
 	if( TargetSizeX > 0 && TargetSizeY > 0 )
 	{
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
-		FRHIResourceCreateInfo CreateInfo(TEXT("FSlateTextureRenderTarget2DResource"), FClearValueBinding(ClearColor));
-		RHICreateTargetableShaderResource2D(
-			TargetSizeX, 
-			TargetSizeY, 
-			Format, 
-			1,
-			/*TexCreateFlags=*/TexCreate_None,
-			TexCreate_RenderTargetable,
-			/*bNeedsTwoCopies=*/false,
-			CreateInfo,
-			RenderTargetTextureRHI,
-			Texture2DRHI
-			);
-		TextureRHI = (FTextureRHIRef&)Texture2DRHI;
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FSlateTextureRenderTarget2DResource"))
+			.SetExtent(TargetSizeX, TargetSizeY)
+			.SetFormat((EPixelFormat)Format)
+			.SetClearValue(FClearValueBinding(ClearColor))
+			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+			.SetInitialState(ERHIAccess::SRVMask);
+
+		RenderTargetTextureRHI = TextureRHI = RHICreateTexture(Desc);
 	}
 
 	// Create the sampler state RHI resource.
@@ -350,8 +351,7 @@ void FSlateTextureRenderTarget2DResource::ReleaseDynamicRHI()
 	// Release the FTexture RHI resources here as well
 	ReleaseRHI();
 
-	Texture2DRHI.SafeRelease();
-	RenderTargetTextureRHI.SafeRelease();	
+	RenderTargetTextureRHI.SafeRelease();
 
 	// Remove from global list of deferred clears
 	RemoveFromDeferredUpdateList();
@@ -364,13 +364,10 @@ void FSlateTextureRenderTarget2DResource::UpdateDeferredResource(FRHICommandList
 	// Clear the target surface to green
 	if (bClearRenderTarget)
 	{
-		FRHIRenderPassInfo RPInfo(RenderTargetTextureRHI, ERenderTargetActions::Clear_Store);
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("Slate2DUpdateDeferred_Clear"));
-		RHICmdList.EndRenderPass();
+		RHICmdList.Transition(FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV));
+		ClearRenderTarget(RHICmdList, RenderTargetTextureRHI);
+		RHICmdList.Transition(FRHITransitionInfo(RenderTargetTextureRHI, ERHIAccess::RTV, ERHIAccess::SRVGraphics));
 	}
-
-	// Copy surface to the texture for use
-	RHICmdList.CopyToResolveTarget(RenderTargetTextureRHI, TextureRHI, FResolveParams());
 }
 
 uint32 FSlateTextureRenderTarget2DResource::GetSizeX() const
@@ -390,7 +387,7 @@ FIntPoint FSlateTextureRenderTarget2DResource::GetSizeXY() const
 
 float FSlateTextureRenderTarget2DResource::GetDisplayGamma() const
 {
-	if (TargetGamma > KINDA_SMALL_NUMBER * 10.0f)
+	if (TargetGamma > UE_KINDA_SMALL_NUMBER * 10.0f)
 	{
 		return TargetGamma;
 	}

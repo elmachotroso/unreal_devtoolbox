@@ -1,16 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerEdMode.h"
+#include "MVVM/ViewModels/ObjectBindingModel.h"
+#include "MVVM/ViewModels/SequenceModel.h"
+#include "MVVM/ViewModels/TrackModel.h"
+#include "MVVM/ObjectBindingModelStorageExtension.h"
+#include "MVVM/ViewModels/ChannelModel.h"
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
+#include "MVVM/ViewModels/ViewModelIterators.h"
+#include "MVVM/Views/STrackAreaView.h"
 #include "EditorViewportClient.h"
 #include "Curves/KeyHandle.h"
 #include "ISequencer.h"
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
-#include "DisplayNodes/SequencerDisplayNode.h"
+#include "IKeyArea.h"
 #include "Sequencer.h"
 #include "Framework/Application/SlateApplication.h"
-#include "DisplayNodes/SequencerObjectBindingNode.h"
-#include "DisplayNodes/SequencerTrackNode.h"
 #include "Evaluation/MovieSceneEvaluationTrack.h"
 #include "SequencerCommonHelpers.h"
 #include "MovieSceneHitProxy.h"
@@ -28,8 +34,16 @@
 #include "MovieSceneTracksComponentTypes.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "SequencerSectionPainter.h"
+#include "MovieSceneTimeHelpers.h"
 #include "MovieSceneToolHelpers.h"
 #include "Tools/MotionTrailOptions.h"
+#include "SequencerCommands.h"
+#include "SnappingUtils.h"
+#include "SequencerNodeTree.h"
+#include "SequencerSettings.h"
+#include "UnrealEdGlobals.h"
+#include "UnrealEdMisc.h"
+#include "Editor/UnrealEdEngine.h"
 
 const FEditorModeID FSequencerEdMode::EM_SequencerMode(TEXT("EM_SequencerMode"));
 
@@ -47,6 +61,8 @@ TAutoConsoleVariable<bool> CVarUseOldSequencerMotionTrails(
 
 namespace UE
 {
+
+
 namespace SequencerEdMode
 {
 
@@ -158,6 +174,8 @@ FSequencerEdMode::~FSequencerEdMode()
 
 void FSequencerEdMode::Enter()
 {
+	bIsTracking = false;;
+	StartXValue.Reset();
 	FEdMode::Enter();
 }
 
@@ -193,18 +211,272 @@ bool FSequencerEdMode::InputKey( FEditorViewportClient* ViewportClient, FViewpor
 	{
 		FModifierKeysState KeyState = FSlateApplication::Get().GetModifierKeys();
 
-		if (ActiveSequencer->GetCommandBindings(ESequencerCommandBindings::Shared).Get()->ProcessCommandBindings(Key, KeyState, (Event == IE_Repeat) ))
+ 		if (ActiveSequencer->GetCommandBindings(ESequencerCommandBindings::Shared).Get()->ProcessCommandBindings(Key, KeyState, (Event == IE_Repeat) ))
+		{
+			return true;
+		}
+		if (IsPressingMoveTimeSlider(Viewport)) //this is needed to make sure we get all of the processed mouse events, for some reason the above may not return true
 		{
 			return true;
 		}
 	}
-
 	return FEdMode::InputKey(ViewportClient, Viewport, Key, Event);
 }
+
+bool FSequencerEdMode::IsPressingMoveTimeSlider(FViewport* InViewport) const
+{
+	const FSequencerCommands& Commands = FSequencerCommands::Get();
+	bool bIsMovingTimeSlider = false;
+	// Need to iterate through primary and secondary to make sure they are all pressed.
+	for (uint32 i = 0; i < static_cast<uint8>(EMultipleKeyBindingIndex::NumChords); ++i)
+	{
+		EMultipleKeyBindingIndex ChordIndex = static_cast<EMultipleKeyBindingIndex>(i);
+		const FInputChord& Chord = *Commands.ScrubTimeViewport->GetActiveChord(ChordIndex);
+		bIsMovingTimeSlider |= Chord.IsValidChord() && InViewport->KeyState(Chord.Key);
+	}
+	return bIsMovingTimeSlider;
+}
+
+//just get the first one.
+USequencerSettings* FSequencerEdMode:: GetSequencerSettings() const
+{
+	TSharedPtr<FSequencer> ActiveSequencer;
+	for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
+	{
+		ActiveSequencer = WeakSequencer.Pin();
+		if (ActiveSequencer.IsValid())
+		{
+			return ActiveSequencer->GetSequencerSettings();
+		}
+	}
+	return nullptr;
+}
+
+bool FSequencerEdMode::IsMovingCamera(FViewport* InViewport) const
+{
+	const bool LeftMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);
+	const bool bIsAltKeyDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
+	const USequencerSettings* SequencerSettings = GetSequencerSettings();
+
+	return ((SequencerSettings ? SequencerSettings->GetLeftMouseDragDoesMarquee() : false) && LeftMouseButtonDown && bIsAltKeyDown);
+}
+bool FSequencerEdMode::IsDoingDrag(FViewport* InViewport) const
+{
+	const USequencerSettings* SequencerSettings = GetSequencerSettings();
+	const bool LeftMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);
+	const bool bIsCtrlKeyDown = InViewport->KeyState(EKeys::LeftControl) || InViewport->KeyState(EKeys::RightControl);
+	const bool bIsAltKeyDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
+	EAxisList::Type CurrentAxis = GetCurrentWidgetAxis();
+
+	//if shfit is down we still want to drag
+
+	return LeftMouseButtonDown && (CurrentAxis == EAxisList::None) && !bIsCtrlKeyDown  && !bIsAltKeyDown && (SequencerSettings ? SequencerSettings->GetLeftMouseDragDoesMarquee() : false);
+}
+
+bool FSequencerEdMode::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	if (IsPressingMoveTimeSlider(InViewport))
+	{
+		TSharedPtr<FSequencer> ActiveSequencer;
+		for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
+		{
+			ActiveSequencer = WeakSequencer.Pin();
+			if (ActiveSequencer.IsValid())
+			{
+				break;
+			}
+		}
+		if (ActiveSequencer.IsValid())
+		{
+			ActiveSequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Scrubbing);
+			ActiveSequencer->OnBeginScrubbingEvent().Broadcast();
+		}
+		return true;
+	}
+	else if (IsMovingCamera(InViewport))
+	{
+		InViewportClient->SetCurrentWidgetAxis(EAxisList::None);
+		return true;
+	}
+	else if (IsDoingDrag(InViewport))
+	{
+		DragToolHandler.MakeDragTool(InViewportClient);
+		return DragToolHandler.StartTracking(InViewportClient, InViewport);
+	}
+	return FEdMode::StartTracking(InViewportClient, InViewport);
+}
+bool FSequencerEdMode::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	if (IsPressingMoveTimeSlider(InViewport))
+	{
+		return true;
+	}
+	else if (IsMovingCamera(InViewport))
+	{
+		return true;
+	}
+	else if (DragToolHandler.EndTracking(InViewportClient, InViewport))
+	{
+		return true;
+	}
+	return FEdMode::EndTracking(InViewportClient, InViewport);
+}
+
+bool FSequencerEdMode::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag, FRotator& InRot, FVector& InScale)
+{
+	if (IsPressingMoveTimeSlider(InViewport))
+	{
+		return true;
+	}
+	else if (IsMovingCamera(InViewport))
+	{
+		if (InDrag.IsNearlyZero() == false || InRot.IsNearlyZero() == false || InScale.IsNearlyZero() == false)
+		{
+			InViewportClient->SetCurrentWidgetAxis(EAxisList::None);
+			InViewportClient->PeformDefaultCameraMovement(InDrag, InRot, InScale);
+			GUnrealEd->UpdatePivotLocationForSelection();
+			GUnrealEd->RedrawLevelEditingViewports();
+		}
+
+		return true;
+	}
+	else if (IsDoingDrag(InViewport))
+	{
+		return DragToolHandler.InputDelta(InViewportClient, InViewport, InDrag, InRot, InScale);
+		GUnrealEd->UpdatePivotLocationForSelection();
+		GUnrealEd->RedrawLevelEditingViewports();
+
+	}
+	return FEdMode::InputDelta(InViewportClient, InViewport, InDrag, InRot, InScale);
+}
+
+static void SnapSequencerTime(TSharedPtr<FSequencer>& Sequencer, FFrameTime& ScrubTime)
+{
+	// Clamp first, snap to frame last
+	if (Sequencer->GetSequencerSettings()->ShouldKeepCursorInPlayRangeWhileScrubbing())
+	{
+		TRange<FFrameNumber> PlaybackRange = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene()->GetPlaybackRange();
+		ScrubTime = UE::MovieScene::ClampToDiscreteRange(ScrubTime, PlaybackRange);
+	}
+
+	if (Sequencer->GetSequencerSettings()->GetIsSnapEnabled())
+	{
+		FFrameRate TickResolution =  Sequencer->GetFocusedTickResolution();
+		FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+
+		// Set the style of the scrub handle
+		if (Sequencer->GetScrubStyle() == ESequencerScrubberStyle::FrameBlock)
+		{
+			// Floor to the display frame
+			ScrubTime = ConvertFrameTime(ConvertFrameTime(ScrubTime, TickResolution, DisplayRate).FloorToFrame(), DisplayRate, TickResolution);
+		}
+		else
+		{
+			// Snap (round) to display rate
+			ScrubTime = FFrameRate::Snap(ScrubTime, TickResolution, DisplayRate);
+		}
+	}
+}
+
+bool FSequencerEdMode::ProcessCapturedMouseMoves(FEditorViewportClient* InViewportClient, FViewport* InViewport, const TArrayView<FIntPoint>& CapturedMouseMoves)
+{
+	TSharedPtr<FSequencer> ActiveSequencer;
+	for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
+	{
+		ActiveSequencer = WeakSequencer.Pin();
+		if (ActiveSequencer.IsValid())
+		{
+			break;
+		}
+	}
+	const bool bTimeChange = IsPressingMoveTimeSlider(InViewport);
+	if (CapturedMouseMoves.Num() > 0)
+	{
+		if (ActiveSequencer.IsValid())
+		{
+			if (bTimeChange)
+			{
+				for (int32 Index = 0; Index < CapturedMouseMoves.Num(); ++Index)
+				{
+					int32 X = CapturedMouseMoves[Index].X;
+					if (StartXValue.IsSet() == false)
+					{
+						StartXValue = X;
+						FQualifiedFrameTime CurrentTime = ActiveSequencer->GetLocalTime();
+						StartFrameNumber = CurrentTime.Time.GetFrame();
+					}
+					else
+					{
+						int32 Diff = X - StartXValue.GetValue();
+						if (Diff != 0)
+						{
+							FIntPoint Origin, Size;
+							InViewportClient->GetViewportDimensions(Origin, Size);
+							const float ViewPortSize = (float)Size.X;
+							const float FloatViewDiff = (float)(Diff) / ViewPortSize;
+
+							FFrameRate TickResolution = ActiveSequencer->GetFocusedTickResolution();
+							TPair<FFrameNumber, FFrameNumber> ViewRange(TickResolution.AsFrameNumber(ActiveSequencer->GetViewRange().GetLowerBoundValue()), TickResolution.AsFrameNumber(ActiveSequencer->GetViewRange().GetUpperBoundValue()));
+							FFrameNumber FrameDiff = ViewRange.Value - ViewRange.Key;
+							FrameDiff = FrameDiff * FloatViewDiff;
+							FFrameTime ScrubTime = StartFrameNumber + FrameDiff;
+							SnapSequencerTime(ActiveSequencer, ScrubTime);
+							ActiveSequencer->SetLocalTime(ScrubTime.GetFrame());
+						}
+					}
+					if (bIsTracking == false)
+					{
+						ActiveSequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Scrubbing);
+						ActiveSequencer->OnBeginScrubbingEvent().Broadcast();
+						bIsTracking = true;
+					}
+				}
+			}
+			else if(bIsTracking)
+			{
+				bIsTracking = false;
+				ActiveSequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Stopped);
+				ActiveSequencer->OnEndScrubbingEvent().Broadcast();
+				StartXValue.Reset();
+			}
+		}
+		else
+		{
+			bIsTracking = false;
+			StartXValue.Reset();
+		}
+		return bIsTracking;
+	}
+	else if (bTimeChange == false && bIsTracking)
+	{
+		if (ActiveSequencer.IsValid())
+		{
+			bIsTracking = false;
+			ActiveSequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Stopped);
+			ActiveSequencer->OnEndScrubbingEvent().Broadcast();
+			StartXValue.Reset();
+		}
+		else
+		{
+			bIsTracking = false;
+			StartXValue.Reset();
+		}
+	}
+	return false;
+}
+
+//Currently this is handled by the processed mouse events above, but don't fully trust ed modes this so leaving around for now
+bool FSequencerEdMode::MouseMove(FEditorViewportClient* ViewportClient, FViewport* InViewport, int32 X, int32 Y)
+{
+	return false;
+}
+
 
 void FSequencerEdMode::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
 	FEdMode::Render(View, Viewport, PDI);
+
+	DragToolHandler.Render3DDragTool(View, PDI);
 
 #if WITH_EDITORONLY_DATA
 	if (PDI)
@@ -229,6 +501,8 @@ void FSequencerEdMode::Render(const FSceneView* View, FViewport* Viewport, FPrim
 void FSequencerEdMode::DrawHUD(FEditorViewportClient* ViewportClient,FViewport* Viewport,const FSceneView* View,FCanvas* Canvas)
 {
 	FEdMode::DrawHUD(ViewportClient,Viewport,View,Canvas);
+
+	DragToolHandler.RenderDragTool(View, Canvas);
 
 	if( ViewportClient->AllowsCinematicControl() )
 	{
@@ -255,6 +529,8 @@ void FSequencerEdMode::AddReferencedObjects(FReferenceCollector& Collector)
 
 void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* KeyProxy)
 {
+	using namespace UE::Sequencer;
+
 	if (!KeyProxy)
 	{
 		return;
@@ -287,16 +563,14 @@ void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* K
 			for (const FTrajectoryKey::FData& KeyData : KeyProxy->Key.KeyData)
 			{
 				UMovieSceneSection* Section = KeyData.Section.Get();
-				TOptional<FSectionHandle> SectionHandle = Sequencer->GetNodeTree()->GetSectionHandle(Section);
+				TSharedPtr<FSectionModel> SectionHandle = Sequencer->GetNodeTree()->GetSectionModel(Section);
 				if (SectionHandle && KeyData.KeyHandle.IsSet())
 				{
-					TArray<TSharedRef<FSequencerSectionKeyAreaNode>> KeyAreaNodes;
-					SectionHandle->GetTrackNode()->GetChildKeyAreaNodesRecursively(KeyAreaNodes);
-
-					for (TSharedRef<FSequencerSectionKeyAreaNode> KeyAreaNode : KeyAreaNodes)
+					TParentFirstChildIterator<FChannelGroupModel> KeyAreaNodes = SectionHandle->GetParentTrackModel().AsModel()->GetDescendantsOfType<FChannelGroupModel>();
+					for (const TViewModelPtr<FChannelGroupModel>& KeyAreaNode : KeyAreaNodes)
 					{
-						TSharedPtr<IKeyArea> KeyArea = KeyAreaNode->GetKeyArea(Section);
-						if (KeyArea.IsValid() && KeyArea->GetName() == KeyData.ChannelName)
+						TSharedPtr<FChannelModel> Channel = KeyAreaNode->GetChannel(Section);
+						if (Channel && Channel->GetKeyArea()->GetName() == KeyData.ChannelName)
 						{
 							if (!bChangedSelection)
 							{
@@ -304,7 +578,7 @@ void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* K
 								bChangedSelection = true;
 							}
 
-							Sequencer->SelectKey(Section, KeyArea, KeyData.KeyHandle.GetValue(), bToggleSelection);
+							Sequencer->SelectKey(Section, Channel, KeyData.KeyHandle.GetValue(), bToggleSelection);
 							break;
 						}
 					}
@@ -368,6 +642,7 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<ISequencer>& Sequence
 											UMovieScene3DTransformTrack* TransformTrack, TArrayView<const TWeakObjectPtr<>> BoundObjects, const bool bIsSelected)
 {
 	using namespace UE::MovieScene;
+	using namespace UE::Sequencer;
 
 	const bool bHitTesting = PDI && PDI->IsHitTesting();
 
@@ -411,7 +686,7 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<ISequencer>& Sequence
 
 	TArray<UMovieScene3DTransformSection*> AllSectionsScratch;
 
-	FLinearColor TrackColor = FSequencerSectionPainter::BlendColor(TransformTrack->GetColorTint());
+	FLinearColor TrackColor = STrackAreaView::BlendDefaultTrackColor(TransformTrack->GetColorTint());
 	FColor       KeyColor   = TrackColor.ToFColor(true);
 
 	// Draw one line per-track (should only really ever be one)
@@ -540,6 +815,7 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<ISequencer>& Sequence
 
 void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 {
+	using namespace UE::Sequencer;
 
 	if (CVarUseOldSequencerMotionTrails->GetBool() == false)
 	{
@@ -562,42 +838,41 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 		// Gather a map of object bindings to their implict selection state
 		TMap<const FMovieSceneBinding*, bool> ObjectBindingNodesSelectionMap;
 
+		FObjectBindingModelStorageExtension* ObjectStorage = Sequencer->GetViewModel()->GetRootModel()->CastDynamic<FObjectBindingModelStorageExtension>();
+		check(ObjectStorage);
+
 		const FSequencerSelection& Selection = Sequencer->GetSelection();
-		const TSharedRef<FSequencerNodeTree>& NodeTree  = Sequencer->GetNodeTree();
+		const TSharedRef<FSequencerNodeTree>& NodeTree = Sequencer->GetNodeTree();
 		for (const FMovieSceneBinding& Binding : Sequence->GetMovieScene()->GetBindings())
 		{
-			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = NodeTree->FindObjectBindingNode(Binding.GetObjectGuid());
-			if (!ObjectBindingNode.IsValid())
+			TSharedPtr<FObjectBindingModel> ObjectBindingNode = ObjectStorage->FindModelForObjectBinding(Binding.GetObjectGuid());
+			if (!ObjectBindingNode)
 			{
 				continue;
 			}
 
-			bool bSelected = false;
-			auto Traverse_IsSelected = [&Selection, &bSelected](FSequencerDisplayNode& InNode)
+			bool bSelected = Selection.IsSelected(ObjectBindingNode);
+			if (!bSelected)
 			{
-				TSharedRef<FSequencerDisplayNode> Shared = InNode.AsShared();
-				if (Selection.IsSelected(Shared) || Selection.NodeHasSelectedKeysOrSections(Shared))
+				for (TSharedPtr<FViewModel> Child : ObjectBindingNode->GetDescendants())
 				{
-					bSelected = true;
-					// Stop traversing
-					return false;
+					if (Selection.IsSelected(Child) || Selection.NodeHasSelectedKeysOrSections(Child))
+					{
+						bSelected = true;
+						// Stop traversing
+						break;
+					}
 				}
 
-				return true;
-			};
-
-			ObjectBindingNode->Traverse_ParentFirst(Traverse_IsSelected, true);
-
-			// If one of our parent is selected, we're considered selected
-			TSharedPtr<FSequencerDisplayNode> ParentNode = ObjectBindingNode->GetParent();
-			while (!bSelected && ParentNode.IsValid())
-			{
-				if (Selection.IsSelected(ParentNode.ToSharedRef()) || Selection.NodeHasSelectedKeysOrSections(ParentNode.ToSharedRef()))
+				// If one of our parent is selected, we're considered selected
+				for (TSharedPtr<FViewModel> Parent : ObjectBindingNode->GetAncestors())
 				{
-					bSelected = true;
+					if (Selection.IsSelected(Parent) || Selection.NodeHasSelectedKeysOrSections(Parent))
+					{
+						bSelected = true;
+						break;
+					}
 				}
-
-				ParentNode = ParentNode->GetParent();
 			}
 
 			ObjectBindingNodesSelectionMap.Add(&Binding, bSelected);
@@ -740,4 +1015,110 @@ bool FSequencerEdModeTool::InputKey(FEditorViewportClient* ViewportClient, FView
 	}
 
 	return FModeTool::InputKey(ViewportClient, Viewport, Key, Event);
+}
+
+/*
+*
+*    Drag Tool Handler
+*
+*/
+
+FMarqueeDragTool::FMarqueeDragTool()
+	: bIsDeletingDragTool(false)
+{
+}
+
+bool FMarqueeDragTool::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	return (DragTool.IsValid() && InViewportClient->GetCurrentWidgetAxis() == EAxisList::None);
+}
+
+bool FMarqueeDragTool::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
+{
+	if (!bIsDeletingDragTool)
+	{
+		// Ending the drag tool may pop up a modal dialog which can cause unwanted reentrancy - protect against this.
+		TGuardValue<bool> RecursionGuard(bIsDeletingDragTool, true);
+
+		// Delete the drag tool if one exists.
+		if (DragTool.IsValid())
+		{
+			if (DragTool->IsDragging())
+			{
+				DragTool->EndDrag();
+			}
+			DragTool.Reset();
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+bool FMarqueeDragTool::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag, FRotator& InRot, FVector& InScale)
+{
+	if (DragTool.IsValid() == false || InViewportClient->GetCurrentWidgetAxis() != EAxisList::None)
+	{
+		return false;
+	}
+	if (DragTool->IsDragging() == false)
+	{
+		int32 InX = InViewport->GetMouseX();
+		int32 InY = InViewport->GetMouseY();
+		FVector2D Start(InX, InY);
+
+		DragTool->StartDrag(InViewportClient, GEditor->ClickLocation,Start);
+	}
+	const bool bUsingDragTool = UsingDragTool();
+	if (bUsingDragTool == false)
+	{
+		return false;
+	}
+
+	DragTool->AddDelta(InDrag);
+	return true;
+}
+
+/**
+ * @return		true if a drag tool is being used by the tracker, false otherwise.
+ */
+bool FMarqueeDragTool::UsingDragTool() const
+{
+	return DragTool.IsValid() && DragTool->IsDragging();
+}
+
+/**
+ * Renders the drag tool.  Does nothing if no drag tool exists.
+ */
+void FMarqueeDragTool::Render3DDragTool(const FSceneView* View, FPrimitiveDrawInterface* PDI)
+{
+	if (DragTool.IsValid())
+	{
+		DragTool->Render3D(View, PDI);
+	}
+}
+
+/**
+ * Renders the drag tool.  Does nothing if no drag tool exists.
+ */
+void FMarqueeDragTool::RenderDragTool(const FSceneView* View, FCanvas* Canvas)
+{
+	if (DragTool.IsValid())
+	{
+		DragTool->Render(View, Canvas);
+	}
+}
+
+void FMarqueeDragTool::MakeDragTool(FEditorViewportClient* InViewportClient)
+{
+	DragTool.Reset();
+	if (InViewportClient->IsOrtho())
+	{
+		DragTool = InViewportClient->MakeDragTool(EDragTool::BoxSelect);
+	}
+	else
+	{
+		DragTool = InViewportClient->MakeDragTool(EDragTool::FrustumSelect);
+	}
+
 }

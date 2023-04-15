@@ -197,11 +197,6 @@ namespace UnrealBuildTool
 		public int DefaultStackSizeCommit = 0;
 
 		/// <summary>
-		/// Whether to optimize for minimal code size
-		/// </summary>
-		public bool bOptimizeForSize = false;
-
-		/// <summary>
 		/// Whether to omit frame pointers or not. Disabling is useful for e.g. memory profiling on the PC
 		/// </summary>
 		public bool bOmitFramePointers = true;
@@ -262,9 +257,25 @@ namespace UnrealBuildTool
 		public bool bIgnoreUnresolvedSymbols;
 
 		/// <summary>
+		/// Set flags for determinstic compiles (experimental).
+		/// </summary>
+		public bool bDeterministic = false;
+
+		/// <summary>
 		/// Whether to log detailed timing information
 		/// </summary>
 		public bool bPrintTimingInfo;
+
+		/// <summary>
+		/// Package full path (directory + filename) where to store input files used at link time 
+		/// Normally used to debug a linker crash for platforms that support it
+		/// </summary>
+		public string? PackagePath;
+
+		/// <summary>
+		/// Directory where to put crash report files for platforms that support it
+		/// </summary>
+		public string? CrashDiagnosticDirectory;
 
 		/// <summary>
 		/// Bundle version for Mac apps
@@ -355,7 +366,6 @@ namespace UnrealBuildTool
 			bIsBuildingDotNetAssembly = Other.bIsBuildingDotNetAssembly;
 			DefaultStackSize = Other.DefaultStackSize;
 			DefaultStackSizeCommit = Other.DefaultStackSizeCommit;
-			bOptimizeForSize = Other.bOptimizeForSize;
 			bOmitFramePointers = Other.bOmitFramePointers;
 			bSupportEditAndContinue = Other.bSupportEditAndContinue;
 			bUseIncrementalLinking = Other.bUseIncrementalLinking;
@@ -368,7 +378,10 @@ namespace UnrealBuildTool
 			bUsePDBFiles = Other.bUsePDBFiles;
 			bUseFastPDBLinking = Other.bUseFastPDBLinking;
 			bIgnoreUnresolvedSymbols = Other.bIgnoreUnresolvedSymbols;
+			bDeterministic = Other.bDeterministic;
 			bPrintTimingInfo = Other.bPrintTimingInfo;
+			PackagePath = Other.PackagePath;
+			CrashDiagnosticDirectory = Other.CrashDiagnosticDirectory;
 			BundleVersion = Other.BundleVersion;
 			InstallName = Other.InstallName;
 			InputFiles.AddRange(Other.InputFiles);

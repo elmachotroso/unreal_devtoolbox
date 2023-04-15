@@ -22,9 +22,9 @@ struct SRCPanelExposedActor : public SRCPanelExposedEntity
 	using SCompoundWidget::AsShared;
 	
 	SLATE_BEGIN_ARGS(SRCPanelExposedActor)
-		: _EditMode(true)
+		: _LiveMode(false)
 	{}
-		SLATE_ATTRIBUTE(bool, EditMode)
+		SLATE_ATTRIBUTE(bool, LiveMode)
 	SLATE_END_ARGS()
 
 	static TSharedPtr<SRCPanelTreeNode> MakeInstance(const FGenerateWidgetArgs& Args);
@@ -41,11 +41,15 @@ private:
 	TSharedRef<SWidget> RecreateWidget(const FString& Path);
 	/** Handle the user selecting a different actor to expose. */
 	void OnChangeActor(const FAssetData& AssetData);
+	/** Handle direct actor value event instead of by asset. */
+	void OnChangeActor(AActor* Actor);
+	/** Creates an actor picker for hosted presets because the engine default one cannot use custom worlds. */
+	TSharedRef<SWidget> CreateEmbeddedPresetActorPicker();
 private:
 	/** Weak reference to the preset that exposes the actor. */
 	TWeakObjectPtr<URemoteControlPreset> WeakPreset;
 	/** Weak ptr to the remote control actor structure. */
 	TWeakPtr<FRemoteControlActor> WeakActor;
-	/** Holds this row's panel edit mode. */
-	TAttribute<bool> bEditMode;
+	/** Holds this row's panel live mode. */
+	TAttribute<bool> bLiveMode;
 };

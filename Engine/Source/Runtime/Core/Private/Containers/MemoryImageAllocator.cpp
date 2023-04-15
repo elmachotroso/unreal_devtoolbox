@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/ResourceArray.h"
+#include "Containers/StringFwd.h"
 #include "Misc/StringBuilder.h"
 #include "Serialization/MemoryImage.h"
+#include "Serialization/MemoryImageWriter.h"
+#include "Serialization/MemoryLayout.h"
 
 IMPLEMENT_ABSTRACT_TYPE_LAYOUT(FResourceArrayInterface);
 

@@ -14,6 +14,8 @@
 #include "SequenceRecorderUtils.h"
 #include "Animation/AnimData/AnimDataModel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScene3DTransformTrackRecorder)
+
 
 DEFINE_LOG_CATEGORY(TransformSerialization);
 
@@ -489,9 +491,11 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 
 			}
 			// Search for the Root Bone in the Skeleton
-			const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->MasterPoseComponent != nullptr ? ToRawPtr(SkeletalMeshComponent->MasterPoseComponent->SkeletalMesh) : ToRawPtr(SkeletalMeshComponent->SkeletalMesh);
+			const USkinnedAsset* SkinnedAsset = SkeletalMeshComponent->LeaderPoseComponent != nullptr ?
+				SkeletalMeshComponent->LeaderPoseComponent->GetSkinnedAsset() : 
+				SkeletalMeshComponent->GetSkeletalMeshAsset();
 			const UAnimSequence* AnimSequence = AnimTrackRecorder->GetAnimSequence();
-			if (AnimSequence && SkeletalMesh && AnimSequence->GetSkeleton())
+			if (AnimSequence && SkinnedAsset && AnimSequence->GetSkeleton())
 			{
 				// Find the root bone
 				int32 RootIndex = INDEX_NONE;
@@ -504,8 +508,8 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 					const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
 					if (BoneTreeIndex != INDEX_NONE)
 					{
-						const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-						const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+						const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkinnedAsset, BoneTreeIndex);
+						const int32 ParentIndex = SkinnedAsset->GetRefSkeleton().GetParentIndex(BoneIndex);
 						if (ParentIndex == INDEX_NONE)
 						{
 							// We've found the root (root bones do not have a valid parent)
@@ -727,3 +731,4 @@ bool UMovieScene3DTransformTrackRecorder::LoadRecordedFile(const FString& FileNa
 	}
 	return false;
 }
+

@@ -1,13 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ModuleAnalysis.h"
-#include "TraceServices/Model/AnalysisSession.h"
+
+#include "HAL/LowLevelMemTracker.h"
 #include "Model/ModuleProvider.h"
+#include "TraceServices/Model/AnalysisSession.h"
 #include "UObject/NameTypes.h"
 
-namespace TraceServices {
+namespace TraceServices
+{
 
 ////////////////////////////////////////////////////////////////////////////////
+
 enum Routes
 {
 	RouteId_ModuleInit,
@@ -16,6 +20,7 @@ enum Routes
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
 FModuleAnalyzer::FModuleAnalyzer(IAnalysisSession& InSession)
 	: Session(InSession)
 	, Provider(nullptr)
@@ -24,6 +29,7 @@ FModuleAnalyzer::FModuleAnalyzer(IAnalysisSession& InSession)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
 void FModuleAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 {
 	FInterfaceBuilder& Builder = Context.InterfaceBuilder;
@@ -33,6 +39,7 @@ void FModuleAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
 void FModuleAnalyzer::OnAnalysisEnd()
 {
 	if (Provider)
@@ -43,21 +50,25 @@ void FModuleAnalyzer::OnAnalysisEnd()
 
 
 ////////////////////////////////////////////////////////////////////////////////
+
 bool FModuleAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
-	switch(RouteId)
+	LLM_SCOPE_BYNAME(TEXT("Insights/FModuleAnalyzer"));
+
+	switch (RouteId)
 	{
 		case RouteId_ModuleInit:
 			{
-				ModuleBaseShift = Context.EventData.GetValue("ModuleBaseShift", 16);
+				ModuleBaseShift = IntCastChecked<uint8>(Context.EventData.GetValue("ModuleBaseShift", 16));
 				FAnsiStringView SymbolFormat;
 				if (Context.EventData.GetString("SymbolFormat", SymbolFormat))
 				{
 					check(Provider == nullptr); // Should only get one init message
-					Provider = CreateModuleProvider(Session, SymbolFormat);
-					if (Provider)
+					TSharedPtr<IModuleAnalysisProvider> ModuleProvider = CreateModuleProvider(Session, SymbolFormat);
+					if (ModuleProvider)
 					{
-						Session.AddProvider(GetModuleProviderName(), Provider);
+						Session.AddProvider(GetModuleProviderName(), ModuleProvider, ModuleProvider);
+						Provider = ModuleProvider.Get();
 					}
 				}
 			}
@@ -91,7 +102,8 @@ bool FModuleAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContex
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-uint64	FModuleAnalyzer::GetBaseAddress(const FEventData& EventData) const
+
+uint64 FModuleAnalyzer::GetBaseAddress(const FEventData& EventData) const
 {
 	if (ModuleBaseShift == 0)
 	{
@@ -107,4 +119,5 @@ uint64	FModuleAnalyzer::GetBaseAddress(const FEventData& EventData) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
 } // namespace TraceServices

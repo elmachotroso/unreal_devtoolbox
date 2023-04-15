@@ -38,7 +38,17 @@ namespace UE
 			{
 				vulkan
 			}
+			public enum Mac
+			{
+				metal
+			}
 		}
+
+		/// <summary>
+		/// Enable the RHI validation layer.
+		/// </summary>
+		[AutoParam]
+		public virtual bool RHIValidation { get; set; } = false;
 
 		/// <summary>
 		/// Run with Nvidia cards for raytracing support
@@ -116,6 +126,7 @@ namespace UE
 		/// Used for having the editor and any client communicate
 		/// </summary>
 		public string SessionID = Guid.NewGuid().ToString();
+		public void GenerateSessionID() { SessionID = Guid.NewGuid().ToString(); }
 
 
 		/// <summary>
@@ -197,7 +208,7 @@ namespace UE
 
 			bool HasNoOtherRole = !OtherRoles.Any();
 			// If there's only one role and it's the editor then tests are running under the editor with no target
-			if (ConfigRole.RoleType == UnrealTargetRole.Editor && HasNoOtherRole)
+			if (ConfigRole.RoleType.IsEditor() && HasNoOtherRole)
 			{ 
 				AppConfig.CommandLine += string.Format(" -ExecCmds=\"Automation {0}\"", AutomationTestArgument);		
 			}
@@ -217,7 +228,7 @@ namespace UE
 				}
 			}
 
-			if ((ConfigRole.RoleType == UnrealTargetRole.Editor && HasNoOtherRole) || ConfigRole.RoleType.IsClient())
+			if ((ConfigRole.RoleType.IsEditor() && HasNoOtherRole) || ConfigRole.RoleType.IsClient())
 			{
 				// These are flags that are required only on the main role that is going to execute the tests. ie raytracing is required only on the client or if it is an editor test.
 				if (DisableFrameTraceCapture || RayTracing)
@@ -235,7 +246,7 @@ namespace UE
 				}
 
 				// Options specific to windows
-				if (ConfigRole.Platform == UnrealTargetPlatform.Win64)
+				if (ConfigRole.Platform != null && ((UnrealTargetPlatform)ConfigRole.Platform).IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					if (PreferNvidia)
 					{
@@ -266,6 +277,11 @@ namespace UE
 				}
 			}
 
+			if (RHIValidation)
+			{
+				AppConfig.CommandLine += " -rhivalidation";
+			}
+
 			// Options specific to roles running under the editor
 			if (ConfigRole.RoleType.UsesEditor())
 			{
@@ -278,6 +294,15 @@ namespace UE
 				{
 					AppConfig.CommandLine += string.Format(" -ddc={0}", DDC);
 				}
+			}
+
+			if (!string.IsNullOrEmpty(VerboseLogCategories))
+			{
+				string LogCmdsString = string.Join(',',
+					VerboseLogCategories
+					.Split(',')
+					.Select(LogName => LogName + " Verbose"));
+				AppConfig.CommandLine += string.Format(" -LogCmds=\"{0}\"", LogCmdsString);
 			}
 
 		}
@@ -301,10 +326,15 @@ namespace UE
 		/// <returns></returns>
 		public override AutomationTestConfig GetConfiguration()
 		{
+			if (CachedConfig != null)
+			{
+				return CachedConfig;
+			}
+
 			AutomationTestConfig Config = base.GetConfiguration();
 
 			// Tests in the editor only require a single role
-			UnrealTestRole EditorRole = Config.RequireRole(UnrealTargetRole.Editor);
+			UnrealTestRole EditorRole = Config.RequireRole(Config.CookedEditor ? UnrealTargetRole.CookedEditor : UnrealTargetRole.Editor);
 			EditorRole.CommandLineParams.AddRawCommandline("-NoWatchdog -stdout -FORCELOGFLUSH -CrashForUAT -log");
 
 			return Config;
@@ -328,6 +358,11 @@ namespace UE
 		/// <returns></returns>
 		public override AutomationTestConfig GetConfiguration()
 		{
+			if (CachedConfig != null)
+			{
+				return CachedConfig;
+			}
+
 			AutomationTestConfig Config = base.GetConfiguration();
 
 			// Target tests require an editor which hosts the process
@@ -389,6 +424,50 @@ namespace UE
 		}
 
 		/// <summary>
+		/// Override the Suite by RunTest if it is a Group
+		/// </summary>
+		public override string Suite
+		{
+			get
+			{
+				string BaseSuite = base.Suite;
+				var Config = GetConfiguration();
+				if (Config is AutomationTestConfig)
+				{
+					var AutomationConfig = Config as AutomationTestConfig;
+					if (!string.IsNullOrEmpty(AutomationConfig.RunTest) && AutomationConfig.RunTest.ToLower().StartsWith("group:"))
+					{
+						BaseSuite  = AutomationConfig.RunTest.Substring(6);
+					}
+				}
+
+				return BaseSuite;
+			}
+		}
+
+		/// <summary>
+		/// Override the Type
+		/// </summary>
+		public override string Type
+		{
+			get
+			{
+				string Base = "UE.Automation";
+				var Config = GetConfiguration();
+				if (Config is AutomationTestConfig)
+				{
+					var AutomationConfig = Config as AutomationTestConfig;
+					if (!string.IsNullOrEmpty(AutomationConfig.RunTest))
+					{
+						return string.Format("{0}({1}) {2}", Base, AutomationConfig.RunTest, Context.BuildInfo.ProjectName);
+					}
+				}
+
+				return string.Format("{0}({1})", Base, Suite);
+			}
+		}
+
+		/// <summary>
 		/// Called when a test is starting
 		/// </summary>
 		/// <param name="Pass"></param>
@@ -426,6 +505,11 @@ namespace UE
 			LastAutomationEntryTime = DateTime.MinValue;
 			LastAutomationEntryCount = 0;
 			TestPassResults = null;
+
+			if (GetConfiguration() is AutomationTestConfig Config)
+			{
+				Config.GenerateSessionID();
+			}
 
 			return base.RestartTest();
 		}
@@ -500,7 +584,7 @@ namespace UE
 					}
 				}
 				
-				if(TestPassResults == null)
+				if(TestPassResults == null && InLog != null)
 				{
 					// Parse automaton info from the log then
 					TestPassResults = new UnrealAutomatedTestPassResults();
@@ -532,6 +616,127 @@ namespace UE
 			}
 
 			return TestPassResults;
+		}
+
+		/// <summary>
+		/// Look for critical failure during the test session and update the test states
+		/// </summary>
+		/// <param name="JsonTestPassResults"></param>
+		private void UpdateTestStateOnCriticalFailure(UnrealAutomatedTestPassResults JsonTestPassResults)
+		{
+			bool HasTimeout = RoleResults != null && RoleResults.Where(R => R.ProcessResult == UnrealProcessResult.TimeOut).Any();
+			string HordeArtifactPath = GetConfiguration().HordeArtifactPath;
+			var MainRole = GetConfiguration().GetMainRequiredRole();
+			string LastTestWithCriticalFailure = string.Empty;
+			if (JsonTestPassResults.InProcess > 0)
+			{
+				// The test pass did not run completely
+				Log.Verbose("Found in-process tests: {0}", JsonTestPassResults.InProcess);
+				// Get any critical error and push it to json report and resave it.
+				if (RoleResults != null)
+				{
+					UnrealLog.CallstackMessage FatalError = null;
+					foreach (var Result in RoleResults)
+					{
+						if (Result.LogSummary.FatalError != null)
+						{
+							FatalError = Result.LogSummary.FatalError;
+							break;
+						}
+					}
+					var Test = JsonTestPassResults.Tests.FirstOrDefault((T => T.State == TestStateType.InProcess));
+					if (!String.IsNullOrEmpty(Test.TestDisplayName))
+					{
+						LastTestWithCriticalFailure = Test.FullTestPath;
+						string ErrorMessage;
+						if (HasTimeout)
+						{
+							ErrorMessage = String.Format("Session reached timeout after {0} seconds.", MaxDuration);
+						}
+						else
+						{
+							ErrorMessage = "Engine encountered a critical failure. \n";
+							if (FatalError != null)
+							{
+								ErrorMessage += FatalError.FormatForLog();
+							}
+							else
+							{
+								ErrorMessage += "No callstack found in the log.";
+							}
+						}
+						Test.AddError(ErrorMessage);
+						if (!CanRetry() || JsonTestPassResults.NotRun == 0)
+						{
+							// Setting the test as fail because no retry will be done anymore.
+							// The InProcess state won't be used for pass resume
+							Test.State = TestStateType.Fail;
+							if (!CanRetry())
+							{
+								Test.AddWarning(string.Format("Session reached maximum of retries({0}) to resume on critical failure!", Retries));
+							}
+						}
+						JsonTestPassResults.WriteToJson();
+					}
+				}
+			}
+			if (JsonTestPassResults.NotRun > 0)
+			{
+				// The test pass did not run at all
+				Log.Verbose("Found not-run tests: {0}", JsonTestPassResults.NotRun);
+				if (GetConfiguration().ResumeOnCriticalFailure && !HasTimeout)
+				{
+					// Reschedule test to resume from last 'in-process' test.
+					if (SetToRetryIfPossible())
+					{
+						// Attach current artifacts to Horde output
+						if (SessionArtifacts != null && !string.IsNullOrEmpty(HordeArtifactPath))
+						{
+							HordeReport.SimpleTestReport TempReport = new HordeReport.SimpleTestReport();
+							TempReport.SetOutputArtifactPath(HordeArtifactPath);
+							foreach (UnrealRoleArtifacts Artifact in SessionArtifacts)
+							{
+								string LogName = Path.GetFullPath(Artifact.LogPath).Replace(Path.GetFullPath(Context.Options.LogDir), "").TrimStart(Path.DirectorySeparatorChar);
+								TempReport.AttachArtifact(Artifact.LogPath, LogName);
+								// Reference last run instance log
+								if (Artifact.SessionRole.RoleType == MainRole.Type)
+								{
+									JsonTestPassResults.Devices.Last().AppInstanceLog = LogName.Replace("\\", "/");
+								}
+							}
+							JsonTestPassResults.WriteToJson();
+						}
+						// Discard the report as we are going to do another pass.
+					}
+					else
+					{
+						Log.Error("Reach maximum of retries({0}) to resume on critical failure!", Retries);
+						// Adding a note to the report about why the not-run are not going to be run
+						string Message = string.Format("Session reached maximum of retries({0}) to resume on critical failure!", Retries);
+						if (!string.IsNullOrEmpty(LastTestWithCriticalFailure))
+						{
+							Message += string.Format(" \nLast critical failure was caught on {0}", LastTestWithCriticalFailure);
+						}
+						var NotRunTests = JsonTestPassResults.Tests.Where((T => T.State == TestStateType.NotRun));
+						foreach (var Test in NotRunTests)
+						{
+							Test.AddInfo(Message);
+						}
+						JsonTestPassResults.WriteToJson();
+					}
+				}
+				else if (HasTimeout)
+				{
+					// Adding a note to the report about why the not-run are not going to be run
+					string Message = string.Format("Session reached timeout after {0} seconds.", MaxDuration);
+					var NotRunTests = JsonTestPassResults.Tests.Where((T => T.State == TestStateType.NotRun));
+					foreach (var Test in NotRunTests)
+					{
+						Test.AddInfo(Message);
+					}
+					JsonTestPassResults.WriteToJson();
+				}
+			}
 		}
 
 		/// <summary>
@@ -581,9 +786,14 @@ namespace UE
 		public override ITestReport CreateReport(TestResult Result)
 		{
 			ITestReport Report = null;
-			if (GetConfiguration() is AutomationTestConfig)
+			if (GetConfiguration() is AutomationTestConfig Config)
 			{
-				var Config = GetConfiguration() as AutomationTestConfig;
+				// Parse the json test pass results and look for critical failure to add to report
+				var TestPassResults = GetTestPassResults(null);
+				if (TestPassResults != null)
+				{
+					UpdateTestStateOnCriticalFailure(TestPassResults);
+				}
 				// Save test result data for Horde build system
 				bool WriteTestResultsForHorde = Config.WriteTestResultsForHorde;
 				if (WriteTestResultsForHorde)
@@ -601,7 +811,7 @@ namespace UE
 							if (Report != null)
 							{
 								var MainRolePlatform = Context.GetRoleContext(Config.GetMainRequiredRole().Type).Platform;
-								Report.SetMetadata("RHI", string.IsNullOrEmpty(Config.RHI) || MainRolePlatform != UnrealTargetPlatform.Win64 ? "default" : Config.RHI.ToLower());
+								Report.SetMetadata("RHI", string.IsNullOrEmpty(Config.RHI) || !MainRolePlatform.IsInGroup(UnrealPlatformGroup.Windows) ? "default" : Config.RHI.ToLower());
 							}
 						}
 					}
@@ -667,14 +877,23 @@ namespace UE
 					}
 					else if (IncompleteTests.Count() > 0)
 					{
-						MB.H3("The following test(s) were incomplete:");
-
-						foreach (UnrealAutomatedTestResult Result in IncompleteTests)
+						var InProcess = IncompleteTests.Where(T => T.State == TestStateType.InProcess);
+						if (InProcess.Any())
 						{
-							MB.H4(string.Format("Error: Test '{0}' did not run or complete", Result.TestDisplayName));
-							MB.Paragraph("FullName: " + Result.FullTestPath);
-							MB.UnorderedList(CapErrorOrWarningList(Result.ErrorEvents.Select(E => ErrorLineForHorde(E.Message)).Distinct()));
-							MB.UnorderedList(CapErrorOrWarningList(Result.WarningEvents.Select(E => WarningLineForHorde(E.Message)).Distinct()));
+							MB.H3("The following test(s) were incomplete:");
+							foreach (UnrealAutomatedTestResult Result in InProcess)
+							{
+								MB.H4(string.Format("Error: Test '{0}' did not complete", Result.TestDisplayName));
+								MB.Paragraph("FullName: " + Result.FullTestPath);
+								MB.UnorderedList(CapErrorOrWarningList(Result.ErrorEvents.Select(E => ErrorLineForHorde(E.Message)).Distinct()));
+								MB.UnorderedList(CapErrorOrWarningList(Result.WarningEvents.Select(E => WarningLineForHorde(E.Message)).Distinct()));
+							}
+						}
+						var NotRun = IncompleteTests.Where(T => T.State == TestStateType.NotRun);
+						if (NotRun.Any())
+						{
+							MB.H3("The following test(s) were not run:");
+							MB.UnorderedList(NotRun.Select(T => T.FullTestPath));
 						}
 					}
 				}

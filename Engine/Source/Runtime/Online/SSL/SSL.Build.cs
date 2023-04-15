@@ -12,10 +12,11 @@ public class SSL : ModuleRules
 				Target.Platform == UnrealTargetPlatform.Mac ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) ||
-	            Target.Platform == UnrealTargetPlatform.IOS ||
-	            Target.Platform == UnrealTargetPlatform.Android;
+				Target.Platform == UnrealTargetPlatform.IOS ||
+				Target.Platform == UnrealTargetPlatform.Android;
 		}
 	}
+
 	protected virtual bool bUseDefaultSSLCert
 	{
 		get
@@ -26,10 +27,9 @@ public class SSL : ModuleRules
 		}
 	}
 
-
 	public SSL(ReadOnlyTargetRules Target) : base(Target)
-    {
-        PublicDefinitions.Add("SSL_PACKAGE=1");
+	{
+		PublicDefinitions.Add("SSL_PACKAGE=1");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -42,12 +42,6 @@ public class SSL : ModuleRules
 			PublicDefinitions.Add("WITH_SSL=1");
 			PrivateDefinitions.Add("USE_DEFAULT_SSLCERT=" + (bUseDefaultSSLCert ? "1" : "0"));
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"Runtime/Online/SSL/Private",
-				}
-			);
-
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 
 			if (Target.Platform == UnrealTargetPlatform.Win64)
@@ -59,5 +53,7 @@ public class SSL : ModuleRules
 		{
 			PublicDefinitions.Add("WITH_SSL=0");
 		}
-    }
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
+	}
 }

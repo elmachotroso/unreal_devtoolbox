@@ -4,42 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "AnimationModifier.h"
+#include "MotionExtractorTypes.h"
 #include "MotionExtractorModifier.generated.h"
-
-/** Type of motion to extract */
-UENUM(BlueprintType)
-enum class EMotionExtractor_MotionType : uint8
-{
-	Translation,
-	Rotation,
-	Scale,
-	TranslationSpeed,
-	RotationSpeed
-};
-
-/** Axis to get the final value from */
-UENUM(BlueprintType)
-enum class EMotionExtractor_Axis : uint8
-{
-	X,
-	Y,
-	Z,
-	XY,
-	XZ,
-	YZ,
-	XYZ
-};
-
-/** Math operations that can be applied to the extracted value before add it to the curve */
-UENUM(BlueprintType)
-enum class EMotionExtractor_MathOperation : uint8
-{
-	None,
-	Addition,
-	Subtraction,
-	Division,
-	Multiplication
-};
 
 /** Extracts motion from a bone in the animation and bakes it into a curve */
 UCLASS()
@@ -61,6 +27,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
 	EMotionExtractor_Axis Axis;
 
+	/** Whether we want to remove the curve when we revert or re-apply modifier 
+		Disabling this allows you to modify settings and create a new curve each time you re-apply the modifier
+		Enabling this is the preferred setting when using a modifier that's applied in bulk and you may want to remove/rename curves */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
+	bool bRemoveCurveOnRevert;
+
+	/** Whether to extract the bone transforms relative to the first frame in the animation */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
+	bool bRelativeToFirstFrame;
+
 	/** Whether to extract the bone pose in component space or local space */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
 	bool bComponentSpace;
@@ -76,6 +52,10 @@ public:
 	/** Right operand for the math operation selected */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (EditCondition = "MathOperation != EMotionExtractor_MathOperation::None"))
 	float Modifier;
+
+	/** Whether we want a normalized value (0 - 1) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
+	bool bNormalize;
 
 	/** Rate used to sample the animation */
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (ClampMin = "1"))
@@ -99,10 +79,4 @@ public:
 
 	/** Returns the desired value from the extracted poses */
 	float GetDesiredValue(const FTransform& BoneTransform, const FTransform& LastBoneTransform, float DeltaTime) const;
-
-	/** Helper function to extract the pose for a given bone at a given time */
-	static FTransform ExtractBoneTransform(UAnimSequence* Animation, const FBoneContainer& BoneContainer, FCompactPoseBoneIndex CompactPoseBoneIndex, float Time, bool bComponentSpace);
-
-	/** Helper function to calculate the magnitude of a vector only considering a specific axis or axes */
-	static float CalculateMagnitude(const FVector& Vector, EMotionExtractor_Axis Axis);
 };

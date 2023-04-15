@@ -101,7 +101,7 @@ namespace Metasound
 		const FInputDataVertex& ToVertex = ToVertexInterface.GetInputVertex(ToKey);
 
 
-		if (FromVertex.GetDataTypeName() != ToVertex.GetDataTypeName())
+		if (FromVertex.DataTypeName != ToVertex.DataTypeName)
 		{
 			return false;
 		}
@@ -139,21 +139,20 @@ namespace Metasound
 		return MakeShared<FGraph::FFactory>();
 	}
 
-	TUniquePtr<IOperator> FGraph::FFactory::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) 
+	TUniquePtr<IOperator> FGraph::FFactory::CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults)
 	{
 		const FGraph& Graph = static_cast<const FGraph&>(InParams.Node);
 
-		FBuildGraphParams BuildParams{Graph, InParams.OperatorSettings, InParams.InputDataReferences, InParams.Environment};
+		FBuildGraphOperatorParams BuildParams { Graph, InParams.OperatorSettings, InParams.InputData, InParams.Environment};
 
 		if (nullptr != InParams.Builder)
 		{
-			// Use the provided builder if it exists. 
-			return InParams.Builder->BuildGraphOperator(BuildParams, OutErrors);
+			// Use the provided builder if it exists.
+			return InParams.Builder->BuildGraphOperator(BuildParams, OutResults);
 		}
 		else
 		{
-			// Use a builder with default settings if no builder was provided. 
-			return FOperatorBuilder(FOperatorBuilderSettings::GetDefaultSettings()).BuildGraphOperator(BuildParams, OutErrors);
+			return FOperatorBuilder(FOperatorBuilderSettings::GetDefaultSettings()).BuildGraphOperator(BuildParams, OutResults);
 		}
 	}
 }

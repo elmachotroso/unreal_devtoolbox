@@ -10,8 +10,11 @@
 #include "OrientedBoxTypes.h"
 #include "CapsuleTypes.h"
 #include "Physics/CollisionPropertySets.h"
+#include "Physics/PhysicsDataCollection.h"
 #include "PropertySets/PolygroupLayersProperties.h"
 #include "Polygroups/PolygroupSet.h"
+#include "ModelingOperators.h"
+#include "MeshOpPreviewHelpers.h"
 #include "SetCollisionGeometryTool.generated.h"
 
 class UPreviewGeometry;
@@ -54,6 +57,7 @@ enum class ECollisionGeometryType
 	Capsules = 4,
 	ConvexHulls = 5,
 	SweptHulls = 6,
+	LevelSets = 7,
 	MinVolume = 10,
 
 	None = 11
@@ -115,6 +119,26 @@ public:
 		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::ConvexHulls"))
 	int32 HullTargetFaceCount = 20;
 
+	/** How many convex hulls can be used to approximate each mesh */
+	UPROPERTY(EditAnywhere, Category = ConvexHulls, meta = (UIMin = "1", UIMax = "100", ClampMin = "1",
+		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::ConvexHulls"))
+	int32 MaxHullsPerMesh = 1;
+
+	/** How much to search the space of possible decompositions beyond MaxHullsPerMesh; for larger values, will do additional work to try to better approximate mesh features (but resulting hulls may overlap more) */
+	UPROPERTY(EditAnywhere, Category = ConvexHulls, meta = (UIMin = "0", UIMax = "2", ClampMin = "0",
+		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::ConvexHulls && MaxHullsPerMesh > 1"))
+	float ConvexDecompositionSearchFactor = .5;
+
+	/** Error tolerance for adding more convex hulls, in cm.  For volumetric errors, the value will be cubed (so a value of 10 indicates a 10x10x10 volume worth of error is acceptable). */
+	UPROPERTY(EditAnywhere, Category = ConvexHulls, meta = (UIMin = "0", UIMax = "1000", ClampMin = "0",
+		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::ConvexHulls && MaxHullsPerMesh > 1"))
+	float AddHullsErrorTolerance = 0;
+
+	/** Minimum part thickness for convex decomposition (in cm); hulls thinner than this will be merged into adjacent hulls, if possible. */
+	UPROPERTY(EditAnywhere, Category = ConvexHulls, meta = (UIMin = "0", UIMax = "1", ClampMin = "0",
+		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::ConvexHulls && MaxHullsPerMesh > 1"))
+	float MinPartThickness = 0.1;
+
 	UPROPERTY(EditAnywhere, Category = SweptHulls, meta = (EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::SweptHulls"))
 	bool bSimplifyPolygons = true;
 
@@ -125,6 +149,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = SweptHulls, meta = (UIMin = "0", UIMax = "10", ClampMin = "0", ClampMax = "100000",
 		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::SweptHulls"))
 	EProjectedHullAxis SweepAxis = EProjectedHullAxis::SmallestVolume;
+
+	// Level Set settings
+
+	/** Level set grid resolution along longest grid axis */
+	UPROPERTY(EditAnywhere, Category = LevelSets, meta = (UIMin = "3", UIMax = "100", ClampMin = "3", ClampMax = "1000",
+		EditConditionHides, EditCondition = "GeometryType == ECollisionGeometryType::LevelSets"))
+	int32 LevelSetResolution = 10;
 
 	UPROPERTY(EditAnywhere, Category = OutputOptions)
 	bool bAppendToExisting = false;
@@ -141,7 +172,7 @@ public:
  * Mesh Inspector Tool for visualizing mesh information
  */
 UCLASS()
-class MESHMODELINGTOOLSEXP_API USetCollisionGeometryTool : public UMultiSelectionMeshEditingTool
+class MESHMODELINGTOOLSEXP_API USetCollisionGeometryTool : public UMultiSelectionMeshEditingTool, public UE::Geometry::IGenericDataOperatorFactory<FPhysicsDataCollection>
 {
 	GENERATED_BODY()
 public:
@@ -152,6 +183,15 @@ public:
 
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
+	virtual bool CanAccept() const override
+	{
+		// allow accept when we're showing the current, valid result
+		return Super::CanAccept() && bInputMeshesValid && Compute && Compute->HaveValidResult() && !bVisualizationDirty;
+	}
+
+	// Begin IGenericDataOperatorFactory interface
+	virtual TUniquePtr<UE::Geometry::TGenericDataOperator<FPhysicsDataCollection>> MakeNewOperator() override;
+	// End IGenericDataOperatorFactory interface
 
 protected:
 
@@ -170,6 +210,11 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UMaterialInterface> LineMaterial = nullptr;
 
+	//
+	// Background compute
+	//
+	TUniquePtr<TGenericDataBackgroundCompute<FPhysicsDataCollection>> Compute = nullptr;
+
 protected:
 	UPROPERTY()
 	TObjectPtr<UPreviewGeometry> PreviewGeom;
@@ -180,6 +225,11 @@ protected:
 	TArray<FDynamicMesh3> InitialSourceMeshes;
 
 	void OnInputModeChanged();
+
+	/**
+	 * Invalidates the background compute operator.
+	 */
+	void InvalidateCompute();
 
 	enum class EDetectedCollisionGeometry
 	{
@@ -217,7 +267,6 @@ protected:
 		const TArray<TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>>& FromInputMeshes,
 		TArray<TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>>& ToMeshes,
 		TFunctionRef<bool(const FDynamicMesh3*, int32, int32)> TrisConnectedPredicate);
-	TSharedPtr<UE::Geometry::FMeshSimpleShapeApproximation, ESPMode::ThreadSafe>& GetApproximator(ESetCollisionGeometryInputMode MeshSetMode);
 
 	TUniquePtr<UE::Geometry::FPolygroupSet> ActiveGroupSet;
 	void OnSelectedGroupLayerChanged();
@@ -226,12 +275,9 @@ protected:
 	FTransform OrigTargetTransform;
 	FVector TargetScale3D;
 
-	bool bResultValid = false;
 	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> InitialCollision;
 	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> GeneratedCollision;
 
-	void UpdateGeneratedCollision();
-//	TSharedPtr<FPhysicsDataCollection> GenerateCollision_MinVolume();
 
 	bool bVisualizationDirty = false;
 	void UpdateVisualization();

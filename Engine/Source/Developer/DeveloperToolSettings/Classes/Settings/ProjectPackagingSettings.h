@@ -91,6 +91,28 @@ enum class EProjectPackagingBlueprintNativizationMethod : uint8
 	Exclusive
 };
 
+/**
+* The list of possible registry writebacks. During staging, iostore can
+* optionally write back data that is only available during the staging process
+* so that asset registry tools can associate this data with their respective
+* assets.
+* 
+* Note that this is used in UnrealPak and thus can't use StaticEnum<>, so if you
+* add any types here, be sure to add the parsing of the strings to IoStoreUtilities.cpp.
+*/
+UENUM()
+enum class EAssetRegistryWritebackMethod : uint8
+{
+	/** Do not write-back staging metadata to the asset registry */
+	Disabled,
+
+	/** The development asset registry from the source cooked directory will be re-used. */
+	OriginalFile,
+
+	/** A duplicate asset registry will be created with the metadata added to it, adjacent to the cooked development asset registry. */
+	AdjacentFile	
+};
+
 USTRUCT()
 struct FPakOrderFileSpec
 {
@@ -122,6 +144,10 @@ struct FProjectBuildSettings
 	/** The name for this custom build. It will be shown in menus for selection. */
 	UPROPERTY(EditAnywhere, Category="Packaging")
 	FString Name;
+
+	/** Any help that you would like to include in the ToolTip of the menu option (or shown in interactive mode Turnkey) */
+	UPROPERTY(EditAnywhere, Category="Packaging")
+	FString HelpText;
 
 	/** If this build step is specific to one or more platforms, add them here by name (note: use Windows, not Win64) */
 	UPROPERTY(EditAnywhere, Category="Packaging")
@@ -301,6 +327,12 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Packaging)
 	FDirectoryPath HttpChunkInstallDataDirectory;
 
+	/**
+	* Whether to write staging metadata back to the asset registry. This metadata contains information such as
+	* the actual compressed chunk sizes of the assets as well as some bulk data diff blame support information.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay)
+	EAssetRegistryWritebackMethod WriteBackMetadataToAssetRegistry;
 
 	/**
 	 * Create compressed cooked packages (decreased deployment size)
@@ -511,13 +543,21 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay)
 	TArray<FString> CompressedChunkWildcard;
 
-	/** List of ini file keys to strip when packaging */
+	UE_DEPRECATED(5.1, "This property is no longer supported. Use IniKeyDenylist.")
 	UPROPERTY(config, EditAnywhere, Category = Packaging)
 	TArray<FString> IniKeyBlacklist;
 
-	/** List of ini file sections to strip when packaging */
+	/** List of ini file keys to strip when packaging */
+	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	TArray<FString> IniKeyDenylist;
+
+	UE_DEPRECATED(5.1, "This property is no longer supported. Use IniSectionDenylist.")
 	UPROPERTY(config, EditAnywhere, Category = Packaging)
 	TArray<FString> IniSectionBlacklist;
+
+	/** List of ini file sections to strip when packaging */
+	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	TArray<FString> IniSectionDenylist;
 
 	/**
 	 * List of specific files to include with GenerateEarlyDownloaderPakFile
@@ -623,7 +663,7 @@ private:
 	TMap<FName, FName> PerPlatformTargetFlavorName;
 
 	/** Per platform build target */
-	UPROPERTY(config)
+	UPROPERTY(config, EditAnywhere, Category=Project)
 	TMap<FName, FString> PerPlatformBuildTarget;
 
 	/** Helper array used to mirror Blueprint asset selections across edits */

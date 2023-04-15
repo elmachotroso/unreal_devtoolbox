@@ -2,15 +2,31 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "SlateFwd.h"
 #include "AddToProjectConfig.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
 #include "GameProjectGenerationModule.h"
+#include "HAL/Platform.h"
 #include "HardwareTargetingSettings.h"
+#include "Misc/Optional.h"
+#include "SlateFwd.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
-class UTemplateProjectDefs;
+class FText;
+class SNotificationItem;
+class UClass;
 class UTemplateCategories;
+class UTemplateProjectDefs;
+struct FAddToProjectConfig;
+struct FGuid;
+struct FModuleContextInfo;
+struct FNewClassInfo;
 struct FProjectDescriptor;
+
 enum class EClassDomain : uint8;
 struct FTemplateConfigValue;
 
@@ -26,7 +42,6 @@ struct FProjectInformation
 	bool bCopyStarterContent = false;
 	bool bIsBlankTemplate = false;
 	bool bIsEnterpriseProject = false;
-	bool bForceExtendedLuminanceRange; // See "r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"
 
 	// These are all optional, because there is an additional state introduced by hiding the setting in the template.
 	// In this case, the template author has chosen not to give the user a choice,
@@ -113,7 +128,7 @@ public:
 	/** Creates the specified project file and all required folders. If TemplateFile is non-empty, it will be used as the template for creation. On failure, OutFailReason will be populated. */
 	static bool CreateProject(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles = nullptr);
 
-	/** Prompts the user to update his project file, if necessary. */
+	/** Prompts the user to update their project file, if necessary. */
 	static void CheckForOutOfDateGameProjectFile();
 
 	/** Warn the user if the project filename is invalid in case they renamed it outside the editor */
@@ -176,8 +191,13 @@ public:
 	/** Creates code project files for a new game project. On failure, OutFailReason and OutFailLog will be populated. */
 	static bool GenerateCodeProjectFiles(const FString& ProjectFilename, FText& OutFailReason, FText& OutFailLog);
 
-	/** Returns true if there are starter content files available for instancing into new projects. */
-	static bool IsStarterContentAvailableForNewProjects();
+	/** Returns true if there are engine starter content files available for instancing into new projects. */
+	static bool IsEngineStarterContentAvailable();
+
+	/** Returns true if the given project is referencing engine starter content pack. */
+	static bool IsUsingEngineStarterContent(const FProjectInformation& ProjectInfo);
+
+	/** Returns true if there are any starter content packs are available for given project. */
 	static bool IsStarterContentAvailableForProject(const FProjectInformation& ProjectInfo);
 
 	/**
@@ -278,6 +298,9 @@ public:
 
 	/** Checks the name for illegal characters */
 	static bool NameContainsOnlyLegalCharacters(const FString& TestName, FString& OutIllegalCharacters);
+
+	/** Checks the name to see if it matches platform module names */
+	static bool NameMatchesPlatformModuleName(const FString& TestName);
 
 	/** Returns a list of #include lines formed from InList */
 	static FString MakeIncludeList(const TArray<FString>& InList);

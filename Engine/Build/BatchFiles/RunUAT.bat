@@ -9,13 +9,30 @@ rem ## if you copy it to a different location and run it.
 setlocal EnableExtensions
 echo Running AutomationTool...
 
-set SCRIPT_DIR=%~dp0
+rem uppercase the drive letter
+SETLOCAL ENABLEDELAYEDEXPANSION
+set DRIVE_LETTER=%~d0
+FOR %%Z IN (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) DO SET DRIVE_LETTER=!DRIVE_LETTER:%%Z=%%Z!
+SETLOCAL DISABLEDELAYEDEXPANSION
+
+set SCRIPT_DIR=%DRIVE_LETTER%%~p0
 set UATExecutable=AutomationTool.dll
 set UATDirectory=Binaries\DotNET\AutomationTool
 
 rem ## Change the CWD to /Engine. 
-pushd "%~dp0..\..\"
+pushd "%SCRIPT_DIR%..\..\"
 if not exist Build\BatchFiles\RunUAT.bat goto Error_BatchFileInWrongLocation
+
+
+rem Unset some env vars that are set when running from VisualStudio that can cause it to look outside of the bundled .net
+set VisualStudioDir=
+set VSSKUEDITION=
+rem Unset some others that don't cause errors, but could cause subtle differences between in-VS runs vs out-of-VS runs
+set PkgDefApplicationConfigFile=
+set VSAPPIDDIR=
+set VisualStudioEdition=
+set VisualStudioVersion=
+
 
 set MSBUILD_LOGLEVEL=quiet
 set FORCECOMPILE_UAT=
@@ -35,6 +52,10 @@ shift
 goto ParseArguments
 :ParseArguments_Done
 
+rem ## Verify that dotnet is present
+call "%SCRIPT_DIR%GetDotnetPath.bat"
+if errorlevel 1 goto Error_NoDotnetSDK
+
 rem ## Use the pre-compiled UAT scripts if -nocompile is specified in the command line
 if %NOCOMPILE_UAT%==1 goto RunPrecompiled
 
@@ -47,11 +68,6 @@ if not "%ForcePrecompiledUAT%"=="" goto RunPrecompiled
 rem ## check if the UAT projects are present. if not, we'll just use the precompiled ones.
 if not exist Source\Programs\AutomationTool\AutomationTool.csproj goto RunPrecompiled
 if not exist Source\Programs\AutomationToolLauncher\AutomationToolLauncher.csproj goto RunPrecompiled
-
-rem ## Verify that dotnet is present
-call "%SCRIPT_DIR%GetDotnetPath.bat"
-if errorlevel 1 goto Error_NoDotnetSDK
-
 
 
 rem Checking for out-of-date files won't find source files in places like Engine/Platform, resulting in occasionally
@@ -75,22 +91,23 @@ rem ## Run AutomationTool
 pushd %UATDirectory%
 dotnet %UATExecutable% %*
 popd
+set RUNUAT_ERRORLEVEL=%ERRORLEVEL%
 
 if %SET_TURNKEY_VARIABLES% == 0 goto SkipTurnkey
 
 rem ## Turnkey needs to update env vars in the calling process so that if it is run multiple times the Sdk env var changes are in effect
-if EXIST %SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat (
-	rem ## We need to endlocal so that the vars in the batch file work. NOTE: Working directory from pushd will be UNDONE here, but since we are about to quit, it's okay
-	endlocal 
+if EXIST "%SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat" (
+	rem ## We need to endlocal so that the vars in the batch file work. NOTE: Working directory from pushd will be UNDONE here, but since we are about to quit, it's okay. UAT errorlevel is preserved beyond the endlocal
+	endlocal & set RUNUAT_ERRORLEVEL=%RUNUAT_ERRORLEVEL%
 	echo Updating environment variables set by a Turnkey sub-process
-	call %SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat
-	del %SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat
+	call "%SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat"
+	del "%SCRIPT_DIR%..\..\Intermediate\Turnkey\PostTurnkeyVariables.bat"
 	rem ## setlocal again so that any popd's etc don't have an effect on calling process
 	setlocal
 )
 :SkipTurnkey
 
-if not %ERRORLEVEL% == 0 goto Error_UATFailed
+if not %RUNUAT_ERRORLEVEL% == 0 goto Error_UATFailed
 
 rem ## Success!
 goto Exit
@@ -118,7 +135,7 @@ goto Exit_Failure
 
 
 :Error_UATFailed
-set RUNUAT_EXITCODE=%ERRORLEVEL%
+set RUNUAT_EXITCODE=%RUNUAT_ERRORLEVEL%
 goto Exit_Failure
 
 :Exit_Failure

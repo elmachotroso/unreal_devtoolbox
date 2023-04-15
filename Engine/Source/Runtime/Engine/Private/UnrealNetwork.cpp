@@ -2,17 +2,25 @@
 
 #include "Net/UnrealNetwork.h"
 
-FPreReplayScrub FNetworkReplayDelegates::OnPreScrub;
-FOnWriteGameSpecificDemoHeader FNetworkReplayDelegates::OnWriteGameSpecificDemoHeader;
-FOnProcessGameSpecificDemoHeader FNetworkReplayDelegates::OnProcessGameSpecificDemoHeader;
-FOnWriteGameSpecificFrameData FNetworkReplayDelegates::OnWriteGameSpecificFrameData;
-FOnProcessGameSpecificFrameData FNetworkReplayDelegates::OnProcessGameSpecificFrameData;
-FOnReplayStartedDelegate FNetworkReplayDelegates::OnReplayStarted;
-FOnReplayStartFailureDelegate FNetworkReplayDelegates::OnReplayStartFailure;
-FOnReplayScrubCompleteDelegate FNetworkReplayDelegates::OnReplayScrubComplete;
-FOnReplayPlaybackCompleteDelegate FNetworkReplayDelegates::OnReplayPlaybackComplete;
-FOnReplayRecordingCompleteDelegate FNetworkReplayDelegates::OnReplayRecordingComplete;
-FOnPauseChannelsChangedDelegate FNetworkReplayDelegates::OnPauseChannelsChanged;
+FPreReplayScrub                                      FNetworkReplayDelegates::OnPreScrub;
+FReplayScrubTeardown                                 FNetworkReplayDelegates::OnScrubTeardown;
+FOnWriteGameSpecificDemoHeader                       FNetworkReplayDelegates::OnWriteGameSpecificDemoHeader;
+FOnProcessGameSpecificDemoHeader                     FNetworkReplayDelegates::OnProcessGameSpecificDemoHeader;
+FOnWriteGameSpecificFrameData                        FNetworkReplayDelegates::OnWriteGameSpecificFrameData;
+FOnProcessGameSpecificFrameData                      FNetworkReplayDelegates::OnProcessGameSpecificFrameData;
+FGetOverridableVersionDataForDemoHeaderReadDelegate  FNetworkReplayDelegates::GetOverridableVersionDataForHeaderRead;
+FGetOverridableVersionDataForDemoHeaderWriteDelegate FNetworkReplayDelegates::GetOverridableVersionDataForHeaderWrite;
+FOnReplayStartedDelegate                             FNetworkReplayDelegates::OnReplayStarted;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FOnReplayStartFailureDelegate                        FNetworkReplayDelegates::OnReplayStartFailure;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+FOnReplayPlaybackFailureDelegate                     FNetworkReplayDelegates::OnReplayPlaybackFailure;
+FOnReplayScrubCompleteDelegate                       FNetworkReplayDelegates::OnReplayScrubComplete;
+FOnReplayPlaybackCompleteDelegate                    FNetworkReplayDelegates::OnReplayPlaybackComplete;
+FOnReplayRecordingStartAttemptDelegate               FNetworkReplayDelegates::OnReplayRecordingStartAttempt;
+FOnReplayRecordingCompleteDelegate                   FNetworkReplayDelegates::OnReplayRecordingComplete;
+FOnPauseChannelsChangedDelegate                      FNetworkReplayDelegates::OnPauseChannelsChanged;
+FOnReplayIDChangedDelegate                           FNetworkReplayDelegates::OnReplayIDChanged;
 
 // ----------------------------------------------------------------
 
@@ -35,12 +43,17 @@ void RegisterReplicatedLifetimeProperty(
 	TArray<FLifetimeProperty>& OutLifetimeProps,
 	const FDoRepLifetimeParams& Params)
 {
+	checkf(Params.Condition != COND_NetGroup, TEXT("Invalid lifetime condition for %s. COND_NetGroup can only be used with registered subobjects"), PropertyDescriptor.PropertyName);
 	for (int32 i = 0; i < PropertyDescriptor.ArrayDim; i++)
 	{
 		const uint16 RepIndex = PropertyDescriptor.RepIndex + i;
 		FLifetimeProperty* RegisteredPropertyPtr = OutLifetimeProps.FindByPredicate([&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
 
 		FLifetimeProperty LifetimeProp(RepIndex, Params.Condition, Params.RepNotifyCondition, Params.bIsPushBased);
+
+#if UE_WITH_IRIS
+		LifetimeProp.CreateAndRegisterReplicationFragmentFunction = Params.CreateAndRegisterReplicationFragmentFunction;
+#endif
 
 		if (RegisteredPropertyPtr)
 		{
@@ -184,7 +197,7 @@ void ResetReplicatedLifetimeProperty(const NetworkingPrivate::FRepPropertyDescri
 void DisableAllReplicatedPropertiesOfClass(const NetworkingPrivate::FRepClassDescriptor& ClassDescriptor, EFieldIteratorFlags::SuperClassFlags SuperClassBehavior, TArray<FLifetimeProperty>& OutLifetimeProps)
 {
 	const int32 StartIndex = (EFieldIteratorFlags::IncludeSuper == SuperClassBehavior) ? 0 : ClassDescriptor.StartRepIndex;
-	for (int32 RepIndex = StartIndex; RepIndex < ClassDescriptor.EndRepIndex; ++RepIndex)
+	for (int32 RepIndex = StartIndex; RepIndex <= ClassDescriptor.EndRepIndex; ++RepIndex)
 	{
 		FLifetimeProperty* RegisteredPropertyPtr = OutLifetimeProps.FindByPredicate([&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
 
@@ -215,23 +228,4 @@ void DisableAllReplicatedPropertiesOfClass(const UClass* ThisClass, const UClass
 			SetReplicatedPropertyToDisabled(Prop, OutLifetimeProps);
 		}
 	}
-}
-
-
-void DeprecatedChangeCondition(const  FProperty* ReplicatedProperty, TArray<FLifetimeProperty>& OutLifetimeProps, ELifetimeCondition InCondition)
-{
-	bool bFound = false;
-	for (int32 i = 0; i < OutLifetimeProps.Num(); i++)
-	{
-		if (OutLifetimeProps[i].RepIndex == ReplicatedProperty->RepIndex)
-		{
-			for ( int32 j = 0; j < ReplicatedProperty->ArrayDim; j++ )
-			{
-				OutLifetimeProps[i + j].Condition = InCondition;
-			}
-			bFound = true;
-			break;
-		}
-	}
-	check( bFound );
 }

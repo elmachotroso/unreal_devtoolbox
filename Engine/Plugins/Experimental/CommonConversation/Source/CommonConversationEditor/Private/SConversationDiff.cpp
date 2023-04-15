@@ -10,7 +10,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "DiffResults.h"
@@ -46,7 +46,7 @@ struct FTreeDiffResultItem : public TSharedFromThis<FTreeDiffResultItem>
 	TSharedRef<SWidget>	GenerateWidget() const
 	{
 		FText ToolTip = Result.ToolTip;
-		FLinearColor Color = Result.DisplayColor;
+		FLinearColor Color = Result.GetDisplayColor();
 		FText Text = Result.DisplayString;
 		if(Text.IsEmpty())
 		{
@@ -72,7 +72,7 @@ class FDiffListCommands : public TCommands<FDiffListCommands>
 public:
 	/** Constructor */
 	FDiffListCommands() 
-		: TCommands<FDiffListCommands>("DiffList", LOCTEXT("Diff", "Behavior Tree Diff"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FDiffListCommands>("DiffList", LOCTEXT("Diff", "Behavior Tree Diff"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 
@@ -96,7 +96,6 @@ public:
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SConversationDiff::Construct( const FArguments& InArgs )
 {
-	LastPinTarget = nullptr;
 	LastOtherPinTarget = nullptr;
 
 	FDiffListCommands::Register();
@@ -124,7 +123,7 @@ void SConversationDiff::Construct( const FArguments& InArgs )
 	this->ChildSlot
 	[	
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Content()
 		[
 			SNew(SSplitter)
@@ -218,8 +217,8 @@ TSharedRef<SWidget> SConversationDiff::GenerateDiffListWidget()
 		KeyCommands->MapAction(Commands.Next, FExecuteAction::CreateSP(this, &SConversationDiff::NextDiff));
 
 		FToolBarBuilder ToolbarBuilder(KeyCommands.ToSharedRef(), FMultiBoxCustomization::None);
-		ToolbarBuilder.AddToolBarButton(Commands.Previous, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "BlueprintDif.PrevDiff"));
-		ToolbarBuilder.AddToolBarButton(Commands.Next, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "BlueprintDif.NextDiff"));
+		ToolbarBuilder.AddToolBarButton(Commands.Previous, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "BlueprintDif.PrevDiff"));
+		ToolbarBuilder.AddToolBarButton(Commands.Next, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "BlueprintDif.NextDiff"));
 
 		TSharedRef<SHorizontalBox> Result =	SNew(SHorizontalBox)
 		+SHorizontalBox::Slot()
@@ -238,9 +237,9 @@ TSharedRef<SWidget> SConversationDiff::GenerateDiffListWidget()
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("PropertyWindow.CategoryBackground"))
+				.BorderImage(FAppStyle::GetBrush("PropertyWindow.CategoryBackground"))
 				.Padding(FMargin(2.0f))
-				.ForegroundColor(FEditorStyle::GetColor("PropertyWindow.CategoryForeground"))
+				.ForegroundColor(FAppStyle::GetColor("PropertyWindow.CategoryForeground"))
 				.ToolTipText(LOCTEXT("BehvaiorTreeDifDifferencesToolTip", "List of differences found between revisions, click to select"))
 				.HAlign(HAlign_Center)
 				[
@@ -329,8 +328,6 @@ TSharedRef<ITableRow> SConversationDiff::OnGenerateRow(FSharedDiffOnGraph Item, 
 
 void SConversationDiff::OnSelectionChanged(FSharedDiffOnGraph Item, ESelectInfo::Type SelectionType)
 {
-	DisablePinDiffFocus();
-
 	if(!Item.IsValid())
 	{
 		return;
@@ -347,9 +344,6 @@ void SConversationDiff::OnSelectionChanged(FSharedDiffOnGraph Item, ESelectInfo:
 		{
 			if (InPin)
 			{
-				LastPinTarget = InPin;
-				InPin->bIsDiffing = true;
-
 				UEdGraph* NodeGraph = InPin->GetOwningNode()->GetGraph();
 				SGraphEditor* NodeGraphEditor = GetGraphEditorForGraph(NodeGraph);
 				NodeGraphEditor->JumpToPin(InPin);
@@ -417,19 +411,6 @@ SGraphEditor* SConversationDiff::GetGraphEditorForGraph(UEdGraph* Graph) const
 	return nullptr;
 }
 
-void SConversationDiff::DisablePinDiffFocus()
-{
-	if(LastPinTarget)
-	{
-		LastPinTarget->bIsDiffing = false;
-	}
-	if(LastOtherPinTarget)
-	{
-		LastOtherPinTarget->bIsDiffing = false;
-	}
-}
-
-
 //////////////////////////////////////////////////////////////////////////
 // FConversationDiffPanel
 //////////////////////////////////////////////////////////////////////////
@@ -485,7 +466,7 @@ void SConversationDiff::FConversationDiffPanel::GeneratePanel(UEdGraph* Graph, U
 			.Appearance(AppearanceInfo)
 			.GraphEvents(InEvents);
 
-		const FSlateBrush* ContentAreaBrush = FEditorStyle::GetBrush( "Docking.Tab", ".ContentAreaBrush" );
+		const FSlateBrush* ContentAreaBrush = FAppStyle::GetBrush( "Docking.Tab", ".ContentAreaBrush" );
 
 		auto NewWidget = SNew(SSplitter)
 			.Orientation(Orient_Vertical)

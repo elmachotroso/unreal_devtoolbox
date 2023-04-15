@@ -5,6 +5,9 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/BrushComponent.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+#include "Engine/OverlapInfo.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsVolume)
 
 APhysicsVolume::APhysicsVolume(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -122,4 +125,5 @@ float APhysicsVolume::GetGravityZ() const
 void APhysicsVolume::ActorEnteredVolume(AActor* Other) {}
 
 void APhysicsVolume::ActorLeavingVolume(AActor* Other) {}
+
 

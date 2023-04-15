@@ -3,12 +3,24 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Engine/MemberReference.h"
-#include "Templates/SubclassOf.h"
 #include "K2Node_EditablePinBase.h"
+#include "Math/Color.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_FunctionTerminator.generated.h"
+
+class FArchive;
+class FText;
+class UFunction;
+class UObject;
+struct FEdGraphPinType;
 
 UCLASS(abstract, MinimalAPI)
 class UK2Node_FunctionTerminator : public UK2Node_EditablePinBase
@@ -27,11 +39,11 @@ class UK2Node_FunctionTerminator : public UK2Node_EditablePinBase
 	virtual FLinearColor GetNodeTitleColor() const override;
 	virtual FName CreateUniquePinName(FName SourcePinName) const override;
 	virtual void ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface
 	virtual bool NodeCausesStructuralBlueprintChange() const override { return true; }
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual void PostPasteNode() override;
 	//~ End UK2Node Interface
 

@@ -13,6 +13,7 @@
 #include "Logging/TokenizedMessage.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "SourceControlSettings.h"
 
 
 #if SOURCE_CONTROL_WITH_SLATE
@@ -87,8 +88,18 @@ bool FSourceControlWindows::ChoosePackagesToCheckIn(const FSourceControlWindowsO
 	// Start selection process...
 
 	// make sure we update the SCC status of all packages (this could take a long time, so we will run it as a background task)
-	TArray<FString> Filenames = GetSourceControlLocations();
-
+	TArray<FString> Filenames;
+	if (ISourceControlModule::Get().UsesCustomProjectDir())
+	{
+		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
+		Filenames.Add(SourceControlProjectDir);
+	}
+	else
+	{
+		Filenames = GetSourceControlLocations();
+	}
+	
+	// make sure the SourceControlProvider state cache is populated as well
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	FSourceControlOperationRef Operation = ISourceControlOperation::Create<FUpdateStatus>();
 	SourceControlProvider.Execute(
@@ -133,7 +144,13 @@ bool FSourceControlWindows::CanChoosePackagesToCheckIn()
 	
 	return ISourceControlModule::Get().IsEnabled() &&
 		ISourceControlModule::Get().GetProvider().IsAvailable() &&
-		!ChoosePackagesToCheckInNotification.IsValid();
+		!ChoosePackagesToCheckInNotification.IsValid()
+		;
+}
+
+bool FSourceControlWindows::ShouldChoosePackagesToCheckBeVisible()
+{
+	return GetDefault<USourceControlSettings>()->bEnableSubmitContentMenuAction;
 }
 
 
@@ -207,10 +224,18 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 		.SupportsMaximize(true)
 		.SupportsMinimize(false);
 
-	TSharedRef<SSourceControlSubmitWidget> SourceControlWidget = 
+	TSharedRef<SSourceControlSubmitWidget> SourceControlWidget =
 		SNew(SSourceControlSubmitWidget)
 		.ParentWindow(NewWindow)
-		.Items(States);
+		.Items(States)
+		.AllowUncheckFiles_Lambda([&]() 
+			{ 
+				if (SourceControlProvider.IsAvailable())
+				{
+					return SourceControlProvider.UsesFileRevisions();
+				}
+				return true;
+			});
 
 	NewWindow->SetContent(
 		SourceControlWidget
@@ -242,24 +267,32 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 	{
 		SourceControlHelpers::RevertUnchangedFiles(SourceControlProvider, Description.FilesForSubmit);
 
-		// Make sure all files are still checked out
-		for (int32 VerifyIndex = Description.FilesForSubmit.Num()-1; VerifyIndex >= 0; --VerifyIndex)
+		if (!ISourceControlModule::Get().UsesCustomProjectDir())
 		{
-			FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(Description.FilesForSubmit[VerifyIndex], EStateCacheUsage::Use);
-			if( SourceControlState.IsValid() && !SourceControlState->IsCheckedOut() && !SourceControlState->IsAdded() && !SourceControlState->IsDeleted() )
+			// Make sure all files are still checked out
+			for (int32 VerifyIndex = Description.FilesForSubmit.Num() - 1; VerifyIndex >= 0; --VerifyIndex)
 			{
-				Description.FilesForSubmit.RemoveAt(VerifyIndex);
+				FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(Description.FilesForSubmit[VerifyIndex], EStateCacheUsage::Use);
+				if (SourceControlState.IsValid() && !SourceControlState->IsCheckedOut() && !SourceControlState->IsAdded() && !SourceControlState->IsDeleted())
+				{
+					Description.FilesForSubmit.RemoveAt(VerifyIndex);
+				}
 			}
 		}
+		else
+		{
+			// For project-based source control, we want to go through with a check in attempt even when 
+			// files are not checked out by the current user, and generate a warning dialog
+		}
 	}
-
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Mark files for add as needed
 	
 	bool bSuccess = true;  // Overall success
-    bool bAddSuccess = true;
-    bool bCheckinSuccess = true;
+	bool bAddSuccess = true;
+	bool bCheckinSuccess = true;
+	bool bCheckinCancelled = false;
 
 	TArray<FString> CombinedFileList = Description.FilesForAdd;
 	CombinedFileList.Append(Description.FilesForSubmit);
@@ -292,50 +325,26 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 		return bSuccess;
 	}
 
-	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	// Allow any finalization pre-submit processes to run
-	TArray<FText> PayloadErrors;
-	TArray<FText> DescriptionTags;
-	ISourceControlModule::Get().GetOnPreSubmitFinalize().Broadcast(CombinedFileList, DescriptionTags, PayloadErrors);
-
-	if (!PayloadErrors.IsEmpty())
+	FText VirtualizationFailureMsg;
+	if (!TryToVirtualizeFilesToSubmit(CombinedFileList, Description.Description, VirtualizationFailureMsg))
 	{
-		for (const FText& Error : PayloadErrors)
-		{
-			FMessageLog("SourceControl").Error(Error);
-		}
-			
-		// TODO: We rely on the calling code to issue a noticeable error message to the user but this is 
-		// currently handled very inconsistently in the engine and the return values often ignored.
-		// So print the error to the log file as well for now but we should try and unify how the errors
-		// are reported.
-		FText FailureMsg(LOCTEXT("SCC_Virtualization_Failed", "Virtualized payloads failed to submit."));
-		FMessageLog("SourceControl").Notify(FailureMsg);
+		FMessageLog("SourceControl").Notify(VirtualizationFailureMsg);
 
 		OutResultInfo.Result = ECommandResult::Failed;
-		OutResultInfo.Description = FailureMsg;
+		OutResultInfo.Description = VirtualizationFailureMsg;
 
 		return false;
 	}
-	else if (!DescriptionTags.IsEmpty())
-	{
-		FTextBuilder NewDescription;
-		NewDescription.AppendLine(Description.Description);
-
-		for (const FText& Line : DescriptionTags)
-		{
-			NewDescription.AppendLine(Line);
-		}
-
-		Description.Description = NewDescription.ToText();
-	}
-	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 	// Check in files
 	TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
 	CheckInOperation->SetDescription(Description.Description);
+	CheckInOperation->SetKeepCheckedOut(SourceControlWidget->WantToKeepCheckedOut());
 
-	bCheckinSuccess = SourceControlProvider.Execute(CheckInOperation, CombinedFileList) == ECommandResult::Succeeded;
+	ECommandResult::Type CheckInResult = SourceControlProvider.Execute(CheckInOperation, CombinedFileList);
+	bCheckinSuccess = CheckInResult == ECommandResult::Succeeded;
+	bCheckinCancelled = CheckInResult == ECommandResult::Cancelled;
+
 	bSuccess &= bCheckinSuccess;
 
 	if (bCheckinSuccess)
@@ -350,8 +359,21 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 		// also add to the log
 		FMessageLog("SourceControl").Info(CheckInOperation->GetSuccessMessage());
 
+		OutResultInfo.Result         = ECommandResult::Succeeded;
 		OutResultInfo.Description    = CheckInOperation->GetSuccessMessage();
 		OutResultInfo.FilesSubmitted = Description.FilesForSubmit;
+	}
+
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// Abort if cancelled
+	if (bCheckinCancelled)
+	{
+		FText Message(LOCTEXT("CheckinCancelled", "File check in cancelled."));
+
+		OutResultInfo.Result      = ECommandResult::Cancelled;
+		OutResultInfo.Description = Message;
+
+		return false;
 	}
 	
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -369,21 +391,6 @@ bool FSourceControlWindows::PromptForCheckin(FCheckinResultInfo& OutResultInfo, 
 		}
 
 		return false;
-	}
-
-	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	// Do we want to to re-check out the files we just checked in?
-	if (SourceControlWidget->WantToKeepCheckedOut())
-	{
-		// Re-check out files
-		if (SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), CombinedFileList) == ECommandResult::Succeeded)
-		{
-			OutResultInfo.bAutoCheckedOut = true;
-		}
-		else
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("SCC_Checkin_ReCheckOutFailed", "Failed to re-check out files."));
-		}
 	}
 
 	SourceControlWidget->ClearChangeListDescription();
@@ -433,9 +440,20 @@ void FSourceControlWindows::ChoosePackagesToCheckInCompleted(const TArray<UPacka
 		return;
 	}
 
-	TArray<FString> PendingDeletePaths = GetSourceControlLocations();
+	TArray<FString> PendingDeletePaths;
 
-	const bool bUseSourceControlStateCache = true;
+	bool bUseSourceControlStateCache = true;
+	if (ISourceControlModule::Get().UsesCustomProjectDir())
+	{
+		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
+		PendingDeletePaths.Add(SourceControlProjectDir);
+		bUseSourceControlStateCache = false;
+	}
+	else
+	{
+		PendingDeletePaths = GetSourceControlLocations();
+	}
+
 	PromptForCheckin(OutResultInfo, PackageNames, PendingDeletePaths, ConfigFiles, bUseSourceControlStateCache);
 }
 
@@ -491,26 +509,26 @@ void FSourceControlWindows::ChoosePackagesToCheckInCallback(const FSourceControl
 	FEditorFileUtils::FindAllSubmittablePackageFiles(PackageStates, true);
 
 	TArray<FString> ConfigFilesToSubmit;
-	const FString ProjectFilePath = FPaths::GetProjectFilePath();
 
 	for (TMap<FString, FSourceControlStatePtr>::TConstIterator PackageIter(PackageStates); PackageIter; ++PackageIter)
 	{
 		const FString PackageName = *PackageIter.Key();
-		const FSourceControlStatePtr CurPackageSCCState = PackageIter.Value();
-
-		if (PackageName == ProjectFilePath)
-		{
-			ConfigFilesToSubmit.Add(PackageName);
-			continue;
-		}
 
 		UPackage* Package = FindPackage(nullptr, *PackageName);
 		if (Package != nullptr)
 		{
 			LoadedPackages.Add(Package);
 		}
-			
+
 		PackageNames.Add(PackageName);
+	}
+
+	// Get a list of all the checked out project files
+	TMap<FString, FSourceControlStatePtr> ProjectFileStates;
+	FEditorFileUtils::FindAllSubmittableProjectFiles(ProjectFileStates);
+	for (TMap<FString, FSourceControlStatePtr>::TConstIterator It(ProjectFileStates); It; ++It)
+	{
+		ConfigFilesToSubmit.Add(It.Key());
 	}
 
 	// Get a list of all the checked out config files

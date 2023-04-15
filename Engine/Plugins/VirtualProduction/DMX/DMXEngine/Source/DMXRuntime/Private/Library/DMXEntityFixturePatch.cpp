@@ -5,6 +5,7 @@
 #include "DMXConversions.h"
 #include "DMXProtocolConstants.h"
 #include "DMXRuntimeLog.h"
+#include "DMXRuntimeMainStreamObjectVersion.h"
 #include "DMXRuntimeUtils.h"
 #include "DMXStats.h"
 #include "DMXTypes.h"
@@ -13,8 +14,11 @@
 #include "IO/DMXOutputPort.h"
 #include "Library/DMXEntityController.h"
 #include "Library/DMXEntityFixtureType.h"
+#include "Library/DMXImportGDTF.h"
 #include "Library/DMXLibrary.h"
 #include "Modulators/DMXModulator.h"
+
+#include "UObject/UObjectGlobals.h"
 
 DECLARE_LOG_CATEGORY_CLASS(DMXEntityFixturePatchLog, Log, All);
 
@@ -28,9 +32,6 @@ FDMXOnFixturePatchChangedDelegate UDMXEntityFixturePatch::OnFixturePatchChangedD
 
 UDMXEntityFixturePatch::UDMXEntityFixturePatch()
 	: UniverseID(1)
-	, bAutoAssignAddress(true)
-	, ManualStartingAddress(1)
-	, AutoStartingAddress(1)
 	, ActiveMode(0)
 #if WITH_EDITORONLY_DATA
 	, EditorColor(FLinearColor(1.0f, 0.0f, 1.0f))
@@ -42,34 +43,80 @@ UDMXEntityFixturePatch* UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FDMX
 {
 	UDMXEntityFixtureType* FixtureType = ConstructionParams.FixtureTypeRef.GetFixtureType();
 
-	if (ensureMsgf(FixtureType, TEXT("Cannot create Fixture Patch when Fixture Type is invalid.")))
+	if (FixtureType)
 	{
 		UDMXLibrary* DMXLibrary = FixtureType->GetParentLibrary();
 		if (ensureMsgf(DMXLibrary, TEXT("Cannot create Fixture Patch when Fixture Type's DMX Library is invalid.")))
 		{
+			const FString EntityName = FDMXRuntimeUtils::FindUniqueEntityName(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), DesiredName);
+			UDMXEntityFixturePatch* NewFixturePatch = NewObject<UDMXEntityFixturePatch>(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), NAME_None, RF_Transactional);
+
 #if WITH_EDITOR
 			if (bMarkDMXLibraryDirty)
 			{
 				DMXLibrary->Modify();
 				DMXLibrary->PreEditChange(UDMXLibrary::StaticClass()->FindPropertyByName(UDMXLibrary::GetEntitiesPropertyName()));
+				NewFixturePatch->PreEditChange(nullptr);
 			}
 #endif
-
-			FString EntityName = FDMXRuntimeUtils::FindUniqueEntityName(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), DesiredName);
-
-			UDMXEntityFixturePatch* NewFixturePatch = NewObject<UDMXEntityFixturePatch>(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), NAME_None, RF_Transactional);
+			
 			NewFixturePatch->SetName(EntityName);
 			NewFixturePatch->SetFixtureType(FixtureType);
 			NewFixturePatch->SetUniverseID(ConstructionParams.UniverseID);
 			NewFixturePatch->SetStartingChannel(ConstructionParams.StartingAddress);
 			NewFixturePatch->SetActiveModeIndex(ConstructionParams.ActiveMode);
 
+			if (ConstructionParams.MVRFixtureUUID.IsValid())
+			{
+				// Make sure the MVR UUID is truly unique across the DNX Library
+				const TArray<UDMXEntityFixturePatch*> FixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
+				const UDMXEntityFixturePatch* const* bOtherFixturePatchWithMVRFixtureUUIDPtr = FixturePatches.FindByPredicate([NewFixturePatch, &ConstructionParams](const UDMXEntityFixturePatch* FixturePatch)
+					{
+						return
+							FixturePatch != NewFixturePatch &&
+							FixturePatch->GetMVRFixtureUUID() == ConstructionParams.MVRFixtureUUID;
+					});
+
+				if (bOtherFixturePatchWithMVRFixtureUUIDPtr)
+				{
+					UE_LOG(LogDMXRuntime, Error, TEXT("Trying to create Fixture Patch '%s' with Unique MVR Fixture ID '%s' in DMX Library '%s'."), *DesiredName, *ConstructionParams.MVRFixtureUUID.ToString(), *DMXLibrary->GetName());
+					UE_LOG(LogDMXRuntime, Error, TEXT("However Fixture Patch '%s' in the same Library already uses this Unique MVR Fixture ID."), *(*bOtherFixturePatchWithMVRFixtureUUIDPtr)->Name);
+					UE_LOG(LogDMXRuntime, Error, TEXT("Generating a new Unique MVR Fixture ID for the new Fixture Patch instead"));
+					ensureAlways(0);
+
+					ConstructionParams.MVRFixtureUUID = FGuid::NewGuid();
+				}
+			}
+			else
+			{
+				// No MVR Fixture UUID specified, generate one.
+				ConstructionParams.MVRFixtureUUID = FGuid::NewGuid();
+			}
+			NewFixturePatch->MVRFixtureUUID = ConstructionParams.MVRFixtureUUID;
+
+#if WITH_EDITORONLY_DATA
+			// Make a nice Editor Color
+			const FLinearColor EditorColor = [DMXLibrary, &ConstructionParams]()
+			{
+				const TArray<UDMXEntityFixturePatch*> FixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
+				const UDMXEntityFixturePatch* const* FixturePatchOfSameTypePtr = FixturePatches.FindByPredicate([&ConstructionParams](const UDMXEntityFixturePatch* FixturePatch)
+					{
+						return FixturePatch->GetFixtureType() == ConstructionParams.FixtureTypeRef.GetFixtureType();
+					});
+				return FixturePatchOfSameTypePtr ? (*FixturePatchOfSameTypePtr)->EditorColor : FLinearColor::MakeRandomColor();
+			}();
+
+			NewFixturePatch->EditorColor = EditorColor;
+#endif
+
 #if WITH_EDITOR
 			if (bMarkDMXLibraryDirty)
 			{
 				DMXLibrary->PostEditChange();
+				NewFixturePatch->PostEditChange();
 			}
 #endif
+
 			OnFixturePatchChangedDelegate.Broadcast(NewFixturePatch);
 			return NewFixturePatch;
 		}
@@ -105,11 +152,34 @@ bool UDMXEntityFixturePatch::Modify(bool bAlwaysMarkDirty)
 }
 #endif // WITH_EDITOR
 
+void UDMXEntityFixturePatch::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FDMXRuntimeMainStreamObjectVersion::GUID);
+	if (Ar.IsLoading())
+	{
+		if (Ar.CustomVer(FDMXRuntimeMainStreamObjectVersion::GUID) < FDMXRuntimeMainStreamObjectVersion::DMXFixturePatchHasMVRUUID)
+		{
+			MVRFixtureUUID = FGuid::NewGuid();
+		}
+
+#if WITH_EDITOR
+		if (Ar.CustomVer(FDMXRuntimeMainStreamObjectVersion::GUID) < FDMXRuntimeMainStreamObjectVersion::DMXFixturePatchNoLongerImplementsAutoAssign)
+		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			StartingChannel = ManualStartingAddress_DEPRECATED;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		}
+#endif
+	}
+}
+
 void UDMXEntityFixturePatch::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	if (!HasAnyFlags(RF_ClassDefaultObject))
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
 	{
 		UDMXEntityFixtureType::GetOnFixtureTypeChanged().AddUObject(this, &UDMXEntityFixturePatch::OnFixtureTypeChanged);
 		RebuildCache();
@@ -120,7 +190,10 @@ void UDMXEntityFixturePatch::PostLoad()
 {
 	Super::PostLoad();
 
-	RebuildCache();
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	{
+		RebuildCache();
+	}
 }
 
 #if WITH_EDITOR
@@ -171,11 +244,26 @@ bool UDMXEntityFixturePatch::IsTickable() const
 bool UDMXEntityFixturePatch::IsTickableInEditor() const
 {
 	const bool bHasListener = OnFixturePatchReceivedDMX.IsBound();
+	if (!bHasListener)
+	{
+		return false;
+	}
 
-#if WITH_EDITORONLY_DATA
-	return bHasListener && bReceiveDMXInEditor;
+#if WITH_EDITOR
+	if (GIsEditor && !GIsPlayInEditorWorld)
+	{
+		if (bReceiveDMXInEditor)
+		{
+			return true;
+		}
+
+		const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>();
+		const bool bAllFixturePatchesReceiveDMXInEditor = ProtocolSettings->ShouldAllFixturePatchesReceiveDMXInEditor();
+		return bAllFixturePatchesReceiveDMXInEditor;
+	}
 #endif
-	return bHasListener; 
+
+	return true; 
 }
 
 ETickableTickType UDMXEntityFixturePatch::GetTickableTickType() const
@@ -417,45 +505,37 @@ void UDMXEntityFixturePatch::SetUniverseID(int32 NewUniverseID)
 	RebuildCache();
 }
 
+#if WITH_EDITOR
 void UDMXEntityFixturePatch::SetAutoStartingAddress(int32 NewAutoStartingAddress)
 {
-	AutoStartingAddress = NewAutoStartingAddress;
-	ManualStartingAddress = NewAutoStartingAddress;
+	// DEPRECATED 5.1
+	AutoStartingAddress_DEPRECATED = NewAutoStartingAddress;
+	ManualStartingAddress_DEPRECATED = NewAutoStartingAddress;
 
 	RebuildCache();
 }
+#endif // WITH_EDITOR
 
+#if WITH_EDITOR
 void UDMXEntityFixturePatch::SetManualStartingAddress(int32 NewManualStartingAddress)
 {
-	ManualStartingAddress = NewManualStartingAddress;
+	// DEPRECATED 5.1
+	ManualStartingAddress_DEPRECATED = NewManualStartingAddress;
 
 	RebuildCache();
 }
+#endif // WITH_EDITOR
 
 void UDMXEntityFixturePatch::SetStartingChannel(int32 NewStartingChannel)
 {
-	if (NewStartingChannel == AutoStartingAddress && ManualStartingAddress == NewStartingChannel)
+	if (NewStartingChannel == StartingChannel)
 	{
 		return;
 	}
 
-	bAutoAssignAddress = false;
-	AutoStartingAddress = NewStartingChannel;
-	ManualStartingAddress = NewStartingChannel;
+	StartingChannel = NewStartingChannel;
 
 	RebuildCache();
-}
-
-int32 UDMXEntityFixturePatch::GetStartingChannel() const
-{
-	if (bAutoAssignAddress)
-	{
-		return AutoStartingAddress;
-	}
-	else
-	{
-		return ManualStartingAddress;
-	}
 }
 
 int32 UDMXEntityFixturePatch::GetChannelSpan() const
@@ -484,12 +564,14 @@ bool UDMXEntityFixturePatch::SetActiveModeIndex(int32 NewActiveModeIndex)
 	return false;
 }
 
+#if WITH_EDITOR
 int32 UDMXEntityFixturePatch::GetRemoteUniverse() const
 {	
 	/** DEPRECATED 4.27 */
 	UE_LOG(LogDMXRuntime, Error, TEXT("No clear remote Universe can be deduced in DMXEntityFixturePatch::GetRemoteUniverse. Returning 0."));
 	return 0;
 }
+#endif // WITH_EDITOR
 
 TArray<FDMXAttributeName> UDMXEntityFixturePatch::GetAllAttributesInActiveMode() const
 {
@@ -498,7 +580,7 @@ TArray<FDMXAttributeName> UDMXEntityFixturePatch::GetAllAttributesInActiveMode()
 	{
 		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
-			AttributeNames.Add(Function.Attribute.GetName());
+			AttributeNames.Add(Function.Attribute.Name);
 		}
 	}
 
@@ -514,7 +596,7 @@ TMap<FDMXAttributeName, FDMXFixtureFunction> UDMXEntityFixturePatch::GetAttribut
 	{
 		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
-			FunctionMap.Add(Function.Attribute.GetName(), Function);
+			FunctionMap.Add(Function.Attribute.Name, Function);
 		}
 	}
 
@@ -650,7 +732,7 @@ bool UDMXEntityFixturePatch::IsMapValid(const TMap<FDMXAttributeName, int32>& Fu
 	for (const TPair<FDMXAttributeName, int32>& Elem : FunctionMap)
 	{
 		const bool bContainsAttributeName = Cache.GetFunctions().ContainsByPredicate([Elem](const FDMXFixtureFunction& Function) {
-			return Function.Attribute.GetName() == Elem.Key;
+			return Function.Attribute.Name == Elem.Key;
 		});
 
 		if (!bContainsAttributeName)
@@ -665,7 +747,7 @@ bool UDMXEntityFixturePatch::IsMapValid(const TMap<FDMXAttributeName, int32>& Fu
 bool UDMXEntityFixturePatch::ContainsAttribute(FDMXAttributeName FunctionAttribute) const
 {
 	const bool bContainsAttributeName = Cache.GetFunctions().ContainsByPredicate([&FunctionAttribute](const FDMXFixtureFunction& Function) {
-		return Function.Attribute.GetName() == FunctionAttribute;
+		return Function.Attribute.Name == FunctionAttribute;
 	});
 
 	return bContainsAttributeName;
@@ -703,7 +785,7 @@ TArray<UDMXEntityController*> UDMXEntityFixturePatch::GetRelevantControllers() c
 const FDMXFixtureFunction* UDMXEntityFixturePatch::GetAttributeFunction(const FDMXAttributeName& Attribute) const
 {
 	const FDMXFixtureFunction* FixtureFunctionPtr = Cache.GetFunctions().FindByPredicate([Attribute](const FDMXFixtureFunction& Function) {
-		return Function.Attribute.GetName() == Attribute;
+		return Function.Attribute.Name == Attribute;
 	});
 
 	if (FixtureFunctionPtr && 
@@ -963,7 +1045,7 @@ bool UDMXEntityFixturePatch::GetMatrixCellChannelsRelative(const FIntPoint& Cell
 		int32 AttributeOffset = 0;
 		for (const FDMXFixtureCellAttribute& CellAttribute : Cache.GetCellAttributes())
 		{
-			AttributeChannelMap.Add(CellAttribute.Attribute.GetName(), RelativeMatrixStartingChannel + AttributeOffset);
+			AttributeChannelMap.Add(CellAttribute.Attribute.Name, RelativeMatrixStartingChannel + AttributeOffset);
 			AttributeOffset += CellAttribute.GetNumChannels();
 		}
 	}
@@ -982,7 +1064,7 @@ bool UDMXEntityFixturePatch::GetMatrixCellChannelsAbsolute(const FIntPoint& Cell
 		int32 AttributeOffset = 0;
 		for (const FDMXFixtureCellAttribute& CellAttribute : Cache.GetCellAttributes())
 		{
-			AttributeChannelMap.Add(CellAttribute.Attribute.GetName(), AbsoluteMatrixStartingChannel + AttributeOffset);
+			AttributeChannelMap.Add(CellAttribute.Attribute.Name, AbsoluteMatrixStartingChannel + AttributeOffset);
 			AttributeOffset += CellAttribute.GetNumChannels();
 		}
 		
@@ -1101,6 +1183,8 @@ void UDMXEntityFixturePatch::OnFixtureTypeChanged(const UDMXEntityFixtureType* F
 	{
 		ValidateActiveMode();
 		RebuildCache();
+
+		OnFixturePatchChangedDelegate.Broadcast(this);
 	}
 }
 

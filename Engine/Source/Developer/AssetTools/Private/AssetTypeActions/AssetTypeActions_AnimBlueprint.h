@@ -23,7 +23,8 @@ public:
 	virtual void PerformAssetDiff(UObject* Asset1, UObject* Asset2, const struct FRevisionInfo& OldRevision, const struct FRevisionInfo& NewRevision) const override;
 	virtual class UThumbnailInfo* GetThumbnailInfo(UObject* Asset) const override;
 	virtual TSharedPtr<SWidget> GetThumbnailOverlay(const FAssetData& AssetData) const override;
-
+	virtual FText GetDisplayNameFromAssetData(const FAssetData& AssetData) const override;
+	
 	// FAssetTypeActions_Blueprint interface
 	virtual UFactory* GetFactoryForBlueprintType(UBlueprint* InBlueprint) const override;
 
@@ -31,10 +32,16 @@ private:
 
 	/** Handler for when FindSkeleton is selected */
 	void ExecuteFindSkeleton(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects);
+
+	/** Handler for when AssignSkeleton is selected */
+	void ExecuteAssignSkeleton(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects);
 	
 	/** Certain options are not available for template anim BPs */
-	bool AreAnyNonTemplateAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const;
+	bool AreOnlyNonTemplateAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const;
 
+	/** Certain options are not available for layer interfaces */
+	bool AreOnlyNonInterfaceAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const;
+	
 	/** When skeleton asset is missing, allow replacing skeleton asset */ 
 	bool ReplaceMissingSkeleton(TArray<UObject*> InAnimBlueprints) const;
 };

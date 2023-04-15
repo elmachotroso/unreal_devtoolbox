@@ -43,7 +43,7 @@ void FUObjectItem::CreateStatID() const
 	for (int32 i = ClassChain.Num() - 1; i >= 0; i--)
 	{
 		Target = ClassChain[i];
-		const FNameEntry* NameEntry = Target->GetFName().GetDisplayNameEntry();
+		const FNameEntry* NameEntry = Target->GetFNameForStatID().GetDisplayNameEntry();
 		if (bFirstEntry)
 		{
 			NameEntry->AppendNameToPathString(LongName);
@@ -82,7 +82,7 @@ FUObjectArray::FUObjectArray()
 , ObjLastNonGCIndex(INDEX_NONE)
 , MaxObjectsNotConsideredByGC(0)
 , OpenForDisregardForGC(!HACK_HEADER_GENERATOR)
-, MasterSerialNumber(START_SERIAL_NUMBER)
+, PrimarySerialNumber(START_SERIAL_NUMBER)
 {
 	GCoreObjectArrayForDebugVisualizers = &GUObjectArray.ObjObjects;
 }
@@ -398,7 +398,7 @@ int32 FUObjectArray::AllocateSerialNumber(int32 Index)
 	int32 SerialNumber = *SerialNumberPtr;
 	if (!SerialNumber)
 	{
-		SerialNumber = MasterSerialNumber.Increment();
+		SerialNumber = PrimarySerialNumber.Increment();
 		UE_CLOG(SerialNumber <= START_SERIAL_NUMBER, LogUObjectArray, Fatal, TEXT("UObject serial numbers overflowed (trying to allocate serial number %d)."), SerialNumber);
 		int32 ValueWas = FPlatformAtomics::InterlockedCompareExchange((int32*)SerialNumberPtr, SerialNumber, 0);
 		if (ValueWas != 0)

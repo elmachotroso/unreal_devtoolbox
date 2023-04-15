@@ -22,6 +22,7 @@
 #include "MetalLLM.h"
 #include "Engine/RendererSettings.h"
 #include "MetalTransitionData.h"
+#include "EngineGlobals.h"
 
 DEFINE_LOG_CATEGORY(LogMetal)
 
@@ -152,8 +153,10 @@ static void VerifyMetalCompiler()
 
 FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 : ImmediateContext(nullptr, FMetalDeviceContext::CreateDeviceContext())
-, AsyncComputeContext(nullptr)
 {
+	check(Singleton == nullptr);
+	Singleton = this;
+
 	@autoreleasepool {
 	// This should be called once at the start 
 	check( IsInGameThread() );
@@ -164,6 +167,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 #endif
 	
 	GRHISupportsMultithreading = true;
+	GRHISupportsMultithreadedResources = true;
 	
 	// we cannot render to a volume texture without geometry shader or vertex-shader-layer support, so initialise to false and enable based on platform feature availability
 	GSupportsVolumeTextureRendering = false;
@@ -322,37 +326,46 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	bool bSupportsSM5 = true;
 	bool bIsIntelHaswell = false;
 	
-	// All should work on Catalina+ using GPU end time
-	GSupportsTimestampRenderQueries = FPlatformMisc::MacOSXVersionCompare(10,15,0) >= 0;
+	GSupportsTimestampRenderQueries = true;
 	
 	if(GRHIAdapterName.Contains("Nvidia"))
 	{
 		bSupportsPointLights = true;
 		GRHIVendorId = 0x10DE;
 		bSupportsTiledReflections = true;
-		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,11,4) >= 0);
+		bSupportsDistanceFields = true;
+		GRHISupportsWaveOperations = false;
 	}
 	else if(GRHIAdapterName.Contains("ATi") || GRHIAdapterName.Contains("AMD"))
 	{
 		bSupportsPointLights = true;
 		GRHIVendorId = 0x1002;
-		if((FPlatformMisc::MacOSXVersionCompare(10,12,0) < 0) && GPUDesc.GPUVendorId == GRHIVendorId)
+		if(GPUDesc.GPUVendorId == GRHIVendorId)
 		{
 			GRHIAdapterName = FString(GPUDesc.GPUName);
 		}
 		bSupportsTiledReflections = true;
-		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,11,4) >= 0);
+		bSupportsDistanceFields = true;
 		
 		// On AMD can also use completion handler time stamp if macOS < Catalina
 		GSupportsTimestampRenderQueries = true;
+		
+		// Only tested on Vega.
+		GRHISupportsWaveOperations = GRHIAdapterName.Contains(TEXT("Vega"));
+		if (GRHISupportsWaveOperations)
+		{
+			GRHIMinimumWaveSize = 32;
+			GRHIMaximumWaveSize = 64;
+		}
 	}
 	else if(GRHIAdapterName.Contains("Intel"))
 	{
 		bSupportsTiledReflections = false;
-		bSupportsPointLights = (FPlatformMisc::MacOSXVersionCompare(10,14,6) > 0);
+		bSupportsPointLights = true;
 		GRHIVendorId = 0x8086;
-		bSupportsDistanceFields = (FPlatformMisc::MacOSXVersionCompare(10,12,2) >= 0);
+		bSupportsDistanceFields = true;
 		bIsIntelHaswell = (GRHIAdapterName == TEXT("Intel HD Graphics 5000") || GRHIAdapterName == TEXT("Intel Iris Graphics") || GRHIAdapterName == TEXT("Intel Iris Pro Graphics"));
+		GRHISupportsWaveOperations = false;
 	}
 	else if(GRHIAdapterName.Contains("Apple"))
 	{
@@ -361,6 +374,10 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = true;
 		GSupportsTimestampRenderQueries = true;
+		
+		GRHISupportsWaveOperations = true;
+		GRHIMinimumWaveSize = 32;
+		GRHIMaximumWaveSize = 32;
 	}
 
 	bool const bRequestedSM5 = (RequestedFeatureLevel == ERHIFeatureLevel::SM5 || (!bRequestedFeatureLevel && (FParse::Param(FCommandLine::Get(),TEXT("metalsm5")) || FParse::Param(FCommandLine::Get(),TEXT("metalmrt")))));
@@ -446,17 +463,10 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	
 #endif
-
-	
-	GRHISupportsCopyToTextureMultipleMips = true;
 		
-	if(
-	   #if PLATFORM_MAC
-	   (Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v3) && FPlatformMisc::MacOSXVersionCompare(10,13,0) >= 0)
-	   #elif PLATFORM_IOS || PLATFORM_TVOS
-	   FPlatformMisc::IOSVersionCompare(10,3,0)
-	   #endif
-	   )
+#if PLATFORM_MAC
+    if (Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v3))
+#endif
 	{
 		GRHISupportsDynamicResolution = true;
 		GRHISupportsFrameCyclesBubblesRemoval = true;
@@ -494,17 +504,11 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	if (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
 		GRHISupportsRHIThread = true;
-#if METAL_SUPPORTS_PARALLEL_RHI_EXECUTE
-		GRHISupportsParallelRHIExecute = GRHISupportsRHIThread && ((!IsRHIDeviceIntel() && !IsRHIDeviceNVIDIA()) || FParse::Param(FCommandLine::Get(),TEXT("metalparallel")));
-#endif
-		GSupportsEfficientAsyncCompute = GRHISupportsParallelRHIExecute && (IsRHIDeviceAMD() || /*TODO: IsRHIDeviceApple()*/ (GRHIVendorId == 0x106B) || PLATFORM_IOS || FParse::Param(FCommandLine::Get(),TEXT("metalasynccompute"))); // Only AMD and Apple currently support async. compute and it requires parallel execution to be useful.
 		GSupportsParallelOcclusionQueries = GRHISupportsRHIThread;
 	}
 	else
 	{
 		GRHISupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread")) || (CVarUseIOSRHIThread.GetValueOnAnyThread() > 0);
-		GRHISupportsParallelRHIExecute = false;
-		GSupportsEfficientAsyncCompute = false;
 		GSupportsParallelOcclusionQueries = false;
 	}
 
@@ -540,16 +544,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 
 #if PLATFORM_MAC
-	if (IsRHIDeviceIntel() && FPlatformMisc::MacOSXVersionCompare(10,13,5) < 0)
-	{
-		static auto CVarSGShadowQuality = IConsoleManager::Get().FindConsoleVariable((TEXT("sg.ShadowQuality")));
-		if (CVarSGShadowQuality && CVarSGShadowQuality->GetInt() != 0)
-		{
-			CVarSGShadowQuality->Set(0);
-		}
-	}
-
-	if (bIsIntelHaswell)
+    if (bIsIntelHaswell)
 	{
 		static auto CVarForceDisableVideoPlayback = IConsoleManager::Get().FindConsoleVariable((TEXT("Fort.ForceDisableVideoPlayback")));
 		if (CVarForceDisableVideoPlayback && CVarForceDisableVideoPlayback->GetInt() != 1)
@@ -576,7 +571,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 
 #if PLATFORM_MAC
 	check(Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v1));
-	GRHISupportsBaseVertexIndex = FPlatformMisc::MacOSXVersionCompare(10,11,2) >= 0 || !IsRHIDeviceAMD(); // Supported on macOS & iOS but not tvOS - broken on AMD prior to 10.11.2
+	GRHISupportsBaseVertexIndex = true;
 	GRHISupportsFirstInstance = true; // Supported on macOS & iOS but not tvOS.
 	GMaxTextureDimensions = 16384;
 	GMaxCubeTextureDimensions = 16384;
@@ -584,7 +579,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMaxShadowDepthBufferSizeX = GMaxTextureDimensions;
 	GMaxShadowDepthBufferSizeY = GMaxTextureDimensions;
     bSupportsD16 = !FParse::Param(FCommandLine::Get(),TEXT("nometalv2")) && Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
-    GRHISupportsHDROutput = FPlatformMisc::MacOSXVersionCompare(10,14,4) >= 0 && Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
+    GRHISupportsHDROutput = Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v2);
 	GRHIHDRDisplayOutputFormat = (GRHISupportsHDROutput) ? PF_PLATFORM_HDR_0 : PF_B8G8R8A8;
 	// Based on the spec below, the maxTotalThreadsPerThreadgroup is not a fixed number but calculated according to the device current ability, so the available threads could less than the maximum number.
 	// For safety and keep the consistency for all platform, reduce the maximum number to half of the device based.
@@ -630,14 +625,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMaxTextureMipCount = FPlatformMath::CeilLogTwo( GMaxTextureDimensions ) + 1;
 	GMaxTextureMipCount = FPlatformMath::Min<int32>( MAX_TEXTURE_MIP_COUNT, GMaxTextureMipCount );
 
-	// Using packed pixel formats (specifically MTLPixelFormatRG11B10Float) for texture_buffers on macOS <= 11.4 results in Metal validation errors:
-	// "pixel format (MTLPixelFormatRG11B10Float) cannot be written to from a shader on this device"
-	// macOS Big Sur 11.5.1 works; Big Sur 11.4.0 (and prior versions including Catalina) report the error; texture2d with buffer backing does not report this error.
-	bool bSupportsPackedPixelFormatsInTextureBuffers = true;
-#if PLATFORM_MAC
-	bSupportsPackedPixelFormatsInTextureBuffers = FPlatformMisc::MacOSXVersionCompare(11,5,1) >= 0;
-#endif
-
 	// Initialize the buffer format map - in such a way as to be able to validate it in non-shipping...
 #if METAL_DEBUG_OPTIONS
 	FMemory::Memset(GMetalBufferFormats, 255);
@@ -651,14 +638,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_DXT3                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_DXT5                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_UYVY                 ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
-	if(bSupportsPackedPixelFormatsInTextureBuffers)
-	{
-		GMetalBufferFormats[PF_FloatRGB        	] = { mtlpp::PixelFormat::RG11B10Float, (uint8)EMetalBufferFormat::RG11B10Half };
-	}
-	else
-	{
-		GMetalBufferFormats[PF_FloatRGB        	] = { mtlpp::PixelFormat::RGBA16Float, (uint8)EMetalBufferFormat::RGBA16Half };
-	}
+	GMetalBufferFormats[PF_FloatRGB        	] = { mtlpp::PixelFormat::RG11B10Float, (uint8)EMetalBufferFormat::RG11B10Half };
 	GMetalBufferFormats[PF_FloatRGBA            ] = { mtlpp::PixelFormat::RGBA16Float, (uint8)EMetalBufferFormat::RGBA16Half };
 	GMetalBufferFormats[PF_DepthStencil         ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_ShadowDepth          ] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
@@ -736,6 +716,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_R32G32B32F			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_R8_SINT				] = { mtlpp::PixelFormat::R8Sint, (uint8)EMetalBufferFormat::R8Sint };
 	GMetalBufferFormats[PF_R64_UINT				] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_R9G9B9EXP5			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	static_assert(PF_MAX == 86, "Please setup GMetalBufferFormats properly for the new pixel format");
 
 	// Initialize the platform pixel format map.
 	GPixelFormats[PF_Unknown			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
@@ -846,16 +828,9 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
     GPixelFormats[PF_DXT3				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC2_RGBA;
     GPixelFormats[PF_DXT5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::BC3_RGBA;
 	
-	if(bSupportsPackedPixelFormatsInTextureBuffers)
-	{
-		GPixelFormats[PF_FloatRGB		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
-		GPixelFormats[PF_FloatRGB		].BlockBytes		= 4;
-	}
-	else
-	{
-		GPixelFormats[PF_FloatRGB		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA16Float;
-		GPixelFormats[PF_FloatRGB		].BlockBytes		= 8;
-	}
+    GPixelFormats[PF_FloatRGB		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
+    GPixelFormats[PF_FloatRGB		].BlockBytes		= 4;
+
 	
 	GPixelFormats[PF_FloatR11G11B10		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG11B10Float;
 	GPixelFormats[PF_FloatR11G11B10		].BlockBytes		= 4;
@@ -874,10 +849,12 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	if(bSupportsD24S8)
 	{
 		GPixelFormats[PF_DepthStencil	].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth24Unorm_Stencil8;
+		GPixelFormats[PF_DepthStencil	].bIs24BitUnormDepthStencil = true;
 	}
 	else
 	{
 		GPixelFormats[PF_DepthStencil	].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth32Float_Stencil8;
+		GPixelFormats[PF_DepthStencil	].bIs24BitUnormDepthStencil = false;
 	}
 	GPixelFormats[PF_DepthStencil		].BlockBytes		= 4;
 	GPixelFormats[PF_DepthStencil		].Supported			= true;
@@ -938,6 +915,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_R16G16B16A16_UINT	].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA16Uint;
 	GPixelFormats[PF_R16G16B16A16_SINT	].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA16Sint;
 	GPixelFormats[PF_R8G8B8A8			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA8Unorm;
+    GPixelFormats[PF_A8R8G8B8           ].PlatformFormat    = (uint32)mtlpp::PixelFormat::RGBA8Unorm;
 	GPixelFormats[PF_R8G8B8A8_UINT		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA8Uint;
 	GPixelFormats[PF_R8G8B8A8_SNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RGBA8Snorm;
 	GPixelFormats[PF_R8G8				].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG8Unorm;
@@ -963,6 +941,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_R8_SINT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::R8Sint;
 	GPixelFormats[PF_R64_UINT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_R64_UINT			].Supported			= false;
+	GPixelFormats[PF_R9G9B9EXP5		    ].PlatformFormat    = (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_R9G9B9EXP5		    ].Supported			= false;
 
 #if METAL_DEBUG_OPTIONS
 	for (uint32 i = 0; i < PF_MAX; i++)
@@ -1006,31 +986,18 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		break;
 	};
 
-	// get driver version (todo: share with other RHIs)
-	{
-		FGPUDriverInfo GPUDriverInfo = FPlatformMisc::GetGPUDriverInfo(GRHIAdapterName);
-		
-		GRHIAdapterUserDriverVersion = GPUDriverInfo.UserDriverVersion;
-		GRHIAdapterInternalDriverVersion = GPUDriverInfo.InternalDriverVersion;
-		GRHIAdapterDriverDate = GPUDriverInfo.DriverDate;
-		
-		UE_LOG(LogMetal, Display, TEXT("    Adapter Name: %s"), *GRHIAdapterName);
-		UE_LOG(LogMetal, Display, TEXT("  Driver Version: %s (internal:%s, unified:%s)"), *GRHIAdapterUserDriverVersion, *GRHIAdapterInternalDriverVersion, *GPUDriverInfo.GetUnifiedDriverVersion());
-		UE_LOG(LogMetal, Display, TEXT("     Driver Date: %s"), *GRHIAdapterDriverDate);
-		UE_LOG(LogMetal, Display, TEXT("          Vendor: %s"), *GPUDriverInfo.ProviderName);
 #if PLATFORM_MAC
-		if(GPUDesc.GPUVendorId == GRHIVendorId)
-		{
-			UE_LOG(LogMetal, Display,  TEXT("      Vendor ID: %d"), GPUDesc.GPUVendorId);
-			UE_LOG(LogMetal, Display,  TEXT("      Device ID: %d"), GPUDesc.GPUDeviceId);
-			UE_LOG(LogMetal, Display,  TEXT("      VRAM (MB): %d"), GPUDesc.GPUMemoryMB);
-		}
-		else
-		{
-			UE_LOG(LogMetal, Warning,  TEXT("GPU descriptor (%s) from IORegistry failed to match Metal (%s)"), *FString(GPUDesc.GPUName), *GRHIAdapterName);
-		}
-#endif
+	if(GPUDesc.GPUVendorId == GRHIVendorId)
+	{
+		UE_LOG(LogMetal, Display,  TEXT("      Vendor ID: %d"), GPUDesc.GPUVendorId);
+		UE_LOG(LogMetal, Display,  TEXT("      Device ID: %d"), GPUDesc.GPUDeviceId);
+		UE_LOG(LogMetal, Display,  TEXT("      VRAM (MB): %d"), GPUDesc.GPUMemoryMB);
 	}
+	else
+	{
+		UE_LOG(LogMetal, Warning,  TEXT("GPU descriptor (%s) from IORegistry failed to match Metal (%s)"), *FString(GPUDesc.GPUName), *GRHIAdapterName);
+	}
+#endif
 
 #if PLATFORM_MAC
 	if (!FPlatformProcess::IsSandboxedApplication())
@@ -1052,7 +1019,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	if (ImmediateContext.Profiler)
 		ImmediateContext.Profiler->BeginFrame();
 #endif
-	AsyncComputeContext = GSupportsEfficientAsyncCompute ? new FMetalRHIComputeContext(ImmediateContext.Profiler, new FMetalContext(ImmediateContext.Context->GetDevice(), ImmediateContext.Context->GetCommandQueue(), true)) : nullptr;
 
 #if ENABLE_METAL_GPUPROFILE
 		if (ImmediateContext.Profiler)
@@ -1076,28 +1042,12 @@ FMetalDynamicRHI::~FMetalDynamicRHI()
 #endif
 }
 
-uint64 FMetalDynamicRHI::RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
+FDynamicRHI::FRHICalcTextureSizeResult FMetalDynamicRHI::RHICalcTexturePlatformSize(FRHITextureDesc const& Desc, uint32 FirstMipIndex)
 {
-	@autoreleasepool {
-	OutAlign = 0;
-	return CalcTextureSize(SizeX, SizeY, (EPixelFormat)Format, NumMips);
-	}
-}
-
-uint64 FMetalDynamicRHI::RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
-{
-	@autoreleasepool {
-	OutAlign = 0;
-	return CalcTextureSize3D(SizeX, SizeY, SizeZ, (EPixelFormat)Format, NumMips);
-	}
-}
-
-uint64 FMetalDynamicRHI::RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
-{
-	@autoreleasepool {
-	OutAlign = 0;
-	return CalcTextureSize(Size, Size, (EPixelFormat)Format, NumMips) * 6;
-	}
+	FDynamicRHI::FRHICalcTextureSizeResult Result;
+	Result.Size = Desc.CalcMemorySizeEstimate(FirstMipIndex);
+	Result.Align = 0;
+	return Result;
 }
 
 uint64 FMetalDynamicRHI::RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format)
@@ -1107,9 +1057,7 @@ uint64 FMetalDynamicRHI::RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat F
 
 void FMetalDynamicRHI::Init()
 {
-	// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().
-	GRHICommandList.GetImmediateCommandList().SetContext(::RHIGetDefaultContext());
-	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(::RHIGetDefaultAsyncComputeContext());
+	GRHICommandList.GetImmediateCommandList().InitializeImmediateContexts();
 
 	FRenderResource::InitPreRHIResources();
 	GIsRHIInitialized = true;
@@ -1118,7 +1066,6 @@ void FMetalDynamicRHI::Init()
 void FMetalRHIImmediateCommandContext::RHIBeginFrame()
 {
 	@autoreleasepool {
-        RHIPrivateBeginFrame();
 #if ENABLE_METAL_GPUPROFILE
 	Profiler->BeginFrame();
 #endif
@@ -1297,7 +1244,6 @@ void FMetalDynamicRHI::RHIFlushResources()
 
 void FMetalDynamicRHI::RHIAcquireThreadOwnership()
 {
-	SetupRecursiveResources();
 }
 
 void FMetalDynamicRHI::RHIReleaseThreadOwnership()
@@ -1345,4 +1291,47 @@ uint16 FMetalDynamicRHI::RHIGetPlatformTextureMaxSampleCount()
 #endif
 	}
 	return PlatformMaxSampleCount;
+}
+
+void FMetalDynamicRHI::RHIBlockUntilGPUIdle()
+{
+	@autoreleasepool {
+	ImmediateContext.Context->SubmitCommandBufferAndWait();
+	}
+}
+
+uint32 FMetalDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
+{
+	check(GPUIndex == 0);
+	return GGPUFrameTime;
+}
+
+void FMetalDynamicRHI::RHIExecuteCommandList(FRHICommandList* RHICmdList)
+{
+	NOT_SUPPORTED("RHIExecuteCommandList");
+}
+
+IRHICommandContext* FMetalDynamicRHI::RHIGetDefaultContext()
+{
+	return &ImmediateContext;
+}
+
+IRHIComputeContext* FMetalDynamicRHI::RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("FMetalDynamicRHI::RHIGetCommandContext should never be called. Metal RHI does not implement parallel command list execution."));
+	return nullptr;
+}
+
+IRHIPlatformCommandList* FMetalDynamicRHI::RHIFinalizeContext(IRHIComputeContext* Context)
+{
+	// "Context" will always be the default context, since we don't implement parallel execution.
+	// Metal uses an immediate context, there's nothing to do here. Executed commands will have already reached the driver.
+
+	// Returning nullptr indicates that we don't want RHISubmitCommandLists to be called.
+	return nullptr;
+}
+
+void FMetalDynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("FMetalDynamicRHI::RHISubmitCommandLists should never be called. Metal RHI does not implement parallel command list execution."));
 }

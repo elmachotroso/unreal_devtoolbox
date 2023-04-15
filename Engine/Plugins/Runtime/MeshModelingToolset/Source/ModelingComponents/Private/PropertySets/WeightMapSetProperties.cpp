@@ -3,6 +3,8 @@
 #include "PropertySets/WeightMapSetProperties.h"
 #include "WeightMapUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WeightMapSetProperties)
+
 
 void UWeightMapSetProperties::InitializeWeightMaps(const TArray<FName>& WeightMapNames)
 {
@@ -35,4 +37,16 @@ bool UWeightMapSetProperties::HasSelectedWeightMap() const
 TArray<FString> UWeightMapSetProperties::GetWeightMapsFunc()
 {
 	return WeightMapsList;
+}
+
+void UWeightMapSetProperties::SetSelectedFromWeightMapIndex(int32 Index)
+{
+	if (Index < 0)
+	{
+		WeightMap = FName(WeightMapsList[0]);
+	}
+	else
+	{
+		WeightMap = FName(WeightMapsList[Index+1]);
+	}
 }

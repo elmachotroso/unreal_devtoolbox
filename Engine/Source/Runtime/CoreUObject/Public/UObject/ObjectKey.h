@@ -13,14 +13,14 @@ struct FObjectKey
 public:
 	/** Default constructor */
 	FORCEINLINE FObjectKey()
-		: ObjectIndex(INDEX_NONE)
+		: ObjectIndex(UE::Core::Private::InvalidWeakObjectIndex)
 		, ObjectSerialNumber(0)
 	{
 	}
 
 	/** Construct from an object pointer */
 	FORCEINLINE FObjectKey(const UObject* Object)
-		: ObjectIndex(INDEX_NONE)
+		: ObjectIndex(UE::Core::Private::InvalidWeakObjectIndex)
 		, ObjectSerialNumber(0)
 	{
 		if (Object)
@@ -106,6 +106,19 @@ public:
 
 		constexpr bool bEvenIfPendingKill = true;
 		return WeakPtr.Get(bEvenIfPendingKill);
+	}
+
+	/**
+	 * Attempt to access the object from which this key was constructed, even if it is RF_PendingKill or RF_Unreachable
+	 * @return The object used to construct this key, or nullptr if it is no longer valid
+	 */
+	UObject* ResolveObjectPtrEvenIfUnreachable() const
+	{
+		FWeakObjectPtr WeakPtr;
+		WeakPtr.ObjectIndex = ObjectIndex;
+		WeakPtr.ObjectSerialNumber = ObjectSerialNumber;
+
+		return WeakPtr.GetEvenIfUnreachable();
 	}
 
 	/** Hash function */

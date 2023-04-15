@@ -6,7 +6,7 @@
 #include "Brushes/SlateBorderBrush.h"
 #include "Brushes/SlateImageBrush.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IPluginManager.h"
 #include "Styling/SlateStyle.h"
@@ -75,7 +75,10 @@ TSharedRef< FSlateStyleSet > FLevelSnapshotsEditorStyle::Create()
 	Style->Set("LevelSnapshots.ToolbarButton.Small", new IMAGE_BRUSH_SVG("Icons/Icon", Icon16x16));
 	Style->Set("ClassIcon.LevelSnapshotsEditorData", new IMAGE_BRUSH_SVG("Icons/Icon", Icon16x16));
 
-	// Brush
+	// Button Icons
+	Style->Set( "LevelSnapshotsEditor.Add", new IMAGE_BRUSH_SVG("Starship/MainToolbar/ToolBadgePlus", Icon20x20));
+
+	// Border Brushes
 	Style->Set("LevelSnapshotsEditor.GroupBorder", new FSlateRoundedBoxBrush(FStyleColors::Secondary, 4.0f));
 	Style->Set("LevelSnapshotsEditor.BrightBorder", new FSlateColorBrush(FColor(112, 112, 112, 100)));
 	Style->Set("LevelSnapshotsEditor.FilterSelected", new BOX_BRUSH("Common/Filter_Selected", FMargin(18.0f / 64.0f)));
@@ -87,23 +90,25 @@ TSharedRef< FSlateStyleSet > FLevelSnapshotsEditorStyle::Create()
 	Style->Set("LevelSnapshotsEditor.IgnoreFilterBorder", new BOX_BRUSH("Common/DarkGroupBorder", FMargin(4.0f / 16.0f)));
 
 	// Buttons
-	FButtonStyle RemoveFilterButtonStyle = FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("FlatButton");
+	FButtonStyle RemoveFilterButtonStyle = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("FlatButton");
 	RemoveFilterButtonStyle.Normal = FSlateNoResource();
 	RemoveFilterButtonStyle.NormalPadding = FMargin(0, 1.5f);
 	RemoveFilterButtonStyle.PressedPadding = FMargin(0, 1.5f);
 	Style->Set("LevelSnapshotsEditor.RemoveFilterButton", RemoveFilterButtonStyle);
 
-	FTextBlockStyle ButtonTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("ContentBrowser.TopBar.Font");
+	FTextBlockStyle ButtonTextStyle = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("ContentBrowser.TopBar.Font");
 	FLinearColor ButtonTextColor = ButtonTextStyle.ColorAndOpacity.GetSpecifiedColor();
 	ButtonTextColor.A /= 2;
 	ButtonTextStyle.ColorAndOpacity = ButtonTextColor;
 	ButtonTextStyle.ShadowColorAndOpacity.A /= 2;
 	Style->Set("LevelSnapshotsEditor.Button.TextStyle", ButtonTextStyle);
 
-	FTextBlockStyle AndTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("Graph.CompactNode.Title");
+	FTextBlockStyle AndTextStyle = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("Graph.CompactNode.Title");
 	FTextBlockStyle OrTextStyle = AndTextStyle;
-	AndTextStyle.SetFont(FCoreStyle::GetDefaultFontStyle("BoldCondensed", 16 ));
-	OrTextStyle.SetFont(FCoreStyle::GetDefaultFontStyle("BoldCondensed", 18 ));
+	FSlateFontInfo AndFont = FAppStyle::Get().GetFontStyle("BoldCondensed"); AndFont.Size = 16;
+	FSlateFontInfo OrFont = FAppStyle::Get().GetFontStyle("BoldCondensed"); OrFont.Size = 18;
+	AndTextStyle.SetFont(AndFont);
+	OrTextStyle.SetFont(OrFont);
 	Style->Set("LevelSnapshotsEditor.FilterRow.And", AndTextStyle);
 	Style->Set("LevelSnapshotsEditor.FilterRow.Or", OrTextStyle);
 	

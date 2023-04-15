@@ -17,7 +17,7 @@
 
 #include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
-#include "AssetRegistryHelpers.h"
+#include "AssetRegistry/AssetRegistryHelpers.h"
 
 #include "Engine/AssetManager.h"
 #include "UObject/Linker.h"
@@ -44,6 +44,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Input/Reply.h"
+#include "Widgets/Layout/SScrollBox.h"
 
 #define LOCTEXT_NAMESPACE "DHIImport"
 
@@ -77,6 +78,9 @@ public:
 
 		this->ChildSlot
 		[
+			SNew(SScrollBox)
+			+ SScrollBox::Slot()
+			[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -200,7 +204,8 @@ public:
 					.OnClicked(this, &SOVerwriteDialog::HandleOK)
 				]
 			]
-		];
+		]
+        ];
 	}
 	
 private:
@@ -375,8 +380,9 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 		ModifiedFiles = GetModifiedFileList(AssetsImportInfo, AssetsToUpdateList);
 	}
 
+
 	// Get confirmation from the user to update the existing common assets
-	/*if (AssetsToUpdateList.Num() > 0) 
+	if (AssetsToUpdateList.Num() > 0) 
 	{
 		FString AssetsUpdateMessage = TEXT("There are some changes to the Common assets in this project. If you continue importing this MetaHuman, your local changes to the following assets may be overwritten.\nContinue anyway?\n");
 
@@ -388,14 +394,15 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 		EAppReturnType::Type UpdateAssetsDialog = FMessageDialog::Open(EAppMsgType::YesNo, FText(FText::FromString(AssetsUpdateMessage)));
 		if (UpdateAssetsDialog != EAppReturnType::Yes)
 			return;
-	}*/
+	}
+
+
+	// Not part of ^
 	/*if (AssetsToUpdateList.Num() > 0 ) 
 	{
 		ShowDialog(SourceMetahumanPath, DestinationMetahumanPath, CommonOverwriteMessage);
 		return;
 	}*/
-
-	
 
 	// Found files that were modified locally, inform user about these before continui
 	//if (ModifiedFiles.Num() > 0)
@@ -452,33 +459,34 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 
 	ProjectUpgradeMessage += TEXT("\nthese are incompatible with UE5 MetaHumans and may result in some errors when they’re together in the same project. We highly recommend that you update all MetaHumans to be UE5 MetaHumans.\nTo continue importing this MetaHuman, please close the project and copy the following files from:");
 
+	// This is where we decide based on the number of UE4 characters whether to show dialog or not
 	if (IncompatibleCharacters.Num() > 0)
 	{
 		ShowDialog(SourceMetahumanPath, DestinationMetahumanPath, ProjectUpgradeMessage, UpgradeFooter);
 		return;
 	}
 
+
+	// TODO: Removed
 	if (PlatformFile.DirectoryExists(*CharacterDestination))
 	{
 		bIsNewCharacter = false;
 		if (MHInLevel(BPPath))
 		{
-			EAppReturnType::Type ContinueImport = FMessageDialog::Open(EAppMsgType::Ok, FText(FText::FromString("This MetaHuman already exists in this level. In order to continue, you will need to close the level and import the MetaHuman into a new or different level.\n\nNote: Hair cards will be missing until you restart Unreal Engine.")));
+			EAppReturnType::Type ContinueImport = FMessageDialog::Open(EAppMsgType::Ok, FText(FText::FromString("This MetaHuman already exists in this level. In order to continue, you will need to close the level and import the MetaHuman into a new or different level.")));
 			return;
 		}
-
 	}
 
 
+	// TODO: Partially Removed
 	if (PlatformFile.DirectoryExists(*CharacterDestination))
 	{
 		bIsNewCharacter = false;
 		
-		EAppReturnType::Type ContinueImport = FMessageDialog::Open(EAppMsgType::YesNo, FText(FText::FromString("The MetaHuman you are trying to import already exists in this project. Do you want to overwrite them?\n\nNote: Hair cards will be missing until you restart Unreal Engine.")));
-		if (ContinueImport != EAppReturnType::Yes)
-			return;
-		
-		
+	// 	EAppReturnType::Type ContinueImport = FMessageDialog::Open(EAppMsgType::YesNo, FText(FText::FromString("The MetaHuman you are trying to import already exists in this project. Do you want to overwrite them?")));
+	// 	if (ContinueImport != EAppReturnType::Yes)
+	// 		return;
 	}
 
 	/*if (PlatformFile.DirectoryExists(*CharacterDestination))
@@ -512,10 +520,7 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 
     CommonDestinationPath = FPaths::Combine(MetaHumansRoot, TEXT("Common"));
 
-	if (bShouldUpdateAll)
-	{
-		PlatformFile.CopyFile(*ProjectAssetsVersionPath, *SourceVersionFilePath);
-	}
+	
 
 	// NOTE: the RigLogic plugin (and maybe others) must be loaded and added to the project before loading the asset
 	// otherwise we get rid of the RigLogic nodes, resulting in leaving the asset in an undefined state. In the context
@@ -547,7 +552,7 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
     TArray<FString> FilesToCopy;
     
 	// Update existing common assets
-	//CopyCommonFiles(AssetsStatus["Update"], CharacterSourceData->CommonPath, true);
+	CopyCommonFiles(AssetsStatus["Update"], CharacterSourceData->CommonPath, true);
 
 	// Add new common assets
 	CopyCommonFiles(AssetsStatus["Add"], CharacterSourceData->CommonPath, false);
@@ -618,7 +623,7 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 
 				FString AssetPackagePath = FPaths::Combine(TEXT("/Game"), StrippedFilePath);
 
-				FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*AssetPackagePath));
+				FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPackagePath));
 				
 				if (GameAssetData.IsAssetLoaded())
 				{					
@@ -729,7 +734,12 @@ void FImportDHI::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 
     AssetRegistryModule.Get().ScanPathsSynchronous(AssetsBasePath, true);
 
-    FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*BPPath));
+	if (bShouldUpdateAll)
+	{
+		PlatformFile.CopyFile(*ProjectAssetsVersionPath, *SourceVersionFilePath);
+	}
+
+    FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(BPPath));
 
     // As part of our discussion to fix this, here was the explanation about why the asset has to be loaded:
     // "In UE4 we came across this issue where even if we did call the syncfolder on content browser, it would still
@@ -806,7 +816,12 @@ TArray<FString> FImportDHI::CheckVersionCompatibilty()
 
             FString VersionFilePath = FPaths::Combine(ProjectMetahumanPath, CharacterName, TEXT("VersionInfo.txt"));
 
-            if (!PlatformFile.FileExists(*VersionFilePath))
+			FString BPName = TEXT("BP_") + CharacterName.Replace(TEXT("/"), TEXT(""));
+			BPName += TEXT(".") + BPName;
+			FString BPPath = FPaths::Combine(TEXT("/Game/MetaHumans/"), CharacterName, BPName);
+			
+
+            if (!PlatformFile.FileExists(*VersionFilePath) && UEditorAssetLibrary::DoesAssetExist(BPPath))
             {
                 IncompatibleCharacters.Add(CharacterName);
             }
@@ -958,7 +973,7 @@ TMap<FString, TArray<FString>> FImportDHI::AssetsToUpdate(const FString& SourceC
 
 		if (PlatformFile.FileExists(*ProjectFilePath))
 		{
-			//AssetsUpdateList.Add(FormattedFilePath);
+			AssetsUpdateList.Add(FormattedFilePath);
 		}
 		else
 		{
@@ -1030,7 +1045,7 @@ void FImportDHI::CopyCommonFiles(TArray<FString> AssetsList, const FString& Comm
 				// Create a path like /Game/Metahumans/MetaHumans/Common/Common/MetaHuman_ControlRig.MetaHuman_ControlRig
 				FString GameAssetPath = TEXT("/Game/") + AssetRelativePath + TEXT(".") + AssetName;
 
-				FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*GameAssetPath));
+				FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(GameAssetPath));
 
 				if (GameAssetData.IsAssetLoaded())
 				{
@@ -1151,7 +1166,7 @@ TArray<FString> FImportDHI::CharactersOpenEditors()
 
 	for (FString CharacterInProject : CharactersInProject)
 	{
-		FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*CharacterInProject));
+		FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(CharacterInProject));
 
 		if (CharacterAssetData.IsAssetLoaded())
 		{
@@ -1172,7 +1187,7 @@ void FImportDHI::CloseAssetEditors(TArray<FString> CharactersOpenInEditors)
 
 	for (FString CharacterAsset : CharactersOpenInEditors)
 	{
-		FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*CharacterAsset));
+		FAssetData CharacterAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(CharacterAsset));
 		
 		UObject* CharacterObject = CharacterAssetData.GetAsset();
 
@@ -1188,7 +1203,7 @@ void FImportDHI::RecompileAllCharacters()
 
 	for (FString CharacterInProject : CharactersInProject)
 	{
-		FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*CharacterInProject));
+		FAssetData GameAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(CharacterInProject));
 		UObject* ItemObject = GameAssetData.GetAsset();
 
 		if (UBlueprint* BPObject = Cast<UBlueprint>(ItemObject))

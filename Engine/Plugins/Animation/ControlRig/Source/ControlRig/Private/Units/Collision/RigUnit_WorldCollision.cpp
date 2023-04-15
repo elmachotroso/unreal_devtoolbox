@@ -5,6 +5,8 @@
 #include "Units/RigUnitContext.h"
 #include "Components/PrimitiveComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_WorldCollision)
+
 FRigUnit_SphereTraceWorld_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -44,6 +46,16 @@ FRigUnit_SphereTraceWorld_Execute()
 		HitLocation = Context.ToRigSpace(HitResult.ImpactPoint);
 		HitNormal = Context.ToWorldSpaceTransform.InverseTransformVector(HitResult.ImpactNormal);
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_SphereTraceWorld::GetUpgradeInfo() const
+{
+	FRigUnit_SphereTraceByTraceChannel NewNode;
+	NewNode.Start = Start;
+	NewNode.End = End;
+	NewNode.Radius = Radius;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
 }
 
 FRigUnit_SphereTraceByTraceChannel_Execute()
@@ -138,3 +150,4 @@ FRigUnit_SphereTraceByObjectTypes_Execute()
 		HitNormal = Context.ToWorldSpaceTransform.InverseTransformVector(HitResult.ImpactNormal);
 	}
 }
+

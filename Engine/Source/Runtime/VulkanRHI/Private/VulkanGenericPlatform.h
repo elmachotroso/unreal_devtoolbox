@@ -10,6 +10,11 @@
 
 struct FOptionalVulkanDeviceExtensions;
 class FVulkanDevice;
+class FVulkanRenderTargetLayout;
+struct FGfxPipelineDesc;
+
+using FVulkanDeviceExtensionArray = TArray<TUniquePtr<class FVulkanDeviceExtension>>;
+using FVulkanInstanceExtensionArray = TArray<TUniquePtr<class FVulkanInstanceExtension>>;
 
 // the platform interface, and empty implementations for platforms that don't need em
 class FVulkanGenericPlatform
@@ -18,21 +23,20 @@ public:
 	static void SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatureLevel::Type InRequestedFeatureLevel);
 
 	static bool IsSupported() { return true; }
-	static void CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId VendorId, const VkPhysicalDeviceProperties& Props) {}
 
 	static bool LoadVulkanLibrary() { return true; }
 	static bool LoadVulkanInstanceFunctions(VkInstance inInstance) { return true; }
 	static void FreeVulkanLibrary() {}
 
 	// Called after querying all the available extensions and layers
-	static void NotifyFoundInstanceLayersAndExtensions(const TArray<FString>& Layers, const TArray<FString>& Extensions) {}
-	static void NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<FString>& Layers, const TArray<FString>& Extensions) {}
+	static void NotifyFoundInstanceLayersAndExtensions(const TArray<const ANSICHAR*>& Layers, const TArray<const ANSICHAR*>& Extensions) {}
+	static void NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<const ANSICHAR*>& Layers, const TArray<const ANSICHAR*>& Extensions) {}
 
 	// Array of required extensions for the platform (Required!)
-	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceExtensions(FVulkanInstanceExtensionArray& OutExtensions);
 	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers) {}
-	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
-	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers) {}
+	static void GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions);
+	static void GetDeviceLayers(TArray<const ANSICHAR*>& OutLayers) {}
 
 	// create the platform-specific surface object - required
 	static void CreateSurface(VkSurfaceKHR* OutSurface);
@@ -107,6 +111,9 @@ public:
 	// Allow platforms to track swapchain destruction
 	static void DestroySwapchainKHR(VkDevice Device, VkSwapchainKHR Swapchain, const VkAllocationCallbacks* Allocator);
 
+	// Whether to attempt recreate swapchain when present or acqurire operations fail
+	static bool RecreateSwapchainOnFail() { return true; }
+
 	// Ensure the last frame completed on the GPU
 	static bool RequiresWaitingForFrameCompletionEvent() { return true; }
 
@@ -125,6 +132,13 @@ public:
 	// Gathers a list of pso cache filenames to attempt to load
 	static TArray<FString> GetPSOCacheFilenames();
 
+	// Gives platform a chance to handle precompile of PSOs, returns nullptr if unsupported
+	static VkPipelineCache PrecompilePSO(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArrayView<uint32_t> VS, TArrayView<uint32_t> PS, size_t& AfterSize) { return VK_NULL_HANDLE; }
+
 	// Return VK_FALSE if platform wants to suppress the given debug report from the validation layers, VK_TRUE to print it.
 	static VkBool32 DebugReportFunction(VkDebugReportFlagsEXT MsgFlags, VkDebugReportObjectTypeEXT ObjType, uint64_t SrcObject, size_t Location, int32 MsgCode, const ANSICHAR* LayerPrefix, const ANSICHAR* Msg, void* UserData) { return VK_TRUE; }
+
+	// Setup platform to use a workaround to reduce textures memory requirements
+	static void SetupImageMemoryRequirementWorkaround(const FVulkanDevice& InDevice) {};
+	static void SetImageMemoryRequirementWorkaround(VkImageCreateInfo& ImageCreateInfo) {};
 };

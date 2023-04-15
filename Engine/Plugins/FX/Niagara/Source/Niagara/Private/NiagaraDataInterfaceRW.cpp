@@ -4,16 +4,18 @@
 #include "ShaderParameterUtils.h"
 #include "ClearQuad.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRW)
+
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceRW"
 
 // Global HLSL variable base names, used by HLSL.
-const FString UNiagaraDataInterfaceRWBase::NumAttributesName(TEXT("NumAttributes_"));
-const FString UNiagaraDataInterfaceRWBase::NumNamedAttributesName(TEXT("NumNamedAttributes_"));
-const FString UNiagaraDataInterfaceRWBase::NumCellsName(TEXT("NumCells_"));
-const FString UNiagaraDataInterfaceRWBase::UnitToUVName(TEXT("UnitToUV_"));
-const FString UNiagaraDataInterfaceRWBase::CellSizeName(TEXT("CellSize_"));
-const FString UNiagaraDataInterfaceRWBase::WorldBBoxSizeName(TEXT("WorldBBoxSize_"));
+const FString UNiagaraDataInterfaceRWBase::NumAttributesName(TEXT("_NumAttributes"));
+const FString UNiagaraDataInterfaceRWBase::NumNamedAttributesName(TEXT("_NumNamedAttributes"));
+const FString UNiagaraDataInterfaceRWBase::NumCellsName(TEXT("_NumCells"));
+const FString UNiagaraDataInterfaceRWBase::UnitToUVName(TEXT("_UnitToUV"));
+const FString UNiagaraDataInterfaceRWBase::CellSizeName(TEXT("_CellSize"));
+const FString UNiagaraDataInterfaceRWBase::WorldBBoxSizeName(TEXT("_WorldBBoxSize"));
 
 // Global VM function names, also used by the shaders code generation methods.
 const FName UNiagaraDataInterfaceRWBase::NumCellsFunctionName("GetNumCells");
@@ -266,10 +268,10 @@ void UNiagaraDataInterfaceGrid3D::GetParameterDefinitionHLSL(const FNiagaraDataI
 		float3 {WorldBBoxSizeName};
 	)");
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {
-		{ TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("CellSizeName"), UNiagaraDataInterfaceRWBase::CellSizeName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("WorldBBoxSizeName"),    UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("NumCellsName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName },
+		{ TEXT("UnitToUVName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName },
+		{ TEXT("CellSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::CellSizeName },
+		{ TEXT("WorldBBoxSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::WorldBBoxSizeName },
 	};
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
 }
@@ -278,10 +280,10 @@ bool UNiagaraDataInterfaceGrid3D::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 {
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {
 		{ TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{ TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("CellSizeName"), UNiagaraDataInterfaceRWBase::CellSizeName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("WorldBBoxSizeName"), UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("NumCellsName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName },
+		{ TEXT("UnitToUVName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName },
+		{ TEXT("CellSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::CellSizeName },
+		{ TEXT("WorldBBoxSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::WorldBBoxSizeName },
 	};
 
 	if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName)
@@ -736,10 +738,10 @@ void UNiagaraDataInterfaceGrid2D::GetParameterDefinitionHLSL(const FNiagaraDataI
 		float2 {WorldBBoxSizeName};
 	)");
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {
-		{ TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("CellSizeName"), UNiagaraDataInterfaceRWBase::CellSizeName + ParamInfo.DataInterfaceHLSLSymbol },		
-		{ TEXT("WorldBBoxSizeName"),    UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("NumCellsName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName },
+		{ TEXT("UnitToUVName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName },
+		{ TEXT("CellSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::CellSizeName },
+		{ TEXT("WorldBBoxSizeName"),    ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::WorldBBoxSizeName },
 	};
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
 }
@@ -748,10 +750,10 @@ bool UNiagaraDataInterfaceGrid2D::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 {
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {
 		{ TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{ TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("CellSizeName"), UNiagaraDataInterfaceRWBase::CellSizeName + ParamInfo.DataInterfaceHLSLSymbol },		
-		{ TEXT("WorldBBoxSizeName"), UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("NumCellsName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName },
+		{ TEXT("UnitToUVName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName },
+		{ TEXT("CellSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::CellSizeName },		
+		{ TEXT("WorldBBoxSizeName"), ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::WorldBBoxSizeName },
 	};
 
 	if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName)
@@ -966,3 +968,4 @@ bool UNiagaraDataInterfaceGrid2D::CopyToInternal(UNiagaraDataInterface* Destinat
 }
 
 #undef LOCTEXT_NAMESPACE
+

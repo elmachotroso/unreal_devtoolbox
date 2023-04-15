@@ -4,12 +4,45 @@
 #include "GameplayTagsManager.h"
 #include "GameplayTagsModule.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "GameplayCueNotify_Actor.h"
 #include "GameplayCueNotify_Static.h"
 #include "GameplayCueManager.h"
 #include "NativeGameplayTags.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueSet)
+
 UE_DEFINE_GAMEPLAY_TAG_STATIC(StaticTag_GameplayCue, TEXT("GameplayCue"));
+
+namespace GameplayCueDebug
+{
+	static FGameplayTagContainer DebugGameplayCueFilter;
+	FAutoConsoleCommand ConCommandDebugGameplayCueFilter(
+		TEXT("GameplayCue.FilterCuesByTag"),
+		TEXT("Adds or removes a GameplayCue tag to the debug filter list. If the filter is populated, only GameplayCues with tags in the filter will be invoked."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args) 
+			{
+				for (const FString& TagToFilter : Args)
+				{
+					const FGameplayTag ExistingTag = FGameplayTag::RequestGameplayTag(FName(TagToFilter));
+					if (!ExistingTag.IsValid())
+					{
+						continue;
+					}
+
+					if (DebugGameplayCueFilter.HasTagExact(ExistingTag))
+					{
+						DebugGameplayCueFilter.RemoveTag(ExistingTag);
+					}
+					else
+					{
+						DebugGameplayCueFilter.AddTagFast(ExistingTag);
+					}
+				}
+			})
+	);
+
+}
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------
 //
@@ -28,6 +61,16 @@ bool UGameplayCueSet::HandleGameplayCue(AActor* TargetActor, FGameplayTag Gamepl
 {
 #if WITH_SERVER_CODE
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_GameplayCueSet_HandleGameplayCue);
+#endif
+	
+#if !UE_BUILD_SHIPPING
+	if (!GameplayCueDebug::DebugGameplayCueFilter.IsEmpty())
+	{
+		if (!GameplayCueDebug::DebugGameplayCueFilter.HasTagExact(GameplayCueTag))
+		{
+			return false;
+		}
+	}
 #endif
 
 	// GameplayCueTags could have been removed from the dictionary but not content. When the content is resaved the old tag will be cleaned up, but it could still come through here
@@ -265,6 +308,12 @@ bool UGameplayCueSet::HandleGameplayCueNotify_Internal(AActor* TargetActor, int3
 		}
 		else if (AGameplayCueNotify_Actor* InstancedCue = Cast<AGameplayCueNotify_Actor>(CueData.LoadedGameplayCueClass->ClassDefaultObject))
 		{
+			bool bShouldDestroy = false;
+			if (EventType == EGameplayCueEvent::Executed && !Parameters.bGameplayEffectActive && InstancedCue->bAutoDestroyOnRemove)
+			{
+				bShouldDestroy = true;
+			}
+
 			if (InstancedCue->HandlesEvent(EventType))
 			{
 				if (TargetActor)
@@ -278,6 +327,11 @@ bool UGameplayCueSet::HandleGameplayCueNotify_Internal(AActor* TargetActor, int3
 						if (!SpawnedInstancedCue->IsOverride)
 						{
 							HandleGameplayCueNotify_Internal(TargetActor, CueData.ParentDataIdx, EventType, Parameters);
+						}
+
+						if (bShouldDestroy)
+						{
+							SpawnedInstancedCue->HandleGameplayCue(TargetActor, EGameplayCueEvent::Removed, Parameters);
 						}
 					}
 				}
@@ -356,3 +410,4 @@ FGameplayTag UGameplayCueSet::BaseGameplayCueTag()
 	// Note we should not cache this off as a static variable, since for new projects the GameplayCue tag will not be found until one is created.
 	return StaticTag_GameplayCue.GetTag();
 }
+

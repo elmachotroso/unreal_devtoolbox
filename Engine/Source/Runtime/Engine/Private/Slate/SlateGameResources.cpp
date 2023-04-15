@@ -3,12 +3,12 @@
 #include "Slate/SlateGameResources.h"
 #include "Curves/CurveBase.h"
 #include "Curves/CurveFloat.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Modules/ModuleManager.h"
 #include "Styling/SlateWidgetStyleAsset.h"
 #include "EngineUtils.h"
 #include "Slate/SlateBrushAsset.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Curves/CurveVector.h"
@@ -34,10 +34,12 @@ FSlateGameResources::~FSlateGameResources()
 	if ( GIsEditor && FModuleManager::Get().IsModuleLoaded( TEXT("AssetRegistry") ) )
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>( TEXT("AssetRegistry") );
-		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-
-		AssetRegistry.OnAssetAdded().RemoveAll( this );
-		AssetRegistry.OnAssetRemoved().RemoveAll( this );
+		IAssetRegistry* AssetRegistry = AssetRegistryModule.TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+		}
 	}
 }
 
@@ -150,18 +152,20 @@ const FSlateWidgetStyle* FSlateGameResources::GetWidgetStyleInternal(const FName
 
 void FSlateGameResources::Log( ISlateStyle::EStyleMessageSeverity Severity, const FText& Message ) const
 {
-	EMessageSeverity::Type EngineMessageSeverity = EMessageSeverity::CriticalError;
-	switch( Severity )
+	if (GIsEditor)
 	{
-	case ISlateStyle::EStyleMessageSeverity::CriticalError: EngineMessageSeverity = EMessageSeverity::CriticalError; break;
-	case ISlateStyle::EStyleMessageSeverity::Error: EngineMessageSeverity = EMessageSeverity::Error; break;
-	case ISlateStyle::EStyleMessageSeverity::PerformanceWarning: EngineMessageSeverity = EMessageSeverity::PerformanceWarning; break;
-	case ISlateStyle::EStyleMessageSeverity::Warning: EngineMessageSeverity = EMessageSeverity::Warning; break;
-	case ISlateStyle::EStyleMessageSeverity::Info: EngineMessageSeverity = EMessageSeverity::Info; break;
-	}
+		const EMessageSeverity::Type EngineMessageSeverity = [Severity]()
+		{
+			switch (Severity)
+			{
+			default:
+			case ISlateStyle::EStyleMessageSeverity::Error:					return EMessageSeverity::Error;
+			case ISlateStyle::EStyleMessageSeverity::PerformanceWarning:	return EMessageSeverity::PerformanceWarning;
+			case ISlateStyle::EStyleMessageSeverity::Warning:				return EMessageSeverity::Warning;
+			case ISlateStyle::EStyleMessageSeverity::Info:					return EMessageSeverity::Info;
+			}
+		}();
 
-	if( GIsEditor )
-	{
 		FMessageLog SlateStyleLog("SlateStyleLog");
 		SlateStyleLog.AddMessage(FTokenizedMessage::Create(EngineMessageSeverity, Message));
 
@@ -228,8 +232,8 @@ void FSlateGameResources::RemoveAsset(const FAssetData& InRemovedAssetData)
 
 bool FSlateGameResources::ShouldCache( const FAssetData& InAssetData )
 {
-	return InAssetData.ObjectPath.ToString().StartsWith( ContentRootDir, ESearchCase::CaseSensitive )
-		&& InAssetData.AssetClass == USlateWidgetStyleAsset::StaticClass()->GetFName();
+	return InAssetData.PackageName.ToString().StartsWith( ContentRootDir, ESearchCase::CaseSensitive )
+		&& InAssetData.AssetClassPath == USlateWidgetStyleAsset::StaticClass()->GetClassPathName();
 }
 
 void FSlateGameResources::AddAssetToCache( UObject* InStyleObject, bool bEnsureUniqueness )

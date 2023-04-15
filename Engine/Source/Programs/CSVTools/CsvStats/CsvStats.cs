@@ -48,6 +48,7 @@ namespace CSVStats
 		public bool bIsCsvBin;
 		public CsvBinVersion BinVersion = CsvBinVersion.COUNT;
 		public CsvBinCompressionLevel BinCompressionLevel = CsvBinCompressionLevel.None;
+		public int SampleCount = 0;
 	};
 
 
@@ -315,7 +316,12 @@ namespace CSVStats
             return (float)(countInBudget) / (float)(samples.Count);
         }
 
-        public int GetCountOfFramesOverBudget(float budget, bool IgnoreFirstFrame = true, bool IgnoreLastFrame = true)
+		public float GetRatioOfFramesOverBudget(float budget)
+		{
+			return 1.0f - GetRatioOfFramesInBudget(budget);
+		}
+
+		public int GetCountOfFramesOverBudget(float budget, bool IgnoreFirstFrame = true, bool IgnoreLastFrame = true)
         {
             int countOverBudget = 0;
             for (int i = IgnoreFirstFrame ? 1 : 0; i < samples.Count - (IgnoreLastFrame ? 1 : 0); i++)
@@ -581,6 +587,21 @@ namespace CSVStats
 
 		private static bool WildcardSubstringMatch(string strLower, string[] subSearchStrings)
 		{
+			if ( subSearchStrings.Length == 0 )
+			{
+				return false;
+			}
+			// Make sure the first and last substrings match the start and end
+			if (!strLower.StartsWith(subSearchStrings[0]))
+			{
+				return false;
+			}
+			if (!strLower.EndsWith(subSearchStrings.Last()))
+			{
+				return false;
+			}
+
+			// Make sure we match all the substrings, in order
 			string remainingString = strLower;
 			foreach (string subString in subSearchStrings)
 			{
@@ -871,6 +892,7 @@ namespace CSVStats
 				FileInfoOut.bIsCsvBin = true;
 				FileInfoOut.BinVersion = (CsvBinVersion)version;
 				FileInfoOut.BinCompressionLevel = compressionLevel;
+				FileInfoOut.SampleCount = sampleCount;
 			}
 
 			if (justHeader)
@@ -1533,21 +1555,17 @@ namespace CSVStats
 		}
 
 
-		public static CsvStats ReadCSVFile(string csvFilename, string[] statNames, int numRowsToSkip = 0, bool bGenerateCsvIdIfMissing=false, CsvFileInfo FileInfoOut=null)
+		public static CsvStats ReadCSVFile(string csvFilename, string[] statNames, int numRowsToSkip = 0, bool bGenerateCsvIdIfMissing=false, CsvFileInfo FileInfoOut=null, bool bJustHeader=false)
         {
 			CsvStats statsOut;
 			if (csvFilename.EndsWith(".csv.bin"))
 			{
-				statsOut = ReadBinFile(csvFilename, statNames, numRowsToSkip, false, FileInfoOut);
+				statsOut = ReadBinFile(csvFilename, statNames, numRowsToSkip, bJustHeader, FileInfoOut);
 			}
 			else
 			{
 				string[] lines = ReadLinesFromFile(csvFilename);
-				statsOut = ReadCSVFromLines(lines, statNames, numRowsToSkip);
-				if ( FileInfoOut != null )
-				{
-					FileInfoOut.bIsCsvBin = false;
-				}
+				statsOut = ReadCSVFromLines(lines, statNames, numRowsToSkip, bJustHeader, FileInfoOut);
 			}
 			if (bGenerateCsvIdIfMissing)
 			{
@@ -1631,7 +1649,7 @@ namespace CSVStats
             return false;
         }
 
-        public static CsvStats ReadCSVFromLines(string[] linesArray, string[] statNames, int numRowsToSkip = 0, bool skipReadingData=false)
+        public static CsvStats ReadCSVFromLines(string[] linesArray, string[] statNames, int numRowsToSkip = 0, bool skipReadingData=false, CsvFileInfo fileInfo=null)
         {
             List<string> lines = linesArray.ToList();
 
@@ -1669,10 +1687,18 @@ namespace CSVStats
                 lines.RemoveAt(lines.Count - 1);
             }
 
-            if (skipReadingData)
+			// First line is headings, last line contains build info 
+			int numSamples = lines.Count - (bHasMetaData ? 2 : 1);
+			if (fileInfo != null)
+			{
+				fileInfo.bIsCsvBin = false;
+				fileInfo.SampleCount = numSamples;
+			}
+
+			if (skipReadingData)
             {
-				int dataLineCount = bHasMetaData ? lines.Count-2 : lines.Count-1;
-                lines.RemoveRange(1, dataLineCount);
+				lines.RemoveRange(1, numSamples);
+				numSamples = 0;
             }
 
 			// Get the list of lower case stat names, expanding wildcards
@@ -1702,9 +1728,6 @@ namespace CSVStats
                 }
                 statNamesLowercase = newStatNamesLowercase.ToArray();
             }
-
-            // First line is headings, last line contains build info 
-            int numSamples = lines.Count - (bHasMetaData ? 2 : 1);
 
             // Create the stats
             int eventHeadingIndex = -1;

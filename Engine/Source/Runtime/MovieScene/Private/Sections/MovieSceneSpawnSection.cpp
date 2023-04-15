@@ -3,6 +3,7 @@
 #include "Sections/MovieSceneSpawnSection.h"
 #include "UObject/SequencerObjectVersion.h"
 
+#include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
 #include "Evaluation/MovieSceneEvaluationField.h"
 #include "EntitySystem/MovieSceneEntityManager.h"
@@ -10,6 +11,8 @@
 #include "EntitySystem/MovieSceneEntityBuilder.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneSpawnablesSystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSpawnSection)
 
 
 UMovieSceneSpawnSection::UMovieSceneSpawnSection(const FObjectInitializer& Init)

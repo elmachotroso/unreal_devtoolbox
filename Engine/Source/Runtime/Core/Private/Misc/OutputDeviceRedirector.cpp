@@ -3,507 +3,721 @@
 #include "Misc/OutputDeviceRedirector.h"
 
 #include "Containers/BitArray.h"
+#include "Containers/DepletableMpscQueue.h"
+#include "Experimental/ConcurrentLinearAllocator.h"
+#include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
-#include "Misc/CoreStats.h"
-#include "Misc/ScopeLock.h"
-#include "Stats/Stats.h"
+#include "HAL/PlatformTime.h"
+#include "HAL/PlatformTLS.h"
+#include "HAL/Thread.h"
+#include "Misc/App.h"
+#include "Misc/ScopeRWLock.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include <atomic>
 
 /*-----------------------------------------------------------------------------
 	FOutputDeviceRedirector.
 -----------------------------------------------------------------------------*/
 
-class FLogAllocator
-{
-public:
-	bool HasSpace(int32 NumChars) const
-	{
-		return Data[BufferIndex].Num() + NumChars <= BufferSize;
-	}
-
-	TCHAR* Alloc(int32 NumChars)
-	{
-		check(HasSpace(NumChars));
-		int32 DataIndex = Data[BufferIndex].AddUninitialized(NumChars);
-		return Data[BufferIndex].GetData() + DataIndex;
-	}
-
-	/**
-	 * Swap which buffer is being used for new allocations.
-	 *
-	 * Buffer remains valid until BufferCount calls are made to this function.
-	 */
-	void SwapBuffers()
-	{
-		BufferIndex = (BufferIndex + 1) % BufferCount;
-		// A failed check within InternalFlushThreadedLogs can cause a stack overflow. This can
-		// currently fail because InternalFlushThreadedLogs can be called from multiple threads
-		// simultaneously if errors cause SetCurrentThreadAsMasterThread to be called from more
-		// than one thread at once, or while the game thread is in InternalFlushThreadedLogs.
-		//check(!DataLocked[BufferIndex]);
-		Data[BufferIndex].Empty();
-	}
-
-	struct FBufferLock 
-	{ 
-		int32 Index = -1;
-
-		/** Returns true if this object represents a locked buffer */
-		bool IsValid() const
-		{
-			return Index >= 0;
-		}
-	};
-
-	FBufferLock LockBuffer()
-	{
-		DataLocked[BufferIndex] = true;
-		return {BufferIndex};
-	}
-
-	void UnlockBuffer(FBufferLock Lock)
-	{
-		DataLocked[Lock.Index] = false;
-	}
-
-private:
-	static constexpr int32 BufferSize = 4096;
-	// BufferCount can be 2 once the check in SwapBuffers can be safely re-enabled. Using more
-	// buffers in the interim minimizes the likelihood of writes to a buffer while it is still
-	// being flushed by another thread.
-	static constexpr int32 BufferCount = 4;
-	TArray<TCHAR, TInlineAllocator<BufferSize>> Data[BufferCount];
-	TBitArray<TInlineAllocator<1>> DataLocked{false, BufferCount};
-	int32 BufferIndex = 0;
-};
-
-FBufferedLine::FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, double InTime, FLogAllocator* ExternalAllocator)
-	: FBufferedLine(InData, FLazyName(InCategory), InVerbosity, InTime, ExternalAllocator)
-{
-}
-
-FBufferedLine::FBufferedLine(const TCHAR* InData, const FLazyName& InCategory, ELogVerbosity::Type InVerbosity, double InTime, FLogAllocator* ExternalAllocator)
+FBufferedLine::FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, double InTime)
 	: Category(InCategory)
 	, Time(InTime)
 	, Verbosity(InVerbosity)
 {
 	int32 NumChars = FCString::Strlen(InData) + 1;
-	bExternalAllocation = ExternalAllocator && ExternalAllocator->HasSpace(NumChars);
-	void* Dest = bExternalAllocation ? ExternalAllocator->Alloc(NumChars) : FMemory::Malloc(sizeof(TCHAR) * NumChars);
+	void* Dest = FMemory::Malloc(sizeof(TCHAR) * NumChars);
 	Data = (TCHAR*)FMemory::Memcpy(Dest, InData, sizeof(TCHAR) * NumChars);
 }
 
 FBufferedLine::~FBufferedLine()
 {
-	if (!bExternalAllocation)
+	FMemory::Free(const_cast<TCHAR*>(Data));
+}
+
+namespace UE::Private
+{
+
+struct FOutputDeviceBlockAllocationTag : FDefaultBlockAllocationTag
+{
+	static constexpr const TCHAR* TagName = TEXT("OutputDeviceLinear");
+
+	struct Allocator
 	{
-		FMemory::Free(const_cast<TCHAR*>(Data));
+		static constexpr bool SupportsAlignment = false;
+
+		FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
+		{
+			return FMemory::Malloc(Size, DEFAULT_ALIGNMENT);
+		}
+
+		FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
+		{
+			return FMemory::Free(Pointer);
+		}
+	};
+};
+
+struct FOutputDeviceLinearAllocator
+{
+	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
+	{
+		return TConcurrentLinearAllocator<FOutputDeviceBlockAllocationTag>::Malloc(Size, Alignment);
+	}
+
+	FORCEINLINE static void Free(void* Pointer)
+	{
+		TConcurrentLinearAllocator<FOutputDeviceBlockAllocationTag>::Free(Pointer);
+	}
+};
+
+struct FOutputDeviceLine
+{
+	const double Time;
+	const TCHAR* Data;
+	const FName Category;
+	const ELogVerbosity::Type Verbosity;
+
+	FOutputDeviceLine(const FBufferedLine&) = delete;
+	FOutputDeviceLine& operator=(const FBufferedLine&) = delete;
+
+	FORCEINLINE FOutputDeviceLine(const TCHAR* const InData, const FName InCategory, const ELogVerbosity::Type InVerbosity, const double InTime)
+		: Time(InTime)
+		, Data(CopyData(InData))
+		, Category(InCategory)
+		, Verbosity(InVerbosity)
+	{
+	}
+
+	FORCEINLINE ~FOutputDeviceLine()
+	{
+		FOutputDeviceLinearAllocator::Free(const_cast<TCHAR*>(Data));
+	}
+
+private:
+	FORCEINLINE static const TCHAR* CopyData(const TCHAR* const InData)
+	{
+		const int32 Len = FCString::Strlen(InData) + 1;
+		void* const Dest = FOutputDeviceLinearAllocator::Malloc(sizeof(TCHAR) * Len, alignof(TCHAR));
+		return static_cast<TCHAR*>(FMemory::Memcpy(Dest, InData, sizeof(TCHAR) * Len));
+	}
+};
+
+static constexpr uint64 CalculateRedirectorCacheLinePadding(const uint64 Size)
+{
+	return PLATFORM_CACHE_LINE_SIZE * FMath::DivideAndRoundUp<uint64>(Size, PLATFORM_CACHE_LINE_SIZE) - Size;
+}
+
+struct FOutputDeviceRedirectorState
+{
+	/** A custom lock to guard access to both buffered and unbuffered output devices. */
+	FRWLock OutputDevicesLock;
+	std::atomic<uint32> OutputDevicesLockState = 0;
+	uint8 OutputDevicesLockPadding[CalculateRedirectorCacheLinePadding(sizeof(OutputDevicesLock) + sizeof(OutputDevicesLockState))]{};
+
+	/** A queue of lines logged by non-primary threads. */
+	TDepletableMpscQueue<FOutputDeviceLine, FOutputDeviceLinearAllocator> BufferedLines;
+	uint8 BufferedLinesPadding[CalculateRedirectorCacheLinePadding(sizeof(BufferedLines))]{};
+
+	/** Array of output devices to redirect to from the primary thread. */
+	TArray<FOutputDevice*> BufferedOutputDevices;
+
+	/** Array of output devices to redirect to from the calling thread. */
+	TArray<FOutputDevice*> UnbufferedOutputDevices;
+
+	/** A queue of lines logged before the editor added its output device. */
+	TArray<FBufferedLine> BacklogLines;
+	FRWLock BacklogLock;
+
+	/** An optional dedicated primary thread for logging to buffered output devices. */
+	FThread Thread;
+
+	/** A lock to synchronize access to the thread. */
+	FRWLock ThreadLock;
+
+	/** A queue of events to trigger when the dedicated primary thread is idle. */
+	TDepletableMpscQueue<FEvent*, FOutputDeviceLinearAllocator> ThreadIdleEvents;
+
+	/** An event to wake the dedicated primary thread to process buffered lines. */
+	std::atomic<FEvent*> ThreadWakeEvent = nullptr;
+
+	/** The ID of the thread holding the primary lock. */
+	std::atomic<uint32> LockedThreadId = MAX_uint32;
+
+	/** The ID of the primary logging thread. Logging from other threads will be buffered for processing by the primary thread. */
+	std::atomic<uint32> PrimaryThreadId = FPlatformTLS::GetCurrentThreadId();
+
+	/** The ID of the panic thread, which is only set by Panic(). */
+	std::atomic<uint32> PanicThreadId = MAX_uint32;
+
+	/** Whether the backlog is enabled. */
+	bool bEnableBacklog = false;
+
+	/** Whether the output device at the corresponding index can be used on the panic thread. */
+	TBitArray<TInlineAllocator<1>> BufferedOutputDevicesCanBeUsedOnPanicThread;
+	TBitArray<TInlineAllocator<1>> UnbufferedOutputDevicesCanBeUsedOnPanicThread;
+
+	bool IsPrimaryThread(const uint32 ThreadId) const
+	{
+		return ThreadId == PrimaryThreadId.load(std::memory_order_relaxed);
+	}
+
+	bool IsPanicThread(const uint32 ThreadId) const
+	{
+		return ThreadId == PanicThreadId.load(std::memory_order_relaxed);
+	}
+
+	bool CanLockFromThread(const uint32 ThreadId) const
+	{
+		if (UNLIKELY(ThreadId == LockedThreadId.load(std::memory_order_relaxed)))
+		{
+			return false;
+		}
+		const uint32 LocalPanicThreadId = PanicThreadId.load(std::memory_order_relaxed);
+		return LocalPanicThreadId == MAX_uint32 || LocalPanicThreadId == ThreadId;
+	}
+
+	void AddOutputDevice(FOutputDevice* OutputDevice);
+	void RemoveOutputDevice(FOutputDevice* OutputDevice);
+
+	bool TryStartThread();
+	bool TryStopThread();
+
+	void ThreadLoop();
+
+	void FlushBufferedLines();
+
+	template <typename OutputDevicesType, typename FunctionType, typename... ArgTypes>
+	FORCEINLINE void BroadcastTo(
+		const uint32 ThreadId,
+		const OutputDevicesType& OutputDevices,
+		const TBitArray<TInlineAllocator<1>>& CanBeUsedOnPanicThread,
+		FunctionType&& Function,
+		ArgTypes&&... Args)
+	{
+		int32 Index = 0;
+		const bool bIsPanicThread = IsPanicThread(ThreadId);
+		for (FOutputDevice* OutputDevice : OutputDevices)
+		{
+			if (!bIsPanicThread || CanBeUsedOnPanicThread[Index++])
+			{
+				Invoke(Function, OutputDevice, Forward<ArgTypes>(Args)...);
+			}
+		}
+	}
+};
+
+/**
+ * A scoped lock for readers of the OutputDevices arrays.
+ *
+ * The read lock:
+ * - Must be locked to read the OutputDevices arrays.
+ * - Must be locked to write to unbuffered output devices.
+ * - Must not be entered when the thread holds a write or primary lock.
+ */
+class FOutputDevicesReadScopeLock
+{
+public:
+	FORCEINLINE explicit FOutputDevicesReadScopeLock(FOutputDeviceRedirectorState& InState)
+		: State(InState)
+	{
+		// Read locks add/sub by 2 to keep the LSB free for write locks to use.
+		if (State.OutputDevicesLockState.fetch_add(2, std::memory_order_acquire) & 1)
+		{
+			WaitForWriteLock();
+		}
+	}
+
+	FORCENOINLINE void WaitForWriteLock()
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDevicesReadScopeLock);
+		// A write lock has set the LSB. Cancel this read lock and wait for the write.
+		State.OutputDevicesLockState.fetch_sub(2, std::memory_order_relaxed);
+		// This read lock will wait until the write lock exits.
+		FReadScopeLock ScopeLock(State.OutputDevicesLock);
+		// This is relaxed because locking OutputDevicesLock has acquire semantics.
+		uint32 LockState = State.OutputDevicesLockState.fetch_add(2, std::memory_order_relaxed);
+		check((LockState & 1) == 0);
+	}
+
+	FORCEINLINE ~FOutputDevicesReadScopeLock()
+	{
+		State.OutputDevicesLockState.fetch_sub(2, std::memory_order_release);
+	}
+
+private:
+	FOutputDeviceRedirectorState& State;
+};
+
+/**
+ * A scoped lock for writers of the OutputDevices arrays.
+ *
+ * The write lock has the same access as the primary lock, and:
+ * - Must be locked to add or remove output devices.
+ * - Must not be entered when the thread holds a read, write, or primary lock.
+ */
+class FOutputDevicesWriteScopeLock
+{
+public:
+	FORCEINLINE explicit FOutputDevicesWriteScopeLock(FOutputDeviceRedirectorState& InState)
+		: State(InState)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDevicesWriteScopeLock);
+		// Take the lock before modifying the state, to avoid contention on the LSB.
+		State.OutputDevicesLock.WriteLock();
+		State.LockedThreadId.store(FPlatformTLS::GetCurrentThreadId(), std::memory_order_relaxed);
+		// Set the LSB to flag to read locks that a write lock is waiting.
+		uint32 LockState = State.OutputDevicesLockState.fetch_or(uint32(1), std::memory_order_acquire);
+		check((LockState & 1) == 0);
+		if (LockState > 1)
+		{
+			// Wait for read locks to be cleared.
+			do
+			{
+				FPlatformProcess::Sleep(0);
+				LockState = State.OutputDevicesLockState.load(std::memory_order_acquire);
+			}
+			while (LockState > 1);
+		}
+	}
+
+	FORCEINLINE ~FOutputDevicesWriteScopeLock()
+	{
+		// Clear the LSB to allow read locks after the unlock below.
+		uint32 LockState = State.OutputDevicesLockState.fetch_and(~uint32(1), std::memory_order_release);
+		check((LockState & 1) == 1);
+		State.LockedThreadId.store(MAX_uint32, std::memory_order_relaxed);
+		State.OutputDevicesLock.WriteUnlock();
+	}
+
+private:
+	FOutputDeviceRedirectorState& State;
+};
+
+/**
+ * A scoped lock for exclusive access to the state of the primary log thread.
+ *
+ * The primary lock has the same access as the read lock, and:
+ * - Must not be entered when the thread holds a write lock or primary lock.
+ * - Must check IsLocked() before performing restricted operations.
+ * - Must be locked to write to buffered output devices.
+ * - Must be locked while calling FlushBufferedLines().
+ * - May be locked when the thread holds a read lock.
+ * - When a panic thread is active, locking will only succeed from the panic thread.
+ */
+class FOutputDevicesPrimaryScopeLock
+{
+public:
+	explicit FOutputDevicesPrimaryScopeLock(FOutputDeviceRedirectorState& InState)
+		: State(InState)
+	{
+		const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+		if (State.CanLockFromThread(ThreadId))
+		{
+			if (State.IsPanicThread(ThreadId))
+			{
+				bLocked = true;
+			}
+			else
+			{
+				State.OutputDevicesLock.WriteLock();
+				if (!State.CanLockFromThread(ThreadId))
+				{
+					State.OutputDevicesLock.WriteUnlock();
+				}
+				else
+				{
+					bNeedsUnlock = true;
+					bLocked = true;
+				}
+			}
+			if (bLocked)
+			{
+				State.LockedThreadId.store(ThreadId, std::memory_order_relaxed);
+			}
+		}
+	}
+
+	FORCEINLINE ~FOutputDevicesPrimaryScopeLock()
+	{
+		if (bLocked)
+		{
+			State.LockedThreadId.store(MAX_uint32, std::memory_order_relaxed);
+		}
+		if (bNeedsUnlock)
+		{
+			State.OutputDevicesLock.WriteUnlock();
+		}
+	}
+
+	FORCEINLINE bool IsLocked() const { return bLocked; }
+
+private:
+	FOutputDeviceRedirectorState& State;
+	bool bNeedsUnlock = false;
+	bool bLocked = false;
+};
+
+void FOutputDeviceRedirectorState::AddOutputDevice(FOutputDevice* OutputDevice)
+{
+	const auto AddTo = [OutputDevice](TArray<FOutputDevice*>& OutputDevices, TBitArray<TInlineAllocator<1>>& Flags)
+	{
+		const int32 Count = OutputDevices.Num();
+		if (OutputDevices.AddUnique(OutputDevice) == Count)
+		{
+			Flags.Add(OutputDevice->CanBeUsedOnPanicThread());
+		}
+	};
+	UE::Private::FOutputDevicesWriteScopeLock ScopeLock(*this);
+	if (OutputDevice->CanBeUsedOnMultipleThreads())
+	{
+		AddTo(UnbufferedOutputDevices, UnbufferedOutputDevicesCanBeUsedOnPanicThread);
+	}
+	else
+	{
+		AddTo(BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread);
 	}
 }
 
-/** Initialization constructor. */
-FOutputDeviceRedirector::FOutputDeviceRedirector(FLogAllocator* Allocator)
-:	MasterThreadID(FPlatformTLS::GetCurrentThreadId())
-,	bEnableBacklog(false)
-,	BufferedLinesAllocator(Allocator)
+void FOutputDeviceRedirectorState::RemoveOutputDevice(FOutputDevice* OutputDevice)
 {
+	const auto RemoveFrom = [OutputDevice](TArray<FOutputDevice*>& OutputDevices, TBitArray<TInlineAllocator<1>>& Flags)
+	{
+		if (const int32 Index = OutputDevices.FindLast(OutputDevice); Index != INDEX_NONE)
+		{
+			OutputDevices.RemoveAt(Index);
+			Flags.RemoveAt(Index);
+		}
+	};
+	UE::Private::FOutputDevicesWriteScopeLock ScopeLock(*this);
+	RemoveFrom(BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread);
+	RemoveFrom(UnbufferedOutputDevices, UnbufferedOutputDevicesCanBeUsedOnPanicThread);
 }
 
-static FLogAllocator GLogAllocator;
+bool FOutputDeviceRedirectorState::TryStartThread()
+{
+	if (FWriteScopeLock ThreadScopeLock(ThreadLock); !ThreadWakeEvent.load(std::memory_order_relaxed))
+	{
+		FEvent* WakeEvent = FPlatformProcess::GetSynchEventFromPool();
+		WakeEvent->Trigger();
+		ThreadWakeEvent.store(WakeEvent, std::memory_order_release);
+		Thread = FThread(TEXT("OutputDeviceRedirector"), [this] { ThreadLoop(); });
+	}
+	return true;
+}
+
+bool FOutputDeviceRedirectorState::TryStopThread()
+{
+	if (FWriteScopeLock ThreadScopeLock(ThreadLock); FEvent* WakeEvent = ThreadWakeEvent.exchange(nullptr, std::memory_order_acquire))
+	{
+		WakeEvent->Trigger();
+		Thread.Join();
+		FOutputDevicesWriteScopeLock Lock(*this);
+		FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
+	}
+	return true;
+}
+
+void FOutputDeviceRedirectorState::ThreadLoop()
+{
+	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+
+	if (FOutputDevicesPrimaryScopeLock Lock(*this); Lock.IsLocked())
+	{
+		PrimaryThreadId.store(ThreadId, std::memory_order_relaxed);
+	}
+
+	while (FEvent* WakeEvent = ThreadWakeEvent.load(std::memory_order_acquire))
+	{
+		WakeEvent->Wait();
+		while (!BufferedLines.IsEmpty() && IsPrimaryThread(ThreadId))
+		{
+			if (FOutputDevicesPrimaryScopeLock Lock(*this); Lock.IsLocked())
+			{
+				FlushBufferedLines();
+			}
+		}
+		ThreadIdleEvents.Deplete([](FEvent* Event) { Event->Trigger(); });
+	}
+}
+
+void FOutputDeviceRedirectorState::FlushBufferedLines()
+{
+	if (BufferedLines.IsEmpty())
+	{
+		return;
+	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::FlushBufferedLines);
+
+	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+	BufferedLines.Deplete([this, ThreadId](UE::Private::FOutputDeviceLine&& Line)
+	{
+		BroadcastTo(ThreadId, BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread,
+			UE_PROJECTION_MEMBER(FOutputDevice, Serialize),
+			Line.Data, Line.Verbosity, Line.Category, Line.Time);
+	});
+}
+
+} // UE::Private
+
+FOutputDeviceRedirector::FOutputDeviceRedirector()
+	: State(MakePimpl<UE::Private::FOutputDeviceRedirectorState>())
+{
+}
 
 FOutputDeviceRedirector* FOutputDeviceRedirector::Get()
 {
-	static FOutputDeviceRedirector Singleton(&GLogAllocator);
+	static FOutputDeviceRedirector Singleton;
 	return &Singleton;
 }
 
-/**
- * Adds an output device to the chain of redirections.	
- *
- * @param OutputDevice	output device to add
- */
-void FOutputDeviceRedirector::AddOutputDevice( FOutputDevice* OutputDevice )
+void FOutputDeviceRedirector::AddOutputDevice(FOutputDevice* OutputDevice)
 {
 	if (OutputDevice)
 	{
-		bool bAdded = false;
-		do
+		State->AddOutputDevice(OutputDevice);
+	}
+}
+
+void FOutputDeviceRedirector::RemoveOutputDevice(FOutputDevice* OutputDevice)
+{
+	if (OutputDevice)
+	{
+		State->RemoveOutputDevice(OutputDevice);
+	}
+}
+
+bool FOutputDeviceRedirector::IsRedirectingTo(FOutputDevice* OutputDevice)
+{
+	UE::Private::FOutputDevicesReadScopeLock Lock(*State);
+	return State->BufferedOutputDevices.Contains(OutputDevice) || State->UnbufferedOutputDevices.Contains(OutputDevice);
+}
+
+void FOutputDeviceRedirector::FlushThreadedLogs(EOutputDeviceRedirectorFlushOptions Options)
+{
+	if (FReadScopeLock ThreadLock(State->ThreadLock); FEvent* WakeEvent = State->ThreadWakeEvent.load(std::memory_order_acquire))
+	{
+		if (!EnumHasAnyFlags(Options, EOutputDeviceRedirectorFlushOptions::Async))
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::FlushThreadedLogs);
+			FEventRef IdleEvent(EEventMode::ManualReset);
+			if (State->ThreadIdleEvents.EnqueueAndReturnWasEmpty(IdleEvent.Get()))
 			{
-				FScopeLock ScopeLock(&OutputDevicesMutex);
-				if (OutputDevicesLockCounter.GetValue() == 0)
-				{
-					if (OutputDevice->CanBeUsedOnMultipleThreads())
-					{
-						UnbufferedOutputDevices.AddUnique(OutputDevice);
-					}
-					else
-					{
-						BufferedOutputDevices.AddUnique(OutputDevice);
-					}
-					bAdded = true;
-				}
+				WakeEvent->Trigger();
 			}
-			if (!bAdded)
-			{
-				FPlatformProcess::Sleep(0);
-			}
-		} while (!bAdded);
-	}
-}
-
-/**
- * Removes an output device from the chain of redirections.	
- *
- * @param OutputDevice	output device to remove
- */
-void FOutputDeviceRedirector::RemoveOutputDevice( FOutputDevice* OutputDevice )
-{
-	bool bRemoved = false;
-	do
-	{
-		{
-			FScopeLock ScopeLock(&OutputDevicesMutex);
-			if (OutputDevicesLockCounter.GetValue() == 0)
-			{
-				BufferedOutputDevices.Remove( OutputDevice );
-				UnbufferedOutputDevices.Remove(OutputDevice);
-				bRemoved = true;
-			}
+			IdleEvent->Wait();
 		}
-		if (!bRemoved)
-		{
-			FPlatformProcess::Sleep(0);
-		}
-	} while (!bRemoved);
-}
+		return;
+	}
 
-/**
- * Returns whether an output device is currently in the list of redirectors.
- *
- * @param	OutputDevice	output device to check the list against
- * @return	true if messages are currently redirected to the the passed in output device, false otherwise
- */
-bool FOutputDeviceRedirector::IsRedirectingTo( FOutputDevice* OutputDevice )
-{
-	// For performance reasons whe're not using the FOutputDevicesLock here
-	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
-	return BufferedOutputDevices.Contains(OutputDevice) || UnbufferedOutputDevices.Contains(OutputDevice);
-}
-
-void FOutputDeviceRedirector::InternalFlushThreadedLogs(bool bUseAllDevices)
-{
-	TLocalOutputDevicesArray LocalBufferedDevices;
-	TLocalOutputDevicesArray LocalUnbufferedDevices;
-	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
-
-	InternalFlushThreadedLogs(LocalBufferedDevices, LocalUnbufferedDevices, bUseAllDevices);
-}
-
-/**
- * The unsynchronized version of FlushThreadedLogs.
- */
-void FOutputDeviceRedirector::InternalFlushThreadedLogs(TLocalOutputDevicesArray& InBufferedDevices, TLocalOutputDevicesArray& InUnbufferedDevices, bool bUseAllDevices)
-{	
-	if (BufferedLines.Num())
+	if (UE::Private::FOutputDevicesPrimaryScopeLock Lock(*State); Lock.IsLocked())
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::InternalFlushThreadedLogs);
-
-		TArray<FBufferedLine, TInlineAllocator<64>> LocalBufferedLines;
-		FLogAllocator::FBufferLock BufferLock;
-		{
-			FScopeLock ScopeLock(&BufferSynchronizationObject);
-			// Copy the buffered lines only if there's any buffered output devices
-			if (InBufferedDevices.Num())
-			{
-				LocalBufferedLines.AddUninitialized(BufferedLines.Num());
-				for (int32 LineIndex = 0; LineIndex < BufferedLines.Num(); LineIndex++)
-				{
-					new(&LocalBufferedLines[LineIndex]) FBufferedLine(BufferedLines[LineIndex], FBufferedLine::EMoveCtor);
-				}
-			}
-
-			// If there's no output devices to redirect to (assumption is that we haven't added any yet)
-			// don't clear the buffer otherwise its content will be lost (for example when calling SetCurrentThreadAsMasterThread() on init)
-			if (InBufferedDevices.Num() || InUnbufferedDevices.Num())
-			{
-				if (BufferedLinesAllocator)
-				{
-					BufferLock = BufferedLinesAllocator->LockBuffer();
-				}
-				EmptyBufferedLines();
-			}
-		}
-
-		for (FBufferedLine& Line : LocalBufferedLines)
-		{
-			const TCHAR* Data = Line.Data;
-			const FLazyName Category = Line.Category;
-			const double Time = Line.Time;
-			const ELogVerbosity::Type Verbosity = Line.Verbosity;
-
-			for (FOutputDevice* OutputDevice : InBufferedDevices)
-			{
-				if (OutputDevice->CanBeUsedOnAnyThread() || bUseAllDevices)
-				{
-					OutputDevice->Serialize(Data, Verbosity, Category, Time);
-				}
-			}
-		}
-
-		if (BufferLock.IsValid())
-		{
-			FScopeLock ScopeLock(&BufferSynchronizationObject);
-			BufferedLinesAllocator->UnlockBuffer(BufferLock);
-		}
+		State->FlushBufferedLines();
 	}
 }
 
-void FOutputDeviceRedirector::EmptyBufferedLines()
+void FOutputDeviceRedirector::SerializeBacklog(FOutputDevice* OutputDevice)
 {
-	BufferedLines.Empty();
-
-	if (BufferedLinesAllocator)
+	FReadScopeLock ScopeLock(State->BacklogLock);
+	for (const FBufferedLine& BacklogLine : State->BacklogLines)
 	{
-		BufferedLinesAllocator->SwapBuffers();
+		OutputDevice->Serialize(BacklogLine.Data, BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time);
 	}
 }
 
-/**
- * Flushes lines buffered by secondary threads.
- */
-void FOutputDeviceRedirector::FlushThreadedLogs()
+void FOutputDeviceRedirector::EnableBacklog(bool bEnable)
 {
-	//QUICK_SCOPE_CYCLE_COUNTER(STAT_FlushThreadedLogs);
-	check(IsInGameThread());
-	InternalFlushThreadedLogs(true);
-}
-
-void FOutputDeviceRedirector::PanicFlushThreadedLogs()
-{
-	//QUICK_SCOPE_CYCLE_COUNTER(STAT_FlushThreadedLogs);
-
-	TLocalOutputDevicesArray LocalBufferedDevices;
-	TLocalOutputDevicesArray LocalUnbufferedDevices;
-	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
-
-	// Flush threaded logs, but use the safe version.
-	InternalFlushThreadedLogs(LocalBufferedDevices, LocalUnbufferedDevices, false);
-
-	// Flush devices.
-	for (FOutputDevice* OutputDevice : LocalBufferedDevices)
+	FWriteScopeLock ScopeLock(State->BacklogLock);
+	State->bEnableBacklog = bEnable;
+	if (!bEnable)
 	{
-		if (OutputDevice->CanBeUsedOnAnyThread())
-		{
-			OutputDevice->Flush();
-		}
-	}
-
-	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
-	{
-		OutputDevice->Flush();
+		State->BacklogLines.Empty();
 	}
 }
 
-/**
- * Serializes the current backlog to the specified output device.
- * @param OutputDevice	- Output device that will receive the current backlog
- */
-void FOutputDeviceRedirector::SerializeBacklog( FOutputDevice* OutputDevice )
+void FOutputDeviceRedirector::SetCurrentThreadAsPrimaryThread()
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
+	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
 
-	for (int32 LineIndex = 0; LineIndex < BacklogLines.Num(); LineIndex++)
+	if (UE::Private::FOutputDevicesPrimaryScopeLock Lock(*State); !Lock.IsLocked() || State->PrimaryThreadId.load(std::memory_order_relaxed) == ThreadId)
 	{
-		const FBufferedLine& BacklogLine = BacklogLines[ LineIndex ];
-		OutputDevice->Serialize( BacklogLine.Data, BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time );
+		return;
 	}
-}
-
-/**
- * Enables or disables the backlog.
- * @param bEnable	- Starts saving a backlog if true, disables and discards any backlog if false
- */
-void FOutputDeviceRedirector::EnableBacklog( bool bEnable )
-{
-	FScopeLock ScopeLock( &SynchronizationObject );
-
-	bEnableBacklog = bEnable;
-	if ( bEnableBacklog == false )
+	else
 	{
-		BacklogLines.Empty();
+		State->PrimaryThreadId.store(ThreadId, std::memory_order_relaxed);
+		State->FlushBufferedLines();
 	}
+
+	State->TryStopThread();
 }
 
-/**
- * Sets the current thread to be the master thread that prints directly
- * (isn't queued up)
- */
-void FOutputDeviceRedirector::SetCurrentThreadAsMasterThread()
+bool FOutputDeviceRedirector::TryStartDedicatedPrimaryThread()
 {
-	InternalFlushThreadedLogs( false );
-
-	// make sure anything queued up is flushed out, this may be called from a background thread, so use the safe version.
-	{
-		FScopeLock ScopeLock(&SynchronizationObject);
-		// set the current thread as the master thread
-		MasterThreadID = FPlatformTLS::GetCurrentThreadId();
-	}
+	return FApp::ShouldUseThreadingForPerformance() && State->TryStartThread();
 }
 
-void FOutputDeviceRedirector::LockOutputDevices(TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices)
-{
-	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
-	OutputDevicesLockCounter.Increment();
-	OutBufferedDevices.Append(BufferedOutputDevices);
-	OutUnbufferedDevices.Append(UnbufferedOutputDevices);
-}
-
-void FOutputDeviceRedirector::UnlockOutputDevices()
-{
-	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
-	int32 LockValue = OutputDevicesLockCounter.Decrement();
-	check(LockValue >= 0);
-}
-
-template<class T>
-void FOutputDeviceRedirector::SerializeImpl(const TCHAR* Data, ELogVerbosity::Type Verbosity, T& Category, const double Time)
+void FOutputDeviceRedirector::Serialize(const TCHAR* const Data, const ELogVerbosity::Type Verbosity, const FName& Category, const double Time)
 {
 	const double RealTime = Time == -1.0f ? FPlatformTime::Seconds() - GStartTime : Time;
 
-	TLocalOutputDevicesArray LocalBufferedDevices;
-	TLocalOutputDevicesArray LocalUnbufferedDevices;
-	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
+	UE::Private::FOutputDevicesReadScopeLock Lock(*State);
 
 #if PLATFORM_DESKTOP
-	// this is for errors which occur after shutdown we might be able to salvage information from stdout 
-	if ((LocalBufferedDevices.Num() == 0) && IsEngineExitRequested())
+	// Print anything that arrives after logging has shut down to at least have it in stdout.
+	if (UNLIKELY(State->BufferedOutputDevices.IsEmpty() && IsEngineExitRequested()))
 	{
-#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS
 		_tprintf(_T("%s\n"), Data);
-#else
+	#endif
 		FGenericPlatformMisc::LocalPrint(Data);
-		// printf("%s\n", TCHAR_TO_ANSI(Data));
-#endif
 		return;
 	}
 #endif
 
+	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+
 	// Serialize directly to any output devices which don't require buffering
-	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
+	State->BroadcastTo(ThreadId, State->UnbufferedOutputDevices, State->UnbufferedOutputDevicesCanBeUsedOnPanicThread,
+		UE_PROJECTION_MEMBER(FOutputDevice, Serialize),
+		Data, Verbosity, Category, RealTime);
+
+	// Serialize to the backlog when not in panic mode. This will deadlock in panic mode when the
+	// FPlatformMallocCrash allocator has been enabled and logging occurs on a non-panic thread.
+	if (UNLIKELY(State->bEnableBacklog && !State->IsPanicThread(ThreadId)))
 	{
-		OutputDevice->Serialize(Data, Verbosity, Category, RealTime);
+		FWriteScopeLock ScopeLock(State->BacklogLock);
+		State->BacklogLines.Emplace(Data, Category, Verbosity, RealTime);
 	}
 
-
-	if (bEnableBacklog)
+	// Serialize to buffered output devices from the primary logging thread.
+	// Lines are queued until buffered output devices are added to avoid missing early log lines.
+	if (State->IsPrimaryThread(ThreadId) && !State->BufferedOutputDevices.IsEmpty())
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
-		new(BacklogLines)FBufferedLine(Data, Category, Verbosity, RealTime, nullptr);
-	}
-
-	if (FPlatformTLS::GetCurrentThreadId() != MasterThreadID || LocalBufferedDevices.Num() == 0)
-	{
-		FScopeLock ScopeLock(&BufferSynchronizationObject);
-		new(BufferedLines)FBufferedLine(Data, Category, Verbosity, RealTime, BufferedLinesAllocator);
-	}
-	else
-	{
-		// Flush previously buffered lines from secondary threads.
-		InternalFlushThreadedLogs(LocalBufferedDevices, LocalUnbufferedDevices, true);
-
-		for (FOutputDevice* OutputDevice : LocalBufferedDevices)
+		// Verify that this is the primary thread again because another thread may have become
+		// the primary thread between the previous check and the lock.
+		if (UE::Private::FOutputDevicesPrimaryScopeLock PrimaryLock(*State); PrimaryLock.IsLocked() && State->IsPrimaryThread(ThreadId))
 		{
-			OutputDevice->Serialize(Data, Verbosity, Category, RealTime);
+			State->FlushBufferedLines();
+			State->BroadcastTo(ThreadId, State->BufferedOutputDevices, State->BufferedOutputDevicesCanBeUsedOnPanicThread,
+				UE_PROJECTION_MEMBER(FOutputDevice, Serialize),
+				Data, Verbosity, Category, RealTime);
+			if (UNLIKELY(State->IsPanicThread(ThreadId)))
+			{
+				Flush();
+			}
+			return;
+		}
+	}
+
+	// Queue the line to serialize to buffered output devices from the primary thread.
+	if (State->BufferedLines.EnqueueAndReturnWasEmpty(Data, Category, Verbosity, RealTime))
+	{
+		if (FEvent* WakeEvent = State->ThreadWakeEvent.load(std::memory_order_acquire))
+		{
+			WakeEvent->Trigger();
 		}
 	}
 }
 
-void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category, const double Time )
+void FOutputDeviceRedirector::Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const FName& Category)
 {
-	SerializeImpl(Data, Verbosity, Category, Time);
-}
-
-void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category )
-{
-	SerializeImpl( Data, Verbosity, Category, -1.0 );
+	Serialize(Data, Verbosity, Category, -1.0);
 }
 
 void FOutputDeviceRedirector::RedirectLog(const FName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data)
 {
-	SerializeImpl(Data, Verbosity, Category, -1.0);
+	Serialize(Data, Verbosity, Category, -1.0);
 }
 
 void FOutputDeviceRedirector::RedirectLog(const FLazyName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data)
 {
-	SerializeImpl(Data, Verbosity, Category, -1.0);
+	Serialize(Data, Verbosity, Category, -1.0);
 }
 
-/**
- * Passes on the flush request to all current output devices.
- */
 void FOutputDeviceRedirector::Flush()
 {
-	TLocalOutputDevicesArray LocalBufferedDevices;
-	TLocalOutputDevicesArray LocalUnbufferedDevices;
-	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
-
-	if(FPlatformTLS::GetCurrentThreadId() == MasterThreadID)
+	if (UE::Private::FOutputDevicesPrimaryScopeLock Lock(*State); Lock.IsLocked())
 	{
-		// Flush previously buffered lines from secondary threads.
-		InternalFlushThreadedLogs(true);
-
-		for (FOutputDevice* OutputDevice : LocalBufferedDevices)
-		{
-			OutputDevice->Flush();
-		}
-	}
-
-	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
-	{
-		OutputDevice->Flush();
+		State->FlushBufferedLines();
+		const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+		State->BroadcastTo(ThreadId, State->BufferedOutputDevices, State->BufferedOutputDevicesCanBeUsedOnPanicThread, &FOutputDevice::Flush);
+		State->BroadcastTo(ThreadId, State->UnbufferedOutputDevices, State->UnbufferedOutputDevicesCanBeUsedOnPanicThread, &FOutputDevice::Flush);
 	}
 }
 
-/**
- * Closes output device and cleans up. This can't happen in the destructor
- * as we might have to call "delete" which cannot be done for static/ global
- * objects.
- */
+void FOutputDeviceRedirector::Panic()
+{
+	uint32 PreviousThreadId = MAX_uint32;
+	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+	if (State->PanicThreadId.compare_exchange_strong(PreviousThreadId, ThreadId, std::memory_order_relaxed))
+	{
+		// Another thread may be holding the lock. Wait a while for it, but avoid waiting forever
+		// because the thread holding the lock may be unable to progress. After the timeout is
+		// reached, assume that it is safe enough to continue on the panic thread. There is a
+		// chance that the thread holding the lock has left an output device in an unusable state
+		// or will resume and crash due to a race with the panic thread. Executing on this thread
+		// and having logging for most panic situations with a chance of a crash is preferable to
+		// the alternative of missing logging in a panic situation.
+		TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::PanicWait);
+		constexpr double WaitTime = 1.0;
+		for (const double EndTime = FPlatformTime::Seconds() + WaitTime; FPlatformTime::Seconds() < EndTime;)
+		{
+			if (State->OutputDevicesLock.TryWriteLock())
+			{
+				State->OutputDevicesLock.WriteUnlock();
+				break;
+			}
+			FPlatformProcess::Yield();
+		}
+
+		// Make the panic thread the primary thread. Neither thread can be changed after this point.
+		State->PrimaryThreadId.exchange(ThreadId, std::memory_order_relaxed);
+
+		// Flush. Every log from the panic thread after this point will also flush.
+		Flush();
+	}
+	else if (PreviousThreadId == ThreadId)
+	{
+		// Calling Panic() multiple times from the panic thread is equivalent to calling Flush().
+		Flush();
+	}
+}
+
 void FOutputDeviceRedirector::TearDown()
 {
-	FScopeLock SyncLock(&SynchronizationObject);
-	check(FPlatformTLS::GetCurrentThreadId() == MasterThreadID);
+	SetCurrentThreadAsPrimaryThread();
 
-	TLocalOutputDevicesArray LocalBufferedDevices;
-	TLocalOutputDevicesArray LocalUnbufferedDevices;
+	Flush();
+
+	State->TryStopThread();
+
+	TArray<FOutputDevice*> LocalBufferedDevices;
+	TArray<FOutputDevice*> LocalUnbufferedDevices;
 
 	{
-		// We need to lock the mutex here so that it gets unlocked after we empty the devices arrays
-		FScopeLock GlobalOutputDevicesLock(&OutputDevicesMutex);
-		LockOutputDevices(LocalBufferedDevices, LocalUnbufferedDevices);
-		BufferedOutputDevices.Empty();
-		UnbufferedOutputDevices.Empty();	
+		UE::Private::FOutputDevicesWriteScopeLock Lock(*State);
+		LocalBufferedDevices = MoveTemp(State->BufferedOutputDevices);
+		LocalUnbufferedDevices = MoveTemp(State->UnbufferedOutputDevices);
+		State->BufferedOutputDevices.Empty();
+		State->UnbufferedOutputDevices.Empty();
 	}
-
-	// Flush previously buffered lines from secondary threads.
-	InternalFlushThreadedLogs(LocalBufferedDevices, LocalUnbufferedDevices, false);
 
 	for (FOutputDevice* OutputDevice : LocalBufferedDevices)
 	{
-		if (OutputDevice->CanBeUsedOnAnyThread())
-		{
-			OutputDevice->Flush();
-		}
 		OutputDevice->TearDown();
 	}
 
 	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
 	{
-		OutputDevice->Flush();
 		OutputDevice->TearDown();
 	}
+}
 
-	UnlockOutputDevices();
+bool FOutputDeviceRedirector::IsBacklogEnabled() const
+{
+	FReadScopeLock Lock(State->BacklogLock);
+	return State->bEnableBacklog;
 }
 
 CORE_API FOutputDeviceRedirector* GetGlobalLogSingleton()

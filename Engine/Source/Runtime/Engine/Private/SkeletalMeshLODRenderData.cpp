@@ -2,7 +2,8 @@
 
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAsset.h"
+#include "Engine/SkeletalMesh.h"	// for FSkeletalMeshLODInfo
 #include "Animation/MorphTarget.h"
 #include "Misc/ConfigCacheIni.h"
 #include "EngineLogs.h"
@@ -158,9 +159,12 @@ FArchive& operator<<(FArchive& Ar, FSkelMeshRenderSection& S)
 	return Ar;
 }
 
-void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LODIndex, TArray<UMorphTarget*>& InMorphTargets, USkeletalMesh* Owner)
+void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LODIndex, TArray<UMorphTarget*>& InMorphTargets, USkinnedAsset* Owner)
 {
-	IncrementMemoryStats(bNeedsVertexColors);
+	if (bStreamedDataInlined)
+	{
+		IncrementMemoryStats(bNeedsVertexColors);
+	}
 
 	MultiSizeIndexContainer.InitResources();
 
@@ -204,15 +208,15 @@ void FSkeletalMeshLODRenderData::InitResources(bool bNeedsVertexColors, int32 LO
 		}
 	}
 
-	// Always make sure the morph target resources are in an initialized state. This could should not get hit since the data should come with the load.
-	bool bNeedsMorphTargetRenderData = Owner->GetMorphTargets().Num() > 0 && !MorphTargetVertexInfoBuffers.IsMorphResourcesInitialized();
+	// Always make sure the morph target resources are in an initialized state. This should not get hit since the data should come with the load.
+	bool bNeedsMorphTargetRenderData = Owner && Owner->GetMorphTargets().Num() > 0 && !MorphTargetVertexInfoBuffers.IsMorphResourcesInitialized();
 	if (bNeedsMorphTargetRenderData)
 	{
 		const FSkeletalMeshLODInfo* SkeletalMeshLODInfo = Owner->GetLODInfo(LODIndex);
 		MorphTargetVertexInfoBuffers.InitMorphResources(GMaxRHIShaderPlatform, RenderSections, Owner->GetMorphTargets(), StaticVertexBuffers.StaticMeshVertexBuffer.GetNumVertices(), LODIndex, SkeletalMeshLODInfo->MorphTargetPositionErrorTolerance);
 	}
-	
-	if (!MorphTargetVertexInfoBuffers.IsRHIIntialized() && MorphTargetVertexInfoBuffers.IsMorphCPUDataValid() && MorphTargetVertexInfoBuffers.NumTotalBatches > 0)
+
+	if (!MorphTargetVertexInfoBuffers.IsRHIIntialized() && MorphTargetVertexInfoBuffers.IsMorphCPUDataValid() && (MorphTargetVertexInfoBuffers.NumTotalBatches > 0 || !bStreamedDataInlined))
 	{
 		BeginInitResource(&MorphTargetVertexInfoBuffers);
 	}
@@ -254,7 +258,7 @@ void FSkeletalMeshLODRenderData::ReleaseResources()
 		}
 	}
 	BeginReleaseResource(&MorphTargetVertexInfoBuffers);
-	
+
 	DEC_DWORD_STAT_BY(STAT_SkeletalMeshVertexMemory, SkinWeightProfilesData.GetResourcesSize());
 	SkinWeightProfilesData.ReleaseResources();
 
@@ -455,18 +459,7 @@ SIZE_T FSkeletalMeshLODRenderData::GetCPUAccessMemoryOverhead() const
 	return Result;
 }
 
-int32 FSkeletalMeshLODRenderData::GetPlatformMinLODIdx(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh)
-{
-#if WITH_EDITOR
-	check(TargetPlatform && SkeletalMesh);
-	const FName IniPlatformName = TargetPlatform->GetPlatformInfo().IniPlatformName;
-	return  SkeletalMesh->GetMinLod().GetValueForPlatform(IniPlatformName);
-#else
-	return 0;
-#endif
-}
-
-uint8 FSkeletalMeshLODRenderData::GenerateClassStripFlags(FArchive& Ar, const USkeletalMesh* OwnerMesh, int32 LODIdx)
+uint8 FSkeletalMeshLODRenderData::GenerateClassStripFlags(FArchive& Ar, const USkinnedAsset* OwnerMesh, int32 LODIdx)
 {
 #if WITH_EDITOR
 	const bool bIsCook = Ar.IsCooking();
@@ -476,7 +469,7 @@ uint8 FSkeletalMeshLODRenderData::GenerateClassStripFlags(FArchive& Ar, const US
 	bool bMeshDisablesMinLodStrip = false;
 	if (bIsCook)
 	{
-		MinMeshLod = OwnerMesh ? OwnerMesh->GetMinLod().GetValueForPlatform(CookTarget->GetPlatformInfo().IniPlatformName) : 0;
+		MinMeshLod = OwnerMesh ? OwnerMesh->GetPlatformMinLODIdx(Ar.CookingTarget()) : 0;
 		bMeshDisablesMinLodStrip = OwnerMesh ? OwnerMesh->GetDisableBelowMinLodStripping().GetValueForPlatform(CookTarget->GetPlatformInfo().IniPlatformName) : false;
 	}
 	const bool bWantToStripBelowMinLod = bIsCook && GStripSkeletalMeshLodsDuringCooking != 0 && MinMeshLod > LODIdx && !bMeshDisablesMinLodStrip;
@@ -489,9 +482,9 @@ uint8 FSkeletalMeshLODRenderData::GenerateClassStripFlags(FArchive& Ar, const US
 #endif
 }
 
-bool FSkeletalMeshLODRenderData::IsLODCookedOut(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh, bool bIsBelowMinLOD)
+bool FSkeletalMeshLODRenderData::IsLODCookedOut(const ITargetPlatform* TargetPlatform, const USkinnedAsset* SkinnedAsset, bool bIsBelowMinLOD)
 {
-	check(SkeletalMesh);
+	check(SkinnedAsset);
 #if WITH_EDITOR
 	if (!bIsBelowMinLOD)
 	{
@@ -504,15 +497,15 @@ bool FSkeletalMeshLODRenderData::IsLODCookedOut(const ITargetPlatform* TargetPla
 	}
 	check(TargetPlatform);
 
-	return !SkeletalMesh->GetEnableLODStreaming(TargetPlatform);
+	return !SkinnedAsset->GetEnableLODStreaming(TargetPlatform);
 #else
 	return false;
 #endif
 }
 
-bool FSkeletalMeshLODRenderData::IsLODInlined(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh, int32 LODIdx, bool bIsBelowMinLOD)
+bool FSkeletalMeshLODRenderData::IsLODInlined(const ITargetPlatform* TargetPlatform, const USkinnedAsset* SkinnedAsset, int32 LODIdx, bool bIsBelowMinLOD)
 {
-	check(SkeletalMesh);
+	check(SkinnedAsset);
 #if WITH_EDITOR
 	if (!TargetPlatform)
 	{
@@ -520,7 +513,7 @@ bool FSkeletalMeshLODRenderData::IsLODInlined(const ITargetPlatform* TargetPlatf
 	}
 	check(TargetPlatform);
 	
-	if (!SkeletalMesh->GetEnableLODStreaming(TargetPlatform))
+	if (!SkinnedAsset->GetEnableLODStreaming(TargetPlatform))
 	{
 		return true;
 	}
@@ -530,8 +523,8 @@ bool FSkeletalMeshLODRenderData::IsLODInlined(const ITargetPlatform* TargetPlatf
 		return false;
 	}
 
-	const int32 MaxNumStreamedLODs = SkeletalMesh->GetMaxNumStreamedLODs(TargetPlatform);
-	const int32 NumLODs = SkeletalMesh->GetLODNum();
+	const int32 MaxNumStreamedLODs = SkinnedAsset->GetMaxNumStreamedLODs(TargetPlatform);
+	const int32 NumLODs = SkinnedAsset->GetLODNum();
 	const int32 NumStreamedLODs = FMath::Min(MaxNumStreamedLODs, NumLODs - 1);
 	const int32 InlinedLODStartIdx = NumStreamedLODs;
 	return LODIdx >= InlinedLODStartIdx;
@@ -540,11 +533,11 @@ bool FSkeletalMeshLODRenderData::IsLODInlined(const ITargetPlatform* TargetPlatf
 #endif
 }
 
-int32 FSkeletalMeshLODRenderData::GetNumOptionalLODsAllowed(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh)
+int32 FSkeletalMeshLODRenderData::GetNumOptionalLODsAllowed(const ITargetPlatform* TargetPlatform, const USkinnedAsset* SkinnedAsset)
 {
 #if WITH_EDITOR
-	check(TargetPlatform && SkeletalMesh);
-	return SkeletalMesh->GetMaxNumOptionalLODs(TargetPlatform);
+	check(TargetPlatform && SkinnedAsset);
+	return SkinnedAsset->GetMaxNumOptionalLODs(TargetPlatform);
 #else
 	return 0;
 #endif
@@ -562,11 +555,11 @@ bool FSkeletalMeshLODRenderData::ShouldForceKeepCPUResources()
 	return true;
 }
 
-bool FSkeletalMeshLODRenderData::ShouldKeepCPUResources(const USkeletalMesh* SkeletalMesh, int32 LODIdx, bool bForceKeep)
+bool FSkeletalMeshLODRenderData::ShouldKeepCPUResources(const USkinnedAsset* SkinnedAsset, int32 LODIdx, bool bForceKeep)
 {
 	return bForceKeep
-		|| SkeletalMesh->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel)
-		|| SkeletalMesh->NeedCPUData(LODIdx);
+		|| SkinnedAsset->GetResourceForRendering()->RequiresCPUSkinning(GMaxRHIFeatureLevel)
+		|| SkinnedAsset->NeedCPUData(LODIdx);
 }
 
 class FSkeletalMeshLODSizeCounter : public FArchive
@@ -594,7 +587,7 @@ private:
 	int64 Size;
 };
 
-void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, uint8 ClassDataStripFlags, bool bNeedsCPUAccess, bool bForceKeepCPUResources)
+void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkinnedAsset* Owner, int32 LODIdx, uint8 ClassDataStripFlags, bool bNeedsCPUAccess, bool bForceKeepCPUResources)
 {
 	Ar.UsingCustomVersion(FUE5PrivateFrostyStreamObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
@@ -634,26 +627,15 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 	Ar << SkinWeightProfilesData;
 	SkinWeightProfilesData.Init(&SkinWeightVertexBuffer);
 
-	if (Ar.IsLoading())
+	if (Ar.IsLoading() && Owner)
 	{
-#if !WITH_EDITOR
-		if (GSkinWeightProfilesLoadByDefaultMode == 1)
-		{
-			// Only allow overriding the base buffer in non-editor builds as it could otherwise be serialized into the asset
-			SkinWeightProfilesData.OverrideBaseBufferSkinWeightData(Owner, LODIdx);
-		} else
-	
-#endif
-		if (GSkinWeightProfilesLoadByDefaultMode == 3)
-		{
-			SkinWeightProfilesData.SetDynamicDefaultSkinWeightProfile(Owner, LODIdx, true);
-		}
+		Owner->SetSkinWeightProfilesData(LODIdx, SkinWeightProfilesData);
 	}
 	Ar << SourceRayTracingGeometry.RawData;
 
 	// Determine if morph target data should be cooked out for this platform
 	EShaderPlatform MorphTargetShaderPlatform = GMaxRHIShaderPlatform;
-	bool bSerializeCompressedMorphTargets = Ar.IsSaving() && FMorphTargetVertexInfoBuffers::IsPlatformShaderSupported(MorphTargetShaderPlatform) && Owner->GetMorphTargets().Num() > 0;
+	bool bSerializeCompressedMorphTargets = Ar.IsSaving() && FMorphTargetVertexInfoBuffers::IsPlatformShaderSupported(MorphTargetShaderPlatform) && Owner && Owner->GetMorphTargets().Num() > 0;
 	if (Ar.IsCooking())
 	{
 		const ITargetPlatform* Platform = Ar.CookingTarget();
@@ -661,7 +643,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 		bSerializeCompressedMorphTargets = false;
 
 		// Make sure to avoid cooking the morph target data when build a server only executable
-		if (!Platform->IsServerOnly() && Owner->GetMorphTargets().Num() > 0)
+		if (!Platform->IsServerOnly() && Owner && Owner->GetMorphTargets().Num() > 0)
 		{
 			// Test if any of the supported shader formats supports SM5
 			TArray<FName> ShaderFormats;
@@ -683,7 +665,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 	{
 		Ar << bSerializeCompressedMorphTargets;
 
-		if (bSerializeCompressedMorphTargets)
+		if (bSerializeCompressedMorphTargets && Owner)
 		{
 #if WITH_EDITOR
 			if (Ar.IsSaving())
@@ -729,7 +711,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 	}
 }
 
-void FSkeletalMeshLODRenderData::SerializeAvailabilityInfo(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, bool bAdjacencyDataStripped, bool bNeedsCPUAccess)
+void FSkeletalMeshLODRenderData::SerializeAvailabilityInfo(FArchive& Ar, int32 LODIdx, bool bAdjacencyDataStripped, bool bNeedsCPUAccess)
 {
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 	MultiSizeIndexContainer.SerializeMetaData(Ar, bNeedsCPUAccess);
@@ -758,13 +740,18 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FSkeletalMeshLODRenderData::Serialize"), STAT_SkeletalMeshLODRenderData_Serialize, STATGROUP_LoadTime);
 
-	USkeletalMesh* OwnerMesh = CastChecked<USkeletalMesh>(Owner);
+	USkinnedAsset* OwnerMesh = CastChecked<USkinnedAsset>(Owner);
 	
 	// Shouldn't needed but to make some static analyzers happy
 	if (!OwnerMesh)
 	{
 		return;
 	}
+
+	bool bUsingCookedEditorData = false;
+#if WITH_EDITORONLY_DATA
+	bUsingCookedEditorData = Owner->GetOutermost()->bIsCookedForEditor;
+#endif
 	
 	// Actual flags used during serialization
 	const uint8 ClassDataStripFlags = GenerateClassStripFlags(Ar, OwnerMesh, Idx);
@@ -772,7 +759,7 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 
 #if WITH_EDITOR
 	const bool bIsBelowMinLOD = StripFlags.IsClassDataStripped(CDSF_MinLodData)
-		|| (Ar.IsCooking() && OwnerMesh && Idx < GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerMesh));
+		|| (Ar.IsCooking() && OwnerMesh && Idx < OwnerMesh->GetPlatformMinLODIdx(Ar.CookingTarget()));
 #else
 	const bool bIsBelowMinLOD = false;
 #endif
@@ -810,7 +797,7 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 	{
 		if (bNeedsCPUAccess)
 		{
-			UE_LOG(LogStaticMesh, Verbose, TEXT("[%s] Skeletal Mesh is marked for CPU read."), *OwnerMesh->GetName());
+			UE_LOG(LogSkeletalMesh, Verbose, TEXT("[%s] Skeletal Mesh is marked for CPU read."), *OwnerMesh->GetName());
 		}
 	}
 
@@ -825,7 +812,7 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 		if (Ar.IsSaving())
 		{
 			FSkeletalMeshLODSizeCounter LODSizeCounter;
-			LODSizeCounter.SetCookingTarget(Ar.CookingTarget());
+			LODSizeCounter.SetCookData(Ar.GetCookData());
 			LODSizeCounter.SetByteSwapping(Ar.IsByteSwapping());
 			SerializeStreamedData(LODSizeCounter, OwnerMesh, Idx, ClassDataStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
 			BuffersSize = LODSizeCounter.TotalSize();
@@ -846,14 +833,14 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 			if (Ar.IsSaving())
 			{
 				const int32 MaxNumOptionalLODs = GetNumOptionalLODsAllowed(Ar.CookingTarget(), OwnerMesh);
-				const int32 OptionalLODIdx = GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerMesh) - Idx;
+				const int32 OptionalLODIdx = OwnerMesh->GetPlatformMinLODIdx(Ar.CookingTarget()) - Idx;
 				bDiscardBulkData = OptionalLODIdx > MaxNumOptionalLODs;
 
 				TArray<uint8> TmpBuff;
 				if (!bDiscardBulkData)
 				{
 					FMemoryWriter MemWriter(TmpBuff, true);
-					MemWriter.SetCookingTarget(Ar.CookingTarget());
+					MemWriter.SetCookData(Ar.GetCookData());
 					MemWriter.SetByteSwapping(Ar.IsByteSwapping());
 					SerializeStreamedData(MemWriter, OwnerMesh, Idx, ClassDataStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
 				}
@@ -881,16 +868,32 @@ void FSkeletalMeshLODRenderData::Serialize(FArchive& Ar, UObject* Owner, int32 I
 				StreamingBulkData.Serialize(Ar, Owner, Idx, false);
 				bIsLODOptional = StreamingBulkData.IsOptional();
 
-				if (StreamingBulkData.GetBulkDataSize() == 0)
+				const int64 BulkDataSize = StreamingBulkData.GetBulkDataSize();
+				if (BulkDataSize == 0)
 				{
 					bDiscardBulkData = true;
 					BuffersSize = 0;
 				}
+#if WITH_EDITORONLY_DATA
+				else if (bUsingCookedEditorData && Ar.IsLoading())
+				{
+					// When using cooked data in editor, only the highest (lowest detailed) LOD is cooked inline, while the lower LODs are saved in StreamingBulkData.
+					// So here we load StreamingBulkData from disk into TempData, then populate the render data from TempData.
+					TArray<uint8> TempData;
+					TempData.SetNum(BulkDataSize);
+					void* Dest = TempData.GetData();
+					StreamingBulkData.GetCopy(&Dest);
+
+					FMemoryReader MemReader(TempData, true);
+					MemReader.SetByteSwapping(Ar.IsByteSwapping());
+					SerializeStreamedData(MemReader, OwnerMesh, Idx, ClassDataStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
+				}
+#endif
 			}
 
 			if (!bDiscardBulkData)
 			{
-				SerializeAvailabilityInfo(Ar, OwnerMesh, Idx, StripFlags.IsClassDataStripped(CDSF_AdjacencyData_DEPRECATED), bNeedsCPUAccess);
+				SerializeAvailabilityInfo(Ar, Idx, StripFlags.IsClassDataStripped(CDSF_AdjacencyData_DEPRECATED), bNeedsCPUAccess);
 			}
 		}
 	}

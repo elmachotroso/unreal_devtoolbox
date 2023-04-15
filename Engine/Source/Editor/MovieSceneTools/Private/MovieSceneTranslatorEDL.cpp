@@ -5,12 +5,12 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "LevelSequence.h"
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/FrameRate.h"
 #include "MovieSceneTimeHelpers.h"
 #include "MovieSceneCaptureModule.h"
@@ -404,7 +404,7 @@ bool MovieSceneTranslatorEDL::ImportEDL(UMovieScene* InMovieScene, FFrameRate In
 
 				// Collect a full list of assets with the specified class
 				TArray<FAssetData> AssetDataArray;
-				AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetFName(), AssetDataArray);
+				AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), AssetDataArray);
 
 				for (FAssetData AssetData : AssetDataArray)
 				{

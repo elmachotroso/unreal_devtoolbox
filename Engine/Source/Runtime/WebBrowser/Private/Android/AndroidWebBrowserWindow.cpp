@@ -38,7 +38,7 @@ FAndroidWebBrowserWindow::FAndroidWebBrowserWindow(FString InUrl, TOptional<FStr
 
 FAndroidWebBrowserWindow::~FAndroidWebBrowserWindow()
 {
-	CloseBrowser(true);
+	CloseBrowser(true, false);
 }
 
 void FAndroidWebBrowserWindow::LoadURL(FString NewURL)
@@ -164,6 +164,11 @@ FReply FAndroidWebBrowserWindow::OnMouseWheel(const FGeometry& MyGeometry, const
 	return FReply::Unhandled();
 }
 
+FReply FAndroidWebBrowserWindow::OnTouchGesture(const FGeometry& MyGeometry, const FPointerEvent& GestureEvent, bool bIsPopup)
+{
+	return FReply::Unhandled();
+}
+
 void FAndroidWebBrowserWindow::OnFocus(bool SetFocus, bool bIsPopup)
 {
 }
@@ -279,7 +284,7 @@ void FAndroidWebBrowserWindow::ExecuteJavascript(const FString& Script)
 	BrowserWidget->ExecuteJavascript(Script);
 }
 
-void FAndroidWebBrowserWindow::CloseBrowser(bool bForce)
+void FAndroidWebBrowserWindow::CloseBrowser(bool bForce, bool bBlockTillClosed /* ignored */)
 {
 	BrowserWidget->Close();
 }

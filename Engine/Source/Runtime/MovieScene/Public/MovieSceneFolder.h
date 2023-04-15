@@ -3,13 +3,28 @@
 #pragma once
 
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "CoreTypes.h"
+#include "EventHandlers/IFolderEventHandler.h"
+#include "EventHandlers/MovieSceneDataEventContainer.h"
+#include "Math/Color.h"
 #include "Misc/Guid.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "MovieSceneFolder.generated.h"
 
+class FArchive;
+class ITransactionObjectAnnotation;
 class UMovieSceneTrack;
+namespace UE { namespace MovieScene { class IFolderEventHandler; } }
 
 /** Represents a folder used for organizing objects in tracks in a movie scene. */
 UCLASS(DefaultToInstanced)
@@ -24,7 +39,7 @@ class MOVIESCENE_API UMovieSceneFolder : public UObject
 	void SetFolderName( FName InFolderName );
 
 	/** Gets the folders contained by this folder. */
-	const TArray<UMovieSceneFolder*>& GetChildFolders() const;
+	TArrayView<UMovieSceneFolder* const> GetChildFolders() const;
 
 	/** Adds a child folder to this folder. Automatically calls Modify() on the folder object. */
 	void AddChildFolder( UMovieSceneFolder* InChildFolder );
@@ -62,13 +77,20 @@ class MOVIESCENE_API UMovieSceneFolder : public UObject
 	/** Searches for a guid in this folder and its child folders, if found returns the folder containing the guid. */
 	UMovieSceneFolder* FindFolderContaining(const FGuid& InObjectBinding);
 
+	/** Searches for a track in this folder and its child folders, if found returns the folder containing the track. */
+	UMovieSceneFolder* FindFolderContaining(const UMovieSceneTrack* InTrack);
+
 	/** Get the folder path for this folder, stopping at the given root folders */
-	static void CalculateFolderPath(UMovieSceneFolder* InFolder, const TArray<UMovieSceneFolder*>& RootFolders, TArray<FName>& FolderPath);
+	static void CalculateFolderPath(UMovieSceneFolder* InFolder, TArrayView<UMovieSceneFolder* const> RootFolders, TArray<FName>& FolderPath);
 	
 	/** For the given set of folders, return the folder that has the matching folder path */
-	static UMovieSceneFolder* GetFolderWithPath(const TArray<FName>& InFolderPath, const TArray<UMovieSceneFolder*>& InFolders, const TArray<UMovieSceneFolder*>& RootFolders);
+	static UMovieSceneFolder* GetFolderWithPath(const TArray<FName>& InFolderPath, const TArray<UMovieSceneFolder*>& InFolders, TArrayView<UMovieSceneFolder* const> RootFolders);
 
 	virtual void Serialize( FArchive& Archive );
+
+	FName MakeUniqueChildFolderName(FName InName) const;
+
+	static FName MakeUniqueChildFolderName(FName InName, TArrayView<UMovieSceneFolder* const> InFolders);
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -110,6 +132,14 @@ class MOVIESCENE_API UMovieSceneFolder : public UObject
 	}
 #endif
 
+#if WITH_EDITOR
+	virtual void PostEditUndo() override;
+	virtual void PostEditUndo(TSharedPtr<ITransactionObjectAnnotation> TransactionAnnotation) override;
+#endif
+
+	/** Event handlers for handling changes to this object */
+	UE::MovieScene::TDataEventContainer<UE::MovieScene::IFolderEventHandler> EventHandlers;
+
 private:
 	/** The name of this folder. */
 	UPROPERTY()
@@ -140,4 +170,7 @@ private:
 	/** The guids for the object bindings contained by this folder. */
 	TArray<FGuid> ChildObjectBindings;
 };
+
+MOVIESCENE_API void GetMovieSceneFoldersRecursive(TArrayView<UMovieSceneFolder* const> InFoldersToRecurse, TArray<UMovieSceneFolder*>& OutFolders);
+
 

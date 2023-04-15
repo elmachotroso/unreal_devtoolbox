@@ -1,22 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CSVtoSVGModule.h"
+
 #include "CSVtoSVGArguments.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "SCSVtoSVG.h"
-#include "ISettingsModule.h"
+#include "HAL/Platform.h"
 #include "HAL/PlatformProcess.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogCategory.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "SCSVtoSVG.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
 #define LOCTEXT_NAMESPACE "CSVtoSVG"
 
@@ -46,7 +51,7 @@ void FCSVtoSVGModule::StartupModule()
 		.SetDisplayName(NSLOCTEXT("CSVtoSVGApp", "TabTitle", "CSV to SVG"))
 		.SetTooltipText(NSLOCTEXT("CSVtoSVGApp", "TooltipText", "Tool for generating vector line graphs from comma-separated value files generated from CSV profiles."))
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.UserDefinedStruct"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.UserDefinedStruct"));
 }
 
 void FCSVtoSVGModule::ShutdownModule()

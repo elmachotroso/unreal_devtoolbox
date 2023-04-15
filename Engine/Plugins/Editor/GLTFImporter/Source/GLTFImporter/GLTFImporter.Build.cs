@@ -6,22 +6,6 @@ namespace UnrealBuildTool.Rules
     {
         public GLTFImporter(ReadOnlyTargetRules Target) : base(Target)
         {
-            PublicIncludePaths.AddRange(
-                new string[] {
-                }
-                );
-
-            PrivateIncludePaths.AddRange(
-                new string[] {
-                }
-                );
-
-            PublicDependencyModuleNames.AddRange(
-                new string[]
-                {
-                }
-                );
-
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
@@ -40,14 +24,7 @@ namespace UnrealBuildTool.Rules
                     "SlateCore",
                     "MainFrame",
                     "InputCore",
-                    "EditorStyle",
 					"GLTFCore",
-                }
-                );
-
-            DynamicallyLoadedModuleNames.AddRange(
-                new string[]
-                {
                 }
                 );
         }

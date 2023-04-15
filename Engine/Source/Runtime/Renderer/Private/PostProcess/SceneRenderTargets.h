@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "../SceneTextures.h"
+#include "SceneTextures.h"
 
 /*
 * Stencil layout during basepass / deferred decals:
@@ -24,9 +24,10 @@
 #define STENCIL_TEMPORAL_RESPONSIVE_AA_BIT_ID 3
 #define STENCIL_LIGHTING_CHANNELS_BIT_ID	4
 #define STENCIL_RECEIVE_DECAL_BIT_ID		7
-// Used only during the lighting pass - alias/reuse decal bit
-#define STENCIL_STRATA_FASTPATH				7 
-#define STENCIL_STRATA_SINGLEPATH			1
+// Used only during the lighting pass - alias/reuse light channels (which copied from stencil to a texture prior to lighting pass)
+#define STENCIL_STRATA_FASTPATH				4 
+#define STENCIL_STRATA_SINGLEPATH			5
+#define STENCIL_STRATA_COMPLEX				6
 
 // Outputs a compile-time constant stencil's bit mask ready to be used
 // in TStaticDepthStencilState<> template parameter. It also takes care
@@ -41,10 +42,10 @@
 #define STENCIL_LIGHTING_CHANNELS_MASK(Value) uint8(((Value) & 0x7) << STENCIL_LIGHTING_CHANNELS_BIT_ID)
 
 // Mobile specific
-// Sky material mask
-#define STENCIL_MOBILE_SKY_MASK GET_STENCIL_BIT_MASK(SANDBOX,1)
-// Store shading model into stencil [1-3] bits
-#define GET_STENCIL_MOBILE_SM_MASK(Value) uint8(((Value) & 0x7) << 1)
+// Store shading model into stencil [1-2] bits
+#define GET_STENCIL_MOBILE_SM_MASK(Value) uint8(((Value) & 0x3) << 1)
+// Sky material mask - bit 3
+#define STENCIL_MOBILE_SKY_MASK uint8(1 << 3)
 
 class FSceneRenderTargets
 {
@@ -67,31 +68,31 @@ public:
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")
 	static FClearValueBinding GetDefaultColorClear()
 	{
-		return GetSceneColorClearValue();
+		return FSceneTexturesConfig::Get().ColorClearValue;
 	}
 
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")
 	static FClearValueBinding GetDefaultDepthClear()
 	{
-		return GetSceneDepthClearValue();
+		return FSceneTexturesConfig::Get().DepthClearValue;
 	}
 
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")
 	static FIntPoint GetBufferSizeXY()
 	{
-		return GetSceneTextureExtent();
+		return FSceneTexturesConfig::Get().Extent;
 	}
 
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")
 	static int32 GetMSAACount()
 	{
-		return GetSceneTextureNumSamples();
+		return FSceneTexturesConfig::Get().NumSamples;
 	}
 
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")
 	static ERHIFeatureLevel::Type GetCurrentFeatureLevel()
 	{
-		return GetSceneTextureFeatureLevel();
+		return FSceneTexturesConfig::Get().FeatureLevel;
 	}
 
 	UE_DEPRECATED(5.0, "FSceneRenderTargets is now deprecated from the RDG refactor. FSceneTextures should be used instead.")

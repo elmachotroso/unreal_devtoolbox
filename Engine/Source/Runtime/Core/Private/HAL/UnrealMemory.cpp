@@ -11,7 +11,7 @@
 #include "Misc/CoreDelegates.h"
 
 #if USE_MALLOC_PROFILER && WITH_ENGINE && IS_MONOLITHIC
-	#include "Runtime/Engine/Public/MallocProfilerEx.h"
+	#include "MallocProfilerEx.h"
 #endif
 
 /*-----------------------------------------------------------------------------
@@ -217,6 +217,21 @@ public:
 	{
 		return UsedMalloc->GetDescriptiveName();
 	}
+
+	virtual void OnMallocInitialized() override
+	{
+		UsedMalloc->OnMallocInitialized();
+	}
+
+	virtual void OnPreFork() override
+	{
+		UsedMalloc->OnPreFork();
+	}
+
+	virtual void OnPostFork() override
+	{
+		UsedMalloc->OnPostFork();
+	}
 };
 
 void FMemory::EnablePurgatoryTests()
@@ -322,12 +337,17 @@ FConsoleCommandDelegate::CreateStatic(&FMemory::EnablePoisonTests)
 /** Helper function called on first allocation to create and initialize GMalloc */
 static int FMemory_GCreateMalloc_ThreadUnsafe()
 {
+#if PLATFORM_CONSOLE_DYNAMIC_LINK
+	FPlatformMemory::Init();
+#endif
+
+	GMalloc = FPlatformMemory::BaseAllocator();
+
 #if !PLATFORM_MAC
 	FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 	uint64 ProgramSize = Stats.UsedPhysical;
 #endif
 
-	GMalloc = FPlatformMemory::BaseAllocator();
 	// Setup malloc crash as soon as possible.
 	FPlatformMallocCrash::Get( GMalloc );
 
@@ -399,6 +419,9 @@ static int FMemory_GCreateMalloc_ThreadUnsafe()
 
 	GMalloc = FMallocDoubleFreeFinder::OverrideIfEnabled(GMalloc);
 	GMalloc = FMallocFrameProfiler::OverrideIfEnabled(GMalloc);
+
+	GMalloc->OnMallocInitialized();
+
 	return 0;
 }
 

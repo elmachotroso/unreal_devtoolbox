@@ -4,6 +4,8 @@
 
 #include "RigVMModel/RigVMGraph.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMVariableNode)
+
 const FString URigVMVariableNode::VariableName = TEXT("Variable");
 const FString URigVMVariableNode::ValueName = TEXT("Value");
 
@@ -38,6 +40,11 @@ bool URigVMVariableNode::IsGetter() const
 		return false;
 	}
 	return ValuePin->GetDirection() == ERigVMPinDirection::Output;
+}
+
+bool URigVMVariableNode::IsExternalVariable() const
+{
+	return !IsLocalVariable() && !IsInputArgument();
 }
 
 bool URigVMVariableNode::IsLocalVariable() const
@@ -128,3 +135,4 @@ URigVMPin* URigVMVariableNode::GetValuePin() const
 {
 	return FindPin(ValueName);
 }
+

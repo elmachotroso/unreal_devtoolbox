@@ -2,12 +2,23 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Misc/Guid.h"
+#include "CoreTypes.h"
 #include "Engine/EngineTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
 #include "PortableObjectPipeline.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "LocalizationTargetTypes.generated.h"
 
 struct FPropertyChangedEvent;
@@ -179,7 +190,7 @@ struct FGatherTextFromPackagesConfiguration
 	TArray<FName> Collections;
 
 	/* Classes that should be excluded from gathering. */
-	UPROPERTY(config, EditAnywhere, Category = "Filter", meta=(MetaClass="Object", AllowAbstract="True"))
+	UPROPERTY(config, EditAnywhere, Category = "Filter", meta=(MetaClass="/Script/CoreUObject.Object", AllowAbstract="True"))
 	TArray<FSoftClassPath> ExcludeClasses;
 
 	/* Should classes derived from those in the exclude classes list also be excluded from gathering? */

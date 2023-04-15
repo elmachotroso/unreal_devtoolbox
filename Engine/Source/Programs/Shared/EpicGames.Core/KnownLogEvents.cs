@@ -1,10 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Text;
 
 namespace EpicGames.Core
 {
@@ -30,9 +26,19 @@ namespace EpicGames.Core
 		public static EventId Exception { get; } = new EventId(2);
 
 		/// <summary>
+		/// Exit code error
+		/// </summary>
+		public static EventId ExitCode { get; } = new EventId(3);
+
+		/// <summary>
 		/// Compiler error
 		/// </summary>
 		public static EventId Compiler { get; } = new EventId(100);
+
+		/// <summary>
+		/// UHT compiler message
+		/// </summary>
+		public static EventId UHT { get; } = new EventId(110);
 
 		/// <summary>
 		/// Linker error
@@ -70,6 +76,21 @@ namespace EpicGames.Core
 		public static EventId Engine_AssetLog { get; } = new EventId(303);
 
 		/// <summary>
+		/// Engine: Localization commandlet output
+		/// </summary>
+		public static EventId Engine_Localization { get; } = new EventId(304);
+
+		/// <summary>
+		/// Engine: appErrorf called
+		/// </summary>
+		public static EventId Engine_AppError { get; } = new EventId(305);
+
+		/// <summary>
+		/// Engine: Shader compiler output
+		/// </summary>
+		public static EventId Engine_ShaderCompiler { get; } = new EventId(310);
+
+		/// <summary>
 		/// UAT error
 		/// </summary>
 		public static EventId AutomationTool { get; } = new EventId(400);
@@ -95,9 +116,24 @@ namespace EpicGames.Core
 		public static EventId AutomationTool_MissingCopyright { get; } = new EventId(404);
 
 		/// <summary>
+		/// UAT: Mismatched Perforce case
+		/// </summary>
+		public static EventId AutomationTool_PerforceCase { get; } = new EventId(405);
+
+		/// <summary>
+		/// UAT: Unacceptable words
+		/// </summary>
+		public static EventId AutomationTool_UnacceptableWords { get; } = new EventId(406);
+
+		/// <summary>
 		/// MSBuild: Generic error
 		/// </summary>
 		public static EventId MSBuild { get; } = new EventId(500);
+
+		/// <summary>
+		/// Microsoft: Generic MSTest error
+		/// </summary>
+		public static EventId MSTest { get; } = new EventId(540);
 
 		/// <summary>
 		/// Microsoft: Generic Visual Studio error
@@ -125,6 +161,11 @@ namespace EpicGames.Core
 		public static EventId Systemic { get; } = new EventId(700);
 
 		/// <summary>
+		/// A systemic event relating to Perforce
+		/// </summary>
+		public static EventId Systemic_Perforce { get; } = new EventId(701);
+
+		/// <summary>
 		/// A systemic event from XGE
 		/// </summary>
 		public static EventId Systemic_Xge { get; } = new EventId(710);
@@ -138,6 +179,16 @@ namespace EpicGames.Core
 		/// BuildService.exe is not running
 		/// </summary>
 		public static EventId Systemic_Xge_ServiceNotRunning { get; } = new EventId(712);
+
+		/// <summary>
+		/// General build failed error
+		/// </summary>
+		public static EventId Systemic_Xge_BuildFailed { get; } = new EventId(713);
+
+		/// <summary>
+		/// Cache size reached
+		/// </summary>
+		public static EventId Systemic_Xge_CacheLimit { get; } = new EventId(714);
 
 		/// <summary>
 		/// DDC is slow
@@ -163,6 +214,65 @@ namespace EpicGames.Core
 		/// A systemic event from MSBuild
 		/// </summary>
 		public static EventId Systemic_MSBuild { get; } = new EventId(750);
+
+		/// <summary>
+		/// A systemic event from XCode
+		/// </summary>
+		public static EventId Systemic_XCode { get; } = new EventId(755);
+
+		/// <summary>
+		/// Robomerge gate is locked
+		/// </summary>
+		public static EventId Systemic_RoboMergeGateLocked { get; } = new EventId(760);
+
+		/// <summary>
+		/// XGEControlWorker is missing
+		/// </summary>
+		public static EventId Systemic_MissingXgeControlWorker { get; } = new EventId(761);
+
+		/// <summary>
+		/// Log parser is taking a significant amount of time; may be bottleneck.
+		/// </summary>
+		public static EventId Systemic_LogParserBottleneck { get; } = new EventId(762);
+
+		/// <summary>
+		/// Exception parsing a log event.
+		/// </summary>
+		public static EventId Systemic_LogEventMatcher { get; } = new EventId(763);
+
+		/// <summary>
+		/// Host is down during I/O operation, usually meaning a share isn't accessible.
+		/// </summary>
+		public static EventId Systemic_HostDownIOException { get; } = new EventId(764);
+
+		/// <summary>
+		/// Microsoft SignTool cannot reach specified timestamp server 
+		/// 
+		/// Signing performs a looping retry using different servers and throws when all retries attempts have been exhausted.
+		/// </summary>
+		public static EventId Systemic_SignToolTimeStampServer { get; } = new EventId(765);
+
+		/// <summary>
+		/// Microsoft SignTool generic error
+		/// 
+		/// Usually preceded by another type of error.
+		/// </summary>
+		public static EventId Systemic_SignTool { get; } = new EventId(766);
+
+		/// <summary>
+		/// Maximum code for systemic events. Add new events in the 700-799 range.
+		/// </summary>
+		public static EventId Systemic_Max { get; } = new EventId(799);
+
+		/// <summary>
+		/// Horde error codes
+		/// </summary>
+		public static EventId Horde { get; } = new EventId(1000);
+
+		/// <summary>
+		/// Invalid preflight change
+		/// </summary>
+		public static EventId Horde_InvalidPreflight { get; } = new EventId(1001);
 	}
 #pragma warning restore CA1707 // Identifiers should not contain underscores
 }

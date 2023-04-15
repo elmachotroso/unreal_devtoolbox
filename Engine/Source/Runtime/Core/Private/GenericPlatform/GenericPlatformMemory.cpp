@@ -22,6 +22,7 @@
 #include "Templates/UnrealTemplate.h"
 #include "HAL/IConsoleManager.h"
 #include "ProfilingDebugging/MemoryTrace.h"
+#include "ProfilingDebugging/CountersTrace.h"
 
 DEFINE_STAT(MCR_Physical);
 DEFINE_STAT(MCR_PhysicalLLM);
@@ -55,9 +56,9 @@ namespace GenericPlatformMemory
 	static FAutoConsoleVariableRef CVarMemoryPressureCriticalThresholdMB(
 		TEXT("memory.MemoryPressureCriticalThresholdMB"),
 		GMemoryPressureCriticalThresholdMB,
-		TEXT("When the available physical memory drops below this threshold memory stats will consider this to be at critical pressure.\n")
-		TEXT("Where a platform can specifically state it's memory pressure this test maybe ignored.\n")
-		TEXT("0 (default) critical pressure will not use the threshold."),
+		TEXT("When the available physical memory drops below this threshold memory stats will consider this to be at critical pressure.\n"
+		     "Where a platform can specifically state it's memory pressure this test maybe ignored.\n"
+		     "0 (default) critical pressure will not use the threshold."),
 		ECVF_Default);
 }
 
@@ -71,6 +72,15 @@ struct TUnalignedTester
 	}
 };
 
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryTotalPhysical, TEXT("PlatformMemory/TotalPhysical"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryTotalVirtual, TEXT("PlatformMemory/TotalVirtual"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryPageSize, TEXT("PlatformMemory/PageSize"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryAvailablePhysical, TEXT("PlatformMemory/AvailablePhysical"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryAvailableVirtual, TEXT("PlatformMemory/AvailableVirtual"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryUsedPhysical, TEXT("PlatformMemory/UsedPhysical"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryPeakUsedPhysical, TEXT("PlatformMemory/PeakUsedPhysical"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryUsedVirtual, TEXT("PlatformMemory/UsedVirtual"));
+TRACE_DECLARE_MEMORY_COUNTER(PlatformMemoryPeakUsedVirtual, TEXT("PlatformMemory/PeakUsedVirtual"));
 
 /** Helper class used to update platform memory stats. */
 struct FGenericStatsUpdater
@@ -103,6 +113,16 @@ struct FGenericStatsUpdater
 		SET_MEMORY_STAT( STAT_PeakUsedPhysical, MemoryStats.PeakUsedPhysical );
 		SET_MEMORY_STAT( STAT_UsedVirtual, MemoryStats.UsedVirtual );
 		SET_MEMORY_STAT( STAT_PeakUsedVirtual, MemoryStats.PeakUsedVirtual );
+
+		TRACE_COUNTER_SET(PlatformMemoryTotalPhysical, MemoryStats.TotalPhysical);
+		TRACE_COUNTER_SET(PlatformMemoryTotalVirtual, MemoryStats.TotalVirtual);
+		TRACE_COUNTER_SET(PlatformMemoryPageSize, MemoryStats.PageSize);
+		TRACE_COUNTER_SET(PlatformMemoryAvailablePhysical, MemoryStats.AvailablePhysical);
+		TRACE_COUNTER_SET(PlatformMemoryAvailableVirtual, MemoryStats.AvailableVirtual);
+		TRACE_COUNTER_SET(PlatformMemoryUsedPhysical, MemoryStats.UsedPhysical);
+		TRACE_COUNTER_SET(PlatformMemoryPeakUsedPhysical, MemoryStats.PeakUsedPhysical);
+		TRACE_COUNTER_SET(PlatformMemoryUsedVirtual, MemoryStats.UsedVirtual);
+		TRACE_COUNTER_SET(PlatformMemoryPeakUsedVirtual, MemoryStats.PeakUsedVirtual);
 
 		// Platform specific stats.
 		FPlatformMemory::InternalUpdateStats( MemoryStats );
@@ -196,13 +216,13 @@ void FGenericPlatformMemory::OnOutOfMemory(uint64 Size, uint32 Alignment)
 			MemoryTrace_Free((uint64)BackupOOMMemoryPool, EMemoryTraceRootHeap::SystemMemory);
 		}
 
-		UE_LOG(LogMemory, Warning, TEXT("MemoryStats:")\
-			TEXT("\n\tAvailablePhysical %llu")\
-			TEXT("\n\t AvailableVirtual %llu")\
-			TEXT("\n\t     UsedPhysical %llu")\
-			TEXT("\n\t PeakUsedPhysical %llu")\
-			TEXT("\n\t      UsedVirtual %llu")\
-			TEXT("\n\t  PeakUsedVirtual %llu"),
+		UE_LOG(LogMemory, Warning, TEXT("MemoryStats:"
+			"\n\tAvailablePhysical %llu"
+			"\n\t AvailableVirtual %llu"
+			"\n\t     UsedPhysical %llu"
+			"\n\t PeakUsedPhysical %llu"
+			"\n\t      UsedVirtual %llu"
+			"\n\t  PeakUsedVirtual %llu"),
 			(uint64)PlatformMemoryStats.AvailablePhysical,
 			(uint64)PlatformMemoryStats.AvailableVirtual,
 			(uint64)PlatformMemoryStats.UsedPhysical,

@@ -2,8 +2,13 @@
 
 #pragma once
 
-#include "Trace/Config.h"
 #include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "Trace/Config.h"
+#include "Trace/Trace.h"
+#include "Trace/Detail/Channel.h"
+
+namespace UE { namespace Trace { class FChannel; } }
 
 #if !defined(UE_TASK_TRACE_ENABLED)
 #if UE_TRACE_ENABLED && !IS_PROGRAM && !UE_BUILD_SHIPPING
@@ -37,9 +42,9 @@ namespace TaskTrace
 	void CORE_API Scheduled(FId TaskId);
 	void CORE_API SubsequentAdded(FId TaskId, FId SubsequentId);
 	void CORE_API Started(FId TaskId);
-	void CORE_API NestedAdded(FId TaskId, FId NestedId);
 	void CORE_API Finished(FId TaskId);
 	void CORE_API Completed(FId TaskId);
+	void CORE_API Destroyed(FId TaskId);
 
 	struct CORE_API FWaitingScope
 	{
@@ -67,9 +72,9 @@ namespace TaskTrace
 	inline void Scheduled(FId TaskId) {}
 	inline void SubsequentAdded(FId TaskId, FId SubsequentId) {}
 	inline void Started(FId TaskId) {}
-	inline void NestedAdded(FId TaskId, FId NestedId) {}
 	inline void Finished(FId TaskId) {}
 	inline void Completed(FId TaskId) {}
+	inline void Destroyed(FId TaskId) {}
 	inline FWaitingScope::FWaitingScope(const TArray<FId>& Tasks) {}
 	inline FWaitingScope::FWaitingScope(FId TaskId) {}
 	inline FWaitingScope::~FWaitingScope() {}

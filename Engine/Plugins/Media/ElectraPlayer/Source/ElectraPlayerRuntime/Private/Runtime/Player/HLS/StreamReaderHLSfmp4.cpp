@@ -10,6 +10,7 @@
 
 #define INTERNAL_ERROR_INIT_SEGMENT_DOWNLOAD_ERROR					1
 #define INTERNAL_ERROR_INIT_SEGMENT_PARSE_ERROR						2
+#define INTERNAL_ERROR_INIT_SEGMENT_UNSUPPORTED_FORMAT				3
 #define INTERNAL_ERROR_INIT_SEGMENT_LICENSEKEY_ERROR				10
 
 
@@ -54,7 +55,7 @@ uint32 FStreamSegmentRequestHLSfmp4::GetPlaybackSequenceID() const
 	return CurrentPlaybackSequenceID;
 }
 
-void FStreamSegmentRequestHLSfmp4::SetExecutionDelay(const FTimeValue& ExecutionDelay)
+void FStreamSegmentRequestHLSfmp4::SetExecutionDelay(const FTimeValue& UTCNow, const FTimeValue& ExecutionDelay)
 {
 	// No-op for HLS.
 }
@@ -242,7 +243,7 @@ IStreamReader::EAddResult FStreamReaderHLSfmp4::AddRequest(uint32 CurrentPlaybac
 	{
 		if (!Handler->bWasStarted)
 		{
-			Handler->ThreadStart(Electra::MakeDelegate(Handler, &FStreamHandler::WorkerThread));
+			Handler->ThreadStart(FMediaRunnable::FStartDelegate::CreateRaw(Handler, &FStreamHandler::WorkerThread));
 			Handler->bWasStarted = true;
 		}
 		Handler->bRequestCanceled = false;
@@ -439,8 +440,8 @@ FStreamReaderHLSfmp4::FStreamHandler::ELicenseKeyResult FStreamReaderHLSfmp4::FS
 			if (!bHaveStaticResponse)
 			{
 				TSharedPtrTS<IElectraHttpManager::FProgressListener>	ProgressListener(new IElectraHttpManager::FProgressListener);
-				ProgressListener->ProgressDelegate   = Electra::MakeDelegate(this, &FStreamHandler::HTTPProgressCallback);
-				ProgressListener->CompletionDelegate = Electra::MakeDelegate(this, &FStreamHandler::HTTPCompletionCallback);
+				ProgressListener->ProgressDelegate   = IElectraHttpManager::FProgressListener::FProgressDelegate::CreateRaw(this, &FStreamHandler::HTTPProgressCallback);
+				ProgressListener->CompletionDelegate = IElectraHttpManager::FProgressListener::FCompletionDelegate::CreateRaw(this, &FStreamHandler::HTTPCompletionCallback);
 				HTTP->ProgressListener = ProgressListener;
 				PlayerSessionService->GetHTTPManager()->AddRequest(HTTP, false);
 				while(!HasReadBeenAborted())
@@ -499,6 +500,8 @@ FStreamReaderHLSfmp4::FStreamHandler::ELicenseKeyResult FStreamReaderHLSfmp4::FS
 
 FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult FStreamReaderHLSfmp4::FStreamHandler::GetInitSegment(FErrorDetail& OutErrorDetail, TSharedPtrTS<const IParserISO14496_12>& OutMP4InitSegment, const TSharedPtrTS<FStreamSegmentRequestHLSfmp4>& Request)
 {
+	bParsingInitSegment = true;
+	bInvalidMP4 = false;
 	if (Request->InitSegmentInfo.IsValid() && Request->InitSegmentInfo->URI.Len())
 	{
 		TSharedPtrTS<const IParserISO14496_12> MP4InitSegment = Request->InitSegmentCache->GetInitSegmentFor(Request->InitSegmentInfo);
@@ -521,8 +524,8 @@ FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult FStreamReaderHLSfmp4::F
 
 			TSharedPtrTS<IElectraHttpManager::FRequest> 			HTTP(new IElectraHttpManager::FRequest);
 			TSharedPtrTS<IElectraHttpManager::FProgressListener>	ProgressListener(new IElectraHttpManager::FProgressListener);
-			ProgressListener->ProgressDelegate   = Electra::MakeDelegate(this, &FStreamHandler::HTTPProgressCallback);
-			ProgressListener->CompletionDelegate = Electra::MakeDelegate(this, &FStreamHandler::HTTPCompletionCallback);
+			ProgressListener->ProgressDelegate   = IElectraHttpManager::FProgressListener::FProgressDelegate::CreateRaw(this, &FStreamHandler::HTTPProgressCallback);
+			ProgressListener->CompletionDelegate = IElectraHttpManager::FProgressListener::FCompletionDelegate::CreateRaw(this, &FStreamHandler::HTTPCompletionCallback);
 			ReadBuffer.Reset();
 			ReadBuffer.ReceiveBuffer = MakeSharedTS<IElectraHttpManager::FReceiveBuffer>();
 
@@ -569,15 +572,22 @@ FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult FStreamReaderHLSfmp4::F
 
 				TSharedPtrTS<IParserISO14496_12> InitSegmentParser = IParserISO14496_12::CreateParser();
 				UEMediaError parseError = InitSegmentParser->ParseHeader(this, this, PlayerSessionService, nullptr);
-				if (parseError == UEMEDIA_ERROR_OK || parseError == UEMEDIA_ERROR_END_OF_STREAM)
+				if (!bInvalidMP4)
 				{
-					// Parse the tracks of the init segment. We do this mainly to get to the CSD we might need should we have to insert filler data later.
-					parseError = InitSegmentParser->PrepareTracks(PlayerSessionService, TSharedPtrTS<const IParserISO14496_12>());
-					if (parseError == UEMEDIA_ERROR_OK)
+					if (parseError == UEMEDIA_ERROR_OK || parseError == UEMEDIA_ERROR_END_OF_STREAM)
 					{
-						Request->InitSegmentCache->AddInitSegment(InitSegmentParser, Request->InitSegmentInfo, FTimeValue::GetPositiveInfinity());
-						OutMP4InitSegment = InitSegmentParser;
-						return FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult::Ok;
+						// Parse the tracks of the init segment. We do this mainly to get to the CSD we might need should we have to insert filler data later.
+						parseError = InitSegmentParser->PrepareTracks(PlayerSessionService, TSharedPtrTS<const IParserISO14496_12>());
+						if (parseError == UEMEDIA_ERROR_OK)
+						{
+							Request->InitSegmentCache->AddInitSegment(InitSegmentParser, Request->InitSegmentInfo, FTimeValue::GetPositiveInfinity());
+							OutMP4InitSegment = InitSegmentParser;
+							return FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult::Ok;
+						}
+						else
+						{
+							return FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult::ParseError;
+						}
 					}
 					else
 					{
@@ -586,7 +596,7 @@ FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult FStreamReaderHLSfmp4::F
 				}
 				else
 				{
-					return FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult::ParseError;
+					return FStreamReaderHLSfmp4::FStreamHandler::EInitSegmentResult::InvalidFormat;
 				}
 			}
 			else
@@ -616,6 +626,9 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	//        to make sure the retry info is not modified.
 	TSharedPtrTS<HTTP::FRetryInfo> CurrentRetryInfo = CurrentRequest->ConnectionInfo.RetryInfo;
 
+	TSharedPtrTS<FBufferSourceInfo> SourceBufferInfo = MakeSharedTS<FBufferSourceInfo>(*Request->SourceBufferInfo);
+	SourceBufferInfo->PlaybackSequenceID = Request->GetPlaybackSequenceID();
+
 	Metrics::FSegmentDownloadStats& ds = CurrentRequest->DownloadStats;
 	ds.StatsID = FMediaInterlockedIncrement(UniqueDownloadID);
 
@@ -635,7 +648,6 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	ds.TimeToDownload      = 0.0;
 	ds.ByteSize 		   = -1;
 	ds.NumBytesDownloaded  = 0;
-	ds.ThroughputBps	   = 0;
 	ds.bInsertedFillerData = false;
 
 	ds.MediaAssetID 	= Request->MediaAsset.IsValid() ? Request->MediaAsset->GetUniqueIdentifier() : "";
@@ -644,7 +656,6 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	ds.URL  			= Request->URL;
 	ds.CDN  			= Request->CDN;
 	ds.RetryNumber  	= Request->NumOverallRetries;
-	ds.ABRState.Reset();
 
 	bIsEmptyFillerSegment = Request->bInsertFillerData;
 
@@ -657,6 +668,7 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	bAbortedByABR   	   = false;
 	bAllowEarlyEmitting    = false;
 	bFillRemainingDuration = false;
+	ABRAbortReason.Empty();
 	DurationSuccessfullyRead.SetToZero();
 	DurationSuccessfullyDelivered.SetToZero();
 	AccessUnitFIFO.Clear();
@@ -700,6 +712,8 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 		}
 	}
 
+	bParsingInitSegment = false;
+	bInvalidMP4 = false;
 	FTimeValue NextExpectedDTS;
 	FTimeValue LastKnownAUDuration;
 	if (!bIsEmptyFillerSegment)
@@ -797,14 +811,13 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 				ds.TimeToDownload      = 0.0;
 				ds.ByteSize 		   = -1;
 				ds.NumBytesDownloaded  = 0;
-				ds.ThroughputBps	   = 0;
 
 				// Clear out the current connection info which may now be populated with the init segment fetch results.
 				CurrentRequest->ConnectionInfo = {};
 
 				TSharedPtrTS<IElectraHttpManager::FProgressListener>	ProgressListener(new IElectraHttpManager::FProgressListener);
-				ProgressListener->ProgressDelegate   = Electra::MakeDelegate(this, &FStreamHandler::HTTPProgressCallback);
-				ProgressListener->CompletionDelegate = Electra::MakeDelegate(this, &FStreamHandler::HTTPCompletionCallback);
+				ProgressListener->ProgressDelegate   = IElectraHttpManager::FProgressListener::FProgressDelegate::CreateRaw(this, &FStreamHandler::HTTPProgressCallback);
+				ProgressListener->CompletionDelegate = IElectraHttpManager::FProgressListener::FCompletionDelegate::CreateRaw(this, &FStreamHandler::HTTPCompletionCallback);
 				TSharedPtrTS<IElectraHttpManager::FRequest> HTTP(new IElectraHttpManager::FRequest);
 				HTTP->Parameters.URL   = RequestURL;
 				HTTP->ReceiveBuffer    = ReadBuffer.ReceiveBuffer;
@@ -832,8 +845,11 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 				bool bIsFirstAU = true;
 				while(!bDone && !HasErrored() && !HasReadBeenAborted())
 				{
+					Metrics::FSegmentDownloadStats::FMovieChunkInfo MoofInfo;
+					MoofInfo.HeaderOffset = GetCurrentOffset();
+
 					UEMediaError parseError = MP4Parser->ParseHeader(this, this, PlayerSessionService, MP4InitSegment.Get());
-					if (parseError == UEMEDIA_ERROR_OK)
+					if (parseError == UEMEDIA_ERROR_OK && !bInvalidMP4)
 					{
 						{
 							SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_HLS_StreamReader);
@@ -916,14 +932,21 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 										AccessUnit->LatestPTS = Request->LastPTS;
 										AccessUnit->LatestPTS.SetSequenceIndex(Request->TimestampSequenceIndex);
 
-										AccessUnit->BufferSourceInfo = Request->SourceBufferInfo;
+										AccessUnit->BufferSourceInfo = SourceBufferInfo;
 
 										// There should not be any gaps!
 								// TODO: what if there are?
 										check(GetCurrentOffset() == TrackIterator->GetSampleFileOffset());
+
+										if (MoofInfo.PayloadStartOffset == 0)
+										{
+											MoofInfo.PayloadStartOffset = GetCurrentOffset();
+										}
+
 										int64 NumRead = ReadData(AccessUnit->AUData, AccessUnit->AUSize);
 										if (NumRead == AccessUnit->AUSize)
 										{
+											MoofInfo.ContentDuration += Duration;
 											DurationSuccessfullyRead += Duration;
 											NextExpectedDTS = AccessUnit->DTS + Duration;
 											LastKnownAUDuration = Duration;
@@ -991,6 +1014,14 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 									}
 									delete TrackIterator;
 
+									MoofInfo.PayloadEndOffset = LastSuccessfulFilePos;
+									/*
+										Not adding this at the moment since it is not needed. We are not gathering download timing traces to
+										make use of the moof chunks. Segments are expected to be downloaded in one fell swoop.
+
+									ds.MovieChunkInfos.Emplace(MoveTemp(MoofInfo));
+									*/
+
 									if (Error != UEMEDIA_ERROR_OK && Error != UEMEDIA_ERROR_END_OF_STREAM)
 									{
 										// error iterating
@@ -1034,7 +1065,14 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 						// failed to parse the segment (in general)
 						if (!HasReadBeenAborted())
 						{
-							LogMessage(IInfoLog::ELevel::Error, FString::Printf(TEXT("Failed to download segment \"%s\""), *Request->URL));
+							if (!bInvalidMP4)
+							{
+								LogMessage(IInfoLog::ELevel::Error, FString::Printf(TEXT("Failed to download segment \"%s\""), *Request->URL));
+							}
+							else
+							{
+								LogMessage(IInfoLog::ELevel::Error, FString::Printf(TEXT("Media segment \"%s\" is not a valid mp4"), *Request->URL));
+							}
 							bHasErrored = true;
 						}
 					}
@@ -1052,7 +1090,12 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 			{
 				// Init segment failed to download or parse.
 				CurrentRequest->ConnectionInfo.StatusInfo.ErrorDetail.SetFacility(Facility::EFacility::HLSFMP4Reader);
-				if (InitSegmentResult == EInitSegmentResult::ParseError)
+				if (InitSegmentResult == EInitSegmentResult::InvalidFormat)
+				{
+					CurrentRequest->ConnectionInfo.StatusInfo.ErrorDetail.SetMessage(TEXT("Init segment is not a valid mp4.")).SetCode(INTERNAL_ERROR_INIT_SEGMENT_UNSUPPORTED_FORMAT);
+					ds.bParseFailure  = true;
+				}
+				else if (InitSegmentResult == EInitSegmentResult::ParseError)
 				{
 					CurrentRequest->ConnectionInfo.StatusInfo.ErrorDetail.SetMessage(TEXT("Init segment parse error")).SetCode(INTERNAL_ERROR_INIT_SEGMENT_PARSE_ERROR);
 					ds.bParseFailure  = true;
@@ -1153,7 +1196,7 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 				AccessUnit->AUSize = 0;
 				AccessUnit->AUData = nullptr;
 				AccessUnit->bIsDummyData = true;
-				AccessUnit->BufferSourceInfo = Request->SourceBufferInfo;
+				AccessUnit->BufferSourceInfo = SourceBufferInfo;
 				if (CSD.IsValid() && CSD->CodecSpecificData.Num())
 				{
 					AccessUnit->AUCodecData = CSD;
@@ -1226,7 +1269,7 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	if (bAbortedByABR)
 	{
 		// If aborted set the reason as the download failure.
-		ds.FailureReason = ds.ABRState.ProgressDecision.Reason;
+		ds.FailureReason = ABRAbortReason;
 	}
 	ds.bWasAborted  	  = bAbortedByABR;
 	ds.bWasSuccessful     = !bHasErrored && !bAbortedByABR;
@@ -1238,12 +1281,8 @@ void FStreamReaderHLSfmp4::FStreamHandler::HandleRequest()
 	ds.TimeToDownload     = (CurrentRequest->ConnectionInfo.RequestEndTime - CurrentRequest->ConnectionInfo.RequestStartTime).GetAsSeconds();
 	ds.ByteSize 		  = CurrentRequest->ConnectionInfo.ContentLength;
 	ds.NumBytesDownloaded = CurrentRequest->ConnectionInfo.BytesReadSoFar;
-	ds.ThroughputBps	  = CurrentRequest->ConnectionInfo.Throughput.GetThroughput();
-	if (ds.ThroughputBps == 0)
-	{
-		ds.ThroughputBps = ds.TimeToDownload > 0.0 ? 8 * ds.NumBytesDownloaded / ds.TimeToDownload : 0;
-	}
-	ds.bIsCachedResponse = CurrentRequest->ConnectionInfo.bIsCachedResponse;
+	ds.bIsCachedResponse  = CurrentRequest->ConnectionInfo.bIsCachedResponse;
+	CurrentRequest->ConnectionInfo.GetTimingTraces(ds.TimingTraces);
 
 	if (!bSilentCancellation)
 	{
@@ -1286,7 +1325,7 @@ bool FStreamReaderHLSfmp4::FStreamHandler::HasErrored() const
  */
 int64 FStreamReaderHLSfmp4::FStreamHandler::ReadData(void* IntoBuffer, int64 NumBytesToRead)
 {
-	FPODRingbuffer& SourceBuffer = ReadBuffer.ReceiveBuffer->Buffer;
+	FWaitableBuffer& SourceBuffer = ReadBuffer.ReceiveBuffer->Buffer;
 	// Make sure the buffer will have the amount of data we need.
 	while(1)
 	{
@@ -1304,7 +1343,6 @@ int64 FStreamReaderHLSfmp4::FStreamHandler::ReadData(void* IntoBuffer, int64 Num
 
 				Metrics::FSegmentDownloadStats& ds = CurrentRequest->DownloadStats;
 				FABRDownloadProgressDecision StreamSelectorDecision = StreamSelector->ReportDownloadProgress(currentDownloadStats);
-				ds.ABRState.ProgressDecision = StreamSelectorDecision;
 				if ((StreamSelectorDecision.Flags & FABRDownloadProgressDecision::EDecisionFlags::eABR_EmitPartialData) != 0)
 				{
 					SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_HLS_StreamReader);
@@ -1339,6 +1377,7 @@ int64 FStreamReaderHLSfmp4::FStreamHandler::ReadData(void* IntoBuffer, int64 Num
 					{
 						bFillRemainingDuration = true;
 					}
+					ABRAbortReason = StreamSelectorDecision.Reason;
 					bAbortedByABR = true;
 					return -1;
 				}
@@ -1500,7 +1539,7 @@ int64 FStreamReaderHLSfmp4::FStreamHandler::ReadData(void* IntoBuffer, int64 Num
  */
 bool FStreamReaderHLSfmp4::FStreamHandler::HasReachedEOF() const
 {
-	const FPODRingbuffer& SourceBuffer = ReadBuffer.ReceiveBuffer->Buffer;
+	const FWaitableBuffer& SourceBuffer = ReadBuffer.ReceiveBuffer->Buffer;
 	return !HasErrored() && SourceBuffer.GetEOD() && (ReadBuffer.ParsePos >= SourceBuffer.Num() || ReadBuffer.ParsePos >= ReadBuffer.MaxParsePos);
 }
 
@@ -1529,6 +1568,34 @@ int64 FStreamReaderHLSfmp4::FStreamHandler::GetCurrentOffset() const
 
 IParserISO14496_12::IBoxCallback::EParseContinuation FStreamReaderHLSfmp4::FStreamHandler::OnFoundBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset)
 {
+	if (bParsingInitSegment)
+	{
+		// We require the very first box to be an 'ftyp' box.
+		if (FileDataOffset == 0 && Box != IParserISO14496_12::BoxType_ftyp)
+		{
+			bInvalidMP4 = true;
+			return IParserISO14496_12::IBoxCallback::EParseContinuation::Stop;
+		}
+	}
+	else
+	{
+		static const TArray<IParserISO14496_12::FBoxType> PermittedFirstBoxes =
+		{
+			IParserISO14496_12::BoxType_ftyp,
+			IParserISO14496_12::BoxType_styp,
+			IParserISO14496_12::BoxType_sidx,
+			IParserISO14496_12::BoxType_moov,
+			IParserISO14496_12::BoxType_moof,
+			IParserISO14496_12::BoxType_prft,
+			IParserISO14496_12::BoxType_free
+		};
+		if (FileDataOffset == 0 && !PermittedFirstBoxes.Contains(Box))
+		{
+			bInvalidMP4 = true;
+			return IParserISO14496_12::IBoxCallback::EParseContinuation::Stop;
+		}
+	}
+
 	// Check which box is being parsed next.
 	switch(Box)
 	{

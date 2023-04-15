@@ -2,9 +2,12 @@
 
 #include "SoundModulationParameterFactory.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerFilter.h"
 #include "SoundModulationParameter.h"
 #include "Kismet2/SClassPickerDialog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundModulationParameterFactory)
 
 
 class FAssetClassParentFilter : public IClassViewerFilter
@@ -71,6 +74,9 @@ UObject* USoundModulationParameterFactory::FactoryCreateNew(UClass* InClass, UOb
 	if (ParameterClass != nullptr)
 	{
 		NewParameter = NewObject<USoundModulationParameter>(InParent, ParameterClass, InName, Flags);
+
+		Audio::Analytics::RecordEvent_Usage(TEXT("AudioModulation.ModulationParameterCreated"));
 	}
+
 	return NewParameter;
 }

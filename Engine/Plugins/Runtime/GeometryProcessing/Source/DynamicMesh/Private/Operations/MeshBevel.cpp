@@ -17,6 +17,21 @@
 
 using namespace UE::Geometry;
 
+// Uncomment to enable various checks and ensures in the Bevel code.
+// We cannot default-enable these checks even in Debug builds, because 
+// Bevel still frequently hits some of these cases, and those checks/ensures 
+// make it very difficult to debug a game using Bevel in Geometry Script (eg Lyra sample)
+//#define ENABLE_MESH_BEVEL_DEBUG
+
+#ifdef ENABLE_MESH_BEVEL_DEBUG
+#define MESH_BEVEL_DEBUG_CHECK(Expr) checkSlow(Expr)
+#define MESH_BEVEL_DEBUG_ENSURE(Expr) ensure(Expr)
+#else
+#define MESH_BEVEL_DEBUG_CHECK(Expr) 
+#define MESH_BEVEL_DEBUG_ENSURE(Expr) (Expr)
+#endif
+
+
 namespace UELocal
 {
 	static void QuadsToTris(const FDynamicMesh3& Mesh, const TArray<FIndex2i>& Quads, TArray<int32>& TrisOut, bool bReset)
@@ -354,7 +369,7 @@ void FMeshBevel::BuildVertexSets(const FDynamicMesh3& Mesh)
 		}
 
 
-		checkSlow(Vertex.IncomingBevelMeshEdges.Num() != 0);		// shouldn't ever happen
+		MESH_BEVEL_DEBUG_CHECK(Vertex.IncomingBevelMeshEdges.Num() != 0);		// shouldn't ever happen
 		if (Vertex.IncomingBevelMeshEdges.Num() == 1)
 		{
 			BuildTerminatorVertex(Vertex, Mesh);
@@ -369,6 +384,39 @@ void FMeshBevel::BuildVertexSets(const FDynamicMesh3& Mesh)
 			return;
 		}
 	}
+
+	// At a 'Terminator' vertex we are going to split the one-ring and fill the bevel-side with a quad, which
+	// will usually leave a single-triangle hole. However if two Terminator vertices are directly connected
+	// via a non-bevel mesh edge, the two triangles will be connected, ie the hole is quad-shaped. It's easier
+	// to detect this case here /before/ we split the mesh up into disconnected parts...
+	for (FBevelVertex& Vertex : Vertices)
+	{
+		if (Vertex.VertexType == EBevelVertexType::TerminatorVertex)
+		{
+			int32 OtherVertexID = Vertex.TerminatorInfo.B;
+			int32* OtherBevelVtxIdx = VertexIDToIndexMap.Find(OtherVertexID);
+			if (OtherBevelVtxIdx != nullptr)
+			{
+				// does other vertex have to be a terminator? or can this also happen w/ a junction?
+				FBevelVertex& OtherVertex = Vertices[*OtherBevelVtxIdx];
+				if (OtherVertex.VertexType == EBevelVertexType::TerminatorVertex)
+				{
+					// want to skip this if the ring-split edge is already a bevel edge
+					int32 MeshEdgeID = Mesh.FindEdge(Vertex.VertexID, OtherVertex.VertexID);
+					MESH_BEVEL_DEBUG_CHECK(MeshEdgeID >= 0);
+					if (Mesh.IsEdge(MeshEdgeID) && 
+						Vertex.TerminatorInfo.A == MeshEdgeID &&
+						OtherVertex.TerminatorInfo.A == MeshEdgeID &&		// do we need the other vertex to use the same edge here?  (is this actually a hard constraint on that edge that we should be enforcing??)
+						Vertex.IncomingBevelMeshEdges.Contains(MeshEdgeID) == false )
+					{
+						Vertex.ConnectedBevelVertex = *OtherBevelVtxIdx;
+					}
+				}
+
+			}
+		}
+	}
+
 }
 
 
@@ -408,7 +456,7 @@ void FMeshBevel::BuildJunctionVertex(FBevelVertex& Vertex, const FDynamicMesh3& 
 		int32 CurTri = Vertex.SortedTriangles[CurTriIndex % NT];
 		int32 NextTri = Vertex.SortedTriangles[(CurTriIndex + 1) % NT];
 		int32 SharedEdge = FindSharedEdgeInTriangles(Mesh, CurTri, NextTri);
-		checkSlow(SharedEdge != -1);
+		MESH_BEVEL_DEBUG_CHECK(SharedEdge != -1);
 		if (Vertex.IncomingBevelMeshEdges.Contains(SharedEdge))
 		{
 			// if we found a bevel-edge, close the current wedge and start a new one
@@ -443,7 +491,7 @@ void FMeshBevel::BuildJunctionVertex(FBevelVertex& Vertex, const FDynamicMesh3& 
 void FMeshBevel::BuildTerminatorVertex(FBevelVertex& Vertex, const FDynamicMesh3& Mesh)
 {
 	Vertex.VertexType = EBevelVertexType::Unknown;
-	if (ensure(Vertex.IncomingBevelMeshEdges.Num() == 1) == false)
+	if (MESH_BEVEL_DEBUG_ENSURE(Vertex.IncomingBevelMeshEdges.Num() == 1) == false)
 	{
 		return;
 	}
@@ -465,12 +513,32 @@ void FMeshBevel::BuildTerminatorVertex(FBevelVertex& Vertex, const FDynamicMesh3
 	// in the "furthest" face (perpendicular to the edge)
 	FIndex2i IncomingEdgeT = Mesh.GetEdgeT(IncomingEdgeID);
 	FIndex2i IncomingEdgeGroups(Mesh.GetTriangleGroup(IncomingEdgeT.A), Mesh.GetTriangleGroup(IncomingEdgeT.B));
-	TArray<int32> VertexGroups;
-	Mesh.GetAllVertexGroups(Vertex.VertexID, VertexGroups);
+
+	// Find the first index of Vertex.SortedTriangles that we want to remove.
+	// This should not be able to fail but if it does, we will just start at 0 
+	// and maybe end up with some bevel failures below
+	int32 NumTriangles = Vertex.SortedTriangles.Num();
+	int32 StartIndex = 0;
+	for (int32 k = 0; k < NumTriangles; ++k)
+	{
+		int32 gid = Mesh.GetTriangleGroup(Vertex.SortedTriangles[k]);
+		if (IncomingEdgeGroups.Contains(gid))
+		{
+			StartIndex = k;
+			break;
+		}
+	}
+
 	TArray<int32> OtherGroupTris;	// sorted wedge of triangles that are not in either of the groups connected to incoming edge
 	TArray<int32> OtherGroups;		// list of group IDs encountered, in-order
-	for (int32 tid : Vertex.SortedTriangles)
+	for ( int32 k = 0; k < NumTriangles; ++k )
 	{
+		// Vertex.SortedTriangles was ordered, ie sequential triangles were connected, but if we filter
+		// out some triangles it may no longer be sequential in OtherGroupTris, leading to badness. 
+		// But the two groups we are removing should be contiguous, so if we start there, then the
+		// remaining tris should be contiguous. StartIndex found above should give us that triangle.
+		int32 ShiftedIndex = (StartIndex + k) % NumTriangles;
+		int32 tid = Vertex.SortedTriangles[ShiftedIndex];
 		int32 gid = Mesh.GetTriangleGroup(tid);
 		if (IncomingEdgeGroups.Contains(gid) == false)
 		{
@@ -478,6 +546,7 @@ void FMeshBevel::BuildTerminatorVertex(FBevelVertex& Vertex, const FDynamicMesh3
 			OtherGroups.AddUnique(gid);
 		}
 	}
+	int32 NumRemainingTris = OtherGroupTris.Num();
 
 	// Determine which edge to split at in the "other" group triangles. If we only have one group
 	// then we can try to pick the "middlest" edge. The worst case is when there is only one triangle,
@@ -506,18 +575,37 @@ void FMeshBevel::BuildTerminatorVertex(FBevelVertex& Vertex, const FDynamicMesh3
 		}
 		else
 		{
+			// try using the 'middlest' triangle as the 'middlest' edge
 			// TODO: should compute opening angles here and pick the edge closest to the middle of the angular span!!
 			int32 j = OtherGroupTris.Num() / 2;
 			RingSplitEdgeID = FindSharedEdgeInTriangles(Mesh, OtherGroupTris[j], OtherGroupTris[j+1]);
+
+			// If the OtherGroupTris list ended up being not contiguous (see above for how that can happen), then
+			// it's possible that (j) and (j+1) are not connected and the share-edge search will fail. In that case
+			// we will just linear-search for two connected triangles. If this fails then this vertex will not be bevelled.
+			if (RingSplitEdgeID == -1)
+			{
+				for (int32 k = 0; k < NumRemainingTris; ++k)
+				{
+					RingSplitEdgeID = FindSharedEdgeInTriangles(Mesh, OtherGroupTris[k], OtherGroupTris[(k+1)%NumRemainingTris]);
+					if (RingSplitEdgeID != -1)
+					{
+						break;
+					}
+				}
+			}
 		}
 	}
 	else
 	{
-		for (int32 k = 1; k < OtherGroupTris.Num(); ++k)
+		// Search for two adjacent triangles in different groups that have a shared edge. This search
+		// may need to wrap around if we got unlucky in the triangle ordering in OtherGroupTris
+		for (int32 k = 0; k < OtherGroupTris.Num(); ++k)
 		{
-			if (Mesh.GetTriangleGroup(OtherGroupTris[k-1]) != Mesh.GetTriangleGroup(OtherGroupTris[k]))
+			int32 TriangleA = OtherGroupTris[k], TriangleB = OtherGroupTris[(k+1)%NumRemainingTris];
+			if (Mesh.GetTriangleGroup(TriangleA) != Mesh.GetTriangleGroup(TriangleB))
 			{
-				RingSplitEdgeID = FindSharedEdgeInTriangles(Mesh, OtherGroupTris[k-1], OtherGroupTris[k]);
+				RingSplitEdgeID = FindSharedEdgeInTriangles(Mesh, TriangleA, TriangleB);
 				Vertex.NewGroupID = -1;		// allocate a new group for this triangle, this is usually what one would want
 				break;
 			}
@@ -697,7 +785,7 @@ void FMeshBevel::UnlinkBevelEdgeInterior(
 		{
 			FDynamicMesh3::FVertexSplitInfo SplitInfo;
 			EMeshResult Result = Mesh.SplitVertex(Split.VertexID, Split.TriSets[0], SplitInfo);
-			if (ensure(Result == EMeshResult::Ok))
+			if (MESH_BEVEL_DEBUG_ENSURE(Result == EMeshResult::Ok))
 			{
 				BevelEdge.NewMeshVertices.Add(SplitInfo.NewVertex);
 				bDone = true;
@@ -711,13 +799,13 @@ void FMeshBevel::UnlinkBevelEdgeInterior(
 
 	// now build edge correspondences
 	N = BevelEdge.MeshVertices.Num();
-	checkSlow(N == BevelEdge.NewMeshVertices.Num());
+	MESH_BEVEL_DEBUG_CHECK(N == BevelEdge.NewMeshVertices.Num());
 	for (int32 k = 0; k < N-1; ++k)
 	{
 		int32 Edge0 = BevelEdge.MeshEdges[k];
 		int32 Edge1 = Mesh.FindEdge(BevelEdge.NewMeshVertices[k], BevelEdge.NewMeshVertices[k + 1]);
 		BevelEdge.NewMeshEdges.Add(Edge1);
-		checkSlow(Edge1 >= 0);
+		MESH_BEVEL_DEBUG_CHECK(Edge1 >= 0);
 		if ( Mesh.IsEdge(Edge1) && Edge0 != Edge1 && MeshEdgePairs.Contains(Edge0) == false )
 		{
 			MeshEdgePairs.Add(Edge0, Edge1);
@@ -772,7 +860,7 @@ void FMeshBevel::UnlinkBevelLoop(FDynamicMesh3& Mesh, FBevelLoop& BevelLoop, FDy
 		{
 			FDynamicMesh3::FVertexSplitInfo SplitInfo;
 			EMeshResult Result = Mesh.SplitVertex(Split.VertexID, Split.TriSets[1], SplitInfo);
-			if (Result == EMeshResult::Ok)
+			if (MESH_BEVEL_DEBUG_ENSURE(Result == EMeshResult::Ok))
 			{
 				BevelLoop.NewMeshVertices.Add(SplitInfo.NewVertex);
 				bDone = true;
@@ -786,13 +874,13 @@ void FMeshBevel::UnlinkBevelLoop(FDynamicMesh3& Mesh, FBevelLoop& BevelLoop, FDy
 
 	// now build edge correspondences
 	N = BevelLoop.MeshVertices.Num();
-	checkSlow(N == BevelLoop.NewMeshVertices.Num());
+	MESH_BEVEL_DEBUG_CHECK(N == BevelLoop.NewMeshVertices.Num());
 	for (int32 k = 0; k < N; ++k)
 	{
 		int32 Edge0 = BevelLoop.MeshEdges[k];
 		int32 Edge1 = Mesh.FindEdge(BevelLoop.NewMeshVertices[k], BevelLoop.NewMeshVertices[(k + 1)%N]);
 		BevelLoop.NewMeshEdges.Add(Edge1);
-		checkSlow(Edge1 >= 0);
+		MESH_BEVEL_DEBUG_CHECK(Edge1 >= 0);
 		if (Mesh.IsEdge(Edge1) && Edge0 != Edge1 && MeshEdgePairs.Contains(Edge0) == false )
 		{
 			MeshEdgePairs.Add(Edge0, Edge1);
@@ -837,7 +925,7 @@ void FMeshBevel::UnlinkVertices(FDynamicMesh3& Mesh, FDynamicMeshChangeTracker* 
 
 void FMeshBevel::UnlinkJunctionVertex(FDynamicMesh3& Mesh, FBevelVertex& Vertex, FDynamicMeshChangeTracker* ChangeTracker)
 {
-	check(Vertex.VertexType == EBevelVertexType::JunctionVertex);
+	MESH_BEVEL_DEBUG_CHECK(Vertex.VertexType == EBevelVertexType::JunctionVertex);
 
 	if (ChangeTracker)
 	{
@@ -845,7 +933,7 @@ void FMeshBevel::UnlinkJunctionVertex(FDynamicMesh3& Mesh, FBevelVertex& Vertex,
 	}
 
 	int32 NumWedges = Vertex.Wedges.Num();
-	checkSlow(NumWedges > 1);
+	MESH_BEVEL_DEBUG_CHECK(NumWedges > 1);
 
 	// Split triangles around vertex into separate tri-sets based on wedges.
 	// This will create a new vertex for each wedge.
@@ -855,7 +943,7 @@ void FMeshBevel::UnlinkJunctionVertex(FDynamicMesh3& Mesh, FBevelVertex& Vertex,
 
 		FDynamicMesh3::FVertexSplitInfo SplitInfo;
 		EMeshResult Result = Mesh.SplitVertex(Vertex.VertexID, Wedge.Triangles, SplitInfo);
-		if (Result == EMeshResult::Ok)
+		if (MESH_BEVEL_DEBUG_ENSURE(Result == EMeshResult::Ok))
 		{
 			Wedge.WedgeVertex = SplitInfo.NewVertex;
 		}
@@ -891,8 +979,8 @@ void FMeshBevel::UnlinkJunctionVertex(FDynamicMesh3& Mesh, FBevelVertex& Vertex,
 
 void FMeshBevel::UnlinkTerminatorVertex(FDynamicMesh3& Mesh, FBevelVertex& BevelVertex, FDynamicMeshChangeTracker* ChangeTracker)
 {
-	check(BevelVertex.VertexType == EBevelVertexType::TerminatorVertex);
-	ensure(BevelVertex.Wedges.Num() == 2);
+	MESH_BEVEL_DEBUG_CHECK(BevelVertex.VertexType == EBevelVertexType::TerminatorVertex);
+	MESH_BEVEL_DEBUG_CHECK(BevelVertex.Wedges.Num() == 2);
 
 	if (ChangeTracker)
 	{
@@ -902,7 +990,7 @@ void FMeshBevel::UnlinkTerminatorVertex(FDynamicMesh3& Mesh, FBevelVertex& Bevel
 	// split the vertex
 	FDynamicMesh3::FVertexSplitInfo SplitInfo;
 	EMeshResult Result = Mesh.SplitVertex(BevelVertex.VertexID, BevelVertex.Wedges[1].Triangles, SplitInfo);
-	if (Result == EMeshResult::Ok)
+	if (MESH_BEVEL_DEBUG_ENSURE(Result == EMeshResult::Ok))
 	{
 		BevelVertex.Wedges[1].WedgeVertex = SplitInfo.NewVertex;
 
@@ -949,7 +1037,7 @@ void FMeshBevel::FixUpUnlinkedBevelEdges(FDynamicMesh3& Mesh)
 		if (Edge.MeshEdges.Num() == 1)
 		{
 			int32* FoundOtherEdge = MeshEdgePairs.Find(Edge.MeshEdges[0]);
-			ensure(FoundOtherEdge != nullptr);
+			MESH_BEVEL_DEBUG_CHECK(FoundOtherEdge != nullptr);
 			if (FoundOtherEdge != nullptr)
 			{
 				Edge.NewMeshEdges[0] = *FoundOtherEdge;
@@ -977,14 +1065,14 @@ void FMeshBevel::FixUpUnlinkedBevelEdges(FDynamicMesh3& Mesh)
 					FIndex3i TriEdges = Mesh.GetTriEdges(tid);
 					if (TriEdges.Contains(E0) && bFoundV0 == false)
 					{
-						checkSlow( Mesh.GetEdgeV(E0).Contains(Wedge.WedgeVertex) );
+						MESH_BEVEL_DEBUG_CHECK( Mesh.GetEdgeV(E0).Contains(Wedge.WedgeVertex) );
 						V0 = Wedge.WedgeVertex;
 						bFoundV0 = true;
 						break;
 					}
 					else if (TriEdges.Contains(E1) && bFoundV1 == false)
 					{
-						checkSlow( Mesh.GetEdgeV(E1).Contains(Wedge.WedgeVertex) );
+						MESH_BEVEL_DEBUG_CHECK( Mesh.GetEdgeV(E1).Contains(Wedge.WedgeVertex) );
 						V1 = Wedge.WedgeVertex;
 						bFoundV1 = true;
 						break;
@@ -1146,7 +1234,7 @@ void FMeshBevel::DisplaceVertices(FDynamicMesh3& Mesh, double Distance)
 
 void FMeshBevel::AppendJunctionVertexPolygon(FDynamicMesh3& Mesh, FBevelVertex& Vertex)
 {
-	check(Vertex.VertexType == EBevelVertexType::JunctionVertex);
+	MESH_BEVEL_DEBUG_CHECK(Vertex.VertexType == EBevelVertexType::JunctionVertex);
 
 	// UnlinkJunctionVertex() split the terminator vertex into N vertices, one for each
 	// (now disconnected) triangle-wedge. The wedges are ordered such that their wedge-vertices
@@ -1177,7 +1265,7 @@ void FMeshBevel::AppendJunctionVertexPolygon(FDynamicMesh3& Mesh, FBevelVertex& 
 
 void FMeshBevel::AppendTerminatorVertexTriangle(FDynamicMesh3& Mesh, FBevelVertex& Vertex)
 {
-	check(Vertex.VertexType == EBevelVertexType::TerminatorVertex);
+	MESH_BEVEL_DEBUG_CHECK(Vertex.VertexType == EBevelVertexType::TerminatorVertex);
 
 	// UnlinkTerminatorVertex() opened up a triangle-shaped hole adjacent to the incoming edge quad-strip
 	// at the terminator vertex. The Wedges of the terminator vertex contain the vertex IDs of the two
@@ -1203,7 +1291,57 @@ void FMeshBevel::AppendTerminatorVertexTriangle(FDynamicMesh3& Mesh, FBevelVerte
 			{
 				Vertex.NewTriangles.Add(tid);
 			}
+			else
+			{
+				MESH_BEVEL_DEBUG_CHECK(false);
+			}
 		}
+		else
+		{
+			MESH_BEVEL_DEBUG_CHECK(false);
+		}
+	}
+}
+
+
+
+void FMeshBevel::AppendTerminatorVertexPairQuad(FDynamicMesh3& Mesh, FBevelVertex& Vertex0, FBevelVertex& Vertex1)
+{
+	MESH_BEVEL_DEBUG_CHECK(Vertex0.VertexType == EBevelVertexType::TerminatorVertex);
+	MESH_BEVEL_DEBUG_CHECK(Vertex1.VertexType == EBevelVertexType::TerminatorVertex);
+
+	// This is a variant of AppendTerminatorVertexTriangle that handles the case where basically two
+	// Terminator Vertices are directly connected by a non-beveled mesh edge that was used as the ring-split-edge.
+	// Since both sides were opened, we have a quad-shaped hole instead of a triangle-shaped hole, with a quad-edge
+	// at each end. The quad can be filled directly, we just need to sort out ordering/etc
+
+	// does not seem like we need to do anything w/ the TerminatorInfo here, we can get everything from wedges
+	int32 QuadEdgeID0 = Mesh.FindEdge(Vertex0.Wedges[0].WedgeVertex, Vertex0.Wedges[1].WedgeVertex);
+	int32 QuadEdgeID1 = Mesh.FindEdge(Vertex1.Wedges[0].WedgeVertex, Vertex1.Wedges[1].WedgeVertex);
+	MESH_BEVEL_DEBUG_CHECK(Mesh.IsEdge(QuadEdgeID0) && Mesh.IsEdge(QuadEdgeID1));
+	FIndex2i QuadEdgeV0 = Mesh.GetOrientedBoundaryEdgeV(QuadEdgeID0);
+	FIndex2i QuadEdgeV1 = Mesh.GetOrientedBoundaryEdgeV(QuadEdgeID1);
+
+	// make sure that the two opposing/connecting edges exist
+	MESH_BEVEL_DEBUG_CHECK(
+		Mesh.FindEdge(QuadEdgeV0.A, QuadEdgeV1.B) != IndexConstants::InvalidID &&
+		Mesh.FindEdge(QuadEdgeV0.B, QuadEdgeV1.A) != IndexConstants::InvalidID);
+
+	// BIASED? should have computed this GroupID in initial setup
+	int32 UseGroupID = (Vertex0.NewGroupID >= 0) ? Vertex0.NewGroupID : Mesh.AllocateTriangleGroup();
+
+	// quad order is V0.B, V0.A, V1.B, V1.A
+	int32 tid0 = Mesh.AppendTriangle(QuadEdgeV0.B, QuadEdgeV0.A, QuadEdgeV1.B, UseGroupID);
+	MESH_BEVEL_DEBUG_CHECK(tid0 >= 0);
+	if (Mesh.IsTriangle(tid0))
+	{
+		Vertex0.NewTriangles.Add(tid0);
+	}
+	int32 tid1 = Mesh.AppendTriangle(QuadEdgeV0.B, QuadEdgeV1.B, QuadEdgeV1.A, UseGroupID);
+	MESH_BEVEL_DEBUG_CHECK(tid1 >= 0);
+	if (Mesh.IsTriangle(tid1))
+	{
+		Vertex1.NewTriangles.Add(tid1);
 	}
 }
 
@@ -1244,8 +1382,21 @@ void FMeshBevel::AppendEdgeQuads(FDynamicMesh3& Mesh, FBevelEdge& Edge)
 		{
 			FIndex2i EdgeV0 = Mesh.GetOrientedBoundaryEdgeV(EdgeID0);
 			FIndex2i EdgeV1 = Mesh.GetOrientedBoundaryEdgeV(EdgeID1);
-			QuadTris.A = Mesh.AppendTriangle(EdgeV0.B, EdgeV0.A, EdgeV1.B, Edge.NewGroupID);
-			QuadTris.B = Mesh.AppendTriangle(EdgeV1.B, EdgeV1.A, EdgeV0.B, Edge.NewGroupID);
+			if (EdgeV0.Contains(EdgeV1.A) || EdgeV0.Contains(EdgeV1.B))
+			{
+				// If we hit this case, it means that Edge0 and Edge1 are still connected at one end, and
+				// so cannot be connected by a Quad, they can only be connected by a single triangle.
+				// It is unclear how we end up in this situation, it does occur somewhat regularly in complex
+				// geometry scripts though (eg see UE-157531 for a potential repro).
+				int32 OtherV = EdgeV0.Contains(EdgeV1.A) ? EdgeV1.B : EdgeV1.A;
+				QuadTris.A = Mesh.AppendTriangle(EdgeV0.B, EdgeV0.A, OtherV, Edge.NewGroupID);
+				QuadTris.B = IndexConstants::InvalidID;
+			}
+			else
+			{
+				QuadTris.A = Mesh.AppendTriangle(EdgeV0.B, EdgeV0.A, EdgeV1.B, Edge.NewGroupID);
+				QuadTris.B = Mesh.AppendTriangle(EdgeV1.B, EdgeV1.A, EdgeV0.B, Edge.NewGroupID);
+			}
 		}
 		Edge.StripQuads.Add(QuadTris);
 	}
@@ -1329,12 +1480,27 @@ void FMeshBevel::CreateBevelMeshing(FDynamicMesh3& Mesh)
 		AppendLoopQuads(Mesh, Loop);
 	}
 
-	// easier to do these last so that we can use quad edge to orient the triangle
+	// easier to do terminators last so that we can use quad edge to orient the triangle
+	TSet<FIndex2i> HandledQuadVtxPairs;
 	for (FBevelVertex& Vertex : Vertices)
 	{
 		if (Vertex.VertexType == EBevelVertexType::TerminatorVertex)
 		{
-			AppendTerminatorVertexTriangle(Mesh, Vertex);
+			if (Vertex.ConnectedBevelVertex >= 0)
+			{
+				FBevelVertex& OtherVertex = Vertices[Vertex.ConnectedBevelVertex];
+				FIndex2i VtxPair(Vertex.VertexID, OtherVertex.VertexID);
+				VtxPair.Sort();
+				if (HandledQuadVtxPairs.Contains(VtxPair) == false)
+				{
+					AppendTerminatorVertexPairQuad(Mesh, Vertex, OtherVertex);
+					HandledQuadVtxPairs.Add(VtxPair);
+				}
+			}
+			else
+			{
+				AppendTerminatorVertexTriangle(Mesh, Vertex);
+			}
 		}
 	}
 }

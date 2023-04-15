@@ -10,8 +10,8 @@ DECLARE_CYCLE_STAT(TEXT("Chaos XPBD Long Range Constraint"), STAT_XPBD_LongRange
 namespace Chaos::Softs
 {
 
-// Stiffness is in N/CM^2, so it needs to be adjusted from the PBD stiffness ranging between [0,1]
-static const double XPBDLongRangeMaxCompliance = 1.e-3;
+static const FSolverReal XPBDLongRangeMinStiffness = (FSolverReal)1e-1;
+static const FSolverReal XPBDLongRangeMaxStiffness = (FSolverReal)1e7;
 
 class FXPBDLongRangeConstraints final : public FPBDLongRangeConstraintsBase
 {
@@ -30,7 +30,7 @@ public:
 		const FSolverVec2& InScale = FSolverVec2::UnitVector)
 	    : FPBDLongRangeConstraintsBase(Particles, InParticleOffset, InParticleCount, InTethers, StiffnessMultipliers, ScaleMultipliers, InStiffness, InScale)
 	{
-		int32 NumTethers = 0;
+		NumTethers = 0;
 		for (const TConstArrayView<FTether>& TetherBatch : Tethers)
 		{
 			NumTethers += TetherBatch.Num();
@@ -40,10 +40,13 @@ public:
 
 	virtual ~FXPBDLongRangeConstraints() override {}
 
+	// Set stiffness offset and range, as well as the simulation stiffness exponent
+	void ApplyProperties(const FSolverReal Dt, const int32 NumIterations) { Stiffness.ApplyXPBDValues(XPBDLongRangeMaxStiffness); ApplyScale(); }
+
 	void Init() const
 	{
 		Lambdas.Reset();
-		Lambdas.AddZeroed(Tethers.Num());
+		Lambdas.AddZeroed(NumTethers);
 	}
 
 	void Apply(FSolverParticles& Particles, const FSolverReal Dt) const 
@@ -126,12 +129,16 @@ public:
 private:
 	void Apply(FSolverParticles& Particles, const FSolverReal Dt, const FTether& Tether, int32 ConstraintIndex, const FSolverReal InStiffness, const FSolverReal InScale) const
 	{
+		if (InStiffness < XPBDLongRangeMinStiffness)
+		{
+			return;
+		}
 		FSolverVec3 Direction;
 		FSolverReal Offset;
 		GetDelta(Particles, Tether, InScale, Direction, Offset);
 
 		FSolverReal& Lambda = Lambdas[ConstraintIndex];
-		const FSolverReal Alpha = (FSolverReal)XPBDLongRangeMaxCompliance / (InStiffness * Dt * Dt);
+		const FSolverReal Alpha = (FSolverReal)1 / (InStiffness * Dt * Dt);
 
 		const FSolverReal DLambda = (Offset - Alpha * Lambda) / ((FSolverReal)1. + Alpha);
 		Particles.P(GetEndParticle(Tether)) += DLambda * Direction;
@@ -146,6 +153,7 @@ private:
 	using Base::ScaleIndices;
 
 	mutable TArray<FSolverReal> Lambdas;
+	int32 NumTethers;
 };
 
 }  // End namespace Chaos::Softs

@@ -5,6 +5,9 @@
 #include "CoreMinimal.h"
 #include "Misc/IQueuedWork.h"
 #include "ISourceControlProvider.h"
+#include "IPlasticSourceControlWorker.h"
+
+#include "PlasticSourceControlChangelist.h"
 
 /**
  * Used to execute Plastic commands multi-threaded.
@@ -12,8 +15,7 @@
 class FPlasticSourceControlCommand : public IQueuedWork
 {
 public:
-
-	FPlasticSourceControlCommand(const TSharedRef<class ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TSharedRef<class IPlasticSourceControlWorker, ESPMode::ThreadSafe>& InWorker, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+	FPlasticSourceControlCommand(const FSourceControlOperationRef& InOperation, const FPlasticSourceControlWorkerRef& InWorker, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
 
 	/**
 	 * This is where the real thread work is done. All work that is done for
@@ -40,10 +42,10 @@ public:
 	FString PathToWorkspaceRoot;
 
 	/** Operation we want to perform - contains outward-facing parameters & results */
-	TSharedRef<class ISourceControlOperation, ESPMode::ThreadSafe> Operation;
+	FSourceControlOperationRef Operation;
 
 	/** The object that will actually do the work */
-	TSharedRef<class IPlasticSourceControlWorker, ESPMode::ThreadSafe> Worker;
+	FPlasticSourceControlWorkerRef Worker;
 
 	/** Delegate to notify when this operation completes */
 	FSourceControlOperationComplete OperationCompleteDelegate;
@@ -78,12 +80,18 @@ public:
 	/** Whether we are running multi-treaded in the background, or blocking the main thread */
 	EConcurrency::Type Concurrency;
 
-	/** Files to perform this operation on */
-	TArray< FString > Files;
+	/** Timestamp of when the command was issued */
+	const double StartTimestamp;
 
-	/**Info and/or warning message message storage*/
-	TArray< FString > InfoMessages;
+	/** Files to perform this operation on */
+	TArray<FString> Files;
+
+	/** Changelist to perform this operation on */
+	FPlasticSourceControlChangelist Changelist;
+
+	/**Info and/or warning message storage*/
+	TArray<FString> InfoMessages;
 
 	/**Potential error message storage*/
-	TArray< FString > ErrorMessages;
+	TArray<FString> ErrorMessages;
 };

@@ -4,8 +4,16 @@
 
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainersFwd.h"
+#include "HAL/Platform.h"
+#include "Math/NumericLimits.h"
+#include "Memory/MemoryFwd.h"
 #include "Memory/MemoryView.h"
 #include "Memory/SharedBuffer.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+
 #include <type_traits>
 
 template <typename FuncType> class TFunctionRef;
@@ -108,6 +116,9 @@ public:
 		TFunctionRef<void (FMemoryView View)> Visitor) const;
 	CORE_API void IterateRange(uint64 Offset, uint64 Size,
 		TFunctionRef<void (FMemoryView View, const FSharedBuffer& ViewOuter)> Visitor) const;
+
+	/** Returns true if the bytes of this buffer are equal to the bytes of the other buffer. */
+	[[nodiscard]] CORE_API bool EqualBytes(const FCompositeBuffer& Other) const;
 
 	/** A null composite buffer. */
 	static const FCompositeBuffer Null;

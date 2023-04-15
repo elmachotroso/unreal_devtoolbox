@@ -2,14 +2,16 @@
 
 #include "Systems/MovieScenePredictionSystem.h"
 #include "Systems/MovieSceneEventSystems.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
+#include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
 #include "Systems/FloatChannelEvaluatorSystem.h"
 
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneInitialValueCache.h"
+#include "EntitySystem/MovieSceneEntitySystemRunner.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 
 #include "Sections/MovieScene3DTransformSection.h"
+#include "MovieSceneCommonHelpers.h"
 #include "MovieSceneTracksComponentTypes.h"
 #include "MovieSceneSequence.h"
 #include "MovieSceneSequencePlayer.h"
@@ -22,6 +24,8 @@
 
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScenePredictionSystem)
 
 DECLARE_CYCLE_STAT(TEXT("Prediction Initialization"), MovieSceneEval_PredictionIntialization, STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("Prediction Finalization"),   MovieSceneEval_PredictionFinalization,  STATGROUP_MovieSceneECS);
@@ -180,6 +184,11 @@ int32 UMovieSceneAsyncAction_SequencePrediction::ImportTransformEntities(UMovieS
 	{
 		UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(InQuery.Entity.Key.EntityOwner.Get());
 		if (TransformSection == nullptr)
+		{
+			return true;
+		}
+
+		if (!MovieSceneHelpers::IsSectionKeyable(TransformSection))
 		{
 			return true;
 		}
@@ -381,7 +390,7 @@ UMovieScenePredictionSystem::UMovieScenePredictionSystem(const FObjectInitialize
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		DefineImplicitPrerequisite(UMovieScenePiecewiseFloatBlenderSystem::StaticClass(), GetClass());
+		DefineImplicitPrerequisite(UMovieScenePiecewiseDoubleBlenderSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UFloatChannelEvaluatorSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UMovieScenePostEvalEventSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UMovieSceneInterrogatedPropertyInstantiatorSystem::StaticClass(), GetClass());

@@ -9,8 +9,11 @@
 
 #include "EntitySystem/MovieSceneEvalTimeSystem.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "MovieSceneTracksComponentTypes.h"
 
 #include "Algo/Find.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FloatChannelEvaluatorSystem)
 
 DECLARE_CYCLE_STAT(TEXT("MovieScene: Float channel system"), MovieSceneEval_FloatChannelSystem, STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("MovieScene: Gather float channels"), MovieSceneEval_GatherFloatChannelTask, STATGROUP_MovieSceneECS);
@@ -25,17 +28,19 @@ namespace MovieScene
 // Do we need to optimize for this case using something like the code below, while pessimizing the common (non-multi-bind) codepath??
 struct FEvaluateFloatChannels
 {
-	void ForEachEntity(FSourceFloatChannel FloatChannel, FFrameTime FrameTime, float& OutResult, FSourceFloatChannelFlags& OutFlags)
+	void ForEachEntity(FSourceFloatChannel FloatChannel, FFrameTime FrameTime, double& OutResult, FSourceFloatChannelFlags& OutFlags)
 	{
 		if (OutFlags.bNeedsEvaluate == false)
 		{
 			return;
 		}
 
-		if (!FloatChannel.Source->Evaluate(FrameTime, OutResult))
+		float FloatResult = 0.f;
+		if (!FloatChannel.Source->Evaluate(FrameTime, FloatResult))
 		{
-			OutResult = MIN_flt;
+			FloatResult = MIN_flt;
 		}
+		OutResult = (double)FloatResult;
 
 		if (FloatChannel.Source->GetTimes().Num() <= 1)
 		{
@@ -56,6 +61,8 @@ UFloatChannelEvaluatorSystem::UFloatChannelEvaluatorSystem(const FObjectInitiali
 {
 	using namespace UE::MovieScene;
 
+	SystemCategories = EEntitySystemCategory::ChannelEvaluators;
+
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineImplicitPrerequisite(UMovieSceneEvalTimeSystem::StaticClass(), GetClass());
@@ -64,13 +71,13 @@ UFloatChannelEvaluatorSystem::UFloatChannelEvaluatorSystem(const FObjectInitiali
 
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Components->FloatChannel); ++Index)
 		{
-			RegisterChannelType(Components->FloatChannel[Index], Components->FloatChannelFlags[Index], Components->FloatResult[Index]);
+			RegisterChannelType(Components->FloatChannel[Index], Components->FloatChannelFlags[Index], Components->DoubleResult[Index]);
 		}
 		RegisterChannelType(Components->WeightChannel, Components->WeightChannelFlags, Components->WeightResult);
 	}
 }
 
-void UFloatChannelEvaluatorSystem::RegisterChannelType(TComponentTypeID<UE::MovieScene::FSourceFloatChannel> SourceChannelType, TComponentTypeID<UE::MovieScene::FSourceFloatChannelFlags> ChannelFlagsType, TComponentTypeID<float> ResultType)
+void UFloatChannelEvaluatorSystem::RegisterChannelType(TComponentTypeID<UE::MovieScene::FSourceFloatChannel> SourceChannelType, TComponentTypeID<UE::MovieScene::FSourceFloatChannelFlags> ChannelFlagsType, TComponentTypeID<double> ResultType)
 {
 	using namespace UE::MovieScene;
 
@@ -118,3 +125,4 @@ void UFloatChannelEvaluatorSystem::OnRun(FSystemTaskPrerequisites& InPrerequisit
 		.Dispatch_PerEntity<FEvaluateFloatChannels>(&Linker->EntityManager, InPrerequisites, &Subsequents);
 	}
 }
+

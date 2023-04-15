@@ -12,6 +12,8 @@
 #include "AudioDeviceManager.h"
 #include "AudioDevice.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioEffect)
+
 #define ENABLE_REVERB_SETTINGS_PRINTING 0
 
 /** 
@@ -503,19 +505,19 @@ static bool operator==(const FAudioReverbEffect& EffectA, const FAudioReverbEffe
 {
 	bool bIsEqual = true;
 
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Volume, EffectB.Volume, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Density, EffectB.Density, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Diffusion, EffectB.Diffusion, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Gain, EffectB.Gain, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.GainHF, EffectB.GainHF, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.DecayTime, EffectB.DecayTime, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.DecayHFRatio, EffectB.DecayHFRatio, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.ReflectionsGain, EffectB.ReflectionsGain, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.ReflectionsDelay, EffectB.ReflectionsDelay, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.LateGain, EffectB.LateGain, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.LateDelay, EffectB.LateDelay, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.AirAbsorptionGainHF, EffectB.AirAbsorptionGainHF, KINDA_SMALL_NUMBER);
-	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.RoomRolloffFactor, EffectB.RoomRolloffFactor, KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Volume, EffectB.Volume, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Density, EffectB.Density, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Diffusion, EffectB.Diffusion, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.Gain, EffectB.Gain, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.GainHF, EffectB.GainHF, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.DecayTime, EffectB.DecayTime, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.DecayHFRatio, EffectB.DecayHFRatio, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.ReflectionsGain, EffectB.ReflectionsGain, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.ReflectionsDelay, EffectB.ReflectionsDelay, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.LateGain, EffectB.LateGain, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.LateDelay, EffectB.LateDelay, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.AirAbsorptionGainHF, EffectB.AirAbsorptionGainHF, UE_KINDA_SMALL_NUMBER);
+	bIsEqual = bIsEqual && FMath::IsNearlyEqual(EffectA.RoomRolloffFactor, EffectB.RoomRolloffFactor, UE_KINDA_SMALL_NUMBER);
 
 	return bIsEqual;
 }
@@ -574,3 +576,4 @@ void FAudioEffectsManager::Update()
 }
 
 // end 
+

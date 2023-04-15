@@ -12,10 +12,12 @@
 #include "Serialization/JsonTypes.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "String/LexFromString.h"
 #include "Modules/ModuleManager.h"
 #include "DesktopPlatformPrivate.h"
 #include "Misc/OutputDeviceRedirector.h"
-
+#include "Misc/ScopedSlowTask.h"
+#include "Misc/SecureHash.h"
 
 #define LOCTEXT_NAMESPACE "DesktopPlatform"
 
@@ -151,7 +153,7 @@ bool FDesktopPlatformBase::GetEngineIdentifierFromRootDir(const FString &RootDir
 	}
 
 	// Otherwise just try to add it
-	return RegisterEngineInstallation(RootDir, OutIdentifier);
+	return RegisterEngineInstallation(NormalizedRootDir, OutIdentifier);
 }
 
 bool FDesktopPlatformBase::GetDefaultEngineIdentifier(FString &OutId)
@@ -235,7 +237,7 @@ bool FDesktopPlatformBase::TryGetEngineVersion(const FString& RootDir, FEngineVe
 				}
 
 				int EncodedChangelist = (IsLicenseeVersion == 0)? Changelist : FEngineVersionBase::EncodeLicenseeChangelist(Changelist);
-				OutVersion = FEngineVersion(MajorVersion, MinorVersion, PatchVersion, EncodedChangelist, BranchName);
+				OutVersion = FEngineVersion(IntCastChecked<uint16>(MajorVersion), IntCastChecked<uint16>(MinorVersion), IntCastChecked<uint16>(PatchVersion), EncodedChangelist, BranchName);
 				return true;
 			}
 		}
@@ -276,14 +278,14 @@ bool FDesktopPlatformBase::TryGetEngineVersion(const FString& RootDir, FEngineVe
 					// Parse an identifier. Exact C rules for an identifier don't really matter; we just need alphanumeric sequences.
 					const TCHAR* TokenStart = TextPos++;
 					while(FChar::IsIdentifier(*TextPos)) TextPos++;
-					Tokens.Add(FString(TextPos - TokenStart, TokenStart));
+					Tokens.Add(FString(UE_PTRDIFF_TO_INT32(TextPos - TokenStart), TokenStart));
 				}
 				else if(*TextPos == '\"')
 				{
 					// Parse a string
 					const TCHAR* TokenStart = TextPos++;
 					while(*TextPos != 0 && (TextPos == TokenStart + 1 || *(TextPos - 1) != '\"')) TextPos++;
-					Tokens.Add(FString(TextPos - TokenStart, TokenStart));
+					Tokens.Add(FString(UE_PTRDIFF_TO_INT32(TextPos - TokenStart), TokenStart));
 				}
 				else if(*TextPos == '/' && *(TextPos + 1) == '/')
 				{
@@ -345,7 +347,7 @@ bool FDesktopPlatformBase::TryGetEngineVersion(const FString& RootDir, FEngineVe
 		if(MajorVersion != -1 && MinorVersion != -1 && PatchVersion != -1)
 		{
 			int EncodedChangelist = (IsLicenseeVersion == 0)? Changelist : FEngineVersionBase::EncodeLicenseeChangelist(Changelist);
-			OutVersion = FEngineVersion(MajorVersion, MinorVersion, PatchVersion, EncodedChangelist, BranchName);
+			OutVersion = FEngineVersion(IntCastChecked<uint16>(MajorVersion), IntCastChecked<uint16>(MinorVersion), IntCastChecked<uint16>(PatchVersion), EncodedChangelist, BranchName);
 			return true;
 		}
 	}
@@ -375,7 +377,7 @@ bool FDesktopPlatformBase::TryParseStockEngineVersion(const FString& Identifier,
 		return false;
 	}
 
-	OutVersion = FEngineVersion(Major, Minor, 0, 0, TEXT(""));
+	OutVersion = FEngineVersion(IntCastChecked<uint16>(Major), IntCastChecked<uint16>(Minor), 0, 0, TEXT(""));
 	return true;
 }
 
@@ -751,6 +753,313 @@ bool FDesktopPlatformBase::RunUnrealBuildTool(const FText& Description, const FS
 	return static_cast<IDesktopPlatform*>(this)->RunUnrealBuildTool(Description, RootDir, Arguments, Warn, ExitCode);
 }
 
+bool FDesktopPlatformBase::IsUnrealBuildToolRunning()
+{
+	FString RunsDir = FPaths::Combine(FPaths::EngineIntermediateDir(), TEXT("UbtRuns"));
+	if (!FPaths::DirectoryExists(RunsDir))
+	{
+		return false;
+	}
+
+	bool bIsRunning = false;
+	IFileManager::Get().IterateDirectory(*RunsDir, [&bIsRunning](const TCHAR* Pathname, bool bIsDirectory)
+		{
+			if (!bIsDirectory)
+			{
+				bool bDeleteFile = true;
+
+				FString Filename = FPaths::GetBaseFilename(FString(Pathname));
+				const TCHAR* Delim = FCString::Strchr(*Filename, '_');
+				if (Delim != nullptr)
+				{
+					FStringView Pid(*Filename, UE_PTRDIFF_TO_INT32(Delim - *Filename));
+					int ProcessId = 0;
+					LexFromString(ProcessId, Pid);
+					FString EntryFullPath = FPlatformProcess::GetApplicationName(ProcessId);
+					if (!EntryFullPath.IsEmpty())
+					{
+						EntryFullPath.ToUpperInline();
+						const auto Utf8String = StringCast<UTF8CHAR>(*EntryFullPath);
+						FMD5Hash Hash;
+						LexFromString(Hash, Delim + 1);
+
+						FMD5 Md5Gen;
+						Md5Gen.Update(reinterpret_cast<const uint8*>(Utf8String.Get()), Utf8String.Length());
+						FMD5Hash TestHash;
+						TestHash.Set(Md5Gen);
+						if (Hash == TestHash)
+						{
+							bDeleteFile = false;
+							bIsRunning = true;
+						}
+					}
+					if (bDeleteFile)
+					{
+						IFileManager::Get().Delete(Pathname);
+					}
+				}
+			}
+			return true;
+		});
+
+	return bIsRunning;
+}
+
+bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, bool Unattended, FFeedbackContext* Warn, FString& OutToken, FDateTime& OutTokenExpiresAt)
+{
+	FString ResultFilePath = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("oidcToken.json"));
+
+	FString Arguments = TEXT(" ");
+	Arguments += FString::Printf(TEXT(" --Service=\"%s\""), *ProviderIdentifier);
+	Arguments += FString::Printf(TEXT(" --OutFile=\"%s\""), *ResultFilePath);
+	Arguments += FString::Printf(TEXT(" --project=\"%s\""),  *IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::ProjectDir()));
+	FString UnattendedArguments = Arguments;
+	UnattendedArguments += TEXT(" --Unattended=true");
+
+	// first we attempt to fetch a token using cached offline tokens, thus setting unattended
+	bool bRes = true;
+	int32 ExitCode;
+	FString ProcessStdout;
+	bRes = InvokeOidcTokenToolSync(LOCTEXT("GetOidcAccessToken", "Fetching OIDC Access Token..."), RootDir, UnattendedArguments, Warn, ExitCode, ProcessStdout);
+
+	if (ExitCode == 10)
+	{
+		if (!Unattended)
+		{
+			bRes = GetOidcAccessTokenInteractive(RootDir, Arguments, Warn, ExitCode);
+			if (!bRes)
+			{
+				UE_LOG(LogDesktopPlatform, Error, TEXT("Unable to allocate an access token. Interactive login failed, make sure you are assigned access and are able to login in the created browser window. Provider used: '%s'. Ran OidcToken (project file is '%s', exe path is '%s')"), *ProviderIdentifier, *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
+				return false;
+			}
+		}
+		else
+		{
+			UE_LOG(LogDesktopPlatform, Error, TEXT("Unable to allocate an access token. Unattended set so unable to request interactive login. Make sure you are logged in using UGS or using the UGS cli command 'login'. Provider used: '%s'. Ran OidcToken (project file is '%s', exe path is '%s')"), *ProviderIdentifier, *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
+			return false;
+		}
+	}
+
+	if (!bRes)
+	{
+		UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to run OidcToken (project file is '%s', exe path is '%s')"), *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
+		return false;
+	}
+	
+	// Read the file to a string
+	FString TokenText;
+	if(FFileHelper::LoadFileToString(TokenText, *ResultFilePath))
+	{
+		// deserialize the json file
+		TSharedPtr< FJsonObject > Object;
+		TSharedRef< TJsonReader<> > Reader = TJsonReaderFactory<>::Create(TokenText);
+		if(FJsonSerializer::Deserialize(Reader, Object) && Object.IsValid())
+		{
+			FString Token;
+			FString ExpiresAt;
+			if(Object->TryGetStringField(TEXT("Token"), Token) && Object->TryGetStringField(TEXT("ExpiresAt"), ExpiresAt))
+			{
+				OutToken = Token;
+
+				FDateTime::ParseIso8601(*ExpiresAt, OutTokenExpiresAt);
+
+				return true;
+			}
+		}
+	}
+
+	UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to run OidcToken (project file is '%s', exe path is '%s'). No result file found at '%s', closed with exit code: %d"), *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir), *ResultFilePath, ExitCode);
+
+	return false;
+}
+
+
+bool FDesktopPlatformBase::GetOidcTokenStatus(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, FFeedbackContext* Warn, int& OutStatus)
+{
+	FString ResultFilePath = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("oidcToken-status.json"));
+
+	FString Arguments = TEXT(" ");
+	Arguments += FString::Printf(TEXT(" --Service=\"%s\""), *ProviderIdentifier);
+	Arguments += FString::Printf(TEXT(" --OutFile=\"%s\""), *ResultFilePath);
+	Arguments += FString::Printf(TEXT(" --project=\"%s\""),  *IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::ProjectDir()));
+
+	bool bRes = true;
+	int32 ExitCode;
+	FString ProcessStdout;
+	bRes = InvokeOidcTokenToolSync(LOCTEXT("GetOidcAccessTokenStatus", "Fetching OIDC Access Token Status..."), RootDir, Arguments, Warn, ExitCode, ProcessStdout);
+
+	if (!bRes)
+	{
+		UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to run OidcToken to determine token status (project file is '%s', exe path is '%s')"), *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
+		return false;
+	}
+	
+	// Read the file to a string
+	FString TokenText;
+	if(FFileHelper::LoadFileToString(TokenText, *ResultFilePath))
+	{
+		// deserialize the json file
+		TSharedPtr< FJsonObject > Object;
+		TSharedRef< TJsonReader<> > Reader = TJsonReaderFactory<>::Create(TokenText);
+		if(FJsonSerializer::Deserialize(Reader, Object) && Object.IsValid())
+		{
+			int Status;
+			if(Object->TryGetNumberField(TEXT("Status"), Status))
+			{
+				OutStatus = Status;
+
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool FDesktopPlatformBase::GetOidcAccessTokenInteractive(const FString& RootDir,  const FString& Arguments, FFeedbackContext* Warn, int32& OutReturnCode)
+{
+	FText OidcInteractivePromptTitle = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunchPromptTitle", "Unreal Engine - Authentication Required");
+	FText OidcInteractiveLaunchPromptText = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunch", "Your team’s preferred DDC (Distributed Data Cache) requires you to log in. Click OK to open the authentication page in your web browser.\n\nYou can cancel authentication and work with a different shared or local DDC instead. However, this may cause delays while the editor prepares the assets you need.");
+	EAppReturnType::Type userAcknowledgedResult = FPlatformMisc::MessageBoxExt(EAppMsgType::OkCancel, *OidcInteractiveLaunchPromptText.ToString(), *OidcInteractivePromptTitle.ToString());
+
+	if (userAcknowledgedResult != EAppReturnType::Ok)
+	{
+		OutReturnCode = -1;
+		return false;
+	}
+
+	// user has acknowledged the login, we update the editor progress and then we run oidc token to spawn the browser and prompt the login
+
+	FScopedSlowTask WaitForOidcTokenSlowTask(0, NSLOCTEXT("OidcToken", "OidcToken_WaitingForToken", "Waiting for OidcToken to finish login"));
+
+	// run the oidc token app and wait for it to finish, prompting users if they have not logged in after a while
+	OutReturnCode = 1;
+	void* PipeRead = nullptr;
+	void* PipeWrite = nullptr;
+
+	verify(FPlatformProcess::CreatePipe(PipeRead, PipeWrite));
+
+	bool bInvoked = false;
+	FProcHandle ProcHandle = InvokeOidcTokenToolAsync(Arguments, PipeRead, PipeWrite);
+
+	if (ProcHandle.IsValid())
+	{
+		bInvoked = true;
+	}
+
+	uint64 WaitStartTime = FPlatformTime::Cycles64();
+	enum class EWaitDurationPhase
+	{
+		Initial,
+		Prompt,
+		Waiting
+	} DurationPhase = EWaitDurationPhase::Initial;
+	bool bIsFinished = false;
+	while (!bIsFinished)
+	{
+		// check if token app has finished running
+		bIsFinished = !FPlatformProcess::IsProcRunning(ProcHandle);
+
+		double WaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - WaitStartTime);
+		if (DurationPhase == EWaitDurationPhase::Initial)
+		{
+			// Note that the dialog may not show up when tokens are allocated early in the launch cycle, but this will at least ensure
+			// the splash screen is refreshed with the appropriate text status message.
+			WaitForOidcTokenSlowTask.MakeDialog(true, false);
+			UE_LOG(LogDesktopPlatform, Display, TEXT("Waiting for OidcToken to finish login..."));
+			DurationPhase = EWaitDurationPhase::Prompt;
+		}
+		// once we have waited for 10 seconds without success we give the user a option to abort
+		else if (WaitDuration > 10.0 && DurationPhase == EWaitDurationPhase::Prompt)
+		{
+			FText OidcLongWaitPromptTitle = NSLOCTEXT("OidcToken", "OidcToken_LongWaitPromptTitle", "Wait for user login?");
+			FText OidcLongWaitPromptText = NSLOCTEXT("OidcToken", "OidcToken_LongWaitPromptText", "Login is taking a long time, make sure you have entered your credentials in your browser window. It can be in a tab in an already existing window. Keep waiting?");
+			if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *OidcLongWaitPromptText.ToString(), *OidcLongWaitPromptTitle.ToString()) == EAppReturnType::No)
+			{
+				break;
+			}
+			// change phase so we do not prompt the user again
+			DurationPhase = EWaitDurationPhase::Waiting;
+		}
+
+		if (WaitForOidcTokenSlowTask.ShouldCancel())
+		{
+			break;
+		}
+		FPlatformProcess::Sleep(0.1f);
+	}
+
+	if (!bIsFinished)
+	{
+		OutReturnCode = -1;
+		FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
+		FPlatformProcess::TerminateProc(ProcHandle);
+		return false;
+	}
+
+	bool bGotReturnCode = FPlatformProcess::GetProcReturnCode(ProcHandle, &OutReturnCode);		
+	check(bGotReturnCode);
+	FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
+
+	return bInvoked;
+}
+
+bool FDesktopPlatformBase::InvokeOidcTokenToolSync(const FText& Description, const FString& RootDir, const FString& Arguments, FFeedbackContext* Warn, int32& OutReturnCode, FString& OutProcOutput)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDesktopPlatformBase::InvokeOidcTokenToolSync);
+	OutReturnCode = 1;
+
+	void* PipeRead = nullptr;
+	void* PipeWrite = nullptr;
+
+	verify(FPlatformProcess::CreatePipe(PipeRead, PipeWrite));
+
+	bool bInvoked = false;
+	FProcHandle ProcHandle = InvokeOidcTokenToolAsync(Arguments, PipeRead, PipeWrite);
+	if (ProcHandle.IsValid())
+	{
+		// rather than waiting, we must flush the read pipe or UBT will stall if it writes out a ton of text to the console.
+		while (FPlatformProcess::IsProcRunning(ProcHandle))
+		{
+			OutProcOutput += FPlatformProcess::ReadPipe(PipeRead);
+			FPlatformProcess::Sleep(0.1f);
+		}		
+		bInvoked = true;
+		bool bGotReturnCode = FPlatformProcess::GetProcReturnCode(ProcHandle, &OutReturnCode);		
+		check(bGotReturnCode);
+	}
+	else
+	{
+		bInvoked = false;
+		OutReturnCode = -1;
+		OutProcOutput = TEXT("");
+	}
+
+
+	FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
+
+	return bInvoked;
+}
+
+FProcHandle FDesktopPlatformBase::InvokeOidcTokenToolAsync(const FString& InArguments, void*& OutReadPipe, void*& OutWritePipe)
+{
+	FString CmdLineParams = InArguments;
+	FString ExecutableFileName = GetOidcTokenExecutableFilename(FPaths::RootDir());
+	UE_LOG(LogDesktopPlatform, Display, TEXT("Launching OidcToken... [%s %s]"), *ExecutableFileName, *CmdLineParams);
+
+	const bool bLaunchDetached = false;
+	const bool bLaunchHidden = true;
+	const bool bLaunchReallyHidden = bLaunchHidden;
+
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutableFileName, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, NULL, OutWritePipe, OutReadPipe);
+	if (!ProcHandle.IsValid())
+	{
+		UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to launch OidcToken (exe path is '%s')"), *ExecutableFileName);
+	}
+
+	return ProcHandle;
+}
+
 struct FTargetFileVisitor : IPlatformFile::FDirectoryStatVisitor
 {
 	TSet<FString>& RemainingTargetNames;
@@ -988,7 +1297,7 @@ void FDesktopPlatformBase::CheckForLauncherEngineInstallation(const FString &App
 	}
 }
 
-int32 FDesktopPlatformBase::ParseReleaseVersion(const FString &Version)
+int32 FDesktopPlatformBase::ParseReleaseVersion(const FString& Version)
 {
 	TCHAR *End;
 
@@ -1004,7 +1313,7 @@ int32 FDesktopPlatformBase::ParseReleaseVersion(const FString &Version)
 		return INDEX_NONE;
 	}
 
-	return (Major << 16) + Minor;
+	return IntCastChecked<int32>((Major << 16) + Minor);
 }
 
 TSharedPtr<FJsonObject> FDesktopPlatformBase::LoadProjectFile(const FString &FileName)

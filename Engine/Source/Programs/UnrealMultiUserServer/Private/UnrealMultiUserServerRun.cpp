@@ -5,6 +5,8 @@
 #include "ConcertSettings.h"
 #include "ConcertSyncServerLoop.h"
 
+#include "Misc/CommandLine.h"
+
 int32 RunUnrealMultiUserServer(int ArgC, TCHAR* ArgV[])
 {
 	FString Role(TEXT("MultiUser"));
@@ -27,5 +29,5 @@ int32 RunUnrealMultiUserServer(int ArgC, TCHAR* ArgV[])
 		return ServerConfig;
 	};
 
-	return ConcertSyncServerLoop(ArgC, ArgV, ServerLoopInitArgs);
+	return ConcertSyncServerLoop(*FCommandLine::BuildFromArgV(nullptr, ArgC, ArgV, nullptr), ServerLoopInitArgs);
 }

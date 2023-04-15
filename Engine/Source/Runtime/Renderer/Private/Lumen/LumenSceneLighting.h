@@ -76,7 +76,7 @@ void DrawQuadsToAtlas(
 	TShaderRefBase<VertexShaderType, FShaderMapPointerTable> VertexShader,
 	TShaderRefBase<PixelShaderType, FShaderMapPointerTable> PixelShader,
 	const PassParametersType* PassParameters,
-	FGlobalShaderMap* GlobalShaderMap,
+	const FGlobalShaderMap* GlobalShaderMap,
 	FRHIBlendState* BlendState,
 	FRHICommandList& RHICmdList,
 	SetParametersLambdaType&& SetParametersLambda,
@@ -133,12 +133,12 @@ class FCopyCardCaptureLightingToAtlasPS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER(float, DiffuseColorBoost)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, AlbedoCardCaptureAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EmissiveCardCaptureAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DirectLightingCardCaptureAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RadiosityCardCaptureAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RadiosityNumFramesAccumulatedCardCaptureAtlas)
-		SHADER_PARAMETER(float, DiffuseReflectivityOverride)
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FIndirectLighting : SHADER_PERMUTATION_BOOL("INDIRECT_LIGHTING");
@@ -174,12 +174,29 @@ void TraceLumenHardwareRayTracedDirectLightingShadows(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
+	int32 ViewIndex,
 	const FLumenCardTracingInputs& TracingInputs,
-	FRDGBufferRef DispatchLightTilesIndirectArgs,
+	FRDGBufferRef ShadowTraceIndirectArgs,
+	FRDGBufferRef ShadowTraceAllocator,
+	FRDGBufferRef ShadowTraces,
 	FRDGBufferRef LightTileAllocator,
 	FRDGBufferRef LightTiles,
 	FRDGBufferRef LumenPackedLights,
 	FRDGBufferUAVRef ShadowMaskTilesUAV);
+
+enum class ELumenDispatchCardTilesIndirectArgsOffset
+{
+	OneThreadPerCardTile = 0 * sizeof(FRHIDispatchIndirectParameters),
+	OneGroupPerCardTile = 1 * sizeof(FRHIDispatchIndirectParameters),
+	Num = 2
+};
+
+struct FLumenCardTileUpdateContext
+{
+	FRDGBufferRef CardTileAllocator;
+	FRDGBufferRef CardTiles;
+	FRDGBufferRef DispatchCardTilesIndirectArgs;
+};
 
 namespace Lumen
 {
@@ -193,15 +210,26 @@ namespace Lumen
 		const FViewInfo& View,
 		FRDGBuilder& GraphBuilder,
 		const FLumenCardTracingInputs& TracingInputs,
-		const FLumenCardUpdateContext& CardUpdateContext);
+		const FLumenCardUpdateContext& CardUpdateContext,
+		const FLumenCardTileUpdateContext& CardTileUpdateContext,
+		ERDGPassFlags ComputePassFlags);
 
 	void BuildCardUpdateContext(
 		FRDGBuilder& GraphBuilder,
-		const FViewInfo& View,
 		const FLumenSceneData& LumenSceneData,
-		TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer,
+		const TArray<FViewInfo>& Views,
+		const FLumenSceneFrameTemporaries& FrameTemporaries,
 		FLumenCardUpdateContext& DirectLightingCardUpdateContext,
-		FLumenCardUpdateContext& IndirectLightingCardUpdateContext);
+		FLumenCardUpdateContext& IndirectLightingCardUpdateContext,
+		ERDGPassFlags ComputePassFlags);
+
+	void SpliceCardPagesIntoTiles(
+		FRDGBuilder& GraphBuilder,
+		const FGlobalShaderMap* GloablShaderMap,
+		const FLumenCardUpdateContext& CardUpdateContext,
+		const TRDGUniformBufferRef<FLumenCardScene>& LumenCardSceneUniformBuffer,
+		FLumenCardTileUpdateContext& OutCardTileUpdateContext,
+		ERDGPassFlags ComputePassFlags);
 
 	inline EPixelFormat GetDirectLightingAtlasFormat() { return PF_FloatR11G11B10; }
 	inline EPixelFormat GetIndirectLightingAtlasFormat() { return PF_FloatR11G11B10; }
@@ -217,9 +245,5 @@ namespace LumenSceneDirectLighting
 	float GetGlobalSDFShadowRayBias();
 	float GetHardwareRayTracingShadowRayBias();
 	bool UseVirtualShadowMaps();
-}
-
-namespace LumenSurfaceCache
-{
-	float GetDiffuseReflectivityOverride();
+	bool AllowShadowMaps(const FEngineShowFlags& EngineShowFlags);
 }

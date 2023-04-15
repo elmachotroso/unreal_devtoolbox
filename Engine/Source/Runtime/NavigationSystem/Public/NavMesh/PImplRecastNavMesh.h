@@ -51,8 +51,12 @@ public:
 	 */
 	void Serialize(FArchive& Ar, int32 NavMeshVersion);
 
-	/** Debug rendering. */
-	void GetDebugGeometry(FRecastDebugGeometry& OutGeometry, int32 TileIndex = INDEX_NONE) const;
+	/* Gather debug geometry.
+	 * @params OutGeometry Output geometry.
+	 * @params TileIndex Used to collect geometry for a specific tile, INDEX_NONE will gather all tiles.
+	 * @return True if done collecting.
+	 */
+	bool GetDebugGeometryForTile(FRecastDebugGeometry& OutGeometry, int32 TileIndex) const;
 	
 	/** Returns bounding box for the whole navmesh. */
 	FBox GetNavMeshBounds() const;
@@ -159,6 +163,8 @@ public:
 	bool GetPolyCenter(NavNodeRef PolyID, FVector& OutCenter) const;
 	/** Retrieves the vertices for the specified polygon. Returns false on error. */
 	bool GetPolyVerts(NavNodeRef PolyID, TArray<FVector>& OutVerts) const;
+	/** Retrieves a random point inside the specified polygon. Returns false on error. */
+	bool GetRandomPointInPoly(NavNodeRef PolyID, FVector& OutPoint) const;
 	/** Retrieves the flags for the specified polygon. Returns false on error. */
 	bool GetPolyData(NavNodeRef PolyID, uint16& Flags, uint8& AreaType) const;
 	/** Retrieves area ID for the specified polygon. */
@@ -175,6 +181,8 @@ public:
 	bool GetClosestPointOnPoly(NavNodeRef PolyID, const FVector& TestPt, FVector& PointOnPoly) const;
 	/** Decode poly ID into tile index and poly index */
 	bool GetPolyTileIndex(NavNodeRef PolyID, uint32& PolyIndex, uint32& TileIndex) const;
+	/** Decode poly ID into FNavTileRef and poly index */
+	bool GetPolyTileRef(NavNodeRef PolyId, uint32& OutPolyIndex, FNavTileRef& OutTileRef) const;
 	/** Retrieves user ID for given offmesh link poly */
 	uint32 GetLinkUserId(NavNodeRef LinkPolyID) const;
 	/** Retrieves start and end point of offmesh link */

@@ -1,22 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClassViewerModule.h"
-#include "Widgets/SWidget.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "SClassViewer.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "ClassViewerProjectSettings.h"
-#include "ISettingsModule.h"
+
 #include "ClassViewerFilter.h"
+#include "ClassViewerProjectSettings.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Docking/TabManager.h"
+#include "ISettingsModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Modules/ModuleManager.h"
+#include "SClassViewer.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
 #define LOCTEXT_NAMESPACE "ClassViewer"
 
@@ -48,7 +50,7 @@ void FClassViewerModule::StartupModule()
 		.SetDisplayName( NSLOCTEXT("ClassViewerApp", "TabTitle", "Class Viewer") )
 		.SetTooltipText( NSLOCTEXT("ClassViewerApp", "TooltipText", "Displays all classes that exist within this project.") )
 		.SetGroup( WorkspaceMenu::GetMenuStructure().GetToolsCategory() )
-		.SetIcon( FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassViewer.TabIcon") );
+		.SetIcon( FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassViewer.TabIcon") );
 
 	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
 	if (SettingsModule != nullptr)
@@ -109,6 +111,7 @@ TSharedRef<FClassViewerFilterFuncs> FClassViewerModule::CreateFilterFuncs()
 void FClassViewerModule::RegisterGlobalClassViewerFilter(const TSharedRef<IClassViewerFilter>& Filter)
 {
 	GlobalClassViewerFilter = Filter;
+	OnGlobalClassViewerFilterModified.Broadcast();
 }
 
 const TSharedPtr<IClassViewerFilter>& FClassViewerModule::GetGlobalClassViewerFilter()

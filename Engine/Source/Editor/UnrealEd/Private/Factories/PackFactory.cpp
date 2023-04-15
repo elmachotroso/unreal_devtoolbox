@@ -13,6 +13,7 @@
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
@@ -183,7 +184,7 @@ namespace PackFactoryHelper
 	void ProcessPackConfig(const FString& ConfigString, FPackConfigParameters& ConfigParameters)
 	{
 		FConfigFile PackConfig;
-		PackConfig.ProcessInputFileContents(ConfigString);
+		PackConfig.ProcessInputFileContents(ConfigString, TEXT("Unknown (see PackFactoryHelper::ProcessPackConfig)"));
 
 		// Input Settings
 		static FArrayProperty* ActionMappingsProp = FindFieldChecked<FArrayProperty>(UInputSettings::StaticClass(), UInputSettings::GetActionMappingsPropertyName());
@@ -205,7 +206,7 @@ namespace PackFactoryHelper
 				if (SettingPair.Key.ToString().Contains("ActionMappings"))
 				{
 					FInputActionKeyMapping ActionKeyMapping;
-					ActionMappingsProp->Inner->ImportText(*SettingPair.Value.GetValue(), &ActionKeyMapping, PPF_None, nullptr);
+					ActionMappingsProp->Inner->ImportText_Direct(*SettingPair.Value.GetValue(), &ActionKeyMapping, nullptr, PPF_None);
 
 					if (!InputSettingsCDO->DoesActionExist(ActionKeyMapping.ActionName))
 					{
@@ -215,7 +216,7 @@ namespace PackFactoryHelper
 				else if (SettingPair.Key.ToString().Contains("AxisMappings"))
 				{
 					FInputAxisKeyMapping AxisKeyMapping;
-					AxisMappingsProp->Inner->ImportText(*SettingPair.Value.GetValue(), &AxisKeyMapping, PPF_None, nullptr);
+					AxisMappingsProp->Inner->ImportText_Direct(*SettingPair.Value.GetValue(), &AxisKeyMapping, nullptr, PPF_None);
 
 					if (!InputSettingsCDO->DoesAxisExist(AxisKeyMapping.AxisName))
 					{
@@ -448,8 +449,7 @@ UObject* UPackFactory::FactoryCreateBinary
 
 						NewFile.UpdateSections(*EngineIniFilename, *RedirectsSection);
 
-						FString FinalIniFileName;
-						GConfig->LoadGlobalIniFile(FinalIniFileName, *RedirectsSection, NULL, true);
+						FConfigContext::ForceReloadIntoGConfig().Load(*RedirectsSection);
 
 						FLinkerLoad::AddGameNameRedirect(*LongOldGameName, *LongNewGameName);
 						FLinkerLoad::AddGameNameRedirect(*ConfigParameters.GameName, *LongNewGameName);

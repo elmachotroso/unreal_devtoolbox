@@ -9,6 +9,8 @@
 #include "UDynamicMesh.h"
 #include "Async/Async.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshComparisonFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshComparisonFunctions"
@@ -101,9 +103,8 @@ UDynamicMesh* UGeometryScriptLibrary_MeshComparisonFunctions::IsIntersectingMesh
 			}
 			else
 			{
-				Transform1 = Transform1.Inverse();
 				bIsIntersecting = Spatials[0].TestIntersection(Spatials[1],
-					[&](const FVector3d& Pos) { return Transform1.TransformPosition(Transform2.TransformPosition(Pos)); });
+					[&](const FVector3d& Pos) { return Transform1.InverseTransformPosition(Transform2.TransformPosition(Pos)); });
 			}
 		});
 	});

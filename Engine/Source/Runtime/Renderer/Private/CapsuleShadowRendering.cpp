@@ -159,9 +159,9 @@ int32 GetCapsuleShadowDownsampleFactor()
 	return GCapsuleShadowsFullResolution ? 1 : 2;
 }
 
-FIntPoint GetBufferSizeForCapsuleShadows()
+FIntPoint GetBufferSizeForCapsuleShadows(const FViewInfo& View)
 {
-	return FIntPoint::DivideAndRoundDown(GetSceneTextureExtent(), GetCapsuleShadowDownsampleFactor());
+	return FIntPoint::DivideAndRoundDown(View.GetSceneTexturesConfig().Extent, GetCapsuleShadowDownsampleFactor());
 }
 
 enum class ECapsuleShadowingType
@@ -209,7 +209,7 @@ public:
 		SHADER_PARAMETER(FIntPoint, TileDimensions)
 		SHADER_PARAMETER(FVector2f, NumGroups)
 
-		SHADER_PARAMETER(FVector4f, LightPositionAndInvRadius)
+		SHADER_PARAMETER(FVector4f, LightTranslatedPositionAndInvRadius)
 		SHADER_PARAMETER(FVector3f, LightDirection)
 		SHADER_PARAMETER(float, LightSourceRadius)
 		SHADER_PARAMETER(FVector3f, LightAngleAndNormalThreshold)
@@ -254,7 +254,6 @@ public:
 
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEX"), GShadowShapeTileSize);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEY"), GShadowShapeTileSize);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 
 		ECapsuleShadowingType ShadowingType = PermutationVector.Get<FShapeShadow>();
 
@@ -352,7 +351,6 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DOWNSAMPLE_FACTOR"), 2);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 	}
 };
 
@@ -366,6 +364,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FUpsampleCapsuleShadowParameters, )
 END_SHADER_PARAMETER_STRUCT()
 
 void SetupCapsuleShadowingParameters(
+	FRDGBuilder& GraphBuilder,
 	FCapsuleShadowingCS::FParameters& Parameters,
 	ECapsuleShadowingType ShadowingType,
 	FRDGTextureUAVRef OutputUAV,
@@ -392,7 +391,7 @@ void SetupCapsuleShadowingParameters(
 {
 	Parameters.SceneTextures = SceneTexturesUniformBuffer;
 	Parameters.View = View.ViewUniformBuffer;
-	Parameters.Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+	Parameters.Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 	if (ShadowingType == ECapsuleShadowingType::MovableSkylightTiledCulling)
 	{
@@ -432,9 +431,8 @@ void SetupCapsuleShadowingParameters(
 
 		Parameters.LightDirection = LightParameters.Direction;
 
-		// LWC_TODO
-		FVector4f LightPositionAndInvRadius((FVector3f)LightParameters.WorldPosition, LightParameters.InvRadius);
-		Parameters.LightPositionAndInvRadius = LightPositionAndInvRadius;
+		FVector4f LightTranslatedPositionAndInvRadius((FVector3f)(LightParameters.WorldPosition + View.ViewMatrices.GetPreViewTranslation()), LightParameters.InvRadius);
+		Parameters.LightTranslatedPositionAndInvRadius = LightTranslatedPositionAndInvRadius;
 
 		// Default light source radius of 0 gives poor results
 		Parameters.LightSourceRadius = LightParameters.SourceRadius == 0 ? 20 : FMath::Clamp(LightParameters.SourceRadius, .001f, 1.0f / (4 * LightParameters.InvRadius));
@@ -466,8 +464,8 @@ void SetupCapsuleShadowingParameters(
 	const float CosFadeStartAngleValue = FMath::Cos(GCapsuleShadowFadeAngleFromVertical);
 	Parameters.CosFadeStartAngle = FVector2f(CosFadeStartAngleValue, 1.0f / (1.0f - CosFadeStartAngleValue));
 
-	Parameters.DFObjectBufferParameters = DistanceField::SetupObjectBufferParameters(Scene->DistanceFieldSceneData);
-	Parameters.DFAtlasParameters = DistanceField::SetupAtlasParameters(Scene->DistanceFieldSceneData);
+	Parameters.DFObjectBufferParameters = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
+	Parameters.DFAtlasParameters = DistanceField::SetupAtlasParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 }
 
 bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
@@ -503,7 +501,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 	FRDGTextureRef RayTracedShadowsRT = nullptr;
 
 	{
-		const FIntPoint BufferSize = GetBufferSizeForCapsuleShadows();
+		const FIntPoint BufferSize = GetBufferSizeForCapsuleShadows(Views[0]);
 		const FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_RenderTargetable | TexCreate_UAV));
 		RayTracedShadowsRT = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
 	}
@@ -511,6 +509,8 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		const FViewInfo& View = Views[ViewIndex];
+		const FVector PreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
+
 		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
 		RDG_EVENT_SCOPE(GraphBuilder, "CapsuleShadows");
 		RDG_GPU_STAT_SCOPE(GraphBuilder, CapsuleShadows);
@@ -532,7 +532,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 
 				if (PrimitiveSceneInfo->Proxy->CastsDynamicShadow())
 				{
-					PrimitiveSceneInfo->Proxy->GetShadowShapes(CapsuleShapeData);
+					PrimitiveSceneInfo->Proxy->GetShadowShapes(PreViewTranslation, CapsuleShapeData);
 				}
 			}
 
@@ -574,6 +574,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 				auto* PassParameters = GraphBuilder.AllocParameters<FCapsuleShadowingCS::FParameters>();
 
 				SetupCapsuleShadowingParameters(
+					GraphBuilder,
 					*PassParameters,
 					ShadowingType,
 					GraphBuilder.CreateUAV(RayTracedShadowsRT),
@@ -628,7 +629,7 @@ bool FDeferredShadingSceneRenderer::RenderCapsuleDirectShadows(
 				PassParameters->VS.ScissorRectMinAndSize = FIntRect(ScissorRect.Min, ScissorRect.Size());
 
 				PassParameters->PS.View = GetShaderBinding(View.ViewUniformBuffer);
-				PassParameters->PS.Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+				PassParameters->PS.Strata = Strata::BindStrataGlobalUniformParameters(View);
 				PassParameters->PS.ShadowFactorsTexture = RayTracedShadowsRT;
 				PassParameters->PS.ShadowFactorsSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 				PassParameters->PS.ScissorRectMinAndSize = FIntRect(ScissorRect.Min, ScissorRect.Size());
@@ -751,6 +752,8 @@ static IndirectCapsuleShadowsResources CreateIndirectCapsuleShadowsResources(
 	int32& NumMeshesWithCapsules, 
 	int32& NumMeshDistanceFieldCasters)
 {
+	const FVector PreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
+
 	IndirectCapsuleShadowsResources Output;
 	Output.IndirectShadowCapsuleShapesSRV = nullptr;
 	Output.IndirectShadowMeshDistanceFieldCasterIndicesSRV = nullptr;
@@ -841,7 +844,7 @@ static IndirectCapsuleShadowsResources CreateIndirectCapsuleShadowsResources(
 
 				if (GroupPrimitiveSceneInfo->Proxy->CastsDynamicShadow())
 				{
-					GroupPrimitiveSceneInfo->Proxy->GetShadowShapes(CapsuleShapeData);
+					GroupPrimitiveSceneInfo->Proxy->GetShadowShapes(PreViewTranslation, CapsuleShapeData);
 					
 					if (GroupPrimitiveSceneInfo->Proxy->HasDistanceFieldRepresentation())
 					{
@@ -928,7 +931,7 @@ static IndirectCapsuleShadowsResources CreateIndirectCapsuleShadowsResources(
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->NumLightDirectionData = NumLightDataElements;
 			PassParameters->SkyLightMode = SkyLightMode;
-			PassParameters->CapsuleIndirectConeAngle = GCapsuleSkyAngleScale;
+			PassParameters->CapsuleIndirectConeAngle = GCapsuleIndirectConeAngle;
 			PassParameters->CapsuleSkyAngleScale = GCapsuleSkyAngleScale;
 			PassParameters->CapsuleMinSkyAngle = GCapsuleMinSkyAngle;
 			PassParameters->RWComputedLightDirectionData = ComputedLightDirectionUAV;
@@ -984,7 +987,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(FRDGBuilder& Gr
 	FRDGTextureRef RayTracedShadowsRT = nullptr;
 
 	{
-		const FIntPoint BufferSize = GetBufferSizeForCapsuleShadows();
+		const FIntPoint BufferSize = GetBufferSizeForCapsuleShadows(Views[0]);
 		const FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_RenderTargetable | TexCreate_UAV));
 		// Reuse temporary target from RTDF shadows
 		RayTracedShadowsRT = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
@@ -1041,6 +1044,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(FRDGBuilder& Gr
 				auto* PassParameters = GraphBuilder.AllocParameters<FCapsuleShadowingCS::FParameters>();
 
 				SetupCapsuleShadowingParameters(
+					GraphBuilder,
 					*PassParameters,
 					ECapsuleShadowingType::IndirectTiledCulling,
 					GraphBuilder.CreateUAV(RayTracedShadowsRT),
@@ -1116,7 +1120,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(FRDGBuilder& Gr
 				PassParameters->VS.ScissorRectMinAndSize = FIntRect(ScissorRect.Min, ScissorRect.Size());
 
 				PassParameters->PS.View = GetShaderBinding(View.ViewUniformBuffer);
-				PassParameters->PS.Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+				PassParameters->PS.Strata = Strata::BindStrataGlobalUniformParameters(View);
 				PassParameters->PS.ShadowFactorsTexture = RayTracedShadowsRT;
 				PassParameters->PS.ShadowFactorsSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 				PassParameters->PS.ScissorRectMinAndSize = FIntRect(ScissorRect.Min, ScissorRect.Size());
@@ -1229,7 +1233,7 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(
 		if (bAnyViewsUseCapsuleShadows)
 		{
 			FRDGTextureRef NewBentNormal = nullptr;
-			AllocateOrReuseAORenderTarget(GraphBuilder, NewBentNormal, TEXT("CapsuleBentNormal"), PF_FloatRGBA);
+			AllocateOrReuseAORenderTarget(GraphBuilder, Views[0], NewBentNormal, TEXT("CapsuleBentNormal"), PF_FloatRGBA);
 
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
@@ -1264,6 +1268,7 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(
 							auto* PassParameters = GraphBuilder.AllocParameters<FCapsuleShadowingCS::FParameters>();
 
 							SetupCapsuleShadowingParameters(
+								GraphBuilder,
 								*PassParameters,
 								ECapsuleShadowingType::MovableSkylightTiledCulling,
 								GraphBuilder.CreateUAV(NewBentNormal),

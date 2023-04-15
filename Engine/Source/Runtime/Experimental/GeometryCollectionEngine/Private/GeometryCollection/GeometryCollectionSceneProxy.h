@@ -249,6 +249,7 @@ class FGeometryCollectionSceneProxy final : public FPrimitiveSceneProxy
 	TMap<int32, int32> SubSectionHitProxyIndexMap;
 	// @todo FractureTools - Reconcile with SubSectionHitProxies.  Currently subsection hit proxies dont work for per-vertex submission
 	TArray<TRefCountPtr<HGeometryCollectionBone>> PerBoneHitProxies;
+	FColor WholeObjectHitProxyColor = FColor(EForceInit::ForceInit);
 	bool bUsesSubSections;
 #endif
 
@@ -316,7 +317,11 @@ public:
 	// FPrimitiveSceneProxy interface.
 #if WITH_EDITOR
 	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
-	virtual const FColorVertexBuffer* GetCustomHitProxyIdBuffer() const override { return bEnableBoneSelection ? &HitProxyIdBuffer : nullptr; }
+	virtual const FColorVertexBuffer* GetCustomHitProxyIdBuffer() const override
+	{
+		// Note: Could return nullptr when bEnableBoneSelection is false if the hitproxy shader was made to not require per-vertex hit proxy IDs in that case
+		return &HitProxyIdBuffer;
+	}
 #endif // WITH_EDITOR
 
 #if GEOMETRYCOLLECTION_EDITOR_SELECTION
@@ -387,6 +392,7 @@ public:
 
 public:
 	// FPrimitiveSceneProxy interface.
+	virtual SIZE_T GetTypeHash() const override;
 	virtual FPrimitiveViewRelevance	GetViewRelevance(const FSceneView* View) const override;
 #if WITH_EDITOR
 	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy> >& OutHitProxies) override;
@@ -399,6 +405,8 @@ public:
 
 	// FSceneProxyBase interface.
 	virtual void GetNaniteResourceInfo(uint32& ResourceID, uint32& HierarchyOffset, uint32& ImposterIndex) const override;
+
+	virtual Nanite::FResourceMeshInfo GetResourceMeshInfo() const override;
 
 	/** Called on render thread to setup static geometry for rendering */
 	void SetConstantData_RenderThread(FGeometryCollectionConstantData* NewConstantData, bool ForceInit = false);
@@ -446,12 +454,3 @@ protected:
 	uint32 bCurrentlyInMotion : 1;
 	uint32 bRequiresGPUSceneUpdate : 1;
 };
-
-// Support ISPC enable/disable in non-shipping builds
-#if !INTEL_ISPC
-const bool bGeometryCollection_SetDynamicData_ISPC_Enabled = false;
-#elif UE_BUILD_SHIPPING
-const bool bGeometryCollection_SetDynamicData_ISPC_Enabled = true;
-#else
-extern bool bGeometryCollection_SetDynamicData_ISPC_Enabled;
-#endif

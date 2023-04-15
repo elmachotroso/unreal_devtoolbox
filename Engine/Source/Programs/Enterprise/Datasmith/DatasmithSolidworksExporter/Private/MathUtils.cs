@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 
 namespace DatasmithSolidworks
 {
-    [ComVisible(false)]
+	[ComVisible(false)]
     public static class MathUtils
     {
 		public static float Rad2Deg { get { return (float)(180.0 / Math.PI); } }
@@ -78,6 +78,72 @@ namespace DatasmithSolidworks
 			return Result;
 		}
 
+		public static float[] LookAt(FVec3 InDirection, FVec3 InFromPoint, float InGeomScale)
+		{
+			float[] Ret = new float[16];
+
+			if (InDirection != null)
+			{
+				FVec3 Forward = InDirection.Normalized();
+				FVec3 Right = FVec3.Cross(FVec3.YAxis, Forward);
+				FVec3 Up = FVec3.Cross(Forward, Right);
+
+				Ret[0] = Forward.X;
+				Ret[1] = Forward.Y;
+				Ret[2] = Forward.Z;
+
+				Ret[4] = Right.X;
+				Ret[5] = Right.Y;
+				Ret[6] = Right.Z;
+
+				Ret[8] = Up.X;
+				Ret[9] = Up.Y;
+				Ret[10] = Up.Z;
+
+				Ret[3] = 0f;
+				Ret[7] = 0f;
+				Ret[11] = 0f;
+				Ret[15] = 1f;
+
+				if (InFromPoint != null)
+				{
+					Ret[12] = InFromPoint.X * InGeomScale;
+					Ret[13] = InFromPoint.Y * InGeomScale;
+					Ret[14] = InFromPoint.Z * InGeomScale;
+				}
+			}
+
+			return Ret;
+		}
+
+		public static float[] Translation(FVec3 InTranslation, float InGeomScale)
+		{
+			float[] Ret = new float[16];
+
+			Ret[0] = 1f;
+			Ret[1] = 0f;
+			Ret[2] = 0f;
+
+			Ret[4] = 0f;
+			Ret[5] = 1f;
+			Ret[6] = 0f;
+
+			Ret[8] = 0f;
+			Ret[9] = 0f;
+			Ret[10] = 1f;
+
+			Ret[3] = 0f;
+			Ret[7] = 0f;
+			Ret[11] = 0f;
+			Ret[15] = 1f;
+
+			Ret[12] = InTranslation.X * InGeomScale;
+			Ret[13] = InTranslation.Y * InGeomScale;
+			Ret[14] = InTranslation.Z * InGeomScale;
+
+			return Ret;
+		}
+
 		public static bool TransformsAreEqual(float[] InTransformA, float[] InTransformB)
 		{
 			Debug.Assert(InTransformA.Length == 16 && InTransformA.Length == InTransformB.Length);
@@ -116,5 +182,24 @@ namespace DatasmithSolidworks
 			MathUtility MUtil = Addin.Instance.SolidworksApp.IGetMathUtility();
 			return (MathPoint)MUtil.CreatePoint(new[] { InX, InY, InZ }); ;
 		}
-	}
+
+		public static FVec3 ToEuler(FMatrix4 Mat)
+		{
+			// See UE::Math::TMatrix<T>::Rotator()
+
+			FVec3 XAxis = Mat.XBasis;
+			FVec3 YAxis = Mat.YBasis;
+			FVec3 ZAxis = Mat.ZBasis;
+
+			double Pitch = Math.Atan2(XAxis.Z, Math.Sqrt(XAxis.X*XAxis.X + XAxis.Y*XAxis.Y));
+			double Yaw = Math.Atan2(XAxis.Y, XAxis.X);
+
+			FVec3 SYAxis = new FVec3(-Math.Sin(Yaw), Math.Cos(Yaw), 0);
+
+			double Roll = Math.Atan2(FVec3.Dot(ZAxis, SYAxis), FVec3.Dot(YAxis, SYAxis));
+
+			// Y <-> Pitch,  Z <-> Yaw, X <-> Roll
+			return new FVec3(MathUtils.Rad2Deg * Roll, MathUtils.Rad2Deg * Pitch, MathUtils.Rad2Deg * Yaw);
+		}
+    }
 }

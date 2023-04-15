@@ -10,6 +10,8 @@
 
 namespace Chaos { class FErrorReporter; }
 
+struct FKLevelSetElem;
+
 namespace Chaos
 {
 
@@ -32,6 +34,7 @@ class CHAOS_API FLevelSet final : public FImplicitObject
 	FLevelSet(FErrorReporter& ErrorReporter, const TUniformGrid<FReal, 3>& InGrid, const FParticles& InParticles, const FTriangleMesh& Mesh, const int32 BandWidth = 0);
 	FLevelSet(FErrorReporter& ErrorReporter, const TUniformGrid<FReal, 3>& InGrid, const FImplicitObject& InObject, const int32 BandWidth = 0, const bool bUseObjectPhi = false);
 	FLevelSet(std::istream& Stream);
+	FLevelSet(TUniformGrid<FReal, 3>&& Grid, TArrayND<FReal, 3>&& Phi, int32 BandWidth);
 	FLevelSet(const FLevelSet& Other) = delete;
 	FLevelSet(FLevelSet&& Other);
 	virtual ~FLevelSet();
@@ -108,7 +111,7 @@ class CHAOS_API FLevelSet final : public FImplicitObject
 			{
 				FReal CellRadius = AvgRadius - FMath::Abs(Phi);
 
-				if(CellRadius > KINDA_SMALL_NUMBER)
+				if(CellRadius > UE_KINDA_SMALL_NUMBER)
 				{
 					const FReal Scale = FMath::Min((FReal)1, CellRadius / AvgRadius);
 					Volume += CellVolume * Scale;
@@ -195,6 +198,7 @@ class CHAOS_API FLevelSet final : public FImplicitObject
 private:
 	FLevelSet() : FImplicitObject(EImplicitObject::HasBoundingBox, ImplicitObjectType::LevelSet) {}	//needed for serialization
 	friend FImplicitObject;	//needed for serialization
+	friend ::FKLevelSetElem; //needed for serialization
 };
 
 template <typename T, int d>

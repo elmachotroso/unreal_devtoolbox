@@ -26,9 +26,11 @@ namespace TraceServices
 			RouteId_Scheduled,
 			RouteId_SubsequentAdded,
 			RouteId_Started,
+			// `NestedAdded` was removed from `TaskTrace` but left here to avoid crashing TasksInsights when used with an old trace file
 			RouteId_NestedAdded,
 			RouteId_Finished,
 			RouteId_Completed,
+			RouteId_Destroyed,
 
 			RouteId_WaitingStarted,
 			RouteId_WaitingFinished,

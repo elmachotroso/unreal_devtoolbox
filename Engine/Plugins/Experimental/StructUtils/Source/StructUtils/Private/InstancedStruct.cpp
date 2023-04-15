@@ -4,6 +4,8 @@
 #include "SharedStruct.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InstancedStruct)
+
 namespace UE::StructUtils::Private
 {
 #if WITH_EDITORONLY_DATA
@@ -57,23 +59,41 @@ FInstancedStruct& FInstancedStruct::operator=(const FConstStructView InOther)
 
 void FInstancedStruct::InitializeAs(const UScriptStruct* InScriptStruct, const uint8* InStructMemory /*= nullptr*/)
 {
-	Reset();
-
-	if (!InScriptStruct)
+	const UScriptStruct* CurrentScriptStruct = GetScriptStruct();
+	if (InScriptStruct && InScriptStruct == CurrentScriptStruct)
 	{
-		// InScriptStruct == nullptr signifies an empty, unset FInstancedStruct instance. No further work required.
-		return;
+		// Struct type already matches...
+		if (InStructMemory)
+		{
+			// ... apply the given state
+			CurrentScriptStruct->CopyScriptStruct(GetMutableMemory(), InStructMemory);
+		}
+		else
+		{
+			// ... return the struct to its default state
+			CurrentScriptStruct->ClearScriptStruct(GetMutableMemory());
+		}
 	}
-
-	const int32 RequiredSize = InScriptStruct->GetStructureSize();
-	const uint8* Memory = ((uint8*)FMemory::Malloc(FMath::Max(1, RequiredSize)));
-	SetStructData(InScriptStruct,Memory);
-
-	InScriptStruct->InitializeStruct(GetMutableMemory());
-
-	if (InStructMemory)
+	else
 	{
-		InScriptStruct->CopyScriptStruct(GetMutableMemory(), InStructMemory);
+		// Struct type mismatch; reset and reinitialize
+		Reset();
+
+		// InScriptStruct == nullptr signifies an empty, unset FInstancedStruct instance
+		if (InScriptStruct)
+		{
+			const int32 MinAlignment = InScriptStruct->GetMinAlignment();
+			const int32 RequiredSize = InScriptStruct->GetStructureSize();
+			const uint8* Memory = ((uint8*)FMemory::Malloc(FMath::Max(1, RequiredSize), MinAlignment));
+			SetStructData(InScriptStruct, Memory);
+
+			InScriptStruct->InitializeStruct(GetMutableMemory());
+
+			if (InStructMemory)
+			{
+				InScriptStruct->CopyScriptStruct(GetMutableMemory(), InStructMemory);
+			}
+		}
 	}
 }
 
@@ -106,7 +126,7 @@ bool FInstancedStruct::Serialize(FArchive& Ar)
 	bool bUseVersioning = true;
 
 #if WITH_EDITOR
-	if (!Ar.IsCooking())
+	if (!Ar.IsCooking() && !Ar.IsFilterEditorOnly())
 	{
 		// Keep archive position to use legacy serialization if the header is not found
 		const int64 HeaderOffset = Ar.Tell();
@@ -144,13 +164,12 @@ bool FInstancedStruct::Serialize(FArchive& Ar)
 	if (Ar.IsLoading())
 	{
 		// UScriptStruct type
-		UScriptStruct* NewNonConstStruct = nullptr;
-		Ar << NewNonConstStruct;
-		if (NewNonConstStruct)
+		Ar << NonConstStruct;
+		if (NonConstStruct)
 		{
-			Ar.Preload(NewNonConstStruct);
+			Ar.Preload(NonConstStruct);
 		}
-		NonConstStruct = ReinitializeAs(NewNonConstStruct);
+		InitializeAs(NonConstStruct);
 
 		// Size of the serialized memory
 		int32 SerialSize = 0; 
@@ -230,7 +249,7 @@ bool FInstancedStruct::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UOb
 
 	if (StructPathName.Len() == 0 || FCString::Stricmp(StructPathName.ToString(), TEXT("None")) == 0)
 	{
-		ReinitializeAs(nullptr);
+		InitializeAs(nullptr);
 	}
 	else
 	{
@@ -240,7 +259,7 @@ bool FInstancedStruct::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UOb
 			return false;
 		}
 
-		ReinitializeAs(StructTypePtr);
+		InitializeAs(StructTypePtr);
 		if (const TCHAR* Result = StructTypePtr->ImportText(Buffer, GetMutableMemory(), Parent, PortFlags, ErrorText, [StructTypePtr]() { return StructTypePtr->GetName(); }))
 		{
 			Buffer = Result;
@@ -277,7 +296,7 @@ bool FInstancedStruct::SerializeFromMismatchedTag(const FPropertyTag& Tag, FStru
 			{
 				if (StructTypePtr)
 				{
-					StructTypePtr->SerializeItem(Record.EnterField(SA_FIELD_NAME(TEXT("StructInstance"))), GetMutableMemory(), nullptr);
+					StructTypePtr->SerializeItem(Record.EnterField(TEXT("StructInstance")), GetMutableMemory(), nullptr);
 				}
 			};
 
@@ -329,19 +348,6 @@ void FInstancedStruct::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 	}
 }
 
-UScriptStruct* FInstancedStruct::ReinitializeAs(const UScriptStruct* InScriptStruct)
-{
-	UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(GetScriptStruct());
-
-	if (InScriptStruct != NonConstStruct)
-	{
-		InitializeAs(InScriptStruct, nullptr);
-		NonConstStruct = const_cast<UScriptStruct*>(GetScriptStruct());
-	}
-
-	return NonConstStruct;
-}
-
 bool FInstancedStruct::Identical(const FInstancedStruct* Other, uint32 PortFlags) const
 {
 	const UScriptStruct* StructTypePtr = GetScriptStruct();
@@ -365,3 +371,4 @@ void FInstancedStruct::AddStructReferencedObjects(class FReferenceCollector& Col
 		Collector.AddReferencedObjects(Struct, GetMutableMemory());
 	}
 }
+

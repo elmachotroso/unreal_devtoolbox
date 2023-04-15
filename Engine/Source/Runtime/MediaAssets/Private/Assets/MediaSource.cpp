@@ -2,6 +2,87 @@
 
 #include "MediaSource.h"
 
+#include "FileMediaSource.h"
+#include "MediaAssetsPrivate.h"
+#include "Misc/Paths.h"
+#include "StreamMediaSource.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MediaSource)
+
+void UMediaSource::SetCacheSettings(const FMediaSourceCacheSettings& Settings)
+{
+	SetMediaOptionBool(TEXT("ImgMediaSmartCacheEnabled"), Settings.bOverride);
+	SetMediaOptionFloat(TEXT("ImgMediaSmartCacheTimeToLookAhead"), Settings.TimeToLookAhead);
+}
+
+void UMediaSource::RegisterSpawnFromFileExtension(const FString& Extension,
+	FMediaSourceSpawnDelegate InDelegate)
+{
+	TMap<FString, FMediaSourceSpawnDelegate>& Delegates =
+		GetSpawnFromFileExtensionDelegates();
+
+	Delegates.Emplace(Extension, InDelegate);
+}
+
+void UMediaSource::UnregisterSpawnFromFileExtension(const FString& Extension)
+{
+	TMap<FString, FMediaSourceSpawnDelegate>& Delegates =
+		GetSpawnFromFileExtensionDelegates();
+
+	Delegates.Remove(Extension);
+}
+
+UMediaSource* UMediaSource::SpawnMediaSourceForString(const FString& MediaPath, UObject* Outer)
+{
+	TObjectPtr<UMediaSource> MediaSource = nullptr;
+
+	// Is it a URL?
+	bool bIsUrl = MediaPath.Contains(TEXT("://"));
+	if (bIsUrl)
+	{
+		TObjectPtr<UStreamMediaSource> StreamMediaSource = NewObject<UStreamMediaSource>(Outer, NAME_None, RF_Transactional);
+		StreamMediaSource->StreamUrl = MediaPath;
+		MediaSource = StreamMediaSource;
+	}
+	else
+	{
+		// Do we know about this file extension?
+		FString FileExtension = FPaths::GetExtension(MediaPath);
+		TMap<FString, FMediaSourceSpawnDelegate>& Delegates =
+			GetSpawnFromFileExtensionDelegates();
+		FMediaSourceSpawnDelegate* Delegate = Delegates.Find(FileExtension);
+		if ((Delegate != nullptr) && (Delegate->IsBound()))
+		{
+			MediaSource = Delegate->Execute(MediaPath, Outer);
+		}
+		else
+		{
+			// Try a file media source.
+			TObjectPtr<UFileMediaSource> FileMediaSource = NewObject<UFileMediaSource>(Outer, NAME_None, RF_Transactional);
+			FileMediaSource->SetFilePath(MediaPath);
+			MediaSource = FileMediaSource;
+		}
+	}
+
+	// Validate the media source.
+	if (MediaSource != nullptr)
+	{
+		if (!MediaSource->Validate())
+		{
+			UE_LOG(LogMediaAssets, Error, TEXT("Failed to validate %s"), *MediaPath);
+			MediaSource = nullptr;
+		}
+	}
+
+	return MediaSource;
+}
+
+TMap<FString, FMediaSourceSpawnDelegate>& UMediaSource::GetSpawnFromFileExtensionDelegates()
+{
+	static TMap<FString, FMediaSourceSpawnDelegate> Delegates;
+	return Delegates;
+}
+
 /* IMediaOptions interface
  *****************************************************************************/
 
@@ -129,5 +210,6 @@ void UMediaSource::SetMediaOption(const FName& Key, FVariant& Value)
 {
 	MediaOptionsMap.Emplace(Key, Value);
 }
+
 
 

@@ -32,13 +32,13 @@ class FAudioFormatOgg : public IAudioFormat
 	enum
 	{
 		/** Version for OGG format, this becomes part of the DDC key. */
-		UE_AUDIO_OGG_VER = 4,
+		UE_AUDIO_OGG_VER = 5,
 	};
 
 public:
 	virtual bool AllowParallelBuild() const override
 	{
-		return false;
+		return true;
 	}
 
 	virtual uint16 GetVersion(FName Format) const override
@@ -55,6 +55,7 @@ public:
 
 	virtual bool Cook(FName Format, const TArray<uint8>& SrcBuffer, FSoundQualityInfo& QualityInfo, TArray<uint8>& CompressedDataStore) const override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAudioFormatOgg::Cook);
 		check(Format == NAME_OGG);
 #if WITH_OGGVORBIS
 		{
@@ -206,6 +207,7 @@ public:
 
 	virtual bool CookSurround(FName Format, const TArray<TArray<uint8> >& SrcBuffers, FSoundQualityInfo& QualityInfo, TArray<uint8>& CompressedDataStore) const override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAudioFormatOgg::CookSurround);
 		check(Format == NAME_OGG);
 #if WITH_OGGVORBIS
 		{

@@ -23,6 +23,9 @@
 #define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT	0
 #define VULKAN_RHI_RAYTRACING						0
 #define VULKAN_SUPPORTS_TRANSIENT_RESOURCE_ALLOCATOR 0
+#define VULKAN_SUPPORTS_DRIVER_PROPERTIES			0
+#define VULKAN_SUPPORTS_MULTIVIEW					1
+#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING			0
 
 // crashing during callback setup on Android, code will fallback to VK_EXT_debug_report instead
 #define VULKAN_SUPPORTS_DEBUG_UTILS					0
@@ -41,11 +44,6 @@
 #define ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(EnumMacro) \
 	EnumMacro(PFN_vkGetRefreshCycleDurationGOOGLE, vkGetRefreshCycleDurationGOOGLE) \
 	EnumMacro(PFN_vkGetPastPresentationTimingGOOGLE, vkGetPastPresentationTimingGOOGLE) \
-	EnumMacro(PFN_vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceProperties2KHR) \
-	EnumMacro(PFN_vkGetPhysicalDeviceFeatures2KHR, vkGetPhysicalDeviceFeatures2KHR) \
-	EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2) \
-	EnumMacro(PFN_vkCreateRenderPass2KHR, vkCreateRenderPass2KHR) \
-	EnumMacro(PFN_vkCmdBeginRenderPass2KHR, vkCmdBeginRenderPass2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
 
 // and now, include the GenericPlatform class
@@ -60,11 +58,11 @@ public:
 	static bool LoadVulkanInstanceFunctions(VkInstance inInstance);
 	static void FreeVulkanLibrary();
 
-	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceExtensions(FVulkanInstanceExtensionArray& OutExtensions);
 	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers);
-	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
-	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers);
-	static void NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<FString>& Layers, const TArray<FString>& Extensions);
+	static void GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions);
+	static void GetDeviceLayers(TArray<const ANSICHAR*>& OutLayers);
+	static void NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<const ANSICHAR*>& Layers, const TArray<const ANSICHAR*>& Extensions);
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
 
@@ -131,12 +129,27 @@ public:
 
 	static void DestroySwapchainKHR(VkDevice Device, VkSwapchainKHR Swapchain, const VkAllocationCallbacks* Allocator);
 
+	// handle precompile of PSOs, send to an android specific precompile external process.
+	static VkPipelineCache PrecompilePSO(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArrayView<uint32_t> VS, TArrayView<uint32_t> PS, size_t& AfterSize);
+
+	static bool AreRemoteCompileServicesActive();
+	static bool StartAndWaitForRemoteCompileServices(int NumServices);
+	static void StopRemoteCompileServices();
+
+	// Do not attempt to immediately recreate swapchain
+	static bool RecreateSwapchainOnFail() { return false; }
+
 	static VkFormat GetPlatform5551FormatWithFallback(VkFormat& OutFallbackFormat0, VkFormat& OutFallbackFormat1) 
 	{ 
 		OutFallbackFormat0 = VK_FORMAT_A1R5G5B5_UNORM_PACK16; 
 		OutFallbackFormat1 = VK_FORMAT_B8G8R8A8_UNORM;
 		return VK_FORMAT_R5G5B5A1_UNORM_PACK16; 
 	};
+
+	// Setup platform to use a workaround to reduce textures memory requirements
+	static void SetupImageMemoryRequirementWorkaround(const FVulkanDevice& InDevice);
+	static void SetImageMemoryRequirementWorkaround(VkImageCreateInfo& ImageCreateInfo);
+
 protected:
 	static void* VulkanLib;
 	static bool bAttemptedLoad;
@@ -154,6 +167,9 @@ protected:
 	static int32 UnsuccessfulRefreshRateFrames;
 	static TArray<TArray<ANSICHAR>> DebugVulkanDeviceLayers;
 	static TArray<TArray<ANSICHAR>> DebugVulkanInstanceLayers;
+
+	static int32 AFBCWorkaroundOption;
+	static int32 ASTCWorkaroundOption;
 };
 
 #if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING

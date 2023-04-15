@@ -1,24 +1,57 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/CanvasSlotCustomization.h"
-#include "Widgets/Layout/Anchors.h"
+
+#include "Animation/CurveSequence.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "IDetailPropertyRow.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Framework/Commands/InputChord.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/PlatformMath.h"
+#include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
+#include "Input/Reply.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateStructs.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-
+#include "Widgets/Layout/Anchors.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
-#include "Components/CanvasPanelSlot.h"
+#include "Widgets/Layout/SUniformGridPanel.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
 
-#include "IDetailChildrenBuilder.h"
-#include "DetailLayoutBuilder.h"
-#include "ScopedTransaction.h"
+class FActiveTimerHandle;
+class SWidget;
+class UObject;
+struct FGeometry;
+struct FPointerEvent;
 
 
 
@@ -46,7 +79,7 @@ public:
 		ChildSlot
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "SimpleSharpButton")
+			.ButtonStyle(FAppStyle::Get(), "SimpleSharpButton")
 			.ButtonColorAndOpacity(FLinearColor(FColor(40, 40, 40)))
 			.OnClicked(this, &SAnchorPreviewWidget::OnAnchorClicked, AnchorsHandle, AlignmentHandle, OffsetsHandle, Anchors)
 			.ContentPadding(FMargin(2.0f, 2.0f))
@@ -57,7 +90,7 @@ public:
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("UMGEditor.AnchorGrid"))
+					.BorderImage(FAppStyle::GetBrush("UMGEditor.AnchorGrid"))
 					.Padding(0)
 					[
 						SNew(SBox)
@@ -81,7 +114,7 @@ public:
 									.Alignment(FVector2D(Anchors.IsStretchedHorizontal() ? 0 : Anchors.Minimum.X, Anchors.IsStretchedVertical() ? 0 : Anchors.Minimum.Y))
 									[
 										SNew(SImage)
-										.Image(FEditorStyle::Get().GetBrush("UMGEditor.AnchoredWidget"))
+										.Image(FAppStyle::Get().GetBrush("UMGEditor.AnchoredWidget"))
 									]
 								]
 							]
@@ -223,7 +256,11 @@ void FCanvasSlotCustomization::FillOutChildren(TSharedRef<IPropertyHandle> Prope
 
 void FCanvasSlotCustomization::CustomizeLayoutData(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
-	TSharedPtr<IPropertyHandle> LayoutData = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(UCanvasPanelSlot, LayoutData));
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const FName LayoutDataName = GET_MEMBER_NAME_CHECKED(UCanvasPanelSlot, LayoutData);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	TSharedPtr<IPropertyHandle> LayoutData = PropertyHandle->GetChildHandle(LayoutDataName);
 	if ( LayoutData.IsValid() )
 	{
 		LayoutData->MarkHiddenByCustomization();
@@ -342,11 +379,11 @@ void FCanvasSlotCustomization::CustomizeAnchors(TSharedPtr<IPropertyHandle> Prop
 			.MenuContent()
 			[
 				SNew(SBorder)
-				//.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))FEditorStyle::GetBrush("WhiteBrush")/*FEditorStyle::GetBrush("ToolPanel.GroupBorder")*/)
+				//.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))FAppStyle::GetBrush("WhiteBrush")/*FAppStyle::GetBrush("ToolPanel.GroupBorder")*/)
 				.Padding(5)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 					.BorderBackgroundColor(FLinearColor(FColor(66, 139, 202)))
 					.Padding(0)
 					[
@@ -471,7 +508,7 @@ void FCanvasSlotCustomization::CustomizeAnchors(TSharedPtr<IPropertyHandle> Prop
 						.AutoHeight()
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+							.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 							.BorderBackgroundColor(FLinearColor(0.016f, 0.016f, 0.016f))
 							[
 								SNew(SVerticalBox)

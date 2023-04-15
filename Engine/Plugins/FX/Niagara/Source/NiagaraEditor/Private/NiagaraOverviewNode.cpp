@@ -17,6 +17,8 @@
 #include "GraphEditorActions.h"
 #include "Framework/Commands/GenericCommands.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraOverviewNode)
+
 #define LOCTEXT_NAMESPACE "NiagaraOverviewNodeStackItem"
 
 bool UNiagaraOverviewNode::bColorsAreInitialized = false;
@@ -63,6 +65,11 @@ static FNiagaraEmitterHandle* FindEmitterHandleByID(UNiagaraSystem* System, cons
 	}
 
 	return nullptr;
+}
+
+FNiagaraEmitterHandle* UNiagaraOverviewNode::TryGetEmitterHandle()
+{
+	return FindEmitterHandleByID(GetOwningSystem(), GetEmitterHandleGuid());
 }
 
 FText UNiagaraOverviewNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
@@ -216,6 +223,18 @@ void UNiagaraOverviewNode::GetNodeContextMenuActions(class UToolMenu* Menu, clas
 							FExecuteAction::CreateSP(EmitterHandleViewModel, &FNiagaraEmitterHandleViewModel::SetIsRenamePending, true)
 						)
 					);
+
+					Section.AddSeparator("DebugEmitterSplit");
+					Section.AddMenuEntry(
+						"DebugEmitter",
+						LOCTEXT("DebugEmitter", "Watch Emitter In Niagara Debugger"),
+						LOCTEXT("DebugEmitterToolTip", "Open Niagara Debugger and track this emitter in the world"),
+						FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateSP(EmitterHandleViewModel, &FNiagaraEmitterHandleViewModel::BeginDebugEmitter)
+						)
+					);
+					Section.AddSeparator("DebugEmitterSplit2");
 				}
 
 				Section.AddMenuEntry(
@@ -313,3 +332,4 @@ UNiagaraSystem* UNiagaraOverviewNode::GetOwningSystem()
 }
 
 #undef LOCTEXT_NAMESPACE
+

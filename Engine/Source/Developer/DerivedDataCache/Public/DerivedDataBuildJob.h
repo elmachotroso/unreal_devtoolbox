@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/StringFwd.h"
-#include "DerivedDataSharedStringFwd.h"
+#include "CoreTypes.h"
 #include "DerivedDataRequestTypes.h"
+#include "DerivedDataSharedStringFwd.h"
 
 template <typename FuncType> class TUniqueFunction;
 

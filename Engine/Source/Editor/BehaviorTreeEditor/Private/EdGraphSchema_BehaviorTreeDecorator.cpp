@@ -9,7 +9,7 @@
 #include "AIGraphTypes.h"
 #include "BehaviorTreeDecoratorGraphNode_Decorator.h"
 #include "BehaviorTreeDecoratorGraphNode_Logic.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ToolMenus.h"
 #include "BehaviorTreeEditorModule.h"
@@ -214,6 +214,21 @@ FLinearColor UEdGraphSchema_BehaviorTreeDecorator::GetPinTypeColor(const FEdGrap
 bool UEdGraphSchema_BehaviorTreeDecorator::ShouldHidePinDefaultValue(UEdGraphPin* Pin) const
 {
 	return true;
+}
+
+bool UEdGraphSchema_BehaviorTreeDecorator::IsCacheVisualizationOutOfDate(const int32 InVisualizationCacheID) const
+{
+	return CurrentCacheRefreshID != InVisualizationCacheID;
+}
+
+int32 UEdGraphSchema_BehaviorTreeDecorator::GetCurrentVisualizationCacheID() const
+{
+	return CurrentCacheRefreshID;
+}
+
+void UEdGraphSchema_BehaviorTreeDecorator::ForceVisualizationCacheClear() const
+{
+	++CurrentCacheRefreshID;
 }
 
 #undef LOCTEXT_NAMESPACE

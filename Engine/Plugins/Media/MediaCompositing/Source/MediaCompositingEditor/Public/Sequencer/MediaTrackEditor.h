@@ -3,7 +3,7 @@
 #pragma once
 
 #include "AnimatedPropertyKey.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "MovieSceneTrackEditor.h"
 #include "Templates/SharedPointer.h"
 
@@ -12,6 +12,7 @@ class FTrackEditorThumbnailPool;
 class UMediaSource;
 class UMovieSceneMediaTrack;
 
+DECLARE_EVENT_OneParam(FMediaTrackEditor, FOnBuildOutlinerEditWidget, FMenuBuilder&);
 
 /**
  * Track editor that understands how to animate MediaPlayer properties on objects
@@ -39,6 +40,12 @@ public:
 	 */
 	static TArray<FAnimatedPropertyKey, TInlineAllocator<1>> GetAnimatedPropertyTypes();
 
+	/**
+	 * Event for when we build the widget for adding to the track.
+	 * Hook into this if you want to add custom options.
+	 */
+	static FOnBuildOutlinerEditWidget OnBuildOutlinerEditWidget;
+
 public:
 
 	/**
@@ -64,6 +71,7 @@ public:
 	virtual bool SupportsType(TSubclassOf<UMovieSceneTrack> TrackClass) const override;
 	virtual void Tick(float DeltaTime) override;
 	virtual const FSlateBrush* GetIconBrush() const override;
+	virtual void OnRelease() override;
 
 protected:
 
@@ -77,10 +85,21 @@ protected:
 
 	void AddNewSectionEnterPressed(const TArray<FAssetData>& Asset, UMovieSceneMediaTrack* Track);
 
+	TSharedPtr<FTrackEditorThumbnailPool> GetThumbnailPool() const { return ThumbnailPool; }
 private:
 
 	/** Callback for executing the "Add Media Track" menu entry. */
 	void HandleAddMediaTrackMenuEntryExecute();
+	/** Callback for when some sequencer data like bindings change. */
+	void OnSequencerDataChanged(EMovieSceneDataChangeType DataChangeType);
+
+	/**
+	 * Updates a media track with the current binding information.
+	 * 
+	 * @param MediaTrack			Track to update.
+	 * @param Binding				Binding to get object from.
+	 */
+	void UpdateMediaTrackBinding(UMovieSceneMediaTrack* MediaTrack, const FMovieSceneBinding& Binding);
 
 private:
 

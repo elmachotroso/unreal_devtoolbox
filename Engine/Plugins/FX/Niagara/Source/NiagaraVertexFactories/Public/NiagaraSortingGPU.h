@@ -13,7 +13,6 @@ NiagaraSortingGPU.h: Niagara sorting shaders
 
 struct FNiagaraGPUSortInfo;
 
-extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUSortingUseMaxPrecision;
 extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUSortingCPUToGPUThreshold;
 extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUCullingCPUToGPUThreshold;
 
@@ -33,7 +32,8 @@ class NIAGARAVERTEXFACTORIES_API FNiagaraSortKeyGenCS : public FGlobalShader
 public:
 	class FEnableCulling : SHADER_PERMUTATION_BOOL("ENABLE_CULLING");
 	class FSortUsingMaxPrecision : SHADER_PERMUTATION_BOOL("SORT_MAX_PRECISION");
-	using FPermutationDomain = TShaderPermutationDomain<FEnableCulling, FSortUsingMaxPrecision>;
+	class FUseWaveOps : SHADER_PERMUTATION_BOOL("DIM_USE_WAVE_OPS");
+	using FPermutationDomain = TShaderPermutationDomain<FEnableCulling, FSortUsingMaxPrecision, FUseWaveOps>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, NIAGARAVERTEXFACTORIES_API)
 		SHADER_PARAMETER_SRV(Buffer, NiagaraParticleDataFloat)
@@ -75,10 +75,9 @@ public:
 		SHADER_PARAMETER_UAV(Buffer, OutCulledParticleCounts)
 	END_SHADER_PARAMETER_STRUCT()
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	static bool UseWaveOps(EShaderPlatform ShaderPlatform);
 };

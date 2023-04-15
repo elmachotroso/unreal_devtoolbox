@@ -4,10 +4,13 @@
 
 #if PLATFORM_HAS_BSD_SOCKETS || PLATFORM_HAS_BSD_IPV6_SOCKETS
 
+#ifndef USE_SOCKET_FEATURE_POLL
+	#define USE_SOCKET_FEATURE_POLL 1
+#endif
+
 #include "BSDSockets/IPAddressBSD.h"
 #include "BSDSockets/SocketSubsystemBSD.h"
 //#include "Net/NetworkProfiler.h"
-
 
 /* FSocket overrides
  *****************************************************************************/
@@ -601,7 +604,8 @@ bool FSocketBSD::SetLinger(bool bShouldLinger,int32 Timeout)
 	linger ling;
 
 	ling.l_onoff = bShouldLinger;
-	ling.l_linger = Timeout;
+	// The type of l_linger varies by platform.
+	ling.l_linger = IntCastChecked<decltype(ling.l_linger)>(Timeout);
 
 	return setsockopt(Socket,SOL_SOCKET,SO_LINGER,(char*)&ling,sizeof(ling)) == 0;
 }
@@ -707,7 +711,43 @@ bool FSocketBSD::SetIPv6Only(bool bIPv6Only)
 
 ESocketBSDReturn FSocketBSD::HasState(ESocketBSDParam State, FTimespan WaitTime)
 {
-#if PLATFORM_HAS_BSD_SOCKET_FEATURE_SELECT
+#if PLATFORM_HAS_BSD_SOCKET_FEATURE_POLL && USE_SOCKET_FEATURE_POLL
+	struct pollfd FDSet;
+	FDSet.fd = Socket;
+	FDSet.revents = 0;
+
+	switch (State)
+	{
+	case ESocketBSDParam::CanRead:
+		FDSet.events = POLLIN;
+		break;
+
+	case ESocketBSDParam::CanWrite:
+		FDSet.events = POLLOUT;
+		break;
+
+	case ESocketBSDParam::HasError:
+		FDSet.events = POLLERR | POLLPRI;
+		break;
+	}
+	int Result = ::poll(&FDSet, 1, (int)WaitTime.GetTotalMilliseconds());
+	if (Result >= 0)
+	{
+		if ((FDSet.revents & FDSet.events) > 0)
+		{
+			return ESocketBSDReturn::Yes;
+		}
+		else
+		{
+			return ESocketBSDReturn::No;
+		}
+	}
+	else
+	{
+		return ESocketBSDReturn::EncounteredError;
+	}
+
+#elif PLATFORM_HAS_BSD_SOCKET_FEATURE_SELECT
 	// convert WaitTime to a timeval
 	timeval Time;
 	Time.tv_sec = (int32)WaitTime.GetTotalSeconds();
@@ -726,15 +766,15 @@ ESocketBSDReturn FSocketBSD::HasState(ESocketBSDParam State, FTimespan WaitTime)
 	switch (State)
 	{
 	case ESocketBSDParam::CanRead:
-		SelectStatus = select(Socket + 1, &SocketSet, NULL, NULL, TimePointer);
+		SelectStatus = select(IntCastChecked<int>(Socket + 1), &SocketSet, NULL, NULL, TimePointer);
 		break;
 
 	case ESocketBSDParam::CanWrite:
-		SelectStatus = select(Socket + 1, NULL, &SocketSet, NULL, TimePointer);
+		SelectStatus = select(IntCastChecked<int>(Socket + 1), NULL, &SocketSet, NULL, TimePointer);
 		break;
 
 	case ESocketBSDParam::HasError:
-		SelectStatus = select(Socket + 1, NULL, NULL, &SocketSet, TimePointer);
+		SelectStatus = select(IntCastChecked<int>(Socket + 1), NULL, NULL, &SocketSet, TimePointer);
 		break;
 	}
 
@@ -743,7 +783,7 @@ ESocketBSDReturn FSocketBSD::HasState(ESocketBSDParam State, FTimespan WaitTime)
 		SelectStatus == 0 ? ESocketBSDReturn::No :
 		ESocketBSDReturn::EncounteredError;
 #else
-	UE_LOG(LogSockets, Fatal, TEXT("This platform doesn't support select(), but FSocketBSD::HasState was not overridden"));
+	UE_LOG(LogSockets, Fatal, TEXT("This platform doesn't support poll() or select(), but FSocketBSD::HasState was not overridden"));
 	return ESocketBSDReturn::EncounteredError;
 #endif
 }

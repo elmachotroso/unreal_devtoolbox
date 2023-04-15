@@ -11,6 +11,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/SProfilerWindow.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "ProfilerStyle.h"
 
 /**
  * Implements the FProfilerModule module.
@@ -22,7 +23,10 @@ public:
 
 	virtual TSharedRef<SWidget> CreateProfilerWindow( const TSharedRef<ISessionManager>& InSessionManager, const TSharedRef<SDockTab>& ConstructUnderMajorTab ) override;
 
-	virtual void StartupModule() override { }
+	virtual void StartupModule() override 
+	{ 
+		FProfilerStyle::Get();
+	}
 	virtual void ShutdownModule() override;
 
 	virtual bool SupportsDynamicReloading() override
@@ -50,6 +54,7 @@ IMPLEMENT_MODULE( FProfilerModule, Profiler );
 
 TSharedRef<SWidget> FProfilerModule::CreateProfilerWindow( const TSharedRef<ISessionManager>& InSessionManager, const TSharedRef<SDockTab>& ConstructUnderMajorTab )
 {
+#if STATS
 	FProfilerManager::Initialize( InSessionManager );
 	TSharedRef<SProfilerWindow> ProfilerWindow = SNew( SProfilerWindow );
 	FProfilerManager::Get()->AssignProfilerWindow( ProfilerWindow );
@@ -57,20 +62,28 @@ TSharedRef<SWidget> FProfilerModule::CreateProfilerWindow( const TSharedRef<ISes
 	ConstructUnderMajorTab->SetOnTabClosed( SDockTab::FOnTabClosedCallback::CreateRaw( this, &FProfilerModule::Shutdown ) );
 
 	return ProfilerWindow;
+#else
+	return SNew(SBox);
+#endif // STATS
 }
 
 void FProfilerModule::ShutdownModule()
 {
+	FProfilerStyle::Shutdown();
+#if STATS
 	if (FProfilerManager::Get().IsValid())
 	{
 		FProfilerManager::Get()->Shutdown();
 	}
+#endif // STATS
 }
 
 void FProfilerModule::Shutdown( TSharedRef<SDockTab> TabBeingClosed )
 {
+#if STATS
 	FProfilerManager::Get()->Shutdown();
 	TabBeingClosed->SetOnTabClosed( SDockTab::FOnTabClosedCallback() );
+#endif // STATS
 }
 
 /*-----------------------------------------------------------------------------
@@ -79,6 +92,7 @@ void FProfilerModule::Shutdown( TSharedRef<SDockTab> TabBeingClosed )
 
 void FProfilerModule::StatsMemoryDumpCommand( const TCHAR* Filename )
 {
+#if STATS
 	TUniquePtr<FRawStatsMemoryProfiler> Instance( FStatsReader<FRawStatsMemoryProfiler>::Create( Filename ) );
 	if (Instance)
 	{
@@ -142,6 +156,7 @@ void FProfilerModule::StatsMemoryDumpCommand( const TCHAR* Filename )
 #endif // UE_BUILD_DEBUG
 		}
 	}
+#endif // STATS
 }
 
 
@@ -151,13 +166,13 @@ void FProfilerModule::StatsMemoryDumpCommand( const TCHAR* Filename )
 
 FRawStatsMemoryProfiler* FProfilerModule::OpenRawStatsForMemoryProfiling( const TCHAR* Filename )
 {
+#if STATS
 	FRawStatsMemoryProfiler* Instance = FStatsReader<FRawStatsMemoryProfiler>::Create( Filename );
 	if (Instance)
 	{
 		Instance->ReadAndProcessAsynchronously();
 	}
 	return Instance;
+#endif // STATS
+	return nullptr;
 }
-
-
-

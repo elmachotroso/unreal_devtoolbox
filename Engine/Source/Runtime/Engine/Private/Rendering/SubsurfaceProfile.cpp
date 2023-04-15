@@ -8,12 +8,22 @@
 #include "RenderTargetPool.h"
 #include "PixelShaderUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SubsurfaceProfile)
+
 DEFINE_LOG_CATEGORY_STATIC(LogSubsurfaceProfile, Log, All);
 
 static TAutoConsoleVariable<int32> CVarSSProfilesPreIntegratedTextureResolution(
 	TEXT("r.SSProfilesPreIntegratedTextureResolution"),
 	64,
 	TEXT("The resolution of the subsurface profile preintegrated texture.\n"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarSSProfilesSamplingChannelSelection(
+	TEXT("r.SSProfilesSamplingChannelSelection"),
+	1,
+	TEXT("0. Select the sampling channel based on max DMFP.\n")
+	TEXT("1. based on max MFP."),
 	ECVF_RenderThreadSafe
 );
 
@@ -68,6 +78,50 @@ void UpgradeSeparableToBurley(FSubsurfaceProfileStruct& Settings)
 	Settings.bEnableBurley = true;
 }
 
+// Match the magic number in BurleyNormalizedSSSCommon.ush
+const float Dmfp2MfpMagicNumber = 0.6f;
+
+void UpgradeDiffuseMeanFreePathToMeanFreePath(FSubsurfaceProfileStruct& Settings)
+{
+	// 1. Update dmfp to mean free path
+	const float CmToMm = 10.0f;
+	
+	FLinearColor OldDmfp = Settings.MeanFreePathColor * Settings.MeanFreePathDistance;
+	
+	FLinearColor Mfp = GetMeanFreePathFromDiffuseMeanFreePath(Settings.SurfaceAlbedo, OldDmfp);
+	Mfp *= Dmfp2MfpMagicNumber;
+
+	Settings.MeanFreePathDistance = FMath::Max3(Mfp.R, Mfp.G, Mfp.B);
+	Settings.MeanFreePathColor = Mfp / Settings.MeanFreePathDistance;
+
+	// Support mfp < 0.1f
+	if (Settings.MeanFreePathDistance < 0.1f)
+	{
+		Settings.MeanFreePathColor = Settings.MeanFreePathColor * (Settings.MeanFreePathDistance / 0.1f);
+		Settings.MeanFreePathDistance = 0.1f;
+	}
+
+	Settings.bEnableMeanFreePath = true;
+
+	//2. Fix scaling
+	// Previously, the scaling is scaled up by 1/(SUBSURFACE_KERNEL_SIZE / BURLEY_CM_2_MM). To maintain the same
+	// visual appearance, apply that scale up to world unit scale
+	Settings.WorldUnitScale /= (SUBSURFACE_KERNEL_SIZE / CmToMm);
+}
+
+void UpgradeSubsurfaceProfileParameters(FSubsurfaceProfileStruct& Settings)
+{
+	if (!Settings.bEnableBurley)
+	{
+		UpgradeSeparableToBurley(Settings);
+	}
+
+	if (!Settings.bEnableMeanFreePath)
+	{
+		UpgradeDiffuseMeanFreePathToMeanFreePath(Settings);
+	}
+}
+
 FSubsurfaceProfileTexture::FSubsurfaceProfileTexture()
 {
 	check(IsInGameThread());
@@ -75,7 +129,7 @@ FSubsurfaceProfileTexture::FSubsurfaceProfileTexture()
 	FSubsurfaceProfileStruct DefaultSkin;
 
 	//The default burley in slot 0 behaves the same as Separable previously
-	UpgradeSeparableToBurley(DefaultSkin);
+	UpgradeSubsurfaceProfileParameters(DefaultSkin);
 
 	// add element 0, it is used as default profile
 	SubsurfaceProfileEntries.Add(FSubsurfaceProfileEntry(DefaultSkin, 0));
@@ -204,7 +258,7 @@ IPooledRenderTarget* FSubsurfaceProfileTexture::GetSSProfilesPreIntegratedTextur
 	int32 SSProfilesPreIntegratedTextureResolution = FMath::RoundUpToPowerOfTwo(FMath::Max(CVarSSProfilesPreIntegratedTextureResolution.GetValueOnAnyThread(), 32));
 	
 	// Generate the new preintegrated texture if needed.
-	if (!GSSProfilesPreIntegratedTexture || 
+	if (!GSSProfilesPreIntegratedTexture ||
 		GSSProfilesPreIntegratedTexture->GetDesc().Extent != SSProfilesPreIntegratedTextureResolution ||
 		ForceUpdateSSProfilesPreIntegratedTexture())
 	{
@@ -242,7 +296,7 @@ IPooledRenderTarget* FSubsurfaceProfileTexture::GetSSProfilesPreIntegratedTextur
 			FPixelShaderUtils::AddFullscreenPass(GraphBuilder, GlobalShaderMap, RDG_EVENT_NAME("SSS::SSProfilePreIntegrated"), PixelShader, PassParameters, ViewRect);
 		}
 
-		GSSProfilesPreIntegratedTexture = ConvertToFinalizedExternalTexture(GraphBuilder, ProfileTexture);
+		GSSProfilesPreIntegratedTexture = ConvertToExternalAccessTexture(GraphBuilder, ProfileTexture);
 	}
 
 	return GSSProfilesPreIntegratedTexture;
@@ -295,8 +349,10 @@ static float GetNextSmallerPositiveFloat(float x)
 #define ENC_WORLDUNITSCALE_IN_CM_TO_UNIT 0.02f
 #define DEC_UNIT_TO_WORLDUNITSCALE_IN_CM 1/ENC_WORLDUNITSCALE_IN_CM_TO_UNIT
 
-// Make sure UIMax|ClampMax of DiffuseMeanFreePath * 10(cm to mm) * ENC_DIFFUSEMEANFREEPATH_IN_MM_TO_UNIT <= 1
-//
+// Make sure DiffuseMeanFreePath * 10(cm to mm) * ENC_DIFFUSEMEANFREEPATH_IN_MM_TO_UNIT <= 1
+// Although UI switches to mean free path, the diffuse mean free path is maintained to have the 
+// same range as before [0, 50] cm.
+// 1 mfp can map to 1.44 dmfp (surface albedo -> 0.0) or 43.50 dmfp (surface albedo -> 1.0).
 #define ENC_DIFFUSEMEANFREEPATH_IN_MM_TO_UNIT (0.01f*0.2f)
 #define DEC_UNIT_TO_DIFFUSEMEANFREEPATH_IN_MM 1/ENC_DIFFUSEMEANFREEPATH_IN_MM_TO_UNIT
 //------------------------------------------------------------------------------------------
@@ -325,14 +381,21 @@ FLinearColor DecodeDiffuseMeanFreePath(FLinearColor EncodedDiffuseMeanFreePath)
 
 void SetupSurfaceAlbedoAndDiffuseMeanFreePath(FLinearColor& SurfaceAlbedo, FLinearColor& Dmfp)
 {
+	int32 SamplingSelectionMethod = FMath::Clamp(CVarSSProfilesSamplingChannelSelection.GetValueOnAnyThread(), 0, 1);
+	FLinearColor Distance = SamplingSelectionMethod == 0 ?
+		Dmfp															// 0: by max diffuse mean free path
+		: GetMeanFreePathFromDiffuseMeanFreePath(SurfaceAlbedo, Dmfp);	// 1: by max mean free path
 	//Store the value that corresponds to the largest Dmfp (diffuse mean free path) channel to A channel.
 	//This is an optimization to shift finding the max correspondence workload
 	//to CPU.
-	const float MaxDmfpComp = FMath::Max3(Dmfp.R, Dmfp.G, Dmfp.B);
-	const uint32 IndexOfMaxDmfp = (Dmfp.R == MaxDmfpComp) ? 0 : ((Dmfp.G == MaxDmfpComp) ? 1 : 2);
+	const float MaxComp = FMath::Max3(Distance.R, Distance.G, Distance.B);
+	const uint32 IndexOfMaxComp = (Distance.R == MaxComp) ? 0 : ((Distance.G == MaxComp) ? 1 : 2);
 
-	SurfaceAlbedo.A = SurfaceAlbedo.Component(IndexOfMaxDmfp);
-	Dmfp.A = MaxDmfpComp;
+	SurfaceAlbedo.A = SurfaceAlbedo.Component(IndexOfMaxComp);
+	Dmfp.A = Dmfp.Component(IndexOfMaxComp);
+
+	// Apply clamping so that dmfp is within encoding range.
+	Dmfp = Dmfp.GetClamped(0.0f, DEC_UNIT_TO_DIFFUSEMEANFREEPATH_IN_MM);
 }
 
 float Sqrt2(float X)
@@ -368,7 +431,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 
 	// Write the contents of the texture.
 	uint32 DestStride;
-	uint8* DestBuffer = (uint8*)RHICmdList.LockTexture2D((FTexture2DRHIRef&)GSSProfiles->GetRenderTargetItem().ShaderResourceTexture, 0, RLM_WriteOnly, DestStride, false);
+	uint8* DestBuffer = (uint8*)RHICmdList.LockTexture2D(GSSProfiles->GetRHI(), 0, RLM_WriteOnly, DestStride, false);
 
 	FLinearColor TextureRow[Width];
 	FMemory::Memzero(TextureRow);
@@ -378,6 +441,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 	// 0.0001f turned out to be too small to fix the issue (for a small KernelSize)
 	const float Bias = 0.009f;
 	const float CmToMm = 10.f;
+	const float MmToCm = 0.1f;
 	const float FloatScaleInitial = 0x10000;
 	const float FloatScale = GetNextSmallerPositiveFloat(FloatScaleInitial);
 	check((int32)GetNextSmallerPositiveFloat(FloatScaleInitial) == (FloatScaleInitial - 1));
@@ -385,6 +449,9 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 	for (uint32 y = 0; y < Height; ++y)
 	{
 		FSubsurfaceProfileStruct Data = SubsurfaceProfileEntries[y].Settings;
+
+		// Fix for postload() not yet called.
+		UpgradeSubsurfaceProfileParameters(Data);
 
 		Data.Tint = Data.Tint.GetClamped();
 		Data.FalloffColor = Data.FalloffColor.GetClamped(Bias);
@@ -399,7 +466,18 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 		
 		const float UnitToCm = Data.WorldUnitScale;
 
-		FLinearColor DifffuseMeanFreePathInMm = (Data.MeanFreePathColor*Data.MeanFreePathDistance) * CmToMm; // convert cm to mm.
+		FLinearColor DifffuseMeanFreePathInMm;
+
+		if (Data.bEnableMeanFreePath)
+		{
+			DifffuseMeanFreePathInMm = GetDiffuseMeanFreePathFromMeanFreePath(Data.SurfaceAlbedo, Data.MeanFreePathColor * Data.MeanFreePathDistance) * CmToMm / Dmfp2MfpMagicNumber;
+		}
+		else
+		{
+			DifffuseMeanFreePathInMm = (Data.MeanFreePathColor * Data.MeanFreePathDistance) * CmToMm;
+			UE_LOG(LogSubsurfaceProfile, Warning, TEXT("DMFP has already been upgraded to MFP. Should not reach here."));
+		}
+
 		SetupSurfaceAlbedoAndDiffuseMeanFreePath(Data.SurfaceAlbedo, DifffuseMeanFreePathInMm);
 		TextureRow[BSSS_SURFACEALBEDO_OFFSET] = Data.SurfaceAlbedo;
 		TextureRow[BSSS_DMFP_OFFSET] = EncodeDiffuseMeanFreePath(DifffuseMeanFreePathInMm);
@@ -409,11 +487,9 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 		TextureRow[SSSS_BOUNDARY_COLOR_BLEED_OFFSET].A = Data.bEnableBurley ? SSS_TYPE_BURLEY : SSS_TYPE_SSSS;
 
 		float MaterialRoughnessToAverage = Data.Roughness0 * (1.0f - Data.LobeMix) + Data.Roughness1 * Data.LobeMix;
-		float AverageToRoughness0 = Data.Roughness0 / MaterialRoughnessToAverage;
-		float AverageToRoughness1 = Data.Roughness1 / MaterialRoughnessToAverage;
 
-		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].R = FMath::Clamp(AverageToRoughness0 / SSSS_MAX_DUAL_SPECULAR_ROUGHNESS, 0.0f, 1.0f);
-		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].G = FMath::Clamp(AverageToRoughness1 / SSSS_MAX_DUAL_SPECULAR_ROUGHNESS, 0.0f, 1.0f);
+		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].R = FMath::Clamp(Data.Roughness0 / SSSS_MAX_DUAL_SPECULAR_ROUGHNESS, 0.0f, 1.0f);
+		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].G = FMath::Clamp(Data.Roughness1 / SSSS_MAX_DUAL_SPECULAR_ROUGHNESS, 0.0f, 1.0f);
 		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].B = Data.LobeMix;
 		TextureRow[SSSS_DUAL_SPECULAR_OFFSET].A = FMath::Clamp(MaterialRoughnessToAverage / SSSS_MAX_DUAL_SPECULAR_ROUGHNESS, 0.0f, 1.0f);
 
@@ -425,20 +501,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 
 		if (Data.bEnableBurley)
 		{
-
-			// When we need performance, we fallback Burley to Separable. In order to achieve that, we estimate Separable parameters
-			// from Burley. This fallback has two two advantages:
-			// 1. Burley Fallback is more expressive than Separable. It can use Burley's scattering profile with hdr dmfp. The original
-			//    separable can only use a fixed dmfp around 2.229 based on the fitting. Because of this, the fallback Separable can be
-			//    used to express any materials. Since we have Burley parameters set, the transmittance profile can also go physically
-			//    more expressive. We can have better transmittance.
-			// 2. It runs faster than Burley. Burley has already been optimized. However, under extreme and rare conditions, it can go slow. 
-			//    If fps is critical even under extreme conditions, we can use Burley Fallback. Under normal setting, it does not have too
-			//    much visual difference. And it looks more appealing than the original one.
-
-			// Estimate the scatter radius based on the mean free path distance and the path color. 0.1f is the minimal value shown in the GUI.
-			// 2.229f is divided because of fitting relationship between falloff color and dmfp that has a scale of 2.229.
-			Data.ScatterRadius = FMath::Max(Data.MeanFreePathDistance*Data.MeanFreePathColor.GetMax()/2.229f, 0.1f);
+			Data.ScatterRadius = FMath::Max(DifffuseMeanFreePathInMm.GetMax()*MmToCm, 0.1f);
 
 			ComputeMirroredBSSSKernel(&TextureRow[SSSS_KERNEL0_OFFSET], SSSS_KERNEL0_SIZE, Data.SurfaceAlbedo,
 				DifffuseMeanFreePathInMm, Data.ScatterRadius);
@@ -447,11 +510,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 			ComputeMirroredBSSSKernel(&TextureRow[SSSS_KERNEL2_OFFSET], SSSS_KERNEL2_SIZE, Data.SurfaceAlbedo,
 				DifffuseMeanFreePathInMm, Data.ScatterRadius);
 
-			// Then, scale up by world unit scale and the fitting parameters to affect screen space sampling location.
-			// For high irradiance, the lose of energy due to insufficient sampling count needs to be compensated to
-			// make Burley fallback looks the same to Burley. Set 1.0f when we have enough samples.
-			const float SamplingCountCompensation = 0.707f;
-			Data.ScatterRadius *= (Data.WorldUnitScale * 10.0f)*2.229f* SamplingCountCompensation;
+			Data.ScatterRadius *= (Data.WorldUnitScale * 10.0f);
 		}
 		else
 		{
@@ -533,7 +592,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 		}
 	}
 
-	RHICmdList.UnlockTexture2D((FTexture2DRHIRef&)GSSProfiles->GetRenderTargetItem().ShaderResourceTexture, 0, false);
+	RHICmdList.UnlockTexture2D(GSSProfiles->GetRHI(), 0, false);
 }
 
 TCHAR MiniFontCharFromIndex(uint32 Index)
@@ -693,6 +752,7 @@ void USubsurfaceProfile::PostEditChangeProperty(struct FPropertyChangedEvent& Pr
 {
 	const FSubsurfaceProfileStruct SettingsLocal = this->Settings;
 	USubsurfaceProfile* Profile = this;
+	GetRendererModule().InvalidatePathTracedOutput();
 	ENQUEUE_RENDER_COMMAND(UpdateSubsurfaceProfile)(
 		[SettingsLocal, Profile](FRHICommandListImmediate& RHICmdList)
 		{
@@ -705,19 +765,6 @@ void USubsurfaceProfile::PostLoad()
 {
 	Super::PostLoad();
 
-	const auto CVar = IConsoleManager::Get().
-		FindTConsoleVariableDataInt(TEXT("r.SSS.Burley.AlwaysUpdateParametersFromSeparable"));
-	if (CVar)
-	{
-		const bool bUpdateBurleyParametersFromSeparable = CVar->GetValueOnAnyThread() == 1;
-
-		if (!Settings.bEnableBurley
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			|| bUpdateBurleyParametersFromSeparable
-#endif
-			)
-		{
-			UpgradeSeparableToBurley(Settings);
-		}
-	}
+	UpgradeSubsurfaceProfileParameters(this->Settings);
 }
+

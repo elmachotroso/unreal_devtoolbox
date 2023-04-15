@@ -14,7 +14,7 @@
 #include "CollectionManagerModule.h"
 #include "GameDelegates.h"
 #include "ICollectionManager.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 #include "Misc/FileHelper.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
 #include "Stats/StatsMisc.h"
@@ -37,7 +37,7 @@
 
 #include "LevelEditor.h"
 #include "GraphEditorModule.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/World.h"
 #include "Misc/App.h"
 #include "GenericPlatform/GenericPlatformFile.h"
@@ -62,8 +62,8 @@
 #include "Misc/MessageDialog.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Misc/ScopedSlowTask.h"
-#include "Editor/StatsViewer/Public/IStatsViewer.h"
-#include "Editor/StatsViewer/Public/StatsViewerModule.h"
+#include "IStatsViewer.h"
+#include "StatsViewerModule.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "ToolMenus.h"
 #include "Toolkits/AssetEditorToolkitMenuContext.h"
@@ -178,7 +178,7 @@ TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetIdSelector(FOnGet
 			SNew(STextBlock)
 			.Text(OnGetObjectText)
 			.ToolTipText(OnGetObjectText)
-			.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+			.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 		];
 }
 
@@ -261,14 +261,17 @@ FAssetData IAssetManagerEditorModule::CreateFakeAssetDataFromPrimaryAssetId(cons
 {
 	FString PackageNameString = PrimaryAssetFakeAssetDataPackagePath.ToString() / PrimaryAssetId.PrimaryAssetType.ToString();
 
-	return FAssetData(*PackageNameString, PrimaryAssetFakeAssetDataPackagePath, PrimaryAssetId.PrimaryAssetName, PrimaryAssetId.PrimaryAssetType);
+	// Need to make sure the package part of FTopLevelAssetPath is set otherwise it's gonna be invalid
+	FTopLevelAssetPath FakeAssetClass(PrimaryAssetId.PrimaryAssetType, PrimaryAssetId.PrimaryAssetType);
+	return FAssetData(*PackageNameString, PrimaryAssetFakeAssetDataPackagePath, PrimaryAssetId.PrimaryAssetName, FakeAssetClass);
 }
 
 FPrimaryAssetId IAssetManagerEditorModule::ExtractPrimaryAssetIdFromFakeAssetData(const FAssetData& InAssetData)
 {
 	if (InAssetData.PackagePath == PrimaryAssetFakeAssetDataPackagePath)
 	{
-		return FPrimaryAssetId(InAssetData.AssetClass, InAssetData.AssetName);
+		// See how CreateFakeAssetDataFromPrimaryAssetId stores the asset type inside of FTopLevelAssetPath
+		return FPrimaryAssetId(InAssetData.AssetClassPath.GetAssetName(), InAssetData.AssetName);
 	}
 	return FPrimaryAssetId();
 }
@@ -334,10 +337,10 @@ private:
 
 	//Prints all dependency chains from the PackageName to any dependency of one of the given class names.
 	//If the package name is a path rather than a package, then it will do this for each package in the path.
-	void FindClassDependencies(FName PackagePath, const TArray<FName>& TargetClasses, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags);
+	void FindClassDependencies(FName PackagePath, const TArray<FTopLevelAssetPath>& TargetClasses, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags);
 
 	bool GetPackageDependencyChain(FName SourcePackage, FName TargetPackage, TArray<FName>& VisitedPackages, TArray<FName>& OutDependencyChain, UE::AssetRegistry::EDependencyQuery RequiredFlags);
-	void GetPackageDependenciesPerClass(FName SourcePackage, const TArray<FName>& TargetClasses, TArray<FName>& VisitedPackages, TArray<FName>& OutDependentPackages, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags);
+	void GetPackageDependenciesPerClass(FName SourcePackage, const TArray<FTopLevelAssetPath>& TargetClasses, TArray<FName>& VisitedPackages, TArray<FName>& OutDependentPackages, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags);
 
 	void LogAssetsWithMultipleLabels();
 	bool CreateOrEmptyCollection(FName CollectionName, ECollectionShareType::Type ShareType);
@@ -932,7 +935,7 @@ void FAssetManagerEditorModule::ExtendContentBrowserAssetSelectionMenu()
 	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
 		UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
-		if (Context && Context->bCanBeModified && Context->SelectedObjects.Num() > 0)
+		if (Context && Context->bCanBeModified && Context->SelectedAssets.Num() > 0)
 		{
 			FAssetManagerEditorModule::CreateAssetContextMenu(InSection);
 		}
@@ -1212,14 +1215,14 @@ bool FAssetManagerEditorModule::GetStringValueForCustomColumn(const FAssetData& 
 		if (CurrentRegistrySource->bIsEditor)
 		{
 			// The in-memory data is wrong, ask the asset manager
-			AssetManager.GetPackageChunkIds(AssetData.PackageName, CurrentRegistrySource->TargetPlatform, AssetData.ChunkIDs, FoundChunks);
+			AssetManager.GetPackageChunkIds(AssetData.PackageName, CurrentRegistrySource->TargetPlatform, AssetData.GetChunkIDs(), FoundChunks);
 		}
 		else
 		{
-			FAssetData PlatformData = CurrentRegistrySource->GetAssetByObjectPath(AssetData.ObjectPath);
+			FAssetData PlatformData = CurrentRegistrySource->GetAssetByObjectPath(AssetData.GetSoftObjectPath());
 			if (PlatformData.IsValid())
 			{
-				FoundChunks = MoveTemp(PlatformData.ChunkIDs);
+				FoundChunks = PlatformData.GetChunkIDs();
 			}
 		}
 		
@@ -1588,7 +1591,7 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 
 				NewState->Serialize(SerializedAssetData, Options);
 
-				if (NewState->GetObjectPathToAssetDataMap().Num() > 0)
+				if (NewState->GetNumAssets() > 0)
 				{
 					bLoaded = true;
 					CurrentRegistrySource->SetRegistryState(NewState);
@@ -1619,17 +1622,16 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 				// Iterate assets and look for chunks
 				const FAssetRegistryState* RegistryState = CurrentRegistrySource->GetOwnedRegistryState();
 				checkf(RegistryState, TEXT("Should be non-null because HasRegistry() && !bIsEditor"));
-				const TMap<FName, const FAssetData*>& AssetDataMap = RegistryState->GetObjectPathToAssetDataMap();
 
-				for (const TPair<FName, const FAssetData*>& Pair : AssetDataMap)
+				RegistryState->EnumerateAllAssets([&RegistryState, this](const FAssetData& AssetData)
 				{
-					const FAssetData& AssetData = *Pair.Value;
-					if (AssetData.ChunkIDs.Num() > 0)
+					const FAssetData::FChunkArrayView ChunkIDs = AssetData.GetChunkIDs();
+					if (!ChunkIDs.IsEmpty())
 					{
 						TArray<FAssetIdentifier> ManagerAssets;
 						RegistryState->GetReferencers(AssetData.PackageName, ManagerAssets, UE::AssetRegistry::EDependencyCategory::Manage);
 
-						for (int32 ChunkId : AssetData.ChunkIDs)
+						for (int32 ChunkId : ChunkIDs)
 						{
 							FPrimaryAssetId ChunkAssetId = UAssetManager::CreatePrimaryAssetIdFromChunkId(ChunkId);
 							
@@ -1668,7 +1670,7 @@ void FAssetManagerEditorModule::SetCurrentRegistrySource(const FString& SourceNa
 							}
 						}
 					}
-				}
+				});
 			}
 
 			CurrentRegistrySource->bManagementDataInitialized = true;
@@ -1905,12 +1907,19 @@ void FAssetManagerEditorModule::PerformDependencyClassConsoleCommand(const TArra
 	UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags = UE::AssetRegistry::EDependencyQuery::NoRequirements;
 
 	FName SourcePackagePath = FName(*Args[0].ToLower());
-	TArray<FName> TargetClasses;
+	TArray<FTopLevelAssetPath> TargetClasses;
 	for (int32 i = 1; i < Args.Num(); ++i)
 	{
 		if (!GetDependencyTypeArg(Args[i], RequiredDependencyFlags))
 		{
-			TargetClasses.AddUnique(FName(*Args[i]));
+			if (!FPackageName::IsShortPackageName(Args[i]))
+			{
+				TargetClasses.AddUnique(FTopLevelAssetPath(Args[i]));
+			}
+			else
+			{
+				UE_LOG(LogClass, Warning, TEXT("Short class names are not supported: %s"), *Args[i]);
+			}
 		}
 	}
 
@@ -1978,7 +1987,7 @@ bool FAssetManagerEditorModule::GetPackageDependencyChain(FName SourcePackage, F
 	return false;
 }
 
-void FAssetManagerEditorModule::GetPackageDependenciesPerClass(FName SourcePackage, const TArray<FName>& TargetClasses, TArray<FName>& VisitedPackages, TArray<FName>& OutDependentPackages, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags)
+void FAssetManagerEditorModule::GetPackageDependenciesPerClass(FName SourcePackage, const TArray<FTopLevelAssetPath>& TargetClasses, TArray<FName>& VisitedPackages, TArray<FName>& OutDependentPackages, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags)
 {
 	//avoid crashing from circular dependencies.
 	if (VisitedPackages.Contains(SourcePackage))
@@ -2003,7 +2012,7 @@ void FAssetManagerEditorModule::GetPackageDependenciesPerClass(FName SourcePacka
 
 	FARFilter Filter;
 	Filter.PackageNames.Add(SourcePackage);
-	Filter.ClassNames = TargetClasses;
+	Filter.ClassPaths = TargetClasses;
 	Filter.bIncludeOnlyOnDiskAssets = true;
 
 	TArray<FAssetData> PackageAssets;
@@ -2059,7 +2068,7 @@ void FAssetManagerEditorModule::FindReferenceChains(FName TargetPackageName, FNa
 	}
 }
 
-void FAssetManagerEditorModule::FindClassDependencies(FName SourcePackageName, const TArray<FName>& TargetClasses, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags)
+void FAssetManagerEditorModule::FindClassDependencies(FName SourcePackageName, const TArray<FTopLevelAssetPath>& TargetClasses, UE::AssetRegistry::EDependencyQuery RequiredDependencyFlags)
 {
 	TArray<FAssetData> PackageAssets;
 	if (!AssetRegistry->GetAssetsByPackageName(SourcePackageName, PackageAssets))
@@ -2091,16 +2100,16 @@ void FAssetManagerEditorModule::FindClassDependencies(FName SourcePackageName, c
 
 			FARFilter Filter;
 			Filter.PackageNames.Add(DependencyPackage);
-			Filter.ClassNames = TargetClasses;
+			Filter.ClassPaths = TargetClasses;
 			Filter.bIncludeOnlyOnDiskAssets = true;
 
 			if (AssetRegistry->GetAssets(Filter, DepAssets))
 			{
 				for (const FAssetData& DepAsset : DepAssets)
 				{
-					if (TargetClasses.Contains(DepAsset.AssetClass))
+					if (TargetClasses.Contains(DepAsset.AssetClassPath))
 					{
-						UE_LOG(LogAssetManagerEditor, Log, TEXT("Asset: %s class: %s"), *DepAsset.AssetName.ToString(), *DepAsset.AssetClass.ToString());
+						UE_LOG(LogAssetManagerEditor, Log, TEXT("Asset: %s class: %s"), *DepAsset.AssetName.ToString(), *DepAsset.AssetClassPath.ToString());
 					}
 				}
 			}
@@ -2283,7 +2292,7 @@ bool FAssetManagerEditorModule::WriteCollection(FName CollectionName, ECollectio
 	FText ResultsMessage;
 	bool bSuccess = false;
 
-	TSet<FName> ObjectPathsToAddToCollection;
+	TSet<FSoftObjectPath> ObjectPathsToAddToCollection;
 
 	FARFilter Filter;
 	Filter.PackageNames = PackageNames;
@@ -2292,7 +2301,7 @@ bool FAssetManagerEditorModule::WriteCollection(FName CollectionName, ECollectio
 	AssetRegistry->GetAssets(Filter, AssetsInPackages);
 	for (const FAssetData& AssetData : AssetsInPackages)
 	{
-		ObjectPathsToAddToCollection.Add(AssetData.ObjectPath);
+		ObjectPathsToAddToCollection.Add(AssetData.GetSoftObjectPath());
 	}
 
 	if (ObjectPathsToAddToCollection.Num() == 0)
@@ -2301,8 +2310,10 @@ bool FAssetManagerEditorModule::WriteCollection(FName CollectionName, ECollectio
 		ResultsMessage = FText::Format(LOCTEXT("NothingToAddToCollection", "Nothing to add to collection {0}"), FText::FromName(CollectionName));
 	}
 	else if (CreateOrEmptyCollection(CollectionName, ShareType))
-	{		
-		if (CollectionManager.AddToCollection(CollectionName, ECollectionShareType::CST_Local, ObjectPathsToAddToCollection.Array()))
+	{	
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (CollectionManager.AddToCollection(CollectionName, ECollectionShareType::CST_Local, UE::SoftObjectPath::Private::ConvertSoftObjectPaths(ObjectPathsToAddToCollection.Array())))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			UE_LOG(LogAssetManagerEditor, Log, TEXT("Updated collection %s"), *CollectionName.ToString());
 			ResultsMessage = FText::Format(LOCTEXT("CreateCollectionSucceeded", "Updated collection {0}"), FText::FromName(CollectionName));

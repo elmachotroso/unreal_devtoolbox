@@ -61,14 +61,14 @@ namespace Metasound
 
 			static const FVertexInterface Interface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)), 
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputModulationRate), 0.5f),
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputModulationDepth), 0.5f),
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCenterDelay), 0.5f),
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputMixLevel), 0.5f)
+					TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)), 
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputModulationRate), 0.5f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputModulationDepth), 0.5f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCenterDelay), 0.5f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputMixLevel), 0.5f)
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudio))
+					TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudio))
 				)
 			);
 
@@ -147,6 +147,9 @@ namespace Metasound
 			// Copy input audio into aligned buffer
 			AlignedAudioIn.Reset();
 			AlignedAudioIn.Append(InputAudio, NumFrames);
+
+			AlignedAudioOut.Reset();
+			AlignedAudioOut.AddUninitialized(NumFrames);
 
 			Flanger.ProcessAudio(AlignedAudioIn, NumFrames, AlignedAudioOut);
 			FMemory::Memcpy(OutputAudio, AlignedAudioOut.GetData(), sizeof(float) * NumFrames);

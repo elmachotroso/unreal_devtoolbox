@@ -1,8 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PointLightComponentVisualizer.h"
-#include "SceneManagement.h"
+
+#include "Components/ActorComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Containers/ContainersFwd.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/Texture.h"
+#include "Engine/TextureDefines.h"
+#include "Engine/TextureLightProfile.h"
+#include "Math/Axis.h"
+#include "Math/Color.h"
+#include "Math/Float16.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
+#include "ShowFlags.h"
+#include "Templates/Casts.h"
+#include "Templates/Function.h"
+#include "UObject/ObjectPtr.h"
 
 
 
@@ -78,14 +96,14 @@ namespace TextureLightProfileVisualizerImpl
 		FVector LocalToLight = InvLightTransform.TransformVector( ToLight );
 
 		// -1..1
-		float DotProd = FVector::DotProduct(ToLight, LightDirection);
+		double DotProd = FVector::DotProduct(ToLight, LightDirection);
 		// -PI..PI (this distortion could be put into the texture but not without quality loss or more memory)
-		float Angle = FMath::Asin(DotProd);
+		float Angle = (float)FMath::Asin(DotProd);
 		// 0..1
-		float NormAngle = Angle / PI + 0.5f;
+		float NormAngle = Angle / UE_PI + 0.5f;
 
-		float TangentAngle = FMath::Atan2( -LocalToLight.Z, -LocalToLight.Y ); // -Y represents 0/360 horizontal angle and we're rotating counter-clockwise
-		float NormTangentAngle = TangentAngle / (PI * 2.f) + 0.5f;
+		float TangentAngle = (float)FMath::Atan2( -LocalToLight.Z, -LocalToLight.Y ); // -Y represents 0/360 horizontal angle and we're rotating counter-clockwise
+		float NormTangentAngle = (TangentAngle / (UE_PI * 2.f) + 0.5f);
 
 		return FilterLightProfile( TextureLightProfileData, NormAngle, NormTangentAngle );
 	}

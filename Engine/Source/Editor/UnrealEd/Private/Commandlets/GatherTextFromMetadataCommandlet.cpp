@@ -1,16 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/GatherTextFromMetadataCommandlet.h"
+
+#include "Commandlets/Commandlet.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/InternationalizationManifest.h"
+#include "Internationalization/LocKeyFuncs.h"
+#include "LocTextHelper.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/LogVerbosity.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "SourceCodeNavigation.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
-#include "UObject/UnrealType.h"
-#include "Misc/Paths.h"
-#include "Misc/PackageName.h"
-#include "Modules/ModuleManager.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/PropertyIterator.h"
-#include "SourceCodeNavigation.h"
+#include "UObject/UnrealType.h"
+
+class UObject;
 
 DEFINE_LOG_CATEGORY_STATIC(LogGatherTextFromMetaDataCommandlet, Log, All);
 
@@ -20,6 +34,13 @@ DEFINE_LOG_CATEGORY_STATIC(LogGatherTextFromMetaDataCommandlet, Log, All);
 UGatherTextFromMetaDataCommandlet::UGatherTextFromMetaDataCommandlet(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+}
+
+bool UGatherTextFromMetaDataCommandlet::ShouldRunInPreview(const TArray<FString>& Switches, const TMap<FString, FString>& ParamVals) const
+{
+	const FString* GatherType = ParamVals.Find(UGatherTextCommandletBase::GatherTypeParam);
+	// If the param is not specified, it is assumed that both source and assets are to be gathered 
+	return !GatherType || *GatherType == TEXT("Metadata") || *GatherType == TEXT("All");
 }
 
 int32 UGatherTextFromMetaDataCommandlet::Main( const FString& Params )
@@ -158,7 +179,7 @@ int32 UGatherTextFromMetaDataCommandlet::Main( const FString& Params )
 				else
 				{
 					const FFieldClass* FieldClass = FFieldClass::GetNameToFieldClassMap().FindRef(*FieldTypeStr);
-					const UClass* UFieldClass = FindObject<UClass>(ANY_PACKAGE, *FieldTypeStr);
+					const UClass* UFieldClass = FindFirstObject<UClass>(*FieldTypeStr, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("Looking for field types to include or exclude in GatherTextFromMetadata commandlet"));
 					if (!FieldClass && !UFieldClass)
 					{
 						UE_LOG(LogGatherTextFromMetaDataCommandlet, Warning, TEXT("Field Type %s was not found (from %s in section %s). Did you forget a ModulesToPreload entry?"), *FieldTypeStr, InConfigKey, *SectionName);
@@ -209,7 +230,7 @@ int32 UGatherTextFromMetaDataCommandlet::Main( const FString& Params )
 				}
 				else
 				{
-					const UStruct* FieldOwnerType = FindObject<UStruct>(ANY_PACKAGE, *FieldOwnerTypeStr);
+					const UStruct* FieldOwnerType = FindFirstObject<UStruct>(*FieldOwnerTypeStr, EFindFirstObjectOptions::EnsureIfAmbiguous);
 					if (!FieldOwnerType)
 					{
 						UE_LOG(LogGatherTextFromMetaDataCommandlet, Warning, TEXT("Field Owner Type %s was not found (from %s in section %s). Did you forget a ModulesToPreload entry?"), *FieldOwnerTypeStr, InConfigKey, *SectionName);

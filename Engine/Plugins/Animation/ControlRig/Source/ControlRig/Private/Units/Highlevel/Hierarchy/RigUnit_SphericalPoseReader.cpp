@@ -4,6 +4,8 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SphericalPoseReader)
+
 FRigUnit_SphericalPoseReader_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -16,10 +18,13 @@ FRigUnit_SphericalPoseReader_Execute()
 
 	if (Context.State == EControlRigState::Init)
 	{
+		DriverCache.Reset();
+		OptionalParentCache.Reset();
+		bCachedInitTransforms = false;
 		return;
 	}
 
-	if (!DriverItem.IsValid())
+	if (!DriverCache.UpdateCache(DriverItem, Hierarchy))
 	{
 		return;
 	}
@@ -37,31 +42,46 @@ FRigUnit_SphericalPoseReader_Execute()
 
 	// get parent global space
 	FTransform GlobalDriverParentTransform;
-	FTransform GlobalDriverParentTransformInit;
-	if (OptionalParentItem.IsValid())
+	OptionalParentCache.UpdateCache(OptionalParentItem, Hierarchy);
+	if (OptionalParentCache.IsValid())
 	{
-		GlobalDriverParentTransform = Hierarchy->GetGlobalTransform(OptionalParentItem);
-		GlobalDriverParentTransformInit = Hierarchy->GetInitialGlobalTransform(OptionalParentItem);
+		GlobalDriverParentTransform = Hierarchy->GetGlobalTransformByIndex(OptionalParentCache, false);
 	}else
 	{
 		// if user does not specify a custom parent space, then simply use the driver's parent
-		GlobalDriverParentTransform = Hierarchy->GetParentTransform(DriverItem);
-		GlobalDriverParentTransformInit = Hierarchy->GetInitialGlobalTransform(DriverItem);
+		GlobalDriverParentTransform = Hierarchy->GetParentTransformByIndex(DriverCache, false);
 	}
-	
-	// get local rotation space of driver
-	FTransform GlobalDriverTransformInit = Hierarchy->GetInitialGlobalTransform(DriverItem);
-	FTransform LocalDriverTransformInit = GlobalDriverTransformInit * GlobalDriverParentTransformInit.Inverse();
-	// apply static offset in local space
-	FQuat RotationOffsetQuat = FQuat::MakeFromEuler(RotationOffset);
-	LocalDriverTransformInit.SetRotation(LocalDriverTransformInit.GetRotation() * RotationOffsetQuat);
-	
+
+	// check if we need to update the LocalDriverTransformInit
+	if (!bCachedInitTransforms || !CachedRotationOffset.Equals(RotationOffset))
+	{
+		bCachedInitTransforms = true;
+		CachedRotationOffset = RotationOffset;
+
+		FTransform GlobalDriverParentTransformInitInverse;
+		if (OptionalParentCache.IsValid())
+		{
+			GlobalDriverParentTransformInitInverse = Hierarchy->GetGlobalTransformByIndex(OptionalParentCache, true).Inverse();
+		}else
+		{
+			// if user does not specify a custom parent space, then simply use the driver's parent
+			GlobalDriverParentTransformInitInverse = Hierarchy->GetParentTransformByIndex(DriverCache, true).Inverse();
+		}
+
+		// get local rotation space of driver
+		const FTransform GlobalDriverTransformInit = Hierarchy->GetGlobalTransformByIndex(DriverCache, true);
+		LocalDriverTransformInit = GlobalDriverTransformInit * GlobalDriverParentTransformInitInverse;
+		// apply static offset in local space
+		FQuat RotationOffsetQuat = FQuat::MakeFromEuler(RotationOffset);
+		LocalDriverTransformInit.SetRotation(LocalDriverTransformInit.GetRotation() * RotationOffsetQuat);
+	}
+
 	// calculate world transform of sphere
+	const FTransform GlobalDriverTransform = Hierarchy->GetGlobalTransformByIndex(DriverCache);
 	FTransform WorldOffset = LocalDriverTransformInit * GlobalDriverParentTransform;
-	WorldOffset.SetLocation(Hierarchy->GetGlobalTransform(DriverItem).GetLocation());
+	WorldOffset.SetLocation(GlobalDriverTransform.GetLocation());
 
 	// get driver axis
-	const FTransform GlobalDriverTransform = Hierarchy->GetGlobalTransform(DriverItem);
 	const FVector CurrentGlobalDriverAxis = GlobalDriverTransform.GetRotation().RotateVector(DriverAxis);
 	DriverNormal = WorldOffset.InverseTransformVectorNoScale(CurrentGlobalDriverAxis).GetSafeNormal();
 
@@ -84,7 +104,7 @@ FRigUnit_SphericalPoseReader_Execute()
 		Debug.DrawDebug(WorldOffset, Context.DrawInterface, InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
 		return;
 	}
-
+	
 	const float PointX = Driver2D.X;
 	const float PointY = Driver2D.Y;
 
@@ -103,7 +123,7 @@ FRigUnit_SphericalPoseReader_Execute()
 
 	// calc output param
 	OutputParam = CalcOutputParam(InnerEllipseResults, OuterEllipseResults);
-	
+
 	// do all debug drawing
 	Debug.DrawDebug(WorldOffset, Context.DrawInterface, InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
 }
@@ -255,3 +275,4 @@ float FRigUnit_SphericalPoseReader::RemapRange(
 	check(FMath::Abs(AEnd - AStart) > 0.0f);
 	return BStart + (T - AStart) * (BEnd - BStart) / (AEnd - AStart);
 }
+

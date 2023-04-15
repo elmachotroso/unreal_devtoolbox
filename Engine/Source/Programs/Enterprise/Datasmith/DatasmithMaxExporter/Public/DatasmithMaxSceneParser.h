@@ -74,7 +74,7 @@ class FDatasmithMaxSceneParser
 public:
 	static EMaxLightClass GetLightClass(INode* InNode);
 	static bool CanBeTriMesh(Object* Obj);
-	static const TArray< FString, TInlineAllocator< 4 > > CollisionNodesPrefixes; // List of supported mesh prefixes for UE4 collision
+	static const TArray< FString, TInlineAllocator< 4 > > CollisionNodesPrefixes; // List of supported mesh prefixes for Unreal collision
 
 	FDatasmithMaxSceneParser();
 	~FDatasmithMaxSceneParser();
@@ -106,6 +106,8 @@ public:
 	int Status;
 	bool bOnlySelection;
 
+	static bool HasCollisionName(INode* Node);
+
 private:
 	void NodeEnum(INode* InNode, bool bSelectedOnly, TSharedPtr< class FDatasmithMaxProgressManager >& ProgressManager);
 	void MaterialEnum(Mtl* Material, bool bAddMat);
@@ -115,7 +117,6 @@ private:
 	void ParseForestNode(INode* ForestNode);
 	void ParseRailcloneNode(INode* RailCloneNode);
 	bool GetActualInstances(INode *pINode, INodeTab* InstanceAndRef);
-	bool HasCollisionName(INode* Node);
 
 
 	TArray<FMaxRendereableNode> RenderableNodes;

@@ -8,7 +8,9 @@
 #if WITH_EDITORONLY_DATA
 	#include "IAssetTools.h"
 #endif
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraParameterCollection)
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -29,6 +31,14 @@ void UNiagaraParameterCollectionInstance::PostLoad()
 	Super::PostLoad();
 
 	ParameterStorage.PostLoad();
+
+	// Before calling SyncWithCollection we must ensure the collections parameter store is PostLoaded
+	// otherwise the parameters may not be sorted correctly.  If we are the default instance of the
+	// Collection then we don't need to do this.
+	if (Collection && (Collection->GetDefaultInstance() != this))
+	{
+		Collection->ConditionalPostLoad();
+	}
 
 	//Ensure we're synced up with our collection. TODO: Do conditionally via a version number/guid?
 	SyncWithCollection();
@@ -520,7 +530,7 @@ void UNiagaraParameterCollection::MakeNamespaceNameUnique()
 {
  	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
  	TArray<FAssetData> CollectionAssets;
- 	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetFName(), CollectionAssets);
+ 	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetClassPathName(), CollectionAssets);
 	TArray<FName> ExistingNames;
  	for (FAssetData& CollectionAsset : CollectionAssets)
  	{
@@ -605,3 +615,4 @@ void UNiagaraParameterCollection::PostLoad()
 #endif
 	}
 }
+

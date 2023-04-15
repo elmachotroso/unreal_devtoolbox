@@ -11,7 +11,7 @@ class UDynamicSubsystem;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogSubsystemCollection, Log, All);
 
-class ENGINE_API FSubsystemCollectionBase : public FGCObject
+class ENGINE_API FSubsystemCollectionBase
 {
 public:
 	/** Initialize the collection of systems, systems will be created and initialized */
@@ -19,6 +19,9 @@ public:
 
 	/* Clears the collection, while deinitializing the systems */
 	void Deinitialize();
+
+	/** Returns true if collection was already initialized */
+	bool IsInitialized() const { return Outer != nullptr; }
 
 	/** 
 	 * Only call from Initialize() of Systems to ensure initialization order
@@ -36,10 +39,6 @@ public:
 		return Cast<TSubsystemClass>(InitializeDependency(TSubsystemClass::StaticClass()));
 	}
 
-	/* FGCObject Interface */
-	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
-	virtual FString GetReferencerName() const override;
-
 	/** Registers and adds instances of the specified Subsystem class to all existing SubsystemCollections of the correct type.
 	 *  Should be used by specific subsystems in plug ins when plugin is activated.
 	 */
@@ -50,6 +49,8 @@ public:
 	 */
 	static void DeactivateExternalSubsystem(UClass* SubsystemClass);
 
+	/** Collect references held by this collection */
+	void AddReferencedObjects(UObject* Referencer, FReferenceCollector& Collector);
 protected:
 	/** protected constructor - for use by the template only(FSubsystemCollection<TBaseType>) */
 	FSubsystemCollectionBase(UClass* InBaseType);
@@ -97,7 +98,54 @@ private:
 };
 
 template<typename TBaseType>
-class FSubsystemCollection : public FSubsystemCollectionBase
+class FSubsystemCollection : public FSubsystemCollectionBase, public FGCObject
+{
+public:
+	/** Get a Subsystem by type */
+	template <typename TSubsystemClass>
+	TSubsystemClass* GetSubsystem(const TSubclassOf<TSubsystemClass>& SubsystemClass) const
+	{
+		static_assert(TIsDerivedFrom<TSubsystemClass, TBaseType>::IsDerived, "TSubsystemClass must be derived from TBaseType");
+
+		// A static cast is safe here because we know SubsystemClass derives from TSubsystemClass if it is not null
+		return static_cast<TSubsystemClass*>(GetSubsystemInternal(SubsystemClass));
+	}
+
+	/** Get a list of Subsystems by type */
+	template <typename TSubsystemClass>
+	const TArray<TSubsystemClass*>& GetSubsystemArray(const TSubclassOf<TSubsystemClass>& SubsystemClass) const
+	{
+		// Force a compile time check that TSubsystemClass derives from TBaseType, the internal code only enforces it's a USubsystem
+		TSubclassOf<TBaseType> SubsystemBaseClass = SubsystemClass;
+
+		const TArray<USubsystem*>& Array = GetSubsystemArrayInternal(SubsystemBaseClass);
+		const TArray<TSubsystemClass*>* SpecificArray = reinterpret_cast<const TArray<TSubsystemClass*>*>(&Array);
+		return *SpecificArray;
+	}
+
+	/* FGCObject Interface */
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
+	{
+		FSubsystemCollectionBase::AddReferencedObjects(nullptr, Collector);
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSubsystemCollection");
+	}
+	
+public:
+
+	/** Construct a FSubsystemCollection, pass in the owning object almost certainly (this). */
+	FSubsystemCollection()
+		: FSubsystemCollectionBase(TBaseType::StaticClass())
+	{
+	}
+};
+
+/** Subsystem collection which delegates UObject references to its owning UObject (object needs to implement AddReferencedObjects and forward call to Collection */
+template<typename TBaseType>
+class FObjectSubsystemCollection : public FSubsystemCollectionBase
 {
 public:
 	/** Get a Subsystem by type */
@@ -125,7 +173,7 @@ public:
 public:
 
 	/** Construct a FSubsystemCollection, pass in the owning object almost certainly (this). */
-	FSubsystemCollection()
+	FObjectSubsystemCollection()
 		: FSubsystemCollectionBase(TBaseType::StaticClass())
 	{
 	}

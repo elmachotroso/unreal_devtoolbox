@@ -3,10 +3,22 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "InputCoreTypes.h"
+#include "Math/NumericLimits.h"
+#include "Math/Ray.h"
 #include "Math/UnrealMath.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "InputState.generated.h"
+
+class UObject;
 
 
 /**
@@ -52,11 +64,27 @@ struct INTERACTIVETOOLSFRAMEWORK_API FInputRayHit
 	/** True if HitNormal was set */
 	bool bHasHitNormal;
 
-	/** client-defined integer identifier for hit object/element/target/etc */
+	/** Client-defined integer identifier for hit object/element/target/etc */
 	int32 HitIdentifier;
 
-	/** client-defined pointer for hit object/target */
+	/**
+	  * Client-defined pointer for hit object/element/target/etc. 
+	  * HitOwner and HitObject should be set to the same pointer if the HitOwner derives from UObject.
+	  */
 	void* HitOwner;
+
+	/**
+	  * Client-defined pointer for UObject-derived hit owners.  
+	  * HitOwner and HitObject should be set to the same pointer if the HitOwner derives from UObject. 
+	  */
+	TWeakObjectPtr<UObject> HitObject;
+
+	/** Set hit object, will also set hit owner to the same value */
+	void SetHitObject(UObject* InHitObject)
+	{
+		HitObject = InHitObject;
+		HitOwner = InHitObject;
+	}
 
 	FInputRayHit()
 	{
@@ -66,6 +94,7 @@ struct INTERACTIVETOOLSFRAMEWORK_API FInputRayHit
 		bHasHitNormal = false;
 		HitIdentifier = 0;
 		HitOwner = nullptr;
+		HitObject = nullptr;
 	}
 
 	explicit FInputRayHit(float HitDepthIn)
@@ -76,6 +105,7 @@ struct INTERACTIVETOOLSFRAMEWORK_API FInputRayHit
 		bHasHitNormal = false;
 		HitIdentifier = 0;
 		HitOwner = nullptr;
+		HitObject = nullptr;
 	}
 
 	explicit FInputRayHit(float HitDepthIn, const FVector& HitNormalIn)
@@ -86,6 +116,7 @@ struct INTERACTIVETOOLSFRAMEWORK_API FInputRayHit
 		bHasHitNormal = true;
 		HitIdentifier = 0;
 		HitOwner = nullptr;
+		HitObject = nullptr;
 	}
 };
 

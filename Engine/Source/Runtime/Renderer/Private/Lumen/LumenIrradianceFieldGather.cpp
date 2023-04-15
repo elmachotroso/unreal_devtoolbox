@@ -195,6 +195,7 @@ class FIrradianceFieldGatherCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER(float, MaxRoughnessToTrace)
 		SHADER_PARAMETER(float, RoughnessFadeLength)
 		SHADER_PARAMETER(float, ProbeOcclusionViewBias)
@@ -226,7 +227,8 @@ static void IrradianceFieldMarkUsedProbes(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FSceneTextures& SceneTextures,
-	const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
+	const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	FMarkRadianceProbesUsedByGBufferCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMarkRadianceProbesUsedByGBufferCS::FParameters>();
 	PassParameters->View = View.ViewUniformBuffer;
@@ -238,6 +240,7 @@ static void IrradianceFieldMarkUsedProbes(
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
 		RDG_EVENT_NAME("MarkRadianceProbesUsedByGBuffer %ux%u", View.ViewRect.Width(), View.ViewRect.Height()),
+		ComputePassFlags,
 		ComputeShader,
 		PassParameters,
 		FComputeShaderUtils::GetGroupCount(View.ViewRect.Size(), FMarkRadianceProbesUsedByGBufferCS::GetGroupSize()));
@@ -248,20 +251,22 @@ DECLARE_GPU_STAT(LumenIrradianceFieldGather);
 FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGather(
 	FRDGBuilder& GraphBuilder,
 	const FSceneTextures& SceneTextures,
-	FLumenSceneFrameTemporaries& FrameTemporaries,
-	const FViewInfo& View)
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
+	const FViewInfo& View,
+	LumenRadianceCache::FRadianceCacheInterpolationParameters& TranslucencyVolumeRadianceCacheParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	RDG_EVENT_SCOPE(GraphBuilder, "LumenIrradianceFieldGather");
 	RDG_GPU_STAT_SCOPE(GraphBuilder, LumenIrradianceFieldGather);
 
 	check(GLumenIrradianceFieldGather != 0);
 
-	FLumenCardTracingInputs TracingInputs(GraphBuilder, Scene, View, FrameTemporaries);
+	FLumenCardTracingInputs TracingInputs(GraphBuilder, *Scene->GetLumenSceneData(View), FrameTemporaries);
 
 	const LumenRadianceCache::FRadianceCacheInputs RadianceCacheInputs = LumenIrradianceFieldGather::SetupRadianceCacheInputs();
 
 	FMarkUsedRadianceCacheProbes Callbacks;
-	Callbacks.AddLambda([&SceneTextures](
+	Callbacks.AddLambda([&SceneTextures, ComputePassFlags](
 		FRDGBuilder& GraphBuilder,
 		const FViewInfo& View,
 		const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
@@ -270,22 +275,51 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 				GraphBuilder,
 				View,
 				SceneTextures,
-				RadianceCacheMarkParameters);
+				RadianceCacheMarkParameters,
+				ComputePassFlags);
 		});
 
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters;
-	RenderRadianceCache(
-		GraphBuilder, 
-		TracingInputs, 
-		RadianceCacheInputs, 
+
+	LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateInputs> InputArray;
+	LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateOutputs> OutputArray;
+
+	InputArray.Add(LumenRadianceCache::FUpdateInputs(
+		TracingInputs,
+		RadianceCacheInputs,
 		FRadianceCacheConfiguration(),
-		Scene,
+		View,
+		nullptr,
+		nullptr,
+		FMarkUsedRadianceCacheProbes(),
+		MoveTemp(Callbacks)));
+
+	OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
+		View.ViewState->Lumen.RadianceCacheState,
+		RadianceCacheParameters));
+
+	LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
+		GraphBuilder,
 		View, 
-		nullptr, 
-		nullptr, 
-		Callbacks,
-		View.ViewState->RadianceCacheState, 
-		RadianceCacheParameters);
+		TracingInputs,
+		ComputePassFlags);
+
+	if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
+	{
+		InputArray.Add(TranslucencyVolumeRadianceCacheUpdateInputs);
+		OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
+			View.ViewState->Lumen.TranslucencyVolumeRadianceCacheState,
+			TranslucencyVolumeRadianceCacheParameters));
+	}
+
+	LumenRadianceCache::UpdateRadianceCaches(
+		GraphBuilder, 
+		InputArray,
+		OutputArray,
+		Scene,
+		ViewFamily.EngineShowFlags,
+		LumenCardRenderer.bPropagateGlobalLightingChange,
+		ComputePassFlags);
 
 	FRDGTextureDesc DiffuseIndirectDesc = FRDGTextureDesc::Create2D(SceneTextures.Config.Extent, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV);
 	FRDGTextureRef DiffuseIndirect = GraphBuilder.CreateTexture(DiffuseIndirectDesc, TEXT("DiffuseIndirect"));
@@ -300,6 +334,7 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 		PassParameters->RadianceCacheParameters = RadianceCacheParameters;
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		extern float GLumenReflectionMaxRoughnessToTrace;
 		extern float GLumenReflectionRoughnessFadeLength;
 		PassParameters->MaxRoughnessToTrace = GLumenReflectionMaxRoughnessToTrace;
@@ -313,6 +348,7 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("IrradianceFieldGather %ux%u", View.ViewRect.Width(), View.ViewRect.Height()),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FComputeShaderUtils::GetGroupCount(View.ViewRect.Size(), FIrradianceFieldGatherCS::GetGroupSize()));

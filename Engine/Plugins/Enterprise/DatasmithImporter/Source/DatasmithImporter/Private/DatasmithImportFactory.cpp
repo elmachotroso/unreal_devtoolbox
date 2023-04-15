@@ -19,7 +19,7 @@
 #include "Utility/DatasmithImporterUtils.h"
 #include "Utility/DatasmithImportFactoryHelper.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ComponentReregisterContext.h"
 #include "Engine/StaticMesh.h"
 #include "EngineAnalytics.h"
@@ -161,7 +161,7 @@ namespace DatasmithImportFactoryImpl
 		// Copy over the changes the user may have done on the options
 		ReImportSceneData->BaseOptions = InContext.Options->BaseOptions;
 
-		for (const TStrongObjectPtr<UDatasmithOptionsBase>& Option : InContext.AdditionalImportOptions)
+		for (const TObjectPtr<UDatasmithOptionsBase>& Option : InContext.AdditionalImportOptions)
 		{
 			UDatasmithOptionsBase* OptionObj = Option.Get();
 			OptionObj->Rename(nullptr, ReImportSceneData);
@@ -186,7 +186,7 @@ namespace DatasmithImportFactoryImpl
 		bOutOperationCancelled = false;
 
 		// Return if the context is not valid
-		if ( !InContext.Options.IsValid() )
+		if ( !InContext.Options )
 		{
 			return false;
 		}
@@ -255,6 +255,15 @@ namespace DatasmithImportFactoryImpl
 			Progress->EnterProgressFrame( 10.f );
 		}
 		FDatasmithStaticMeshImporter::PreBuildStaticMeshes(InContext);
+
+		if ( InContext.bUserCancelled )
+		{
+			bOutOperationCancelled = true;
+			return false;
+		}
+
+		// CLOTH
+		FDatasmithImporter::ImportClothes( InContext );
 
 		if ( InContext.bUserCancelled )
 		{
@@ -339,12 +348,12 @@ namespace DatasmithImportFactoryImpl
 
 				// Log tessellator if CADKernel has been used
 				bool bUseCADKernel = false;
-				TArray<TStrongObjectPtr<UDatasmithOptionsBase>> Options;
+				TArray<TObjectPtr<UDatasmithOptionsBase>> Options;
 				ImportContext.SceneTranslator->GetSceneImportOptions(Options);
 
-				for (const TStrongObjectPtr<UDatasmithOptionsBase>& Option : Options)
+				for (const TObjectPtr<UDatasmithOptionsBase>& Option : Options)
 				{
-					if (UDatasmithCommonTessellationOptions* TessellationOptionsObject = Cast<UDatasmithCommonTessellationOptions>(Option.Get()))
+					if (UDatasmithCommonTessellationOptions* TessellationOptionsObject = Cast<UDatasmithCommonTessellationOptions>(Option))
 					{
 						bUseCADKernel = TessellationOptionsObject->Options.bUseCADKernel;
 					}
@@ -496,7 +505,7 @@ UObject* UDatasmithImportFactory::FactoryCreateFile(UClass* InClass, UObject* In
 		UE_LOG(LogDatasmithImport, Warning, TEXT("Datasmith import error: no suitable external source found for this file path. Abort import."));
 		return nullptr;
 	}
-	
+
 	return CreateFromExternalSource(InClass, InParent, InName, InFlags, ExternalSource.ToSharedRef(), InParms, InWarn, bOutOperationCanceled);
 }
 
@@ -799,7 +808,7 @@ EReimportResult::Type UDatasmithImportFactory::ReimportStaticMesh(UStaticMesh* M
 	ImportContext.AssetsContext.LevelSequencesImportPackage.Reset();
 	ImportContext.AssetsContext.LevelVariantSetsImportPackage.Reset();
 	ImportContext.AssetsContext.MaterialsImportPackage.Reset();
-	ImportContext.AssetsContext.MasterMaterialsImportPackage.Reset();
+	ImportContext.AssetsContext.ReferenceMaterialsImportPackage.Reset();
 	ImportContext.AssetsContext.MaterialFunctionsImportPackage.Reset();
 	ImportContext.AssetsContext.TexturesImportPackage.Reset();
 
@@ -843,7 +852,7 @@ EReimportResult::Type UDatasmithImportFactory::ReimportScene(UDatasmithScene* Sc
 	}
 
 	UDatasmithSceneImportData& AssetImportData = *SceneAsset->AssetImportData;
-	
+
 	TSharedPtr<FExternalSource> ExternalSource = IExternalSourceModule::Get().GetManager().TryGetExternalSourceFromImportData(AssetImportData);
 	if (!ExternalSource)
 	{

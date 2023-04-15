@@ -3,6 +3,8 @@
 #include "Units/Simulation/RigUnit_SpringInterp.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SpringInterp)
+
 namespace RigUnitSpringInterpConstants
 {
 	static const float FixedTimeStep = 1.0f / 60.0f;
@@ -33,6 +35,12 @@ FRigUnit_SpringInterp_Execute()
 		Result = UKismetMathLibrary::FloatSpringInterp(Result, Target, SpringState, Stiffness, CriticalDamping, RemainingTime, Mass);
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_SpringInterp::GetUpgradeInfo() const
+{
+	// this node is no longer supported and the new implementation is vastly different
+	return FRigVMStructUpgradeInfo();
+}
  
 FRigUnit_SpringInterpVector_Execute()
 {
@@ -56,6 +64,12 @@ FRigUnit_SpringInterpVector_Execute()
  
 		Result = UKismetMathLibrary::VectorSpringInterp(Result, Target, SpringState, Stiffness, CriticalDamping, RemainingTime, Mass);
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_SpringInterpVector::GetUpgradeInfo() const
+{
+	// this node is no longer supported and the new implementation is vastly different
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_SpringInterpV2_Execute()
@@ -146,4 +160,5 @@ FRigUnit_SpringInterpQuaternionV2_Execute()
 		AngularVelocity = SpringState.AngularVelocity;
 	}
 }
+
 

@@ -2,6 +2,9 @@
 
 #include "PythonOnlineDocsCommandlet.h"
 #include "PyWrapperTypeRegistry.h"
+#include "PyGenUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PythonOnlineDocsCommandlet)
 
 DEFINE_LOG_CATEGORY_STATIC(LogPythonOnlineDocsCommandlet, Log, All);
 
@@ -42,6 +45,9 @@ int32 UPythonOnlineDocsCommandlet::Main(const FString& Params)
 		DocGenFlags = EPyOnlineDocsFilterFlags::IncludeAll;
 	}
 
+	// For the documentation, use the the light typing version, avoid listing all type coercions which make the API harder to read.
+	PyGenUtil::SetTypeHintingMode(ETypeHintingMode::AutoCompletion);
+
 	UE_LOG(LogPythonOnlineDocsCommandlet, Display, TEXT("\n\nGenerating Python documentation..."));
 	FPyWrapperTypeRegistry::Get().GenerateStubCodeForWrappedTypes(DocGenFlags);
 
@@ -54,3 +60,4 @@ int32 UPythonOnlineDocsCommandlet::Main(const FString& Params)
 
 	return 0;
 }
+

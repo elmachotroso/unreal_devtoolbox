@@ -9,6 +9,7 @@ using System.Text;
 using EpicGames.Core;
 using System.Text.RegularExpressions;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -19,12 +20,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		public string XcodeDeveloperDir = "xcode-select";
 
-		public AppleToolChainSettings(bool bVerbose)
+		public AppleToolChainSettings(bool bVerbose, ILogger Logger)
 		{
-			SelectXcode(ref XcodeDeveloperDir, bVerbose);
+			SelectXcode(ref XcodeDeveloperDir, bVerbose, Logger);
 		}
 
-		private static void SelectXcode(ref string DeveloperDir, bool bVerbose)
+		private static void SelectXcode(ref string DeveloperDir, bool bVerbose, ILogger Logger)
 		{
 			string Reason = "hardcoded";
 
@@ -33,7 +34,7 @@ namespace UnrealBuildTool
 				Reason = "xcode-select";
 
 				// on the Mac, run xcode-select directly
-				DeveloperDir = Utils.RunLocalProcessAndReturnStdOut("xcode-select", "--print-path");
+				DeveloperDir = Utils.RunLocalProcessAndReturnStdOut("xcode-select", "--print-path", Logger);
 
 				// make sure we get a full path
 				if (Directory.Exists(DeveloperDir) == false)
@@ -68,7 +69,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		protected void SelectSDK(string BaseSDKDir, string OSPrefix, ref string PlatformSDKVersion, bool bVerbose)
+		protected void SelectSDK(string BaseSDKDir, string OSPrefix, ref string PlatformSDKVersion, bool bVerbose, ILogger Logger)
 		{
 			if (PlatformSDKVersion == "latest")
 			{
@@ -127,8 +128,8 @@ namespace UnrealBuildTool
 				catch (Exception Ex)
 				{
 					// on any exception, just use the backup version
-					Log.TraceInformation("Triggered an exception while looking for SDK directory in Xcode.app");
-					Log.TraceInformation("{0}", Ex.ToString());
+					Logger.LogInformation("Triggered an exception while looking for SDK directory in Xcode.app");
+					Logger.LogInformation("{Ex}", Ex.ToString());
 				}
 			}
 
@@ -140,23 +141,35 @@ namespace UnrealBuildTool
 
 			if (bVerbose && !ProjectFileGenerator.bGenerateProjectFiles)
 			{
-				Log.TraceInformation("Compiling with {0} SDK {1}", OSPrefix, PlatformSDKVersion);
+				Logger.LogInformation("Compiling with {Os} SDK {Sdk}", OSPrefix, PlatformSDKVersion);
 			}
 		}
 	}
 
-	abstract class AppleToolChain : ISPCToolChain
+	abstract class AppleToolChain : ClangToolChain
 	{
+		protected class AppleToolChainInfo : ClangToolChainInfo
+		{
+			public AppleToolChainInfo(FileReference Clang, FileReference Archiver, ILogger Logger)
+				: base(Clang, Archiver, Logger)
+			{
+			}
+
+			// libtool doesn't provide version, just use clang's version string
+			/// <inheritdoc/>
+			protected override string QueryArchiverVersionString() => ClangVersionString;
+		}
+
 		protected FileReference? ProjectFile;
 
-		public AppleToolChain(FileReference? InProjectFile)
+		public AppleToolChain(FileReference? InProjectFile, ClangToolChainOptions InOptions, ILogger InLogger) : base(InOptions, InLogger)
 		{
 			ProjectFile = InProjectFile;
 		}
 
 		protected DirectoryReference GetMacDevSrcRoot()
 		{
-			return UnrealBuildTool.EngineSourceDirectory;
+			return Unreal.EngineSourceDirectory;
 		}
 
 		protected void StripSymbolsWithXcode(FileReference SourceFile, FileReference TargetFile, string ToolchainDir)
@@ -172,72 +185,161 @@ namespace UnrealBuildTool
 			StartInfo.Arguments = String.Format("\"{0}\" -S", TargetFile.FullName);
 			StartInfo.UseShellExecute = false;
 			StartInfo.CreateNoWindow = true;
-			Utils.RunLocalProcessAndLogOutput(StartInfo);
+			Utils.RunLocalProcessAndLogOutput(StartInfo, Logger);
 		}
 
-		static Version? ClangVersion = null;
-		static string? FullClangVersion = null;
-
-		protected Version GetClangVersion()
-		{	
-			if (ClangVersion == null)
-			{
-				FileReference ClangLocation = new FileReference("/usr/bin/clang");
-				ClangVersion = RunToolAndCaptureVersion(ClangLocation, "--version");			
-			}
-			return ClangVersion;
-		}
-
-		protected string GetFullClangVersion()
+		/// <inheritdoc/>
+		protected override string EscapePreprocessorDefinition(string Definition)
 		{
-			if (FullClangVersion == null)
-			{
-				// get the first line that has the full clang and build number
-				FileReference ClangLocation = new FileReference("/usr/bin/clang");
-				FullClangVersion = RunToolAndCaptureOutput(ClangLocation, "--version", "(.*)")!;
-			}
-
-			return FullClangVersion;
+			return Definition.Contains("\"") ? Definition.Replace("\"", "\\\"") : Definition;
 		}
 
-		protected static string GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment)
+		protected override void GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
-			string Result;
-			switch (CompileEnvironment.CppStandard)
+			Arguments.Add("-x objective-c++");
+			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
+			Arguments.Add("-stdlib=libc++");
+		}
+
+		protected override void GetCompileArguments_MM(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			Arguments.Add("-x objective-c++");
+			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
+			Arguments.Add("-stdlib=libc++");
+		}
+
+		protected override void GetCompileArguments_M(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			Arguments.Add("-x objective-c");
+			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
+			Arguments.Add("-stdlib=libc++");
+		}
+
+		protected override void GetCompileArguments_PCH(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			Arguments.Add("-x objective-c++-header");
+			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
+			Arguments.Add("-stdlib=libc++");
+
+			if (CompilerVersionGreaterOrEqual(13, 0, 0)) // Note this is supported for >=11 on other clang platforms
 			{
-				case CppStandardVersion.Cpp14:
-					Result = " -std=c++14";
-					break;
-				case CppStandardVersion.Latest:
-				case CppStandardVersion.Cpp17:
-					Result = " -std=c++17";
-					break;
-				case CppStandardVersion.Cpp20:
-					Result = " -std=c++20";
-					break;
-				default:
-					throw new BuildException($"Unsupported C++ standard type set: {CompileEnvironment.CppStandard}");
+				Arguments.Add("-fpch-instantiate-templates");
+			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_WarningsAndErrors(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_WarningsAndErrors(CompileEnvironment, Arguments);
+
+			// Flags added in Xcode 13.3 (Apple clang 13.1.6)
+			if (CompilerVersionGreaterOrEqual(13, 0, 0) && CompilerVersionLessThan(13, 1, 6))
+			{
+				Arguments.Remove("-Wno-unused-but-set-variable");
+				Arguments.Remove("-Wno-unused-but-set-parameter");
+				Arguments.Remove("-Wno-ordered-compare-function-pointers");
 			}
 
-			if (CompileEnvironment.bEnableCoroutines)
+			// clang 12.00 has a new warning for copies in ranged loops. Instances have all been fixed up (2020/6/26) but
+			// are likely to be reintroduced due to no equivalent on other platforms at this time so disable the warning
+			if (CompilerVersionGreaterOrEqual(12, 0, 0))
 			{
-				Result += " -fcoroutines-ts";
-				if (!CompileEnvironment.bEnableExceptions)
+				Arguments.Add("-Wno-range-loop-analysis");
+			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Optimizations(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Optimizations(CompileEnvironment, Arguments);
+
+			bool bStaticAnalysis = false;
+			string? StaticAnalysisMode = Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE");
+			if (!string.IsNullOrEmpty(StaticAnalysisMode))
+			{
+				bStaticAnalysis = true;
+			}
+
+			// Optimize non- debug builds.
+			if (CompileEnvironment.bOptimizeCode && !bStaticAnalysis)
+			{
+				// Don't over optimise if using AddressSanitizer or you'll get false positive errors due to erroneous optimisation of necessary AddressSanitizer instrumentation.
+				if (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer))
 				{
-					Result += " -Wno-coroutine-missing-unhandled-exception";
+					Arguments.Add("-O1");
+					Arguments.Add("-g");
+					Arguments.Add("-fno-optimize-sibling-calls");
+					Arguments.Add("-fno-omit-frame-pointer");
+				}
+				else if (Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer))
+				{
+					Arguments.Add("-O1");
+					Arguments.Add("-g");
+				}
+				else if (CompileEnvironment.OptimizationLevel == OptimizationMode.Size)
+				{
+					Arguments.Add("-Oz");
+				}
+				else if (CompileEnvironment.OptimizationLevel == OptimizationMode.SizeAndSpeed)
+				{
+					Arguments.Add("-Os");
+
+					if (CompileEnvironment.Architecture.StartsWith("aarch64"))
+					{
+						Arguments.Add("-moutline");
+					}
+				}
+				else
+				{
+					Arguments.Add("-O3");
 				}
 			}
-
-			return Result;
+			else
+			{
+				Arguments.Add("-O0");
+			}
 		}
 
-		protected string GetDsymutilPath(out string ExtraOptions, bool bIsForLTOBuild=false)
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Debugging(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Debugging(CompileEnvironment, Arguments);
+
+			// Create DWARF format debug info if wanted,
+			if (CompileEnvironment.bCreateDebugInfo)
+			{
+				Arguments.Add("-gdwarf-2");
+			}
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Analyze(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Analyze(CompileEnvironment, Arguments);
+
+			// Disable all clang tidy checks
+			Arguments.Add($"-Xclang -analyzer-tidy-checker=-*");
+		}
+
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Global(CompileEnvironment, Arguments);
+
+			Arguments.Add(GetRTTIFlag(CompileEnvironment));
+
+			Arguments.Add("-fmessage-length=0");
+			Arguments.Add("-fpascal-strings");
+		}
+
+		protected string GetDsymutilPath(ILogger Logger, out string ExtraOptions, bool bIsForLTOBuild=false)
 		{
 			FileReference DsymutilLocation = new FileReference("/usr/bin/dsymutil");
 
 			// dsymutil before 10.0.1 has a bug that causes issues, it's fixed in autosdks but not everyone has those set up so for the timebeing we have
 			// a version in P4 - first determine if we need it
-			string DsymutilVersionString = Utils.RunLocalProcessAndReturnStdOut(DsymutilLocation.FullName, "-version");
+			string DsymutilVersionString = Utils.RunLocalProcessAndReturnStdOut(DsymutilLocation.FullName, "-version", Logger);
 
 			bool bUseInstalledDsymutil = true;
 			int Major = 0, Minor = 0, Patch = 0;

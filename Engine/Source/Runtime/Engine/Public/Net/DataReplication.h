@@ -12,6 +12,9 @@
 #include "Engine/EngineTypes.h"
 #include "UObject/UnrealType.h"
 #include "UObject/GCObject.h"
+#include "HAL/LowLevelMemTracker.h"
+
+LLM_DECLARE_TAG_API(NetObjReplicator, ENGINE_API);
 
 class FNetFieldExportGroup;
 class FOutBunch;
@@ -154,7 +157,14 @@ public:
 	void CountBytes(FArchive& Ar) const;
 
 	/** Writes dirty properties to bunch */
-	void ReplicateCustomDeltaProperties(FNetBitWriter& Bunch, FReplicationFlags RepFlags);
+	UE_DEPRECATED(5.1, "Now takes an additional out param")
+	void ReplicateCustomDeltaProperties(FNetBitWriter& Bunch, FReplicationFlags RepFlags)
+	{
+		bool bSkippedPropertyCondition = false;
+		ReplicateCustomDeltaProperties(Bunch, RepFlags, bSkippedPropertyCondition);
+	}
+
+	void ReplicateCustomDeltaProperties(FNetBitWriter& Bunch, FReplicationFlags RepFlags, bool& bSkippedPropertyCondition);
 	bool ReplicateProperties(FOutBunch& Bunch, FReplicationFlags RepFlags);
 	bool ReplicateProperties(FOutBunch& Bunch, FReplicationFlags RepFlags, FNetBitWriter& Writer);
 	bool ReplicateProperties_r(FOutBunch& Bunch, FReplicationFlags RepFlags, FNetBitWriter& Writer);
@@ -202,13 +212,19 @@ public:
 
 	FORCEINLINE UObject* GetObject() const
 	{
-		return ObjectPtr;
+		// If this replicator is dormant we have released our strong ref but the object may still be alive.
+		return ObjectPtr ? ObjectPtr : WeakObjectPtr.Get();
 	}
 
 	FORCEINLINE void SetObject(UObject* NewObj)
 	{
 		ObjectPtr = NewObj;
 		WeakObjectPtr = NewObj;
+	}
+
+	void ReleaseStrongReference()
+	{
+		ObjectPtr = nullptr;
 	}
 
 	FORCEINLINE void PreNetReceive()
@@ -248,6 +264,8 @@ public:
 	 */
 	bool CanSkipUpdate(FReplicationFlags Flags);
 
+	bool IsDirtyForReplay() const { return bDirtyForReplay; }
+
 public:
 
 	/** Net GUID for the object we're replicating. */
@@ -278,6 +296,9 @@ private:
 	 * simple flag checks.
 	 */
 	uint32 bCanUseNonDirtyOptimization : 1;
+
+	/** Used to track if we've replicated this object into a checkpoint */
+	uint32 bDirtyForReplay : 1;
 
 public:
 	

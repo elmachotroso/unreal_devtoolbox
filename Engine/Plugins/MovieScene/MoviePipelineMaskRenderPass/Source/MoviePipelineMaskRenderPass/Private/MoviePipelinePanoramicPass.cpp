@@ -35,6 +35,8 @@
 #include "Engine/LocalPlayer.h"
 #include "MoviePipelinePanoramicBlender.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelinePanoramicPass)
+
 UMoviePipelinePanoramicPass::UMoviePipelinePanoramicPass() 
 	: UMoviePipelineImagePassBase()
 	, NumHorizontalSteps(8)
@@ -124,34 +126,11 @@ void UMoviePipelinePanoramicPass::SetupImpl(const MoviePipeline::FMoviePipelineR
 	Super::SetupImpl(InPassInitSettings);
 	// LLM_SCOPE_BYNAME(TEXT("MoviePipeline/PanoBlendSetup"));
 
-	// Allocate a shared render target for readback:
-	{
-		CanvasReadbackTexture = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
-		CanvasReadbackTexture->ClearColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	const FIntPoint PaneResolution = GetPaneResolution(InPassInitSettings.BackbufferResolution);
 
-		// We calculate a different resolution than the final output resolution.
-		float HorizontalFoV;
-		float VerticalFoV;
-		GetFieldOfView(HorizontalFoV, VerticalFoV, bStereo);
-
-		// Horizontal FoV is a proportion of the global horizontal resolution
-		// ToDo: We might have to check which is higher, if numVerticalPanes > numHorizontalPanes this math might be backwards.
-		float HorizontalRes = (HorizontalFoV / 360.0f) * InPassInitSettings.BackbufferResolution.X;
-		float Intermediate = FMath::Tan(FMath::DegreesToRadians(VerticalFoV) * 0.5f) / FMath::Tan(FMath::DegreesToRadians(HorizontalFoV) * 0.5f);
-		float VerticalRes = HorizontalRes * Intermediate;
-
-		//float VerticalRes = HorizontalRes * FMath::Tan(FMath::DegreesToRadians(VerticalFoV) * 0.5f) / FMath::Tan(FMath::DegreesToRadians(HorizontalFoV) * 0.5f);
-		// 
-		// ToDo: I think this is just aspect ratio based on FoVs?
-
-		PaneResolution = FIntPoint(FMath::CeilToInt(HorizontalRes), FMath::CeilToInt(VerticalRes));
-		CanvasReadbackTexture->InitCustomFormat(PaneResolution.X, PaneResolution.Y, EPixelFormat::PF_FloatRGBA, false);
-
-		// OCIO: Since this is a manually created Render target we don't need Gamma to be applied.
-		// We use this render target to render to via a display extension that utilizes Display Gamma
-		// which has a default value of 2.2 (DefaultDisplayGamma), therefore we need to set Gamma on this render target to 2.2 to cancel out any unwanted effects.
-		CanvasReadbackTexture->TargetGamma = FOpenColorIODisplayExtension::DefaultDisplayGamma;
-	}
+	// Re-initialize the render target and surface queue
+	GetOrCreateViewRenderTarget(PaneResolution);
+	GetOrCreateSurfaceQueue(PaneResolution);
 
 	int32 StereoMultiplier = bStereo ? 2 : 1;
 	int32 NumPanes = NumHorizontalSteps * NumVerticalSteps;
@@ -165,13 +144,6 @@ void UMoviePipelinePanoramicPass::SetupImpl(const MoviePipeline::FMoviePipelineR
 			OptionalPaneViewStates[Index].Allocate(InPassInitSettings.FeatureLevel);
 		}
 	}
-
-	if (GetPipeline()->GetPreviewTexture() == nullptr)
-	{
-		GetPipeline()->SetPreviewTexture(CanvasReadbackTexture);
-	}
-
-	SurfaceQueue = MakeShared<FMoviePipelineSurfaceQueue>(PaneResolution, EPixelFormat::PF_FloatRGBA, 3, true);
 
 	// We need one accumulator per pano tile if using accumulation.
 	AccumulatorPool = MakeShared<TAccumulatorPool<FImageOverlappedAccumulator>, ESPMode::ThreadSafe>(NumPanoramicPanes);
@@ -188,23 +160,8 @@ void UMoviePipelinePanoramicPass::SetupImpl(const MoviePipeline::FMoviePipelineR
 
 void UMoviePipelinePanoramicPass::TeardownImpl()
 {
-	GetPipeline()->SetPreviewTexture(nullptr);
-
-	// This may call FlushRenderingCommands if there are outstanding readbacks that need to happen.
-	if (SurfaceQueue.IsValid())
-	{
-		SurfaceQueue->Shutdown();
-	}
-
-	// Stall until the task graph has completed any pending accumulations. Because the actual
-	// Panoramic blending is also done on the same task as the accumulation that produced it,
-	// this will stall until all blends are finished too and pass them to the output merger.
-	FTaskGraphInterface::Get().WaitUntilTasksComplete(OutstandingTasks, ENamedThreads::GameThread);
-	OutstandingTasks.Reset();
 	PanoramicOutputBlender.Reset();
-
 	AccumulatorPool.Reset();
-	SurfaceQueue.Reset();
 
 	for (int32 Index = 0; Index < OptionalPaneViewStates.Num(); Index++)
 	{
@@ -216,7 +173,6 @@ void UMoviePipelinePanoramicPass::TeardownImpl()
 		OptionalPaneViewStates[Index].Destroy();
 	}
 	OptionalPaneViewStates.Reset();
-	CanvasReadbackTexture = nullptr;
 	
 	OCIOSceneViewExtension.Reset();
 	OCIOSceneViewExtension = nullptr;
@@ -254,11 +210,6 @@ FSceneViewStateInterface* UMoviePipelinePanoramicPass::GetSceneViewStateInterfac
 	}
 }
 
-UTextureRenderTarget2D* UMoviePipelinePanoramicPass::GetViewRenderTarget(IViewCalcPayload* OptPayload) const
-{
-	return CanvasReadbackTexture;
-}
-
 void UMoviePipelinePanoramicPass::GatherOutputPassesImpl(TArray<FMoviePipelinePassIdentifier>& ExpectedRenderPasses)
 {
 	// Despite rendering many views, we only output one image total, which is covered by the base.
@@ -283,8 +234,27 @@ void UMoviePipelinePanoramicPass::AddViewExtensions(FSceneViewFamilyContext& InC
 	}
 }
 
+FIntPoint UMoviePipelinePanoramicPass::GetPaneResolution(const FIntPoint& InSize) const
+{
+	// We calculate a different resolution than the final output resolution.
+	float HorizontalFoV;
+	float VerticalFoV;
+	GetFieldOfView(HorizontalFoV, VerticalFoV, bStereo);
 
-void UMoviePipelinePanoramicPass::GetFieldOfView(float& OutHorizontal, float& OutVertical, const bool bInStereo)
+	// Horizontal FoV is a proportion of the global horizontal resolution
+	// ToDo: We might have to check which is higher, if numVerticalPanes > numHorizontalPanes this math might be backwards.
+	float HorizontalRes = (HorizontalFoV / 360.0f) * InSize.X;
+	float Intermediate = FMath::Tan(FMath::DegreesToRadians(VerticalFoV) * 0.5f) / FMath::Tan(FMath::DegreesToRadians(HorizontalFoV) * 0.5f);
+	float VerticalRes = HorizontalRes * Intermediate;
+
+	//float VerticalRes = HorizontalRes * FMath::Tan(FMath::DegreesToRadians(VerticalFoV) * 0.5f) / FMath::Tan(FMath::DegreesToRadians(HorizontalFoV) * 0.5f);
+	// 
+	// ToDo: I think this is just aspect ratio based on FoVs?
+
+	return FIntPoint(FMath::CeilToInt(HorizontalRes), FMath::CeilToInt(VerticalRes));
+}
+
+void UMoviePipelinePanoramicPass::GetFieldOfView(float& OutHorizontal, float& OutVertical, const bool bInStereo) const
 {
 	// ToDo: These should probably be mathematically derived based on numSteps
 	OutHorizontal = bInStereo ? 30.f : HorzFieldOfView > 0 ? HorzFieldOfView : 90.f;
@@ -326,7 +296,13 @@ FSceneView* UMoviePipelinePanoramicPass::GetSceneViewForSampleState(FSceneViewFa
 
 	// Calculate a Projection Matrix
 	{
-		const float MinZ = GNearClippingPlane;
+		float MinZ = GNearClippingPlane;
+		if (LocalPlayerController && LocalPlayerController->PlayerCameraManager)
+		{
+			float NearClipPlane = LocalPlayerController->PlayerCameraManager->GetCameraCacheView().PerspectiveNearClipPlane;
+			MinZ = NearClipPlane > 0 ? NearClipPlane : MinZ;
+		}
+		PanoPane->NearClippingPlane = MinZ;
 		const float MaxZ = MinZ;
 		// Avoid zero ViewFOV's which cause divide by zero's in projection matrix
 		const float MatrixFOV = FMath::Max(0.001f, ViewFOV) * (float)PI / 360.0f;
@@ -386,7 +362,7 @@ FSceneView* UMoviePipelinePanoramicPass::GetSceneViewForSampleState(FSceneViewFa
 	View->PreviousViewTransform = FTransform(PanoPane->PrevCameraRotation, PanoPane->PrevCameraLocation);
 
 	View->StartFinalPostprocessSettings(View->ViewLocation);
-	BlendPostProcessSettings(View);
+	BlendPostProcessSettings(View, InOutSampleState, OptPayload);
 
 	// Scaling sensor size inversely with the the projection matrix [0][0] should physically
 	// cause the circle of confusion to be unchanged.
@@ -403,15 +379,33 @@ FSceneView* UMoviePipelinePanoramicPass::GetSceneViewForSampleState(FSceneViewFa
 	return View;
 }
 
+FIntPoint UMoviePipelinePanoramicPass::GetPayloadPaneResolution(const FIntPoint& InSize, IViewCalcPayload* OptPayload) const
+{
+	if (OptPayload)
+	{
+		FPanoPane* PanoPane = (FPanoPane*)OptPayload;
+		return PanoPane->Resolution;
+	}
+
+	return InSize;
+}
+
+TWeakObjectPtr<UTextureRenderTarget2D> UMoviePipelinePanoramicPass::GetOrCreateViewRenderTarget(const FIntPoint& InSize, IViewCalcPayload* OptPayload)
+{
+	return Super::GetOrCreateViewRenderTarget(GetPayloadPaneResolution(InSize, OptPayload), OptPayload);
+}
+
+TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> UMoviePipelinePanoramicPass::GetOrCreateSurfaceQueue(const FIntPoint& InSize, IViewCalcPayload* OptPayload)
+{
+	return Super::GetOrCreateSurfaceQueue(GetPayloadPaneResolution(InSize, OptPayload), OptPayload);
+}
+
 void UMoviePipelinePanoramicPass::RenderSample_GameThreadImpl(const FMoviePipelineRenderPassMetrics& InSampleState)
 {
+	// Wait for a surface to be available to write to. This will stall the game thread while the RHI/Render Thread catch up.
 	Super::RenderSample_GameThreadImpl(InSampleState);
 
-	// Wait for a surface to be available to write to. This will stall the game thread while the RHI/Render Thread catch up.
-	{
-		SCOPE_CYCLE_COUNTER(STAT_MoviePipeline_WaitForAvailableSurface);
-		SurfaceQueue->BlockUntilAnyAvailable();
-	}
+	const FIntPoint PaneResolution = GetPaneResolution(InSampleState.BackbufferSize);
 	
 	// This function will be called for each sample of every tile. We'll then submit renders for each
 	// Panoramic Pane. This effectively means that all panes will fill in their top left corners first.
@@ -477,8 +471,13 @@ void UMoviePipelinePanoramicPass::RenderSample_GameThreadImpl(const FMoviePipeli
 				}
 
 				// Submit the view to be rendered.
-				FRenderTarget* RenderTarget = CanvasReadbackTexture->GameThread_GetRenderTargetResource();
-				FCanvas Canvas = FCanvas(RenderTarget, nullptr, GetPipeline()->GetWorld(), ERHIFeatureLevel::SM5, FCanvas::CDM_DeferDrawing, 1.0f);
+				TWeakObjectPtr<UTextureRenderTarget2D> ViewRenderTarget = GetOrCreateViewRenderTarget(PaneResolution);
+				check(ViewRenderTarget.IsValid());
+
+				FRenderTarget* RenderTarget = ViewRenderTarget->GameThread_GetRenderTargetResource();
+				check(RenderTarget);
+
+				FCanvas Canvas = FCanvas(RenderTarget, nullptr, GetPipeline()->GetWorld(), ViewFamily->GetFeatureLevel(), FCanvas::CDM_DeferDrawing, 1.0f);
 				GetRendererModule().BeginRenderingViewFamily(&Canvas, ViewFamily.Get());
 
 				// Schedule a readback and then high-res accumulation.
@@ -487,7 +486,6 @@ void UMoviePipelinePanoramicPass::RenderSample_GameThreadImpl(const FMoviePipeli
 		}
 	}
 }
-
 
 void UMoviePipelinePanoramicPass::ScheduleReadbackAndAccumulation(const FMoviePipelineRenderPassMetrics& InSampleState, const FPanoPane& InPane, FCanvas& InCanvas)
 {
@@ -510,13 +508,13 @@ void UMoviePipelinePanoramicPass::ScheduleReadbackAndAccumulation(const FMoviePi
 		FMoviePipelinePassIdentifier PanePassIdentifier = FMoviePipelinePassIdentifier(FString::Printf(TEXT("%s_x%d_y%d"), *PassIdentifier.Name, InPane.VerticalStepIndex, InPane.HorizontalStepIndex));
 		SampleAccumulator = AccumulatorPool->BlockAndGetAccumulator_GameThread(InSampleState.OutputState.OutputFrameNumber, PanePassIdentifier);
 	}
-	TSharedPtr<FMoviePipelineSurfaceQueue> LocalSurfaceQueue = SurfaceQueue;
 
 	TSharedRef<FPanoramicImagePixelDataPayload, ESPMode::ThreadSafe> FramePayload = MakeShared<FPanoramicImagePixelDataPayload, ESPMode::ThreadSafe>();
 	FramePayload->PassIdentifier = PassIdentifier;
 	FramePayload->SampleState = InSampleState;
 	FramePayload->SortingOrder = GetOutputFileSortingOrder();
 	FramePayload->Pane = InPane;
+
 	if (FramePayload->Pane.EyeIndex >= 0)
 	{
 		FramePayload->Debug_OverrideFilename = FString::Printf(TEXT("/%s_SS_%d_TS_%d_TileX_%d_TileY_%d_PaneX_%d_PaneY_%d_Eye_%d.%d.exr"),
@@ -532,6 +530,8 @@ void UMoviePipelinePanoramicPass::ScheduleReadbackAndAccumulation(const FMoviePi
 			FramePayload->Pane.VerticalStepIndex, FramePayload->SampleState.OutputState.OutputFrameNumber);
 	}
 	
+	TSharedPtr<FMoviePipelineSurfaceQueue, ESPMode::ThreadSafe> LocalSurfaceQueue = GetOrCreateSurfaceQueue(InSampleState.BackbufferSize, (IViewCalcPayload*)(&FramePayload->Pane));
+
 	MoviePipeline::FImageSampleAccumulationArgs AccumulationArgs;
 	{
 		AccumulationArgs.OutputMerger = PanoramicOutputBlender;
@@ -573,4 +573,3 @@ void UMoviePipelinePanoramicPass::ScheduleReadbackAndAccumulation(const FMoviePi
 		});
 
 }
-

@@ -9,6 +9,8 @@
 #include "Animation/NodeMappingContainer.h"
 #include "AnimationRuntime.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ControlRig)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #endif
@@ -26,6 +28,19 @@ FAnimNode_ControlRig::FAnimNode_ControlRig()
 {
 }
 
+FAnimNode_ControlRig::~FAnimNode_ControlRig()
+{
+	if(ControlRig)
+	{
+		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
+	}
+}
+
+void FAnimNode_ControlRig::HandleOnInitialized_AnyThread(UControlRig*, const EControlRigState, const FName&)
+{
+	RefPoseSetterHash.Reset();
+}
+
 void FAnimNode_ControlRig::OnInitializeAnimInstance(const FAnimInstanceProxy* InProxy, const UAnimInstance* InAnimInstance)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
@@ -36,25 +51,14 @@ void FAnimNode_ControlRig::OnInitializeAnimInstance(const FAnimInstanceProxy* In
 		ControlRig->Initialize(true);
 		ControlRig->RequestInit();
 		RefPoseSetterHash.Reset();
-		ControlRig->OnInitialized_AnyThread().AddLambda([this](class UControlRig*, const EControlRigState, const FName&) { RefPoseSetterHash.Reset(); });
+		ControlRig->OnInitialized_AnyThread().AddRaw(this, &FAnimNode_ControlRig::HandleOnInitialized_AnyThread);
 
 		UpdateControlRigRefPoseIfNeeded(InProxy);
 	}
 
 	FAnimNode_ControlRigBase::OnInitializeAnimInstance(InProxy, InAnimInstance);
 
-#if WITH_EDITOR
-	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FAnimNode_ControlRig::OnObjectsReplaced);
-#endif // WITH_EDITOR
-
 	InitializeProperties(InAnimInstance, GetTargetClass());
-}
-
-FAnimNode_ControlRig::~FAnimNode_ControlRig()
-{
-#if WITH_EDITOR
-	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
-#endif // WITH_EDITOR
 }
 
 void FAnimNode_ControlRig::GatherDebugData(FNodeDebugData& DebugData)
@@ -291,7 +295,7 @@ void FAnimNode_ControlRig::UpdateControlRigRefPoseIfNeeded(const FAnimInstancePr
 
 	if(InProxy->GetSkelMeshComponent())
 	{
-		ExpectedHash = HashCombine(ExpectedHash, (int32)reinterpret_cast<uintptr_t>(InProxy->GetSkelMeshComponent()->SkeletalMesh.Get()));
+		ExpectedHash = HashCombine(ExpectedHash, (int32)reinterpret_cast<uintptr_t>(InProxy->GetSkelMeshComponent()->GetSkeletalMeshAsset()));
 	}
 
 	if(bIncludePoseInHash)
@@ -517,7 +521,7 @@ void FAnimNode_ControlRig::PropagateInputProperties(const UObject* InSourceInsta
 							if(ensure(StructProperty->Struct == TBaseStructure<FTransform>::Get()))
 							{
 								const FTransform& SrcTransform = *(FTransform*)SrcPtr;  
-								Value = FRigControlValue::Make<FEulerTransform>(SrcTransform);
+								Value = FRigControlValue::Make<FEulerTransform>(FEulerTransform(SrcTransform));
 								bIsValid = true;
 							}
 						}
@@ -583,6 +587,13 @@ void FAnimNode_ControlRig::PropagateInputProperties(const UObject* InSourceInsta
 						StructProperty->Struct->CopyScriptStruct(Variable.Memory, SrcPtr, 1);
 					}
 				}
+				else if(FArrayProperty* ArrayProperty = CastField<FArrayProperty>(CallerProperty))
+				{
+					if(ensure(ArrayProperty->SameType(Variable.Property)))
+					{
+						ArrayProperty->CopyCompleteValue(Variable.Memory, SrcPtr);
+					}
+				}
 				else
 				{
 					ensureMsgf(false, TEXT("Property %s type %s not recognized"), *CallerProperty->GetName(), *CallerProperty->GetCPPType());
@@ -593,17 +604,16 @@ void FAnimNode_ControlRig::PropagateInputProperties(const UObject* InSourceInsta
 }
 
 #if WITH_EDITOR
-void FAnimNode_ControlRig::OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewInstanceMap)
-{
-	if (ControlRig)
-	{
-		UObject* const* NewFound = OldToNewInstanceMap.Find(ControlRig);
 
-		if (NewFound)
-		{
-			// recache the properties
-			bReinitializeProperties = true;
-		}
+void FAnimNode_ControlRig::HandleObjectsReinstanced_Impl(UObject* InSourceObject, UObject* InTargetObject, const TMap<UObject*, UObject*>& OldToNewInstanceMap)
+{
+	Super::HandleObjectsReinstanced_Impl(InSourceObject, InTargetObject, OldToNewInstanceMap);
+	
+	if(ControlRig)
+	{
+		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
+		ControlRig->OnInitialized_AnyThread().AddRaw(this, &FAnimNode_ControlRig::HandleOnInitialized_AnyThread);
 	}
 }
-#endif	// #if WITH_EDITOR
+
+#endif

@@ -1,25 +1,59 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CurveColorCustomization.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Containers/UnrealString.h"
 #include "Curves/CurveLinearColor.h"
-#include "Misc/PackageName.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Editor.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Curves/KeyHandle.h"
+#include "Delegates/Delegate.h"
 #include "DetailWidgetRow.h"
-#include "Layout/WidgetPath.h"
+#include "Dialogs/Dialogs.h"
+#include "Dialogs/DlgPickAssetPath.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "IDetailChildrenBuilder.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "Layout/WidgetPath.h"
+#include "MiniCurveEditor.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Misc/PackageName.h"
+#include "PackageTools.h"
+#include "PropertyHandle.h"
+#include "SCurveEditor.h"
+#include "Selection.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "Dialogs/Dialogs.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
 
-#include "Dialogs/DlgPickAssetPath.h"
-#include "PackageTools.h"
-#include "MiniCurveEditor.h"
-#include "AssetRegistryModule.h"
-#include "SCurveEditor.h"
-#include "Engine/Selection.h"
-#include "Subsystems/AssetEditorSubsystem.h"
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "CurveColorCustomization"
 
@@ -86,7 +120,7 @@ void FCurveColorCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InStr
 		HeaderRow
 			.NameContent()
 			[
-				InStructPropertyHandle->CreatePropertyNameWidget( FText::GetEmpty(), FText::GetEmpty(), false )
+				InStructPropertyHandle->CreatePropertyNameWidget( FText::GetEmpty(), FText::GetEmpty() )
 			]
 			.ValueContent()
 			.HAlign(HAlign_Fill)
@@ -123,7 +157,7 @@ void FCurveColorCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InStr
 		HeaderRow
 			.NameContent()
 			[
-				InStructPropertyHandle->CreatePropertyNameWidget( FText::GetEmpty(), FText::GetEmpty(), false )
+				InStructPropertyHandle->CreatePropertyNameWidget()
 			]
 			.ValueContent()
 			[
@@ -175,14 +209,14 @@ void FCurveColorCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InS
 						.Padding(1,0)
 						[
 							SNew(SButton)
-							.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+							.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 							.ContentPadding(1.f)
 							.ToolTipText(LOCTEXT("ConvertInternalCurveTooltip", "Convert to Internal Color Curve"))
 							.OnClicked(this, &FCurveColorCustomization::OnConvertButtonClicked)
 							.IsEnabled(this, &FCurveColorCustomization::IsConvertButtonEnabled)
 							[
 								SNew(SImage)
-								.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")) )
+								.Image( FAppStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")) )
 							]
 						]
 					]

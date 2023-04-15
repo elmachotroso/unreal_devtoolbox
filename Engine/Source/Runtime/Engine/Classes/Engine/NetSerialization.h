@@ -219,7 +219,7 @@ bool WritePackedVector(FVector3d Vector, FArchive& Ar)
 template<int32 ScaleFactor, int32 MaxBitsPerComponent>
 bool ReadPackedVector(FVector3f& Value, FArchive& Ar)
 {
-	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT)
+	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 	{
 		return UE::Net::ReadQuantizedVector(ScaleFactor, Value, Ar);
 	}
@@ -232,7 +232,7 @@ bool ReadPackedVector(FVector3f& Value, FArchive& Ar)
 template<int32 ScaleFactor, int32 MaxBitsPerComponent>
 bool ReadPackedVector(FVector3d& Value, FArchive& Ar)
 {
-	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT)
+	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 	{
 		return UE::Net::ReadQuantizedVector(ScaleFactor, Value, Ar);
 	}
@@ -248,7 +248,7 @@ bool ReadPackedVector(FVector3d& Value, FArchive& Ar)
 template<int32 ScaleFactor, int32 MaxBitsPerComponent>
 bool SerializePackedVector(FVector3f& Value, FArchive& Ar)
 {
-	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT)
+	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 	{
 		return UE::Net::SerializeQuantizedVector<ScaleFactor>(Value, Ar);
 	}
@@ -262,7 +262,7 @@ bool SerializePackedVector(FVector3f& Value, FArchive& Ar)
 template<int32 ScaleFactor, int32 MaxBitsPerComponent>
 bool SerializePackedVector(FVector3d& Value, FArchive& Ar)
 {
-	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT)
+	if (Ar.EngineNetVer() >= HISTORY_PACKED_VECTOR_LWC_SUPPORT && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 	{
 		return UE::Net::SerializeQuantizedVector<ScaleFactor>(Value, Ar);
 	}
@@ -294,7 +294,7 @@ bool WriteFixedCompressedFloat(const T Value, FArchive& Ar)
 	using Details = TFixedCompressedFloatDetails<MaxValue, NumBits>;
 
 	bool clamp = false;
-	int32 ScaledValue;
+	int64 ScaledValue;
 	if ( MaxValue > Details::MaxBitValue )
 	{
 		// We have to scale this down
@@ -304,7 +304,7 @@ bool WriteFixedCompressedFloat(const T Value, FArchive& Ar)
 	else
 	{
 		// We will scale up to get extra precision. But keep is a whole number preserve whole values
-		enum { Scale = Details::MaxBitValue / MaxValue };
+		constexpr int32 Scale = Details::MaxBitValue / MaxValue;
 		ScaledValue = FMath::RoundToInt( Scale * Value );
 	}
 
@@ -401,7 +401,7 @@ bool SerializeFixedVector(FVector3d &Vector, FArchive& Ar)
  *	Note: this is the historical UE format for vector net serialization
  *
  */
-USTRUCT(meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector_NetQuantize", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector_NetQuantize"))
+USTRUCT(meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector_NetQuantize", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector_NetQuantize"))
 struct FVector_NetQuantize : public FVector
 {
 	GENERATED_USTRUCT_BODY()
@@ -447,7 +447,7 @@ struct TStructOpsTypeTraits< FVector_NetQuantize > : public TStructOpsTypeTraits
  *	Valid range: 2^24 / 10 = +/- 1,677,721.6
  *
  */
-USTRUCT(meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector_NetQuantize10", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector_NetQuantize10"))
+USTRUCT(meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector_NetQuantize10", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector_NetQuantize10"))
 struct FVector_NetQuantize10 : public FVector
 {
 	GENERATED_USTRUCT_BODY()
@@ -493,7 +493,7 @@ struct TStructOpsTypeTraits< FVector_NetQuantize10 > : public TStructOpsTypeTrai
  *	Valid range: 2^30 / 100 = +/- 10,737,418.24
  *
  */
-USTRUCT(meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector_NetQuantize100", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector_NetQuantize100"))
+USTRUCT(meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector_NetQuantize100", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector_NetQuantize100"))
 struct FVector_NetQuantize100 : public FVector
 {
 	GENERATED_USTRUCT_BODY()
@@ -535,7 +535,7 @@ struct TStructOpsTypeTraits< FVector_NetQuantize100 > : public TStructOpsTypeTra
  *	16 bits per component
  *	Valid range: -1..+1 inclusive
  */
-USTRUCT(meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector_NetQuantizeNormal", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector_NetQuantizeNormal"))
+USTRUCT(meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector_NetQuantizeNormal", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector_NetQuantizeNormal"))
 struct FVector_NetQuantizeNormal : public FVector
 {
 	GENERATED_USTRUCT_BODY()

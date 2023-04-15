@@ -2,20 +2,18 @@
 
 #include "AssetTypeActions/AssetTypeActions_Class.h"
 #include "ToolMenus.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "HAL/FileManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SourceCodeNavigation.h"
 #include "AddToProjectConfig.h"
 #include "GameProjectGenerationModule.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
-
-bool FAssetTypeActions_Class::HasActions(const TArray<UObject*>& InObjects) const
-{
-	return true;
-}
 
 void FAssetTypeActions_Class::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
@@ -45,9 +43,14 @@ void FAssetTypeActions_Class::GetActions(const TArray<UObject*>& InObjects, FToo
 		);
 	};
 
-	auto CanCreateDerivedCppClass = [bIsValidBaseCppClass]() -> bool
+	auto IsCPPAllowed = []()
 	{
-		return bIsValidBaseCppClass;
+		return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
+	};
+
+	auto CanCreateDerivedCppClass = [bIsValidBaseCppClass, IsCPPAllowed]() -> bool
+	{
+		return bIsValidBaseCppClass && IsCPPAllowed();
 	};
 
 	auto CreateCreateDerivedBlueprintClass = [BaseClass]()
@@ -107,18 +110,20 @@ void FAssetTypeActions_Class::GetActions(const TArray<UObject*>& InObjects, FToo
 		"NewDerivedCppClass",
 		NewDerivedCppClassLabel,
 		NewDerivedCppClassToolTip,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.C++"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.C++"),
 		FUIAction(
 			FExecuteAction::CreateLambda(CreateCreateDerivedCppClass),
-			FCanExecuteAction::CreateLambda(CanCreateDerivedCppClass)
-			)
-		);
+			FCanExecuteAction::CreateLambda(CanCreateDerivedCppClass),
+			FIsActionChecked(),
+			FIsActionButtonVisible::CreateLambda(IsCPPAllowed)
+		)
+	);
 
 	Section.AddMenuEntry(
 		"NewDerivedBlueprintClass",
 		NewDerivedBlueprintClassLabel,
 		NewDerivedBlueprintClassToolTip,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.Blueprint"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Blueprint"),
 		FUIAction(
 			FExecuteAction::CreateLambda(CreateCreateDerivedBlueprintClass),
 			FCanExecuteAction::CreateLambda(CanCreateDerivedBlueprintClass)
@@ -164,7 +169,7 @@ void FAssetTypeActions_Class::OpenAssetEditor( const TArray<UObject*>& InObjects
 
 TWeakPtr<IClassTypeActions> FAssetTypeActions_Class::GetClassTypeActions(const FAssetData& AssetData) const
 {
-	UClass* Class = FindObject<UClass>(ANY_PACKAGE, *AssetData.AssetName.ToString());
+	UClass* Class = FindObject<UClass>(nullptr, *AssetData.GetObjectPathString());
 	if(Class)
 	{
 		FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();

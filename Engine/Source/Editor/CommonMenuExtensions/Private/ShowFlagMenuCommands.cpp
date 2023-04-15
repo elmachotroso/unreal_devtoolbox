@@ -1,10 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShowFlagMenuCommands.h"
+
+#include "Containers/BitArray.h"
+#include "Containers/StringConv.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "EditorShowFlags.h"
-#include "EditorStyleSet.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ToolMenus.h"
+#include "EditorViewportClient.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Internationalization/Internationalization.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/Function.h"
+#include "ToolMenu.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuSection.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "ShowFlagMenuCommands"
 
@@ -36,7 +52,7 @@ FShowFlagMenuCommands::FShowFlagMenuCommands()
 		TEXT("ShowFlagsMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "ShowFlagsMenu", "Show Flags Menu"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	),
 	ShowFlagCommands(),
 	bCommandsInitialised(false)
@@ -198,7 +214,7 @@ void FShowFlagMenuCommands::StaticCreateShowFlagsSubMenu(UToolMenu* Menu, TArray
 FSlateIcon FShowFlagMenuCommands::GetShowFlagIcon(const FShowFlagData& Flag) const
 {
 	return Flag.Group == EShowFlagGroup::SFG_Normal
-		? FSlateIcon(FEditorStyle::GetStyleSetName(), FEditorStyle::Join(GetContextName(), TCHAR_TO_ANSI(*FString::Printf(TEXT(".%s"), *Flag.ShowFlagName.ToString()))))
+		? FSlateIcon(FAppStyle::GetAppStyleSetName(), FAppStyle::Join(GetContextName(), TCHAR_TO_ANSI(*FString::Printf(TEXT(".%s"), *Flag.ShowFlagName.ToString()))))
 		: FSlateIcon();
 }
 

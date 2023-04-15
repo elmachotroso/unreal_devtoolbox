@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "../Common.ush"
+#include "LumenMaterial.ush"
 #include "../DeferredShadingCommon.ush"
 #include "../BRDF.ush"
 #include "LumenScreenProbeCommon.ush"
@@ -16,7 +17,6 @@
 #define THREADGROUP_SIZE 1
 #endif
 
-
 RWTexture2D<UNORM float4> RWScreenBentNormal;
 float SlopeCompareToleranceScale;
 
@@ -27,16 +27,23 @@ float4 HZBUvFactorAndInvFactor;
 [numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
 void ScreenSpaceBentNormalCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
-	float2 ScreenUV = float2((DispatchThreadId.xy + .5f) * View.BufferSizeAndInvSize.zw);
-	float SceneDepth = CalcSceneDepth(ScreenUV);
+#if STRATA_ENABLED && PERMUTATION_OVERFLOW
+	const FLumenMaterialCoord Coord = GetLumenMaterialCoord(DispatchThreadId + (Strata.OverflowTileOffset * STRATA_TILE_SIZE), true);
+#else
+	const FLumenMaterialCoord Coord = GetLumenMaterialCoord(DispatchThreadId + View.ViewRectMinAndSize.xy, false);
+#endif
 
-	FGBufferData GBufferData = GetGBufferDataUint(DispatchThreadId.xy);
+	const float2 ScreenUV = (Coord.SvPosition + .5f) * View.BufferSizeAndInvSize.zw;
+	const float SceneDepth = CalcSceneDepth(ScreenUV);
 
-	if (GBufferData.ShadingModelID != SHADINGMODELID_UNLIT)
+	const float DummyMaxRoughnessToTrace = 0.5f;
+	const FLumenMaterialData Material = ReadMaterialData(Coord, DummyMaxRoughnessToTrace);
+
+	if (IsValid(Material))
 	{
 		float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
-		float3x3 TangentBasis = GetTangentBasis(GBufferData.WorldNormal);
-		uint2 Seed0 = Rand3DPCG16(int3(DispatchThreadId.xy, GENERAL_TEMPORAL_INDEX)).xy;
+		float3x3 TangentBasis = GetTangentBasis(Material.WorldNormal);
+		//uint2 Seed0 = Rand3DPCG16(int3(Coord.SvPosition, GENERAL_TEMPORAL_INDEX)).xy;
 		float MaxScreenTraceFraction = ScreenProbeDownsampleFactor * 2 * View.ViewSizeAndInvSize.z;
 		float TraceDistance = SceneDepth * MaxScreenTraceFraction * 2.0 * GetTanHalfFieldOfView().x;
 		float DepthThresholdScale = HasDistanceFieldRepresentation(ScreenUV) ? 1.0f : ScreenTraceNoFallbackThicknessScale;
@@ -48,7 +55,9 @@ void ScreenSpaceBentNormalCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		UNROLL
 		for (uint PixelRayIndex = 0; PixelRayIndex < NumPixelSamples; PixelRayIndex++)
 		{
-			float2 UniformRandom = Hammersley16(PixelRayIndex, NumPixelSamples, Seed0);
+			//float2 UniformRandom = Hammersley16(PixelRayIndex, NumPixelSamples, Seed0);
+			float2 UniformRandom = BlueNoiseVec2(Coord.SvPosition, (RAY_DIRECTION_TEMPORAL_INDEX * NumPixelSamples + PixelRayIndex));
+
 			//@todo - other shading models
 			float4 HemisphereSample = CosineSampleHemisphere(UniformRandom);
 			float3 RayDirection = mul(HemisphereSample.xyz, TangentBasis);
@@ -60,7 +69,7 @@ void ScreenSpaceBentNormalCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 				uint NumSteps = 4;
 				float StartMipLevel = 0;
 
-				uint2 NoiseCoord = DispatchThreadId.xy * uint2(NumPixelSamples, 1) + uint2(PixelRayIndex, 0);
+				uint2 NoiseCoord = Coord.SvPosition * uint2(NumPixelSamples, 1) + uint2(PixelRayIndex, 0);
 				float StepOffset = InterleavedGradientNoise(NoiseCoord + 0.5f, 0.0f);
 
 				float RayRoughness = .2f;
@@ -112,8 +121,8 @@ void ScreenSpaceBentNormalCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		}
 
 		// Debug passthrough
-		//BentNormal = GBufferData.WorldNormal;
+		//BentNormal = Material.WorldNormal;
 
-		RWScreenBentNormal[DispatchThreadId.xy] = float4(BentNormal * .5f + .5f, 0);
+		RWScreenBentNormal[Coord.SvPositionFlatten] = float4(BentNormal * .5f + .5f, 0);
 	}
 }

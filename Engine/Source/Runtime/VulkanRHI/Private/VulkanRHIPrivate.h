@@ -139,7 +139,6 @@ inline EShaderFrequency VkStageBitToUEFrequency(VkShaderStageFlagBits FlagBits)
 	return SF_NumFrequencies;
 }
 
-
 class FVulkanRenderTargetLayout
 {
 public:
@@ -285,8 +284,8 @@ public:
 	inline bool ContainsRenderTarget(FRHITexture* Texture) const
 	{
 		ensure(Texture);
-		FVulkanTextureBase* Base = (FVulkanTextureBase*)Texture->GetTextureBaseRHI();
-		return ContainsRenderTarget(Base->Surface.Image);
+		FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(Texture);
+		return ContainsRenderTarget(VulkanTexture->Image);
 	}
 
 	inline bool ContainsRenderTarget(VkImage Image) const
@@ -814,7 +813,6 @@ namespace VulkanRHI
 		{
 			return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 		}
-#if VULKAN_SUPPORTS_MAINTENANCE_LAYER2
 		else if (RequestedDSAccess == FExclusiveDepthStencil::DepthRead_StencilWrite && InDevice.GetOptionalExtensions().HasKHRMaintenance2)
 		{
 			return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR;
@@ -823,7 +821,6 @@ namespace VulkanRHI
 		{
 			return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR;
 		}
-#endif
 
 		ensure(RequestedDSAccess.IsDepthWrite() || RequestedDSAccess.IsStencilWrite());
 		return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;

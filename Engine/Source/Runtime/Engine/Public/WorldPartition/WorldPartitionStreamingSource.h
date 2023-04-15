@@ -324,9 +324,11 @@ struct ENGINE_API FWorldPartitionStreamingSource
 		, Velocity(0.f)
 		, DebugColor(ForceInit)
 		, TargetGrid(NAME_None)
+		, bReplay(false)
+		, bRemote(false)
 	{}
 
-	FWorldPartitionStreamingSource(FName InName, const FVector& InLocation, const FRotator& InRotation, EStreamingSourceTargetState InTargetState, bool bInBlockOnSlowLoading, EStreamingSourcePriority InPriority, float InVelocity = 0.f)
+	FWorldPartitionStreamingSource(FName InName, const FVector& InLocation, const FRotator& InRotation, EStreamingSourceTargetState InTargetState, bool bInBlockOnSlowLoading, EStreamingSourcePriority InPriority, bool bRemote, float InVelocity = 0.f)
 		: Name(InName)
 		, Location(InLocation)
 		, Rotation(InRotation)
@@ -336,6 +338,8 @@ struct ENGINE_API FWorldPartitionStreamingSource
 		, Velocity(InVelocity)
 		, DebugColor(ForceInit)
 		, TargetGrid(NAME_None)
+		, bReplay(false)
+		, bRemote(bRemote)
 	{}
 
 	FColor GetDebugColor() const
@@ -381,6 +385,12 @@ struct ENGINE_API FWorldPartitionStreamingSource
 	/** Source internal shapes. When none are provided, a sphere is automatically used. It's radius is equal to grid's loading range and center equals source's location. */
 	TArray<FStreamingSourceShape> Shapes;
 
+	/** If true, this streaming source is from a replay recording */
+	bool bReplay;
+
+	/** If true, this streaming source is from a remote session */
+	bool bRemote;
+
 	/** Returns a box encapsulating all shapes. */
 	FORCEINLINE FBox CalcBounds(float InGridLoadingRange, FName InGridName, const FSoftObjectPath& InGridHLODLayer, bool bCalcIn2D = false) const
 	{
@@ -405,11 +415,12 @@ struct ENGINE_API FWorldPartitionStreamingSource
 	{
 		const FVector Direction = Rotation.Euler();
 		return FString::Printf(
-			TEXT("Priority: %d | %s | %s | Pos: X=%d,Y=%d,Z=%d | Rot: X=%d,Y=%d,Z=%d | Vel: %3.2f m/s (%d mph)"), 
+			TEXT("Priority: %d | %s | %s | %s | Pos: X=%lld,Y=%lld,Z=%lld | Rot: X=%d,Y=%d,Z=%d | Vel: %3.2f m/s (%d mph)"), 
 			Priority, 
+			bRemote ? TEXT("Remote") : TEXT("Local"),
 			GetStreamingSourceTargetStateName(TargetState),
 			bBlockOnSlowLoading ? TEXT("Blocking") : TEXT("NonBlocking"),
-			(int32)Location.X, (int32)Location.Y, (int32)Location.Z, 
+			(int64)Location.X, (int64)Location.Y, (int64)Location.Z, 
 			(int32)Direction.X, (int32)Direction.Y, (int32)Direction.Z, 
 			Velocity, 
 			(int32)(Velocity*2.23694f)
@@ -422,5 +433,5 @@ struct ENGINE_API FWorldPartitionStreamingSource
  */
 struct ENGINE_API IWorldPartitionStreamingSourceProvider
 {
-	virtual bool GetStreamingSource(FWorldPartitionStreamingSource& StreamingSource) = 0;
+	virtual bool GetStreamingSource(FWorldPartitionStreamingSource& StreamingSource) const = 0;
 };

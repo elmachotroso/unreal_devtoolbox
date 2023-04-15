@@ -4,6 +4,8 @@
 #include "CommonUITypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnalogSlider)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -12,17 +14,17 @@
 UAnalogSlider::UAnalogSlider(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Orientation = EOrientation::Orient_Horizontal;
-	SliderBarColor = FLinearColor::White;
-	SliderHandleColor = FLinearColor::White;
-	StepSize = 0.01f;
+	SetOrientation(EOrientation::Orient_Horizontal);
+	SetSliderBarColor(FLinearColor::White);
+	SetSliderHandleColor(FLinearColor::White);
+	SetStepSize(0.01f);
 	IsFocusable = true;
 }
 
 TSharedRef<SWidget> UAnalogSlider::RebuildWidget()
 {
 	MySlider = MyAnalogSlider = SNew(SAnalogSlider)
-		.Style(&WidgetStyle)
+		.Style(&GetWidgetStyle())
 		.IsFocusable(IsFocusable)
 		.OnMouseCaptureBegin(BIND_UOBJECT_DELEGATE(FSimpleDelegate, HandleOnMouseCaptureBegin))
 		.OnMouseCaptureEnd(BIND_UOBJECT_DELEGATE(FSimpleDelegate, HandleOnMouseCaptureEnd))
@@ -68,3 +70,4 @@ void UAnalogSlider::HandleInputMethodChanged(ECommonInputType CurrentInputType)
 }
 
 #undef LOCTEXT_NAMESPACE
+

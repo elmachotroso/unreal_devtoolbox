@@ -22,6 +22,11 @@ class UBodySetup;
 class FLidarPointCloudCollisionRendering;
 class FLidarPointCloudNotification;
 
+namespace LidarPointCloudMeshing
+{
+	struct FMeshBuffers;
+};
+
 /**
  * Used for ULidarPointCloud::CreateFromXXXX calls
  */
@@ -151,15 +156,16 @@ private:
 
 	/** Description of collision */
 	UPROPERTY(transient, duplicatetransient)
-	UBodySetup* BodySetup;
+	TObjectPtr<UBodySetup> BodySetup;
 	UPROPERTY(transient, duplicatetransient)
-	UBodySetup* NewBodySetup;
+	TObjectPtr<UBodySetup> NewBodySetup;
 
 	/** Used for collision building */
 	FThreadSafeBool bCollisionBuildInProgress;
 
 	FOnPointCloudChanged OnPointCloudRebuiltEvent;
 	FOnPointCloudChanged OnPointCloudUpdateCollisionEvent;
+	FOnPointCloudChanged OnPointCloudNormalsUpdatedEvent;
 	FOnPointCloudChanged OnPreSaveCleanupEvent;
 
 public:
@@ -167,6 +173,7 @@ public:
 
 	FOnPointCloudChanged& OnPointCloudRebuilt() { return OnPointCloudRebuiltEvent; }
 	FOnPointCloudChanged& OnPointCloudCollisionUpdated() { return OnPointCloudUpdateCollisionEvent; }
+	FOnPointCloudChanged& OnPointCloudNormalsUpdated() { return OnPointCloudNormalsUpdatedEvent; }
 	FOnPointCloudChanged& OnPreSaveCleanup() { return OnPreSaveCleanupEvent; }
 
 	// Begin UObject Interface.
@@ -216,6 +223,10 @@ public:
 	/** Returns true, if the Octree has collision built */
 	UFUNCTION(BlueprintPure, Category = "Lidar Point Cloud")
 	bool HasCollisionData() const;
+	
+	/** Returns the number of polygons in the collider or 0 if no collider is built */
+	UFUNCTION(BlueprintPure, Category = "Lidar Point Cloud")
+	int32 GetColliderPolys() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
 	void RefreshRendering();
@@ -409,6 +420,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
 	void MarkPointVisibilityDirty() { Octree.MarkPointVisibilityDirty(); }
 
+#if WITH_EDITOR
+	/** Set of editor helper functions */
+	void SelectByConvexVolume(FConvexVolume ConvexVolume, bool bAdditive, bool bApplyLocationOffset, bool bVisibleOnly);
+	void SelectBySphere(FSphere Sphere, bool bAdditive, bool bApplyLocationOffset, bool bVisibleOnly);
+	void HideSelected();
+	void DeleteSelected();
+	void InvertSelection();
+	int64 NumSelectedPoints() const;
+	bool HasSelectedPoints() const;
+	void GetSelectedPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints, FTransform Transform) const;
+	void CalculateNormalsForSelection();
+	void ClearSelection();
+	void BuildStaticMeshBuffersForSelection(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform);
+#endif
+	
 	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
 	void SetSourcePath(const FString& NewSourcePath);
 
@@ -426,14 +452,24 @@ public:
 		Octree.Initialize((FVector3f)NewBounds.GetExtent());
 	}
 
+	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
+	void SetOptimalCollisionError();
+
 	/** Builds collision mesh for the cloud, using current collision settings */
 	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
-	void BuildCollision();
+	void BuildCollision() { BuildCollision(nullptr); }
+	void BuildCollision(TFunction<void(bool)> CompletionCallback);
+
+	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud", meta = (Latent, WorldContext = "WorldContextObject", LatentInfo = "LatentInfo"))
+	void BuildCollisionWithCallback(UObject* WorldContextObject, FLatentActionInfo LatentInfo, bool& bSuccess);
 
 	/** Removes collision mesh from the cloud. */
 	UFUNCTION(BlueprintCallable, Category = "Lidar Point Cloud")
 	void RemoveCollision();
 
+	/** Constructs and returns the MeshBuffers struct from the data */
+	void BuildStaticMeshBuffers(float CellSize, LidarPointCloudMeshing::FMeshBuffers* OutMeshBuffers, const FTransform& Transform);
+	
 	/** Returns true, if the cloud is fully and persistently loaded. */
 	UFUNCTION(BlueprintPure, Category = "Lidar Point Cloud")
 	bool IsFullyLoaded() const { return Octree.IsFullyLoaded(); }
@@ -592,6 +628,7 @@ public:
 
 	//~ Begin Interface_CollisionDataProvider Interface
 	virtual bool GetPhysicsTriMeshData(FTriMeshCollisionData* CollisionData, bool InUseAllTriData) override;
+	virtual bool GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const override;
 	virtual bool ContainsPhysicsTriMeshData(bool InUseAllTriData) const override { return HasCollisionData(); }
 	virtual bool WantsNegXTriMesh() override { return false; }
 	//~ End Interface_CollisionDataProvider Interface
@@ -677,10 +714,10 @@ struct FLidarPointCloudTraceHit
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collision")
-	ALidarPointCloudActor* Actor = nullptr;
+	TObjectPtr<ALidarPointCloudActor> Actor = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collision")
-	ULidarPointCloudComponent* Component = nullptr;
+	TObjectPtr<ULidarPointCloudComponent> Component = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collision")
 	TArray<FLidarPointCloudPoint> Points;

@@ -12,7 +12,7 @@
 #include "Animation/AnimNodeBase.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/ExposedValueHandler.h"
-#include "Engine/PoseWatch.h"
+#include "Engine/PoseWatchRenderData.h"
 
 #include "AnimBlueprintGeneratedClass.generated.h"
 
@@ -129,6 +129,32 @@ public:
 #endif
 };
 
+struct FAnimBlueprintDebugData_NodeVisit
+{
+	int32 SourceID;
+	int32 TargetID;
+	float Weight;
+
+	FAnimBlueprintDebugData_NodeVisit(int32 InSourceID, int32 InTargetID, float InWeight)
+		: SourceID(InSourceID)
+		, TargetID(InTargetID)
+		, Weight(InWeight)
+	{
+	}
+};
+
+
+struct FAnimBlueprintDebugData_AttributeRecord
+{
+	FName Attribute;
+	int32 OtherNode;
+
+	FAnimBlueprintDebugData_AttributeRecord(int32 InOtherNode, FName InAttribute)
+		: Attribute(InAttribute)
+		, OtherNode(InOtherNode)
+	{}
+};
+
 // This structure represents animation-related debugging information for an entire AnimBlueprint
 // (general debug information for the event graph, etc... is still contained in a FBlueprintDebugData structure)
 USTRUCT()
@@ -180,34 +206,13 @@ public:
 	TMap<TFieldPath<const FProperty>, TFieldPath<const FProperty>> NodeToFoldedPropertyMap;
 
 	// Node visit structure
-	struct FNodeVisit
-	{
-		int32 SourceID;
-		int32 TargetID;
-		float Weight;
-
-		FNodeVisit(int32 InSourceID, int32 InTargetID, float InWeight)
-			: SourceID(InSourceID)
-			, TargetID(InTargetID)
-			, Weight(InWeight)
-		{
-		}
-	};
+	using FNodeVisit = FAnimBlueprintDebugData_NodeVisit;
 
 	// History of activated nodes
 	TArray<FNodeVisit> UpdatedNodesThisFrame;
 
 	// Record of attribute transfer between nodes
-	struct FAttributeRecord
-	{
-		FName Attribute;
-		int32 OtherNode;
-
-		FAttributeRecord(int32 InOtherNode, FName InAttribute)
-			: Attribute(InAttribute)
-			, OtherNode(InOtherNode)
-		{}
-	};
+	using FAttributeRecord = FAnimBlueprintDebugData_AttributeRecord;
 
 	// History of node attributes that are output from and input to nodes
 	TMap<int32, TArray<FAttributeRecord>> NodeInputAttributesThisFrame;
@@ -307,8 +312,10 @@ public:
 	void RecordSequencePlayer(int32 InNodeID, float InPosition, float InLength, int32 InFrameCount);
 	void RecordBlendSpacePlayer(int32 InNodeID, const UBlendSpace* InBlendSpace, const FVector& InPosition, const FVector& InFilteredPosition);
 
-	void AddPoseWatch(int32 NodeID, UPoseWatch*);
+	void AddPoseWatch(int32 NodeID, UPoseWatchPoseElement* const InPoseWatchPoseElement);
 	void RemovePoseWatch(int32 NodeID);
+	void ForEachActiveVisiblePoseWatchPoseElement(const TFunctionRef<void(FAnimNodePoseWatch&)>& InFunction);
+	void DisableAllPoseWatches();
 
 	TArrayView<const FName> GetNodeAttributes(TWeakObjectPtr<UAnimGraphNode_Base> InAnimGraphNode) const;
 #endif

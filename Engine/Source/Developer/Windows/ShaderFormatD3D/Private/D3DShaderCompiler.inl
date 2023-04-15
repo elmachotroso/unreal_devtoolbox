@@ -30,13 +30,14 @@ public:
 		bool bSymbolsBasedOnSource,
 		uint32 D3DCompileFlags,
 		uint32 AutoBindingSpace,
-		const TCHAR* InOptValidatorVersion
+		const TCHAR* InOptValidatorVersion,
+		uint32 HlslVersion = 2018
 	)
-	: ShaderProfile(InShaderProfile)
-	, EntryPoint(InEntryPoint)
-	, Exports(InExports)
-	, DumpDebugInfoPath(InDumpDebugInfoPath)
-	, bEnable16BitTypes(bInEnable16BitTypes)
+		: ShaderProfile(InShaderProfile)
+		, EntryPoint(InEntryPoint)
+		, Exports(InExports)
+		, DumpDebugInfoPath(InDumpDebugInfoPath)
+		, bEnable16BitTypes(bInEnable16BitTypes)
 	{
 		BatchBaseFilename = FPaths::GetBaseFilename(InBaseFilename);
 
@@ -46,9 +47,34 @@ public:
 			DumpDisasmFilename = InDumpDebugInfoPath / TEXT("Output.d3dasm");
 		}
 
+		switch (HlslVersion)
+		{
+		case 2015:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2015"));
+			break;
+		case 2016:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2016"));
+			break;
+		case 2017:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2017"));
+			break;
+		case 2018:
+			break; // Default
+		case 2021:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2021"));
+			break;
+		default:
+			checkf(false, TEXT("Invalid HLSL version: expected 2015, 2016, 2017, 2018, or 2021 but %u was specified"), HlslVersion);
+			break;
+		}
+
 		if (AutoBindingSpace != ~0u)
 		{
-			ExtraArguments.Add(L"/auto-binding-space");
+			ExtraArguments.Add(TEXT("/auto-binding-space"));
 			ExtraArguments.Add(FString::Printf(TEXT("%d"), AutoBindingSpace));
 		}
 
@@ -56,76 +82,78 @@ public:
 		{
 			// Ensure that only the requested functions exists in the output DXIL.
 			// All other functions and their used resources must be eliminated.
-			ExtraArguments.Add(L"/exports");
+			ExtraArguments.Add(TEXT("/exports"));
 			ExtraArguments.Add(Exports);
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_PREFER_FLOW_CONTROL)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_PREFER_FLOW_CONTROL;
-			ExtraArguments.Add(L"/Gfp");
-		}
-
-		if (D3DCompileFlags & D3DCOMPILE_SKIP_OPTIMIZATION)
-		{
-			D3DCompileFlags &= ~D3DCOMPILE_SKIP_OPTIMIZATION;
-			ExtraArguments.Add(L"/Od");
+			ExtraArguments.Add(TEXT("/Gfp"));
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_SKIP_VALIDATION)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_SKIP_VALIDATION;
-			ExtraArguments.Add(L"/Vd");
+			ExtraArguments.Add(TEXT("/Vd"));
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_AVOID_FLOW_CONTROL)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_AVOID_FLOW_CONTROL;
-			ExtraArguments.Add(L"/Gfa");
+			ExtraArguments.Add(TEXT("/Gfa"));
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_PACK_MATRIX_ROW_MAJOR)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_PACK_MATRIX_ROW_MAJOR;
-			ExtraArguments.Add(L"/Zpr");
+			ExtraArguments.Add(TEXT("/Zpr"));
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY;
-			ExtraArguments.Add(L"/Gec");
+			ExtraArguments.Add(TEXT("/Gec"));
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_WARNINGS_ARE_ERRORS)
 		{
 			D3DCompileFlags &= ~D3DCOMPILE_WARNINGS_ARE_ERRORS;
-			ExtraArguments.Add(L"/WX");
+			ExtraArguments.Add(TEXT("/WX"));
 		}
 
-		switch (D3DCompileFlags & SHADER_OPTIMIZATION_LEVEL_MASK)
+		if (D3DCompileFlags & D3DCOMPILE_SKIP_OPTIMIZATION)
 		{
-		case D3DCOMPILE_OPTIMIZATION_LEVEL0:
-			D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL0;
-			ExtraArguments.Add(L"/O0");
-			break;
+			D3DCompileFlags &= ~D3DCOMPILE_SKIP_OPTIMIZATION;
+			ExtraArguments.Add(TEXT("/Od"));
+		}
+		else
+		{
+			switch (D3DCompileFlags & SHADER_OPTIMIZATION_LEVEL_MASK)
+			{
+			case D3DCOMPILE_OPTIMIZATION_LEVEL0:
+				D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL0;
+				ExtraArguments.Add(TEXT("/O0"));
+				break;
 
-		case D3DCOMPILE_OPTIMIZATION_LEVEL1:
-			D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL1;
-			ExtraArguments.Add(L"/O1");
-			break;
+			case D3DCOMPILE_OPTIMIZATION_LEVEL1:
+				D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL1;
+				ExtraArguments.Add(TEXT("/O1"));
+				break;
 
-		case D3DCOMPILE_OPTIMIZATION_LEVEL2:
-			D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL2;
-			ExtraArguments.Add(L"/O2");
-			break;
+			case D3DCOMPILE_OPTIMIZATION_LEVEL2:
+				D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL2;
+				ExtraArguments.Add(TEXT("/O2"));
+				break;
 
-		case D3DCOMPILE_OPTIMIZATION_LEVEL3:
-			D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL3;
-			ExtraArguments.Add(L"/O3");
-			break;
+			case D3DCOMPILE_OPTIMIZATION_LEVEL3:
+				D3DCompileFlags &= ~D3DCOMPILE_OPTIMIZATION_LEVEL3;
+				ExtraArguments.Add(TEXT("/O3"));
+				break;
 
-		default:
-			break;
+			default:
+				break;
+			}
 		}
 
 		if (D3DCompileFlags & D3DCOMPILE_DEBUG)
@@ -136,14 +164,14 @@ public:
 
 		if (bEnable16BitTypes)
 		{
-			ExtraArguments.Add(L"/enable-16bit-types");
+			ExtraArguments.Add(TEXT("/enable-16bit-types"));
 		}
 
 		checkf(D3DCompileFlags == 0, TEXT("Unhandled shader compiler flags 0x%x!"), D3DCompileFlags);
 
 		if (InOptValidatorVersion)
 		{
-			ExtraArguments.Add(L"/validator-version");
+			ExtraArguments.Add(TEXT("/validator-version"));
 			ExtraArguments.Add(FString(InOptValidatorVersion));
 		}
 
@@ -151,19 +179,22 @@ public:
 		{
 			// -Zsb Compute Shader Hash considering only output binary
 			// -Zss Compute Shader Hash considering source information
-			ExtraArguments.Add(bSymbolsBasedOnSource ? L"/Zss" : L"/Zsb");
+			ExtraArguments.Add(bSymbolsBasedOnSource ? TEXT("/Zss") : TEXT("/Zsb"));
 
-			ExtraArguments.Add(L"/Qembed_debug");
-			ExtraArguments.Add(L"/Zi");
+			ExtraArguments.Add(TEXT("/Qembed_debug"));
+			ExtraArguments.Add(TEXT("/Zi"));
 
-			ExtraArguments.Add(L"/Fd");
-			ExtraArguments.Add(L".\\");
+			ExtraArguments.Add(TEXT("/Fd"));
+			ExtraArguments.Add(TEXT(".\\"));
 
 			bKeepEmbeddedPDB = true;
 		}
 
 		// Reflection will be removed later, otherwise the disassembly won't contain variables
-		//ExtraArguments.Add(L"/Qstrip_reflect");
+		//ExtraArguments.Add(TEXT("/Qstrip_reflect"));
+
+		// disable undesired warnings
+		ExtraArguments.Add(TEXT("-Wno-parentheses-equality"));
 	}
 
 	inline FString GetDumpDebugInfoPath() const
@@ -183,7 +214,7 @@ public:
 
 	FString GetEntryPointName() const
 	{
-		return Exports.Len() > 0 ? FString(L"") : EntryPoint;
+		return Exports.Len() > 0 ? FString(TEXT("")) : EntryPoint;
 	}
 
 	const FString& GetShaderProfile() const
@@ -209,17 +240,17 @@ public:
 		GetCompilerArgsNoEntryNoProfileNoDisasm(Out);
 		if (Exports.Len() == 0)
 		{
-			Out.Add(L"/E");
+			Out.Add(TEXT("/E"));
 			Out.Add(*EntryPoint);
 		}
 
-		Out.Add(L"/T");
+		Out.Add(TEXT("/T"));
 		Out.Add(*ShaderProfile);
 
-		Out.Add(L" /Fc ");
+		Out.Add(TEXT(" /Fc "));
 		Out.Add(TEXT("zzz.d3dasm"));	// Dummy
 
-		Out.Add(L" /Fo ");
+		Out.Add(TEXT(" /Fo "));
 		Out.Add(TEXT("zzz.dxil"));	// Dummy
 	}
 
@@ -228,23 +259,23 @@ public:
 		FString DXCCommandline;
 		for (const FString& Entry : ExtraArguments)
 		{
-			DXCCommandline += L" ";
+			DXCCommandline += TEXT(" ");
 			DXCCommandline += Entry;
 		}
 
-		DXCCommandline += L" /T ";
+		DXCCommandline += TEXT(" /T ");
 		DXCCommandline += ShaderProfile;
 
 		if (Exports.Len() == 0)
 		{
-			DXCCommandline += L" /E ";
+			DXCCommandline += TEXT(" /E ");
 			DXCCommandline += EntryPoint;
 		}
 
-		DXCCommandline += L" /Fc ";
+		DXCCommandline += TEXT(" /Fc ");
 		DXCCommandline += BatchBaseFilename + TEXT(".d3dasm");
 
-		DXCCommandline += L" /Fo ";
+		DXCCommandline += TEXT(" /Fo ");
 		DXCCommandline += BatchBaseFilename + TEXT(".dxil");
 
 		return DXCCommandline;
@@ -288,7 +319,7 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 				if (ShouldUseStableConstantBuffer(Input))
 				{
 					// Each member found in the global constant buffer means it was not in RootParametersStructure or
-					// it would have been moved by ShaderParameterParser.ParseAndMoveShaderParametersToRootConstantBuffer().
+					// it would have been moved by ShaderParameterParser.ParseAndModify().
 					for (uint32 ConstantIndex = 0; ConstantIndex < CBDesc.Variables; ConstantIndex++)
 					{
 						ID3D1xShaderReflectionVariable* Variable = ConstantBuffer->GetVariableByIndex(ConstantIndex);
@@ -316,13 +347,14 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 						{
 							bGlobalUniformBufferUsed = true;
 
-							Output.ParameterMap.AddParameterAllocation(
-								ANSI_TO_TCHAR(VariableDesc.Name),
+							HandleReflectedGlobalConstantBufferMember(
+								FString(VariableDesc.Name),
 								CBIndex,
 								VariableDesc.StartOffset,
 								VariableDesc.Size,
-								EShaderParameterType::LooseData
+								Output
 							);
+
 							UsedUniformBufferSlots[CBIndex] = true;
 						}
 					}
@@ -342,24 +374,22 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 						Variable->GetDesc(&VariableDesc);
 						if (VariableDesc.uFlags & D3D_SVF_USED)
 						{
-							FString MemberName(ANSI_TO_TCHAR(VariableDesc.Name));
-							int32 ReflectionSize = VariableDesc.Size;
-							int32 ReflectionOffset = VariableDesc.StartOffset;
+							HandleReflectedRootConstantBufferMember(
+								Input,
+								ShaderParameterParser,
+								FString(VariableDesc.Name),
+								VariableDesc.StartOffset,
+								VariableDesc.Size,
+								Output
+							);
 
-							ShaderParameterParser.ValidateShaderParameterType(Input, MemberName, ReflectionOffset, ReflectionSize, Output);
-
-							ConstantBufferSize = FMath::Max(ConstantBufferSize, ReflectionOffset + ReflectionSize);
+							ConstantBufferSize = FMath::Max<int32>(ConstantBufferSize, VariableDesc.StartOffset + VariableDesc.Size);
 						}
 					}
 
 					if (ConstantBufferSize > 0)
 					{
-						Output.ParameterMap.AddParameterAllocation(
-							FShaderParametersMetadata::kRootUniformBufferBindingName,
-							FShaderParametersMetadata::kRootCBufferBindingIndex,
-							/* Offset = */ uint16(0),
-							/* Size = */ uint16(ConstantBufferSize),
-							EShaderParameterType::LooseData);
+						HandleReflectedRootConstantBuffer(ConstantBufferSize, Output);
 
 						bGlobalUniformBufferUsed = true;
 						UsedUniformBufferSlots[CBIndex] = true;
@@ -379,21 +409,18 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 			else
 			{
 				// Track just the constant buffer itself.
-				Output.ParameterMap.AddParameterAllocation(
-					ANSI_TO_TCHAR(CBDesc.Name),
-					CBIndex,
-					0,
-					0,
-					EShaderParameterType::UniformBuffer
-				);
-				UsedUniformBufferSlots[CBIndex] = true;
+				const FString UniformBufferName(CBDesc.Name);
 
-				if (UniformBufferNames.Num() <= (int32)CBIndex)
-				{
-					UniformBufferNames.AddDefaulted(CBIndex - UniformBufferNames.Num() + 1);
-				}
-				UniformBufferNames[CBIndex] = CBDesc.Name;
+				HandleReflectedUniformBuffer(UniformBufferName, CBIndex, Output);
+				
+				UsedUniformBufferSlots[CBIndex] = true;
 			}
+
+			if (UniformBufferNames.Num() <= (int32)CBIndex)
+			{
+				UniformBufferNames.AddDefaulted(CBIndex - UniformBufferNames.Num() + 1);
+			}
+			UniformBufferNames[CBIndex] = UE::ShaderCompilerCommon::RemoveConstantBufferPrefix(FString(CBDesc.Name));
 
 			NumCBs = FMath::Max(NumCBs, BindDesc.BindPoint + BindDesc.BindCount);
 		}
@@ -405,9 +432,6 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 			const bool bIsAMDTexExtension = (FCStringAnsi::Strcmp(BindDesc.Name, "AmdDxExtShaderIntrinsicsResource") == 0);
 			const bool bIsAMDSmpExtension = (FCStringAnsi::Strcmp(BindDesc.Name, "AmdDxExtShaderIntrinsicsSamplerState") == 0);
 			const bool bIsVendorParameter = bIsAMDTexExtension || bIsAMDSmpExtension;
-
-			TCHAR OfficialName[1024];
-			FCString::Strcpy(OfficialName, ANSI_TO_TCHAR(BindDesc.Name));
 
 			const uint32 BindCount = 1;
 			EShaderParameterType ParameterType = EShaderParameterType::Num;
@@ -426,16 +450,13 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 			{
 				VendorExtensions.Emplace(0x1002 /*AMD*/, 0, BindDesc.BindPoint, BindCount, ParameterType);
 			}
+			else if (ParameterType == EShaderParameterType::Sampler)
+			{
+				HandleReflectedShaderSampler(FString(BindDesc.Name), BindDesc.BindPoint, Output);
+			}
 			else
 			{
-				// Add a parameter for the texture only, the sampler index will be invalid
-				Output.ParameterMap.AddParameterAllocation(
-					OfficialName,
-					0,
-					BindDesc.BindPoint,
-					BindCount,
-					ParameterType
-				);
+				HandleReflectedShaderResource(FString(BindDesc.Name), BindDesc.BindPoint, Output);
 			}
 		}
 		else if (BindDesc.Type == D3D_SIT_UAV_RWTYPED || BindDesc.Type == D3D_SIT_UAV_RWSTRUCTURED ||
@@ -461,9 +482,6 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 			// See D3DCommon.ush
 			const bool bIsDiagnosticBufferParameter = (FCStringAnsi::Strcmp(BindDesc.Name, "UEDiagnosticBuffer") == 0);
 
-			TCHAR OfficialName[1024];
-			FCString::Strcpy(OfficialName, ANSI_TO_TCHAR(BindDesc.Name));
-
 			const uint32 BindCount = 1;
 			if (bIsVendorParameter)
 			{
@@ -480,13 +498,7 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 			}
 			else
 			{
-				Output.ParameterMap.AddParameterAllocation(
-					OfficialName,
-					0,
-					BindDesc.BindPoint,
-					BindCount,
-					EShaderParameterType::UAV
-				);
+				HandleReflectedShaderUAV(FString(BindDesc.Name), BindDesc.BindPoint, Output);
 			}
 
 			NumUAVs = FMath::Max(NumUAVs, BindDesc.BindPoint + BindCount);
@@ -494,38 +506,15 @@ template <typename ID3D1xShaderReflection, typename D3D1x_SHADER_DESC, typename 
 		else if (BindDesc.Type == D3D_SIT_STRUCTURED || BindDesc.Type == D3D_SIT_BYTEADDRESS)
 		{
 			check(BindDesc.BindCount == 1);
-			TCHAR OfficialName[1024];
-			FCString::Strcpy(OfficialName, ANSI_TO_TCHAR(BindDesc.Name));
-
-			const uint32 BindCount = 1;
-			Output.ParameterMap.AddParameterAllocation(
-				OfficialName,
-				0,
-				BindDesc.BindPoint,
-				BindCount,
-				EShaderParameterType::SRV
-			);
-
-			NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + BindCount);
+			HandleReflectedShaderResource(FString(BindDesc.Name), BindDesc.BindPoint, Output);
+			NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + 1);
 		}
 		else if (BindDesc.Type == (D3D_SHADER_INPUT_TYPE)(D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER + 1)) // D3D_SIT_RTACCELERATIONSTRUCTURE (12)
 		{
 			// Acceleration structure resources are treated as SRVs.
 			check(BindDesc.BindCount == 1);
-
-			TCHAR OfficialName[1024];
-			FCString::Strcpy(OfficialName, ANSI_TO_TCHAR(BindDesc.Name));
-
-			const uint32 BindCount = 1;
-			Output.ParameterMap.AddParameterAllocation(
-				OfficialName,
-				0,
-				BindDesc.BindPoint,
-				BindCount,
-				EShaderParameterType::SRV
-			);
-
-			NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + BindCount);
+			HandleReflectedShaderResource(FString(BindDesc.Name), BindDesc.BindPoint, Output);
+			NumSRVs = FMath::Max(NumSRVs, BindDesc.BindPoint + 1);
 		}
 	}
 }
@@ -558,7 +547,7 @@ inline void GenerateFinalOutput(TRefCountPtr<TBlob>& CompressedData,
 
 		if (UniformBufferNames.Num() < GenericSRT.ResourceTableLayoutHashes.Num())
 		{
-			UniformBufferNames.AddDefaulted(GenericSRT.ResourceTableLayoutHashes.Num() - UniformBufferNames.Num() + 1);
+			UniformBufferNames.AddDefaulted(GenericSRT.ResourceTableLayoutHashes.Num() - UniformBufferNames.Num());
 		}
 
 		for (int32 Index = 0; Index < GenericSRT.ResourceTableLayoutHashes.Num(); ++Index)

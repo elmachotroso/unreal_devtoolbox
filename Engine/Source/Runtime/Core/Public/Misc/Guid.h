@@ -2,18 +2,27 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Crc.h"
 #include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
-#include "Serialization/StructuredArchive.h"
-#include "Serialization/MemoryLayout.h"
+#include "CoreTypes.h"
+#include "HAL/PreprocessorHelpers.h"
 #include "Hash/CityHash.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Crc.h"
+#include "Serialization/Archive.h"
+#include "Serialization/MemoryLayout.h"
+#include "Serialization/StructuredArchive.h"
 
 class FArchive;
+class FMemoryImageWriter;
+class FMemoryUnfreezeContent;
 class FOutputDevice;
+class FPointerTableBase;
+class FSHA1;
 class UObject;
+template <typename CharType> class TStringBuilderBase;
+template <typename T> struct TCanBulkSerialize;
+template <typename T> struct TIsPODType;
 
 
 /**
@@ -27,6 +36,13 @@ enum class EGuidFormats
 	 * For example: "00000000000000000000000000000000"
 	 */
 	Digits,
+
+	/**
+	 * 32 digits in lowercase
+	 *
+	 * For example: "0123abc456def789abcd123ef4a5b6c7"
+	 */
+	 DigitsLower,
 
 	/**
 	 * 32 digits separated by hyphens.
@@ -299,20 +315,22 @@ public:
 	/**
 	 * Converts this GUID to its string representation.
 	 *
+	 * @param Format The string format to use.
 	 * @return The string representation.
 	 */
-	FString ToString() const
+	FString ToString(EGuidFormats Format = EGuidFormats::Digits) const
 	{
-		return ToString(EGuidFormats::Digits);
+		FString Out;
+		AppendString(Out, Format);
+		return Out;
 	}
 
 	/**
 	 * Converts this GUID to its string representation using the specified format.
 	 *
 	 * @param Format The string format to use.
-	 * @return The string representation.
 	 */
-	CORE_API FString ToString(EGuidFormats Format) const;
+	CORE_API void AppendString(FString& Out, EGuidFormats Format = EGuidFormats::Digits) const;
 
 	/**
 	 * Appends this GUID to the string builder using the specified format.

@@ -31,6 +31,8 @@ public:
 	
 	/** Get the asset this controller controls. */
 	UIKRigDefinition* GetAsset() const;
+	/** Get unique asset integer ID as a name */
+	FName GetAssetIDAsName() const;
 
 	/** SKELETON
 	 * 
@@ -38,8 +40,6 @@ public:
 	/** Sets the preview mesh to use, can optionally reinitialize the skeleton with bReImportBone=true.
 	 * Returns true if the mesh was able to be set. False if it was incompatible for any reason. */
 	bool SetSkeletalMesh(USkeletalMesh* SkeletalMesh, bool bTransact=false) const;
-	/** Get the skeletal mesh asset this IK Rig was initialized with */
-	USkeletalMesh* GetSkeletalMesh() const;
 	/** Get read-access to the IKRig skeleton representation */
 	const FIKRigSkeleton& GetIKRigSkeleton() const;
 	/** Get the USkeleton asset this rig was initialized with */
@@ -92,18 +92,22 @@ public:
 	bool SetGoalBone(const FName& GoalName, const FName& NewBoneName) const;
 	/** The the Bone associated with the given Goal. */
 	FName GetBoneForGoal(const FName& GoalName) const;
+	/** The the Goal associated with the given Bone (may be null. */
+	UIKRigEffectorGoal* GetGoalForBone(const FName& BoneName) const;
 	/** Connect the given Goal to the given Solver. This creates an "Effector" with settings specific to this Solver.*/
 	bool ConnectGoalToSolver(const UIKRigEffectorGoal& Goal, int32 SolverIndex) const;
 	/** Disconnect the given Goal from the given Solver. This removes the Effector that associates the Goal with the Solver.*/
 	bool DisconnectGoalFromSolver(const FName& GoalToRemove, int32 SolverIndex) const;
 	/** Returns true if the given Goal is connected to the given Solver. False otherwise. */
 	bool IsGoalConnectedToSolver(const FName& GoalName, int32 SolverIndex) const;
+	/** Returns true if the given Goal is connected to ANY solver. False otherwise. */
+	bool IsGoalConnectedToAnySolver(const FName& GoalName) const;
 	/** Get the index of the given Goal in the list of Goals. */
-	int32 GetGoalIndex(const FName& GoalName) const;
+	int32 GetGoalIndex(const FName& InGoalName, const ENameCase CompareMethod = ENameCase::IgnoreCase) const;
 	/** Get the name of Goal at the given index. */
 	FName GetGoalName(const int32& GoalIndex) const;
-	/** Get read-only access to the list of Goals. */
-	const TArray<UIKRigEffectorGoal*>& GetAllGoals() const;
+	/** Get access to the list of Goals. */
+	TArray<UIKRigEffectorGoal*>& GetAllGoals() const;
 	/** Get read-only access to the Goal at the given index. */
 	const UIKRigEffectorGoal* GetGoal(int32 GoalIndex) const;
 	/** Get read-write access to the Goal with the given name. */
@@ -119,6 +123,9 @@ public:
 	void ResetGoalTransforms() const;
 	/** Ensure that the given name adheres to required standards for Goal names (no special characters etc..)*/
 	static void SanitizeGoalName(FString& InOutName);
+	/** Add a suffix as needed to ensure the Goal name is unique */
+	FName GetUniqueGoalName(const FName& NameToMakeUnique) const;
+	
 	/** END Goals */
 
 	/** Bone Settings
@@ -141,8 +148,8 @@ public:
 	/** Retargeting Options and Retarget Bone Chains
 	 * 
 	 */
-	/** Add a Chain with the given Name and Start/End bones. Returns true if a new Chain was created. */
-	void AddRetargetChain(const FName& ChainName, const FName& StartBone, const FName& EndBone) const;
+	/** Add a Chain with the given Name and Start/End bones. Returns newly created chain name. */
+	FName AddRetargetChain(const FBoneChain& BoneChain) const;
 	/** Remove a Chain with the given name. Returns true if a Chain was removed. */
 	bool RemoveRetargetChain(const FName& ChainName) const;
 	/** Renamed the given Chain. Returns the new name (same as old if unsuccessful). */
@@ -159,6 +166,8 @@ public:
     FName GetRetargetChainStartBone(const FName& ChainName) const;
     /** Get the Start Bone name for the given Chain. */
     FName GetRetargetChainEndBone(const FName& ChainName) const;
+	/** Get read-only access to a single retarget chain with the given name */
+	const FBoneChain* GetRetargetChainByName(const FName& ChainName) const;
 	/** Get read-only access to the list of Chains. */
 	const TArray<FBoneChain>& GetRetargetChains() const;
 	/** Set the Root Bone of the retargeting (can only be one). */
@@ -169,8 +178,16 @@ public:
 	void SortRetargetChains() const;
 	/** Make unique name for a retargeting bone chain. Adds a numbered suffix to make it unique.*/
 	FName GetUniqueRetargetChainName(const FName& NameToMakeUnique) const;
-	/** Returns true if this is a valid chain. Produces array of bone indices between start and end (inclusive). */
-	bool ValidateChain(const FName& ChainName, TSet<int32>& OutChainIndices) const;
+	/** Returns true if this is a valid chain. Produces array of bone indices between start and end (inclusive).
+	 * Optionally provide a runtime skeleton from an IKRigProcessor to get indices for a running instance (otherwise uses stored hierarchy in asset)*/
+	bool ValidateChain(
+		const FName& ChainName,
+		const FIKRigSkeleton* OptionalSkeleton,
+		TSet<int32>& OutChainIndices) const;
+	/** Get the name of the retarget chain that contains the given Bone. Returns NAME_None if Bone not in a Chain. */
+	FName GetRetargetChainFromBone(const FName& BoneName, const FIKRigSkeleton* OptionalSkeleton) const;
+	/** Get the name of the retarget chain that contains the given Goal. Returns NAME_None if Goal not in a Chain. */
+	FName GetRetargetChainFromGoal(const FName& GoalName) const;
 	/** END retarget chains */
 
 	// force all currently connected processors to reinitialize using latest asset state
@@ -185,20 +202,24 @@ private:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnIKRigNeedsInitialized, UIKRigDefinition*);
 	FOnIKRigNeedsInitialized IKRigNeedsInitialized;
 
-	/** Called whenever a retarget chain is renamed.*/
-	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnRetargetChainRenamed, UIKRigDefinition*, FName /*old name*/, FName /*new name*/);
-	FOnRetargetChainRenamed RetargetChainRenamed;
+	/** Called whenever a retarget chain is added.*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnRetargetChainAdded, UIKRigDefinition*);
+	FOnRetargetChainAdded RetargetChainAdded;
 
 	/** Called whenever a retarget chain is removed.*/
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRetargetChainRemoved, UIKRigDefinition*, const FName& /*chain name*/);
 	FOnRetargetChainRemoved RetargetChainRemoved;
 
+	/** Called whenever a retarget chain is renamed.*/
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnRetargetChainRenamed, UIKRigDefinition*, FName /*old name*/, FName /*new name*/);
+	FOnRetargetChainRenamed RetargetChainRenamed;
+
 public:
 	
 	FOnIKRigNeedsInitialized& OnIKRigNeedsInitialized(){ return IKRigNeedsInitialized; };
-
-	FOnRetargetChainRenamed& OnRetargetChainRenamed(){ return RetargetChainRenamed; };
+	FOnRetargetChainAdded& OnRetargetChainAdded(){ return RetargetChainAdded; };
 	FOnRetargetChainRemoved& OnRetargetChainRemoved(){ return RetargetChainRemoved; };
+	FOnRetargetChainRenamed& OnRetargetChainRenamed(){ return RetargetChainRenamed; };
 
 private:
 

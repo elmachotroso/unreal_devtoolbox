@@ -1,12 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorUtilityWidgetBlueprint.h"
-#include "WidgetBlueprint.h"
+
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
 #include "EditorUtilityWidget.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
+#include "Framework/Docking/TabManager.h"
 #include "IBlutilityModule.h"
-#include "Modules/ModuleManager.h"
 #include "LevelEditor.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealNames.h"
+#include "UnrealEdMisc.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+
+class SWidget;
+class UClass;
+class UWorld;
 
 
 
@@ -82,6 +106,19 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 		{
 			// Editor Utility is flagged as transient to prevent from dirty the World it's created in when a property added to the Utility Widget is changed
 			CreatedUMGWidget->SetFlags(RF_Transient);
+
+			// Also mark nested utility widgets as transient to prevent them from dirtying the world (since they'll be created via CreateWidget and not CreateUtilityWidget)
+			TArray<UWidget*> AllWidgets;
+			CreatedUMGWidget->WidgetTree->GetAllWidgets(AllWidgets);
+
+			for (UWidget* Widget : AllWidgets)
+			{
+				if (Widget->IsA(UEditorUtilityWidget::StaticClass()))
+				{
+					Widget->SetFlags(RF_Transient);
+					Widget->Slot->SetFlags(RF_Transient);
+				}
+			}
 		}
 	}
 

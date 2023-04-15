@@ -5,7 +5,8 @@
 =============================================================================*/
 
 #include "Commandlets/WorldPartitionConvertCommandlet.h"
-#include "Algo/Transform.h"
+#include "Algo/ForEach.h"
+#include "AssetToolsModule.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
@@ -16,13 +17,14 @@
 #include "Engine/LODActor.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/MapBuildDataRegistry.h"
-#include "Engine/Public/ActorReferencesUtils.h"
+#include "ActorReferencesUtils.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/WorldPartitionMiniMap.h"
 #include "WorldPartition/WorldPartitionMiniMapHelper.h"
 #include "LevelInstance/LevelInstanceActor.h"
+#include "DataLayer/DataLayerFactory.h"
 #include "GameFramework/WorldSettings.h"
 #include "UObject/UObjectHash.h"
 #include "PackageHelperFunctions.h"
@@ -38,7 +40,7 @@
 #include "Editor/GroupActor.h"
 #include "EdGraph/EdGraph.h"
 #include "ProfilingDebugging/ScopedTimers.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FoliageEditUtility.h"
 #include "FoliageHelper.h"
 #include "Engine/WorldComposition.h"
@@ -53,7 +55,7 @@
 #include "LandscapeSplinesComponent.h"
 #include "LandscapeSplineControlPoint.h"
 #include "LandscapeGizmoActor.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "ActorFolder.h"
 
@@ -64,7 +66,7 @@ class FArchiveGatherPrivateImports : public FArchiveUObject
 	AActor* Root;
 	UPackage* RootPackage;
 	UObject* CurrentObject;
-	TMap<UObject*, UObject*>& PrivateRefsMap;
+	TMap<UObject*, AActor*>& PrivateRefsMap;
 	TSet<FString>& ActorsReferencesToActors;
 
 	void HandleObjectReference(UObject* Obj)
@@ -80,7 +82,7 @@ class FArchiveGatherPrivateImports : public FArchiveUObject
 	}
 
 public:
-	FArchiveGatherPrivateImports(AActor* InRoot, TMap<UObject*, UObject*>& InPrivateRefsMap, TSet<FString>& InActorsReferencesToActors)
+	FArchiveGatherPrivateImports(AActor* InRoot, TMap<UObject*, AActor*>& InPrivateRefsMap, TSet<FString>& InActorsReferencesToActors)
 		: Root(InRoot)
 		, RootPackage(InRoot->GetPackage())
 		, CurrentObject(nullptr)
@@ -111,7 +113,7 @@ public:
 			{
 				if(!Obj->GetTypedOuter<AActor>())
 				{
-					UObject** OriginalRoot = PrivateRefsMap.Find(Obj);
+					AActor** OriginalRoot = PrivateRefsMap.Find(Obj);
 					if(OriginalRoot && (*OriginalRoot != Root))
 					{
 						SET_WARN_COLOR(COLOR_RED);
@@ -141,7 +143,7 @@ public:
 								PrivateRefsMap.Add(Obj, Root);
 
 								SET_WARN_COLOR(COLOR_WHITE);
-								UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Encountered reference %s.%s(%s)"), *Root->GetName(), *Obj->GetName(), *Obj->GetClass()->GetName());
+								UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Encountered actor %s referencing %s (%s)"), *Root->GetName(), *Obj->GetPathName(), *Obj->GetClass()->GetName());
 								CLEAR_WARN_COLOR();
 							}
 
@@ -161,8 +163,9 @@ UWorldPartitionConvertCommandlet::UWorldPartitionConvertCommandlet(const FObject
 	, ConversionSuffix(TEXT("_WP"))
 	, bConvertActorsNotReferencedByLevelScript(true)
 	, WorldOrigin(FVector::ZeroVector)
-	, WorldExtent(WORLDPARTITION_MAX * 0.5)
+	, WorldExtent(HALF_WORLD_MAX)
 	, LandscapeGridSize(4)
+	, DataLayerFactory(NewObject<UDataLayerFactory>())
 {}
 
 UWorld* UWorldPartitionConvertCommandlet::LoadWorld(const FString& LevelToLoad)
@@ -224,7 +227,6 @@ UWorldPartition* UWorldPartitionConvertCommandlet::CreateWorldPartition(AWorldSe
 	if (bDisableStreaming)
 	{
 		WorldPartition->bEnableStreaming = false;
-		WorldPartition->bStreamingWasEnabled = false;
 	}
 		
 	// Read the conversion config file
@@ -232,7 +234,15 @@ UWorldPartition* UWorldPartitionConvertCommandlet::CreateWorldPartition(AWorldSe
 	{
 		WorldPartition->EditorHash->LoadConfig(*EditorHashClass, *LevelConfigFilename);
 		WorldPartition->RuntimeHash->LoadConfig(*RuntimeHashClass, *LevelConfigFilename);
-		WorldPartition->DefaultHLODLayer = HLODLayers.FindRef(DefaultHLODLayerName);
+		// Use specified existing default HLOD layer if valid 
+		if (UHLODLayer* ExistingHLODLayer = LoadObject<UHLODLayer>(NULL, *DefaultHLODLayerAsset))
+		{
+			WorldPartition->DefaultHLODLayer = ExistingHLODLayer;
+		}
+		else
+		{
+			WorldPartition->DefaultHLODLayer = HLODLayers.FindRef(DefaultHLODLayerName);
+		}
 	}
 
 	if ((WorldPartition->DefaultHLODLayer == UHLODLayer::GetEngineDefaultHLODLayersSetup()) && !bDisableStreaming)
@@ -246,8 +256,6 @@ UWorldPartition* UWorldPartitionConvertCommandlet::CreateWorldPartition(AWorldSe
 			CurrentHLODLayer = Cast<UHLODLayer>(CurrentHLODLayer->GetParentLayer().Get());
 		}
 	}
-
-	WorldPartition->EditorHash->Initialize();
 	
 	return WorldPartition;
 }
@@ -431,7 +439,7 @@ void UWorldPartitionConvertCommandlet::FixupSoftObjectPaths(UPackage* OuterPacka
 				return *this;
 			}
 
-			FString OriginalValue = Value.ToString();
+			const FString OriginalValue = Value.ToString();
 
 			auto GetSourceString = [this]()
 			{
@@ -454,20 +462,12 @@ void UWorldPartitionConvertCommandlet::FixupSoftObjectPaths(UPackage* OuterPacka
 				int32 DotPos = Value.GetSubPathString().Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromStart);
 				if (DotPos != INDEX_NONE)
 				{
-					RemappedValue = RemapSoftObjectPaths.Find(Value.GetAssetPathName().ToString());
+					RemappedValue = RemapSoftObjectPaths.Find(Value.GetWithoutSubPath().ToString());
 					if (RemappedValue)
 					{
 						FString NewPath = *RemappedValue + ':' + Value.GetSubPathString();
 						Value.SetPath(NewPath);
 					}
-				}
-
-				FString NewValue = Value.ToString();
-				if (NewValue == OriginalValue)
-				{
-					Value.Reset();
-					UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Error remapping SoftObjectPath %s"), *OriginalValue);
-					UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("  Source: %s"), *GetSourceString());
 				}
 			}
 
@@ -688,13 +688,22 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 	UE_SCOPED_TIMER(TEXT("Conversion"), LogWorldPartitionConvertCommandlet, Display);
 
+	FPackageSourceControlHelper PackageHelper;
+
 	TArray<FString> Tokens, Switches;
 	TMap<FString, FString> Arguments;
 	ParseCommandLine(*Params, Tokens, Switches, Arguments);
 
-	if (Tokens.Num() != 1)
+	if (!Tokens.Num())
 	{
-		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("ConvertToPartitionedLevel bad parameters"));
+		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("missing map name"));
+		return 1;
+	}
+	else if (Tokens.Num() > 1)
+	{
+		FString BadParams;
+		Algo::ForEach(Tokens, [&BadParams](const FString& Token) { BadParams += Token; BadParams += TEXT(" "); });
+		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("extra parameters %s"), *BadParams);
 		return 1;
 	}
 
@@ -747,8 +756,8 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		}
 		else
 		{
-			EditorHashClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WorldPartitionEditorSpatialHash"));
-			RuntimeHashClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WorldPartitionRuntimeSpatialHash"));
+			EditorHashClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.WorldPartitionEditorSpatialHash"));
+			RuntimeHashClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.WorldPartitionRuntimeSpatialHash"));
 		}
 	}
 
@@ -766,19 +775,46 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 	SetupHLOD();
 
+	// Load world
+	UWorld* MainWorld = LoadWorld(Tokens[0]);
+	if (!MainWorld)
+	{
+		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Unknown world '%s'"), *Tokens[0]);
+		return 1;
+	}
+
+	// Setup Folder for DataLayer assets
+	if (FString* DataLayerAssetFolderValue = Arguments.Find(TEXT("DataLayerAssetFolder")))
+	{
+		DataLayerAssetFolder = *DataLayerAssetFolderValue;
+	}
+	else
+	{
+		UPackage* Package = MainWorld->GetPackage();
+		FName PackageMountPoint = FPackageName::GetPackageMountPoint(Package->GetLoadedPath().GetPackageName());
+		if (PackageMountPoint.IsNone())
+		{
+			PackageMountPoint = TEXT("Game");
+		}
+		DataLayerAssetFolder = FPaths::RemoveDuplicateSlashes(FString::Printf(TEXT("/%s/DataLayers/%s%s/"), *PackageMountPoint.ToString(), *MainWorld->GetName(), *ConversionSuffix));
+	}
+
 	// Delete existing result from running the commandlet, even if not using the suffix mode to cleanup previous conversion
 	if (!bReportOnly)
 	{
 		UE_SCOPED_TIMER(TEXT("Deleting existing conversion results"), LogWorldPartitionConvertCommandlet, Display);
 
 		FString OldLevelName = Tokens[0] + ConversionSuffix;
-		TArray<FString> ExternalObjectsPaths = ULevel::GetExternalObjectsPaths(OldLevelName);
-		for (const FString& ExternalObjectsPath : ExternalObjectsPaths)
+		TArray<FString> CleanupPaths = ULevel::GetExternalObjectsPaths(OldLevelName);
+		// Append DataLayer assets folder
+		CleanupPaths.Add(DataLayerAssetFolder);
+
+		for (const FString& CleanupPath : CleanupPaths)
 		{
-			FString ExternalObjectsFilePath = FPackageName::LongPackageNameToFilename(ExternalObjectsPath);
-			if (IFileManager::Get().DirectoryExists(*ExternalObjectsFilePath))
+			FString Directory = FPackageName::LongPackageNameToFilename(CleanupPath);
+			if (IFileManager::Get().DirectoryExists(*Directory))
 			{
-				bool bResult = IFileManager::Get().IterateDirectoryRecursively(*ExternalObjectsFilePath, [this](const TCHAR* FilenameOrDirectory, bool bIsDirectory)
+				bool bResult = IFileManager::Get().IterateDirectoryRecursively(*Directory, [this, &PackageHelper](const TCHAR* FilenameOrDirectory, bool bIsDirectory)
 				{
 					if (!bIsDirectory)
 					{
@@ -793,7 +829,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 				if (!bResult)
 				{
-					UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Failed to delete external package(s)"));
+					UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Failed to delete previous conversion package(s)"));
 					return 1;
 				}
 			}
@@ -809,19 +845,11 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		}
 	}
 
-	// Load world
-	UWorld* MainWorld = LoadWorld(Tokens[0]);
-	if (!MainWorld)
-	{
-		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Unknown world '%s'"), *Tokens[0]);
-		return 1;
-	}
-
 	// Make sure the world isn't already partitioned
 	AWorldSettings* MainWorldSettings = MainWorld->GetWorldSettings();
 	if (MainWorldSettings->IsPartitionedWorld())
 	{
-		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Level '%s' is already partitionned"), *Tokens[0]);
+		UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Level '%s' is already partitioned"), *Tokens[0]);
 		return 1;
 	}
 
@@ -936,7 +964,9 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		return true;
 	};
 
-	auto PartitionLandscape = [this, MainWorld](ULandscapeInfo* LandscapeInfo)
+	TSet<AActor*> NewSplineActors;
+
+	auto PartitionLandscape = [this, MainWorld, &NewSplineActors](ULandscapeInfo* LandscapeInfo)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(PartitionLandscape);
 
@@ -944,19 +974,18 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		if (!LandscapeInfo->LandscapeActor.Get())
 		{
 			// Use the first proxy as the landscape template
-			ALandscapeProxy* FirstProxy = LandscapeInfo->Proxies[0];
+			if (ALandscapeProxy* FirstProxy = LandscapeInfo->StreamingProxies[0].Get())
+			{
+				FActorSpawnParameters SpawnParams;
+				FTransform LandscapeTransform = FirstProxy->LandscapeActorToWorld();
+				ALandscape* NewLandscape = MainWorld->SpawnActor<ALandscape>(ALandscape::StaticClass(), LandscapeTransform, SpawnParams);
 
-			FActorSpawnParameters SpawnParams;
-			FTransform LandscapeTransform = FirstProxy->LandscapeActorToWorld();
-			ALandscape* NewLandscape = MainWorld->SpawnActor<ALandscape>(ALandscape::StaticClass(), LandscapeTransform, SpawnParams);
-			
-			NewLandscape->GetSharedProperties(FirstProxy);
+				NewLandscape->GetSharedProperties(FirstProxy);
 
-			LandscapeInfo->RegisterActor(NewLandscape);
+				LandscapeInfo->RegisterActor(NewLandscape);
+			}
 		}
 
-		TSet<AActor*> NewSplineActors;
-						
 		auto MoveControlPointToNewSplineActor = [&NewSplineActors, LandscapeInfo](ULandscapeSplineControlPoint* ControlPoint)
 		{
 			AActor* CurrentOwner = ControlPoint->GetTypedOuter<AActor>();
@@ -996,7 +1025,42 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		}
 	};
 
-	auto PrepareLevelActors = [this, PartitionFoliage, PartitionLandscape, MainWorldDataLayers](ULevel* Level, TArray<AActor*>& Actors, bool bMainLevel) -> bool
+	IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+	auto ConvertActorLayersToDataLayers = [this, MainWorldDataLayers, &AssetTools](AActor* Actor)
+	{
+		// Convert Layers into DataLayers with DynamicallyLoaded flag disabled
+		if (Actor->SupportsDataLayer())
+		{
+			for (FName Layer : Actor->Layers)
+			{
+				FString DataLayerAssetName = SlugStringForValidName(Layer.ToString());
+				FName DataLayerAssetPathName(DataLayerAssetFolder + DataLayerAssetName + TEXT(".") + DataLayerAssetName);
+				UDataLayerInstance* DataLayerInstance = const_cast<UDataLayerInstance*>(MainWorldDataLayers->GetDataLayerInstanceFromAssetName(DataLayerAssetPathName));
+				if (!DataLayerInstance)
+				{
+					if (UObject* Asset = AssetTools.CreateAsset(DataLayerAssetName, DataLayerAssetFolder, UDataLayerAsset::StaticClass(), DataLayerFactory))
+					{
+						PackagesToSave.Add(Asset->GetPackage());
+						UDataLayerAsset* DataLayerAsset = CastChecked<UDataLayerAsset>(Asset);
+						DataLayerAsset->SetType(EDataLayerType::Editor);
+						DataLayerInstance = MainWorldDataLayers->CreateDataLayer<UDataLayerInstanceWithAsset>(DataLayerAsset);
+					}
+				}
+				if (DataLayerInstance)
+				{
+					Actor->AddDataLayer(DataLayerInstance);
+				}
+			}
+		}
+		// Clear actor layers as they are replaced by data layers, keep them if only merging
+		if (!bOnlyMergeSubLevels)
+		{
+			Actor->Layers.Empty();
+		}
+	};
+
+	auto PrepareLevelActors = [this, PartitionFoliage, PartitionLandscape, MainWorld, ConvertActorLayersToDataLayers](ULevel* Level, TArray<AActor*>& Actors, bool bMainLevel) -> bool
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(PrepareLevelActors);
 
@@ -1004,15 +1068,26 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 		TArray<AInstancedFoliageActor*> IFAs;
 		TSet<ULandscapeInfo*> LandscapeInfos;
-		for (AActor* Actor: Actors)
+
+		for (auto Iter = Actors.CreateIterator(); Iter; ++Iter)
 		{
+			AActor* Actor = *Iter;
+
 			if (Actor && IsValidChecked(Actor))
 			{
 				check(Actor->GetLevel() == Level);
 
 				if (ShouldDeleteActor(Actor, bMainLevel))
 				{
-					Level->GetWorld()->DestroyActor(Actor);
+					// Delete actor if processing main level, otherwise just ignore them
+					if (bMainLevel)
+					{
+						Level->GetWorld()->DestroyActor(Actor);
+					}
+					else
+					{
+						Iter.RemoveCurrent();
+					}
 				}
 				else 
 				{
@@ -1037,25 +1112,26 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 						}
 					}
 
-					// Convert Layers into DataLayers with DynamicallyLoaded flag disabled
-					if (Actor->IsValidForDataLayer())
+					if (bMainLevel)
 					{
-						for (FName Layer : Actor->Layers)
-						{
-							UDataLayer* DataLayer = const_cast<UDataLayer*>(MainWorldDataLayers->GetDataLayerFromLabel(Layer));
-							if (!DataLayer)
-							{
-								DataLayer = MainWorldDataLayers->CreateDataLayer();
-								DataLayer->SetDataLayerLabel(Layer);
-								DataLayer->SetIsRuntime(false);
-							}
-							Actor->AddDataLayer(DataLayer);
-						}
+						ConvertActorLayersToDataLayers(Actor);
 					}
-					// Clear actor layers as they are not supported yet in world partition, keep them if only merging
-					if (!bOnlyMergeSubLevels)
+				}
+			}
+		}
+
+		if (bMainLevel)
+		{
+			if (LevelHasLevelScriptBlueprint(Level))
+			{
+				ULevelScriptBlueprint* LevelScriptBlueprint = Level->GetLevelScriptBlueprint(true);
+				TArray<AActor*> LevelScriptActorReferences = ActorsReferencesUtils::GetActorReferences(LevelScriptBlueprint);
+
+				for (AActor* LevelScriptActorReference : LevelScriptActorReferences)
+				{
+					if (LevelScriptActorReference->GetIsSpatiallyLoaded() && LevelScriptActorReference->CanChangeIsSpatiallyLoadedFlag())
 					{
-						Actor->Layers.Empty();
+						LevelScriptActorReference->SetIsSpatiallyLoaded(false);
 					}
 				}
 			}
@@ -1144,7 +1220,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		RemapSoftObjectPaths.Add(OldPackagePath, FSoftObjectPath(MainPackage).ToString());
 	}
 
-	TMap<UObject*, UObject*> PrivateRefsMap;
+	TMap<UObject*, AActor*> PrivateRefsMap;
 	for(ULevel* SubLevel : SubLevelsToConvert)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(ConvertSubLevel);
@@ -1170,22 +1246,31 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 				LevelScriptActorReferences.Add(LevelScriptActor);
 
 				ULevelScriptBlueprint* LevelScriptBlueprint = SubLevel->GetLevelScriptBlueprint(true);
-				LevelScriptActorReferences.Append(ActorsReferencesUtils::GetActorReferences(LevelScriptBlueprint));
+				LevelScriptActorReferences.Append(ActorsReferencesUtils::GetActorReferences(LevelScriptBlueprint, RF_NoFlags, true));
 
 				for(AActor* Actor: SubLevel->Actors)
 				{
 					if(IsValid(Actor))
 					{
-						TSet<AActor*> ActorReferences;
-						ActorReferences.Append(ActorsReferencesUtils::GetActorReferences(Actor));
-
-						for (AActor* ActorReference : ActorReferences)
+						// Since we'll keep this level around, pass bMainLevel true here to ensure that we 
+						// delete only unwanted actors, and keep level specific actors (world settings, brush and level script)
+						if (ShouldDeleteActor(Actor, /*bMainLevel=*/true))
 						{
-							if (LevelScriptActorReferences.Find(ActorReference))
+							SubLevel->GetWorld()->DestroyActor(Actor);
+						}
+						else
+						{
+							TSet<AActor*> ActorReferences;
+							ActorReferences.Append(ActorsReferencesUtils::GetActorReferences(Actor, RF_NoFlags, true));
+
+							for (AActor* ActorReference : ActorReferences)
 							{
-								LevelScriptActorReferences.Add(Actor);
-								LevelScriptActorReferences.Append(ActorReferences);
-								break;
+								if (LevelScriptActorReferences.Find(ActorReference))
+								{
+									LevelScriptActorReferences.Add(Actor);
+									LevelScriptActorReferences.Append(ActorReferences);
+									break;
+								}
 							}
 						}
 					}
@@ -1198,6 +1283,10 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 						if (!LevelScriptActorReferences.Find(Actor))
 						{
 							ActorsToConvert.Add(Actor);
+						}
+						else
+						{
+							RemapSoftObjectPaths.Add(FSoftObjectPath(Actor).ToString(), FSoftObjectPath(Actor).ToString());
 						}
 					}
 				}
@@ -1254,6 +1343,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 			LevelInstanceActor->DesiredRuntimeBehavior = ELevelInstanceRuntimeBehavior::LevelStreaming;
 			LevelInstanceActor->SetActorTransform(LevelTransform);
 			LevelInstanceActor->SetWorldAsset(SubLevelWorld);
+			LevelInstanceActor->SetActorLabel(SubLevelWorld->GetName());
 		}
 		else
 		{
@@ -1314,6 +1404,9 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 					ChangeObjectOuter(ActorClass, MainPackage);
 					UE_LOG(LogWorldPartitionConvertCommandlet, Log, TEXT("Extracted non-native class %s"), *ActorClass->GetName());
 				}
+
+				// Actor is now in main level, we can create data layers for it
+				ConvertActorLayersToDataLayers(Actor);
 			}
 		}
 
@@ -1339,6 +1432,11 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 				PackagesToDelete.Add(SubLevel->GetPackage());
 			}
+		}
+		else
+		{
+			// Rebuild Model to clear refs to actors that were converted
+			GEditor->RebuildLevel(*SubLevel);
 		}
 	}
 
@@ -1456,6 +1554,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 		MainWorld->WorldComposition = nullptr;
 		MainLevel->bIsPartitioned = !bOnlyMergeSubLevels;
+		GEditor->RebuildLevel(*MainLevel);
 
 		if (bDeleteSourceLevels)
 		{
@@ -1488,14 +1587,47 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 			}
 		}
 
-		for (TMap<UObject*, UObject*>::TConstIterator It(PrivateRefsMap); It; ++It)
+		SET_WARN_COLOR(COLOR_YELLOW);
+		bool bRemapError = false;
+		for (TMap<UObject*, AActor*>::TConstIterator It(PrivateRefsMap); It; ++It)
 		{
-			SET_WARN_COLOR(COLOR_YELLOW);
-			UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Renaming %s from %s to %s"), *It->Key->GetName(), *It->Key->GetPackage()->GetName(), *It->Value->GetPackage()->GetName());
-			CLEAR_WARN_COLOR();
-
-			It->Key->SetExternalPackage(It->Value->GetPackage());
+			check(It->Value->IsPackageExternal() == It->Value->SupportsExternalPackaging());
+			if (It->Value->SupportsExternalPackaging())
+			{
+				UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Changing object %s package from %s to actor external package %s"), *It->Key->GetName(), *It->Key->GetPackage()->GetName(), *It->Value->GetPackage()->GetName());
+				check(It->Value->GetExternalPackage());
+				It->Key->SetExternalPackage(It->Value->GetExternalPackage());
+			}
+			else
+			{
+				// Remap obj's outer
+				//
+				// Before remapping, validate that object is still in a different package than the actor's package :
+				// Calling Rename on an object can also affect other objects of PrivateRefsMap (UModel::Rename is one example).
+				UPackage* ActorPackage = It->Value->GetPackage();
+				if (!It->Key->IsInPackage(ActorPackage))
+				{
+					UObject* ObjectOuter = It->Key->GetOuter();
+					FString* RemappedOuterPath = RemapSoftObjectPaths.Find(FSoftObjectPath(ObjectOuter).ToString());
+					if (UObject* RemappedOuterObject = RemappedOuterPath ? FSoftObjectPath(*RemappedOuterPath).ResolveObject() : nullptr)
+					{
+						FString OldPathName = It->Key->GetPathName();
+						It->Key->Rename(nullptr, RemappedOuterObject, REN_DontCreateRedirectors);
+						UE_LOG(LogWorldPartitionConvertCommandlet, Warning, TEXT("Renamed object from %s to %s"), *OldPathName, *It->Key->GetPathName());
+					}
+					else
+					{
+						UE_LOG(LogWorldPartitionConvertCommandlet, Error, TEXT("Failed to find a corresponding outer for object %s."), *It->Key->GetPathName());
+						bRemapError = true;
+					}
+				}
+			}
 		}
+		if (bRemapError)
+		{
+			return 1;
+		}
+		CLEAR_WARN_COLOR();
 	
 		// Save packages
 		{
@@ -1555,6 +1687,8 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 			{
 				Pair.Value->SaveConfig(CPF_Config, *LevelConfigFilename);
 			}
+
+			UE_LOG(LogWorldPartitionConvertCommandlet, Display, TEXT("Generated ini file: %s"), *LevelConfigFilename);
 		}
 	}
 

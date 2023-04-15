@@ -18,31 +18,27 @@ struct FWorldPartitionPerWorldSettings
 	FWorldPartitionPerWorldSettings()
 	{}
 
-	FWorldPartitionPerWorldSettings(TArray<FName>& InLoadedEditorGridCells)
-		: LoadedEditorGridCells(InLoadedEditorGridCells)
-	{}
-
 	void Reset()
 	{
-		LoadedEditorGridCells.Empty();
+		LoadedEditorRegions.Empty();
+		LoadedEditorLocationVolumes.Empty();
 		NotLoadedDataLayers.Empty();
 		LoadedDataLayers.Empty();
-		EditorGridConfigHash = 0;
 	}
 #endif
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<FName> LoadedEditorGridCells;
+	TArray<FBox> LoadedEditorRegions;
+
+	UPROPERTY()
+	TArray<FName> LoadedEditorLocationVolumes;
 
 	UPROPERTY()
 	TArray<FName> NotLoadedDataLayers;
 
 	UPROPERTY()
 	TArray<FName> LoadedDataLayers;
-
-	UPROPERTY()
-	uint32 EditorGridConfigHash = 0;
 #endif
 };
 
@@ -61,31 +57,33 @@ public:
 		, bHideUnloadedActors(false)
 		, bShowOnlySelectedActors(false)
 		, bHighlightSelectedDataLayers(true)
-		, bDisableLoadingOfLastLoadedCells(false)
+		, bHideLevelInstanceContent(true)
+		, bDisableLoadingOfLastLoadedRegions(false)
 #endif
 	{}
 
 #if WITH_EDITOR
-	void UpdateEditorGridConfigHash(UWorld* InWorld);
-	static void UpdateEditorGridConfigHash(UWorld* InWorld, FWorldPartitionPerWorldSettings& PerWorldSettings);
-	TArray<FName> GetEditorGridLoadedCells(UWorld* InWorld) const;
-	void SetEditorGridLoadedCells(UWorld* InWorld, const TArray<FName>& InEditorGridLoadedCells);
+	TArray<FBox> GetEditorLoadedRegions(UWorld* InWorld) const;
+	void SetEditorLoadedRegions(UWorld* InWorld, const TArray<FBox>& InEditorLoadedRegions);
 
-	bool GetEnableLoadingOfLastLoadedCells() const
+	TArray<FName> GetEditorLoadedLocationVolumes(UWorld* InWorld) const;
+	void SetEditorLoadedLocationVolumes(UWorld* InWorld, const TArray<FName>& InEditorLoadedLocationVolumes);
+
+	bool GetEnableLoadingOfLastLoadedRegions() const
 	{
-		return !bDisableLoadingOfLastLoadedCells;
+		return !bDisableLoadingOfLastLoadedRegions;
 	}
 
-	bool GetBugItGoLoadCells() const
+	bool GetBugItGoLoadRegion() const
 	{
-		return bBugItGoLoadCells;
+		return bBugItGoLoadRegion;
 	}
 
-	void SetBugItGoLoadCells(bool bInBugItGoLoadCells)
+	void SetBugItGoLoadRegion(bool bInBugItGoLoadRegion)
 	{
-		if (bBugItGoLoadCells != bInBugItGoLoadCells)
+		if (bBugItGoLoadRegion != bInBugItGoLoadRegion)
 		{
-			bBugItGoLoadCells = bInBugItGoLoadCells;
+			bBugItGoLoadRegion = bInBugItGoLoadRegion;
 			SaveConfig();
 		}
 	}
@@ -139,6 +137,10 @@ public:
 	UPROPERTY(config)
 	uint32 bHighlightSelectedDataLayers : 1;
 
+	/** True when the Data Layer Outliner is not displaying Level Instance content */
+	UPROPERTY(config)
+	uint32 bHideLevelInstanceContent : 1;
+
 private:
 	bool ShouldSaveSettings(const UWorld* InWorld) const
 	{
@@ -146,10 +148,10 @@ private:
 	}
 
 	UPROPERTY(config)
-	uint32 bDisableLoadingOfLastLoadedCells : 1;
+	uint32 bDisableLoadingOfLastLoadedRegions : 1;
 
 	UPROPERTY(config)
-	uint32 bBugItGoLoadCells : 1;
+	uint32 bBugItGoLoadRegion : 1;
 
 	UPROPERTY(config)
 	uint32 bShowCellCoords : 1;

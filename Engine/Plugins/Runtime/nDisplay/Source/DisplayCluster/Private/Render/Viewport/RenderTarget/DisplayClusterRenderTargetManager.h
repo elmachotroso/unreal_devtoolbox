@@ -8,14 +8,17 @@ class FViewport;
 class FDisplayClusterViewport;
 class FDisplayClusterRenderFrame;
 class FDisplayClusterRenderTargetResourcesPool;
+class FDisplayClusterViewportManagerProxy;
 
 struct FDisplayClusterRenderFrameSettings;
 
 class FDisplayClusterRenderTargetManager
 {
 public:
-	FDisplayClusterRenderTargetManager();
+	FDisplayClusterRenderTargetManager(FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
 	~FDisplayClusterRenderTargetManager();
+
+	void Release();
 
 public:
 	bool AllocateRenderFrameResources(FViewport* InViewport, const FDisplayClusterRenderFrameSettings& InRenderFrameSettings, const TArray<FDisplayClusterViewport*>& InViewports, FDisplayClusterRenderFrame& InOutRenderFrame);

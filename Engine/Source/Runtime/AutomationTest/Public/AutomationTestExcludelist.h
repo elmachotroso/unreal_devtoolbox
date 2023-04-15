@@ -8,9 +8,10 @@
 UENUM(Meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
 enum class ERHI_Flags : uint8
 {
-	DirectX11	= 0x01 UMETA(DisplayName = "DirectX 11"),
-	DirectX12	= 0x02 UMETA(DisplayName = "DirectX 12"),
-	Vulkan		= 0x04 UMETA(DisplayName = "Vulkan"),
+	DirectX11	= 1 << 0 UMETA(DisplayName = "DirectX 11"),
+	DirectX12	= 1 << 1 UMETA(DisplayName = "DirectX 12"),
+	Vulkan		= 1 << 2 UMETA(DisplayName = "Vulkan"),
+	Metal		= 1 << 3 UMETA(DisplayName = "Metal"),
 	NUM			UMETA(Hidden)
 };
 
@@ -48,7 +49,7 @@ struct FAutomationTestExcludeOptions
 	FName Reason;
 
 	/* Option to target specific RHI. No option means it should be applied to all RHI */
-	UPROPERTY(EditAnywhere, Meta = (Bitmask, BitmaskEnum = "ERHI_Flags"), Category = ExcludeTestOptions)
+	UPROPERTY(EditAnywhere, Meta = (Bitmask, BitmaskEnum = "/Script/AutomationTest.ERHI_Flags"), Category = ExcludeTestOptions)
 	int8 RHIs = 0;
 
 	/* Should the Reason be reported as a warning in the log */
@@ -72,7 +73,7 @@ struct FAutomationTestExcludelistEntry
 		int32 Num_Flags = Enum->NumEnums();
 		for (int32 i = 0; i < Num_Flags; i++)
 		{
-			int8 Flag = Enum->GetValueByIndex(i);
+			int8 Flag = IntCastChecked<int8>(Enum->GetValueByIndex(i));
 			if ((int8)ERHI_Flags::NUM == Flag)
 				break; // We reach the maximum value
 
@@ -113,15 +114,30 @@ struct FAutomationTestExcludelistEntry
 		bIsPropagated = false;
 	}
 
-	/* Confirm that test should be excluded for that RHI */
-	bool ShouldExcludeForRHI(const FString& InRHI) const
+	/* Has conditional exclusion */
+	bool HasConditions() const
 	{
-		if (!InRHI.IsEmpty() && RHIs.Num() != 0 && !RHIs.Contains(*InRHI))
+		return !RHIs.IsEmpty();
+	}
+
+	/* Remove exclusion conditions, return true if a condition was removed */
+	bool RemoveConditions(const FAutomationTestExcludelistEntry& Entry)
+	{
+		if (!Entry.HasConditions())
 		{
 			return false;
 		}
 
-		return true;
+		bool GotRemoved = false;
+		// Check RHIs
+		int Length = RHIs.Num();
+		if (Length > 0)
+		{
+			RHIs = RHIs.Difference(Entry.RHIs);
+			GotRemoved = GotRemoved || Length != RHIs.Num();
+		}
+
+		return GotRemoved;
 	}
 
 	/* Hold full test name/path */
@@ -166,7 +182,7 @@ public:
 	void AddToExcludeTest(const FString& TestName, const FAutomationTestExcludelistEntry& ExcludelistEntry);
 	void RemoveFromExcludeTest(const FString& TestName);
 	bool IsTestExcluded(const FString& TestName, const FString& RHI = TEXT(""), FName* OutReason = nullptr, bool* OutWarn = nullptr);
-	FAutomationTestExcludelistEntry* GetExcludeTestEntry(const FString& TestName);
+	FAutomationTestExcludelistEntry* GetExcludeTestEntry(const FString& TestName, const FString& RHI = TEXT(""));
 
 	void SaveConfig();
 	FString GetConfigFilename() { return UObject::GetDefaultConfigFilename(); } const

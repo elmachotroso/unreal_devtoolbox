@@ -13,7 +13,7 @@
 #include "Algo/ForEach.h"
 #include "Algo/Reverse.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 struct FPolylineBBox
@@ -22,8 +22,8 @@ struct FPolylineBBox
 	FPoint Min;
 	FPoint MaxPoints[3];
 	FPoint MinPoints[3];
-	double CoordinateOfMaxPoint[3];
-	double CoordinateOfMinPoint[3];
+	double CoordinateOfMaxPoint[3] = { -HUGE_VALUE, -HUGE_VALUE, -HUGE_VALUE };
+	double CoordinateOfMinPoint[3] = { HUGE_VALUE, HUGE_VALUE, HUGE_VALUE };
 
 	FPolylineBBox()
 		: Max(-HUGE_VALUE, -HUGE_VALUE, -HUGE_VALUE)
@@ -135,7 +135,7 @@ template<class PointType>
 PointType ComputePoint(const TArray<double>& PolylineCoordinates, const TArray<PointType>& PolylinePoints, const int32 Index, const double PointCoordinate)
 {
 	double Delta = PolylineCoordinates[Index + 1] - PolylineCoordinates[Index];
-	if (FMath::IsNearlyZero(Delta, (double)SMALL_NUMBER))
+	if (FMath::IsNearlyZero(Delta, (double)DOUBLE_SMALL_NUMBER))
 	{
 		return PolylinePoints[Index];
 	}
@@ -169,7 +169,6 @@ protected:
 
 		double LastSegmentLength;
 		double Length = 0;
-		ensureCADKernel(BoundaryIndices[1] > BoundaryIndices[0]);
 
 		OutCurvilinearCoordinates.Add(0);
 		if (BoundaryIndices[1] > BoundaryIndices[0] + 1)
@@ -201,7 +200,7 @@ protected:
 	PointType ComputePoint(const int32 Index, const double PointCoordinate) const
 	{
 		double Delta = PolylineCoordinates[Index + 1] - PolylineCoordinates[Index];
-		if (FMath::IsNearlyZero(Delta, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyZero(Delta, (double)DOUBLE_SMALL_NUMBER))
 		{
 			return PolylinePoints[Index];
 		}
@@ -425,12 +424,12 @@ public:
 		double LastCoordinate = InBoundary.Min;
 		for (int32 IndexCurvilinear = 1, IndexCoordinate = BoundaryIndices[0] + 1; IndexCurvilinear < CurvilinearCoordinates.Num(); ++IndexCurvilinear, ++IndexCoordinate)
 		{
-			while (CurvilinearLength < CurvilinearCoordinates[IndexCurvilinear] + SMALL_NUMBER)
+			while (CurvilinearLength < CurvilinearCoordinates[IndexCurvilinear] + DOUBLE_SMALL_NUMBER)
 			{
 				double Coordinate = ComputeSamplePointCoordinate(IndexCurvilinear, IndexCoordinate, CurvilinearLength, LastCoordinate);
 				OutCoordinates.Add(Coordinate);
 				CurvilinearLength += SectionLength;
-				if (CurvilinearLength + SMALL_NUMBER > CurveLength)
+				if (CurvilinearLength + DOUBLE_SMALL_NUMBER > CurveLength)
 				{
 					OutCoordinates.Add(InBoundary.Max);
 					break;
@@ -553,11 +552,11 @@ public:
 
 		int32 PolylineStartIndex = BoundaryIndices[0];
 		int32 PolylineEndIndex = BoundaryIndices[1];
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)DOUBLE_SMALL_NUMBER))
 		{
 			PolylineStartIndex++;
 		}
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)DOUBLE_SMALL_NUMBER))
 		{
 			PolylineEndIndex--;
 		}
@@ -596,12 +595,12 @@ public:
 		OutCoordinates.Empty(NewSize);
 		OutPoints.Empty(NewSize);
 
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)DOUBLE_SMALL_NUMBER))
 		{
 			BoundaryIndices[0]++;
 		}
 
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)DOUBLE_SMALL_NUMBER))
 		{
 			BoundaryIndices[1]--;
 		}
@@ -623,14 +622,17 @@ public:
 		int32 BoundaryIndices[2];
 		GetStartEndIndex(InBoundary, BoundaryIndices);
 
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)SMALL_NUMBER))
+		if (BoundaryIndices[1] - BoundaryIndices[0] > 0)
 		{
-			BoundaryIndices[0]++;
-		}
+			if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[0] + 1], InBoundary.Min, (double)DOUBLE_SMALL_NUMBER))
+			{
+				BoundaryIndices[0]++;
+			}
 
-		if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)SMALL_NUMBER))
-		{
-			BoundaryIndices[1]--;
+			if (FMath::IsNearlyEqual(PolylineCoordinates[BoundaryIndices[1]], InBoundary.Max, (double)DOUBLE_SMALL_NUMBER))
+			{
+				BoundaryIndices[1]--;
+			}
 		}
 
 		OutBBox.Update(InBoundary.Min, ComputePoint(BoundaryIndices[0], InBoundary.Min));
@@ -698,5 +700,5 @@ public:
 	}
 };
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

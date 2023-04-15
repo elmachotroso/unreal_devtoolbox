@@ -70,6 +70,7 @@ public:
 
 	/** Gets the asset referenced by this node, or nullptr if there isn't one. */
 	virtual UObject* GetReferencedAsset() const { return nullptr; }
+	virtual void OpenReferencedAsset() const {};
 
 	/** Refreshes the node due to external changes, e.g. the underlying function changed for a function call node. Return true if the graph changed.*/
 	virtual bool RefreshFromExternalChanges() { return false; }
@@ -143,7 +144,7 @@ public:
 	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true, bool bFilterForCompilation = true) const;
 	
 	/** Go through all the external dependencies of this node in isolation and add them to the reference id list.*/
-	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const {};
+	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const {};
 
 	/** Traces one of this node's output pins to its source output pin.
 	 *
@@ -163,7 +164,7 @@ public:
 	virtual bool SubstituteCompiledPin(FHlslNiagaraTranslator* Translator, UEdGraphPin** LocallyOwnedPin);
 
 	virtual UEdGraphPin* GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin) const override { return nullptr; }
-	virtual UEdGraphPin* GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage MasterUsage) const { return nullptr; }
+	virtual UEdGraphPin* GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage InUsage) const { return nullptr; }
 
 	/** Identify that this node has undergone changes that will require synchronization with a compiled script.*/
 	void MarkNodeRequiresSynchronization(FString Reason, bool bRaiseGraphNeedsRecompile);
@@ -171,7 +172,7 @@ public:
 	/** Get the change id for this node. This change id is updated whenever the node is manipulated in a way that should force a recompile.*/
 	const FGuid& GetChangeId() const { return ChangeId; }
 
-	/** Set the change id for his node to an explicit value. This should only be called by internal code. */
+	/** Set the change id for this node to an explicit value. This should only be called by internal code. */
 	void ForceChangeId(const FGuid& InId, bool bRaiseGraphNeedsRecompile);
 
 	FOnNodeVisualsChanged& OnVisualsChanged();

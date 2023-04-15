@@ -1,19 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeCommon.Rpc;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Threading.Tasks;
+using EpicGames.Core;
+using EpicGames.Horde.Storage;
+using Microsoft.Extensions.Configuration;
 
-namespace HordeAgent
+namespace Horde.Agent
 {
 	/// <summary>
 	/// The type of executor to use
@@ -73,7 +68,7 @@ namespace HordeAgent
 		/// Url of the server
 		/// </summary>
 		[Required]
-		public string Url { get; set; } = null!;
+		public Uri Url { get; set; } = null!;
 
 		/// <summary>
 		/// Bearer token to use to initiate the connection
@@ -88,20 +83,25 @@ namespace HordeAgent
 		/// <summary>
 		/// Thumbprints of certificates to trust. Allows using self-signed certs for the server.
 		/// </summary>
-		public List<string> Thumbprints { get; set; } = new List<string>();
+		public List<string> Thumbprints { get; } = new List<string>();
+
+		/// <summary>
+		/// Storage settings for using this server
+		/// </summary>
+		public StorageOptions Storage { get; set; } = new StorageOptions();
 
 		/// <summary>
 		/// Checks whether the given certificate thumbprint should be trusted
 		/// </summary>
-		/// <param name="CertificateThumbprint">The cert thumbprint</param>
+		/// <param name="certificateThumbprint">The cert thumbprint</param>
 		/// <returns>True if the cert should be trusted</returns>
-		public bool IsTrustedCertificate(string CertificateThumbprint)
+		public bool IsTrustedCertificate(string certificateThumbprint)
 		{
-			if (Thumbprint != null && Thumbprint.Equals(CertificateThumbprint, StringComparison.OrdinalIgnoreCase))
+			if (Thumbprint != null && Thumbprint.Equals(certificateThumbprint, StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}
-			if (Thumbprints.Any(x => x.Equals(CertificateThumbprint, StringComparison.OrdinalIgnoreCase)))
+			if (Thumbprints.Any(x => x.Equals(certificateThumbprint, StringComparison.OrdinalIgnoreCase)))
 			{
 				return true;
 			}
@@ -149,7 +149,7 @@ namespace HordeAgent
 		/// <summary>
 		/// Known servers to connect to
 		/// </summary>
-		public List<ServerProfile> ServerProfiles { get; set; } = new List<ServerProfile>();
+		public List<ServerProfile> ServerProfiles { get; } = new List<ServerProfile>();
 
 		/// <summary>
 		/// The default server, unless overridden from the command line
@@ -190,12 +190,12 @@ namespace HordeAgent
 		/// <summary>
 		/// List of network shares to mount
 		/// </summary>
-		public List<MountNetworkShare> Shares { get; set; } = new List<MountNetworkShare>();
+		public List<MountNetworkShare> Shares { get; } = new List<MountNetworkShare>();
 
 		/// <summary>
 		/// List of process names to terminate after a job
 		/// </summary>
-		public List<string> ProcessNamesToTerminate { get; set; } = new List<string>();
+		public List<string> ProcessNamesToTerminate { get; } = new List<string>();
 
 		/// <summary>
 		/// Whether to write step output to the logging device
@@ -203,13 +203,18 @@ namespace HordeAgent
 		public bool WriteStepOutputToLogger { get; set; }
 
 		/// <summary>
+		/// Key/value properties in addition to those set internally by the agent
+		/// </summary>
+		public Dictionary<string, string> Properties { get; } = new();
+
+		/// <summary>
 		/// Gets the current server settings
 		/// </summary>
 		/// <returns>The current server settings</returns>
-		public ServerProfile GetServerProfile(string Name)
+		public ServerProfile GetServerProfile(string name)
 		{
-			ServerProfile? ServerProfile = ServerProfiles.FirstOrDefault(x => x.Name.Equals(Name, StringComparison.OrdinalIgnoreCase));
-			if (ServerProfile == null)
+			ServerProfile? serverProfile = ServerProfiles.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+			if (serverProfile == null)
 			{
 				if (ServerProfiles.Count == 0)
 				{
@@ -217,10 +222,10 @@ namespace HordeAgent
 				}
 				else
 				{
-					throw new Exception($"Unknown server profile name '{Name}' (valid profiles: {String.Join("/", ServerProfiles.Select(x => x.Name))})");
+					throw new Exception($"Unknown server profile name '{name}' (valid profiles: {String.Join("/", ServerProfiles.Select(x => x.Name))})");
 				}
 			}
-			return ServerProfile;
+			return serverProfile;
 		}
 
 		/// <summary>
@@ -240,6 +245,23 @@ namespace HordeAgent
 		internal string GetAgentName()
 		{
 			return Name ?? Environment.MachineName;
+		}
+	}
+
+	/// <summary>
+	/// Extension methods for retrieving config settings
+	/// </summary>
+	public static class AgentSettingsExtensions
+	{
+		/// <summary>
+		/// Gets the configuration section for the active server profile
+		/// </summary>
+		/// <param name="configSection"></param>
+		/// <returns></returns>
+		public static IConfigurationSection GetCurrentServerProfile(this IConfigurationSection configSection)
+		{
+			string profileName = configSection[nameof(AgentSettings.Server)];
+			return configSection.GetSection(nameof(AgentSettings.ServerProfiles)).GetChildren().First(x => x[nameof(ServerProfile.Name)] == profileName);
 		}
 	}
 }

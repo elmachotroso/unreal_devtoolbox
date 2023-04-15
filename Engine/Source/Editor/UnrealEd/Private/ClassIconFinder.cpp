@@ -2,11 +2,19 @@
 
 
 #include "ClassIconFinder.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Class.h"
-#include "AssetData.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "Containers/UnrealString.h"
 #include "Engine/Blueprint.h"
-#include "Engine/Brush.h"
+#include "GameFramework/Actor.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
 
 const FSlateBrush* FClassIconFinder::FindIconForActors(const TArray< TWeakObjectPtr<AActor> >& InActors, UClass*& CommonBaseClass)
 {
@@ -96,7 +104,7 @@ const UClass* FClassIconFinder::GetIconClassForAssetData(const FAssetData& InAss
 		*bOutIsClassType = false;
 	}
 
-	UClass* AssetClass = FindObjectSafe<UClass>(ANY_PACKAGE, *InAssetData.AssetClass.ToString());
+	UClass* AssetClass = FindObjectSafe<UClass>(InAssetData.AssetClassPath);
 	if ( !AssetClass )
 	{
 		return nullptr;
@@ -109,11 +117,11 @@ const UClass* FClassIconFinder::GetIconClassForAssetData(const FAssetData& InAss
 			*bOutIsClassType = true;
 		}
 
-		return FindObject<UClass>(ANY_PACKAGE, *InAssetData.AssetName.ToString());
+		return FindObject<UClass>(nullptr, *InAssetData.GetObjectPathString());
 	}
 	
 	static const FName IgnoreClassThumbnail(TEXT("IgnoreClassThumbnail"));
-	if ( (AssetClass->IsChildOf<UBlueprint>() || AssetClass->IsChildOf<UBlueprintGeneratedClass>()) &&
+	if ( (AssetClass->IsChildOf<UBlueprint>() || AssetClass->IsChildOf<UClass>()) &&
 		!AssetClass->HasMetaDataHierarchical(IgnoreClassThumbnail))
 	{
 		if ( bOutIsClassType )
@@ -121,7 +129,7 @@ const UClass* FClassIconFinder::GetIconClassForAssetData(const FAssetData& InAss
 			*bOutIsClassType = true;
 		}
 
-		// We need to use the asset data to get the parent class as the blueprint may not be loaded
+		// We need to use the asset data to get the parent class as the generated class may not be loaded
 		FString ParentClassName;
 		if ( !InAssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName) )
 		{
@@ -131,7 +139,7 @@ const UClass* FClassIconFinder::GetIconClassForAssetData(const FAssetData& InAss
 		{
 			UObject* Outer = nullptr;
 			ResolveName(Outer, ParentClassName, false, false);
-			return FindObject<UClass>(ANY_PACKAGE, *ParentClassName);
+			return FindObject<UClass>(Outer, *ParentClassName);
 		}
 	}
 

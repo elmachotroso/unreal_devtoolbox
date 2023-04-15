@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Utils.h"
+#include "TraceServices/Utils.h"
+#include "Common/FormatArgs.h"
 #include "TraceServices/Containers/Tables.h"
 #include "Templates/SharedPointer.h"
 #include "HAL/FileManager.h"
@@ -16,8 +18,8 @@ void Table2Csv(const IUntypedTable& Table, const TCHAR* Filename)
 	check(OutputFile);
 	FString Header;
 	const ITableLayout& Layout = Table.GetLayout();
-	int32 ColumnCount = Layout.GetColumnCount();
-	for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+	uint32 ColumnCount = static_cast<uint32>(Layout.GetColumnCount());
+	for (uint32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 	{
 		Header += Layout.GetColumnName(ColumnIndex);
 		if (ColumnIndex < ColumnCount - 1)
@@ -35,7 +37,7 @@ void Table2Csv(const IUntypedTable& Table, const TCHAR* Filename)
 	for (; TableReader->IsValid(); TableReader->NextRow())
 	{
 		FString Line;
-		for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
+		for (uint32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 		{
 			switch (Layout.GetColumnType(ColumnIndex))
 			{
@@ -70,6 +72,11 @@ void Table2Csv(const IUntypedTable& Table, const TCHAR* Filename)
 		OutputFile->Serialize((void*)AnsiLine.Get(), AnsiLine.Length());
 	}
 	OutputFile->Close();
+}
+
+void StringFormat(TCHAR* Out, uint64 MaxOut, TCHAR* Temp, uint64 MaxTemp, const TCHAR* FormatString, const uint8* FormatArgs)
+{
+	FFormatArgsHelper::Format(Out, MaxOut, Temp, MaxTemp, FormatString, FormatArgs);
 }
 
 } // namespace TraceServices

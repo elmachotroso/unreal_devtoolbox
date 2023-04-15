@@ -5,11 +5,11 @@
 #include "Systems/MovieScenePiecewiseIntegerBlenderSystem.h"
 #include "MovieSceneTracksComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneIntegerPropertySystem)
+
 UMovieSceneIntegerPropertySystem::UMovieSceneIntegerPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->Integer);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
@@ -25,4 +25,5 @@ void UMovieSceneIntegerPropertySystem::OnRun(FSystemTaskPrerequisites& InPrerequ
 {
 	Super::OnRun(InPrerequisites, Subsequents);
 }
+
 

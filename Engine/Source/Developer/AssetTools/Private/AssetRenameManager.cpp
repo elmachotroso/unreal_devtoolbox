@@ -27,7 +27,7 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlModule.h"
 #include "ISourceControlProvider.h"
@@ -35,7 +35,7 @@
 #include "SourceControlHelpers.h"
 #include "FileHelpers.h"
 #include "SDiscoveringAssetsDialog.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CollectionManagerTypes.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
@@ -94,13 +94,11 @@ struct FAssetRenameDataWithReferencers : public FAssetRenameData
 	FText FailureReason;
 	bool bCreateRedirector;
 	bool bRenameFailed;
-	bool bWarnAboutProjectSettingsReference;
 
 	FAssetRenameDataWithReferencers(const FAssetRenameData& InRenameData)
 		: FAssetRenameData(InRenameData)
 		, bCreateRedirector(false)
 		, bRenameFailed(false)
-		, bWarnAboutProjectSettingsReference(false)
 	{
 		if (Asset.IsValid() && !OldObjectPath.IsValid())
 		{
@@ -143,7 +141,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+			.BorderImage( FAppStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
 			.Padding(FMargin(4, 8, 4, 4))
 			[
 				SNew(SVerticalBox)
@@ -161,7 +159,7 @@ public:
 				.FillHeight(1.f)
 				[
 					SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+					.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 					[
 						SNew(SListView<TSharedRef<FText>>)
 						.ListItemsSource(&FailedRenames)
@@ -395,23 +393,12 @@ bool FAssetRenameManager::FixReferencesAndRename(const TArray<FAssetRenameData>&
 			UObject* Asset = (*SoftRefIt)->Asset.Get();
 			if (Asset)
 			{
-				FString OptionalTagsString;
-
-				if ((*SoftRefIt)->bWarnAboutProjectSettingsReference)
-				{
-					OptionalTagsString = LOCTEXT("ProjSettingsReferenceTag", "project settings soft reference").ToString();
-				}
-				else
-				{
-					OptionalTagsString = LOCTEXT("SoftReferenceTag", "soft reference").ToString();
-				}
-				
-				AssetNames += FString::Printf(TEXT("\n%s (%s)"), *Asset->GetName(), *OptionalTagsString);
+				AssetNames += FString("\n") + Asset->GetName();
 			}
 		}
 
-		const FText MessageText = FText::Format(LOCTEXT("RenameCDOReferences", "The following assets are referenced by one or more Class Default Objects: \n{0}\n\nContinuing with the rename may require changes to fix references in code or project settings. Assets could otherwise be missing in cooked/packaged builds. Do you wish to continue?"), FText::FromString(AssetNames));
-		if (FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, MessageText) == EAppReturnType::No)
+		const FText MessageText = FText::Format(LOCTEXT("RenameCDOReferences", "Source code, config INI, and text files may need Find/Replace for:\n\n{0}\n\nOtherwise assets can be missing from cooked builds. Continue with rename?"), FText::FromString(AssetNames));
+		if (FMessageDialog::Open(EAppMsgType::OkCancel, EAppReturnType::Cancel, MessageText) == EAppReturnType::Cancel)
 		{
 			return false;
 		}
@@ -594,7 +581,7 @@ struct FSoftObjectPathRenameSerializer : public FArchiveUObject
 		const FString& SubPath = Value.GetSubPathString();
 		for (const TPair<FSoftObjectPath, FSoftObjectPath>& Pair : RedirectorMap)
 		{
-			if (Pair.Key.GetAssetPathName() == Value.GetAssetPathName())
+			if (Pair.Key.GetAssetPath() == Value.GetAssetPath())
 			{
 				// Same asset, fix sub path. Asset will be fixed by normal serializePath call below
 				const FString& CheckSubPath = Pair.Key.GetSubPathString();
@@ -613,7 +600,7 @@ struct FSoftObjectPathRenameSerializer : public FArchiveUObject
 
 						FString NewSubPath(SubPath);
 						NewSubPath.ReplaceInline(*CheckSubPath, *Pair.Value.GetSubPathString());
-						Value = FSoftObjectPath(Pair.Value.GetAssetPathName(), NewSubPath);
+						Value = FSoftObjectPath(Pair.Value.GetAssetPath(), NewSubPath);
 					}
 					break;
 				}
@@ -664,7 +651,6 @@ void FAssetRenameManager::FindCDOReferences(const TArrayView<FAssetRenameDataWit
 	{
 		UClass* Cls = (*ClassDefaultObjectIt);
 		UObject* CDO = Cls->ClassDefaultObject;
-		bool bWorkingOnGameMapsSettings = (CDO == GetDefault<UGameMapsSettings>());
 
 		if (!CDO || !CDO->HasAllFlags(RF_ClassDefaultObject) || !IsValidChecked(CDO) || Cls->ClassGeneratedBy != nullptr)
 		{
@@ -713,15 +699,15 @@ void FAssetRenameManager::FindCDOReferences(const TArrayView<FAssetRenameDataWit
 				TWeakObjectPtr<UBlueprint> ObjectAsBP = UBlueprint::GetBlueprintFromClass(Cast<UBlueprintGeneratedClass>(Object));
 
 				// Resolve to the redirected asset path if necessary
-				FName FinalSoftObjPathName = SoftRefObjPath.GetAssetPathName();
+				FSoftObjectPath FinalSoftObjPath = SoftRefObjPath.GetWithoutSubPath();
 			
 				if (!Object.IsValid() && SoftRefObjPath.IsValid())
 				{
-					FName RedirObjectPathName = GRedirectCollector.GetAssetPathRedirection(SoftRefObjPath.GetAssetPathName());
+					FSoftObjectPath RedirObjectPath = GRedirectCollector.GetAssetPathRedirection(SoftRefObjPath.GetWithoutSubPath());
 
-					if (RedirObjectPathName != NAME_None && RedirObjectPathName != FinalSoftObjPathName)
+					if (!RedirObjectPath.IsNull() && RedirObjectPath != FinalSoftObjPath)
 					{
-						FinalSoftObjPathName = RedirObjectPathName;
+						FinalSoftObjPath = RedirObjectPath;
 					}
 				}
 
@@ -731,10 +717,9 @@ void FAssetRenameManager::FindCDOReferences(const TArrayView<FAssetRenameDataWit
 					// Look for loaded references, indirect blueprint refs to their generated class counterparts, or path name matching
 					if ((Object == AssetToRename->Asset) ||
 						(ObjectAsBP != nullptr && ObjectAsBP == AssetToRename->Asset) ||
-						(!FinalSoftObjPathName.IsNone() && FinalSoftObjPathName == AssetToRename->OldObjectPath.GetAssetPathName()))
+						(!FinalSoftObjPath.IsNull() && FinalSoftObjPath == AssetToRename->OldObjectPath.GetWithoutSubPath()))
 					{
 						AssetToRename->bCreateRedirector |= bSetRedirectorFlags;
-						AssetToRename->bWarnAboutProjectSettingsReference |= bWorkingOnGameMapsSettings;
 
 						OutSoftReferences.Push(AssetToRename);
 						RemainingSoftRefAssetChecklist.Remove(AssetToRename);
@@ -1178,7 +1163,7 @@ void FAssetRenameManager::DetectReferencingCollections(TArray<FAssetRenameDataWi
 		if (AssetToRename.Asset.IsValid())
 		{
 			TArray<FCollectionNameType> ReferencingCollections;
-			CollectionManagerModule.Get().GetCollectionsContainingObject(*AssetToRename.Asset->GetPathName(), ReferencingCollections);
+			CollectionManagerModule.Get().GetCollectionsContainingObject(FSoftObjectPath(AssetToRename.Asset.Get()), ReferencingCollections);
 
 			if (ReferencingCollections.Num() > 0)
 			{
@@ -1230,7 +1215,7 @@ void FAssetRenameManager::RenameReferencingSoftObjectPaths(const TArray<UPackage
 	{
 		if (Pair.Key.IsAsset())
 		{
-			GRedirectCollector.AddAssetPathRedirection(Pair.Key.GetAssetPathName(), Pair.Value.GetAssetPathName());
+			GRedirectCollector.AddAssetPathRedirection(Pair.Key.GetWithoutSubPath(), Pair.Value.GetWithoutSubPath());
 		}
 	}
 
@@ -1343,7 +1328,7 @@ bool FAssetRenameManager::CheckPackageForSoftObjectReferences(UPackage* Package,
 			const FString& SubPath = CachedKey.GetSubPathString();
 
 			// Stop as soon as we're not anymore in the range we're searching
-			if (Pair.Key.GetAssetPathName() != CachedKey.GetAssetPathName())
+			if (Pair.Key.GetWithoutSubPath() != CachedKey.GetWithoutSubPath())
 			{
 				break;
 			}

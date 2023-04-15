@@ -194,20 +194,21 @@ TAtomic<int32> FStats::GameThreadStatsFrame(1);
 void FStats::AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThreadStats& AdvanceRenderingThreadStatsDelegate /*= FOnAdvanceRenderingThreadStats()*/ )
 {
 #if STATS
+	TRACE_CPUPROFILER_EVENT_SCOPE(FStats::AdvanceFrame);
 	LLM_SCOPE(ELLMTag::Stats);
 	check( IsInGameThread() );
-	static int32 MasterDisableChangeTagStartFrame = -1;
+	static int32 PrimaryDisableChangeTagStartFrame = -1;
 	int64 Frame = ++GameThreadStatsFrame;
 
 	if( bDiscardCallstack )
 	{
 		FThreadStats::FrameDataIsIncomplete(); // we won't collect call stack stats this frame
 	}
-	if( MasterDisableChangeTagStartFrame == -1 )
+	if( PrimaryDisableChangeTagStartFrame == -1 )
 	{
-		MasterDisableChangeTagStartFrame = FThreadStats::MasterDisableChangeTag();
+		PrimaryDisableChangeTagStartFrame = FThreadStats::PrimaryDisableChangeTag();
 	}
-	if( !FThreadStats::IsCollectingData() || MasterDisableChangeTagStartFrame != FThreadStats::MasterDisableChangeTag() )
+	if( !FThreadStats::IsCollectingData() || PrimaryDisableChangeTagStartFrame != FThreadStats::PrimaryDisableChangeTag() )
 	{
 		Frame = -Frame; // mark this as a bad frame
 	}
@@ -219,7 +220,7 @@ void FStats::AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThre
 
 	if( AdvanceRenderingThreadStatsDelegate.IsBound() )
 	{
-		AdvanceRenderingThreadStatsDelegate.Execute( bDiscardCallstack, Frame, MasterDisableChangeTagStartFrame );
+		AdvanceRenderingThreadStatsDelegate.Execute( bDiscardCallstack, Frame, PrimaryDisableChangeTagStartFrame );
 	}
 	else
 	{
@@ -229,7 +230,7 @@ void FStats::AdvanceFrame( bool bDiscardCallstack, const FOnAdvanceRenderingThre
 
 	FThreadStats::ExplicitFlush( bDiscardCallstack );
 	FThreadStats::WaitForStats();
-	MasterDisableChangeTagStartFrame = FThreadStats::MasterDisableChangeTag();
+	PrimaryDisableChangeTagStartFrame = FThreadStats::PrimaryDisableChangeTag();
 #endif
 }
 
@@ -438,7 +439,7 @@ public:
 	virtual void SetHighPerformanceEnableForGroup(FName Group, bool Enable) override
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
-		FThreadStats::MasterDisableChangeTagLockAdd();
+		FThreadStats::PrimaryDisableChangeTagLockAdd();
 		FGroupEnable* Found = HighPerformanceEnable.Find(Group);
 		if (Found)
 		{
@@ -458,13 +459,13 @@ public:
 				}
 			}
 		}
-		FThreadStats::MasterDisableChangeTagLockSubtract();
+		FThreadStats::PrimaryDisableChangeTagLockSubtract();
 	}
 
 	virtual void SetHighPerformanceEnableForAllGroups(bool Enable) override
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
-		FThreadStats::MasterDisableChangeTagLockAdd();
+		FThreadStats::PrimaryDisableChangeTagLockAdd();
 		for (auto It = HighPerformanceEnable.CreateIterator(); It; ++It)
 		{
 			It.Value().CurrentEnable = Enable;
@@ -483,12 +484,12 @@ public:
 				}
 			}
 		}
-		FThreadStats::MasterDisableChangeTagLockSubtract();
+		FThreadStats::PrimaryDisableChangeTagLockSubtract();
 	}
 	virtual void ResetHighPerformanceEnableForAllGroups() override
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
-		FThreadStats::MasterDisableChangeTagLockAdd();
+		FThreadStats::PrimaryDisableChangeTagLockAdd();
 		for (auto It = HighPerformanceEnable.CreateIterator(); It; ++It)
 		{
 			It.Value().CurrentEnable = It.Value().DefaultEnable;
@@ -507,7 +508,7 @@ public:
 				}
 			}
 		}
-		FThreadStats::MasterDisableChangeTagLockSubtract();
+		FThreadStats::PrimaryDisableChangeTagLockSubtract();
 	}
 
 	virtual TStatId GetHighPerformanceEnableForStat(FName StatShortName, const char* InGroup, const char* InCategory, bool bDefaultEnable, bool bShouldClearEveryFrame, EStatDataType::Type InStatType, TCHAR const* InDescription, bool bCycleStat, bool bSortByName, FPlatformMemory::EMemoryCounterRegion MemoryRegion = FPlatformMemory::MCR_Invalid) override
@@ -621,12 +622,12 @@ public:
 			{
 				ANSICHAR NameBuffer[1024];
 				StatShortName.GetPlainANSIString(NameBuffer);
-				FStatsTrace::DeclareStat(Stat, NameBuffer, *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
+				FStatsTrace::DeclareStat(Stat, NameBuffer, *StatDescription, InGroup, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
 			}
 			else
 			{
 				FString StatShortNameString = StatShortName.GetPlainNameString();
-				FStatsTrace::DeclareStat(Stat, TCHAR_TO_ANSI(*StatShortNameString), *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
+				FStatsTrace::DeclareStat(Stat, TCHAR_TO_ANSI(*StatShortNameString), *StatDescription, InGroup, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
 			}
 		}
 #endif
@@ -1218,6 +1219,12 @@ FThreadStatsPool::FThreadStatsPool()
 	}
 }
 
+FThreadStatsPool& FThreadStatsPool::Get()
+{
+	static FThreadStatsPool Singleton;
+	return Singleton;
+}
+
 FThreadStats* FThreadStatsPool::GetFromPool()
 {
 	LLM_SCOPE(ELLMTag::Stats);
@@ -1243,11 +1250,11 @@ void FThreadStatsPool::ReturnToPool( FThreadStats* Instance )
 -----------------------------------------------------------------------------*/
 
 uint32 FThreadStats::TlsSlot = 0;
-FThreadSafeCounter FThreadStats::MasterEnableCounter;
-FThreadSafeCounter FThreadStats::MasterEnableUpdateNumber;
-FThreadSafeCounter FThreadStats::MasterDisableChangeTagLock;
-bool FThreadStats::bMasterEnable = false;
-bool FThreadStats::bMasterDisableForever = false;
+FThreadSafeCounter FThreadStats::PrimaryEnableCounter;
+FThreadSafeCounter FThreadStats::PrimaryEnableUpdateNumber;
+FThreadSafeCounter FThreadStats::PrimaryDisableChangeTagLock;
+bool FThreadStats::bPrimaryEnable = false;
+bool FThreadStats::bPrimaryDisableForever = false;
 bool FThreadStats::bIsRawStatsActive = false;
 
 FThreadStats::FThreadStats():
@@ -1281,19 +1288,19 @@ FThreadStats::FThreadStats( EConstructor ):
 
 void FThreadStats::CheckEnable()
 {
-	bool bOldMasterEnable(bMasterEnable);
-	bool bNewMasterEnable( WillEverCollectData() && (!IsRunningCommandlet() || FStats::EnabledForCommandlet()) && IsThreadingReady() && (MasterEnableCounter.GetValue()) );
-	if (bMasterEnable != bNewMasterEnable)
+	bool bOldPrimaryEnable(bPrimaryEnable);
+	bool bNewPrimaryEnable( WillEverCollectData() && (!IsRunningCommandlet() || FStats::EnabledForCommandlet()) && IsThreadingReady() && (PrimaryEnableCounter.GetValue()) );
+	if (bPrimaryEnable != bNewPrimaryEnable)
 	{
-		MasterDisableChangeTagLockAdd();
-		bMasterEnable = bNewMasterEnable;
-		MasterDisableChangeTagLockSubtract();
+		PrimaryDisableChangeTagLockAdd();
+		bPrimaryEnable = bNewPrimaryEnable;
+		PrimaryDisableChangeTagLockSubtract();
 	}
 }
 
 void FThreadStats::Flush( bool bHasBrokenCallstacks /*= false*/, bool bForceFlush /*= false*/ )
 {
-	if (bMasterDisableForever)
+	if (bPrimaryDisableForever)
 	{
 		Packet.StatMessages.Empty();
 		return;
@@ -1574,6 +1581,10 @@ void FThreadStats::StartThread()
 
 static int32 CurrentEventIndex = 0;
 
+#if UE_STATS_THREAD_AS_PIPE
+static UE::Tasks::FTask LastFramesBarriers[MAX_STAT_LAG];
+#endif
+
 static FGraphEventRef LastFramesEvents[MAX_STAT_LAG];
 
 void FThreadStats::StopThread()
@@ -1590,7 +1601,7 @@ void FThreadStats::StopThread()
 		// If we are writing stats data, stop it now.
 		DirectStatsCommand( TEXT( "stat stopfile" ), true );
 
-		FThreadStats::MasterDisableForever();
+		FThreadStats::PrimaryDisableForever();
 
 		WaitForStats();
 	}
@@ -1600,6 +1611,10 @@ void FThreadStats::StopThread()
 	while (GStatsPipe.HasWork())
 	{
 		FPlatformProcess::Yield();
+	}
+	for (int32 Index = 0; Index < MAX_STAT_LAG; Index++)
+	{
+		LastFramesBarriers[Index] = {}; // release memory before the allocator is destroyed
 	}
 #else
 	for (int32 Index = 0; Index < MAX_STAT_LAG; Index++)
@@ -1621,7 +1636,7 @@ void FThreadStats::WaitForStats()
 	}
 
 	check(IsInGameThread());
-	if (IsThreadingReady() && !bMasterDisableForever)
+	if (IsThreadingReady() && !bPrimaryDisableForever)
 	{
 		DECLARE_CYCLE_STAT(TEXT("WaitForStats"), STAT_WaitForStats, STATGROUP_Engine);
 
@@ -1630,13 +1645,9 @@ void FThreadStats::WaitForStats()
 #if UE_STATS_THREAD_AS_PIPE
 		if (FPlatformProcess::SupportsMultithreading())
 		{
-			static UE::Tasks::FTask LocalLastFramesEvents[MAX_STAT_LAG];
-			{
-				SCOPE_CYCLE_COUNTER(STAT_WaitForStats);
-				LocalLastFramesEvents[EventIndex].Wait();
-			}
-
-			LocalLastFramesEvents[EventIndex] = GStatsPipe.Launch(UE_SOURCE_LOCATION, [] {});
+			SCOPE_CYCLE_COUNTER(STAT_WaitForStats);
+			LastFramesBarriers[EventIndex].Wait();
+			LastFramesBarriers[EventIndex] = GStatsPipe.Launch(UE_SOURCE_LOCATION, [] {});
 		}
 		else
 #endif

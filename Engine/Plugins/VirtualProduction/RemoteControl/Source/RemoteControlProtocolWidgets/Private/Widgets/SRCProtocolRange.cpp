@@ -1,8 +1,8 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SRCProtocolRange.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IDetailPropertyRow.h"
 #include "IDetailTreeNode.h"
 #include "IStructureDetailsView.h"
@@ -23,20 +23,14 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 	PrimaryColumnSizeData = InArgs._PrimaryColumnSizeData;
 	SecondaryColumnSizeData = InArgs._SecondaryColumnSizeData;
 
-	ViewModel->OnChanged().AddLambda([this]()
-	{
-		// May not have been created yet
-		if(InputPropertyView.IsValid())
-		{
-			InputPropertyView->Refresh();	
-		}
-	});
-
+	ViewModel->OnChanged().AddSP(this, &SRCProtocolRange::OnViewModelChanged);
+	
 	const TSharedPtr<SWidget> LeftWidget =
 	SNew(SHorizontalBox)
 	+ SHorizontalBox::Slot()
 	.HAlign(HAlign_Right)
-	.VAlign(VAlign_Top)
+	.VAlign(VAlign_Center)
+	.Padding(4.f, 4.f, 0.f, 0.f)
 	.AutoWidth()
 	[
 		MakeInput()
@@ -48,6 +42,7 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 	+ SHorizontalBox::Slot()
 	.HAlign(HAlign_Left)
 	.VAlign(VAlign_Center)
+	.Padding(4.f, 4.f, 0.f, 0.f)
 	.FillWidth(1.0f)
 	[
 		SNew(SHorizontalBox)
@@ -64,12 +59,11 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 	// Copies current property value
 	+ SHorizontalBox::Slot()
 	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Top)
-	.Padding(0, 6, 0, 0)
+	.VAlign(VAlign_Center)
 	.AutoWidth()
 	[
 		SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+		.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 		.OnClicked(this, &SRCProtocolRange::CopyFromCurrentPropertyValue)
 		.ToolTipText(LOCTEXT("UsePropertyValue", "Use current property value."))
 		.ContentPadding(4.0f)
@@ -77,7 +71,7 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 		.IsFocusable(false)
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::Get().GetBrush("Icons.Use"))
+			.Image(FAppStyle::Get().GetBrush("Icons.Use"))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	]
@@ -85,8 +79,7 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 	// Validation warning
 	+ SHorizontalBox::Slot()
 	.HAlign(HAlign_Right)
-	.VAlign(VAlign_Top)
-	.Padding(0, 8, 0, 0)
+	.VAlign(VAlign_Center)
 	.AutoWidth()
 	[
 		SNew(SRCBindingWarning)
@@ -106,26 +99,27 @@ void SRCProtocolRange::Construct(const FArguments& InArgs, const TSharedRef<STab
 	// Delete button container
 	+ SHorizontalBox::Slot()
 	.HAlign(HAlign_Right)
-	.VAlign(VAlign_Top)
-	.Padding(0, 8, 0, 0)
+	.VAlign(VAlign_Center)
+	.Padding(2.f, 0.f)
 	.AutoWidth()
 	[
 		SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+		.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 		.ForegroundColor(FSlateColor::UseForeground())
 		.IsFocusable(false)
 		.OnClicked(this, &SRCProtocolRange::OnDelete)
+		.ContentPadding(2.f)
 		.Content()
 		[
-			SNew(STextBlock)
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-			.Text(FText::FromString(FString(TEXT("\xf00d"))))
+			SNew(SImage)
+			.ColorAndOpacity(FSlateColor::UseForeground())
+			.Image(FAppStyle::GetBrush("Icons.X"))
 		]
 	];
 
 	STableRow::Construct(
 		STableRow::FArguments()
-		.Style(FEditorStyle::Get(), "DetailsView.TreeView.TableRow")
+		.Style(FAppStyle::Get(), "DetailsView.TreeView.TableRow")
 		.ShowSelection(false)
 		.Content()
 		[
@@ -268,6 +262,15 @@ void SRCProtocolRange::OnOutputProxyChanged(const FPropertyChangedEvent& InEvent
 		ViewModel->SetOutputData(InPropertyHandle);
 	});
 	OutputPropertyView->Refresh();
+}
+
+void SRCProtocolRange::OnViewModelChanged() const
+{
+	// May not have been created yet
+	if(InputPropertyView.IsValid())
+	{
+		InputPropertyView->Refresh();	
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -20,12 +20,13 @@
 #include "VREditorActions.h"
 #include "VREditorAssetContainer.h"
 #include "VREditorMode.h"
-#include "VREditorDockableWindow.h"
+#include "UI/VREditorDockableWindow.h"
 #include "VREditorFloatingText.h"
-#include "VREditorFloatingUI.h"
+#include "VREditorModule.h"
+#include "UI/VREditorFloatingUI.h"
 #include "VREditorPlacement.h"
-#include "VREditorRadialFloatingUI.h"
-#include "VREditorUISystem.h"
+#include "UI/VREditorRadialFloatingUI.h"
+#include "UI/VREditorUISystem.h"
 #include "VRModeSettings.h"
 #include "XRMotionControllerBase.h" // for FXRMotionControllerBase::Left/RightHandSourceId and GetHandEnumForSourceName()
 
@@ -80,8 +81,9 @@ namespace VREditorKeyNames
 	static const FName MotionController_Right_FullyPressedTriggerAxis( "MotionController_Right_FullyPressedTriggerAxis" );
 }
 
-static const FName OculusDeviceType( TEXT( "OculusHMD" ) );
-static const FName SteamVRDeviceType( TEXT( "SteamVR" ) );
+static const FName OculusDeviceType = TEXT( "OculusHMD" );
+static const FName SteamVRDeviceType = TEXT( "SteamVR" );
+static const FName OpenXRDeviceType = TEXT( "OpenXR" );
 
 const FName UVREditorInteractor::TrackpadPositionX = FName( "TrackpadPosition_X" );
 const FName UVREditorInteractor::TrackpadPositionY = FName( "TrackpadPosition_Y" );
@@ -97,7 +99,10 @@ UVREditorInteractor::UVREditorInteractor() :
 	Super(),
 	bIsUndoRedoSwipeEnabled( true ),
 	MotionControllerComponent( nullptr ),
+	LaserMotionControllerComponent( nullptr ),
 	HandMeshComponent( nullptr ),
+	HandMeshBaseScale( FVector3d::OneVector ),
+	HandMeshGripTransform( FTransform::Identity ),
 	LaserSplineComponent( nullptr ),
 	LaserPointerMID( nullptr ),
 	TranslucentLaserPointerMID( nullptr ),
@@ -141,67 +146,145 @@ UVREditorInteractor::UVREditorInteractor() :
 {
 }
 
+TMap<FViewportActionKeyInput, TArray<FKey>> UVREditorInteractor::GetKnownActionMappings(
+	EControllerHand InHand /* = EControllerHand::AnyHand */,
+	FName InHMDDeviceType /* = NAME_None */
+) const
+{
+	TMap<FViewportActionKeyInput, TArray<FKey>> ReturnMap;
+
+	if (InHand == EControllerHand::Left || InHand == EControllerHand::AnyHand)
+	{
+		if (InHMDDeviceType == SteamVRDeviceType || InHMDDeviceType == OpenXRDeviceType || InHMDDeviceType == NAME_None)
+		{
+			// HTC Vive
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::Vive_Left_Grip_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::Vive_Left_Menu_Click);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::Vive_Left_Trackpad_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::Vive_Left_Trackpad_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::Vive_Left_Trackpad_Right);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::Vive_Left_Trackpad_Up);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::Vive_Left_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::Vive_Left_Trackpad_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::Vive_Left_Trackpad_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::Vive_Left_Trackpad_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::Vive_Left_Trackpad_Touch);
+
+			// Valve Index
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::ValveIndex_Left_Trackpad_Touch);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::ValveIndex_Left_A_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier2)).Add(EKeys::ValveIndex_Left_B_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::ValveIndex_Left_Thumbstick_Touch);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::ValveIndex_Left_Thumbstick_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::ValveIndex_Left_Thumbstick_Up);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::ValveIndex_Left_Thumbstick_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::ValveIndex_Left_Thumbstick_Right);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::ValveIndex_Left_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::ValveIndex_Left_Thumbstick_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::ValveIndex_Left_Thumbstick_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::ValveIndex_Left_Thumbstick_Click);
+		}
+
+		if (InHMDDeviceType == OculusDeviceType || InHMDDeviceType == OpenXRDeviceType || InHMDDeviceType == NAME_None)
+		{
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::OculusTouch_Left_Grip_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::OculusTouch_Left_X_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier2)).Add(EKeys::OculusTouch_Left_Y_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::OculusTouch_Left_Thumbstick_Touch);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::OculusTouch_Left_Thumbstick_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::OculusTouch_Left_Thumbstick_Up);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::OculusTouch_Left_Thumbstick_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::OculusTouch_Left_Thumbstick_Right);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::OculusTouch_Left_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::OculusTouch_Left_Thumbstick_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::OculusTouch_Left_Thumbstick_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::OculusTouch_Left_Thumbstick_Click);
+		}
+	}
+
+	if (InHand == EControllerHand::Right || InHand == EControllerHand::AnyHand)
+	{
+		if (InHMDDeviceType == SteamVRDeviceType || InHMDDeviceType == OpenXRDeviceType || InHMDDeviceType == NAME_None)
+		{
+			// HTC Vive
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::Vive_Right_Grip_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::Vive_Right_Menu_Click);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::Vive_Right_Trackpad_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::Vive_Right_Trackpad_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::Vive_Right_Trackpad_Right);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::Vive_Right_Trackpad_Up);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::Vive_Right_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::Vive_Right_Trackpad_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::Vive_Right_Trackpad_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::Vive_Right_Trackpad_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::Vive_Right_Trackpad_Touch);
+
+			// Valve Index
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::ValveIndex_Right_Trackpad_Touch);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::ValveIndex_Right_A_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier2)).Add(EKeys::ValveIndex_Right_B_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::ValveIndex_Right_Thumbstick_Touch);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::ValveIndex_Right_Thumbstick_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::ValveIndex_Right_Thumbstick_Up);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::ValveIndex_Right_Thumbstick_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::ValveIndex_Right_Thumbstick_Right);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::ValveIndex_Right_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::ValveIndex_Right_Thumbstick_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::ValveIndex_Right_Thumbstick_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::ValveIndex_Right_Thumbstick_Click);
+		}
+
+		if (InHMDDeviceType == OculusDeviceType || InHMDDeviceType == OpenXRDeviceType || InHMDDeviceType == NAME_None)
+		{
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(ViewportWorldActionTypes::WorldMovement)).Add(EKeys::OculusTouch_Right_Grip_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier)).Add(EKeys::OculusTouch_Right_A_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Modifier2)).Add(EKeys::OculusTouch_Right_B_Click);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::Touch)).Add(EKeys::OculusTouch_Right_Thumbstick_Touch);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadDown)).Add(EKeys::OculusTouch_Right_Thumbstick_Down); // down
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadUp)).Add(EKeys::OculusTouch_Right_Thumbstick_Up);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadLeft)).Add(EKeys::OculusTouch_Right_Thumbstick_Left);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::TrackpadRight)).Add(EKeys::OculusTouch_Right_Thumbstick_Right);
+
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TriggerAxis)).Add(EKeys::OculusTouch_Right_Trigger_Axis);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionX)).Add(EKeys::OculusTouch_Right_Thumbstick_X);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput::Axis(UVREditorInteractor::TrackpadPositionY)).Add(EKeys::OculusTouch_Right_Thumbstick_Y);
+			ReturnMap.FindOrAdd(FViewportActionKeyInput(VRActionTypes::ConfirmRadialSelection)).Add(EKeys::OculusTouch_Right_Thumbstick_Click);
+		}
+	}
+
+	return ReturnMap;
+}
+
 void UVREditorInteractor::Init_Implementation( UVREditorMode* InVRMode )
 {
 	VRMode = InVRMode;
 	KeyToActionMap.Reset();
 
 	const FName HMDDeviceType = InVRMode->GetHMDDeviceType();
+
 	// Setup keys
 	if (ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId)
 	{
 		AddKeyAction( UVREditorInteractor::MotionController_Left_FullyPressedTriggerAxis, FViewportActionKeyInput( ViewportWorldActionTypes::SelectAndMove_FullyPressed ) );
 		AddKeyAction( UVREditorInteractor::MotionController_Left_PressedTriggerAxis, FViewportActionKeyInput( ViewportWorldActionTypes::SelectAndMove ) );
 
-		if (HMDDeviceType == SteamVRDeviceType)
+		for (const TPair<FViewportActionKeyInput, TArray<FKey>>& ActionMappings : GetKnownActionMappings(EControllerHand::Left, HMDDeviceType))
 		{
-			// HTC Vive
-			AddKeyAction( EKeys::Vive_Left_Grip_Click, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::Vive_Left_Menu_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-
-			AddKeyAction( EKeys::Vive_Left_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
-			AddKeyAction( EKeys::Vive_Left_Trackpad_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-
-			// Valve Index
-			AddKeyAction( EKeys::ValveIndex_Left_Trackpad_Touch, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::ValveIndex_Left_A_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-			AddKeyAction( EKeys::ValveIndex_Left_B_Click, FViewportActionKeyInput( VRActionTypes::Modifier2 ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-
-			AddKeyAction( EKeys::ValveIndex_Left_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::ValveIndex_Left_Thumbstick_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
-		}
-		else if (HMDDeviceType == OculusDeviceType)
-		{
-			AddKeyAction( EKeys::OculusTouch_Left_Grip_Click, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::OculusTouch_Left_X_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Y_Click, FViewportActionKeyInput( VRActionTypes::Modifier2 ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-
-			AddKeyAction( EKeys::OculusTouch_Left_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::OculusTouch_Left_Thumbstick_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
+			for (const FKey& Key : ActionMappings.Value)
+			{
+				AddKeyAction(Key, ActionMappings.Key);
+			}
 		}
 	}
 	else if (ControllerMotionSource == FXRMotionControllerBase::RightHandSourceId)
@@ -209,57 +292,15 @@ void UVREditorInteractor::Init_Implementation( UVREditorMode* InVRMode )
 		AddKeyAction( UVREditorInteractor::MotionController_Right_FullyPressedTriggerAxis, FViewportActionKeyInput( ViewportWorldActionTypes::SelectAndMove_FullyPressed ) );
 		AddKeyAction( UVREditorInteractor::MotionController_Right_PressedTriggerAxis, FViewportActionKeyInput( ViewportWorldActionTypes::SelectAndMove ) );
 
-		if (HMDDeviceType == SteamVRDeviceType)
+		for (const TPair<FViewportActionKeyInput, TArray<FKey>>& ActionMappings : GetKnownActionMappings(EControllerHand::Right, HMDDeviceType))
 		{
-			// HTC Vive
-			AddKeyAction( EKeys::Vive_Right_Grip_Click, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::Vive_Right_Menu_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-			
-			AddKeyAction( EKeys::Vive_Right_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
-			AddKeyAction( EKeys::Vive_Right_Trackpad_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-			
-			// Valve Index
-			AddKeyAction( EKeys::ValveIndex_Right_Trackpad_Touch, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::ValveIndex_Right_A_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-			AddKeyAction( EKeys::ValveIndex_Right_B_Click, FViewportActionKeyInput( VRActionTypes::Modifier2 ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-			
-			AddKeyAction( EKeys::ValveIndex_Right_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::ValveIndex_Right_Thumbstick_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
-		}
-		else if (HMDDeviceType == OculusDeviceType)
-		{
-			AddKeyAction( EKeys::OculusTouch_Right_Grip_Click, FViewportActionKeyInput( ViewportWorldActionTypes::WorldMovement ) );
-			AddKeyAction( EKeys::OculusTouch_Right_A_Click, FViewportActionKeyInput( VRActionTypes::Modifier ) );
-			AddKeyAction( EKeys::OculusTouch_Right_B_Click, FViewportActionKeyInput( VRActionTypes::Modifier2 ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Touch, FViewportActionKeyInput( VRActionTypes::Touch ) );
-
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Down, FViewportActionKeyInput( VRActionTypes::TrackpadDown ) ); // down
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Up, FViewportActionKeyInput( VRActionTypes::TrackpadUp ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Left, FViewportActionKeyInput( VRActionTypes::TrackpadLeft ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Right, FViewportActionKeyInput( VRActionTypes::TrackpadRight ) );
-			
-			AddKeyAction( EKeys::OculusTouch_Right_Trigger_Axis, FViewportActionKeyInput( UVREditorInteractor::TriggerAxis ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_X, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionX ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Y, FViewportActionKeyInput( UVREditorInteractor::TrackpadPositionY ) );
-			AddKeyAction( EKeys::OculusTouch_Right_Thumbstick_Click, FViewportActionKeyInput( VRActionTypes::ConfirmRadialSelection ) );
+			for (const FKey& Key : ActionMappings.Value)
+			{
+				AddKeyAction(Key, ActionMappings.Key);
+			}
 		}
 	}
+
 	bHaveMotionController = true;
 }
 
@@ -273,23 +314,27 @@ void UVREditorInteractor::SetupComponent_Implementation( AActor* OwningActor )
 	{
 		MotionControllerComponent = NewObject<UMotionControllerComponent>(OwningAvatar);
 		OwningAvatar->AddOwnedComponent( MotionControllerComponent );
-		MotionControllerComponent->SetupAttachment(OwningAvatar->GetRootComponent() );
+		MotionControllerComponent->SetupAttachment( OwningAvatar->GetRootComponent() );
 		MotionControllerComponent->RegisterComponent();
-
 		MotionControllerComponent->SetMobility( EComponentMobility::Movable );
 		MotionControllerComponent->SetCollisionEnabled( ECollisionEnabled::NoCollision );
-
 		MotionControllerComponent->MotionSource = ControllerMotionSource;
-
-		// @todo vreditor: Reenable late frame updates after we've sorted out why they cause popping artifacts on Rift
-		MotionControllerComponent->bDisableLowLatencyUpdate = true;
 	}
 
 	const UVREditorAssetContainer& AssetContainer = VRMode->GetAssetContainer();
 
 	// Hand mesh
 	{
-		HandMeshComponent = VRMode->CreateMotionControllerMesh(OwningAvatar, MotionControllerComponent );
+		HandMeshComponent = VRMode->CreateMotionControllerMesh(OwningAvatar, MotionControllerComponent);
+		if (ControllerMotionSource == FXRMotionControllerBase::RightHandSourceId &&
+			GetHMDDeviceType() == OculusDeviceType)	// Oculus has asymmetrical controllers, so we mirror the mesh horizontally
+		{
+			HandMeshBaseScale = FVector3d(1.0, -1.0, 1.0);
+		}
+		else
+		{
+			HandMeshBaseScale = FVector3d(1.0, 1.0, 1.0);
+		}
 		SetHandMeshComponentProperties();
 
 		UMaterialInterface* HandMeshMaterial = GetVRMode().GetHMDDeviceType() == SteamVRDeviceType ? AssetContainer.VivePreControllerMaterial : AssetContainer.OculusControllerMaterial;
@@ -297,6 +342,20 @@ void UVREditorInteractor::SetupComponent_Implementation( AActor* OwningActor )
 		HandMeshMID = UMaterialInstanceDynamic::Create( HandMeshMaterial, GetTransientPackage() );
 		check( HandMeshMID != nullptr );
 		HandMeshComponent->SetMaterial( 0, HandMeshMID );
+	}
+
+	if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetSystemName() == OpenXRDeviceType)
+	{
+		LaserMotionControllerComponent = NewObject<UMotionControllerComponent>(OwningAvatar);
+		OwningAvatar->AddOwnedComponent(LaserMotionControllerComponent);
+		LaserMotionControllerComponent->SetupAttachment(OwningAvatar->GetRootComponent());
+		LaserMotionControllerComponent->RegisterComponent();
+		LaserMotionControllerComponent->SetMobility(EComponentMobility::Movable);
+		LaserMotionControllerComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		LaserMotionControllerComponent->MotionSource =
+			(ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId)
+			? FName("LeftAim")
+			: FName("RightAim");
 	}
 
 	{
@@ -357,7 +416,7 @@ void UVREditorInteractor::SetupComponent_Implementation( AActor* OwningActor )
 
 		LaserSplineComponent = NewObject<USplineComponent>(OwningAvatar);
 		OwningAvatar->AddOwnedComponent( LaserSplineComponent );
-		LaserSplineComponent->SetupAttachment( MotionControllerComponent );
+		LaserSplineComponent->SetupAttachment( LaserMotionControllerComponent ? LaserMotionControllerComponent : MotionControllerComponent );
 		LaserSplineComponent->RegisterComponent();
 		LaserSplineComponent->SetVisibility( false );
 		LaserSplineMeshComponents.Empty();
@@ -398,11 +457,15 @@ void UVREditorInteractor::SetupComponent_Implementation( AActor* OwningActor )
 }
 
 
-void UVREditorInteractor::ReplaceHandMeshComponent(UStaticMesh* NewMesh)
+void UVREditorInteractor::ReplaceHandMeshComponent(
+	UStaticMesh* NewMesh,
+	FVector MeshScale /* = FVector(1.f, 1.f, 1.f) */
+)
 {
 	HandMeshComponent->UnregisterComponent();
 	HandMeshComponent->DestroyComponent();
 	HandMeshComponent = VRMode->CreateMotionControllerMesh(OwningAvatar, MotionControllerComponent, NewMesh);
+	HandMeshBaseScale = MeshScale;
 	SetHandMeshComponentProperties();
 }
 
@@ -414,6 +477,29 @@ void UVREditorInteractor::SetHandMeshComponentProperties()
 	HandMeshComponent->SetCollisionEnabled(ECollisionEnabled::PhysicsOnly);
 	HandMeshComponent->SetCollisionResponseToAllChannels(ECR_Overlap);
 	HandMeshComponent->SetGenerateOverlapEvents(true);
+
+	HandMeshGripTransform = FTransform::Identity;
+
+	// To help ease the transition to OpenXR, an alternative controller mesh origin can be specified.
+	if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetSystemName() == OpenXRDeviceType)
+	{
+		const FName GripSocket("OpenXrGrip");
+		if (HandMeshComponent->DoesSocketExist(GripSocket))
+		{
+			HandMeshGripTransform = HandMeshComponent->GetSocketTransform(GripSocket, RTS_Component);
+		}
+	}
+
+	UpdateHandMeshRelativeTransform();
+}
+
+void UVREditorInteractor::UpdateHandMeshRelativeTransform_Implementation()
+{
+	// The hands need to stay the same size relative to our tracking space, so we inverse compensate for world to meters scale here
+	const float WorldScaleFactor = WorldInteraction->GetWorldScaleFactor();
+	const FTransform ScaleTransform(FRotator::ZeroRotator, FVector::ZeroVector, HandMeshBaseScale / WorldScaleFactor);
+	const FTransform NewRelativeTransform = (ScaleTransform * HandMeshGripTransform).Inverse();
+	HandMeshComponent->SetRelativeTransform(NewRelativeTransform);
 }
 
 void UVREditorInteractor::Shutdown_Implementation()
@@ -474,24 +560,11 @@ void UVREditorInteractor::Tick_Implementation( const float DeltaTime )
 {
 	Super::Tick_Implementation( DeltaTime );
 
-	{
-		const float WorldScaleFactor = WorldInteraction->GetWorldScaleFactor();
+	// @todo vreditor: Manually ticking motion controller components
+	MotionControllerComponent->TickComponent( DeltaTime, ELevelTick::LEVELTICK_PauseTick, nullptr );
+	LaserMotionControllerComponent->TickComponent( DeltaTime, ELevelTick::LEVELTICK_PauseTick, nullptr );
 
-		// @todo vreditor: Manually ticking motion controller components
-		MotionControllerComponent->TickComponent( DeltaTime, ELevelTick::LEVELTICK_PauseTick, nullptr );
-
-		// The hands need to stay the same size relative to our tracking space, so we inverse compensate for world to meters scale here
-		// NOTE: We don't need to set the hand mesh location and rotation, as the MotionControllerComponent does that itself
-		if (ControllerMotionSource == FXRMotionControllerBase::RightHandSourceId &&
-			GetHMDDeviceType() == OculusDeviceType)	// Oculus has asymmetrical controllers, so we mirror the mesh horizontally
-		{
-			HandMeshComponent->SetRelativeScale3D( FVector( WorldScaleFactor, -WorldScaleFactor, WorldScaleFactor ) );
-		}
-		else
-		{
-			HandMeshComponent->SetRelativeScale3D( FVector( WorldScaleFactor ) );
-		}
-	}
+	UpdateHandMeshRelativeTransform();
 
 	UpdateRadialMenuInput( DeltaTime );
 
@@ -582,8 +655,15 @@ void UVREditorInteractor::Tick_Implementation( const float DeltaTime )
 		// so if in the next frame it needs to be visible it won't interpolate from a previous location.
 		{
 			// Offset the beginning of the laser pointer a bit, so that it doesn't overlap the hand mesh
-			const float LaserPointerStartOffset = WorldScaleFactor *
-				(GetVRMode().GetHMDDeviceType() == OculusDeviceType ? VREd::OculusLaserPointerStartOffset->GetFloat() : VREd::ViveLaserPointerStartOffset->GetFloat());
+			float LaserPointerStartOffset = WorldScaleFactor *
+				(GetVRMode().GetHMDDeviceType() == OculusDeviceType
+					? VREd::OculusLaserPointerStartOffset->GetFloat()
+					: VREd::ViveLaserPointerStartOffset->GetFloat());
+
+			if (LaserMotionControllerComponent)
+			{
+				LaserPointerStartOffset = 0.0f;
+			}
 
 			// Get the hand transform and forward vector.
 			FTransform InteractorTransform;
@@ -709,7 +789,7 @@ void UVREditorInteractor::Tick_Implementation( const float DeltaTime )
 
 FName UVREditorInteractor::GetHMDDeviceType() const
 {
-	return (GEngine && GEngine->XRSystem.IsValid()) ? GEngine->XRSystem->GetSystemName() : FName();
+	return GetVRMode().GetHMDDeviceType();
 }
 
 void UVREditorInteractor::CalculateDragRay( float& InOutDragRayLength, float& InOutDragRayVelocity )
@@ -726,8 +806,6 @@ void UVREditorInteractor::CalculateDragRay( float& InOutDragRayLength, float& In
 
 		if (!FMath::IsNearlyZero( SlideDelta ))
 		{
-
-
 			InOutDragRayLength += SlideDelta;
 
 			InOutDragRayVelocity = 0.0f;
@@ -831,14 +909,11 @@ void UVREditorInteractor::PreviewInputKey( class FEditorViewportClient& Viewport
 	{
 		if (Event == IE_Pressed)
 		{
-			bIsTouchingTrackpad = true;
-
 			// Set initial position when starting to touch the trackpad
 			InitialTouchPosition = TrackpadPosition;
 		}
 		else if (Event == IE_Released)
 		{
-			bIsTouchingTrackpad = false;
 			bIsTrackpadPositionValid[0] = false;
 			bIsTrackpadPositionValid[1] = false;
 
@@ -879,23 +954,7 @@ void UVREditorInteractor::PreviewInputKey( class FEditorViewportClient& Viewport
 		}
 	}
 
-	if (Action.ActionType == VRActionTypes::ConfirmRadialSelection)
-	{
-		bIsPressingTrackpad = Event == IE_Released ? false : true;
-	}
-
-	// Update modifier state
-	if (Action.ActionType == VRActionTypes::Modifier)
-	{
-		if (Event == IE_Pressed)
-		{
-			bIsModifierPressed = true;
-		}
-		else if (Event == IE_Released)
-		{
-			bIsModifierPressed = false;
-		}
-	}
+	ActionKeysPressed.FindOrAdd(Action.ActionType) = (Event == IE_Released) ? false : true;
 
 	if (!bOutWasHandled)
 	{
@@ -941,61 +1000,61 @@ void UVREditorInteractor::HandleInputKey( class FEditorViewportClient& ViewportC
 
 void UVREditorInteractor::HandleInputAxis( FEditorViewportClient& ViewportClient, FViewportActionKeyInput& Action, const FKey Key, const float Delta, const float DeltaTime, bool& bOutWasHandled )
 {
+	const FName HmdDeviceType = GetHMDDeviceType();
+
 	if (!bOutWasHandled && Action.ActionType == TriggerAxis)
 	{
+		const float TriggerPressedThreshold = (HmdDeviceType == OculusDeviceType) ? GetDefault<UVRModeSettings>()->TriggerPressedThreshold_Rift : GetDefault<UVRModeSettings>()->TriggerPressedThreshold_Vive;
+		const float TriggerDeadZone = (HmdDeviceType == OculusDeviceType) ? VREd::TriggerDeadZone_Rift->GetFloat() : VREd::TriggerDeadZone_Vive->GetFloat();
+
+		// Synthesize "lightly pressed" events for the trigger
 		{
-			const float TriggerPressedThreshold = (GetHMDDeviceType() == OculusDeviceType) ? GetDefault<UVRModeSettings>()->TriggerPressedThreshold_Rift : GetDefault<UVRModeSettings>()->TriggerPressedThreshold_Vive;
-			const float TriggerDeadZone = (GetHMDDeviceType() == OculusDeviceType) ? VREd::TriggerDeadZone_Rift->GetFloat() : VREd::TriggerDeadZone_Vive->GetFloat();
+			// Store latest trigger value amount
+			SelectAndMoveTriggerValue = Delta;
 
-			// Synthesize "lightly pressed" events for the trigger
+			if (!bIsTriggerPressed &&			// Don't fire if we are already pressed
+				bHasTriggerBeenReleasedSinceLastPress &&	// Only if we've been fully released since the last time we fired
+				Delta >= TriggerPressedThreshold)
 			{
-				// Store latest trigger value amount
-				SelectAndMoveTriggerValue = Delta;
-
-				if (!bIsTriggerPressed &&			// Don't fire if we are already pressed
-					bHasTriggerBeenReleasedSinceLastPress &&	// Only if we've been fully released since the last time we fired
-					Delta >= TriggerPressedThreshold)
-				{
-					bIsTriggerPressed = true;
-					bHasTriggerBeenReleasedSinceLastPress = false;
-					// Synthesize an input key for this light press
-					const EInputEvent InputEvent = IE_Pressed;
-					const bool bWasLightPressHandled = UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_PressedTriggerAxis : MotionController_Right_PressedTriggerAxis, InputEvent );
-				}
-				else if (bIsTriggerPressed && Delta < TriggerPressedThreshold)
-				{
-					bIsTriggerPressed = false;
-
-					// Synthesize an input key for this light press
-					const EInputEvent InputEvent = IE_Released;
-					const bool bWasLightReleaseHandled = UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_PressedTriggerAxis : MotionController_Right_PressedTriggerAxis, InputEvent );
-				}
+				bIsTriggerPressed = true;
+				bHasTriggerBeenReleasedSinceLastPress = false;
+				// Synthesize an input key for this light press
+				const EInputEvent InputEvent = IE_Pressed;
+				const bool bWasLightPressHandled = UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_PressedTriggerAxis : MotionController_Right_PressedTriggerAxis, InputEvent );
 			}
-
-			if (!bHasTriggerBeenReleasedSinceLastPress && Delta < TriggerDeadZone)
+			else if (bIsTriggerPressed && Delta < TriggerPressedThreshold)
 			{
-				bHasTriggerBeenReleasedSinceLastPress = true;
+				bIsTriggerPressed = false;
+
+				// Synthesize an input key for this light press
+				const EInputEvent InputEvent = IE_Released;
+				const bool bWasLightReleaseHandled = UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_PressedTriggerAxis : MotionController_Right_PressedTriggerAxis, InputEvent );
 			}
+		}
 
-			// Synthesize "fully pressed" events for the trigger
+		if (!bHasTriggerBeenReleasedSinceLastPress && Delta < TriggerDeadZone)
+		{
+			bHasTriggerBeenReleasedSinceLastPress = true;
+		}
+
+		// Synthesize "fully pressed" events for the trigger
+		{
+			const float TriggerFullyPressedThreshold = (HmdDeviceType == OculusDeviceType) ? VREd::TriggerFullyPressedThreshold_Rift->GetFloat() : VREd::TriggerFullyPressedThreshold_Vive->GetFloat();
+
+			if (!bIsTriggerFullyPressed &&	// Don't fire if we are already pressed
+				Delta >= TriggerFullyPressedThreshold)
 			{
-				const float TriggerFullyPressedThreshold = (GetHMDDeviceType() == OculusDeviceType) ? VREd::TriggerFullyPressedThreshold_Rift->GetFloat() : VREd::TriggerFullyPressedThreshold_Vive->GetFloat();
+				bIsTriggerFullyPressed = true;
 
-				if (!bIsTriggerFullyPressed &&	// Don't fire if we are already pressed
-					Delta >= TriggerFullyPressedThreshold)
-				{
-					bIsTriggerFullyPressed = true;
+				const EInputEvent InputEvent = IE_Pressed;
+				UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_FullyPressedTriggerAxis : MotionController_Right_FullyPressedTriggerAxis, InputEvent );
+			}
+			else if (bIsTriggerFullyPressed && Delta < TriggerPressedThreshold)
+			{
+				bIsTriggerFullyPressed = false;
 
-					const EInputEvent InputEvent = IE_Pressed;
-					UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_FullyPressedTriggerAxis : MotionController_Right_FullyPressedTriggerAxis, InputEvent );
-				}
-				else if (bIsTriggerFullyPressed && Delta < TriggerPressedThreshold)
-				{
-					bIsTriggerFullyPressed = false;
-
-					const EInputEvent InputEvent = IE_Released;
-					UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_FullyPressedTriggerAxis : MotionController_Right_FullyPressedTriggerAxis, InputEvent );
-				}
+				const EInputEvent InputEvent = IE_Released;
+				UViewportInteractor::HandleInputKey( ViewportClient, ControllerMotionSource == FXRMotionControllerBase::LeftHandSourceId ? MotionController_Left_FullyPressedTriggerAxis : MotionController_Right_FullyPressedTriggerAxis, InputEvent );
 			}
 		}
 	}
@@ -1025,6 +1084,89 @@ void UVREditorInteractor::HandleInputAxis( FEditorViewportClient& ViewportClient
 				TrackpadPosition.Y = DeltaAxis;
 				bIsTrackpadPositionValid[1] = true;
 			}
+		}
+	}
+
+	// Check and generate trackpad d-pad key events ourselves, which may be required if the XR runtime doesn't support them.
+	if (Action.ActionType == TrackpadPositionX || Action.ActionType == TrackpadPositionY)
+	{
+		const bool bTrackpadValid = bIsTrackpadPositionValid[0] && bIsTrackpadPositionValid[1];
+		if (VRMode->NeedsSyntheticDpad() && bTrackpadValid)
+		{
+			//const float WedgeAngle = 0.5f * UE_PI; // Quadrants / 4-way
+			const float WedgeAngle = 3.0f * UE_PI / 4.0f; // Overlapping octants / 8-way
+			const float CenterRegion = 0.75f;
+
+			const float WedgeHalfAngle = WedgeAngle / 2.0f;
+
+			enum EDpadDirection
+			{
+				Up,
+				Down,
+				Left,
+				Right,
+			};
+
+			const float Magnitude = TrackpadPosition.Size();
+			const float Angle = FMath::Atan2(TrackpadPosition.Y, TrackpadPosition.X);
+
+			auto IsDpadDirectionPressed = [&](EDpadDirection Dir) -> bool
+			{
+				if (Magnitude <= CenterRegion)
+				{
+					return false;
+				}
+
+				switch (Dir)
+				{
+					case Up:    return Angle >= (UE_PI * .5f - WedgeHalfAngle)  && Angle <= (UE_PI * .5f + WedgeHalfAngle);
+					case Down:  return Angle >= (-UE_PI * .5f - WedgeHalfAngle) && Angle <= (-UE_PI * .5f + WedgeHalfAngle);
+					case Left:  return Angle >= (UE_PI - WedgeHalfAngle)        || Angle <= (-UE_PI + WedgeHalfAngle);
+					case Right: return Angle >= (-WedgeHalfAngle)               && Angle <= (WedgeHalfAngle);
+					default: checkNoEntry(); return false;
+				}
+			};
+
+			auto CheckSendDpadKeyEvent = [&](EDpadDirection Dir)
+			{
+				FName ActionName;
+				switch (Dir)
+				{
+					case Up:    ActionName = VRActionTypes::TrackpadUp; break;
+					case Down:  ActionName = VRActionTypes::TrackpadDown; break;
+					case Left:  ActionName = VRActionTypes::TrackpadLeft; break;
+					case Right: ActionName = VRActionTypes::TrackpadRight; break;
+					default: checkNoEntry(); return;
+				}
+
+				const bool bWasPressed = IsActionKeyPressed(ActionName);
+				const bool bPressedNow = IsDpadDirectionPressed(Dir);
+
+				if (bPressedNow != bWasPressed)
+				{
+					FKey InputKey;
+					for (const TPair<FKey, FViewportActionKeyInput>& ActionPair : KeyToActionMap)
+					{
+						if (ActionPair.Value.ActionType == ActionName)
+						{
+							InputKey = ActionPair.Key;
+						}
+					}
+
+					if (ensure(InputKey.IsValid()))
+					{
+						const EInputEvent InputEvent = bPressedNow ? IE_Pressed : IE_Released;
+						UE_LOG(LogVREditor, Verbose, TEXT("Synthesized D-pad event: Key %s %s"),
+							*InputKey.ToString(), InputEvent == IE_Pressed ? TEXT("pressed") : TEXT("released"));
+						UViewportInteractor::HandleInputKey(ViewportClient, InputKey, InputEvent);
+					}
+				}
+			};
+
+			CheckSendDpadKeyEvent(Up);
+			CheckSendDpadKeyEvent(Down);
+			CheckSendDpadKeyEvent(Left);
+			CheckSendDpadKeyEvent(Right);
 		}
 	}
 
@@ -1105,7 +1247,7 @@ float UVREditorInteractor::GetTrackpadSlideDelta( const bool Axis /*= 1*/ ) cons
 
 	const bool bIsAbsolute = (GetVRMode().GetHMDDeviceType() == SteamVRDeviceType);
 	float SlideDelta = 0.0f;
-	if (bIsTouchingTrackpad || !bIsAbsolute)
+	if (IsActionKeyPressed(VRActionTypes::Touch) || !bIsAbsolute)
 	{
 		if (bIsAbsolute)
 		{
@@ -1122,6 +1264,17 @@ float UVREditorInteractor::GetTrackpadSlideDelta( const bool Axis /*= 1*/ ) cons
 }
 
 
+bool UVREditorInteractor::IsActionKeyPressed(FName ActionName) const
+{
+	if (const bool* bResult = ActionKeysPressed.Find(ActionName))
+	{
+		return *bResult;
+	}
+
+	return false;
+}
+
+
 void UVREditorInteractor::PollInput()
 {
 	bHaveMotionController = false;
@@ -1132,7 +1285,7 @@ void UVREditorInteractor::PollInput()
 	TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>( IMotionController::GetModularFeatureName() );
 	for (auto MotionController : MotionControllers)	// @todo viewportinteraction: Needs support for multiple pairs of motion controllers
 	{
-		if (MotionController != nullptr && !bHaveMotionController)
+		if (MotionController != nullptr)
 		{
 			FVector Location = FVector::ZeroVector;
 			FRotator Rotation = FRotator::ZeroRotator;
@@ -1142,11 +1295,13 @@ void UVREditorInteractor::PollInput()
 				WorldScale = GetVRMode().GetWorldScaleFactor() *100.0f; // WorldScaleFactor is worldscale / 100.0
 			}
 
-			if (MotionController->GetControllerOrientationAndPosition( WorldInteraction->GetMotionControllerID(), ControllerMotionSource, /* Out */ Rotation, /* Out */ Location, WorldScale ))
+			const FName MotionSource = LaserMotionControllerComponent ? LaserMotionControllerComponent->MotionSource : ControllerMotionSource;
+			if (MotionController->GetControllerOrientationAndPosition( WorldInteraction->GetMotionControllerID(), MotionSource,/* Out */ Rotation, /* Out */ Location, WorldScale ))
 			{
 				bHaveMotionController = true;
 				InteractorData.RoomSpaceTransform = FTransform( Rotation.Quaternion(), Location, FVector( 1.0f ) );
 				InteractorData.Transform = InteractorData.RoomSpaceTransform * WorldInteraction->GetRoomTransform();
+				break;
 			}
 		}
 	}
@@ -1157,10 +1312,22 @@ bool UVREditorInteractor::GetTransformAndForwardVector( FTransform& OutHandTrans
 {
 	if (bHaveMotionController)
 	{
-		OutHandTransform = InteractorData.Transform;
+		if (LaserMotionControllerComponent)
+		{
+			OutHandTransform = InteractorData.Transform;
+			OutForwardVector = InteractorData.Transform.TransformVector(FVector::ForwardVector);
+		}
+		else
+		{
+			const float LaserPointerRotationOffset = GetHMDDeviceType() == OculusDeviceType
+				? VREd::OculusLaserPointerRotationOffset->GetFloat()
+				: VREd::ViveLaserPointerRotationOffset->GetFloat();
 
-		const float LaserPointerRotationOffset = GetHMDDeviceType() == OculusDeviceType ? VREd::OculusLaserPointerRotationOffset->GetFloat() : VREd::ViveLaserPointerRotationOffset->GetFloat();
-		OutForwardVector = OutHandTransform.GetRotation().RotateVector( FRotator( LaserPointerRotationOffset, 0.0f, 0.0f ).RotateVector( FVector( 1.0f, 0.0f, 0.0f ) ) );
+			OutHandTransform = InteractorData.Transform;
+			OutForwardVector = OutHandTransform.GetRotation()
+				.RotateVector(FRotator(LaserPointerRotationOffset, 0.0f, 0.0f)
+				.RotateVector(FVector::ForwardVector));
+		}
 
 		return true;
 	}
@@ -1204,7 +1371,7 @@ void UVREditorInteractor::ApplyButtonPressColors( const FViewportActionKeyInput&
 		SetMotionControllerButtonPressedVisuals( Event, StaticModifierParameter, PressStrength );
 	}
 
-	if (GetVRMode().GetHMDDeviceType() == OculusDeviceType && ActionType == VRActionTypes::Modifier2)
+	if (ActionType == VRActionTypes::Modifier2)
 	{
 		static FName StaticModifierParameter( "B5" );
 		SetMotionControllerButtonPressedVisuals( Event, StaticModifierParameter, PressStrength );
@@ -1617,7 +1784,7 @@ void UVREditorInteractor::UpdateRadialMenuInput( const float DeltaTime )
 			}
 		}
 		// If we are not currently touching the Vive touchpad, reset the highlighted button and pause sequencer playback if scrubbing
-		else if (HMDDeviceType == SteamVRDeviceType && !bIsTouchingTrackpad)
+		else if (HMDDeviceType == SteamVRDeviceType && !IsActionKeyPressed(VRActionTypes::Touch))
 		{
 			if (bIsScrubbingSequence)
 			{
@@ -1708,14 +1875,13 @@ bool UVREditorInteractor::GetIsLaserBlocked() const
 void UVREditorInteractor::ResetTrackpad()
 {
 	TrackpadPosition = FVector2D::ZeroVector;
-	bIsTouchingTrackpad = false;
 	bIsTrackpadPositionValid[0] = false;
 	bIsTrackpadPositionValid[1] = false;
 }
 
 bool UVREditorInteractor::IsTouchingTrackpad() const
 {
-	return bIsTouchingTrackpad;
+	return IsActionKeyPressed(VRActionTypes::Touch);
 }
 
 FVector2D UVREditorInteractor::GetTrackpadPosition() const
@@ -1790,7 +1956,7 @@ void UVREditorInteractor::SetLastHoveredWidgetComponent( UWidgetComponent* NewHo
 
 bool UVREditorInteractor::IsModifierPressed() const
 {
-	return bIsModifierPressed;
+	return IsActionKeyPressed(VRActionTypes::Modifier);
 }
 
 void UVREditorInteractor::SetIsClickingOnUI( const bool bInIsClickingOnUI )

@@ -2,10 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Templates/SharedPointer.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
 #include "LiveLinkRole.h"
 #include "LiveLinkTypes.h"
+#include "Math/Transform.h"
+#include "MessageEndpointBuilder.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+
+class ULiveLinkRole;
 
 /** Delegate called when the connection status of the provider has changed. */
 DECLARE_MULTICAST_DELEGATE(FLiveLinkProviderConnectionStatusChanged);
@@ -39,6 +51,19 @@ struct ILiveLinkProvider : public ILiveLinkProvider_Base_DEPRECATED
 {
 public:
 	LIVELINKMESSAGEBUSFRAMEWORK_API static TSharedPtr<ILiveLinkProvider> CreateLiveLinkProvider(const FString& ProviderName);
+
+	/**
+	 * Create a Live Link Provider based on a class derived from ILiveLinkProvider instead of using the default Live Link Provider.
+	 * @param ProviderName		The provider name.
+	 * @param EndpointBuilder	An endpoint builder that can be used to add additional message handlers.
+	 * @return					Shared pointer to the ILiveLinkProvider-derived class. Use StaticCastSharedPtr to cast it back to child class type.
+	 */
+	template<typename T>
+	static TSharedPtr<ILiveLinkProvider> CreateLiveLinkProvider(const FString& ProviderName,
+																struct FMessageEndpointBuilder&& EndpointBuilder)
+	{
+		return MakeShared<T>(ProviderName, MoveTemp(EndpointBuilder));
+	}
 
 	virtual ~ILiveLinkProvider() {}
 

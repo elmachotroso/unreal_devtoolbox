@@ -7,21 +7,27 @@
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuReadbackManager.h"
 #include "NiagaraGPUSystemTick.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
+
 #include "Internationalization/Internationalization.h"
-#include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
+#include "ShaderParameterUtils.h"
+#include "Misc/LargeWorldRenderPosition.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceExport)
 
 namespace NDIExportLocal
 {
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(uint32,						WriteBufferSize)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>,	RWWriteBuffer)
+	END_SHADER_PARAMETER_STRUCT()
+
 	static const TCHAR*		TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceExportTemplate.ush");
 
 	static const FName		StoreDataName_DEPRECATED(TEXT("StoreParticleData"));
 	static const FName		ExportDataName(TEXT("ExportParticleData"));
-
-	static const FString	WriteBufferSizeName(TEXT("WriteBufferSize_"));
-	static const FString	RWWriteBufferName(TEXT("RWWriteBuffer_"));
-	static const FString	WriteBufferName(TEXT("WriteBuffer_"));
 
 	static constexpr uint32 NumFloatsPerInstance = 7;
 
@@ -103,7 +109,9 @@ struct FNDIExportInstanceData_RenderThread
 
 	bool							bWriteBufferUsed = false;
 	uint32							WriteBufferInstanceCount = 0;
-	FRWBuffer						WriteBuffer;
+
+	FRDGBufferRef					RDGWriteBuffer = nullptr;
+	FRDGBufferUAVRef				RDGWriteBufferUAV = nullptr;
 };
 
 struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
@@ -115,63 +123,20 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 		return 0;
 	}
 
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override
+	virtual void PostStage(const FNDIGpuComputePostStageContext& Context) override
 	{
-		FNDIExportInstanceData_RenderThread* InstanceData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		check(InstanceData);
-
-		// Ensure our buffer if big enough to hold all the data
-		const int32 AllocationRounding = 64;
-		const int32 DataBufferNumInstances = Context.ComputeInstanceData->Context->CurrentMaxInstances_RT;
-		int32 NumInstances;
-		if (InstanceData->AllocationMode == ENDIExport_GPUAllocationMode::PerParticle)
-		{
-			NumInstances = int32(float(DataBufferNumInstances) * InstanceData->AllocationPerParticleSize);
-			NumInstances = FMath::Max(NumInstances, 0);
-			if (NDIExportLocal::GGPUMaxReadbackCount > 0)
-			{
-				NumInstances = FMath::Min(NumInstances, NDIExportLocal::GGPUMaxReadbackCount);
-			}
-		}
-		else
-		{
-			NumInstances = InstanceData->AllocationFixedSize;
-		}
-
-		const int32 AllocationNumInstances = FMath::DivideAndRoundUp(NumInstances, AllocationRounding) * AllocationRounding;
-		const int32 RequiredElements = 1 + (AllocationNumInstances * NDIExportLocal::NumFloatsPerInstance);
-		const int32 RequiredBytes = sizeof(float) * RequiredElements;
-
-		InstanceData->WriteBufferInstanceCount = NumInstances;
-		if (InstanceData->WriteBuffer.NumBytes != RequiredBytes)
-		{
-			InstanceData->WriteBuffer.Release();
-			InstanceData->WriteBuffer.Initialize(TEXT("FNDIExportProxy_WriteBuffer"), sizeof(float), RequiredElements, PF_R32_UINT, BUF_SourceCopy);
-
-			// Clear counter when we initialize the buffer
-			ClearCounter(RHICmdList, InstanceData);
-		}
-
-		RHICmdList.Transition(FRHITransitionInfo(InstanceData->WriteBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	}
-
-	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override
-	{
-		FNDIExportInstanceData_RenderThread* InstanceData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		check(InstanceData);
+		FNDIExportInstanceData_RenderThread& InstanceData = SystemInstancesToProxyData_RT.FindChecked(Context.GetSystemInstanceID());
 
 		// If we bound the buffer as a UAV the stage may have written to it
-		if (InstanceData->bWriteBufferUsed)
+		if (InstanceData.bWriteBufferUsed)
 		{
-			InstanceData->bWriteBufferUsed = false;
+			InstanceData.bWriteBufferUsed = false;
 
-			RHICmdList.Transition(FRHITransitionInfo(InstanceData->WriteBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
-
-			FNiagaraGpuReadbackManager* ReadbackManager = Context.ComputeDispatchInterface->GetGpuReadbackManager();
+			FNiagaraGpuReadbackManager* ReadbackManager = Context.GetComputeDispatchInterface().GetGpuReadbackManager();
 			ReadbackManager->EnqueueReadback(
-				RHICmdList,
-				InstanceData->WriteBuffer.Buffer,
-				[MaxInstances=InstanceData->WriteBufferInstanceCount, WeakCallbackHandler=InstanceData->WeakCallbackHandler, WeakSystem=InstanceData->WeakSystem, SystemLWCTile=Context.SystemLWCTile](TConstArrayView<TPair<void*, uint32>> Buffers)
+				Context.GetGraphBuilder(),
+				InstanceData.RDGWriteBuffer,
+				[MaxInstances= InstanceData.WriteBufferInstanceCount, WeakCallbackHandler=InstanceData.WeakCallbackHandler, WeakSystem=InstanceData.WeakSystem, SystemLWCTile= Context.GetSystemLWCTile()](TConstArrayView<TPair<void*, uint32>> Buffers)
 				{
 					const uint32 ReadbackInstanceCount = *reinterpret_cast<uint32*>(Buffers[0].Key);
 					check(ReadbackInstanceCount <= MaxInstances);
@@ -199,84 +164,13 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 					}
 				}
 			);
-
-			RHICmdList.Transition(FRHITransitionInfo(InstanceData->WriteBuffer.UAV, ERHIAccess::CopySrc, ERHIAccess::UAVCompute));
-
-			// Ensure counter is clear for the next user, they will perform the transition on the buffer
-			ClearCounter(RHICmdList, InstanceData);
 		}
-	}
-
-	void ClearCounter(FRHICommandList& RHICmdList, FNDIExportInstanceData_RenderThread* InstanceData)
-	{
-		check(InstanceData);
-		check(InstanceData->WriteBuffer.NumBytes > 0);
-
-		//-OPT: We only need to reset the first 4 bytes for the count
-		RHICmdList.ClearUAVUint(InstanceData->WriteBuffer.UAV, FUintVector4(0, 0, 0, 0));
+		InstanceData.RDGWriteBuffer = nullptr;
+		InstanceData.RDGWriteBufferUAV = nullptr;
 	}
 
 	TMap<FNiagaraSystemInstanceID, FNDIExportInstanceData_RenderThread> SystemInstancesToProxyData_RT;
 };
-
-//////////////////////////////////////////////////////////////////////////
-// Compute Shader Binding
-
-struct FNDIExportCS : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNDIExportCS, NonVirtual);
-
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{
-		WriteBufferSizeParam.Bind(ParameterMap, *(NDIExportLocal::WriteBufferSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-		WriteBufferParam.Bind(ParameterMap, *(NDIExportLocal::WriteBufferName + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		uint32 WriteBufferSize = 0;
-
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		if (WriteBufferParam.IsUAVBound())
-		{
-			// Get proxy data
-			FNDIExportProxy* DIProxy = static_cast<FNDIExportProxy*>(Context.DataInterface);
-			FNDIExportInstanceData_RenderThread* InstanceData = DIProxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-			check(InstanceData);
-
-			if (InstanceData->WeakCallbackHandler.IsExplicitlyNull())
-			{
-				WriteBufferSize = 0;
-				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_UINT, ENiagaraEmptyUAVType::Buffer));
-			}
-			else
-			{
-				InstanceData->bWriteBufferUsed = true;
-				WriteBufferSize = InstanceData->WriteBufferInstanceCount;
-				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), InstanceData->WriteBuffer.UAV);
-			}
-		}
-		SetShaderValue(RHICmdList, ComputeShaderRHI, WriteBufferSizeParam, WriteBufferSize);
-	}
-
-	void Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		WriteBufferParam.UnsetUAV(RHICmdList, Context.Shader.GetComputeShader());
-	}
-
-private:
-	LAYOUT_FIELD(FShaderParameter, WriteBufferSizeParam);
-	LAYOUT_FIELD(FRWShaderParameter, WriteBufferParam);
-};
-
-IMPLEMENT_TYPE_LAYOUT(FNDIExportCS);
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceExport, FNDIExportCS);
 
 //////////////////////////////////////////////////////////////////////////
 // Data Interface
@@ -492,6 +386,76 @@ bool UNiagaraDataInterfaceExport::AppendCompileHash(FNiagaraCompileHashVisitor* 
 }
 #endif
 
+void UNiagaraDataInterfaceExport::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<NDIExportLocal::FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceExport::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	FNDIExportProxy& DIProxy = Context.GetProxy<FNDIExportProxy>();
+	FNDIExportInstanceData_RenderThread& InstanceData_RT = DIProxy.SystemInstancesToProxyData_RT.FindChecked(Context.GetSystemInstanceID());
+
+	NDIExportLocal::FShaderParameters* Parameters = Context.GetParameterNestedStruct<NDIExportLocal::FShaderParameters>();
+	if ( Context.IsResourceBound(&Parameters->RWWriteBuffer) )
+	{
+		if ( !InstanceData_RT.WeakCallbackHandler.IsExplicitlyNull() )
+		{
+			FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+			if (InstanceData_RT.RDGWriteBuffer == nullptr)
+			{
+				// Ensure our buffer if big enough to hold all the data
+				const int32 AllocationRounding = 64;
+				const int32 DataBufferNumInstances = Context.GetComputeInstanceData().Context->CurrentMaxInstances_RT;
+				int32 NumInstances = 0;
+				if (InstanceData_RT.AllocationMode == ENDIExport_GPUAllocationMode::PerParticle)
+				{
+					NumInstances = int32(float(DataBufferNumInstances) * InstanceData_RT.AllocationPerParticleSize);
+					NumInstances = FMath::Max(NumInstances, 0);
+					if (NDIExportLocal::GGPUMaxReadbackCount > 0)
+					{
+						NumInstances = FMath::Min(NumInstances, NDIExportLocal::GGPUMaxReadbackCount);
+					}
+				}
+				else
+				{
+					NumInstances = InstanceData_RT.AllocationFixedSize;
+				}
+
+				InstanceData_RT.WriteBufferInstanceCount = NumInstances;
+
+				const int32 AllocationNumInstances = FMath::DivideAndRoundUp(NumInstances, AllocationRounding) * AllocationRounding;
+				const int32 RequiredElements = 1 + (AllocationNumInstances * NDIExportLocal::NumFloatsPerInstance);
+				const int32 RequiredBytes = sizeof(float) * RequiredElements;
+
+				FRDGBufferDesc BufferDesc = FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), RequiredElements);
+				BufferDesc.Usage |= BUF_SourceCopy;
+				InstanceData_RT.RDGWriteBuffer = GraphBuilder.CreateBuffer(BufferDesc, TEXT("FNDIExportProxy_WriteBuffer"));
+				InstanceData_RT.RDGWriteBufferUAV = GraphBuilder.CreateUAV(InstanceData_RT.RDGWriteBuffer, PF_R32_UINT);
+
+			}
+
+			//-OPT: We only need to reset the first 4 bytes for the count
+			//-OPT: We only need to clear if we actual use the buffer
+			AddClearUAVPass(GraphBuilder, InstanceData_RT.RDGWriteBufferUAV, 0);
+
+			InstanceData_RT.bWriteBufferUsed = true;
+			Parameters->WriteBufferSize = InstanceData_RT.WriteBufferInstanceCount;
+			Parameters->RWWriteBuffer = InstanceData_RT.RDGWriteBufferUAV;
+		}
+		else
+		{
+			Parameters->WriteBufferSize = 0;
+			Parameters->RWWriteBuffer = Context.GetComputeDispatchInterface().GetEmptyBufferUAV(Context.GetGraphBuilder(), PF_R32_UINT);
+		}
+	}
+	else
+	{
+		Parameters->WriteBufferSize	= 0;
+		Parameters->RWWriteBuffer = nullptr;
+	}
+}
+
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceExport, StoreData);
 DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceExport, ExportData);
 void UNiagaraDataInterfaceExport::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
@@ -588,3 +552,4 @@ bool UNiagaraDataInterfaceExport::CopyToInternal(UNiagaraDataInterface* Destinat
 	OtherTyped->GPUAllocationPerParticleSize = GPUAllocationPerParticleSize;
 	return true;
 }
+

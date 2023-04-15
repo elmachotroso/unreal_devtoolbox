@@ -25,9 +25,13 @@ class FScene;
 class FViewInfo;
 class UPrimitiveComponent;
 class FIndirectLightingCacheUniformParameters;
+
 template<typename ElementType,typename OctreeSemantics> class TOctree2;
 
 class FNaniteCommandInfo;
+struct FNaniteRasterBin;
+struct FNaniteShadingBin;
+struct FNaniteMaterialSlot;
 struct FRayTracingInstance;
 
 namespace Nanite
@@ -238,24 +242,6 @@ namespace ENaniteMeshPass
 	};
 }
 
-
-enum class EPrimitiveDirtyState : uint8
-{
-	None                  = 0U,
-	ChangedId             = (1U << 0U),
-	ChangedTransform      = (1U << 1U),
-	ChangedStaticLighting = (1U << 2U),
-	ChangedOther          = (1U << 3U),
-	/** The Added flag is a bit special, as it is used to skip invalidations in the VSM, and thus must only be set if the primitive is in fact added
-	 * (a previous remove must have been processed by GPU scene, or it is new). If in doubt, don't set this. */
-	 Added                = (1U << 4U),
-	 Removed              = (1U << 5U), // Only used to make sure we don't process something that has been marked as Removed (more a debug feature, can be trimmed if need be)
-	 ChangedAll = ChangedId | ChangedTransform | ChangedStaticLighting | ChangedOther,
-	 /** Mark all data as changed and set Added flag. Must ONLY be used when a primitive is added, c.f. Added, above. */
-	 AddedMask = ChangedAll | Added,
-};
-ENUM_CLASS_FLAGS(EPrimitiveDirtyState);
-
 enum class EUpdateStaticMeshFlags : uint8
 {
 	RasterCommands		= (1U << 1U),
@@ -300,7 +286,11 @@ public:
 	/** 
 	 * Pointer to the last render time variable on the primitive's owning actor (if owned), which is written to by the RT and read by the GT.
 	 * The value of LastRenderTime will therefore not be deterministic due to race conditions, but the GT uses it in a way that allows this.
-	 * Storing a pointer to the UObject member variable only works because UPrimitiveComponent and AActor has a mechanism to ensure it does not get deleted before the proxy (DetachFence).
+	 * Storing a pointer to the UObject member variable only works because:
+	 *	UPrimitiveComponent's outer is its owning AActor, so it prevents the owner from being garbage collected while the component lives.
+	 *  If the UPrimitiveComponent is GC'd during the Actor's lifetime, OwnerLastRenderTime is still valid so there is no issue.
+	 *	If the UPrimitiveComponent and the Actor are GC'd together, neither will be deleted until FinishDestroy has been executed on both.
+	 *	UPrimitiveComponent's FinishDestroy will not execute until the primitive has been detached from the Scene through it's DetachFence.
 	 * In general feedback from the renderer to the game thread like this should be avoided.
 	 */
 	float* OwnerLastRenderTime;
@@ -325,8 +315,11 @@ public:
 	/** The primitive's static meshes. */
 	TArray<class FStaticMeshBatch> StaticMeshes;
 
+	TArray<FNaniteRasterBin> NaniteRasterBins[ENaniteMeshPass::Num];
+	TArray<FNaniteShadingBin> NaniteShadingBins[ENaniteMeshPass::Num];
 	TArray<FNaniteCommandInfo> NaniteCommandInfos[ENaniteMeshPass::Num];
-	TArray<uint32> NaniteMaterialSlots[ENaniteMeshPass::Num];
+	TArray<FNaniteMaterialSlot> NaniteMaterialSlots[ENaniteMeshPass::Num];
+
 #if WITH_EDITOR
 	TArray<uint32> NaniteHitProxyIds;
 #endif
@@ -387,8 +380,8 @@ public:
 	/** The scene the primitive is in. */
 	FScene* Scene;
 
-	/** The number of movable point lights for mobile */
-	int32 NumMobileMovablePointLights;
+	/** The number of local lights with dynamic lighting for mobile */
+	int32 NumMobileDynamicLocalLights;
 
 	/** Set to true for the primitive to be rendered in the main pass to be visible in a view. */
 	bool bShouldRenderInMainPass : 1;
@@ -398,7 +391,9 @@ public:
 
 #if RHI_RAYTRACING
 	bool bDrawInGame : 1;
+	bool bRayTracingFarField : 1;
 	bool bIsVisibleInSceneCaptures : 1;
+	bool bIsVisibleInSceneCapturesOnly : 1;
 	bool bIsRayTracingRelevant : 1;
 	bool bIsRayTracingStaticRelevant : 1;
 	bool bIsVisibleInRayTracing : 1;
@@ -410,11 +405,8 @@ public:
 	TArray<uint64> CachedRayTracingMeshCommandsHashPerLOD;
 	// TODO: this should be placed in FRayTracingScene and we have a pointer/handle here. It's here for now for PoC
 	FRayTracingGeometryInstance CachedRayTracingInstance;
-	TArray<FMatrix> CachedRayTracingInstanceLocalTransforms;
-	TArray<FMatrix> CachedRayTracingInstanceWorldTransforms;
 	TArray<FBoxSphereBounds> CachedRayTracingInstanceWorldBounds;
 	int32 SmallestRayTracingInstanceWorldBoundsIndex;
-	bool bUpdateCachedRayTracingInstanceWorldTransforms;
 #endif
 
 	/** Initialization constructor. */
@@ -602,13 +594,18 @@ public:
 	static void UpdateCachedRaytracingData(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
 	RENDERER_API FRHIRayTracingGeometry* GetStaticRayTracingGeometryInstance(int LodLevel) const;
 
-	void UpdateCachedRayTracingInstanceWorldTransforms();
-
 	int GetRayTracingGeometryNum() const { return RayTracingGeometries.Num(); }
 #endif
 
 	/** Return primitive fullname (for debugging only). */
 	FString GetFullnameForDebuggingOnly() const;
+
+	FORCEINLINE bool ShouldCacheShadowAsStatic() const
+	{
+		return bCacheShadowAsStatic;
+	}
+
+	void SetCacheShadowAsStatic(bool bStatic);
 
 private:
 
@@ -647,6 +644,9 @@ private:
 
 	/** True if the primitive registered with velocity data and needs to remove itself when being removed from the scene. */
 	bool bRegisteredWithVelocityData : 1;
+
+	/** True if the primitive should be treated as static for the purpose of caching shadows */
+	bool bCacheShadowAsStatic : 1;
 
 	/** Index into the scene's PrimitivesNeedingLevelUpdateNotification array for this primitive scene info level. */
 	int32 LevelUpdateNotificationIndex;
@@ -700,8 +700,8 @@ private:
 	/** Removes cached ray tracing representations for all meshes. */
 	void RemoveCachedRayTracingPrimitives();
 
-	/** Updates cached transforms in CachedRayTracingInstance */
-	void UpdateCachedRayTracingInstanceTransforms(const FMatrix& NewPrimitiveLocalToWorld);
+	/** Updates cached world bounds in CachedRayTracingInstance */
+	void UpdateCachedRayTracingInstanceWorldBounds(const FMatrix& NewPrimitiveLocalToWorld);
 
 	/** Updates cached ray tracing instances. Utility closely mirrors CacheRayTracingPrimitives(..) */
 	static void UpdateCachedRayTracingInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
@@ -722,7 +722,7 @@ struct FPrimitiveOctreeSemantics
 	enum { MinInclusiveElementsPerNode = 7 };
 	enum { MaxNodeDepth = 12 };
 
-	typedef TInlineAllocator<MaxElementsPerLeaf> ElementAllocator;
+	typedef FDefaultAllocator ElementAllocator;
 
 	FORCEINLINE static const FCompactBoxSphereBounds& GetBoundingBox(const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact)
 	{

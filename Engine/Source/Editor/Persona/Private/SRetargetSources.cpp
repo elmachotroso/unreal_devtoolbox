@@ -4,7 +4,7 @@
 #include "Misc/MessageDialog.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SButton.h"
 #include "Animation/DebugSkelMeshComponent.h"
@@ -41,7 +41,7 @@ void SRetargetSources::Construct(
 		.AutoHeight()
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "Persona.RetargetManager.ImportantText")
+			.TextStyle(FAppStyle::Get(), "Persona.RetargetManager.ImportantText")
 			.Text(LOCTEXT("BasePose_Title", "Edit Retarget Base Pose"))
 		]
 
@@ -91,7 +91,7 @@ void SRetargetSources::Construct(
 		.AutoHeight()
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "Persona.RetargetManager.ImportantText")
+			.TextStyle(FAppStyle::Get(), "Persona.RetargetManager.ImportantText")
 			.Text(LOCTEXT("RetargetSource_Title", "Manage Retarget Sources"))
 		]
 		
@@ -101,6 +101,30 @@ void SRetargetSources::Construct(
 		[
 			// construct retarget source window
 			SNew(SRetargetSourceWindow, InEditableSkeleton, InOnPostUndo)
+		]
+
+		+SVerticalBox::Slot()
+		.Padding(5, 5)
+		.AutoHeight()
+		[
+			SNew(SSeparator)
+			.Orientation(Orient_Horizontal)
+		]
+
+		+ SVerticalBox::Slot()
+		.Padding(5, 5)
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.TextStyle(FAppStyle::Get(), "Persona.RetargetManager.ImportantText")
+			.Text(LOCTEXT("CompatibleSkeletons_Title", "Manage Compatible Skeletons"))
+		]
+
+		+ SVerticalBox::Slot()
+		.Padding(5, 5)
+		.FillHeight(0.5)
+		[
+			SNew(SCompatibleSkeletons, InEditableSkeleton, InOnPostUndo)
 		]
 	];
 }
@@ -157,7 +181,7 @@ TSharedRef<SWidget> SRetargetSources::OnModifyPoseContextMenu()
 		(
 			LOCTEXT("ModifyPoseContextMenu_Reset", "Reset"),
 			LOCTEXT("ModifyPoseContextMenu_Reset_Desc", "Reset to reference pose"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_ReferencePose, NAME_None, EUserInterfaceActionType::Button
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_ReferencePose, NAME_None, EUserInterfaceActionType::Button
 		);
 
 		FUIAction Action_UseCurrentPose
@@ -169,7 +193,7 @@ TSharedRef<SWidget> SRetargetSources::OnModifyPoseContextMenu()
 		(
 			LOCTEXT("ModifyPoseContextMenu_UseCurrentPose", "Use CurrentPose"),
 			LOCTEXT("ModifyPoseContextMenu_UseCurrentPose_Desc", "Use Current Pose"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_UseCurrentPose, NAME_None, EUserInterfaceActionType::Button
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_UseCurrentPose, NAME_None, EUserInterfaceActionType::Button
 		);
 
 		MenuBuilder.AddMenuSeparator();
@@ -260,9 +284,9 @@ bool SRetargetSources::ShouldFilterAsset(const FAssetData& InAssetData)
 void SRetargetSources::ResetRetargetBasePose()
 {
 	UDebugSkelMeshComponent * PreviewMeshComp = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-	if(PreviewMeshComp && PreviewMeshComp->SkeletalMesh)
+	if(PreviewMeshComp && PreviewMeshComp->GetSkeletalMeshAsset())
 	{
-		USkeletalMesh * PreviewMesh = PreviewMeshComp->SkeletalMesh;
+		USkeletalMesh * PreviewMesh = PreviewMeshComp->GetSkeletalMeshAsset();
 
 		check(PreviewMesh && &EditableSkeletonPtr.Pin()->GetSkeleton() == PreviewMesh->GetSkeleton());
 
@@ -282,9 +306,9 @@ void SRetargetSources::ResetRetargetBasePose()
 void SRetargetSources::UseCurrentPose()
 {
 	UDebugSkelMeshComponent * PreviewMeshComp = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-	if (PreviewMeshComp && PreviewMeshComp->SkeletalMesh)
+	if (PreviewMeshComp && PreviewMeshComp->GetSkeletalMeshAsset())
 	{
-		USkeletalMesh * PreviewMesh = PreviewMeshComp->SkeletalMesh;
+		USkeletalMesh * PreviewMesh = PreviewMeshComp->GetSkeletalMeshAsset();
 
 		check(PreviewMesh && &EditableSkeletonPtr.Pin()->GetSkeleton() == PreviewMesh->GetSkeleton());
 
@@ -297,7 +321,7 @@ void SRetargetSources::UseCurrentPose()
 			// @todo check to see if skeleton vs preview mesh makes it different for missing bones
 			const FReferenceSkeleton& RefSkeleton = PreviewMesh->GetRefSkeleton();
 			TArray<FTransform> & NewRetargetBasePose = PreviewMesh->GetRetargetBasePose();
-			// if you're using master pose component in preview, this won't work
+			// if you're using leader pose component in preview, this won't work
 			check(PreviewMesh->GetRefSkeleton().GetNum() == SpaceBases.Num());
 			int32 TotalNumBones = PreviewMesh->GetRefSkeleton().GetNum();
 			NewRetargetBasePose.Empty(TotalNumBones);
@@ -362,9 +386,9 @@ void SRetargetSources::ImportPose(const UPoseAsset* PoseAsset, const FName& Pose
 
 			// now I have pose, I have to copy to the retarget base pose
 			UDebugSkelMeshComponent * PreviewMeshComp = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-			if (PreviewMeshComp && PreviewMeshComp->SkeletalMesh)
+			if (PreviewMeshComp && PreviewMeshComp->GetSkeletalMeshAsset())
 			{
-				USkeletalMesh * PreviewMesh = PreviewMeshComp->SkeletalMesh;
+				USkeletalMesh * PreviewMesh = PreviewMeshComp->GetSkeletalMeshAsset();
 
 				check(PreviewMesh && &EditableSkeletonPtr.Pin()->GetSkeleton() == PreviewMesh->GetSkeleton());
 

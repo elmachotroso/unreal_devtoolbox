@@ -177,7 +177,7 @@ struct FNiagaraMatrix
 };
 
 USTRUCT()
-struct FNiagaraAssetVersion
+struct NIAGARA_API FNiagaraAssetVersion
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -200,7 +200,9 @@ struct FNiagaraAssetVersion
 	bool operator==(const FNiagaraAssetVersion& Other) const { return VersionGuid == Other.VersionGuid; }
 	bool operator!=(const FNiagaraAssetVersion& Other) const { return !(*this == Other); }
 	bool operator<(const FNiagaraAssetVersion& Other) const { return MajorVersion < Other.MajorVersion || (MajorVersion == Other.MajorVersion && MinorVersion < Other.MinorVersion); }
-	bool operator<=(const FNiagaraAssetVersion& Other) const { return *this < Other || *this == Other; }
+	bool operator<=(const FNiagaraAssetVersion& Other) const { return *this < Other || (MajorVersion == Other.MajorVersion && MinorVersion == Other.MinorVersion); }
+
+	static FGuid CreateStableVersionGuid(UObject* Object);
 };
 
 struct NIAGARA_API FNiagaraLWCConverter
@@ -373,6 +375,30 @@ public:
 	static UScriptStruct* FindNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct, ENiagaraStructConversion StructConversion);
 	static bool IsNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct, ENiagaraStructConversion StructConversion);
 	static UScriptStruct* GetSWCStruct(UScriptStruct* LWCStruct);
+	static UScriptStruct* GetLWCStruct(UScriptStruct* LWCStruct);
+	static void TickTypeRemap();
+
+private:
+	struct FRemapEntry
+	{
+		UScriptStruct* Get(UScriptStruct* InStruct) const
+		{
+#if WITH_EDITORONLY_DATA
+			return SerialNumber == InStruct->FieldPathSerialNumber ? Struct.Get() : nullptr;
+#else
+			return Struct.Get();
+#endif
+		}
+
+		TWeakObjectPtr<UScriptStruct>	Struct;
+#if WITH_EDITORONLY_DATA
+		int32 SerialNumber = 0;
+#endif
+	};
+
+	static FRWLock RemapTableLock;
+	static TMap<TWeakObjectPtr<UScriptStruct>, FRemapEntry> RemapTable;
+	static std::atomic<bool> RemapTableDirty;
 };
 
 /** Information about how this type should be laid out in an FNiagaraDataSet */
@@ -442,13 +468,13 @@ private:
 				Layout.Int32ComponentByteOffsets.Add(PropOffset);
 			}
 			//Should be able to support double easily enough
-			else if (FStructProperty* StructProp = CastFieldChecked<FStructProperty>(Property))
+			else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 			{
 				GenerateLayoutInfoInternal(Layout, FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(StructProp->Struct, ENiagaraStructConversion::Simulation), PropOffset);
 			}
 			else
 			{
-				check(false);
+				checkf(false, TEXT("Property(%s) Class(%s) is not a supported type"), *Property->GetName(), *Property->GetClass()->GetName());
 			}
 		}
 	}
@@ -564,6 +590,14 @@ public:
 	static int LogCompileIdGeneration;
 
 #if WITH_EDITORONLY_DATA
+	FNiagaraCompileHashVisitorDebugInfo* AddDebugInfo()
+	{
+		if (LogCompileIdGeneration != 0)
+		{
+			return &Values.AddDefaulted_GetRef();
+		}
+		return nullptr;
+	}
 
 	// Debug data about the compilation hash, including key value pairs to detect differences.
 	TArray<FNiagaraCompileHashVisitorDebugInfo> Values;
@@ -630,12 +664,22 @@ public:
 	}
 
 	/**
+	 * Adds the string representation of an FName to the hash
+	 */
+	bool UpdateName(const TCHAR* InDebugName, FName InName)
+	{
+		FNameBuilder NameString(InName);
+		return UpdateString(InDebugName, NameString.ToView());
+	}
+
+	/**
 	Adds a single value of typed POD (plain old data) to the hash.
 	*/
 	template<typename T>
 	bool UpdatePOD(const TCHAR* InDebugName, const T& InData)
 	{
 		static_assert(TIsPODType<T>::Value, "Update does not support a constructor / destructor on the element class.");
+		static_assert(!TIsPointer<T>::Value, "Update does not support pointer types.");
 		HashState.Update((const uint8 *)&InData, sizeof(T));
 #if WITH_EDITORONLY_DATA
 		if (LogCompileIdGeneration != 0)
@@ -647,6 +691,13 @@ public:
 		}
 #endif
 		return true;
+	}
+
+	template<typename T>
+	bool UpdateShaderParameters()
+	{
+		const FShaderParametersMetadata* ShaderParametersMetadata = TShaderParameterStructTypeInfo<T>::GetStructMetadata();
+		return UpdatePOD(ShaderParametersMetadata->GetStructTypeName(), ShaderParametersMetadata->GetLayoutHash());
 	}
 
 	/**
@@ -811,6 +862,9 @@ struct NIAGARA_API FNiagaraVariableMetaData
 	UPROPERTY(EditAnywhere, Category = "Variable", meta = (ToolTip = "If set, this attribute is visually displayed as a child under the given parent attribute. Currently, only static switches are supported as parent attributes!", SkipForCompileHash = "true"))
 	FName ParentAttribute;
 
+	UPROPERTY(EditAnywhere, Category = "Variable", DisplayName = "Alternate Aliases For Variable", AdvancedDisplay, meta = (ToolTip = "List of alternate/previous names for this variable. Note that this is not normally needed if you rename through the UX. However, if you delete and then add a different variable, intending for it to match, you will likely want to add the prior name here.\n\nYou may need to restart and reload assets after making this change to have it take effect on already loaded assets."))
+	TArray<FName> AlternateAliases;
+
 	bool GetIsStaticSwitch_DEPRECATED() const { return bIsStaticSwitch_DEPRECATED; };
 
 	int32 GetStaticSwitchDefaultValue_DEPRECATED() const { return StaticSwitchDefaultValue_DEPRECATED; };
@@ -858,8 +912,12 @@ struct NIAGARA_API FNiagaraTypeDefinition
 
 	enum FTypeFlags
 	{
-		TF_None = 0,
-		TF_Static
+		TF_None			= 0x0000,
+		TF_Static		= 0x0001,
+
+		/// indicates that the ClassStructOrEnum property has been serialized as the LWC struct (see FNiagaraTypeHelper)
+		/// instead of the Transient SWC version of the struct
+		TF_SerializedAsLWC	= 0x0002,
 	};
 
 public:
@@ -1115,7 +1173,6 @@ public:
 	uint16 UnderlyingType;
 
 	bool Serialize(FArchive& Ar);
-	void PostSerialize(const FArchive& Ar);
 
 private:
 	UPROPERTY(EditAnywhere, Category = Type)
@@ -1156,6 +1213,7 @@ public:
 	static const FNiagaraTypeDefinition& GetUStaticMeshDef() { return UStaticMeshDef; }
 	static const FNiagaraTypeDefinition& GetUTextureDef() { return UTextureDef; }
 	static const FNiagaraTypeDefinition& GetUTextureRenderTargetDef() { return UTextureRenderTargetDef; }
+	static const FNiagaraTypeDefinition& GetSimCacheClassDef() { return USimCacheClassDef; }
 	static const FNiagaraTypeDefinition& GetWildcardDef() { return WildcardDef; }
 	static const FNiagaraTypeDefinition& GetHalfDef() { return HalfDef; }
 	static const FNiagaraTypeDefinition& GetHalfVec2Def() { return HalfVec2Def; }
@@ -1242,6 +1300,7 @@ private:
 	static FNiagaraTypeDefinition UTextureDef;
 	static FNiagaraTypeDefinition UTextureRenderTargetDef;
 	static FNiagaraTypeDefinition UStaticMeshDef;
+	static FNiagaraTypeDefinition USimCacheClassDef;
 	static FNiagaraTypeDefinition WildcardDef;
 
 	static FNiagaraTypeDefinition HalfDef;
@@ -1307,7 +1366,6 @@ struct TStructOpsTypeTraits<FNiagaraTypeDefinition> : public TStructOpsTypeTrait
 	enum
 	{
 		WithSerializer = true,
-		WithPostSerialize = true,
 	};
 };
 
@@ -1539,9 +1597,9 @@ public:
 	{
 		FNiagaraTypeRegistry& Registry = Get();
 
+		const uint32 TypeHash = GetTypeHash(NewType);
 		{
 			FReadScopeLock Lock(Registry.RegisteredTypesLock);
-			const uint32 TypeHash = GetTypeHash(NewType);
 			if (const int32* ExistingIndex = Registry.RegisteredTypeIndexMap.Find(TypeHash))
 			{
 				return *ExistingIndex;
@@ -1550,7 +1608,7 @@ public:
 
 		FRWScopeLock Lock(Registry.RegisteredTypesLock, SLT_Write);
 		const int32 Index = Registry.RegisteredTypes.AddUnique(NewType);
-		Registry.RegisteredTypeIndexMap.Add(GetTypeHash(NewType), Index);
+		Registry.RegisteredTypeIndexMap.Add(TypeHash, Index);
 		return Index;
 	}
 
@@ -1589,6 +1647,11 @@ public:
 	virtual FString GetReferencerName() const;
 
 private:
+	friend class FLazySingleton;
+
+	FNiagaraTypeRegistry();
+	virtual ~FNiagaraTypeRegistry();
+
 	RegisteredTypesArray RegisteredTypes;
 
 	TArray<FNiagaraTypeDefinition> RegisteredUserVariableTypes;
@@ -1735,20 +1798,41 @@ struct FNiagaraVariableBase
 		return Name != NAME_None && TypeDefHandle->IsValid();
 	}
 
+	/**
+	Removes the root namespace from the variable if it matches the expected namespace.
+	i.e. MyNamespace.VarName would become VarName but Other.MyNamespace.VarName would not be modified.
+	For more complex namespace manipulation refer to FNiagaraUtilities::ResolveAliases
+	*/
+	bool RemoveRootNamespace(const FStringView& ExpectedNamespace);
+
+	/**
+	Replaces the root namespace from the variable if it matches the expected namespace with the NewNamespace.
+	i.e. Prev.VarName would become Next.VarName but Other.Prev.VarName would not be modified.
+	For more complex namespace manipulation refer to FNiagaraUtilities::ResolveAliases
+	*/
+	bool ReplaceRootNamespace(const FStringView& ExpectedNamespace, const FStringView& NewNamespace);
+
 	FORCEINLINE bool IsInNameSpace(const FStringView& Namespace) const
 	{
-		TStringBuilder<128> NameString;
+		FNameBuilder NameString;
 		Name.ToString(NameString);
 		
 		FStringView NameStringView = NameString.ToView();
-		return (NameStringView.Len() > Namespace.Len() + 1) && (NameStringView[Namespace.Len()] == '.') && NameStringView.StartsWith(Namespace);
+		if (Namespace.Len() > 1 && Namespace[Namespace.Len() - 1] == '.') // Includes period in namespace
+		{
+			return (NameStringView.Len() > Namespace.Len()) && NameStringView.StartsWith(Namespace);
+		}
+		else // Skips period, makes sure it's in the name string to delineate
+		{
+			return (NameStringView.Len() > Namespace.Len() + 1) && (NameStringView[Namespace.Len()] == '.') && NameStringView.StartsWith(Namespace);
+		}
 	}
 
 #if WITH_EDITORONLY_DATA
 	// This method should not be used at runtime as we have pre-defined strings in FNiagaraConstants for runtime cases
 	FORCEINLINE bool IsInNameSpace(const FName& Namespace) const
 	{
-		TStringBuilder<128> NamespaceString;
+		FNameBuilder NamespaceString;
 		Namespace.ToString(NamespaceString);
 		return IsInNameSpace(NamespaceString.ToView());
 	}
@@ -1758,6 +1842,8 @@ struct FNiagaraVariableBase
 #if WITH_EDITORONLY_DATA
 	void PostSerialize(const FArchive& Ar);
 #endif
+
+	bool NIAGARA_API AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
 
 protected:
 	UPROPERTY(EditAnywhere, Category = "Variable")
@@ -1883,26 +1969,6 @@ struct FNiagaraVariable : public FNiagaraVariableBase
 		return Value;
 	}
 
-	template<typename T>
-	void SetDoubleValue(const T& Data)
-	{
-		static_assert(TIsUECoreVariant<T, double>::Value, "Float core variant, please use SetValue.");
-		check(sizeof(T) == TypeDefHandle->GetSize());
-		AllocateData();
-		FMemory::Memcpy(VarData.GetData(), &Data, VarData.Num());
-	}
-
-	template<typename T>
-	T GetDoubleValue() const
-	{
-		static_assert(TIsUECoreVariant<T, double>::Value, "Float core variant, please use GetValue.");
-		check(sizeof(T) == TypeDefHandle->GetSize());
-		check(IsDataAllocated());
-		T Value;
-		FMemory::Memcpy(&Value, GetData(), TypeDefHandle->GetSize());
-		return Value;
-	}
-
 	void SetData(const uint8* Data)
 	{
 		check(Data);
@@ -1940,22 +2006,36 @@ struct FNiagaraVariable : public FNiagaraVariableBase
 
 	static int32 SearchArrayForPartialNameMatch(const TArray<FNiagaraVariable>& Variables, const FName& VariableName)
 	{
-		FString VarNameStr = VariableName.ToString();
-		FString BestMatchSoFar;
+		FNameBuilder VarNameBuilder(VariableName);
+		FStringView VarNameView(VarNameBuilder);
+
+		int32 BestMatchLength = INDEX_NONE;
 		int32 BestMatchIdx = INDEX_NONE;
+
+		const int32 VarNameLength = VarNameView.Len();
 
 		for (int32 i = 0; i < Variables.Num(); i++)
 		{
 			const FNiagaraVariable& TestVar = Variables[i];
-			FString TestVarNameStr = TestVar.GetName().ToString();
-			if (TestVarNameStr == VarNameStr)
+			FNameBuilder TestVarNameBuilder(TestVar.GetName());
+			FStringView TestVarNameView(TestVarNameBuilder);
+
+			if (VarNameView.Equals(TestVarNameView))
 			{
 				return i;
 			}
-			else if (VarNameStr.StartsWith(TestVarNameStr + TEXT(".")) && (BestMatchSoFar.Len() == 0 || TestVarNameStr.Len() > BestMatchSoFar.Len()))
+			else
 			{
-				BestMatchIdx = i;
-				BestMatchSoFar = TestVarNameStr;
+				const int32 TestVarNameLength = TestVarNameView.Len();
+
+				if (VarNameLength > TestVarNameLength && (BestMatchLength == INDEX_NONE || TestVarNameLength > BestMatchLength))
+				{
+					if (VarNameView.StartsWith(TestVarNameView) && VarNameView[TestVarNameLength] == TCHAR('.'))
+					{
+						BestMatchIdx = i;
+						BestMatchLength = TestVarNameLength;
+					}
+				}
 			}
 		}
 
@@ -1972,6 +2052,22 @@ private:
 	//TODO: Remove storage here entirely and move everything to an FNiagaraParameterStore.
 	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	TArray<uint8> VarData;
+};
+
+struct FNiagaraVariableMatch
+{
+	explicit FNiagaraVariableMatch(const FNiagaraTypeDefinition& InType, const FName& InName)
+		: VariableBase(InType, InName)
+	{
+	}
+
+	bool operator()(const FNiagaraVariable& Other) const
+	{
+		return static_cast<const FNiagaraVariableBase&>(Other) == VariableBase;
+	}
+
+private:
+	FNiagaraVariableBase VariableBase;
 };
 
 
@@ -2060,20 +2156,26 @@ struct alignas(16) FNiagaraOwnerParameters
 	NIAGARA_API static const TArray<FNiagaraVariable>& GetVariables();
 #endif
 
-	FMatrix44f EngineLocalToWorld = FMatrix44f::Identity;
-	FMatrix44f EngineWorldToLocal = FMatrix44f::Identity;
-	FMatrix44f EngineLocalToWorldTransposed = FMatrix44f::Identity;
-	FMatrix44f EngineWorldToLocalTransposed = FMatrix44f::Identity;
-	FMatrix44f EngineLocalToWorldNoScale = FMatrix44f::Identity;
-	FMatrix44f EngineWorldToLocalNoScale = FMatrix44f::Identity;
-	FQuat4f EngineRotation = FQuat4f::Identity;
-	FVector4f EnginePosition = FVector4f(ForceInitToZero);
-	FVector4f EngineVelocity = FVector4f(ForceInitToZero);
-	FVector4f EngineXAxis = FVector4f(1.0f, 0.0f, 0.0f, 0.0f);
-	FVector4f EngineYAxis = FVector4f(0.0f, 1.0f, 0.0f, 0.0f);
-	FVector4f EngineZAxis = FVector4f(0.0f, 0.0f, 1.0f, 0.0f);
-	FVector4f EngineScale = FVector4f(1.0f, 1.0f, 1.0f, 0.0f);
-	FVector4f EngineLWCTile = FVector4f(ForceInitToZero);
+	FMatrix44f	EngineLocalToWorld = FMatrix44f::Identity;
+	FMatrix44f	EngineWorldToLocal = FMatrix44f::Identity;
+	FMatrix44f	EngineLocalToWorldTransposed = FMatrix44f::Identity;
+	FMatrix44f	EngineWorldToLocalTransposed = FMatrix44f::Identity;
+	FMatrix44f	EngineLocalToWorldNoScale = FMatrix44f::Identity;
+	FMatrix44f	EngineWorldToLocalNoScale = FMatrix44f::Identity;
+	FQuat4f		EngineRotation = FQuat4f::Identity;
+	FVector3f	EnginePosition = FVector3f(ForceInitToZero);
+	float		_Pad0;
+	FVector3f	EngineVelocity = FVector3f(ForceInitToZero);
+	float		_Pad1;
+	FVector3f	EngineXAxis = FVector3f(1.0f, 0.0f, 0.0f);
+	float		_Pad2;
+	FVector3f	EngineYAxis = FVector3f(0.0f, 1.0f, 0.0f);
+	float		_Pad3;
+	FVector3f	EngineZAxis = FVector3f(0.0f, 0.0f, 1.0f);
+	float		_Pad4;
+	FVector3f	EngineScale = FVector3f(1.0f, 1.0f, 1.0f);
+	float		_Pad5;
+	FVector4f	EngineLWCTile = FVector4f(ForceInitToZero);
 };
 
 // Any change to this structure, or it's GetVariables implementation will require a bump in the CustomNiagaraVersion so that we
@@ -2096,3 +2198,73 @@ struct alignas(16) FNiagaraEmitterParameters
 	int32 _Pad0;
 	int32 _Pad1;
 };
+
+// Forward decl FVersionedNiagaraEmitterWeakPtr to support FVersionedNiagaraEmitter::ToWeakPtr().
+struct FVersionedNiagaraEmitterWeakPtr;
+struct FVersionedNiagaraEmitterData;
+class UNiagaraEmitter;
+
+/** Struct combining an emitter with a specific version.*/
+USTRUCT()
+struct NIAGARA_API FVersionedNiagaraEmitter
+{
+	GENERATED_USTRUCT_BODY()
+	
+	FVersionedNiagaraEmitter() {}
+	FVersionedNiagaraEmitter(UNiagaraEmitter* InEmitter, const FGuid& InVersion)
+		: Emitter(InEmitter), Version(InVersion)
+	{};
+
+	FVersionedNiagaraEmitterData* GetEmitterData() const;
+	FVersionedNiagaraEmitterWeakPtr ToWeakPtr() const;
+
+	UPROPERTY()
+	TObjectPtr<UNiagaraEmitter> Emitter = nullptr;
+
+	UPROPERTY()
+	FGuid Version;
+
+	bool operator==(const FVersionedNiagaraEmitter& Other) const
+	{
+		return Emitter == Other.Emitter && Version == Other.Version;
+	}
+
+	bool operator!=(const FVersionedNiagaraEmitter& Other) const
+	{
+		return !(*this == Other);
+	}
+};
+
+struct NIAGARA_API FVersionedNiagaraEmitterWeakPtr
+{
+	FVersionedNiagaraEmitterWeakPtr() : Emitter(nullptr) {}
+	FVersionedNiagaraEmitterWeakPtr(UNiagaraEmitter* InEmitter, const FGuid& InVersion);
+	FVersionedNiagaraEmitter ResolveWeakPtr() const;
+	FVersionedNiagaraEmitterData* GetEmitterData() const;
+	bool IsValid() const;
+	bool operator==(const FVersionedNiagaraEmitterWeakPtr& Other) const
+	{
+		return Emitter == Other.Emitter && Version == Other.Version;
+	}
+
+
+	bool operator!=(const FVersionedNiagaraEmitterWeakPtr& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	TWeakObjectPtr<UNiagaraEmitter> Emitter;
+	FGuid Version;
+};
+
+inline uint32 GetTypeHash(const FVersionedNiagaraEmitterWeakPtr& Item)
+{
+	return GetTypeHash(Item.Emitter);
+}
+
+inline uint32 GetTypeHash(const FVersionedNiagaraEmitter& Item)
+{
+	return GetTypeHash(Item.Emitter) + GetTypeHash(Item.Version);
+}
+
+

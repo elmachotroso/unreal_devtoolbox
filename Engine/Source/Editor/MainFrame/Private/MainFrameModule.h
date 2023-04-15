@@ -122,6 +122,16 @@ public:
 		return MainFrameSDKNotInstalled.Broadcast(PlatformName, DocLink);
 	}
 
+	DECLARE_DERIVED_EVENT(FMainFrameModule, IMainFrameModule::FMainFrameRequestResource, FMainFrameRequestResource);
+	virtual FMainFrameRequestResource& OnMainFrameRequestResource() override
+	{
+		return MainFrameRequestResource;
+	}
+	void BroadcastMainFrameRequestResource(const FString& Category, const FString& ResourceName) override
+	{
+		return MainFrameRequestResource.Broadcast(Category, ResourceName);
+	}
+
 	virtual void EnableDelayedShowMainFrame() override
 	{
 		bDelayedShowMainFrame = true;
@@ -161,6 +171,18 @@ public:
 		return true;
 	}
 
+	virtual void SetEditorSettingsDefaultSelectionOverride(FName CategoryName = FName(), FName SectionName = FName()) override
+	{
+		EditorSettingsDefaultCategoryOverride = CategoryName;
+		EditorSettingsDefaultSectionOverride = SectionName;
+	}
+
+	virtual void GetEditorSettingsDefaultSelectionOverride(FName& OutCategoryName, FName& OutSectionName) override
+	{
+		OutCategoryName = EditorSettingsDefaultCategoryOverride;
+		OutSectionName = EditorSettingsDefaultSectionOverride;
+	}
+
 public:
 
 	// IModuleInterface interface
@@ -188,7 +210,7 @@ protected:
 public:
 
 	/** Get the size of the project browser window */
-	static FVector2D GetProjectBrowserWindowSize() { return FVector2D(1190, 733); }
+	static FVector2D GetProjectBrowserWindowSize() { return FVector2D(1190, 822); }
 
 private:
 
@@ -229,11 +251,20 @@ private:
 	// Override window title, or empty to not override
 	FText OverriddenWindowTitle;
 
+	// Overrides the category that gets selected by default when opening editor settings
+	FName EditorSettingsDefaultCategoryOverride;
+
+	// Overrides the section that gets selected by default when editor settings
+	FName EditorSettingsDefaultSectionOverride;
+
 	/// Event to be called when the mainframe is fully created.
 	FMainFrameCreationFinishedEvent MainFrameCreationFinishedEvent;
 
 	/// Event to be called when the editor tried to use a platform, but it wasn't installed
 	FMainFrameSDKNotInstalled MainFrameSDKNotInstalled;
+
+	/// Event to be called to make an open-ended request for a resource from any registered listeners
+	FMainFrameRequestResource MainFrameRequestResource;
 
 	// Commands used by main frame in menus and key bindings.
 	TSharedPtr<class FMainFrameCommands> MainFrameActions;

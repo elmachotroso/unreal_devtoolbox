@@ -8,16 +8,22 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
-#include "Containers/Map.h"
-#include "Logging/LogMacros.h"
 #include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/UnrealTemplate.h"
 
-struct FHistogramBuilder;
+#include <initializer_list>
+
 struct FAnalyticsEventAttribute;
+struct FHistogramBuilder;
+template <typename FuncType> class TFunctionRef;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogHistograms, Log, All);
 
@@ -124,7 +130,7 @@ struct CORE_API FHistogram
 	/** Returns the average of all measurements (essentially a shortcut for Sum/Count). */
 	inline double GetAverageOfAllMeasures() const
 	{
-		return SumOfAllMeasures / (double)CountOfAllMeasures;
+		return (CountOfAllMeasures > 0) ? (SumOfAllMeasures / (double)CountOfAllMeasures) : 0 ;
 	}
 
 	/** Returns the minimum of all measurements. */

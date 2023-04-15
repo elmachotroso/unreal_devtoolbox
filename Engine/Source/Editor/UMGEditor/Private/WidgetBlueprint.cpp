@@ -768,7 +768,7 @@ bool UWidgetBlueprint::DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors)
 
 	// Update the widget tree directly to match the blueprint tree.  That way the preview can update
 	// without needing to do a full recompile.
-	TempUserWidget->DuplicateAndInitializeFromWidgetTree(WidgetTree);
+	TempUserWidget->DuplicateAndInitializeFromWidgetTree(WidgetTree, TMap<FName, UWidget*>());
 
 	// We don't want this widget doing all the normal startup and acting like it's the real deal
 	// trying to do gameplay stuff, so make sure it's in design mode.
@@ -864,7 +864,7 @@ bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults&
 				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
 				Diff.ToolTip = FText::Format(LOCTEXT("DIF_RequestWidgetTooltip", "Widget {WidgetTitle}\nPath: {WidgetPath}"), Args);
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_RequestWidgetLabel", "Widget {WidgetTitle}"), Args);
-				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+				Diff.Category = EDiffType::CONTROL;
 
 				Results.Add(Diff);
 
@@ -883,7 +883,7 @@ bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults&
 					SlotArgs.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
 					SlotDiff.ToolTip = FText::Format(LOCTEXT("DIF_RequestSlotTooltip", "Slot for {WidgetTitle}\nPath: {WidgetPath}"), SlotArgs);
 					SlotDiff.DisplayString = FText::Format(LOCTEXT("DIF_RequestSlotLabel", "Slot for {WidgetTitle}"), SlotArgs);
-					SlotDiff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+					Diff.Category = EDiffType::CONTROL;
 
 					Results.Add(SlotDiff);
 				}
@@ -904,7 +904,7 @@ bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults&
 				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
 				Diff.ToolTip = FText::Format(LOCTEXT("DIF_AddedWidgetTooltip", "Added Widget {WidgetTitle}\nPath: {WidgetPath}"), Args);
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_AddedWidgetLabel", "Added Widget {WidgetTitle}"), Args);
-				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+				Diff.Category = EDiffType::ADDITION;
 			}
 
 			Results.Add(Diff);
@@ -931,7 +931,7 @@ bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults&
 				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
 				Diff.ToolTip = FText::Format(LOCTEXT("DIF_RemovedWidgetTooltip", "Removed Widget {WidgetTitle}\nPath:{WidgetPath}"), Args);
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_RemovedWidgetLabel", "Removed Widget {WidgetTitle}"), Args);
-				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+				Diff.Category = EDiffType::SUBTRACTION;
 			}
 
 			Results.Add(Diff);
@@ -943,7 +943,7 @@ bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults&
 	{
 		FDiffSingleResult Diff;
 		Diff.Diff = EDiffType::INFO_MESSAGE;
-		Diff.DisplayColor = FLinearColor(.7f, .7f, .7f);
+		Diff.Category = EDiffType::CONTROL;
 		Diff.ToolTip = LOCTEXT("DIF_WidgetWarningMessage", "Warning: This may be missing changes to Animations and Bindings");
 		Diff.DisplayString = Diff.ToolTip;
 
@@ -1345,6 +1345,16 @@ void UWidgetBlueprint::UpdateTickabilityStats(bool& OutHasLatentActions, bool& O
 bool UWidgetBlueprint::ArePropertyBindingsAllowed() const
 {
 	return GetDefault<UUMGEditorProjectSettings>()->CompilerOption_PropertyBindingRule(this) == EPropertyBindingPermissionLevel::Allow;
+}
+
+TArray<FName> UWidgetBlueprint::GetInheritedAvailableNamedSlots() const
+{
+	if (const UWidgetBlueprintGeneratedClass* GeneratedBPClass = Cast<UWidgetBlueprintGeneratedClass>(GeneratedClass->GetSuperClass()))
+	{
+		return GeneratedBPClass->AvailableNamedSlots;
+	}
+	
+	return TArray<FName>();
 }
 
 #if WITH_EDITOR

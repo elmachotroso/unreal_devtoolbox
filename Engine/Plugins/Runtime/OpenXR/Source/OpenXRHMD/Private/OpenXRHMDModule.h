@@ -51,6 +51,7 @@ private:
 	TRefCountPtr<class FOpenXRRenderBridge> RenderBridge;
 	TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > VulkanExtensions;
 
+	void DestroyInstance();
 	bool EnumerateExtensions();
 	bool EnumerateLayers();
 	bool InitRenderBridge();

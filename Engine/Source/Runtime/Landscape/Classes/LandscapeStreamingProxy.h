@@ -6,14 +6,14 @@
 #include "UObject/ObjectMacros.h"
 #include "LandscapeProxy.h"
 
-#if WITH_EDITOR
-#include "WorldPartition/WorldPartitionHandle.h"
-#endif
-
 #include "LandscapeStreamingProxy.generated.h"
 
 class ALandscape;
+
+#if WITH_EDITOR
 class UMaterialInterface;
+struct FActorPartitionIdentifier;
+#endif
 
 UCLASS(MinimalAPI, notplaceable)
 class ALandscapeStreamingProxy : public ALandscapeProxy
@@ -26,11 +26,6 @@ public:
 	UPROPERTY(EditAnywhere, Category=LandscapeProxy)
 	TLazyObjectPtr<ALandscape> LandscapeActor;
 
-#if WITH_EDITORONLY_DATA
-	/** hard refs to actors that need to be loaded when this proxy is loaded */
-	TSet<FWorldPartitionReference> ActorDescReferences;
-#endif
-
 	//~ Begin UObject Interface
 #if WITH_EDITOR
 	virtual bool ShouldExport() override { return false;  }
@@ -40,6 +35,8 @@ public:
 	virtual AActor* GetSceneOutlinerParent() const override;
 	virtual bool CanDeleteSelectedActor(FText& OutReason) const override;
 	virtual bool GetReferencedContentObjects(TArray<UObject*>& Objects) const override;
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return true; }
+	virtual bool ShouldIncludeGridSizeInName(UWorld* InWorld, const FActorPartitionIdentifier& InIdentifier) const override;
 #endif
 	//~ End UObject Interface
 
@@ -49,6 +46,7 @@ public:
 #if WITH_EDITOR
 	virtual UMaterialInterface* GetLandscapeMaterial(int8 InLODIndex = INDEX_NONE) const override;
 	virtual UMaterialInterface* GetLandscapeHoleMaterial() const override;
+	virtual bool IsNaniteEnabled() const override;
 #endif
 	//~ End ALandscapeBase Interface
 

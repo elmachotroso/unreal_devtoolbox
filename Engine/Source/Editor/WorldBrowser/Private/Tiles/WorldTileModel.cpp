@@ -4,9 +4,11 @@
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "UObject/Package.h"
+#include "DragAndDrop/LevelDragDropOp.h"
 #include "Engine/LevelBounds.h"
 #include "Engine/LevelStreamingDynamic.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "ScopedTransaction.h"
 #include "EditorLevelUtils.h"
 #include "LevelCollectionModel.h"
@@ -70,7 +72,7 @@ FWorldTileModel::FWorldTileModel(FWorldTileCollectionModel& InWorldModel, int32 
 		{
 			// Find the world object
 			UWorld* World = UWorld::FindWorldInPackage(LevelPackage);
-			if (World)
+			if (IsValid(World))
 			{
 				LoadedLevel = World->PersistentLevel;
 				// Enable tile properties

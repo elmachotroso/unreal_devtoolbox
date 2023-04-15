@@ -2,6 +2,8 @@
 
 #include "NiagaraCullProxyComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraCullProxyComponent)
+
 //////////////////////////////////////////////////////////////////////////
 
 const FName UNiagaraCullProxyComponent::TotalCullProxiesName(TEXT("TotalCullProxies"));
@@ -66,7 +68,7 @@ bool UNiagaraCullProxyComponent::RegisterCulledComponent(UNiagaraComponent* Comp
 	}
 #endif
 
-	if (bForce || GetAsset()->GetScalabilitySettings().MaxSystemProxies < Instances.Num())
+	if (bForce || Instances.Num() < GetAsset()->GetScalabilitySettings().MaxSystemProxies)
 	{
 		FNiagaraCulledComponentInfo& NewInfo = Instances.AddDefaulted_GetRef();
 		NewInfo.WeakComponent = Component;

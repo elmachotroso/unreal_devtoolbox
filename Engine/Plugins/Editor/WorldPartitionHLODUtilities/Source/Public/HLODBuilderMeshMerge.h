@@ -22,15 +22,15 @@ class WORLDPARTITIONHLODUTILITIES_API UHLODBuilderMeshMergeSettings : public UHL
 	FMeshMergingSettings MeshMergeSettings;
 
 	/** Material that will be used by the generated HLOD static mesh */
-	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = HLOD)
-	TSoftObjectPtr<UMaterial> HLODMaterial;
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = HLOD, meta = (DisplayName = "HLOD Material"))
+	TSoftObjectPtr<UMaterialInterface> HLODMaterial;
 };
 
 
 /**
  * Build a merged mesh using geometry from the provided actors
  */
-UCLASS()
+UCLASS(HideDropdown)
 class WORLDPARTITIONHLODUTILITIES_API UHLODBuilderMeshMerge : public UHLODBuilder
 {
 	GENERATED_UCLASS_BODY()

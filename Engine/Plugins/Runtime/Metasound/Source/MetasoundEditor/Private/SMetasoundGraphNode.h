@@ -4,8 +4,10 @@
 
 #include "Input/Reply.h"
 #include "Layout/Visibility.h"
+#include "MetasoundFrontendDocument.h"
 #include "Misc/Attribute.h"
 #include "SGraphNode.h"
+#include "SGraphNodeKnot.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SOverlay.h"
 
@@ -81,6 +83,30 @@ namespace Metasound
 			FDelegateHandle InputSliderOnValueChangedDelegateHandle;
 			// Handle for on input slider range changed  
 			FDelegateHandle InputSliderOnRangeChangedDelegateHandle;
+
+			// Whether the input widget is currently transacting 
+			// for keeping track of transaction state across delegates to only commit transaction on value commit
+			bool bIsInputWidgetTransacting = false;
+
+			EMetasoundFrontendClassType ClassType;
+		};
+
+		class SMetaSoundGraphNodeKnot : public SGraphNodeKnot
+		{
+		public:
+			SLATE_BEGIN_ARGS(SMetaSoundGraphNode)
+			{
+			}
+
+			SLATE_END_ARGS()
+
+			void Construct(const FArguments& InArgs, class UEdGraphNode* InNode);
+
+			virtual TSharedPtr<SGraphPin> CreatePinWidget(UEdGraphPin* Pin) const override;
+			virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty) override;
+
+			UMetasoundEditorGraphNode& GetMetaSoundNode();
+			const UMetasoundEditorGraphNode& GetMetaSoundNode() const;
 		};
 	} // namespace Editor
 } // namespace Metasound

@@ -8,9 +8,11 @@
 
 #include "CoreMinimal.h"
 #include "HAL/ThreadSingleton.h"
+#include "Internationalization/Text.h"
 #include "Stats/Stats.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/CoreMisc.h"
+#include "Memory/VirtualStackAllocator.h"
 
 struct FFrame;
 
@@ -61,6 +63,23 @@ typedef uint16 CodeSkipSizeType;
 typedef uint32 CodeSkipSizeType;
 #endif
 
+// Context object for data and utilities that may be needed throughout BP execution
+// In the future, it would be preferable for this not to be a thread singleton but to have
+// clearer initialization/termination semantics and per-thread tuning for the stack allocator
+class FBlueprintContext
+{
+public:
+
+	COREUOBJECT_API static FBlueprintContext* GetThreadSingleton();
+
+	FBlueprintContext();
+
+	FVirtualStackAllocator* GetVirtualStackAllocator() { return &VirtualStackAllocator; }
+
+private:
+
+	FVirtualStackAllocator VirtualStackAllocator;
+};
 
 //
 // Blueprint VM intrinsic return value declaration.
@@ -102,13 +121,16 @@ namespace FunctionCallspace
 // Function flags.
 //
 // Note: Please keep ParseFunctionFlags in sync when this enum is modified.
+//
+// This MUST be kept in sync with EEnumFlags defined in
+// Engine\Source\Programs\Shared\EpicGames.Core\UnrealEngineTypes.cs
 enum EFunctionFlags : uint32
 {
 	// Function flags.
 	FUNC_None				= 0x00000000,
 
 	FUNC_Final				= 0x00000001,	// Function is final (prebindable, non-overridable function).
-	FUNC_RequiredAPI			= 0x00000002,	// Indicates this function is DLL exported/imported.
+	FUNC_RequiredAPI		= 0x00000002,	// Indicates this function is DLL exported/imported.
 	FUNC_BlueprintAuthorityOnly= 0x00000004,   // Function will only run if the object has network authority
 	FUNC_BlueprintCosmetic	= 0x00000008,   // Function is cosmetic in nature and should not be invoked on dedicated servers
 	// FUNC_				= 0x00000010,   // unused.
@@ -160,7 +182,7 @@ ENUM_CLASS_FLAGS(EFunctionFlags)
 //
 // Evaluatable expression item types.
 //
-enum EExprToken
+enum EExprToken : uint8
 {
 	// Variable references.
 	EX_LocalVariable		= 0x00,	// A local variable.
@@ -273,30 +295,16 @@ enum EExprToken
 	EX_ArrayGetByRef		= 0x6B,
 	EX_ClassSparseDataVariable = 0x6C, // Sparse data variable
 	EX_FieldPathConst		= 0x6D,
-	EX_Max					= 0x100,
+	EX_Max					= 0xFF,
 };
 
-enum ECastToken
+enum ECastToken : uint8
 {
 	CST_ObjectToInterface		= 0x00,
 	CST_ObjectToBool			= 0x01,
 	CST_InterfaceToBool			= 0x02,
 	CST_DoubleToFloat			= 0x03,
-	CST_DoubleToFloatArray		= 0x04,
-	CST_DoubleToFloatSet		= 0x05,
-	CST_FloatToDouble			= 0x06,
-	CST_FloatToDoubleArray		= 0x07,
-	CST_FloatToDoubleSet		= 0x08,
-	CST_VectorToVector3f		= 0x09,
-	CST_Vector3fToVector		= 0x0A,
-	CST_FloatToDoubleKeys_Map	= 0x0B,
-	CST_DoubleToFloatKeys_Map	= 0x0C,
-	CST_FloatToDoubleValues_Map	= 0x0D,
-	CST_DoubleToFloatValues_Map	= 0x0E,
-	CST_FloatToDoubleKeys_FloatToDoubleValues_Map	= 0x0F,
-	CST_DoubleToFloatKeys_FloatToDoubleValues_Map	= 0x10,
-	CST_DoubleToFloatKeys_DoubleToFloatValues_Map	= 0x11,
-	CST_FloatToDoubleKeys_DoubleToFloatValues_Map	= 0x12,
+	CST_FloatToDouble			= 0x04,
 
 	CST_Max						= 0xFF,
 };
@@ -328,6 +336,7 @@ namespace EBlueprintExceptionType
 		InfiniteLoop,
 		NonFatalError,
 		FatalError,
+		AbortExecution,
 	};
 }
 
@@ -476,7 +485,7 @@ public:
 	static FOnScriptExecutionEnd OnScriptExecutionEnd;
 
 public:
-	static void ThrowScriptException(const UObject* ActiveObject, const struct FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
+	static void ThrowScriptException(const UObject* ActiveObject, struct FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
 	static void InstrumentScriptEvent(const FScriptInstrumentationSignal& Info);
 	static void SetScriptMaximumLoopIterations( const int32 MaximumLoopIterations );
 	static bool IsDebuggingEnabled();
@@ -525,11 +534,23 @@ struct COREUOBJECT_API FBlueprintContextTracker : TThreadSingleton<FBlueprintCon
 	{
 		return ScriptEntryTag;
 	}
-	
+
 	/** Returns current script stack frame */
-	FORCEINLINE const TArray<const FFrame*>& GetScriptStack() const
+	UE_DEPRECATED(5.1, "GetScriptStack() inefficiently copies the array to return and is now deprecated. Use GetCurrentScriptStack() which returns a TArrayView instead")
+	FORCEINLINE TArray<const FFrame*> GetScriptStack() const
 	{
-		return ScriptStack;
+		return TArray<const FFrame*>(GetCurrentScriptStack());
+	}
+
+	/** Returns current script stack frame */
+	FORCEINLINE TArrayView<const FFrame* const> GetCurrentScriptStack() const
+	{
+		return MakeArrayView<const FFrame* const>(ScriptStack.GetData(), ScriptStack.Num());
+	}
+
+	FORCEINLINE TArrayView<FFrame* const> GetCurrentScriptStackWritable() const
+	{
+		return MakeArrayView<FFrame* const>(ScriptStack.GetData(), ScriptStack.Num());
 	}
 
 	/** Delegate called from EnterScriptContext, could be called on any thread! This can be used to detect entries into script from native code */
@@ -551,7 +572,7 @@ private:
 	int32 ScriptEntryTag;
 
 	// Stack pointers from the VM to be unrolled when we assert
-	TArray<const FFrame*> ScriptStack;
+	TArray<FFrame*> ScriptStack;
 
 	// Map of reported access warnings in exception handler
 	TMap<FName, int32> DisplayedWarningsMap;

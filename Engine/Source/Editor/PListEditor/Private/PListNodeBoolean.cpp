@@ -1,19 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PListNodeBoolean.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
+
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "PListNode.h"
+#include "SPlistEditor.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "SPlistEditor.h"
 
 /** Validation check */
 bool FPListNodeBoolean::IsValid()
@@ -279,11 +286,11 @@ const FSlateBrush* FPListNodeBoolean::GetOverlayBrush()
 {
 	if(bFiltered)
 	{
-		return FEditorStyle::GetBrush( TEXT("PListEditor.FilteredColor") );
+		return FAppStyle::GetBrush( TEXT("PListEditor.FilteredColor") );
 	}
 	else
 	{
-		return FEditorStyle::GetBrush( TEXT("PListEditor.NoOverlayColor") );
+		return FAppStyle::GetBrush( TEXT("PListEditor.NoOverlayColor") );
 	}
 }
 
@@ -349,7 +356,7 @@ FSlateColor FPListNodeBoolean::GetKeyBackgroundColor() const
 
 	if(!bKeyValid)
 	{
-		return FEditorStyle::GetColor("ErrorReporting.BackgroundColor");
+		return FAppStyle::GetColor("ErrorReporting.BackgroundColor");
 	}
 	else
 	{
@@ -364,16 +371,16 @@ FSlateColor FPListNodeBoolean::GetKeyForegroundColor() const
 
 	if(bArrayMember)
 	{
-		return FEditorStyle::GetSlateColor(InvertedForegroundName);
+		return FAppStyle::GetSlateColor(InvertedForegroundName);
 	}
 
 	if(!bKeyValid)
 	{
 		static const FName ForegroundColor("ErrorReporting.ForegroundColor");
-		return FEditorStyle::GetColor(ForegroundColor);
+		return FAppStyle::GetColor(ForegroundColor);
 	}
 	else
 	{
-		return FEditorStyle::GetSlateColor(InvertedForegroundName);
+		return FAppStyle::GetSlateColor(InvertedForegroundName);
 	}
 }

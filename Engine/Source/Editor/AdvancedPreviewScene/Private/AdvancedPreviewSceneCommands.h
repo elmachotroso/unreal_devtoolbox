@@ -2,9 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 class FAdvancedPreviewSceneCommands : public TCommands<FAdvancedPreviewSceneCommands>
 {
@@ -15,7 +21,7 @@ public:
 		"AdvancedPreviewScene",
 		NSLOCTEXT("Contexts", "AdvancedPreviewScene", "Advanced Preview Scene"),
 		NAME_None,
-		FEditorStyle::Get().GetStyleSetName()
+		FAppStyle::Get().GetStyleSetName()
 	)
 	{}
 	

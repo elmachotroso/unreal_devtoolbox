@@ -7,6 +7,22 @@
 
 #define LOCTEXT_NAMESPACE "MemTagNode"
 
+#define INSIGHTS_ENSURE ensure
+//#define INSIGHTS_ENSURE(...)
+
+// Default pre-sorting (group nodes sorts above leaf nodes)
+#define INSIGHTS_DEFAULT_PRESORTING_NODES(A, B) \
+	{ \
+		if (ShouldCancelSort()) \
+		{ \
+			return CancelSort(); \
+		} \
+		if (A->IsGroup() != B->IsGroup()) \
+		{ \
+			return A->IsGroup(); \
+		} \
+	}
+
 // Sort by name (ascending).
 #define INSIGHTS_DEFAULT_SORTING_NODES(A, B) return A->GetName().LexicalLess(B->GetName());
 //#define INSIGHTS_DEFAULT_SORTING_NODES(A, B) return A->GetDefaultSortOrder() < B->GetDefaultSortOrder();
@@ -31,12 +47,14 @@ void FMemTagNodeSortingByType::Sort(TArray<Insights::FBaseTreeNodePtr>& NodesToS
 {
 	if (SortMode == Insights::ESortMode::Ascending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 
 			if (MemTagNodeA->GetType() == MemTagNodeB->GetType())
@@ -52,12 +70,14 @@ void FMemTagNodeSortingByType::Sort(TArray<Insights::FBaseTreeNodePtr>& NodesToS
 	}
 	else // if (SortMode == ESortMode::Descending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 
 			if (MemTagNodeA->GetType() == MemTagNodeB->GetType())
@@ -93,12 +113,14 @@ void FMemTagNodeSortingByTracker::Sort(TArray<Insights::FBaseTreeNodePtr>& Nodes
 {
 	if (SortMode == Insights::ESortMode::Ascending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 
 			if (MemTagNodeA->GetMemTrackerId() == MemTagNodeB->GetMemTrackerId())
@@ -114,12 +136,14 @@ void FMemTagNodeSortingByTracker::Sort(TArray<Insights::FBaseTreeNodePtr>& Nodes
 	}
 	else // if (SortMode == ESortMode::Descending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 
 			if (MemTagNodeA->GetMemTrackerId() == MemTagNodeB->GetMemTrackerId())
@@ -155,13 +179,15 @@ void FMemTagNodeSortingByInstanceCount::Sort(TArray<Insights::FBaseTreeNodePtr>&
 {
 	if (SortMode == Insights::ESortMode::Ascending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 			const uint64 ValueA = MemTagNodeA->GetAggregatedStats().InstanceCount;
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 			const uint64 ValueB = MemTagNodeB->GetAggregatedStats().InstanceCount;
 
@@ -178,13 +204,15 @@ void FMemTagNodeSortingByInstanceCount::Sort(TArray<Insights::FBaseTreeNodePtr>&
 	}
 	else // if (SortMode == ESortMode::Descending)
 	{
-		NodesToSort.Sort([](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
+		NodesToSort.Sort([this](const Insights::FBaseTreeNodePtr& A, const Insights::FBaseTreeNodePtr& B) -> bool
 		{
-			ensure(A.IsValid() && A->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_DEFAULT_PRESORTING_NODES(A, B);
+
+			INSIGHTS_ENSURE(A.IsValid() && A->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeA = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(A);
 			const uint64 ValueA = MemTagNodeA->GetAggregatedStats().InstanceCount;
 
-			ensure(B.IsValid() && B->GetTypeName() == FMemTagNode::TypeName);
+			INSIGHTS_ENSURE(B.IsValid() && B->Is<FMemTagNode>());
 			const FMemTagNodePtr MemTagNodeB = StaticCastSharedPtr<FMemTagNode, Insights::FBaseTreeNode>(B);
 			const uint64 ValueB = MemTagNodeB->GetAggregatedStats().InstanceCount;
 
@@ -204,4 +232,6 @@ void FMemTagNodeSortingByInstanceCount::Sort(TArray<Insights::FBaseTreeNodePtr>&
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #undef INSIGHTS_DEFAULT_SORTING_NODES
+#undef INSIGHTS_DEFAULT_PRESORTING_NODES
+#undef INSIGHTS_ENSURE
 #undef LOCTEXT_NAMESPACE

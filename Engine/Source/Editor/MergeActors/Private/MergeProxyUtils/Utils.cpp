@@ -45,7 +45,7 @@ void BuildMergeComponentDataFromSelection(TArray<TSharedPtr<FMergeComponentData>
 		check(Actor != nullptr);
 
 		TArray<UPrimitiveComponent*> PrimComponents;
-		Actor->GetComponents<UPrimitiveComponent>(PrimComponents);
+		Actor->GetComponents(PrimComponents);
 		for (UPrimitiveComponent* PrimComponent : PrimComponents)
 		{
 			bool bInclude = false; // Should put into UI list
@@ -103,7 +103,7 @@ bool GetPackageNameForMergeAction(const FString& DefaultPackageName, FString& Ou
 		SaveAssetDialogConfig.DefaultPath = DefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = DefaultName;
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
-		SaveAssetDialogConfig.AssetClassNames = { UStaticMesh::StaticClass()->GetFName() };
+		SaveAssetDialogConfig.AssetClassNames = { UStaticMesh::StaticClass()->GetClassPathName() };
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 		FString SaveObjectPath = ContentBrowserModule.Get().CreateModalSaveAssetDialog(SaveAssetDialogConfig);

@@ -4,6 +4,8 @@
 #include "Animation/BlendSpace.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_BlendSpaceEvaluator)
+
 /////////////////////////////////////////////////////
 // FAnimNode_BlendSpaceEvaluator
 
@@ -36,5 +38,6 @@ void FAnimNode_BlendSpaceEvaluator::GatherDebugData(FNodeDebugData& DebugData)
 
 float FAnimNode_BlendSpaceEvaluator::GetPlayRate() const
 {
-	return 0.0f;
+	return bTeleportToNormalizedTime ? 0.0f : 1.0f;;
 }
+

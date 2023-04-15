@@ -14,6 +14,8 @@
 
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerAsset.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/NavigationData/NavigationDataChunkActor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionNavigationDataBuilder, Log, All);
@@ -25,17 +27,36 @@ UWorldPartitionNavigationDataBuilder::UWorldPartitionNavigationDataBuilder(const
 
 bool UWorldPartitionNavigationDataBuilder::PreRun(UWorld* World, FPackageSourceControlHelper& PackageHelper)
 {
+	// Set runtime data layer to be included in the base navmesh generation.
+	UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World);
+	for (const TObjectPtr<UDataLayerAsset> DataLayer : World->GetWorldSettings()->BaseNavmeshDataLayers)
+	{
+		if (DataLayer != nullptr)
+		{
+			const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayer);
+			if (DataLayerInstance == nullptr)
+			{
+				UE_LOG(LogWorldPartitionNavigationDataBuilder, Error, TEXT("Missing UDataLayerInstance for %s."), *DataLayer->GetName());
+			}
+			else if (DataLayerInstance->IsRuntime())
+			{
+				DataLayerShortNames.Add(FName(DataLayerInstance->GetDataLayerShortName()));
+			}
+		}
+	}
+	
 	const TSubclassOf<APartitionActor>& NavigationDataActorClass = ANavigationDataChunkActor::StaticClass();
 	uint32 GridSize = NavigationDataActorClass->GetDefaultObject<APartitionActor>()->GetDefaultGridSize(World);
 	GridSize = FMath::Max(GridSize, 1u);
 
 	// Size of loaded cell. Set as big as your hardware can afford.
 	const uint32 LoadingCellSizeSetting = World->GetWorldSettings()->NavigationDataBuilderLoadingCellSize;
-	IterativeCellSize = (LoadingCellSizeSetting / GridSize) * GridSize;
+	IterativeCellSize = GridSize * FMath::Max(LoadingCellSizeSetting / GridSize, 1u);
 	
 	// Extra padding around loaded cell.
-	// @todo: set value programatically.
-	IterativeCellOverlapSize = 2000; // navmesh tile size
+	// Make sure navigation is added and initialized before fetching the build overlap
+	FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorWorldPartitionBuildMode);
+	IterativeCellOverlapSize = FMath::CeilToInt32(FNavigationSystem::GetWorldPartitionNavigationDataBuilderOverlap(*World));
 
 	TArray<FString> Tokens, Switches;
 	UCommandlet::ParseCommandLine(FCommandLine::Get(), Tokens, Switches);
@@ -121,11 +142,6 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 			UE_LOG(LogWorldPartitionNavigationDataBuilder, Error, TEXT("Error deleting packages."));
 		}
 
-		if (!SavePackages(PackagesToClean.Array()))
-		{
-			return true;
-		}
-
 		// If we had packages to delete we need to notify the delete after the save. Else WP might try to load the deleted descriptors on the next iteration.
 		// Note: this notification is expected to be done by the SavePackages()
 		for (UPackage* Package : PackagesToClean)
@@ -175,10 +191,8 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 			else
 			{
 				PackagesToAdd.Add(ActorPackage);
+				PackagesToSave.Add(ActorPackage);
 			}
-
-			// Save all packages (we need to also save the ones we are deleting).
-			PackagesToSave.Add(ActorPackage);
 		}
 	}
 
@@ -186,25 +200,25 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 	if (!DeletePackages(PackageHelper, PackagesToDelete))
 	{
 		UE_LOG(LogWorldPartitionNavigationDataBuilder, Error, TEXT("Error deleting packages."));
-		return 1;
+		return true;
 	}
 
 	// Save packages
 	if (!PackagesToSave.IsEmpty())
 	{
 		{
-			// Checkout or remove read-only for packages to save
+			// Checkout or remove read-only for packages to add
 			TRACE_CPUPROFILER_EVENT_SCOPE(CheckoutPackages);
-			UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("Checking out %d packages."), PackagesToSave.Num());
+			UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("Checking out %d packages."), PackagesToAdd.Num());
 
 			if (PackageHelper.UseSourceControl())
 			{
-				FEditorFileUtils::CheckoutPackages(PackagesToSave, /*OutPackagesCheckedOut*/nullptr, /*bErrorIfAlreadyCheckedOut*/false);
+				FEditorFileUtils::CheckoutPackages(PackagesToAdd, /*OutPackagesCheckedOut*/nullptr, /*bErrorIfAlreadyCheckedOut*/false);
 			}
 			else
 			{
 				// Remove read-only
-				for (const UPackage* Package : PackagesToSave)
+				for (const UPackage* Package : PackagesToAdd)
 				{
 					const FString PackageFilename = SourceControlHelpers::PackageFilename(Package);
 					if (IPlatformFile::GetPlatformPhysical().FileExists(*PackageFilename))
@@ -212,7 +226,7 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 						if (!IPlatformFile::GetPlatformPhysical().SetReadOnly(*PackageFilename, /*bNewReadOnlyValue*/false))
 						{
 							UE_LOG(LogWorldPartitionNavigationDataBuilder, Error, TEXT("Error setting %s writable"), *PackageFilename);
-							return 1;
+							return true;
 						}
 					}
 				}
@@ -246,7 +260,7 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 			if (!PackageHelper.AddToSourceControl(PackageNamesToAdd))
 			{
 				UE_LOG(LogWorldPartitionNavigationDataBuilder, Error, TEXT("Error adding packages."));
-				return 1;
+				return true;
 			}
 		}
 
@@ -269,13 +283,13 @@ bool UWorldPartitionNavigationDataBuilder::GenerateNavigationData(UWorldPartitio
 
 	static int32 CallCount = 0;
 	CallCount++;
-	UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("%i. GenerateNavigationData for LoadedBounds %s"), CallCount, *LoadedBounds.ToString());
+	UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("Iteration %i. GenerateNavigationData for LoadedBounds %s"), CallCount, *LoadedBounds.ToString());
 
 	UWorld* World = WorldPartition->World;
 
 	// Generate navmesh
-	// Make sure navigation is added and initialized in EditorMode
-	FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
+	// Make sure navigation is added and initialized in EditorWorldPartitionBuildMode
+	FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorWorldPartitionBuildMode);
 
 	UNavigationSystemBase* NavSystem = World->GetNavigationSystem();
 	if (NavSystem == nullptr)
@@ -314,7 +328,13 @@ bool UWorldPartitionNavigationDataBuilder::GenerateNavigationData(UWorldPartitio
 
 	// A DataChunkActor will be generated for each tile touching the generating bounds.
 	const TSubclassOf<APartitionActor>& NavigationDataActorClass = ANavigationDataChunkActor::StaticClass();
-	const FIntRect GeneratingBounds2D(GeneratingBounds.Min.X, GeneratingBounds.Min.Y, GeneratingBounds.Max.X, GeneratingBounds.Max.Y);
+
+	int32 XMin = static_cast<int32>(GeneratingBounds.Min.X);
+	int32 YMin = static_cast<int32>(GeneratingBounds.Min.Y);
+	int32 XMax = static_cast<int32>(GeneratingBounds.Max.X);
+	int32 YMax = static_cast<int32>(GeneratingBounds.Max.Y);
+
+	const FIntRect GeneratingBounds2D(XMin, YMin, XMax, YMax);
 	FActorPartitionGridHelper::ForEachIntersectingCell(NavigationDataActorClass, GeneratingBounds2D, World->PersistentLevel,
 		[&WorldPartition, &ActorCount, World, &ValidNavigationDataChunkActors, &NavDataBounds, this](const UActorPartitionSubsystem::FCellCoord& InCellCoord, const FIntRect& InCellBounds)->bool
 		{
@@ -329,7 +349,7 @@ bool UWorldPartitionNavigationDataBuilder::GenerateNavigationData(UWorldPartitio
 				return false;
 			}
 
-			constexpr float HalfHeight = WORLDPARTITION_MAX * 0.5;
+			constexpr float HalfHeight = HALF_WORLD_MAX;
 			const FBox QueryBounds(FVector(CellBounds.Min.X, CellBounds.Min.Y, -HalfHeight), FVector(CellBounds.Max.X, CellBounds.Max.Y, HalfHeight));
 
 			if (!NavDataBounds.IsValid || !NavDataBounds.Intersect(QueryBounds))

@@ -9,9 +9,9 @@ public class Landscape : ModuleRules
 	{
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"Runtime/Engine/Private", // for Engine/Private/Collision/PhysXCollision.h
-				"Runtime/Landscape/Private",
-                "../Shaders/Shared"
+				Path.Combine(GetModuleDirectory("Engine"), "Private"), // for Engine/Private/Collision/PhysXCollision.h
+				Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+				"../Shaders/Shared"
             }
 		);
 
@@ -39,10 +39,6 @@ public class Landscape : ModuleRules
 		);
 
 		SetupModulePhysicsSupport(Target);
-		if (Target.bCompilePhysX && Target.bBuildEditor)
-		{
-			DynamicallyLoadedModuleNames.Add("PhysXCooking");
-		}
 
 		if (Target.Type == TargetType.Editor || Target.Type == TargetType.Program)
 		{
@@ -67,9 +63,16 @@ public class Landscape : ModuleRules
 					"MaterialUtilities",
 					"SlateCore",
 					"Slate",
-					"GeometryCore"
+					"GeometryCore",
+					"MeshUtilities",
+					"MeshUtilitiesCommon",
+					"MeshBuilderCommon",
+					"MeshBuilder",
 				}
 			);
+
+			DynamicallyLoadedModuleNames.Add("NaniteBuilder");
+			PrivateIncludePathModuleNames.Add("NaniteBuilder");
 
 			CircularlyReferencedDependentModules.AddRange(
 				new string[] {

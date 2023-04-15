@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemEOS.h"
+#include "OnlineSubsystemEOSPrivate.h"
 #include "OnlineSubsystemUtils.h"
 #include "UserManagerEOS.h"
 #include "OnlineSessionEOS.h"
@@ -223,7 +224,18 @@ bool FOnlineSubsystemEOS::PlatformCreate()
 	{
 		OverlayFlags |= EOS_PF_DISABLE_SOCIAL_OVERLAY;
 	}
-	PlatformOptions.Flags = IsRunningGame() ? OverlayFlags : EOS_PF_DISABLE_OVERLAY;
+#if WITH_EDITOR
+	if (!EOSSettings.bEnableEditorOverlay)
+	{
+		OverlayFlags |= EOS_PF_LOADING_IN_EDITOR;
+	}
+#endif
+
+	// Don't allow the overlay to be used in the editor when running PIE.
+	const bool bEditorOverlayAllowed = EOSSettings.bEnableEditorOverlay && InstanceName == FOnlineSubsystemImpl::DefaultInstanceName;
+	const bool bOverlayAllowed = IsRunningGame() || bEditorOverlayAllowed;
+
+	PlatformOptions.Flags = bOverlayAllowed ? OverlayFlags : EOS_PF_DISABLE_OVERLAY;
 	// Make the cache directory be in the user's writable area
 
 	const FString CacheDir = EOSSDKManager->GetCacheDirBase() / ArtifactName / EOSSettings.CacheDir;
@@ -395,9 +407,10 @@ bool FOnlineSubsystemEOS::Init()
 	}
 
 	UserManager = MakeShareable(new FUserManagerEOS(this));
+	UserManager->Init();
 	SessionInterfacePtr = MakeShareable(new FOnlineSessionEOS(this));
 	// Set the bucket id to use for all sessions based upon the name and version to avoid upgrade issues
-	SessionInterfacePtr->Init(EOSSDKManager->GetProductName() + TEXT("_") + EOSSDKManager->GetProductVersion());
+	SessionInterfacePtr->Init(EOSSDKManager->GetProductName() + TEXT("_") + FString::FromInt(GetBuildUniqueId()));
 	StatsInterfacePtr = MakeShareable(new FOnlineStatsEOS(this));
 	LeaderboardsInterfacePtr = MakeShareable(new FOnlineLeaderboardsEOS(this));
 	AchievementsInterfacePtr = MakeShareable(new FOnlineAchievementsEOS(this));
@@ -420,7 +433,6 @@ bool FOnlineSubsystemEOS::Shutdown()
 		EOS_Platform_Tick(*EOSPlatformHandle);
 	}
 
-	FCallbackBase::CancelAllCallbacks();
 	StopTicker();
 
 	if (SocketSubsystem)
@@ -541,7 +553,7 @@ FText FOnlineSubsystemEOS::GetOnlineServiceName() const
 }
 
 FOnlineSubsystemEOS::FOnlineSubsystemEOS(FName InInstanceName) :
-	FOnlineSubsystemImpl(EOS_SUBSYSTEM, InInstanceName)
+	IOnlineSubsystemEOS(EOS_SUBSYSTEM, InInstanceName)
 	, EOSSDKManager(nullptr)
 	, AuthHandle(nullptr)
 	, UIHandle(nullptr)
@@ -675,7 +687,7 @@ IVoiceChatUser* FOnlineSubsystemEOS::GetVoiceChatUserInterface(const FUniqueNetI
 		else
 		{
 			FEOSVoiceChatUser* VoiceChatUser = static_cast<FEOSVoiceChatUser*>(VoiceChatInterface->CreateUser());
-			VoiceChatUser->Login(UserManager->GetPlatformUserIdFromUniqueNetId(LocalUserId), FUniqueNetIdEOS::Cast(LocalUserId).ProductUserIdStr, FString(), FOnVoiceChatLoginCompleteDelegate());
+			VoiceChatUser->Login(UserManager->GetPlatformUserIdFromUniqueNetId(LocalUserId), LexToString(FUniqueNetIdEOS::Cast(LocalUserId).GetProductUserId()), FString(), FOnVoiceChatLoginCompleteDelegate());
 
 			const FOnlineSubsystemEOSVoiceChatUserWrapperRef& Wrapper = LocalVoiceChatUsers.Emplace(LocalUserId.AsShared(), MakeShared<FOnlineSubsystemEOSVoiceChatUserWrapper, ESPMode::ThreadSafe>(*VoiceChatUser));
 			Result = &Wrapper.Get();

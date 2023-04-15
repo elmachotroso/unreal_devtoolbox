@@ -10,6 +10,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "PrimitiveSceneProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SphereComponent)
+
 USphereComponent::USphereComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -39,7 +41,7 @@ bool InvalidateOrUpdateSphereBodySetup(BodySetupType& ShapeBodySetup, bool bUseA
 
 	// check for mal formed values
 	float Radius = SphereRadius;
-	if (Radius < KINDA_SMALL_NUMBER)
+	if (Radius < UE_KINDA_SMALL_NUMBER)
 	{
 		Radius = 0.1f;
 	}
@@ -205,3 +207,4 @@ bool USphereComponent::AreSymmetricRotations(const FQuat& A, const FQuat& B, con
 	// Not detecting rotations around non-uniform scale.
 	return Scale3D.GetAbs().AllComponentsEqual() || A.Equals(B);
 }
+

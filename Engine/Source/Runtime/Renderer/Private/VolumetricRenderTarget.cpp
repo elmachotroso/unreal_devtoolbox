@@ -6,8 +6,8 @@
 
 #include "VolumetricRenderTarget.h"
 #include "DeferredShadingRenderer.h"
-#include "RenderCore/Public/RenderGraphUtils.h"
-#include "RenderCore/Public/PixelShaderUtils.h"
+#include "RenderGraphUtils.h"
+#include "PixelShaderUtils.h"
 #include "ScenePrivate.h"
 #include "SceneTextureParameters.h"
 #include "SingleLayerWaterRendering.h"
@@ -19,37 +19,37 @@
 static TAutoConsoleVariable<int32> CVarVolumetricRenderTarget(
 	TEXT("r.VolumetricRenderTarget"), 1,
 	TEXT(""),
-	ECVF_SetByScalability | ECVF_RenderThreadSafe);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<float> CVarVolumetricRenderTargetUvNoiseScale(
 	TEXT("r.VolumetricRenderTarget.UvNoiseScale"), 0.5f,
 	TEXT("Used when r.VolumetricRenderTarget.UpsamplingMode is in a mode using jitter - this value scales the amount of jitter."),
-	ECVF_SetByScalability);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<float> CVarVolumetricRenderTargetUvNoiseSampleAcceptanceWeight(
 	TEXT("r.VolumetricRenderTarget.UvNoiseSampleAcceptanceWeight"), 20.0f,
 	TEXT("Used when r.VolumetricRenderTarget.UpsamplingMode is in a mode using jitter - this value control the acceptance of noisy cloud samples according to their similarities. A higher value means large differences will be less accepted for blending."),
-	ECVF_SetByScalability);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarVolumetricRenderTargetMode(
 	TEXT("r.VolumetricRenderTarget.Mode"), 0,
 	TEXT("[0] trace quarter resolution + reconstruct at half resolution + upsample [1] trace half res + reconstruct full res + upsample [2] trace at quarter resolution + reconstruct full resolution (cannot intersect with opaque meshes and forces UpsamplingMode=2 [3] trace 1/8 resolution + reconstruct at half resolution + upsample)"),
-	ECVF_SetByScalability);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarVolumetricRenderTargetUpsamplingMode(
 	TEXT("r.VolumetricRenderTarget.UpsamplingMode"), 4,
 	TEXT("Used in compositing volumetric RT over the scene. [0] bilinear [1] bilinear + jitter [2] nearest + depth test [3] bilinear + jitter + keep closest [4] bilaterial upsampling"),
-	ECVF_SetByScalability);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarVolumetricRenderTargetPreferAsyncCompute(
 	TEXT("r.VolumetricRenderTarget.PreferAsyncCompute"), 0,
 	TEXT("Whether to prefer using async compute to generate volumetric cloud render targets."),
-	ECVF_SetByScalability | ECVF_RenderThreadSafe);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarVolumetricRenderTargetReprojectionBoxConstraint(
 	TEXT("r.VolumetricRenderTarget.ReprojectionBoxConstraint"), 0,
 	TEXT("Whether reprojected data should be constrained to the new incoming cloud data neighborhod value."),
-	ECVF_SetByScalability | ECVF_RenderThreadSafe);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 
 static float GetUvNoiseSampleAcceptanceWeight()
@@ -572,6 +572,7 @@ class FComposeVolumetricRTOverScenePS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, WaterLinearDepthTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2DMS<float>, MSAADepthTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, LinearTextureSampler)
+		SHADER_PARAMETER_SAMPLER(SamplerState, WaterLinearDepthSampler)
 		RENDER_TARGET_BINDING_SLOTS()
 		SHADER_PARAMETER(float, UvOffsetScale)
 		SHADER_PARAMETER(float, UvOffsetSampleAcceptanceWeight)
@@ -593,7 +594,7 @@ class FComposeVolumetricRTOverScenePS : public FGlobalShader
 	{
 		FPermutationDomain PermutationVector(Parameters.PermutationId);
 
-		if ((!IsAnyForwardShadingEnabled(Parameters.Platform) || !RHISupportsMSAA(Parameters.Platform)) && PermutationVector.Get<FMSAASampleCount>() > 1)
+		if ((!IsForwardShadingEnabled(Parameters.Platform) || !RHISupportsMSAA(Parameters.Platform)) && PermutationVector.Get<FMSAASampleCount>() > 1)
 		{
 			// We only compile the MSAA support when Forward shading is enabled because MSAA can only be used in this case.
 			return false;
@@ -672,6 +673,7 @@ void ComposeVolumetricRenderTargetOverScene(
 		GetTextureSafeUvCoordBound(PassParameters->VolumetricTexture, PassParameters->VolumetricTextureValidCoordRect, PassParameters->VolumetricTextureValidUvRect);
 
 		PassParameters->WaterLinearDepthTexture = WaterPassData.DepthTexture;
+		PassParameters->WaterLinearDepthSampler = TStaticSamplerState<SF_Point>::GetRHI();
 		if (bShouldRenderSingleLayerWater)
 		{
 			const FSceneWithoutWaterTextures::FView& WaterPassViewData = WaterPassData.Views[ViewIndex];
@@ -707,7 +709,7 @@ void ComposeVolumetricRenderTargetOverSceneUnderWater(
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		FViewInfo& ViewInfo = Views[ViewIndex];
-		if (!ShouldViewRenderVolumetricCloudRenderTarget(ViewInfo))
+		if (!ShouldViewRenderVolumetricCloudRenderTarget(ViewInfo) || !ViewInfo.ShouldRenderView())
 		{
 			continue;
 		}
@@ -736,6 +738,7 @@ void ComposeVolumetricRenderTargetOverSceneUnderWater(
 		PassParameters->VolumetricDepthTexture = VolumetricDepthTexture;
 		PassParameters->WaterLinearDepthTexture = WaterPassData.DepthTexture;
 		PassParameters->LinearTextureSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+		PassParameters->WaterLinearDepthSampler = TStaticSamplerState<SF_Point>::GetRHI();
 		PassParameters->UvOffsetScale = VolumetricCloudRT.GetUvNoiseScale();
 		PassParameters->UvOffsetSampleAcceptanceWeight = GetUvNoiseSampleAcceptanceWeight();
 		PassParameters->FullResolutionToVolumetricBufferResolutionScale = FVector2f(1.0f / float(GetMainDownsampleFactor(VRTMode)), float(GetMainDownsampleFactor(VRTMode)));
@@ -749,7 +752,7 @@ void ComposeVolumetricRenderTargetOverSceneUnderWater(
 		PassParameters->VolumetricTextureSizeAndInvSize = FVector4f(VolumetricTextureSize.X, VolumetricTextureSize.Y, 1.0f / VolumetricTextureSize.X, 1.0f / VolumetricTextureSize.Y);
 
 		FPixelShaderUtils::AddFullscreenPass<FComposeVolumetricRTOverScenePS>(
-			GraphBuilder, ViewInfo.ShaderMap, RDG_EVENT_NAME("VolumetricComposeOverScene"), PixelShader, PassParameters, WaterPassViewData.ViewRect,
+			GraphBuilder, ViewInfo.ShaderMap, RDG_EVENT_NAME("SLW::VolumetricComposeOverScene"), PixelShader, PassParameters, WaterPassViewData.ViewRect,
 			PreMultipliedColorTransmittanceBlend);
 	}
 }

@@ -2,11 +2,11 @@
 
 #include "Trace/Config.h"
 
-#if UE_TRACE_ENABLED
+#if UE_TRACE_ENABLED && PLATFORM_WINDOWS
 
 #include "Windows/AllowWindowsPlatformTypes.h"
 #	include "Windows/WindowsHWrapper.h"
-#	define _WINSOCK_DEPRECATED_NO_WARNINGS  
+#	define _WINSOCK_DEPRECATED_NO_WARNINGS
 #	include <winsock2.h>
 #	include <ws2tcpip.h>
 #	pragma comment(lib, "ws2_32.lib")
@@ -20,7 +20,7 @@ namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
-UPTRINT ThreadCreate(const ANSICHAR* Name, void (*Entry)())
+UPTRINT ThreadCreate(const ANSICHAR*, void (*Entry)())
 {
 	DWORD (WINAPI *WinApiThunk)(void*) = [] (void* Param) -> DWORD
 	{

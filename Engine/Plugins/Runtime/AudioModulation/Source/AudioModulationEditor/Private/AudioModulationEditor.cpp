@@ -1,17 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "AudioModulationEditor.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetTypeActions/AssetTypeActions_SoundControlBus.h"
 #include "AssetTypeActions/AssetTypeActions_SoundControlBusMix.h"
 #include "AssetTypeActions/AssetTypeActions_SoundModulationGenerator.h"
 #include "AssetTypeActions/AssetTypeActions_SoundModulationParameter.h"
 #include "AssetTypeActions/AssetTypeActions_SoundModulationPatch.h"
+#include "AudioModulation.h"
 #include "Editors/ModulationPatchCurveEditorViewStacked.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
-#include "IAssetRegistry.h"
+#include "IAudioModulation.h"
 #include "ICurveEditorModule.h"
 #include "Internationalization/Internationalization.h"
 #include "Layouts/SoundControlBusMixStageLayout.h"
@@ -19,15 +21,21 @@
 #include "Layouts/SoundModulationParameterSettingsLayout.h"
 #include "Layouts/SoundModulationTransformLayout.h"
 #include "LevelEditor.h"
+#include "Modules/ModuleManager.h"
 #include "Sound/SoundBase.h"
 #include "SoundModulationParameter.h"
-#include "SoundModulationTransform.h"
+#include "SoundModulationPatch.h"
 #include "Templates/SharedPointer.h"
 #include "Textures/SlateIcon.h"
 #include "UObject/UObjectIterator.h"
 
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
+#include "MetasoundDataReference.h"
+#include "MetasoundEditorModule.h"
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT
 
 DEFINE_LOG_CATEGORY(LogAudioModulationEditor);
+
 
 namespace AudioModulationEditor
 {
@@ -74,6 +82,9 @@ void FAudioModulationEditorModule::SetIcon(const FString& ClassName)
 
 void FAudioModulationEditorModule::StartupModule()
 {
+	// Seems to be required to avoid missing class definition on start-up for some platforms when the asset manager loads
+	FModuleManager::LoadModuleChecked<FAudioModulationModule>("AudioModulation");
+
 	static const FName AudioModulationStyleName(TEXT("AudioModulationStyle"));
 	StyleSet = MakeShared<FSlateStyleSet>(AudioModulationStyleName);
 
@@ -98,7 +109,7 @@ void FAudioModulationEditorModule::StartupModule()
 	RegisterCustomPropertyLayouts();
 
 	ICurveEditorModule& CurveEditorModule = FModuleManager::LoadModuleChecked<ICurveEditorModule>("CurveEditor");
-	FModPatchCurveEditorModel::ViewId = CurveEditorModule.RegisterView(FOnCreateCurveEditorView::CreateStatic(
+	FModPatchCurveEditorModel::ModPatchViewId = CurveEditorModule.RegisterView(FOnCreateCurveEditorView::CreateStatic(
 		[](TWeakPtr<FCurveEditor> WeakCurveEditor) -> TSharedRef<SCurveEditorView>
 		{
 			return SNew(SModulationPatchEditorViewStacked, WeakCurveEditor);
@@ -107,13 +118,25 @@ void FAudioModulationEditorModule::StartupModule()
 
 	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
 
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
+	{
+		using namespace Metasound;
+		using namespace Metasound::Editor;
+		IMetasoundEditorModule& MetaSoundEditorModule = FModuleManager::GetModuleChecked<IMetasoundEditorModule>("MetaSoundEditor");
+		MetaSoundEditorModule.RegisterPinType("Modulator");
+		MetaSoundEditorModule.RegisterPinType(CreateArrayTypeNameFromElementTypeName("Modulator"));
+		MetaSoundEditorModule.RegisterPinType("ModulationParameter");
+		MetaSoundEditorModule.RegisterPinType(CreateArrayTypeNameFromElementTypeName("ModulationParameter"));
+	}
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT
+
 	// All parameters are required to always be loaded in editor to enable them to be referenced via object
 	// metadata and custom layouts, even if they are not referenced by runtime uobjects/systems directly
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	TArray<FAssetData> Assets;
 	AssetRegistry.OnAssetAdded().AddLambda([](const FAssetData& InAssetData)
 	{
-		if (InAssetData.GetClass()->IsChildOf<USoundModulationParameter>())
+		UClass* AssetDataClass = InAssetData.GetClass();
+		if (AssetDataClass && AssetDataClass->IsChildOf<USoundModulationParameter>())
 		{
 			if (USoundModulationParameter* Parameter = CastChecked<USoundModulationParameter>(InAssetData.GetAsset()))
 			{
@@ -164,9 +187,10 @@ void FAudioModulationEditorModule::ShutdownModule()
 
 	if (ICurveEditorModule* CurveEditorModule = FModuleManager::GetModulePtr<ICurveEditorModule>("CurveEditor"))
 	{
-		CurveEditorModule->UnregisterView(FModPatchCurveEditorModel::ViewId);
+		CurveEditorModule->UnregisterView(FModPatchCurveEditorModel::ModPatchViewId);
 	}
-	FModPatchCurveEditorModel::ViewId = ECurveEditorViewID::Invalid;
+
+	FModPatchCurveEditorModel::ModPatchViewId = ECurveEditorViewID::Invalid;
 
 	FSlateStyleRegistry::UnRegisterSlateStyle(*StyleSet.Get());
 }

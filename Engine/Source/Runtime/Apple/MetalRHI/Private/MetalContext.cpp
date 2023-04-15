@@ -161,28 +161,21 @@ static mtlpp::Device GetMTLDevice(uint32& DeviceIndex)
 	
 	ns::Array<mtlpp::Device> DeviceList;
 	
-	if (FPlatformMisc::MacOSXVersionCompare(10, 13, 4) >= 0)
-	{
-			DeviceList = mtlpp::Device::CopyAllDevicesWithObserver(GMetalDeviceObserver, ^(const mtlpp::Device & Device, const ns::String & Notification)
-			{
-				if ([Notification.GetPtr() isEqualToString:MTLDeviceWasAddedNotification])
-				{
-					FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::Added);
-				}
-				else if ([Notification.GetPtr() isEqualToString:MTLDeviceRemovalRequestedNotification])
-				{
-					FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::RemovalRequested);
-				}
-				else if ([Notification.GetPtr() isEqualToString:MTLDeviceWasRemovedNotification])
-				{
-					FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::Removed);
-				}
-			});
-	}
-	else
-	{
-		DeviceList = mtlpp::Device::CopyAllDevices();
-	}
+    DeviceList = mtlpp::Device::CopyAllDevicesWithObserver(GMetalDeviceObserver, ^(const mtlpp::Device & Device, const ns::String & Notification)
+    {
+        if ([Notification.GetPtr() isEqualToString:MTLDeviceWasAddedNotification])
+        {
+            FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::Added);
+        }
+        else if ([Notification.GetPtr() isEqualToString:MTLDeviceRemovalRequestedNotification])
+        {
+            FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::RemovalRequested);
+        }
+        else if ([Notification.GetPtr() isEqualToString:MTLDeviceWasRemovedNotification])
+        {
+            FPlatformMisc::GPUChangeNotification(Device.GetRegistryID(), FPlatformMisc::EMacGPUNotification::Removed);
+        }
+    });
 	
 	const int32 NumDevices = DeviceList.GetSize();
 	
@@ -198,7 +191,7 @@ static mtlpp::Device GetMTLDevice(uint32& DeviceIndex)
  	int32 OverrideRendererId = FPlatformMisc::GetExplicitRendererIndex();
 	
 	int32 ExplicitRendererId = OverrideRendererId >= 0 ? OverrideRendererId : HmdGraphicsAdapter;
-	if(ExplicitRendererId < 0 && GPUs.Num() > 1 && FMacPlatformMisc::MacOSXVersionCompare(10, 11, 5) == 0)
+	if(ExplicitRendererId < 0 && GPUs.Num() > 1)
 	{
 		OverrideRendererId = -1;
 		bool bForceExplicitRendererId = false;
@@ -458,10 +451,7 @@ FMetalDeviceContext::~FMetalDeviceContext()
     delete UniformBufferAllocator;
 	
 #if PLATFORM_MAC
-	if (FPlatformMisc::MacOSXVersionCompare(10, 13, 4) >= 0)
-	{
-		mtlpp::Device::RemoveDeviceObserver(GMetalDeviceObserver);
-	}
+    mtlpp::Device::RemoveDeviceObserver(GMetalDeviceObserver);
 #endif
 }
 
@@ -766,18 +756,7 @@ void FMetalDeviceContext::ReleaseTexture(FMetalTexture& Texture)
 	{
 		check(Texture);
 		FreeListMutex.Lock();
-        if (Texture.GetStorageMode() == mtlpp::StorageMode::Private)
-        {
-            Heap.ReleaseTexture(nullptr, Texture);
-			
-			// Ensure that the Objective-C handle can't disappear prior to the GPU being done with it without racing with the above
-			if(!ObjectFreeList.Contains(Texture.GetPtr()))
-			{
-				[Texture.GetPtr() retain];
-				ObjectFreeList.Add(Texture.GetPtr());
-        }
-        }
-		else if(!UsedTextures.Contains(Texture))
+		if(!UsedTextures.Contains(Texture))
 		{
 			UsedTextures.Add(MoveTemp(Texture));
 		}
@@ -1177,36 +1156,10 @@ void FMetalContext::TransitionResource(FRHIUnorderedAccessView* InResource)
 {
 	FMetalUnorderedAccessView* UAV = ResourceCast(InResource);
 
-	// figure out which one of the resources we need to set
-	FMetalStructuredBuffer* StructuredBuffer = UAV->SourceView->SourceStructuredBuffer.GetReference();
-	FMetalVertexBuffer*     VertexBuffer     = UAV->SourceView->SourceVertexBuffer.GetReference();
-	FMetalIndexBuffer*      IndexBuffer      = UAV->SourceView->SourceIndexBuffer.GetReference();
-	FRHITexture*            Texture          = UAV->SourceView->SourceTexture.GetReference();
-	FMetalSurface*          Surface          = UAV->SourceView->TextureView;
-
-	if (StructuredBuffer)
+	if (UAV->bTexture)
 	{
-		RenderPass.TransitionResources(StructuredBuffer->GetCurrentBuffer());
-	}
-	else if (VertexBuffer && VertexBuffer->GetCurrentBufferOrNil())
-	{
-		RenderPass.TransitionResources(VertexBuffer->GetCurrentBuffer());
-	}
-	else if (IndexBuffer)
-	{
-		RenderPass.TransitionResources(IndexBuffer->GetCurrentBuffer());
-	}
-	else if (Surface)
-	{
-		RenderPass.TransitionResources(Surface->Texture.GetParentTexture());
-	}
-	else if (Texture)
-	{
-		if (!Surface)
-		{
-			Surface = GetMetalSurfaceFromRHITexture(Texture);
-		}
-		if ((Surface != nullptr) && Surface->Texture)
+		FMetalSurface* Surface = UAV->GetSourceTexture();
+		if (Surface->Texture)
 		{
 			RenderPass.TransitionResources(Surface->Texture);
 			if (Surface->MSAATexture)
@@ -1214,6 +1167,11 @@ void FMetalContext::TransitionResource(FRHIUnorderedAccessView* InResource)
 				RenderPass.TransitionResources(Surface->MSAATexture);
 			}
 		}
+	}
+	else
+	{
+		FMetalResourceMultiBuffer* Buffer = UAV->GetSourceBuffer();
+		RenderPass.TransitionResources(Buffer->GetCurrentBuffer());
 	}
 }
 
@@ -1733,96 +1691,3 @@ void FMetalDeviceContext::EndParallelRenderCommandEncoding(void)
 		FPlatformAtomics::AtomicStore(&NumParallelContextsInPass, 0);
 	}
 }
-
-#if METAL_SUPPORTS_PARALLEL_RHI_EXECUTE
-
-class FMetalCommandContextContainer : public IRHICommandContextContainer
-{
-	FMetalRHICommandContext* CmdContext;
-	int32 Index;
-	int32 Num;
-	
-public:
-	
-	/** Custom new/delete with recycling */
-	void* operator new(size_t Size);
-	void operator delete(void *RawMemory);
-	
-	FMetalCommandContextContainer(int32 InIndex, int32 InNum)
-	: CmdContext(nullptr)
-	, Index(InIndex)
-	, Num(InNum)
-	{
-		CmdContext = GetMetalDeviceContext().AcquireContext(Index, Num);
-		check(CmdContext);
-	}
-	
-	virtual ~FMetalCommandContextContainer() override final
-	{
-		check(!CmdContext);
-	}
-	
-	virtual IRHICommandContext* GetContext() override final
-	{
-		check(CmdContext);
-		CmdContext->GetInternalContext().InitFrame(false, Index, Num);
-		return CmdContext;
-	}
-	
-	virtual void FinishContext() override final
-	{
-	}
-
-	virtual void SubmitAndFreeContextContainer(int32 NewIndex, int32 NewNum) override final
-	{
-		if (CmdContext)
-		{
-			check(Index == NewIndex && Num == NewNum);
-			
-			if (Index == (Num - 1))
-			{
-				TRefCountPtr<FMetalFence> Fence = CmdContext->GetInternalContext().GetParallelPassEndFence();
-				GetMetalDeviceContext().SetParallelPassFences(Fence, nil);
-			}
-
-			CmdContext->GetInternalContext().FinishFrame(false);
-			GetMetalDeviceContext().EndParallelRenderCommandEncoding();
-
-			CmdContext->GetInternalContext().GetCommandList().Submit(Index, Num);
-			
-			GetMetalDeviceContext().ReleaseContext(CmdContext);
-			CmdContext = nullptr;
-			check(!CmdContext);
-		}
-		delete this;
-	}
-};
-
-static TLockFreeFixedSizeAllocator<sizeof(FMetalCommandContextContainer), PLATFORM_CACHE_LINE_SIZE, FThreadSafeCounter> FMetalCommandContextContainerAllocator;
-
-void* FMetalCommandContextContainer::operator new(size_t Size)
-{
-	return FMemory::Malloc(Size);
-}
-
-/**
- * Custom delete
- */
-void FMetalCommandContextContainer::operator delete(void *RawMemory)
-{
-	FMemory::Free(RawMemory);
-}
-
-IRHICommandContextContainer* FMetalDynamicRHI::RHIGetCommandContextContainer(int32 Index, int32 Num)
-{
-	return new FMetalCommandContextContainer(Index, Num);
-}
-
-#else
-
-IRHICommandContextContainer* FMetalDynamicRHI::RHIGetCommandContextContainer(int32 Index, int32 Num)
-{
-	return nullptr;
-}
-
-#endif

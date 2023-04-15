@@ -1,31 +1,56 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BodyInstanceCustomization.h"
-#include "Components/SceneComponent.h"
+
 #include "Components/PrimitiveComponent.h"
-#include "Components/StaticMeshComponent.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "Components/ShapeComponent.h"
-#include "Engine/CollisionProfile.h"
-#include "Kismet2/ComponentEditorUtils.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "DestructibleInterface.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "IDetailGroup.h"
+#include "Engine/CollisionProfile.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Text/TextLayout.h"
+#include "Framework/Views/TableViewTypeTraits.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
-#include "ScopedTransaction.h"
-#include "Widgets/SToolTip.h"
 #include "IDocumentation.h"
-#include "Widgets/Input/SNumericEntryBox.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/ComponentEditorUtils.h"
+#include "Layout/Margin.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "ObjectEditorUtils.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-#include "ObjectEditorUtils.h"
-#include "DestructibleInterface.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+class USceneComponent;
 
 #define LOCTEXT_NAMESPACE "BodyInstanceCustomization"
 
@@ -41,8 +66,13 @@ FBodyInstanceCustomization::FBodyInstanceCustomization()
 
 UStaticMeshComponent* FBodyInstanceCustomization::GetDefaultCollisionProvider(const FBodyInstance* BI) const
 {
+	if (!BI)
+	{
+		return nullptr;
+	}
+
 	UPrimitiveComponent* OwnerComp = BI->OwnerComponent.Get();
-	if(!OwnerComp)
+	if (!OwnerComp)
 	{
 		TWeakObjectPtr<UPrimitiveComponent> FoundComp = BodyInstanceToPrimComponent.FindRef(BI);
 		OwnerComp = FoundComp.Get();
@@ -55,7 +85,7 @@ UStaticMeshComponent* FBodyInstanceCustomization::GetDefaultCollisionProvider(co
 bool FBodyInstanceCustomization::CanUseDefaultCollision() const
 {
 	bool bResult = BodyInstances.Num() > 0;
-	for(const FBodyInstance* BI : BodyInstances)
+	for (const FBodyInstance* BI : BodyInstances)
 	{
 		bResult &= GetDefaultCollisionProvider(BI) != nullptr;
 	}
@@ -166,7 +196,7 @@ void FBodyInstanceCustomization::AddCollisionCategory(TSharedRef<class IProperty
 }
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils )
+void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils )
 {
 	BodyInstanceHandle = StructPropertyHandle;
 
@@ -175,7 +205,7 @@ void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<class IPropertyHa
 	StructPropertyHandle->AccessRawData(StructPtrs);
 	check(StructPtrs.Num() != 0);
 
-	BodyInstances.AddUninitialized(StructPtrs.Num());
+	BodyInstances.AddZeroed(StructPtrs.Num());
 	for (auto Iter = StructPtrs.CreateIterator(); Iter; ++Iter)
 	{
 		check(*Iter);
@@ -186,7 +216,7 @@ void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<class IPropertyHa
 	StructPropertyHandle->GetOuterObjects(OwningObjects);
 
 	PrimComponents.Empty(OwningObjects.Num());
-	for(UObject* Obj : OwningObjects)
+	for (UObject* Obj : OwningObjects)
 	{
 		if(UPrimitiveComponent* PrimComponent = Cast<UPrimitiveComponent>(Obj))
 		{
@@ -207,7 +237,6 @@ void FBodyInstanceCustomization::CustomizeChildren( TSharedRef<class IPropertyHa
 
 	if(CollisionCategoryHandle.IsValid())
 	{
-		
 		UseDefaultCollisionHandle = CollisionCategoryHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(UStaticMeshComponent, bUseDefaultCollision));
 	}
 
@@ -1290,8 +1319,7 @@ void FBodyInstanceCustomizationHelper::CustomizeDetails( IDetailLayoutBuilder& D
 
 		AddMaxAngularVelocity(PhysicsCategory, BodyInstanceHandler);
 
-#if WITH_CHAOS
-		// Hide PhysX-Only settings in Chaos
+		// Hide legacy settings in Chaos
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, DOFMode))->MarkHiddenByCustomization();
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, bLockTranslation))->MarkHiddenByCustomization();
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, bLockRotation))->MarkHiddenByCustomization();
@@ -1305,7 +1333,7 @@ void FBodyInstanceCustomizationHelper::CustomizeDetails( IDetailLayoutBuilder& D
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, VelocitySolverIterationCount))->MarkHiddenByCustomization();
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, MaxDepenetrationVelocity))->MarkHiddenByCustomization();
 		BodyInstanceHandler->GetChildHandle(GET_MEMBER_NAME_CHECKED(FBodyInstance, CustomDOFPlaneNormal))->MarkHiddenByCustomization();
-#endif
+
 		//Add the rest
 		uint32 NumChildren = 0;
 		BodyInstanceHandler->GetNumChildren(NumChildren);

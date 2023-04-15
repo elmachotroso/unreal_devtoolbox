@@ -10,6 +10,7 @@
 #include "Linux/LinuxPlatformApplicationMisc.h"
 #include "IInputDeviceModule.h"
 #include "IHapticDevice.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 //
 // GameController thresholds
@@ -29,6 +30,21 @@ float ShortToNormalFloat(short AxisVal)
 	// normalize [-32768..32767] -> [-1..1]
 	const float Norm = (AxisVal <= 0 ? 32768.f : 32767.f);
 	return float(AxisVal) / Norm;
+}
+
+namespace UE::Input
+{
+	/** A helper method for converting an Input Device id to an int32 */
+	static int32 ConvertInputDeviceToInt(FInputDeviceId DeviceId)
+	{
+		int32 UserStateControllerId = INDEX_NONE;
+		IPlatformInputDeviceMapper& Mapper = IPlatformInputDeviceMapper::Get();
+
+		FPlatformUserId UserId = Mapper.GetUserForInputDevice(DeviceId);
+		Mapper.RemapUserAndDeviceToControllerId(UserId, UserStateControllerId, DeviceId);
+
+		return UserStateControllerId;
+	}
 }
 
 FLinuxApplication* LinuxApplication = NULL;
@@ -341,7 +357,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					int32 BorderSizeX, BorderSizeY;
 					CurrentEventWindow->GetNativeBordersSize(BorderSizeX, BorderSizeY);
 
-					LinuxCursor->SetCachedPosition(motionEvent.x + Props.Location.X + BorderSizeX, motionEvent.y + Props.Location.Y + BorderSizeY);
+					LinuxCursor->SetCachedPosition((int32)(motionEvent.x + Props.Location.X + BorderSizeX), (int32)(motionEvent.y + Props.Location.Y + BorderSizeY));
 				}
 
 				if( !CurrentEventWindow->GetDefinition().HasOSWindowBorder )
@@ -349,7 +365,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					if ( CurrentEventWindow->IsRegularWindow() )
 					{
 						FVector2D CurrentPosition = LinuxCursor->GetPosition();
-						MessageHandler->GetWindowZoneForPoint( CurrentEventWindow.ToSharedRef(), CurrentPosition.X - Props.Location.X, CurrentPosition.Y - Props.Location.Y );
+						MessageHandler->GetWindowZoneForPoint(CurrentEventWindow.ToSharedRef(), (int32)(CurrentPosition.X - Props.Location.X), (int32)(CurrentPosition.Y - Props.Location.Y));
 						MessageHandler->OnCursorSet();
 					}
 				}
@@ -447,7 +463,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 	case SDL_MOUSEWHEEL:
 		{
 			SDL_MouseWheelEvent *WheelEvent = &Event.wheel;
-			float Amount = WheelEvent->y * fMouseWheelScrollAccel;
+			float Amount = (float)WheelEvent->y * fMouseWheelScrollAccel;
 
 			MessageHandler->OnMouseWheel(Amount);
 		}
@@ -476,6 +492,7 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 			}
 
 			SDLControllerState &ControllerState = ControllerStates[caxisEvent.which];
+			FPlatformUserId UserId = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(ControllerState.DeviceId);
 
 			switch (caxisEvent.axis)
 			{
@@ -485,26 +502,26 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[0])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickRight, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickRight, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[0] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[0])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickRight, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickRight, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[0] = false;
 				}
 				if(caxisEvent.value < -GAMECONTROLLER_LEFT_THUMB_DEADZONE)
 				{
 					if(!ControllerState.AnalogOverThreshold[1])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickLeft, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickLeft, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[1] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[1])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickLeft, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickLeft, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[1] = false;
 				}
 				break;
@@ -515,26 +532,26 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[2])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickDown, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickDown, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[2] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[2])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickDown, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickDown, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[2] = false;
 				}
 				if(caxisEvent.value < -GAMECONTROLLER_LEFT_THUMB_DEADZONE)
 				{
 					if(!ControllerState.AnalogOverThreshold[3])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickUp, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftStickUp, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[3] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[3])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickUp, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftStickUp, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[3] = false;
 				}
 				break;
@@ -544,26 +561,26 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[4])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickRight, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickRight, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[4] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[4])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickRight, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickRight, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[4] = false;
 				}
 				if(caxisEvent.value < -GAMECONTROLLER_RIGHT_THUMB_DEADZONE)
 				{
 					if(!ControllerState.AnalogOverThreshold[5])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickLeft, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickLeft, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[5] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[5])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickLeft, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickLeft, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[5] = false;
 				}
 				break;
@@ -574,26 +591,26 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[6])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickDown, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickDown, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[6] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[6])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickDown, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickDown, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[6] = false;
 				}
 				if(caxisEvent.value < -GAMECONTROLLER_RIGHT_THUMB_DEADZONE)
 				{
 					if(!ControllerState.AnalogOverThreshold[7])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickUp, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightStickUp, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[7] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[7])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickUp, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightStickUp, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[7] = false;
 				}
 				break;
@@ -603,13 +620,13 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[8])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftTriggerThreshold, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::LeftTriggerThreshold, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[8] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[8])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftTriggerThreshold, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::LeftTriggerThreshold, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[8] = false;
 				}
 				break;
@@ -619,13 +636,13 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				{
 					if(!ControllerState.AnalogOverThreshold[9])
 					{
-						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightTriggerThreshold, ControllerState.ControllerIndex, false);
+						MessageHandler->OnControllerButtonPressed(FGamepadKeyNames::RightTriggerThreshold, UserId, ControllerState.DeviceId, false);
 						ControllerState.AnalogOverThreshold[9] = true;
 					}
 				}
 				else if(ControllerState.AnalogOverThreshold[9])
 				{
-					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightTriggerThreshold, ControllerState.ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(FGamepadKeyNames::RightTriggerThreshold, UserId, ControllerState.DeviceId, false);
 					ControllerState.AnalogOverThreshold[9] = false;
 				}
 				break;
@@ -701,13 +718,15 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 
 			if (Button != FGamepadKeyNames::Invalid)
 			{
+				FPlatformUserId UserId = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(ControllerStates[cbuttonEvent.which].DeviceId);
+
 				if(cbuttonEvent.type == SDL_CONTROLLERBUTTONDOWN)
 				{
-					MessageHandler->OnControllerButtonPressed(Button, ControllerStates[cbuttonEvent.which].ControllerIndex, false);
+					MessageHandler->OnControllerButtonPressed(Button, UserId, ControllerStates[cbuttonEvent.which].DeviceId, false);
 				}
 				else
 				{
-					MessageHandler->OnControllerButtonReleased(Button, ControllerStates[cbuttonEvent.which].ControllerIndex, false);
+					MessageHandler->OnControllerButtonReleased(Button, UserId, ControllerStates[cbuttonEvent.which].DeviceId, false);
 				}
 			}
 		}
@@ -1124,11 +1143,13 @@ void FLinuxApplication::ProcessDeferredEvents( const float TimeDelta )
 
 void FLinuxApplication::PollGameDeviceState( const float TimeDelta )
 {
+	IPlatformInputDeviceMapper& Mapper = IPlatformInputDeviceMapper::Get();
 	for(auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
 	{
 		for(auto Event = ControllerIt.Value().AxisEvents.CreateConstIterator(); Event; ++Event)
 		{
-			MessageHandler->OnControllerAnalog(Event.Key(), ControllerIt.Value().ControllerIndex, Event.Value());
+			FPlatformUserId UserId = Mapper.GetUserForInputDevice(ControllerIt.Value().DeviceId);
+			MessageHandler->OnControllerAnalog(Event.Key(), UserId, ControllerIt.Value().DeviceId, Event.Value());
 		}
 		ControllerIt.Value().AxisEvents.Empty();
 
@@ -1170,18 +1191,18 @@ TCHAR FLinuxApplication::ConvertChar( SDL_Keysym Keysym )
 		return 0;
 	}
 
-	TCHAR Char = SDL_GetKeyFromScancode(Keysym.scancode);
+	TCHAR Char = (TCHAR)SDL_GetKeyFromScancode(Keysym.scancode);
 
     if (Keysym.mod & (KMOD_LSHIFT | KMOD_RSHIFT))
     {
         // Convert to uppercase (FIXME: what about CAPS?)
 		if( SDL_GetKeyFromScancode(Keysym.scancode)  >= 97 && SDL_GetKeyFromScancode(Keysym.scancode)  <= 122)
         {
-            return Keysym.sym - 32;
+            return (TCHAR)(Keysym.sym - 32);
         }
 		else if( SDL_GetKeyFromScancode(Keysym.scancode) >= 91 && SDL_GetKeyFromScancode(Keysym.scancode)  <= 93)
         {
-			return SDL_GetKeyFromScancode(Keysym.scancode) + 32; // [ \ ] -> { | }
+			return (TCHAR)(SDL_GetKeyFromScancode(Keysym.scancode) + 32); // [ \ ] -> { | }
         }
         else
         {
@@ -1366,17 +1387,28 @@ FModifierKeysState FLinuxApplication::GetModifierKeys() const
 	return FModifierKeysState( bIsLeftShiftDown, bIsRightShiftDown, bIsLeftControlDown, bIsRightControlDown, bIsLeftAltDown, bIsRightAltDown, false, false, bAreCapsLocked );
 }
 
-
 void FLinuxApplication::SetCapture( const TSharedPtr< FGenericWindow >& InWindow )
 {
 	bIsMouseCaptureEnabled = InWindow.IsValid();
 	UpdateMouseCaptureWindow( bIsMouseCaptureEnabled ? ((FLinuxWindow*)InWindow.Get())->GetHWnd() : NULL );
 }
 
-
 void* FLinuxApplication::GetCapture( void ) const
 {
 	return ( bIsMouseCaptureEnabled && MouseCaptureWindow ) ? MouseCaptureWindow : NULL;
+}
+
+bool FLinuxApplication::IsGamepadAttached() const
+{
+	for (const TPair<SDL_JoystickID, SDLControllerState>& ControllerState : ControllerStates)
+	{
+		if (SDL_GameControllerGetAttached(ControllerState.Value.Controller))
+		{
+			return true;
+		}
+	}
+	
+	return false;
 }
 
 void FLinuxApplication::UpdateMouseCaptureWindow(SDL_HWindow TargetWindow)
@@ -1867,7 +1899,7 @@ bool FLinuxApplication::IsMouseAttached() const
 
 	for (int i=0; i<9; i++)
 	{
-		Mouse[MouseIdx] = '0' + i;
+		Mouse[MouseIdx] = (char)('0' + i);
 		if (access(Mouse, F_OK) == 0)
 		{
 			return true;
@@ -1887,7 +1919,8 @@ void FLinuxApplication::SetForceFeedbackChannelValue(int32 ControllerId, FForceF
 	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
 	{
 		auto& ControllerState = ControllerIt.Value();
-		if (ControllerState.ControllerIndex == ControllerId)
+		int32 ControllerIndex = UE::Input::ConvertInputDeviceToInt(ControllerState.DeviceId);
+		if (ControllerIndex == ControllerId)
 		{
 			if (ControllerState.Haptic != nullptr)
 			{
@@ -1927,7 +1960,8 @@ void FLinuxApplication::SetForceFeedbackChannelValues(int32 ControllerId, const 
 	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
 	{
 		auto& ControllerState = ControllerIt.Value();
-		if (ControllerState.ControllerIndex == ControllerId)
+		int32 ControllerIndex = UE::Input::ConvertInputDeviceToInt(ControllerState.DeviceId);
+		if (ControllerIndex == ControllerId)
 		{
 			if (ControllerState.Haptic != nullptr)
 			{
@@ -1992,15 +2026,15 @@ void FLinuxApplication::SDLControllerState::UpdateHapticEffect()
 	{
 		Effect.type = SDL_HAPTIC_LEFTRIGHT;
 		Effect.leftright.length = 1000;
-		Effect.leftright.large_magnitude = 32767.0f * LargeValue;
-		Effect.leftright.small_magnitude = 32767.0f * SmallValue;
+		Effect.leftright.large_magnitude = (uint16)(32767.0f * LargeValue);
+		Effect.leftright.small_magnitude = (uint16)(32767.0f * SmallValue);
 	}
 	else if (SDL_HapticQuery(Haptic) & SDL_HAPTIC_SINE)
 	{
 		Effect.type = SDL_HAPTIC_SINE;
 		Effect.periodic.length = 1000;
 		Effect.periodic.period = 1000;
-		Effect.periodic.magnitude = 32767.0f * FMath::Max(SmallValue, LargeValue);
+		Effect.periodic.magnitude = (uint16)(32767.0f * FMath::Max(SmallValue, LargeValue));
 	}
 	else
 	{
@@ -2054,10 +2088,13 @@ void FLinuxApplication::AddGameController(int Index)
 		return;
 	}
 
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
 	uint32 UsedBits = 0;
 	for (auto ControllerIt = ControllerStates.CreateIterator(); ControllerIt; ++ControllerIt)
 	{
-		UsedBits |= (1 << ControllerIt.Value().ControllerIndex);
+		FPlatformUserId UserId = DeviceMapper.GetUserForInputDevice(ControllerIt.Value().DeviceId);
+		UsedBits |= (1 << UserId.GetInternalId());
 	}
 
 	int32 FirstUnusedIndex = FMath::CountTrailingZeros(~UsedBits);
@@ -2065,7 +2102,10 @@ void FLinuxApplication::AddGameController(int Index)
 	UE_LOG(LogLinux, Verbose, TEXT("Adding controller %i '%s'"), FirstUnusedIndex, UTF8_TO_TCHAR(SDL_GameControllerName(Controller)));
 	auto& ControllerState = ControllerStates.Add(Id);
 	ControllerState.Controller = Controller;
-	ControllerState.ControllerIndex = FirstUnusedIndex;
+
+	FPlatformUserId UserId = FPlatformUserId::CreateFromInternalId(FirstUnusedIndex);
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(FirstUnusedIndex, UserId, ControllerState.DeviceId);
+
 	// Check for haptic support.
 	ControllerState.Haptic = SDL_HapticOpenFromJoystick(SDL_GameControllerGetJoystick(Controller));
 
@@ -2073,13 +2113,13 @@ void FLinuxApplication::AddGameController(int Index)
 	{
 		if ((SDL_HapticQuery(ControllerState.Haptic) & (SDL_HAPTIC_SINE | SDL_HAPTIC_LEFTRIGHT)) == 0)
 		{
-			UE_LOG(LogLinux, Warning, TEXT("No supported haptic effects for controller %i"), ControllerState.ControllerIndex);
+			UE_LOG(LogLinux, Warning, TEXT("No supported haptic effects for controller %i"), ControllerState.DeviceId.GetId());
 			SDL_HapticClose(ControllerState.Haptic);
 			ControllerState.Haptic = nullptr;
 		}
 	}
 
-	FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, Id);
+	DeviceMapper.Internal_MapInputDeviceToUser(ControllerState.DeviceId, UserId, EInputDeviceConnectionState::Connected);
 }
 
 void FLinuxApplication::RemoveGameController(SDL_JoystickID Id)
@@ -2090,7 +2130,7 @@ void FLinuxApplication::RemoveGameController(SDL_JoystickID Id)
 	}
 
 	SDLControllerState& ControllerState = ControllerStates[Id];
-	UE_LOG(LogLinux, Verbose, TEXT("Removing controller %i '%s'"), ControllerState.ControllerIndex, UTF8_TO_TCHAR(SDL_GameControllerName(ControllerState.Controller)));
+	UE_LOG(LogLinux, Verbose, TEXT("Removing controller %i '%s'"), ControllerState.DeviceId.GetId(), UTF8_TO_TCHAR(SDL_GameControllerName(ControllerState.Controller)));
 
 	if (ControllerState.Haptic != nullptr)
 	{
@@ -2100,5 +2140,11 @@ void FLinuxApplication::RemoveGameController(SDL_JoystickID Id)
 	SDL_GameControllerClose(ControllerState.Controller);
 	ControllerStates.Remove(Id);
 
-	FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, Id);
+	FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+	FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Id, OUT PlatformUserId, OUT DeviceId);
+
+	DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Disconnected);
 }

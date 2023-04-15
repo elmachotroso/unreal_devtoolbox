@@ -1,22 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SmartObjectCollection.h"
+
+#include "GameplayTagAssetInterface.h"
 #include "SmartObjectTypes.h"
 #include "SmartObjectSubsystem.h"
 #include "SmartObjectComponent.h"
 #include "Engine/World.h"
 #include "VisualLogger/VisualLogger.h"
+#include "Engine/LevelStreaming.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectCollection)
 
 //----------------------------------------------------------------------//
 // FSmartObjectCollectionEntry 
 //----------------------------------------------------------------------//
-FSmartObjectCollectionEntry::FSmartObjectCollectionEntry(const FSmartObjectHandle& SmartObjectHandle, const USmartObjectComponent& SmartObjectComponent, const uint32 DefinitionIndex)
-	: Handle(SmartObjectHandle)
-	, Path(&SmartObjectComponent)
+FSmartObjectCollectionEntry::FSmartObjectCollectionEntry(const FSmartObjectHandle SmartObjectHandle, const USmartObjectComponent& SmartObjectComponent, const uint32 DefinitionIndex)
+	: Path(&SmartObjectComponent)
 	, Transform(SmartObjectComponent.GetComponentTransform())
 	, Bounds(SmartObjectComponent.GetSmartObjectBounds())
+	, Handle(SmartObjectHandle)
 	, DefinitionIdx(DefinitionIndex)
 {
+	if (const IGameplayTagAssetInterface* TagInterface = Cast<IGameplayTagAssetInterface>(SmartObjectComponent.GetOwner()))
+	{
+		TagInterface->GetOwnedGameplayTags(Tags);
+	}
 }
 
 USmartObjectComponent* FSmartObjectCollectionEntry::GetComponent() const
@@ -32,13 +41,22 @@ ASmartObjectCollection::ASmartObjectCollection(const FObjectInitializer& ObjectI
 	: Super(ObjectInitializer)
 {
 #if WITH_EDITORONLY_DATA
-	bLockLocation = true;
 	bActorLabelEditable = false;
 #endif
 
 	PrimaryActorTick.bCanEverTick = false;
 	bNetLoadOnClient = false;
 	SetCanBeDamaged(false);
+}
+
+void ASmartObjectCollection::PostLoad()
+{
+	Super::PostLoad();
+#if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	bBuildCollectionAutomatically = !bBuildOnDemand_DEPRECATED;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITORONLY_DATA
 }
 
 void ASmartObjectCollection::Destroyed()
@@ -140,14 +158,17 @@ bool ASmartObjectCollection::UnregisterWithSubsystem(const FString& Context)
 	return true;
 }
 
-bool ASmartObjectCollection::AddSmartObject(USmartObjectComponent& SOComponent)
+FSmartObjectCollectionEntry* ASmartObjectCollection::AddSmartObject(USmartObjectComponent& SOComponent, bool& bAlreadyInCollection)
 {
+	FSmartObjectCollectionEntry* Entry = nullptr;
+	bAlreadyInCollection = false;
+
 	const UWorld* World = GetWorld();
 	if (World == nullptr)
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, Error, TEXT("'%s' can't be registered to collection '%s': no associated world"),
 			*GetNameSafe(SOComponent.GetOwner()), *GetFullName());
-		return false;
+		return Entry;
 	}
 
 	const FSoftObjectPath ObjectPath = &SOComponent;
@@ -170,16 +191,17 @@ bool ASmartObjectCollection::AddSmartObject(USmartObjectComponent& SOComponent)
 	FSmartObjectHandle Handle = FSmartObjectHandle(HashCombine(GetTypeHash(AssetPathString), GetTypeHash(ObjectPath.GetSubPathString())));
 	SOComponent.SetRegisteredHandle(Handle);
 
-	const FSmartObjectCollectionEntry* ExistingEntry = CollectionEntries.FindByPredicate([Handle](const FSmartObjectCollectionEntry& Entry)
+	Entry = CollectionEntries.FindByPredicate([Handle](const FSmartObjectCollectionEntry& ExistingEntry)
 	{
-		return Entry.Handle == Handle;
+		return ExistingEntry.Handle == Handle;
 	});
 
-	if (ExistingEntry != nullptr)
+	if (Entry != nullptr)
 	{
 		UE_VLOG_UELOG(this, LogSmartObject, VeryVerbose, TEXT("'%s[%s]' already registered to collection '%s'"),
 			*GetNameSafe(SOComponent.GetOwner()), *LexToString(Handle), *GetFullName());
-		return false;
+		bAlreadyInCollection = true;
+		return Entry;
 	}
 
 	const USmartObjectDefinition* Definition = SOComponent.GetDefinition();
@@ -187,9 +209,10 @@ bool ASmartObjectCollection::AddSmartObject(USmartObjectComponent& SOComponent)
 	uint32 DefinitionIndex = Definitions.AddUnique(Definition);
 
 	UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Adding '%s[%s]' to collection '%s'"), *GetNameSafe(SOComponent.GetOwner()), *LexToString(Handle), *GetFullName());
-	CollectionEntries.Emplace(Handle, SOComponent, DefinitionIndex);
+	const int32 NewEntryIndex = CollectionEntries.Emplace(Handle, SOComponent, DefinitionIndex);
 	RegisteredIdToObjectMap.Add(Handle, ObjectPath);
-	return true;
+
+	return &CollectionEntries[NewEntryIndex];
 }
 
 bool ASmartObjectCollection::RemoveSmartObject(USmartObjectComponent& SOComponent)
@@ -197,6 +220,8 @@ bool ASmartObjectCollection::RemoveSmartObject(USmartObjectComponent& SOComponen
 	FSmartObjectHandle Handle = SOComponent.GetRegisteredHandle();
 	if (!Handle.IsValid())
 	{
+		UE_VLOG_UELOG(this, LogSmartObject, Verbose, TEXT("Skipped removal of '%s[%s]' from collection '%s'. Handle is not valid"),
+			*GetNameSafe(SOComponent.GetOwner()), *LexToString(Handle), *GetFullName());
 		return false;
 	}
 
@@ -218,7 +243,7 @@ bool ASmartObjectCollection::RemoveSmartObject(USmartObjectComponent& SOComponen
 	return Index != INDEX_NONE;
 }
 
-USmartObjectComponent* ASmartObjectCollection::GetSmartObjectComponent(const FSmartObjectHandle& SmartObjectHandle) const
+USmartObjectComponent* ASmartObjectCollection::GetSmartObjectComponent(const FSmartObjectHandle SmartObjectHandle) const
 {
 	const FSoftObjectPath* Path = RegisteredIdToObjectMap.Find(SmartObjectHandle);
 	return Path != nullptr ? CastChecked<USmartObjectComponent>(Path->ResolveObject(), ECastCheckedType::NullAllowed) : nullptr;
@@ -252,7 +277,12 @@ void ASmartObjectCollection::ValidateDefinitions()
 {
 	for (const USmartObjectDefinition* Definition : Definitions)
 	{
-		if (ensureMsgf(Definition != nullptr, TEXT("Collection is expected to contain only valid definition entries")))
+
+		UE_CVLOG_UELOG(Definition == nullptr, this, LogSmartObject, Warning
+			, TEXT("Null definition found at index (%d) in collection '%s'. Collection needs to be rebuilt and saved.")
+			, Definitions.IndexOfByKey(Definition)
+			,*GetFullName());
+		if (Definition != nullptr)
 		{
 			Definition->Validate();
 		}
@@ -281,14 +311,22 @@ void ASmartObjectCollection::PostEditChangeProperty(FPropertyChangedEvent& Prope
 	if (PropertyChangedEvent.Property)
 	{
 		const FName PropName = PropertyChangedEvent.Property->GetFName();
-		if (PropName == GET_MEMBER_NAME_CHECKED(ASmartObjectCollection, bBuildOnDemand))
+		if (PropName == GET_MEMBER_NAME_CHECKED(ASmartObjectCollection, bBuildCollectionAutomatically))
 		{
-			if (!bBuildOnDemand)
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			bBuildOnDemand_DEPRECATED = !bBuildCollectionAutomatically;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			if (bBuildCollectionAutomatically)
 			{
 				RebuildCollection();
 			}
 		}
 	}
+}
+
+void ASmartObjectCollection::ClearCollection()
+{
+	ResetCollection();
 }
 
 void ASmartObjectCollection::RebuildCollection()
@@ -308,11 +346,35 @@ void ASmartObjectCollection::RebuildCollection(const TConstArrayView<USmartObjec
 
 	ResetCollection(Components.Num());
 
+	// the incoming Components collection represents all the smart objects currently registered with the SmartObjectsSubsystem,
+	// but we don't want to register all of them - some of the SmartObjectComponents in the collection come from levels 
+	// added to the editor world, but at runtime will be procedurally loaded with a BP function call, which means those
+	// components might never get loaded, so we don't really want to store them in the persistent collection.
+	// The collection we're building here represents all the smart objects the level will start with, not the ones that will
+	// eventually get added. 
+	auto LevelTester = [](const ULevel* Level) -> bool
+	{
+		const ULevelStreaming* LevelStreaming = ULevelStreaming::FindStreamingLevel(Level);
+		return (LevelStreaming && LevelStreaming->ShouldBeAlwaysLoaded()) || Level->IsPersistentLevel();
+	};
+
+	ULevel* PreviousLevel = nullptr;
+	bool bPreviousLevelValid = false;
+	bool bAlreadyInCollection = false;
 	for (USmartObjectComponent* const Component : Components)
 	{
 		if (Component != nullptr)
 		{
-			AddSmartObject(*Component);
+			ULevel* OwnerLevel = Component->GetComponentLevel();
+			const bool bValid = (OwnerLevel == PreviousLevel) ? bPreviousLevelValid : LevelTester(OwnerLevel);
+
+			if (bValid)
+			{	
+				AddSmartObject(*Component, bAlreadyInCollection);
+			}
+
+			bPreviousLevelValid = bValid;
+			PreviousLevel = OwnerLevel;
 		}
 	}
 
@@ -330,3 +392,4 @@ void ASmartObjectCollection::ResetCollection(const int32 ExpectedNumElements)
 	Definitions.Reset();
 }
 #endif // WITH_EDITOR
+

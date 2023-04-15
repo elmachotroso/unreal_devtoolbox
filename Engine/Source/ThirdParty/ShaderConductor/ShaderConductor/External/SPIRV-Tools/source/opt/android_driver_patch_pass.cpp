@@ -56,6 +56,19 @@ Pass::Status AndroidDriverPatchPass::Process() {
   return modified ? Status::SuccessWithChange : Status::SuccessWithoutChange;
 }
 
+void InsertAfterOpPhi(Instruction* curInst, Instruction* newInst) {
+  // OpPhi Instructions must be the first instructions after a branch
+  Instruction* nextAvailableNode = curInst;
+  while (nextAvailableNode->NextNode()->opcode() == SpvOpPhi) {
+    if (nextAvailableNode->NextNode()) {
+      nextAvailableNode = nextAvailableNode->NextNode();
+    } else {
+      break;
+    }
+  }
+  newInst->InsertAfter(nextAvailableNode);
+}
+
 bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
                                                  Instruction* entryPoint) {
   if (inst->opcode() != SpvOpPhi) {
@@ -88,63 +101,44 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
     return false;
   }
 
-  // Extract first operand
-  Operand valueType1Op = inst->GetInOperand(0);
-  Instruction* valueType1Inst =
-    context()->get_def_use_mgr()->GetDef(valueType1Op.words[0]);
+  uint32_t numArgs = inst->NumInOperands();
+  uint32_t numOps = numArgs / 2;
 
-  std::vector<uint32_t> valueType1Components;
-  for (uint32_t i = 0; i < ColumnCount; ++i) {
-    const uint32_t newVarID = context()->TakeNextId();
+  std::map<uint32_t, std::vector<uint32_t>> valueTypeComponents;
 
-	std::vector<Operand> operands;
-    operands.push_back({SPV_OPERAND_TYPE_ID, {valueType1Op.words[0]}});
-    operands.push_back({SPV_OPERAND_TYPE_LITERAL_INTEGER, {i}});
+  for (uint32_t n = 0; n < numOps; n++)
+  {
+    Operand valueTypeOp = inst->GetInOperand(n*2);
+    Instruction* valueTypeInst = context()->get_def_use_mgr()->GetDef(valueTypeOp.words[0]);
 
-    Instruction* newVar =
-        new Instruction(context(), SpvOpCompositeExtract,
-                        typeInst->GetOperand(1).words[0],
-                        newVarID, operands);
-    valueType1Components.push_back(newVarID);
-
-	get_def_use_mgr()->AnalyzeInstDef(newVar);
-    get_def_use_mgr()->AnalyzeInstUse(newVar);
+	if (valueTypeInst->opcode() == SpvOpUndef)
+	  return false;
     
-	// If the variable is a constant, then insert at the beginning of the block
-	if(!valueType1Inst->IsConstant()) {
-      newVar->InsertAfter(valueType1Inst);
-    } else {
-      newVar->InsertBefore(entryPoint);
-	}
-  }
-  
-  // Extract second operand
-  Operand valueType2Op = inst->GetInOperand(2);
-  Instruction* valueType2Inst =
-      context()->get_def_use_mgr()->GetDef(valueType2Op.words[0]);
+	valueTypeComponents.insert({n, {}});
 
-  std::vector<uint32_t> valueType2Components;
-  for (uint32_t i = 0; i < ColumnCount; ++i) {
-    const uint32_t newVarID = context()->TakeNextId();
+	for (uint32_t i = 0; i < ColumnCount; ++i) {
+      const uint32_t newVarID = context()->TakeNextId();
 
-    std::vector<Operand> operands;
-    operands.push_back({SPV_OPERAND_TYPE_ID, {valueType2Op.words[0]}});
-    operands.push_back({SPV_OPERAND_TYPE_LITERAL_INTEGER, {i}});
+      std::vector<Operand> operands;
+      operands.push_back({SPV_OPERAND_TYPE_ID, {valueTypeOp.words[0]}});
+      operands.push_back({SPV_OPERAND_TYPE_LITERAL_INTEGER, {i}});
 
-    Instruction* newVar =
-        new Instruction(context(), SpvOpCompositeExtract,
-                        typeInst->GetOperand(1).words[0],
-                        newVarID, operands);
-    valueType2Components.push_back(newVarID);
+      Instruction* newVar = new Instruction(context(), SpvOpCompositeExtract, typeInst->GetOperand(1).words[0], newVarID, operands);
+      valueTypeComponents[n].push_back(newVarID);
 
-	get_def_use_mgr()->AnalyzeInstDef(newVar);
-    get_def_use_mgr()->AnalyzeInstUse(newVar);
+	  if (HasRelaxedPrecision(valueTypeOp.words[0])) {
+        AddRelaxedPrecision(newVarID);
+      }
 
-	// If the variable is a constant, then insert at the beginning of the block
-	if (!valueType2Inst->IsConstant()) {
-      newVar->InsertAfter(valueType2Inst);
-    } else {
-      newVar->InsertBefore(entryPoint);
+      get_def_use_mgr()->AnalyzeInstDef(newVar);
+      get_def_use_mgr()->AnalyzeInstUse(newVar);
+
+      // If the variable is a constant, then insert at the beginning of the block
+      if (!valueTypeInst->IsConstant()) {
+		InsertAfterOpPhi(valueTypeInst, newVar);
+      } else {
+        newVar->InsertBefore(entryPoint);
+      }
     }
   }
 
@@ -154,14 +148,18 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
     const uint32_t newVarID = context()->TakeNextId();
 
     std::vector<Operand> operands;
-    operands.push_back({SPV_OPERAND_TYPE_ID, {valueType1Components[i]}});
-    operands.push_back({SPV_OPERAND_TYPE_ID, {inst->GetInOperand(1).words[0]}});
-    operands.push_back({SPV_OPERAND_TYPE_ID, {valueType2Components[i]}});
-    operands.push_back({SPV_OPERAND_TYPE_ID, {inst->GetInOperand(3).words[0]}});
 
-    Instruction* newVar = new Instruction(context(), SpvOpPhi, typeInst->GetOperand(1).words[0],
-                        newVarID, operands);
+	for (uint32_t n = 0; n < numOps; n++) {
+      operands.push_back({SPV_OPERAND_TYPE_ID, {valueTypeComponents[n][i]}});
+      operands.push_back({SPV_OPERAND_TYPE_ID, {inst->GetInOperand(n*2 + 1).words[0]}});
+	}
+
+    Instruction* newVar = new Instruction(context(), SpvOpPhi, typeInst->GetOperand(1).words[0], newVarID, operands);
     
+	if (HasRelaxedPrecision(inst->GetInOperand(1).words[0]) && HasRelaxedPrecision(inst->GetInOperand(3).words[0])) {
+      AddRelaxedPrecision(newVarID);
+    }
+
 	opPhiInstructs.push_back(newVarID);
 
     get_def_use_mgr()->AnalyzeInstDef(newVar);
@@ -181,17 +179,11 @@ bool AndroidDriverPatchPass::FixupOpPhiMatrix4x3(Instruction* inst,
   get_def_use_mgr()->AnalyzeInstDef(compositeConstruction);
   get_def_use_mgr()->AnalyzeInstUse(compositeConstruction);
 
-  // OpPhi Instructions must be the first instructions after a branch, so insert composite after
-  Instruction* nextAvailableNode = inst;
-  while (nextAvailableNode->NextNode()->opcode() == SpvOpPhi) {
-    if (nextAvailableNode->NextNode()) {
-      nextAvailableNode = nextAvailableNode->NextNode();
-    } else {
-      break;
-	}
+  if (HasRelaxedPrecision(HasRelaxedPrecision(inst->GetOperand(0).words[0]))) {
+    AddRelaxedPrecision(compositeVarID);
   }
 
-  compositeConstruction->InsertAfter(nextAvailableNode);
+  InsertAfterOpPhi(inst, compositeConstruction);
   context()->ReplaceAllUsesWith(inst->result_id(), compositeVarID);
   inst->RemoveFromList();
   
@@ -220,12 +212,14 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
   const Instruction* inputType2 = get_def_use_mgr()->GetDef(inputInst2->type_id());
 
   bool bValidOutput = outputType->opcode() == SpvOpTypeVector && outputType->GetSingleWordOperand(2) == 3;
-  bool bValidInput1 = (inputType1->opcode() == SpvOpTypeVector || inputType1->GetSingleWordOperand(2) == 4);
-  bool bValidInput2 = (inputType2->opcode() == SpvOpTypeVector || inputType2->GetSingleWordOperand(2) == 4);
+  bool bValidInput1 = (inputType1->opcode() == SpvOpTypeVector && inputType1->GetSingleWordOperand(2) == 4);
+  bool bValidInput2 = (inputType2->opcode() == SpvOpTypeVector && inputType2->GetSingleWordOperand(2) == 4);
 
-  if (!bValidOutput || (!bValidInput1 || !bValidInput2)) {
+  if (!bValidOutput || (!bValidInput1 && !bValidInput2)) {
     return false;
   }
+
+  bool bOutputHasRelaxedPrecision = HasRelaxedPrecision(inst->GetOperand(0).words[0]);
 
   uint32_t inputCompCount1 = inputType1->GetSingleWordOperand(2);
 
@@ -235,7 +229,9 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
     const Operand op = inst->GetInOperand(i);
 
 	// If we have read past the indexes then break
-    if (op.type != SPV_OPERAND_TYPE_LITERAL_INTEGER) break;
+    if (op.type != SPV_OPERAND_TYPE_LITERAL_INTEGER) {
+      break;
+    }
 
 	indicies.push_back(op.words[0]);
   }
@@ -266,6 +262,10 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
 
 	  get_def_use_mgr()->AnalyzeInstDef(compositeExtractVar);
       compositeExtractVar->InsertBefore(inst);
+
+      if (HasRelaxedPrecision(inVector->GetOperand(1).words[0])) {
+        AddRelaxedPrecision(compositeExtractID);
+      }
 	}
   }
 
@@ -278,6 +278,10 @@ bool AndroidDriverPatchPass::FixupOpVectorShuffle(Instruction* inst) {
   }
 
   Instruction* compositeConstruction = new Instruction(context(), SpvOpCompositeConstruct, inst->GetOperand(0).words[0], compositeVarID, operands);
+
+  if (bOutputHasRelaxedPrecision) {
+    AddRelaxedPrecision(compositeVarID);
+  }
 
   get_def_use_mgr()->AnalyzeInstDef(compositeConstruction);
   compositeConstruction->InsertBefore(inst);
@@ -331,6 +335,42 @@ bool AndroidDriverPatchPass::FixupOpTypeImage(Instruction* inst) {
 
   return true;
 }
+
+bool AndroidDriverPatchPass::HasRelaxedPrecision(uint32_t operand_id) {
+  std::vector<Instruction*> decorations =
+      get_decoration_mgr()->GetDecorationsFor(operand_id, false);
+  for (Instruction* decoration : decorations) {
+    if (decoration->GetSingleWordInOperand(1) ==
+        SpvDecorationRelaxedPrecision) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AndroidDriverPatchPass::AddRelaxedPrecision(uint32_t operand_id) {
+  if (HasRelaxedPrecision(operand_id)) {
+    return;
+  }
+
+  get_decoration_mgr()->AddDecoration(operand_id, SpvDecorationRelaxedPrecision);
+
+  return;
+}
+
+bool AndroidDriverPatchPass::RemoveRelaxedPrecision(uint32_t operand_id) {
+  std::vector<Instruction*> decorations = get_decoration_mgr()->GetDecorationsFor(operand_id, false);
+
+  for (Instruction* decoration : decorations) {
+    if (decoration->GetSingleWordInOperand(1) == SpvDecorationRelaxedPrecision) {
+      get_decoration_mgr()->RemoveDecoration(decoration);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 
 }  // namespace opt
 }  // namespace spvtools

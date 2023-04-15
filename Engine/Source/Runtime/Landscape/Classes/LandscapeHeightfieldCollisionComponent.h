@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -26,20 +25,21 @@ struct FNavigableGeometryExport;
 
 namespace Chaos
 {
-class FHeightField;
+	class FHeightField;
 }
 
-#if WITH_PHYSX
-namespace physx
+enum class EHeightfieldSource
 {
-	class PxMaterial;
-	class PxHeightField;
-}
-#endif // WITH_PHYSX
+	Simple = 0,
+	Complex = 1,
+	Editor = 2
+};
 
 UCLASS(MinimalAPI, Within=LandscapeProxy)
 class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 {
+	friend class FLandscapeHeightfieldCollisionComponentSceneProxy;
+
 	GENERATED_UCLASS_BODY()
 
 	ULandscapeHeightfieldCollisionComponent(FVTableHelper& Helper);
@@ -72,7 +72,7 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 	UPROPERTY()
 	TArray<uint8> CollisionQuadFlags;
 
-	/** Guid used to share PhysX heightfield objects in the editor */
+	/** Guid used to share Physics heightfield objects in the editor */
 	UPROPERTY()
 	FGuid HeightfieldGuid;
 
@@ -92,33 +92,24 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 	{
 		FGuid Guid;
 
-#if WITH_PHYSX
-		/** List of PxMaterials used on this landscape */
-		TArray<physx::PxMaterial*> UsedPhysicalMaterialArray;
-		physx::PxHeightField* RBHeightfield = nullptr;
-		physx::PxHeightField* RBHeightfieldSimple = nullptr;
-#if WITH_EDITOR
-		physx::PxHeightField* RBHeightfieldEd = nullptr; // Used only by landscape editor, does not have holes in it
-#endif	//WITH_EDITOR
-#endif	//WITH_PHYSX
-
-#if WITH_CHAOS
 		TArray<Chaos::FMaterialHandle> UsedChaosMaterials;
 		TUniquePtr<Chaos::FHeightField> Heightfield;
 	    TUniquePtr<Chaos::FHeightField> HeightfieldSimple;
-#if WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
 		TUniquePtr<Chaos::FHeightField> EditorHeightfield;
-#endif
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 		FHeightfieldGeometryRef(FGuid& InGuid);
 
 		virtual ~FHeightfieldGeometryRef();
+		void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 	};
 	
 #if WITH_EDITORONLY_DATA
 	friend struct FEnableCollisionHashOptimScope;
 	
+	UPROPERTY()
 	uint32										CollisionHash = 0;
 
 	/** The collision height values. Stripped from cooked content */
@@ -205,10 +196,7 @@ public:
 
 	//~ Begin UPrimitiveComponent Interface
 	virtual bool DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const override;
-#if WITH_EDITOR
-	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
-	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
-#endif
+	virtual bool IsShown(const FEngineShowFlags& ShowFlags) const override;
 	//End UPrimitiveComponent interface
 
 	//~ Begin INavRelevantInterface Interface
@@ -221,6 +209,7 @@ public:
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void BeginDestroy() override;
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual void PostLoad() override;
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
 	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
@@ -242,7 +231,7 @@ public:
 	 */
 	virtual bool CookCollisionData(const FName& Format, bool bUseOnlyDefMaterial, bool bCheckDDC, TArray<uint8>& OutCookedData, TArray<UPhysicalMaterial*>& InOutMaterials) const;
 
-	/** Modify a sub-region of the PhysX heightfield. Note that this does not update the physical material */
+	/** Modify a sub-region of the physics heightfield. Note that this does not update the physical material */
 	void UpdateHeightfieldRegion(int32 ComponentX1, int32 ComponentY1, int32 ComponentX2, int32 ComponentY2);
 
 	/** Computes a hash of all the data that will impact final collision */
@@ -250,6 +239,11 @@ public:
 #endif
 	/** Gets the landscape info object for this landscape */
 	ULandscapeInfo* GetLandscapeInfo() const;
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_EDITORONLY_DATA
+	// The scene proxy is only for debug purposes :
+	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_EDITORONLY_DATA
 
 	/** Creates collision object from a cooked collision data */
 	virtual void CreateCollisionObject();
@@ -274,7 +268,7 @@ public:
 #endif
 
 public:
-	TOptional<float> GetHeight(float X, float Y);
+	TOptional<float> GetHeight(float X, float Y, EHeightfieldSource HeightFieldSource);
 
 	/**
 	 * Populates a supplied array with the heights from the heightfield.  Samples are placed

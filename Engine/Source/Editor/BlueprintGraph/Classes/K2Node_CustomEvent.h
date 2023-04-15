@@ -3,17 +3,33 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Textures/SlateIcon.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "K2Node_EditablePinBase.h"
 #include "K2Node_Event.h"
+#include "Math/Vector2D.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_CustomEvent.generated.h"
 
+class FArchive;
 class FBlueprintActionDatabaseRegistrar;
 class INameValidatorInterface;
 class UEdGraph;
+class UEdGraphPin;
+class UFunction;
+class UObject;
+struct FEdGraphPinType;
 struct FKismetUserDeclaredFunctionMetadata;
+struct FLinearColor;
 
 UCLASS(MinimalAPI)
 class UK2Node_CustomEvent : public UK2Node_Event
@@ -52,6 +68,7 @@ class UK2Node_CustomEvent : public UK2Node_Event
 	virtual FText GetKeywords() const override;
 	virtual bool HasDeprecatedReference() const override { return bIsDeprecated; }
 	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface
@@ -59,7 +76,6 @@ class UK2Node_CustomEvent : public UK2Node_Event
 	virtual void GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const override;
 	virtual void FixupPinStringDataReferences(FArchive* SavingArchive) override;
 	virtual bool NodeCausesStructuralBlueprintChange() const override { return true; }
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UK2Node Interface
 
 	//~ Begin UK2Node_EditablePinBase Interface

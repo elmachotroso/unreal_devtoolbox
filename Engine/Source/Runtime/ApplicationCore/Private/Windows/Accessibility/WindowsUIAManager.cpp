@@ -86,7 +86,14 @@ FWindowsUIAManager::FWindowsUIAManager(const FWindowsApplication& InApplication)
 
 void FWindowsUIAManager::OnAccessibleMessageHandlerChanged()
 {
-	WindowsApplication.GetAccessibleMessageHandler()->SetAccessibleEventDelegate(FGenericAccessibleMessageHandler::FAccessibleEvent::CreateRaw(this, &FWindowsUIAManager::OnEventRaised));
+	TSharedRef<FGenericAccessibleMessageHandler> MessageHandler = WindowsApplication.GetAccessibleMessageHandler();
+	// We register the primary user (keyboard) 
+	// This user is what UIA will interact with
+	FGenericAccessibleUserRegistry& UserRegistry = MessageHandler->GetAccessibleUserRegistry();
+	// We failed to register the primary user, this should only happen if another user with the 0th index has already been registered.
+	ensure(UserRegistry.RegisterUser(MakeShared<FGenericAccessibleUser>(FGenericAccessibleUserRegistry::GetPrimaryUserIndex())));
+
+	MessageHandler->SetAccessibleEventDelegate(FGenericAccessibleMessageHandler::FAccessibleEvent::CreateRaw(this, &FWindowsUIAManager::OnEventRaised));
 }
 
 FWindowsUIAManager::~FWindowsUIAManager()
@@ -173,29 +180,29 @@ void FWindowsUIAManager::OnAccessibilityDisabled()
 	}
 }
 
-void FWindowsUIAManager::OnEventRaised(TSharedRef<IAccessibleWidget> Widget, EAccessibleEvent Event, FVariant OldValue, FVariant NewValue)
+void FWindowsUIAManager::OnEventRaised(const FAccessibleEventArgs& Args)
 {
 	if (UiaClientsAreListening())
 	{
-		FScopedWidgetProvider ScopedProvider(GetWidgetProvider(Widget));
+		FScopedWidgetProvider ScopedProvider(GetWidgetProvider(Args.Widget));
 
-		switch (Event)
+		switch (Args.Event)
 		{
 		case EAccessibleEvent::FocusChange:
 		{
 			// On focus change, emit a generic FocusChanged event as well as a per-Provider PropertyChanged event
 			// todo: handle difference between any focus vs keyboard focus
-			if (Widget->HasFocus())
+			if (Args.Widget->HasUserFocus(0))
 			{
 				UiaRaiseAutomationEvent(&ScopedProvider.Provider, UIA_AutomationFocusChangedEventId);
 			}
-			EmitPropertyChangedEvent(&ScopedProvider.Provider, UIA_HasKeyboardFocusPropertyId, OldValue, NewValue);
+			EmitPropertyChangedEvent(&ScopedProvider.Provider, UIA_HasKeyboardFocusPropertyId, Args.OldValue, Args.NewValue);
 			break;
 		}
 		case EAccessibleEvent::Activate:
 			if (ScopedProvider.Provider.SupportsInterface(UIA_TogglePatternId))
 			{
-				EmitPropertyChangedEvent(&ScopedProvider.Provider, UIA_ToggleToggleStatePropertyId, OldValue, NewValue);
+				EmitPropertyChangedEvent(&ScopedProvider.Provider, UIA_ToggleToggleStatePropertyId, Args.OldValue, Args.NewValue);
 
 			}
 			else if (ScopedProvider.Provider.SupportsInterface(UIA_InvokePatternId))
@@ -232,7 +239,7 @@ void FWindowsUIAManager::OnEventRaised(TSharedRef<IAccessibleWidget> Widget, EAc
 			}
 			if (NotificationFunc)
 			{
-				NotificationFunc(&ScopedProvider.Provider, NotificationKindEnum, NotificationProcessingEnum, SysAllocString(*NewValue.GetValue<FString>()), SysAllocString(TEXT("")));
+				NotificationFunc(&ScopedProvider.Provider, NotificationKindEnum, NotificationProcessingEnum, SysAllocString(*Args.NewValue.GetValue<FString>()), SysAllocString(TEXT("")));
 			}
 			break;
 		}
@@ -241,8 +248,8 @@ void FWindowsUIAManager::OnEventRaised(TSharedRef<IAccessibleWidget> Widget, EAc
 		// For now, I'm disabling this until we figure out if it's absolutely necessary.
 		//case EAccessibleEvent::ParentChanged:
 		//{
-		//	const AccessibleWidgetId OldId = OldValue.GetValue<AccessibleWidgetId>();
-		//	const AccessibleWidgetId NewId = NewValue.GetValue<AccessibleWidgetId>();
+		//	const AccessibleWidgetId OldId = Args.OldValue.GetValue<AccessibleWidgetId>();
+		//	const AccessibleWidgetId NewId = Args.NewValue.GetValue<AccessibleWidgetId>();
 		//	if (OldId != IAccessibleWidget::InvalidAccessibleWidgetId)
 		//	{
 		//		GetWidgetProvider(WindowsApplication.GetAccessibleMessageHandler()->GetAccessibleWidgetFromId(OldId).ToSharedRef());
@@ -305,20 +312,20 @@ void FWindowsUIAManager::DumpAccessibilityStats() const
 	// This isn't exactly right since some ControlProviders will be TextRangeProviders, but it should be close
 	const uint32 NumControlProviders = ProviderList.Num() - NumWidgetProviders;
 
-	const uint32 SizeOfWidgetProvider = sizeof(FWindowsUIAWidgetProvider);
-	const uint32 SizeOfControlProvider = sizeof(FWindowsUIAControlProvider);
-	const uint32 SizeOfCachedWidgetProviders = CachedWidgetProviders.GetAllocatedSize();
-	const uint32 SizeOfProviderList = ProviderList.GetAllocatedSize();
-	const uint32 CacheSize = NumWidgetProviders * SizeOfWidgetProvider + NumControlProviders * SizeOfControlProvider + SizeOfCachedWidgetProviders + SizeOfProviderList;
+	const SIZE_T SizeOfWidgetProvider = sizeof(FWindowsUIAWidgetProvider);
+	const SIZE_T SizeOfControlProvider = sizeof(FWindowsUIAControlProvider);
+	const SIZE_T SizeOfCachedWidgetProviders = CachedWidgetProviders.GetAllocatedSize();
+	const SIZE_T SizeOfProviderList = ProviderList.GetAllocatedSize();
+	const SIZE_T CacheSize = NumWidgetProviders * SizeOfWidgetProvider + NumControlProviders * SizeOfControlProvider + SizeOfCachedWidgetProviders + SizeOfProviderList;
 
 	UE_LOG(LogAccessibility, Log, TEXT("Dumping Windows accessibility stats:"));
 	UE_LOG(LogAccessibility, Log, TEXT("Number of Widget Providers: %i"), NumWidgetProviders);
 	UE_LOG(LogAccessibility, Log, TEXT("Number of non-Widget Providers: %i"), NumControlProviders);
-	UE_LOG(LogAccessibility, Log, TEXT("Size of FWindowsUIAWidgetProvider: %u"), SizeOfWidgetProvider);
-	UE_LOG(LogAccessibility, Log, TEXT("Size of FWindowsUIAControlProvider: %u"), SizeOfControlProvider);
-	UE_LOG(LogAccessibility, Log, TEXT("Size of WidgetProvider* map: %u"), SizeOfCachedWidgetProviders);
-	UE_LOG(LogAccessibility, Log, TEXT("Size of all Provider* set: %u"), SizeOfProviderList);
-	UE_LOG(LogAccessibility, Log, TEXT("Memory stored in cache: %u kb"), CacheSize / 1000);
+	UE_LOG(LogAccessibility, Log, TEXT("Size of FWindowsUIAWidgetProvider: %" SIZE_T_FMT), SizeOfWidgetProvider);
+	UE_LOG(LogAccessibility, Log, TEXT("Size of FWindowsUIAControlProvider: %" SIZE_T_FMT), SizeOfControlProvider);
+	UE_LOG(LogAccessibility, Log, TEXT("Size of WidgetProvider* map: %" SIZE_T_FMT), SizeOfCachedWidgetProviders);
+	UE_LOG(LogAccessibility, Log, TEXT("Size of all Provider* set: %" SIZE_T_FMT), SizeOfProviderList);
+	UE_LOG(LogAccessibility, Log, TEXT("Memory stored in cache: %" SIZE_T_FMT " kb"), CacheSize / 1000);
 }
 #endif
 

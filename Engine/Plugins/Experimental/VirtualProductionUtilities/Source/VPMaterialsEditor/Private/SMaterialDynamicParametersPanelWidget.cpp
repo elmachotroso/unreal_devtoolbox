@@ -2,15 +2,15 @@
 
 #include "SMaterialDynamicParametersPanelWidget.h"
 
-#include "PropertyHandle.h"
-
+#include "DetailColumnSizeData.h"
 #include "DetailWidgetRow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IDetailPropertyRow.h"
 #include "IDetailTreeNode.h"
 #include "IPropertyRowGenerator.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Materials/MaterialInstance.h"
@@ -186,7 +186,7 @@ private:
 
 	FSlateColor GetOuterBackgroundColor(TSharedPtr<FPropertySortedParamData> InParamData) const;
 
-	TSharedRef<SWidget> GetRowExtensionButtons(TSharedPtr<IPropertyHandle> InPropertyHandle) const;
+	TSharedRef<SWidget> GetRowExtensionButtons(TSharedPtr<IPropertyHandle> InPropertyHandle);
 private:
 
 	/** The node info to build the tree view row from. */
@@ -197,6 +197,12 @@ private:
 
 	/** The set of material parameters this is associated with */
 	TWeakObjectPtr<UMaterialInstance> MaterialInstance;
+
+	/** Pointer to copied ValuePtr. Needed for workaround for now */
+	TUniquePtr<uint8> NewDefaultValuePtr;
+
+	/** Pointer to Widget for Workaround. */
+	TSharedPtr<SWidget> ResetArrow;
 };
 
 
@@ -216,19 +222,40 @@ FSlateColor SMaterialDynamicParametersOverviewTreeItem::GetOuterBackgroundColor(
 	return FAppStyle::Get().GetSlateColor("Colors.Panel");
 }
 
-TSharedRef<SWidget> SMaterialDynamicParametersOverviewTreeItem::GetRowExtensionButtons(TSharedPtr<IPropertyHandle> InPropertyHandle) const
+TSharedRef<SWidget> SMaterialDynamicParametersOverviewTreeItem::GetRowExtensionButtons(TSharedPtr<IPropertyHandle> InPropertyHandle)
 {
 	if (!InPropertyHandle.IsValid())
 	{
 		return SNullWidget::NullWidget;
 	}
 
-	const auto ResetDelegate = FExecuteAction::CreateLambda([InPropertyHandle]()
+	const auto ResetDelegate = FExecuteAction::CreateLambda([this, InPropertyHandle]()
 	{
 		if (InPropertyHandle.IsValid())
 		{
 			InPropertyHandle->ResetToDefault();
+			ResetArrow->SetVisibility(EVisibility::Hidden);
 		}
+	});
+
+	/** Needed as Dynamic Material Instances don't have a default to use normally for DiffersFromDefault */
+	const auto DiffersFromDefaultDelegate = FIsActionButtonVisible::CreateLambda([this, InPropertyHandle]()
+	{
+		if (!NewDefaultValuePtr)
+		{
+			return true;
+		}
+
+		FProperty* Property = InPropertyHandle->GetProperty();
+		
+		void* ValuePtr;
+		InPropertyHandle->GetValueData(ValuePtr);
+		
+		if (Property->Identical(NewDefaultValuePtr.Get(), ValuePtr))
+		{
+			return false;
+		}
+		return true;
 	});
 	
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -236,7 +263,7 @@ TSharedRef<SWidget> SMaterialDynamicParametersOverviewTreeItem::GetRowExtensionB
 	TArray<FPropertyRowExtensionButton> ExtensionButtons;
 	FPropertyRowExtensionButton& ResetToDefault = ExtensionButtons.AddDefaulted_GetRef();
 	ResetToDefault.Label = NSLOCTEXT("PropertyEditor", "ResetToDefault", "Reset to Default");
-	ResetToDefault.UIAction = FUIAction(ResetDelegate);
+	ResetToDefault.UIAction = FUIAction(ResetDelegate, FCanExecuteAction(), FIsActionChecked(), DiffersFromDefaultDelegate);
 
 	ResetToDefault.Icon = FSlateIcon(FAppStyle::Get().GetStyleSetName(), "PropertyWindow.DiffersFromDefault");
 	ResetToDefault.ToolTip = NSLOCTEXT("PropertyEditor", "ResetToDefaultToolTip", "Reset this property to its default value.");
@@ -255,7 +282,17 @@ TSharedRef<SWidget> SMaterialDynamicParametersOverviewTreeItem::GetRowExtensionB
 		ToolbarBuilder.AddToolBarButton(Extension.UIAction, NAME_None, Extension.Label, Extension.ToolTip, Extension.Icon);
 	}
 
-	return ToolbarBuilder.MakeWidget();
+	/** Set up the Default Value for the Workaround. */
+	FProperty* Property = InPropertyHandle->GetProperty();
+	NewDefaultValuePtr = MakeUnique<uint8>(Property->GetSize());
+	void* ValuePtr;
+	InPropertyHandle->GetValueData(ValuePtr);
+	Property->CopyCompleteValue(NewDefaultValuePtr.Get(), ValuePtr);
+	Property->ClearValue(NewDefaultValuePtr.Get());
+	
+	ResetArrow = ToolbarBuilder.MakeWidget();
+	
+	return ResetArrow.ToSharedRef();
 }
 
 void SMaterialDynamicParametersOverviewTreeItem::RefreshOnRowChange(const FAssetData& AssetData, TSharedPtr<SMaterialDynamicParametersOverviewTree> InTree)
@@ -335,7 +372,7 @@ void SMaterialDynamicParametersOverviewTreeItem::Construct(const FArguments& InA
 				[
 					SNew(STextBlock)
 					.Text(NameOverride)
-					.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+					.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 				]
 			];
 		}
@@ -372,12 +409,12 @@ void SMaterialDynamicParametersOverviewTreeItem::Construct(const FArguments& InA
 					.BorderBackgroundColor(this, &SMaterialDynamicParametersOverviewTreeItem::GetOuterBackgroundColor, StackParameterData)
 					[
 						SNew(SSplitter)
-						.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+						.Style(FAppStyle::Get(), "DetailsView.Splitter")
 						.PhysicalSplitterHandleSize(1.0f)
 						.HitDetectionSplitterHandleSize(5.0f)
 						+ SSplitter::Slot()
-						.Value(ColumnSizeData.NameColumnWidth)
-						.OnSlotResized(ColumnSizeData.OnNameColumnResized)
+						.Value(ColumnSizeData.GetNameColumnWidth())
+						.OnSlotResized(ColumnSizeData.GetOnNameColumnResized())
 						.Value(0.25f)
 						[
 							SNew(SHorizontalBox)
@@ -396,8 +433,8 @@ void SMaterialDynamicParametersOverviewTreeItem::Construct(const FArguments& InA
 							]
 						]
 						+ SSplitter::Slot()
-						.Value(ColumnSizeData.ValueColumnWidth)
-						.OnSlotResized(ColumnSizeData.OnValueColumnResized) 
+						.Value(ColumnSizeData.GetValueColumnWidth())
+						.OnSlotResized(ColumnSizeData.GetOnValueColumnResized()) 
 						[
 							SNew(SHorizontalBox)
 							+ SHorizontalBox::Slot()
@@ -421,7 +458,7 @@ void SMaterialDynamicParametersOverviewTreeItem::Construct(const FArguments& InA
 
 	STableRow< TSharedPtr<FPropertySortedParamData> >::ConstructInternal(
 		STableRow::FArguments()
-		.Style(FEditorStyle::Get(), "DetailsView.TreeView.TableRow")
+		.Style(FAppStyle::Get(), "DetailsView.TreeView.TableRow")
 		.ShowSelection(false),
 		InOwnerTableView
 	);

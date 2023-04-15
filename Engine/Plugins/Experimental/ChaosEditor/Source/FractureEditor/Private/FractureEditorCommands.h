@@ -33,6 +33,8 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		TSharedPtr< FUICommandInfo > SelectSiblings;
 		TSharedPtr< FUICommandInfo > SelectAllInLevel;
 		TSharedPtr< FUICommandInfo > SelectInvert;
+		TSharedPtr< FUICommandInfo > SelectLeaves;
+		TSharedPtr< FUICommandInfo > SelectClusters;
 		TSharedPtr< FUICommandInfo > SelectCustom;
 
 		// View Settings
@@ -58,6 +60,8 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 		TSharedPtr< FUICommandInfo > DeleteBranch;
 		TSharedPtr< FUICommandInfo > Hide;
 		TSharedPtr< FUICommandInfo > Unhide;
+		TSharedPtr< FUICommandInfo > MergeSelected;
+		TSharedPtr< FUICommandInfo > SplitSelected;
 		
 		// Generate Commands
 		TSharedPtr< FUICommandInfo > GenerateAsset;
@@ -92,6 +96,7 @@ class FFractureEditorCommands : public TCommands<FFractureEditorCommands>
 
 		// Property Commands
 		TSharedPtr< FUICommandInfo > SetInitialDynamicState;
+		TSharedPtr< FUICommandInfo > SetRemoveOnBreak;
 		
 };
 

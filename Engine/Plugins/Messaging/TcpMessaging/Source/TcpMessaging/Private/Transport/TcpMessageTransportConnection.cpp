@@ -54,7 +54,7 @@ struct FTcpMessageHeader
 /* FTcpMessageTransportConnection structors
  *****************************************************************************/
 
-FTcpMessageTransportConnection::FTcpMessageTransportConnection(FSocket* InSocket, const FIPv4Endpoint& InRemoteEndpoint, int32 InConnectionRetryDelay)
+FTcpMessageTransportConnection::FTcpMessageTransportConnection(FSocket* InSocket, const FIPv4Endpoint& InRemoteEndpoint, int32 InConnectionRetryDelay, int32 InConnectionRetryPeriod)
 	: ConnectionState(STATE_Connecting)
 	, OpenedTime(FDateTime::UtcNow())
 	, RemoteEndpoint(InRemoteEndpoint)
@@ -68,6 +68,7 @@ FTcpMessageTransportConnection::FTcpMessageTransportConnection(FSocket* InSocket
 	, TotalBytesSent(0)
 	, bRun(false)
 	, ConnectionRetryDelay(InConnectionRetryDelay)
+	, ConnectionRetryPeriod(InConnectionRetryPeriod)
 	, RecvMessageDataRemaining(0)
 {
 	int32 NewSize = 0;
@@ -169,47 +170,54 @@ uint32 FTcpMessageTransportConnection::Run()
 		if ((!SendHeader() || !ReceiveMessages() || Socket->GetConnectionState() == SCS_ConnectionError) && bRun)
 		{
 			// Disconnected. Reconnect if requested.
-			if (ConnectionRetryDelay > 0)
+			const float Delay = ConnectionRetryDelay;
+			if (Delay > 0)
 			{
 				bool bReconnectPending = false;
-
 				{
 				    // Wait for any sending before we close the socket
 				    FScopeLock SendLock(&SendCriticalSection);
     
 				    Socket->Close();
 				    ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
-				    Socket = nullptr;
-    
-				    UE_LOG(LogTcpMessaging, Verbose, TEXT("Connection to '%s' failed, retrying..."), *RemoteEndpoint.ToString());
-				    FPlatformProcess::Sleep(ConnectionRetryDelay);
-    
-				    Socket = FTcpSocketBuilder(TEXT("FTcpMessageTransport.RemoteConnection"))
-						.WithSendBufferSize(TCP_MESSAGING_SEND_BUFFER_SIZE)
-						.WithReceiveBufferSize(TCP_MESSAGING_RECEIVE_BUFFER_SIZE);
+					Socket = nullptr;
 
-				    if (Socket && Socket->Connect(RemoteEndpoint.ToInternetAddr().Get()))
-				    {
-					    bSentHeader = false;
-					    bReceivedHeader = false;
-						ConnectionState = STATE_DisconnectReconnectPending;
-					    RemoteNodeId.Invalidate();
-						bReconnectPending = true;
-				    }
-				    else
-				    {
-					    if (Socket)
-					    {
-						    ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
-						    Socket = nullptr;
-					    }
-					    bRun = false;
-				    }
+					for (float TimeSpentRetrying = 0; bRun && Socket == nullptr && TimeSpentRetrying <= ConnectionRetryPeriod; TimeSpentRetrying += Delay)
+					{
+						UE_LOG(LogTcpMessaging, Verbose, TEXT("Connection to '%s' failed, retrying..."), *RemoteEndpoint.ToString());
+						FPlatformProcess::Sleep(ConnectionRetryDelay);
+
+						Socket = FTcpSocketBuilder(TEXT("FTcpMessageTransport.RemoteConnection"))
+							.WithSendBufferSize(TCP_MESSAGING_SEND_BUFFER_SIZE)
+							.WithReceiveBufferSize(TCP_MESSAGING_RECEIVE_BUFFER_SIZE);
+
+						if (Socket && Socket->Connect(RemoteEndpoint.ToInternetAddr().Get()))
+						{
+							bSentHeader = false;
+							bReceivedHeader = false;
+							ConnectionState = STATE_DisconnectReconnectPending;
+							RemoteNodeId.Invalidate();
+							bReconnectPending = true;
+						}
+						else
+						{
+							if (Socket)
+							{
+								ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+								Socket = nullptr;
+								bRun = false;
+							}
+						}
+					}
 				}
 
 				if (bReconnectPending)
 				{
 					ConnectionStateChangedDelegate.ExecuteIfBound();
+				}
+				else
+				{
+					UE_LOG(LogTcpMessaging, Error, TEXT("Reconnection to '%s' failed."), *RemoteEndpoint.ToString());
 				}
 			}
 			else
@@ -432,11 +440,10 @@ bool FTcpMessageTransportConnection::ReceiveMessages()
 			RecvMessageDataRemaining -= BytesRead;
 			if (RecvMessageDataRemaining == 0)
 			{
-				// @todo gmp: move message deserialization into an async task
-				FTcpDeserializedMessage* DeserializedMessage = new FTcpDeserializedMessage(nullptr);
+				TSharedPtr<FTcpDeserializedMessage, ESPMode::ThreadSafe> DeserializedMessage = MakeShareable(new FTcpDeserializedMessage(nullptr));
 				if (DeserializedMessage->Deserialize(RecvMessageData))
 				{
-					Inbox.Enqueue(MakeShareable(DeserializedMessage));
+					Inbox.Enqueue(DeserializedMessage);
 				}
 				RecvMessageData.Reset();
 			}

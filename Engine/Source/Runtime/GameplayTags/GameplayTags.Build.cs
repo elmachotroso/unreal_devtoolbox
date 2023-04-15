@@ -6,12 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public GameplayTags(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"Runtime/GameplayTags/Private",
-				}
-				);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -39,6 +33,8 @@ namespace UnrealBuildTool.Rules
 				}
                 );
             }
-        }
+
+			SetupIrisSupport(Target);
+		}
 	}
 }

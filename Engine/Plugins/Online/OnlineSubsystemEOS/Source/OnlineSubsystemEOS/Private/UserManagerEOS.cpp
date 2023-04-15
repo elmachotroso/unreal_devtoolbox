@@ -2,6 +2,7 @@
 
 #include "UserManagerEOS.h"
 #include "OnlineSubsystemEOS.h"
+#include "OnlineSubsystemEOSPrivate.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Guid.h"
 #include "Misc/OutputDeviceRedirector.h"
@@ -131,10 +132,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 IOnlinePresence::FOnPresenceTaskCompleteDelegate IgnoredPresenceDelegate;
 IOnlineUser::FOnQueryExternalIdMappingsComplete IgnoredMappingDelegate;
 
-typedef TEOSGlobalCallback<EOS_UI_OnDisplaySettingsUpdatedCallback, EOS_UI_OnDisplaySettingsUpdatedCallbackInfo> FOnDisplaySettingsUpdatedCallback;
+typedef TEOSGlobalCallback<EOS_UI_OnDisplaySettingsUpdatedCallback, EOS_UI_OnDisplaySettingsUpdatedCallbackInfo, FUserManagerEOS> FOnDisplaySettingsUpdatedCallback;
 
 FUserManagerEOS::FUserManagerEOS(FOnlineSubsystemEOS* InSubsystem)
-	: EOSSubsystem(InSubsystem)
+	: TSharedFromThis<FUserManagerEOS, ESPMode::ThreadSafe>()
+	, EOSSubsystem(InSubsystem)
 	, DefaultLocalUser(-1)
 	, LoginNotificationId(0)
 	, LoginNotificationCallback(nullptr)
@@ -142,6 +144,12 @@ FUserManagerEOS::FUserManagerEOS(FOnlineSubsystemEOS* InSubsystem)
 	, FriendsNotificationCallback(nullptr)
 	, PresenceNotificationId(0)
 	, PresenceNotificationCallback(nullptr)
+	, DisplaySettingsUpdatedId(0)
+	, DisplaySettingsUpdatedCallback(nullptr)
+{
+}
+
+void FUserManagerEOS::Init()
 {
 	// This delegate would cause a crash when running a dedicated server
 	if (!IsRunningDedicatedServer())
@@ -150,7 +158,7 @@ FUserManagerEOS::FUserManagerEOS(FOnlineSubsystemEOS* InSubsystem)
 		EOS_UI_AddNotifyDisplaySettingsUpdatedOptions Options = {};
 		Options.ApiVersion = EOS_UI_ADDNOTIFYDISPLAYSETTINGSUPDATED_API_LATEST;
 
-		FOnDisplaySettingsUpdatedCallback* CallbackObj = new FOnDisplaySettingsUpdatedCallback();
+		FOnDisplaySettingsUpdatedCallback* CallbackObj = new FOnDisplaySettingsUpdatedCallback(AsWeak());
 		DisplaySettingsUpdatedCallback = CallbackObj;
 		CallbackObj->CallbackLambda = [this](const EOS_UI_OnDisplaySettingsUpdatedCallbackInfo* Data)
 		{
@@ -161,7 +169,7 @@ FUserManagerEOS::FUserManagerEOS(FOnlineSubsystemEOS* InSubsystem)
 	}
 }
 
-FUserManagerEOS::~FUserManagerEOS()
+void FUserManagerEOS::Shutdown()
 {
 	// This delegate would cause a crash when running a dedicated server
 	if (DisplaySettingsUpdatedId != EOS_INVALID_NOTIFICATIONID)
@@ -169,8 +177,16 @@ FUserManagerEOS::~FUserManagerEOS()
 		// Removing subscription to external ui display change event
 		EOS_UI_RemoveNotifyDisplaySettingsUpdated(EOSSubsystem->UIHandle, DisplaySettingsUpdatedId);
 
-		delete DisplaySettingsUpdatedCallback;
+		if (DisplaySettingsUpdatedCallback)
+		{
+			delete DisplaySettingsUpdatedCallback;
+		}
 	}
+}
+
+FUserManagerEOS::~FUserManagerEOS()
+{
+	Shutdown();
 }
 
 void FUserManagerEOS::LoginStatusChanged(const EOS_Auth_LoginStatusChangedCallbackInfo* Data)
@@ -284,9 +300,9 @@ FString FUserManagerEOS::GetPlatformDisplayName(int32 LocalUserNum) const
 	return Result;
 }
 
-typedef TEOSCallback<EOS_Auth_OnLoginCallback, EOS_Auth_LoginCallbackInfo> FLoginCallback;
-typedef TEOSCallback<EOS_Connect_OnLoginCallback, EOS_Connect_LoginCallbackInfo> FConnectLoginCallback;
-typedef TEOSCallback<EOS_Auth_OnDeletePersistentAuthCallback, EOS_Auth_DeletePersistentAuthCallbackInfo> FDeletePersistentAuthCallback;
+typedef TEOSCallback<EOS_Auth_OnLoginCallback, EOS_Auth_LoginCallbackInfo, FUserManagerEOS> FLoginCallback;
+typedef TEOSCallback<EOS_Connect_OnLoginCallback, EOS_Connect_LoginCallbackInfo, FUserManagerEOS> FConnectLoginCallback;
+typedef TEOSCallback<EOS_Auth_OnDeletePersistentAuthCallback, EOS_Auth_DeletePersistentAuthCallbackInfo, FUserManagerEOS> FDeletePersistentAuthCallback;
 
 // Chose arbitrarily since the SDK doesn't define it
 #define EOS_MAX_TOKEN_SIZE 4096
@@ -367,7 +383,7 @@ struct FAuthCredentials :
 		Id = IdAnsi;
 		Token = TokenAnsi;
 
-		uint32_t InOutBufferLength = EOS_OSS_STRING_BUFFER_LENGTH;
+		uint32_t InOutBufferLength = EOS_MAX_TOKEN_SIZE;
 		EOS_ByteArray_ToString(InToken.GetData(), InToken.Num(), TokenAnsi, &InOutBufferLength);
 	}
 
@@ -436,6 +452,13 @@ bool FUserManagerEOS::Login(int32 LocalUserNum, const FOnlineAccountCredentials&
 		FCStringAnsi::Strncpy(Credentials.IdAnsi, TCHAR_TO_UTF8(*AccountCredentials.Id), EOS_OSS_STRING_BUFFER_LENGTH);
 		FCStringAnsi::Strncpy(Credentials.TokenAnsi, TCHAR_TO_UTF8(*AccountCredentials.Token), EOS_MAX_TOKEN_SIZE);
 	}
+	else if (AccountCredentials.Type == TEXT("password"))
+	{
+		// This is using a direct username / password. Restricted and not generally available.
+		Credentials.Type = EOS_ELoginCredentialType::EOS_LCT_Password;
+		FCStringAnsi::Strncpy(Credentials.IdAnsi, TCHAR_TO_UTF8(*AccountCredentials.Id), EOS_OSS_STRING_BUFFER_LENGTH);
+		FCStringAnsi::Strncpy(Credentials.TokenAnsi, TCHAR_TO_UTF8(*AccountCredentials.Token), EOS_MAX_TOKEN_SIZE);
+	}
 	else if (AccountCredentials.Type == TEXT("accountportal"))
 	{
 		// This is auth via the EOS Account Portal
@@ -461,7 +484,7 @@ bool FUserManagerEOS::Login(int32 LocalUserNum, const FOnlineAccountCredentials&
 		return false;
 	}
 
-	FLoginCallback* CallbackObj = new FLoginCallback();
+	FLoginCallback* CallbackObj = new FLoginCallback(AsWeak());
 	CallbackObj->CallbackLambda = [this, LocalUserNum, bIsPersistentLogin](const EOS_Auth_LoginCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success)
@@ -486,7 +509,7 @@ bool FUserManagerEOS::Login(int32 LocalUserNum, const FOnlineAccountCredentials&
 			// Check for invalid persistent login credentials.
 			if (bIsPersistentLogin && bShouldRemoveCachedToken)
 			{
-				FDeletePersistentAuthCallback* DeleteAuthCallbackObj = new FDeletePersistentAuthCallback();
+				FDeletePersistentAuthCallback* DeleteAuthCallbackObj = new FDeletePersistentAuthCallback(AsWeak());
 				DeleteAuthCallbackObj->CallbackLambda = [this, LocalUserNum, TriggerLoginFailure](const EOS_Auth_DeletePersistentAuthCallbackInfo* Data)
 				{
 					// Deleting the auth token is best effort.
@@ -512,44 +535,47 @@ bool FUserManagerEOS::Login(int32 LocalUserNum, const FOnlineAccountCredentials&
 void FUserManagerEOS::LoginViaExternalAuth(int32 LocalUserNum)
 {
 	GetPlatformAuthToken(LocalUserNum,
-		FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
+		FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this, WeakThis = AsWeak()](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
 		{
-			if (!bWasSuccessful || !AuthToken.IsValid())
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
 			{
-				UE_LOG_ONLINE(Warning, TEXT("Unable to Login() user (%d) due to an empty platform auth token"), LocalUserNum);
-				TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), FString(TEXT("Missing platform auth token")));
-				return;
+				if (!bWasSuccessful || !AuthToken.IsValid())
+				{
+					UE_LOG_ONLINE(Warning, TEXT("Unable to Login() user (%d) due to an empty platform auth token"), LocalUserNum);
+					TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), FString(TEXT("Missing platform auth token")));
+					return;
+				}
+
+				EOS_Auth_LoginOptions LoginOptions = { };
+				LoginOptions.ApiVersion = EOS_AUTH_LOGIN_API_LATEST;
+				LoginOptions.ScopeFlags = EOS_EAuthScopeFlags::EOS_AS_BasicProfile | EOS_EAuthScopeFlags::EOS_AS_FriendsList | EOS_EAuthScopeFlags::EOS_AS_Presence;
+
+				check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
+				FAuthCredentials Credentials(ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), *LocalUserNumToLastLoginCredentials[LocalUserNum]), AuthToken);
+				LoginOptions.Credentials = &Credentials;
+
+				FLoginCallback* CallbackObj = new FLoginCallback(AsWeak());
+				CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Auth_LoginCallbackInfo* Data)
+				{
+					if (Data->ResultCode == EOS_EResult::EOS_Success)
+					{
+						ConnectLoginEAS(LocalUserNum, Data->LocalUserId);
+					}
+					else if (Data->ResultCode == EOS_EResult::EOS_InvalidUser)
+					{
+						// Link the account
+						LinkEAS(LocalUserNum, Data->ContinuanceToken);
+					}
+					else
+					{
+						FString ErrorString = FString::Printf(TEXT("Login(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+						UE_LOG_ONLINE(Warning, TEXT("%s"), *ErrorString);
+						TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), ErrorString);
+					}
+				};
+				// Perform the auth call
+				EOS_Auth_Login(EOSSubsystem->AuthHandle, &LoginOptions, (void*)CallbackObj, CallbackObj->GetCallbackPtr());
 			}
-
-			EOS_Auth_LoginOptions LoginOptions = { };
-			LoginOptions.ApiVersion = EOS_AUTH_LOGIN_API_LATEST;
-			LoginOptions.ScopeFlags = EOS_EAuthScopeFlags::EOS_AS_BasicProfile | EOS_EAuthScopeFlags::EOS_AS_FriendsList | EOS_EAuthScopeFlags::EOS_AS_Presence;
-
-			check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
-			FAuthCredentials Credentials(ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), *LocalUserNumToLastLoginCredentials[LocalUserNum]), AuthToken);
-			LoginOptions.Credentials = &Credentials;
-
-			FLoginCallback* CallbackObj = new FLoginCallback();
-			CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Auth_LoginCallbackInfo* Data)
-			{
-				if (Data->ResultCode == EOS_EResult::EOS_Success)
-				{
-					ConnectLoginEAS(LocalUserNum, Data->LocalUserId);
-				}
-				else if (Data->ResultCode == EOS_EResult::EOS_InvalidUser)
-				{
-					// Link the account
-					LinkEAS(LocalUserNum, Data->ContinuanceToken);
-				}
-				else
-				{
-					FString ErrorString = FString::Printf(TEXT("Login(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
-					UE_LOG_ONLINE(Warning, TEXT("%s"), *ErrorString);
-					TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), ErrorString);
-				}
-			};
-			// Perform the auth call
-			EOS_Auth_Login(EOSSubsystem->AuthHandle, &LoginOptions, (void*)CallbackObj, CallbackObj->GetCallbackPtr());
 		}));
 }
 
@@ -564,12 +590,12 @@ struct FLinkAccountOptions :
 	}
 };
 
-typedef TEOSCallback<EOS_Auth_OnLinkAccountCallback, EOS_Auth_LinkAccountCallbackInfo> FLinkAccountCallback;
+typedef TEOSCallback<EOS_Auth_OnLinkAccountCallback, EOS_Auth_LinkAccountCallbackInfo, FUserManagerEOS> FLinkAccountCallback;
 
 void FUserManagerEOS::LinkEAS(int32 LocalUserNum, EOS_ContinuanceToken Token)
 {
 	FLinkAccountOptions Options(Token);
-	FLinkAccountCallback* CallbackObj = new FLinkAccountCallback();
+	FLinkAccountCallback* CallbackObj = new FLinkAccountCallback(AsWeak());
 	CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Auth_LinkAccountCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success)
@@ -632,53 +658,56 @@ struct FConnectCredentials :
 bool FUserManagerEOS::ConnectLoginNoEAS(int32 LocalUserNum)
 {
 	GetPlatformAuthToken(LocalUserNum,
-		FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
+		FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this, WeakThis = AsWeak()](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
 		{
-			if (!bWasSuccessful || !AuthToken.IsValid())
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
 			{
-				const FString ErrorString = FString::Printf(TEXT("ConnectLoginNoEAS(%d) failed due to the platform OSS giving an empty auth token"), LocalUserNum);
-				UE_LOG_ONLINE(Warning, TEXT("%s"), *ErrorString);
-				TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), ErrorString);
-				return;
-			}
-
-			// Now login into our EOS account
-			check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
-			FConnectCredentials Credentials(ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), *LocalUserNumToLastLoginCredentials[LocalUserNum]), AuthToken);
-			EOS_Connect_LoginOptions Options = { };
-			Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
-			Options.Credentials = &Credentials;
-
-#if ADD_USER_LOGIN_INFO
-			EOS_Connect_UserLoginInfo UserLoginInfo = {};
-			UserLoginInfo.ApiVersion = EOS_CONNECT_USERLOGININFO_API_LATEST;
-			const FTCHARToUTF8 DisplayNameUtf8(*GetPlatformDisplayName(LocalUserNum));
-			UserLoginInfo.DisplayName = DisplayNameUtf8.Get();
-
-			Options.UserLoginInfo = &UserLoginInfo;
-#endif
-
-			FConnectLoginCallback* CallbackObj = new FConnectLoginCallback();
-			CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Connect_LoginCallbackInfo* Data)
-			{
-				if (Data->ResultCode == EOS_EResult::EOS_Success)
+				if (!bWasSuccessful || !AuthToken.IsValid())
 				{
-					// We have an account mapping to the platform account, skip to final login
-					FullLoginCallback(LocalUserNum, nullptr, Data->LocalUserId);
-				}
-				else if (Data->ResultCode == EOS_EResult::EOS_InvalidUser)
-				{
-					// We need to create the platform account mapping for this user using the continuation token
-					CreateConnectedLogin(LocalUserNum, nullptr, Data->ContinuanceToken);
-				}
-				else
-				{
-					const FString ErrorString = FString::Printf(TEXT("ConnectLoginNoEAS(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+					const FString ErrorString = FString::Printf(TEXT("ConnectLoginNoEAS(%d) failed due to the platform OSS giving an empty auth token"), LocalUserNum);
 					UE_LOG_ONLINE(Warning, TEXT("%s"), *ErrorString);
 					TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), ErrorString);
+					return;
 				}
-			};
-			EOS_Connect_Login(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+
+				// Now login into our EOS account
+				check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
+				FConnectCredentials Credentials(ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), *LocalUserNumToLastLoginCredentials[LocalUserNum]), AuthToken);
+				EOS_Connect_LoginOptions Options = { };
+				Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
+				Options.Credentials = &Credentials;
+
+#if ADD_USER_LOGIN_INFO
+				EOS_Connect_UserLoginInfo UserLoginInfo = {};
+				UserLoginInfo.ApiVersion = EOS_CONNECT_USERLOGININFO_API_LATEST;
+				const FTCHARToUTF8 DisplayNameUtf8(*GetPlatformDisplayName(LocalUserNum));
+				UserLoginInfo.DisplayName = DisplayNameUtf8.Get();
+
+				Options.UserLoginInfo = &UserLoginInfo;
+#endif
+
+				FConnectLoginCallback* CallbackObj = new FConnectLoginCallback(AsWeak());
+				CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Connect_LoginCallbackInfo* Data)
+				{
+					if (Data->ResultCode == EOS_EResult::EOS_Success)
+					{
+						// We have an account mapping to the platform account, skip to final login
+						FullLoginCallback(LocalUserNum, nullptr, Data->LocalUserId);
+					}
+					else if (Data->ResultCode == EOS_EResult::EOS_InvalidUser)
+					{
+						// We need to create the platform account mapping for this user using the continuation token
+						CreateConnectedLogin(LocalUserNum, nullptr, Data->ContinuanceToken);
+					}
+					else
+					{
+						const FString ErrorString = FString::Printf(TEXT("ConnectLoginNoEAS(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+						UE_LOG_ONLINE(Warning, TEXT("%s"), *ErrorString);
+						TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdEOS::EmptyId(), ErrorString);
+					}
+				};
+				EOS_Connect_Login(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+			}
 		}));
 
 	return true;
@@ -702,7 +731,7 @@ bool FUserManagerEOS::ConnectLoginEAS(int32 LocalUserNum, EOS_EpicAccountId Acco
 		Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
 		Options.Credentials = &Credentials;
 
-		FConnectLoginCallback* CallbackObj = new FConnectLoginCallback();
+		FConnectLoginCallback* CallbackObj = new FConnectLoginCallback(AsWeak());
 		CallbackObj->CallbackLambda = [LocalUserNum, AccountId, this](const EOS_Connect_LoginCallbackInfo* Data)
 		{
 			if (Data->ResultCode == EOS_EResult::EOS_Success)
@@ -752,6 +781,12 @@ void FUserManagerEOS::RefreshConnectLogin(int32 LocalUserNum)
 		EOS_EResult CopyResult = EOS_Auth_CopyUserAuthToken(EOSSubsystem->AuthHandle, &CopyOptions, AccountId, &AuthToken);
 		if (CopyResult == EOS_EResult::EOS_Success)
 		{
+			// We update the auth token cached in the user account, along with the user information
+			const FUniqueNetIdEOSPtr UniqueNetId = UserNumToNetIdMap.FindChecked(LocalUserNum);
+			const FUserOnlineAccountEOSRef UserAccountRef = StringToUserAccountMap.FindChecked(UniqueNetId->ToString());
+			UserAccountRef->SetAuthAttribute(AUTH_ATTR_ID_TOKEN, AuthToken->AccessToken);
+			UpdateUserInfo(UserAccountRef, AccountId, AccountId);
+
 			EOS_Connect_Credentials Credentials = { };
 			Credentials.ApiVersion = EOS_CONNECT_CREDENTIALS_API_LATEST;
 			Credentials.Type = EOS_EExternalCredentialType::EOS_ECT_EPIC;
@@ -761,7 +796,7 @@ void FUserManagerEOS::RefreshConnectLogin(int32 LocalUserNum)
 			Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
 			Options.Credentials = &Credentials;
 
-			FConnectLoginCallback* CallbackObj = new FConnectLoginCallback();
+			FConnectLoginCallback* CallbackObj = new FConnectLoginCallback(AsWeak());
 			CallbackObj->CallbackLambda = [LocalUserNum, AccountId, this](const EOS_Connect_LoginCallbackInfo* Data)
 			{
 				if (Data->ResultCode != EOS_EResult::EOS_Success)
@@ -784,39 +819,42 @@ void FUserManagerEOS::RefreshConnectLogin(int32 LocalUserNum)
 	{
 		// Not using EAS so grab the platform auth token
 		GetPlatformAuthToken(LocalUserNum,
-			FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
+			FOnGetLinkedAccountAuthTokenCompleteDelegate::CreateLambda([this, WeakThis = AsWeak()](int32 LocalUserNum, bool bWasSuccessful, const FExternalAuthToken& AuthToken)
 			{
-				if (!bWasSuccessful || !AuthToken.HasTokenData())
+				if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
 				{
-					UE_LOG_ONLINE(Error, TEXT("ConnectLoginNoEAS(%d) failed due to the platform OSS giving an empty auth token"), LocalUserNum);
-					Logout(LocalUserNum);
-					return;
-				}
-
-				// Now login into our EOS account
-				check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
-				const FOnlineAccountCredentials& Creds = *LocalUserNumToLastLoginCredentials[LocalUserNum];
-				EOS_EExternalCredentialType CredType = ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), Creds);
-				FConnectCredentials Credentials(CredType, AuthToken);
-				EOS_Connect_LoginOptions Options = { };
-				Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
-				Options.Credentials = &Credentials;
-
-				FConnectLoginCallback* CallbackObj = new FConnectLoginCallback();
-				CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Connect_LoginCallbackInfo* Data)
-				{
-					if (Data->ResultCode != EOS_EResult::EOS_Success)
+					if (!bWasSuccessful || !AuthToken.IsValid())
 					{
-						UE_LOG_ONLINE(Error, TEXT("Failed to refresh ConnectLogin(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+						UE_LOG_ONLINE(Error, TEXT("ConnectLoginNoEAS(%d) failed due to the platform OSS giving an empty auth token"), LocalUserNum);
 						Logout(LocalUserNum);
+						return;
 					}
-				};
-				EOS_Connect_Login(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+
+					// Now login into our EOS account
+					check(LocalUserNumToLastLoginCredentials.Contains(LocalUserNum));
+					const FOnlineAccountCredentials& Creds = *LocalUserNumToLastLoginCredentials[LocalUserNum];
+					EOS_EExternalCredentialType CredType = ToEOS_EExternalCredentialType(GetPlatformOSS()->GetSubsystemName(), Creds);
+					FConnectCredentials Credentials(CredType, AuthToken);
+					EOS_Connect_LoginOptions Options = { };
+					Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
+					Options.Credentials = &Credentials;
+
+					FConnectLoginCallback* CallbackObj = new FConnectLoginCallback(AsWeak());
+					CallbackObj->CallbackLambda = [this, LocalUserNum](const EOS_Connect_LoginCallbackInfo* Data)
+					{
+						if (Data->ResultCode != EOS_EResult::EOS_Success)
+						{
+							UE_LOG_ONLINE(Error, TEXT("Failed to refresh ConnectLogin(%d) failed with EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+							Logout(LocalUserNum);
+						}
+					};
+					EOS_Connect_Login(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+				}
 			}));
 	}
 }
 
-typedef TEOSCallback<EOS_Connect_OnCreateUserCallback, EOS_Connect_CreateUserCallbackInfo> FCreateUserCallback;
+typedef TEOSCallback<EOS_Connect_OnCreateUserCallback, EOS_Connect_CreateUserCallbackInfo, FUserManagerEOS> FCreateUserCallback;
 
 void FUserManagerEOS::CreateConnectedLogin(int32 LocalUserNum, EOS_EpicAccountId AccountId, EOS_ContinuanceToken Token)
 {
@@ -824,7 +862,7 @@ void FUserManagerEOS::CreateConnectedLogin(int32 LocalUserNum, EOS_EpicAccountId
 	Options.ApiVersion = EOS_CONNECT_CREATEUSER_API_LATEST;
 	Options.ContinuanceToken = Token;
 
-	FCreateUserCallback* CallbackObj = new FCreateUserCallback();
+	FCreateUserCallback* CallbackObj = new FCreateUserCallback(AsWeak());
 	CallbackObj->CallbackLambda = [LocalUserNum, AccountId, this](const EOS_Connect_CreateUserCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success)
@@ -841,17 +879,17 @@ void FUserManagerEOS::CreateConnectedLogin(int32 LocalUserNum, EOS_EpicAccountId
 	EOS_Connect_CreateUser(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
 }
 
-typedef TEOSGlobalCallback<EOS_Connect_OnAuthExpirationCallback, EOS_Connect_AuthExpirationCallbackInfo> FRefreshAuthCallback;
-typedef TEOSGlobalCallback<EOS_Presence_OnPresenceChangedCallback, EOS_Presence_PresenceChangedCallbackInfo> FPresenceChangedCallback;
-typedef TEOSGlobalCallback<EOS_Friends_OnFriendsUpdateCallback, EOS_Friends_OnFriendsUpdateInfo> FFriendsStatusUpdateCallback;
-typedef TEOSGlobalCallback<EOS_Auth_OnLoginStatusChangedCallback, EOS_Auth_LoginStatusChangedCallbackInfo> FLoginStatusChangedCallback;
+typedef TEOSGlobalCallback<EOS_Connect_OnAuthExpirationCallback, EOS_Connect_AuthExpirationCallbackInfo, FUserManagerEOS> FRefreshAuthCallback;
+typedef TEOSGlobalCallback<EOS_Presence_OnPresenceChangedCallback, EOS_Presence_PresenceChangedCallbackInfo, FUserManagerEOS> FPresenceChangedCallback;
+typedef TEOSGlobalCallback<EOS_Friends_OnFriendsUpdateCallback, EOS_Friends_OnFriendsUpdateInfo, FUserManagerEOS> FFriendsStatusUpdateCallback;
+typedef TEOSGlobalCallback<EOS_Auth_OnLoginStatusChangedCallback, EOS_Auth_LoginStatusChangedCallbackInfo, FUserManagerEOS> FLoginStatusChangedCallback;
 
 void FUserManagerEOS::FullLoginCallback(int32 LocalUserNum, EOS_EpicAccountId AccountId, EOS_ProductUserId UserId)
 {
 	// Add our login status changed callback if not already set
 	if (LoginNotificationId == 0)
 	{
-		FLoginStatusChangedCallback* CallbackObj = new FLoginStatusChangedCallback();
+		FLoginStatusChangedCallback* CallbackObj = new FLoginStatusChangedCallback(AsWeak());
 		LoginNotificationCallback = CallbackObj;
 		CallbackObj->CallbackLambda = [this](const EOS_Auth_LoginStatusChangedCallbackInfo* Data)
 		{
@@ -865,7 +903,7 @@ void FUserManagerEOS::FullLoginCallback(int32 LocalUserNum, EOS_EpicAccountId Ac
 	// Register for friends updates if not set yet
 	if (FriendsNotificationId == 0)
 	{
-		FFriendsStatusUpdateCallback* CallbackObj = new FFriendsStatusUpdateCallback();
+		FFriendsStatusUpdateCallback* CallbackObj = new FFriendsStatusUpdateCallback(AsWeak());
 		FriendsNotificationCallback = CallbackObj;
 		CallbackObj->CallbackLambda = [LocalUserNum, this](const EOS_Friends_OnFriendsUpdateInfo* Data)
 		{
@@ -879,7 +917,7 @@ void FUserManagerEOS::FullLoginCallback(int32 LocalUserNum, EOS_EpicAccountId Ac
 	// Register for presence updates if not set yet
 	if (PresenceNotificationId == 0)
 	{
-		FPresenceChangedCallback* CallbackObj = new FPresenceChangedCallback();
+		FPresenceChangedCallback* CallbackObj = new FPresenceChangedCallback(AsWeak());
 		PresenceNotificationCallback = CallbackObj;
 		CallbackObj->CallbackLambda = [LocalUserNum, this](const EOS_Presence_PresenceChangedCallbackInfo* Data)
 		{
@@ -901,7 +939,7 @@ void FUserManagerEOS::FullLoginCallback(int32 LocalUserNum, EOS_EpicAccountId Ac
 		FNotificationIdCallbackPair* NotificationPair = new FNotificationIdCallbackPair();
 		LocalUserNumToConnectLoginNotifcationMap.Emplace(LocalUserNum, NotificationPair);
 
-		FRefreshAuthCallback* CallbackObj = new FRefreshAuthCallback();
+		FRefreshAuthCallback* CallbackObj = new FRefreshAuthCallback(AsWeak());
 		NotificationPair->Callback = CallbackObj;
 		CallbackObj->CallbackLambda = [LocalUserNum, this](const EOS_Connect_AuthExpirationCallbackInfo* Data)
 		{
@@ -921,7 +959,7 @@ void FUserManagerEOS::FullLoginCallback(int32 LocalUserNum, EOS_EpicAccountId Ac
 	TriggerOnLoginStatusChangedDelegates(LocalUserNum, ELoginStatus::NotLoggedIn, ELoginStatus::LoggedIn, *UserNetId);
 }
 
-typedef TEOSCallback<EOS_Auth_OnLogoutCallback, EOS_Auth_LogoutCallbackInfo> FLogoutCallback;
+typedef TEOSCallback<EOS_Auth_OnLogoutCallback, EOS_Auth_LogoutCallbackInfo, FUserManagerEOS> FLogoutCallback;
 
 bool FUserManagerEOS::Logout(int32 LocalUserNum)
 {
@@ -934,10 +972,10 @@ bool FUserManagerEOS::Logout(int32 LocalUserNum)
 		return false;
 	}
 
-	FLogoutCallback* CallbackObj = new FLogoutCallback();
+	FLogoutCallback* CallbackObj = new FLogoutCallback(AsWeak());
 	CallbackObj->CallbackLambda = [LocalUserNum, this](const EOS_Auth_LogoutCallbackInfo* Data)
 	{
-		FDeletePersistentAuthCallback* DeleteAuthCallbackObj = new FDeletePersistentAuthCallback();
+		FDeletePersistentAuthCallback* DeleteAuthCallbackObj = new FDeletePersistentAuthCallback(AsWeak());
 		DeleteAuthCallbackObj->CallbackLambda = [this, LocalUserNum, LogoutResultCode = Data->ResultCode](const EOS_Auth_DeletePersistentAuthCallbackInfo* Data)
 		{
 			if (LogoutResultCode == EOS_EResult::EOS_Success)
@@ -960,7 +998,7 @@ bool FUserManagerEOS::Logout(int32 LocalUserNum)
 
 	EOS_Auth_LogoutOptions LogoutOptions = { };
 	LogoutOptions.ApiVersion = EOS_AUTH_LOGOUT_API_LATEST;
-	LogoutOptions.LocalUserId = StringToAccountIdMap[UserId->UniqueNetIdStr];
+	LogoutOptions.LocalUserId = UserId->GetEpicAccountId();
 
 	EOS_Auth_Logout(EOSSubsystem->AuthHandle, &LogoutOptions, CallbackObj, CallbackObj->GetCallbackPtr());
 
@@ -981,7 +1019,7 @@ bool FUserManagerEOS::AutoLogin(int32 LocalUserNum)
 
 	FEOSSettings Settings = UEOSSettings::GetSettings();
 
-	if (EOSSubsystem->bIsDefaultOSS && Settings.bUseEAS && (LoginId.IsEmpty() || Password.IsEmpty() || AuthType.IsEmpty()))
+	if (EOSSubsystem->bIsDefaultOSS && Settings.bUseEAS && AuthType.IsEmpty())
 	{
 		UE_LOG_ONLINE(Warning, TEXT("Unable to AutoLogin user (%d) due to missing auth command line args"), LocalUserNum);
 		return false;
@@ -1001,8 +1039,8 @@ void FUserManagerEOS::AddLocalUser(int32 LocalUserNum, EOS_EpicAccountId EpicAcc
 		DefaultLocalUser = LocalUserNum;
 	}
 
-	const FString& NetId = MakeNetIdStringFromIds(EpicAccountId, UserId);
-	FUniqueNetIdEOSRef UserNetId = FUniqueNetIdEOS::Create(NetId);
+	FUniqueNetIdEOSRef UserNetId = FUniqueNetIdEOSRegistry::FindOrAdd(EpicAccountId, UserId).ToSharedRef();
+	const FString& NetId = UserNetId->ToString();
 	FUserOnlineAccountEOSRef UserAccountRef(new FUserOnlineAccountEOS(UserNetId));
 
 	UserNumToNetIdMap.Emplace(LocalUserNum, UserNetId);
@@ -1012,11 +1050,9 @@ void FUserManagerEOS::AddLocalUser(int32 LocalUserNum, EOS_EpicAccountId EpicAcc
 	StringToUserAccountMap.Emplace(NetId, UserAccountRef);
 	AccountIdToStringMap.Emplace(EpicAccountId, NetId);
 	ProductUserIdToStringMap.Emplace(UserId, *NetId);
-	StringToAccountIdMap.Emplace(NetId, EpicAccountId);
 	EpicAccountIdToAttributeAccessMap.Emplace(EpicAccountId, UserAccountRef);
 	UserNumToProductUserIdMap.Emplace(LocalUserNum, UserId);
 	ProductUserIdToUserNumMap.Emplace(UserId, LocalUserNum);
-	StringToProductUserIdMap.Emplace(NetId, UserId);
 
 	// Init player lists
 	FFriendsListEOSRef FriendsList = MakeShareable(new FFriendsListEOS(LocalUserNum, UserNetId));
@@ -1094,7 +1130,7 @@ TSharedPtr<FUserOnlineAccount> FUserManagerEOS::GetUserAccount(const FUniqueNetI
 	TSharedPtr<FUserOnlineAccount> Result;
 
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	const FUserOnlineAccountEOSRef* FoundUserAccount = StringToUserAccountMap.Find(EOSID.UniqueNetIdStr);
+	const FUserOnlineAccountEOSRef* FoundUserAccount = StringToUserAccountMap.Find(EOSID.ToString());
 	if (FoundUserAccount != nullptr)
 	{
 		return *FoundUserAccount;
@@ -1122,14 +1158,19 @@ FUniqueNetIdPtr FUserManagerEOS::GetUniquePlayerId(int32 LocalUserNum) const
 int32 FUserManagerEOS::GetLocalUserNumFromUniqueNetId(const FUniqueNetId& NetId) const
 {
 	const FUniqueNetIdEOS& EosId = FUniqueNetIdEOS::Cast(NetId);
-	if (StringToAccountIdMap.Contains(EosId.UniqueNetIdStr))
+
+	const EOS_EpicAccountId AccountId = EosId.GetEpicAccountId();
+	if (const int32* UserNum = AccountIdToUserNumMap.Find(AccountId))
 	{
-		EOS_EpicAccountId AccountId = StringToAccountIdMap[EosId.UniqueNetIdStr];
-		if (AccountIdToUserNumMap.Contains(AccountId))
-		{
-			return AccountIdToUserNumMap[AccountId];
-		}
+		return *UserNum;
 	}
+
+	const EOS_ProductUserId ProductUserId = EosId.GetProductUserId();
+	if (const int32* UserNum = ProductUserIdToUserNumMap.Find(ProductUserId))
+	{
+		return *UserNum;
+	}
+
 	// Use the default user if we can't find the person that they want
 	return DefaultLocalUser;
 }
@@ -1137,7 +1178,7 @@ int32 FUserManagerEOS::GetLocalUserNumFromUniqueNetId(const FUniqueNetId& NetId)
 bool FUserManagerEOS::IsLocalUser(const FUniqueNetId& NetId) const
 {
 	const FUniqueNetIdEOS& EosId = FUniqueNetIdEOS::Cast(NetId);
-	return StringToAccountIdMap.Contains(EosId.UniqueNetIdStr);
+	return AccountIdToUserNumMap.Contains(EosId.GetEpicAccountId()) || ProductUserIdToUserNumMap.Contains(EosId.GetProductUserId());
 }
 
 FUniqueNetIdEOSPtr FUserManagerEOS::GetLocalUniqueNetIdEOS(int32 LocalUserNum) const
@@ -1214,29 +1255,7 @@ EOS_ProductUserId FUserManagerEOS::GetLocalProductUserId(EOS_EpicAccountId Accou
 	return nullptr;
 }
 
-EOS_EpicAccountId FUserManagerEOS::GetEpicAccountId(const FUniqueNetId& NetId) const
-{
-	const FUniqueNetIdEOS& EOSId = FUniqueNetIdEOS::Cast(NetId);
-
-	if (StringToAccountIdMap.Contains(EOSId.UniqueNetIdStr))
-	{
-		return StringToAccountIdMap[EOSId.UniqueNetIdStr];
-	}
-	return nullptr;
-}
-
-EOS_ProductUserId FUserManagerEOS::GetProductUserId(const FUniqueNetId& NetId) const
-{
-	const FUniqueNetIdEOS& EOSId = FUniqueNetIdEOS::Cast(NetId);
-
-	if (StringToProductUserIdMap.Contains(EOSId.UniqueNetIdStr))
-	{
-		return StringToProductUserIdMap[EOSId.UniqueNetIdStr];
-	}
-	return nullptr;
-}
-
-typedef TEOSCallback<EOS_Connect_OnQueryProductUserIdMappingsCallback, EOS_Connect_QueryProductUserIdMappingsCallbackInfo> FConnectQueryProductUserIdMappingsCallback;
+typedef TEOSCallback<EOS_Connect_OnQueryProductUserIdMappingsCallback, EOS_Connect_QueryProductUserIdMappingsCallbackInfo, FUserManagerEOS> FConnectQueryProductUserIdMappingsCallback;
 
 /**
  * Uses the Connect API to retrieve the EOS_EpicAccountId for a given EOS_ProductUserId
@@ -1273,43 +1292,75 @@ bool FUserManagerEOS::GetEpicAccountIdFromProductUserId(const EOS_ProductUserId&
 	return bResult;
 }
 
-void FUserManagerEOS::GetEpicAccountIdAsync(const EOS_ProductUserId& ProductUserId, const GetEpicAccountIdAsyncCallback& Callback) const
+void FUserManagerEOS::ResolveUniqueNetId(const EOS_ProductUserId& ProductUserId, const FResolveUniqueNetIdCallback& Callback) const
 {
-	// We check first if the Product User Id has already been queried, which would allow us to retrieve its Epic Account Id directly
-	EOS_EpicAccountId AccountId;
-	if (GetEpicAccountIdFromProductUserId(ProductUserId, AccountId))
-	{
-		Callback(ProductUserId, AccountId);
-	}
-	else
-	{
-		// If it's the first time we want the Epic Account Id for this Product User Id, we have to query it first
-		TArray<EOS_ProductUserId> ProductUserIdList = { const_cast<EOS_ProductUserId>(ProductUserId) };
+	TArray<EOS_ProductUserId> ProductUserIds = { const_cast<EOS_ProductUserId>(ProductUserId) };
 
+	FResolveUniqueNetIdsCallback GroupCallback = [ProductUserId, OriginalCallback = Callback](TMap<EOS_ProductUserId, FUniqueNetIdEOSRef> ResolvedUniqueNetIds) {
+		OriginalCallback(ResolvedUniqueNetIds[ProductUserId]);
+	};
+
+	ResolveUniqueNetIds(ProductUserIds, GroupCallback);
+}
+
+void FUserManagerEOS::ResolveUniqueNetIds(const TArray<EOS_ProductUserId>& ProductUserIds, const FResolveUniqueNetIdsCallback& Callback) const
+{
+	TMap<EOS_ProductUserId, FUniqueNetIdEOSRef> ResolvedUniqueNetIds;
+	TArray<EOS_ProductUserId> ProductUserIdsToResolve;
+
+	for (const EOS_ProductUserId& ProductUserId : ProductUserIds)
+	{
+		EOS_EpicAccountId EpicAccountId;
+
+		// We check first if the Product User Id has already been queried, which would allow us to retrieve its Epic Account Id directly
+		if (GetEpicAccountIdFromProductUserId(ProductUserId, EpicAccountId))
+		{
+			const FUniqueNetIdEOSRef UniqueNetId = FUniqueNetIdEOSRegistry::FindOrAdd(EpicAccountId, ProductUserId).ToSharedRef();
+
+			ResolvedUniqueNetIds.Add(ProductUserId, UniqueNetId);
+		}
+		else
+		{
+			// If that's not the case, we'll have to query them first
+			ProductUserIdsToResolve.Add(ProductUserId);
+		}
+	}
+
+	if (!ProductUserIdsToResolve.IsEmpty())
+	{
 		EOS_Connect_QueryProductUserIdMappingsOptions QueryProductUserIdMappingsOptions = {};
 		QueryProductUserIdMappingsOptions.ApiVersion = EOS_CONNECT_QUERYPRODUCTUSERIDMAPPINGS_API_LATEST;
 		QueryProductUserIdMappingsOptions.LocalUserId = EOSSubsystem->UserManager->GetLocalProductUserId(0);
-		QueryProductUserIdMappingsOptions.ProductUserIds = ProductUserIdList.GetData();
-		QueryProductUserIdMappingsOptions.ProductUserIdCount = 1;
+		QueryProductUserIdMappingsOptions.ProductUserIds = ProductUserIdsToResolve.GetData();
+		QueryProductUserIdMappingsOptions.ProductUserIdCount = ProductUserIdsToResolve.Num();
 
-		FConnectQueryProductUserIdMappingsCallback* CallbackObj = new FConnectQueryProductUserIdMappingsCallback();
-		CallbackObj->CallbackLambda = [this, ProductUserId, Callback](const EOS_Connect_QueryProductUserIdMappingsCallbackInfo* Data)
+		FConnectQueryProductUserIdMappingsCallback* CallbackObj = new FConnectQueryProductUserIdMappingsCallback(FUserManagerEOSConstWeakPtr(AsShared()));
+		CallbackObj->CallbackLambda = [this, ProductUserIdsToResolve, ResolvedUniqueNetIds = MoveTemp(ResolvedUniqueNetIds), Callback](const EOS_Connect_QueryProductUserIdMappingsCallbackInfo* Data) mutable
 		{
-			EOS_EpicAccountId AccountId = nullptr;
-
-			if (Data->ResultCode == EOS_EResult::EOS_Success)
+			if (Data->ResultCode != EOS_EResult::EOS_Success)
 			{
-				GetEpicAccountIdFromProductUserId(ProductUserId, AccountId);
-			}
-			else
-			{
-				UE_LOG_ONLINE(Verbose, TEXT("[FUserManagerEOS::GetEpicAccountIdAsync] EOS_Connect_QueryProductUserIdMappings not successful for ProductUserId (%s). Finished with EOS_EResult %s."), *LexToString(ProductUserId), ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+				UE_LOG_ONLINE(Verbose, TEXT("[FUserManagerEOS::ResolveUniqueNetIds] EOS_Connect_QueryProductUserIdMappings not successful for user (%s). Finished with EOS_EResult %s."), *LexToString(Data->LocalUserId), ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
 			}
 
-			Callback(ProductUserId, AccountId);
+			for (const EOS_ProductUserId& ProductUserId : ProductUserIdsToResolve)
+			{
+				EOS_EpicAccountId EpicAccountId = nullptr;
+
+				GetEpicAccountIdFromProductUserId(ProductUserId, EpicAccountId);
+
+				const FUniqueNetIdEOSRef UniqueNetId = FUniqueNetIdEOSRegistry::FindOrAdd(EpicAccountId, ProductUserId).ToSharedRef();
+
+				ResolvedUniqueNetIds.Add(ProductUserId, UniqueNetId);
+			}
+
+			Callback(ResolvedUniqueNetIds);
 		};
 
 		EOS_Connect_QueryProductUserIdMappings(EOSSubsystem->ConnectHandle, &QueryProductUserIdMappingsOptions, CallbackObj, CallbackObj->GetCallbackPtr());
+	}
+	else
+	{
+		Callback(ResolvedUniqueNetIds);
 	}
 }
 
@@ -1319,9 +1370,9 @@ FOnlineUserPtr FUserManagerEOS::GetLocalOnlineUser(int32 LocalUserNum) const
 	if (UserNumToNetIdMap.Contains(LocalUserNum))
 	{
 		const FUniqueNetIdEOSPtr NetId = UserNumToNetIdMap.FindRef(LocalUserNum);
-		if (NetIdStringToOnlineUserMap.Contains(*NetId->UniqueNetIdStr))
+		if (NetIdStringToOnlineUserMap.Contains(NetId->ToString()))
 		{
-			OnlineUser = NetIdStringToOnlineUserMap.FindRef(*NetId->UniqueNetIdStr);
+			OnlineUser = NetIdStringToOnlineUserMap.FindRef(NetId->ToString());
 		}
 	}
 	return OnlineUser;
@@ -1333,7 +1384,7 @@ FOnlineUserPtr FUserManagerEOS::GetOnlineUser(EOS_ProductUserId UserId) const
 	if (ProductUserIdToStringMap.Contains(UserId))
 	{
 		const FString& NetId = ProductUserIdToStringMap.FindRef(UserId);
-		if (NetIdStringToOnlineUserMap.Contains(*NetId))
+		if (NetIdStringToOnlineUserMap.Contains(NetId))
 		{
 			OnlineUser = NetIdStringToOnlineUserMap.FindRef(*NetId);
 		}
@@ -1347,9 +1398,9 @@ FOnlineUserPtr FUserManagerEOS::GetOnlineUser(EOS_EpicAccountId AccountId) const
 	if (AccountIdToStringMap.Contains(AccountId))
 	{
 		const FString& NetId = AccountIdToStringMap.FindRef(AccountId);
-		if (NetIdStringToOnlineUserMap.Contains(*NetId))
+		if (NetIdStringToOnlineUserMap.Contains(NetId))
 		{
-			OnlineUser = NetIdStringToOnlineUserMap.FindRef(*NetId);
+			OnlineUser = NetIdStringToOnlineUserMap.FindRef(NetId);
 		}
 	}
 	return OnlineUser;
@@ -1362,12 +1413,11 @@ void FUserManagerEOS::RemoveLocalUser(int32 LocalUserNum)
 	{
 		EOSSubsystem->ReleaseVoiceChatUserInterface(**FoundId);
 		LocalUserNumToFriendsListMap.Remove(LocalUserNum);
-		const FString& NetId = (*FoundId)->UniqueNetIdStr;
-		EOS_EpicAccountId AccountId = StringToAccountIdMap[NetId];
+		const FString& NetId = (*FoundId)->ToString();
+		const EOS_EpicAccountId AccountId = (*FoundId)->GetEpicAccountId();
 		AccountIdToStringMap.Remove(AccountId);
 		AccountIdToUserNumMap.Remove(AccountId);
 		NetIdStringToOnlineUserMap.Remove(NetId);
-		StringToAccountIdMap.Remove(NetId);
 		StringToUserAccountMap.Remove(NetId);
 		UserNumToNetIdMap.Remove(LocalUserNum);
 		UserNumToAccountIdMap.Remove(LocalUserNum);
@@ -1385,18 +1435,17 @@ void FUserManagerEOS::RemoveLocalUser(int32 LocalUserNum)
 
 FUniqueNetIdPtr FUserManagerEOS::CreateUniquePlayerId(uint8* Bytes, int32 Size)
 {
-	if (Bytes != nullptr && Size >= 32)
-	{
-		// In the case of crossplay the size might be larger, but we only know how to parse the 32
-// @todo joeg crossplay
-		return FUniqueNetIdEOS::Create(Bytes, 32);
-	}
-	return nullptr;
+	// If we're passed an EOSPlus id, the first EOS_ID_BYTE_SIZE bytes are the EAS|EOS part we care about.
+	Size = FMath::Min(Size, EOS_ID_BYTE_SIZE);
+	return FUniqueNetIdEOSRegistry::FindOrAdd(Bytes, Size);
 }
 
-FUniqueNetIdPtr FUserManagerEOS::CreateUniquePlayerId(const FString& Str)
+FUniqueNetIdPtr FUserManagerEOS::CreateUniquePlayerId(const FString& InStr)
 {
-	return FUniqueNetIdEOS::Create(Str);
+	FString NetIdStr = InStr;
+	// If we're passed an EOSPlus id, remove the platform id and separator.
+	NetIdStr.Split(EOSPLUS_ID_SEPARATOR, nullptr, &NetIdStr);
+	return FUniqueNetIdEOSRegistry::FindOrAdd(NetIdStr);
 }
 
 ELoginStatus::Type FUserManagerEOS::GetLoginStatus(int32 LocalUserNum) const
@@ -1411,16 +1460,11 @@ ELoginStatus::Type FUserManagerEOS::GetLoginStatus(int32 LocalUserNum) const
 
 ELoginStatus::Type FUserManagerEOS::GetLoginStatus(const FUniqueNetIdEOS& UserId) const
 {
-	if (!StringToAccountIdMap.Contains(UserId.UniqueNetIdStr))
-	{
-		return ELoginStatus::NotLoggedIn;
-	}
-
 	FEOSSettings Settings = UEOSSettings::GetSettings();
 	// If the user isn't using EAS, then only check for a product user id
 	if (!Settings.bUseEAS)
 	{
-		EOS_ProductUserId ProductUserId = StringToProductUserIdMap[UserId.UniqueNetIdStr];
+		const EOS_ProductUserId ProductUserId = UserId.GetProductUserId();
 		if (ProductUserId != nullptr)
 		{
 			return ELoginStatus::LoggedIn;
@@ -1428,7 +1472,7 @@ ELoginStatus::Type FUserManagerEOS::GetLoginStatus(const FUniqueNetIdEOS& UserId
 		return ELoginStatus::NotLoggedIn;
 	}
 
-	EOS_EpicAccountId AccountId = StringToAccountIdMap[UserId.UniqueNetIdStr];
+	const EOS_EpicAccountId AccountId = UserId.GetEpicAccountId();
 	if (AccountId == nullptr)
 	{
 		return ELoginStatus::NotLoggedIn;
@@ -1507,7 +1551,7 @@ void FUserManagerEOS::GetLinkedAccountAuthToken(int32 LocalUserNum, const FOnGet
 {
 	FExternalAuthToken ExternalToken;
 	ExternalToken.TokenString = GetAuthToken(LocalUserNum);
-	Delegate.ExecuteIfBound(LocalUserNum, ExternalToken.HasTokenString(), ExternalToken);
+	Delegate.ExecuteIfBound(LocalUserNum, ExternalToken.IsValid(), ExternalToken);
 }
 
 void FUserManagerEOS::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivileges::Type Privilege, const FOnGetUserPrivilegeCompleteDelegate& Delegate)
@@ -1534,7 +1578,7 @@ bool FUserManagerEOS::ShowAccountCreationUI(const int ControllerIndex, const FOn
 {
 	UE_LOG_ONLINE_EXTERNALUI(Warning, TEXT("[FUserManagerEOS::ShowAccountCreationUI] This method is not implemented."));
 	
-	EOSSubsystem->ExecuteNextTick([this, ControllerIndex, Delegate]()
+	EOSSubsystem->ExecuteNextTick([ControllerIndex, Delegate]()
 		{
 			Delegate.ExecuteIfBound(ControllerIndex, FOnlineAccountCredentials(), FOnlineError(EOnlineErrorResult::NotImplemented));
 		});
@@ -1542,7 +1586,7 @@ bool FUserManagerEOS::ShowAccountCreationUI(const int ControllerIndex, const FOn
 	return true;
 }
 
-typedef TEOSCallback<EOS_UI_OnShowFriendsCallback, EOS_UI_ShowFriendsCallbackInfo> FOnShowFriendsCallback;
+typedef TEOSCallback<EOS_UI_OnShowFriendsCallback, EOS_UI_ShowFriendsCallbackInfo, FUserManagerEOS> FOnShowFriendsCallback;
 
 bool FUserManagerEOS::ShowFriendsUI(int32 LocalUserNum)
 {
@@ -1550,8 +1594,8 @@ bool FUserManagerEOS::ShowFriendsUI(int32 LocalUserNum)
 	Options.ApiVersion = EOS_UI_SHOWFRIENDS_API_LATEST;
 	Options.LocalUserId = GetLocalEpicAccountId(LocalUserNum);
 
-	FOnShowFriendsCallback* CallbackObj = new FOnShowFriendsCallback();
-	CallbackObj->CallbackLambda = [this](const EOS_UI_ShowFriendsCallbackInfo* Data)
+	FOnShowFriendsCallback* CallbackObj = new FOnShowFriendsCallback(AsWeak());
+	CallbackObj->CallbackLambda = [](const EOS_UI_ShowFriendsCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success)
 		{
@@ -1596,7 +1640,7 @@ bool FUserManagerEOS::ShowWebURL(const FString& Url, const FShowWebUrlParams& Sh
 
 	if (Delegate.IsBound())
 	{
-		EOSSubsystem->ExecuteNextTick([this, Delegate]()
+		EOSSubsystem->ExecuteNextTick([Delegate]()
 			{
 				Delegate.ExecuteIfBound(FString());
 			});
@@ -1618,7 +1662,7 @@ bool FUserManagerEOS::ShowProfileUI(const FUniqueNetId& Requestor, const FUnique
 
 	if (Delegate.IsBound())
 	{
-		EOSSubsystem->ExecuteNextTick([this, Delegate]()
+		EOSSubsystem->ExecuteNextTick([Delegate]()
 			{
 				Delegate.ExecuteIfBound();
 			});
@@ -1640,7 +1684,7 @@ bool FUserManagerEOS::ShowStoreUI(int32 LocalUserNum, const FShowStoreParams& Sh
 
 	if (Delegate.IsBound())
 	{
-		EOSSubsystem->ExecuteNextTick([this, Delegate]()
+		EOSSubsystem->ExecuteNextTick([Delegate]()
 			{
 				Delegate.ExecuteIfBound(false);
 			});
@@ -1655,7 +1699,7 @@ bool FUserManagerEOS::ShowSendMessageUI(int32 LocalUserNum, const FShowSendMessa
 
 	if (Delegate.IsBound())
 	{
-		EOSSubsystem->ExecuteNextTick([this, Delegate]()
+		EOSSubsystem->ExecuteNextTick([Delegate]()
 			{
 				Delegate.ExecuteIfBound(false);
 			});
@@ -1666,7 +1710,7 @@ bool FUserManagerEOS::ShowSendMessageUI(int32 LocalUserNum, const FShowSendMessa
 
 // ~IOnlineExternalUI Interface
 
-typedef TEOSCallback<EOS_Friends_OnQueryFriendsCallback, EOS_Friends_QueryFriendsCallbackInfo> FReadFriendsCallback;
+typedef TEOSCallback<EOS_Friends_OnQueryFriendsCallback, EOS_Friends_QueryFriendsCallbackInfo, FUserManagerEOS> FReadFriendsCallback;
 
 void FUserManagerEOS::FriendStatusChanged(const EOS_Friends_OnFriendsUpdateInfo* Data)
 {
@@ -1719,8 +1763,8 @@ void FUserManagerEOS::FriendStatusChanged(const EOS_Friends_OnFriendsUpdateInfo*
 
 void FUserManagerEOS::AddFriend(int32 LocalUserNum, EOS_EpicAccountId EpicAccountId)
 {
-	const FString NetId = LexToString(EpicAccountId);
-	FUniqueNetIdEOSRef FriendNetId = FUniqueNetIdEOS::Create(NetId);
+	FUniqueNetIdEOSRef FriendNetId = FUniqueNetIdEOSRegistry::FindOrAdd(EpicAccountId, nullptr).ToSharedRef();
+	const FString NetId = FriendNetId->ToString();
 	FOnlineFriendEOSRef FriendRef = MakeShareable(new FOnlineFriendEOS(FriendNetId));
 	LocalUserNumToFriendsListMap[LocalUserNum]->Add(NetId, FriendRef);
 
@@ -1746,7 +1790,7 @@ void FUserManagerEOS::AddFriend(int32 LocalUserNum, EOS_EpicAccountId EpicAccoun
 
 void FUserManagerEOS::AddRemotePlayer(int32 LocalUserNum, const FString& NetId, EOS_EpicAccountId EpicAccountId)
 {
-	FUniqueNetIdEOSRef EOSID = FUniqueNetIdEOS::Create(NetId);
+	FUniqueNetIdEOSRef EOSID = FUniqueNetIdEOSRegistry::FindOrAdd(NetId).ToSharedRef();
 	FOnlineUserEOSRef UserRef = MakeShareable(new FOnlineUserEOS(EOSID));
 	// Add this user as a remote (this will grab presence & user info)
 	AddRemotePlayer(LocalUserNum, NetId, EpicAccountId, EOSID, UserRef, UserRef);
@@ -1759,34 +1803,29 @@ void FUserManagerEOS::AddRemotePlayer(int32 LocalUserNum, const FString& NetId, 
 	NetIdStringToAttributeAccessMap.Emplace(NetId, AttributeRef);
 	EpicAccountIdToAttributeAccessMap.Emplace(EpicAccountId, AttributeRef);
 
-	StringToAccountIdMap.Emplace(NetId, EpicAccountId);
 	AccountIdToStringMap.Emplace(EpicAccountId, NetId);
 
 	// Read the user info for this player
 	ReadUserInfo(LocalUserNum, EpicAccountId);
 }
 
-void FUserManagerEOS::UpdateRemotePlayerProductUserId(EOS_EpicAccountId AccountId, EOS_ProductUserId UserId)
+void FUserManagerEOS::UpdateRemotePlayerProductUserId(EOS_EpicAccountId EpicAccountId, EOS_ProductUserId ProductUserId)
 {
 	// See if the net ids have changed for this user and bail if they are the same
-	const FString NewNetIdStr = MakeNetIdStringFromIds(AccountId, UserId);
-	const FString PrevNetIdStr = AccountIdToStringMap[AccountId];
+	const FString PrevNetIdStr = AccountIdToStringMap[EpicAccountId];
+	// Note that calling FindOrAdd with previously invalid EAS/EOS components will update the net id in place.
+	const FString NewNetIdStr = FUniqueNetIdEOSRegistry::FindOrAdd(EpicAccountId, ProductUserId)->ToString();
 	if (PrevNetIdStr == NewNetIdStr)
 	{
 		// No change, so skip any work
 		return;
 	}
 
-	const FString AccountIdStr = LexToString(AccountId);
-	const FString UserIdStr = LexToString(UserId);
+	const FString ProductUserIdStr = LexToString(ProductUserId);
 
 	// Get the unique net id and rebuild the string for it
 	IAttributeAccessInterfaceRef AttrAccess = NetIdStringToAttributeAccessMap[PrevNetIdStr];
 	FUniqueNetIdEOSPtr NetIdEOS = AttrAccess->GetUniqueNetIdEOS();
-	if (NetIdEOS.IsValid())
-	{
-		ConstCastSharedPtr<FUniqueNetIdEOS>(NetIdEOS)->UpdateNetIdStr(NewNetIdStr);
-	}
 	// Update any old friends entries with the new net id key
 	for (TMap<int32, FFriendsListEOSRef>::TConstIterator It(LocalUserNumToFriendsListMap); It; ++It)
 	{
@@ -1798,24 +1837,12 @@ void FUserManagerEOS::UpdateRemotePlayerProductUserId(EOS_EpicAccountId AccountI
 		}
 	}
 	// Update all of the other net id to X mappings
-	AccountIdToStringMap.Remove(AccountId);
-	AccountIdToStringMap.Emplace(AccountId, NewNetIdStr);
-	ProductUserIdToStringMap.Remove(UserId);
-	ProductUserIdToStringMap.Emplace(UserId, *NewNetIdStr);
-	StringToAccountIdMap.Remove(PrevNetIdStr);
-	StringToAccountIdMap.Emplace(NewNetIdStr, AccountId);
-	StringToProductUserIdMap.Emplace(NewNetIdStr, UserId);
-	// If it's the first time we're updating this remote player, it will be indexed by its epic account id
-	FOnlineUserPtr OnlineUser = NetIdStringToOnlineUserMap[AccountIdStr];
-	if (OnlineUser.IsValid())
-	{
-		NetIdStringToOnlineUserMap.Remove(AccountIdStr);
-	}
-	else
-	{
-		OnlineUser = NetIdStringToOnlineUserMap[PrevNetIdStr];
-		NetIdStringToOnlineUserMap.Remove(PrevNetIdStr);
-	}
+	AccountIdToStringMap.Remove(EpicAccountId);
+	AccountIdToStringMap.Emplace(EpicAccountId, NewNetIdStr);
+	ProductUserIdToStringMap.Remove(ProductUserId);
+	ProductUserIdToStringMap.Emplace(ProductUserId, *NewNetIdStr);
+	FOnlineUserPtr OnlineUser = NetIdStringToOnlineUserMap[PrevNetIdStr];
+	NetIdStringToOnlineUserMap.Remove(PrevNetIdStr);
 	NetIdStringToOnlineUserMap.Emplace(NewNetIdStr, OnlineUser);
 	NetIdStringToAttributeAccessMap.Remove(PrevNetIdStr);
 	NetIdStringToAttributeAccessMap.Emplace(NewNetIdStr, AttrAccess);
@@ -1858,7 +1885,7 @@ bool FUserManagerEOS::ReadFriendsList(int32 LocalUserNum, const FString& ListNam
 	Options.ApiVersion = EOS_FRIENDS_QUERYFRIENDS_API_LATEST;
 	Options.LocalUserId = UserNumToAccountIdMap[LocalUserNum];
 
-	FReadFriendsCallback* CallbackObj = new FReadFriendsCallback();
+	FReadFriendsCallback* CallbackObj = new FReadFriendsCallback(AsWeak());
 	CallbackObj->CallbackLambda = [this, LocalUserNum, ListName, Delegate](const EOS_Friends_QueryFriendsCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;
@@ -1895,16 +1922,19 @@ bool FUserManagerEOS::ReadFriendsList(int32 LocalUserNum, const FString& ListNam
 				}
 			}
 
-			const TFunction<FOnQueryExternalIdMappingsComplete::TFuncType>& OnExternalIdMappingsQueriedLambda = 
-				[this, LocalUserNum](bool bWasSuccessful, const FUniqueNetId& UserId, const FExternalIdQueryOptions& QueryOptions,
-					const TArray<FString>& ExternalIds, const FString& Error) {
-						ProcessReadFriendsListComplete(LocalUserNum, bWasSuccessful, Error);
-				};
+			const TFunction<FOnQueryExternalIdMappingsComplete::TFuncType>& OnExternalIdMappingsQueriedLambda =
+				[this, WeakThis = AsWeak(), LocalUserNum](bool bWasSuccessful, const FUniqueNetId& UserId, const FExternalIdQueryOptions& QueryOptions, const TArray<FString>& ExternalIds, const FString& Error)
+			{
+				if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+				{
+					ProcessReadFriendsListComplete(LocalUserNum, bWasSuccessful, Error);
+				}
+			};
 
 			const auto& ExternalMappingsCallback = OSSInternalCallback::Create<FOnQueryExternalIdMappingsComplete>(EOSSubsystem->UserManager, OnExternalIdMappingsQueriedLambda);
-			
+
 			QueryExternalIdMappings(*GetLocalUniqueNetIdEOS(DefaultLocalUser), FExternalIdQueryOptions(), FriendEasIds, ExternalMappingsCallback);
-			
+
 		}
 		else
 		{
@@ -1943,7 +1973,7 @@ void FUserManagerEOS::SetFriendAlias(int32 LocalUserNum, const FUniqueNetId& Fri
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::SetFriendAlias] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, FriendId = FriendId.AsShared(), ListName, Delegate]()
+	EOSSubsystem->ExecuteNextTick([LocalUserNum, FriendId = FriendId.AsShared(), ListName, Delegate]()
 		{
 			Delegate.ExecuteIfBound(LocalUserNum, *FriendId, ListName, FOnlineError(EOnlineErrorResult::NotImplemented));
 		});
@@ -1953,7 +1983,7 @@ void FUserManagerEOS::DeleteFriendAlias(int32 LocalUserNum, const FUniqueNetId& 
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::DeleteFriendAlias] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, FriendId = FriendId.AsShared(), ListName, Delegate]()
+	EOSSubsystem->ExecuteNextTick([LocalUserNum, FriendId = FriendId.AsShared(), ListName, Delegate]()
 		{
 			Delegate.ExecuteIfBound(LocalUserNum, *FriendId, ListName, FOnlineError(EOnlineErrorResult::NotImplemented));
 		});
@@ -1963,7 +1993,7 @@ bool FUserManagerEOS::DeleteFriendsList(int32 LocalUserNum, const FString& ListN
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::DeleteFriendsList] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, ListName, Delegate]()
+	EOSSubsystem->ExecuteNextTick([LocalUserNum, ListName, Delegate]()
 		{
 			Delegate.ExecuteIfBound(LocalUserNum, false, ListName, TEXT("This method is not supported."));
 		});
@@ -1971,7 +2001,7 @@ bool FUserManagerEOS::DeleteFriendsList(int32 LocalUserNum, const FString& ListN
 	return true;
 }
 
-typedef TEOSCallback<EOS_Friends_OnSendInviteCallback, EOS_Friends_SendInviteCallbackInfo> FSendInviteCallback;
+typedef TEOSCallback<EOS_Friends_OnSendInviteCallback, EOS_Friends_SendInviteCallbackInfo, FUserManagerEOS> FSendInviteCallback;
 
 bool FUserManagerEOS::SendInvite(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnSendInviteComplete& Delegate)
 {
@@ -1983,14 +2013,15 @@ bool FUserManagerEOS::SendInvite(int32 LocalUserNum, const FUniqueNetId& FriendI
 	}
 
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(FriendId);
-	if (!StringToAccountIdMap.Contains(EOSID.UniqueNetIdStr))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
 		UE_LOG_ONLINE_FRIEND(Warning, TEXT("Can't SendInvite() for user (%d) since the potential player id is unknown"), LocalUserNum);
 		Delegate.ExecuteIfBound(LocalUserNum, false, FriendId, ListName, FString(TEXT("Can't SendInvite() for user (%d) since the player id is unknown"), LocalUserNum));
 		return false;
 	}
 
-	FSendInviteCallback* CallbackObj = new FSendInviteCallback();
+	FSendInviteCallback* CallbackObj = new FSendInviteCallback(AsWeak());
 	CallbackObj->CallbackLambda = [LocalUserNum, ListName, this, Delegate](const EOS_Friends_SendInviteCallbackInfo* Data)
 	{
 		const FString& NetId = AccountIdToStringMap[Data->TargetUserId];
@@ -2001,19 +2032,19 @@ bool FUserManagerEOS::SendInvite(int32 LocalUserNum, const FUniqueNetId& FriendI
 		{
 			ErrorString = FString::Printf(TEXT("Failed to send invite for user (%d) to player (%s) with result code (%s)"), LocalUserNum, *NetId, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
 		}
-		Delegate.ExecuteIfBound(LocalUserNum, bWasSuccessful, *FUniqueNetIdEOS::Create(NetId), ListName, ErrorString);
+		Delegate.ExecuteIfBound(LocalUserNum, bWasSuccessful, *FUniqueNetIdEOSRegistry::FindOrAdd(NetId), ListName, ErrorString);
 	};
 
 	EOS_Friends_SendInviteOptions Options = { };
 	Options.ApiVersion = EOS_FRIENDS_SENDINVITE_API_LATEST;
 	Options.LocalUserId = UserNumToAccountIdMap[LocalUserNum];
-	Options.TargetUserId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
+	Options.TargetUserId = AccountId;
 	EOS_Friends_SendInvite(EOSSubsystem->FriendsHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
 
 	return true;
 }
 
-typedef TEOSCallback<EOS_Friends_OnAcceptInviteCallback, EOS_Friends_AcceptInviteCallbackInfo> FAcceptInviteCallback;
+typedef TEOSCallback<EOS_Friends_OnAcceptInviteCallback, EOS_Friends_AcceptInviteCallbackInfo, FUserManagerEOS> FAcceptInviteCallback;
 
 bool FUserManagerEOS::AcceptInvite(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnAcceptInviteComplete& Delegate)
 {
@@ -2025,14 +2056,15 @@ bool FUserManagerEOS::AcceptInvite(int32 LocalUserNum, const FUniqueNetId& Frien
 	}
 
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(FriendId);
-	if (!StringToAccountIdMap.Contains(EOSID.UniqueNetIdStr))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
 		UE_LOG_ONLINE_FRIEND(Warning, TEXT("Can't AcceptInvite() for user (%d) since the friend is not in their list"), LocalUserNum);
 		Delegate.ExecuteIfBound(LocalUserNum, false, FriendId, ListName, FString(TEXT("Can't AcceptInvite() for user (%d) since the friend is not in their list"), LocalUserNum));
 		return false;
 	}
 
-	FAcceptInviteCallback* CallbackObj = new FAcceptInviteCallback();
+	FAcceptInviteCallback* CallbackObj = new FAcceptInviteCallback(AsWeak());
 	CallbackObj->CallbackLambda = [LocalUserNum, ListName, this, Delegate](const EOS_Friends_AcceptInviteCallbackInfo* Data)
 	{
 		const FString& NetId = AccountIdToStringMap[Data->TargetUserId];
@@ -2043,13 +2075,13 @@ bool FUserManagerEOS::AcceptInvite(int32 LocalUserNum, const FUniqueNetId& Frien
 		{
 			ErrorString = FString::Printf(TEXT("Failed to accept invite for user (%d) from friend (%s) with result code (%s)"), LocalUserNum, *NetId, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
 		}
-		Delegate.ExecuteIfBound(LocalUserNum, bWasSuccessful, *FUniqueNetIdEOS::Create(NetId), ListName, ErrorString);
+		Delegate.ExecuteIfBound(LocalUserNum, bWasSuccessful, *FUniqueNetIdEOSRegistry::FindOrAdd(NetId), ListName, ErrorString);
 	};
 
 	EOS_Friends_AcceptInviteOptions Options = { };
 	Options.ApiVersion = EOS_FRIENDS_ACCEPTINVITE_API_LATEST;
 	Options.LocalUserId = UserNumToAccountIdMap[LocalUserNum];
-	Options.TargetUserId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
+	Options.TargetUserId = AccountId;
 	EOS_Friends_AcceptInvite(EOSSubsystem->FriendsHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
 	return true;
 }
@@ -2068,7 +2100,8 @@ bool FUserManagerEOS::RejectInvite(int32 LocalUserNum, const FUniqueNetId& Frien
 	}
 
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(FriendId);
-	if (!StringToAccountIdMap.Contains(EOSID.UniqueNetIdStr))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
 		UE_LOG_ONLINE_FRIEND(Warning, TEXT("Can't RejectInvite() for user (%d) since the friend is not in their list"), LocalUserNum);
 		return false;
@@ -2077,7 +2110,7 @@ bool FUserManagerEOS::RejectInvite(int32 LocalUserNum, const FUniqueNetId& Frien
 	EOS_Friends_RejectInviteOptions Options{ 0 };
 	Options.ApiVersion = EOS_FRIENDS_REJECTINVITE_API_LATEST;
 	Options.LocalUserId = UserNumToAccountIdMap[LocalUserNum];
-	Options.TargetUserId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
+	Options.TargetUserId = AccountId;
 	EOS_Friends_RejectInvite(EOSSubsystem->FriendsHandle, &Options, nullptr, &EOSRejectInviteCallback);
 	return true;
 }
@@ -2086,9 +2119,12 @@ bool FUserManagerEOS::DeleteFriend(int32 LocalUserNum, const FUniqueNetId& Frien
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::DeleteFriend] Friends may only be deleted via the Epic Games Launcher."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, FriendId = FriendId.AsShared(), ListName]()
+	EOSSubsystem->ExecuteNextTick([this, WeakThis = AsWeak(), LocalUserNum, FriendId = FriendId.AsShared(), ListName]()
 		{
-			TriggerOnDeleteFriendCompleteDelegates(LocalUserNum, false, *FriendId, ListName, TEXT("[FUserManagerEOS::DeleteFriend] Friends may only be deleted via the Epic Games Launcher."));
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+			{
+				TriggerOnDeleteFriendCompleteDelegates(LocalUserNum, false, *FriendId, ListName, TEXT("[FUserManagerEOS::DeleteFriend] Friends may only be deleted via the Epic Games Launcher."));
+			}
 		});
 
 	return true;
@@ -2155,7 +2191,7 @@ TSharedPtr<FOnlineFriend> FUserManagerEOS::GetFriend(int32 LocalUserNum, const F
 	{
 		FFriendsListEOSRef FriendsList = LocalUserNumToFriendsListMap[LocalUserNum];
 		const FUniqueNetIdEOS& EosId = FUniqueNetIdEOS::Cast(FriendId);
-		FOnlineFriendEOSPtr FoundFriend = FriendsList->GetByNetIdString(EosId.UniqueNetIdStr);
+		FOnlineFriendEOSPtr FoundFriend = FriendsList->GetByNetIdString(EosId.ToString());
 		if (FoundFriend.IsValid())
 		{
 			const FOnlineUserPresence& Presence = FoundFriend->GetPresence();
@@ -2184,9 +2220,12 @@ bool FUserManagerEOS::QueryRecentPlayers(const FUniqueNetId& UserId, const FStri
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::QueryRecentPlayers] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, UserId = UserId.AsShared(), Namespace]()
+	EOSSubsystem->ExecuteNextTick([this, WeakThis = AsWeak(), UserId = UserId.AsShared(), Namespace]()
 		{
-			TriggerOnQueryRecentPlayersCompleteDelegates(*UserId, Namespace, false, TEXT("This method is not supported."));
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+			{
+				TriggerOnQueryRecentPlayersCompleteDelegates(*UserId, Namespace, false, TEXT("This method is not supported."));
+			}
 		});
 
 	return true;
@@ -2203,9 +2242,12 @@ bool FUserManagerEOS::BlockPlayer(int32 LocalUserNum, const FUniqueNetId& Player
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::BlockPlayer] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, PlayerId = PlayerId.AsShared()]()
+	EOSSubsystem->ExecuteNextTick([this, WeakThis = AsWeak(), LocalUserNum, PlayerId = PlayerId.AsShared()]()
 		{
-			TriggerOnBlockedPlayerCompleteDelegates(LocalUserNum, false, *PlayerId, TEXT(""), TEXT("This method is not supported"));
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+			{
+				TriggerOnBlockedPlayerCompleteDelegates(LocalUserNum, false, *PlayerId, TEXT(""), TEXT("This method is not supported"));
+			}
 		});
 
 	return true;
@@ -2215,9 +2257,12 @@ bool FUserManagerEOS::UnblockPlayer(int32 LocalUserNum, const FUniqueNetId& Play
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::UnblockPlayer] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, LocalUserNum, PlayerId = PlayerId.AsShared()]()
+	EOSSubsystem->ExecuteNextTick([this, WeakThis = AsWeak(), LocalUserNum, PlayerId = PlayerId.AsShared()]()
 		{
-			TriggerOnUnblockedPlayerCompleteDelegates(LocalUserNum, false, *PlayerId, TEXT(""), TEXT("This method is not supported"));
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+			{
+				TriggerOnUnblockedPlayerCompleteDelegates(LocalUserNum, false, *PlayerId, TEXT(""), TEXT("This method is not supported"));
+			}
 		});
 
 	return true;
@@ -2227,9 +2272,12 @@ bool FUserManagerEOS::QueryBlockedPlayers(const FUniqueNetId& UserId)
 {
 	UE_LOG_ONLINE_FRIEND(Warning, TEXT("[FUserManagerEOS::QueryBlockedPlayers] This method is not supported."));
 
-	EOSSubsystem->ExecuteNextTick([this, UserId = UserId.AsShared()]()
+	EOSSubsystem->ExecuteNextTick([this, WeakThis = AsWeak(), UserId = UserId.AsShared()]()
 		{
-			TriggerOnQueryBlockedPlayersCompleteDelegates(*UserId, false, TEXT("This method is not supported"));
+			if (FUserManagerEOSPtr StrongThis = WeakThis.Pin())
+			{
+				TriggerOnQueryBlockedPlayersCompleteDelegates(*UserId, false, TEXT("This method is not supported"));
+			}
 		});
 
 	return true;
@@ -2299,7 +2347,7 @@ bool FUserManagerEOS::HandleFriendsExec(UWorld* InWorld, const TCHAR* Cmd, FOutp
 		int LocalUserNum = FCString::Atoi(*FParse::Token(Cmd, false));
 
 		FString FriendUserIdStr = FParse::Token(Cmd, false);
-		FUniqueNetIdEOSRef FriendEosId = FUniqueNetIdEOS::Create(FriendUserIdStr);
+		FUniqueNetIdEOSRef FriendEosId = FUniqueNetIdEOSRegistry::FindOrAdd(FriendUserIdStr).ToSharedRef();
 
 		FString FriendsList = FParse::Token(Cmd, false);
 
@@ -2323,7 +2371,7 @@ bool FUserManagerEOS::HandleFriendsExec(UWorld* InWorld, const TCHAR* Cmd, FOutp
 		int LocalUserNum = FCString::Atoi(*FParse::Token(Cmd, false));
 
 		FString FriendUserIdStr = FParse::Token(Cmd, false);
-		FUniqueNetIdEOSRef FriendEosId = FUniqueNetIdEOS::Create(FriendUserIdStr);
+		FUniqueNetIdEOSRef FriendEosId = FUniqueNetIdEOSRegistry::FindOrAdd(FriendUserIdStr).ToSharedRef();
 
 		FString FriendsList = FParse::Token(Cmd, false);
 
@@ -2366,21 +2414,22 @@ struct FRichTextOptions :
 	char RichTextAnsi[EOS_PRESENCE_RICH_TEXT_MAX_VALUE_LENGTH];
 };
 
-typedef TEOSCallback<EOS_Presence_SetPresenceCompleteCallback, EOS_Presence_SetPresenceCallbackInfo> FSetPresenceCallback;
+typedef TEOSCallback<EOS_Presence_SetPresenceCompleteCallback, EOS_Presence_SetPresenceCallbackInfo, FUserManagerEOS> FSetPresenceCallback;
 
 void FUserManagerEOS::SetPresence(const FUniqueNetId& UserId, const FOnlineUserPresenceStatus& Status, const FOnPresenceTaskCompleteDelegate& Delegate)
 {
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	if (!StringToAccountIdMap.Contains(EOSID.UniqueNetIdStr))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
-		UE_LOG_ONLINE(Error, TEXT("Can't SetPresence() for user (%s) since they are not logged in"), *EOSID.UniqueNetIdStr);
+		UE_LOG_ONLINE(Error, TEXT("Can't SetPresence() for user (%s) since they are not logged in"), *EOSID.ToDebugString());
 		return;
 	}
 
 	EOS_HPresenceModification ChangeHandle = nullptr;
 	EOS_Presence_CreatePresenceModificationOptions Options = { };
 	Options.ApiVersion = EOS_PRESENCE_CREATEPRESENCEMODIFICATION_API_LATEST;
-	Options.LocalUserId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
+	Options.LocalUserId = AccountId;
 	EOS_Presence_CreatePresenceModification(EOSSubsystem->PresenceHandle, &Options, &ChangeHandle);
 	if (ChangeHandle == nullptr)
 	{
@@ -2426,32 +2475,32 @@ void FUserManagerEOS::SetPresence(const FUniqueNetId& UserId, const FOnlineUserP
 	EOS_EResult SetDataResult = EOS_PresenceModification_SetData(ChangeHandle, &DataOptions);
 	if (SetDataResult != EOS_EResult::EOS_Success)
 	{
-		UE_LOG_ONLINE(Error, TEXT("EOS_PresenceModification_SetData() failed with result code (%s)"), ANSI_TO_TCHAR(EOS_EResult_ToString(SetDataResult)));
+		UE_LOG_ONLINE(Error, TEXT("EOS_PresenceModification_SetData() failed with result code (%s)"), *LexToString(SetDataResult));
 	}
 
-	FSetPresenceCallback* CallbackObj = new FSetPresenceCallback();
+	FSetPresenceCallback* CallbackObj = new FSetPresenceCallback(AsWeak());
 	CallbackObj->CallbackLambda = [this, Delegate](const EOS_Presence_SetPresenceCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success && AccountIdToStringMap.Contains(Data->LocalUserId))
 		{
-			FUniqueNetIdEOSRef EOSID = FUniqueNetIdEOS::Create(AccountIdToStringMap[Data->LocalUserId]);
+			FUniqueNetIdEOSRef EOSID = FUniqueNetIdEOSRegistry::FindOrAdd(AccountIdToStringMap[Data->LocalUserId]).ToSharedRef();
 			Delegate.ExecuteIfBound(*EOSID, true);
 			return;
 		}
-		UE_LOG_ONLINE(Error, TEXT("SetPresence() failed with result code (%s)"), ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+		UE_LOG_ONLINE(Error, TEXT("SetPresence() failed with result code (%s)"), *LexToString(Data->ResultCode));
 		Delegate.ExecuteIfBound(*FUniqueNetIdEOS::EmptyId(), false);
 	};
 
 	EOS_Presence_SetPresenceOptions PresOptions = { };
 	PresOptions.ApiVersion = EOS_PRESENCE_SETPRESENCE_API_LATEST;
-	PresOptions.LocalUserId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
+	PresOptions.LocalUserId = AccountId;
 	PresOptions.PresenceModificationHandle = ChangeHandle;
 	// Last step commit the changes
 	EOS_Presence_SetPresence(EOSSubsystem->PresenceHandle, &PresOptions, CallbackObj, CallbackObj->GetCallbackPtr());
 	EOS_PresenceModification_Release(ChangeHandle);
 }
 
-typedef TEOSCallback<EOS_Presence_OnQueryPresenceCompleteCallback, EOS_Presence_QueryPresenceCallbackInfo> FQueryPresenceCallback;
+typedef TEOSCallback<EOS_Presence_OnQueryPresenceCompleteCallback, EOS_Presence_QueryPresenceCallbackInfo, FUserManagerEOS> FQueryPresenceCallback;
 
 void FUserManagerEOS::QueryPresence(const FUniqueNetId& UserId, const FOnPresenceTaskCompleteDelegate& Delegate)
 {
@@ -2463,10 +2512,10 @@ void FUserManagerEOS::QueryPresence(const FUniqueNetId& UserId, const FOnPresenc
 	}
 
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	const FString& NetId = EOSID.UniqueNetIdStr;
-	if (!StringToAccountIdMap.Contains(NetId))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
-		UE_LOG_ONLINE(Error, TEXT("Can't QueryPresence(%s) for unknown unique net id"), *NetId);
+		UE_LOG_ONLINE(Error, TEXT("Can't QueryPresence(%s) for unknown unique net id"), *EOSID.ToDebugString());
 		Delegate.ExecuteIfBound(UserId, false);
 		return;
 	}
@@ -2474,11 +2523,11 @@ void FUserManagerEOS::QueryPresence(const FUniqueNetId& UserId, const FOnPresenc
 	EOS_Presence_HasPresenceOptions HasOptions = { };
 	HasOptions.ApiVersion = EOS_PRESENCE_HASPRESENCE_API_LATEST;
 	HasOptions.LocalUserId = UserNumToAccountIdMap[DefaultLocalUser];
-	HasOptions.TargetUserId = StringToAccountIdMap[NetId];
+	HasOptions.TargetUserId = AccountId;
 	EOS_Bool bHasPresence = EOS_Presence_HasPresence(EOSSubsystem->PresenceHandle, &HasOptions);
 	if (bHasPresence == EOS_FALSE)
 	{
-		FQueryPresenceCallback* CallbackObj = new FQueryPresenceCallback();
+		FQueryPresenceCallback* CallbackObj = new FQueryPresenceCallback(AsWeak());
 		CallbackObj->CallbackLambda = [this, Delegate](const EOS_Presence_QueryPresenceCallbackInfo* Data)
 		{
 			if (Data->ResultCode == EOS_EResult::EOS_Success && EpicAccountIdToOnlineUserMap.Contains(Data->TargetUserId))
@@ -2489,8 +2538,8 @@ void FUserManagerEOS::QueryPresence(const FUniqueNetId& UserId, const FOnPresenc
 				Delegate.ExecuteIfBound(*OnlineUser->GetUserId(), true);
 				return;
 			}
-			const FString& TargetUser = MakeNetIdStringFromIds(Data->TargetUserId, nullptr);
-			UE_LOG_ONLINE(Error, TEXT("QueryPresence() for user (%s) failed with result code (%s)"), *TargetUser, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+			const FString& TargetUser = FUniqueNetIdEOSRegistry::FindOrAdd(Data->TargetUserId, nullptr)->ToString();
+			UE_LOG_ONLINE(Error, TEXT("QueryPresence() for user (%s) failed with result code (%s)"), *TargetUser, *LexToString(Data->ResultCode));
 			Delegate.ExecuteIfBound(*FUniqueNetIdEOS::EmptyId(), false);
 		};
 
@@ -2575,9 +2624,9 @@ void FUserManagerEOS::UpdateFriendPresence(const FString& FriendId, FOnlineUserP
 EOnlineCachedResult::Type FUserManagerEOS::GetCachedPresence(const FUniqueNetId& UserId, TSharedPtr<FOnlineUserPresence>& OutPresence)
 {
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	if (NetIdStringToOnlineUserPresenceMap.Contains(EOSID.UniqueNetIdStr))
+	if (NetIdStringToOnlineUserPresenceMap.Contains(EOSID.ToString()))
 	{
-		OutPresence = NetIdStringToOnlineUserPresenceMap[EOSID.UniqueNetIdStr];
+		OutPresence = NetIdStringToOnlineUserPresenceMap[EOSID.ToString()];
 		return EOnlineCachedResult::Success;
 	}
 	return EOnlineCachedResult::NotFound;
@@ -2598,26 +2647,26 @@ bool FUserManagerEOS::QueryUserInfo(int32 LocalUserNum, const TArray<FUniqueNetI
 	{
 		const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(*NetId);
 		// Skip querying for local users since we already have that data
-		if (StringToUserAccountMap.Contains(EOSID.UniqueNetIdStr))
+		if (StringToUserAccountMap.Contains(EOSID.ToString()))
 		{
 			continue;
 		}
 		// Check to see if we know about this user or not
-		if (StringToAccountIdMap.Contains(EOSID.UniqueNetIdStr))
+		const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+		if (EOS_EpicAccountId_IsValid(AccountId) == EOS_TRUE)
 		{
-			EOS_EpicAccountId AccountId = StringToAccountIdMap[EOSID.UniqueNetIdStr];
-			ReadUserInfo(LocalUserNum, AccountId);
-		}
-		else
-		{
-			// We need to build this one from the string
-			EOS_EpicAccountId AccountId = EOS_EpicAccountId_FromString(TCHAR_TO_UTF8(*EOSID.EpicAccountIdStr));
-			if (EOS_EpicAccountId_IsValid(AccountId) == EOS_TRUE)
+			// If the user is already registered, we'll update their user info
+			if (EpicAccountIdToAttributeAccessMap.Contains(AccountId))
 			{
-				UserEasIdsNeedingExternalMappings.Add(EOSID.EpicAccountIdStr);
-				
+				ReadUserInfo(LocalUserNum, AccountId);
+			}
+			else
+			{
+				// If the user is not registered, we'll add it and query their user info
+				UserEasIdsNeedingExternalMappings.Add(LexToString(AccountId));
+
 				// Registering the player will also query the user info data
-				AddRemotePlayer(LocalUserNum, EOSID.UniqueNetIdStr, AccountId);
+				AddRemotePlayer(LocalUserNum, EOSID.ToString(), AccountId);
 			}
 		}
 	}
@@ -2628,11 +2677,11 @@ bool FUserManagerEOS::QueryUserInfo(int32 LocalUserNum, const TArray<FUniqueNetI
 	return true;
 }
 
-typedef TEOSCallback<EOS_UserInfo_OnQueryUserInfoCallback, EOS_UserInfo_QueryUserInfoCallbackInfo> FReadUserInfoCallback;
+typedef TEOSCallback<EOS_UserInfo_OnQueryUserInfoCallback, EOS_UserInfo_QueryUserInfoCallbackInfo, FUserManagerEOS> FReadUserInfoCallback;
 
 void FUserManagerEOS::ReadUserInfo(int32 LocalUserNum, EOS_EpicAccountId EpicAccountId)
 {
-	FReadUserInfoCallback* CallbackObj = new FReadUserInfoCallback();
+	FReadUserInfoCallback* CallbackObj = new FReadUserInfoCallback(AsWeak());
 	CallbackObj->CallbackLambda = [this, LocalUserNum, EpicAccountId](const EOS_UserInfo_QueryUserInfoCallbackInfo* Data)
 	{
 		if (Data->ResultCode == EOS_EResult::EOS_Success)
@@ -2680,9 +2729,9 @@ TSharedPtr<FOnlineUser> FUserManagerEOS::GetUserInfo(int32 LocalUserNum, const F
 {
 	TSharedPtr<FOnlineUser> OnlineUser;
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	if (NetIdStringToOnlineUserMap.Contains(EOSID.UniqueNetIdStr))
+	if (NetIdStringToOnlineUserMap.Contains(EOSID.ToString()))
 	{
-		OnlineUser = NetIdStringToOnlineUserMap[EOSID.UniqueNetIdStr];
+		OnlineUser = NetIdStringToOnlineUserMap[EOSID.ToString()];
 	}
 	return OnlineUser;
 }
@@ -2699,21 +2748,21 @@ struct FQueryByDisplayNameOptions :
 	char DisplayNameAnsi[EOS_OSS_STRING_BUFFER_LENGTH];
 };
 
-typedef TEOSCallback<EOS_UserInfo_OnQueryUserInfoByDisplayNameCallback, EOS_UserInfo_QueryUserInfoByDisplayNameCallbackInfo> FQueryInfoByNameCallback;
+typedef TEOSCallback<EOS_UserInfo_OnQueryUserInfoByDisplayNameCallback, EOS_UserInfo_QueryUserInfoByDisplayNameCallbackInfo, FUserManagerEOS> FQueryInfoByNameCallback;
 
 bool FUserManagerEOS::QueryUserIdMapping(const FUniqueNetId& UserId, const FString& DisplayNameOrEmail, const FOnQueryUserMappingComplete& Delegate)
 {
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	const FString& NetId = EOSID.UniqueNetIdStr;
-	if (!StringToAccountIdMap.Contains(NetId))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
-		UE_LOG_ONLINE(Error, TEXT("Specified local user (%s) is not known"), *EOSID.UniqueNetIdStr);
-		Delegate.ExecuteIfBound(false, UserId, DisplayNameOrEmail, *FUniqueNetIdEOS::EmptyId(), FString::Printf(TEXT("Specified local user (%s) is not known"), *EOSID.UniqueNetIdStr));
+		UE_LOG_ONLINE(Error, TEXT("Specified local user (%s) is not known"), *EOSID.ToDebugString());
+		Delegate.ExecuteIfBound(false, UserId, DisplayNameOrEmail, *FUniqueNetIdEOS::EmptyId(), FString::Printf(TEXT("Specified local user (%s) is not known"), *EOSID.ToDebugString()));
 		return false;
 	}
 	int32 LocalUserNum = GetLocalUserNumFromUniqueNetId(UserId);
 
-	FQueryInfoByNameCallback* CallbackObj = new FQueryInfoByNameCallback();
+	FQueryInfoByNameCallback* CallbackObj = new FQueryInfoByNameCallback(AsWeak());
 	CallbackObj->CallbackLambda = [LocalUserNum, DisplayNameOrEmail, this, Delegate](const EOS_UserInfo_QueryUserInfoByDisplayNameCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;
@@ -2735,7 +2784,7 @@ bool FUserManagerEOS::QueryUserIdMapping(const FUniqueNetId& UserId, const FStri
 				AddRemotePlayer(LocalUserNum, NetIdStr, Data->TargetUserId);
 			}
 
-			Delegate.ExecuteIfBound(true, *LocalUserId, DisplayNameOrEmail, *FUniqueNetIdEOS::Create(NetIdStr), ErrorString);
+			Delegate.ExecuteIfBound(true, *LocalUserId, DisplayNameOrEmail, *FUniqueNetIdEOSRegistry::FindOrAdd(NetIdStr), ErrorString);
 		}
 		else
 		{
@@ -2746,7 +2795,7 @@ bool FUserManagerEOS::QueryUserIdMapping(const FUniqueNetId& UserId, const FStri
 
 	FQueryByDisplayNameOptions Options;
 	FCStringAnsi::Strncpy(Options.DisplayNameAnsi, TCHAR_TO_UTF8(*DisplayNameOrEmail), EOS_OSS_STRING_BUFFER_LENGTH);
-	Options.LocalUserId = StringToAccountIdMap[NetId];
+	Options.LocalUserId = AccountId;
 	EOS_UserInfo_QueryUserInfoByDisplayName(EOSSubsystem->UserInfoHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
 
 	return true;
@@ -2793,22 +2842,30 @@ struct FGetAccountMappingOptions :
 	char AccountId[EOS_CONNECT_EXTERNAL_ACCOUNT_ID_MAX_LENGTH+1];
 };
 
-typedef TEOSCallback<EOS_Connect_OnQueryExternalAccountMappingsCallback, EOS_Connect_QueryExternalAccountMappingsCallbackInfo> FQueryByStringIdsCallback;
+typedef TEOSCallback<EOS_Connect_OnQueryExternalAccountMappingsCallback, EOS_Connect_QueryExternalAccountMappingsCallbackInfo, FUserManagerEOS> FQueryByStringIdsCallback;
 
 bool FUserManagerEOS::QueryExternalIdMappings(const FUniqueNetId& UserId, const FExternalIdQueryOptions& QueryOptions, const TArray<FString>& ExternalIds, const FOnQueryExternalIdMappingsComplete& Delegate)
 {
 	const FUniqueNetIdEOS& EOSID = FUniqueNetIdEOS::Cast(UserId);
-	if (!StringToProductUserIdMap.Contains(EOSID.UniqueNetIdStr))
+	const EOS_EpicAccountId AccountId = EOSID.GetEpicAccountId();
+	if (EOS_EpicAccountId_IsValid(AccountId) == EOS_FALSE)
 	{
-		Delegate.ExecuteIfBound(false, UserId, QueryOptions, ExternalIds, FString::Printf(TEXT("User (%s) is not logged in, so can't query external account ids"), *EOSID.UniqueNetIdStr));
+		Delegate.ExecuteIfBound(false, UserId, QueryOptions, ExternalIds, FString::Printf(TEXT("User (%s) is not logged in, so can't query external account ids"), *EOSID.ToDebugString()));
 		return false;
 	}
+
+	if (ExternalIds.IsEmpty())
+	{
+		Delegate.ExecuteIfBound(false, UserId, QueryOptions, ExternalIds, FString::Printf(TEXT("List of ids to query is empty for User (%s), so can't query external account ids"), *EOSID.ToDebugString()));
+		return false;
+	}
+
 	int32 LocalUserNum = GetLocalUserNumFromUniqueNetId(UserId);
 
 	// Mark the queries as in progress
 	IsPlayerQueryExternalMappingsOngoingForLocalUserMap.FindOrAdd(LocalUserNum).Append(ExternalIds);
 
-	EOS_ProductUserId LocalUserId = StringToProductUserIdMap[EOSID.UniqueNetIdStr];
+	const EOS_ProductUserId LocalUserId = EOSID.GetProductUserId();
 	const int32 NumBatches = (ExternalIds.Num() / EOS_CONNECT_QUERYEXTERNALACCOUNTMAPPINGS_MAX_ACCOUNT_IDS) + 1;
 	int32 QueryStart = 0;
 	// Process queries in batches since there's a max that can be done at once
@@ -2824,7 +2881,7 @@ bool FUserManagerEOS::QueryExternalIdMappings(const FUniqueNetId& UserId, const 
 			FCStringAnsi::Strncpy(Options.PointerArray[ProcessedCount], TCHAR_TO_UTF8(*ExternalIds[ProcessedCount]), EOS_CONNECT_EXTERNAL_ACCOUNT_ID_MAX_LENGTH+1);
 			BatchIds.Add(ExternalIds[ProcessedCount]);
 		}
-		FQueryByStringIdsCallback* CallbackObj = new FQueryByStringIdsCallback();
+		FQueryByStringIdsCallback* CallbackObj = new FQueryByStringIdsCallback(AsWeak());
 		CallbackObj->CallbackLambda = [LocalUserNum, QueryOptions, BatchIds, this, Delegate](const EOS_Connect_QueryExternalAccountMappingsCallbackInfo* Data)
 		{
 			EOS_EResult Result = Data->ResultCode;
@@ -2845,7 +2902,7 @@ bool FUserManagerEOS::QueryExternalIdMappings(const FUniqueNetId& UserId, const 
 				// Get the product id for each epic account passed in
 				for (const FString& StringId : BatchIds)
 				{
-					FCStringAnsi::Strncpy(Options.AccountId, TCHAR_TO_UTF8(*StringId), EOS_CONNECT_EXTERNAL_ACCOUNT_ID_MAX_LENGTH+1);
+					FCStringAnsi::Strncpy(Options.AccountId, TCHAR_TO_UTF8(*StringId), EOS_CONNECT_EXTERNAL_ACCOUNT_ID_MAX_LENGTH + 1);
 					EOS_ProductUserId ProductUserId = EOS_Connect_GetExternalAccountMapping(EOSSubsystem->ConnectHandle, &Options);
 					if (EOS_ProductUserId_IsValid(ProductUserId) == EOS_TRUE)
 					{
@@ -2865,7 +2922,7 @@ bool FUserManagerEOS::QueryExternalIdMappings(const FUniqueNetId& UserId, const 
 			{
 				OngoingQueries.RemoveSwap(StringId, false);
 			}
-			
+
 			const bool bWasSuccessful = Result == EOS_EResult::EOS_Success;
 			Delegate.ExecuteIfBound(bWasSuccessful, *EOSID, QueryOptions, BatchIds, ErrorString);
 		};

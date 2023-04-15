@@ -285,11 +285,6 @@ void BloomPS_Mobile(
 	half4 C2 = SceneColorTexture.Sample(SceneColorSampler, InUVs[2]);
 	half4 C3 = SceneColorTexture.Sample(SceneColorSampler, InUVs[3]);
 
-	C0.rgb = C0;
-	C1.rgb = C1;
-	C2.rgb = C2;
-	C3.rgb = C3;
-
 	// Output color is average.
 	AverageColor.rgb = (C0.rgb * 0.25) + (C1.rgb * 0.25) + (C2.rgb * 0.25) + (C3.rgb * 0.25);
 
@@ -361,10 +356,14 @@ void BloomPS_Mobile(
 #endif
 
 #if MOBILE_USEEYEADAPTATION
-
-	const half Intensity = max(dot(AverageColor, half3(1.0f, 1.0f, 1.0f) / 3.0f), EyeAdaptation_LuminanceMin);
+	half Intensity = dot(AverageColor, half3(1.0f, 1.0f, 1.0f) / 3.0f);
+	if (Intensity == 0.0)
+	{
+		// Override intensity for black pixels to MidGray. This behaviour is controlled by the cvar "r.EyeAdaptation.BlackHistogramBucketInfluence"
+		Intensity = (0.18 - EyeAdaptation_BlackHistogramBucketInfluence);
+	}
+	Intensity = max(Intensity, EyeAdaptation_LuminanceMin);
 	const float LogIntensity = clamp(log2(Intensity), -10.0f, 20.0f);
-
 	// Store log intensity in the alpha channel: scale to 0,1 range.
 	OutEyeAdaptation = EyeAdaptation_HistogramScale * LogIntensity + EyeAdaptation_HistogramBias;
 #endif
@@ -1053,7 +1052,6 @@ void SunMergeVS_Mobile(
 
 float4 SunColorVignetteIntensity;
 float3 BloomColor;
-float BloomIntensity;
 
 Texture2D BloomDirtMaskTexture;
 SamplerState BloomDirtMaskSampler;
@@ -1110,8 +1108,6 @@ void SunMergePS_Mobile(
 		Sun = HighlightDecompression(Sun);
 		OutColor.rgb += SunColorVignetteIntensity.rgb * Sun;
 	#endif
-
-	OutColor.rgb *= BloomIntensity;
 
 	OutColor.a = 1.0f;
 }
@@ -1360,7 +1356,7 @@ void Histogram_MainCS(
 				Bucket0 = (uint)(fBucket);
 				Bucket1 = Bucket0 + 1;
 
-//				Bucket0 = min(Bucket0, HistogramSizeMinusOne);
+				Bucket0 = min(Bucket0, HistogramSizeMinusOne);
 				Bucket1 = min(Bucket1, HistogramSizeMinusOne);
 
 				// Weighted blend between the two buckets.
@@ -1371,10 +1367,11 @@ void Histogram_MainCS(
 				// case is so the black background pixels in the editor have no effect. But if we have cases where
 				// pixel values can actually be black, we want to set EyeAdaptation_LastHistogramBucketInfluence=1.0.
 				// This value is controlled by the cvar "r.EyeAdaptation.BlackHistogramBucketInfluence"
-				if (Bucket0 == 0)
-				{
-					Weight0 *= EyeAdaptation_BlackHistogramBucketInfluence;
-				}
+				// THIS IS DONE in a Bloom setup, black pixels will set intencity to 0.18
+				//if (Bucket0 == 0)
+				//{
+				//	Weight0 *= EyeAdaptation_BlackHistogramBucketInfluence;
+				//}
 
 				// Accumulate the weight to the nearby history buckets.
 #if IOS // The IOS A8 and lower devices seems don't support using a float4 array as a two dimension array, separate the operations to two steps.

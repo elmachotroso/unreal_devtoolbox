@@ -1,24 +1,58 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CollisionProfileDetails.h"
-#include "Misc/MessageDialog.h"
-#include "Widgets/SWindow.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
-#include "Editor.h"
+
+#include "BodyInstanceCustomization.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
-#include "Widgets/Input/SComboBox.h"
-#include "BodyInstanceCustomization.h"
-#include "Widgets/SToolTip.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/PlatformMisc.h"
 #include "IDocumentation.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Serialization/Archive.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "CollsiionProfileDetails"
 
@@ -200,7 +234,7 @@ void SChannelEditDialog::Construct(const FArguments& InArgs)
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("SChannelEditDialog_Accept", "Accept"))
 				.OnClicked(this, &SChannelEditDialog::OnAccept)
 				.IsEnabled(this, &SChannelEditDialog::IsAcceptAvailable)
@@ -209,7 +243,7 @@ void SChannelEditDialog::Construct(const FArguments& InArgs)
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("SChannelEditDialog_Cancel", "Cancel"))
 				.OnClicked(this, &SChannelEditDialog::OnCancel)
 			]
@@ -603,7 +637,7 @@ void SProfileEditDialog::Construct(const FArguments& InArgs)
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("SProfileEditDialog_Accept", "Accept"))
 				.OnClicked(this, &SProfileEditDialog::OnAccept)
 				.IsEnabled(this, &SProfileEditDialog::IsAcceptAvailable)
@@ -612,7 +646,7 @@ void SProfileEditDialog::Construct(const FArguments& InArgs)
 			.HAlign(HAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("SProfileEditDialog_Cancel", "Cancel"))
 				.OnClicked(this, &SProfileEditDialog::OnCancel)
 			]
@@ -1246,7 +1280,7 @@ TSharedRef<SWidget> SProfileListItem::GenerateWidgetForColumn(const FName& Colum
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("SettingsEditor.Collision_Engine"))
+					.Image(FAppStyle::GetBrush("SettingsEditor.Collision_Engine"))
 					.ToolTipText(LOCTEXT("CantModify_Tooltip", "You can't modify the name of Engine profiles"))
 				];
 		}
@@ -1257,7 +1291,7 @@ TSharedRef<SWidget> SProfileListItem::GenerateWidgetForColumn(const FName& Colum
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("SettingsEditor.Collision_Game"))
+					.Image(FAppStyle::GetBrush("SettingsEditor.Collision_Game"))
 					.ToolTipText(LOCTEXT("CanModify_Tooltip", "This is your custom project profile"))
 				];
 		}
@@ -1370,7 +1404,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_NewObject", "New Object Channel..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnNewChannel, false)
 				.IsEnabled(this, &FCollisionProfileDetails::IsNewChannelAvailable)
@@ -1382,7 +1416,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_Edit", "Edit..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnEditChannel, false)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyChannelSelected, false)
@@ -1394,7 +1428,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_Delete", "Delete..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnDeleteChannel, false)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyChannelSelected, false)
@@ -1468,7 +1502,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_NewTrace", "New Trace Channel..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnNewChannel, true)
 				.IsEnabled(this, &FCollisionProfileDetails::IsNewChannelAvailable)
@@ -1480,7 +1514,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_Edit", "Edit..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnEditChannel, true)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyChannelSelected, true)
@@ -1492,7 +1526,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ChannelMenu_Delete", "Delete..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnDeleteChannel, true)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyChannelSelected, true)
@@ -1566,7 +1600,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ProfileMenu_New", "New..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnNewProfile)
 			]
@@ -1577,7 +1611,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ProfileMenu_Edit", "Edit..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnEditProfile)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyProfileSelected)
@@ -1589,7 +1623,7 @@ void FCollisionProfileDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.Text(LOCTEXT("ProfileMenu_Delete", "Delete..."))
 				.OnClicked(this, &FCollisionProfileDetails::OnDeleteProfile)
 				.IsEnabled(this, &FCollisionProfileDetails::IsAnyProfileSelected)
@@ -1957,7 +1991,7 @@ FReply FCollisionProfileDetails::OnNewChannel(bool bTraceType)
 		WidgetWindow->SetContent
 			(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(ChannelEditor, SChannelEditDialog)
 				.ChannelSetup(NULL)
@@ -2000,7 +2034,7 @@ FReply	FCollisionProfileDetails::OnEditChannel(bool bTraceType)
 		WidgetWindow->SetContent
 		(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(ChannelEditor, SChannelEditDialog)
 				.ChannelSetup(SelectedItem->ChannelSetup.Get())
@@ -2070,7 +2104,7 @@ FReply	FCollisionProfileDetails::OnNewProfile()
 	WidgetWindow->SetContent
 		(
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SAssignNew(ProfileEditor, SProfileEditDialog)
 			.ProfileTemplate(NULL)
@@ -2121,7 +2155,7 @@ FReply	FCollisionProfileDetails::OnEditProfile()
 			WidgetWindow->SetContent
 				(
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SAssignNew(ProfileEditor, SProfileEditDialog)
 					.ProfileTemplate(&CollisionProfile->Profiles[ProfileIndex])

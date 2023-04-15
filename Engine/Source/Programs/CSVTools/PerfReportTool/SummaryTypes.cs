@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Xml.Linq;
 
 namespace PerfSummaries
 {
@@ -152,7 +154,7 @@ namespace PerfSummaries
 			int bI = (int)(b * 255.0f);
 			return "#" + rI.ToString("x2") + gI.ToString("x2") + bI.ToString("x2");
 		}
-
+		
 		public static Colour White = new Colour(1.0f, 1.0f, 1.0f, 1.0f);
 		public static Colour Black = new Colour(0, 0, 0, 1.0f);
 		public static Colour Orange = new Colour(1.0f, 0.5f, 0.0f, 1.0f);
@@ -181,15 +183,124 @@ namespace PerfSummaries
 		public ColourThresholdList()
 		{ }
 
-		public ColourThresholdList(double redValue, double orangeValue, double yellowValue, double greenValue)
+		public ColourThresholdList(double redValue, double orangeValue, double yellowValue, double greenValue, bool lerpColours = true)
 		{
 			Add(new ThresholdInfo(greenValue, null));
 			Add(new ThresholdInfo(yellowValue, null));
 			Add(new ThresholdInfo(orangeValue, null));
 			Add(new ThresholdInfo(redValue, null));
+			LerpColours = lerpColours;
 		}
+
+		public ColourThresholdList(IEnumerable<ThresholdInfo> thresholds, bool lerpColours)
+		{
+			Thresholds = thresholds.ToList();
+			LerpColours = lerpColours;
+		}
+
+		public ColourThresholdList(Dictionary<string, dynamic> JsonDict)
+		{ 
+			if (JsonDict.ContainsKey("thresholds"))
+			{
+				List<dynamic> thresholdsList = JsonDict["thresholds"];
+				Thresholds = new List<ThresholdInfo>(thresholdsList.Count);
+				foreach(dynamic thresholdValue in thresholdsList)
+				{
+					Add(new ThresholdInfo(thresholdValue, null));
+				}
+				if (JsonDict.ContainsKey("colors"))
+				{
+					List<dynamic> colorsList = JsonDict["colors"];
+					int n = Math.Min(colorsList.Count, thresholdsList.Count);
+					for (int i = 0; i < n; i++)
+					{
+						Thresholds[i].colour = new Colour(colorsList[i]);
+					}
+				}
+				if (JsonDict.ContainsKey("lerpColours"))
+				{
+					LerpColours = JsonDict["lerpColours"];
+				}
+			}
+		}
+
+		public Dictionary<string, dynamic> ToJsonDict()
+		{
+			Dictionary<string, dynamic> Dict = new Dictionary<string, dynamic>();
+			if (Thresholds.Count > 0)
+			{
+				List<double> ThresholdValues = new List<double>();
+				List<string> ThresholdColors = new List<string>();
+
+				bool bHasValidColors = false;
+				foreach (ThresholdInfo thresholdInfo in Thresholds)
+				{
+					ThresholdValues.Add(thresholdInfo.value);
+					ThresholdColors.Add(thresholdInfo.colour == null ? "null" : thresholdInfo.colour.ToString());
+
+					if (thresholdInfo.colour != null)
+					{
+						bHasValidColors = true;
+					}
+				}
+
+				Dict["thresholds"] = ThresholdValues;
+				if (bHasValidColors)
+				{
+					Dict["colors"] = ThresholdColors;
+				}
+				Dict["lerpColours"] = LerpColours;
+			}
+			return Dict;
+		}
+
+		public static string GetThresholdColour(double value, List<ThresholdInfo> thresholds, bool lerpColours = true)
+		{
+			if (thresholds.Count == 0)
+			{
+				return Colour.White.ToHTMLString();
+			}
+
+			Colour col = null;
+			for (int i = 0; i < thresholds.Count; ++i)
+			{
+				ThresholdInfo threshold = thresholds[i];
+				if (threshold.colour == null)
+				{
+					throw new ArgumentException("All thresholds must have a valid colour set.", "thresholds");
+				}
+
+				if (value <= threshold.value)
+				{
+					if (i == 0)
+					{
+						col = threshold.colour;
+						break;
+					}
+
+					if (lerpColours)
+					{
+						ThresholdInfo prevThreshold = thresholds[i - 1];
+						double t = (value - prevThreshold.value) / (threshold.value - prevThreshold.value);
+						col = Colour.Lerp(prevThreshold.colour, threshold.colour, (float)t);
+					}
+					else
+					{
+						col = threshold.colour;
+					}
+					break;
+				}
+			}
+
+			if (col == null)
+			{
+				col = thresholds.Last().colour;
+			}
+			return col.ToHTMLString();
+		}
+
 		public static string GetThresholdColour(double value, double redValue, double orangeValue, double yellowValue, double greenValue,
-			Colour redOverride = null, Colour orangeOverride = null, Colour yellowOverride = null, Colour greenOverride = null)
+			Colour redOverride = null, Colour orangeOverride = null, Colour yellowOverride = null, Colour greenOverride = null, bool lerpColours = true)
 		{
 			Colour green = (greenOverride != null) ? greenOverride : new Colour(0.0f, 1.0f, 0.0f, 1.0f);
 			Colour orange = (orangeOverride != null) ? orangeOverride : new Colour(1.0f, 0.5f, 0.0f, 1.0f);
@@ -205,39 +316,19 @@ namespace PerfSummaries
 				value = -value;
 			}
 
-			Colour col = null;
-			if (value <= redValue)
+			List<ThresholdInfo> thresholds = new List<ThresholdInfo>
 			{
-				col = red;
-			}
-			else if (value <= orangeValue)
-			{
-				double t = (value - redValue) / (orangeValue - redValue);
-				col = Colour.Lerp(red, orange, (float)t);
-			}
-			else if (value <= yellowValue)
-			{
-				double t = (value - orangeValue) / (yellowValue - orangeValue);
-				col = Colour.Lerp(orange, yellow, (float)t);
-			}
-			else if (value <= greenValue)
-			{
-				float t = (float)(value - yellowValue) / (float)(greenValue - yellowValue);
-				col = Colour.Lerp(yellow, green, t);
-			}
-			else
-			{
-				col = green;
-			}
-			return col.ToHTMLString();
+				new ThresholdInfo(redValue, red),
+				new ThresholdInfo(orangeValue, orange),
+				new ThresholdInfo(yellowValue, yellow),
+				new ThresholdInfo(greenValue, green)
+			};
+			return GetThresholdColour(value, thresholds, lerpColours);
 		}
 
 		public void Add(ThresholdInfo info)
 		{
-			if (Thresholds.Count < 4)
-			{
-				Thresholds.Add(info);
-			}
+			Thresholds.Add(info);
 		}
 		public int Count
 		{
@@ -260,7 +351,11 @@ namespace PerfSummaries
 		{
 			if (Thresholds.Count == 4)
 			{
-				return GetThresholdColour(value, Thresholds[3].value, Thresholds[2].value, Thresholds[1].value, Thresholds[0].value, Thresholds[3].colour, Thresholds[2].colour, Thresholds[1].colour, Thresholds[0].colour);
+				return GetThresholdColour(value, Thresholds[3].value, Thresholds[2].value, Thresholds[1].value, Thresholds[0].value, Thresholds[3].colour, Thresholds[2].colour, Thresholds[1].colour, Thresholds[0].colour, LerpColours);
+			}
+			else if (Thresholds.Count > 0)
+			{
+				return GetThresholdColour(value, Thresholds, LerpColours);
 			}
 			return "'#ffffff'";
 		}
@@ -281,6 +376,75 @@ namespace PerfSummaries
 			}
 			return list.GetColourForValue(value);
 		}
+
+		public static ColourThresholdList ReadColourThresholdListXML(XElement colourThresholdEl)
+		{
+			if (colourThresholdEl != null)
+			{
+				ColourThresholdList thresholdList = new ColourThresholdList();
+
+				XAttribute lerpColoursElement = colourThresholdEl.Attribute("lerpColours");
+				if (lerpColoursElement != null)
+				{
+					thresholdList.LerpColours = bool.Parse(lerpColoursElement.Value);
+				}
+
+				XElement thresholdsElement = colourThresholdEl.Element("thresholds");
+				XElement coloursElement = colourThresholdEl.Element("colours");
+				if (thresholdsElement != null && coloursElement != null)
+				{
+					string[] thresholdStrings = thresholdsElement.Value.Split(',');
+					string[] colourStrings = coloursElement.Value.Split(',');
+					if (thresholdStrings.Length != colourStrings.Length)
+					{
+						throw new Exception("Number of colour thresholds and colours must match");
+					}
+
+					for (int i = 0; i < thresholdStrings.Length; ++i)
+					{
+						double value = double.Parse(thresholdStrings[i]);
+						Colour colour = new Colour(colourStrings[i]);
+						thresholdList.Add(new ThresholdInfo(value, colour));
+					}
+				}
+				else
+				{
+					// Revert to previous logic if sub elements don't exist.
+					double[] values = ReadColourThresholdsXML(colourThresholdEl);
+					if (values != null)
+					{
+						foreach (double value in values)
+						{
+							thresholdList.Add(new ThresholdInfo(value));
+						}
+					}
+				}
+				return thresholdList;
+			}
+			return null;
+		}
+
+		public static double[] ReadColourThresholdsXML(XElement colourThresholdEl)
+		{
+			if (colourThresholdEl != null)
+			{
+				string[] colourStrings = colourThresholdEl.Value.Split(',');
+				if (colourStrings.Length != 4)
+				{
+					throw new Exception("Incorrect number of colourthreshold entries. Should be 4.");
+				}
+				double[] colourThresholds = new double[4];
+				for (int i = 0; i < colourStrings.Length; i++)
+				{
+					colourThresholds[i] = Convert.ToDouble(colourStrings[i], System.Globalization.CultureInfo.InvariantCulture);
+				}
+				return colourThresholds;
+			}
+			return null;
+		}
+
 		public List<ThresholdInfo> Thresholds = new List<ThresholdInfo>();
+		// TODO: support serializing LerpColours. This will require adding backwards compat to the serialization system.
+		public bool LerpColours = true;
 	};
 }

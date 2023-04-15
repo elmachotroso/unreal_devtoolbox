@@ -2,13 +2,14 @@
 
 #include "Sound/QuartzQuantizationUtilities.h"
 
-#include "Core/Public/CoreGlobals.h"
-#include "Core/Public/Math/NumericLimits.h"
-#include "Core/Public/Math/UnrealMathUtility.h"
+#include "CoreGlobals.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
 #include "AudioMixerDevice.h"
 
-#define INVALID_DURATION -1
+#include UE_INLINE_GENERATED_CPP_BY_NAME(QuartzQuantizationUtilities)
 
+#define INVALID_DURATION -1
 
 DEFINE_LOG_CATEGORY(LogAudioQuartz);
 
@@ -18,23 +19,18 @@ EQuartzCommandQuantization TimeSignatureQuantizationToCommandQuantization(const 
 	{
 		case EQuartzTimeSignatureQuantization::HalfNote :
 			return EQuartzCommandQuantization::HalfNote;
-			break;
 
 		case EQuartzTimeSignatureQuantization::QuarterNote :
 			return EQuartzCommandQuantization::QuarterNote;
-			break;
 
 		case EQuartzTimeSignatureQuantization::EighthNote :
 			return EQuartzCommandQuantization::EighthNote;
-			break;
 
 		case EQuartzTimeSignatureQuantization::SixteenthNote :
 			return EQuartzCommandQuantization::SixteenthNote;
-			break;
 
 		case EQuartzTimeSignatureQuantization::ThirtySecondNote :
 			return EQuartzCommandQuantization::ThirtySecondNote;
-			break;
 
 		default:
 			return EQuartzCommandQuantization::Count;
@@ -73,7 +69,7 @@ bool FQuartzTimeSignature::operator==(const FQuartzTimeSignature& Other) const
 			const bool NumPulsesMatch = (OptionalPulseOverride[i].NumberOfPulses == Other.OptionalPulseOverride[i].NumberOfPulses);
 			const bool DurationsMatch = (OptionalPulseOverride[i].PulseDuration == Other.OptionalPulseOverride[i].PulseDuration);
 
-			if (!(NumPulseEntries && DurationsMatch))
+			if (!(NumPulsesMatch && DurationsMatch))
 			{
 				Result = false;
 				break;
@@ -137,15 +133,15 @@ void FQuartLatencyTracker::PushSingleResult(const double& InResult)
 {
 	if (++NumEntries == 0)
 	{
-		LifetimeAverage = InResult;
+		LifetimeAverage = (float)InResult;
 	}
 	else
 	{
-		LifetimeAverage = (LifetimeAverage * (NumEntries - 1) + InResult) / NumEntries;
+		LifetimeAverage = (LifetimeAverage * (NumEntries - 1) + (float)InResult) / NumEntries;
 	}
 
-	Min = FMath::Min(Min, static_cast<float>(InResult));
-	Max = FMath::Max(Max, static_cast<float>(InResult));
+	Min = FMath::Min(Min, (float)InResult);
+	Max = FMath::Max(Max, (float)InResult);
 }
 
 void FQuartLatencyTracker::DigestQueue()
@@ -165,7 +161,7 @@ namespace Audio
 {
 	FQuartzClockTickRate::FQuartzClockTickRate()
 	{
-		SetBeatsPerMinute(60.f);
+		SetBeatsPerMinute(60.0);
 	}
 
 	void FQuartzClockTickRate::SetFramesPerTick(int32 InNewFramesPerTick)
@@ -176,25 +172,25 @@ namespace Audio
 			InNewFramesPerTick = 1;
 		}
 
-		FramesPerTick = InNewFramesPerTick;
+		FramesPerTick = (double)InNewFramesPerTick;
 		RecalculateDurationsBasedOnFramesPerTick();
 	}
 
-	void FQuartzClockTickRate::SetMillisecondsPerTick(float InNewMillisecondsPerTick)
+	void FQuartzClockTickRate::SetMillisecondsPerTick(double InNewMillisecondsPerTick)
 	{
-		FramesPerTick = FMath::Max(1.0f, (InNewMillisecondsPerTick * SampleRate) / 1000.f);
+		FramesPerTick = FMath::Max(1.0, (InNewMillisecondsPerTick * SampleRate) / 1000.0);
 		RecalculateDurationsBasedOnFramesPerTick();
 	}
 
-	void FQuartzClockTickRate::SetThirtySecondNotesPerMinute(float InNewThirtySecondNotesPerMinute)
+	void FQuartzClockTickRate::SetThirtySecondNotesPerMinute(double InNewThirtySecondNotesPerMinute)
 	{
 		check(InNewThirtySecondNotesPerMinute > 0);
 
-		FramesPerTick = FMath::Max(1.0f, (60.f * SampleRate ) / InNewThirtySecondNotesPerMinute);
+		FramesPerTick = FMath::Max(1.0, (60. * SampleRate ) / InNewThirtySecondNotesPerMinute);
 		RecalculateDurationsBasedOnFramesPerTick();
 	}
 
-	void FQuartzClockTickRate::SetBeatsPerMinute(float InNewBeatsPerMinute)
+	void FQuartzClockTickRate::SetBeatsPerMinute(double InNewBeatsPerMinute)
 	{
 		// same as 1/32nd notes,
 		// except there are 1/8th the number of quarter notes than thirty-second notes in a minute
@@ -203,24 +199,24 @@ namespace Audio
 		// FramesPerTick = 1/8 * (60.f / (InNewBeatsPerMinute)) * SampleRate;
 		// (60.0 / 8.0) = 7.5f
 
-		FramesPerTick = FMath::Max(1.0f, (7.5f * SampleRate) / InNewBeatsPerMinute);
+		FramesPerTick = FMath::Max(1.0, (7.5 * SampleRate) / InNewBeatsPerMinute);
 		RecalculateDurationsBasedOnFramesPerTick();
 	}
 
-	void FQuartzClockTickRate::SetSampleRate(float InNewSampleRate)
+	void FQuartzClockTickRate::SetSampleRate(double InNewSampleRate)
 	{
 		check(InNewSampleRate >= 0);
 
-		FramesPerTick = FMath::Max(1.0f, (InNewSampleRate / SampleRate) * static_cast<float>(FramesPerTick));
+		FramesPerTick = FMath::Max(1.0, (InNewSampleRate / SampleRate) * FramesPerTick);
 		SampleRate = InNewSampleRate;
 
 		RecalculateDurationsBasedOnFramesPerTick();
 	}
 
-	int64 FQuartzClockTickRate::GetFramesPerDuration(EQuartzCommandQuantization InDuration) const
+	double FQuartzClockTickRate::GetFramesPerDuration(EQuartzCommandQuantization InDuration) const
 	{
-		const int64 FramesPerDotted16th = FramesPerTick * 3;
-		const int64 FramesPer16thTriplet = 4.f * FramesPerTick / 3.f;
+		const double FramesPerDotted16th = FramesPerTick * 3.0;
+		const double FramesPer16thTriplet = 4.0 * FramesPerTick / 3.0;
 
 		switch (InDuration)
 		{
@@ -233,37 +229,37 @@ namespace Audio
 			return FramesPerTick; // same as 1/32nd note
 
 		case EQuartzCommandQuantization::SixteenthNote:
-			return (int64)FramesPerTick << 1;
+			return FramesPerTick * 2.0;
 
 		case EQuartzCommandQuantization::EighthNote:
-			return (int64)FramesPerTick << 2;
+			return FramesPerTick * 4.0;
 
 		case EQuartzCommandQuantization::Beat: // default to quarter note (should be overridden for non-basic meters)
 		case EQuartzCommandQuantization::QuarterNote:
-			return (int64)FramesPerTick << 3;
+			return FramesPerTick * 8.0;
 
 		case EQuartzCommandQuantization::HalfNote:
-			return (int64)FramesPerTick << 4;
+			return FramesPerTick * 16.0;
 
 		case EQuartzCommandQuantization::Bar: // default to whole note (should be overridden for non-4/4 meters)
 		case EQuartzCommandQuantization::WholeNote:
-			return (int64)FramesPerTick << 5;
+			return FramesPerTick * 32.0;
 
 			// DOTTED
 		case EQuartzCommandQuantization::DottedSixteenthNote:
 			return FramesPerDotted16th;
 
 		case EQuartzCommandQuantization::DottedEighthNote:
-			return FramesPerDotted16th << 1;
+			return FramesPerDotted16th * 2.0;
 
 		case EQuartzCommandQuantization::DottedQuarterNote:
-			return FramesPerDotted16th << 2;
+			return FramesPerDotted16th * 4.0;
 
 		case EQuartzCommandQuantization::DottedHalfNote:
-			return FramesPerDotted16th << 3;
+			return FramesPerDotted16th * 8.0;
 
 		case EQuartzCommandQuantization::DottedWholeNote:
-			return FramesPerDotted16th << 4;
+			return FramesPerDotted16th * 16.0;
 
 
 			// TRIPLETS
@@ -271,14 +267,13 @@ namespace Audio
 			return FramesPer16thTriplet;
 
 		case EQuartzCommandQuantization::EighthNoteTriplet:
-			return FramesPer16thTriplet << 1;
+			return FramesPer16thTriplet * 2.0;
 
 		case EQuartzCommandQuantization::QuarterNoteTriplet:
-			return FramesPer16thTriplet << 2;
+			return FramesPer16thTriplet * 4.0;
 
 		case EQuartzCommandQuantization::HalfNoteTriplet:
-			return FramesPer16thTriplet << 3;
-
+			return FramesPer16thTriplet * 8.0;
 
 
 		default:
@@ -289,7 +284,7 @@ namespace Audio
 		return INVALID_DURATION;
 	}
 
-	int64 FQuartzClockTickRate::GetFramesPerDuration(EQuartzTimeSignatureQuantization InDuration) const
+	double FQuartzClockTickRate::GetFramesPerDuration(EQuartzTimeSignatureQuantization InDuration) const
 	{
 		switch (InDuration)
 		{
@@ -366,20 +361,19 @@ namespace Audio
 
 	void FQuartzClockTickRate::RecalculateDurationsBasedOnFramesPerTick()
 	{
-		check(FramesPerTick > 0);
-		check(SampleRate > 0);
-		const float FloatFramesPerTick = static_cast<float>(FramesPerTick);
+		check(FramesPerTick > 0.0);
+		check(SampleRate > 0.0);
 
-		SecondsPerTick = (FloatFramesPerTick / SampleRate);
-		MillisecondsPerTick = SecondsPerTick * 1000.f;
-		ThirtySecondNotesPerMinute = (60.f * SampleRate) / FloatFramesPerTick;
-		BeatsPerMinute = ThirtySecondNotesPerMinute / 8.0f;
+		SecondsPerTick = FramesPerTick / SampleRate;
+		MillisecondsPerTick = SecondsPerTick * 1000.0;
+		ThirtySecondNotesPerMinute = (60.0 * SampleRate) / FramesPerTick;
+		BeatsPerMinute = ThirtySecondNotesPerMinute / 8.0;
 	}
 
 
-	void FQuartzClockTickRate::SetSecondsPerTick(float InNewSecondsPerTick)
+	void FQuartzClockTickRate::SetSecondsPerTick(double InNewSecondsPerTick)
 	{
-		SetMillisecondsPerTick(InNewSecondsPerTick * 1000.f);
+		SetMillisecondsPerTick(InNewSecondsPerTick * 1000.0);
 	}
 
 
@@ -388,7 +382,6 @@ namespace Audio
 		, int32 InSourceID
 	)
 		: ClockName(RHS.ClockName)
-		, ClockHandleName(RHS.ClockHandleName)
 		, OtherClockName(RHS.OtherClockName)
 		, QuantizedCommandPtr(RHS.QuantizedCommandPtr)
 		, QuantizationBoundary(RHS.QuantizationBoundary)
@@ -406,7 +399,7 @@ namespace Audio
 		return nullptr;
 	}
 
-	void IQuartzQuantizedCommand::AddSubscriber(TSharedPtr<FShareableQuartzCommandQueue, ESPMode::ThreadSafe> InSubscriber)
+	void IQuartzQuantizedCommand::AddSubscriber(FQuartzGameThreadSubscriber InSubscriber)
 	{
 		GameThreadSubscribers.AddUnique(InSubscriber);
 	}
@@ -414,8 +407,8 @@ namespace Audio
 	void IQuartzQuantizedCommand::OnQueued(const FQuartzQuantizedCommandInitInfo& InCommandInitInfo)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(QuartzQuantizedCommand::OnQueued);
-		Audio::FMixerDevice* MixerDevice = InCommandInitInfo.OwningClockPointer->GetMixerDevice();
-		if (MixerDevice)
+
+		if (Audio::FMixerDevice* MixerDevice = InCommandInitInfo.OwningClockPointer->GetMixerDevice())
 		{
 			MixerDevice->QuantizedEventClockManager.PushLatencyTrackerResult(FQuartzCrossThreadMessage::RequestRecieved());
 		}
@@ -431,18 +424,43 @@ namespace Audio
 			Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnQueued;
 			Data.DelegateID = GameThreadDelegateID;
 
-
-			for (auto& SubscriberQueue : GameThreadSubscribers)
+			for (auto& Subscriber : GameThreadSubscribers)
 			{
-				if (SubscriberQueue.IsValid())
-				{
-					SubscriberQueue->PushEvent(Data);
-				}
+				Subscriber.PushEvent(Data);
 			}
 		}
 
 		UE_LOG(LogAudioQuartz, Verbose, TEXT("OnQueued() called for quantized event type: [%s]"), *GetCommandName().ToString());
 		OnQueuedCustom(InCommandInitInfo);
+	}
+
+	void IQuartzQuantizedCommand::OnScheduled(const FQuartzClockTickRate& InTickRate)
+	{
+		for(auto& Subscriber : GameThreadSubscribers)
+		{
+			Subscriber.FinalizeOffset(InTickRate);
+		}
+	}
+
+	void IQuartzQuantizedCommand::Update(int32 NumFramesUntilDeadline)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(QuartzQuantizedCommand::Countdown);
+
+		FQuartzQuantizedCommandDelegateData Data;
+		Data.CommandType = GetCommandType();
+		Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnAboutToStart;
+		Data.DelegateID = GameThreadDelegateID;
+
+		for(auto& Subscriber : GameThreadSubscribers)
+		{
+			// we only want to send this notification to the subscriber once
+			const int32 NumFramesOfAnticipation = Subscriber.GetOffsetAsAudioFrames();
+			if(!Subscriber.HasBeenNotifiedOfAboutToStart()
+				&&  (NumFramesOfAnticipation >= NumFramesUntilDeadline))
+			{
+				Subscriber.PushEvent(Data);
+			}
+		}
 	}
 
 	void IQuartzQuantizedCommand::FailedToQueue(FQuartzQuantizedRequestData& InGameThreadData)
@@ -459,13 +477,9 @@ namespace Audio
 			Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnFailedToQueue;
 			Data.DelegateID = GameThreadDelegateID;
 
-
-			for (auto& SubscriberQueue : GameThreadSubscribers)
+			for (auto& Subscriber : GameThreadSubscribers)
 			{
-				if (SubscriberQueue.IsValid())
-				{
-					SubscriberQueue->PushEvent(Data);
-				}
+				Subscriber.PushEvent(Data);
 			}
 		}
 
@@ -476,29 +490,18 @@ namespace Audio
 	void IQuartzQuantizedCommand::AboutToStart()
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(QuartzQuantizedCommand::AboutToStart);
-		// only call once for the lifespan of this event
-		if (bAboutToStartHasBeenCalled)
+
+		FQuartzQuantizedCommandDelegateData Data;
+		Data.CommandType = GetCommandType();
+		Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnAboutToStart;
+		Data.DelegateID = GameThreadDelegateID;
+
+		for(auto& Subscriber : GameThreadSubscribers)
 		{
-			return;
-		}
-
-		bAboutToStartHasBeenCalled = true;
-
-
-		if (GameThreadSubscribers.Num())
-		{
-			FQuartzQuantizedCommandDelegateData Data;
-
-			Data.CommandType = GetCommandType();
-			Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnAboutToStart;
-			Data.DelegateID = GameThreadDelegateID;
-
-			for (auto& SubscriberQueue : GameThreadSubscribers)
+			// we only want to send this notification to the subscriber once
+			if(!Subscriber.HasBeenNotifiedOfAboutToStart())
 			{
-				if (SubscriberQueue.IsValid())
-				{
-					SubscriberQueue->PushEvent(Data);
-				}
+				Subscriber.PushEvent(Data);
 			}
 		}
 
@@ -519,10 +522,7 @@ namespace Audio
 
 			for (auto& Subscriber : GameThreadSubscribers)
 			{
-				if (Subscriber.IsValid())
-				{
-					Subscriber->PushEvent(OnStartedData);
-				}
+				Subscriber.PushEvent(OnStartedData);
 			}
 		}
 
@@ -553,19 +553,14 @@ namespace Audio
 		Data.DelegateSubType = EQuartzCommandDelegateSubType::CommandOnCanceled;
 		Data.DelegateID = GameThreadDelegateID;
 
-
-		for (auto& SubscriberQueue : GameThreadSubscribers)
+		for (auto& Subscriber : GameThreadSubscribers)
 		{
-			if (SubscriberQueue.IsValid())
-			{
-				SubscriberQueue->PushEvent(Data);
-			}
+			Subscriber.PushEvent(Data);
 		}
 
 		UE_LOG(LogAudioQuartz, Verbose, TEXT("Cancel() called for quantized event type: [%s]"), *GetCommandName().ToString());
 		CancelCustom();
 	}
-
 
 
 	bool FQuartzQuantizedCommandHandle::Cancel()
@@ -681,7 +676,59 @@ namespace Audio
 		return Timer.GetCurrentTimePassedMs();
 	}
 
+	bool FQuartzOffset::operator==(const FQuartzOffset& Other) const
+	{
+		return OffsetInMilliseconds == Other.OffsetInMilliseconds
+			&& OffsetAsDuration == Other.OffsetAsDuration;
+	}
 
+	bool FQuartzGameThreadSubscriber::operator==(const FQuartzGameThreadSubscriber& Other) const
+	{
+		return Offset == Other.Offset
+			&& Queue == Other.Queue;
+	}
+
+	void FQuartzGameThreadSubscriber::PushEvent(const FQuartzQuantizedCommandDelegateData& Data)
+	{
+		if(ensure(Queue.IsValid()))
+		{
+			Queue->PushEvent(Data);
+
+			// raise the flag if this was a CommandOnAboutToStart notification
+			if(!bHasBeenNotifiedOfAboutToStart)
+			{
+				bHasBeenNotifiedOfAboutToStart = (Data.DelegateSubType == EQuartzCommandDelegateSubType::CommandOnAboutToStart);
+			}
+		}
+	}
+
+	void FQuartzGameThreadSubscriber::PushEvent(const FQuartzMetronomeDelegateData& Data)
+	{
+		if(ensure(Queue.IsValid()))
+		{
+			Queue->PushEvent(Data);
+		}
+	}
+
+	void FQuartzGameThreadSubscriber::PushEvent(const FQuartzQueueCommandData& Data)
+	{
+		if(ensure(Queue.IsValid()))
+		{
+			Queue->PushEvent(Data);
+		}
+	}
+
+	int32 FQuartzGameThreadSubscriber::FinalizeOffset(const FQuartzClockTickRate& TickRate)
+	{
+		bOffsetConvertedToFrames = true;
+		return OffsetInAudioFrames = Offset.GetOffsetInAudioFrames(TickRate);
+	}
+
+	int32 FQuartzGameThreadSubscriber::GetOffsetAsAudioFrames() const
+	{
+		ensureAlwaysMsgf(bOffsetConvertedToFrames, TEXT("FinalizeOffset must be called before calling GetOffsetAsAudioFrames()"));
+		return OffsetInAudioFrames;
+	}
 } // namespace Audio
 
 bool FQuartzTransportTimeStamp::IsZero() const
@@ -695,3 +742,4 @@ void FQuartzTransportTimeStamp::Reset()
 	Beat = 0;
 	BeatFraction = 0.f;
 }
+

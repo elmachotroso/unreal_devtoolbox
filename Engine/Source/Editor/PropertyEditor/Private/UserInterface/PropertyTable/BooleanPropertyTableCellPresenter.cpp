@@ -1,14 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyTable/BooleanPropertyTableCellPresenter.h"
-#include "Layout/Margin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
 
-#include "UserInterface/PropertyEditor/SPropertyEditorBool.h"
+#include "HAL/Platform.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Presentation/PropertyEditor/PropertyEditor.h"
+#include "PropertyHandle.h"
 #include "SResetToDefaultPropertyEditor.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorBool.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
 
 FBooleanPropertyTableCellPresenter::FBooleanPropertyTableCellPresenter( const TSharedRef< class FPropertyEditor >& InPropertyEditor )
 	: PropertyEditor( InPropertyEditor )
@@ -23,7 +31,7 @@ TSharedRef< class SWidget > FBooleanPropertyTableCellPresenter::ConstructDisplay
 		.Padding( 0 )
 		.VAlign( VAlign_Center )
 		.HAlign( HAlign_Center )
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+		.BorderImage( FAppStyle::GetBrush("NoBorder") )
 		.Content()
 		[	
 			SAssignNew( HorizontalBox, SHorizontalBox )
@@ -34,7 +42,7 @@ TSharedRef< class SWidget > FBooleanPropertyTableCellPresenter::ConstructDisplay
 			.Padding( FMargin( 2, 0, 2, 0 ) )
 			[
 				SNew( SBorder )
-				.BorderImage( FEditorStyle::GetBrush( "PropertyTable.ContentBorder" ) )
+				.BorderImage( FAppStyle::GetBrush( "PropertyTable.ContentBorder" ) )
 				.Padding( 0 )
 				.Content()
 				[

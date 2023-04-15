@@ -47,6 +47,7 @@ enum class EScreenProbeIndirectArgs
 	ThreadPerTrace,
 	ThreadPerGather,
 	ThreadPerGatherWithBorder,
+	ThreadPerLightSample,
 	Max
 };
 
@@ -67,6 +68,7 @@ END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FScreenProbeParameters, )
 	SHADER_PARAMETER(uint32, ScreenProbeTracingOctahedronResolution)
+	SHADER_PARAMETER(uint32, ScreenProbeLightSampleResolutionXY)
 	SHADER_PARAMETER(uint32, ScreenProbeGatherOctahedronResolution)
 	SHADER_PARAMETER(uint32, ScreenProbeGatherOctahedronResolutionWithBorder)
 	SHADER_PARAMETER(uint32, ScreenProbeDownsampleFactor)
@@ -96,9 +98,18 @@ BEGIN_SHADER_PARAMETER_STRUCT(FScreenProbeParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeWorldNormal)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeWorldSpeed)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeTranslatedWorldPosition)
-
+	
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWTraceRadiance)
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWTraceHit)
+
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LightSampleTraceRadiance)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LightSampleTraceHit)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeLightSampleDirection)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeLightSampleFlags)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenProbeLightSampleRadiance)
+
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWLightSampleTraceRadiance)
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWLightSampleTraceHit)
 
 	SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeImportanceSamplingParameters, ImportanceSampling)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FOctahedralSolidAngleParameters, OctahedralSolidAngleParameters)
@@ -119,6 +130,7 @@ END_SHADER_PARAMETER_STRUCT()
 BEGIN_SHADER_PARAMETER_STRUCT(FCompactedTraceParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, CompactedTraceTexelAllocator)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint2>, CompactedTraceTexelData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint2>, CompactedLightSampleTraceTexelData)
 	RDG_BUFFER_ACCESS(IndirectArgs, ERHIAccess::IndirectArgs)
 END_SHADER_PARAMETER_STRUCT()
 
@@ -128,7 +140,8 @@ extern void GenerateBRDF_PDF(
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef& BRDFProbabilityDensityFunction,
 	FRDGBufferSRVRef& BRDFProbabilityDensityFunctionSH,
-	FScreenProbeParameters& ScreenProbeParameters);
+	FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags);
 
 extern void GenerateImportanceSamplingRays(
 	FRDGBuilder& GraphBuilder,
@@ -137,19 +150,23 @@ extern void GenerateImportanceSamplingRays(
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	FRDGTextureRef BRDFProbabilityDensityFunction,
 	FRDGBufferSRVRef BRDFProbabilityDensityFunctionSH,
-	FScreenProbeParameters& ScreenProbeParameters);
+	FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags);
 
 extern void TraceScreenProbes(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
+	bool bRenderDirectLighting,
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef LightingChannelsTexture,
 	const FLumenCardTracingInputs& TracingInputs,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	FScreenProbeParameters& ScreenProbeParameters,
-	FLumenMeshSDFGridParameters& MeshSDFGridParameters);
+	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
+	ERDGPassFlags ComputePassFlags);
 
 void RenderHardwareRayTracingScreenProbe(
 	FRDGBuilder& GraphBuilder,
@@ -167,7 +184,9 @@ extern void FilterScreenProbes(
 	const FViewInfo& View,
 	const FSceneTextures& SceneTextures,
 	const FScreenProbeParameters& ScreenProbeParameters,
-	FScreenProbeGatherParameters& GatherParameters);
+	bool bRenderDirectLighting,
+	FScreenProbeGatherParameters& GatherParameters,
+	ERDGPassFlags ComputePassFlags);
 
 extern FLumenScreenSpaceBentNormalParameters ComputeScreenSpaceBentNormal(
 	FRDGBuilder& GraphBuilder,
@@ -175,7 +194,8 @@ extern FLumenScreenSpaceBentNormalParameters ComputeScreenSpaceBentNormal(
 	const FViewInfo& View,
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef LightingChannelsTexture,
-	const FScreenProbeParameters& ScreenProbeParameters);
+	const FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags);
 
 namespace LumenScreenProbeGatherRadianceCache
 {
@@ -183,6 +203,12 @@ namespace LumenScreenProbeGatherRadianceCache
 }
 
 extern bool CanMaterialRenderInLumenTranslucencyRadianceCacheMarkPass(
+	const FScene& Scene,
+	const FSceneViewFamily& ViewFamily,
+	const FPrimitiveSceneProxy& PrimitiveSceneProxy,
+	const FMaterial& Material);
+
+extern bool CanMaterialRenderInLumenFrontLayerTranslucencyGBufferPass(
 	const FScene& Scene,
 	const FSceneViewFamily& ViewFamily,
 	const FPrimitiveSceneProxy& PrimitiveSceneProxy,

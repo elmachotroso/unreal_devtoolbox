@@ -1,11 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailsDiff.h"
-#include "Modules/ModuleManager.h"
-#include "IDetailsView.h"
-#include "PropertyEditorModule.h"
+
+#include "BlueprintDetailsCustomization.h"
 #include "Algo/Copy.h"
 #include "Algo/Transform.h"
+#include "Containers/Set.h"
+#include "DetailsViewArgs.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailsView.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "PropertyPath.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Engine/MemberReference.h"
+
+class UObject;
 
 FDetailsDiff::FDetailsDiff(const UObject* InObject, FOnDisplayedPropertiesChanged InOnDisplayedPropertiesChanged )
 	: OnDisplayedPropertiesChanged( InOnDisplayedPropertiesChanged )
@@ -19,6 +31,15 @@ FDetailsDiff::FDetailsDiff(const UObject* InObject, FOnDisplayedPropertiesChange
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	DetailsView = EditModule.CreateDetailView(DetailsViewArgs);
 	DetailsView->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateStatic([]{return false; }));
+	if (InObject->IsA<UBlueprint>())
+	{
+		// create a custom property layout so that sections like interfaces will be included in the diff view
+		const FOnGetDetailCustomizationInstance LayoutOptionDetails = FOnGetDetailCustomizationInstance::CreateStatic(
+			&FBlueprintGlobalOptionsDetails::MakeInstanceForDiff,
+			const_cast<UBlueprint *>(Cast<UBlueprint>(InObject))
+		);
+		DetailsView->RegisterInstancedCustomPropertyLayout(UBlueprint::StaticClass(), LayoutOptionDetails);
+	}
 	// Forcing all advanced properties to be displayed for now, the logic to show changes made to advance properties
 	// conditionally is fragile and low priority for now:
 	DetailsView->ShowAllAdvancedProperties();

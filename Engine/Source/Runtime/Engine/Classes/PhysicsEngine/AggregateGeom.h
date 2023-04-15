@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "PhysicsEngine/ConvexElem.h"
+#include "PhysicsEngine/LevelSetElem.h"
 #include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
@@ -34,6 +35,9 @@ struct ENGINE_API FKAggregateGeom
 	UPROPERTY(EditAnywhere, editfixedsize, Category = "Aggregate Geometry", meta = (DisplayName = "Tapered Capsules"))
 	TArray<FKTaperedCapsuleElem> TaperedCapsuleElems;
 
+	UPROPERTY(EditAnywhere, editfixedsize, Category = "Aggregate Geometry", meta = (DisplayName = "Level Sets"))
+	TArray<FKLevelSetElem> LevelSetElems;
+
 	class FKConvexGeomRenderInfo* RenderInfo;
 
 	FKAggregateGeom()
@@ -56,10 +60,12 @@ struct ENGINE_API FKAggregateGeom
 
 	int32 GetElementCount() const
 	{
-		return SphereElems.Num() + SphylElems.Num() + BoxElems.Num() + ConvexElems.Num() + TaperedCapsuleElems.Num();
+		return SphereElems.Num() + SphylElems.Num() + BoxElems.Num() + ConvexElems.Num() + TaperedCapsuleElems.Num() + LevelSetElems.Num();
 	}
 
 	int32 GetElementCount(EAggCollisionShape::Type Type) const;
+
+	SIZE_T GetAllocatedSize() const { return SphereElems.GetAllocatedSize() + SphylElems.GetAllocatedSize() + BoxElems.GetAllocatedSize() + ConvexElems.GetAllocatedSize() + TaperedCapsuleElems.GetAllocatedSize(); }
 
 	FKShapeElem* GetElement(const EAggCollisionShape::Type Type, const int32 Index)
 	{
@@ -75,6 +81,8 @@ struct ENGINE_API FKAggregateGeom
 			if (ensure(ConvexElems.IsValidIndex(Index))) { return &ConvexElems[Index]; }
 		case EAggCollisionShape::TaperedCapsule:
 			if (ensure(TaperedCapsuleElems.IsValidIndex(Index))) { return &TaperedCapsuleElems[Index]; }
+		case EAggCollisionShape::LevelSet:
+			if (ensure(LevelSetElems.IsValidIndex(Index))) { return &LevelSetElems[Index]; }
 		default:
 			ensure(false);
 			return nullptr;
@@ -93,6 +101,8 @@ struct ENGINE_API FKAggregateGeom
 		if (Index < ConvexElems.Num()) { return &ConvexElems[Index]; }
 		Index -= ConvexElems.Num();
 		if (Index < TaperedCapsuleElems.Num()) { return &TaperedCapsuleElems[Index]; }
+		Index -= TaperedCapsuleElems.Num();
+		if (Index < LevelSetElems.Num()) { return &LevelSetElems[Index]; }
 		ensure(false);
 		return nullptr;
 	}
@@ -109,6 +119,8 @@ struct ENGINE_API FKAggregateGeom
 		if (Index < ConvexElems.Num()) { return &ConvexElems[Index]; }
 		Index -= ConvexElems.Num();
 		if (Index < TaperedCapsuleElems.Num()) { return &TaperedCapsuleElems[Index]; }
+		Index -= TaperedCapsuleElems.Num();
+		if (Index < LevelSetElems.Num()) { return &LevelSetElems[Index]; }
 		ensure(false);
 		return nullptr;
 	}
@@ -120,6 +132,7 @@ struct ENGINE_API FKAggregateGeom
 		SphylElems.Empty();
 		SphereElems.Empty();
 		TaperedCapsuleElems.Empty();
+		LevelSetElems.Empty();
 
 		FreeRenderInfo();
 	}
@@ -128,7 +141,7 @@ struct ENGINE_API FKAggregateGeom
 	void FixupDeprecated(FArchive& Ar);
 #endif
 
-	void GetAggGeom(const FTransform& Transform, const FColor Color, const FMaterialRenderProxy* MatInst, bool bPerHullColor, bool bDrawSolid, bool bDrawsVelocity, int32 ViewIndex, class FMeshElementCollector& Collector) const;
+	void GetAggGeom(const FTransform& Transform, const FColor Color, const FMaterialRenderProxy* MatInst, bool bPerHullColor, bool bDrawSolid, bool bOutputVelocity, int32 ViewIndex, class FMeshElementCollector& Collector) const;
 
 	/** Release the RenderInfo (if its there) and safely clean up any resources. Call on the game thread. */
 	void FreeRenderInfo();
@@ -145,7 +158,11 @@ struct ENGINE_API FKAggregateGeom
 	void CalcBoxSphereBounds(FBoxSphereBounds& Output, const FTransform& LocalToWorld) const;
 
 	/** Returns the volume of this element */
-	float GetVolume(const FVector& Scale3D) const;
+	UE_DEPRECATED(5.1, "Changed to GetScaledVolume. Note that Volume calculation now includes non-uniform scale so values may have changed")
+	FVector::FReal GetVolume(const FVector& Scale3D) const;
+
+	/** Returns the volume of this element */
+	FVector::FReal GetScaledVolume(const FVector& Scale3D) const;
 
 	FGuid MakeDDCKey() const;
 
@@ -159,5 +176,6 @@ private:
 		SphylElems = Other.SphylElems;
 		ConvexElems = Other.ConvexElems;
 		TaperedCapsuleElems = Other.TaperedCapsuleElems;
+		LevelSetElems = Other.LevelSetElems;
 	}
 };

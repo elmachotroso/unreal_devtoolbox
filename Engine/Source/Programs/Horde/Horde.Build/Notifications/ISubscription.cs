@@ -1,15 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeCommon;
-using HordeServer.Api;
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Models
+namespace Horde.Build.Notifications
 {
 	using UserId = ObjectId<IUser>;
 

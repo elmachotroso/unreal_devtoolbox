@@ -14,6 +14,7 @@
 #include "Evaluation/MovieSceneRootOverridePath.h"
 
 #include "IMovieScenePlayer.h"
+#include "MovieSceneSequence.h"
 #include "MovieSceneSequencePlayer.h"
 #include "MovieSceneTimeHelpers.h"
 
@@ -66,18 +67,23 @@ void PurgeStaleTrackTemplates(UMovieSceneCompiledDataManager* CompiledDataManage
 
 
 
-FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle InInstanceHandle)
+FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FRootInstanceHandle InInstanceHandle)
 	: SequenceID(MovieSceneSequenceID::Root)
 	, RootOverrideSequenceID(MovieSceneSequenceID::Root)
 	, PlayerIndex(Player->GetUniqueIndex())
 	, InstanceHandle(InInstanceHandle)
-	, RootInstanceHandle(InstanceHandle)
+	, RootInstanceHandle(InInstanceHandle)
 {
 	// Root instances always start in a finished state in order to ensure that 'Start'
 	// is called correctly for the top level instance. This is subtly different from
 	// bHasEverUpdated since a sequence instance can be Finished and restarted multiple times
 	bFinished = true;
 	bHasEverUpdated = false;
+
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+	UMovieSceneSequence* RootSequence = Player->GetEvaluationTemplate().GetRootSequence();
+	RootSequenceName = RootSequence->GetPathName();
+#endif
 
 	CompiledDataID = Player->GetEvaluationTemplate().GetCompiledDataID();
 
@@ -87,7 +93,7 @@ FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMov
 	InvalidateCachedData(Linker);
 }
 
-FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle InInstanceHandle, FInstanceHandle InRootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID)
+FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle InInstanceHandle, FRootInstanceHandle InRootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID)
 	: CompiledDataID(InCompiledDataID)
 	, SequenceID(InSequenceID)
 	, RootOverrideSequenceID(MovieSceneSequenceID::Invalid)
@@ -203,18 +209,16 @@ void FSequenceInstance::Start(UMovieSceneEntitySystemLinker* Linker, const FMovi
 	bFinished = false;
 	bHasEverUpdated = true;
 
+	check(RootInstanceHandle == InstanceHandle);
+
 	IMovieScenePlayer* Player = GetPlayer();
-	SequenceUpdater->Start(Linker, InstanceHandle, Player, InContext);
+	SequenceUpdater->Start(Linker, RootInstanceHandle, Player, InContext);
 }
 
 void FSequenceInstance::Update(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneContext& InContext)
 {
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_SequenceInstanceUpdate);
-
-#if STATS || ENABLE_STATNAMEDEVENTS
-	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
-	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? GetPlayer()->AsUObject() : nullptr);
-#endif
+	SCOPE_CYCLE_UOBJECT(ContextScope, GetPlayer()->AsUObject());
 
 	bHasEverUpdated = true;
 
@@ -223,8 +227,10 @@ void FSequenceInstance::Update(UMovieSceneEntitySystemLinker* Linker, const FMov
 		Start(Linker, InContext);
 	}
 
+	check(RootInstanceHandle == InstanceHandle);
+
 	Context = InContext;
-	SequenceUpdater->Update(Linker, InstanceHandle, GetPlayer(), InContext);
+	SequenceUpdater->Update(Linker, RootInstanceHandle, GetPlayer(), InContext);
 }
 
 void FSequenceInstance::Finish(UMovieSceneEntitySystemLinker* Linker)
@@ -248,7 +254,8 @@ void FSequenceInstance::Finish(UMovieSceneEntitySystemLinker* Linker)
 
 	if (SequenceUpdater)
 	{
-		SequenceUpdater->Finish(Linker, InstanceHandle, Player);
+		check(RootInstanceHandle == InstanceHandle);
+		SequenceUpdater->Finish(Linker, RootInstanceHandle, Player);
 	}
 
 	if (LegacyEvaluator)
@@ -356,7 +363,8 @@ void FSequenceInstance::OverrideRootSequence(UMovieSceneEntitySystemLinker* Link
 {
 	if (SequenceUpdater)
 	{
-		SequenceUpdater->OverrideRootSequence(Linker, InstanceHandle, NewRootSequenceID);
+		check(RootInstanceHandle == InstanceHandle);
+		SequenceUpdater->OverrideRootSequence(Linker, RootInstanceHandle, NewRootSequenceID);
 	}
 
 	RootOverrideSequenceID = NewRootSequenceID;
@@ -370,6 +378,11 @@ FInstanceHandle FSequenceInstance::FindSubInstance(FMovieSceneSequenceID SubSequ
 FMovieSceneEntityID FSequenceInstance::FindEntity(UObject* Owner, uint32 EntityID) const
 {
 	return Ledger.FindImportedEntity(FMovieSceneEvaluationFieldEntityKey{ decltype(FMovieSceneEvaluationFieldEntityKey::EntityOwner)(Owner), EntityID });
+}
+
+void FSequenceInstance::FindEntities(UObject* Owner, TArray<FMovieSceneEntityID>& OutEntityIDs) const
+{
+	Ledger.FindImportedEntities(Owner, OutEntityIDs);
 }
 
 FSubSequencePath FSequenceInstance::GetSubSequencePath() const

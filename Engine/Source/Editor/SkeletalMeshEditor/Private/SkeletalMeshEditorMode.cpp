@@ -7,7 +7,8 @@
 #include "ISkeletonEditorModule.h"
 #include "IPersonaToolkit.h"
 #include "SControlRigMappingWindow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
+#include "Engine/SkeletalMesh.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshEditorMode"
 
@@ -122,7 +123,7 @@ FMeshControllerMappingTabSummoner::FMeshControllerMappingTabSummoner(TSharedPtr<
 	, OnPostUndo(InOnPostUndo)
 {
 	TabLabel = LOCTEXT("ControlRigMappingWindowTabTitle", "Control Rig");
-	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.Tabs.ControlRigMappingWindow");
+	TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.Tabs.ControlRigMappingWindow");
 
 	EnableTabPadding();
 	bIsSingleton = true;

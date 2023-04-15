@@ -59,6 +59,12 @@ static TAutoConsoleVariable<int32> CVarMaterialBakingRDOCCapture(
 	TEXT("1: Turned On"),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarMaterialBakingVTWarmupFrames(
+	TEXT("MaterialBaking.VTWarmupFrames"),
+	5,
+	TEXT("Number of frames to render for virtual texture warmup when material baking."));
+
+
 namespace FMaterialBakingModuleImpl
 {
 	// Custom dynamic mesh allocator specifically tailored for Material Baking.
@@ -190,14 +196,17 @@ namespace FMaterialBakingModuleImpl
 			}
 
 			TRACE_CPUPROFILER_EVENT_SCOPE(RHICreateTexture2D)
-			FRHIResourceCreateInfo CreateInfo(TEXT("FStagingBufferPool_StagingBuffer"));
-			ETextureCreateFlags TextureCreateFlags = TexCreate_CPUReadback;
+
+			FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(TEXT("FStagingBufferPool_StagingBuffer"), Width, Height, Format)
+				.SetFlags(ETextureCreateFlags::CPUReadback);
+
 			if (bIsSRGB)
 			{
-				TextureCreateFlags |= TexCreate_SRGB;
+				Desc.AddFlags(ETextureCreateFlags::SRGB);
 			}
-			
-			return RHICreateTexture2D(Width, Height, Format, 1, 1, TextureCreateFlags, CreateInfo);
+
+			return RHICreateTexture(Desc);
 		}
 
 		void ReleaseStagingBufferForUnmap_AnyThread(FTexture2DRHIRef& Texture2DRHIRef)
@@ -317,6 +326,7 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialData*>& Material
 		FMaterialDataEx& MaterialDataEx = MaterialDataExs.AddDefaulted_GetRef();
 		MaterialDataEx.Material = MaterialData->Material;
 		MaterialDataEx.bPerformBorderSmear = MaterialData->bPerformBorderSmear;
+		MaterialDataEx.bTangentSpaceNormal = MaterialData->bTangentSpaceNormal;
 
 		for (const TPair<EMaterialProperty, FIntPoint>& PropertySizePair : MaterialData->PropertySizes)
 		{
@@ -369,8 +379,6 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 			UE_LOG(LogMaterialBaking, Verbose, TEXT("    [%5d] Material: %-50s Vertices: %8d    Triangles: %8d"), i, *MaterialSettings[i]->Material->GetName(), MeshSettings[i]->MeshDescription->Vertices().Num(), MeshSettings[i]->MeshDescription->Triangles().Num());
 		}
 	}
-
-	RenderCaptureInterface::FScopedCapture RenderCapture(CVarMaterialBakingRDOCCapture.GetValueOnAnyThread() == 1, TEXT("MaterialBaking"));
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FMaterialBakingModule::BakeMaterials)
 
@@ -487,7 +495,7 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 			for (TMap<FMaterialPropertyEx, FIntPoint>::TConstIterator PropertySizeIterator = CurrentMaterialSettings->PropertySizes.CreateConstIterator(); PropertySizeIterator; ++PropertySizeIterator)
 			{
 				// They will be stored in the pool and compiled asynchronously
-				CreateMaterialProxy(CurrentMaterialSettings->Material, PropertySizeIterator.Key());
+				CreateMaterialProxy(CurrentMaterialSettings, PropertySizeIterator.Key());
 			}
 		}
 	}
@@ -556,7 +564,7 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 
 				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*Property.ToString())
 
-				FExportMaterialProxy* ExportMaterialProxy = CreateMaterialProxy(CurrentMaterialSettings->Material, Property);
+				FExportMaterialProxy* ExportMaterialProxy = CreateMaterialProxy(CurrentMaterialSettings, Property);
 
 				if (!ExportMaterialProxy->IsCompilationFinished())
 				{
@@ -599,18 +607,36 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 							Canvas.SetRenderTargetRect(FIntRect(0, 0, RenderTarget->GetSurfaceWidth(), RenderTarget->GetSurfaceHeight()));
 							Canvas.SetBaseTransform(Canvas.CalcBaseTransform2D(RenderTarget->GetSurfaceWidth(), RenderTarget->GetSurfaceHeight()));
 
+							// Virtual textures may require repeated rendering to warm up.
+							int32 WarmupIterationCount = 1;
+ 							if (UseVirtualTexturing(ViewFamily.GetFeatureLevel()))
+ 							{
+ 								const FMaterial& MeshMaterial = ExportMaterialProxy->GetIncompleteMaterialWithFallback(ViewFamily.GetFeatureLevel());
+								if (!MeshMaterial.GetUniformVirtualTextureExpressions().IsEmpty())
+								{
+									WarmupIterationCount = CVarMaterialBakingVTWarmupFrames.GetValueOnAnyThread();
+								}
+ 							}
+
 							// Do rendering
-							Canvas.Clear(RenderTarget->ClearColor);
-							FCanvas::FCanvasSortElement& SortElement = Canvas.GetSortElement(Canvas.TopDepthSortKey());
-							SortElement.RenderBatchArray.Add(&RenderItem);
-							Canvas.Flush_RenderThread(RHICmdList);
-							SortElement.RenderBatchArray.Empty();
+							{
+								RenderCaptureInterface::FScopedCapture RenderCapture(CVarMaterialBakingRDOCCapture.GetValueOnAnyThread() == 1, &RHICmdList, TEXT("MaterialBaking"));
+
+								for (int WarmupIndex = 0; WarmupIndex < WarmupIterationCount; ++WarmupIndex)
+								{
+									Canvas.Clear(RenderTarget->ClearColor);
+									FCanvas::FCanvasSortElement& SortElement = Canvas.GetSortElement(Canvas.TopDepthSortKey());
+									SortElement.RenderBatchArray.Add(&RenderItem);
+									Canvas.Flush_RenderThread(RHICmdList);
+									SortElement.RenderBatchArray.Empty();
+
+									RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+								}
+							}
 
 							FTexture2DRHIRef StagingBufferRef = StagingBufferPool.CreateStagingBuffer_RenderThread(RHICmdList, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY(), RenderTarget->GetFormat(), RenderTarget->IsSRGB());
 							FGPUFenceRHIRef GPUFence = RHICreateGPUFence(TEXT("MaterialBackingFence"));
-
-							FResolveRect Rect(0, 0, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY());
-							RHICmdList.CopyToResolveTarget(RenderTargetResource->GetRenderTargetTexture(), StagingBufferRef, FResolveParams(Rect));	
+							TransitionAndCopyTexture(RHICmdList, RenderTargetResource->GetRenderTargetTexture(), StagingBufferRef, {});
 							RHICmdList.WriteGPUFence(GPUFence);
 
 							// Prepare a lambda for final processing that will be executed asynchronously
@@ -873,7 +899,7 @@ UTextureRenderTarget2D* FMaterialBakingModule::CreateRenderTarget(bool bInForceL
 	return RenderTarget;
 }
 
-FExportMaterialProxy* FMaterialBakingModule::CreateMaterialProxy(UMaterialInterface* Material, const FMaterialPropertyEx& Property)
+FExportMaterialProxy* FMaterialBakingModule::CreateMaterialProxy(const FMaterialDataEx* MaterialSettings, const FMaterialPropertyEx& Property)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FMaterialBakingModule::CreateMaterialProxy)
 
@@ -881,12 +907,12 @@ FExportMaterialProxy* FMaterialBakingModule::CreateMaterialProxy(UMaterialInterf
 
 	// Find all pooled material proxy matching this material
 	TArray<FMaterialPoolValue> Entries;
-	MaterialProxyPool.MultiFind(Material, Entries);
+	MaterialProxyPool.MultiFind(MaterialSettings->Material, Entries);
 
 	// Look for the matching property
 	for (FMaterialPoolValue& Entry : Entries)
 	{
-		if (Entry.Key == Property)
+		if (Entry.Key == Property && Entry.Value->bTangentSpaceNormal == MaterialSettings->bTangentSpaceNormal)
 		{
 			Proxy = Entry.Value;
 			break;
@@ -896,8 +922,8 @@ FExportMaterialProxy* FMaterialBakingModule::CreateMaterialProxy(UMaterialInterf
 	// Not found, create a new entry
 	if (Proxy == nullptr)
 	{
-		Proxy = new FExportMaterialProxy(Material, Property.Type, Property.CustomOutput.ToString(), false /* bInSynchronousCompilation */);
-		MaterialProxyPool.Add(Material, FMaterialPoolValue(Property, Proxy));
+		Proxy = new FExportMaterialProxy(MaterialSettings->Material, Property.Type, Property.CustomOutput.ToString(), false /* bInSynchronousCompilation */, MaterialSettings->bTangentSpaceNormal);
+		MaterialProxyPool.Add(MaterialSettings->Material, FMaterialPoolValue(Property, Proxy));
 	}
 
 	return Proxy;

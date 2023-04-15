@@ -10,9 +10,8 @@ All common code shared between the editor side debugger and debugger clients run
 #include "Misc/NotifyHook.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCommon.h"
+#include "NiagaraSimCache.h"
 #include "NiagaraDebuggerCommon.generated.h"
-
-#define WITH_NIAGARA_DEBUGGER (!UE_BUILD_SHIPPING)// || WITH_EDITOR)
 
 //////////////////////////////////////////////////////////////////////////
 // Niagara Outliner.
@@ -71,6 +70,9 @@ struct FNiagaraOutlinerSystemInstanceData
 	FString ComponentName;
 
 	UPROPERTY(VisibleAnywhere, Category = "System")
+	FVector3f LWCTile = FVector3f::Zero();
+
+	UPROPERTY(VisibleAnywhere, Category = "System")
 	TArray<FNiagaraOutlinerEmitterInstanceData> Emitters;
 	
 	UPROPERTY(VisibleAnywhere, Category = "State")
@@ -100,6 +102,9 @@ struct FNiagaraOutlinerSystemInstanceData
 	UPROPERTY(VisibleAnywhere, Category = "Ticking")
 	TEnumAsByte<ETickingGroup> TickGroup;
 
+	UPROPERTY(VisibleAnywhere, Category = "Ticking")
+	TEnumAsByte<ENiagaraGpuComputeTickStage::Type> GpuTickStage;
+
 	UPROPERTY(VisibleAnywhere, Category = "Gpu")
 	uint32 bIsSolo : 1;
 
@@ -122,6 +127,7 @@ struct FNiagaraOutlinerSystemInstanceData
 		: bPendingKill(false)
 		, bUsingCullProxy(false)
 		, TickGroup(0)
+		, GpuTickStage(ENiagaraGpuComputeTickStage::First)
 		, bIsSolo(false)
 		, bRequiresDistanceFieldData(false)
 		, bRequiresDepthBuffer(false)
@@ -129,10 +135,6 @@ struct FNiagaraOutlinerSystemInstanceData
 		, bRequiresViewUniformBuffer(false)
 		, bRequiresRayTracingScene(false)
 	{}
-
-	//TODO:
-	//Tick info, solo, tick group etc.
-	//Mem usage?
 };
 
 /** Wrapper for array of system instance outliner data so that it can be placed in a map. */
@@ -426,9 +428,13 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	bool bWidgetEnabled = false;
 #endif
 
-	/** Master control for all HUD features. */
+	/** Primary control for all HUD features. */
 	UPROPERTY(EditAnywhere, Category = "Debug General", meta = (DisplayName = "Debug HUD Enabled"))
 	bool bHudEnabled = true;
+
+	/** Primary control for HUD rendering. */
+	UPROPERTY(EditAnywhere, Category = "Debug General", meta = (DisplayName = "Debug HUD Rendering Enabled"))
+	bool bHudRenderingEnabled = true;
 
 	/**
 	When enabled all Niagara systems that pass the filter will have the simulation data buffers validation.
@@ -460,6 +466,14 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	/** Overview display location. */
 	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Text Location", EditCondition = "bOverviewEnabled"))
 	FVector2D OverviewLocation = FIntPoint(30.0f, 150.0f);
+
+	/** Overview display font to use. */
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (EditCondition = "bOverviewEnabled && OverviewMode == ENiagaraDebugHUDOverviewMode::Overview"))
+	bool bShowRegisteredComponents = false;
+	
+	/** When enabled the overview will only show the filter system information. */
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (EditCondition = "bOverviewEnabled"))
+	bool bOverviewShowFilteredSystemOnly = false;
 
 	/**
 	Wildcard filter which is compared against the Components Actor name to narrow down the detailed information.
@@ -508,6 +522,10 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	/** When enabled we show information about emitter / particle counts. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))
 	ENiagaraDebugHudVerbosity SystemEmitterVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+	/** When enabled allows data interfaces to include additional debugging information. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))
+	ENiagaraDebugHudVerbosity DataInterfaceVerbosity = ENiagaraDebugHudVerbosity::None;
 
 	/** When enabled will show the system bounds for all filtered systems. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
@@ -744,6 +762,10 @@ struct NIAGARA_API FNiagaraOutlinerCaptureSettings
 	
 	UPROPERTY(EditAnywhere, Config, Category = "Settings")
 	bool bGatherPerfData = true;
+
+	/** How many frames capture when capturing a sim cache. */
+	UPROPERTY(EditAnywhere, Config, Category = "Settings")
+	uint32 SimCacheCaptureFrames = 10;
 };
 
 /** Simple information on the connected client for use in continuous or immediate response UI elements. */
@@ -769,6 +791,39 @@ struct NIAGARA_API FNiagaraSimpleClientInfo
 	TArray<FString> Emitters;
 };
 
+/** Message sent from the debugger to a client to request a sim cache capture for a particular component. */
+USTRUCT()
+struct NIAGARA_API FNiagaraSystemSimCacheCaptureRequest
+{
+	GENERATED_BODY()
+
+	/** Name of the component we're going to capture. */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	FName ComponentName;
+
+	/** How many frames to delay capture. */
+	UPROPERTY(EditAnywhere, Config, Category="Settings")
+	uint32 CaptureDelayFrames = 60;
+
+	/** How many frames to capture. */
+	UPROPERTY(EditAnywhere, Config, Category = "Settings")
+	uint32 CaptureFrames = 10;
+};
+
+
+/** Message sent from a debugger client to a connected debugger containing the results of a sim cache capture. */
+USTRUCT()
+struct NIAGARA_API FNiagaraSystemSimCacheCaptureReply
+{
+	GENERATED_BODY()
+
+	/** Name of the captured component. */
+	UPROPERTY()
+	FName ComponentName;
+	
+	UPROPERTY()
+	TArray<uint8> SimCacheData;
+};
 
 enum class ENiagaraDebugMessageType : uint8
 {

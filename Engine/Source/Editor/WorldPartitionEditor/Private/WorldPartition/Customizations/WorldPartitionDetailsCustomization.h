@@ -5,9 +5,11 @@
 #include "CoreMinimal.h"
 #include "SlateFwd.h"
 #include "IDetailCustomization.h"
+#include "WorldPartition/WorldPartition.h"
 
 class IDetailLayoutBuilder;
-class UWorldPartition;
+
+enum class ECheckBoxState : uint8;
 
 class FWorldPartitionDetails : public IDetailCustomization
 {
@@ -21,13 +23,15 @@ protected:
 
 private:
 	/** IDetailCustomization interface */
-	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+	virtual void CustomizeDetails(IDetailLayoutBuilder& InDetailBuilder) override;
 
-	// Callback for changes in the world partition editor cell size.
-	void HandleWorldPartitionEditorCellSizeChanged(uint32 NewValue);
+	// Callback for changes in the world partition enable streaming.
+	void HandleWorldPartitionEnableStreamingChanged(ECheckBoxState InCheckState);
 
-	// Callback for getting the world partition editor cell size.
-	TOptional<uint32> HandleWorldPartitionEditorCellSizeValue() const;
+	// Callback for changes in the world partition runtime hash class.
+	void HandleWorldPartitionRuntimeHashClassChanged(const UClass* InRuntimeHashClass);
 
-	UWorldPartition* WorldPartition;
+	IDetailLayoutBuilder* DetailBuilder;
+	TWeakObjectPtr<UWorldPartition> WorldPartition;
+	const UClass* RuntimeHashClass;
 };

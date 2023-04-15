@@ -9,7 +9,7 @@
 #include "Misc/NetworkGuid.h"
 #include "UObject/CoreNet.h"
 #include "EngineLogs.h"
-#include "Net/Core/Trace/Config.h"
+#include "Net/Core/Trace/NetTraceConfig.h"
 
 class UChannel;
 class UNetConnection;
@@ -69,6 +69,7 @@ public:
 
 	// Functions.
 	FOutBunch();
+	explicit FOutBunch(int64 InMaxBits);
 	FOutBunch( class UChannel* InChannel, bool bClose );
 	FOutBunch( UPackageMap * PackageMap, int64 InMaxBits = 1024 );
 

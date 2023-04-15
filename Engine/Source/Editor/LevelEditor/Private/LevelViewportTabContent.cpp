@@ -60,6 +60,8 @@ void FLevelViewportTabContent::Initialize(AssetEditorViewportFactoryFunction Fun
 
 void FLevelViewportTabContent::BindViewportLayoutCommands(FUICommandList& InOutCommandList, FName ViewportConfigKey)
 {
+	FEditorViewportTabContent::BindViewportLayoutCommands(InOutCommandList, ViewportConfigKey);
+
 	FLevelViewportCommands& ViewportActions = FLevelViewportCommands::Get();
 
 	auto AddViewportConfigurationAction = [&InOutCommandList, this](const TSharedPtr<FUICommandInfo>& InCommandInfo, FName InLayoutType)

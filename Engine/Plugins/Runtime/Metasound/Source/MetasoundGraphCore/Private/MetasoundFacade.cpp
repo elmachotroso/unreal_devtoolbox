@@ -9,9 +9,25 @@ namespace Metasound
 	{
 	}
 
-	TUniquePtr<IOperator> FNodeFacade::FFactory::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
+	FNodeFacade::FFactory::FFactory(FOriginalCreateOperatorFunction InCreateFunc)
+	:	CreateFunc(WrapOriginalCreateOperatorFunction(InCreateFunc))
 	{
-		return CreateFunc(InParams, OutErrors);
+	}
+
+
+	TUniquePtr<IOperator> FNodeFacade::FFactory::CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults)
+	{
+		return CreateFunc(InParams, OutResults);
+	}
+
+	FNodeFacade::FFactory::FCreateOperatorFunction FNodeFacade::FFactory::WrapOriginalCreateOperatorFunction(FOriginalCreateOperatorFunction InCreateFunc)
+	{
+		return [InCreateFunc](const FBuildOperatorParams& InParams, FBuildResults& OutResults)
+		{
+			FDataReferenceCollection InputDataReferences = InParams.InputData.ToDataReferenceCollection();
+			FCreateOperatorParams DeprecatedParams{ InParams.Node, InParams.OperatorSettings, InputDataReferences, InParams.Environment, InParams.Builder };
+			return InCreateFunc(DeprecatedParams, OutResults.Errors);
+		};
 	}
 
 	const FVertexInterface& FNodeFacade::GetVertexInterface() const

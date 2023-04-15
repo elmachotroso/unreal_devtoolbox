@@ -16,6 +16,7 @@
 #include "SlateOptMacros.h"
 
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBorder.h"
@@ -67,9 +68,8 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 								SNew(STextBlock)
 								.Text(this, &SEnvironmentLightingViewer::GetSelectedComboBoxDetailFilterTextLabel)
 							];
-	
+
 	uint32 Zero = 0;
-	uint32 One = 1;
 	ButtonCreateSkyLight = SNew(SButton)
 					.HAlign(HAlign_Center)
 					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateSkyLight)
@@ -77,11 +77,7 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 	ButtonCreateAtmosphericLight0 = SNew(SButton)
 					.HAlign(HAlign_Center)
 					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateAtmosphericLight, Zero)
-					.Text(LOCTEXT("CreateAtmosphericLight0", "Create Atmospheric Light 0"));
-	ButtonCreateAtmosphericLight1 = SNew(SButton)
-					.HAlign(HAlign_Center)
-					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateAtmosphericLight, One)
-					.Text(LOCTEXT("CreateAtmosphericLight1", "Create Atmospheric Light 1"));
+					.Text(LOCTEXT("CreateAtmosphericLight0", "Create Atmospheric Light"));
 	ButtonCreateSkyAtmosphere = SNew(SButton)
 					.HAlign(HAlign_Center)
 					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateSkyAtmosphere)
@@ -144,13 +140,6 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 			.VAlign(VAlign_Center)
 			[
 				ButtonCreateAtmosphericLight0->AsShared()
-			]
-			+SWrapBox::Slot()
-			.Padding(5.0f)
-			.HAlign(HAlign_Center)
-			.VAlign(VAlign_Center)
-			[
-				ButtonCreateAtmosphericLight1->AsShared()
 			]
 			+SWrapBox::Slot()
 			.Padding(5.0f)
@@ -307,11 +296,8 @@ void SEnvironmentLightingViewer::Tick(const FGeometry& AllottedGeometry, const d
 	};
 
 	UDirectionalLightComponent* AtmosphericLight0 = GetAtmosphericLight(0);
-	UDirectionalLightComponent* AtmosphericLight1 = GetAtmosphericLight(1);
 	AddComponentDetailView(AtmosphericLight0, "Directional Light 0", DirLightColor);
-	AddComponentDetailView(AtmosphericLight1, "Directional Light 1", DirLightColor);
 	ButtonCreateAtmosphericLight0->SetVisibility(AtmosphericLight0 ? EVisibility::Collapsed : EVisibility::Visible);
-	ButtonCreateAtmosphericLight1->SetVisibility(AtmosphericLight1 ? EVisibility::Collapsed : EVisibility::Visible);
 
 	USkyLightComponent* SkyLightComp = nullptr;
 	for (TObjectIterator<USkyLightComponent> ComponentIt; ComponentIt; ++ComponentIt)

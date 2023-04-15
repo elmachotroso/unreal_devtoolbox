@@ -17,19 +17,41 @@ public:
 		FIKRetargetEditorStyle::Get().GetStyleSetName() // Icon Style Set
 	)
 	{}
+
+	/** reset retarget pose */
+	TSharedPtr< FUICommandInfo > ShowRetargetPose;
 	
-	/** edit reference pose */
+	/** edit retarget pose */
 	TSharedPtr< FUICommandInfo > EditRetargetPose;
 
-	/** new reference pose */
-	TSharedPtr< FUICommandInfo > NewRetargetPose;
+	/** reset retarget pose to ref pose */
+	TSharedPtr< FUICommandInfo > ResetAllBones;
+	/** reset retarget pose to ref pose */
+	TSharedPtr< FUICommandInfo > ResetSelectedBones;
+	/** reset retarget pose to ref pose */
+	TSharedPtr< FUICommandInfo > ResetSelectedAndChildrenBones;
 
-	/** delete reference pose */
+	/** delete retarget pose */
 	TSharedPtr< FUICommandInfo > DeleteRetargetPose;
 
-	/** reset reference pose */
-	TSharedPtr< FUICommandInfo > ResetRetargetPose;
-	
+	/** rename retarget pose */
+	TSharedPtr< FUICommandInfo > RenameRetargetPose;
+
+	/** new retarget pose */
+	TSharedPtr< FUICommandInfo > NewRetargetPose;
+
+	/** duplicate retarget pose */
+	TSharedPtr< FUICommandInfo > DuplicateRetargetPose;
+
+	/** import retarget pose */
+	TSharedPtr< FUICommandInfo > ImportRetargetPose;
+
+	/** import retarget pose from anim */
+	TSharedPtr< FUICommandInfo > ImportRetargetPoseFromAnim;
+
+	/** export retarget pose */
+	TSharedPtr< FUICommandInfo > ExportRetargetPose;
+
 	/** export animation */
 	TSharedPtr< FUICommandInfo > ExportAnimation;
 

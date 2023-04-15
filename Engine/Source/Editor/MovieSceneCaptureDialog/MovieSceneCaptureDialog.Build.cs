@@ -6,17 +6,10 @@ public class MovieSceneCaptureDialog : ModuleRules
 {
 	public MovieSceneCaptureDialog(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/MovieSceneCaptureDialog/Private"
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"EditorStyle",
 				"Engine",
 				"InputCore",
 				"Json",

@@ -2,8 +2,8 @@
 
 #include "PersonaAssetFamily.h"
 #include "Modules/ModuleManager.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Animation/AnimBlueprint.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "AssetToolsModule.h"
@@ -63,14 +63,14 @@ static void FindAssets(const USkeleton* InSkeleton, TArray<FAssetData>& OutAsset
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	FARFilter Filter;
 	Filter.bRecursiveClasses = true;
-	Filter.ClassNames.Add(AssetType::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(AssetType::StaticClass()->GetClassPathName());
 	Filter.TagsAndValues.Add(SkeletonTag, FAssetData(InSkeleton).GetExportTextName());
 	
 	// Also include all compatible assets.
 	FString CompatibleTagValue;
 	for (const auto& CompatibleSkeleton : InSkeleton->GetCompatibleSkeletons())
 	{
-		CompatibleTagValue = FString::Format(TEXT("{0}'{1}'"), { *USkeleton::StaticClass()->GetName(), *CompatibleSkeleton.ToString() });
+		CompatibleTagValue = FString::Format(TEXT("{0}'{1}'"), { *USkeleton::StaticClass()->GetPathName(), *CompatibleSkeleton.ToString() });
 		Filter.TagsAndValues.Add(SkeletonTag, CompatibleTagValue);
 	}
 
@@ -147,10 +147,10 @@ FAssetData FPersonaAssetFamily::FindAssetOfType(UClass* InAssetClass) const
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 				FARFilter Filter;
 				Filter.bRecursiveClasses = true;
-				Filter.ClassNames.Add(UPhysicsAsset::StaticClass()->GetFName());
+				Filter.ClassPaths.Add(UPhysicsAsset::StaticClass()->GetClassPathName());
 				if(Mesh.IsValid())
 				{
-					Filter.TagsAndValues.Add(GET_MEMBER_NAME_CHECKED(UPhysicsAsset, PreviewSkeletalMesh), FAssetData(Mesh.Get()).ObjectPath.ToString());
+					Filter.TagsAndValues.Add(GET_MEMBER_NAME_CHECKED(UPhysicsAsset, PreviewSkeletalMesh), FSoftObjectPath(Mesh.Get()).ToString());
 				}
 
 				AssetRegistryModule.Get().GetAssets(Filter, Assets);
@@ -192,10 +192,10 @@ void FPersonaAssetFamily::FindAssetsOfType(UClass* InAssetClass, TArray<FAssetDa
 			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 			FARFilter Filter;
 			Filter.bRecursiveClasses = true;
-			Filter.ClassNames.Add(UPhysicsAsset::StaticClass()->GetFName());
+			Filter.ClassPaths.Add(UPhysicsAsset::StaticClass()->GetClassPathName());
 			if(Mesh != nullptr)
 			{
-				Filter.TagsAndValues.Add(GET_MEMBER_NAME_CHECKED(UPhysicsAsset, PreviewSkeletalMesh), FAssetData(Mesh.Get()).ObjectPath.ToString());
+				Filter.TagsAndValues.Add(GET_MEMBER_NAME_CHECKED(UPhysicsAsset, PreviewSkeletalMesh), FSoftObjectPath(Mesh.Get()).ToString());
 			}
 
 			AssetRegistryModule.Get().GetAssets(Filter, OutAssets);
@@ -342,7 +342,7 @@ bool FPersonaAssetFamily::IsAssetCompatible(const FAssetData& InAssetData) const
 			FAssetDataTagMapSharedView::FFindTagResult Result = InAssetData.TagsAndValues.FindTag(GET_MEMBER_NAME_CHECKED(UPhysicsAsset, PreviewSkeletalMesh));
 			if (Result.IsSet() && Mesh.IsValid())
 			{
-				return Result.GetValue() == FAssetData(Mesh.Get()).ObjectPath.ToString();
+				return Result.GetValue() == FSoftObjectPath(Mesh.Get()).ToString();
 			}
 		}
 	}

@@ -14,18 +14,21 @@ namespace UnrealBuildTool.Rules
 				{
 					"Core",
 					"CoreUObject",
+					"DesktopPlatform",
 					"DesktopWidgets",
-					"EditorFramework",
-					"EditorStyle",
+					"EditorFramework",	
 					"Engine",
 					"InputCore",
 					"LevelEditor",
+					"LiveLinkEditor", // For SLiveLinkSubjectRepresentationPicker
+					"LiveLinkInterface", // For the ULiveLinkAnimation/TransformRole classes
 					"Projects", // So that we can use the IPluginManager, required for our custom style
 					"SceneOutliner",
 					"Slate",
 					"SlateCore",
 					"UnrealEd",
 					"UnrealUSDWrapper",
+					"USDClasses",
 					"USDSchemas",
 					"USDStage",
 					"USDStageEditorViewModels",

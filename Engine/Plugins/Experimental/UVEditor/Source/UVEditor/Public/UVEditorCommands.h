@@ -18,8 +18,10 @@ public:
 	TSharedPtr<FUICommandInfo> OpenUVEditor;
 	TSharedPtr<FUICommandInfo> ApplyChanges;
 
-	TSharedPtr<FUICommandInfo> BeginSelectTool;
 	TSharedPtr<FUICommandInfo> BeginLayoutTool;
+	TSharedPtr<FUICommandInfo> BeginTransformTool;
+	TSharedPtr<FUICommandInfo> BeginAlignTool;
+	TSharedPtr<FUICommandInfo> BeginDistributeTool;
 	TSharedPtr<FUICommandInfo> BeginParameterizeMeshTool;
 	TSharedPtr<FUICommandInfo> BeginChannelEditTool;
 	TSharedPtr<FUICommandInfo> BeginSeamTool;
@@ -27,7 +29,6 @@ public:
 
 	TSharedPtr<FUICommandInfo> SewAction;
 	TSharedPtr<FUICommandInfo> SplitAction;
-	TSharedPtr<FUICommandInfo> IslandConformalUnwrapAction;
 
 	TSharedPtr<FUICommandInfo> AcceptOrCompleteActiveTool;
 	TSharedPtr<FUICommandInfo> CancelOrCompleteActiveTool;
@@ -37,8 +38,11 @@ public:
 	TSharedPtr<FUICommandInfo> TriangleSelection;
 	TSharedPtr<FUICommandInfo> IslandSelection;
 	TSharedPtr<FUICommandInfo> FullMeshSelection;
+	TSharedPtr<FUICommandInfo> SelectAll;
 
 	TSharedPtr<FUICommandInfo> EnableOrbitCamera;
 	TSharedPtr<FUICommandInfo> EnableFlyCamera;
+	TSharedPtr<FUICommandInfo> SetFocusCamera;
+
 	TSharedPtr<FUICommandInfo> ToggleBackground;
 };

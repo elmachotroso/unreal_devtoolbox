@@ -5,8 +5,8 @@
 #include "CoreMinimal.h"
 #include "Containers/Array.h"
 #include "WorldPartition/WorldPartitionHandle.h"
+#include "WorldPartition/WorldPartitionStreamingGenerationContext.h"
 #include "WorldPartition/DataLayer/DataLayersID.h"
-#include "WorldPartition/WorldPartitionActorCluster.h"
 
 class AActor;
 class UWorldPartition;
@@ -17,7 +17,7 @@ class AWorldPartitionHLOD;
 
 struct ENGINE_API FHLODCreationContext
 {
-	TMap<uint64, FWorldPartitionHandle> HLODActorDescs;
+	TMap<FName, FWorldPartitionHandle> HLODActorDescs;
 	TArray<FWorldPartitionReference> ActorReferences;
 };
 
@@ -25,11 +25,6 @@ struct ENGINE_API FHLODCreationParams
 {
 	UWorldPartition* WorldPartition;
 
-	// Everything needed to build the cell hash
-	int64 GridIndexX;
-	int64 GridIndexY;
-	int64 GridIndexZ;
-	FDataLayersID DataLayersID;
 	FName HLODLayerName;
 
 	FName CellName;
@@ -55,7 +50,7 @@ public:
 	 * @param	InActors			The actors for which we'll build an HLOD representation
 	 * @param	InDataLayers		The data layers to assign to the newly created HLOD actors
 	 */
-	virtual TArray<AWorldPartitionHLOD*> CreateHLODActors(FHLODCreationContext& InCreationContext, const FHLODCreationParams& InCreationParams, const TSet<FActorInstance>& InActors, const TArray<const UDataLayer*>& InDataLayers) = 0;
+	virtual TArray<AWorldPartitionHLOD*> CreateHLODActors(FHLODCreationContext& InCreationContext, const FHLODCreationParams& InCreationParams, const TArray<IStreamingGenerationContext::FActorInstance>& InActors, const TArray<const UDataLayerInstance*>& InDataLayerInstances) = 0;
 
 	/**
 	 * Build HLOD for the specified AWorldPartitionHLOD actor.

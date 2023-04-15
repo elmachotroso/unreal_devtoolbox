@@ -105,7 +105,7 @@ void FNiagaraSystemGpuComputeProxy::RemoveFromRenderThread(FNiagaraGpuComputeDis
 		[=](FRHICommandListImmediate& RHICmdList)
 		{
 			ComputeDispatchInterface->RemoveGpuComputeProxy(this);
-			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager());
+			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max());
 
 			for (FNiagaraComputeExecutionContext* ComputeContext : ComputeContexts)
 			{
@@ -125,6 +125,19 @@ void FNiagaraSystemGpuComputeProxy::RemoveFromRenderThread(FNiagaraGpuComputeDis
 			{
 				delete this;
 			}
+		}
+	);
+}
+
+void FNiagaraSystemGpuComputeProxy::ClearTicksFromRenderThread(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface)
+{
+	check(IsInGameThread());
+	check(DebugOwnerComputeDispatchInterface == ComputeDispatchInterface);
+
+	ENQUEUE_RENDER_COMMAND(ClearTicksFromProxy)(
+		[=](FRHICommandListImmediate& RHICmdList)
+		{
+			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager(), TNumericLimits<int32>::Max());
 		}
 	);
 }
@@ -157,16 +170,18 @@ void FNiagaraSystemGpuComputeProxy::QueueTick(const FNiagaraGPUSystemTick& Tick)
 	}
 }
 
-void FNiagaraSystemGpuComputeProxy::ReleaseTicks(FNiagaraGPUInstanceCountManager& GPUInstanceCountManager)
+void FNiagaraSystemGpuComputeProxy::ReleaseTicks(FNiagaraGPUInstanceCountManager& GPUInstanceCountManager, int32 NumTicksToRelease)
 {
 	check(IsInRenderingThread());
 
 	// Release all the ticks
-	for (auto& Tick : PendingTicks)
+	NumTicksToRelease = FMath::Min(NumTicksToRelease, PendingTicks.Num());
+	for ( int32 iTick=0; iTick < NumTicksToRelease; ++iTick )
 	{
+		FNiagaraGPUSystemTick& Tick = PendingTicks[iTick];
 		Tick.Destroy();
 	}
-	PendingTicks.Empty();
+	PendingTicks.RemoveAt(0, NumTicksToRelease, NumTicksToRelease == PendingTicks.Num());
 
 	for (FNiagaraComputeExecutionContext* ComputeContext : ComputeContexts)
 	{

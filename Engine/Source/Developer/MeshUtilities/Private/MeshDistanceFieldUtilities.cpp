@@ -258,6 +258,8 @@ void FMeshUtilities::GenerateSignedDistanceFieldVolumeData(
 	bool bGenerateAsIfTwoSided,
 	FDistanceFieldVolumeData& OutData)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateSignedDistanceFieldVolumeData);
+
 	if (DistanceFieldResolutionScale > 0)
 	{
 		const double StartTime = FPlatformTime::Seconds();
@@ -272,35 +274,12 @@ void FMeshUtilities::GenerateSignedDistanceFieldVolumeData(
 
 		check(EmbreeScene.bUseEmbree);
 
-		bool bMostlyTwoSided;
-		{
-			uint32 NumTrianglesTotal = 0;
-			uint32 NumTwoSidedTriangles = 0;
-
-			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
-			{
-				const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
-
-				if (MaterialBlendModes.IsValidIndex(Section.MaterialIndex))
-				{
-					NumTrianglesTotal += Section.NumTriangles;
-
-					if (MaterialBlendModes[Section.MaterialIndex].bTwoSided)
-					{
-						NumTwoSidedTriangles += Section.NumTriangles;
-					}
-				}
-			}
-
-			bMostlyTwoSided = NumTwoSidedTriangles * 4 >= NumTrianglesTotal || bGenerateAsIfTwoSided;
-		}
-
 		// Whether to use an Embree Point Query to compute the closest unsigned distance.  Rays will only be traced to determine backfaces visible for sign.
 		const bool bUsePointQuery = true;
 
 		TArray<FVector3f> SampleDirections;
 		{
-			const int32 NumVoxelDistanceSamples = bUsePointQuery ? 120 : 1200;
+			const int32 NumVoxelDistanceSamples = bUsePointQuery ? 49 : 576;
 			FRandomStream RandomStream(0);
 			MeshUtilities::GenerateStratifiedUniformHemisphereSamples(NumVoxelDistanceSamples, RandomStream, SampleDirections);
 			TArray<FVector3f> OtherHemisphereSamples;
@@ -337,7 +316,7 @@ void FMeshUtilities::GenerateSignedDistanceFieldVolumeData(
 		// We sample on voxel corners and use central differencing for gradients, so a box mesh using two-sided materials whose vertices lie on LocalSpaceMeshBounds produces a zero gradient on intersection
 		// Expand the mesh bounds by a fraction of a voxel to allow room for a pullback on the hit location for computing the gradient.
 		// Only expand for two sided meshes as this adds significant Mesh SDF tracing cost
-		if (bMostlyTwoSided)
+		if (EmbreeScene.bMostlyTwoSided)
 		{
 			const FVector DesiredDimensions = FVector(LocalSpaceMeshBounds.GetSize() * FVector(NumVoxelsPerLocalSpaceUnit / (float)DistanceField::UniqueDataBrickSize));
 			const FIntVector Mip0IndirectionDimensions = FIntVector(
@@ -409,7 +388,9 @@ void FMeshUtilities::GenerateSignedDistanceFieldVolumeData(
 			{
 				EParallelForFlags Flags = EParallelForFlags::BackgroundPriority | EParallelForFlags::Unbalanced;
 
-				ParallelForTemplate(AsyncTasks.Num(), [&AsyncTasks](int32 TaskIndex)
+				ParallelForTemplate(
+					TEXT("GenerateSignedDistanceFieldVolumeData.PF"),
+					AsyncTasks.Num(),1, [&AsyncTasks](int32 TaskIndex)
 				{
 					AsyncTasks[TaskIndex].DoWork();
 				}, Flags);
@@ -508,7 +489,7 @@ void FMeshUtilities::GenerateSignedDistanceFieldVolumeData(
 
 		MeshRepresentation::DeleteEmbreeScene(EmbreeScene);
 
-		OutData.bMostlyTwoSided = bMostlyTwoSided;
+		OutData.bMostlyTwoSided = EmbreeScene.bMostlyTwoSided;
 		OutData.LocalSpaceMeshBounds = LocalSpaceMeshBounds;
 
 		OutData.StreamableMips.Lock(LOCK_READ_WRITE);

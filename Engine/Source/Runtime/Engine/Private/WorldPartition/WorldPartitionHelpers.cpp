@@ -2,41 +2,68 @@
 
 #include "WorldPartition/WorldPartitionHelpers.h"
 
-#include "Engine/Engine.h"
-#include "RenderingThread.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionEditorHash.h"
+#include "Algo/AnyOf.h"
+
+#include "Commandlets/Commandlet.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionHelpers, Log, All);
 
-
 #if WITH_EDITOR
 
-void FWorldPartitionHelpers::ForEachIntersectingActorDesc(UWorldPartition* WorldPartition, const FBox& Box, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Predicate)
+bool FWorldPartitionHelpers::IsActorDescClassCompatibleWith(const FWorldPartitionActorDesc* ActorDesc, const UClass* Class)
 {
-	WorldPartition->EditorHash->ForEachIntersectingActor(Box, [&ActorClass, Predicate](const FWorldPartitionActorDesc* ActorDesc)
+	check(Class);
+
+	UClass* ActorNativeClass = ActorDesc->GetActorNativeClass();
+	UClass* ActorBaseClass = ActorNativeClass;
+
+	if (!Class->IsNative())
 	{
-		if (ActorDesc->GetActorClass()->IsChildOf(ActorClass))
+		if (FTopLevelAssetPath ActorBasePath = ActorDesc->GetBaseClass(); !ActorBasePath.IsNull())
 		{
-			Predicate(ActorDesc);
+			ActorBaseClass = LoadClass<AActor>(nullptr, *ActorBasePath.ToString(), nullptr, LOAD_None, nullptr);
+
+			if (!ActorBaseClass)
+			{
+				UE_LOG(LogWorldPartitionHelpers, Warning, TEXT("Failed to find actor base class: %s."), *ActorBasePath.ToString());
+				ActorBaseClass = ActorNativeClass;
+			}
+		}
+	}
+
+	return ActorBaseClass->IsChildOf(Class);
+}
+
+void FWorldPartitionHelpers::ForEachIntersectingActorDesc(UWorldPartition* WorldPartition, const FBox& Box, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func)
+{
+	WorldPartition->EditorHash->ForEachIntersectingActor(Box, [&ActorClass, Func](const FWorldPartitionActorDesc* ActorDesc)
+	{
+		if (IsActorDescClassCompatibleWith(ActorDesc, ActorClass))
+		{
+			Func(ActorDesc);
 		}
 	});
 }
 
-void FWorldPartitionHelpers::ForEachActorDesc(UWorldPartition* WorldPartition, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Predicate)
+void FWorldPartitionHelpers::ForEachActorDesc(UWorldPartition* WorldPartition, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func)
 {
-	for (UActorDescContainer::TConstIterator<> ActorDescIterator(WorldPartition, ActorClass); ActorDescIterator; ++ActorDescIterator)
+	for (FActorDescContainerCollection::TConstIterator<> ActorDescIterator(WorldPartition); ActorDescIterator; ++ActorDescIterator)
 	{
-		if (!Predicate(*ActorDescIterator))
+		if (IsActorDescClassCompatibleWith(*ActorDescIterator, ActorClass))
 		{
-			return;
+			if (!Func(*ActorDescIterator))
+			{
+				return;
+			}
 		}
 	}
 }
 
 namespace WorldPartitionHelpers
 {
-	void LoadReferences(UWorldPartition* WorldPartition, const FGuid& ActorGuid, TMap<FGuid, FWorldPartitionReference>& InOutActorReferences)
+	void LoadReferencesInternal(UWorldPartition* WorldPartition, const FGuid& ActorGuid, TMap<FGuid, FWorldPartitionReference>& InOutActorReferences)
 	{
 		if (InOutActorReferences.Contains(ActorGuid))
 		{
@@ -49,60 +76,119 @@ namespace WorldPartitionHelpers
 
 			for (FGuid ReferenceGuid : ActorDesc->GetReferences())
 			{
-				LoadReferences(WorldPartition, ReferenceGuid, InOutActorReferences);
+				LoadReferencesInternal(WorldPartition, ReferenceGuid, InOutActorReferences);
 			}
 
 			InOutActorReferences[ActorGuid] = FWorldPartitionReference(WorldPartition, ActorGuid);
 		}
 	}
 
-	bool ForEachActorWithLoadingBody(const FGuid& ActorGuid, UWorldPartition* WorldPartition, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Predicate, bool bGCPerActor, TMap<FGuid, FWorldPartitionReference>& ActorReferences)
+	void LoadReferences(UWorldPartition* WorldPartition, const FGuid& ActorGuid, TMap<FGuid, FWorldPartitionReference>& InOutActorReferences)
 	{
-		WorldPartitionHelpers::LoadReferences(WorldPartition, ActorGuid, ActorReferences);
+		FWorldPartitionLoadingContext::FDeferred LoadingContext;
+		LoadReferencesInternal(WorldPartition, ActorGuid, InOutActorReferences);
+	}
+}
 
-		FWorldPartitionReference ActorReference(WorldPartition, ActorGuid);
-		if (!Predicate(ActorReference.Get()))
+FWorldPartitionHelpers::FForEachActorWithLoadingParams::FForEachActorWithLoadingParams()
+	: bGCPerActor(false)
+	, bKeepReferences(false)
+	, ActorClasses({ AActor::StaticClass() })
+{}
+
+void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func, TFunctionRef<void()> OnReleasingActorReferences, bool bGCPerActor)
+{
+	FForEachActorWithLoadingParams Params;
+	Params.ActorClasses = { ActorClass };
+	Params.OnPreGarbageCollect = [&OnReleasingActorReferences]() { OnReleasingActorReferences(); };
+	ForEachActorWithLoading(WorldPartition, Func, Params);
+}
+
+void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, const TArray<FGuid>& ActorGuids, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func, TFunctionRef<void()> OnReleasingActorReferences, bool bGCPerActor)
+{
+	TSet<FGuid> ActorGuidsSet(ActorGuids);
+	FForEachActorWithLoadingParams Params;
+	Params.FilterActorDesc = [&ActorGuidsSet](const FWorldPartitionActorDesc* ActorDesc) -> bool { return ActorGuidsSet.Contains(ActorDesc->GetGuid());	};
+	Params.OnPreGarbageCollect = [&OnReleasingActorReferences]() { OnReleasingActorReferences(); };	
+	ForEachActorWithLoading(WorldPartition, Func, Params);
+}
+
+void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func, const FForEachActorWithLoadingParams& Params)
+{
+	FForEachActorWithLoadingResult Result;
+	ForEachActorWithLoading(WorldPartition, Func, Params, Result);
+}
+
+void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Func, const FForEachActorWithLoadingParams& Params, FForEachActorWithLoadingResult& Result)
+{
+	check(Result.ActorReferences.IsEmpty());
+	auto CallGarbageCollect = [&Params, &Result]()
+	{
+		check(!Params.bKeepReferences);
+		if (Params.OnPreGarbageCollect)
 		{
-			return false;
+			Params.OnPreGarbageCollect();
 		}
+		Result.ActorReferences.Empty();
+		DoCollectGarbage();
+	};
 
-		if (bGCPerActor || FWorldPartitionHelpers::HasExceededMaxMemory())
+	auto ForEachActorWithLoadingImpl = [&](const FWorldPartitionActorDesc* ActorDesc)
+	{
+		if (Algo::AnyOf(Params.ActorClasses, [ActorDesc](UClass* ActorClass) { return IsActorDescClassCompatibleWith(ActorDesc, ActorClass); }))
 		{
-			ActorReferences.Empty();
-			FWorldPartitionHelpers::DoCollectGarbage();
+			if (!Params.FilterActorDesc || Params.FilterActorDesc(ActorDesc))
+			{
+				WorldPartitionHelpers::LoadReferences(WorldPartition, ActorDesc->GetGuid(), Result.ActorReferences);
+
+				FWorldPartitionReference ActorReference(WorldPartition, ActorDesc->GetGuid());
+				if (!Func(ActorReference.Get()))
+				{
+					return false;
+				}
+
+				if (!Params.bKeepReferences && (Params.bGCPerActor || FWorldPartitionHelpers::HasExceededMaxMemory()))
+				{
+					CallGarbageCollect();
+				}
+			}
 		}
 
 		return true;
-	}
-}
+	};
 
-void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Predicate, bool bGCPerActor)
-{
-	TMap<FGuid, FWorldPartitionReference> ActorReferences;
-		
-	ForEachActorDesc(WorldPartition, ActorClass, [&](const FWorldPartitionActorDesc* ActorDesc)
+	if (Params.ActorGuids.IsEmpty())
 	{
-		return WorldPartitionHelpers::ForEachActorWithLoadingBody(ActorDesc->GetGuid(), WorldPartition, Predicate, bGCPerActor, ActorReferences);
-	});
-
-	ActorReferences.Empty();
-	DoCollectGarbage();
-}
-
-void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldPartition, const TArray<FGuid>& ActorGuids, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Predicate, bool bGCPerActor)
-{
-	TMap<FGuid, FWorldPartitionReference> ActorReferences;
-
-	for(const FGuid& ActorGuid : ActorGuids)
-	{
-		if (!WorldPartitionHelpers::ForEachActorWithLoadingBody(ActorGuid, WorldPartition, Predicate, bGCPerActor, ActorReferences))
+		for (FActorDescContainerCollection::TConstIterator<> ActorDescIterator(WorldPartition); ActorDescIterator; ++ActorDescIterator)
 		{
-			break;
+			if (const FWorldPartitionActorDesc* ActorDesc = *ActorDescIterator)
+			{
+				if (!ForEachActorWithLoadingImpl(ActorDesc))
+				{
+					break;
+				}
+			}
+			
+		}
+	}
+	else
+	{
+		for (const FGuid& ActorGuid : Params.ActorGuids)
+		{
+			if (const FWorldPartitionActorDesc* ActorDesc = WorldPartition->GetActorDesc(ActorGuid))
+			{
+				if (!ForEachActorWithLoadingImpl(ActorDesc))
+				{
+					break;
+				}
+			}
 		}
 	}
 
-	ActorReferences.Empty();
-	DoCollectGarbage();
+	if (!Params.bKeepReferences)
+	{
+		CallGarbageCollect();
+	}
 }
 
 bool FWorldPartitionHelpers::HasExceededMaxMemory()
@@ -123,7 +209,7 @@ bool FWorldPartitionHelpers::HasExceededMaxMemory()
 void FWorldPartitionHelpers::DoCollectGarbage()
 {
 	const FPlatformMemoryStats MemStatsBefore = FPlatformMemory::GetStats();
-	CollectGarbage(RF_NoFlags, true);
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
 	const FPlatformMemoryStats MemStatsAfter = FPlatformMemory::GetStats();
 
 	UE_LOG(LogWorldPartition, Log, TEXT("GC Performed - Available Physical: %.2fGB, Available Virtual: %.2fGB"),
@@ -136,29 +222,7 @@ void FWorldPartitionHelpers::FakeEngineTick(UWorld* InWorld)
 {
 	check(InWorld);
 
-	// Simulate an engine frame tick
-	// Will make sure systems can perform their internal bookkeeping properly. For example, the VT system needs to 
-	// process deleted VTs.
-
-	if (FSceneInterface* Scene = InWorld->Scene)
-	{
-		// BeingFrame/EndFrame (taken from FEngineLoop)
-
-		ENQUEUE_RENDER_COMMAND(BeginFrame)([](FRHICommandListImmediate& RHICmdList)
-			{
-				GFrameNumberRenderThread++;
-				RHICmdList.BeginFrame();
-				FCoreDelegates::OnBeginFrameRT.Broadcast();
-			});
-
-		ENQUEUE_RENDER_COMMAND(EndFrame)([](FRHICommandListImmediate& RHICmdList)
-			{
-				FCoreDelegates::OnEndFrameRT.Broadcast();
-				RHICmdList.EndFrame();
-			});
-
-		FlushRenderingCommands();
-	}
+	CommandletHelpers::TickEngine(InWorld);
 }
 
 #endif // #if WITH_EDITOR

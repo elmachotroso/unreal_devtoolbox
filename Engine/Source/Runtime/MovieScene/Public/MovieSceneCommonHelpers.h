@@ -14,6 +14,7 @@ class AActor;
 class UCameraComponent;
 class UMovieScene;
 class UMovieSceneSection;
+class UMovieSceneSubSection;
 class UMovieSceneSequence;
 class USceneComponent;
 class USoundBase;
@@ -23,6 +24,28 @@ enum class EMovieSceneKeyInterpolation : uint8;
 class MOVIESCENE_API MovieSceneHelpers
 {
 public:
+
+	/*
+	* Helper struct to cache the package dirty state and then to restore it
+	* after this leaves scope. This is for a few minor areas where calling
+	* functions on actors dirties them, but Sequencer doesn't actually want
+	* the package to be dirty as it causes Sequencer to unnecessairly dirty
+	* actors.
+	*/
+	struct MOVIESCENE_API FMovieSceneScopedPackageDirtyGuard
+	{
+		FMovieSceneScopedPackageDirtyGuard(class USceneComponent* InComponent);
+		virtual ~FMovieSceneScopedPackageDirtyGuard();
+
+	private:
+		class USceneComponent* Component;
+		bool bPackageWasDirty;
+	};
+
+	/** 
+	 * @return Whether the section is keyable (active, on a track that is not muted, etc 
+	 */
+	static bool IsSectionKeyable(const UMovieSceneSection*);
 
 	/**
 	 * Finds a section that exists at a given time
@@ -73,6 +96,11 @@ public:
 	 */
 	static void GetDescendantMovieScenes(UMovieSceneSequence* InSequence, TArray<UMovieScene*> & InMovieScenes);
 
+	/*
+	 * Gather up descendant movie scene sub-sections from the incoming movie scene
+	 */
+	static void GetDescendantSubSections(const UMovieScene* InMovieScene, TArray<UMovieSceneSubSection*>& InSubSections);
+	
 	/**
 	 * Get the scene component from the runtime object
 	 *
@@ -179,7 +207,13 @@ public:
 	void CallFunction( UObject& InRuntimeObject, typename TCallTraits<ValueType>::ParamType PropertyValue )
 	{
 		FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-		if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
+
+		FProperty* Property = GetProperty(InRuntimeObject);
+		if (Property && Property->HasSetter())
+		{
+			Property->CallSetter(&InRuntimeObject, &PropertyValue);
+		}
+		else if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 		{
 			InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 		}

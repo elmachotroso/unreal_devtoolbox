@@ -123,7 +123,7 @@ public:
 	virtual void DeleteKey(FKeyHandle KeyHandle) final override;
 
 	/** Finds the key at InTime, and updates its value. If it can't find the key within the KeyTimeTolerance, it adds one at that time */
-	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = KINDA_SMALL_NUMBER) final override;
+	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = UE_KINDA_SMALL_NUMBER) final override;
 
 	/** Move a key to a new time. */
 	virtual void SetKeyTime(FKeyHandle KeyHandle, float NewTime) final override;
@@ -183,8 +183,8 @@ public:
 	virtual void BakeCurve(float SampleRate, float FirstKeyTime, float LastKeyTime) final override;
 
 	/** Remove redundant keys, comparing against Tolerance */
-	virtual void RemoveRedundantKeys(float Tolerance) final override;
-	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime) final override;
+	virtual void RemoveRedundantKeys(float Tolerance, FFrameRate SampleRate = FFrameRate(0,0)) final override;
+	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime, FFrameRate SampleRate = FFrameRate(0,0)) final override;
 
 	/** Allocates a duplicate of the curve */
 	virtual FIndexedCurve* Duplicate() const final { return new FSimpleCurve(*this); }

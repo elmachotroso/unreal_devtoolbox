@@ -9,7 +9,7 @@
 
 #include "ClearQuad.h"
 #include "SceneRendering.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RHIResources.h"
 #include "PostProcess/PostProcessing.h"
 #include "RayTracing/RaytracingOptions.h"
@@ -44,11 +44,9 @@ class FRayTracingPrimaryRaysRGS : public FGlobalShader
 		SHADER_PARAMETER(float, MaxNormalBias)
 
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
-		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
-		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRaytracingLightDataPacked, LightDataPacked)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformParameters)
 
@@ -99,7 +97,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 	float ResolutionFraction,
 	ERayTracingPrimaryRaysFlag Flags)
 {
-	const FSceneTextures& SceneTextures = FSceneTextures::Get(GraphBuilder);
+	const FSceneTextures& SceneTextures = GetActiveSceneTextures();
 	const FSceneTextureParameters SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
 	int32 UpscaleFactor = int32(1.0f / ResolutionFraction);
@@ -144,10 +142,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 	PassParameters->MaxNormalBias = GetRaytracingMaxNormalBias();
 	PassParameters->ShouldUsePreExposure = View.Family->EngineShowFlags.Tonemapper;
 	PassParameters->PrimaryRayFlags = (uint32)Flags;
-	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-	PassParameters->LightDataPacked = View.RayTracingLightData.UniformBuffer;
-	PassParameters->LightDataBuffer = View.RayTracingLightData.LightBufferSRV;
+	PassParameters->LightDataPacked = View.RayTracingLightDataUniformBuffer;
 
 	PassParameters->SceneTextures = SceneTextureParameters;
 
@@ -158,7 +155,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 
 	PassParameters->ColorOutput = GraphBuilder.CreateUAV(*InOutColorTexture);
 	PassParameters->RayHitDistanceOutput = GraphBuilder.CreateUAV(*InOutRayHitDistanceTexture);
-	PassParameters->SSProfilesTexture = View.RayTracingSubSurfaceProfileTexture;
 
 	FRayTracingPrimaryRaysRGS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FRayTracingPrimaryRaysRGS::FEnableTwoSidedGeometryForShadowDim>(EnableRayTracingShadowTwoSidedGeometry());

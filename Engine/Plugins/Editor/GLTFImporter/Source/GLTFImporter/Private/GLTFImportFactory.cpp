@@ -12,9 +12,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetImportTask.h"
-#include "Editor/UnrealEd/Public/Editor.h"
+#include "Editor.h"
 #include "Engine/StaticMesh.h"
 #include "IMessageLogListing.h"
 #include "Interfaces/IMainFrameModule.h"
@@ -24,6 +24,8 @@
 #include "MessageLogModule.h"
 #include "PackageTools.h"
 #include "UObject/StrongObjectPtr.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GLTFImportFactory)
 
 DEFINE_LOG_CATEGORY(LogGLTF);
 
@@ -177,6 +179,18 @@ bool UGLTFImportFactory::FactoryCanImport(const FString& Filename)
 	return false;
 }
 
+TArray<FString> UGLTFImportFactory::GetFormats() const
+{
+	static TArray<FString> EmptyArray;
+	static const auto CVarGltf = IConsoleManager::Get().FindConsoleVariable(TEXT("Interchange.FeatureFlags.Import.GLTF"));
+	const bool bUseLegacyGltf = (!CVarGltf || !CVarGltf->GetBool());
+	if (bUseLegacyGltf)
+	{
+		return Formats;
+	}
+	return EmptyArray;
+}
+
 void UGLTFImportFactory::CleanUp()
 {
 	// cleanup any resources/buffers
@@ -221,3 +235,4 @@ void UGLTFImportFactory::UpdateMeshes() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

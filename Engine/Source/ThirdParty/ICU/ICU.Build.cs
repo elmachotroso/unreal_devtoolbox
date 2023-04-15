@@ -21,6 +21,7 @@ public class ICU : ModuleRules
 		get
 		{
 			if (Target.Platform == UnrealTargetPlatform.IOS ||
+				Target.Platform == UnrealTargetPlatform.TVOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Android) ||
@@ -102,57 +103,13 @@ public class ICU : ModuleRules
 			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, VSVersionFolderName, UseDebugLibs ? "Debug" : "Release", "icu.lib"));
 		}
-		else if (Target.Platform == UnrealTargetPlatform.HoloLens)
-		{
-			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
-			string PlatformICULibPath = Path.Combine(ICULibPath, VSVersionFolderName, Target.WindowsPlatform.GetArchitectureSubpath(), "lib");
-
-			string[] LibraryNameStems =
-			{
-				"dt",   // Data
-				"uc",   // Unicode Common
-				"in",   // Internationalization
-				"le",   // Layout Engine
-				"lx",   // Layout Extensions
-				"io"	// Input/Output
-			};
-			string LibraryNamePostfix = UseDebugLibs ? "d" : string.Empty;
-
-			// Library Paths
-			foreach (string Stem in LibraryNameStems)
-			{
-				string LibraryName = "sicu" + Stem + LibraryNamePostfix + "." + "lib";
-				PublicAdditionalLibraries.Add(Path.Combine(PlatformICULibPath, LibraryName));
-			}
-		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, UseDebugLibs ? "libicud.a" : "libicu.a"));
 		}
-		else if (Target.Platform == UnrealTargetPlatform.IOS)
+		else if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 		{
 			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, UseDebugLibs ? "Debug" : "Release", "libicu.a"));
-		}
-		else if (Target.Platform == UnrealTargetPlatform.TVOS)
-		{
-			string PlatformICULibPath = Path.Combine(ICULibPath, "lib");
-
-			string[] LibraryNameStems =
-			{
-				"data", // Data
-				"uc",   // Unicode Common
-				"i18n", // Internationalization
-				"le",   // Layout Engine
-				"lx",   // Layout Extensions
-				"io"	// Input/Output
-			};
-			string LibraryNamePostfix = (UseDebugLibs) ? "d" : string.Empty;
-
-			foreach (string Stem in LibraryNameStems)
-			{
-				string LibraryName = "libicu" + Stem + LibraryNamePostfix + ".a";
-				PublicAdditionalLibraries.Add(Path.Combine(PlatformICULibPath, LibraryName));
-			}
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{

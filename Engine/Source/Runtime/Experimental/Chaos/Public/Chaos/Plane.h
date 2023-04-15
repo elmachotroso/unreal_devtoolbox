@@ -56,7 +56,7 @@ public:
 
 		// Even after all the above, we may still get a zero normal (e.g., we scale N=(1,0,0) by S=(0,1,0))
 		const T ScaleN2 = ScaledN.SizeSquared();
-		if (ScaleN2 > SMALL_NUMBER)
+		if (ScaleN2 > UE_SMALL_NUMBER)
 		{
 			ScaledN = ScaledN * FMath::InvSqrt(ScaleN2);
 		}
@@ -77,7 +77,7 @@ public:
 
 		// We don't handle zero scales, but we could still end up with a small normal
 		const T ScaleN2 = ScaledN.SizeSquared();
-		if (ScaleN2 > SMALL_NUMBER)
+		if (ScaleN2 > UE_SMALL_NUMBER)
 		{
 			ScaledN =  ScaledN * FMath::InvSqrt(ScaleN2);
 		}
@@ -97,7 +97,7 @@ public:
 
 		// We don't handle zero scales, but we could still end up with a small normal
 		const T ScaleN2 = ScaledN.SizeSquared();
-		if (ScaleN2 > SMALL_NUMBER)
+		if (ScaleN2 > UE_SMALL_NUMBER)
 		{
 			ScaledN = ScaledN * FMath::InvSqrt(ScaleN2);
 		}
@@ -152,9 +152,14 @@ public:
 
 	bool Raycast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const FReal Thickness, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex) const
 	{
-		ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
+		ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)UE_KINDA_SMALL_NUMBER));
 		CHAOS_ENSURE(Length > 0);
 		OutFaceIndex = INDEX_NONE;
+		OutTime = 0;
+
+		// This is mainly to fix static analysis warnings
+		OutPosition = FVec3(0);
+		OutNormal = FVec3(0);
 
 		const FReal SignedDist = FVec3::DotProduct(StartPoint - (FVec3)MX, (FVec3)MNormal);
 		if (FMath::Abs(SignedDist) < Thickness)
@@ -163,7 +168,7 @@ public:
 			//const FReal DirDotNormal = FVec3::DotProduct(Dir, (FVec3)MNormal);
 			//OutPosition = StartPoint;
 			//OutNormal = DirDotNormal < 0 ? MNormal : -MNormal;
-			OutTime = 0;
+			//OutTime = 0;
 			return true;
 		}
 
@@ -488,9 +493,9 @@ TVector<T, d> FindClosestPointAndBaryOnTriangle(const TVector<T, d>& P0, const T
 
 
 	// Degenerate triangles
-	if (Size10 < (T)DOUBLE_SMALL_NUMBER)
+	if (Size10 < (T)UE_DOUBLE_SMALL_NUMBER)
 	{
-		if (Size20 < (T)DOUBLE_SMALL_NUMBER)
+		if (Size20 < (T)UE_DOUBLE_SMALL_NUMBER)
 		{
 			// Triangle is (nearly) a single point.
 			Bary.X = (T)1.;
@@ -501,7 +506,7 @@ TVector<T, d> FindClosestPointAndBaryOnTriangle(const TVector<T, d>& P0, const T
 		// Triangle is a line segment from P0(=P1) to P2. Project to that line segment.
 		return ProjectToP02();
 	}
-	if (Size20 < (T)DOUBLE_SMALL_NUMBER)
+	if (Size20 < (T)UE_DOUBLE_SMALL_NUMBER)
 	{
 		// Triangle is a line segment from P0(=P2) to P1. Project to that line segment.
 		return ProjectToP01();
@@ -511,7 +516,7 @@ TVector<T, d> FindClosestPointAndBaryOnTriangle(const TVector<T, d>& P0, const T
 	const T ProjSides = P10.Dot(P20);
 	const T Denom = Size10 * Size20 - ProjSides * ProjSides;
 
-	if (Denom < (T)DOUBLE_SMALL_NUMBER)
+	if (Denom < (T)UE_DOUBLE_SMALL_NUMBER)
 	{
 		// Triangle is a line segment from P0 to P1(=P2), or otherwise the 3 points are (nearly) colinear. Project to the longest edge.
 		if (Size21 > Size20)

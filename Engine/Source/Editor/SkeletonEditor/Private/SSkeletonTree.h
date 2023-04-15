@@ -12,7 +12,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "EditableSkeleton.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "ISkeletonTree.h"
 #include "Widgets/Views/STableViewBase.h"
@@ -168,10 +168,16 @@ private:
 	TSharedPtr< SWidget > CreateContextMenu();
 
 	/** Called to display the add new menu */
-	TSharedRef< SWidget > CreateNewMenu();
+	TSharedRef< SWidget > CreateNewMenuWidget();
+
+	/** Called to create the add new menu */
+	void RegisterNewMenu();
 
 	/** Called to display the filter menu */
-	TSharedRef< SWidget > CreateFilterMenu();
+	TSharedRef< SWidget > CreateFilterMenuWidget();
+
+	/** Called to create the filter menu */
+	void RegisterFilterMenu();
 
 	/** Function to copy selected bone name to the clipboard */
 	void OnCopyBoneNames();
@@ -210,7 +216,7 @@ private:
 	void OnPromoteSocket();
 
 	/** Create sub menu to allow users to pick a target bone for the new space switching bone(s) */
-	void FillVirtualBoneSubmenu(FMenuBuilder& MenuBuilder, TArray<TSharedPtr<class ISkeletonTreeItem>> SourceBones);
+	void FillVirtualBoneSubmenu(FMenuBuilder& MenuBuilder);
 
 	/** Handler for user picking a target bone */
 	void OnVirtualTargetBonePicked(FName TargetBoneName, TArray<TSharedPtr<class ISkeletonTreeItem>> SourceBones);
@@ -262,6 +268,12 @@ private:
 
 	/**  Handler for when we change the "Show Retargeting Options" check box */
 	void OnChangeShowingAdvancedOptions();
+
+	/** Handler for "Show Debug Visualization Options" check box IsChecked functionality */
+	bool IsShowingDebugVisualizationOptions() const;
+
+	/**  Handler for when we change the "Show Debug Visualization Options" check box */
+	void OnChangeShowingDebugVisualizationOptions();
 
 	/** This replicates the socket filter to the previewcomponent so that the viewport can use the same settings */
 	void SetPreviewComponentSocketFilter() const;
@@ -326,8 +338,11 @@ private:
 	/** Removes the active Blend Profile */
 	void OnDeleteCurrentBlendProfile();
 
-	/** Generate Blend Profile Menu */
-	void GetBlendProfileMenu(FMenuBuilder& MenuBuilder);
+	/** Register Blend Profile Menu */
+	void RegisterBlendProfileMenu();
+
+	/** Create Blend Profile Menu */
+	static void CreateBlendProfileMenu(UToolMenu* InMenu);
 
 	TSharedRef<SWidget> GetBlendProfileColumnMenuContent();
 
@@ -414,6 +429,9 @@ private:
 
 	/** Whether to allow operations that modify the mesh */
 	bool bAllowSkeletonOperations;
+
+	/** Whether to show the filter option to allow filtering of debug draw elements in the viewport. */
+	bool bShowDebugVisualizationOptions;
 
 	/** Extenders for menus */
 	TSharedPtr<FExtender> Extenders;

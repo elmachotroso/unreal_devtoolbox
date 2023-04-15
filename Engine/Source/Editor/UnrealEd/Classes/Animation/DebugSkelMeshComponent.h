@@ -130,7 +130,7 @@ public:
 
 	FDebugSkelMeshDynamicData* DynamicData;
 
-	uint32 GetAllocatedSize() const
+	SIZE_T GetAllocatedSize() const
 	{
 		return FSkeletalMeshSceneProxy::GetAllocatedSize();
 	}
@@ -145,22 +145,33 @@ private:
 	bool bSelectable;
 };
 
+/** Generic modes used to render debug skeletons depending on editor-specific context */
+UENUM()
+enum class ESkeletonDrawMode : uint8
+{
+	/** Bones are visible and selectable */
+	Default,
+
+	/** Bones are completely hidden */
+	Hidden,
+
+	/** Bones are visible but non-selectable */
+	GreyedOut
+};
+
 UCLASS(transient)
 class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 {
 	GENERATED_UCLASS_BODY()
-
-	/** If true, render a wireframe skeleton of the mesh animated with the raw (uncompressed) animation data. */
-	UPROPERTY()
-	uint32 bRenderRawSkeleton:1;
-
-	/** Holds onto the bone color that will be used to render the bones of its skeletal mesh */
-	//var Color		BoneColor;
 	
+	/** Global drawing mode for this skeleton. Depends on context of specific editor using the component. */
+	UPROPERTY()
+	ESkeletonDrawMode SkeletonDrawMode = ESkeletonDrawMode::Default;
+
 	/** If true then the skeletal mesh associated with the component is drawn. */
 	UPROPERTY()
 	uint32 bDrawMesh:1;
-
+	
 	/** If true then the bone names associated with the skeletal mesh are displayed */
 	UPROPERTY()
 	uint32 bShowBoneNames:1;
@@ -407,6 +418,9 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	 */
 	bool CheckIfBoundsAreCorrrect();
 
+	/** Get the in-game bounds of the skeleton mesh */
+	FBoxSphereBounds CalcGameBounds(const FTransform& LocalToWorld) const;
+
 	/** 
 	 * Update components position based on animation root motion
 	 */
@@ -435,7 +449,7 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	/** Whether the supplied root motion mode can be used for the current asset */
 	bool CanUseProcessRootMotionMode(EProcessRootMotionMode Mode) const;
 
-	/** Whether the current asset is using root motion */
+	/** Whether the current asset or animation blueprint is using root motion */
 	bool DoesCurrentAssetHaveRootMotion() const;
 
 	/** Whether the current LOD of the debug mesh is being synced with the attached (preview) mesh instance. */
@@ -583,9 +597,9 @@ public:
 	 */
 	virtual const FReferenceSkeleton& GetReferenceSkeleton() const
 	{
-		if (SkeletalMesh)
+		if (GetSkeletalMeshAsset())
 		{
-			return SkeletalMesh->GetRefSkeleton();
+			return GetSkeletalMeshAsset()->GetRefSkeleton();
 		}
 
 		static FReferenceSkeleton EmptySkeleton;

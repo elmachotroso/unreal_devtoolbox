@@ -25,6 +25,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LatticeDeformerTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "ULatticeDeformerTool"
@@ -173,6 +175,9 @@ void ULatticeDeformerTool::Setup()
 	FMeshDescriptionToDynamicMesh Converter;
 	Converter.Convert(UE::ToolTarget::GetMeshDescription(Target), *OriginalMesh);
 
+	// Note: Mesh will be implicitly transformed to world space by transforming the lattice; we account for whether that would invert the mesh here
+	MeshTransforms::ReverseOrientationIfNeeded(*OriginalMesh, (Cast<IPrimitiveComponentBackedTarget>(Target)->GetWorldTransform()));
+
 	Settings = NewObject<ULatticeDeformerToolProperties>(this, TEXT("Lattice Deformer Tool Settings"));
 	Settings->Initialize(this);
 	Settings->RestoreProperties(this);
@@ -241,6 +246,20 @@ void ULatticeDeformerTool::Setup()
 
 	ControlPointsMechanic->SetCoordinateSystem(Settings->GizmoCoordinateSystem);
 	ControlPointsMechanic->UpdateSetPivotMode(Settings->bSetPivotMode);
+
+
+	ControlPointsMechanic->ShouldHideGizmo = ULatticeControlPointsMechanic::FShouldHideGizmo::CreateLambda([this]()->bool
+	{
+		for (int32 VID : ControlPointsMechanic->GetSelectedPointIDs())
+		{
+			if (!ConstrainedLatticePoints.Contains(VID))
+			{
+				return false;	// found a selected point that is not constrained
+			}
+		}
+		return true;
+	});
+
 
 	StartPreview();
 }
@@ -358,7 +377,7 @@ void ULatticeDeformerTool::OnShutdown(EToolShutdownType ShutdownType)
 			// The lattice and its output mesh are in world space, so get them in local space.
 			// TODO: Would it make more sense to do all the lattice computation in local space?
 			FTransform3d LocalToWorld(TargetComponent->GetWorldTransform());
-			MeshTransforms::ApplyTransformInverse(*DynamicMeshResult, LocalToWorld);
+			MeshTransforms::ApplyTransformInverse(*DynamicMeshResult, LocalToWorld, true);
 
 			UE::ToolTarget::CommitMeshDescriptionUpdateViaDynamicMesh(Target, *DynamicMeshResult, true);
 
@@ -535,3 +554,4 @@ FString FLatticeDeformerToolConstrainedPointsChange::ToString() const
 
 
 #undef LOCTEXT_NAMESPACE
+

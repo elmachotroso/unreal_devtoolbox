@@ -12,6 +12,7 @@
 #include "OpenColorIOColorSpace.h"
 #include "Async/ParallelFor.h"
 #include "MovieSceneSequenceID.h"
+#include "MovieRenderDebugWidget.h"
 #include "MovieRenderPipelineDataTypes.generated.h"
 
 class UMovieSceneCinematicShotSection;
@@ -95,14 +96,16 @@ struct FMoviePipelinePassIdentifier
 	FMoviePipelinePassIdentifier()
 	{}
 
-	FMoviePipelinePassIdentifier(const FString& InPassName)
+	// Name defaults to "camera" for backwards compatiblity with non-multicam metadata
+	FMoviePipelinePassIdentifier(const FString& InPassName, const FString& InCameraName = TEXT("camera"))
 		: Name(InPassName)
+		, CameraName(InCameraName)
 	{
 	}
 
 	bool operator == (const FMoviePipelinePassIdentifier& InRHS) const
 	{
-		return Name == InRHS.Name;
+		return Name == InRHS.Name && CameraName == InRHS.CameraName;
 	}
 
 	bool operator != (const FMoviePipelinePassIdentifier& InRHS) const
@@ -112,12 +115,18 @@ struct FMoviePipelinePassIdentifier
 
 	friend uint32 GetTypeHash(FMoviePipelinePassIdentifier OutputState)
 	{
-		return GetTypeHash(OutputState.Name);
+		return HashCombine(GetTypeHash(OutputState.Name), GetTypeHash(OutputState.CameraName));
 	}
 
 public:
+	// The name of the pass such as "FinalImage" or "ObjectId", etc.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movie Pipeline")
 	FString Name;
+
+	// The name of the camera that this pass is for. Stored here so we can differentiate between 
+	// multiple cameras within a single pass.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movie Pipeline")
+	FString CameraName;
 };
 
 namespace MoviePipeline
@@ -147,6 +156,11 @@ namespace MoviePipeline
 
 		/** Previous frame camera view rotation **/
 		FRotator PrevViewRotation;
+
+		TArray<FVector> CurrSidecarViewLocations;
+		TArray<FRotator> CurrSidecarViewRotations;
+		TArray<FVector> PrevSidecarViewLocations;
+		TArray<FRotator> PrevSidecarViewRotations;
 	};
 
 	/**
@@ -469,6 +483,7 @@ public:
 		, State(EMovieRenderShotState::Uninitialized)
 		, bHasEvaluatedMotionBlurFrame(false)
 		, NumEngineWarmUpFramesRemaining(0)
+		, VersionNumber(0)
 	{
 	}
 
@@ -532,6 +547,9 @@ public:
 
 	/** How many engine warm up frames are left to process for this shot. May be zero. */
 	int32 NumEngineWarmUpFramesRemaining;
+
+	/** What version number should this shot use when resolving format arguments. */
+	int32 VersionNumber;
 };
 
 /**
@@ -633,6 +651,9 @@ public:
 	/** The name of the currently active camera being rendered. May be empty. */
 	FString CameraName;
 
+	/** Name used by the {camera_name} format tag. May be empty */
+	FString CameraNameOverride;
+
 	/** THe name of the currently active shot. May be empty if there is no shot track. */
 	FString ShotName;
 
@@ -705,6 +726,7 @@ public:
 	
 	FTimecode CurrentShotSourceTimeCode;
 
+	int32 CameraIndex;
 
 
 	bool operator == (const FMoviePipelineFrameOutputState& InRHS) const
@@ -755,7 +777,7 @@ struct FMoviePipelineFormatArgs
 
 	/** Which job is this for? Some settings are specific to the level sequence being rendered. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
-	class UMoviePipelineExecutorJob* InJob;
+	TObjectPtr<class UMoviePipelineExecutorJob> InJob;
 };
 
 USTRUCT(BlueprintType)
@@ -773,6 +795,7 @@ struct FMoviePipelineFilenameResolveParams
 		, InitializationTime(0)
 		, InitializationVersion(0)
 		, Job(nullptr)
+		, CameraIndex(-1)
 		, ShotOverride(nullptr)
 		, AdditionalFrameNumberOffset(0)
 	{
@@ -810,6 +833,10 @@ struct FMoviePipelineFilenameResolveParams
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
 	bool bForceRelativeFrameNumbers;
 
+	/** Optional. If specified this is the filename that will be used instead of automatically building it from the Job's Output Setting. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
+	FString FileNameOverride;
+
 	/** 
 	* A map between "{format}" tokens and their values. These are applied after the auto-generated ones from the system,
 	* which allows the caller to override things like {.ext} depending or {render_pass} which have dummy names by default.
@@ -831,11 +858,14 @@ struct FMoviePipelineFilenameResolveParams
 
 	/** Required. This is the job all of the settings should be pulled from.*/
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
-	UMoviePipelineExecutorJob* Job;
+	TObjectPtr<UMoviePipelineExecutorJob> Job;
+
+	/** If this shot has multiple cameras in the sidecar array, which camera is this for? -1 will return the InnerName/Main camera for the shot. */
+	int32 CameraIndex;
 
 	/** Optional. If specified, settings will be pulled from this shot (if overriden by the shot). If null, always use the master configuration in the job. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
-	UMoviePipelineExecutorShot* ShotOverride;
+	TObjectPtr<UMoviePipelineExecutorShot> ShotOverride;
 
 	/** Additional offset added onto the offset provided by the Output Settings in the Job. Required for some internal things (FCPXML). */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
@@ -864,10 +894,20 @@ public:
 	ESceneCaptureSource SceneCaptureSource;
 
 	/** How many tiles on X and Y are there total. */
+	FIntPoint OriginalTileCounts;
+
+	/** How many tiles on X and Y are there total. */
 	FIntPoint TileCounts;
 
 	/** Of the TileCount, which X/Y Tile is this sample for. */
 	FIntPoint TileIndexes;
+
+	/** SpatialJitter offset X. */
+	float SpatialShiftX;
+
+	/** SpatialJitter offset Y. */
+	float SpatialShiftY;
+
 
 	/** Get a 0-(TileCount-1) version of TileIndex. */
 	FORCEINLINE int32 GetTileIndex() const
@@ -882,6 +922,9 @@ public:
 
 	/** How big is the back buffer for this sample? This is the final target size divided by the number of tiles with padding added. */
 	FIntPoint BackbufferSize;
+
+	/** Full Output image resolution for this shot. */
+	FIntPoint EffectiveOutputResolution;
 
 	/** How big is an individual tile for this sample? This is the final target size divided by the number of tiles (without padding added) */
 	FIntPoint TileSize;
@@ -971,6 +1014,14 @@ namespace MoviePipeline
 		FIntPoint TileCount = FIntPoint(0, 0);
 
 		ERHIFeatureLevel::Type FeatureLevel;
+	};
+
+	struct FCompositePassInfo
+	{
+		FCompositePassInfo() {}
+
+		FMoviePipelinePassIdentifier PassIdentifier;
+		TUniquePtr<FImagePixelData> PixelData;
 	};
 
 }
@@ -1081,6 +1132,36 @@ public:
 	{
 	}
 
+	bool HasDataFromMultipleCameras() const
+	{
+		TMap<FString, int32> CameraNameUseCounts;
+		for(const FMoviePipelinePassIdentifier& PassIdentifier : ExpectedRenderPasses)
+		{
+			CameraNameUseCounts.FindOrAdd(PassIdentifier.CameraName) += 1;
+		}
+
+		// ToDo: This logic might get more complicated because of burn ins, etc. that don't have camera names, 
+		// need to check.
+		return CameraNameUseCounts.Num() > 1;
+	}
+
+	bool HasDataFromMultipleRenderPasses(const TArray<MoviePipeline::FCompositePassInfo>& InCompositedPasses) const
+	{
+		TMap<FString, int32> RenderPassUseCounts;
+		for (const FMoviePipelinePassIdentifier& PassIdentifier : ExpectedRenderPasses)
+		{
+			RenderPassUseCounts.FindOrAdd(PassIdentifier.Name) += 1;
+		}
+
+		// Remove any render passes that will be composited on later
+		for (const MoviePipeline::FCompositePassInfo& CompositePass : InCompositedPasses)
+		{
+			RenderPassUseCounts.Remove(CompositePass.PassIdentifier.Name);
+		}
+
+		return RenderPassUseCounts.Num() > 1;
+	}
+
 private:
 	// Explicitly delete copy operators since we own unique data.
 	// void operator=(const FMoviePipelineMergerOutputFrame&);
@@ -1149,14 +1230,6 @@ namespace MoviePipeline
 		/** An array of active submixes we are recording for this shot. Gets cleared when recording stops on a shot. */
 		TArray<TWeakPtr<Audio::FMixerSubmix, ESPMode::ThreadSafe>> ActiveSubmixes;
 	};
-
-	struct FCompositePassInfo
-	{
-		FCompositePassInfo() {}
-
-		FMoviePipelinePassIdentifier PassIdentifier;
-		TUniquePtr<FImagePixelData> PixelData;
-	};
 }
 
 USTRUCT(BlueprintType)
@@ -1199,6 +1272,17 @@ namespace MoviePipeline
 	};
 }
 
+namespace UE
+{
+	namespace MoviePipeline
+	{
+		struct FViewportArgs
+		{
+			TSubclassOf<UMovieRenderDebugWidget> DebugWidgetClass;
+			bool bRenderViewport = false;
+		};
+	}
+}
 /**
 * Contains information about the to-disk output generated by a movie pipeline. This structure is used both for per-shot work finished
 * callbacks and for the final render finished callback. When used as a per-shot callback ShotData will only have one entry (for the
@@ -1223,11 +1307,11 @@ struct FMoviePipelineOutputData
 	* Provided here for backwards compatibility.
 	*/
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Movie Pipeline")
-	UMoviePipeline* Pipeline;
+	TObjectPtr<UMoviePipeline> Pipeline;
 	
 	/** Job the data is for. Job may still be in progress (if a shot callback) so be careful about modifying properties on it */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Movie Pipeline")
-	UMoviePipelineExecutorJob* Job;
+	TObjectPtr<UMoviePipelineExecutorJob> Job;
 	
 	/** Did the job succeed, or was it canceled early due to an error (such as failure to write file to disk)? */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Movie Pipeline")

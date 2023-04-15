@@ -1,24 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/UnrealString.h"
-#include "Misc/EnumClassFlags.h"
-#include "UObject/NameTypes.h"
-#include "Logging/LogMacros.h"
+#include "CoreTypes.h"
 #include "HAL/PlatformTLS.h"
-#include "Templates/Atomic.h"
+#include "Logging/LogMacros.h"
+#include "Misc/Build.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/OutputDevice.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Templates/Atomic.h"
+#include "UObject/NameTypes.h"
 
 #include <atomic>
 
 class Error;
-class FConfigCacheIni;
-class FFixedUObjectArray;
 class FChunkedFixedUObjectArray;
+class FConfigCacheIni;
+class FExec;
+class FFixedUObjectArray;
 class FOutputDeviceConsole;
 class FOutputDeviceRedirector;
+class FRunnableThread;
+class FText;
 class ITransaction;
+class UClass;
 
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogHAL, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogSerialization, Log, All);
@@ -74,8 +80,17 @@ struct CORE_API FScopedBootTiming
 	~FScopedBootTiming();
 };
 
+struct CORE_API FEngineTrackedActivityScope
+{
+	FEngineTrackedActivityScope(const TCHAR* Fmt, ...);
+	FEngineTrackedActivityScope(const FString& Str);
+	~FEngineTrackedActivityScope();
+};
+
 
 #define SCOPED_BOOT_TIMING(x) TRACE_CPUPROFILER_EVENT_SCOPE_STR(x); FScopedBootTiming ANONYMOUS_VARIABLE(BootTiming_)(x);
+#define UE_SCOPED_ENGINE_ACTIVITY(Fmt, ...) FEngineTrackedActivityScope ANONYMOUS_VARIABLE(EngineActivity_)(Fmt, ## __VA_ARGS__);
+
 
 #define GLog GetGlobalLogSingleton()
 extern CORE_API FConfigCacheIni* GConfig;
@@ -226,6 +241,7 @@ extern CORE_API bool GFirstFrameIntraFrameDebugging;
 
 #if WITH_EDITOR
 extern CORE_API bool PRIVATE_GIsRunningCookCommandlet;
+extern CORE_API bool PRIVATE_GIsRunningDLCCookCommandlet;
 #endif
 
 /**
@@ -247,6 +263,18 @@ FORCEINLINE bool IsRunningCookCommandlet()
 {
 #if WITH_EDITOR
 	return PRIVATE_GIsRunningCookCommandlet;
+#else
+	return false;
+#endif
+}
+
+/**
+* Check to see if this executable is running the cookcommandlet
+*/
+FORCEINLINE bool IsRunningDLCCookCommandlet()
+{
+#if WITH_EDITOR
+	return PRIVATE_GIsRunningDLCCookCommandlet;
 #else
 	return false;
 #endif
@@ -459,16 +487,9 @@ extern CORE_API uint32 GFrameNumber;
 /** NEED TO RENAME, for RT version of GFrameTime use View.ViewFamily->FrameNumber or pass down from RT from GFrameTime). */
 extern CORE_API uint32 GFrameNumberRenderThread;
 
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
-// We cannot count on this variable to be accurate in a shipped game, so make sure no code tries to use it
 /** Whether we are the first instance of the game running. */
-#if PLATFORM_UNIX
-#define GIsFirstInstance FPlatformProcess::IsFirstInstance()
-#else
+UE_DEPRECATED(5.1, "Please use `FPlatformProcess::IsFirstInstance()`")
 extern CORE_API bool GIsFirstInstance;
-#endif
-
-#endif
 
 /** Threshold for a frame to be considered a hitch (in milliseconds). */
 extern CORE_API float GHitchThresholdMS;
@@ -499,10 +520,10 @@ extern CORE_API FLazyName GCurrentTraceName;
 extern CORE_API ELogTimes::Type GPrintLogTimes;
 
 /** How to print the category in log output. */
-extern CORE_API bool GPrintLogCategory;
+extern CORE_API TSAN_ATOMIC(bool) GPrintLogCategory;
 
 /** How to print the verbosity in log output. */
-extern CORE_API bool GPrintLogVerbosity;
+extern CORE_API TSAN_ATOMIC(bool) GPrintLogVerbosity;
 
 #if USE_HITCH_DETECTION
 /** Used by the lightweight stats and FGameThreadHitchHeartBeat to print a stat stack for hitches in shipping builds. */
@@ -538,6 +559,13 @@ extern CORE_API bool GPumpingMessages;
  
 /** Enables various editor and HMD hacks that allow the experimental VR editor feature to work, perhaps at the expense of other systems */
 extern CORE_API bool GEnableVREditorHacks;
+
+#if !UE_BUILD_SHIPPING
+
+/** Whether we should ignore the attached debugger. */
+extern CORE_API bool GIgnoreDebugger;
+
+#endif // #if !UE_BUILD_SHIPPING
 
 enum class ETaskTag : int32
 {
@@ -594,6 +622,11 @@ public:
 	 * state (from functions like IsInGameThread()).
 	 */
 	static void CORE_API SetTagStaticInit();
+
+	/**
+	* Swap the Tag this is only used when Thread contexts move between different threads.
+	*/
+	static ETaskTag CORE_API SwapTag(ETaskTag Tag);
 
 protected:
 	CORE_API FTaskTagScope(bool InTagOnlyIfNone, ETaskTag InTag);
@@ -683,6 +716,9 @@ extern CORE_API bool IsRHIThreadRunning();
 /** @return True if called from the RHI thread, or if called from ANY thread during single threaded rendering */
 extern CORE_API bool IsInRHIThread();
 
+/** @return True if called from any parallel RHI thread, or if called from ANY thread during single threaded rendering */
+extern CORE_API bool IsInParallelRHIThread();
+
 /** Thread used for RHI */
 UE_DEPRECATED(4.26, "Please use `IsRHIThreadRunning()`")
 extern CORE_API FRunnableThread* GRHIThread_InternalUseOnly;
@@ -724,14 +760,19 @@ void CORE_API SetEmitDrawEvents(bool EmitDrawEvents);
 
 /** Array to help visualize weak pointers in the debugger */
 class FChunkedFixedUObjectArray;
+
 extern CORE_API FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers;
 
 /** Array to help visualize object paths in the debugger */
-extern template class TArray<FMinimalName, TInlineAllocator<3>>;
-extern CORE_API TArray<FMinimalName, TInlineAllocator<3>>* GCoreComplexObjectPathDebug;
+namespace UE::ObjectPath::Private
+{
+	struct FStoredObjectPath;
+}
+extern CORE_API UE::ObjectPath::Private::FStoredObjectPath* GCoreComplexObjectPathDebug;
 
 /** Array to help visualize object handles in the debugger */
 struct FObjectHandlePackageDebugData;
+
 extern CORE_API FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug;
 
 /** @return True if running cook-on-the-fly. */

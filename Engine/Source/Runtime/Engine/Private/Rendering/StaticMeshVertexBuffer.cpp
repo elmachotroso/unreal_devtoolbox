@@ -269,22 +269,7 @@ void FStaticMeshVertexBuffer::operator=(const FStaticMeshVertexBuffer &Other)
 template <bool bRenderThread>
 FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Internal()
 {
-	if (GetNumVertices())
-	{
- 		FResourceArrayInterface* RESTRICT ResourceArray = TangentsData ? TangentsData->GetResourceArray() : nullptr;
-		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(TEXT("TangentsRHIBuffer"), ResourceArray);
-		CreateInfo.bWithoutNativeResource = !TangentsData;
-		if (bRenderThread)
-		{
-			return RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
-		}
-		else
-		{
-			return RHIAsyncCreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
-		}
-	}
-	return nullptr;
+	return CreateRHIBuffer<bRenderThread>(TangentsData, GetNumVertices(), BUF_Static | BUF_ShaderResource, TEXT("TangentsRHIBuffer"));
 }
 
 FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_RenderThread()
@@ -300,22 +285,7 @@ FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Async()
 template <bool bRenderThread>
 FBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Internal()
 {
-	if (GetNumTexCoords())
-	{
-		FResourceArrayInterface* RESTRICT ResourceArray = TexcoordData ? TexcoordData->GetResourceArray() : nullptr;
-		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(TEXT("TexCoordRHIBuffer"), ResourceArray);
-		CreateInfo.bWithoutNativeResource = !TexcoordData;
-		if (bRenderThread)
-		{
-			return RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
-		}
-		else
-		{
-			return RHIAsyncCreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
-		}
-	}
-	return nullptr;
+	return CreateRHIBuffer<bRenderThread>(TexcoordData, GetNumTexCoords(), BUF_Static | BUF_ShaderResource, TEXT("TexCoordRHIBuffer"));
 }
 
 FBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_RenderThread()
@@ -361,22 +331,31 @@ void FStaticMeshVertexBuffer::InitRHI()
 	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshVertexBuffer::InitRHI);
 	SCOPED_LOADTIMER(FStaticMeshVertexBuffer_InitRHI);
 
+	// When bAllowCPUAccess is true the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
+	// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
+	// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
+
+	const bool bHadTangentsData = TangentsData != nullptr;
+	const bool bCreateTangentsSRV = bHadTangentsData && TangentsData->GetAllowCPUAccess();
 	TangentsVertexBuffer.VertexBufferRHI = CreateTangentsRHIBuffer_RenderThread();
-	TexCoordVertexBuffer.VertexBufferRHI = CreateTexCoordRHIBuffer_RenderThread();
-	if (TangentsVertexBuffer.VertexBufferRHI && (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform)))
+	if (TangentsVertexBuffer.VertexBufferRHI && (bCreateTangentsSRV || RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform)))
 	{
 		// When TangentsData is null, this buffer hasn't been streamed in yet. We still need to create a FRHIShaderResourceView which will be
 		// cached in a vertex factory uniform buffer later. The nullptr tells the RHI that the SRV doesn't view on anything yet.
 		TangentsSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(
-			TangentsData ? TangentsVertexBuffer.VertexBufferRHI : nullptr,
+			bHadTangentsData ? TangentsVertexBuffer.VertexBufferRHI : nullptr,
 			GetUseHighPrecisionTangentBasis() ? PF_R16G16B16A16_SNORM : PF_R8G8B8A8_SNORM));
 	}
-	if (TexCoordVertexBuffer.VertexBufferRHI && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
+
+	const bool bHadTexCoordData = TexcoordData != nullptr;
+	const bool bCreateTexCoordSRV = bHadTexCoordData && TexcoordData->GetAllowCPUAccess();
+	TexCoordVertexBuffer.VertexBufferRHI = CreateTexCoordRHIBuffer_RenderThread();
+	if (TexCoordVertexBuffer.VertexBufferRHI && (bCreateTexCoordSRV || RHISupportsManualVertexFetch(GMaxRHIShaderPlatform)))
 	{
 		// When TexcoordData is null, this buffer hasn't been streamed in yet. We still need to create a FRHIShaderResourceView which will be
 		// cached in a vertex factory uniform buffer later. The nullptr tells the RHI that the SRV doesn't view on anything yet.
 		TextureCoordinatesSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(
-			TexcoordData ? TexCoordVertexBuffer.VertexBufferRHI : nullptr,
+			bHadTexCoordData ? TexCoordVertexBuffer.VertexBufferRHI : nullptr,
 			GetUseFullPrecisionUVs() ? PF_G32R32F : PF_G16R16F));
 	}
 }
@@ -527,7 +506,7 @@ void FStaticMeshVertexBuffer::BindTangentVertexBuffer(const FVertexFactory* Vert
 	}
 }
 
-void FStaticMeshVertexBuffer::BindPackedTexCoordVertexBuffer(const FVertexFactory* VertexFactory, FStaticMeshDataType& Data) const
+void FStaticMeshVertexBuffer::BindPackedTexCoordVertexBuffer(const FVertexFactory* VertexFactory, FStaticMeshDataType& Data, int32 MaxNumTexCoords) const
 {
 	Data.TextureCoordinates.Empty();
 	Data.NumTexCoords = GetNumTexCoords();
@@ -555,8 +534,16 @@ void FStaticMeshVertexBuffer::BindPackedTexCoordVertexBuffer(const FVertexFactor
 
 		uint32 UvStride = UVSizeInBytes * GetNumTexCoords();
 
+		// If the max num of UVs is specified, clamp to that number.
+		int32 ClampedNumTexCoords = GetNumTexCoords();
+		if (MaxNumTexCoords > -1)
+		{
+			ClampedNumTexCoords = FMath::Min<int32>(GetNumTexCoords(), MaxNumTexCoords);
+		}
+		check(ClampedNumTexCoords >= 0);
+
 		int32 UVIndex;
-		for (UVIndex = 0; UVIndex < (int32)GetNumTexCoords() - 1; UVIndex += 2)
+		for (UVIndex = 0; UVIndex < (int32)ClampedNumTexCoords - 1; UVIndex += 2)
 		{
 			Data.TextureCoordinates.Add(FVertexStreamComponent(
 				&TexCoordVertexBuffer,
@@ -568,7 +555,7 @@ void FStaticMeshVertexBuffer::BindPackedTexCoordVertexBuffer(const FVertexFactor
 		}
 
 		// possible last UV channel if we have an odd number
-		if (UVIndex < (int32)GetNumTexCoords())
+		if (UVIndex < (int32)ClampedNumTexCoords)
 		{
 			Data.TextureCoordinates.Add(FVertexStreamComponent(
 				&TexCoordVertexBuffer,

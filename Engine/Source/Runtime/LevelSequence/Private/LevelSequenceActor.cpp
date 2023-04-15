@@ -13,6 +13,8 @@
 #include "LevelSequenceModule.h"
 #include "MovieSceneSequenceTickManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequenceActor)
+
 #if WITH_EDITOR
 	#include "PropertyCustomizationHelpers.h"
 	#include "ActorPickerMode.h"
@@ -61,6 +63,8 @@ ALevelSequenceActor::ALevelSequenceActor(const FObjectInitializer& Init)
 	bIsSpatiallyLoaded = false;
 #endif //WITH_EDITORONLY_DATA
 
+	bReplicateUsingRegisteredSubObjectList = false;
+
 	BindingOverrides = Init.CreateDefaultSubobject<UMovieSceneBindingOverrides>(this, "BindingOverrides");
 	BurnInOptions = Init.CreateDefaultSubobject<ULevelSequenceBurnInOptions>(this, "BurnInOptions");
 	DefaultInstanceData = Init.CreateDefaultSubobject<UDefaultLevelSequenceInstanceData>(this, "InstanceData");
@@ -88,6 +92,7 @@ void ALevelSequenceActor::PostInitProperties()
 	// Have to initialize this here as any properties set on default subobjects inside the constructor
 	// Get stomped by the CDO's properties when the constructor exits.
 	SequencePlayer->SetPlaybackClient(this);
+	SequencePlayer->SetPlaybackSettings(PlaybackSettings);
 }
 
 void ALevelSequenceActor::RewindForReplay()
@@ -148,6 +153,7 @@ void ALevelSequenceActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(ALevelSequenceActor, SequencePlayer);
+	DOREPLIFETIME(ALevelSequenceActor, LevelSequenceAsset);
 }
 
 void ALevelSequenceActor::PostInitializeComponents()
@@ -168,12 +174,6 @@ void ALevelSequenceActor::PostInitializeComponents()
 
 void ALevelSequenceActor::BeginPlay()
 {
-	UMovieSceneSequenceTickManager* TickManager = SequencePlayer->GetTickManager();
-	if (ensure(TickManager))
-	{
-		TickManager->RegisterSequenceActor(this);
-	}
-
 	Super::BeginPlay();
 
 	if (PlaybackSettings.bAutoPlay)
@@ -195,21 +195,10 @@ void ALevelSequenceActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		SequencePlayer->OnPlayReverse.RemoveAll(this);
 		SequencePlayer->OnStop.RemoveAll(this);
 
-		if (UMovieSceneSequenceTickManager* TickManager = SequencePlayer->GetTickManager())
-		{
-			TickManager->UnregisterSequenceActor(this);
-		}
+		SequencePlayer->TearDown();
 	}
 
 	Super::EndPlay(EndPlayReason);
-}
-
-void ALevelSequenceActor::TickFromSequenceTickManager(float DeltaSeconds)
-{
-	if (SequencePlayer)
-	{
-		SequencePlayer->UpdateAsync(DeltaSeconds);
-	}
 }
 
 void ALevelSequenceActor::PostLoad()
@@ -222,6 +211,8 @@ void ALevelSequenceActor::PostLoad()
 		PlaybackSettings.bAutoPlay = bAutoPlay_DEPRECATED;
 		bAutoPlay_DEPRECATED = false;
 	}
+
+	SequencePlayer->SetPlaybackSettings(PlaybackSettings);
 
 #if WITH_EDITORONLY_DATA
 	if (LevelSequence_DEPRECATED.IsValid())
@@ -255,6 +246,14 @@ void ALevelSequenceActor::PostLoad()
 #endif
 }
 
+#if WITH_EDITORONLY_DATA
+void ALevelSequenceActor::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UDefaultLevelSequenceInstanceData::StaticClass()));
+}
+#endif
+
 ULevelSequence* ALevelSequenceActor::GetSequence() const
 {
 	return LevelSequenceAsset;
@@ -269,7 +268,7 @@ void ALevelSequenceActor::SetSequence(ULevelSequence* InSequence)
 		// cbb: should ideally null out the template and player when no sequence is assigned, but that's currently not possible
 		if (InSequence)
 		{
-			SequencePlayer->Initialize(InSequence, GetLevel(), PlaybackSettings, CameraSettings);
+			SequencePlayer->Initialize(InSequence, GetLevel(), CameraSettings);
 		}
 	}
 }
@@ -281,7 +280,7 @@ void ALevelSequenceActor::InitializePlayer()
 		// Level sequence is already loaded. Initialize the player if it's not already initialized with this sequence
 		if (LevelSequenceAsset != SequencePlayer->GetSequence())
 		{
-			SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), PlaybackSettings, CameraSettings);
+			SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), CameraSettings);
 		}
 	}
 }
@@ -316,7 +315,7 @@ void ALevelSequenceActor::RefreshBurnIn()
 {
 	if (BurnInInstance)
 	{
-		BurnInInstance->RemoveFromViewport();
+		BurnInInstance->RemoveFromParent();
 		BurnInInstance = nullptr;
 	}
 	
@@ -502,6 +501,16 @@ const TArray<FMovieSceneObjectBindingID>& ALevelSequenceActor::FindNamedBindings
 	return EmptyBindings;
 }
 
+void ALevelSequenceActor::PostNetReceive()
+{
+	Super::PostNetReceive();
+
+	if (LevelSequenceAsset && SequencePlayer && SequencePlayer->GetSequence() != LevelSequenceAsset)
+	{
+		InitializePlayer();
+	}
+}
+
 #if WITH_EDITOR
 
 void FBoundActorProxy::Initialize(TSharedPtr<IPropertyHandle> InPropertyHandle)
@@ -533,6 +542,11 @@ void ALevelSequenceActor::UpdateObjectFromProxy(FStructOnScope& Proxy, IProperty
 {
 	UObject* BoundActor = reinterpret_cast<FBoundActorProxy*>(Proxy.GetStructMemory())->BoundActor;
 	ObjectPropertyHandle.SetValue(BoundActor);
+}
+
+UMovieSceneSequence* ALevelSequenceActor::RetrieveOwnedSequence() const
+{
+	return GetSequence();
 }
 
 bool ALevelSequenceActor::GetReferencedContentObjects(TArray<UObject*>& Objects) const
@@ -613,3 +627,9 @@ void ULevelSequenceBurnInOptions::PostEditChangeProperty( FPropertyChangedEvent&
 }
 
 #endif // WITH_EDITOR
+
+AReplicatedLevelSequenceActor::AReplicatedLevelSequenceActor(const FObjectInitializer& Init)
+	: Super(Init)
+{
+	bAlwaysRelevant = true;
+}

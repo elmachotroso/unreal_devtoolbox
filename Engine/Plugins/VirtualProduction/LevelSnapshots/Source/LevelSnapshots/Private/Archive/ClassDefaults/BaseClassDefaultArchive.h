@@ -11,26 +11,15 @@ struct FWorldSnapshotData;
 
 namespace UE::LevelSnapshots::Private
 {
-	/* Shared logic for serializing class defaults. */
+	/** Shared logic for serializing class defaults. */
 	class FBaseClassDefaultArchive : public FSnapshotArchive
 	{
 		using Super = FSnapshotArchive;
-	public:
-
-		//~ Begin FSnapshotArchive Interface
-		virtual bool ShouldSkipProperty(const FProperty* InProperty) const override;
-		//~ End FSnapshotArchive Interface
-
-		protected:
-	
-		//~ Begin FSnapshotArchive Interface
-		virtual UObject* ResolveObjectDependency(int32 ObjectIndex) const override;
-		//~ End FSnapshotArchive Interface
+	protected:
 	
 		FBaseClassDefaultArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, bool bIsLoading, UObject* InObjectToRestore);
 
-	private:
-	
-		bool IsPropertyReferenceToSubobjectOrClassDefaults(const FProperty* InProperty) const;
+		// Class archetypes do not need fixing up... they only reference assets and subobjects. Subobjects are handled entirely by the the archetype itself.
+		virtual void FixUpReference(UObject*& Value) const override {}
 	};
 }

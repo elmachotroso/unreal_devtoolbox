@@ -1,22 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OutputLogModule.h"
-#include "Features/IModularFeatures.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
+#include "OutputLogCreationParams.h"
 #include "SDebugConsole.h"
 #include "SOutputLog.h"
 #include "SDeviceOutputLog.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+
 #include "Widgets/Docking/SDockTab.h"
 #include "Misc/ConfigCacheIni.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#include "ISettingsModule.h"
+#endif
+
+#if WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
+#include "OutputLogSettings.h"
+#endif
+
+#include "Internationalization/Internationalization.h"
+#include "OutputLogStyle.h"
+
+#if WITH_EDITOR
+#include "StatusBarSubsystem.h"
 #endif
 
 IMPLEMENT_MODULE(FOutputLogModule, OutputLog);
@@ -98,20 +111,34 @@ TSharedRef<SDockTab> FOutputLogModule::SpawnDeviceOutputLogTab(const FSpawnTabAr
 
 void FOutputLogModule::StartupModule()
 {
-	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OutputLogModule::OutputLogTabName, FOnSpawnTab::CreateRaw(this, &FOutputLogModule::SpawnOutputLogTab))
-		.SetDisplayName(NSLOCTEXT("UnrealEditor", "OutputLogTab", "Output Log"))
-		.SetTooltipText(NSLOCTEXT("UnrealEditor", "OutputLogTooltipText", "Open the Output Log tab."))
-		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsLogCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Log.TabIcon"));
-
-	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OutputLogModule::DeviceOutputLogTabName, FOnSpawnTab::CreateRaw(this, &FOutputLogModule::SpawnDeviceOutputLogTab))
-		.SetDisplayName(NSLOCTEXT("UnrealEditor", "DeviceOutputLogTab", "Device Output Log"))
-		.SetTooltipText(NSLOCTEXT("UnrealEditor", "DeviceOutputLogTooltipText", "Open the Device Output Log tab."))
-		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsLogCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Log.TabIcon"));
+	FOutputLogStyle::Get();
 
 #if WITH_EDITOR
+	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
+	if (SettingsModule)
+	{
+		SettingsModule->RegisterSettings("Editor", "General", "Output Log",
+			NSLOCTEXT("OutputLog", "OutputLogSettingsName", "Output Log"),
+			NSLOCTEXT("OutputLog", "OutputLogSettingsDescription", "Set up preferences for the Output Log appearance and workflow."),
+			GetMutableDefault<UOutputLogSettings>()
+		);
+	}
+
 	FEditorDelegates::BeginPIE.AddRaw(this, &FOutputLogModule::ClearOnPIE);
+#endif
+
+#if WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OutputLogModule::OutputLogTabName, FOnSpawnTab::CreateRaw(this, &FOutputLogModule::SpawnOutputLogTab))
+		.SetDisplayName(NSLOCTEXT("OutputLog", "OutputLogTab", "Output Log"))
+		.SetTooltipText(NSLOCTEXT("OutputLog", "OutputLogTooltipText", "Open the Output Log tab."))
+		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsLogCategory())
+		.SetIcon(FSlateIcon(FOutputLogStyle::Get().GetStyleSetName(), "Log.TabIcon"));
+
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OutputLogModule::DeviceOutputLogTabName, FOnSpawnTab::CreateRaw(this, &FOutputLogModule::SpawnDeviceOutputLogTab))
+		.SetDisplayName(NSLOCTEXT("OutputLog", "DeviceOutputLogTab", "Device Output Log"))
+		.SetTooltipText(NSLOCTEXT("OutputLog", "DeviceOutputLogTooltipText", "Open the Device Output Log tab."))
+		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsLogCategory())
+		.SetIcon(FSlateIcon(FOutputLogStyle::Get().GetStyleSetName(), "Log.TabIcon"));
 #endif
 
 	OutputLogHistory = MakeShareable(new FOutputLogHistory);
@@ -119,16 +146,18 @@ void FOutputLogModule::StartupModule()
 
 void FOutputLogModule::ShutdownModule()
 {
+#if WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
 	if (FSlateApplication::IsInitialized())
 	{
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OutputLogModule::OutputLogTabName);
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OutputLogModule::DeviceOutputLogTabName);
 	}
+#endif
 
 #if WITH_EDITOR
 	FEditorDelegates::BeginPIE.RemoveAll(this);
 #endif
-
+	FOutputLogStyle::Shutdown();
 	OutputLogHistory.Reset();
 }
 
@@ -164,6 +193,16 @@ TSharedRef<SWidget> FOutputLogModule::MakeOutputLogDrawerWidget(const FSimpleDel
 	}
 
 	return OutputLogDrawerPinned.ToSharedRef();
+}
+
+TSharedRef<SWidget> FOutputLogModule::MakeOutputLogWidget(const FOutputLogCreationParams& Params)
+{
+	return SNew(SOutputLog, Params.bCreateDockInLayoutButton)
+			.OnCloseConsole(Params.OnCloseConsole)
+			.Messages(OutputLogHistory->GetMessages())
+			.SettingsMenuFlags(Params.SettingsMenuCreationFlags)
+			.DefaultCategorySelection(Params.DefaultCategorySelection)
+			.AllowInitialLogCategory(Params.AllowAsInitialLogCategory);
 }
 
 void FOutputLogModule::ToggleDebugConsoleForWindow(const TSharedRef<SWindow>& Window, const EDebugConsoleStyle::Type InStyle, const FDebugConsoleDelegates& DebugConsoleDelegates)
@@ -252,7 +291,7 @@ void FOutputLogModule::ClearOnPIE(const bool bIsSimulating)
 
 	if (bClearOnPIEEnabled)
 	{
-		if(TSharedPtr<SOutputLog> OutputLogPinned = OutputLog.Pin())
+		if (TSharedPtr<SOutputLog> OutputLogPinned = OutputLog.Pin())
 		{
 			if (OutputLogPinned->CanClearLog())
 			{
@@ -285,4 +324,56 @@ void FOutputLogModule::FocusOutputLogConsoleBox(const TSharedRef<SWidget> Output
 const TSharedPtr<SWidget> FOutputLogModule::GetOutputLog() const
 {
 	return OutputLog.Pin();
+}
+
+void FOutputLogModule::FocusOutputLog()
+{
+	// 1. Output log tab is open but not active. 
+	if (OutputLog.IsValid()) 
+	{
+		OutputLogTab.Pin()->DrawAttention(); 
+	}
+#if WITH_EDITOR
+	// 2. Output log tab isn't open and the window directly behind the notification window has a status bar, then open Output Log Drawer. 
+	else if (GEditor->GetEditorSubsystem<UStatusBarSubsystem>()->ActiveWindowBehindNotificationHasStatusBar())
+	{
+		TSharedRef<SWindow> ParentWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow().ToSharedRef(); 
+
+		// try toggle the console to open the Output Log Drawer
+		if (GEditor->GetEditorSubsystem<UStatusBarSubsystem>()->ToggleDebugConsole(ParentWindow, true))
+		{
+			OutputLogDrawer.Pin()->FocusConsoleCommandBox(); 
+		}
+		// if unable to open the drawer, invoke a new Output Log tab. 
+		else 
+		{ 
+			OpenOutputLog(); 
+			OutputLogTab.Pin()->DrawAttention();
+		}
+	}
+#endif
+	// 3. The parent window has no status bar, then invoke a new Output Log tab.  
+	else
+	{
+		OpenOutputLog(); 
+		OutputLogTab.Pin()->DrawAttention(); 
+	}
+}
+
+void FOutputLogModule::UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, TOptional<bool> bShowErrors, TOptional<bool> bShowWarnings, TOptional<bool> bShowLogs)
+{
+	if (TSharedPtr<SOutputLog> SharedOutputLog = OutputLog.Pin())
+	{
+		SharedOutputLog->UpdateOutputLogFilter(CategoriesToShow, bShowErrors, bShowWarnings, bShowLogs);
+	}
+}
+
+void FOutputLogModule::OpenOutputLog() const
+{
+	FGlobalTabmanager::Get()->TryInvokeTab(OutputLogModule::OutputLogTabName);
+}
+
+bool FOutputLogModule::ShouldCycleToOutputLogDrawer() const 
+{
+	return GetDefault<UOutputLogSettings>()->bCycleToOutputLogDrawer; 
 }

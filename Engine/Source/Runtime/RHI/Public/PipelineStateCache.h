@@ -39,8 +39,18 @@ enum class ERayTracingPipelineCacheFlags : int
 };
 ENUM_CLASS_FLAGS(ERayTracingPipelineCacheFlags);
 
+enum class EPSOPrecacheResult
+{
+	Unknown,			//< No known pre cache state
+	Active,				//< PSO is currently precaching
+	Complete,			//< PSO has been precached successfully
+	Missed,				//< PSO precache miss, needs to be compiled at draw time
+	NotSupported,		//< PSO precache not supported (VertexFactory or MeshPassProcessor doesn't support/implement precaching)
+	Untracked,			//< PSO is not tracked at all (Compute or not coming from MeshDrawCommands)
+};
+
 extern RHI_API void SetComputePipelineState(FRHIComputeCommandList& RHICmdList, FRHIComputeShader* ComputeShader);
-extern RHI_API void SetGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& Initializer, uint32 StencilRef, EApplyRendertargetOption ApplyFlags = EApplyRendertargetOption::CheckApply, bool bApplyAdditionalState = true);
+extern RHI_API void SetGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& Initializer, uint32 StencilRef, EApplyRendertargetOption ApplyFlags = EApplyRendertargetOption::CheckApply, bool bApplyAdditionalState = true, EPSOPrecacheResult PSOPrecacheResult = EPSOPrecacheResult::Untracked);
 
 UE_DEPRECATED(5.0, "SetGraphicsPipelineState now requires a StencilRef argument and EApplyRendertargetOption::ForceApply will soon be removed")
 inline void SetGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& Initializer, EApplyRendertargetOption ApplyFlags = EApplyRendertargetOption::CheckApply, bool bApplyAdditionalState = true)
@@ -54,7 +64,9 @@ namespace PipelineStateCache
 
 	extern RHI_API FComputePipelineState*	GetAndOrCreateComputePipelineState(FRHIComputeCommandList& RHICmdList, FRHIComputeShader* ComputeShader, bool bFromFileCache);
 
-	extern RHI_API FGraphicsPipelineState*	GetAndOrCreateGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& OriginalInitializer, EApplyRendertargetOption ApplyFlags);
+	extern RHI_API FGraphicsPipelineState*	GetAndOrCreateGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& OriginalInitializer, EApplyRendertargetOption ApplyFlags, EPSOPrecacheResult PSOPrecacheResult);
+
+	extern RHI_API FGraphicsPipelineState*	FindGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer);
 
 	extern RHI_API FRHIVertexDeclaration*	GetOrCreateVertexDeclaration(const FVertexDeclarationElementList& Elements);
 
@@ -75,9 +87,37 @@ namespace PipelineStateCache
 
 	/* Clears all pipeline cached state. Called on shutdown, calling GetAndOrCreate after this will recreate state */
 	extern RHI_API void Shutdown();
+
+	/* Called when PSO precompile has completed */
+	extern RHI_API void PreCompileComplete();
+
+	/* Returns the number of PSO precompiles currently in progress */
+	extern RHI_API int32 GetNumActivePipelinePrecompileTasks();
+	
+	/* Is precaching currently enabled - can help to skip certain time critical code when precaching is disabled */
+	extern RHI_API bool						IsPSOPrecachingEnabled();
+
+	/* Precache the compute shader and return an optional graph event if precached async */
+	extern RHI_API FGraphEventRef			PrecacheComputePipelineState(FRHIComputeShader* ComputeShader);
+
+	/* Precache the graphic PSO and return an optional graph event if precached async */
+	extern RHI_API FGraphEventRef			PrecacheGraphicsPipelineState(const FGraphicsPipelineStateInitializer& PipelineStateInitializer);
+
+	/* Retrieve the current PSO precache result state (slightly slower than IsPrecaching) */
+	extern RHI_API EPSOPrecacheResult		CheckPipelineStateInCache(const FGraphicsPipelineStateInitializer& PipelineStateInitializer);
+
+	/* Is the given PSO initializer still precaching? */
+	extern RHI_API bool						IsPrecaching(const FGraphicsPipelineStateInitializer& PipelineStateInitializer);
+
+	/* Any async precaching operations still busy */
+	extern RHI_API bool						IsPrecaching();
+
+	
 }
 
-// Returns the hit group index within the ray tracing pipeline or INDEX_NONE if given shader does not exist.
+// Returns the shader index within the ray tracing pipeline or INDEX_NONE if given shader does not exist.
 // Asserts if shader is not found but bRequired is true.
 extern RHI_API int32 FindRayTracingHitGroupIndex(FRayTracingPipelineState* Pipeline, FRHIRayTracingShader* HitGroupShader, bool bRequired = true);
+extern RHI_API int32 FindRayTracingCallableShaderIndex(FRayTracingPipelineState* Pipeline, FRHIRayTracingShader* CallableShader, bool bRequired = true);
+extern RHI_API int32 FindRayTracingMissShaderIndex(FRayTracingPipelineState* Pipeline, FRHIRayTracingShader* MissShader, bool bRequired = true);
 

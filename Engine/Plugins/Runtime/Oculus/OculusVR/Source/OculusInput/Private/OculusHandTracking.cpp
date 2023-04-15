@@ -13,14 +13,21 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Model.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #define OCULUS_TO_UE4_SCALE 100.0f
 
 namespace OculusInput
 {
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FQuat FOculusHandTracking::GetBoneRotation(const int32 ControllerIndex, const EOculusHandType DeviceHand, const EBone BoneId)
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	FQuat Rotation = FQuat::Identity;
 	if (BoneId <= EBone::Invalid && BoneId >= EBone::Bone_Max)
 	{
@@ -34,7 +41,7 @@ FQuat FOculusHandTracking::GetBoneRotation(const int32 ControllerIndex, const EO
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -55,13 +62,18 @@ FQuat FOculusHandTracking::GetBoneRotation(const int32 ControllerIndex, const EO
 float FOculusHandTracking::GetHandScale(const int32 ControllerIndex, const EOculusHandType DeviceHand)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -78,13 +90,18 @@ float FOculusHandTracking::GetHandScale(const int32 ControllerIndex, const EOcul
 ETrackingConfidence FOculusHandTracking::GetTrackingConfidence(const int32 ControllerIndex, const EOculusHandType DeviceHand)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -100,13 +117,18 @@ ETrackingConfidence FOculusHandTracking::GetTrackingConfidence(const int32 Contr
 
 ETrackingConfidence FOculusHandTracking::GetFingerTrackingConfidence(const int32 ControllerIndex, const EOculusHandType DeviceHand, const EOculusHandAxes Finger)
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -122,13 +144,18 @@ ETrackingConfidence FOculusHandTracking::GetFingerTrackingConfidence(const int32
 FTransform FOculusHandTracking::GetPointerPose(const int32 ControllerIndex, const EOculusHandType DeviceHand, const float WorldToMeters)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -147,13 +174,18 @@ FTransform FOculusHandTracking::GetPointerPose(const int32 ControllerIndex, cons
 bool FOculusHandTracking::IsPointerPoseValid(const int32 ControllerIndex, const EOculusHandType DeviceHand)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -181,13 +213,18 @@ bool FOculusHandTracking::IsHandTrackingEnabled()
 bool FOculusHandTracking::IsHandDominant(const int32 ControllerIndex, const EOculusHandType DeviceHand)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -203,13 +240,18 @@ bool FOculusHandTracking::IsHandDominant(const int32 ControllerIndex, const EOcu
 
 bool FOculusHandTracking::IsHandPositionValid(int32 ControllerIndex, EOculusHandType DeviceHand)
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
 	if (OculusInputModule.IsValid())
 	{
 		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusHandType::None)
 				{
@@ -552,7 +594,7 @@ TArray<FOculusCapsuleCollider> FOculusHandTracking::InitializeHandPhysics(const 
 		FVector CapsulePointOne = OvrBoneVectorToFVector(OvrBoneCapsule.Points[1], WorldToMeters);
 		FVector Delta = (CapsulePointOne - CapsulePointZero);
 
-		FName BoneName = HandComponent->SkeletalMesh->GetRefSkeleton().GetBoneName(OvrBoneCapsule.BoneIndex);
+		FName BoneName = HandComponent->GetSkinnedAsset()->GetRefSkeleton().GetBoneName(OvrBoneCapsule.BoneIndex);
 
 		float CapsuleHeight = Delta.Size();
 		float CapsuleRadius = OvrBoneCapsule.Radius * WorldToMeters;
@@ -594,7 +636,7 @@ FString FOculusHandTracking::GetBoneName(uint8 Bone)
 {
 	uint8 HandBone = Bone == ovrpBoneId_Invalid ? (uint8)EBone::Invalid : Bone;
 
-	UEnum* BoneEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EBone"), true);
+	UEnum* BoneEnum = FindObject<UEnum>(nullptr, TEXT("/Script/OculusInput.EBone"), true);
 	if (BoneEnum)
 	{
 		return BoneEnum->GetDisplayNameTextByValue(HandBone).ToString();
@@ -626,4 +668,5 @@ FQuat FOculusHandTracking::OvrBoneQuatToFQuat(ovrpQuatf ovrpQuat)
 {
 	return FQuat(ovrpQuat.x, -ovrpQuat.y, ovrpQuat.z, -ovrpQuat.w);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }

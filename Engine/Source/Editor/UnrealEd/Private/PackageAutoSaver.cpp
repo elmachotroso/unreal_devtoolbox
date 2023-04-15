@@ -14,13 +14,14 @@
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "UnrealEdMisc.h"
 #include "FileHelpers.h"
+#include "InterchangeManager.h"
 #include "UnrealEdGlobals.h"
 #include "PackageRestore.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -415,7 +416,6 @@ bool FPackageAutoSaver::CanAutoSave() const
 	const bool bDidInteractRecently = (FApp::GetCurrentTime() - LastInteractionTime) < InteractionDelay;
 	const bool bAutosaveEnabled	= LoadingSavingSettings->bAutoSaveEnable && bPackagesNeedAutoSave;
 	const bool bSlowTask = GIsSlowTask;
-	const bool bInterpEditMode = GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit);
 	const bool bPlayWorldValid = GUnrealEd->PlayWorld != nullptr;
 	const bool bAnyMenusVisible	= FSlateApplication::Get().AnyMenusVisible();
 	const bool bAutomationTesting = GIsAutomationTesting;
@@ -425,6 +425,7 @@ bool FPackageAutoSaver::CanAutoSave() const
 	const bool bAreAssetsCompiling = FAssetCompilingManager::Get().GetNumRemainingAssets() > 0;
 	const bool bIsVREditorActive = IVREditorModule::Get().IsVREditorEnabled();	// @todo vreditor: Eventually we should support this while in VR (modal VR progress, with sufficient early warning)
 	const bool bAreAnimationsCompressing = GAsyncCompressedAnimationsTracker ? GAsyncCompressedAnimationsTracker->GetNumRemainingJobs() > 0 : false;
+	const bool bIsInterchangeActive = UInterchangeManager::GetInterchangeManager().IsInterchangeActive();
 
 	bool bIsSequencerPlaying = false;
 	for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
@@ -439,7 +440,21 @@ bool FPackageAutoSaver::CanAutoSave() const
 	// query any active editor modes and allow them to prevent autosave
 	const bool bActiveModesAllowAutoSave = GLevelEditorModeTools().CanAutoSave();
 
-	return (bAutosaveEnabled && !bSlowTask && !bInterpEditMode && !bPlayWorldValid && !bAnyMenusVisible && !bAutomationTesting && !bIsInteracting && !GIsDemoMode && bHasGameOrProjectLoaded && !bAreShadersCompiling && !bAreAssetsCompiling && !bAreAnimationsCompressing && !bIsVREditorActive && !bIsSequencerPlaying && bActiveModesAllowAutoSave);
+	return (bAutosaveEnabled
+		&& !bSlowTask
+		&& !bPlayWorldValid
+		&& !bAnyMenusVisible
+		&& !bAutomationTesting
+		&& !bIsInteracting
+		&& !GIsDemoMode
+		&& bHasGameOrProjectLoaded
+		&& !bAreShadersCompiling
+		&& !bAreAssetsCompiling
+		&& !bAreAnimationsCompressing
+		&& !bIsVREditorActive
+		&& !bIsSequencerPlaying
+		&& !bIsInterchangeActive
+		&& bActiveModesAllowAutoSave);
 }
 
 bool FPackageAutoSaver::DoPackagesNeedAutoSave() const
@@ -559,7 +574,7 @@ void FPackageAutoSaver::UpdateAutoSaveNotification()
 			}
 			else // defer until the user finishes using pop-up menus or the notification will dismiss them...
 			{
-				ForceMinimumTimeTillAutoSave(LoadingSavingSettings->AutoSaveWarningInSeconds);
+				ForceMinimumTimeTillAutoSave(static_cast<float>(LoadingSavingSettings->AutoSaveWarningInSeconds));
 			}
 		}
 		else

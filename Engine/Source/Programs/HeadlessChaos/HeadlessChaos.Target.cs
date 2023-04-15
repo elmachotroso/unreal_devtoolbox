@@ -1,19 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
-using System.Collections.Generic;
 
 [SupportedPlatforms("Win64")]
-public class HeadlessChaosTarget : TargetRules
+public class HeadlessChaosTarget : TestTargetRules
 {
 	public HeadlessChaosTarget(TargetInfo Target) : base(Target)
 	{
-		Type = TargetType.Program;
-		LinkType = TargetLinkType.Monolithic;
-
 		ExeBinariesSubFolder = LaunchModuleName = "HeadlessChaos";
-
-		bBuildDeveloperTools = false;
 
 		// HeadlessChaos doesn't ever compile with the engine linked in
 		bCompileAgainstEngine = false;
@@ -28,12 +22,11 @@ public class HeadlessChaosTarget : TargetRules
 
 		GlobalDefinitions.Add("CHAOS_SERIALIZE_OUT=1");
 
-		// Force enable Chaos as the physics engine for this project as this
-		// is a Chaos unit test framework - it doesn't build with PhysX enabled
-		bUseChaos = true;
-		bCompileChaos = true;
-		bCompilePhysX = false;
-		bCompileAPEX = false;
-		bCompileNvCloth = false;
+		// our gtest does not have debug crt libs
+		bDebugBuildsActuallyUseDebugCRT = false;
+
+		// Enable additional debug functionality in the constraint management system to allow better unit testing
+		GlobalDefinitions.Add("CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED=1");
+		BuildEnvironment = TargetBuildEnvironment.Unique;
 	}
 }

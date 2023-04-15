@@ -76,7 +76,10 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 	}
 
 	// If we have a template component we hide the default widget and build a new category with all its properties
-	DetailBuilder.EditDefaultProperty(TemplateHandle)->Visibility(EVisibility::Collapsed);
+	if (IDetailPropertyRow* TemplateHandlePropertyRow = DetailBuilder.EditDefaultProperty(TemplateHandle))
+	{
+		TemplateHandlePropertyRow->Visibility(EVisibility::Collapsed);
+	}
 
 	static const FName ComponentCategoryName = TEXT("Component Properties");
 	IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(ComponentCategoryName);
@@ -145,10 +148,9 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 
 			TSharedPtr<SWidget> NameWidget;
 			TSharedPtr<SWidget> ValueWidget;
-			const FNiagaraComponentPropertyBinding* Binding = FindBinding(PropHandle);
 
 			// if we have a binding override, we display a different value ui for the property
-			if (Binding)
+			if (const FNiagaraComponentPropertyBinding* Binding = FindBinding(PropHandle))
 			{
 				FDetailWidgetRow& WidgetRow = PropertyRow.CustomWidget(false);
 				PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, false);
@@ -172,7 +174,7 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 					[
 						// The binding selector
 						SNew(SComboButton)
-						.ButtonStyle(FEditorStyle::Get(), StyleName)
+						.ButtonStyle(FAppStyle::Get(), StyleName)
 						.OnGetMenuContent(this, &FNiagaraComponentRendererPropertiesDetails::GetAddBindingMenuContent, PropHandle)
 						.ContentPadding(1)
 						.ToolTipText(Tooltip)
@@ -191,7 +193,7 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 					[
 						// Delete binding button
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.ForegroundColor(FSlateColor::UseForeground())
 						.ContentPadding(FMargin(2))
 						.ToolTipText(LOCTEXT("NiagaraRemoveBindingToolTip", "Remove the particle attribute binding"))
@@ -200,7 +202,7 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 						.Content()
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("Icons.Delete"))
+							.Image(FAppStyle::GetBrush("Icons.Delete"))
 						]
 					]
 				];
@@ -235,7 +237,7 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 						// Override binding button
 						SNew(SComboButton)
 						.IsEnabled(this, &FNiagaraComponentRendererPropertiesDetails::IsOverridableType, PropHandle)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.ForegroundColor(FSlateColor::UseForeground())
 						.ContentPadding(FMargin(2))
 						.ToolTipText(LOCTEXT("NiagaraRendererChangePropertyBindingToolTip", "Bind to a particle attribute to update this parameter each tick"))
@@ -278,8 +280,7 @@ TSharedRef<SWidget> FNiagaraComponentRendererPropertiesDetails::GetAddBindingMen
 
 void FNiagaraComponentRendererPropertiesDetails::ChangePropertyBinding(TSharedPtr<IPropertyHandle> PropertyHandle, const FNiagaraVariable& BindingVar)
 {
-	UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get();
-	if (ComponentProperties)
+	if (UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get())
 	{
 		FScopedTransaction Transaction(FText::Format(LOCTEXT("ChangePropertyBinding", "Change component property binding to \"{0}\" "), FText::FromName(BindingVar.GetName())));
 		FNiagaraComponentPropertyBinding NewBinding = ToPropertyBinding(PropertyHandle, ComponentProperties);
@@ -288,8 +289,7 @@ void FNiagaraComponentRendererPropertiesDetails::ChangePropertyBinding(TSharedPt
 		ComponentProperties->Modify();
 		PropertyHandle->NotifyPreChange();
 
-		const FNiagaraComponentPropertyBinding* PropertyBinding = FindBinding(PropertyHandle);
-		if (PropertyBinding)
+		if (const FNiagaraComponentPropertyBinding* PropertyBinding = FindBinding(PropertyHandle))
 		{
 			// this is an update, so remove the preexisting binding
 			for (int i = ComponentProperties->PropertyBindings.Num() - 1; i >= 0; i--)
@@ -358,8 +358,7 @@ FReply FNiagaraComponentRendererPropertiesDetails::ResetBindingButtonPressed(TSh
 void FNiagaraComponentRendererPropertiesDetails::RefreshPropertiesPanel()
 {
 	// Raw because we don't want to keep alive the details builder when calling the force refresh details
-	IDetailLayoutBuilder* DetailLayoutBuilder = DetailBuilderWeakPtr.Pin().Get();
-	if (DetailLayoutBuilder)
+	if (IDetailLayoutBuilder* DetailLayoutBuilder = DetailBuilderWeakPtr.Pin().Get())
 	{
 		DetailLayoutBuilder->ForceRefreshDetails();
 	}
@@ -367,11 +366,9 @@ void FNiagaraComponentRendererPropertiesDetails::RefreshPropertiesPanel()
 
 FText FNiagaraComponentRendererPropertiesDetails::GetCurrentBindingText(TSharedPtr<IPropertyHandle> PropertyHandle) const
 {
-	UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get();
-	if (ComponentProperties)
+	if (UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get())
 	{
-		const FNiagaraComponentPropertyBinding* PropertyBinding = FindBinding(PropertyHandle);
-		if (PropertyBinding)
+		if (const FNiagaraComponentPropertyBinding* PropertyBinding = FindBinding(PropertyHandle))
 		{
 			return FText::FromName(PropertyBinding->AttributeBinding.GetName());
 		}
@@ -379,26 +376,25 @@ FText FNiagaraComponentRendererPropertiesDetails::GetCurrentBindingText(TSharedP
 	return FText::FromString(TEXT("Missing"));
 }
 
-const UNiagaraEmitter* FNiagaraComponentRendererPropertiesDetails::GetCurrentEmitter() const
+FVersionedNiagaraEmitter FNiagaraComponentRendererPropertiesDetails::GetCurrentEmitter() const
 {
-	UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get();
-	if (ComponentProperties)
+	if (UNiagaraComponentRendererProperties* ComponentProperties = RendererProperties.Get())
 	{
-		return Cast<UNiagaraEmitter>(ComponentProperties->GetOuter());
+		return ComponentProperties->GetOuterEmitter();
 	}
-	return nullptr;
+	return FVersionedNiagaraEmitter();
 }
 
 TArray<FNiagaraVariable> FNiagaraComponentRendererPropertiesDetails::GetPossibleBindings(TSharedPtr<IPropertyHandle> PropertyHandle) const
 {
 	const FNiagaraTypeDefinition& PropertyType = UNiagaraComponentRendererProperties::ToNiagaraType(PropertyHandle->GetProperty());
 
-	const UNiagaraEmitter* Emitter = GetCurrentEmitter();
-	if (!Emitter || !PropertyType.IsValid())
+	FVersionedNiagaraEmitterData* EmitterData = GetCurrentEmitter().GetEmitterData();
+	if (!EmitterData || !PropertyType.IsValid())
 	{
 		return TArray<FNiagaraVariable>();
 	}
-	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Emitter->GraphSource);
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
 	if (!Source)
 	{
 		return TArray<FNiagaraVariable>();

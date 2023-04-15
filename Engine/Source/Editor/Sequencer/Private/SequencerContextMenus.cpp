@@ -2,17 +2,15 @@
 
 #include "SequencerContextMenus.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
-#include "DisplayNodes/SequencerSectionKeyAreaNode.h"
-#include "DisplayNodes/SequencerTrackNode.h"
-#include "DisplayNodes/SequencerObjectBindingNode.h"
+#include "Styling/AppStyle.h"
 #include "SequencerCommonHelpers.h"
 #include "SequencerCommands.h"
 #include "SSequencer.h"
 #include "SectionLayout.h"
+#include "IKeyArea.h"
 #include "SSequencerSection.h"
 #include "SequencerSettings.h"
-#include "ISequencerHotspot.h"
+#include "MVVM/Views/ITrackAreaHotspot.h"
 #include "SequencerHotspots.h"
 #include "ScopedTransaction.h"
 #include "MovieSceneToolHelpers.h"
@@ -43,8 +41,15 @@
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
 #include "Channels/MovieSceneChannel.h"
+#include "MVVM/Extensions/ITrackExtension.h"
+#include "MVVM/ViewModels/ViewModelIterators.h"
+#include "MVVM/ViewModels/SectionModel.h"
+#include "MVVM/ViewModels/TrackModel.h"
+#include "MVVM/ViewModels/ViewModel.h"
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "Algo/AnyOf.h"
+#include "IKeyArea.h"
 
 
 #define LOCTEXT_NAMESPACE "SequencerContextMenus"
@@ -57,10 +62,10 @@ static void CreateKeyStructForSelection(TSharedPtr<ISequencer> InSequencer, TSha
 	{
 		for (const FSequencerSelectedKey& Key : SelectedKeys)
 		{
-			if (Key.KeyArea.IsValid() && Key.KeyHandle.IsSet())
+			if (Key.IsValid())
 			{
-				OutKeyStruct = Key.KeyArea->GetKeyStruct(Key.KeyHandle.GetValue());
-				OutKeyStructSection = Key.KeyArea->GetOwningSection();
+				OutKeyStruct = Key.WeakChannel.Pin()->GetKeyArea()->GetKeyStruct(Key.KeyHandle);
+				OutKeyStructSection = Key.WeakChannel.Pin()->GetSection();
 				return;
 			}
 		}
@@ -71,15 +76,15 @@ static void CreateKeyStructForSelection(TSharedPtr<ISequencer> InSequencer, TSha
 		UMovieSceneSection* CommonSection = nullptr;
 		for (const FSequencerSelectedKey& Key : SelectedKeys)
 		{
-			if (Key.KeyArea.IsValid() && Key.KeyHandle.IsSet())
+			if (Key.IsValid())
 			{
-				KeyHandles.Add(Key.KeyHandle.GetValue());
+				KeyHandles.Add(Key.KeyHandle);
 
 				if (!CommonSection)
 				{
-					CommonSection = Key.KeyArea->GetOwningSection();
+					CommonSection = Key.WeakChannel.Pin()->GetSection();
 				}
-				else if (CommonSection != Key.KeyArea->GetOwningSection())
+				else if (CommonSection != Key.WeakChannel.Pin()->GetSection())
 				{
 					CommonSection = nullptr;
 					return;
@@ -95,14 +100,16 @@ static void CreateKeyStructForSelection(TSharedPtr<ISequencer> InSequencer, TSha
 	}
 }
 
-void FKeyContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequencer& InSequencer)
+void FKeyContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, FSequencer& InSequencer)
 {
 	TSharedRef<FKeyContextMenu> Menu = MakeShareable(new FKeyContextMenu(InSequencer));
-	Menu->PopulateMenu(MenuBuilder);
+	Menu->PopulateMenu(MenuBuilder, MenuExtender);
 }
 
-void FKeyContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
+void FKeyContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender)
 {
+	using namespace UE::Sequencer;
+
 	FSequencer* SequencerPtr = &Sequencer.Get();
 	TSharedRef<FKeyContextMenu> Shared = AsShared();
 
@@ -129,7 +136,7 @@ void FKeyContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 			ISequencerChannelInterface* ChannelInterface = SequencerModule.FindChannelEditorInterface(Pair.Key);
 			if (ChannelInterface)
 			{
-				ChannelInterface->ExtendKeyMenu_Raw(MenuBuilder, MoveTemp(Pair.Value), Sequencer);
+				ChannelInterface->ExtendKeyMenu_Raw(MenuBuilder, MenuExtender, MoveTemp(Pair.Value), Sequencer);
 			}
 		}
 	}
@@ -152,9 +159,7 @@ void FKeyContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 
 	MenuBuilder.BeginSection("SequencerKeyEdit", LOCTEXT("EditMenu", "Edit"));
 	{
-		TSharedPtr<ISequencerHotspot> Hotspot = SequencerPtr->GetHotspot();
-
-		if (Hotspot.IsValid() && Hotspot->GetType() == ESequencerHotspot::Key)
+		if (HotspotCast<FKeyHotspot>(SequencerPtr->GetViewModel()->GetTrackArea()->GetHotspot()))
 		{
 			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
 			MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
@@ -244,14 +249,14 @@ FSectionContextMenu::FSectionContextMenu(FSequencer& InSeqeuncer, FFrameTime InM
 	}
 }
 
-void FSectionContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequencer& InSequencer, FFrameTime InMouseDownTime)
+void FSectionContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, FSequencer& InSequencer, FFrameTime InMouseDownTime)
 {
 	TSharedRef<FSectionContextMenu> Menu = MakeShareable(new FSectionContextMenu(InSequencer, InMouseDownTime));
-	Menu->PopulateMenu(MenuBuilder);
+	Menu->PopulateMenu(MenuBuilder, MenuExtender);
 }
 
 
-void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
+void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender)
 {
 	// Copy a reference to the context menu by value into each lambda handler to ensure the type stays alive until the menu is closed
 	TSharedRef<FSectionContextMenu> Shared = AsShared();
@@ -272,7 +277,7 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 		ISequencerChannelInterface* ChannelInterface = SequencerModule.FindChannelEditorInterface(Pair.Key);
 		if (ChannelInterface)
 		{
-			ChannelInterface->ExtendSectionMenu_Raw(MenuBuilder, Pair.Value, Sections, Sequencer);
+			ChannelInterface->ExtendSectionMenu_Raw(MenuBuilder, MenuExtender, Pair.Value, Sections, Sequencer);
 		}
 	}
 
@@ -310,7 +315,7 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("Paste", "Paste"),
 			FText(),
-			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ if (PasteMenu.IsValid()) { PasteMenu->PopulateMenu(SubMenuBuilder); } }),
+			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ if (PasteMenu.IsValid()) { PasteMenu->PopulateMenu(SubMenuBuilder, MenuExtender); } }),
 			FUIAction (
 				FExecuteAction(),
 				FCanExecuteAction::CreateLambda([=]{ return PasteMenu.IsValid() && PasteMenu->IsValidPaste(); })
@@ -322,7 +327,7 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("PasteFromHistory", "Paste From History"),
 			FText(),
-			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ if (PasteFromHistoryMenu.IsValid()) { PasteFromHistoryMenu->PopulateMenu(SubMenuBuilder); } }),
+			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ if (PasteFromHistoryMenu.IsValid()) { PasteFromHistoryMenu->PopulateMenu(SubMenuBuilder, MenuExtender); } }),
 			FUIAction (
 				FExecuteAction(),
 				FCanExecuteAction::CreateLambda([=]{ return PasteFromHistoryMenu.IsValid(); })
@@ -332,6 +337,11 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 		);
 	}
 	MenuBuilder.EndSection(); // SequencerKeyEdit
+
+	MenuBuilder.BeginSection("SequencerChannels", LOCTEXT("ChannelsMenu", "Channels"));
+	{
+	}
+	MenuBuilder.EndSection(); // SequencerChannels
 
 	MenuBuilder.BeginSection("SequencerSections", LOCTEXT("SectionsMenu", "Sections"));
 	{
@@ -434,7 +444,13 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 				LOCTEXT("KeySection", "Key This Section"),
 				LOCTEXT("KeySection_ToolTip", "This section will get changed when we modify the property externally"),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateLambda([=] { return Shared->SetSectionToKey(); }))
+				FUIAction(
+					FExecuteAction::CreateLambda([=] { return Shared->SetSectionToKey(); }),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([=] { return Shared->IsSectionToKey(); })
+				),
+				NAME_None,
+				EUserInterfaceActionType::Check
 			);
 		}
 	}
@@ -485,7 +501,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SetKeyInterpolationAuto", "Cubic (Auto)"),
 		LOCTEXT("SetKeyInterpolationAutoTooltip", "Set key interpolation to auto"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyAuto"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyAuto"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_Auto); }),
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
@@ -494,7 +510,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SetKeyInterpolationUser", "Cubic (User)"),
 		LOCTEXT("SetKeyInterpolationUserTooltip", "Set key interpolation to user"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyUser"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyUser"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_User); }),
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
@@ -503,7 +519,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SetKeyInterpolationBreak", "Cubic (Break)"),
 		LOCTEXT("SetKeyInterpolationBreakTooltip", "Set key interpolation to break"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyBreak"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyBreak"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_Break); }),
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
@@ -512,7 +528,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SetKeyInterpolationLinear", "Linear"),
 		LOCTEXT("SetKeyInterpolationLinearTooltip", "Set key interpolation to linear"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyLinear"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyLinear"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Linear, RCTM_Auto); }),
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
@@ -521,7 +537,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SetKeyInterpolationConstant", "Constant"),
 		LOCTEXT("SetKeyInterpolationConstantTooltip", "Set key interpolation to constant"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyConstant"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyConstant"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Constant, RCTM_Auto); }),
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
@@ -554,7 +570,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 			.AutoWidth()
 			[
 				SNew(SSpinBox<float>)
-				.Style(&FEditorStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.HyperlinkSpinBox"))
+				.Style(&FAppStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.HyperlinkSpinBox"))
 				.OnValueCommitted_Lambda([=](float Value, ETextCommit::Type) { OnReduceKeysToleranceChanged(Value); })
 				.OnValueChanged_Lambda(OnReduceKeysToleranceChanged)
 				.MinValue(0)
@@ -620,27 +636,32 @@ void FSectionContextMenu::AddBlendTypeMenu(FMenuBuilder& MenuBuilder)
 
 void FSectionContextMenu::SelectAllKeys()
 {
+	using namespace UE::Sequencer;
+
 	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sequencer->GetSelection().GetSelectedSections())
 	{
 		UMovieSceneSection* Section = WeakSection.Get();
-		TOptional<FSectionHandle> SectionHandle = Sequencer->GetNodeTree()->GetSectionHandle(Section);
+		TSharedPtr<FSectionModel> SectionHandle = Sequencer->GetNodeTree()->GetSectionModel(Section);
 		if (!SectionHandle)
 		{
 			continue;
 		}
 
-		FSectionLayout Layout(*SectionHandle->GetTrackNode(), SectionHandle->GetSectionIndex());
+		FSectionLayout Layout(SectionHandle);
 		for (const FSectionLayoutElement& Element : Layout.GetElements())
 		{
-			for (TSharedRef<IKeyArea> KeyArea : Element.GetKeyAreas())
+			for (const TWeakPtr<FChannelModel>& WeakChannel : Element.GetChannels())
 			{
-				TArray<FKeyHandle> Handles;
-				KeyArea->GetKeyHandles(Handles);
-
-				for (FKeyHandle KeyHandle : Handles)
+				if (TSharedPtr<FChannelModel> Channel = WeakChannel.Pin())
 				{
-					FSequencerSelectedKey SelectKey(*Section, KeyArea, KeyHandle);
-					Sequencer->GetSelection().AddToSelection(SelectKey);
+					TArray<FKeyHandle> Handles;
+					Channel->GetKeyArea()->GetKeyHandles(Handles);
+
+					for (FKeyHandle KeyHandle : Handles)
+					{
+						FSequencerSelectedKey SelectKey(*Section, Channel, KeyHandle);
+						Sequencer->GetSelection().AddToSelection(SelectKey);
+					}
 				}
 			}
 		}
@@ -660,6 +681,7 @@ void FSectionContextMenu::SetSectionToKey()
 		return;
 	}
 
+	const bool bToggle = IsSectionToKey();
 	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
 	{
 		if (UMovieSceneSection* Section = WeakSection.Get())
@@ -669,11 +691,27 @@ void FSectionContextMenu::SetSectionToKey()
 			{
 				FScopedTransaction Transaction(LOCTEXT("SetSectionToKey", "Set Section To Key"));
 				Track->Modify();
-				Track->SetSectionToKey(Section);
+				Track->SetSectionToKey(bToggle ? nullptr : Section);
 			}
 		}
 		break;
 	}
+}
+
+bool FSectionContextMenu::IsSectionToKey() const
+{
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
+	{
+		if (UMovieSceneSection* Section = WeakSection.Get())
+		{
+			UMovieSceneTrack* Track = Section->GetTypedOuter<UMovieSceneTrack>();
+			if (Track && Track->GetSectionToKey() != Section)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 bool FSectionContextMenu::CanSetSectionToKey() const
@@ -738,23 +776,23 @@ void FSectionContextMenu::AutoSizeSection()
 
 void FSectionContextMenu::ReduceKeys()
 {
+	using namespace UE::Sequencer;
+
 	FScopedTransaction ReduceKeysTransaction(LOCTEXT("ReduceKeys_Transaction", "Reduce Keys"));
 
 	TSet<TSharedPtr<IKeyArea> > KeyAreas;
-	for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : Sequencer->GetSelection().GetSelectedOutlinerNodes())
+	for (const TWeakPtr<FViewModel>& WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
 	{
-		SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+		SequencerHelpers::GetAllKeyAreas(WeakItem.Pin(), KeyAreas);
 	}
 
 	if (KeyAreas.Num() == 0)
 	{
-		const TSet<TSharedRef<FSequencerDisplayNode>>& SelectedNodes = Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections();
-		for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : SelectedNodes)
+		for (const TWeakPtr<FViewModel>& DisplayNode : Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections())
 		{
-			SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+			SequencerHelpers::GetAllKeyAreas(DisplayNode.Pin(), KeyAreas);
 		}
 	}
-
 
 	FKeyDataOptimizationParams Params;
 	Params.bAutoSetInterpolation = true;
@@ -797,18 +835,19 @@ bool FSectionContextMenu::CanAutoSize() const
 
 bool FSectionContextMenu::CanReduceKeys() const
 {
+	using namespace UE::Sequencer;
+
 	TSet<TSharedPtr<IKeyArea> > KeyAreas;
-	for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : Sequencer->GetSelection().GetSelectedOutlinerNodes())
+	for (const TWeakPtr<FViewModel>& WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
 	{
-		SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+		SequencerHelpers::GetAllKeyAreas(WeakItem.Pin(), KeyAreas);
 	}
 
 	if (KeyAreas.Num() == 0)
 	{
-		const TSet<TSharedRef<FSequencerDisplayNode>>& SelectedNodes = Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections();
-		for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : SelectedNodes)
+		for (const TWeakPtr<FViewModel>& DisplayNode : Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections())
 		{
-			SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+			SequencerHelpers::GetAllKeyAreas(DisplayNode.Pin(), KeyAreas);
 		}
 	}
 
@@ -817,20 +856,21 @@ bool FSectionContextMenu::CanReduceKeys() const
 
 void FSectionContextMenu::SetInterpTangentMode(ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode)
 {
+	using namespace UE::Sequencer;
+
 	FScopedTransaction SetInterpTangentModeTransaction(LOCTEXT("SetInterpTangentMode_Transaction", "Set Interpolation and Tangent Mode"));
 
 	TSet<TSharedPtr<IKeyArea> > KeyAreas;
-	for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : Sequencer->GetSelection().GetSelectedOutlinerNodes())
+	for (const TWeakPtr<FViewModel>& WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
 	{
-		SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+		SequencerHelpers::GetAllKeyAreas(WeakItem.Pin(), KeyAreas);
 	}
 
 	if (KeyAreas.Num() == 0)
 	{
-		const TSet<TSharedRef<FSequencerDisplayNode>>& SelectedNodes = Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections();
-		for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : SelectedNodes)
+		for (const TWeakPtr<FViewModel>& DisplayNode : Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections())
 		{
-			SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+			SequencerHelpers::GetAllKeyAreas(DisplayNode.Pin(), KeyAreas);
 		}
 	}
 
@@ -886,18 +926,19 @@ void FSectionContextMenu::SetInterpTangentMode(ERichCurveInterpMode InterpMode, 
 
 bool FSectionContextMenu::CanSetInterpTangentMode() const
 {
+	using namespace UE::Sequencer;
+
 	TSet<TSharedPtr<IKeyArea> > KeyAreas;
-	for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : Sequencer->GetSelection().GetSelectedOutlinerNodes())
+	for (const TWeakPtr<FViewModel>& WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
 	{
-		SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+		SequencerHelpers::GetAllKeyAreas(WeakItem.Pin(), KeyAreas);
 	}
 
 	if (KeyAreas.Num() == 0)
 	{
-		const TSet<TSharedRef<FSequencerDisplayNode>>& SelectedNodes = Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections();
-		for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : SelectedNodes)
+		for (const TWeakPtr<FViewModel>& DisplayNode : Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections())
 		{
-			SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
+			SequencerHelpers::GetAllKeyAreas(DisplayNode.Pin(), KeyAreas);
 		}
 	}
 
@@ -1279,7 +1320,7 @@ void FSectionContextMenu::SendBackward()
 }
 
 
-bool FPasteContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequencer& InSequencer, const FPasteContextMenuArgs& Args)
+bool FPasteContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, FSequencer& InSequencer, const FPasteContextMenuArgs& Args)
 {
 	TSharedRef<FPasteContextMenu> Menu = MakeShareable(new FPasteContextMenu(InSequencer, Args));
 	Menu->Setup();
@@ -1288,7 +1329,7 @@ bool FPasteContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequencer& InSeque
 		return false;
 	}
 
-	Menu->PopulateMenu(MenuBuilder);
+	Menu->PopulateMenu(MenuBuilder, MenuExtender);
 	return true;
 }
 
@@ -1301,18 +1342,16 @@ TSharedRef<FPasteContextMenu> FPasteContextMenu::CreateMenu(FSequencer& InSequen
 }
 
 
-TArray<TSharedRef<FSequencerSectionKeyAreaNode>> KeyAreaNodesBuffer;
+TArray<TSharedPtr<UE::Sequencer::FChannelGroupModel>> KeyAreaNodesBuffer;
 
-void FPasteContextMenu::GatherPasteDestinationsForNode(FSequencerDisplayNode& InNode, UMovieSceneSection* InSection, const FName& CurrentScope, TMap<FName, FSequencerClipboardReconciler>& Map)
+void FPasteContextMenu::GatherPasteDestinationsForNode(const UE::Sequencer::TViewModelPtr<UE::Sequencer::IOutlinerExtension>& InNode, UMovieSceneSection* InSection, const FName& CurrentScope, TMap<FName, FSequencerClipboardReconciler>& Map)
 {
+	using namespace UE::Sequencer;
+
 	KeyAreaNodesBuffer.Reset();
-	if (InNode.GetType() == ESequencerNode::KeyArea)
+	for (const TViewModelPtr<FChannelGroupModel>& ChannelNode : InNode.AsModel()->GetDescendantsOfType<FChannelGroupModel>(true))
 	{
-		KeyAreaNodesBuffer.Add(StaticCastSharedRef<FSequencerSectionKeyAreaNode>(InNode.AsShared()));
-	}
-	else
-	{
-		InNode.GetChildKeyAreaNodesRecursively(KeyAreaNodesBuffer);
+		KeyAreaNodesBuffer.Add(ChannelNode);
 	}
 
 	if (!KeyAreaNodesBuffer.Num())
@@ -1328,7 +1367,7 @@ void FPasteContextMenu::GatherPasteDestinationsForNode(FSequencerDisplayNode& In
 			ThisScopeString.Append(CurrentScope.ToString());
 			ThisScopeString.AppendChar('.');
 		}
-		ThisScopeString.Append(InNode.GetDisplayName().ToString());
+		ThisScopeString.Append(InNode->GetIdentifier().ToString());
 		ThisScope = *ThisScopeString;
 	}
 
@@ -1339,74 +1378,27 @@ void FPasteContextMenu::GatherPasteDestinationsForNode(FSequencerDisplayNode& In
 	}
 
 	FSequencerClipboardPasteGroup Group = Reconciler->AddDestinationGroup();
-	for (const TSharedRef<FSequencerSectionKeyAreaNode>& KeyAreaNode : KeyAreaNodesBuffer)
+	for (const TSharedPtr<FChannelGroupModel>& KeyAreaNode : KeyAreaNodesBuffer)
 	{
-		TSharedPtr<IKeyArea> KeyArea = KeyAreaNode->GetKeyArea(InSection);
-		if (KeyArea.IsValid())
+		TSharedPtr<FChannelModel> Channel = KeyAreaNode->GetChannel(InSection);
+		if (Channel)
 		{
-			Group.Add(*KeyArea.Get());
+			Group.Add(Channel);
 		}
 	}
 
 	// Add children
-	for (const TSharedPtr<FSequencerDisplayNode> Child : InNode.GetChildNodes())
+	for (const TViewModelPtr<IOutlinerExtension>& Child : InNode.AsModel()->GetChildrenOfType<IOutlinerExtension>())
 	{
-		GatherPasteDestinationsForNode(*Child, InSection, ThisScope, Map);
+		GatherPasteDestinationsForNode(Child, InSection, ThisScope, Map);
 	}
-}
-
-
-void GetFullNodePath(FSequencerDisplayNode& InNode, FString& Path)
-{
-	TSharedPtr<FSequencerDisplayNode> Parent = InNode.GetParent();
-	if (Parent.IsValid())
-	{
-		GetFullNodePath(*Parent, Path);
-	}
-
-	if (!Path.IsEmpty())
-	{
-		Path.AppendChar('.');
-	}
-
-	Path.Append(InNode.GetDisplayName().ToString());
-}
-
-
-TSharedPtr<FSequencerTrackNode> GetTrackFromNode(FSequencerDisplayNode& InNode, FString& Scope)
-{
-	if (InNode.GetType() == ESequencerNode::Track)
-	{
-		return StaticCastSharedRef<FSequencerTrackNode>(InNode.AsShared());
-	}
-	else if (InNode.GetType() == ESequencerNode::Object)
-	{
-		return nullptr;
-	}
-
-	TSharedPtr<FSequencerDisplayNode> Parent = InNode.GetParent();
-	if (Parent.IsValid())
-	{
-		TSharedPtr<FSequencerTrackNode> Track = GetTrackFromNode(*Parent, Scope);
-		if (Track.IsValid())
-		{
-			FString ThisScope = InNode.GetDisplayName().ToString();
-			if (!Scope.IsEmpty())
-			{
-				ThisScope.AppendChar('.');
-				ThisScope.Append(Scope);
-				Scope = MoveTemp(ThisScope);
-			}
-			return Track;
-		}
-	}
-
-	return nullptr;
 }
 
 
 void FPasteContextMenu::Setup()
 {
+	using namespace UE::Sequencer;
+
 	if (!Args.Clipboard.IsValid())
 	{
 		if (Sequencer->GetClipboardStack().Num() != 0)
@@ -1420,35 +1412,28 @@ void FPasteContextMenu::Setup()
 	}
 
 	// Gather a list of sections we want to paste into
-	TArray<FSectionHandle> SectionHandles;
+	TArray<TSharedPtr<FSectionModel>> SectionModels;
 
 	if (Args.DestinationNodes.Num())
 	{
 		// If we have exactly one channel to paste, first check if we have exactly one valid target channel selected to support copying between channels e.g. from Tranform.x to Transform.y
 		if (Args.Clipboard->GetKeyTrackGroups().Num() == 1)
 		{
-			for (const TSharedRef<FSequencerDisplayNode>& Node : Args.DestinationNodes)
+			for (const TViewModelPtr<IOutlinerExtension>& Node : Args.DestinationNodes)
 			{
-				if (Node->GetType() != ESequencerNode::KeyArea && Node->GetType() != ESequencerNode::Category)
-				{
-					continue;
-				}
-
-				FString Scope;
-				TSharedPtr<FSequencerTrackNode> TrackNode = GetTrackFromNode(*Node, Scope);
-				if (!TrackNode.IsValid())
+				TViewModelPtr<ITrackExtension> TrackNode = Node.AsModel()->FindAncestorOfType<ITrackExtension>(true);
+				if (!TrackNode)
 				{
 					continue;
 				}
 
 				FPasteDestination& Destination = PasteDestinations[PasteDestinations.AddDefaulted()];
 
-				TArray<UMovieSceneSection*> Sections;
-				for (TSharedRef<ISequencerSection> Section : TrackNode->GetSections())
+				for (UMovieSceneSection* Section : TrackNode->GetSections())
 				{
-					if (Section.Get().GetSectionObject())
+					if (Section)
 					{
-						GatherPasteDestinationsForNode(*Node, Section.Get().GetSectionObject(), NAME_None, Destination.Reconcilers);
+						GatherPasteDestinationsForNode(Node, Section, NAME_None, Destination.Reconcilers);
 					}
 				}
 
@@ -1487,34 +1472,19 @@ void FPasteContextMenu::Setup()
 		}
 
 		// Build a list of sections based on selected tracks
-		for (const TSharedRef<FSequencerDisplayNode>& Node : Args.DestinationNodes)
+		for (const TViewModelPtr<IOutlinerExtension>& Node : Args.DestinationNodes)
 		{
-			FString Scope;
-			TSharedPtr<FSequencerTrackNode> TrackNode = GetTrackFromNode(*Node, Scope);
-			if (!TrackNode.IsValid())
+			TViewModelPtr<ITrackExtension> TrackNode = Node.AsModel()->FindAncestorOfType<ITrackExtension>(true);
+			if (!TrackNode)
 			{
 				continue;
 			}
 
-			TArray<UMovieSceneSection*> Sections;
-			for (TSharedRef<ISequencerSection> Section : TrackNode->GetSections())
+			UMovieSceneSection* Section = MovieSceneHelpers::FindNearestSectionAtTime(TrackNode->GetSections(), Args.PasteAtTime);
+			TSharedPtr<FSectionModel> SectionModel = Sequencer->GetNodeTree()->GetSectionModel(Section);
+			if (SectionModel)
 			{
-				if (Section.Get().GetSectionObject())
-				{
-					Sections.Add(Section.Get().GetSectionObject());
-				}
-			}
-
-			UMovieSceneSection* Section = MovieSceneHelpers::FindNearestSectionAtTime(Sections, Args.PasteAtTime);
-			int32 SectionIndex = INDEX_NONE;
-			if (Section)
-			{
-				SectionIndex = Sections.IndexOfByKey(Section);
-			}
-
-			if (SectionIndex != INDEX_NONE)
-			{
-				SectionHandles.Add(FSectionHandle(TrackNode.ToSharedRef(), SectionIndex));
+				SectionModels.Add(SectionModel);
 			}
 		}
 	}
@@ -1523,40 +1493,44 @@ void FPasteContextMenu::Setup()
 		// Use the selected sections
 		for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
 		{
-			if (TOptional<FSectionHandle> SectionHandle = Sequencer->GetNodeTree()->GetSectionHandle(WeakSection.Get()))
+			if (TSharedPtr<FSectionModel> SectionHandle = Sequencer->GetNodeTree()->GetSectionModel(WeakSection.Get()))
 			{
-				SectionHandles.Add(SectionHandle.GetValue());
+				SectionModels.Add(SectionHandle);
 			}
 		}
 	}
 
-	TMap<FName, TArray<FSectionHandle>> SectionsByType;
-	for (const FSectionHandle& Section : SectionHandles)
+	TMap<FName, TArray<TSharedPtr<FSectionModel>>> SectionsByType;
+	for (TSharedPtr<FSectionModel> SectionModel : SectionModels)
 	{
-		UMovieSceneTrack* Track = Section.GetTrackNode()->GetTrack();
+		UMovieSceneTrack* Track = SectionModel->GetParentTrackExtension()->GetTrack();
 		if (Track)
 		{
-			SectionsByType.FindOrAdd(Track->GetClass()->GetFName()).Add(Section);
+			SectionsByType.FindOrAdd(Track->GetClass()->GetFName()).Add(SectionModel);
 		}
 	}
 
-	for (const TTuple<FName, TArray<FSectionHandle>>& Pair : SectionsByType)
+	for (const TTuple<FName, TArray<TSharedPtr<FSectionModel>>>& Pair : SectionsByType)
 	{
 		FPasteDestination& Destination = PasteDestinations[PasteDestinations.AddDefaulted()];
 		if (Pair.Value.Num() == 1)
 		{
-			FString Path;
-			GetFullNodePath(*Pair.Value[0].GetTrackNode(), Path);
-			Destination.Name = FText::FromString(Path);
+			TSharedPtr<FViewModel> Model = Pair.Value[0]->FindAncestorOfTypes({ITrackExtension::ID, IOutlinerExtension::ID});
+			if (ensure(Model))
+			{
+				FString Path = IOutlinerExtension::GetPathName(Model);
+				Destination.Name = FText::FromString(Path);
+			}
 		}
 		else
 		{
 			Destination.Name = FText::Format(LOCTEXT("PasteMenuHeaderFormat", "{0} ({1} tracks)"), FText::FromName(Pair.Key), FText::AsNumber(Pair.Value.Num()));
 		}
 
-		for (const FSectionHandle& Section : Pair.Value)
+		for (TSharedPtr<FSectionModel> Section : Pair.Value)
 		{
-			GatherPasteDestinationsForNode(*Section.GetTrackNode(), Section.GetSectionObject(), NAME_None, Destination.Reconcilers);
+			FViewModelPtr Model = Section->FindAncestorOfTypes({ITrackExtension::ID, IOutlinerExtension::ID});
+			GatherPasteDestinationsForNode(Model.ImplicitCast(), Section->GetSection(), NAME_None, Destination.Reconcilers);
 		}
 
 		// Reconcile and remove invalid pastes
@@ -1581,7 +1555,7 @@ bool FPasteContextMenu::IsValidPaste() const
 }
 
 
-void FPasteContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
+void FPasteContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender)
 {
 	// Copy a reference to the context menu by value into each lambda handler to ensure the type stays alive until the menu is closed
 	TSharedRef<FPasteContextMenu> Shared = AsShared();
@@ -1675,11 +1649,11 @@ void FPasteContextMenu::EndPasteInto(bool bAnythingPasted, const TSet<FSequencer
 
 	GEditor->EndTransaction();
 
-	SSequencerSection::ThrobKeySelection();
+	UE::Sequencer::SSequencerSection::ThrobKeySelection();
 
 	FSequencerSelection& Selection = Sequencer->GetSelection();
 	Selection.SuspendBroadcast();
-	Selection.EmptySelectedSections();
+	Selection.EmptySelectedTrackAreaItems();
 	Selection.EmptySelectedKeys();
 
 	for (const FSequencerSelectedKey& Key : NewSelection)
@@ -1688,7 +1662,6 @@ void FPasteContextMenu::EndPasteInto(bool bAnythingPasted, const TSet<FSequencer
 	}
 	Selection.ResumeBroadcast();
 	Selection.GetOnKeySelectionChanged().Broadcast();
-	Selection.GetOnSectionSelectionChanged().Broadcast();
 
 	Sequencer->OnClipboardUsed(Args.Clipboard);
 	Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::TrackValueChanged);
@@ -1701,15 +1674,15 @@ bool FPasteContextMenu::PasteInto(int32 DestinationIndex, FName KeyAreaName, TSe
 	FSequencerPasteEnvironment PasteEnvironment;
 	PasteEnvironment.TickResolution = Sequencer->GetFocusedTickResolution();
 	PasteEnvironment.CardinalTime = Args.PasteAtTime;
-	PasteEnvironment.OnKeyPasted = [&](FKeyHandle Handle, IKeyArea& KeyArea){
-		NewSelection.Add(FSequencerSelectedKey(*KeyArea.GetOwningSection(), KeyArea.AsShared(), Handle));
+	PasteEnvironment.OnKeyPasted = [&](FKeyHandle Handle, TSharedPtr<UE::Sequencer::FChannelModel> Channel){
+		NewSelection.Add(FSequencerSelectedKey(*Channel->GetSection(), Channel, Handle));
 	};
 
 	return Reconciler.Paste(PasteEnvironment);
 }
 
 
-bool FPasteFromHistoryContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequencer& InSequencer, const FPasteContextMenuArgs& Args)
+bool FPasteFromHistoryContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, FSequencer& InSequencer, const FPasteContextMenuArgs& Args)
 {
 	if (InSequencer.GetClipboardStack().Num() == 0)
 	{
@@ -1717,7 +1690,7 @@ bool FPasteFromHistoryContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, FSequenc
 	}
 
 	TSharedRef<FPasteFromHistoryContextMenu> Menu = MakeShareable(new FPasteFromHistoryContextMenu(InSequencer, Args));
-	Menu->PopulateMenu(MenuBuilder);
+	Menu->PopulateMenu(MenuBuilder, MenuExtender);
 	return true;
 }
 
@@ -1733,7 +1706,7 @@ TSharedPtr<FPasteFromHistoryContextMenu> FPasteFromHistoryContextMenu::CreateMen
 }
 
 
-void FPasteFromHistoryContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
+void FPasteFromHistoryContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender)
 {
 	// Copy a reference to the context menu by value into each lambda handler to ensure the type stays alive until the menu is closed
 	TSharedRef<FPasteFromHistoryContextMenu> Shared = AsShared();
@@ -1750,7 +1723,7 @@ void FPasteFromHistoryContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddSubMenu(
 			ThisPasteArgs.Clipboard->GetDisplayText(),
 			FText(),
-			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ PasteMenu->PopulateMenu(SubMenuBuilder); }),
+			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){ PasteMenu->PopulateMenu(SubMenuBuilder, MenuExtender); }),
 			FUIAction (
 				FExecuteAction(),
 				FCanExecuteAction::CreateLambda([=]{ return PasteMenu->IsValidPaste(); })
@@ -1763,22 +1736,24 @@ void FPasteFromHistoryContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.EndSection();
 }
 
-void FEasingContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, const TArray<FEasingAreaHandle>& InEasings, FSequencer& Sequencer, FFrameTime InMouseDownTime)
+void FEasingContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, const TArray<UE::Sequencer::FEasingAreaHandle>& InEasings, FSequencer& Sequencer, FFrameTime InMouseDownTime)
 {
 	TSharedRef<FEasingContextMenu> EasingMenu = MakeShareable(new FEasingContextMenu(InEasings, Sequencer));
-	EasingMenu->PopulateMenu(MenuBuilder);
+	EasingMenu->PopulateMenu(MenuBuilder, MenuExtender);
 
 	MenuBuilder.AddMenuSeparator();
 
-	FSectionContextMenu::BuildMenu(MenuBuilder, Sequencer, InMouseDownTime);
+	FSectionContextMenu::BuildMenu(MenuBuilder, MenuExtender, Sequencer, InMouseDownTime);
 }
 
-void FEasingContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
+void FEasingContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender)
 {
+	using namespace UE::Sequencer;
+
 	FText SectionText = Easings.Num() == 1 ? LOCTEXT("EasingCurve", "Easing Curve") : FText::Format(LOCTEXT("EasingCurvesFormat", "Easing Curves ({0} curves)"), FText::AsNumber(Easings.Num()));
 	const bool bReadOnly = Algo::AnyOf(Easings, [](const FEasingAreaHandle& Handle) -> bool
 		{
-			const UMovieSceneSection* Section = Handle.WeakSection.Get();
+			const UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection();
 			const UMovieSceneTrack* SectionTrack = Section->GetTypedOuter<UMovieSceneTrack>();
 			FMovieSceneSupportsEasingParams Params(Section);
 			return !EnumHasAllFlags(SectionTrack->SupportsEasing(Params), EMovieSceneTrackEasingSupportFlags::ManualEasing);
@@ -1818,8 +1793,8 @@ void FEasingContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 				.HAlign(HAlign_Right)
 				[
 					SNew(SNumericEntryBox<double>)
-					.SpinBoxStyle(&FEditorStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.HyperlinkSpinBox"))
-					.EditableTextBoxStyle(&FEditorStyle::GetWidgetStyle<FEditableTextBoxStyle>("Sequencer.HyperlinkTextBox"))
+					.SpinBoxStyle(&FAppStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.HyperlinkSpinBox"))
+					.EditableTextBoxStyle(&FAppStyle::GetWidgetStyle<FEditableTextBoxStyle>("Sequencer.HyperlinkTextBox"))
 					// Don't update the value when undetermined text changes
 					.OnUndeterminedValueChanged_Lambda([](FText){})
 					.AllowSpin(true)
@@ -1841,7 +1816,7 @@ void FEasingContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 					.OnValueCommitted_Lambda(OnValueCommitted)
 					.OnBeginSliderMovement_Lambda(OnBeginSliderMovement)
 					.OnEndSliderMovement_Lambda(OnEndSliderMovement)
-					.BorderForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+					.BorderForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 					.TypeInterface(Sequencer->GetNumericTypeInterface())
 				]
 			]
@@ -1878,11 +1853,13 @@ void FEasingContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 
 TOptional<int32> FEasingContextMenu::GetCurrentLength() const
 {
+	using namespace UE::Sequencer;
+
 	TOptional<int32> Value;
 
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		UMovieSceneSection* Section = Handle.WeakSection.Get();
+		UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection();
 		if (Section)
 		{
 			if (Handle.EasingType == ESequencerEasingType::In && Section->Easing.GetEaseInDuration() == Value.Get(Section->Easing.GetEaseInDuration()))
@@ -1905,9 +1882,11 @@ TOptional<int32> FEasingContextMenu::GetCurrentLength() const
 
 void FEasingContextMenu::OnUpdateLength(int32 NewLength)
 {
+	using namespace UE::Sequencer;
+
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		if (UMovieSceneSection* Section = Handle.WeakSection.Get())
+		if (UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection())
 		{
 			Section->Modify();
 			if (Handle.EasingType == ESequencerEasingType::In)
@@ -1926,10 +1905,12 @@ void FEasingContextMenu::OnUpdateLength(int32 NewLength)
 
 ECheckBoxState FEasingContextMenu::GetAutoEasingCheckState() const
 {
+	using namespace UE::Sequencer;
+
 	TOptional<bool> IsChecked;
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		if (UMovieSceneSection* Section = Handle.WeakSection.Get())
+		if (UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection())
 		{
 			if (Handle.EasingType == ESequencerEasingType::In)
 			{
@@ -1954,13 +1935,15 @@ ECheckBoxState FEasingContextMenu::GetAutoEasingCheckState() const
 
 void FEasingContextMenu::SetAutoEasing(bool bAutoEasing)
 {
+	using namespace UE::Sequencer;
+
 	FScopedTransaction Transaction(LOCTEXT("SetAutoEasingText", "Set Automatic Easing"));
 
 	TArray<UMovieSceneTrack*> AllTracks;
 
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		if (UMovieSceneSection* Section = Handle.WeakSection.Get())
+		if (UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection())
 		{
 			AllTracks.AddUnique(Section->GetTypedOuter<UMovieSceneTrack>());
 
@@ -1984,11 +1967,13 @@ void FEasingContextMenu::SetAutoEasing(bool bAutoEasing)
 
 FText FEasingContextMenu::GetEasingTypeText() const
 {
+	using namespace UE::Sequencer;
+
 	FText CurrentText;
 	UClass* ClassType = nullptr;
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		if (UMovieSceneSection* Section = Handle.WeakSection.Get())
+		if (UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection())
 		{
 			UObject* Object = Handle.EasingType == ESequencerEasingType::In ? Section->Easing.EaseIn.GetObject() : Section->Easing.EaseOut.GetObject();
 			if (Object)
@@ -2048,11 +2033,13 @@ void FEasingContextMenu::EasingTypeMenu(FMenuBuilder& MenuBuilder)
 
 void FEasingContextMenu::OnEasingTypeChanged(UClass* NewClass)
 {
+	using namespace UE::Sequencer;
+
 	FScopedTransaction Transaction(LOCTEXT("SetEasingType", "Set Easing Method"));
 
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		UMovieSceneSection* Section = Handle.WeakSection.Get();
+		UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection();
 		if (!Section)
 		{
 			continue;
@@ -2073,6 +2060,8 @@ void FEasingContextMenu::OnEasingTypeChanged(UClass* NewClass)
 
 void FEasingContextMenu::EasingOptionsMenu(FMenuBuilder& MenuBuilder)
 {
+	using namespace UE::Sequencer;
+
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
 	FDetailsViewArgs DetailsViewArgs;
@@ -2087,7 +2076,7 @@ void FEasingContextMenu::EasingOptionsMenu(FMenuBuilder& MenuBuilder)
 	TArray<UObject*> Objects;
 	for (const FEasingAreaHandle& Handle : Easings)
 	{
-		if (UMovieSceneSection* Section = Handle.WeakSection.Get())
+		if (UMovieSceneSection* Section = Handle.WeakSectionModel.Pin()->GetSection())
 		{
 			if (Handle.EasingType == ESequencerEasingType::In)
 			{

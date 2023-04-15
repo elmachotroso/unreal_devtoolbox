@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RtAudio.h"
+#include "AudioCaptureCoreLog.h"
 
 #if WITH_RTAUDIO
 
@@ -231,7 +232,7 @@ RtAudio :: RtAudio( RtAudio::Api api )
 
     // No compiled support for specified API value.  Issue a debug
     // warning and continue as if no API was specified.
-    std::cerr << "\nRtAudio: no compiled support for specified API argument!\n" << std::endl;
+    UE_LOG(LogAudioCaptureCore, Warning, TEXT("RtAudio has no compiled support for specified API argument."));
   }
 
   // Iterate through the compiled APIs and return as soon as we find
@@ -248,11 +249,8 @@ RtAudio :: RtAudio( RtAudio::Api api )
   // It should not be possible to get here because the preprocessor
   // definition __RTAUDIO_DUMMY__ is automatically defined if no
   // API-specific definitions are passed to the compiler. But just in
-  // case something weird happens, we'll thow an error.
-  std::string errorText = "\nRtAudio: no compiled API support found ... critical error!!\n\n";
-
-  // Modification: handled exceptions are prohibited in the UE coding standard.
-  // throw_wrapper( RtAudioError( errorText, RtAudioError::UNSPECIFIED ) );
+  // case something weird happens, we'll log an error.
+  UE_LOG(LogAudioCaptureCore, Error, TEXT("RtAudio has no compiled API support found."));
 }
 
 RtAudio :: ~RtAudio()
@@ -538,7 +536,7 @@ RtApiCore:: RtApiCore()
   CFRunLoopRef theRunLoop = NULL;
   AudioObjectPropertyAddress property = { kAudioHardwarePropertyRunLoop,
                                           kAudioObjectPropertyScopeGlobal,
-                                          kAudioObjectPropertyElementMaster };
+										  kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectSetPropertyData( kAudioObjectSystemObject, &property, 0, NULL, sizeof(CFRunLoopRef), &theRunLoop);
   if ( result != noErr ) {
     errorText_ = "RtApiCore::RtApiCore: error setting run loop property!";
@@ -559,7 +557,7 @@ unsigned int RtApiCore :: getDeviceCount( void )
 {
   // Find out how many audio devices there are, if any.
   UInt32 dataSize;
-  AudioObjectPropertyAddress propertyAddress = { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
+  AudioObjectPropertyAddress propertyAddress = { kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectGetPropertyDataSize( kAudioObjectSystemObject, &propertyAddress, 0, NULL, &dataSize );
   if ( result != noErr ) {
     errorText_ = "RtApiCore::getDeviceCount: OS-X error getting device info!";
@@ -577,7 +575,7 @@ unsigned int RtApiCore :: getDefaultInputDevice( void )
 
   AudioDeviceID id;
   UInt32 dataSize = sizeof( AudioDeviceID );
-  AudioObjectPropertyAddress property = { kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
+  AudioObjectPropertyAddress property = { kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectGetPropertyData( kAudioObjectSystemObject, &property, 0, NULL, &dataSize, &id );
   if ( result != noErr ) {
     errorText_ = "RtApiCore::getDefaultInputDevice: OS-X system error getting device.";
@@ -610,7 +608,7 @@ unsigned int RtApiCore :: getDefaultOutputDevice( void )
 
   AudioDeviceID id;
   UInt32 dataSize = sizeof( AudioDeviceID );
-  AudioObjectPropertyAddress property = { kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
+  AudioObjectPropertyAddress property = { kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectGetPropertyData( kAudioObjectSystemObject, &property, 0, NULL, &dataSize, &id );
   if ( result != noErr ) {
     errorText_ = "RtApiCore::getDefaultOutputDevice: OS-X system error getting device.";
@@ -659,7 +657,7 @@ RtAudio::DeviceInfo RtApiCore :: getDeviceInfo( unsigned int device )
   UInt32 dataSize = sizeof( AudioDeviceID ) * nDevices;
   AudioObjectPropertyAddress property = { kAudioHardwarePropertyDevices,
                                           kAudioObjectPropertyScopeGlobal,
-                                          kAudioObjectPropertyElementMaster };
+										  kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectGetPropertyData( kAudioObjectSystemObject, &property,
                                                 0, NULL, &dataSize, (void *) &deviceList );
   if ( result != noErr ) {
@@ -908,7 +906,7 @@ static OSStatus rateListener( AudioObjectID inDevice,
   UInt32 dataSize = sizeof( Float64 );
   AudioObjectPropertyAddress property = { kAudioDevicePropertyNominalSampleRate,
                                           kAudioObjectPropertyScopeGlobal,
-                                          kAudioObjectPropertyElementMaster };
+										  kAudioObjectPropertyElementMain };
   AudioObjectGetPropertyData( inDevice, &property, 0, NULL, &dataSize, rate );
   return kAudioHardwareNoError;
 }
@@ -936,7 +934,7 @@ bool RtApiCore :: probeDeviceOpen( unsigned int device, StreamMode mode, unsigne
   UInt32 dataSize = sizeof( AudioDeviceID ) * nDevices;
   AudioObjectPropertyAddress property = { kAudioHardwarePropertyDevices,
                                           kAudioObjectPropertyScopeGlobal,
-                                          kAudioObjectPropertyElementMaster };
+										  kAudioObjectPropertyElementMain };
   OSStatus result = AudioObjectGetPropertyData( kAudioObjectSystemObject, &property,
                                                 0, NULL, &dataSize, (void *) &deviceList );
   if ( result != noErr ) {
@@ -1127,7 +1125,7 @@ bool RtApiCore :: probeDeviceOpen( unsigned int device, StreamMode mode, unsigne
 
     // Set a property listener for the sample rate change
     Float64 reportedRate = 0.0;
-    AudioObjectPropertyAddress tmp = { kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMaster };
+    AudioObjectPropertyAddress tmp = { kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
     result = AudioObjectAddPropertyListener( id, &tmp, rateListener, (void *) &reportedRate );
     if ( result != noErr ) {
       errorStream_ << "RtApiCore::probeDeviceOpen: system error (" << getErrorCode( result ) << ") setting sample rate property listener for device (" << device << ").";
@@ -1445,7 +1443,7 @@ void RtApiCore :: closeStream( void )
     if (handle) {
       AudioObjectPropertyAddress property = { kAudioHardwarePropertyDevices,
         kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMaster };
+		kAudioObjectPropertyElementMain };
 
       property.mSelector = kAudioDeviceProcessorOverload;
       property.mScope = kAudioObjectPropertyScopeGlobal;
@@ -1468,7 +1466,7 @@ void RtApiCore :: closeStream( void )
     if (handle) {
       AudioObjectPropertyAddress property = { kAudioHardwarePropertyDevices,
         kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMaster };
+		kAudioObjectPropertyElementMain };
 
       property.mSelector = kAudioDeviceProcessorOverload;
       property.mScope = kAudioObjectPropertyScopeGlobal;
@@ -3731,12 +3729,14 @@ static const char* getAsioErrorString( ASIOError result )
 
 //=============================================================================
 
-#define SAFE_RELEASE( objectPtr )\
-if ( objectPtr )\
-{\
-  objectPtr->Release();\
-  objectPtr = NULL;\
-}
+#if !defined(SAFE_RELEASE)
+	#define SAFE_RELEASE( objectPtr )\
+	if ( objectPtr )\
+	{\
+	  objectPtr->Release();\
+	  objectPtr = NULL;\
+	}
+#endif
 
 typedef HANDLE ( __stdcall *TAvSetMmThreadCharacteristicsPtr )( LPCWSTR TaskName, LPDWORD TaskIndex );
 

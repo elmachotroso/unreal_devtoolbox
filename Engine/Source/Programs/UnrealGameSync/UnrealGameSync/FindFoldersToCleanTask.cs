@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -18,12 +20,12 @@ namespace UnrealGameSync
 		public Dictionary<string, FileInfo> NameToFile = new Dictionary<string, FileInfo>(StringComparer.InvariantCultureIgnoreCase);
 		public List<FileInfo> FilesToDelete = new List<FileInfo>();
 		public List<FileInfo> FilesToSync = new List<FileInfo>();
-		public bool bEmptyLeaf = false;
-		public bool bEmptyAfterClean = true;
+		public bool EmptyLeaf = false;
+		public bool EmptyAfterClean = true;
 
-		public FolderToClean(DirectoryInfo InDirectory)
+		public FolderToClean(DirectoryInfo inDirectory)
 		{
-			Directory = InDirectory;
+			Directory = inDirectory;
 		}
 
 		public string Name
@@ -37,215 +39,230 @@ namespace UnrealGameSync
 		}
 	}
 
-	class FindFoldersToCleanTask : IModalTask, IDisposable
+	class FindFoldersToCleanTask : IDisposable
 	{
 		class PerforceHaveFolder
 		{
-			public Dictionary<string, PerforceHaveFolder> NameToSubFolder = new Dictionary<string,PerforceHaveFolder>(StringComparer.InvariantCultureIgnoreCase);
-			public Dictionary<string, PerforceFileRecord> NameToFile = new Dictionary<string,PerforceFileRecord>(StringComparer.InvariantCultureIgnoreCase);
+			public Dictionary<string, PerforceHaveFolder> NameToSubFolder = new Dictionary<string,PerforceHaveFolder>(StringComparer.OrdinalIgnoreCase);
+			public Dictionary<string, FStatRecord> NameToFile = new Dictionary<string, FStatRecord>(StringComparer.OrdinalIgnoreCase);
 		}
 
-		PerforceConnection PerforceClient;
-		string ClientRootPath;
-		IReadOnlyList<string> SyncPaths;
-		TextWriter Log;
-		FolderToClean RootFolderToClean;
+		IPerforceSettings _perforceSettings;
+		string _clientRootPath;
+		IReadOnlyList<string> _syncPaths;
+		ILogger _logger;
+		FolderToClean _rootFolderToClean;
 
-		int RemainingFoldersToScan;
-		ManualResetEvent FinishedScan = new ManualResetEvent(false);
-		bool bAbortScan;
-		string ScanError;
+		int _remainingFoldersToScan;
+		ManualResetEvent _finishedScan = new ManualResetEvent(false);
+		bool _abortScan;
+		string? _scanError;
 
 		public List<string> FileNames = new List<string>();
 
-		public FindFoldersToCleanTask(PerforceConnection InPerforceClient, FolderToClean InRootFolderToClean, string InClientRootPath, IReadOnlyList<string> InSyncPaths, TextWriter InLog)
+		public FindFoldersToCleanTask(IPerforceSettings inPerforceSettings, FolderToClean inRootFolderToClean, string inClientRootPath, IReadOnlyList<string> inSyncPaths, ILogger logger)
 		{
-			PerforceClient = InPerforceClient;
-			ClientRootPath = InClientRootPath.TrimEnd('/') + "/";
-			SyncPaths = new List<string>(InSyncPaths);
-			Log = InLog;
-			RootFolderToClean = InRootFolderToClean;
-			FinishedScan = new ManualResetEvent(true);
+			_perforceSettings = inPerforceSettings;
+			_clientRootPath = inClientRootPath.TrimEnd('/') + "/";
+			_syncPaths = new List<string>(inSyncPaths);
+			this._logger = logger;
+			_rootFolderToClean = inRootFolderToClean;
+			_finishedScan = new ManualResetEvent(true);
 		}
 
-		void QueueFolderToPopulate(FolderToClean Folder)
+		void QueueFolderToPopulate(FolderToClean folder)
 		{
-			if(Interlocked.Increment(ref RemainingFoldersToScan) == 1)
+			if(Interlocked.Increment(ref _remainingFoldersToScan) == 1)
 			{
-				FinishedScan.Reset();
+				_finishedScan.Reset();
 			}
-			ThreadPool.QueueUserWorkItem(x => PopulateFolder(Folder));
+			ThreadPool.QueueUserWorkItem(x => PopulateFolder(folder));
 		}
 
-		void PopulateFolder(FolderToClean Folder)
+		void PopulateFolder(FolderToClean folder)
 		{
-			if(!bAbortScan)
+			if(!_abortScan)
 			{
 				try
 				{
-					if ((Folder.Directory.Attributes & FileAttributes.ReparsePoint) == 0)
+					if ((folder.Directory.Attributes & FileAttributes.ReparsePoint) == 0)
 					{
-						foreach (DirectoryInfo SubDirectory in Folder.Directory.EnumerateDirectories())
+						foreach (DirectoryInfo subDirectory in folder.Directory.EnumerateDirectories())
 						{
-							FolderToClean SubFolder = new FolderToClean(SubDirectory);
-							Folder.NameToSubFolder[SubFolder.Name] = SubFolder;
-							QueueFolderToPopulate(SubFolder);
+							FolderToClean subFolder = new FolderToClean(subDirectory);
+							folder.NameToSubFolder[subFolder.Name] = subFolder;
+							QueueFolderToPopulate(subFolder);
 						}
-						foreach (FileInfo File in Folder.Directory.EnumerateFiles())
+						foreach (FileInfo file in folder.Directory.EnumerateFiles())
 						{
-							FileAttributes Attributes = File.Attributes; // Force the value to be cached.
-							Folder.NameToFile[File.Name] = File;
+							FileAttributes attributes = file.Attributes; // Force the value to be cached.
+							folder.NameToFile[file.Name] = file;
 						}
 					}
 				}
-				catch (Exception Ex)
+				catch (Exception ex)
 				{
-					string NewError = String.Format("Unable to enumerate contents of {0} due to an error:\n\n{1}", Folder.Directory.FullName, Ex);
-					Interlocked.CompareExchange(ref ScanError, NewError, null);
-					bAbortScan = true;
+					string newError = String.Format("Unable to enumerate contents of {0} due to an error:\n\n{1}", folder.Directory.FullName, ex);
+					Interlocked.CompareExchange(ref _scanError, newError, null);
+					_abortScan = true;
 				}
 			}
 
-			if(Interlocked.Decrement(ref RemainingFoldersToScan) == 0)
+			if(Interlocked.Decrement(ref _remainingFoldersToScan) == 0)
 			{
-				FinishedScan.Set();
+				_finishedScan.Set();
 			}
 		}
 
-		void MergeTrees(FolderToClean LocalFolder, PerforceHaveFolder PerforceFolder, HashSet<string> OpenClientPaths, string PerforceConfigFile)
+		void MergeTrees(FolderToClean localFolder, PerforceHaveFolder? perforceFolder, HashSet<string> openClientPaths, string? perforceConfigFile)
 		{
-			if(PerforceFolder == null)
+			if(perforceFolder == null)
 			{
 				// Loop through all the local sub-folders
-				foreach(FolderToClean LocalSubFolder in LocalFolder.NameToSubFolder.Values)
+				foreach(FolderToClean localSubFolder in localFolder.NameToSubFolder.Values)
 				{
-					MergeTrees(LocalSubFolder, null, OpenClientPaths, PerforceConfigFile);
+					MergeTrees(localSubFolder, null, openClientPaths, perforceConfigFile);
 				}
 
 				// Delete everything
-				LocalFolder.FilesToDelete.AddRange(LocalFolder.NameToFile.Values);
+				localFolder.FilesToDelete.AddRange(localFolder.NameToFile.Values);
 			}
 			else
 			{
 				// Loop through all the local sub-folders
-				foreach(FolderToClean LocalSubFolder in LocalFolder.NameToSubFolder.Values)
+				foreach(FolderToClean localSubFolder in localFolder.NameToSubFolder.Values)
 				{
-					PerforceHaveFolder PerforceSubFolder;
-					PerforceFolder.NameToSubFolder.TryGetValue(LocalSubFolder.Name, out PerforceSubFolder);
-					MergeTrees(LocalSubFolder, PerforceSubFolder, OpenClientPaths, PerforceConfigFile);
+					PerforceHaveFolder? perforceSubFolder;
+					perforceFolder.NameToSubFolder.TryGetValue(localSubFolder.Name, out perforceSubFolder);
+					MergeTrees(localSubFolder, perforceSubFolder, openClientPaths, perforceConfigFile);
 				}
 
 				// Also merge all the Perforce folders that no longer exist
-				foreach(KeyValuePair<string, PerforceHaveFolder> PerforceSubFolderPair in PerforceFolder.NameToSubFolder)
+				foreach(KeyValuePair<string, PerforceHaveFolder> perforceSubFolderPair in perforceFolder.NameToSubFolder)
 				{
-					FolderToClean LocalSubFolder;
-					if(!LocalFolder.NameToSubFolder.TryGetValue(PerforceSubFolderPair.Key, out LocalSubFolder))
+					FolderToClean? localSubFolder;
+					if(!localFolder.NameToSubFolder.TryGetValue(perforceSubFolderPair.Key, out localSubFolder))
 					{
-						LocalSubFolder = new FolderToClean(new DirectoryInfo(Path.Combine(LocalFolder.Directory.FullName, PerforceSubFolderPair.Key)));
-						MergeTrees(LocalSubFolder, PerforceSubFolderPair.Value, OpenClientPaths, PerforceConfigFile);
-						LocalFolder.NameToSubFolder.Add(LocalSubFolder.Name, LocalSubFolder);
+						localSubFolder = new FolderToClean(new DirectoryInfo(Path.Combine(localFolder.Directory.FullName, perforceSubFolderPair.Key)));
+						MergeTrees(localSubFolder, perforceSubFolderPair.Value, openClientPaths, perforceConfigFile);
+						localFolder.NameToSubFolder.Add(localSubFolder.Name, localSubFolder);
 					}
 				}
 
 				// Find all the files that need to be re-synced
-				foreach(KeyValuePair<string, PerforceFileRecord> FilePair in PerforceFolder.NameToFile)
+				foreach(KeyValuePair<string, FStatRecord> filePair in perforceFolder.NameToFile)
 				{
-					FileInfo LocalFile;
-					if(!LocalFolder.NameToFile.TryGetValue(FilePair.Key, out LocalFile))
+					FileInfo? localFile;
+					if(!localFolder.NameToFile.TryGetValue(filePair.Key, out localFile))
 					{
-						LocalFolder.FilesToSync.Add(new FileInfo(Path.Combine(LocalFolder.Directory.FullName, FilePair.Key)));
+						localFolder.FilesToSync.Add(new FileInfo(Path.Combine(localFolder.Directory.FullName, filePair.Key)));
 					}
-					else if((FilePair.Value.Flags & PerforceFileFlags.AlwaysWritable) == 0 && (LocalFile.Attributes & FileAttributes.ReadOnly) == 0 && !OpenClientPaths.Contains(FilePair.Value.ClientPath))
+					else if(IsFileTypeWritable(filePair.Value?.HeadType ?? filePair.Value?.Type) && (localFile.Attributes & FileAttributes.ReadOnly) == 0 && !openClientPaths.Contains(filePair.Value?.ClientFile ?? ""))
 					{
-						LocalFolder.FilesToSync.Add(LocalFile);
+						localFolder.FilesToSync.Add(localFile);
 					}
 				}
 
 				// Find all the files that should be deleted
-				foreach(FileInfo LocalFileInfo in LocalFolder.NameToFile.Values)
+				foreach(FileInfo localFileInfo in localFolder.NameToFile.Values)
 				{
-					if(!PerforceFolder.NameToFile.ContainsKey(LocalFileInfo.Name) && !OpenClientPaths.Contains(LocalFileInfo.FullName))
+					if(!perforceFolder.NameToFile.ContainsKey(localFileInfo.Name) && !openClientPaths.Contains(localFileInfo.FullName))
 					{
-						LocalFolder.FilesToDelete.Add(LocalFileInfo);
+						localFolder.FilesToDelete.Add(localFileInfo);
 					}
 				}
 			}
 
 			// Remove any config files
-			if(PerforceConfigFile != null)
+			if(perforceConfigFile != null)
 			{
-				LocalFolder.FilesToDelete.RemoveAll(x => String.Compare(x.Name, PerforceConfigFile, StringComparison.OrdinalIgnoreCase) == 0);
+				localFolder.FilesToDelete.RemoveAll(x => String.Compare(x.Name, perforceConfigFile, StringComparison.OrdinalIgnoreCase) == 0);
 			}
 
 			// Figure out if this folder is just an empty directory that needs to be removed
-			LocalFolder.bEmptyLeaf = LocalFolder.NameToFile.Count == 0 && LocalFolder.NameToSubFolder.Count == 0 && LocalFolder.FilesToSync.Count == 0;
+			localFolder.EmptyLeaf = localFolder.NameToFile.Count == 0 && localFolder.NameToSubFolder.Count == 0 && localFolder.FilesToSync.Count == 0;
 
 			// Figure out if it the folder will be empty after the clean operation
-			LocalFolder.bEmptyAfterClean = LocalFolder.NameToSubFolder.Values.All(x => x.bEmptyAfterClean) && LocalFolder.FilesToDelete.Count == LocalFolder.NameToFile.Count && LocalFolder.FilesToSync.Count == 0;
+			localFolder.EmptyAfterClean = localFolder.NameToSubFolder.Values.All(x => x.EmptyAfterClean) && localFolder.FilesToDelete.Count == localFolder.NameToFile.Count && localFolder.FilesToSync.Count == 0;
 		}
 
-		void RemoveEmptyFolders(FolderToClean Folder)
+		static bool IsFileTypeWritable(string? type)
 		{
-			foreach(FolderToClean SubFolder in Folder.NameToSubFolder.Values)
+			if (type != null)
 			{
-				RemoveEmptyFolders(SubFolder);
+				int idx = type.IndexOf('+');
+				if (idx != -1)
+				{
+					return type.IndexOf('w', idx) != -1;
+				}
+			}
+			return true;
+		}
+
+		void RemoveEmptyFolders(FolderToClean folder)
+		{
+			foreach(FolderToClean subFolder in folder.NameToSubFolder.Values)
+			{
+				RemoveEmptyFolders(subFolder);
 			}
 
-			Folder.NameToSubFolder = Folder.NameToSubFolder.Values.Where(x => x.NameToSubFolder.Count > 0 || x.FilesToSync.Count > 0 || x.FilesToDelete.Count > 0 || x.bEmptyLeaf).ToDictionary(x => x.Name, x => x, StringComparer.InvariantCultureIgnoreCase);
+			folder.NameToSubFolder = folder.NameToSubFolder.Values.Where(x => x.NameToSubFolder.Count > 0 || x.FilesToSync.Count > 0 || x.FilesToDelete.Count > 0 || x.EmptyLeaf).ToDictionary(x => x.Name, x => x, StringComparer.InvariantCultureIgnoreCase);
 		}
 
 		public void Dispose()
 		{
-			bAbortScan = true;
+			_abortScan = true;
 
-			if(FinishedScan != null)
+			if(_finishedScan != null)
 			{
-				FinishedScan.WaitOne();
-				FinishedScan.Dispose();
-				FinishedScan = null;
+				_finishedScan.WaitOne();
+				_finishedScan.Dispose();
+				_finishedScan = null!;
 			}
 		}
 
-		public bool Run(out string ErrorMessage)
+		public async Task RunAsync(CancellationToken cancellationToken)
 		{
-			Log.WriteLine("Finding files in workspace...");
-			Log.WriteLine();
+			using IPerforceConnection perforceClient = await PerforceConnection.CreateAsync(_perforceSettings, _logger);
+
+			_logger.LogInformation("Finding files in workspace...");
+			_logger.LogInformation("");
 
 			// Clear the current error
-			ScanError = null;
+			_scanError = null;
 
 			// Start enumerating all the files that exist locally
-			foreach(string SyncPath in SyncPaths)
+			foreach(string syncPath in _syncPaths)
 			{
-				Debug.Assert(SyncPath.StartsWith(ClientRootPath));
-				if(SyncPath.StartsWith(ClientRootPath, StringComparison.InvariantCultureIgnoreCase))
+				Debug.Assert(syncPath.StartsWith(_clientRootPath));
+				if(syncPath.StartsWith(_clientRootPath, StringComparison.InvariantCultureIgnoreCase))
 				{
-					string[] Fragments = SyncPath.Substring(ClientRootPath.Length).Split('/');
+					string[] fragments = syncPath.Substring(_clientRootPath.Length).Split('/');
 
-					FolderToClean SyncFolder = RootFolderToClean;
-					for(int Idx = 0; Idx < Fragments.Length - 1; Idx++)
+					FolderToClean syncFolder = _rootFolderToClean;
+					for(int idx = 0; idx < fragments.Length - 1; idx++)
 					{
-						FolderToClean NextSyncFolder;
-						if(!SyncFolder.NameToSubFolder.TryGetValue(Fragments[Idx], out NextSyncFolder))
+						FolderToClean? nextSyncFolder;
+						if(!syncFolder.NameToSubFolder.TryGetValue(fragments[idx], out nextSyncFolder))
 						{
-							NextSyncFolder = new FolderToClean(new DirectoryInfo(Path.Combine(SyncFolder.Directory.FullName, Fragments[Idx])));
-							SyncFolder.NameToSubFolder[NextSyncFolder.Name] = NextSyncFolder;
+							nextSyncFolder = new FolderToClean(new DirectoryInfo(Path.Combine(syncFolder.Directory.FullName, fragments[idx])));
+							syncFolder.NameToSubFolder[nextSyncFolder.Name] = nextSyncFolder;
 						}
-						SyncFolder = NextSyncFolder;
+						syncFolder = nextSyncFolder;
 					}
 
-					string Wildcard = Fragments[Fragments.Length - 1];
-					if(Wildcard == "...")
+					string wildcard = fragments[fragments.Length - 1];
+					if(wildcard == "...")
 					{
-						QueueFolderToPopulate(SyncFolder);
+						QueueFolderToPopulate(syncFolder);
 					}
 					else
 					{
-						if(SyncFolder.Directory.Exists)
+						if(syncFolder.Directory.Exists)
 						{
-							foreach(FileInfo File in SyncFolder.Directory.EnumerateFiles(Wildcard))
+							foreach(FileInfo file in syncFolder.Directory.EnumerateFiles(wildcard))
 							{
-								SyncFolder.NameToFile[File.Name] = File;
+								syncFolder.NameToFile[file.Name] = file;
 							}
 						}
 					}
@@ -253,84 +270,68 @@ namespace UnrealGameSync
 			}
 
 			// Get the prefix for any local file
-			string LocalRootPrefix = RootFolderToClean.Directory.FullName.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+			string localRootPrefix = _rootFolderToClean.Directory.FullName.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
 			// Query the have table and build a separate tree from it
-			PerforceHaveFolder RootHaveFolder = new PerforceHaveFolder();
-			foreach(string SyncPath in SyncPaths)
+			PerforceHaveFolder rootHaveFolder = new PerforceHaveFolder();
+			foreach(string syncPath in _syncPaths)
 			{
-				List<PerforceFileRecord> FileRecords;
-				if(!PerforceClient.Stat(String.Format("{0}#have", SyncPath), out FileRecords, Log))
+				List<FStatRecord> fileRecords = await perforceClient.FStatAsync($"{syncPath}#have", cancellationToken).ToListAsync(cancellationToken);
+				foreach(FStatRecord fileRecord in fileRecords)
 				{
-					ErrorMessage = "Couldn't query have table from Perforce.";
-					return false;
-				}
-				foreach(PerforceFileRecord FileRecord in FileRecords)
-				{
-					if(!FileRecord.ClientPath.StartsWith(LocalRootPrefix, StringComparison.InvariantCultureIgnoreCase))
+					if(fileRecord.ClientFile == null || !fileRecord.ClientFile.StartsWith(localRootPrefix, StringComparison.InvariantCultureIgnoreCase))
 					{
-						ErrorMessage = String.Format("Failed to get have table; file '{0}' doesn't start with root path ('{1}')", FileRecord.ClientPath, RootFolderToClean.Directory.FullName);
-						return false;
+						throw new UserErrorException($"Failed to get have table; file '{fileRecord.ClientFile}' doesn't start with root path ('{_rootFolderToClean.Directory.FullName}')");
 					}
 
-					string[] Tokens = FileRecord.ClientPath.Substring(LocalRootPrefix.Length).Split('/', '\\');
+					string[] tokens = fileRecord.ClientFile.Substring(localRootPrefix.Length).Split('/', '\\');
 
-					PerforceHaveFolder FileFolder = RootHaveFolder;
-					for(int Idx = 0; Idx < Tokens.Length - 1; Idx++)
+					PerforceHaveFolder fileFolder = rootHaveFolder;
+					for(int idx = 0; idx < tokens.Length - 1; idx++)
 					{
-						PerforceHaveFolder NextFileFolder;
-						if(!FileFolder.NameToSubFolder.TryGetValue(Tokens[Idx], out NextFileFolder))
+						PerforceHaveFolder? nextFileFolder;
+						if(!fileFolder.NameToSubFolder.TryGetValue(tokens[idx], out nextFileFolder))
 						{
-							NextFileFolder = new PerforceHaveFolder();
-							FileFolder.NameToSubFolder.Add(Tokens[Idx], NextFileFolder);
+							nextFileFolder = new PerforceHaveFolder();
+							fileFolder.NameToSubFolder.Add(tokens[idx], nextFileFolder);
 						}
-						FileFolder = NextFileFolder;
+						fileFolder = nextFileFolder;
 					}
-					FileFolder.NameToFile[Tokens[Tokens.Length - 1]] = FileRecord;
+					fileFolder.NameToFile[tokens[tokens.Length - 1]] = fileRecord;
 				}
 			}
 
 			// Find all the files which are currently open for edit. We don't want to force sync these.
-			List<PerforceFileRecord> OpenFileRecords;
-			if(!PerforceClient.GetOpenFiles("//...", out OpenFileRecords, Log))
-			{
-				ErrorMessage = "Couldn't query open files from Perforce.";
-				return false;
-			}
+			List<OpenedRecord> openFileRecords = await perforceClient.OpenedAsync(OpenedOptions.None, -1, null, null, -1, "//...", cancellationToken).ToListAsync(cancellationToken);
 
 			// Build a set of all the open local files
-			HashSet<string> OpenLocalFiles = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-			foreach(PerforceFileRecord OpenFileRecord in OpenFileRecords)
+			HashSet<string> openLocalFiles = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+			foreach (OpenedRecord openFileRecord in openFileRecords)
 			{
-				if(!OpenFileRecord.ClientPath.StartsWith(ClientRootPath, StringComparison.InvariantCultureIgnoreCase))
+				if(!openFileRecord.ClientFile.StartsWith(_clientRootPath, StringComparison.InvariantCultureIgnoreCase))
 				{
-					ErrorMessage = String.Format("Failed to get open file list; file '{0}' doesn't start with client root path ('{1}')", OpenFileRecord.ClientPath, ClientRootPath);
-					return false;
+					throw new UserErrorException($"Failed to get open file list; file '{openFileRecord.ClientFile}' doesn't start with client root path ('{_clientRootPath}')");
 				}
-				OpenLocalFiles.Add(LocalRootPrefix + PerforceUtils.UnescapePath(OpenFileRecord.ClientPath).Substring(ClientRootPath.Length).Replace('/', Path.DirectorySeparatorChar));
+				openLocalFiles.Add(localRootPrefix + PerforceUtils.UnescapePath(openFileRecord.ClientFile).Substring(_clientRootPath.Length).Replace('/', Path.DirectorySeparatorChar));
 			}
 
 			// Wait to finish scanning the directory
-			FinishedScan.WaitOne();
+			_finishedScan.WaitOne();
 
 			// Check if there was an error
-			if (ScanError != null)
+			if (_scanError != null)
 			{
-				ErrorMessage = ScanError;
-				return false;
+				throw new UserErrorException(_scanError);
 			}
 
 			// Find the value of the P4CONFIG variable
-			string PerforceConfigFile;
-			PerforceClient.GetSetting("P4CONFIG", out PerforceConfigFile, Log);
+			string? perforceConfigFile = PerforceEnvironment.Default.GetValue("P4CONFIG");
 
 			// Merge the trees
-			MergeTrees(RootFolderToClean, RootHaveFolder, OpenLocalFiles, PerforceConfigFile);
+			MergeTrees(_rootFolderToClean, rootHaveFolder, openLocalFiles, perforceConfigFile);
 
 			// Remove all the empty folders
-			RemoveEmptyFolders(RootFolderToClean);
-			ErrorMessage = null;
-			return true;
+			RemoveEmptyFolders(_rootFolderToClean);
 		}
 	}
 }

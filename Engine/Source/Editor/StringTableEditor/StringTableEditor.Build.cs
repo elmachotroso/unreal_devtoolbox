@@ -15,16 +15,11 @@ public class StringTableEditor : ModuleRules
                 "InputCore",
                 "Slate",
                 "SlateCore",
-                "EditorStyle",
                 "DesktopPlatform",
 				"EditorFramework",
                 "UnrealEd",
-            });
-
-        PrivateIncludePathModuleNames.AddRange(
-            new string[] {
-                "AssetTools"
-            });
+				"AssetTools",
+			});
 
         DynamicallyLoadedModuleNames.Add("WorkspaceMenuStructure");
     }

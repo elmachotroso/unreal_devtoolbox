@@ -28,14 +28,17 @@ public:
 		void ResetFromSceneView(const FSceneView& SceneView)
 		{
 			ViewMatrix = SceneView.ViewMatrices.GetViewMatrix();
+			InvViewMatrix = SceneView.ViewMatrices.GetInvViewMatrix();
 			ViewProjectionMatrix = SceneView.ViewMatrices.GetViewProjectionMatrix();
 		}
 
 		const FMatrix& GetViewMatrix() const { return ViewMatrix; }
+		const FMatrix& GetInvViewMatrix() const { return InvViewMatrix; }
 		const FMatrix& GetViewProjectionMatrix() const { return ViewProjectionMatrix; }
 
 	protected:
 		FMatrix ViewMatrix;
+		FMatrix InvViewMatrix;
 		FMatrix ViewProjectionMatrix;
 	};
 
@@ -59,6 +62,27 @@ public:
 	FVector4 WorldToScreen(const FVector& WorldPoint) const
 	{
 		return ViewMatrices.GetViewProjectionMatrix().TransformFVector4(FVector4(WorldPoint, 1));
+	}
+
+	bool ScreenToPixel(const FVector4& ScreenPoint, FVector2D& OutPixelLocation) const
+	{
+		// implementation copied from FSceneView::ScreenToPixel() 
+
+		if (ScreenPoint.W != 0.0f)
+		{
+			//Reverse the W in the case it is negative, this allow to manipulate a manipulator in the same direction when the camera is really close to the manipulator.
+			double InvW = (ScreenPoint.W > 0.0 ? 1.0 : -1.0) / ScreenPoint.W;
+			double Y = (GProjectionSignY > 0.0) ? ScreenPoint.Y : 1.0 - ScreenPoint.Y;
+			OutPixelLocation = FVector2D(
+				UnscaledViewRect.Min.X + (0.5 + ScreenPoint.X * 0.5 * InvW) * UnscaledViewRect.Width(),
+				UnscaledViewRect.Min.Y + (0.5 - Y * 0.5 * InvW) * UnscaledViewRect.Height()
+			);
+			return true;
+		}
+		else
+		{
+			return false;
+		}
 	}
 
 	FMatrices ViewMatrices;

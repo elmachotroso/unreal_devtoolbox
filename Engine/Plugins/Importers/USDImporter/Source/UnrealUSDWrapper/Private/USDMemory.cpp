@@ -2,10 +2,13 @@
 
 #include "USDMemory.h"
 
+#include "Async/Async.h"
 #include "Containers/Array.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/TlsAutoCleanup.h"
 #include "Misc/ScopeLock.h"
+
+LLM_DEFINE_TAG( Usd );
 
 class UNREALUSDWRAPPER_API FTlsSlot final
 {
@@ -91,7 +94,7 @@ private:
 };
 
 TOptional< FTlsSlot > FUsdMemoryManager::ActiveAllocatorsStackTLS {};
-TSet< void* > FUsdMemoryManager::SystemAllocedPtrs {};
+FUsdMemoryManager::FThreadSafeSet FUsdMemoryManager::SystemAllocedPtrs {};
 FCriticalSection FUsdMemoryManager::CriticalSection{};
 
 void FUsdMemoryManager::Initialize()
@@ -113,7 +116,7 @@ void FUsdMemoryManager::ActivateAllocator( EUsdActiveAllocator Allocator )
 bool FUsdMemoryManager::DeactivateAllocator( EUsdActiveAllocator Allocator )
 {
 	FActiveAllocatorsStack& ActiveAllocatorStack = GetActiveAllocatorsStackForThread();
-		
+
 	// Remove the topmost instance of Allocator on the stack
 	if ( ActiveAllocatorStack->Num() > 0 )
 	{
@@ -136,6 +139,8 @@ bool FUsdMemoryManager::DeactivateAllocator( EUsdActiveAllocator Allocator )
 
 void* FUsdMemoryManager::Malloc( SIZE_T Count )
 {
+	LLM_SCOPE_BYTAG(Usd);
+
 	void* Result = nullptr;
 
 #if USD_USES_SYSTEM_MALLOC
@@ -143,8 +148,8 @@ void* FUsdMemoryManager::Malloc( SIZE_T Count )
 	{
 		Result = FMemory::SystemMalloc( Count );
 
+		if ( Result )
 		{
-			FScopeLock Lock( &CriticalSection );
 			SystemAllocedPtrs.Add( Result );
 		}
 	}
@@ -162,13 +167,10 @@ void FUsdMemoryManager::Free( void* Original )
 #if USD_USES_SYSTEM_MALLOC
 	// Because USD is multi-threaded, it might call us back to free an object after we've exited our allocator scope.
 	// This can happen for inlined USD functions that call delete.
-	if ( FUsdMemoryManager::IsUsingSystemMalloc() || SystemAllocedPtrs.Contains( Original ) )
+	// Skip nullptr to avoid collision between threads for something that was not inserted in the first place.
+	const bool bRemoved = Original != nullptr && SystemAllocedPtrs.Remove( Original );
+	if ( FUsdMemoryManager::IsUsingSystemMalloc() || bRemoved )
 	{
-		{
-			FScopeLock Lock( &CriticalSection );
-			SystemAllocedPtrs.Remove( Original );
-		}
-
 		FMemory::SystemFree( Original );
 	}
 	else
@@ -187,7 +189,7 @@ bool FUsdMemoryManager::IsUsingSystemMalloc()
 	}
 
 	FActiveAllocatorsStack* ActiveAllocatorStack = reinterpret_cast< FActiveAllocatorsStack* >( ActiveAllocatorsStackTLS->GetTlsValue() );
-	
+
 	if ( ActiveAllocatorStack && (*ActiveAllocatorStack)->Num() > 0 )
 	{
 		return (*ActiveAllocatorStack)->Top() == EUsdActiveAllocator::System;

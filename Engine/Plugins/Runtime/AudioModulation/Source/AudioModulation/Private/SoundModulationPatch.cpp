@@ -9,7 +9,8 @@
 #include "SoundControlBus.h"
 #include "SoundModulationParameter.h"
 #include "SoundModulationPatchProxy.h"
-#include "SoundModulationTransform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundModulationPatch)
 
 
 #define LOCTEXT_NAMESPACE "SoundModulationPatch"
@@ -58,6 +59,11 @@ void USoundModulationPatch::PostEditChangeChainProperty(FPropertyChangedChainEve
 
 	Super::PostEditChangeChainProperty(InPropertyChangedEvent);
 }
+
+void USoundModulationPatch::PreSave(FObjectPreSaveContext InSaveContext)
+{
+	Super::PreSave(InSaveContext);
+}
 #endif // WITH_EDITOR
 
 FSoundControlModulationInput::FSoundControlModulationInput()
@@ -76,3 +82,4 @@ const USoundControlBus& FSoundControlModulationInput::GetBusChecked() const
 	return *Bus;
 }
 #undef LOCTEXT_NAMESPACE // SoundModulationPatch
+

@@ -27,6 +27,16 @@ constexpr const TCHAR* OpenXRSessionStateToString(XrSessionState e)
 	}
 }
 
+#define XR_REFERENCE_SPACE_TYPE_STR(name, val) case name: return TEXT(#name);
+constexpr const TCHAR* OpenXRReferenceSpaceTypeToString(XrReferenceSpaceType e)
+{
+	switch (e)
+	{
+		XR_LIST_ENUM_XrReferenceSpaceType(XR_REFERENCE_SPACE_TYPE_STR);
+	default: return TEXT("Unknown");
+	}
+}
+
 #if DO_CHECK
 #define XR_ENSURE(x) [] (XrResult Result) \
 	{ \
@@ -49,6 +59,11 @@ FORCEINLINE XrQuaternionf ToXrQuat(FQuat Quat)
 FORCEINLINE FVector ToFVector(XrVector3f Vector, float Scale = 1.0f)
 {
 	return FVector(-Vector.z * Scale, Vector.x * Scale, Vector.y * Scale);
+}
+
+FORCEINLINE FVector3f ToFVector3f(XrVector3f Vector, float Scale = 1.0f)
+{
+	return FVector3f(-Vector.z * Scale, Vector.x * Scale, Vector.y * Scale);
 }
 
 FORCEINLINE XrVector3f ToXrVector(FVector Vector, float Scale = 1.0f)
@@ -91,6 +106,11 @@ FORCEINLINE XrRect2Di ToXrRect(FIntRect Rect)
 	return XrRect2Di{ { Rect.Min.X, Rect.Min.Y }, { Rect.Width(), Rect.Height() } };
 }
 
+FORCEINLINE FVector2D ToFVector2D(XrVector2f Vector, float Scale = 1.0f)
+{
+	return FVector2D(Vector.x * Scale, Vector.y * Scale);
+}
+
 FORCEINLINE FVector2D ToFVector2D(XrExtent2Df Extent, float Scale = 1.0f)
 {
 	return FVector2D(Extent.width * Scale, Extent.height * Scale);
@@ -102,6 +122,13 @@ FORCEINLINE XrExtent2Df ToXrExtent2D(FVector2D Vector, float Scale = 1.0f)
 		return XrExtent2Df{ 0.0f, 0.0f };
 
 	return XrExtent2Df{ (float)Vector.X / Scale, (float)Vector.Y / Scale };
+}
+
+FORCEINLINE uint32 ToXrPriority(int32 Priority)
+{
+	// Ensure negative priority numbers map to the lower half of the 32-bit range.
+	// We do this by casting to an unsigned int and then flipping the signed bit.
+	return (uint32)Priority ^ (1 << 31);
 }
 
 /** List all OpenXR global entry points used by Unreal. */
@@ -185,3 +212,35 @@ bool PreInitOpenXRCore(PFN_xrGetInstanceProcAddr InGetProcAddr);
  * @returns true if initialization was successful.
  */
 bool InitOpenXRCore(XrInstance Instance);
+
+FORCEINLINE XrResult OpenXRPathToFString(XrInstance Instance, XrPath Path, FString& OutString)
+{
+	uint32 PathCount = 0;
+	char PathChars[XR_MAX_PATH_LENGTH];
+	XrResult Result = xrPathToString(Instance, Path, XR_MAX_PATH_LENGTH, &PathCount, PathChars);
+	if (Result == XR_SUCCESS)
+	{
+		OutString = FString(PathCount, PathChars);
+	}
+	else
+	{
+		OutString = "";
+	}	
+	return Result;
+}
+
+FORCEINLINE XrResult OpenXRPathToFName(XrInstance Instance, XrPath Path, FName& OutFName)
+{
+	uint32 PathCount = 0;
+	char PathChars[XR_MAX_PATH_LENGTH];
+	XrResult Result = xrPathToString(Instance, Path, XR_MAX_PATH_LENGTH, &PathCount, PathChars);
+	if (Result == XR_SUCCESS)
+	{
+		OutFName = FName(PathCount, PathChars);
+	}
+	else
+	{
+		OutFName = NAME_None;
+	}
+	return Result;
+}

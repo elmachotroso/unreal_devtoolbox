@@ -47,11 +47,14 @@ public:
 
 	virtual FSphere GetBoundingSphere() const;
 
+	virtual float GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices, const FIntPoint& CameraViewRectSize) const override;
 	virtual float GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices) const override;
 
 	virtual FVector GetPerObjectProjectedShadowProjectionPoint(const FBoxSphereBounds& SubjectBounds) const;
 
 	virtual bool GetPerObjectProjectedShadowInitializer(const FBoxSphereBounds& SubjectBounds, class FPerObjectProjectedShadowInitializer& OutInitializer) const override;
+
+	virtual bool IsLocalLight() const override;
 
 protected:
 
@@ -60,4 +63,6 @@ protected:
 
 	float MaxDrawDistance;
 	float FadeRange;
+
+	float InverseExposureBlend;
 };

@@ -29,7 +29,9 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FMeshParticleUniformParameters, ENGINE_API
 	SHADER_PARAMETER( uint32, TexCoordWeightA )
 	SHADER_PARAMETER( uint32, TexCoordWeightB )
 	SHADER_PARAMETER( uint32, PrevTransformAvailable )
-	SHADER_PARAMETER( float, DeltaSeconds)
+	SHADER_PARAMETER( float, DeltaSeconds )
+	SHADER_PARAMETER( uint32, bUseLocalSpace )
+	SHADER_PARAMETER( FVector3f, LWCTile )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FMeshParticleUniformParameters> FMeshParticleUniformBufferRef;
 
@@ -110,7 +112,12 @@ public:
 	 * @param OutEnvironment - shader compile environment to modify
 	 */
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-	
+
+	/**
+	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
+	 */
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+
 	/**
 	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
 	 */

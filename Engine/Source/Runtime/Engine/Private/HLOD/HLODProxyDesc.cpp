@@ -2,12 +2,15 @@
 
 #include "HLOD/HLODProxyDesc.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODProxyDesc)
+
 #if WITH_EDITOR
 #include "Engine/LODActor.h"
 #include "Algo/Transform.h"
 #include "GameFramework/WorldSettings.h"
 #include "LevelUtils.h"
 #include "Engine/LevelStreaming.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #endif
 
 #if WITH_EDITOR
@@ -19,11 +22,29 @@ FHLODISMComponentDesc::FHLODISMComponentDesc(const UInstancedStaticMeshComponent
 
 	Instances.Reset(InISMComponent->GetInstanceCount());
 
+	const int32 NumCustomDataFloats = InISMComponent->NumCustomDataFloats;
+
 	for (int32 InstanceIndex = 0; InstanceIndex < InISMComponent->GetInstanceCount(); ++InstanceIndex)
 	{
 		FTransform InstanceTransform;
 		InISMComponent->GetInstanceTransform(InstanceIndex, InstanceTransform);
 		Instances.Emplace(InstanceTransform);
+
+		if (NumCustomDataFloats > 0)
+		{
+			if (ensure(InISMComponent->PerInstanceSMCustomData.IsValidIndex(InstanceIndex * NumCustomDataFloats)))
+			{
+				FCustomPrimitiveData InstanceCustomData;
+				InstanceCustomData.Data.SetNumUninitialized(NumCustomDataFloats);
+				
+				check(InISMComponent->PerInstanceSMCustomData.GetTypeSize() == InstanceCustomData.Data.GetTypeSize());
+
+				void* Dest = 
+				FMemory::Memcpy(InstanceCustomData.Data.GetData(), &InISMComponent->PerInstanceSMCustomData[InstanceIndex * NumCustomDataFloats], NumCustomDataFloats * InstanceCustomData.Data.GetTypeSize());
+
+				InstancesCustomPrimitiveData.Emplace(MoveTemp(InstanceCustomData));
+			}
+		}
 	}
 }
 
@@ -34,7 +55,16 @@ bool FHLODISMComponentDesc::operator==(const FHLODISMComponentDesc& Other) const
 		return false;
 	}
 
-	if (Material != Other.Material)
+	UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Material);
+	UMaterialInstance* OtherMaterialInstance = Cast<UMaterialInstance>(Other.Material);
+	if (MaterialInstance && OtherMaterialInstance)
+	{
+		if (!MaterialInstance->Equivalent(OtherMaterialInstance))
+		{
+			return false;
+		}
+	}
+	else if (Material != Other.Material)
 	{
 		return false;
 	}
@@ -51,6 +81,11 @@ bool FHLODISMComponentDesc::operator==(const FHLODISMComponentDesc& Other) const
 		{
 			return false;
 		}
+	}
+
+	if (InstancesCustomPrimitiveData != Other.InstancesCustomPrimitiveData)
+	{
+		return false;
 	}
 
 	return true;
@@ -95,6 +130,10 @@ bool UHLODProxyDesc::UpdateFromLODActor(const ALODActor* InLODActor)
 		}
 	}
 
+	// Sort the arrays to ensure a stable order for comparisons
+	SubActors.Sort(FNameLexicalLess());
+	SubHLODDescs.Sort(FSoftObjectPtrLexicalLess());
+
 	StaticMesh = InLODActor->StaticMeshComponent ? InLODActor->StaticMeshComponent->GetStaticMesh() : nullptr;
 
 	const TMap<FHLODInstancingKey, TObjectPtr<UInstancedStaticMeshComponent>>& ISMComponents = InLODActor->InstancedStaticMeshComponents;
@@ -103,7 +142,14 @@ bool UHLODProxyDesc::UpdateFromLODActor(const ALODActor* InLODActor)
 	{
 		if (Pair.Key.IsValid() && Pair.Value->GetInstanceCount() != 0)
 		{
-			ISMComponentsDesc.Emplace(Pair.Value);
+			FHLODISMComponentDesc& ISMComponentDesc = ISMComponentsDesc.Emplace_GetRef(Pair.Value);
+
+			// MIDs are not assets and are normally outered to their owner component.
+			// We need to duplicate them here to make sure we don't create references to actors in the source level.
+			if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(ISMComponentDesc.Material))
+			{ 
+				ISMComponentDesc.Material = DuplicateObject<UMaterialInstanceDynamic>(MID, this);
+			}
 		}
 	}
 
@@ -143,6 +189,10 @@ bool UHLODProxyDesc::ShouldUpdateDesc(const ALODActor* InLODActor) const
 			LocalSubActors.Emplace(SubActor->GetFName());
 		}
 	}
+
+	// Sort the arrays to ensure a stable order for the comparisons below
+	LocalSubActors.Sort(FNameLexicalLess());
+	LocalSubHLODDescs.Sort(FSoftObjectPtrLexicalLess());
 
 	if (LocalSubActors != SubActors)
 	{
@@ -270,9 +320,17 @@ ALODActor* UHLODProxyDesc::SpawnLODActor(ULevel* InLevel) const
 
 	for (const FHLODISMComponentDesc& ISMComponentDesc : ISMComponentsDesc)
 	{
-		if (!ISMComponentDesc.StaticMesh || !ISMComponentDesc.Material || ISMComponentDesc.Instances.Num() == 0)
+		UStaticMesh* ISMStaticMesh = ISMComponentDesc.StaticMesh;
+		UMaterialInterface* ISMMaterial = ISMComponentDesc.Material;
+
+		if (!ISMStaticMesh || !ISMMaterial || ISMComponentDesc.Instances.IsEmpty())
 		{
 			continue;
+		}
+
+		if (UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(ISMMaterial))
+		{
+			ISMMaterial = DuplicateObject<UMaterialInstanceDynamic>(MID, LODActor);
 		}
 		
 		// Apply transform to HISM instances
@@ -285,11 +343,11 @@ ALODActor* UHLODProxyDesc::SpawnLODActor(ULevel* InLevel) const
 				Transform *= ActorTransform;
 			}
 
-			LODActor->AddInstances(ISMComponentDesc.StaticMesh, ISMComponentDesc.Material, Transforms);
+			LODActor->AddInstances(ISMStaticMesh, ISMMaterial, Transforms, ISMComponentDesc.InstancesCustomPrimitiveData);
 		}
 		else
 		{
-			LODActor->AddInstances(ISMComponentDesc.StaticMesh, ISMComponentDesc.Material, ISMComponentDesc.Instances);
+			LODActor->AddInstances(ISMStaticMesh, ISMMaterial, ISMComponentDesc.Instances, ISMComponentDesc.InstancesCustomPrimitiveData);
 		}
 	}
 
@@ -350,3 +408,4 @@ ALODActor* UHLODProxyDesc::SpawnLODActor(ULevel* InLevel) const
 }
 
 #endif // #if WITH_EDITOR
+

@@ -18,7 +18,7 @@
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXEntityFixturePatch.h"
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EngineAnalytics.h"
 #include "EngineUtils.h"
 #include "Async/Async.h"
@@ -28,7 +28,7 @@
 #include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #endif // WITH_EDITOR
 
 DECLARE_LOG_CATEGORY_CLASS(DMXSubsystemLog, Log, All);
@@ -795,7 +795,7 @@ void UDMXSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 #if WITH_EDITOR
 void UDMXSubsystem::OnAssetRegistryAddedAsset(const FAssetData& Asset)
 {
-	if (Asset.AssetClass == UDMXLibrary::StaticClass()->GetFName())
+	if (Asset.AssetClassPath == UDMXLibrary::StaticClass()->GetClassPathName())
 	{
 		UObject* AssetObject = Asset.GetAsset();
 		if (UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject))
@@ -810,7 +810,7 @@ void UDMXSubsystem::OnAssetRegistryAddedAsset(const FAssetData& Asset)
 #if WITH_EDITOR
 void UDMXSubsystem::OnAssetRegistryRemovedAsset(const FAssetData& Asset)
 {
-	if (Asset.AssetClass == UDMXLibrary::StaticClass()->GetFName())
+	if (Asset.AssetClassPath == UDMXLibrary::StaticClass()->GetClassPathName())
 	{
 		UObject* AssetObject = Asset.GetAsset();
 		if (UDMXLibrary* Library = Cast<UDMXLibrary>(AssetObject))

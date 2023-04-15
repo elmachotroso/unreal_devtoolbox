@@ -1,22 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialNodes/SGraphNodeMaterialComposite.h"
-#include "Materials/MaterialExpressionComposite.h"
-#include "MaterialGraph/MaterialGraphNode_Composite.h"
 
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
 #include "EdGraph/EdGraph.h"
-#include "Widgets/SBoxPanel.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SToolTip.h"
-#include "Styling/CoreStyle.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/ICursor.h"
 #include "GraphEditorSettings.h"
-#include "SCommentBubble.h"
-#include "SGraphPreviewer.h"
-#include "IDocumentationPage.h"
 #include "IDocumentation.h"
+#include "IDocumentationPage.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "MaterialGraph/MaterialGraph.h"
+#include "MaterialGraph/MaterialGraphNode_Composite.h"
+#include "Materials/MaterialExpression.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SCommentBubble.h"
+#include "SGraphNode.h"
+#include "SGraphPreviewer.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SToolTip.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 void SGraphNodeMaterialComposite::Construct(const FArguments& InArgs, class UMaterialGraphNode_Composite* InNode)
 {
@@ -70,14 +94,14 @@ void SGraphNodeMaterialComposite::UpdateGraphNode()
 		.VAlign(VAlign_Center)
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush( "Graph.CollapsedNode.Body" ) )
+			.BorderImage( FAppStyle::GetBrush( "Graph.CollapsedNode.Body" ) )
 			.Padding(0)
 			[
 				SNew(SOverlay)
 				+SOverlay::Slot()
 				[
 					SNew(SImage)
-					.Image( FEditorStyle::GetBrush("Graph.CollapsedNode.BodyColorSpill") )
+					.Image( FAppStyle::GetBrush("Graph.CollapsedNode.BodyColorSpill") )
 					.ColorAndOpacity( this, &SGraphNode::GetNodeTitleColor )
 				]
 				+SOverlay::Slot()
@@ -94,7 +118,7 @@ void SGraphNodeMaterialComposite::UpdateGraphNode()
 						.VAlign(VAlign_Center)
 						[
 							SNew(SBorder)
-							.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+							.BorderImage( FAppStyle::GetBrush("NoBorder") )
 							.Padding( FMargin(10,5,30,3) )
 							[
 								SNew(SVerticalBox)
@@ -108,7 +132,7 @@ void SGraphNodeMaterialComposite::UpdateGraphNode()
 										.AutoHeight()
 									[
 										SAssignNew(InlineEditableText, SInlineEditableTextBlock)
-										.Style( FEditorStyle::Get(), "Graph.Node.NodeTitleInlineEditableText" )
+										.Style( FAppStyle::Get(), "Graph.Node.NodeTitleInlineEditableText" )
 										.Text( NodeTitle.Get(), &SNodeTitle::GetHeadTitle )
 										.OnVerifyTextChanged(this, &SGraphNodeMaterialComposite::OnVerifyNameTextChanged)
 										.OnTextCommitted(this, &SGraphNodeMaterialComposite::OnNameTextCommited)
@@ -260,7 +284,7 @@ TSharedRef<SWidget> SGraphNodeMaterialComposite::CreateNodeBody()
 	{
 		// Create the input and output pin areas if there are pins
 		return SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+			.BorderImage( FAppStyle::GetBrush("NoBorder") )
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			.Padding( FMargin(0,3) )

@@ -4,7 +4,6 @@
 
 #include "BlockCodingHelpers.h"
 #include "EngineModule.h"
-#include "CrunchCompression.h"
 #include "RendererInterface.h"
 #include "UploadingVirtualTexture.h"
 #include "VirtualTextureChunkManager.h"
@@ -102,8 +101,7 @@ struct FTranscodeTask
 
 		// Used to allocate any temp memory needed to decode tile
 		// Inline allocator hopefully avoids heap allocation in most cases
-		// Most common allocation need here is to linearize compressed Crunch source tile
-		// 136x136 DXT5 tile is 18k uncompressed, so will generally be around 2-4k when compressed with Crunch
+		// 136x136 DXT5 tile is 18k uncompressed
 		// TaskGraph threads currently look to be created with 384k of stack space
 		TArray<uint8, TInlineAllocator<16u * 1024>> TempBuffer;
 
@@ -154,66 +152,55 @@ struct FTranscodeTask
 			case EVirtualTextureCodec::RawGPU:
 				if (StagingBufferForLayer.Stride == PackedStride)
 				{
-					check(TileLayerSize <= StagingBufferForLayer.MemorySize);
-					Params.Data->CopyTo(StagingBufferForLayer.Memory, DataOffset, TileLayerSize);
+					bDecodeResult = bDecodeResult && ensure(TileLayerSize <= StagingBufferForLayer.MemorySize);
+					if (bDecodeResult)
+					{
+						Params.Data->CopyTo(StagingBufferForLayer.Memory, DataOffset, TileLayerSize);
+					}
 				}
 				else
 				{
-					check(PackedStride <= StagingBufferForLayer.Stride);
-					check(TileLayerSize <= PackedOutputSize);
-					check(TileHeightInBlocks * StagingBufferForLayer.Stride <= StagingBufferForLayer.MemorySize);
-					TempBuffer.SetNumUninitialized(PackedOutputSize, false);
-					Params.Data->CopyTo(TempBuffer.GetData(), DataOffset, TileLayerSize);
-					for (uint32 y = 0; y < TileHeightInBlocks; ++y)
+					bDecodeResult = bDecodeResult && ensure(PackedStride <= StagingBufferForLayer.Stride);
+					bDecodeResult = bDecodeResult && ensure(TileLayerSize <= PackedOutputSize);
+					bDecodeResult = bDecodeResult && ensure(TileHeightInBlocks * StagingBufferForLayer.Stride <= StagingBufferForLayer.MemorySize);
+					if (bDecodeResult)
 					{
-						FMemory::Memcpy((uint8*)StagingBufferForLayer.Memory + y * StagingBufferForLayer.Stride, TempBuffer.GetData() + y * PackedStride, PackedStride);
+						TempBuffer.SetNumUninitialized(PackedOutputSize, false);
+						Params.Data->CopyTo(TempBuffer.GetData(), DataOffset, TileLayerSize);
+						for (uint32 y = 0; y < TileHeightInBlocks; ++y)
+						{
+							FMemory::Memcpy((uint8*)StagingBufferForLayer.Memory + y * StagingBufferForLayer.Stride, TempBuffer.GetData() + y * PackedStride, PackedStride);
+						}
 					}
 				}
 				break;
-			case EVirtualTextureCodec::Crunch:
+			case EVirtualTextureCodec::Crunch_DEPRECATED:
 			{
-#if WITH_CRUNCH
-				// See if we can access compressed tile as a single contiguous block of memory
-				int64 DataReadSize = 0;
-				const void* CompressedTile = Params.Data->Read(DataReadSize, DataOffset, TileLayerSize);
-				if (DataReadSize < TileLayerSize)
-				{
-					// Couldn't access the full block, need to allocate temp block of contiguous memory
-					TempBuffer.SetNumUninitialized(TileLayerSize, false);
-					Params.Data->CopyTo(TempBuffer.GetData(), DataOffset, TileLayerSize);
-					CompressedTile = TempBuffer.GetData();
-				}
-
-				check(Params.Codec);
-				const uint32 StagingBufferSize = StagingBufferForLayer.Stride * TileHeightInBlocks;
-				check(StagingBufferSize <= StagingBufferForLayer.MemorySize);
-				bDecodeResult = CrunchCompression::Decode(Params.Codec->Contexts[LayerIndex],
-					CompressedTile, TileLayerSize,
-					StagingBufferForLayer.Memory, StagingBufferSize, StagingBufferForLayer.Stride);
-#else
 				bDecodeResult = false;
-#endif
 				break;
 			}
-			case EVirtualTextureCodec::ZippedGPU:
+			case EVirtualTextureCodec::ZippedGPU_DEPRECATED:
 				if (StagingBufferForLayer.Stride == PackedStride)
 				{
 					// output buffer is tightly packed, can decompress directly
-					check(PackedOutputSize <= StagingBufferForLayer.MemorySize);
-					bDecodeResult = FCompression::UncompressMemoryStream(NAME_Zlib, StagingBufferForLayer.Memory, PackedOutputSize, Params.Data, DataOffset, TileLayerSize);
+					bDecodeResult = bDecodeResult && ensure(PackedOutputSize <= StagingBufferForLayer.MemorySize);
+					bDecodeResult = bDecodeResult && FCompression::UncompressMemoryStream(NAME_Zlib, StagingBufferForLayer.Memory, PackedOutputSize, Params.Data, DataOffset, TileLayerSize);
 				}
 				else
 				{
 					// output buffer has per-scanline padding, need to decompress to temp buffer, then copy line-by-line
-					check(PackedStride <= StagingBufferForLayer.Stride);
-					TempBuffer.SetNumUninitialized(PackedOutputSize, false);
-					bDecodeResult = FCompression::UncompressMemoryStream(NAME_Zlib, TempBuffer.GetData(), PackedOutputSize, Params.Data, DataOffset, TileLayerSize);
+					bDecodeResult = bDecodeResult && ensure(PackedStride <= StagingBufferForLayer.Stride);
 					if (bDecodeResult)
 					{
-						check(TileHeightInBlocks * StagingBufferForLayer.Stride <= StagingBufferForLayer.MemorySize);
-						for (uint32 y = 0; y < TileHeightInBlocks; ++y)
+						TempBuffer.SetNumUninitialized(PackedOutputSize, false);
+						bDecodeResult = FCompression::UncompressMemoryStream(NAME_Zlib, TempBuffer.GetData(), PackedOutputSize, Params.Data, DataOffset, TileLayerSize);
+						if (bDecodeResult)
 						{
-							FMemory::Memcpy((uint8*)StagingBufferForLayer.Memory + y * StagingBufferForLayer.Stride, TempBuffer.GetData() + y * PackedStride, PackedStride);
+							check(TileHeightInBlocks * StagingBufferForLayer.Stride <= StagingBufferForLayer.MemorySize);
+							for (uint32 y = 0; y < TileHeightInBlocks; ++y)
+							{
+								FMemory::Memcpy((uint8*)StagingBufferForLayer.Memory + y * StagingBufferForLayer.Stride, TempBuffer.GetData() + y * PackedStride, PackedStride);
+							}
 						}
 					}
 				}
@@ -444,7 +431,9 @@ FVTTranscodeTileHandle FVirtualTextureTranscodeCache::SubmitTask(
 
 	if (bNeedToLaunchTask)
 	{
-		TaskEntry.GraphEvent = TGraphTask<FTranscodeTask>::CreateTask(Prerequisites).ConstructAndDispatchWhenReady(StagingBuffer, InParams);
+		FGraphEventRef Task = TGraphTask<FTranscodeTask>::CreateTask(Prerequisites).ConstructAndDispatchWhenReady(StagingBuffer, InParams);
+		// this reference can live long, store completion handle instead of a reference to the task to reduce peak mem usage 
+		TaskEntry.GraphEvent = Task->CreateCompletionHandle();
 	}
 	else
 	{

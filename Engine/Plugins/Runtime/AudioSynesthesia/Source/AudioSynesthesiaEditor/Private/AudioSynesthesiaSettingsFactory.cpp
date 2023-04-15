@@ -2,11 +2,14 @@
 
 #include "AudioSynesthesiaSettingsFactory.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "Modules/ModuleManager.h"
 #include "AudioSynesthesiaClassFilter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioSynesthesiaSettingsFactory)
 
 UAudioSynesthesiaSettingsFactory::UAudioSynesthesiaSettingsFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -54,8 +57,11 @@ UObject* UAudioSynesthesiaSettingsFactory::FactoryCreateNew(UClass* InClass, UOb
 	if (AudioSynesthesiaSettingsClass != nullptr)
 	{
 		NewAudioSynesthesiaSettings = NewObject<UAudioSynesthesiaSettings>(InParent, AudioSynesthesiaSettingsClass, InName, Flags);
+
+		Audio::Analytics::RecordEvent_Usage(TEXT("AudioSynesthesia.SettingsFactoryCreated"));
 	}
 	return NewAudioSynesthesiaSettings;
 }
 
 #undef LOCTEXT_NAMESPACE
+

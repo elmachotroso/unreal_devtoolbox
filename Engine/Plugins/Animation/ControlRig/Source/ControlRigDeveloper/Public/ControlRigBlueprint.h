@@ -15,7 +15,7 @@
 #include "ControlRigGizmoLibrary.h"
 #include "RigVMCore/RigVM.h"
 #include "RigVMCore/RigVMStatistics.h"
-#include "RigVMModel/RigVMController.h"
+#include "RigVMModel/RigVMClient.h"
 #include "RigVMCompiler/RigVMCompiler.h"
 #include "ControlRigValidationPass.h"
 #include "Drawing/ControlRigDrawContainer.h"
@@ -30,8 +30,9 @@
 class UControlRigBlueprintGeneratedClass;
 class USkeletalMesh;
 class UControlRigGraph;
+struct FEndLoadPackageContext;
 
-DECLARE_EVENT_TwoParams(UControlRigBlueprint, FOnVMCompiledEvent, UBlueprint*, URigVM*);
+DECLARE_EVENT_TwoParams(UControlRigBlueprint, FOnVMCompiledEvent, UObject*, URigVM*);
 DECLARE_EVENT_OneParam(UControlRigBlueprint, FOnRefreshEditorEvent, UControlRigBlueprint*);
 DECLARE_EVENT_FourParams(UControlRigBlueprint, FOnVariableDroppedEvent, UObject*, FProperty*, const FVector2D&, const FVector2D&);
 DECLARE_EVENT_OneParam(UControlRigBlueprint, FOnExternalVariablesChanged, const TArray<FRigVMExternalVariable>&);
@@ -41,6 +42,7 @@ DECLARE_EVENT_OneParam(UControlRigBlueprint, FOnPostEditChangeChainProperty, FPr
 DECLARE_EVENT_ThreeParams(UControlRigBlueprint, FOnLocalizeFunctionDialogRequested, URigVMLibraryNode*, UControlRigBlueprint*, bool);
 DECLARE_EVENT_ThreeParams(UControlRigBlueprint, FOnReportCompilerMessage, EMessageSeverity::Type, UObject*, const FString&);
 DECLARE_DELEGATE_RetVal_FourParams(FRigVMController_BulkEditResult, FControlRigOnBulkEditDialogRequestedDelegate, UControlRigBlueprint*, URigVMController*, URigVMLibraryNode*, ERigVMControllerBulkEditType);
+DECLARE_DELEGATE_RetVal_OneParam(bool, FControlRigOnBreakLinksDialogRequestedDelegate, TArray<URigVMLink*>);
 DECLARE_EVENT(UControlRigBlueprint, FOnBreakpointAdded);
 DECLARE_EVENT_OneParam(UControlRigBlueprint, FOnRequestInspectObject, const TArray<UObject*>& );
 
@@ -111,9 +113,10 @@ struct CONTROLRIGDEVELOPER_API FRigGraphDisplaySettings
 	GENERATED_BODY();
 
 	FRigGraphDisplaySettings()
-		: bShowNodeRunCounts(false)
+		: bShowNodeInstructionIndex(false)
+		, bShowNodeRunCounts(false)
 		, NodeRunLowerBound(1)
-		, NodeRunLimit(64)
+		, NodeRunLimit(256)
 		, MinMicroSeconds(0.0)
 		, MaxMicroSeconds(1.0)
 		, TotalMicroSeconds(0.0)
@@ -124,6 +127,11 @@ struct CONTROLRIGDEVELOPER_API FRigGraphDisplaySettings
 		, MaxDurationColor(FLinearColor::Red)
 	{
 	}
+
+	// When enabled shows the first node instruction index
+	// matching the execution stack window.
+	UPROPERTY(EditAnywhere, Category = "Graph Display Settings")
+	bool bShowNodeInstructionIndex;
 
 	// When enabled shows the node counts both in the graph view as
 	// we as in the execution stack window.
@@ -187,8 +195,14 @@ struct CONTROLRIGDEVELOPER_API FControlRigPythonSettings
 	}
 };
 
+enum class EControlRigBlueprintLoadType : uint8
+{
+	PostLoad,
+	CheckUserDefinedStructs
+};
+
 UCLASS(BlueprintType, meta=(IgnoreClassThumbnail))
-class CONTROLRIGDEVELOPER_API UControlRigBlueprint : public UBlueprint, public IInterface_PreviewMeshProvider
+class CONTROLRIGDEVELOPER_API UControlRigBlueprint : public UBlueprint, public IInterface_PreviewMeshProvider, public IRigVMClientHost
 {
 	GENERATED_UCLASS_BODY()
 
@@ -222,6 +236,9 @@ public:
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual bool IsPostLoadThreadSafe() const override { return false; }
 	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
 	virtual void ReplaceDeprecatedNodes() override;
@@ -232,7 +249,7 @@ public:
 	virtual bool SupportsFunctions() const override { return true; }
 	virtual bool SupportsMacros() const override { return false; }
 	virtual bool SupportsDelegates() const override { return false; }
-	virtual bool SupportsEventGraphs() const override { return false; }
+	virtual bool SupportsEventGraphs() const override { return true; }
 	virtual bool SupportsAnimLayers() const override { return false; }
 	virtual bool ExportGraphToText(UEdGraph* InEdGraph, FString& OutText) override;
 	virtual bool TryImportGraphFromText(const FString& InClipboardText, UEdGraph** OutGraphPtr = nullptr) override;
@@ -240,6 +257,18 @@ public:
 
 	// UObject interface
 	virtual void PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
+	virtual void PostRename(UObject* OldOuter, const FName OldName) override;
+	/** Called during cooking. Must return all objects that will be Preload()ed when this is serialized at load time. */
+	void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
+
+	// IRigVMClientHost interface
+	virtual FRigVMClient* GetRigVMClient() override;
+	virtual const FRigVMClient* GetRigVMClient() const override;
+	virtual UObject* GetEditorObjectForRigVMGraph(URigVMGraph* InVMGraph) const override;
+	virtual void HandleRigVMGraphAdded(const FRigVMClient* InClient, const FString& InNodePath) override;
+	virtual void HandleRigVMGraphRemoved(const FRigVMClient* InClient, const FString& InNodePath) override;
+	virtual void HandleRigVMGraphRenamed(const FRigVMClient* InClient, const FString& InOldNodePath, const FString& InNewNodePath) override;
+	virtual void HandleConfigureRigVMController(const FRigVMClient* InClient, URigVMController* InControllerToConfigure) override;
 
 	FOnRequestInspectObject& OnRequestInspectObject() { return OnRequestInspectObjectEvent; }
 	void RequestInspectObject(const TArray<UObject*>& InObjects) { OnRequestInspectObjectEvent.Broadcast(InObjects); }
@@ -271,8 +300,12 @@ public:
 	// model data can change while the Control Rig BP is not opened
 	// for example, if a user defined struct changed after BP load,
 	// any pin that references the struct needs to be regenerated
-	void RefreshAllModels();
+	void RefreshAllModels(EControlRigBlueprintLoadType InLoadType = EControlRigBlueprintLoadType::PostLoad);
 
+	// RigVMRegistry changes can be triggered when new user defined types(structs/enums) are added/removed
+	// in which case we have to refresh the model
+	void OnRigVMRegistryChanged();
+	
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	void RequestControlRigInit();
 
@@ -281,16 +314,25 @@ public:
 	URigVMGraph* GetModel(const FString& InNodePath) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	URigVMGraph* GetDefaultModel() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	TArray<URigVMGraph*> GetAllModels() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	URigVMFunctionLibrary* GetLocalFunctionLibrary() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
-	URigVMController* GetController(URigVMGraph* InGraph = nullptr) const;
+	URigVMGraph* AddModel(FString InName = TEXT("Rig Graph"), bool bSetupUndoRedo = true, bool bPrintPythonCommand = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
-	URigVMController* GetControllerByName(const FString InGraphName) const;
+	bool RemoveModel(FString InName = TEXT("Rig Graph"), bool bSetupUndoRedo = true, bool bPrintPythonCommand = true);
+
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	URigVMController* GetController(const URigVMGraph* InGraph = nullptr) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	URigVMController* GetControllerByName(const FString InGraphName = TEXT("")) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	URigVMController* GetOrCreateController(URigVMGraph* InGraph = nullptr);
@@ -336,6 +378,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = "User Interface")
 	FRigGraphDisplaySettings RigGraphDisplaySettings;
 
+	UPROPERTY(EditAnywhere, Category = "Hierarchy")
+	FRigHierarchySettings HierarchySettings;
+
 	UPROPERTY(EditAnywhere, Category = "VM")
 	FRigVMRuntimeSettings VMRuntimeSettings;
 
@@ -347,11 +392,14 @@ public:
 
 protected:
 
-	UPROPERTY(BlueprintReadOnly, Category = "VM")
-	TObjectPtr<URigVMGraph> Model;
+	UPROPERTY()
+	TObjectPtr<URigVMGraph> Model_DEPRECATED;
 
-	UPROPERTY(BlueprintReadOnly, Category = "VM")
-	TObjectPtr<URigVMFunctionLibrary> FunctionLibrary;
+	UPROPERTY()
+	TObjectPtr<URigVMFunctionLibrary> FunctionLibrary_DEPRECATED;
+
+	UPROPERTY()
+	FRigVMClient RigVMClient;
 
 	/** Asset searchable information about exposed public functions on this rig */
 	UPROPERTY(AssetRegistrySearchable)
@@ -360,9 +408,6 @@ protected:
 	/** Asset searchable information function references in this rig */
 	UPROPERTY(AssetRegistrySearchable)
 	TArray<FRigVMReferenceNodeData> FunctionReferenceNodeData;
-
-	UPROPERTY(BlueprintReadOnly, transient, Category = "VM")
-	TMap<TObjectPtr<URigVMGraph>, TObjectPtr<URigVMController>> Controllers;
 
 #if WITH_EDITORONLY_DATA
 
@@ -403,6 +448,9 @@ public:
 	static TArray<UStruct*> GetAvailableRigUnits();
 
 #if WITH_EDITOR
+	UFUNCTION(BlueprintCallable, Category = "Variables")
+	TArray<FRigVMGraphVariableDescription> GetMemberVariables() const;
+	
 	UFUNCTION(BlueprintCallable, Category = "Variables")
 	FName AddMemberVariable(const FName& InName, const FString& InCPPType, bool bIsPublic = false, bool bIsReadOnly = false, FString InDefaultValue = TEXT(""));
 
@@ -447,9 +495,6 @@ public:
 
 	/** Removes all  transient / temporary control used to interact with pins */
 	void ClearTransientControls();
-
-	/** update the value of the transient / temporary control to the current value of the rig element*/
-	void SetTransientControlValue(const FRigElementKey& InElement);
 
 #endif
 
@@ -551,6 +596,8 @@ private:
 	void PatchBoundVariables();
 	void PatchVariableNodesWithIncorrectType();
 	void PatchPropagateToChildren();
+	void PatchParameterNodesOnLoad();
+	void PatchTemplateNodesWithPreferredPermutation();
 
 	TMap<FName, int32> AddedMemberVariableMap;
 	TArray<FBPVariableDescription> LastNewVariables;
@@ -581,9 +628,18 @@ private:
 	void HandleHierarchyModified(ERigHierarchyNotification InNotification, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
 
 #if WITH_EDITOR
-	void HandlePackageDone(TConstArrayView<UPackage*> InPackages);
+	void HandlePackageDone(const FEndLoadPackageContext& Context);
+	void HandlePackageDone();
 	// ControlRigBP, once end-loaded, will inform other ControlRig-Dependent systems that ControlRig instances are ready.
 	void BroadcastControlRigPackageDone();
+
+	// Previously some memory classes were parented to the asset object
+	// however it is no longer supported since classes are now identified 
+	// with only package name + class name, see FTopLevelAssetPath
+	// this function removes those deprecated class.
+	// new classes should be created by RecompileVM and parented to the Package
+	// during PostLoad
+	void RemoveDeprecatedVMMemoryClass() const;
 #endif
 
 	// Class used to temporarily cache all 
@@ -631,6 +687,10 @@ public:
 
 	FControlRigOnBulkEditDialogRequestedDelegate& OnRequestBulkEditDialog() { return RequestBulkEditDialog; }
 
+	FControlRigOnBreakLinksDialogRequestedDelegate& OnRequestBreakLinksDialog() { return RequestBreakLinksDialog; }
+
+	FRigVMController_RequestJumpToHyperlinkDelegate& OnRequestJumpToHyperlink() { return RequestJumpToHyperlink; };
+
 	FOnReportCompilerMessage& OnReportCompilerMessage() { return ReportCompilerMessageEvent; }
 	void BroadCastReportCompilerMessage(EMessageSeverity::Type InSeverity, UObject* InSubject, const FString& InMessage);
 
@@ -646,9 +706,15 @@ private:
 	FOnLocalizeFunctionDialogRequested RequestLocalizeFunctionDialog;
 	FOnReportCompilerMessage ReportCompilerMessageEvent;
 	FControlRigOnBulkEditDialogRequestedDelegate RequestBulkEditDialog;
+	FControlRigOnBreakLinksDialogRequestedDelegate RequestBreakLinksDialog;
+	FRigVMController_RequestJumpToHyperlinkDelegate RequestJumpToHyperlink;
 
 #endif
 
+	UEdGraph* CreateEdGraph(URigVMGraph* InModel, bool bForce = false);
+	bool RemoveEdGraph(URigVMGraph* InModel);
+	void DestroyObject(UObject* InObject);
+	void RenameGraph(const FString& InNodePath, const FName& InNewName);
 	void CreateEdGraphForCollapseNodeIfNeeded(URigVMCollapseNode* InNode, bool bForce = false);
 	bool RemoveEdGraphForCollapseNode(URigVMCollapseNode* InNode, bool bNotify = false);
 	void HandleReportFromCompiler(EMessageSeverity::Type InSeverity, UObject* InSubject, const FString& InMessage);
@@ -698,9 +764,12 @@ public:
 
 #endif
 
+	static constexpr TCHAR RigVMModelPrefix[] = TEXT("RigVMModel");
+
 private:
 	bool bDirtyDuringLoad;
 	bool bErrorsDuringCompilation;
+	bool bSuspendPythonMessagesForRigVMClient;
 
 	friend class FControlRigBlueprintCompilerContext;
 	friend class SRigHierarchy;
@@ -718,6 +787,7 @@ private:
 	friend class FControlRigEditorModule;
 	friend class UControlRigComponent;
 	friend struct FControlRigGraphSchemaAction_PromoteToVariable;
+	friend class UControlRigGraphSchema;
 };
 
 class CONTROLRIGDEVELOPER_API FControlRigBlueprintVMCompileScope

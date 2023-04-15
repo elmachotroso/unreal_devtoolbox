@@ -11,6 +11,8 @@
 #include "OnlineSubsystemUtils.h"
 #include "OnlineSessionClient.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LobbyBeaconClient)
+
 ALobbyBeaconClient::ALobbyBeaconClient(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer),
 	LobbyState(nullptr),
@@ -27,6 +29,24 @@ void ALobbyBeaconClient::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > 
 
 	DOREPLIFETIME(ALobbyBeaconClient, LobbyState);
 	DOREPLIFETIME(ALobbyBeaconClient, PlayerState);
+}
+
+void ALobbyBeaconClient::EndPlay(EEndPlayReason::Type Reason)
+{
+	Super::EndPlay(Reason);
+
+	if (PlayerState)
+	{
+		if (PlayerState->ClientActor == this)
+		{
+			PlayerState->ClientActor = nullptr;
+		}
+
+		if (PlayerState->GetOwner() == this)
+		{
+			PlayerState->SetOwner(nullptr);
+		}
+	}
 }
 
 void ALobbyBeaconClient::OnConnected()
@@ -356,4 +376,5 @@ void ALobbyBeaconClient::ServerCheat_Implementation(const FString& Msg)
 	
 #endif
 }
+
 

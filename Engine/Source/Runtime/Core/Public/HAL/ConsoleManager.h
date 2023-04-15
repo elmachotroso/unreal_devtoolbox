@@ -2,11 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
 #include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
 #include "HAL/IConsoleManager.h"
+
+class FOutputDevice;
+class UWorld;
 
 class CORE_API FConsoleManager :public IConsoleManager
 {
@@ -43,6 +47,8 @@ public:
 
 	void OnCVarChanged();
 
+	virtual FConsoleVariableMulticastDelegate& OnCVarUnregistered()override;
+
 	// interface IConsoleManager -----------------------------------
 
 	virtual IConsoleVariable* RegisterConsoleVariable(const TCHAR* Name, bool DefaultValue, const TCHAR* Help, uint32 Flags) override;
@@ -66,6 +72,7 @@ public:
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithArgsDelegate& Command, uint32 Flags) override;
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldDelegate& Command, uint32 Flags) override;
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldAndArgsDelegate& Command, uint32 Flags) override;
+	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithArgsAndOutputDeviceDelegate& Command, uint32 Flags) override;
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldArgsAndOutputDeviceDelegate& Command, uint32 Flags) override;
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithOutputDeviceDelegate& Command, uint32 Flags) override;
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, uint32 Flags) override;
@@ -89,6 +96,8 @@ private: // ----------------------------------------------------
 	bool bHistoryWasLoaded;
 	TMap<FString, TArray<FString>>	HistoryEntriesMap;
 	TArray<FConsoleCommandDelegate>	ConsoleVariableChangeSinks;
+
+	FConsoleVariableMulticastDelegate ConsoleVariableUnregisteredDelegate;
 
 	IConsoleThreadPropagation* ThreadPropagationCallback;
 

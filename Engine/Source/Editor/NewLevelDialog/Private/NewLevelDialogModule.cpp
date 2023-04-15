@@ -19,7 +19,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Views/STileView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/Texture2D.h"
 #include "UnrealEdGlobals.h"
@@ -50,6 +50,7 @@ struct FNewLevelTemplateItem
 	FString Category;
 	TUniquePtr<FSlateBrush> ThumbnailBrush;
 	UTexture2D* ThumbnailAsset = nullptr;
+	int32 OriginalIndex = INDEX_NONE;
 
 	enum NewLevelType
 	{
@@ -230,10 +231,6 @@ public:
 	{
 		ParentWindowPtr = InArgs._ParentWindow.Get();
 
-		OutTemplateMapPackageName = TEXT("");
-		bIsPartitionedWorld = false;
-		bUserClickedOkay = false;
-
 		TemplateItemsList = MakeTemplateItems(InArgs._bShowPartitionedTemplates.Get(), InArgs._Templates.Get());
 		
 		TemplateListView = SNew(STileView<TSharedPtr<FNewLevelTemplateItem>>)
@@ -315,9 +312,25 @@ public:
 		}
 	}
 
-	FString GetChosenTemplate() const { return OutTemplateMapPackageName; }
-	bool IsPartitionedWorld() const { return bIsPartitionedWorld; }
-	bool IsTemplateChosen() const { return bUserClickedOkay; }
+	FString GetChosenTemplate() const
+	{
+		FString Result;
+		if (OutTemplateItem.IsValid())
+		{
+			Result = OutTemplateItem->TemplateMapInfo.Map.GetLongPackageName();
+			// For backwards compatibility, handle the case where the map name format does not include the object name directly
+			if (Result.IsEmpty())
+			{
+				Result = OutTemplateItem->TemplateMapInfo.Map.GetAssetPathString();
+			}
+		}
+
+		return Result;
+	}
+
+	FTemplateMapInfo GetChosenTemplateMapInfo() const { return OutTemplateItem.IsValid() ? OutTemplateItem->TemplateMapInfo : FTemplateMapInfo(); }
+	bool IsPartitionedWorld() const { return OutTemplateItem.IsValid() && OutTemplateItem->Type == FNewLevelTemplateItem::NewLevelType::EmptyWorldPartition; }
+	bool IsTemplateChosen() const { return OutTemplateItem.IsValid(); }
 
 	//~ Begin FGCObject Interface.
 	virtual void AddReferencedObjects(FReferenceCollector& Collector)  override
@@ -343,10 +356,12 @@ private:
 		TArray<TSharedPtr<FNewLevelTemplateItem>> TemplateItems;
 
 		// Build a list of items - one for each template
+		int32 CurrentIndex = 0;
 		for (const FTemplateMapInfo& TemplateMapInfo : TemplateMapInfos)
 		{
 			if (!bShowPartitionedTemplates && ULevel::GetIsLevelPartitionedFromPackage(FName(*TemplateMapInfo.Map.ToString())))
 			{
+				CurrentIndex++;
 				continue;
 			}
 
@@ -355,34 +370,34 @@ private:
 			Item->Type = FNewLevelTemplateItem::NewLevelType::Template;
 			Item->Name = TemplateMapInfo.DisplayName;
 			Item->Category = TemplateMapInfo.Category;
+			Item->OriginalIndex = CurrentIndex++;
 
-			UTexture2D* ThumbnailTexture = nullptr;
+			TSoftObjectPtr<UTexture2D> ThumbnailSoftObjectPtr;
 			if (TemplateMapInfo.Thumbnail.IsValid())
 			{
-				FSoftObjectPath SoftObjectPath(TemplateMapInfo.Thumbnail);
-				ThumbnailTexture = Cast<UTexture2D>(SoftObjectPath.ResolveObject());
-				if (!ThumbnailTexture)
-				{
-					ThumbnailTexture = Cast<UTexture2D>(SoftObjectPath.TryLoad());
-					if (ThumbnailTexture)
-					{
-						// Newly loaded texture requires async work to complete before being rendered in modal dialog
-						ThumbnailTexture->FinishCachePlatformData();
-						ThumbnailTexture->UpdateResource();
-					}
-				}
+				ThumbnailSoftObjectPtr = TemplateMapInfo.Thumbnail;
 			}
 			else if (!TemplateMapInfo.ThumbnailTexture.IsNull())
 			{
-				ThumbnailTexture = TemplateMapInfo.ThumbnailTexture.Get();
+				ThumbnailSoftObjectPtr = TemplateMapInfo.ThumbnailTexture;
+			}
+
+			UTexture2D* ThumbnailTexture = nullptr;
+			if (!ThumbnailSoftObjectPtr.IsNull())
+			{
+				ThumbnailTexture = ThumbnailSoftObjectPtr.Get();
 				if (!ThumbnailTexture)
 				{
-					ThumbnailTexture = TemplateMapInfo.ThumbnailTexture.LoadSynchronous();
+					ThumbnailTexture = ThumbnailSoftObjectPtr.LoadSynchronous();
 					if (ThumbnailTexture)
 					{
-						// Newly loaded texture requires async work to complete before being rendered in modal dialog
-						ThumbnailTexture->FinishCachePlatformData();
-						ThumbnailTexture->UpdateResource();
+						// Avoid calling UpdateResource on cooked texture as doing so will destroy the texture's data
+						if (!ThumbnailTexture->GetPackage()->HasAllPackagesFlags(PKG_FilterEditorOnly))
+						{
+							// Newly loaded texture requires async work to complete before being rendered in modal dialog
+							ThumbnailTexture->FinishCachePlatformData();
+							ThumbnailTexture->UpdateResource();
+						}
 					}
 				}
 			}
@@ -425,7 +440,7 @@ private:
 		TSharedPtr<FNewLevelTemplateItem> NewItem = MakeShareable(new FNewLevelTemplateItem());
 		NewItem->Type = FNewLevelTemplateItem::NewLevelType::Empty;
 		NewItem->Name = LOCTEXT("NewLevelItemLabel", "Empty Level");
-		NewItem->ThumbnailBrush = MakeUnique<FSlateBrush>(*FEditorStyle::GetBrush("NewLevelDialog.Blank"));
+		NewItem->ThumbnailBrush = MakeUnique<FSlateBrush>(*FAppStyle::GetBrush("NewLevelDialog.Blank"));
 		NewItem->ThumbnailBrush->OutlineSettings.CornerRadii = FVector4(4, 4, 0, 0);
 		NewItem->ThumbnailBrush->OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
 		NewItem->ThumbnailBrush->DrawAs = ESlateBrushDrawType::RoundedBox;
@@ -440,7 +455,7 @@ private:
 			NewItemWP->Type = FNewLevelTemplateItem::NewLevelType::EmptyWorldPartition;
 			NewItemWP->Name = LOCTEXT("NewWPLevelItemLabel", "Empty Open World");
 			NewItemWP->Category = OpenWorldCategory;
-			NewItemWP->ThumbnailBrush = MakeUnique<FSlateBrush>(*FEditorStyle::GetBrush("NewLevelDialog.BlankWP"));
+			NewItemWP->ThumbnailBrush = MakeUnique<FSlateBrush>(*FAppStyle::GetBrush("NewLevelDialog.BlankWP"));
 			NewItemWP->ThumbnailBrush->OutlineSettings.CornerRadii = FVector4(4, 4, 0, 0);
 			NewItemWP->ThumbnailBrush->OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
 			NewItemWP->ThumbnailBrush->DrawAs = ESlateBrushDrawType::RoundedBox;
@@ -452,6 +467,11 @@ private:
 		{
 			if (LHS->Category == RHS->Category)
 			{
+				if (LHS->Type == RHS->Type)
+				{
+					return LHS->OriginalIndex < RHS->OriginalIndex;
+				}
+
 				return LHS->Type > RHS->Type;
 			}
 			else if (LHS->Category == OpenWorldCategory)
@@ -492,21 +512,7 @@ private:
 			return FReply::Handled();
 		}
 
-		const TSharedPtr<FNewLevelTemplateItem> Template = Items[0];
-		if (Template->Type == FNewLevelTemplateItem::NewLevelType::Template)
-		{
-			OutTemplateMapPackageName = Template->TemplateMapInfo.Map.GetLongPackageName();
-			// For backwards compatibility, handle the case where the map name format does not include the object name directly
-			if (OutTemplateMapPackageName.IsEmpty())
-			{
-				OutTemplateMapPackageName = Template->TemplateMapInfo.Map.GetAssetPathString();
-			}
-		}
-		else if (Template->Type == FNewLevelTemplateItem::NewLevelType::EmptyWorldPartition)
-		{
-			bIsPartitionedWorld = true;
-		}
-		bUserClickedOkay = true;
+		OutTemplateItem = Items[0];
 
 		ParentWindowPtr.Pin()->RequestDestroyWindow();
 		return FReply::Handled();
@@ -514,8 +520,6 @@ private:
 
 	FReply OnCancelClicked()
 	{
-		bUserClickedOkay = false;
-
 		ParentWindowPtr.Pin()->RequestDestroyWindow();
 		return FReply::Handled();
 	}
@@ -543,9 +547,7 @@ private:
 
 	TArray<TSharedPtr<FNewLevelTemplateItem>> TemplateItemsList;
 	TSharedPtr < STileView<TSharedPtr<FNewLevelTemplateItem>> > TemplateListView;
-	FString OutTemplateMapPackageName;
-	bool bUserClickedOkay;
-	bool bIsPartitionedWorld;
+	TSharedPtr<FNewLevelTemplateItem> OutTemplateItem;
 };
 
 IMPLEMENT_MODULE( FNewLevelDialogModule, NewLevelDialog );
@@ -560,13 +562,13 @@ void FNewLevelDialogModule::ShutdownModule()
 {
 }
 
-bool FNewLevelDialogModule::CreateAndShowNewLevelDialog( const TSharedPtr<const SWidget> ParentWidget, FString& OutTemplateMapPackageName, bool bShowPartitionedTemplates, bool& bOutIsPartitionedWorld)
+bool FNewLevelDialogModule::CreateAndShowNewLevelDialog( const TSharedPtr<const SWidget> ParentWidget, FString& OutTemplateMapPackageName, bool bShowPartitionedTemplates, bool& bOutIsPartitionedWorld, FTemplateMapInfo* OutTemplateMapInfo)
 {
 	TArray<FTemplateMapInfo> EmptyTemplates;
-	return CreateAndShowTemplateDialog(ParentWidget, LOCTEXT("WindowHeader", "New Level"), GUnrealEd ? GUnrealEd->GetTemplateMapInfos() : EmptyTemplates, OutTemplateMapPackageName, bShowPartitionedTemplates, bOutIsPartitionedWorld);
+	return CreateAndShowTemplateDialog(ParentWidget, LOCTEXT("WindowHeader", "New Level"), GUnrealEd ? GUnrealEd->GetTemplateMapInfos() : EmptyTemplates, OutTemplateMapPackageName, bShowPartitionedTemplates, bOutIsPartitionedWorld, OutTemplateMapInfo);
 }
 
-bool FNewLevelDialogModule::CreateAndShowTemplateDialog( const TSharedPtr<const SWidget> ParentWidget, const FText& Title, const TArray<FTemplateMapInfo>& Templates, FString& OutTemplateMapPackageName, bool bShowPartitionedTemplates, bool& bOutIsPartitionedWorld)
+bool FNewLevelDialogModule::CreateAndShowTemplateDialog( const TSharedPtr<const SWidget> ParentWidget, const FText& Title, const TArray<FTemplateMapInfo>& Templates, FString& OutTemplateMapPackageName, bool bShowPartitionedTemplates, bool& bOutIsPartitionedWorld, FTemplateMapInfo* OutTemplateMapInfo)
 {
 	// Open larger window if there are enough templates
 	FVector2D WindowClientSize(NewLevelDialogDefs::DefaultWindowWidth, NewLevelDialogDefs::DefaultWindowHeight);
@@ -594,6 +596,11 @@ bool FNewLevelDialogModule::CreateAndShowTemplateDialog( const TSharedPtr<const 
 	NewLevelWindow->SetContent(NewLevelDialog);
 
 	FSlateApplication::Get().AddModalWindow(NewLevelWindow.ToSharedRef(), ParentWidget);
+
+	if (OutTemplateMapInfo)
+	{
+		*OutTemplateMapInfo = NewLevelDialog->GetChosenTemplateMapInfo();
+	}
 
 	OutTemplateMapPackageName = NewLevelDialog->GetChosenTemplate();
 	bOutIsPartitionedWorld = NewLevelDialog->IsPartitionedWorld();

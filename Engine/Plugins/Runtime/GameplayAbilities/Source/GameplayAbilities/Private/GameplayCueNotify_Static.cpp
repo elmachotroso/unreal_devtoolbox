@@ -5,7 +5,10 @@
 #include "AbilitySystemStats.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemLog.h"
 #include "GameplayCueManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueNotify_Static)
 
 UGameplayCueNotify_Static::UGameplayCueNotify_Static(const FObjectInitializer& PCIP)
 : Super(PCIP)
@@ -120,3 +123,4 @@ UWorld* UGameplayCueNotify_Static::GetWorld() const
 {
 	return UGameplayCueManager::GetCachedWorldForGameplayCueNotifies();
 }
+

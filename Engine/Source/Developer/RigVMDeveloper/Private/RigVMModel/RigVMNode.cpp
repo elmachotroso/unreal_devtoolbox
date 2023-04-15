@@ -1,9 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/RigVMNode.h"
+#include "RigVMModel/Nodes/RigVMUnitNode.h"
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMCore/RigVMExecuteContext.h"
 #include "RigVMCore/RigVMStruct.h"
+#include "RigVMUserWorkflowRegistry.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMNode)
 
 const FString URigVMNode::NodeColorName = TEXT("NodeColor");
 
@@ -147,7 +151,7 @@ URigVMPin* URigVMNode::FindPin(const FString& InPinPath) const
 
 	for (URigVMPin* Pin : GetPins())
 	{
-		if (Pin->GetName() == Left)
+		if (Pin->NameEquals(Left, true))
 		{
 			if (Right.IsEmpty())
 			{
@@ -281,22 +285,21 @@ bool URigVMNode::IsPure() const
 
 bool URigVMNode::IsMutable() const
 {
-	URigVMPin* ExecutePin = FindPin(FRigVMStruct::ExecuteContextName.ToString());
-	if (ExecutePin)
+	if (const URigVMPin* ExecutePin = FindPin(FRigVMStruct::ExecuteContextName.ToString()))
 	{
-		if (ExecutePin->GetScriptStruct()->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+		if(const UScriptStruct* ScriptStruct = ExecutePin->GetScriptStruct())
 		{
-			return true;
+			return ScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct());
 		}
 	}
 	return false;
 }
 
-bool URigVMNode::HasUnknownTypePin() const
+bool URigVMNode::HasWildCardPin() const
 {
 	for (const URigVMPin* Pin : GetPins())
 	{
-		if (Pin->IsUnknownType())
+		if (Pin->IsWildCard())
 		{
 			return true;
 		}
@@ -306,12 +309,17 @@ bool URigVMNode::HasUnknownTypePin() const
 
 bool URigVMNode::IsEvent() const
 {
-	return IsMutable() && !HasInputPin(true /* include io */) && !GetEventName().IsNone();
+	return IsMutable() && !GetEventName().IsNone();
 }
 
 FName URigVMNode::GetEventName() const
 {
 	return NAME_None;
+}
+
+bool URigVMNode::CanOnlyExistOnce() const
+{
+	return false;
 }
 
 bool URigVMNode::HasInputPin(bool bIncludeIO) const
@@ -526,6 +534,104 @@ double URigVMNode::GetInstructionMicroSeconds(URigVM* InVM, const FRigVMASTProxy
 	}
 #endif
 	return -1.0;
+}
+
+TArray<FRigVMUserWorkflow> URigVMNode::GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const
+{
+	if(InSubject == nullptr)
+	{
+		InSubject = this;
+	}
+
+	const UScriptStruct* Struct = nullptr;
+	if(const URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(this))
+	{
+		Struct = UnitNode->GetScriptStruct();
+	}
+	return URigVMUserWorkflowRegistry::Get()->GetWorkflows(InType, Struct, InSubject);
+}
+
+bool URigVMNode::IsAggregate() const
+{
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED
+	const TArray<URigVMPin*> AggregateInputs = GetAggregateInputs();
+	const TArray<URigVMPin*> AggregateOutputs = GetAggregateOutputs();
+
+	if ((AggregateInputs.Num() == 2 && AggregateOutputs.Num() == 1) ||
+		(AggregateInputs.Num() == 1 && AggregateOutputs.Num() == 2))
+	{
+		TArray<URigVMPin*> AggregateAll = AggregateInputs;
+		AggregateAll.Append(AggregateOutputs);
+		for (int32 i = 1; i < 3; ++i)
+		{
+			if (AggregateAll[0]->GetCPPType() != AggregateAll[i]->GetCPPType() ||
+				AggregateAll[0]->GetCPPTypeObject() != AggregateAll[i]->GetCPPTypeObject())
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+#endif
+	
+	return false;
+}
+
+URigVMPin* URigVMNode::GetFirstAggregatePin() const
+{
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED
+	const TArray<URigVMPin*> Inputs = GetAggregateInputs();
+	const TArray<URigVMPin*> Outputs = GetAggregateOutputs();
+	if (Inputs.Num() == 2 && Outputs.Num() == 1)
+	{
+		return Inputs[0];
+	}
+	if (Inputs.Num() == 1 && Outputs.Num() == 2)
+	{
+		return Outputs[0];
+	}
+#endif
+	return nullptr;
+}
+
+URigVMPin* URigVMNode::GetSecondAggregatePin() const
+{
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED
+	const TArray<URigVMPin*> Inputs = GetAggregateInputs();
+	const TArray<URigVMPin*> Outputs = GetAggregateOutputs();
+	if (Inputs.Num() == 2 && Outputs.Num() == 1)
+	{
+		return Inputs[1];
+	}
+	if (Inputs.Num() == 1 && Outputs.Num() == 2)
+	{
+		return Outputs[1];
+	}
+#endif
+	return nullptr;
+}
+
+URigVMPin* URigVMNode::GetOppositeAggregatePin() const
+{
+#if UE_RIGVM_AGGREGATE_NODES_ENABLED
+	const TArray<URigVMPin*> Inputs = GetAggregateInputs();
+	const TArray<URigVMPin*> Outputs = GetAggregateOutputs();
+	if (Inputs.Num() == 2 && Outputs.Num() == 1)
+	{
+		return Outputs[0];
+	}
+	if (Inputs.Num() == 1 && Outputs.Num() == 2)
+	{
+		return Inputs[0];
+	}
+#endif
+	return nullptr;
+}
+
+bool URigVMNode::IsInputAggregate() const
+{
+	return GetAggregateInputs().Num() == 2;
 }
 
 #if WITH_EDITOR

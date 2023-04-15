@@ -6,24 +6,14 @@ public class AudioGameplay : ModuleRules
 {
 	public AudioGameplay(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-
-		PublicIncludePaths.AddRange(
-			new string[] {
-			}
-			);
-				
-		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-			}
-			);
-			
+		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;			
 		
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"Core",
+				"AudioExtensions",
+				"GameplayTags",
 			}
 			);
 			

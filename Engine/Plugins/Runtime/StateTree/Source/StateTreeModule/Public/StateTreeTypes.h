@@ -2,7 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "StructView.h"
+#include "PropertyBag.h"
+#include "GameplayTagContainer.h"
 #include "StateTreeTypes.generated.h"
 
 STATETREEMODULE_API DECLARE_LOG_CATEGORY_EXTERN(LogStateTree, Warning, All);
@@ -11,89 +13,160 @@ STATETREEMODULE_API DECLARE_LOG_CATEGORY_EXTERN(LogStateTree, Warning, All);
 #define WITH_STATETREE_DEBUG (!(UE_BUILD_SHIPPING || UE_BUILD_SHIPPING_WITH_EDITOR || UE_BUILD_TEST) && 1)
 #endif // WITH_STATETREE_DEBUG
 
-/**
- * Status describing current ticking state. 
- */
+/** Status describing current ticking state. */
 UENUM()
 enum class EStateTreeRunStatus : uint8
 {
-	Running,			/** Tree is still running. */
-	Failed,				/** Tree execution has stopped on failure. */
-	Succeeded,			/** Tree execution has stopped on success. */
-	Unset,				/** Status not set. */
+	/** Tree is still running. */
+	Running,
+	
+	/** Tree execution has stopped on failure. */
+	Failed,
+	
+	/** Tree execution has stopped on success. */
+	Succeeded,
+	
+	/** Status not set. */
+	Unset,
 };
 
-/**  Evaluator evaluation type. */
+/** Evaluator evaluation type. */
 UENUM()
 enum class EStateTreeEvaluationType : uint8
 {
-	PreSelect,			/** Called during selection process on states that have not been visited yet. */
-    Tick,				/** Called during tick on active states. */
+	/** Called during selection process on states that have not been visited yet. */
+	PreSelect,
+	
+	/** Called during tick on active states. */
+    Tick,
 };
 
-/**  State change type. Passed to EnterState() and ExitState() to indicate how the state change affects the state and Evaluator or Task is on. */
+/** State change type. Passed to EnterState() and ExitState() to indicate how the state change affects the state and Evaluator or Task is on. */
 UENUM()
 enum class EStateTreeStateChangeType : uint8
 {
-	None,				/** Not an activation */
-	Changed,			/** The state became activated or deactivated. */
-    Sustained,			/** The state is parent of new active state and sustained previous active state. */
+	/** Not an activation */
+	None,
+	
+	/** The state became activated or deactivated. */
+	Changed,
+	
+	/** The state is parent of new active state and sustained previous active state. */
+    Sustained,
 };
 
 /** Transitions behavior. */
 UENUM()
 enum class EStateTreeTransitionType : uint8
 {
-	Succeeded,			// Signal StateTree execution succeeded.
-	Failed,				// Signal StateTree execution failed.
-	GotoState,			// Transition to specified state.
-	NotSet,				// No transition.
-	NextState,			// Goto next sibling state.
+	/** Stop StateTree and mark execution succeeded. */
+	Succeeded,
+	
+	/** Stop StateTree and mark execution failed. */
+	Failed,
+	
+	/** Transition to specified state. */
+	GotoState,
+	
+	/** No transition. */
+	NotSet,
+	
+	/** Goto next sibling state. */
+	NextState,
 };
 
-
-/** Transitions event. */
+/** Operand between conditions */
 UENUM()
-enum class EStateTreeTransitionEvent : uint8
+enum class EStateTreeConditionOperand : uint8
+{
+	/** Copy result */
+	Copy UMETA(Hidden),
+	
+	/** Combine results with AND. */
+	And,
+	
+	/** Combine results with OR. */
+	Or,
+};
+
+UENUM()
+enum class EStateTreeStateType : uint8
+{
+	/** A State containing tasks and evaluators. */
+	State,
+	
+	/** A State containing just sub states. */
+	Group,
+	
+	/** A State that is linked to another state in the tree (the execution continues on the linked state). */
+	Linked,
+	
+	/** A subtree that can be linked to. */
+	Subtree,
+};
+
+namespace UE::StateTree
+{
+	constexpr int32 MaxConditionIndent = 4;
+
+	const FName SchemaTag(TEXT("Schema"));
+}; // UE::StateTree
+
+
+
+/** Transitions trigger. */
+UENUM()
+enum class EStateTreeTransitionTrigger : uint8
 {
 	None = 0 UMETA(Hidden),
-	OnCompleted = 0x1 | 0x2,
-    OnSucceeded = 0x1,
-    OnFailed = 0x2,
-    OnCondition = 0x4,
-};
-ENUM_CLASS_FLAGS(EStateTreeTransitionEvent)
 
-/**
- * Handle that is used to refer baked state tree data.
- */
+	/** Try trigger transition when a state succeeded or failed. */
+	OnStateCompleted = 0x1 | 0x2,
+
+	/** Try trigger transition when a state succeeded. */
+    OnStateSucceeded = 0x1,
+
+	/** Try trigger transition when a state failed. */
+    OnStateFailed = 0x2,
+
+	/** Try trigger transition each StateTree tick. */
+    OnTick = 0x4,
+	
+	/** Try trigger transition on specific event. */
+	OnEvent = 0x8,
+
+	MAX
+};
+ENUM_CLASS_FLAGS(EStateTreeTransitionTrigger)
+
+/** Handle to a StateTree state */
 USTRUCT(BlueprintType)
-struct STATETREEMODULE_API FStateTreeHandle
+struct STATETREEMODULE_API FStateTreeStateHandle
 {
 	GENERATED_BODY()
 
-	static const uint16 InvalidIndex = uint16(-1);		// Index value indicating invalid item.
-	static const uint16 SucceededIndex = uint16(-2);	// Index value indicating a Succeeded item.
-	static const uint16 FailedIndex = uint16(-3);		// Index value indicating a Failed item.
+	static constexpr uint16 InvalidIndex = uint16(-1);		// Index value indicating invalid item.
+	static constexpr uint16 SucceededIndex = uint16(-2);	// Index value indicating a Succeeded item.
+	static constexpr uint16 FailedIndex = uint16(-3);		// Index value indicating a Failed item.
 	
-	static const FStateTreeHandle Invalid;
-	static const FStateTreeHandle Succeeded;
-	static const FStateTreeHandle Failed;
+	static const FStateTreeStateHandle Invalid;
+	static const FStateTreeStateHandle Succeeded;
+	static const FStateTreeStateHandle Failed;
 
-	FStateTreeHandle() = default;
-	explicit FStateTreeHandle(uint16 InIndex) : Index(InIndex) {}
+	FStateTreeStateHandle() = default;
+	explicit FStateTreeStateHandle(uint16 InIndex) : Index(InIndex) {}
 
 	bool IsValid() const { return Index != InvalidIndex; }
 
-	bool operator==(const FStateTreeHandle& RHS) const { return Index == RHS.Index; }
-	bool operator!=(const FStateTreeHandle& RHS) const { return Index != RHS.Index; }
+	bool operator==(const FStateTreeStateHandle& RHS) const { return Index == RHS.Index; }
+	bool operator!=(const FStateTreeStateHandle& RHS) const { return Index != RHS.Index; }
 
 	FString Describe() const
 	{
 		switch (Index)
 		{
 		case InvalidIndex:		return TEXT("Invalid Item");
-		case SucceededIndex: 	return TEXT("Succeeded Item");
+		case SucceededIndex:	return TEXT("Succeeded Item");
 		case FailedIndex: 		return TEXT("Failed Item");
 		default: 				return FString::Printf(TEXT("%d"), Index);
 		}
@@ -103,27 +176,240 @@ struct STATETREEMODULE_API FStateTreeHandle
 	uint16 Index = InvalidIndex;
 };
 
-
-/**
- * Describes current status of a running state or desired state.
- */
+/** uint16 index that can be invalid. */
 USTRUCT(BlueprintType)
-struct STATETREEMODULE_API FStateTreeStateStatus
+struct STATETREEMODULE_API FStateTreeIndex16
 {
 	GENERATED_BODY()
 
-	FStateTreeStateStatus() = default;
-	FStateTreeStateStatus(const FStateTreeHandle InState, const EStateTreeRunStatus InStatus) : State(InState), RunStatus(InStatus) {}
-	FStateTreeStateStatus(const FStateTreeHandle InState) : State(InState), RunStatus(EStateTreeRunStatus::Running) {}
-	FStateTreeStateStatus(const EStateTreeRunStatus InStatus) : State(), RunStatus(InStatus) {}
+	static constexpr uint16 InvalidValue = MAX_uint16;
+	static const FStateTreeIndex16 Invalid;
 
-	bool IsSet() const { return RunStatus != EStateTreeRunStatus::Unset; }
+	/** @return true if the given index can be represented by the type. */
+	static bool IsValidIndex(const int32 Index)
+	{
+		return Index >= 0 && Index < (int32)MAX_uint16;
+	}
+
+	FStateTreeIndex16() = default;
 	
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	FStateTreeHandle State = FStateTreeHandle::Invalid;
+	explicit FStateTreeIndex16(const int32 InIndex)
+	{
+		check(InIndex == INDEX_NONE || IsValidIndex(InIndex));
+		Value = InIndex == INDEX_NONE ? InvalidValue : (uint16)InIndex;
+	}
 
-	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	EStateTreeRunStatus RunStatus = EStateTreeRunStatus::Unset;
+	/** @retrun value of the index. */
+	uint16 Get() const { return Value; }
+	
+	/** @return the index value as int32, mapping invalid value to INDEX_NONE. */
+	int32 AsInt32() const { return Value == InvalidValue ? INDEX_NONE : Value; }
+
+	/** @return true if the index is valid. */
+	bool IsValid() const { return Value != InvalidValue; }
+
+	bool operator==(const FStateTreeIndex16& RHS) const { return Value == RHS.Value; }
+	bool operator!=(const FStateTreeIndex16& RHS) const { return Value != RHS.Value; }
+
+protected:
+	UPROPERTY()
+	uint16 Value = InvalidValue;
+};
+	
+
+/** uint8 index that can be invalid. */
+USTRUCT(BlueprintType)
+struct STATETREEMODULE_API FStateTreeIndex8
+{
+	GENERATED_BODY()
+
+	static constexpr uint8 InvalidValue = MAX_uint8;
+	static const FStateTreeIndex8 Invalid;
+	
+	/** @return true if the given index can be represented by the type. */
+	static bool IsValidIndex(const int32 Index)
+	{
+		return Index >= 0 && Index < (int32)MAX_uint8;
+	}
+	
+	FStateTreeIndex8() = default;
+	
+	explicit FStateTreeIndex8(const int32 InIndex)
+	{
+		check(InIndex == INDEX_NONE || IsValidIndex(InIndex));
+		Value = InIndex == INDEX_NONE ? InvalidValue : (uint8)InIndex;
+	}
+
+	/** @retrun value of the index. */
+	uint8 Get() const { return Value; }
+
+	/** @return the index value as int32, mapping invalid value to INDEX_NONE. */
+	int32 AsInt32() const { return Value == InvalidValue ? INDEX_NONE : Value; }
+	
+	/** @return true if the index is valid. */
+	bool IsValid() const { return Value != InvalidValue; }
+
+	bool operator==(const FStateTreeIndex8& RHS) const { return Value == RHS.Value; }
+	bool operator!=(const FStateTreeIndex8& RHS) const { return Value != RHS.Value; }
+
+protected:
+	UPROPERTY()
+	uint8 Value = InvalidValue;
+};
+
+
+/**
+ * Describes an array of active states in a State Tree.
+ */
+USTRUCT(BlueprintType)
+struct STATETREEMODULE_API FStateTreeActiveStates
+{
+	GENERATED_BODY()
+
+	static constexpr uint8 MaxStates = 8;	// Max number of active states
+
+	FStateTreeActiveStates() = default;
+	
+	explicit FStateTreeActiveStates(const FStateTreeStateHandle StateHandle)
+	{
+		Push(StateHandle);
+	}
+	
+	/** Resets the active state array to empty. */
+	void Reset()
+	{
+		NumStates = 0;
+	}
+
+	/** Pushes new state at the back of the array and returns true if there was enough space. */
+	bool Push(const FStateTreeStateHandle StateHandle)
+	{
+		if ((NumStates + 1) > MaxStates)
+		{
+			return false;
+		}
+		
+		States[NumStates++] = StateHandle;
+		
+		return true;
+	}
+
+	/** Pushes new state at the front of the array and returns true if there was enough space. */
+	bool PushFront(const FStateTreeStateHandle StateHandle)
+	{
+		if ((NumStates + 1) > MaxStates)
+		{
+			return false;
+		}
+
+		NumStates++;
+		for (int32 Index = (int32)NumStates - 1; Index > 0; Index--)
+		{
+			States[Index] = States[Index - 1];
+		}
+		States[0] = StateHandle;
+		
+		return true;
+	}
+
+	/** Pops a state from the back of the array and returns the popped value, or invalid handle if the array was empty. */
+	FStateTreeStateHandle Pop()
+	{
+		if (NumStates == 0)
+		{
+			return FStateTreeStateHandle::Invalid;			
+		}
+
+		const FStateTreeStateHandle Ret = States[NumStates - 1];
+		NumStates--;
+		return Ret;
+	}
+
+	/** Sets the number of states, new states are set to invalid state. */
+	void SetNum(const int32 NewNum)
+	{
+		check(NewNum >= 0 && NewNum <= MaxStates);
+		if (NewNum > (int32)NumStates)
+		{
+			for (int32 Index = NumStates; Index < NewNum; Index++)
+			{
+				States[Index] = FStateTreeStateHandle::Invalid;
+			}
+		}
+		NumStates = NewNum;
+	}
+
+	/** Returns true of the array contains specified state. */
+	bool Contains(const FStateTreeStateHandle StateHandle) const
+	{
+		for (const FStateTreeStateHandle& Handle : *this)
+		{
+			if (Handle == StateHandle)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Returns index of a state, searching in reverse order. */
+	int32 IndexOfReverse(const FStateTreeStateHandle StateHandle) const
+	{
+		for (int32 Index = (int32)NumStates - 1; Index >= 0; Index--)
+		{
+			if (States[Index] == StateHandle)
+				return Index;
+		}
+		return INDEX_NONE;
+	}
+	
+	/** Returns last state in the array, or invalid state if the array is empty. */
+	FStateTreeStateHandle Last() const { return NumStates > 0 ? States[NumStates - 1] : FStateTreeStateHandle::Invalid; }
+	
+	/** Returns number of states in the array. */
+	int32 Num() const { return NumStates; }
+
+	/** Returns true if the index is within array bounds. */
+	bool IsValidIndex(const int32 Index) const { return Index >= 0 && Index < (int32)NumStates; }
+	
+	/** Returns true if the array is empty. */
+	bool IsEmpty() const { return NumStates == 0; } 
+
+	/** Returns a specified state in the array. */
+	FORCEINLINE FStateTreeStateHandle operator[](const int32 Index) const
+	{
+		check(Index >= 0 && Index < (int32)NumStates);
+		return States[Index];
+	}
+
+	/** Returns mutable reference to a specified state in the array. */
+	FORCEINLINE FStateTreeStateHandle& operator[](const int32 Index)
+	{
+		check(Index >= 0 && Index < (int32)NumStates);
+		return States[Index];
+	}
+
+	/** Returns a specified state in the array, or FStateTreeStateHandle::Invalid if Index is out of array bounds. */
+	FStateTreeStateHandle GetStateSafe(const int32 Index) const
+	{
+		return (Index >= 0 && Index < (int32)NumStates) ? States[Index] : FStateTreeStateHandle::Invalid;
+	}
+
+	/**
+	 * DO NOT USE DIRECTLY
+	 * STL-like iterators to enable range-based for loop support.
+	 */
+	FORCEINLINE FStateTreeStateHandle* begin() { return &States[0]; }
+	FORCEINLINE FStateTreeStateHandle* end  () { return &States[0] + Num(); }
+	FORCEINLINE const FStateTreeStateHandle* begin() const { return &States[0]; }
+	FORCEINLINE const FStateTreeStateHandle* end  () const { return &States[0] + Num(); }
+
+
+	UPROPERTY(EditDefaultsOnly, Category = Default)
+	FStateTreeStateHandle States[MaxStates];
+
+	UPROPERTY(EditDefaultsOnly, Category = Default)
+	uint8 NumStates = 0;
 };
 
 /**
@@ -137,24 +423,30 @@ struct STATETREEMODULE_API FStateTreeTransitionResult
 	GENERATED_BODY()
 
 	FStateTreeTransitionResult() = default;
-	FStateTreeTransitionResult(const FStateTreeStateStatus InSource, const FStateTreeHandle InTransitionAndNext) : Source(InSource), Target(InTransitionAndNext), Next(InTransitionAndNext) {}
-	FStateTreeTransitionResult(const FStateTreeStateStatus InSource, const FStateTreeHandle InTransition, const FStateTreeHandle InNext) : Source(InSource), Target(InTransition), Next(InNext) {}
 
-	/** State where the transition started. */
+	/** Current active states, where the transition started. */
 	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	FStateTreeStateStatus Source = FStateTreeStateStatus();
+	FStateTreeActiveStates CurrentActiveStates;
+
+	/** Current Run status. */
+	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	EStateTreeRunStatus CurrentRunStatus = EStateTreeRunStatus::Unset;
 
 	/** Transition target state */
 	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	FStateTreeHandle Target = FStateTreeHandle::Invalid;
+	FStateTreeStateHandle TargetState = FStateTreeStateHandle::Invalid;
 
-	/** Selected state, can be different from Transition, if Transition is a selector state. */
+	/** States selected as result of the transition. */
 	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	FStateTreeHandle Next = FStateTreeHandle::Invalid;
+	FStateTreeActiveStates NextActiveStates;
 
-	/** Current state, update as we execute the tree. */
+	/** The current state being executed. On enter/exit callbacks this is the state of the task or evaluator. */
 	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
-	FStateTreeHandle Current = FStateTreeHandle::Invalid;
+	FStateTreeStateHandle CurrentState = FStateTreeStateHandle::Invalid;
+
+	/** If the change type is Sustained, then the CurrentState was reselected, or if Changed then the state was just activated. */
+	UPROPERTY(EditDefaultsOnly, Category = Default, BlueprintReadOnly)
+	EStateTreeStateChangeType ChangeType = EStateTreeStateChangeType::Changed; 
 };
 
 
@@ -162,29 +454,44 @@ struct STATETREEMODULE_API FStateTreeTransitionResult
  *  Runtime representation of a StateTree transition.
  */
 USTRUCT()
-struct STATETREEMODULE_API FBakedStateTransition
+struct STATETREEMODULE_API FCompactStateTransition
 {
 	GENERATED_BODY()
 
+	/** Transition event tag, used when trigger type is event. */
 	UPROPERTY()
-	uint16 ConditionsBegin = 0;							// Index to first condition to test
+	FGameplayTag EventTag;
+
+	/** Index to first condition to test */
 	UPROPERTY()
-	FStateTreeHandle State = FStateTreeHandle::Invalid;	// Target state of the transition
+	uint16 ConditionsBegin = 0;
+
+	/** Target state of the transition */
 	UPROPERTY()
-	EStateTreeTransitionType Type = EStateTreeTransitionType::NotSet;	// Type of the transition.
+	FStateTreeStateHandle State = FStateTreeStateHandle::Invalid;
+
+	/** Type of the transition. */
 	UPROPERTY()
-	EStateTreeTransitionEvent Event = EStateTreeTransitionEvent::None;	// Type of the transition event.
+	EStateTreeTransitionType Type = EStateTreeTransitionType::NotSet;
+ 
+	/* Type of the transition trigger. */
 	UPROPERTY()
-	uint8 GateDelay = 0;								// The time the conditions need to hold true for the transition to become active, in tenths of a seconds.
+	EStateTreeTransitionTrigger Trigger = EStateTreeTransitionTrigger::None;
+
+	/** The time the conditions need to hold true for the transition to become active, in tenths of a seconds. */
 	UPROPERTY()
-	uint8 ConditionsNum = 0;							// Number of conditions to test.
+	uint8 GateDelay = 0;
+
+	/** Number of conditions to test. */
+	UPROPERTY()
+	uint8 ConditionsNum = 0;
 };
 
 /**
  *  Runtime representation of a StateTree state.
  */
 USTRUCT()
-struct STATETREEMODULE_API FBakedStateTreeState
+struct STATETREEMODULE_API FCompactStateTreeState
 {
 	GENERATED_BODY()
 
@@ -198,25 +505,26 @@ struct STATETREEMODULE_API FBakedStateTreeState
 	FName Name;											// Name of the State
 
 	UPROPERTY()
-	FStateTreeHandle Parent = FStateTreeHandle::Invalid;	// Parent state
+	FStateTreeStateHandle LinkedState = FStateTreeStateHandle::Invalid;	// Linked state 
+
+	UPROPERTY()
+	FStateTreeStateHandle Parent = FStateTreeStateHandle::Invalid;		// Parent state
 	UPROPERTY()
 	uint16 ChildrenBegin = 0;							// Index to first child state
 	UPROPERTY()
 	uint16 ChildrenEnd = 0;								// Index one past the last child state
 
 	UPROPERTY()
-	FStateTreeHandle StateDoneTransitionState = FStateTreeHandle::Invalid;		// State to transition to when the state execution is done. See also StateDoneTransitionType.
-	UPROPERTY()
-	FStateTreeHandle StateFailedTransitionState = FStateTreeHandle::Invalid;	// State to transition to if the state execution fails. See also StateFailedTransitionType.
-	
-	UPROPERTY()
 	uint16 EnterConditionsBegin = 0;					// Index to first state enter condition
 	UPROPERTY()
 	uint16 TransitionsBegin = 0;						// Index to first transition
 	UPROPERTY()
 	uint16 TasksBegin = 0;								// Index to first task
+
 	UPROPERTY()
-	uint16 EvaluatorsBegin = 0;							// Index to first evaluator
+	FStateTreeIndex16 ParameterInstanceIndex = FStateTreeIndex16::Invalid;	// Index to state instance data
+	UPROPERTY()
+	FStateTreeIndex16 ParameterDataViewIndex = FStateTreeIndex16::Invalid;	// Data view index of the input parameters
 
 	UPROPERTY()
 	uint8 EnterConditionsNum = 0;						// Number of enter conditions
@@ -225,24 +533,19 @@ struct STATETREEMODULE_API FBakedStateTreeState
 	UPROPERTY()
 	uint8 TasksNum = 0;									// Number of tasks
 	UPROPERTY()
-	uint8 EvaluatorsNum = 0;							// Number of evaluators
-
-	UPROPERTY()
-	EStateTreeTransitionType StateDoneTransitionType = EStateTreeTransitionType::NotSet;		// Type of the State Done transition. See also StateDoneTransitionState.
-	UPROPERTY()
-	EStateTreeTransitionType StateFailedTransitionType = EStateTreeTransitionType::NotSet;		// Type of the State Failed transition. See also StateFailedTransitionState.
+	EStateTreeStateType Type = EStateTreeStateType::State; 
 };
 
-/** An offset into the StateTree runtime storage type to get a struct view to a specific Task, Evaluator, or Condition. */
-struct FStateTreeInstanceStorageOffset
+USTRUCT()
+struct STATETREEMODULE_API FCompactStateTreeParameters
 {
-	FStateTreeInstanceStorageOffset() = default;
-	FStateTreeInstanceStorageOffset(const UScriptStruct* InStruct, const int32 InOffset) : Struct(InStruct), Offset(InOffset) {}
+	GENERATED_BODY()
 
-	/** Struct of the data the offset points at */
-	const UScriptStruct* Struct = nullptr;
-	/** Offset within the storage struct */
-	int32 Offset = 0;
+	UPROPERTY()
+	FStateTreeIndex16 BindingsBatch = FStateTreeIndex16::Invalid;
+
+	UPROPERTY()
+	FInstancedPropertyBag Parameters;
 };
 
 UENUM()
@@ -262,13 +565,12 @@ struct STATETREEMODULE_API FStateTreeExternalDataHandle
 	GENERATED_BODY()
 
 	static const FStateTreeExternalDataHandle Invalid;
-	static constexpr uint8 IndexNone = MAX_uint8;
-
-	static bool IsValidIndex(const int32 Index) { return Index >= 0 && Index < (int32)IndexNone; }
-
-	bool IsValid() const { return DataViewIndex != IndexNone; }
 	
-	uint8 DataViewIndex = IndexNone;
+	static bool IsValidIndex(const int32 Index) { return FStateTreeIndex8::IsValidIndex(Index); }
+	bool IsValid() const { return DataViewIndex.IsValid(); }
+
+	UPROPERTY()
+	FStateTreeIndex8 DataViewIndex = FStateTreeIndex8::Invalid;
 };
 
 /**
@@ -304,43 +606,13 @@ struct TStateTreeExternalDataHandle : FStateTreeExternalDataHandle
 };
 
 UENUM()
-enum class EStateTreePropertyIndirection : uint8
-{
-	Offset,
-	Indirect,
-};
-
-UENUM()
 enum class EStateTreePropertyUsage : uint8
 {
 	Invalid,
+	Context,
 	Input,
 	Parameter,
 	Output,
-	Internal,
-};
-
-
-USTRUCT()
-struct STATETREEMODULE_API FStateTreeInstanceDataPropertyHandle
-{
-	GENERATED_BODY()
-
-	static constexpr uint8 IndexNone = MAX_uint8;
-
-	static bool IsValidIndex(const int32 Index) { return Index >= 0 && Index < (int32)IndexNone; }
-
-	bool IsValid() const { return DataViewIndex != IndexNone; }
-
-	uint16 PropertyOffset = 0;
-	uint8 DataViewIndex = IndexNone;
-	EStateTreePropertyIndirection Type = EStateTreePropertyIndirection::Offset;
-};
-
-template<typename T>
-struct TStateTreeInstanceDataPropertyHandle : FStateTreeInstanceDataPropertyHandle
-{
-	typedef T DataType;
 };
 
 
@@ -356,6 +628,14 @@ struct STATETREEMODULE_API FStateTreeExternalDataDesc
 	FStateTreeExternalDataDesc() = default;
 	FStateTreeExternalDataDesc(const UStruct* InStruct, const EStateTreeExternalDataRequirement InRequirement) : Struct(InStruct), Requirement(InRequirement) {}
 
+	FStateTreeExternalDataDesc(const FName InName, const UStruct* InStruct, const FGuid InGuid)
+		: Struct(InStruct)
+		, Name(InName)
+#if WITH_EDITORONLY_DATA
+		, ID(InGuid)
+#endif
+	{}
+
 	bool operator==(const FStateTreeExternalDataDesc& Other) const
 	{
 		return Struct == Other.Struct && Requirement == Other.Requirement;
@@ -363,8 +643,16 @@ struct STATETREEMODULE_API FStateTreeExternalDataDesc
 	
 	/** Class or struct of the external data. */
 	UPROPERTY();
-	const UStruct* Struct = nullptr;
+	TObjectPtr<const UStruct> Struct = nullptr;
 
+	/**
+	 * Name of the external data. Used only for bindable external data (enforced by the schema).
+	 * External data linked explicitly by the nodes (i.e. LinkExternalData) are identified only
+	 * by their type since they are used for unique instance of a given type.  
+	 */
+	UPROPERTY(VisibleAnywhere, Category = Common)
+	FName Name;
+	
 	/** Handle/Index to the StateTreeExecutionContext data views array */
 	UPROPERTY();
 	FStateTreeExternalDataHandle Handle;
@@ -372,122 +660,91 @@ struct STATETREEMODULE_API FStateTreeExternalDataDesc
 	/** Describes if the data is required or not. */
 	UPROPERTY();
 	EStateTreeExternalDataRequirement Requirement = EStateTreeExternalDataRequirement::Required;
+
+#if WITH_EDITORONLY_DATA
+	/** Unique identifier. Used only for bindable external data. */
+	UPROPERTY()
+	FGuid ID;
+#endif
 };
 
 
-#define STATETREE_INSTANCEDATA_PROPERTY(Struct, Member) \
-		decltype(Struct::Member){}, Struct::StaticStruct(), TEXT(#Member)
-
-UENUM()
-enum class EStateTreeLinkerStatus : uint8
-{
-	Succeeded,
-	Failed,
-};
 /**
- * The StateTree linker is used to resolved references to various StateTree data at load time.
- * @see TStateTreeExternalDataHandle<> for example usage.
+ * StateTree struct ref allows to get a reference/pointer to a specified type via property binding.
+ * It is useful for referencing larger properties to avoid copies of the data, or to be able to write to a bounds property.
+ *
+ * The expected type of the reference should be set in "BaseStruct" meta tag.
+ *
+ * Example:
+ *
+ *	USTRUCT()
+ *	struct FAwesomeTaskInstanceData
+ *	{
+ *		GENERATED_BODY()
+ *
+ *		UPROPERTY(VisibleAnywhere, Category = Input, meta = (BaseStruct = "/Script/AwesomeModule.AwesomeData"))
+ *		FStateTreeStructRef Data;
+ *	};
+ *
+ *
+ *	if (const FAwesomeData* Awesome = InstanceData.Data.GetPtr<FAwesomeData>())
+ *	{
+ *		...
+ *	}
  */
-struct FStateTreeLinker
+USTRUCT(BlueprintType)
+struct STATETREEMODULE_API FStateTreeStructRef
 {
-	/** Sets base index for all external data handles. */
-	void SetExternalDataBaseIndex(const int32 InExternalDataBaseIndex) { ExternalDataBaseIndex = InExternalDataBaseIndex; }
+	GENERATED_BODY()
 
-	/** Sets currently linked item's instance data type and index. */ 
-	void SetCurrentInstanceDataType(const UStruct* Struct, const int32 Index)
+	FStateTreeStructRef() = default;
+
+	/** @return true if the reference is valid (safe to use the reference getters). */
+	bool IsValid() const
 	{
-		CurrentInstanceStruct = Struct;
-		CurrentInstanceIndex = Index;
+		return Data.IsValid();
 	}
 
-	EStateTreeLinkerStatus GetStatus() const { return Status; }
-	
-	/**
-	 * Links reference to an external UObject.
-	 * @param Handle Reference to TStateTreeExternalDataHandle<> with UOBJECT type to link to.
-	 */
+	/** Sets the struct ref (used by property copy) */
+	void Set(FStructView NewData)
+	{
+		Data = NewData;
+	}
+
+	/** Returns const reference to the struct, this getter assumes that all data is valid. */
 	template <typename T>
-	typename TEnableIf<TIsDerivedFrom<typename T::DataType, UObject>::IsDerived, void>::Type LinkExternalData(T& Handle)
+	const T& Get() const
 	{
-		LinkExternalData(Handle, T::DataType::StaticClass(), T::DataRequirement);
+		return Data.template Get<T>();
 	}
 
-	/**
-	 * Links reference to an external UObject.
-	 * @param Handle Reference to TStateTreeExternalDataHandle<> with USTRUCT type to link to.
-	 */
+	/** Returns const pointer to the struct, or nullptr if cast is not valid. */
 	template <typename T>
-	typename TEnableIf<!TIsDerivedFrom<typename T::DataType, UObject>::IsDerived, void>::Type LinkExternalData(T& Handle)
+	const T* GetPtr() const
 	{
-		LinkExternalData(Handle, T::DataType::StaticStruct(), T::DataRequirement);
+		return Data.template GetPtr<T>();
 	}
 
-	/**
-	 * Links reference to an external Object or Struct.
-	 * This function should only be used when TStateTreeExternalDataHandle<> cannot be used, i.e. the Struct is based on some data.
-	 * @param Handle Reference to link to.
-	 * @param Struct Expected type of the Object or Struct to link to.
-	 * @param Requirement Describes if the external data is expected to be required or optional.
-	 */
-	void LinkExternalData(FStateTreeExternalDataHandle& Handle, const UStruct* Struct, const EStateTreeExternalDataRequirement Requirement)
+	/** Returns mutable reference to the struct, this getter assumes that all data is valid. */
+	template <typename T>
+    T& GetMutable() const
 	{
-		const FStateTreeExternalDataDesc Desc(Struct, Requirement);
-		int32 Index = ExternalDataDescs.Find(Desc);
-		if (Index == INDEX_NONE)
-		{
-			Index = ExternalDataDescs.Add(Desc);
-			check(FStateTreeExternalDataHandle::IsValidIndex(Index + ExternalDataBaseIndex));
-			ExternalDataDescs[Index].Handle.DataViewIndex = (uint8)(Index + ExternalDataBaseIndex);
-		}
-		Handle.DataViewIndex = (uint8)(Index + ExternalDataBaseIndex);
-	}
-	/**
-	 * Links reference to a property in instance data.
-	 * Usage:
-	 * 	  Linker.LinkRuntimeDataProperty(HitPointsHandle, STATETREE_INSTANCEDATA_PROPERTY(FHitPointLayout, HitPoints));
-	 *
-	 * @param Handle Reference to TStateTreeExternalDataHandle<> with USTRUCT type to link to.
-	 * @param DummyProperty Do not use directly.
-	 * @param ScriptStruct Do not use directly.
-	 * @param PropertyName Do not use directly.
-	 */
-	template <typename T, typename S>
-	void LinkInstanceDataProperty(T& Handle, const S& DummyProperty, const UScriptStruct* ScriptStruct, const TCHAR* PropertyName)
-	{
-		static_assert(TIsSame<typename T::DataType, S>::Value, "Expecting linked handle to have same type as the instance data struct member.");
-		LinkInstanceDataPropertyInternal(Handle, ScriptStruct, PropertyName);
+		return Data.template GetMutable<T>();
 	}
 
-	/** @return linked external data descriptors. */
-	TConstArrayView<FStateTreeExternalDataDesc> GetExternalDataDescs() const { return ExternalDataDescs; }
+	/** Returns mutable pointer to the struct, or nullptr if cast is not valid. */
+	template <typename T>
+    T* GetMutablePtr() const
+	{
+		return Data.template GetMutablePtr<T>();
+	}
+
+	/** @return Struct describing the data type. */
+	const UScriptStruct* GetScriptStruct() const
+	{
+		return Data.GetScriptStruct();
+	}
 
 protected:
-
-
-	void LinkInstanceDataPropertyInternal(FStateTreeInstanceDataPropertyHandle& Handle, const UScriptStruct* ScriptStruct, const TCHAR* PropertyName)
-	{
-		check(CurrentInstanceStruct != nullptr);
-		check(CurrentInstanceIndex != INDEX_NONE);
-
-		FProperty* Property = ScriptStruct->FindPropertyByName(FName(PropertyName));
-		if (Property == nullptr)
-		{
-			Handle = FStateTreeInstanceDataPropertyHandle();
-			Status = EStateTreeLinkerStatus::Failed;
-			return;
-		}
-
-		check(CurrentInstanceIndex < MAX_uint8);
-		check(Property->GetOffset_ForInternal() < MAX_uint16);
-		
-		Handle.DataViewIndex = (uint8)CurrentInstanceIndex;
-		Handle.Type = EStateTreePropertyIndirection::Offset;
-		Handle.PropertyOffset = (uint16)Property->GetOffset_ForInternal();
-	}
-
-	EStateTreeLinkerStatus Status = EStateTreeLinkerStatus::Succeeded;
-	const UStruct* CurrentInstanceStruct = nullptr;
-	int32 CurrentInstanceIndex = INDEX_NONE;
-	int32 ExternalDataBaseIndex = 0;
-	TArray<FStateTreeExternalDataDesc> ExternalDataDescs;
+	FStructView Data;
 };

@@ -53,6 +53,11 @@ struct FUniqueNetIdRepl : public FUniqueNetIdWrapper
 		: FUniqueNetIdWrapper(InUniqueNetId)
 	{
 	}
+	
+	FUniqueNetIdRepl(const FUniqueNetId& InUniqueNetId)
+		: FUniqueNetIdWrapper(InUniqueNetId)
+	{
+	}
 
 	virtual ~FUniqueNetIdRepl() {}
 
@@ -62,10 +67,10 @@ struct FUniqueNetIdRepl : public FUniqueNetIdWrapper
 		FUniqueNetIdWrapper::SetUniqueNetId(UniqueNetId);
 	}
 
-	virtual void SetAccountId(const UE::Online::FOnlineAccountIdHandle& Handle) override
+	virtual void SetAccountId(const UE::Online::FAccountId& AccountId) override
 	{
 		ReplicationBytes.Empty();
-		FUniqueNetIdWrapper::SetAccountId(Handle);
+		FUniqueNetIdWrapper::SetAccountId(AccountId);
 	}
 
 	/** Export contents of this struct as a string */

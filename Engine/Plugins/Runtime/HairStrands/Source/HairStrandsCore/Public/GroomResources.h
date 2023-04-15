@@ -15,7 +15,7 @@
 
 inline uint32 GetBufferTotalNumBytes(const FRDGExternalBuffer& In) 
 {
-	return In.Buffer ? In.Buffer->Desc.GetTotalNumBytes() : 0;
+	return In.Buffer ? In.Buffer->GetSize() : 0;
 }
 
 enum class EHairStrandsResourcesType : uint8
@@ -131,11 +131,12 @@ struct FHairStrandsRestRootResource : public FHairCommonResource
 		Total += GetBufferTotalNumBytes(VertexToCurveIndexBuffer);
 		for (const FLOD& LOD : LODs)
 		{
-			Total += GetBufferTotalNumBytes(LOD.RootTriangleIndexBuffer);
-			Total += GetBufferTotalNumBytes(LOD.RootTriangleBarycentricBuffer);
-			Total += GetBufferTotalNumBytes(LOD.RestRootTrianglePosition0Buffer);
-			Total += GetBufferTotalNumBytes(LOD.RestRootTrianglePosition1Buffer);
-			Total += GetBufferTotalNumBytes(LOD.RestRootTrianglePosition2Buffer);
+			Total += GetBufferTotalNumBytes(LOD.UniqueTriangleIndexBuffer);
+			Total += GetBufferTotalNumBytes(LOD.RootToUniqueTriangleIndexBuffer);
+			Total += GetBufferTotalNumBytes(LOD.RootBarycentricBuffer);
+			Total += GetBufferTotalNumBytes(LOD.RestUniqueTrianglePosition0Buffer);
+			Total += GetBufferTotalNumBytes(LOD.RestUniqueTrianglePosition1Buffer);
+			Total += GetBufferTotalNumBytes(LOD.RestUniqueTrianglePosition2Buffer);
 			Total += GetBufferTotalNumBytes(LOD.MeshInterpolationWeightsBuffer);
 			Total += GetBufferTotalNumBytes(LOD.MeshSampleIndicesBuffer);
 			Total += GetBufferTotalNumBytes(LOD.RestSamplePositionsBuffer);
@@ -156,13 +157,15 @@ struct FHairStrandsRestRootResource : public FHairCommonResource
 		/* Triangle on which a root is attached */
 		/* When the projection is done with source to target mesh transfer, the projection indices does not match.
 		   In this case we need to separate index computation. The barycentric coords remain the same however. */
-		FRDGExternalBuffer RootTriangleIndexBuffer;
-		FRDGExternalBuffer RootTriangleBarycentricBuffer;
+		FRDGExternalBuffer UniqueTriangleIndexBuffer;
+		/* Strands hair root to unique triangle index */
+		FRDGExternalBuffer RootToUniqueTriangleIndexBuffer;
+		FRDGExternalBuffer RootBarycentricBuffer;
 
 		/* Strand hair roots translation and rotation in rest position relative to the bound triangle. Positions are relative to the rest root center */
-		FRDGExternalBuffer RestRootTrianglePosition0Buffer;
-		FRDGExternalBuffer RestRootTrianglePosition1Buffer;
-		FRDGExternalBuffer RestRootTrianglePosition2Buffer;
+		FRDGExternalBuffer RestUniqueTrianglePosition0Buffer;
+		FRDGExternalBuffer RestUniqueTrianglePosition1Buffer;
+		FRDGExternalBuffer RestUniqueTrianglePosition2Buffer;
 
 		/* Strand hair mesh interpolation matrix and sample indices */
 		uint32 SampleCount = 0;
@@ -174,8 +177,14 @@ struct FHairStrandsRestRootResource : public FHairCommonResource
 	/* Store the hair projection information for each mesh LOD */
 	TArray<FLOD> LODs;
 
+	/* LOD bulk data requests */
+	TArray<FBulkDataBatchRequest> LODRequests;
+
 	/* Store CPU data for root info & root binding */
 	FHairStrandsRootBulkData& BulkData;
+
+	/* Bulk data request handle */
+	FBulkDataBatchRequest BulkDataRequest;
 
 	/* Type of curves */
 	const EHairStrandsResourcesType CurveType;
@@ -205,13 +214,31 @@ struct FHairStrandsDeformedRootResource : public FHairCommonResource
 		uint32 Total = 0;
 		for (const FLOD& LOD : LODs)
 		{
-			Total += GetBufferTotalNumBytes(LOD.DeformedRootTrianglePosition0Buffer);
-			Total += GetBufferTotalNumBytes(LOD.DeformedRootTrianglePosition1Buffer);
-			Total += GetBufferTotalNumBytes(LOD.DeformedRootTrianglePosition2Buffer);
-			Total += GetBufferTotalNumBytes(LOD.DeformedSamplePositionsBuffer);
-			Total += GetBufferTotalNumBytes(LOD.MeshSampleWeightsBuffer);
+			Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition0Buffer[0]);
+			Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition1Buffer[0]);
+			Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition2Buffer[0]);
+			Total += GetBufferTotalNumBytes(LOD.DeformedSamplePositionsBuffer[0]);
+			Total += GetBufferTotalNumBytes(LOD.MeshSampleWeightsBuffer[0]);
+
+			// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
+			if (IsHairStrandContinuousDecimationReorderingEnabled())
+			{
+				Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition0Buffer[1]);
+				Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition1Buffer[1]);
+				Total += GetBufferTotalNumBytes(LOD.DeformedUniqueTrianglePosition2Buffer[1]);
+				Total += GetBufferTotalNumBytes(LOD.DeformedSamplePositionsBuffer[1]);
+				Total += GetBufferTotalNumBytes(LOD.MeshSampleWeightsBuffer[1]);
+			}
 		}
 		return Total;
+	}
+
+	void SwapBuffer()
+	{
+		for (FLOD& LOD : LODs)
+		{
+			LOD.SwapBuffer();
+		}
 	}
 
 	struct FLOD
@@ -226,14 +253,32 @@ struct FHairStrandsDeformedRootResource : public FHairCommonResource
 		int32 LODIndex = -1;
 
 		/* Strand hair roots translation and rotation in triangle-deformed position relative to the bound triangle. Positions are relative the deformed root center*/
-		FRDGExternalBuffer DeformedRootTrianglePosition0Buffer;
-		FRDGExternalBuffer DeformedRootTrianglePosition1Buffer;
-		FRDGExternalBuffer DeformedRootTrianglePosition2Buffer;
+		FRDGExternalBuffer DeformedUniqueTrianglePosition0Buffer[2];
+		FRDGExternalBuffer DeformedUniqueTrianglePosition1Buffer[2];
+		FRDGExternalBuffer DeformedUniqueTrianglePosition2Buffer[2];
 
 		/* Strand hair mesh interpolation matrix and sample indices */
 		uint32 SampleCount = 0;
-		FRDGExternalBuffer DeformedSamplePositionsBuffer;
-		FRDGExternalBuffer MeshSampleWeightsBuffer;
+		FRDGExternalBuffer DeformedSamplePositionsBuffer[2];
+		FRDGExternalBuffer MeshSampleWeightsBuffer[2];
+
+		/* Whether the GPU data should be initialized with the asset data or not */
+		uint32 CurrentIndex = 0;
+
+		enum EFrameType
+		{
+			Previous,
+			Current
+		};
+
+		// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
+		inline uint32 GetIndex(EFrameType T) const { return T == EFrameType::Current ? CurrentIndex : 1u - CurrentIndex; }
+		inline const FRDGExternalBuffer& GetDeformedUniqueTrianglePosition0Buffer(EFrameType T) const { return IsHairStrandContinuousDecimationReorderingEnabled() ? DeformedUniqueTrianglePosition0Buffer[GetIndex(T)] : DeformedUniqueTrianglePosition0Buffer[0]; }
+		inline const FRDGExternalBuffer& GetDeformedUniqueTrianglePosition1Buffer(EFrameType T) const { return IsHairStrandContinuousDecimationReorderingEnabled() ? DeformedUniqueTrianglePosition1Buffer[GetIndex(T)] : DeformedUniqueTrianglePosition1Buffer[0]; }
+		inline const FRDGExternalBuffer& GetDeformedUniqueTrianglePosition2Buffer(EFrameType T) const { return IsHairStrandContinuousDecimationReorderingEnabled() ? DeformedUniqueTrianglePosition2Buffer[GetIndex(T)] : DeformedUniqueTrianglePosition2Buffer[0]; }
+		inline const FRDGExternalBuffer& GetDeformedSamplePositionsBuffer(EFrameType T) const { return IsHairStrandContinuousDecimationReorderingEnabled() ? DeformedSamplePositionsBuffer[GetIndex(T)] : DeformedSamplePositionsBuffer[0]; }
+		inline const FRDGExternalBuffer& GetMeshSampleWeightsBuffer(EFrameType T) const { return IsHairStrandContinuousDecimationReorderingEnabled() ? MeshSampleWeightsBuffer[GetIndex(T)] : MeshSampleWeightsBuffer[0]; }
+		inline void SwapBuffer() { CurrentIndex = 1u - CurrentIndex; }
 	};
 
 	/* Store the hair projection information for each mesh LOD */
@@ -298,6 +343,9 @@ struct FHairStrandsRestResource : public FHairCommonResource
 
 	/* Reference to the hair strands render data */
 	FHairStrandsBulkData& BulkData;
+
+	/* Handle to bulk data request */
+	FBulkDataBatchRequest BulkDataRequest;
 
 	/* Type of curves */
 	const EHairStrandsResourcesType CurveType;
@@ -407,6 +455,9 @@ struct FHairStrandsClusterCullingResource : public FHairCommonResource
 	FRDGExternalBuffer ClusterVertexIdBuffer;
 
 	FHairStrandsClusterCullingBulkData& BulkData;
+
+	/* Handle to bulk data request */
+	FBulkDataBatchRequest BulkDataRequest;
 };
 
 struct FHairStrandsInterpolationResource : public FHairCommonResource
@@ -442,6 +493,9 @@ struct FHairStrandsInterpolationResource : public FHairCommonResource
 
 	/* Reference to the hair strands interpolation render data */
 	FHairStrandsInterpolationBulkData& BulkData;
+
+	/* Handle to bulk data request */
+	FBulkDataBatchRequest BulkDataRequest;
 };
 
 #if RHI_RAYTRACING

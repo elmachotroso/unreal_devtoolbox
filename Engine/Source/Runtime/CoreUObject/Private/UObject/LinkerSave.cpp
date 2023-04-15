@@ -15,6 +15,11 @@
 #include "UObject/UnrealType.h"
 #include "HAL/PlatformStackWalk.h"
 
+#if WITH_EDITORONLY_DATA
+#include "IO/IoDispatcher.h"
+#include "Serialization/DerivedData.h"
+#endif
+
 /*----------------------------------------------------------------------------
 	FLinkerSave.
 ----------------------------------------------------------------------------*/
@@ -67,7 +72,7 @@ FLinkerSave::FLinkerSave(UPackage* InParent, const TCHAR* InFilename, bool bForc
 		if (Package)
 		{
 #if WITH_EDITORONLY_DATA
-			Summary.FolderName = Package->GetFolderName().ToString();
+			Summary.PackageName = Package->GetName();
 #endif
 			Summary.ChunkIDs = Package->GetChunkIDs();
 		}
@@ -121,7 +126,7 @@ FLinkerSave::FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteS
 		if (Package)
 		{
 #if WITH_EDITORONLY_DATA
-			Summary.FolderName = Package->GetFolderName().ToString();
+			Summary.PackageName = Package->GetName();
 #endif
 			Summary.ChunkIDs = Package->GetChunkIDs();
 		}
@@ -170,7 +175,7 @@ FLinkerSave::FLinkerSave(UPackage* InParent, bool bForceByteSwapping, bool bInSa
 		if (Package)
 		{
 #if WITH_EDITORONLY_DATA
-			Summary.FolderName = Package->GetFolderName().ToString();
+			Summary.PackageName = Package->GetName();
 #endif
 			Summary.ChunkIDs = Package->GetChunkIDs();
 		}
@@ -219,6 +224,19 @@ int32 FLinkerSave::MapName(FNameEntryId Id) const
 
 	return INDEX_NONE;
 }
+
+int32 FLinkerSave::MapSoftObjectPath(const FSoftObjectPath& SoftObjectPath) const
+{
+	const int32* IndexPtr = SoftObjectPathIndices.Find(SoftObjectPath);
+
+	if (IndexPtr)
+	{
+		return *IndexPtr;
+	}
+
+	return INDEX_NONE;
+}
+
 
 FPackageIndex FLinkerSave::MapObject( const UObject* Object ) const
 {
@@ -332,7 +350,7 @@ FArchive& FLinkerSave::operator<<( FName& InName )
 	{
 		// Set an error on the archive and record the error on the log output if one is set.
 		SetCriticalError();
-		FString ErrorMessage = FString::Printf(TEXT("Name \"%s\" is not mapped when saving %s (object: %s, property: %s)."),
+		FString ErrorMessage = FString::Printf(TEXT("Name \"%s\" is not mapped when saving %s (object: %s, property: %s). This can mean that this object serialize function is not deterministic between reference harvesting and serialization."),
 			*InName.ToString(),
 			*GetArchiveName(),
 			*GetSerializeContext()->SerializedObject->GetFullName(),
@@ -375,6 +393,37 @@ FArchive& FLinkerSave::operator<<( UObject*& Obj )
 		Save = MapObject(Obj);
 	}
 	return *this << Save;
+}
+
+FArchive& FLinkerSave::operator<<(FSoftObjectPath& SoftObjectPath)
+{
+	// Map soft object path to indices if we aren't currently serializing the list itself
+	// and we actually built one, cooking might want to serialize soft object path directly for example
+	if (!bIsWritingHeader && SoftObjectPathList.Num() > 0)
+	{
+		int32 Save = MapSoftObjectPath(SoftObjectPath);
+		bool bPathMapped = Save != INDEX_NONE;
+		if (!bPathMapped)
+		{
+			// Set an error on the archive and record the error on the log output if one is set.
+			SetCriticalError();
+			FString ErrorMessage = FString::Printf(TEXT("SoftObjectPath \"%s\" is not mapped when saving %s (object: %s, property: %s). This can mean that this object serialize function is not deterministic between reference harvesting and serialization."),
+				*SoftObjectPath.ToString(),
+				*GetArchiveName(),
+				*GetSerializeContext()->SerializedObject->GetFullName(),
+				*GetFullNameSafe(GetSerializedProperty()));
+			ensureMsgf(false, TEXT("%s"), *ErrorMessage);
+			if (LogOutput)
+			{
+				LogOutput->Logf(ELogVerbosity::Error, TEXT("%s"), *ErrorMessage);
+			}
+		}
+		return *this << Save;
+	}
+	else
+	{
+		return FArchiveUObject::operator<<(SoftObjectPath);
+	}
 }
 
 FArchive& FLinkerSave::operator<<(FLazyObjectPtr& LazyObjectPtr)
@@ -459,3 +508,50 @@ void FLinkerSave::SetUseUnversionedPropertySerialization(bool bInUseUnversioned)
 		}
 	}
 }
+
+void FLinkerSave::SetFilterEditorOnly(bool bInFilterEditorOnly)
+{
+	FArchiveUObject::SetFilterEditorOnly(bInFilterEditorOnly);
+	if (Saver)
+	{
+		Saver->SetFilterEditorOnly(bInFilterEditorOnly);
+	}
+	if (bInFilterEditorOnly)
+	{
+		Summary.SetPackageFlags(Summary.GetPackageFlags() | PKG_FilterEditorOnly);
+		if (LinkerRoot)
+		{
+			LinkerRoot->SetPackageFlags(PKG_FilterEditorOnly);
+		}
+	}
+	else
+	{
+		Summary.SetPackageFlags(Summary.GetPackageFlags() & ~PKG_FilterEditorOnly);
+		if (LinkerRoot)
+		{
+			LinkerRoot->ClearPackageFlags(PKG_FilterEditorOnly);
+		}
+	}
+}
+
+#if WITH_EDITORONLY_DATA
+UE::FDerivedData FLinkerSave::AddDerivedData(const UE::FDerivedData& Data)
+{
+	UE_LOG(LogLinker, Warning, TEXT("Data will not be able to load because derived data is not saved yet."));
+
+	UE::DerivedData::Private::FCookedData CookedData;
+
+	const FPackageId PackageId = FPackageId::FromName(LinkerRoot->GetFName());
+	const int32 ChunkIndex = ++LastDerivedDataIndex;
+	checkf(ChunkIndex >= 0 && ChunkIndex < (1 << 24), TEXT("ChunkIndex %d is out of range."), ChunkIndex);
+
+	// PackageId                 ChunkIndex Type
+	// [00 01 02 03 04 05 06 07] [08 09 10] [11]
+	*reinterpret_cast<uint8*>(&CookedData.ChunkId[11]) = static_cast<uint8>(EIoChunkType::DerivedData);
+	*reinterpret_cast<uint32*>(&CookedData.ChunkId[7]) = NETWORK_ORDER32(ChunkIndex);
+	*reinterpret_cast<uint64*>(&CookedData.ChunkId[0]) = PackageId.Value();
+
+	CookedData.Flags = Data.GetFlags();
+	return UE::FDerivedData(CookedData);
+}
+#endif // WITH_EDITORONLY_DATA

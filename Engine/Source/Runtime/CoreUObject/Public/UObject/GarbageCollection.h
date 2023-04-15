@@ -6,12 +6,25 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "UObject/UObjectGlobals.h"
-#include "Serialization/ArchiveUObject.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/ThreadSafeBool.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/ArchiveUObject.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
 #include "UObject/FastReferenceCollectorOptions.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+
+class FProperty;
+class UObject;
 
 #if !defined(UE_WITH_GC)
 #	define UE_WITH_GC	1
@@ -24,7 +37,9 @@
 #define PERF_DETAILED_PER_CLASS_GC_STATS				(LOOKING_FOR_PERF_ISSUES || 0) 
 
 /** UObject pointer checks are disabled by default in shipping and test builds as they add roughly 20% overhead to GC times */
-#define ENABLE_GC_OBJECT_CHECKS (!(UE_BUILD_TEST || UE_BUILD_SHIPPING) || 0)
+#ifndef ENABLE_GC_OBJECT_CHECKS
+	#define ENABLE_GC_OBJECT_CHECKS (!(UE_BUILD_TEST || UE_BUILD_SHIPPING) || 0)
+#endif
 
 /** Token debug info (token names) enabled in non-shipping builds */
 #define ENABLE_GC_TOKEN_DEBUG_INFO (!UE_BUILD_SHIPPING)
@@ -80,6 +95,7 @@ enum EGCReferenceType
 	GCRT_ArrayDelegate,
 	GCRT_MulticastDelegate,
 	GCRT_ArrayMulticastDelegate,
+	GCRT_DynamicallyTypedValue,
 };
 
 enum class EGCTokenType : uint32
@@ -525,8 +541,8 @@ public:
 	~FGCScopeGuard();
 };
 
-template <EFastReferenceCollectorOptions Options> class FGCReferenceProcessor;
 class FGCObject;
+template <EFastReferenceCollectorOptions Options> class FGCReferenceProcessor;
 
 /** Information about references to objects marked as Garbage that's gather by the Garbage Collector */
 struct FGarbageReferenceInfo
@@ -685,7 +701,7 @@ public:
 };
 
 /** True if Garbage Collection is running. Use IsGarbageCollecting() functio n instead of using this variable directly */
-extern COREUOBJECT_API FThreadSafeBool GIsGarbageCollecting;
+extern COREUOBJECT_API bool GIsGarbageCollecting;
 
 /**
  * Gets the last time that the GC was run.
@@ -701,3 +717,8 @@ FORCEINLINE bool IsGarbageCollecting()
 {
 	return GIsGarbageCollecting;
 }
+
+/**
+* Whether garbage collection is locking the global uobject hash tables
+*/
+COREUOBJECT_API bool IsGarbageCollectingAndLockingUObjectHashTables();

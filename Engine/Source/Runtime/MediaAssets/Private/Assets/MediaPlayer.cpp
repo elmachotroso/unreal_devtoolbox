@@ -26,9 +26,15 @@
 #include "MediaSource.h"
 #include "StreamMediaSource.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MediaPlayer)
+
 #if WITH_EDITOR
 #include "EngineAnalytics.h"
 #endif
+
+
+FLazyName UMediaPlayer::MediaInfoNameSourceNumMips(TEXT("SourceNumMips"));
+FLazyName UMediaPlayer::MediaInfoNameSourceNumTiles(TEXT("SourceNumTiles"));
 
 /* UMediaPlayer structors
  *****************************************************************************/
@@ -200,6 +206,12 @@ int32 UMediaPlayer::GetNumTrackFormats(EMediaPlayerTrack TrackType, int32 TrackI
 }
 
 
+FVariant UMediaPlayer::GetMediaInfo(FName InfoName) const
+{
+	return PlayerFacade->GetMediaInfo(InfoName);
+}
+
+
 TSharedRef<FMediaPlayerFacade, ESPMode::ThreadSafe> UMediaPlayer::GetPlayerFacade() const
 {
 	return PlayerFacade.ToSharedRef();
@@ -229,7 +241,6 @@ void UMediaPlayer::GetSupportedRates(TArray<FFloatRange>& OutRates, bool Unthinn
 	const TRangeSet<float> Rates = PlayerFacade->GetSupportedRates(Unthinned);
 	Rates.GetRanges((TArray<TRange<float>>&)OutRates);
 }
-
 
 FTimespan UMediaPlayer::GetTime() const
 {
@@ -1205,4 +1216,5 @@ void UMediaPlayer::OpenSourceLatent(const UObject* WorldContextObject, FLatentAc
 		}
 	}
 }
+
 

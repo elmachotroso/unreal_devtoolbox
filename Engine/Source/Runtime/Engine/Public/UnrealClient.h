@@ -17,6 +17,8 @@
 #include "HitProxies.h"
 #include "RenderGraphDefinitions.h"
 #include "Elements/Framework/TypedElementListFwd.h"
+#include "DynamicRenderScaling.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 class FCanvas;
 class FViewport;
@@ -44,7 +46,7 @@ public:
 	* Accessor for the surface RHI when setting this render target
 	* @return render target surface RHI resource
 	*/
-	ENGINE_API virtual const FTexture2DRHIRef& GetRenderTargetTexture() const;
+	ENGINE_API virtual const FTextureRHIRef& GetRenderTargetTexture() const;
 	ENGINE_API virtual FUnorderedAccessViewRHIRef GetRenderTargetUAV() const;
 
 	/**
@@ -59,6 +61,10 @@ public:
 	* @return display gamma expected for rendering to this render target
 	*/
 	ENGINE_API virtual float GetDisplayGamma() const;
+
+	virtual EDisplayColorGamut GetDisplayColorGamut() const { return EDisplayColorGamut::sRGB_D65; }
+	virtual EDisplayOutputFormat GetDisplayOutputFormat() const { return EDisplayOutputFormat::SDR_sRGB; }
+	virtual bool GetSceneHDREnabled() const { return false; }
 
 	/**
 	* Handles freezing/unfreezing of rendering
@@ -111,7 +117,7 @@ public:
 
 protected:
 
-	FTexture2DRHIRef RenderTargetTextureRHI;
+	FTextureRHIRef RenderTargetTextureRHI;
 
 	/**
 	 * Reads the viewport's displayed pixels into a preallocated color buffer.
@@ -253,7 +259,7 @@ struct FStatUnitData
 	TArray<float> FrameTimes;
 	TArray<float> RHITTimes;
 	TArray<float> InputLatencyTimes;
-	TArray<float> ResolutionFractions;
+	DynamicRenderScaling::TMap<TArray<float>> ResolutionFractions;
 #endif //!UE_BUILD_SHIPPING
 
 	FStatUnitData()
@@ -282,10 +288,14 @@ struct FStatUnitData
 		FrameTimes.AddZeroed(NumberOfSamples);
 		RHITTimes.AddZeroed(NumberOfSamples);
 		InputLatencyTimes.AddZeroed(NumberOfSamples);
-		ResolutionFractions.Reserve(NumberOfSamples);
-		for (int32 i = 0; i < NumberOfSamples; i++)
+		for (TLinkedList<DynamicRenderScaling::FBudget*>::TIterator BudgetIt(DynamicRenderScaling::FBudget::GetGlobalList()); BudgetIt; BudgetIt.Next())
 		{
-			ResolutionFractions.Add(-1.0f);
+			const DynamicRenderScaling::FBudget& Budget = **BudgetIt;
+			ResolutionFractions[Budget].Reserve(NumberOfSamples);
+			for (int32 i = 0; i < NumberOfSamples; i++)
+			{
+				ResolutionFractions[Budget].Add(-1.0f);
+			}
 		}
 #endif //!UE_BUILD_SHIPPING
 	}
@@ -691,7 +701,7 @@ protected:
 		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
 		virtual FString GetReferencerName() const override;
 
-		const FTexture2DRHIRef& GetHitProxyTexture(void) const		{ return HitProxyTexture; }
+		const FTexture2DRHIRef& GetHitProxyTexture(void) const		{ return RenderTargetTextureRHI; }
 		const FTexture2DRHIRef& GetHitProxyCPUTexture(void) const		{ return HitProxyCPUTexture; }
 
 	private:
@@ -705,7 +715,6 @@ protected:
 		/** References to the hit proxies cached by the hit proxy map. */
 		TArray<TRefCountPtr<HHitProxy> > HitProxies;
 
-		FTexture2DRHIRef HitProxyTexture;
 		FTexture2DRHIRef HitProxyCPUTexture;
 	};
 
@@ -786,6 +795,7 @@ public:
 	FInputKeyEventArgs(FViewport* InViewport, int32 InControllerId, FKey InKey, EInputEvent InEvent)
 		: Viewport(InViewport)
 		, ControllerId(InControllerId)
+		, InputDevice(FInputDeviceId::CreateFromInternalId(InControllerId))
 		, Key(InKey)
 		, Event(InEvent)
 		, AmountDepressed(1.0f)
@@ -793,14 +803,39 @@ public:
 	{
 	}
 
+	FInputKeyEventArgs(FViewport* InViewport, FInputDeviceId InInputDevice, FKey InKey, EInputEvent InEvent)
+		: Viewport(InViewport)
+		, InputDevice(InInputDevice)
+		, Key(InKey)
+		, Event(InEvent)
+		, AmountDepressed(1.0f)
+		, bIsTouchEvent(false)
+	{
+		FPlatformUserId UserID = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(InInputDevice);
+		ControllerId = FPlatformMisc::GetUserIndexForPlatformUser(UserID);
+	}
+
 	FInputKeyEventArgs(FViewport* InViewport, int32 InControllerId, FKey InKey, EInputEvent InEvent, float InAmountDepressed, bool bInIsTouchEvent)
 		: Viewport(InViewport)
 		, ControllerId(InControllerId)
+		, InputDevice(FInputDeviceId::CreateFromInternalId(InControllerId))
 		, Key(InKey)
 		, Event(InEvent)
 		, AmountDepressed(InAmountDepressed)
 		, bIsTouchEvent(bInIsTouchEvent)
 	{
+	}
+	
+	FInputKeyEventArgs(FViewport* InViewport, FInputDeviceId InInputDevice, FKey InKey, EInputEvent InEvent, float InAmountDepressed, bool bInIsTouchEvent)
+		: Viewport(InViewport)
+		, InputDevice(InInputDevice)
+		, Key(InKey)
+		, Event(InEvent)
+		, AmountDepressed(InAmountDepressed)
+		, bIsTouchEvent(bInIsTouchEvent)
+	{
+		FPlatformUserId UserID = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(InInputDevice);
+		ControllerId = FPlatformMisc::GetUserIndexForPlatformUser(UserID);
 	}
 
 	bool IsGamepad() const { return Key.IsGamepadKey(); }
@@ -811,6 +846,8 @@ public:
 	FViewport* Viewport;
 	// The controller which the key event is from.
 	int32 ControllerId;
+	// The input device which this key event is from
+	FInputDeviceId InputDevice;
 	// The type of event which occurred.
 	FKey Key;
 	// The type of event which occurred.
@@ -845,10 +882,12 @@ public:
 	 */
 	virtual bool InputKey(const FInputKeyEventArgs& EventArgs)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return InputKey(EventArgs.Viewport, EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.Key.IsGamepadKey());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	//UE_DEPRECATED(4.21, "Use the new InputKey(const FInputKeyEventArgs& EventArgs) function.")
+	UE_DEPRECATED(5.1, "Use the new InputKey(const FInputKeyEventArgs& EventArgs) function.")
 	virtual bool InputKey(FViewport* Viewport,int32 ControllerId,FKey Key,EInputEvent Event,float AmountDepressed = 1.f,bool bGamepad=false) { return false; }
 
 	/**
@@ -863,7 +902,22 @@ public:
 	 * @param	bGamepad - input came from gamepad (ie xbox controller)
 	 * @return	True to consume the axis movement, false to pass it on.
 	 */
+	UE_DEPRECATED(5.1, "Use the new InputAxis function that takes a FInputDeviceId.")
 	virtual bool InputAxis(FViewport* Viewport,int32 ControllerId,FKey Key,float Delta,float DeltaTime,int32 NumSamples=1,bool bGamepad=false) { return false; }
+
+	/**
+	 * Check an axis movement received by the viewport.
+	 * If the viewport client uses the movement, it should return true to consume it.
+	 * @param	Viewport - The viewport which the axis movement is from.
+	 * @param	InputDevice - The input device that triggered this axis movement
+	 * @param	Key - The name of the axis which moved.
+	 * @param	Delta - The axis movement delta.
+	 * @param	DeltaTime - The time since the last axis update.
+	 * @param	NumSamples - The number of device samples that contributed to this Delta, useful for things like smoothing
+	 * @param	bGamepad - input came from gamepad (ie xbox controller)
+	 * @return	True to consume the axis movement, false to pass it on.
+	 */
+	virtual bool InputAxis(FViewport* Viewport, FInputDeviceId InputDevice, FKey Key, float Delta, float DeltaTime, int32 NumSamples = 1, bool bGamepad = false) { return false; }
 
 	/**
 	 * Check a character input received by the viewport.
@@ -1215,13 +1269,7 @@ public:
 	//~ End FViewport Interface
 
 	//~ Begin FRenderResource Interface
-	virtual void InitDynamicRHI() override
-	{
-		FTexture2DRHIRef ShaderResourceTextureRHI;
-
-		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyViewport"));
-		RHICreateTargetableShaderResource2D( SizeX, SizeY, PF_A2B10G10R10, 1, TexCreate_None, TexCreate_RenderTargetable, false, CreateInfo, RenderTargetTextureRHI, ShaderResourceTextureRHI );
-	}
+	virtual void InitDynamicRHI() override;
 
 	// @todo DLL: Without these functions we get unresolved linker errors with FRenderResource
 	virtual void InitRHI() override{}

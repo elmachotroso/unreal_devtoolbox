@@ -257,8 +257,6 @@ public:
 
 		bGoodCandidateForCachedShadowmap = CacheShadowDepthsFromPrimitivesUsingWPO() || !MaterialRelevance.bUsesWorldPositionOffset;
 
-		bUsingWPOMaterial = !!MaterialRelevance.bUsesWorldPositionOffset;
-
 		// Try to find a color for level coloration.
 		UObject* ModelOuter = InComponent->GetModel()->GetOuter();
 		ULevel* Level = Cast<ULevel>( ModelOuter );
@@ -567,6 +565,7 @@ public:
 		}
 		Result.bShadowRelevance = IsShadowCast(View);
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 		return Result;
 	}
 

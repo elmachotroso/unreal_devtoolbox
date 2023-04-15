@@ -5,7 +5,7 @@
 #include "GameFramework/Controller.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Debug/DebugHelpers.h"
-#include "MLAdapterManager.h"
+#include "Managers/MLAdapterManager.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "MLAdapterSpace.h"
 
@@ -25,36 +25,41 @@ UMLAdapterSensor_AIPerception::UMLAdapterSensor_AIPerception(const FObjectInitia
 
 void UMLAdapterSensor_AIPerception::Configure(const TMap<FName, FString>& Params)
 {
-	const FName NAME_Count = TEXT("count");
-	const FName NAME_Sort = TEXT("sort");
-	const FName NAME_Mode = TEXT("mode");
-	const FName NAME_PeripheralAngle = TEXT("peripheral_angle");
-	const FName NAME_MaxAge = TEXT("max_age");
-
 	Super::Configure(Params);
 
-	for (auto KeyValue : Params)
+	const FName NAME_Count = TEXT("count");
+	const FString* CountValue = Params.Find(NAME_Count);
+	if (CountValue != nullptr)
 	{
-		if (KeyValue.Key == NAME_Count)
-		{
-			TargetsToSenseCount = FMath::Max(FCString::Atoi(*KeyValue.Value), 1);
-		}
-		else if (KeyValue.Key == NAME_Sort)
-		{
-			TargetsSortType = (KeyValue.Value == TEXT("in_front")) ? ESortType::InFrontness : ESortType::Distance;
-		}
-		else if (KeyValue.Key == NAME_Mode)
-		{
-			bVectorMode = (KeyValue.Value.Find(TEXT("vector")) != INDEX_NONE);
-		}
-		else if (KeyValue.Key == NAME_PeripheralAngle)
-		{
-			PeripheralVisionAngleDegrees = FMath::Max(FCString::Atof(*KeyValue.Value), 1.f);
-		}
-		else if (KeyValue.Key == NAME_MaxAge)
-		{
-			MaxStimulusAge = FMath::Max(FCString::Atof(*KeyValue.Value), 0.001f);
-		}
+		TargetsToSenseCount = FMath::Max(FCString::Atoi((TCHAR*)CountValue), 1);
+	}
+
+	const FName NAME_Sort = TEXT("sort");
+	const FString* SortValue = Params.Find(NAME_Sort);
+	if (SortValue != nullptr)
+	{
+		TargetsSortType = (*SortValue == TEXT("in_front")) ? ESortType::InFrontness : ESortType::Distance;
+	}
+
+	const FName NAME_Mode = TEXT("mode");
+	const FString* ModeValue = Params.Find(NAME_Mode);
+	if (ModeValue != nullptr)
+	{
+		bVectorMode = (ModeValue->Find(TEXT("vector")) != INDEX_NONE);
+	}
+
+	const FName NAME_PeripheralAngle = TEXT("peripheral_angle");
+	const FString* PeripheralAngleValue = Params.Find(NAME_PeripheralAngle);
+	if (PeripheralAngleValue != nullptr)
+	{
+		PeripheralVisionAngleDegrees = FMath::Max(FCString::Atof((TCHAR*)PeripheralAngleValue), 1.f);
+	}
+
+	const FName NAME_MaxAge = TEXT("max_age");
+	const FString* MaxAgeValue = Params.Find(NAME_MaxAge);
+	if (MaxAgeValue != nullptr)
+	{
+		MaxStimulusAge = FMath::Max(FCString::Atof((TCHAR*)MaxAgeValue), 0.001f);
 	}
 
 	UpdateSpaceDef();
@@ -217,11 +222,14 @@ void UMLAdapterSensor_AIPerception::GetObservations(FMLAdapterMemoryWriter& Ar)
 		Ar.Serialize(&TargetData.Distance, sizeof(float));
 		if (bVectorMode)
 		{
-			Ar << TargetData.HeadingVector;
+			FVector3f HeadingVector3f = (FVector3f)TargetData.HeadingVector;
+			Ar << HeadingVector3f;
 		}
 		else
 		{
-			Ar << TargetData.HeadingRotator.Pitch << TargetData.HeadingRotator.Yaw;
+			float Pitch = TargetData.HeadingRotator.Pitch;
+			float Yaw = TargetData.HeadingRotator.Yaw;
+			Ar << Pitch << Yaw;
 		}
 	}
 }

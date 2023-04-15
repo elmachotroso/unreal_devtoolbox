@@ -38,16 +38,6 @@ namespace AutomationTool
 			return CachedFrameworkMsbuildExe;
 		}
 
-		public override FileReference GetDotnetExe()
-		{
-			return FileReference.Combine(Unreal.EngineDirectory, @"Binaries\ThirdParty\DotNet\Mac\dotnet");
-		}
-
-		public override string GetDotnetMsbuildExe()
-		{
-			return "../../ThirdParty/DotNet/Mac/dotnet";
-		}
-
 		public override string RelativeBinariesFolder
 		{
 			get { return @"Engine/Binaries/Mac/"; }
@@ -97,10 +87,19 @@ namespace AutomationTool
 			{
 				if (P4ExePath == null)
 				{
-					P4ExePath = "/usr/bin/p4";
-					if (!File.Exists(P4ExePath))
+					string[] p4Paths = { 
+						"/usr/bin/p4", // Default path
+						"/opt/homebrew/bin/p4", // Apple Silicon Homebrew Path
+						"/usr/local/bin/p4" // Apple Intel Homebrew Path
+					};
+					
+					foreach (string path in p4Paths)
 					{
-						P4ExePath = "/usr/local/bin/p4";
+						if (File.Exists(path))
+						{
+							P4ExePath = path;
+							break;
+						}
 					}
 				}
 				return P4ExePath;
@@ -147,9 +146,6 @@ namespace AutomationTool
 					}
 				}
 				// some of our C# applications are converted to dotnet core, do not run those via mono
-				// they are instead assumed to produce a host executable that can just be run
-
-				// this needs fixing: these applications should be launched through the bundled dotnet
 
 				else if (AppName.Contains("UnrealBuildTool") || AppName.Contains("AutomationTool"))
 				{

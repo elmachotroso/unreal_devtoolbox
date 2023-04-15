@@ -8,8 +8,6 @@
 #include "LandscapeComponent.h"
 #include "LandscapePrivate.h"
 #include "LandscapeRender.h"
-#include "Materials/MaterialExpressionLandscapePhysicalMaterialOutput.h"
-#include "Materials/MaterialInstanceConstant.h"
 #include "MeshMaterialShader.h"
 #include "MeshPassProcessor.h"
 #include "MeshPassProcessor.inl"
@@ -18,55 +16,18 @@
 #include "RHIResources.h"
 #include "SceneRenderTargetParameters.h"
 #include "SimpleMeshDrawCommandPass.h"
+#include "RHIGPUReadback.h"
+#include "RenderGraphUtils.h"
+#include "RenderCaptureInterface.h"
 
 DECLARE_GPU_STAT_NAMED(LandscapePhysicalMaterial_Draw, TEXT("LandscapePhysicalMaterial"));
 
-
-namespace
-{
-	/** Get the landscape material used by the landscape component. */
-	UMaterialInterface* GetLandscapeMaterial(ULandscapeComponent const* InLandscapeComponent)
-	{
-		UMaterialInterface* Material = InLandscapeComponent->GetLandscapeMaterial();
-		for (UMaterialInstanceConstant* MIC = Cast<UMaterialInstanceConstant>(Material); MIC; MIC = Cast<UMaterialInstanceConstant>(Material))
-		{
-			Material = MIC->Parent;
-		}
-		return Material;
-	}
-
-	/** 
-	 * Get the physical materials that are configured by the landscape component graphical material. 
-	 * Returns false if there are no non-null physical materials. (We probably don't want to use if no physical material connections are bound.)
-	 */
-	bool GetPhysicalMaterials(ULandscapeComponent const* InLandscapeComponent, TArray<UPhysicalMaterial*>& OutPhysicalMaterials)
-	{
-		bool bReturnValue = false;
-		OutPhysicalMaterials.Reset();
-
-		UMaterialInterface* Material = GetLandscapeMaterial(InLandscapeComponent);
-		if (Material != nullptr)
-		{
-			ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
-			{
-				TArray<const UMaterialExpressionLandscapePhysicalMaterialOutput*> Expressions;
-				Material->GetMaterial()->GetAllExpressionsOfType<UMaterialExpressionLandscapePhysicalMaterialOutput>(Expressions);
-				if (Expressions.Num() > 0)
-				{
-					// Assume only one valid physical material output material node
-					for (const FPhysicalMaterialInput& Input : Expressions[0]->Inputs)
-					{
-						OutPhysicalMaterials.Add(Input.PhysicalMaterial);
-						bReturnValue |= (Input.PhysicalMaterial != nullptr);
-					}
-				}
-			}
-		}
-
-		return bReturnValue;
-	}
-}
-
+int32 RenderCaptureLayersNextPhysicalMaterialDraws = 0;
+static FAutoConsoleVariableRef CVarRenderCaptureLayersNextPhysicalMaterialDraws(
+	TEXT("landscape.RenderCaptureLayersNextPhysicalMaterialDraws"),
+	RenderCaptureLayersNextPhysicalMaterialDraws,
+	TEXT("Trigger N render captures during the next landscape physical material draw calls."),
+	EConsoleVariableFlags::ECVF_RenderThreadSafe);
 
 /** Material shader for rendering physical material IDs. */
 class FLandscapePhysicalMaterial : public FMeshMaterialShader
@@ -120,6 +81,19 @@ public:
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FLandscapePhysicalMaterialPS, TEXT("/Engine/Private/LandscapePhysicalMaterial.usf"), TEXT("PSMain"), SF_Pixel);
 
+// Tries to retrieve the VS/PS for rendering landscape physical materials. If the shaders are not available yet (e.g. not compiled), it will return false and will request them to become available . 
+//  This can be called repeatedly until the shaders become available :
+bool TryGetLandscapePhysicalMaterialShaders(const FMaterial& InMaterialResource, FMaterialShaders& OutShaders)
+{
+	FMaterialShaderTypes ShaderTypes;
+	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialVS>();
+	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialPS>();
+	
+	FVertexFactoryType* VertexFactoryType = FindVertexFactoryType(FName(TEXT("FLandscapeFixedGridVertexFactory"), FNAME_Find));
+	check(VertexFactoryType != nullptr);
+	return InMaterialResource.TryGetShaders(ShaderTypes, VertexFactoryType, OutShaders);
+}
+
 
 /** Simple mesh processor implementation to draw using the FLandscapePhysicalMaterial mesh material shader. */
 class FLandscapePhysicalMaterialMeshProcessor : public FMeshPassProcessor
@@ -137,21 +111,6 @@ public:
 		int32 StaticMeshId = -1) override final;
 
 private:
-	bool TryAddMeshBatch(
-		const FMeshBatch& RESTRICT MeshBatch,
-		uint64 BatchElementMask,
-		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-		int32 StaticMeshId,
-		const FMaterialRenderProxy& MaterialRenderProxy,
-		const FMaterial& MaterialResource);
-
-	bool Process(
-		const FMeshBatch& MeshBatch,
-		uint64 BatchElementMask,
-		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
-		const FMaterial& RESTRICT MaterialResource);
-
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
 
@@ -159,7 +118,7 @@ FLandscapePhysicalMaterialMeshProcessor::FLandscapePhysicalMaterialMeshProcessor
 	const FScene* Scene, 
 	const FSceneView* InViewIfDynamicMeshCommand, 
 	FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, InViewIfDynamicMeshCommand->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::Num, Scene, InViewIfDynamicMeshCommand->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 {
 	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
@@ -172,60 +131,20 @@ void FLandscapePhysicalMaterialMeshProcessor::AddMeshBatch(
 	int32 StaticMeshId)
 {
 	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
-	while (MaterialRenderProxy)
-	{
 		const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
-		if (Material)
-		{
-			if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
-			{
-				break;
-			}
-		}
+	checkf(Material != nullptr, TEXT("InitTaskRenderResources should ensure that by the time we render the physical materials, the shaders are valid and ready."));
 
-		MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
-	}
-}
-
-bool FLandscapePhysicalMaterialMeshProcessor::TryAddMeshBatch(
-	const FMeshBatch& RESTRICT MeshBatch,
-	uint64 BatchElementMask,
-	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-	int32 StaticMeshId,
-	const FMaterialRenderProxy& MaterialRenderProxy,
-	const FMaterial& MaterialResource)
-{
-	return Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource);
-}
-
-bool FLandscapePhysicalMaterialMeshProcessor::Process(
-	const FMeshBatch& MeshBatch,
-	uint64 BatchElementMask,
-	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-	const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
-	const FMaterial& RESTRICT MaterialResource)
-{
-	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
+	FMaterialShaders Shaders;
+	verify(TryGetLandscapePhysicalMaterialShaders(*Material, Shaders));
 
 	TMeshProcessorShaders<
 		FLandscapePhysicalMaterialVS,
 		FLandscapePhysicalMaterialPS> PassShaders;
-
-	FMaterialShaderTypes ShaderTypes;
-	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialVS>();
-	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialPS>();
-
-	FMaterialShaders Shaders;
-	if (!MaterialResource.TryGetShaders(ShaderTypes, VertexFactory->GetType(), Shaders))
-	{
-		return false;
-	}
-
 	Shaders.TryGetVertexShader(PassShaders.VertexShader);
 	Shaders.TryGetPixelShader(PassShaders.PixelShader);
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, MaterialResource, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
 	const ERasterizerCullMode MeshCullMode = CM_None;
 
 	FMeshMaterialShaderElementData ShaderElementData;
@@ -237,8 +156,8 @@ bool FLandscapePhysicalMaterialMeshProcessor::Process(
 		MeshBatch,
 		BatchElementMask,
 		PrimitiveSceneProxy,
-		MaterialRenderProxy,
-		MaterialResource,
+		*MaterialRenderProxy,
+		*Material,
 		PassDrawRenderState,
 		PassShaders,
 		MeshFillMode,
@@ -246,10 +165,7 @@ bool FLandscapePhysicalMaterialMeshProcessor::Process(
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
-
-	return true;
 }
-
 
 namespace
 {
@@ -267,11 +183,11 @@ namespace
 	 * Initially we only collect the base landscape mesh, but potentially we could gather other objects like roads?
 	 * WARNING: This gets the SceneProxy pointer from the UComponent on the render thread. This doesn't feel safe but it's what the grass renderer does...
 	 */
-	void FillMeshInfos_RenderThread(const FPrimitiveSceneProxy* InSceneProxy, FMeshInfoArray& OutMeshInfos)
+	void FillMeshInfos_RenderThread(const FLandscapeComponentSceneProxy* InSceneProxy, FMeshInfoArray& OutMeshInfos)
 	{
 		const int32 MeshInfoIndex = OutMeshInfos.AddUninitialized();
 		OutMeshInfos[MeshInfoIndex].Proxy = InSceneProxy;
-		OutMeshInfos[MeshInfoIndex].MeshBatch = &((FLandscapeComponentSceneProxy*)InSceneProxy)->GetGrassMeshBatch();
+		OutMeshInfos[MeshInfoIndex].MeshBatch = &(InSceneProxy->GetGrassMeshBatch());
 		OutMeshInfos[MeshInfoIndex].MeshBatchElementMask = 1 << 0; // LOD 0 only
 	}
 	
@@ -292,8 +208,11 @@ namespace
 		FMatrix ProjectionMatrix,
 		FRHIGPUTextureReadback* Readback)
 	{
-		FMemMark Mark(FMemStack::Get());
 		FRDGBuilder GraphBuilder(RHICmdList);
+
+		{
+			RenderCaptureInterface::FScopedCapture RenderCapture((RenderCaptureLayersNextPhysicalMaterialDraws != 0), GraphBuilder, TEXT("LandscapePhysicalMaterialCapture"));
+			RenderCaptureLayersNextPhysicalMaterialDraws = FMath::Max(0, RenderCaptureLayersNextPhysicalMaterialDraws - 1);
 
 		// Create the view
 		FSceneViewFamily::ConstructionValues ViewFamilyInit(nullptr, SceneInterface, FEngineShowFlags(ESFIM_Game));
@@ -340,6 +259,7 @@ namespace
 			});
 
 		AddEnqueueCopyPass(GraphBuilder, Readback, OutputTexture);
+		}
 
 		GraphBuilder.Execute();
 	}
@@ -377,16 +297,17 @@ namespace
 	/** Completion state for a physical material render task. */
 	enum class ECompletionState : uint64
 	{
-		None = 0,		// Draw not submitted
-		Pending = 1,	// Draw submitted, waiting for GPU
-		Complete = 2	// Result copied back from GPU
+		None = 0,					// Task initialized
+		WaitForRenderResources = 1,	// Waiting for shaders to compile
+		Pending = 2,				// Draw submitted, waiting for GPU
+		Complete = 3				// Result copied back from GPU
 	};
 
 	/** Data for a physical material render task. */
 	struct FLandscapePhysicalMaterialRenderTaskImpl
 	{
 		// Create on game thread
-		ULandscapeComponent const* LandscapeComponent = nullptr;
+		ULandscapeComponent const* LandscapeComponent = nullptr; // !Do not access on render thread!
 		uint32 InitFrameId = 0;
 		FIntPoint TargetSize = FIntPoint(ForceInitToZero);
 		FVector ViewOrigin = FVector(ForceInitToZero);
@@ -404,12 +325,12 @@ namespace
 		TArray<uint8> ResultIds;
 	};
 
-	/** Initialize the physical material render task data. */
+	/** Initialize the physical material render task data. Return false if there are no physical materials needing to be rendered by the graphical material. */
 	bool InitTask(FLandscapePhysicalMaterialRenderTaskImpl& Task, ULandscapeComponent const* InLandscapeComponent, uint32 InFrameId)
 	{
 		if (InLandscapeComponent != nullptr)
 		{
-			if (GetPhysicalMaterials(InLandscapeComponent, Task.ResultMaterials))
+			if (InLandscapeComponent->GetRenderPhysicalMaterials(Task.ResultMaterials))
 			{
 				Task.LandscapeComponent = InLandscapeComponent;
 				Task.InitFrameId = InFrameId;
@@ -422,7 +343,7 @@ namespace
 				const FVector TargetCenter = ComponentTransform.TransformPosition(FVector(TargetSizeMinusOne, 0.f) * 0.5f);
 				const FVector TargetExtent = FVector(TargetSize, 0.0f) * ComponentTransform.GetScale3D() * 0.5f;
 				const FMatrix ViewRotationMatrix = FInverseRotationMatrix(ComponentTransform.Rotator()) * FMatrix(FPlane(1, 0, 0, 0), FPlane(0, -1, 0, 0), FPlane(0, 0, -1, 0), FPlane(0, 0, 0, 1));
-				const float ZOffset = WORLD_MAX;
+				const FMatrix::FReal ZOffset = UE_OLD_WORLD_MAX;
 				const FMatrix ProjectionMatrix = FReversedZOrthoMatrix(TargetExtent.X, TargetExtent.Y, 0.5f / ZOffset, ZOffset);
 
 				if (Task.TargetSize != TargetSize)
@@ -442,36 +363,54 @@ namespace
 		return false;
 	}
 
-	/** Initialize the physical material render task read back resources. */
-	bool InitTaskRenderResources(FLandscapePhysicalMaterialRenderTaskImpl& Task)
+	bool InitTaskRenderResources(FLandscapePhysicalMaterialRenderTaskImpl& InTask, const FLandscapeComponentSceneProxy* InSceneProxy)
 	{
+	/** Initialize the physical material render task read back resources. */
 		//todo: Consider pooling these and throttling to the pool size?
-		if (!Task.Readback.IsValid())
+		if (!InTask.Readback.IsValid())
 		{
-			Task.Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("LandscapePhysicalMaterialReadback"));
+			InTask.Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("LandscapePhysicalMaterialReadback"));
 		}
 
-		return true;
+		// Make sure the landscape physical material shader is compiled and if not, initiate compilation : 
+		const FMeshBatch& GrassMeshBatch = InSceneProxy->GetGrassMeshBatch();
+		check(GrassMeshBatch.MaterialRenderProxy != nullptr);
+
+		ERHIFeatureLevel::Type FeatureLevel = InSceneProxy->GetScene().GetFeatureLevel();
+		const FMaterial* Material = GrassMeshBatch.MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+		if (Material == nullptr)
+		{
+			return false;
+		}
+
+		// Only return true when the shaders needed for rendering landscape physical materials are ready : 
+		FMaterialShaders Shaders;
+		return TryGetLandscapePhysicalMaterialShaders(*Material, Shaders);
 	}
 
 	/** Update the physical material render task on the render thread. */
-	void UpdateTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapePhysicalMaterialRenderTaskImpl& Task, bool bFlush)
+	void UpdateTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapePhysicalMaterialRenderTaskImpl& Task, const FLandscapeComponentSceneProxy* InSceneProxy, bool bFlush, uint32 FrameCount)
 	{
-		// WARNING: We access the UComponent to get in SceneProxy for FillMeshInfos_RenderThread(). 
-		// This isn't good style but probably works since the UComponent owns the update task and is guaranteed to be valid.
-		const FPrimitiveSceneProxy* SceneProxy = Task.LandscapeComponent->SceneProxy;
-		if (Task.CompletionState == ECompletionState::None && SceneProxy)
+		if (Task.CompletionState <= ECompletionState::WaitForRenderResources && InSceneProxy)
 		{
-			// Allocate read back resources
-			if (InitTaskRenderResources(Task))
+			// Make sure everything is ready to render, if not (e.g. shader not yet compiled), wait until it is:
+			if (!InitTaskRenderResources(Task, InSceneProxy))
+			{
+			    // resources not available (and may not be for many frames)
+				// reset the init frame, to delay garbage collection
+				Task.InitFrameId = FrameCount;
+				FPlatformMisc::MemoryBarrier();
+				Task.CompletionState = ECompletionState::WaitForRenderResources;
+			}
+			else
 			{
 				// Render the pending item.
 				FMeshInfoArray MeshInfos;
-				FillMeshInfos_RenderThread(SceneProxy, MeshInfos);
+				FillMeshInfos_RenderThread(InSceneProxy, MeshInfos);
 
 				Render_RenderThread(
 					RHICmdList,
-					&SceneProxy->GetScene(),
+					&InSceneProxy->GetScene(),
 					MeshInfos,
 					Task.TargetSize,
 					Task.ViewOrigin,
@@ -510,14 +449,16 @@ class FLandscapePhysicalMaterialRenderTaskPool : public FRenderResource
 public:
 	/** Pool uses chunked array to avoid task data being moved by a realloc. */
 	TChunkedArray< FLandscapePhysicalMaterialRenderTaskImpl > Pool;
+
 	/** Frame count used to validate and garbage collect. */
 	uint32 FrameCount = 0;
 
-	/** Allocate task data from the pool. */
-	void Allocate(FLandscapePhysicalMaterialRenderTask& InTask, ULandscapeComponent const* InLandscapeComponent)
+	/** Allocate task data from the pool. Returns false if no physical material needs to be rendered. */
+	bool Allocate(FLandscapePhysicalMaterialRenderTask& InTask, ULandscapeComponent const* InLandscapeComponent)
 	{
 		check(InTask.PoolHandle == -1);
 
+		// search the pool to find an existing free entry
 		int32 Index = 0;
 		auto ItEnd = Pool.end();
 		for (auto It = Pool.begin(); It != ItEnd; ++It, ++Index)
@@ -528,6 +469,7 @@ public:
 			}
 		}
 
+		// if none found, create a new entry in the pool
 		if (Index == Pool.Num())
 		{
 			Pool.Add();
@@ -535,6 +477,8 @@ public:
 
 		const bool bSuccess = InitTask(Pool[Index], InLandscapeComponent, FrameCount);
 		InTask.PoolHandle = bSuccess ? Index : -1;
+
+		return bSuccess;
 	}
 
 	/** Return task data to the pool. */
@@ -563,6 +507,8 @@ public:
 		{
 			// Garbage collect a maximum of one item per call to reduce overhead if pool has grown large.
 			FLandscapePhysicalMaterialRenderTaskImpl* Task = &Pool[FrameCount % PoolSize];
+
+			// Only garbage collect tasks that are at least 100 frames old (allows resources to be re-used for some time)
 			if (Task->InitFrameId + 100 < FrameCount)
 			{
 				if (Task->LandscapeComponent != nullptr)
@@ -599,14 +545,14 @@ public:
 static TGlobalResource< FLandscapePhysicalMaterialRenderTaskPool > GTaskPool;
 
 
-void FLandscapePhysicalMaterialRenderTask::Init(ULandscapeComponent const* LandscapeComponent)
+bool FLandscapePhysicalMaterialRenderTask::Init(ULandscapeComponent const* LandscapeComponent)
 {
 	check(IsInGameThread());
 	if (IsValid())
 	{
 		GTaskPool.Free(*this);
 	}
-	GTaskPool.Allocate(*this, LandscapeComponent);
+	return GTaskPool.Allocate(*this, LandscapeComponent);
 }
 
 void FLandscapePhysicalMaterialRenderTask::Release()
@@ -633,18 +579,7 @@ bool FLandscapePhysicalMaterialRenderTask::IsComplete() const
 
 void FLandscapePhysicalMaterialRenderTask::Tick()
 {
-	check(IsInGameThread());
-	if (IsValid() && !IsComplete())
-	{
-		FLandscapePhysicalMaterialRenderTaskImpl* Task = &GTaskPool.Pool[PoolHandle];
-
-		ENQUEUE_RENDER_COMMAND(FLandscapePhysicalMaterialUpdaterTick)(
-			[Task](FRHICommandListImmediate& RHICmdList)
-			{
-				check(Task->LandscapeComponent);
-				UpdateTask_RenderThread(RHICmdList, *Task, false);
-			});
-	}
+	UpdateInternal(/*bInFlush = */false);
 }
 
 // Note: We could add a global function that calls Flush() on multiple tasks. 
@@ -652,18 +587,31 @@ void FLandscapePhysicalMaterialRenderTask::Tick()
 // It could be useful if we see performance issue with any path that calls Flush individually for each landscape component.
 void FLandscapePhysicalMaterialRenderTask::Flush()
 {
+	UpdateInternal(/*bInFlush = */true);
+}
+
+void FLandscapePhysicalMaterialRenderTask::UpdateInternal(bool bInFlush)
+{
 	check(IsInGameThread());
 	if (IsValid() && !IsComplete())
 	{
-		FLandscapePhysicalMaterialRenderTaskImpl* Task = &GTaskPool.Pool[PoolHandle];
+		uint32 FrameCount = GTaskPool.FrameCount;
 
+		FLandscapePhysicalMaterialRenderTaskImpl* Task = &GTaskPool.Pool[PoolHandle];
+		check(Task->LandscapeComponent != nullptr);
+
+		// If the material gets recompiled, for example, the component's scene proxy could be changed before the RT update runs, so we need to make sure we're getting the scene proxy on the game thread :
+		const FLandscapeComponentSceneProxy* SceneProxy = static_cast<const FLandscapeComponentSceneProxy*>(Task->LandscapeComponent->SceneProxy);
 		ENQUEUE_RENDER_COMMAND(FLandscapePhysicalMaterialFlush)(
-			[Task](FRHICommandListImmediate& RHICmdList)
+			[Task, SceneProxy, bInFlush, FrameCount](FRHICommandListImmediate& RHICmdList)
 			{
-				UpdateTask_RenderThread(RHICmdList, *Task, true);
+				UpdateTask_RenderThread(RHICmdList, *Task, SceneProxy, bInFlush, FrameCount);
 			});
 
-		FlushRenderingCommands();
+		if (bInFlush)
+		{
+			FlushRenderingCommands();
+		}
 	}
 }
 

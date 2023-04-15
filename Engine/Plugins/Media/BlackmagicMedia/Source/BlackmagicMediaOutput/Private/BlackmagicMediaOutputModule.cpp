@@ -18,9 +18,29 @@ void FBlackmagicMediaOutputModule::StartupModule()
 {
 	const auto DMAInitializationFunc = [this]()
 	{
+		static const TArray<FString> SupportedGPUPrefixes = {
+			TEXT("RTX A4"),
+			TEXT("RTX A5"),
+			TEXT("RTX A6"),
+			TEXT("Quadro")
+		};
+
 		const FGPUDriverInfo GPUDriverInfo = FPlatformMisc::GetGPUDriverInfo(GRHIAdapterName);
 		bIsGPUTextureTransferAvailable = GPUDriverInfo.IsNVIDIA() && !FModuleManager::Get().IsModuleLoaded("RenderDocPlugin");
 		bIsGPUTextureTransferAvailable &= !GPUDriverInfo.DeviceDescription.Contains(TEXT("Tesla"));
+
+		if (bIsGPUTextureTransferAvailable)
+		{
+			bIsGPUTextureTransferAvailable = false;
+			for (const FString& GPUPrefix : SupportedGPUPrefixes)
+			{
+				if (GPUDriverInfo.DeviceDescription.Contains(GPUPrefix))
+				{
+					bIsGPUTextureTransferAvailable = true;
+					break;
+				}
+			}
+		}
 
 		if (bIsGPUTextureTransferAvailable)
 		{
@@ -34,23 +54,14 @@ void FBlackmagicMediaOutputModule::StartupModule()
 
 					auto GetRHI = []()
 					{
-						FString RHIName = GDynamicRHI->GetName();
-						if (RHIName == TEXT("D3D11"))
+						switch (RHIGetInterfaceType())
 						{
-							return BlackmagicDesign::ERHI::D3D11;
+						case ERHIInterfaceType::D3D11: return BlackmagicDesign::ERHI::D3D11;
+						case ERHIInterfaceType::D3D12: return BlackmagicDesign::ERHI::D3D12;
+						case ERHIInterfaceType::Vulkan: return BlackmagicDesign::ERHI::Vulkan;
+						default: return BlackmagicDesign::ERHI::Invalid;
 						}
-						else if (RHIName == TEXT("D3D12"))
-						{
-							return BlackmagicDesign::ERHI::D3D12;
-						}
-						else if (RHIName == TEXT("Vulkan"))
-						{
-							return BlackmagicDesign::ERHI::Vulkan;
-						}
-
-						return  BlackmagicDesign::ERHI::Invalid;
 					};
-
 
 					BlackmagicDesign::FInitializeDMAArgs Args;
 					BlackmagicDesign::ERHI RHI = GetRHI();

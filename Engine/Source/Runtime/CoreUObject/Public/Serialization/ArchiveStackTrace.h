@@ -7,19 +7,22 @@
 #include "Containers/Map.h"
 #include "Containers/UnrealString.h"
 #include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "Serialization/Archive.h"
-#include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/LargeMemoryReader.h"
+#include "Serialization/LargeMemoryWriter.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
-class FUObjectThreadContext;
 class FLinkerLoad;
 class FProperty;
+class FUObjectThreadContext;
 class UObject;
-struct FObjectImport;
 struct FObjectExport;
+struct FObjectImport;
+struct FUObjectSerializeContext;
 
 /** Structure that holds stats from comparing two packages */
 struct COREUOBJECT_API FArchiveDiffStats
@@ -229,7 +232,7 @@ public:
 	virtual ~FArchiveStackTrace();
 
 	//~ Begin FArchive Interface
-	virtual void Serialize(void* Data, int64 Num) override;
+	FORCENOINLINE virtual void Serialize(void* Data, int64 Num) override; // FORCENOINLINE so it can be counted during StackTrace
 	virtual void SetSerializeContext(FUObjectSerializeContext* InLoadContext) override;
 	virtual FUObjectSerializeContext* GetSerializeContext() override;
 #if WITH_EDITOR

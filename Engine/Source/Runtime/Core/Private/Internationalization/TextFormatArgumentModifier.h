@@ -2,16 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/SortedMap.h"
 #include "CoreTypes.h"
-#include "Containers/UnrealString.h"
-#include "Internationalization/Text.h"
+#include "Internationalization/CulturePointer.h"
 #include "Internationalization/ITextFormatArgumentModifier.h"
+#include "Internationalization/Text.h"
+#include "Templates/SharedPointer.h"
 
+class FString;
 struct FPrivateTextFormatArguments;
-
-/// @cond DOXYGEN_WARNINGS
-template<typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs > class TMap;
-/// @endcond
 
 /**
  * Plural form argument modifier.
@@ -33,7 +33,7 @@ public:
 	virtual void EstimateLength(int32& OutLength, bool& OutUsesFormatArgs) const override;
 
 private:
-	FTextFormatArgumentModifier_PluralForm(const ETextPluralType InPluralType, const TMap<FTextFormatString, FTextFormat>& InPluralForms, const int32 InLongestPluralFormStringLen, const bool InDoPluralFormsUseFormatArgs);
+	FTextFormatArgumentModifier_PluralForm(const ETextPluralType InPluralType, const TSortedMap<FTextFormatString, FTextFormat>& InPluralForms, const int32 InLongestPluralFormStringLen, const bool InDoPluralFormsUseFormatArgs);
 
 	ETextPluralType PluralType;
 	int32 LongestPluralFormStringLen;

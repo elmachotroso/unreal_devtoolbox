@@ -80,6 +80,7 @@ protected:
 		FBufferRHIRef ClothVertexBuffer;
 		FBufferRHIRef IndexBuffer;
 		TArray<TPair<FName, FSkinWeightRHIInfo>> AltSkinWeightVertexBuffers;
+		FBufferRHIRef MorphBuffer;
 
 		void CreateFromCPUData_RenderThread(FSkeletalMeshLODRenderData& LODResource);
 		void CreateFromCPUData_Async(FSkeletalMeshLODRenderData& LODResource);
@@ -171,9 +172,6 @@ protected:
 	typedef FAutoDeleteAsyncTask<FCancelIORequestsTask> FAsyncCancelIORequestsTask;
 	friend class FCancelIORequestsTask;
 
-	/** Set a callback called when IORequest is completed or cancelled */
-	void SetAsyncFileCallback(const FContext& Context);
-
 	/** Create a new async IO request to read in LOD data */
 	void SetIORequest(const FContext& Context);
 
@@ -192,8 +190,12 @@ protected:
 	/** Called by FAsyncCancelIORequestsTask to cancel inflight IO request if any */
 	void CancelIORequest();
 
-	class IBulkDataIORequest* IORequest;
-	FBulkDataIORequestCallBack AsyncFileCallback;
+	/** Handle to bulk data I/O request */
+	FBulkDataBatchRequest BulkDataRequest;
+
+	/** Bulk data I/O buffer */
+	FIoBuffer BulkData;
+
 	bool bHighPrioIORequest;
 
 	// Whether an IO error was detected (when files do not exists).

@@ -81,7 +81,7 @@
 	<Property Name="ProfileArgs" Value="$(ProfileArgs) -NoShaderDistrib -VerboseShaderLogging"/>
 
 	<!-- Gauntlet arguments for commandlet, summarize runs -->
-	<Property Name="CommandletArgs" Value="-notraceserver -ddc=NoShared"/>
+	<Property Name="CommandletArgs" Value="-notraceserver"/>
 	<Property Name="SummarizeArgs" Value=""/>
 	<Property Name="SummarizeArgs" Value="-skipbaseline" If="$(RunAndBaseline)"/>
 
@@ -106,7 +106,7 @@
 		<Commandlet Project="$(Project)" Name="DDCCleanup" Arguments="$(Args) $(CommandletArgs)"/>
 
 		<!-- Run the Gauntlet EditorPerf Tests -->
-		<Command Name="RunUnreal" Arguments="$(AllGauntletArgs) $(ProfileArgs) $(Args) -tracefile=&quot;$(TraceFilePath)&quot;"/>
+		<Command Name="RunUnreal" Arguments="$(AllGauntletArgs) $(ProfileArgs) $(Args) -sessionlabel=&quot;$(TestName)&quot; -tracefile=&quot;$(TraceFilePath)&quot;"/>
 
 		<!-- Translate the utrace file into csv data -->
 		<Commandlet Project="$(Project)" Name="SummarizeTrace" Arguments="-inputfile=&quot;$(TraceFilePath)&quot; -testname=&quot;$(TestName)&quot; $(SummarizeArgs) $(CommandletArgs)"/>
@@ -157,6 +157,7 @@
 			<Property Name="CompileNodeName" Value="Compile $(Project) $(Platform)"/>
 			<Agent Name="Compile Editor Agent $(Platform) $(Project)" Type="$($(Platform)CompileAgentType)">
 				<Node Name="$(CompileNodeName)">
+					<SetVersion Change="$(Change)" Branch="$(EscapedBranch)" If="$(IsBuildMachine)"/>
 					<Compile Target="UnrealHeaderTool" Platform="$(Platform)" Configuration="Development"/>
 					<Compile Target="UnrealHeaderTool" Platform="$(Platform)" Project="$(Project)" Configuration="Development"/>
 					<Compile Target="ShaderCompileWorker" Platform="$(Platform)" Configuration="Development"/>
@@ -164,7 +165,7 @@
 					<Compile Target="$(EditorTarget)" Platform="$(Platform)" Project="$(Project)" Configuration="Development" Arguments="$(EditorCompileArgs)"/>
 				</Node>
 			</Agent>
-			<Label Category="$(CompileCategory)" Name="EP Compile $(Project) $(Platform)" Requires="$(CompileNodeName)"/>
+			<Label Category="$(CompileCategory)" Name="$(Project) Editor Compile" Requires="$(CompileNodeName)"/>
 
 			<!-- Run the Tests -->
 			<Property Name="RunNodeRequires" Value="$(CompileNodeName)"/>
@@ -183,7 +184,7 @@
 					</ForEach>
 				</ForEach>
 			</Agent>
-			<Label Category="$(RunCategory)" Name="EP Run $(Project) $(Platform)" Requires="$(RunNodeRequires);$(RunNodeList)"/>
+			<Label Category="$(RunCategory)" Name="$(Project) Editor Run" Requires="$(RunNodeRequires);$(RunNodeList)" UgsBadge="$(Project) Editor Run"/>
 			<Property Name="RunGraphNodes" Value="$(RunGraphNodes);$(RunNodeList)"/>
 
 			<!-- Baseline the Results -->
@@ -198,7 +199,7 @@
 					</ForEach>
 				</Node>
 			</Agent>
-			<Label Category="$(BaselineCategory)" Name="EP Baseline $(Project) $(Platform)" Requires="$(BaselineNodeName)"/>
+			<Label Category="$(BaselineCategory)" Name="$(Project) Perf Baseline" Requires="$(BaselineNodeName)"/>
 
 		</ForEach> <!-- Projects -->
 

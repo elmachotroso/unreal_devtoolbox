@@ -1,10 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "SWorldPartitionBuildHLODsDialog.h"
 
-#include "Widgets/Layout/SSpacer.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
 
 #define LOCTEXT_NAMESPACE "WorldPartitionBuildHLODsDialog"
 
@@ -18,7 +26,7 @@ void SWorldPartitionBuildHLODsDialog::Construct(const FArguments& InArgs)
 	this->ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -49,7 +57,7 @@ void SWorldPartitionBuildHLODsDialog::Construct(const FArguments& InArgs)
 					[
 						SNew(SButton)
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SWorldPartitionBuildHLODsDialog::OnBuildClicked)
 						.Text(LOCTEXT("BuildButton", "Build HLODs"))
 					]
@@ -59,7 +67,7 @@ void SWorldPartitionBuildHLODsDialog::Construct(const FArguments& InArgs)
 						[
 							SNew(SButton)
 							.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SWorldPartitionBuildHLODsDialog::OnDeleteClicked)
 						.Text(LOCTEXT("DeleteButton", "Delete HLODs"))
 						]
@@ -69,7 +77,7 @@ void SWorldPartitionBuildHLODsDialog::Construct(const FArguments& InArgs)
 					[
 						SNew(SButton)
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SWorldPartitionBuildHLODsDialog::OnCancelClicked)
 						.Text(LOCTEXT("CancelButton", "Cancel"))
 					]

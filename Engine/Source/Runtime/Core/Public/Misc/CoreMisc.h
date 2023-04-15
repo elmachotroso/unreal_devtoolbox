@@ -2,16 +2,23 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/Exec.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/Map.h"
-#include "Templates/Function.h"
-#include "Math/IntPoint.h"
-#include "UObject/NameTypes.h"
+#include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformProperties.h"
 #include "HAL/ThreadSingleton.h"
+#include "Logging/LogVerbosity.h"
+#include "Math/IntPoint.h"
+#include "Misc/Build.h"
+#include "Misc/Exec.h"
+#include "Templates/Function.h"
+#include "UObject/NameTypes.h"
+
+class FOutputDevice;
+class UWorld;
 
 /**
  * Exec handler that registers itself and is being routed via StaticExec.
@@ -70,6 +77,9 @@ CORE_API class FDerivedDataCacheInterface* GetDerivedDataCache();
 
 /** Returns the derived data cache interface, or fatal error if it is not available. */
 CORE_API class FDerivedDataCacheInterface& GetDerivedDataCacheRef();
+
+/** Returns the derived data cache interface if it is available and initialized, otherwise null. */
+CORE_API class FDerivedDataCacheInterface* TryGetDerivedDataCache();
 
 /**
  * Return the Target Platform Manager interface, if it is available, otherwise return nullptr.
@@ -261,6 +271,20 @@ struct CORE_API FScopedScriptExceptionHandler
 {
 	explicit FScopedScriptExceptionHandler(const FScriptExceptionHandlerFunc& InFunc);
 	~FScopedScriptExceptionHandler();
+};
+
+/**
+ * Enables named events when profiling.
+ * Increments/decrements GCycleStatsShouldEmitNamedEvents based on bIsProfiling.
+ * Functionality is controlled by stats.AutoEnableNamedEventsWhenProfiling.
+ */
+class FAutoNamedEventsToggler
+{
+public:
+	CORE_API void Update(bool bIsProfiling);
+
+private:
+	bool bSetNamedEventsEnabled = false;
 };
 
 /** 

@@ -55,6 +55,8 @@ namespace GLTF
 
 	struct GLTFCORE_API FAsset : FNoncopyable
 	{
+		static const TSet<EExtension> SupportedExtensions;
+
 		enum EValidationCheck
 		{
 			Valid,
@@ -84,6 +86,7 @@ namespace GLTF
 		TArray<FString>   Variants;
 
 		TSet<EExtension> ExtensionsUsed;
+		TArray<FString>	 RequiredExtensions;
 		FMetadata        Metadata;
 
 		/**

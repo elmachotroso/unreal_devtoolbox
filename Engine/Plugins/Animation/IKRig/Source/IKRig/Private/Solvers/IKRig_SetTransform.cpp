@@ -4,6 +4,8 @@
 #include "IKRigDataTypes.h"
 #include "IKRigSkeleton.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRig_SetTransform)
+
 #define LOCTEXT_NAMESPACE "UIKRig_SetTransform"
 
 UIKRig_SetTransform::UIKRig_SetTransform()
@@ -55,8 +57,6 @@ void UIKRig_SetTransform::Solve(FIKRigSkeleton& IKRigSkeleton, const FIKRigGoalC
 	IKRigSkeleton.PropagateGlobalPoseBelowBone(BoneIndex);
 }
 
-#if WITH_EDITOR
-
 void UIKRig_SetTransform::UpdateSolverSettings(UIKRigSolver* InSettings)
 {
 	if (UIKRig_SetTransform* Settings = Cast<UIKRig_SetTransform>(InSettings))
@@ -67,6 +67,17 @@ void UIKRig_SetTransform::UpdateSolverSettings(UIKRigSolver* InSettings)
 	}
 }
 
+void UIKRig_SetTransform::RemoveGoal(const FName& GoalName)
+{
+	if (Goal == GoalName)
+	{
+		Goal = NAME_None;
+		RootBone = NAME_None;
+	}	
+}
+
+#if WITH_EDITOR
+
 FText UIKRig_SetTransform::GetNiceName() const
 {
 	return FText(LOCTEXT("SolverName", "Set Transform"));
@@ -76,7 +87,7 @@ bool UIKRig_SetTransform::GetWarningMessage(FText& OutWarningMessage) const
 {
 	if (RootBone == NAME_None)
 	{
-		OutWarningMessage = LOCTEXT("MissingGoal", "Missing goals.");
+		OutWarningMessage = LOCTEXT("MissingGoal", "Missing goal.");
 		return true;
 	}
 	return false;
@@ -86,15 +97,6 @@ void UIKRig_SetTransform::AddGoal(const UIKRigEffectorGoal& NewGoal)
 {
 	Goal = NewGoal.GoalName;
 	RootBone = NewGoal.BoneName;
-}
-
-void UIKRig_SetTransform::RemoveGoal(const FName& GoalName)
-{
-	if (Goal == GoalName)
-	{
-		Goal = NAME_None;
-		RootBone = NAME_None;
-	}	
 }
 
 void UIKRig_SetTransform::RenameGoal(const FName& OldName, const FName& NewName)
@@ -131,3 +133,4 @@ bool UIKRig_SetTransform::IsBoneAffectedBySolver(const FName& BoneName, const FI
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

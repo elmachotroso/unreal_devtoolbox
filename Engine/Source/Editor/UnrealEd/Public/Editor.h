@@ -9,7 +9,7 @@
 #include "CoreMinimal.h"
 #include "Templates/ScopedCallback.h"
 #include "Engine/Level.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/EditorEngine.h"
 #include "Engine/StaticMesh.h"
 
@@ -86,6 +86,8 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnStandaloneLocalPlayEvent, const uint32);
 	/** delegate type for beginning or finishing configuration of the properties of a new asset */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNewAssetCreation, UFactory*);
+	/** delegate for when assets are about to undergo a destructive action caused by the Editor UI (Delete, Rename, Move, Privatize, etc.) */
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPreDestructiveAssetAction, const TArray<UObject*>&, EDestructiveAssetActions, FResultMessage&);
 	/** delegate type fired when new assets are being (re-)imported. Params: UFactory* InFactory, UClass* InClass, UObject* InParent, const FName& Name, const TCHAR* Type */
 	DECLARE_MULTICAST_DELEGATE_FiveParams(FOnAssetPreImport, UFactory*, UClass*, UObject*, const FName&, const TCHAR*);
 	/** delegate type fired when new assets have been (re-)imported. Note: InCreatedObject can be NULL if import failed. Params: UFactory* InFactory, UObject* InCreatedObject */
@@ -94,8 +96,10 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAssetReimport, UObject*);
 	/** delegate type for finishing up construction of a new blueprint */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnFinishPickingBlueprintClass, UClass*);
-	/** delegate type for triggering when new actors are dropped on to the viewport */
+	/** delegate type for triggering when new actors are dropped on to the viewport via drag and drop */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNewActorsDropped, const TArray<UObject*>&, const TArray<AActor*>&);
+	/** delegate type for triggering when new actors are placed on to the viewport. Triggers before NewActorsDropped if placement is caused by a drop action */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNewActorsPlaced, UObject*, const TArray<AActor*>&);
 	/** delegate type for when attempting to apply an object to an actor */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnApplyObjectToActor, UObject*, AActor*);
 	/** delegate type for triggering when grid snapping has changed */
@@ -235,10 +239,16 @@ struct UNREALED_API FEditorDelegates
 	static FOnPreSaveExternalActors PreSaveExternalActors;
 	/** Called after any number of external actors has been saved */
 	static FOnPostSaveExternalActors PostSaveExternalActors;
+	/** Called before any asset validation happens via the Asset Validation subsystem. */
+	static FSimpleMulticastDelegate OnPreAssetValidation;
+	/** Called after asset validation happens by the Asset Validation subsystem. */
+	static FSimpleMulticastDelegate OnPostAssetValidation;
 	/** Called when finishing picking a new blueprint class during construction */
 	static FOnFinishPickingBlueprintClass OnFinishPickingBlueprintClass;
 	/** Called when beginning configuration of a new asset */
 	static FOnNewAssetCreation OnConfigureNewAssetProperties;
+	/** Called when an asset is about to undergo a destructive action caused by the Editor UI (Delete, Move, Rename, Privatize, etc.) */
+	static FOnPreDestructiveAssetAction OnPreDestructiveAssetAction;
 	/** Called when finishing configuration of a new asset */
 	static FOnNewAssetCreation OnNewAssetCreated;
 	/** Called when new assets are being (re-)imported. */
@@ -252,6 +262,8 @@ struct UNREALED_API FEditorDelegates
 	static FOnAssetReimport OnAssetReimport;
 	/** Called when new actors are dropped on to the viewport */
 	static FOnNewActorsDropped OnNewActorsDropped;
+	/** Called when new actors are placed in the viewport */
+	static FOnNewActorsPlaced OnNewActorsPlaced;
 	/** Called when grid snapping is changed */
 	static FOnGridSnappingChanged OnGridSnappingChanged;
 	/** Called when a lighting build has started */
@@ -490,7 +502,7 @@ struct FImportObjectParams
  * @return	NULL if the default values couldn't be imported
  */
 
-const TCHAR* ImportObjectProperties( FImportObjectParams& InParams );
+UNREALED_API const TCHAR* ImportObjectProperties( FImportObjectParams& InParams );
 
 
 /**
@@ -631,19 +643,29 @@ TCHAR* SetFVECTOR( TCHAR* Dest, const FVector* Value );
  * Takes an FName and checks to see that it is unique among all loaded objects.
  *
  * @param	InName		The name to check
- * @param	Outer		The context for validating this object name. Should be a group/package, but could be ANY_PACKAGE if you want to check across the whole system (not recommended)
+ * @param	Outer		The context for validating this object name. Should be a group/package
  * @param	InReason	If the check fails, this string is filled in with the reason why.
  *
  * @return	true if the name is valid
  */
 
-UNREALED_API bool IsUniqueObjectName( const FName& InName, UObject* Outer, FText* InReason=NULL );
+UNREALED_API bool IsUniqueObjectName( const FName& InName, UObject* Outer, FText* InReason = nullptr );
+
+/**
+ * Takes an FName and checks to see that it is unique among all loaded objects in all packages.
+ *
+ * @param	InName		The name to check
+ * @param	InReason	If the check fails, this string is filled in with the reason why.
+ *
+ * @return	true if the name is valid
+ */
+UNREALED_API bool IsGloballyUniqueObjectName(const FName& InName, FText* InReason = nullptr);
 
 /**
  * Takes an FName and checks to see that it is unique among all loaded objects.
  *
  * @param	InName		The name to check
- * @param	Outer		The context for validating this object name. Should be a group/package, but could be ANY_PACKAGE if you want to check across the whole system (not recommended)
+ * @param	Outer		The context for validating this object name. Should be a group/package.
  * @param	InReason	If the check fails, this string is filled in with the reason why.
  *
  * @return	true if the name is valid

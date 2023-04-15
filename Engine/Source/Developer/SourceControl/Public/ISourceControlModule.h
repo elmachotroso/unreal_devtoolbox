@@ -9,7 +9,11 @@
 
 class ISourceControlProvider;
 class ISourceControlChangelist;
+class FSourceControlFileStatusMonitor;
+
 class FSourceControlAssetDataCache;
+class FSourceControlInitSettings;
+
 typedef TSharedPtr<class ISourceControlChangelist, ESPMode::ThreadSafe> FSourceControlChangelistPtr;
 
 SOURCECONTROL_API DECLARE_LOG_CATEGORY_EXTERN(LogSourceControl, Log, All);
@@ -22,6 +26,9 @@ DECLARE_MULTICAST_DELEGATE_TwoParams( FSourceControlProviderChanged, ISourceCont
 
 /** Delegate called on pre-submit for data validation */
 DECLARE_DELEGATE_FourParams(FSourceControlPreSubmitDataValidationDelegate, FSourceControlChangelistPtr /*Changelist*/, EDataValidationResult& /*Result*/, TArray<FText>& /*ValidationErrors*/, TArray<FText>& /*ValidationWarnings*/);
+
+/** Delegate used to specify the project base directory to be used by the source control */
+DECLARE_DELEGATE_RetVal(FString, FSourceControlProjectDirDelegate);
 
 /** 
  * Delegate called once the user has confirmed that they want to submit files to source control BUT before the files are actually submitted.
@@ -119,6 +126,25 @@ public:
 	 */
 	virtual ISourceControlProvider& GetProvider() const = 0;
 
+	/** 
+	 * Creates and returns a unique source control provider that will be owned by
+	 * the caller. This allows subsystems to own their own source control connection
+	 * in addition to the general connection used by the rest of the process. This 
+	 * could be to avoid the user changing settings that the subsystem needs, or so
+	 * that it can open a connection with an entirely different source control type
+	 * if required.
+	 * 
+	 * @param	Name			The name of the type of provider to create.
+	 * @param	OwningSystem	The name of the system that will own the provider. This is
+	 *							used to customize things, like the config section that
+	 *							that providers settings will be saved to etc.
+	 * 
+	 * @return	A pointer to the newly created provider, this can be null if creating the 
+	 *			name is invalid or if the provider type does not support unique connection
+	 *			creation.
+	 */
+	virtual TUniquePtr<ISourceControlProvider> CreateProvider(const FName& Name, const FStringView& OwningSystem, const FSourceControlInitSettings& InitialSettings) const = 0;
+
 	/**
 	 * Get the source control AssetData information cache.
 	 */
@@ -179,16 +205,19 @@ public:
 	/** 
 	 * Register a delegate that is invokes right before files are submitted to source control. @see FSourceControlPreSubmitFinalizeDelegate
 	 */
+	UE_DEPRECATED(5.1, "ISourceControlModule::RegisterPreSubmitFinalize is deprecated, the functionality will be removed")
 	virtual FDelegateHandle RegisterPreSubmitFinalize(const FSourceControlPreSubmitFinalizeDelegate::FDelegate& Delegate) = 0;
 
 	/**
 	 * Unregister a previously registered delegate. @see FSourceControlPreSubmitFinalizeDelegate
 	 */
+	UE_DEPRECATED(5.1, "ISourceControlModule::UnregisterPreSubmitFinalize is deprecated, the functionality will be removed")
 	virtual void UnregisterPreSubmitFinalize(FDelegateHandle Handle) = 0;
 
 	/** 
 	 * Returns access to the delegate so that it can be broadcast as needed. @see FSourceControlPreSubmitFinalizeDelegate
 	 */
+	UE_DEPRECATED(5.1, "ISourceControlModule::GetOnPreSubmitFinalize is deprecated, the functionality will be removed")
 	virtual const FSourceControlPreSubmitFinalizeDelegate& GetOnPreSubmitFinalize() const = 0;
 
 	/**
@@ -205,6 +234,31 @@ public:
 	 * Returns access to the delegate so that it can be broadcast as needed. @see FSourceControlFilesDeletedDelegate
 	 */
 	virtual const FSourceControlFilesDeletedDelegate& GetOnFilesDeleted() const = 0;
+
+	/**
+	 * Register a delegate used to specify the project base directory to be used by the source control
+	 */
+	virtual void RegisterSourceControlProjectDirDelegate(const FSourceControlProjectDirDelegate& SourceControlProjectDirDelegate) = 0;
+
+	/**
+	 * Unregister the FSourceControlProjectDirDelegate delegate
+	 */
+	virtual void UnregisterSourceControlProjectDirDelegate() = 0;
+
+	/**
+	 * Returns the project base directory to be used by the source control
+	 */
+	virtual FString GetSourceControlProjectDir() const = 0;
+
+	/**
+	 * Returns whether a delegate has been registered to specify the project base directory to be used by the source control
+	 */
+	virtual bool UsesCustomProjectDir() const = 0;
+
+	/**
+	 * Returns the object used to monitor the source control status of a collection of files.
+	 */
+	virtual FSourceControlFileStatusMonitor& GetSourceControlFileStatusMonitor() = 0;
 
 	/**
 	 * Gets a reference to the source control module instance.

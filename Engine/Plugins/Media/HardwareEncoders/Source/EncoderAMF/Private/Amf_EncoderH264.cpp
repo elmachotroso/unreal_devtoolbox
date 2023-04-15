@@ -5,7 +5,6 @@
 #include "VideoEncoderCommon.h"
 #include "CodecPacket.h"
 #include "AVEncoderDebug.h"
-#include "VulkanRHIBridge.h"
 #include "VideoEncoderInput.h"
 #include "RHI.h"
 #include <stdio.h>
@@ -143,7 +142,7 @@ namespace AVEncoder
 				
 		TSharedRef<FVideoEncoderInputImpl>	Input(StaticCastSharedRef<FVideoEncoderInputImpl>(input));
 
-		FString RHIName = "null";
+		ERHIInterfaceType RHIType = ERHIInterfaceType::Hidden;
 
 		// TODO fix initializing contexts
 		FrameFormat = input->GetFrameFormat();
@@ -152,16 +151,16 @@ namespace AVEncoder
 #if PLATFORM_WINDOWS
 		case AVEncoder::EVideoFrameFormat::D3D11_R8G8B8A8_UNORM:
 			EncoderDevice = Input->GetD3D11EncoderDevice();
-			RHIName = "D3D11";
+			RHIType = ERHIInterfaceType::D3D11;
 			break;
 		case AVEncoder::EVideoFrameFormat::D3D12_R8G8B8A8_UNORM:
 			EncoderDevice = Input->GetD3D12EncoderDevice();
-			RHIName = "D3D12";
+			RHIType = ERHIInterfaceType::D3D12;
 			break;
 #endif
 		case AVEncoder::EVideoFrameFormat::VULKAN_R8G8B8A8_UNORM:
 			EncoderDevice = Input->GetVulkanEncoderDevice();
-			RHIName = "Vulkan";
+			RHIType = ERHIInterfaceType::Vulkan;
 			break;
 		case AVEncoder::EVideoFrameFormat::Undefined:
 		default:
@@ -170,7 +169,7 @@ namespace AVEncoder
 		}
 
 		//TODO(sandor.hadas) see if the current issues with AMF can be resolved then remove this error message
-		if (RHIName == "D3D11")
+		if (RHIType == ERHIInterfaceType::D3D11)
 		{
 			UE_LOG(LogEncoderAMF, Error, TEXT("AMF with DX11 is not currently supported try DX12 or Vulkan."));
 			return false;
@@ -184,9 +183,9 @@ namespace AVEncoder
 				
 		if (!Amf.GetIsCtxInitialized())
 		{	
-			if (RHIName != "Vulkan")
+			if (RHIType != ERHIInterfaceType::Vulkan)
 			{
-				if (!Amf.InitializeContext(GDynamicRHI->GetName(), EncoderDevice))
+				if (!Amf.InitializeContext(RHIGetInterfaceType(), GDynamicRHI->GetName(), EncoderDevice))
 				{
 					UE_LOG(LogEncoderAMF, Error, TEXT("Amf component not initialised"));
 				}
@@ -194,7 +193,7 @@ namespace AVEncoder
 			else
 			{
 				FVulkanDataStruct* VulkanData = static_cast<FVulkanDataStruct*>(EncoderDevice);
-				if (!Amf.InitializeContext(GDynamicRHI->GetName(), VulkanData->VulkanDevice, VulkanData->VulkanInstance, VulkanData->VulkanPhysicalDevice))
+				if (!Amf.InitializeContext(RHIGetInterfaceType(), GDynamicRHI->GetName(), VulkanData->VulkanDevice, VulkanData->VulkanInstance, VulkanData->VulkanPhysicalDevice))
 				{
 					UE_LOG(LogEncoderAMF, Error, TEXT("Amf component not initialised"));
 				}
@@ -227,9 +226,9 @@ namespace AVEncoder
 		delete layer;
 	}
 
-	void FVideoEncoderAmf_H264::Encode(FVideoEncoderInputFrame const* frame, FEncodeOptions const& options)
+	void FVideoEncoderAmf_H264::Encode(const TSharedPtr<FVideoEncoderInputFrame> frame, FEncodeOptions const& options)
 	{
-		const FVideoEncoderInputFrameImpl* amfFrame = static_cast<const FVideoEncoderInputFrameImpl*>(frame);
+		const TSharedPtr<FVideoEncoderInputFrameImpl> amfFrame = StaticCastSharedPtr<FVideoEncoderInputFrameImpl>(frame);
 		for (auto& layer : Layers)
 		{
 			FAMFLayer* amfLayer = static_cast<FAMFLayer*>(layer);
@@ -402,19 +401,27 @@ namespace AVEncoder
 		}
 	}
 
-	AMF_RESULT FVideoEncoderAmf_H264::FAMFLayer::Encode(FVideoEncoderInputFrameImpl const* frame, FEncodeOptions const& options)
+	AMF_RESULT FVideoEncoderAmf_H264::FAMFLayer::Encode(const TSharedPtr<FVideoEncoderInputFrameImpl> frame, FEncodeOptions const& options)
 	{
 		AMF_RESULT Result = AMF_FAIL;
 		TSharedPtr<FInputOutput> Buffer = GetOrCreateSurface(frame);
 
 		if (Buffer)
 		{
+			if(CurrentConfig.Width != frame->GetWidth() || CurrentConfig.Height != frame->GetHeight())
+			{
+				CurrentConfig.Width = frame->GetWidth();
+				CurrentConfig.Height = frame->GetHeight();
+				NeedsReconfigure = true;
+			}
+
+			
 			MaybeReconfigure();
 
 			Buffer->Surface->SetPts(frame->GetTimestampRTP());
 			amf_int64 Start_ts = FPlatformTime::Cycles64();
 			Buffer->Surface->SetProperty(AMF_VIDEO_ENCODER_START_TS, Start_ts);
-			Buffer->Surface->SetProperty(AMF_BUFFER_INPUT_FRAME, uintptr_t(frame));
+			Buffer->Surface->SetProperty(AMF_BUFFER_INPUT_FRAME, uintptr_t(frame.Get()));
 
 #if PLATFORM_WINDOWS
 			Buffer->Surface->SetProperty(AMF_VIDEO_ENCODER_STATISTICS_FEEDBACK, true);
@@ -512,7 +519,7 @@ namespace AVEncoder
 				Packet.IsKeyFrame = true;
 			}
 
-			if (FString(GDynamicRHI->GetName()) != FString("Vulkan")) // Amf with Vulkan doesn't currently support statistics
+			if (RHIGetInterfaceType() != ERHIInterfaceType::Vulkan) // Amf with Vulkan doesn't currently support statistics
 			{
 				if (OutBuffer->GetProperty(AMF_VIDEO_ENCODER_STATISTIC_FRAME_QP, &Packet.VideoQP) != AMF_OK)
 				{
@@ -530,7 +537,7 @@ namespace AVEncoder
 			Packet.Timings.FinishTs = FTimespan::FromSeconds(FPlatformTime::ToSeconds64(FPlatformTime::Cycles64()));
 			Packet.Framerate = GetConfig().MaxFramerate;
 
-			FVideoEncoderInputFrameImpl* SourceFrame;
+			TSharedPtr<FVideoEncoderInputFrameImpl> SourceFrame;
 			if (OutBuffer->GetProperty(AMF_BUFFER_INPUT_FRAME, (intptr_t*)&SourceFrame) != AMF_OK)
 			{
 				UE_LOG(LogEncoderAMF, Fatal, TEXT("Amf failed to get buffer input frame."));
@@ -594,7 +601,7 @@ namespace AVEncoder
 		return SurfaceTexture;
 	}
 
-	TSharedPtr<FVideoEncoderAmf_H264::FAMFLayer::FInputOutput> FVideoEncoderAmf_H264::FAMFLayer::GetOrCreateSurface(const FVideoEncoderInputFrameImpl* InFrame)
+	TSharedPtr<FVideoEncoderAmf_H264::FAMFLayer::FInputOutput> FVideoEncoderAmf_H264::FAMFLayer::GetOrCreateSurface(const TSharedPtr<FVideoEncoderInputFrameImpl> InFrame)
 	{
 		void* TextureToCompress = nullptr;
 
@@ -682,7 +689,7 @@ namespace AVEncoder
 	class FSampleObserver : public AMFSurfaceObserver
 	{
 	public:
-		FSampleObserver(const FVideoEncoderInputFrameImpl *Frame) : SourceFrame(Frame) {}
+		FSampleObserver(const TSharedPtr<FVideoEncoderInputFrameImpl> Frame) : SourceFrame(Frame) {}
 		virtual ~FSampleObserver() {}
 
 	protected:
@@ -693,10 +700,10 @@ namespace AVEncoder
 		}
 
 	private:
-		const FVideoEncoderInputFrameImpl* SourceFrame;
+		const TSharedPtr<FVideoEncoderInputFrameImpl> SourceFrame;
 	};
 
-	bool FVideoEncoderAmf_H264::FAMFLayer::CreateSurface(TSharedPtr<FVideoEncoderAmf_H264::FAMFLayer::FInputOutput>& OutBuffer, const FVideoEncoderInputFrameImpl* SourceFrame, void* TextureToCompress)
+	bool FVideoEncoderAmf_H264::FAMFLayer::CreateSurface(TSharedPtr<FVideoEncoderAmf_H264::FAMFLayer::FInputOutput>& OutBuffer, const TSharedPtr<FVideoEncoderInputFrameImpl> SourceFrame, void* TextureToCompress)
 	{
 		AMF_RESULT Result = AMF_OK;
 
@@ -786,7 +793,7 @@ namespace AVEncoder
 	{
 		bool bSuccess = true;
 
-		AMF.InitializeContext(GDynamicRHI->GetName(), NULL);
+		AMF.InitializeContext(RHIGetInterfaceType(), GDynamicRHI->GetName(), NULL);
 		EncoderInfo.CodecType = ECodecType::H264;
 		
 		// Create temp component

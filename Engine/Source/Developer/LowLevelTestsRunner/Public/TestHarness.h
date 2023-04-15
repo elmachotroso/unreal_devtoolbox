@@ -2,107 +2,49 @@
 
 #pragma once
 
-#ifndef UE5_ENABLE_TESTHARNESS_ENGINE_SUPPORT
-#define UE5_ENABLE_TESTHARNESS_ENGINE_SUPPORT 1
+#ifndef UE_ENABLE_TESTHARNESS_ENGINE_SUPPORT
+#define UE_ENABLE_TESTHARNESS_ENGINE_SUPPORT 1
 #endif
 
-#if UE5_ENABLE_TESTHARNESS_ENGINE_SUPPORT
-#include "CoreMinimal.h"
-#include "Containers/StringConv.h"
-#endif
+#if UE_ENABLE_TESTHARNESS_ENGINE_SUPPORT
+#include "CoreTypes.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringFwd.h"
 
-#if defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
-THIRD_PARTY_INCLUDES_START
-#endif // defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+#if PLATFORM_MAC
+// Fix type redefinition error of FVector
+#include "HAL/PlatformMath.h"
+#endif // PLATFORM_MAC
 
-#ifdef _MSC_VER
-#pragma warning(disable: 4005 4582 4583) // 4005 is a macro redefinition. It's for "TEXT" and harmless in this case. 4582 and 4583 shouldn't be enabled by the engine in the first place.
-#pragma pack(push, 8)
-#endif
-#include "catch.hpp"
-#ifdef _MSC_VER
-#pragma pack(pop)
-#endif
+#include <ostream>
 
-#include <stdio.h>
-#include <atomic>
+std::ostream& operator<<(std::ostream& Stream, const TCHAR* Value);
+std::ostream& operator<<(std::ostream& Stream, const FString& Value);
+std::ostream& operator<<(std::ostream& Stream, const FAnsiStringView& Value);
+std::ostream& operator<<(std::ostream& Stream, const FWideStringView& Value);
+std::ostream& operator<<(std::ostream& Stream, const FUtf8StringView& Value);
+std::ostream& operator<<(std::ostream& Stream, const FAnsiStringBuilderBase& Value);
+std::ostream& operator<<(std::ostream& Stream, const FWideStringBuilderBase& Value);
+std::ostream& operator<<(std::ostream& Stream, const FUtf8StringBuilderBase& Value);
 
-#if defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
-THIRD_PARTY_INCLUDES_END
-#endif // defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+enum class ESPMode : uint8;
+template <class ObjectType, ESPMode InMode> class TSharedRef;
+template <class ObjectType, ESPMode InMode> class TSharedPtr;
 
-
-#if UE5_ENABLE_TESTHARNESS_ENGINE_SUPPORT
-
-inline std::string FStringToStdString(const FString& Value)
+template <typename ObjectType, ESPMode Mode>
+std::ostream& operator<<(std::ostream& Stream, const TSharedRef<ObjectType, Mode>& Value)
 {
-	static std::string quote(R"(")");
-	return quote + std::string(TCHAR_TO_UTF8(*Value)) + quote;
+	return Stream << &Value.Get();
 }
 
-inline FDateTime TestDateTime(const TCHAR* DateString)
+template <typename ObjectType, ESPMode Mode>
+std::ostream& operator<<(std::ostream& Stream, const TSharedPtr<ObjectType, Mode>& Value)
 {
-	FDateTime Output;
-	REQUIRE(FDateTime::ParseIso8601(DateString, Output));
-	return Output;
+	return Stream << Value.Get();
 }
-
-
-namespace Catch
-{
-	// Tell Catch how to print FStrings
-	template <>
-	class StringMaker<FString>
-	{
-	public:
-		static std::string convert(const FString& Value) { return FStringToStdString(Value);  }
-	};
-
-	// Tell Catch how to print TCHAR strings
-	template <int SZ>
-	class StringMaker<TCHAR[SZ]>
-	{
-	public:
-		static std::string convert(const TCHAR* Value) { return FStringToStdString(FString((int32)SZ, Value)); }
-	};
-
-	// Tell Catch how to print TPairs
-	template <typename PairKeyType, typename PairValueType>
-	class StringMaker<TPair<PairKeyType, PairValueType>>
-	{
-	public:
-		static std::string convert(const TPair<PairKeyType, PairValueType>& Value)
-		{
-			return "{ " + StringMaker<PairKeyType>::convert(Value.Key) + " , " + StringMaker<PairValueType>::convert(Value.Value) + " }";
-		}
-	};
-
-	// Tell Catch how to print TSharedRef
-	template<typename T, ESPMode Mode>
-	class StringMaker<TSharedRef<T, Mode>>
-	{
-	public:
-		static std::string convert(const TSharedRef<T, Mode>& Value)
-		{
-			return "0x" + std::string(TCHAR_TO_ANSI(*FString::Printf(TEXT("%p"), &Value.Get())));
-		}
-	};
-
-	// Tell Catch how to print TSharedPtr
-	template<typename T, ESPMode Mode>
-	class StringMaker<TSharedPtr<T, Mode>>
-	{
-	public:
-		static std::string convert(const TSharedPtr<T, Mode>& Value)
-		{
-			return "0x" + std::string(TCHAR_TO_ANSI(*FString::Printf(TEXT("%p"), Value.Get())));
-		}
-	};
-}
-
 
 template <typename KeyT, typename ValueT>
-static bool operator==(const TMap<KeyT, ValueT>& Left, const TMap<KeyT, ValueT>& Right)
+inline bool operator==(const TMap<KeyT, ValueT>& Left, const TMap<KeyT, ValueT>& Right)
 {
 	bool bIsEqual = Left.Num() == Right.Num();
 	if (bIsEqual)
@@ -116,4 +58,118 @@ static bool operator==(const TMap<KeyT, ValueT>& Left, const TMap<KeyT, ValueT>&
 	return bIsEqual;
 }
 
-#endif // #if UE5_ENABLE_TESTHARNESS_ENGINE_SUPPORT
+#if defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+THIRD_PARTY_INCLUDES_START
+#endif // defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+
+#ifdef _MSC_VER
+#pragma pack(push, 8)
+#pragma warning(push)
+#pragma warning(disable: 4005) // 'identifier': macro redefinition
+#pragma warning(disable: 4582) // 'type': constructor is not implicitly called
+#pragma warning(disable: 4583) // 'type': destructor is not implicitly called
+#endif
+#include <catch2/catch_test_macros.hpp>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#pragma pack(pop)
+#endif
+
+#if defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+THIRD_PARTY_INCLUDES_END
+#endif // defined(THIRD_PARTY_INCLUDES_START) && defined(THIRD_PARTY_INCLUDES_END)
+
+#define LLT_CONCAT_(x, y) x##y
+#define LLT_CONCAT(x, y) LLT_CONCAT_(x,y)
+
+#define DISABLED_TEST_CASE_METHOD_INTERNAL(TestName, ClassName, ...) \
+	CATCH_INTERNAL_START_WARNINGS_SUPPRESSION \
+	CATCH_INTERNAL_SUPPRESS_GLOBALS_WARNINGS \
+	namespace \
+	{ \
+		struct TestName : INTERNAL_CATCH_REMOVE_PARENS(ClassName) \
+		{ \
+			void test(); \
+		}; \
+	} \
+	CATCH_INTERNAL_STOP_WARNINGS_SUPPRESSION \
+	void TestName::test()
+
+#define DISABLED_TEST_CASE(...) static void LLT_CONCAT(disabled_test_,__LINE__)()
+#define DISABLED_TEST_CASE_METHOD(ClassName, ...) \
+	DISABLED_TEST_CASE_METHOD_INTERNAL(INTERNAL_CATCH_UNIQUE_NAME( CATCH2_INTERNAL_TEST_ ), ClassName, __VA_ARGS__)
+#define DISABLED_SCENARIO(...) static void LLT_CONCAT(disabled_scenario_,__LINE__)()
+#define DISABLED_SECTION(...) auto LLT_CONCAT(disabled_section_,__LINE__) = []()
+
+// Tell Catch how to print TTuple<KeyType, ValueType>
+template <typename... Types> struct TTuple;
+
+template <typename KeyType, typename ValueType>
+struct Catch::StringMaker<TTuple<KeyType, ValueType>>
+{
+	static std::string convert(const TTuple<KeyType, ValueType>& Value)
+	{
+		return "{ " + StringMaker<KeyType>::convert(Value.Key) + " , " + StringMaker<ValueType>::convert(Value.Value) + " }";
+	}
+};
+
+#define VERIFY(What, Actual)\
+	CAPTURE(What);\
+	CHECK(Actual == true)
+
+#define ADD_WARNING(What)\
+	WARN(What)
+
+#define ADD_ERROR(What)\
+	FAIL(What)
+
+#define CHECK_EQUAL(Actual, Expected)\
+	CHECK(Actual == Expected)
+
+#define CHECK_NOT_EQUAL(Actual, Expected)\
+	CHECK(Actual != Expected)
+
+#define REQUIRE_EQUAL(Actual, Expected)\
+	REQUIRE(Actual == Expected)
+
+#define REQUIRE_NOT_EQUAL(Actual, Expected)\
+	REQUIRE(Actual != Expected)
+
+#define TEST_TRUE(What, Value)\
+	INFO(What);\
+	CHECK((Value)==true)
+
+#define TEST_FALSE(What, Value)\
+	INFO(What);\
+	CHECK((Value)==false)
+
+#define TEST_EQUAL(What, Actual, Expected)\
+	INFO(What);\
+	CHECK((Actual) == (Expected))
+
+#define TEST_EQUAL_STR(What, Expected, Actual)\
+	INFO(What);\
+	CAPTURE(Actual);\
+	CHECK(FCString::Strcmp(ToCStr((Expected)), ToCStr((Actual))) == 0)
+
+#define TEST_NOT_EQUAL(What, Actual, Expected)\
+	INFO(What);\
+	CHECK((Actual) != (Expected))
+
+#define TEST_NULL(What, Value)\
+	INFO(What);\
+	CHECK((Value)==nullptr)
+
+#define TEST_NOT_NULL(What, Value)\
+	INFO(What);\
+	CHECK((Value)!=nullptr)
+
+#define TEST_VALID(What, Value)\
+	INFO(What);\
+	CHECK(Value.IsValid()==true)
+
+#define TEST_INVALID(What, Value)\
+	INFO(What);\
+	CHECK(Value.IsValid()==false)
+
+#endif // UE_ENABLE_TESTHARNESS_ENGINE_SUPPORT

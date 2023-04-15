@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "CookOnTheFlyServerConnection.h"
 #include "CookOnTheFly.h"
 #include "HAL/PlatformMisc.h"
 #include "Async/Async.h"
@@ -11,171 +12,152 @@
 #include "Misc/App.h"
 #include "Misc/DateTime.h"
 #include "Serialization/MemoryReader.h"
+#include "Misc/CoreDelegates.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCotfServerConnection, Log, All);
-
-static TArray<TSharedPtr<FInternetAddr>> GetAddressFromString(ISocketSubsystem& SocketSubsystem, TArrayView<const FString> HostAddresses, const int32 Port)
-{
-	TArray<TSharedPtr<FInternetAddr>> InterntAddresses;
-
-	for (const FString& HostAddr : HostAddresses)
-	{
-		TSharedPtr<FInternetAddr> Addr = SocketSubsystem.GetAddressFromString(HostAddr);
-
-		if (!Addr.IsValid() || !Addr->IsValid())
-		{
-			FAddressInfoResult GAIRequest = SocketSubsystem.GetAddressInfo(*HostAddr, nullptr, EAddressInfoFlags::Default, NAME_None);
-			if (GAIRequest.ReturnCode == SE_NO_ERROR && GAIRequest.Results.Num() > 0)
-			{
-				Addr = GAIRequest.Results[0].Address;
-			}
-		}
-
-		if (Addr.IsValid() && Addr->IsValid())
-		{
-			Addr->SetPort(Port);
-			InterntAddresses.Emplace(MoveTemp(Addr));
-		}
-	}
-
-	return InterntAddresses;
-}
 
 class FCookOnTheFlyServerConnection final
 	: public UE::Cook::ICookOnTheFlyServerConnection
 {
 public:
-	FCookOnTheFlyServerConnection()
-	{ }
+	FCookOnTheFlyServerConnection(TUniquePtr<ICookOnTheFlyServerTransport> InTransport, const FString& InHost)
+		: Transport(MoveTemp(InTransport))
+		, Host(InHost)
+		, bIsSingleThreaded(!FGenericPlatformProcess::SupportsMultithreading())
+	{
+		using namespace UE::Cook;
+
+		check(Transport);
+
+		TArray<FString> TargetPlatformNames;
+		if (FPlatformProperties::RequiresCookedData())
+		{
+			FPlatformMisc::GetValidTargetPlatforms(TargetPlatformNames);
+		}
+		
+		FBufferArchive HandshakeRequestPayload;
+		HandshakeRequestPayload << TargetPlatformNames;
+		bool bIsSingleThreaded_ = bIsSingleThreaded;
+		HandshakeRequestPayload << bIsSingleThreaded_;
+
+		if (!Transport->SendPayload(HandshakeRequestPayload))
+		{
+			UE_LOG(LogCotfServerConnection, Fatal, TEXT("Failed to send handshake request to server"));
+			return;
+		}
+
+		FArrayReader ResponsePayload;
+		if (!Transport->ReceivePayload(ResponsePayload))
+		{
+			UE_LOG(LogCotfServerConnection, Fatal, TEXT("Failed to receive handshake response from server"));
+			return;
+		}
+		bool bIsOk;
+		ResponsePayload << bIsOk;
+		if (!bIsOk)
+		{
+			UE_LOG(LogCotfServerConnection, Fatal, TEXT("Couldn't handshake with server"));
+			return;
+		}
+		ResponsePayload << PlatformName;
+		ResponsePayload << ZenProjectName;
+
+		FCoreDelegates::OnEnginePreExit.AddRaw(this, &FCookOnTheFlyServerConnection::OnEnginePreExit);
+
+		Thread = MakeUnique<FThread>(
+			TEXT("CotfServerConnection"),
+			[this]()
+			{
+				ThreadEntry();
+			},
+			[this]()
+			{
+				SingleThreadedTickFunction();
+			},
+			8 * 1024);
+	}
 
 	~FCookOnTheFlyServerConnection()
 	{
+		FCoreDelegates::OnEnginePreExit.RemoveAll(this);
 		Disconnect();
 	}
 
-	bool Connect(const UE::Cook::FCookOnTheFlyHostOptions& HostOptions)
+	virtual const FString& GetHost() const override
 	{
-		check(HostOptions.Hosts.Num());
+		return Host;
+	}
 
-		const int32 Port = HostOptions.Port > 0 ? HostOptions.Port : UE::Cook::DefaultCookOnTheFlyServingPort;
+	virtual const FString& GetZenProjectName() const override
+	{
+		return ZenProjectName;
+	}
 
-		ISocketSubsystem& SocketSubsystem = *ISocketSubsystem::Get();
-		TArray<TSharedPtr<FInternetAddr>> HostAddresses = GetAddressFromString(SocketSubsystem, HostOptions.Hosts, Port);
+	virtual const FString& GetPlatformName() const override
+	{
+		return PlatformName;
+	}
 
-		if (!HostAddresses.Num())
-		{
-			UE_LOG(LogCotfServerConnection, Error, TEXT("No valid COTF server address found"));
-			return false;
-		}
-
-		bool bConnected = false;
-		const double ServerWaitEndTime = FPlatformTime::Seconds() + HostOptions.ServerStartupWaitTime.GetTotalSeconds();
-
-		for (;;)
-		{
-			for (const TSharedPtr<FInternetAddr>& Addr : HostAddresses)
-			{
-				UE_LOG(LogCotfServerConnection, Display, TEXT("Connecting to COTF server at '%s'..."), *Addr->ToString(true));
-			
-				Socket.Reset(SocketSubsystem.CreateSocket(NAME_Stream, TEXT("COTF-ServerConnection"), Addr->GetProtocolType()));
-				if (Socket.IsValid() && Socket->Connect(*Addr))
-				{
-					ServerAddr = Addr;
-					bConnected = true;
-					break;
-				}
-			}
-
-			if (bConnected || FPlatformTime::Seconds() > ServerWaitEndTime)
-			{
-				break;
-			}
-
-			FPlatformProcess::Sleep(1.0f);
-		};
-
-		if (!bConnected)
-		{
-			UE_LOG(LogCotfServerConnection, Error, TEXT("Failed to connect to COTF server"));
-			return false;
-		}
-
-		if (!SendHandshakeMessage())
-		{
-			UE_LOG(LogCotfServerConnection, Fatal, TEXT("Failed to handshake with COTF server at '%s'"), *ServerAddr->ToString(true));
-			return false;
-		}
-
-		Thread = AsyncThread([this] { return ThreadEntry(); },  8 * 1024, TPri_Normal);
-
-		UE_LOG(LogCotfServerConnection, Log, TEXT("Connected to COTF server at '%s'"), *ServerAddr->ToString(true));
-
-		return true;
+	virtual bool IsSingleThreaded() const override
+	{
+		return bIsSingleThreaded;
 	}
 
 	virtual bool IsConnected() const override
 	{
-		return ClientId > 0;
+		return Transport.IsValid();
 	}
 
-	virtual TFuture<UE::Cook::FCookOnTheFlyResponse> SendRequest(const UE::Cook::FCookOnTheFlyRequest& Request) override
+	virtual TFuture<UE::Cook::FCookOnTheFlyResponse> SendRequest(UE::Cook::FCookOnTheFlyRequest& Request) override
 	{
 		using namespace UE::Cook;
 
 		const uint32 CorrelationId					= NextCorrelationId++;
-		FCookOnTheFlyMessageHeader RequestHeader	= Request.GetHeader();
+		FCookOnTheFlyMessageHeader& RequestHeader	= Request.GetHeader();
 
-		RequestHeader.MessageType	= RequestHeader.MessageType | ECookOnTheFlyMessage::Request;
 		RequestHeader.MessageStatus = ECookOnTheFlyMessageStatus::Ok;
-		RequestHeader.SenderId		= ClientId;
 		RequestHeader.CorrelationId = CorrelationId;
 		RequestHeader.Timestamp		= FDateTime::UtcNow().GetTicks();
 
 		FBufferArchive RequestPayload;
 		RequestPayload.Reserve(Request.TotalSize());
 
-		RequestPayload << RequestHeader;
-		RequestPayload << const_cast<TArray<uint8>&>(Request.GetBody());
+		RequestPayload << Request;
 
 		FPendingRequest* PendingRequest = Alloc(CorrelationId);
 		PendingRequest->RequestHeader = RequestHeader;
 		
 		TFuture<FCookOnTheFlyResponse> FutureResponse = PendingRequest->ResponsePromise.GetFuture();
 
-		UE_LOG(LogCotfServerConnection, Verbose, TEXT("Sending: %s, Size='%lld'"), *RequestHeader.ToString(), Request.TotalSize());
-
-		if (SendMessage(RequestPayload))
+		bool bOk = false;
+		if (Transport)
 		{
-			return FutureResponse;
+			UE_LOG(LogCotfServerConnection, Verbose, TEXT("Sending: %s, Size='%lld'"), *RequestHeader.ToString(), Request.TotalSize());
+
+			FScopeLock _(&TransportCritical);
+			if (Transport->SendPayload(RequestPayload))
+			{
+				if (bIsSingleThreaded)
+				{
+					ProcessMessagesWhile([this, CorrelationId]()
+						{
+							return PendingRequests.Contains(CorrelationId);
+						});
+				}
+				bOk = true;
+			}
 		}
-		else
+		if (!bOk)
 		{
 			UE_LOG(LogCotfServerConnection, Warning, TEXT("Failed to send: %s, Size='%lld'"), *RequestHeader.ToString(), Request.TotalSize());
 
-			Free(PendingRequest);
-
-			FCookOnTheFlyResponse ErrorResponse;
+			FCookOnTheFlyResponse ErrorResponse(Request);
 			ErrorResponse.SetStatus(ECookOnTheFlyMessageStatus::Error);
+			PendingRequest->ResponsePromise.SetValue(ErrorResponse);
 
-			TPromise<FCookOnTheFlyResponse> ErrorResponsePromise;
-			ErrorResponsePromise.SetValue(ErrorResponse);
-			return ErrorResponsePromise.GetFuture();
+			Free(PendingRequest);
 		}
-	}
-
-	virtual void Disconnect() override
-	{
-		if (IsConnected())
-		{
-			if (!bStopRequested.Exchange(true))
-			{
-				Socket->Close();
-				Thread.Wait();
-				Thread.Reset();
-				Socket.Reset();
-				ClientId  = -1;
-			}
-		}
+		return FutureResponse;
 	}
 
 	DECLARE_DERIVED_EVENT(FCookOnTheFlyServerConnection, UE::Cook::ICookOnTheFlyServerConnection::FMessageEvent, FMessageEvent);
@@ -184,82 +166,31 @@ public:
 		return MessageEvent;
 	}
 
-	bool SendMessage(const TArray<uint8>& Message)
+private:
+	void Disconnect()
 	{
-		if (!FNFSMessageHeader::WrapAndSendPayload(Message, FSimpleAbstractSocket_FSocket(Socket.Get())))
+		if (!bStopRequested.Exchange(true))
 		{
-			UE_LOG(LogCotfServerConnection, Fatal, TEXT("Failed sending payload to COTF server"));
-			return false;
+			if (Transport)
+			{
+				Transport->Disconnect();
+			}
+			Thread->Join();
+			Thread.Reset();
 		}
-
-		return true;
 	}
 
-	bool ReceiveMessage(FArrayReader& Message)
-	{
-		if (!FNFSMessageHeader::ReceivePayload(Message, FSimpleAbstractSocket_FSocket(Socket.Get())))
-		{
-			UE_LOG(LogCotfServerConnection, Warning, TEXT("Failed reveiving payload from COTF server"));
-			return false;
-		}
-
-		return true;
-	}
-
-	bool SendHandshakeMessage()
+	bool ProcessMessagesWhile(TFunctionRef<bool()> Condition)
 	{
 		using namespace UE::Cook;
 
-		FCookOnTheFlyMessage HandshakeRequest(ECookOnTheFlyMessage::Handshake | ECookOnTheFlyMessage::Request);
-		{
-			TArray<FString> TargetPlatformNames;
-			FPlatformMisc::GetValidTargetPlatforms(TargetPlatformNames);
-			check(TargetPlatformNames.Num() > 0);
-			FString PlatformName(MoveTemp(TargetPlatformNames[0]));
-			FString ProjectName(FApp::GetProjectName());
-
-			TUniquePtr<FArchive> Ar = HandshakeRequest.WriteBody();
-			*Ar << PlatformName;
-			*Ar << ProjectName;
-		}
-
-		FBufferArchive HandshakeRequestPayload;
-		HandshakeRequestPayload << HandshakeRequest;
-
-		if (!SendMessage(HandshakeRequestPayload))
-		{
-			return false;
-		}
-
-		FArrayReader HandshakeResponsePayload;
-		if (!ReceiveMessage(HandshakeResponsePayload))
-		{
-			return false;
-		}
-
-		FCookOnTheFlyMessage HandshakeResponse;
-		HandshakeResponsePayload << HandshakeResponse;
-		{
-			TUniquePtr<FArchive> Ar = HandshakeResponse.ReadBody();
-			*Ar << ClientId;
-		}
-
-		UE_CLOG(ClientId > 0, LogCotfServerConnection, Display, TEXT("Connected to server with ID='%d'"), ClientId);
-
-		return ClientId > 0;
-	}
-
-	void ThreadEntry()
-	{
-		using namespace UE::Cook;
-
-		while (!bStopRequested.Load())
+		while (Condition())
 		{
 			FArrayReader MessagePayload;
-			if (!ReceiveMessage(MessagePayload))
+			if (!Transport || !Transport->ReceivePayload(MessagePayload))
 			{
-				UE_LOG(LogCotfServerConnection, Warning, TEXT("Failed to receive message from '%s'"), *ServerAddr->ToString(true));
-				break;
+				UE_LOG(LogCotfServerConnection, Warning, TEXT("Failed to receive message from server"));
+				return false;
 			}
 
 			FCookOnTheFlyMessageHeader MessageHeader;
@@ -272,32 +203,10 @@ public:
 
 			const bool bIsResponse = EnumHasAnyFlags(MessageHeader.MessageType, ECookOnTheFlyMessage::Response);
 			const bool bIsRequest = EnumHasAnyFlags(MessageHeader.MessageType, ECookOnTheFlyMessage::Request);
-			EnumRemoveFlags(MessageHeader.MessageType, ECookOnTheFlyMessage::TypeFlags);
 
 			if (bIsRequest)
 			{
-				UE_CLOG(
-					MessageHeader.MessageType != ECookOnTheFlyMessage::Heartbeat,
-					LogCotfServerConnection, Fatal, TEXT("Invalid server request message '%s'"), LexToString(MessageHeader.MessageType));
-
-				FCookOnTheFlyMessage HeartbeatResponse(ECookOnTheFlyMessage::Heartbeat | ECookOnTheFlyMessage::Response);
-				FCookOnTheFlyMessageHeader& ResponseHeader = HeartbeatResponse.GetHeader();
-
-				ResponseHeader.MessageStatus	= ECookOnTheFlyMessageStatus::Ok;
-				ResponseHeader.SenderId			= ClientId;
-				ResponseHeader.CorrelationId	= MessageHeader.CorrelationId;
-				ResponseHeader.Timestamp		= FDateTime::UtcNow().GetTicks();
-				
-				FBufferArchive ResponsePayload;
-				ResponsePayload << HeartbeatResponse;
-
-				UE_LOG(LogCotfServerConnection, Warning, TEXT("Sending heartbeat response to '%s'"), *ServerAddr->ToString(true));
-
-				if (!SendMessage(ResponsePayload))
-				{
-					UE_LOG(LogCotfServerConnection, Warning, TEXT("Failed to send heartbeat response to '%s'"), *ServerAddr->ToString(true));
-					break;
-				}
+				UE_LOG(LogCotfServerConnection, Warning, TEXT("Received request from server, ignoring"));
 			}
 			else if (bIsResponse)
 			{
@@ -326,7 +235,26 @@ public:
 			}
 		}
 
-		UE_LOG(LogCotfServerConnection, Display, TEXT("Terminating connection to server '%s'"), *ServerAddr->ToString(true));
+		return true;
+	}
+
+	void ThreadEntry()
+	{
+		ProcessMessagesWhile([this]()
+			{
+				return !bStopRequested.Load();
+			});
+
+		UE_LOG(LogCotfServerConnection, Display, TEXT("Terminating connection to server"));
+		Transport.Reset();
+	}
+
+	void SingleThreadedTickFunction()
+	{
+		ProcessMessagesWhile([this]()
+			{
+				return Transport && Transport->HasPendingPayload();
+			});
 	}
 
 	struct FPendingRequest
@@ -360,29 +288,27 @@ public:
 		return nullptr;
 	}
 
+	void OnEnginePreExit()
+	{
+		Disconnect();
+	}
+
+	FCriticalSection TransportCritical;
+	TUniquePtr<ICookOnTheFlyServerTransport> Transport;
+	FString Host;
 	FMessageEvent MessageEvent;
-	TSharedPtr<FInternetAddr> ServerAddr;
-	TUniquePtr<FSocket> Socket;
-	uint32 ClientId = 0;
-	TFuture<void> Thread;
-	TAtomic<bool> bStopRequested { false };
+	TUniquePtr<FThread> Thread;
+	TAtomic<bool> bStopRequested{ false };
+	const bool bIsSingleThreaded;
+	FString PlatformName;
+	FString ZenProjectName;
 
 	FCriticalSection RequestsCriticalSection;
 	TMap<uint32, TUniquePtr<FPendingRequest>> PendingRequests;
 	TAtomic<uint32> NextCorrelationId { 1 };
 };
 
-namespace UE { namespace Cook
+UE::Cook::ICookOnTheFlyServerConnection* MakeCookOnTheFlyServerConnection(TUniquePtr<ICookOnTheFlyServerTransport> InTransport, const FString& InHost)
 {
-
-TUniquePtr<ICookOnTheFlyServerConnection> MakeServerConnection(const UE::Cook::FCookOnTheFlyHostOptions& HostOptions)
-{
-	TUniquePtr<FCookOnTheFlyServerConnection> Connection = MakeUnique<FCookOnTheFlyServerConnection>();
-	if (!Connection->Connect(HostOptions))
-	{
-		Connection.Release();
-	}
-	return Connection;
+	return new FCookOnTheFlyServerConnection(MoveTemp(InTransport), InHost);
 }
-
-}} // namespace UE::Cook

@@ -2,10 +2,17 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
-#include "Templates/SharedPointer.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+
+class FString;
 
 /** List of owner names that requested a specific item filtered, allows unregistering specific set of changes by a given plugin or system */
 typedef TArray<FName> FPermissionListOwners;
@@ -109,10 +116,19 @@ protected:
 	bool bSuppressOnFilterChanged = false;
 };
 
+enum class EPathPermissionListType
+{
+	Default,	// Default path permission list
+	ClassPaths	// Class permission list
+};
+
 class CORE_API FPathPermissionList : public TSharedFromThis<FPathPermissionList>
 {
 public:
-	FPathPermissionList() {}
+	FPathPermissionList(EPathPermissionListType InType = EPathPermissionListType::Default) 
+		: ListType(InType)
+	{
+	}
 	virtual ~FPathPermissionList() {}
 	
 	/** Returns true if passes filter restrictions using exact match */
@@ -152,6 +168,24 @@ public:
 	bool AddDenyListItem(const FName OwnerName, const TCHAR* Item);
 
 	/**
+	* Remove item from the DenyList
+	* @return whether the filters changed
+	*/
+	bool RemoveDenyListItem(const FName OwnerName, const FStringView Item);
+
+	/**
+	* Remove item from the DenyList
+	* @return whether the filters changed
+	*/
+	bool RemoveDenyListItem(const FName OwnerName, const FName Item);
+
+	/**
+	* Remove item from the DenyList
+	* @return whether the filters changed
+	*/
+	bool RemoveDenyListItem(const FName OwnerName, const TCHAR* Item);
+
+	/**
 	 * Add item to allowlist after which all items not in the allowlist will be filtered out.
 	 * @return whether the filters changed.
 	 */
@@ -168,6 +202,24 @@ public:
 	 * @return whether the filters changed.
 	 */
 	bool AddAllowListItem(const FName OwnerName, const TCHAR* Item);
+
+	/**
+	* Remove item from the AllowList
+	* @return whether the filters changed
+	*/
+	bool RemoveAllowListItem(const FName OwnerName, const FStringView Item);
+
+	/**
+	* Remove item from the AllowList
+	* @return whether the filters changed
+	*/
+	bool RemoveAllowListItem(const FName OwnerName, const FName Item);
+
+	/**
+	* Remove item from the AllowList
+	* @return whether the filters changed
+	*/
+	bool RemoveAllowListItem(const FName OwnerName, const TCHAR* Item);
 
 	/**
 	 * Set to filter out all items.
@@ -227,6 +279,12 @@ public:
 
 protected:
 
+	/**
+	 * Checks if an item is of a valid format for this list
+	 * @return True if the item passes list type test.
+	 */
+	void VerifyItemMatchesListType(const FStringView Item) const;
+
 	/** List if items to filter out */
 	TMap<FString, FPermissionListOwners> DenyList;
 
@@ -241,4 +299,7 @@ protected:
 
 	/** Temporarily prevent delegate from being triggered */
 	bool bSuppressOnFilterChanged = false;
+
+	/** Type of paths this list represent */
+	EPathPermissionListType ListType;
 };

@@ -52,9 +52,18 @@
 #pragma warning(disable:5045)
 #endif
 
+/* Unreal Engine changes: disable deprecation declarations with newer Apple toolchains */
+#if defined(__APPLE__)
+#if __apple_build_version__ >= 14000017
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#endif
+
+/* Unreal engine changes: Don't re-define sscanf because of unity builds */
 /* Apparently sscanf is not implemented in some "standard" libraries, so don't use it, if you
  * don't have to. */
-#define sscanf THINK_TWICE_ABOUT_USING_SSCANF
+// #define sscanf THINK_TWICE_ABOUT_USING_SSCANF
 
 #define STARTING_CAPACITY 16
 #define MAX_NESTING       2048
@@ -69,10 +78,12 @@
 /* Unreal engine changes: Added ifndef to avoid unwanted errors of redefinition */
 #ifndef MAX
 #define MAX(a, b)             ((a) > (b) ? (a) : (b))
+#define PARSON_LOCAL_MAX 1
 #endif
 
-#undef malloc
-#undef free
+/* Unreal engine changes: Don't undefine these macros */
+// #undef malloc
+// #undef free
 
 #if defined(isnan) && defined(isinf)
 #define IS_NUMBER_INVALID(x) (isnan((x)) || isinf((x)))
@@ -173,12 +184,14 @@ static char * parson_strndup(const char *string, size_t n) {
         return NULL;
     }
     output_string[n] = '\0';
-#if __GNUC__ >= 8
+/* Unreal engine changes: Added defined(__GNUC__) to resolve UndefinedIdentifier error */
+#if defined(__GNUC__) && __GNUC__ >= 8
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-truncation"
 #endif
     strncpy(output_string, string, n);
-#if __GNUC__ >= 8
+/* Unreal engine changes: Added defined(__GNUC__) to resolve UndefinedIdentifier error */
+#if defined(__GNUC__) && __GNUC__ >= 8
 #pragma GCC diagnostic pop
 #endif
     return output_string;
@@ -2079,6 +2092,29 @@ void json_set_allocation_functions(JSON_Malloc_Function malloc_fun, JSON_Free_Fu
     parson_malloc = malloc_fun;
     parson_free = free_fun;
 }
+
+/* Unreal engine changes: Undefine locally created macros to avoid unity build failures */
+#undef STARTING_CAPACITY
+#undef MAX_NESTING
+#undef FLOAT_FORMAT
+#undef NUM_BUF_SIZE
+#undef SIZEOF_TOKEN
+#undef SKIP_CHAR
+#undef SKIP_WHITESPACES
+#undef IS_NUMBER_INVALID
+#undef IS_CONT
+#undef APPEND_STRING
+#if defined(PARSON_LOCAL_MAX)
+#undef PARSON_LOCAL_MAX
+#undef MAX
+#endif
+
+/* Unreal Engine changes: enable deprecation declarations with newer Apple toolchains */
+#if defined(__APPLE__)
+#if __apple_build_version__ >= 14000017
+#pragma clang diagnostic pop
+#endif
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(pop)

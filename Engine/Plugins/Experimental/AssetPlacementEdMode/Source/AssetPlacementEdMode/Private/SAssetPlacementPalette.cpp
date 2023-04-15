@@ -10,13 +10,13 @@
 #include "Widgets/Layout/SScrollBorder.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "AssetThumbnail.h"
 
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "PropertyCustomizationHelpers.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetSelection.h"
 #include "Editor.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -40,6 +40,10 @@
 #include "PlacementPaletteItem.h"
 #include "Factories/AssetFactoryInterface.h"
 #include "Instances/EditorPlacementSettings.h"
+
+#if !UE_IS_COOKED_EDITOR
+#include "AssetPlacementEdModeModule.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "AssetPlacementMode"
 
@@ -72,6 +76,98 @@ void SAssetPlacementPalette::Construct(const FArguments& InArgs)
 			OnSetPaletteAsset(PlacementSettings->GetActivePalettePath().TryLoad());
 		}
 	}
+	SetupContentBrowserMirroring(!bIsMirroringContentBrowser);
+
+	TSharedPtr<SWidget> TopBar = 
+		SNew(SBorder)
+		.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
+		.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f, 1.0f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.HAlign(HAlign_Fill)
+			[
+				SNew(SCheckBox)
+				.Type(ESlateCheckBoxType::Type::ToggleButton)
+				.IsChecked(bIsMirroringContentBrowser ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.Style(&FAssetPlacementEdModeStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckBox"))
+				.Visibility(this, &SAssetPlacementPalette::GetContentBrowserMirrorVisibility)
+				.OnCheckStateChanged(this, &SAssetPlacementPalette::OnContentBrowserMirrorButtonClicked)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("Placement_ToggleContentBrowserMirroring", "Mirror Content Browser Selection"))
+					.Justification(ETextJustify::Type::Center)
+					.TextStyle(&FAssetPlacementEdModeStyle::Get().GetWidgetStyle<FTextBlockStyle>("ButtonText"))
+					.ToolTipText(LOCTEXT("Placement_ToggleContentBrowserMirroring_ToolTip", "Toggles palette to mirror the active content browser selection."))
+				]
+			]
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SObjectPropertyEntryBox)
+				.AllowedClass(UPlacementPaletteAsset::StaticClass())
+				.ObjectPath(this, &SAssetPlacementPalette::GetPalettePath)
+				.OnObjectChanged(this, &SAssetPlacementPalette::OnSetPaletteAsset)
+				.ThumbnailPool(ThumbnailPool)
+				.Visibility(this, &SAssetPlacementPalette::GetPaletteAssetPropertyBoxVisible)
+				.CustomContentSlot()
+				[
+					SNew(SBox)
+					.HAlign(HAlign_Left)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							PropertyCustomizationHelpers::MakeClearButton(FSimpleDelegate::CreateSP(this, &SAssetPlacementPalette::OnResetPaletteAssetClicked), LOCTEXT("ResetPaletteAssetTooltip", "Clear the current palette asset, and use the user's local palette."), TAttribute<bool>::CreateLambda([this]() { return PalettePath.IsValid(); }))
+						]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(2.0f, 0.0f)
+						[
+							PropertyCustomizationHelpers::MakeSaveButton(FSimpleDelegate::CreateSP(this, &SAssetPlacementPalette::OnSavePaletteAssetClicked), LOCTEXT("SaveAssetPaletteTooltip", "Save changes to the current palette asset"), TAttribute<bool>::CreateLambda([this]() { return PalettePath.IsValid() || (PaletteItems.Num() > 0); }))
+						]
+					]
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(.75f)
+				[
+					SAssignNew(SearchBoxPtr, SSearchBox)
+					.HintText(LOCTEXT("SearchPlacementPaletteHint", "Search Palette"))
+					.OnTextChanged(this, &SAssetPlacementPalette::OnSearchTextChanged)
+				]
+
+				// View Options
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SComboButton)
+					.ForegroundColor(FSlateColor::UseForeground())
+					.ButtonStyle(FAppStyle::Get(), "ToggleButton")
+					.OnGetMenuContent(this, &SAssetPlacementPalette::GetViewOptionsMenuContent)
+					.ButtonContent()
+					[
+						SNew(SBox)
+						.VAlign(VAlign_Center)
+						[
+							SNew(SImage)
+							.Image(FAppStyle::Get().GetBrush("GenericViewButton"))
+						]
+					]
+				]
+			]
+		];
 
 	ChildSlot
 	[
@@ -80,101 +176,11 @@ void SAssetPlacementPalette::Construct(const FArguments& InArgs)
 		.HAlign(HAlign_Fill)
 		.AutoHeight()
 		[
-			// Top bar
-			SNew(SBorder)
-			.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
-			.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f, 1.0f))
-			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.HAlign(HAlign_Fill)
-				[
-					SNew(SCheckBox)
-					.Type(ESlateCheckBoxType::Type::ToggleButton)
-					.IsChecked(bIsMirroringContentBrowser ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-					.Style(&FAssetPlacementEdModeStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckBox"))
-					.Visibility(this, &SAssetPlacementPalette::GetContentBrowserMirrorVisibility)
-					.OnCheckStateChanged(this, &SAssetPlacementPalette::OnContentBrowserMirrorButtonClicked)
-					[
-						SNew(STextBlock)
-						.Text(LOCTEXT("Placement_ToggleContentBrowserMirroring", "Mirror Content Browser Selection"))
-						.Justification(ETextJustify::Type::Center)
-						.TextStyle(&FAssetPlacementEdModeStyle::Get().GetWidgetStyle<FTextBlockStyle>("ButtonText"))
-						.ToolTipText(LOCTEXT("Placement_ToggleContentBrowserMirroring_ToolTip", "Toggles palette to mirror the active content browser selection."))
-					]
-				]
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SObjectPropertyEntryBox)
-					.AllowedClass(UPlacementPaletteAsset::StaticClass())
-					.ObjectPath(this, &SAssetPlacementPalette::GetPalettePath)
-					.OnObjectChanged(this, &SAssetPlacementPalette::OnSetPaletteAsset)
-					.ThumbnailPool(ThumbnailPool)
-					.CustomContentSlot()
-					[
-						SNew(SBox)
-						.HAlign(HAlign_Left)
-						.VAlign(VAlign_Center)
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-							.VAlign(VAlign_Center)
-							.AutoWidth()
-							[
-								PropertyCustomizationHelpers::MakeClearButton(FSimpleDelegate::CreateSP(this, &SAssetPlacementPalette::OnResetPaletteAssetClicked), LOCTEXT("ResetPaletteAssetTooltip", "Clear the current palette asset, and use the user's local palette."), TAttribute<bool>::CreateLambda([this]() { return PalettePath.IsValid(); }))
-							]
-							+ SHorizontalBox::Slot()
-							.VAlign(VAlign_Center)
-							.AutoWidth()
-							.Padding(2.0f, 0.0f)
-							[
-								PropertyCustomizationHelpers::MakeSaveButton(FSimpleDelegate::CreateSP(this, &SAssetPlacementPalette::OnSavePaletteAssetClicked), LOCTEXT("SaveAssetPaletteTooltip", "Save changes to the current palette asset"), TAttribute<bool>::CreateLambda([this]() { return PalettePath.IsValid(); }))
-							]
-						]
-					]
-				]
-
-				+ SVerticalBox::Slot()
-				.VAlign(VAlign_Center)
-				.AutoHeight()
-				[
-					SNew(SHorizontalBox)
-
-					+ SHorizontalBox::Slot()
-					.FillWidth(.75f)
-					[
-						SAssignNew(SearchBoxPtr, SSearchBox)
-						.HintText(LOCTEXT("SearchPlacementPaletteHint", "Search Palette"))
-						.OnTextChanged(this, &SAssetPlacementPalette::OnSearchTextChanged)
-					]
-
-					// View Options
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SComboButton)
-						.ForegroundColor(FSlateColor::UseForeground())
-						.ButtonStyle(FAppStyle::Get(), "ToggleButton")
-						.OnGetMenuContent(this, &SAssetPlacementPalette::GetViewOptionsMenuContent)
-						.ButtonContent()
-						[
-							SNew(SBox)
-							.VAlign(VAlign_Center)
-							[
-								SNew(SImage)
-								.Image(FAppStyle::Get().GetBrush("GenericViewButton"))
-							]
-						]
-					]
-				]
-			]
+			TopBar.ToSharedRef()
 		]
 
 		+ SVerticalBox::Slot()
-		.HAlign(HAlign_Fill)
-		.VAlign(VAlign_Fill)
+		.FillHeight(1.0)
 		[
 			SNew(SAssetDropTarget)
 			.OnAreAssetsAcceptableForDrop(this, &SAssetPlacementPalette::OnAreAssetsValidForDrop)
@@ -184,7 +190,24 @@ void SAssetPlacementPalette::Construct(const FArguments& InArgs)
 				SNew(SOverlay)
 				+ SOverlay::Slot()
 				[
-					CreatePaletteViews()
+					SNew(SBox)
+					.HeightOverride_Lambda([TopBarWeakPtr = TWeakPtr<SWidget>(TopBar)]()
+					{
+						if (TSharedPtr<SWidget> ParentWidgetPin = TopBarWeakPtr.Pin())
+						{
+							return FOptionalSize(ParentWidgetPin->GetTickSpaceGeometry().GetLocalSize().Y - 1);
+						}
+						return FOptionalSize();
+					})
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
+						CreatePaletteViews()
+					]
 				]
 
 				+ SOverlay::Slot()
@@ -299,6 +322,41 @@ void SAssetPlacementPalette::SetPaletteToAssetDataList(TArrayView<const FAssetDa
 	}
 }
 
+void SAssetPlacementPalette::OnRemoveSelectedItemsFromPalette()
+{
+	UPlacementModeSubsystem* ModeSubsystem = GEditor->GetEditorSubsystem<UPlacementModeSubsystem>();
+	TSharedPtr<IDetailsView> PinnedItemDetails = ItemDetailsWidget.Pin();
+	TArray<TWeakObjectPtr<UObject>> SelectedObjects;
+	if (PinnedItemDetails)
+	{
+		SelectedObjects = PinnedItemDetails->GetSelectedObjects();
+	}
+
+	for (FPlacementPaletteItemModelPtr& PaletteItem : GetActiveViewWidget()->GetSelectedItems())
+	{
+		const FAssetPlacementUIInfoPtr PaletteInfo = PaletteItem->GetTypeUIInfo();
+		
+		if (ModeSubsystem)
+		{
+			ModeSubsystem->GetMutableModeSettingsObject()->RemoveClientFromActivePalette(PaletteInfo->AssetData);
+		}
+
+		SelectedObjects.Remove(PaletteInfo->SettingsObject);
+	}
+
+	// Update the palette's view to the updated palette
+	if (ModeSubsystem)
+	{
+		SetPaletteItems(ModeSubsystem->GetModeSettingsObject()->GetActivePaletteItems());
+	}
+
+	// Reset the item details to valid objects
+	if (PinnedItemDetails)
+	{
+		PinnedItemDetails->SetObjects(SelectedObjects);
+	}
+}
+
 TSharedRef<SWidgetSwitcher> SAssetPlacementPalette::CreatePaletteViews()
 {
 	const FText BlankText = FText::GetEmpty();
@@ -403,12 +461,30 @@ void SAssetPlacementPalette::OnSavePaletteAssetClicked()
 	if (UPlacementModeSubsystem* PlacementModeSubsystem = GEditor->GetEditorSubsystem<UPlacementModeSubsystem>())
 	{
 		PlacementModeSubsystem->GetMutableModeSettingsObject()->SaveActivePalette();
+
+		// If we saved from a temporary/user palette, update the active palette now
+		if (!PalettePath.IsValid())
+		{
+			OnSetPaletteAsset(PlacementModeSubsystem->GetModeSettingsObject()->GetActivePalettePath().TryLoad());
+		}
 	}
 }
 
 EVisibility SAssetPlacementPalette::GetContentBrowserMirrorVisibility() const
 {
 	return GetPalettePath().IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+EVisibility SAssetPlacementPalette::GetPaletteAssetPropertyBoxVisible() const
+{
+#if !UE_IS_COOKED_EDITOR
+	if (AssetPlacementEdModeUtil::AreInstanceWorkflowsEnabled())
+	{
+		return EVisibility::Visible;
+	}
+#endif
+	
+	return EVisibility::Collapsed;
 }
 
 void SAssetPlacementPalette::OnContentBrowserMirrorButtonClicked(ECheckBoxState InState)
@@ -432,12 +508,17 @@ void SAssetPlacementPalette::OnContentBrowserSelectionChanged(const TArray<FAsse
 
 void SAssetPlacementPalette::SetupContentBrowserMirroring(bool bInMirrorContentBrowser)
 {
-	bool bWasMirroringContentBrowser = bIsMirroringContentBrowser;
-	if (bWasMirroringContentBrowser != bInMirrorContentBrowser)
+	bool bCanMirrorContentBrowser = bInMirrorContentBrowser;
+	if (PalettePath.IsValid())
+	{
+		bCanMirrorContentBrowser = false;
+	}
+
+	if (bIsMirroringContentBrowser != bCanMirrorContentBrowser)
 	{
 		if (FContentBrowserModule* ContentBrowserModule = FModuleManager::GetModulePtr<FContentBrowserModule>("ContentBrowser"))
 		{
-			if (bInMirrorContentBrowser)
+			if (bInMirrorContentBrowser && bCanMirrorContentBrowser)
 			{
 				TArray<FAssetData> SelectedAssetDatas;
 				ContentBrowserModule->Get().GetSelectedAssets(SelectedAssetDatas);
@@ -469,10 +550,6 @@ void SAssetPlacementPalette::OnSetPaletteAsset(const FAssetData& InAssetData)
 			PlacementModeSubsystem->GetMutableModeSettingsObject()->SetPaletteAsset(PaletteAsset);
 
 			PalettePath = NewAssetPath;
-
-			// Setup content browser mirroring if this is the user palette
-			SetupContentBrowserMirroring(PalettePath.IsValid() ? false : PlacementModeSubsystem->GetModeSettingsObject()->bUseContentBrowserSelection);
-
 			SetPaletteItems(PlacementModeSubsystem->GetModeSettingsObject()->GetActivePaletteItems());
 		}
 	}
@@ -493,7 +570,7 @@ void SAssetPlacementPalette::SetPaletteItems(TArrayView<const TObjectPtr<UPlacem
 	{
 		if (PaletteItem)
 		{
-			FAssetData AssetData = AssetRegistry.Get().GetAssetByObjectPath(PaletteItem->AssetPath.GetAssetPathName());
+			FAssetData AssetData = AssetRegistry.Get().GetAssetByObjectPath(PaletteItem->AssetPath.GetWithoutSubPath());
 			if (AssetData.IsValid())
 			{
 				PaletteItems.Add(MakeShared<FAssetPlacementPaletteItemModel>(AssetData, PaletteItem, SharedThis(this), ThumbnailPool));
@@ -700,6 +777,18 @@ TSharedPtr<SWidget> SAssetPlacementPalette::ConstructPlacementTypeContextMenu()
 			FUIAction(
 				FExecuteAction::CreateSP(this, &SAssetPlacementPalette::OnClearPalette),
 				FCanExecuteAction::CreateSP(this, &SAssetPlacementPalette::HasAnyItemInPalette))
+		);
+
+		const int32 NumSelectedItems = SAssetPlacementPalette::GetActiveViewWidget()->GetNumItemsSelected();
+		MenuBuilder.AddMenuEntry(
+			FText::Format(LOCTEXT("Palette_RemoveItem", "Remove {0} {0}|plural(one=item,other=items)"), FText::AsNumber(NumSelectedItems)),
+			FText::Format(LOCTEXT("Palette_RemoveItemDesc", "Removes the {0} selected {0}|plural(one=item,other=items) from the palette."), FText::AsNumber(NumSelectedItems)),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SAssetPlacementPalette::OnRemoveSelectedItemsFromPalette),
+				FCanExecuteAction::CreateSP(this, &SAssetPlacementPalette::HasAnyItemInPalette),
+				FIsActionChecked::CreateLambda([]() { return false; }),
+				FIsActionButtonVisible::CreateLambda([NumSelectedItems]() { return (NumSelectedItems > 0); }))
 		);
 	}
 	return MenuBuilder.MakeWidget();

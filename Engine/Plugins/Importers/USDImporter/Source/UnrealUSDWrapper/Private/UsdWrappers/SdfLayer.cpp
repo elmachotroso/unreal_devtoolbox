@@ -3,6 +3,7 @@
 #include "UsdWrappers/SdfLayer.h"
 
 #include "UsdWrappers/SdfPath.h"
+#include "UsdWrappers/SdfPrimSpec.h"
 
 #include "USDMemory.h"
 
@@ -11,6 +12,7 @@
 #include "USDIncludesStart.h"
 	#include "pxr/usd/sdf/layer.h"
 	#include "pxr/usd/sdf/layerUtils.h"
+	#include "pxr/usd/sdf/primSpec.h"
 #include "USDIncludesEnd.h"
 
 #endif // #if USE_USD_SDK
@@ -228,10 +230,56 @@ namespace UE
 #endif // #if USE_USD_SDK
 
 	template<typename PtrType>
+	FString FSdfLayerBase<PtrType>::GetComment() const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+			return ANSI_TO_TCHAR( Ptr->GetComment().c_str() );
+		}
+#endif // #if USE_USD_SDK
+		return {};
+	}
+
+	template<typename PtrType>
+	void FSdfLayerBase<PtrType>::SetComment( const TCHAR* Comment ) const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+			Ptr->SetComment( TCHAR_TO_ANSI( Comment ) );
+		}
+#endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
+	void FSdfLayerBase<PtrType>::TransferContent( const FSdfLayer& SourceLayer )
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			Ptr->TransferContent( pxr::SdfLayerRefPtr{ SourceLayer } );
+		}
+#endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
 	FSdfLayer FSdfLayerBase<PtrType>::FindOrOpen( const TCHAR* Identifier )
 	{
 #if USE_USD_SDK
 		return FSdfLayer( pxr::SdfLayer::FindOrOpen( TCHAR_TO_ANSI( Identifier ) ) );
+#else
+		return FSdfLayer();
+#endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
+	FSdfLayer FSdfLayerBase<PtrType>::CreateNew( const TCHAR* Identifier )
+	{
+#if USE_USD_SDK
+		return FSdfLayer( pxr::SdfLayer::CreateNew( TCHAR_TO_ANSI( Identifier ) ) );
 #else
 		return FSdfLayer();
 #endif // #if USE_USD_SDK
@@ -247,6 +295,43 @@ namespace UE
 		}
 #endif // #if USE_USD_SDK
 
+		return false;
+	}
+
+	template<typename PtrType>
+	TSet<FString> FSdfLayerBase<PtrType>::GetCompositionAssetDependencies() const
+	{
+		TSet<FString> Results;
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+			const std::set<std::string> AssetDependencies = Ptr->GetCompositionAssetDependencies();
+
+			Results.Reserve( AssetDependencies.size() );
+			for ( const std::string& AssetDependency : AssetDependencies )
+			{
+				Results.Add( ANSI_TO_TCHAR( AssetDependency.c_str() ) );
+			}
+		}
+#endif // #if USE_USD_SDK
+		return Results;
+	}
+
+	template<typename PtrType>
+	bool FSdfLayerBase<PtrType>::UpdateCompositionAssetDependency(
+			const TCHAR* OldAssetPath,
+			const TCHAR* NewAssetPath)
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+			return Ptr->UpdateCompositionAssetDependency(
+				TCHAR_TO_ANSI( OldAssetPath ),
+				(NewAssetPath != nullptr) ? TCHAR_TO_ANSI( NewAssetPath ) : std::string() );
+		}
+#endif // #if USE_USD_SDK
 		return false;
 	}
 
@@ -286,6 +371,20 @@ namespace UE
 		{
 			FScopedUsdAllocs UsdAllocs;
 			return FString( ANSI_TO_TCHAR( Ptr->GetDisplayName().c_str() ) );
+		}
+#endif // #if USE_USD_SDK
+
+		return FString();
+	}
+
+	template<typename PtrType>
+	FString FSdfLayerBase<PtrType>::ComputeAbsolutePath( const FString& AssetPath ) const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+			return FString( ANSI_TO_TCHAR( Ptr->ComputeAbsolutePath( TCHAR_TO_ANSI( *AssetPath ) ).c_str() ) );
 		}
 #endif // #if USE_USD_SDK
 
@@ -449,6 +548,17 @@ namespace UE
 	}
 
 	template<typename PtrType>
+	void FSdfLayerBase<PtrType>::RemoveSubLayerPath( int32 Index )
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			Ptr->RemoveSubLayerPath( Index );
+		}
+#endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
 	void FSdfLayerBase<PtrType>::SetFramesPerSecond( double FramesPerSecond )
 	{
 #if USE_USD_SDK
@@ -534,6 +644,32 @@ namespace UE
 	}
 
 	template<typename PtrType>
+	FSdfPrimSpec FSdfLayerBase<PtrType>::GetPseudoRoot() const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			return FSdfPrimSpec{ Ptr->GetPseudoRoot() };
+		}
+#endif // #if USE_USD_SDK
+
+		return FSdfPrimSpec{};
+	}
+
+	template<typename PtrType>
+	FSdfPrimSpec FSdfLayerBase<PtrType>::GetPrimAtPath( const FSdfPath& Path ) const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			return FSdfPrimSpec{ Ptr->GetPrimAtPath( Path ) };
+		}
+#endif // #if USE_USD_SDK
+
+		return FSdfPrimSpec{};
+	}
+
+	template<typename PtrType>
 	TSet< double > FSdfLayerBase<PtrType>::ListTimeSamplesForPath( const FSdfPath& Path ) const
 	{
 		TSet< double > TimeSamples;
@@ -564,6 +700,19 @@ namespace UE
 			return Ptr->EraseTimeSample( Path, Time );
 		}
 #endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
+	bool FSdfLayerBase<PtrType>::IsDirty() const
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			return Ptr->IsDirty();
+		}
+#endif // #if USE_USD_SDK
+
+		return false;
 	}
 
 	template<typename PtrType>
@@ -603,6 +752,17 @@ namespace UE
 #endif // #if USE_USD_SDK
 
 		return false;
+	}
+
+	template<typename PtrType>
+	void FSdfLayerBase<PtrType>::Clear()
+	{
+#if USE_USD_SDK
+		if ( const PtrType& Ptr = Impl->GetInner() )
+		{
+			return Ptr->Clear();
+		}
+#endif // #if USE_USD_SDK
 	}
 
 	FString FSdfLayerUtils::SdfComputeAssetPathRelativeToLayer( const FSdfLayer& Anchor, const TCHAR* AssetPath )

@@ -2,6 +2,7 @@
 
 #include "DecalRenderingCommon.h"
 #include "RenderUtils.h"
+#include "Strata/Strata.h"
 
 namespace DecalRendering
 {
@@ -71,15 +72,39 @@ namespace DecalRendering
 		}
 	}
 
-	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, FMaterial const* Material)
+	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, const FMaterial& Material)
 	{
 		FDecalBlendDesc Desc;
-		Desc.BlendMode = Material->GetBlendMode();
-		Desc.bWriteBaseColor = Material->HasBaseColorConnected();
-		Desc.bWriteNormal = Material->HasNormalConnected();
-		Desc.bWriteRoughnessSpecularMetallic = Material->HasRoughnessConnected() || Material->HasSpecularConnected() || Material->HasMetallicConnected();
-		Desc.bWriteEmissive = Material->HasEmissiveColorConnected();
-		Desc.bWriteAmbientOcclusion = Material->HasAmbientOcclusionConnected();
+		if (Strata::IsStrataEnabled())
+		{
+			check(Material.IsStrataMaterial());
+
+			const bool bUseDiffuseAlbedoAndF0 =
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_DiffuseColor) ||	// This is used for Strata Slab using (DiffuseAlbedo | F0) parameterization
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_SpecularColor);	// This is used for Strata Slab using (DiffuseAlbedo | F0) parameterization
+
+			Desc.BlendMode = Material.GetBlendMode();
+			Desc.bWriteBaseColor = Material.HasMaterialPropertyConnected(EMaterialProperty::MP_BaseColor) || bUseDiffuseAlbedoAndF0;
+			Desc.bWriteNormal = Material.HasMaterialPropertyConnected(EMaterialProperty::MP_Normal);
+			Desc.bWriteRoughnessSpecularMetallic =
+				bUseDiffuseAlbedoAndF0 ||
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_Metallic) ||
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_Specular) ||
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_Roughness);
+			Desc.bWriteEmissive=
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_EmissiveColor);
+			Desc.bWriteAmbientOcclusion =
+				Material.HasMaterialPropertyConnected(EMaterialProperty::MP_AmbientOcclusion);
+		}
+		else
+		{
+			Desc.BlendMode = Material.GetBlendMode();
+			Desc.bWriteBaseColor = Material.HasBaseColorConnected();
+			Desc.bWriteNormal = Material.HasNormalConnected();
+			Desc.bWriteRoughnessSpecularMetallic = Material.HasRoughnessConnected() || Material.HasSpecularConnected() || Material.HasMetallicConnected();
+			Desc.bWriteEmissive = Material.HasEmissiveColorConnected();
+			Desc.bWriteAmbientOcclusion = Material.HasAmbientOcclusionConnected();
+		}
 		FinalizeBlendDesc(Platform, Desc);
 		return Desc;
 	}
@@ -87,12 +112,32 @@ namespace DecalRendering
 	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, FMaterialShaderParameters const& MaterialShaderParameters)
 	{
 		FDecalBlendDesc Desc;
-		Desc.BlendMode = MaterialShaderParameters.BlendMode;
-		Desc.bWriteBaseColor = MaterialShaderParameters.bHasBaseColorConnected;
-		Desc.bWriteNormal = MaterialShaderParameters.bHasNormalConnected;
-		Desc.bWriteRoughnessSpecularMetallic = MaterialShaderParameters.bHasRoughnessConnected || MaterialShaderParameters.bHasSpecularConnected || MaterialShaderParameters.bHasMetallicConnected;
-		Desc.bWriteEmissive = MaterialShaderParameters.bHasEmissiveColorConnected;
-		Desc.bWriteAmbientOcclusion = MaterialShaderParameters.bHasAmbientOcclusionConnected;
+		if (Strata::IsStrataEnabled())
+		{
+			const bool bUseDiffuseAlbedoAndF0 = 
+				MaterialShaderParameters.bHasDiffuseAlbedoConnected || 
+				MaterialShaderParameters.bHasF0Connected;
+			
+			Desc.BlendMode = MaterialShaderParameters.BlendMode;
+			Desc.bWriteBaseColor = MaterialShaderParameters.bHasBaseColorConnected || bUseDiffuseAlbedoAndF0;
+			Desc.bWriteNormal = MaterialShaderParameters.bHasNormalConnected;
+			Desc.bWriteRoughnessSpecularMetallic = 
+				bUseDiffuseAlbedoAndF0 ||
+				MaterialShaderParameters.bHasRoughnessConnected || 
+				MaterialShaderParameters.bHasSpecularConnected || 
+				MaterialShaderParameters.bHasMetallicConnected;
+			Desc.bWriteEmissive = MaterialShaderParameters.bHasEmissiveColorConnected;
+			Desc.bWriteAmbientOcclusion = MaterialShaderParameters.bHasAmbientOcclusionConnected;
+		}
+		else
+		{
+			Desc.BlendMode = MaterialShaderParameters.BlendMode;
+			Desc.bWriteBaseColor = MaterialShaderParameters.bHasBaseColorConnected;
+			Desc.bWriteNormal = MaterialShaderParameters.bHasNormalConnected;
+			Desc.bWriteRoughnessSpecularMetallic = MaterialShaderParameters.bHasRoughnessConnected || MaterialShaderParameters.bHasSpecularConnected || MaterialShaderParameters.bHasMetallicConnected;
+			Desc.bWriteEmissive = MaterialShaderParameters.bHasEmissiveColorConnected;
+			Desc.bWriteAmbientOcclusion = MaterialShaderParameters.bHasAmbientOcclusionConnected;
+		}
 		FinalizeBlendDesc(Platform, Desc);
 		return Desc;
 	}
@@ -739,21 +784,21 @@ namespace DecalRendering
 				if (DecalBlendDesc.bWriteEmissive)
 				{
 					// Treat blend as emissive
-					return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_One>::GetRHI();
+					return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_One, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 				}
 				else
 				{
 					// Treat blend as non-emissive
-					return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha>::GetRHI();
+					return TStaticBlendState<CW_RGB, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 				}
 			}
 			else if (DecalBlendDesc.BlendMode == BLEND_AlphaComposite)
 			{
-				return TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
+				return TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 			}
 			else if (DecalBlendDesc.BlendMode == BLEND_Modulate)
 			{
-				return TStaticBlendState<CW_RGB, BO_Add, BF_DestColor, BF_InverseSourceAlpha>::GetRHI();
+				return TStaticBlendState<CW_RGB, BO_Add, BF_DestColor, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One, CW_NONE>::GetRHI();
 			}
 		}
 		else
@@ -860,5 +905,9 @@ namespace DecalRendering
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERTARGETMODE_GBUFFER_NONORMAL"), (uint32)EDecalRenderTargetMode::SceneColorAndGBufferNoNormal);
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERTARGETMODE_SCENECOLOR"), (uint32)EDecalRenderTargetMode::SceneColor);
 		OutEnvironment.SetDefine(TEXT("DECAL_RENDERTARGETMODE_AO"), (uint32)EDecalRenderTargetMode::AmbientOcclusion);
+
+		// Decals needs to both read Strata data (deferred path) and write (inline path)
+		OutEnvironment.SetDefine(TEXT("STRATA_INLINE_SHADING"), 1);
+		OutEnvironment.SetDefine(TEXT("STRATA_DEFERRED_SHADING"), 1);
 	}
 }

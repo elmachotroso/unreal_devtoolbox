@@ -2,18 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "DMXFixtureActorBase.h"
+
 #include "DMXFixtureComponent.h"
 #include "DMXFixtureComponentDouble.h"
 #include "DMXFixtureComponentSingle.h"
 #include "DMXFixtureComponentColor.h"
-#include "GameFramework/Actor.h"
-#include "Game/DMXComponent.h"
-#include "Components/SpotLightComponent.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "Components/ArrowComponent.h"
+#include "DMXMVRFixtureActorInterface.h"
 #include "DMXProtocolTypes.h"
 #include "Library/DMXEntityFixturePatch.h"
+
+#include "CoreMinimal.h"
+#include "Components/ArrowComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+
 #include "DMXFixtureActor.generated.h"
 
 
@@ -28,17 +31,28 @@ enum EDMXFixtureQualityLevel
 };
 
 UCLASS()
-class DMXFIXTURES_API ADMXFixtureActor : public AActor
+class DMXFIXTURES_API ADMXFixtureActor 
+	: public ADMXFixtureActorBase
+	, public IDMXMVRFixtureActorInterface
 {
 	GENERATED_BODY()
 
 protected:
+	//~ Begin AActor Interface
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+	//~ End AActor interface
 
 public:
 	ADMXFixtureActor();
+
+	//~ Begin DMXMVRFixtureActorInterface interface
+	virtual void OnMVRGetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames, TArray<FName>& OutMatrixAttributeNames) const override;
+	//~ End DMXMVRFixtureActorInterface interface
+	
+	// UObject interface
+	virtual void PostLoad() override;
 
 	bool HasBeenInitialized;
 	float LensRadius;
@@ -50,23 +64,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture", meta = (DisplayPriority = 0))
 	TEnumAsByte<EDMXFixtureQualityLevel> QualityLevel;
 
-	// Visual quality when using smaller zoom angle (thin beam). Small value is visually better but cost more on GPU
+	// Visual quality for the light beam - small value is visually better but cost more on GPU
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture", meta = (EditCondition = "QualityLevel == EDMXFixtureQualityLevel::Custom", EditConditionHides))
-	float MinQuality;
+	float BeamQuality;
 
-	// Visual quality when using bigger zoom angle (wide beam). Small value is visually better but cost more on GPU
+	// Visual quality for the light beam when zoom is wide - small value is visually better but cost more on GPU
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture", meta = (EditCondition = "QualityLevel == EDMXFixtureQualityLevel::Custom", EditConditionHides))
-	float MaxQuality;
+	float ZoomQuality;
 
 	// HIERARCHY---------------------------------
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	USceneComponent* Base;
+	TObjectPtr<USceneComponent> Base;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	USceneComponent* Yoke;
+	TObjectPtr<USceneComponent> Yoke;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	USceneComponent* Head;
+	TObjectPtr<USceneComponent> Head;
 
 	// FUNCTIONS---------------------------------
 
@@ -74,13 +88,9 @@ public:
 	void InitializeFixture(UStaticMeshComponent* StaticMeshLens, UStaticMeshComponent* StaticMeshBeam);
 
 	/** Pushes DMX Values to the Fixture. Expects normalized values in the range of 0.0f - 1.0f */
-	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
-	void PushNormalizedValuesPerAttribute(const FDMXNormalizedAttributeValueMap& ValuePerAttributeMap);
+	virtual void PushNormalizedValuesPerAttribute(const FDMXNormalizedAttributeValueMap& ValuePerAttributeMap) override;
 	
 public:
-	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
-	void InterpolateDMXComponents(float DeltaSeconds);
-	
 	/** Sets the a new max light intensity */
 	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
 	void SetLightIntensityMax(float NewLightIntensityMax);
@@ -136,51 +146,59 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	bool UseDynamicOcclusion;
 
-
-	// DMX COMPONENT -----------------------------
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
-	class UDMXComponent* DMX;
+	// Disable lights rendering in the fixture to save on GPU
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
+	bool DisableLights;
 
 	// COMPONENTS ---------------------------------
 
 	UPROPERTY(BlueprintReadOnly, Category = "DMX Light Fixture")
-	TArray<UStaticMeshComponent*> StaticMeshComponents;
+	TArray<TObjectPtr<UStaticMeshComponent>> StaticMeshComponents;
 	
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	class USpotLightComponent* SpotLight;
+	TObjectPtr<class USpotLightComponent> SpotLight;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	class UPointLightComponent* PointLight;
+	TObjectPtr<class UPointLightComponent> PointLight;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Light Fixture")
-	class UArrowComponent* OcclusionDirection;
+	TObjectPtr<class UArrowComponent> OcclusionDirection;
 
 
 	// MATERIALS ---------------------------------
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "DMX Light Fixture")
-	UMaterialInstance* LensMaterialInstance;
+	TObjectPtr<UMaterialInstance> LensMaterialInstance;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "DMX Light Fixture")
-	UMaterialInstance* BeamMaterialInstance;
+	TObjectPtr<UMaterialInstance> BeamMaterialInstance;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "DMX Light Fixture")
-	UMaterialInstance* SpotLightMaterialInstance;
+	TObjectPtr<UMaterialInstance> SpotLightMaterialInstance;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "DMX Light Fixture")
-	UMaterialInstance* PointLightMaterialInstance;
+	TObjectPtr<UMaterialInstance> PointLightMaterialInstance;
 
 	UPROPERTY(BlueprintReadOnly, Category = "DMX Light Fixture")
-	UMaterialInstanceDynamic* DynamicMaterialLens;
+	TObjectPtr<UMaterialInstanceDynamic> DynamicMaterialLens;
 
 	UPROPERTY(BlueprintReadOnly, Category = "DMX Light Fixture")
-	UMaterialInstanceDynamic* DynamicMaterialBeam;
+	TObjectPtr<UMaterialInstanceDynamic> DynamicMaterialBeam;
 
 	UPROPERTY(BlueprintReadOnly, Category = "DMX Light Fixture")
-	UMaterialInstanceDynamic* DynamicMaterialSpotLight;
+	TObjectPtr<UMaterialInstanceDynamic> DynamicMaterialSpotLight;
 
 	UPROPERTY(BlueprintReadOnly, Category = "DMX Light Fixture")
-	UMaterialInstanceDynamic* DynamicMaterialPointLight;
+	TObjectPtr<UMaterialInstanceDynamic> DynamicMaterialPointLight;
 
+	///////////////////////////////////////
+	// DEPRECATED 5.1
+public:
+	UE_DEPRECATED(5.1, "Use BeamQuality instead")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use BeamQuality instead."))
+	float MinQuality;
+
+	UE_DEPRECATED(5.1, "Use ZoomQuality instead")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use ZoomQuality instead."))
+	float MaxQuality;
 };

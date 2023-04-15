@@ -2,13 +2,13 @@
 
 #include "RuntimeVirtualTextureAssetTypeActions.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserModule.h"
 #include "EditorSupportDelegates.h"
 #include "FileHelpers.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "IContentBrowserSingleton.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
@@ -44,7 +44,7 @@ namespace
 			{
 				if (MatchClass != nullptr)
 				{
-					if (AssetData.GetClass()->IsChildOf(MatchClass))
+					if (AssetData.IsInstanceOf(MatchClass))
 					{
 						OutAssetDatas.AddUnique(AssetData);
 					}
@@ -114,7 +114,7 @@ namespace
 				Task.EnterProgressFrame();
 
 				bool bMaterialModified = false;
-				for (UMaterialExpression* Expression : Material->Expressions)
+				for (UMaterialExpression* Expression : Material->GetExpressions())
 				{
 					UMaterialExpressionRuntimeVirtualTextureSample* RVTSampleExpression = Cast<UMaterialExpressionRuntimeVirtualTextureSample>(Expression);
 					if (RVTSampleExpression)
@@ -153,8 +153,7 @@ namespace
 				Task.EnterProgressFrame();
 
 				bool bFunctionModified = false;
-				const TArray<TObjectPtr<UMaterialExpression>> *Expressions = Function->GetFunctionExpressions();
-				for (const TObjectPtr<UMaterialExpression>& Expression : *Expressions)
+				for (const TObjectPtr<UMaterialExpression>& Expression : Function->GetExpressions())
 				{
 					UMaterialExpressionRuntimeVirtualTextureSample* RVTSampleExpression = Cast<UMaterialExpressionRuntimeVirtualTextureSample>(Expression);
 					if (RVTSampleExpression)
@@ -238,7 +237,7 @@ void FAssetTypeActions_RuntimeVirtualTexture::GetActions(TArray<UObject*> const&
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("RuntimeVirtualTexture_FixMaterialUsage", "Fix Material Usage"),
 			LOCTEXT("RuntimeVirtualTexture_FixMaterialUsageTooltip", "Find materials using this Runtime Virtual Texture and fix any mismatching content types."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.Texture2D"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Texture2D"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FAssetTypeActions_RuntimeVirtualTexture::ExecuteFixMaterialUsage, RuntimeVirtualTextures[0]),
 				FCanExecuteAction()

@@ -9,6 +9,9 @@
 #include "MovieSceneTimeHelpers.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Rigs/RigHierarchyController.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneControlRigParameterTrack)
+
 #define LOCTEXT_NAMESPACE "MovieSceneParameterControlRigTrack"
 
 
@@ -49,7 +52,10 @@ UMovieSceneSection* UMovieSceneControlRigParameterTrack::CreateNewSection()
 	{
 		NewSection->SetBlendType(EMovieSceneBlendType::Additive);
 	}
+
 	NewSection->SpaceChannelAdded().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnSpaceAdded);
+	NewSection->ConstraintChannelAdded().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnConstraintAdded);
+
 	if (ControlRig)
 	{
 		NewSection->RecreateWithThisControlRig(ControlRig,bSetDefault);
@@ -88,6 +94,13 @@ void UMovieSceneControlRigParameterTrack::HandleOnSpaceNoLongerUsed(FMovieSceneC
 			}
 		}
 	}
+}
+
+void UMovieSceneControlRigParameterTrack::HandleOnConstraintAdded(
+	IMovieSceneConstrainedSection* InSection,
+	FMovieSceneConstraintChannel* InChannel) const
+{
+	OnConstraintChannelAdded.Broadcast(InSection, InChannel);
 }
 
 void UMovieSceneControlRigParameterTrack::RemoveAllAnimationData()
@@ -193,7 +206,7 @@ TArray<UMovieSceneSection*, TInlineAllocator<4>> UMovieSceneControlRigParameterT
 
 	for (UMovieSceneSection* Section : Sections)
 	{
-		if (Section->GetRange().Contains(Time))
+		if (MovieSceneHelpers::IsSectionKeyable(Section) && Section->GetRange().Contains(Time))
 		{
 			OverlappingSections.Add(Section);
 		}
@@ -229,10 +242,10 @@ UMovieSceneSection* UMovieSceneControlRigParameterTrack::FindOrExtendSection(FFr
 {
 	Weight = 1.0f;
 	TArray<UMovieSceneSection*, TInlineAllocator<4>> OverlappingSections = FindAllSections(Time);
-	if (SectionToKey)
+	if (SectionToKey && MovieSceneHelpers::IsSectionKeyable(SectionToKey))
 	{
 		bool bCalculateWeight = false;
-		if (SectionToKey && !OverlappingSections.Contains(SectionToKey))
+		if (!OverlappingSections.Contains(SectionToKey))
 		{
 			if (SectionToKey->HasEndFrame() && SectionToKey->GetExclusiveEndFrame() <= Time)
 			{
@@ -381,7 +394,13 @@ void UMovieSceneControlRigParameterTrack::ReconstructControlRig()
 					{
 						CRSection->SpaceChannelAdded().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnSpaceAdded);
 					}
-					CRSection->RecreateWithThisControlRig(ControlRig, false);
+
+					if (!CRSection->ConstraintChannelAdded().IsBoundToObject(this))
+					{
+						CRSection->ConstraintChannelAdded().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnConstraintAdded);
+					}
+					
+					CRSection->RecreateWithThisControlRig(ControlRig, CRSection->GetBlendType() == EMovieSceneBlendType::Absolute);
 				}
 			}
 		}
@@ -403,8 +422,17 @@ void UMovieSceneControlRigParameterTrack::PostLoad()
 #endif
 }
 
+#if WITH_EDITORONLY_DATA
+void UMovieSceneControlRigParameterTrack::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UMovieSceneSection::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UMovieSceneControlRigParameterSection::StaticClass()));
+}
+#endif
+
 #if WITH_EDITOR
-void UMovieSceneControlRigParameterTrack::HandlePackageDone(TConstArrayView<UPackage*> InPackages)
+void UMovieSceneControlRigParameterTrack::HandlePackageDone(const FEndLoadPackageContext& Context)
 {
 	if (!GetPackage()->GetHasBeenEndLoaded())
 	{
@@ -412,7 +440,7 @@ void UMovieSceneControlRigParameterTrack::HandlePackageDone(TConstArrayView<UPac
 	}
 
 	// ensure both packages are fully end-loaded
-	if (ControlRig)
+	if (ControlRig && !ControlRig->GetClass()->IsNative())
 	{
 		if (const UPackage* ControlRigPackage = Cast<UPackage>(ControlRig->GetClass()->GetOutermost()))
 		{
@@ -442,7 +470,11 @@ void UMovieSceneControlRigParameterTrack::HandleControlRigPackageDone(UControlRi
 void UMovieSceneControlRigParameterTrack::PostEditImport()
 {
 	Super::PostEditImport();
-
+	if (ControlRig)
+	{
+		ControlRig->ClearFlags(RF_Transient); //when copied make sure it's no longer transient, sequencer does this for tracks/sections 
+											  //but not for all objects in them since the control rig itself has transient objects.
+	}
 	ReconstructControlRig();
 }
 
@@ -594,3 +626,4 @@ TArray<FFBXNodeAndChannels>* UMovieSceneControlRigParameterTrack::GetNodeAndChan
 
 
 #undef LOCTEXT_NAMESPACE
+

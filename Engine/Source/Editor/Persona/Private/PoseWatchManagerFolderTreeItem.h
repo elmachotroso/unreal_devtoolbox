@@ -35,6 +35,7 @@ public:
 	virtual void SetIsVisible(const bool bVisible) override;
 	virtual bool HasChildren() const override;
 	virtual void OnRemoved() override;
+	virtual void SetIsExpanded(const bool bIsExpanded) override;
 	virtual bool IsExpanded() const override;
 	/* End IPoseWatchManagerTreeItem Implementation */
 };

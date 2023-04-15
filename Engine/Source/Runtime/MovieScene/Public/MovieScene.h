@@ -2,29 +2,58 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "EventHandlers/MovieSceneDataEventContainer.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Math/Range.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
 #include "Misc/Guid.h"
-#include "Templates/SubclassOf.h"
-#include "Templates/Casts.h"
-#include "MovieSceneFwd.h"
-#include "MovieSceneSpawnable.h"
 #include "MovieSceneBinding.h"
-#include "MovieScenePossessable.h"
-#include "MovieSceneSignedObject.h"
-#include "MovieSceneSequenceID.h"
-#include "MovieSceneObjectBindingID.h"
 #include "MovieSceneFrameMigration.h"
+#include "MovieSceneFwd.h"
+#include "MovieSceneObjectBindingID.h"
+#include "MovieScenePossessable.h"
+#include "MovieSceneSequenceID.h"
+#include "MovieSceneSignedObject.h"
+#include "MovieSceneSpawnable.h"
 #include "MovieSceneTimeController.h"
+#include "MovieSceneTrack.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "MovieScene.generated.h"
 
-struct FMovieSceneTimeController;
-
+class FArchive;
+class FObjectPreSaveContext;
+class UClass;
 class UMovieSceneFolder;
 class UMovieSceneSection;
 class UMovieSceneTrack;
+namespace UE { namespace MovieScene { class ISequenceDataEventHandler; } }
 struct FMovieSceneChannelMetaData;
+struct FMovieSceneTimeController;
 struct FMovieSceneTimecodeSource;
+template <typename FuncType> class TFunctionRef;
 
 //delegates for use when some data in the MovieScene changes, WIP right now, hopefully will replace delegates on ISequencer
 //and be used for moving towards a true MVC system
@@ -351,12 +380,18 @@ public:
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 
 #if WITH_EDITOR
 	virtual void PostEditUndo() override;
 #endif
 
 public:
+
+	UE::MovieScene::TDataEventContainer<UE::MovieScene::ISequenceDataEventHandler> EventHandlers;
 
 	/**
 	 * Add a spawnable to this movie scene's list of owned blueprints.
@@ -572,6 +607,16 @@ public:
 	 * @return true if a binding was found for this track.
 	 */
 	bool FindTrackBinding(const UMovieSceneTrack& InTrack, FGuid& OutGuid) const;
+
+#if WITH_EDITOR
+
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FIsTrackClassAllowedEvent, UClass*);
+
+	static FIsTrackClassAllowedEvent IsTrackClassAllowedEvent;
+
+	static bool IsTrackClassAllowed(UClass* InClass);
+
+#endif
 
 public:
 
@@ -868,7 +913,42 @@ public:
 	/**
 	 * Gets the root folders for this movie scene.
 	 */
-	TArray<UMovieSceneFolder*>& GetRootFolders();
+	TArrayView<UMovieSceneFolder* const> GetRootFolders();
+
+	/**
+	 * Gets a copy of the root folders for this movie scene.
+	 */
+	void GetRootFolders(TArray<UMovieSceneFolder*>& InRootFolders);
+
+	/**
+	 * Gets the number of root folders in this movie scene.
+	 */
+	int32 GetNumRootFolders() const;
+
+	/**
+	 * Gets the i-th root folder for this movie scene.
+	 */
+	UMovieSceneFolder* GetRootFolder(int32 FolderIndex) const;
+
+	/**
+	 * Adds a root folder for this movie scene.
+	 */
+	void AddRootFolder(UMovieSceneFolder* Folder);
+
+	/**
+	 * Removes a root folder for this movie scene (does not delete tracks or objects contained within)
+	 */
+	int32 RemoveRootFolder(UMovieSceneFolder* Folder);
+
+	/**
+	 * Removes a root folder for this movie scene (does not delete tracks or objects contained within)
+	 */
+	bool RemoveRootFolder(int32 FolderIndex);
+
+	/**
+	 * Removes all root folders from this movie scene (does not delete tracks or objects contained within)
+	 */
+	void EmptyRootFolders();
 
 	/**
 	 * Gets the nodes marked as solo in the editor, as node tree paths
@@ -950,6 +1030,10 @@ public:
 	 * @return The editor only data for use with this movie scene
 	 */
 	FMovieSceneEditorData& GetEditorData()
+	{
+		return EditorData;
+	}
+	const FMovieSceneEditorData& GetEditorData() const
 	{
 		return EditorData;
 	}

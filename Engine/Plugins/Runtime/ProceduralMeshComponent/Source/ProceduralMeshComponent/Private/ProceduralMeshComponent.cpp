@@ -21,6 +21,8 @@
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ProceduralMeshComponent)
+
 DECLARE_CYCLE_STAT(TEXT("Create ProcMesh Proxy"), STAT_ProcMesh_CreateSceneProxy, STATGROUP_ProceduralMesh);
 DECLARE_CYCLE_STAT(TEXT("Create Mesh Section"), STAT_ProcMesh_CreateMeshSection, STATGROUP_ProceduralMesh);
 DECLARE_CYCLE_STAT(TEXT("UpdateSection GT"), STAT_ProcMesh_UpdateSectionGT, STATGROUP_ProceduralMesh);
@@ -384,9 +386,10 @@ public:
 						int32 SingleCaptureIndex;
 						bool bOutputVelocity;
 						GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+						bOutputVelocity |= AlwaysHasVelocity();
 
 						FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity, GetCustomPrimitiveData());
+						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
 						BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 						BatchElement.FirstIndex = 0;
@@ -413,7 +416,7 @@ public:
 				if (ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled() && BodySetup->GetCollisionTraceFlag() != ECollisionTraceFlag::CTF_UseComplexAsSimple)
 				{
 					FTransform GeomTransform(GetLocalToWorld());
-					BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(FColor(157, 149, 223, 255), IsSelected(), IsHovered()).ToFColor(true), NULL, false, false, DrawsVelocity(), ViewIndex, Collector);
+					BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(FColor(157, 149, 223, 255), IsSelected(), IsHovered()).ToFColor(true), NULL, false, false, AlwaysHasVelocity(), ViewIndex, Collector);
 				}
 
 				// Render bounds
@@ -501,9 +504,10 @@ public:
 					int32 SingleCaptureIndex;
 					bool bOutputVelocity;
 					GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+					bOutputVelocity |= AlwaysHasVelocity();
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity, GetCustomPrimitiveData());
+					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 					BatchElement.FirstIndex = 0;
@@ -550,7 +554,7 @@ void UProceduralMeshComponent::PostLoad()
 	}
 }
 
-void UProceduralMeshComponent::CreateMeshSection_LinearColor(int32 SectionIndex, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals, const TArray<FVector2D>& UV0, const TArray<FVector2D>& UV1, const TArray<FVector2D>& UV2, const TArray<FVector2D>& UV3, const TArray<FLinearColor>& VertexColors, const TArray<FProcMeshTangent>& Tangents, bool bCreateCollision)
+void UProceduralMeshComponent::CreateMeshSection_LinearColor(int32 SectionIndex, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals, const TArray<FVector2D>& UV0, const TArray<FVector2D>& UV1, const TArray<FVector2D>& UV2, const TArray<FVector2D>& UV3, const TArray<FLinearColor>& VertexColors, const TArray<FProcMeshTangent>& Tangents, bool bCreateCollision, bool bSRGBConversion)
 {
 	// Convert FLinearColors to FColors
 	TArray<FColor> Colors;
@@ -560,7 +564,7 @@ void UProceduralMeshComponent::CreateMeshSection_LinearColor(int32 SectionIndex,
 
 		for (int32 ColorIdx = 0; ColorIdx < VertexColors.Num(); ColorIdx++)
 		{
-			Colors[ColorIdx] = VertexColors[ColorIdx].ToFColor(false);
+			Colors[ColorIdx] = VertexColors[ColorIdx].ToFColor(bSRGBConversion);
 		}
 	}
 
@@ -624,7 +628,7 @@ void UProceduralMeshComponent::CreateMeshSection(int32 SectionIndex, const TArra
 	if (NumDegenerateTriangles > 0)
 	{
 		UE_LOG(LogProceduralComponent, Warning, TEXT("Detected %d degenerate triangle%s with non-unique vertex indices for created mesh section in '%s'; degenerate triangles will be dropped."),
-			   NumDegenerateTriangles, NumDegenerateTriangles > 1 ? "s" : "", *GetFullName());
+			   NumDegenerateTriangles, NumDegenerateTriangles > 1 ? TEXT("s") : TEXT(""), *GetFullName());
 	}
 
 	// Copy index buffer for non-degenerate triangles
@@ -657,7 +661,7 @@ void UProceduralMeshComponent::CreateMeshSection(int32 SectionIndex, const TArra
 	MarkRenderStateDirty(); // New section requires recreating scene proxy
 }
 
-void UProceduralMeshComponent::UpdateMeshSection_LinearColor(int32 SectionIndex, const TArray<FVector>& Vertices, const TArray<FVector>& Normals, const TArray<FVector2D>& UV0, const TArray<FVector2D>& UV1, const TArray<FVector2D>& UV2, const TArray<FVector2D>& UV3, const TArray<FLinearColor>& VertexColors, const TArray<FProcMeshTangent>& Tangents)
+void UProceduralMeshComponent::UpdateMeshSection_LinearColor(int32 SectionIndex, const TArray<FVector>& Vertices, const TArray<FVector>& Normals, const TArray<FVector2D>& UV0, const TArray<FVector2D>& UV1, const TArray<FVector2D>& UV2, const TArray<FVector2D>& UV3, const TArray<FLinearColor>& VertexColors, const TArray<FProcMeshTangent>& Tangents, bool bSRGBConversion)
 {
 	// Convert FLinearColors to FColors
 	TArray<FColor> Colors;
@@ -667,7 +671,7 @@ void UProceduralMeshComponent::UpdateMeshSection_LinearColor(int32 SectionIndex,
 
 		for (int32 ColorIdx = 0; ColorIdx < VertexColors.Num(); ColorIdx++)
 		{
-			Colors[ColorIdx] = VertexColors[ColorIdx].ToFColor(true);
+			Colors[ColorIdx] = VertexColors[ColorIdx].ToFColor(bSRGBConversion);
 		}
 	}
 
@@ -949,6 +953,19 @@ FBoxSphereBounds UProceduralMeshComponent::CalcBounds(const FTransform& LocalToW
 	return Ret;
 }
 
+bool UProceduralMeshComponent::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	for (const FProcMeshSection& Section : ProcMeshSections)
+	{
+		if (Section.bEnableCollision)
+		{
+			OutTriMeshEstimates.VerticeCount += Section.ProcVertexBuffer.Num();
+		}
+	}
+
+	return true;
+}
+
 bool UProceduralMeshComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData)
 {
 	int32 VertexBase = 0; // Base vertex index for current section
@@ -1149,3 +1166,4 @@ UMaterialInterface* UProceduralMeshComponent::GetMaterialFromCollisionFaceIndex(
 
 	return Result;
 }
+

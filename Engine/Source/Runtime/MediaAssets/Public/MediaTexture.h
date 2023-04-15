@@ -41,6 +41,9 @@ enum MediaTextureOrientation
 
 /**
  * Implements a texture asset for rendering video tracks from UMediaPlayer assets.
+ * 
+ * note: derives directly from UTexture, not from UTexture2D or UTexture2DDynamic
+ *    maybe should have been UTexture2DDynamic?
  */
 UCLASS(hidecategories=(Adjustments, Compositing, LevelOfDetail, ImportSettings, Object))
 class MEDIAASSETS_API UMediaTexture
@@ -193,6 +196,20 @@ public:
 	 */
 	MediaTextureOrientation GetCurrentOrientation() const;
 
+	/**
+	 * Get the texture's mip-map bias, clamped to a legal range.
+	 * @return Mip-map bias value
+	 */
+	float GetMipMapBias() const;
+
+	/**
+	 * Set texture's mip-map bias, for use by the texture resource sampler.
+	 * Note: UpdateResource() should be called afterwards and the material should be notified.
+	 *
+	 * @param InMipMapBias Bias value.
+	 */
+	void SetMipMapBias(float InMipMapBias);
+
 public:
 
 	//~ UTexture interface.
@@ -206,6 +223,7 @@ public:
 	virtual uint32 GetSurfaceArraySize() const override { return 0; }
 	virtual FGuid GetExternalTextureGuid() const override;
 	void SetRenderedExternalTextureGuid(const FGuid& InNewGuid);
+	virtual ETextureClass GetTextureClass() const { return ETextureClass::Other2DNoSource; }
 
 public:
 
@@ -293,4 +311,7 @@ private:
 
 	/** Number of mips in the actual output texture */
 	int32 TextureNumMips;
+
+	/** Mip-map bias used by the media texture resource sampler. */
+	float MipMapBias;
 };

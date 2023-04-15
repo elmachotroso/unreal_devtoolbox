@@ -1,11 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MRUList.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "CoreGlobals.h"
 #include "HAL/FileManager.h"
-#include "Misc/PackageName.h"
-#include "Misc/ConfigCacheIni.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "Logging/MessageLog.h"
-#include "AssetRegistryModule.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreMiscDefines.h"
+#include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/NameTypes.h"
 
 FMRUList::FMRUList(const FString& InINISection, const int32 InitMaxItems)
 	:	MaxItems( InitMaxItems ),
@@ -172,9 +182,9 @@ bool FMRUList::VerifyMRUFile(int32 InItem, FString& OutPackageName)
 
 	// Handle redirector
 	const FString OriginalPackageName = Items[InItem];
-	const FName OriginalObjectPath = FName(*(OriginalPackageName + TEXT('.') + FPackageName::GetShortName(OriginalPackageName)));
+	const FSoftObjectPath OriginalObjectPath = FSoftObjectPath(*OriginalPackageName, *FPackageName::GetShortName(OriginalPackageName), {});
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	const FName RedirectedObjectPath = AssetRegistryModule.Get().GetRedirectedObjectPath(OriginalObjectPath);
+	const FSoftObjectPath RedirectedObjectPath = AssetRegistryModule.Get().GetRedirectedObjectPath(OriginalObjectPath);
 
 	FString PackageName;
 	FString RedirectedPackageName;

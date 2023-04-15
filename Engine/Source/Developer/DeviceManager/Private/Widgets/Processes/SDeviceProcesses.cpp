@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SDeviceProcesses.h"
+#include "Widgets/Processes/SDeviceProcesses.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Interfaces/ITargetDevice.h"
 #include "Internationalization/Text.h"
 #include "Misc/MessageDialog.h"
@@ -99,7 +99,7 @@ void SDeviceProcesses::Construct(const FArguments& InArgs, const TSharedRef<FDev
 					[
 						// process list
 						SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							.Padding(0.0f)
 							[
 								SAssignNew(ProcessTreeView, STreeView<TSharedPtr<FDeviceProcessesProcessTreeNode>>)
@@ -153,7 +153,7 @@ void SDeviceProcesses::Construct(const FArguments& InArgs, const TSharedRef<FDev
 					[
 						SNew(SBorder)
 							.Padding(FMargin(8.0f, 6.0f, 8.0f, 4.0f))
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							[
 								SNew(SHorizontalBox)
 
@@ -200,7 +200,7 @@ void SDeviceProcesses::Construct(const FArguments& InArgs, const TSharedRef<FDev
 			.VAlign(VAlign_Center)
 			[
 				SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("NotificationList.ItemBackground"))
+					.BorderImage(FAppStyle::GetBrush("NotificationList.ItemBackground"))
 					.Padding(8.0f)
 					.Visibility_Lambda(MessageOverlayVisibility)
 					[
@@ -271,7 +271,7 @@ void SDeviceProcesses::ReloadProcessList(bool FullyReload)
 void SDeviceProcesses::UpdateProcessTree()
 {
 	// update process tree
-	TMap<uint32, TSharedPtr<FDeviceProcessesProcessTreeNode>> NewProcessMap;
+	SDeviceProcesses::ProcessMapType NewProcessMap;
 
 	for (int32 ProcessIndex = 0; ProcessIndex < RunningProcesses.Num(); ++ProcessIndex)
 	{
@@ -296,10 +296,10 @@ void SDeviceProcesses::UpdateProcessTree()
 	// build process tree
 	if (ShowProcessTree)
 	{
-		for (TMap<uint32, TSharedPtr<FDeviceProcessesProcessTreeNode>>::TConstIterator It(ProcessMap); It; ++It)
+		for (SDeviceProcesses::ProcessMapType::TConstIterator It(ProcessMap); It; ++It)
 		{
 			TSharedPtr<FDeviceProcessesProcessTreeNode> Node = It.Value();
-			TSharedPtr<FDeviceProcessesProcessTreeNode> Parent = ProcessMap.FindRef(Node->GetProcessInfo().ParentId);
+			TSharedPtr<FDeviceProcessesProcessTreeNode> Parent = ProcessMap.FindRef((int64)Node->GetProcessInfo().ParentId);
 
 			if (Parent.IsValid())
 			{
@@ -312,7 +312,7 @@ void SDeviceProcesses::UpdateProcessTree()
 	// filter process list
 	ProcessList.Reset();
 
-	for (TMap<uint32, TSharedPtr<FDeviceProcessesProcessTreeNode>>::TConstIterator It(ProcessMap); It; ++It)
+	for (SDeviceProcesses::ProcessMapType::TConstIterator It(ProcessMap); It; ++It)
 	{
 		TSharedPtr<FDeviceProcessesProcessTreeNode> Node = It.Value();
 

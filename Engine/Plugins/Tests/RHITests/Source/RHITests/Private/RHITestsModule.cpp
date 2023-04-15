@@ -25,16 +25,24 @@ static bool RunTests_RenderThread(FRHICommandListImmediate& RHICmdList)
 
 		RUN_TEST(FRHIBufferTests::Test_RHIClearUAVUint_StructuredBuffer(RHICmdList));
 		RUN_TEST(FRHIBufferTests::Test_RHIClearUAVFloat_StructuredBuffer(RHICmdList));
+
+		RUN_TEST(FRHIBufferTests::Test_RHICreateBuffer_Parallel(RHICmdList));
 	}
 
 	// Texture2D/3D
 	{
 		RUN_TEST(FRHITextureTests::Test_RHIClearUAV_Texture2D(RHICmdList));
 		RUN_TEST(FRHITextureTests::Test_RHIClearUAV_Texture3D(RHICmdList));
+		RUN_TEST(FRHITextureTests::Test_UpdateTexture2D(RHICmdList));
+		RUN_TEST(FRHITextureTests::Test_MultipleLockTexture2D(RHICmdList));
 	}
 
 	{
 		RUN_TEST(FRHITextureTests::Test_RHIFormats(RHICmdList));
+	}
+
+	{
+		RUN_TEST(FRHITextureTests::Test_RHICopyTexture(RHICmdList));
 	}
 
 	// @todo - add more tests
@@ -53,11 +61,11 @@ void FRHITestsModule::RunAllTests()
 	{
 		if (RunOnRenderThreadSynchronous(RunTests_RenderThread))
 		{
-			UE_LOG(LogRHIUnitTestCommandlet, Display, TEXT("RHI unit tested completed. All tests passed."));
+			UE_LOG(LogRHIUnitTestCommandlet, Display, TEXT("RHI unit tests completed. All tests passed."));
 		}
 		else
 		{
-			UE_LOG(LogRHIUnitTestCommandlet, Error, TEXT("RHI unit tested completed. At least one test failed."));
+			UE_LOG(LogRHIUnitTestCommandlet, Error, TEXT("RHI unit tests completed. At least one test failed."));
 		}
 	}
 }

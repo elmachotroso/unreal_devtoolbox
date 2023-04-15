@@ -21,6 +21,11 @@ class UAnimGraphNode_LayeredBoneBlend : public UAnimGraphNode_BlendListBase
 	ANIMGRAPH_API virtual void AddPinToBlendByFilter();
 	ANIMGRAPH_API virtual void RemovePinFromBlendByFilter(UEdGraphPin* Pin);
 
+	// UObject interface
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
+	// End of UObject interface
+
 	// UEdGraphNode interface
 	virtual FLinearColor GetNodeTitleColor() const override;
 	virtual FText GetTooltipText() const override;

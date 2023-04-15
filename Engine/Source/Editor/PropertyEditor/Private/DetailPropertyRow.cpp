@@ -27,13 +27,13 @@ FDetailPropertyRow::FDetailPropertyRow(TSharedPtr<FPropertyNode> InPropertyNode,
 	, bForceAutoExpansion( false )
 	, bCachedCustomTypeInterface(false)
 {
-	PropertyHandle = InParentCategory->GetParentLayoutImpl().GetPropertyHandle(PropertyNode);
+	PropertyHandle = InParentCategory->GetParentLayoutImpl()->GetPropertyHandle(PropertyNode);
 
 	if (PropertyNode.IsValid())
 	{
 		TSharedRef<FPropertyNode> PropertyNodeRef = PropertyNode.ToSharedRef();
 
-		const TSharedRef<IPropertyUtilities> Utilities = InParentCategory->GetParentLayoutImpl().GetPropertyUtilities();
+		const TSharedRef<IPropertyUtilities> Utilities = InParentCategory->GetParentLayoutImpl()->GetPropertyUtilities();
 
 		if (PropertyNode->AsCategoryNode() == nullptr)
 		{
@@ -291,7 +291,13 @@ void FDetailPropertyRow::OnItemNodeInitialized( TSharedRef<FDetailCategoryImpl> 
 		if (CustomPropertyWidget->IsEnabledAttr.IsSet())
 		{
 			CustomIsEnabledAttrib = CustomPropertyWidget->IsEnabledAttr;
-		}		
+		}
+
+		// set initial value of auto-expand from struct customization
+		if (CustomPropertyWidget->ForceAutoExpansion.IsSet())
+		{
+			bForceAutoExpansion = CustomPropertyWidget->ForceAutoExpansion.GetValue();
+		}
 	}
 
 	if( bShowCustomPropertyChildren && CustomTypeInterface.IsValid() )
@@ -314,8 +320,8 @@ void FDetailPropertyRow::OnGenerateChildren( FDetailNodeList& OutChildren )
 	{
 		// This is a sub-category.  Populate from SubCategory builder
 		TSharedRef<FDetailCategoryImpl> ParentCategoryRef = ParentCategory.Pin().ToSharedRef();
-		FDetailLayoutBuilderImpl& LayoutBuilder = ParentCategoryRef->GetParentLayoutImpl();
-		TSharedPtr<FDetailCategoryImpl> MyCategory = LayoutBuilder.GetSubCategoryImpl(PropertyNode->AsCategoryNode()->GetCategoryName());
+		TSharedPtr<FDetailLayoutBuilderImpl> LayoutBuilder = ParentCategoryRef->GetParentLayoutImpl();
+		TSharedPtr<FDetailCategoryImpl> MyCategory = LayoutBuilder->GetSubCategoryImpl(PropertyNode->AsCategoryNode()->GetCategoryName());
 		if(MyCategory.IsValid())
 		{
 			MyCategory->GenerateLayout();
@@ -371,7 +377,14 @@ void FDetailPropertyRow::GenerateChildrenForPropertyNode( TSharedPtr<FPropertyNo
 		for( int32 ChildIndex = 0; ChildIndex < RootPropertyNode->GetNumChildNodes(); ++ChildIndex )
 		{
 			TSharedPtr<FPropertyNode> ChildNode = RootPropertyNode->GetChildNode(ChildIndex);
-
+			
+			if (!LayoutBuilder.IsPropertyPathAllowed(ChildNode->GetPropertyPath()))
+			{
+				ChildNode->SetNodeFlags( EPropertyNodeFlags::RequiresValidation, false); 
+				ChildNode->SetNodeFlags( EPropertyNodeFlags::IsBeingFiltered | EPropertyNodeFlags::SkipChildValidation, true);
+				continue;
+			}
+			
 			if( ChildNode.IsValid() && ChildNode->HasNodeFlags( EPropertyNodeFlags::IsCustomized ) == 0 )
 			{
 				if( ChildNode->AsObjectNode() )
@@ -388,6 +401,12 @@ void FDetailPropertyRow::GenerateChildrenForPropertyNode( TSharedPtr<FPropertyNo
 					// Create and initialize the child first
 					FDetailLayoutCustomization Customization;
 					Customization.PropertyRow = MakeShareable(new FDetailPropertyRow(ChildNode, ParentCategoryRef));
+
+					if (CustomResetToDefault.IsSet() && CustomResetToDefault->PropagatesToChildren())
+					{
+						Customization.PropertyRow->OverrideResetToDefault(CustomResetToDefault.GetValue());
+					}
+
 					TSharedRef<FDetailItemNode> ChildNodeItem = MakeShareable(new FDetailItemNode(Customization, ParentCategoryRef, ParentEnabledState));
 					ChildNodeItem->Initialize();
 
@@ -479,7 +498,7 @@ TSharedPtr<IPropertyTypeCustomization> FDetailPropertyRow::GetPropertyCustomizat
 	if (!PropertyEditorHelpers::IsStaticArray(*InPropertyNode))
 	{
 		FProperty* Property = InPropertyNode->GetProperty();
-		TSharedPtr<IPropertyHandle> PropHandle = InParentCategory->GetParentLayoutImpl().GetPropertyHandle(InPropertyNode);
+		TSharedPtr<IPropertyHandle> PropHandle = InParentCategory->GetParentLayoutImpl()->GetPropertyHandle(InPropertyNode);
 
 		static FName NAME_PropertyEditor("PropertyEditor");
 		FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>(NAME_PropertyEditor);
@@ -518,7 +537,7 @@ void FDetailPropertyRow::MakeExternalPropertyRowCustomization(TSharedPtr<FStruct
 
 	RootPropertyNode->InitNode(InitParams);
 
-	ParentCategory->GetParentLayoutImpl().AddExternalRootPropertyNode(RootPropertyNode);
+	ParentCategory->GetParentLayoutImpl()->AddExternalRootPropertyNode(RootPropertyNode);
 
 	if (PropertyName != NAME_None)
 	{
@@ -590,7 +609,7 @@ void FDetailPropertyRow::MakeExternalPropertyRowCustomization(const TArray<UObje
 
 	RootPropertyNode->InitNode(InitParams);
 
-	ParentCategory->GetParentLayoutImpl().AddExternalRootPropertyNode(RootPropertyNode);
+	ParentCategory->GetParentLayoutImpl()->AddExternalRootPropertyNode(RootPropertyNode);
 
 	if (PropertyName != NAME_None)
 	{
@@ -629,7 +648,7 @@ bool FDetailPropertyRow::HasEditCondition() const
 
 bool FDetailPropertyRow::GetEnabledState() const
 {
-	bool Result = IsParentEnabled.Get();
+	bool Result = IsParentEnabled.Get(true);
 
 	Result = Result && CustomIsEnabledAttrib.Get(true);
 
@@ -639,7 +658,7 @@ bool FDetailPropertyRow::GetEnabledState() const
 		{
 			Result = Result && CustomEditConditionValue.Get();
 		}
-		else
+		else if (PropertyEditor.IsValid())
 		{
 			Result = Result && PropertyEditor->IsEditConditionMet();
 		}
@@ -691,7 +710,7 @@ void FDetailPropertyRow::SetWidgetRowProperties(FDetailWidgetRow& Row) const
 {
 	// set edit condition handlers - use customized if provided
 	TAttribute<bool> EditConditionValue = CustomEditConditionValue;
-	if (!EditConditionValue.IsSet())
+	if (!EditConditionValue.IsSet() && PropertyEditor.IsValid())
 	{
 		EditConditionValue = TAttribute<bool>(PropertyEditor.ToSharedRef(), &FPropertyEditor::IsEditConditionMet);
 	}
@@ -702,7 +721,7 @@ void FDetailPropertyRow::SetWidgetRowProperties(FDetailWidgetRow& Row) const
 		TWeakPtr<FPropertyEditor> PropertyEditorWeak = PropertyEditor;
 		OnEditConditionValueChanged = FOnBooleanValueChanged::CreateStatic(&ExecuteCustomEditConditionToggle, CustomEditConditionValueChanged, PropertyEditorWeak);
 	}
-	else if (PropertyEditor->SupportsEditConditionToggle())
+	else if (PropertyEditor.IsValid() && PropertyEditor->SupportsEditConditionToggle())
 	{
 		TWeakPtr<FPropertyEditor> PropertyEditorWeak = PropertyEditor;
 		OnEditConditionValueChanged = FOnBooleanValueChanged::CreateStatic(&TogglePropertyEditorEditCondition, PropertyEditorWeak);
@@ -735,7 +754,7 @@ void FDetailPropertyRow::MakeNameOrKeyWidget( FDetailWidgetRow& Row, const TShar
 	EHorizontalAlignment HorizontalAlignment = HAlign_Fill;
 
 	// We will only use key widgets for non-struct keys
-	const bool bHasKeyNode = PropertyKeyEditor.IsValid() && !PropertyHandle->HasMetaData(TEXT("ReadOnlyKeys"));
+	const bool bHasKeyNode = PropertyKeyEditor.IsValid();
 
 	if (!bHasKeyNode && InCustomRow.IsValid())
 	{
@@ -753,6 +772,11 @@ void FDetailPropertyRow::MakeNameOrKeyWidget( FDetailWidgetRow& Row, const TShar
 	// Key nodes take precedence over custom rows
 	if (bHasKeyNode)
 	{
+		if (PropertyHandle->HasMetaData(TEXT("ReadOnlyKeys")))
+		{
+			PropertyKeyEditor->GetPropertyNode()->SetNodeFlags(EPropertyNodeFlags::IsReadOnly, true);
+		}
+
 		// Does this key have a custom type, use it
 		if (CachedKeyCustomTypeInterface)
 		{
@@ -764,10 +788,8 @@ void FDetailPropertyRow::MakeNameOrKeyWidget( FDetailWidgetRow& Row, const TShar
 		}
 		else
 		{
-			const TSharedRef<IPropertyUtilities> PropertyUtilities = ParentCategory.Pin()->GetParentLayoutImpl().GetPropertyUtilities();
-
 			NameWidget =
-				SNew(SPropertyValueWidget, PropertyKeyEditor, PropertyUtilities)
+				SNew(SPropertyValueWidget, PropertyKeyEditor, ParentCategory.Pin()->GetParentLayoutImpl()->GetPropertyUtilities())
 				.IsEnabled(IsEnabledAttrib)
 				.ShowPropertyButtons(false);
 		}

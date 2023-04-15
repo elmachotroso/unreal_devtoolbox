@@ -9,7 +9,6 @@
 #include "VulkanResources.h"
 #include "VulkanGPUProfiler.h"
 #include "VulkanBarriers.h"
-#include "RHICoreShader.h"
 
 class FVulkanDevice;
 class FVulkanCommandBufferManager;
@@ -39,6 +38,7 @@ public:
 
 	virtual void RHISetStreamSource(uint32 StreamIndex, FRHIBuffer* VertexBuffer, uint32 Offset) final override;
 	virtual void RHISetViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ) final override;
+	virtual void RHISetStereoViewport(float LeftMinX, float RightMinX, float LeftMinY, float RightMinY, float MinZ, float LeftMaxX, float RightMaxX, float LeftMaxY, float RightMaxY, float MaxZ) override;
 	virtual void RHISetScissorRect(bool bEnable, uint32 MinX, uint32 MinY, uint32 MaxX, uint32 MaxY) final override;
 	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState) final override;
 	virtual void RHISetShaderTexture(FRHIGraphicsShader* Shader, uint32 TextureIndex, FRHITexture* NewTexture) final override;
@@ -65,7 +65,6 @@ public:
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) final override;
 	virtual void RHIPopEvent() final override;
 
-	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) final override;
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) final override;
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) final override;
 	virtual void RHIDispatchIndirectComputeShader(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset) final override;
@@ -255,30 +254,7 @@ private:
 	FVulkanGPUTiming* FrameTiming;
 
 	template <typename TRHIShader>
-	void ApplyStaticUniformBuffers(TRHIShader* Shader)
-	{
-		if (Shader)
-		{
-			const auto& StaticSlots = Shader->StaticSlots;
-			const auto& UBInfos = Shader->GetCodeHeader().UniformBuffers;
-
-			for (int32 BufferIndex = 0; BufferIndex < StaticSlots.Num(); ++BufferIndex)
-			{
-				const FUniformBufferStaticSlot Slot = StaticSlots[BufferIndex];
-
-				if (IsUniformBufferStaticSlotValid(Slot))
-				{
-					FRHIUniformBuffer* Buffer = GlobalUniformBuffers[Slot];
-					UE::RHICore::ValidateStaticUniformBuffer(Buffer, Slot, UBInfos[BufferIndex].LayoutHash);
-
-					if (Buffer)
-					{
-						RHISetShaderUniformBuffer(Shader, BufferIndex, Buffer);
-					}
-				}
-			}
-		}
-	}
+	void ApplyStaticUniformBuffers(TRHIShader* Shader);
 
 	TArray<FRHIUniformBuffer*> GlobalUniformBuffers;
 
@@ -291,7 +267,7 @@ public:
 	FVulkanCommandListContextImmediate(FVulkanDynamicRHI* InRHI, FVulkanDevice* InDevice, FVulkanQueue* InQueue);
 };
 
-
+#if 0 // @todo: RHI command list refactor - todo
 struct FVulkanCommandContextContainer : public IRHICommandContextContainer, public VulkanRHI::FDeviceChild
 {
 	FVulkanCommandListContext* CmdContext;
@@ -309,6 +285,7 @@ struct FVulkanCommandContextContainer : public IRHICommandContextContainer, publ
 private:
 	friend class FVulkanDevice;
 };
+#endif
 
 inline FVulkanCommandListContextImmediate& FVulkanDevice::GetImmediateContext()
 {

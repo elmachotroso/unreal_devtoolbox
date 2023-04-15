@@ -2,8 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "HAL/PlatformAffinity.h"
+
+#ifndef DEFAULT_SERVER_FAKE_FORKS
+	#define DEFAULT_SERVER_FAKE_FORKS 0
+#endif
+
+class CORE_API FRunnable;
+class CORE_API FRunnableThread;
+
+enum class EForkProcessRole : uint8
+{
+	Parent,
+	Child,
+};
 
 /**
  * Helper functions for processes that fork in order to share memory pages.
@@ -42,9 +55,14 @@ public:
 	static bool IsForkedChildProcess();
 
 	/**
-	 * Sets the forked child process flag 
+	 * Sets the forked child process flag and index given to this child process
 	 */
-	static void SetIsForkedChildProcess();
+	static void SetIsForkedChildProcess(uint16 ChildIndex=1);
+
+	/**
+	* Returns the unique index of this forked child process. Index 0 is for the master server
+	*/
+	static uint16 GetForkedChildProcessIndex();
 
 	/**
 	 * Event triggered when a fork occurred on the child process and its safe to create real threads
@@ -75,6 +93,28 @@ public:
 		uint64 InThreadAffinityMask = FPlatformAffinity::GetNoAffinityMask(),
 		EThreadCreateFlags InCreateFlags = EThreadCreateFlags::None
 	);
+
+	/**
+	 * Performs low-level cross-platform actions that should happen immediately BEFORE forking in a well-specified order.
+	 * Runs after any higher level code like calling into game-level constructs or anything that may allocate memory.
+	 * E.g. notifies GMalloc to optimize for memory sharing across parent/child process
+	 * Note: This will be called multiple times on the parent before each fork. 
+	 */
+	static void LowLevelPreFork();
+
+	/**
+	 * Performs low-level cross-platform actions that should happen immediately AFTER forking in the PARENT process in a well-specified order.
+	 * Runs before any higher level code like calling into game-level constructs.
+	 * E.g. notifies GMalloc to optimize for memory sharing across parent/child process
+	 */
+	static void LowLevelPostForkParent();
+
+	/**
+	 * Performs low-level cross-platform actions that should happen immediately AFTER forking in the CHILD process in a well-specified order.
+	 * Runs before any higher level code like calling into game-level constructs.
+	 * E.g. notifies GMalloc to optimize for memory sharing across parent/child process
+	 */
+	static void LowLevelPostForkChild(uint16 ChildIndex=1);
 };
 
 

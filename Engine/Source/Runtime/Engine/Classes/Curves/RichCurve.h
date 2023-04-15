@@ -245,7 +245,7 @@ public:
 	void DeleteKey(FKeyHandle KeyHandle) final override;
 
 	/** Finds the key at InTime, and updates its value. If it can't find the key within the KeyTimeTolerance, it adds one at that time */
-	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = KINDA_SMALL_NUMBER) final override;
+	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = UE_KINDA_SMALL_NUMBER) final override;
 
 	/** Move a key to a new time. */
 	virtual void SetKeyTime(FKeyHandle KeyHandle, float NewTime) final override;
@@ -263,7 +263,7 @@ public:
 	virtual TPair<float, float> GetKeyTimeValuePair(FKeyHandle KeyHandle) const final override;
 
 	/** Returns whether the curve is constant or not */
-	bool IsConstant(float Tolerance = SMALL_NUMBER) const;
+	bool IsConstant(float Tolerance = UE_SMALL_NUMBER) const;
 
 	/** Returns whether the curve is empty or not */
 	bool IsEmpty() const { return Keys.Num() == 0; }
@@ -313,17 +313,24 @@ public:
 	virtual void BakeCurve(float SampleRate, float FirstKeyTime, float LastKeyTime) final override;
 
 	/** Remove redundant keys, comparing against Tolerance */
-	virtual void RemoveRedundantKeys(float Tolerance) final override;
-	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime) final override;
+	UE_DEPRECATED(5.1, "FRichCurve::RemoveRedundantKeys is deprecated, use signature with additional SampleRate or RemoveRedundantAutoTangentKeys instead")
+	void RemoveRedundantKeys(float Tolerance) { RemoveRedundantAutoTangentKeys(Tolerance); }
+	void RemoveRedundantAutoTangentKeys(float Tolerance);
+	virtual void RemoveRedundantKeys(float Tolerance, FFrameRate SampleRate) final override;
+
+	UE_DEPRECATED(5.1, "FRichCurve::RemoveRedundantKeys is deprecated, use signature with additional SampleRate or RemoveRedundantAutoTangentKeys instead")
+	void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime) { RemoveRedundantAutoTangentKeys(Tolerance, FirstKeyTime, LastKeyTime); }
+	void RemoveRedundantAutoTangentKeys(float Tolerance, float FirstKeyTime, float LastKeyTime);
+	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime, FFrameRate SampleRate) final override;
 
 	/** Compresses a rich curve for efficient runtime storage and evaluation */
-	void CompressCurve(struct FCompressedRichCurve& OutCurve, float ErrorThreshold = 0.0001f, float SampleRate = 120.0f) const;
+	void CompressCurve(struct FCompressedRichCurve& OutCurve, float ErrorThreshold = 0.0001f, float SampleRate = 120.0) const;
 
 	/** Allocates a duplicate of the curve */
 	virtual FIndexedCurve* Duplicate() const final { return new FRichCurve(*this); }
 
 private:
-	void RemoveRedundantKeysInternal(float Tolerance, int32 InStartKeepKey, int32 InEndKeepKey);
+	void RemoveRedundantKeysInternal(float Tolerance, int32 InStartKeepKey, int32 InEndKeepKey, FFrameRate SampleRate);
 	virtual int32 GetKeyIndex(float KeyTime, float KeyTimeTolerance) const override final;
 
 public:
@@ -388,6 +395,9 @@ struct ENGINE_API FCompressedRichCurve
 
 	/** Evaluate this rich curve at the specified time */
 	float Eval(float InTime, float InDefaultValue = 0.0f) const;
+
+	/** Populate RichCurve with decompressed key-data */
+	void PopulateCurve(FRichCurve& OutCurve) const;
 
 	/** Evaluate this rich curve at the specified time */
 	static float StaticEval(ERichCurveCompressionFormat CompressionFormat, ERichCurveKeyTimeCompressionFormat KeyTimeCompressionFormat, ERichCurveExtrapolation PreInfinityExtrap, ERichCurveExtrapolation PostInfinityExtrap, TConstantValueNumKeys ConstantValueNumKeys, const uint8* CompressedKeys, float InTime, float InDefaultValue = 0.0f);

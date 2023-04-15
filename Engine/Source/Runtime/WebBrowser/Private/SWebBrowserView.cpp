@@ -17,8 +17,8 @@
 #	include "Android/AndroidWebBrowserWindow.h"
 #elif PLATFORM_IOS
 #	include "IOS/IOSPlatformWebBrowser.h"
-#elif PLATFORM_PS4
-#	include "PS4PlatformWebBrowser.h"
+#elif PLATFORM_SPECIFIC_WEB_BROWSER
+#	include COMPILED_PLATFORM_HEADER(PlatformWebBrowser.h)
 #elif WITH_CEF3
 #	include "CEF/CEFWebBrowserWindow.h"
 #else
@@ -47,6 +47,9 @@ SWebBrowserView::~SWebBrowserView()
 		BrowserWindow->OnDismissAllDialogs().Unbind();
 		BrowserWindow->OnCreateWindow().Unbind();
 		BrowserWindow->OnCloseWindow().Unbind();
+		BrowserWindow->OnSuppressContextMenu().Unbind();
+		BrowserWindow->OnDragWindow().Unbind();
+		BrowserWindow->OnConsoleMessage().Unbind();
 
 		if (BrowserWindow->OnBeforeBrowse().IsBoundToObject(this))
 		{
@@ -95,6 +98,7 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 	OnUnhandledKeyDown = InArgs._OnUnhandledKeyDown;
 	OnUnhandledKeyUp = InArgs._OnUnhandledKeyUp;
 	OnUnhandledKeyChar = InArgs._OnUnhandledKeyChar;
+	OnConsoleMessage = InArgs._OnConsoleMessage;
 
 	BrowserWindow = InWebBrowserWindow;
 	if(!BrowserWindow.IsValid())
@@ -108,6 +112,7 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 			FCreateBrowserWindowSettings Settings;
 			Settings.InitialURL = InArgs._InitialURL;
 			Settings.bUseTransparency = InArgs._SupportsTransparency;
+			Settings.bInterceptLoadRequests = InArgs._InterceptLoadRequests;
 			Settings.bThumbMouseButtonNavigation = InArgs._SupportsThumbMouseButtonNavigation;
 			Settings.ContentsToLoad = InArgs._ContentsToLoad;
 			Settings.bShowErrorMessage = InArgs._ShowErrorMessage;
@@ -209,6 +214,11 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 
 		BrowserWindow->OnDragWindow().BindSP(this, &SWebBrowserView::HandleDrag);
 		OnDragWindow = InArgs._OnDragWindow;
+
+		if (!BrowserWindow->OnConsoleMessage().IsBound())
+		{
+			BrowserWindow->OnConsoleMessage().BindSP(this, &SWebBrowserView::HandleConsoleMessage);
+		}
 
 		BrowserViewport = MakeShareable(new FWebBrowserViewport(BrowserWindow));
 #if WITH_CEF3
@@ -459,6 +469,11 @@ void SWebBrowserView::HandleUrlChanged( FString NewUrl )
 {
 	AddressBarUrl = FText::FromString(NewUrl);
 	OnUrlChanged.ExecuteIfBound(AddressBarUrl);
+}
+
+void SWebBrowserView::CloseBrowser()
+{
+	BrowserWindow->CloseBrowser(true /*force*/, true /*block until closed*/);
 }
 
 void SWebBrowserView::HandleToolTip(FString ToolTipText)
@@ -723,7 +738,6 @@ bool SWebBrowserView::UnhandledKeyChar(const FCharacterEvent& CharacterEvent)
 	return false;
 }
 
-
 void SWebBrowserView::SetParentWindow(TSharedPtr<SWindow> Window)
 {
 	SetupParentWindowHandlers();
@@ -733,5 +747,14 @@ void SWebBrowserView::SetParentWindow(TSharedPtr<SWindow> Window)
 	}
 }
 
+void SWebBrowserView::SetBrowserKeyboardFocus()
+{
+	BrowserWindow->OnFocus(HasAnyUserFocusOrFocusedDescendants(), false);
+}
+
+void SWebBrowserView::HandleConsoleMessage(const FString& Message, const FString& Source, int32 Line, EWebBrowserConsoleLogSeverity Serverity)
+{
+	OnConsoleMessage.ExecuteIfBound(Message, Source, Line, Serverity);
+}
 
 #undef LOCTEXT_NAMESPACE

@@ -49,11 +49,16 @@
 #include "IImageWrapperModule.h"
 #include "ImageWrapperHelper.h"
 #include "Misc/FileHelper.h"
+#include "Materials/MaterialInterface.h"
+#include "AssetCompilingManager.h"
+#include "DynamicResolutionState.h"
 
 #if WITH_EDITOR
 #include "SLevelViewport.h"
 #endif
 #include "FunctionalTestBase.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AutomationBlueprintFunctionLibrary)
 
 
 #define LOCTEXT_NAMESPACE "Automation"
@@ -156,7 +161,7 @@ public:
 		, Options(InOptions)
 	{
 	}
-	
+
 	/** ISceneViewExtension interface */
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView)
 	{
@@ -214,7 +219,7 @@ public:
 			// Disable screen percentage.
 			//InViewFamily.EngineShowFlags.SetScreenPercentage(false);
 		}
-		
+
 		if (Options.bDisableTonemapping)
 		{
 			//InViewFamily.EngineShowFlags.SetEyeAdaptation(false);
@@ -223,8 +228,8 @@ public:
 		}
 
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) {}
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {}
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) {}
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) {}
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) {}
 
 	/** We always want to go last. */
 	virtual int32 GetPriority() const override { return MIN_int32; }
@@ -245,6 +250,8 @@ FAutomationTestScreenshotEnvSetup::FAutomationTestScreenshotEnvSetup()
 	, TonemapperSharpen(TEXT("r.Tonemapper.Sharpen"))
 	, ScreenPercentage(TEXT("r.ScreenPercentage"))
 	, ScreenPercentageMode(TEXT("r.ScreenPercentage.Mode"))
+	, DynamicResTestScreenPercentage(TEXT("r.DynamicRes.TestScreenPercentage"))
+	, DynamicResOperationMode(TEXT("r.DynamicRes.OperationMode"))
 	, EditorViewportOverrideGameScreenPercentage(TEXT("r.Editor.Viewport.OverridePIEScreenPercentage"))
 	, SecondaryScreenPercentage(TEXT("r.SecondaryScreenPercentage.GameViewport"))
 {
@@ -284,6 +291,16 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 		if (GIsEditor)
 		{
 			EditorViewportOverrideGameScreenPercentage.Set(0);
+		}
+
+		// Completly disable dynamic resolution
+		{
+			DynamicResTestScreenPercentage.Set(0);
+			DynamicResOperationMode.Set(0);
+
+			// Dynamic resolution status change is only taking effect at next dyn res frame.
+			GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::EndFrame);
+			GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::BeginFrame);
 		}
 		ScreenPercentageMode.Set(0);
 		ScreenPercentage.Set(100.f);
@@ -328,6 +345,8 @@ void FAutomationTestScreenshotEnvSetup::Restore()
 	//TonemapperSharpen.Restore();
 	ScreenPercentage.Restore();
 	ScreenPercentageMode.Restore();
+	DynamicResOperationMode.Restore();
+	DynamicResTestScreenPercentage.Restore();
 	EditorViewportOverrideGameScreenPercentage.Restore();
 	SecondaryScreenPercentage.Restore();
 
@@ -368,13 +387,13 @@ public:
 			{
 #if WITH_EDITOR
 				// In the editor we can only attempt to re-size standalone viewports
-				UEditorEngine* EditorEngine = Cast<UEditorEngine>(GEngine);	
+				UEditorEngine* EditorEngine = Cast<UEditorEngine>(GEngine);
 
-				const bool bIsPIEViewport = GameViewport->IsPlayInEditorViewport();	
+				const bool bIsPIEViewport = GameViewport->IsPlayInEditorViewport();
 				const bool bIsNewViewport = InWorld && EditorEngine && EditorEngine->WorldIsPIEInNewViewport(InWorld);
 
 				if (!bIsPIEViewport || bIsNewViewport)
-#endif		
+#endif
 				{
 					ViewportRestoreSize = GameViewport->GetSize();
 					FIntPoint ScreenshotViewportSize = UAutomationBlueprintFunctionLibrary::GetAutomationScreenshotSize(InOptions);
@@ -505,7 +524,7 @@ public:
 private:
 
 	TWeakObjectPtr<UWorld> World;
-	
+
 	FString	Context;
 	FString	ScreenShotName;
 	FString Notes;
@@ -634,7 +653,7 @@ public:
 	virtual void SetDone() override
 	{
 		FScreenshotRequest::OnScreenshotRequestProcessed().RemoveAll(this);
-		
+
 		UnlockViewport();
 
 		Done = true;
@@ -676,22 +695,25 @@ UAutomationBlueprintFunctionLibrary::UAutomationBlueprintFunctionLibrary(const c
 
 void UAutomationBlueprintFunctionLibrary::FinishLoadingBeforeScreenshot()
 {
-	// Finish compiling the shaders if the platform doesn't require cooked data.
-	if (!FPlatformProperties::RequiresCookedData())
-	{
-		GShaderCompilingManager->FinishAllCompilation();
-		FModuleManager::GetModuleChecked<IAutomationControllerModule>("AutomationController").GetAutomationController()->ResetAutomationTestTimeout(TEXT("shader compilation"));
-	}
-
 	FlushAsyncLoading();
 
+	UWorld* CurrentWorld{ nullptr };
 	// Make sure we finish all level streaming
 	if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
 	{
 		if (UWorld* GameWorld = GameEngine->GetGameWorld())
 		{
+			CurrentWorld = GameWorld;
 			GameWorld->FlushLevelStreaming(EFlushLevelStreamingType::Full);
 		}
+	}
+
+	// Finish compiling the shaders if the platform doesn't require cooked data.
+	if (!FPlatformProperties::RequiresCookedData())
+	{
+		UMaterialInterface::SubmitRemainingJobsForWorld(CurrentWorld);
+		FAssetCompilingManager::Get().FinishAllCompilation();
+		FModuleManager::GetModuleChecked<IAutomationControllerModule>("AutomationController").GetAutomationController()->ResetAutomationTestTimeout(TEXT("shader compilation"));
 	}
 
 	// Force all mip maps to load before taking the screenshot.
@@ -944,11 +966,11 @@ float HelperGetStat(FName StatName)
 		{
 			if(bCallCount)
 			{
-				return StatMessage->GetValue_CallCount(ValueType);	
+				return (float)StatMessage->GetValue_CallCount(ValueType);
 			}
 			else
 			{
-				return FPlatformTime::ToMilliseconds(StatMessage->GetValue_Duration(ValueType));
+				return (float)FPlatformTime::ToMilliseconds64(StatMessage->GetValue_Duration(ValueType));
 			}
 		}
 	}
@@ -1024,7 +1046,7 @@ public:
 		, Options(InOptions)
 	{
 		UAutomationBlueprintFunctionLibrary::FinishLoadingBeforeScreenshot();
-		
+
 		WaitingFrames = 0;
 		LastLoadTime = FPlatformTime::Seconds();
 
@@ -1136,7 +1158,7 @@ public:
 		return TEXT("Waiting For Loading");
 	}
 #endif
-	
+
 private:
 	FName ExecutionFunction;
 	int32 OutputLink;
@@ -1200,7 +1222,7 @@ UAutomationEditorTask* UAutomationBlueprintFunctionLibrary::TakeHighResScreensho
 
 			Task->BindTask(MakeUnique<FScreenshotTakenState>());
 
-			// Delay taking the screenshot by a few frames			
+			// Delay taking the screenshot by a few frames
 			FTSTicker::GetCoreTicker().AddTicker(TEXT("ScreenshotDelay"), Delay, [LevelViewport, ComparisonTolerance, ComparisonNotes, Filename, ResX, ResY, bMaskEnabled, bCaptureHDR](float) {
 					FHighResScreenshotConfig& HighResScreenshotConfig = GetHighResScreenshotConfig();
 					HighResScreenshotConfig.SetResolution(ResX, ResY);
@@ -1381,4 +1403,47 @@ void UAutomationBlueprintFunctionLibrary::SetScalabilityQualityToLow(UObject* Wo
 	Scalability::SetQualityLevels(Quality, true);
 }
 
+void UAutomationBlueprintFunctionLibrary::SetEditorViewportViewMode(EViewModeIndex Index)
+{
+#if WITH_EDITOR
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	if (TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor())
+	{
+		for (TSharedPtr<SLevelViewport> LevelViewport : LevelEditor->GetViewports())
+		{
+			if (LevelViewport.IsValid())
+			{
+				if (TSharedPtr<FEditorViewportClient> Viewport = LevelViewport->GetViewportClient())
+				{
+					Viewport->SetViewMode(Index);
+				}
+			}
+		}
+	}
+#endif
+}
+
+void UAutomationBlueprintFunctionLibrary::SetEditorViewportVisualizeBuffer( FName BufferName )
+{
+#if WITH_EDITOR
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+
+	if (TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor())
+	{
+		for (TSharedPtr<SLevelViewport> LevelViewport : LevelEditor->GetViewports())
+		{
+			if (LevelViewport.IsValid())
+			{
+				if (TSharedPtr<FEditorViewportClient> Viewport = LevelViewport->GetViewportClient())
+				{
+					Viewport->ChangeBufferVisualizationMode(BufferName);
+				}
+			}
+		}
+	}
+#endif
+}
+
 #undef LOCTEXT_NAMESPACE
+

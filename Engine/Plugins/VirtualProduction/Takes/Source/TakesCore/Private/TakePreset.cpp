@@ -2,8 +2,12 @@
 
 #include "TakePreset.h"
 #include "LevelSequence.h"
+#include "MovieScene.h"
 #include "MovieSceneToolsProjectSettings.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "UObject/Package.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakePreset)
 
 UTakePreset::UTakePreset(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -148,3 +152,4 @@ void UTakePreset::PostTransacted(const FTransactionObjectEvent& TransactionEvent
 		OnLevelSequenceChangedEvent.Broadcast();
 	}
 }
+

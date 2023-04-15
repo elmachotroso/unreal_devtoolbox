@@ -187,7 +187,7 @@ public:
 	virtual float GetWaveAttenuationFactor(const FVector& InPosition, float InWaterDepth, float InTargetWaveMaskDepth) const override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Instanced, Category = Waves)
-	UGerstnerWaterWaveGeneratorBase* GerstnerWaveGenerator;
+	TObjectPtr<UGerstnerWaterWaveGeneratorBase> GerstnerWaveGenerator;
 
 protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Wave")
@@ -211,4 +211,5 @@ public:
 private:
 	FVector GetWaveOffsetAtPosition(const FGerstnerWave& InWaveParams, const FVector& InPosition, float InTime, FVector& OutNormal, float& OutOffset1D) const;
 	float GetSimpleWaveOffsetAtPosition(const FGerstnerWave& InWaveParams, const FVector& InPosition, float InTime) const;
+	void BlendWaveBetweenLWCTiles(const FGerstnerWave& InWaveParams, const FVector& InPosition, float InTime, float& WaveSin, float& WaveCos) const;
 };

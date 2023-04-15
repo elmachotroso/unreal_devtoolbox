@@ -4,7 +4,7 @@
 
 #include "DisplayClusterConfiguratorCompiler.h"
 #include "IAssetTypeActions.h"
-#include "Interfaces/IDisplayClusterConfigurator.h"
+#include "IDisplayClusterConfigurator.h"
 
 class FPlacementModeID;
 class IAssetTools;
@@ -37,12 +37,8 @@ private:
 	void UnregisterSettings();
 	void RegisterCustomLayouts();
 	void UnregisterCustomLayouts();
-
-	/** Register items to show up in the Place Actors panel. */
-	void RegisterPlacementModeItems();
-	
-	/** Unregister items in Place Actors panel */
-	void UnregisterPlacementModeItems();
+	void RegisterSectionMappings();
+	void UnregisterSectionMappings();
 
 	static TSharedPtr<FKismetCompilerContext> GetCompilerForDisplayClusterBP(UBlueprint* BP, FCompilerResultsLog& InMessageLog, const FKismetCompilerOptions& InCompileOptions);
 
@@ -53,7 +49,6 @@ private:
 	FDisplayClusterConfiguratorKismetCompiler  BlueprintCompiler;
 	TArray<FName> RegisteredClassLayoutNames;
 	TArray<FName> RegisteredPropertyLayoutNames;
-	TArray<TOptional<FPlacementModeID>> PlaceActors;
 	FDelegateHandle FilesLoadedHandle;
 	FDelegateHandle PostEngineInitHandle;
 

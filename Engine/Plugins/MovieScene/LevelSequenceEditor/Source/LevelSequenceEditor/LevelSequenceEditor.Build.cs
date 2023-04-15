@@ -21,15 +21,16 @@ public class LevelSequenceEditor : ModuleRules
         
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"ApplicationCore",
 				"AppFramework",
                 "LevelSequence",
 				"BlueprintGraph",
                 "CinematicCamera",
+				"ClassViewer",
 				"Core",
 				"CoreUObject",
 				"CurveEditor",
 				"EditorFramework",
-                "EditorStyle",
 				"EditorSubsystem",
 				"Engine",
                 "InputCore",
@@ -47,6 +48,7 @@ public class LevelSequenceEditor : ModuleRules
                 "UnrealEd",
                 "VREditor",
 				"TimeManagement",
+				"ToolMenus",
 				"ToolWidgets",
 			}
 		);

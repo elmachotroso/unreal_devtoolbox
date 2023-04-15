@@ -242,8 +242,6 @@ private:
  */
 class FSlateElementBatcher
 {
-
-	friend struct FLineBuilder;
 public:
 
 	SLATECORE_API FSlateElementBatcher( TSharedRef<FSlateRenderingPolicy> InRenderingPolicy );
@@ -264,6 +262,10 @@ public:
 	/** Whether or not any post process passes were batched */
 	bool HasFXPassses() const { return NumPostProcessPasses > 0;}
 
+	bool CompositeHDRViewports() const { return bCompositeHDRViewports; }
+
+	void SetCompositeHDRViewports(bool bInCompositeHDRViewports) { bCompositeHDRViewports = bInCompositeHDRViewports; }
+
 	/** 
 	 * Resets all stored data accumulated during the batching process
 	 */
@@ -277,8 +279,8 @@ public:
 	}
 
 private:
-	void AddElementsInternal(const FSlateDrawElementArray& DrawElements, const FVector2D& ViewportSize);
-	void AddCachedElements(FSlateCachedElementData& CachedElementData, const FVector2D& ViewportSize);
+	void AddElementsInternal(const FSlateDrawElementArray& DrawElements, FVector2f ViewportSize);
+	void AddCachedElements(FSlateCachedElementData& CachedElementData, FVector2f ViewportSize);
 
 	/** 
 	 * Creates vertices necessary to draw a Quad element 
@@ -337,9 +339,23 @@ private:
 
 	void AddCustomVerts( const FSlateDrawElement& DrawElement );
 
-	void AddPostProcessPass(const FSlateDrawElement& DrawElement, const FVector2D& WindowSize);
+	void AddPostProcessPass(const FSlateDrawElement& DrawElement, FVector2f WindowSize);
 
 	FSlateRenderBatch& CreateRenderBatch(
+		int32 Layer,
+		const FShaderParams& ShaderParams,
+		const FSlateShaderResource* InResource,
+		ESlateDrawPrimitive PrimitiveType,
+		ESlateShader ShaderType,
+		ESlateDrawEffect DrawEffects,
+		ESlateBatchDrawFlag DrawFlags,
+		const FSlateDrawElement& DrawElement)
+	{
+		return CreateRenderBatch(BatchData, Layer, ShaderParams, InResource, PrimitiveType, ShaderType, DrawEffects, DrawFlags, DrawElement);
+	}
+
+	FSlateRenderBatch& CreateRenderBatch(
+		FSlateBatchData* SlateBatchData,
 		int32 Layer,
 		const FShaderParams& ShaderParams,
 		const FSlateShaderResource* InResource,
@@ -381,6 +397,7 @@ private:
 private:
 	/** Uncached Batch data currently being filled in */
 	FSlateBatchData* BatchData;
+	FSlateBatchData* BatchDataHDR;
 
 	/** Cached batches currently being filled in */
 	FSlateCachedElementList* CurrentCachedElementList;
@@ -424,4 +441,7 @@ private:
 
 	// true if any element in the batch requires vsync.
 	bool bRequiresVsync;
+
+	// true if viewports get composited as a separate pass, instead of being rendered directly to the render target. Useful for HDR displays
+	bool bCompositeHDRViewports;
 };

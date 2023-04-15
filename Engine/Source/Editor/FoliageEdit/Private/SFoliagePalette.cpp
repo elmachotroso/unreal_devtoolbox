@@ -1,46 +1,91 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SFoliagePalette.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
+
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetSelection.h"
+#include "AssetThumbnail.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserModule.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "DetailsViewArgs.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/StaticMesh.h"
+#include "FoliageEdMode.h"
+#include "FoliagePaletteCommands.h"
 #include "FoliagePaletteItem.h"
 #include "FoliageType.h"
+#include "FoliageTypePaintingCustomization.h"
 #include "FoliageType_Actor.h"
 #include "FoliageType_InstancedStaticMesh.h"
-#include "Misc/MessageDialog.h"
-#include "Misc/FeedbackContext.h"
-#include "Modules/ModuleManager.h"
+#include "FoliageType_InstancedStaticMeshPaintingCustomization.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/SRichTextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "Widgets/Input/SSlider.h"
-#include "SPositiveActionButton.h"
-#include "EditorStyleSet.h"
-#include "FoliagePaletteCommands.h"
-#include "AssetThumbnail.h"
-#include "PropertyEditorModule.h"
-#include "FoliageTypePaintingCustomization.h"
-#include "FoliageType_InstancedStaticMeshPaintingCustomization.h"
-
+#include "Framework/SlateDelegates.h"
+#include "Framework/Text/TextLayout.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformMisc.h"
 #include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "PropertyCustomizationHelpers.h"
 #include "IDetailsView.h"
-#include "AssetSelection.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "SPositiveActionButton.h"
 #include "ScopedTransaction.h"
-#include "AssetData.h"
-#include "Engine/StaticMesh.h"
-#include "Editor.h"
-
-
-#include "Widgets/Layout/SScaleBox.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/Function.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/Package.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SSlider.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScaleBox.h"
+#include "Widgets/Layout/SScrollBorder.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/SRichTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/ITableRow.h"
+#include "Widgets/Views/SListView.h"
+
+class FDragDropEvent;
+class UObject;
+struct FGeometry;
+struct FKeyEvent;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "FoliageEd_Mode"
 
@@ -65,7 +110,7 @@ public:
 		this->ChildSlot
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+				.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 				.BorderBackgroundColor(this, &SFoliageDragDropHandler::GetBackgroundColor)
 				.Padding(FMargin(30))
 				[
@@ -131,7 +176,7 @@ public:
 		ChildSlot
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::Get().GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot()
@@ -141,16 +186,16 @@ public:
 					.Padding(2)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::Get().GetBrush("Icons.Warning"))
+						.Image(FAppStyle::Get().GetBrush("Icons.Warning"))
 					]
 					+ SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
 						.Padding(2)
 						[
 							SNew(SRichTextBlock)
-							.DecoratorStyleSet(&FEditorStyle::Get())
+							.DecoratorStyleSet(&FAppStyle::Get())
 							.Justification(ETextJustify::Left)
-							.TextStyle(FEditorStyle::Get(), "DetailsView.BPMessageTextStyle")
+							.TextStyle(FAppStyle::Get(), "DetailsView.BPMessageTextStyle")
 							.Text(InArgs._WarningText)
 							.AutoWrapText(true)
 							+ SRichTextBlock::HyperlinkDecorator(TEXT("HyperlinkDecorator"), InArgs._OnHyperlinkClicked)
@@ -252,8 +297,8 @@ void SFoliagePalette::Construct(const FArguments& InArgs)
 				.Content()
 				[
 					SNew(SImage)
-            		.ColorAndOpacity(FSlateColor::UseForeground())
-					.Image(FEditorStyle::GetBrush("LevelEditor.Tabs.Details"))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::GetBrush("LevelEditor.Tabs.Details"))
 				]
 			]
 
@@ -269,109 +314,102 @@ void SFoliagePalette::Construct(const FArguments& InArgs)
 				.ButtonContent()
 				[
 					SNew(SImage)
-            		.ColorAndOpacity(FSlateColor::UseForeground())
+					.ColorAndOpacity(FSlateColor::UseForeground())
 					.Image( FAppStyle::Get().GetBrush("Icons.Settings") )
 				]
 			]
 		]
 
 		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.MaxHeight(230.0f)
 		[
-			SNew(SSplitter)
-			.Orientation(Orient_Vertical)
-			.Style(FEditorStyle::Get(), "FoliageEditMode.Splitter")
+			SNew(SOverlay)
 
-			+ SSplitter::Slot()
-			.Value(0.6f)
+			+ SOverlay::Slot()
 			[
-				SNew(SOverlay)
+				SNew(SVerticalBox)
 
-				+ SOverlay::Slot()
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(FMargin(6.f, 3.f))
 				[
-					SNew(SVerticalBox)
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(FMargin(6.f, 3.f))
-					[
-						SNew(SBox)
-						.Visibility(this, &SFoliagePalette::GetDropFoliageHintVisibility)
-						.Padding(FMargin(15, 0))
-						.MinDesiredHeight(30)
-						[
-							SNew(SScaleBox)
-							.Stretch(EStretch::ScaleToFit)
-							[
-								SNew(STextBlock)
-								.Text(LOCTEXT("Foliage_DropStatic", "+ Drop Foliage Here"))
-								.ToolTipText(LOCTEXT("Foliage_DropStatic_ToolTip", "Drag and drop foliage types or static meshes from the Content Browser to add them to the palette"))
-							]
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					[
-						CreatePaletteViews()
-					]
-				
-					+ SVerticalBox::Slot()
-					.Padding(FMargin(0.f))
-					.VAlign(VAlign_Bottom)
-					.AutoHeight()
-					[
-						SNew(SHorizontalBox)
-						
-						// Selected type name area
-						+ SHorizontalBox::Slot()
-						.Padding(FMargin(3.f))
-						.VAlign(VAlign_Bottom)
-						//.AutoWidth()
-						[
-							SNew(STextBlock)
-							.Text(this, &SFoliagePalette::GetDetailsNameAreaText)
-						]
-					]
-				]
-				
-				// Foliage Mesh Drop Zone
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SNew(SFoliageDragDropHandler)
-					.Visibility(this, &SFoliagePalette::GetFoliageDropTargetVisibility)
-					.OnDrop(this, &SFoliagePalette::HandleFoliageDropped)
+					SNew(SBox)
+					.Visibility(this, &SFoliagePalette::GetDropFoliageHintVisibility)
+					.Padding(FMargin(15, 0))
+					.MinDesiredHeight(30)
 					[
 						SNew(SScaleBox)
 						.Stretch(EStretch::ScaleToFit)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("Foliage_AddFoliageMesh", "+ Foliage Type"))
-							.ShadowOffset(FVector2D(1.f, 1.f))
+							.Text(LOCTEXT("Foliage_DropStatic", "+ Drop Foliage Here"))
+							.ToolTipText(LOCTEXT("Foliage_DropStatic_ToolTip", "Drag and drop foliage types or static meshes from the Content Browser to add them to the palette"))
 						]
 					]
 				]
-			]
-
-			// Details
-			+SSplitter::Slot()
-			[
-				SNew(SVerticalBox)
 
 				+ SVerticalBox::Slot()
-				.Padding(0, 2)
+				[
+					CreatePaletteViews()
+				]
+				
+				+ SVerticalBox::Slot()
+				.Padding(FMargin(0.f))
+				.VAlign(VAlign_Bottom)
 				.AutoHeight()
 				[
-					SNew(SUneditableFoliageTypeWarning)
-					.WarningText(LOCTEXT("CannotEditBlueprintFoliageTypeWarning", "Blueprint foliage types must be edited in the <a id=\"HyperlinkDecorator\" style=\"DetailsView.BPMessageHyperlinkStyle\">Blueprint</>"))
-					.OnHyperlinkClicked(this, &SFoliagePalette::OnEditFoliageTypeBlueprintHyperlinkClicked)
-					.Visibility(this, &SFoliagePalette::GetUneditableFoliageTypeWarningVisibility)
+					SNew(SHorizontalBox)
+						
+					// Selected type name area
+					+ SHorizontalBox::Slot()
+					.Padding(FMargin(3.f))
+					.VAlign(VAlign_Bottom)
+					//.AutoWidth()
+					[
+						SNew(STextBlock)
+						.Text(this, &SFoliagePalette::GetDetailsNameAreaText)
+					]
 				]
-
-				+ SVerticalBox::Slot()
+			]
+				
+			// Foliage Mesh Drop Zone
+			+ SOverlay::Slot()
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			[
+				SNew(SFoliageDragDropHandler)
+				.Visibility(this, &SFoliagePalette::GetFoliageDropTargetVisibility)
+				.OnDrop(this, &SFoliagePalette::HandleFoliageDropped)
 				[
-					DetailsWidget.ToSharedRef()
+					SNew(SScaleBox)
+					.Stretch(EStretch::ScaleToFit)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("Foliage_AddFoliageMesh", "+ Foliage Type"))
+						.ShadowOffset(FVector2D(1.f, 1.f))
+					]
 				]
+			]
+		]
+		// Details
+		+ SVerticalBox::Slot()
+		[
+			SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot()
+			.Padding(0, 2)
+			.AutoHeight()
+			[
+				SNew(SUneditableFoliageTypeWarning)
+				.WarningText(LOCTEXT("CannotEditBlueprintFoliageTypeWarning", "Blueprint foliage types must be edited in the <a id=\"HyperlinkDecorator\" style=\"DetailsView.BPMessageHyperlinkStyle\">Blueprint</>"))
+				.OnHyperlinkClicked(this, &SFoliagePalette::OnEditFoliageTypeBlueprintHyperlinkClicked)
+				.Visibility(this, &SFoliagePalette::GetUneditableFoliageTypeWarningVisibility)
+			]
+
+			+ SVerticalBox::Slot()
+			[
+				DetailsWidget.ToSharedRef()
 			]
 		]
 	];
@@ -401,6 +439,9 @@ void SFoliagePalette::UpdatePalette(bool bRebuildItems)
 	{
 		bIsRebuildTimerRegistered = true;
 		RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SFoliagePalette::UpdatePaletteItems));
+
+		// widget view needs to be refreshed immediately since it's possibly invalid and can't participate in layouting
+		RefreshActivePaletteViewWidget();
 	}
 }
 
@@ -613,7 +654,7 @@ TSharedRef<SWidgetSwitcher> SFoliagePalette::CreatePaletteViews()
 	WidgetSwitcher->AddSlot(EFoliagePaletteViewMode::Tree)
 	[
 		SNew(SScrollBorder, TreeViewWidget.ToSharedRef())
-		.Style(&FEditorStyle::Get().GetWidgetStyle<FScrollBorderStyle>("FoliageEditMode.TreeView.ScrollBorder"))
+		.Style(&FAppStyle::Get().GetWidgetStyle<FScrollBorderStyle>("FoliageEditMode.TreeView.ScrollBorder"))
 		.Content()
 		[
 			TreeViewWidget.ToSharedRef()
@@ -837,7 +878,7 @@ EVisibility SFoliagePalette::GetFoliageDropTargetVisibility() const
 			{
 				for (const UClass* Filter : ClassFilters)
 				{
-					if (AssetData.GetClass()->IsChildOf(Filter))
+					if (AssetData.IsInstanceOf(Filter))
 					{
 						return EVisibility::Visible;
 					}
@@ -890,7 +931,7 @@ TSharedPtr<SWidget> SFoliagePalette::ConstructFoliageTypeContextMenu()
 				MenuBuilder.AddMenuEntry(
 					LOCTEXT("SaveAsFoliageType", "Save As Foliage Type..."),
 					LOCTEXT("SaveAsFoliageType_ToolTip", "Creates a Foliage Type asset with these settings that can be reused in other levels."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.SaveIcon16x"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Level.SaveIcon16x"),
 					FUIAction(
 						FExecuteAction::CreateSP(this, &SFoliagePalette::OnSaveSelected)
 						),
@@ -907,7 +948,7 @@ TSharedPtr<SWidget> SFoliagePalette::ConstructFoliageTypeContextMenu()
 				MenuBuilder.AddMenuEntry(
 					LOCTEXT("SaveSelectedFoliageTypes", "Save"),
 					LOCTEXT("SaveSelectedFoliageTypes_ToolTip", "Saves any changes to the selected foliage type asset(s)."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.SaveIcon16x"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Level.SaveIcon16x"),
 					FUIAction(
 						FExecuteAction::CreateSP(this, &SFoliagePalette::OnSaveSelected),
 						FCanExecuteAction::CreateSP(this, &SFoliagePalette::OnCanSaveAnySelectedAssets),
@@ -1076,7 +1117,7 @@ void SFoliagePalette::FillReplaceFoliageTypeSubmenu(FMenuBuilder& MenuBuilder)
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(UFoliageType::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UFoliageType::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SFoliagePalette::OnReplaceFoliageTypeSelected);
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
@@ -1374,7 +1415,7 @@ FText SFoliagePalette::GetShowHideDetailsTooltipText() const
 const FSlateBrush* SFoliagePalette::GetShowHideDetailsImage() const
 {
 	const bool bDetailsCurrentlyVisible = DetailsWidget->GetVisibility() != EVisibility::Collapsed;
-	return FEditorStyle::Get().GetBrush(bDetailsCurrentlyVisible ? "Symbols.DoubleDownArrow" : "Symbols.DoubleUpArrow");
+	return FAppStyle::Get().GetBrush(bDetailsCurrentlyVisible ? "Symbols.DoubleDownArrow" : "Symbols.DoubleUpArrow");
 }
 
 void SFoliagePalette::OnShowHideDetailsClicked(const ECheckBoxState InCheckedState) const

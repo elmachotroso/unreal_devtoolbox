@@ -2,13 +2,22 @@
 
 #pragma once
 
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "DatasmithMaterialElements.h"
 #include "DatasmithVariantElements.h"
 #include "IDatasmithSceneElements.h"
+#include "Math/Quat.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 
+class FDatasmithTextureSampler;
 class FXmlFile;
 class FXmlNode;
 class UTexture;
+struct FLinearColor;
 
 class DATASMITHCORE_API FDatasmithSceneXmlReader
 {
@@ -22,8 +31,16 @@ public:
 
 private:
 	bool ParseXmlFile(TSharedRef< IDatasmithScene >& OutScene, bool bInAppend = false);
+	void PatchUpVersion(TSharedRef< IDatasmithScene >& OutScene) const;
 
-	void PatchUpVersion(TSharedRef< IDatasmithScene >& OutScene);
+	UE_NODISCARD FString UnsanitizeXMLText(const FString& InString) const;
+
+	template<typename T> T ValueFromString(const FString& InString) const = delete;
+	FVector VectorFromNode(FXmlNode* InNode, const TCHAR* XName, const TCHAR* YName, const TCHAR* ZName) const;
+	FQuat QuatFromHexString(const FString& HexString) const;
+	FQuat QuatFromNode(FXmlNode* InNode) const;
+	FTransform ParseTransform(FXmlNode* InNode) const;
+	void ParseTransform(FXmlNode* InNode, TSharedPtr< IDatasmithActorElement >& OutElement) const;
 
 	void ParseElement(FXmlNode* InNode, TSharedRef<IDatasmithElement> OutElement) const;
 	void ParseLevelSequence(FXmlNode* InNode, const TSharedRef<IDatasmithLevelSequenceElement>& OutElement) const;
@@ -34,12 +51,12 @@ private:
 	void ParsePropertyCapture( FXmlNode* InNode, const TSharedRef<IDatasmithPropertyCaptureElement>& OutElement ) const;
 	void ParseObjectPropertyCapture( FXmlNode* InNode, const TSharedRef<IDatasmithObjectPropertyCaptureElement>& OutElement, const TMap< FString, TSharedPtr<IDatasmithElement> >& Objects ) const;
 	void ParseMesh(FXmlNode* InNode, TSharedPtr<IDatasmithMeshElement>& OutElement) const;
+	void ParseCloth(FXmlNode* InNode, TSharedPtr<IDatasmithClothElement>& OutElement) const;
 	void ParseTextureElement(FXmlNode* InNode, TSharedPtr<IDatasmithTextureElement>& OutElement) const;
 	void ParseTexture(FXmlNode* InNode, FString& OutTextureFilename, FDatasmithTextureSampler& OutTextureUV) const;
-	void ParseTransform(FXmlNode* InNode, TSharedPtr< IDatasmithActorElement >& OutElement) const;
-	FTransform ParseTransform(FXmlNode* InNode) const;
 	void ParseActor(FXmlNode* InNode, TSharedPtr<IDatasmithActorElement>& InOutElement, TSharedRef< IDatasmithScene > Scene, TMap< FString, TSharedPtr<IDatasmithActorElement> >& Actors) const;
 	void ParseMeshActor(FXmlNode* InNode, TSharedPtr<IDatasmithMeshActorElement>& OutElement, TSharedRef< IDatasmithScene > Scene) const;
+	void ParseClothActor(FXmlNode* InNode, TSharedPtr<IDatasmithClothActorElement>& OutElement, TSharedRef< IDatasmithScene > Scene) const;
 	void ParseHierarchicalInstancedStaticMeshActor(FXmlNode* InNode, TSharedPtr<IDatasmithHierarchicalInstancedStaticMeshActorElement>& OutElement, TSharedRef< IDatasmithScene > Scene) const;
 	void ParseLight(FXmlNode* InNode, TSharedPtr<IDatasmithLightActorElement>& OutElement) const;
 	void ParseCamera(FXmlNode* InNode, TSharedPtr<IDatasmithCameraActorElement>& OutElement) const;
@@ -48,7 +65,7 @@ private:
 	void ParseColor(FXmlNode* InNode, FLinearColor& OutColor) const;
 	void ParseComp(FXmlNode* InNode, TSharedPtr< IDatasmithCompositeTexture >& OutCompTexture, bool bInIsNormal = false) const;
 	void ParseMaterial(FXmlNode* InNode, TSharedPtr< IDatasmithMaterialElement >& OutElement) const;
-	void ParseMasterMaterial(FXmlNode* InNode, TSharedPtr< IDatasmithMasterMaterialElement >& OutElement) const;
+	void ParseMaterialInstance(FXmlNode* InNode, TSharedPtr< IDatasmithMaterialInstanceElement >& OutElement) const;
 	void ParseDecalMaterial(FXmlNode* InNode, TSharedPtr< IDatasmithDecalMaterialElement >& OutElement) const;
 	void ParseUEPbrMaterial(FXmlNode* InNode, TSharedPtr< IDatasmithUEPbrMaterialElement >& OutElement) const;
 	void ParseCustomActor(FXmlNode* InNode, TSharedPtr< IDatasmithCustomActorElement >& OutElement) const;
@@ -61,11 +78,10 @@ private:
 	bool LoadFromFile(const FString& InFilename);
 	bool LoadFromBuffer(const FString& XmlBuffer);
 
-	FString ResolveFilePath(const FString& InAssetFile) const;
-
-	template<typename T> T ValueFromString(const FString& InString) const;
-	FQuat QuatFromHexString(const FString& HexString) const;
+	template< typename ExpressionInputType >
+	void ParseExpressionInput(const FXmlNode* InNode, TSharedPtr< IDatasmithUEPbrMaterialElement >& OutElement, ExpressionInputType& ExpressionInput) const;
 
 	TUniquePtr< FXmlFile > XmlFile;
 	FString ProjectPath;
 };
+

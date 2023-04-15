@@ -92,6 +92,7 @@ public:
 
 	void				QueueUpdate( uint8 Layer, uint8 vLogSize, uint32 vAddress, uint8 vLevel, const FPhysicalTileLocation& pTileLocation);
 	void				AllocateTextures(FRDGBuilder& GraphBuilder);
+	void				FinalizeTextures(FRDGBuilder& GraphBuilder);
 	void				ApplyUpdates(FVirtualTextureSystem* System, FRDGBuilder& GraphBuilder);
 	void				QueueUpdateEntirePageTable();
 
@@ -102,6 +103,8 @@ public:
 #endif // WITH_EDITOR
 
 private:
+	FUintPoint GetRequiredPageTableAllocationSize() const;
+
 	static const uint32 TextureCapacity = (VIRTUALTEXTURE_SPACE_MAXLAYERS + LayersPerPageTableTexture - 1u) / LayersPerPageTableTexture;
 
 	struct FTextureEntry

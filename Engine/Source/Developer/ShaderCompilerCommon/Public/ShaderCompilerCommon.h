@@ -7,6 +7,18 @@
 #include "ShaderCompilerCore.h"
 #include "CrossCompilerDefinitions.h"
 #include "ShaderConductorContext.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "ShaderParameterParser.h"
+#endif
+
+class FShaderParameterParser;
+
+namespace UE::ShaderCompilerCommon
+{
+	static constexpr const TCHAR* kUniformBufferConstantBufferPrefix = TEXT("UniformBufferConstants_");
+	static constexpr const TCHAR* kBindlessResourcePrefix = TEXT("BindlessResource_");
+	static constexpr const TCHAR* kBindlessSamplerPrefix = TEXT("BindlessSampler_");
+}
 
 /**
  * This function looks for resources specified in ResourceTableMap in the 
@@ -42,112 +54,130 @@ extern SHADERCOMPILERCOMMON_API void BuildResourceTableTokenStream(
 // Finds the number of used uniform buffers in a resource map
 extern SHADERCOMPILERCOMMON_API int16 GetNumUniformBuffersUsed(const FShaderCompilerResourceTable& InSRT);
 
-/** Validates and moves all the shader loose data parameter defined in the root scope of the shader into the root uniform buffer. */
-class SHADERCOMPILERCOMMON_API FShaderParameterParser
+namespace UE::ShaderCompilerCommon
 {
-public:
-	struct FParsedShaderParameter
-	{
-	public:
-		/** Original information about the member. */
-		const FShaderParametersMetadata::FMember* Member = nullptr;
+	extern SHADERCOMPILERCOMMON_API EShaderParameterType ParseParameterType(FStringView InType, TArrayView<const TCHAR*> InExtraSRVTypes, TArrayView<const TCHAR*> InExtraUAVTypes);
 
-		/** Information found about the member when parsing the preprocessed code. */
-		FString ParsedType;
-		FString ParsedArraySize;
+	extern SHADERCOMPILERCOMMON_API FStringView          RemoveConstantBufferPrefix(FStringView InName);
+	extern SHADERCOMPILERCOMMON_API FString              RemoveConstantBufferPrefix(const FString& InName);
 
-		/** Offset the member should be in the constant buffer. */
-		int32 ConstantBufferOffset = 0;
+	extern SHADERCOMPILERCOMMON_API EShaderParameterType ParseAndRemoveBindlessParameterPrefix(FStringView& InName);
+	extern SHADERCOMPILERCOMMON_API EShaderParameterType ParseAndRemoveBindlessParameterPrefix(FString& InName);
 
-		/* Returns whether the shader parameter has been found when parsing. */
-		bool IsFound() const
-		{
-			return !ParsedType.IsEmpty();
-		}
+	extern SHADERCOMPILERCOMMON_API bool                 RemoveBindlessParameterPrefix(FString& InName);
 
-		/** Returns whether the shader parameter is bindable to the shader parameter structure. */
-		bool IsBindable() const
-		{
-			return Member != nullptr;
-		}
+	extern SHADERCOMPILERCOMMON_API bool                 ValidatePackedResourceCounts(FShaderCompilerOutput& Output, const FShaderCodePackedResourceCounts& PackedResourceCounts);
 
-	private:
-		int32 ParsedPragmaLineoffset = 0;
-		int32 ParsedLineOffset = 0;
+	/*
+	* Parses ray tracing shader entry point specification string in one of the following formats:
+	* 1) Verbatim single entry point name, e.g. "MainRGS"
+	* 2) Complex entry point for ray tracing hit group shaders:
+	*      a) "closesthit=MainCHS"
+	*      b) "closesthit=MainCHS anyhit=MainAHS"
+	*      c) "closesthit=MainCHS anyhit=MainAHS intersection=MainIS"
+	*      d) "closesthit=MainCHS intersection=MainIS"
+	*    NOTE: closesthit attribute must always be provided for complex hit group entry points
+	*/
+	extern SHADERCOMPILERCOMMON_API void ParseRayTracingEntryPoint(const FString& Input, FString& OutMain, FString& OutAnyHit, FString& OutIntersection);
+}
 
-		friend class FShaderParameterParser;
-	};
+extern SHADERCOMPILERCOMMON_API void HandleReflectedGlobalConstantBufferMember(
+	const FString& MemberName,
+	uint32 ConstantBufferIndex,
+	int32 ReflectionOffset,
+	int32 ReflectionSize,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	/** Parses the preprocessed shader code and move the parameters into root constant buffer */
-	bool ParseAndMoveShaderParametersToRootConstantBuffer(
-		const FShaderCompilerInput& CompilerInput,
-		FShaderCompilerOutput& CompilerOutput,
-		FString& PreprocessedShaderSource,
-		const TCHAR* ConstantBufferType);
+extern SHADERCOMPILERCOMMON_API void HandleReflectedRootConstantBufferMember(
+	const FShaderCompilerInput& Input,
+	const FShaderParameterParser& ShaderParameterParser,
+	const FString& MemberName,
+	int32 ReflectionOffset,
+	int32 ReflectionSize,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	/** Gets parsing information from a parameter binding name. */
-	const FParsedShaderParameter& FindParameterInfos(const FString& ParameterName) const
-	{
-		return ParsedParameters.FindChecked(ParameterName);
-	}
+extern SHADERCOMPILERCOMMON_API void HandleReflectedRootConstantBuffer(
+	int32 ConstantBufferSize,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	/** Validates the shader parameter in code is compatible with the shader parameter structure. */
-	void ValidateShaderParameterType(
-		const FShaderCompilerInput& CompilerInput,
-		const FString& ShaderBindingName,
-		int32 ReflectionOffset,
-		int32 ReflectionSize,
-		bool bPlatformSupportsPrecisionModifier,
-		FShaderCompilerOutput& CompilerOutput) const;
+extern SHADERCOMPILERCOMMON_API void HandleReflectedUniformBuffer(
+	const FString& UniformBufferName,
+	int32 ReflectionSlot,
+	int32 BaseIndex,
+	int32 BufferSize,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	void ValidateShaderParameterType(
-		const FShaderCompilerInput& CompilerInput,
-		const FString& ShaderBindingName,
-		int32 ReflectionOffset,
-		int32 ReflectionSize,
-		FShaderCompilerOutput& CompilerOutput) const
-	{
-		ValidateShaderParameterType(CompilerInput, ShaderBindingName, ReflectionOffset, ReflectionSize, false, CompilerOutput);
-	}
+inline void HandleReflectedUniformBuffer(const FString& UniformBufferName, int32 ReflectionSlot, int32 BufferSize, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedUniformBuffer(UniformBufferName, ReflectionSlot, 0, BufferSize, CompilerOutput);
+}
 
-	/** Validates shader parameter map is compatible with the shader parameter structure. */
-	void ValidateShaderParameterTypes(
-		const FShaderCompilerInput& CompilerInput,
-		bool bPlatformSupportsPrecisionModifier,
-		FShaderCompilerOutput& CompilerOutput) const;
+inline void HandleReflectedUniformBuffer(const FString& UniformBufferName, int32 ReflectionSlot, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedUniformBuffer(UniformBufferName, ReflectionSlot, 0, CompilerOutput);
+}
 
-	void ValidateShaderParameterTypes(
-		const FShaderCompilerInput& CompilerInput,
-		FShaderCompilerOutput& CompilerOutput) const
-	{
-		ValidateShaderParameterTypes(CompilerInput, false, CompilerOutput);
-	}
+extern SHADERCOMPILERCOMMON_API void HandleReflectedShaderResource(
+	const FString& ResourceName,
+	int32 BindOffset,
+	int32 ReflectionSlot,
+	int32 BindCount,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	/** Gets file and line of the parameter in the shader source code. */
-	void GetParameterFileAndLine(const FParsedShaderParameter& ParsedParameter, FString& OutFile, FString& OutLine) const
-	{
-		return ExtractFileAndLine(ParsedParameter.ParsedPragmaLineoffset, ParsedParameter.ParsedLineOffset, OutFile, OutLine);
-	}
+inline void HandleReflectedShaderResource(const FString& ResourceName, int32 ReflectionSlot, int32 BindCount, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderResource(ResourceName, 0, ReflectionSlot, BindCount, CompilerOutput);
+}
 
-private:
-	void ExtractFileAndLine(int32 PragamLineoffset, int32 LineOffset, FString& OutFile, FString& OutLine) const;
+inline void HandleReflectedShaderResource(const FString& ResourceName, int32 ReflectionSlot, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderResource(ResourceName, ReflectionSlot, 1, CompilerOutput);
+}
 
-	FString OriginalParsedShader;
+extern SHADERCOMPILERCOMMON_API void HandleReflectedShaderUAV(
+	const FString& UAVName,
+	int32 BindOffset,
+	int32 ReflectionSlot,
+	int32 BindCount,
+	FShaderCompilerOutput& CompilerOutput
+);
 
-	TMap<FString, FParsedShaderParameter> ParsedParameters;
+inline void HandleReflectedShaderUAV(const FString& UAVName, int32 ReflectionSlot, int32 BindCount, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderUAV(UAVName, 0, ReflectionSlot, BindCount, CompilerOutput);
+}
 
-	bool bMovedLoosedParametersToRootConstantBuffer = false;
-};
+inline void HandleReflectedShaderUAV(const FString& UAVName, int32 ReflectionSlot, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderUAV(UAVName, ReflectionSlot, 1, CompilerOutput);
+}
+
+extern SHADERCOMPILERCOMMON_API void HandleReflectedShaderSampler(
+	const FString& SamplerName,
+	int32 BindOffset,
+	int32 ReflectionSlot,
+	int32 BindCount,
+	FShaderCompilerOutput& CompilerOutput
+);
+
+inline void HandleReflectedShaderSampler(const FString& SamplerName, int32 ReflectionSlot, int32 BindCount, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderSampler(SamplerName, 0, ReflectionSlot, BindCount, CompilerOutput);
+}
+
+inline void HandleReflectedShaderSampler(const FString& SamplerName, int32 ReflectionSlot, FShaderCompilerOutput& CompilerOutput)
+{
+	HandleReflectedShaderSampler(SamplerName, ReflectionSlot, 1, CompilerOutput);
+}
 
 /** Adds a note to CompilerOutput.Error about where the shader parameter structure is on C++ side. */
 extern SHADERCOMPILERCOMMON_API void AddNoteToDisplayShaderParameterStructureOnCppSide(
 	const FShaderParametersMetadata* ParametersStructure,
-	FShaderCompilerOutput& CompilerOutput);
-
-/** Adds a note to CompilerOutput.Error about where the shader parameter is on C++ side. */
-extern SHADERCOMPILERCOMMON_API void AddNoteToDisplayShaderParameterMemberOnCppSide(
-	const FShaderCompilerInput& CompilerInput,
-	const FShaderParameterParser::FParsedShaderParameter& ParsedParameter,
 	FShaderCompilerOutput& CompilerOutput);
 
 /** Adds an error to CompilerOutput.Error about a shader parameters that could not be bound. */
@@ -160,6 +190,10 @@ extern SHADERCOMPILERCOMMON_API void AddUnboundShaderParameterError(
 // The cross compiler doesn't yet support struct initializers needed to construct static structs for uniform buffers
 // Replace all uniform buffer struct member references (View.WorldToClip) with a flattened name that removes the struct dependency (View_WorldToClip)
 extern SHADERCOMPILERCOMMON_API void RemoveUniformBuffersFromSource(const FShaderCompilerEnvironment& Environment, FString& PreprocessedShaderSource);
+
+// Processes TEXT macros
+extern SHADERCOMPILERCOMMON_API void TransformStringIntoCharacterArray(FString& PreprocessedShaderSource);
+
 extern SHADERCOMPILERCOMMON_API bool RemoveUnusedOutputs(FString& InOutSourceCode, const TArray<FString>& InUsedOutputs, const TArray<FString>& InExceptions, FString& InOutEntryPoint, TArray<FString>& OutErrors);
 
 extern SHADERCOMPILERCOMMON_API bool RemoveUnusedInputs(FString& InOutSourceCode, const TArray<FString>& InUsedInputs, FString& InOutEntryPoint, TArray<FString>& OutErrors);

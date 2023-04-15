@@ -1,12 +1,53 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SplineGeneratorPanel.h"
-#include "Widgets/Input/SButton.h"
-#include "Layout/WidgetPath.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Text/STextBlock.h"
-#include "ScopedTransaction.h"
+
+#include "ClassViewerModule.h"
+#include "ComponentVisualizer.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "DetailsViewArgs.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Math/InterpCurve.h"
+#include "Math/InterpCurvePoint.h"
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/VectorRegister.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "SplineComponentVisualizer.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWindow;
+struct FFocusEvent;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "SplineGenerator"
 
@@ -139,7 +180,7 @@ double CalcTangentMultiplier(const float InRadius, const float InRotInc)
 	// Calculate the difference between the actual interpolated midpoint and expected interpolated midpoint
 	const FVector ActualVal = FMath::CubicInterp(P0, T0, P1, T1, A);
 	const FVector ExpectedVal = P0.RotateAngleAxis(InRotInc * A, FVector::UpVector);
-	const float Diff = (ActualVal.X - ExpectedVal.X);
+	const double Diff = (ActualVal.X - ExpectedVal.X);
 
 	// Do a partial calculation of the cubic interpolation equation
 	static constexpr double C1 = (A3 - (2 * A2) + A), C2 = (A3 - A2);
@@ -379,13 +420,13 @@ void ULineSplineGenerator::BuildCurve()
 	SelectedSplineComponent->SplineCurves = CachedSplineCurves;
 
 	const bool bPrepend = !(ShapeAddMode & (EShapeAddMode::AppendAfter | EShapeAddMode::InsertAfter));
-	const float LengthFlip = bPrepend ? -1.f : 1.f;
+	const double LengthFlip = bPrepend ? -1.f : 1.f;
 
 	// Find starting features
 	const FVector StartPoint = SelectedSplineComponent->GetLocationAtSplinePoint(GetAddIndex(-1), ESplineCoordinateSpace::Local);
 	const FQuat StartQuat = SelectedSplineComponent->GetQuaternionAtSplinePoint(GetAddIndex(-1), ESplineCoordinateSpace::Local);
 
-	float LineInc = 0.0f;
+	double LineInc = 0.0f;
 	FVector LineDir = FVector::ZeroVector;
 	
 	bEnableUpToNextPoint = false;
@@ -405,18 +446,18 @@ void ULineSplineGenerator::BuildCurve()
 		const FVector Diff = NextPoint - StartPoint;
 		Length = Diff.Size();
 		LineDir = Diff.GetSafeNormal();
-		LineInc = Diff.Size() / float(NumberOfPoints + 1);
+		LineInc = Diff.Size() / double(NumberOfPoints + 1);
 	}
 	else
 	{
-		LineInc = Length / float(NumberOfPoints);
+		LineInc = Length / double(NumberOfPoints);
 		LineDir = StartQuat.GetForwardVector() * LengthFlip;
 	}
 
 	for (int32 Index = 0; Index < NumberOfPoints; Index++)
 	{
 		const int32 AddIdx = GetAddIndex(Index);
-		const FVector NewPoint = StartPoint + (LineInc * float(Index + 1)) * LineDir;
+		const FVector NewPoint = StartPoint + (LineInc * double(Index + 1)) * LineDir;
 		SelectedSplineComponent->AddSplinePointAtIndex(NewPoint, AddIdx, ESplineCoordinateSpace::Local);
 	}
 }
@@ -502,7 +543,7 @@ void SSplineGeneratorPanel::Construct(const FArguments& InArgs, TWeakPtr<FSpline
 		ShapeSelectorWidget->AddSlot()
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "RadioButton")
+			.Style(FAppStyle::Get(), "RadioButton")
 			.IsChecked_Lambda(IsRadioChecked)
 			.OnCheckStateChanged_Lambda(OnRadioChanged)
 			.Padding(FMargin(10.f, 3.f))
@@ -531,7 +572,7 @@ void SSplineGeneratorPanel::Construct(const FArguments& InArgs, TWeakPtr<FSpline
 		[
 			SNew(SBorder)
 			.Padding(FMargin(5.f, 5.f))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 			.Content()
 			[
 				ShapeSelectorWidget

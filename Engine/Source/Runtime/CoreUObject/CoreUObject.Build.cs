@@ -10,8 +10,6 @@ public class CoreUObject : ModuleRules
 
 		SharedPCHHeaderFile = "Public/CoreUObjectSharedPCH.h";
 
-		PrivateIncludePaths.Add("Runtime/CoreUObject/Private");
-
         PrivateIncludePathModuleNames.AddRange(
                 new string[] 
 			    {
@@ -26,11 +24,13 @@ public class CoreUObject : ModuleRules
         PrivateDependencyModuleNames.Add("Json");
 
 		//@TODO: UE-127233
-		// UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+		// UnsafeTypeCastWarningLevel = WarningLevel.Error;
 
 		if (Target.bBuildWithEditorOnlyData)
 		{
 			PrivateDependencyModuleNames.Add("DerivedDataCache");
 		}
+
+		PrivateDefinitions.Add("UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES=0");
 	}
 }

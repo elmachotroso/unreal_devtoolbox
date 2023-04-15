@@ -9,6 +9,8 @@
 #include "DrawDebugHelpers.h"
 #include "VisualLoggerCameraController.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VisualLoggerHUD)
+
 #define LOCTEXT_NAMESPACE "AVisualLoggerHUD"
 
 //----------------------------------------------------------------------//
@@ -63,7 +65,7 @@ void AVisualLoggerHUD::PostRender()
 			Canvas->DrawItem( TextItem, X, Y );
 			Y += TextItem.DrawnSize.Y;
 
-			if (DebugCamController->PickedActor != NULL)
+			if (DebugCamController->PickedActor.IsValid())
 			{
 				TextItem.Text = FText::FromString(FString::Printf(TEXT("Selected: '%s'"), *DebugCamController->PickedActor->GetName()));
 				Canvas->DrawItem( TextItem, X, Y );				
@@ -72,3 +74,4 @@ void AVisualLoggerHUD::PostRender()
 	}
 }
 #undef LOCTEXT_NAMESPACE
+

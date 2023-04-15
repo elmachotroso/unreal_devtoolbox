@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "Engine/TextureDefines.h"
-#include "UObject/ObjectMacros.h"
 #include "VirtualTexturing.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
 #include "RuntimeVirtualTexture.generated.h"
@@ -74,8 +73,8 @@ protected:
 
 	/** Texture group this texture belongs to */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = LevelOfDetail, meta = (DisplayName = "Texture Group"), AssetRegistrySearchable)
-	TEnumAsByte<enum TextureGroup> LODGroup;
-
+	TEnumAsByte<enum TextureGroup> LODGroup = TEXTUREGROUP_World;
+	
 	/** Deprecated size of virtual texture. */
 	UPROPERTY()
 	int32 Size_DEPRECATED = -1;
@@ -122,7 +121,7 @@ public:
 	bool GetContinuousUpdate() const { return bContinuousUpdate; }
 	/** Public getter for virtual texture removed low mips */
 	int32 GetRemoveLowMips() const { return FMath::Clamp(RemoveLowMips, 0, 5); }
-
+	/** Public getter for virtual texture using low quality compression flag. */
 	bool GetLQCompression() const { return bUseLowQualityCompression; }
 	/** Public getter for texture LOD Group */
 	TEnumAsByte<enum TextureGroup> GetLODGroup() const { return LODGroup; }

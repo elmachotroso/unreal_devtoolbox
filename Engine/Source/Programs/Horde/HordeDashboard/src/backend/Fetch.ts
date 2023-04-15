@@ -21,7 +21,7 @@ export type FetchResponse = {
     status: number;
 }
 
-function handleError(errorIn: ErrorInfo, force?:boolean) {
+function handleError(errorIn: ErrorInfo, force?: boolean) {
 
     const e = { ...errorIn, hordeError: true } as ErrorInfo;
 
@@ -49,6 +49,7 @@ export class Fetch {
 
                 if (response.status === 404) {
                     if (config?.suppress404) {
+                        reject(`Received suppressed 404 on ${url}`);
                         return;
                     }
                 }
@@ -56,7 +57,7 @@ export class Fetch {
                 const challenge = await this.challenge();
 
                 if (challenge === ChallengeStatus.Unauthorized) {
-                    
+
                     this.login(window.location.toString());
                     return;
                 }
@@ -71,7 +72,7 @@ export class Fetch {
 
                 // Note: the fetch request sets error for redirects, this is opaque as per the spec
                 // so all we get is an error string and can't detect AccessDenied, etc in redirect :/
-                let message = `Possible permissions issue, ${reason}`;
+                let message = `Error in request, ${reason}`;
 
                 handleError({
                     reason: message,
@@ -166,10 +167,8 @@ export class Fetch {
             return;
         }
 
-        window.location.assign("/api/v1/dashboard/login?redirect=" + encodeURI(redirect));
+        window.location.assign("/api/v2/dashboard/login?redirect=" + btoa(redirect ?? "/index"));
     }
-
-
 
     private async handleResponse(response: Response, url: string, mode: string, resolve: (value: FetchResponse | PromiseLike<FetchResponse>) => void, reject: (reason?: any) => void, config?: FetchRequestConfig) {
 
@@ -180,6 +179,8 @@ export class Fetch {
         }
 
         if (!response.ok) {
+
+            let message = response.statusText;
 
             if (response.url?.indexOf("AccessDenied") !== -1) {
 
@@ -193,15 +194,34 @@ export class Fetch {
 
                 if (response.status !== 404 || !config?.suppress404) {
 
-                    handleError({
+                    let errorInfo: ErrorInfo = {
                         response: response,
                         url: url
-                    });
+                    }
+
+                    let json: any = undefined;
+
+                    try {
+                        json = await response.json();
+                    } catch {
+
+                    }
+
+                    // dynamic detection of horde formatted error
+                    if (json && json.time && json.message && json.level) {
+                        errorInfo.format = json;
+                        message = json.message;
+                        if (json.id) {
+                            message = `(Error ${json.id}) - ${message}`;
+                        }
+                    }
+
+                    handleError(errorInfo);
 
                 }
             }
 
-            reject(response.statusText);
+            reject(message);
             return;
         }
 
@@ -354,7 +374,7 @@ export class Fetch {
                         url: url
                     });
                 }
-        
+
                 return ChallengeStatus.Unauthorized;
             }
         } catch (reason) {
@@ -375,7 +395,7 @@ export class Fetch {
         if (!token) {
 
             this.debugToken = undefined;
-            this.setAuthorization(undefined);    
+            this.setAuthorization(undefined);
             return;
         }
 
@@ -391,10 +411,10 @@ export class Fetch {
             return;
         }
 
-        this.baseUrl = url;        
+        this.baseUrl = url;
     }
 
-    logout:boolean = false;
+    logout: boolean = false;
 
     private baseUrl = "";
     private debugToken?: string;

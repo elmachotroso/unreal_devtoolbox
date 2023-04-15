@@ -35,6 +35,9 @@ namespace Chaos
 	CHAOS_API int32 AccelerationStructureUseDynamicTree = 1;
 	FAutoConsoleVariableRef CVarAccelerationStructureUseDynamicTree(TEXT("p.Chaos.AccelerationStructureUseDynamicTree"), AccelerationStructureUseDynamicTree, TEXT("Use a dynamic BVH tree structure for dynamic objects"));
 
+	CHAOS_API int32 AccelerationStructureUseDirtyTreeInsteadOfGrid = 1;
+	FAutoConsoleVariableRef CVarAccelerationStructureUseDirtyTreeInsteadOfGrid(TEXT("p.Chaos.AccelerationStructureUseDirtyTreeInsteadOfGrid"), AccelerationStructureUseDirtyTreeInsteadOfGrid, TEXT("Use a dynamic tree structure for dirty elements instead of a 2D grid"));
+
 	/** Console variable to enable the caching of the overlapping leaves if the dynamic tree is enable */
 	CHAOS_API int32 GAccelerationStructureCacheOverlappingLeaves = 1;
 	FAutoConsoleVariableRef CVarAccelerationStructureCacheOverlappingLeaves(TEXT("p.Chaos.AccelerationStructureCacheOverlappingLeaves"), GAccelerationStructureCacheOverlappingLeaves, TEXT("Set to 1: Cache the overlapping leaves for faster overlap query, any other value will disable the feature"));
@@ -45,43 +48,19 @@ namespace Chaos
 	CHAOS_API int32 AccelerationStructureTimeSlicingMaxBytesCopy = 100000;
 	FAutoConsoleVariableRef CVarAccelerationStructureTimeSlicingMaxBytesCopy(TEXT("p.Chaos.AccelerationStructureTimeSlicingMaxBytesCopy"), AccelerationStructureTimeSlicingMaxBytesCopy, TEXT("The Maximum number of bytes to copy to the external acceleration structure during Copy Time Slicing"));
 
-	struct FAccelerationConfig
-	{
-		int32 BroadphaseType;
-		int32 BVNumCells;
-		int32 MaxChildrenInLeaf;
-		int32 MaxTreeDepth;
-		int32 AABBMaxChildrenInLeaf;
-		int32 AABBMaxTreeDepth;
-		FRealSingle MaxPayloadSize;
-		int32 IterationsPerTimeSlice;
+	CHAOS_API FBroadPhaseConfig BroadPhaseConfig;
 
-		FAccelerationConfig()
-		{
-			BroadphaseType = 3;
-			BVNumCells = 35;
-			MaxChildrenInLeaf = 5;
-			MaxTreeDepth = 200;
-			AABBMaxChildrenInLeaf = 500;
-			AABBMaxTreeDepth = 200;
-			MaxPayloadSize = 100000;
-			IterationsPerTimeSlice = 4000;
-		}
-	} ConfigSettings;
-
-	FAutoConsoleVariableRef CVarBroadphaseIsTree(TEXT("p.BroadphaseType"), ConfigSettings.BroadphaseType, TEXT(""));
-	FAutoConsoleVariableRef CVarBoundingVolumeNumCells(TEXT("p.BoundingVolumeNumCells"), ConfigSettings.BVNumCells, TEXT(""));
-	FAutoConsoleVariableRef CVarMaxChildrenInLeaf(TEXT("p.MaxChildrenInLeaf"), ConfigSettings.MaxChildrenInLeaf, TEXT(""));
-	FAutoConsoleVariableRef CVarMaxTreeDepth(TEXT("p.MaxTreeDepth"), ConfigSettings.MaxTreeDepth, TEXT(""));
-	FAutoConsoleVariableRef CVarAABBMaxChildrenInLeaf(TEXT("p.AABBMaxChildrenInLeaf"), ConfigSettings.AABBMaxChildrenInLeaf, TEXT(""));
-	FAutoConsoleVariableRef CVarAABBMaxTreeDepth(TEXT("p.AABBMaxTreeDepth"), ConfigSettings.AABBMaxTreeDepth, TEXT(""));
-	FAutoConsoleVariableRef CVarMaxPayloadSize(TEXT("p.MaxPayloadSize"), ConfigSettings.MaxPayloadSize, TEXT(""));
-	FAutoConsoleVariableRef CVarIterationsPerTimeSlice(TEXT("p.IterationsPerTimeSlice"), ConfigSettings.IterationsPerTimeSlice, TEXT(""));
+	FAutoConsoleVariableRef CVarBroadphaseIsTree(TEXT("p.BroadphaseType"), BroadPhaseConfig.BroadphaseType, TEXT(""));
+	FAutoConsoleVariableRef CVarBoundingVolumeNumCells(TEXT("p.BoundingVolumeNumCells"), BroadPhaseConfig.BVNumCells, TEXT(""));
+	FAutoConsoleVariableRef CVarMaxChildrenInLeaf(TEXT("p.MaxChildrenInLeaf"), BroadPhaseConfig.MaxChildrenInLeaf, TEXT(""));
+	FAutoConsoleVariableRef CVarMaxTreeDepth(TEXT("p.MaxTreeDepth"), BroadPhaseConfig.MaxTreeDepth, TEXT(""));
+	FAutoConsoleVariableRef CVarAABBMaxChildrenInLeaf(TEXT("p.AABBMaxChildrenInLeaf"), BroadPhaseConfig.AABBMaxChildrenInLeaf, TEXT(""));
+	FAutoConsoleVariableRef CVarAABBMaxTreeDepth(TEXT("p.AABBMaxTreeDepth"), BroadPhaseConfig.AABBMaxTreeDepth, TEXT(""));
+	FAutoConsoleVariableRef CVarMaxPayloadSize(TEXT("p.MaxPayloadSize"), BroadPhaseConfig.MaxPayloadSize, TEXT(""));
+	FAutoConsoleVariableRef CVarIterationsPerTimeSlice(TEXT("p.IterationsPerTimeSlice"), BroadPhaseConfig.IterationsPerTimeSlice, TEXT(""));
 
 	struct FDefaultCollectionFactory : public ISpatialAccelerationCollectionFactory
 	{
-		FAccelerationConfig Config;
-
 		using BVType = TBoundingVolume<FAccelerationStructureHandle>;
 		using AABBTreeType = TAABBTree<FAccelerationStructureHandle, TAABBTreeLeafArray<FAccelerationStructureHandle>>;
 		using AABBDynamicTreeType = TAABBTree<FAccelerationStructureHandle, TAABBTreeLeafArray<FAccelerationStructureHandle>>;
@@ -97,7 +76,7 @@ namespace Chaos
 		{
 			TConstParticleView<FSpatialAccelerationCache> Empty;
 
-			const uint16 NumBuckets = ConfigSettings.BroadphaseType >= 3 ? 2 : 1;
+			const uint16 NumBuckets = BroadPhaseConfig.BroadphaseType >= FBroadPhaseConfig::TreeAndGrid ? 2 : 1;
 			auto Collection = new TSpatialAccelerationCollection<AABBTreeType, BVType, AABBTreeOfGridsType>();
 
 			for (uint16 BucketIdx = 0; BucketIdx < NumBuckets; ++BucketIdx)
@@ -116,7 +95,7 @@ namespace Chaos
 
 		virtual uint8 GetActiveBucketsMask() const
 		{
-			return ConfigSettings.BroadphaseType >= 3 ? 3 : 1;
+			return BroadPhaseConfig.BroadphaseType >= FBroadPhaseConfig::TreeAndGrid ? 3 : 1;
 		}
 
 		virtual bool IsBucketTimeSliced(uint16 BucketIdx) const
@@ -126,17 +105,17 @@ namespace Chaos
 			{
 			case 0:
 			{
-				if (ConfigSettings.BroadphaseType == 0)
+				if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::Grid)
 				{
 					// BVType
 					return false;
 				}
-				else if (ConfigSettings.BroadphaseType == 1 || ConfigSettings.BroadphaseType == 3)
+				else if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::Tree || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeAndGrid)
 				{
 					// AABBTreeType
 					return true;
 				}
-				else if (ConfigSettings.BroadphaseType == 4 || ConfigSettings.BroadphaseType == 2)
+				else if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGridAndGrid || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGrid)
 				{
 					// AABBTreeOfGridsType
 					return true;
@@ -145,7 +124,7 @@ namespace Chaos
 			case 1:
 			{
 				// BVType
-				ensure(ConfigSettings.BroadphaseType == 3 || ConfigSettings.BroadphaseType == 4);
+				ensure(BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeAndGrid || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGridAndGrid);
 				return false;
 			}
 			default:
@@ -163,27 +142,27 @@ namespace Chaos
 			{
 			case 0:
 			{
-				if (ConfigSettings.BroadphaseType == 0)
+				if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::Grid)
 				{
-					return MakeUnique<BVType>(Particles, false, static_cast<FReal>(0), ConfigSettings.BVNumCells, ConfigSettings.MaxPayloadSize);
+					return MakeUnique<BVType>(Particles, false, static_cast<FReal>(0), BroadPhaseConfig.BVNumCells, BroadPhaseConfig.MaxPayloadSize);
 				}
-				else if (ConfigSettings.BroadphaseType == 1 || ConfigSettings.BroadphaseType == 3)
+				else if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::Tree || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeAndGrid)
 				{
 					if (bDynamicTree)
 					{
-						return MakeUnique<AABBDynamicTreeType>(Particles, ConfigSettings.MaxChildrenInLeaf, ConfigSettings.MaxTreeDepth, ConfigSettings.MaxPayloadSize, ForceFullBuild ? 0 : ConfigSettings.IterationsPerTimeSlice, true);
+						return MakeUnique<AABBDynamicTreeType>(Particles, BroadPhaseConfig.MaxChildrenInLeaf, BroadPhaseConfig.MaxTreeDepth, BroadPhaseConfig.MaxPayloadSize, ForceFullBuild ? 0 : BroadPhaseConfig.IterationsPerTimeSlice, true);
 					}
-					return MakeUnique<AABBTreeType>(Particles, ConfigSettings.MaxChildrenInLeaf, ConfigSettings.MaxTreeDepth, ConfigSettings.MaxPayloadSize, ForceFullBuild ? 0 : ConfigSettings.IterationsPerTimeSlice);
+					return MakeUnique<AABBTreeType>(Particles, BroadPhaseConfig.MaxChildrenInLeaf, BroadPhaseConfig.MaxTreeDepth, BroadPhaseConfig.MaxPayloadSize, ForceFullBuild ? 0 : BroadPhaseConfig.IterationsPerTimeSlice, false, AccelerationStructureUseDirtyTreeInsteadOfGrid == 1);
 				}
-				else if (ConfigSettings.BroadphaseType == 4 || ConfigSettings.BroadphaseType == 2)
+				else if (BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGridAndGrid || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGrid)
 				{
-					return MakeUnique<AABBTreeOfGridsType>(Particles, ConfigSettings.AABBMaxChildrenInLeaf, ConfigSettings.AABBMaxTreeDepth, ConfigSettings.MaxPayloadSize);
+					return MakeUnique<AABBTreeOfGridsType>(Particles, BroadPhaseConfig.AABBMaxChildrenInLeaf, BroadPhaseConfig.AABBMaxTreeDepth, BroadPhaseConfig.MaxPayloadSize);
 				}
 			}
 			case 1:
 			{
-				ensure(ConfigSettings.BroadphaseType == 3 || ConfigSettings.BroadphaseType == 4);
-				return MakeUnique<BVType>(Particles, false, static_cast<FReal>(0), ConfigSettings.BVNumCells, ConfigSettings.MaxPayloadSize);
+				ensure(BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeAndGrid || BroadPhaseConfig.BroadphaseType == FBroadPhaseConfig::TreeOfGridAndGrid);
+				return MakeUnique<BVType>(Particles, false, static_cast<FReal>(0), BroadPhaseConfig.BVNumCells, BroadPhaseConfig.MaxPayloadSize);
 			}
 			default:
 			{
@@ -207,8 +186,9 @@ namespace Chaos
 		}
 	};
 
-	FPBDRigidsEvolutionBase::FPBDRigidsEvolutionBase(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& InSolverPhysicsMaterials, int32 InNumIterations, int32 InNumPushOutIterations, bool InIsSingleThreaded)
-	    : Particles(InParticles)
+	FPBDRigidsEvolutionBase::FPBDRigidsEvolutionBase(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& InSolverPhysicsMaterials, bool InIsSingleThreaded)
+	    : IslandGroupManager(ConstraintGraph)
+		, Particles(InParticles)
 		, SolverPhysicsMaterials(InSolverPhysicsMaterials)
 		, InternalAcceleration(nullptr)
 		, AsyncInternalAcceleration(nullptr)
@@ -216,8 +196,9 @@ namespace Chaos
 		, bIsSingleThreaded(InIsSingleThreaded)
 		, bCanStartAsyncTasks(true)
 		, LatestExternalTimestampConsumed_Internal(-1)
-		, NumIterations(InNumIterations)
-		, NumPushOutIterations(InNumPushOutIterations)
+		, NumPositionIterations(0)
+		, NumVelocityIterations(0)
+		, NumProjectionIterations(0)
 		, SpatialCollectionFactory(new FDefaultCollectionFactory())
 	{
 		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
@@ -800,7 +781,9 @@ namespace Chaos
 			if (bCanStartAsyncTasks)
 			{
 				// we run the task for both starting a new accel structure as well as for the time-slicing
-				AccelerationStructureTaskComplete = TGraphTask<FChaosAccelerationStructureTask>::CreateTask().ConstructAndDispatchWhenReady(*SpatialCollectionFactory, SpatialAccelerationCache, AsyncInternalAcceleration, AsyncExternalAcceleration, ForceFullBuild, bIsSingleThreaded, bNeedsReset);
+				FGraphEventRef Task = TGraphTask<FChaosAccelerationStructureTask>::CreateTask().ConstructAndDispatchWhenReady(*SpatialCollectionFactory, SpatialAccelerationCache, AsyncInternalAcceleration, AsyncExternalAcceleration, ForceFullBuild, bIsSingleThreaded, bNeedsReset);
+				// this reference can live long, store completion handle instead of a reference to the task to reduce peak mem usage 
+				AccelerationStructureTaskComplete = Task->CreateCompletionHandle();
 			}
 		}
 		else
@@ -948,17 +931,17 @@ namespace Chaos
 	void FPBDRigidsEvolutionBase::Serialize(FChaosArchive& Ar)
 	{
 		ensure(false);	//disabled transient data serialization. Need to rethink
-		int32 DefaultBroadphaseType = ConfigSettings.BroadphaseType;
+		int32 DefaultBroadphaseType = BroadPhaseConfig.BroadphaseType;
 
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::SerializeBroadphaseType)
 		{
-			Ar << ConfigSettings.BroadphaseType;
+			Ar << BroadPhaseConfig.BroadphaseType;
 		}
 		else
 		{
 			//older archives just assume type 3
-			ConfigSettings.BroadphaseType = 3;
+			BroadPhaseConfig.BroadphaseType = 3;
 		}
 
 		Particles.Serialize(Ar);
@@ -1014,15 +997,18 @@ namespace Chaos
 			FlushSpatialAcceleration();
 		}
 
-		ConfigSettings.BroadphaseType = DefaultBroadphaseType;
+		BroadPhaseConfig.BroadphaseType = DefaultBroadphaseType;
 	}
 
 	void FPBDRigidsEvolutionBase::SetParticleObjectState(FPBDRigidParticleHandle* Particle, EObjectStateType ObjectState)
 	{
-		EObjectStateType InitialState = Particle->ObjectState();
+		const EObjectStateType InitialState = Particle->ObjectState();
+		const bool bWasDynamic = (InitialState == EObjectStateType::Dynamic) || (InitialState == EObjectStateType::Sleeping);
+		const bool bIsDynamic = (ObjectState == EObjectStateType::Dynamic) || (ObjectState == EObjectStateType::Sleeping);
 
 		Particle->SetObjectStateLowLevel(ObjectState);
 
+		// Put the particle into the correct array. This will change the location of the particle data
 		if (auto ClusteredParticle = Particle->CastToClustered())
 		{
 			Particles.SetClusteredParticleSOA(ClusteredParticle);
@@ -1034,19 +1020,25 @@ namespace Chaos
 
 		if (InitialState != ObjectState && !Particle->Disabled())
 		{
-			if (InitialState == EObjectStateType::Sleeping)
+			// If we were just put to sleep or made kinematic, we should still report info back to GT
+			// @todo(chaos): why? add reason to the comments
+			if (ObjectState != EObjectStateType::Dynamic)
 			{
-				if (Particle->IslandIndex() != INDEX_NONE)
-				{
-					// GT has forced a wake so have to wake everything in the island
-					IslandsToWake.Enqueue(Particle->IslandIndex());
-				}
-			}
-			else if (ObjectState != EObjectStateType::Dynamic)
-			{
-				// even though we went to sleep, we should still report info back to GT
 				Particles.MarkTransientDirtyParticle(Particle);
 			}
+		}
+
+		// If we are now dynamic and enabled, we need to be in the graph if not already there. We may not be
+		// because Kinematic particles are only in the graph if referenced by a constraint.
+		if (bIsDynamic && !bWasDynamic && !Particle->Disabled())
+		{
+			ConstraintGraph.AddParticle(Particle);
+		}
+
+		// If we switched to/from dynamic the inertia conditioning may need to be refreshed
+		if (Particle->InertiaConditioningEnabled() && (bWasDynamic != bIsDynamic))
+		{
+			Particle->SetInertiaConditioningDirty();
 		}
 	}
 
@@ -1059,15 +1051,7 @@ namespace Chaos
 		Particles.SetDynamicParticleSOA(Particle);
 		if (InitialState != ObjectState)
 		{
-			if (InitialState == EObjectStateType::Sleeping)
-			{
-				if (Particle->IslandIndex() != INDEX_NONE)
-				{
-					// GT has forced a wake so have to wake everything in the island
-					IslandsToWake.Enqueue(Particle->IslandIndex());
-				}
-			}
-			else if(ObjectState != EObjectStateType::Dynamic)
+			if(ObjectState != EObjectStateType::Dynamic)
 			{
 				// even though we went to sleep, we should still report info back to GT
 				Particles.MarkTransientDirtyParticle(Particle);
@@ -1081,10 +1065,9 @@ namespace Chaos
 		{
 			Particles.DisableParticle(Particle);
 			RemoveParticleFromAccelerationStructure(*Particle);
-			ConstraintGraph.DisableParticle(Particle);
+			DisableConstraints(Particle);
+			ConstraintGraph.RemoveParticle(Particle);
 		}
-
-		DisableConstraints(InParticles);
 	}
 
 	void FPBDRigidsEvolutionBase::DisableParticleWithRemovalEvent(FGeometryParticleHandle* Particle)

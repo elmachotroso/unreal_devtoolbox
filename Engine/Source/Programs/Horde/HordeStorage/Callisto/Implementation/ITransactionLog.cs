@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 
 namespace Callisto.Implementation
@@ -17,7 +18,6 @@ namespace Callisto.Implementation
         Task Drop();
         TransactionLogDescription Describe();
     }
-
 
     public interface ITransactionLogs
     {
@@ -34,8 +34,8 @@ namespace Callisto.Implementation
             KnownSites = knownSites;
         }
 
-        public Guid Generation { get; set; }
-        public List<string> KnownSites { get; set; }
+        public Guid Generation { get; }
+        public List<string> KnownSites { get; }
     }
 
     public class TransactionEvents

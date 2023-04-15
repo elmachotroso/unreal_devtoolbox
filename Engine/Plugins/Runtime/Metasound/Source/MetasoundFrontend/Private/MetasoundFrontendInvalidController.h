@@ -34,6 +34,7 @@ namespace Metasound
 
 			const FMetasoundFrontendLiteral& GetInvalidLiteral();
 			const FMetasoundFrontendClassInterface& GetInvalidClassInterface();
+			const FMetasoundFrontendNodeInterface& GetInvalidNodeInterface();
 			const FMetasoundFrontendClassMetadata& GetInvalidClassMetadata();
 			const FMetasoundFrontendGraphClassPresetOptions& GetInvalidGraphClassPresetOptions();
 			const FMetasoundFrontendGraphClass& GetInvalidGraphClass();
@@ -59,6 +60,7 @@ namespace Metasound
 			virtual FGuid GetID() const override { return Metasound::FrontendInvalidID; }
 			virtual const FName& GetDataType() const override { return Invalid::GetInvalidName(); }
 			virtual const FVertexName& GetName() const override { return Invalid::GetInvalidName(); }
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const override { return EMetasoundFrontendVertexAccessType::Unset; }
 
 #if WITH_EDITOR
 			virtual FText GetDisplayName() const override { return FText::GetEmpty(); }
@@ -102,6 +104,7 @@ namespace Metasound
 			virtual bool IsConnected() const override { return false; }
 			virtual const FName& GetDataType() const override { return Invalid::GetInvalidName(); }
 			virtual const FVertexName& GetName() const override { return Invalid::GetInvalidName(); }
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const override { return EMetasoundFrontendVertexAccessType::Reference; }
 
 #if WITH_EDITOR
 			virtual FText GetDisplayName() const override { return Invalid::GetInvalidText(); }
@@ -235,6 +238,8 @@ namespace Metasound
 			virtual const FMetasoundFrontendClassInterface& GetClassInterface() const override { return Invalid::GetInvalidClassInterface(); }
 			virtual const FMetasoundFrontendClassMetadata& GetClassMetadata() const override { return Invalid::GetInvalidClassMetadata(); }
 
+			virtual const FMetasoundFrontendNodeInterface& GetNodeInterface() const override { return Invalid::GetInvalidNodeInterface(); }
+
 #if WITH_EDITOR
 			virtual const FMetasoundFrontendInterfaceStyle& GetInputStyle() const override { return Invalid::GetInvalidInterfaceStyle(); }
 			virtual const FMetasoundFrontendInterfaceStyle& GetOutputStyle() const override { return Invalid::GetInvalidInterfaceStyle(); }
@@ -248,8 +253,6 @@ namespace Metasound
 
 			virtual bool DiffAgainstRegistryInterface(FClassInterfaceUpdates& OutInterfaceUpdates, bool bInUseHighestMinorVersion) const override { return false; }
 			virtual bool CanAutoUpdate(FClassInterfaceUpdates& OutInterfaceUpdates) const override { OutInterfaceUpdates = { }; return false; }
-			virtual FMetasoundFrontendVersionNumber FindHighestVersionInRegistry() const override { return FMetasoundFrontendVersionNumber::GetInvalid(); }
-			virtual FMetasoundFrontendVersionNumber FindHighestMinorVersionInRegistry() const override { return FMetasoundFrontendVersionNumber::GetInvalid(); }
 
 			virtual TSharedRef<IGraphController> AsGraph() override;
 			virtual TSharedRef<const IGraphController> AsGraph() const override;
@@ -404,6 +407,7 @@ namespace Metasound
 			virtual FNodeHandle AddNode(const FNodeRegistryKey& InNodeClass, FGuid InNodeGuid) override { return INodeController::GetInvalidHandle(); }
 			virtual FNodeHandle AddNode(const FMetasoundFrontendClassMetadata& InNodeClass, FGuid InNodeGuid) override { return INodeController::GetInvalidHandle(); }
 			virtual FNodeHandle AddDuplicateNode(const INodeController& InNode) override { return INodeController::GetInvalidHandle(); }
+			virtual FNodeHandle AddTemplateNode(const FNodeRegistryKey& InNodeClass, FMetasoundFrontendNodeInterface&& InNodeInterface, FGuid InNodeGuid) override { return INodeController::GetInvalidHandle(); }
 
 			// Remove the node corresponding to this node handle.
 			// On success, invalidates the received node handle.
@@ -421,10 +425,7 @@ namespace Metasound
 
 			virtual FNodeHandle CreateEmptySubgraph(const FMetasoundFrontendClassMetadata& InInfo) override { return INodeController::GetInvalidHandle(); }
 
-			virtual TUniquePtr<IOperator> BuildOperator(const FOperatorSettings& InSettings, const FMetasoundEnvironment& InEnvironment, TArray<IOperatorBuilder::FBuildErrorPtr>& OutBuildErrors) const override
-			{
-				return TUniquePtr<IOperator>(nullptr);
-			}
+			virtual TUniquePtr<IOperator> BuildOperator(const FOperatorSettings& InSettings, const FMetasoundEnvironment& InEnvironment, FBuildResults& OutBuildErrors) const override { return { }; }
 
 			virtual FDocumentHandle GetOwningDocument() override;
 			virtual FConstDocumentHandle GetOwningDocument() const override;
@@ -472,6 +473,7 @@ namespace Metasound
 
 				virtual void SetMetadata(const FMetasoundFrontendDocumentMetadata& InMetadata) override { }
 				virtual const FMetasoundFrontendDocumentMetadata& GetMetadata() const override { return Invalid::GetInvalidDocumentMetadata(); }
+				virtual FMetasoundFrontendDocumentMetadata* GetMetadata() override { return nullptr; }
 
 				virtual void RemoveUnreferencedDependencies() override { }
 				virtual TArray<FConstClassAccessPtr> SynchronizeDependencyMetadata() override { return { }; }

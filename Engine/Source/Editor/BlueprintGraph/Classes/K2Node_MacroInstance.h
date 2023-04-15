@@ -3,16 +3,34 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "EdGraph/EdGraph.h"
+#include "BlueprintActionFilter.h"
 #include "BlueprintNodeSignature.h"
-#include "K2Node_Tunnel.h"
-#include "Textures/SlateIcon.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraph/EdGraphPin.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "K2Node.h"
+#include "K2Node_Tunnel.h"
+#include "Math/Color.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "K2Node_MacroInstance.generated.h"
 
+class FArchive;
 class UBlueprint;
+class UObject;
+struct FKismetUserDeclaredFunctionMetadata;
+template <typename KeyType, typename ValueType> struct TKeyValuePair;
 
 UCLASS(MinimalAPI)
 class UK2Node_MacroInstance : public UK2Node_Tunnel
@@ -56,6 +74,7 @@ public:
 	virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const override;
 	virtual bool CanPasteHere(const UEdGraph* TargetGraph) const override;
 	virtual UObject* GetJumpTargetForDoubleClick() const override { return GetMacroGraph(); }
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface
@@ -63,7 +82,6 @@ public:
 	virtual bool DrawNodeAsEntry() const override { return false; }
 	virtual void NotifyPinConnectionListChanged(UEdGraphPin* Pin) override;
 	virtual void PostReconstructNode() override;
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual void GetNodeAttributes( TArray<TKeyValuePair<FString, FString>>& OutNodeAttributes ) const override;
 	virtual FText GetMenuCategory() const override;
 	virtual int32 GetNodeRefreshPriority() const override { return EBaseNodeRefreshPriority::Low_UsesDependentWildcard; }

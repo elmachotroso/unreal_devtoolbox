@@ -1,9 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Editor/ClassViewer/Private/ClassViewerNode.h"
 #include "ClassViewerFilter.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/TopLevelAssetPath.h"
+
+class FClassViewerNode;
+class UClass;
 
 class FUnloadedBlueprintData : public IUnloadedBlueprintData
 {
@@ -30,7 +38,10 @@ public:
 
 	virtual TSharedPtr<FString> GetClassName() const override;
 
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use GetClassPathName.")
 	virtual FName GetClassPath() const override;
+
+	virtual FTopLevelAssetPath GetClassPathName() const override;
 
 	virtual const UClass* GetClassWithin() const override;
 

@@ -4,7 +4,7 @@
 
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorCommands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEditorStyle.h"
 #include "NiagaraEmitterHandle.h"
@@ -24,7 +24,6 @@
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #include "ViewModels/Stack/NiagaraStackSystemSettingsGroup.h"
 #include "ViewModels/Stack/NiagaraStackParameterStoreEntry.h"
-#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
@@ -51,14 +50,10 @@
 #include "NiagaraEditorWidgetsUtilities.h"
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "Stack/SNiagaraStackErrorItem.h"
-#include "NiagaraStackEditorData.h"
-#include "ScopedTransaction.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "ViewModels/Stack/NiagaraStackRoot.h"
 #include "NiagaraStackCommandContext.h"
 #include "NiagaraEditorUtilities.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "EditorFontGlyphs.h"
 #include "Framework/Commands/UICommandList.h"
 #include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "Widgets/SNiagaraParameterName.h"
@@ -86,7 +81,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FStyleColors::Panel)
 			[
 				SNew(SVerticalBox)
@@ -230,7 +225,7 @@ private:
 
 	EVisibility GetOpenSourceEmitterVisibility() const
 	{
-		return EmitterHandleViewModel->GetEmitterViewModel()->GetEmitter()->GetParent() != nullptr ? EVisibility::Visible : EVisibility::Collapsed;
+		return EmitterHandleViewModel->GetEmitterViewModel()->HasParentEmitter() ? EVisibility::Visible : EVisibility::Collapsed;
 	}
 
 	FReply OnIssueIconClicked() const
@@ -288,7 +283,7 @@ void SNiagaraStack::Construct(const FArguments& InArgs, UNiagaraStackViewModel* 
 		.Padding(1, 1, 1, 4)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FStyleColors::Panel)
 			.Padding(5)
 			[
@@ -494,7 +489,7 @@ void SNiagaraStack::ShowEmitterInContentBrowser(TWeakPtr<FNiagaraEmitterHandleVi
 		TArray<FAssetData> Assets;
 		if (EmitterHandleViewModel->GetEmitterViewModel()->HasParentEmitter())
 		{
-			Assets.Add(FAssetData(EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter()));
+			Assets.Add(FAssetData(EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter().Emitter));
 			ContentBrowserModule.Get().SyncBrowserToAssets(Assets);
 		}
 	}
@@ -654,7 +649,7 @@ TSharedRef<ITableRow> SNiagaraStack::OnGenerateRowForTopLevelObject(TSharedRef<U
 	{
 		Content =
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FStyleColors::Panel)
 			[
 				SNew(SHorizontalBox)
@@ -984,12 +979,19 @@ SNiagaraStack::FRowWidgets SNiagaraStack::ConstructNameAndValueWidgetsForItem(UN
 			[
 				PropertyRowWidgets.WholeRowWidget.ToSharedRef()
 			];
-			RowBox->AddSlot()
-			.AutoWidth()
-			.Padding(3, 0, 0, 0)
-			[
-				SNew(SResetToDefaultPropertyEditor, PropertyRow->GetDetailTreeNode()->CreatePropertyHandle())
-			];
+
+			// do not add reset widget if it is customized
+			TSharedPtr<IPropertyHandle> PropertyHandle = PropertyRow->GetDetailTreeNode()->CreatePropertyHandle();
+			if (PropertyHandle.IsValid() && !(PropertyHandle->IsResetToDefaultCustomized() || PropertyHandle->HasMetaData(TEXT("NoResetToDefault"))))
+			{
+				RowBox->AddSlot()
+				.AutoWidth()
+				.Padding(3, 0, 0, 0)
+				[
+					SNew(SResetToDefaultPropertyEditor, PropertyHandle)
+				];
+			}
+
 			return FRowWidgets(RowBox); 
 		}
 		else
@@ -1020,18 +1022,24 @@ SNiagaraStack::FRowWidgets SNiagaraStack::ConstructNameAndValueWidgetsForItem(UN
 				NameWidget = PropertyRowWidgets.NameWidget;
 			}
 
-			TSharedRef<SWidget> ValueWidget = SNew(SHorizontalBox)
+			TSharedRef<SHorizontalBox> ValueWidget = SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
 			[
 				PropertyRowWidgets.ValueWidget.ToSharedRef()
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(3, 0, 0, 0)
-			[
-				SNew(SResetToDefaultPropertyEditor, PropertyRow->GetDetailTreeNode()->CreatePropertyHandle())
 			];
+
+			// do not add reset widget if it is customized
+			TSharedPtr<IPropertyHandle> PropertyHandle = PropertyRow->GetDetailTreeNode()->CreatePropertyHandle();
+			if (PropertyHandle.IsValid() && !(PropertyHandle->IsResetToDefaultCustomized() || PropertyHandle->HasMetaData(TEXT("NoResetToDefault"))))
+			{
+				ValueWidget->AddSlot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(3, 0, 0, 0)
+				[
+					SNew(SResetToDefaultPropertyEditor, PropertyHandle)
+				];
+			}
 
 			return FRowWidgets(NameWidget.ToSharedRef(), ValueWidget);
 		}

@@ -2,19 +2,20 @@
 
 #include "SoundClassEditor.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EdGraph/EdGraph.h"
 #include "SoundClassGraph/SoundClassGraph.h"
 #include "SoundClassGraph/SoundClassGraphNode.h"
 #include "SoundClassGraph/SoundClassGraphSchema.h"
 #include "Sound/SoundClass.h"
 #include "Editor.h"
+#include "EngineAnalytics.h"
 
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+#include "WorkspaceMenuStructureModule.h"
 
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "ScopedTransaction.h"
@@ -78,12 +79,12 @@ void FSoundClassEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>&
 	InTabManager->RegisterTabSpawner( GraphCanvasTabId, FOnSpawnTab::CreateSP(this, &FSoundClassEditor::SpawnTab_GraphCanvas) )
 		.SetDisplayName( LOCTEXT( "GraphCanvasTab", "Graph" ) )
 		.SetGroup( WorkspaceMenuCategoryRef )
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "GraphEditor.EventGraph_16x"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.EventGraph_16x"));
 
 	InTabManager->RegisterTabSpawner( PropertiesTabId, FOnSpawnTab::CreateSP(this, &FSoundClassEditor::SpawnTab_Properties) )
 		.SetDisplayName( LOCTEXT( "PropertiesTab", "Details" ) )
 		.SetGroup( WorkspaceMenuCategoryRef )
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 }
 
 void FSoundClassEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)

@@ -16,6 +16,7 @@
 #include "Containers/StringFwd.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Fork.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/EngineBuildSettings.h"
@@ -41,6 +42,37 @@
 DEFINE_LOG_CATEGORY_STATIC(LogCrashContext, Display, All);
 
 extern CORE_API bool GIsGPUCrashed;
+
+/**
+ * A function-like type that creates a TStringBuilder to xml-escape a string
+ */
+template<int BufferSize=512>
+class FXmlEscapedString : public TStringBuilderWithBuffer<TCHAR, BufferSize>
+{
+public:
+	explicit FXmlEscapedString(FStringView Str)
+	{
+		FGenericCrashContext::AppendEscapedXMLString(*this, Str);
+	}
+};
+
+static bool NeedsEscape(FStringView Str)
+{
+	for (TCHAR C : Str)
+	{
+		switch (C)
+		{
+		case TCHAR('&'):
+		case TCHAR('"'):
+		case TCHAR('\''):
+		case TCHAR('<'):
+		case TCHAR('>'):
+		case TCHAR('\r'):
+			return true;
+		}
+	}
+	return false;
+}
 
 /*-----------------------------------------------------------------------------
 	FGenericCrashContext
@@ -72,6 +104,7 @@ const TCHAR* const FGenericCrashContext::CrashTypeStall = TEXT("Stall");
 const TCHAR* const FGenericCrashContext::CrashTypeGPU = TEXT("GPUCrash");
 const TCHAR* const FGenericCrashContext::CrashTypeHang = TEXT("Hang");
 const TCHAR* const FGenericCrashContext::CrashTypeAbnormalShutdown = TEXT("AbnormalShutdown");
+const TCHAR* const FGenericCrashContext::CrashTypeOutOfMemory = TEXT("OutOfMemory");
 
 const TCHAR* const FGenericCrashContext::EngineModeExUnknown = TEXT("Unset");
 const TCHAR* const FGenericCrashContext::EngineModeExDirty = TEXT("Dirty");
@@ -83,6 +116,10 @@ volatile int64 FGenericCrashContext::OutOfProcessCrashReporterExitCode = 0;
 int32 FGenericCrashContext::StaticCrashContextIndex = 0;
 
 const FGuid FGenericCrashContext::ExecutionGuid = FGuid::NewGuid();
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+FAdditionalCrashContextDelegate FGenericCrashContext::AdditionalCrashContextDelegate;
+#endif //WITH_ADDITIONAL_CRASH_CONTEXTS
 
 namespace NCached
 {
@@ -107,7 +144,7 @@ void FGenericCrashContext::Initialize()
 	NCached::Session.bIsSourceDistribution = FEngineBuildSettings::IsSourceDistribution();
 	NCached::Session.ProcessId = FPlatformProcess::GetCurrentProcessId();
 
-	NCached::Set(NCached::Session.GameName, *FString::Printf(TEXT("UE5-%s"), FApp::GetProjectName()));
+	NCached::Set(NCached::Session.GameName, *FString::Printf(TEXT("UE-%s"), FApp::GetProjectName()));
 	NCached::Set(NCached::Session.GameSessionID, TEXT("")); // Updated by callback
 	NCached::Set(NCached::Session.GameStateName, TEXT("")); // Updated by callback
 	NCached::Set(NCached::Session.UserActivityHint, TEXT("")); // Updated by callback
@@ -269,6 +306,17 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	});
 
 	FCoreDelegates::ConfigReadyForUse.AddStatic(FGenericCrashContext::InitializeFromConfig);
+
+	FCoreDelegates::OnPostFork.AddLambda([](EForkProcessRole Role)
+	{
+		if (Role == EForkProcessRole::Child)
+		{
+			UE_LOG(LogCrashContext, VeryVerbose, TEXT("Updating forked child Session ProcessID: %u -> %u"), NCached::Session.ProcessId, FPlatformProcess::GetCurrentProcessId());
+
+			NCached::Session.ProcessId = FPlatformProcess::GetCurrentProcessId();
+			SerializeTempCrashContextToFile();
+		}
+	});
 
 	SerializeTempCrashContextToFile();
 
@@ -727,7 +775,9 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 	BeginSection( CommonBuffer, PlatformPropertiesTag );
 	AddPlatformSpecificProperties();
 	// The name here is a bit cryptic, but we keep it to avoid breaking backend stuff.
-	AddCrashProperty(TEXT("PlatformCallbackResult"), NCached::Session.CrashType);
+	AddCrashProperty(TEXT("PlatformCallbackResult"), NCached::Session.CrashTrigger);
+	// New name we can phase in for the crash trigger to distinguish real crashes from debug
+	AddCrashProperty(TEXT("CrashTrigger"), NCached::Session.CrashTrigger);
 	EndSection( CommonBuffer, PlatformPropertiesTag );
 
 	// Add the engine data
@@ -787,7 +837,7 @@ void FGenericCrashContext::SetDeploymentName(const FString& EpicApp)
 
 void FGenericCrashContext::SetCrashTrigger(ECrashTrigger Type)
 {
-	NCached::Session.CrashType = (int32)Type;
+	NCached::Session.CrashTrigger = (int32)Type;
 }
 
 void FGenericCrashContext::GetUniqueCrashName(TCHAR* GUIDBuffer, int32 BufferSize) const
@@ -815,18 +865,13 @@ void FGenericCrashContext::SerializeAsXML( const TCHAR* Filename ) const
 	FFileHelper::SaveStringToFile( CommonBuffer, Filename, FFileHelper::EEncodingOptions::AutoDetect );
 }
 
-void FGenericCrashContext::AddCrashPropertyInternal(FString& Buffer, const TCHAR* PropertyName, const TCHAR* PropertyValue)
+void FGenericCrashContext::AddCrashPropertyInternal(FString& Buffer, FStringView PropertyName, FStringView PropertyValue)
 {
-	Buffer += TEXT( "<" );
-	Buffer += PropertyName;
-	Buffer += TEXT( ">" );
-
-	AppendEscapedXMLString(Buffer, PropertyValue);
-
-	Buffer += TEXT( "</" );
-	Buffer += PropertyName;
-	Buffer += TEXT( ">" );
-	Buffer += LINE_TERMINATOR;
+	Buffer.Appendf(TEXT("<%.*s>%s</%.*s>" LINE_TERMINATOR_ANSI), 
+		PropertyName.Len(), PropertyName.GetData(),
+		*FXmlEscapedString(PropertyValue), 
+		PropertyName.Len(), PropertyName.GetData()
+		);
 }
 
 void FGenericCrashContext::AddPlatformSpecificProperties() const
@@ -873,6 +918,23 @@ void FGenericCrashContext::AddPortableCallStackHash() const
 	AddCrashProperty(TEXT("PCallStackHash"), *EscapedPortableHash);
 }
 
+void FGenericCrashContext::AppendPortableCallstack(FString& OutBuffer, TConstArrayView<FCrashStackFrame> StackFrames)
+{
+	OutBuffer += LINE_TERMINATOR;
+
+	// Get the max module name length for padding
+	int32 MaxModuleLength = 0;
+	for (const FCrashStackFrame& Frame : StackFrames)
+	{
+		MaxModuleLength = FMath::Max(MaxModuleLength, FXmlEscapedString(Frame.ModuleName).Len());
+	}
+
+	for (const FCrashStackFrame& Frame : StackFrames)
+	{
+		OutBuffer.Appendf(TEXT("%-*s 0x%016llx + %-16llx" LINE_TERMINATOR_ANSI), MaxModuleLength + 1, *FXmlEscapedString(Frame.ModuleName), Frame.BaseAddress, Frame.Offset);
+	}
+}
+
 void FGenericCrashContext::AddPortableCallStack() const
 {	
 	if (CallStack.Num() == 0)
@@ -881,31 +943,16 @@ void FGenericCrashContext::AddPortableCallStack() const
 		return;
 	}
 
-	FString CrashStackBuffer = LINE_TERMINATOR;
-
-	// Get the max module name length for padding
-	int32 MaxModuleLength = 0;
-	for (TArray<FCrashStackFrame>::TConstIterator It(CallStack); It; ++It)
-	{
-		MaxModuleLength = FMath::Max(MaxModuleLength, It->ModuleName.Len());
-	}
-
-	for (TArray<FCrashStackFrame>::TConstIterator It(CallStack); It; ++It)
-	{
-		CrashStackBuffer += FString::Printf(TEXT("%-*s 0x%016llx + %-16llx"),MaxModuleLength + 1, *It->ModuleName, It->BaseAddress, It->Offset);
-		CrashStackBuffer += LINE_TERMINATOR;
-	}
-
-	FString EscapedStackBuffer;
-
-	AppendEscapedXMLString(EscapedStackBuffer, *CrashStackBuffer);
-
-	AddCrashProperty(TEXT("PCallStack"), *EscapedStackBuffer);
+	BeginSection(CommonBuffer, TEXT("PCallStack"));
+	AppendPortableCallstack(CommonBuffer, CallStack);
+	EndSection(CommonBuffer, TEXT("PCallStack"));
 }
+
+
 
 void FGenericCrashContext::AddHeader(FString& Buffer)
 {
-	Buffer += TEXT("<?xml version=\"1.0\" encoding=\"UTF-8\"?>") LINE_TERMINATOR;
+	Buffer += TEXT("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" LINE_TERMINATOR_ANSI);
 	BeginSection(Buffer, TEXT("FGenericCrashContext") );
 }
 
@@ -916,30 +963,25 @@ void FGenericCrashContext::AddFooter(FString& Buffer)
 
 void FGenericCrashContext::BeginSection(FString& Buffer, const TCHAR* SectionName)
 {
-	Buffer += TEXT( "<" );
-	Buffer += SectionName;
-	Buffer += TEXT(">");
-	Buffer += LINE_TERMINATOR;
+	Buffer.Appendf(TEXT("<%s>" LINE_TERMINATOR_ANSI), SectionName);
 }
 
 void FGenericCrashContext::EndSection(FString& Buffer, const TCHAR* SectionName)
 {
-	Buffer += TEXT( "</" );
-	Buffer += SectionName;
-	Buffer += TEXT( ">" );
-	Buffer += LINE_TERMINATOR;
+	Buffer.Appendf(TEXT("</%s>" LINE_TERMINATOR_ANSI), SectionName);
 }
 
-void FGenericCrashContext::AppendEscapedXMLString(FString& OutBuffer, const TCHAR* Text)
+template<typename DEST>
+static void AppendEscapedXMLString(DEST& OutBuffer, FStringView Text)
 {
-	if (!Text)
+	if (Text.IsEmpty())
 	{
 		return;
 	}
 
-	while (*Text)
+	for (TCHAR C : Text)
 	{
-		switch (*Text)
+		switch (C)
 		{
 		case TCHAR('&'):
 			OutBuffer += TEXT("&amp;");
@@ -959,11 +1001,19 @@ void FGenericCrashContext::AppendEscapedXMLString(FString& OutBuffer, const TCHA
 		case TCHAR('\r'):
 			break;
 		default:
-			OutBuffer += *Text;
+			OutBuffer += C;
 		};
-
-		Text++;
 	}
+}
+
+void FGenericCrashContext::AppendEscapedXMLString(FString& OutBuffer, FStringView Text)
+{
+	::AppendEscapedXMLString(OutBuffer, Text);
+}
+
+void FGenericCrashContext::AppendEscapedXMLString(FStringBuilderBase& OutBuffer, FStringView Text)
+{
+	::AppendEscapedXMLString(OutBuffer, Text);
 }
 
 FString FGenericCrashContext::UnescapeXMLString( const FString& Text )
@@ -997,6 +1047,8 @@ const TCHAR* FGenericCrashContext::GetCrashTypeString(ECrashContextType Type)
 		return CrashTypeAssert;
 	case ECrashContextType::AbnormalShutdown:
 		return CrashTypeAbnormalShutdown;
+	case ECrashContextType::OutOfMemory:
+		return CrashTypeOutOfMemory;
 	default:
 		return CrashTypeCrash;
 	}
@@ -1203,6 +1255,18 @@ void FGenericCrashContext::CapturePortableCallStack(void* ErrorProgramCounter, v
 	SetPortableCallStack(StackTraceCursor, StackTraceDepth);
 }
 
+void FGenericCrashContext::CaptureThreadPortableCallStack(const uint64 ThreadId, void* Context)
+{
+	// Capture the stack trace
+	static const int StackTraceMaxDepth = 100;
+	uint64 StackTrace[StackTraceMaxDepth];
+	FMemory::Memzero(StackTrace);
+	int32 StackTraceDepth = FPlatformStackWalk::CaptureThreadStackBackTrace(ThreadId, StackTrace, StackTraceMaxDepth, Context);
+
+	// Generate the portable callstack from it
+	SetPortableCallStack(StackTrace, StackTraceDepth);
+}
+
 void FGenericCrashContext::CapturePortableCallStack(int32 NumStackFramesToIgnore, void* Context)
 {
 	CapturePortableCallStack(nullptr, Context);
@@ -1258,6 +1322,23 @@ void FGenericCrashContext::AddPortableThreadCallStack(uint32 ThreadId, const TCH
 	// Not implemented for generic class
 }
 
+void FGenericCrashContext::CaptureModules()
+{
+	ModulesInfo.Reset();
+	GetModules(ModulesInfo);
+}
+
+void FGenericCrashContext::GetModules(TArray<FStackWalkModuleInfo>& OutModules) const
+{
+	int32 Count = FPlatformStackWalk::GetProcessModuleCount();
+	if (Count > 0)
+	{
+		OutModules.Reset();
+		OutModules.AddZeroed(Count);
+		Count = FPlatformStackWalk::GetProcessModuleSignatures(OutModules.GetData(), Count);
+		OutModules.SetNum(Count);
+	}
+}
 
 
 void FGenericCrashContext::CopyPlatformSpecificFiles(const TCHAR* OutputDirectory, void* Context)
@@ -1403,6 +1484,7 @@ void FGenericCrashContext::DumpAdditionalContext(const TCHAR* CrashFolderAbsolut
 {
 #if WITH_ADDITIONAL_CRASH_CONTEXTS 
 	FCrashContextExtendedWriterImpl Writer(CrashFolderAbsolute);
+	AdditionalCrashContextDelegate.Broadcast(Writer);
 	FAdditionalCrashContextStack::ExecuteProviders(Writer);
 #endif
 }

@@ -16,31 +16,10 @@
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PoseAsset)
+
 #define LOCTEXT_NAMESPACE "PoseAsset"
 
-// utility function 
-#if WITH_EDITOR
-FSmartName GetUniquePoseName(USkeleton* Skeleton)
-{
-	check(Skeleton);
-	int32 NameIndex = 0;
-
-	SmartName::UID_Type NewUID;
-	FName NewName;
-
-	do
-	{
-		NewName = FName(*FString::Printf(TEXT("Pose_%d"), NameIndex++));
-		NewUID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, NewName);
-	} while (NewUID != SmartName::MaxUID);
-
-	// if found, 
-	FSmartName NewPoseName;
-	Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, NewName, NewPoseName);
-
-	return NewPoseName;
-}
-#endif 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // FPoseDataContainer
@@ -188,7 +167,7 @@ bool FPoseDataContainer::InsertTrack(const FName& InTrackName, USkeleton* InSkel
 	return false;
 }
 
-bool FPoseDataContainer::FillUpSkeletonPose(FPoseData* PoseData, USkeleton* InSkeleton)
+bool FPoseDataContainer::FillUpSkeletonPose(FPoseData* PoseData, const USkeleton* InSkeleton)
 {
 	if (PoseData)
 	{
@@ -310,7 +289,7 @@ void FPoseDataContainer::ConvertToFullPose(USkeleton* InSkeleton, const TArray<F
 			{
 				// we only add to local space poses if it's not same as default pose
 				FTransform DefaultTransform = GetDefaultTransform(Tracks[TrackIndex], InSkeleton, RefPose);
-				if (!Pose.SourceLocalSpacePose[TrackIndex].Equals(DefaultTransform, KINDA_SMALL_NUMBER))
+				if (!Pose.SourceLocalSpacePose[TrackIndex].Equals(DefaultTransform, UE_KINDA_SMALL_NUMBER))
 				{
 					int32 NewIndex = Pose.LocalSpacePose.Add(Pose.SourceLocalSpacePose[TrackIndex]);
 					TrackPoseInfluenceIndices[TrackIndex].Influences.Emplace(FPoseAssetInfluence{PoseIndex, NewIndex});
@@ -1168,11 +1147,11 @@ void UPoseAsset::PostProcessData()
 	UpdateTrackBoneIndices();
 }
 
-bool UPoseAsset::AddOrUpdatePoseWithUniqueName(USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName /*= nullptr*/)
+bool UPoseAsset::AddOrUpdatePoseWithUniqueName(const USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName /*= nullptr*/)
 {
 	bool bSavedAdditivePose = bAdditivePose;
 
-	FSmartName NewPoseName = GetUniquePoseName(GetSkeleton());
+	FSmartName NewPoseName = GetUniquePoseSmartName(GetSkeleton());
 	AddOrUpdatePose(NewPoseName, MeshComponent);
 
 	if (OutPoseName)
@@ -1187,16 +1166,34 @@ bool UPoseAsset::AddOrUpdatePoseWithUniqueName(USkeletalMeshComponent* MeshCompo
 	return true;
 }
 
-
-void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshComponent* MeshComponent, bool bUpdateCurves)
+void UPoseAsset::AddReferencePose(const FSmartName& PoseName, const FReferenceSkeleton& RefSkeleton)
 {
-	USkeleton* MySkeleton = GetSkeleton();
-	if (MySkeleton && MeshComponent && MeshComponent->SkeletalMesh)
+	TArray<FTransform> BoneTransforms;
+	TArray<FName> TrackNames;
+
+	const TArray<FTransform>& ReferencePose = RefSkeleton.GetRefBonePose();
+	for (int32 BoneIndex = 0; BoneIndex < RefSkeleton.GetNum(); ++BoneIndex)
+	{
+		TrackNames.Add(RefSkeleton.GetBoneName(BoneIndex));
+		BoneTransforms.Add(ReferencePose[BoneIndex]);
+	}
+			
+	TArray<float> NewCurveValues;
+	NewCurveValues.AddZeroed(PoseContainer.Curves.Num());
+
+	AddOrUpdatePose(PoseName, TrackNames, BoneTransforms, NewCurveValues);
+	PostProcessData();
+}
+
+void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, const USkeletalMeshComponent* MeshComponent, bool bUpdateCurves)
+{
+	const USkeleton* MySkeleton = GetSkeleton();
+	if (MySkeleton && MeshComponent && MeshComponent->GetSkeletalMeshAsset())
 	{
 		TArray<FName> TrackNames;
 		// note this ignores root motion
 		TArray<FTransform> BoneTransform = MeshComponent->GetComponentSpaceTransforms();
-		const FReferenceSkeleton& RefSkeleton = MeshComponent->SkeletalMesh->GetRefSkeleton();
+		const FReferenceSkeleton& RefSkeleton = MeshComponent->GetSkeletalMeshAsset()->GetRefSkeleton();
 		for (int32 BoneIndex = 0; BoneIndex < RefSkeleton.GetNum(); ++BoneIndex)
 		{
 			TrackNames.Add(RefSkeleton.GetBoneName(BoneIndex));
@@ -1212,7 +1209,7 @@ void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshCompon
 			}
 		}
 
-		const USkeleton* MeshSkeleton = MeshComponent->SkeletalMesh->GetSkeleton();
+		const USkeleton* MeshSkeleton = MeshComponent->GetSkeletalMeshAsset()->GetSkeleton();
 		const FSmartNameMapping* Mapping = MeshSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
 		
 		TArray<float> NewCurveValues;
@@ -1224,8 +1221,8 @@ void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshCompon
  
 			for (int32 NewCurveIndex = 0; NewCurveIndex < NewCurveValues.Num(); ++NewCurveIndex)
 			{
-				FAnimCurveBase& Curve = PoseContainer.Curves[NewCurveIndex];
-				SmartName::UID_Type CurveUID = Mapping->FindUID(Curve.Name.DisplayName);
+				const FAnimCurveBase& Curve = PoseContainer.Curves[NewCurveIndex];
+				const SmartName::UID_Type CurveUID = Mapping->FindUID(Curve.Name.DisplayName);
 				if (CurveUID != SmartName::MaxUID)
 				{
 					const float MeshCurveValue = MeshCurves.Get(CurveUID);
@@ -1243,12 +1240,13 @@ void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshCompon
 
 void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, const TArray<FName>& TrackNames, const TArray<FTransform>& LocalTransform, const TArray<float>& CurveValues)
 {
-	USkeleton* MySkeleton = GetSkeleton();
+	const USkeleton* MySkeleton = GetSkeleton();
 	if (MySkeleton)
 	{
 		// first combine track, we want to make sure all poses contains tracks with this
 		CombineTracks(TrackNames);
 
+		const bool bNewPose = PoseContainer.FindPoseData(PoseName) == nullptr;
 		FPoseData* PoseData = PoseContainer.FindOrAddPoseData(PoseName);
 		// now copy all transform back to it. 
 		check(PoseData);
@@ -1257,7 +1255,7 @@ void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, const TArray<FName>
 		// but We have to add all tracks to match poses container
 		// TrackNames.Num() is subset of PoseContainer.Tracks.Num()
 		// Above CombineTracks will combine both
-		int32 TotalTracks = PoseContainer.Tracks.Num();
+		const int32 TotalTracks = PoseContainer.Tracks.Num();
 		PoseData->SourceLocalSpacePose.Reset(TotalTracks);
 		PoseData->SourceLocalSpacePose.AddUninitialized(TotalTracks);
 		PoseData->SourceLocalSpacePose.SetNumZeroed(TotalTracks, true);
@@ -1276,9 +1274,14 @@ void UPoseAsset::AddOrUpdatePose(const FSmartName& PoseName, const TArray<FName>
 			// now get poseData track index
 			const FName& TrackName = TrackNames[Index];
 			//int32 SkeletonIndex = RefSkeleton.FindBoneIndex(TrackName);
-			int32 InternalTrackIndex = PoseContainer.Tracks.Find(TrackName);
+			const int32 InternalTrackIndex = PoseContainer.Tracks.Find(TrackName);
 			// copy to the internal track index
 			PoseData->SourceLocalSpacePose[InternalTrackIndex] = LocalTransform[Index];
+		}
+
+		if (bNewPose)
+		{
+			OnPoseListChanged.Broadcast();
 		}
 	}
 }
@@ -1385,8 +1388,11 @@ void UPoseAsset::CreatePoseFromAnimation(class UAnimSequence* AnimSequence, cons
 			// reinitialize, now we're making new pose from this animation
 			Reinitialize();
 
-			const int32 NumPoses = AnimSequence->GetNumberOfSampledKeys();
-
+			int32 NumPoses = AnimSequence->GetNumberOfSampledKeys();
+			if(InPoseNames && InPoseNames->Num() > NumPoses)
+			{
+				NumPoses=InPoseNames->Num();
+			}
 			// make sure we have more than one pose
 			if (NumPoses > 0)
 			{
@@ -1437,7 +1443,7 @@ void UPoseAsset::CreatePoseFromAnimation(class UAnimSequence* AnimSequence, cons
 				// add to skeleton UID, so that it knows the curve data
 				for (int32 PoseIndex = 0; PoseIndex < NumPoses; ++PoseIndex)
 				{
-					FSmartName NewPoseName = (InPoseNames && InPoseNames->IsValidIndex(PoseIndex))? (*InPoseNames)[PoseIndex] : GetUniquePoseName(TargetSkeleton);
+					FSmartName NewPoseName = (InPoseNames && InPoseNames->IsValidIndex(PoseIndex))? (*InPoseNames)[PoseIndex] : GetUniquePoseSmartName(TargetSkeleton);
 					// now get rawanimationdata, and each key is converted to new pose
 					for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
 					{
@@ -1625,6 +1631,34 @@ bool UPoseAsset::GetFullPose(int32 PoseIndex, TArray<FTransform>& OutTransforms)
 	return true;
 }
 
+FTransform UPoseAsset::GetComponentSpaceTransform(FName BoneName, const TArray<FTransform>& LocalTransforms) const
+{
+	const FReferenceSkeleton& RefSkel = GetSkeleton()->GetReferenceSkeleton();
+
+	// Init component space transform with identity
+	FTransform ComponentSpaceTransform = FTransform::Identity;
+
+	// Start to walk up parent chain until we reach root (ParentIndex == INDEX_NONE)
+	int32 BoneIndex = RefSkel.FindBoneIndex(BoneName);
+	while (BoneIndex != INDEX_NONE)
+	{
+		BoneName = RefSkel.GetBoneName(BoneIndex);
+		int32 TrackIndex = GetTrackIndexByName(BoneName);
+
+		// If a track for parent, get local space transform from that
+		// If not, get from ref pose
+		FTransform BoneLocalTM = (TrackIndex != INDEX_NONE) ? LocalTransforms[TrackIndex] : RefSkel.GetRefBonePose()[BoneIndex];
+
+		// Continue to build component space transform
+		ComponentSpaceTransform = ComponentSpaceTransform * BoneLocalTM;
+
+		// Now move up to parent
+		BoneIndex = RefSkel.GetParentIndex(BoneIndex);
+	}
+
+	return ComponentSpaceTransform;
+}
+
 bool UPoseAsset::ConvertSpace(bool bNewAdditivePose, int32 NewBasePoseIndex)
 {
 	// first convert to full pose first
@@ -1766,7 +1800,37 @@ void FPoseDataContainer::DeleteTrack(int32 TrackIndex)
 #endif // WITH_EDITOR
 	}
 }
+
 #if WITH_EDITOR
+FName UPoseAsset::GetUniquePoseName(const USkeleton* Skeleton)
+{
+	FName NewName = NAME_None;
+	if (Skeleton)
+	{
+		int32 NameIndex = 0;
+		SmartName::UID_Type NewUID;
+		do
+		{
+			NewName = FName(*FString::Printf(TEXT("Pose_%d"), NameIndex++));
+			NewUID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, NewName);
+		} while (NewUID != SmartName::MaxUID);
+	}
+
+	return NewName;
+}
+
+FSmartName UPoseAsset::GetUniquePoseSmartName(USkeleton* Skeleton)
+{
+	const FName NewName = GetUniquePoseName(Skeleton);
+	FSmartName NewPoseName;
+	if (NewName != NAME_None)
+	{
+		Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, NewName, NewPoseName);
+	}
+
+	return NewPoseName;
+}
+
 void UPoseAsset::RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces)
 {
 	Super::RemapTracksToNewSkeleton(NewSkeleton, bConvertSpaces);
@@ -1853,3 +1917,4 @@ bool UPoseAsset::GetBasePoseTransform(TArray<FTransform>& OutBasePose, TArray<fl
 #endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE 
+

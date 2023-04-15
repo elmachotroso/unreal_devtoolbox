@@ -1,15 +1,45 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDeviceProfileSelectionPanel.h"
-#include "Templates/Casts.h"
+
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Views/SListView.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "EditorStyleSet.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FSlateBrush;
 
 
 #define LOCTEXT_NAMESPACE "DeviceProfileEditorSelectionPanel"
@@ -138,7 +168,7 @@ TSharedRef< SWidget > SDeviceProfileSelectionRow::GenerateWidgetForColumn( const
 		ColumnWidget = SAssignNew( PinProfileButton, SButton )
 			.IsFocusable( false )
 			.ToolTipText(LOCTEXT("PinProfileColumnButtonToolTip", "Pin profile to device profile editor table"))
-			.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+			.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 			.ContentPadding( 0 ) 
 			.HAlign( HAlign_Center )
 			.VAlign( VAlign_Center )
@@ -159,7 +189,7 @@ TSharedRef< SWidget > SDeviceProfileSelectionRow::GenerateWidgetForColumn( const
 		ColumnWidget = SAssignNew(ViewProfileButton, SButton)
 			.IsFocusable(false)
 			.ToolTipText(LOCTEXT("ViewSingleProfileColumnButtonToolTip", "View this profile in it's own editor"))
-			.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+			.ButtonStyle(FAppStyle::Get(), "NoBorder")
 			.ContentPadding(0)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
@@ -167,7 +197,7 @@ TSharedRef< SWidget > SDeviceProfileSelectionRow::GenerateWidgetForColumn( const
 			[
 				SNew(STextBlock)
 				.Text(FText::FromString(TEXT("...")))
-				.Font(FEditorStyle::GetFontStyle("BoldFont"))
+				.Font(FAppStyle::GetFontStyle("BoldFont"))
 			];
 	}
 
@@ -201,7 +231,7 @@ FReply SDeviceProfileSelectionRow::ViewSingleProfile()
 
 const FSlateBrush* SDeviceProfileSelectionRow::GetPinnedImage() const
 {
-	return bIsPinned ? FEditorStyle::GetBrush( "PropertyEditor.RemoveColumn" ) : FEditorStyle::GetBrush( "PropertyEditor.AddColumn" );
+	return bIsPinned ? FAppStyle::GetBrush( "PropertyEditor.RemoveColumn" ) : FAppStyle::GetBrush( "PropertyEditor.AddColumn" );
 }
 
 
@@ -239,7 +269,7 @@ void SDeviceProfileSelectionPanel::Construct( const FArguments& InArgs, TWeakObj
 			.Padding( 0.0f, 0.0f, 4.0f, 0.0f )
 			[
 				SNew( SImage )
-				.Image( FEditorStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
+				.Image( FAppStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
 			]
 			+SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
@@ -255,7 +285,7 @@ void SDeviceProfileSelectionPanel::Construct( const FArguments& InArgs, TWeakObj
 			+ SScrollBox::Slot()
 			[
 				SNew( SBorder )
-				.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
+				.BorderImage( FAppStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 				[
 					SAssignNew( ListWidget, SVerticalBox )
 				]

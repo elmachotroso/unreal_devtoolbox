@@ -6,8 +6,6 @@ public class Blutility : ModuleRules
 {
 	public Blutility(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Editor/Blutility/Private");
-
 		PrivateIncludePathModuleNames.Add("AssetTools");
 
         PublicDependencyModuleNames.AddRange(new string[] {
@@ -23,7 +21,6 @@ public class Blutility : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"Kismet",

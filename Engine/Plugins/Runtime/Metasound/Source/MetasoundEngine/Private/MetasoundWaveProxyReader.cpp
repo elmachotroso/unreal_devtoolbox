@@ -22,7 +22,7 @@
 
 static int32 GMetaSoundWaveProxyReaderSimulateSeekOnNonSeekable = 0;
 FAutoConsoleVariableRef CVarMetaSoundWaveProxyReaderSimulateSeekOnNonSeekable(
-	TEXT("au.MetaSounds.WavePlayer.SimulateSeek"),
+	TEXT("au.MetaSound.WavePlayer.SimulateSeek"),
 	GMetaSoundWaveProxyReaderSimulateSeekOnNonSeekable ,
 	TEXT("If true, SoundWaves which are not of a seekable format will simulate seek calls by reading and discarding samples.\n")
 	TEXT("0: Do not simulate seek, !0: Simulate seek"),
@@ -410,13 +410,26 @@ namespace Metasound
 		}
 
 		// Seek input to start time.
-		const bool bSeekSucceeded = DecoderInput->SeekToTime(InStartTimeInSeconds);
-		if (!bSeekSucceeded)
+		if (!FMath::IsNearlyEqual(0.0f, InStartTimeInSeconds))
 		{
-			UE_LOG(LogMetaSound, Warning, TEXT("Failed to seek decoder input during initialization: (format:%s) for wave (package:%s) to time '%.6f'"),
-				*Format.ToString(),
-				*WaveProxy->GetPackageName().ToString(),
-				InStartTimeInSeconds);
+			if (WaveProxy->IsSeekable())
+			{
+				const bool bSeekSucceeded = DecoderInput->SeekToTime(InStartTimeInSeconds);
+				if (!bSeekSucceeded)
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("Failed to seek decoder input during initialization: (format:%s) for wave (package:%s) to time '%.6f'"),
+						*Format.ToString(),
+						*WaveProxy->GetPackageName().ToString(),
+						InStartTimeInSeconds);
+				}
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Attempt to seek on non-seekable wave: (format:%s) for wave (package:%s) to time '%.6f'"),
+					*Format.ToString(),
+					*WaveProxy->GetPackageName().ToString(),
+					InStartTimeInSeconds);
+			}
 		}
 		CurrentFrameIndex = InStartTimeInSeconds * GetSampleRate();
 
@@ -508,7 +521,7 @@ namespace Metasound
 			const int32 MinLoopDurationInFrames = FMath::CeilToInt(MinLoopDurationInSeconds * SampleRate);
 			const float LoopEndTime = Settings.LoopStartTimeInSeconds + Settings.LoopDurationInSeconds;
 			const int32 MinLoopEndFrameIndex = LoopStartFrameIndex + MinLoopDurationInFrames;
-			const int32 MaxLoopEndFrameIndex = NumFramesInWave + 1;
+			const int32 MaxLoopEndFrameIndex = NumFramesInWave;
 
 			LoopStartFrameIndex = FMath::FloorToInt(Settings.LoopStartTimeInSeconds * SampleRate);
 			LoopEndFrameIndex = FMath::Clamp(LoopEndTime * SampleRate, MinLoopEndFrameIndex, MaxLoopEndFrameIndex);
@@ -516,7 +529,7 @@ namespace Metasound
 		else
 		{
 			LoopStartFrameIndex = 0;
-			LoopEndFrameIndex = NumFramesInWave + 1;
+			LoopEndFrameIndex = NumFramesInWave;
 		}
 	}
 }

@@ -16,6 +16,8 @@ struct FPlanarCells;
 struct FInternalSurfaceMaterials;
 struct FNoiseSettings;
 
+class FProgressCancel;
+
 namespace UE
 {
 namespace PlanarCut
@@ -89,7 +91,7 @@ struct PLANARCUT_API FCellMeshes
 	FCellMeshes(int32 NumUVLayers, FRandomStream& RandomStream, const FPlanarCells& Cells, UE::Geometry::FAxisAlignedBox3d DomainBounds, double Grout, double ExtendDomain, bool bIncludeOutsideCell);
 
 	// Note: RandomStream not required for this constructor because noise is not supported in this case
-	FCellMeshes(int32 NumUVLayers, UE::Geometry::FDynamicMesh3& SingleCutter, const FInternalSurfaceMaterials& Materials, TOptional<FTransform> Transform);
+	FCellMeshes(int32 NumUVLayers, const UE::Geometry::FDynamicMesh3& SingleCutter, const FInternalSurfaceMaterials& Materials, TOptional<FTransform> Transform);
 
 	// Special function to just make the "grout" part of the planar mesh cells
 	// Used to make the multi-plane cuts with grout easier to implement
@@ -223,7 +225,8 @@ struct PLANARCUT_API FDynamicMeshCollection
 		int32 RandomSeed,
 		FGeometryCollection* Collection,
 		FInternalSurfaceMaterials& InternalSurfaceMaterials,
-		bool bSetDefaultInternalMaterialsFromCollection
+		bool bSetDefaultInternalMaterialsFromCollection,
+		FProgressCancel* Progress = nullptr
 	);
 
 	/**
@@ -234,9 +237,20 @@ struct PLANARCUT_API FDynamicMeshCollection
 	 * @param CellsMeshes Meshed versions of the cells, with noise and material properties baked in
 	 * @param Collection Results will be stored in this
 	 * @param bSetDefaultInternalMaterialsFromCollection If true, set internal materials to the most common external material + 1, following a convenient artist convention
+	 * @param CollisionSampleSpacing If > 0, new geometry will have collision samples added (vertices not on any triangles) to fill any gaps greater than the this size
 	 * @return Index of the first created geometry
 	 */
 	int32 CutWithCellMeshes(const FInternalSurfaceMaterials& InternalSurfaceMaterials, const TArray<TPair<int32, int32>>& CellConnectivity, FCellMeshes& CellMeshes, FGeometryCollection* Collection, bool bSetDefaultInternalMaterialsFromCollection, double CollisionSampleSpacing);
+
+
+	/**
+	 * Split islands for all collection meshes, and append results to a geometry collection
+	 *
+	 * @param Collection Results will be stored in this
+	 * @param CollisionSampleSpacing If > 0, new geometry will have collision samples added (vertices not on any triangles) to fill any gaps greater than the this size
+	 * @return Index of the first created geometry, or -1 if nothing was split
+	 */
+	int32 SplitAllIslands(FGeometryCollection* Collection, double CollisionSampleSpacing);
 
 	static void SetVisibility(FGeometryCollection& Collection, int32 GeometryIdx, bool bVisible)
 	{

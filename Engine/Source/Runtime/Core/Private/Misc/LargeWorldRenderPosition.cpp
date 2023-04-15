@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/LargeWorldRenderPosition.h"
-#include "EngineDefines.h"
+
+#include "HAL/Platform.h"
+#include "Math/Matrix.inl"
+#include "Math/TranslationMatrix.h"
+#include "Misc/AssertionMacros.h"
 
 #define UE_LWC_RENDER_TILE_SIZE_MIN (262144.0)	// LWC_TODO: Make this smaller?
 

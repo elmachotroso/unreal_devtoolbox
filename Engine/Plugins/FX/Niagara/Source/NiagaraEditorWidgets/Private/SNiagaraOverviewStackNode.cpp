@@ -1,40 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNiagaraOverviewStackNode.h"
-#include "NiagaraOverviewNode.h"
-#include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/NiagaraEmitterHandleViewModel.h"
-#include "ViewModels/NiagaraSystemSelectionViewModel.h"
-#include "ViewModels/Stack/NiagaraStackItemGroup.h"
-#include "ViewModels/Stack/NiagaraStackModuleItem.h"
-#include "ViewModels/Stack/NiagaraStackViewModel.h"
-#include "SNiagaraOverviewStack.h"
+
+#include "EditorFontGlyphs.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
+#include "Modules/ModuleManager.h"
 #include "NiagaraEditorModule.h"
+#include "NiagaraEditorSettings.h"
 #include "NiagaraEditorStyle.h"
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEmitter.h"
+#include "NiagaraEmitterInstance.h"
+#include "NiagaraOverviewNode.h"
+#include "NiagaraRendererProperties.h"
+#include "NiagaraSettings.h"
+#include "SGraphPanel.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SNiagaraOverviewStack.h"
 #include "Stack/SNiagaraStackIssueIcon.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Layout/SBox.h"
+#include "Styling/AppStyle.h"
+#include "Styling/StyleColors.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/Stack/NiagaraStackItemGroup.h"
+#include "ViewModels/Stack/NiagaraStackModuleItem.h"
+#include "ViewModels/Stack/NiagaraStackRendererItem.h"
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "AssetThumbnail.h"
-#include "NiagaraEmitterInstance.h"
-#include "Widgets/SToolTip.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
-#include "NiagaraRendererProperties.h"
+#include "Widgets/SToolTip.h"
 #include "Widgets/SWidget.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "ViewModels/Stack/NiagaraStackRendererItem.h"
-#include "Materials/MaterialInterface.h"
-#include "Materials/Material.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraOverviewStackNode"
 
-const float ThumbnailSize = 24.0f;
+constexpr float ThumbnailSize = 24.0f;
 
 void SNiagaraOverviewStackNode::Construct(const FArguments& InArgs, UNiagaraOverviewNode* InNode)
 {
@@ -75,10 +81,25 @@ void SNiagaraOverviewStackNode::Construct(const FArguments& InArgs, UNiagaraOver
 			}
 			UMaterial::OnMaterialCompilationFinished().AddSP(this, &SNiagaraOverviewStackNode::OnMaterialCompiled);
 			OverviewSelectionViewModel = OwningSystemViewModel->GetSelectionViewModel();
+			ScalabilityViewModel = OwningSystemViewModel->GetScalabilityViewModel();
+
+			if(ScalabilityViewModel.IsValid())
+			{
+				bScalabilityModeActive = ScalabilityViewModel->IsActive();
+				ScalabilityViewModel->OnScalabilityModeChanged().AddSP(this, &SNiagaraOverviewStackNode::OnScalabilityModeChanged);
+			}
 		}
 	}
 
 	UpdateGraphNode();
+}
+
+SNiagaraOverviewStackNode::~SNiagaraOverviewStackNode()
+{
+	if(ScalabilityViewModel.IsValid())
+	{
+		ScalabilityViewModel->OnScalabilityModeChanged().RemoveAll(this);
+	}
 }
 
 TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateTitleWidget(TSharedPtr<SNodeTitle> NodeTitle)
@@ -127,6 +148,8 @@ TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateTitleRightWidget()
 		return SNullWidget::NullWidget;
 	}
 	return SNew(SHorizontalBox)
+
+		// open parent button
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.HAlign(HAlign_Right)
@@ -135,8 +158,8 @@ TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateTitleRightWidget()
 		[
 			SNew(SButton)
 			.IsFocusable(false)
-			.ToolTipText(LOCTEXT("OpenAndFocusParentEmitterToolTip", "Open and Focus Parent Emitter"))
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ToolTipText(this, &SNiagaraOverviewStackNode::OpenParentEmitterTooltip)
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ContentPadding(2)
 			.OnClicked(this, &SNiagaraOverviewStackNode::OpenParentEmitter)
 			.Visibility(this, &SNiagaraOverviewStackNode::GetOpenParentEmitterVisibility)
@@ -148,6 +171,47 @@ TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateTitleRightWidget()
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		]
+	
+		// version selector
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Right)
+		.AutoWidth()
+		.Padding(1, 0, 2, 0)
+		[
+			SNew(SComboButton)
+			.HasDownArrow(false)
+			.ToolTipText(LOCTEXT("ChangeEmitterVersionToolTip", "Change the parent emitter version"))
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+			.ForegroundColor(FSlateColor::UseForeground())
+			.OnGetMenuContent(this, &SNiagaraOverviewStackNode::GetVersionSelectorDropdownMenu)
+			.ContentPadding(FMargin(2))
+			.Visibility(this, &SNiagaraOverviewStackNode::GetVersionSelectorVisibility)
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
+				.ColorAndOpacity(this, &SNiagaraOverviewStackNode::GetVersionSelectorColor)
+				.Text(FEditorFontGlyphs::Random)
+			]
+		]
+
+		// scalability indicator
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SBox)
+			.WidthOverride(16.f)
+			.HeightOverride(16.f)
+			[
+				SNew(SImage)
+				.Image(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Scalability"))
+				.Visibility(this, &SNiagaraOverviewStackNode::GetScalabilityIndicatorVisibility)
+				.ToolTipText(FText::FormatOrdered(LOCTEXT("ScalabilityIndicatorToolTip",
+					"This {0} has scalability set up. Inspecting and editing scalability is accessible by using scalability mode from the toolbar."), EmitterHandleViewModelWeak.IsValid() ? FText::FromString("emitter") : FText::FromString("system")))
+			]
+		]
+	
+		// issue/error icon
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.HAlign(HAlign_Right)
@@ -262,14 +326,24 @@ void SNiagaraOverviewStackNode::Tick(const FGeometry& AllottedGeometry, const do
 			FillTopContentBar();
 			bTopContentBarRefreshPending = false;
 		}
+
+		if (ScalabilityWrapper != nullptr && !UseLowDetailNodeContent())
+		{
+			LastHighDetailSize = ScalabilityWrapper->GetTickSpaceGeometry().Size;
+			if (GeometryTickForSize > 0)
+			{
+				// the stack needs a few tick to fully initialize, so we wait to bit to grab the right low detail geomtry size
+				GeometryTickForSize--;
+			}
+		}
 	}
 }
 
 void SNiagaraOverviewStackNode::OnMaterialCompiled(class UMaterialInterface* MaterialInterface)
 {
-	bool bUsingThisMaterial = false;
 	if (EmitterHandleViewModelWeak.IsValid())
 	{
+		bool bUsingThisMaterial = false;
 		EmitterHandleViewModelWeak.Pin()->GetRendererEntries(PreviewStackEntries);
 		FNiagaraEmitterInstance* InInstance = EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetSimulation().IsValid() ? EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetSimulation().Pin().Get() : nullptr;
 		for (UNiagaraStackEntry* Entry : PreviewStackEntries)
@@ -295,7 +369,7 @@ void SNiagaraOverviewStackNode::OnMaterialCompiled(class UMaterialInterface* Mat
 
 void SNiagaraOverviewStackNode::CreateBottomSummaryExpander()
 {
-	UNiagaraEmitter* Emitter = EmitterHandleViewModelWeak.IsValid()? EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetEmitter() : nullptr;
+	UNiagaraEmitter* Emitter = EmitterHandleViewModelWeak.IsValid()? EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetEmitter().Emitter : nullptr;
 	if (BottomSummaryExpander.IsValid() || !Emitter)
 	{
 		return;
@@ -308,7 +382,7 @@ void SNiagaraOverviewStackNode::CreateBottomSummaryExpander()
 	.VAlign(VAlign_Fill)
 	[
 		SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+		.ButtonStyle(FAppStyle::Get(), "NoBorder")
 		.HAlign(HAlign_Center)
 		.ContentPadding(2)
 		.ToolTipText(this, &SNiagaraOverviewStackNode::GetSummaryViewCollapseTooltipText)
@@ -321,6 +395,29 @@ void SNiagaraOverviewStackNode::CreateBottomSummaryExpander()
 				.Image(this, &SNiagaraOverviewStackNode::GetSummaryViewButtonBrush)
 		]		
 	];
+}
+
+EVisibility SNiagaraOverviewStackNode::GetScalabilityIndicatorVisibility() const
+{
+	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
+
+	if(EmitterHandleViewModel.IsValid())
+	{
+		if(FVersionedNiagaraEmitterData* EmitterData = EmitterHandleViewModel->GetEmitterHandle()->GetInstance().GetEmitterData())
+		{
+			bool bIsQualityLevelMaskSetup = EmitterData->Platforms.QualityLevelMask != INDEX_NONE;
+			bool bIsScalabilitySetup = EmitterData->ScalabilityOverrides.Overrides.Num() != 0 || (bIsQualityLevelMaskSetup && EmitterData->Platforms.QualityLevelMask != FNiagaraPlatformSet::GetFullQualityLevelMask(GetDefault<UNiagaraSettings>()->QualityLevels.Num())); 
+			return bIsScalabilitySetup ? EVisibility::Visible : EVisibility::Collapsed;
+		}
+	}
+
+	if(UNiagaraSystem* System = OverviewStackNode->GetOwningSystem())
+	{
+		bool bIsScalabilitySetup = System->GetOverrideScalabilitySettings();
+		return bIsScalabilitySetup ? EVisibility::Visible : EVisibility::Collapsed; 
+	}
+	
+	return EVisibility::Collapsed;
 }
 
 TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateNodeContentArea()
@@ -345,7 +442,7 @@ TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateNodeContentArea()
 	
 	// NODE CONTENT AREA
 	TSharedRef<SWidget> NodeWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		.Padding(FMargin(2, 2, 2, 4))
@@ -409,8 +506,166 @@ TSharedRef<SWidget> SNiagaraOverviewStackNode::CreateNodeContentArea()
 		];
 	}
 
-	return NodeWidget;
+	TSharedRef<SWidget> DetailedContent = SNew(SLevelOfDetailBranchNode)
+		.UseLowDetailSlot(this, &SNiagaraOverviewStackNode::UseLowDetailNodeContent)
+		.LowDetail()
+		[
+			SNew(SBox)
+			.WidthOverride(this, &SNiagaraOverviewStackNode::GetLowDetailDesiredWidth)
+			.HeightOverride(this, &SNiagaraOverviewStackNode::GetLowDetailDesiredHeight)
+			[
+				SNew(STextBlock)
+				.Text(this, &SNiagaraOverviewStackNode::GetLowDetailNodeTitle)
+				.TextStyle(&FNiagaraEditorWidgetsStyle::Get().GetWidgetStyle<FTextBlockStyle>("NiagaraEditor.SystemOverview.ZoomedOutNodeFont"))
+				.Visibility(EVisibility::HitTestInvisible)
+				.Clipping(EWidgetClipping::Inherit)
+			]
+		]
+		.HighDetail()
+		[
+			NodeWidget
+		];
 
+	ScalabilityWrapper = SNew(SOverlay)
+	+ SOverlay::Slot()
+	[
+		DetailedContent
+	]
+	+ SOverlay::Slot()
+	.Padding(0, 1)
+	[
+		SNew(SBorder)
+		.Visibility(this, &SNiagaraOverviewStackNode::ShowExcludedOverlay)
+		.BorderImage(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.SystemOverview.ExcludedFromScalability.NodeBody"))
+		.BorderBackgroundColor(TAttribute<FSlateColor>(this, &SNiagaraOverviewStackNode::GetScalabilityTintAlpha))
+	];
+
+	return ScalabilityWrapper.ToSharedRef();
+
+}
+
+bool SNiagaraOverviewStackNode::UseLowDetailNodeContent() const
+{
+	const UNiagaraEditorSettings* NiagaraSettings = GetDefault<UNiagaraEditorSettings>();
+	if (LastHighDetailSize.IsNearlyZero() || GeometryTickForSize > 0 || !NiagaraSettings->bSimplifyStackNodesAtLowResolution)
+	{
+		return false;
+	}
+	
+	if (const SGraphPanel* MyOwnerPanel = GetOwnerPanel().Get())
+	{
+		return (MyOwnerPanel->GetCurrentLOD() <= EGraphRenderingLOD::LowDetail);
+	}
+	return false;
+}
+
+FVector2D SNiagaraOverviewStackNode::GetLowDetailDesiredSize() const
+{
+	return LastHighDetailSize;
+}
+
+FOptionalSize SNiagaraOverviewStackNode::GetLowDetailDesiredWidth() const
+{
+	return LastHighDetailSize.X;
+}
+
+FOptionalSize SNiagaraOverviewStackNode::GetLowDetailDesiredHeight() const
+{
+	return LastHighDetailSize.Y;
+}
+
+namespace NiagaraOverviewStackNode
+{
+	struct StringRange
+	{
+		int32 Start = 0;
+		int32 End = 0;
+	};
+	
+	bool IsUpperAlphaNumeric(const TCHAR& c)
+	{
+		return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+	}
+
+	// this method splits long emitter names for the low details view by inserting new lines
+	// and abbreviating large pieces when necessary
+	FString PrettySplitString(const FString& Input)
+	{
+		TArray<FStringView, TInlineAllocator<16>> Parts;
+
+		// split at convenient places
+		int32 Start = 0;
+		for (int i = 0; i < Input.Len() - 1; i++)
+		{
+			TCHAR currentChar = Input[i];
+			TCHAR nextChar = Input[i + 1];
+
+			bool bIsLowerAlpha = currentChar >= 'a' && currentChar <= 'z';
+
+			// skip '_' at the beginning or in sequence
+			if (currentChar == '_')
+			{
+				Start = i + 1;
+			}
+			// replace '_' in the middle of the name with a newline
+			else if (nextChar == '_')
+			{
+				Parts.Add(FStringView(&Input[Start], i - Start + 1));
+				i++;
+				Start = i + 1;
+			}
+			// split when changing from lowercase to uppercase or number
+			else if (bIsLowerAlpha && IsUpperAlphaNumeric(nextChar))
+			{
+				Parts.Add(FStringView(&Input[Start], i - Start + 1));
+				Start = i + 1;
+			}
+		}
+		// add the end piece
+		if (Start < Input.Len())
+		{
+			Parts.Add(FStringView(&Input[Start], Input.Len() - Start));
+		}
+
+		// assemble the pieces
+		const UNiagaraEditorSettings* NiagaraSettings = GetDefault<UNiagaraEditorSettings>();
+		int32 MaxLength = FMath::Max(3, NiagaraSettings->LowResolutionNodeMaxNameChars);
+		TStringBuilder<128> SplitNameBuilder;
+		int32 RunningLength = 0;
+		for (const FStringView& Split : Parts)
+		{
+			// merge small parts together, only insert a newline between big parts
+			if (Split.Len() + RunningLength > MaxLength && SplitNameBuilder.Len() > 0)
+			{
+				SplitNameBuilder.AppendChar('\n');
+				RunningLength = 0;
+			}
+			
+			// if the name is too long, abbreviate with ...
+			if (Split.Len() > MaxLength)
+			{
+				SplitNameBuilder.Append(Split.Left(MaxLength - 2));
+				SplitNameBuilder.Append(TEXT("…"));
+			}
+			else
+			{
+				SplitNameBuilder.Append(Split);
+			}
+			RunningLength += Split.Len();
+		}
+
+		return SplitNameBuilder.ToString();
+	}
+}
+
+FText SNiagaraOverviewStackNode::GetLowDetailNodeTitle() const
+{
+	if (FString Title = GetEditableNodeTitle(); LowDetailTitleCache.Key != Title)
+	{
+		LowDetailTitleCache.Key = Title;
+		LowDetailTitleCache.Value = FText::FromString(NiagaraOverviewStackNode::PrettySplitString(Title));
+	}
+	return LowDetailTitleCache.Value;
 }
 
 void SNiagaraOverviewStackNode::StackViewModelStructureChanged(ENiagaraStructureChangedFlags Flags)
@@ -437,8 +692,7 @@ void SNiagaraOverviewStackNode::FillTopContentBar()
 		TopContentBar->ClearChildren();
 	}
 	if (EmitterHandleViewModelWeak.IsValid())
-	{
-	
+	{		
 		// Isolate toggle button
 		TopContentBar->AddSlot()
 			.AutoWidth()
@@ -447,7 +701,7 @@ void SNiagaraOverviewStackNode::FillTopContentBar()
 			.Padding(2, 0, 0, 0)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.HAlign(HAlign_Center)
 				.ContentPadding(1)
 				.ToolTipText(this, &SNiagaraOverviewStackNode::GetToggleIsolateToolTip)
@@ -579,34 +833,149 @@ FSlateColor SNiagaraOverviewStackNode::GetToggleIsolateImageColor() const
 	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
 	return EmitterHandleViewModel.IsValid() && 
 		EmitterHandleViewModel->GetIsIsolated()
-		? FEditorStyle::GetSlateColor("SelectionColor")
+		? FAppStyle::GetSlateColor("SelectionColor")
 		: FLinearColor::Gray;
+}
+
+FSlateColor SNiagaraOverviewStackNode::GetScalabilityTintAlpha() const
+{
+	if(EmitterHandleViewModelWeak.IsValid())
+	{
+		float ScalabilityBaseAlpha = FNiagaraEditorUtilities::GetScalabilityTintAlpha(EmitterHandleViewModelWeak.Pin()->GetEmitterHandle());
+		return FLinearColor(1, 1, 1, ScalabilityBaseAlpha * GetGraphZoomDistanceAlphaMultiplier());
+	}
+
+	return FLinearColor(1, 1, 1, 1);
+}
+
+void SNiagaraOverviewStackNode::OnScalabilityModeChanged(bool bActive)
+{
+	bScalabilityModeActive = bActive;
+}
+
+EVisibility SNiagaraOverviewStackNode::ShowExcludedOverlay() const
+{
+	// we only want actual results in scalability mode and for nodes representing emitters (not system nodes)
+	if(bScalabilityModeActive && EmitterHandleViewModelWeak.IsValid())
+	{		
+		return EmitterHandleViewModelWeak.Pin()->GetEmitterHandle()->GetEmitterData()->IsAllowedByScalability() ? EVisibility::Hidden : EVisibility::HitTestInvisible;
+	}
+	
+	return EVisibility::Hidden; 
+}
+
+float SNiagaraOverviewStackNode::GetGraphZoomDistanceAlphaMultiplier() const
+{
+	// we lower the alpha if the zoom amount is high
+	float ZoomAmount = OwnerGraphPanelPtr.Pin()->GetZoomAmount();
+	return FMath::Lerp(0.4f, 1.f, 1 - ZoomAmount);
 }
 
 FReply SNiagaraOverviewStackNode::OpenParentEmitter()
 {
 	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
-
 	if (EmitterHandleViewModel.IsValid())
 	{
-		UNiagaraEmitter* ParentEmitter = const_cast<UNiagaraEmitter*>(EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter());
-		if (ParentEmitter != nullptr)
-		{
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ParentEmitter);
-		}
+		FNiagaraEditorUtilities::OpenParentEmitterForEdit(EmitterHandleViewModel->GetEmitterViewModel());
 	}
 	return FReply::Handled();
+}
+
+FText SNiagaraOverviewStackNode::OpenParentEmitterTooltip() const
+{
+	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
+	if (EmitterHandleViewModel.IsValid() && EmitterHandleViewModel->GetEmitterViewModel()->HasParentEmitter() && EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter().Emitter->IsVersioningEnabled())
+	{
+		FVersionedNiagaraEmitter ParentEmitter = EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter();
+		FText ParentName = FText::FromString(ParentEmitter.Emitter->GetUniqueEmitterName());
+		if (FVersionedNiagaraEmitterData* EmitterData = ParentEmitter.GetEmitterData())
+		{
+			return FText::Format(LOCTEXT("OpenAndFocusVersionedParentToolTip", "Open and Focus Parent Emitter:\n{0} - v{1}.{2}"), ParentName, EmitterData->Version.MajorVersion, EmitterData->Version.MinorVersion);
+		}
+	}
+	return LOCTEXT("OpenAndFocusParentEmitterToolTip", "Open and Focus Parent Emitter");
 }
 
 EVisibility SNiagaraOverviewStackNode::GetOpenParentEmitterVisibility() const
 {
 	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
 	return EmitterHandleViewModel.IsValid() && 
-		EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter() != nullptr
+		EmitterHandleViewModel->GetEmitterViewModel()->HasParentEmitter()
 		? EVisibility::Visible 
 		: EVisibility::Collapsed;
 }
 
+EVisibility SNiagaraOverviewStackNode::GetVersionSelectorVisibility() const
+{
+	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin();
+	return EmitterHandleViewModel.IsValid() && 
+		EmitterHandleViewModel->GetEmitterViewModel()->HasParentEmitter() &&
+		EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter().Emitter->IsVersioningEnabled()
+		? EVisibility::Visible 
+		: EVisibility::Collapsed;
+}
+
+FSlateColor SNiagaraOverviewStackNode::GetVersionSelectorColor() const
+{
+	if (TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin())
+	{
+		FVersionedNiagaraEmitter ParentEmitter = EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter();
+		if (ParentEmitter.Emitter && ParentEmitter.Emitter->IsVersioningEnabled())
+		{
+			FNiagaraAssetVersion ExposedVersion = ParentEmitter.Emitter->GetExposedVersion();
+			if (ParentEmitter.GetEmitterData() == nullptr || ParentEmitter.GetEmitterData()->Version < ExposedVersion)
+			{
+				return FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.IconColor.VersionUpgrade");
+			}
+		}
+	}
+	return FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor");
+}
+
+TSharedRef<SWidget> SNiagaraOverviewStackNode::GetVersionSelectorDropdownMenu()
+{
+	constexpr bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
+
+	if (TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin())
+	{
+		FVersionedNiagaraEmitter ParentEmitter = EmitterHandleViewModel->GetEmitterViewModel()->GetParentEmitter();
+		TArray<FNiagaraAssetVersion> AssetVersions = ParentEmitter.Emitter->GetAllAvailableVersions();
+		for (FNiagaraAssetVersion& Version : AssetVersions)
+		{
+			if (!Version.bIsVisibleInVersionSelector)
+			{
+				continue;
+			}
+			FVersionedNiagaraEmitterData* EmitterData = ParentEmitter.Emitter->GetEmitterData(Version.VersionGuid);
+			bool bIsSelected = ParentEmitter.Version == Version.VersionGuid;
+		
+			FText Tooltip = LOCTEXT("NiagaraSelectVersion_Tooltip", "Select this version to use for the emitter");
+			if (EmitterData && !EmitterData->VersionChangeDescription.IsEmpty())
+			{
+				Tooltip = FText::Format(LOCTEXT("NiagaraSelectVersionChangelist_Tooltip", "Select this version to use for the emitter. Change description for this version:\n{0}"), EmitterData->VersionChangeDescription);
+			}
+		
+			FUIAction UIAction(FExecuteAction::CreateSP(this, &SNiagaraOverviewStackNode::SwitchToVersion, Version),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([bIsSelected]() { return bIsSelected; }));
+			FText Format = (Version == ParentEmitter.Emitter->GetExposedVersion()) ? FText::FromString("{0}.{1}*") : FText::FromString("{0}.{1}");
+			FText Label = FText::Format(Format, Version.MajorVersion, Version.MinorVersion);
+			MenuBuilder.AddMenuEntry(Label, Tooltip, FSlateIcon(), UIAction, NAME_None, EUserInterfaceActionType::RadioButton);	
+		}
+	}
+
+	return MenuBuilder.MakeWidget();
+}
+
+// this switches the referenced parent version, for the version selector in the toolbar see FNiagaraSystemViewModel::ChangeEmitterVersion
+void SNiagaraOverviewStackNode::SwitchToVersion(FNiagaraAssetVersion Version)
+{
+	if (TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = EmitterHandleViewModelWeak.Pin())
+	{
+		FNiagaraEditorUtilities::SwitchParentEmitterVersion(EmitterHandleViewModel->GetEmitterViewModel(), EmitterHandleViewModel->GetOwningSystemViewModel(), Version.VersionGuid);
+	}
+}
 
 const FSlateBrush* SNiagaraOverviewStackNode::GetSummaryViewButtonBrush() const
 {
@@ -614,14 +983,14 @@ const FSlateBrush* SNiagaraOverviewStackNode::GetSummaryViewButtonBrush() const
 	if (BottomSummaryExpander->IsHovered())
 	{
 		return EditorData && EditorData->ShouldShowSummaryView()
-			? FEditorStyle::GetBrush("DetailsView.PulldownArrow.Down.Hovered")
-			: FEditorStyle::GetBrush("DetailsView.PulldownArrow.Up.Hovered");
+			? FAppStyle::GetBrush("DetailsView.PulldownArrow.Down.Hovered")
+			: FAppStyle::GetBrush("DetailsView.PulldownArrow.Up.Hovered");
 	}
 	else
 	{
 		return EditorData && EditorData->ShouldShowSummaryView()
-			? FEditorStyle::GetBrush("DetailsView.PulldownArrow.Down")
-			: FEditorStyle::GetBrush("DetailsView.PulldownArrow.Up");
+			? FAppStyle::GetBrush("DetailsView.PulldownArrow.Down")
+			: FAppStyle::GetBrush("DetailsView.PulldownArrow.Up");
 	}	
 }
 
@@ -633,8 +1002,7 @@ FText SNiagaraOverviewStackNode::GetSummaryViewCollapseTooltipText() const
 
 FReply SNiagaraOverviewStackNode::ExpandSummaryViewClicked()
 {
-	UNiagaraEmitterEditorData* EditorData = EmitterHandleViewModelWeak.IsValid()? &EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetOrCreateEditorData() : nullptr;
-	if (EditorData)
+	if (UNiagaraEmitterEditorData* EditorData = EmitterHandleViewModelWeak.IsValid()? &EmitterHandleViewModelWeak.Pin()->GetEmitterViewModel()->GetOrCreateEditorData() : nullptr)
 	{
 		EditorData->ToggleShowSummaryView();
 	}

@@ -22,8 +22,7 @@ namespace UnrealBuildTool.Rules
 				"AssetTools",
 				"UnrealEd",
 				"Slate",
-				"SlateCore",
-				"EditorStyle",
+				"SlateCore",				
 				"PropertyEditor",
 				"AIModule",
 				"StructUtils",
@@ -40,6 +39,7 @@ namespace UnrealBuildTool.Rules
 				"PropertyEditor",
 				"AIGraph",
 				"ToolMenus",
+				"BlueprintGraph",
 			}
 			);
 		}

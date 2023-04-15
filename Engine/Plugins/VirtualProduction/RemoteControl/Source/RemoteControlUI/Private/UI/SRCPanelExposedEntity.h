@@ -6,9 +6,11 @@
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "RemoteControlPanelStyle.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/SNullWidget.h"
 
 class AActor;
 class FMenuBuilder;
+struct FRCPanelStyle;
 struct FRemoteControlEntity;
 class SInlineEditableTextBlock;
 class SWidget;
@@ -19,35 +21,40 @@ class URemoteControlPreset;
  */
 struct SRCPanelExposedEntity : public SRCPanelTreeNode
 {
-	//~ SWidget interface
-	virtual void Tick(const FGeometry&, const double, const float) override;
-
 	//~ SRCPanelTreeNode interface
 	TSharedPtr<FRemoteControlEntity> GetEntity() const;
 	virtual TSharedPtr<SWidget> GetContextMenu() override;
 	virtual FGuid GetRCId() const override final { return EntityId; }
+	/** Make the group name's text box editable. */
+	virtual void EnterRenameMode() override;
+	/** Updates the highlight text to active search term. */
+	virtual void SetHighlightText(const FText& InHightlightText = FText::GetEmpty()) override { HighlightText = InHightlightText; }
 
 protected:
-	void Initialize(const FGuid& InEntityId, URemoteControlPreset* InPreset, const TAttribute<bool>& InbEditMode);
+	void Initialize(const FGuid& InEntityId, URemoteControlPreset* InPreset, const TAttribute<bool>& InbLiveMode);
 	
 	/** Create a widget that displays the rebind button. */
 	TSharedRef<SWidget> CreateInvalidWidget();
 
 	/** Get the widget's visibility according to the panel's mode. */
-	EVisibility GetVisibilityAccordingToEditMode(EVisibility NonEditModeVisibility) const;
+	EVisibility GetVisibilityAccordingToLiveMode(EVisibility NonEditModeVisibility) const;
 
 	/** Create an exposed entity widget with a drag handle and unexpose button. */
-	TSharedRef<SWidget> CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, const FText& OptionalWarningMessage = FText::GetEmpty());
+	TSharedRef<SWidget> CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget = SNullWidget::NullWidget, const FText& OptionalWarningMessage = FText::GetEmpty());
 
 protected:
 	/** Id of the entity. */
 	FGuid EntityId;
 	/** The underlying preset. */
 	TWeakObjectPtr<URemoteControlPreset> Preset;
-	/** Whether the panel is in edit mode or not. */
-	TAttribute<bool> bEditMode;
+	/** Whether the panel is in live mode or not. */
+	TAttribute<bool> bLiveMode;
 	/** Display name of the entity. */
 	FName CachedLabel;
+	/** Text to be highlighted while searching. */
+	TAttribute<FText> HighlightText;
+	/** Panel Style reference. */
+	const FRCPanelStyle* RCPanelStyle;
 
 private:
 	/** Handles changing the object this entity is bound to upon selecting an actor in the rebinding dropdown. */
@@ -61,6 +68,9 @@ private:
 	/** Create the content of the rebind component button. */
 	void CreateRebindComponentMenuContent(FMenuBuilder& SubMenuBuilder);
 
+	/** Create the content of the rebind subobject button. */
+	void CreateRebindSubObjectMenuContent(FMenuBuilder& SubMenuBuilder);
+
 	/** Create the content for the menu used to rebind all properties for the actor that owns this entity. */
 	TSharedRef<SWidget> CreateRebindAllPropertiesForActorMenuContent();
 
@@ -73,8 +83,6 @@ private:
 	void OnLabelCommitted(const FText& InLabel, ETextCommit::Type InCommitInfo);
 	/** Returns whether or not the actor is selectable for a binding replacement. */
 	bool IsActorSelectable(const AActor* Parent) const;
-	/** Whether the editable text box for the label needs to enter edit mode. */
-	bool bNeedsRename = false;
 	/** Handle clicking on the unexpose button. */
 	void HandleUnexposeEntity();
 

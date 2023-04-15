@@ -1,48 +1,93 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCurveEditorPanel.h"
-#include "Templates/Tuple.h"
-#include "Algo/Partition.h"
-#include "Rendering/DrawElements.h"
-#include "CurveDrawInfo.h"
-#include "CurveEditorSettings.h"
-#include "CurveEditorCommands.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/SWindow.h"
-#include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Misc/Attribute.h"
+
 #include "Algo/Sort.h"
+#include "CommonFrameRates.h"
+#include "Containers/Array.h"
+#include "CurveEditor.h"
+#include "CurveEditorCommands.h"
 #include "CurveEditorEditObjectContainer.h"
-#include "Modules/ModuleManager.h"
-#include "PropertyEditorModule.h"
-#include "IDetailsView.h"
-#include "IPropertyRowGenerator.h"
-#include "SCurveKeyDetailPanel.h"
-#include "ICurveEditorExtension.h"
-#include "ISequencerWidgetsModule.h"
-#include "CurveEditorScreenSpace.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Filters/SCurveEditorFilterPanel.h"
-#include "Filters/CurveEditorFilterBase.h"
+#include "CurveEditorKeyProxy.h"
+#include "CurveEditorSelection.h"
+#include "CurveEditorSettings.h"
+#include "CurveEditorSnapMetrics.h"
+#include "CurveEditorViewRegistry.h"
+#include "CurveModel.h"
+#include "Curves/KeyHandle.h"
+#include "Delegates/Delegate.h"
 #include "Filters/CurveEditorBakeFilter.h"
 #include "Filters/CurveEditorReduceFilter.h"
-#include "SGridLineSpacingList.h"
-#include "Widgets/SFrameRatePicker.h"
-#include "CommonFrameRates.h"
-#include "CurveEditorViewRegistry.h"
-#include "SCurveEditorViewContainer.h"
-#include "SCurveEditorToolProperties.h"
+#include "Filters/SCurveEditorFilterPanel.h"
 #include "Fonts/FontMeasure.h"
-#include "CurveEditorHelpers.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformCrt.h"
+#include "ICurveEditorDragOperation.h"
+#include "ICurveEditorModule.h"
+#include "ICurveEditorToolExtension.h"
+#include "IPropertyRowGenerator.h"
+#include "ISequencerWidgetsModule.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Clipping.h"
+#include "Layout/Margin.h"
+#include "Layout/PaintGeometry.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/FrameRate.h"
+#include "Modules/ModuleManager.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateLayoutTransform.h"
+#include "Rendering/SlateRenderer.h"
+#include "SCurveEditorToolProperties.h"
+#include "SCurveEditorView.h"
+#include "SCurveEditorViewContainer.h"
+#include "SCurveKeyDetailPanel.h"
+#include "SGridLineSpacingList.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/Tuple.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBar.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SFrameRatePicker.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+
+class FPaintArgs;
+class FSlateRect;
+class FWidgetStyle;
+class SWidget;
+class SWindow;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SCurveEditorPanel"
 
@@ -76,7 +121,7 @@ class SCurveEditorViewOverlay : public SCompoundWidget
 	{
 		static const FLinearColor BackgroundColor = FLinearColor::Black.CopyWithNewOpacity(0.35f);
 		static const FText InstructionText = LOCTEXT("CurveEditorTutorialOverlay", "Select a curve on the left to begin editing.");
-		const FSlateBrush*   WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
+		const FSlateBrush*   WhiteBrush = FAppStyle::GetBrush("WhiteBrush");
 		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 		const FSlateFontInfo FontInfo = FCoreStyle::Get().GetFontStyle("FontAwesome.13");
 
@@ -173,7 +218,7 @@ void SCurveEditorPanel::Construct(const FArguments& InArgs, TSharedRef<FCurveEdi
 			[
 				// Top Time Slider
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.BorderBackgroundColor(FLinearColor(.50f, .50f, .50f, 1.0f))
 				.Padding(0)
 				.Clipping(EWidgetClipping::ClipToBounds)
@@ -232,7 +277,7 @@ void SCurveEditorPanel::Construct(const FArguments& InArgs, TSharedRef<FCurveEdi
 		[
 			SNew(SSplitter)
 			.Orientation(Orient_Horizontal)
-			.Style(FEditorStyle::Get(), "SplitterDark")
+			.Style(FAppStyle::Get(), "SplitterDark")
 			.PhysicalSplitterHandleSize(3.0f)
 
 			+ SSplitter::Slot()
@@ -434,6 +479,7 @@ void SCurveEditorPanel::Tick(const FGeometry& AllottedGeometry, const double InC
 
 	UpdateCommonCurveInfo();
 	UpdateEditBox();
+	UpdateTime();
 
 	CachedSelectionSerialNumber = CurveEditor->Selection.GetSerialNumber();
 }
@@ -450,7 +496,13 @@ void SCurveEditorPanel::RemoveCurveFromViews(FCurveModelID InCurveID)
 void SCurveEditorPanel::PostUndo()
 {
 	EditObjects->CurveIDToKeyProxies.Empty();
+
+	// Force the edit box to update (ie. the value of the keys might have changed)
 	CachedSelectionSerialNumber = 0;
+	UpdateEditBox();
+
+	// Reset the selection serial number so that time doesn't change since selection didn't really change on undo
+	CachedSelectionSerialNumber = CurveEditor->Selection.GetSerialNumber();
 }
 
 void SCurveEditorPanel::AddView(TSharedRef<SCurveEditorView> ViewToAdd)
@@ -688,6 +740,20 @@ void SCurveEditorPanel::OnCurveEditorToolChanged(FCurveEditorToolID InToolId)
 	ToolPropertiesPanel->OnToolChanged(InToolId);
 }
 
+void SCurveEditorPanel::UpdateTime()
+{
+	const FCurveEditorSelection& Selection = CurveEditor->Selection;
+	if (CachedSelectionSerialNumber == Selection.GetSerialNumber())
+	{
+		return;
+	}
+
+	if (CurveEditor->GetSettings()->GetSnapTimeToSelection())
+	{
+		CurveEditor->SnapToSelectedKey();
+	}
+}
+
 void SCurveEditorPanel::UpdateEditBox()
 {
 	const FCurveEditorSelection& Selection = CurveEditor->Selection;
@@ -890,6 +956,8 @@ TSharedRef<SWidget> SCurveEditorPanel::MakeCurveEditorCurveViewOptionsMenu()
 
 	MenuBuilder.AddMenuSeparator();
 	MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ToggleAutoFrameCurveEditor);
+	MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ToggleSnapTimeToSelection);
+	MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ToggleShowBufferedCurves);
 	MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ToggleShowCurveEditorCurveToolTips);
 
 	MenuBuilder.BeginSection("Organize", LOCTEXT("CurveEditorMenuOrganizeHeader", "Organize"));
@@ -968,7 +1036,7 @@ FSlateIcon SCurveEditorPanel::GetCurveExtrapolationPreIcon() const
 	}
 	else
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.PreInfinityMixed");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.PreInfinityMixed");
 	}
 }
 
@@ -997,7 +1065,7 @@ FSlateIcon SCurveEditorPanel::GetCurveExtrapolationPostIcon() const
 	}
 	else
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.PostInfinityMixed");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.PostInfinityMixed");
 	}
 }
 

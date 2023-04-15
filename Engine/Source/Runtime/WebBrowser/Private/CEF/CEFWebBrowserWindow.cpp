@@ -7,6 +7,7 @@
 #include "Textures/SlateUpdatableTexture.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "WebBrowserLog.h"
 
 #if WITH_CEF3
@@ -17,6 +18,7 @@
 #include "CEFJSScripting.h"
 #include "CEFImeHandler.h"
 #include "CEFWebBrowserWindowRHIHelper.h"
+#include "CEF3Utils.h"
 #include "Async/Async.h"
 
 #if PLATFORM_MAC
@@ -29,8 +31,9 @@
 #include "Windows/WindowsCursor.h"
 typedef FWindowsCursor FPlatformCursor;
 #elif PLATFORM_MAC
-#include "Mac/MacCursor.h"
 #include "Mac/CocoaThread.h"
+#include "Mac/MacApplication.h"
+#include "Mac/MacCursor.h"
 typedef FMacCursor FPlatformCursor;
 #else
 #endif
@@ -415,6 +418,9 @@ FCEFWebBrowserWindow::FCEFWebBrowserWindow(CefRefPtr<CefBrowser> InBrowser, CefR
 	, Ime(new FCEFImeHandler(InBrowser))
 #endif
 	, RHIRenderHelper(nullptr)
+#if PLATFORM_WINDOWS || PLATFORM_MAC
+	, bInDirectHwndMode(false)
+#endif
 {
 	check(InBrowser.get() != nullptr);
 	check(!bUsingAcceleratedPaint || CanSupportAcceleratedPaint()); // make sure if accelerated paint is selected we can support it
@@ -426,6 +432,13 @@ FCEFWebBrowserWindow::FCEFWebBrowserWindow(CefRefPtr<CefBrowser> InBrowser, CefR
 	{
 		ReleaseTextures();
 	}
+
+#if PLATFORM_WINDOWS || PLATFORM_MAC
+	if (InternalCefBrowser->GetHost()->GetWindowHandle() != nullptr)
+	{
+		bInDirectHwndMode = true;
+	}
+#endif
 
 #if USE_BUFFERED_VIDEO
 	BufferedVideo = TUniquePtr<FBrowserBufferedVideo>(new FBrowserBufferedVideo(4));
@@ -525,7 +538,11 @@ FCEFWebBrowserWindow::~FCEFWebBrowserWindow()
 	WebBrowserHandler->OnBeforeResourceLoad().Unbind();
 	WebBrowserHandler->OnResourceLoadComplete().Unbind();
 	WebBrowserHandler->OnConsoleMessage().Unbind();
-	CloseBrowser(true);
+	if (IsValid())
+	{
+		UE_LOG(LogWebBrowser, Log, TEXT("Closing browser during destruction, this may cause a later crash."), *CurrentUrl);
+		CloseBrowser(true, false);
+	}
 
 	ReleaseTextures();
 
@@ -534,6 +551,8 @@ FCEFWebBrowserWindow::~FCEFWebBrowserWindow()
 	{
 		delete RHIRenderHelper;
 	}
+
+	UE_LOG(LogWebBrowser, Log, TEXT("Deleting browser for Url=%s."), *CurrentUrl);
 }
 
 void FCEFWebBrowserWindow::LoadURL(FString NewURL)
@@ -579,6 +598,17 @@ TOptional<FSlateRenderTransform> FCEFWebBrowserWindow::GetWebBrowserRenderTransf
 	return LocalRenderTransform;
 }
 
+bool FCEFWebBrowserWindow::BlockInputInDirectHwndMode() const
+{
+#if PLATFORM_WINDOWS
+	return bInDirectHwndMode;
+#elif PLATFORM_MAC
+	return bInDirectHwndMode;
+#endif
+
+	return false;
+}
+
 void FCEFWebBrowserWindow::SetViewportSize(FIntPoint WindowSize, FIntPoint WindowPos)
 {
 	// SetViewportSize is called from the browser viewport tick method, which means that since we are receiving ticks, we can mark the browser as visible.
@@ -593,6 +623,8 @@ void FCEFWebBrowserWindow::SetViewportSize(FIntPoint WindowSize, FIntPoint Windo
 	{
 		WindowDPIScaleFactor = ParentWindowPtr->GetNativeWindow()->GetDPIScaleFactor();
 	}
+
+	ViewportPos = WindowPos;
 
 	// Ignore sizes that can't be seen as it forces CEF to re-render whole image
 	if ((WindowSize.X > 0 && WindowSize.Y > 0 && ViewportSize != WindowSize) || WindowDPIScaleFactor != ViewportDPIScaleFactor)
@@ -618,6 +650,23 @@ void FCEFWebBrowserWindow::SetViewportSize(FIntPoint WindowSize, FIntPoint Windo
 				FIntPoint WindowSizeScaled = (FVector2D(WindowSize) * WindowDPIScaleFactor).IntPoint();
 
 				::SetWindowPos(NativeHandle, 0, WindowPos.X - ParentRect.left, WindowPos.Y - ParentRect.top, WindowSizeScaled.X, WindowSizeScaled.Y, 0);
+			}
+#elif PLATFORM_MAC
+			CefWindowHandle NativeWindowHandle = InternalCefBrowser->GetHost()->GetWindowHandle();
+			if (NativeWindowHandle)
+			{
+				NSView* browserView = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(NativeWindowHandle);
+				if (TSharedPtr<SWindow> ParentWindowPtr = ParentWindow.Pin())
+				{
+					NSWindow* parentWindow = (NSWindow*)ParentWindowPtr->GetNativeWindow()->GetOSWindowHandle();
+
+					const FVector2D CocoaPosition = FMacApplication::ConvertSlatePositionToCocoa(WindowPos.X, WindowPos.Y);
+					NSRect parentFrame = [parentWindow frame];
+					NSRect Rect = NSMakeRect(CocoaPosition.X - parentFrame.origin.x, (CocoaPosition.Y - parentFrame.origin.y) - WindowSize.Y, FMath::Max(WindowSize.X, 1), FMath::Max(WindowSize.Y, 1));
+					Rect = [parentWindow frameRectForContentRect : Rect];
+
+					[browserView setFrame : Rect] ;
+				}
 			}
 #endif
 
@@ -1103,16 +1152,33 @@ void FCEFWebBrowserWindow::PopulateCefKeyEvent(const FKeyEvent& InKeyEvent, CefK
 
 }
 
+#if PLATFORM_MAC
+bool FilterSystemKeyChord(const FKeyEvent& InKeyEvent)
+{
+	if(InKeyEvent.IsControlDown())
+	{
+		// Special case for Mac - make sure Cmd+~ is always passed back to the OS
+		if (InKeyEvent.GetKey() == EKeys::Tilde)
+		{
+			return true;
+		}
+		// Special case for Mac - make sure Cmd+H is always ignored by CEF
+		if (InKeyEvent.GetKey() == EKeys::H )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
 bool FCEFWebBrowserWindow::OnKeyDown(const FKeyEvent& InKeyEvent)
 {
-	if (IsValid() && !bIgnoreKeyDownEvent)
+	if (IsValid() && !BlockInputInDirectHwndMode() && !bIgnoreKeyDownEvent)
 	{
 #if PLATFORM_MAC
-		// Special case for Mac - make sure Cmd+~ is always passed back to the OS
-		if (InKeyEvent.GetKey() == EKeys::Tilde && InKeyEvent.IsControlDown())
-		{
+		if(FilterSystemKeyChord(InKeyEvent))
 			return false;
-		}
 #endif
 		PreviousKeyDownEvent = InKeyEvent;
 		CefKeyEvent KeyEvent;
@@ -1126,14 +1192,11 @@ bool FCEFWebBrowserWindow::OnKeyDown(const FKeyEvent& InKeyEvent)
 
 bool FCEFWebBrowserWindow::OnKeyUp(const FKeyEvent& InKeyEvent)
 {
-	if (IsValid() && !bIgnoreKeyUpEvent)
+	if (IsValid() && !BlockInputInDirectHwndMode() && !bIgnoreKeyUpEvent)
 	{
 #if PLATFORM_MAC
-		// Special case for Mac - make sure Cmd+~ is always passed back to the OS
-		if (InKeyEvent.GetKey() == EKeys::Tilde && InKeyEvent.IsControlDown())
-		{
+		if(FilterSystemKeyChord(InKeyEvent))
 			return false;
-		}
 #endif
 		PreviousKeyUpEvent = InKeyEvent;
 		CefKeyEvent KeyEvent;
@@ -1147,7 +1210,7 @@ bool FCEFWebBrowserWindow::OnKeyUp(const FKeyEvent& InKeyEvent)
 
 bool FCEFWebBrowserWindow::OnKeyChar(const FCharacterEvent& InCharacterEvent)
 {
-	if (IsValid() && !bIgnoreCharacterEvent)
+	if (IsValid() && !BlockInputInDirectHwndMode() && !bIgnoreCharacterEvent)
 	{
 		PreviousCharacterEvent = InCharacterEvent;
 		CefKeyEvent KeyEvent;
@@ -1159,7 +1222,23 @@ bool FCEFWebBrowserWindow::OnKeyChar(const FCharacterEvent& InCharacterEvent)
 #endif
 		KeyEvent.type = KEYEVENT_CHAR;
 		KeyEvent.modifiers = GetCefInputModifiers(InCharacterEvent);
-
+#if PLATFORM_WINDOWS
+		if (InCharacterEvent.IsAltDown() && InCharacterEvent.IsControlDown())
+		{
+			// For german and other keyboards with an AltGR state, windows sets alt and left control down 
+			// See OsrWindowWin::OnKeyEvent in 
+			//https://bitbucket.org/chromiumembedded/cef/raw/c4baba880e0b28ce82845275b328a12b2407e2f0/tests/cefclient/browser/osr_window_win.cc 
+			// from which the concept behind this check was taken
+			HKL CurrentKBLayout = ::GetKeyboardLayout(0);
+			SHORT ScanResult = ::VkKeyScanExW(InCharacterEvent.GetCharacter(), CurrentKBLayout);
+			if (((ScanResult >> 8) & 0xFF) == (2 | 4))
+			{  
+				// ctrl-alt pressed from this single character event so convert to AltGR	
+				KeyEvent.modifiers &= ~(EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN);
+				KeyEvent.modifiers |= EVENTFLAG_ALTGR_DOWN;
+			}
+		}
+#endif
 		InternalCefBrowser->GetHost()->SendKeyEvent(KeyEvent);
 		return true;
 	}
@@ -1362,7 +1441,7 @@ void FCEFWebBrowserWindow::OnRenderProcessTerminated(CefRequestHandler::Terminat
 FReply FCEFWebBrowserWindow::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-	if (IsValid())
+	if (IsValid() && !BlockInputInDirectHwndMode())
 	{
 		FKey Button = MouseEvent.GetEffectingButton();
 		// CEF only supports left, right, and middle mouse buttons
@@ -1392,7 +1471,7 @@ FReply FCEFWebBrowserWindow::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 FReply FCEFWebBrowserWindow::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-	if (IsValid())
+	if (IsValid() && !BlockInputInDirectHwndMode())
 	{
 		FKey Button = MouseEvent.GetEffectingButton();
 		// CEF only supports left, right, and middle mouse buttons
@@ -1438,7 +1517,7 @@ FReply FCEFWebBrowserWindow::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 FReply FCEFWebBrowserWindow::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-	if (IsValid())
+	if (IsValid() && !BlockInputInDirectHwndMode())
 	{
 		FKey Button = MouseEvent.GetEffectingButton();
 		// CEF only supports left, right, and middle mouse buttons
@@ -1461,7 +1540,7 @@ FReply FCEFWebBrowserWindow::OnMouseButtonDoubleClick(const FGeometry& MyGeometr
 FReply FCEFWebBrowserWindow::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-	if (IsValid())
+	if (IsValid() && !BlockInputInDirectHwndMode())
 	{
 		CefMouseEvent Event = GetCefMouseEvent(MyGeometry, MouseEvent, bIsPopup);
 
@@ -1495,7 +1574,7 @@ void FCEFWebBrowserWindow::OnMouseLeave(const FPointerEvent& MouseEvent)
 	SetToolTip(CefString());
 	// We have no geometry here to convert our mouse event to local space so we just make a dummy event and set the moueLeave param to true
 	CefMouseEvent DummyEvent;
-	if (IsValid())
+	if (IsValid() && !BlockInputInDirectHwndMode())
 	{
 		InternalCefBrowser->GetHost()->SendMouseMoveEvent(DummyEvent, true);
 	}
@@ -1512,14 +1591,38 @@ bool FCEFWebBrowserWindow::GetSupportsMouseWheel() const
 	return bSupportsMouseWheel;
 }
 
+FReply FCEFWebBrowserWindow::OnTouchGesture(const FGeometry& MyGeometry, const FPointerEvent& GestureEvent, bool bIsPopup)
+{
+	FReply Reply = FReply::Unhandled();
+	if(IsValid() && bSupportsMouseWheel && !BlockInputInDirectHwndMode())
+	{
+		const EGestureEvent GestureType = GestureEvent.GetGestureType();
+		const FVector2D& GestureDelta = GestureEvent.GetGestureDelta();
+		if ( GestureType == EGestureEvent::Scroll )
+		{
+			CefMouseEvent Event = GetCefMouseEvent(MyGeometry, GestureEvent, bIsPopup);
+			InternalCefBrowser->GetHost()->SendMouseWheelEvent(Event, GestureDelta.X, GestureDelta.Y);
+			Reply = FReply::Handled();
+		}
+	}
+	
+	return Reply;
+}
+
 FReply FCEFWebBrowserWindow::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-	if(IsValid() && bSupportsMouseWheel)
+	if(IsValid() && bSupportsMouseWheel && !BlockInputInDirectHwndMode())
 	{
+#if PLATFORM_WINDOWS
 		// The original delta is reduced so this should bring it back to what CEF expects
 		// see WindowsApplication.cpp , case WM_MOUSEWHEEL:
-		const float SpinFactor = 120.0f; 
+		const float SpinFactor = 120.0f;
+#else
+		// other OS's seem to want us to scale by "line height" here, so pick a magic number
+		// 50 matches a single mouse wheel tick in movement as compared to Chrome
+		const float SpinFactor = 50.0f;
+#endif
 		const float TrueDelta = MouseEvent.GetWheelDelta() * SpinFactor;
 		if (fabs(TrueDelta) > 0.001f)
 		{
@@ -1632,17 +1735,54 @@ void FCEFWebBrowserWindow::ExecuteJavascript(const FString& Script)
 }
 
 
-void FCEFWebBrowserWindow::CloseBrowser(bool bForce)
+void FCEFWebBrowserWindow::CloseBrowser(bool bForce, bool bBlockTillClosed)
 {
 	if (IsValid())
 	{
 		CefRefPtr<CefBrowserHost> Host = InternalCefBrowser->GetHost();
+#if PLATFORM_MAC
+		CefWindowHandle NativeWindowHandle = Host->GetWindowHandle();
+		if (NativeWindowHandle != nullptr)
+		{
+			NSView *browserView = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(NativeWindowHandle);
+			if (browserView != nil)
+				[browserView removeFromSuperview];
+		}
+#endif
 		// In case this is called from inside a CEF event handler, use CEF's task mechanism to
 		// postpone the actual closing of the window until it is safe.
 		CefPostTask(TID_UI, new FCEFBrowserClosureTask(nullptr, [=]()
 		{
-			Host->CloseBrowser(bForce);
+			// if blocking till closed for the close here
+			Host->CloseBrowser(bForce||bBlockTillClosed);
 		}));
+
+		if (bBlockTillClosed)
+		{
+			SetIsHidden(true); // hide the window as we close it
+			float CloseWaitTimeout = 1.0f;
+			// BUGBUG Alfred - I think 1 second should be enough wait, remove these config settings
+			//   if we don't end up having to tune timeouts in the field.
+			GConfig->GetFloat(TEXT("Browser"), TEXT("CloseWaitTimeout"), CloseWaitTimeout, GEngineIni);
+			if (IsEngineExitRequested())
+			{
+				// wait longer if the app is shutting down
+				GConfig->GetFloat(TEXT("Browser"), TEXT("CloseWaitTimeoutAppExit"), CloseWaitTimeout, GEngineIni);
+			}
+			const double StartWaitAppTime = FPlatformTime::Seconds();
+			while (InternalCefBrowser != nullptr)
+			{
+				if (FPlatformTime::Seconds() - StartWaitAppTime > CloseWaitTimeout )
+				{
+					UE_LOG(LogWebBrowser, Error, TEXT("CloseBrowser - took more than %0.2f second to close. Abandoning wait..."), CloseWaitTimeout);
+					break; // don't spin forever
+				}
+				FPlatformProcess::Sleep(0.01);
+				// CEF needs the windows message pump run to be able to finish closing a browser, so run it manually here
+				FSlateApplication::Get().PumpMessages();
+				CefDoMessageLoopWork();
+			}
+		}
 	}
 }
 
@@ -1952,7 +2092,80 @@ void FCEFWebBrowserWindow::UpdateVideoBuffering()
 	}
 }
 
-void FCEFWebBrowserWindow::OnCursorChange(CefCursorHandle CefCursor, CefRenderHandler::CursorType Type, const CefCursorInfo& CustomCursorInfo)
+#if PLATFORM_WINDOWS
+bool FCEFWebBrowserWindow::LoadCustomCEF3Cursor(cef_cursor_type_t Type)
+{
+	// generated from the ui_unscaled_resources.h file in a CEF build
+#define IDC_PAN_EAST 25846
+#define IDC_PAN_MIDDLE 25847
+#define IDC_PAN_MIDDLE_HORIZONTAL 25848
+#define IDC_PAN_MIDDLE_VERTICAL 25849
+#define IDC_PAN_NORTH 25850
+#define IDC_PAN_NORTH_EAST 25851
+#define IDC_PAN_NORTH_WEST 25852
+#define IDC_PAN_SOUTH 25853
+#define IDC_PAN_SOUTH_EAST 25854
+#define IDC_PAN_SOUTH_WEST 25855
+#define IDC_PAN_WEST 25856
+
+	HINSTANCE CEF3ModuleHandle = (HINSTANCE)CEF3Utils::GetCEF3ModuleHandle();
+	if (CEF3ModuleHandle != nullptr)
+	{
+		HCURSOR customCursor = 0;
+		switch (Type) {
+		case CT_MIDDLE_PANNING_HORIZONTAL:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_MIDDLE_HORIZONTAL));
+			break;
+		case CT_MIDDLE_PANNING_VERTICAL:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_MIDDLE_VERTICAL));
+			break;
+		case CT_MIDDLEPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_MIDDLE));
+			break;
+		case CT_SOUTHPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_SOUTH));
+			break;
+		case CT_NORTHPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_NORTH));
+			break;
+		case CT_EASTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_EAST));
+			break;
+		case CT_WESTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_WEST));
+			break;
+		case CT_NORTHEASTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_NORTH_EAST));
+			break;
+		case CT_NORTHWESTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_NORTH_WEST));
+			break;
+		case CT_SOUTHEASTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_SOUTH_EAST));
+			break;
+		case CT_SOUTHWESTPANNING:
+			customCursor = LoadCursor(CEF3ModuleHandle, MAKEINTRESOURCE(IDC_PAN_SOUTH_WEST));
+			break;
+		}
+			
+		if (customCursor)
+		{
+			TSharedPtr<ICursor> PlatformCursor = FSlateApplication::Get().GetPlatformCursor();
+
+			if (PlatformCursor.IsValid())
+			{
+				PlatformCursor->SetTypeShape(EMouseCursor::Custom, (void*)customCursor);
+				Cursor = EMouseCursor::Custom;
+				::SetCursor(customCursor);
+			}
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
+bool FCEFWebBrowserWindow::OnCursorChange(CefCursorHandle CefCursor, cef_cursor_type_t Type, const CefCursorInfo& CustomCursorInfo)
 {
 	switch (Type) {
 		// Map the basic 3 cursor types directly to Slate types on all platforms
@@ -1966,9 +2179,14 @@ void FCEFWebBrowserWindow::OnCursorChange(CefCursorHandle CefCursor, CefRenderHa
 			Cursor = EMouseCursor::TextEditBeam;
 			break;
 		#if PLATFORM_WINDOWS || PLATFORM_MAC
-		// Platform specific support for native cursor types
 		default:
+			// Platform specific support for native cursor types
 			{
+		#if PLATFORM_WINDOWS
+				// check if we have a cursor in libcef.dll we can use
+				if (LoadCustomCEF3Cursor(Type))
+					return true;
+		#endif
 				TSharedPtr<ICursor> PlatformCursor = FSlateApplication::Get().GetPlatformCursor();
 
 				if (PlatformCursor.IsValid())
@@ -2040,8 +2258,39 @@ void FCEFWebBrowserWindow::OnCursorChange(CefCursorHandle CefCursor, CefRenderHa
 	}
 	// Tell Slate to update the cursor now
 	FSlateApplication::Get().QueryCursor();
+	return false;
 }
 
+EWebTransitionSource TransitionTypeToSourceEnum(const CefRequest::TransitionType& Type)
+{
+	CefRequest::TransitionType TransitionSource = (CefRequest::TransitionType)(Type & TT_SOURCE_MASK);
+	switch (TransitionSource)
+	{
+		case TT_LINK:			return EWebTransitionSource::Link;
+		case TT_EXPLICIT:		return EWebTransitionSource::Explicit;
+		case TT_AUTO_SUBFRAME:	return EWebTransitionSource::AutoSubframe;
+		case TT_FORM_SUBMIT:	return EWebTransitionSource::FormSubmit;
+		case TT_RELOAD:			return EWebTransitionSource::Reload;
+		default:				return EWebTransitionSource::Unknown;
+	}
+	return EWebTransitionSource::Unknown;
+}
+
+EWebTransitionSourceQualifier TransitionTypeToSourceQualifierEnum(const CefRequest::TransitionType& Type)
+{
+	CefRequest::TransitionType TransitionSourceQualifier = (CefRequest::TransitionType)(Type & TT_QUALIFIER_MASK);
+	switch (TransitionSourceQualifier)
+	{
+		case TT_BLOCKED_FLAG:			return EWebTransitionSourceQualifier::Blocked;
+		case TT_FORWARD_BACK_FLAG:		return EWebTransitionSourceQualifier::ForwardBack;
+		case TT_CHAIN_START_FLAG:		return EWebTransitionSourceQualifier::ChainStart;
+		case TT_CHAIN_END_FLAG:			return EWebTransitionSourceQualifier::ChainEnd;
+		case TT_CLIENT_REDIRECT_FLAG:	return EWebTransitionSourceQualifier::ClientRedirect;
+		case TT_SERVER_REDIRECT_FLAG:	return EWebTransitionSourceQualifier::ServerRedirect;
+		default:						return EWebTransitionSourceQualifier::Unknown;
+	}
+	return EWebTransitionSourceQualifier::Unknown;
+}
 
 bool FCEFWebBrowserWindow::OnBeforeBrowse( CefRefPtr<CefBrowser> Browser, CefRefPtr<CefFrame> Frame, CefRefPtr<CefRequest> Request, bool user_gesture, bool bIsRedirect )
 {
@@ -2058,8 +2307,12 @@ bool FCEFWebBrowserWindow::OnBeforeBrowse( CefRefPtr<CefBrowser> Browser, CefRef
 				FWebNavigationRequest RequestDetails;
 				RequestDetails.bIsRedirect = bIsRedirect;
 				RequestDetails.bIsMainFrame = bIsMainFrame;
-				RequestDetails.bIsExplicitTransition = Request->GetTransitionType() == TT_EXPLICIT;
 
+				const CefRequest::TransitionType RequestTransitionType = Request->GetTransitionType();
+				RequestDetails.TransitionSource = TransitionTypeToSourceEnum(RequestTransitionType);
+				RequestDetails.TransitionSourceQualifier = TransitionTypeToSourceQualifierEnum(RequestTransitionType);
+				RequestDetails.bIsExplicitTransition = RequestDetails.TransitionSource == EWebTransitionSource::Explicit;
+			
 				if (bIsMainFrame)
 				{
 					// We need to defer all future navigations until we can determine if this current navigation is going to be handled or not
@@ -2122,9 +2375,9 @@ FString URLRequestSTatusToString(const CefResourceRequestHandler::URLRequestStat
 	return StatusStr;
 }
 
-void FCEFWebBrowserWindow::HandleOnBeforeResourceLoad(const CefString& URL, CefRequest::ResourceType Type, FRequestHeaders& AdditionalHeaders)
+void FCEFWebBrowserWindow::HandleOnBeforeResourceLoad(const CefString& URL, CefRequest::ResourceType Type, FRequestHeaders& AdditionalHeaders, const bool AllowUserCredentials)
 {
-	BeforeResourceLoadDelegate.ExecuteIfBound(WCHAR_TO_TCHAR(URL.ToWString().c_str()), ResourceTypeToString(Type), AdditionalHeaders);
+	BeforeResourceLoadDelegate.ExecuteIfBound(WCHAR_TO_TCHAR(URL.ToWString().c_str()), ResourceTypeToString(Type), AdditionalHeaders, AllowUserCredentials);
 }
 
 void FCEFWebBrowserWindow::HandleOnResourceLoadComplete(const CefString& URL, CefRequest::ResourceType Type, CefResourceRequestHandler::URLRequestStatus Status, int64 ContentLength)
@@ -2138,8 +2391,8 @@ EWebBrowserConsoleLogSeverity CefLogSeverityToWebBrowser(cef_log_severity_t Leve
 	{
 	case LOGSEVERITY_VERBOSE:
 		return EWebBrowserConsoleLogSeverity::Verbose;
-		//case LOGSEVERITY_DEBUG: // same as LOGSEVERITY_VERBOSE
-		//	return Verbose;
+	//case LOGSEVERITY_DEBUG: // same as LOGSEVERITY_VERBOSE
+	//	return Verbose;
 	case LOGSEVERITY_INFO:
 		return EWebBrowserConsoleLogSeverity::Info;
 	case LOGSEVERITY_WARNING:
@@ -2154,7 +2407,7 @@ EWebBrowserConsoleLogSeverity CefLogSeverityToWebBrowser(cef_log_severity_t Leve
 	}
 }
 
-void FCEFWebBrowserWindow::HandleOnConsoleMessage(CefRefPtr<CefBrowser> Browser, cef_log_severity_t Level, const CefString& Message, const CefString& Source, int Line)
+void FCEFWebBrowserWindow::HandleOnConsoleMessage(CefRefPtr<CefBrowser> Browser, cef_log_severity_t Level, const CefString& Message, const CefString& Source, int32 Line)
 {
 	ConsoleMessageDelegate.ExecuteIfBound(WCHAR_TO_TCHAR(Message.ToWString().c_str()), WCHAR_TO_TCHAR(Source.ToWString().c_str()), Line, CefLogSeverityToWebBrowser(Level));
 }
@@ -2241,6 +2494,7 @@ int32 FCEFWebBrowserWindow::GetCefMouseModifiers(const FPointerEvent& InMouseEve
 CefMouseEvent FCEFWebBrowserWindow::GetCefMouseEvent(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	CefMouseEvent Event;
+
 	FGeometry MouseGeometry = MyGeometry;
 	if (bUsingAcceleratedPaint)
 	{
@@ -2301,22 +2555,6 @@ int32 FCEFWebBrowserWindow::GetCefInputModifiers(const FInputEvent& InputEvent)
 		Modifiers |= EVENTFLAG_CAPS_LOCK_ON;
 	}
 
-#if PLATFORM_WINDOWS
-	if (InputEvent.IsAltDown() && InputEvent.IsLeftControlDown())
-	{
-		// For german and other keyboards with an AltGR state, windows sets alt and left control down 
-		// as well as VK_RMENU. So check for that state here and set the ALTGR flag if needed.
-		// See https://bitbucket.org/chromiumembedded/cef/commits/30d83cb94a79#chg-tests/cefclient/browser/osr_window_win.cc 
-		// from which the concept behind this check was taken
-		SHORT keystate = ::GetKeyState(VK_RMENU);
-		if ((keystate & 0x8000) != 0)
-		{
-			Modifiers &= ~(EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN);
-			Modifiers |= EVENTFLAG_ALTGR_DOWN;
-		}
-	}
-#endif
-
 	return Modifiers;
 }
 
@@ -2339,12 +2577,12 @@ bool FCEFWebBrowserWindow::CanSupportAcceleratedPaint()
 	return false;
 #elif PLATFORM_WINDOWS
 #if PLATFORM_64BITS
-	//return false;
-	
+	return false;
+	/*
 	static bool Windows10OrAbove = FWindowsPlatformMisc::VerifyWindowsVersion(10, 0); //Win10
 	if (Windows10OrAbove == false)
 	{
-		return false;
+		return  -false;
 	}
 
 	// match the logic in GetStandardStandaloneRenderer() from StandaloneRenderer.cpp to check for the OGL slate renderer
@@ -2352,8 +2590,8 @@ bool FCEFWebBrowserWindow::CanSupportAcceleratedPaint()
 	{
 		return false;
 	}
-	// Disable accelerated paint by default until we can fix the multi-gpu rendering issue
-	return false;
+	return true;*/
+
 #else
 	return false; // 32-bit windows doesn't have the accelerated rendering patches applied, it can be done if needed
 #endif
@@ -2440,9 +2678,16 @@ void FCEFWebBrowserWindow::ProcessPendingNavigation()
 		CefString Url = TCHAR_TO_WCHAR(*PendingLoadUrl);
 		PendingLoadUrl.Empty();
 #if PLATFORM_MAC
-		MainThreadCall(^{
-		MainFrame->LoadURL(Url);
-		}, NSDefaultRunLoopMode, true);
+		if ([NSThread isMainThread])
+		{
+			MainFrame->LoadURL(Url);
+		}
+		else
+		{
+			MainThreadCall(^{
+				MainFrame->LoadURL(Url);
+			}, NSDefaultRunLoopMode, true);
+		}
 #else
 		MainFrame->LoadURL(Url);
 #endif
@@ -2473,14 +2718,49 @@ void FCEFWebBrowserWindow::SetIsHidden(bool bValue)
 				{
 					::SetFocus((HWND)ParentWindowPtr->GetNativeWindow()->GetOSWindowHandle());
 				}
+				// when hidden also resize the window to 0x0 to further reduce resource usage. This copies the
+				// behavior of the CefClient code, see browser_window_std_win.cc in the ::Hide() function. This code
+				// is also required for the HTML5 visibility API to work 
+				SetWindowPos(NativeWindowHandle, NULL, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+			}
+			else
+			{
+				// restore the window to its right size/position
+				HWND Parent = ::GetParent(NativeWindowHandle);
+				// Position is in screen coordinates, so we'll need to get the parent window location first.
+				RECT ParentRect = { 0, 0, 0, 0 };
+				if (Parent)
+				{
+					::GetWindowRect(Parent, &ParentRect);
+				}
+
+				FIntPoint WindowSizeScaled = (FVector2D(ViewportSize) * ViewportDPIScaleFactor).IntPoint();
+
+				::SetWindowPos(NativeWindowHandle, 0, ViewportPos.X - ParentRect.left, ViewportPos.Y - ParentRect.top, WindowSizeScaled.X, WindowSizeScaled.Y, 0);
 			}
 		}
 		else
 		{
-			// only hide OSR renderer windows
+#elif PLATFORM_MAC
+		CefWindowHandle NativeWindowHandle = BrowserHost->GetWindowHandle();
+		if (NativeWindowHandle != nullptr)
+		{
+			NSView *browserView = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(NativeWindowHandle);
+			if(bIsHidden)
+			{
+				[browserView setHidden:YES];
+			}
+			else
+			{
+				[browserView setHidden:NO];
+			}
+			
+		}
+		else
+		{
 #endif
 			BrowserHost->WasHidden(bIsHidden);
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_MAC
 		}
 #endif
 	}
@@ -2543,7 +2823,12 @@ bool FCEFWebBrowserWindow::OnProcessMessageReceived(CefRefPtr<CefBrowser> Browse
 
 	if (!bHandled)
 	{
-#if !PLATFORM_LINUX
+#if PLATFORM_MAC
+		if (!bInDirectHwndMode) // IME is handled by the CEF control in direct render mode
+		{
+			bHandled = Ime->OnProcessMessageReceived(Browser, SourceProcess, Message);
+		}
+#elif PLATFORM_WINDOWS
 		bHandled = Ime->OnProcessMessageReceived(Browser, SourceProcess, Message);
 #endif
 	}

@@ -1,29 +1,25 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using EpicGames.Perforce;
-using HordeServer.Models;
-using HordeServer.Utilities;
-using MongoDB.Bson;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Streams;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Commits
+namespace Horde.Build.Perforce
 {
+	using CommitId = ObjectId<ICommit>;
 	using StreamId = StringId<IStream>;
 	using UserId = ObjectId<IUser>;
 
 	/// <summary>
 	/// Stores metadata about a commit
 	/// </summary>
-	interface ICommit
+	public interface ICommit
 	{
 		/// <summary>
 		/// Unique id for this document
 		/// </summary>
-		public ObjectId Id { get; }
+		public CommitId Id { get; }
 
 		/// <summary>
 		/// The stream id
@@ -64,17 +60,12 @@ namespace HordeServer.Commits
 		/// Date/time that change was committed
 		/// </summary>
 		public DateTime DateUtc { get; }
-
-		/// <summary>
-		/// Name of a reference describing the tree at this changelist
-		/// </summary>
-		public string? TreeRef { get; }
 	}
 
 	/// <summary>
 	/// New commit object
 	/// </summary>
-	class NewCommit
+	public class NewCommit
 	{
 		/// <inheritdoc cref="ICommit.StreamId"/>
 		public StreamId StreamId { get; set; }
@@ -100,31 +91,27 @@ namespace HordeServer.Commits
 		/// <inheritdoc cref="ICommit.DateUtc"/>
 		public DateTime DateUtc { get; set; }
 
-		/// <inheritdoc cref="ICommit.TreeRef"/>
-		public string? TreeRef { get; set; }
-
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public NewCommit(ICommit Commit)
-			: this(Commit.StreamId, Commit.Change, Commit.OriginalChange, Commit.AuthorId, Commit.OwnerId, Commit.Description, Commit.BasePath, Commit.DateUtc)
+		public NewCommit(ICommit commit)
+			: this(commit.StreamId, commit.Change, commit.OriginalChange, commit.AuthorId, commit.OwnerId, commit.Description, commit.BasePath, commit.DateUtc)
 		{
-			this.TreeRef = Commit.TreeRef;
 		}
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public NewCommit(StreamId StreamId, int Change, int OriginalChange, UserId AuthorId, UserId OwnerId, string Description, string BasePath, DateTime DateUtc)
+		public NewCommit(StreamId streamId, int change, int originalChange, UserId authorId, UserId ownerId, string description, string basePath, DateTime dateUtc)
 		{
-			this.StreamId = StreamId;
-			this.Change = Change;
-			this.OriginalChange = OriginalChange;
-			this.AuthorId = AuthorId;
-			this.OwnerId = OwnerId;
-			this.Description = Description;
-			this.BasePath = BasePath;
-			this.DateUtc = DateUtc;
+			StreamId = streamId;
+			Change = change;
+			OriginalChange = originalChange;
+			AuthorId = authorId;
+			OwnerId = ownerId;
+			Description = description;
+			BasePath = basePath;
+			DateUtc = dateUtc;
 		}
 	}
 }

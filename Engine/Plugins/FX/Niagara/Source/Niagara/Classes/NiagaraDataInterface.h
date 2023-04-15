@@ -1,23 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Niagara/Public/NiagaraCommon.h"
-#include "NiagaraShared.h"
-#include "VectorVM.h"
-#include "StaticMeshResources.h"
-#include "Curves/RichCurve.h"
-#include "NiagaraMergeable.h"
+#include "NiagaraCommon.h"
 #include "NiagaraDataInterfaceBase.h"
 #include "NiagaraScriptBase.h"
+#include "NiagaraShared.h"
+#include "VectorVM.h"
 #include "NiagaraDataInterface.generated.h"
+
+class RENDERCORE_API FRDGBuilder;
+class FRDGExternalAccessQueue;
 
 class INiagaraCompiler;
 class UCurveVector;
 class UCurveLinearColor;
 class UCurveFloat;
-class FNiagaraSystemInstance;
-class FNiagaraEmitterInstance;
 struct FNiagaraDataInterfaceProxy;
+struct FNiagaraDataInterfaceProxyRW;
+struct FNiagaraComputeInstanceData;
+class FNiagaraEmitterInstance;
+class FNiagaraGpuComputeDispatchInterface;
+class FNiagaraGPUSystemTick;
+struct FNiagaraSimStageData;
+class FNiagaraSystemInstance;
 
 struct FNDITransformHandlerNoop
 {
@@ -25,6 +30,8 @@ struct FNDITransformHandlerNoop
 	FORCEINLINE void TransformPosition(FVector3d& V, const FMatrix44d& M) const { }
 	FORCEINLINE void TransformVector(FVector3f& V, const FMatrix44f& M) const { }
 	FORCEINLINE void TransformVector(FVector3d& V, const FMatrix44d& M) const { }
+	FORCEINLINE void TransformNotUnitVector(FVector3f& V, const FMatrix44f& M) const { }
+	FORCEINLINE void TransformNotUnitVector(FVector3d& V, const FMatrix44d& M) const { }
 	FORCEINLINE void TransformRotation(FQuat4f& Q1, const FQuat4f& Q2) const { }
 	FORCEINLINE void TransformRotation(FQuat4d& Q1, const FQuat4d& Q2) const { }
 };
@@ -35,6 +42,8 @@ struct FNDITransformHandler
 	FORCEINLINE void TransformPosition(FVector3d& P, const FMatrix44d& M) const { P = M.TransformPosition(P); }
 	FORCEINLINE void TransformVector(FVector3f& V, const FMatrix44f& M) const { V = M.TransformVector(V).GetUnsafeNormal3(); }
 	FORCEINLINE void TransformVector(FVector3d& V, const FMatrix44d& M) const { V = M.TransformVector(V).GetUnsafeNormal3(); }
+	FORCEINLINE void TransformNotUnitVector(FVector3f& V, const FMatrix44f& M) const { V = M.TransformVector(V); }
+	FORCEINLINE void TransformNotUnitVector(FVector3d& V, const FMatrix44d& M) const { V = M.TransformVector(V); }
 	FORCEINLINE void TransformRotation(FQuat4f& Q1, const FQuat4f& Q2) const { Q1 = Q2 * Q1; }
 	FORCEINLINE void TransformRotation(FQuat4d& Q1, const FQuat4d& Q2) const { Q1 = Q2 * Q1; }
 };
@@ -234,7 +243,88 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
-struct FNiagaraDataInterfaceProxyRW;
+struct NIAGARA_API FNDIGpuComputeContext
+{
+	FNDIGpuComputeContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface)
+		: GraphBuilder(InGraphBuilder)
+		, ComputeDispatchInterface(InComputeDispatchInterface)
+	{
+	}
+
+	FRDGBuilder& GetGraphBuilder() const { return GraphBuilder; }
+	FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
+
+	const FNiagaraGpuComputeDispatchInterface& GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
+
+private:
+	FRDGBuilder& GraphBuilder;
+	const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface;
+};
+
+struct NIAGARA_API FNDIGpuComputeResetContext : public FNDIGpuComputeContext
+{
+	FNDIGpuComputeResetContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, FNiagaraSystemInstanceID InSystemInstanceID)
+		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
+		, SystemInstanceID(InSystemInstanceID)
+	{
+	}
+
+	FNiagaraSystemInstanceID GetSystemInstanceID() const { return SystemInstanceID; }
+
+private:
+	FNiagaraSystemInstanceID SystemInstanceID = FNiagaraSystemInstanceID();
+};
+
+struct NIAGARA_API FNDIGpuComputePrePostStageContext : public FNDIGpuComputeContext
+{
+	FNDIGpuComputePrePostStageContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, const FNiagaraGPUSystemTick& InSystemTick, const FNiagaraComputeInstanceData& InComputeInstanceData, const FNiagaraSimStageData& InSimStageData)
+		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
+		, SystemTick(InSystemTick)
+		, ComputeInstanceData(InComputeInstanceData)
+		, SimStageData(InSimStageData)
+	{
+	}
+
+	const FNiagaraComputeInstanceData& GetComputeInstanceData() const { return ComputeInstanceData; }
+	const FNiagaraSimStageData& GetSimStageData() const { return SimStageData; }
+
+	FNiagaraSystemInstanceID GetSystemInstanceID() const;
+	FVector3f GetSystemLWCTile() const;
+	bool IsOutputStage() const;
+	bool IsInputStage() const;
+	bool IsIterationStage() const;
+
+	void SetDataInterfaceProxy(FNiagaraDataInterfaceProxy* InDataInterfaceProxy) { DataInterfaceProxy = InDataInterfaceProxy; }
+
+private:
+	const FNiagaraGPUSystemTick& SystemTick;
+	const FNiagaraComputeInstanceData& ComputeInstanceData;
+	const FNiagaraSimStageData& SimStageData;
+	FNiagaraDataInterfaceProxy* DataInterfaceProxy = nullptr;
+};
+
+using FNDIGpuComputePreStageContext = FNDIGpuComputePrePostStageContext;
+using FNDIGpuComputePostStageContext = FNDIGpuComputePrePostStageContext;
+
+struct NIAGARA_API FNDIGpuComputePostSimulateContext : public FNDIGpuComputeContext
+{
+	FNDIGpuComputePostSimulateContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, FNiagaraSystemInstanceID InSystemInstanceID, bool InFinalPostSimulate)
+		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
+		, SystemInstanceID(InSystemInstanceID)
+		, bFinalPostSimulate(InFinalPostSimulate)
+	{
+	}
+
+	FNiagaraSystemInstanceID GetSystemInstanceID() const { return SystemInstanceID; }
+	bool IsFinalPostSimulate() const { return bFinalPostSimulate; }
+
+private:
+	FNiagaraSystemInstanceID SystemInstanceID = FNiagaraSystemInstanceID();
+	bool bFinalPostSimulate = false;
+};
+
+//////////////////////////////////////////////////////////////////////////
+
 struct FNiagaraDataInterfaceProxy
 {
 	FNiagaraDataInterfaceProxy() {}
@@ -245,20 +335,116 @@ struct FNiagaraDataInterfaceProxy
 
 	// #todo(dmp): move all of this stuff to the RW interface to keep it out of here?
 	FName SourceDIName;
-	
+
+	// New data interface path
+	virtual void ResetData(const FNDIGpuComputeResetContext& Context) { }
+	virtual void PreStage(const FNDIGpuComputePostStageContext& Context) {}
+	virtual void PostStage(const FNDIGpuComputePostStageContext& Context) {}
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) {}
+
+	virtual bool RequiresPreStageFinalize() const { return false; }
+	virtual void FinalizePreStage(FRDGBuilder& GraphBuilder, const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface) {}
+
+	virtual bool RequiresPostStageFinalize() const { return false; }
+	virtual void FinalizePostStage(FRDGBuilder& GraphBuilder, const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface) {}
+
+
+	// Legacy data interface path
 	virtual void ResetData(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) { }
 
 	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) {}
 	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) {}
 	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) {}
 
-	virtual bool RequiresPreStageFinalize() const { return false; }
 	virtual void FinalizePreStage(FRHICommandList& RHICmdList, const FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface) {}
 
-	virtual bool RequiresPostStageFinalize() const { return false; }
 	virtual void FinalizePostStage(FRHICommandList& RHICmdList, const FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface) {}
 
 	virtual FNiagaraDataInterfaceProxyRW* AsIterationProxy() { return nullptr; }
+};
+
+//////////////////////////////////////////////////////////////////////////
+
+struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
+{
+	FNiagaraDataInterfaceSetShaderParametersContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, const FNiagaraGPUSystemTick& InSystemTick, const FNiagaraComputeInstanceData& InComputeInstanceData, const FNiagaraSimStageData& InSimStageData, const FNiagaraShaderRef& InShaderRef, const FNiagaraShaderScriptParametersMetadata& InShaderParametersMetadata, uint8* InBaseParameters)
+		: GraphBuilder(InGraphBuilder)
+		, ComputeDispatchInterface(InComputeDispatchInterface)
+		, SystemTick(InSystemTick)
+		, ComputeInstanceData(InComputeInstanceData)
+		, SimStageData(InSimStageData)
+		, ShaderRef(InShaderRef)
+		, ShaderParametersMetadata(InShaderParametersMetadata)
+		, BaseParameters(InBaseParameters)
+	{
+	}
+
+	FRDGBuilder& GetGraphBuilder() const { return GraphBuilder; }
+	FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
+
+	template<typename T> T& GetProxy() const { check(DataInterfaceProxy); return static_cast<T&>(*DataInterfaceProxy); }
+	const FNiagaraGpuComputeDispatchInterface& GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
+	const FNiagaraGPUSystemTick& GetSystemTick() const { return SystemTick; }
+	const FNiagaraComputeInstanceData& GetComputeInstanceData() const { return ComputeInstanceData; }
+	const FNiagaraSimStageData& GetSimStageData() const { return SimStageData; }
+
+	FNiagaraSystemInstanceID GetSystemInstanceID() const;
+	FVector3f GetSystemLWCTile() const;
+	bool IsResourceBound(const void* ResourceAddress) const;
+	bool IsParameterBound(const void* ParameterAddress) const;
+	template<typename T> bool IsStructBound(const T* StructAddress) const { return IsStructBoundInternal(StructAddress, sizeof(T)); }
+	bool IsOutputStage() const;
+	bool IsIterationStage() const;
+
+	template<typename T> T* GetParameterNestedStruct() const
+	{
+		const uint32 StructOffset = Align(ParametersOffset, TShaderParameterStructTypeInfo<T>::Alignment);
+		ParametersOffset = StructOffset + TShaderParameterStructTypeInfo<T>::GetStructMetadata()->GetSize();
+
+		return reinterpret_cast<T*>(BaseParameters + StructOffset);
+	}
+	template<typename T> T* GetParameterIncludedStruct() const
+	{
+		const uint16 StructOffset = GetParameterIncludedStructInternal(TShaderParameterStructTypeInfo<T>::GetStructMetadata());
+		return reinterpret_cast<T*>(BaseParameters + StructOffset);
+	}
+	template<typename T> TArrayView<T> GetParameterLooseArray(int32 NumElements) const
+	{
+		const uint32 ArrayOffset = Align(ParametersOffset, SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
+		ParametersOffset = ArrayOffset + (sizeof(T) * NumElements);
+		return TArrayView<T>(reinterpret_cast<T*>(BaseParameters + ArrayOffset), NumElements);
+	}
+
+	template<typename T> const T& GetShaderStorage() const
+	{
+		check(ShaderStorage != nullptr);
+		return static_cast<const T&>(*ShaderStorage);
+	}
+
+	void SetDataInterface(FNiagaraDataInterfaceProxy* InDataInterfaceProxy, uint32 InParametersOffset, const FNiagaraDataInterfaceParametersCS* InShaderStorage)
+	{
+		DataInterfaceProxy = InDataInterfaceProxy;
+		ParametersOffset = InParametersOffset;
+		ShaderStorage = InShaderStorage;
+	}
+
+private:
+	bool IsStructBoundInternal(const void* StructAddress, uint32 StructSize) const;
+	uint16 GetParameterIncludedStructInternal(const FShaderParametersMetadata* StructMetadata) const;
+
+private:
+	FRDGBuilder& GraphBuilder;
+	const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface;
+	const FNiagaraGPUSystemTick& SystemTick;
+	const FNiagaraComputeInstanceData& ComputeInstanceData;
+	const FNiagaraSimStageData& SimStageData;
+	const FNiagaraShaderRef& ShaderRef;
+	const FNiagaraShaderScriptParametersMetadata& ShaderParametersMetadata;
+	uint8* BaseParameters = nullptr;
+	const FNiagaraDataInterfaceParametersCS* ShaderStorage = nullptr;
+
+	FNiagaraDataInterfaceProxy* DataInterfaceProxy = nullptr;
+	mutable uint32 ParametersOffset = 0;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -312,6 +498,27 @@ public:
 	/** Ticks the per instance data for this interface, if it has any. */
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
 	virtual bool PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
+	
+	/** Begin writing data for a simulation cache, returning a nullptr means the data interface does not store data into the simulation cache. */
+	virtual UObject* SimCacheBeginWrite(UObject* SimCache, FNiagaraSystemInstance* NiagaraSystemInstance, const void* OptionalPerInstanceData) const { return nullptr; }
+	/** Write a new frame of data for the simulation cache.  This is always in sequence, i.e. 0, 1, 2, etc, we will never jump around frames. */
+	virtual bool SimCacheWriteFrame(UObject* StorageObject, int FrameIndex, FNiagaraSystemInstance* SystemInstance, const void* OptionalPerInstanceData) const { return true; }
+	/** End writing data for a simulation cache.  Note this is called on the CDO not the instance the object was created from. */
+	virtual bool SimCacheEndWrite(UObject* StorageObject) const { return true; }
+	/** Read a frame of data from the simulation cache. */
+	virtual bool SimCacheReadFrame(UObject* StorageObject, int FrameA, int FrameB, float Interp, FNiagaraSystemInstance* SystemInstance, void* OptionalPerInstanceData) { return true; }
+	/**
+	Called when the simulation cache has finished reading a frame.
+	Only DataInterfaces with PerInstanceData are currently supported.
+	*/
+	virtual void SimCachePostReadFrame(void* OptionalPerInstanceData, FNiagaraSystemInstance* SystemInstance) {}
+	/**
+	This function allows you to preserve a list of attributes when building a renderer only cache.
+	The UsageContext will be either a UNiagaraSystem or a UNiagaraEmitter and can be used to scope your variables accordingly.
+	For example, if you were to require 'Particles.MyAttribute' in order to process the cache results you would need to convert
+	this into 'MyEmitter.Particles.MyAttribute' by checking the UsageContext is a UNiagaraEmitter and then creating the variable from the unique name.
+	*/
+	virtual TArray<FNiagaraVariableBase> GetSimCacheRendererAttributes(UObject* UsageContext) const { return TArray<FNiagaraVariableBase>(); }
 
 #if WITH_EDITORONLY_DATA
 	/** Allows the generic class defaults version of this class to specify any dependencies/version/etc that might invalidate the compile. It should never depend on the value of specific properties.*/
@@ -429,6 +636,16 @@ public:
 
 	virtual void PostExecute() {}
 
+#if WITH_NIAGARA_DEBUGGER
+	/**
+	Override this function to provide additional context to the debug HUD.
+	Fill VariableDataString with the data to display on the variable information in the HUD, this information
+	should be kept light to avoid polluting the display.
+	You can also use the Canvas to draw additional information based on verbosity
+	*/
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const {};
+#endif
+
 #if WITH_EDITOR	
 	/** Refreshes and returns the errors detected with the corresponding data, if any.*/
 	virtual TArray<FNiagaraDataInterfaceError> GetErrors() { return TArray<FNiagaraDataInterfaceError>(); }
@@ -454,7 +671,7 @@ public:
 #endif
 
     /** Method to add asset tags that are specific to this data interface. By default we add in how many instances of this class exist in the list.*/
-	virtual void GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
+	virtual void GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
 	virtual bool CanExposeVariables() const { return false; }
 	virtual void GetExposedVariables(TArray<FNiagaraVariableBase>& OutVariables) const {}
 	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const { return false; }
@@ -472,9 +689,15 @@ public:
 	* Allows a DI to specify data dependencies between emitters, so the system can ensure that the emitter instances are executed in the correct order.
 	* The Dependencies array may already contain items, and this method should only append to it.
 	*/
-	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const {}
+	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const {}
 
 	virtual bool ReadsEmitterParticleData(const FString& EmitterName) const { return false; }
+
+	/**
+	Set the shader parameters will only be called if the data interface provided shader parameters.
+	You must write the parameters in the order you added them to the structure.
+	*/
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const {}
 
 protected:
 	virtual void PushToRenderThreadImpl() {}

@@ -8,17 +8,17 @@
 
 struct BxDFContext
 {
-	float NoV;
-	float NoL;
-	float VoL;
-	float NoH;
-	float VoH;
-	float XoV;
-	float XoL;
-	float XoH;
-	float YoV;
-	float YoL;
-	float YoH;
+	half NoV;
+	half NoL;
+	half VoL;
+	half NoH;
+	half VoH;
+	half XoV;
+	half XoL;
+	half XoH;
+	half YoV;
+	half YoL;
+	half YoH;
 #if 1	// Shit code until we get member functions
 };
 
@@ -58,6 +58,26 @@ void Init( inout BxDFContext Context, half3 N, half3 X, half3 Y, half3 V, half3 
 	Context.YoV = dot(Y, V);
 	Context.YoL = dot(Y, L);
 	Context.YoH = (Context.YoL + Context.YoV) * InvLenH;
+}
+
+void InitMobile(inout BxDFContext Context, half3 N, half3 V, half3 L, half NoL)
+{
+	Context.NoL = NoL;
+	Context.NoV = dot(N, V);
+	Context.VoL = dot(V, L);
+	float3 H = normalize(float3(V + L));
+	Context.NoH = max(0, dot(N, H));
+	Context.VoH = max(0, dot(V, H));
+
+	//NoL = saturate( NoL );
+	//NoV = saturate( abs( NoV ) + 1e-5 );
+
+	Context.XoV = 0.0f;
+	Context.XoL = 0.0f;
+	Context.XoH = 0.0f;
+	Context.YoV = 0.0f;
+	Context.YoL = 0.0f;
+	Context.YoH = 0.0f;
 }
 
 // [ de Carpentier 2017, "Decima Engine: Advances in Lighting and AA" ]
@@ -255,7 +275,7 @@ void SphereMaxNoH( inout BxDFContext Context, float SinAlpha, bool bNewtonIterat
 // f = Microfacet specular BRDF = D*G*F / (4*NoL*NoV) = D*Vis*F
 
 
-float3 Diffuse_Lambert( float3 DiffuseColor )
+half3 Diffuse_Lambert( half3 DiffuseColor )
 {
 	return DiffuseColor * (1 / PI);
 }
@@ -321,7 +341,7 @@ float3 Diffuse_Chan( float3 DiffuseColor, float a2, float NoV, float NoL, float 
 	NoH = saturate(NoH);
 
 	// a2 = 2 / ( 1 + exp2( 18 * g )
-	float g = saturate( (1.0 / 18.0) * log2( 2 / a2 - 1 ) );
+	float g = saturate( (1.0 / 18.0) * log2( 2 * rcpFast(a2) - 1 ) );
 
 	float F0 = VoH + Pow5( 1 - VoH );
 	float FdV = 1 - 0.75 * Pow5( 1 - NoV );
@@ -331,7 +351,7 @@ float3 Diffuse_Chan( float3 DiffuseColor, float a2, float NoV, float NoL, float 
 	float Fd = lerp( F0, FdV * FdL, saturate( 2.2 * g - 0.5 ) );
 
 	// Retro reflectivity contribution.
-	float Fb = ( (34.5 * g - 59 ) * g + 24.5 ) * VoH * exp2( -max( 73.2 * g - 21.2, 8.9 ) * sqrt( NoH ) );
+	float Fb = ( (34.5 * g - 59 ) * g + 24.5 ) * VoH * exp2( -max( 73.2 * g - 21.2, 8.9 ) * sqrtFast( NoH ) );
 	// It fades out when lights become area lights in order to avoid visual artefacts.
 	Fb *= RetroReflectivityWeight;
 	
@@ -640,3 +660,75 @@ float Vis_Cloth( float NoV, float NoL )
 	return rcp( 4 * ( NoL + NoV - NoL * NoV ) );
 }
 
+float D_Charlie(float Roughness, float NoH)
+{
+	float InvR = 1 / Roughness;
+	float Cos2H = NoH * NoH;
+	float Sin2H = 1 - Cos2H;
+	return (2 + InvR) * pow(Sin2H, InvR * 0.5) / (2 * PI);
+}
+
+// [Estevez and Kulla 2017, "Production Friendly Microfacet Sheen BRDF"]
+float Vis_Charlie_L(float x, float r)
+{
+	r = saturate(r);
+	r = 1.0 - (1. - r) * (1. - r);
+
+	float a = lerp(25.3245 , 21.5473 , r);
+	float b = lerp( 3.32435,  3.82987, r);
+	float c = lerp( 0.16801,  0.19823, r);
+	float d = lerp(-1.27393, -1.97760, r);
+	float e = lerp(-4.85967, -4.32054, r);
+
+	return a * rcp( (1 + b * pow(x, c)) + d * x + e);
+}
+float Vis_Charlie(float Roughness, float NoV, float NoL)
+{
+	float VisV = NoV < 0.5 ? exp(Vis_Charlie_L(NoV, Roughness)) : exp(2 * Vis_Charlie_L(0.5, Roughness) - Vis_Charlie_L(1 - NoV, Roughness));
+	float VisL = NoL < 0.5 ? exp(Vis_Charlie_L(NoL, Roughness)) : exp(2 * Vis_Charlie_L(0.5, Roughness) - Vis_Charlie_L(1 - NoL, Roughness));
+
+	return rcp(((1 + VisV + VisL) * (4 * NoV * NoL)));
+}
+
+float Vis_Ashikhmin(float NoV, float NoL)
+{
+	return rcp(4 * (NoL + NoV - NoL * NoV));
+}
+
+// Special medium transmittance evaluation for the clear coat BSDF.
+float3 SimpleClearCoatTransmittance(float NoL, float NoV, float Metallic, float3 BaseColor)
+{
+	float3 Transmittance = 1.0;
+
+	float ClearCoatCoverage = Metallic;
+	if (ClearCoatCoverage > 0.0)
+	{
+		float LayerThickness = 1.0;	// Assume a normalized thickness
+
+		// The path length inside the medium is from light to bottom surface, then back from bottom surface to the viewer.
+		// This assuming an infinite and flat medium slab.
+		float ThinDistance = LayerThickness * (rcp(NoV) + rcp(NoL));
+
+		// BaseColor represents reflected color viewed at 0 incidence angle for the view and light direction... 
+		float3 TransmittanceColor = Diffuse_Lambert(BaseColor);
+		// ... and after being affected by the substrate transmittance when traveling through it, back and forth.
+		// Because of this, extinction is normalized by traveling through layer thickness twice
+		float3 ExtinctionCoefficient = -log(TransmittanceColor) / (2.0 * LayerThickness);
+
+		// Optical depth is evaluated for ThinDistance computed above. But we also subtract 2.0 * LayerThickness
+		// in order to respect the fact that BaseColor represents reflected color viewed at 0 incidence angle. => In this case, OpticalDepth will be 0 and thus Transmittance=1.
+		float3 OpticalDepth = ExtinctionCoefficient * max(ThinDistance - 2.0 * LayerThickness, 0.0);
+
+		// Compute transmittance as a fonction of OpticalDepth
+		Transmittance = exp(-OpticalDepth);
+		// And as a fucntion of the ClearCoatCoverage.
+		Transmittance = lerp(1.0, Transmittance, ClearCoatCoverage);
+	}
+
+	// Note: this is a really special way to handle clear coat transmittance.
+	//  - The basecolor of the bottom layer is used as the transmittance color.
+	//	- So basically, a colored metal as bottom layer will look even more saturated at grazing angle.
+	//	- Transmittance is only computed for metals, for some reason plastic do not receive transmittance.
+
+	return Transmittance;
+}

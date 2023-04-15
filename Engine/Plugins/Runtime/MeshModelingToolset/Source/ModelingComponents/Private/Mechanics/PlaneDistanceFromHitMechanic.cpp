@@ -7,6 +7,8 @@
 #include "Distance/DistLine3Ray3.h"
 #include "ToolDataVisualizer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlaneDistanceFromHitMechanic)
+
 using namespace UE::Geometry;
 
 
@@ -36,6 +38,17 @@ void UPlaneDistanceFromHitMechanic::Initialize(FDynamicMesh3&& HitTargetMesh, co
 	{
 		MeshTransforms::WorldToFrameCoords(PreviewHeightTarget, PreviewHeightFrame);
 	}
+
+	PreviewHeightTargetAABB.SetMesh(&PreviewHeightTarget);
+}
+
+// Alternative Initialize() that explicitly specifies what transform to bake
+void UPlaneDistanceFromHitMechanic::Initialize(FDynamicMesh3&& HitTargetMesh, const FFrame3d& PlaneFrameWorld, const FTransform& MeshToPlaneFrame)
+{
+	PreviewHeightFrame = PlaneFrameWorld;
+
+	PreviewHeightTarget = MoveTemp(HitTargetMesh);
+	MeshTransforms::ApplyTransform(PreviewHeightTarget, MeshToPlaneFrame);
 
 	PreviewHeightTargetAABB.SetMesh(&PreviewHeightTarget);
 }

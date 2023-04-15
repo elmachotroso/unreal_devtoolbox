@@ -14,6 +14,7 @@
 #include "PhysicsReplication.h"
 #include "Physics/PhysicsInterfaceCore.h"
 #include "UObject/UObjectThreadContext.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
 //////////////// PRIMITIVECOMPONENT ///////////////
 
@@ -30,7 +31,7 @@ DECLARE_CYCLE_STAT(TEXT("PrimComp SetCollisionProfileName"), STAT_PrimComp_SetCo
 	#define WarnInvalidPhysicsOperations(Text, BodyInstance, BoneName)
 #endif
 
-void UPrimitiveComponent::SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, FName BoneName)
+void UPrimitiveComponent::SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, FName BoneName, int32 ServerFrame, int32 ServerHandle)
 {
 	if (UWorld* World = GetWorld())
 	{
@@ -41,7 +42,8 @@ void UPrimitiveComponent::SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedS
 				FBodyInstance* BI = GetBodyInstance(BoneName);
 				if (BI && BI->IsValidBodyInstance())
 				{
-					PhysicsReplication->SetReplicatedTarget(this, BoneName, UpdatedState);
+					PhysicsReplication->SetReplicatedTarget(this, BoneName, UpdatedState, ServerFrame);
+					BI->GetPhysicsActorHandle();// ->GetGameThreadAPI().SetParticleID(Chaos::FParticleID{ ServerPhysicsHandle, INDEX_NONE });
 				}
 			}
 		}
@@ -815,6 +817,19 @@ void UPrimitiveComponent::UnWeldChildren()
 FBodyInstance* UPrimitiveComponent::GetBodyInstance(FName BoneName, bool bGetWelded, int32 Index) const
 {
 	return const_cast<FBodyInstance*>((bGetWelded && BodyInstance.WeldParent) ? BodyInstance.WeldParent : &BodyInstance);
+}
+
+FBodyInstanceAsyncPhysicsTickHandle UPrimitiveComponent::GetBodyInstanceAsyncPhysicsTickHandle(FName BoneName, bool bGetWelded, int32 Index) const
+{
+	if(FBodyInstance* BI = GetBodyInstance(BoneName, bGetWelded, Index))
+	{
+		return BI->GetBodyInstanceAsyncPhysicsTickHandle();
+	}
+	else
+	{
+		return FBodyInstanceAsyncPhysicsTickHandle();
+	}
+	
 }
 
 bool UPrimitiveComponent::GetSquaredDistanceToCollision(const FVector& Point, float& OutSquaredDistance, FVector& OutClosestPointOnCollision) const

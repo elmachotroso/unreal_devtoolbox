@@ -11,9 +11,11 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -75,10 +77,13 @@ namespace UnrealBuildTool
 				LocalProcess.StartInfo = new ProcessStartInfo(SNDBSUtilExe, $"-connected");
 				LocalProcess.OutputDataReceived += (Sender, Args) =>
 				{
-					Match Result = FindHost.Match(Args.Data);
-					if (Result.Success)
+					if (Args.Data != null)
 					{
-						BrokerHostName = Result.Groups[1].Value;
+						Match Result = FindHost.Match(Args.Data);
+						if (Result.Success)
+						{
+							BrokerHostName = Result.Groups[1].Value;
+						}
 					}
 				};
 				if (Utils.RunLocalProcess(LocalProcess) == 1 && BrokerHostName.Length > 0)
@@ -119,7 +124,7 @@ namespace UnrealBuildTool
 			return null;
 		}
 
-		public static bool IsHostOnVpn(string HostName)
+		public static bool IsHostOnVpn(string HostName, ILogger Logger)
 		{
 			// If there aren't any defined subnets, just early out
 			if (VpnSubnets == null || VpnSubnets.Length == 0)
@@ -160,12 +165,12 @@ namespace UnrealBuildTool
 			}
 			catch (Exception Ex)
 			{
-				Log.TraceWarning("Unable to check whether host {0} is connected to VPN:\n{1}", HostName, ExceptionUtils.FormatExceptionDetails(Ex));
+				Logger.LogWarning("Unable to check whether host {HostName} is connected to VPN:\n{Ex}", HostName, ExceptionUtils.FormatExceptionDetails(Ex));
 			}
 			return false;
 		}
 
-		public static bool IsAvailable()
+		public static bool IsAvailable(ILogger Logger)
 		{
 			// Check the executable exists on disk
 			if (SCERoot == null || !File.Exists(SNDBSBuildExe))
@@ -183,7 +188,7 @@ namespace UnrealBuildTool
 			if (!bAllowOverVpn && VpnSubnets != null && VpnSubnets.Length > 0)
 			{
 				string? BrokerHost;
-				if (TryGetBrokerHost(out BrokerHost) && IsHostOnVpn(BrokerHost))
+				if (TryGetBrokerHost(out BrokerHost) && IsHostOnVpn(BrokerHost, Logger))
 				{
 					return false;
 				}
@@ -192,7 +197,7 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-		public override bool ExecuteActions(List<LinkedAction> Actions)
+		public override bool ExecuteActions(List<LinkedAction> Actions, ILogger Logger)
 		{
 			if (Actions.Count == 0)
 				return true;
@@ -211,6 +216,8 @@ namespace UnrealBuildTool
 
 			// Build the json script file to describe all the actions and their dependencies
 			var ActionIds = Actions.ToDictionary(a => a, a => Guid.NewGuid().ToString());
+			JsonSerializerOptions JsonOption = new JsonSerializerOptions();
+			JsonOption.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
 			File.WriteAllText(ScriptFile.FullName, JsonSerializer.Serialize(new Dictionary<string, object>()
 			{
 				["jobs"] = Actions.ToDictionary(a => ActionIds[a], a =>
@@ -237,7 +244,7 @@ namespace UnrealBuildTool
 
 					return Job;
 				})
-			}, new JsonSerializerOptions { WriteIndented = true }));
+			}, JsonOption));
 
 			PrepareToolTemplates();
 			bool bHasRewrites = GenerateSNDBSIncludeRewriteRules();
@@ -258,15 +265,15 @@ namespace UnrealBuildTool
 			{
 				StartInfo.Arguments += " -k";
 			}
-			return ExecuteProcessWithProgressMarkup(StartInfo, Actions.Count);
+			return ExecuteProcessWithProgressMarkup(StartInfo, Actions.Count, Logger);
 		}
 
 		/// <summary>
 		/// Executes the process, parsing progress markup as part of the output.
 		/// </summary>
-		private bool ExecuteProcessWithProgressMarkup(ProcessStartInfo SnDbsStartInfo, int NumActions)
+		private bool ExecuteProcessWithProgressMarkup(ProcessStartInfo SnDbsStartInfo, int NumActions, ILogger Logger)
 		{
-			using (ProgressWriter Writer = new ProgressWriter("Compiling C++ source files...", false))
+			using (ProgressWriter Writer = new ProgressWriter("Compiling C++ source files...", false, Logger))
 			{
 				int NumCompletedActions = 0;
 				string CurrentStatus = "";
@@ -283,14 +290,14 @@ namespace UnrealBuildTool
 
 							Text = Args.Data.Substring(ProgressMarkupPrefix.Length).Trim();
 							var ActionInfo = Text.Split(':');
-							Log.TraceInformation($"[{NumCompletedActions}/{NumActions}] {ActionInfo[0]} {ActionInfo[1]}");
+							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {ActionInfo0} {ActionInfo1}", NumCompletedActions, NumActions, ActionInfo[0], ActionInfo[1]);
 							CurrentStatus = ActionInfo[1];
 							return;
 						}
 						// Suppress redundant tool output of status we already printed (e.g., msvc cl prints compile unit name always)
 						if (!Text.Equals(CurrentStatus))
 						{
-							Log.TraceInformation(Text);
+							Log.TraceInformation("{0}", Text); // Need to send this through registered event parser; using old logger
 						}
 					}
 				};
@@ -316,7 +323,7 @@ namespace UnrealBuildTool
 						LocalProcess.BeginErrorReadLine();
 					}
 
-					Log.TraceInformation("Distributing {0} action{1} to SN-DBS",
+					Logger.LogInformation("Distributing {NumAction} action{ActionS} to SN-DBS",
 						NumActions,
 						NumActions == 1 ? "" : "s");
 
@@ -506,33 +513,37 @@ omp=true
 omp_min_threads=1",
 			["clang++.exe"] = @"
 [tool]
-family=clang-cl
+family=clang
+extensions=.c;.cc;.cpp;.cxx;.c++;.h;.hpp;.s;.asm
+adjacent_metadata_extensions=.pch;.gch;.pth;.o;.obj
 include_path01=..\include
 include_path02=..\include\c++\v1
 include_path03=..\lib\clang\*\include
+include_path04=%CPATH%;%C_INCLUDE_PATH%;%CPLUS_INCLUDE_PATH%
 
 [files]
 main=clang++.exe
-file01=clang-shared.dll
-file02=libclang.dll
-file03=NXMangledNamePrinter.dll
-file04=..\lib\*
+
+[include-path-patterns]
+include01=-(?:I|F|isystem|idirafter)[ \t]*(\""[^\""]+\""|[^ ]+)
+
+[additional-include-file-patterns]
+includefile01=--?include[ \t]*(\""[^\""]+\""|[^ ]+)
+
+[additional-input-file-patterns]
+inputfile01=--?(?:include-pch|fprofile-instr-use=|fprofile-sample-use=|fprofile-use=|fsanitize-ignorelist=)[ \t]*(\""[^\""]+\""|[^ ]+)
 
 [output-file-patterns]
-outputfile01=\s*""([^ "",]+\.cpp\.txt)\""
+outputfile01=-o[ \t]*(\""[^\""]+\""|[^ ]+)
 
-[output-file-rules]
-rule01=*.log|discard=true
-rule02=*.dat|discard=true
-rule03=*.tmp|discard=true
+[definition-patterns]
+definition01=-D[ \t]*""?([a-zA-Z_0-9]+)(?:[\s""]|$)()
+definition02=-D[ \t]*""?([a-zA-Z_0-9]+)=(?:\\""|<)(.+?)(?:\\""|>)
+definition03=-D[ \t]*""?([a-zA-Z_0-9]+)=((?!(?:\\""|<))[^ ""]*)
 
-[system-file-filters]
-filter01=msvcr*.dll
-filter02=msvcp*.dll
-filter03=vcruntime140*.dll
-filter04=appcrt140*.dll
-filter05=desktopcrt140*.dll
-filter06=concrt140*.dll",
+[input-scanners]
+scanner01=c .*
+scanner02=assembler .s;.asm",
 		};
 	}
 }

@@ -69,6 +69,8 @@ public:
 
 	FORCEINLINE const FRHIGPUMask& GetLastCopyGPUMask() const { return LastCopyGPUMask; }
 
+	FName GetName() const { return Fence->GetFName(); }
+
 protected:
 
 	FGPUFenceRHIRef Fence;
@@ -92,6 +94,7 @@ public:
 	void EnqueueCopy(FRHICommandList& RHICmdList, FRHIBuffer* SourceBuffer, uint32 NumBytes = 0) override;
 	void* Lock(uint32 NumBytes) override;
 	void Unlock() override;
+	uint64 GetGPUSizeBytes() const;
 
 private:
 
@@ -110,9 +113,10 @@ class RHI_API FRHIGPUTextureReadback final : public FRHIGPUMemoryReadback
 public:
 	FRHIGPUTextureReadback(FName RequestName);
 
+	UE_DEPRECATED(5.1, "EnqueueCopyRDG is deprecated. Use EnqueueCopy instead.")
 	void EnqueueCopyRDG(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveRect Rect = FResolveRect());
-	void EnqueueCopy(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveRect Rect = FResolveRect()) override;
 
+	void EnqueueCopy(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveRect Rect = FResolveRect()) override;
 
 	UE_DEPRECATED(5.0, "Use FRHIGPUTextureReadback::Lock( int32& OutRowPitchInPixels) instead.")
 	void* Lock(uint32 NumBytes) override;
@@ -123,8 +127,11 @@ public:
 	UE_DEPRECATED(5.0, "Use FRHIGPUTextureReadback::Lock( int32& OutRowPitchInPixels) instead.")
 	void LockTexture(FRHICommandListImmediate& RHICmdList, void*& OutBufferPtr, int32& OutRowPitchInPixels);
 
-private:
-	void EnqueueCopyInternal(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveParams Params);
+	uint64 GetGPUSizeBytes() const;
 
-	FTextureRHIRef DestinationStagingTexture;
+#if WITH_MGPU
+	FTextureRHIRef DestinationStagingTextures[MAX_NUM_GPUS];
+#else
+	FTextureRHIRef DestinationStagingTextures[1];
+#endif
 };

@@ -5,14 +5,22 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNode_LinkedInputPose.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_CustomProperty)
+
 FAnimNode_CustomProperty::FAnimNode_CustomProperty()
 	: FAnimNode_Base()
 	, TargetInstance(nullptr)
-#if WITH_EDITOR
-	, bReinitializeProperties(false)
-#endif // WITH_EDITOR
 {
+#if WITH_EDITOR
+	FCoreUObjectDelegates::OnObjectsReinstanced.AddRaw(this, &FAnimNode_CustomProperty::HandleObjectsReinstanced);
+#endif // WITH_EDITOR
+}
 
+FAnimNode_CustomProperty::~FAnimNode_CustomProperty()
+{
+#if WITH_EDITOR
+	FCoreUObjectDelegates::OnObjectsReinstanced.RemoveAll(this);
+#endif // WITH_EDITOR
 }
 
 void FAnimNode_CustomProperty::SetTargetInstance(UObject* InInstance)
@@ -45,19 +53,6 @@ void FAnimNode_CustomProperty::PropagateInputProperties(const UObject* InSourceI
 			}
 		}
 	}
-}
-
-void FAnimNode_CustomProperty::PreUpdate(const UAnimInstance* InAnimInstance) 
-{
-	FAnimNode_Base::PreUpdate(InAnimInstance);
-
-#if WITH_EDITOR
-	if (bReinitializeProperties)
-	{
-		InitializeProperties(InAnimInstance, GetTargetClass());
-		bReinitializeProperties = false;
-	}
-#endif// WITH_EDITOR
 }
 
 void FAnimNode_CustomProperty::InitializeProperties(const UObject* InSourceInstance, UClass* InTargetClass)
@@ -95,4 +90,50 @@ void FAnimNode_CustomProperty::InitializeProperties(const UObject* InSourceInsta
 		}
 	}
 }
+
+#if WITH_EDITOR
+
+void FAnimNode_CustomProperty::OnInitializeAnimInstance(const FAnimInstanceProxy* InProxy, const UAnimInstance* InAnimInstance)
+{
+	SourceInstance = const_cast<UAnimInstance*>(InAnimInstance);
+}
+
+void FAnimNode_CustomProperty::HandleObjectsReinstanced_Impl(UObject* InSourceObject, UObject* InTargetObject, const TMap<UObject*, UObject*>& OldToNewInstanceMap)
+{
+	static IConsoleVariable* UseLegacyAnimInstanceReinstancingBehavior = IConsoleManager::Get().FindConsoleVariable(TEXT("bp.UseLegacyAnimInstanceReinstancingBehavior"));
+	if(UseLegacyAnimInstanceReinstancingBehavior == nullptr || !UseLegacyAnimInstanceReinstancingBehavior->GetBool())
+	{
+		InitializeProperties(CastChecked<UAnimInstance>(InSourceObject), GetTargetClass());
+	}
+}
+
+void FAnimNode_CustomProperty::HandleObjectsReinstanced(const TMap<UObject*, UObject*>& OldToNewInstanceMap)
+{
+	static IConsoleVariable* UseLegacyAnimInstanceReinstancingBehavior = IConsoleManager::Get().FindConsoleVariable(TEXT("bp.UseLegacyAnimInstanceReinstancingBehavior"));
+	if(UseLegacyAnimInstanceReinstancingBehavior == nullptr || !UseLegacyAnimInstanceReinstancingBehavior->GetBool())
+	{
+		UObject* TargetObject = GetTargetInstance<UObject>();
+		UObject* SourceObject = SourceInstance;
+
+		if(TargetObject && SourceObject)
+		{
+			bool bRelevantObjectWasReinstanced = false;
+			for(const TPair<UObject*, UObject*>& ObjectPair : OldToNewInstanceMap)
+			{
+				if(ObjectPair.Value == TargetObject || ObjectPair.Value == SourceObject)
+				{
+					bRelevantObjectWasReinstanced = true;
+					break;
+				}
+			}
+
+			if(bRelevantObjectWasReinstanced)
+			{
+				HandleObjectsReinstanced_Impl(SourceObject, TargetObject, OldToNewInstanceMap);
+			}
+		}
+	}
+}
+
+#endif	// #if WITH_EDITOR
 

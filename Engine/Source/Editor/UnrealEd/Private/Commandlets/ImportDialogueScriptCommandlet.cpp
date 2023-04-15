@@ -1,12 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/ImportDialogueScriptCommandlet.h"
-#include "UObject/UnrealType.h"
-#include "Misc/FileHelper.h"
-#include "UObject/PropertyPortFlags.h"
-#include "Sound/DialogueWave.h"
+
+#include "Commandlets/Commandlet.h"
 #include "Commandlets/ExportDialogueScriptCommandlet.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "CoreTypes.h"
+#include "Internationalization/InternationalizationManifest.h"
+#include "Internationalization/Text.h"
+#include "LocTextHelper.h"
+#include "LocalizationSourceControlUtil.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/FileHelper.h"
 #include "Serialization/Csv/CsvParser.h"
+#include "Sound/DialogueWave.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/UnrealType.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogImportDialogueScriptCommandlet, Log, All);
 
@@ -227,7 +243,7 @@ bool UImportDialogueScriptCommandlet::ImportDialogueScriptForCulture(FLocTextHel
 		// Parse the SpokenDialogue data
 		{
 			const TCHAR* const CellData = RowData[SpokenDialogueColumnIndex];
-			if (SpokenDialogueProperty->ImportText(CellData, SpokenDialogueProperty->ContainerPtrToValuePtr<void>(&ParsedScriptEntry), PPF_None, nullptr) == nullptr)
+			if (SpokenDialogueProperty->ImportText_InContainer(CellData, &ParsedScriptEntry, nullptr, PPF_None) == nullptr)
 			{
 				UE_LOG(LogImportDialogueScriptCommandlet, Error, TEXT("Failed to parse the required column '%s' for row '%d' for culture '%s'."), *SpokenDialogueProperty->GetName(), RowIndex, *InCultureName);
 				continue;
@@ -237,7 +253,7 @@ bool UImportDialogueScriptCommandlet::ImportDialogueScriptForCulture(FLocTextHel
 		// Parse the LocalizationKeys data
 		{
 			const TCHAR* const CellData = RowData[LocalizationKeysColumnIndex];
-			if (LocalizationKeysProperty->ImportText(CellData, LocalizationKeysProperty->ContainerPtrToValuePtr<void>(&ParsedScriptEntry), PPF_None, nullptr) == nullptr)
+			if (LocalizationKeysProperty->ImportText_InContainer(CellData, &ParsedScriptEntry, nullptr, PPF_None) == nullptr)
 			{
 				UE_LOG(LogImportDialogueScriptCommandlet, Error, TEXT("Failed to parse the required column '%s' for row '%d' for culture '%s'."), *LocalizationKeysProperty->GetName(), RowIndex, *InCultureName);
 				continue;

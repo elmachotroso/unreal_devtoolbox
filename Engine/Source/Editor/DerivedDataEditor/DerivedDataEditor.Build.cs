@@ -8,7 +8,6 @@ public class DerivedDataEditor : ModuleRules
 		 : base(Target)
 	{
 		PublicIncludePaths.Add(ModuleDirectory + "/Public");
-		PrivateIncludePaths.Add("Developer/Virtualization/Private");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -18,7 +17,6 @@ public class DerivedDataEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
-				"EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"ToolMenus",

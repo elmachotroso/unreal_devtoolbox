@@ -10,6 +10,8 @@
 #include "Internationalization/TextTransformer.h"
 #include "Framework/Text/ShapedTextCache.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextLayout)
+
 DECLARE_CYCLE_STAT(TEXT("Text Layout"), STAT_SlateTextLayout, STATGROUP_Slate);
 
 static TAutoConsoleVariable<int32> CVarDefaultTextFlowDirection(
@@ -2642,6 +2644,11 @@ FVector2D FTextLayout::GetSize() const
 	return TextLayoutSize.GetDrawSize() * Inverse(Scale);
 }
 
+FVector2D FTextLayout::GetViewSize() const
+{
+	return ViewSize;
+}
+
 FVector2D FTextLayout::GetDrawSize() const
 {
 	return TextLayoutSize.GetDrawSize();
@@ -2938,3 +2945,4 @@ int32 FTextLayout::FTextOffsetLocations::GetTextLength() const
 	}
 	return 0;
 }
+

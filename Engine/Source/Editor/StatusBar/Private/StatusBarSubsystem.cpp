@@ -22,8 +22,10 @@
 #include "Widgets/Input/SButton.h"
 #include "Misc/ConfigCacheIni.h"
 #include "OutputLogModule.h"
+#include "WidgetDrawerConfig.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
-#include "Classes/EditorStyleSettings.h"
+#include "OutputLogSettings.h"
+#include "SOneTimeIndustryQuery.h"
 
 #define LOCTEXT_NAMESPACE "StatusBar"
 
@@ -234,10 +236,12 @@ void UStatusBarSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (MainFrameModule.IsWindowInitialized())
 	{
 		CreateAndShowNewUserTipIfNeeded(MainFrameModule.GetParentWindow(), false);
+		CreateAndShowOneTimeIndustryQueryIfNeeded(MainFrameModule.GetParentWindow(), false);
 	}
 	else
 	{
 		MainFrameModule.OnMainFrameCreationFinished().AddUObject(this, &UStatusBarSubsystem::CreateAndShowNewUserTipIfNeeded);
+		MainFrameModule.OnMainFrameCreationFinished().AddUObject(this, &UStatusBarSubsystem::CreateAndShowOneTimeIndustryQueryIfNeeded);
 	}
 
 
@@ -258,13 +262,14 @@ bool UStatusBarSubsystem::ToggleDebugConsole(TSharedRef<SWindow> ParentWindow, b
 {
 	bool bToggledSuccessfully = false;
 
-	FOutputLogModule& OutputLogModule = FOutputLogModule::Get();
+	FOutputLogModule& OutputLogModule = FModuleManager::Get().LoadModuleChecked<FOutputLogModule>("OutputLog");
+
 
 	// Get the global output log tab if it exists. If it exists and is in the same editor as the status bar we'll focus that instead
 	TSharedPtr<SDockTab> MainOutputLogTab = OutputLogModule.GetOutputLogTab();
 	
-	const bool bCycleToOutputLogDrawer = GetDefault<UEditorStyleSettings>()->bCycleToOutputLogDrawer || bAlwaysToggleDrawer;
-
+	const bool bCycleToOutputLogDrawer = OutputLogModule.ShouldCycleToOutputLogDrawer() || bAlwaysToggleDrawer;
+	
 	for (auto StatusBar : StatusBars)
 	{
 		FStatusBarData& SBData = StatusBar.Value;
@@ -338,6 +343,12 @@ bool UStatusBarSubsystem::OpenOutputLogDrawer()
 {
 	TSharedPtr<SWindow> ParentWindow = UE::StatusBarSubsystem::Private::FindParentWindow();
 
+	if (ParentWindow.IsValid() && ParentWindow->GetType() == EWindowType::Notification)
+	{
+		// Get the parent window directly behind the notification. 
+		ParentWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow(); 
+	}
+	
 	if (ParentWindow.IsValid() && ParentWindow->GetType() == EWindowType::Normal)
 	{
 		return ToggleDebugConsole(ParentWindow.ToSharedRef(), true);
@@ -433,7 +444,7 @@ TSharedRef<SWidget> UStatusBarSubsystem::MakeStatusBarWidget(FName StatusBarName
 	TSharedRef<SStatusBar> StatusBar =
 		SNew(SStatusBar, StatusBarName, InParentTab);
 
-	FStatusBarDrawer ContentBrowserDrawer(StatusBarDrawerIds::ContentBrowser);
+	FWidgetDrawerConfig ContentBrowserDrawer(StatusBarDrawerIds::ContentBrowser);
 	ContentBrowserDrawer.GetDrawerContentDelegate.BindUObject(this, &UStatusBarSubsystem::OnGetContentBrowser);
 	ContentBrowserDrawer.OnDrawerOpenedDelegate.BindUObject(this, &UStatusBarSubsystem::OnContentBrowserOpened);
 	ContentBrowserDrawer.OnDrawerDismissedDelegate.BindUObject(this, &UStatusBarSubsystem::OnContentBrowserDismissed);
@@ -443,7 +454,7 @@ TSharedRef<SWidget> UStatusBarSubsystem::MakeStatusBarWidget(FName StatusBarName
 
 	StatusBar->RegisterDrawer(MoveTemp(ContentBrowserDrawer));
 
-	FOutputLogModule& OutputLogModule = FOutputLogModule::Get();
+	FOutputLogModule& OutputLogModule = FModuleManager::Get().LoadModuleChecked<FOutputLogModule>("OutputLog");
 
 	TWeakPtr<SStatusBar> StatusBarWeakPtr = StatusBar;
 
@@ -465,7 +476,7 @@ TSharedRef<SWidget> UStatusBarSubsystem::MakeStatusBarWidget(FName StatusBarName
 			];
 	
 
-	FStatusBarDrawer OutputLogDrawer(StatusBarDrawerIds::OutputLog);
+	FWidgetDrawerConfig OutputLogDrawer(StatusBarDrawerIds::OutputLog);
 
 	OutputLogDrawer.GetDrawerContentDelegate.BindUObject(this, &UStatusBarSubsystem::OnGetOutputLog);
 	OutputLogDrawer.OnDrawerOpenedDelegate.BindUObject(this, &UStatusBarSubsystem::OnOutputLogOpened);
@@ -517,7 +528,32 @@ bool UStatusBarSubsystem::ActiveWindowHasStatusBar() const
 	return false;
 }
 
-void UStatusBarSubsystem::RegisterDrawer(FName StatusBarName, FStatusBarDrawer&& Drawer, int32 SlotIndex)
+// This function is identical to UStatusBarSubsystem::ActiveWindowHasStatusBar(), except the variable ParentWindow stores the topmost
+// Regular window rather than the direct parent window. This function is only used when users click on the hyperlink "Show Output Log" on 
+// the notification window. 
+bool UStatusBarSubsystem::ActiveWindowBehindNotificationHasStatusBar()
+{
+	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow(); 
+
+	// Same code as ActiveWindowHasStatusBar() from here: 
+	if (ParentWindow.IsValid() && ParentWindow->GetType() == EWindowType::Normal)
+	{
+		for (const TPair<FName, FStatusBarData>& StatusBar : StatusBars)
+		{
+			if (TSharedPtr<SStatusBar> StatusBarPinned = StatusBar.Value.StatusBarWidget.Pin())
+			{
+				TSharedPtr<SDockTab> ParentTab = StatusBarPinned->GetParentTab();
+				if (ParentTab && ParentTab->IsForeground() && ParentTab->GetParentWindow() == ParentWindow)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+void UStatusBarSubsystem::RegisterDrawer(FName StatusBarName, FWidgetDrawerConfig&& Drawer, int32 SlotIndex)
 {
 	if (TSharedPtr<SStatusBar> StatusBar = GetStatusBar(StatusBarName))
 	{
@@ -664,39 +700,90 @@ void UStatusBarSubsystem::CreateAndShowNewUserTipIfNeeded(TSharedPtr<SWindow> Pa
 {
 	if(!bIsNewProjectDialog)
 	{
-		const FString StoreId = TEXT("Epic Games");
-		const FString SectionName = TEXT("Unreal Engine/Editor");
-		const FString KeyName = TEXT("LaunchTipShown");
-
-		const FString FallbackIniLocation = TEXT("/Script/UnrealEd.EditorSettings");
-		const FString FallbackIniKey = TEXT("LaunchTipShownFallback");
-
-		// Its important that this new user message does not appear after the first launch so we store it in a more permanent place
-		FString CurrentState = TEXT("0");
-		if (!FPlatformMisc::GetStoredValue(StoreId, SectionName, KeyName, CurrentState))
-		{
-			// As a fallback where the registry was not readable or writable, save a flag in the editor ini. This will be less permanent as the registry but will prevent 
-			// the notification from appearing on every launch
-			GConfig->GetString(*FallbackIniLocation, *FallbackIniKey, CurrentState, GEditorSettingsIni);
-
-
-		}
+		FString CurrentState = GetNewUserTipState();
 
 		if(CurrentState != TEXT("1"))
 		{
 			SNewUserTipNotification::Show(ParentWindow);
 
+			const FString StoreId = TEXT("Epic Games");
+			const FString SectionName = TEXT("Unreal Engine/Editor");
+			const FString KeyName = TEXT("LaunchTipShown");
+
+			const FString FallbackIniLocation = TEXT("/Script/UnrealEd.EditorSettings");
+			const FString FallbackIniKey = TEXT("LaunchTipShownFallback");
 			// Write that we've shown the notification
-			if (!FPlatformMisc::SetStoredValue(StoreId, SectionName, KeyName, TEXT("1")))
-			{
-				// Use fallback
-				GConfig->SetString(*FallbackIniLocation, *FallbackIniKey, TEXT("1"), GEditorSettingsIni);
-			}
+			UStatusBarSubsystem::SetOneTimeStateWithFallback(StoreId, SectionName, KeyName, FallbackIniLocation, FallbackIniKey);
 		}
 	}
 
 	// Ignore the if the main frame gets recreated this session
 	IMainFrameModule::Get().OnMainFrameCreationFinished().RemoveAll(this);
+}
+
+const FString UStatusBarSubsystem::GetNewUserTipState() const
+{
+	const FString StoreId = TEXT("Epic Games");
+	const FString SectionName = TEXT("Unreal Engine/Editor");
+	const FString KeyName = TEXT("LaunchTipShown");
+
+	const FString FallbackIniLocation = TEXT("/Script/UnrealEd.EditorSettings");
+	const FString FallbackIniKey = TEXT("LaunchTipShownFallback");
+
+	FString CurrentState = UStatusBarSubsystem::GetOneTimeStateWithFallback(StoreId, SectionName, KeyName, FallbackIniLocation, FallbackIniKey);
+	
+	return CurrentState;
+}
+
+void UStatusBarSubsystem::CreateAndShowOneTimeIndustryQueryIfNeeded(TSharedPtr<SWindow> ParentWindow, bool bIsNewProjectDialog)
+{
+	// Only show for external builds where editor analytics are on and the industry popup is not suppressed
+	if(SOneTimeIndustryQuery::ShouldShowIndustryQuery())
+	{
+		FString NewUserTipState = GetNewUserTipState();
+		if (!bIsNewProjectDialog && NewUserTipState == TEXT("1"))
+		{
+			const FString StoreId = TEXT("Epic Games");
+			const FString SectionName = TEXT("Unreal Engine/Editor");
+			const FString KeyName = TEXT("OneTimeIndustryQueryShown");
+
+			const FString FallbackIniLocation = TEXT("/Script/UnrealEd.EditorSettings");
+			const FString FallbackIniKey = TEXT("OneTimeIndustryQueryShownFallback");
+
+			FString CurrentState = UStatusBarSubsystem::GetOneTimeStateWithFallback(StoreId, SectionName, KeyName, FallbackIniLocation, FallbackIniKey);
+
+			if (CurrentState != TEXT("1"))
+			{
+				SOneTimeIndustryQuery::Show(ParentWindow);
+				SetOneTimeStateWithFallback(StoreId, SectionName, KeyName, FallbackIniLocation, FallbackIniKey);
+			}
+		}
+	}
+	// Ignore this if the main frame gets recreated this session
+	IMainFrameModule::Get().OnMainFrameCreationFinished().RemoveAll(this);
+}
+
+const FString UStatusBarSubsystem::GetOneTimeStateWithFallback(const FString StoreId, const FString SectionName, const FString KeyName, const FString FallbackIniLocation, const FString FallbackIniKey)
+{
+	// Its important that this new user message does not appear after the first launch so we store it in a more permanent place
+	FString CurrentState = TEXT("0");
+	if (!FPlatformMisc::GetStoredValue(StoreId, SectionName, KeyName, CurrentState))
+	{
+		// As a fallback where the registry was not readable or writable, save a flag in the editor ini. This will be less permanent as the registry but will prevent 
+		// the notification from appearing on every launch
+		GConfig->GetString(*FallbackIniLocation, *FallbackIniKey, CurrentState, GEditorSettingsIni);
+	}
+	return CurrentState;
+}
+
+void UStatusBarSubsystem::SetOneTimeStateWithFallback(const FString StoreId, const FString SectionName, const FString KeyName, const FString FallbackIniLocation, const FString FallbackIniKey)
+{
+	// Write that we've shown the notification
+	if (!FPlatformMisc::SetStoredValue(StoreId, SectionName, KeyName, TEXT("1")))
+	{
+		// Use fallback
+		GConfig->SetString(*FallbackIniLocation, *FallbackIniKey, TEXT("1"), GEditorSettingsIni);
+	}
 }
 
 TSharedPtr<SStatusBar> UStatusBarSubsystem::GetStatusBar(FName StatusBarName) const
@@ -766,9 +853,11 @@ void UStatusBarSubsystem::HandleDeferredOpenContentBrowser(TSharedPtr<SWindow> P
 
 TSharedRef<SWidget> UStatusBarSubsystem::OnGetOutputLog()
 {
+	FOutputLogModule& OutputLogModule = FModuleManager::Get().LoadModuleChecked<FOutputLogModule>("OutputLog"); 
+
 	if (!StatusBarOutputLog)
 	{
-		StatusBarOutputLog = FOutputLogModule::Get().MakeOutputLogDrawerWidget(FSimpleDelegate::CreateUObject(this, &UStatusBarSubsystem::OnDebugConsoleDrawerClosed));
+		StatusBarOutputLog = OutputLogModule.MakeOutputLogDrawerWidget(FSimpleDelegate::CreateUObject(this, &UStatusBarSubsystem::OnDebugConsoleDrawerClosed));
 	}
 
 	return StatusBarOutputLog.ToSharedRef();
@@ -787,8 +876,8 @@ void UStatusBarSubsystem::OnOutputLogOpened(FName StatusBarWithDrawerName)
 			}
 		}
 	}
-
-	FOutputLogModule::Get().FocusOutputLogConsoleBox(StatusBarOutputLog.ToSharedRef());
+	FOutputLogModule& OutputLogModule = FModuleManager::Get().LoadModuleChecked<FOutputLogModule>("OutputLog");
+	OutputLogModule.FocusOutputLogConsoleBox(StatusBarOutputLog.ToSharedRef());
 }
 
 void UStatusBarSubsystem::OnOutputLogDismised(const TSharedPtr<SWidget>& NewlyFocusedWidget)

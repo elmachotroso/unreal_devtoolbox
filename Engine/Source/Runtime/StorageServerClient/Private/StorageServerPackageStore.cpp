@@ -8,7 +8,7 @@
 
 #if !UE_BUILD_SHIPPING
 
-FStorageServerPackageStore::FStorageServerPackageStore(FStorageServerConnection& Connection)
+FStorageServerPackageStoreBackend::FStorageServerPackageStoreBackend(FStorageServerConnection& Connection)
 {
 	FIoChunkId HeaderChunkId = CreateIoChunkId(FIoContainerId::FromName(TEXT("global")).Value(), 0, EIoChunkType::ContainerHeader);
 	Connection.ReadChunkRequest(HeaderChunkId, 0, uint64(-1), [this](FStorageServerResponse& Response)
@@ -21,8 +21,8 @@ FStorageServerPackageStore::FStorageServerPackageStore(FStorageServerConnection&
 			FIoContainerHeader ContainerHeader;
 			Ar << ContainerHeader;
 			StoreEntriesData = MoveTemp(ContainerHeader.StoreEntries);
-			StoreEntriesMap.Reserve(ContainerHeader.PackageCount);
-			TArrayView<const FFilePackageStoreEntry> StoreEntries(reinterpret_cast<const FFilePackageStoreEntry*>(StoreEntriesData.GetData()), ContainerHeader.PackageCount);
+			StoreEntriesMap.Reserve(ContainerHeader.PackageIds.Num());
+			TArrayView<const FFilePackageStoreEntry> StoreEntries(reinterpret_cast<const FFilePackageStoreEntry*>(StoreEntriesData.GetData()), ContainerHeader.PackageIds.Num());
 			int32 Index = 0;
 			for (const FFilePackageStoreEntry& StoreEntry : StoreEntries)
 			{
@@ -35,12 +35,7 @@ FStorageServerPackageStore::FStorageServerPackageStore(FStorageServerConnection&
 	});
 }
 
-bool FStorageServerPackageStore::DoesPackageExist(FPackageId PackageId)
-{
-	return PackageId.IsValid() && StoreEntriesMap.Contains(PackageId);
-}
-
-EPackageStoreEntryStatus FStorageServerPackageStore::GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry)
+EPackageStoreEntryStatus FStorageServerPackageStoreBackend::GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry)
 {
 	const FFilePackageStoreEntry* FindEntry = StoreEntriesMap.FindRef(PackageId);
 	if (FindEntry)

@@ -13,6 +13,7 @@
 #include "Tools/MotionTrailOptions.h"
 #include "CanvasItem.h"
 #include "ISequencer.h"
+#include "CanvasTypes.h"
 
 namespace UE
 {
@@ -36,7 +37,7 @@ struct HMotionTrailMovieSceneKeyProxy : public HBaseTrailProxy
 };
 IMPLEMENT_HIT_PROXY(HMotionTrailMovieSceneKeyProxy, HBaseTrailProxy);
 
-void FMotionTraiMovieScenelKeyTool::Render(const FGuid& Guid, const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
+void FMotionTraiMovieScenelKeyTool::Render(const FGuid& Guid, const FSceneView* View, FPrimitiveDrawInterface* PDI)
 {
 	const bool bIsVisible = (UMotionTrailToolOptions::GetTrailOptions()->bShowKeys);
 
@@ -68,7 +69,7 @@ void FMotionTraiMovieScenelKeyTool::Render(const FGuid& Guid, const FSceneView* 
 	}
 }
 
-void FMotionTraiMovieScenelKeyTool::DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
+void FMotionTraiMovieScenelKeyTool::DrawHUD(const FSceneView* View, FCanvas* Canvas)
 {
 	const bool bIsVisible = (UMotionTrailToolOptions::GetTrailOptions()->bShowKeys && UMotionTrailToolOptions::GetTrailOptions()->bShowFrameNumber);
 	if (!bIsVisible)
@@ -90,7 +91,7 @@ void FMotionTraiMovieScenelKeyTool::DrawHUD(FEditorViewportClient* ViewportClien
 			FVector2D PixelLocation;
 			if (View->WorldToPixel(FrameKeyPair.Value->Transform.GetLocation(), PixelLocation))
 			{
-				PixelLocation /= ViewportClient->GetDPIScale();
+				PixelLocation /= Canvas->GetDPIScale();
 
 				int32 FrameNumber = FFrameRate::TransformTime(FFrameTime(FrameKeyPair.Value->FrameNumber), TickResolution, DisplayRate).RoundToFrame().Value;
 				FCanvasTextItem TextItem(PixelLocation, FText::FromString(FString::FromInt(FrameNumber)), GEngine->GetMediumFont(), KeyColor);
@@ -192,7 +193,10 @@ void FMotionTraiMovieScenelKeyTool::BuildKeys()
 	TArray<FFrameNumber> KeyTimes = SelectedKeyTimes();
 	Keys.Reset();
 	CachedSelection.Reset();
-
+	if (OwningTrail->GetChannelOffset() == INDEX_NONE)
+	{
+		return;
+	}
 	UMovieSceneSection* AbsoluteTransformSection = OwningTrail->GetSection();
 	int32 MaxChannel = (int32)ETransformChannel::TranslateZ;//only do the first three channels, 0,1,2 which are position.
 	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = AbsoluteTransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
@@ -261,6 +265,10 @@ TArray<FKeyHandle> FMotionTraiMovieScenelKeyTool::GetSelectedKeyHandles(FMovieSc
 
 void FMotionTraiMovieScenelKeyTool::TranslateSelectedKeys(bool bRight)
 {
+	if (OwningTrail->GetChannelOffset() == INDEX_NONE)
+	{
+		return;
+	}
 	UMovieSceneSection* Section = OwningTrail->GetSection();
 	if (CachedSelection.Num() > 0 && Section && Section->TryModify())
 	{
@@ -340,6 +348,10 @@ void FMotionTraiMovieScenelKeyTool::TranslateSelectedKeys(bool bRight)
 
 void FMotionTraiMovieScenelKeyTool::DeleteSelectedKeys()
 {
+	if (OwningTrail->GetChannelOffset() == INDEX_NONE)
+	{
+		return;
+	}
 	UMovieSceneSection* Section = OwningTrail->GetSection();
 	if (CachedSelection.Num() > 0 && Section && Section->TryModify())
 	{
@@ -506,6 +518,10 @@ TArray<FFrameNumber> FMotionTraiMovieScenelKeyTool::GetTimesFromModifiedTimes(co
 
 bool FMotionTraiMovieScenelKeyTool::ShouldRebuildKeys()
 {
+	if (OwningTrail->GetChannelOffset() == INDEX_NONE)
+	{
+		return false;
+	}
 	TMap<FFrameNumber, TSet<ETransformChannel>> KeyTimes;
 	int32 MaxChannel = (int32)ETransformChannel::TranslateZ;///only do the first three channels, 0,1,2 which are position.
 	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = OwningTrail->GetSection()->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
@@ -605,6 +621,10 @@ FTrailKeyInfo::FTrailKeyInfo(const FFrameNumber InFrameNumber, UMovieSceneSectio
 , bDirty(true)
 , OwningTrail(InOwningTrail)
 {
+	if (OwningTrail->GetChannelOffset() == INDEX_NONE)
+	{
+		return;
+	}
 	int32 MaxChannel = (int32)ETransformChannel::TranslateZ;///only do the first three channels, 0,1,2 which are position.
 	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = InSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
 	TArrayView<FMovieSceneFloatChannel*> FloatChannels = InSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();

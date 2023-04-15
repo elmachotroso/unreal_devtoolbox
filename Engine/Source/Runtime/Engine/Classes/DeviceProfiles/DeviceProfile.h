@@ -30,6 +30,10 @@ class ENGINE_API UDeviceProfile : public UTextureLODSettings
 	UPROPERTY(EditAnywhere, config, Category=DeviceSettings)
 	FString BaseProfileName;
 
+	/** Some asset types can reference Device Profiles, is this profile visible to those assets. */
+	UPROPERTY(EditAnywhere, config, Category = DeviceSettings)
+	uint32 bIsVisibleForAssets : 1;
+
 	/** The parent object of this profile, it is the object matching this DeviceType with the BaseProfileName */
 	UPROPERTY()
 	TObjectPtr<UDeviceProfile> Parent;
@@ -82,6 +86,14 @@ public:
 		return CVarsUpdatedDelegate;
 	}
 
+	/** 
+	 * Accessor to a fragment by tag.
+	 * @param FragmentTag the name of the tag to find
+	 * @return FSelectedFragmentProperties ptr or null if FragmentTag not found.
+	 */	
+	const FSelectedFragmentProperties* GetFragmentByTag(FName& FragmentTag) const;
+
+	bool IsVisibleForAssets()const { return bIsVisibleForAssets; }
 public:
 	/** 
 	 * Access to the device profiles Texture LOD Settings
@@ -100,13 +112,15 @@ private:
 	FOnCVarsUpdated CVarsUpdatedDelegate;
 
 public:
+	// The selected result after running the MatchingRules process.
+	TArray<FSelectedFragmentProperties> SelectedFragments;
+
 	/* ValidateProfile()
 	* Validate the Profile after changes by loading it's config (.ini)
 	*/
 	void ValidateProfile();
 
 	//~ Begin UObject Interface
-	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
 	//~ End UObject Interface
 
@@ -164,14 +178,23 @@ private:
 public:
 	const TMap<FString, FString>& GetAllExpandedCVars();
 	const TMap<FString, FString>& GetAllPreviewCVars();
-	void AddExpandedCVars(const TMap<FString, FString>& CVarsToMerge);
-	void AddPreviewCVars(const TMap<FString, FString>& CVarsToMerge);
 	void ClearAllExpandedCVars();
+	/** Set the memory size bucket to be used when previewing this DP, changing this will reset the expanded cvars. */
+	void SetPreviewMemorySizeBucket(EPlatformMemorySizeBucket PreviewMemorySizeBucketIn);
+	EPlatformMemorySizeBucket GetPreviewMemorySizeBucket() const;
+
 private:
+	
+	// calculate the cvars for another platform's deviceprofile
+	void ExpandDeviceProfileCVars();
+		
 	/** Resolved CVars, including expanded scalability cvars used to properly emulate one platform on another */
 	TMap<FString, FString> AllExpandedCVars;
 
 	/** The set of cvars that can be previewed (a subset of AllExpandedCVars) */
 	TMap<FString, FString> AllPreviewCVars;
+
+	/** The EPlatformMemorySizeBucket to use when processing the device profile for previewing. */
+	EPlatformMemorySizeBucket PreviewMemorySizeBucket = EPlatformMemorySizeBucket::Default;
 #endif
 };

@@ -13,20 +13,30 @@ public class Engine : ModuleRules
 
 		SharedPCHHeaderFile = "Public/EngineSharedPCH.h";
 
-		PublicIncludePathModuleNames.AddRange(new string[] { "Renderer", "PacketHandler", "AudioMixer", "AudioMixerCore", "AnimationCore" });
+		PublicIncludePathModuleNames.AddRange(
+			new string[] {
+				"AnimationCore",
+				"AudioMixer", 
+				"AudioMixerCore",
+				"MovieSceneCapture", 
+				"PacketHandler", 
+				"Renderer", 
+			}
+		);
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"Runtime/SynthBenchmark/Public",
-				"Runtime/Engine/Private",
-				"Runtime/Net/Core/Private/Net/Core/PushModel/Types",
-				"Developer/Virtualization/Private"
+				Path.Combine(GetModuleDirectory("NetCore"), "Private"),
+				Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+				Path.Combine(GetModuleDirectory("SynthBenchmark"), "Private"),
+				Path.Combine(GetModuleDirectory("Virtualization"), "Private"),
 			}
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"DerivedDataCache",
+				"DistributedBuildInterface",
 				"TargetPlatform",
 				"ImageWrapper",
 				"ImageWriteQueue",
@@ -41,7 +51,7 @@ public class Engine : ModuleRules
 			}
 		);
 
-		if (Target.Configuration != UnrealTargetConfiguration.Shipping || Target.Type == TargetType.Editor)
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping || Target.bCompileAgainstEditor)
 		{
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
@@ -71,6 +81,7 @@ public class Engine : ModuleRules
 				"CoreUObject",
 				"NetCore",
 				"ApplicationCore",
+				"ImageCore",
 				"Json",
 				"JsonUtilities",
 				"SlateCore",
@@ -99,7 +110,7 @@ public class Engine : ModuleRules
 				"AudioExtensions",
 				"DeveloperSettings",
 				"AudioLinkCore",
-				"CookOnTheFly",
+				"CookOnTheFly"
 			}
 		);
 
@@ -114,6 +125,7 @@ public class Engine : ModuleRules
 			new string[] {
 				"AnimationCore",
 				"AppFramework",
+				"BuildSettings",
 				"Networking",
 				"Landscape",
 				"UMG",
@@ -127,10 +139,11 @@ public class Engine : ModuleRules
 				"AudioMixer",
 				"AudioMixerCore",
 				"SignalProcessing",
-				"CrunchCompression",
 				"IntelISPC",
 				"TraceLog",
-				"ColorManagement"
+				"ColorManagement",
+				"Icmp",
+				"XmlParser"
 			}
 		);
 
@@ -151,12 +164,20 @@ public class Engine : ModuleRules
 		}
 
 		// to prevent "causes WARNING: Non-editor build cannot depend on non-redistributable modules."
-		if (Target.Type == TargetType.Editor)
+		if (Target.bCompileAgainstEditor)
 		{
+
+			PublicDependencyModuleNames.AddRange(
+				new string[] {
+					"TextureBuildUtilities"
+				}
+			);
+
 			// for now we depend on these
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"RawMesh",
+					"Zen"
 				}
 			);
 		}
@@ -169,7 +190,7 @@ public class Engine : ModuleRules
 			}
 		);
 
-		if (Target.Type == TargetType.Editor)
+		if (Target.bCompileAgainstEditor)
 		{
 			// these modules require variadic templates
 			PrivateDependencyModuleNames.AddRange(
@@ -188,9 +209,8 @@ public class Engine : ModuleRules
 		CircularlyReferencedDependentModules.Add("CinematicCamera");
 		CircularlyReferencedDependentModules.Add("AudioMixer");
 
-		if (Target.Type == TargetType.Editor)
+		if (Target.bCompileAgainstEditor)
 		{
-			PrivateDependencyModuleNames.Add("EditorStyle");
 			PrivateIncludePathModuleNames.Add("Foliage");
 		}
 
@@ -235,7 +255,7 @@ public class Engine : ModuleRules
 			PrivateDependencyModuleNames.Add("PerfCounters");
 		}
 
-		if (Target.Type == TargetType.Editor)
+		if (Target.bCompileAgainstEditor)
 		{
 			PrivateIncludePathModuleNames.Add("MaterialUtilities");
 			PrivateDependencyModuleNames.Add("MaterialUtilities");
@@ -250,7 +270,6 @@ public class Engine : ModuleRules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"ImageCore",
 					"RawMesh"
 				}
 			);
@@ -339,6 +358,7 @@ public class Engine : ModuleRules
 			);
 
 			PrivateDependencyModuleNames.Add("DerivedDataCache");
+			PrivateDependencyModuleNames.Add("TextureCompressor");
 
 			PrivateIncludePathModuleNames.Add("TextureCompressor");
 			PrivateIncludePaths.Add("Developer/TextureCompressor/Public");
@@ -360,11 +380,6 @@ public class Engine : ModuleRules
 		}
 
 		SetupModulePhysicsSupport(Target);
-
-		if (Target.bCompilePhysX && (Target.bBuildEditor || Target.bCompileAPEX))
-		{
-			DynamicallyLoadedModuleNames.Add("PhysXCooking");
-		}
 
 		// Engine public headers need to know about some types (enums etc.)
 		PublicIncludePathModuleNames.Add("ClothingSystemRuntimeInterface");
@@ -439,5 +454,10 @@ public class Engine : ModuleRules
         {
 			PublicDefinitions.Add("WITH_ODSC=0");
 		}
+
+		const bool bIrisAddAsPublicDepedency = true;
+		SetupIrisSupport(Target, bIrisAddAsPublicDepedency);
+
+		PrivateDefinitions.Add("UE_DEPRECATE_LEGACY_MATH_CONSTANT_MACRO_NAMES=1");
 	}
 }

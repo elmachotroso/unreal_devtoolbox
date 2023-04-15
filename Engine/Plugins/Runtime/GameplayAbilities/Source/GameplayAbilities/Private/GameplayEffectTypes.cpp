@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayEffectTypes.h"
+#include "AbilitySystemLog.h"
 #include "GameFramework/Pawn.h"
 #include "GameplayTagAssetInterface.h"
 #include "GameplayEffect.h"
@@ -9,6 +10,8 @@
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
 #include "Engine/PackageMapClient.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayEffectTypes)
 
 
 #define LOCTEXT_NAMESPACE "GameplayEffectTypes"
@@ -118,7 +121,7 @@ void FGameplayEffectContext::AddInstigator(class AActor *InInstigator, class AAc
 	EffectCauser = InEffectCauser;
 	InstigatorAbilitySystemComponent = NULL;
 
-	// Cache off his AbilitySystemComponent.
+	// Cache off the AbilitySystemComponent.
 	InstigatorAbilitySystemComponent = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Instigator.Get());
 }
 
@@ -254,6 +257,12 @@ bool FGameplayEffectContext::NetSerialize(FArchive& Ar, class UPackageMap* Map, 
 	
 	bOutSuccess = true;
 	return true;
+}
+
+FString FGameplayEffectContext::ToString() const
+{
+	const AActor* InstigatorPtr = Instigator.Get();
+	return (InstigatorPtr ? InstigatorPtr->GetName() : FString(TEXT("NONE")));
 }
 
 bool FGameplayEffectContext::IsLocallyControlled() const
@@ -856,6 +865,12 @@ FGameplayEffectSpecHandle::FGameplayEffectSpecHandle(FGameplayEffectSpec* DataPt
 
 }
 
+bool FGameplayEffectSpecHandle::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
+{
+	ABILITY_LOG(Fatal, TEXT("FGameplayEffectSpecHandle should not be NetSerialized"));
+	return false;
+}
+
 FGameplayCueParameters::FGameplayCueParameters(const FGameplayEffectSpecForRPC& Spec)
 : NormalizedMagnitude(0.0f)
 , RawMagnitude(0.0f)
@@ -1121,6 +1136,23 @@ const UObject* FGameplayCueParameters::GetSourceObject() const
 	return EffectContext.GetSourceObject();
 }
 
+void FMinimalReplicationTagCountMap::RemoveTag(const FGameplayTag& Tag)
+{
+	MapID++;
+	int32& Count = TagMap.FindOrAdd(Tag);
+	Count--;
+	if (Count == 0)
+	{
+		// Remove from map so that we do not replicate
+		TagMap.Remove(Tag);
+	}
+	else if (Count < 0)
+	{
+		ABILITY_LOG(Error, TEXT("FMinimalReplicationTagCountMap::RemoveTag called on Tag %s and count is now < 0"), *Tag.ToString());
+		Count = 0;
+	}
+}
+
 bool FMinimalReplicationTagCountMap::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 {
 	const int32 CountBits = UAbilitySystemGlobals::Get().MinimalReplicationTagCountBits;
@@ -1133,7 +1165,7 @@ bool FMinimalReplicationTagCountMap::NetSerialize(FArchive& Ar, class UPackageMa
 		if (Count > MaxCount)
 		{
 #if UE_BUILD_SHIPPING
-			ABILITY_LOG(Error, TEXT("FMinimalReplicationTagCountMap has too many tags (%d) when the limit is %d. This will cause tags to not replicate. See FMinimapReplicationTagCountMap::NetSerialize"), TagMap.Num(), MaxCount);
+			ABILITY_LOG(Error, TEXT("FMinimalReplicationTagCountMap has too many tags (%d) when the limit is %d. This will cause tags to not replicate. See FMinimalReplicationTagCountMap::NetSerialize"), TagMap.Num(), MaxCount);
 #else
 			TArray<FGameplayTag> TagKeys;
 			TagMap.GetKeys(TagKeys);
@@ -1152,7 +1184,7 @@ bool FMinimalReplicationTagCountMap::NetSerialize(FArchive& Ar, class UPackageMa
 				TagKeys[TagIndex].GetTagName().AppendString(TagsString);
 			}
 
-			ABILITY_LOG(Error, TEXT("FMinimalReplicationTagCountMap has too many tags (%d) when the limit is %d. This will cause tags to not replicate. See FMinimapReplicationTagCountMap::NetSerialize\nTagMap tags: %s"), TagMap.Num(), MaxCount, *TagsString);
+			ABILITY_LOG(Error, TEXT("FMinimalReplicationTagCountMap has too many tags (%d) when the limit is %d. This will cause tags to not replicate. See FMinimalReplicationTagCountMap::NetSerialize\nTagMap tags: %s"), TagMap.Num(), MaxCount, *TagsString);
 #endif	
 
 			//clamp the count
@@ -1265,3 +1297,4 @@ void FMinimalReplicationTagCountMap::UpdateOwnerTagMap()
 }
 
 #undef LOCTEXT_NAMESPACE
+

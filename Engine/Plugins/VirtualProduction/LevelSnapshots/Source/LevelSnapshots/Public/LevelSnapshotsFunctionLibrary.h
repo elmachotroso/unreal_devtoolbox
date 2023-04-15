@@ -29,6 +29,7 @@ public:
 	 * Goes through the properties of the actors and their components calling IsPropertyValid on them.
 	 * This function does not recursively check object references, e.g. 'Instanced' uproperties. These properties are currently unsupported by the snapshot framework.
 	 */
+	UE_DEPRECATED(5.1, "Use ULevelSnapshotsFilteringLibrary::ApplyFilterToFindSelectedProperties instead.")
 	static void ApplyFilterToFindSelectedProperties(
 		ULevelSnapshot* Snapshot,
 		FPropertySelectionMap& MapToAddTo,
@@ -52,7 +53,7 @@ public:
 		ULevelSnapshot* Snapshot, 
 		UObject* SnapshotRootObject,
 		UObject* WorldRootObject,
-		TFunction<void(UObject* SnapshotSubobject, UObject* EditorWorldSubobject)> HandleCustomSubobjectPair,
-		TFunction<void(UObject* UnmatchedSnapshotSubobject)> HandleUnmatchedSnapshotSubobject
+		TFunctionRef<void(UObject* SnapshotSubobject, UObject* EditorWorldSubobject)> HandleCustomSubobjectPair,
+		TFunctionRef<void(UObject* UnmatchedSnapshotSubobject)> HandleUnmatchedSnapshotSubobject
 		);
 };

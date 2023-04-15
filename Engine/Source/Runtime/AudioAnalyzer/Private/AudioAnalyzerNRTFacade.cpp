@@ -12,7 +12,9 @@ namespace Audio
 	IAnalyzerNRTFactory* GetAnalyzerNRTFactory(FName InFactoryName)
 	{
 		// Get all analyzer nrt factories implementations.
+		IModularFeatures::Get().LockModularFeatureList();
 		TArray<IAnalyzerNRTFactory*> RegisteredFactories = IModularFeatures::Get().GetModularFeatureImplementations<IAnalyzerNRTFactory>(IAnalyzerNRTFactory::GetModularFeatureName());
+		IModularFeatures::Get().UnlockModularFeatureList();
 
 		// Get the factory of interest by matching the name.
 		TArray<IAnalyzerNRTFactory*> MatchingFactories = RegisteredFactories.FilterByPredicate([InFactoryName](IAnalyzerNRTFactory* Factory) { check(nullptr != Factory); return Factory->GetName() == InFactoryName; });
@@ -51,6 +53,8 @@ namespace Audio
 	 */
 	TUniquePtr<IAnalyzerNRTResult> FAnalyzerNRTFacade::AnalyzePCM16Audio(const TArray<uint8>& InRawWaveData, int32 InNumChannels, float InSampleRate)
 	{
+		AUDIO_ANALYSIS_LLM_SCOPE
+
 		// Get analyzer factory
 		IAnalyzerNRTFactory* Factory = GetAnalyzerNRTFactory(FactoryName);
 

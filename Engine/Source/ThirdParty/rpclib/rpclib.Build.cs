@@ -3,34 +3,31 @@
 using System.IO;
 using UnrealBuildTool;
 
-// @todo rcplib does support both Max and Linux, got to compile for those platforms first
-[SupportedPlatforms("Win64"/*, "Mac", "Linux"*/)]
+[SupportedPlatforms("Win64", "Mac", "Linux")]
 public class RPCLib : ModuleRules
 {
-    public RPCLib(ReadOnlyTargetRules Target) : base(Target)
-    {
-        Type = ModuleType.External;
-        PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Source", "include"));
+	protected readonly string Version = "2.2.1";
 
-        // The Win64 debug config doesn't link property atm. We don't reall need it,
-        // just something to keep in mind
-        string ConfigName = /*Target.Configuration == UnrealTargetConfiguration.Debug ? "Debug" : */"Release";
-        string LibraryPath = "";
-        if (Target.Platform == UnrealTargetPlatform.Win64)
-        {
-            LibraryPath = Path.Combine(ModuleDirectory, "Lib", ConfigName, "Win64");
-        }
-        else if (Target.Platform == UnrealTargetPlatform.Mac)
-        {
-            // PublicAdditionalLibraries.Add(BaseLibPath + "lib/librpc.a");
-        }
-        else if (Target.Platform == UnrealTargetPlatform.Linux)
-        {
-        }
+	public RPCLib(ReadOnlyTargetRules Target) : base(Target)
+	{
+		Type = ModuleType.External;
 
-        if (LibraryPath.Length > 0)
-        {
-            PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "rpc.lib"));
-        }
-    }
+		string VersionPath = Path.Combine(ModuleDirectory, Version);
+		string LibraryPath = Path.Combine(VersionPath, "lib");
+
+		PublicSystemIncludePaths.Add(Path.Combine(VersionPath, "include"));
+
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
+		{
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "Unix", Target.Architecture, "Release", "librpc.a"));
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "Mac", "Release", "librpc.a"));
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "Win64", Target.WindowsPlatform.Architecture.ToString().ToLowerInvariant(), "Release", "rpc.lib"));
+		}
+	}
 }

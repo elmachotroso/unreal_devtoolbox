@@ -22,18 +22,21 @@ public:
 	/** Elements of the vertex declaration. */
 	FD3D12VertexElements VertexElements;
 
-	uint16 StreamStrides[MaxVertexElementCount];
+	TStaticArray<uint16, MaxVertexElementCount> StreamStrides;
 	uint32 Hash;
+	uint32 HashNoStrides;
 
 	/** Initialization constructor. */
-	explicit FD3D12VertexDeclaration(const FD3D12VertexElements& InElements, const uint16* InStrides, const uint32 InHash)
+	explicit FD3D12VertexDeclaration(const FD3D12VertexElements& InElements, const uint16* InStrides, const uint32 InHash, const uint32 InHashNoStrides)
 		: VertexElements(InElements)
 		, Hash(InHash)
+		, HashNoStrides(InHashNoStrides)
 	{
-		FMemory::Memcpy(StreamStrides, InStrides, sizeof(StreamStrides));
+		FMemory::Memcpy(StreamStrides.GetData(), InStrides, StreamStrides.Num() * sizeof(StreamStrides[0]));
 	}
 
 	virtual bool GetInitializer(FVertexDeclarationElementList& Init) final override;
+	virtual uint32 GetPrecachePSOHash() const final override { return HashNoStrides;  }
 };
 
 struct FD3D12ShaderData
@@ -88,8 +91,9 @@ struct FD3D12ShaderData
 #endif
 
 	FORCEINLINE bool UsesDiagnosticBuffer() const { return EnumHasAnyFlags(GetFeatures(), EShaderCodeFeatures::DiagnosticBuffer); }
-	FORCEINLINE bool UsesBindlessResources() const { return EnumHasAnyFlags(GetFeatures(), EShaderCodeFeatures::BindlessResources); }
-	FORCEINLINE bool UsesBindlessSamplers() const { return EnumHasAnyFlags(GetFeatures(), EShaderCodeFeatures::BindlessSamplers); }
+	FORCEINLINE bool UsesGlobalUniformBuffer() const { return EnumHasAnyFlags(ResourceCounts.UsageFlags, EShaderResourceUsageFlags::GlobalUniformBuffer); }
+	FORCEINLINE bool UsesBindlessResources() const { return EnumHasAnyFlags(ResourceCounts.UsageFlags, EShaderResourceUsageFlags::BindlessResources); }
+	FORCEINLINE bool UsesBindlessSamplers() const { return EnumHasAnyFlags(ResourceCounts.UsageFlags, EShaderResourceUsageFlags::BindlessSamplers); }
 
 	bool InitCommon(TArrayView<const uint8> InCode);
 };
@@ -130,7 +134,7 @@ class FD3D12ComputeShader : public FRHIComputeShader, public FD3D12ShaderData
 public:
 	enum { StaticFrequency = SF_Compute };
 
-	const FD3D12RootSignature* pRootSignature = nullptr;
+	const FD3D12RootSignature* RootSignature = nullptr;
 };
 
 /**

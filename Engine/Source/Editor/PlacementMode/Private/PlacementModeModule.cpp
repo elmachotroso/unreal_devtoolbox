@@ -10,7 +10,7 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Textures/SlateIcon.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
 #include "ActorFactories/ActorFactory.h"
 #include "ActorFactories/ActorFactoryBoxReflectionCapture.h"
@@ -38,12 +38,12 @@
 #include "GameFramework/Volume.h"
 #include "Engine/PostProcessVolume.h"
 #include "LevelEditorActions.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EditorModeRegistry.h"
 #include "EditorModes.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ActorPlacementInfo.h"
 #include "IPlacementModeModule.h"
 #include "ToolMenus.h"
@@ -51,7 +51,6 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "ActorFactories/ActorFactoryPlanarReflection.h"
 #include "SPlacementModeTools.h"
-#include "Classes/EditorStyleSettings.h"
 #include "AssetSelection.h"
 
 
@@ -350,10 +349,14 @@ void FPlacementModeModule::PreUnloadCallback()
 	FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry");
 	if (AssetRegistryModule)
 	{
-		AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
-		AssetRegistryModule->Get().OnAssetRenamed().RemoveAll(this);
-		AssetRegistryModule->Get().OnAssetAdded().RemoveAll(this);
-		AssetRegistryModule->Get().OnFilesLoaded().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+			AssetRegistry->OnAssetRenamed().RemoveAll(this);
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+		}
 	}
 }
 
@@ -435,7 +438,7 @@ void FPlacementModeModule::OnAssetRenamed(const FAssetData& AssetData, const FSt
 	{
 		if (RecentlyPlacedItem.ObjectPath == OldObjectPath)
 		{
-			RecentlyPlacedItem.ObjectPath = AssetData.ObjectPath.ToString();
+			RecentlyPlacedItem.ObjectPath = AssetData.GetObjectPathString();
 			break;
 		}
 	}
@@ -621,7 +624,7 @@ void FPlacementModeModule::RefreshRecentlyPlaced()
 		// If asset is pending delete, it will not be marked as RF_Standalone, in which case we skip it
 		if (Asset != nullptr && Asset->HasAnyFlags(RF_Standalone))
 		{
-			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*RecentlyPlacedItem.ObjectPath);
+			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(RecentlyPlacedItem.ObjectPath));
 
 			if (AssetData.IsValid())
 			{
@@ -764,13 +767,14 @@ bool FPlacementModeModule::PassesFilters(const TSharedPtr<FPlaceableItem>& Item)
 		if (PredicatePair.Value(Item))
 		{
 			bool bPlaceable = true;
-			if (Item->AssetData.GetClass() == UClass::StaticClass())
+			UClass* AssetClass = Item->AssetData.GetClass();
+			if (AssetClass == UClass::StaticClass())
 			{
 				UClass* Class = Cast<UClass>(Item->AssetData.GetAsset());
 
 				bPlaceable = AssetSelectionUtils::IsClassPlaceable(Class);
 			}
-			else if (Item->AssetData.GetClass()->IsChildOf<UBlueprint>())
+			else if (AssetClass && AssetClass->IsChildOf<UBlueprint>())
 			{
 				// For blueprints, attempt to determine placeability from its tag information
 
@@ -779,10 +783,7 @@ bool FPlacementModeModule::PassesFilters(const TSharedPtr<FPlaceableItem>& Item)
 				if (Item->AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, TagValue) && !TagValue.IsEmpty())
 				{
 					// If the native parent class can't be placed, neither can the blueprint
-
-					UObject* Outer = nullptr;
-					ResolveName(Outer, TagValue, false, false);
-					UClass* NativeParentClass = FindObject<UClass>(ANY_PACKAGE, *TagValue);
+					UClass* NativeParentClass = UClass::TryFindTypeSlow<UClass>(FPackageName::ExportTextPathToObjectPath(TagValue));
 
 					bPlaceable = AssetSelectionUtils::IsChildBlueprintPlaceable(NativeParentClass);
 				}

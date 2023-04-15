@@ -79,10 +79,10 @@ class COMPOSURE_API ACompositingElement : public AComposurePipelineBaseActor, pu
 
 public:
 	UPROPERTY(BlueprintReadOnly, Category = "Composure")
-	UComposureCompositingTargetComponent* CompositingTarget;
+	TObjectPtr<UComposureCompositingTargetComponent> CompositingTarget;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Composure")
-	UComposurePostProcessingPassProxy* PostProcessProxy;
+	TObjectPtr<UComposurePostProcessingPassProxy> PostProcessProxy;
 
 protected:
 	/*********************************/
@@ -90,13 +90,13 @@ protected:
 	//   - protected to prevent users from directly modifying these lists (use the accessor functions instead)
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, BlueprintGetter = GetInputsList, Category = "Composure|Input", meta=(ShowOnlyInnerProperties))
-	TArray<UCompositingElementInput*> Inputs;
+	TArray<TObjectPtr<UCompositingElementInput>> Inputs;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, BlueprintGetter = GetTransformsList, Category = "Composure|Transform/Compositing Passes", meta=(DisplayName = "Transform Passes", ShowOnlyInnerProperties, DisplayAfter="Inputs"))
-	TArray<UCompositingElementTransform*> TransformPasses;
+	TArray<TObjectPtr<UCompositingElementTransform>> TransformPasses;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, BlueprintGetter = GetOutputsList, Category = "Composure|Output", meta = (ShowOnlyInnerProperties))
-	TArray<UCompositingElementOutput*> Outputs;
+	TArray<TObjectPtr<UCompositingElementOutput>> Outputs;
 
 public:
 
@@ -138,7 +138,7 @@ public:
 	// Editor Only
 
 private:
-	UPROPERTY(/*BlueprintReadWrite, Category = "Composure",*/ meta = (Bitmask, BitmaskEnum = ETargetUsageFlags))
+	UPROPERTY(/*BlueprintReadWrite, Category = "Composure",*/ meta = (Bitmask, BitmaskEnum = "/Script/Composure.ETargetUsageFlags"))
 	int32 FreezeFrameMask = 0x00;
 
 public:
@@ -147,7 +147,7 @@ public:
 	EInheritedSourceType PreviewTransformSource = EInheritedSourceType::Inherited;
 
 	UPROPERTY(EditAnywhere, Instanced, Category = "Composure|Preview")
-	UCompositingElementTransform* PreviewTransform;
+	TObjectPtr<UCompositingElementTransform> PreviewTransform;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Composure|Editor")
 	TSubclassOf<UCompositingElementInput> DefaultInputType;
@@ -323,11 +323,11 @@ public:
 	UCompositingElementOutput* FindOutputPass(UPARAM(meta = (AllowAbstract = "false"))TSubclassOf<UCompositingElementOutput> OutputType, FName OptionalPassName = NAME_None);
 	
 	UFUNCTION(BlueprintGetter)
-	TArray<UCompositingElementInput*> GetInputsList() const { return GetInternalInputsList(); }
+	TArray<UCompositingElementInput*> GetInputsList() const { return ToRawPtrTArrayUnsafe(GetInternalInputsList()); }
 	UFUNCTION(BlueprintGetter)
-	TArray<UCompositingElementTransform*> GetTransformsList() const { return GetInternalTransformsList(); }
+	TArray<UCompositingElementTransform*> GetTransformsList() const { return ToRawPtrTArrayUnsafe(GetInternalTransformsList()); }
 	UFUNCTION(BlueprintGetter)
-	TArray<UCompositingElementOutput*> GetOutputsList() const { return GetInternalOutputsList(); }
+	TArray<UCompositingElementOutput*> GetOutputsList() const { return ToRawPtrTArrayUnsafe(GetInternalOutputsList()); }
 
 	/**
 	 * Delete a specific pass. This function deals with the public list where deletion is directly reflected in the editor.
@@ -386,9 +386,9 @@ public:
 #endif
 	//~ End UObject interface
 	
-	//~ Begin AAcotr interface
-	virtual void RerunConstructionScripts() override;
+	//~ Begin AActor interface
 #if WITH_EDITOR
+	virtual void RerunConstructionScripts() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 #endif
 	//~ End AAcotr interface
@@ -423,9 +423,9 @@ private:
 	void RefreshInternalTransformsList();
 	void RefreshInternalOutputsList();
 
-	const TArray<UCompositingElementInput*>& GetInternalInputsList() const;
-	const TArray<UCompositingElementTransform*>& GetInternalTransformsList() const;
-	const TArray<UCompositingElementOutput*>& GetInternalOutputsList() const;
+	const decltype(Inputs)& GetInternalInputsList() const;
+	const decltype(TransformPasses)& GetInternalTransformsList() const;
+	const decltype(Outputs)& GetInternalOutputsList() const;
 
 	void BeginFrameForAllPasses(bool bCameraCutThisFrame);
 	void GenerateInputs();
@@ -448,31 +448,31 @@ private:
 	FName CompShotIdName;
 
 	UPROPERTY()
-	ACompositingElement* Parent;
+	TObjectPtr<ACompositingElement> Parent;
 	UPROPERTY()
-	TArray<ACompositingElement*> ChildLayers;
+	TArray<TObjectPtr<ACompositingElement>> ChildLayers;
 
 	/** EDITOR ONLY - Properties associated with */
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)
-	UTexture* DisabledMsgImage;
+	TObjectPtr<UTexture> DisabledMsgImage;
 	UPROPERTY(Transient)
-	UTexture* EmptyWarnImage;
+	TObjectPtr<UTexture> EmptyWarnImage;
 	UPROPERTY(Transient)
-	UTexture* SuspendedDbgImage;
+	TObjectPtr<UTexture> SuspendedDbgImage;
 	UPROPERTY(Transient)
-	UTexture* CompilerErrImage;
+	TObjectPtr<UTexture> CompilerErrImage;
 
 	UPROPERTY(Transient, DuplicateTransient)
 	bool bUsingDebugDisplayImage = false;
 
 	UPROPERTY(Transient, DuplicateTransient)
-	UTexture* ColorPickerDisplayImage;
+	TObjectPtr<UTexture> ColorPickerDisplayImage;
 	UPROPERTY(Transient, DuplicateTransient)
-	UTexture* EditorPreviewImage;
+	TObjectPtr<UTexture> EditorPreviewImage;
 
 	UPROPERTY(Transient, DuplicateTransient)
-	UTextureRenderTarget2D* ColorPickerTarget;
+	TObjectPtr<UTextureRenderTarget2D> ColorPickerTarget;
 
 	uint32 LastEnqueuedFrameId = (uint32)-1;
 	int32  PreviewCount = 0;
@@ -489,11 +489,11 @@ private:
 	 * re-construction, so we don't perpetually grow the lists.
 	 */
 	UPROPERTY()
-	TMap<UCompositingElementInput*, ECompPassConstructionType> UserConstructedInputs;
+	TMap<TObjectPtr<UCompositingElementInput>, ECompPassConstructionType> UserConstructedInputs;
 	UPROPERTY()
-	TMap<UCompositingElementTransform*, ECompPassConstructionType> UserConstructedTransforms;
+	TMap<TObjectPtr<UCompositingElementTransform>, ECompPassConstructionType> UserConstructedTransforms;
 	UPROPERTY()
-	TMap<UCompositingElementOutput*, ECompPassConstructionType> UserConstructedOutputs;
+	TMap<TObjectPtr<UCompositingElementOutput>, ECompPassConstructionType> UserConstructedOutputs;
 
 	/** 
 	 * Authoritative lists that we use to iterate on the passes - conjoined from the public lists and the  
@@ -502,14 +502,14 @@ private:
 	 * alive via the transaction buffer).
 	 */
 	UPROPERTY(Instanced, Transient, DuplicateTransient, SkipSerialization)
-	TArray<UCompositingElementInput*> InternalInputs;
+	TArray<TObjectPtr<UCompositingElementInput>> InternalInputs;
 	UPROPERTY(Instanced, Transient, DuplicateTransient, SkipSerialization)
-	TArray<UCompositingElementTransform*> InternalTransformPasses;
+	TArray<TObjectPtr<UCompositingElementTransform>> InternalTransformPasses;
 	UPROPERTY(Instanced, Transient, DuplicateTransient, SkipSerialization)
-	TArray<UCompositingElementOutput*> InternalOutputs;
+	TArray<TObjectPtr<UCompositingElementOutput>> InternalOutputs;
 
 	UPROPERTY(Transient)
-	UAlphaTransformPass* InternalAlphaPass = nullptr;
+	TObjectPtr<UAlphaTransformPass> InternalAlphaPass = nullptr;
 
 	/** */
 	FCompositingTextureLookupTable PassResultsTable;

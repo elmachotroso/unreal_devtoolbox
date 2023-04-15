@@ -1,13 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "FindInBT.h"
-#include "EdGraph/EdGraph.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+
+#include "BehaviorTreeEditor.h"
+#include "BehaviorTreeGraphNode.h"
 #include "BehaviorTreeGraphNode_Decorator.h"
 #include "BehaviorTreeGraphNode_Service.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GraphEditor.h"
+#include "HAL/PlatformMath.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "FindInBT"
 
@@ -45,15 +72,15 @@ TSharedRef<SWidget> FFindInBTResult::CreateIcon() const
 	{
 		if (Cast<UBehaviorTreeGraphNode_Service>(GraphNode.Get()))
 		{
-			Brush = FEditorStyle::GetBrush(TEXT("GraphEditor.PinIcon"));
+			Brush = FAppStyle::GetBrush(TEXT("GraphEditor.PinIcon"));
 		}
 		else if (Cast<UBehaviorTreeGraphNode_Decorator>(GraphNode.Get()))
 		{
-			Brush = FEditorStyle::GetBrush(TEXT("GraphEditor.RefPinIcon"));
+			Brush = FAppStyle::GetBrush(TEXT("GraphEditor.RefPinIcon"));
 		}
 		else
 		{
-			Brush = FEditorStyle::GetBrush(TEXT("GraphEditor.FIB_Event"));
+			Brush = FAppStyle::GetBrush(TEXT("GraphEditor.FIB_Event"));
 		}
 	}
 	
@@ -136,7 +163,7 @@ void SFindInBT::Construct( const FArguments& InArgs, TSharedPtr<FBehaviorTreeEdi
 			.Padding(0.f, 4.f, 0.f, 0.f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+				.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 				[
 					SAssignNew(TreeView, STreeViewType)
 					.ItemHeight(24)

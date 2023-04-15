@@ -12,8 +12,11 @@
 #include "Misc/Guid.h"
 #include "Async/AsyncWork.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundWaveTimecodeInfo.h"
+#include "Interfaces/Interface_AsyncCompilation.h"
 #include "Serialization/BulkData.h"
 #include "Serialization/BulkDataBuffer.h"
+#include "Serialization/EditorBulkData.h"
 #include "Sound/SoundGroups.h"
 #include "Sound/SoundWaveLoadingBehavior.h"
 #include "UObject/ObjectKey.h"
@@ -22,6 +25,7 @@
 #include "PerPlatformProperties.h"
 #include "ContentStreaming.h"
 #include "IAudioProxyInitializer.h"
+#include "IWaveformTransformation.h"
 #include "SoundWave.generated.h"
 
 class FSoundWaveData;
@@ -102,8 +106,6 @@ struct ENGINE_API FStreamedAudioPlatformData
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** Number of audio chunks. */
-	int32 NumChunks;
 	/** Format in which audio chunks are stored. */
 	FName AudioFormat;
 	/** audio data. */
@@ -112,6 +114,8 @@ struct ENGINE_API FStreamedAudioPlatformData
 #if WITH_EDITORONLY_DATA
 	/** The key associated with this derived data. */
 	FString DerivedDataKey;
+	/** Protection for AsyncTask manipulation since it can be accessed from multiple threads */
+	mutable TDontCopy<FRWLock> AsyncTaskLock;
 	/** Async cache task if one is outstanding. */
 	struct FStreamedAudioAsyncCacheDerivedDataTask* AsyncTask;
 #endif // WITH_EDITORONLY_DATA
@@ -131,7 +135,14 @@ struct ENGINE_API FStreamedAudioPlatformData
 	 */
 	int32 GetChunkFromDDC(int32 ChunkIndex, uint8** OutChunkData, bool bMakeSureChunkIsLoaded = false);
 
-	
+	/** Get the chunks while making sure any async task are finished before returning. */
+	TIndirectArray<struct FStreamedAudioChunk>& GetChunks() const;
+
+	/** Get the number of chunks while making sure any async task are finished before returning. */
+	int32 GetNumChunks() const;
+
+	/** Get the audio format making sure any async task are finished before returning. */
+	FName GetAudioFormat() const;
 
 	/** Serialization. */
 	void Serialize(FArchive& Ar, class USoundWave* Owner);
@@ -140,15 +151,24 @@ struct ENGINE_API FStreamedAudioPlatformData
 	void Cache(class USoundWave& InSoundWave, const FPlatformAudioCookOverrides* CompressionOverrides, FName AudioFormatName, uint32 InFlags);
 	void FinishCache();
 	bool IsFinishedCache() const;
+	bool IsAsyncWorkComplete() const;
+	bool IsCompiling() const;
 	bool TryInlineChunkData();
 
-	UE_DEPRECATED(5.00, "Use AreDerivedChunksAvailable with the context instead.")
+	UE_DEPRECATED(5.0, "Use AreDerivedChunksAvailable with the context instead.")
 	bool AreDerivedChunksAvailable() const;
 	
 	bool AreDerivedChunksAvailable(FStringView Context) const;
 #endif // WITH_EDITORONLY_DATA
 
 private:
+#if WITH_EDITORONLY_DATA
+	friend class USoundWave;
+	/**  Utility function used internally to change task priority while maintaining thread-safety. */
+	bool RescheduleAsyncTask(FQueuedThreadPool* InThreadPool, EQueuedWorkPriority InPriority);
+	/**  Utility function used internally to wait or poll a task while maintaining thread-safety. */
+	bool WaitAsyncTaskWithTimeout(float InTimeoutInSeconds);
+#endif
 
 	/**
 	 * Takes the results of a DDC operation and deserializes it into an FStreamedAudioChunk struct.
@@ -298,6 +318,9 @@ enum class ESoundAssetCompressionType : uint8
 
 	// Encodes the asset to a platform specific format and will be different depending on the platform. It does not currently support seeking.
 	PlatformSpecific,
+
+	// The project defines the codec used for this asset.
+	ProjectDefined,
 };
 
 
@@ -307,38 +330,52 @@ namespace Audio
 	{
 		switch (InDecoderType)
 		{
-		case ESoundAssetCompressionType::PlatformSpecific:		return NAME_PLATFORM_SPECIFIC;
-
 		case ESoundAssetCompressionType::BinkAudio:				return NAME_BINKA;
 		case ESoundAssetCompressionType::ADPCM:					return NAME_ADPCM;
 		case ESoundAssetCompressionType::PCM:					return NAME_PCM;
+		case ESoundAssetCompressionType::PlatformSpecific:		return NAME_PLATFORM_SPECIFIC;
+		case ESoundAssetCompressionType::ProjectDefined:		return NAME_PROJECT_DEFINED;
 		default:
 			ensure(false);
 			return TEXT("UNKNOWN");
 		}
 	}
+
+	static ESoundAssetCompressionType ToSoundAssetCompressionType(EDefaultAudioCompressionType InDefaultCompressionType)
+	{
+		switch (InDefaultCompressionType)
+		{
+			case EDefaultAudioCompressionType::BinkAudio:			return ESoundAssetCompressionType::BinkAudio;
+			case EDefaultAudioCompressionType::ADPCM:				return ESoundAssetCompressionType::ADPCM;
+			case EDefaultAudioCompressionType::PCM:					return ESoundAssetCompressionType::PCM;
+			case EDefaultAudioCompressionType::PlatformSpecific:	return ESoundAssetCompressionType::PlatformSpecific;
+			default:
+				ensure(false);
+				return ESoundAssetCompressionType::PlatformSpecific;
+		}
+	}
 }
 
 // Struct defining a cue point in a sound wave asset
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FSoundWaveCuePoint
 {
 	GENERATED_USTRUCT_BODY()
 
 	// Unique identifier for the wave cue point
-	UPROPERTY(Category = Info, VisibleAnywhere)
+	UPROPERTY(Category = Info, VisibleAnywhere, BlueprintReadOnly)
 	int32 CuePointID = 0;
 
 	// The label for the cue point
-	UPROPERTY(Category = Info, VisibleAnywhere)
+	UPROPERTY(Category = Info, VisibleAnywhere, BlueprintReadOnly)
 	FString Label;
 
 	// The frame position of the cue point
-	UPROPERTY(Category = Info, VisibleAnywhere)
+	UPROPERTY(Category = Info, VisibleAnywhere, BlueprintReadOnly)
 	int32 FramePosition = 0;
 
 	// The frame length of the cue point (non-zero if it's a region)
-	UPROPERTY(Category = Info, VisibleAnywhere)
+	UPROPERTY(Category = Info, VisibleAnywhere, BlueprintReadOnly)
 	int32 FrameLength = 0;
 };
 
@@ -353,7 +390,7 @@ struct ISoundWaveClient
 	virtual void OnFinishDestroy(class USoundWave* Wave) = 0;
 };
 UCLASS(hidecategories=Object, editinlinenew, BlueprintType, meta= (LoadBehavior = "LazyOnDemand"))
-class ENGINE_API USoundWave : public USoundBase, public IAudioProxyDataFactory
+class ENGINE_API USoundWave : public USoundBase, public IAudioProxyDataFactory, public IInterface_AsyncCompilation
 {
 	GENERATED_UCLASS_BODY()
 
@@ -419,9 +456,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Audio")
 	ESoundAssetCompressionType GetSoundAssetCompressionType() const;
 
+	/** will return the raw value, (i.e. does not resolve options such as "Project Defined" to the correct codec) */
+	ESoundAssetCompressionType GetSoundAssetCompressionTypeEnum() const;
+
 	/** Procedurally set the compression type. */
 	UFUNCTION(BlueprintCallable, Category = "Audio")
-	void SetSoundAssetCompressionType(ESoundAssetCompressionType InSoundAssetCompressionType);
+	void SetSoundAssetCompressionType(ESoundAssetCompressionType InSoundAssetCompressionType, bool bMarkDirty = true);
+
+	/** Returns the Runtime format of the wave */
+	FName GetRuntimeFormat() const;
 
 private:
 	// cached proxy
@@ -531,6 +574,11 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Loading")
 	int32 InitialChunkSize;
 
+#if WITH_EDITOR
+	const FWaveTransformUObjectConfiguration& GetTransformationChainConfig() const;
+	const FWaveTransformUObjectConfiguration& UpdateTransformations();
+#endif
+
 private:
 
 	/** Helper functions to search analysis data. Takes starting index to start query. Returns which data index the result was found at. Returns INDEX_NONE if not found. */
@@ -554,7 +602,7 @@ private:
 
 	// Called when we change any properties about the underlying audio asset
 #if WITH_EDITOR
-	void UpdateAsset();
+	void UpdateAsset(bool bMarkDirty = true);
 #endif
 
 public:
@@ -659,7 +707,7 @@ public:
 	int32 NumChannels;
 
 	/** Cue point data */
-	UPROPERTY(Category = Info, VisibleAnywhere)
+	UPROPERTY(Category = Info, VisibleAnywhere, BlueprintReadOnly)
 	TArray<FSoundWaveCuePoint> CuePoints;
 
 #if WITH_EDITORONLY_DATA
@@ -712,6 +760,14 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITORONLY_DATA
+	
+	/** Information about the time-code from import, if available.  */
+	UPROPERTY(VisibleAnywhere, Category = Info)
+	FSoundWaveTimecodeInfo TimecodeInfo;
+
+#endif // WITH_EDITORONLY_DATA
+
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FString SourceFilePath_DEPRECATED;
 	
@@ -760,8 +816,14 @@ public:
 public:
 	const uint8* GetResourceData() const;
 
+#if WITH_EDITORONLY_DATA
 	/** Uncompressed wav data 16 bit in mono or stereo - stereo not allowed for multichannel data */
-	FByteBulkData RawData;
+	UE::Serialization::FEditorBulkData RawData;
+
+	/** Waveform edits to be applied to this SoundWave on cook (editing transformations will trigger a cook) */
+	UPROPERTY(EditAnywhere, Instanced, Category = "Waveform Processing")
+	TArray<TObjectPtr<class UWaveformTransformationBase>> Transformations;
+#endif
 
 	/** GUID used to uniquely identify this node so it can be found in the DDC */
 	FGuid CompressedDataGuid;
@@ -769,8 +831,8 @@ public:
 #if WITH_EDITORONLY_DATA
 	TMap<FName, uint32> AsyncLoadingDataFormats;
 
-	/** FByteBulkData doesn't currently support readonly access from multiple threads, so we limit access to RawData with a critical section on cook. */
-	FCriticalSection RawDataCriticalSection;
+	/** FByteBulkData doesn't currently support read-only access from multiple threads, so we limit access to RawData with a critical section on cook. */
+	mutable FCriticalSection RawDataCriticalSection;
 
 #endif // WITH_EDITORONLY_DATA
 	/** cooked streaming platform data for this sound */
@@ -783,8 +845,10 @@ public:
 	virtual void FinishDestroy() override;
 	virtual void PostLoad() override;
 
-	// When stream caching is enabled, this is called after we've successfully compressed and split the streamed audio for this file.
-	void EnsureZerothChunkIsLoaded();
+	// Returns true if the zeroth chunk is loaded, or attempts to load it if not already loaded,
+	// returning true if the load was successful. Can return false if either an error was encountered
+	// in attempting to load the chunk or if stream caching is not enabled for the given sound.
+	bool LoadZerothChunk();
 
 	// Returns the amount of chunks this soundwave contains if it's streaming,
 	// or zero if it is not a streaming source.
@@ -795,7 +859,29 @@ public:
 	virtual void BeginDestroy() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** IInterface_AsyncCompilation begin*/
+	virtual bool IsCompiling() const override;
+	/** IInterface_AsyncCompilation end*/
+
+	bool IsAsyncWorkComplete() const;
+
+	void PostImport();
+
+private:
+	friend class FSoundWaveCompilingManager;
+	/**  Utility function used internally to change task priority while maintaining thread-safety. */
+	bool RescheduleAsyncTask(FQueuedThreadPool* InThreadPool, EQueuedWorkPriority InPriority);
+	/**  Utility function used internally to wait or poll a task while maintaining thread-safety. */
+	bool WaitAsyncTaskWithTimeout(float InTimeoutInSeconds);
+
+public:
 #endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	TArray<Audio::FTransformationPtr> CreateTransformations() const;
+#endif // WITH_EDITORONLY_DATA
+	
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual FName GetExporterName() override;
 	virtual FString GetDesc() override;
@@ -843,6 +929,11 @@ public:
 		ImportedSampleRate = InImportedSampleRate;
 #endif
 	}
+
+#if WITH_EDITORONLY_DATA
+	void SetTimecodeInfo(const FSoundWaveTimecodeInfo& InTimecode);
+	TOptional<FSoundWaveTimecodeInfo> GetTimecodeInfo() const;
+#endif //WITH_EDITORONLY_DATA	
 
 	/**
 	* Overwrite sample rate. Used for procedural soundwaves, as well as sound waves that are resampled on compress/decompress.
@@ -952,12 +1043,19 @@ private:
 
 	void BakeFFTAnalysis();
 	void BakeEnvelopeAnalysis();
+
+	FWaveTransformUObjectConfiguration TransformationChainConfig;
 #endif //WITH_EDITOR
 
 public:
 
 #if WITH_EDITOR
 	void LogBakedData();
+
+	/** Returns if an async task for a certain platform has finished. */
+	bool IsCompressedDataReady(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides) const;
+
+	bool IsLoadedFromCookedData() const;
 #endif //WITH_EDITOR
 
 	virtual void BeginGetCompressedData(FName Format, const FPlatformAudioCookOverrides* CompressionOverrides);
@@ -1144,6 +1242,9 @@ public:
 		, bIsSeekable(0)
 		, bShouldUseStreamCaching(0)
 		, bLoadingBehaviorOverridden(0)
+#if WITH_EDITOR
+		, bLoadedFromCookedData(0)
+#endif //WITH_EDITOR
 	{
 	}
 
@@ -1189,7 +1290,11 @@ public:
  
  	bool IsZerothChunkDataLoaded() const;
  	const TArrayView<uint8> GetZerothChunkDataView() const;
- 	void EnsureZerothChunkIsLoaded();
+
+	// Returns true if the zeroth chunk is loaded, or attempts to load it if not already loaded,
+	// returning true if the load was successful. Can return false if either an error was encountered
+	// in attempting to load the chunk or if stream caching is not enabled for the given sound.
+	bool LoadZerothChunk();
  
  #if WITH_EDITOR
  	int32 GetCurrentChunkRevision() const;
@@ -1208,8 +1313,16 @@ public:
 
 
 private:
+	void DiscardZerothChunkData();
+
+	FName FindRuntimeFormat(const USoundWave&) const;
+
 	/** Zeroth Chunk of audio for sources that use Load On Demand. */
 	FBulkDataBuffer<uint8> ZerothChunkData;
+	mutable FCriticalSection LoadZerothChunkDataCriticalSection;
+
+	/* Accessor to get the zeroth chunk which might perform additional work in editor to handle async tasks. */
+	FBulkDataBuffer<uint8>& GetZerothChunkData() const;
 
 	/** The streaming derived data for this sound on this platform. */
 	FStreamedAudioPlatformData RunningPlatformData;
@@ -1239,7 +1352,6 @@ private:
 	float Duration = 0;
 
 	uint32 NumChannels = 0;
-	uint32 NumChunks = 0;
 	int32 NumFrames = 0;
 
 	// shared flags
@@ -1249,6 +1361,10 @@ private:
 	uint8 bIsSeekable : 1;
 	uint8 bShouldUseStreamCaching : 1;
 	uint8 bLoadingBehaviorOverridden : 1;
+
+#if WITH_EDITOR
+	uint8 bLoadedFromCookedData : 1;
+#endif //WITH_EDITOR
 
 	friend class USoundWave;
 }; // class FSoundWaveData
@@ -1273,7 +1389,11 @@ public:
 
 	// USoundWave Interface
 	void ReleaseCompressedAudio();
-	void EnsureZerothChunkIsLoaded();
+
+	// Returns true if the zeroth chunk is loaded, or attempts to load it if not already loaded,
+	// returning true if the load was successful. Can return false if either an error was encountered
+	// in attempting to load the chunk or if stream caching is not enabled for the given sound.
+	bool LoadZerothChunk();
 	bool GetChunkData(int32 ChunkIndex, uint8** OutChunkData, bool bMakeSureChunkIsLoaded = false);
 
 	// Getters
@@ -1296,7 +1416,6 @@ public:
 	bool IsLooping() const;
 	bool IsTemplate() const;
 	bool IsStreaming() const;
-	bool UseBinkAudio() const;
 	bool IsRetainingAudio() const;
 	bool ShouldUseStreamCaching() const;
 	bool IsSeekable() const;

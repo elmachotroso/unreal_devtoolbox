@@ -1,24 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PerPlatformPropertyCustomization.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Images/SImage.h"
-#include "DetailWidgetRow.h"
-#include "Editor.h"
-#include "PropertyHandle.h"
+
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "DetailLayoutBuilder.h"
-#include "PlatformInfo.h"
-#include "ScopedTransaction.h"
-#include "IPropertyUtilities.h"
-#include "UObject/MetaData.h"
+#include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "PerPlatformProperties.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "SPerPlatformPropertiesWidget.h"
+#include "ScopedTransaction.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "PerPlatformPropertyCustomization"
 
@@ -26,8 +45,6 @@ template<typename PerPlatformType>
 void FPerPlatformPropertyCustomization<PerPlatformType>::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
 	PropertyUtilities = StructCustomizationUtils.GetPropertyUtilities();
-
-	int32 PlatformNumber = PlatformInfo::GetAllPlatformGroupNames().Num();
 
 	TAttribute<TArray<FName>> PlatformOverrideNames = TAttribute<TArray<FName>>::Create(TAttribute<TArray<FName>>::FGetter::CreateSP(this, &FPerPlatformPropertyCustomization<PerPlatformType>::GetPlatformOverrideNames, StructPropertyHandle));
 
@@ -241,9 +258,9 @@ void FPerPlatformPropertyCustomNodeBuilder::GenerateHeaderRowContent(FDetailWidg
 	// Build Platform menu
 	FMenuBuilder AddPlatformMenuBuilder(true, nullptr, nullptr, true);
 
+	const TArray<const FDataDrivenPlatformInfo*>& SortedPlatforms = FDataDrivenPlatformInfoRegistry::GetSortedPlatformInfos(EPlatformInfoType::TruePlatformsOnly);
 	// Platform (group) names
-	const TArray<FName>& PlatformGroupNameArray = PlatformInfo::GetAllPlatformGroupNames();
-	const TArray<FName>& VanillaPlatformNameArray = PlatformInfo::GetAllVanillaPlatformNames();
+//	const TArray<FName>& PlatformGroupNameArray = PlatformInfo::GetAllPlatformGroupNames();
 
 	// Sanitized platform names
 	TArray<FName> BasePlatformNameArray;
@@ -251,15 +268,17 @@ void FPerPlatformPropertyCustomNodeBuilder::GenerateHeaderRowContent(FDetailWidg
 	TMultiMap<FName, FName> GroupToPlatform;
 
 	TArray<FName> PlatformOverrides = Args.PlatformOverrideNames.Get();
+	TArray<FName> PlatformGroupNameArray;
 
 	// Create mapping from platform to platform groups and remove postfixes and invalid platform names
-	for (const FName& PlatformName : VanillaPlatformNameArray)
+	for (const FDataDrivenPlatformInfo* DDPI : SortedPlatforms)
 	{
 		// Add platform name if it isn't already set, and also add to group mapping
-		if (!PlatformOverrides.Contains(PlatformName))
+		if (!PlatformOverrides.Contains(DDPI->IniPlatformName))
 		{
-			BasePlatformNameArray.AddUnique(PlatformName);
-			GroupToPlatform.AddUnique(PlatformInfo::FindPlatformInfo(PlatformName)->DataDrivenPlatformInfo->PlatformGroupName, PlatformName);
+			BasePlatformNameArray.AddUnique(DDPI->IniPlatformName);
+			GroupToPlatform.AddUnique(DDPI->PlatformGroupName, DDPI->IniPlatformName);
+			PlatformGroupNameArray.AddUnique(DDPI->PlatformGroupName);
 		}
 	}
 
@@ -283,6 +302,8 @@ void FPerPlatformPropertyCustomNodeBuilder::GenerateHeaderRowContent(FDetailWidg
 
 		TArray<FName> PlatformNames;
 		GroupToPlatform.MultiFind(GroupName, PlatformNames);
+		// these come out reversed for whatever MultiFind reason, even tho they went in sorted
+		Algo::Reverse(PlatformNames);
 
 		const FTextFormat Format = NSLOCTEXT("SPerPlatformPropertiesWidget", "AddOverrideFor", "Add Override specifically for {0}");
 		for (const FName& PlatformName : PlatformNames)
@@ -316,13 +337,13 @@ void FPerPlatformPropertyCustomNodeBuilder::GenerateHeaderRowContent(FDetailWidg
 		.VAlign(VAlign_Center)
 		[
 			SNew(SComboButton)
-			.ComboButtonStyle(FEditorStyle::Get(), "SimpleComboButton")
+			.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
 			.HasDownArrow(false)
 			.ToolTipText(NSLOCTEXT("SPerPlatformPropertiesWidget", "AddOverrideToolTip", "Add an override for a specific platform or platform group"))
 			.ButtonContent()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+				.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 			.MenuContent()
@@ -388,7 +409,7 @@ void FPerPlatformPropertyCustomNodeBuilder::AddPlatformToMenu(const FName Platfo
 	AddPlatformMenuBuilder.AddMenuEntry(
 		MenuText,
 		MenuTooltipText,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "PerPlatformWidget.AddPlatform"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "PerPlatformWidget.AddPlatform"),
 		FUIAction(FExecuteAction::CreateSP(this, &FPerPlatformPropertyCustomNodeBuilder::OnAddPlatformOverride, PlatformName))
 	);
 }

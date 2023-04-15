@@ -29,7 +29,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Materials/Material.h"
 #include "Factories/Factory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraph.h"
 #include "Sound/SoundWave.h"
 #include "GameFramework/WorldSettings.h"
@@ -61,8 +61,8 @@
 #include "Tests/AutomationEditorPromotionCommon.h"
 
 //Assets
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetSelection.h"
 #include "PackageHelperFunctions.h"
 
@@ -382,7 +382,7 @@ namespace EditorBuildPromotionTestUtils
 		{
 			FString ValueString;
 			const uint8* PropertyAddr = FoundProperty->ContainerPtrToValuePtr<uint8>(TargetObject);
-			FoundProperty->ExportTextItem(ValueString, PropertyAddr, NULL, NULL, PPF_None);
+			FoundProperty->ExportTextItem_Direct(ValueString, PropertyAddr, NULL, NULL, PPF_None);
 			return ValueString;
 		}
 		return TEXT("");
@@ -1495,9 +1495,9 @@ namespace BuildPromotionTestHelper
 
 				//Get the editor material
 				UMaterial* EditorMaterial = Cast<UMaterial>(MaterialEditor->GetMaterialInterface());
-				for (int32 i = 0; i < EditorMaterial->Expressions.Num(); ++i)
+				for (UMaterialExpression* Expression : EditorMaterial->GetExpressions())
 				{
-					UMaterialExpressionConstant3Vector* ColorParam = Cast<UMaterialExpressionConstant3Vector>(EditorMaterial->Expressions[i]);
+					UMaterialExpressionConstant3Vector* ColorParam = Cast<UMaterialExpressionConstant3Vector>(Expression);
 					if (ColorParam)
 					{
 						EditorMaterial->Modify();

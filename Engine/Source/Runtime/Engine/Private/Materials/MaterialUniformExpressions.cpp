@@ -143,7 +143,7 @@ FMaterialUniformExpressionType::FMaterialUniformExpressionType(const TCHAR* InNa
 void FMaterialUniformExpression::WriteNumberOpcodes(UE::Shader::FPreshaderData& OutData) const
 {
 	UE_LOG(LogMaterial, Warning, TEXT("Missing WriteNumberOpcodes impl for %s"), GetType()->GetName());
-	OutData.WriteOpcode(UE::Shader::EPreshaderOpcode::ConstantZero);
+	OutData.WriteOpcode(UE::Shader::EPreshaderOpcode::ConstantZero).Write(UE::Shader::FType(UE::Shader::EValueType::Float1));
 }
 
 void FUniformParameterOverrides::SetNumericOverride(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, const UE::Shader::FValue& Value, bool bOverride)
@@ -361,7 +361,7 @@ FShaderParametersMetadata* FUniformExpressionSet::CreateBufferStruct()
 
 	if (UniformPreshaderBufferSize > 0u)
 	{
-		new(Members) FShaderParametersMetadata::FMember(TEXT("PreshaderBuffer"),TEXT(""),__LINE__,NextMemberOffset,UBMT_FLOAT32,EShaderPrecisionModifier::Half,1,4, UniformPreshaderBufferSize,NULL);
+		new(Members) FShaderParametersMetadata::FMember(TEXT("PreshaderBuffer"),TEXT(""),__LINE__,NextMemberOffset,UBMT_FLOAT32,EShaderPrecisionModifier::Float,1,4, UniformPreshaderBufferSize,NULL);
 		NextMemberOffset += UniformPreshaderBufferSize * sizeof(FVector4f);
 	}
 
@@ -541,11 +541,13 @@ FUniformExpressionSet::FVTPackedStackAndLayerIndex FUniformExpressionSet::GetVTS
 
 void FMaterialUniformExpression::GetNumberValue(const struct FMaterialRenderContext& Context, FLinearColor& OutValue) const
 {
-	UE::Shader::FPreshaderData PreshaderData;
+	using namespace UE::Shader;
+
+	FPreshaderData PreshaderData;
 	WriteNumberOpcodes(PreshaderData);
-	UE::Shader::FValue Value;
-	PreshaderData.Evaluate(nullptr, Context, Value);
-	OutValue = Value.AsLinearColor();
+	FPreshaderStack Stack;
+	const FPreshaderValue Value = PreshaderData.Evaluate(nullptr, Context, Stack);
+	OutValue = Value.AsShaderValue().AsLinearColor();
 }
 
 int32 FUniformExpressionSet::FindOrAddTextureParameter(EMaterialTextureParameterType Type, const FMaterialTextureParameterInfo& Info)
@@ -559,6 +561,19 @@ int32 FUniformExpressionSet::FindOrAddTextureParameter(EMaterialTextureParameter
 	}
 
 	return UniformTextureParameters[(int32)Type].Add(Info);
+}
+
+int32 FUniformExpressionSet::FindOrAddExternalTextureParameter(const FMaterialExternalTextureParameterInfo& Info)
+{
+	for (int32 i = 0; i < UniformExternalTextureParameters.Num(); ++i)
+	{
+		if (UniformExternalTextureParameters[i] == Info)
+		{
+			return i;
+		}
+	}
+
+	return UniformExternalTextureParameters.Add(Info);
 }
 
 int32 FUniformExpressionSet::FindOrAddNumericParameter(EMaterialParameterType Type, const FMaterialParameterInfo& ParameterInfo, uint32 DefaultValueOffset)
@@ -586,6 +601,18 @@ uint32 FUniformExpressionSet::AddDefaultParameterValue(const UE::Shader::FValue&
 	UE::Shader::FMemoryImageValue DefaultValueMemory = Value.AsMemoryImage();
 	DefaultValues.Append(DefaultValueMemory.Bytes, DefaultValueMemory.Size);
 	return Offset;
+}
+
+int32 FUniformExpressionSet::AddVTStack(int32 InPreallocatedStackTextureIndex)
+{
+	return VTStacks.Add(FMaterialVirtualTextureStack(InPreallocatedStackTextureIndex));
+}
+
+int32 FUniformExpressionSet::AddVTLayer(int32 StackIndex, int32 TextureIndex)
+{
+	const int32 VTLayerIndex = VTStacks[StackIndex].AddLayer();
+	VTStacks[StackIndex].SetLayer(VTLayerIndex, TextureIndex);
+	return VTLayerIndex;
 }
 
 void FUniformExpressionSet::GetGameThreadTextureValue(EMaterialTextureParameterType Type, int32 Index, const UMaterialInterface* MaterialInterface, const FMaterial& Material, UTexture*& OutValue, bool bAllowOverride) const
@@ -641,6 +668,12 @@ void FUniformExpressionSet::GetTextureValue(int32 Index, const FMaterialRenderCo
 
 void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& MaterialRenderContext, const FUniformExpressionCache& UniformExpressionCache, const FRHIUniformBufferLayout* UniformBufferLayout, uint8* TempBuffer, int TempBufferSize) const
 {
+	FillUniformBuffer(MaterialRenderContext, UniformExpressionCache.AllocatedVTs, UniformBufferLayout, TempBuffer, TempBufferSize);
+}
+
+void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& MaterialRenderContext, TConstArrayView<IAllocatedVirtualTexture*> AllocatedVTs, const FRHIUniformBufferLayout* UniformBufferLayout, uint8* TempBuffer, int TempBufferSize) const
+{
+	using namespace UE::Shader;
 	check(IsInParallelRenderingThread());
 
 	if (UniformBufferLayout->ConstantBufferSize > 0)
@@ -652,10 +685,10 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 		check(BufferCursor <= TempBuffer + TempBufferSize);
 
 		// Dump virtual texture per page table uniform data
-		check(UniformExpressionCache.AllocatedVTs.Num() == VTStacks.Num());
+		check(AllocatedVTs.Num() == VTStacks.Num());
 		for ( int32 VTStackIndex = 0; VTStackIndex < VTStacks.Num(); ++VTStackIndex)
 		{
-			const IAllocatedVirtualTexture* AllocatedVT = UniformExpressionCache.AllocatedVTs[VTStackIndex];
+			const IAllocatedVirtualTexture* AllocatedVT = AllocatedVTs[VTStackIndex];
 			FUintVector4* VTPackedPageTableUniform = (FUintVector4*)BufferCursor;
 			if (AllocatedVT)
 			{
@@ -687,7 +720,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				if (Texture != nullptr)
 				{
 					const FVTPackedStackAndLayerIndex StackAndLayerIndex = GetVTStackAndLayerIndex(ExpressionIndex);
-					const IAllocatedVirtualTexture* AllocatedVT = UniformExpressionCache.AllocatedVTs[StackAndLayerIndex.StackIndex];
+					const IAllocatedVirtualTexture* AllocatedVT = AllocatedVTs[StackAndLayerIndex.StackIndex];
 					if (AllocatedVT)
 					{
 						AllocatedVT->GetPackedUniform(VTPackedUniform, StackAndLayerIndex.LayerIndex);
@@ -713,41 +746,133 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 		}
 
 		// Dump preshader results into buffer.
-		float* PreshaderBuffer = (float*)BufferCursor;
-		UE::Shader::FPreshaderStack PreshaderStack;
-		UE::Shader::FPreshaderDataContext PreshaderBaseContext(UniformPreshaderData);
+		float* const PreshaderBuffer = (float*)BufferCursor;
+		FPreshaderStack PreshaderStack;
+		FPreshaderDataContext PreshaderBaseContext(UniformPreshaderData);
 		for (const FMaterialUniformPreshaderHeader& Preshader : UniformPreshaders)
 		{
-			UE::Shader::FValue Result;
-			UE::Shader::FPreshaderDataContext PreshaderContext(PreshaderBaseContext, Preshader.OpcodeOffset, Preshader.OpcodeSize);
-			UE::Shader::EvaluatePreshader(this, MaterialRenderContext, PreshaderStack, PreshaderContext, Result);
+			FPreshaderDataContext PreshaderContext(PreshaderBaseContext, Preshader.OpcodeOffset, Preshader.OpcodeSize);
+			const FPreshaderValue Result = EvaluatePreshader(this, MaterialRenderContext, PreshaderStack, PreshaderContext);
 
-			float* DestAddress = PreshaderBuffer + Preshader.BufferOffset;
-			if(Preshader.ComponentType == UE::Shader::EValueComponentType::Float)
+			// Fast path for non-structure float1 to float4 fields, which represents the vast majority of cases
+			EValueType FirstFieldType = UniformPreshaderFields[Preshader.FieldIndex].Type;
+			EValueType ResultType = Result.Type.ValueType;
+
+			// This min-max logic assumes that Float1 through Float4 are sequential in the EValueType enum, so we can do just two comparisons
+			// to detect if both Result and the destination field are float types.
+			static_assert((int32)EValueType::Float2 == (int32)EValueType::Float1 + 1);
+			static_assert((int32)EValueType::Float3 == (int32)EValueType::Float2 + 1);
+			static_assert((int32)EValueType::Float4 == (int32)EValueType::Float3 + 1);
+			
+			int32 MinValueType = FMath::Min((int32)FirstFieldType, (int32)ResultType);
+			int32 MaxValueType = FMath::Max((int32)FirstFieldType, (int32)ResultType);
+
+			if (Preshader.NumFields == 1 && MinValueType >= (int32)EValueType::Float1 && MaxValueType <= (int32)EValueType::Float4)
 			{
-				const UE::Shader::FFloatValue FloatValue = Result.AsFloat();
-				for (uint32 i = 0u; i < Preshader.NumComponents; ++i)
+				float* DestAddress = PreshaderBuffer + UniformPreshaderFields[Preshader.FieldIndex].BufferOffset;
+
+				// Copy components that exist in both result and destination buffer
+				int32 NumCopyComponents = MinValueType - ((int32)EValueType::Float1 - 1);
+				for (int32 i = 0; i < NumCopyComponents; ++i)
 				{
-					*DestAddress++ = FloatValue[i];
+					*DestAddress++ = Result.Component[i].Float;
 				}
-			}
-			else if (Preshader.ComponentType == UE::Shader::EValueComponentType::Double)
-			{
-				const UE::Shader::FDoubleValue DoubleValue = Result.AsDouble();
-				float TileValue[4];
-				float OffsetValue[4];
-				for (uint32 i = 0u; i < Preshader.NumComponents; ++i)
+
+				// Zero out any additional components that exist in the destination buffer
+				int32 NumDestComponents = (int32)FirstFieldType - ((int32)EValueType::Float1 - 1);
+				for (int32 i = NumCopyComponents; i < NumDestComponents; ++i)
 				{
-					const FLargeWorldRenderScalar Value(DoubleValue[i]);
-					TileValue[i] = Value.GetTile();
-					OffsetValue[i] = Value.GetOffset();
+					*DestAddress++ = 0.0f;
 				}
-				for (uint32 i = 0u; i < Preshader.NumComponents; ++i) *DestAddress++ = TileValue[i];
-				for (uint32 i = 0u; i < Preshader.NumComponents; ++i) *DestAddress++ = OffsetValue[i];
 			}
 			else
 			{
-				ensure(false);
+				for (uint32 FieldIndex = 0u; FieldIndex < Preshader.NumFields; ++FieldIndex)
+				{
+					const FMaterialUniformPreshaderField& PreshaderField = UniformPreshaderFields[Preshader.FieldIndex + FieldIndex];
+					const FValueTypeDescription UniformTypeDesc = GetValueTypeDescription(PreshaderField.Type);
+					const int32 NumFieldComponents = UniformTypeDesc.NumComponents;
+
+					const int32 NumResultComponents = FMath::Min<int32>(NumFieldComponents, Result.Component.Num() - PreshaderField.ComponentIndex);
+					check(NumResultComponents > 0);
+
+					// The type generated by the preshader might not match the expected type
+					// In the future, with new HLSLTree, preshader could potentially include explicit cast opcodes, and avoid implicit conversions
+					// Making this change is difficult while also maintaining backwards compatibility however
+					FValue FieldValue(Result.Type.GetComponentType(PreshaderField.ComponentIndex), NumResultComponents);
+					for (int32 i = 0; i < NumResultComponents; ++i)
+					{
+						FieldValue.Component[i] = Result.Component[PreshaderField.ComponentIndex + i];
+					}
+
+					if (UniformTypeDesc.ComponentType == EValueComponentType::Float)
+					{
+						const FFloatValue FloatValue = FieldValue.AsFloat();
+						float* DestAddress = PreshaderBuffer + PreshaderField.BufferOffset;
+						for (int32 i = 0; i < NumFieldComponents; ++i)
+						{
+							*DestAddress++ = FloatValue[i];
+						}
+					}
+					else if (UniformTypeDesc.ComponentType == EValueComponentType::Int)
+					{
+						const FIntValue IntValue = FieldValue.AsInt();
+						int32* DestAddress = (int32*)PreshaderBuffer + PreshaderField.BufferOffset;
+						for (int32 i = 0; i < NumFieldComponents; ++i)
+						{
+							*DestAddress++ = IntValue[i];
+						}
+					}
+					else if (UniformTypeDesc.ComponentType == EValueComponentType::Bool)
+					{
+						const FBoolValue BoolValue = FieldValue.AsBool();
+						uint32 Mask = 0u;
+						for (int32 i = 0; i < NumFieldComponents; ++i)
+						{
+							if (BoolValue[i])
+							{
+								Mask |= (1u << i);
+							}
+						}
+
+						const uint32 BufferOffset = PreshaderField.BufferOffset / 32u;
+						const uint32 BufferBitOffset = PreshaderField.BufferOffset % 32u;
+						check(BufferBitOffset + NumFieldComponents <= 32u);
+
+						uint32* DestAddress = (uint32*)PreshaderBuffer + BufferOffset;
+						if (BufferBitOffset == 0u)
+						{
+							// First update to a group of bits needs to initialize memory
+							*DestAddress = Mask;
+						}
+						else
+						{
+							// Combine with any previous bits
+							*DestAddress |= (Mask << BufferBitOffset);
+						}
+					}
+					else if (UniformTypeDesc.ComponentType == EValueComponentType::Double)
+					{
+						const FDoubleValue DoubleValue = FieldValue.AsDouble();
+
+						float TileValue[4];
+						float OffsetValue[4];
+						for (int32 i = 0; i < NumFieldComponents; ++i)
+						{
+							const FLargeWorldRenderScalar Value(DoubleValue[i]);
+							TileValue[i] = Value.GetTile();
+							OffsetValue[i] = Value.GetOffset();
+						}
+
+						float* DestAddress = PreshaderBuffer + PreshaderField.BufferOffset;
+						for (int32 i = 0; i < NumFieldComponents; ++i) *DestAddress++ = TileValue[i];
+						for (int32 i = 0; i < NumFieldComponents; ++i) *DestAddress++ = OffsetValue[i];
+					}
+					else
+					{
+						ensure(false);
+					}
+				}
 			}
 		}
 
@@ -848,6 +973,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					SamplerSource = &Clamp_WorldGroupSettings->SamplerStateRHI;
 				}
+				// NOTE: for SSM_TerrainWeightmapGroupSettings, the generated code always tries to use the per-view sampler, but we can fallback to the texture-associated sampler if necessary
 
 				if (*SamplerSource)
 				{
@@ -901,6 +1027,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					SamplerSource = &Clamp_WorldGroupSettings->SamplerStateRHI;
 				}
+				check(SourceMode != SSM_TerrainWeightmapGroupSettings); // not allowed for cubemaps
 
 				check(*SamplerSource);
 				*ResourceTableSamplerPtr = *SamplerSource;
@@ -939,6 +1066,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					SamplerSource = &Clamp_WorldGroupSettings->SamplerStateRHI;
 				}
+				check(SourceMode != SSM_TerrainWeightmapGroupSettings); // not allowed for texture arrays
 
 				check(*SamplerSource);
 				*ResourceTableSamplerPtr = *SamplerSource;
@@ -977,6 +1105,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					SamplerSource = &Clamp_WorldGroupSettings->SamplerStateRHI;
 				}
+				check(SourceMode != SSM_TerrainWeightmapGroupSettings); // not allowed for texture cube arrays
 
 				check(*SamplerSource);
 				*ResourceTableSamplerPtr = *SamplerSource;
@@ -1017,6 +1146,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 				{
 					SamplerSource = &Clamp_WorldGroupSettings->SamplerStateRHI;
 				}
+				check(SourceMode != SSM_TerrainWeightmapGroupSettings); // not allowed for texture volumes
 
 				check(*SamplerSource);
 				*ResourceTableSamplerPtr = *SamplerSource;
@@ -1079,7 +1209,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 			void** ResourceTablePageIndirectionBuffer = (void**)((uint8*)BufferCursor + 0 * SHADER_PARAMETER_POINTER_ALIGNMENT);
 			BufferCursor = ((uint8*)BufferCursor) + SHADER_PARAMETER_POINTER_ALIGNMENT;
 
-			const IAllocatedVirtualTexture* AllocatedVT = UniformExpressionCache.AllocatedVTs[VTStackIndex];
+			const IAllocatedVirtualTexture* AllocatedVT = AllocatedVTs[VTStackIndex];
 			if (AllocatedVT != nullptr)
 			{
 				FRHITexture* PageTable0RHI = AllocatedVT->GetPageTableTexture(0u);
@@ -1133,7 +1263,7 @@ void FUniformExpressionSet::FillUniformBuffer(const FMaterialRenderContext& Mate
 					FVirtualTexture2DResource* VTResource = (FVirtualTexture2DResource*)Texture->GetResource();
 					check(VTResource);
 
-					const IAllocatedVirtualTexture* AllocatedVT = UniformExpressionCache.AllocatedVTs[StackAndLayerIndex.StackIndex];
+					const IAllocatedVirtualTexture* AllocatedVT = AllocatedVTs[StackAndLayerIndex.StackIndex];
 					if (AllocatedVT != nullptr)
 					{
 						FRHIShaderResourceView* PhysicalViewRHI = AllocatedVT->GetPhysicalTextureSRV(StackAndLayerIndex.LayerIndex, VTResource->bSRGB);

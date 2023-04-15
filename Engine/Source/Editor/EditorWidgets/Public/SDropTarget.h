@@ -3,17 +3,28 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Styling/SlateColor.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Framework/SlateDelegates.h"
+#include "Input/DragAndDrop.h"
 #include "Input/Reply.h"
 #include "Layout/Visibility.h"
-#include "Framework/SlateDelegates.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/StyleColors.h"
+#include "Templates/SharedPointer.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "EditorStyleSet.h"
-#include "Styling/StyleColors.h"
 
 class FPaintArgs;
+class FSlateRect;
 class FSlateWindowElementList;
+class FWidgetStyle;
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 /** 
  * A widget that displays a hover cue and handles dropping assets of allowed types onto this widget
@@ -27,9 +38,9 @@ public:
 	SLATE_BEGIN_ARGS(SDropTarget)
 		: _ValidColor(FStyleColors::AccentBlue)
 		, _InvalidColor(FStyleColors::Error)
-		, _VerticalImage(FEditorStyle::GetBrush("WideDash.Vertical"))
-		, _HorizontalImage(FEditorStyle::GetBrush("WideDash.Horizontal"))
-		, _BackgroundImage(FEditorStyle::GetBrush("DropTarget.Background"))
+		, _VerticalImage(FAppStyle::GetBrush("WideDash.Vertical"))
+		, _HorizontalImage(FAppStyle::GetBrush("WideDash.Horizontal"))
+		, _BackgroundImage(FAppStyle::GetBrush("DropTarget.Background"))
 	{ }
 	
 		UE_DEPRECATED(5.0, "BackgroundColor has been removed. You may alter the background brush to get the same effect.")

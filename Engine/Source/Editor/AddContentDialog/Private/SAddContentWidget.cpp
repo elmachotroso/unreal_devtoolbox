@@ -1,22 +1,56 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAddContentWidget.h"
-#include "ViewModels/ContentSourceViewModel.h"
+
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/Platform.h"
+#include "IContentSource.h"
+#include "Internationalization/BreakIterator.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "SPrimaryButton.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/StyleColors.h"
+#include "Styling/StyleDefaults.h"
+#include "SWidgetCarouselWithNavigation.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
 #include "ViewModels/AddContentWidgetViewModel.h"
+#include "ViewModels/CategoryViewModel.h"
+#include "ViewModels/ContentSourceViewModel.h"
+#include "WidgetCarouselStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Input/SSegmentedControl.h"
-#include "EditorStyleSet.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SSegmentedControl.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
-#include "Styling/StyleColors.h"
-#include "Internationalization/BreakIterator.h"
-#include "WidgetCarousel/Public/WidgetCarouselStyle.h"
-#include "WidgetCarousel/Public/SWidgetCarouselWithNavigation.h"
-#include "SPrimaryButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class FString;
+class ITableRow;
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "AddContentDialog"
 
@@ -314,7 +348,7 @@ TSharedRef<SWidget> SAddContentWidget::CreateContentSourceDetail(TSharedPtr<FCon
 			.Padding(FMargin(10, 0, 0, 5))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
 				.Font(FAppStyle::Get().GetFontStyle("HeadingExtraSmall"))
 				.ColorAndOpacity(FStyleColors::ForegroundHover)
 				.Text(ContentSource->GetName())
@@ -334,7 +368,7 @@ TSharedRef<SWidget> SAddContentWidget::CreateContentSourceDetail(TSharedPtr<FCon
 			[
 				SNew(STextBlock)						
 				.Visibility(ContentSource->GetAssetTypes().IsEmpty() == false ? EVisibility::Visible : EVisibility::Collapsed)
-				.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
 				.Text(LOCTEXT("FeaturePackAssetReferences", "Asset Types Used"))
 			]
 			+ SScrollBox::Slot()
@@ -350,7 +384,7 @@ TSharedRef<SWidget> SAddContentWidget::CreateContentSourceDetail(TSharedPtr<FCon
 			.Padding(FMargin(10, 0, 0, 0))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
 				.Visibility(ContentSource->GetClassTypes().IsEmpty() == false ? EVisibility::Visible : EVisibility::Collapsed)
 				.Text(LOCTEXT("FeaturePackClassReferences", "Class Types Used"))
 			] 
@@ -369,12 +403,11 @@ TSharedRef<SWidget> SAddContentWidget::CreateContentSourceDetail(TSharedPtr<FCon
 
 TSharedRef<SWidget> SAddContentWidget::CreateScreenshotCarousel(TSharedPtr<FContentSourceViewModel> ContentSource)
 {
-	TSharedPtr<FSlateBrush> Brush;
-	if (ContentSource->GetScreenshotBrushes().Num() > 0)
-	{
-		Brush = ContentSource->GetScreenshotBrushes()[0];
-	}
-	return CreateScreenshotWidget(Brush);
+	return SNew(SWidgetCarouselWithNavigation<TSharedPtr<FSlateBrush>>)
+		.NavigationBarStyle(FWidgetCarouselModuleStyle::Get(), "CarouselNavigationBar")
+		.NavigationButtonStyle(FWidgetCarouselModuleStyle::Get(), "CarouselNavigationButton")
+		.OnGenerateWidget(this, &SAddContentWidget::CreateScreenshotWidget)
+		.WidgetItemsSource(&ContentSource->GetScreenshotBrushes());
 }
 
 void SAddContentWidget::SearchTextChanged(const FText& SearchText)

@@ -50,10 +50,14 @@ void USequencerPlaylistPlayer::BeginDestroy()
 }
 
 
-//static
-USequencerPlaylistPlayer* USequencerPlaylistPlayer::GetDefaultPlayer()
+void USequencerPlaylistPlayer::SetPlaylist(USequencerPlaylist* InPlaylist)
 {
-	return ISequencerPlaylistsModule::Get().GetDefaultPlayer();
+	// Broadcast the event first, so subscribers can still access the previous via GetPlaylist().
+	if (InPlaylist != Playlist)
+	{
+		OnPlaylistSet.Broadcast(this, InPlaylist);
+		Playlist = InPlaylist;
+	}
 }
 
 
@@ -473,10 +477,18 @@ void USequencerPlaylistPlayer::OnTakeRecorderStopped(UTakeRecorder* InRecorder)
 	if (TSharedPtr<ISequencer> Sequencer = GetValidatedSequencer())
 	{
 		FScopedTransaction Transaction(LOCTEXT("TakeRecorderStoppedTransaction", "Playlist - Take Recorder stopped"));
+		bool bAnySequencesModified = false;
 
 		for (USequencerPlaylistItem* Item : Playlist->Items)
 		{
-			GetCheckedItemPlayer(Item)->Stop(Item);
+			bAnySequencesModified |= GetCheckedItemPlayer(Item)->Stop(Item);
+		}
+
+		if (!bAnySequencesModified)
+		{
+			// Cancel the otherwise empty transaction if stopping the item
+			// players did not modify any sequences.
+			Transaction.Cancel();
 		}
 	}
 }

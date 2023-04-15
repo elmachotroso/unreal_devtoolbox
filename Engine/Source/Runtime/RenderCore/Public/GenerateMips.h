@@ -2,8 +2,16 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+#include "PixelFormat.h"
+#include "RHIDefinitions.h"
 #include "RenderGraphDefinitions.h"
+#include "Templates/SharedPointer.h"
 
+class FRDGBuilder;
+class FRHICommandListImmediate;
+class FRHISamplerState;
+class FRHITexture;
 struct FGenerateMipsStruct;
 
 struct FGenerateMipsParams
@@ -29,6 +37,7 @@ public:
 	/** (ES3.1+) Generates mips for the requested RHI texture using the feature-level appropriate means (Compute, Raster, or Fixed-Function). */
 	static void Execute(
 		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
 		FRDGTextureRef Texture,
 		FGenerateMipsParams Params = {},
 		EGenerateMipsPass Pass = EGenerateMipsPass::AutoDetect);
@@ -36,26 +45,47 @@ public:
 	/** (SM5+) Generates mips for the requested RDG texture using the requested compute / raster pass. */
 	static void Execute(
 		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
 		FRDGTextureRef Texture,
 		FRHISamplerState* Sampler,
 		EGenerateMipsPass Pass = EGenerateMipsPass::AutoDetect);
 
-	static void ExecuteCompute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler);
+	static void ExecuteCompute(
+		FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel,
+		FRDGTextureRef Texture,
+		FRHISamplerState* Sampler);
 	
 	/** (SM5+) Generate mips for the requested RDG texture using the compute pass conditionally.
 		if( uint(ConditionBuffer[Offset]) > 0)
 			Execute(...)
 	*/
-	static void ExecuteCompute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler,
-								 FRDGBufferRef ConditionBuffer, uint32 Offset = 0);
+	static void ExecuteCompute(
+		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
+		FRDGTextureRef Texture,
+		FRHISamplerState* Sampler,
+		FRDGBufferRef ConditionBuffer, uint32 Offset = 0);
 
-	static void ExecuteRaster(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler);
+	static void ExecuteRaster(
+		FRDGBuilder& GraphBuilder,
+		ERHIFeatureLevel::Type FeatureLevel,
+		FRDGTextureRef Texture,
+		FRHISamplerState* Sampler);
 
 	//////////////////////////////////////////////////////////////////////////
-	UE_DEPRECATED(4.26, "Please use the FRDGBuilder version of this function instead.")
-	static void Execute(FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, TSharedPtr<FGenerateMipsStruct>& GenerateMipsStruct, FGenerateMipsParams Params = {}, bool bAllowRenderBasedGeneration = false);
+	UE_DEPRECATED(5.1, "This function now requires a ERHIFeatureLevel argument. You can obtain the correct Feature Level from a Scene or View.")
+	static void Execute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FGenerateMipsParams Params = {}, EGenerateMipsPass Pass = EGenerateMipsPass::AutoDetect);
 
-	UE_DEPRECATED(4.26, "Please use the FRDGBuilder version of this function instead.")
-	static void Execute(FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, FGenerateMipsParams Params = {}, bool bAllowRenderBasedGeneration = false);
+	UE_DEPRECATED(5.1, "This function now requires a ERHIFeatureLevel argument. You can obtain the correct Feature Level from a Scene or View.")
+	static void Execute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler, EGenerateMipsPass Pass = EGenerateMipsPass::AutoDetect);
+
+	UE_DEPRECATED(5.1, "This function now requires a ERHIFeatureLevel argument. You can obtain the correct Feature Level from a Scene or View.")
+	static void ExecuteCompute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler);
+
+	UE_DEPRECATED(5.1, "This function now requires a ERHIFeatureLevel argument. You can obtain the correct Feature Level from a Scene or View.")
+	static void ExecuteCompute(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler, FRDGBufferRef ConditionBuffer, uint32 Offset = 0);
+
+	UE_DEPRECATED(5.1, "This function now requires a ERHIFeatureLevel argument. You can obtain the correct Feature Level from a Scene or View.")
+	static void ExecuteRaster(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, FRHISamplerState* Sampler);
 	//////////////////////////////////////////////////////////////////////////
 };

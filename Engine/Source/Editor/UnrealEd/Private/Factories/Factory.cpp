@@ -64,18 +64,19 @@ UObject* UFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName I
 
 	if (ScriptFactoryCreateFile(Task))
 	{
-		if (Task->Result.Num() == 0)
+		TArray<UObject*> TaskResults = Task->GetObjects();
+		if (TaskResults.Num() == 0)
 		{
 			return nullptr;
 		}
 		else
 		{
-			for (int32 ResultIndex = 1; ResultIndex < Task->Result.Num(); ++ResultIndex)
+			for (int32 ResultIndex = 1; ResultIndex < TaskResults.Num(); ++ResultIndex)
 			{
-				AdditionalImportedObjects.Add(Task->Result[ResultIndex]);
+				AdditionalImportedObjects.Add(TaskResults[ResultIndex]);
 			}
 
-			return Task->Result[0];
+			return TaskResults[0];
 		}
 	}
 
@@ -99,13 +100,15 @@ UObject* UFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName I
 
 	// load as binary
 	{
-		TArray<uint8> Data;
+		TArray64<uint8> Data;
 		if (!FFileHelper::LoadFileToArray(Data, *Filename))
 		{
 			UE_LOG(LogFactory, Error, TEXT("Failed to load file '%s' to array"), *Filename);
 			return nullptr;
 		}
 
+		// adds an extra null byte
+		// data loaders must be able to ignore an unexpected extra zero byte at the end of the file
 		Data.Add(0);
 		ParseParms(Parms);
 		const uint8* Ptr = &Data[0];
@@ -526,7 +529,7 @@ bool UFactory::IsSupportedFileExtension(FStringView InExtension) const
 }
 
 
-bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkData& BulkData)
+bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FBulkData& BulkData)
 {
 	FString StrLine;
 	int32 ElementCount = 0;
@@ -564,7 +567,7 @@ bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkD
 					check(Size == (ElementSize *ElementCount));
 
 					BulkData.Lock(LOCK_READ_WRITE);
-					void* RawBulkData = BulkData.Realloc(ElementCount);
+					void* RawBulkData = BulkData.Realloc(ElementCount, ElementSize);
 					RawData = (uint8*)RawBulkData;
 					bBulkDataIsLocked = true;
 				}

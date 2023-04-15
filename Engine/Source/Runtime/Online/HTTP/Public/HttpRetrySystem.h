@@ -2,16 +2,28 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Templates/Atomic.h"
-#include "Interfaces/IHttpRequest.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
 #include "HttpRequestAdapter.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Logging/LogVerbosity.h"
+#include "Misc/Optional.h"
+#include "Templates/Atomic.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 
 /**
  * Helpers of various types for the retry system
  */
 namespace FHttpRetrySystem
 {
+	class FManager;
+
 	typedef uint32 RetryLimitCountType;
 	typedef double RetryTimeoutRelativeSecondsType;
 
@@ -143,7 +155,7 @@ namespace FHttpRetrySystem
 			const FRetryDomainsPtr& InRetryDomains = FRetryDomainsPtr()
 			);
 
-		HTTP_API virtual ~FManager() = default;
+		HTTP_API virtual ~FManager();
 
         /**
          * Updates the entries in the list of retry requests. Optional parameters are for future connection health assessment
@@ -177,6 +189,30 @@ namespace FHttpRetrySystem
             TSharedRef<FRequest, ESPMode::ThreadSafe>	Request;
         };
 
+		class FHttpLogVerbosityTracker
+		{
+		public:
+			FHttpLogVerbosityTracker();
+			~FHttpLogVerbosityTracker();
+
+			/** Mark that a request is being retried */
+			void IncrementRetriedRequests();
+			/** Mark that a retried request is no longer being retried */
+			void DecrementRetriedRequests();
+			static FHttpLogVerbosityTracker& Get();
+		protected:
+			/** Update settings from config */
+			void UpdateSettingsFromConfig();
+			void OnConfigSectionsChanged(const FString& IniFilename, const TSet<FString>& SectionName);
+
+			/** Number of requests that are in a retried state.  When this is non-zero, verbosity will be adjusted. */
+			int32 NumRetriedRequests = 0;
+			/** Verbosity to restore to when there are no requests being retried */
+			ELogVerbosity::Type OriginalVerbosity = ELogVerbosity::Error;
+			/** Config driven target verbosity to set to when requests are being retried.  NoLogging means the verbosity will not be modified. */
+			ELogVerbosity::Type TargetVerbosity = ELogVerbosity::NoLogging;
+		};
+
 		bool ProcessRequest(TSharedRef<FRequest, ESPMode::ThreadSafe>& HttpRequest);
 		void CancelRequest(TSharedRef<FRequest, ESPMode::ThreadSafe>& HttpRequest);
 
@@ -190,6 +226,12 @@ namespace FHttpRetrySystem
         // @return true if the retry request has timed out
         bool HasTimedOut(const FHttpRetryRequestEntry& HttpRetryRequestEntry, const double NowAbsoluteSeconds);
 
+		/**
+		 * Retry an HTTP request
+		 * @param RequestEntry request to retry
+		 */
+		void RetryHttpRequest(FHttpRetryRequestEntry& RequestEntry);
+
         // @return number of seconds to lockout for
         float GetLockoutPeriodSeconds(const FHttpRetryRequestEntry& HttpRetryRequestEntry);
 
@@ -198,6 +240,6 @@ namespace FHttpRetrySystem
         FRetryLimitCountSetting              RetryLimitCountDefault;
         FRetryTimeoutRelativeSecondsSetting  RetryTimeoutRelativeSecondsDefault;
 
-        TArray<FHttpRetryRequestEntry>        RequestList;
+        TArray<FHttpRetryRequestEntry>       RequestList;
     };
 }

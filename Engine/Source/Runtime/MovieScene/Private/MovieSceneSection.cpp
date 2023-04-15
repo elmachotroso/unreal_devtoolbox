@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneSection.h"
+#include "MovieScene.h"
 #include "MovieSceneTrack.h"
 #include "MovieSceneSequence.h"
 #include "MovieSceneCommonHelpers.h"
@@ -17,6 +18,8 @@
 #include "Channels/MovieSceneChannel.h"
 #include "UObject/SequencerObjectVersion.h"
 #include "Misc/FeedbackContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSection)
 
 UMovieSceneSection::UMovieSceneSection(const FObjectInitializer& ObjectInitializer)
 	: Super( ObjectInitializer )
@@ -117,6 +120,15 @@ void UMovieSceneSection::Serialize(FArchive& Ar)
 #endif
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void UMovieSceneSection::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UMovieSceneBuiltInEasingFunction::StaticClass()));
+}
+#endif
+
 
 void UMovieSceneSection::PostDuplicate(bool bDuplicateForPIE)
 {
@@ -365,6 +377,17 @@ bool UMovieSceneSection::IsReadOnly() const
 #endif
 
 	return false;
+}
+
+void UMovieSceneSection::SetRowIndex(int32 NewRowIndex)
+{
+	const int32 OldRowIndex = RowIndex;
+	RowIndex = NewRowIndex;
+
+	if (OldRowIndex != RowIndex)
+	{
+		EventHandlers.Trigger(&UE::MovieScene::ISectionEventHandler::OnRowChanged, this);
+	}
 }
 
 void UMovieSceneSection::GetOverlappingSections(TArray<UMovieSceneSection*>& OutSections, bool bSameRow, bool bIncludeThis)
@@ -689,7 +712,7 @@ void UMovieSceneSection::EvaluateEasing(FFrameTime InTime, TOptional<float>& Out
 		}
 	}
 
-	if (HasEndFrame() && Easing.EaseOut.GetObject() && GetEaseOutRange().Contains(InTime.FrameNumber))
+	if (HasEndFrame() && Easing.EaseOut.GetObject() && (GetEaseOutRange().Contains(InTime.FrameNumber) || GetEaseOutRange().GetUpperBoundValue() == InTime.FrameNumber))
 	{
 		const int32  EaseFrame     = (InTime.FrameNumber - GetExclusiveEndFrame() + Easing.GetEaseOutDuration()).Value;
 		const double EaseOutInterp = (double(EaseFrame) + InTime.GetSubFrame()) / Easing.GetEaseOutDuration();

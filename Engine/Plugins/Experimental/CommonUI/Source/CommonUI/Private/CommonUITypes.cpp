@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
  
 #include "CommonUITypes.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "ICommonInputModule.h"
 #include "CommonInputSettings.h"
 #include "HAL/PlatformInput.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonUITypes)
 
 FScrollBoxStyle CommonUI::EmptyScrollBoxStyle = FScrollBoxStyle();
 

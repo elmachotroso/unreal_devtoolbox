@@ -6,6 +6,7 @@
 #include "GameFramework/Volume.h"
 #include "Components/BrushComponent.h"
 #include "ConversionUtils/VolumeToDynamicMesh.h"
+#include "TransformTypes.h"
 
 using namespace UE::Geometry;
 
@@ -121,7 +122,7 @@ bool FSceneVolumeSpatial::FindNearestHit(
 
 	FRay3d LocalRay = Transform.InverseTransformRay(WorldRay);
 	double RayHitT; int32 HitTID; FVector3d HitBaryCoords;
-	if ( ColliderMesh.GetAABBTree().FindNearestHitTriangle(LocalRay, RayHitT, HitTID, HitBaryCoords) )
+	if ( ColliderMesh.FindNearestHitTriangle(LocalRay, RayHitT, HitTID, HitBaryCoords) )
 	{
 		HitResultOut.Component = Component.Get();
 		HitResultOut.Actor = HitResultOut.Component->GetOwner();

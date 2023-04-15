@@ -27,17 +27,17 @@ FAutoConsoleVariableRef FMaterialShader::CVarAllowCachedUniformExpressions(
 	TEXT("Allow uniform expressions to be cached."),
 	ECVF_RenderThreadSafe);
 
-void FMeshMaterialShaderElementData::InitializeMeshMaterialData(const FSceneView* SceneView, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, const FMeshBatch& RESTRICT MeshBatch, int32 StaticMeshId, bool bAllowStencilDither)
+void FMeshMaterialShaderElementData::InitializeMeshMaterialData(const FSceneView* SceneView, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, bool bDitheredLODTransition, bool bAllowStencilDither)
 {
 	FadeUniformBuffer = GDistanceCullFadedInUniformBuffer.GetUniformBufferRHI();
 	DitherUniformBuffer = GDitherFadedInUniformBuffer.GetUniformBufferRHI();
 
-	if (SceneView && StaticMeshId >= 0)
+	if (SceneView)
 	{
 		checkSlow(SceneView->bIsViewInfo);
 		const FViewInfo* ViewInfo = (FViewInfo*)SceneView;
 
-		if (MeshBatch.bDitheredLODTransition && !(bAllowStencilDither && ViewInfo->bAllowStencilDither))
+		if (StaticMeshId >= 0 && bDitheredLODTransition && !(bAllowStencilDither && ViewInfo->bAllowStencilDither))
 		{
 			if (ViewInfo->StaticMeshFadeOutDitheredLODMap[StaticMeshId])
 			{
@@ -53,12 +53,17 @@ void FMeshMaterialShaderElementData::InitializeMeshMaterialData(const FSceneView
 		{
 			int32 const PrimitiveIndex = PrimitiveSceneProxy->GetPrimitiveSceneInfo()->GetIndex();
 
-			if (ViewInfo->PrimitiveFadeUniformBufferMap[PrimitiveIndex])
+			if (ViewInfo->PrimitiveFadeUniformBufferMap.IsValidIndex(PrimitiveIndex) && ViewInfo->PrimitiveFadeUniformBufferMap[PrimitiveIndex])
 			{
 				FadeUniformBuffer = ViewInfo->PrimitiveFadeUniformBuffers[PrimitiveIndex];
 			}
 		}
 	}
+}
+
+void FMeshMaterialShaderElementData::InitializeMeshMaterialData(const FSceneView* SceneView, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, const FMeshBatch& RESTRICT MeshBatch, int32 StaticMeshId, bool bAllowStencilDither)
+{
+	InitializeMeshMaterialData(SceneView, PrimitiveSceneProxy, StaticMeshId, MeshBatch.bDitheredLODTransition, bAllowStencilDither);
 }
 
 FName FMaterialShader::UniformBufferLayoutName(TEXT("Material"));
@@ -71,7 +76,7 @@ FMaterialShader::FMaterialShader(const FMaterialShaderType::CompiledShaderInitia
 #endif // WITH_EDITORONLY_DATA
 {
 #if WITH_EDITORONLY_DATA
-	check(!DebugDescription.IsEmpty());
+	check(UE_BUILD_SHIPPING || !DebugDescription.IsEmpty());
 	DebugUniformExpressionUBLayout.CopyFrom(Initializer.UniformExpressionSet.GetUniformBufferLayoutInitializer());
 #endif // WITH_EDITORONLY_DATA
 
@@ -131,6 +136,7 @@ void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* 
 		|| UniformExpressionCache->CachedUniformExpressionShaderMap != ShaderMap;
 	if (!bUniformExpressionSetMismatch)
 	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (UniformExpressionCache->LocalUniformBuffer.IsValid())
 		{
 			if (UniformExpressionCache->LocalUniformBuffer.BypassUniform)
@@ -154,6 +160,7 @@ void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* 
 				}
 			}
 		}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		else
 		{
 			if (DebugUniformExpressionUBLayout.GetHash() != UniformExpressionCache->UniformBuffer->GetLayout().GetHash())
@@ -203,9 +210,9 @@ void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* 
 }
 #endif
 
-template<typename TRHIShader>
+template<typename TRHIShader, typename TRHICommandList>
 void FMaterialShader::SetParameters(
-	FRHICommandList& RHICmdList,
+	TRHICommandList& RHICmdList,
 	TRHIShader* ShaderRHI,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const FMaterial& Material,
@@ -248,13 +255,10 @@ void FMaterialShader::SetParameters(
 		FMaterialRenderContext MaterialRenderContext(MaterialRenderProxy, Material, &View);
 		bUniformExpressionCacheNeedsDelete = true;
 		UniformExpressionCache = new FUniformExpressionCache();
-		MaterialRenderProxy->EvaluateUniformExpressions(*UniformExpressionCache, MaterialRenderContext, &RHICmdList);
-		SetLocalUniformBufferParameter(RHICmdList, ShaderRHI, MaterialUniformBuffer, UniformExpressionCache->LocalUniformBuffer);
+		MaterialRenderProxy->EvaluateUniformExpressions(*UniformExpressionCache, MaterialRenderContext);
 	}
-	else
-	{
-		SetUniformBufferParameter(RHICmdList, ShaderRHI, MaterialUniformBuffer, UniformExpressionCache->UniformBuffer);
-	}
+
+	SetUniformBufferParameter(RHICmdList, ShaderRHI, MaterialUniformBuffer, UniformExpressionCache->UniformBuffer);
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING || !WITH_EDITOR)
 	VerifyExpressionAndShaderMaps(MaterialRenderProxy, Material, UniformExpressionCache);
@@ -322,20 +326,21 @@ void FMaterialShader::SetParameters(
 // Doxygen struggles to parse these explicit specializations. Just ignore them for now.
 #if !UE_BUILD_DOCS
 
-#define IMPLEMENT_MATERIAL_SHADER_SetParameters( TRHIShader ) \
-	template RENDERER_API void FMaterialShader::SetParameters< TRHIShader >( \
-		FRHICommandList& RHICmdList,					\
+#define IMPLEMENT_MATERIAL_SHADER_SetParameters( TRHICommandList, TRHIShader ) \
+	template RENDERER_API void FMaterialShader::SetParameters< TRHIShader, TRHICommandList >( \
+		TRHICommandList& RHICmdList,				\
 		TRHIShader* ShaderRHI,							\
 		const FMaterialRenderProxy* MaterialRenderProxy,\
 		const FMaterial& Material,						\
 		const FSceneView& View							\
 	);
 
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIVertexShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIGeometryShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIPixelShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIComputeShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIMeshShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIVertexShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIGeometryShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIPixelShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIMeshShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHICommandList, FRHIComputeShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIComputeCommandList, FRHIComputeShader);
 
 #endif
 
@@ -490,13 +495,8 @@ void FMeshMaterialShader::GetShaderBindings(
 	FMeshDrawSingleShaderBindings& ShaderBindings) const
 {
 	FMaterialShader::GetShaderBindings(Scene, FeatureLevel, MaterialRenderProxy, Material, ShaderBindings);
-	if (DrawRenderState.GetViewUniformBuffer())
-	{
-		ShaderBindings.Add(GetUniformBufferParameter<FViewUniformShaderParameters>(), DrawRenderState.GetViewUniformBuffer());
-	}
 	ShaderBindings.Add(GetUniformBufferParameter<FDistanceCullFadeUniformShaderParameters>(), ShaderElementData.FadeUniformBuffer);
 	ShaderBindings.Add(GetUniformBufferParameter<FDitherUniformShaderParameters>(), ShaderElementData.DitherUniformBuffer);
-	ShaderBindings.Add(GetUniformBufferParameter<FNaniteUniformParameters>(), DrawRenderState.GetNaniteUniformBuffer());
 }
 
 void FMeshMaterialShader::GetElementShaderBindings(

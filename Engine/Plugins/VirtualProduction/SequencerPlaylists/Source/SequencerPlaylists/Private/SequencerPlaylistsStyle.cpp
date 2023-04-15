@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerPlaylistsStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IPluginManager.h"
 #include "Slate/SlateGameResources.h"
@@ -12,6 +12,7 @@
 
 
 #define RootToContentDir Style->RootToContentDir
+#define RootToCoreContentDir Style->RootToCoreContentDir
 
 
 TSharedPtr<FSlateStyleSet> FSequencerPlaylistsStyle::StyleInstance = nullptr;
@@ -133,7 +134,7 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 
 	// Table rows
 	{
-		const FTableRowStyle& NormalTableRowStyle = FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
+		const FTableRowStyle& NormalTableRowStyle = FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
 		FTableRowStyle PlaylistItemRowStyle = FTableRowStyle(NormalTableRowStyle)
 			.SetEvenRowBackgroundBrush(FSlateNoResource())
 			.SetOddRowBackgroundBrush(FSlateNoResource())
@@ -219,6 +220,7 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 	Style->Set("SequencerPlaylists.HoverTransport.Reset", ResetHoverTransportButton);
 
 	FEditableTextBoxStyle EditableTextStyle = FEditableTextBoxStyle()
+		.SetTextStyle(FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
 		.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 		.SetBackgroundImageNormal(FSlateNoResource())
 		.SetBackgroundImageHovered(FSlateNoResource())
@@ -244,13 +246,14 @@ TSharedRef<FSlateStyleSet> FSequencerPlaylistsStyle::Create()
 		// Engine/Content/Editor/Slate/...
 		{
 			Style->SetContentRoot(EngineEditorSlateDir);
+			Style->SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
 			Style->Set("SequencerPlaylists.SavePlaylist", new IMAGE_BRUSH_SVG("Starship/Common/SaveCurrent", Icon16x16));
 
 			Style->Set("SequencerPlaylists.Play", new IMAGE_BRUSH_SVG("Starship/Common/play", Icon20x20));
 			Style->Set("SequencerPlaylists.Play.Small", new IMAGE_BRUSH_SVG("Starship/Common/play", Icon12x12));
-			Style->Set("SequencerPlaylists.Stop", new IMAGE_BRUSH_SVG("Starship/MainToolbar/stop", Icon20x20));
-			Style->Set("SequencerPlaylists.Stop.Small", new IMAGE_BRUSH_SVG("Starship/MainToolbar/stop", Icon12x12));
+			Style->Set("SequencerPlaylists.Stop", new IMAGE_BRUSH_SVG("Starship/Common/stop", Icon20x20));
+			Style->Set("SequencerPlaylists.Stop.Small", new IMAGE_BRUSH_SVG("Starship/Common/stop", Icon12x12));
 			Style->Set("SequencerPlaylists.Reset", new IMAGE_BRUSH_SVG("Starship/Common/Reset", Icon20x20));
 			Style->Set("SequencerPlaylists.Reset.Small", new IMAGE_BRUSH_SVG("Starship/Common/Reset", Icon12x12));
 		}

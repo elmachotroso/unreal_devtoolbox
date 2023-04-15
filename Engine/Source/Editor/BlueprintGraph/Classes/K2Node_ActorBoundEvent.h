@@ -3,16 +3,27 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "Internationalization/Text.h"
 #include "K2Node_Event.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_ActorBoundEvent.generated.h"
 
 class AActor;
+class FArchive;
 class FKismetCompilerContext;
+class FMulticastDelegateProperty;
 class FNodeHandlingFunctor;
+class UClass;
 class UEdGraph;
+class UObject;
 
 UCLASS(MinimalAPI)
 class UK2Node_ActorBoundEvent : public UK2Node_Event
@@ -65,6 +76,9 @@ class UK2Node_ActorBoundEvent : public UK2Node_Event
 	/** Return the delegate property that this event is bound to */
 	BLUEPRINTGRAPH_API FMulticastDelegateProperty* GetTargetDelegateProperty() const;
 	BLUEPRINTGRAPH_API FMulticastDelegateProperty* GetTargetDelegatePropertyFromSkel() const;
+
+	/** Gets the proper display name for the property */
+	BLUEPRINTGRAPH_API FText GetTargetDelegateDisplayName() const;
 
 private:
 	/** Constructing FText strings can be costly, so we cache the node's title */

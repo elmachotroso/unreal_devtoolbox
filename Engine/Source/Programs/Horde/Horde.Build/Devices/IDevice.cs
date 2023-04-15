@@ -1,19 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Generic;
+using Horde.Build.Acls;
+using Horde.Build.Projects;
+using Horde.Build.Streams;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 
-using System.Collections.Generic;
-using HordeServer.Utilities;
-
-namespace HordeServer.Models
+namespace Horde.Build.Devices
 {
 	using DeviceId = StringId<IDevice>;
 	using DevicePlatformId = StringId<IDevicePlatform>;
 	using DevicePoolId = StringId<IDevicePool>;
-	using UserId = ObjectId<IUser>;
 	using ProjectId = StringId<IProject>;
+	using UserId = ObjectId<IUser>;
+	using StreamId = StringId<IStream>;
 
 	/// <summary>
 	/// A reservation containing one or more devices
@@ -31,6 +35,11 @@ namespace HordeServer.Models
 		public DevicePoolId PoolId { get; }
 
 		/// <summary>
+		/// Strwam id holding reservation
+		/// </summary>
+		public string? StreamId { get; }
+
+		/// <summary>
 		/// JobID holding reservation
 		/// </summary>
 		public string? JobId { get; }
@@ -39,6 +48,16 @@ namespace HordeServer.Models
 		/// Job step id holding reservation
 		/// </summary>
 		public string? StepId { get; }
+
+		/// <summary>
+		/// Job name holding reservation
+		/// </summary>
+		public string? JobName { get; }
+
+		/// <summary>
+		/// Job step name holding reservation
+		/// </summary>
+		public string? StepName { get; }
 
 		/// <summary>
 		/// Reservations held by a user, requires a token
@@ -71,11 +90,15 @@ namespace HordeServer.Models
 		public List<DeviceId> Devices { get; }
 
 		/// <summary>
+		/// The requested device platforms for reservation, which may differ from IDevice platform due to devices that support more than one platform, or legacy platforms
+		/// </summary>
+		public List<string> RequestedDevicePlatforms { get; }
+
+		/// <summary>
 		/// The legacy reservation system guid, to be removed once can update Gauntlet client in all streams
 		/// </summary>
 		public string LegacyGuid { get; }
 	}
-
 
 	/// <summary>
 	/// A device platform 
@@ -96,7 +119,6 @@ namespace HordeServer.Models
 		/// A list of valid models for the platform
 		/// </summary>
 		public IReadOnlyList<string>? Models { get; }
-
 	}
 
     /// <summary>
@@ -113,7 +135,6 @@ namespace HordeServer.Models
         /// Shared by users with remote checking and checkouts
         /// </summary>
         Shared
-
     }
 
     /// <summary>
@@ -148,7 +169,7 @@ namespace HordeServer.Models
 	}
 
 	/// <summary>
-	/// A device utilization snapshot
+	/// A device utilization snapshot [DEPRECATED]
 	/// </summary>
 	public class DeviceUtilizationTelemetry
 	{
@@ -183,11 +204,72 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="ReservationStartUtc"></param>
-		public DeviceUtilizationTelemetry( DateTime ReservationStartUtc )
+		/// <param name="reservationStartUtc"></param>
+		public DeviceUtilizationTelemetry( DateTime reservationStartUtc )
 		{
-			this.ReservationStartUtc = ReservationStartUtc;
+			ReservationStartUtc = reservationStartUtc;
 		}
+	}
+
+	/// <summary>
+	/// Device telemetry information
+	/// </summary>
+	public interface IDeviceTelemetry
+	{
+		/// <summary>
+		///  The creation time of this telemetry data
+		/// </summary>
+		public DateTime CreateTimeUtc { get; }
+
+		/// <summary>
+		/// The device id for telemetry
+		/// </summary>
+		public DeviceId DeviceId { get; }
+
+		/// <summary>
+		/// The stream id which utilized device
+		/// </summary>
+		public string? StreamId { get; }
+
+		/// <summary>
+		/// The job id which utilized device
+		/// </summary>
+		public string? JobId { get; }
+
+		/// <summary>
+		/// The job name which utilized device
+		/// </summary>
+		public string? JobName { get; }
+
+		/// <summary>
+		/// The job's step id
+		/// </summary>
+		public string? StepId { get; }
+
+		/// <summary>
+		/// The job name which utilized device
+		/// </summary>
+		public string? StepName { get; }
+
+		/// <summary>
+		/// Reservation Id (transient, reservations are deleted upon expiration)
+		/// </summary>
+		public ObjectId? ReservationId { get; }
+
+		/// <summary>
+		/// The time device was reserved
+		/// </summary>
+		public DateTime? ReservationStartUtc { get; }
+
+		/// <summary>
+		/// The time device was freed
+		/// </summary>
+		public DateTime? ReservationFinishUtc { get; }
+
+		/// <summary>
+		/// If the device reported a problem
+		/// </summary>
+		public DateTime? ProblemTimeUtc { get; }
 
 	}
 
@@ -222,7 +304,6 @@ namespace HordeServer.Models
 		/// </summary>
 		public string? ModelId { get; }
 
-
 		/// <summary>
 		/// Address if the device supports shared network connections
 		/// </summary>
@@ -247,7 +328,6 @@ namespace HordeServer.Models
 		/// The last time this device was checked out
 		/// </summary>
 		public DateTime? CheckOutTime { get; }
-
 
 		/// <summary>
 		/// The last time a problem was reported
@@ -274,11 +354,91 @@ namespace HordeServer.Models
 		/// </summary>
 		public Acl? Acl { get; }
 	}
+
+	/// <summary>
+	/// Stream device telemetry for pool snapshot
+	/// </summary>
+	public interface IDevicePoolReservationTelemetry
+	{
+		/// <summary>
+		/// Device id for reservation
+		/// </summary>
+		public DeviceId DeviceId { get;}
+
+		/// <summary>
+		/// Job id associated with reservation
+		/// </summary>
+		public string? JobId { get; }
+
+		/// <summary>
+		/// The step id of reservation
+		/// </summary>
+		public string? StepId { get; }
+
+		/// <summary>
+		/// The name of the job holding reservation
+		/// </summary>
+		public string? JobName { get; }
+
+		/// <summary>
+		/// The name of the step holding reservation
+		/// </summary>
+		public string? StepName { get; }
+	}
+
+
+	/// <summary>
+	/// Platform telemetry for a device pool
+	/// </summary>
+	public interface IDevicePlatformTelemetry
+	{
+		/// <summary>
+		/// The corresponding platform id
+		/// </summary>
+		public DevicePlatformId PlatformId { get; }
+
+		/// <summary>
+		/// Available devices of this platform 
+		/// </summary>
+		public IReadOnlyList<DeviceId>? Available { get; }
+
+		/// <summary>
+		/// Number of devices in maintenance state
+		/// </summary>
+		public IReadOnlyList<DeviceId>? Maintenance { get; }
+
+		/// <summary>
+		/// Number of devices in problem state
+		/// </summary>
+		public IReadOnlyList<DeviceId>? Problem { get; }
+
+		/// <summary>
+		/// Number of devices in disabled state
+		/// </summary>
+		public IReadOnlyList<DeviceId>? Disabled { get; }
+
+		/// <summary>
+		/// Number of reserved devices of this platform 
+		/// </summary>
+		public IReadOnlyDictionary<StreamId, IReadOnlyList<IDevicePoolReservationTelemetry>>? Reserved { get; }
+
+	}
+
+	/// <summary>
+	/// A snapshot of device pool telemetry
+	/// </summary>
+	public interface IDevicePoolTelemetry
+	{
+		/// <summary>
+		/// The creation time of this telemetry data
+		/// </summary>
+		public DateTime CreateTimeUtc { get; }
+
+		/// <summary>
+		/// Pool platform telemetry
+		/// </summary>
+		public IReadOnlyDictionary<DevicePoolId, IReadOnlyList<IDevicePlatformTelemetry>> Pools { get; }
+
+	}
+
 }
-
-
-
-
-
-
-

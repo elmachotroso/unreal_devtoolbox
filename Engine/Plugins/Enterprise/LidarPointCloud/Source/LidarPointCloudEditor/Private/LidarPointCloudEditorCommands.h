@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LidarPointCloudStyle.h"
 
 class FLidarPointCloudEditorCommands : public TCommands<FLidarPointCloudEditorCommands>
@@ -24,38 +24,28 @@ public:
 	virtual void RegisterCommands() override;
 	// End of TCommand<> interface
 
+	static TMap<FName, TArray<TSharedPtr<FUICommandInfo>>> GetToolkitCommands()
+	{
+		return Get().ToolkitCommands;
+	}
+
 public:
-	TSharedPtr< FUICommandInfo > SetShowGrid;
-	TSharedPtr< FUICommandInfo > SetShowBounds;
-	TSharedPtr< FUICommandInfo > SetShowCollision;
-	TSharedPtr< FUICommandInfo > SetShowNodes;
+	TSharedPtr<FUICommandInfo> SetShowGrid;
+	TSharedPtr<FUICommandInfo> SetShowBounds;
+	TSharedPtr<FUICommandInfo> SetShowCollision;
+	TSharedPtr<FUICommandInfo> SetShowNodes;
+	TSharedPtr<FUICommandInfo> ResetCamera;
+	TSharedPtr<FUICommandInfo> Center;
 
-	TSharedPtr< FUICommandInfo > ResetCamera;
+	// TOOLKIT COMMANDS
 
-	TSharedPtr< FUICommandInfo > Center;
-	TSharedPtr< FUICommandInfo > BuildCollision;
-	TSharedPtr< FUICommandInfo > RemoveCollision;
+	TSharedPtr<FUICommandInfo> ToolkitSelect;
+	TSharedPtr<FUICommandInfo> ToolkitBoxSelection;
+	TSharedPtr<FUICommandInfo> ToolkitPolygonalSelection;
+	TSharedPtr<FUICommandInfo> ToolkitLassoSelection;
+	TSharedPtr<FUICommandInfo> ToolkitPaintSelection;
+	TSharedPtr<FUICommandInfo> ToolktitCancelSelection;
 
-	TSharedPtr< FUICommandInfo > EditMode;
-
-	TSharedPtr< FUICommandInfo > BoxSelection;
-	TSharedPtr< FUICommandInfo > PolygonalSelection;
-	TSharedPtr< FUICommandInfo > LassoSelection;
-	TSharedPtr< FUICommandInfo > PaintSelection;
-
-	TSharedPtr< FUICommandInfo > InvertSelection;
-
-	TSharedPtr< FUICommandInfo > HideSelected;
-	TSharedPtr< FUICommandInfo > UnhideAll;
-
-	TSharedPtr< FUICommandInfo > DeleteSelected;
-	TSharedPtr< FUICommandInfo > DeleteHidden;
-
-	TSharedPtr< FUICommandInfo > CalculateNormals;
-	TSharedPtr< FUICommandInfo > CalculateNormalsSelection;
-
-	TSharedPtr< FUICommandInfo > Extract;
-	TSharedPtr< FUICommandInfo > ExtractCopy;
-	TSharedPtr< FUICommandInfo > Merge;
-	TSharedPtr< FUICommandInfo > Align;
+private:
+	TMap<FName, TArray<TSharedPtr<FUICommandInfo>>> ToolkitCommands;
 };

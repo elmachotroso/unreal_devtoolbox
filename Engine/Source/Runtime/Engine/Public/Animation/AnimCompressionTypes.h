@@ -191,9 +191,9 @@ struct ENGINE_API FCompressibleAnimData
 public:
 	FCompressibleAnimData();
 
-	FCompressibleAnimData(UAnimBoneCompressionSettings* InBoneCompressionSettings, UAnimCurveCompressionSettings* InCurveCompressionSettings, USkeleton* InSkeleton, EAnimInterpolationType InInterpolation, float InSequenceLength, int32 InNumberOfKeys);
+	FCompressibleAnimData(UAnimBoneCompressionSettings* InBoneCompressionSettings, UAnimCurveCompressionSettings* InCurveCompressionSettings, USkeleton* InSkeleton, EAnimInterpolationType InInterpolation, float InSequenceLength, int32 InNumberOfKeys, const ITargetPlatform* InTargetPlatform);
 
-	FCompressibleAnimData(class UAnimSequence* InSeq, const bool bPerformStripping);
+	FCompressibleAnimData(class UAnimSequence* InSeq, const bool bPerformStripping, const ITargetPlatform* InTargetPlatform);
 
 	FCompressibleAnimData(const FCompressibleAnimData&);
 	FCompressibleAnimData& operator=(const FCompressibleAnimData&);
@@ -236,6 +236,8 @@ public:
 	FName   AnimFName;
 
 	FCancelCompressionSignal IsCancelledSignal;
+
+	const ITargetPlatform* TargetPlatform;
 
 	static int32 GetApproxRawDataArraySize(const TArray<FRawAnimSequenceTrack>& AnimData)
 	{
@@ -296,7 +298,7 @@ public:
 	}
 
 private:
-
+	void WriteCompressionDataToJSON(TArrayView<FName> OriginalTrackNames, TArrayView<FRawAnimSequenceTrack> FinalRawAnimationData, TArrayView<FName> FinalTrackNames) const;
 };
 
 typedef TSharedPtr<FCompressibleAnimData, ESPMode::ThreadSafe> FCompressibleAnimPtr;
@@ -805,6 +807,19 @@ struct FRootMotionReset
 		}
 	}
 };
+
+#if WITH_EDITOR
+namespace UE::Anim::Compression {
+	struct ENGINE_API FAnimDDCKeyArgs
+	{
+		FAnimDDCKeyArgs(const UAnimSequenceBase& AnimSequence);
+		FAnimDDCKeyArgs(const UAnimSequenceBase& AnimSequence, const ITargetPlatform* TargetPlatform);
+
+		const UAnimSequenceBase& AnimSequence;
+		const ITargetPlatform* TargetPlatform;
+	};
+}
+#endif // WITH_EDITOR
 
 extern void DecompressPose(FCompactPose& OutPose,
 							const FCompressedAnimSequence& CompressedData,

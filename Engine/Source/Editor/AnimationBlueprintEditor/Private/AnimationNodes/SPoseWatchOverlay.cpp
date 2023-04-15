@@ -1,11 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPoseWatchOverlay.h"
-#include "Widgets/SBoxPanel.h"
-#include "Engine/PoseWatch.h"
-#include "Widgets/Images/SImage.h"
+
 #include "AnimationEditorUtils.h"
-#include "SNodePanel.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/PoseWatch.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Math/Color.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 
 #define LOCTEXT_NAMESPACE "SPoseWatchOverlay"
 
@@ -14,8 +21,8 @@ const FSlateBrush* SPoseWatchOverlay::IconNotVisible = nullptr;
 
 void SPoseWatchOverlay::Construct(const FArguments& InArgs, UEdGraphNode* InNode)
 {
-	IconVisible = FEditorStyle::GetBrush("Level.VisibleIcon16x");
-	IconNotVisible = FEditorStyle::GetBrush("Level.NotVisibleIcon16x");
+	IconVisible = FAppStyle::GetBrush("Level.VisibleIcon16x");
+	IconNotVisible = FAppStyle::GetBrush("Level.NotVisibleIcon16x");
 
 	GraphNode = InNode;
 
@@ -47,9 +54,13 @@ FSlateColor SPoseWatchOverlay::GetPoseViewColor() const
 	UPoseWatch* CurPoseWatch = PoseWatch.Get();
 	if (CurPoseWatch)
 	{
-		FLinearColor OutColor = CurPoseWatch->GetColor();
-		OutColor.A = CurPoseWatch->GetShouldDeleteOnDeselect() ? AlphaTemporary : AlphaPermanent;
-		return FSlateColor(OutColor);
+		TObjectPtr<UPoseWatchPoseElement> PoseElement = CurPoseWatch->GetFirstElementOfType<UPoseWatchPoseElement>();
+		if (PoseElement)
+		{
+			FLinearColor OutColor = PoseElement->GetColor();
+			OutColor.A = CurPoseWatch->GetShouldDeleteOnDeselect() ? AlphaTemporary : AlphaPermanent;
+			return FSlateColor(OutColor);
+		}
 	}
 	return FSlateColor(FColor::Black);
 }

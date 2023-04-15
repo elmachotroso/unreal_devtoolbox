@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Containers/SortedMap.h"
+#include "Containers/Array.h"
 #include "MetasoundDataFactory.h"
 #include "MetasoundDataReference.h"
 #include "MetasoundEnvironment.h"
@@ -12,14 +12,8 @@
 
 namespace Metasound
 {
-	/** Name of a given vertex.  Only unique for a given node interface.
-	 */
+	/** Name of a given vertex.  Only unique for a given node interface. */
 	using FVertexName = FName;
-
-	// Forward declarations
-	class FInputDataVertex;
-	class FOutputDataVertex;
-	class FEnvironmentVertex;
 
 	// Vertex metadata
 	struct FDataVertexMetadata
@@ -29,618 +23,352 @@ namespace Metasound
 		bool bIsAdvancedDisplay = false;
 	};
 
-	/** FDataVertexModel
-	 *
-	 * An FDataVertexModel implements various vertex behaviors. 
-	 *
-	 * Essentially, an FDataVertexModel implements the underlying behavior of a
-	 * FInputDataVertex or FOutputDataVertex.  
-	 *
-	 * The FInputDataVertex and FOutputDataVertex supply copy constructors and 
-	 * assignment operators by utilizing the Clone() operator of the 
-	 * FDataVertexModel. This allows FDataVertexModel behavior to be passed 
-	 * to other objects without having to know the concrete implementation of the
-	 * FDataVertexModel.
-	 */
-	struct FDataVertexModel
+	/** Describe how the vertex will access connected data. */
+	enum class EVertexAccessType
 	{
-		/** FDataVertexModel Constructor
+		Reference, //< Vertex accesses the data references
+		Value      //< Vertex accesses the data value.
+	};
+
+
+	/** FDataVertex
+	 *
+	 * An FDataVertex is a named vertex of a MetaSound node which can contain data.
+	 */
+	class FDataVertex
+	{
+
+	public:
+
+		FDataVertex() = default;
+
+		/** FDataVertex Constructor
 		 *
 		 * @InVertexName - Name of vertex.
 		 * @InDataTypeName - Name of data type.
 		 * @InMetadata - Metadata pertaining to given vertex.
+		 * @InAccessType - The access type of the vertex.
 		 */
-		FDataVertexModel(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata)
-		:	VertexName(InVertexName)
-		,	DataTypeName(InDataTypeName)
-		,	VertexMetadata(InMetadata)
+		FDataVertex(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata, EVertexAccessType InAccessType)
+		: VertexName(InVertexName)
+		, DataTypeName(InDataTypeName)
+#if WITH_EDITORONLY_DATA
+		, Metadata(InMetadata)
+#endif // WITH_EDITORONLY_DATA
+		, AccessType(InAccessType)
 		{
 		}
 
-		virtual ~FDataVertexModel() = default;
+
+		virtual ~FDataVertex() = default;
 
 		/** Name of vertex. */
-		const FVertexName VertexName;
+		FVertexName VertexName;
 
 		/** Type name of data. */
-		const FName DataTypeName;
+		FName DataTypeName;
 
+#if WITH_EDITORONLY_DATA
 		/** Metadata associated with vertex. */
-		const FDataVertexMetadata VertexMetadata;
+		FDataVertexMetadata Metadata;
+#endif // WITH_EDITORONLY_DATA
 
-		/** Test if a IDataReference matches the DataType of this vertex model.
-		 *
-		 * @param InReference - Data reference object.
-		 *
-		 * @return True if the types are equal, false otherwise.
-		 */
-		virtual bool IsReferenceOfSameType(const IDataReference& InReference) const = 0;
+		/** Access type of the vertex. */
+		EVertexAccessType AccessType;
 
-		/** Return the vertex type name (not to be confused with the data type name).
-		 *
-		 * @return Name of this vertex type.
-		 */
-		virtual const FName& GetVertexTypeName() const = 0;
+		UE_DEPRECATED(5.1, "GetVertexName() is deprecated. Use VertexName")
+		const FVertexName& GetVertexName() const
+		{
+			return VertexName;
+		}
+
+		UE_DEPRECATED(5.1, "GetDataTypeName() is deprecated. Use DataTypeName")
+		const FName& GetDataTypeName() const
+		{
+			return DataTypeName;
+		}
+
+#if WITH_EDITORONLY_DATA
+		UE_DEPRECATED(5.1, "GetMetadata() is deprecated. Use Metadata")
+		const FDataVertexMetadata& GetMetadata() const
+		{
+			return Metadata;
+		}
+#endif // WITH_EDITORONLY_DATA
 	};
 
-
-	/** FInputDataVertexModel
-	 *
-	 * Vertex model for inputs.
-	 */
-	struct FInputDataVertexModel : public FDataVertexModel
+	/** FInputDataVertex */
+	class FInputDataVertex : public FDataVertex
 	{
-	private:
-		
-		// Factory for creating a literal. 
-		struct ILiteralFactory
+		// FLiteralFactory supports creation of an FLiteral for a vertex given a
+		// copyable literal value type.
+		//
+		// An FLiteral cannot be assigned or copy-constructed because it can contain
+		// a TUniquePtr<> which does not support the assignment operator and copy constructor.
+		//
+		// For factory can create a literal given a copyable type. The factory can
+		// also be copied.
+		struct FLiteralFactory
 		{
-			virtual ~ILiteralFactory() = default;
-			virtual FLiteral CreateLiteral() const = 0;
-			virtual TUniquePtr<ILiteralFactory> Clone() const = 0;
-		};
+			struct ILiteralFactoryImpl
+			{
+				virtual ~ILiteralFactoryImpl() = default;
+				virtual FLiteral CreateLiteral() const = 0;
+				virtual TUniquePtr<ILiteralFactoryImpl> Clone() const = 0;
+			};
 
-		// Create a literal with a copyable type.
-		template<typename LiteralValueType>
-		struct TLiteralFactory : ILiteralFactory
-		{
-			LiteralValueType LiteralValue;
+			// Create a literal with a copyable type.
+			template<typename LiteralValueType>
+			struct TLiteralFactoryImpl : ILiteralFactoryImpl
+			{
+				static_assert(std::is_copy_constructible<LiteralValueType>::value && std::is_copy_assignable<LiteralValueType>::value, "Literals can only be assigned for copyable types");
 
-			TLiteralFactory(const LiteralValueType& InValue)
-			: LiteralValue(InValue)
+				TLiteralFactoryImpl(const LiteralValueType& InValue)
+				: LiteralValue(InValue)
+				{
+				}
+				
+				FLiteral CreateLiteral() const override
+				{
+					return FLiteral(LiteralValue);
+				}
+
+				TUniquePtr<ILiteralFactoryImpl> Clone() const override
+				{
+					return MakeUnique<TLiteralFactoryImpl<LiteralValueType>>(*this);
+				}
+			private:
+				LiteralValueType LiteralValue;
+			};
+
+			FLiteralFactory()
+			: FactoryImpl(nullptr)
 			{
 			}
-			
-			FLiteral CreateLiteral() const override
+
+			template<typename ValueType>
+			FLiteralFactory(const ValueType& InValue)
+			: FactoryImpl(MakeUnique<TLiteralFactoryImpl<ValueType>>(InValue))
 			{
-				return FLiteral(LiteralValue);
 			}
 
-			TUniquePtr<ILiteralFactory> Clone() const override
+			FLiteralFactory(const FLiteralFactory& InOther)
 			{
-				return MakeUnique<TLiteralFactory<LiteralValueType>>(*this);
+				*this = InOther;
 			}
+
+			FLiteralFactory& operator=(const FLiteralFactory& InOther)
+			{
+				FactoryImpl.Reset();
+				if (InOther.FactoryImpl.IsValid())
+				{
+					FactoryImpl = InOther.FactoryImpl->Clone();
+				}
+				return *this;
+			}
+
+			FLiteral CreateLiteral() const
+			{
+				if (FactoryImpl.IsValid())
+				{
+					return FactoryImpl->CreateLiteral();
+				}
+
+				return FLiteral::CreateInvalid();
+			}
+
+		private:
+
+			TUniquePtr<ILiteralFactoryImpl> FactoryImpl;
 		};
 
 	public:
 
-		FInputDataVertexModel(const FVertexName& InVertexName, const FName& InDataTypeName, const FText& InDescription)
-			: FDataVertexModel(InVertexName, InDataTypeName, { InDescription })
-			, LiteralFactory(MakeUnique<TLiteralFactory<FLiteral::FNone>>(FLiteral::FNone{}))
+		FInputDataVertex() = default;
+
+		/** Construct an FInputDataVertex. */
+		FInputDataVertex(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata, EVertexAccessType InAccessType=EVertexAccessType::Reference)
+			: FDataVertex(InVertexName, InDataTypeName, InMetadata, InAccessType)
+			, LiteralFactory(FLiteral::FNone{})
 		{
 		}
 
-		FInputDataVertexModel(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata)
-			: FDataVertexModel(InVertexName, InDataTypeName, InMetadata)
-			, LiteralFactory(MakeUnique<TLiteralFactory<FLiteral::FNone>>(FLiteral::FNone{}))
-		{
-		}
-
+		/** Construct an FInputDataVertex with a default literal. */
 		template<typename LiteralValueType>
-		FInputDataVertexModel(const FVertexName& InVertexName, const FName& InDataTypeName, const FText& InDescription, const LiteralValueType& InLiteralValue)
-			: FDataVertexModel(InVertexName, InDataTypeName, { InDescription })
-			, LiteralFactory(MakeUnique<TLiteralFactory<LiteralValueType>>(InLiteralValue))
+		UE_DEPRECATED(5.1, "Use constructor with EVertexAccessType argument.")
+		FInputDataVertex(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata, const LiteralValueType& InLiteralValue)
+			: FDataVertex(InVertexName, InDataTypeName, InMetadata, EVertexAccessType::Reference)
+			, LiteralFactory(InLiteralValue)
 		{
 		}
 
+		/** Construct an FInputDataVertex with a default literal. */
 		template<typename LiteralValueType>
-		FInputDataVertexModel(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata, const LiteralValueType& InLiteralValue)
-			: FDataVertexModel(InVertexName, InDataTypeName, InMetadata)
-			, LiteralFactory(MakeUnique<TLiteralFactory<LiteralValueType>>(InLiteralValue))
+		FInputDataVertex(const FVertexName& InVertexName, const FName& InDataTypeName, const FDataVertexMetadata& InMetadata, EVertexAccessType InAccessType, const LiteralValueType& InLiteralValue)
+			: FDataVertex(InVertexName, InDataTypeName, InMetadata, InAccessType)
+			, LiteralFactory(InLiteralValue)
 		{
 		}
 
-		FInputDataVertexModel(const FInputDataVertexModel& InOther)
-		: FDataVertexModel(InOther)
+		/** Returns the default literal associated with this input. */
+		FLiteral GetDefaultLiteral() const 
 		{
-			if (InOther.LiteralFactory)
-			{
-				LiteralFactory = InOther.LiteralFactory->Clone();
-			}
-		}
-
-		/** Create a clone of this FInputDataVertexModel */
-		virtual TUniquePtr<FInputDataVertexModel> Clone() const = 0;
-
-		/** Creates the default literal for this vertex. If a default does not exist,
-		 * then an invalid literal is returned. 
-		 */
-		FLiteral CreateDefaultLiteral() const 
-		{
-			if (LiteralFactory.IsValid())
-			{
-				return LiteralFactory->CreateLiteral();
-			}
-
-			return FLiteral::CreateInvalid();
+			return LiteralFactory.CreateLiteral();
 		}
 
 		friend bool METASOUNDGRAPHCORE_API operator==(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
 		friend bool METASOUNDGRAPHCORE_API operator!=(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
+		friend bool METASOUNDGRAPHCORE_API operator<(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
 
-		private:
+	private:
 
-		/** Compare another FInputDataVertexModel is equal to this
-		 *
-		 * @return True if models are equal, false otherwise.
-		 */
-		virtual bool IsEqual(const FInputDataVertexModel& InOther) const = 0;
-
-		TUniquePtr<ILiteralFactory> LiteralFactory;
+		FLiteralFactory LiteralFactory;
 	};
 
-	/** FOutputDataVertexModel
-	 *
-	 * Vertex model for outputs.
-	 */
-	struct FOutputDataVertexModel : public FDataVertexModel
+	/** Create a FInputDataVertex with a templated MetaSound data type. */
+	template<typename DataType>
+	class TInputDataVertex : public FInputDataVertex
 	{
-		using FDataVertexModel::FDataVertexModel;
+	public:
+		TInputDataVertex() = default;
 
-		/** Create a clone of this FOutputDataVertexModel */
-		virtual TUniquePtr<FOutputDataVertexModel> Clone() const = 0;
+		template<typename... ArgTypes>
+		TInputDataVertex(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata, ArgTypes&&... Args)
+		: FInputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), InMetadata, EVertexAccessType::Reference, Forward<ArgTypes>(Args)...)
+		{
+		}
+
+		template<typename... ArgTypes>
+ 		UE_DEPRECATED(5.1, "TInputDataVertex constructor without explicit FDataVertexMatadata is deprecated. Use constructor which accepts TDataVertexMetadata")
+		TInputDataVertex(const FVertexName& InVertexName, const FText& InDescription, ArgTypes&&... Args)
+		: FInputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), { InDescription }, EVertexAccessType::Reference, Forward<ArgTypes>(Args)...)
+		{
+		}
+	};
+
+	template<typename DataType>
+	using TInputDataVertexModel UE_DEPRECATED(5.1, "TInputDataVertexModel<DataType> is deprecated. Replace with TInputDataVertex<DataType>") = TInputDataVertex<DataType>;
+
+	/** Create a FInputDataVertex with a templated MetaSound data type which only
+	 * reads data at operator time. */
+	template<typename DataType>
+	class TInputConstructorVertex : public FInputDataVertex
+	{
+	public:
+		TInputConstructorVertex() = default;
+
+		template<typename... ArgTypes>
+		TInputConstructorVertex(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata, ArgTypes&&... Args)
+		: FInputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), InMetadata, EVertexAccessType::Value, Forward<ArgTypes>(Args)...)
+		{
+		}
+	};
+	
+	/** FOutputDataVertex
+	 *
+	 * Vertex for outputs.
+	 */
+	class FOutputDataVertex : public FDataVertex
+	{
+	public:
+		using FDataVertex::FDataVertex;
 
 		friend bool METASOUNDGRAPHCORE_API operator==(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
 		friend bool METASOUNDGRAPHCORE_API operator!=(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
-
-		private:
-
-		/** Compare another FOutputDataVertexModel is equal to this
-		 *
-		 * @return True if models are equal, false otherwise.
-		 */
-		virtual bool IsEqual(const FOutputDataVertexModel& InOther) const = 0;
-
+		friend bool METASOUNDGRAPHCORE_API operator<(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
 	};
 
-	/** TBaseVertexModel provides basic functionality of vertex models. */
-	template<typename DataType, typename VertexModelType>
-	struct TBaseVertexModel : public VertexModelType
-	{
-		/** TBaseVertexModel Constructor
-		 *
-		 * @InVertexName - Name of vertex.
-		 * @InDescription - Human readable vertex description.
-		 */
-		template<typename... ModelArgTypes>
-		TBaseVertexModel(const FVertexName& InVertexName, const FText& InDescription, ModelArgTypes&&... ModelArgs)
-		:	VertexModelType(InVertexName, GetMetasoundDataTypeName<DataType>(), { InDescription }, Forward<ModelArgTypes>(ModelArgs)...)
-		{
-		}
-
-		/** TBaseVertexModel Constructor
-		 *
-		 * @InVertexName - Name of vertex.
-		 * @InVertexMetadata - Vertex metadata, used primarily for debugging or live edit.
-		 */
-		template<typename... ModelArgTypes>
-		TBaseVertexModel(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata, ModelArgTypes&&... ModelArgs)
-		:	VertexModelType(InVertexName, GetMetasoundDataTypeName<DataType>(), InMetadata, Forward<ModelArgTypes>(ModelArgs)...)
-		{
-		}
-
-		/** Test if a IDataReference matches the DataType of this vertex model.
-		 *
-		 * @param InReference - Data reference object.
-		 *
-		 * @return True if the types are equal, false otherwise.
-		 */
-		virtual bool IsReferenceOfSameType(const IDataReference& InReference) const override
-		{
-			return IsDataReferenceOfType<DataType>(InReference);
-		}
-
-
-		private:
-
-		/** Compare if another VertexModelType is equal to this.
-		 *
-		 * @return True if models are equal, false otherwise.
-		 */
-		virtual bool IsEqual(const VertexModelType& InOther) const override
-		{
-			bool bIsEqual = this->GetVertexTypeName() == InOther.GetVertexTypeName();
-
-			bIsEqual &= this->VertexName == InOther.VertexName;
-			bIsEqual &= this->DataTypeName == InOther.DataTypeName;
-
-			return bIsEqual;
-		}
-	};
-
-	/** TOuputDataVertexModel creates a simple, unchanging, input vertex. */
+	/** Create a FOutputDataVertex with a templated MetaSound data type. */
 	template<typename DataType>
-	struct TInputDataVertexModel : public TBaseVertexModel<DataType, FInputDataVertexModel>
+	class TOutputDataVertex : public FOutputDataVertex
 	{
+	public:
 
-		using TBaseVertexModel<DataType, FInputDataVertexModel>::TBaseVertexModel;
+		TOutputDataVertex() = default;
 
-		/** TInputDataVertexModel Constructor
-		 *
-		 * @InVertexName - Name of vertex.
-		 * @InDescription - Human readable vertex description.
-		 */
-		TInputDataVertexModel(const FVertexName& InVertexName, const FText& InDescription)
-		:	TBaseVertexModel<DataType, FInputDataVertexModel>(InVertexName, InDescription)
+		template<typename... ArgTypes>
+		TOutputDataVertex(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata, ArgTypes&&... Args)
+		: FOutputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), InMetadata, EVertexAccessType::Reference, Forward<ArgTypes>(Args)...)
 		{
 		}
 
-		/** TInputDataVertexModel Constructor
-		 *
-		 * @InVertexName - Name of vertex.
-		 * @InDescription - Human readable vertex description.
-		 * @InDefaultValue - Default Value of vertex
-		 */
-		template<typename LiteralValueType>
-		TInputDataVertexModel(const FVertexName& InVertexName, const FText& InDescription, const LiteralValueType& InDefaultValue)
-		:	TBaseVertexModel<DataType, FInputDataVertexModel>(InVertexName, InDescription, InDefaultValue)
+		template<typename... ArgTypes>
+ 		UE_DEPRECATED(5.1, "TOutputDataVertex constructor without explicit FDataVertexMatadata is deprecated. Use constructor which accepts TDataVertexMetadata")
+		TOutputDataVertex(const FVertexName& InVertexName, const FText& InDescription, ArgTypes&&... Args)
+		: FOutputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), { InDescription }, EVertexAccessType::Reference, Forward<ArgTypes>(Args)...)
 		{
-		}
-
-		/** TInputDataVertexModel Constructor
-		 *
-		 * @InVertexName - Name of vertex.
-		 * @InDescription - Human readable vertex description.
-		 * @InDefaultValue - Default Value of vertex
-		 */
-		template<typename LiteralValueType>
-		TInputDataVertexModel(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata)
-		:	TBaseVertexModel<DataType, FInputDataVertexModel>(InVertexName, InMetadata)
-		{
-		}
-
-		TInputDataVertexModel(const TInputDataVertexModel& InOther) = default;
-
-		/** Return the vertex type name (not to be confused with the data type name).
-		 *
-		 * @return Name of this vertex type.
-		 */
-		virtual const FName& GetVertexTypeName() const override
-		{
-			static const FString VertexTypeString = TEXT("InputDataVertex_") + GetMetasoundDataTypeName<DataType>().ToString();
-			static const FName VertexTypeName(*VertexTypeString);
-
-			return VertexTypeName;
-		}
-
-		/** Create a clone of this VertexModelType */
-		virtual TUniquePtr<FInputDataVertexModel> Clone() const override
-		{
-			return MakeUnique<TInputDataVertexModel<DataType>>(*this);
 		}
 	};
 
-
-	/** FInputDataVertex represents an input vertex to an interface. It uses
-	 * a FInputDataVertexModel to determine its behavior.
-	 */
-	class METASOUNDGRAPHCORE_API FInputDataVertex
-	{
-			using FEmptyVertexModel = TInputDataVertexModel<void>;
-
-		public:
-
-			/** Construct an FInputDataVertex with a given vertex model.
-			 *
-			 * @param InVertexModel - A model subclass of FInputDataVertexModel.
-			 */
-			template<typename VertexModelType, typename = typename TEnableIf<TIsDerivedFrom<VertexModelType, FInputDataVertexModel>::Value>::Type>
-			FInputDataVertex(const VertexModelType& InVertexModel)
-			:	VertexModel(InVertexModel.Clone())
-			{
-				static_assert(TIsDerivedFrom<VertexModelType, FInputDataVertexModel>::Value, "Vertex implementation must be a subclass of FInputDataVertexModel");
-
-				if (!VertexModel.IsValid())
-				{
-					VertexModel = MakeUnique<FEmptyVertexModel>(TEXT(""), FText::GetEmpty());
-				}
-			}
-
-			/** Construct an empty FInputDataVertex. */
-			FInputDataVertex();
-
-			/** Copy constructor */
-			FInputDataVertex(const FInputDataVertex& InOther);
-
-			/** Assignment operator. */
-			FInputDataVertex& operator=(const FInputDataVertex& InOther);
-
-			/** Name of vertex. */
-			const FVertexName& GetVertexName() const;
-
-			/** Type name of data reference. */
-			const FName& GetDataTypeName() const;
-
-			/** Description of the vertex. */
-			const FDataVertexMetadata& GetMetadata() const;
-
-			/** Default value of the vertex. */
-			FLiteral GetDefaultLiteral() const;
-
-			/** Determine if vertex refers to same data type. 
-			 *
-			 * @param InReference - Data reference object.
-			 *
-			 * @return True if the types are equal, false otherwise.
-			 */
-			bool IsReferenceOfSameType(const IDataReference& InReference) const;
-
-			/** Return the vertex type name (not to be confused with the data type name).
-			 *
-			 * @return Name of this vertex type.
-			 */
-			const FName& GetVertexTypeName() const;
-
-			friend bool METASOUNDGRAPHCORE_API operator==(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator!=(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator<(const FInputDataVertex& InLHS, const FInputDataVertex& InRHS);
-
-		private:
-
-			TUniquePtr<FInputDataVertexModel> VertexModel;
-	};
-
-	/** TOuputDataVertexModel creates a simple, unchanging, output vertex. */
 	template<typename DataType>
-	struct TOutputDataVertexModel : TBaseVertexModel<DataType, FOutputDataVertexModel>
+	using TOutputDataVertexModel UE_DEPRECATED(5.1, "TOutputDataVertexModel<DataType> is deprecated. Replace with TOutputDataVertex<DataType>") = TOutputDataVertex<DataType>;
+
+	/** Create a FOutputDataVertex with a templated MetaSound data type which is only
+	 * sets data at operator construction time. 
+	 */
+	template<typename DataType>
+	class TOutputConstructorVertex : public FOutputDataVertex
 	{
-		using TBaseVertexModel<DataType, FOutputDataVertexModel>::TBaseVertexModel;
+	public:
 
-		/** Return the vertex type name (not to be confused with the data type name).
-		 *
-		 * @return Name of this vertex type.
-		 */
-		virtual const FName& GetVertexTypeName() const override
+		TOutputConstructorVertex() = default;
+
+		template<typename... ArgTypes>
+		TOutputConstructorVertex(const FVertexName& InVertexName, const FDataVertexMetadata& InMetadata, ArgTypes&&... Args)
+		: FOutputDataVertex(InVertexName, GetMetasoundDataTypeName<DataType>(), InMetadata, EVertexAccessType::Value, Forward<ArgTypes>(Args)...)
 		{
-			static const FString VertexTypeString = TEXT("OutputDataVertex_") + GetMetasoundDataTypeName<DataType>().ToString();
-			static const FName VertexTypeName(*VertexTypeString);
-
-			return VertexTypeName;
-		}
-
-		/** Create a clone of this TOutputDataVertexModel*/
-		virtual TUniquePtr<FOutputDataVertexModel> Clone() const override
-		{
-			return MakeUnique<TOutputDataVertexModel<DataType>>(this->VertexName, this->VertexMetadata);
 		}
 	};
 
-	/** FOutputDataVertex represents an input vertex to an interface. It uses
-	 * a FOutputDataVertexModel to determine its behavior.
-	 */
-	class METASOUNDGRAPHCORE_API FOutputDataVertex
-	{
-		using FEmptyVertexModel = TOutputDataVertexModel<void>;
-
-		public:
-
-			/** Construct an FOutputDataVertex with a given vertex model.
-			 *
-			 * @param InVertexModel - A model subclass of FOutputDataVertexModel.
-			 */
-			template<typename VertexModelType>
-			FOutputDataVertex(const VertexModelType& InVertexModel)
-			:	VertexModel(InVertexModel.Clone())
-			{
-				static_assert(TIsDerivedFrom<VertexModelType, FOutputDataVertexModel>::Value, "Vertex implementation must be a subclass of FOutputDataVertexModel");
-
-				if (!VertexModel.IsValid())
-				{
-					VertexModel = MakeUnique<FEmptyVertexModel>(TEXT(""), FText::GetEmpty());
-				}
-			}
-
-			/** Construct an empty FInputDataVertex. */
-			FOutputDataVertex();
-
-			/** Copy constructor */
-			FOutputDataVertex(const FOutputDataVertex& InOther);
-
-			/** Assignment operator. */
-			FOutputDataVertex& operator=(const FOutputDataVertex& InOther);
-
-			/** Name of vertex. */
-			FVertexName GetVertexName() const;
-
-			/** Type name of data reference. */
-			const FName& GetDataTypeName() const;
-
-			/** Metadata of the vertex. */
-			const FDataVertexMetadata& GetMetadata() const;
-
-			/** Test if a IDataReference matches the DataType of this vertex.
-			 *
-			 * @param InReference - Data reference object.
-			 *
-			 * @return True if the types are equal, false otherwise.
-			 */
-			bool IsReferenceOfSameType(const IDataReference& InReference) const;
-
-			/** Return the vertex type name (not to be confused with the data type name).
-			 *
-			 * @return Name of this vertex type.
-			 */
-			const FName& GetVertexTypeName() const;
-
-			friend bool METASOUNDGRAPHCORE_API operator==(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator!=(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator<(const FOutputDataVertex& InLHS, const FOutputDataVertex& InRHS);
-
-		private:
-
-			TUniquePtr<FOutputDataVertexModel> VertexModel;
-	};
-
-	/** FEnvironmentVertexModel
+	/** FEnvironmentVertex
 	 *
-	 * An FEnvironmentVertexModel implements various vertex behaviors. 
-	 *
-	 * The FEnvironmentVertex supplies copy constructors and assignment operators 
-	 * by utilizing the Clone() operator of the FEnvironmentVertexModel. 
-	 * This allows FEnvironmentVertexModel behavior to be passed to other objects 
-	 * without having to know the concrete implementation of the FEnvironmentVertexModel.
+	 * A vertex for environment variables. 
 	 */
-	struct FEnvironmentVertexModel
+	class FEnvironmentVertex
 	{
-		/** FEnvironmentVertexModel Construtor
+	public:
+		/** FEnvironmentVertex Construtor
 		 *
 		 * @InVertexName - Name of vertex.
 		 * @InDescription - Human readable vertex description.
 		 */
-		FEnvironmentVertexModel(FVertexName InVertexName, const FText& InDescription)
+		FEnvironmentVertex(const FVertexName& InVertexName, const FText& InDescription)
 		:	VertexName(InVertexName)
+#if WITH_EDITORONLY_DATA
 		,	Description(InDescription)
+#endif // WITH_EDITORONLY_DATA
 		{
 		}
 
-		virtual ~FEnvironmentVertexModel() = default;
+		virtual ~FEnvironmentVertex() = default;
 
 		/** Name of vertex. */
-		const FVertexName VertexName;
+		FVertexName VertexName;
 
+#if WITH_EDITORONLY_DATA
 		/** Description of the vertex. */
-		const FText Description;
+		FText Description;
+#endif // WITH_EDITORONLY_DATA
 
-		/** Test if a IMetasoundEnvironmentVariable matches the DataType of this vertex model.
-		 *
-		 * @param InVariable - Environment variable object.
-		 *
-		 * @return True if the types are equal, false otherwise.
-		 */
-		virtual bool IsVariableOfSameType(const IMetasoundEnvironmentVariable& InVariable) const = 0;
+		/** Name of vertex. */
+		UE_DEPRECATED(5.1, "GetVertexName() is deprecated. Use VertexName")
+		const FVertexName& GetVertexName() const
+		{
+			return VertexName;
+		}
 
-		virtual FMetasoundEnvironmentVariableTypeId GetVariableTypeId() const = 0;
-
-		/** Create a clone of this FEnvironmentVertexModel */
-		virtual TUniquePtr<FEnvironmentVertexModel> Clone() const = 0;
+#if WITH_EDITORONLY_DATA
+		/** Description of the vertex. */
+		UE_DEPRECATED(5.1, "GetDescription() is deprecated. Use Description")
+		const FText& GetDescription() const
+		{
+			return Description;
+		}
+#endif // WITH_EDITORONLY_DATA
 
 		friend bool METASOUNDGRAPHCORE_API operator==(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
 		friend bool METASOUNDGRAPHCORE_API operator!=(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-
-		private:
-
-		/** Compare another FEnvironmentVertexModel is equal to this
-		 *
-		 * @return True if models are equal, false otherwise.
-		 */
-		virtual bool IsEqual(const FEnvironmentVertexModel& InOther) const = 0;
-	};
-
-	/** TEnvironmentVertexModel creates a simple, unchanging, environment vertex. */
-	template<typename VarType>
-	struct TEnvironmentVertexModel : FEnvironmentVertexModel
-	{
-		/** Inherited constructor. */
-		using FEnvironmentVertexModel::FEnvironmentVertexModel;
-
-		/** Test if a IMetasoundEnvironmentVariable matches the DataType of this vertex model.
-		 *
-		 * @param InVariable - Environment variable object.
-		 *
-		 * @return True if the types are equal, false otherwise.
-		 */
-		bool IsVariableOfSameType(const IMetasoundEnvironmentVariable& InVariable) const override
-		{
-			return IsEnvironmentVariableOfType<VarType>(InVariable);
-		}
-		
-		/** Return the type id of the vertex. */
-		FMetasoundEnvironmentVariableTypeId GetVariableTypeId() const override
-		{
-			return GetMetasoundEnvironmentVariableTypeId<VarType>();
-		}
-
-		/** Create a clone of this TEnvironmentVertexModel*/
-		virtual TUniquePtr<FEnvironmentVertexModel> Clone() const override
-		{
-			return MakeUnique<TEnvironmentVertexModel<VarType>>(this->VertexName, this->Description);
-		}
-
-		friend bool METASOUNDGRAPHCORE_API operator==(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-		friend bool METASOUNDGRAPHCORE_API operator!=(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-	private:
-
-		bool IsEqual(const FEnvironmentVertexModel& InOther) const override
-		{
-			return (GetVariableTypeId() == InOther.GetVariableTypeId()) && (VertexName == InOther.VertexName);
-		}
-	};
-
-	/** FEnvironmentVertex represents an input vertex to an interface. It uses
-	 * a FEnvironmentVertexModel to determine its behavior.
-	 */
-	class METASOUNDGRAPHCORE_API FEnvironmentVertex
-	{
-		using FEmptyVertexModel = TEnvironmentVertexModel<void>;
-
-		public:
-
-			/** Construct an FEnvironmentVertex with a given vertex model.
-			 *
-			 * @param InVertexModel - A model subclass of FEnvironmentVertexModel.
-			 */
-			template<typename VertexModelType>
-			FEnvironmentVertex(const VertexModelType& InVertexModel)
-			:	VertexModel(InVertexModel.Clone())
-			{
-				static_assert(TIsDerivedFrom<VertexModelType, FEnvironmentVertexModel>::Value, "Vertex implementation must be a subclass of FEnvironmentVertexModel");
-
-				if (!VertexModel.IsValid())
-				{
-					VertexModel = MakeUnique<FEmptyVertexModel>(TEXT(""), FText::GetEmpty());
-				}
-			}
-
-			/** Construct an empty FInputDataVertex. */
-			FEnvironmentVertex();
-
-			/** Copy constructor */
-			FEnvironmentVertex(const FEnvironmentVertex& InOther);
-
-			/** Assignment operator. */
-			FEnvironmentVertex& operator=(const FEnvironmentVertex& InOther);
-
-			/** Name of vertex. */
-			const FVertexName& GetVertexName() const;
-
-			/** Description of the vertex. */
-			const FText& GetDescription() const;
-
-			/** Test if a IMetasoundEnvironmentVariable matches the DataType of this vertex.
-			 *
-			 * @param InVariable - Environment variable object.
-			 *
-			 * @return True if the types are equal, false otherwise.
-			 */
-			bool IsVariableOfSameType(const IMetasoundEnvironmentVariable& InVariable) const;
-
-			friend bool METASOUNDGRAPHCORE_API operator==(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator!=(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-			friend bool METASOUNDGRAPHCORE_API operator<(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
-
-		private:
-
-			TUniquePtr<FEnvironmentVertexModel> VertexModel;
+		friend bool METASOUNDGRAPHCORE_API operator<(const FEnvironmentVertex& InLHS, const FEnvironmentVertex& InRHS);
 	};
 
 	/** TVertexInterfaceGroups encapsulates multiple related data vertices. It 
@@ -649,132 +377,210 @@ namespace Metasound
 	template<typename VertexType>
 	class TVertexInterfaceGroup
 	{
-			static constexpr bool bIsDerivedFromFInputDataVertex = std::is_base_of<FInputDataVertex, VertexType>::value;
-			static constexpr bool bIsDerivedFromFOutputDataVertex = std::is_base_of<FOutputDataVertex, VertexType>::value;
-			static constexpr bool bIsDerivedFromFEnvironmentVertex = std::is_base_of<FEnvironmentVertex, VertexType>::value;
-			static constexpr bool bIsSupportedVertexType = bIsDerivedFromFInputDataVertex || bIsDerivedFromFOutputDataVertex || bIsDerivedFromFEnvironmentVertex;
-
-			static_assert(bIsSupportedVertexType, "VertexType must be derived from FInputDataVertex, FOutputDataVertex, or FEnvironmentVertex");
-
-			using FContainerType = TSortedMap<FVertexName, VertexType, FDefaultAllocator, FNameFastLess>;
-			using FOrderContainerType = TArray<FVertexName>;
-
-			// Required for end of recursion.
-			static void CopyInputs(FContainerType& InStorage, FOrderContainerType& InOrder)
-			{
-			}
-
-			// Recursive call used to unpack a template parameter pack. This stores
-			// each object in the template parameter pack into the groups internal
-			// storage.
-			//
-			// Assume that InputType is either a sublcass of FDataVertexModel
-			// and that VertexType is either FInputDataVertex or FOutputDataVertex
-			template<typename VertexModelType, typename... RemainingVertexModelTypes>
-			static void CopyInputs(FContainerType& InStorage, FOrderContainerType& InKeyOrder, const VertexModelType& InInput, const RemainingVertexModelTypes&... InRemainingInputs)
-			{
-				// Create vertex out of vertex model
-				VertexType Vertex(InInput);
-
-				InStorage.Add(Vertex.GetVertexName(), Vertex);
-				InKeyOrder.Add(Vertex.GetVertexName());
-				CopyInputs(InStorage, InKeyOrder, InRemainingInputs...);
-			}
-
-		public:
-
-			using RangedForConstIteratorType = typename FContainerType::RangedForConstIteratorType;
-
-			/** TVertexInterfaceGroup constructor with variadic list of vertex
-			 * models.
-			 */
-			template<typename... VertexModelTypes>
-			TVertexInterfaceGroup(VertexModelTypes&&... InVertexModels)
-			{
-				CopyInputs(Vertices, OrderedKeys, Forward<VertexModelTypes>(InVertexModels)...);
-			}
-
-			/** Add a vertex model to the group. */
-			template<typename VertexModelType, typename = typename TEnableIf<TIsDerivedFrom<VertexModelType, FDataVertexModel>::Value>::Type>
-			void Add(const VertexModelType& InVertexModel)
-			{
-				VertexType Vertex(InVertexModel);
-				Add(Vertex);
-			}
-
-			/** Add a vertex to the group. */
-			void Add(const VertexType& InVertex)
-			{
-				Vertices.Add(InVertex.GetVertexName(), InVertex);
-				OrderedKeys.Add(InVertex.GetVertexName());
-			}
-
-			/** Remove a vertex by key. */
-			bool Remove(const FVertexName& InKey)
-			{
-				int32 NumRemoved = Vertices.Remove(InKey);
-				OrderedKeys.Remove(InKey);
-				return (NumRemoved > 0);
-			}
-
-			/** Returns true if the group contains a vertex with a matching key. */
-			bool Contains(const FVertexName& InKey) const
-			{
-				return Vertices.Contains(InKey);
-			}
-
-			const VertexType* Find(const FVertexName& InKey) const
-			{
-				return Vertices.Find(InKey);
-			}
-
-			int32 GetSortOrderIndex(const FVertexName& InKey) const
-			{
-				int32 OutIndex = INDEX_NONE;
-				OrderedKeys.Find(InKey, OutIndex);
-				return OutIndex;
-			}
-
-			/** Return the vertex for a given vertex key. */
-			const VertexType& operator[](const FVertexName& InName) const
-			{
-				return Vertices[InName];
-			}
-
-			/** Iterator for ranged for loops. */
-			RangedForConstIteratorType begin() const
-			{
-				return Vertices.begin();
-			}
-
-			/** Iterator for ranged for loops. */
-			RangedForConstIteratorType end() const
-			{
-				return Vertices.end();
-			}
-
-			/** Returns the number of vertices in the group. */
-			int32 Num() const
-			{
-				return Vertices.Num();
-			}
-
-			/** Compare whether two vertex groups are equal. */
-			friend bool operator==(const TVertexInterfaceGroup<VertexType>& InLHS, const TVertexInterfaceGroup<VertexType>& InRHS)
-			{
-				return InLHS.Vertices == InRHS.Vertices;
-			}
-
-			/** Compare whether two vertex groups are unequal. */
-			friend bool operator!=(const TVertexInterfaceGroup<VertexType>& InLHS, const TVertexInterfaceGroup<VertexType>& InRHS)
-			{
-				return !(InLHS == InRHS);
-			}
-
+		// Determine if the vertex type is a supported vertex type.
+		template<typename T>
+		struct TIsSupportedVertexType
+		{
 		private:
+			static constexpr bool bIsDerivedFromFInputDataVertex = std::is_base_of<FInputDataVertex, T>::value;
+			static constexpr bool bIsDerivedFromFOutputDataVertex = std::is_base_of<FOutputDataVertex, T>::value;
+			static constexpr bool bIsDerivedFromFEnvironmentVertex = std::is_base_of<FEnvironmentVertex, T>::value;
+			static constexpr bool bIsSupportedVertexType = bIsDerivedFromFInputDataVertex || bIsDerivedFromFOutputDataVertex || bIsDerivedFromFEnvironmentVertex;
+		public:
+			static constexpr bool Value = bIsSupportedVertexType;
+		};
 
-			FContainerType Vertices;
-			FOrderContainerType OrderedKeys;
+		static_assert(TIsSupportedVertexType<VertexType>::Value, "VertexType must be derived from FInputDataVertex, FOutputDataVertex, or FEnvironmentVertex");
+
+
+		// Helper struct for determining whether the vertices in a parameter pack
+		// can be used in the TVertexInterfaceGroup constructor
+		template<typename ...>
+		struct TIsConstructibleFromParameterPack
+		{
+			static constexpr bool Value = false;
+		};
+
+		// Helper struct specialization for no template argument. 
+		template<>
+		struct TIsConstructibleFromParameterPack<>
+		{
+			static constexpr bool Value = true;
+		};
+
+
+	
+
+		// Helper struct specialization for unwinding a parameter pack.
+		template<typename T, typename ... Ts>
+		struct TIsConstructibleFromParameterPack<T, Ts...>
+		{
+			static constexpr bool Value = std::is_constructible<VertexType, T>::value && TIsConstructibleFromParameterPack<Ts...>::Value;
+		};
+
+
+		using FContainerType = TArray<VertexType>;
+
+		struct FEqualVertexNamePredicate
+		{
+			const FVertexName& NameRef;
+
+			FEqualVertexNamePredicate(const FVertexName& InName)
+			: NameRef(InName)
+			{
+			}
+
+			FEqualVertexNamePredicate(const VertexType& InVertex)
+			: NameRef(InVertex.VertexName)
+			{
+			}
+
+			bool operator()(const VertexType& InOther)
+			{
+				return InOther.VertexName == NameRef;
+			}
+		};
+
+		void AddOrUpdateVertex(VertexType&& InVertex)
+		{
+			if (VertexType* Vertex = Find(InVertex.VertexName))
+			{
+				*Vertex = MoveTemp(InVertex);
+			}
+			else
+			{
+				Vertices.Add(MoveTemp(InVertex));
+			}
+		}
+
+		// Required for end of recursion.
+		void CopyInputs()
+		{
+		}
+
+		// Recursive call used to unpack a template parameter pack. This stores
+		// each object in the template parameter pack into the groups internal
+		// storage.
+		//
+		// Assume that InputType is either a sublcass of FDataVertex
+		// and that VertexType is either FInputDataVertex or FOutputDataVertex
+		template<typename CurrentVertexType, typename... RemainingVertexTypes>
+		void CopyInputs(CurrentVertexType&& InInput, RemainingVertexTypes&&... InRemainingInputs)
+		{
+			// Create vertex out of vertex model
+			AddOrUpdateVertex(MoveTemp(InInput));
+			CopyInputs(InRemainingInputs...);
+		}
+
+
+	public:
+
+		using RangedForConstIteratorType = typename FContainerType::RangedForConstIteratorType;
+
+		/** TVertexInterfaceGroup constructor with variadic list of vertex
+		 * models.
+		 */
+		template<
+			typename... VertexTypes, 
+			typename std::enable_if< TIsConstructibleFromParameterPack<VertexTypes...>::Value, int >::type = 0
+		>
+		TVertexInterfaceGroup(VertexTypes&&... InVertexs)
+		{
+			// Reserve array to hold exact number of vertices to avoid
+			// over allocation.
+			Vertices.Reserve(sizeof...(VertexTypes));
+
+			CopyInputs(Forward<VertexTypes>(InVertexs)...);
+		}
+
+		/** Add a vertex to the group. */
+		void Add(const VertexType& InVertex)
+		{
+			AddOrUpdateVertex(VertexType(InVertex));
+		}
+
+		void Add(VertexType&& InVertex)
+		{
+			AddOrUpdateVertex(MoveTemp(InVertex));
+		}
+
+		/** Remove a vertex by key. */
+		bool Remove(const FVertexName& InKey)
+		{
+			int32 NumRemoved = Vertices.RemoveAll(FEqualVertexNamePredicate(InKey));
+			return (NumRemoved > 0);
+		}
+
+		/** Returns true if the group contains a vertex with a matching key. */
+		bool Contains(const FVertexName& InKey) const
+		{
+			return Vertices.ContainsByPredicate(FEqualVertexNamePredicate(InKey));
+		}
+
+		/** Find a vertex with a given VertexName */
+		VertexType* Find(const FVertexName& InKey)
+		{
+			return Vertices.FindByPredicate(FEqualVertexNamePredicate(InKey));
+		}
+
+		/** Find a vertex with a given VertexName */
+		const VertexType* Find(const FVertexName& InKey) const
+		{
+			return Vertices.FindByPredicate(FEqualVertexNamePredicate(InKey));
+		}
+
+		/** Return the sort order index of a vertex with the given name.
+		 *
+		 * @param InKey - FVertexName of vertex of interest.
+		 *
+		 * @return The index of the vertex. INDEX_NONE if the vertex does not exist. 
+		 */
+		int32 GetSortOrderIndex(const FVertexName& InKey) const
+		{
+			return Vertices.IndexOfByPredicate(FEqualVertexNamePredicate(InKey));
+		}
+
+		/** Return the vertex for a given vertex key. */
+		const VertexType& operator[](const FVertexName& InName) const
+		{
+			const VertexType* Vertex = Find(InName);
+			checkf(nullptr != Vertex, TEXT("Vertex with name '%s' does not exist"), *InName.ToString());
+			return *Vertex;
+		}
+
+		/** Iterator for ranged for loops. */
+		RangedForConstIteratorType begin() const
+		{
+			return Vertices.begin();
+		}
+
+		/** Iterator for ranged for loops. */
+		RangedForConstIteratorType end() const
+		{
+			return Vertices.end();
+		}
+
+		/** Returns the number of vertices in the group. */
+		int32 Num() const
+		{
+			return Vertices.Num();
+		}
+
+		/** Compare whether two vertex groups are equal. */
+		friend bool operator==(const TVertexInterfaceGroup<VertexType>& InLHS, const TVertexInterfaceGroup<VertexType>& InRHS)
+		{
+			return InLHS.Vertices == InRHS.Vertices;
+		}
+
+		/** Compare whether two vertex groups are unequal. */
+		friend bool operator!=(const TVertexInterfaceGroup<VertexType>& InLHS, const TVertexInterfaceGroup<VertexType>& InRHS)
+		{
+			return !(InLHS == InRHS);
+		}
+
+	private:
+
+		FContainerType Vertices;
 	};
 
 	
@@ -862,3 +668,7 @@ namespace Metasound
 		FGuid InstanceID;
 	};
 }
+
+/** Convert EVertexAccessType to string */
+METASOUNDGRAPHCORE_API FString LexToString(Metasound::EVertexAccessType InAccessType);
+

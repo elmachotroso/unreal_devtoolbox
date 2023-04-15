@@ -4,6 +4,7 @@
 
 #include "DMXProtocolCommon.h"
 #include "Library/DMXEntity.h"
+#include "MVR/DMXMVRGeneralSceneDescription.h"
 
 #include "DMXAttribute.h"
 #include "DMXProtocolCommon.h"
@@ -26,7 +27,6 @@ struct FPropertyChangedEvent;
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FDMXOnFixturePatchChangedDelegate, const UDMXEntityFixturePatch* /** ChangedFixturePatch */);
 
-
 /** Parameters to construct a Fixture Patch. */
 USTRUCT(BlueprintType)
 struct DMXRUNTIME_API FDMXEntityFixturePatchConstructionParams
@@ -48,7 +48,15 @@ struct DMXRUNTIME_API FDMXEntityFixturePatchConstructionParams
 	/** Starting channel for when auto-assign address is false */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fixture Patch", meta = (DisplayName = "Starting Address", UIMin = "1", UIMax = "512", ClampMin = "1", ClampMax = "512"))
 	int32 StartingAddress = 1;
+
+	/** 
+	 * When spawning the DMX Library as MVR Scene in Editor, each Fixture Patch has to correspond to a Fixture in the World (if it is desired to export the Scene as MVR later).
+	 * Mostly useful when importing an MVR into the DMX Library (see DMXLibraryFromMVRFactory). If left '00000000-00000000-00000000-00000000', a Unique ID will be generated for the patch. 
+	 * Ensures the Unique ID is not used by another patch in the DMX Library already.
+	 */
+	FGuid MVRFixtureUUID;
 };
+
 
 /** 
  * A DMX fixture patch that can be patch to channels in a DMX Universe via the DMX Library Editor. 
@@ -80,6 +88,7 @@ public:
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 #endif
 protected:
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 
@@ -156,17 +165,19 @@ public:
 	/** Sets the Universe ID of the patch*/
 	void SetUniverseID(int32 NewUniverseID);
 
-	/**  Sets the auto starting address */
+#if WITH_EDITOR
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Please use SetStartingChannel instead of SetAutoStartingAddress.")
 	void SetAutoStartingAddress(int32 NewAutoStartingAddress);
 
-	/** Returns the auto starting channel. Used only when bAutoAssignAdress is true. In most cases, you'll want GetStartingChannel instead. */
-	FORCEINLINE int32 GetAutoStartingAddress() const { return AutoStartingAddress; }
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Please use GetStartingChannel instead of GetAutoStartingAddress.")
+	FORCEINLINE int32 GetAutoStartingAddress() const { return AutoStartingAddress_DEPRECATED; }
 
-	/**  Sets the manual starting address */
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Please use SetStartingChannel instead of SetManualStartingAddress.")
 	void SetManualStartingAddress(int32 NewManualStartingAddress);
 
-	/** Returns the manual starting channel. Used only when bAutoAssignAdress is false.  In most cases, you'll want GetStartingChannel instead. */
-	FORCEINLINE int32 GetManualStartingAddress() const { return ManualStartingAddress; }
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Please use GetStartingChannel instead of GetManualStartingAddress.")
+	FORCEINLINE int32 GetManualStartingAddress() const { return ManualStartingAddress_DEPRECATED; }
+#endif // WITH_EDITOR
 
 	/** 
 	 * Sets the starting channel of the Fixture Patch.
@@ -177,16 +188,18 @@ public:
 	void SetStartingChannel(int32 NewStartingChannel);
 
 	/** Return the starting channel */
-	UFUNCTION(BlueprintPure, Category = "DMX|Fixture Patch")
-	int32 GetStartingChannel() const;
+	UFUNCTION(BlueprintCallable, Category = "DMX|Fixture Patch")
+	FORCEINLINE int32 GetStartingChannel() const { return StartingChannel; }
 
 #if WITH_EDITOR
 	/** Sets bAutoAssignAddress for the patch. Does not update relevant properties. Use UDMXEditor Module's UDMXEditorUtils::AutoAssignAddresses methods instead. */
-	void SetAutoAssignAddressUnsafe(bool bShouldAutoAssignAddress) { bAutoAssignAddress = bShouldAutoAssignAddress; }
-#endif // WITH_EDITOR
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Auto assign is now a method in FDMXEditorUtils and applied on demand.")
+	void SetAutoAssignAddressUnsafe(bool bShouldAutoAssignAddress) { bAutoAssignAddress_DEPRECATED = bShouldAutoAssignAddress; }
 
 	/** Returns true if the patch is set to auto assign address */
-	FORCEINLINE bool IsAutoAssignAddress() const { return bAutoAssignAddress; }
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Auto assign is now a method in FDMXEditorUtils and applied on demand.")
+	FORCEINLINE bool IsAutoAssignAddress() const { return bAutoAssignAddress_DEPRECATED; }
+#endif // WITH_EDITOR
 
 	/** Returns the number of channels this Patch occupies with the Fixture functions from its Active Mode or 0 if the patch has no valid Active Mode */
 	UFUNCTION(BlueprintPure, Category = "DMX|Fixture Patch")
@@ -205,14 +218,25 @@ public:
 	/** Returns custom tags defined for the patch */
 	FORCEINLINE const TArray<FName>& GetCustomTags() const { return CustomTags; }
 
+	/** Returns the MVR Fixture UUIDs of this patch */
+	FORCEINLINE const FGuid& GetMVRFixtureUUID() const { return MVRFixtureUUID; }
+
 #if WITH_EDITOR
-	/** Property name getters. When accessing the this way, use with care. The patch will need to update its cache after using property setters. Call RebuildCache to do that. */
+	/** Property name getters. When accessing the this way, use with care. The patch will need to update its cache after using property setters, use Pre/PostEditChanged events to achieve that. */
 	static FName GetUniverseIDPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, UniverseID); }
-	static FName GetAutoAssignAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, bAutoAssignAddress); }
-	static FName GetManualStartingAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ManualStartingAddress); }
-	static FName GetAutoStartingAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, AutoStartingAddress); }
 	static FName GetParentFixtureTypeTemplatePropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ParentFixtureTypeTemplate); }
 	static FName GetActiveModePropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ActiveMode); }
+	static FName GetMVRFixtureUUIDPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, MVRFixtureUUID); }
+	static FName GetStartingChannelPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, StartingChannel); }
+
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Auto assign is now a method in FDMXEditorUtils and applied on demand.")
+	static FName GetManualStartingAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, ManualStartingAddress_DEPRECATED); }
+
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Auto assign is now a method in FDMXEditorUtils and applied on demand.")
+	static FName GetAutoStartingAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, AutoStartingAddress_DEPRECATED); }
+
+	UE_DEPRECATED(5.1, "bAutoAssignAddress and related members are deprecated. Auto assign is now a method in FDMXEditorUtils and applied on demand.")
+	static FName GetAutoAssignAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(UDMXEntityFixturePatch, bAutoAssignAddress_DEPRECATED); }
 #endif // WITH_EDITOR
 
 protected:
@@ -220,25 +244,35 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch", meta = (ClampMin = 0, DisplayName = "Universe"))
 	int32 UniverseID;
 
-	/** Auto-assign address from drag/drop list order and available channels */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch", meta = (DisplayName = "Auto-Assign Address"))
-	bool bAutoAssignAddress;
+#if WITH_EDITORONLY_DATA
+	/** DEPRECATED 5.1 */
+	UPROPERTY(Meta = (DeprecatedProperty, DeprecationMessage = "bAutoAssignAddress and related members are deprecated. Auto assign is now only a method in FDMXEditorUtils and should be applied on demand."))
+	bool bAutoAssignAddress_DEPRECATED = true;
 
-	/** Starting channel for when auto-assign address is false */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch", meta = (EditCondition = "!bAutoAssignAddress", DisplayName = "Manual Starting Address", UIMin = "1", UIMax = "512", ClampMin = "1", ClampMax = "512"))
-	int32 ManualStartingAddress;
+	/** DEPRECATED 5.1 */
+	UPROPERTY(Meta = (DeprecatedProperty, DeprecationMessage = "bAutoAssignAddress and related members are deprecated. Auto assign is now only a method in FDMXEditorUtils and should be applied on demand."))
+	int32 ManualStartingAddress_DEPRECATED = 1;
 
-	/** Starting channel from auto-assignment. Used when AutoAssignAddress is true */
-	UPROPERTY(NonTransactional)
-	int32 AutoStartingAddress;
+	/** DEPRECATED 5.1 */
+	UPROPERTY(Meta = (DeprecatedProperty, DeprecationMessage = "bAutoAssignAddress and related members are deprecated. Auto assign is now only a method in FDMXEditorUtils and should be applied on demand."))
+	int32 AutoStartingAddress_DEPRECATED = 1;
+#endif // WITH_EDITORONLY_DATA
+
+	/** Starting Channel of the Patch */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch", Meta = (UIMin = "1", UIMax = "512", ClampMin = "1", ClampMax = "512"))
+	int32 StartingChannel = 0;
 
 	/** Property to point to the template parent fixture for details panel purposes */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadWrite, BlueprintSetter = SetFixtureType, Category = "Fixture Patch", meta = (DisplayName = "Fixture Type"))
-	UDMXEntityFixtureType* ParentFixtureTypeTemplate;
+	TObjectPtr<UDMXEntityFixtureType> ParentFixtureTypeTemplate;
 
 	/** The Index of the Mode in the Fixture Type the Patch uses */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch")
 	int32 ActiveMode;
+
+	/** The MVR Fixture UUID when used as such */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Fixture Patch")
+	FGuid MVRFixtureUUID;
 
 	/** Delegate broadcast when a Fixture Patch changed */
 	static FDMXOnFixturePatchChangedDelegate OnFixturePatchChangedDelegate;
@@ -255,17 +289,19 @@ public:
 
 	/** 
 	 * If true, the patch receives dmx and raises the OnFixturePatchReceivedDMX event in editor. 
-	 * NOTE: DMXComponent does not support this. To receive the patch in editor, drag out from the patch and bind its OnFixturePatchReceivedDMX event!
+	 * NOTE: If 'All Fixture Patches receive DMX in editor' is set to true in Project Settings -> Plugins -> DMX, this setting here is ignored.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Patch")
 	bool bReceiveDMXInEditor;
 #endif
 
 public:
+#if WITH_EDITOR
 	/** DEPRECATED 4.27 */
 	UE_DEPRECATED(4.27, "Controllers are replaced with DMX Ports.")
 	UFUNCTION(BlueprintPure, Category = "DMX|Fixture Patch", meta = (DeprecatedFunction, DeprecationMessage = "Deprecated 4.27. No clear remote universe can be deduced from controllers (before 4.27) or ports (from 4.27 on)."))
 	int32 GetRemoteUniverse() const;
+#endif // WITH_EDITOR
 
 	/**
 	 * Returns an array of valid attributes for the currently active mode.

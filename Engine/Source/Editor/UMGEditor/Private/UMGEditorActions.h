@@ -2,9 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+
+class FUICommandInfo;
 
 /**
  * Unreal UMG editor actions
@@ -18,7 +22,7 @@ public:
 		"UMGEditor", // Context name for fast lookup
 		NSLOCTEXT("Contexts", "UMGEditor", "UMG Editor"), // Localized context name for displaying
 		"EditorViewport",  // Parent
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 	{
 	}

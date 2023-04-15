@@ -1,14 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_GetInputAxisKeyValue.h"
-#include "GameFramework/Actor.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
+#include "Engine/Blueprint.h"
+#include "Engine/DynamicBlueprintBinding.h"
+#include "Engine/InputAxisKeyDelegateBinding.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
-#include "Engine/InputAxisKeyDelegateBinding.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+
+struct FLinearColor;
 
 #define LOCTEXT_NAMESPACE "K2Node_GetInputAxisKeyValue"
 
@@ -115,7 +133,7 @@ void UK2Node_GetInputAxisKeyValue::RegisterDynamicBinding(UDynamicBlueprintBindi
 
 FSlateIcon UK2Node_GetInputAxisKeyValue::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", EKeys::GetMenuCategoryPaletteIcon(InputAxisKey.GetMenuCategory()));
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), EKeys::GetMenuCategoryPaletteIcon(InputAxisKey.GetMenuCategory()));
 }
 
 void UK2Node_GetInputAxisKeyValue::GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const

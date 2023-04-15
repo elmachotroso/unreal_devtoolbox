@@ -1,13 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "Internationalization/Text.h"
 #include "K2Node_Tunnel.h"
+#include "Math/Color.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_Composite.generated.h"
 
 class INameValidatorInterface;
+class UObject;
 
 UCLASS()
 class BLUEPRINTGRAPH_API UK2Node_Composite : public UK2Node_Tunnel
@@ -35,6 +46,7 @@ class BLUEPRINTGRAPH_API UK2Node_Composite : public UK2Node_Tunnel
 	virtual void OnRenameNode(const FString& NewName) override;
 	virtual TSharedPtr<class INameValidatorInterface> MakeNameValidator() const override;
 	virtual TArray<UEdGraph*> GetSubGraphs() const override { return TArray<UEdGraph*>( { BoundGraph } ); }
+	virtual bool CanCreateUnderSpecifiedSchema(const UEdGraphSchema* DesiredSchema) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface

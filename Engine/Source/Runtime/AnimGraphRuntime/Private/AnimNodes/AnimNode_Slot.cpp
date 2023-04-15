@@ -5,6 +5,8 @@
 #include "Animation/AnimTrace.h"
 #include "Animation/AnimNode_Inertialization.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_Slot)
+
 /////////////////////////////////////////////////////
 // FAnimNode_Slot
 
@@ -39,13 +41,13 @@ void FAnimNode_Slot::Update_AnyThread(const FAnimationUpdateContext& Context)
 	// Update cache in AnimInstance.
 	Context.AnimInstanceProxy->UpdateSlotNodeWeight(SlotName, WeightData.SlotNodeWeight, Context.GetFinalBlendWeight());
 
-	float InertializationDuration;
-	if (Context.AnimInstanceProxy->GetSlotInertializationRequest(SlotName, InertializationDuration))
+	UE::Anim::FSlotInertializationRequest InertializationRequest;
+	if (Context.AnimInstanceProxy->GetSlotInertializationRequest(SlotName, InertializationRequest))
 	{
 		UE::Anim::IInertializationRequester* InertializationRequester = Context.GetMessage<UE::Anim::IInertializationRequester>();
 		if (InertializationRequester)
 		{
-			InertializationRequester->RequestInertialization(InertializationDuration);
+			InertializationRequester->RequestInertialization(InertializationRequest.Get<0>(), InertializationRequest.Get<1>());
 		}
 		else
 		{
@@ -131,3 +133,4 @@ FAnimNode_Slot::FAnimNode_Slot()
 	, bAlwaysUpdateSourcePose(false)
 {
 }
+

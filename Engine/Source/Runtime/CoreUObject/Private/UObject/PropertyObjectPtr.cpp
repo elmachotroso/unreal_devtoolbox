@@ -55,6 +55,8 @@ void FObjectPtrProperty::StaticSerializeItem(const FObjectPropertyBase* ObjectPr
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	FObjectPtr* ObjectPtr = (FObjectPtr*)GetPropertyValuePtr(Value);
+	const bool IsHandleResolved = IsObjectHandleResolved(ObjectPtr->GetHandle());
+	UObject* CurrentValue = IsHandleResolved ? ObjectPtr->Get() : nullptr;
 
 	if (UnderlyingArchive.IsObjectReferenceCollector())
 	{
@@ -62,7 +64,7 @@ void FObjectPtrProperty::StaticSerializeItem(const FObjectPropertyBase* ObjectPr
 
 		if(!UnderlyingArchive.IsSaving() && IsObjectHandleResolved(ObjectPtr->GetHandle()))
 		{
-			ObjectProperty->CheckValidObject(ObjectPtr);
+			ObjectProperty->CheckValidObject(ObjectPtr, CurrentValue);
 		}
 	}
 	else
@@ -96,7 +98,7 @@ void FObjectPtrProperty::StaticSerializeItem(const FObjectPropertyBase* ObjectPr
 			//        to accommodate this (as it depends on finding itself as the set value)
 	#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
-			ObjectProperty->CheckValidObject(Value);
+			ObjectProperty->CheckValidObject(Value, CurrentValue);
 		}
 	}
 }
@@ -137,14 +139,48 @@ bool FObjectPtrProperty::Identical(const void* A, const void* B, uint32 PortFlag
 	return false;
 }
 
+FObjectPtr& FObjectPtrProperty::GetObjectPropertyValueAsPtr(const void* PropertyValueAddress) const
+{
+	return (FObjectPtr&)GetPropertyValue(PropertyValueAddress);
+}
+
+TObjectPtr<UObject> FObjectPtrProperty::GetObjectPtrPropertyValue(const void* PropertyValueAddress) const
+{
+	return GetPropertyValue(PropertyValueAddress);
+}
+
 UObject* FObjectPtrProperty::GetObjectPropertyValue(const void* PropertyValueAddress) const
 {
-	return ((FObjectPtr&)GetPropertyValue(PropertyValueAddress)).Get();
+	return GetPropertyValue(PropertyValueAddress).Get();
+}
+
+UObject* FObjectPtrProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
+{
+	return GetWrappedObjectPropertyValue_InContainer<FObjectPtr>(ContainerAddress, ArrayIndex);
 }
 
 void FObjectPtrProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
 {
-	SetPropertyValue(PropertyValueAddress, TCppType(Value));
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetPropertyValue(PropertyValueAddress, TCppType(Value));
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
+}
+
+void FObjectPtrProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
+{
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetWrappedObjectPropertyValue_InContainer<FObjectPtr>(ContainerAddress, Value, ArrayIndex);
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
 }
 
 bool FObjectPtrProperty::AllowCrossLevel() const

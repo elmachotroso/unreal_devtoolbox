@@ -14,8 +14,6 @@
 	#error "Windows Vista and earlier are no longer supported"
 #endif
 
-#define PLATFORM_TCHAR_IS_UTF8CHAR				0
-
 /**
 * Windows specific types
 **/
@@ -29,7 +27,7 @@ struct FWindowsPlatformTypes : public FGenericPlatformTypes
 	typedef long				SSIZE_T;
 #endif
 
-#if PLATFORM_TCHAR_IS_UTF8CHAR
+#if USE_UTF8_TCHARS
 	typedef UTF8CHAR TCHAR;
 #endif
 };
@@ -90,6 +88,7 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING			1
 #define PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING				1
 #define PLATFORM_SUPPORTS_MESH_SHADERS						1
+#define PLATFORM_SUPPORTS_BINDLESS_RENDERING				1
 #define PLATFORM_USES__ALIGNED_MALLOC						1
 
 #if WITH_EDITOR
@@ -102,6 +101,8 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define PLATFORM_GLOBAL_LOG_CATEGORY						LogWindows
 
 #define PLATFORM_SUPPORTS_BORDERLESS_WINDOW					1
+
+#define PLATFORM_RETURN_ADDRESS_FOR_CALLSTACKTRACING		PLATFORM_RETURN_ADDRESS_POINTER
 
 #define WINDOWS_USE_FEATURE_APPLICATIONMISC_CLASS			1
 #define WINDOWS_USE_FEATURE_PLATFORMPROCESS_CLASS			1
@@ -130,9 +131,6 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define STDCALL		__stdcall										/* Standard calling convention */
 #define FORCEINLINE __forceinline									/* Force code to be inline */
 #define FORCENOINLINE __declspec(noinline)							/* Force code to NOT be inline */
-#define FUNCTION_NO_RETURN_START \
-	DEPRECATED_MACRO(4.26, "FUNCTION_NO_RETURN_START has been deprecated - please use UE_NORETURN") \
-	__declspec(noreturn)				/* Indicate that the function never returns. */
 #define FUNCTION_NON_NULL_RETURN_START _Ret_notnull_				/* Indicate that the function never returns nullptr. */
 
 #define DECLARE_UINT64(x)	x
@@ -200,23 +198,6 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 
 // Include code analysis features
 #include "Windows/WindowsPlatformCodeAnalysis.h"
-
-#if USING_CODE_ANALYSIS && _MSC_VER == 1900
-	// Disable this warning as VC2015 Update 1 produces this warning erroneously when placed on variadic templates:
-	//
-	// warning C28216: The checkReturn annotation only applies to postconditions for function 'Func' _Param_(N).
-	#define FUNCTION_CHECK_RETURN_START	 \
-		DEPRECATED_MACRO(4.26, "FUNCTION_CHECK_RETURN_START has been deprecated - please use UE_NODISCARD") \
-		__pragma(warning(push)) __pragma(warning(disable: 28216)) __declspec("SAL_checkReturn")
-
-	#define FUNCTION_CHECK_RETURN_END	 \
-		DEPRECATED_MACRO(4.26, "FUNCTION_CHECK_RETURN_END has been deprecated - please use UE_NODISCARD") \
-		__pragma(warning(pop))
-#else
-	#define FUNCTION_CHECK_RETURN_START	 \
-		DEPRECATED_MACRO(4.26, "FUNCTION_CHECK_RETURN_START has been deprecated - please use UE_NODISCARD") \
-		__declspec("SAL_checkReturn")	/* Warn that callers should not ignore the return value. */
-#endif
 
 // Other macros
 #ifndef ENABLE_WIN_ALLOC_TRACKING

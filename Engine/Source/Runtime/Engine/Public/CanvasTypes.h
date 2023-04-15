@@ -13,6 +13,7 @@
 #include "BatchedElements.h"
 #include "RendererInterface.h"
 #include "StaticMeshResources.h"
+#include "UnrealEngine.h"
 #include "CanvasTypes.generated.h"
 
 class FCanvasRenderContext;
@@ -530,11 +531,6 @@ public:
 	*/
 	EShaderPlatform GetShaderPlatform() const { return GShaderPlatformForFeatureLevel[FeatureLevel]; }
 
-	// Get/Set if this Canvas allows its batched elements to switch vertical axis (e.g., rendering to back buffer should never flip)
-	bool GetAllowSwitchVerticalAxis() const { return bAllowsToSwitchVerticalAxis; }
-
-	void SetAllowSwitchVerticalAxis(bool bInAllowsToSwitchVerticalAxis) { bAllowsToSwitchVerticalAxis = bInAllowsToSwitchVerticalAxis; }
-
 public:
 	float AlphaModulate;
 
@@ -632,8 +628,6 @@ private:
 	FGameTime Time;
 	/** true, if Canvas should be scaled to whole render target */
 	bool bScaledToRenderTarget;
-	// True if canvas allows switching vertical axis; false will ignore any flip
-	bool bAllowsToSwitchVerticalAxis;
 	/** Feature level that we are currently rendering with */
 	ERHIFeatureLevel::Type FeatureLevel;
 
@@ -665,10 +659,10 @@ public:
 	}
 
 	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
-	float GetCurrentRealTime() const { return GetTime().GetRealTimeSeconds(); }
+	float GetCurrentRealTime() const { return FloatCastChecked<float>(GetTime().GetRealTimeSeconds(), UE_DOUBLE_SMALL_NUMBER); }
 
 	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
-	float GetCurrentWorldTime() const { return GetTime().GetWorldTimeSeconds(); }
+	float GetCurrentWorldTime() const { return FloatCastChecked<float>(GetTime().GetWorldTimeSeconds(), UE_DOUBLE_SMALL_NUMBER); }
 
 	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
 	float GetCurrentDeltaWorldTime() const { return GetTime().GetDeltaWorldTimeSeconds(); }
@@ -791,6 +785,7 @@ public:
 	ENGINE_API FCanvasSortElement& GetSortElement(int32 DepthSortKey);
 
 	friend class FCanvasRenderContext;
+	friend class FCanvasRenderThreadScope;
 };
 
 /**
@@ -1077,7 +1072,6 @@ private:
 			FMeshPassProcessorRenderState& DrawRenderState,
 			const FSceneView& View,
 			bool bIsHitTesting,
-			bool bNeedsToSwitchVerticalAxis,
 			bool bUse128bitRT = false);
 
 		const FMaterialRenderProxy* const MaterialRenderProxy;
@@ -1094,7 +1088,7 @@ private:
 
 	private:
 		FMeshBatch* AllocTileMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
-		void InitTileMesh(const FSceneView& View, bool bNeedsToSwitchVerticalAxis);
+		void InitTileMesh(const FSceneView& View);
 		void ReleaseTileMesh();
 
 		FRawIndexBuffer16or32 IndexBuffer;
@@ -1254,8 +1248,7 @@ private:
 			FCanvasRenderContext& RenderContext,
 			FMeshPassProcessorRenderState& DrawRenderState,
 			const FSceneView& View,
-			bool bIsHitTesting,
-			bool bNeedsToSwitchVerticalAxis);
+			bool bIsHitTesting);
 
 		const FMaterialRenderProxy* const MaterialRenderProxy;
 		const FCanvas::FTransformEntry Transform;
@@ -1265,7 +1258,7 @@ private:
 
 	private:
 		FMeshBatch* AllocTriangleMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
-		void InitTriangleMesh(const FSceneView& View, bool bNeedsToSwitchVerticalAxis);
+		void InitTriangleMesh(const FSceneView& View);
 		void ReleaseTriangleMesh();
 
 		FRawIndexBuffer16or32 IndexBuffer;
@@ -1300,4 +1293,27 @@ private:
 */
 extern ENGINE_API void StringSize( const UFont* Font, int32& XL, int32& YL, const TCHAR* Text);
 
+/**
+ * Helper class to write a line of texts on screen
+ */
+struct FScreenMessageWriter
+{
+	FScreenMessageWriter(FCanvas& InCanvas, int32 InY)
+		: Canvas(InCanvas)
+		, Y(InY)
+	{}
 
+	inline void EmptyLine()
+	{
+		Y += 14;
+	}
+
+	void DrawLine(const FText& Message, int32 X = 10, const FLinearColor& Color = FLinearColor(1.0, 0.05, 0.05, 1.0))
+	{
+		Canvas.DrawShadowedText((float)X, (float)Y, Message, GetStatsFont(), Color);
+		EmptyLine();
+	}
+
+	FCanvas& Canvas;
+	int32 Y;
+};

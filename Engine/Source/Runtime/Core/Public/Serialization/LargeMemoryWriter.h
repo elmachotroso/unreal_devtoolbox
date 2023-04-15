@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Memory/MemoryFwd.h"
 #include "Memory/MemoryView.h"
-#include "UObject/NameTypes.h"
-#include "Serialization/MemoryArchive.h"
 #include "Serialization/LargeMemoryData.h"
+#include "Serialization/MemoryArchive.h"
+#include "UObject/NameTypes.h"
 
 /**
 * Archive for storing a large amount of arbitrary data to memory
@@ -59,6 +60,14 @@ public:
 	FORCEINLINE uint8* ReleaseOwnership()
 	{
 		return Data.ReleaseOwnership();
+	}
+
+	/**
+	 * Reserves memory such that the writer can contain at least Size number of bytes.
+	 */
+	void Reserve(int64 Size)
+	{
+		Data.Reserve(Size);
 	}
 
 private:

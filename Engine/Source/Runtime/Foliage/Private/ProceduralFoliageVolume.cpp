@@ -4,6 +4,9 @@
 #include "Components/BrushComponent.h"
 #include "ProceduralFoliageComponent.h"
 #include "ProceduralFoliageSpawner.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterActor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ProceduralFoliageVolume)
 
 AProceduralFoliageVolume::AProceduralFoliageVolume(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -23,6 +26,31 @@ AProceduralFoliageVolume::AProceduralFoliageVolume(const FObjectInitializer& Obj
 }
 
 #if WITH_EDITOR
+void AProceduralFoliageVolume::PostRegisterAllComponents()
+{
+	Super::PostRegisterAllComponents();
+
+	if (!GetWorld()->IsGameWorld() && GetWorld()->IsPartitionedWorld() && !WorldPartitionActorLoader)
+	{
+		WorldPartitionActorLoader = new FLoaderAdapterActor(this);
+	}
+}
+
+void AProceduralFoliageVolume::BeginDestroy()
+{
+	if (WorldPartitionActorLoader)
+	{
+		delete WorldPartitionActorLoader;
+		WorldPartitionActorLoader = nullptr;
+	}
+
+	Super::BeginDestroy();
+}
+
+IWorldPartitionActorLoaderInterface::ILoaderAdapter* AProceduralFoliageVolume::GetLoaderAdapter()
+{
+	return WorldPartitionActorLoader;
+}
 
 void AProceduralFoliageVolume::PostEditImport()
 {
@@ -40,5 +68,5 @@ bool AProceduralFoliageVolume::GetReferencedContentObjects(TArray<UObject*>& Obj
 	}
 	return true;
 }
-
 #endif
+

@@ -36,7 +36,7 @@
 #include "FbxImporter.h"
 
 #include "Misc/FbxErrors.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageTools.h"
 
 #include "SFbxSceneOptionWindow.h"
@@ -116,7 +116,6 @@ UReimportFbxSceneFactory::UReimportFbxSceneFactory(const FObjectInitializer& Obj
 {
 
 	SupportedClass = UFbxSceneImportData::StaticClass();
-	Formats.Add(TEXT("fbx;FBX scene"));
 
 	bCreateNew = false;
 	bText = false;
@@ -553,7 +552,7 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 			continue;
 		}
 		//Find the asset
-		AssetDataToDelete.Add(AssetRegistryModule.Get().GetAssetByObjectPath(FName(*(MeshInfo->GetFullImportName()))));
+		AssetDataToDelete.Add(AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath((MeshInfo->GetFullImportName()))));
 	}
 
 	FbxNode* RootNodeToImport = FbxImporter->Scene->GetRootNode();
@@ -690,9 +689,9 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 
 		if (!AbortDelete)
 		{
-			//Delete the asset and use the normal dialog to make sure the user understand he will remove some content
-			//The user can decide to cancel the delete or not. This will not interrupt the reimport process
-			//The delete is done at the end because we want to remove the blueprint reference before deleting object
+			//Delete the asset and use the normal dialog to make sure the user understands they will remove some content.
+			//The user can decide to cancel the delete or not. This will not interrupt the reimport process.
+			//The delete is done at the end because we want to remove the Blueprint reference before deleting the object.
 			ObjectTools::DeleteAssets(AssetDataToDelete, !GIsRunningUnattendedScript);
 		}
 	}
@@ -894,7 +893,7 @@ void UReimportFbxSceneFactory::RecursivelySetComponentProperties(USCS_Node* Curr
 		{
 			USkeletalMeshComponent *CurrentNodeMeshComponent = Cast<USkeletalMeshComponent>(CurrentNodeSceneComponent);
 			USkeletalMeshComponent *MeshComponent = Cast<USkeletalMeshComponent>(SceneComponent);
-			if (CurrentNodeMeshComponent->SkeletalMesh != MeshComponent->SkeletalMesh)
+			if (CurrentNodeMeshComponent->GetSkeletalMeshAsset() != MeshComponent->GetSkeletalMeshAsset())
 				bShouldSerializeProperty = false;
 		}
 
@@ -940,7 +939,7 @@ UBlueprint *UReimportFbxSceneFactory::UpdateOriginalBluePrint(FString &BluePrint
 	FbxSceneReimportStatusMapPtr NodeStatusMapPtr = (FbxSceneReimportStatusMapPtr)VoidNodeStatusMapPtr;
 	//Find the BluePrint
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	FAssetData BlueprintAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*(BluePrintFullName)));
+	FAssetData BlueprintAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(BluePrintFullName));
 
 	UPackage* PkgExist = FindPackage(nullptr, *BlueprintAssetData.PackageName.ToString());
 	if (PkgExist == nullptr)
@@ -953,13 +952,18 @@ UBlueprint *UReimportFbxSceneFactory::UpdateOriginalBluePrint(FString &BluePrint
 	}
 	//Load the package before searching the asset
 	PkgExist->FullyLoad();
-	UBlueprint* BluePrint = FindObjectSafe<UBlueprint>(ANY_PACKAGE, *BluePrintFullName);
+	UBlueprint* BluePrint = FindObjectSafe<UBlueprint>(nullptr, *BluePrintFullName);
 	if (BluePrint == nullptr)
 	{
 		return nullptr;
 	}
-	//Close all editor that edit this blueprint
-	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(BluePrint);
+	if (GEditor)
+	{
+		//Close all editor that edit this blueprint
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(BluePrint);
+		//Make sure all editor selection are cleared
+		GEditor->ResetAllSelectionSets();
+	}
 	//Set the import status for the next reimport
 	for (TSharedPtr<FFbxNodeInfo> NodeInfo : SceneInfoPtr->HierarchyInfo)
 	{
@@ -1257,7 +1261,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 	UPackage* PkgExist = MeshInfo->GetContentPackage();
 
 	FString AssetName = MeshInfo->GetFullImportName();
-	USkeletalMesh* Mesh = FindObjectSafe<USkeletalMesh>(ANY_PACKAGE, *AssetName);
+	USkeletalMesh* Mesh = FindFirstObject<USkeletalMesh>(*AssetName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("ReimportSkeletalMesh"));
 	if (Mesh == nullptr)
 	{
 		//We reimport only skeletal mesh here
@@ -1342,7 +1346,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 			if (SortedLinks.Num() != 0)
 			{
 				//Find the number of take
-				int32 ResampleRate = DEFAULT_SAMPLERATE;
+				int32 ResampleRate = static_cast<int32>(DEFAULT_SAMPLERATE);
 				if (GlobalImportSettings->bResample)
 				{
 					if(FbxImporter->ImportOptions->ResampleRate > 0)
@@ -1365,7 +1369,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 					FbxAnimStack* CurAnimStack = FbxImporter->Scene->GetSrcObject<FbxAnimStack>(AnimStackIndex);
 
 					FbxTimeSpan AnimTimeSpan = FbxImporter->GetAnimationTimeSpan(SortedLinks[0], CurAnimStack);
-					bool bValidAnimStack = FbxImporter->ValidateAnimStack(SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, GlobalImportSettings->bImportMorph, AnimTimeSpan);
+					bool bValidAnimStack = FbxImporter->ValidateAnimStack(SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, GlobalImportSettings->bImportMorph, GlobalImportSettings->bSnapToClosestFrameBoundary, AnimTimeSpan);
 					// no animation
 					if (!bValidAnimStack)
 					{
@@ -1398,7 +1402,8 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 						{
 							ParentPackage->FullyLoad();
 						}
-						UObject* Object = FindObjectSafe<UObject>(ANY_PACKAGE, *SequenceName);
+
+						UObject* Object = FindFirstObject<UObject>(*SequenceName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("ReimportSkeletalMesh"));
 						if (Object != nullptr)
 						{
 							if (ParentPackage == nullptr)
@@ -1411,7 +1416,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 						}
 						
 						//Get the sequence timespan
-						ResampleRate = DEFAULT_SAMPLERATE;
+						ResampleRate = static_cast<int32>(DEFAULT_SAMPLERATE);
 						if (FbxImporter->ImportOptions->bResample)
 						{
 							if(FbxImporter->ImportOptions->ResampleRate > 0)
@@ -1456,7 +1461,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 						else
 						{
 							//Reimport in a existing sequence
-							if (FbxImporter->ValidateAnimStack(SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, true, AnimTimeSpan))
+							if (FbxImporter->ValidateAnimStack(SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, true, FbxImporter->ImportOptions->bSnapToClosestFrameBoundary, AnimTimeSpan))
 							{
 								FbxImporter->ImportAnimation(Mesh->GetSkeleton(), DestSeq, CurrentFilename, SortedLinks, FBXMeshNodeArray, CurAnimStack, ResampleRate, AnimTimeSpan);
 							}
@@ -1481,7 +1486,7 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportStaticMesh(void* VoidFbx
 	MeshInfo->GetContentPackage();
 
 	FString AssetName = MeshInfo->GetFullImportName();
-	UStaticMesh* Mesh = FindObjectSafe<UStaticMesh>(ANY_PACKAGE, *AssetName);
+	UStaticMesh* Mesh = FindFirstObject<UStaticMesh>(*AssetName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("ReimportStaticMesh"));
 	if (Mesh == nullptr)
 	{
 		//We reimport only static mesh here

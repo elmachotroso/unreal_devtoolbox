@@ -24,6 +24,8 @@ public class BuildCookRun : BuildCommand
 {
 	public override void ExecuteBuild()
 	{
+		var StartTime = DateTime.UtcNow;
+
 		// these need to be done first
 		var bForeign = ParseParam("foreign");
 		var bForeignCode = ParseParam("foreigncode");
@@ -38,6 +40,8 @@ public class BuildCookRun : BuildCommand
 		var Params = SetupParams();
 
 		DoBuildCookRun(Params);
+
+		LogInformation("BuildCookRun time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
 	}
 
 	protected ProjectParams SetupParams()
@@ -75,6 +79,18 @@ public class BuildCookRun : BuildCommand
         {
             Params.CulturesToCook = new ParamList<string>(CulturesToCook.Split('+'));
         }
+
+		var ReferenceContainerGlobalFileName = ParseParamValue("ReferenceContainerGlobalFileName");
+		if (!String.IsNullOrEmpty(ReferenceContainerGlobalFileName))
+		{
+			Params.ReferenceContainerGlobalFileName = ReferenceContainerGlobalFileName;
+		}
+
+		var ReferenceContainerCryptoKeys = ParseParamValue("ReferenceContainerCryptoKeys");
+		if (!String.IsNullOrEmpty(ReferenceContainerCryptoKeys))
+		{
+			Params.ReferenceContainerCryptoKeys = ReferenceContainerCryptoKeys;
+		}
 
 		if (Params.DedicatedServer)
 		{

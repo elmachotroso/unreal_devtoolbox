@@ -2,9 +2,36 @@
 
 #include "PropertyInfoViewStyle.h"
 
-#include "EditorStyleSet.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
 #include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/ITableRow.h"
+
+class FPaintArgs;
+class FSlateRect;
+class FWidgetStyle;
 
 namespace PropertyInfoViewStyle
 {
@@ -237,7 +264,7 @@ namespace PropertyInfoViewStyle
 
 	void STextHighlightOverlay::Construct(const FArguments& InArgs)
 	{
-		static FSlateBrush HighlightShape = FSlateBrush(*FEditorStyle::Get().GetBrush("TextBlock.HighlightShape"));
+		static FSlateBrush HighlightShape = FSlateBrush(*FAppStyle::Get().GetBrush("TextBlock.HighlightShape"));
 		HighlightShape.TintColor = FLinearColor(0.f, 0.47f, 1.f, .3f);
 		
 		// uses overlay to create the highlight so that the text widget can be a button,

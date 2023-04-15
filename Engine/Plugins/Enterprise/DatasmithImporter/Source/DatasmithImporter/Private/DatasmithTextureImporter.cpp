@@ -8,7 +8,7 @@
 #include "Utility/DatasmithImporterUtils.h"
 #include "Utility/DatasmithTextureResize.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "Async/AsyncWork.h"
 
@@ -34,7 +34,7 @@
 #include "ObjectTools.h"
 #include "RHI.h"
 #include "InterchangeSourceData.h"
-#include "InterchangeTextureFactoryNode.h"
+#include "InterchangeTexture2DFactoryNode.h"
 #include "InterchangeTextureNode.h"
 
 #define LOCTEXT_NAMESPACE "DatasmithTextureImport"
@@ -218,7 +218,6 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 	switch (TextureElement->GetTextureMode())
 	{
 	case EDatasmithTextureMode::Diffuse:
-		TextureFact->MipGenSettings = TMGS_Sharpen5;
 		TextureFact->LODGroup = TEXTUREGROUP_World;
 		break;
 	case EDatasmithTextureMode::Specular:
@@ -409,11 +408,11 @@ UE::Interchange::FAssetImportResultRef FDatasmithTextureImporter::CreateTextureA
 	return UInterchangeManager::GetInterchangeManager().ImportAssetAsync( ContentPath, ScopedSourceData.GetSourceData(), ImportAssetParameters );
 }
 
-bool UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
+void UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
 {
 	if ( !TextureElement.IsValid() )
 	{
-		return false;
+		return;
 	}
 
 	TArray< FString > Nodes;
@@ -421,24 +420,24 @@ bool UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeCon
 
 	if ( Nodes.Num() <= 0)
 	{
-		return false;
+		return;
 	}
 
-	UInterchangeTextureNode* TextureTranslatedNode = Cast<UInterchangeTextureNode >( BaseNodeContainer->GetNode( Nodes[0] ) );
+	const UInterchangeTextureNode* TextureTranslatedNode = Cast<const UInterchangeTextureNode >( BaseNodeContainer->GetNode( Nodes[0] ) );
 	if (!ensure(TextureTranslatedNode))
 	{
-		return false;
+		return;
 	}
 
 	FString DisplayLabel = TextureTranslatedNode->GetDisplayLabel();
 	FString NodeUID = UInterchangeTextureFactoryNode::GetTextureFactoryNodeUidFromTextureNodeUid(TextureTranslatedNode->GetUniqueID());
-	UInterchangeTextureFactoryNode* TextureFactoryNode = NewObject<UInterchangeTextureFactoryNode>(BaseNodeContainer, NAME_None);
+	UInterchangeTexture2DFactoryNode* TextureFactoryNode = NewObject<UInterchangeTexture2DFactoryNode>(BaseNodeContainer, NAME_None);
 	if (!ensure(TextureFactoryNode))
 	{
-		return false;
+		return;
 	}
 	//Creating a UTexture2D
-	TextureFactoryNode->InitializeTextureNode(NodeUID, DisplayLabel, UTexture2D::StaticClass()->GetName(), TextureTranslatedNode->GetDisplayLabel());
+	TextureFactoryNode->InitializeTextureNode(NodeUID, DisplayLabel, TextureTranslatedNode->GetDisplayLabel());
 	TextureFactoryNode->SetCustomTranslatedTextureNodeUid(TextureTranslatedNode->GetUniqueID());
 	BaseNodeContainer->AddNode(TextureFactoryNode);
 
@@ -451,7 +450,6 @@ bool UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeCon
 	switch ( TextureElement->GetTextureMode() )
 	{
 	case EDatasmithTextureMode::Diffuse:
-		MipGenSettings = TMGS_Sharpen5;
 		LODGroup = TEXTUREGROUP_World;
 		break;
 	case EDatasmithTextureMode::Specular:
@@ -549,8 +547,6 @@ bool UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeCon
 	{
 		TextureFactoryNode->SetCustomFilter( TexFilter.GetValue() );
 	}
-
-	return true;
 }
 
 #undef LOCTEXT_NAMESPACE

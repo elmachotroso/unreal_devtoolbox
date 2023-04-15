@@ -118,6 +118,7 @@ public:
 
 		SLATE_ARGUMENT( FVector2D, ScrollBarThickness )
 
+		/** This accounts for total internal scroll bar padding; default 2.0f padding from the scroll bar itself is removed */
 		SLATE_ARGUMENT( FMargin, ScrollBarPadding )
 
 		SLATE_ARGUMENT(EAllowOverscroll, AllowOverscroll);
@@ -262,7 +263,7 @@ private:
 	/** Gets the component of a vector in the direction of scrolling based on the Orientation property. */
 	FORCEINLINE float GetScrollComponentFromVector(FVector2D Vector) const
 	{
-		return Orientation == Orient_Vertical ? Vector.Y : Vector.X;
+		return float(Orientation == Orient_Vertical ? Vector.Y : Vector.X);
 	}
 
 	/** Sets the component of a vector in the direction of scrolling based on the Orientation property. */

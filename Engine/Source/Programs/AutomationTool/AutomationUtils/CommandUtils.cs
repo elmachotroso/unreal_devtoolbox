@@ -22,12 +22,13 @@ using System.IO.Compression;
 using JetBrains.Annotations;
 using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using System.Runtime.Versioning;
 
 namespace AutomationTool
 {
 	/// <summary>
 	/// Wrapper around List with support for multi parameter constructor, i.e:
-	///   var Maps = new ParamList<string>("Map1", "Map2");
+	///   var Maps = new ParamList&lt;string&gt;("Map1", "Map2");
 	/// </summary>
 	/// <typeparam name="T"></typeparam>
 	public class ParamList<T> : List<T>
@@ -97,9 +98,6 @@ namespace AutomationTool
 		static internal void InitCommandEnvironment()
 		{
 			CmdEnvironment = new CommandEnvironment();
-
-			// Initializing a type in system.Security.Permissions to make sure it is present as Ionic.Zip requires this assembly
-			EnvironmentPermission _ = new EnvironmentPermission(PermissionState.None);
 		}
 
 		/// <summary>
@@ -659,11 +657,11 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="OldName">Old name</param>
 		/// <param name="NewName">new name</param>
-		public static void RenameDirectory(string OldName, string NewName)
+		public static void RenameDirectory(string OldName, string NewName, bool bQuiet = false)
 		{
 			var OldNormalized = ConvertSeparators(PathSeparator.Default, OldName);
 			var NewNormalized = ConvertSeparators(PathSeparator.Default, NewName);
-			Directory.Move(OldNormalized, NewNormalized);
+			InternalUtils.SafeRenameDirectory(OldNormalized, NewNormalized, bQuiet);
 		}
 
 		/// <summary>
@@ -1429,6 +1427,18 @@ namespace AutomationTool
 			File.SetLastWriteTimeUtc(Dest.FullName, File.GetLastWriteTimeUtc(Source.FullName));
 		}
 
+		[Flags]
+		public enum CopyDirectoryOptions
+		{
+			None = 0,
+			SuppressLogging = 1,
+			KeepExistingDirectories = 2,
+			KeepExistingFiles = 4,
+
+			Default = None,
+			Merge = KeepExistingFiles | KeepExistingDirectories
+		};
+
 		/// <summary>
 		/// Copies a directory and all of it's contents recursively. Does not throw exceptions.
 		/// </summary>
@@ -1450,11 +1460,50 @@ namespace AutomationTool
 		/// <returns>True if the operation was successful, false otherwise.</returns>
 		public static bool CopyDirectory_NoExceptions(string Source, string Dest, bool bQuiet = false)
 		{
+			return CopyDirectory_NoExceptions(Source, Dest, CopyDirectoryOptions.Default | (bQuiet ? CopyDirectoryOptions.SuppressLogging : CopyDirectoryOptions.None));
+		}
+
+		/// <summary>
+		/// Copies a directory and all of it's contents recursively. Merges with the destination directory. Does not throw exceptions.
+		/// </summary>
+		/// <param name="Source"></param>
+		/// <param name="Dest"></param>
+		/// <param name="bQuiet">When true, logging is suppressed.</param>
+		/// <returns>True if the operation was successful, false otherwise.</returns>
+		public static bool MergeDirectory_NoExceptions(DirectoryReference Source, DirectoryReference Dest, bool bQuiet = false)
+		{
+			return CopyDirectory_NoExceptions(Source.FullName, Dest.FullName, CopyDirectoryOptions.KeepExistingDirectories | (bQuiet ? CopyDirectoryOptions.SuppressLogging : CopyDirectoryOptions.None));
+		}
+
+		/// <summary>
+		/// Copies a directory and all of it's contents recursively. Merges with the destination directory. Does not throw exceptions.
+		/// </summary>
+		/// <param name="Source"></param>
+		/// <param name="Dest"></param>
+		/// <param name="bQuiet">When true, logging is suppressed.</param>
+		/// <returns>True if the operation was successful, false otherwise.</returns>
+		public static bool MergeDirectory_NoExceptions(string Source, string Dest, bool bQuiet = false)
+		{
+			return CopyDirectory_NoExceptions(Source, Dest, CopyDirectoryOptions.KeepExistingDirectories | (bQuiet ? CopyDirectoryOptions.SuppressLogging : CopyDirectoryOptions.None));
+		}
+
+		/// <summary>
+		/// Copies a directory and all of it's contents recursively. Does not throw exceptions.
+		/// </summary>
+		/// <param name="Source"></param>
+		/// <param name="Dest"></param>
+		/// <param name="Options">Options to control logging and overwriting</param>
+		/// <returns>True if the operation was successful, false otherwise.</returns>
+		public static bool CopyDirectory_NoExceptions(string Source, string Dest, CopyDirectoryOptions Options)
+		{
+			bool bQuiet = !Options.HasFlag(CopyDirectoryOptions.SuppressLogging);
+
 			Source = ConvertSeparators(PathSeparator.Default, Source);
 			Dest = ConvertSeparators(PathSeparator.Default, Dest);
 			Dest = Dest.TrimEnd(new char[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar });
 
-			if (InternalUtils.SafeDirectoryExists(Dest))
+			// if we want to overwrite directories, and it already exists, delete it first
+			if (!Options.HasFlag(CopyDirectoryOptions.KeepExistingDirectories) && InternalUtils.SafeDirectoryExists(Dest))
 			{
 				InternalUtils.SafeDeleteDirectory(Dest, bQuiet);
 				if (InternalUtils.SafeDirectoryExists(Dest, true))
@@ -1473,7 +1522,7 @@ namespace AutomationTool
 				foreach (var SourceSubDirectory in Directory.GetDirectories(Source))
 				{
 					string DestPath = Dest + GetPathSeparatorChar(PathSeparator.Default) + GetLastDirectoryName(SourceSubDirectory + GetPathSeparatorChar(PathSeparator.Default));
-					if (!CopyDirectory_NoExceptions(SourceSubDirectory, DestPath, bQuiet))
+					if (!CopyDirectory_NoExceptions(SourceSubDirectory, DestPath, Options))
 					{
 						return false;
 					}
@@ -1482,6 +1531,11 @@ namespace AutomationTool
 				{
 					int FilenameStart = SourceFile.LastIndexOf(GetPathSeparatorChar(PathSeparator.Default));
 					string DestPath = Dest + SourceFile.Substring(FilenameStart);
+					// if we don't want to overwrite files, then if it already exists, skip it
+					if (Options.HasFlag(CopyDirectoryOptions.KeepExistingFiles) && InternalUtils.SafeFileExists(DestPath, true))
+					{
+						continue;
+					}
 					if (!CopyFile_NoExceptions(SourceFile, DestPath, bQuiet))
 					{
 						return false;
@@ -1739,12 +1793,13 @@ namespace AutomationTool
 		/// <param name="TargetDir">Target directory</param>
 		/// <param name="RelativePaths">Paths relative to the source directory to copy</param>
 		/// <param name="MaxThreads">Maximum number of threads to create</param>
+		/// <param name="bRetry"></param>
 		/// <returns>List of filenames copied to the target directory</returns>
-		public static List<string> ThreadedCopyFiles(string SourceDir, string TargetDir, List<string> RelativePaths, int MaxThreads = 64)
+		public static List<string> ThreadedCopyFiles(string SourceDir, string TargetDir, List<string> RelativePaths, int MaxThreads = 64, bool bRetry = false)
 		{
             var SourceFileNames = RelativePaths.Select(RelativePath => CommandUtils.CombinePaths(SourceDir, RelativePath)).ToList();
             var TargetFileNames = RelativePaths.Select(RelativePath => CommandUtils.CombinePaths(TargetDir, RelativePath)).ToList();
-			CommandUtils.ThreadedCopyFiles(SourceFileNames, TargetFileNames, MaxThreads);
+			CommandUtils.ThreadedCopyFiles(SourceFileNames, TargetFileNames, MaxThreads, bRetry: bRetry);
 			return TargetFileNames;
 		}
 
@@ -1756,20 +1811,20 @@ namespace AutomationTool
 		/// <param name="Filter">Filter which selects files from the source directory to copy</param>
 		/// <param name="bIgnoreSymlinks">Whether to ignore symlinks during the copy</param>
 		/// <param name="MaxThreads">Maximum number of threads to create</param>
+		/// <param name="bRetry"></param>
 		/// <returns>List of filenames copied to the target directory</returns>
-		public static List<string> ThreadedCopyFiles(string SourceDir, string TargetDir, FileFilter Filter, bool bIgnoreSymlinks, int MaxThreads = 64)
+		public static List<string> ThreadedCopyFiles(string SourceDir, string TargetDir, FileFilter Filter, bool bIgnoreSymlinks, int MaxThreads = 64, bool bRetry = false)
 		{
 			// Filter all the relative paths
 			LogInformation("Applying filter to {0}...", SourceDir);
 			DirectoryReference SourceDirRef = new DirectoryReference(SourceDir);
 			var RelativePaths = Filter.ApplyToDirectory(SourceDirRef, bIgnoreSymlinks).Select(x => x.MakeRelativeTo(SourceDirRef)).ToList();
-			return ThreadedCopyFiles(SourceDir, TargetDir, RelativePaths);
+			return ThreadedCopyFiles(SourceDir, TargetDir, RelativePaths, MaxThreads, bRetry: bRetry);
 		}
 
 		/// <summary>
 		/// Moves files in parallel
         /// </summary>
-		/// <param
 		/// <param name="SourceAndTargetPairs">Pairs of source and target files</param>
 		public static void ParallelMoveFiles(IEnumerable<KeyValuePair<FileReference, FileReference>> SourceAndTargetPairs)
 		{
@@ -1779,7 +1834,6 @@ namespace AutomationTool
 		/// <summary>
 		/// Moves files in parallel
 		/// </summary>
-		/// <param
 		/// <param name="SourceAndTargetPairs">Pairs of source and target files</param>
 		/// <param name="Overwrite">Whether or not to overwrite target files if they already exist</param>
 		public static void ParallelMoveFiles(IEnumerable<KeyValuePair<FileReference, FileReference>> SourceAndTargetPairs, bool Overwrite)
@@ -2026,7 +2080,7 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Telemetry data for the current run. Add -WriteTelemetry=<Path> to the command line to export to disk.
+		/// Telemetry data for the current run. Add -WriteTelemetry=[Path] to the command line to export to disk.
 		/// </summary>
 		public static TelemetryData Telemetry = new TelemetryData();
 
@@ -2215,10 +2269,21 @@ namespace AutomationTool
 		public static IEnumerable<FileReference> UnzipFiles(FileReference ZipFileName, DirectoryReference BaseDirectory)
 		{
 			List<FileReference> OutputFiles = new List<FileReference>();
+
+			if (!FileReference.Exists(ZipFileName))
+			{
+				throw new AutomationException("Cannot unzip {0}. File not found", ZipFileName);
+			}
+
 			using (ZipArchive ZipArchive = ZipFile.Open(ZipFileName.FullName, ZipArchiveMode.Read))
 			{
 				foreach (ZipArchiveEntry Entry in ZipArchive.Entries)
 				{
+					if(Entry.FullName.EndsWith("/"))
+					{
+						// ignore directories
+						continue;
+					}
 					FileReference OutputFile = FileReference.Combine(BaseDirectory, Entry.FullName);
 					DirectoryReference.CreateDirectory(OutputFile.Directory);
 					Entry.ExtractToFile_CrossPlatform(OutputFile.FullName, true);
@@ -2349,31 +2414,6 @@ namespace AutomationTool
 			return Files;
 		}
 
-		static public Dictionary<Version, string> GetBuildVersionPathMap(string[] BuildFolders)
-		{
-			Dictionary<Version, string> BuildVersionPaths = new Dictionary<Version, string>();
-
-			foreach (string buildFolder in BuildFolders)
-			{
-				string XboxoneReleaseVersion = Path.GetFileName(buildFolder);
-
-				// The name of all recent archived builds either start with "EA" or only contain version
-				string VersionPrefix = "EA";
-				if (XboxoneReleaseVersion.StartsWith(VersionPrefix))
-				{
-					XboxoneReleaseVersion.Substring(VersionPrefix.Length);  // Length of "EA"
-				}
-
-				Version ReleaseVersion;
-				if (Version.TryParse(XboxoneReleaseVersion, out ReleaseVersion))
-				{
-					BuildVersionPaths.Add(ReleaseVersion, buildFolder);
-				}
-			}
-
-			return BuildVersionPaths;
-		}
-		
 		public static string FormatSizeString(long Size)
 		{
 			string[] Units = { "bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB" };
@@ -2669,7 +2709,7 @@ namespace AutomationTool
         }
 
         /// <summary>
-        /// Flushes the time to <see cref="CmdEnv.CSVFile"/> if we are the build machine and that environment variable is specified.
+        /// Flushes the time to <see cref="CommandEnvironment.CSVFile"/> if we are the build machine and that environment variable is specified.
         /// Call Finish manually with an alternate name to use that one instead. Useful for dynamically generated names that you can't specify at construction.
         /// </summary>
         /// <param name="AlternateName">Used in place of the Name specified during construction.</param>
@@ -2816,8 +2856,8 @@ namespace AutomationTool
 
 		static readonly string[] TimestampServersSHA1 =
 		{
-			"http://timestamp.comodoca.com/authenticode",
 			"http://timestamp.digicert.com",
+			"http://timestamp.comodoca.com/authenticode",
 			"http://timestamp.globalsign.com/scripts/timstamp.dll"
 		};
 
@@ -2828,16 +2868,20 @@ namespace AutomationTool
 			"http://rfc3161timestamp.globalsign.com/advanced"
 		};
 
-		public static void Sign(FileReference File, SignatureType SignatureType)
+		[SupportedOSPlatform("windows")]
+		public static void Sign(FileReference File, SignatureType SignatureType, bool AllowMultipleSignatures = true)
 		{
 			List<FileReference> Files = new List<FileReference> { File };
-			Sign(Files, SignatureType);
+			Sign(Files, SignatureType, AllowMultipleSignatures);
 		}
 
-		public static void Sign(List<FileReference> Files, SignatureType SignatureType)
+		[SupportedOSPlatform("windows")]
+		public static void Sign(List<FileReference> Files, SignatureType SignatureType, bool AllowMultipleSignatures = true)
 		{
 			string SignToolPath = GetSignToolPath();
 			string SpecificStoreArg = bUseMachineStoreForCertificates ? " /sm" : "";
+			string MultipleSignatureArg = AllowMultipleSignatures ? " /as" : "";
+			string SHA1TimestampArg = AllowMultipleSignatures ? " /tr" : " /t";
 
 			for(int FileIdx = 0; FileIdx < Files.Count; )
 			{
@@ -2852,7 +2896,7 @@ namespace AutomationTool
 					StringBuilder CommandLine = new StringBuilder();
 					if(SignatureType == SignatureType.SHA1)
 					{
-						CommandLine.AppendFormat("sign{0} /a /n \"{1}\" /t {2} /v", SpecificStoreArg, SigningIdentity, TimestampServersSHA1[NumAttempts % TimestampServersSHA1.Length]);
+						CommandLine.AppendFormat("sign{0} /a /n \"{1}\" {2} {3} /v {4}", SpecificStoreArg, SigningIdentity, SHA1TimestampArg, TimestampServersSHA1[NumAttempts % TimestampServersSHA1.Length], MultipleSignatureArg);
 					}
 					else if(SignatureType == SignatureType.SHA256)
 					{
@@ -2864,8 +2908,10 @@ namespace AutomationTool
 					}
 
 					// Append the files for this batch
+					// per: https://docs.microsoft.com/en-us/dotnet/api/system.diagnostics.process.start?view=net-6.0#system-diagnostics-process-start(system-diagnostics-processstartinfo)
+					// The length of the application + command line arguments cannot exceed 2080 characters, otherwise a Win32Exception will be thrown.
 					int NextFileIdx = FileIdx;
-					while(NextFileIdx < Files.Count && CommandLine.Length + Files[NextFileIdx].FullName.Length < 2000)
+					while(NextFileIdx < Files.Count && SignToolPath.Length + CommandLine.Length + Files[NextFileIdx].FullName.Length < 2080)
 					{
 						CommandLine.AppendFormat(" \"{0}\"", Files[NextFileIdx]);
 						NextFileIdx++;
@@ -2897,6 +2943,7 @@ namespace AutomationTool
 		/// Finds the path to SignTool.exe, or throws an exception.
 		/// </summary>
 		/// <returns>Path to signtool.exe</returns>
+		[SupportedOSPlatform("windows")]
 		static string GetSignToolPath()
 		{
 			List<KeyValuePair<string, DirectoryReference>> WindowsSdkDirs = WindowsExports.GetWindowsSdkDirs();
@@ -2938,7 +2985,7 @@ namespace AutomationTool
 		/// </summary>
 		public static void SignSingleExecutableIfEXEOrDLL(string Filename, bool bIgnoreExtension = false)
 		{
-            if (!RuntimePlatform.IsWindows)
+            if (!OperatingSystem.IsWindows())
             {
                 CommandUtils.LogLog(String.Format("Can't sign '{0}' on non-Windows platform.", Filename));
                 return;
@@ -3116,10 +3163,7 @@ namespace AutomationTool
 					List<FileReference> FilesToSign = new List<FileReference>();
 					foreach (string File in Files)
 					{
-						if (!(Path.GetDirectoryName(File).Replace("\\", "/")).Contains("Binaries/XboxOne"))
-						{
-							FilesToSign.Add(new FileReference(File));
-						}						
+						FilesToSign.Add(new FileReference(File));
 					}
 					SignMultipleFilesIfEXEOrDLL(FilesToSign);
 				}
@@ -3132,7 +3176,7 @@ namespace AutomationTool
 
 		public static void SignMultipleFilesIfEXEOrDLL(List<FileReference> Files, bool bIgnoreExtension = false)
 		{
-			if (!RuntimePlatform.IsWindows)
+			if (!OperatingSystem.IsWindows())
 			{
 				CommandUtils.LogLog(String.Format("Can't sign on non-Windows platform."));
 				return;
@@ -3166,7 +3210,7 @@ namespace AutomationTool
 					FinalFiles.Add(new FileReference(TargetFileInfo));
 				}
 			}
-			CodeSignWindows.Sign(FinalFiles, CodeSignWindows.SignatureType.SHA1);
+			CodeSignWindows.Sign(FinalFiles, CodeSignWindows.SignatureType.SHA1, !FinalFiles.Any(x => x.HasExtension(".msi"))); // By default we append signatures, but disable if there are MSI files in the list
 			CodeSignWindows.Sign(FinalFiles.Where(x => !x.HasExtension(".msi")).ToList(), CodeSignWindows.SignatureType.SHA256); // MSI files can only have one signature; prefer SHA1 for compatibility
 		}
 	}

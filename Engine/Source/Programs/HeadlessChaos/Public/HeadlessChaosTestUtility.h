@@ -18,6 +18,7 @@
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
 #include "Chaos/Collision/CollisionApplyType.h"
+#include "Chaos/Collision/CollisionContext.h"
 
 namespace Chaos
 {
@@ -148,10 +149,11 @@ namespace ChaosTest {
 	{
 		// Settings used for unit tests
 		const float CullDistance = 3.0f;
-		Evolution.GetNarrowPhase().SetBoundsExpansion(CullDistance);
-		Evolution.GetCollisionDetector().GetNarrowPhase().GetContext().bDeferUpdate = false;
-		Evolution.GetCollisionDetector().GetNarrowPhase().GetContext().bAllowManifolds = true;
-		Evolution.GetCollisionConstraints().SetSolverType(EConstraintSolverType::QuasiPbd);
+		FCollisionDetectorSettings DetectorSettings = Evolution.GetCollisionDetector().GetSettings();
+		DetectorSettings.BoundsExpansion = CullDistance;
+		DetectorSettings.bDeferNarrowPhase = false;
+		DetectorSettings.bAllowManifolds = true;
+		Evolution.GetCollisionDetector().SetSettings(DetectorSettings);
 	}
 
 	template<typename T_SOLVER>

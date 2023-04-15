@@ -377,13 +377,6 @@ struct FPerShapeDataStateBase
 	//helper functions for shape API
 	template <typename TParticle>
 	static const FCollisionFilterData& GetQueryData(const FPerShapeDataStateBase* State, const TParticle& Particle, int32 ShapeIdx) { return State && State->CollisionData.IsSet() ? State->CollisionData.Read().QueryData : Particle.ShapesArray()[ShapeIdx]->GetQueryData(); }
-	/*const FCollisionFilterData& GetSimData() const { return CollisionData.Read().SimData; }
-	
-	TSerializablePtr<FImplicitObject> GetGeometry() const { return Geometry; }
-	const TArray<FMaterialHandle>& GetMaterials() const { return Materials.Read().Materials; }
-	const TArray<FMaterialMaskHandle>& GetMaterialMasks() const { return Materials.Read().MaterialMasks; }
-	const TArray<uint32>& GetMaterialMaskMaps() const { return Materials.Read().MaterialMaskMaps; }
-	const TArray<FMaterialHandle>& GetMaterialMaskMapMaterials() const { return Materials.Read().MaterialMaskMapMaterials; }*/
 };
 
 class FPerShapeDataState
@@ -419,6 +412,61 @@ struct FShapesArrayStateBase
 
 	}
 };
+
+template <typename T>
+FString ToStringHelper(const T& Val)
+{
+	return Val.ToString();
+}
+
+template <typename T>
+FString ToStringHelper(const TVector<T, 2>& Val)
+{
+	return FString::Printf(TEXT("(%s, %s)"), *Val[0].ToString(), *Val[1].ToString());
+}
+
+inline FString ToStringHelper(void* Val)
+{
+	// We don't print pointers because they will always be different in diff, need this function so we will compile
+	// when using property .inl macros.
+	return FString();
+}
+
+inline FString ToStringHelper(const FReal Val)
+{
+	return FString::Printf(TEXT("%f"), Val);
+}
+
+inline FString ToStringHelper(const EObjectStateType Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
+inline FString ToStringHelper(const EPlasticityType Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
+inline FString ToStringHelper(const EJointForceMode Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
+inline FString ToStringHelper(const EJointMotionType Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
+inline FString ToStringHelper(const bool Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
+inline FString ToStringHelper(const int32 Val)
+{
+	return FString::Printf(TEXT("%d"), Val);
+}
+
 
 template <typename TParticle>
 class TShapesArrayState
@@ -475,7 +523,7 @@ private:
 	decltype(auto) Get##FUNC_NAME() const\
 	{\
 		const auto Data = State ? State->PROP.Read(FrameAndPhase, Pool) : nullptr;\
-		return Data ? Data->NAME : Head.GetSettings().NAME;\
+		return Data ? Data->NAME : Head.Get##PROP().NAME;\
 	}\
 
 inline int32 ComputeCircularSize(int32 NumFrames) { return NumFrames * FFrameAndPhase::NumPhases; }
@@ -600,9 +648,8 @@ public:
 	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, MaxLinearSpeedSq)
 	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, MaxAngularSpeedSq)
 	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, ObjectState)
-	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, GravityEnabled)
-	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, CCDEnabled)
 	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, CollisionGroup)
+	REWIND_PARTICLE_RIGID_PROPERTY(DynamicsMisc, ControlFlags)
 
 	REWIND_PARTICLE_RIGID_PROPERTY(MassProps, CenterOfMass)
 	REWIND_PARTICLE_RIGID_PROPERTY(MassProps, RotationOfMass)
@@ -637,6 +684,50 @@ public:
 		State = InState;
 	}
 
+	FString ToString() const
+	{
+#undef REWIND_PARTICLE_TO_STR
+#define REWIND_PARTICLE_TO_STR(PropName) Out += FString::Printf(TEXT(#PropName":%s\n"), *ToStringHelper(PropName()));
+		//TODO: use macro to define api and the to string
+		FString Out = FString::Printf(TEXT("ParticleID:[Global: %d Local: %d]\n"), Particle.ParticleID().GlobalID, Particle.ParticleID().LocalID);
+
+		REWIND_PARTICLE_TO_STR(X)
+		REWIND_PARTICLE_TO_STR(R)
+		//REWIND_PARTICLE_TO_STR(Geometry)
+		//REWIND_PARTICLE_TO_STR(UniqueIdx)
+		//REWIND_PARTICLE_TO_STR(SpatialIdx)
+
+		if(Particle.CastToKinematicParticle())
+		{
+			REWIND_PARTICLE_TO_STR(V)
+			REWIND_PARTICLE_TO_STR(W)
+		}
+
+		if(Particle.CastToRigidParticle())
+		{
+			REWIND_PARTICLE_TO_STR(LinearEtherDrag)
+			REWIND_PARTICLE_TO_STR(AngularEtherDrag)
+			REWIND_PARTICLE_TO_STR(MaxLinearSpeedSq)
+			REWIND_PARTICLE_TO_STR(MaxAngularSpeedSq)
+			REWIND_PARTICLE_TO_STR(ObjectState)
+			REWIND_PARTICLE_TO_STR(CollisionGroup)
+			REWIND_PARTICLE_TO_STR(ControlFlags)
+
+			REWIND_PARTICLE_TO_STR(CenterOfMass)
+			REWIND_PARTICLE_TO_STR(RotationOfMass)
+			REWIND_PARTICLE_TO_STR(I)
+			REWIND_PARTICLE_TO_STR(M)
+			REWIND_PARTICLE_TO_STR(InvM)
+
+			REWIND_PARTICLE_TO_STR(Acceleration)
+			REWIND_PARTICLE_TO_STR(AngularAcceleration)
+			REWIND_PARTICLE_TO_STR(LinearImpulseVelocity)
+			REWIND_PARTICLE_TO_STR(AngularImpulseVelocity)
+		}
+
+		return Out;
+	}
+
 private:
 	const FGeometryParticleHandle& Particle;
 	const FDirtyPropertiesPool& Pool;
@@ -652,7 +743,7 @@ struct FJointStateBase
 {
 	explicit FJointStateBase(int32 NumFrames)
 		: JointSettings(ComputeCircularSize(NumFrames))
-		, ProxyPair(ComputeCircularSize(NumFrames))
+		, JointProxies(ComputeCircularSize(NumFrames))
 	{
 	}
 
@@ -663,31 +754,31 @@ struct FJointStateBase
 	void Release(FDirtyPropertiesPool& Manager)
 	{
 		JointSettings.Release(Manager);
-		ProxyPair.Release(Manager);
+		JointProxies.Release(Manager);
 	}
 
 	void Reset()
 	{
 		JointSettings.Reset();
-		ProxyPair.Reset();
+		JointProxies.Reset();
 	}
 
 	void ClearEntryAndFuture(const FFrameAndPhase FrameAndPhase)
 	{
 		JointSettings.ClearEntryAndFuture(FrameAndPhase);
-		ProxyPair.ClearEntryAndFuture(FrameAndPhase);
+		JointProxies.ClearEntryAndFuture(FrameAndPhase);
 	}
 
 	bool IsClean(const FFrameAndPhase FrameAndPhase) const
 	{
-		return JointSettings.IsClean(FrameAndPhase) && ProxyPair.IsClean(FrameAndPhase);
+		return JointSettings.IsClean(FrameAndPhase) && JointProxies.IsClean(FrameAndPhase);
 	}
 
 	template <bool bSkipDynamics>
 	bool IsInSync(const FPBDJointConstraintHandle& Handle, const FFrameAndPhase FrameAndPhase, const FDirtyPropertiesPool& Pool) const;
 
 	TParticlePropertyBuffer<FPBDJointSettings, EChaosProperty::JointSettings> JointSettings;
-	TParticlePropertyBuffer<FProxyBasePair, EChaosProperty::JointParticleProxies> ProxyPair;
+	TParticlePropertyBuffer<FProxyBasePairProperty, EChaosProperty::JointParticleProxies> JointProxies;
 };
 
 class FJointState
@@ -711,6 +802,19 @@ public:
 	//Each CHAOS_INNER_JOINT_PROPERTY entry will have a Get*
 #define CHAOS_INNER_JOINT_PROPERTY(OuterProp, FuncName, Inner, InnerType) REWIND_JOINT_PROPERTY(OuterProp, FuncName, Inner);
 #include "Chaos/JointProperties.inl"
+
+
+	FString ToString() const
+	{
+		TVector<FGeometryParticleHandle*, 2> Particles = Head.GetConstrainedParticles();
+		FString Out = FString::Printf(TEXT("Joint: Particle0 ID:[Global: %d Local: %d] Particle1 ID:[Global: %d Local: %d]\n"), Particles[0]->ParticleID().GlobalID, Particles[0]->ParticleID().LocalID, Particles[1]->ParticleID().GlobalID, Particles[1]->ParticleID().LocalID);
+
+#define CHAOS_INNER_JOINT_PROPERTY(OuterProp, FuncName, Inner, InnerType) Out += FString::Printf(TEXT(#FuncName":%s\n"), *ToStringHelper(Get##FuncName()));
+#include "Chaos/JointProperties.inl"
+#undef CHAOS_INNER_JOINT_PROPERTY
+
+		return Out;
+	}
 
 private:
 	const FPBDJointConstraintHandle& Head;
@@ -866,6 +970,8 @@ public:
 		return !!EnableResimCache && bResimOptimization ? Managers[CurFrame].ExternalResimCache.Get() : nullptr;
 	}
 
+	void CHAOS_API DumpHistory_Internal(const int32 FramePrintOffset, const FString& Filename = FString(TEXT("Dump")));
+
 	template <typename CreateCache>
 	void AdvanceFrame(FReal DeltaTime, const CreateCache& CreateCacheFunc)
 	{
@@ -955,7 +1061,9 @@ private:
 		int32 DirtyDynamics = INDEX_NONE;	//Only used by particles, indicates the dirty properties was written to.
 		int32 LastDirtyFrame;	//Track how recently this was made dirty
 		int32 InitializedOnStep = INDEX_NONE;	//if not INDEX_NONE, it indicates we saw initialization during rewind history window
-		bool bResimAsSlave = true;	//Indicates the particle will always resim in the exact same way from game thread data
+		UE_DEPRECATED(5.1, "bResimAsSlave is deprecated - please use bResimAsFollower")
+		bool bResimAsSlave = true;
+		bool bResimAsFollower = true;	//Indicates the particle will always resim in the exact same way from game thread data
 
 		TDirtyObjectInfo(FDirtyPropertiesPool& InPropertiesPool, TObj& InObj, const int32 CurFrame, const int32 NumFrames)
 			: History(NumFrames)
@@ -971,7 +1079,7 @@ private:
 			, PropertiesPool(Other.PropertiesPool)
 			, LastDirtyFrame(Other.LastDirtyFrame)
 			, InitializedOnStep(Other.InitializedOnStep)
-			, bResimAsSlave(Other.bResimAsSlave)
+			, bResimAsFollower(Other.bResimAsFollower)
 		{
 			Other.PropertiesPool = nullptr;
 		}
@@ -1073,6 +1181,11 @@ private:
 	void DesyncIfNecessary(TDirtyInfo& Info, const FFrameAndPhase FrameAndPhase);
 };
 
+struct FResimDebugInfo
+{
+	double ResimTime = 0.0;
+};
+
 /** Used by user code to determine when rewind should occur and gives it the opportunity to record any additional data */
 class IRewindCallback
 {
@@ -1088,6 +1201,13 @@ public:
 	*	Gives user the ability to modify inputs or record them - this can help with reducing latency if you want to act on inputs immediately
 	*/
 	virtual void ProcessInputs_External(int32 PhysicsStep, const TArray<FSimCallbackInputAndObject>& SimCallbackInputs) {}
+
+	/** Called before inputs are split into potential sub-steps and marshalled over to the physics thread.
+	*	The physics state has not been applied yet, and cannot be inspected anyway because this is triggered from the external thread (game thread)
+	*	Gives user the ability to call GetProducerInputData_External one last time.
+	*	Input data is shared amongst sub-steps. If NumSteps > 1 it means any input data injected will be shared for all sub-steps generated
+	*/
+	virtual void InjectInputs_External(int32 PhysicsStep, int32 NumSteps){}
 
 	/** Called after sim step to give the option to rewind. Any pending inputs for the next frame will remain in the queue
 	*   Return the PhysicsStep to start resimulating from. Resim will run up until latest step passed into RecordInputs (i.e. latest physics sim simulated so far)
@@ -1106,5 +1226,8 @@ public:
 	virtual void PostResimStep_Internal(int32 PhysicsStep){}
 
 	virtual void RegisterRewindableSimCallback_Internal(ISimCallbackObject* Callback) { ensure(false); }
+
+	/** Called When resim is finished with debug information about the resim */
+	virtual void SetResimDebugInfo_Internal(const FResimDebugInfo& ResimDebugInfo){}
 };
 }

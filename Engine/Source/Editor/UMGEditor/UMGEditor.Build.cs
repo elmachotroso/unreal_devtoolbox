@@ -6,23 +6,6 @@ public class UMGEditor : ModuleRules
 {
 	public UMGEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/UMGEditor/Private", // For PCH includes (because they don't work with relative paths, yet)
-				"Editor/UMGEditor/Private/Templates",
-				"Editor/UMGEditor/Private/Extensions",
-				"Editor/UMGEditor/Private/Customizations",
-				"Editor/UMGEditor/Private/BlueprintModes",
-				"Editor/UMGEditor/Private/TabFactory",
-				"Editor/UMGEditor/Private/Designer",
-				"Editor/UMGEditor/Private/Hierarchy",
-				"Editor/UMGEditor/Private/Palette",
-				"Editor/UMGEditor/Private/Library",
-				"Editor/UMGEditor/Private/Details",
-				"Editor/UMGEditor/Private/DragDrop",
-                "Editor/UMGEditor/Private/Utility",
-			});
-
 		OverridePackageType = PackageOverrideType.EngineDeveloper;
 
 		PrivateIncludePathModuleNames.AddRange(
@@ -39,6 +22,7 @@ public class UMGEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"ClassViewer",
 				"Core",
 				"CoreUObject",
 				"ContentBrowser",
@@ -47,7 +31,10 @@ public class UMGEditor : ModuleRules
 				"InputCore",
 				"Engine",
 				"AssetTools",
+				"EditorConfig",
+				"EditorSubsystem",
 				"EditorFramework",
+				"InteractiveToolsFramework",
 				"UnrealEd", // for Asset Editor Subsystem
 				"KismetWidgets",
 				"EditorWidgets",
@@ -79,6 +66,7 @@ public class UMGEditor : ModuleRules
 				"DeveloperSettings",
 				"ImageWrapper",
 				"ToolWidgets",
+				"WorkspaceMenuStructure"
 			}
 			);
 	}

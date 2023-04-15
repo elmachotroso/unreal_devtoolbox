@@ -37,6 +37,13 @@ namespace Chaos
 		void Enable();
 
 		/**
+		* Convert the constraint between this pair of bodies into a probe. Collision callbacks will still occur if the
+		* bodies collide (a contact occurring in contact modification does not mean a contact actually has occurred
+		* yet, but that it may)
+		*/
+		void ConvertToProbe();
+
+		/**
 		* @return Number of contact points in constraint pair. ContactPointIdx must be below number of contacts.
 		*/
 		int32 GetNumContacts() const;
@@ -72,12 +79,17 @@ namespace Chaos
 		void ModifyTargetSeparation(FReal TargetSeparation, int32 ContactPointIdx);
 
 		/**
+		* @brief Get the world-space contact normal.
+		* @note The contact normal always points away from the second body.
+		* E.g., a sphere lying on a flat ground could return a WorldNormal pointing up or down, depending on whether the
+		* sphere is the first or second body in the constraint.
 		* @return Normal of contact in world space.
 		*/
 		FVec3 GetWorldNormal(int32 ContactPointIdx) const;
 
 		/**
 		* Modify contact normal in world space. If modifying separation and normal, order of operations should be considered.
+		* @note The contact normal should always point away from the second body.
 		*/
 		void ModifyWorldNormal(const FVec3& Normal, int32 ContactPointIdx);
 
@@ -323,6 +335,10 @@ namespace Chaos
 		TArrayView<FPBDCollisionConstraint* const>& GetConstraints();
 		void DisableConstraint(FPBDCollisionConstraint& Constraint);
 		void EnableConstraint(FPBDCollisionConstraint& Constraint);
+
+		// Turn this constraint into a probe. It will still generate hit events,
+		// but will not produce impulses
+		void ConvertToProbeConstraint(FPBDCollisionConstraint& Constraint);
 
 		void MarkConstraintForManifoldUpdate(FPBDCollisionConstraint& Constraint);
 

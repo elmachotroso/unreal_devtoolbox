@@ -7,15 +7,19 @@
 
 #pragma once
 
+#include "CoreFwd.h" // IWYU pragma: keep
 #include "CoreTypes.h"
-#include "CoreFwd.h"
-#include <wchar.h>
+#include "HAL/PlatformString.h"
+
 #include <string.h>
+#include <wchar.h>
 
-struct FPlatformMemoryStats;
-
+class FMalloc;
+class FOutputDevice;
+class FString;
 /** Holds generic memory stats, internally implemented as a map. */
 struct FGenericMemoryStats;
+struct FPlatformMemoryStats;
 
 /**
 * Platform-dependent "bucket" for memory size, where Default is the normal, or possibly the largest.
@@ -174,6 +178,9 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 	TArray<FPlatformSpecificStat> GetPlatformSpecificStats() const;
 
 	uint64 GetAvailablePhysical(bool bExcludeExtraDevMemory) const;
+
+	/** Called by FCsvProfiler::EndFrame to set platform specific CSV stats. */
+	void SetEndFrameCsvStats() const {}
 };
 
 

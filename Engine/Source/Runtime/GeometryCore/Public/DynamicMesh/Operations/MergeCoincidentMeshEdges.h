@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "Math/UnrealMathSSE.h"
 #include "MathUtil.h"
 #include "VectorTypes.h"
 
@@ -44,6 +45,12 @@ public:
 	  * If zero, we set to MergeVertexTolerance*2
 	  */
 	double MergeSearchTolerance = 0;
+
+
+	/** Number of mesh boundary edges before merging */
+	int32 InitialNumBoundaryEdges = 0;
+	/** Number of mesh boundary edges after merging */
+	int32 FinalNumBoundaryEdges = 0;
 
 public:
 	FMergeCoincidentMeshEdges(FDynamicMesh3* mesh) : Mesh(mesh)

@@ -7,8 +7,6 @@ public class Launch : ModuleRules
 {
 	public Launch(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Runtime/Launch/Private");
-
 		PrivateIncludePathModuleNames.AddRange(new string[] {
 				"AutomationController",
 				"TaskGraph",
@@ -77,20 +75,19 @@ public class Launch : ModuleRules
 				});
 			}
 
+			DynamicallyLoadedModuleNames.AddRange(new string[] {
+					"AudioMixerPlatformAudioLink",
+				});
+
 			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
 				DynamicallyLoadedModuleNames.AddRange(new string[] {
 					"AudioMixerXAudio2",
 				});
 			}
-			else if (Target.Platform == UnrealTargetPlatform.HoloLens)
-			{
-				DynamicallyLoadedModuleNames.Add("D3D11RHI");
-				DynamicallyLoadedModuleNames.Add("AudioMixerXAudio2");
-			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac)
 			{
-				DynamicallyLoadedModuleNames.AddRange(new string [] {
+				DynamicallyLoadedModuleNames.AddRange(new string[] {
 					"AudioMixerCoreAudio",
 				});
 			}
@@ -203,7 +200,8 @@ public class Launch : ModuleRules
 					"OutputLog",
 					"TextureCompressor",
 					"MeshUtilities",
-					"SourceCodeAccess"
+					"SourceCodeAccess",
+					"EditorStyle"
 			});
 
 			if (Target.Platform == UnrealTargetPlatform.Mac)
@@ -242,13 +240,6 @@ public class Launch : ModuleRules
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			// Clang 9.0.1 lld seems to end up having issues with resolving EditorStyle
-			// when dealing with circular dependencies on SourceControl module
-			if (Target.bBuildEditor == true)
-			{
-				PrivateDependencyModuleNames.Add("EditorStyle");
-			}
-
 			PrivateDependencyModuleNames.Add("UnixCommonStartup");
 		}
 
@@ -262,11 +253,11 @@ public class Launch : ModuleRules
 			}
 		}
 
-		if(Target.LinkType == TargetLinkType.Monolithic && !Target.bFormalBuild)
+		if (Target.LinkType == TargetLinkType.Monolithic && !Target.bFormalBuild)
 		{
 			PrivateDefinitions.Add(string.Format("COMPILED_IN_CL={0}", Target.Version.Changelist));
 			PrivateDefinitions.Add(string.Format("COMPILED_IN_COMPATIBLE_CL={0}", Target.Version.EffectiveCompatibleChangelist));
-			PrivateDefinitions.Add(string.Format("COMPILED_IN_BRANCH_NAME={0}", (Target.Version.BranchName == null || Target.Version.BranchName.Length == 0)? "UE" : Target.Version.BranchName));
+			PrivateDefinitions.Add(string.Format("COMPILED_IN_BRANCH_NAME={0}", (Target.Version.BranchName == null || Target.Version.BranchName.Length == 0) ? "UE" : Target.Version.BranchName));
 		}
 	}
 }

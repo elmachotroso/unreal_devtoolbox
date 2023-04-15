@@ -14,9 +14,12 @@
 #include "CADKernel/Mesh/Structure/Grid.h"
 #include "CADKernel/Topo/Shell.h"
 #include "CADKernel/Topo/TopologicalEdge.h"
-#include "CADKernel/Topo/TopologyReport.h"
 
-namespace CADKernel
+#ifdef CADKERNEL_DEV
+#include "CADKernel/Topo/TopologyReport.h"
+#endif
+
+namespace UE::CADKernel
 {
 
 void FTopologicalFace::ComputeBoundary() const
@@ -49,8 +52,6 @@ void FTopologicalFace::Presample()
 #ifdef DEBUG_GET_BBOX
 #include "CADKernel/Math/Aabb.h"
 #endif
-
-void UpdateSubPolylineBBox(const FPolyline3D& Polyline, const FLinearBoundary& IntersectionBoundary, FPolylineBBox& IsoBBox);
 
 void FTopologicalFace::UpdateBBox(int32 IsoCount, const double ApproximationFactor, FBBoxWithNormal& BBox)
 {
@@ -104,7 +105,7 @@ void FTopologicalFace::UpdateBBox(int32 IsoCount, const double ApproximationFact
 				Draw(SubPolyline, EVisuProperty::Iso);
 #endif
 
-				UpdateSubPolylineBBox(Polyline, IntersectionBoundary, IsoBBox);
+				Polyline.UpdateSubPolylineBBox(IntersectionBoundary, IsoBBox);
 
 				Intersections.Pop();
 				IntersectionCount--;
@@ -124,14 +125,14 @@ void FTopologicalFace::UpdateBBox(int32 IsoCount, const double ApproximationFact
 				Polyline.GetSubPolyline(Boundary, EOrientation::Front, SubPolyline);
 				Draw(SubPolyline, EVisuProperty::Iso);
 #endif
-				UpdateSubPolylineBBox(Polyline, IntersectionBoundary, IsoBBox);
+				Polyline.UpdateSubPolylineBBox(IntersectionBoundary, IsoBBox);
 			}
 
 #ifdef DEBUG_GET_BBOX2
 			for (int32 Index = 0; Index < 3; ++Index)
 			{
-				CADKernel::DisplayPoint(IsoBBox.MaxPoints[Index], EVisuProperty::YellowPoint);
-				CADKernel::DisplayPoint(IsoBBox.MinPoints[Index], EVisuProperty::YellowPoint);
+				UE::CADKernel::DisplayPoint(IsoBBox.MaxPoints[Index], EVisuProperty::YellowPoint);
+				UE::CADKernel::DisplayPoint(IsoBBox.MinPoints[Index], EVisuProperty::YellowPoint);
 			}
 #endif
 
@@ -149,18 +150,19 @@ void FTopologicalFace::UpdateBBox(int32 IsoCount, const double ApproximationFact
 		F3DDebugSession _(TEXT("BBox Face"));
 
 		FAABB AABB(BBox.Min, BBox.Max);
-		CADKernel::DisplayAABB(AABB);
+		UE::CADKernel::DisplayAABB(AABB);
 
 		for (int32 Index = 0; Index < 3; ++Index)
 		{
-			CADKernel::DisplayPoint(BBox.MaxPoints[Index], EVisuProperty::YellowPoint);
-			CADKernel::DisplayPoint(BBox.MinPoints[Index], EVisuProperty::YellowPoint);
-			CADKernel::DisplaySegment(BBox.MaxPoints[Index], BBox.MaxPoints[Index] + BBox.MaxPointNormals[Index], 0, EVisuProperty::YellowCurve);
-			CADKernel::DisplaySegment(BBox.MinPoints[Index], BBox.MinPoints[Index] + BBox.MinPointNormals[Index], 0, EVisuProperty::YellowCurve);
+			UE::CADKernel::DisplayPoint(BBox.MaxPoints[Index], EVisuProperty::YellowPoint);
+			UE::CADKernel::DisplayPoint(BBox.MinPoints[Index], EVisuProperty::YellowPoint);
+			UE::CADKernel::DisplaySegment(BBox.MaxPoints[Index], BBox.MaxPoints[Index] + BBox.MaxPointNormals[Index], 0, EVisuProperty::YellowCurve);
+			UE::CADKernel::DisplaySegment(BBox.MinPoints[Index], BBox.MinPoints[Index] + BBox.MinPointNormals[Index], 0, EVisuProperty::YellowCurve);
 		}
 		Wait();
 	}
 #endif
+
 }
 
 
@@ -209,6 +211,11 @@ void FTopologicalFace::ApplyNaturalLoops(const FSurfacicBoundary& Boundaries)
 	EndPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Min);
 	BuildEdge(StartPoint, EndPoint);
 
+	if (Edges.IsEmpty())
+	{
+		return;
+	}
+
 	TSharedPtr<FTopologicalEdge> PreviousEdge = Edges.Last();
 	for (TSharedPtr<FTopologicalEdge>& Edge : Edges)
 	{
@@ -219,7 +226,8 @@ void FTopologicalFace::ApplyNaturalLoops(const FSurfacicBoundary& Boundaries)
 	TArray<EOrientation> Orientations;
 	Orientations.Init(EOrientation::Front, Edges.Num());
 
-	TSharedPtr<FTopologicalLoop> Loop = FTopologicalLoop::Make(Edges, Orientations, CarrierSurface->Get3DTolerance());
+	const bool bIsExternalLoop = true;
+	TSharedPtr<FTopologicalLoop> Loop = FTopologicalLoop::Make(Edges, Orientations, bIsExternalLoop, CarrierSurface->Get3DTolerance());
 	AddLoop(Loop);
 }
 
@@ -260,13 +268,25 @@ void FTopologicalFace::RemoveLoop(const TSharedPtr<FTopologicalLoop>& Loop)
 	}
 }
 
-void FTopologicalFace::RemoveLinksWithNeighbours()
+void FTopologicalFace::Disjoin(TArray<FTopologicalEdge*>& NewBorderEdges)
 {
+	NewBorderEdges.Reserve(NewBorderEdges.Num() + EdgeCount());
 	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
 	{
 		for (const FOrientedEdge& Edge : Loop->GetEdges())
 		{
+			const TArray<FTopologicalEdge*> Twins = Edge.Entity->GetTwinEntities();
+			for (FTopologicalEdge* TwinEdge : Twins)
+			{
+				if (TwinEdge != Edge.Entity.Get())
+				{
+					NewBorderEdges.Add(TwinEdge);
+				}
+			}
 			Edge.Entity->RemoveFromLink();
+			Edge.Entity->SetMarker1();
+			Edge.Entity->GetStartVertex()->RemoveFromLink();
+			Edge.Entity->GetEndVertex()->RemoveFromLink();
 		}
 	}
 }
@@ -337,6 +357,7 @@ const FTopologicalEdge* FTopologicalFace::GetLinkedEdge(const FTopologicalEdge& 
 	return nullptr;
 }
 
+#ifdef CADKERNEL_DEV
 void FTopologicalFace::FillTopologyReport(FTopologyReport& Report) const
 {
 	Report.Add(this);
@@ -349,6 +370,7 @@ void FTopologicalFace::FillTopologyReport(FTopologyReport& Report) const
 		}
 	}
 }
+#endif
 
 void FTopologicalFace::GetEdgeIndex(const FTopologicalEdge& Edge, int32& OutBoundaryIndex, int32& OutEdgeIndex) const
 {
@@ -418,10 +440,10 @@ TSharedRef<FFaceMesh> FTopologicalFace::GetOrCreateMesh(FModelMesh& MeshModel)
 
 void FTopologicalFace::InitDeltaUs()
 {
-	CrossingPointDeltaMins[EIso::IsoU].Init(SMALL_NUMBER, CrossingCoordinates[EIso::IsoU].Num() - 1);
+	CrossingPointDeltaMins[EIso::IsoU].Init(DOUBLE_SMALL_NUMBER, CrossingCoordinates[EIso::IsoU].Num() - 1);
 	CrossingPointDeltaMaxs[EIso::IsoU].Init(HUGE_VALUE, CrossingCoordinates[EIso::IsoU].Num() - 1);
 
-	CrossingPointDeltaMins[EIso::IsoV].Init(SMALL_NUMBER, CrossingCoordinates[EIso::IsoV].Num() - 1);
+	CrossingPointDeltaMins[EIso::IsoV].Init(DOUBLE_SMALL_NUMBER, CrossingCoordinates[EIso::IsoV].Num() - 1);
 	CrossingPointDeltaMaxs[EIso::IsoV].Init(HUGE_VALUE, CrossingCoordinates[EIso::IsoV].Num() - 1);
 }
 
@@ -626,6 +648,19 @@ void FTopologicalFace::DefineSurfaceType()
 		break;
 	}
 }
+
+const TSharedPtr<FTopologicalLoop> FTopologicalFace::GetExternalLoop() const
+{
+	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
+	{
+		if (Loop->IsExternal())
+		{
+			return Loop;
+		}
+	}
+	return TSharedPtr<FTopologicalLoop>();
+}
+
 
 
 void FFaceSubset::SetMainShell(TMap<FTopologicalShapeEntity*, int32>& ShellToFaceCount)

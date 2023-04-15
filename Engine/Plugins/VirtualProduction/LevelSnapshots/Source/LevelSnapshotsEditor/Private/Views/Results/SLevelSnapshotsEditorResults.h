@@ -49,7 +49,7 @@ public:
 
 	TOptional<ULevelSnapshot*> GetSelectedLevelSnapshot() const;
 
-	void OnSnapshotSelected(const TOptional<ULevelSnapshot*>& InLevelSnapshot);
+	void OnSnapshotSelected(ULevelSnapshot* InLevelSnapshot);
 	void RefreshResults(const bool bSnapshotHasChanged = false);
 	FReply OnClickApplyToWorld();
 
@@ -126,7 +126,7 @@ private:
 	//  Tree View Implementation
 
 	void GenerateTreeView(const bool bSnapshotHasChanged);
-	bool GenerateTreeViewChildren_ModifiedActors(FLevelSnapshotsEditorResultsRowPtr ModifiedActorsHeader, ULevelSnapshotFilter* UserFilters);
+	bool GenerateTreeViewChildren_ModifiedActors(FLevelSnapshotsEditorResultsRowPtr ModifiedActorsHeader);
 	bool GenerateTreeViewChildren_AddedActors(FLevelSnapshotsEditorResultsRowPtr AddedActorsHeader);
 	bool GenerateTreeViewChildren_RemovedActors(FLevelSnapshotsEditorResultsRowPtr RemovedActorsHeader);
 	

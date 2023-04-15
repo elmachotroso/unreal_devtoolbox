@@ -1,39 +1,78 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FontEditor.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EngineGlobals.h"
-#include "Engine/Texture2D.h"
-#include "Framework/Commands/Commands.h"
-#include "Engine/Engine.h"
-#include "Misc/MessageDialog.h"
-#include "Misc/FileHelper.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/List.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "DesktopPlatformModule.h"
+#include "DetailsViewArgs.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
 #include "EditorReimportHandler.h"
-#include "Exporters/Exporter.h"
-#include "Engine/FontImportOptions.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
 #include "Engine/Font.h"
 #include "Engine/FontFace.h"
-#include "Editor.h"
+#include "Engine/FontImportOptions.h"
+#include "Engine/Texture.h"
+#include "Engine/Texture2D.h"
+#include "Engine/TextureDefines.h"
+#include "Exporters/Exporter.h"
+#include "Exporters/TextureExporterTGA.h"
+#include "Factories/Factory.h"
 #include "Factories/FontFactory.h"
 #include "Factories/TextureFactory.h"
 #include "Factories/TrueTypeFontFactory.h"
-#include "Exporters/TextureExporterTGA.h"
-#include "Dialogs/Dialogs.h"
 #include "FontEditorModule.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Colors/SColorPicker.h"
-#include "SFontEditorViewport.h"
-#include "SCompositeFontEditor.h"
-#include "DesktopPlatformModule.h"
-#include "PropertyEditorModule.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "IDesktopPlatform.h"
 #include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/FileHelper.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "SCompositeFontEditor.h"
+#include "SFontEditorViewport.h"
+#include "Selection.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Subsystems/ImportSubsystem.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "Types/SlateEnums.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Engine/Selection.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FontEditor"
 
@@ -56,7 +95,7 @@ class FFontEditorCommands : public TCommands<FFontEditorCommands>
 public:
 	/** Constructor */
 	FFontEditorCommands() 
-		: TCommands<FFontEditorCommands>("FontEditor", NSLOCTEXT("Contexts", "FontEditor", "Font Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FFontEditorCommands>("FontEditor", NSLOCTEXT("Contexts", "FontEditor", "Font Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 	
@@ -103,29 +142,29 @@ void FFontEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTab
 	InTabManager->RegisterTabSpawner( TexturePagesViewportTabId, FOnSpawnTab::CreateSP(this, &FFontEditor::SpawnTab_TexturePagesViewport) )
 		.SetDisplayName( LOCTEXT("TexturePagesViewportTab", "Texture Pages") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports"))
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"))
 		.SetMenuType( TAttribute<ETabSpawnerMenuType::Type>::Create(TAttribute<ETabSpawnerMenuType::Type>::FGetter::CreateSP(this, &FFontEditor::GetTabSpawnerMenuType, TexturePagesViewportTabId)) );
 
 	InTabManager->RegisterTabSpawner( CompositeFontEditorTabId, FOnSpawnTab::CreateSP(this, &FFontEditor::SpawnTab_CompositeFontEditor) )
 		.SetDisplayName( LOCTEXT("CompositeFontEditorTab", "Composite Font") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "FontEditor.Tabs.PageProperties"))
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "FontEditor.Tabs.PageProperties"))
 		.SetMenuType( TAttribute<ETabSpawnerMenuType::Type>::Create(TAttribute<ETabSpawnerMenuType::Type>::FGetter::CreateSP(this, &FFontEditor::GetTabSpawnerMenuType, CompositeFontEditorTabId)) );
 
 	InTabManager->RegisterTabSpawner( PreviewTabId,		FOnSpawnTab::CreateSP(this, &FFontEditor::SpawnTab_Preview) )
 		.SetDisplayName( LOCTEXT("PreviewTab", "Preview") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "FontEditor.Tabs.Preview"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "FontEditor.Tabs.Preview"));
 
 	InTabManager->RegisterTabSpawner( PropertiesTabId,	FOnSpawnTab::CreateSP(this, &FFontEditor::SpawnTab_Properties) )
 		.SetDisplayName( LOCTEXT("PropertiesTabId", "Details") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner( PagePropertiesTabId,FOnSpawnTab::CreateSP(this, &FFontEditor::SpawnTab_PageProperties) )
 		.SetDisplayName( LOCTEXT("PagePropertiesTab", "Page Details") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "FontEditor.Tabs.PageProperties"))
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "FontEditor.Tabs.PageProperties"))
 		.SetMenuType( TAttribute<ETabSpawnerMenuType::Type>::Create(TAttribute<ETabSpawnerMenuType::Type>::FGetter::CreateSP(this, &FFontEditor::GetTabSpawnerMenuType, PagePropertiesTabId)) );
 }
 

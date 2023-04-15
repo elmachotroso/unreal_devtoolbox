@@ -33,7 +33,7 @@ uint GPUSceneNumInstances;
 uint GPUSceneNumPrimitives;
 uint GPUSceneNumLightmapDataItems;
 
-StructuredBuffer<FDrawCommandDesc> DrawCommandDescs;
+StructuredBuffer<uint> DrawCommandDescs;
 Buffer<uint> InstanceIdOffsetBuffer;
 StructuredBuffer<uint> ViewIds;
 
@@ -95,7 +95,7 @@ float2 PackLocalBoundsExtent(float3 Extent)
 	return Result;
 }
 
-void WritePackedInstanceData(uint Offset, uint InstanceId, FInstanceSceneData InstanceData, uint ViewIdIndex)
+void WritePackedInstanceData(uint Offset, uint InstanceId, FInstanceSceneData InstanceData, uint ViewIdIndex, uint MeshLODIndex)
 {
 	FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
 	
@@ -104,8 +104,7 @@ void WritePackedInstanceData(uint Offset, uint InstanceId, FInstanceSceneData In
 #if ALLOW_STATIC_LIGHTING 
 	float4 LightMapUVScaleBias = float4(1,1,0,0);
 	float4 ShadowMapUVScaleBias = float4(1,1,0,0);
-	// FIXME: need LODIndex to compute correct LightmapDataIndex
-	uint LightmapDataIndex = PrimitiveData.LightmapDataIndex; // + LODIndex;
+	uint LightmapDataIndex = PrimitiveData.LightmapDataIndex + MeshLODIndex;
 	if (LightmapDataIndex < GPUSceneNumLightmapDataItems)
 	{
 		LightMapUVScaleBias = GetLightmapData(LightmapDataIndex).LightMapCoordinateScaleBias;
@@ -122,7 +121,7 @@ void WritePackedInstanceData(uint Offset, uint InstanceId, FInstanceSceneData In
 		LightmapDataIndex = 0;
 	}
 	InstanceAuxData4 = PackLightmapData(LightMapUVScaleBias, ShadowMapUVScaleBias);
-	InstanceAuxData1 = asfloat(LightmapDataIndex);
+	InstanceAuxData1 = asfloat(PrimitiveData.LightmapDataIndex);
 #else
 	InstanceAuxData4.xy = PackLocalBoundsCenter(InstanceData.LocalBoundsCenter);
 	InstanceAuxData4.zw = PackLocalBoundsExtent(InstanceData.LocalBoundsExtent);
@@ -151,12 +150,12 @@ void WritePackedInstanceData(uint Offset, uint InstanceId, FInstanceSceneData In
 }
 #endif
 
-void WriteInstance(uint Offset, uint InstanceId, FInstanceSceneData InstanceData, uint ViewIdIndex)
+void WriteInstance(uint Offset, uint InstanceId, FInstanceSceneData InstanceData, uint ViewIdIndex, uint MeshLODIndex)
 {
 	checkSlow(InstanceId < GPUSceneNumInstances);
 
 #if USES_PACKED_INSTANCE_DATA
-	WritePackedInstanceData(Offset, InstanceId, InstanceData, ViewIdIndex);
+	WritePackedInstanceData(Offset, InstanceId, InstanceData, ViewIdIndex, MeshLODIndex);
 #else
 	uint PackedId = InstanceId | (ViewIdIndex << 28U);
 	checkStructuredBufferAccessSlow(InstanceIdsBufferOut, Offset);
@@ -179,7 +178,7 @@ bool ShouldRenderInstance(FInstanceSceneData InstanceData, FDrawCommandDesc Desc
 	BRANCH
 		if (bDrawOnlyVSMInvalidatingGeometry != 0)
 		{
-			const bool bHasMoved = GetGPUSceneFrameNumber() == InstanceData.LastUpdateSceneFrameNumber || Desc.bMaterialMayModifyPosition;
+			const bool bHasMoved = GetGPUSceneFrameNumber() == InstanceData.LastUpdateSceneFrameNumber || Desc.bMaterialUsesWorldPositionOffset;
 
 			// TODO: Fix the shadow flag here:
 			const bool bCastShadow = (GetPrimitiveData(InstanceData.PrimitiveId).Flags & 1u) != 0u;
@@ -208,9 +207,6 @@ bool IsInstanceVisible(FInstanceSceneData InstanceData, uint ViewIdIndex)
 		return true;
 	}
 
-	// TODO: impact? make permutation for shadow views? Or use a dynamic branch?
-	bool bNearClip = true;
-
 	// TODO: remove this indirection and go straight to data index
 	checkStructuredBufferAccessSlow(ViewIds, ViewIdIndex);
 
@@ -222,8 +218,10 @@ bool IsInstanceVisible(FInstanceSceneData InstanceData, uint ViewIdIndex)
 
 		float4x4 LocalToTranslatedWorld = LWCMultiplyTranslation(InstanceData.LocalToWorld, NaniteView.PreViewTranslation);
 		float4x4 LocalToClip = mul(LocalToTranslatedWorld, NaniteView.TranslatedWorldToClip);
+		const bool bIsOrtho = IsOrthoProjection(NaniteView.ViewToClip);
+		const bool bNearClip = (NaniteView.Flags & NANITE_VIEW_FLAG_NEAR_CLIP) != 0;
 
-		FFrustumCullData Cull = BoxCullFrustum(InstanceData.LocalBoundsCenter, InstanceData.LocalBoundsExtent, LocalToClip, bNearClip, false);
+		FFrustumCullData Cull = BoxCullFrustum(InstanceData.LocalBoundsCenter, InstanceData.LocalBoundsExtent, LocalToClip, bIsOrtho, bNearClip, false);
 
 #if OCCLUSION_CULL_INSTANCES
 		BRANCH
@@ -231,7 +229,8 @@ bool IsInstanceVisible(FInstanceSceneData InstanceData, uint ViewIdIndex)
 		{
 			float4x4 LocalToPrevTranslatedWorld = LWCMultiplyTranslation(InstanceData.LocalToWorld, NaniteView.PrevPreViewTranslation);
 			float4x4 LocalToPrevClip = mul(LocalToPrevTranslatedWorld, NaniteView.PrevTranslatedWorldToClip);
-			FFrustumCullData PrevCull = BoxCullFrustum(InstanceData.LocalBoundsCenter, InstanceData.LocalBoundsExtent, LocalToPrevClip, bNearClip, false);
+			const bool bPrevIsOrtho = IsOrthoProjection(NaniteView.PrevViewToClip);
+			FFrustumCullData PrevCull = BoxCullFrustum(InstanceData.LocalBoundsCenter, InstanceData.LocalBoundsExtent, LocalToPrevClip, bPrevIsOrtho, bNearClip, false);
 			BRANCH
 			if ((PrevCull.bIsVisible || PrevCull.bFrustumSideCulled) && !PrevCull.bCrossesNearPlane)
 			{
@@ -293,7 +292,7 @@ void InstanceCullBuildInstanceIdBufferCS(uint3 GroupId : SV_GroupID, int GroupTh
 	}
 
 	// Load auxiliary per-instanced-draw command info
-	const FDrawCommandDesc DrawCommandDesc = DrawCommandDescs[Payload.IndirectArgIndex];
+	const FDrawCommandDesc DrawCommandDesc = UnpackDrawCommandDesc(DrawCommandDescs[Payload.IndirectArgIndex]);
 
 	// Extract compaction data (if applicable)	
 #if ENABLE_INSTANCE_COMPACTION
@@ -339,8 +338,8 @@ void InstanceCullBuildInstanceIdBufferCS(uint3 GroupId : SV_GroupID, int GroupTh
 	{
 		uint OutputOffset;
 		InterlockedAdd(DrawIndirectArgsBufferOut[Payload.IndirectArgIndex * INDIRECT_ARGS_NUM_WORDS + 1], 2U, OutputOffset);				
-		WriteInstance(InstanceDataOutputOffset + OutputOffset + 0U, InstanceId, InstanceData, 0U);
-		WriteInstance(InstanceDataOutputOffset + OutputOffset + 1U, InstanceId, InstanceData, 1U);
+		WriteInstance(InstanceDataOutputOffset + OutputOffset + 0U, InstanceId, InstanceData, 0U, DrawCommandDesc.MeshLODIndex);
+		WriteInstance(InstanceDataOutputOffset + OutputOffset + 1U, InstanceId, InstanceData, 1U, DrawCommandDesc.MeshLODIndex);
 	}
 #else // !STEREO_CULLING_MODE
 
@@ -364,7 +363,7 @@ void InstanceCullBuildInstanceIdBufferCS(uint3 GroupId : SV_GroupID, int GroupTh
 			uint OutputOffset;
 			InterlockedAdd(DrawIndirectArgsBufferOut[Payload.IndirectArgIndex * INDIRECT_ARGS_NUM_WORDS + 1], 1U, OutputOffset);
 
-			WriteInstance(InstanceDataOutputOffset + OutputOffset, InstanceId, InstanceData, ViewIdIndex);
+			WriteInstance(InstanceDataOutputOffset + OutputOffset, InstanceId, InstanceData, ViewIdIndex, DrawCommandDesc.MeshLODIndex);
 		}
 	}
 #endif // STEREO_CULLING_MODE

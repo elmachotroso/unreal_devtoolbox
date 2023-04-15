@@ -82,11 +82,17 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Network")
 	bool bIsTargetAnActor;
 
+#if WITH_EDITOR
+	/** This is used in the process of determining whether we should replicate to a specific client. */
+	UE_DEPRECATED(5.1, "This property is deprecated. Please use PrimaryPC instead")
+	APlayerController* MasterPC;
+#endif // WITH_EDITOR
+	
 	/** This is used in the process of determining whether we should replicate to a specific client. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network")
-	APlayerController* MasterPC;
+	TObjectPtr<APlayerController> PrimaryPC;
 
 	/** In the future, we may want to grab things like sockets off of this. */
 	UPROPERTY(BlueprintReadOnly, Category = "Network")
-	AActor* TargetingActor;
+	TObjectPtr<AActor> TargetingActor;
 };

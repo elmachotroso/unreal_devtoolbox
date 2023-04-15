@@ -27,6 +27,7 @@ enum class EMediaCaptureSourceType : int8
 {
 	RENDER_TARGET,
 	SCENE_VIEWPORT,
+	RHI_RESOURCE,
 };
 
 /**
@@ -83,7 +84,19 @@ public:
 	 * The conversion we wish to accomplish on the GPU before the DMA transfer occurs.
 	 */
 	virtual EMediaCaptureConversionOperation GetConversionOperation(EMediaCaptureSourceType InSourceType) const { return EMediaCaptureConversionOperation::NONE; }
+	
+#if WITH_EDITOR
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnOutputModified, UMediaOutput*);
+	FOnOutputModified& OnOutputModified() { return OnOutputModifiedDelegate; }
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 protected:
 	virtual UMediaCapture* CreateMediaCaptureImpl() { return nullptr; }
+
+private:
+#if WITH_EDITOR
+	FOnOutputModified OnOutputModifiedDelegate;
+#endif
+
 };

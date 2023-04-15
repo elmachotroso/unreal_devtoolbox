@@ -5,6 +5,8 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayTagsSettings)
+
 UGameplayTagsList::UGameplayTagsList(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -63,6 +65,8 @@ UGameplayTagsSettings::UGameplayTagsSettings(const FObjectInitializer& ObjectIni
 	WarnOnInvalidTags = true;
 	ClearInvalidTags = false;
 	FastReplication = false;
+	AllowEditorTagUnloading = true;
+	AllowGameTagUnloading = false;
 	InvalidTagCharacters = ("\"',");
 	NumBitsForContainerSize = 6;
 	NetIndexFirstBitSegment = 16;
@@ -145,3 +149,4 @@ FName UGameplayTagsDeveloperSettings::GetCategoryName() const
 {
 	return NAME_Advanced;
 }
+

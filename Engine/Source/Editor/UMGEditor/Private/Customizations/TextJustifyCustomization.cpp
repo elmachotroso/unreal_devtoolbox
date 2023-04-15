@@ -1,11 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/TextJustifyCustomization.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SCheckBox.h"
+
+#include "Delegates/Delegate.h"
 #include "DetailWidgetRow.h"
-#include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/Attribute.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SSegmentedControl.h"
+
+class IDetailChildrenBuilder;
 
 
 #define LOCTEXT_NAMESPACE "UMG"
@@ -24,13 +33,13 @@ void FTextJustifyCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> Prop
 		.Value(this, &FTextJustifyCustomization::GetCurrentJustification, PropertyHandle)
 		.OnValueChanged(this, &FTextJustifyCustomization::OnJustificationChanged, PropertyHandle)
 		+ SSegmentedControl<ETextJustify::Type>::Slot(ETextJustify::Left)
-		.Icon(FEditorStyle::GetBrush("HorizontalAlignment_Left"))
+		.Icon(FAppStyle::GetBrush("HorizontalAlignment_Left"))
 		.ToolTip(LOCTEXT("AlignTextLeft", "Align Text Left"))
 		+ SSegmentedControl<ETextJustify::Type>::Slot(ETextJustify::Center)
-		.Icon(FEditorStyle::GetBrush("HorizontalAlignment_Center"))
+		.Icon(FAppStyle::GetBrush("HorizontalAlignment_Center"))
 		.ToolTip(LOCTEXT("AlignTextCenter", "Align Text Center"))
 		+ SSegmentedControl<ETextJustify::Type>::Slot(ETextJustify::Right)
-		.Icon(FEditorStyle::GetBrush("HorizontalAlignment_Right"))
+		.Icon(FAppStyle::GetBrush("HorizontalAlignment_Right"))
 		.ToolTip(LOCTEXT("AlignTextRight", "Align Text Right"))
 	];
 }

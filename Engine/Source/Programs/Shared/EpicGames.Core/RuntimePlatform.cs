@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace EpicGames.Core
 {
+	/// <summary>
+	/// Allows testing different platforsm
+	/// </summary>
 	public class RuntimePlatform
 	{
 		/// <summary>
@@ -24,9 +24,25 @@ namespace EpicGames.Core
 		/// </summary>
 		public static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
+		/// <summary>
+		/// The platform type
+		/// </summary>
 		public enum Type
 		{
-			Windows, Linux, Mac
+			/// <summary>
+			/// Windows
+			/// </summary>
+			Windows, 
+			
+			/// <summary>
+			/// Linux
+			/// </summary>
+			Linux, 
+			
+			/// <summary>
+			/// Mac
+			/// </summary>
+			Mac
 		};
 
 		/// <summary>

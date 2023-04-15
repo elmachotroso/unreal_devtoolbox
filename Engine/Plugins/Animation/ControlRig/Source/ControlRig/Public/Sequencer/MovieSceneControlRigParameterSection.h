@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ConstraintsManager.h"
 #include "Sections/MovieSceneParameterSection.h"
+#include "Sections/MovieSceneConstrainedSection.h"
 #include "UObject/ObjectMacros.h"
 #include "Channels/MovieSceneFloatChannel.h"
 #include "Sections/MovieSceneSubSection.h"
@@ -14,8 +16,9 @@
 #include "Compilation/MovieSceneTemplateInterrogation.h"
 #include "Channels/MovieSceneIntegerChannel.h"
 #include "Channels/MovieSceneByteChannel.h"
+#include "Channels/MovieSceneBoolChannel.h"
 #include "Sequencer/MovieSceneControlRigSpaceChannel.h"
-
+#include "ConstraintChannel.h"
 
 #include "MovieSceneControlRigParameterSection.generated.h"
 
@@ -103,8 +106,9 @@ struct CONTROLRIG_API FSpaceControlNameAndChannel
 	FMovieSceneControlRigSpaceChannel SpaceCurve;
 };
 
+
 /**
-*  Data that's queried during an interrogtion
+*  Data that's queried during an interrogation
 */
 struct FFloatInterrogationData
 {
@@ -124,9 +128,9 @@ struct FVectorInterrogationData
 	FName ParameterName;
 };
 
-struct FTransformInterrogationData
+struct FEulerTransformInterrogationData
 {
-	FTransform Val;
+	FEulerTransform Val;
 	FName ParameterName;
 };
 
@@ -161,7 +165,8 @@ struct CONTROLRIG_API FChannelMapInfo
 
 	int32 GeneratedKeyIndex = -1; //temp index set by the ControlRigParameterTrack, not saved
 
-
+	UPROPERTY()
+	TArray<uint32> ConstraintsIndex; //constraints data
 };
 
 
@@ -171,13 +176,13 @@ struct FMovieSceneControlRigSpaceChannel;
  * Movie scene section that controls animation controller animation
  */
 UCLASS()
-class CONTROLRIG_API UMovieSceneControlRigParameterSection : public UMovieSceneParameterSection
+class CONTROLRIG_API UMovieSceneControlRigParameterSection : public UMovieSceneParameterSection, public IMovieSceneConstrainedSection
 {
 	GENERATED_BODY()
 
 public:
 
-	/** Bindable event for when we add a space channel*/
+	/** Bindable events for when we add space or constraint channels. */
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FSpaceChannelAddedEvent, UMovieSceneControlRigParameterSection*, const FName&, FMovieSceneControlRigSpaceChannel*);
 
 	void AddEnumParameterKey(FName InParameterName, FFrameNumber InTime, uint8 InValue);
@@ -200,11 +205,12 @@ public:
 	
 	FSpaceChannelAddedEvent& SpaceChannelAdded() { return OnSpaceChannelAdded; }
 
+	const FName& FindControlNameFromConstraintChannel(const FMovieSceneConstraintChannel* InConstraintChannel) const;
+		
 	bool RenameParameterName(const FName& OldParameterName, const FName& NewParameterName);
 private:
 
 	FSpaceChannelAddedEvent OnSpaceChannelAdded;
-
 	/** Control Rig that controls us*/
 	UPROPERTY()
 	TObjectPtr<UControlRig> ControlRig;
@@ -244,6 +250,10 @@ protected:
 	UPROPERTY()
 	TArray<FSpaceControlNameAndChannel>  SpaceChannels;
 
+	/** Space Channels*/
+	UPROPERTY()
+	TArray<FConstraintAndActiveChannel> ConstraintsChannels;
+
 public:
 
 	UMovieSceneControlRigParameterSection();
@@ -251,15 +261,52 @@ public:
 	//UMovieSceneSection virtuals
 	virtual void SetBlendType(EMovieSceneBlendType InBlendType) override;
 	virtual UObject* GetImplicitObjectOwner() override;
+	// IMovieSceneConstrainedSection overrides
+	/*
+	* Whether it has that channel
+	*/
+	virtual bool HasConstraintChannel(const FName& InConstraintName) const override;
+
+	/*
+	* Get constraint with that name
+	*/
+	virtual FConstraintAndActiveChannel* GetConstraintChannel(const FName& InConstraintName) override;
+
+	/*
+	*  Add Constraint channel
+	*/
+	virtual void AddConstraintChannel(UTickableConstraint* InConstraint) override;
+
+	/*
+	*  Remove Constraint channel
+	*/
+	virtual void RemoveConstraintChannel(const FName& InConstraintName) override;
+
+	/*
+	*  Get The channels
+	*/
+	virtual TArray<FConstraintAndActiveChannel>& GetConstraintsChannels()  override;
+
+	/*
+	*  Replace the constraint with the specified name with the new one
+	*/
+	virtual void ReplaceConstraint(const FName InName, UTickableConstraint* InConstraint)  override;
+
+	/*
+	*  What to do if the constraint object has been changed, for example by an undo or redo.
+	*/
+	virtual void OnConstraintsChanged() override;
+
+	//not override but needed
+	const TArray<FConstraintAndActiveChannel>& GetConstraintsChannels() const;
 
 #if WITH_EDITOR
 	//Function to save control rig key when recording.
-	void RecordControlRigKey(FFrameNumber FrameNumber, bool bSetDefault, bool bDoAutoKey);
+	void RecordControlRigKey(FFrameNumber FrameNumber, bool bSetDefault, ERichCurveInterpMode InInterpMode);
 
 	//Function to load an Anim Sequence into this section. It will automatically resize to the section size.
 	//Will return false if fails or is canceled
-	virtual bool LoadAnimSequenceIntoThisSection(UAnimSequence* Sequence, UMovieScene* MovieScene, USkeletalMeshComponent* SkelMeshComp,
-		bool bKeyReduce, float Tolerance, FFrameNumber InStartFrame = 0);
+	virtual bool LoadAnimSequenceIntoThisSection(UAnimSequence* Sequence, UMovieScene* MovieScene, UObject* BoundObject, bool bKeyReduce, float Tolerance, FFrameNumber InStartFrame = 0);
 #endif
 	const TArray<bool>& GetControlsMask() const
 	{
@@ -332,31 +379,31 @@ public:
 	/** Get Whether to key or not*/
 	bool GetDoNotKey() const { return bDoNotKey; }
 
-	/**  Whether or not this section his scalar*/
+	/**  Whether or not this section has scalar*/
 	bool HasScalarParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his bool*/
+	/**  Whether or not this section has bool*/
 	bool HasBoolParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his enum*/
+	/**  Whether or not this section has enum*/
 	bool HasEnumParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his int*/
+	/**  Whether or not this section has int*/
 	bool HasIntegerParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his scalar*/
+	/**  Whether or not this section has scalar*/
 	bool HasVector2DParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his scalar*/
+	/**  Whether or not this section has scalar*/
 	bool HasVectorParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his scalar*/
+	/**  Whether or not this section has scalar*/
 	bool HasColorParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his scalar*/
+	/**  Whether or not this section has scalar*/
 	bool HasTransformParameter(FName InParameterName) const;
 
-	/**  Whether or not this section his space*/
+	/**  Whether or not this section has space*/
 	bool HasSpaceChannel(FName InParameterName) const;
 
 	/** Get The Space Channel for the Control*/
@@ -384,10 +431,11 @@ public:
 	void AddColorParameter(FName InParameterName, TOptional<FLinearColor> DefaultValue, bool bReconstructChannel);
 
 	/** Adds a a key for a specific transform parameter*/
-	void AddTransformParameter(FName InParameterName, TOptional<FTransform> DefaultValue, bool bReconstructChannel);
+	void AddTransformParameter(FName InParameterName, TOptional<FEulerTransform> DefaultValue, bool bReconstructChannel);
 
 	/** Add Space Parameter for a specified Control, no Default since that is Parent space*/
 	void AddSpaceChannel(FName InControlName, bool bReconstructChannel);
+
 
 	/** Clear Everything Out*/
 	void ClearAllParameters();
@@ -414,7 +462,8 @@ public:
 	TOptional<FLinearColor> EvaluateColorParameter(const  FFrameTime& InTime, FName InParameterName);
 
 	/** Evaluates a a key for a specific transform parameter. Will not get set if not found */
-	TOptional<FTransform> EvaluateTransformParameter(const  FFrameTime& InTime, FName InParameterName);
+	TOptional<FEulerTransform> EvaluateTransformParameter(const  FFrameTime& InTime, FName InParameterName);
+	
 
 	/** Evaluates a a key for a specific space parameter. Will not get set if not found */
 	TOptional<FMovieSceneControlRigSpaceBaseKey> EvaluateSpaceChannel(const  FFrameTime& InTime, FName InParameterName);
@@ -450,6 +499,9 @@ protected:
 	virtual void PostEditImport() override;
 	virtual void PostLoad() override;
 	virtual float GetTotalWeightValue(FFrameTime InTime) const override;
+	virtual void OnBindingIDsUpdated(const TMap<UE::MovieScene::FFixedObjectBindingID, UE::MovieScene::FFixedObjectBindingID>& OldFixedToNewFixedMap, FMovieSceneSequenceID LocalSequenceID, const FMovieSceneSequenceHierarchy* Hierarchy, IMovieScenePlayer& Player) override;
+	virtual void GetReferencedBindings(TArray<FGuid>& OutBindings) override;
+	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
 
 
 	// When true we do not set a key on the section, since it will be set because we changed the value
@@ -458,7 +510,18 @@ protected:
 	mutable bool bDoNotKey;
 
 public:
-	/** Special list of Names that we should only Modify. Needed to handle Interaction (FK/IK) since Control Rig expecting only changed value to be set
-	not all Controls*/
+	// Special list of Names that we should only Modify. Needed to handle Interaction (FK/IK) since Control Rig expecting only changed value to be set
+	//not all Controls
 	mutable TSet<FName> ControlsToSet;
+
+
+public:
+	//Test Controls really are new
+	bool IsDifferentThanLastControlsUsedToReconstruct(const TArray<FRigControlElement*>& NewControls) const;
+
+private:
+	void StoreLastControlsUsedToReconstruct(const TArray<FRigControlElement*>& NewControls);
+	//Last set of Controls used to reconstruct the channel proxies, used to make sure controls really changed if we want to reconstruct
+	//only care to check name and type
+	TArray<TPair<FName, ERigControlType>> LastControlsUsedToReconstruct;
 };

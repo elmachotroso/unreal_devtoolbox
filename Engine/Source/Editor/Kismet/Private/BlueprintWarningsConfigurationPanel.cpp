@@ -1,25 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintWarningsConfigurationPanel.h"
+
+#include "Blueprint/BlueprintSupport.h"
+#include "BlueprintRuntime.h"
+#include "BlueprintRuntimeSettings.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "Misc/Paths.h"
-#include "Widgets/SBoxPanel.h"
-#include "Styling/SlateTypes.h"
+#include "Modules/ModuleManager.h"
+#include "SSettingsEditorCheckoutNotice.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/SHeaderRow.h"
-#include "Widgets/Views/STableRow.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/Package.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SComboBox.h"
-#include "EditorStyleSet.h"
+#include "Widgets/Views/SHeaderRow.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
 
-#include "BlueprintRuntime.h"
-#include "Blueprint/BlueprintSupport.h"
-#include "BlueprintRuntimeSettings.h"
-#include "SSettingsEditorCheckoutNotice.h"
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FTableRowStyle;
 
 #define LOCTEXT_NAMESPACE "BlueprintWarningConfigurationPanel"
 
@@ -69,7 +96,7 @@ class SBlueprintWarningRow : public SMultiColumnTableRow< FBlueprintWarningListE
 		{
 			const auto& GetWarningText = [this]() -> FText
 			{
-				UEnum* const BlueprintWarningBehaviorEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EBlueprintWarningBehavior"));
+				UEnum* const BlueprintWarningBehaviorEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/BlueprintRuntime.EBlueprintWarningBehavior"));
 				EBlueprintWarningBehavior Behavior = EBlueprintWarningBehavior::Warn;
 				FName WarningIdentifier = this->WarningInfo->WarningIdentifier;
 				if (FBlueprintSupport::ShouldTreatWarningAsError(WarningIdentifier))
@@ -103,7 +130,7 @@ class SBlueprintWarningRow : public SMultiColumnTableRow< FBlueprintWarningListE
 					FBlueprintWarningBehaviorComboBox::FOnGenerateWidget::CreateStatic(
 						[]( TSharedPtr<EBlueprintWarningBehavior> Behavior )->TSharedRef<SWidget>
 						{
-							UEnum* const BlueprintWarningBehaviorEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EBlueprintWarningBehavior"));
+							UEnum* const BlueprintWarningBehaviorEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/BlueprintRuntime.EBlueprintWarningBehavior"));
 							return SNew(STextBlock)
 								.Text(BlueprintWarningBehaviorEnum->GetDisplayNameTextByValue(static_cast<int64>(*Behavior)));
 						}
@@ -163,12 +190,12 @@ void SBlueprintWarningsConfigurationPanel::Construct(const FArguments& InArgs)
 			.Padding(0.0f, 16.0f, 0.0f, 0.0f)
 		[
 			SAssignNew(Label, SBorder)
-				.Padding(3)
-				.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+				.Padding(3.0f)
+				.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 				.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 				.Text(LOCTEXT("BlueprintWarningSettings", "Warning Behavior"))
 			]
 		]
@@ -176,7 +203,7 @@ void SBlueprintWarningsConfigurationPanel::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(ListView, FBlueprintWarningListView)
 					.SelectionMode(ESelectionMode::Multi)
@@ -242,25 +269,27 @@ void SBlueprintWarningsConfigurationPanel::UpdateSelectedWarningBehaviors(EBluep
 		{
 			// update config data:
 			FName CurrentIdentifer = Declaration->WarningIdentifier;
-			FBlueprintWarningSettings* WarningEntry = RuntimeSettings->WarningSettings.FindByPredicate(
+			int WarningEntryIndex = RuntimeSettings->WarningSettings.IndexOfByPredicate(
 				[CurrentIdentifer](const FBlueprintWarningSettings& Entry) -> bool
 				{
 					return Entry.WarningIdentifier == CurrentIdentifer;
 				}
 			);
+
 			switch(NewBehavior)
 			{
 			case EBlueprintWarningBehavior::Warn:
-				if( WarningEntry )
+				if (WarningEntryIndex >= 0)
 				{
-					RuntimeSettings->WarningSettings.RemoveAtSwap(WarningEntry - &(RuntimeSettings->WarningSettings[0]));
+					RuntimeSettings->WarningSettings.RemoveAtSwap(WarningEntryIndex);
 				}
 				break;
 			case EBlueprintWarningBehavior::Error:
 			case EBlueprintWarningBehavior::Suppress:
-				if( WarningEntry )
+				if (WarningEntryIndex >= 0)
 				{
-					WarningEntry->WarningBehavior = NewBehavior;
+					FBlueprintWarningSettings& WarningEntry = RuntimeSettings->WarningSettings[WarningEntryIndex];
+					WarningEntry.WarningBehavior = NewBehavior;
 				}
 				else
 				{
@@ -268,9 +297,7 @@ void SBlueprintWarningsConfigurationPanel::UpdateSelectedWarningBehaviors(EBluep
 					NewEntry.WarningIdentifier = CurrentIdentifer;
 					NewEntry.WarningDescription = Declaration->WarningDescription;
 					NewEntry.WarningBehavior = NewBehavior;
-					RuntimeSettings->WarningSettings.Add(
-						NewEntry
-					);
+					RuntimeSettings->WarningSettings.Add(NewEntry);
 				}
 				break;
 			}

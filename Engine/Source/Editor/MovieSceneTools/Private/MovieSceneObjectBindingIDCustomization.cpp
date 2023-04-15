@@ -1,20 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneObjectBindingIDCustomization.h"
-#include "IPropertyUtilities.h"
-#include "MovieSceneBindingOwnerInterface.h"
-#include "MovieSceneSequence.h"
-#include "MovieScene.h"
-#include "PropertyHandle.h"
-#include "PropertyHandle.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
 #include "DetailWidgetRow.h"
-#include "IDetailChildrenBuilder.h"
-#include "SDropTarget.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailsView.h"
 #include "ISequencer.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "MovieSceneBindingOwnerInterface.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyHandle.h"
+#include "SDropTarget.h"
 #include "ScopedTransaction.h"
 #include "SequencerObjectBindingDragDropOp.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/TypeHash.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "MovieSceneObjectBindingIDCustomization"
 
@@ -40,13 +57,22 @@ void FMovieSceneObjectBindingIDCustomization::BindTo(TSharedRef<ISequencer> Oute
 
 void FMovieSceneObjectBindingIDCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
+	using namespace UE::Sequencer;
+
 	StructProperty = PropertyHandle;
 
 	Initialize();
 
 	auto IsAcceptable = [](TSharedPtr<FDragDropOperation> Operation)
 	{
-		return Operation->IsOfType<FSequencerObjectBindingDragDropOp>() && static_cast<FSequencerObjectBindingDragDropOp*>(Operation.Get())->GetDraggedBindings().Num() == 1;
+		using namespace UE::Sequencer;
+		if (!Operation->IsOfType<FSequencerObjectBindingDragDropOp>())
+		{
+			return false;
+		}
+
+		FSequencerObjectBindingDragDropOp* DragDropOp = static_cast<FSequencerObjectBindingDragDropOp*>(Operation.Get());
+		return DragDropOp->GetDraggedRebindableBindings().Num() == 1;
 	};
 
 	HeaderRow
@@ -90,10 +116,12 @@ void FMovieSceneObjectBindingIDCustomization::CustomizeHeader(TSharedRef<IProper
 
 FReply FMovieSceneObjectBindingIDCustomization::OnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent)
 {
+	using namespace UE::Sequencer;
+
 	TSharedPtr<FSequencerObjectBindingDragDropOp> SequencerOp = InDragDropEvent.GetOperationAs<FSequencerObjectBindingDragDropOp>();
 	if (SequencerOp)
 	{
-		TArray<UE::MovieScene::FFixedObjectBindingID> Bindings = SequencerOp->GetDraggedBindings();
+		TArray<UE::MovieScene::FFixedObjectBindingID> Bindings = SequencerOp->GetDraggedRebindableBindings();
 		if (Bindings.Num() == 1)
 		{
 			SetBindingId(Bindings[0]);

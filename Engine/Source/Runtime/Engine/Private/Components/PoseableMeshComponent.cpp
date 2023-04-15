@@ -9,6 +9,8 @@
 #include "Animation/AnimStats.h"
 #include "Animation/AnimInstance.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PoseableMeshComponent)
+
 UPoseableMeshComponent::UPoseableMeshComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bNeedsRefreshTransform (false)
@@ -21,9 +23,9 @@ bool UPoseableMeshComponent::AllocateTransformData()
 	// Allocate transforms if not present.
 	if ( Super::AllocateTransformData() )
 	{
-		if(BoneSpaceTransforms.Num() != SkeletalMesh->GetRefSkeleton().GetNum() )
+		if(BoneSpaceTransforms.Num() != GetSkinnedAsset()->GetRefSkeleton().GetNum() )
 		{
-			BoneSpaceTransforms = SkeletalMesh->GetRefSkeleton().GetRefBonePose();
+			BoneSpaceTransforms = GetSkinnedAsset()->GetRefSkeleton().GetRefBonePose();
 
 			TArray<FBoneIndexType> RequiredBoneIndexArray;
 			RequiredBoneIndexArray.AddUninitialized(BoneSpaceTransforms.Num());
@@ -32,7 +34,7 @@ bool UPoseableMeshComponent::AllocateTransformData()
 				RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 			}
 
-			RequiredBones.InitializeTo(RequiredBoneIndexArray, FCurveEvaluationOption(false), *SkeletalMesh);
+			RequiredBones.InitializeTo(RequiredBoneIndexArray, FCurveEvaluationOption(false), *GetSkinnedAsset());
 		}
 
 		FillComponentSpaceTransforms();
@@ -50,8 +52,8 @@ void UPoseableMeshComponent::RefreshBoneTransforms(FActorComponentTickFunction* 
 {
 	SCOPE_CYCLE_COUNTER(STAT_RefreshBoneTransforms);
 
-	// Can't do anything without a SkeletalMesh
-	if( !SkeletalMesh )
+	// Can't do anything without a SkinnedAsset
+	if( !GetSkinnedAsset())
 	{
 		return;
 	}
@@ -78,15 +80,15 @@ void UPoseableMeshComponent::FillComponentSpaceTransforms()
 {
 	ANIM_MT_SCOPE_CYCLE_COUNTER(FillComponentSpaceTransforms, IsRunningParallelEvaluation());
 
-	if( !SkeletalMesh )
+	if( !GetSkinnedAsset())
 	{
 		return;
 	}
 
 	// right now all this does is to convert to SpaceBases
-	check( SkeletalMesh->GetRefSkeleton().GetNum() == BoneSpaceTransforms.Num() );
-	check( SkeletalMesh->GetRefSkeleton().GetNum() == GetNumComponentSpaceTransforms());
-	check( SkeletalMesh->GetRefSkeleton().GetNum() == GetBoneVisibilityStates().Num() );
+	check( GetSkinnedAsset()->GetRefSkeleton().GetNum() == BoneSpaceTransforms.Num() );
+	check( GetSkinnedAsset()->GetRefSkeleton().GetNum() == GetNumComponentSpaceTransforms());
+	check( GetSkinnedAsset()->GetRefSkeleton().GetNum() == GetBoneVisibilityStates().Num() );
 
 	const int32 NumBones = BoneSpaceTransforms.Num();
 
@@ -113,7 +115,7 @@ void UPoseableMeshComponent::FillComponentSpaceTransforms()
 		BoneProcessed[BoneIndex] = 1;
 #endif
 		// For all bones below the root, final component-space transform is relative transform * component-space transform of parent.
-		const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+		const int32 ParentIndex = GetSkinnedAsset()->GetRefSkeleton().GetParentIndex(BoneIndex);
 		FPlatformMisc::Prefetch(SpaceBasesData + ParentIndex);
 
 #if DO_GUARD_SLOW
@@ -130,12 +132,12 @@ void UPoseableMeshComponent::FillComponentSpaceTransforms()
 
 void UPoseableMeshComponent::SetBoneTransformByName(FName BoneName, const FTransform& InTransform, EBoneSpaces::Type BoneSpace)
 {
-	if( !SkeletalMesh || !RequiredBones.IsValid() )
+	if( !GetSkinnedAsset() || !RequiredBones.IsValid() )
 	{
 		return;
 	}
 
-	check(!MasterPoseComponent.IsValid()); //Shouldn't call set bone functions when we are using MasterPoseComponent
+	check(!LeaderPoseComponent.IsValid()); //Shouldn't call set bone functions when we are using LeaderPoseComponent
 
 	int32 BoneIndex = GetBoneIndex(BoneName);
 	if(BoneIndex >=0 && BoneIndex < BoneSpaceTransforms.Num())
@@ -216,12 +218,12 @@ FTransform GetBoneTransformByNameHelper(FName BoneName, EBoneSpaces::Type BoneSp
 
 FTransform UPoseableMeshComponent::GetBoneTransformByName(FName BoneName, EBoneSpaces::Type BoneSpace)
 {
-	if( !SkeletalMesh || !RequiredBones.IsValid() )
+	if( !GetSkinnedAsset() || !RequiredBones.IsValid() )
 	{
 		return FTransform();
 	}
 
-	USkinnedMeshComponent* MPCPtr = MasterPoseComponent.Get();
+	USkinnedMeshComponent* MPCPtr = LeaderPoseComponent.Get();
 	if (MPCPtr)
 	{
 		if (USkeletalMeshComponent* SMC = Cast<USkeletalMeshComponent>(MPCPtr))
@@ -230,11 +232,11 @@ FTransform UPoseableMeshComponent::GetBoneTransformByName(FName BoneName, EBoneS
 			{
 				return GetBoneTransformByNameHelper(BoneName, BoneSpace, AnimInstance->GetRequiredBones(), SMC);
 			}
-			FString Message = FString::Printf(TEXT("Cannot return valid bone transform. Master Pose Component has no anim instance"));
+			FString Message = FString::Printf(TEXT("Cannot return valid bone transform. Leader Pose Component has no anim instance"));
 			FFrame::KismetExecutionMessage(*Message, ELogVerbosity::Warning);
 			return FTransform();
 		}
-		FString Message = FString::Printf(TEXT("Cannot return valid bone transform. Master Pose Component is not of type USkeletalMeshComponent"));
+		FString Message = FString::Printf(TEXT("Cannot return valid bone transform. Leader Pose Component is not of type USkeletalMeshComponent"));
 		FFrame::KismetExecutionMessage(*Message, ELogVerbosity::Warning);
 		return FTransform();
 	}
@@ -261,7 +263,7 @@ FVector UPoseableMeshComponent::GetBoneScaleByName(FName BoneName, EBoneSpaces::
 
 void UPoseableMeshComponent::ResetBoneTransformByName(FName BoneName)
 {
-	if( !SkeletalMesh )
+	if( !GetSkinnedAsset())
 	{
 		return;
 	}
@@ -269,7 +271,7 @@ void UPoseableMeshComponent::ResetBoneTransformByName(FName BoneName)
 	const int32 BoneIndex = GetBoneIndex(BoneName);
 	if( BoneIndex != INDEX_NONE )
 	{
-		BoneSpaceTransforms[BoneIndex] = SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex];
+		BoneSpaceTransforms[BoneIndex] = GetSkinnedAsset()->GetRefSkeleton().GetRefBonePose()[BoneIndex];
 	}
 	else
 	{
@@ -283,7 +285,7 @@ void UPoseableMeshComponent::CopyPoseFromSkeletalComponent(USkeletalMeshComponen
 	if(RequiredBones.IsValid())
 	{
 		TArray<FTransform> LocalTransforms = InComponentToCopy->GetBoneSpaceTransforms();
-		if(this->SkeletalMesh == InComponentToCopy->SkeletalMesh 
+		if(this->GetSkinnedAsset() == InComponentToCopy->GetSkinnedAsset()
 			&& LocalTransforms.Num() == BoneSpaceTransforms.Num())
 		{
 			
@@ -294,10 +296,10 @@ void UPoseableMeshComponent::CopyPoseFromSkeletalComponent(USkeletalMeshComponen
 			// The meshes don't match, search bone-by-bone (slow path)
 
 			// first set the localatoms to ref pose from our current mesh
-			BoneSpaceTransforms = SkeletalMesh->GetRefSkeleton().GetRefBonePose();
+			BoneSpaceTransforms = GetSkinnedAsset()->GetRefSkeleton().GetRefBonePose();
 
 			// Now overwrite any matching bones
-			const int32 NumSourceBones = InComponentToCopy->SkeletalMesh->GetRefSkeleton().GetNum();
+			const int32 NumSourceBones = InComponentToCopy->GetSkinnedAsset()->GetRefSkeleton().GetNum();
 
 			for(int32 SourceBoneIndex = 0 ; SourceBoneIndex < NumSourceBones ; ++SourceBoneIndex)
 			{

@@ -17,6 +17,7 @@
 #include "Views/Details/Cluster/DisplayClusterConfiguratorClusterDetailsCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorExternalImageTypeCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorGenerateMipsCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorMediaCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorNodeSelectionCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorClusterReferenceListCustomization.h"
 #include "Views/Details/Cluster/DisplayClusterConfiguratorViewportDetailsCustomization.h"
@@ -39,8 +40,6 @@
 #include "AssetTypeCategories.h"
 #include "HAL/IConsoleManager.h"
 #include "Modules/ModuleManager.h"
-#include "IPlacementModeModule.h"
-#include "IVPUtilitiesEditorModule.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
 
 #define REGISTER_PROPERTY_LAYOUT(PropertyType, CustomizationType) { \
@@ -88,7 +87,7 @@ void FDisplayClusterConfiguratorModule::StartupModule()
 
 	RegisterCustomLayouts();
 	RegisterSettings();
-	RegisterPlacementModeItems();
+	RegisterSectionMappings();
 	
 	FDisplayClusterConfiguratorStyle::Get();
 
@@ -125,7 +124,7 @@ void FDisplayClusterConfiguratorModule::ShutdownModule()
 
 	UnregisterSettings();
 	UnregisterCustomLayouts();
-	UnregisterPlacementModeItems();
+	UnregisterSectionMappings();
 
 	MenuExtensibilityManager.Reset();
 	ToolBarExtensibilityManager.Reset();
@@ -203,6 +202,7 @@ void FDisplayClusterConfiguratorModule::RegisterCustomLayouts()
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationClusterItemReferenceList, FDisplayClusterConfiguratorClusterReferenceListCustomization);
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationViewport_RemapData, FDisplayClusterConfiguratorViewportRemapCustomization);
 	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationRectangle, FDisplayClusterConfiguratorRectangleCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationMedia, FDisplayClusterConfiguratorMediaCustomization);
 }
 
 void FDisplayClusterConfiguratorModule::UnregisterCustomLayouts()
@@ -222,72 +222,81 @@ void FDisplayClusterConfiguratorModule::UnregisterCustomLayouts()
 	RegisteredPropertyLayoutNames.Empty();
 }
 
-void FDisplayClusterConfiguratorModule::RegisterPlacementModeItems()
+void FDisplayClusterConfiguratorModule::RegisterSectionMappings()
 {
-	auto RegisterPlaceActors = [&]() -> void
-	{
-		if (!GEditor)
-		{
-			return;
-		}
-		
-		const FPlacementCategoryInfo* Info = IVPUtilitiesEditorModule::Get().GetVirtualProductionPlacementCategoryInfo();
-		if (!Info)
-		{
-			UE_LOG(DisplayClusterConfiguratorLog, Warning, TEXT("Could not find or create VirtualProduction Place Actor Category"));
-			return;
-		}
-
-		FAssetData LightCardAssetData(
-			TEXT("/nDisplay/LightCard/LightCard"),
-			TEXT("/nDisplay/LightCard"),
-			TEXT("LightCard"),
-			TEXT("Blueprint")
-		);
-		check (LightCardAssetData.IsValid());
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	
-		PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
-			*UActorFactoryBlueprint::StaticClass(),
-			LightCardAssetData,
-			NAME_None,
-			NAME_None,
-			TOptional<FLinearColor>(),
-			TOptional<int32>(),
-			NSLOCTEXT("PlacementMode", "LightCard", "LightCard")
-		)));
-	};
-
-	if (GEngine && GEngine->IsInitialized())
+	// Root Actor
 	{
-		RegisterPlaceActors();
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::ViewportsCategory, LOCTEXT("Viewports", "Viewports"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::ViewportsCategory);
 	}
-	else
 	{
-		PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddLambda(RegisterPlaceActors);
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::ICVFXCategory, LOCTEXT("In-Camera VFX", "In-Camera VFX"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::ICVFXCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::ColorGradingCategory, LOCTEXT("Color Grading", "Color Grading"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::ColorGradingCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::OCIOCategory, LOCTEXT("OCIO", "OCIO"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::OCIOCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::LightcardCategory, LOCTEXT("Light Cards", "Light Cards"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::LightcardCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(ADisplayClusterRootActor::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::PreviewCategory, LOCTEXT("Editor Preview", "Editor Preview"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::PreviewCategory);
+	}
+
+	// ICVFX Component
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(),
+		DisplayClusterConfigurationStrings::categories::ICVFXCategory, LOCTEXT("In-Camera VFX", "In-Camera VFX"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::ICVFXCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(),
+		DisplayClusterConfigurationStrings::categories::CameraColorGradingCategory, LOCTEXT("Inner Frustum Color Grading", "Inner Frustum Color Grading"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::CameraColorGradingCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::OCIOCategory, LOCTEXT("OCIO", "OCIO"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::OCIOCategory);
+	}
+	{
+		const TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(),
+			DisplayClusterConfigurationStrings::categories::ChromaKeyCategory, LOCTEXT("Chromakey", "Chromakey"));
+		Section->AddCategory(DisplayClusterConfigurationStrings::categories::ChromaKeyCategory);
 	}
 }
 
-void FDisplayClusterConfiguratorModule::UnregisterPlacementModeItems()
+void FDisplayClusterConfiguratorModule::UnregisterSectionMappings()
 {
-	if (!IsEngineExitRequested() && GEditor && UObjectInitialized())
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor") && FSlateApplication::IsInitialized())
 	{
-		IPlacementModeModule& PlacementModeModule = IPlacementModeModule::Get();
+		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.RemoveSection(ADisplayClusterRootActor::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::ViewportsCategory);
+		PropertyModule.RemoveSection(ADisplayClusterRootActor::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::ICVFXCategory);
+		PropertyModule.RemoveSection(ADisplayClusterRootActor::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::ColorGradingCategory);
+		PropertyModule.RemoveSection(ADisplayClusterRootActor::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::OCIOCategory);
+		PropertyModule.RemoveSection(ADisplayClusterRootActor::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::LightcardCategory);
 
-		for (TOptional<FPlacementModeID>& PlaceActor : PlaceActors)
-		{
-			if (PlaceActor.IsSet())
-			{
-				PlacementModeModule.UnregisterPlaceableItem(*PlaceActor);
-			}
-		}
+		PropertyModule.RemoveSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::ICVFXCategory);
+		PropertyModule.RemoveSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::CameraColorGradingCategory);
+		PropertyModule.RemoveSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::OCIOCategory);
+		PropertyModule.RemoveSection(UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName(), DisplayClusterConfigurationStrings::categories::ChromaKeyCategory);
 	}
-
-	if (PostEngineInitHandle.IsValid())
-	{
-		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
-	}
-	
-	PlaceActors.Empty();
 }
 
 TSharedPtr<FKismetCompilerContext> FDisplayClusterConfiguratorModule::GetCompilerForDisplayClusterBP(UBlueprint* BP,

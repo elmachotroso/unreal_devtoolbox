@@ -8,11 +8,13 @@
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/Actor.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/EnumClassFlags.h"
 #include "Net/DataBunch.h"
 #include "UObject/ObjectKey.h"
 #include "UObject/UObjectHash.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/NetConnection.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "ReplicationGraphTypes.generated.h"
 
 class AActor;
@@ -24,6 +26,8 @@ class UReplicationGraph;
 struct FActorDestructionInfo;
 
 REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All );
+
+LLM_DECLARE_TAG_API(NetRepGraph, REPLICATIONGRAPH_API);
 
 // Check aliases for within the system. The intention is that these can be flipped to checkSlow once the system is stable.
 
@@ -52,6 +56,10 @@ REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All 
 #define REPGRAPH_DEVCVAR_SHIPCONST(Type,VarName,Var,Value,Help) \
 	const Type Var = Value;
 #endif
+
+#ifndef REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
+#define REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE 1
+#endif // REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -367,6 +375,11 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 		return RepList.Contains(Value);
 	}
 
+	void CountBytes(FArchive& Ar) const
+	{
+		RepList.CountBytes(Ar);
+	}
+
 private:
 
 	friend struct FActorRepListStatCollector;
@@ -519,13 +532,18 @@ struct FFastSharedReplicationInfo
 
 DECLARE_MULTICAST_DELEGATE_FourParams(FNotifyActorChangeDormancy, FActorRepListType, FGlobalActorReplicationInfo&, ENetDormancy /*NewVlue*/, ENetDormancy /*OldValue*/);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FNotifyActorFlushDormancy, FActorRepListType, FGlobalActorReplicationInfo&);
+
+#if REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 DECLARE_MULTICAST_DELEGATE_TwoParams(FNotifyActorForceNetUpdate, FActorRepListType, FGlobalActorReplicationInfo&);
+#endif // REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 
 struct FGlobalActorReplicationEvents
 {
 	FNotifyActorChangeDormancy	DormancyChange;
 	FNotifyActorFlushDormancy	DormancyFlush; // This delegate is cleared after broadcasting
+#if REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 	FNotifyActorForceNetUpdate	ForceNetUpdate;
+#endif // REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 };
 
 /** Per-Actor data that is global for the entire Replication Graph */
@@ -569,7 +587,7 @@ struct FGlobalActorReplicationInfo
 
 	void LogDebugString(FOutputDevice& Ar) const;
 
-	void CountBytes(FArchive& Ar)
+	void CountBytes(FArchive& Ar) const
 	{
 		// Note, we don't count DependentActorList because it's memory will be cached by the allocator / pooling stuff.
 		if (FastSharedReplicationInfo.IsValid())
@@ -577,6 +595,9 @@ struct FGlobalActorReplicationInfo
 			Ar.CountBytes(sizeof(FFastSharedReplicationInfo), sizeof(FFastSharedReplicationInfo));
 			FastSharedReplicationInfo->CountBytes(Ar);
 		}
+
+		DependentActorList.CountBytes(Ar);
+		ParentActorList.CountBytes(Ar);
 	}
 
 	typedef TArray<FActorRepListType> FDependantListType;
@@ -771,9 +792,9 @@ struct FGlobalActorReplicationInfoMap
 
 
 	/** Finds data associated with the actor but does not create if its not there yet. */
-	FORCEINLINE FGlobalActorReplicationInfo* Find(const FActorRepListType& Actor)
+	FORCEINLINE FGlobalActorReplicationInfo* Find(const FActorRepListType& Actor) const 
 	{
-		if (TUniquePtr<FGlobalActorReplicationInfo>* Ptr = ActorMap.Find(Actor))
+		if (const TUniquePtr<FGlobalActorReplicationInfo>* Ptr = ActorMap.Find(Actor))
 		{
 			return Ptr->Get();
 		}
@@ -784,7 +805,7 @@ struct FGlobalActorReplicationInfoMap
 	/** Removes actor data from map */
 	int32 Remove(const FActorRepListType& RemovedActor)
 	{
-		// Clean the references to the removed actor from his dependency chain.
+		// Clean the references to the removed actor from its dependency chain.
 		if (FGlobalActorReplicationInfo* RemovedActorInfo = Find(RemovedActor))
 		{
 			// Remove child dependents
@@ -845,6 +866,8 @@ struct FGlobalActorReplicationInfoMap
 	{
 		None = 0,
 		WarnAlreadyDependant = 1 << 0,
+		WarnParentNotRegistered = 1 << 1,
+		AllWarnings = WarnAlreadyDependant | WarnParentNotRegistered
 	};
 
 	REPLICATIONGRAPH_API void AddDependentActor(AActor* Parent, AActor* Child, FGlobalActorReplicationInfoMap::EWarnFlag WarnFlag = FGlobalActorReplicationInfoMap::EWarnFlag::None);
@@ -873,7 +896,7 @@ struct FGlobalActorReplicationInfoMap
 			return;
 		}
 		
-		// Remove this actor from all his parents
+		// Remove this actor from all its parents
 		for (FActorRepListType ParentActor : MainActorInfo->ParentActorList)
 		{
 			if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
@@ -1274,13 +1297,6 @@ typedef TArray<FNetViewer, FReplicationGraphConnectionsAllocator> FNetViewerArra
 // Parameter structure for what we actually pass down during the Gather phase.
 struct FConnectionGatherActorListParameters
 {
-	UE_DEPRECATED(4.26, "Please use the constructor that takes a viewer array.")
-	FConnectionGatherActorListParameters(FNetViewer& InViewer, UNetReplicationGraphConnection& InConnectionManager, TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
-		: ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
-	{
-		Viewers.Emplace(InViewer);
-	}
-
 	FConnectionGatherActorListParameters(FNetViewerArray& InViewers, UNetReplicationGraphConnection& InConnectionManager, TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
 		: Viewers(InViewers), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
 	{
@@ -1460,6 +1476,7 @@ CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphVisibleLevels);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphForcedUpdates);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphCleanMS);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphCleanNumReps);
+CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphRedundantMS);
 
 #ifndef REPGRAPH_CSV_TRACKER
 #define REPGRAPH_CSV_TRACKER (CSV_PROFILER && WITH_SERVER_CODE)
@@ -1468,6 +1485,15 @@ CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphCleanNumReps);
 /** Helper struct for tracking finer grained ReplicationGraph stats through the CSV profiler. Intention is that it is setup/configured in the UReplicationGraph subclasses */
 struct FReplicationGraphCSVTracker
 {
+	enum class EActorFlags : uint8
+	{
+		None = 0,
+		IsInDiscovery = 1 << 0,
+		AlreadyReplicatedThisFrame = 1 << 1
+	};
+
+	FRIEND_ENUM_CLASS_FLAGS(EActorFlags)
+
 	FReplicationGraphCSVTracker()
 		: EverythingElse(TEXT("Other"))
 		, EverythingElse_FastPath(TEXT("OtherFastPath"))
@@ -1580,7 +1606,15 @@ struct FReplicationGraphCSVTracker
 #endif //REPGRAPH_CSV_TRACKER
 	}
 
+	UE_DEPRECATED(5.1, "Use the overload of PostReplicateActor that takes EActorFlags.")
 	void PostReplicateActor(UClass* ActorClass, const double Time, const int64 Bits, const bool bIsActorDiscovery)
+	{
+		const EActorFlags Flags = bIsActorDiscovery ? EActorFlags::IsInDiscovery : EActorFlags::None;
+
+		PostReplicateActor(ActorClass, Time, Bits, Flags);
+	}
+
+	void PostReplicateActor(UClass* ActorClass, const double Time, const int64 Bits, const EActorFlags Flags)
 	{
 #if REPGRAPH_CSV_TRACKER
 		if (!bIsCapturing)
@@ -1605,10 +1639,15 @@ struct FReplicationGraphCSVTracker
 		}
 
 		// When opening actor channels keep all traffic in a separate bucket
-		if (bIsActorDiscovery)
+		if (EnumHasAnyFlags(Flags, EActorFlags::IsInDiscovery))
 		{
 			ActorDiscovery.BitsAccumulated += Bits;
 			ActorDiscovery.CPUTimeAccumulated += Time;
+
+			if (EnumHasAnyFlags(Flags, EActorFlags::AlreadyReplicatedThisFrame))
+			{
+				ActorDiscovery.RedundantRepCPUTimeAccumulated += Time;
+			}
 
 			// But keep the number of replicated classes unique
 			TrackedData->NumReplications++;
@@ -1623,6 +1662,11 @@ struct FReplicationGraphCSVTracker
 			{
 				TrackedData->CleanCPUTimeAccumulated += Time;
 				TrackedData->CleanNumReplications++;
+			}
+
+			if (EnumHasAnyFlags(Flags, EActorFlags::AlreadyReplicatedThisFrame))
+			{
+				TrackedData->RedundantRepCPUTimeAccumulated += Time;
 			}
 		}
 #endif	
@@ -1761,6 +1805,11 @@ struct FReplicationGraphCSVTracker
 		UntrackedReplications.CountBytes(Ar);
 	}
 
+	void SetReportUntrackedClasses(bool bReport)
+	{
+		bReportUntrackedClasses = bReport;
+	}
+
 public:
 
 	struct FVisibleLevelData
@@ -1791,6 +1840,7 @@ private:
 
 		double CPUTimeAccumulated = 0.0;
 		double CleanCPUTimeAccumulated = 0.0;
+		double RedundantRepCPUTimeAccumulated = 0.0;
 		int64 BitsAccumulated = 0;
 		int32 ChannelsOpened = 0;
 		int32 NumReplications = 0;
@@ -1803,6 +1853,7 @@ private:
 		{
 			CPUTimeAccumulated = 0.0;
 			CleanCPUTimeAccumulated = 0.0;
+			RedundantRepCPUTimeAccumulated = 0.0;
 			BitsAccumulated = 0;
 			ChannelsOpened = 0;
 			NumReplications = 0;
@@ -1843,11 +1894,14 @@ private:
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphForcedUpdates), static_cast<float>(Data.ForcedUpdates), ECsvCustomStatOp::Set);
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphCleanMS), static_cast<float>(Data.CleanCPUTimeAccumulated) * 1000.f, ECsvCustomStatOp::Set);
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphCleanNumReps), static_cast<float>(Data.CleanNumReplications), ECsvCustomStatOp::Set);
+		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphRedundantMS), static_cast<float>(Data.RedundantRepCPUTimeAccumulated) * 1000.f, ECsvCustomStatOp::Set);
 
 		Data.Reset();
 	}
 #endif
 };
+
+ENUM_CLASS_FLAGS(FReplicationGraphCSVTracker::EActorFlags);
 
 // Debug Actor/Connection pair that can be set by code for further narrowing down breakpoints/logging
 struct FActorConnectionPair

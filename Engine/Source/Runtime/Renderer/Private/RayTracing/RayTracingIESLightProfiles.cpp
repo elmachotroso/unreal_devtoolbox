@@ -39,8 +39,11 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 
 	if (!DefaultTexture)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("RTDefaultIESProfile"));
-		DefaultTexture = RHICreateTexture2D(AllowedIESProfileWidth, 1, AllowedIESProfileFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("RTDefaultIESProfile"), AllowedIESProfileWidth, 1, AllowedIESProfileFormat)
+			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+
+		DefaultTexture = RHICreateTexture(Desc);
 		FUnorderedAccessViewRHIRef UAV = RHICreateUnorderedAccessView(DefaultTexture, 0);
 
 		RHICmdList.Transition(FRHITransitionInfo(DefaultTexture, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
@@ -50,8 +53,11 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 
 	if (!AtlasTexture || AtlasTexture->GetSizeY() != NewArraySize)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("RTIESProfileAtlas"));
-		AtlasTexture = RHICreateTexture2D(AllowedIESProfileWidth, NewArraySize, AllowedIESProfileFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("RTIESProfileAtlas"), AllowedIESProfileWidth, NewArraySize, AllowedIESProfileFormat)
+			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+
+		AtlasTexture = RHICreateTexture(Desc);
 		AtlasUAV = RHICreateUnorderedAccessView(AtlasTexture, 0);
 	}
 
@@ -64,7 +70,7 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 	FRHIComputeShader* ShaderRHI = Shader.GetComputeShader();
 
 	RHICmdList.Transition(FRHITransitionInfo(AtlasUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.SetComputeShader(ShaderRHI);
+	SetComputePipelineState(RHICmdList, ShaderRHI);
 	RHICmdList.SetUAVParameter(ShaderRHI, Shader->GetDstResourceParam().GetBaseIndex(), AtlasUAV);
 	RHICmdList.BeginUAVOverlap(AtlasUAV);
 	for (uint32 ProfileIndex = 0; ProfileIndex < NewArraySize; ++ProfileIndex)

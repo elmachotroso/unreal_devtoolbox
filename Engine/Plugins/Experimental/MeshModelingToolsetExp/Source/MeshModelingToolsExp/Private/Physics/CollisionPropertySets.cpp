@@ -3,7 +3,9 @@
 #include "Physics/CollisionPropertySets.h"
 #include "Physics/PhysicsDataCollection.h"
 
-#include "Engine/Classes/PhysicsEngine/BodySetup.h"
+#include "PhysicsEngine/BodySetup.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CollisionPropertySets)
 
 void UE::PhysicsTools::InitializePhysicsToolObjectPropertySet(const FPhysicsDataCollection* PhysicsData, UPhysicsObjectToolPropertySet* PropSet)
 {
@@ -57,6 +59,13 @@ void UE::PhysicsTools::InitializePhysicsToolObjectPropertySet(const FPhysicsData
 		ConvexData.Element = Convex;
 		PropSet->Convexes.Add(ConvexData);
 	}
+
+	for (const FKLevelSetElem& LevelSet: AggGeom.LevelSetElems)
+	{
+		FPhysicsLevelSetData LevelSetData;
+		LevelSetData.Element = LevelSet;
+		PropSet->LevelSets.Add(LevelSetData);
+	}
 }
 
 
@@ -68,4 +77,5 @@ void UPhysicsObjectToolPropertySet::Reset()
 	Boxes.Reset();
 	Capsules.Reset();
 	Convexes.Reset();
+	LevelSets.Reset();
 }

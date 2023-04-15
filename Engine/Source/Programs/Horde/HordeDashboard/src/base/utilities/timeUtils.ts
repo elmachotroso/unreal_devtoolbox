@@ -148,6 +148,25 @@ export const getStepFinishTime = (step: StepData): HordeTime => {
     };
 };
 
+export const getStepStartTime = (step: StepData): HordeTime => {
+
+    let displayStart = "";    
+    let serverStart = "";    
+
+    const format = dashboard.display24HourClock ? "HH:mm:ss z" : "LT z";
+
+    if (step.startTime) {
+        const end = moment(step.startTime);
+        displayStart = moment.utc(end).tz(displayTimeZone()).format(format);
+        serverStart = moment.utc(end).tz(serverTimeZone).format(format);
+    }
+
+    return {
+        display: displayStart,
+        server: serverStart
+    };
+};
+
 
 export const getLabelFinishTime = (label: JobLabel, job: JobData): HordeTime => {
 
@@ -221,33 +240,42 @@ export const getElapsedString = (start: Moment, end: Moment, includeSeconds:bool
     let duration = "";
     const d = moment.duration(end.diff(start));
 
+    if (d.years()) {
+        duration = `${d.years()} year`;
+        if (d.years() > 1) {
+            duration += "s";
+        }
+    }
     if (d.months()) {
-        duration = `${d.months()} month`;
+        duration += ` ${d.months()} month`;
         if (d.months() > 1) {
             duration += "s";
         }
         return duration;
     }
 
-    if (d.days()) {
-        duration += `${d.days()}d `;
+    if (!d.years() && !d.months()) {
+
+        if (d.days()) {
+            duration += `${d.days()}d `;
+        }
+        
+        if (d.hours()) {
+            duration += `${d.hours()}h `;
+        }
+
+        if (d.minutes()) {
+            duration += `${d.minutes()}m `;
+        }
+
+        if (includeSeconds || !duration) {
+            if (d.seconds()) {
+                duration += `${d.seconds()}s `;
+            }
+        }
     }
 
-    if (d.hours()) {
-        duration += `${d.hours()}h `;
-    }
-
-    if (d.minutes()) {
-        duration += `${d.minutes()}m `;
-    }
-
-    if (includeSeconds) {
-        if (d.seconds()) {
-            duration += `${d.seconds()}s `;
-        }    
-    }
-
-    return duration;
+    return duration?.trim();
 
 };
 
@@ -315,6 +343,40 @@ export const getLeaseElapsed = (lease: GetAgentLeaseResponse | undefined): strin
 
 };
 
+
+export const getHumanTime = (timeIn: Date | string | undefined): string => {
+
+    if (!timeIn) {
+        return "";
+    }
+
+    const now = moment.utc().tz(displayTimeZone());
+    const time = moment(timeIn).tz(displayTimeZone());
+
+    const nowDay = now.dayOfYear();
+    const timeDay = time.dayOfYear();
+
+    const delta = nowDay - timeDay;
+
+    if (delta > 2 || now.year() !== time.year()) {
+        return time.format('MMM Do');    
+    }
+
+    if (delta === 1) {
+        return 'Yesterday';
+    }
+
+    if (delta === 0) {
+        return 'Today';
+    }
+
+    if (time.day() === 1) {
+        return "Monday";
+    }
+
+    return time.format('MMM Do');    
+
+};
 
 
 export const getShortNiceTime = (timeIn: Date | string | undefined, relative: boolean = false): string => {

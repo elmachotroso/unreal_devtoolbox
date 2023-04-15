@@ -12,6 +12,7 @@
 #include "Framework/Commands/InputChord.h"
 #include "Kismet2/EnumEditorUtils.h"
 #include "UObject/StrongObjectPtr.h"
+#include "PythonScriptPluginSettings.h"
 
 class FPythonScriptPlugin;
 class FPythonScriptRemoteExecution;
@@ -44,6 +45,7 @@ public:
 	virtual bool AllowHotKeyClose() const override;
 	virtual bool AllowMultiLine() const override;
 	virtual FInputChord GetHotKey() const override;
+	virtual FInputChord GetIterateExecutorHotKey() const override;
 
 private:
 	IPythonScriptPlugin* PythonScriptPlugin;
@@ -68,6 +70,7 @@ public:
 	virtual bool AllowHotKeyClose() const override;
 	virtual bool AllowMultiLine() const override;
 	virtual FInputChord GetHotKey() const override;
+	virtual FInputChord GetIterateExecutorHotKey() const override;
 
 private:
 	IPythonScriptPlugin* PythonScriptPlugin;
@@ -175,6 +178,8 @@ private:
 	static void UnregisterModulePaths(const FString& InFilesystemPath);
 
 	static bool IsDeveloperModeEnabled();
+
+	static ETypeHintingMode GetTypeHintingMode();
 
 	void OnAssetRenamed(const FAssetData& Data, const FString& OldName);
 

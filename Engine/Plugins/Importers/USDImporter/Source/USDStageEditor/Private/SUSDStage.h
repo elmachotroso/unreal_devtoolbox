@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "USDStageViewModel.h"
+#include "UsdWrappers/UsdStage.h"
+
 #include "CoreMinimal.h"
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
@@ -10,8 +13,6 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-
-#include "USDStageViewModel.h"
 
 class AUsdStageActor;
 class FLevelCollectionModel;
@@ -39,12 +40,16 @@ protected:
 	TSharedRef< SWidget > MakeMainMenu();
 	TSharedRef< SWidget > MakeActorPickerMenu();
 	TSharedRef< SWidget > MakeActorPickerMenuContent();
+	TSharedRef< SWidget > MakeIsolateWarningButton();
 	void FillFileMenu( FMenuBuilder& MenuBuilder );
 	void FillActionsMenu( FMenuBuilder& MenuBuilder );
 	void FillOptionsMenu( FMenuBuilder& MenuBuilder );
+	void FillExportSubMenu( FMenuBuilder& MenuBuilder );
 	void FillPayloadsSubMenu( FMenuBuilder& MenuBuilder );
 	void FillPurposesToLoadSubMenu( FMenuBuilder& MenuBuilder );
 	void FillRenderContextSubMenu( FMenuBuilder& MenuBuilder );
+	void FillMaterialPurposeSubMenu( FMenuBuilder& MenuBuilder );
+	void FillRootMotionSubMenu( FMenuBuilder& MenuBuilder );
 	void FillCollapsingSubMenu( FMenuBuilder& MenuBuilder );
 	void FillInterpolationTypeSubMenu( FMenuBuilder& MenuBuilder );
 	void FillSelectionSubMenu( FMenuBuilder& MenuBuilder );
@@ -53,9 +58,13 @@ protected:
 	void OnNew();
 	void OnOpen();
 	void OnSave();
+	void OnExportAll();
+	void OnExportFlattened();
 	void OnReloadStage();
 	void OnResetStage();
 	void OnClose();
+
+	void OnLayerIsolated( const UE::FSdfLayer& IsolatedLayer );
 
 	void OnImport();
 
@@ -69,13 +78,13 @@ protected:
 
 	void OnStageActorLoaded( AUsdStageActor* InUsdStageActor );
 
-	void OnMapChanged( UWorld* World, EMapChangeType ChangeType );
-
 	void OnViewportSelectionChanged( UObject* NewSelection );
 
 	int32 GetNaniteTriangleThresholdValue() const;
 	void OnNaniteTriangleThresholdValueChanged( int32 InValue );
 	void OnNaniteTriangleThresholdValueCommitted( int32 InValue, ETextCommit::Type InCommitType );
+
+	UE::FUsdStageWeak GetCurrentStage() const;
 
 protected:
 	TSharedPtr< class SUsdStageTreeView > UsdStageTreeView;
@@ -108,6 +117,8 @@ protected:
 	TSharedPtr<ISceneOutliner> ActorPickerMenu;
 
 	int32 CurrentNaniteThreshold = INT32_MAX;
+
+	TArray<TSharedPtr<FString>> MaterialPurposes;
 };
 
 #endif // #if USE_USD_SDK

@@ -17,7 +17,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 class UsdLuxDiskLight;
 class UsdLuxDistantLight;
 class UsdLuxDomeLight;
-class UsdLuxLight;
+class UsdLuxLightAPI;
 class UsdLuxRectLight;
 class UsdLuxShapingAPI;
 class UsdLuxSphereLight;
@@ -40,11 +40,11 @@ enum class ELightUnits : uint8;
 struct FUsdStageInfo;
 
 /**
- * Converts UsdLuxLight attributes to the corresponding ULightComponent.
+ * Converts UsdLux light attributes to the corresponding ULightComponent.
  *
- * Corresponding UsdLuxLight schema to Unreal component:
+ * Corresponding UsdLux light schema to Unreal component:
  *
- *	UsdLuxLight			->	ULightComponent
+ *	UsdLuxLightAPI		->	ULightComponent
  *	UsdLuxDistantLight	->	UDirectionalLightComponent
  *	UsdLuxRectLight		->	URectLightComponent
  *	UsdLuxDiskLight		->	URectLightComponent
@@ -55,7 +55,7 @@ struct FUsdStageInfo;
 namespace UsdToUnreal
 {
 	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
-	USDUTILITIES_API bool ConvertLight( const pxr::UsdLuxLight& Light, ULightComponentBase& LightComponentBase, double TimeCode );
+	USDUTILITIES_API bool ConvertLight( const pxr::UsdLuxLightAPI& LightAPI, ULightComponentBase& LightComponentBase, double TimeCode );
 	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )
 	USDUTILITIES_API bool ConvertDistantLight( const pxr::UsdLuxDistantLight& DistantLight, UDirectionalLightComponent& LightComponent, double TimeCode );
 	UE_DEPRECATED( 5.0, "Prefer the overload that receives a pxr::UsdPrim" )

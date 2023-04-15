@@ -115,6 +115,7 @@ namespace BlackmagicDesign
 		TCF_None,
 		TCF_LTC,
 		TCF_VITC1,
+		TCF_Auto
 	};
 
 	enum struct ELinkConfiguration
@@ -181,6 +182,7 @@ namespace BlackmagicDesign
 		int32_t NumberOfAudioChannel;
 
 		bool bUseTheDedicatedLTCInput;
+		bool bAutoDetect;
 	};
 
 	/* FOutputChannelOptions definition
@@ -252,7 +254,7 @@ namespace BlackmagicDesign
 
 		virtual void OnFrameReceived(const FFrameReceivedInfo&) = 0;
 		virtual void OnFrameFormatChanged(const FFormatInfo& NewFormat) = 0;
-		virtual void OnInterlacedOddFieldEvent() = 0;
+		virtual void OnInterlacedOddFieldEvent(long long FrameNumber) = 0;
 	};
 
 	/* IOutputEventCallback definition
@@ -280,22 +282,23 @@ namespace BlackmagicDesign
 		virtual void OnInterlacedOddFieldEvent() = 0;
 	};
 
-	struct UEBLACKMAGICDESIGN_API FFrameDescriptor
+	struct UEBLACKMAGICDESIGN_API FBaseFrameData
+	{
+		FTimecode Timecode;
+		uint32_t FrameIdentifier = 0;
+		bool bEvenFrame = true;
+	};
+
+	struct UEBLACKMAGICDESIGN_API FFrameDescriptor : public FBaseFrameData
 	{
 		uint8_t* VideoBuffer = nullptr;
 		int32_t VideoWidth = 0;
 		int32_t VideoHeight = 0;
-
-		FTimecode Timecode;
-		uint32_t FrameIdentifier = 0;
 	};
 
-	struct UEBLACKMAGICDESIGN_API FFrameDescriptor_GPUDMA
+	struct UEBLACKMAGICDESIGN_API FFrameDescriptor_GPUDMA : public FBaseFrameData
 	{
 		void* RHITexture = nullptr;
-
-		FTimecode Timecode;
-		uint32_t FrameIdentifier = 0;
 	};
 
 	struct UEBLACKMAGICDESIGN_API FAudioSamplesDescriptor
@@ -333,7 +336,6 @@ namespace BlackmagicDesign
 		void* RHITexture = nullptr;
 		void* RHIResourceMemory = nullptr; // Vulkan only
 	};
-	
 
 	/* BlackmagicDeviceScanner definition
 	*****************************************************************************/

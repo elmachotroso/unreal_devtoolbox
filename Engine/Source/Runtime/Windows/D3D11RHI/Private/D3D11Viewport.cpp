@@ -6,6 +6,7 @@
 
 #include "D3D11RHIPrivate.h"
 #include "RenderCore.h"
+#include "HDRHelper.h"
 #include "Engine/RendererSettings.h"
 #include "HAL/ThreadHeartBeat.h"
 
@@ -89,8 +90,6 @@ namespace RHIConsoleVariables
 		);
 };
 
-extern void D3D11TextureAllocated2D( FD3D11Texture2D& Texture );
-
 /**
  * Returns the current swap chain flags but with the same tearing policy used during construction.
  */
@@ -111,7 +110,7 @@ uint32 FD3D11Viewport::GetSwapChainFlags()
 /**
  * Creates a FD3D11Surface to represent a swap chain's back buffer.
  */
-FD3D11Texture2D* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain)
+FD3D11Texture* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain)
 {
 	// Grab the back buffer
 	TRefCountPtr<ID3D11Texture2D> BackBufferResource;
@@ -182,27 +181,20 @@ FD3D11Texture2D* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, E
 	SRVDesc.Texture2D.MipLevels = 1;
 	VERIFYD3D11RESULT_EX(D3DRHI->GetDevice()->CreateShaderResourceView(BackBufferResource,&SRVDesc,BackBufferShaderResourceView.GetInitReference()), D3DRHI->GetDevice());
 
-	FD3D11Texture2D* NewTexture = new FD3D11Texture2D(
-		D3DRHI,
+	const FRHITextureCreateDesc CreateDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("FD3D11Viewport::GetSwapChainSurface"), TextureDesc.Width, TextureDesc.Height, PixelFormat)
+		.SetFlags(ETextureCreateFlags::RenderTargetable)
+		.DetermineInititialState();
+
+	FD3D11Texture* NewTexture = new FD3D11Texture(
+		CreateDesc,
 		BackBufferResource,
 		BackBufferShaderResourceView,
-		false,
 		1,
+		false,
 		RenderTargetViews,
-		NULL,
-		TextureDesc.Width,
-		TextureDesc.Height,
-		1,
-		1,
-		1,
-		PixelFormat,
-		false,
-		TexCreate_RenderTargetable,
-		false,
-		FClearValueBinding()
-		);
-
-	D3D11TextureAllocated2D(*NewTexture);
+		{}
+	);
 
 	return NewTexture;
 }
@@ -320,6 +312,15 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 			VERIFYD3D11RESIZEVIEWPORTRESULT(SwapChain->ResizeBuffers(0, SizeX, SizeY, RenderTargetFormat, GetSwapChainFlags()), OldState, NewState, D3DRHI->GetDevice());
 		}
 	}
+
+	RECT WindowRect = {};
+#if PLATFORM_WINDOWS
+	GetWindowRect(WindowHandle, &WindowRect);
+#endif
+	FVector2D WindowTopLeft((float)WindowRect.left, (float)WindowRect.top);
+	FVector2D WindowBottomRight((float)WindowRect.right, (float)WindowRect.bottom);
+	bool bHDREnabled;
+	HDRGetMetaData(DisplayOutputFormat, DisplayColorGamut, bHDREnabled, WindowTopLeft, WindowBottomRight, (void*)WindowHandle);
 
 	// Float RGBA backbuffers are requested whenever HDR mode is desired
 	if (PixelFormat == GRHIHDRDisplayOutputFormat && bIsFullscreen)

@@ -3,7 +3,6 @@
 #pragma once
 
 #include "Interfaces/OnlineLeaderboardInterface.h"
-#include "OnlineSubsystemEOSPackage.h"
 #include "OnlineSubsystemEOSTypes.h"
 
 class FOnlineSubsystemEOS;
@@ -16,8 +15,9 @@ class FOnlineSubsystemEOS;
 /**
  * Interface for interacting with EOS stats
  */
-class FOnlineLeaderboardsEOS :
-	public IOnlineLeaderboards
+class FOnlineLeaderboardsEOS
+	: public IOnlineLeaderboards
+	, public TSharedFromThis<FOnlineLeaderboardsEOS, ESPMode::ThreadSafe>
 {
 public:
 	FOnlineLeaderboardsEOS() = delete;
@@ -34,7 +34,6 @@ public:
 	virtual bool WriteOnlinePlayerRatings(const FName& SessionName, int32 LeaderboardId, const TArray<FOnlinePlayerScore>& PlayerScores) override;
 // ~IOnlineLeaderboards Interface
 
-PACKAGE_SCOPE:
 	FOnlineLeaderboardsEOS(FOnlineSubsystemEOS* InSubsystem)
 		: EOSSubsystem(InSubsystem)
 	{
@@ -47,5 +46,6 @@ private:
 };
 
 typedef TSharedPtr<FOnlineLeaderboardsEOS, ESPMode::ThreadSafe> FOnlineLeaderboardsEOSPtr;
+typedef TWeakPtr<FOnlineLeaderboardsEOS, ESPMode::ThreadSafe> FOnlineLeaderboardsEOSWeakPtr;
 
 #endif

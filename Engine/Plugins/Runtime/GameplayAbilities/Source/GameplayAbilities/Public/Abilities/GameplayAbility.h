@@ -21,6 +21,19 @@ class UGameplayAbility;
 class UGameplayTask;
 class UGameplayTasksComponent;
 
+struct FScopedCanActivateAbilityLogEnabler
+{
+	FScopedCanActivateAbilityLogEnabler() { ++LogEnablerCounter; }
+
+	~FScopedCanActivateAbilityLogEnabler() { --LogEnablerCounter; }
+
+	static bool IsLoggingEnabled() { return LogEnablerCounter > 0; }
+
+private:
+
+	static int32 LogEnablerCounter;
+};
+
 /**
  * UGameplayAbility
  *	
@@ -69,16 +82,6 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGameplayAbilityStateEnded, FName);
 
 /** Used to delay execution until we leave a critical section */
 DECLARE_DELEGATE(FPostLockDelegate);
-
-
-#define ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(FunctionName, ReturnValue)																				\
-{																																						\
-	if (!ensure(IsInstantiated()))																														\
-	{																																					\
-		ABILITY_LOG(Error, TEXT("%s: " #FunctionName " cannot be called on a non-instanced ability. Check the instancing policy."), *GetPathName());	\
-		return ReturnValue;																																\
-	}																																					\
-}
 
 /** Structure that defines how an ability will be triggered by external events */
 USTRUCT()
@@ -183,18 +186,10 @@ public:
 	UAbilitySystemComponent* GetAbilitySystemComponentFromActorInfo_Ensured() const;
 
 	/** Gets the current actor info bound to this ability - can only be called on instanced abilities. */
-	const FGameplayAbilityActorInfo* GetCurrentActorInfo() const
-	{
-		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActorInfo, nullptr);
-		return CurrentActorInfo;
-	}
+	const FGameplayAbilityActorInfo* GetCurrentActorInfo() const;
 
 	/** Gets the current activation info bound to this ability - can only be called on instanced abilities. */
-	FGameplayAbilityActivationInfo GetCurrentActivationInfo() const
-	{
-		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActivationInfo, FGameplayAbilityActivationInfo());
-		return CurrentActivationInfo;
-	}
+	FGameplayAbilityActivationInfo GetCurrentActivationInfo() const;
 
 	/** Gets the current activation info bound to this ability - can only be called on instanced abilities. */
 	FGameplayAbilityActivationInfo& GetCurrentActivationInfoRef()
@@ -204,11 +199,7 @@ public:
 	}
 
 	/** Gets the current AbilitySpecHandle- can only be called on instanced abilities. */
-	FGameplayAbilitySpecHandle GetCurrentAbilitySpecHandle() const
-	{
-		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentAbilitySpecHandle, FGameplayAbilitySpecHandle());
-		return CurrentSpecHandle;
-	}
+	FGameplayAbilitySpecHandle GetCurrentAbilitySpecHandle() const;
 
 	/** Retrieves the actual AbilitySpec for this ability. Can only be called on instanced abilities. */
 	FGameplayAbilitySpec* GetCurrentAbilitySpec() const;
@@ -473,7 +464,7 @@ public:
 	}
 
 	/** 
-	 * Invalidates the current prediction key. This should be used in cases where there is a valid prediction window, but the server is doing logic that only he can do, and afterwards performs an action that the client could predict (had the client been able to run the server-only code prior).
+	 * Invalidates the current prediction key. This should be used in cases where there is a valid prediction window, but the server is doing logic that only it can do, and afterwards performs an action that the client could predict (had the client been able to run the server-only code prior).
 	 * This returns instantly and has no other side effects other than clearing the current prediction key.
 	 */ 
 	UFUNCTION(BlueprintCallable, Category = Ability)
@@ -509,6 +500,11 @@ public:
 	virtual int32 GetFunctionCallspace(UFunction* Function, FFrame* Stack) override;
 	virtual bool CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack) override;
 	virtual bool IsSupportedForNetworking() const override;
+
+#if UE_WITH_IRIS
+	/** Register all replication fragments */
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+#endif // UE_WITH_IRIS
 
 	// --------------------------------------
 	//	IGameplayTaskOwnerInterface
@@ -793,7 +789,7 @@ protected:
 
 	/** List of currently active tasks, do not modify directly */
 	UPROPERTY()
-	TArray<UGameplayTask*>	ActiveTasks;
+	TArray<TObjectPtr<UGameplayTask>>	ActiveTasks;
 
 	/** Tasks can emit debug messages throughout their life for debugging purposes. Saved on the ability so that they persist after task is finished */
 	TArray<FAbilityTaskDebugMessage> TaskDebugMessages;
@@ -820,7 +816,7 @@ protected:
 
 	/** Active montage being played by this ability */
 	UPROPERTY()
-	class UAnimMontage* CurrentMontage;
+	TObjectPtr<class UAnimMontage> CurrentMontage;
 
 	// ----------------------------------------------------------------------------------------------------------------
 	//	Target Data

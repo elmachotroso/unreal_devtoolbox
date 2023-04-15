@@ -9,6 +9,8 @@
 
 #include "DetailLayoutBuilder.h"
 #include "Kismet2/CompilerResultsLog.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+
 /////////////////////////////////////////////////////
 // UAnimGraphNode_LayeredBoneBlend
 
@@ -66,7 +68,7 @@ void UAnimGraphNode_LayeredBoneBlend::PostEditChangeProperty(struct FPropertyCha
 
 FString UAnimGraphNode_LayeredBoneBlend::GetNodeCategory() const
 {
-	return TEXT("Blends");
+	return TEXT("Animation|Blends");
 }
 
 void UAnimGraphNode_LayeredBoneBlend::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
@@ -167,13 +169,13 @@ void UAnimGraphNode_LayeredBoneBlend::ValidateAnimNodeDuringCompilation(class US
 		for (int32 MaskIndex = 0; MaskIndex < NumBlendMasks; ++MaskIndex)
 		{
 			const UBlendProfile* BlendMask = Node.BlendMasks[MaskIndex];
-			if (BlendMask == nullptr)
+			if (BlendMask == nullptr && !GetAnimBlueprint()->bIsTemplate)
 			{
 				MessageLog.Error(*FText::Format(LOCTEXT("LayeredBlendNullMask", "@@ has null BlendMask for Blend Pose {0}. "), FText::AsNumber(MaskIndex)).ToString(), this, BlendMask);
 				bCompilationError = true;
-				continue;
 			}
-			else if (BlendMask->Mode != EBlendProfileMode::BlendMask)
+			
+			if (BlendMask && BlendMask->Mode != EBlendProfileMode::BlendMask)
 			{
 				MessageLog.Error(*FText::Format(LOCTEXT("LayeredBlendProfileModeError", "@@ is using a BlendProfile(@@) without a BlendMask mode for Blend Pose {0}. "), FText::AsNumber(MaskIndex)).ToString(), this, BlendMask);
 				bCompilationError = true;
@@ -193,4 +195,38 @@ void UAnimGraphNode_LayeredBoneBlend::ValidateAnimNodeDuringCompilation(class US
  		Node.RebuildPerBoneBlendWeights(ForSkeleton);
  	}
 }
+
+void UAnimGraphNode_LayeredBoneBlend::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+
+	if (Ar.IsLoading() && Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::AnimLayeredBoneBlendMasks)
+	{
+		if (Node.BlendMode == ELayeredBoneBlendMode::BlendMask && Node.BlendMasks.Num() != Node.BlendPoses.Num())
+		{
+			Node.BlendMasks.SetNum(Node.BlendPoses.Num());
+		}
+	}
+}
+
+void UAnimGraphNode_LayeredBoneBlend::PostLoad()
+{
+	Super::PostLoad();
+
+	// Post-load our blend masks, in case they've been pre-loaded, but haven't had their bone references initialized yet.
+	if (Node.BlendMode == ELayeredBoneBlendMode::BlendMask)
+	{
+		int32 NumBlendMasks = Node.BlendMasks.Num();
+		for (int32 MaskIndex = 0; MaskIndex < NumBlendMasks; ++MaskIndex)
+		{
+			if(UBlendProfile* BlendMask = Node.BlendMasks[MaskIndex])
+			{
+				BlendMask->ConditionalPostLoad();
+			}
+		}
+	}
+}
+
 #undef LOCTEXT_NAMESPACE

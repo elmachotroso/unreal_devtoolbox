@@ -2,11 +2,13 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "Logging/LogVerbosity.h"
 #include "Misc/OutputDevice.h"
 #include "Serialization/Archive.h"
-#include "Containers/Array.h"
-#include "HAL/CriticalSection.h"
+#include "UObject/NameTypes.h"
 
 /**
  * Memory output device. Logs only into pre-allocated memory buffer.
@@ -55,6 +57,10 @@ public:
 	virtual void Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category, const double Time ) override;
 	virtual void Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category) override;
 	virtual bool CanBeUsedOnAnyThread() const override
+	{
+		return true;
+	}
+	virtual bool CanBeUsedOnPanicThread() const override
 	{
 		return true;
 	}

@@ -22,6 +22,7 @@ void	Writer_Shutdown();
 void	Writer_Update();
 bool	Writer_SendTo(const ANSICHAR*, uint32);
 bool	Writer_WriteTo(const ANSICHAR*);
+bool	Writer_WriteSnapshotTo(const ANSICHAR*);
 bool	Writer_IsTracing();
 bool	Writer_Stop();
 uint32	Writer_GetThreadId();
@@ -33,10 +34,10 @@ extern FStatistics GTraceStatistics;
 
 
 ////////////////////////////////////////////////////////////////////////////////
-template <int DestSize>
-static uint32 ToAnsiCheap(ANSICHAR (&Dest)[DestSize], const WIDECHAR* Src)
+template <int DestSize, typename SRC_TYPE>
+static uint32 ToAnsiCheap(ANSICHAR (&Dest)[DestSize], const SRC_TYPE* Src)
 {
-	const WIDECHAR* Cursor = Src;
+	const SRC_TYPE* Cursor = Src;
 	for (ANSICHAR& Out : Dest)
 	{
 		Out = ANSICHAR(*Cursor++ & 0x7f);
@@ -94,6 +95,14 @@ bool WriteTo(const TCHAR* InPath)
 	char Path[512];
 	ToAnsiCheap(Path, InPath);
 	return Private::Writer_WriteTo(Path);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool WriteSnapshotTo(const TCHAR* InPath)
+{
+	char Path[512];
+	ToAnsiCheap(Path, InPath);
+	return Private::Writer_WriteSnapshotTo(Path);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -157,19 +166,23 @@ UE_TRACE_EVENT_END()
 ////////////////////////////////////////////////////////////////////////////////
 void ThreadRegister(const TCHAR* Name, uint32 SystemId, int32 SortHint)
 {
+	ANSICHAR NameA[96];
+
 	uint32 ThreadId = Private::Writer_GetThreadId();
-	uint32 NameLen = FCString::Strlen(Name);
+	uint32 NameLen = ToAnsiCheap(NameA, Name);
 	UE_TRACE_LOG($Trace, ThreadInfo, TraceLogChannel, NameLen * sizeof(ANSICHAR))
 		<< ThreadInfo.ThreadId(ThreadId)
 		<< ThreadInfo.SystemId(SystemId)
 		<< ThreadInfo.SortHint(SortHint)
-		<< ThreadInfo.Name(Name, NameLen);
+		<< ThreadInfo.Name(NameA, NameLen);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 void ThreadGroupBegin(const TCHAR* Name)
 {
-	uint32 NameLen = FCString::Strlen(Name);
+	ANSICHAR NameA[96];
+
+	uint32 NameLen = ToAnsiCheap(NameA, Name);
 	UE_TRACE_LOG($Trace, ThreadGroupBegin, TraceLogChannel, NameLen * sizeof(ANSICHAR))
 		<< ThreadGroupBegin.Name(Name, NameLen);
 }

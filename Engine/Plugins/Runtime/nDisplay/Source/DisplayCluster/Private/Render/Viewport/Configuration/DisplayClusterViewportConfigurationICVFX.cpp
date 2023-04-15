@@ -279,29 +279,14 @@ FDisplayClusterViewportConfigurationICVFX::~FDisplayClusterViewportConfiguration
 
 bool FDisplayClusterViewportConfigurationICVFX::CreateLightcardViewport(FDisplayClusterViewport& BaseViewport)
 {
-	FDisplayClusterViewport* LightcardViewport = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateLightcardViewport(BaseViewport, RootActor, false);
+	FDisplayClusterViewport* LightcardViewport = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateLightcardViewport(BaseViewport, RootActor);
 	if (LightcardViewport)
 	{
 		// Update lightcard viewport settings
-		FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(*LightcardViewport, BaseViewport, RootActor, false);
+		FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(*LightcardViewport, BaseViewport, RootActor);
 
 		// Support projection policy update
 		FDisplayClusterViewportConfigurationHelpers::UpdateProjectionPolicy(*LightcardViewport);
-
-		// When lightcard use OCIO or PP for render we need resolve scene. Now get alpha channel by second render pass
-		if ((LightcardViewport->RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXLightcardColor) != 0)
-		{
-			// Now OCIO require second vp for alpha
-			FDisplayClusterViewport* LightcardViewportAlpha = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateLightcardViewport(BaseViewport, RootActor, true);
-			if (LightcardViewportAlpha)
-			{
-				// Update lightcard viewport settings
-				FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(*LightcardViewportAlpha, BaseViewport, RootActor, true);
-
-				// Support projection policy update
-				FDisplayClusterViewportConfigurationHelpers::UpdateProjectionPolicy(*LightcardViewportAlpha);
-			}
-		}
 
 		return true;
 	}
@@ -317,7 +302,17 @@ void FDisplayClusterViewportConfigurationICVFX::Update()
 	if (ViewportManager)
 	{
 		ImplBeginReallocateViewports(*ViewportManager);
-		
+
+		// Disable ICVFX if cluster node rendering is not used
+		const FString& ClusterNodeId = ViewportManager->GetRenderFrameSettings().ClusterNodeId;
+		if(ClusterNodeId.IsEmpty())
+		{
+			// The nDisplay viewport should now always have the name of the cluster node.
+			// When rendering MRQ viewports, the list of viewports is used without cluster node names.
+			ImplFinishReallocateViewports(*ViewportManager);
+			return;
+		}
+
 		TArray<FDisplayClusterViewport*> TargetViewports;
 		const EDisplayClusterViewportICVFXFlags TargetViewportsFlags = ImplGetTargetViewports(*ViewportManager, TargetViewports);
 
@@ -345,8 +340,8 @@ void FDisplayClusterViewportConfigurationICVFX::Update()
 						// Add this target to all cameras visible on it
 						for (FDisplayClusterViewportConfigurationCameraICVFX& CameraIt : StageCameras)
 						{
-							if (CameraIt.IsCameraProjectionVisibleOnViewport(TargetIt)
-								&& !CameraIt.GetCameraSettings().HiddenICVFXViewports.ItemNames.Contains(TargetIt->GetId()))
+						if (CameraIt.IsCameraProjectionVisibleOnViewport(TargetIt)
+							&& !CameraIt.GetCameraSettings().HiddenICVFXViewports.ItemNames.Contains(TargetIt->GetId()))
 							{
 								CameraIt.VisibleTargets.Add(TargetIt);
 							}
@@ -401,7 +396,7 @@ void FDisplayClusterViewportConfigurationICVFX::Update()
 				// Freeze render for lightcards when outer viewports freezed
 				if (StageSettings.Lightcard.bIgnoreOuterViewportsFreezingForLightcards == false)
 				{
-					const EDisplayClusterViewportRuntimeICVFXFlags LightcardViewportMask = ViewportRuntime_ICVFXLightcard | ViewportRuntime_ICVFXLightcardColor | ViewportRuntime_ICVFXLightcardAlpha;
+					const EDisplayClusterViewportRuntimeICVFXFlags LightcardViewportMask = ViewportRuntime_ICVFXLightcard;
 
 					for (FDisplayClusterViewport* ViewportIt : ViewportManager->ImplGetViewports())
 					{

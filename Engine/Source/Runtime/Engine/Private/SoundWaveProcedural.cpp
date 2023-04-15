@@ -5,6 +5,8 @@
 #include "AudioDevice.h"
 #include "Engine/Engine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundWaveProcedural)
+
 
 USoundWaveProcedural::USoundWaveProcedural(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -185,6 +187,15 @@ void USoundWaveProcedural::Serialize(FArchive& Ar)
 {
 	// Do not call the USoundWave version of serialize
 	USoundBase::Serialize(Ar);
+
+#if WITH_EDITORONLY_DATA
+	// Due to "skipping" USoundWave::Serialize above, modulation
+	// versioning is required to be called explicitly here.
+	if (Ar.IsLoading())
+	{
+		ModulationSettings.VersionModulators();
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 void USoundWaveProcedural::InitAudioResource(FByteBulkData& CompressedData)
@@ -198,3 +209,4 @@ bool USoundWaveProcedural::InitAudioResource(FName Format)
 	// Nothing to be done to initialize a USoundWaveProcedural
 	return true;
 }
+

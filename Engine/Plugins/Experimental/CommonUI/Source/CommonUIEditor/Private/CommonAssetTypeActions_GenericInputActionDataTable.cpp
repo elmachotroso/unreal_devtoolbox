@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonAssetTypeActions_GenericInputActionDataTable.h"
-#include "ToolMenus.h"
-#include "Misc/MessageDialog.h"
-#include "Editor/DataTableEditor/Public/DataTableEditorModule.h"
+#include "DataTableEditorModule.h"
 #include "Input/CommonGenericInputActionDataTable.h"
+#include "Misc/MessageDialog.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -52,8 +52,8 @@ void FCommonAssetTypeActions_GenericInputActionDataTable::OpenAssetEditor(const 
 		DataTablesListText.Indent();
 		for (UDataTable* Table : InvalidDataTables)
 		{
-			const FName ResolvedRowStructName = Table->GetRowStructName();
-			DataTablesListText.AppendLineFormat(LOCTEXT("DataTable_MissingRowStructListEntry", "* {0} (Row Structure: {1})"), FText::FromString(Table->GetName()), FText::FromName(ResolvedRowStructName));
+			const FTopLevelAssetPath ResolvedRowStructName = Table->GetRowStructPathName();
+			DataTablesListText.AppendLineFormat(LOCTEXT("DataTable_MissingRowStructListEntry", "* {0} (Row Structure: {1})"), FText::FromString(Table->GetName()), FText::FromString(ResolvedRowStructName.ToString()));
 		}
 
 		FText Title = LOCTEXT("DataTable_MissingRowStructTitle", "Continue?");

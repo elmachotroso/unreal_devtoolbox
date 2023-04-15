@@ -20,6 +20,7 @@
 #include "AudioDeviceManager.h"
 #include "Templates/UniqueObj.h"
 #include "Containers/Ticker.h"
+#include "DynamicRenderScaling.h"
 #include "Engine.generated.h"
 
 #define WITH_DYNAMIC_RESOLUTION (!UE_SERVER)
@@ -132,10 +133,10 @@ struct FDynamicResolutionStateInfos
 
 	// Approximation of the resolution fraction being applied. This is only an approximation because
 	// of non (and unecessary) thread safety of this value between game thread, and render thread.
-	float ResolutionFractionApproximation;
+	DynamicRenderScaling::TMap<float> ResolutionFractionApproximations;
 
 	// Maximum resolution fraction set, always MaxResolutionFraction >= ResolutionFractionApproximation.
-	float ResolutionFractionUpperBound;
+	DynamicRenderScaling::TMap<float> ResolutionFractionUpperBounds;
 };
 
 
@@ -224,12 +225,53 @@ struct FNetDriverDefinition
 	UPROPERTY()
 	FName DriverClassNameFallback;
 
+	UPROPERTY()
+	int32 MaxChannelsOverride;
+
 	FNetDriverDefinition() :
 		DefName(NAME_None),
 		DriverClassName(NAME_None),
-		DriverClassNameFallback(NAME_None)
+		DriverClassNameFallback(NAME_None),
+		MaxChannelsOverride(INDEX_NONE)
 	{
 	}
+};
+
+/**
+* Struct used to configure which NetDriver is started with Iris enabled or not
+* Only one attribute out of the NetDriverDefinition, NetDriverName or NetDriverWildcardName should be set along with the bEnableIris property
+*/
+USTRUCT()
+struct FIrisNetDriverConfig 
+{
+	GENERATED_BODY()
+
+	/**
+	 * Name of the net driver definition to configure
+	 * e.g. GameNetDriver, BeaconNetDriver, etc.
+	 */
+	UPROPERTY()
+	FName NetDriverDefinition;
+
+	/**
+	 * Name of the named driver to configure.
+	 * e.g. GameNetDriver, DemoNetDriver, etc.
+	 */
+	UPROPERTY()
+	FName NetDriverName;
+
+	/**
+	 * Wildcard match the netdriver name to configure
+	 * e.g. NetDriverWildcardName="UnitTestNetDriver*" matches with UnitTestNetDriver_1, UnitTestNetDriver_2, etc.
+	 */
+	UPROPERTY()
+	FString NetDriverWildcardName;
+
+	/**
+	 * Configurable property that decides if the NetDriver will use the Iris replication system or not
+	 */
+	UPROPERTY()
+	bool bEnableIris = false;
 };
 
 
@@ -367,6 +409,9 @@ struct FWorldContext
 	/** Is this world context waiting for an online login to complete (for PIE) */
 	bool	bWaitingOnOnlineSubsystem;
 
+	/** Is this the 'primary' PIE instance.  Primary is preferred when, for example, unique hardware like a VR headset can be used by only one PIE instance. */
+	bool	bIsPrimaryPIEInstance;
+
 	/** Handle to this world context's audio device.*/
 	uint32 AudioDeviceID;
 
@@ -376,6 +421,9 @@ struct FWorldContext
 	// If > 0, tick this world at a fixed rate in PIE
 	float PIEFixedTickSeconds  = 0.f;
 	float PIEAccumulatedTickSeconds = 0.f;
+
+	/** On a transition to another level (e.g. LoadMap), the engine will verify that these objects have been cleaned up by garbage collection */
+	TSet<FObjectKey> GarbageObjectsToVerify;
 
 	/**************************************************************/
 
@@ -420,6 +468,7 @@ struct FWorldContext
 		, PIEWorldFeatureLevel(ERHIFeatureLevel::Num)
 		, RunAsDedicated(false)
 		, bWaitingOnOnlineSubsystem(false)
+		, bIsPrimaryPIEInstance(false)
 		, AudioDeviceID(INDEX_NONE)
 		, ThisCurrentWorld(nullptr)
 	{ }
@@ -613,6 +662,23 @@ struct FPluginRedirect
 	FString NewPluginName;
 };
 
+/* Options for UEngine::FindAndPrintStaleReferencesToObject function */
+enum class EPrintStaleReferencesOptions
+{
+	None = 0,
+	Log = 1,
+	Display = 2,
+	Warning = 3,
+	Error = 4,
+	Fatal = 5,
+	Ensure = 0x00000100,
+
+	// Only search for direct references to the object or one of its inners, not a full reference chain 
+	Minimal = 0x00000200, 
+
+	VerbosityMask = 0x000000ff
+};
+ENUM_CLASS_FLAGS(EPrintStaleReferencesOptions);
 
 /** Game thread events for dynamic resolution state. */
 enum class EDynamicResolutionStateEvent : uint8;
@@ -649,7 +715,7 @@ private:
 
 public:
 	/** Sets the font used for the smallest engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Tiny Font", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Tiny Font", ConfigRestartRequired=true))
 	FSoftObjectPath TinyFontName;
 
 private:
@@ -658,7 +724,7 @@ private:
 
 public:
 	/** Sets the font used for small engine text, used for most debug displays */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Small Font", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Small Font", ConfigRestartRequired=true))
 	FSoftObjectPath SmallFontName;
 
 private:
@@ -667,7 +733,7 @@ private:
 
 public:
 	/** Sets the font used for medium engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Medium Font", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Medium Font", ConfigRestartRequired=true))
 	FSoftObjectPath MediumFontName;
 
 private:
@@ -676,7 +742,7 @@ private:
 
 public:
 	/** Sets the font used for large engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Large Font", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Large Font", ConfigRestartRequired=true))
 	FSoftObjectPath LargeFontName;
 
 private:
@@ -685,7 +751,7 @@ private:
 
 public:
 	/** Sets the font used by the default Subtitle Manager */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Subtitle Font", ConfigRestartRequired=true), AdvancedDisplay)
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Subtitle Font", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftObjectPath SubtitleFontName;
 
 private:
@@ -701,31 +767,31 @@ public:
 	TSubclassOf<class UConsole>  ConsoleClass;
 
 	/** Sets the class to use for the game console summoned with ~ */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Console", DisplayName="Console Class", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.Console", DisplayName="Console Class", ConfigRestartRequired=true))
 	FSoftClassPath ConsoleClassName;
 
 	UPROPERTY()
 	TSubclassOf<class UGameViewportClient>  GameViewportClientClass;
 
 	/** Sets the class to use for the game viewport client, which can be overridden to change game-specific input and display behavior. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="GameViewportClient", DisplayName="Game Viewport Client Class", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.GameViewportClient", DisplayName="Game Viewport Client Class", ConfigRestartRequired=true))
 	FSoftClassPath GameViewportClientClassName;
 
 	UPROPERTY()
 	TSubclassOf<class ULocalPlayer>  LocalPlayerClass;
 
 	/** Sets the class to use for local players, which can be overridden to store game-specific information for a local player. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LocalPlayer", DisplayName="Local Player Class", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.LocalPlayer", DisplayName="Local Player Class", ConfigRestartRequired=true))
 	FSoftClassPath LocalPlayerClassName;
 
 	UPROPERTY()
 	TSubclassOf<class AWorldSettings>  WorldSettingsClass;
 
 	/** Sets the class to use for WorldSettings, which can be overridden to store game-specific information on map/world. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="WorldSettings", DisplayName="World Settings Class", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.WorldSettings", DisplayName="World Settings Class", ConfigRestartRequired=true))
 	FSoftClassPath WorldSettingsClassName;
 
-	UPROPERTY(globalconfig, noclear, meta=(MetaClass="NavigationSystem", DisplayName="Navigation System Class"))
+	UPROPERTY(globalconfig, noclear, meta=(MetaClass="/Script/NavigationSystem.NavigationSystem", DisplayName="Navigation System Class"))
 	FSoftClassPath NavigationSystemClassName;
 
 	/** Sets the class to use for NavigationSystem, which can be overridden to change game-specific navigation/AI behavior. */
@@ -733,32 +799,32 @@ public:
 	TSubclassOf<class UNavigationSystemBase>  NavigationSystemClass;
 
 	/** Sets the Navigation System Config class, which can be overridden to change game-specific navigation/AI behavior. */
-	UPROPERTY(globalconfig, noclear, meta = (MetaClass = "NavigationSystem", DisplayName = "Navigation System Config Class"))
+	UPROPERTY(globalconfig, noclear, meta = (MetaClass = "/Script/NavigationSystem.NavigationSystem", DisplayName = "Navigation System Config Class"))
 	FSoftClassPath NavigationSystemConfigClassName;
 
 	UPROPERTY()
 	TSubclassOf<class UNavigationSystemConfig>  NavigationSystemConfigClass;
 	
 	/** Sets the AvoidanceManager class, which can be overridden to change AI crowd behavior. */
-	UPROPERTY(globalconfig, noclear, meta=(MetaClass="AvoidanceManager", DisplayName="Avoidance Manager Class"))
+	UPROPERTY(globalconfig, noclear, meta=(MetaClass="/Script/Engine.AvoidanceManager", DisplayName="Avoidance Manager Class"))
 	FSoftClassPath AvoidanceManagerClassName;
 	
 	UPROPERTY()
 	TSubclassOf<class UAvoidanceManager>  AvoidanceManagerClass;
 
 	/** Sets the class to be used as the default AIController class for pawns. */
-	UPROPERTY(globalconfig, noclear, meta = (MetaClass = "AI", DisplayName = "Default AIController class for all Pawns"))
+	UPROPERTY(globalconfig, noclear, meta = (MetaClass = "/Script/AIModule.AIController", DisplayName = "Default AIController class for all Pawns"))
 	FSoftClassPath AIControllerClassName;
 
 	UPROPERTY()
 	TSubclassOf<class UPhysicsCollisionHandler>	PhysicsCollisionHandlerClass;
 
 	/** Sets the PhysicsCollisionHandler class to use by default, which can be overridden to change game-specific behavior when objects collide using physics. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="PhysicsCollisionHandler", DisplayName="Physics Collision Handler Class", ConfigRestartRequired=true), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.PhysicsCollisionHandler", DisplayName="Physics Collision Handler Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath PhysicsCollisionHandlerClassName;
 
 	/** Sets the GameUserSettings class, which can be overridden to support game-specific options for Graphics/Sound/Gameplay. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="GameUserSettings", DisplayName="Game User Settings Class", ConfigRestartRequired=true), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.GameUserSettings", DisplayName="Game User Settings Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath GameUserSettingsClassName;
 
 	UPROPERTY()
@@ -772,15 +838,15 @@ public:
 	TSubclassOf<class ALevelScriptActor>  LevelScriptActorClass;
 
 	/** Sets the Level Script Actor class, which can be overridden to allow game-specific behavior in per-map blueprint scripting */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LevelScriptActor", DisplayName="Level Script Actor Class", ConfigRestartRequired=true))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/Engine.LevelScriptActor", DisplayName="Level Script Actor Class", ConfigRestartRequired=true))
 	FSoftClassPath LevelScriptActorClassName;
 	
 	/** Sets the base class to use for new blueprints created in the editor, configurable on a per-game basis */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Default Blueprint Base Class", AllowAbstract, BlueprintBaseOnly), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/CoreUObject.Object", DisplayName="Default Blueprint Base Class", AllowAbstract, BlueprintBaseOnly), AdvancedDisplay)
 	FSoftClassPath DefaultBlueprintBaseClassName;
 
 	/** Sets the class for a global object spawned at startup to handle game-specific data. If empty, it will not spawn one */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Game Singleton Class", ConfigRestartRequired=true), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/CoreUObject.Object", DisplayName="Game Singleton Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath GameSingletonClassName;
 
 	/** A UObject spawned at initialization time to handle game-specific data */
@@ -788,7 +854,7 @@ public:
 	TObjectPtr<UObject> GameSingleton;
 
 	/** Sets the class to spawn as the global AssetManager, configurable per game. If empty, it will not spawn one */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Asset Manager Class", ConfigRestartRequired=true), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="/Script/CoreUObject.Object", DisplayName="Asset Manager Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath AssetManagerClassName;
 
 	/** A UObject spawned at initialization time to handle runtime asset loading and management */
@@ -1081,7 +1147,7 @@ public:
 	TObjectPtr<class UMaterial> PreviewShadowsIndicatorMaterial;
 
 	/** Path of the material that renders a message about preview shadows being used. */
-	UPROPERTY(globalconfig, EditAnywhere, Category=DefaultMaterials, meta=(AllowedClasses="Material", DisplayName="Preview Shadows Indicator Material"))
+	UPROPERTY(globalconfig, EditAnywhere, Category=DefaultMaterials, meta=(AllowedClasses="/Script/Engine.Material", DisplayName="Preview Shadows Indicator Material"))
 	FSoftObjectPath PreviewShadowsIndicatorMaterialName;
 
 	/** Material that 'fakes' lighting, used for arrows, widgets. */
@@ -1127,6 +1193,36 @@ public:
 	/** The colors used for texture streaming accuracy debug view modes. */
 	UPROPERTY(globalconfig)
 	TArray<FLinearColor> StreamingAccuracyColors;
+
+	/** The visualization color when sk mesh not using skin cache. */
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationExcludedColor;
+
+	/** The visualization color when sk mesh using skin cache. */
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationIncludedColor;
+
+	/** The visualization color when sk mesh using recompute tangents. */
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationRecomputeTangentsColor;
+
+	/** The memory visualization threshold in MB for a skin cache entry */
+	UPROPERTY(globalconfig)
+	float GPUSkinCacheVisualizationLowMemoryThresholdInMB;
+	UPROPERTY(globalconfig)
+	float GPUSkinCacheVisualizationHighMemoryThresholdInMB;
+
+	/** The memory visualization colors of skin cache */
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationLowMemoryColor;
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationMidMemoryColor;
+	UPROPERTY(globalconfig)
+	FLinearColor GPUSkinCacheVisualizationHighMemoryColor;
+
+	/** The visualization colors of ray tracing LOD index offset from raster LOD */
+	UPROPERTY(globalconfig)
+	TArray<FLinearColor> GPUSkinCacheVisualizationRayTracingLODOffsetColors;
 
 	/**
 	* Complexity limits for the various complexity view mode combinations.
@@ -1197,7 +1293,7 @@ public:
 	TObjectPtr<class UPhysicalMaterial> DefaultDestructiblePhysMaterial;
 
 	/** Path of the PhysicalMaterial to use if none is defined for a particular object. */
-	UPROPERTY(globalconfig, EditAnywhere, Category = DefaultMaterials, meta = (AllowedClasses = "Physics", DisplayName = "Destructible Physics Material"))
+	UPROPERTY(globalconfig, EditAnywhere, Category = DefaultMaterials, meta = (AllowedClasses = "/Script/PhysicsCore.PhysicalMaterial", DisplayName = "Destructible Physics Material"))
 	FSoftObjectPath DefaultDestructiblePhysMaterialName;
 
 	/** Deprecated rules for redirecting renamed objects, replaced by the CoreRedirects system*/
@@ -1223,11 +1319,19 @@ public:
 
 	/** Tiled blue-noise texture */
 	UPROPERTY()
-	TObjectPtr<class UTexture2D> BlueNoiseTexture;
+	TObjectPtr<class UTexture2D> BlueNoiseScalarTexture;
+
+	/** Spatial-temporal blue noise texture with two channel output */
+	UPROPERTY()
+	TObjectPtr<class UTexture2D> BlueNoiseVec2Texture;
 
 	/** Path of the tiled blue-noise texture */
 	UPROPERTY(globalconfig)
-	FSoftObjectPath BlueNoiseTextureName;
+	FSoftObjectPath BlueNoiseScalarTextureName;
+
+	/** Path of the tiled blue-noise texture */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath BlueNoiseVec2TextureName;
 
 	/** Texture used to do font rendering in shaders */
 	UPROPERTY()
@@ -1338,7 +1442,7 @@ public:
 	 * This class will be responsible of updating the application Time and DeltaTime.
 	 * Can be used to synchronize the engine with another process (gen-lock).
 	 */
-	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Framerate, meta=(MetaClass="EngineCustomTimeStep", DisplayName="Custom TimeStep"))
+	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Framerate, meta=(MetaClass="/Script/Engine.EngineCustomTimeStep", DisplayName="Custom TimeStep"))
 	FSoftClassPath CustomTimeStepClassName;
 
 private:
@@ -1354,7 +1458,7 @@ private:
 
 public:
 	/** Set TimecodeProvider when the engine is started. */
-	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="Timecode Provider"))
+	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="/Script/Engine.TimecodeProvider", DisplayName="Timecode Provider"))
 	FSoftClassPath TimecodeProviderClassName;
 
 	/**
@@ -1444,6 +1548,9 @@ public:
 
 	UPROPERTY(config, EditAnywhere, Category = PerQualityLevelProperty, AdvancedDisplay)
 	bool UseStaticMeshMinLODPerQualityLevels;
+
+	UPROPERTY(config, EditAnywhere, Category = PerQualityLevelProperty, AdvancedDisplay)
+	bool UseSkeletalMeshMinLODPerQualityLevels;
 
 	/** The state of the current map transition.  */
 	UPROPERTY()
@@ -1787,7 +1894,7 @@ private:
 protected:
 
 	/** The audio device manager */
-	FAudioDeviceManager* AudioDeviceManager;
+	FAudioDeviceManager* AudioDeviceManager = nullptr;
 
 	/** Audio device handle to the main audio device. */
 	FAudioDeviceHandle MainAudioDeviceHandle;
@@ -2447,15 +2554,15 @@ public:
 #if !UE_BUILD_SHIPPING
 	/** 
 	 * Capture screenshots and performance metrics
-	 * @param EventTime time of the Matinee event
+	 * @param EventTime time of the Sequencer event
 	 */
-	void PerformanceCapture(UWorld* World, const FString& MapName, const FString& MatineeName, float EventTime);
+	void PerformanceCapture(UWorld* World, const FString& MapName, const FString& SequenceName, float EventTime);
 
 	/**
 	 * Logs performance capture for use in automation analytics
-	 * @param EventTime time of the Matinee event
+	 * @param EventTime time of the Sequencer event
 	 */
-	void LogPerformanceCapture(UWorld* World, const FString& MapName, const FString& MatineeName, float EventTime);
+	void LogPerformanceCapture(UWorld* World, const FString& MapName, const FString& SequenceName, float EventTime);
 #endif	// UE_BUILD_SHIPPING
 
 	/**
@@ -2502,6 +2609,9 @@ private:
 	 * @param bInIsOpening			true if the UI is opening, false if it is being closed.
 	*/
 	void OnExternalUIChange(bool bInIsOpening);
+
+	/** Returns GetTimeBetweenGarbageCollectionPasses but tweaked if its an idle server or not */
+	float GetTimeBetweenGarbageCollectionPasses(bool bHasPlayersConnected) const;
 
 protected:
 
@@ -2570,7 +2680,13 @@ public:
 	 * @param bOverrideLocation		Whether this is an override location, which forces the streaming system to ignore all other locations
 	 * @param OverrideDuration		How long the streaming system should keep checking this location if bOverrideLocation is true, in seconds. 0 means just for the next Tick.
 	 */
-	void AddTextureStreamingSlaveLoc(FVector InLoc, float BoostFactor, bool bOverrideLocation, float OverrideDuration);
+	void AddTextureStreamingLoc(FVector InLoc, float BoostFactor, bool bOverrideLocation, float OverrideDuration);
+
+	UE_DEPRECATED(5.1, "This is deprecated to follow inclusive naming rules. Use AddTextureStreamingLoc() instead.")
+	void AddTextureStreamingSlaveLoc(FVector InLoc, float BoostFactor, bool bOverrideLocation, float OverrideDuration)
+	{
+		AddTextureStreamingLoc(InLoc, BoostFactor, bOverrideLocation, OverrideDuration);
+	}
 
 	/** 
 	 * Obtain a world object pointer from an object with has a world context.
@@ -2607,7 +2723,12 @@ public:
 	ULocalPlayer* GetLocalPlayerFromControllerId( const UGameViewportClient* InViewport, const int32 ControllerId ) const;
 	ULocalPlayer* GetLocalPlayerFromControllerId( UWorld * InWorld, const int32 ControllerId ) const;
 
+	ULocalPlayer* GetLocalPlayerFromInputDevice(const UGameViewportClient* InViewport, const FInputDeviceId InputDevice) const;
+	ULocalPlayer* GetLocalPlayerFromInputDevice(UWorld * InWorld, const FInputDeviceId InputDevice) const;
+
 	void SwapControllerId(ULocalPlayer *NewPlayer, const int32 CurrentControllerId, const int32 NewControllerID) const;
+	
+	void SwapPlatformUserId(ULocalPlayer *NewPlayer, const FPlatformUserId CurrentUserId, const FPlatformUserId NewUserID) const;
 
 	/** 
 	 * Find a Local Player Controller, which may not exist at all if this is a server.
@@ -2720,6 +2841,7 @@ public:
 	/** Makes a strong effort to copy everything possible from and old object to a new object of a different class, used for blueprint to update things after a recompile. */
 	struct FCopyPropertiesForUnrelatedObjectsParams
 	{
+		UE_DEPRECATED(5.1, "Aggressive Default Subobject Replacement is no longer being done. An ensure has been left in place to catch any cases that was making use of this feature.")
 		bool bAggressiveDefaultSubobjectReplacement;
 		bool bDoDelta;
 		bool bReplaceObjectClassReferences;
@@ -2733,20 +2855,13 @@ public:
 		bool bClearReferences;
 		bool bDontClearReferenceIfNewerClassExists;
 
-		FCopyPropertiesForUnrelatedObjectsParams()
-			: bAggressiveDefaultSubobjectReplacement(false)
-			, bDoDelta(true)
-			, bReplaceObjectClassReferences(true)
-			, bCopyDeprecatedProperties(false)
-			, bPreserveRootComponent(true)
-			, bPerformDuplication(false)
-			, bSkipCompilerGeneratedDefaults(false)
-			, bNotifyObjectReplacement(false)
-			, bClearReferences(true)
-			, bDontClearReferenceIfNewerClassExists(false)
-		{}
+		// In cases where the SourceObject will no longer be able to look up its correct Archetype, it can be supplied
+		UObject* SourceObjectArchetype;
+
+		ENGINE_API FCopyPropertiesForUnrelatedObjectsParams();
+		ENGINE_API FCopyPropertiesForUnrelatedObjectsParams(const FCopyPropertiesForUnrelatedObjectsParams&);
 	};
-	static void CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, FCopyPropertiesForUnrelatedObjectsParams Params = FCopyPropertiesForUnrelatedObjectsParams());//bool bAggressiveDefaultSubobjectReplacement = false, bool bDoDelta = true);
+	static void CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, FCopyPropertiesForUnrelatedObjectsParams Params = FCopyPropertiesForUnrelatedObjectsParams());
 	virtual void NotifyToolsOfObjectReplacement(const TMap<UObject*, UObject*>& OldToNewInstanceMap) { }
 
 	virtual bool UseSound() const;
@@ -2867,12 +2982,30 @@ private:
 	FScreenSaverInhibitor*  ScreenSaverInhibitorRunnable;
 
 
+	/** Increments every time a non-seamless travel happens on a server, to generate net session id's. Written to config to preserve id upon crash. */
+	UPROPERTY(Config)
+	uint32 GlobalNetTravelCount = 0;
+
+public:
+	void IncrementGlobalNetTravelCount()
+	{
+		GlobalNetTravelCount++;
+	}
+
+	uint32 GetGlobalNetTravelCount() const
+	{
+		return GlobalNetTravelCount;
+	}
 public:
 
 	/** A list of named UNetDriver definitions */
 	UPROPERTY(Config, transient)
 	TArray<FNetDriverDefinition> NetDriverDefinitions;
 
+	/** A list of Iris NetDriverConfigs */
+	UPROPERTY(Config, transient)
+	TArray<FIrisNetDriverConfig> IrisNetDriverConfigs;
+	
 	/** A configurable list of actors that are automatically spawned upon server startup (just prior to InitGame) */
 	UPROPERTY(config)
 	TArray<FString> ServerActors;
@@ -2985,8 +3118,6 @@ public:
 	void DestroyNamedNetDriver(UWorld *InWorld, FName NetDriverName);
 	void DestroyNamedNetDriver(UPendingNetGame *PendingNetGame, FName NetDriverName);
 
-	UE_DEPRECATED(4.26, "Please use NetworkRemapPath that takes a connection instead.")
-	virtual bool NetworkRemapPath(UNetDriver* Driver, FString &Str, bool bReading=true) { return false; }
 	virtual bool NetworkRemapPath(UNetConnection* Connection, FString& Str, bool bReading=true) { return false; }
 	virtual bool NetworkRemapPath(UPendingNetGame *PendingNetGame, FString &Str, bool bReading=true) { return false; }
 
@@ -3131,15 +3262,28 @@ public:
 	 */
 	UWorld* GetCurrentPlayWorld(UWorld* PossiblePlayWorld = nullptr) const;
 
-	/** Verify any remaining World(s) are valid after ::LoadMap destroys a world */
-	virtual void VerifyLoadMapWorldCleanup();
+	/**
+	 * Finds any World(s) and related objects that are still referenced after being destroyed by ::LoadMap and logs which objects are holding the references.
+	 * May rename packages for the dangling objects to allow the world to be reloaded without conflicting with the existing one.
+	 * @param InWorldContext The optional world context for which we want to check references to additional "must-destroy" objects.
+	 */
+	virtual void CheckAndHandleStaleWorldObjectReferences(FWorldContext* InWorldContext = nullptr);
 
 	/**
 	 * Attempts to find what is referencing a world that should have been garbage collected
 	 * @param ObjectToFindReferencesTo World or its package (or any object from the world package that should've been destroyed)
 	 * @param Verbosity Verbosity (can be fatal or non-fatal) with which to print the error message with
 	 */
+	UE_DEPRECATED(5.1, "Please use FindAndPrintStaleReferencesToObject overload that takes EPrintStaleReferencesOptions parameter")
 	static void FindAndPrintStaleReferencesToObject(UObject* ObjectToFindReferencesTo, ELogVerbosity::Type Verbosity);
+
+	/**
+	 * Attempts to find a reference chain leading to a world that should have been garbage collected
+	 * @param ObjectToFindReferencesTo World or its package (or any object from the world package that should've been destroyed)
+	 * @param Options Determines how the stale references messages should be logged
+	 */
+	static FString FindAndPrintStaleReferencesToObject(UObject* ObjectToFindReferencesTo, EPrintStaleReferencesOptions Options);
+	static TArray<FString> FindAndPrintStaleReferencesToObjects(TConstArrayView<UObject*> ObjectsToFindReferencesTo, EPrintStaleReferencesOptions Options);
 
 	FWorldContext& CreateNewWorldContext(EWorldType::Type WorldType);
 
@@ -3346,7 +3490,7 @@ public:
 	UEngineSubsystem* GetEngineSubsystemBase(TSubclassOf<UEngineSubsystem> SubsystemClass) const
 	{
 		checkSlow(this != nullptr);
-		return EngineSubsystemCollection->GetSubsystem<UEngineSubsystem>(SubsystemClass);
+		return EngineSubsystemCollection.GetSubsystem<UEngineSubsystem>(SubsystemClass);
 	}
 
 	/**
@@ -3356,7 +3500,7 @@ public:
 	TSubsystemClass* GetEngineSubsystem() const
 	{
 		checkSlow(this != nullptr);
-		return EngineSubsystemCollection->GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EngineSubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 	/**
@@ -3365,15 +3509,11 @@ public:
 	template <typename TSubsystemClass>
 	const TArray<TSubsystemClass*>& GetEngineSubsystemArray() const
 	{
-		return EngineSubsystemCollection->GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EngineSubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 private:
-	// TUniqueObj is used here to work around a hot reload issue caused by FSubsystemCollection inheriting FGCObject.
-	// When hot reload occurs, the CDO for this type can be reconstructed over the same object at the same address without
-	// destroying it first, which breaks FGCObject.
-	// TUniquePtr makes sure the object is allocated on the heap, giving it a unique address.
-	TUniqueObj<FSubsystemCollection<UEngineSubsystem>> EngineSubsystemCollection;
+	FObjectSubsystemCollection<UEngineSubsystem> EngineSubsystemCollection;
 
 public:
 	/**
@@ -3437,6 +3577,16 @@ public:
 	 * @param ViewRotation The world space view rotation.
 	 */
 	void RenderEngineStats(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 LHSX, int32& InOutLHSY, int32 RHSX, int32& InOutRHSY, const FVector* ViewLocation, const FRotator* ViewRotation);
+
+	/**
+	 * Function to render text indicating whether named events are enabled.
+	 *
+	 * @param Canvas The canvas to use when drawing.
+	 * @param X The X position to start drawing from.
+	 * @param Y The Y position to start drawing from.
+	 * @return The ending Y position to continue rendering stats at.
+	 */
+	int32 RenderNamedEventsEnabled(FCanvas* Canvas, int32 X, int32 Y);
 
 	/**
 	 * Function definition for those stats which have their own toggle functions (or toggle other stats).
@@ -3570,7 +3720,6 @@ private:
 	int32 RenderStatFPS(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatHitches(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatSummary(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
-	int32 RenderStatNamedEvents(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatColorList(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatLevels(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatLevelMap(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
@@ -3594,6 +3743,10 @@ private:
 #endif
 
 	FDelegateHandle HandleScreenshotCapturedDelegateHandle;
+
+public:
+	/** Set priority and affinity on game thread either from ini file or from FPlatformAffinity::GetGameThreadPriority()*/
+	void SetPriorityAndAffinityOnGameThread();
 };
 
 /** Global engine pointer. Can be 0 so don't use without checking. */

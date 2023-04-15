@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Input/CommonAnalogCursor.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "Slate/SObjectWidget.h"
 #include "Blueprint/UserWidget.h"
 #include "Input/CommonUIActionRouterBase.h"
@@ -35,7 +35,10 @@ const float ScrollDeadZone = 0.2f;
 bool IsEligibleFakeKeyPointerEvent(const FPointerEvent& PointerEvent)
 {
 	FKey EffectingButton = PointerEvent.GetEffectingButton();
-	return EffectingButton.IsMouseButton() && EffectingButton != EKeys::LeftMouseButton && EffectingButton != EKeys::RightMouseButton;
+	return EffectingButton.IsMouseButton() 
+		&& EffectingButton != EKeys::LeftMouseButton
+		&& EffectingButton != EKeys::RightMouseButton
+		&& EffectingButton != EKeys::MiddleMouseButton;
 }
 
 FCommonAnalogCursor::FCommonAnalogCursor(const UCommonUIActionRouterBase& InActionRouter)
@@ -50,6 +53,7 @@ void FCommonAnalogCursor::Initialize()
 	PointerButtonDownKeys = FSlateApplication::Get().GetPressedMouseButtons();
 	PointerButtonDownKeys.Remove(EKeys::LeftMouseButton);
 	PointerButtonDownKeys.Remove(EKeys::RightMouseButton);
+	PointerButtonDownKeys.Remove(EKeys::MiddleMouseButton);
 
 	UCommonInputSubsystem& InputSubsystem = ActionRouter.GetInputSubsystem();
 	InputSubsystem.OnInputMethodChangedNative.AddSP(this, &FCommonAnalogCursor::HandleInputMethodChanged);
@@ -333,10 +337,9 @@ bool FCommonAnalogCursor::HandleMouseButtonDownEvent(FSlateApplication& SlateApp
 {
 	if (FAnalogCursor::IsRelevantInput(PointerEvent))
 	{
-#if PLATFORM_SWITCH	
-		//@todo DanH: Is it intentional or a bug that Switch doesn't swap to Touch input type when the user touches?
-		// Switch doesn't register as switching its input type, so detect touch input here to hide the cursor.
-		if (PointerEvent.IsTouchEvent())
+#if UE_COMMONUI_PLATFORM_SUPPORTS_TOUCH	
+		// Some platforms don't register as switching its input type, so detect touch input here to hide the cursor.
+		if (PointerEvent.IsTouchEvent() && ShouldHideCursor())
 		{
 			//ClearCenterWidget();
 			HideCursor();
@@ -346,9 +349,10 @@ bool FCommonAnalogCursor::HandleMouseButtonDownEvent(FSlateApplication& SlateApp
 		//@todo DanH: May want to make the list of "mouse buttons to treat like keys" a settings thing
 		// Mouse buttons other than the two primaries are fair game for binding as if they were normal keys
 		const FKey EffectingButton = PointerEvent.GetEffectingButton();
-		if (EffectingButton.IsMouseButton() &&
-			EffectingButton != EKeys::LeftMouseButton &&
-			EffectingButton != EKeys::RightMouseButton)
+		if (EffectingButton.IsMouseButton()
+			&& EffectingButton != EKeys::LeftMouseButton
+			&& EffectingButton != EKeys::RightMouseButton
+			&& EffectingButton != EKeys::MiddleMouseButton)
 		{
 			UGameViewportClient* ViewportClient = GetViewportClient();
 			if (TSharedPtr<SWidget> ViewportWidget = ViewportClient ? ViewportClient->GetGameViewportWidget() : nullptr)
@@ -520,6 +524,18 @@ void FCommonAnalogCursor::RefreshCursorVisibility()
 bool FCommonAnalogCursor::IsUsingGamepad() const
 {
 	return ActiveInputMethod == ECommonInputType::Gamepad;
+}
+
+bool FCommonAnalogCursor::ShouldHideCursor() const
+{
+	bool bUsingMouseForTouch = FSlateApplication::Get().IsFakingTouchEvents();
+	const ULocalPlayer& LocalPlayer = *ActionRouter.GetLocalPlayerChecked();
+	if (UGameViewportClient* GameViewportClient = LocalPlayer.ViewportClient)
+	{
+		bUsingMouseForTouch |= GameViewportClient->GetUseMouseForTouch();
+	}
+
+	return !bUsingMouseForTouch;
 }
 
 void FCommonAnalogCursor::HideCursor()

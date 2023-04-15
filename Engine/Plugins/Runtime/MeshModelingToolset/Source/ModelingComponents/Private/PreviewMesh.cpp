@@ -6,6 +6,9 @@
 
 #include "DynamicMeshToMeshDescription.h"
 #include "MeshDescriptionToDynamicMesh.h"
+#include "SceneInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PreviewMesh)
 
 using namespace UE::Geometry;
 
@@ -410,7 +413,7 @@ bool UPreviewMesh::FindRayIntersection(const FRay3d& WorldRay, FHitResult& HitOu
 {
 	if (IsVisible() && TemporaryParentActor != nullptr && bBuildSpatialDataStructure)
 	{
-		FTransform3d Transform(TemporaryParentActor->GetActorTransform());
+		FTransformSRT3d Transform(TemporaryParentActor->GetActorTransform());
 		FRay3d LocalRay(Transform.InverseTransformPosition(WorldRay.Origin),
 			Transform.InverseTransformVector(WorldRay.Direction));
 		UE::Geometry::Normalize(LocalRay.Direction);
@@ -425,7 +428,7 @@ bool UPreviewMesh::FindRayIntersection(const FRay3d& WorldRay, FHitResult& HitOu
 
 			HitOut.FaceIndex = HitTriID;
 			HitOut.Distance = Query.RayParameter;
-			HitOut.Normal = (FVector)Transform.TransformVectorNoScale(UseMesh->GetTriNormal(HitTriID));
+			HitOut.Normal = (FVector)Transform.TransformNormal(Triangle.Normal());
 			HitOut.ImpactNormal = HitOut.Normal;
 			HitOut.ImpactPoint = (FVector)Transform.TransformPosition(LocalRay.PointAt(Query.RayParameter));
 			return true;
@@ -691,3 +694,4 @@ void UPreviewMesh::NotifyWorldPathTracedOutputInvalidated()
 		}
 	}
 }
+

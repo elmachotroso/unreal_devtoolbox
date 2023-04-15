@@ -3,6 +3,9 @@
 #include "Abilities/Async/AbilityAsync_WaitGameplayEffectApplied.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemLog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityAsync_WaitGameplayEffectApplied)
 
 UAbilityAsync_WaitGameplayEffectApplied* UAbilityAsync_WaitGameplayEffectApplied::WaitGameplayEffectAppliedToActor(AActor* TargetActor, const FGameplayTargetDataFilterHandle SourceFilter, FGameplayTagRequirements SourceTagRequirements, FGameplayTagRequirements TargetTagRequirements, bool TriggerOnce, bool ListenForPeriodicEffect)
 {
@@ -87,3 +90,4 @@ void UAbilityAsync_WaitGameplayEffectApplied::EndAction()
 	}
 	Super::EndAction();
 }
+

@@ -3,7 +3,6 @@
 #include "EditorModeManager.h"
 #include "Engine/Selection.h"
 #include "Misc/MessageDialog.h"
-#include "Classes/EditorStyleSettings.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GameFramework/WorldSettings.h"
@@ -22,7 +21,7 @@
 #include "Editor/UnrealEdEngine.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Toolkits/BaseToolkit.h"
@@ -51,11 +50,6 @@
 	The master class that handles tracking of the current mode.
 ------------------------------------------------------------------------------*/
 
-namespace EditorModeToolsInternal
-{
-	static bool bIsExitingModesDuringTick = false;
-}
-
 FEditorModeTools::FEditorModeTools()
 	: PivotShown(false)
 	, Snapping(false)
@@ -80,6 +74,7 @@ FEditorModeTools::FEditorModeTools()
 
 	InteractiveToolsContext = NewObject<UModeManagerInteractiveToolsContext>(GetTransientPackage(), UModeManagerInteractiveToolsContext::StaticClass(), NAME_None, RF_Transient);
 	InteractiveToolsContext->InitializeContextWithEditorModeManager(this);
+	InteractiveToolsContext->Activate();
 
 	// Load the last used settings
 	LoadConfig();
@@ -115,6 +110,7 @@ FEditorModeTools::~FEditorModeTools()
 	// which would mean that this instances will be garbage
 	if (UObjectInitialized())
 	{
+		InteractiveToolsContext->Deactivate();
 		InteractiveToolsContext->ShutdownContext();
 		InteractiveToolsContext = nullptr;
 	}
@@ -634,7 +630,7 @@ bool FEditorModeTools::TestAllModes(TFunctionRef<bool(UEdMode*)> InCalllback, bo
 
 void FEditorModeTools::ExitAllModesPendingDeactivate()
 {
-	EditorModeToolsInternal::bIsExitingModesDuringTick = true;
+	bIsExitingModesDuringTick = true;
 
 	// Make a copy so we can modify the pending deactivate modes map during ExitMode
 	TMap<FEditorModeID, UEdMode*> PendingDeactivateModesCopy(PendingDeactivateModes);
@@ -643,7 +639,7 @@ void FEditorModeTools::ExitAllModesPendingDeactivate()
 		ExitMode(Pair.Value);
 	}
 
-	EditorModeToolsInternal::bIsExitingModesDuringTick = false;
+	bIsExitingModesDuringTick = false;
 
 	check(PendingDeactivateModes.Num() == 0);
 }
@@ -731,7 +727,10 @@ void FEditorModeTools::RemoveAllDelegateHandlers()
 	if (GEditor)
 	{
 		GEditor->UnregisterForUndo(this);
-		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OnEditorModeUnregistered().RemoveAll(this);
+		if (UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+		{
+			AssetEditorSubsystem->OnEditorModeUnregistered().RemoveAll(this);
+		}
 	}
 
 	FWorldDelegates::OnWorldCleanup.RemoveAll(this);
@@ -862,7 +861,7 @@ void FEditorModeTools::ActivateMode(FEditorModeID InID, bool bToggle)
 		if (ScriptableMode)
 		{
 			// If we are actively exiting modes, don't re-activate the mode
-			if (EditorModeToolsInternal::bIsExitingModesDuringTick)
+			if (bIsExitingModesDuringTick)
 			{
 				return;
 			}
@@ -1539,8 +1538,8 @@ void FEditorModeTools::DrawHUD( FEditorViewportClient* InViewportClient,FViewpor
 							PixelLocation.Y < 0.0f || PixelLocation.Y > View->UnscaledViewRect.Height() * InvDpiScale;
 						if (!bOutside)
 						{
-							const float X = PixelLocation.X - (TextureSizeX / 2);
-							const float Y = PixelLocation.Y - (TextureSizeY / 2);
+							const double X = PixelLocation.X - (TextureSizeX / 2);
+							const double Y = PixelLocation.Y - (TextureSizeY / 2);
 							if (bIsHitTesting)
 							{
 								Canvas->SetHitProxy(new HStaticMeshVert(Actor, Vertex));

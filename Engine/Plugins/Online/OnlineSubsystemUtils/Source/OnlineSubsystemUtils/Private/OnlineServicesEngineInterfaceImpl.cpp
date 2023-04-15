@@ -12,6 +12,8 @@
 #include "Online/OnlineServices.h"
 #include "Online/OnlineServicesRegistry.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineServicesEngineInterfaceImpl)
+
 UOnlineServicesEngineInterfaceImpl::UOnlineServicesEngineInterfaceImpl(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -63,7 +65,7 @@ void UOnlineServicesEngineInterfaceImpl::ShutdownOnlineSubsystem(FName OnlineIde
 void UOnlineServicesEngineInterfaceImpl::DestroyOnlineSubsystem(FName OnlineIdentifier)
 {
 	// TODO:  Does this need to support multiple online service types?  Other accessors seem to not differentiate and just use the default
-	UE::Online::DestroyServices(UE::Online::EOnlineServices::Default, OnlineIdentifier);
+	UE::Online::DestroyService(UE::Online::EOnlineServices::Default, OnlineIdentifier);
 }
 
 FName UOnlineServicesEngineInterfaceImpl::GetDefaultOnlineSubsystemName() const
@@ -108,11 +110,11 @@ FUniqueNetIdWrapper UOnlineServicesEngineInterfaceImpl::GetUniquePlayerIdWrapper
 	{
 		if (UE::Online::IAuthPtr AuthPtr = OnlineServices->GetAuthInterface())
 		{
-			UE::Online::FAuthGetAccountByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
-			UE::Online::TOnlineResult<UE::Online::FAuthGetAccountByPlatformUserId> GetAccountResult = AuthPtr->GetAccountByPlatformUserId(MoveTemp(GetAccountParams));
+			UE::Online::FAuthGetLocalOnlineUserByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
+			UE::Online::TOnlineResult<UE::Online::FAuthGetLocalOnlineUserByPlatformUserId> GetAccountResult = AuthPtr->GetLocalOnlineUserByPlatformUserId(MoveTemp(GetAccountParams));
 			if (GetAccountResult.IsOk())
 			{
-				return FUniqueNetIdWrapper(GetAccountResult.GetOkValue().AccountInfo->UserId);
+				return FUniqueNetIdWrapper(GetAccountResult.GetOkValue().AccountInfo->AccountId);
 			}
 		}
 	}
@@ -128,11 +130,12 @@ FString UOnlineServicesEngineInterfaceImpl::GetPlayerNickname(UWorld* World, con
 	{
 		if (UE::Online::IAuthPtr AuthPtr = OnlineServices->GetAuthInterface())
 		{
-			UE::Online::FAuthGetAccountByAccountId::Params GetAccountParams = { UniqueId.GetV2() };
-			UE::Online::TOnlineResult<UE::Online::FAuthGetAccountByAccountId> GetAccountResult = AuthPtr->GetAccountByAccountId(MoveTemp(GetAccountParams));
+			UE::Online::FAuthGetLocalOnlineUserByOnlineAccountId::Params GetAccountParams = { UniqueId.GetV2() };
+			UE::Online::TOnlineResult<UE::Online::FAuthGetLocalOnlineUserByOnlineAccountId> GetAccountResult = AuthPtr->GetLocalOnlineUserByOnlineAccountId(MoveTemp(GetAccountParams));
 			if (GetAccountResult.IsOk())
 			{
-				return GetAccountResult.GetOkValue().AccountInfo->DisplayName;
+				const UE::Online::FSchemaVariant* DisplayName = GetAccountResult.GetOkValue().AccountInfo->Attributes.Find(UE::Online::AccountAttributeData::DisplayName);
+				return DisplayName ? DisplayName->GetString() : FString();
 			}
 		}
 	}
@@ -148,11 +151,14 @@ bool UOnlineServicesEngineInterfaceImpl::GetPlayerPlatformNickname(UWorld* World
 	{
 		if (UE::Online::IAuthPtr AuthPtr = OnlineServices->GetAuthInterface())
 		{
-			UE::Online::FAuthGetAccountByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
-			UE::Online::TOnlineResult<UE::Online::FAuthGetAccountByPlatformUserId> GetAccountResult = AuthPtr->GetAccountByPlatformUserId(MoveTemp(GetAccountParams));
+			UE::Online::FAuthGetLocalOnlineUserByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
+			UE::Online::TOnlineResult<UE::Online::FAuthGetLocalOnlineUserByPlatformUserId> GetAccountResult = AuthPtr->GetLocalOnlineUserByPlatformUserId(MoveTemp(GetAccountParams));
 			if (GetAccountResult.IsOk())
 			{
-				OutNickname = GetAccountResult.GetOkValue().AccountInfo->DisplayName;
+				if (const UE::Online::FSchemaVariant* DisplayName = GetAccountResult.GetOkValue().AccountInfo->Attributes.Find(UE::Online::AccountAttributeData::DisplayName))
+				{
+					OutNickname = DisplayName->GetString();
+				}
 				return !OutNickname.IsEmpty();
 			}
 		}
@@ -192,8 +198,8 @@ bool UOnlineServicesEngineInterfaceImpl::IsLoggedIn(UWorld* World, int32 LocalUs
 	{
 		if (UE::Online::IAuthPtr AuthPtr = OnlineServices->GetAuthInterface())
 		{
-			UE::Online::FAuthGetAccountByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
-			UE::Online::TOnlineResult<UE::Online::FAuthGetAccountByPlatformUserId> GetAccountResult = AuthPtr->GetAccountByPlatformUserId(MoveTemp(GetAccountParams));
+			UE::Online::FAuthGetLocalOnlineUserByPlatformUserId::Params GetAccountParams = { FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum) };
+			UE::Online::TOnlineResult<UE::Online::FAuthGetLocalOnlineUserByPlatformUserId> GetAccountResult = AuthPtr->GetLocalOnlineUserByPlatformUserId(MoveTemp(GetAccountParams));
 			if (GetAccountResult.IsOk())
 			{
 				return GetAccountResult.GetOkValue().AccountInfo->LoginStatus == UE::Online::ELoginStatus::LoggedIn;
@@ -478,3 +484,4 @@ void UOnlineServicesEngineInterfaceImpl::LoginPIEInstance(FName OnlineIdentifier
 }
 
 #endif
+

@@ -1,57 +1,101 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HLODOutliner.h"
-#include "GameFramework/Actor.h"
-#include "Widgets/SOverlay.h"
-#include "Engine/GameViewportClient.h"
-#include "Engine/World.h"
-#include "Components/DrawSphereComponent.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Misc/CoreDelegates.h"
-#include "Modules/ModuleManager.h"
-#include "SlateOptMacros.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ToolMenus.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
-#include "Engine/MeshMerging.h"
-#include "GameFramework/WorldSettings.h"
-#include "Engine/Selection.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/IndirectArray.h"
+#include "DetailsViewArgs.h"
+#include "DrawDebugHelpers.h"
 #include "Editor.h"
-
+#include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/HLODProxy.h"
 #include "Engine/LODActor.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/WorldSettings.h"
+#include "HLODOutlinerDragDrop.h"
+#include "HLODTreeWidgetItem.h"
 #include "HierarchicalLOD.h"
-
-#include "EngineGlobals.h"
-#include "PropertyEditorModule.h"
+#include "HierarchicalLODUtilitiesModule.h"
 #include "IDetailsView.h"
-#include "ScopedTransaction.h"
-
+#include "IHierarchicalLODUtilities.h"
+#include "ITreeItem.h"
+#include "Internationalization/Internationalization.h"
 #include "LODActorItem.h"
 #include "LODLevelItem.h"
-#include "StaticMeshActorItem.h"
-#include "HLODTreeWidgetItem.h"
-
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
 #include "Logging/MessageLog.h"
-
-#include "IHierarchicalLODUtilities.h"
-#include "HierarchicalLODUtilitiesModule.h"
-#include "Widgets/Images/SImage.h"
-#include "DrawDebugHelpers.h"
-#include "Widgets/Layout/SUniformGridPanel.h"
-#include "EditorFontGlyphs.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Styling/StyleColors.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-
-#include "Engine/HLODProxy.h"
+#include "Math/Box.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "ScopedTransaction.h"
+#include "Selection.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "StaticMeshActorItem.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Styling/StyleColors.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenuContext.h"
+#include "ToolMenus.h"
+#include "TreeItemID.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectBase.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBorder.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class AHierarchicalLODVolume;
+class FDragDropEvent;
+class ITableRow;
+class SWidget;
+class UToolMenu;
+struct FKeyEvent;
+struct FPointerEvent;
 
 #define LOCTEXT_NAMESPACE "HLODOutliner"
 
@@ -103,7 +147,7 @@ namespace HLODOutliner
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
+					.BorderImage(FAppStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
 					.BorderBackgroundColor(FColor(166,137,0))							
 					[
 						SNew(SHorizontalBox)
@@ -119,7 +163,7 @@ namespace HLODOutliner
 						.Padding(4.0f, 0.0f, 4.0f, 0.0f)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("SettingsEditor.WarningIcon"))
+							.Image(FAppStyle::GetBrush("SettingsEditor.WarningIcon"))
 						]
 
 						+SHorizontalBox::Slot()
@@ -160,7 +204,7 @@ namespace HLODOutliner
 
 		TSharedRef<SWidget> ClusterWidgets = 
 			SNew(SBorder)
-			.BorderImage(&FEditorStyle::GetWidgetStyle<FTableRowStyle>("TableView.Row").EvenRowBackgroundBrush)
+			.BorderImage(&FAppStyle::GetWidgetStyle<FTableRowStyle>("TableView.Row").EvenRowBackgroundBrush)
 			.Padding(0)
 			[
 				SNew(SVerticalBox)
@@ -189,7 +233,7 @@ namespace HLODOutliner
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
+					.BorderImage(FAppStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
 					.BorderBackgroundColor(FColor(166,137,0))							
 					[
 						SNew(SHorizontalBox)
@@ -204,7 +248,7 @@ namespace HLODOutliner
 						.Padding(4.0f, 0.0f, 4.0f, 0.0f)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("Icons.Warning"))
+							.Image(FAppStyle::GetBrush("Icons.Warning"))
 						]
 
 						+SHorizontalBox::Slot()
@@ -234,7 +278,7 @@ namespace HLODOutliner
 				+SWidgetSwitcher::Slot()
 				[
 					SNew(SSplitter)
-					.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+					.Style(FAppStyle::Get(), "DetailsView.Splitter")
 					.Orientation(Orient_Horizontal)
 					+ SSplitter::Slot()
 					.Value(0.5)
@@ -250,7 +294,7 @@ namespace HLODOutliner
 				+SWidgetSwitcher::Slot()
 				[
 					SNew(SSplitter)
-					.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+					.Style(FAppStyle::Get(), "DetailsView.Splitter")
 					.Orientation(Orient_Vertical)
 					+ SSplitter::Slot()
 					.Value(0.5)
@@ -270,7 +314,7 @@ namespace HLODOutliner
 			.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
+				.BorderImage(FAppStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
 				.BorderBackgroundColor(FColor(166,137,0))
 				[
 					SNew(SHorizontalBox)
@@ -285,7 +329,7 @@ namespace HLODOutliner
 					.Padding(4.0f, 0.0f, 4.0f, 0.0f)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.Warning"))
+						.Image(FAppStyle::GetBrush("Icons.Warning"))
 					]
 
 					+SHorizontalBox::Slot()
@@ -305,7 +349,7 @@ namespace HLODOutliner
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.Padding(FMargin(8.0f, 8.0f, 0.0f, 8.0f))
 				[
 					SNew(SCheckBox)
@@ -366,7 +410,7 @@ namespace HLODOutliner
 			NAME_None,
 			FText(),
 			LOCTEXT("SaveAllToolTip", "Saves all external HLOD data: Meshes, materials etc."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetEditor.SaveAsset")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveAsset")
 		);
 
 		return ToolBarBuilder.MakeWidget();
@@ -401,7 +445,7 @@ namespace HLODOutliner
 			.Padding(FMargin(0.0f, 0.0f, 0.0f, 2.0f))
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+				.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot()
@@ -410,7 +454,7 @@ namespace HLODOutliner
 					.Padding(FMargin(6.0f, 0.0f, 0.0f, 0.0f))
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+						.TextStyle(FAppStyle::Get(), "DialogButtonText")
 						.Text(LOCTEXT("ClustersLabel", "Clusters"))
 					]
 
@@ -421,14 +465,14 @@ namespace HLODOutliner
 					.AutoWidth()
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 						.ContentPadding(0)
 						.HAlign(HAlign_Center)
 						.OnClicked(this, &SHLODOutliner::GenerateClustersFromUI)
 						.ToolTipText(LOCTEXT("GenerateClusterToolTip", "Generates clusters (but not proxy meshes) for meshes in the level"))
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("Icons.PlusCircle"))
+							.Image(FAppStyle::Get().GetBrush("Icons.PlusCircle"))
 						]
 					]
 
@@ -439,7 +483,7 @@ namespace HLODOutliner
 					.AutoWidth()
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 						.ContentPadding(0)
 						.HAlign(HAlign_Center)
 						.OnClicked_Lambda([this]() { return HandleDeleteHLODs(); })
@@ -447,7 +491,7 @@ namespace HLODOutliner
 						.ToolTipText(LOCTEXT("DeleteClusterToolTip", "Deletes all clusters in the level"))
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("Icons.Delete"))
+							.Image(FAppStyle::Get().GetBrush("Icons.Delete"))
 						]
 					]
 				]
@@ -500,14 +544,14 @@ namespace HLODOutliner
 		return SNew(SComboButton)
 				.ContentPadding(FMargin(4.0f, 2.0f))
 				.ForegroundColor(FLinearColor::White)
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+				.ButtonStyle(FAppStyle::Get(), "FlatButton")
 				.HasDownArrow(true)
 				.OnGetMenuContent(this, &SHLODOutliner::GetForceLevelMenuContent)
 				.ToolTipText(LOCTEXT("ForcedLODButtonTooltip", "Choose the LOD level to view."))
 				.ButtonContent()
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+					.TextStyle(FAppStyle::Get(), "DialogButtonText")
 					.Text(this, &SHLODOutliner::HandleForceLevelText)
 				];
 	}

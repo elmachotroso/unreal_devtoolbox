@@ -2,9 +2,21 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/Guid.h"
 #include "SlateColor.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "StyleColors.generated.h"
+
+struct FSlateColor;
 
 /** Themes are only allowed in the editor or standalone tools */
 #define ALLOW_THEMES WITH_EDITOR || IS_PROGRAM
@@ -144,6 +156,10 @@ public:
 		return ActiveColors.StyleColors[static_cast<int32>(Color)];
 	}
 
+	const FGuid& GetCurrentThemeID()
+	{
+		return CurrentThemeId; 
+	}
 
 	USlateThemeManager();
 
@@ -194,6 +210,21 @@ public:
 	 * Applies a theme as the active theme
 	 */
 	void ApplyTheme(FGuid ThemeId);
+
+	/**
+	 * Applies the default dark theme as the active theme
+	*/
+	void ApplyDefaultTheme();
+
+	/**
+	* Returns true if the active theme is an engine-specific theme
+	*/
+	bool IsEngineTheme() const;
+
+	/**
+	* Returns true if the active theme is a project-specific theme
+	*/
+	bool IsProjectTheme() const;
 
 	/**
 	 * Removes a theme. 
@@ -247,6 +278,20 @@ public:
 	 * @return the user theme dir. Themes in this dir are per-user and override engine and project themes
 	 */
 	FString GetUserThemeDir() const;
+		
+	/**
+	 * @return true if the ThemeID already exists in the theme dropdown. 
+	 */
+	bool DoesThemeExist(const FGuid& ThemeID) const;
+
+	DECLARE_EVENT_OneParam(USlateThemeManager, FThemeChangedEvent, FGuid);
+	/**
+	 * Returns an event delegate that is executed when the themeID has changed.
+	 *
+	 * @return the event delegate.
+	 */
+	FThemeChangedEvent& OnThemeChanged() { return ThemeChangedEvent; }
+
 private:
 
 	FStyleTheme& GetMutableCurrentTheme() { return *Themes.FindByKey(CurrentThemeId); }
@@ -255,10 +300,14 @@ private:
 	void EnsureValidCurrentTheme();
 	void LoadThemeColors(FStyleTheme& Theme);
 
-
 private:
+	FStyleTheme DefaultDarkTheme;
 	TArray<FStyleTheme> Themes;
 	FLinearColor DefaultColors[(int32)EStyleColor::MAX];
+
+	/** Broadcasts whenever the theme changes **/
+	FThemeChangedEvent ThemeChangedEvent;
+
 #endif // ALLOW_THEMES
 
 	FLinearColor GetDefaultColor(EStyleColor InColorId)

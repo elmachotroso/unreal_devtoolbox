@@ -42,6 +42,7 @@
 #include "ContentBrowserModule.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Logging/LogMacros.h"
+#include "IHairCardGenerator.h"
 
 #include "MeshDescription.h"
 #include "MeshAttributes.h"
@@ -61,10 +62,14 @@
 #include "GroomCustomAssetEditorToolkit.h"
 #include "IPropertyUtilities.h"
 
+#include "Styling/AppStyle.h"
+
 static FLinearColor HairGroupColor(1.0f, 0.5f, 0.0f);
 static FLinearColor HairLODColor(1.0f, 0.5f, 0.0f);
 
 #define LOCTEXT_NAMESPACE "GroomRenderingDetails"
+
+DEFINE_LOG_CATEGORY_STATIC(LogGroomAssetDetails, Log, All);
 
 static int32 GHairCardsProcerudalResolution = 4096;
 static int32 GHairCardsProcerudalResolution_LOD0 = -1;
@@ -275,6 +280,7 @@ FGroomRenderingDetails::FGroomRenderingDetails(IGroomCustomAssetEditorToolkit* I
 	if (InToolkit)
 	{
 		GroomAsset = InToolkit->GetCustomAsset();
+		Toolkit = InToolkit;
 	}
 	bDeleteWarningConsumed = false;
 	PanelType = Type;
@@ -300,6 +306,7 @@ FName GetCategoryName(EMaterialPanelType Type)
 	case EMaterialPanelType::Interpolation: return FName(TEXT("Interpolation"));
 	case EMaterialPanelType::LODs:			return FName(TEXT("LODs"));
 	case EMaterialPanelType::Physics:		return FName(TEXT("Physics"));
+	case EMaterialPanelType::Bindings:		return FName(TEXT("Bindings"));
 	}
 	return FName(TEXT("Unknown"));
 }
@@ -314,12 +321,25 @@ void FGroomRenderingDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLayout
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = DetailLayout.GetSelectedObjects();
 	check(SelectedObjects.Num() <= 1); // The OnGenerateCustomWidgets delegate will not be useful if we try to process more than one object.
 
-	GroomAsset = SelectedObjects.Num() > 0 ? Cast<UGroomAsset>(SelectedObjects[0].Get()) : nullptr;
-	GroomDetailLayout = &DetailLayout;
-
 	FName CategoryName = GetCategoryName(PanelType);
-	IDetailCategoryBuilder& HairGroupCategory = DetailLayout.EditCategory(CategoryName, FText::GetEmpty(), ECategoryPriority::TypeSpecific);
-	CustomizeStrandsGroupProperties(DetailLayout, HairGroupCategory);
+	GroomDetailLayout = &DetailLayout;
+	if(SelectedObjects.Num() > 0)
+	{
+		if (UGroomAsset* LocalGroomAsset = Cast<UGroomAsset>(SelectedObjects[0].Get()))
+		{
+			GroomAsset = LocalGroomAsset;
+
+			IDetailCategoryBuilder& HairGroupCategory = DetailLayout.EditCategory(CategoryName, FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+			CustomizeStrandsGroupProperties(DetailLayout, HairGroupCategory);
+		}
+		else if (UGroomBindingAssetList* LocalGroomBindingList = Cast<UGroomBindingAssetList>(SelectedObjects[0].Get()))
+		{
+			GroomBindingAssetList = LocalGroomBindingList;
+
+			IDetailCategoryBuilder& HairGroupCategory = DetailLayout.EditCategory(CategoryName, FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+			CustomizeStrandsGroupProperties(DetailLayout, HairGroupCategory);
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -347,11 +367,11 @@ void FGroomRenderingDetails::AddNewGroupButton(IDetailCategoryBuilder& FilesCate
 			SNew(SButton)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &FGroomRenderingDetails::OnAddGroup, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+				.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 			]
 		]
 	];
@@ -375,6 +395,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Meshes:
@@ -391,6 +412,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Strands:
@@ -407,6 +429,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Physics:
@@ -423,6 +446,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::Interpolation:
@@ -439,6 +463,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		//DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	case EMaterialPanelType::LODs:
@@ -455,6 +480,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
+		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, RiggedSkeletalMesh), UGroomAsset::StaticClass()));
 	}
 	break;
 	}
@@ -535,6 +561,18 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 			}
 		}
 		break;
+		case EMaterialPanelType::Bindings:
+		{
+			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomBindingAssetList, Bindings), UGroomBindingAssetList::StaticClass());
+			if (Property->IsValidHandle())
+			{
+				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
+				PropertyBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateSP(this, &FGroomRenderingDetails::OnGenerateElementForBindingAsset, &DetailLayout));
+				PropertyBuilder->SetDisplayName(FText::FromString(TEXT("Bindings")));
+				FilesCategory.AddCustomBuilder(PropertyBuilder, false);
+			}
+		}
+		break;
 	}
 }
 
@@ -584,6 +622,17 @@ FReply FGroomRenderingDetails::OnAddGroup(FProperty* Property)
 	break;
 	}
 
+	return FReply::Handled();
+}
+
+FReply FGroomRenderingDetails::OnSelectBinding(int32 BindingIndex, FProperty* Property)
+{
+	check(GroomBindingAssetList);
+
+	// If user click twice onto the same binding index, we disable the binding;
+	BindingIndex = Toolkit->GetActiveBindingIndex() == BindingIndex ? -1 : BindingIndex;
+	Toolkit->PreviewBinding(BindingIndex);
+	ApplyChanges();
 	return FReply::Handled();
 }
 
@@ -813,6 +862,13 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, bRandomizeGuide);
 			HAIR_RESET1(HairGroupsInterpolation, FHairInterpolationSettings, InterpolationSettings, bUseUniqueGuide);
 		}
+
+		{
+			FHairDeformationSettings Default;
+			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, NumCurves);
+			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, NumPoints);
+			HAIR_RESET1(HairGroupsInterpolation, FHairDeformationSettings, RiggingSettings, bEnableRigging);
+		}
 	}
 
 	// LODs
@@ -958,12 +1014,12 @@ void FGroomRenderingDetails::ResetToDefault(TSharedPtr<IPropertyHandle> ChildHan
 	CommonResetToDefault(ChildHandle, GroupIndex, LODIndex, true);
 }
 
-void FGroomRenderingDetails::AddPropertyWithCustomReset(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& Builder, int32 GroupIndex, int32 LODIndex)
+IDetailPropertyRow& FGroomRenderingDetails::AddPropertyWithCustomReset(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& Builder, int32 GroupIndex, int32 LODIndex)
 {	
 	FIsResetToDefaultVisible IsResetVisible = FIsResetToDefaultVisible::CreateSP(this, &FGroomRenderingDetails::ShouldResetToDefault, GroupIndex, LODIndex);
 	FResetToDefaultHandler ResetHandler = FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::ResetToDefault, GroupIndex, LODIndex);
 	FResetToDefaultOverride ResetOverride = FResetToDefaultOverride::Create(IsResetVisible, ResetHandler);
-	Builder.AddProperty(PropertyHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+	return Builder.AddProperty(PropertyHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
 }
 
 void FGroomRenderingDetails::ExpandStructForLOD(TSharedRef<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset)
@@ -1109,6 +1165,33 @@ FReply FGroomRenderingDetails::OnSaveCards(int32 DescIndex, FProperty* Property)
 	return FReply::Handled();
 }
 
+FReply FGroomRenderingDetails::OnGenerateCardDataUsingPlugin(int32 GroupIndex)
+{
+	if (GroomAsset && GroomAsset->HairGroupsCards.IsValidIndex(GroupIndex))
+	{
+		TArray<IHairCardGenerator*> HairCardGeneratorPlugins = IModularFeatures::Get().GetModularFeatureImplementations<IHairCardGenerator>(IHairCardGenerator::ModularFeatureName);
+		if (HairCardGeneratorPlugins.Num() > 0)
+		{
+			UE_CLOG(HairCardGeneratorPlugins.Num() > 1, LogGroomAssetDetails, Warning, TEXT("There are more than one available hair-card generator options. Defaulting to the first one found."));
+
+			const FScopedTransaction Transaction(LOCTEXT("GenerateHairCardsTransaction", "Generate hair cards."));
+
+			// Use a copy so we can only apply changes on success
+			FHairGroupsCardsSourceDescription HairCardsCopy = GroomAsset->HairGroupsCards[GroupIndex];
+			// Clear fields that are supposed to be set by the generation (in case it leaves any unset, and we don't cary over old settings)
+			HairCardsCopy.Textures = FHairGroupCardsTextures();
+
+			const bool bSuccess = HairCardGeneratorPlugins[0]->GenerateHairCardsForLOD(GroomAsset, HairCardsCopy);
+			if (bSuccess)
+			{
+				GroomAsset->Modify();
+				GroomAsset->HairGroupsCards[GroupIndex] = HairCardsCopy;
+			}
+		}
+	}
+	return FReply::Handled();
+}
+
 void FGroomRenderingDetails::AddLODSlot(TSharedRef<IPropertyHandle>& LODHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex)
 {	
 	ExpandStruct(LODHandle, ChildrenBuilder, GroupIndex, LODIndex, true);
@@ -1156,11 +1239,11 @@ void FGroomRenderingDetails::OnGenerateElementForLODs(TSharedRef<IPropertyHandle
 				SNew(SButton)
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Right)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &FGroomRenderingDetails::OnRemoveLODClicked, GroupIndex, LODIndex, Property)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.Delete"))
+					.Image(FAppStyle::GetBrush("Icons.Delete"))
 				]
 			]
 			
@@ -1181,11 +1264,11 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 		return SNew(SButton)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Right)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &FGroomRenderingDetails::OnAddLODClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+				.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 			];
 	}
 	break;
@@ -1194,11 +1277,11 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 		return SNew(SButton)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Right)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &FGroomRenderingDetails::OnRemoveGroupClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Delete"))
+				.Image(FAppStyle::GetBrush("Icons.Delete"))
 			];
 	}
 	break;
@@ -1207,11 +1290,11 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 		return SNew(SButton)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Right)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &FGroomRenderingDetails::OnRemoveGroupClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Delete"))
+				.Image(FAppStyle::GetBrush("Icons.Delete"))
 			];
 	}
 	break;
@@ -1220,7 +1303,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 	return SNullWidget::NullWidget;
 }
 
-FName FGroomRenderingDetails::GetGroupName(int32 GroupIndex) const
+static FName GetGroupName(const UGroomAsset* GroomAsset, int32 GroupIndex)
 {
 	if (GroomAsset && GroupIndex >= 0 && GroupIndex < GroomAsset->HairGroupsInfo.Num())
 	{
@@ -1229,7 +1312,26 @@ FName FGroomRenderingDetails::GetGroupName(int32 GroupIndex) const
 	return NAME_None;
 }
 
-TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 GroupIndex, const FLinearColor& GroupColor)
+TSharedRef<SWidget> GetGroupNameWidget(const UGroomAsset* GroomAsset, int32 GroupIndex, const FLinearColor& GroupColor)
+{
+	FName GroupName = GetGroupName(GroomAsset, GroupIndex);
+	if (GroupName != NAME_None)
+	{
+		return SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.ColorAndOpacity(GroupColor)
+			.Text(FText::Format(LOCTEXT("GroupWithName", "Group ID {0} - {1}"), FText::AsNumber(GroupIndex), FText::FromName(GroupName)));
+	}
+	else
+	{
+		return SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.ColorAndOpacity(GroupColor)
+			.Text(FText::Format(LOCTEXT("GroupWithoutName", "Group ID {0}"), FText::AsNumber(GroupIndex)));
+	}
+}
+
+TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 GroupIndex, const FLinearColor& GroupTextColor)
 {
 	switch (PanelType)
 	{
@@ -1237,7 +1339,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 Gro
 	{
 		return SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(GroupColor)
+			.ColorAndOpacity(GroupTextColor)
 			.Text(FText::Format(LOCTEXT("Cards", "Cards {0} "), FText::AsNumber(GroupIndex)));
 	}
 	break;
@@ -1245,27 +1347,13 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 Gro
 	{
 		return SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(GroupColor)
+			.ColorAndOpacity(GroupTextColor)
 			.Text(FText::Format(LOCTEXT("Meshes", "Meshes {0} "), FText::AsNumber(GroupIndex)));
 	}
 	break;
 	default:
 	{
-		FName GroupName = GetGroupName(GroupIndex);
-		if (GroupName != NAME_None)
-		{
-			return SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.ColorAndOpacity(GroupColor)
-				.Text(FText::Format(LOCTEXT("GroupWithName", "Group ID {0} - {1}"), FText::AsNumber(GroupIndex), FText::FromName(GroupName)));
-		}
-		else
-		{
-			return SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.ColorAndOpacity(GroupColor)
-				.Text(FText::Format(LOCTEXT("GroupWithoutName", "Group ID {0}"), FText::AsNumber(GroupIndex)));
-		}
+		return GetGroupNameWidget(GroomAsset, GroupIndex, GroupTextColor);
 	}
 	break;
 	}
@@ -1389,7 +1477,7 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 			{
 				ExpandStruct(ChildHandle, ChildrenBuilder, GroupIndex, -1, true);
 			}
-			else
+			else 
 			{
 				ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
 			}
@@ -1397,59 +1485,160 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		break;
 		case EMaterialPanelType::Cards:
 		{
-			if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, SourceType))
-			{
-				// Add the Source type selection and just below add a save button
-				AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
-				if (GroomAsset != nullptr && GroupIndex >= 0 && GroupIndex < GroomAsset->HairGroupsCards.Num() && (PanelType == EMaterialPanelType::Cards))
-				{
-					FText ToolTipTextForGeneration(FText::FromString(TEXT("Generate procedural cards data (meshes and textures) based on current procedural settings. Cards generation needs to run prior to the (re)loading of the cards data.")));
-					FText ToolTipTextForReloading(FText::FromString(TEXT("(Re)Load generated cards data (meshes and textures) into the groom asset. The data need to be generated with the save/generated button prior to reloading.")));
-
-					ChildrenBuilder.AddCustomRow(LOCTEXT("HairCardsButtons", "HairCardsButtons"))
-					.ValueContent()
-					.HAlign(HAlign_Fill)
-					[
-
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						[
-							SNew(SButton)
-							.VAlign(VAlign_Center)
-							.HAlign(HAlign_Center)
-							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-							.ToolTipText(ToolTipTextForGeneration)
-							.OnClicked(this, &FGroomRenderingDetails::OnSaveCards, GroupIndex, Property)
-							[
-								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("AssetEditor.SaveAsset"))
-							]
-						]
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						[
-							SNew(SButton)
-							.VAlign(VAlign_Center)
-							.HAlign(HAlign_Center)
-							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-							.ToolTipText(ToolTipTextForReloading)
-							.OnClicked(this, &FGroomRenderingDetails::OnRefreshCards, GroupIndex, Property)
-							[
-								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("Icons.Refresh"))
-							]
-						]
-					];
-				}
-			}
-			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, CardsInfo))
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, CardsInfo))
 			{
 				// Not node display
 			}
 			else
 			{
-				AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
+				IDetailPropertyRow& PropertyRow = AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
+
+				auto CustomizeMeshPropertyRow = [](IDetailPropertyRow& PropertyRow, bool bEnable)->FDetailWidgetRow&
+				{
+					TSharedPtr<SWidget> NameWidget;
+					TSharedPtr<SWidget> ValueWidget;
+					FDetailWidgetRow Row;
+					PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
+
+					ValueWidget->SetEnabled(bEnable);
+
+					return PropertyRow.CustomWidget()
+						.NameContent()
+						[
+							PropertyRow.GetPropertyHandle()->CreatePropertyNameWidget(
+								LOCTEXT("HairCardsMeshProperty", "Mesh"),
+								LOCTEXT("HairCardsMeshTooltop",  "")
+							)
+						]
+						.ValueContent()
+						[
+							ValueWidget.ToSharedRef()
+						];
+				};
+
+				TWeakObjectPtr<UGroomAsset> GroomAssetPtr = GroomAsset;
+				auto ShouldShowProceduralProperties = [GroomAssetPtr, GroupIndex]()
+				{
+					return GroomAssetPtr.IsValid() && GroomAssetPtr->HairGroupsCards.IsValidIndex(GroupIndex) &&
+						GroomAssetPtr->HairGroupsCards[GroupIndex].SourceType == EHairCardsSourceType::Procedural;
+				};
+				TAttribute<EVisibility> ProceduralPropertyVisibility = TAttribute<EVisibility>::CreateLambda([ShouldShowProceduralProperties]()
+					{
+						return ShouldShowProceduralProperties() ? EVisibility::Visible : EVisibility::Collapsed;
+					}
+				);
+				
+				if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, ProceduralMesh))
+				{
+					PropertyRow.Visibility(ProceduralPropertyVisibility);
+					CustomizeMeshPropertyRow(PropertyRow, /*bEnable =*/false);
+				}
+				else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, ProceduralSettings))
+				{
+					PropertyRow.Visibility(TAttribute<EVisibility>::CreateLambda([ShouldShowProceduralProperties]()
+						{
+							TArray<IHairCardGenerator*> HairCardGeneratorPlugins = IModularFeatures::Get().GetModularFeatureImplementations<IHairCardGenerator>(IHairCardGenerator::ModularFeatureName);
+							return HairCardGeneratorPlugins.IsEmpty() && ShouldShowProceduralProperties() ? EVisibility::Visible : EVisibility::Collapsed;
+						}
+					));
+				}
+				else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, ImportedMesh))
+				{
+					TAttribute<EVisibility> NonProceduralPropertyVisibility = TAttribute<EVisibility>::CreateLambda([ShouldShowProceduralProperties]()
+						{
+							return ShouldShowProceduralProperties() ? EVisibility::Collapsed : EVisibility::Visible;
+						}
+					);
+					PropertyRow.Visibility(NonProceduralPropertyVisibility);
+
+					CustomizeMeshPropertyRow(PropertyRow, /*bEnable =*/true);
+				}
+				else if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupsCardsSourceDescription, SourceType))
+				{
+					TSharedPtr<SWidget> NameWidget;
+					TSharedPtr<SWidget> ValueWidget;
+					FDetailWidgetRow Row;
+					PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
+
+					TSharedRef<SHorizontalBox> ProceduralGenButtons = SNew(SHorizontalBox).Visibility(ProceduralPropertyVisibility);
+					TArray<IHairCardGenerator*> HairCardGeneratorPlugins = IModularFeatures::Get().GetModularFeatureImplementations<IHairCardGenerator>(IHairCardGenerator::ModularFeatureName);
+					if (HairCardGeneratorPlugins.Num() > 0)
+					{
+						FText RegenToolTipText = LOCTEXT("GenerateNewCardsTooltip", "Generate new card assets (meshes and textures) using the current procedural settings. NOTE: This will overwrite preexisting card assets for this LOD.");
+						ProceduralGenButtons->AddSlot()
+							.AutoWidth()
+							[
+								SNew(SButton)
+									.VAlign(VAlign_Center)
+									.HAlign(HAlign_Center)
+									.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+									.ToolTipText(RegenToolTipText)
+									.OnClicked(this, &FGroomRenderingDetails::OnGenerateCardDataUsingPlugin, GroupIndex)
+									[
+										SNew(SImage)
+											// @TODO: Need a specialized icon for this?
+											.Image(FAppStyle::GetBrush("ContentBrowser.AssetActions.ReimportAsset"))
+											.RenderTransform(FSlateRenderTransform(FQuat2D(FMath::DegreesToRadians(90.0f))))
+											.RenderTransformPivot(FVector2D(0.5f, 0.5f))
+									]
+							];
+					}
+					else
+					{
+						FText ToolTipTextForGeneration(FText::FromString(TEXT("Generate procedural cards data (meshes and textures) based on current procedural settings. Cards generation needs to run prior to the (re)loading of the cards data.")));
+						FText ToolTipTextForReloading(FText::FromString(TEXT("(Re)Load generated cards data (meshes and textures) into the groom asset. The data need to be generated with the save/generated button prior to reloading.")));
+
+						ProceduralGenButtons->AddSlot()
+							.AutoWidth()
+							[
+								SNew(SButton)
+								.VAlign(VAlign_Center)
+								.HAlign(HAlign_Center)
+								.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+								.ToolTipText(ToolTipTextForGeneration)
+								.OnClicked(this, &FGroomRenderingDetails::OnSaveCards, GroupIndex, Property)
+								[
+									SNew(SImage)
+									.Image(FAppStyle::GetBrush("AssetEditor.SaveAsset"))
+								]
+							];
+
+						ProceduralGenButtons->AddSlot()
+							.AutoWidth()
+							[
+								SNew(SButton)
+								.VAlign(VAlign_Center)
+								.HAlign(HAlign_Center)
+								.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+								.ToolTipText(ToolTipTextForReloading)
+								.OnClicked(this, &FGroomRenderingDetails::OnRefreshCards, GroupIndex, Property)
+								[
+									SNew(SImage)
+									.Image(FAppStyle::GetBrush("Icons.Refresh"))
+								]
+							];
+					}
+
+					PropertyRow.CustomWidget()
+						.NameContent()
+						[
+							NameWidget.ToSharedRef()
+						]
+						.ValueContent()
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							[
+								ValueWidget.ToSharedRef()
+							]
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							[
+								ProceduralGenButtons
+							]
+						];
+				}
 			}
 		}
 		break;
@@ -1492,6 +1681,11 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 			AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
 		}
 		break;
+		case EMaterialPanelType::Bindings:
+		{
+			AddPropertyWithCustomReset(ChildHandle, ChildrenBuilder, GroupIndex, -1);
+		}
+		break;
 		default:
 		{
 			ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
@@ -1500,6 +1694,35 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		}
 
 	}
+}
+
+// Hair binding display
+void FGroomRenderingDetails::OnGenerateElementForBindingAsset(TSharedRef<IPropertyHandle> StructProperty, int32 BindingIndex, IDetailChildrenBuilder& ChildrenBuilder, IDetailLayoutBuilder* DetailLayout)
+{
+	FProperty* Property = StructProperty->GetProperty();
+	ChildrenBuilder.AddProperty(StructProperty);
+
+	const FLinearColor Color = BindingIndex == Toolkit->GetActiveBindingIndex() ? FLinearColor::White : FLinearColor(0.1f, 0.1f, 0.1f, 1.f);
+
+	ChildrenBuilder.AddCustomRow(FText::FromString(TEXT("Preview")))
+	.ValueContent()
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Center)
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+			.OnClicked(this, &FGroomRenderingDetails::OnSelectBinding, BindingIndex, Property)
+			[
+				SNew(SImage)
+				.Image(FAppStyle::GetBrush("Icons.Visible"))
+				.ColorAndOpacity(Color)
+			]
+		]
+	];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

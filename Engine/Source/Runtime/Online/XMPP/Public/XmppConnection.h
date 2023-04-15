@@ -2,7 +2,12 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
 
 class IXmppChat;
 class IXmppMessages;
@@ -258,9 +263,9 @@ public:
 
 	/**
 	 * Get the jid of the last user login attempt
-	 * Note that he may be logged out
+	 * Note that they may be logged out
 	 *
-	 * @param jid to identity user
+	 * @param jid to identify user
 	 */
 	virtual const FXmppUserJid& GetUserJid() const = 0;
 

@@ -2,7 +2,13 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshOverlay.h"
+#include "HAL/Platform.h"
+#include "IndexTypes.h"
+#include "Misc/AssertionMacros.h"
 
 namespace UE
 {
@@ -24,6 +30,18 @@ namespace Geometry
 	 * @param TriangleIDsOut list of triangle IDs where any vertex of triangle touches an element of VertexIDs
 	 */
 	GEOMETRYCORE_API void VertexToTriangleOneRing(const FDynamicMesh3* Mesh, const TArray<int>& VertexIDs, TSet<int>& TriangleIDsOut);
+
+
+	/**
+	 * For a given list/enumeration of Triangles, and an Overlay, find all the Elements in all the Triangles.
+	 * Note that if ElementsOut is a TArray, it may include an Element multiple times.
+	 * @param Overlay source overlay
+	 * @param TriangleEnumeration list of triangles
+	 * @param ElementsOut list of elements
+	 */
+	template<typename OverlayType, typename EnumeratorType, typename OutputSetType>
+	void TrianglesToOverlayElements(const OverlayType* Overlay, EnumeratorType TriangleEnumeration, OutputSetType& ElementsOut);
+
 
 
 	/**
@@ -140,6 +158,24 @@ FIndex3i FindNextAdjacentTriangleAroundVtx(const FDynamicMesh3* Mesh,
 
 	return FIndex3i(IndexConstants::InvalidID, IndexConstants::InvalidID, IndexConstants::InvalidID);
 }
+
+
+
+template<typename OverlayType, typename EnumeratorType, typename OutputSetType>
+void TrianglesToOverlayElements(const OverlayType* Overlay, EnumeratorType TriangleEnumeration, OutputSetType& ElementsOut)
+{
+	for (int32 TriangleID : TriangleEnumeration)
+	{
+		if ( Overlay->IsSetTriangle(TriangleID) )
+		{
+			FIndex3i TriElements = Overlay->GetTriangle(TriangleID);
+			ElementsOut.Add(TriElements.A);
+			ElementsOut.Add(TriElements.B);
+			ElementsOut.Add(TriElements.C);
+		}
+	}
+}
+
 
 
 }

@@ -19,13 +19,14 @@
 #include "Misc/FeedbackContext.h"
 #include "HAL/FileManager.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Modules/ModuleManager.h"
 
 #if WITH_EDITOR
 	#include "LevelEditor.h"
 #endif
 
+LLM_DEFINE_TAG(Concert_ConcertClientPackageBridge);
 #define LOCTEXT_NAMESPACE "ConcertClientPackageBridge"
 
 namespace ConcertClientPackageBridgeUtil
@@ -54,6 +55,7 @@ FConcertClientPackageBridge::FConcertClientPackageBridge()
 	: bIgnoreLocalSave(false)
 	, bIgnoreLocalDiscard(false)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClientPackageBridge);
 #if WITH_EDITOR
 	// Previously these event handlers were wrapped in the GIsEditor below.  We moved them out to support take recording
 	// on nodes running in -game mode. This is a very focused use case and it is not safe to rely on these working
@@ -95,9 +97,13 @@ FConcertClientPackageBridge::~FConcertClientPackageBridge()
 		// Unregister Asset Registry Events
 		if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
 		{
-			AssetRegistryModule->Get().OnInMemoryAssetCreated().RemoveAll(this);
-			AssetRegistryModule->Get().OnInMemoryAssetDeleted().RemoveAll(this);
-			AssetRegistryModule->Get().OnAssetRenamed().RemoveAll(this);
+			IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+			if (AssetRegistry)
+			{
+				AssetRegistry->OnInMemoryAssetCreated().RemoveAll(this);
+				AssetRegistry->OnInMemoryAssetDeleted().RemoveAll(this);
+				AssetRegistry->OnAssetRenamed().RemoveAll(this);
+			}
 		}
 
 		// Unregister Map Change Events

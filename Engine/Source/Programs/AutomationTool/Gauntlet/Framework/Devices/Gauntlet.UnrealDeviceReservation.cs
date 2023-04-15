@@ -11,7 +11,7 @@ namespace Gauntlet
 	/// </summary>
 	public class UnrealDeviceReservation
 	{
-		public List<ProblemDevice> ProblemDevices { get; protected set; }
+		protected List<ProblemDevice> ProblemDevices { get; private set; } = new List<ProblemDevice>();
 		public List<ITargetDevice> ReservedDevices { get; protected set; }
 
 		public bool TryReserveDevices(Dictionary<UnrealDeviceTargetConstraint, int> RequiredDeviceTypes, int ExpectedNumberOfDevices)
@@ -21,10 +21,7 @@ namespace Gauntlet
 
 			ReleaseDevices();
 
-			if (ProblemDevices == null)
-			{
-				ProblemDevices = new List<ProblemDevice>();
-			}
+			ProblemDevices.Clear();
 
 			// check whether pool can accommodate devices
 			if (!DevicePool.Instance.CheckAvailableDevices(RequiredDeviceTypes, ProblemDevices))
@@ -127,6 +124,7 @@ namespace Gauntlet
 			{
 				Log.Info("Failed to resolve all devices. Releasing the ones we have ");
 				DevicePool.Instance.ReleaseDevices(AcquiredDevices);
+				ReservedDevices = new List<ITargetDevice>();
 			}
 			else
 			{
@@ -145,7 +143,7 @@ namespace Gauntlet
 			{
 				foreach (ITargetDevice device in ReservedDevices)
 				{
-					IDeviceUsageReporter.RecordEnd(device.Name, (UnrealTargetPlatform)device.Platform, IDeviceUsageReporter.EventType.Device);
+					IDeviceUsageReporter.RecordEnd(device.Name, device.Platform, IDeviceUsageReporter.EventType.Device);
 				}
 				DevicePool.Instance.ReleaseDevices(ReservedDevices);
 				ReservedDevices.Clear();

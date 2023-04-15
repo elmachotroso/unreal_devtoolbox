@@ -25,7 +25,8 @@ namespace ESubmitResults
 	enum Type
 	{
 		SUBMIT_ACCEPTED,
-		SUBMIT_CANCELED
+		SUBMIT_CANCELED,
+		SUBMIT_SAVED,
 	};
 }
 
@@ -40,6 +41,10 @@ public:
 	FText Description;
 };
 
+bool TryToVirtualizeFilesToSubmit(const TArray<FString>& FilesToSubmit, FText& Description, FText& OutFailureMsg);
+
+DECLARE_DELEGATE_OneParam(FSourceControlSaveChangelistDescription, const FText& /*NewDescription*/);
+
 class SSourceControlSubmitWidget : public SCompoundWidget
 {
 public:
@@ -47,23 +52,27 @@ public:
 		: _ParentWindow()
 		, _Items()
 		, _Description()
-		, _ChangeValidationIcon()
-		, _ChangeValidationDescription()
+		, _ChangeValidationResult()
+		, _ChangeValidationWarnings()
+		, _ChangeValidationErrors()
 		, _AllowDescriptionChange(true)
 		, _AllowUncheckFiles(true)
 		, _AllowKeepCheckedOut(true)
 		, _AllowSubmit(true)
+		, _AllowSaveAndClose(false)
 	{}
 
 		SLATE_ATTRIBUTE(TSharedPtr<SWindow>, ParentWindow)
 		SLATE_ATTRIBUTE(TArray<FSourceControlStateRef>, Items)
 		SLATE_ATTRIBUTE(FText, Description)
-		SLATE_ATTRIBUTE(FName, ChangeValidationIcon)
-		SLATE_ATTRIBUTE(FString, ChangeValidationDescription)
+		SLATE_ATTRIBUTE(FString, ChangeValidationResult)
+		SLATE_ATTRIBUTE(FString, ChangeValidationWarnings)
+		SLATE_ATTRIBUTE(FString, ChangeValidationErrors)
 		SLATE_ATTRIBUTE(bool, AllowDescriptionChange)
 		SLATE_ATTRIBUTE(bool, AllowUncheckFiles)
 		SLATE_ATTRIBUTE(bool, AllowKeepCheckedOut)
 		SLATE_ATTRIBUTE(bool, AllowSubmit)
+		SLATE_ATTRIBUTE(bool, AllowSaveAndClose)
 
 	SLATE_END_ARGS()
 
@@ -108,6 +117,9 @@ private:
 
 	/** Called when the settings of the dialog are to be ignored*/
 	FReply CancelClicked();
+
+	/** Called when the user click the 'Save' button. */
+	FReply SaveAndCloseClicked();
 
 	/** Called to check if the submit button is enabled or not. */
 	bool IsSubmitEnabled() const;
@@ -161,7 +173,7 @@ private:
 	bool CanDiffAgainstDepot() const;
 	void OnDiffAgainstDepot();
 	void OnDiffAgainstDepotSelected(TSharedPtr<FFileTreeItem> InSelectedItem);
-	
+
 private:
 	ESubmitResults::Type DialogResult;
 
@@ -188,9 +200,6 @@ private:
 
 	/** Currently selected sorting mode */
 	EColumnSortMode::Type SortMode;
-
-	/** Submit Description saved when the widget is destroyed if canceled */
-	static FText SavedChangeListDescription;	
 };
 
 class SSourceControlSubmitListRow : public SMultiColumnTableRow<TSharedPtr<FFileTreeItem>>

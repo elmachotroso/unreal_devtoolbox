@@ -11,8 +11,8 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "AssetRegistryModule.h"
+#include "Styling/AppStyle.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorWidgetsModule.h"
 #include "Interfaces/IMainFrameModule.h"
 
@@ -22,8 +22,11 @@ SDiscoveringAssetsDialog::~SDiscoveringAssetsDialog()
 {
 	if ( FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")) )
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry");
-		AssetRegistryModule.Get().OnFilesLoaded().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+		}
 	}
 }
 
@@ -37,7 +40,7 @@ void SDiscoveringAssetsDialog::Construct( const FArguments& InArgs )
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+		.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 		.Padding(FMargin(4, 8, 4, 4))
 		[
 			SNew(SVerticalBox)

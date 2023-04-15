@@ -79,7 +79,7 @@ public:
 	// Hit shader parameters per geometry segment
 	TArray<FHitGroupSystemParameters> HitGroupSystemParameters[MAX_NUM_GPUS];
 
-	FName DebugName;
+	FDebugName DebugName;
 
 	// Array of geometry descriptions, one per segment (single-segment geometry is a common case).
 	// Only references CPU-accessible structures (no GPU resources).
@@ -98,10 +98,11 @@ public:
 	// Scaling beyond 5 total threads does not yield any speedup in practice.
 	static constexpr uint32 MaxBindingWorkers = 5; // RHI thread + 4 parallel workers.
 
-	FD3D12RayTracingScene(FD3D12Adapter* Adapter, FRayTracingSceneInitializer2 Initializer, TResourceArray<D3D12_RAYTRACING_INSTANCE_DESC, 16> Instances, TArray<uint32> PerInstanceNumTransforms);
+	FD3D12RayTracingScene(FD3D12Adapter* Adapter, FRayTracingSceneInitializer2 Initializer);
 	~FD3D12RayTracingScene();
 
 	const FRayTracingSceneInitializer2& GetInitializer() const override final { return Initializer; }
+	uint32 GetLayerBufferOffset(uint32 LayerIndex) const override final { return Layers[LayerIndex].BufferOffset; }
 
 	void BindBuffer(FRHIBuffer* Buffer, uint32 BufferOffset);
 	void ReleaseBuffer();
@@ -111,19 +112,21 @@ public:
 		FD3D12Buffer* InstanceBuffer, uint32 InstanceBufferOffset
 	);
 
-	FShaderResourceViewRHIRef ShaderResourceView;
+	struct FLayerData
+	{
+		FShaderResourceViewRHIRef ShaderResourceView;
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS BuildInputs = {};
+		FRayTracingAccelerationStructureSize SizeInfo = {};
+		uint32 BufferOffset;
+		uint32 ScratchBufferOffset;
+	};
+
+	TArray<FLayerData> Layers;
 
 	TRefCountPtr<FD3D12Buffer> AccelerationStructureBuffers[MAX_NUM_GPUS];
 	uint32 BufferOffset = 0;
 
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS BuildInputs = {};
-
-	FRayTracingAccelerationStructureSize SizeInfo = {};
-
 	const FRayTracingSceneInitializer2 Initializer;
-
-	TResourceArray<D3D12_RAYTRACING_INSTANCE_DESC, 16> Instances;
-	TArray<uint32> PerInstanceNumTransforms;
 
 	// Scene keeps track of child acceleration structure buffers to ensure
 	// they are resident when any ray tracing work is dispatched.
@@ -145,6 +148,8 @@ public:
 	TMap<const FD3D12RayTracingPipelineState*, FD3D12RayTracingShaderTable*> ShaderTables[MAX_NUM_GPUS];
 
 	uint64 LastCommandListID = 0;
+
+	bool bBuilt = false;
 };
 
 // Manages all the pending BLAS compaction requests
@@ -174,7 +179,7 @@ private:
 
 	TRefCountPtr<FD3D12Buffer> PostBuildInfoBuffer;
 	FStagingBufferRHIRef PostBuildInfoStagingBuffer;
-	uint64 PostBuildInfoBufferReadbackFence;
+	FD3D12SyncPointRef PostBuildInfoBufferReadbackSyncPoint;
 };
 
 #endif // D3D12_RHI_RAYTRACING

@@ -14,9 +14,9 @@ class FViewport;
 class UGameViewportClient;
 
 
-/** Note that this sensor doesn't buffer input state between GetObservations call
- *	@todo a child class could easily do that by overriding OnInputKey/OnInputAxis and 
- *		GetObservations
+/**
+ *	Note that this sensor doesn't buffer input state between GetObservations call
+ *	@todo a child class could easily do that by overriding OnInputKey/OnInputAxis and GetObservations
  */
 UCLASS(Blueprintable)
 class MLADAPTER_API UMLAdapterSensor_Input : public UMLAdapterSensor
@@ -36,7 +36,7 @@ protected:
 	virtual void OnAvatarSet(AActor* Avatar);
 
 	UPROPERTY(EditDefaultsOnly, Category = MLAdapter)
-	UGameViewportClient* GameViewport;
+	TObjectPtr<UGameViewportClient> GameViewport;
 
 	UPROPERTY(EditDefaultsOnly, Category = MLAdapter)
 	uint32 bRecordKeyRelease : 1;

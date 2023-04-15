@@ -17,7 +17,7 @@ namespace Geometry
 
 
 template<typename RealType>
-void TExtremePoints3<RealType>::Init(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc, double Epsilon)
+void TExtremePoints3<RealType>::Init(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc, RealType Epsilon)
 {
 	TVector<RealType> FirstPoint;
 	int FirstPtIdx = -1;
@@ -118,8 +118,20 @@ void TExtremePoints3<RealType>::Init(int32 NumPoints, TFunctionRef<TVector<RealT
 	Basis[1] = GetPointFunc(Extreme[2]) - Origin;
 	// project Basis[1] to be orthogonal to Basis[0]
 	Basis[1] -= (Basis[0].Dot(Basis[1])) * Basis[0];
-	Normalize(Basis[1]);
+	if (!Basis[1].Normalize(Epsilon)) // points too collinear to form a valid basis
+	{
+		Dimension = 1;
+		Extreme[3] = Extreme[2] = Extreme[1];
+		return;
+	}
 	Basis[2] = Basis[0].Cross(Basis[1]);
+	if (!Basis[2].Normalize(Epsilon)) // points too collinear to form a valid basis
+	{
+		Dimension = 1;
+		Extreme[3] = Extreme[2] = Extreme[1];
+		return;
+	}
+
 
 	{
 		TPlane3<RealType> Plane(Basis[2], Origin);
@@ -130,7 +142,7 @@ void TExtremePoints3<RealType>::Init(int32 NumPoints, TFunctionRef<TVector<RealT
 			{
 				continue;
 			}
-			RealType DistSigned = Plane.DistanceTo(GetPointFunc(Idx));
+			RealType DistSigned = (RealType)Plane.DistanceTo(GetPointFunc(Idx));
 			RealType Dist = TMathUtil<RealType>::Abs(DistSigned);
 			if (Dist > MaxDist)
 			{
@@ -234,20 +246,20 @@ struct FHullConnectivity
 	 * @param ValueOut The volume of the tetrahedron formed by TriPts and Pt
 	 * @return true if Pt is on the 'positive' side of the triangle
 	 */
-	bool IsVisible(const FVector3d TriPts[3], const FVector3d& Pt, double& ValueOut)
+	bool IsVisible(const TVector<RealType> TriPts[3], const TVector<RealType>& Pt, double& ValueOut)
 	{
-		ValueOut = ExactPredicates::Orient3D(TriPts[0], TriPts[1], TriPts[2], Pt);
+		ValueOut = ExactPredicates::Orient3<RealType>(TriPts[0], TriPts[1], TriPts[2], Pt);
 		return ValueOut > 0;
 	}
 
 	/**
 	 * Set triangle positions to prep for IsVisible calls
 	 */
-	void SetTriPts(const FIndex3i& Tri, TFunctionRef<TVector<RealType>(int32)> GetPointFunc,  FVector3d TriPtsOut[3])
+	void SetTriPts(const FIndex3i& Tri, TFunctionRef<TVector<RealType>(int32)> GetPointFunc,  TVector<RealType> TriPtsOut[3])
 	{
-		TriPtsOut[0] = (FVector3d)GetPointFunc(Tri[0]);
-		TriPtsOut[1] = (FVector3d)GetPointFunc(Tri[1]);
-		TriPtsOut[2] = (FVector3d)GetPointFunc(Tri[2]);
+		TriPtsOut[0] = GetPointFunc(Tri[0]);
+		TriPtsOut[1] = GetPointFunc(Tri[1]);
+		TriPtsOut[2] = GetPointFunc(Tri[2]);
 	}
 
 	/**
@@ -257,15 +269,15 @@ struct FHullConnectivity
 	{
 		VisiblePoints.SetNum(Triangles.Num());
 
-		FVector3d TriPts[3];
-		FVector3d Pt;
+		TVector<RealType> TriPts[3];
+		TVector<RealType> Pt;
 		for (int32 PtIdx = 0; PtIdx < NumPoints; PtIdx++)
 		{
 			if (!FilterFunc(PtIdx))
 			{
 				continue;
 			}
-			Pt = (FVector3d)GetPointFunc(PtIdx);
+			Pt = GetPointFunc(PtIdx);
 			for (int32 TriIdx = 0; TriIdx < Triangles.Num(); TriIdx++)
 			{
 				SetTriPts(Triangles[TriIdx], GetPointFunc, TriPts);
@@ -475,12 +487,12 @@ struct FHullConnectivity
 	 * @param CrossedEdgeFirstVertex The first vertex of the edge that was 'crossed over' to traverse to this TriIdx, or -1 for the initial call
 	 * @return false if triangle is beyond horizon (so we don't need to search through it / remove it), true otherwise
 	 */
-	bool HorizonHelper(const TArray<FIndex3i>& Triangles, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, const FVector3d& Pt, TArray<int32>& NewlyUnclaimed, TSet<int32>& ToDelete, TArray<FNewTriangle>& ToAdd, int32 TriIdx, int32 CrossedEdgeFirstVertex)
+	bool HorizonHelper(const TArray<FIndex3i>& Triangles, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, const TVector<RealType>& Pt, TArray<int32>& NewlyUnclaimed, TSet<int32>& ToDelete, TArray<FNewTriangle>& ToAdd, int32 TriIdx, int32 CrossedEdgeFirstVertex)
 	{
 		// if it's not the first triangle, crossed edge should be set and we should check if the triangle is visible / actually needs to be replaced
 		if (CrossedEdgeFirstVertex != -1)
 		{
-			FVector3d TriPts[3];
+			TVector<RealType> TriPts[3];
 			SetTriPts(Triangles[TriIdx], GetPointFunc, TriPts);
 			double UnusedValue;
 			if (!IsVisible(TriPts, Pt, UnusedValue))
@@ -531,7 +543,7 @@ struct FHullConnectivity
 	{
 		//ValidateConnectivity(Triangles);
 
-		FVector3d Pt = (FVector3d)GetPointFunc(PtIdx);
+		TVector<RealType> Pt = GetPointFunc(PtIdx);
 
 		// Call the recursive helper to find all the tris we need to delete + the 'horizon' of edges that will form new triangles
 		TArray<int32> NewlyUnclaimed;
@@ -542,7 +554,7 @@ struct FHullConnectivity
 		// Connect up all the horizon triangles
 		int32 NewTriStart = Triangles.Num();
 		int32 NumAdd = ToAdd.Num();
-		FVector3d TriPts[3];
+		TVector<RealType> TriPts[3];
 		for (int32 AddIdx = 0; AddIdx < NumAdd; AddIdx++)
 		{
 			const FNewTriangle& TriData = ToAdd[AddIdx];
@@ -560,7 +572,7 @@ struct FHullConnectivity
 			{
 				int32 UnPtIdx = NewlyUnclaimed[UnclaimedIdx];
 				double Value;
-				if (IsVisible(TriPts, (FVector3d)GetPointFunc(UnPtIdx), Value))
+				if (IsVisible(TriPts, GetPointFunc(UnPtIdx), Value))
 				{
 					Visible.AddPt(UnPtIdx, Value);
 					NewlyUnclaimed.RemoveAtSwap(UnclaimedIdx, 1, false);
@@ -576,7 +588,6 @@ struct FHullConnectivity
 
 		//ValidateConnectivity(Triangles, ToDelete);
 
-		TArray<FIndex3i> OldNbrs = TriNeighbors;
 
 		// do the deletions *last* so we don't invalidate tri indices in ToAdd
 		DeleteTriangles(Triangles, ToDelete);
@@ -603,15 +614,15 @@ bool TConvexHull3<RealType>::Solve(int32 NumPoints, TFunctionRef<TVector<RealTyp
 		}
 		else if (Dimension == 2)
 		{
-			Plane = TPlane3<RealType>(InitialTet.Basis[1], InitialTet.Origin);
+			Plane = TPlane3<RealType>(InitialTet.Basis[2], InitialTet.Origin);
 		}
 		return false;
 	}
 
 	// safety check; seems possible the InitialTet chosen points were actually coplanar, because it was constructed w/ inexact math
-	if (ExactPredicates::Orient3D(GetPointFunc(InitialTet.Extreme[0]), GetPointFunc(InitialTet.Extreme[1]), GetPointFunc(InitialTet.Extreme[2]), GetPointFunc(InitialTet.Extreme[3])) == 0)
+	if (ExactPredicates::Orient3<RealType>(GetPointFunc(InitialTet.Extreme[0]), GetPointFunc(InitialTet.Extreme[1]), GetPointFunc(InitialTet.Extreme[2]), GetPointFunc(InitialTet.Extreme[3])) == 0)
 	{
-		Plane = TPlane3<RealType>(InitialTet.Basis[1], InitialTet.Origin);
+		Plane = TPlane3<RealType>(InitialTet.Basis[2], InitialTet.Origin);
 		Dimension = 2;
 		return false;
 	}
@@ -640,6 +651,11 @@ bool TConvexHull3<RealType>::Solve(int32 NumPoints, TFunctionRef<TVector<RealTyp
 		}
 		NumHullPoints++;
 		Connectivity.UpdateHullWithNewPoint(Hull, GetPointFunc, Visible.A, Visible.B);
+	}
+
+	if (bSaveTriangleNeighbors)
+	{
+		HullNeighbors = MoveTemp(Connectivity.TriNeighbors);
 	}
 
 	return true;

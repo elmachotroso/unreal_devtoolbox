@@ -6,6 +6,7 @@
 
 #include "NiagaraShared.h"
 #include "NiagaraShaderModule.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraShaderType.h"
 #include "NiagaraShader.h"
 #include "NiagaraScriptBase.h"
@@ -22,7 +23,11 @@
 #include "NiagaraCustomVersion.h"
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
+#include "ShaderCodeLibrary.h"
 #endif
+#include "ShaderParameterMetadataBuilder.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraShared)
 
 IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParamRef);
 IMPLEMENT_TYPE_LAYOUT(FNiagaraShaderMapContent);
@@ -223,11 +228,10 @@ void FNiagaraShaderScript::GetShaderMapId(EShaderPlatform Platform, const ITarge
 	{
 		INiagaraShaderModule* Module = INiagaraShaderModule::Get();
 
-		OutId.FeatureLevel = GetFeatureLevel();/*
-		OutId.BaseScriptID = BaseScriptId;*/
+		OutId.FeatureLevel = GetFeatureLevel();
 		OutId.bUsesRapidIterationParams = bUsesRapidIterationParams;		
 		BaseCompileHash.ToSHAHash(OutId.BaseCompileHash);
-		OutId.CompilerVersionID = FNiagaraCustomVersion::LatestScriptCompileVersion;
+		OutId.CompilerVersionID = FNiagaraCustomVersion::GetLatestScriptCompileVersion();
 
 		OutId.ReferencedCompileHashes.Reserve(ReferencedCompileHashes.Num());
 		for (const FNiagaraCompileHash& Hash : ReferencedCompileHashes)
@@ -254,18 +258,22 @@ void FNiagaraShaderScript::GetShaderMapId(EShaderPlatform Platform, const ITarge
 			OutId.ShaderTypeDependencies.Emplace(ShaderType, Platform);
 		}
 
+#if WITH_EDITOR
 		if (TargetPlatform)
 		{
-#if WITH_EDITOR
-			OutId.LayoutParams.InitializeForPlatform(TargetPlatform);
-#else
-			UE_LOG(LogShaders, Error, TEXT("FNiagaraShaderScript::GetShaderMapId: TargetPlatform is not null, but a cooked executable cannot target platforms other than its own."));
-#endif
+			OutId.LayoutParams.InitializeForPlatform(TargetPlatform->IniPlatformName(), TargetPlatform->HasEditorOnlyData());
 		}
 		else
 		{
 			OutId.LayoutParams.InitializeForCurrent();
 		}
+#else
+		if (TargetPlatform != nullptr)
+		{
+			UE_LOG(LogShaders, Error, TEXT("FNiagaraShaderScript::GetShaderMapId: TargetPlatform is not null, but a cooked executable cannot target platforms other than its own."));
+		}
+		OutId.LayoutParams.InitializeForCurrent();
+#endif
 	}
 }
 
@@ -396,7 +404,6 @@ void FNiagaraShaderScript::SetScript(UNiagaraScriptBase* InScript, ERHIFeatureLe
 	checkf(InBaseCompileHash.IsValid(), TEXT("Invalid base compile hash.  Script caching will fail."))
 	BaseVMScript = InScript;
 	CompilerVersionId = InCompilerVersionID;
-	//BaseScriptId = InBaseScriptID;
 	AdditionalDefines = InAdditionalDefines;
 	AdditionalVariables = InAdditionalVariables;
 	bUsesRapidIterationParams = bInUsesRapidIterationParams;
@@ -490,10 +497,6 @@ void FNiagaraShaderScript::UpdateCachedData_PostCompile(bool bCalledFromSerializ
 	FNiagaraShaderMapCachedData CachedData;
 	CachedData.NumPermutations = GetNumPermutations();
 	CachedData.bIsComplete = 1;
-	CachedData.bGlobalConstantBufferUsed = 0;
-	CachedData.bSystemConstantBufferUsed = 0;
-	CachedData.bOwnerConstantBufferUsed = 0;
-	CachedData.bEmitterConstantBufferUsed = 0;
 	CachedData.bExternalConstantBufferUsed = 0;
 	CachedData.bViewUniformBufferUsed = 0;
 
@@ -512,13 +515,18 @@ void FNiagaraShaderScript::UpdateCachedData_PostCompile(bool bCalledFromSerializ
 			for (int i = 0; i < 2; ++i)
 			{
 				const uint32 BitToSet = 1 << i;
-				CachedData.bGlobalConstantBufferUsed |= NiagaraShader->GlobalConstantBufferParam[i].IsBound() ? BitToSet : 0;
-				CachedData.bSystemConstantBufferUsed |= NiagaraShader->SystemConstantBufferParam[i].IsBound() ? BitToSet : 0;
-				CachedData.bOwnerConstantBufferUsed |= NiagaraShader->OwnerConstantBufferParam[i].IsBound() ? BitToSet : 0;
-				CachedData.bEmitterConstantBufferUsed |= NiagaraShader->EmitterConstantBufferParam[i].IsBound() ? BitToSet : 0;
 				CachedData.bExternalConstantBufferUsed |= NiagaraShader->ExternalConstantBufferParam[i].IsBound() ? BitToSet : 0;
 			}
-			CachedData.bViewUniformBufferUsed |= NiagaraShader->ViewUniformBufferParam.IsBound() ? 1 : 0;
+			CachedData.bViewUniformBufferUsed |= NiagaraShader->bNeedsViewUniformBuffer;
+
+			// request precache the compute shader
+			if (IsResourcePSOPrecachingEnabled() || IsComponentPSOPrecachingEnabled())
+			{
+				check(NiagaraShader->GetFrequency() == SF_Compute)
+				FRHIShader* RHIShader = GameThreadShaderMap->GetResource()->GetShader(Shader->GetResourceIndex());
+				FRHIComputeShader* RHIComputeShader = static_cast<FRHIComputeShader*>(RHIShader);
+				PipelineStateCache::PrecacheComputePipelineState(RHIComputeShader);
+			}
 		}
 	}
 	else
@@ -675,20 +683,44 @@ void FNiagaraShaderScript::FinishCompilation()
 
 #endif
 
-void FNiagaraShaderScript::SetDataInterfaceParamInfo(const TArray< FNiagaraDataInterfaceGPUParamInfo >& InDIParamInfo)
+void FNiagaraShaderScript::BuildScriptParametersMetadata(const FNiagaraShaderScriptParametersMetadata& InScriptParametersMetadata)
 {
-	DIParamInfo = InDIParamInfo;
+	TSharedRef<FNiagaraShaderScriptParametersMetadata> NewMetadata = MakeShared<FNiagaraShaderScriptParametersMetadata>();
+	NewMetadata->DataInterfaceParamInfo = InScriptParametersMetadata.DataInterfaceParamInfo;
 
+	FShaderParametersMetadataBuilder ShaderMetadataBuilder(TShaderParameterStructTypeInfo<FNiagaraShader::FParameters>::GetStructMetadata());
+
+	// Build meta data for each data interface
 	INiagaraShaderModule* ShaderModule = INiagaraShaderModule::Get();
-	for (const FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : DIParamInfo)
+	for (FNiagaraDataInterfaceGPUParamInfo& DataInterfaceParamInfo : NewMetadata->DataInterfaceParamInfo)
 	{
 		UNiagaraDataInterfaceBase* CDODataInterface = ShaderModule->RequestDefaultDataInterface(*DataInterfaceParamInfo.DIClassName);
 		if (CDODataInterface == nullptr)
 		{
 			Invalidate();
-			return;
+			continue;
+		}
+
+		if (CDODataInterface->UseLegacyShaderBindings() == false)
+		{
+			const uint32 NextMemberOffset = ShaderMetadataBuilder.GetNextMemberOffset();
+			FNiagaraShaderParametersBuilder ShaderParametersBuilder(DataInterfaceParamInfo, NewMetadata->LooseMetadataNames, NewMetadata->StructIncludeInfos, ShaderMetadataBuilder);
+			CDODataInterface->BuildShaderParameters(ShaderParametersBuilder);
+			DataInterfaceParamInfo.ShaderParametersOffset = NextMemberOffset;
 		}
 	}
+
+	NewMetadata->ShaderParametersMetadata = MakeShareable<FShaderParametersMetadata>(ShaderMetadataBuilder.Build(FShaderParametersMetadata::EUseCase::ShaderParameterStruct, TEXT("FNiagaraShaderScript")));
+
+	// There are paths in the editor / uncooked game where we will rebuild metadata while the system is running.
+	// We don't pause the systems in those instances and nothing will actually change in the generated metadata,
+	// therefore we can enqueue the release to the render thread.
+	// Note: If we ever have different shaders at different quality levels we will need to replicate to RT
+	if (ScriptParametersMetadata->ShaderParametersMetadata.IsValid())
+	{
+		ENQUEUE_RENDER_COMMAND(ReleaseShaderMetadata)([MetaDataToRelease_RT = ScriptParametersMetadata](FRHICommandListImmediate&) {});
+	}
+	ScriptParametersMetadata = NewMetadata;
 }
 
 FNiagaraShaderRef FNiagaraShaderScript::GetShader(int32 PermutationId) const
@@ -797,3 +829,4 @@ bool FNiagaraCVarUtilities::GetShouldEmitMessagesForFailIfNotSet()
 }
 
 #endif
+

@@ -2,13 +2,20 @@
 
 #pragma once 
 
-#include "CoreMinimal.h"
-#include "PhysicsInterfaceWrapperShared.h"
 #include "Chaos/Declares.h"
+#include "Chaos/ParticleHandleFwd.h"
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreMinimal.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "PhysicsInterfaceWrapperShared.h"
 
 namespace Chaos
 {
 	class FChaosArchive;
+	class FPerShapeData;
 }
 
 namespace ChaosInterface
@@ -101,10 +108,52 @@ namespace ChaosInterface
 		return Ar;
 	}
 
+	struct FPTActorShape
+	{
+		Chaos::FGeometryParticleHandle* Actor;
+		const Chaos::FPerShapeData* Shape;
+	};
+
+	struct FPTQueryHit : public FPTActorShape
+	{
+		/**
+		Face index of touched triangle, for triangle meshes, convex meshes and height fields. Defaults to -1 if face index is not available
+		*/
+
+		int32 FaceIndex = -1; // Signed int to match TArray's size type, and so INDEX_NONE/-1 doesn't underflow.
+
+		int32 ElementIndex = -1; // Currently used to indicate which shape was hit for a particle with multiple shapes.
+	};
+
+	struct FPTLocationHit : public FPTQueryHit
+	{
+		FHitFlags Flags;
+		FVector WorldPosition;
+		FVector WorldNormal;
+		float Distance;	// LWC_TODO: Should be FVector::FReal, but that causes precision issues resulting in collision failures. Investigate!
+
+		bool operator<(const FPTLocationHit& Other) const { return Distance < Other.Distance; }
+	};
+
+	struct FPTRaycastHit : public FPTLocationHit
+	{
+		float U;
+		float V;
+	};
+	
+	struct FPTOverlapHit : public FPTQueryHit
+	{
+	};
+
+	struct FPTSweepHit : public FPTLocationHit
+	{
+	};
+
 	#ifndef CHAOS_HIT_BUFFER_SIZE
 		#define CHAOS_HIT_BUFFER_SIZE 512 // Preallocated hit buffer size for traces and sweeps.
 	#endif // CHAOS_HIT_BUFFER_SIZE
 	static_assert(CHAOS_HIT_BUFFER_SIZE > 0, "Invalid Chaos hit buffer size.");
+
 
 	inline void FinishQueryHelper(TArray<FOverlapHit, TInlineAllocator<CHAOS_HIT_BUFFER_SIZE>>& Hits, const FOverlapHit& BlockingHit, bool bHasBlockingHit)
 	{
@@ -114,6 +163,13 @@ namespace ChaosInterface
 		}
 	}
 
+	inline void FinishQueryHelper(TArray<FPTOverlapHit, TInlineAllocator<CHAOS_HIT_BUFFER_SIZE>>& Hits, const FPTOverlapHit& BlockingHit, bool bHasBlockingHit)
+	{
+		if (bHasBlockingHit)
+		{
+			Hits.Add(BlockingHit);
+		}
+	}
 
 	template <typename HitType>
 	void FinishQueryHelper(TArray<HitType, TInlineAllocator<CHAOS_HIT_BUFFER_SIZE>>& Hits, const HitType& BlockingHit, bool bHasBlockingHit)

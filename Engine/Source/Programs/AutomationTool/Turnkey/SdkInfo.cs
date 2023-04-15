@@ -18,24 +18,26 @@ namespace Turnkey
 		public enum LocalAvailability
 		{
 			None = 0,
-			AutoSdk_VariableExists = 1,
-			AutoSdk_ValidVersionExists = 2,
-			AutoSdk_InvalidVersionExists = 4,
+			AutoSdk_VariableExists                  = (1 << 0),
+			AutoSdk_ValidVersionExists              = (1 << 1),
+			AutoSdk_InvalidVersionExists            = (1 << 2),
 			
-			InstalledSdk_ValidInactiveVersionExists = 8,
-			InstalledSdk_ValidVersionExists = 16,
-			InstalledSdk_InvalidVersionExists = 32,
+			InstalledSdk_ValidInactiveVersionExists = (1 << 3),
+			InstalledSdk_ValidVersionExists         = (1 << 4),
+			InstalledSdk_InvalidVersionExists       = (1 << 5),
 
-			Platform_ValidHostPrerequisites = 64,
-			Platform_InvalidHostPrerequisites = 128,
+			Platform_ValidHostPrerequisites         = (1 << 6),
+			Platform_InvalidHostPrerequisites       = (1 << 7),
 
-			Device_InvalidPrerequisites = 256,
-			Device_InstallSoftwareValid = 512,
-			Device_InstallSoftwareInvalid = 1024,
-			Device_CannotConnect = 2048,
+			Device_InvalidPrerequisites             = (1 << 8),
+			Device_InstallSoftwareValid             = (1 << 9),
+			Device_InstallSoftwareInvalid           = (1 << 10),
+			Device_CannotConnect                    = (1 << 11),
 
-			Support_FullSdk = 4096,
-			Support_AutoSdk = 8192,
+			Support_FullSdk                         = (1 << 12),
+			Support_AutoSdk                         = (1 << 13),
+
+			Sdk_HasBestVersion                      = (1 << 14),
 		}
 
 		static public LocalAvailability GetLocalAvailability(AutomationTool.Platform AutomationPlatform, bool bAllowUpdatingPrerequisites, TurnkeyContextImpl TurnkeyContext)
@@ -58,10 +60,11 @@ namespace Turnkey
 				Result |= LocalAvailability.Platform_InvalidHostPrerequisites;
 			}
 
-			string ManualSDKVersion, AutoSDKVersion;
-			SDK.GetInstalledVersions(out ManualSDKVersion, out AutoSDKVersion);
+			// get all the SDK info we can
+			SDKCollection SDKInfo = SDK.GetAllSDKInfo();
 
-			if (AutoSDKVersion == null)
+			// if we don't have an AutoSDK in good shape, look for others
+			if (SDKInfo.AutoSdk?.Current == null)
 			{
 				// look to see if other versions are around
 				string AutoSdkVar = Environment.GetEnvironmentVariable("UE_SDKS_ROOT");
@@ -86,35 +89,41 @@ namespace Turnkey
 						}
 					}
 				}
-
 			}
 			else
 			{
 				Result |= LocalAvailability.AutoSdk_ValidVersionExists | LocalAvailability.AutoSdk_VariableExists;
 			}
 
-			// if we have the variable at all, 
-
-			// if anything is installed, this will return a value
-			if (!string.IsNullOrEmpty(ManualSDKVersion))
+			// if all manual SDKs are valid, then we are good
+			if (SDKInfo.AreAllManualSDKsValid())
 			{
-				if (SDK.IsVersionValid(ManualSDKVersion, bForAutoSDK: false))
-				{
-					Result |= LocalAvailability.InstalledSdk_ValidVersionExists;
-				}
-				else
-				{
-					Result |= LocalAvailability.InstalledSdk_InvalidVersionExists;
-				}
+				Result |= LocalAvailability.InstalledSdk_ValidVersionExists;
 			}
-
+			// but if we have any manual SDKs that have a Current version, then we have invalid version installed
+			else if (SDKInfo.Sdks.Where(x => string.Compare(x.Name, "AutoSDK", true) != 0 && x.Current != null).Count() > 0)
+			{ 
+				Result |= LocalAvailability.InstalledSdk_InvalidVersionExists;
+			}
 
 			// look for other, inactive, versions
 			foreach (string AlternateVersion in SDK.GetAllInstalledSDKVersions())
 			{
-				if (SDK.IsVersionValid(AlternateVersion, bForAutoSDK: false))
+				// @todo turnkey: do we want to deal with multiple installed sdk for platforms with multiple SDK types???
+				if (SDK.IsVersionValid(AlternateVersion, "Sdk"))
 				{
 					Result |= LocalAvailability.InstalledSdk_ValidInactiveVersionExists;
+				}
+			}
+
+			// see if we have the best version available (note: this is an approximation of FileSource.ChooseBest() without hitting the file sources)
+			if ((Result & (LocalAvailability.InstalledSdk_ValidVersionExists | LocalAvailability.AutoSdk_ValidVersionExists)) != 0)
+			{
+				string MainVersion = SDK.GetMainVersion();
+				if (SDKInfo.Sdks.All(x => (x.Current == null) || (x.Current == MainVersion) || (x.Current == x.Max)))
+				{
+					// only set this when all valid Current sdks are either MainVersion or MaxVersion
+					Result |= LocalAvailability.Sdk_HasBestVersion;
 				}
 			}
 

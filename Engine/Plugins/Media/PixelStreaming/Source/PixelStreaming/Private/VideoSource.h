@@ -2,97 +2,42 @@
 
 #pragma once
 
-#include "WebRTCIncludes.h"
-#include "PixelStreamingPlayerId.h"
-#include "FixedFPSPump.h"
-#include "TextureSource.h"
-#include "IPixelStreamingSessions.h"
+#include "AdaptedVideoTrackSource.h"
+#include "PixelStreamingVideoInput.h"
 
-namespace UE
+namespace UE::PixelStreaming
 {
-	namespace PixelStreaming
+	/**
+	 * A source of video frames for a WebRTC peer. Has a video input which will provide
+	 * frame data to this source. The source will then pass that data to an adapter
+	 * which will have one or many adapt processes that are provided by the input object
+	 * and are responsible for converting the frame data to the format required for
+	 * the selected video encoder.
+	 * This video source should be contained within a FVideoSourceGroup which is responsible
+	 * for telling each source to push a frame to WebRTC at the expected rate. This source
+	 * will make sure that the adapter has valid output and if so will create a frame
+	 * for WebRTC. Otherwise it will continue to wait until the next frame.
+	 */
+	class FVideoSource : public FAdaptedVideoTrackSource
 	{
-		class FVideoSourceFactory;
+	public:
+		FVideoSource(TSharedPtr<FPixelStreamingVideoInput> InVideoInput, const TFunction<bool()>& InShouldGenerateFramesCheck);
+		virtual ~FVideoSource() = default;
 
-		/*
-		* Base class for pumped Pixel Streaming video sources. Video sources are WebRTC video sources that populate WebRTC tracks
-		* and pass WebRTC video frames to `OnFrame`, which eventually gets passed to a WebRTC video encoder, encoded, and transmitted.
-		*/
-		class FVideoSourceBase : public rtc::AdaptedVideoTrackSource, public IPumpedVideoSource
-		{
-		public:
-			FVideoSourceBase(FPixelStreamingPlayerId InPlayerId);
-			virtual ~FVideoSourceBase();
-			FPixelStreamingPlayerId GetPlayerId() const { return PlayerId; }
-			virtual void Initialize();
+		void MaybePushFrame();
 
-			/* Begin rtc::AdaptedVideoTrackSource overrides */
-			virtual webrtc::MediaSourceInterface::SourceState state() const override { return CurrentState; }
-			virtual bool remote() const override { return false; }
-			virtual bool is_screencast() const override { return false; }
-			virtual absl::optional<bool> needs_denoising() const override { return false; }
-			/* End rtc::AdaptedVideoTrackSource overrides */
+		/* Begin UE::PixelStreaming::AdaptedVideoTrackSource overrides */
+		virtual webrtc::MediaSourceInterface::SourceState state() const override { return CurrentState; }
+		virtual bool remote() const override { return false; }
+		virtual bool is_screencast() const override { return false; }
+		virtual absl::optional<bool> needs_denoising() const override { return false; }
+		/* End UE::PixelStreaming::AdaptedVideoTrackSource overrides */
 
-			/* Begin IPumpedVideoSource */
-			virtual void OnPump(int32 FrameId) override;
-			virtual bool IsReadyForPump() const = 0;
-			virtual void AddRef() const override;
-			virtual rtc::RefCountReleaseStatus Release() const override;
-			virtual bool HasOneRef() const { return RefCount.HasOneRef(); }
-			/* End IPumpedVideoSource */
+	private:
+		webrtc::MediaSourceInterface::SourceState CurrentState;
+		TSharedPtr<FPixelStreamingVideoInput> VideoInput;
+		TFunction<bool()> ShouldGenerateFramesCheck;
 
-		protected:
-			virtual bool AdaptCaptureFrame(const int64 TimestampUs, FIntPoint Resolution);
-			virtual webrtc::VideoFrame CreateFrame(int32 FrameId) = 0;
-
-		private:
-			mutable webrtc::webrtc_impl::RefCounter RefCount{ 0 };
-
-		protected:
-			webrtc::MediaSourceInterface::SourceState CurrentState;
-			FPixelStreamingPlayerId PlayerId;
-		};
-
-		/*
-		* A video source for P2P peers.
-		*/
-		class FVideoSourceP2P : public FVideoSourceBase
-		{
-		public:
-			FVideoSourceP2P(FPixelStreamingPlayerId InPlayerId, IPixelStreamingSessions* InSessions);
-
-		protected:
-			IPixelStreamingSessions* Sessions;
-			TSharedPtr<ITextureSource> TextureSource;
-			Settings::ECodec Codec;
-
-		protected:
-			/* Begin FVideoSourceBase */
-			virtual webrtc::VideoFrame CreateFrame(int32 FrameId) override;
-			virtual bool IsReadyForPump() const override;
-			/* End FVideoSourceBase */
-
-			virtual webrtc::VideoFrame CreateFrameH264(int32 FrameId);
-			virtual webrtc::VideoFrame CreateFrameVPX(int32 FrameId);
-		};
-
-		/*
-		* A video source for the SFU.
-		*/
-		class FVideoSourceSFU : public FVideoSourceBase
-		{
-		public:
-			FVideoSourceSFU();
-
-		protected:
-			TArray<TSharedPtr<ITextureSource>> LayerTextures;
-
-		protected:
-			/* Begin FVideoSourceBase */
-			virtual webrtc::VideoFrame CreateFrame(int32 FrameId) override;
-			virtual bool IsReadyForPump() const override;
-			/* End FVideoSourceBase */
-		};
-
-	} // namespace PixelStreaming
-} // namespace UE
+		void PushFrame();
+	};
+} // namespace UE::PixelStreaming

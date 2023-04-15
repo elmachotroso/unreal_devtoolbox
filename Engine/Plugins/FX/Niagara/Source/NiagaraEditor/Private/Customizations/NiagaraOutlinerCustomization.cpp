@@ -22,11 +22,16 @@
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 ///Niagara
 #include "NiagaraEditorModule.h"
 #include "NiagaraComponent.h"
 #include "NiagaraEditorStyle.h"
 #include "Widgets/SVerticalResizeBox.h"
+
+#include "NiagaraSimCache.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraOutlinerCustomization)
 
 
 #if WITH_NIAGARA_DEBUGGER
@@ -83,7 +88,7 @@ public:
 			.Padding(2, 2.0f, 2.0f, 2.0f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
 				.Padding(FMargin(6.0, 3.0f, 6.0f, 3.0f))
 				.ToolTipText(this, &SNiagaraOutlinerTreeItem::HandleBorderToolTipText)
 				[
@@ -98,7 +103,7 @@ public:
 						[
 							SNew(STextBlock)
 							.Text(this, &SNiagaraOutlinerTreeItem::HandleNameText)
-							.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+							.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 							.HighlightText(Owner->GetSearchText())
 						]
 						+ SHorizontalBox::Slot()
@@ -205,7 +210,7 @@ void SNiagaraOutlinerTree::Construct(const FArguments& InArgs, TSharedPtr<FNiaga
 				.Padding(2.0f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
@@ -234,9 +239,9 @@ void SNiagaraOutlinerTree::Construct(const FArguments& InArgs, TSharedPtr<FNiaga
 				.Padding(2.0f)
 				[				
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
-						SelectedItemDetails->GetWidget().ToSharedRef()//TODO: Maybe shunt this out intot he main outliner details somehow?
+						SelectedItemDetails->GetWidget().ToSharedRef()//TODO: Maybe shunt this out into the main outliner details somehow?
 					]	
 				]			
 			]
@@ -571,7 +576,7 @@ class SNiagaraOutlinerTreeItemHeaderDataWidget : public SCompoundWidget
 			.ToolTipText(InArgs._ToolTipText)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.HAlign(HAlign_Center)
 				[
 					HeaderWidget
@@ -628,7 +633,7 @@ class SNiagaraOutlinerTreeItemHeaderDataWidget<FText> : public SCompoundWidget
 			.ToolTipText(InArgs._ToolTipText)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.HAlign(HAlign_Center)
 				[
 					HeaderWidget
@@ -680,7 +685,7 @@ class SNiagaraOutlinerTreeItemHeaderDataWidget<FNiagaraOutlinerTimingData> : pub
 
 		TSharedRef<SSplitter> HeaderWidget = SNew(SSplitter)
 			.PhysicalSplitterHandleSize(2)
-			.Style(FEditorStyle::Get(), "SplitterDark");
+			.Style(FAppStyle::Get(), "SplitterDark");
 		
 		if (Label.IsEmpty() == false)
 		{
@@ -725,7 +730,7 @@ class SNiagaraOutlinerTreeItemHeaderDataWidget<FNiagaraOutlinerTimingData> : pub
 		ChildSlot
 		[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.ToolTipText(InArgs._ToolTipText)
 				.HAlign(HAlign_Center)
 				[
@@ -1269,10 +1274,105 @@ TSharedRef<SWidget> FNiagaraOutlinerTreeComponentItem::GetHeaderWidget()
 
 			//TODO: Add baseline comparison traffic light icon with tooltip containing details.
 		}
+		else if (Outliner->ViewSettings.ViewMode == ENiagaraOutlinerViewModes::Debug)
+		{			
+			Box->AddSlot()
+			.AutoWidth()
+			.Padding(FMargin(HeaderPadding, 0.0f, HeaderPadding, 0.0f))
+			[
+				SNew(SButton)
+				.OnClicked_Raw(this, &FNiagaraOutlinerTreeComponentItem::CaputreSimCache)
+				.ToolTipText(LOCTEXT("NiagaraOutlineCaptureSimCacheTooltip", "Capture a new Sim Cache for this component."))
+				.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
+				//.ForegroundColor(FLinearColor::White)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NiagaraOutlinerCaptureSimCache", "Capture"))
+					//.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+				]	
+			];
+
+			if (TObjectPtr<UNiagaraSimCache> SimCache = Outliner->FindSimCache(*Data->ComponentName))
+			{
+				Box->AddSlot()
+				.AutoWidth()
+				.Padding(FMargin(HeaderPadding, 0.0f, HeaderPadding, 0.0f))
+				[
+					SNew(SButton)
+					.OnClicked_Raw(this, &FNiagaraOutlinerTreeComponentItem::OpenSimCache)
+					.ToolTipText(LOCTEXT("NiagaraOutlineOpenSimCacheTooltip", "Sim Cache is available for this component. Open in new window."))
+					.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
+					//.ForegroundColor(FLinearColor::White)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("NiagaraOutlinerOpenSimCache", "Sim Cache"))
+						//.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+					]	
+				];
+			}
+			else
+			{
+				Box->AddSlot()
+					.AutoWidth()
+					.Padding(FMargin(HeaderPadding, 0.0f, HeaderPadding, 0.0f))
+					[
+						SNew(SButton)						
+						.ToolTipText(LOCTEXT("NiagaraOutlineOpenSimCacheTooltipDisabled", "No Sim Cache available. Please capture one."))
+						.ButtonStyle(FAppStyle::Get(), "FlatButton.Default")
+						//.ForegroundColor(FLinearColor::White)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("NiagaraOutlinerOpenSimCache", "Sim Cache"))
+						//.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+					]
+				];
+			}
+
+			//TODO:	Add playback controls per component.
+			//TODO: Add controls to set the current debug hud component filter to this component.
+		}
 
 		return Box;
 	}
 	return SNullWidget::NullWidget;
+}
+
+FReply FNiagaraOutlinerTreeComponentItem::OpenSimCache()
+{
+	if (FNiagaraOutlinerSystemInstanceData* Data = (FNiagaraOutlinerSystemInstanceData*)GetData())
+	{
+		TSharedPtr<SNiagaraOutlinerTree> Tree = OwnerTree.Pin();
+		check(Tree.IsValid());//If we managed to get valid data then the tree should be valid.
+		TSharedPtr<FNiagaraDebugger>& Debugger = Tree->GetDebugger();
+		check(Debugger.IsValid());
+		UNiagaraOutliner* Outliner = Debugger->GetOutliner();
+		check(Outliner);
+
+		if (TObjectPtr<UNiagaraSimCache> SimCache = Outliner->FindSimCache(*Data->ComponentName))
+		{
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Cast<UObject,UNiagaraSimCache>(SimCache.Get()), EToolkitMode::Standalone);
+		}
+	}
+	return FReply::Handled();
+}
+
+FReply FNiagaraOutlinerTreeComponentItem::CaputreSimCache()
+{
+	if (FNiagaraOutlinerSystemInstanceData* Data = (FNiagaraOutlinerSystemInstanceData*)GetData())
+	{
+		TSharedPtr<SNiagaraOutlinerTree> Tree = OwnerTree.Pin();
+		check(Tree.IsValid());//If we managed to get valid data then the tree should be valid.
+		TSharedPtr<FNiagaraDebugger>& Debugger = Tree->GetDebugger();
+		check(Debugger.IsValid());
+		UNiagaraOutliner* Outliner = Debugger->GetOutliner();
+		check(Outliner);
+
+		if (Outliner->CaptureSettings.SimCacheCaptureFrames > 0)
+		{
+			Debugger->TriggerSimCacheCapture(*Data->ComponentName, Outliner->CaptureSettings.CaptureDelayFrames, Outliner->CaptureSettings.SimCacheCaptureFrames);
+		}
+	}
+	return FReply::Handled();
 }
 
 void FNiagaraOutlinerTreeEmitterItem::SortChildren() 
@@ -1441,3 +1541,4 @@ void FNiagaraOutlinerEmitterInstanceDetailsCustomization::CustomizeChildren(TSha
 #undef LOCTEXT_NAMESPACE
 
 #endif // WITH_NIAGARA_DEBUGGER
+

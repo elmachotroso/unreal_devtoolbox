@@ -10,8 +10,11 @@
 #include "ChaosSolversModule.h"
 #include "Chaos/ChaosGameplayEventDispatcher.h"
 #include "Chaos/Framework/DebugSubstep.h"
+#include "Engine/Texture2D.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosSolverActor)
 
 //DEFINE_LOG_CATEGORY_STATIC(AFA_Log, NoLogging, All);
 
@@ -185,7 +188,6 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 	, DoGenerateBreakingData_DEPRECATED(true)
 	, DoGenerateTrailingData_DEPRECATED(true)
 	, MassScale_DEPRECATED(1.f)
-	, bGenerateContactGraph_DEPRECATED(true)
 	, bHasFloor(true)
 	, FloorHeight(0.f)
 	, ChaosDebugSubstepControl()
@@ -197,7 +199,6 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 	{
 		// Don't spawn solvers on the CDO
 
-#if WITH_CHAOS
 		// @question(Benn) : Does this need to be created on the Physics thread using a queued command?
 		PhysScene = MakeShareable(new FPhysScene_Chaos(this
 #if CHAOS_DEBUG_NAME
@@ -205,7 +206,6 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 #endif
 		));
 		Solver = PhysScene->GetSolver();
-#endif
 		// Ticking setup for collision/breaking notifies
 		PrimaryActorTick.TickGroup = TG_PostPhysics;
 		PrimaryActorTick.bCanEverTick = true;
@@ -348,6 +348,8 @@ void AChaosSolverActor::PostLoad()
 				return EClusterUnionMethod::MinimalSpanningSubsetDelaunayTriangulation;
 			case EClusterConnectionTypeEnum::Chaos_PointImplicitAugmentedWithMinimalDelaunay:
 				return EClusterUnionMethod::PointImplicitAugmentedWithMinimalDelaunay;
+			case EClusterConnectionTypeEnum::Chaos_BoundsOverlapFilteredDelaunayTriangulation:
+				return EClusterUnionMethod::BoundsOverlapFilteredDelaunayTriangulation;
 			default:
 				break;
 			}
@@ -355,10 +357,8 @@ void AChaosSolverActor::PostLoad()
 			return EClusterUnionMethod::None;
 		};
 
-		Properties.Iterations = CollisionIterations_DEPRECATED;
-		Properties.CollisionPairIterations = 2;
-		Properties.PushOutIterations = PushOutIterations_DEPRECATED;
-		Properties.CollisionPushOutPairIterations = PushOutPairIterations_DEPRECATED;
+		Properties.PositionIterations = CollisionIterations_DEPRECATED;
+		Properties.VelocityIterations = PushOutIterations_DEPRECATED;
 		Properties.ClusterConnectionFactor = ClusterConnectionFactor_DEPRECATED;
 		Properties.ClusterUnionConnectionType = ConvertDeprecatedConnectionType(ClusterUnionConnectionType_DEPRECATED);
 		Properties.bGenerateBreakData = DoGenerateBreakingData_DEPRECATED;
@@ -367,7 +367,6 @@ void AChaosSolverActor::PostLoad()
 		Properties.BreakingFilterSettings = BreakingFilterSettings_DEPRECATED;
 		Properties.CollisionFilterSettings = CollisionFilterSettings_DEPRECATED;
 		Properties.TrailingFilterSettings = TrailingFilterSettings_DEPRECATED;
-		Properties.bGenerateContactGraph = bGenerateContactGraph_DEPRECATED;
 	}
 }
 
@@ -382,13 +381,12 @@ void AChaosSolverActor::Serialize(FArchive& Ar)
 void AChaosSolverActor::PostRegisterAllComponents()
 {
 	Super::PostRegisterAllComponents();
-#if INCLUDE_CHAOS
+
 	UWorld* const W = GetWorld(); 
 	if (W && !W->PhysicsScene_Chaos)
 	{
 		SetAsCurrentWorldSolver();
 	}
-#endif
 }
 
 void AChaosSolverActor::PostDuplicate(EDuplicateMode::Type DuplicateMode)
@@ -412,7 +410,7 @@ void AChaosSolverActor::MakeFloor()
 		FilterData.Word1 = 0xFFFF;
 		FilterData.Word3 = 0xFFFF;
 		FloorParticle->SetShapeSimData(0, FilterData);
-		Proxy = FSingleParticlePhysicsProxy::Create(MoveTemp(FloorParticle));
+		Proxy = Chaos::FSingleParticlePhysicsProxy::Create(MoveTemp(FloorParticle));
 		Solver->RegisterObject(Proxy);
 	}
 }
@@ -422,9 +420,7 @@ void AChaosSolverActor::SetAsCurrentWorldSolver()
 	UWorld* const W = GetWorld();
 	if (W)
 	{
-#if INCLUDE_CHAOS
 		W->PhysicsScene_Chaos = PhysScene;
-#endif
 	}
 }
 
@@ -490,4 +486,5 @@ FAutoConsoleCommand SerializeForPerfTestCommand(TEXT("p.SerializeForPerfTest"), 
 #endif
 
 #endif
+
 

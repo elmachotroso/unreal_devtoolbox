@@ -2,12 +2,38 @@
 
 
 #include "DragConnection.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphHandleTypes.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "SGraphNode.h"
 #include "SGraphPanel.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/ChooseClass.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 TSharedRef<FDragConnection> FDragConnection::New(const TSharedRef<SGraphPanel>& GraphPanel, const FDraggedPinTable& DraggedPins)
 {
@@ -115,7 +141,7 @@ void FDragConnection::HoverTargetChanged()
 	{
 		// Display the place a new node icon, we're not over a valid pin and have no message from the schema
 		SetSimpleFeedbackMessage(
-			FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.NewNode")),
+			FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.NewNode")),
 			FLinearColor::White,
 			NSLOCTEXT("GraphEditor.Feedback", "PlaceNewNode", "Place a new node."));
 	}
@@ -134,20 +160,20 @@ void FDragConnection::HoverTargetChanged()
 			case CONNECT_RESPONSE_BREAK_OTHERS_A:
 			case CONNECT_RESPONSE_BREAK_OTHERS_B:
 			case CONNECT_RESPONSE_BREAK_OTHERS_AB:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 				break;
 
 			case CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
 				break;
 
 			case CONNECT_RESPONSE_MAKE_WITH_PROMOTION:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.ViaCast"));
 				break;
 
 			case CONNECT_RESPONSE_DISALLOW:
 			default:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				break;
 			}
 
@@ -201,27 +227,36 @@ FReply FDragConnection::DroppedOnPin(FVector2D ScreenPosition, FVector2D GraphPo
 	TArray<UEdGraphPin*> ValidSourcePins;
 	ValidateGraphPinList(/*out*/ ValidSourcePins);
 
+	// store the pins as pin tuples since the structure of the
+	// graph may change during the creation of a connection
+	TArray<FEdGraphPinHandle> ValidSourcePinHandles;
+	for(const UEdGraphPin* ValidSourcePin : ValidSourcePins)
+	{
+		ValidSourcePinHandles.Add(ValidSourcePin);
+	}
+
 	const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "GraphEd_CreateConnection", "Create Pin Link") );
 
-	UEdGraphPin* PinB = GetHoveredPin();
+	FEdGraphPinHandle PinB(GetHoveredPin());
 	bool bError = false;
-	TSet<UEdGraphNode*> NodeList;
+	TSet<FEdGraphNodeHandle> NodeList;
 
-	for (UEdGraphPin* PinA : ValidSourcePins)
+	for (const FEdGraphPinHandle& PinA : ValidSourcePinHandles)
 	{
-		if ((PinA != NULL) && (PinB != NULL))
+		if ((PinA.GetPin() != NULL) && (PinB.GetPin() != NULL))
 		{
-			UEdGraph* MyGraphObj = PinA->GetOwningNode()->GetGraph();
+			const UEdGraph* MyGraphObj = PinA.GetGraph();
 
-			if (MyGraphObj->GetSchema()->TryCreateConnection(PinA, PinB))
+			// the pin may change during the creation of the link
+			if (MyGraphObj->GetSchema()->TryCreateConnection(PinA.GetPin(), PinB.GetPin()))
 			{
-				if (!PinA->IsPendingKill())
+				if (PinA.GetPin() && !PinA.GetPin()->IsPendingKill())
 				{
-					NodeList.Add(PinA->GetOwningNode());
+					NodeList.Add(PinA.GetPin()->GetOwningNode());
 				}
-				if (!PinB->IsPendingKill())
+				if (PinB.GetPin() && !PinB.GetPin()->IsPendingKill())
 				{
-					NodeList.Add(PinB->GetOwningNode());
+					NodeList.Add(PinB.GetNode());
 				}
 			}
 		}
@@ -234,8 +269,10 @@ FReply FDragConnection::DroppedOnPin(FVector2D ScreenPosition, FVector2D GraphPo
 	// Send all nodes that received a new pin connection a notification
 	for (auto It = NodeList.CreateConstIterator(); It; ++It)
 	{
-		UEdGraphNode* Node = (*It);
-		Node->NodeConnectionListChanged();
+		if(UEdGraphNode* Node = It->GetNode())
+		{
+			Node->NodeConnectionListChanged();
+		}
 	}
 
 	if (bError)

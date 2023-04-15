@@ -132,9 +132,6 @@ struct FEncryptionKeyResponse
 	EEncryptionResponse Response;
 	/** Error message related to the response */
 	FString ErrorMsg;
-	/** Encryption key */
-	UE_DEPRECATED(4.24, "Use EncryptionData struct instead.")
-	TArray<uint8> EncryptionKey;
 	/** Encryption data */
 	FEncryptionData EncryptionData;
 
@@ -148,6 +145,17 @@ struct FEncryptionKeyResponse
 		, ErrorMsg(InErrorMsg)
 	{
 	}
+};
+
+/** Specifies how to handle encryption failures */
+enum class EEncryptionFailureAction : uint8
+{
+	/** Default handling of encryption failures - net.AllowEncryption determines whether to reject or accept, with exceptions for PIE etc. */
+	Default,
+	/** Reject the connection */
+	RejectConnection,
+	/** Allow the connection */
+	AllowConnection
 };
 
 /** Types of punishment to apply to a cheating client */
@@ -252,6 +260,18 @@ public:
 	 */
 	DECLARE_DELEGATE_OneParam(FReceivedNetworkEncryptionAck, const FOnEncryptionKeyResponse& /*Delegate*/);
 	static FReceivedNetworkEncryptionAck OnReceivedNetworkEncryptionAck;
+
+	/**
+	 * Delegate fired when encryption has failed for a specific connection (client OR server) - allowing gameplay code to override how this is handled
+	 * (e.g. to accept connections without encryption in development environments, and reject them in shipping environments).
+	 *
+	 * Binding to this delegate overrides UGameInstance's handling of encryption (@see ReceivedNetworkEncryptionFailure)
+	 *
+	 * @param Connection	The server or client NetConnection which failed encryption.
+	 * @return				Returns how to handle the encryption failure.
+	 */
+	DECLARE_DELEGATE_RetVal_OneParam(EEncryptionFailureAction, FReceivedNetworkEncryptionFailure, UNetConnection* /* Connection */);
+	static FReceivedNetworkEncryptionFailure OnReceivedNetworkEncryptionFailure;
 
 
 	/**

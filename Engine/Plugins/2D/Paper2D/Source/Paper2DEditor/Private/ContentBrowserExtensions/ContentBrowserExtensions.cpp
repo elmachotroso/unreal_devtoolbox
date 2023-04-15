@@ -7,9 +7,9 @@
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Texture2D.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "PaperSprite.h"
@@ -287,7 +287,7 @@ public:
 		for (auto AssetIt = SelectedAssets.CreateConstIterator(); AssetIt; ++AssetIt)
 		{
 			const FAssetData& Asset = *AssetIt;
-			bAnyTextures = bAnyTextures || (Asset.AssetClass == UTexture2D::StaticClass()->GetFName());
+			bAnyTextures = bAnyTextures || (Asset.AssetClassPath == UTexture2D::StaticClass()->GetClassPathName());
 		}
 
 		if (bAnyTextures)

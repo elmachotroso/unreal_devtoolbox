@@ -19,6 +19,8 @@
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialBillboardComponent)
+
 /** A material sprite vertex. */
 struct FMaterialSpriteVertex
 {
@@ -269,6 +271,7 @@ public:
 		Result.bDynamicRelevance = true;
 		Result.bShadowRelevance = IsShadowCast(View);
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 		return Result;
 	}
 	virtual bool CanBeOccluded() const override { return !MaterialRelevance.bDisableDepthTest; }
@@ -298,19 +301,19 @@ FPrimitiveSceneProxy* UMaterialBillboardComponent::CreateSceneProxy()
 
 FBoxSphereBounds UMaterialBillboardComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
-	float BoundsSize = 1.0f;
+	FTransform::FReal BoundsSize = 1.0f;
 	for (int32 i = 0; i < Elements.Num(); ++i)
 	{
 		if (Elements[i].bSizeIsInScreenSpace)
 		{
 			// Workaround static bounds by disabling culling. Still allows override such as 'use parent bounds', etc.
 			// Note: Bounds are dynamically calculated at draw time per view, so difficult to cull correctly. (UE-4725)
-			BoundsSize = float(HALF_WORLD_MAX); 
+			BoundsSize = HALF_WORLD_MAX; 
 			break;
 		}
 		else
 		{
-			BoundsSize = FMath::Max3(BoundsSize, Elements[i].BaseSizeX, Elements[i].BaseSizeY);
+			BoundsSize = FMath::Max3<FTransform::FReal>(BoundsSize, Elements[i].BaseSizeX, Elements[i].BaseSizeY);
 		}
 	}
 	BoundsSize *= LocalToWorld.GetMaximumAxisScale();
@@ -372,6 +375,31 @@ UMaterialInterface* UMaterialBillboardComponent::GetMaterial(int32 Index) const
 		ResultMI = Elements[Index].Material;
 	}
 	return ResultMI;
+}
+
+void UMaterialBillboardComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	if (IsComponentPSOPrecachingEnabled())
+	{
+		FPSOPrecacheParams PrecachePSOParams;
+		SetupPrecachePSOParams(PrecachePSOParams);
+		PrecachePSOParams.PrimitiveType = PT_TriangleStrip;
+		PrecachePSOParams.bDisableBackFaceCulling = true;
+
+		const FVertexFactoryType* VFType = &FLocalVertexFactory::StaticType;
+
+		TArray<UMaterialInterface*> UsedMaterials;
+		GetUsedMaterials(UsedMaterials, false);
+		for (UMaterialInterface* MaterialInterface : UsedMaterials)
+		{
+			if (MaterialInterface)
+			{
+				MaterialInterface->PrecachePSOs(VFType, PrecachePSOParams);
+			}
+		}
+	}
 }
 
 void UMaterialBillboardComponent::SetMaterial(int32 ElementIndex, class UMaterialInterface* Material)

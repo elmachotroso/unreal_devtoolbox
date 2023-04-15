@@ -7,7 +7,7 @@
 #include "USDStageModule.h"
 #include "USDTypesConversion.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #include "Engine/World.h"
 #include "Modules/ModuleManager.h"
@@ -43,7 +43,7 @@ TSharedRef< SWidget > SUsdVariantRow::GenerateWidgetForColumn( const FName& Colu
 	{
 		SAssignNew( ColumnWidget, STextBlock )
 		.Text( FText::FromString( VariantSet->SetName ) )
-		.Font( FEditorStyle::GetFontStyle( UsdVariantSetsListConstants::NormalFont ) );
+		.Font( FAppStyle::GetFontStyle( UsdVariantSetsListConstants::NormalFont ) );
 	}
 	else
 	{
@@ -61,7 +61,7 @@ TSharedRef< SWidget > SUsdVariantRow::GenerateWidgetForColumn( const FName& Colu
 				.OptionsSource( &VariantSet->Variants )
 				.InitiallySelectedItem( InitialSelection )
 				.OnSelectionChanged( this, &SUsdVariantRow::OnSelectionChanged )
-				.Font( FEditorStyle::GetFontStyle( UsdVariantSetsListConstants::NormalFont ) );
+				.Font( FAppStyle::GetFontStyle( UsdVariantSetsListConstants::NormalFont ) );
 	}
 
 	return SNew(SBox)
@@ -84,12 +84,8 @@ void SUsdVariantRow::OnSelectionChanged( TSharedPtr< FString > NewValue, ESelect
 	OnVariantSelectionChanged.ExecuteIfBound( VariantSet.ToSharedRef(), NewValue );
 }
 
-void SVariantsList::Construct( const FArguments& InArgs, const UE::FUsdStageWeak& UsdStage, const TCHAR* InPrimPath )
+void SVariantsList::Construct( const FArguments& InArgs )
 {
-	PrimPath = InPrimPath;
-
-	ViewModel.UpdateVariantSets( UsdStage, InPrimPath );
-
 	SAssignNew( HeaderRowWidget, SHeaderRow )
 
 	+SHeaderRow::Column( FName( TEXT("VariantSetName") ) )
@@ -107,6 +103,8 @@ void SVariantsList::Construct( const FArguments& InArgs, const UE::FUsdStageWeak
 		.OnGenerateRow( this, &SVariantsList::OnGenerateRow )
 		.HeaderRow( HeaderRowWidget )
 	);
+
+	SetVisibility( EVisibility::Collapsed ); // Start hidden until SetPrimPath displays us
 }
 
 TSharedRef< ITableRow > SVariantsList::OnGenerateRow( TSharedPtr< FUsdVariantSetViewModel > InDisplayNode, const TSharedRef< STableViewBase >& OwnerTable )
@@ -117,8 +115,10 @@ TSharedRef< ITableRow > SVariantsList::OnGenerateRow( TSharedPtr< FUsdVariantSet
 
 void SVariantsList::SetPrimPath( const UE::FUsdStageWeak& UsdStage, const TCHAR* InPrimPath )
 {
-	PrimPath = InPrimPath;
-	ViewModel.UpdateVariantSets( UsdStage, *PrimPath );
+	ViewModel.UpdateVariantSets( UsdStage, InPrimPath );
+
+	SetVisibility( ViewModel.VariantSets.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed );
+
 	RequestListRefresh();
 }
 

@@ -3,11 +3,12 @@
 #include "SLensDistortionToolPanel.h"
 
 #include "AssetRegistry/AssetData.h"
+#include "CameraCalibrationSettings.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CameraLensDistortionAlgo.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Selection.h"
 #include "LensDistortionTool.h"
 #include "LensFile.h"
@@ -48,6 +49,52 @@ void SLensDistortionToolPanel::Construct(const FArguments& InArgs, ULensDistorti
 			.AutoHeight()
 			[ BuildUIWrapper() ]
 
+			+ SVerticalBox::Slot() // Import dataset
+			.AutoHeight()
+			.HAlign(HAlign_Center)
+			.Padding(0, 20)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SButton).Text(LOCTEXT("ImportCalibrationDataset", "Import Lens Distortion Dataset"))
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						if (ULensDistortionTool* LensDistortionTool = Tool.Get())
+						{
+							LensDistortionTool->ImportCalibrationDataset();
+
+							// After importing, the tool may have switched the active algo, so redraw the UI accordingly
+							UCameraLensDistortionAlgo* Algo = LensDistortionTool->GetAlgo();
+							UI->ClearChildren();
+							UI->AddSlot()[Algo->BuildUI()];
+
+							for (const TSharedPtr<FString>& AlgoString : CurrentAlgos)
+							{
+								if (AlgoString->Equals(Algo->FriendlyName().ToString()))
+								{
+									AlgosComboBox->SetSelectedItem(AlgoString);
+									break;
+								}
+							}
+						}
+						return FReply::Handled();
+					})
+					.Visibility_Lambda([]() -> EVisibility
+					{
+						if (GetDefault<UCameraCalibrationSettings>()->IsCalibrationDatasetImportExportEnabled())
+						{
+							return EVisibility::Visible;
+						}
+						return EVisibility::Collapsed;
+					})
+				]
+			]
+
 			+ SVerticalBox::Slot() // Save Offset
 			.AutoHeight()
 			.Padding(0, 20)
@@ -55,11 +102,11 @@ void SLensDistortionToolPanel::Construct(const FArguments& InArgs, ULensDistorti
 				SNew(SButton).Text(LOCTEXT("AddToLUT", "Add To Lens Distortion Calibration"))
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
-				.OnClicked_Lambda([&]() -> FReply
+				.OnClicked_Lambda([WeakTool = Tool]() -> FReply
 				{
-					if (Tool.IsValid())
+					if (WeakTool.IsValid())
 					{
-						Tool->OnSaveCurrentCalibrationData();
+						WeakTool->OnSaveCurrentCalibrationData();
 					}
 					return FReply::Handled();
 				})
@@ -188,7 +235,7 @@ TSharedRef<SWidget> SLensDistortionToolPanel::BuildAlgoPickerWidget()
 			.ToolTipText(LOCTEXT("ShowHelp_Tip", "Help about this algo"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				if (!Tool.IsValid())
@@ -206,7 +253,10 @@ TSharedRef<SWidget> SLensDistortionToolPanel::BuildAlgoPickerWidget()
 				TSharedRef< SCustomDialog> AlgoHelpWindow = 
 					SNew(SCustomDialog)
 					.Title(FText::FromName(Tool->FriendlyName()))
-					.DialogContent(Algo->BuildHelpWidget())
+					.Content()
+					[
+						Algo->BuildHelpWidget()
+					]
 					.Buttons({
 						SCustomDialog::FButton(LOCTEXT("Ok", "Ok")),
 					});
@@ -217,7 +267,7 @@ TSharedRef<SWidget> SLensDistortionToolPanel::BuildAlgoPickerWidget()
 			})
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.12"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
 				.Text(FEditorFontGlyphs::Info_Circle)
 				.ColorAndOpacity(FLinearColor::White)
 			]

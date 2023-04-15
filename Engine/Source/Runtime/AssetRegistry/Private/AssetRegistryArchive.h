@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "AssetRegistry/AssetDataTagMapSerializationDetails.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "UObject/NameBatchSerialization.h"
@@ -10,22 +9,32 @@
 struct FAssetData;
 struct FAssetRegistrySerializationOptions;
 
+// Header containing versioning & data stripping information for a serialized asset registry state.
+struct FAssetRegistryHeader
+{
+	FAssetRegistryVersion::Type Version = FAssetRegistryVersion::LatestVersion;
+	bool bFilterEditorOnlyData = false; // True if editor only data has been removed/should be removed while saving 
+
+	void SerializeHeader(FArchive& Ar);
+};
+
 /** @see FAssetRegistryWriter */
 class FAssetRegistryReader : public FArchiveProxy
 {
 public:
 	/// @param NumWorkers > 0 for parallel loading
-	FAssetRegistryReader(FArchive& Inner, int32 NumWorkers = 0);
+	FAssetRegistryReader(FArchive& Inner, int32 NumWorkers, FAssetRegistryHeader Header);
 	~FAssetRegistryReader();
 
 	virtual FArchive& operator<<(FName& Value) override;
 
 	void SerializeTagsAndBundles(FAssetData& Out);
+	void SerializeTagsAndBundlesOldVersion(FAssetData& Out, FAssetRegistryVersion::Type Version);
 
 	void WaitForTasks();
 
 private:
-	TArray<FNameEntryId> Names;
+	TArray<FDisplayNameEntryId> Names;
 	TRefCountPtr<const FixedTagPrivate::FStore> Tags;
 	TFuture<void> Task;
 
@@ -72,7 +81,7 @@ public:
 	void SerializeTagsAndBundles(const FAssetData& In);
 
 private:
-	TMap<FNameEntryId, uint32> Names;
+	TMap<FDisplayNameEntryId, uint32> Names;
 	FixedTagPrivate::FStoreBuilder Tags;
 	FArchive& TargetAr;
 

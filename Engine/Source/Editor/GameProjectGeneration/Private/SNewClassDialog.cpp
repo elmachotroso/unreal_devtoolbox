@@ -13,7 +13,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Blueprint.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -33,7 +33,7 @@
 #include "Widgets/Input/SHyperlink.h"
 #include "TutorialMetaData.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -273,7 +273,7 @@ void SNewClassDialog::Construct( const FArguments& InArgs )
 	[
 		SNew(SBorder)
 		.Padding(18)
-		.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+		.BorderImage( FAppStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
 		[
 			SNew(SVerticalBox)
 			.AddMetaData<FTutorialMetaData>(TEXT("AddCodeMajorAnchor"))
@@ -380,7 +380,7 @@ void SNewClassDialog::Construct( const FArguments& InArgs )
 					[
 						SNew(SBorder)
 						.AddMetaData<FTutorialMetaData>(TEXT("AddCodeOptions"))
-						.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+						.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 						[
 							SNew(SVerticalBox)
 
@@ -466,7 +466,7 @@ void SNewClassDialog::Construct( const FArguments& InArgs )
 						.HAlign(HAlign_Left)
 						[
 							SNew(SHyperlink)
-							.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
+							.Style(FAppStyle::Get(), "Common.GotoNativeCodeHyperlink")
 							.OnNavigate(this, &SNewClassDialog::OnEditCodeClicked)
 							.Text(this, &SNewClassDialog::GetSelectedParentClassFilename)
 							.ToolTipText(FText::Format(LOCTEXT("GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSelectedSourceCodeIDE()))
@@ -533,7 +533,7 @@ void SNewClassDialog::Construct( const FArguments& InArgs )
 						.AutoHeight()
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+							.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 							.BorderBackgroundColor(FLinearColor(0.6f, 0.6f, 0.6f, 1.0f ))
 							.Padding(FMargin(6.0f, 4.0f, 7.0f, 4.0f))
 							[
@@ -810,7 +810,7 @@ TSharedRef<ITableRow> SNewClassDialog::MakeParentClassListViewWidget(TSharedPtr<
 	return
 		SNew( STableRow<TSharedPtr<FParentClassItem>>, OwnerTable )
 		.Padding(4)
-		.Style(FEditorStyle::Get(), "NewClassDialog.ParentClassListView.TableRow")
+		.Style(FAppStyle::Get(), "NewClassDialog.ParentClassListView.TableRow")
 		.ToolTip(IDocumentation::Get()->CreateToolTip(ClassFullDescription, nullptr, FEditorClassUtils::GetDocumentationPage(Class), FEditorClassUtils::GetDocumentationExcerpt(Class)))
 		[
 			SNew(SBox)
@@ -989,7 +989,8 @@ FText SNewClassDialog::GetGlobalErrorLabelText() const
 	if ( ClassDomain == EClassDomain::Native && !FSourceCodeNavigation::IsCompilerAvailable() )
 	{
 #if PLATFORM_LINUX
-		return FText::Format(LOCTEXT("NoCompilerFoundNewClassLinux", "In order to use a C++ template, you must first install or disable {0}."), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
+		return FText::Format(LOCTEXT("NoCompilerFoundNewClassLinux", "Your IDE {0} is missing or incorrectly configured, please consider using {1}"),
+			FSourceCodeNavigation::GetSelectedSourceCodeIDE(), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
 #else
 		return FText::Format(LOCTEXT("NoCompilerFoundNewClass", "No compiler was found. In order to use C++ code, you must first install {0}."), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
 #endif
@@ -1116,7 +1117,7 @@ void SNewClassDialog::FinishClicked()
 			// @todo show fail reason in error label
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AddCodeFailed_Blueprint_NoBase", "No parent class has been specified. Failed to generate new Blueprint class."));
 		}
-		else if (FindObject<UBlueprint>(ANY_PACKAGE, *PackagePath))
+		else if (FindObject<UBlueprint>(nullptr, *PackagePath))
 		{
 			// @todo show fail reason in error label
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AddCodeFailed_Blueprint_AlreadyExists", "The chosen Blueprint class already exists, please try again with a different name."));
@@ -1431,7 +1432,7 @@ void SNewClassDialog::UpdateInputValidity()
 		if (bLastInputValidityCheckSuccessful)
 		{
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
-			if (AssetRegistry.GetAssetByObjectPath(*(NewClassPath / NewClassName)).IsValid())
+			if (AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(NewClassPath / NewClassName)).IsValid())
 			{
 				bLastInputValidityCheckSuccessful = false;
 				LastInputValidityErrorText = FText::Format(LOCTEXT("AssetAlreadyExists", "An asset called {0} already exists in {1}."), FText::FromString(NewClassName), FText::FromString(NewClassPath));

@@ -167,6 +167,12 @@ public:
 	 */
 	virtual void RequestAvailableWorkers( const FGuid& InSessionId ) = 0;
 
+	/** 
+	 * Return true when the manager is ready and capable of executing tests. 
+	 * if RunTests is called earlier it may block until internally these conditions are met
+	 */
+	virtual bool IsReadyForTests() = 0;
+
 	/** Send request for tests that are available to run. */
 	virtual void RequestTests() = 0;
 
@@ -216,6 +222,16 @@ public:
 	* Sets if analytics should be sent
 	*/
 	virtual void SetSendAnalytics(const bool bNewValue) = 0;
+
+	/**
+	* Returns if PIE should be kept open when test pass end
+	*/
+	virtual bool KeepPIEOpen() const = 0;
+
+	/**
+	* Sets if PIE should be kept open when test pass end
+	*/
+	virtual void SetKeepPIEOpen(const bool bNewValue) = 0;
 
 	/**
 	 * Filters the visible list of tests.
@@ -271,6 +287,13 @@ public:
 	 * @param OutEnabledTestNames The list to populate with enabled test names.
 	 */
 	virtual void GetEnabledTestNames(TArray<FString>& OutEnabledTestNames) const = 0;
+
+	/**
+	* Gets the names of all the filtered tests.
+	*
+	* @param OutFilteredTestNames The list to populate with filtered test names.
+	*/
+	virtual void GetFilteredTestNames(TArray<FString>& OutFilteredTestNames) const = 0;
 
 	/**
 	 * Sets any tests that match a name in the enabled tests array.

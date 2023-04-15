@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "FieldNotification/FieldNotificationDeclaration.h"
+#include "FieldNotification/IFieldValueChanged.h"
 #include "Misc/Attribute.h"
 #include "Templates/SubclassOf.h"
 #include "UObject/ScriptMacros.h"
@@ -27,6 +29,7 @@
 
 class ULocalPlayer;
 class SObjectWidget;
+class UGameViewportSubsystem;
 class UPanelSlot;
 class UPropertyBinding;
 class UUserWidget;
@@ -87,17 +90,6 @@ namespace UMWidget
 
 
 
-
-/**
- * Helper macro for binding to a delegate or using the constant value when constructing the underlying SWidget
- */
-#define OPTIONAL_BINDING(ReturnType, MemberName)				\
-	DEPRECATED_MACRO(4.17, "OPTIONAL_BINDING macro is deprecated.  Please use PROPERTY_BINDING in place and you'll need to define a PROPERTY_BINDING_IMPLEMENTATION in your header instead.") \
-	( MemberName ## Delegate.IsBound() && !IsDesignTime() )		\
-	?															\
-		TAttribute< ReturnType >::Create(MemberName ## Delegate.GetUObject(), MemberName ## Delegate.GetFunctionName()) \
-	:															\
-		TAttribute< ReturnType >(MemberName)
 
 #if WITH_EDITOR
 
@@ -216,12 +208,23 @@ public:
 /**
  * This is the base class for all wrapped Slate controls that are exposed to UObjects.
  */
-UCLASS(Abstract, BlueprintType, Blueprintable)
-class UMG_API UWidget : public UVisual
+UCLASS(Abstract, BlueprintType, Blueprintable, CustomFieldNotify)
+class UMG_API UWidget : public UVisual, public INotifyFieldValueChanged
 {
 	GENERATED_UCLASS_BODY()
 
+	friend UGameViewportSubsystem;
+
 public:
+	UE_FIELD_NOTIFICATION_DECLARE_CLASS_DESCRIPTOR_BASE_BEGIN(UMG_API)
+		UE_FIELD_NOTIFICATION_DECLARE_FIELD(ToolTipText)
+		UE_FIELD_NOTIFICATION_DECLARE_FIELD(Visibility)
+		UE_FIELD_NOTIFICATION_DECLARE_FIELD(bIsEnabled)
+		UE_FIELD_NOTIFICATION_DECLARE_ENUM_FIELD_BEGIN(ToolTipText)
+		UE_FIELD_NOTIFICATION_DECLARE_ENUM_FIELD(Visibility)
+		UE_FIELD_NOTIFICATION_DECLARE_ENUM_FIELD(bIsEnabled)
+		UE_FIELD_NOTIFICATION_DECLARE_ENUM_FIELD_END()
+	UE_FIELD_NOTIFICATION_DECLARE_CLASS_DESCRIPTOR_BASE_END();
 
 	// Common Bindings - If you add any new common binding, you must provide a UPropertyBinding for it.
 	//                   all primitive binding in UMG goes through native binding evaluators to prevent
@@ -259,7 +262,8 @@ public:
 	FGetBool bIsEnabledDelegate;
 
 	/** Tooltip text to show when the user hovers over the widget with the mouse */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Behavior", meta=(MultiLine=true))
+	UE_DEPRECATED(5.1, "Direct access to ToolTipText is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetToolTipText", Category="Behavior", meta=(MultiLine=true))
 	FText ToolTipText;
 
 	/** A bindable delegate for ToolTipText */
@@ -267,7 +271,8 @@ public:
 	FGetText ToolTipTextDelegate;
 
 	/** Tooltip widget to show when the user hovers over the widget with the mouse */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Behavior", AdvancedDisplay)
+	UE_DEPRECATED(5.1, "Direct access to ToolTipWidget is deprecated. Please use the getter or setter.")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Getter="GetToolTip", Setter="SetToolTip", BlueprintSetter="SetToolTip", Category="Behavior", AdvancedDisplay)
 	TObjectPtr<UWidget> ToolTipWidget;
 
 	/** A bindable delegate for ToolTipWidget */
@@ -277,24 +282,27 @@ public:
 
 	/** A bindable delegate for Visibility */
 	UPROPERTY()
-	FGetSlateVisibility VisibilityDelegate;
-
-	/** A bindable delegate for Cursor */
-	//UPROPERTY()
-	//FGetMouseCursor CursorDelegate;
+	FGetSlateVisibility VisibilityDelegate;;
 
 public:
 
 	/** The render transform of the widget allows for arbitrary 2D transforms to be applied to the widget. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Render Transform", meta=( DisplayName="Transform" ))
+	UE_DEPRECATED(5.1, "Direct access to RenderTransform is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetRenderTransform", Category="Render Transform", meta = (DisplayName = "Transform"))
 	FWidgetTransform RenderTransform;
 
 	/**
 	 * The render transform pivot controls the location about which transforms are applied.  
 	 * This value is a normalized coordinate about which things like rotations will occur.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Render Transform", meta=( DisplayName="Pivot" ))
+	UE_DEPRECATED(5.1, "Direct access to RenderTransformPivot is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetRenderTransformPivot", Category="Render Transform", meta=( DisplayName="Pivot" ))
 	FVector2D RenderTransformPivot;
+
+	/** Allows you to set a new flow direction */
+	UE_DEPRECATED(5.1, "Direct access to FlowDirectionPreference is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, Getter, Setter, Category="Localization")
+	EFlowDirectionPreference FlowDirectionPreference;
 
 	/**
 	 * Allows controls to be exposed as variables in a blueprint.  Not all controls need to be exposed
@@ -308,16 +316,13 @@ public:
 	uint8 bCreatedByConstructionScript:1;
 
 	/** Sets whether this widget can be modified interactively by the user */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Behavior")
+	UE_DEPRECATED(5.1, "Direct access to bIsEnabled is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, FieldNotify, Getter="GetIsEnabled", Setter="SetIsEnabled", BlueprintGetter="GetIsEnabled", BlueprintSetter="SetIsEnabled", Category="Behavior")
 	uint8 bIsEnabled:1;
 
 	/**  */
 	UPROPERTY(EditAnywhere, Category="Behavior", meta=(InlineEditConditionToggle))
 	uint8 bOverride_Cursor : 1;
-
-	/** Allows you to set a new flow direction */
-	UPROPERTY(EditAnywhere, Category = "Localization")
-	EFlowDirectionPreference FlowDirectionPreference;
 
 #if WITH_EDITORONLY_DATA
 	// These editor-only properties exist for two reasons:
@@ -365,11 +370,6 @@ public:
 	USlateAccessibleWidgetData::FGetText AccessibleSummaryTextDelegate;
 #endif
 
-private:
-	/** A custom set of accessibility rules for this widget. If null, default rules for the widget are used. */
-	UPROPERTY(Instanced)
-	TObjectPtr<USlateAccessibleWidgetData> AccessibleWidgetData;
-
 protected:
 
 	/**
@@ -380,6 +380,9 @@ protected:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Performance")
 	uint8 bIsVolatile:1;
+
+	/** Cached value that indicate if the widget was added to the GameViewportSubsystem. */
+	uint8 bIsManagedByGameViewportSubsystem:1;
 
 public:
 #if WITH_EDITORONLY_DATA
@@ -397,7 +400,8 @@ public:
 #endif
 
 	/** The cursor to show when the mouse is over the widget */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Behavior", AdvancedDisplay, meta=( editcondition="bOverride_Cursor" ))
+	UE_DEPRECATED(5.1, "Direct access to Cursor is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetCursor", Category="Behavior", AdvancedDisplay, meta = (editcondition = "bOverride_Cursor"))
 	TEnumAsByte<EMouseCursor::Type> Cursor;
 
 	/**
@@ -409,17 +413,26 @@ public:
 	 * performance cost to clipping.  Do not enable clipping unless a panel actually needs to prevent
 	 * content from showing up outside its bounds.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Clipping")
+	UE_DEPRECATED(5.1, "Direct access to Clipping is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category="Clipping")
 	EWidgetClipping Clipping;
 
 	/** The visibility of the widget */
-	UPROPERTY(EditAnywhere, Category="Behavior")
+	UE_DEPRECATED(5.1, "Direct access to Visibility is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, FieldNotify, Getter, Setter, BlueprintGetter="GetVisibility", BlueprintSetter="SetVisibility", Category="Behavior")
 	ESlateVisibility Visibility;
 
 	/** The opacity of the widget */
-	UPROPERTY(EditAnywhere, Category="Behavior")
+	UE_DEPRECATED(5.1, "Direct access to RenderOpacity is deprecated. Please use the getter or setter.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter="GetRenderOpacity", BlueprintSetter="SetRenderOpacity", Category="Behavior")
 	float RenderOpacity;
 
+private:
+	/** A custom set of accessibility rules for this widget. If null, default rules for the widget are used. */
+	UPROPERTY(Instanced)
+	TObjectPtr<USlateAccessibleWidgetData> AccessibleWidgetData;
+
+public:
 	/**
 	 * The navigation object for this widget is optionally created if the user has configured custom
 	 * navigation rules for this widget in the widget designer.  Those rules determine how navigation transitions
@@ -459,6 +472,8 @@ public:
 #endif
 
 public:
+	/** */
+	const FWidgetTransform& GetRenderTransform() const;
 
 	/** */
 	UFUNCTION(BlueprintCallable, Category="Widget|Transform")
@@ -485,8 +500,17 @@ public:
 	void SetRenderTranslation(FVector2D Translation);
 
 	/** */
+	FVector2D GetRenderTransformPivot() const;
+
+	/** */
 	UFUNCTION(BlueprintCallable, Category="Widget|Transform")
 	void SetRenderTransformPivot(FVector2D Pivot);
+
+	/** */
+	EFlowDirectionPreference GetFlowDirectionPreference() const;
+
+	/** */
+	void SetFlowDirectionPreference(EFlowDirectionPreference FlowDirection);
 
 	/** Gets the current enabled status of the widget */
 	UFUNCTION(BlueprintCallable, Category="Widget")
@@ -496,13 +520,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	virtual void SetIsEnabled(bool bInIsEnabled);
 
+	/* @return true if the widget was added to the viewport using AddToViewport or AddToPlayerScreen. */
+	UFUNCTION(BlueprintPure, BlueprintCosmetic, Category = "Appearance")
+	bool IsInViewport() const;
+
+	/** @return the tooltip text for the widget. */
+	FText GetToolTipText() const;
+
 	/** Sets the tooltip text for the widget. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	void SetToolTipText(const FText& InToolTipText);
 
+	/** @return the custom widget as the tooltip of the widget. */
+	UWidget* GetToolTip() const;
+
 	/** Sets a custom widget as the tooltip of the widget. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	void SetToolTip(UWidget* Widget);
+
+	/** Sets the cursor to show over the widget. */
+	EMouseCursor::Type GetCursor() const;
 
 	/** Sets the cursor to show over the widget. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
@@ -511,6 +548,10 @@ public:
 	/** Resets the cursor to use on the widget, removing any customization for it. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	void ResetCursor();
+	
+	/** Returns true if the widget is Visible, HitTestInvisible or SelfHitTestInvisible and the Render Opacity is greater than 0. */
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	bool IsRendered() const;
 
 	/** Returns true if the widget is Visible, HitTestInvisible or SelfHitTestInvisible. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
@@ -524,6 +565,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	virtual void SetVisibility(ESlateVisibility InVisibility);
 
+protected:
+	void SetVisibilityInternal(ESlateVisibility InVisibility);
+
+public:
 	/** Gets the current visibility of the widget. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	float GetRenderOpacity() const;
@@ -640,7 +685,7 @@ public:
 	 *	@param WidgetToFocus When using the Explicit rule, focus on this widget
 	 */
 	UE_DEPRECATED(4.23, "SetNavigationRule is deprecated. Please use either SetNavigationRuleBase or SetNavigationRuleExplicit or SetNavigationRuleCustom or SetNavigationRuleCustomBoundary.")
-	UFUNCTION(BlueprintCallable, Category = "Widget")
+	UFUNCTION(BlueprintCallable, Category = "Widget", meta = (DeprecatedFunction, DeprecatedMessage = "Please use either SetNavigationRuleBase or SetNavigationRuleExplicit or SetNavigationRuleCustom or SetNavigationRuleCustomBoundary."))
 	void SetNavigationRule(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus);
 
 	/**
@@ -703,6 +748,28 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	const FGeometry& GetPaintSpaceGeometry() const;
+
+	//~ Begin INotifyFieldValueChanged Interface
+public:
+	virtual FDelegateHandle AddFieldValueChangedDelegate(UE::FieldNotification::FFieldId InFieldId, FFieldValueChangedDelegate InNewDelegate) override final;
+	virtual bool RemoveFieldValueChangedDelegate(UE::FieldNotification::FFieldId InFieldId, FDelegateHandle InHandle) override final;
+	virtual int32 RemoveAllFieldValueChangedDelegates(const void* InUserObject) override final;
+	virtual int32 RemoveAllFieldValueChangedDelegates(UE::FieldNotification::FFieldId InFieldId, const void* InUserObject) override final;
+	//~ End INotifyFieldValueChanged Interface
+
+	UFUNCTION(BlueprintCallable, Category = "FieldNotify", meta = (DisplayName = "Add Field Value Changed Delegate", ScriptName = "AddFieldValueChangedDelegate"))
+	void K2_AddFieldValueChangedDelegate(FFieldNotificationId FieldId, FFieldValueChangedDynamicDelegate Delegate);
+
+	UFUNCTION(BlueprintCallable, Category = "FieldNotify", meta = (DisplayName = "Remove Field Value Changed Delegate", ScriptName="RemoveFieldValueChangedDelegate"))
+	void K2_RemoveFieldValueChangedDelegate(FFieldNotificationId FieldId, FFieldValueChangedDynamicDelegate Delegate);
+
+protected:
+	void BroadcastFieldValueChanged(UE::FieldNotification::FFieldId InFieldId);
+
+	UFUNCTION(BlueprintCallable, Category="FieldNotify", meta = (DisplayName="Broadcast Field Value Changed", ScriptName="BroadcastFieldValueChanged"))
+	void K2_BroadcastFieldValueChanged(FFieldNotificationId FieldId);
+
+public:
 	/**
 	 * Gets the underlying slate widget or constructs it if it doesn't exist.  If you're looking to replace
 	 * what slate widget gets constructed look for RebuildWidget.  For extremely special cases where you actually
@@ -891,15 +958,12 @@ public:
 
 	static TSubclassOf<UPropertyBinding> FindBinderClassForDestination(FProperty* Property);
 
-	// Begin UObject
+	//~ Begin UObject
 	virtual UWorld* GetWorld() const override;
+	virtual void BeginDestroy() override;
 	virtual void FinishDestroy() override;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
-	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
-	// End UObject
+	//~ End UObject
 
 	FORCEINLINE bool CanSafelyRouteEvent()
 	{
@@ -1051,6 +1115,7 @@ protected:
 	static TArray<TSubclassOf<UPropertyBinding>> BinderClasses;
 
 private:
+	TBitArray<> EnabledFieldNotifications;
 
 #if WITH_EDITORONLY_DATA
 	/** Any flags used by the designer at edit time. */

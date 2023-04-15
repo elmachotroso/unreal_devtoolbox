@@ -56,41 +56,6 @@ bool FlushPackageFile(const FString& InFilename, FName* OutPackageName = nullptr
 	return false;
 }
 
-#if WITH_EDITOR
-
-FDirectoryWatcherModule& GetDirectoryWatcherModule()
-{
-	static const FName DirectoryWatcherModuleName = TEXT("DirectoryWatcher");
-	return FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(DirectoryWatcherModuleName);
-}
-
-FDirectoryWatcherModule* GetDirectoryWatcherModuleIfLoaded()
-{
-	static const FName DirectoryWatcherModuleName = TEXT("DirectoryWatcher");
-	if (FModuleManager::Get().IsModuleLoaded(DirectoryWatcherModuleName))
-	{
-		return &FModuleManager::GetModuleChecked<FDirectoryWatcherModule>(DirectoryWatcherModuleName);
-	}
-	return nullptr;
-}
-
-IDirectoryWatcher* GetDirectoryWatcher()
-{
-	FDirectoryWatcherModule& DirectoryWatcherModule = GetDirectoryWatcherModule();
-	return DirectoryWatcherModule.Get();
-}
-
-IDirectoryWatcher* GetDirectoryWatcherIfLoaded()
-{
-	if (FDirectoryWatcherModule* DirectoryWatcherModule = GetDirectoryWatcherModuleIfLoaded())
-	{
-		return DirectoryWatcherModule->Get();
-	}
-	return nullptr;
-}
-
-#endif
-
 }
 
 FConcertSandboxPlatformFile::FConcertSandboxPlatformFile(const FString& InSandboxRootPath)
@@ -111,7 +76,7 @@ FConcertSandboxPlatformFile::~FConcertSandboxPlatformFile()
 	FPackageName::OnContentPathDismounted().RemoveAll(this);
 
 #if WITH_EDITOR
-	if (IDirectoryWatcher* DirectoryWatcher = ConcertSandboxPlatformFileUtil::GetDirectoryWatcherIfLoaded())
+	if (IDirectoryWatcher* DirectoryWatcher = ConcertSyncClientUtil::GetDirectoryWatcherIfLoaded())
 	{
 		for (FSandboxMountPoint& SandboxMountPoint : SandboxMountPoints)
 		{
@@ -731,119 +696,128 @@ FString FConcertSandboxPlatformFile::ConvertToAbsolutePathForExternalAppForWrite
 	return LowerLevel->ConvertToAbsolutePathForExternalAppForWrite(*ResolvedPath.GetNonSandboxPath());
 }
 
-bool FConcertSandboxPlatformFile::PersistSandbox(TArrayView<const FString> InFiles, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons)
+
+bool FConcertSandboxPlatformFile::CopyFileWithSCC(
+	const TCHAR* InToFilename,
+	const TCHAR* InFromFilename,
+	const FPersistParameters& InParam,
+	FPersistResult& OutResult)
 {
-	// Lambda copy file from the sandbox
-	auto CopyFileWithSCC = [this, SourceControlProvider, OutFailureReasons](const TCHAR* InToFilename, const TCHAR* InFromFilename)
+	// If this file maps to a package then we need to flush its linker so that we can overwrite the file on disk
+	ConcertSandboxPlatformFileUtil::FlushPackageFile(InToFilename);
+
+	ISourceControlProvider* SourceControlProvider = InParam.SourceControlProvider;
+	// Get the source control state of the destination file
+	FSourceControlStatePtr ToFileSCCState;
+	if (SourceControlProvider && SourceControlProvider->IsEnabled())
 	{
-		// If this file maps to a package then we need to flush its linker so that we can overwrite the file on disk
-		ConcertSandboxPlatformFileUtil::FlushPackageFile(InToFilename);
+		ToFileSCCState = SourceControlProvider->GetState(InToFilename, EStateCacheUsage::ForceUpdate);
+	}
 
-		// Get the source control state of the destination file
-		FSourceControlStatePtr ToFileSCCState;
-		if (SourceControlProvider && SourceControlProvider->IsEnabled())
+	// We don't need to do anything with source control if the file is already checked-out or added
+	const bool bRequiresSCCAction = ToFileSCCState && !ToFileSCCState->IsCheckedOut() && !ToFileSCCState->IsAdded();
+
+	// If the file can be checked-out, do so now
+	if (bRequiresSCCAction && ToFileSCCState->IsSourceControlled())
+	{
+		// the static analysis tool is not able to see that `SourceControlProvider` won't be null if `bRequiresSCCAction` is true
+		CA_ASSUME(SourceControlProvider != nullptr);
+		if (ToFileSCCState->CanCheckout() && SourceControlProvider->UsesCheckout())
 		{
-			ToFileSCCState = SourceControlProvider->GetState(InToFilename, EStateCacheUsage::ForceUpdate);
-		}
+			TArray<FString> FilesToBeCheckedOut;
+			FilesToBeCheckedOut.Add(InToFilename);
 
-		// We don't need to do anything with source control if the file is already checked-out or added
-		const bool bRequiresSCCAction = ToFileSCCState && !ToFileSCCState->IsCheckedOut() && !ToFileSCCState->IsAdded();
-
-		// If the file can be checked-out, do so now
-		if (bRequiresSCCAction && ToFileSCCState->IsSourceControlled())
-		{
-			// the static analysis tool is not able to see that `SourceControlProvider` won't be null if `bRequiresSCCAction` is true
-			CA_ASSUME(SourceControlProvider != nullptr);
-			if (ToFileSCCState->CanCheckout() && SourceControlProvider->UsesCheckout())
+			if (SourceControlProvider->Execute(ISourceControlOperation::Create<FCheckOut>(), FilesToBeCheckedOut) != ECommandResult::Succeeded)
 			{
-				TArray<FString> FilesToBeCheckedOut;
-				FilesToBeCheckedOut.Add(InToFilename);
-
-				if (SourceControlProvider->Execute(ISourceControlOperation::Create<FCheckOut>(), FilesToBeCheckedOut) != ECommandResult::Succeeded)
-				{
-					FText Failure = FText::Format(NSLOCTEXT("Concert", "CheckoutFileFailure", "Failed to check-out file '{0}' from source control when persiting sandbox state!"), FText::FromString(InToFilename));
-					UE_LOG(LogConcert, Warning, TEXT("%s"),  *Failure.ToString());
-					if (OutFailureReasons)
-					{
-						OutFailureReasons->Add(MoveTemp(Failure));
-					}
-					return false;
-				}
-			}
-			else
-			{
-				FText Failure = FText::Format(NSLOCTEXT("Concert", "CanCheckoutFileFailure", "Can't check-out file '{0}' from source control when persiting sandbox state!"), FText::FromString(InToFilename));
-				UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-				if (OutFailureReasons)
-				{
-					OutFailureReasons->Add(MoveTemp(Failure));
-				}
+				FText Failure = FText::Format(
+					NSLOCTEXT("Concert", "CheckoutFileFailure", "Failed to check-out file '{0}' from source control when persiting sandbox state!"),
+					FText::FromString(InToFilename));
+				UE_LOG(LogConcert, Warning, TEXT("%s"),  *Failure.ToString());
+				OutResult.FailureReasons.Add(MoveTemp(Failure));
 				return false;
 			}
 		}
-
-		// Copy the on-disk sandbox file
-		FString ToFileDir = FPaths::GetPath(InToFilename);
-		if (!CreateDirectoryTree(*ToFileDir) || !LowerLevel->CopyFile(InToFilename, InFromFilename))
+		else
 		{
-			FText Failure = FText::Format(NSLOCTEXT("Concert", "CopyFileFailure", "Failed to copy file '{0}' (from '{1}') when persiting sandbox state!"), FText::FromString(InToFilename), FText::FromString(InFromFilename));
+			FText Failure = FText::Format(
+				NSLOCTEXT("Concert", "CanCheckoutFileFailure", "Can't check-out file '{0}' from source control when persiting sandbox state!"),
+				FText::FromString(InToFilename));
 			UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-			if (OutFailureReasons)
-			{
-				OutFailureReasons->Add(MoveTemp(Failure));
-			}
+			OutResult.FailureReasons.Add(MoveTemp(Failure));
 			return false;
 		}
+	}
+	else if (InParam.bShouldMakeWritableIfNoSourceControl)
+	{
+		if (LowerLevel->FileExists(InToFilename) && !LowerLevel->SetReadOnly(InToFilename, false))
+		{
+			FText Failure = FText::Format(
+				NSLOCTEXT("Concert", "CanMakeWritable", "Can't make file '{0}' writable when persiting sandbox state!"),
+				FText::FromString(InToFilename));
+			UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
+			OutResult.FailureReasons.Add(MoveTemp(Failure));
+			return false;
+		}
+	}
+
+	// Copy the on-disk sandbox file
+	FString ToFileDir = FPaths::GetPath(InToFilename);
+	if (!CreateDirectoryTree(*ToFileDir) || !LowerLevel->CopyFile(InToFilename, InFromFilename))
+	{
+		FText Failure = FText::Format(
+			NSLOCTEXT("Concert", "CopyFileFailure", "Failed to copy file '{0}' (from '{1}') when persiting sandbox state!"),
+			FText::FromString(InToFilename), FText::FromString(InFromFilename));
+		UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
+		OutResult.FailureReasons.Add(MoveTemp(Failure));
+		return false;
+	}
 
 		// If the file is new, add it to source control now
-		if (bRequiresSCCAction && !ToFileSCCState->IsSourceControlled())
-		{
-			TArray<FString> FilesToBeAdded;
-			FilesToBeAdded.Add(InToFilename);
-
-			if (SourceControlProvider->Execute(ISourceControlOperation::Create<FMarkForAdd>(), FilesToBeAdded) != ECommandResult::Succeeded)
-			{
-				FText Failure = FText::Format(NSLOCTEXT("Concert", "AddFileFailure", "Failed to add file '{0}' to source control when persiting sandbox state!"), FText::FromString(InToFilename));
-				UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-				if (OutFailureReasons)
-				{
-					OutFailureReasons->Add(MoveTemp(Failure));
-				}
-				return false;
-			}
-		}
-		return true;
-	};
-	// Lambda to delete files removed from the sandbox
-	auto DeleteFileWithSCC = [this, SourceControlProvider, OutFailureReasons](const TCHAR* InFilename)
+	if (bRequiresSCCAction && !ToFileSCCState->IsSourceControlled())
 	{
-		// If this file maps to a package then we need to flush its linker so that we can remove the file from disk
-		ConcertSandboxPlatformFileUtil::FlushPackageFile(InFilename);
+		TArray<FString> FilesToBeAdded;
+		FilesToBeAdded.Add(InToFilename);
 
-		// Get the source control state of the file
-		FSourceControlStatePtr FileSCCState;
-		if (SourceControlProvider && SourceControlProvider->IsEnabled())
+		if (SourceControlProvider->Execute(ISourceControlOperation::Create<FMarkForAdd>(), FilesToBeAdded) != ECommandResult::Succeeded)
 		{
-			FileSCCState = SourceControlProvider->GetState(InFilename, EStateCacheUsage::ForceUpdate);
+			FText Failure = FText::Format(
+				NSLOCTEXT("Concert", "AddFileFailure", "Failed to add file '{0}' to source control when persiting sandbox state!"),
+				FText::FromString(InToFilename));
+			UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
+			OutResult.FailureReasons.Add(MoveTemp(Failure));
+			return false;
 		}
+	}
+	return true;
+}
 
-		// Try and let source control remove the file first
-		if (FileSCCState && FileSCCState->IsSourceControlled())
+/** Delete file using source control */
+bool FConcertSandboxPlatformFile::DeleteFileWithSCC(const TCHAR* InFilename, const FPersistParameters& InParam, FPersistResult& OutResult)
+{
+	// If this file maps to a package then we need to flush its linker so that we can remove the file from disk
+	ConcertSandboxPlatformFileUtil::FlushPackageFile(InFilename);
+
+	ISourceControlProvider* SourceControlProvider = InParam.SourceControlProvider;
+	// Get the source control state of the file
+	FSourceControlStatePtr FileSCCState;
+	if (SourceControlProvider && SourceControlProvider->IsEnabled())
+	{
+		FileSCCState = SourceControlProvider->GetState(InFilename, EStateCacheUsage::ForceUpdate);
+	}
+
+	// Try and let source control remove the file first
+	if (FileSCCState && FileSCCState->IsSourceControlled())
+	{
+		const bool bAdded = FileSCCState->IsAdded();
+
+		if (bAdded || FileSCCState->IsCheckedOut())
 		{
-			const bool bAdded = FileSCCState->IsAdded();
-
-			if (bAdded || FileSCCState->IsCheckedOut())
+			if (SourceControlProvider->Execute(ISourceControlOperation::Create<FRevert>(), InFilename) != ECommandResult::Succeeded)
 			{
-				if (SourceControlProvider->Execute(ISourceControlOperation::Create<FRevert>(), InFilename) != ECommandResult::Succeeded)
-				{
-					FText Failure = FText::Format(NSLOCTEXT("Concert", "RevertFileFailure", "Failed to revert file '{0}' to source control when persisting sandbox state!"), FText::FromString(InFilename));
-					UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-					if (OutFailureReasons)
-					{
-						OutFailureReasons->Add(MoveTemp(Failure));
-					}
-					return false;
-				}
+				FText Failure = FText::Format(NSLOCTEXT("Concert", "RevertFileFailure", "Failed to revert file '{0}' to source control when persisting sandbox state!"), FText::FromString(InFilename));
+				UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
+				OutResult.FailureReasons.Add(MoveTemp(Failure));
+				return false;
 			}
 
 			if (!bAdded)
@@ -852,44 +826,36 @@ bool FConcertSandboxPlatformFile::PersistSandbox(TArrayView<const FString> InFil
 				{
 					FText Failure = FText::Format(NSLOCTEXT("Concert", "DeleteSCCFileFailure", "Failed to delete file '{0}' from source control when persiting sandbox state!"), FText::FromString(InFilename));
 					UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-					if (OutFailureReasons)
-					{
-						OutFailureReasons->Add(MoveTemp(Failure));
-					}
+					OutResult.FailureReasons.Add(MoveTemp(Failure));
 					return false;
 				}
 			}
 		}
+	}
 
-		// Delete file if it still exists
-		if (LowerLevel->FileExists(InFilename) && !LowerLevel->DeleteFile(InFilename))
-		{
-			FText Failure = FText::Format(NSLOCTEXT("Concert", "DeleteFileFailure", "Failed to delete file '{0}' when persiting sandbox state!"), FText::FromString(InFilename));
-			UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
-			if (OutFailureReasons)
-			{
-				OutFailureReasons->Add(MoveTemp(Failure));
-			}
-			return false;
-		}
-		return true;
-	};
+	// Delete file if it still exists
+	if (LowerLevel->FileExists(InFilename) && !LowerLevel->DeleteFile(InFilename))
+	{
+		FText Failure = FText::Format(NSLOCTEXT("Concert", "DeleteFileFailure", "Failed to delete file '{0}' when persiting sandbox state!"), FText::FromString(InFilename));
+		UE_LOG(LogConcert, Warning, TEXT("%s"), *Failure.ToString());
+		OutResult.FailureReasons.Add(MoveTemp(Failure));
+		return false;
+	}
+	return true;
+}
 
+FPersistResult FConcertSandboxPlatformFile::PersistSandbox(TArrayView<const FString> InFiles, FPersistParameters InParams)
+{
+	FPersistResult OutResult;
 	// We need to disable the sandbox while we do this
 	bool bFullOperationSuccess = true;
 	TGuardValue<TAtomic<bool>, bool> DisableSandboxGuard(bSandboxEnabled, false);
 	for (const FString& File : InFiles)
 	{
 		FConcertSandboxPlatformFilePath FilePath = ToSandboxPath(File, true);
-		bool bSuccess = true;
-		if (IsPathDeleted(FilePath))
-		{
-			bSuccess = DeleteFileWithSCC(*FilePath.GetNonSandboxPath());
-		}
-		else
-		{
-			bSuccess = CopyFileWithSCC(*FilePath.GetNonSandboxPath(), *FilePath.GetSandboxPath());
-		}
+		bool bSuccess = IsPathDeleted(FilePath) ?
+			DeleteFileWithSCC(*FilePath.GetNonSandboxPath(), InParams, OutResult) :
+			CopyFileWithSCC(*FilePath.GetNonSandboxPath(), *FilePath.GetSandboxPath(), InParams, OutResult);
 
 		// if the file operation was successful, mark the file as persisted
 		if (bSuccess)
@@ -899,7 +865,8 @@ bool FConcertSandboxPlatformFile::PersistSandbox(TArrayView<const FString> InFil
 
 		bFullOperationSuccess &= bSuccess;
 	}
-	return bFullOperationSuccess;
+	OutResult.PersistStatus = bFullOperationSuccess ? EPersistStatus::Success : EPersistStatus::Failure;
+	return OutResult;
 }
 
 void FConcertSandboxPlatformFile::DiscardSandbox(TArray<FName>& OutPackagesPendingHotReload, TArray<FName>& OutPackagesPendingPurge)
@@ -1000,21 +967,19 @@ void FConcertSandboxPlatformFile::DiscardSandbox(TArray<FName>& OutPackagesPendi
 
 #if WITH_EDITOR
 	// Notify that the sandboxed directories have been restored to their original state
-	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSandboxPlatformFileUtil::GetDirectoryWatcherModuleIfLoaded())
+	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSyncClientUtil::GetDirectoryWatcherModuleIfLoaded())
 	{
 		if (FileChanges.Num() > 0)
 		{
 			DirectoryWatcherModule->RegisterExternalChanges(FileChanges);
-			if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule->Get())
-			{
-				// Force the directory watcher to process the file changes
-				// immediately. This ensures that the Asset Registry is
-				// brought up to date especially after file/package deletes,
-				// since we may not otherwise Tick() before packages are hot
-				// reloaded and stale entries could still be present in the
-				// registry.
-				DirectoryWatcher->Tick(0.0f);
-			}
+
+			// Force a sync of the Asset Registry immediately to process the
+			// file changes. This ensures that the Asset Registry is brought
+			// up to date especially after file/package deletes, since
+			// otherwise it may not get updated before packages are hot
+			// reloaded and stale entries could still be present in the
+			// registry.
+			ConcertSyncClientUtil::SynchronizeAssetRegistry();
 		}
 	}
 #endif
@@ -1109,7 +1074,7 @@ void FConcertSandboxPlatformFile::RegisterContentMountPath(const FString& InCont
 
 		FSandboxMountPoint& SandboxMountPoint = SandboxMountPoints.Add_GetRef(FSandboxMountPoint{ FConcertSandboxPlatformFilePath(MoveTemp(AbsoluteNonSandboxPath), MoveTemp(AbsoluteSandboxPath)) });
 #if WITH_EDITOR
-		if (IDirectoryWatcher* DirectoryWatcher = ConcertSandboxPlatformFileUtil::GetDirectoryWatcher())
+		if (IDirectoryWatcher* DirectoryWatcher = ConcertSyncClientUtil::GetDirectoryWatcher())
 		{
 			DirectoryWatcher->RegisterDirectoryChangedCallback_Handle(SandboxMountPoint.Path.GetSandboxPath(), IDirectoryWatcher::FDirectoryChanged::CreateRaw(this, &FConcertSandboxPlatformFile::OnDirectoryChanged, SandboxMountPoint.Path), SandboxMountPoint.OnDirectoryChangedHandle, IDirectoryWatcher::IncludeDirectoryChanges);
 		}
@@ -1128,7 +1093,7 @@ void FConcertSandboxPlatformFile::UnregisterContentMountPath(const FString& InCo
 #if WITH_EDITOR
 			if (bShouldRemove && InSandboxMountPoint.OnDirectoryChangedHandle.IsValid())
 			{
-				if (IDirectoryWatcher* DirectoryWatcher = ConcertSandboxPlatformFileUtil::GetDirectoryWatcherIfLoaded())
+				if (IDirectoryWatcher* DirectoryWatcher = ConcertSyncClientUtil::GetDirectoryWatcherIfLoaded())
 				{
 					DirectoryWatcher->UnregisterDirectoryChangedCallback_Handle(InSandboxMountPoint.Path.GetSandboxPath(), InSandboxMountPoint.OnDirectoryChangedHandle);
 					InSandboxMountPoint.OnDirectoryChangedHandle.Reset();
@@ -1229,7 +1194,7 @@ void FConcertSandboxPlatformFile::NotifyFileDeleted(const FConcertSandboxPlatfor
 	}
 
 #if WITH_EDITOR
-	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSandboxPlatformFileUtil::GetDirectoryWatcherModuleIfLoaded())
+	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSyncClientUtil::GetDirectoryWatcherModuleIfLoaded())
 	{
 		FFileChangeData FileChange(InPath.GetNonSandboxPath(), FFileChangeData::FCA_Removed);
 		DirectoryWatcherModule->RegisterExternalChanges(TArrayView<const FFileChangeData>(&FileChange, 1));
@@ -1343,7 +1308,7 @@ void FConcertSandboxPlatformFile::OnDirectoryChanged(const TArray<FFileChangeDat
 		return;
 	}
 
-	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSandboxPlatformFileUtil::GetDirectoryWatcherModuleIfLoaded())
+	if (FDirectoryWatcherModule* DirectoryWatcherModule = ConcertSyncClientUtil::GetDirectoryWatcherModuleIfLoaded())
 	{
 		TArray<FFileChangeData> RemappedFileChanges;
 		RemappedFileChanges.Reserve(FileChanges.Num());

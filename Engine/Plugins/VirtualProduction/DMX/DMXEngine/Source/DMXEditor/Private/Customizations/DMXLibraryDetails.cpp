@@ -29,15 +29,14 @@ void FDMXLibraryDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 
 	IDetailCategoryBuilder& DetailCategoryBuilder = DetailBuilder.EditCategory("DMX Ports");
 
-	const TSharedPtr<IPropertyHandle> PortReferencesHandle = DetailBuilder.GetProperty(UDMXLibrary::GetPortReferencesPropertyName());
-	
+	// Add a button to open DMX Project Settings
 	DetailCategoryBuilder.AddCustomRow(LOCTEXT("OpenSettingsFilterString", "Settings"))
 		.WholeRowContent()
 		.HAlign(HAlign_Left)
 		.VAlign(VAlign_Top)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 			.ForegroundColor(FLinearColor::White)
 			.ToolTipText(LOCTEXT("OpenSettingsTooltip", "Opens the DMX Project Settings"))
 			.ContentPadding(FMargin(4.0f, 1.0f))
@@ -66,7 +65,12 @@ void FDMXLibraryDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 			]
 		];
 
-	DetailCategoryBuilder.AddProperty(PortReferencesHandle.ToSharedRef());
+
+	// Add the Port References
+	const TSharedPtr<IPropertyHandle> PortReferencesHandle = DetailBuilder.GetProperty(UDMXLibrary::GetPortReferencesPropertyName());
+	DetailCategoryBuilder
+		.AddProperty(PortReferencesHandle.ToSharedRef())
+		.ShouldAutoExpand(true);
 }
- 
+
 #undef LOCTEXT_NAMESPACE

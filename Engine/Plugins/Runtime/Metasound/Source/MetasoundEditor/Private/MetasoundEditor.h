@@ -1,19 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "IMetasoundEditor.h"
 #include "AudioMeterStyle.h"
-#include "AudioSynesthesia/Classes/Meter.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EditorUndoClient.h"
 #include "Framework/Commands/UICommandList.h"
 #include "GraphEditor.h"
 #include "IDetailsView.h"
-#include "IMetasoundEditor.h"
+#include "Logging/TokenizedMessage.h"
 #include "Math/UnrealMathUtility.h"
+#include "MetasoundEditorGraphConnectionManager.h"
 #include "MetasoundEditorGraphNode.h"
 #include "MetasoundEditorMeter.h"
 #include "MetasoundFrontend.h"
 #include "MetasoundFrontendController.h"
+#include "Meter.h"
 #include "Misc/NotifyHook.h"
 #include "SAudioMeter.h"
 #include "SGraphActionMenu.h"
@@ -42,8 +44,9 @@ class FSlateRect;
 class IDetailsView;
 class IToolkitHost;
 class SVerticalBox;
+class UAudioComponent;
 class UEdGraphNode;
-class UMetaSound;
+class UMetaSoundPatch;
 class UMetasoundEditorGraph;
 class UMetasoundEditorGraphNode;
 
@@ -89,6 +92,11 @@ namespace Metasound
 		public:
 			static const FName EditorName;
 
+			FEditor()
+				: GraphConnectionManager(MakeUnique<FGraphConnectionManager>())
+			{
+			}
+
 			virtual ~FEditor();
 
 			virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& TabManager) override;
@@ -100,6 +108,8 @@ namespace Metasound
 			/** Edits the specified Metasound object */
 			void InitMetasoundEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, UObject* ObjectToEdit);
 
+			UAudioComponent* GetAudioComponent() const;
+
 			/** IMetasoundEditor interface */
 			virtual UObject* GetMetasoundObject() const override;
 			virtual void SetSelection(const TArray<UObject*>& SelectedObjects) override;
@@ -110,6 +120,8 @@ namespace Metasound
 			virtual FText GetBaseToolkitName() const override;
 			virtual FString GetWorldCentricTabPrefix() const override;
 			virtual FLinearColor GetWorldCentricTabColorScale() const override;
+			virtual const FSlateBrush* GetDefaultTabIcon() const override;
+			virtual FLinearColor GetDefaultTabColor() const override;
 
 			/** IAssetEditorInstance interface */
 			virtual FName GetEditorName() const override;
@@ -138,6 +150,8 @@ namespace Metasound
 			virtual void Play() override;
 			virtual void Stop() override;
 
+			virtual bool IsPlaying() const override;
+
 			/** Whether pasting the currently selected nodes is permissible */
 			bool CanPasteNodes();
 
@@ -151,9 +165,12 @@ namespace Metasound
 			void PasteNodes(const FVector2D* InLocation = nullptr);
 			void PasteNodes(const FVector2D* InLocation, const FText& InTransactionText);
 
+			/** Returns Graph Connection Manager associated with this editor */
+			FGraphConnectionManager& GetConnectionManager();
+			const FGraphConnectionManager& GetConnectionManager() const;
 
-			/** Forces all UX pertaining to the root graph's interface to be refreshed. */
-			void RefreshGraphMemberMenu();
+			/** Forces all UX pertaining to the root graph's interface to be refreshed, returning the first selected member. */
+			UMetasoundEditorGraphMember* RefreshGraphMemberMenu();
 
 			/** Forces refresh of interfaces list. */
 			void RefreshInterfaces();
@@ -164,17 +181,17 @@ namespace Metasound
 			/* Whether the displayed graph is marked as editable */
 			bool IsGraphEditable() const;
 
+			void ClearSelectionAndSelectNode(UEdGraphNode* Node);
+
 			int32 GetNumNodesSelected() const
 			{
 				return MetasoundGraphEditor->GetSelectedNodes().Num();
 			}
 
-			void OnInputNameChanged(FGuid InNodeID);
-			void OnOutputNameChanged(FGuid InNodeID);
-			void OnVariableNameChanged(FGuid InVariableID);
-
 			/** Creates analyzers */
 			void CreateAnalyzers();
+
+			void BuildTransport(FToolBarBuilder& InToolBarBuilder);
 
 			/** Destroys analyzers */
 			void DestroyAnalyzers();
@@ -243,6 +260,10 @@ namespace Metasound
 
 			UMetasoundEditorGraph& GetMetaSoundGraphChecked();
 
+			FText GetGraphStatusDescription() const;
+			const FSlateIcon& GetPlayIcon() const;
+			const FSlateIcon& GetStopIcon() const;
+
 			/**
 			 * Called when a node's title is committed for a rename
 			 *
@@ -305,7 +326,11 @@ namespace Metasound
 			/** Called to redo the last undone action */
 			void RedoGraphAction();
 
+			void RefreshEditorContext();
+
 		private:
+			void RemoveInvalidSelection();
+
 			void SetPreviewID(uint32 InPreviewID);
 
 			/** FNotifyHook interface */
@@ -360,19 +385,12 @@ namespace Metasound
 			/** Whether we can add an input to the currently selected node */
 			bool CanAddInput() const;
 
-			/** Delete an input from the currently selected node */
-			void DeleteInput();
-
-			/** Whether we can delete an input from the currently selected node */
-			bool CanDeleteInput() const;
-
 			/* Create comment node on graph */
 			void OnCreateComment();
 
 			/** Create new graph editor widget */
 			void CreateGraphEditorWidget();
-			
-		private:
+
 			TSharedPtr<SWidget> BuildAnalyzerWidget() const;
 
 			void EditObjectSettings();
@@ -382,8 +400,6 @@ namespace Metasound
 			void NotifyDocumentVersioned();
 			void NotifyNodePasteFailure_MultipleVariableSetters();
 			void NotifyNodePasteFailure_ReferenceLoop();
-
-			bool IsPlaying() const;
 
 			/** List of open tool panels; used to ensure only one exists at any one time */
 			TMap<FName, TWeakPtr<SDockableTab>> SpawnedToolPanels;
@@ -411,13 +427,13 @@ namespace Metasound
 			TSharedPtr<STextBlock> PlayTimeWidget;
 			double PlayTime = 0.0;
 
+			TUniquePtr<FGraphConnectionManager> GraphConnectionManager;
+
 			/** Command list for this editor */
 			TSharedPtr<FUICommandList> GraphEditorCommands;
 
 			/** The Metasound asset being edited */
 			UObject* Metasound = nullptr;
-
-			TMap<FGuid, FDelegateHandle> NameChangeDelegateHandles;
 
 			/** Whether or not metasound being edited is valid */
 			bool bPassedValidation = true;
@@ -431,6 +447,8 @@ namespace Metasound
 
 			/** Whether or not registry is currently being primed due to assets still loading */
 			bool bPrimingRegistry = false;
+
+			int32 HighestMessageSeverity = EMessageSeverity::Info;
 		};
 	} // namespace Editor
 } // namespace Metasound

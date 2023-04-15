@@ -9,17 +9,20 @@
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
 #include "ToolMenus.h"
 #include "ContentBrowserMenuContexts.h"
-#include "AssetTools/Private/AssetTools.h"
+#include "AssetTools.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/SkeletalMeshActor.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "ScopedTransaction.h"
 #include "LevelSequenceActor.h"
+#include "LevelSequence.h"
+#include "LevelSequencePlayer.h"
+#include "EditorDirectories.h"
 #include "EngineUtils.h"
 #include "ISequencer.h"
 #include "ILevelSequenceEditorToolkit.h"
@@ -31,7 +34,9 @@
 #include "MovieSceneToolsProjectSettings.h"
 #include "SBlueprintDiff.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/PackageName.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
+#include "Sequencer/ControlRigParameterTrackEditor.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigBlueprintActions"
 
@@ -76,7 +81,7 @@ TSharedPtr<SWidget> FControlRigBlueprintActions::GetThumbnailOverlay(const FAsse
 	const FSlateBrush* Icon = FSlateIconFinder::FindIconBrushForClass(UControlRigBlueprint::StaticClass());
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetNoBrush())
+		.BorderImage(FAppStyle::GetNoBrush())
 		.Visibility(EVisibility::HitTestInvisible)
 		.Padding(FMargin(0.0f, 0.0f, 0.0f, 3.0f))
 		.HAlign(HAlign_Right)
@@ -92,11 +97,13 @@ void FControlRigBlueprintActions::PerformAssetDiff(UObject* OldAsset, UObject* N
 	UBlueprint* OldBlueprint = CastChecked<UBlueprint>(OldAsset);
 	UBlueprint* NewBlueprint = CastChecked<UBlueprint>(NewAsset);
 
+	static const FText DiffWindowMessage = LOCTEXT("ControlRigDiffWindow", "Opening a diff window will close the control rig editor. {0}.\nAre you sure?");
+	
 	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
 	for (IAssetEditorInstance* Editor : AssetEditorSubsystem->FindEditorsForAsset(OldAsset))
 	{
 		const EAppReturnType::Type Answer = FMessageDialog::Open( EAppMsgType::YesNo,
-				FText::FromString(FString::Printf(TEXT("Opening a diff window will close the control rig editor. %s.\nAre you sure?"),  *OldBlueprint->GetName() )));
+				FText::Format(DiffWindowMessage, FText::FromString(OldBlueprint->GetName())));
 		if(Answer == EAppReturnType::No)
 		{
 		   return;
@@ -105,7 +112,7 @@ void FControlRigBlueprintActions::PerformAssetDiff(UObject* OldAsset, UObject* N
 	for (IAssetEditorInstance* Editor : AssetEditorSubsystem->FindEditorsForAsset(NewAsset))
 	{
 		const EAppReturnType::Type Answer = FMessageDialog::Open( EAppMsgType::YesNo,
-				FText::FromString(FString::Printf(TEXT("Opening a diff window will close the control rig editor. %s.\nAre you sure?"),  *NewBlueprint->GetName() )));
+				FText::Format(DiffWindowMessage, FText::FromString(NewBlueprint->GetName())));
 		if(Answer == EAppReturnType::No)
 		{
 			return;
@@ -245,9 +252,14 @@ UControlRigBlueprint* FControlRigBlueprintActions::CreateControlRigFromSkeletalM
 	return NewControlRigBlueprint;
 }
 
-USkeletalMesh* FControlRigBlueprintActions::GetSkeletalMeshFromControlRigBlueprint(UObject* InAsset)
+USkeletalMesh* FControlRigBlueprintActions::GetSkeletalMeshFromControlRigBlueprint(const FAssetData& InAsset)
 {
-	if (UControlRigBlueprint* Blueprint = Cast<UControlRigBlueprint>(InAsset))
+	if (InAsset.GetClass() != UControlRigBlueprint::StaticClass())
+	{
+		return nullptr;
+	}
+	
+	if (const UControlRigBlueprint* Blueprint = Cast<UControlRigBlueprint>(InAsset.GetAsset()))
 	{
 		return Blueprint->GetPreviewMesh();
 	}
@@ -290,14 +302,21 @@ void FControlRigBlueprintActions::OnSpawnedSkeletalMeshActorChanged(UObject* InO
 	}
 	UClass* ControlRigClass = RigBlueprint->GeneratedClass;
 
+	TGuardValue<bool> DisableTrackCreation(FControlRigParameterTrackEditor::bAutoGenerateControlRigTrack, false);
+
 	// find a level sequence in the world, if can't find that, create one
 	ULevelSequence* Sequence = ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence();
 	if (Sequence == nullptr)
 	{
-		ALevelSequenceActor* LevelSequenceActor = nullptr;
-
 		FString SequenceName = FString::Printf(TEXT("%s_Take1"), *InAsset->GetName());
-		FString PackagePath = TEXT("/Game");
+		
+		FString PackagePath;
+		const FString DefaultDirectory = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::NEW_ASSET);
+		FPackageName::TryConvertFilenameToLongPackageName(DefaultDirectory, PackagePath);
+		if (PackagePath.IsEmpty())
+		{
+			PackagePath = TEXT("/Game");
+		}
 
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		FString UniquePackageName;
@@ -314,20 +333,13 @@ void FControlRigBlueprintActions::OnSpawnedSkeletalMeshActorChanged(UObject* InO
 		FFrameRate TickResolution = Sequence->GetMovieScene()->GetTickResolution();
 		Sequence->GetMovieScene()->SetPlaybackRange((ProjectSettings->DefaultStartTime*TickResolution).FloorToFrame(), (ProjectSettings->DefaultDuration*TickResolution).FloorToFrame().Value);
 
-		UActorFactory* ActorFactory = GEditor->FindActorFactoryForActorClass(ALevelSequenceActor::StaticClass());
-		if (!ensure(ActorFactory))
+		if (UActorFactory* ActorFactory = GEditor->FindActorFactoryForActorClass(ALevelSequenceActor::StaticClass()))
 		{
-			return;
+			if (ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(GEditor->UseActorFactory(ActorFactory, FAssetData(Sequence), &FTransform::Identity)))
+			{
+				LevelSequenceActor->SetSequence(Sequence);
+			}
 		}
-
-		AActor* NewActor = GEditor->UseActorFactory(ActorFactory, FAssetData(Sequence), &FTransform::Identity);
-		if (NewActor == nullptr)
-		{
-			return;
-		}
-
-		LevelSequenceActor = CastChecked<ALevelSequenceActor>(NewActor);
-		LevelSequenceActor->SetSequence(Sequence);
 	}
  
 	if (Sequence == nullptr)
@@ -347,27 +359,46 @@ void FControlRigBlueprintActions::OnSpawnedSkeletalMeshActorChanged(UObject* InO
 		TArray<TWeakObjectPtr<AActor> > ActorsToAdd;
 		ActorsToAdd.Add(MeshActor);
 		TArray<FGuid> ActorTracks = WeakSequencer.Pin()->AddActors(ActorsToAdd, false);
+		FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
+
 		for (FGuid ActorTrackGuid : ActorTracks)
 		{
 			//Delete binding from default animating rig
 			FGuid CompGuid = WeakSequencer.Pin()->FindObjectId(*(MeshActor->GetSkeletalMeshComponent()), WeakSequencer.Pin()->GetFocusedTemplateID());
 			if (CompGuid.IsValid())
 			{
+				if (ControlRigEditMode)
+				{
+					UMovieSceneControlRigParameterTrack* Track = Cast<UMovieSceneControlRigParameterTrack>(MovieScene->FindTrack(UMovieSceneControlRigParameterTrack::StaticClass(), CompGuid, NAME_None));
+					if (Track && Track->GetControlRig())
+					{
+						ControlRigEditMode->RemoveControlRig(Track->GetControlRig());
+					}
+				}
 				if (!MovieScene->RemovePossessable(CompGuid))
 				{
 					MovieScene->RemoveSpawnable(CompGuid);
 				}
 			}
-			UMovieSceneControlRigParameterTrack* Track = MovieScene->AddTrack<UMovieSceneControlRigParameterTrack>(ActorTrackGuid);
-			if (Track)
+
+			UMovieSceneControlRigParameterTrack* Track = Cast<UMovieSceneControlRigParameterTrack>(MovieScene->FindTrack(UMovieSceneControlRigParameterTrack::StaticClass(), ActorTrackGuid));
+			if (!Track)
 			{
-				USkeletalMesh* SkeletalMesh = MeshActor->GetSkeletalMeshComponent()->SkeletalMesh;
+				Track = MovieScene->AddTrack<UMovieSceneControlRigParameterTrack>(ActorTrackGuid);
+			}
+
+			UControlRig* ControlRig = Track->GetControlRig();
+
+			FString ObjectName = (ControlRigClass->GetName());
+
+			if (!ControlRig || ControlRig->GetClass() != ControlRigClass)
+			{		
+				USkeletalMesh* SkeletalMesh = MeshActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset();
 				USkeleton* Skeleton = SkeletalMesh->GetSkeleton();
 				
-				FString ObjectName = (ControlRigClass->GetName());
 				ObjectName.RemoveFromEnd(TEXT("_C"));
 
-				UControlRig* ControlRig = NewObject<UControlRig>(Track, ControlRigClass, FName(*ObjectName), RF_Transactional);
+				ControlRig = NewObject<UControlRig>(Track, ControlRigClass, FName(*ObjectName), RF_Transactional);
 				ControlRig->SetObjectBinding(MakeShared<FControlRigObjectBinding>());
 				ControlRig->GetObjectBinding()->BindToObject(MeshActor->GetSkeletalMeshComponent());
 				ControlRig->GetDataSourceRegistry()->RegisterDataSource(UControlRig::OwnerComponent, ControlRig->GetObjectBinding()->GetBoundObject());
@@ -376,34 +407,46 @@ void FControlRigBlueprintActions::OnSpawnedSkeletalMeshActorChanged(UObject* InO
 				ControlRig->CreateRigControlsForCurveContainer();
 
 				WeakSequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+			}
 
+			UMovieSceneSection* Section = Track->GetAllSections().Num() ? Track->GetAllSections()[0] : nullptr;
+			if (!Section)
+			{
 				Track->Modify();
-				UMovieSceneSection* NewSection = Track->CreateControlRigSection(0, ControlRig, true);
+				Section = Track->CreateControlRigSection(0, ControlRig, true);
 				//mz todo need to have multiple rigs with same class
 				Track->SetTrackName(FName(*ObjectName));
 				Track->SetDisplayName(FText::FromString(ObjectName));
 
 				WeakSequencer.Pin()->EmptySelection();
-				WeakSequencer.Pin()->SelectSection(NewSection);
+				WeakSequencer.Pin()->SelectSection(Section);
 				WeakSequencer.Pin()->ThrobSectionSelection();
 				WeakSequencer.Pin()->ObjectImplicitlyAdded(ControlRig);
-				FText Name = LOCTEXT("SequenceTrackFilter_ControlRigControls", "Control Rig Controls");
-				WeakSequencer.Pin()->SetTrackFilterEnabled(Name, true);
-				WeakSequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
-				FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-				if (!ControlRigEditMode)
-				{
-					GLevelEditorModeTools().ActivateMode(FControlRigEditMode::ModeName);
-					ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-
-				}
-				if (ControlRigEditMode)
-				{
-					ControlRigEditMode->SetObjects(ControlRig, nullptr, WeakSequencer.Pin());
-				}
+			}
+			
+			FText Name = LOCTEXT("SequenceTrackFilter_ControlRigControls", "Control Rig Controls");
+			WeakSequencer.Pin()->SetTrackFilterEnabled(Name, true);
+			WeakSequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+			if (!ControlRigEditMode)
+			{
+				GLevelEditorModeTools().ActivateMode(FControlRigEditMode::ModeName);
+				ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
+			}
+			if (ControlRigEditMode)
+			{
+				ControlRigEditMode->AddControlRigObject(ControlRig, WeakSequencer.Pin());
 			}
 		}
 	}
+}
+
+const TArray<FText>& FControlRigBlueprintActions::GetSubMenus() const
+{
+	static const TArray<FText> SubMenus
+	{
+		LOCTEXT("AnimControlRigSubMenu", "Control Rig")
+	};
+	return SubMenus;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -4,19 +4,22 @@
 
 #include "WaterBodyTypes.h"
 #include "Chaos/GeometryParticlesfwd.h"
-#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 #include "BuoyancyTypes.generated.h"
 
 class UBuoyancyComponent;
 class AWaterBody;
 
+extern WATER_API TAutoConsoleVariable<int32> CVarWaterDebugBuoyancy;
+extern WATER_API TAutoConsoleVariable<int32> CVarWaterBuoyancyDebugPoints;
+extern WATER_API TAutoConsoleVariable<int32> CVarWaterBuoyancyDebugSize;
+
 USTRUCT(Blueprintable)
 struct FSphericalPontoon
 {
 	GENERATED_BODY()
 
-	/** The socket to center this pontoon on */
+	/** The socket to center this pontoon on. Also used as the name of the pontoon for effects */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Buoyancy)
 	FName CenterSocket;
 
@@ -27,6 +30,10 @@ struct FSphericalPontoon
 	/** The radius of the pontoon */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Buoyancy)
 	float Radius;
+
+	/** Should this pontoon be considered as a candidate location for visual/audio effects upon entering water for burst cues? To be implemented by user*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Buoyancy)
+	bool bFXEnabled = true;
 
 	UPROPERTY(BlueprintReadOnly, Category = Buoyancy)
 	FVector LocalForce;
@@ -66,6 +73,9 @@ struct FSphericalPontoon
 	UPROPERTY(BlueprintReadOnly, Category = Buoyancy)
 	int32 WaterBodyIndex;
 
+	UPROPERTY(BlueprintReadOnly, Category = Buoyancy)
+	bool bIsInWater;
+	
 	FTransform SocketTransform;
 
 	TMap<const UWaterBodyComponent*, float> SplineInputKeys;
@@ -74,12 +84,11 @@ struct FSphericalPontoon
 	TMap<const FSolverSafeWaterBodyData*, float> SolverSplineInputKeys;
 	TMap<const FSolverSafeWaterBodyData*, float> SolverSplineSegments;
 
-	uint8 bIsInWater : 1;
 	uint8 bEnabled : 1;
 	uint8 bUseCenterSocket : 1;
 
 	UPROPERTY(Transient, BlueprintReadOnly, Category = Buoyancy)
-	UWaterBodyComponent* CurrentWaterBodyComponent;
+	TObjectPtr<UWaterBodyComponent> CurrentWaterBodyComponent;
 
 	FSolverSafeWaterBodyData* SolverWaterBody;
 
@@ -99,8 +108,8 @@ struct FSphericalPontoon
 		, WaterSurfacePosition(FVector::ZeroVector)
 		, WaterVelocity(FVector::ZeroVector)
 		, WaterBodyIndex(0)
-		, SocketTransform(FTransform::Identity)
 		, bIsInWater(false)
+		, SocketTransform(FTransform::Identity)
 		, bEnabled(true)
 		, bUseCenterSocket(false)
 		, CurrentWaterBodyComponent(nullptr)
@@ -155,14 +164,12 @@ struct FSphericalPontoon
 		Ar << WaterSurfacePosition;
 		Ar << WaterVelocity;
 		Ar << WaterBodyIndex;
+		Ar << bIsInWater;
 		Ar << SocketTransform;
-		uint8 IsInWater = bIsInWater;
 		uint8 Enabled = bEnabled;
 		uint8 UseCenterSocket = bUseCenterSocket;
-		Ar << IsInWater;
 		Ar << Enabled;
 		Ar << UseCenterSocket;
-		bIsInWater = IsInWater;
 		bEnabled = Enabled;
 		bUseCenterSocket = UseCenterSocket;
 	}
@@ -176,6 +183,10 @@ struct FBuoyancyData
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Buoyancy)
 	TArray<FSphericalPontoon> Pontoons;
 
+	/** If true, center pontoons around center of mass when using relative locations
+		(not used when pontoon locations are specified via sockets) */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = Buoyancy)
+	bool bCenterPontoonsOnCOM = true;
 
 	/** Increases buoyant force applied on each pontoon. */
 	UPROPERTY(EditDefaultsOnly, Category = Buoyancy)
@@ -375,7 +386,7 @@ struct FBuoyancyComponentAsyncInput
 	const EAsyncBuoyancyComponentDataType Type;
 	const UBuoyancyComponent* BuoyancyComponent;
 
-	FSingleParticlePhysicsProxy* Proxy;
+	Chaos::FSingleParticlePhysicsProxy* Proxy;
 
 	virtual TUniquePtr<struct FBuoyancyComponentAsyncOutput> PreSimulate(UWorld* World, const float DeltaSeconds, const float TotalSeconds, FBuoyancyComponentAsyncAux* Aux, const TMap<UWaterBodyComponent*, TUniquePtr<FSolverSafeWaterBodyData>>& WaterBodyComponentData) const = 0;
 

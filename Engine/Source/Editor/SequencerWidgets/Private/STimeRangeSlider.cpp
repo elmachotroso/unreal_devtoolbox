@@ -1,9 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "STimeRangeSlider.h"
-#include "Rendering/DrawElements.h"
+
 #include "ITimeSlider.h"
-#include "EditorStyleSet.h"
+#include "Input/Events.h"
+#include "Layout/Geometry.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/WidgetStyle.h"
+#include "UObject/NameTypes.h"
+
+class FSlateRect;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "STimeRangeSlider"
 
@@ -81,9 +93,9 @@ int32 STimeRangeSlider::OnPaint( const FPaintArgs& Args, const FGeometry& Allott
 	const int32 SliderBoxLayer = BackgroundLayer+1;
 	const int32 HandleLayer = SliderBoxLayer+1;
 
-	static const FSlateBrush* RangeHandleLeft = FEditorStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandleLeft" ) ); 
-	static const FSlateBrush* RangeHandleRight = FEditorStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandleRight" ) ); 
-	static const FSlateBrush* RangeHandle = FEditorStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandle" ) ); 
+	static const FSlateBrush* RangeHandleLeft = FAppStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandleLeft" ) ); 
+	static const FSlateBrush* RangeHandleRight = FAppStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandleRight" ) ); 
+	static const FSlateBrush* RangeHandle = FAppStyle::GetBrush( TEXT( "Sequencer.Timeline.RangeHandle" ) ); 
 
 	float LeftHandleOffset = 0.f;
 	float HandleOffset = 0.f;
@@ -91,7 +103,7 @@ int32 STimeRangeSlider::OnPaint( const FPaintArgs& Args, const FGeometry& Allott
 	ComputeHandleOffsets(LeftHandleOffset, HandleOffset, RightHandleOffset, AllottedGeometry.GetLocalSize().X);
 
 	static const FName SelectionColorName("SelectionColor");
-	FLinearColor SelectionColor = FEditorStyle::GetSlateColor(SelectionColorName).GetColor(FWidgetStyle());
+	FLinearColor SelectionColor = FAppStyle::GetSlateColor(SelectionColorName).GetColor(FWidgetStyle());
 
 	// Draw the handle box
 	FSlateDrawElement::MakeBox( 

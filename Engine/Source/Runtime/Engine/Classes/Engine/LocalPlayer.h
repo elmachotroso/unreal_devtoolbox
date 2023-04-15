@@ -176,14 +176,14 @@ public:
 	/** The FUniqueNetId which this player is associated with. */
 	FUniqueNetIdRepl CachedUniqueNetId;
 
-	/** The master viewport containing this player's view. */
+	/** The primary viewport containing this player's view. */
 	UPROPERTY()
 	TObjectPtr<class UGameViewportClient> ViewportClient;
 
-	/** The coordinates for the upper left corner of the master viewport subregion allocated to this player. 0-1 */
+	/** The coordinates for the upper left corner of the primary viewport subregion allocated to this player. 0-1 */
 	FVector2D Origin;
 
-	/** The size of the master viewport subregion allocated to this player. 0-1 */
+	/** The size of the primary viewport subregion allocated to this player. 0-1 */
 	FVector2D Size;
 
 	/** The location of the player's view the previous frame. */
@@ -223,11 +223,10 @@ private:
 	/** Event called when platform user id changes */
 	FOnPlatformUserIdChanged OnPlatformUserIdChangedEvent;
 
-	FSubsystemCollection<ULocalPlayerSubsystem> SubsystemCollection;
+	FObjectSubsystemCollection<ULocalPlayerSubsystem> SubsystemCollection;
 
 public:
 	// UObject interface
-	virtual void PostInitProperties() override;
 	virtual void FinishDestroy() override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	// End of UObject interface
@@ -376,6 +375,11 @@ public:
 	 * Called at creation time for internal setup
 	 */
 	virtual void PlayerAdded(class UGameViewportClient* InViewportClient, int32 InControllerID);
+
+	/**
+	 * Called at creation time for internal setup
+	 */
+	virtual void PlayerAdded(class UGameViewportClient* InViewportClient, FPlatformUserId InUserId);
 
 	/**
 	 * Called to initialize the online delegates

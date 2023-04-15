@@ -169,7 +169,11 @@ public:
 	//~ Begin FViewportClient Interface.
 	virtual void RedrawRequested(FViewport* InViewport) override {}
 	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
+	
+	UE_DEPRECATED(5.1, "This version of InputAxis has been deprecated. Please use the version that takes an FInputDeviceId instead")
 	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
+	virtual bool InputAxis(FViewport* Viewport, FInputDeviceId InputDevice, FKey Key, float Delta, float DeltaTime, int32 NumSamples = 1, bool bGamepad = false) override;
+	
 	virtual bool InputChar(FViewport* Viewport,int32 ControllerId, TCHAR Character) override;
 	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex) override;
 	virtual bool InputMotion(FViewport* Viewport, int32 ControllerId, const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration) override;
@@ -269,7 +273,7 @@ public:
 	/**
 	 * Removes a previously-added widget from the Slate viewport, in the player's section.
 	 *
-	 * @param	Player The player to remove the widget's viewport from.
+	 * @param	Player The player to remove the widget's viewport from. Null will remove the widget regardless of which player it was added for.
 	 * @param	ViewportContent  The widget to remove.  Must be valid.
 	 */
 	virtual void RemoveViewportWidgetForPlayer(ULocalPlayer* Player, TSharedRef<SWidget> ViewportContent);
@@ -743,9 +747,6 @@ public:
 	 * Set the mouse capture behavior for the viewport.
 	 */
 	void SetMouseCaptureMode(EMouseCaptureMode Mode);
-
-	UE_DEPRECATED(4.26, "Please call UGameViewportClient::SetMouseCaptureMode(EMouseCaptureMode) instead.")
-	void SetCaptureMouseOnClick(EMouseCaptureMode Mode) { SetMouseCaptureMode(Mode); }
 
 	/**
 	 * Gets the mouse capture behavior when the viewport is clicked

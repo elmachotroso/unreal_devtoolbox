@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Containers/Tables.h"
 #include "Templates/Function.h"
 #include "Common/PagedArray.h"
 #include "Common/SlabAllocator.h"
@@ -198,6 +197,17 @@ public:
 		return *this;
 	}
 
+	template<typename ColumnNativeType>
+	TTableLayout<RowType>& AddColumn(const TCHAR* ColumnName, TFunction<FColumnValueContainer(const RowType&)> Projector, uint32 DisplayHintFlags = 0)
+	{
+		Columns.Add({
+			ColumnName,
+			GetColumnTypeFromNativeType<ColumnNativeType>(),
+			DisplayHintFlags,
+			Projector });
+		return *this;
+	}
+
 	uint64 GetColumnCount() const override
 	{
 		return Columns.Num();
@@ -205,22 +215,27 @@ public:
 
 	const TCHAR* GetColumnName(uint64 ColumnIndex) const override
 	{
-		return *Columns[ColumnIndex].Name;
+		return *Columns[(int32)ColumnIndex].Name;
 	}
 
 	ETableColumnType GetColumnType(uint64 ColumnIndex) const override
 	{
-		return Columns[ColumnIndex].Type;
+		return Columns[(int32)ColumnIndex].Type;
+	}
+
+	void SetColumnType(uint64 ColumnIndex, ETableColumnType ColumnType)
+	{
+		Columns[(int32)ColumnIndex].Type = ColumnType;
 	}
 
 	uint32 GetColumnDisplayHintFlags(uint64 ColumnIndex) const override
 	{
-		return Columns[ColumnIndex].DisplayHintFlags;
+		return Columns[(int32)ColumnIndex].DisplayHintFlags;
 	}
 
 	FColumnValueContainer GetColumnValue(const RowType& Row, uint64 ColumnIndex) const
 	{
-		return Columns[ColumnIndex].Projector(Row);
+		return Columns[(int32)ColumnIndex].Projector(Row);
 	}
 
 private:
@@ -325,7 +340,7 @@ public:
 		case TableColumnType_Float:
 			return Layout.GetColumnValue(*CurrentRow, ColumnIndex).FloatValue;
 		case TableColumnType_Double:
-			return static_cast<double>(Layout.GetColumnValue(*CurrentRow, ColumnIndex).DoubleValue);
+			return static_cast<float>(Layout.GetColumnValue(*CurrentRow, ColumnIndex).DoubleValue);
 		}
 		return 0.0;
 	}
@@ -432,13 +447,13 @@ private:
 	const TPagedArray<RowType>& Rows;
 };
 
-template<typename RowType>
+template<typename RowType, int AllocatorSlabSize = 2 << 20>
 class TTable
 	: public TTableBase<RowType>
 {
 public:
 	TTable()
-		: Allocator(2 << 20)
+		: Allocator(AllocatorSlabSize)
 		, Rows(Allocator, 1024)
 	{
 
@@ -446,7 +461,7 @@ public:
 
 	TTable(TTableLayout<RowType> Layout)
 		: TTableBase<RowType>(Layout)
-		, Allocator(2 << 20)
+		, Allocator(AllocatorSlabSize)
 		, Rows(Allocator, 1024)
 	{
 
@@ -457,13 +472,15 @@ public:
 		return Rows.PushBack();
 	}
 
+protected:
+	FSlabAllocator Allocator;
+
 private:
 	virtual const TPagedArray<RowType>& GetRows() const override
 	{
 		return Rows;
 	}
 
-	FSlabAllocator Allocator;
 	TPagedArray<RowType> Rows;
 };
 

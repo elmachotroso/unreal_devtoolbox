@@ -3,12 +3,22 @@
 #include "Components/SinglePropertyView.h"
 
 #include "Components/PropertyViewHelper.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
 #include "ISinglePropertyView.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
-#include "UObject/UObjectGlobals.h"
 
 
 #define LOCTEXT_NAMESPACE "UMG"
@@ -67,9 +77,7 @@ void USinglePropertyView::BuildContentWidget()
 			{
 				MissingWidgetText = FPropertyViewHelper::InvalidPropertyText;
 			}
-			else if (CastField<FStructProperty>(Property) || CastField<FArrayProperty>(Property)
-				|| CastField<FMapProperty>(Property) || CastField<FSetProperty>(Property)
-				)
+			else if (CastField<FArrayProperty>(Property) || CastField<FMapProperty>(Property) || CastField<FSetProperty>(Property))
 			{
 				MissingWidgetText = FPropertyViewHelper::UnsupportedPropertyText;
 			}
@@ -90,7 +98,15 @@ void USinglePropertyView::BuildContentWidget()
 				}
 				else
 				{
-					MissingWidgetText = FPropertyViewHelper::UnknownErrorText;
+					// Some built-in structs like FColor are supported, others aren't
+					if (CastField<FStructProperty>(Property))
+					{
+						MissingWidgetText = FPropertyViewHelper::UnsupportedPropertyText;
+					}
+					else
+					{
+						MissingWidgetText = FPropertyViewHelper::UnknownErrorText;
+					}
 				}
 			}
 		}

@@ -23,12 +23,13 @@
 #include "Editor.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "LightmapDenoising.h"
+#include "ShaderCompiler.h"
 #include "Misc/FileHelper.h"
 #include "Components/ReflectionCaptureComponent.h"
+#include "ScenePrivate.h"
 
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
 
-extern RENDERER_API void SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance(FVector4f* OutSkyIrradianceEnvironmentMap, const FSHVectorRGB3 SkyIrradiance);
 extern ENGINE_API bool GCompressLightmaps;
 
 extern float GetTerrainExpandPatchCount(float LightMapRes, int32& X, int32& Y, int32 ComponentSize, int32 LightmapSize, int32& DesiredSize, uint32 LightingLOD);
@@ -40,12 +41,14 @@ FScene::FScene(FGPULightmass* InGPULightmass)
 	: GPULightmass(InGPULightmass)
 	, Settings(InGPULightmass->Settings)
 	, Geometries(*this)
+	, FeatureLevel(InGPULightmass->World->FeatureLevel)
 {
 	StaticMeshInstances.LinkRenderStateArray(RenderState.StaticMeshInstanceRenderStates);
 	InstanceGroups.LinkRenderStateArray(RenderState.InstanceGroupRenderStates);
 	Landscapes.LinkRenderStateArray(RenderState.LandscapeRenderStates);
 
 	RenderState.Settings = Settings;
+	RenderState.FeatureLevel = FeatureLevel;
 
 	ENQUEUE_RENDER_COMMAND(RenderThreadInit)(
 		[&RenderState = RenderState](FRHICommandListImmediate&) mutable
@@ -188,13 +191,10 @@ void FScene::GatherImportanceVolumes()
 		CombinedImportanceVolume = ReasonableSceneBounds;
 		ImportanceVolumes.Add(ReasonableSceneBounds);
 	}
-
-	float TargetDetailCellSize = Settings->VolumetricLightmapDetailCellSize;
-
-	ENQUEUE_RENDER_COMMAND(UpdateVLMRendererVolume)([&RenderState = RenderState, CombinedImportanceVolume, ImportanceVolumes, TargetDetailCellSize](FRHICommandList&) mutable {
-		RenderState.VolumetricLightmapRenderer->CombinedImportanceVolume = CombinedImportanceVolume;
-		RenderState.VolumetricLightmapRenderer->ImportanceVolumes = ImportanceVolumes;
-		RenderState.VolumetricLightmapRenderer->TargetDetailCellSize = TargetDetailCellSize;
+	
+	ENQUEUE_RENDER_COMMAND(UpdateLIVs)([&RenderState = RenderState, CombinedImportanceVolume, ImportanceVolumes](FRHICommandList&) mutable {
+		RenderState.CombinedImportanceVolume = CombinedImportanceVolume;
+		RenderState.ImportanceVolumes = ImportanceVolumes;
 	});
 }
 
@@ -221,7 +221,7 @@ void AddLightToLightmap(
 	// For both static and stationary lights
 	Lightmap.LightmapObject->LightGuids.Add(Light.GetComponentUObject()->LightGuid);
 
-	if (Light.bStationary)
+	if (Light.CastsStationaryShadow())
 	{
 		Lightmap.NumStationaryLightsPerShadowChannel[Light.ShadowMapChannel]++;
 		Lightmap.LightmapObject->bShadowChannelValid[Light.ShadowMapChannel] = true;
@@ -238,7 +238,7 @@ void RemoveLightFromLightmap(
 {
 	Lightmap.LightmapObject->LightGuids.Remove(Light.GetComponentUObject()->LightGuid);
 
-	if (Light.bStationary)
+	if (Light.CastsStationaryShadow())
 	{
 		Lightmap.NumStationaryLightsPerShadowChannel[Light.ShadowMapChannel]--;
 
@@ -363,31 +363,31 @@ struct LightTypeInfo<URectLightComponent>
 };
 
 template<typename LightComponentType>
-void FScene::AddLight(LightComponentType* PointLightComponent)
+void FScene::AddLight(LightComponentType* LightComponent)
 {
-	if (LightTypeInfo<LightComponentType>::GetLightComponentRegistration(LightScene).Contains(PointLightComponent))
+	if (LightTypeInfo<LightComponentType>::GetLightComponentRegistration(LightScene).Contains(LightComponent))
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Warning: duplicated component registration"));
 		return;
 	}
 
-	const bool bCastStationaryShadows = PointLightComponent->CastShadows && PointLightComponent->CastStaticShadows && !PointLightComponent->HasStaticLighting();
+	const bool bCastStationaryShadows = LightComponent->CastShadows && LightComponent->CastStaticShadows && LightComponent->Mobility == EComponentMobility::Stationary;
 
 	if (bCastStationaryShadows)
 	{
-		if (PointLightComponent->PreviewShadowMapChannel == INDEX_NONE)
+		if (LightComponent->PreviewShadowMapChannel == INDEX_NONE)
 		{
 			UE_LOG(LogGPULightmass, Log, TEXT("Ignoring light with ShadowMapChannel == -1 (probably in the middle of SpawnActor)"));
 			return;
 		}
 	}
 
-	typename LightTypeInfo<LightComponentType>::BuildInfoType Light(PointLightComponent);
+	typename LightTypeInfo<LightComponentType>::BuildInfoType Light(LightComponent);
 
 	typename LightTypeInfo<LightComponentType>::LightRefType LightRef = LightTypeInfo<LightComponentType>::GetLightArray(LightScene).Emplace(MoveTemp(Light));
-	LightTypeInfo<LightComponentType>::GetLightComponentRegistration(LightScene).Add(PointLightComponent, LightRef);
+	LightTypeInfo<LightComponentType>::GetLightComponentRegistration(LightScene).Add(LightComponent, LightRef);
 
-	typename LightTypeInfo<LightComponentType>::RenderStateType LightRenderState(PointLightComponent);
+	typename LightTypeInfo<LightComponentType>::RenderStateType LightRenderState(LightComponent);
+	LightRenderState.LightComponentMapBuildData = LightRef->LightComponentMapBuildData;
 
 	TArray<FPrimitiveSceneProxy*> SceneProxiesToUpdateOnRenderThread;
 	TArray<FGeometryRenderStateToken> RelevantGeometriesToUpdateOnRenderThread;
@@ -396,9 +396,9 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 	{
 		FGeometry& Geometry = GeomIt.GetGeometry();
 
-		if (Light.AffectsBounds(Geometry.WorldBounds))
+		if (LightRef->AffectsBounds(Geometry.WorldBounds))
 		{
-			if (Light.bStationary)
+			if (LightRef->CastsStationaryShadow())
 			{
 				RelevantGeometriesToUpdateOnRenderThread.Add({ GeomIt.Index, GeomIt.Array.GetRenderStateArray() });
 			}
@@ -407,7 +407,7 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 			{
 				if (Lightmap.IsValid())
 				{
-					AddLightToLightmap(Lightmap.GetReference_Unsafe(), Light);
+					AddLightToLightmap(Lightmap.GetReference_Unsafe(), LightRef.GetReference_Unsafe());
 				}
 			}
 
@@ -418,6 +418,11 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 		}
 	}
 
+	if (LightRef->CastsStationaryShadow())
+	{
+		GatherImportanceVolumes();
+	}
+
 	ENQUEUE_RENDER_COMMAND(UpdateStaticLightingBufferCmd)(
 		[SceneProxiesToUpdateOnRenderThread = MoveTemp(SceneProxiesToUpdateOnRenderThread)](FRHICommandListImmediate& RHICmdList)
 	{
@@ -426,8 +431,7 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
 			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				PrimitiveSceneInfo->UpdateStaticLightingBuffer();
-				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex());
+				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedStaticLighting);
 			}
 		}
 	});
@@ -436,10 +440,22 @@ void FScene::AddLight(LightComponentType* PointLightComponent)
 		[
 			&RenderState = RenderState,
 			LightRenderState = MoveTemp(LightRenderState),
-			RelevantGeometriesToUpdateOnRenderThread
+			RelevantGeometriesToUpdateOnRenderThread,
+			bShouldRenderStaticShadowDepthMap = LightRef->CastsStationaryShadow(),
+			&StaticShadowDepthMap = LightComponent->StaticShadowDepthMap,
+			DepthMapPtr = &LightRef->LightComponentMapBuildData->DepthMap
 		](FRHICommandListImmediate& RHICmdList) mutable
 	{
 		typename LightTypeInfo<LightComponentType>::RenderStateRefType LightRenderStateRef = LightTypeInfo<LightComponentType>::GetLightRenderStateArray(RenderState.LightSceneRenderState).Emplace(MoveTemp(LightRenderState));
+
+		LightRenderStateRef->RenderThreadInit();
+
+		if (bShouldRenderStaticShadowDepthMap)
+		{
+			LightRenderStateRef->RenderStaticShadowDepthMap(RHICmdList, RenderState);
+			StaticShadowDepthMap.Data = DepthMapPtr;
+			StaticShadowDepthMap.InitRHI();
+		}
 
 		for (FGeometryRenderStateToken Token : RelevantGeometriesToUpdateOnRenderThread)
 		{
@@ -512,8 +528,7 @@ void FScene::RemoveLight(LightComponentType* PointLightComponent)
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
 			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				PrimitiveSceneInfo->UpdateStaticLightingBuffer();
-				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex());
+				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedStaticLighting);
 			}
 		}
 	});
@@ -531,6 +546,8 @@ void FScene::RemoveLight(LightComponentType* PointLightComponent)
 	{
 		typename LightTypeInfo<LightComponentType>::RenderStateRefType LightRenderStateRef(LightTypeInfo<LightComponentType>::GetLightRenderStateArray(RenderState.LightSceneRenderState).Elements[ElementId], LightTypeInfo<LightComponentType>::GetLightRenderStateArray(RenderState.LightSceneRenderState));
 
+		LightRenderStateRef->RenderThreadFinalize();
+		
 		for (FGeometryRenderStateToken Token : RelevantGeometriesToUpdateOnRenderThread)
 		{
 			for (FLightmapRenderStateRef& Lightmap : Token.RenderStateArray->Get(Token.ElementId).LODLightmapRenderStates)
@@ -572,7 +589,6 @@ void FScene::AddLight(USkyLightComponent* SkyLight)
 {
 	if (LightScene.SkyLight.IsSet() && LightScene.SkyLight->ComponentUObject == SkyLight)
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Warning: duplicated component registration"));
 		return;
 	}
 
@@ -592,17 +608,20 @@ void FScene::AddLight(USkyLightComponent* SkyLight)
 
 	FSkyLightBuildInfo NewSkyLight;
 	NewSkyLight.ComponentUObject = SkyLight;
+	NewSkyLight.bStationary = SkyLight->Mobility == EComponentMobility::Stationary;
+	NewSkyLight.bCastShadow = SkyLight->CastShadows && SkyLight->CastStaticShadows;
 
 	LightScene.SkyLight = MoveTemp(NewSkyLight);
 
 	FSkyLightRenderState NewSkyLightRenderState;
-	NewSkyLightRenderState.bStationary = !SkyLight->HasStaticLighting();
+	NewSkyLightRenderState.bStationary = SkyLight->Mobility == EComponentMobility::Stationary;
+	NewSkyLightRenderState.bCastShadow = SkyLight->CastShadows && SkyLight->CastStaticShadows;
 	NewSkyLightRenderState.Color = SkyLight->GetLightColor() * SkyLight->Intensity;
 	NewSkyLightRenderState.TextureDimensions = FIntPoint(SkyLight->GetProcessedSkyTexture()->GetSizeX(), SkyLight->GetProcessedSkyTexture()->GetSizeY());
 	NewSkyLightRenderState.IrradianceEnvironmentMap = SkyLight->GetIrradianceEnvironmentMap();
 
 	ENQUEUE_RENDER_COMMAND(AddLightRenderState)(
-		[&RenderState = RenderState, NewSkyLightRenderState = MoveTemp(NewSkyLightRenderState), ProcessedSkyTexture = SkyLight->GetProcessedSkyTexture()](FRHICommandListImmediate& RHICmdList) mutable
+		[&RenderState = RenderState, NewSkyLightRenderState = MoveTemp(NewSkyLightRenderState), ProcessedSkyTexture = SkyLight->GetProcessedSkyTexture(), FeatureLevel = FeatureLevel](FRHICommandListImmediate& RHICmdList) mutable
 	{
 		// Dereferencing ProcessedSkyTexture must be deferred onto render thread
 		NewSkyLightRenderState.ProcessedTexture = ProcessedSkyTexture->TextureRHI;
@@ -610,7 +629,7 @@ void FScene::AddLight(USkyLightComponent* SkyLight)
 
 		NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Initialize(TEXT("SkyIrradianceEnvironmentMap"), sizeof(FVector4f), 7);
 
-		NewSkyLightRenderState.PrepareSkyTexture(RHICmdList);
+		NewSkyLightRenderState.PrepareSkyTexture(RHICmdList, FeatureLevel);
 
 		// Set the captured environment map data
 		void* DataPtr = RHICmdList.LockBuffer(NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Buffer, 0, NewSkyLightRenderState.SkyIrradianceEnvironmentMap.NumBytes, RLM_WriteOnly);
@@ -643,6 +662,24 @@ void FScene::RemoveLight(USkyLightComponent* SkyLight)
 	});
 }
 
+void FScene::OnSkyAtmosphereModified()
+{
+	ConditionalTriggerSkyLightRecapture();
+}
+
+void FScene::ConditionalTriggerSkyLightRecapture()
+{
+	if (LightScene.SkyLight.IsSet())
+	{
+		USkyLightComponent* SkyLight = LightScene.SkyLight->ComponentUObject;
+		if (SkyLight->SourceType == SLS_CapturedScene || SkyLight->bRealTimeCapture)
+		{
+			SkyLight->SetCaptureIsDirty();
+			SkyLight->UpdateSkyCaptureContents(SkyLight->GetWorld());
+		}
+	}
+}
+
 template<typename LightType, typename GeometryRefType>
 TArray<int32> AddAllPossiblyRelevantLightsToGeometry(
 	TEntityArray<LightType>& LightArray,
@@ -655,7 +692,7 @@ TArray<int32> AddAllPossiblyRelevantLightsToGeometry(
 	{
 		if (Light.AffectsBounds(Instance->WorldBounds))
 		{
-			if (Light.bStationary)
+			if (Light.CastsStationaryShadow())
 			{
 				RelevantLightsToAddOnRenderThread.Add(&Light - LightArray.Elements.GetData());
 			}
@@ -677,7 +714,6 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 {
 	if (RegisteredStaticMeshComponentUObjects.Contains(InComponent))
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Warning: duplicated component registration"));
 		return;
 	}
 	
@@ -710,7 +746,7 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 	InstanceRenderState.RenderData = Instance->ComponentUObject->GetStaticMesh()->GetRenderData();
 	InstanceRenderState.LocalToWorld = InComponent->GetRenderMatrix();
 	InstanceRenderState.WorldBounds = InComponent->Bounds;
-	InstanceRenderState.ActorPosition = InComponent->GetAttachmentRootActor() ? InComponent->GetAttachmentRootActor()->GetActorLocation() : FVector(ForceInitToZero);
+	InstanceRenderState.ActorPosition = InComponent->GetActorPositionForRenderer();
 	InstanceRenderState.LocalBounds = InComponent->CalcBounds(FTransform::Identity);
 	InstanceRenderState.bCastShadow = InComponent->CastShadow && InComponent->bCastStaticShadow;
 	InstanceRenderState.LODOverrideColorVertexBuffers.AddZeroed(InComponent->GetStaticMesh()->GetRenderData()->LODResources.Num());
@@ -742,7 +778,6 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 	}
 
 	TArray<FLightmapRenderState::Initializer> InstanceLightmapRenderStateInitializers;
-	TArray<FLightmapResourceCluster*> ResourceClusters;
 
 	for (FLightmapRef& Lightmap : Instance->LODLightmaps)
 	{
@@ -755,18 +790,18 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 				AddLightToLightmap(Lightmap.GetReference_Unsafe(), DirectionalLight);
 			}
 
+			// Ownership will be transferred to render thread, can be nullptr if not created
 			FLightmapResourceCluster* ResourceCluster = Lightmap->ResourceCluster.Release();
 
 			FLightmapRenderState::Initializer Initializer {
 				Lightmap->Name,
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
-				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
+				ResourceCluster,
 				FVector4f(FVector2f(Lightmap->LightmapObject->CoordinateScale), FVector2f(Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(MoveTemp(Initializer));
-			ResourceClusters.Add(ResourceCluster);
 		}
 		else
 		{
@@ -780,6 +815,7 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 
 	ENQUEUE_RENDER_COMMAND(RenderThreadInit)(
 		[
+			FeatureLevel = FeatureLevel,
 			InstanceRenderState = MoveTemp(InstanceRenderState), 
 			InstanceLightmapRenderStateInitializers = MoveTemp(InstanceLightmapRenderStateInitializers),
 			&RenderState = RenderState,
@@ -790,46 +826,13 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 	{
 		FStaticMeshInstanceRenderStateRef InstanceRenderStateRef = RenderState.StaticMeshInstanceRenderStates.Emplace(MoveTemp(InstanceRenderState));
 
-		InstanceRenderStateRef->PrimitiveUniformShaderParameters =
-			FPrimitiveUniformShaderParametersBuilder{}
-			.Defaults()
-				.LocalToWorld(InstanceRenderStateRef->LocalToWorld)
-				.ActorWorldPosition(InstanceRenderStateRef->ActorPosition)
-				.WorldBounds(InstanceRenderStateRef->WorldBounds)
-				.LocalBounds(InstanceRenderStateRef->LocalBounds)
-				.LightingChannelMask(0b111)
-				.LightmapDataIndex(0)
-				.CastContactShadow(true)
-				.CastShadow(true)
-			.Build();
-
 		for (int32 LODIndex = 0; LODIndex < InstanceLightmapRenderStateInitializers.Num(); LODIndex++)
 		{
 			FLightmapRenderState::Initializer& Initializer = InstanceLightmapRenderStateInitializers[LODIndex];
 			if (Initializer.IsValid())
 			{
 				FLightmapRenderStateRef LightmapRenderState = RenderState.LightmapRenderStates.Emplace(Initializer, RenderState.StaticMeshInstanceRenderStates.CreateGeometryInstanceRef(InstanceRenderStateRef, LODIndex));
-				FLightmapPreviewVirtualTexture* LightmapPreviewVirtualTexture = new FLightmapPreviewVirtualTexture(LightmapRenderState, RenderState.LightmapRenderer.Get());
-				LightmapRenderState->LightmapPreviewVirtualTexture = LightmapPreviewVirtualTexture;
-				LightmapRenderState->ResourceCluster->AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-				LightmapRenderState->ResourceCluster->InitResource();
-
-				{
-					IAllocatedVirtualTexture* AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-
-					check(AllocatedVT);
-
-					AllocatedVT->GetPackedPageTableUniform(&LightmapRenderState->LightmapVTPackedPageTableUniform[0]);
-					uint32 NumLightmapVTLayers = AllocatedVT->GetNumTextureLayers();
-					for (uint32 LayerIndex = 0u; LayerIndex < NumLightmapVTLayers; ++LayerIndex)
-					{
-						AllocatedVT->GetPackedUniform(&LightmapRenderState->LightmapVTPackedUniform[LayerIndex], LayerIndex);
-					}
-					for (uint32 LayerIndex = NumLightmapVTLayers; LayerIndex < 5u; ++LayerIndex)
-					{
-						LightmapRenderState->LightmapVTPackedUniform[LayerIndex] = FUintVector4(ForceInitToZero);
-					}
-				}
+				CreateLightmapPreviewVirtualTexture(LightmapRenderState, FeatureLevel, RenderState.LightmapRenderer.Get());
 
 				InstanceRenderStateRef->LODLightmapRenderStates.Emplace(LightmapRenderState);
 
@@ -870,11 +873,6 @@ void FScene::AddGeometryInstanceFromComponent(UStaticMeshComponent* InComponent)
 
 	bNeedsVoxelization = true;
 
-	for (auto ResourceCluster : ResourceClusters)
-	{
-		ResourceCluster->UpdateUniformBuffer(ERHIFeatureLevel::SM5);
-	}
-
 	if (InComponent->GetWorld())
 	{
 		InComponent->GetWorld()->SendAllEndOfFrameUpdates();
@@ -908,11 +906,7 @@ void FScene::RemoveGeometryInstanceFromComponent(UStaticMeshComponent* InCompone
 		{
 			if (Lightmap.IsValid())
 			{
-				Lightmap->ResourceCluster->ReleaseResource();
-
-				FVirtualTextureProducerHandle ProducerHandle = Lightmap->LightmapPreviewVirtualTexture->ProducerHandle;
-				GetRendererModule().ReleaseVirtualTextureProducer(ProducerHandle);
-
+				Lightmap->ReleasePreviewVirtualTexture();
 				RenderState.LightmapRenderStates.Remove(Lightmap);
 			}
 		}
@@ -931,13 +925,11 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 {
 	if (InComponent->PerInstanceSMData.Num() == 0)
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Skipping empty instanced static mesh"));
 		return;
 	}
 
 	if (RegisteredInstancedStaticMeshComponentUObjects.Contains(InComponent))
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Warning: duplicated component registration"));
 		return;
 	}
 
@@ -960,7 +952,6 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 	Instance->AllocateLightmaps(Lightmaps);
 
 	TArray<FLightmapRenderState::Initializer> InstanceLightmapRenderStateInitializers;
-	TArray<FLightmapResourceCluster*> ResourceClusters;
 
 	for (int32 LODIndex = 0; LODIndex < Instance->LODLightmaps.Num(); LODIndex++)
 	{
@@ -974,7 +965,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 				int32 BaseLightMapWidth = Instance->LODPerInstanceLightmapSize[LODIndex].X;
 				int32 BaseLightMapHeight = Instance->LODPerInstanceLightmapSize[LODIndex].Y;
 
-				FVector2D Scale = FVector2D(BaseLightMapWidth - 2, BaseLightMapHeight - 2) / Lightmap->Size;
+				FVector2D Scale = FVector2D(BaseLightMapWidth - 2, BaseLightMapHeight - 2) / Lightmap->GetPaddedSize();
 				Lightmap->LightmapObject->CoordinateScale = Scale;
 				Lightmap->LightmapObject->CoordinateBias = FVector2D(0, 0);
 
@@ -987,7 +978,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 					{
 						int32 X = RenderIndex % InstancesPerRow;
 						int32 Y = RenderIndex / InstancesPerRow;
-						FVector2f Bias = (FVector2f(X, Y) * FVector2f(BaseLightMapWidth, BaseLightMapHeight) + FVector2f(1, 1)) / Lightmap->Size;
+						FVector2f Bias = (FVector2f(X, Y) * FVector2f(BaseLightMapWidth, BaseLightMapHeight) + FVector2f(1, 1)) / Lightmap->GetPaddedSize();
 						Lightmap->MeshMapBuildData->PerInstanceLightmapData[GameThreadInstanceIndex].LightmapUVBias = Bias;
 						Lightmap->MeshMapBuildData->PerInstanceLightmapData[GameThreadInstanceIndex].ShadowmapUVBias = Bias;
 					}
@@ -999,18 +990,18 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 				AddLightToLightmap(Lightmap.GetReference_Unsafe(), DirectionalLight);
 			}
 
+			// Ownership will be transferred to render thread, can be nullptr if not created
 			FLightmapResourceCluster* ResourceCluster = Lightmap->ResourceCluster.Release();
 
 			FLightmapRenderState::Initializer Initializer {
 				Lightmap->Name,
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
-				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
+				ResourceCluster,
 				FVector4f(FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(Initializer);
-			ResourceClusters.Add(ResourceCluster);
 		}
 		else
 		{
@@ -1023,10 +1014,10 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 	FInstanceGroupRenderState InstanceRenderState;
 	InstanceRenderState.ComponentUObject = Instance->ComponentUObject;
 	InstanceRenderState.RenderData = Instance->ComponentUObject->GetStaticMesh()->GetRenderData();
-	InstanceRenderState.InstancedRenderData = MakeUnique<FInstancedStaticMeshRenderData>(Instance->ComponentUObject, ERHIFeatureLevel::SM5);
+	InstanceRenderState.InstancedRenderData = MakeUnique<FInstancedStaticMeshRenderData>(Instance->ComponentUObject, FeatureLevel);
 	InstanceRenderState.LocalToWorld = InComponent->GetRenderMatrix();
 	InstanceRenderState.WorldBounds = InComponent->Bounds;
-	InstanceRenderState.ActorPosition = InComponent->GetAttachmentRootActor() ? InComponent->GetAttachmentRootActor()->GetActorLocation() : FVector(ForceInitToZero);
+	InstanceRenderState.ActorPosition = InComponent->GetActorPositionForRenderer();
 	InstanceRenderState.LocalBounds = InComponent->CalcBounds(FTransform::Identity);
 	InstanceRenderState.bCastShadow = InComponent->CastShadow && InComponent->bCastStaticShadow;
 
@@ -1041,6 +1032,7 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 
 	ENQUEUE_RENDER_COMMAND(RenderThreadInit)(
 		[
+			FeatureLevel = FeatureLevel,
 			InstanceRenderState = MoveTemp(InstanceRenderState),
 			InstanceLightmapRenderStateInitializers = MoveTemp(InstanceLightmapRenderStateInitializers),
 			&RenderState = RenderState,
@@ -1058,27 +1050,8 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 			if (Initializer.IsValid())
 			{
 				FLightmapRenderStateRef LightmapRenderState = RenderState.LightmapRenderStates.Emplace(Initializer, RenderState.InstanceGroupRenderStates.CreateGeometryInstanceRef(InstanceRenderStateRef, LODIndex));
-				FLightmapPreviewVirtualTexture* LightmapPreviewVirtualTexture = new FLightmapPreviewVirtualTexture(LightmapRenderState, RenderState.LightmapRenderer.Get());
-				LightmapRenderState->LightmapPreviewVirtualTexture = LightmapPreviewVirtualTexture;
-				LightmapRenderState->ResourceCluster->AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-				LightmapRenderState->ResourceCluster->InitResource();
+				CreateLightmapPreviewVirtualTexture(LightmapRenderState, FeatureLevel, RenderState.LightmapRenderer.Get());
 
-				{
-					IAllocatedVirtualTexture* AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-
-					check(AllocatedVT);
-
-					AllocatedVT->GetPackedPageTableUniform(&LightmapRenderState->LightmapVTPackedPageTableUniform[0]);
-					uint32 NumLightmapVTLayers = AllocatedVT->GetNumTextureLayers();
-					for (uint32 LayerIndex = 0u; LayerIndex < NumLightmapVTLayers; ++LayerIndex)
-					{
-						AllocatedVT->GetPackedUniform(&LightmapRenderState->LightmapVTPackedUniform[LayerIndex], LayerIndex);
-					}
-					for (uint32 LayerIndex = NumLightmapVTLayers; LayerIndex < 5u; ++LayerIndex)
-					{
-						LightmapRenderState->LightmapVTPackedUniform[LayerIndex] = FUintVector4(ForceInitToZero);
-					}
-				}
 
 				InstanceRenderStateRef->LODLightmapRenderStates.Emplace(MoveTemp(LightmapRenderState));
 
@@ -1109,11 +1082,6 @@ void FScene::AddGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InC
 	});
 
 	bNeedsVoxelization = true;
-
-	for (auto ResourceCluster : ResourceClusters)
-	{
-		ResourceCluster->UpdateUniformBuffer(ERHIFeatureLevel::SM5);
-	}
 }
 
 void FScene::RemoveGeometryInstanceFromComponent(UInstancedStaticMeshComponent* InComponent)
@@ -1152,11 +1120,7 @@ void FScene::RemoveGeometryInstanceFromComponent(UInstancedStaticMeshComponent* 
 		{
 			if (Lightmap.IsValid())
 			{
-				Lightmap->ResourceCluster->ReleaseResource();
-
-				FVirtualTextureProducerHandle ProducerHandle = Lightmap->LightmapPreviewVirtualTexture->ProducerHandle;
-				GetRendererModule().ReleaseVirtualTextureProducer(ProducerHandle);
-
+				Lightmap->ReleasePreviewVirtualTexture();
 				RenderState.LightmapRenderStates.Remove(Lightmap);
 			}
 		}
@@ -1175,13 +1139,11 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 {
 	if (InComponent->GetLandscapeInfo() == nullptr)
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Skipping landscape with empty info object"));
 		return;
 	}
 
 	if (RegisteredLandscapeComponentUObjects.Contains(InComponent))
 	{
-		UE_LOG(LogGPULightmass, Log, TEXT("Warning: duplicated component registration"));
 		return;
 	}
 
@@ -1194,7 +1156,6 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	Instance->AllocateLightmaps(Lightmaps);
 
 	TArray<FLightmapRenderState::Initializer> InstanceLightmapRenderStateInitializers;
-	TArray<FLightmapResourceCluster*> ResourceClusters;
 
 	for (int32 LODIndex = 0; LODIndex < Instance->LODLightmaps.Num(); LODIndex++)
 	{
@@ -1204,7 +1165,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 		{
 			Lightmap->CreateGameThreadResources();
 
-			Lightmap->LightmapObject->CoordinateScale = FVector2D(1, 1);
+			Lightmap->LightmapObject->CoordinateScale = FVector2D(Lightmap->Size) / Lightmap->GetPaddedSize();
 			Lightmap->LightmapObject->CoordinateBias = FVector2D(0, 0);
 
 			for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
@@ -1212,18 +1173,18 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 				AddLightToLightmap(Lightmap.GetReference_Unsafe(), DirectionalLight);
 			}
 
+			// Ownership will be transferred to render thread, can be nullptr if not created
 			FLightmapResourceCluster* ResourceCluster = Lightmap->ResourceCluster.Release();
 
 			FLightmapRenderState::Initializer Initializer{
 				Lightmap->Name,
 				Lightmap->Size,
 				FMath::Min((int32)FMath::CeilLogTwo((uint32)FMath::Min(Lightmap->GetPaddedSizeInTiles().X, Lightmap->GetPaddedSizeInTiles().Y)), GPreviewLightmapMipmapMaxLevel),
-				ResourceCluster, // temporarily promote unique ptr to raw ptr to make it copyable
+				ResourceCluster,
 				FVector4f(FVector4(Lightmap->LightmapObject->CoordinateScale, Lightmap->LightmapObject->CoordinateBias))
 			};
 
 			InstanceLightmapRenderStateInitializers.Add(Initializer);
-			ResourceClusters.Add(ResourceCluster);
 		}
 		else
 		{
@@ -1235,15 +1196,13 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	InstanceRenderState.ComponentUObject = Instance->ComponentUObject;
 	InstanceRenderState.LocalToWorld = InComponent->GetRenderMatrix();
 	InstanceRenderState.WorldBounds = InComponent->Bounds;
-	InstanceRenderState.ActorPosition = InComponent->GetAttachmentRootActor() ? InComponent->GetAttachmentRootActor()->GetActorLocation() : FVector(ForceInitToZero);
+	InstanceRenderState.ActorPosition = InComponent->GetActorPositionForRenderer();
 	InstanceRenderState.LocalBounds = InComponent->CalcBounds(FTransform::Identity);
 	InstanceRenderState.bCastShadow = InComponent->CastShadow && InComponent->bCastStaticShadow;
 
 	const int8 SubsectionSizeLog2 = FMath::CeilLogTwo(InComponent->SubsectionSizeQuads + 1);
-	InstanceRenderState.SharedBuffersKey = (SubsectionSizeLog2 & 0xf) | ((InComponent->NumSubsections & 0xf) << 4) |
-		(InComponent->GetWorld()->FeatureLevel <= ERHIFeatureLevel::ES3_1 ? 0 : (1 << 30)) | (InComponent->XYOffsetmapTexture == nullptr ? 0 : 1 << 31);
+	InstanceRenderState.SharedBuffersKey = (SubsectionSizeLog2 & 0xf) | ((InComponent->NumSubsections & 0xf) << 4) | (InComponent->XYOffsetmapTexture == nullptr ? 0 : 1 << 31);
 	InstanceRenderState.SharedBuffersKey |= 1 << 29; // Use this bit to indicate it is GPULightmass specific buffer (which only has FixedGridVertexFactory created)
-	TEnumAsByte<ERHIFeatureLevel::Type> FeatureLevel = InComponent->GetWorld()->FeatureLevel;
 
 	TArray<UMaterialInterface*> AvailableMaterials;
 
@@ -1286,7 +1245,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	ENQUEUE_RENDER_COMMAND(RenderThreadInit)(
 		[
 			InstanceRenderState = MoveTemp(InstanceRenderState),
-			FeatureLevel,
+			LocalFeatureLevel = FeatureLevel,
 			Initializer,
 			InstanceLightmapRenderStateInitializers = MoveTemp(InstanceLightmapRenderStateInitializers),
 			&RenderState = RenderState,
@@ -1300,11 +1259,11 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 		{
 			InstanceRenderState.SharedBuffers = new FLandscapeSharedBuffers(
 				InstanceRenderState.SharedBuffersKey, Initializer.SubsectionSizeQuads, Initializer.NumSubsections,
-				FeatureLevel);
+				LocalFeatureLevel);
 
 			FLandscapeComponentSceneProxy::SharedBuffersMap.Add(InstanceRenderState.SharedBuffersKey, InstanceRenderState.SharedBuffers);
 
-			FLandscapeFixedGridVertexFactory* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactory(FeatureLevel);
+			FLandscapeFixedGridVertexFactory* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactory(LocalFeatureLevel);
 			LandscapeVertexFactory->Data.PositionComponent = FVertexStreamComponent(InstanceRenderState.SharedBuffers->VertexBuffer, 0, sizeof(FLandscapeVertex), VET_Float4);
 			LandscapeVertexFactory->InitResource();
 			InstanceRenderState.SharedBuffers->FixedGridVertexFactory = LandscapeVertexFactory;
@@ -1386,7 +1345,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 
 			LandscapeParams.NormalmapTexture = Initializer.HeightmapTexture->TextureReference.TextureReferenceRHI;
 			LandscapeParams.NormalmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
-
+			
 			// No support for XYOffset
 			LandscapeParams.XYOffsetmapTexture = GBlackTexture->TextureRHI;
 			LandscapeParams.XYOffsetmapTextureSampler = GBlackTexture->SamplerStateRHI;
@@ -1402,27 +1361,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 			if (LightmapInitializer.IsValid())
 			{
 				FLightmapRenderStateRef LightmapRenderState = RenderState.LightmapRenderStates.Emplace(LightmapInitializer, RenderState.LandscapeRenderStates.CreateGeometryInstanceRef(InstanceRenderStateRef, LODIndex));
-				FLightmapPreviewVirtualTexture* LightmapPreviewVirtualTexture = new FLightmapPreviewVirtualTexture(LightmapRenderState, RenderState.LightmapRenderer.Get());
-				LightmapRenderState->LightmapPreviewVirtualTexture = LightmapPreviewVirtualTexture;
-				LightmapRenderState->ResourceCluster->AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-				LightmapRenderState->ResourceCluster->InitResource();
-
-				{
-					IAllocatedVirtualTexture* AllocatedVT = LightmapPreviewVirtualTexture->AllocatedVT;
-
-					check(AllocatedVT);
-
-					AllocatedVT->GetPackedPageTableUniform(&LightmapRenderState->LightmapVTPackedPageTableUniform[0]);
-					uint32 NumLightmapVTLayers = AllocatedVT->GetNumTextureLayers();
-					for (uint32 LayerIndex = 0u; LayerIndex < NumLightmapVTLayers; ++LayerIndex)
-					{
-						AllocatedVT->GetPackedUniform(&LightmapRenderState->LightmapVTPackedUniform[LayerIndex], LayerIndex);
-					}
-					for (uint32 LayerIndex = NumLightmapVTLayers; LayerIndex < 5u; ++LayerIndex)
-					{
-						LightmapRenderState->LightmapVTPackedUniform[LayerIndex] = FUintVector4(ForceInitToZero);
-					}
-				}
+				CreateLightmapPreviewVirtualTexture(LightmapRenderState, LocalFeatureLevel, RenderState.LightmapRenderer.Get());
 
 				InstanceRenderStateRef->LODLightmapRenderStates.Emplace(MoveTemp(LightmapRenderState));
 
@@ -1453,11 +1392,6 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 	});
 
 	bNeedsVoxelization = true;
-
-	for (auto ResourceCluster : ResourceClusters)
-	{
-		ResourceCluster->UpdateUniformBuffer(ERHIFeatureLevel::SM5);
-	}
 
 	if (InComponent->GetWorld())
 	{
@@ -1518,7 +1452,10 @@ void FScene::RemoveGeometryInstanceFromComponent(ULandscapeComponent* InComponen
 				{
 					const int8 SubSectionIdx = SubX + SubY * LandscapeRenderState.NumSubsections;
 
-					LandscapeRenderState.SectionRayTracingStates[SubSectionIdx]->Geometry.ReleaseResource();
+					if (LandscapeRenderState.SectionRayTracingStates[SubSectionIdx].IsValid())
+					{
+						LandscapeRenderState.SectionRayTracingStates[SubSectionIdx]->Geometry.ReleaseResource();
+					}
 				}
 			}
 		}
@@ -1527,11 +1464,7 @@ void FScene::RemoveGeometryInstanceFromComponent(ULandscapeComponent* InComponen
 		{
 			if (Lightmap.IsValid())
 			{
-				Lightmap->ResourceCluster->ReleaseResource();
-
-				FVirtualTextureProducerHandle ProducerHandle = Lightmap->LightmapPreviewVirtualTexture->ProducerHandle;
-				GetRendererModule().ReleaseVirtualTextureProducer(ProducerHandle);
-
+				Lightmap->ReleasePreviewVirtualTexture();
 				RenderState.LightmapRenderStates.Remove(Lightmap);
 			}
 		}
@@ -1589,27 +1522,40 @@ void FScene::BackgroundTick()
 
 	if (Percentage < 100 || GPULightmass->Settings->Mode == EGPULightmassMode::BakeWhatYouSee)
 	{
-		if (bNeedsVoxelization)
+		bool bIsCompilingShaders = GShaderCompilingManager && GShaderCompilingManager->IsCompiling();
+
+		if (!bIsCompilingShaders)
 		{
-			GatherImportanceVolumes();
+			if (bNeedsVoxelization)
+			{
+				GatherImportanceVolumes();
+
+				float TargetDetailCellSize = Settings->VolumetricLightmapDetailCellSize;
+				
+				ENQUEUE_RENDER_COMMAND(BackgroundTickRenderThread)([&RenderState = RenderState, TargetDetailCellSize](FRHICommandListImmediate&) mutable {
+					RenderState.VolumetricLightmapRenderer->TargetDetailCellSize = TargetDetailCellSize;
+					RenderState.VolumetricLightmapRenderer->VoxelizeScene();
+					RenderState.VolumetricLightmapRenderer->FrameNumber = 0;
+					RenderState.VolumetricLightmapRenderer->SamplesTaken = 0;
+				});
+
+				bNeedsVoxelization = false;
+			}
 
 			ENQUEUE_RENDER_COMMAND(BackgroundTickRenderThread)([&RenderState = RenderState](FRHICommandListImmediate&) mutable {
-				RenderState.VolumetricLightmapRenderer->VoxelizeScene();
-				RenderState.VolumetricLightmapRenderer->FrameNumber = 0;
-				RenderState.VolumetricLightmapRenderer->SamplesTaken = 0;
+				RenderState.BackgroundTick();
 			});
-
-			bNeedsVoxelization = false;
 		}
-
-		ENQUEUE_RENDER_COMMAND(BackgroundTickRenderThread)([&RenderState = RenderState](FRHICommandListImmediate&) mutable {
-			RenderState.BackgroundTick();
-		});
 	}
 	else
 	{
-		ApplyFinishedLightmapsToWorld();
-		GPULightmass->World->GetSubsystem<UGPULightmassSubsystem>()->OnLightBuildEnded().Broadcast();
+		if (!bNeedsVoxelization)
+		{
+			ApplyFinishedLightmapsToWorld();
+			GPULightmass->World->GetSubsystem<UGPULightmassSubsystem>()->OnLightBuildEnded().Broadcast();
+			// We can't destroy GPULM in its member func
+			// FGPULightmassModule::EditorTick() will handle the destruction
+		}
 	}
 }
 
@@ -1641,10 +1587,10 @@ void FSceneRenderState::BackgroundTick()
 					{
 						FTileVirtualCoordinates VirtualCoordinates(FIntPoint(X, Y), 0);
 
-						TotalSamples += Settings->GISamples * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+						TotalSamples += LightmapRenderer->NumTotalPassesToRender * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 						SamplesTaken += (Lightmap.DoesTileHaveValidCPUData(VirtualCoordinates, LightmapRenderer->GetCurrentRevision()) ?
-							Settings->GISamples :
-							FMath::Min(Lightmap.RetrieveTileState(VirtualCoordinates).RenderPassIndex, Settings->GISamples - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+							LightmapRenderer->NumTotalPassesToRender  :
+							FMath::Min(Lightmap.RetrieveTileState(VirtualCoordinates).RenderPassIndex, LightmapRenderer->NumTotalPassesToRender - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 					}
 				}
 			}
@@ -1655,11 +1601,11 @@ void FSceneRenderState::BackgroundTick()
 			{
 				for (FLightmapTileRequest& Tile : LightmapRenderer->RecordedTileRequests)
 				{
-					TotalSamples += Settings->GISamples * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+					TotalSamples += LightmapRenderer->NumTotalPassesToRender * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 
 					SamplesTaken += (Tile.RenderState->DoesTileHaveValidCPUData(Tile.VirtualCoordinates, LightmapRenderer->GetCurrentRevision()) ?
-						Settings->GISamples :
-						FMath::Min(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex, Settings->GISamples - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+						LightmapRenderer->NumTotalPassesToRender :
+						FMath::Min(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex, LightmapRenderer->NumTotalPassesToRender - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 				}
 			}
 			else
@@ -1668,11 +1614,11 @@ void FSceneRenderState::BackgroundTick()
 				{
 					for (FLightmapTileRequest& Tile : FrameRequests)
 					{
-						TotalSamples += Settings->GISamples * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+						TotalSamples += LightmapRenderer->NumTotalPassesToRender  * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 
 						SamplesTaken += (Tile.RenderState->DoesTileHaveValidCPUData(Tile.VirtualCoordinates, LightmapRenderer->GetCurrentRevision()) ?
-							Settings->GISamples :
-							FMath::Min(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex, Settings->GISamples - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
+							LightmapRenderer->NumTotalPassesToRender :
+							FMath::Min(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex, LightmapRenderer->NumTotalPassesToRender - 1)) * GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize;
 					}
 				}
 			}
@@ -1682,14 +1628,23 @@ void FSceneRenderState::BackgroundTick()
 
 		{
 			int32 NumCellsPerBrick = 5 * 5 * 5;
-			SamplesTaken += VolumetricLightmapRenderer->SamplesTaken;
-			TotalSamples += (uint64)VolumetricLightmapRenderer->NumTotalBricks * NumCellsPerBrick * Settings->GISamples * VolumetricLightmapRenderer->GetGISamplesMultiplier();
+			// VLM traces 2 paths samples per pass
+			// Multiply by 2 to get a more linear progress
+			SamplesTaken += 2 * VolumetricLightmapRenderer->SamplesTaken * NumCellsPerBrick;
+			TotalSamples += 2 * (uint64)VolumetricLightmapRenderer->NumTotalBricks * NumCellsPerBrick * VolumetricLightmapRenderer->NumTotalPassesToRender;
 		}
 
 		int32 IntPercentage = FMath::FloorToInt(SamplesTaken * 100.0 / TotalSamples);
 		IntPercentage = FMath::Max(IntPercentage, 0);
 		// With high number of samples (like 8192) double precision isn't enough to prevent fake 100%s
-		IntPercentage = FMath::Min(IntPercentage, SamplesTaken < TotalSamples ? 99 : 100);
+		if (SamplesTaken < TotalSamples)
+		{
+			IntPercentage = FMath::Min(IntPercentage, 99);
+		}
+		else
+		{
+			IntPercentage = 100;
+		}
 
 		FPlatformAtomics::InterlockedExchange(&Percentage, IntPercentage);
 	}
@@ -1716,8 +1671,9 @@ void CopyRectTiled(
 	int32 TileBorderSize = 0
 )
 {
-	for (int32 Y = DstRect.Min.Y; Y < DstRect.Max.Y; Y++)
+	ParallelFor(DstRect.Max.Y - DstRect.Min.Y, [&](int32 dy)
 	{
+		int32 Y = DstRect.Min.Y + dy;
 		for (int32 X = DstRect.Min.X; X < DstRect.Max.X; X++)
 		{
 			FIntPoint SrcPosition = FIntPoint(X, Y) - DstRect.Min + SrcMin;
@@ -1732,13 +1688,16 @@ void CopyRectTiled(
 
 			Func(DstLinearIndex, SrcTilePosition, SrcLinearIndex);
 		}
-	}
+	});
 }
 
 void ReadbackVolumetricLightmapDataLayerFromGPU(FRHICommandListImmediate& RHICmdList, FVolumetricLightmapDataLayer& Layer, FIntVector Dimensions)
 {
-	FRHIResourceCreateInfo CreateInfo(TEXT("VolumetricLightmapDataLayerReadback"));
-	FTexture2DRHIRef StagingTexture2DSlice = RHICreateTexture2D(Layer.Texture->GetSizeX(), Layer.Texture->GetSizeY(), Layer.Texture->GetFormat(), 1, 1, TexCreate_CPUReadback | TexCreate_HideInVisualizeTexture, CreateInfo);
+	const FRHITextureCreateDesc StagingDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("VolumetricLightmapDataLayerReadback"), Layer.Texture->GetSizeX(), Layer.Texture->GetSizeY(), Layer.Texture->GetFormat())
+		.SetFlags(ETextureCreateFlags::CPUReadback | ETextureCreateFlags::HideInVisualizeTexture);
+
+	FTextureRHIRef StagingTexture2DSlice = RHICreateTexture(StagingDesc);
 	FGPUFenceRHIRef Fence = RHICreateGPUFence(TEXT("VolumetricLightmapDataLayerReadback"));
 
 	check(Dimensions.Z == Layer.Texture->GetSizeZ());
@@ -1761,7 +1720,6 @@ void ReadbackVolumetricLightmapDataLayerFromGPU(FRHICommandListImmediate& RHICmd
 		RHICmdList.MapStagingSurface(StagingTexture2DSlice, Fence, (void*&)Buffer, RowPitchInPixels, Height);
 		check(RowPitchInPixels >= Dimensions.X);
 		check(Height == Dimensions.Y);
-		RHICmdList.UnmapStagingSurface(StagingTexture2DSlice);
 
 		const int32 SrcPitch = RowPitchInPixels * GPixelFormats[Layer.Format].BlockBytes;
 		const int32 DstPitch = Dimensions.X * GPixelFormats[Layer.Format].BlockBytes;
@@ -1775,6 +1733,8 @@ void ReadbackVolumetricLightmapDataLayerFromGPU(FRHICommandListImmediate& RHICmd
 			const int32 SourceIndex = YIndex * SrcPitch;
 			FMemory::Memcpy((uint8*)&Layer.Data[DestIndex], (const uint8*)&Buffer[SourceIndex], DstPitch);
 		}
+		
+		RHICmdList.UnmapStagingSurface(StagingTexture2DSlice);
 	}
 
 }
@@ -1825,13 +1785,75 @@ void GatherBuildDataResourcesToKeep(const ULevel* InLevel, ULevel* LightingScena
 	}
 }
 
+void FLocalLightBuildInfo::AllocateMapBuildData(ULevel* StorageLevel)
+{
+	check(!CastsStationaryShadow() || GetComponentUObject()->PreviewShadowMapChannel != INDEX_NONE);
+
+	UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
+	FLightComponentMapBuildData& LightBuildData = Registry->FindOrAllocateLightBuildData(GetComponentUObject()->LightGuid, true);
+	LightBuildData.ShadowMapChannel = CastsStationaryShadow() ? GetComponentUObject()->PreviewShadowMapChannel : INDEX_NONE;
+	// Copy to storage
+	LightBuildData.DepthMap = LightComponentMapBuildData->DepthMap;
+}
+
+void FScene::AddRelevantStaticLightGUIDs(FQuantizedLightmapData* QuantizedLightmapData, const FBoxSphereBounds& WorldBounds)
+{
+	// Add static lights to lightmap data
+	for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
+	{
+		if (!DirectionalLight.bStationary)
+		{
+			UDirectionalLightComponent* Light = DirectionalLight.ComponentUObject;
+			QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
+		}
+	}
+
+	for (FPointLightBuildInfo& PointLight : LightScene.PointLights.Elements)
+	{
+		if (!PointLight.bStationary)
+		{
+			UPointLightComponent* Light = PointLight.ComponentUObject;
+			if (PointLight.AffectsBounds(WorldBounds))
+			{
+				QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
+			}
+		}
+	}
+
+	for (FSpotLightBuildInfo& SpotLight : LightScene.SpotLights.Elements)
+	{
+		if (!SpotLight.bStationary)
+		{
+			USpotLightComponent* Light = SpotLight.ComponentUObject;
+			if (SpotLight.AffectsBounds(WorldBounds))
+			{
+				QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
+			}
+		}
+	}
+
+	for (FRectLightBuildInfo& RectLight : LightScene.RectLights.Elements)
+	{
+		if (!RectLight.bStationary)
+		{
+			URectLightComponent* Light = RectLight.ComponentUObject;
+			if (RectLight.AffectsBounds(WorldBounds))
+			{
+				QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
+			}
+		}
+	}
+}
+
 void FScene::ApplyFinishedLightmapsToWorld()
 {
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
-	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(GMaxRHIFeatureLevel);
-
 	UWorld* World = GPULightmass->World;
 
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
+	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(World->FeatureLevel);
+
+	bool bHasSkyShadowing = LightScene.SkyLight.IsSet() && LightScene.SkyLight->CastsStationaryShadow();
+	
 	{
 		FScopedSlowTask SlowTask(3);
 		SlowTask.MakeDialog();
@@ -1882,48 +1904,25 @@ void FScene::ApplyFinishedLightmapsToWorld()
 
 		for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
 		{
-			UDirectionalLightComponent* Light = DirectionalLight.ComponentUObject;
-			check(!DirectionalLight.bStationary || Light->PreviewShadowMapChannel != INDEX_NONE);
-
-			ULevel* StorageLevel = LightingScenario ? LightingScenario : Light->GetOwner()->GetLevel();
-			UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
-			FLightComponentMapBuildData& LightBuildData = Registry->FindOrAllocateLightBuildData(Light->LightGuid, true);
-			LightBuildData.ShadowMapChannel = DirectionalLight.bStationary ? Light->PreviewShadowMapChannel : INDEX_NONE;
+			DirectionalLight.AllocateMapBuildData(LightingScenario ? LightingScenario : DirectionalLight.ComponentUObject->GetOwner()->GetLevel());
 		}
 
 		for (FPointLightBuildInfo& PointLight : LightScene.PointLights.Elements)
 		{
-			UPointLightComponent* Light = PointLight.ComponentUObject;
-			check(!PointLight.bStationary || Light->PreviewShadowMapChannel != INDEX_NONE);
-
-			ULevel* StorageLevel = LightingScenario ? LightingScenario : Light->GetOwner()->GetLevel();
-			UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
-			FLightComponentMapBuildData& LightBuildData = Registry->FindOrAllocateLightBuildData(Light->LightGuid, true);
-			LightBuildData.ShadowMapChannel = PointLight.bStationary ? Light->PreviewShadowMapChannel : INDEX_NONE;
+			PointLight.AllocateMapBuildData(LightingScenario ? LightingScenario : PointLight.ComponentUObject->GetOwner()->GetLevel());
 		}
 
 		for (FSpotLightBuildInfo& SpotLight : LightScene.SpotLights.Elements)
 		{
-			USpotLightComponent* Light = SpotLight.ComponentUObject;
-			check(!SpotLight.bStationary || Light->PreviewShadowMapChannel != INDEX_NONE);
-
-			ULevel* StorageLevel = LightingScenario ? LightingScenario : Light->GetOwner()->GetLevel();
-			UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
-			FLightComponentMapBuildData& LightBuildData = Registry->FindOrAllocateLightBuildData(Light->LightGuid, true);
-			LightBuildData.ShadowMapChannel = SpotLight.bStationary ? Light->PreviewShadowMapChannel : INDEX_NONE;
+			SpotLight.AllocateMapBuildData(LightingScenario ? LightingScenario : SpotLight.ComponentUObject->GetOwner()->GetLevel());
 		}
 
 		for (FRectLightBuildInfo& RectLight : LightScene.RectLights.Elements)
 		{
-			URectLightComponent* Light = RectLight.ComponentUObject;
-			check(!RectLight.bStationary || Light->PreviewShadowMapChannel != INDEX_NONE);
-
-			ULevel* StorageLevel = LightingScenario ? LightingScenario : Light->GetOwner()->GetLevel();
-			UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
-			FLightComponentMapBuildData& LightBuildData = Registry->FindOrAllocateLightBuildData(Light->LightGuid, true);
-			LightBuildData.ShadowMapChannel = RectLight.bStationary ? Light->PreviewShadowMapChannel : INDEX_NONE;
+			RectLight.AllocateMapBuildData(LightingScenario ? LightingScenario : RectLight.ComponentUObject->GetOwner()->GetLevel());
 		}
 
+		if (RenderState.VolumetricLightmapRenderer->NumTotalBricks > 0)
 		{
 			ULevel* SubLevelStorageLevel = LightingScenario ? LightingScenario : ToRawPtr(World->PersistentLevel);
 			UMapBuildDataRegistry* SubLevelRegistry = SubLevelStorageLevel->GetOrCreateMapBuildData();
@@ -1970,10 +1969,12 @@ void FScene::ApplyFinishedLightmapsToWorld()
 									Lightmap.TileStorage[Coords].CPUTextureData[0]->Decompress();
 									Lightmap.TileStorage[Coords].CPUTextureData[1]->Decompress();
 									Lightmap.TileStorage[Coords].CPUTextureData[2]->Decompress();
+									Lightmap.TileStorage[Coords].CPUTextureData[3]->Decompress();
 
 									Lightmap.TileStorage[ParentCoords].CPUTextureData[0]->Decompress();
 									Lightmap.TileStorage[ParentCoords].CPUTextureData[1]->Decompress();
 									Lightmap.TileStorage[ParentCoords].CPUTextureData[2]->Decompress();
+									Lightmap.TileStorage[ParentCoords].CPUTextureData[3]->Decompress();
 
 									for (int32 X = 0; X < GPreviewLightmapVirtualTileSize; X++)
 									{
@@ -1993,6 +1994,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 											Lightmap.TileStorage[Coords].CPUTextureData[0]->Data[DstLinearIndex] = Lightmap.TileStorage[ParentCoords].CPUTextureData[0]->Data[SrcLinearIndex];
 											Lightmap.TileStorage[Coords].CPUTextureData[1]->Data[DstLinearIndex] = Lightmap.TileStorage[ParentCoords].CPUTextureData[1]->Data[SrcLinearIndex];
 											Lightmap.TileStorage[Coords].CPUTextureData[2]->Data[DstLinearIndex] = Lightmap.TileStorage[ParentCoords].CPUTextureData[2]->Data[SrcLinearIndex];
+											Lightmap.TileStorage[Coords].CPUTextureData[3]->Data[DstLinearIndex] = Lightmap.TileStorage[ParentCoords].CPUTextureData[3]->Data[SrcLinearIndex];
 										}
 									}
 
@@ -2070,12 +2072,20 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							Tile.Value.CPUTextureData[0]->Decompress();
 							Tile.Value.CPUTextureData[1]->Decompress();
 							Tile.Value.CPUTextureData[2]->Decompress();
+							Tile.Value.CPUTextureData[3]->Decompress();
 						}
 
 						// Transencode GI layers
 						TArray<FLightSampleData> LightSampleData;
 						LightSampleData.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y); // LightSampleData will have different row pitch as VT is padded to tiles
 
+						TArray<FLinearColor> IncidentLighting;
+						TArray<FLinearColor> LuminanceSH;
+						TArray<FVector3f> SkyBentNormal;
+						
+						IncidentLighting.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
+						LuminanceSH.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
+						
 						{
 							int32 SrcRowPitchInPixels = GPreviewLightmapVirtualTileSize;
 							int32 DstRowPitchInPixels = Lightmap.GetSize().X;
@@ -2085,10 +2095,77 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								FIntRect(FIntPoint(0, 0), Lightmap.GetSize()),
 								SrcRowPitchInPixels,
 								DstRowPitchInPixels,
-								[&Lightmap, &LightSampleData](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+								[&Lightmap, &IncidentLighting, &LuminanceSH](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
 							{
-								LightSampleData[DstLinearIndex] = ConvertToLightSample(Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex], Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex]);
+								IncidentLighting[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex];
+								LuminanceSH[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex];
 							});
+
+							if (bHasSkyShadowing)
+							{
+								SkyBentNormal.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
+
+								CopyRectTiled(
+									FIntPoint(0, 0),
+									FIntRect(FIntPoint(0, 0), Lightmap.GetSize()),
+									SrcRowPitchInPixels,
+									DstRowPitchInPixels,
+									[&Lightmap, &SkyBentNormal](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+									{
+										FLinearColor SkyOcclusion = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[3]->Data[SrcLinearIndex];
+										
+										// Revert sqrt in LightmapEncoding.ush which was done for preview
+										float Length = SkyOcclusion.A * SkyOcclusion.A;
+										FVector3f UnpackedBentNormalVector = FVector3f(SkyOcclusion) * 2.0f - 1.0f;
+										SkyBentNormal[DstLinearIndex] = UnpackedBentNormalVector * Length;
+									});
+							}
+						}
+
+						if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
+						{
+							if (Settings->Denoiser == EGPULightmassDenoiser::SimpleFireflyRemover)
+							{
+								TLightSampleDataProvider<FLinearColor> GISampleData(Lightmap.GetSize(), IncidentLighting, LuminanceSH);
+								SimpleFireflyFilter(GISampleData);
+
+								if (bHasSkyShadowing)
+								{
+									TLightSampleDataProvider<FVector3f> SkyBentNormalSampleData(Lightmap.GetSize(), IncidentLighting, SkyBentNormal);
+									SimpleFireflyFilter(SkyBentNormalSampleData);
+								}
+							}
+							else
+							{
+								if (bHasSkyShadowing)
+								{
+									DenoiseSkyBentNormal(Lightmap.GetSize(), IncidentLighting, SkyBentNormal, DenoiserContext);
+								}
+								DenoiseRawData(Lightmap.GetSize(), IncidentLighting, LuminanceSH, DenoiserContext);
+							}
+						}
+							
+						for (int32 Y = 0 ; Y < Lightmap.GetSize().Y; Y++)
+						{
+							for (int32 X = 0 ; X < Lightmap.GetSize().X; X++)
+							{
+								int32 LinearIndex = Y * Lightmap.GetSize().X + X;
+								LightSampleData[LinearIndex] = ConvertToLightSample(IncidentLighting[LinearIndex], LuminanceSH[LinearIndex]);
+							}
+						}
+								
+						if (bHasSkyShadowing)
+						{
+							for (int32 Y = 0 ; Y < Lightmap.GetSize().Y; Y++)
+							{
+								for (int32 X = 0 ; X < Lightmap.GetSize().X; X++)
+								{
+									int32 LinearIndex = Y * Lightmap.GetSize().X + X;
+									LightSampleData[LinearIndex].SkyOcclusion[0] = SkyBentNormal[LinearIndex].X;
+									LightSampleData[LinearIndex].SkyOcclusion[1] = SkyBentNormal[LinearIndex].Y;
+									LightSampleData[LinearIndex].SkyOcclusion[2] = SkyBentNormal[LinearIndex].Z;
+								}
+							}
 						}
 
 #if 0
@@ -2139,64 +2216,14 @@ void FScene::ApplyFinishedLightmapsToWorld()
 						}
 #endif
 
-						if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
-						{
-							DenoiseLightSampleData(Lightmap.GetSize(), LightSampleData, DenoiserContext);
-						}
-
 						FQuantizedLightmapData* QuantizedLightmapData = new FQuantizedLightmapData();
 						QuantizedLightmapData->SizeX = Lightmap.GetSize().X;
 						QuantizedLightmapData->SizeY = Lightmap.GetSize().Y;
+						QuantizedLightmapData->bHasSkyShadowing = bHasSkyShadowing;
 
 						QuantizeLightSamples(LightSampleData, QuantizedLightmapData->Data, QuantizedLightmapData->Scale, QuantizedLightmapData->Add);
 
-						// Add static lights to lightmap data
-						{
-							for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
-							{
-								if (!DirectionalLight.bStationary)
-								{
-									UDirectionalLightComponent* Light = DirectionalLight.ComponentUObject;
-									QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-								}
-							}
-
-							for (FPointLightBuildInfo& PointLight : LightScene.PointLights.Elements)
-							{
-								if (!PointLight.bStationary)
-								{
-									UPointLightComponent* Light = PointLight.ComponentUObject;
-									if (PointLight.AffectsBounds(StaticMeshInstances.Elements[InstanceIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-
-							for (FSpotLightBuildInfo& SpotLight : LightScene.SpotLights.Elements)
-							{
-								if (!SpotLight.bStationary)
-								{
-									USpotLightComponent* Light = SpotLight.ComponentUObject;
-									if (SpotLight.AffectsBounds(StaticMeshInstances.Elements[InstanceIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-
-							for (FRectLightBuildInfo& RectLight : LightScene.RectLights.Elements)
-							{
-								if (!RectLight.bStationary)
-								{
-									URectLightComponent* Light = RectLight.ComponentUObject;
-									if (RectLight.AffectsBounds(StaticMeshInstances.Elements[InstanceIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-						}
+						AddRelevantStaticLightGUIDs(QuantizedLightmapData, StaticMeshInstances.Elements[InstanceIndex].WorldBounds);
 
 						// Transencode stationary light shadow masks
 						TMap<ULightComponent*, FShadowMapData2D*> ShadowMaps;
@@ -2206,7 +2233,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								FLocalLightRenderState& Light
 								)
 							{
-								check(Light.bStationary);
+								check(Light.bStationary && Light.bCastShadow);
 								check(Light.ShadowMapChannel != INDEX_NONE);
 								FQuantizedShadowSignedDistanceFieldData2D* ShadowMap = new FQuantizedShadowSignedDistanceFieldData2D(Lightmap.GetSize().X, Lightmap.GetSize().Y);
 
@@ -2230,7 +2257,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							// Directional lights are always relevant
 							for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
 							{
-								if (!DirectionalLight.bStationary)
+								if (!DirectionalLight.CastsStationaryShadow())
 								{
 									continue;
 								}
@@ -2282,29 +2309,32 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								ULevel* StorageLevel = LightingScenario ? LightingScenario : StaticMeshComponent->GetOwner()->GetLevel();
 								UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
 
-								FStaticMeshComponentLODInfo& ComponentLODInfo = StaticMeshComponent->LODData[LODIndex];
+								// Nanite meshes have only LOD0 technically, but that has some weird interaction with ClampedMinLOD
+								// Allocate for LOD0 only in that case
+								int32 LODLevelToStoreLODInfo = StaticMeshComponent->GetStaticMesh()->HasValidNaniteData() ? 0 : LODIndex;
+								FStaticMeshComponentLODInfo& ComponentLODInfo = StaticMeshComponent->LODData[LODLevelToStoreLODInfo];
 
 								// Detect duplicated MapBuildDataId
 								if (Registry->GetMeshBuildDataDuringBuild(ComponentLODInfo.MapBuildDataId))
 								{
 									ComponentLODInfo.MapBuildDataId.Invalidate();
 
-									if (LODIndex > 0)
+									if (LODLevelToStoreLODInfo > 0)
 									{
 										// Non-zero LODs derive their MapBuildDataId from LOD0. In this case also regenerate LOD0 GUID
 										StaticMeshComponent->LODData[0].MapBuildDataId.Invalidate();
-										check(StaticMeshComponent->LODData[0].CreateMapBuildDataId(0));
+										verify(StaticMeshComponent->LODData[0].CreateMapBuildDataId(0));
 									}
 								}
 
-								if (ComponentLODInfo.CreateMapBuildDataId(LODIndex))
+								if (ComponentLODInfo.CreateMapBuildDataId(LODLevelToStoreLODInfo))
 								{
 									StaticMeshComponent->MarkPackageDirty();
 								}
 
 								FMeshMapBuildData& MeshBuildData = Registry->AllocateMeshBuildData(ComponentLODInfo.MapBuildDataId, true);
 
-								const bool bNeedsLightMap = true;// bHasNonZeroData;
+								const bool bNeedsLightMap = bHasNonZeroData || (bUseVirtualTextures && ShadowMaps.Num() > 0);
 								if (bNeedsLightMap)
 								{
 									// Create a light-map for the primitive.
@@ -2368,6 +2398,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							Tile.Value.CPUTextureData[0]->Decompress();
 							Tile.Value.CPUTextureData[1]->Decompress();
 							Tile.Value.CPUTextureData[2]->Decompress();
+							Tile.Value.CPUTextureData[3]->Decompress();
 						}
 
 						FInstanceGroup& InstanceGroup = InstanceGroups.Elements[InstanceGroupIndex];
@@ -2387,6 +2418,12 @@ void FScene::ApplyFinishedLightmapsToWorld()
 
 						for (int32 InstanceIndex = 0; InstanceIndex < InstanceGroupLightSampleData.Num(); InstanceIndex++)
 						{
+							TArray<FLinearColor> IncidentLighting;
+							TArray<FLinearColor> LuminanceSH;
+							TArray<FVector3f> SkyBentNormal;
+							IncidentLighting.AddZeroed(BaseLightMapWidth * BaseLightMapHeight);
+							LuminanceSH.AddZeroed(BaseLightMapWidth * BaseLightMapHeight);
+							
 							TArray<FLightSampleData>& LightSampleData = InstanceGroupLightSampleData[InstanceIndex];
 							LightSampleData.AddZeroed(BaseLightMapWidth * BaseLightMapHeight);
 							InstancedSourceQuantizedData[InstanceIndex] = MakeUnique<FQuantizedLightmapData>();
@@ -2400,26 +2437,89 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							{
 								FIntPoint InstanceTilePos = FIntPoint(RenderIndex % InstancesPerRow, RenderIndex / InstancesPerRow);
 								FIntPoint InstanceTileMin = FIntPoint(InstanceTilePos.X * BaseLightMapWidth, InstanceTilePos.Y * BaseLightMapHeight);
-
+								
 								CopyRectTiled(
 									InstanceTileMin,
 									FIntRect(FIntPoint(0, 0), FIntPoint(BaseLightMapWidth, BaseLightMapHeight)),
 									SrcRowPitchInPixels,
 									DstRowPitchInPixels,
-									[&Lightmap, &LightSampleData](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+									[&Lightmap, &IncidentLighting, &LuminanceSH](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
 								{
-									LightSampleData[DstLinearIndex] = ConvertToLightSample(Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex], Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex]);
+									IncidentLighting[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex];
+									LuminanceSH[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex];
 								});
-							}
 
-							if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
-							{
-								DenoiseLightSampleData(FIntPoint(BaseLightMapWidth, BaseLightMapHeight), LightSampleData, DenoiserContext);
+								if (bHasSkyShadowing)
+								{
+									SkyBentNormal.AddZeroed(BaseLightMapWidth * BaseLightMapHeight);
+									
+									CopyRectTiled(
+										InstanceTileMin,
+										FIntRect(FIntPoint(0, 0), FIntPoint(BaseLightMapWidth, BaseLightMapHeight)),
+										SrcRowPitchInPixels,
+										DstRowPitchInPixels,
+										[&Lightmap, &SkyBentNormal](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+										{
+											FLinearColor SkyOcclusion = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[3]->Data[SrcLinearIndex];
+
+											// Revert sqrt in LightmapEncoding.ush which was done for preview
+											float Length = SkyOcclusion.A * SkyOcclusion.A;
+											FVector3f UnpackedBentNormalVector = FVector3f(SkyOcclusion) * 2.0f - 1.0f;
+											SkyBentNormal[DstLinearIndex] = UnpackedBentNormalVector * Length;
+										});
+								}
+								
+								if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
+								{
+									if (Settings->Denoiser == EGPULightmassDenoiser::SimpleFireflyRemover)
+									{
+										TLightSampleDataProvider<FLinearColor> SampleData(FIntPoint{BaseLightMapWidth, BaseLightMapHeight}, IncidentLighting, LuminanceSH);
+										SimpleFireflyFilter(SampleData);
+										
+										if (bHasSkyShadowing)
+										{
+											TLightSampleDataProvider<FVector3f> SkyBentNormalSampleData(FIntPoint{BaseLightMapWidth, BaseLightMapHeight}, IncidentLighting, SkyBentNormal);
+											SimpleFireflyFilter(SkyBentNormalSampleData);
+										}
+									}
+									else
+									{
+										if (bHasSkyShadowing)
+										{
+											DenoiseSkyBentNormal(FIntPoint{BaseLightMapWidth, BaseLightMapHeight}, IncidentLighting, SkyBentNormal, DenoiserContext);
+										}
+										DenoiseRawData(FIntPoint{BaseLightMapWidth, BaseLightMapHeight}, IncidentLighting, LuminanceSH, DenoiserContext);
+									}
+								}
+
+								for (int32 Y = 0; Y < BaseLightMapHeight; Y++)
+								{
+									for (int32 X = 0; X < BaseLightMapWidth; X++)
+									{
+										int32 LinearIndex = Y * BaseLightMapWidth + X;
+										LightSampleData[LinearIndex] = ConvertToLightSample(IncidentLighting[LinearIndex], LuminanceSH[LinearIndex]);
+									}
+								}
+
+								if (bHasSkyShadowing)
+								{
+									for (int32 Y = 0; Y < BaseLightMapHeight; Y++)
+									{
+										for (int32 X = 0; X < BaseLightMapWidth; X++)
+										{
+											int32 LinearIndex = Y * BaseLightMapWidth + X;
+											LightSampleData[LinearIndex].SkyOcclusion[0] = SkyBentNormal[LinearIndex].X;
+											LightSampleData[LinearIndex].SkyOcclusion[1] = SkyBentNormal[LinearIndex].Y;
+											LightSampleData[LinearIndex].SkyOcclusion[2] = SkyBentNormal[LinearIndex].Z;
+										}
+									}
+								}
 							}
 
 							FQuantizedLightmapData& QuantizedLightmapData = *InstancedSourceQuantizedData[InstanceIndex];
 							QuantizedLightmapData.SizeX = BaseLightMapWidth;
 							QuantizedLightmapData.SizeY = BaseLightMapHeight;
+							QuantizedLightmapData.bHasSkyShadowing = bHasSkyShadowing;
 
 							QuantizeLightSamples(LightSampleData, QuantizedLightmapData.Data, QuantizedLightmapData.Scale, QuantizedLightmapData.Add);
 
@@ -2431,7 +2531,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								// Directional lights are always relevant
 								for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
 								{
-									if (!DirectionalLight.bStationary)
+									if (!DirectionalLight.CastsStationaryShadow())
 									{
 										continue;
 									}
@@ -2460,7 +2560,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 
 								for (FPointLightRenderStateRef& PointLight : Lightmap.RelevantPointLights)
 								{
-									check(PointLight->bStationary);
+									check(PointLight->bStationary && PointLight->bCastShadow);
 									check(PointLight->ShadowMapChannel != INDEX_NONE);
 									TUniquePtr<FQuantizedShadowSignedDistanceFieldData2D> ShadowMap = MakeUnique<FQuantizedShadowSignedDistanceFieldData2D>(BaseLightMapWidth, BaseLightMapHeight);
 
@@ -2485,7 +2585,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 
 								for (FSpotLightRenderStateRef& SpotLight : Lightmap.RelevantSpotLights)
 								{
-									check(SpotLight->bStationary);
+									check(SpotLight->bStationary && SpotLight->bCastShadow);
 									check(SpotLight->ShadowMapChannel != INDEX_NONE);
 									TUniquePtr<FQuantizedShadowSignedDistanceFieldData2D> ShadowMap = MakeUnique<FQuantizedShadowSignedDistanceFieldData2D>(BaseLightMapWidth, BaseLightMapHeight);
 
@@ -2510,7 +2610,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 
 								for (FRectLightRenderStateRef& RectLight : Lightmap.RelevantRectLights)
 								{
-									check(RectLight->bStationary);
+									check(RectLight->bStationary && RectLight->bCastShadow);
 									check(RectLight->ShadowMapChannel != INDEX_NONE);
 									TUniquePtr<FQuantizedShadowSignedDistanceFieldData2D> ShadowMap = MakeUnique<FQuantizedShadowSignedDistanceFieldData2D>(BaseLightMapWidth, BaseLightMapHeight);
 
@@ -2540,52 +2640,8 @@ void FScene::ApplyFinishedLightmapsToWorld()
 						if (InstancedSourceQuantizedData.Num() > 0)
 						{
 							TUniquePtr<FQuantizedLightmapData>& QuantizedLightmapData = InstancedSourceQuantizedData[0];
-							{
-								for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
-								{
-									if (!DirectionalLight.bStationary)
-									{
-										UDirectionalLightComponent* Light = DirectionalLight.ComponentUObject;
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-
-								for (FPointLightBuildInfo& PointLight : LightScene.PointLights.Elements)
-								{
-									if (!PointLight.bStationary)
-									{
-										UPointLightComponent* Light = PointLight.ComponentUObject;
-										if (PointLight.AffectsBounds(InstanceGroup.WorldBounds))
-										{
-											QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-										}
-									}
-								}
-
-								for (FSpotLightBuildInfo& SpotLight : LightScene.SpotLights.Elements)
-								{
-									if (!SpotLight.bStationary)
-									{
-										USpotLightComponent* Light = SpotLight.ComponentUObject;
-										if (SpotLight.AffectsBounds(InstanceGroup.WorldBounds))
-										{
-											QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-										}
-									}
-								}
-
-								for (FRectLightBuildInfo& RectLight : LightScene.RectLights.Elements)
-								{
-									if (!RectLight.bStationary)
-									{
-										URectLightComponent* Light = RectLight.ComponentUObject;
-										if (RectLight.AffectsBounds(InstanceGroup.WorldBounds))
-										{
-											QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-										}
-									}
-								}
-							}
+							
+							AddRelevantStaticLightGUIDs(QuantizedLightmapData.Get(), InstanceGroup.WorldBounds);
 						}
 
 						UStaticMesh* ResolvedMesh = InstanceGroup.ComponentUObject->GetStaticMesh();
@@ -2600,14 +2656,17 @@ void FScene::ApplyFinishedLightmapsToWorld()
 						ULevel* StorageLevel = LightingScenario ? LightingScenario : InstanceGroup.ComponentUObject->GetOwner()->GetLevel();
 						UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();
 
-						FStaticMeshComponentLODInfo& ComponentLODInfo = InstanceGroup.ComponentUObject->LODData[LODIndex];
+						// Nanite meshes have only LOD0 technically, but that has some weird interaction with ClampedMinLOD
+						// Allocate for LOD0 only in that case
+						int32 LODLevelToStoreLODInfo = InstanceGroup.ComponentUObject->GetStaticMesh()->HasValidNaniteData() ? 0 : LODIndex;
+						FStaticMeshComponentLODInfo& ComponentLODInfo = InstanceGroup.ComponentUObject->LODData[LODLevelToStoreLODInfo];
 						
 						// Detect duplicated MapBuildDataId
 						if (Registry->GetMeshBuildDataDuringBuild(ComponentLODInfo.MapBuildDataId))
 						{
 							ComponentLODInfo.MapBuildDataId.Invalidate();
 
-							if (LODIndex > 0)
+							if (LODLevelToStoreLODInfo > 0)
 							{
 								// Non-zero LODs derive their MapBuildDataId from LOD0. In this case also regenerate LOD0 GUID
 								InstanceGroup.ComponentUObject->LODData[0].MapBuildDataId.Invalidate();
@@ -2615,7 +2674,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							}
 						}
 
-						if (ComponentLODInfo.CreateMapBuildDataId(LODIndex))
+						if (ComponentLODInfo.CreateMapBuildDataId(LODLevelToStoreLODInfo))
 						{
 							InstanceGroup.ComponentUObject->MarkPackageDirty();
 						}
@@ -2681,12 +2740,19 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							Tile.Value.CPUTextureData[0]->Decompress();
 							Tile.Value.CPUTextureData[1]->Decompress();
 							Tile.Value.CPUTextureData[2]->Decompress();
+							Tile.Value.CPUTextureData[3]->Decompress();
 						}
 
 						// Transencode GI layers
 						TArray<FLightSampleData> LightSampleData;
 						LightSampleData.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y); // LightSampleData will have different row pitch as VT is padded to tiles
 
+						TArray<FLinearColor> IncidentLighting;
+						TArray<FLinearColor> LuminanceSH;
+						TArray<FVector3f> SkyBentNormal;
+						IncidentLighting.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
+						LuminanceSH.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
+						
 						{
 							int32 SrcRowPitchInPixels = GPreviewLightmapVirtualTileSize;
 							int32 DstRowPitchInPixels = Lightmap.GetSize().X;
@@ -2696,70 +2762,87 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								FIntRect(FIntPoint(0, 0), Lightmap.GetSize()),
 								SrcRowPitchInPixels,
 								DstRowPitchInPixels,
-								[&Lightmap, &LightSampleData](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+								[&Lightmap, &IncidentLighting, &LuminanceSH](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
 							{
-								LightSampleData[DstLinearIndex] = ConvertToLightSample(Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex], Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex]);
+								IncidentLighting[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[0]->Data[SrcLinearIndex];
+								LuminanceSH[DstLinearIndex] = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[1]->Data[SrcLinearIndex];
 							});
-						}
+							
+							if (bHasSkyShadowing)
+							{
+								SkyBentNormal.AddZeroed(Lightmap.GetSize().X * Lightmap.GetSize().Y);
 
-						if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
-						{
-							DenoiseLightSampleData(Lightmap.GetSize(), LightSampleData, DenoiserContext);
+								CopyRectTiled(
+									FIntPoint(0, 0),
+									FIntRect(FIntPoint(0, 0), Lightmap.GetSize()),
+									SrcRowPitchInPixels,
+									DstRowPitchInPixels,
+									[&Lightmap, &SkyBentNormal](int32 DstLinearIndex, FIntPoint SrcTilePosition, int32 SrcLinearIndex) mutable
+									{
+										FLinearColor SkyOcclusion = Lightmap.TileStorage[FTileVirtualCoordinates(SrcTilePosition, 0)].CPUTextureData[3]->Data[SrcLinearIndex];
+										
+										// Revert sqrt in LightmapEncoding.ush which was done for preview
+										float Length = SkyOcclusion.A * SkyOcclusion.A;
+										FVector3f UnpackedBentNormalVector = FVector3f(SkyOcclusion) * 2.0f - 1.0f;
+										SkyBentNormal[DstLinearIndex] = UnpackedBentNormalVector * Length;
+									});
+							}
+
+							if (Settings->DenoisingOptions == EGPULightmassDenoisingOptions::OnCompletion)
+							{
+								if (Settings->Denoiser == EGPULightmassDenoiser::SimpleFireflyRemover)
+								{
+									TLightSampleDataProvider<FLinearColor> GISampleData(Lightmap.GetSize(), IncidentLighting, LuminanceSH);
+									SimpleFireflyFilter(GISampleData);
+
+									if (bHasSkyShadowing)
+									{
+										TLightSampleDataProvider<FVector3f> SkyBentNormalSampleData(Lightmap.GetSize(), IncidentLighting, SkyBentNormal);
+										SimpleFireflyFilter(SkyBentNormalSampleData);
+									}
+								}
+								else
+								{
+									if (bHasSkyShadowing)
+									{
+										DenoiseSkyBentNormal(Lightmap.GetSize(), IncidentLighting, SkyBentNormal, DenoiserContext);
+									}
+									DenoiseRawData(Lightmap.GetSize(), IncidentLighting, LuminanceSH, DenoiserContext);
+								}
+							}
+							
+							for (int32 Y = 0 ; Y < Lightmap.GetSize().Y; Y++)
+							{
+								for (int32 X = 0 ; X < Lightmap.GetSize().X; X++)
+								{
+									int32 LinearIndex = Y * Lightmap.GetSize().X + X;
+									LightSampleData[LinearIndex] = ConvertToLightSample(IncidentLighting[LinearIndex], LuminanceSH[LinearIndex]);
+								}
+							}
+
+							if (bHasSkyShadowing)
+							{
+								for (int32 Y = 0 ; Y < Lightmap.GetSize().Y; Y++)
+								{
+									for (int32 X = 0 ; X < Lightmap.GetSize().X; X++)
+									{
+										int32 LinearIndex = Y * Lightmap.GetSize().X + X;
+										LightSampleData[LinearIndex].SkyOcclusion[0] = SkyBentNormal[LinearIndex].X;
+										LightSampleData[LinearIndex].SkyOcclusion[1] = SkyBentNormal[LinearIndex].Y;
+										LightSampleData[LinearIndex].SkyOcclusion[2] = SkyBentNormal[LinearIndex].Z;
+									}
+								}
+							}
 						}
 
 						FQuantizedLightmapData* QuantizedLightmapData = new FQuantizedLightmapData();
 						QuantizedLightmapData->SizeX = Lightmap.GetSize().X;
 						QuantizedLightmapData->SizeY = Lightmap.GetSize().Y;
+						QuantizedLightmapData->bHasSkyShadowing = bHasSkyShadowing;
 
 						QuantizeLightSamples(LightSampleData, QuantizedLightmapData->Data, QuantizedLightmapData->Scale, QuantizedLightmapData->Add);
 
-						// Add static lights to lightmap data
-						{
-							for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
-							{
-								if (!DirectionalLight.bStationary)
-								{
-									UDirectionalLightComponent* Light = DirectionalLight.ComponentUObject;
-									QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-								}
-							}
-
-							for (FPointLightBuildInfo& PointLight : LightScene.PointLights.Elements)
-							{
-								if (!PointLight.bStationary)
-								{
-									UPointLightComponent* Light = PointLight.ComponentUObject;
-									if (PointLight.AffectsBounds(Landscapes.Elements[LandscapeIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-
-							for (FSpotLightBuildInfo& SpotLight : LightScene.SpotLights.Elements)
-							{
-								if (!SpotLight.bStationary)
-								{
-									USpotLightComponent* Light = SpotLight.ComponentUObject;
-									if (SpotLight.AffectsBounds(Landscapes.Elements[LandscapeIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-
-							for (FRectLightBuildInfo& RectLight : LightScene.RectLights.Elements)
-							{
-								if (!RectLight.bStationary)
-								{
-									URectLightComponent* Light = RectLight.ComponentUObject;
-									if (RectLight.AffectsBounds(Landscapes.Elements[LandscapeIndex].WorldBounds))
-									{
-										QuantizedLightmapData->LightGuids.Add(Light->LightGuid);
-									}
-								}
-							}
-						}
+						AddRelevantStaticLightGUIDs(QuantizedLightmapData, Landscapes.Elements[LandscapeIndex].WorldBounds);
 
 						// Transencode stationary light shadow masks
 						TMap<ULightComponent*, FShadowMapData2D*> ShadowMaps;
@@ -2769,7 +2852,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 								FLocalLightRenderState& Light
 								)
 							{
-								check(Light.bStationary);
+								check(Light.bStationary && Light.bCastShadow);
 								check(Light.ShadowMapChannel != INDEX_NONE);
 								FQuantizedShadowSignedDistanceFieldData2D* ShadowMap = new FQuantizedShadowSignedDistanceFieldData2D(Lightmap.GetSize().X, Lightmap.GetSize().Y);
 
@@ -2793,7 +2876,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 							// Directional lights are always relevant
 							for (FDirectionalLightBuildInfo& DirectionalLight : LightScene.DirectionalLights.Elements)
 							{
-								if (!DirectionalLight.bStationary)
+								if (!DirectionalLight.CastsStationaryShadow())
 								{
 									continue;
 								}
@@ -2824,7 +2907,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 						{
 							ULandscapeComponent* LandscapeComponent = Landscapes.Elements[LandscapeIndex].ComponentUObject;
 							ELightMapPaddingType PaddingType = LMPT_NoPadding;
-							const bool bHasNonZeroData = QuantizedLightmapData->HasNonZeroData();
+							const bool bHasNonZeroData = QuantizedLightmapData->HasNonZeroData() || (bUseVirtualTextures && ShadowMaps.Num() > 0);
 
 							ULevel* StorageLevel = LightingScenario ? LightingScenario : LandscapeComponent->GetOwner()->GetLevel();
 							UMapBuildDataRegistry* Registry = StorageLevel->GetOrCreateMapBuildData();

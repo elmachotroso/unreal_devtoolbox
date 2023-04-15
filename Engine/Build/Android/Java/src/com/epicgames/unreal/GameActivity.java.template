@@ -32,6 +32,7 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import java.lang.Override;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -213,6 +214,7 @@ import android.widget.TextView.OnEditorActionListener;
 import android.content.BroadcastReceiver;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.FileProvider;
+import com.epicgames.unreal.psoservices.PSOProgramServiceAccessor;
 //$${gameActivityImportAdditions}$$
 
 //$${gameActivityPostImportAdditions}$$
@@ -236,6 +238,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 															ComponentCallbacks2
 {
 	public int VersionCode = 0;
+	public String VersionName = "Unknown";
+	public int targetSdkVersion = 0;
+
 	private boolean bAllowIMU = true;
 	private SensorManager sensorManager;
 	private Sensor accelerometer;
@@ -483,6 +488,11 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public boolean bSupportsFloatingPointRenderTargets = false;
 	private String EGLErrorStatus = "UNSET";
 	
+	private PSOProgramServiceAccessor mPSOProgramServiceAccessor = new PSOProgramServiceAccessor();
+
+	static final private AtomicBoolean bIsActivityPaused = new AtomicBoolean(true);
+	static public boolean IsActivityPaused() { return bIsActivityPaused.get();}
+
 	/** Flag for not officially supported devices */
 	public static boolean bSupportedDevice = true;
 
@@ -1670,6 +1680,24 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			hardware = cpuInfo.get("Hardware");
 		}
 		Log.debug("Hardware: " + hardware);
+		String roSOCModel = getProp("ro.soc.model");
+		if (!roSOCModel.equals(""))
+		{
+			Log.debug("ro.soc.model: " + roSOCModel);
+
+			// validate either we only have ro.soc.model, or that previous hardware value in agreement
+			// encountered a device which had ro.hardware and /proc/cpuinfo correct but ro.soc.model set differently
+			String CheckHardware = hardware.toLowerCase();
+			String CheckSOC = roSOCModel.toLowerCase();
+			if (CheckHardware.isEmpty() || CheckHardware.contains(CheckSOC) || CheckSOC.contains(CheckHardware))
+			{
+				hardware = roSOCModel;
+			}
+			else
+			{
+				Log.debug("Warning: hardware does not match ro.soc.model, assuming hardware is correct");
+			}
+		}
 
 		// register variables for the program to access
 		Map<String, String> variables = new HashMap<String, String>();
@@ -1683,10 +1711,14 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		variables.put("memory", Integer.toString(totalMemory));
 
 		//variables.put("Profile", "Android");
+		variables.put("versionCode", Integer.toString(VersionCode));
+		variables.put("versionName", VersionName);
+		variables.put("targetSdkVersion", Integer.toString(targetSdkVersion));
 		variables.put("unsupportedDevice", "false");
 		variables.put("OverrideProfile", "true");
 		variables.put("hardware", hardware);
 		variables.put("ro.hardware", roHardware);
+		variables.put("ro.soc.model", roSOCModel);
 		variables.put("processor", processor);
 		variables.put("processorCount", Integer.toString(processorCount));
 		variables.put("useAffinity", "false");
@@ -2368,18 +2400,20 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			}
 		}
 
-		//Check for target sdk.  If 23 or higher then warn that permission handling may mean features don't work if user denies them.
-		int targetSdkVersion = 0;
+		// Retrieve version code, name, and target SDK
 		try 
 		{
 			PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+			VersionCode = packageInfo.versionCode;
+			VersionName = packageInfo.versionName;
 			targetSdkVersion = packageInfo.applicationInfo.targetSdkVersion;
 		}
-		catch (PackageManager.NameNotFoundException e) 
+		catch (Exception e)
 		{
-			Log.debug(e.getMessage());
+			Log.debug("Error accessing packageInfo: " + e.getMessage());
 		}
 
+		// Check for target sdk.  If 23 or higher then warn that permission handling may mean features don't work if user denies them.
 		boolean bIsShipping = nativeIsShippingBuild();
 		if (ANDROID_BUILD_VERSION >= 23 && targetSdkVersion >= 23) //23 is the API level (Marshmallow) where runtime permission handling is available
 		{
@@ -2619,7 +2653,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				_activity.setRequestedOrientation( android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE );
 			}
 		}
-		
+
 		// Read metadata from AndroidManifest.xml
 		appPackageName = getPackageName();
 		String ProjectName = getPackageName();
@@ -2646,9 +2680,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				Log.debug( "Did not find DepthBufferPreference, using default.");
 			}
 
-			if (bundle.containsKey("com.epicgames.ue4.GameActivity.PropagateAlpha"))
+			if (bundle.containsKey("com.epicgames.unreal.GameActivity.PropagateAlpha"))
 			{
-				PropagateAlpha = bundle.getInt("com.epicgames.ue4.GameActivity.PropagateAlpha");
+				PropagateAlpha = bundle.getInt("com.epicgames.unreal.GameActivity.PropagateAlpha");
 				Log.debug( "Found PropagateAlpha = " + PropagateAlpha);
 			}
 			else
@@ -2834,17 +2868,15 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		Log.debug( "Debugger attached is " + bDebuggerAttached );
 
 		nativeSetAndroidVersionInformation( android.os.Build.VERSION.RELEASE, targetSdkVersion, android.os.Build.MANUFACTURER, android.os.Build.MODEL, android.os.Build.DISPLAY, Language );
-
-		try
+		int PatchVersion = 0;
+		if (VersionCode > 0)
 		{
-			VersionCode = getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
-			int PatchVersion = 0;
 			nativeSetObbInfo(ProjectName, getApplicationContext().getPackageName(), VersionCode, PatchVersion, AppType);
 		}
-		catch (Exception e)
+		else
 		{
 			// if the above failed, then, we can't use obbs
-			Log.debug("==================================> PackageInfo failure getting .obb info: " + e.getMessage());
+			Log.debug("==================================> PackageInfo failure getting .obb info: versionCode invalid");
 		}
 		
 		// enable the physical volume controls to the game
@@ -3168,7 +3200,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 
 //$${gameActivityOnCreateAdditions}$$
 //$${gameActivityOnCreateFinalAdditions}$$
-		
+		mPSOProgramServiceAccessor.Init(this);
+
 		Log.debug("==============> GameActive.onCreate complete!");
 	}
 
@@ -3341,6 +3374,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	public void onResume()
 	{
 		super.onResume();
+		bIsActivityPaused.set(false);
 
 		// start memory reporter timer (runs every 10 seconds)
 		synchronized(this)
@@ -3488,6 +3522,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	@Override
 	protected void onPause()
 	{
+		bIsActivityPaused.set(true);
+
 		// stop memory reporter timer if running
 		synchronized(this)
 		{
@@ -4690,7 +4726,6 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				return;
 			}
 		}
-//$${gameActivityOnActivityResultIapStoreHelperHandler}$$
 		else
 		{
 			super.onActivityResult(requestCode, resultCode, data);
@@ -4749,22 +4784,6 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 			Log.debug("[JAVA] - Store Helper is invalid");
 		}
 		return bTriggeredQuery;
-	}
-
-	public boolean AndroidThunkJava_IapRestorePurchases(String[] InProductIDs, boolean[] bConsumable)
-	{
-		Log.debug("[JAVA] - AndroidThunkJava_IapRestorePurchases");
-		boolean bTriggeredRestore = false;
-		if( IapStoreHelper != null )
-		{
-			Log.debug("[JAVA] - AndroidThunkJava_IapRestorePurchases - Kick off logic here!");
-			bTriggeredRestore = IapStoreHelper.RestorePurchases(InProductIDs, bConsumable);
-		}
-		else
-		{
-			Log.debug("[JAVA] - Store Helper is invalid");
-		}
-		return bTriggeredRestore;
 	}
 
 	public void AndroidThunkJava_DismissSplashScreen()
@@ -5069,7 +5088,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		notificationIntent.putExtra("local-notification-activationEvent", activationEvent);
 
 		// Designate the callback as a PendingIntent
-		PendingIntent pendingIntent = PendingIntent.getBroadcast(context, notificationID, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+		PendingIntent pendingIntent = PendingIntent.getBroadcast(context, notificationID, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
 		TimeZone targetTimeZone = TimeZone.getTimeZone("UTC");
 
@@ -5139,7 +5158,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		for(int curID : idList)
 		{
 			AlarmManager alarmManager = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
-			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, curID, new Intent(this, LocalNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT);
+			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, curID, new Intent(this, LocalNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 			pendingIntent.cancel();
 			alarmManager.cancel(pendingIntent);
 		}
@@ -5167,7 +5186,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 
 			//Cancel the intent itself as well as from the alarm manager
 			AlarmManager alarmManager = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
-			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, notificationId, new Intent(this, LocalNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT);
+			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, notificationId, new Intent(this, LocalNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 			pendingIntent.cancel();
 			alarmManager.cancel(pendingIntent);
 			
@@ -5372,7 +5391,30 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 
 	public boolean AndroidThunkJava_SetNativeDisplayRefreshRate(int RefreshRate)
 	{
-		if(ANDROID_BUILD_VERSION >= 24)
+		if (ANDROID_BUILD_VERSION >= 30)
+		{
+			final int FinalRefreshRate = RefreshRate;
+			_activity.runOnUiThread(new Runnable()
+			{
+				@Override
+				public void run()
+				{
+					// the window might be gone by the time this code runs
+					try
+					{
+						MySurfaceView.getHolder().getSurface().setFrameRate(FinalRefreshRate, android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+					}
+					catch (Exception e)
+					{
+						Log.debug("setFrameRate failed. "+ e.getMessage());
+					}
+				}
+			});
+			
+			Log.debug("SetNativeDisplayRefreshRate - setFrameRate " + RefreshRate);
+			return true;
+		}
+		else if(ANDROID_BUILD_VERSION >= 24)
 		{
 			WindowManager windowManager =  getWindowManager();
 			Display display = windowManager.getDefaultDisplay();
@@ -6551,7 +6593,6 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	{
 		System.loadLibrary("Unreal");
 //$${soLoadLibrary}$$
-		System.loadLibrary("c++_shared");
 	}
 
 	public native void nativeHandleSensorEvents(float[] tilt, float[] rotation_rate, float[] gravity, float[] acceleration);

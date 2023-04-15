@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/CoreMiscDefines.h"
 #include "Misc/EnumClassFlags.h"
 
 #ifdef WITH_COREUOBJECT
@@ -27,7 +28,8 @@ enum class EDatasmithElementType : uint64
 	Camera                         = 1ull << 10,
 	Shader                         = 1ull << 11,
 	BaseMaterial                   = 1ull << 12,
-	MasterMaterial                 = 1ull << 13,
+	MasterMaterial UE_DEPRECATED(5.1, "EDatasmithElementType::MasterMaterial will not be supported in 5.2. Please use EDatasmithElementType::MaterialInstance instead.") = 1ull << 13,
+	MaterialInstance               = 1ull << 13,
 	KeyValueProperty               = 1ull << 14,
 	Texture                        = 1ull << 15,
 	MaterialId                     = 1ull << 16,
@@ -48,6 +50,8 @@ enum class EDatasmithElementType : uint64
 	MaterialExpression             = 1ull << 31,
 	MaterialExpressionInput        = 1ull << 32,
 	MaterialExpressionOutput       = 1ull << 33,
+	Cloth                          = 1ull << 34,
+	ClothActor                     = 1ull << 35,
 };
 
 ENUM_CLASS_FLAGS( EDatasmithElementType ); // Define bitwise operators for EDatasmithElementType
@@ -223,23 +227,24 @@ enum class EDatasmithMaterialMode
 	MixedMetal
 };
 
-enum class EDatasmithMasterMaterialType : uint8
+enum class EDatasmithReferenceMaterialType : uint8
 {
-	/** Let Datasmith figure which master material to use */
+	/** Let Datasmith figure which reference material to use */
 	Auto,
 	Opaque,
 	Transparent,
 	ClearCoat,
-	/** Instantiate a master material from a specified one */
+	/** Instantiate a reference material from a specified one */
 	Custom,
 	/** Material has a transparent cutout map */
 	CutOut,
 	Emissive,
+	Decal,
 	/** Dummy element to count the number of types */
 	Count
 };
 
-enum class EDatasmithMasterMaterialQuality : uint8
+enum class EDatasmithReferenceMaterialQuality : uint8
 {
 	High,
 	Low,
@@ -341,14 +346,15 @@ enum class EDatasmithShaderUsage
 	LightFunction
 };
 
-static const TCHAR* DatasmithShadingModelStrings[] = { TEXT("DefaultLit"), TEXT("ThinTranslucent"), TEXT("Subsurface"), TEXT("ClearCoat") };
+static const TCHAR* DatasmithShadingModelStrings[] = { TEXT("DefaultLit"), TEXT("ThinTranslucent"), TEXT("Subsurface"), TEXT("ClearCoat"), TEXT("Unlit") };
 
 enum class EDatasmithShadingModel : uint8
 {
 	DefaultLit,
 	ThinTranslucent,
 	Subsurface,
-	ClearCoat
+	ClearCoat,
+	Unlit
 };
 
 UENUM()
@@ -452,6 +458,9 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 
 #define DATASMITH_ACTORNAME						TEXT("Actor")
 
+#define DATASMITH_CLOTH							TEXT("Cloth")
+#define DATASMITH_CLOTHACTORNAME				TEXT("ClothActor")
+
 //ACTOR MESHES
 #define DATASMITH_ACTORMESHNAME					TEXT("ActorMesh")
 
@@ -552,10 +561,10 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 #define DATASMITH_PARENTMATERIALLABEL			TEXT("ParentLabel")
 #define DATASMITH_UEPBRMATERIALNAME				TEXT("UEPbrMaterial")
 
-#define DATASMITH_MASTERMATERIALNAME			TEXT("MasterMaterial")
-#define DATASMITH_MASTERMATERIALTYPE			TEXT("Type")
-#define DATASMITH_MASTERMATERIALQUALITY			TEXT("Quality")
-#define DATASMITH_MASTERMATERIALPATHNAME		TEXT("PathName")
+#define DATASMITH_MATERIALINSTANCENAME			TEXT("MaterialInstance")
+#define DATASMITH_MATERIALINSTANCETYPE			TEXT("Type")
+#define DATASMITH_MATERIALINSTANCEQUALITY		TEXT("Quality")
+#define DATASMITH_MATERIALINSTANCEPATHNAME		TEXT("PathName")
 
 #define DATASMITH_TEXTURENAME					TEXT("Texture")
 #define DATASMITH_TEXTURECOMPNAME				TEXT("Texturecomp")
@@ -627,5 +636,3 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 
 #define DATASMITH_DECALMATERIALNAME				TEXT("DecalMaterial")
 
-//LODS
-#define DATASMITH_LODSCREENSIZE					TEXT("LodScreenSize")

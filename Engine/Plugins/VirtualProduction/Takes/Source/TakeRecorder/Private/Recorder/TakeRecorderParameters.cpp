@@ -3,10 +3,13 @@
 #include "Recorder/TakeRecorderParameters.h"
 #include "Recorder/TakeRecorder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderParameters)
+
 FTakeRecorderUserParameters::FTakeRecorderUserParameters()
 	: bMaximizeViewport(false)
 	, CountdownSeconds(0.f)
 	, EngineTimeDilation(1.f)
+	, bResetPlayhead(true)
 	, bStopAtPlaybackEnd(false)
 	, bRemoveRedundantTracks(true)
 	, ReduceKeysTolerance(KINDA_SMALL_NUMBER)
@@ -31,3 +34,4 @@ FTakeRecorderProjectParameters::FTakeRecorderProjectParameters()
 FTakeRecorderParameters::FTakeRecorderParameters() 
 	: TakeRecorderMode(ETakeRecorderMode::RecordNewSequence)
 {}
+

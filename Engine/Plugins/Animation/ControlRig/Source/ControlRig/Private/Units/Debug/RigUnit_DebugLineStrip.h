@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Units/Debug/RigUnit_DebugBase.h"
+#include "RigUnit_DebugBase.h"
 #include "RigUnit_DebugLineStrip.generated.h"
 
 USTRUCT(meta=(DisplayName="Draw Line Strip", Deprecated = "4.25"))
@@ -38,6 +38,9 @@ struct CONTROLRIG_API FRigUnit_DebugLineStrip : public FRigUnit_DebugBaseMutable
 	
 	UPROPERTY(meta = (Input, Constant))
 	bool bEnabled;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
 
 /**
@@ -75,6 +78,6 @@ struct CONTROLRIG_API FRigUnit_DebugLineStripItemSpace : public FRigUnit_DebugBa
 	UPROPERTY(meta = (Input))
 	FTransform WorldOffset;
 	
-	UPROPERTY(meta = (Input, Constant))
+	UPROPERTY(meta = (Input))
 	bool bEnabled;
 };

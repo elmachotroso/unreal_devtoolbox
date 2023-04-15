@@ -31,6 +31,7 @@
 #include "FbxImporter.h"
 #include "GeomFitUtils.h"
 #include "ImportUtils/StaticMeshImportUtils.h"
+#include "InterchangeProjectSettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Misc/FbxErrors.h"
@@ -63,6 +64,7 @@ struct FRestoreReimportData
 
 	FRestoreReimportData(UStaticMesh* Mesh)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FRestoreReimportData);
 		if (!ensure(Mesh))
 		{
 			return;
@@ -81,6 +83,7 @@ struct FRestoreReimportData
 
 	void RestoreMesh(UnFbx::FFbxImporter* FbxImporter)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(RestoreMesh);
 		if (!ensure(EditorObject && DupObject))
 		{
 			return;
@@ -125,6 +128,7 @@ struct FRestoreReimportData
 
 	void CleanupDuplicateMesh()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(CleanupDuplicateMesh);
 		if(DupObject)
 		{
 			DupObject->RemoveFromRoot();
@@ -367,9 +371,8 @@ float UnFbx::FFbxImporter::GetTriangleAreaThreshold() const
 	return (ImportOptions->bRemoveDegenerates && !ImportOptions->bBuildNanite) ? SMALL_NUMBER : 0.0f;
 }
 
-
 bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh* StaticMesh, TArray<FFbxMaterial>& MeshMaterials, int32 LODIndex,
-	EVertexColorImportOption::Type VertexColorImportOption, const TMap<FVector, FColor>& ExistingVertexColorData, const FColor& VertexOverrideColor)
+	EVertexColorImportOption::Type VertexColorImportOption, const TMap<FVector3f, FColor>& ExistingVertexColorData, const FColor& VertexOverrideColor)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FFbxImporter::BuildStaticMeshFromGeometry);
 	FFbxScopedOperation ScopedImportOperation(this);
@@ -383,11 +386,6 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 	//The mesh description should have been created before calling BuildStaticMeshFromGeometry
 	check(MeshDescription);
 	FStaticMeshAttributes Attributes(*MeshDescription);
-
-	//This slow task doesn't have any text description and is used to unify all the other sub-tasks of this function.
-	FScopedSlowTask BuildStaticMeshSlowTask(Mesh->IsTriangleMesh() ? 1 : 2);
-	BuildStaticMeshSlowTask.MakeDialog();
-	BuildStaticMeshSlowTask.EnterProgressFrame(1);
 
 	//Get the base layer of the mesh
 	FbxLayer* BaseLayer = Mesh->GetLayer(0);
@@ -404,6 +402,10 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 		StaticMesh->SetLightMapCoordinateIndex(FBXNamedLightMapCoordinateIndex);
 	}
 	
+	//Get the default hard/smooth edges from the project settings
+	const UInterchangeProjectSettings* InterchangeProjectSettings = GetDefault<UInterchangeProjectSettings>();
+	const bool bStaticMeshUseSmoothEdgesIfSmoothingInformationIsMissing = InterchangeProjectSettings->bStaticMeshUseSmoothEdgesIfSmoothingInformationIsMissing;
+
 	//
 	// create materials
 	//
@@ -486,13 +488,6 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 		{
 			AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, FText::Format(LOCTEXT("Error_FailedToTriangulateWithOmission", "Unable to triangulate mesh '{0}': it will be omitted."), FText::FromString(FbxNodeName))), FFbxErrors::Generic_Mesh_TriangulationFailed);
 			return false;
-		}
-		
-		BuildStaticMeshSlowTask.EnterProgressFrame(1);
-		if (ImportOptions->bIsImportCancelable && BuildStaticMeshSlowTask.ShouldCancel())
-		{ 
-			bImportOperationCanceled = true; 
-			return false; 
 		}
 	}
 	
@@ -604,25 +599,29 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 		bool bEnableCollision = bImportedCollision || (GBuildStaticMeshCollision && LODIndex == 0 && ImportOptions->bRemoveDegenerates);
 		for(int32 SectionIndex=MaterialIndexOffset; SectionIndex<MaterialIndexOffset+MaterialCount; SectionIndex++)
 		{
-			FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LODIndex, SectionIndex);
-		
-			Info.bEnableCollision = bEnableCollision;
-			//Make sure LOD greater then 0 copy the LOD 0 sections collision flags
-			if (LODIndex != 0)
+			if (StaticMesh->GetSectionInfoMap().IsValidSection(LODIndex, SectionIndex))
 			{
-				//Match the material slot index
-				for (int32 LodZeroSectionIndex = 0; LodZeroSectionIndex < StaticMesh->GetSectionInfoMap().GetSectionNumber(0); ++LodZeroSectionIndex)
+				FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LODIndex, SectionIndex);
+		
+				Info.bEnableCollision = bEnableCollision;
+				//Make sure LOD greater then 0 copy the LOD 0 sections collision flags
+				if (LODIndex != 0)
 				{
-					FMeshSectionInfo InfoLodZero = StaticMesh->GetSectionInfoMap().Get(0, LodZeroSectionIndex);
-					if (InfoLodZero.MaterialIndex == Info.MaterialIndex)
+					//Match the material slot index
+					for (int32 LodZeroSectionIndex = 0; LodZeroSectionIndex < StaticMesh->GetSectionInfoMap().GetSectionNumber(0); ++LodZeroSectionIndex)
 					{
-						Info.bEnableCollision = InfoLodZero.bEnableCollision;
-						Info.bCastShadow = InfoLodZero.bCastShadow;
-						break;
+						FMeshSectionInfo InfoLodZero = StaticMesh->GetSectionInfoMap().Get(0, LodZeroSectionIndex);
+						if (InfoLodZero.MaterialIndex == Info.MaterialIndex)
+						{
+							Info.bEnableCollision = InfoLodZero.bEnableCollision;
+							Info.bCastShadow = InfoLodZero.bCastShadow;
+							break;
+						}
 					}
 				}
+
+				StaticMesh->GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
 			}
-			StaticMesh->GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
 		}
 	}
 
@@ -778,7 +777,7 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 
 				MeshDescription->ReserveNewPolygons(PolygonCount);
 				MeshDescription->ReserveNewVertexInstances(TotalVertexCount);
-				MeshDescription->ReserveNewEdges(TotalVertexCount);
+				MeshDescription->ReserveNewEdges(Mesh->GetMeshEdgeCount());
 			}
 
 			bool  bBeginGetMeshEdgeIndexForPolygonCalled   = false;
@@ -853,7 +852,7 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 					CornerInstanceIDs[CornerIndex] = VertexInstanceID;
 					const int32 ControlPointIndex = Mesh->GetPolygonVertex(PolygonIndex, CornerIndex);
 					const FVertexID VertexID(VertexOffset + ControlPointIndex);
-					const FVector VertexPosition = (FVector)VertexPositions[VertexID];
+					const FVector3f& VertexPosition = VertexPositions[VertexID];
 					CornerVerticesIDs[CornerIndex] = VertexID;
 
 					FVertexInstanceID AddedVertexInstanceId = MeshDescription->CreateVertexInstance(VertexID);
@@ -1102,8 +1101,8 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 							}
 							else
 							{
-								//When there is no smoothing group we set all edge to hard (faceted mesh)
-								EdgeHardnesses[MatchEdgeId] = true;
+								//When there is no smoothing group we set all edge to hard (faceted mesh) or false depending on the project settings
+								EdgeHardnesses[MatchEdgeId] = !bStaticMeshUseSmoothEdgesIfSmoothingInformationIsMissing;
 							}
 						}
 					}
@@ -1176,11 +1175,7 @@ bool UnFbx::FFbxImporter::BuildStaticMeshFromGeometry(FbxNode* Node, UStaticMesh
 
 			if (SkippedVertexInstance > 0)
 			{
-				//We must compact the sparse array before reserving new space
-				//When we reserve it will make a hole in the sparse array if the last reserve was not fully use
-				//The importer assume there will be no hole when importing a mesh
-				FElementIDRemappings OutRemappings;
-				MeshDescription->Compact(OutRemappings);
+				check(MeshDescription->Triangles().Num() == MeshDescription->Triangles().GetArraySize());
 			}
 		}
 	}
@@ -1681,7 +1676,7 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 	UObject* ExistingObject = NULL;
 
 	// A mapping of vertex positions to their color in the existing static mesh
-	TMap<FVector, FColor>		ExistingVertexColorData;
+	TMap<FVector3f, FColor>		ExistingVertexColorData;
 
 	EVertexColorImportOption::Type VertexColorImportOption = ImportOptions->VertexColorImportOption;
 	FString NewPackageName;
@@ -1769,7 +1764,10 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 	{
 		MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
 		check(MeshDescription != nullptr);
-		StaticMesh->CommitMeshDescription(LODIndex);
+
+		UStaticMesh::FCommitMeshDescriptionParams Params;
+		Params.bUseHashAsGuid = true;
+		StaticMesh->CommitMeshDescription(LODIndex, Params);
 
 		//Make sure an imported mesh do not get reduce if there was no mesh data before reimport.
 		//In this case we have a generated LOD convert to a custom LOD
@@ -1798,10 +1796,12 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 	bool bAllDegenerated = true;
 	TArray<FFbxMaterial> MeshMaterials;
 	int32 NodeFailCount = 0;
+	
+	FScopedSlowTask BuildMeshSlowTask(MeshNodeArray.Num(), FText::Format(LOCTEXT("FbxStaticMeshBuildGeometryTask", "Importing Static Mesh Geometries {0} of {1}."), FText::AsNumber(0), FText::AsNumber(MeshNodeArray.Num())));
+	BuildMeshSlowTask.MakeDialog();
 	for (int32 MeshIndex = 0; MeshIndex < MeshNodeArray.Num(); MeshIndex++)
 	{
-		FScopedSlowTask BuildMeshSlowTask(MeshNodeArray.Num(), FText::Format(LOCTEXT("FbxStaticMeshBuildGeometryTask", "Importing Static Mesh Geometry {0} of {1}."), FText::AsNumber(1), FText::AsNumber(MeshNodeArray.Num())));
-		
+		BuildMeshSlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("FbxStaticMeshBuildGeometryTaskProgress", "Importing Static Mesh Geometry {0} of {1}."), FText::AsNumber(MeshIndex+1), FText::AsNumber(MeshNodeArray.Num())));
 		FbxNode* Node = MeshNodeArray[MeshIndex];
 		if (Node->GetMesh())
 		{
@@ -1817,8 +1817,6 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 			{
 				bAllDegenerated = false;
 
-				//Only cancel the operation if we are creating a new asset, as we don't support existing asset restoration yet.
-				BuildMeshSlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("FbxStaticMeshBuildGeometryTask", "Importing Static Mesh Geometry {0} of {1}."), FText::AsNumber(MeshIndex + 1), FText::AsNumber(MeshNodeArray.Num())));
 				if(ImportOptions->bIsImportCancelable && BuildMeshSlowTask.ShouldCancel())
 				{
 					bImportOperationCanceled = true; 
@@ -1876,33 +1874,29 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 			}
 			UMaterialInterface* Material = MeshMaterials.IsValidIndex(MaterialIndex) ? MeshMaterials[MaterialIndex].Material : UMaterial::GetDefaultMaterial(MD_Surface);
 			FStaticMaterial StaticMaterial(Material, MaterialSlotName, ImportedMaterialSlotName);
-			(LODIndex > 0) ? MaterialToAdd.Add(StaticMaterial) : StaticMesh->GetStaticMaterials().Add(StaticMaterial);
+			MaterialToAdd.Add(StaticMaterial);
 		}
-		if (LODIndex > 0)
+
 		{
 			//Insert the new materials in the static mesh
 			//The build function will search for imported slot name to find the appropriate slot
-			int32 StaticMeshMaterialCount = StaticMesh->GetStaticMaterials().Num();
-			if (StaticMeshMaterialCount > 0)
+			for (int32 MaterialToAddIndex = 0; MaterialToAddIndex < MaterialToAdd.Num(); ++MaterialToAddIndex)
 			{
-				for (int32 MaterialToAddIndex = 0; MaterialToAddIndex < MaterialToAdd.Num(); ++MaterialToAddIndex)
+				const FStaticMaterial& CandidateMaterial = MaterialToAdd[MaterialToAddIndex];
+				bool FoundExistingMaterial = false;
+				//Found matching existing material
+				for (int32 StaticMeshMaterialIndex = 0; StaticMeshMaterialIndex < StaticMesh->GetStaticMaterials().Num(); ++StaticMeshMaterialIndex)
 				{
-					const FStaticMaterial& CandidateMaterial = MaterialToAdd[MaterialToAddIndex];
-					bool FoundExistingMaterial = false;
-					//Found matching existing material
-					for (int32 StaticMeshMaterialIndex = 0; StaticMeshMaterialIndex < StaticMeshMaterialCount; ++StaticMeshMaterialIndex)
+					const FStaticMaterial& StaticMeshMaterial = StaticMesh->GetStaticMaterials()[StaticMeshMaterialIndex];
+					if (StaticMeshMaterial.ImportedMaterialSlotName == CandidateMaterial.ImportedMaterialSlotName)
 					{
-						const FStaticMaterial& StaticMeshMaterial = StaticMesh->GetStaticMaterials()[StaticMeshMaterialIndex];
-						if (StaticMeshMaterial.ImportedMaterialSlotName == CandidateMaterial.ImportedMaterialSlotName)
-						{
-							FoundExistingMaterial = true;
-							break;
-						}
+						FoundExistingMaterial = true;
+						break;
 					}
-					if (!FoundExistingMaterial)
-					{
-						StaticMesh->GetStaticMaterials().Add(CandidateMaterial);
-					}
+				}
+				if (!FoundExistingMaterial)
+				{
+					StaticMesh->GetStaticMaterials().Add(CandidateMaterial);
 				}
 			}
 			
@@ -1940,8 +1934,11 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 				SectionIndex++;
 			}
 		}
+
 		//Set the original mesh description to be able to do non destructive reduce
-		StaticMesh->CommitMeshDescription(LODIndex);
+		UStaticMesh::FCommitMeshDescriptionParams Params;
+		Params.bUseHashAsGuid = true;
+		StaticMesh->CommitMeshDescription(LODIndex, Params);
 
 		// Setup default LOD settings based on the selected LOD group.
 		if (LODIndex == 0)
@@ -2025,6 +2022,7 @@ UStaticMesh* UnFbx::FFbxImporter::ImportStaticMeshAsSingle(UObject* InParent, TA
 			ExistingBuildSettings.bGenerateLightmapUVs = SrcModel.BuildSettings.bGenerateLightmapUVs;
 			ExistingBuildSettings.DstLightmapIndex = SrcModel.BuildSettings.DstLightmapIndex;
 			MutableExistMeshDataPtr->ExistingLightMapCoordinateIndex = SrcModel.BuildSettings.DstLightmapIndex;
+			MutableExistMeshDataPtr->ExistingNaniteSettings.bEnabled = StaticMesh->NaniteSettings.bEnabled;
 
 			StaticMeshImportUtils::RestoreExistingMeshSettings(ExistMeshDataPtr, InStaticMesh, StaticMesh->LODGroup != NAME_None ? INDEX_NONE : LODIndex);
 		}

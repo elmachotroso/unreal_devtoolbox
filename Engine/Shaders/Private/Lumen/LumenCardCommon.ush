@@ -31,6 +31,8 @@ struct FLumenCardData
 
 	bool bVisible;
 	bool bHeightfield;
+	uint AxisAlignedDirection;
+	uint LightingChannelMask;
 
 	// Average world space texel size of always resident pages
 	float TexelSize;
@@ -72,11 +74,15 @@ FLumenCardData GetLumenCardData(uint CardId)
 	CardData.Origin = float3(Vector0.w, Vector1.w, Vector2.w);
 
 	CardData.LocalExtent = abs(Vector3.xyz);
-	CardData.ResLevelToResLevelXYBias.x = (asuint(Vector3.w) >> 0) & 0xFF;
-	CardData.ResLevelToResLevelXYBias.y = (asuint(Vector3.w) >> 8) & 0xFF;
-	CardData.bVisible = asuint(Vector3.w) & (1 << 16);
-	CardData.bHeightfield = asuint(Vector3.w) & (1 << 17);
 
+	uint Packed3W = asuint(Vector3.w);
+	CardData.ResLevelToResLevelXYBias.x = (Packed3W >> 0) & 0xFF;
+	CardData.ResLevelToResLevelXYBias.y = (Packed3W >> 8) & 0xFF;
+	CardData.AxisAlignedDirection = (Packed3W >> 16) & 0xF;
+	CardData.LightingChannelMask = (Packed3W >> 20) & 0xF;
+	CardData.bVisible = (Packed3W >> 24) & 1;
+	CardData.bHeightfield = (Packed3W >> 25) & 1;
+	 
 	CardData.SizeInPages.x = (asuint(Vector4.x) >> 0) & 0xFFFF;
 	CardData.SizeInPages.y = (asuint(Vector4.x) >> 16) & 0xFFFF;
 	CardData.PageTableOffset = asuint(Vector4.y);
@@ -88,7 +94,7 @@ FLumenCardData GetLumenCardData(uint CardId)
 	CardData.MeshCardsToLocalRotation[1] = Vector6.xyz;
 	CardData.MeshCardsToLocalRotation[2] = Vector7.xyz;
 	CardData.MeshCardsOrigin = float3(Vector5.w, Vector6.w, Vector7.w);
-	CardData.MeshCardsExtent = abs(Vector8.xyz);
+	CardData.MeshCardsExtent = Vector8.xyz;
 	CardData.TexelSize = Vector8.w;
 
 	return CardData;
@@ -241,12 +247,12 @@ FLumenMeshCardsData GetLumenMeshCardsData(uint MeshCardsId)
 }
 
 // Stride of mesh cards data, must match C++
-#define LUMEN_HEIGHTFIELD_DATA_STRIDE 2
+#define LUMEN_HEIGHTFIELD_DATA_STRIDE 3
 
 struct FLumenHeightfieldData
 {
-	float3 BoundsCenter;
-	float3 BoundsExtent;
+	FLWCVector3 BoundsCenter;	// World space AABB center
+	float3 BoundsExtent;		// World space AABB extent
 	uint MeshCardsIndex;
 	bool bValid;
 };
@@ -260,9 +266,11 @@ FLumenHeightfieldData GetLumenHeightfieldData(uint HeightfieldId)
 
 	float4 V0 = LumenCardScene.HeightfieldData[BaseOffset + 0];
 	float4 V1 = LumenCardScene.HeightfieldData[BaseOffset + 1];
+	float4 V2 = LumenCardScene.HeightfieldData[BaseOffset + 2];
 
-	LumenHeightfield.BoundsCenter = V0.xyz;
-	LumenHeightfield.BoundsExtent = V1.xyz;
+	LumenHeightfield.BoundsCenter = MakeLWCVector3(V0.xyz, V1.xyz);
+	LumenHeightfield.BoundsExtent = V2.xyz;
+
 	LumenHeightfield.MeshCardsIndex = asuint(V0.w);
 	LumenHeightfield.bValid = LumenHeightfield.MeshCardsIndex < LumenCardScene.NumMeshCards;
 
@@ -275,7 +283,7 @@ float3 GetCardLocalPosition(float3 CardLocalExtent, float2 CardUV, float Depth)
 
 	float3 LocalPosition;
 	LocalPosition.xy = CardLocalExtent.xy * (1.0f - 2.0f * CardUV);
-	LocalPosition.z = -CardLocalExtent.z + Depth * 2.0f * CardLocalExtent.z;
+	LocalPosition.z = -(2.0f * Depth - 1.0f) * CardLocalExtent.z;
 
 	return LocalPosition;
 }
@@ -284,8 +292,8 @@ void GetCardLocalBBox(FLumenCardPageData CardPage, FLumenCardData Card, float2 U
 {
 	float2 CardUVMin = lerp(CardPage.CardUVRect.xw, CardPage.CardUVRect.zy, UVMin);
 	float2 CardUVMax = lerp(CardPage.CardUVRect.xw, CardPage.CardUVRect.zy, UVMax);
-	float3 CardPageLocalBoxMin = GetCardLocalPosition(Card.LocalExtent, CardUVMin, 0.0f);
-	float3 CardPageLocalBoxMax = GetCardLocalPosition(Card.LocalExtent, CardUVMax, 1.0f);
+	float3 CardPageLocalBoxMin = GetCardLocalPosition(Card.LocalExtent, CardUVMin, 1.0f);
+	float3 CardPageLocalBoxMax = GetCardLocalPosition(Card.LocalExtent, CardUVMax, 0.0f);
 
 	CardPageLocalCenter = 0.5f * (CardPageLocalBoxMax + CardPageLocalBoxMin);
 	CardPageLocalExtent = 0.5f * (CardPageLocalBoxMax - CardPageLocalBoxMin);
@@ -325,21 +333,6 @@ float2 SamplePositonToCardUV(FLumenCardData Card, float2 LocalSamplePosition)
 {
 	float2 CardUV = saturate(float2(+0.5f, -0.5f) * (LocalSamplePosition / Card.LocalExtent.xy) + 0.5f);
 	return CardUV;
-}
-
-// Return decoded world space normal
-float3 DecodeSurfaceCacheNormal(FLumenCardData Card, float2 EncodedNormal)
-{
-	float3 CardSpaceNormal;
-	CardSpaceNormal.xy = EncodedNormal.xy * 2.0f - 1.0f;
-	CardSpaceNormal.z = sqrt(max(1.0f - length2(CardSpaceNormal.xy), 0.0001f));
-	return mul(Card.WorldToLocalRotation, CardSpaceNormal);
-}
-
-// Return decoded albedo
-float3 DecodeSurfaceCacheAlbedo(float3 EncodedAlbedo)
-{
-	return EncodedAlbedo * EncodedAlbedo;
 }
 
 uint GetMeshCardsIndexFromSceneInstanceIndex(uint SceneInstanceIndex)

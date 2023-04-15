@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/DataTable.h"
+#include "AssetRegistry/AssetData.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Internationalization/StabilizeLocalizationKeys.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
@@ -13,6 +14,8 @@
 #include "DataTableJSON.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/UserDefinedStruct.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataTable)
 
 namespace
 {
@@ -113,7 +116,7 @@ void UDataTable::LoadStructData(FStructuredArchiveSlot Slot)
 		// And be sure to call DestroyScriptStruct later
 		LoadUsingStruct->InitializeStruct(RowData);
 
-		LoadUsingStruct->SerializeItem(RowRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), RowData, nullptr);
+		LoadUsingStruct->SerializeItem(RowRecord.EnterField(TEXT("Value")), RowData, nullptr);
 
 		// Add to map
 		RowMap.Add(RowName, RowData);
@@ -146,7 +149,7 @@ void UDataTable::SaveStructData(FStructuredArchiveSlot Slot)
 		// Save out data
 		uint8* RowData = RowIt.Value();
 
-		SaveUsingStruct->SerializeItem(Row.EnterField(SA_FIELD_NAME(TEXT("Value"))), RowData, nullptr);
+		SaveUsingStruct->SerializeItem(Row.EnterField(TEXT("Value")), RowData, nullptr);
 	}
 }
 
@@ -229,7 +232,8 @@ void UDataTable::Serialize(FStructuredArchiveRecord Record)
 	// Make sure and update RowStructName before calling the parent Serialize (which will save the properties)
 	if (BaseArchive.IsSaving() && RowStruct)
 	{
-		RowStructName = RowStruct->GetFName();
+		RowStructName_DEPRECATED = RowStruct->GetFName();
+		RowStructPathName = RowStruct->GetStructPathName();
 	}
 #endif	// WITH_EDITORONLY_DATA
 
@@ -248,11 +252,11 @@ void UDataTable::Serialize(FStructuredArchiveRecord Record)
 	{
 		DATATABLE_CHANGE_SCOPE();
 		EmptyTable();
-		LoadStructData(Record.EnterField(SA_FIELD_NAME(TEXT("Data"))));
+		LoadStructData(Record.EnterField(TEXT("Data")));
 	}
 	else if(BaseArchive.IsSaving())
 	{
-		SaveStructData(Record.EnterField(SA_FIELD_NAME(TEXT("Data"))));
+		SaveStructData(Record.EnterField(TEXT("Data")));
 	}
 }
 
@@ -303,7 +307,12 @@ void UDataTable::FinishDestroy()
 #if WITH_EDITORONLY_DATA
 FName UDataTable::GetRowStructName() const
 {
-	return (RowStruct) ? RowStruct->GetFName() : RowStructName;
+	return (RowStruct) ? RowStruct->GetFName() : RowStructName_DEPRECATED;
+}
+
+FTopLevelAssetPath UDataTable::GetRowStructPathName() const
+{
+	return (RowStruct) ? RowStruct->GetStructPathName() : RowStructPathName;
 }
 
 void UDataTable::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -316,7 +325,7 @@ void UDataTable::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	// Add the row structure tag
 	{
 		static const FName RowStructureTag = "RowStructure";
-		OutTags.Add( FAssetRegistryTag(RowStructureTag, GetRowStructName().ToString(), FAssetRegistryTag::TT_Alphabetical) );
+		OutTags.Add( FAssetRegistryTag(RowStructureTag, GetRowStructPathName().ToString(), FAssetRegistryTag::TT_Alphabetical) );
 	}
 
 	Super::GetAssetRegistryTags(OutTags);
@@ -341,8 +350,42 @@ void UDataTable::PostLoad()
 		Info.Insert(FAssetImportInfo::FSourceFile(ImportPath_DEPRECATED));
 		AssetImportData->SourceData = MoveTemp(Info);
 	}
+	if (!RowStructName_DEPRECATED.IsNone())
+	{
+		UStruct* SavedRowStruct = RowStruct;
+		if (!SavedRowStruct)
+		{
+			SavedRowStruct = FindFirstObjectSafe<UStruct>(*RowStructName_DEPRECATED.ToString());
+		}
+		if (SavedRowStruct)
+		{
+			RowStructPathName = SavedRowStruct->GetStructPathName();
+		}
+		else
+		{
+			UE_LOG(LogDataTable, Error, TEXT("Unable to resolved RowStruct PathName from serialized short name '%s'!"), *RowStructName_DEPRECATED.ToString());
+		}
+	}
 }
 #endif // WITH_EDITORONLY_DATA
+
+#if WITH_EDITOR
+void UDataTable::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+
+	static const FName RowStructureTag(TEXT("RowStructure"));
+	FString TagValue = InAssetData.GetTagValueRef<FString>(RowStructureTag);
+	if (!TagValue.IsEmpty() && FPackageName::IsShortPackageName(TagValue))
+	{
+		FTopLevelAssetPath PathName = UClass::TryConvertShortTypeNameToPathName<UField>(TagValue, ELogVerbosity::Warning, TEXT("UDataTable::PostLoadAssetRegistryTags"));
+		if (!PathName.IsNull())
+		{
+			OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(RowStructureTag, PathName.ToString(), FAssetRegistryTag::TT_Alphabetical));
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 UScriptStruct& UDataTable::GetEmptyUsingStruct() const
 {
@@ -381,6 +424,11 @@ void UDataTable::RemoveRow(FName RowName)
 {
 	DATATABLE_CHANGE_SCOPE();
 
+	RemoveRowInternal(RowName);
+}
+
+void UDataTable::RemoveRowInternal(FName RowName)
+{
 	UScriptStruct& EmptyUsingStruct = GetEmptyUsingStruct();
 
 	uint8* RowData = nullptr;
@@ -393,13 +441,14 @@ void UDataTable::RemoveRow(FName RowName)
 	}
 }
 
-	
 void UDataTable::AddRow(FName RowName, const FTableRowBase& RowData)
 {
 	DATATABLE_CHANGE_SCOPE();
 
 	UScriptStruct& EmptyUsingStruct = GetEmptyUsingStruct();
-	RemoveRow(RowName);
+
+	// We want to delete the row memory even for child classes that override remove
+	RemoveRowInternal(RowName);
 		
 	uint8* NewRawRowData = (uint8*)FMemory::Malloc(EmptyUsingStruct.GetStructureSize());
 	
@@ -602,7 +651,8 @@ bool UDataTable::CopyImportOptions(UDataTable* SourceTable)
 
 	if (RowStruct)
 	{
-		RowStructName = RowStruct->GetFName();
+		RowStructName_DEPRECATED = RowStruct->GetFName();
+		RowStructPathName = RowStruct->GetStructPathName();
 	}
 
 	if (SourceTable->AssetImportData)
@@ -931,3 +981,4 @@ bool FDataTableCategoryHandle::operator != (FDataTableCategoryHandle const& Othe
 {
 	return DataTable != Other.DataTable || ColumnName != Other.ColumnName || RowContents != Other.RowContents;
 }
+

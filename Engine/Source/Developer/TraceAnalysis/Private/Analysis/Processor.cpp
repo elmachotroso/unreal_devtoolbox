@@ -2,6 +2,7 @@
 
 #include "Processor.h"
 #include "HAL/Event.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
 #include "StreamReader.h"
@@ -33,9 +34,11 @@ FAnalysisProcessor::FImpl::~FImpl()
 ////////////////////////////////////////////////////////////////////////////////
 uint32 FAnalysisProcessor::FImpl::Run()
 {
+	LLM_SCOPE_BYNAME(TEXT("TraceAnalysis"));
+
 	AnalysisEngine.Begin();
 
-	FStreamBuffer Buffer;
+	FStreamBuffer Buffer(4 << 20);
 	while (!StopEvent->Wait(0, true))
 	{
 		UnpausedEvent->Wait();

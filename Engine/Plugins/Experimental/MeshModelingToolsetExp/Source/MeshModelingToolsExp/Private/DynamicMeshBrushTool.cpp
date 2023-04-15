@@ -6,6 +6,8 @@
 #include "ToolSetupUtil.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DynamicMeshBrushTool)
+
 using namespace UE::Geometry;
 
 // localization namespace
@@ -24,7 +26,7 @@ void UDynamicMeshBrushTool::Setup()
 {
 	PreviewMesh = NewObject<UPreviewMesh>(this);
 	PreviewMesh->bBuildSpatialDataStructure = true;
-	PreviewMesh->CreateInWorld(UE::ToolTarget::GetTargetActor(Target)->GetWorld(), FTransform::Identity);
+	PreviewMesh->CreateInWorld(GetTargetWorld(), FTransform::Identity);
 	FTransformSRT3d LocalToWorldTransform = UE::ToolTarget::GetLocalToWorldTransform(Target);
 	PreviewMesh->SetTransform((FTransform)LocalToWorldTransform);
 	ToolSetupUtil::ApplyRenderingConfigurationToPreview(PreviewMesh, Target);
@@ -87,3 +89,4 @@ bool UDynamicMeshBrushTool::HitTest(const FRay& Ray, FHitResult& OutHit)
 
 
 #undef LOCTEXT_NAMESPACE
+

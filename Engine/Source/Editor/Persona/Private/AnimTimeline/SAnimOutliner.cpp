@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SAnimOutliner.h"
-#include "AnimModel.h"
-#include "AnimTimelineTrack.h"
-#include "SAnimOutlinerItem.h"
-#include "SAnimTrackArea.h"
+#include "AnimTimeline/SAnimOutliner.h"
+#include "AnimTimeline/AnimModel.h"
+#include "AnimTimeline/AnimTimelineTrack.h"
+#include "AnimTimeline/SAnimOutlinerItem.h"
+#include "AnimTimeline/SAnimTrackArea.h"
 #include "Widgets/Input/SButton.h"
-#include "SAnimTrack.h"
+#include "AnimTimeline/SAnimTrack.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 
@@ -42,7 +42,7 @@ void SAnimOutliner::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 	STreeView::Construct
 	(
 		STreeView::FArguments()
-		.TreeItemsSource(&InAnimModel->GetRootTracks())
+		.TreeItemsSource(&InAnimModel->GetAllRootTracks())
 		.SelectionMode(ESelectionMode::Multi)
 		.OnGenerateRow(this, &SAnimOutliner::HandleGenerateRow) 
 		.OnGetChildren(this, &SAnimOutliner::HandleGetChildren)
@@ -54,10 +54,10 @@ void SAnimOutliner::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 	);
 
 	// expand all
-	for(TSharedRef<FAnimTimelineTrack>& RootTrack : InAnimModel->GetRootTracks())
+	InAnimModel->ForEachRootTrack([this](FAnimTimelineTrack& InRootTrack)
 	{
-		RootTrack->Traverse_ParentFirst([this](FAnimTimelineTrack& InTrack){ SetItemExpansion(InTrack.AsShared(), InTrack.IsExpanded()); return true; });
-	}
+		InRootTrack.Traverse_ParentFirst([this](FAnimTimelineTrack& InTrack){ SetItemExpansion(InTrack.AsShared(), InTrack.IsExpanded()); return true; });
+	});
 }
 
 void SAnimOutliner::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)

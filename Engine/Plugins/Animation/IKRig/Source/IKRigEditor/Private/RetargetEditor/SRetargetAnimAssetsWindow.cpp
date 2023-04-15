@@ -13,6 +13,7 @@
 #include "PropertyCustomizationHelpers.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Misc/ScopedSlowTask.h"
+#include "RetargetEditor/IKRetargeterController.h"
 #include "Retargeter/IKRetargeter.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -48,7 +49,7 @@ void SSelectExportPathDialog::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -75,14 +76,14 @@ void SSelectExportPathDialog::Construct(const FArguments& InArgs)
 			.Padding(5)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0, 0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("OK", "OK"))
 					.OnClicked(this, &SSelectExportPathDialog::OnButtonClick, EAppReturnType::Ok)
 				]
@@ -90,7 +91,7 @@ void SSelectExportPathDialog::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.OnClicked(this, &SSelectExportPathDialog::OnButtonClick, EAppReturnType::Cancel)
 				]
@@ -226,7 +227,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("DuplicateAndRetarget_SourceTitle", "Source Skeletal Mesh"))
-						.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
+						.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
 						.AutoWrapText(true)
 					]
 
@@ -260,27 +261,6 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 						})
 						.ObjectPath(this, &SRetargetAnimAssetsWindow::GetCurrentSourceMeshPath)
 						.OnObjectChanged(this, &SRetargetAnimAssetsWindow::SourceMeshAssigned)
-						.OnShouldFilterAsset_Lambda([this](const FAssetData& AssetData)
-						{
-							if (!BatchContext.IKRetargetAsset)
-							{
-								return true;
-							}
-							
-							USkeletalMesh* Mesh = Cast<USkeletalMesh>(AssetData.GetAsset());
-							if (!Mesh)
-							{
-								return true;
-							}
-							
-							USkeletalMesh* PreviewMesh = BatchContext.IKRetargetAsset->GetSourceIKRig()->GetPreviewMesh();
-							if (!PreviewMesh)
-							{
-								return true;
-							}
-							
-							return Mesh->GetSkeleton() != PreviewMesh->GetSkeleton();
-						})
 					]
 				]
 
@@ -301,7 +281,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("DuplicateAndRetarget_TargetTitle", "Target Skeletal Mesh"))
-						.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
+						.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
 						.AutoWrapText(true)
 					]
 				
@@ -335,30 +315,6 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 						})
 						.ObjectPath(this, &SRetargetAnimAssetsWindow::GetCurrentTargetMeshPath)
 						.OnObjectChanged(this, &SRetargetAnimAssetsWindow::TargetMeshAssigned)
-						.OnShouldFilterAsset_Lambda([this](const FAssetData& AssetData)
-						{
-							/*
-							if (!BatchContext.IKRetargetAsset)
-							{
-								return true;
-							}
-							
-							USkeletalMesh* Mesh = Cast<USkeletalMesh>(AssetData.GetAsset());
-							if (!Mesh)
-							{
-								return true;
-							}
-
-							
-							USkeletalMesh* PreviewMesh = BatchContext.IKRetargetAsset->TargetIKRigAsset->GetPreviewMesh();
-							if (!PreviewMesh)
-							{
-								return true;
-							}
-							
-							return Mesh->GetSkeleton() != PreviewMesh->GetSkeleton();*/
-							return false;
-						})
 					]
 				]
 			]
@@ -384,7 +340,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("DuplicateAndRetarget_RetargetAsset", "IK Retargeter"))
-				.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
+				.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.BoldFont"))
 				.AutoWrapText(true)
 			]
 
@@ -422,7 +378,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.SmallBoldFont"))
+					.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.SmallBoldFont"))
 					.Text(LOCTEXT("DuplicateAndRetarget_RenameLabel", "Rename New Assets"))
 				]
 
@@ -520,7 +476,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.Text(this,  &SRetargetAnimAssetsWindow::GetExampleText)
-						.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.ItalicFont"))
+						.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.ItalicFont"))
 					]
 				]
 
@@ -535,7 +491,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("DuplicateAndRetarget_Folder", "Folder "))
-						.Font(FEditorStyle::GetFontStyle("Persona.RetargetManager.SmallBoldFont"))
+						.Font(FAppStyle::GetFontStyle("Persona.RetargetManager.SmallBoldFont"))
 					]
 
 					+SHorizontalBox::Slot()
@@ -584,14 +540,14 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0, 0)
 				[
 					SNew(SButton).HAlign(HAlign_Center)
 					.Text(LOCTEXT("RetargetOptions_Cancel", "Cancel"))
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SRetargetAnimAssetsWindow::OnCancel)
 				]
 				+SUniformGridPanel::Slot(1, 0)
@@ -601,7 +557,7 @@ void SRetargetAnimAssetsWindow::Construct(const FArguments& InArgs)
 					.IsEnabled(this, &SRetargetAnimAssetsWindow::CanApply)
 					.OnClicked(this, &SRetargetAnimAssetsWindow::OnApply)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				]
 				
 			]
@@ -656,7 +612,7 @@ void SRetargetAnimAssetsWindow::ShowWindow(TArray<UObject*> InSelectedAssets)
 	TSharedPtr<class SRetargetAnimAssetsWindow> DialogWidget;
 	TSharedPtr<SBorder> DialogWrapper =
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(4.0f)
 		[
 			SAssignNew(DialogWidget, SRetargetAnimAssetsWindow)
@@ -707,12 +663,9 @@ void SRetargetAnimAssetsWindow::RetargeterAssigned(const FAssetData& InAssetData
 {
 	UIKRetargeter* InRetargeter = Cast<UIKRetargeter>(InAssetData.GetAsset());
 	BatchContext.IKRetargetAsset = InRetargeter;
-	const UIKRigDefinition* SourceIKRig = InRetargeter ? InRetargeter->GetSourceIKRig() : nullptr;
-	const UIKRigDefinition* TargetIKRig = InRetargeter ? InRetargeter->GetTargetIKRig() : nullptr;
-	USkeletalMesh* SourceMesh =  SourceIKRig ? SourceIKRig->GetPreviewMesh() : nullptr;
-	USkeletalMesh* TargetMesh =  TargetIKRig ? TargetIKRig->GetPreviewMesh() : nullptr;
-	SourceMeshAssigned(FAssetData(SourceMesh));
-	TargetMeshAssigned(FAssetData(TargetMesh));
+	const UIKRetargeterController* Controller = UIKRetargeterController::GetController(InRetargeter);
+	SourceMeshAssigned(FAssetData(Controller->GetPreviewMesh(ERetargetSourceOrTarget::Source)));
+	TargetMeshAssigned(FAssetData(Controller->GetPreviewMesh(ERetargetSourceOrTarget::Target)));
 }
 
 ECheckBoxState SRetargetAnimAssetsWindow::IsRemappingReferencedAssets() const
@@ -790,7 +743,7 @@ FText SRetargetAnimAssetsWindow::GetFolderPath() const
 FReply SRetargetAnimAssetsWindow::GetExportFolder()
 {
 	TSharedRef<SSelectExportPathDialog> Dialog = SNew(SSelectExportPathDialog)
-	.DefaultAssetPath(FText::FromString(BatchContext.FolderPath));
+	.DefaultAssetPath(FText::FromString(BatchContext.NameRule.FolderPath));
 	
 	if(Dialog->ShowModal() != EAppReturnType::Cancel)
 	{

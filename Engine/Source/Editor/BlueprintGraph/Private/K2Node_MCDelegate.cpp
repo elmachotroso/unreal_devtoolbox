@@ -1,26 +1,47 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Class.h"
-#include "Templates/Casts.h"
-#include "UObject/UnrealType.h"
-#include "Engine/Blueprint.h"
-#include "Engine/MemberReference.h"
-#include "Engine/BlueprintGeneratedClass.h"
+#include "BlueprintCompiledStatement.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "DelegateNodeHandlers.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/MemberReference.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
-#include "K2Node_CallFunction.h"
-#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_AddDelegate.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_CallDelegate.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_ClearDelegate.h"
 #include "K2Node_RemoveDelegate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-
+#include "Kismet2/CompilerResultsLog.h"
 #include "KismetCompiler.h"
-#include "DelegateNodeHandlers.h"
+#include "KismetCompilerMisc.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 struct FK2Node_BaseMCDelegateHelper
 {
@@ -203,6 +224,13 @@ bool UK2Node_BaseMCDelegate::HasExternalDependencies(TArray<class UStruct*>* Opt
 	}
 
 	UFunction* Signature = GetDelegateSignature(true);
+
+	checkf(!Signature || Signature->IsValidLowLevel(), TEXT("Invalid Signature: BP - %s Delegate Ref - %s %s" ),
+		*SourceBlueprint->GetName(),
+		*DelegateReference.GetMemberScopeName(),
+		*DelegateReference.GetMemberName().ToString()
+	);
+	
 	UClass* SignatureSourceClass = Signature ? Signature->GetOwnerClass() : nullptr;
 	const bool bSignatureResult = (SignatureSourceClass != NULL) && (SignatureSourceClass->ClassGeneratedBy != SourceBlueprint);
 	if (bSignatureResult && OptionalOutput)
@@ -239,7 +267,8 @@ void UK2Node_BaseMCDelegate::AutowireNewNode(UEdGraphPin* FromPin)
 				if (DelegateProperty)
 				{
 					UClass* DelegateOwner = DelegateProperty->GetOwnerClass();
-					if (FromPin->PinType.PinSubCategoryObject == DelegateOwner || dynamic_cast<UClass*>(FromPin->PinType.PinSubCategoryObject.Get())->IsChildOf(DelegateOwner))
+					const UClass* PinSubCategoryObject = dynamic_cast<UClass*>(FromPin->PinType.PinSubCategoryObject.Get());
+					if (FromPin->PinType.PinSubCategoryObject == DelegateOwner || (PinSubCategoryObject && PinSubCategoryObject->IsChildOf(DelegateOwner)))
 					{
 						// If we get here, then the property delegate is also available on the FromPin's class.
 						// Fix up the type by propagating it from the FromPin to our target pin

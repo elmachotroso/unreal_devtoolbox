@@ -8,7 +8,7 @@
 #include "WorldPartition/WorldPartitionHandle.h"
 #include "WorldPartitionEditorHash.generated.h"
 
-class UWorldPartitionEditorCell;
+class IWorldPartitionEditorModule;
 
 UCLASS(Abstract, Config=Engine, Within = WorldPartition)
 class ENGINE_API UWorldPartitionEditorHash : public UObject
@@ -21,45 +21,34 @@ public:
 	virtual void SetDefaultValues() PURE_VIRTUAL(UWorldPartitionEditorHash::SetDefaultValues, return;);
 	virtual FName GetWorldPartitionEditorName() const PURE_VIRTUAL(UWorldPartitionEditorHash::GetWorldPartitionEditorName, return FName(NAME_None););
 	virtual FBox GetEditorWorldBounds() const  PURE_VIRTUAL(UWorldPartitionEditorHash::GetEditorWorldBounds, return FBox(ForceInit););
+	virtual FBox GetRuntimeWorldBounds() const  PURE_VIRTUAL(UWorldPartitionEditorHash::GetRuntimeWorldBounds, return FBox(ForceInit););
+	virtual FBox GetNonSpatialBounds() const PURE_VIRTUAL(UWorldPartitionEditorHash::GetNonSpatialBounds, return FBox(ForceInit););
 	virtual void Tick(float DeltaSeconds) PURE_VIRTUAL(UWorldPartitionEditorHash::Tick, return;);
 
 	virtual void HashActor(FWorldPartitionHandle& InActorHandle) PURE_VIRTUAL(UWorldPartitionEditorHash::HashActor, ;);
 	virtual void UnhashActor(FWorldPartitionHandle& InActorHandle) PURE_VIRTUAL(UWorldPartitionEditorHash::UnhashActor, ;);
 
-	virtual int32 ForEachIntersectingActor(const FBox& Box, TFunctionRef<void(FWorldPartitionActorDesc*)> InOperation) PURE_VIRTUAL(UWorldPartitionEditorHash::ForEachIntersectingActor, return 0;);
-	virtual int32 ForEachIntersectingCell(const FBox& Box, TFunctionRef<void(UWorldPartitionEditorCell*)> InOperation) PURE_VIRTUAL(UWorldPartitionEditorHash::ForEachIntersectingCell, return 0;);
-	virtual int32 ForEachCell(TFunctionRef<void(UWorldPartitionEditorCell*)> InOperation) PURE_VIRTUAL(UWorldPartitionEditorHash::ForEachCell, return 0;);
-	virtual UWorldPartitionEditorCell* GetAlwaysLoadedCell() PURE_VIRTUAL(UWorldPartitionEditorHash::GetAlwaysLoadedCell, return nullptr;);
+	UE_DEPRECATED(5.1, "Use version that takes FForEachIntersectingActorParams instead.")	
+	int32 ForEachIntersectingActor(const FBox& Box, TFunctionRef<void(FWorldPartitionActorDesc*)> InOperation, bool bIncludeSpatiallyLoadedActors, bool bIncludeNonSpatiallyLoadedActors);
 
-	virtual uint32 GetWantedEditorCellSize() const PURE_VIRTUAL(UWorldPartitionEditorHash::GetWantedEditorCellSize, return 0;);
-	virtual void SetEditorWantedCellSize(uint32 InCellSize) PURE_VIRTUAL(UWorldPartitionEditorHash::SetEditorWantedCellSize, );
-
-	virtual void AddBackReference(const FGuid& Reference, UWorldPartitionEditorCell* Cell, const FGuid& Source) PURE_VIRTUAL(UWorldPartitionEditorHash::AddBackReference, ;);
-	virtual void RemoveBackReference(const FGuid& Reference, UWorldPartitionEditorCell* Cell, const FGuid& Source) PURE_VIRTUAL(UWorldPartitionEditorHash::RemoveBackReference, ;);
-
-	// Helpers
-	inline int32 GetIntersectingActors(const FBox& Box, TArray<FWorldPartitionActorDesc*>& OutActors)
+	/* Struct of optional parameters passed to ForEachIntersectingActor. */
+	struct ENGINE_API FForEachIntersectingActorParams
 	{
-		return ForEachIntersectingActor(Box, [&OutActors](FWorldPartitionActorDesc* ActorDesc)
-		{
-			OutActors.Add(ActorDesc);
-		});
-	}
+		FForEachIntersectingActorParams();
 
-	int32 GetIntersectingCells(const FBox& Box, TArray<UWorldPartitionEditorCell*>& OutCells)
-	{
-		return ForEachIntersectingCell(Box, [&OutCells](UWorldPartitionEditorCell* Cell)
-		{
-			OutCells.Add(Cell);
-		});
-	}
+		/** Should we include spatially loaded actors in the query? */
+		bool bIncludeSpatiallyLoadedActors;
 
-	int32 GetAllCells(TArray<UWorldPartitionEditorCell*>& OutCells)
-	{
-		return ForEachCell([&OutCells](UWorldPartitionEditorCell* Cell)
-		{
-			OutCells.Add(Cell);
-		});
-	}
+		/** Should we include non-spatially loaded actors in the query? */
+		bool bIncludeNonSpatiallyLoadedActors;
+
+		/** Optional minimum box to stop searching for actors */
+		TOptional<FBox> MinimumBox;
+	};
+
+	virtual int32 ForEachIntersectingActor(const FBox& Box, TFunctionRef<void(FWorldPartitionActorDesc*)> InOperation, const FForEachIntersectingActorParams& Params = FForEachIntersectingActorParams()) PURE_VIRTUAL(UWorldPartitionEditorHash::ForEachIntersectingActor, return 0;);
+
+protected:
+	IWorldPartitionEditorModule* WorldPartitionEditorModule;
 #endif
 };

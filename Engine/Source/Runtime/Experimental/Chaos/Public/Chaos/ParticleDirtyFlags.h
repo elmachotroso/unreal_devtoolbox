@@ -11,13 +11,16 @@
 #include "Chaos/CollisionFilterData.h"
 #include "Chaos/Collision/CollisionConstraintFlags.h"
 #include "Chaos/KinematicTargets.h"
+#include "Chaos/RigidParticleControlFlags.h"
 #include "UObject/ExternalPhysicsCustomObjectVersion.h"
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
+#include "UObject/FortniteNCBranchObjectVersion.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "Framework/PhysicsProxyBase.h"
 #include "PBDJointConstraintTypes.h"
+#include "PBDSuspensionConstraintTypes.h"
 
 #ifndef CHAOS_DEBUG_NAME
 #define CHAOS_DEBUG_NAME 0
@@ -27,6 +30,26 @@ class FName;
 
 namespace Chaos
 {
+
+struct FParticleID
+{
+	int32 GlobalID = INDEX_NONE; //Set by global ID system
+	int32 LocalID = INDEX_NONE;	//Set by local client. This can only be used in cases where the LocalID will be set in the same way (for example we always spawn N client only particles)
+
+	bool operator<(const FParticleID& Other) const
+	{
+		if (GlobalID == Other.GlobalID)
+		{
+			return LocalID < Other.LocalID;
+		}
+		return GlobalID < Other.GlobalID;
+	}
+
+	bool operator==(const FParticleID& Other) const
+	{
+		return GlobalID == Other.GlobalID && LocalID == Other.LocalID;
+	}
+};
 
 using FKinematicTarget = TKinematicTarget<FReal, 3>;
 
@@ -187,6 +210,11 @@ private:
 
 typedef TVector<IPhysicsProxyBase*, 2> FProxyBasePair;
 
+struct FProxyBasePairProperty
+{
+	FProxyBasePair ParticleProxies = { nullptr, nullptr };
+};
+
 inline FChaosArchive& operator<<(FChaosArchive& Ar, FParticleDynamics& Data)
 {
 	Data.Serialize(Ar);
@@ -278,23 +306,37 @@ public:
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		Ar.UsingCustomVersion(FPhysicsObjectVersion::GUID);
 
+		// Flags moved into a bitmask
+		const bool bAddControlFlags = (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AddRigidParticleControlFlags);
+
 		Ar << MLinearEtherDrag;
 		Ar << MAngularEtherDrag;
 		Ar << MObjectState;
-		Ar << MGravityEnabled;
-		Ar << MSleepType;
-		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
+		if (!bAddControlFlags && Ar.IsLoading())
 		{
-			Ar << MOneWayInteraction;
+			bool bGravityEnabled;
+			Ar << bGravityEnabled;
+			MControlFlags.SetGravityEnabled(bGravityEnabled);
 		}
-		else
+		Ar << MSleepType;
+		if (!bAddControlFlags && Ar.IsLoading())
 		{
-			MOneWayInteraction = false;
+			bool bOneWayInteraction = false;
+			if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
+			{
+				Ar << bOneWayInteraction;
+			}
+			MControlFlags.SetOneWayInteractionEnabled(bOneWayInteraction);
 		}
 
-		if (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCCDEnableFlag)
+		if (!bAddControlFlags && Ar.IsLoading())
 		{
-			Ar << bCCDEnabled;
+			if (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCCDEnableFlag)
+			{
+				bool bCCDEnabled;
+				Ar << bCCDEnabled;
+				MControlFlags.SetCCDEnabled(bCCDEnabled);
+			}
 		}
 
 		const bool bAddCollisionConstraintFlagUE4 = (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCollisionConstraintFlag);
@@ -318,6 +360,11 @@ public:
 			Ar << MMaxLinearSpeedSq;
 			Ar << MMaxAngularSpeedSq;
 		}
+
+		if (bAddControlFlags)
+		{
+			Ar << MControlFlags;
+		}
 	}
 
 	template <typename TOther>
@@ -328,12 +375,10 @@ public:
 		SetMaxLinearSpeedSq(Other.MaxLinearSpeedSq());
 		SetMaxAngularSpeedSq(Other.MaxAngularSpeedSq());
 		SetObjectState(Other.ObjectState());
-		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
 		SetSleepType(Other.SleepType());
-		SetOneWayInteraction(Other.OneWayInteraction());
 		SetCollisionConstraintFlags(Other.CollisionConstraintFlags());
-		SetCCDEnabled(Other.CCDEnabled());
+		SetControlFlags(Other.ControlFlags());
 		SetDisabled(Other.Disabled());
 	}
 
@@ -345,12 +390,10 @@ public:
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
 			&& MaxLinearSpeedSq() == Other.MaxLinearSpeedSq()
 			&& MaxAngularSpeedSq() == Other.MaxAngularSpeedSq()
-			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
 			&& SleepType() == Other.SleepType()
-			&& OneWayInteraction() == Other.OneWayInteraction() 
 			&& CollisionConstraintFlags() == Other.CollisionConstraintFlags()
-			&& CCDEnabled() == Other.CCDEnabled()
+			&& ControlFlags() == Other.ControlFlags()
 			&& Disabled() == Other.Disabled();
 	}
 
@@ -374,11 +417,11 @@ public:
 	EObjectStateType ObjectState() const { return MObjectState; }
 	void SetObjectState(EObjectStateType InState){ MObjectState = InState; }
 
-	bool GravityEnabled() const { return MGravityEnabled; }
-	void SetGravityEnabled(bool InGravity){ MGravityEnabled = InGravity; }
+	bool GravityEnabled() const { return MControlFlags.GetGravityEnabled(); }
+	void SetGravityEnabled(bool bInGravity){ MControlFlags.SetGravityEnabled(bInGravity); }
 
-	bool CCDEnabled() const { return bCCDEnabled; }
-	void SetCCDEnabled(bool bInCCDEnabled) { bCCDEnabled = bInCCDEnabled; }
+	bool CCDEnabled() const { return MControlFlags.GetCCDEnabled(); }
+	void SetCCDEnabled(bool bInCCDEnabled) { MControlFlags.SetCCDEnabled(bInCCDEnabled); }
 
 	bool Disabled() const { return bDisabled; }
 	void SetDisabled(bool bInDisabled) { bDisabled = bInDisabled; }
@@ -394,8 +437,14 @@ public:
 	void AddCollisionConstraintFlag(const ECollisionConstraintFlags Flag) { MCollisionConstraintFlag |= uint32(Flag); }
 	void RemoveCollisionConstraintFlag(const ECollisionConstraintFlags Flag) { MCollisionConstraintFlag &= ~uint32(Flag); }
 	
-	bool OneWayInteraction() const { return MOneWayInteraction; }
-	void SetOneWayInteraction(bool InOneWayInteraction) { MOneWayInteraction = InOneWayInteraction; }
+	bool OneWayInteraction() const { return MControlFlags.GetOneWayInteractionEnabled(); }
+	void SetOneWayInteraction(bool bInOneWayInteraction) { MControlFlags.SetOneWayInteractionEnabled(bInOneWayInteraction); }
+
+	bool InertiaConditioningEnabled() const { return MControlFlags.GetInertiaConditioningEnabled(); }
+	void SetInertiaConditioningEnabled(bool bInEnabled) { MControlFlags.SetInertiaConditioningEnabled(bInEnabled); }
+
+	FRigidParticleControlFlags ControlFlags() const { return MControlFlags; }
+	void SetControlFlags(const FRigidParticleControlFlags& InFlags) { MControlFlags = InFlags; }
 
 private:
 	//NOTE: MObjectState is the only sim-writable data in this struct
@@ -411,11 +460,9 @@ private:
 	EResimType MResimType;
 	ESleepType MSleepType;
 
-	bool MGravityEnabled;
-	bool MOneWayInteraction = false;
 	uint32 MCollisionConstraintFlag = 0;
+	FRigidParticleControlFlags MControlFlags;
 
-	bool bCCDEnabled;
 	bool bDisabled;
 };
 
@@ -487,6 +534,13 @@ public:
 		MResimType = InType;
 	}
 
+	void SetParticleID(const FParticleID& ParticleID)
+	{
+		MParticleID = ParticleID;
+	}
+
+	const FParticleID& ParticleID() const { return MParticleID; }
+
 	bool EnabledDuringResim() const { return MEnabledDuringResim; }
 	void SetEnabledDuringResim(bool bEnabledDuringResim) { MEnabledDuringResim = bEnabledDuringResim; }
 
@@ -498,6 +552,7 @@ private:
 	TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe> MGeometry;
 	FUniqueIdx MUniqueIdx;
 	FSpatialAccelerationIdx MSpatialIdx;
+	FParticleID MParticleID;
 	EResimType MResimType;
 	bool MEnabledDuringResim;
 #if CHAOS_DEBUG_NAME
@@ -519,12 +574,14 @@ struct FCollisionData
 	EChaosCollisionTraceFlag CollisionTraceType;
 	uint8 bSimCollision : 1;
 	uint8 bQueryCollision : 1;
+	uint8 bIsProbe : 1;
 
 	FCollisionData()
 	: UserData(nullptr)
 	, CollisionTraceType(EChaosCollisionTraceFlag::Chaos_CTF_UseDefault)
 	, bSimCollision(true)
 	, bQueryCollision(true)
+	, bIsProbe(false)
 	{
 	}
 
@@ -534,6 +591,7 @@ struct FCollisionData
 	{
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 		Ar.UsingCustomVersion(FExternalPhysicsMaterialCustomObjectVersion::GUID);
+		Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
 
 		Ar << QueryData;
 		Ar << SimData;
@@ -567,6 +625,13 @@ struct FCollisionData
 			int32 Data = (int32)CollisionTraceType;
 			Ar << Data;
 			CollisionTraceType = (EChaosCollisionTraceFlag)Data;
+		}
+
+		if (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) >= FFortniteNCBranchObjectVersion::AddShapeIsProbe)
+		{
+			int8 IsProbe = bIsProbe;
+			Ar << IsProbe;
+			bIsProbe = IsProbe;
 		}
 	}
 };

@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "ElectraPlayerPlugin.h"
+
 #include "Misc/Optional.h"
 #include "IMediaEventSink.h"
 #include "IMediaOptions.h"
 #include "MediaSamples.h"
 #include "MediaPlayerOptions.h"
 
-#include "ElectraPlayerPlugin.h"
 #include "IElectraPlayerRuntimeModule.h"
 #include "IElectraPlayerPluginModule.h"
 #include "IElectraMetadataSample.h"
@@ -71,9 +72,11 @@ bool FElectraPlayerPlugin::Initialize(IMediaEventSink& InEventSink,
 	EventSink = &InEventSink;
 	CallbackPointerLock.Unlock();
 
+	OutputTexturePool = MakeShareable(new FElectraTextureSamplePool);
+
 	MediaSamples.Reset(new FMediaSamples);
 
-	PlayerResourceDelegate.Reset(PlatformCreatePlayerResourceDelegate());
+	PlayerResourceDelegate = MakeShareable(PlatformCreatePlayerResourceDelegate());
 
 	PlayerDelegate = MakeShareable(new FPlayerAdapterDelegate(AsShared()));
 	Player = MakeShareable(FElectraPlayerRuntimeFactory::CreatePlayer(PlayerDelegate, InSendAnalyticMetricsDelegate, InSendAnalyticMetricsPerMinuteDelegate, InReportVideoStreamingErrorDelegate, InReportSubtitlesFileMetricsDelegate));
@@ -363,7 +366,7 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVide
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		FElectraTextureSampleRef TextureSample = PinnedHost->OutputTexturePool.AcquireShared();
+		FElectraTextureSampleRef TextureSample = PinnedHost->OutputTexturePool->AcquireShared();
 		TextureSample->Initialize(InVideoFrame.Get());
 		PinnedHost->MediaSamples->AddVideo(TextureSample);
 	}
@@ -431,7 +434,7 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PrepareForDecoderShutdown()
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		PinnedHost->OutputTexturePool.PrepareForDecoderShutdown();
+		PinnedHost->OutputTexturePool->PrepareForDecoderShutdown();
 	}
 }
 
@@ -442,12 +445,12 @@ FString FElectraPlayerPlugin::FPlayerAdapterDelegate::GetVideoAdapterName() cons
 }
 
 
-IElectraPlayerResourceDelegate* FElectraPlayerPlugin::FPlayerAdapterDelegate::GetResourceDelegate() const
+TSharedPtr<IElectraPlayerResourceDelegate, ESPMode::ThreadSafe> FElectraPlayerPlugin::FPlayerAdapterDelegate::GetResourceDelegate() const
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		return PinnedHost->PlayerResourceDelegate.Get();
+		return PinnedHost->PlayerResourceDelegate;
 	}
 	return nullptr;
 }
@@ -593,6 +596,18 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 		PlayerOptions.Set("throw_error_when_rebuffering", Electra::FVariantValue(bThrowErrorWhenRebuffering));
 		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Throw playback error when rebuffering"), this);
 	}
+	FString CDNHTTPStatusDenyStream = Options->GetMediaOption(TEXT("ElectraGetDenyStreamCode"), FString());
+	if (CDNHTTPStatusDenyStream.Len())
+	{
+		int32 HTTPStatus = -1;
+		LexFromString(HTTPStatus, *CDNHTTPStatusDenyStream);
+		if (HTTPStatus > 0 && HTTPStatus < 1000)
+		{
+			PlayerOptions.Set("abr:cdn_deny_httpstatus", Electra::FVariantValue((int64)HTTPStatus));
+			UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: CDN HTTP status %d will deny a stream permanently"), this, HTTPStatus);
+		}
+	}
+
 
 	// Check for options that can be changed during playback and apply them at startup already.
 	// If a media source supports the MaxResolutionForMediaStreaming option then we can override the max resolution.
@@ -645,7 +660,7 @@ void FElectraPlayerPlugin::Close()
  */
 void FElectraPlayerPlugin::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 {
-	OutputTexturePool.Tick();
+	OutputTexturePool->Tick();
 	Player->Tick(DeltaTime, Timecode);
 }
 
@@ -662,6 +677,8 @@ bool FElectraPlayerPlugin::GetPlayerFeatureFlag(EFeatureFlag flag) const
 		case EFeatureFlag::UsePlaybackTimingV2:
 			return true;
 		case EFeatureFlag::PlayerUsesInternalFlushOnSeek:
+			return true;
+		case EFeatureFlag::IsTrackSwitchSeamless:
 			return true;
 		default:
 			break;
@@ -705,21 +722,22 @@ uint32 FElectraPlayerPlugin::GetNewResourcesOnOpen() const
 bool FElectraPlayerPlugin::CanControl(EMediaControl Control) const
 {
 	EMediaState CurrentState = GetState();
-	if (Control == EMediaControl::Pause)
+	if (Control == EMediaControl::BlockOnFetch)
 	{
 		return CurrentState == EMediaState::Playing;
 	}
-
-	if (Control == EMediaControl::Resume)
+	else if (Control == EMediaControl::Pause)
+	{
+		return CurrentState == EMediaState::Playing;
+	}
+	else if (Control == EMediaControl::Resume)
 	{
 		return CurrentState == EMediaState::Paused || CurrentState == EMediaState::Stopped;
 	}
-
-	if (Control == EMediaControl::Seek)
+	else if (Control == EMediaControl::Seek)
 	{
-		return CurrentState == EMediaState::Playing || CurrentState == EMediaState::Paused || CurrentState == EMediaState::Stopped ;//|| CurrentState == Preparing;
+		return CurrentState == EMediaState::Playing || CurrentState == EMediaState::Paused || CurrentState == EMediaState::Stopped;
 	}
-
 	return false;
 }
 

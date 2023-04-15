@@ -8,7 +8,7 @@ DirectionalLight.usf: Light sampling functions for Directional light implementat
 
 #include "PathTracingLightCommon.ush"
 
-FLightHit DirectionalLight_TraceLight(RayDesc Ray, int LightId)
+FLightHit DirectionalLight_TraceLight(FRayDesc Ray, int LightId)
 {
 	if (Ray.TMax == POSITIVE_INFINITY) // we hit the background
 	{
@@ -59,4 +59,21 @@ float DirectionalLight_EstimateLight(
 	float NoL = 1.0; // trivial upper bound -- trying to be more accurate appears to reduce performance
 	float LightPower = Luminance(GetColor(LightId));
 	return LightPower * NoL;
+}
+
+// NOTE: unused
+FVolumeLightSampleSetup DirectionalLight_PrepareLightVolumeSample(
+	int LightId,
+	float3 RayOrigin,
+	float3 RayDirection,
+	float TMin,
+	float TMax
+)
+{
+	float3 LightColor = GetColor(LightId);
+	float SinThetaMax = max(0.001, GetRadius(LightId)); // Sin(Angle / 2)
+	float SinThetaMax2 = SinThetaMax * SinThetaMax;
+	float OneMinusCosThetaMax = SinThetaMax2 < 0.01 ? SinThetaMax2 * (0.5 + 0.125 * SinThetaMax2) : 1 - sqrt(1 - SinThetaMax2);
+	float SolidAngle = 2 * PI * OneMinusCosThetaMax;
+	return CreateUniformSampler(max3(LightColor.x, LightColor.y, LightColor.z) * rcp(SolidAngle), TMin, TMax);
 }

@@ -2,7 +2,7 @@
 
 #include "SDMXPixelMappingComponentLabel.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Text/STextBlock.h"
@@ -10,6 +10,7 @@
 
 #if WITH_EDITOR
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // The whole class is deprecated 5.1
 void SDMXPixelMappingComponentLabel::Construct(const FArguments& InArgs)
 {
 	SetCanTick(false);
@@ -79,5 +80,6 @@ const FVector2D& SDMXPixelMappingComponentLabel::GetLocalSize() const
 {
 	return GetCachedGeometry().GetLocalSize();
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_EDITOR

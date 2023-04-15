@@ -7,6 +7,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/CoreStats.h"
+#include "Misc/TrackedActivity.h"
 #include "Misc/Compression.h"
 #include "Misc/LazySingleton.h"
 #include "Misc/CommandLine.h"
@@ -37,7 +38,6 @@ IMPLEMENT_MODULE( FCoreModule, Core );
 /*-----------------------------------------------------------------------------
 	Global variables.
 -----------------------------------------------------------------------------*/
-
 CORE_API FFeedbackContext*	GWarn						= nullptr;		/* User interaction and non critical warnings */
 FConfigCacheIni*			GConfig						= nullptr;		/* Configuration database cache */
 ITransaction*				GUndo						= nullptr;		/* Transaction tracker, non-NULL when a transaction is in progress */
@@ -48,10 +48,10 @@ CORE_API FMalloc**			GFixedMallocLocationPtr = nullptr;		/* Memory allocator poi
 class FPropertyWindowManager*	GPropertyWindowManager	= nullptr;		/* Manages and tracks property editing windows */
 
 /** For building call stack text dump in guard/unguard mechanism. */
-TCHAR GErrorHist[16384]	= TEXT("");
+TCHAR GErrorHist[16384] = {};
 
 /** For building exception description text dump in guard/unguard mechanism. */
-TCHAR GErrorExceptionDescription[4096] = TEXT( "" );
+TCHAR GErrorExceptionDescription[4096] = {};
 
 // We define our texts like this so that the header only needs to refer to references to FTexts,
 // as FText is only forward-declared there.
@@ -165,6 +165,7 @@ bool GIsRunningUnattendedScript = false;
 
 #if WITH_EDITOR
 bool					PRIVATE_GIsRunningCookCommandlet	= false;				/** Whether this executable is running the cook commandlet */
+bool					PRIVATE_GIsRunningDLCCookCommandlet = false;				/** Whether this executable is running the cook commandlet on a DLC plugin */
 #endif
 
 #if WITH_ENGINE
@@ -240,14 +241,13 @@ float					GNearClippingPlane				= 10.0f;				/* Near clipping plane */
 bool					GExitPurge						= false;
 
 FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers = nullptr;
-template class CORE_API TArray<FMinimalName, TInlineAllocator<3>>;
 
-TArray<FMinimalName, TInlineAllocator<3>>* GCoreComplexObjectPathDebug = nullptr;
+UE::ObjectPath::Private::FStoredObjectPath* GCoreComplexObjectPathDebug = nullptr;
 FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug = nullptr;
 #if PLATFORM_UNIX
 uint8** CORE_API GNameBlocksDebug = FNameDebugVisualizer::GetBlocks();
 FChunkedFixedUObjectArray*& CORE_API GObjectArrayForDebugVisualizers = GCoreObjectArrayForDebugVisualizers;
-TArray<FMinimalName, TInlineAllocator<3>>*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
+UE::ObjectPath::Private::FStoredObjectPath*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
 FObjectHandlePackageDebugData*& CORE_API GObjectHandlePackageDebug = GCoreObjectHandlePackageDebug;
 #endif
 
@@ -358,13 +358,10 @@ uint64					GInputTime					= 0;
 uint32					GFrameNumber					= 1;
 /** NEED TO RENAME, for RT version of GFrameTime use View.ViewFamily->FrameNumber or pass down from RT from GFrameTime). */
 uint32					GFrameNumberRenderThread		= 1;
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
-// We cannot count on this variable to be accurate in a shipped game, so make sure no code tries to use it
 /** Whether we are the first instance of the game running.													*/
-#if !PLATFORM_UNIX
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool					GIsFirstInstance				= true;
-#endif
-#endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 /** Threshold for a frame to be considered a hitch (in milliseconds). */
 float GHitchThresholdMS = 60.0f;
 /** Size to break up data into when saving compressed data													*/
@@ -386,11 +383,11 @@ bool					GShouldSuspendRenderingThread	= false;
 /** Determines what kind of trace should occur, NAME_None for none.											*/
 FLazyName				GCurrentTraceName;
 /** How to print the time in log output																		*/
-ELogTimes::Type			GPrintLogTimes					= ELogTimes::None;
-/** How to print the category in log output. */
-bool					GPrintLogCategory = true;
-/** How to print the verbosity in log output. */
-bool					GPrintLogVerbosity = true;
+ELogTimes::Type	GPrintLogTimes			= ELogTimes::None;
+/** How to print the category in log output.																*/
+TSAN_ATOMIC(bool)		GPrintLogCategory				= true;
+/** How to print the verbosity in log output.																*/
+TSAN_ATOMIC(bool)		GPrintLogVerbosity				= true;
 
 #if USE_HITCH_DETECTION
 TSAN_ATOMIC(bool)				GHitchDetected(false);
@@ -419,6 +416,13 @@ bool					GEnableVREditorHacks = false;
 
 bool CORE_API			GIsGPUCrashed = false;
 
+#if !UE_BUILD_SHIPPING
+
+/** Whether we should ignore the attached debugger. */
+CORE_API bool			GIgnoreDebugger = false;
+
+#endif // #if !UE_BUILD_SHIPPING
+
 bool GetEmitDrawEvents()
 {
 	return GEmitDrawEvents;
@@ -445,6 +449,25 @@ static struct FBootTimingStart
 	}
 } GBootTimingStart;
 
+FEngineTrackedActivityScope::FEngineTrackedActivityScope(const TCHAR* Fmt, ...)
+{
+	va_list Args;
+	va_start(Args, Fmt);
+	TCHAR Str[4096];
+	FCString::GetVarArgs(Str, UE_ARRAY_COUNT(Str), Fmt, Args);
+	FTrackedActivity::GetEngineActivity().Push(Str);
+	va_end(Args);
+}
+
+FEngineTrackedActivityScope::FEngineTrackedActivityScope(const FString& Text)
+{
+	FTrackedActivity::GetEngineActivity().Push(*Text);
+}
+
+FEngineTrackedActivityScope::~FEngineTrackedActivityScope()
+{
+	FTrackedActivity::GetEngineActivity().Pop();
+}
 
 #define USE_BOOT_PROFILING 0
 

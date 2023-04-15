@@ -5,7 +5,7 @@
 #include "SUVEditor2DViewportToolBar.h"
 #include "UVEditor2DViewportClient.h"
 #include "UVEditorCommands.h"
-#include "UVToolContextObjects.h" // UUVToolViewportButtonsAPI::ESelectionMode
+#include "ContextObjects/UVToolContextObjects.h" // UUVToolViewportButtonsAPI::ESelectionMode
 
 #define LOCTEXT_NAMESPACE "SUVEditor2DViewport"
 
@@ -91,7 +91,8 @@ void SUVEditor2DViewport::RemoveOverlayWidget(TSharedRef<SWidget> OverlaidWidget
 TSharedPtr<SWidget> SUVEditor2DViewport::MakeViewportToolbar()
 {
 	return SNew(SUVEditor2DViewportToolBar)
-		.CommandList(CommandList);
+		.CommandList(CommandList)
+		.Viewport2DClient(StaticCastSharedPtr<FUVEditor2DViewportClient>(Client));
 }
 
 bool SUVEditor2DViewport::IsWidgetModeActive(UE::Widget::EWidgetMode Mode) const

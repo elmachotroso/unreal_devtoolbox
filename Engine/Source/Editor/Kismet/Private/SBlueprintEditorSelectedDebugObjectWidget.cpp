@@ -1,22 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBlueprintEditorSelectedDebugObjectWidget.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Widgets/Text/STextBlock.h"
-#include "EngineGlobals.h"
+
+#include "Components/Widget.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/IndirectArray.h"
+#include "CoreTypes.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/GameInstance.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
+#include "IDocumentation.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PreviewScene.h"
+#include "PropertyCustomizationHelpers.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "EditorStyleSet.h"
-#include "Editor/UnrealEdEngine.h"
 #include "UnrealEdGlobals.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "PropertyCustomizationHelpers.h"
-#include "Widgets/SToolTip.h"
-#include "IDocumentation.h"
-#include "SLevelOfDetailBranchNode.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Components/Widget.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FTagMetaData;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "KismetToolbar"
 
@@ -114,9 +144,11 @@ const FString& SBlueprintEditorSelectedDebugObjectWidget::GetDebugAllWorldsStrin
 
 TSharedRef<SWidget> SBlueprintEditorSelectedDebugObjectWidget::OnGetActiveDetailSlotContent(bool bChangedToHighDetail)
 {
-	const TSharedRef<SWidget> BrowseButton = PropertyCustomizationHelpers::MakeBrowseButton(FSimpleDelegate::CreateSP(this, &SBlueprintEditorSelectedDebugObjectWidget::SelectedDebugObject_OnClicked));
+	const TSharedRef<SWidget> BrowseButton = PropertyCustomizationHelpers::MakeBrowseButton(
+		FSimpleDelegate::CreateSP(this, &SBlueprintEditorSelectedDebugObjectWidget::SelectedDebugObject_OnClicked),
+		LOCTEXT("DebugSelectActor", "Select this Actor in level")
+	);
 	BrowseButton->SetVisibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &SBlueprintEditorSelectedDebugObjectWidget::IsSelectDebugObjectButtonVisible)));
-	BrowseButton->SetToolTipText(LOCTEXT("DebugSelectActor", "Select this Actor in level"));
 
 	TSharedRef<SWidget> DebugObjectSelectionWidget =
 		SNew(SHorizontalBox)
@@ -547,6 +579,11 @@ void SBlueprintEditorSelectedDebugObjectWidget::DebugObjectSelectionChanged(TSha
 	{
 		UObject* DebugObj = NewSelection->ObjectPtr.Get();
 		GetBlueprintObj()->SetObjectBeingDebugged(DebugObj);
+
+		if (TSharedPtr<FBlueprintEditor> SharedBlueprintEditor = BlueprintEditor.Pin())
+		{
+			SharedBlueprintEditor->RefreshMyBlueprint();
+		}
 		
 		LastObjectObserved = DebugObj;
 	}

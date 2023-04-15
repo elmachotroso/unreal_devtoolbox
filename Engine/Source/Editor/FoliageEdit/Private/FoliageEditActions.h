@@ -2,9 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EditorStyleSet.h"
 #include "Framework/Commands/Commands.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /**
  * Unreal Foliage Edit mode actions
@@ -18,7 +23,7 @@ public:
 		"FoliageEditMode", // Context name for fast lookup
 		NSLOCTEXT("Contexts", "FoliageEditMode", "Foliage Edit Mode"), // Localized context name for displaying
 		NAME_None, // Parent
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 	{
 	}

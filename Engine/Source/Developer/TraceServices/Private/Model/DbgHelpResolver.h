@@ -1,5 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
+
+#include "HAL/Platform.h"
+
 #if PLATFORM_WINDOWS
 
 #include "Containers/Array.h"
@@ -20,9 +23,9 @@ class FDbgHelpResolver : public FRunnable
 {
 public:
 	typedef TArray<TTuple<uint64, FResolvedSymbol*>> SymbolArray;
-	
+
 	void Start();
-	FDbgHelpResolver(IAnalysisSession& InSession);
+	FDbgHelpResolver(IAnalysisSession& InSession, IResolvedSymbolFilter& InSymbolFilter);
 	~FDbgHelpResolver();
 	void QueueModuleLoad(const uint8* ImageId, uint32 ImageIdSize, FModule* Module);
 	void QueueModuleReload(const FModule* Module, const TCHAR* InPath, TFunction<void(SymbolArray&)> ResolveOnSuccess);
@@ -31,7 +34,7 @@ public:
 	void EnumerateSymbolSearchPaths(TFunctionRef<void(FStringView Path)> Callback) const;
 	void OnAnalysisComplete();
 
-private:	
+private:
 	struct FModuleEntry
 	{
 		uint64 Base;
@@ -59,14 +62,13 @@ private:
 		MaxNameLen = 512,
 	};
 
-
 	bool SetupSyms();
 	void FreeSyms() const;
 	virtual uint32 Run() override;
 	virtual void Stop() override;
-	static void UpdateResolvedSymbol(FResolvedSymbol* Symbol, ESymbolQueryResult Result, const TCHAR* Module, const TCHAR* Name, const TCHAR* File, uint16 Line);
+	static void UpdateResolvedSymbol(FResolvedSymbol& Symbol, ESymbolQueryResult Result, const TCHAR* Module, const TCHAR* Name, const TCHAR* File, uint16 Line);
 
-	void ResolveSymbol(uint64 Address, FResolvedSymbol* Target);
+	void ResolveSymbol(uint64 Address, FResolvedSymbol& Target);
 	void LoadModuleSymbols(const FModule* Module, const TCHAR* Path, const TArrayView<const uint8> ImageId);
 	const FModuleEntry* GetModuleForAddress(uint64 Address) const;
 
@@ -85,6 +87,7 @@ private:
 	bool bDrainThenStop;
 	UPTRINT Handle;
 	IAnalysisSession& Session;
+	IResolvedSymbolFilter& SymbolFilter;
 	FRunnableThread* Thread;
 };
 

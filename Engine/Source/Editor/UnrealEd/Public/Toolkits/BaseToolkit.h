@@ -163,6 +163,12 @@ public:
 	FName GetCurrentPalette() const;
 	void SetModeSettingsObject(UObject* InSettingsObject);
 	virtual void InvokeUI();
+
+	/**
+	 * Force the Mode Toolbar/Palette to be repopulated with the current ToolPaletteNames
+	 */
+	virtual void RebuildModeToolPalette();
+
 protected:
 	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
 	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
@@ -176,8 +182,8 @@ protected:
 	const FEditorModeInfo* GetEditorModeInfo() const;
 
 	/**
- * Whether or not the mode toolbar should be shown.  If any active modes generated a toolbar this method will return true
- */
+	 * Whether or not the mode toolbar should be shown.  If any active modes generated a toolbar this method will return true
+	 */
 	bool ShouldShowModeToolbar() const;
 	TSharedRef<SDockTab> CreatePrimaryModePanel(const FSpawnTabArgs& Args);
 	void UpdatePrimaryModePanel();
@@ -189,7 +195,10 @@ protected:
 	 */
 	TSharedRef<SDockTab> MakeModeToolbarTab(const FSpawnTabArgs& Args);
 
-
+	/**
+	 * Creates the entire tool palette widget, override to specify toolbar style
+	 */
+	virtual TSharedRef<SWidget> CreatePaletteWidget(TSharedPtr<FUICommandList> InCommandList, FName InToolbarCustomizationName, FName InPaletteName);
 
 	void SpawnOrUpdateModeToolbar();
 	void RebuildModeToolBar();

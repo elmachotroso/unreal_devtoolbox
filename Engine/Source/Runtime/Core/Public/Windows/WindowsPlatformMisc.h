@@ -27,6 +27,16 @@ struct CORE_API FWindowsOSVersionHelper
 	static int32 GetOSVersions( FString& OutOSVersion, FString& OutOSSubVersion );
 };
 
+/**
+  * Determines the concurrency model to be set for a thread.
+  * 
+  * @see FWindowsPlatformMisc::CoInitialize
+  */
+enum class ECOMModel : uint8
+{
+	Singlethreaded = 0,		///< Single-Threaded Apartment (STA)
+	Multithreaded,			///< Multi-Threaded Apartment (MTA)
+};
 
 /**
 * Windows implementation of the misc OS functions
@@ -36,7 +46,11 @@ struct CORE_API FWindowsPlatformMisc
 {
 	static void PlatformPreInit();
 	static void PlatformInit();
+	static void PlatformTearDown();
 	static void SetGracefulTerminationHandler();
+	static void CallGracefulTerminationHandler();
+	static ECrashHandlingType GetCrashHandlingType();
+	static ECrashHandlingType SetCrashHandlingType(ECrashHandlingType);
 	static int32 GetMaxPathLength();
 
 	UE_DEPRECATED(4.21, "void FPlatformMisc::GetEnvironmentVariable(Name, Result, Length) is deprecated. Use FString FPlatformMisc::GetEnvironmentVariable(Name) instead.")
@@ -94,7 +108,7 @@ struct CORE_API FWindowsPlatformMisc
 	static bool DeleteStoredValue(const FString& InStoreId, const FString& InSectionName, const FString& InKeyName);
 	static bool DeleteStoredSection(const FString& InStoreId, const FString& InSectionName);
 
-	static bool CoInitialize();
+	static bool CoInitialize(ECOMModel Model = ECOMModel::Singlethreaded);
 	static void CoUninitialize();
 
 	/**
@@ -193,6 +207,8 @@ struct CORE_API FWindowsPlatformMisc
 	static bool HasNonoptionalCPUFeatures();
 	/** @return whether to check for specific CPU compatibility or not */
 	static bool NeedsNonoptionalCPUFeaturesCheck();
+	/** @return whether this cpu has timed pause instruction support or not */
+	static bool HasTimedPauseCPUFeature();
 
 	/** 
 	 * Provides a simpler interface for fetching and cleanup of registry value queries
@@ -245,13 +261,22 @@ struct CORE_API FWindowsPlatformMisc
 	 */
 	static bool IsRunningOnBattery();
 
-	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, int32& OutputDevice, int32& ColorGamut)
+	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, EDisplayOutputFormat& OutputDevice, EDisplayColorGamut& ColorGamut)
 	{
 		if (DeviceId == 0x1002 /*AMD*/ || DeviceId == 0x10DE /*NVIDIA*/)
 		{
-			// ScRGB, 1000 or 2000 nits, Rec2020
-			OutputDevice = (DisplayNitLevel == 1000) ? 5 : 6;
-			ColorGamut = 2;
+			// needs to match GRHIHDRDisplayOutputFormat chosen in FD3D12DynamicRHI::Init
+#if WITH_EDITOR
+		// ScRGB, 1000 or 2000 nits
+			OutputDevice = (DisplayNitLevel == 1000) ? EDisplayOutputFormat::HDR_ACES_1000nit_ScRGB : EDisplayOutputFormat::HDR_ACES_2000nit_ScRGB;
+			// Rec709
+			ColorGamut = EDisplayColorGamut::sRGB_D65;
+#else
+		// ST-2084, 1000 or 2000 nits
+			OutputDevice = (DisplayNitLevel == 1000) ? EDisplayOutputFormat::HDR_ACES_1000nit_ST2084 : EDisplayOutputFormat::HDR_ACES_2000nit_ST2084;
+			// Rec2020
+			ColorGamut = EDisplayColorGamut::Rec2020_D65;
+#endif
 		}
 	}
 

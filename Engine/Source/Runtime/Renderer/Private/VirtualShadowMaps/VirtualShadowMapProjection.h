@@ -12,16 +12,19 @@
 
 class FVirtualShadowMapClipmap;
 
+// Note: Must match the definitions in VirtualShadowMapPageManagement.usf!
 enum class EVirtualShadowMapProjectionInputType
 {
 	GBuffer = 0,
-	HairStrands = 1
+	HairStrands = 1,
+	GBufferAndSingleLayerWaterDepth = 2
 };
+const TCHAR* ToString(EVirtualShadowMapProjectionInputType In);
 
 void RenderVirtualShadowMapProjection(
 	FRDGBuilder& GraphBuilder,
 	const FMinimalSceneTextures& SceneTextures,
-	const FViewInfo& View,
+	const FViewInfo& View, int32 ViewIndex,
 	FVirtualShadowMapArray& VirtualShadowMapArray,
 	const FIntRect ScissorRect,
 	EVirtualShadowMapProjectionInputType InputType,
@@ -31,23 +34,44 @@ void RenderVirtualShadowMapProjection(
 void RenderVirtualShadowMapProjection(
 	FRDGBuilder& GraphBuilder,
 	const FMinimalSceneTextures& SceneTextures,
-	const FViewInfo& View,
+	const FViewInfo& View, int32 ViewIndex,
 	FVirtualShadowMapArray& VirtualShadowMapArray,
 	const FIntRect ScissorRect,
 	EVirtualShadowMapProjectionInputType InputType,
-	FProjectedShadowInfo* ShadowInfo,
+	const FLightSceneInfo& LightSceneInfo,
+	int32 VirtualShadowMapId,
 	FRDGTextureRef OutputShadowMaskTexture);
 
-FRDGTextureRef RenderVirtualShadowMapProjectionOnePass(
+FRDGTextureRef CreateVirtualShadowMapMaskBits(
 	FRDGBuilder& GraphBuilder,
 	const FMinimalSceneTextures& SceneTextures,
-	const FViewInfo& View,
 	FVirtualShadowMapArray& VirtualShadowMapArray,
-	EVirtualShadowMapProjectionInputType InputType);
+	const TCHAR* Name);
+
+void RenderVirtualShadowMapProjectionOnePass(
+	FRDGBuilder& GraphBuilder,
+	const FMinimalSceneTextures& SceneTextures,
+	const FViewInfo& View, int32 ViewIndex,
+	FVirtualShadowMapArray& VirtualShadowMapArray,
+	EVirtualShadowMapProjectionInputType InputType,
+	FRDGTextureRef ShadowMaskBits);
 
 void CompositeVirtualShadowMapMask(
 	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
 	const FIntRect ScissorRect,
 	const FRDGTextureRef Input,
 	bool bDirectionalLight,
 	FRDGTextureRef OutputShadowMaskTexture);
+
+void CompositeVirtualShadowMapFromMaskBits(
+	FRDGBuilder& GraphBuilder,
+	const FMinimalSceneTextures& SceneTextures,
+	const FViewInfo& View,
+	const FIntRect ScissorRect,
+	FVirtualShadowMapArray& VirtualShadowMapArray,
+	EVirtualShadowMapProjectionInputType InputType,
+	int32 VirtualShadowMapId,
+	FRDGTextureRef ShadowMaskBits,
+	FRDGTextureRef OutputShadowMaskTexture);
+

@@ -20,7 +20,7 @@
 #include "SelectionSystem/DataprepFilter.h"
 #include "SelectionSystem/DataprepSelectionTransform.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -751,7 +751,7 @@ void FDataprepCoreUtils::DeleteTemporaryFolders(const FString& BaseTemporaryPath
 		ObjectsToDelete.Reserve( AssetDataList.Num() );
 		for(const FAssetData& AssetData : AssetDataList)
 		{
-			FSoftObjectPath ObjectPath( AssetData.ObjectPath.ToString() );
+			FSoftObjectPath ObjectPath( AssetData.GetSoftObjectPath() );
 
 			if(UObject* Object = ObjectPath.ResolveObject())
 			{

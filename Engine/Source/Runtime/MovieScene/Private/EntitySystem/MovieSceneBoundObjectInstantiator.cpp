@@ -12,6 +12,8 @@
 
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBoundObjectInstantiator)
+
 UMovieSceneGenericBoundObjectInstantiator::UMovieSceneGenericBoundObjectInstantiator(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
@@ -23,6 +25,7 @@ UMovieSceneGenericBoundObjectInstantiator::UMovieSceneGenericBoundObjectInstanti
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineComponentProducer(GetClass(), Components->BoundObject);
+		DefineComponentProducer(GetClass(), Components->SymbolicTags.CreatesEntities);
 	}
 }
 
@@ -71,3 +74,4 @@ void UMovieSceneGenericBoundObjectInstantiator::OnRun(FSystemTaskPrerequisites& 
 	.FilterNone({ Components->Tags.NeedsUnlink })
 	.RunInline_PerAllocation(&Linker->EntityManager, BoundObjectTask);
 }
+

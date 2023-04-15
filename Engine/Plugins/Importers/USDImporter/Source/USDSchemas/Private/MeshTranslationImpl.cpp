@@ -107,26 +107,7 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 			case UsdUtils::EPrimAssignmentType::None:
 			default:
 			{
-				// Check if there is a material already on the mesh
-				UMaterialInstanceConstant* ExistingMaterialInstance = Cast< UMaterialInstanceConstant >( ExistingAssignments[ GlobalResolvedMaterialIndex ] );
-
-				// Assuming that we own the material instance and that we can change it as we wish, reuse it
-				if ( ExistingMaterialInstance && ExistingMaterialInstance->GetOuter() == GetTransientPackage() )
-				{
-#if WITH_EDITOR
-					UUsdAssetImportData* AssetImportData = Cast<UUsdAssetImportData>( ExistingMaterialInstance->AssetImportData );
-					if ( AssetImportData && AssetImportData->PrimPath == UsdToUnreal::ConvertPath( UsdPrim.GetPrimPath() ) )
-#endif // WITH_EDITOR
-					{
-						// If we have displayColor data on our prim, repurpose this material to show it
-						if ( TOptional<UsdUtils::FDisplayColorMaterial> DisplayColorDescription = UsdUtils::ExtractDisplayColorMaterial( pxr::UsdGeomMesh( UsdPrim ) ) )
-						{
-							UsdToUnreal::ConvertDisplayColor( DisplayColorDescription.GetValue(), *ExistingMaterialInstance );
-						}
-
-						Material = ExistingMaterialInstance;
-					}
-				}
+				ensure( false );
 				break;
 			}
 			}
@@ -138,7 +119,17 @@ TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> MeshTranslation
 	return ResolvedMaterials;
 }
 
-void MeshTranslationImpl::SetMaterialOverrides( const pxr::UsdPrim& Prim, const TArray<UMaterialInterface*>& ExistingAssignments, UMeshComponent& MeshComponent, UUsdAssetCache& AssetCache, float Time, EObjectFlags Flags, bool bInterpretLODs, const FName& RenderContext )
+void MeshTranslationImpl::SetMaterialOverrides(
+	const pxr::UsdPrim& Prim,
+	const TArray<UMaterialInterface*>& ExistingAssignments,
+	UMeshComponent& MeshComponent,
+	UUsdAssetCache& AssetCache,
+	float Time,
+	EObjectFlags Flags,
+	bool bInterpretLODs,
+	const FName& RenderContext,
+	const FName& MaterialPurpose
+)
 {
 	FScopedUsdAllocs Allocs;
 
@@ -151,10 +142,15 @@ void MeshTranslationImpl::SetMaterialOverrides( const pxr::UsdPrim& Prim, const 
 	pxr::UsdStageRefPtr Stage = Prim.GetStage();
 
 	pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
-
 	if ( !RenderContext.IsNone() )
 	{
 		RenderContextToken = UnrealToUsd::ConvertToken( *RenderContext.ToString() ).Get();
+	}
+
+	pxr::TfToken MaterialPurposeToken = pxr::UsdShadeTokens->allPurpose;
+	if ( !MaterialPurpose.IsNone() )
+	{
+		MaterialPurposeToken = UnrealToUsd::ConvertToken( *MaterialPurpose.ToString() ).Get();
 	}
 
 	TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignments;
@@ -167,7 +163,13 @@ void MeshTranslationImpl::SetMaterialOverrides( const pxr::UsdPrim& Prim, const 
 		TMap<int32, UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignmentsMap;
 		TFunction<bool( const pxr::UsdGeomMesh&, int32 )> IterateLODs = [ & ]( const pxr::UsdGeomMesh& LODMesh, int32 LODIndex )
 		{
-			UsdUtils::FUsdPrimMaterialAssignmentInfo LODInfo = UsdUtils::GetPrimMaterialAssignments( LODMesh.GetPrim(), pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken );
+			UsdUtils::FUsdPrimMaterialAssignmentInfo LODInfo = UsdUtils::GetPrimMaterialAssignments(
+				LODMesh.GetPrim(),
+				pxr::UsdTimeCode( Time ),
+				bProvideMaterialIndices,
+				RenderContextToken,
+				MaterialPurposeToken
+			);
 			LODIndexToAssignmentsMap.Add( LODIndex, LODInfo );
 			return true;
 		};
@@ -191,7 +193,15 @@ void MeshTranslationImpl::SetMaterialOverrides( const pxr::UsdPrim& Prim, const 
 	// Extract material assignment info from prim if its *not* a LOD mesh, or if we failed to parse LODs
 	if ( !bInterpretedLODs )
 	{
-		LODIndexToAssignments = { UsdUtils::GetPrimMaterialAssignments( ValidPrim, pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken ) };
+		LODIndexToAssignments = {
+			UsdUtils::GetPrimMaterialAssignments(
+				ValidPrim,
+				pxr::UsdTimeCode( Time ),
+				bProvideMaterialIndices,
+				RenderContextToken,
+				MaterialPurposeToken
+			)
+		};
 	}
 
 	TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials = MeshTranslationImpl::ResolveMaterialAssignmentInfo(

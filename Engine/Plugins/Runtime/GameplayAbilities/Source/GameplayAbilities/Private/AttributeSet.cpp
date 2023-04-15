@@ -4,6 +4,7 @@
 #include "Stats/StatsMisc.h"
 #include "EngineDefines.h"
 #include "Engine/ObjectLibrary.h"
+#include "Engine/World.h"
 #include "VisualLogger/VisualLogger.h"
 #include "AbilitySystemLog.h"
 #include "GameplayEffectAggregator.h"
@@ -15,6 +16,11 @@
 #include "Net/Core/PushModel/PushModel.h"
 #include "UObject/UObjectThreadContext.h"
 
+#if UE_WITH_IRIS
+#include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
+#endif // UE_WITH_IRIS
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AttributeSet)
 
 #if ENABLE_VISUAL_LOG
 namespace
@@ -370,6 +376,18 @@ void UAttributeSet::SetNetAddressable()
 	bNetAddressable = true;
 }
 
+#if UE_WITH_IRIS
+void UAttributeSet::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
+	using namespace UE::Net;
+
+	Super::RegisterReplicationFragments(Context, RegistrationFlags);
+
+	// Build descriptors and allocate PropertyReplicationFragments for this object
+	FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
+}
+#endif // UE_WITH_IRIS
+
 void UAttributeSet::InitFromMetaDataTable(const UDataTable* DataTable)
 {
 	static const FString Context = FString(TEXT("UAttribute::BindToMetaDataTable"));
@@ -407,6 +425,11 @@ void UAttributeSet::InitFromMetaDataTable(const UDataTable* DataTable)
 	}
 
 	PrintDebug();
+}
+
+AActor* UAttributeSet::GetOwningActor() const
+{
+	return CastChecked<AActor>(GetOuter());
 }
 
 UAbilitySystemComponent* UAttributeSet::GetOwningAbilitySystemComponent() const
@@ -755,3 +778,4 @@ bool FAttributeSetInitterDiscreteLevels::IsSupportedProperty(FProperty* Property
 {
 	return (Property && (CastField<FNumericProperty>(Property) || FGameplayAttribute::IsGameplayAttributeDataProperty(Property)));
 }
+

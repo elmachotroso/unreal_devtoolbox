@@ -21,7 +21,7 @@ class FNiagaraParameterDefinitionsPanelCommands : public TCommands<FNiagaraParam
 public:
 	/** Constructor */
 	FNiagaraParameterDefinitionsPanelCommands()
-		: TCommands<FNiagaraParameterDefinitionsPanelCommands>(TEXT("NiagaraParameterDefinitionsPanelCommands"), NSLOCTEXT("Contexts", "NiagaraParameterDefinitionsPanel", "NiagaraParameterDefinitionsPanel"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FNiagaraParameterDefinitionsPanelCommands>(TEXT("NiagaraParameterDefinitionsPanelCommands"), NSLOCTEXT("Contexts", "NiagaraParameterDefinitionsPanel", "NiagaraParameterDefinitionsPanel"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 
@@ -40,7 +40,7 @@ public:
 	{}
 	SLATE_END_ARGS();
 
-	NIAGARAEDITOR_API ~SNiagaraParameterDefinitionsPanel();
+	NIAGARAEDITOR_API virtual ~SNiagaraParameterDefinitionsPanel() override;
 
 	NIAGARAEDITOR_API void Construct(const FArguments& InArgs, const TSharedPtr<INiagaraParameterDefinitionsPanelViewModel>& InParameterDefinitionsPanelViewModel, const TSharedPtr<FUICommandList>& InToolkitCommands);
 
@@ -59,7 +59,7 @@ public:
 	void OnCategoryActivated(const FNiagaraParameterDefinitionsPanelCategory& ActivatedCategory) const;
 	//~ End SItemSelector
 
-	void Refresh();
+	void Refresh(bool bExpandCategories);
 	void AddParameterDefinitions(UNiagaraParameterDefinitions* NewParameterDefinitions) const;
 	void OnParameterItemSelected(const FNiagaraParameterDefinitionsPanelItem& SelectedItem, ESelectInfo::Type SelectInfo) const;
 	FReply OnParameterItemsDragged(const TArray<FNiagaraParameterDefinitionsPanelItem>& DraggedItems, const FPointerEvent& MouseEvent) const;

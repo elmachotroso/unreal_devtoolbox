@@ -77,6 +77,17 @@ protected:
 	}
 
 	/**
+	 * Set the extended channel-type specific editor data on an already added channel entry
+	 */
+	template<typename ChannelType, typename ExtendedEditorDataType>
+	void SetExtendedEditorData(int32 EntryIndex, ExtendedEditorDataType&& InExtendedEditorData)
+	{
+		// Set the extended channel-type specific editor data
+		auto& TypedImpl = static_cast<TMovieSceneExtendedEditorDataArray<ChannelType>&>(ExtendedEditorDataArray.GetValue());
+		TypedImpl.Data[EntryIndex] = Forward<ExtendedEditorDataType>(InExtendedEditorData);
+	}
+
+	/**
 	 * Access the extended editor data for channels stored in this entry
 	 */
 	template<typename ChannelType>

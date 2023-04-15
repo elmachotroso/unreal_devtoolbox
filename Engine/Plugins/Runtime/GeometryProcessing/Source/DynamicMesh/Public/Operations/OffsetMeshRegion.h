@@ -115,7 +115,13 @@ public:
 
 		/** Initial loops on the mesh */
 		TArray<FEdgeLoop> BaseLoops;
-		/** Offset loops on the mesh */
+		/** 
+		 * Offset loops on the mesh. If the region had bowtie vertices (in terms of selection, not
+		 * even necessarily in terms of original mesh topology), then the number of loops here may
+		 * no longer match number of loops in BaseLoops, StitchTriangles, etc (for example, imagine
+		 * a circular hole tangent inside a circular region; when the tangent bowtie is split, this
+		 * becomes one C-shaped loop instead of two nested ones)
+		 */
 		TArray<FEdgeLoop> OffsetLoops;
 
 		/** Lists of triangle-strip "tubes" that connect each loop-pair */
@@ -167,7 +173,7 @@ public:
 		int32 Eid1, int32 Eid2, bool bCheckColinearityAtBorder);
 protected:
 
-	virtual bool ApplyOffset(FOffsetInfo& Region, FMeshNormals* UseNormals = nullptr);
+	virtual bool ApplyOffset(FOffsetInfo& Region);
 };
 
 } // end namespace UE::Geometry

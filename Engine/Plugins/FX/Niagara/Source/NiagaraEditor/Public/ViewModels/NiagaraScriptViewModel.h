@@ -31,11 +31,11 @@ class FNiagaraScriptViewModel
 public:
 	FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode, bool bInIsForDataProcessingOnly);
 
-	virtual ~FNiagaraScriptViewModel();
+	virtual ~FNiagaraScriptViewModel() override;
 
 	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
 protected:
-	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override { checkf(false, TEXT("Tried to modify parameter libraries for script viewmodel; this is only a valid operation for standalone script viewmodel and scratchpad scriptviewmodel!")); return nullptr; };
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override;
 	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
 
 public:
@@ -46,7 +46,7 @@ public:
 	/** Sets the view model to a different script. */
 	void SetScript(FVersionedNiagaraScript InScript);
 
-	void SetScripts(UNiagaraEmitter* InEmitter);
+	void SetScripts(FVersionedNiagaraEmitter InEmitter);
 
 	/** Gets the view model for the input parameter collection. */
 	TSharedRef<FNiagaraScriptInputCollectionViewModel> GetInputCollectionViewModel();
@@ -69,14 +69,14 @@ public:
 	void CompileStandaloneScript(bool bForceCompile = false);
 
 	/** Get the latest status of this view-model's script compilation.*/
-	virtual ENiagaraScriptCompileStatus GetLatestCompileStatus(FGuid VersionGuid = FGuid());
+	NIAGARAEDITOR_API virtual ENiagaraScriptCompileStatus GetLatestCompileStatus(FGuid VersionGuid = FGuid());
 
 	/** Refreshes the nodes in the script graph, updating the pins to match external changes. */
 	void RefreshNodes();
 
 	//~ FEditorUndoClient Interface
-	virtual void PostUndo(bool bSuccess) override;
-	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
+	NIAGARAEDITOR_API virtual void PostUndo(bool bSuccess) override;
+	NIAGARAEDITOR_API virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
 
 	UNiagaraScript* GetContainerScript(ENiagaraScriptUsage InUsage, FGuid InUsageId = FGuid());
 	UNiagaraScript* GetScript(ENiagaraScriptUsage InUsage, FGuid InUsageId = FGuid());
@@ -86,7 +86,8 @@ public:
 
 	/** If this is editing a standalone script, returns the script being edited.*/
 	virtual FVersionedNiagaraScript GetStandaloneScript();
-	//const UNiagaraScript* GetStandaloneScript() const;
+	
+	bool RenameParameter(const FNiagaraVariable TargetParameter, const FName NewName);
 
 private:
 	/** Handles the selection changing in the graph view model. */
@@ -110,9 +111,9 @@ protected:
 	/** The script which provides the data for this view model. */
 	TArray<FVersionedNiagaraScriptWeakPtr> Scripts;
 
-	virtual void OnVMScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
+	NIAGARAEDITOR_API virtual void OnVMScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 
-	virtual void OnGPUScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
+	NIAGARAEDITOR_API virtual void OnGPUScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion);
 
 	TWeakObjectPtr<UNiagaraScriptSource> Source;
 

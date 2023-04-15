@@ -2,13 +2,19 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
+#include "Delegates/Delegate.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/Platform.h"
+#include "ITransportControl.h"
 #include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "SCurveEditor.h"
+#include "SScrubWidget.h"
+#include "Templates/SharedPointer.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "SScrubWidget.h"
-#include "Editor/EditorWidgets/Public/ITransportControl.h"
 
 class KISMETWIDGETS_API SScrubControlPanel : public SCompoundWidget
 {
@@ -80,6 +86,7 @@ public:
 		/** Optional, additional values to draw on the timeline **/
 		SLATE_ATTRIBUTE( TArray<float>, DraggableBars )
 		SLATE_EVENT( FOnScrubBarDrag, OnBarDrag )
+		SLATE_EVENT( FOnScrubBarCommit, OnBarCommit )
 		/** Called each frame during playback */
 		SLATE_EVENT( FOnTickPlayback, OnTickPlayback )
 	SLATE_END_ARGS()

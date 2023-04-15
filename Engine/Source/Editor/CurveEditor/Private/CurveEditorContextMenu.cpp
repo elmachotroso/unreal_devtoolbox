@@ -1,10 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CurveEditorContextMenu.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Commands/GenericCommands.h"
+
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 #include "CurveEditor.h"
 #include "CurveEditorCommands.h"
+#include "CurveEditorSelection.h"
+#include "CurveEditorTypes.h"
+#include "CurveModel.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/UnrealNames.h"
+
+class IBufferedCurveModel;
 
 #define LOCTEXT_NAMESPACE "CurveEditorContextMenu"
 
@@ -14,10 +29,21 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 
 	TSharedPtr<FCurveEditor> LocalCurveEditor = CurveEditor->AsShared();
 
+	int32 NumActiveCurves = LocalCurveEditor->GetSelectionFromTreeAndKeys().Num();
+
+	int32 NumBufferedCurves = 0;
+	for (const TUniquePtr<IBufferedCurveModel>& BufferedCurve : LocalCurveEditor->GetBufferedCurves())
+	{
+		if (LocalCurveEditor->IsActiveBufferedCurve(BufferedCurve))
+		{
+			++NumBufferedCurves;
+		}
+	}
+
 	// We change the name to reflect the current number of curves selected.
-	TAttribute<FText> ApplyBufferedCurvesText = TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateLambda([LocalCurveEditor] {
-		return FText::Format(LOCTEXT("ApplyStoredCurvesContextMenu", "Apply {0} Stored Curves"), LocalCurveEditor->GetNumBufferedCurves());
-	}));
+	TAttribute<FText> BufferedCurvesText = FText::Format(LOCTEXT("BufferCurvesContextMenu", "Buffer {0} Curves"), NumActiveCurves);
+	TAttribute<FText> SwapBufferedCurvesText = FText::Format(LOCTEXT("SwapBufferedCurvesContextMenu", "Swap {0} Buffered Curves onto {1} Selected Curves"), NumBufferedCurves, NumActiveCurves);
+	TAttribute<FText> ApplyBufferedCurvesText = FText::Format(LOCTEXT("ApplyBufferedCurvesContextMenu", "Apply {0} Buffered Curves onto {1} Selected Curves"), NumBufferedCurves, NumActiveCurves);
 
 	const FCurveModel* HoveredCurve = HoveredCurveID.IsSet() ? CurveEditor->FindCurve(HoveredCurveID.GetValue()) : nullptr;
 
@@ -50,6 +76,7 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 				// Modify Data
 				MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
 				MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().PasteOverwriteRange);
 				MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
 				MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
 
@@ -69,6 +96,15 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 				MenuBuilder.AddMenuSeparator();
 			}
 
+			// Buffer Curves
+			MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().BufferVisibleCurves, NAME_None, BufferedCurvesText);
+			if (!bIsReadOnly)
+			{
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SwapBufferedCurves, NAME_None, SwapBufferedCurvesText);
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ApplyBufferedCurves, NAME_None, ApplyBufferedCurvesText);
+			}
+			MenuBuilder.AddSeparator();
+
 			// Select
 			MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SelectAllKeys);
 
@@ -82,18 +118,25 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 	}
 	else
 	{
+		// Test if at least one curve is editable
+		bool bIsReadOnly = true;
+		TSet<FCurveModelID> CurvesToAddTo;
+		for(const FCurveModelID& CurveModelID : CurveEditor->GetEditedCurves())
+		{
+			if (const FCurveModel* CurveModel = CurveEditor->FindCurve(CurveModelID))
+			{
+				if (!CurveModel->IsReadOnly())
+				{
+					bIsReadOnly = false;
+					break;
+				}
+			}
+		}
+
 		if (HoveredCurve)
 		{
 			MenuBuilder.BeginSection("CurveEditorCurveSection", FText::Format(LOCTEXT("CurveNameFormat", "Curve '{0}'"), HoveredCurve->GetLongDisplayName()));
 			{
-				// Buffer Curves
-				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().BufferVisibleCurves);
-				if (!HoveredCurve->IsReadOnly())
-				{
-					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ApplyBufferedCurves, NAME_None, ApplyBufferedCurvesText);
-				}
-				MenuBuilder.AddMenuSeparator();
-
 				// Modify Curve
 				if (!HoveredCurve->IsReadOnly())
 				{
@@ -125,6 +168,15 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 					);
 
 					MenuBuilder.AddMenuSeparator();
+
+					// Buffer Curves
+					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().BufferVisibleCurves, NAME_None, BufferedCurvesText);
+					if (!bIsReadOnly)
+					{
+						MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SwapBufferedCurves, NAME_None, SwapBufferedCurvesText);
+						MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ApplyBufferedCurves, NAME_None, ApplyBufferedCurvesText);
+					}
+					MenuBuilder.AddSeparator();
 				}
 
 				// Select
@@ -140,33 +192,23 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 		}
 		else
 		{
-			// Test if at least one curve is editable
-			bool bIsReadOnly = true;
-			TSet<FCurveModelID> CurvesToAddTo;
-			for(const FCurveModelID& CurveModelID : CurveEditor->GetEditedCurves())
-			{
-				if (const FCurveModel* CurveModel = CurveEditor->FindCurve(CurveModelID))
-				{
-					if (!CurveModel->IsReadOnly())
-					{
-						bIsReadOnly = false;
-						break;
-					}
-				}
-			}
-
 			MenuBuilder.BeginSection("CurveEditorAllCurveSections", LOCTEXT("CurveEditorAllCurveSections", "All Curves"));
 			{
-				// Buffer Curves
-				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().BufferVisibleCurves);
 				if (!bIsReadOnly)
 				{
-					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ApplyBufferedCurves, NAME_None, ApplyBufferedCurvesText);
-					MenuBuilder.AddMenuSeparator();
-
 					// Modify Curves
 					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().AddKeyToAllCurves);
-					MenuBuilder.AddMenuSeparator();
+
+					MenuBuilder.AddSeparator();
+
+					// Buffer Curves
+					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().BufferVisibleCurves, NAME_None, BufferedCurvesText);
+					if (!bIsReadOnly)
+					{
+						MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SwapBufferedCurves, NAME_None, SwapBufferedCurvesText);
+						MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ApplyBufferedCurves, NAME_None, ApplyBufferedCurvesText);
+					}
+					MenuBuilder.AddSeparator();
 				}
 
 				// Select

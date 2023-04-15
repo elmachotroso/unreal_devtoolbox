@@ -2,18 +2,24 @@
 
 #include "Serialization/CompactBinaryWriter.h"
 
-#include "Containers/StringConv.h"
+#include "HAL/PlatformString.h"
+#include "HAL/UnrealMemory.h"
 #include "IO/IoHash.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
 #include "Memory/CompositeBuffer.h"
 #include "Memory/SharedBuffer.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/ByteSwap.h"
 #include "Misc/DateTime.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/Guid.h"
 #include "Misc/Timespan.h"
 #include "Serialization/Archive.h"
 #include "Serialization/CompactBinaryPackage.h"
 #include "Serialization/CompactBinarySerialization.h"
 #include "Serialization/VarInt.h"
+#include "UObject/NameTypes.h"
 
 enum class FCbWriter::EStateFlags : uint8
 {
@@ -398,7 +404,7 @@ void FCbWriter::AddString(const FUtf8StringView Value)
 void FCbWriter::AddString(const FWideStringView Value)
 {
 	BeginField();
-	const uint32 Size = uint32(FTCHARToUTF8_Convert::ConvertedLength(Value.GetData(), Value.Len()));
+	const uint32 Size = uint32(FPlatformString::ConvertedLength<UTF8CHAR>(Value.GetData(), Value.Len()));
 	const uint32 SizeByteCount = MeasureVarUInt(Size);
 	const int64 Offset = Data.AddUninitialized(SizeByteCount + Size);
 	uint8* StringData = Data.GetData() + Offset;
@@ -406,7 +412,7 @@ void FCbWriter::AddString(const FWideStringView Value)
 	StringData += SizeByteCount;
 	if (Size > 0)
 	{
-		FTCHARToUTF8_Convert::Convert(reinterpret_cast<UTF8CHAR*>(StringData), Size, Value.GetData(), Value.Len());
+		FPlatformString::Convert(reinterpret_cast<UTF8CHAR*>(StringData), Size, Value.GetData(), Value.Len());
 	}
 	EndField(ECbFieldType::String);
 }
@@ -620,6 +626,12 @@ FCbWriter& operator<<(FCbWriter& Writer, const FDateTime Value)
 FCbWriter& operator<<(FCbWriter& Writer, const FTimespan Value)
 {
 	Writer.AddTimeSpan(Value);
+	return Writer;
+}
+
+FCbWriter& operator<<(FCbWriter& Writer, FName Value)
+{
+	Writer << WriteToUtf8String<FName::StringBufferSize>(Value).ToView();
 	return Writer;
 }
 

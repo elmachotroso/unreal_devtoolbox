@@ -7,6 +7,8 @@
 #include "AIController.h"
 #include "VisualLogger/VisualLogger.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PawnAction_Move)
+
 UPawnAction_Move::UPawnAction_Move(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, GoalLocation(FAISystem::InvalidLocation)
@@ -16,7 +18,7 @@ UPawnAction_Move::UPawnAction_Move(const FObjectInitializer& ObjectInitializer)
 	, bAllowPartialPath(true)
 	, bProjectGoalToNavigation(false)
 	, bUpdatePathToGoal(true)
-	, bAbortChildActionOnPathChange(false)
+	, bAbortSubActionOnPathChange(false)
 {
 	bShouldPauseMovement = true;
 
@@ -281,7 +283,7 @@ void UPawnAction_Move::OnPathUpdated(FNavigationPath* UpdatedPath, ENavPathEvent
 
 	UE_VLOG(MyOwner, LogPawnAction, Log, TEXT("%s> Path updated!"), *GetName());
 	
-	if (bAbortChildActionOnPathChange && GetChildAction())
+	if (bAbortSubActionOnPathChange && GetChildAction())
 	{
 		UE_VLOG(MyOwner, LogPawnAction, Log, TEXT(">> aborting child action: %s"), *GetNameSafe(GetChildAction()));
 		
@@ -393,3 +395,4 @@ bool UPawnAction_Move::IsPartialPathAllowed() const
 {
 	return bAllowPartialPath;
 }
+

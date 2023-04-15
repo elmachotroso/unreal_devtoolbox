@@ -3,6 +3,7 @@
 #include "StageDataProvider.h"
 
 #include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 #include "MessageEndpoint.h"
 #include "MessageEndpointBuilder.h"
 #include "Misc/App.h"
@@ -11,6 +12,7 @@
 #include "StageMonitoringSettings.h"
 #include "StageMonitorUtils.h"
 #include "VPSettings.h"
+#include "VPRoles/Public/VPRolesSubsystem.h"
 
 
 namespace StageDataProviderUtils
@@ -187,10 +189,16 @@ bool FStageDataProvider::IsMessageTypeExcluded(UScriptStruct* MessageType) const
 	const FStageDataProviderSettings& ProviderSettings = GetDefault<UStageMonitoringSettings>()->ProviderSettings;
 	if (const FGameplayTagContainer* SupportedRoles = ProviderSettings.MessageTypeRoleExclusion.Find(FStageMessageTypeWrapper(MessageType->GetFName())))
 	{
-		const FGameplayTagContainer& CurrentRoles = GetDefault<UVPSettings>()->GetRoles();
-		if (!SupportedRoles->HasAny(CurrentRoles))
+		if (GEngine)
 		{
-			return true;
+			if (UVirtualProductionRolesSubsystem* VPRolesSubsytem = GEngine->GetEngineSubsystem<UVirtualProductionRolesSubsystem>())
+			{
+				const FGameplayTagContainer& CurrentRoles = VPRolesSubsytem->GetRolesContainer_Private();
+				if (!SupportedRoles->HasAny(CurrentRoles))
+				{
+					return true;
+				}
+			}
 		}
 	}
 

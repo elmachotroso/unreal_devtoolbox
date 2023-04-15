@@ -1,23 +1,20 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SRCProtocolBindingList.h"
 
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IRemoteControlProtocolModule.h"
-#include "RemoteControlProtocolWidgetsSettings.h"
+#include "RemoteControlProtocolWidgetsModule.h"
 #include "SRCProtocolBinding.h"
-#include "SRCProtocolList.h"
 #include "Delegates/DelegateSignatureImpl.inl"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Types/ISlateMetaData.h"
 #include "ViewModels/ProtocolEntityViewModel.h"
 #include "ViewModels/RCViewModelCommon.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STableViewBase.h"
@@ -61,28 +58,8 @@ void SRCProtocolBindingList::Construct(const FArguments& InArgs, TSharedRef<FPro
 		Refresh();
 	});
 
-	// The visibility toggle menu to show/hide protocol types
-	FMenuBuilder ProtocolVisibilityMenu(true, nullptr);
-
 	TSharedRef<SScrollBar> ExternalScrollBar = SNew(SScrollBar);
 	ExternalScrollBar->SetVisibility(TAttribute<EVisibility>(this, &SRCProtocolBindingList::GetScrollBarVisibility));
-
-	ProtocolNames = IRemoteControlProtocolModule::Get().GetProtocolNames();
-	for(const FName& ProtocolName : ProtocolNames)
-	{
-		ProtocolVisibilityMenu.AddMenuEntry(
-			FText::Format(LOCTEXT("ShowProtocolFmt", "Show {0}"), FText::FromName(ProtocolName)),
-			FText::Format(LOCTEXT("ShowProtocolTooltipFmt", "Show all {0} protocol entries."), FText::FromName(ProtocolName)),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([&](){ this->ToggleShowProtocol(ProtocolName); }),
-				FCanExecuteAction(),
-				FIsActionChecked::CreateLambda([&]() { return this->IsProtocolShown(ProtocolName); })
-			),
-			NAME_None,
-			EUserInterfaceActionType::ToggleButton
-		);
-	}
 
 	SAssignNew(BindingList, SListView<TSharedPtr<IRCTreeNodeViewModel>>)
 	.ListItemsSource(&FilteredBindings)
@@ -103,42 +80,54 @@ void SRCProtocolBindingList::Construct(const FArguments& InArgs, TSharedRef<FPro
 			.AutoWidth()
 			[
 				SNew(SHorizontalBox)
+
 				+ SHorizontalBox::Slot()
 				.Padding(Padding)
 				.AutoWidth()
 				[
-					SAssignNew(ProtocolList, SRCProtocolList)
-				]
-
-				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Left)
-				[
 					SNew(SButton)
-	                .ButtonStyle(FEditorStyle::Get(), "NoBorder")
-	                .ToolTipText(LOCTEXT("AddProtocol", "Add Protocol"))
-	                .IsEnabled_Lambda([this](){ return CanAddProtocol(); })
-	                .OnClicked_Lambda([this]()
-	                {
-	                	if(ProtocolList.IsValid() && ProtocolList->GetSelectedProtocolName().IsValid())
-	                	{
-	                		const FName& ProtocolName = *ProtocolList->GetSelectedProtocolName();
-	                		ViewModel->AddBinding(ProtocolName);
-	                		if (!IsProtocolShown(ProtocolName))
-	                		{
-	                			ToggleShowProtocol(ProtocolName);
-	                		}
-	                	}
-                        return FReply::Handled();
-	                })
-	                .ContentPadding(FMargin(2.0f, 2.0f))
-	                .Content()
-	                [
-	                    SNew(STextBlock)
-	                    .TextStyle(FEditorStyle::Get(), "NormalText.Important")
-	                    .Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-	                    .Text(FEditorFontGlyphs::Plus)
-	                ]
+					.ButtonStyle(FAppStyle::Get(), "PropertyEditor.AssetComboStyle")
+					.ForegroundColor(FSlateColor::UseForeground())
+					.ToolTipText(this, &SRCProtocolBindingList::HandleAddBindingToolTipText)
+					.IsEnabled_Lambda([this]() { return CanAddProtocol(); })
+					.OnClicked_Lambda([this]()
+						{
+							IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
+
+							const FName& ProtocolName = RCProtocolWidgetsModule.GetSelectedProtocolName();
+
+							ViewModel->AddBinding(ProtocolName);
+
+							Refresh(false);
+
+							return FReply::Handled();
+						}
+					)
+					.ContentPadding(FMargin(4.f, 2.f))
+					.Content()
+					[
+						SNew(SHorizontalBox)
+						
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(2.f)
+						[
+							SNew(SImage)
+							.ColorAndOpacity(FSlateColor::UseForeground())
+							.Image(FAppStyle::GetBrush("Icons.Plus"))
+						]
+
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(2.f)
+						[
+							SNew(STextBlock)
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+							.Text(LOCTEXT("AddBindingText", "Add Binding"))
+						]
+					]
 				]
 
 				+ SHorizontalBox::Slot()
@@ -159,25 +148,6 @@ void SRCProtocolBindingList::Construct(const FArguments& InArgs, TSharedRef<FPro
 			[
 				SNullWidget::NullWidget
 			]
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			[
-				SNew(SComboButton)
-				.ContentPadding(0)
-				.ForegroundColor(FSlateColor::UseForeground())
-				.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
-				.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ViewOptions")))
-				.MenuContent()
-				[
-					ProtocolVisibilityMenu.MakeWidget()
-				]
-				.ButtonContent()
-				[
-				 	SNew(SImage)
-				 	.Image(FEditorStyle::GetBrush("GenericViewButton"))
-				]
-			]
 		]			 
 
 		+ SVerticalBox::Slot()
@@ -188,7 +158,7 @@ void SRCProtocolBindingList::Construct(const FArguments& InArgs, TSharedRef<FPro
 			+ SHorizontalBox::Slot()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.Padding(5.0f)
 				[
 					BindingList.ToSharedRef()				
@@ -236,14 +206,15 @@ TSharedRef<ITableRow> SRCProtocolBindingList::ConstructBindingWidget(TSharedPtr<
 
 bool SRCProtocolBindingList::CanAddProtocol()
 {
-	const TSharedPtr<FName> SelectedProtocolName = ProtocolList.IsValid() ? ProtocolList->GetSelectedProtocolName() : nullptr;
+	IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
+	const FName& SelectedProtocolName = RCProtocolWidgetsModule.GetSelectedProtocolName();
 	if(!ViewModel->IsBound())
 	{
 		StatusMessage = FText::GetEmpty();
 		return false;
 	}
 	
-	if(ViewModel->CanAddBinding(SelectedProtocolName.IsValid() ? *SelectedProtocolName : NAME_None, StatusMessage))
+	if(ViewModel->CanAddBinding(SelectedProtocolName, StatusMessage))
 	{
 		StatusMessage = FText::GetEmpty();
 		return true;
@@ -252,24 +223,18 @@ bool SRCProtocolBindingList::CanAddProtocol()
 	return false;	
 }
 
-void SRCProtocolBindingList::ToggleShowProtocol(const FName& InProtocolName)
+FText SRCProtocolBindingList::HandleAddBindingToolTipText() const
 {
-	if(IsProtocolShown(InProtocolName))
-	{
-		GetSettings()->HiddenProtocolTypeNames.Add(InProtocolName);
-	}
-	else
-	{
-		GetSettings()->HiddenProtocolTypeNames.Remove(InProtocolName);
-	}
-	GetSettings()->SaveConfig();
+	IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
 
-	Refresh(false);
-}
+	const FName& SelectedProtocolName = RCProtocolWidgetsModule.GetSelectedProtocolName();
 
-bool SRCProtocolBindingList::IsProtocolShown(const FName& InProtocolName)
-{
-	return !GetSettings()->HiddenProtocolTypeNames.Contains(InProtocolName);
+	if (!SelectedProtocolName.IsNone())
+	{
+		return FText::Format(LOCTEXT("AddBindingToolTip", "Add {0} protocol binding."), { FText::FromName(SelectedProtocolName) });
+	}
+
+	return FText::GetEmpty();
 }
 
 EVisibility SRCProtocolBindingList::GetScrollBarVisibility() const
@@ -288,25 +253,19 @@ void SRCProtocolBindingList::OnStopRecording(TSharedPtr<TStructOnScope<FRemoteCo
 	AwaitingProtocolEntities.Remove(InEntity);
 }
 
-URemoteControlProtocolWidgetsSettings* SRCProtocolBindingList::GetSettings()
-{
-	if(Settings.IsValid())
-	{
-		return Settings.Get();
-	}
-
-	Settings = GetMutableDefault<URemoteControlProtocolWidgetsSettings>();
-	ensure(Settings.IsValid());
-	
-	return Settings.Get();
-}
-
 bool SRCProtocolBindingList::Refresh(bool bNavigateToEnd)
 {
 	FilteredBindings.Empty(FilteredBindings.Num());
-	for(const TSharedPtr<FProtocolBindingViewModel>& ProtocolBinding :  ViewModel->GetFilteredBindings(GetSettings()->HiddenProtocolTypeNames))
+
+	IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
+	const FName& SelectedProtocolName = RCProtocolWidgetsModule.GetSelectedProtocolName();
+
+	for (const TSharedPtr<FProtocolBindingViewModel>& ProtocolBinding : ViewModel->GetBindings())
 	{
-		FilteredBindings.Add(ProtocolBinding);
+		if (ProtocolBinding->GetBinding()->GetProtocolName() == SelectedProtocolName)
+		{
+			FilteredBindings.Add(ProtocolBinding);
+		}
 	}
 	
 	if(BindingList.IsValid())
@@ -317,7 +276,6 @@ bool SRCProtocolBindingList::Refresh(bool bNavigateToEnd)
 			return false;
 		}
 
-		
 		GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([bNavigateToEnd, WeakListPtr = TWeakPtr<SRCProtocolBindingList>(StaticCastSharedRef<SRCProtocolBindingList>(AsShared()))]()
 		{
 			if (TSharedPtr<SRCProtocolBindingList> ListPtr = WeakListPtr.Pin())

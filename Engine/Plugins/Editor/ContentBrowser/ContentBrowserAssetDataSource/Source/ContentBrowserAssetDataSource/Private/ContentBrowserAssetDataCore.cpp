@@ -3,7 +3,7 @@
 #include "ContentBrowserAssetDataCore.h"
 #include "ContentBrowserDataSource.h"
 #include "IAssetTools.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetViewUtils.h"
 #include "AssetPropertyTagCache.h"
 #include "ObjectTools.h"
@@ -18,9 +18,13 @@
 #include "AssetFileContextMenu.h"
 #include "ContentBrowserDataUtils.h"
 #include "Settings/ContentBrowserSettings.h"
-#include "Engine/World.h"
+#include "Engine/Level.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowserAssetDataSource"
+
+DEFINE_LOG_CATEGORY_STATIC(LogContentBrowserAssetDataSource, Warning, Warning);
 
 namespace ContentBrowserAssetData
 {
@@ -158,7 +162,27 @@ bool CanModifyAssetFolderItem(IAssetTools* InAssetTools, const FContentBrowserAs
 
 bool CanModifyAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg)
 {
-	return CanModifyPath(InAssetTools, InAssetPayload.GetAssetData().PackageName, OutErrorMsg);
+	if (!CanModifyPath(InAssetTools, InAssetPayload.GetAssetData().PackageName, OutErrorMsg))
+	{
+		return false;
+	}
+
+	if (const UClass* AssetClass = InAssetPayload.GetAssetData().GetClass())
+	{
+		if (AssetClass->IsChildOf<UClass>())
+		{
+			SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotModifyGeneratedClasses", "Cannot modify generated classes"));
+			return false;
+		}
+	}
+
+	if (InAssetPayload.GetAssetData().HasAnyPackageFlags(PKG_Cooked | PKG_FilterEditorOnly))
+	{
+		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotModifyCookedAssets", "Cannot modify cooked assets"));
+		return false;
+	}
+
+	return true;
 }
 
 bool CanEditItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -175,12 +199,6 @@ bool CanEditAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetF
 {
 	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
 	{
-		return false;
-	}
-
-	if (InAssetPayload.GetAssetData().PackageFlags & PKG_FilterEditorOnly)
-	{
-		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotEditCookedPackages", "Cannot edit cooked packages"));
 		return false;
 	}
 
@@ -249,7 +267,7 @@ bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrows
 		
 		for (const FAssetData& AssetData : AssetsToLoad)
 		{
-			if (!AssetData.IsAssetLoaded() && FEditorFileUtils::IsMapPackageAsset(AssetData.ObjectPath.ToString()))
+			if (!AssetData.IsAssetLoaded() && FEditorFileUtils::IsMapPackageAsset(AssetData.GetObjectPathString()))
 			{
 				SlowTask.MakeDialog();
 			}
@@ -328,6 +346,15 @@ bool CanDuplicateAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserA
 		return false;
 	}
 
+	if (const UClass* AssetClass = InAssetPayload.GetAssetData().GetClass())
+	{
+		if (AssetClass->IsChildOf<UClass>())
+		{
+			SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotDuplicateGeneratedClasses", "Cannot duplicate generated classes"));
+			return false;
+		}
+	}
+
 	if (TSharedPtr<IAssetTypeActions> AssetTypeActions = InAssetPayload.GetAssetTypeActions())
 	{
 		if (!AssetTypeActions->CanDuplicate(InAssetPayload.GetAssetData(), OutErrorMsg))
@@ -355,8 +382,7 @@ bool DuplicateItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* I
 bool DuplicateAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, UObject*& OutSourceAsset, FAssetData& OutNewAsset)
 {
 	// We need to potentially load the asset in order to duplicate it
-	FScopedLoadAllExternalObjects Scope(InAssetPayload.GetAssetData().PackageName);
-	if (UObject* Asset = InAssetPayload.LoadAsset())
+	if (UObject* Asset = InAssetPayload.LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 	{
 		// Find a unique default name for the duplicated asset
 		FString DefaultAssetName;
@@ -364,7 +390,7 @@ bool DuplicateAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAsse
 		InAssetTools->CreateUniqueAssetName(Asset->GetOutermost()->GetPathName(), FString(), PackageNameToUse, DefaultAssetName);
 
 		OutSourceAsset = Asset;
-		OutNewAsset = FAssetData(*PackageNameToUse, *FPackageName::GetLongPackagePath(PackageNameToUse), *DefaultAssetName, Asset->GetClass()->GetFName());
+		OutNewAsset = FAssetData(*PackageNameToUse, *FPackageName::GetLongPackagePath(PackageNameToUse), *DefaultAssetName, Asset->GetClass()->GetClassPathName());
 		return true;
 	}
 
@@ -394,8 +420,7 @@ bool DuplicateAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAs
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
-		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
-		if (UObject* Asset = AssetPayload->LoadAsset())
+		if (UObject* Asset = AssetPayload->LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 		{
 			ObjectsToDuplicate.Add(Asset);
 		}
@@ -434,12 +459,6 @@ bool CanSaveAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetF
 {
 	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
 	{
-		return false;
-	}
-
-	if (InAssetPayload.GetAssetData().PackageFlags & PKG_FilterEditorOnly)
-	{
-		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotSaveCookedPackages", "Cannot save cooked packages"));
 		return false;
 	}
 
@@ -570,6 +589,42 @@ bool CanDeleteAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAsse
 	return true;
 }
 
+bool CanPrivatizeItem(IAssetTools* InAssetTools, IAssetRegistry* InAssetRegistry, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	if (TSharedPtr<const FContentBrowserAssetFolderItemDataPayload> FolderPayload = GetAssetFolderItemPayload(InOwnerDataSource, InItem))
+	{
+		return false;
+	}
+
+	if (TSharedPtr<const FContentBrowserAssetFileItemDataPayload> AssetPayload = GetAssetFileItemPayload(InOwnerDataSource, InItem))
+	{
+		return CanPrivatizeAssetFileItem(InAssetTools, *AssetPayload, OutErrorMsg);
+	}
+
+	return false;
+}
+
+bool CanPrivatizeAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg)
+{
+	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
+	{
+		return false;
+	}
+
+	if (IsRunningPIE(OutErrorMsg))
+	{
+		return false;
+	}
+
+	if (InAssetPayload.GetAssetData().IsRedirector())
+	{
+		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotPrivatizeRedirectors", "Cannot make redirectors private"));
+		return false;
+	}
+
+	return true;
+}
+
 bool DeleteItems(IAssetTools* InAssetTools, IAssetRegistry* InAssetRegistry, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems)
 {
 	TArray<TSharedRef<const FContentBrowserAssetFolderItemDataPayload>, TInlineAllocator<16>> FolderPayloads;
@@ -608,6 +663,41 @@ bool DeleteItems(IAssetTools* InAssetTools, IAssetRegistry* InAssetRegistry, con
 	}
 
 	return bDidDelete;
+}
+
+bool PrivatizeItems(IAssetTools* InAssetTools, IAssetRegistry* InAssetRegistry, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems)
+{
+	TArray<TSharedRef<const FContentBrowserAssetFileItemDataPayload>, TInlineAllocator<16>> AssetPayloads;
+
+	auto ProcessAssetFolderItem = [](const TSharedRef<const FContentBrowserAssetFolderItemDataPayload>& InFolderPayload)
+	{
+		return true;
+	};
+
+	auto ProcessAssetFileItem = [InAssetTools, &AssetPayloads](const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& InAssetPayload)
+	{
+		if (CanPrivatizeAssetFileItem(InAssetTools, *InAssetPayload, nullptr))
+		{
+			AssetPayloads.Add(InAssetPayload);
+		}
+		return true;
+	};
+
+	EnumerateAssetItemPayloads(InOwnerDataSource, InItems, ProcessAssetFolderItem, ProcessAssetFileItem);
+
+	if (AssetPayloads.IsEmpty())
+	{
+		return false;
+	}
+
+	TArray<FAssetData> AssetsToPrivatize;
+
+	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : AssetPayloads)
+	{
+		AssetsToPrivatize.Add(AssetPayload->GetAssetData());
+	}
+
+	return ObjectTools::PrivatizeAssets(AssetsToPrivatize) > 0;
 }
 
 bool DeleteAssetFolderItems(TArrayView<const TSharedRef<const FContentBrowserAssetFolderItemDataPayload>> InFolderPayloads)
@@ -692,12 +782,6 @@ bool CanRenameAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAsse
 		return false;
 	}
 
-	if (InAssetPayload.GetAssetData().PackageFlags & PKG_FilterEditorOnly)
-	{
-		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotRenameCookedPackages", "Cannot rename cooked packages"));
-		return false;
-	}
-
 	if (InNewName && InNewName->Len() >= NAME_SIZE)
 	{
 		SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_AssetNameTooLarge", "This asset name is too long. Please choose a shorter name."));
@@ -770,9 +854,17 @@ bool RenameAssetFolderItem(IAssetRegistry* InAssetRegistry, const FContentBrowse
 bool RenameAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, const FString& InNewName)
 {
 	// We need to potentially load the asset in order to rename it
-	FScopedLoadAllExternalObjects Scope(InAssetPayload.GetAssetData().PackageName);
-	if (UObject* Asset = InAssetPayload.LoadAsset())
+	if (UObject* Asset = InAssetPayload.LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 	{
+		FResultMessage Result;
+		Result.bSucceeded = true;
+		FEditorDelegates::OnPreDestructiveAssetAction.Broadcast({Asset}, EDestructiveAssetActions::AssetRename, Result);
+		if (!Result.WasSuccesful())
+		{
+			UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.GetErrorMessage());
+			return false;
+		}
+
 		const FString PackagePath = FPackageName::GetLongPackagePath(Asset->GetOutermost()->GetName());
 
 		TArray<FAssetRenameData> AssetsAndNames;
@@ -844,8 +936,7 @@ bool CopyAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFi
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
-		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
-		if (UObject* Asset = AssetPayload->LoadAsset())
+		if (UObject* Asset = AssetPayload->LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 		{
 			AssetsToCopy.Add(Asset);
 		}
@@ -930,11 +1021,19 @@ bool MoveAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFi
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
-		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
-		if (UObject* Asset = AssetPayload->LoadAsset())
+		if (UObject* Asset = AssetPayload->LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 		{
 			AssetsToMove.Add(Asset);
 		}
+	}
+
+	FResultMessage Result;
+	Result.bSucceeded = true;
+	FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(AssetsToMove, EDestructiveAssetActions::AssetMove, Result);
+	if (!Result.WasSuccesful())
+	{
+		UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.GetErrorMessage());
+		return false;
 	}
 
 	if (AssetsToMove.Num() > 0)
@@ -1075,7 +1174,7 @@ void GetClassItemAttribute(const FAssetData& InAssetData, const bool InIncludeMe
 {
 	check(InAssetData.IsValid());
 
-	OutAttributeValue.SetValue(InAssetData.AssetClass);
+	OutAttributeValue.SetValue(InAssetData.AssetClassPath.ToString());
 
 	if (InIncludeMetaData)
 	{
@@ -1110,6 +1209,38 @@ bool GetDiskSizeItemAttribute(const FAssetData& InAssetData, IAssetRegistry* InA
 		return true;
 	}
 	return false;
+}
+
+bool GetVirtualizationItemAttribute(const FAssetData& InAssetData, IAssetRegistry* InAssetRegistry, const bool InIncludeMetaData, FContentBrowserItemDataAttributeValue& OutAttributeValue)
+{
+	check(InAssetData.IsValid());
+	check(InAssetRegistry != nullptr);
+
+	if (TOptional<FAssetPackageData> PackageData = InAssetRegistry->GetAssetPackageDataCopy(InAssetData.PackageName))
+	{
+		// We could set a bool here but that will display the value in lower case, where as asset properties 
+		// use a string value with the first letter in upper case, so we replicate that here to avoid the 
+		// entry looking out of place.
+		OutAttributeValue.SetValue(PackageData->HasVirtualizedPayloads() ? TEXT("True") : TEXT("False"));
+
+		if (InIncludeMetaData)
+		{
+			static const FText DisplayName = LOCTEXT("AttributeDisplayName_VirtualizedData", "Has Virtualized Data");
+
+			FContentBrowserItemDataAttributeMetaData AttributeMetaData;
+			AttributeMetaData.AttributeType = UObject::FAssetRegistryTag::TT_Alphabetical;
+			AttributeMetaData.DisplayFlags = UObject::FAssetRegistryTag::TD_None;
+			AttributeMetaData.DisplayName = DisplayName;
+
+			OutAttributeValue.SetMetaData(MoveTemp(AttributeMetaData));
+		}
+
+		return true;
+	}
+	else
+	{
+		return false;
+	}
 }
 
 void GetGenericItemAttribute(const FName InTagKey, const FString& InTagValue, const FAssetPropertyTagCache::FClassPropertyTagCache& InClassPropertyTagCache, const bool InIncludeMetaData, FContentBrowserItemDataAttributeValue& OutAttributeValue)
@@ -1223,7 +1354,15 @@ bool GetAssetFileItemAttribute(const FContentBrowserAssetFileItemDataPayload& In
 		{
 			if (TSharedPtr<IAssetTypeActions> AssetTypeActions = InAssetPayload.GetAssetTypeActions())
 			{
-				OutAttributeValue.SetValue(AssetTypeActions->GetName());
+				const FText AssetDisplayName = AssetTypeActions->GetDisplayNameFromAssetData(InAssetPayload.GetAssetData());
+				if (!AssetDisplayName.IsEmpty())
+				{
+					OutAttributeValue.SetValue(AssetDisplayName);
+				}
+				else
+				{
+					OutAttributeValue.SetValue(AssetTypeActions->GetName());
+				}
 				return true;
 			}
 			return false;
@@ -1246,6 +1385,11 @@ bool GetAssetFileItemAttribute(const FContentBrowserAssetFileItemDataPayload& In
 		if (InAttributeKey == ContentBrowserItemAttributes::ItemDiskSize)
 		{
 			return GetDiskSizeItemAttribute(InAssetPayload.GetAssetData(), IAssetRegistry::Get(), InIncludeMetaData, OutAttributeValue);
+		}
+
+		if (InAttributeKey == ContentBrowserItemAttributes::VirtualizedData)
+		{
+			return GetVirtualizationItemAttribute(InAssetPayload.GetAssetData(), IAssetRegistry::Get(), InIncludeMetaData, OutAttributeValue);
 		}
 
 		if (InAttributeKey == ContentBrowserItemAttributes::ItemIsDeveloperContent)
@@ -1298,7 +1442,7 @@ bool GetAssetFileItemAttribute(const FContentBrowserAssetFileItemDataPayload& In
 	// Generic attribute keys
 	{
 		const FAssetData& AssetData = InAssetPayload.GetAssetData();
-		const FAssetPropertyTagCache::FClassPropertyTagCache& ClassPropertyTagCache = FAssetPropertyTagCache::Get().GetCacheForClass(AssetData.AssetClass);
+		const FAssetPropertyTagCache::FClassPropertyTagCache& ClassPropertyTagCache = FAssetPropertyTagCache::Get().GetCacheForClass(AssetData.AssetClassPath);
 
 		FName FoundAttributeKey = InAttributeKey;
 		FAssetDataTagMapSharedView::FFindTagResult FoundValue = AssetData.TagsAndValues.FindTag(FoundAttributeKey);
@@ -1345,22 +1489,38 @@ bool GetAssetFileItemAttributes(const FContentBrowserAssetFileItemDataPayload& I
 		{
 			OutAttributeValues.Add(ContentBrowserItemAttributes::ItemDiskSize, MoveTemp(DiskSizeAttributeValue));
 		}
+
+		// Virtualized Payloads
+		FContentBrowserItemDataAttributeValue VirtualizedAttributeValue;
+		if (GetVirtualizationItemAttribute(InAssetPayload.GetAssetData(), IAssetRegistry::Get(), InIncludeMetaData, VirtualizedAttributeValue))
+		{
+			OutAttributeValues.Add(ContentBrowserItemAttributes::VirtualizedData, MoveTemp(VirtualizedAttributeValue));
+		}	
 	}
 
 	// Generic attribute keys
-	static const FName BlueprintAssetClass = FName("Blueprint");
+	static const FTopLevelAssetPath BlueprintAssetClass = FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("Blueprint"));
 	static const FName ParentClassTag = FName("ParentClass");
 	{
 		const FAssetData& AssetData = InAssetPayload.GetAssetData();
-		const FAssetPropertyTagCache::FClassPropertyTagCache& ClassPropertyTagCache = FAssetPropertyTagCache::Get().GetCacheForClass(AssetData.AssetClass);
+		const FAssetPropertyTagCache::FClassPropertyTagCache& ClassPropertyTagCache = FAssetPropertyTagCache::Get().GetCacheForClass(AssetData.AssetClassPath);
 		const FAssetPropertyTagCache::FClassPropertyTagCache* ParentClassPropertyTagCache = nullptr;
 
-		if (AssetData.AssetClass == BlueprintAssetClass)
+		if (AssetData.AssetClassPath == BlueprintAssetClass)
 		{
 			FAssetTagValueRef ParentClassRef = AssetData.TagsAndValues.FindTag(ParentClassTag);
 			if (ParentClassRef.IsSet())
 			{
-				ParentClassPropertyTagCache = &FAssetPropertyTagCache::Get().GetCacheForClass(ParentClassRef.AsName());
+				FString ParentClassName(ParentClassRef.AsString());
+				FTopLevelAssetPath ParentClassPathName = UClass::TryConvertShortTypeNameToPathName<UClass>(ParentClassName, ELogVerbosity::Warning, TEXT("GetAssetFileItemAttributes"));
+				if (!ParentClassPathName.IsNull())
+				{
+					ParentClassPropertyTagCache = &FAssetPropertyTagCache::Get().GetCacheForClass(ParentClassPathName);
+				}
+				else
+				{
+					UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("Unable to convert short ParentClass name \"%s\" to path name"), *ParentClassName);
+				}
 			}
 		}
 
@@ -1386,6 +1546,7 @@ void PopulateAssetFolderContextMenu(UContentBrowserDataSource* InOwnerDataSource
 
 	// Extract the internal package paths that belong to this data source from the full list of selected items given in the context
 	TArray<FString> SelectedPackagePaths;
+	TArray<FString> SelectedAssetPackages;
 	for (const FContentBrowserItem& SelectedItem : ContextObject->SelectedItems)
 	{
 		for (const FContentBrowserItemData& SelectedItemData : SelectedItem.GetInternalItems())
@@ -1394,12 +1555,17 @@ void PopulateAssetFolderContextMenu(UContentBrowserDataSource* InOwnerDataSource
 			{
 				SelectedPackagePaths.Add(FolderPayload->GetInternalPath().ToString());
 			}
+			else if (TSharedPtr<const FContentBrowserAssetFileItemDataPayload> ItemPayload = GetAssetFileItemPayload(InOwnerDataSource, SelectedItemData))
+			{
+				SelectedAssetPackages.Add(ItemPayload->GetAssetData().PackageName.ToString());
+			}
 		}
 	}
 
 	InAssetFolderContextMenu.MakeContextMenu(
 		InMenu,
-		SelectedPackagePaths
+		SelectedPackagePaths,
+		SelectedAssetPackages
 		);
 }
 
@@ -1443,7 +1609,7 @@ void PopulateAssetFileContextMenu(UContentBrowserDataSource* InOwnerDataSource, 
 		InMenu,
 		SelectedAssets,
 		OnShowAssetsInPathsView
-		);
+	);
 }
 
 }

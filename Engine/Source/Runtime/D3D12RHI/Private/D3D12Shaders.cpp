@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "RHICoreShader.h"
 
 template <typename TShaderType>
 static inline bool ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShaderType& OutShader)
@@ -54,10 +55,20 @@ static inline bool ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShad
 	return true;
 }
 
-static bool ValidateShaderIsUsable(FD3D12ShaderData* InShader)
+static bool ValidateShaderIsUsable(FD3D12ShaderData* InShader, EShaderFrequency InFrequency)
 {
 #if D3D12RHI_NEEDS_SHADER_FEATURE_CHECKS
+	if ((InFrequency == SF_Mesh || InFrequency == SF_Amplification) && !GRHISupportsMeshShadersTier0)
+	{
+		return false;
+	}
+
 	if (EnumHasAnyFlags(InShader->Features, EShaderCodeFeatures::WaveOps) && !GRHISupportsWaveOperations)
+	{
+		return false;
+	}
+
+	if (EnumHasAnyFlags(InShader->Features, EShaderCodeFeatures::BindlessResources | EShaderCodeFeatures::BindlessSamplers) && !GRHISupportsBindless)
 	{
 		return false;
 	}
@@ -74,7 +85,7 @@ bool InitShaderCommon(FShaderCodeReader& ShaderCode, int32 Offset, TShaderType* 
 		return false;
 	}
 
-	if (!ValidateShaderIsUsable(InShader))
+	if (!ValidateShaderIsUsable(InShader, InShader->GetFrequency()))
 	{
 		return false;
 	}
@@ -102,23 +113,7 @@ TShaderType* CreateStandardShader(TArrayView<const uint8> InCode)
 		return nullptr;
 	}
 
-	// InitUniformBufferStaticSlots
-
-	const FBaseShaderResourceTable& SRT = Shader->ShaderResourceTable;
-	Shader->StaticSlots.Reserve(SRT.ResourceTableLayoutHashes.Num());
-
-	for (uint32 LayoutHash : SRT.ResourceTableLayoutHashes)
-	{
-		if (const FShaderParametersMetadata* Metadata = FindUniformBufferStructByLayoutHash(LayoutHash))
-		{
-			Shader->StaticSlots.Add(Metadata->GetLayout().StaticSlot);
-		}
-		else
-		{
-			Shader->StaticSlots.Add(MAX_UNIFORM_BUFFER_STATIC_SLOTS);
-		}
-	}
-
+	UE::RHICore::InitStaticUniformBufferSlots(Shader->StaticSlots, Shader->ShaderResourceTable);
 	return Shader;
 }
 
@@ -155,12 +150,10 @@ FComputeShaderRHIRef FD3D12DynamicRHI::RHICreateComputeShader(TArrayView<const u
 		FD3D12Adapter& Adapter = GetAdapter();
 
 #if USE_STATIC_ROOT_SIGNATURE
-		Shader->pRootSignature = Adapter.GetStaticComputeRootSignature();
+		Shader->RootSignature = Adapter.GetStaticComputeRootSignature();
 #else
-		const D3D12_RESOURCE_BINDING_TIER Tier = Adapter.GetResourceBindingTier();
-		FD3D12QuantizedBoundShaderState QBSS;
-		QuantizeBoundShaderState(Tier, Shader, QBSS);
-		Shader->pRootSignature = Adapter.GetRootSignature(QBSS);
+		const FD3D12QuantizedBoundShaderState QBSS = QuantizeBoundComputeShaderState(Adapter, Shader);
+		Shader->RootSignature = Adapter.GetRootSignature(QBSS);
 #endif
 	}
 
@@ -198,6 +191,8 @@ FRayTracingShaderRHIRef FD3D12DynamicRHI::RHICreateRayTracingShader(TArrayView<c
 		return nullptr;
 	}
 
+	UE::RHICore::InitStaticUniformBufferSlots(Shader->StaticSlots, Shader->ShaderResourceTable);
+
 	FD3D12Adapter& Adapter = GetAdapter();
 
 #if USE_STATIC_ROOT_SIGNATURE
@@ -215,9 +210,7 @@ FRayTracingShaderRHIRef FD3D12DynamicRHI::RHICreateRayTracingShader(TArrayView<c
 		checkNoEntry(); // Unexpected shader target frequency
 	}
 #else // USE_STATIC_ROOT_SIGNATURE
-	const D3D12_RESOURCE_BINDING_TIER Tier = Adapter.GetResourceBindingTier();
-	FD3D12QuantizedBoundShaderState QBSS;
-	QuantizeBoundShaderState(ShaderFrequency, Tier, Shader, QBSS);
+	const FD3D12QuantizedBoundShaderState QBSS = QuantizeBoundRayTracingShaderState(Adapter, ShaderFrequency, Shader);
 	Shader->pRootSignature = Adapter.GetRootSignature(QBSS);
 #endif // USE_STATIC_ROOT_SIGNATURE
 
@@ -246,9 +239,7 @@ FD3D12BoundShaderState::FD3D12BoundShaderState(
 #if USE_STATIC_ROOT_SIGNATURE
 	pRootSignature = InAdapter->GetStaticGraphicsRootSignature();
 #else
-	const D3D12_RESOURCE_BINDING_TIER Tier = InAdapter->GetResourceBindingTier();
-	FD3D12QuantizedBoundShaderState QuantizedBoundShaderState;
-	QuantizeBoundShaderState(Tier, this, QuantizedBoundShaderState);
+	const FD3D12QuantizedBoundShaderState QuantizedBoundShaderState = QuantizeBoundGraphicsShaderState(*InAdapter, this);
 	pRootSignature = InAdapter->GetRootSignature(QuantizedBoundShaderState);
 #endif
 
@@ -271,9 +262,7 @@ FD3D12BoundShaderState::FD3D12BoundShaderState(
 #if USE_STATIC_ROOT_SIGNATURE
 	pRootSignature = InAdapter->GetStaticGraphicsRootSignature();
 #else
-	const D3D12_RESOURCE_BINDING_TIER Tier = InAdapter->GetResourceBindingTier();
-	FD3D12QuantizedBoundShaderState QuantizedBoundShaderState;
-	QuantizeBoundShaderState(Tier, this, QuantizedBoundShaderState);
+	const FD3D12QuantizedBoundShaderState QuantizedBoundShaderState = QuantizeBoundGraphicsShaderState(*InAdapter, this);
 	pRootSignature = InAdapter->GetRootSignature(QuantizedBoundShaderState);
 #endif
 
@@ -295,7 +284,7 @@ FBoundShaderStateRHIRef FD3D12DynamicRHI::DX12CreateBoundShaderState(const FBoun
 {
 	//SCOPE_CYCLE_COUNTER(STAT_D3D12CreateBoundShaderStateTime);
 
-	checkf(GIsRHIInitialized && GetRHIDevice(0)->GetCommandListManager().IsReady(), (TEXT("Bound shader state RHI resource was created without initializing Direct3D first")));
+	checkf(GIsRHIInitialized, (TEXT("Bound shader state RHI resource was created without initializing Direct3D first")));
 
 #if D3D12_SUPPORTS_PARALLEL_RHI_EXECUTE
 	// Check for an existing bound shader state which matches the parameters

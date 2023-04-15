@@ -26,6 +26,11 @@ public class WebSockets : ModuleRules
 		}
 	}
 
+	protected virtual bool bPlatformSupportsWinRTWebsockets
+	{
+		get => false;
+	}
+
 	protected virtual bool UsePlatformSSL
 	{
 		get => false;
@@ -35,9 +40,45 @@ public class WebSockets : ModuleRules
 	{
 		get
 		{
-			bool bPlatformSupportsWinRTWebsockets = Target.Platform == UnrealTargetPlatform.HoloLens;
-
 			return PlatformSupportsLibWebsockets || bPlatformSupportsWinRTWebsockets || bPlatformSupportsWinHttpWebSockets;
+		}
+	}
+
+	protected virtual string WebSocketsManagerPlatformInclude
+	{
+		get
+		{
+			if (PlatformSupportsLibWebsockets)
+			{
+				return "Lws/LwsWebSocketsManager.h";
+			}
+			else if (bPlatformSupportsWinHttpWebSockets)
+			{
+				return "WinHttp/WinHttpWebSocketsManager.h";
+			}
+			else
+			{
+				return "";
+			}
+		}
+	}
+
+	protected virtual string WebSocketsManagerPlatformClass
+	{
+		get
+		{
+			if (PlatformSupportsLibWebsockets)
+			{
+				return "FLwsWebSocketsManager";
+			}
+			else if (bPlatformSupportsWinHttpWebSockets)
+			{
+				return "FWinHttpWebSocketsManager";
+			}
+			else
+			{
+				return "";
+			}
 		}
 	}
 
@@ -58,12 +99,6 @@ public class WebSockets : ModuleRules
 		{
 			bWithWebSockets = true;
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"Runtime/Online/WebSockets/Private",
-				}
-			);
-
 			if (PlatformSupportsLibWebsockets)
 			{
 				bWithLibWebSockets = true;
@@ -79,7 +114,7 @@ public class WebSockets : ModuleRules
 					PrivateDependencyModuleNames.Add("SSL");
 				}
 			}
-			if (bPlatformSupportsWinHttpWebSockets)
+			else if (bPlatformSupportsWinHttpWebSockets)
 			{
 				// Enable WinHttp Support
 				bWithWinHttpWebSockets = true;
@@ -99,5 +134,11 @@ public class WebSockets : ModuleRules
 		PublicDefinitions.Add("WITH_WEBSOCKETS=" + (bWithWebSockets ? "1" : "0"));
 		PublicDefinitions.Add("WITH_LIBWEBSOCKETS=" + (bWithLibWebSockets ? "1" : "0"));
 		PublicDefinitions.Add("WITH_WINHTTPWEBSOCKETS=" + (bWithWinHttpWebSockets ? "1" : "0"));
+		string PlatformInclude = WebSocketsManagerPlatformInclude;
+		if (PlatformInclude.Length > 0)
+		{
+			PublicDefinitions.Add("WEBSOCKETS_MANAGER_PLATFORM_INCLUDE=\"" + WebSocketsManagerPlatformInclude + "\"");
+			PublicDefinitions.Add("WEBSOCKETS_MANAGER_PLATFORM_CLASS=" + WebSocketsManagerPlatformClass);
+		}
 	}
 }

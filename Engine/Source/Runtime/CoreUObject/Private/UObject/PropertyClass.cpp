@@ -10,13 +10,20 @@
 #include "UObject/PropertyHelper.h"
 #include "Hash/Blake3.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 /*-----------------------------------------------------------------------------
 	FClassProperty.
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FClassProperty)
+
+FClassProperty::FClassProperty(FFieldVariant InOwner, const UECodeGen_Private::FClassPropertyParams& Prop)
+	: FObjectProperty(InOwner, (const UECodeGen_Private::FObjectPropertyParams&)Prop)
+{
+	if (!PropertyClass)
+	{
+		PropertyClass = UClass::StaticClass();
+	}
+	MetaClass = Prop.MetaClassFunc ? Prop.MetaClassFunc() : nullptr;
+}
 
 #if WITH_EDITORONLY_DATA
 FClassProperty::FClassProperty(UField* InField)
@@ -96,11 +103,12 @@ void FClassProperty::AddReferencedObjects(FReferenceCollector& Collector)
 	Super::AddReferencedObjects( Collector );
 }
 
-const TCHAR* FClassProperty::ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const
+const TCHAR* FClassProperty::ImportText_Internal( const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText ) const
 {
-	const TCHAR* Result = FObjectProperty::ImportText_Internal( Buffer, Data, PortFlags, Parent, ErrorText );
+	const TCHAR* Result = FObjectProperty::ImportText_Internal( Buffer, ContainerOrPropertyPtr, PropertyPointerType, Parent, PortFlags, ErrorText );
 	if( Result )
 	{
+		void* Data = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
 		if (UClass* AssignedPropertyClass = dynamic_cast<UClass*>(GetObjectPropertyValue(Data)))
 		{
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
@@ -125,7 +133,15 @@ const TCHAR* FClassProperty::ImportText_Internal( const TCHAR* Buffer, void* Dat
 			{
 				// the object we imported doesn't implement our interface class
 				ErrorText->Logf(TEXT("Invalid object '%s' specified for property '%s'"), *AssignedPropertyClass->GetFullName(), *GetName());
-				SetObjectPropertyValue(Data, NULL);
+				UObject* NullObj = nullptr;
+				if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+				{
+					SetValue_InContainer(ContainerOrPropertyPtr, NullObj);
+				}
+				else
+				{
+					SetObjectPropertyValue(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType), NullObj);
+				}
 				Result = NULL;
 			}
 		}
@@ -192,4 +208,3 @@ void FClassProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) co
 	}
 }
 #endif
-#include "UObject/DefineUPropertyMacros.h"

@@ -16,18 +16,19 @@ public class CEF3 : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			CEFVersion = "84.1.6+gc551bc2+chromium-84.0.4147.38";
+			CEFVersion = "90.6.7+g19ba721+chromium-90.0.4430.212";
 			CEFPlatform = "windows64";
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			CEFVersion = "84.4.0+g304e015+chromium-84.0.4147.105";
-			CEFPlatform = "macosx64";
+			CEFVersion = "90.6.7+g19ba721+chromium-90.0.4430.212";
+			// the wrapper.la that is in macosarm64 is universal, so we always point to this one for the lib
+			CEFPlatform = "macosarm64";
 		}
 		else if(Target.Platform == UnrealTargetPlatform.Linux)
 		{
-			CEFVersion = "84.4.1+gfdc7504+chromium-84.0.4147.105";
-			CEFPlatform = "linux64";
+			CEFVersion = "93.0.0+gf38ce34+chromium-93.0.4577.82";
+			CEFPlatform = "linux64_ozone";
 		}
 
 		if (CEFPlatform.Length > 0 && CEFVersion.Length > 0 && Target.bCompileCEF3)
@@ -61,7 +62,6 @@ public class CEF3 : ModuleRules
 				List<string> Dlls = new List<string>();
 
 				Dlls.Add("chrome_elf.dll");
-				Dlls.Add("d3dcompiler_43.dll");
 				Dlls.Add("d3dcompiler_47.dll");
 				Dlls.Add("libcef.dll");
 				Dlls.Add("libEGL.dll");
@@ -92,7 +92,11 @@ public class CEF3 : ModuleRules
 			else if (Target.Platform == UnrealTargetPlatform.Mac)
 			{
 				string WrapperPath = LibraryPath + "/libcef_dll_wrapper.a";
-                string FrameworkPath = Target.UEThirdPartyBinariesDirectory + "CEF3/Mac/Chromium Embedded Framework.framework";
+				
+				// we have separate frameworks for x86 and arm64 because they are so large, some single-architecture builds don't want
+				// to pay the cost of both of them (ideally we would make this universal, and then remove the unused architectures during staging)
+				string FrameworkPathX86 = Target.UEThirdPartyBinariesDirectory + "CEF3/Mac/Chromium Embedded Framework x86.framework";
+				string FrameworkPathArm64 = Target.UEThirdPartyBinariesDirectory + "CEF3/Mac/Chromium Embedded Framework arm64.framework";
 
 				PublicAdditionalLibraries.Add(WrapperPath);
 
@@ -105,11 +109,23 @@ public class CEF3 : ModuleRules
 					}
 				}
 
-				// Add contents of framework directory as runtime dependencies
-				foreach (string FilePath in Directory.EnumerateFiles(FrameworkPath, "*", SearchOption.AllDirectories))
+				if (Target.Architecture.ToLower().Contains("arm64"))
 				{
-					RuntimeDependencies.Add(FilePath);
+					// Add contents of framework directory as runtime dependencies
+					foreach (string FilePath in Directory.EnumerateFiles(FrameworkPathArm64, "*", SearchOption.AllDirectories))
+					{
+						RuntimeDependencies.Add(FilePath);
+					}
 				}
+				if (Target.Architecture.ToLower().Contains("x86"))
+				{
+					// Add contents of framework directory as runtime dependencies
+					foreach (string FilePath in Directory.EnumerateFiles(FrameworkPathX86, "*", SearchOption.AllDirectories))
+					{
+						RuntimeDependencies.Add(FilePath);
+					}
+				}
+
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Linux)
 			{
@@ -125,15 +141,21 @@ public class CEF3 : ModuleRules
 				PrivateRuntimeLibraryPaths.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString());
 
 				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/libcef.so");
+				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/libEGL.so");
+				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/libGLESv2.so");
 				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/icudtl.dat");
 				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/v8_context_snapshot.bin");
 				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/CEF3/" + Target.Platform.ToString() + "/snapshot_blob.bin");
 
-				// And the entire Resources folder. Enunerate the entire directory instead of mentioning each file manually here.
-				foreach (string FileName in Directory.EnumerateFiles(Path.Combine(RuntimePath, "Resources"), "*", SearchOption.AllDirectories))
+				// Add the Resources and Swiftshader folders, enumerating the directory contents programmatically rather than listing each file manually here
+				string[] AdditionalDirs = new string[]{"Resources", "swiftshader"};
+				foreach (string DirName in AdditionalDirs)
 				{
-					string DependencyName = FileName.Substring(Target.UEThirdPartyBinariesDirectory.Length).Replace('\\', '/');
-					RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/" + DependencyName);
+					foreach (string FileName in Directory.EnumerateFiles(Path.Combine(RuntimePath, DirName), "*", SearchOption.AllDirectories))
+					{
+						string DependencyName = FileName.Substring(Target.UEThirdPartyBinariesDirectory.Length).Replace('\\', '/');
+						RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/" + DependencyName);
+					}
 				}
 			}
 		}

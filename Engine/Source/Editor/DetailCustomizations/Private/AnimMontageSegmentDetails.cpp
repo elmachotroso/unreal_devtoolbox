@@ -1,26 +1,66 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimMontageSegmentDetails.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/SViewport.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#include "Animation/AnimSequenceBase.h"
-#include "Animation/AnimMontage.h"
-#include "DetailWidgetRow.h"
-#include "Viewports.h"
-#include "PropertyHandle.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
+
 #include "AnimPreviewInstance.h"
-#include "Slate/SceneViewport.h"
-#include "Settings/SkeletalMeshEditorSettings.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "Animation/EditorAnimSegment.h"
 #include "Animation/AnimCompositeBase.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimSingleNodeInstance.h"
+#include "Animation/AnimationAsset.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Animation/EditorAnimSegment.h"
+#include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetData.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Containers/UnrealString.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Editor/UnrealEdTypes.h"
+#include "EditorComponents.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
+#include "EngineDefines.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailPropertyRow.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/BoxSphereBounds.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SScrubControlPanel.h"
+#include "SceneInterface.h"
+#include "Settings/SkeletalMeshEditorSettings.h"
+#include "ShowFlags.h"
+#include "Slate/SceneViewport.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Field.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Viewports.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SViewport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "AnimMontageSegmentDetails"
 
@@ -44,7 +84,7 @@ FAnimationSegmentViewportClient::FAnimationSegmentViewportClient(FPreviewScene& 
 	DrawHelper.GridColorAxis = FColor(70, 70, 70);
 	DrawHelper.GridColorMajor = FColor(40, 40, 40);
 	DrawHelper.GridColorMinor =  FColor(20, 20, 20);
-	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+	DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 }
 
 
@@ -85,19 +125,18 @@ void FAnimMontageSegmentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 	const FObjectPropertyBase* ObjectProperty = CastFieldChecked<const FObjectPropertyBase>(TargetProperty);
 
 	IDetailPropertyRow& PropertyRow = SegmentCategory.AddProperty(TargetPropertyHandle);
-	PropertyRow.DisplayName(LOCTEXT("AnimationReferenceLabel", "Animation Reference"));
 
 	TSharedPtr<SWidget> NameWidget;
 	TSharedPtr<SWidget> ValueWidget;
 	FDetailWidgetRow Row;
 	PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
-
-	const bool bAllowClear = !(ObjectProperty->PropertyFlags & CPF_NoClear);
+	PropertyRow.OverrideResetToDefault(FResetToDefaultOverride::Hide());
 
 	SAssignNew(ValueWidget, SObjectPropertyEntryBox)
 		.PropertyHandle(TargetPropertyHandle)
 		.AllowedClass(ObjectProperty->PropertyClass)
-		.AllowClear(bAllowClear)
+		.AllowClear(false)
+		.OnObjectChanged(this, &FAnimMontageSegmentDetails::SetAnimationAsset)
 		.OnShouldFilterAsset(FOnShouldFilterAsset::CreateSP(this, &FAnimMontageSegmentDetails::OnShouldFilterAnimAsset));
 
 	PropertyRow.CustomWidget()
@@ -132,11 +171,11 @@ void FAnimMontageSegmentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 			.AllowSpin(true)
 			.MinSliderValue(0.f)
 			.MinValue(0.f)
-			.MaxSliderValue_Raw(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
-			.MaxValue_Raw(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
-			.Value_Raw(this, &FAnimMontageSegmentDetails::GetStartTime)
-			.OnValueChanged_Raw(this, &FAnimMontageSegmentDetails::OnStartTimeChanged, ETextCommit::Default, true)
-			.OnValueCommitted_Raw(this, &FAnimMontageSegmentDetails::OnStartTimeChanged, false)
+			.MaxSliderValue(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
+			.MaxValue(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
+			.Value(this, &FAnimMontageSegmentDetails::GetStartTime)
+			.OnValueChanged(this, &FAnimMontageSegmentDetails::OnStartTimeChanged, ETextCommit::Default, true)
+			.OnValueCommitted(this, &FAnimMontageSegmentDetails::OnStartTimeChanged, false)
 		];
 
 		FResetToDefaultOverride Handler = FResetToDefaultOverride::Create
@@ -171,11 +210,11 @@ void FAnimMontageSegmentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 			.AllowSpin(true)
 			.MinSliderValue(0.f)
 			.MinValue(0.f)
-			.MaxSliderValue_Raw(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
-			.MaxValue_Raw(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
-			.Value_Raw(this, &FAnimMontageSegmentDetails::GetEndTime)
-			.OnValueChanged_Raw(this, &FAnimMontageSegmentDetails::OnEndTimeChanged, ETextCommit::Default, true)
-			.OnValueCommitted_Raw(this, &FAnimMontageSegmentDetails::OnEndTimeChanged, false)
+			.MaxSliderValue(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
+			.MaxValue(this, &FAnimMontageSegmentDetails::GetAnimationAssetPlayLength)
+			.Value(this, &FAnimMontageSegmentDetails::GetEndTime)
+			.OnValueChanged(this, &FAnimMontageSegmentDetails::OnEndTimeChanged, ETextCommit::Default, true)
+			.OnValueCommitted(this, &FAnimMontageSegmentDetails::OnEndTimeChanged, false)
 		];
 
 		const TSharedPtr<IPropertyHandle> AnimPlayRateProperty = AnimSegmentHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimPlayRate));
@@ -196,7 +235,7 @@ void FAnimMontageSegmentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 			.MinValue(-32.f)
 			.MaxSliderValue(1.f)
 			.MaxValue(32.f)
-			.Value_Raw(this, &FAnimMontageSegmentDetails::GetPlayRate)
+			.Value(this, &FAnimMontageSegmentDetails::GetPlayRate)
 			.OnValueChanged_Lambda([AnimPlayRateProperty](float InValue)
 			{
 				if(AnimPlayRateProperty.IsValid() && !FMath::IsNearlyZero(InValue))
@@ -297,7 +336,7 @@ const UAnimSequenceBase* FAnimMontageSegmentDetails::GetAnimationAsset() const
 {
 	if (const FAnimSegment* AnimSegment = GetAnimationSegment())
 	{
-		return AnimSegment->AnimReference.Get();
+		return AnimSegment->GetAnimReference().Get();
 	}
 
 	return nullptr;
@@ -308,7 +347,7 @@ void FAnimMontageSegmentDetails::SetAnimationAsset(const FAssetData& InAssetData
 	if (FAnimSegment* AnimSegment = GetAnimationSegment())
 	{
 		UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(InAssetData.GetAsset());
-		AnimSegment->AnimReference = AnimSequenceBase;
+		AnimSegment->SetAnimReference(AnimSequenceBase);
 	}
 }
 
@@ -478,7 +517,8 @@ void SAnimationSegmentViewport::Construct(const FArguments& InArgs)
 			.ViewInputMax(this, &SAnimationSegmentViewport::GetViewMaxInput)
 			.PreviewInstance(this, &SAnimationSegmentViewport::GetPreviewInstance)
 			.DraggableBars(this, &SAnimationSegmentViewport::GetBars)
-			.OnBarDrag(this, &SAnimationSegmentViewport::OnBarDrag, false)
+			.OnBarDrag(this, &SAnimationSegmentViewport::OnBarDrag, true)
+			.OnBarCommit(this, &SAnimationSegmentViewport::OnBarDrag, false)
 			.bAllowZoom(true)
 		]
 	];
@@ -517,7 +557,7 @@ void SAnimationSegmentViewport::InitSkeleton()
 		if (Skeleton && PreviewMesh)
 		{
 			UAnimSingleNodeInstance* Preview = PreviewComponent->PreviewInstance;
-			if((Preview == nullptr || Preview->GetCurrentAsset() != AnimSequenceBase) || (PreviewComponent->SkeletalMesh != PreviewMesh))
+			if((Preview == nullptr || Preview->GetCurrentAsset() != AnimSequenceBase) || (PreviewComponent->GetSkeletalMeshAsset() != PreviewMesh))
 			{
 				const float PlayRate = PlayRateAttribute.Get().Get(1.f);
 
@@ -565,7 +605,7 @@ void SAnimationSegmentViewport::Tick( const FGeometry& AllottedGeometry, const d
 		{
 			Description->SetText(FText::Format( LOCTEXT("Previewing", "Previewing {0}"), FText::FromString(Component->AnimClass->GetName()) ));
 		}
-		else if (Component->SkeletalMesh == NULL)
+		else if (Component->GetSkeletalMeshAsset() == NULL)
 		{
 			Description->SetText(FText::Format( LOCTEXT("NoMeshFound", "No skeletal mesh found for skeleton '{0}'"), FText::FromString(TargetSkeletonName) ));
 		}
@@ -688,6 +728,7 @@ void SAnimationSegmentScrubPanel::Construct( const SAnimationSegmentScrubPanel::
 				.IsRealtimeStreamingMode(this, &SAnimationSegmentScrubPanel::IsRealtimeStreamingMode)
 				.DraggableBars(InArgs._DraggableBars)
 				.OnBarDrag(InArgs._OnBarDrag)
+				.OnBarCommit(InArgs._OnBarCommit)
 				.OnTickPlayback(InArgs._OnTickPlayback)
 			]
 		];

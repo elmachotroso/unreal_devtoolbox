@@ -1,10 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace EpicGames.Perforce
 {
@@ -17,25 +13,25 @@ namespace EpicGames.Perforce
 		/// The integration action performed for this file
 		/// </summary>
 		[PerforceTag("how")]
-		public IntegrateAction Action;
+		public IntegrateAction Action { get; set; }
 
 		/// <summary>
 		/// The partner file for this integration
 		/// </summary>
 		[PerforceTag("file")]
-		public string OtherFile;
+		public string OtherFile { get; set; }
 
 		/// <summary>
 		/// Min revision of the partner file for this integration
 		/// </summary>
 		[PerforceTag("srev")]
-		public int StartRevisionNumber;
+		public int StartRevisionNumber { get; set; }
 
 		/// <summary>
 		/// Max revision of the partner file for this integration
 		/// </summary>
 		[PerforceTag("erev")]
-		public int EndRevisionNumber;
+		public int EndRevisionNumber { get; set; }
 
 		/// <summary>
 		/// Private constructor for serialization
@@ -51,7 +47,7 @@ namespace EpicGames.Perforce
 		/// <returns>Formatted integration record</returns>
 		public override string ToString()
 		{
-			if(StartRevisionNumber + 1 == EndRevisionNumber)
+			if (StartRevisionNumber + 1 == EndRevisionNumber)
 			{
 				return String.Format("{0} {1}#{2}", Action, OtherFile, EndRevisionNumber);
 			}

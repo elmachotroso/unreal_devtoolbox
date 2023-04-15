@@ -3,11 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "EditorConfigBase.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/SoftObjectPath.h"
 #include "Engine/DeveloperSettings.h"
 #include "Engine/EngineTypes.h"
+#include "Misc/NamePermissionList.h"
 #include "UMGEditorProjectSettings.generated.h"
 
 class UWidgetCompilerRule;
@@ -157,7 +159,7 @@ public:
 	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category="Class Filtering")
 	TArray<FString> CategoriesToHide;
 
-	UPROPERTY(EditAnywhere, config, Category = "Class Filtering", meta = (MetaClass = "Widget"))
+	UPROPERTY(EditAnywhere, config, Category = "Class Filtering", meta = (MetaClass = "/Script/UMG.Widget"))
 	TArray<FSoftClassPath> WidgetClassesToHide;
 
 public:
@@ -169,6 +171,18 @@ public:
 	/** The panel widget to place at the root of all newly constructed widget blueprints. Can be empty. */
 	UPROPERTY(EditAnywhere, config, Category = Designer)
 	TSubclassOf<UPanelWidget> DefaultRootWidget;
+
+	/** Set true to hide UMG-graph related elements when the graph editor is hidden  */
+	UPROPERTY(EditAnywhere, Category = Designer)
+	bool bGraphEditorHidden;
+
+	/** Set true to hide widget animation related elements in the UMG editor  */
+	UPROPERTY(EditAnywhere, Category = Designer)
+	bool bHideWidgetAnimationEditor;
+
+	/** Set true to filter all categories and widgets out in the palette, selectively enabling them later via permission lists  */
+	UPROPERTY(EditAnywhere, config, Category = Designer)
+	bool bUseEditorConfigPaletteFiltering;
 
 	/**
 	 * The default parent class for all newly constructed widget blueprints.
@@ -184,6 +198,12 @@ public:
 	bool CompilerOption_AllowBlueprintPaint(const class UWidgetBlueprint* WidgetBlueprint) const;
 	EPropertyBindingPermissionLevel CompilerOption_PropertyBindingRule(const class UWidgetBlueprint* WidgetBlueprint) const;
 	TArray<UWidgetCompilerRule*> CompilerOption_Rules(const class UWidgetBlueprint* WidgetBlueprint) const;
+
+	/** Get the permission list that controls which categories are exposed in config palette filtering */
+	FNamePermissionList& GetAllowedPaletteCategories();
+
+	/** Get the permission list that controls which widgets are exposed in config palette filtering */
+	FPathPermissionList& GetAllowedPaletteWidgets();
 
 private:
 	template<typename ReturnType, typename T>
@@ -207,4 +227,10 @@ protected:
 
 	/** This one is unsaved, we compare it on post init to see if the save matches real */
 	int32 CurrentVersion;
+
+	/** Palette categories to allow all widgets within when using permission list palette filtering */
+	FNamePermissionList AllowedPaletteCategories;
+
+	/** Individual widgets to always allow when using permission list palette filtering, regardless of category */
+	FPathPermissionList AllowedPaletteWidgets;
 };

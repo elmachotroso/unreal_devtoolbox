@@ -22,7 +22,7 @@
 #include "Brushes/SlateImageBrush.h"
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Texture2D.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
@@ -30,6 +30,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Input/DragAndDrop.h"
 #include "ScopedTransaction.h"
+#include "Styling/StyleColors.h"
 #include "Textures/SlateIcon.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SButton.h"
@@ -42,15 +43,26 @@ FVariantManagerVariantSetNode::FVariantManagerVariantSetNode( UVariantSet& InVar
 	: FVariantManagerDisplayNode(InParentNode, InParentTree)
 	, VariantSet(InVariantSet)
 {
-	ExpandedBackgroundBrush = FEditorStyle::GetBrush("Sequencer.AnimationOutliner.TopLevelBorder_Expanded");
-	CollapsedBackgroundBrush = FEditorStyle::GetBrush("Sequencer.AnimationOutliner.TopLevelBorder_Collapsed");
+	ExpandedBackgroundBrush = FAppStyle::GetBrush("Sequencer.AnimationOutliner.TopLevelBorder_Expanded");
+	CollapsedBackgroundBrush = FAppStyle::GetBrush("Sequencer.AnimationOutliner.TopLevelBorder_Collapsed");
+	RowStyle = FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SimpleTableView.Row");
+	RowStyle
+		.SetEvenRowBackgroundBrush(FSlateRoundedBoxBrush(FStyleColors::Header, 2.f, FStyleColors::Transparent, 1.f))
+		.SetOddRowBackgroundBrush(FSlateRoundedBoxBrush(FStyleColors::Header, 2.f, FStyleColors::Transparent, 1.f))
+		.SetEvenRowBackgroundHoveredBrush(FSlateRoundedBoxBrush(FStyleColors::SelectHover, 2.f))
+		.SetOddRowBackgroundHoveredBrush(FSlateRoundedBoxBrush(FStyleColors::SelectHover, 2.f));
 
 	bExpanded = InVariantSet.IsExpanded();
 }
 
+const FTableRowStyle* FVariantManagerVariantSetNode::GetRowStyle() const
+{
+	return &RowStyle;
+}
+
 TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSharedPtr<SVariantManagerTableRow> InTableRow)
 {
-	FSlateFontInfo NodeFont = FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont");
+	FSlateFontInfo NodeFont = FAppStyle::GetFontStyle("BoldFont");
 
 	EditableLabel = SNew(SInlineEditableTextBlock)
 		.IsReadOnly(this, &FVariantManagerDisplayNode::IsReadOnly)
@@ -74,18 +86,15 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSha
 
 	return
 	SNew( SBorder )
-	.BorderImage( FEditorStyle::GetBrush( "WhiteBrush" ) )
-	.BorderBackgroundColor( FVariantManagerStyle::Get()->GetColor("VariantManager.Panels.LightBackgroundColor") )
-	.Padding( FMargin( 0.0f, bIsFirstRowOfTree ? 0.0f : FVariantManagerStyle::Get()->GetFloat( "VariantManager.Spacings.BorderThickness" ), 0.0f, 0.0f ) )
+	.BorderImage(nullptr)
 	[
 		SNew(SBox)
-		.HeightOverride(78)
+		.HeightOverride(48)
 		[
 			SNew(SBorder)
+			.BorderImage(nullptr)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Fill)
-			.BorderImage(this, &FVariantManagerDisplayNode::GetNodeBorderImage)
-			.BorderBackgroundColor(this, &FVariantManagerDisplayNode::GetNodeBackgroundTint)
 			.Padding(FMargin(2.0f, 0.0f, 2.0f, 0.0f))
 			[
 				SNew(SHorizontalBox)
@@ -96,7 +105,7 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSha
 				.MaxWidth(24.0f)
 				.AutoWidth()
 				[
-					SNew(SExpanderArrow, InTableRow).IndentAmount( FVariantManagerStyle::Get()->GetFloat( "VariantManager.Spacings.IndentAmount" ) )
+					SNew(SExpanderArrow, InTableRow).IndentAmount( FVariantManagerStyle::Get().GetFloat( "VariantManager.Spacings.IndentAmount" ) )
 				]
 
 				+ SHorizontalBox::Slot()
@@ -110,7 +119,7 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSha
 				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Left)
-				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+				.Padding(FMargin(4.f, 0.f, 4.f, 0.f))
 				.FillWidth(1.0f)
 				[
 					EditableLabel.ToSharedRef()
@@ -124,8 +133,7 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSha
 				.Padding(FMargin(4.f, 0.f, 4.f, 0.f))
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
-					.ToolTipText(LOCTEXT("AddVariantToolTip", "Add a new variant"))
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 					.OnClicked_Lambda([this]
 					{
 						TSharedPtr<FVariantManager> VariantManagerPtr = GetVariantManager().Pin();
@@ -141,13 +149,12 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetCustomOutlinerContent(TSha
 
 						return FReply::Handled();
 					})
-					.ContentPadding(FMargin(2.0f, 1.0f))
-					.Content()
+					.ContentPadding(FMargin(1, 0))
+					.ToolTipText(LOCTEXT("AddVariantToolTip", "Add a new variant"))
 					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-						.Text(FEditorFontGlyphs::Plus)
+						SNew(SImage)
+						.Image(FAppStyle::Get().GetBrush("Icons.PlusCircle"))
+						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
 			]
@@ -184,8 +191,8 @@ TSharedRef<SWidget> FVariantManagerVariantSetNode::GetThumbnailWidget()
 	}
 
 	return SNew(SBox)
-		.WidthOverride(64)
-		.HeightOverride(64)
+		.WidthOverride(40)
+		.HeightOverride(40)
 		[
 			ThumbnailWidget.IsValid() ? ThumbnailWidget.ToSharedRef() : SNullWidget::NullWidget
 		];
@@ -324,7 +331,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 				NumActorsWeCanAdd,
 				NumVarsThatCanAccept);
 
-			const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 
 			DecoratedDragDropOp->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -335,7 +342,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 			FText NewHoverText = FText::Format( LOCTEXT("CanDrop_NoVariantsInSet", "Variant set '{0}' has no variants!"),
 				GetVariantSet().GetDisplayText());
 
-			const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 			DecoratedDragDropOp->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -346,7 +353,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 			FText NewHoverText = FText::Format( LOCTEXT("CanDrop_ActorsAlreadyBound", "Actors already bound to all variants of set '{0}'!"),
 				GetVariantSet().GetDisplayText());
 
-			const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 			DecoratedDragDropOp->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -431,7 +438,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 					NumActorsWeCanAdd,
 					NumVariants);
 
-				const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+				const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 
 				VarManDragDrop->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -442,7 +449,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 				FText NewHoverText = FText::Format( LOCTEXT("CanDrop_ActorsAlreadyBound", "Actors already bound to all variants of set '{0}'!"),
 					GetVariantSet().GetDisplayText());
 
-				const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 				VarManDragDrop->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -458,7 +465,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 				NumDraggedVariants,
 				GetVariantSet().GetDisplayText());
 
-			const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 
 			VarManDragDrop->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -472,7 +479,7 @@ TOptional<EItemDropZone> FVariantManagerVariantSetNode::CanDrop(const FDragDropE
 				ModifierKeysState.IsControlDown() ? LOCTEXT("Copy", "Copy") : LOCTEXT("Move", "Move"),
 				NumDraggedVariants);
 
-			const FSlateBrush* NewHoverIcon = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			const FSlateBrush* NewHoverIcon = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 
 			VarManDragDrop->SetToolTip(NewHoverText, NewHoverIcon);
 
@@ -726,22 +733,6 @@ void FVariantManagerVariantSetNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 UVariantSet& FVariantManagerVariantSetNode::GetVariantSet() const
 {
 	return VariantSet;
-}
-
-FSlateColor FVariantManagerVariantSetNode::GetNodeBackgroundTint() const
-{
-	if (IsSelected())
-	{
-		return FEditorStyle::GetSlateColor("SelectionColor_Pressed");
-	}
-	else if (IsHovered())
-	{
-		return FLinearColor(FColor(52, 52, 52, 255));
-	}
-	else
-	{
-		return FLinearColor(FColor(48, 48, 48, 255));
-	}
 }
 
 const FSlateBrush* FVariantManagerVariantSetNode::GetNodeBorderImage() const

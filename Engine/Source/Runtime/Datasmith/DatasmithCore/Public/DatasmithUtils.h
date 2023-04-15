@@ -1,13 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "DatasmithDefinitions.h"
-
 #include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "Containers/UnrealString.h"
+#include "DatasmithDefinitions.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Matrix.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
 #include "Math/Vector.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/SharedPointer.h"
+
+#include <stdint.h>
 
 class FDatasmithMesh;
+class IDatasmithActorElement;
+class IDatasmithScene;
 struct FMeshDescription;
 struct FRawMesh;
 
@@ -23,7 +36,7 @@ public:
 	static void SanitizeStringInplace(FString& InString);
 
 	static int32 GetEnterpriseVersionAsInt();
-	static FString GetEnterpriseVersionAsString();
+	static FString GetEnterpriseVersionAsString(bool bWithChangelist=false);
 
 	/** Returns the Datasmith data format version */
 	static float GetDatasmithFormatVersionAsFloat();
@@ -50,7 +63,7 @@ public:
 	static const TCHAR* GetShortAppName();
 
 	/** Computes the area of a triangle */
-	static double AreaTriangle3D(FVector v0, FVector v1, FVector v2);
+	static float AreaTriangle3D(const FVector3f& v0, const FVector3f& v1, const FVector3f& v2);
 
 	enum class EModelCoordSystem : uint8
 	{
@@ -61,33 +74,34 @@ public:
 		ZUp_RightHanded_FBXLegacy,
 	};
 
-	static void ConvertVectorArray(EModelCoordSystem ModelCoordSys, TArray<FVector>& Array)
+	template<typename VecType>
+	static void ConvertVectorArray(EModelCoordSystem ModelCoordSys, TArray<VecType>& Array)
 	{
 		switch (ModelCoordSys)
 		{
 		case EModelCoordSystem::YUp_LeftHanded:
-			for (FVector& Vector : Array)
+			for (VecType& Vector : Array)
 			{
 				Vector.Set(Vector[2], Vector[0], Vector[1]);
 			}
 			break;
 
 		case EModelCoordSystem::YUp_RightHanded:
-			for (FVector& Vector : Array)
+			for (VecType& Vector : Array)
 			{
 				Vector.Set(-Vector[2], Vector[0], Vector[1]);
 			}
 			break;
 
 		case EModelCoordSystem::ZUp_RightHanded:
-			for (FVector& Vector : Array)
+			for (VecType& Vector : Array)
 			{
 				Vector.Set(-Vector[0], Vector[1], Vector[2]);
 			}
 			break;
 
 		case EModelCoordSystem::ZUp_RightHanded_FBXLegacy:
-			for (FVector& Vector : Array)
+			for (VecType& Vector : Array)
 			{
 				Vector.Set(Vector[0], -Vector[1], Vector[2]);
 			}
@@ -100,43 +114,89 @@ public:
 	}
 
 	template<typename VecType>
-	static FVector ConvertVector(EModelCoordSystem ModelCoordSys, const VecType& V)
+	static VecType ConvertVector(EModelCoordSystem ModelCoordSys, const VecType& V)
 	{
 		switch (ModelCoordSys)
 		{
 		case EModelCoordSystem::YUp_LeftHanded:
-			return FVector(V[2], V[0], V[1]);
+			return VecType(V[2], V[0], V[1]);
 
 		case EModelCoordSystem::YUp_RightHanded:
-			return FVector(-V[2], V[0], V[1]);
+			return VecType(-V[2], V[0], V[1]);
 
 		case EModelCoordSystem::ZUp_RightHanded:
-			return FVector(-V[0], V[1], V[2]);
+			return VecType(-V[0], V[1], V[2]);
 
 		case EModelCoordSystem::ZUp_RightHanded_FBXLegacy:
-			return FVector(V[0], -V[1], V[2]);
+			return VecType(V[0], -V[1], V[2]);
 
 		case EModelCoordSystem::ZUp_LeftHanded:
 		default:
-			return FVector(V[0], V[1], V[2]);
+			return VecType(V[0], V[1], V[2]);
 		}
 	}
 
 	FTransform static ConvertTransform(EModelCoordSystem SourceCoordSystem, const FTransform& LocalTransform);
 
-	FMatrix static GetSymmetricMatrix(const FVector& Origin, const FVector& Normal);
+	template<typename Type>
+	static UE::Math::TMatrix<Type> GetSymmetricMatrix(const UE::Math::TVector<Type>& Origin, const UE::Math::TVector<Type>& Normal)
+	{
+		using namespace UE::Math;
+		//Calculate symmetry matrix
+		//(Px, Py, Pz) = normal
+		// -Px*Px + Pz*Pz + Py*Py  |  - 2 * Px * Py           |  - 2 * Px * Pz
+		// - 2 * Py * Px           |  - Py*Py + Px*Px + Pz*Pz |  - 2 * Py * Pz
+		// - 2 * Pz * Px           |  - 2 * Pz * Py           |  - Pz*Pz + Py*Py + Px*Px
+
+		TVector<Type> LocOrigin = Origin;
+
+		Type NormalXSqr = Normal.X * Normal.X;
+		Type NormalYSqr = Normal.Y * Normal.Y;
+		Type NormalZSqr = Normal.Z * Normal.Z;
+
+		TMatrix<Type> OSymmetricMatrix;
+		OSymmetricMatrix.SetIdentity();
+		TVector<Type> Axis0(-NormalXSqr + NormalZSqr + NormalYSqr, -2 * Normal.X * Normal.Y, -2 * Normal.X * Normal.Z);
+		TVector<Type> Axis1(-2 * Normal.Y * Normal.X, -NormalYSqr + NormalXSqr + NormalZSqr, -2 * Normal.Y * Normal.Z);
+		TVector<Type> Axis2(-2 * Normal.Z * Normal.X, -2 * Normal.Z * Normal.Y, -NormalZSqr + NormalYSqr + NormalXSqr);
+		OSymmetricMatrix.SetAxes(&Axis0, &Axis1, &Axis2);
+
+		TMatrix<Type> SymmetricMatrix;
+		SymmetricMatrix.SetIdentity();
+
+		//Translate to 0, 0, 0
+		LocOrigin *= -1.;
+		SymmetricMatrix.SetOrigin(LocOrigin);
+
+		//// Apply Symmetric
+		SymmetricMatrix *= OSymmetricMatrix;
+
+		//Translate to original position
+		LocOrigin *= -1.;
+		TMatrix<Type> OrigTranslation;
+		OrigTranslation.SetIdentity();
+		OrigTranslation.SetOrigin(LocOrigin);
+		SymmetricMatrix *= OrigTranslation;
+
+		return SymmetricMatrix;
+	}
 };
 
 class DATASMITHCORE_API FDatasmithMeshUtils
 {
-public:
 	/**
 	 * @param bValidateRawMesh this boolean indicate if the raw must be valid.
 	 * For example a collision mesh don't need to have a valid raw mesh
 	 */
 	static bool ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMesh, bool bValidateRawMesh = true);
-	static bool ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescription& MeshDescription);
 
+public:
+	enum EUvGenerationPolicy
+	{
+		Ignore, // do not generate a default UV. Conversion fails when no UV is available
+		GenerateBox, // generate a Box UV mapping on the resulting MeshDescription (see also FStaticMeshOperations::GenerateBoxUV)
+	};
+	static bool ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescription& MeshDescription, EUvGenerationPolicy UvGen=EUvGenerationPolicy::Ignore);
 
 	/**
 	 * Validates that the given UV Channel does not contain a degenerated triangle.
@@ -145,6 +205,18 @@ public:
 	 * @param Channel	The UV channel to validate, starting at 0
 	 */
 	static bool IsUVChannelValid(const FDatasmithMesh& DsMesh, const int32 Channel);
+
+	/**
+	 * Generate simple UV data at channel 0 for the base mesh and it's various LOD variants.
+	 *
+	 * @param Mesh    The DatasmithMesh in which the UV data will be created.
+	 */
+	static void CreateDefaultUVsWithLOD(FDatasmithMesh& Mesh);
+
+	/**
+	 * Build an array of point from a MeshDescription
+	 */
+	static void ExtractVertexPositions(const FMeshDescription& Mesh, TArray<FVector3f>& OutPositions);
 };
 
 enum class EDSTextureUtilsError : int32

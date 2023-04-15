@@ -15,6 +15,7 @@ namespace Gauntlet
 		public string Project;
 		public string GameMap;
 		private Dictionary<string, object> Params;
+		private HashSet<string> NonOptionParams;
 
 		// Give external people read-only access
 		public IReadOnlyDictionary<string, object> Arguments {  get { return Params;  } }
@@ -31,6 +32,7 @@ namespace Gauntlet
 			GameMap = string.Empty;
 			AdditionalExplicitCommandLineArgs = string.Empty;
 			Params = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+			NonOptionParams = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		}
 
 		// copy constructor
@@ -40,6 +42,7 @@ namespace Gauntlet
 			GameMap = InCopy.GameMap;
 			AdditionalExplicitCommandLineArgs = InCopy.AdditionalExplicitCommandLineArgs;
 			Params = new Dictionary<string, object>(InCopy.Params);
+			NonOptionParams = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		}
 
 		/// <summary>
@@ -50,7 +53,7 @@ namespace Gauntlet
 		public void AddRawCommandline(string InRawCommandline, bool bOverrideExistingValues = true)
 		{
 			// turn Name(p1,etc) into a collection of Name|(p1,etc) groups
-			MatchCollection Matches = Regex.Matches(InRawCommandline, "-(?<option>\\-?[\\w\\d.:!\\[\\]\\/\\\\]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
+			MatchCollection Matches = Regex.Matches(InRawCommandline, "-(?<option>\\-?[\\w\\d.:!\\[\\]\\/\\\\\\-]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
 
 			foreach (Match M in Matches)
 			{
@@ -119,8 +122,13 @@ namespace Gauntlet
 		/// </summary>
 		/// <param name="ParamName"></param>
 		/// <param name="ParamVal"></param>
-		public void Add(string ParamName, object ParamVal = null)
+		public void Add(string ParamName, object ParamVal = null, bool IsNonOption = false)
 		{
+			if (IsNonOption)
+			{
+				NonOptionParams.Add(ParamName);
+			}
+
 			if (Params.ContainsKey(ParamName))
 			{
 				if (ParamName.ToLower() == "execcmds" && ParamVal != null)
@@ -233,13 +241,13 @@ namespace Gauntlet
 				string CurrentArgument;
 				if (Params[Key] != null && !string.IsNullOrWhiteSpace(Params[Key].ToString()))
 				{
-					CurrentArgument = string.Format("-{0}={1}", Key,
+					CurrentArgument = string.Format("{0}{1}={2}", NonOptionParams.Contains(Key) ? "" : "-", Key,
 						(Params[Key].ToString().Contains(' ') && !Params[Key].ToString().Contains('\"'))
 						? string.Format("\"{0}\"", Params[Key]) : Params[Key]);
 				}
 				else
 				{
-					CurrentArgument = string.Format("-{0}", Key);
+					CurrentArgument = string.Format("{0}{1}", NonOptionParams.Contains(Key) ? "" : "-", Key);
 				}
 				FinalCommandline = string.Format("{0} {1} ", FinalCommandline, CurrentArgument);
 			}
@@ -526,7 +534,7 @@ namespace Gauntlet
 		protected bool Windowed { get; set; }
 
 		/// <summary>
-		/// Which window mode to use for the PC or Mac client. Only Windowed and Fullscreen are fully supported.
+		/// Which window mode to use for the PC or Mac or Linux client. Only Windowed and Fullscreen are fully supported.
 		/// </summary>
 		/// 
 		[AutoParam(EWindowMode.Windowed)]
@@ -580,6 +588,12 @@ namespace Gauntlet
 		/// </summary>
 		[AutoParam]
 		public string HordeArtifactPath = "";
+
+		/// <summary>
+		/// PreFlight change id
+		/// </summary>
+		[AutoParam]
+		public string PreFlightChange = "";
 
 		/// <summary>
 		/// Telemetry Database config to use
@@ -638,6 +652,18 @@ namespace Gauntlet
 		[AutoParam]
 		public int ForceVerticalRes = 0;
 
+		/// <summary>
+		/// Consider the package as CookedEditor
+		/// </summary>
+		[AutoParam(false)]
+		public bool CookedEditor { get; set; }
+
+		/// <summary>
+		/// Enforce Verbose logging for a list of loggers
+		/// </summary>
+		[AutoParam]
+		public string VerboseLogCategories { get; set; }
+
 		// Member variables 
 
 		/// <summary>
@@ -688,12 +714,26 @@ namespace Gauntlet
 		/// <returns></returns>
 		public UnrealTestRole RequireRole(UnrealTargetRole InRole)
 		{
+			if(InRole.IsEditor())
+			{
+				return GetEditorRole();
+			}
 			return RequireRoles(InRole, 1).First();
 		}
 
 		public UnrealTestRole RequireRole(UnrealTargetRole InRole, UnrealTargetPlatform PlatformOverride)
 		{
+			if (InRole.IsEditor())
+			{
+				InRole = CookedEditor ? UnrealTargetRole.CookedEditor : UnrealTargetRole.Editor;
+			}
 			return RequireRoles(InRole, PlatformOverride, 1).First();
+		}
+
+		public UnrealTestRole GetEditorRole()
+		{
+			UnrealTargetRole EditorRole = CookedEditor ? UnrealTargetRole.CookedEditor : UnrealTargetRole.Editor;
+			return RequireRoles(EditorRole, 1).First();
 		}
 
 		/// <summary>
@@ -816,7 +856,7 @@ namespace Gauntlet
 			}
 			else if (AppConfig.ProcessType.IsClient())
 			{
-				if (AppConfig.Platform == UnrealTargetPlatform.Win64 || AppConfig.Platform == UnrealTargetPlatform.Mac)
+				if (AppConfig.Platform == UnrealTargetPlatform.Win64 || AppConfig.Platform == UnrealTargetPlatform.Mac || AppConfig.Platform == UnrealTargetPlatform.Linux)
 				{
 					if (!IgnoreDefaultResolutionAndWindowMode)
 					{
@@ -849,6 +889,14 @@ namespace Gauntlet
 				}
 			}
 
+			if (AppConfig.Platform == UnrealTargetPlatform.Linux)
+			{
+				// due to an issue with dotnet being extremely pedantic we have to drop our locks on files so we can read from the log file
+				// https://github.com/dotnet/runtime/issues/34126
+				AppConfig.CommandLine += " -noexclusivelockonwrite";
+				AppConfig.CommandLine += " -RemoveInvalidKeys";
+			}
+
 			// use -log on servers so we get a window..
 			if (AppConfig.ProcessType.IsServer())
 			{
@@ -857,7 +905,18 @@ namespace Gauntlet
 
 			if (Attended == false)
 			{
-				AppConfig.CommandLine += " -unattended";
+				AppConfig.CommandLine += " -unattended -nosplash";
+
+				// if we are unattended but still may need access to Vulkan passing renderoffscreen to allow not depending on
+				// the X11/Wayland display server to be around and use a dummy/offscreen rendering mode
+				//
+				// As well as disable sound as there are no audio devices when running through horde
+				//
+				// Disable cef as it seems to want to talk to an X11 server so unlikely its even working
+				if (AppConfig.Platform == UnrealTargetPlatform.Linux)
+				{
+					AppConfig.CommandLine += " -renderoffscreen";
+				}
 			}
 
 			AppConfig.CommandLine += " -stdout -AllowStdOutLogVerbosity";
@@ -877,12 +936,6 @@ namespace Gauntlet
 				{
 					AppConfig.CommandLineParams.GameMap = MapChoice;
 				}
-			}
-
-			// we write results to Horde test data if we run under Horde agent
-			if (HordeReport.IsUnderHordeAgent)
-			{
-				WriteTestResultsForHorde = true;
 			}
 		}			
 	}

@@ -7,8 +7,8 @@
 
 #include "SAnimNotifyPanel.h"
 #include "Editor.h"
-#include "AnimModel_AnimComposite.h"
-#include "SAnimTimeline.h"
+#include "AnimTimeline/AnimModel_AnimComposite.h"
+#include "AnimTimeline/SAnimTimeline.h"
 
 //////////////////////////////////////////////////////////////////////////
 // SAnimCompositeEditor
@@ -32,7 +32,6 @@ void SAnimCompositeEditor::Construct(const FArguments& InArgs, const TSharedRef<
 		InOnEditCurves.ExecuteIfBound(InAnimSequence, InCurveInfo, TimelineWidget->GetTimeSliderController());
 	});
 
-	AnimModel->OnStopEditingCurves = InArgs._OnStopEditingCurves;
 	AnimModel->Initialize();
 
 	SAnimEditorBase::Construct( SAnimEditorBase::FArguments()

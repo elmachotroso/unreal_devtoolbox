@@ -57,23 +57,23 @@ inline FStringView GetMimeType(EContentType Type)
 	switch (Type)
 	{
 		case EContentType::Binary:
-			return TEXT("application/octet-stream"_SV);
+			return TEXTVIEW("application/octet-stream");
 		case EContentType::Text:
-			return TEXT("text/plain"_SV);
+			return TEXTVIEW("text/plain");
 		case EContentType::JSON:
-			return TEXT("application/json"_SV);
+			return TEXTVIEW("application/json");
 		case EContentType::CbObject:
-			return TEXT("application/x-ue-cb"_SV);
+			return TEXTVIEW("application/x-ue-cb");
 		case EContentType::CbPackage:
-			return TEXT("application/x-ue-cbpkg"_SV);
+			return TEXTVIEW("application/x-ue-cbpkg");
 		case EContentType::YAML:
-			return TEXT("text/yaml"_SV);
+			return TEXTVIEW("text/yaml");
 		case EContentType::CbPackageOffer:
-			return TEXT("application/x-ue-offer"_SV);
+			return TEXTVIEW("application/x-ue-offer");
 		case EContentType::CompressedBinary:
-			return TEXT("application/x-ue-comp"_SV);
+			return TEXTVIEW("application/x-ue-comp");
 		default:
-			return TEXT("unknown"_SV);
+			return TEXTVIEW("unknown");
 	}
 }
 
@@ -245,7 +245,7 @@ private:
 		* @param Buffer Optional buffer to directly receive the result of the request.
 		* If unset the response body will be stored in the request.
 		*/
-	Result PerformBlocking(FStringView Uri, RequestVerb Verb, uint32 ContentLength);
+	Result PerformBlocking(FStringView Uri, RequestVerb Verb, uint64 ContentLength);
 
 	FZenHttpRequest::Result ParseRpcResponse(FZenHttpRequest::Result ResultFromPost, FCbPackage& OutResponse);
 

@@ -1,21 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceCubeTexture.h"
+#include "NiagaraComputeExecutionContext.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraShader.h"
-#include "ShaderParameterUtils.h"
-#include "NiagaraCustomVersion.h"
+#include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraSystemInstance.h"
+
 #include "Engine/TextureCube.h"
 #include "Engine/TextureRenderTargetCube.h"
-#include "NiagaraSystemInstance.h"
-#include "NiagaraComputeExecutionContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceCubeTexture)
 
 #define LOCTEXT_NAMESPACE "UNiagaraDataInterfaceCubeTexture"
 
+const TCHAR* UNiagaraDataInterfaceCubeTexture::TemplateShaderFilePath = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceCubeTextureTemplate.ush");
 const FName UNiagaraDataInterfaceCubeTexture::SampleCubeTextureName(TEXT("SampleCubeTexture"));
 const FName UNiagaraDataInterfaceCubeTexture::TextureDimsName(TEXT("TextureDimensions"));
-const FString UNiagaraDataInterfaceCubeTexture::TextureName(TEXT("Texture_"));
-const FString UNiagaraDataInterfaceCubeTexture::SamplerName(TEXT("Sampler_"));
-const FString UNiagaraDataInterfaceCubeTexture::DimensionsBaseName(TEXT("Dimensions_"));
 
 struct FNDICubeTextureInstanceData_GameThread
 {
@@ -28,8 +29,9 @@ struct FNDICubeTextureInstanceData_RenderThread
 {
 	FSamplerStateRHIRef		SamplerStateRHI;
 	FTextureReferenceRHIRef	TextureReferenceRHI;
-	FTextureRHIRef			ResolvedTextureRHI;
 	FIntPoint				TextureSize;
+
+	FRDGTextureRef			TransientRDGTexture = nullptr;
 };
 
 struct FNiagaraDataInterfaceProxyCubeTexture : public FNiagaraDataInterfaceProxy
@@ -37,26 +39,13 @@ struct FNiagaraDataInterfaceProxyCubeTexture : public FNiagaraDataInterfaceProxy
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override { check(false); }
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
 
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override
 	{
-		if (FNDICubeTextureInstanceData_RenderThread* InstanceData = InstanceData_RT.Find(Context.SystemInstanceID))
+		if (Context.IsFinalPostSimulate())
 		{
-			// Because the underlying reference can have a switch in flight on the RHI we get the referenced texture
-			// here, ensure it's valid (as it could be queued for delete) and cache until next round.  If we were
-			// to release the reference in PostStage / PostSimulate we still stand a chance the the transition we
-			// queue will be invalid by the time it is processed on the RHI thread.
-			if (Context.SimStageData->bFirstStage && InstanceData->TextureReferenceRHI.IsValid())
+			if (FNDICubeTextureInstanceData_RenderThread* InstanceData = InstanceData_RT.Find(Context.GetSystemInstanceID()))
 			{
-				InstanceData->ResolvedTextureRHI = InstanceData->TextureReferenceRHI->GetReferencedTexture();
-				if (InstanceData->ResolvedTextureRHI && !InstanceData->ResolvedTextureRHI->IsValid())
-				{
-					InstanceData->ResolvedTextureRHI = nullptr;
-				}
-			}
-			if (InstanceData->ResolvedTextureRHI)
-			{
-				// Make sure the texture is readable, we don't know where it's coming from.
-				RHICmdList.Transition(FRHITransitionInfo(InstanceData->ResolvedTextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+				InstanceData->TransientRDGTexture = nullptr;
 			}
 		}
 	}
@@ -205,14 +194,15 @@ bool UNiagaraDataInterfaceCubeTexture::PerInstanceTick(void* PerInstanceData, FN
 					if (RT_Texture)
 					{
 						InstanceData.TextureReferenceRHI = RT_Texture->TextureReference.TextureReferenceRHI;
-						InstanceData.SamplerStateRHI = RT_Texture->GetResource() ? RT_Texture->GetResource()->SamplerStateRHI : nullptr;
+						InstanceData.SamplerStateRHI = RT_Texture->GetResource() ? RT_Texture->GetResource()->SamplerStateRHI.GetReference() : TStaticSamplerState<SF_Point>::GetRHI();
+						InstanceData.TextureSize = RT_TextureSize;
 					}
 					else
 					{
 						InstanceData.TextureReferenceRHI = nullptr;
 						InstanceData.SamplerStateRHI = nullptr;
+						InstanceData.TextureSize = FIntPoint::ZeroValue;
 					}
-					InstanceData.TextureSize = RT_TextureSize;
 				}
 			);
 		}
@@ -248,104 +238,81 @@ void UNiagaraDataInterfaceCubeTexture::SampleCubeTexture(FVectorVMExternalFuncti
 }
 
 #if WITH_EDITORONLY_DATA
+bool UNiagaraDataInterfaceCubeTexture::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	bool bSuccess = Super::AppendCompileHash(InVisitor);
+	InVisitor->UpdateString(TEXT("UNiagaraDataInterfaceCubeTextureHLSLSource"), GetShaderFileHash(TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	bSuccess &= InVisitor->UpdateShaderParameters<FShaderParameters>();
+	return bSuccess;
+}
+
+void UNiagaraDataInterfaceCubeTexture::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+{
+	TMap<FString, FStringFormatArg> TemplateArgs =
+	{
+		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
+	};
+
+	FString TemplateFile;
+	LoadShaderSourceFile(TemplateShaderFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+}
+
 bool UNiagaraDataInterfaceCubeTexture::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
-	if (FunctionInfo.DefinitionName == SampleCubeTextureName)
+	if ((FunctionInfo.DefinitionName == SampleCubeTextureName) ||
+		(FunctionInfo.DefinitionName == TextureDimsName))
 	{
-		const FString HLSLTextureName = TextureName + ParameterInfo.DataInterfaceHLSLSymbol;
-		const FString HLSLSamplerName = SamplerName + ParameterInfo.DataInterfaceHLSLSymbol;
-
-		OutHLSL.Appendf(TEXT("void %s(in float3 In_UVW, in float MipLevel, out float4 Out_Value)\n"), *FunctionInfo.InstanceName);
-		OutHLSL.Append(TEXT("{\n"));
-		OutHLSL.Appendf(TEXT("\tOut_Value = %s.SampleLevel(%s, In_UVW, MipLevel);\n"), *HLSLTextureName, *HLSLSamplerName);
-		OutHLSL.Append(TEXT("}\n"));
-		return true;
-	}
-	else if (FunctionInfo.DefinitionName == TextureDimsName)
-	{
-		const FString DimsVar = DimensionsBaseName + ParameterInfo.DataInterfaceHLSLSymbol;
-
-		OutHLSL.Appendf(TEXT("void %s(out int Out_Width, out int Out_Height)\n"), *FunctionInfo.InstanceName);
-		OutHLSL.Append (TEXT("{\n"));
-		OutHLSL.Appendf(TEXT("\tOut_Width = %s.x;\n"), *DimsVar);
-		OutHLSL.Appendf(TEXT("\tOut_Width = %s.y;\n"), *DimsVar);
-		OutHLSL.Append(TEXT("}\n"));
 		return true;
 	}
 	return false;
 }
-
-void UNiagaraDataInterfaceCubeTexture::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, FString& OutHLSL)
-{
-	const FString HLSLTextureName = TextureName + ParameterInfo.DataInterfaceHLSLSymbol;
-	const FString HLSLSamplerName = SamplerName + ParameterInfo.DataInterfaceHLSLSymbol;
-	const FString DimsVar = DimensionsBaseName + ParameterInfo.DataInterfaceHLSLSymbol;
-
-	OutHLSL.Appendf(TEXT("TextureCube %s;\n"), *HLSLTextureName);
-	OutHLSL.Appendf(TEXT("SamplerState %s;\n"), *HLSLSamplerName);
-	OutHLSL.Appendf(TEXT("int2 %s;\n"), *DimsVar);
-}
 #endif
 
-struct FNiagaraDataInterfaceParametersCS_CubeTexture : public FNiagaraDataInterfaceParametersCS
+void UNiagaraDataInterfaceCubeTexture::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
 {
-	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CubeTexture, NonVirtual);
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
+	ShaderParametersBuilder.AddNestedStruct<FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceCubeTexture::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	FNiagaraDataInterfaceProxyCubeTexture& TextureProxy = Context.GetProxy<FNiagaraDataInterfaceProxyCubeTexture>();
+	FNDICubeTextureInstanceData_RenderThread* InstanceData = TextureProxy.InstanceData_RT.Find(Context.GetSystemInstanceID());
+
+	FShaderParameters* Parameters = Context.GetParameterNestedStruct<FShaderParameters>();
+	if (InstanceData && InstanceData->TextureReferenceRHI.IsValid())
 	{
-		const FString HLSLTextureName = UNiagaraDataInterfaceCubeTexture::TextureName + ParameterInfo.DataInterfaceHLSLSymbol;
-		const FString HLSLSamplerName = UNiagaraDataInterfaceCubeTexture::SamplerName + ParameterInfo.DataInterfaceHLSLSymbol;
-		const FString DimsVar = UNiagaraDataInterfaceCubeTexture::DimensionsBaseName + ParameterInfo.DataInterfaceHLSLSymbol;
-
-		TextureParam.Bind(ParameterMap, *HLSLTextureName);
-		SamplerParam.Bind(ParameterMap, *HLSLSamplerName);
-		Dimensions.Bind(ParameterMap, *DimsVar);
-	}
-
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		FNiagaraDataInterfaceProxyCubeTexture* TextureDI = static_cast<FNiagaraDataInterfaceProxyCubeTexture*>(Context.DataInterface);
-		FNDICubeTextureInstanceData_RenderThread* InstanceData = TextureDI->InstanceData_RT.Find(Context.SystemInstanceID);
-
-		if (InstanceData && InstanceData->ResolvedTextureRHI.IsValid())
+		Parameters->TextureSize = InstanceData->TextureSize;
+		Parameters->TextureSampler = InstanceData->SamplerStateRHI;
+		if (Context.IsResourceBound(&Parameters->Texture))
 		{
-			FRHISamplerState* SamplerStateRHI = InstanceData->SamplerStateRHI ? InstanceData->SamplerStateRHI : GBlackTexture->SamplerStateRHI;
-			SetTextureParameter(
-				RHICmdList,
-				ComputeShaderRHI,
-				TextureParam,
-				SamplerParam,
-				SamplerStateRHI,
-				InstanceData->ResolvedTextureRHI
-			);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, Dimensions, InstanceData->TextureSize);
-		}
-		else
-		{
-			SetTextureParameter(
-				RHICmdList,
-				ComputeShaderRHI,
-				TextureParam,
-				SamplerParam,
-				GBlackTextureCube->SamplerStateRHI,
-				GBlackTextureCube->TextureRHI
-			);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, Dimensions, FVector3f::ZeroVector);
+			FRDGTextureRef RDGTexture = InstanceData ? InstanceData->TransientRDGTexture : nullptr;
+			if (InstanceData && RDGTexture == nullptr)
+			{
+				FTextureRHIRef ResolvedTextureRHI = InstanceData->TextureReferenceRHI->GetReferencedTexture();
+				if (ResolvedTextureRHI.IsValid())
+				{
+					InstanceData->TransientRDGTexture = Context.GetGraphBuilder().FindExternalTexture(ResolvedTextureRHI);
+					if (InstanceData->TransientRDGTexture == nullptr)
+					{
+						InstanceData->TransientRDGTexture = Context.GetGraphBuilder().RegisterExternalTexture(CreateRenderTarget(ResolvedTextureRHI, TEXT("NiagaraTextureCube")));
+					}
+					RDGTexture = InstanceData->TransientRDGTexture;
+				}
+			}
+
+			Parameters->Texture = RDGTexture ? RDGTexture : Context.GetComputeDispatchInterface().GetBlackTexture(Context.GetGraphBuilder(), ETextureDimension::TextureCube);
 		}
 	}
-private:
-	LAYOUT_FIELD(FShaderResourceParameter, TextureParam);
-	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
-	LAYOUT_FIELD(FShaderParameter, Dimensions);
-};
+	else
+	{
+		Parameters->TextureSize = FIntPoint::ZeroValue;
+		Parameters->TextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
+		Parameters->Texture = Context.GetComputeDispatchInterface().GetBlackTexture(Context.GetGraphBuilder(), ETextureDimension::TextureCube);
+	}
+}
 
-IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CubeTexture);
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceCubeTexture, FNiagaraDataInterfaceParametersCS_CubeTexture);
-
-void UNiagaraDataInterfaceCubeTexture::SetTexture(UTextureCube* InTexture)
+void UNiagaraDataInterfaceCubeTexture::SetTexture(UTexture* InTexture)
 {
 	if (InTexture)
 	{
@@ -354,3 +321,4 @@ void UNiagaraDataInterfaceCubeTexture::SetTexture(UTextureCube* InTexture)
 }
 
 #undef LOCTEXT_NAMESPACE
+

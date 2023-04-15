@@ -8,8 +8,7 @@
 #include "GlobalShader.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSettings.h"
-#include "Renderer/Private/ScenePrivate.h"
-#include "Renderer/Private/SceneRendering.h"
+#include "ScenePrivate.h"
 
 static int GNiagaraAsyncGpuTraceHwrtEnabled = 1;
 static FAutoConsoleVariableRef CVarNiagaraAsyncGpuTraceHwrtEnabled(
@@ -33,7 +32,7 @@ struct FVFXTracePayload
 	float WorldNormal[3];
 };
 
-BEGIN_SHADER_PARAMETER_STRUCT(FGPUSceneParameters, )
+BEGIN_SHADER_PARAMETER_STRUCT(FNiagaraGPUSceneParameters, )
 	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
 	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
 	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
@@ -47,7 +46,7 @@ class FNiagaraCollisionRayTraceRG : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FGPUSceneParameters, GPUSceneParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FNiagaraGPUSceneParameters, GPUSceneParameters)
 
 		SHADER_PARAMETER_SRV(Buffer<UINT>, HashTable)
 		SHADER_PARAMETER_SRV(Buffer<UINT>, HashToCollisionGroups)
@@ -204,15 +203,14 @@ static void BindNiagaraRayTracingMeshCommands(
 	const uint32 NumUniformBuffers = 1;
 	const uint32 UniformBufferArraySize = sizeof(FRHIUniformBuffer*) * NumUniformBuffers;
 
+	FConcurrentLinearBulkObjectAllocator Allocator;
 	FRayTracingLocalShaderBindings* Bindings = nullptr;
 	FRHIUniformBuffer** UniformBufferArray = nullptr;
 
 	if (RHICmdList.Bypass())
 	{
-		FMemStack& MemStack = FMemStack::Get();
-
-		Bindings = reinterpret_cast<FRayTracingLocalShaderBindings*>(MemStack.Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings)));
-		UniformBufferArray = reinterpret_cast<FRHIUniformBuffer**>(MemStack.Alloc(UniformBufferArraySize, alignof(FRHIUniformBuffer*)));
+		Bindings = reinterpret_cast<FRayTracingLocalShaderBindings*>(Allocator.Malloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings)));
+		UniformBufferArray = reinterpret_cast<FRHIUniformBuffer**>(Allocator.Malloc(UniformBufferArraySize, alignof(FRHIUniformBuffer*)));
 	}
 	else
 	{
@@ -245,6 +243,7 @@ static void BindNiagaraRayTracingMeshCommands(
 		NumTotalBindings,
 		Bindings,
 		bCopyDataToInlineStorage);
+	RHICmdList.SetRayTracingMissShader(RayTracingScene, 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -291,7 +290,7 @@ void FNiagaraAsyncGpuTraceProviderHwrt::PostRenderOpaque(FRHICommandList& RHICmd
 	if (Scene && Scene->RayTracingScene.IsCreated())
 	{
 		RayTracingScene = Scene->RayTracingScene.GetRHIRayTracingSceneChecked();
-		RayTracingSceneView = Scene->RayTracingScene.GetShaderResourceViewChecked();
+		RayTracingSceneView = Scene->RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
 		ViewUniformBuffer = ReferenceView.ViewUniformBuffer;
 
 		FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(ShaderPlatform);
@@ -347,9 +346,9 @@ void FNiagaraAsyncGpuTraceProviderHwrt::IssueTraces(FRHICommandList& RHICmdList,
 	FNiagaraCollisionRayTraceRG::FParameters Params;
 
 	Params.View = GetShaderBinding(ViewUniformBuffer);
-	Params.GPUSceneParameters.GPUSceneInstanceSceneData = Scene->GPUScene.InstanceSceneDataBuffer.SRV;
-	Params.GPUSceneParameters.GPUSceneInstancePayloadData = Scene->GPUScene.InstancePayloadDataBuffer.SRV;
-	Params.GPUSceneParameters.GPUScenePrimitiveSceneData = Scene->GPUScene.PrimitiveBuffer.SRV;
+	Params.GPUSceneParameters.GPUSceneInstanceSceneData = Scene->GPUScene.InstanceSceneDataBuffer->GetSRV();
+	Params.GPUSceneParameters.GPUSceneInstancePayloadData = Scene->GPUScene.InstancePayloadDataBuffer->GetSRV();
+	Params.GPUSceneParameters.GPUScenePrimitiveSceneData = Scene->GPUScene.PrimitiveBuffer->GetSRV();
 	Params.GPUSceneParameters.GPUSceneFrameNumber = Scene->GPUScene.GetSceneFrameNumber();
 
 	if (CollisionGroupHash)

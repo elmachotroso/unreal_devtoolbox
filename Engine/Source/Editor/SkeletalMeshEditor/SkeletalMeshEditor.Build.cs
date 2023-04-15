@@ -20,7 +20,6 @@ public class SkeletalMeshEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
                 "UnrealEd",
                 "SkeletonEditor",
@@ -40,6 +39,8 @@ public class SkeletalMeshEditor : ModuleRules
 				"EditorSubsystem",
 				"StatusBar",
 				"PhysicsUtilities",
+				"InterchangeCore",
+				"InterchangeEngine",
 			}
 		);
 

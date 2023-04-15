@@ -2,6 +2,9 @@
 
 #include "RigUnit_GetRelativeBoneTransform.h"
 #include "Units/RigUnitContext.h"
+#include "Units/Hierarchy/RigUnit_GetRelativeTransform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_GetRelativeBoneTransform)
 
 FRigUnit_GetRelativeBoneTransform_Execute()
 {
@@ -39,6 +42,19 @@ FRigUnit_GetRelativeBoneTransform_Execute()
 			}
 		}
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_GetRelativeBoneTransform::GetUpgradeInfo() const
+{
+	FRigUnit_GetRelativeTransformForItem NewNode;
+	NewNode.Parent = FRigElementKey(Space, ERigElementType::Bone);
+	NewNode.Child = FRigElementKey(Bone, ERigElementType::Bone);
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Space"), TEXT("Parent.Name"));
+	Info.AddRemappedPin(TEXT("Bone"), TEXT("Child.Name"));
+	Info.AddRemappedPin(TEXT("Transform"), TEXT("RelativeTransform"));
+	return Info;
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

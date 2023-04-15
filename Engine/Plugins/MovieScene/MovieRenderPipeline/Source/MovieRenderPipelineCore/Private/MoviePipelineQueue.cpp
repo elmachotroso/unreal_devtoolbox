@@ -6,6 +6,8 @@
 #include "MoviePipelineBlueprintLibrary.h"
 #include "MovieRenderPipelineCoreModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineQueue)
+
 UMoviePipelineExecutorJob* UMoviePipelineQueue::AllocateNewJob(TSubclassOf<UMoviePipelineExecutorJob> InJobType)
 {
 	if (!ensureAlwaysMsgf(InJobType, TEXT("Failed to specify a Job Type. Use the default in project setting or UMoviePipelineExecutorJob.")))
@@ -63,6 +65,19 @@ UMoviePipelineExecutorJob* UMoviePipelineQueue::DuplicateJob(UMoviePipelineExecu
 #endif
 
 	UMoviePipelineExecutorJob* NewJob = CastChecked<UMoviePipelineExecutorJob>(StaticDuplicateObject(InJob, this));
+
+	// Duplication causes the DisplayNames to get renamed to the asset name (required to support both duplicating
+	// and renaming objects in the Content Browser). So after using the normal duplication, we run our custom
+	// CopyFrom code to transfer the configurations over (which do a display name fixup).
+	NewJob->GetConfiguration()->CopyFrom(InJob->GetConfiguration());
+	for (int32 Index = 0; Index < NewJob->ShotInfo.Num(); Index++)
+	{
+		if (InJob->ShotInfo[Index]->GetShotOverrideConfiguration())
+		{
+			NewJob->ShotInfo[Index]->GetShotOverrideConfiguration()->CopyFrom(InJob->ShotInfo[Index]->GetShotOverrideConfiguration());
+		}
+	}
+
 	NewJob->OnDuplicated();
 	Jobs.Add(NewJob);
 
@@ -240,3 +255,4 @@ void UMoviePipelineExecutorShot::SetShotOverridePresetOrigin(UMoviePipelineShotC
 		ShotOverridePresetOrigin.Reset();
 	}
 }
+

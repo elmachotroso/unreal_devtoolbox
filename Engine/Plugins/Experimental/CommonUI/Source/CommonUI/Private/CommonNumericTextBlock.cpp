@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonNumericTextBlock.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "TimerManager.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Math/UnitConversion.h"
 #include "CommonCustomVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonNumericTextBlock)
 
 UCommonNumericTextBlock::UCommonNumericTextBlock(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -129,11 +131,13 @@ bool UCommonNumericTextBlock::CanEditChange(const FProperty* InProperty) const
 	if (bIsEditable && InProperty)
 	{
 		const FName PropertyName = InProperty->GetFName();
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// this should be move in a customizaer
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UTextBlock, MinDesiredWidth))
 		{
 			bIsEditable = PerformSizeInterpolation != true;
 		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return bIsEditable;

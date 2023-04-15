@@ -6,6 +6,7 @@
 #include "NiagaraGPUSystemTick.h"
 #include "NiagaraDataInterfaceBase.h"
 #include "NiagaraComponent.h"
+#include "NiagaraEmitter.h"
 
 #include "Async/Async.h"
 
@@ -48,53 +49,32 @@ void FNiagaraGpuProfilerListener::SetHandler(TFunction<void(const FNiagaraGpuFra
 }
 
 //////////////////////////////////////////////////////////////////////////
-FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, FName StageName)
+
+FNiagaraGpuProfileEvent::FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, const bool bFirstInstanceData)
+{
+	bUniqueInstance = SimStageData.bSetDataToRender && bFirstInstanceData;
+	OwnerComponent = InstanceData.Context->ProfilingComponentPtr;
+	OwnerEmitter = InstanceData.Context->ProfilingEmitterPtr;
+	StageName = SimStageData.StageMetaData->SimulationStageName;
+}
+
+FNiagaraGpuProfileEvent::FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, FName CustomStageName)
+{
+	bUniqueInstance = false;
+	OwnerComponent = InstanceData.Context->ProfilingComponentPtr;
+	OwnerEmitter = InstanceData.Context->ProfilingEmitterPtr;
+	StageName = CustomStageName;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraGpuProfileEvent& Event)
 	: RHICmdList(InRHICmdList)
 	, GPUProfiler(static_cast<FNiagaraGPUProfiler*>(ComputeDispatchInterface->GetGPUProfiler()))
 {
 	if (GPUProfiler)
 	{
-		GPUProfiler->BeginDispatch(RHICmdList, StageName);
-	}
-}
-
-FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const struct FNiagaraGpuDispatchInstance& DispatchInstance)
-	: RHICmdList(InRHICmdList)
-	, GPUProfiler(static_cast<FNiagaraGPUProfiler*>(ComputeDispatchInterface->GetGPUProfiler()))
-{
-	if (GPUProfiler)
-	{
-		GPUProfiler->BeginDispatch(RHICmdList, DispatchInstance);
-	}
-}
-
-FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const struct FNiagaraDataInterfaceArgs& Context, FName StageName)
-	: RHICmdList(InRHICmdList)
-	, GPUProfiler(static_cast<FNiagaraGPUProfiler*>(Context.ComputeDispatchInterface->GetGPUProfiler()))
-{
-	if (GPUProfiler)
-	{
-		GPUProfiler->BeginDispatch(RHICmdList, StageName);
-	}
-}
-
-FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const struct FNiagaraDataInterfaceSetArgs& Context, FName StageName)
-	: RHICmdList(InRHICmdList)
-	, GPUProfiler(static_cast<FNiagaraGPUProfiler*>(Context.ComputeDispatchInterface->GetGPUProfiler()))
-{
-	if (GPUProfiler)
-	{
-		GPUProfiler->BeginDispatch(RHICmdList, *Context.ComputeInstanceData, StageName);
-	}
-}
-
-FNiagaraGpuProfileScope::FNiagaraGpuProfileScope(FRHICommandList& InRHICmdList, const struct FNiagaraDataInterfaceStageArgs& Context, FName StageName)
-	: RHICmdList(InRHICmdList)
-	, GPUProfiler(static_cast<FNiagaraGPUProfiler*>(Context.ComputeDispatchInterface->GetGPUProfiler()))
-{
-	if (GPUProfiler)
-	{
-		GPUProfiler->BeginDispatch(RHICmdList, *Context.ComputeInstanceData, StageName);
+		GPUProfiler->BeginDispatch(RHICmdList, Event);
 	}
 }
 
@@ -144,13 +124,13 @@ void SetResultsForEditorStats(const FNiagaraGpuFrameResultsPtr& FrameResults)
 #if WITH_NIAGARA_GPU_PROFILER_EDITOR
 	// Send data for editor stat display
 	//-TODO: editor stats should merge with particle perf stats
-	TMap<UNiagaraEmitter*, TMap<TStatIdData const*, float>> CapturedStats;
+	TMap<FVersionedNiagaraEmitterData*, TMap<TStatIdData const*, float>> CapturedStats;
 	CapturedStats.Reserve(FrameResults->DispatchResults.Num());
 
 	for (const auto& DispatchResult : FrameResults->DispatchResults)
 	{
-		UNiagaraEmitter* Emitter = DispatchResult.OwnerEmitter.Get();
-		if ( Emitter == nullptr )
+		FVersionedNiagaraEmitterData* EmitterData = DispatchResult.OwnerEmitter.GetEmitterData();
+		if ( EmitterData == nullptr )
 		{
 			continue;
 		}
@@ -162,7 +142,7 @@ void SetResultsForEditorStats(const FNiagaraGpuFrameResultsPtr& FrameResults)
 		const FName StatFName(StatNameBuilder.ToString());
 
 		const TStatId StatId = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_NiagaraDetailed>(StatFName);
-		CapturedStats.FindOrAdd(Emitter).FindOrAdd(StatId.GetRawPointer()) += DispatchResult.DurationMicroseconds;
+		CapturedStats.FindOrAdd(EmitterData).FindOrAdd(StatId.GetRawPointer()) += DispatchResult.DurationMicroseconds;
 	}
 
 	for (auto& CapturedStat : CapturedStats)

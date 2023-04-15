@@ -39,7 +39,14 @@ public:
 	void SetListItems(const TArray<ItemObjectT, AllocatorType>& InListItems)
 	{
 		ClearListItems();
-		ListItems.Append(InListItems);
+		ListItems.Reserve(InListItems.Num());
+		for (const ItemObjectT ListItem : InListItems)
+		{
+			if (ListItem != nullptr)
+			{
+				ListItems.Add(ListItem);
+			}
+		}
 
 		OnItemsChanged(ListItems, TArray<UObject*>());
 

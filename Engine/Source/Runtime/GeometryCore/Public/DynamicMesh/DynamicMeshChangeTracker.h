@@ -2,9 +2,21 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "CoreTypes.h"
+#include "DynamicMesh/DynamicAttribute.h"
 #include "DynamicMesh/DynamicMesh3.h"
-#include "DynamicMesh/DynamicMeshOverlay.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "DynamicMesh/DynamicMeshOverlay.h"
+#include "DynamicMesh/DynamicMeshTriangleAttribute.h"
+#include "DynamicMesh/InfoTypes.h"
+#include "GeometryTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "IndexTypes.h"
+#include "Misc/Optional.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 
 
 //
@@ -92,6 +104,9 @@ typedef TDynamicMeshAttributeChange<float, 4> FDynamicMeshColorChange;
 /** Standard per-triangle integer attribute change type */
 typedef FDynamicMeshTriangleAttributeChange<int32,1> FDynamicMeshTriGroupChange;
 
+/** Standard weight map change type - 1-element float */
+typedef TDynamicMeshAttributeChange<float, 1> FDynamicMeshWeightChange;
+
 /**
  * FDynamicMeshAttributeChangeSet stores a set of UV and Normal changes for a FDynamicMesh3
  */
@@ -106,6 +121,8 @@ public:
 	TOptional<FDynamicMeshColorChange> ColorChange;
 	TOptional<FDynamicMeshTriGroupChange> MaterialIDAttribChange;
 	TArray<FDynamicMeshTriGroupChange> PolygroupChanges;
+
+	TArray<TUniquePtr<FDynamicMeshAttributeChangeBase>> WeightChanges;
 	TArray<TUniquePtr<FDynamicMeshAttributeChangeBase>> RegisteredAttributeChanges;
 
 	/** call ::Apply() on all the UV and Normal changes */

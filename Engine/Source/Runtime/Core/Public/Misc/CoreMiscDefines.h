@@ -124,8 +124,8 @@ enum EInPlace {InPlace};
 	#define UE_PUSH_MACRO(name) __pragma(push_macro(name))
 	#define UE_POP_MACRO(name) __pragma(pop_macro(name))
 #endif
-#define PUSH_MACRO(name) DEPRECATED_MACRO(5.0, "PUSH_MACRO is deprecated. Use UE_PUSH_MACRO and pass the macro name as a string.") UE_PUSH_MACRO(PREPROCESSOR_TO_STRING(name))
-#define POP_MACRO(name) DEPRECATED_MACRO(5.0, "POP_MACRO is deprecated. Use UE_POP_MACRO and pass the macro name as a string.") UE_POP_MACRO(PREPROCESSOR_TO_STRING(name))
+#define PUSH_MACRO(name) UE_DEPRECATED_MACRO(5.0, "PUSH_MACRO is deprecated. Use UE_PUSH_MACRO and pass the macro name as a string.") UE_PUSH_MACRO(PREPROCESSOR_TO_STRING(name))
+#define POP_MACRO(name) UE_DEPRECATED_MACRO(5.0, "POP_MACRO is deprecated. Use UE_POP_MACRO and pass the macro name as a string.") UE_POP_MACRO(PREPROCESSOR_TO_STRING(name))
 
 #ifdef __COUNTER__
 	// Created a variable with a unique name
@@ -349,3 +349,109 @@ private:
 
 /** Static invalid platform user */
 const FPlatformUserId PLATFORMUSERID_NONE;
+
+/**
+ * Represents a single input device such as a gamepad, keyboard, or mouse.
+ *
+ * Has a globally unique identifier that is assigned by the IPlatformInputDeviceMapper
+ */
+struct FInputDeviceId
+{
+	FORCEINLINE explicit FInputDeviceId()
+		: InternalId(INDEX_NONE)
+	{}
+	
+	FInputDeviceId(const FInputDeviceId&) = default;
+	
+	/** Explicit function to create from an internal id */
+	FORCEINLINE static FInputDeviceId CreateFromInternalId(int32 InInternalId)
+	{
+		FInputDeviceId IdToReturn;
+		IdToReturn.InternalId = InInternalId;
+		return IdToReturn;
+	}
+	
+	FORCEINLINE int32 GetId() const
+	{
+		return InternalId;
+	}
+
+	/** Sees if this is a valid input device */
+	FORCEINLINE bool IsValid() const
+	{
+		return InternalId >= 0;
+	}
+
+	FORCEINLINE bool operator==(const FInputDeviceId& Other) const
+	{
+		return InternalId == Other.InternalId;
+	}
+
+	FORCEINLINE bool operator!=(const FInputDeviceId& Other) const
+	{
+		return InternalId != Other.InternalId;
+	}
+	
+	FORCEINLINE bool operator<(const FInputDeviceId& Other) const
+	{
+		return InternalId < Other.InternalId;
+	}
+
+	FORCEINLINE bool operator<=(const FInputDeviceId& Other) const
+	{
+		return InternalId <= Other.InternalId;
+	}
+
+	FORCEINLINE bool operator>(const FInputDeviceId& Other) const
+	{
+		return InternalId > Other.InternalId;
+	}
+
+	FORCEINLINE bool operator>=(const FInputDeviceId& Other) const
+	{
+		return InternalId >= Other.InternalId;
+	}
+
+	FORCEINLINE friend uint32 GetTypeHash(const FInputDeviceId& InputId)
+	{
+		return InputId.InternalId;
+	}
+	
+private:
+	
+	/**
+	 * Raw id, will be allocated by application layer
+	 * 
+	 * @see IPlatformInputDeviceMapper::AllocateNewInputDeviceId
+	 */
+	int32 InternalId;
+};
+
+/** Static invalid input device. */
+const FInputDeviceId INPUTDEVICEID_NONE;
+
+/** Represents the connection status of a given FInputDeviceId */
+enum class EInputDeviceConnectionState : uint8
+{
+	/** This is not a valid input device */
+	Invalid,
+
+	/** It is not known if this device is connected or not */
+	Unknown,
+
+	/** Device is definitely connected */
+	Disconnected,
+
+	/** Definitely connected and powered on */
+	Connected
+};
+
+/** Data about an input device's current state */
+struct FPlatformInputDeviceState
+{
+	/** The platform user that this input device belongs to */
+	FPlatformUserId OwningPlatformUser = PLATFORMUSERID_NONE;
+
+	/** The connection state of this input device */
+	EInputDeviceConnectionState ConnectionState = EInputDeviceConnectionState::Invalid;
+};

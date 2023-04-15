@@ -63,15 +63,15 @@ void SetGBufferForShadingModel(
 			GBuffer.CustomData.rgb = EncodeSubsurfaceProfile(SubsurfaceProfile);
 			GBuffer.CustomData.a = Opacity;
 
-			// Average roughness for dual specular.
-			uint SubsurfaceProfileUInt = uint(SubsurfaceProfile * 255.0f + 0.5f);
-			float MaterialRoughnessToAverage = GetSubsurfaceProfileTexture(SSSS_DUAL_SPECULAR_OFFSET, SubsurfaceProfileUInt).w * SSSS_MAX_DUAL_SPECULAR_ROUGHNESS;
+		#if SHADING_PATH_MOBILE
+			#if MATERIAL_SUBSURFACE_PROFILE_USE_CURVATURE
+				GBuffer.Curvature = GetMaterialCustomData0(MaterialParameters);
+			#else
+				GBuffer.Curvature = CalculateCurvature(GBuffer.WorldNormal, MaterialParameters.WorldPosition_CamRelative);
+			#endif
 
-			// Smooth blend out dual specular when opacity is low, we have the extra SSSS_OPACITY_THRESHOLD_EPS so that we fade out by the time we
-			// get to 0.01, as opposed to 0.0.
-			MaterialRoughnessToAverage = lerp(1.0f, MaterialRoughnessToAverage, saturate((Opacity - SSSS_OPACITY_THRESHOLD_EPS) * 10.0f));
-
-			GBuffer.Roughness = saturate(GBuffer.Roughness * MaterialRoughnessToAverage);
+			GBuffer.Curvature = clamp(GBuffer.Curvature, 0.001f, 1.0f);
+		#endif
 		}
 	#if SUBSURFACE_PROFILE_OPACITY_THRESHOLD
 		else
@@ -105,7 +105,7 @@ void SetGBufferForShadingModel(
 				#endif
 
 				float2 oct1 = UnitVectorToOctahedron(tempnormal);
-				float2 oct3 = ( (oct1 - oct2) *  0.5 ) + (128.0/255.0);
+				float2 oct3 = ( (oct1 - oct2) *  0.25 ) + (128.0/255.0);
 				GBuffer.CustomData.a = oct3.x;
 				GBuffer.CustomData.z = oct3.y;
 			#else
@@ -188,6 +188,16 @@ void SetGBufferForShadingModel(
 			float3 Tangent = GetTangentOutput0(MaterialParameters);
 			GBuffer.CustomData.yz = UnitVectorToOctahedron( normalize(Tangent) ) * 0.5 + 0.5;
 		#endif
+	#endif
+
+	#if SHADING_PATH_MOBILE
+		#if MATERIAL_SHADINGMODEL_EYE_USE_CURVATURE
+			GBuffer.Curvature = Metallic;
+		#else
+			GBuffer.Curvature = CalculateCurvature(GBuffer.WorldNormal, MaterialParameters.WorldPosition_CamRelative);
+		#endif
+
+		GBuffer.Curvature = clamp(GBuffer.Curvature, 0.001f, 1.0f);
 	#endif
 	}
 #endif
