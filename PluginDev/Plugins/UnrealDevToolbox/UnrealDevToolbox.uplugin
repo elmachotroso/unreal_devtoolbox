@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "UnrealDevToolbox",
+	"Description": "Unreal Engine Dev Toolbox is a collection of tools and framework for instant game/experience creation!",
+	"Category": "Other",
+	"CreatedBy": "Andrei Victor",
+	"CreatedByURL": "https://www.andreivictor.net/UnrealDevToolbox",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "UnrealDevToolbox",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
